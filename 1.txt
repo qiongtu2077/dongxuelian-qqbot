@@ -1,0 +1,192 @@
+cat > /root/koishi-app/node_modules/koishi-plugin-local-video-sender/lib/index.js <<'EOF'
+const { segment } = require('koishi')
+const { execFile } = require('child_process')
+const fs = require('fs/promises')
+const path = require('path')
+
+exports.name = 'local-video-sender'
+
+const YTDLP = '/usr/local/bin/yt-dlp'
+const COOKIES = '/root/bilibili-cookies.txt'
+const WORKDIR = '/root/koishi-bili-downloads'
+const MAX_SIZE = 200 * 1024 * 1024
+
+const FORMAT_CANDIDATES = [
+  { format: '30064+30280', label: '720p AVC' },
+  { format: '30066+30280', label: '720p HEVC' },
+  { format: '100024+30280', label: '720p AV1' },
+]
+
+function run(file, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout
+        error.stderr = stderr
+        reject(error)
+      } else {
+        resolve({ stdout, stderr })
+      }
+    })
+  })
+}
+
+function extractBiliUrl(input = '') {
+  const urlMatch = input.match(/https?:\/\/(?:www\.bilibili\.com|bilibili\.com|b23\.tv)\/[^\s"'<>，。！？、]+/i)
+  if (urlMatch) return urlMatch[0]
+
+  const bvMatch = input.match(/\bBV[0-9A-Za-z]{10}\b/i)
+  if (bvMatch) return `https://www.bilibili.com/video/${bvMatch[0]}`
+
+  return null
+}
+
+function safeNumber(value) {
+  return Number.isFinite(value) ? value : 0
+}
+
+function pickFormat(info) {
+  const formats = Array.isArray(info.formats) ? info.formats : []
+
+  for (const candidate of FORMAT_CANDIDATES) {
+    const [videoId, audioId] = candidate.format.split('+')
+    const video = formats.find(item => String(item.format_id) === videoId)
+    const audio = formats.find(item => String(item.format_id) === audioId)
+    if (!video || !audio) continue
+
+    const videoSize = safeNumber(video.filesize) || safeNumber(video.filesize_approx)
+    const audioSize = safeNumber(audio.filesize) || safeNumber(audio.filesize_approx)
+    const totalSize = videoSize + audioSize
+
+    return {
+      format: candidate.format,
+      label: candidate.label,
+      totalSize,
+    }
+  }
+
+  return null
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '未知'
+  return `${(bytes / 1024 / 1024).toFixed(1)}MB`
+}
+
+function formatDuration(seconds) {
+  seconds = Math.floor(safeNumber(seconds))
+  if (!seconds) return '未知'
+
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return `${minutes}:${String(rest).padStart(2, '0')}`
+}
+
+function formatVideoInfo(info, picked) {
+  return [
+    `标题：${info.title || '未知'}`,
+    `UP：${info.uploader || info.channel || '未知'}`,
+    `时长：${formatDuration(info.duration)}`,
+    `清晰度：${picked.label}`,
+    `预计大小：${formatBytes(picked.totalSize)}`,
+    `链接：${info.webpage_url || info.original_url || ''}`,
+  ].join('\n')
+}
+
+function buildInfoMessage(info, picked) {
+  const text = formatVideoInfo(info, picked)
+  if (info.thumbnail) {
+    return `${text}\n${segment.image(info.thumbnail)}`
+  }
+  return text
+}
+
+async function probeVideo(url) {
+  const { stdout } = await run(YTDLP, [
+    '--cookies', COOKIES,
+    '--dump-single-json',
+    '--no-warnings',
+    url,
+  ], { timeout: 2 * 60 * 1000 })
+
+  const info = JSON.parse(stdout)
+  const picked = pickFormat(info)
+
+  if (!picked) {
+    return { error: '没有找到可用的 720p 格式。' }
+  }
+
+  return { info, picked }
+}
+
+async function downloadAndSend(ctx, session, url) {
+  await fs.mkdir(WORKDIR, { recursive: true })
+
+  let info
+  let picked
+  try {
+    const result = await probeVideo(url)
+    if (result.error) return result.error
+    info = result.info
+    picked = result.picked
+  } catch (error) {
+    ctx.logger('bvidl').warn(error.stderr || error.message)
+    return '下载前探测失败，稍后重试。'
+  }
+
+  await session.send(buildInfoMessage(info, picked))
+
+  if (picked.totalSize && picked.totalSize > MAX_SIZE) {
+    return `视频过大，请前往 B 站观看。预计大小：${formatBytes(picked.totalSize)}`
+  }
+
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const outputTemplate = path.join(WORKDIR, `${id}.%(ext)s`)
+  const outputFile = path.join(WORKDIR, `${id}.mp4`)
+
+  try {
+    await run(YTDLP, [
+      '--cookies', COOKIES,
+      '-f', picked.format,
+      '--merge-output-format', 'mp4',
+      '-o', outputTemplate,
+      url,
+    ], { timeout: 10 * 60 * 1000 })
+
+    const stat = await fs.stat(outputFile)
+    if (stat.size > MAX_SIZE) {
+      await fs.rm(outputFile, { force: true }).catch(() => {})
+      return `视频过大，请前往 B 站观看。实际大小：${formatBytes(stat.size)}`
+    }
+
+    await session.send(segment.video(`file://${outputFile}`))
+    await fs.rm(outputFile, { force: true }).catch(() => {})
+  } catch (error) {
+    await fs.rm(outputFile, { force: true }).catch(() => {})
+    ctx.logger('bvidl').warn(error.stderr || error.message)
+    return '下载或发送失败，稍后看日志排查。'
+  }
+}
+
+exports.apply = (ctx) => {
+  ctx.command('sendtestvideo', '发送本地测试视频').action(() => {
+    return segment.video('file:///root/test_bili.mp4')
+  })
+
+  ctx.command('bvidl <text:text>', '下载并发送 B 站视频').action(async ({ session }, text) => {
+    const url = extractBiliUrl(text)
+    if (!url) return '请发送：bvidl B站链接 或 bvidl BV号'
+    return downloadAndSend(ctx, session, url)
+  })
+
+  ctx.middleware(async (session, next) => {
+    const content = session.content || ''
+    if (/^\s*bvidl\b/i.test(content)) return next()
+
+    const url = extractBiliUrl(content)
+    if (!url) return next()
+
+    return downloadAndSend(ctx, session, url)
+  })
+}
+EOF
