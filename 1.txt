@@ -10,11 +10,19 @@ const YTDLP = '/usr/local/bin/yt-dlp'
 const COOKIES = '/root/bilibili-cookies.txt'
 const WORKDIR = '/root/koishi-bili-downloads'
 const MAX_SIZE = 200 * 1024 * 1024
+const MIN_720_HEIGHT = 700
+const MAX_720_HEIGHT = 720
 
 const FORMAT_CANDIDATES = [
-  { format: '30064+30280', label: '720p AVC' },
-  { format: '30066+30280', label: '720p HEVC' },
-  { format: '100024+30280', label: '720p AV1' },
+  { format: '30064+30280', label: '720档 AVC' },
+  { format: '30066+30280', label: '720档 HEVC' },
+  { format: '100024+30280', label: '720档 AV1' },
+]
+
+const SINGLE_FILE_CANDIDATES = [
+  { format: '64', label: '720档 单文件' },
+  { format: '32', label: '480档 单文件' },
+  { format: '16', label: '360档 单文件' },
 ]
 
 function run(file, args, options = {}) {
@@ -45,6 +53,10 @@ function safeNumber(value) {
   return Number.isFinite(value) ? value : 0
 }
 
+function estimateFormatSize(format) {
+  return safeNumber(format.filesize) || safeNumber(format.filesize_approx)
+}
+
 function pickFormat(info) {
   const formats = Array.isArray(info.formats) ? info.formats : []
 
@@ -54,14 +66,52 @@ function pickFormat(info) {
     const audio = formats.find(item => String(item.format_id) === audioId)
     if (!video || !audio) continue
 
-    const videoSize = safeNumber(video.filesize) || safeNumber(video.filesize_approx)
-    const audioSize = safeNumber(audio.filesize) || safeNumber(audio.filesize_approx)
-    const totalSize = videoSize + audioSize
+    const totalSize = estimateFormatSize(video) + estimateFormatSize(audio)
 
     return {
       format: candidate.format,
       label: candidate.label,
       totalSize,
+      height: safeNumber(video.height),
+    }
+  }
+
+  for (const candidate of SINGLE_FILE_CANDIDATES) {
+    const merged = formats.find(item => String(item.format_id) === candidate.format)
+    if (!merged) continue
+
+    return {
+      format: candidate.format,
+      label: candidate.label,
+      totalSize: estimateFormatSize(merged),
+      height: safeNumber(merged.height),
+    }
+  }
+
+  const audioCandidates = formats
+    .filter(item => item.vcodec === 'none' && item.acodec && item.acodec !== 'none')
+    .sort((left, right) => estimateFormatSize(right) - estimateFormatSize(left))
+
+  const videoCandidates = formats
+    .filter(item => {
+      const height = safeNumber(item.height)
+      return item.vcodec && item.vcodec !== 'none' && height >= MIN_720_HEIGHT && height <= MAX_720_HEIGHT
+    })
+    .sort((left, right) => {
+      const heightDiff = safeNumber(right.height) - safeNumber(left.height)
+      if (heightDiff) return heightDiff
+      return estimateFormatSize(right) - estimateFormatSize(left)
+    })
+
+  if (videoCandidates.length && audioCandidates.length) {
+    const video = videoCandidates[0]
+    const audio = audioCandidates[0]
+
+    return {
+      format: `${video.format_id}+${audio.format_id}`,
+      label: `${safeNumber(video.height)}p档`,
+      totalSize: estimateFormatSize(video) + estimateFormatSize(audio),
+      height: safeNumber(video.height),
     }
   }
 
@@ -113,7 +163,7 @@ async function probeVideo(url) {
   const picked = pickFormat(info)
 
   if (!picked) {
-    return { error: '没有找到可用的 720p 格式。' }
+    return { error: '没有找到可用的视频格式。' }
   }
 
   return { info, picked }
