@@ -8,8 +8,8 @@
 - 主链路已稳定打通：`NapCat + Koishi + OneBot11`
 - `NapCat` 和 `Koishi` 均已接入 `systemd`，并设置为服务化运行
 - QQ 机器人当前可正常接收消息，`help` 命令已验证可正常回复
-- 第一阶段 B 站视频解析/搬运功能已完成并验证无异常
-- 下一阶段开始添加第二个功能：群友昵称与集合管理，方便快速艾特
+- 第一阶段 B 站视频解析/搬运功能已全部完成，当前运行正常
+- 第二阶段开始规划群友昵称与集合管理，方便快速艾特
 
 ## 主链路
 
@@ -43,10 +43,10 @@
 
 ### 当前状态
 
-- 状态：已完成，当前无异常
+- 状态：已完成，当前运行正常
 - 插件实例：`local-video-sender:test`
 - 插件文件：`/root/koishi-app/node_modules/koishi-plugin-local-video-sender/lib/index.js`
-- 本地部署脚本记录：`1.txt`
+- 本地部署脚本记录：`1.md`
 - 测试命令：`sendtestvideo`
 - 手动命令：`bvidl <B站链接或BV号>`
 - 自动监听：已开启，群内直接发送 B 站内容即可触发
@@ -57,6 +57,7 @@
 - 完整 B 站视频链接
 - 带标题的 B 站分享文本
 - `b23.tv` 短链
+- QQ 内 B 站小程序分享卡片
 
 ### 回复流程
 
@@ -65,6 +66,14 @@
 - 当前已将回复链接规范化为：`https://www.bilibili.com/video/BVxxxx/`
 - 不再发送“开始下载中”的单独提示
 - 超过 `200MB` 的视频不搬运，直接提示去 B 站观看
+
+### 小程序分享解析
+
+- 新增 `normalizeSharedText()`，用于处理 QQ 小程序卡片中的转义内容
+- 支持反转义 `https:\/\/`、HTML 实体、Unicode 转义和百分号编码
+- `extractBiliUrl()` 会先规范化文本，再提取 B 站 URL 或 `BV号`
+- 已增加 `m.bilibili.com` 域名匹配
+- 解析逻辑已写入 `1.md`，当前已验证可用
 
 ### 格式选择策略
 
