@@ -27,24 +27,28 @@ const HELP_COLLECTION = [
   '集合功能菜单',
   '',
   '一、基础绑定',
-  '@A用户 昵称 名称A / 删除昵称 名称A / 删除昵称 名称A @A用户 / at名称A',
+  '@A用户 昵称 名称A',
+  '删除昵称 名称A @A用户',
+  'at名称A',
   '',
   '二、查询',
-  '查看昵称 @A用户 / 查看昵称 A用户',
-  '查看集合 集合A / 谁是 集合A',
-  '查看全部昵称 / nicklist',
-  '查看全部集合 / 集合列表',
-  '说明：1 人的是昵称，2 人及以上的是集合',
+  '查看昵称 @A用户',
+  '查看集合 集合A/谁是 集合A',
+  '集合列表',
   '',
   '三、集合管理',
-  '创建集合 集合A @A用户 @B用户 / 集合添加 集合A @A用户 @B用户 / 集合删除 集合A @A用户 @B用户',
-  '清空集合 集合A / 确认清空集合 集合A',
-  '删除集合 集合A / 确认删除集合 集合A',
-  '重命名集合 集合A 集合B / 重命名昵称 名称A 名称B',
-  '复制集合 集合A 集合B / 合并集合 集合A 集合B',
+  '创建集合 集合A @A用户 @B用户',
+  '集合添加 集合A @A用户 @B用户',
+  '集合删除 集合A @A用户 @B用户',
+  '清空集合 集合A',
+  '删除集合 集合A',
+  '重命名集合 集合A 集合B',
+  '复制集合 集合A 集合B',
   '',
   '四、集合运算',
-  '集合交集 集合A 集合B / 集合并集 集合A 集合B / 集合差集 集合A 集合B',
+  '集合交集 集合A 集合B',
+  '集合并集 集合A 集合B',
+  '集合差集 集合A 集合B',
 ].join('\n')
 
 const HELP_MAP = {
@@ -122,3 +126,5 @@ printf '\nInstalled koishi-plugin-dongxuelian-help 0.3.0\n'
 systemctl restart koishi
 printf 'Restarted koishi. Check logs with:\n'
 printf 'journalctl -u koishi -n 120 --no-pager | grep dongxuelian-help\n'
+systemctl restart koishi
+
