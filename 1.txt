@@ -14,15 +14,15 @@ const MIN_720_HEIGHT = 700
 const MAX_720_HEIGHT = 720
 
 const FORMAT_CANDIDATES = [
-  { format: '30064+30280', label: '720档 AVC' },
-  { format: '30066+30280', label: '720档 HEVC' },
-  { format: '100024+30280', label: '720档 AV1' },
+  { format: '30064+30280', label: '720P AVC' },
+  { format: '30066+30280', label: '720P HEVC' },
+  { format: '100024+30280', label: '720P AV1' },
 ]
 
 const SINGLE_FILE_CANDIDATES = [
-  { format: '64', label: '720档 单文件' },
-  { format: '32', label: '480档 单文件' },
-  { format: '16', label: '360档 单文件' },
+  { format: '64', label: '720P single file' },
+  { format: '32', label: '480P single file' },
+  { format: '16', label: '360P single file' },
 ]
 
 function run(file, args, options = {}) {
@@ -40,13 +40,22 @@ function run(file, args, options = {}) {
 }
 
 function extractBiliUrl(input = '') {
-  const urlMatch = input.match(/https?:\/\/(?:www\.bilibili\.com|bilibili\.com|b23\.tv)\/[^\s"'<>，。！？、]+/i)
+  const urlMatch = input.match(/https?:\/\/(?:www\.bilibili\.com|bilibili\.com|b23\.tv)\/[^\s"'<>]+/i)
   if (urlMatch) return urlMatch[0]
 
   const bvMatch = input.match(/\bBV[0-9A-Za-z]{10}\b/i)
   if (bvMatch) return `https://www.bilibili.com/video/${bvMatch[0]}`
 
   return null
+}
+
+function getCanonicalBiliUrl(info = {}) {
+  const source = info.webpage_url || info.original_url || ''
+  const bvMatch = source.match(/\bBV[0-9A-Za-z]{10}\b/i)
+  if (bvMatch) {
+    return `https://www.bilibili.com/video/${bvMatch[0]}/`
+  }
+  return source ? source.split('?')[0] : ''
 }
 
 function safeNumber(value) {
@@ -109,7 +118,7 @@ function pickFormat(info) {
 
     return {
       format: `${video.format_id}+${audio.format_id}`,
-      label: `${safeNumber(video.height)}p档`,
+      label: `${safeNumber(video.height)}P split stream`,
       totalSize: estimateFormatSize(video) + estimateFormatSize(audio),
       height: safeNumber(video.height),
     }
@@ -119,13 +128,13 @@ function pickFormat(info) {
 }
 
 function formatBytes(bytes) {
-  if (!bytes) return '未知'
+  if (!bytes) return 'unknown'
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`
 }
 
 function formatDuration(seconds) {
   seconds = Math.floor(safeNumber(seconds))
-  if (!seconds) return '未知'
+  if (!seconds) return 'unknown'
 
   const minutes = Math.floor(seconds / 60)
   const rest = seconds % 60
@@ -133,22 +142,16 @@ function formatDuration(seconds) {
 }
 
 function formatVideoInfo(info, picked) {
+  const canonicalUrl = getCanonicalBiliUrl(info)
   return [
-    `标题：${info.title || '未知'}`,
-    `UP：${info.uploader || info.channel || '未知'}`,
-    `时长：${formatDuration(info.duration)}`,
-    `清晰度：${picked.label}`,
-    `预计大小：${formatBytes(picked.totalSize)}`,
-    `链接：${info.webpage_url || info.original_url || ''}`,
-  ].join('\n')
+    info.title || 'Unknown title',
+    segment.image(info.thumbnail),
+    canonicalUrl,
+  ].filter(Boolean).join('\n')
 }
 
 function buildInfoMessage(info, picked) {
-  const text = formatVideoInfo(info, picked)
-  if (info.thumbnail) {
-    return `${text}\n${segment.image(info.thumbnail)}`
-  }
-  return text
+  return formatVideoInfo(info, picked)
 }
 
 async function probeVideo(url) {
@@ -163,7 +166,7 @@ async function probeVideo(url) {
   const picked = pickFormat(info)
 
   if (!picked) {
-    return { error: '没有找到可用的视频格式。' }
+    return { error: 'No available video format found.' }
   }
 
   return { info, picked }
@@ -181,13 +184,13 @@ async function downloadAndSend(ctx, session, url) {
     picked = result.picked
   } catch (error) {
     ctx.logger('bvidl').warn(error.stderr || error.message)
-    return '下载前探测失败，稍后重试。'
+    return 'Failed to probe video. Please try again later.'
   }
 
   await session.send(buildInfoMessage(info, picked))
 
   if (picked.totalSize && picked.totalSize > MAX_SIZE) {
-    return `视频过大，请前往 B 站观看。预计大小：${formatBytes(picked.totalSize)}`
+    return `Video is too large. Please watch it on Bilibili. Size: ${formatBytes(picked.totalSize)}`
   }
 
   const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -206,7 +209,7 @@ async function downloadAndSend(ctx, session, url) {
     const stat = await fs.stat(outputFile)
     if (stat.size > MAX_SIZE) {
       await fs.rm(outputFile, { force: true }).catch(() => {})
-      return `视频过大，请前往 B 站观看。实际大小：${formatBytes(stat.size)}`
+      return `Video is too large. Please watch it on Bilibili. Actual size: ${formatBytes(stat.size)}`
     }
 
     await session.send(segment.video(`file://${outputFile}`))
@@ -214,18 +217,18 @@ async function downloadAndSend(ctx, session, url) {
   } catch (error) {
     await fs.rm(outputFile, { force: true }).catch(() => {})
     ctx.logger('bvidl').warn(error.stderr || error.message)
-    return '下载或发送失败，稍后看日志排查。'
+    return 'Failed to download or send video. Please check logs later.'
   }
 }
 
 exports.apply = (ctx) => {
-  ctx.command('sendtestvideo', '发送本地测试视频').action(() => {
+  ctx.command('sendtestvideo', 'send local test video').action(() => {
     return segment.video('file:///root/test_bili.mp4')
   })
 
-  ctx.command('bvidl <text:text>', '下载并发送 B 站视频').action(async ({ session }, text) => {
+  ctx.command('bvidl <text:text>', 'download and send Bilibili video').action(async ({ session }, text) => {
     const url = extractBiliUrl(text)
-    if (!url) return '请发送：bvidl B站链接 或 bvidl BV号'
+    if (!url) return 'Usage: bvidl Bilibili_URL_or_BV_ID'
     return downloadAndSend(ctx, session, url)
   })
 
@@ -240,3 +243,4 @@ exports.apply = (ctx) => {
   })
 }
 EOF
+systemctl restart koishi
