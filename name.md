@@ -2,7 +2,7 @@ mkdir -p /root/koishi-app/node_modules/koishi-plugin-group-name-at/lib
 cat > /root/koishi-app/node_modules/koishi-plugin-group-name-at/package.json <<'EOF'
 {
   "name": "koishi-plugin-group-name-at",
-  "version": "0.4.2",
+  "version": "0.4.5",
   "main": "lib/index.js"
 }
 EOF
@@ -13,7 +13,7 @@ const path = require('path')
 
 exports.name = 'group-name-at'
 
-const PLUGIN_VERSION = '0.4.2'
+const PLUGIN_VERSION = '0.4.5'
 const DATA_FILE = '/root/koishi-app/data/nickname-collections.json'
 const CONFIRM_TIMEOUT = 60 * 1000
 
@@ -48,14 +48,16 @@ const TEXT = {
   mentionRequired: '请至少 @ 一个成员。',
   aliasNotFound: (alias) => `没有找到「${alias}」。`,
   aliasExists: (alias, label) => `「${alias}」已经绑定到 ${label}，无需重复添加。`,
-  aliasAdded: (alias, label) => `已为 ${label} 添加昵称「${alias}」。`,
+  aliasAdded: (alias, label) => `昵称“${alias}”成功绑定到用户！`,
   collectionUpgraded: (alias, label, count) => `已将${label}加入集合「${alias}」，已自动升级为集合，当前共 ${count} 人。`,
   collectionAdded: (alias, label, count, added) => `已将 ${added} 人加入集合「${alias}」，当前共 ${count} 人。`,
   aliasRemoveMissing: (alias) => `「${alias}」下没有绑定该成员。`,
   aliasRemovedLast: (alias) => `已删除「${alias}」的最后一个成员绑定。`,
   aliasRemoved: (alias, count) => `已从「${alias}」中移除该成员，当前剩余 ${count} 人。`,
-  aliasListTitle: '本群昵称 / 集合：',
-  aliasListEmpty: '本群还没有昵称或集合。',
+  aliasListTitle: '本群昵称：',
+  aliasListEmpty: '本群还没有单人昵称。',
+  collectionListTitle: '本群集合：',
+  collectionListEmpty: '本群还没有集合。',
   collectionTitle: (alias) => `集合：${alias}`,
   collectionCount: (count) => `人数：${count}`,
   collectionExists: (alias) => `集合「${alias}」已存在。要添加成员请用：集合添加 ${alias} @成员`,
@@ -99,6 +101,14 @@ function startsWithCommand(input, command) {
 
 function afterCommand(input, command) {
   if (!startsWithCommand(input, command)) return null
+  return normalizeAliasName(input.slice(command.length))
+}
+
+function afterCommandLoose(input, command) {
+  input = String(input || '')
+  command = String(command || '')
+  if (!input.startsWith(command)) return null
+  if (input === command) return ''
   return normalizeAliasName(input.slice(command.length))
 }
 
@@ -346,17 +356,34 @@ async function sendAliasMention(session, alias) {
   return buildAtMessage(entry.members)
 }
 
+function countMembers(entry) {
+  return Array.isArray(entry?.members) ? entry.members.length : 0
+}
+
+function formatAliasList(entries) {
+  return entries
+    .sort((left, right) => left[0].localeCompare(right[0], 'zh-CN'))
+    .map(([alias, entry]) => `${alias} (${countMembers(entry)})`)
+}
+
 async function listAliases(session) {
   await ensureStore()
   const scopeStore = getScopeStore(session)
   const aliases = Object.entries(scopeStore.aliases)
+    .filter(([, entry]) => countMembers(entry) === 1)
   if (!aliases.length) return TEXT.aliasListEmpty
 
-  const lines = aliases
-    .sort((left, right) => left[0].localeCompare(right[0], 'zh-CN'))
-    .map(([alias, entry]) => `${alias} (${Array.isArray(entry.members) ? entry.members.length : 0})`)
+  return [TEXT.aliasListTitle, ...formatAliasList(aliases)].join('\n')
+}
 
-  return [TEXT.aliasListTitle, ...lines].join('\n')
+async function listCollections(session) {
+  await ensureStore()
+  const scopeStore = getScopeStore(session)
+  const collections = Object.entries(scopeStore.aliases)
+    .filter(([, entry]) => countMembers(entry) > 1)
+  if (!collections.length) return TEXT.collectionListEmpty
+
+  return [TEXT.collectionListTitle, ...formatAliasList(collections)].join('\n')
 }
 
 async function createCollection(session, alias, userIds, merge) {
@@ -588,7 +615,7 @@ function parseAliasBind(content) {
   if (!mentionIds.length) return null
 
   const plain = stripMentions(content)
-  const alias = afterCommand(plain, CMD.alias)
+  const alias = afterCommandLoose(plain, CMD.alias)
   if (!alias) return null
 
   return { targetUserId: mentionIds[0], alias }
@@ -623,16 +650,29 @@ async function handlePlainCommand(session, content) {
     return viewMember(session, '', mentionIds[0])
   }
 
-  if (plain === CMD.viewAllAliases || plain === CMD.viewAllCollections || plain === CMD.collectionList || /^nicklist$/i.test(plain)) {
+  if (plain === CMD.viewAllAliases || /^nicklist$/i.test(plain)) {
     return listAliases(session)
   }
 
-  for (const command of [CMD.viewCollection, CMD.viewAlias, CMD.whoIs]) {
+  if (plain === CMD.viewAllCollections || plain === CMD.collectionList) {
+    return listCollections(session)
+  }
+
+  if (mentionIds.length && plain === CMD.viewAlias) {
+    return viewMember(session, '', mentionIds[0])
+  }
+
+  let value = afterCommand(plain, CMD.viewAlias)
+  if (value) {
+    return viewMember(session, value, mentionIds[0])
+  }
+
+  for (const command of [CMD.viewCollection, CMD.whoIs]) {
     const alias = afterCommand(plain, command)
     if (alias) return viewAlias(session, alias)
   }
 
-  let value = afterCommand(plain, CMD.viewMember)
+  value = afterCommand(plain, CMD.viewMember)
   if (value || (mentionIds.length && plain === CMD.viewMember)) {
     return viewMember(session, value, mentionIds[0])
   }
@@ -731,5 +771,5 @@ exports.apply = (ctx) => {
   })
 }
 EOF
-printf '\nInstalled koishi-plugin-group-name-at 0.4.2\n'
+printf '\nInstalled koishi-plugin-group-name-at 0.4.5\n'
 systemctl restart koishi

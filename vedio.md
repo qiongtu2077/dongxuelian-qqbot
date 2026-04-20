@@ -12,6 +12,7 @@ const WORKDIR = '/root/koishi-bili-downloads'
 const MAX_SIZE = 200 * 1024 * 1024
 const MIN_720_HEIGHT = 700
 const MAX_720_HEIGHT = 720
+const PREFERRED_MAX_HEIGHT = 720
 
 const FORMAT_CANDIDATES = [
   { format: '30064+30280', label: '720P AVC' },
@@ -95,6 +96,53 @@ function estimateFormatSize(format) {
   return safeNumber(format.filesize) || safeNumber(format.filesize_approx)
 }
 
+function isAudioOnlyFormat(format) {
+  return format && format.vcodec === 'none' && format.acodec && format.acodec !== 'none'
+}
+
+function isVideoFormat(format) {
+  return format && format.vcodec && format.vcodec !== 'none'
+}
+
+function pickBestAudio(formats) {
+  return formats
+    .filter(isAudioOnlyFormat)
+    .sort((left, right) => {
+      const abrDiff = safeNumber(right.abr) - safeNumber(left.abr)
+      if (abrDiff) return abrDiff
+      return estimateFormatSize(right) - estimateFormatSize(left)
+    })[0]
+}
+
+function sortVideoCandidates(left, right, targetHeight = PREFERRED_MAX_HEIGHT) {
+  const leftHeight = safeNumber(left.height)
+  const rightHeight = safeNumber(right.height)
+  const leftDistance = Math.abs(leftHeight - targetHeight)
+  const rightDistance = Math.abs(rightHeight - targetHeight)
+  if (leftDistance !== rightDistance) return leftDistance - rightDistance
+
+  const leftPreferred = leftHeight <= targetHeight ? 1 : 0
+  const rightPreferred = rightHeight <= targetHeight ? 1 : 0
+  if (leftPreferred !== rightPreferred) return rightPreferred - leftPreferred
+
+  const heightDiff = rightHeight - leftHeight
+  if (heightDiff) return heightDiff
+
+  const fpsDiff = safeNumber(right.fps) - safeNumber(left.fps)
+  if (fpsDiff) return fpsDiff
+
+  return estimateFormatSize(right) - estimateFormatSize(left)
+}
+
+function buildSplitPick(video, audio, label) {
+  return {
+    format: `${video.format_id}+${audio.format_id}`,
+    label,
+    totalSize: estimateFormatSize(video) + estimateFormatSize(audio),
+    height: safeNumber(video.height),
+  }
+}
+
 function pickFormat(info) {
   const formats = Array.isArray(info.formats) ? info.formats : []
 
@@ -114,6 +162,30 @@ function pickFormat(info) {
     }
   }
 
+  const audio = pickBestAudio(formats)
+
+  const exact720Candidates = formats
+    .filter(item => {
+      const height = safeNumber(item.height)
+      return isVideoFormat(item) && height >= MIN_720_HEIGHT && height <= MAX_720_HEIGHT
+    })
+    .sort((left, right) => sortVideoCandidates(left, right, PREFERRED_MAX_HEIGHT))
+
+  if (exact720Candidates.length && audio) {
+    return buildSplitPick(exact720Candidates[0], audio, `${safeNumber(exact720Candidates[0].height)}P split stream`)
+  }
+
+  const preferredVideoCandidates = formats
+    .filter(item => {
+      const height = safeNumber(item.height)
+      return isVideoFormat(item) && height > 0 && height <= PREFERRED_MAX_HEIGHT
+    })
+    .sort((left, right) => sortVideoCandidates(left, right, PREFERRED_MAX_HEIGHT))
+
+  if (preferredVideoCandidates.length && audio) {
+    return buildSplitPick(preferredVideoCandidates[0], audio, `${safeNumber(preferredVideoCandidates[0].height)}P split stream`)
+  }
+
   for (const candidate of SINGLE_FILE_CANDIDATES) {
     const merged = formats.find(item => String(item.format_id) === candidate.format)
     if (!merged) continue
@@ -126,30 +198,25 @@ function pickFormat(info) {
     }
   }
 
-  const audioCandidates = formats
-    .filter(item => item.vcodec === 'none' && item.acodec && item.acodec !== 'none')
-    .sort((left, right) => estimateFormatSize(right) - estimateFormatSize(left))
+  const anyVideoCandidates = formats
+    .filter(item => isVideoFormat(item) && safeNumber(item.height) > 0)
+    .sort((left, right) => sortVideoCandidates(left, right, PREFERRED_MAX_HEIGHT))
 
-  const videoCandidates = formats
-    .filter(item => {
-      const height = safeNumber(item.height)
-      return item.vcodec && item.vcodec !== 'none' && height >= MIN_720_HEIGHT && height <= MAX_720_HEIGHT
-    })
-    .sort((left, right) => {
-      const heightDiff = safeNumber(right.height) - safeNumber(left.height)
-      if (heightDiff) return heightDiff
-      return estimateFormatSize(right) - estimateFormatSize(left)
-    })
+  if (anyVideoCandidates.length && audio) {
+    return buildSplitPick(anyVideoCandidates[0], audio, `${safeNumber(anyVideoCandidates[0].height)}P fallback split stream`)
+  }
 
-  if (videoCandidates.length && audioCandidates.length) {
-    const video = videoCandidates[0]
-    const audio = audioCandidates[0]
+  const anyMergedCandidates = formats
+    .filter(item => isVideoFormat(item) && item.acodec && item.acodec !== 'none')
+    .sort((left, right) => sortVideoCandidates(left, right, PREFERRED_MAX_HEIGHT))
 
+  if (anyMergedCandidates.length) {
+    const merged = anyMergedCandidates[0]
     return {
-      format: `${video.format_id}+${audio.format_id}`,
-      label: `${safeNumber(video.height)}P split stream`,
-      totalSize: estimateFormatSize(video) + estimateFormatSize(audio),
-      height: safeNumber(video.height),
+      format: String(merged.format_id),
+      label: `${safeNumber(merged.height)}P fallback single file`,
+      totalSize: estimateFormatSize(merged),
+      height: safeNumber(merged.height),
     }
   }
 
