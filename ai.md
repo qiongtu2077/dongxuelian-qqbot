@@ -5,7 +5,7 @@ mkdir -p /root/koishi-app/node_modules/koishi-plugin-dongxuelian-ai/lib
 cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-ai/package.json <<'EOF'
 {
   "name": "koishi-plugin-dongxuelian-ai",
-  "version": "0.2.44",
+  "version": "0.2.45",
   "main": "lib/index.js"
 }
 EOF
@@ -15,7 +15,7 @@ const path = require('path')
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '0.2.44'
+const PLUGIN_VERSION = '0.2.45'
 const KEY_FILE = '/root/koishi-app/data/ai-openai-key.txt'
 const MODEL_FILE = '/root/koishi-app/data/ai-model.txt'
 const BASE_URL_FILE = '/root/koishi-app/data/ai-base-url.txt'
@@ -37,6 +37,12 @@ const OVERUSED_REPLY_PATTERNS = [
   /你他妈脑子进水了/,
   /词汇量也就够在键盘上撒泼/,
   /连骂人都得靠复读/,
+  /废物也配骂人/,
+  /只会喷粪的嘴/,
+  /现实里怕是连条/,
+  /你这种货色也就配在/,
+  /连条野狗都/,
+  /连条母狗都/,
 ]
 
 const ABUSIVE_INPUT_RE = /(?:\b(?:sb|nmsl|nmlgb|zz|nc|md)\b|傻[比逼币批]|煞笔|沙比|伞兵|海豹|草死你|操死你|妈了个|妈卖批)/i
@@ -290,13 +296,38 @@ function normalizeReplyFingerprint(text = '') {
     .trim()
 }
 
+function longestCommonSubstringLength(a, b) {
+  const m = a.length
+  const n = b.length
+  let maxLen = 0
+  const dp = new Array(n + 1).fill(0)
+  for (let i = 1; i <= m; i++) {
+    let prev = 0
+    for (let j = 1; j <= n; j++) {
+      const temp = dp[j]
+      if (a[i - 1] === b[j - 1]) {
+        dp[j] = prev + 1
+        if (dp[j] > maxLen) maxLen = dp[j]
+      } else {
+        dp[j] = 0
+      }
+      prev = temp
+    }
+  }
+  return maxLen
+}
+
 function isReplyTooSimilar(left = '', right = '') {
   const normalizedLeft = normalizeReplyFingerprint(left)
   const normalizedRight = normalizeReplyFingerprint(right)
   if (!normalizedLeft || !normalizedRight) return false
   if (normalizedLeft === normalizedRight) return true
   if (Math.min(normalizedLeft.length, normalizedRight.length) < 8) return false
-  return normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)
+  if (normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)) return true
+  // 最长公共子串超过较短串长度的 50%，判定为句式结构雷同
+  const lcs = longestCommonSubstringLength(normalizedLeft, normalizedRight)
+  const shorter = Math.min(normalizedLeft.length, normalizedRight.length)
+  return lcs / shorter >= 0.5
 }
 
 function isOverusedReply(reply = '') {
@@ -306,14 +337,8 @@ function isOverusedReply(reply = '') {
 function shouldRetryRepeatedReply(session, reply = '') {
   if (!reply) return false
   if (isOverusedReply(reply)) return true
-  const fingerprint = normalizeReplyFingerprint(reply)
   const recentFingerprints = getReplyFingerprintHistory(session)
-  return recentFingerprints.some(prev => {
-    if (!prev || !fingerprint) return false
-    if (prev === fingerprint) return true
-    if (Math.min(prev.length, fingerprint.length) < 8) return false
-    return prev.includes(fingerprint) || fingerprint.includes(prev)
-  })
+  return recentFingerprints.some(prev => isReplyTooSimilar(reply, prev))
 }
 
 function buildRepeatRetryPrompt(userText, recentReplies = []) {
@@ -322,9 +347,10 @@ function buildRepeatRetryPrompt(userText, recentReplies = []) {
     : ''
 
   return [
-    '【系统提示：你刚才的回法太像旧回复，或者用了陈词滥调。】',
-    '不要再用“你妈的话你信不信我帮你转达”“你照镜子说的”“先看看自己”这种偷懒套话。',
-    '这次必须换一个新角度，针对对方这句里最蠢的点开骂，短一点，狠一点，别复读。',
+    '【系统提示：你刚才的回法太像旧回复，或者用了陈词滥调，或者句子结构和之前的回复相同。】',
+    '不要再用"你妈的话你信不信我帮你转达""你照镜子说的""先看看自己"这种偷懒套话。',
+    '严禁填空题模板：比如"你这种连xxx废物也配骂人，先管好你自己那张只会喷粪的嘴"、"你这种货色也就配在xxx"、"现实里怕是连条野狗都xxx"——换了填空内容但结构一样，仍然算失败。',
+    '这次必须从结构上彻底换一个新骂法，切入点完全不同，短一点，狠一点。',
     recentBlock,
     `当前用户原话：${userText}`,
   ].filter(Boolean).join('\n')
@@ -363,6 +389,7 @@ function buildSystemPrompt() {
     '对线时可以使用孙吧骂人法：把对方的特征、行为、智商、家庭、段位叠在一起组成复合骂，要有具体画面感，不要只堆形容词。每次骂法要自己现场组合，禁止重复已经用过的句子。',
     '每次回复必须换角度，严禁重复上一条回复的句式、用词或攻击逻辑。同一个人连续骂你时，切入点每次都要不同：可以轮换嘲讽智商、戳行为、嘲段位、嘲家庭、用孙吧复合骂、反将一军等，绝对不能一个模子刻出来。',
     '禁止偷懒复读固定套话，尤其别把"你妈的话你信不信我帮你转达"、"你照镜子说的"、"先看看自己"当万能答案；这种句子一旦连续出现，就算回复失败。',
+    '严禁使用填空题式模板句——比如"你这种连xxx废物也配骂人，先管好你自己那张只会喷粪的嘴"或"你这种货色也就配在xxx，现实里怕是连条野狗都xxx"，换了填空内容依然是结构重复，等于失败。每次骂的结构必须从根上不同。',
     '禁止在任何情况下提到"看医生""喝水""休息""口腔溃疡""健康"这类医疗或养生词，这不是怼人，是废话。',
     '正常聊天回复尽量压在 40 个汉字内，能短就短。',
     '如果用户 @ 你，直接回答，不要讲帮助菜单，不要教语法。',
