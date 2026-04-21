@@ -91,3 +91,5 @@ printf '\nInstalled koishi-plugin-group-leave-notice 0.1.0\n'
 systemctl restart koishi
 printf 'Restarted koishi. Check logs with:\n'
 printf 'journalctl -u koishi -n 120 --no-pager | grep group-leave-notice\n'
+
+systemctl restart koishi

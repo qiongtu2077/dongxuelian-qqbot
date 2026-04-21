@@ -1,3 +1,11 @@
+mkdir -p /root/koishi-app/node_modules/koishi-plugin-local-video-sender/lib
+cat > /root/koishi-app/node_modules/koishi-plugin-local-video-sender/package.json <<'EOF'
+{
+  "name": "koishi-plugin-local-video-sender",
+  "version": "0.2.0",
+  "main": "lib/index.js"
+}
+EOF
 cat > /root/koishi-app/node_modules/koishi-plugin-local-video-sender/lib/index.js <<'EOF'
 const { segment } = require('koishi')
 const { execFile } = require('child_process')
