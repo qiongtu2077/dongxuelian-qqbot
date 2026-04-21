@@ -17,8 +17,9 @@ const PLUGIN_VERSION = '0.4.7'
 const DATA_FILE = '/root/koishi-app/data/nickname-collections.json'
 const CONFIRM_TIMEOUT = 60 * 1000
 //黑名单
-const GROUP_BLACKLIST = new Set(['942033342
-  //' '123456789',
+const GROUP_BLACKLIST = new Set([
+  '942033342',
+  // '123456789',
 ])
 
 const CMD = {
