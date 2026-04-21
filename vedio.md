@@ -21,6 +21,14 @@ const MAX_SIZE = 200 * 1024 * 1024
 const MIN_720_HEIGHT = 700
 const MAX_720_HEIGHT = 720
 const PREFERRED_MAX_HEIGHT = 720
+const DUPLICATE_WINDOW_MS = 60 * 1000
+const DUPLICATE_HISTORY_LIMIT = 3
+//黑名单
+const GROUP_BLACKLIST = new Set([ '942033342'
+  // '123456789',
+])
+
+const recentParseHistory = new Map()
 
 const FORMAT_CANDIDATES = [
   { format: '30064+30280', label: '720P AVC' },
@@ -76,6 +84,31 @@ function normalizeSharedText(input = '') {
   return text
 }
 
+function uniqueStrings(values = []) {
+  return [...new Set(values.filter(Boolean).map(value => String(value)))]
+}
+
+function normalizeBiliIdentifier(identifier = '') {
+  const value = String(identifier).trim()
+  if (!value) return ''
+  return `bv:${value.replace(/^bv/i, '').toLowerCase()}`
+}
+
+function normalizeBiliUrlKey(input = '') {
+  const value = normalizeSharedText(input).trim()
+  if (!value) return ''
+
+  try {
+    const parsed = new URL(value)
+    const host = parsed.hostname.toLowerCase()
+    const pathname = parsed.pathname.replace(/\/+$/, '')
+    if (!host) return ''
+    return `url:${host}${pathname.toLowerCase()}`
+  } catch {
+    return `url:${value.replace(/[?#].*$/, '').replace(/\/+$/, '').toLowerCase()}`
+  }
+}
+
 function extractBiliUrl(input = '') {
   const text = normalizeSharedText(input)
   const urlMatch = text.match(/https?:\/\/(?:www\.bilibili\.com|m\.bilibili\.com|bilibili\.com|b23\.tv)\/[^\s"'<>\\\]}),，。！？、]+/i)
@@ -85,6 +118,77 @@ function extractBiliUrl(input = '') {
   if (bvMatch) return `https://www.bilibili.com/video/${bvMatch[0]}`
 
   return null
+}
+
+function buildBiliKeys(input = '') {
+  const text = normalizeSharedText(input)
+  const keys = []
+  const bvMatches = text.match(/\bBV[0-9A-Za-z]{10}\b/gi) || []
+
+  for (const bv of bvMatches) {
+    keys.push(normalizeBiliIdentifier(bv))
+  }
+
+  const url = extractBiliUrl(text)
+  if (url) keys.push(normalizeBiliUrlKey(url))
+
+  return uniqueStrings(keys)
+}
+
+function getParseChannelKey(session) {
+  return String(session.guildId || session.channelId || session.userId || 'private')
+}
+
+function getGroupBlacklistCandidates(session) {
+  const ids = []
+  if (session.guildId) ids.push(String(session.guildId))
+  if (!session.isDirect && session.channelId) ids.push(String(session.channelId))
+  return [...new Set(ids.filter(Boolean))]
+}
+
+function isBlacklistedGroup(session) {
+  return getGroupBlacklistCandidates(session).some(groupId => GROUP_BLACKLIST.has(groupId))
+}
+
+function pruneRecentParseHistory(session, now = Date.now()) {
+  const channelKey = getParseChannelKey(session)
+  const history = recentParseHistory.get(channelKey) || []
+  const nextHistory = history
+    .filter(entry => now - entry.timestamp <= DUPLICATE_WINDOW_MS)
+    .slice(-DUPLICATE_HISTORY_LIMIT)
+
+  if (nextHistory.length) {
+    recentParseHistory.set(channelKey, nextHistory)
+  } else {
+    recentParseHistory.delete(channelKey)
+  }
+
+  return nextHistory
+}
+
+function isRecentDuplicateParse(session, keys, now = Date.now()) {
+  if (!keys.length) return false
+  const history = pruneRecentParseHistory(session, now)
+  return history.some(entry => entry.keys.some(key => keys.includes(key)))
+}
+
+function rememberRecentParse(session, keys, now = Date.now()) {
+  if (!keys.length) return null
+
+  const history = pruneRecentParseHistory(session, now)
+  const entry = {
+    timestamp: now,
+    keys: uniqueStrings(keys),
+  }
+
+  history.push(entry)
+  recentParseHistory.set(getParseChannelKey(session), history.slice(-DUPLICATE_HISTORY_LIMIT))
+  return entry
+}
+
+function mergeRecentParseKeys(entry, keys) {
+  if (!entry || !keys.length) return
+  entry.keys = uniqueStrings(entry.keys.concat(keys))
 }
 
 function getCanonicalBiliUrl(info = {}) {
@@ -276,7 +380,20 @@ async function probeVideo(url) {
   return { info, picked }
 }
 
-async function downloadAndSend(ctx, session, url) {
+async function downloadAndSend(ctx, session, url, source = url) {
+  if (isBlacklistedGroup(session)) {
+    return
+  }
+
+  const now = Date.now()
+  const initialKeys = buildBiliKeys(source)
+
+  if (isRecentDuplicateParse(session, initialKeys, now)) {
+    return
+  }
+
+  const recentEntry = rememberRecentParse(session, initialKeys, now)
+
   await fs.mkdir(WORKDIR, { recursive: true })
 
   let info
@@ -290,6 +407,8 @@ async function downloadAndSend(ctx, session, url) {
     ctx.logger('bvidl').warn(error.stderr || error.message)
     return 'Failed to probe video. Please try again later.'
   }
+
+  mergeRecentParseKeys(recentEntry, buildBiliKeys(getCanonicalBiliUrl(info)))
 
   await session.send(buildInfoMessage(info, picked))
 
@@ -331,19 +450,23 @@ exports.apply = (ctx) => {
   })
 
   ctx.command('bvidl <text:text>', 'download and send Bilibili video').action(async ({ session }, text) => {
+    if (isBlacklistedGroup(session)) return
+
     const url = extractBiliUrl(text)
     if (!url) return 'Usage: bvidl Bilibili_URL_or_BV_ID'
-    return downloadAndSend(ctx, session, url)
+    return downloadAndSend(ctx, session, url, text || url)
   })
 
   ctx.middleware(async (session, next) => {
+    if (isBlacklistedGroup(session)) return next()
+
     const content = session.content || ''
     if (/^\s*bvidl\b/i.test(content)) return next()
 
     const url = extractBiliUrl(content)
     if (!url) return next()
 
-    return downloadAndSend(ctx, session, url)
+    return downloadAndSend(ctx, session, url, content)
   })
 }
 EOF

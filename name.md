@@ -16,6 +16,10 @@ exports.name = 'group-name-at'
 const PLUGIN_VERSION = '0.4.7'
 const DATA_FILE = '/root/koishi-app/data/nickname-collections.json'
 const CONFIRM_TIMEOUT = 60 * 1000
+//黑名单
+const GROUP_BLACKLIST = new Set(['942033342
+  //' '123456789',
+])
 
 const CMD = {
   alias: '昵称',
@@ -82,6 +86,17 @@ const pendingConfirms = new Map()
 
 function getScopeId(session) {
   return String(session.guildId || session.channelId || 'global')
+}
+
+function getGroupBlacklistCandidates(session) {
+  const ids = []
+  if (session.guildId) ids.push(String(session.guildId))
+  if (!session.isDirect && session.channelId) ids.push(String(session.channelId))
+  return [...new Set(ids.filter(Boolean))]
+}
+
+function isBlacklistedGroup(session) {
+  return getGroupBlacklistCandidates(session).some(groupId => GROUP_BLACKLIST.has(groupId))
 }
 
 function normalizeName(name = '') {
@@ -714,10 +729,14 @@ exports.apply = (ctx) => {
   })
 
   ctx.command('nicklist', 'list aliases in current group').action(async ({ session }) => {
+    if (isBlacklistedGroup(session)) return
+
     return listEntries(session, 'alias')
   })
 
   ctx.middleware(async (session, next) => {
+    if (isBlacklistedGroup(session)) return next()
+
     const content = session.content || ''
 
     const bindAction = parseAliasBind(content)

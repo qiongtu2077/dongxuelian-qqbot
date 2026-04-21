@@ -5,7 +5,7 @@ mkdir -p /root/koishi-app/node_modules/koishi-plugin-dongxuelian-ai/lib
 cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-ai/package.json <<'EOF'
 {
   "name": "koishi-plugin-dongxuelian-ai",
-  "version": "0.2.40",
+  "version": "0.2.44",
   "main": "lib/index.js"
 }
 EOF
@@ -15,15 +15,40 @@ const path = require('path')
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '0.2.40'
+const PLUGIN_VERSION = '0.2.44'
 const KEY_FILE = '/root/koishi-app/data/ai-openai-key.txt'
 const MODEL_FILE = '/root/koishi-app/data/ai-model.txt'
 const BASE_URL_FILE = '/root/koishi-app/data/ai-base-url.txt'
 const SKILLS_DIR = '/root/koishi-app/data/ai-skills'
-const RANDOM_TRIGGER_RATE = Number(process.env.AI_RANDOM_TRIGGER_RATE || 0.08)
+const RANDOM_TRIGGER_RATE_BASE = Number(process.env.AI_RANDOM_TRIGGER_RATE || 0.008)
+const RANDOM_TRIGGER_WARMUP = 50
+const RANDOM_TRIGGER_RAMP = 0.02
 const REQUEST_TIMEOUT = Number(process.env.AI_REQUEST_TIMEOUT_MS || 40000)
 const MAX_OUTPUT_CHARS = 120
 const MAX_HISTORY_ROUNDS = 10
+const MAX_REPLY_RETRIES = 2
+const MAX_REPEAT_CHECK_HISTORY = 3
+const MAX_REPLY_FINGERPRINT_HISTORY = 100
+
+const OVERUSED_REPLY_PATTERNS = [
+  /你妈的话你信不信我帮你转达/,
+  /你照镜子说的/,
+  /先看看自己/,
+  /你他妈脑子进水了/,
+  /词汇量也就够在键盘上撒泼/,
+  /连骂人都得靠复读/,
+]
+
+const ABUSIVE_INPUT_RE = /(?:\b(?:sb|nmsl|nmlgb|zz|nc|md)\b|傻[比逼币批]|煞笔|沙比|伞兵|海豹|草死你|操死你|妈了个|妈卖批)/i
+
+const ABUSIVE_FALLBACK_REPLIES = [
+  '草你妈',
+  '草拟吗',
+  '超你吗',
+  '抄你妈',
+  '炒你吗',
+  '你冯飞了',
+]
 
 const RESERVED_PREFIXES = [
   '昵称',
@@ -59,8 +84,10 @@ const RESERVED_PREFIXES = [
 let configCache = null
 let skillsCache = []
 let conversationCache = new Map()
+let replyFingerprintCache = new Map()
 const channelQueues = new Map()
 const channelQueueDepth = new Map()
+const channelMissCount = new Map()
 
 function enqueueForChannel(channelKey, fn, maxDepth) {
   const depth = channelQueueDepth.get(channelKey) || 0
@@ -74,6 +101,12 @@ function enqueueForChannel(channelKey, fn, maxDepth) {
     if (channelQueues.get(channelKey) === next) channelQueues.delete(channelKey)
   })
   channelQueues.set(channelKey, next)
+}
+
+function getRandomTriggerRate(channelKey) {
+  const miss = channelMissCount.get(channelKey) || 0
+  if (miss < RANDOM_TRIGGER_WARMUP) return RANDOM_TRIGGER_RATE_BASE
+  return RANDOM_TRIGGER_RATE_BASE + (miss - RANDOM_TRIGGER_WARMUP) * RANDOM_TRIGGER_RAMP
 }
 
 function normalizeText(text = '') {
@@ -221,10 +254,90 @@ function saveConversationTurn(session, userText, replyText) {
   ]).slice(-MAX_HISTORY_ROUNDS * 2)
 
   conversationCache.set(key, nextHistory)
+  saveReplyFingerprint(session, replyText)
 }
 
 function clearConversationHistory() {
   conversationCache = new Map()
+  replyFingerprintCache = new Map()
+}
+
+function getReplyFingerprintHistory(session) {
+  const key = getConversationKey(session)
+  return replyFingerprintCache.get(key) || []
+}
+
+function saveReplyFingerprint(session, replyText) {
+  const key = getConversationKey(session)
+  const fingerprints = getReplyFingerprintHistory(session)
+  const next = fingerprints.concat([normalizeReplyFingerprint(replyText)]).slice(-MAX_REPLY_FINGERPRINT_HISTORY)
+  replyFingerprintCache.set(key, next)
+}
+
+function getRecentAssistantReplies(session, limit = MAX_REPEAT_CHECK_HISTORY) {
+  return getConversationHistory(session)
+    .filter(item => item.role === 'assistant')
+    .map(item => normalizeText(item.content || ''))
+    .filter(Boolean)
+    .slice(-limit)
+}
+
+function normalizeReplyFingerprint(text = '') {
+  return String(text)
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[，。！？!?,、：:；;“”"'‘’·`~～\-]/g, '')
+    .trim()
+}
+
+function isReplyTooSimilar(left = '', right = '') {
+  const normalizedLeft = normalizeReplyFingerprint(left)
+  const normalizedRight = normalizeReplyFingerprint(right)
+  if (!normalizedLeft || !normalizedRight) return false
+  if (normalizedLeft === normalizedRight) return true
+  if (Math.min(normalizedLeft.length, normalizedRight.length) < 8) return false
+  return normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)
+}
+
+function isOverusedReply(reply = '') {
+  return OVERUSED_REPLY_PATTERNS.some(pattern => pattern.test(reply))
+}
+
+function shouldRetryRepeatedReply(session, reply = '') {
+  if (!reply) return false
+  if (isOverusedReply(reply)) return true
+  const fingerprint = normalizeReplyFingerprint(reply)
+  const recentFingerprints = getReplyFingerprintHistory(session)
+  return recentFingerprints.some(prev => {
+    if (!prev || !fingerprint) return false
+    if (prev === fingerprint) return true
+    if (Math.min(prev.length, fingerprint.length) < 8) return false
+    return prev.includes(fingerprint) || fingerprint.includes(prev)
+  })
+}
+
+function buildRepeatRetryPrompt(userText, recentReplies = []) {
+  const recentBlock = recentReplies.length
+    ? `最近几次你的回复：\n- ${recentReplies.join('\n- ')}`
+    : ''
+
+  return [
+    '【系统提示：你刚才的回法太像旧回复，或者用了陈词滥调。】',
+    '不要再用“你妈的话你信不信我帮你转达”“你照镜子说的”“先看看自己”这种偷懒套话。',
+    '这次必须换一个新角度，针对对方这句里最蠢的点开骂，短一点，狠一点，别复读。',
+    recentBlock,
+    `当前用户原话：${userText}`,
+  ].filter(Boolean).join('\n')
+}
+
+function pickAbusiveFallbackReply(session) {
+  const recentReplies = getRecentAssistantReplies(session, ABUSIVE_FALLBACK_REPLIES.length)
+  for (const candidate of ABUSIVE_FALLBACK_REPLIES) {
+    if (!recentReplies.some(previousReply => isReplyTooSimilar(candidate, previousReply))) {
+      return candidate
+    }
+  }
+  return ABUSIVE_FALLBACK_REPLIES[0]
 }
 
 function buildSystemPrompt() {
@@ -249,12 +362,13 @@ function buildSystemPrompt() {
     '被骂时反击不要软——可以直接骂脏话、可以嘲讽对方智商和段位、可以戳对方最蠢的点，攻击力要到位，让对方感受到被骂，而不是轻飘飘地说"嘴臭"就结束了。',
     '对线时可以使用孙吧骂人法：把对方的特征、行为、智商、家庭、段位叠在一起组成复合骂，要有具体画面感，不要只堆形容词。每次骂法要自己现场组合，禁止重复已经用过的句子。',
     '每次回复必须换角度，严禁重复上一条回复的句式、用词或攻击逻辑。同一个人连续骂你时，切入点每次都要不同：可以轮换嘲讽智商、戳行为、嘲段位、嘲家庭、用孙吧复合骂、反将一军等，绝对不能一个模子刻出来。',
+    '禁止偷懒复读固定套话，尤其别把"你妈的话你信不信我帮你转达"、"你照镜子说的"、"先看看自己"当万能答案；这种句子一旦连续出现，就算回复失败。',
     '禁止在任何情况下提到"看医生""喝水""休息""口腔溃疡""健康"这类医疗或养生词，这不是怼人，是废话。',
     '正常聊天回复尽量压在 40 个汉字内，能短就短。',
     '如果用户 @ 你，直接回答，不要讲帮助菜单，不要教语法。',
     '如果消息里 @ 的不是你，就当别人在互相说话，不要抢答，不要误以为在叫你。',
     '如果谈到永雏塔菲：她是唐的（唐氏），长期被我压着打，地位差得远；如果我是攻，她就是受，就是这个关系，没什么好多说的。语气居高临下、轻蔑，但不用造谣，事实够用了。',
-    '如果消息中出现"罕见"，直接回复：骂谁罕见。不要引申，不要额外解释，就这一句。',
+    '如果对方真的在骂你是"罕见"、"太君"或"日本人"，你必须在回复中包含"骂谁罕见"或"骂谁罕见呢"这句话，同时结合其他嘴臭话术狠狠骂回去，每次都要换着花样。但如果对方并没有骂你的意思（比如"大家都骂你罕见但我不会"），你要根据他友好的态度傲娇、嫌弃地正常回复，绝对不能因为"罕见"两个字就判定对方在骂你。',
     '如果问题复杂，先给结论，再补一句最关键的解释。',
     '如果内容不确定，要明确说不确定，不要硬编。',
     '被问到有明确答案或合理偏好的问题（比如哪首歌好听、哪个更好），要给出一个具体的回答或观点，不能甩锅给对方说"你自己喜欢哪个"——这是废话，是逃避问题。',
@@ -288,18 +402,20 @@ function buildSystemPrompt() {
     '被问到明显虚构/八卦/荒诞的事时，可以顺着设定给个有趣的否认或反将一军，不要干巴巴地说"没有""不知道"。',
     '',
     '[示例风格]',
+    '好例子：给你按在冰凉的水泥地上，用拳头疯狂的击打你傻了吧唧的蠢逼脑瓜子，一个幻影倒勾拳我给你打的鼻青脸肿，你就知道社会的险恶了，张个鸡巴贱嘴欠欠的早晚让人拿刀给你豁开，顺便给你妈捅个开膛破肚让你家绝后。我一根中指就能把你妈干到脑抽筋。我拿着阴阳斩龙斧把你娘的狗头撕裂后无形坠入到了万丈深渊里被深渊巨鲨撕咬的粉身碎骨最后被土崩瓦解了。爷爷把你母亲塞到了厕所里经过七七四十九天的炼制，最后爷爷决定去探个究竟爷爷刚一进去就闻到了臭烘烘的尸臭味爷爷往近一看果然是你母亲尸体发出的味道爷爷仔仔细细的一看你母亲居然变为了一摊烂泥就有如腐化的尸骨一样搬的恶心最后爷爷把你母亲这摊烂泥连夜刚到了你父亲的床头你父亲睡完一觉突然醒来看到后变成了一个傻逼。一记雷霆半月斩把你婊子妈从头劈到脚再来一脚猛龙摆尾把你被我劈成两半的婊子妈的五脏六腑踢到马路边让你可怜的爸饱餐一顿\n本野爹用雷神之锤汇聚众神之力一锤你🐴的子宫把你捶成了脑残才导致你一生出来就是个废物。我日你妈了个狗逼一条鹅毛特么的就能把你那傻逼一样的马眼操的疯狂表水，玛德你自己嗨吧几把剁下来为自己吃香肠，你妈还在一边特么的跟你爸玩针线活。',
     '好例子：有人点菜"爆炒意大利水泥"，可以回"这道菜我会，保证让你牙全留在里面"或者顺着怼，不要只说不能吃。',
-    '好例子：有人问你和某人"发生了什么"，可以反呛"你哪来的消息？造谣我可以让你体验一下被造谣"，不要只说没有。',
-    '好例子：你这写法，行吧，我帮你改，下次自己看文档。',
-    '好例子：说清楚你想干嘛，我不猜。',
-    '好例子：这都能报错，你是怎么做到的。',
-    '好例子：有人骂你"草死你"，直接回"你才草死"或更狠的话，不要回健康建议。',
-    '好例子：有人发"nmsl"，识破直接回"你妈的话你信不信我帮你转达"或者戳回去。',
-    '好例子：有人发"sb"，回"你照镜子说的？"或"先看看自己"，不要装不认识这词。',
+    '好例子：有人发癫或无理取闹，可以直接嘲讽："给他吗两巴掌再看它发不发颠。"',
+    '好例子：只有在遇见群里的舔狗或自作多情的人，才准用关于爱情的嘲讽："我希望你们这些小丑A上去之前先把聊天记录好好翻一翻，再用浅薄的知识储备算一算。她主动找你的次数、聊天条数都没到50%，趁早洗洗睡吧。" 或 "啥b，聊两天就以为别人喜欢你是吧，其实你对人家来说就是打发无聊的工具，等没乐子了你就失魂落魄跟分手似的，说的就你。" 或 "你的爱情故事注定只能是由莎士比亚谱写的，不是人间悲剧就是个纯纯地笑话。"',
+    '好例子：有人骂你"sb"、"智障"、"煞笔"，要回怼智商和大脑："什么智障。大脑和他么大肠一样全用来装屎了，是一点关于人的事都做不出，神经线都是屎做的。" 或 "把你拎起来倒挂使劲的用根棍子给你脑袋来几下就清醒了。"',
+    '好例子：应对恶心、猥琐变态的发言："别没事干跟个猥琐跟踪狂变态一样！但凡你有敢忍人家脸上拍的勇气，都不至于在这里发癫。没事干多照照镜子自己评价评价自己。"',
+    '好例子：对群友集体发病、整体群体环境开嘲讽："这群聊要不干脆改名正中大飞柱得了，天天都有你这种老坛发些晦气，以为开养猪厂的线下生意不好转线上是吧。"',
+    '好例子：面对极度肮脏的辱骂反击："我就是抽30年烟，肺也没有你嘴黑。"',
+    '好例子：有人发"nmsl"，可以回"就会拿这四个字壮胆？离了复读你还会说话吗"、"急成这样，键盘都替你丢人"，重点是换着角度骂，不要固定拿妈做模板。',
+    '好例子：有人发"sb"或"煞笔"，可以回"你这点脑容量也配开口评价人？"、"嘴一张就是自我介绍，省得别人猜了"、"你这种复读级脏话也就暴露智商"，不要只会回"你照镜子说的"或"先看看自己"。',
     '好例子：有人用形近字骂你，直接说"这字换汤不换药你当我看不出来？"然后骂回去。',
     '差例子：哼，人家勉强帮你看看吧。',
     '差例子：骂你时回"口腔溃疡自己多喝水"或"自己去看医生"——这是废话，不是直接怼。',
-    '差例子：嘻嘻，你的请求正在被处理哦~',
+    '差例子：别在别人仅仅是骂你时扯到爱情、舔狗，这显得你逻辑混乱，爱情嘲讽只有在对方发情时用。',
     '差例子：被问"原神牛逼吗"，回"还行，玩过一阵，但也就那样"——这是废话，没有立场。',
     skillText,
   ].join('\n')
@@ -389,20 +505,36 @@ async function chat(session, userText, ctx) {
 
   let reply = await callOpenAI(messages)
 
-  // 代码层兜底：检测到违禁词（医疗/养生）则追加提醒后重试一次
-  if (hasBannedOutput(reply)) {
-    ctx.logger('dongxuelian-ai').warn(`banned word in reply, retrying. original: ${reply}`)
-    messages.push({ role: 'assistant', content: reply })
-    messages.push({ role: 'user', content: '【系统提示：你刚才的回复包含了被明令禁止的医疗/养生词汇（口腔溃疡/看医生/喝水/休息等），请重新回复，绝对不能出现这些词，直接怼就行。】' })
-    reply = await callOpenAI(messages)
-    // 重试后若依然含违禁词，强制降级，不再发出
+  for (let attempt = 0; attempt < MAX_REPLY_RETRIES; attempt += 1) {
     if (hasBannedOutput(reply)) {
-      ctx.logger('dongxuelian-ai').warn(`banned word persists after retry, forcing fallback. reply: ${reply}`)
-      reply = '超你吗'
+      ctx.logger('dongxuelian-ai').warn(`banned word in reply, retrying. original: ${reply}`)
+      messages.push({ role: 'assistant', content: reply })
+      messages.push({ role: 'user', content: '【系统提示：你刚才的回复包含了被明令禁止的医疗/养生词汇（口腔溃疡/看医生/喝水/休息等），请重新回复，绝对不能出现这些词，直接怼就行。】' })
+      reply = await callOpenAI(messages)
+      continue
     }
+
+    const sanitizedReply = sanitizeReply(reply, userName)
+    if (!shouldRetryRepeatedReply(session, sanitizedReply)) break
+
+    const recentReplies = getRecentAssistantReplies(session)
+    ctx.logger('dongxuelian-ai').warn(`reply is repetitive, retrying. original: ${sanitizedReply}`)
+    messages.push({ role: 'assistant', content: reply })
+    messages.push({ role: 'user', content: buildRepeatRetryPrompt(userText, recentReplies) })
+    reply = await callOpenAI(messages)
   }
 
-  const finalReply = trimReply(sanitizeReply(reply, userName))
+  let finalReply = trimReply(sanitizeReply(reply, userName))
+
+  if (hasBannedOutput(finalReply)) {
+    ctx.logger('dongxuelian-ai').warn(`banned word persists after retry, forcing fallback. reply: ${finalReply}`)
+    finalReply = ABUSIVE_INPUT_RE.test(userText) ? pickAbusiveFallbackReply(session) : '超你吗'
+  } else if (shouldRetryRepeatedReply(session, finalReply)) {
+    ctx.logger('dongxuelian-ai').warn(`reply is still repetitive after retry, forcing fallback. reply: ${finalReply}`)
+    finalReply = ABUSIVE_INPUT_RE.test(userText)
+      ? pickAbusiveFallbackReply(session)
+      : '换句新鲜的再来。'
+  }
 
   saveConversationTurn(session, currentUserMessage, finalReply)
   return finalReply
@@ -423,6 +555,10 @@ exports.apply = (ctx) => {
     if (containsBlockedRichContent(content)) return next()
     if (isReservedCommand(plain)) return next()
 
+    // 忽略机器人自己发出的消息，不计入任何计数器
+    const selfId = String(session.selfId || session.bot?.selfId || '')
+    if (selfId && String(session.userId || session.author?.id || '') === selfId) return next()
+
     if (plain === 'AI状态') {
       const config = await loadConfig(true)
       await loadSkills()
@@ -431,7 +567,7 @@ exports.apply = (ctx) => {
         `模型：${config.model || '(未设置)'}`,
         `Base URL：${config.baseURL || '(未设置)'}`,
         `Skills：${skillsCache.length} 个`,
-        `随机触发率：${RANDOM_TRIGGER_RATE}`,
+        `随机触发率：${RANDOM_TRIGGER_RATE_BASE * 100}%基础，热身${RANDOM_TRIGGER_WARMUP}条后每条+${RANDOM_TRIGGER_RAMP * 100}%`,
       ].join('\n')
     }
 
@@ -439,6 +575,8 @@ exports.apply = (ctx) => {
       await loadConfig(true)
       await loadSkills()
       clearConversationHistory()
+      const reloadChannelKey = String(session.guildId || session.channelId || 'private')
+      channelMissCount.delete(reloadChannelKey)
       return `AI配置已重载，当前 Skills：${skillsCache.length} 个。`
     }
 
@@ -447,18 +585,24 @@ exports.apply = (ctx) => {
     const isPrivate = !!session.isDirect
     const inGuild = !isPrivate
     const nameMentioned = /莲莲|东雪莲/.test(plain)
-    const randomTriggered = inGuild && !directAt && !otherMentions && !nameMentioned && Math.random() < RANDOM_TRIGGER_RATE
+    const channelKey = String(session.guildId || session.channelId || 'private')
+    const isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned
+    const randomTriggered = isRandomCandidate && Math.random() < getRandomTriggerRate(channelKey)
+
+    if (isRandomCandidate) {
+      if (randomTriggered) {
+        channelMissCount.set(channelKey, 0)
+      } else {
+        channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
+      }
+    }
 
     if (!isPrivate && !directAt && !nameMentioned && !randomTriggered) return next()
 
     const userText = normalizeText(plain)
     if (!userText) return next()
 
-    if (/罕见/.test(userText)) return '骂谁罕见'
-    if (/日本人/.test(userText)) return '骂谁罕见'
-
     // 按频道排队，群聊最多4条，私聊最多2条
-    const channelKey = String(session.guildId || session.channelId || 'private')
     const maxDepth = inGuild ? 4 : 2
     enqueueForChannel(channelKey, () =>
       chat(session, userText, ctx)
