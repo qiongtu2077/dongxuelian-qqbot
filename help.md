@@ -2,14 +2,14 @@ mkdir -p /root/koishi-app/node_modules/koishi-plugin-dongxuelian-help/lib
 cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-help/package.json <<'EOF'
 {
   "name": "koishi-plugin-dongxuelian-help",
-  "version": "0.4.1",
+  "version": "0.4.3",
   "main": "lib/index.js"
 }
 EOF
 cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-help/lib/index.js <<'EOF'
 exports.name = 'dongxuelian-help'
 
-const PLUGIN_VERSION = '0.4.1'
+const PLUGIN_VERSION = '0.4.3'
 
 function normalizeText(text = '') {
   return String(text).replace(/\s+/g, ' ').trim()
@@ -18,7 +18,6 @@ function normalizeText(text = '') {
 function renderRootHelp() {
   return [
     '东雪莲帮助',
-    'help东雪莲 / 帮助东雪莲',
     '',
     '可用子菜单：',
     '- help集合 / 帮助集合',
@@ -71,7 +70,7 @@ exports.apply = (ctx) => {
   ctx.middleware((session, next) => {
     const plain = normalizeText(session.content || '')
 
-    if (plain === 'help东雪莲' || plain === '帮助东雪莲') {
+    if (plain === 'help东雪莲' || plain === '帮助东雪莲' || plain === '东雪莲help' || plain === '东雪莲帮助') {
       return renderRootHelp()
     }
 

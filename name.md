@@ -2,7 +2,7 @@ mkdir -p /root/koishi-app/node_modules/koishi-plugin-group-name-at/lib
 cat > /root/koishi-app/node_modules/koishi-plugin-group-name-at/package.json <<'EOF'
 {
   "name": "koishi-plugin-group-name-at",
-  "version": "0.4.5",
+  "version": "0.4.7",
   "main": "lib/index.js"
 }
 EOF
@@ -13,7 +13,7 @@ const path = require('path')
 
 exports.name = 'group-name-at'
 
-const PLUGIN_VERSION = '0.4.5'
+const PLUGIN_VERSION = '0.4.7'
 const DATA_FILE = '/root/koishi-app/data/nickname-collections.json'
 const CONFIRM_TIMEOUT = 60 * 1000
 
@@ -228,8 +228,9 @@ async function refreshMemberDisplayNames(session, members) {
   return changed
 }
 
-function buildAtMessage(members) {
-  return members.map((member) => segment.at(member.userId)).join('')
+function buildAtMessage(members, tail) {
+  const atPart = members.map((member) => segment.at(member.userId)).join('')
+  return tail ? atPart + ' ' + tail : atPart
 }
 
 async function createMember(session, userId) {
@@ -312,7 +313,7 @@ async function viewAlias(session, alias) {
   return [title, TEXT.collectionCount(entry.members.length), ...lines].join('\n')
 }
 
-async function sendAliasMention(session, alias) {
+async function sendAliasMention(session, alias, tail) {
   await ensureStore()
   alias = normalizeName(alias)
   if (!alias) return null
@@ -323,7 +324,7 @@ async function sendAliasMention(session, alias) {
 
   const changed = await refreshMemberDisplayNames(session, entry.members)
   if (changed) await saveStore()
-  return buildAtMessage(entry.members)
+  return buildAtMessage(entry.members, tail)
 }
 
 async function listEntries(session, mode) {
@@ -588,11 +589,29 @@ function parseAliasDelete(content, session) {
   }
 }
 
+// 返回 at 后的原始文本（包含昵称+消息），由调用方再拆分
 function parseAtAlias(content) {
   const plain = stripMentions(content)
   const match = plain.match(/^at\s*(.+)$/i)
   if (!match) return null
   return normalizeName(match[1])
+}
+
+// 从已有昵称中贪心匹配最长前缀，返回 { alias, tail } 或 null
+async function resolveAtAlias(session, text) {
+  await ensureStore()
+  const scopeStore = getScopeStore(session)
+  const aliases = Object.keys(scopeStore.aliases)
+  // 按昵称长度从长到短排序，优先匹配最长的
+  aliases.sort((a, b) => b.length - a.length)
+  const normalized = normalizeName(text)
+  for (const alias of aliases) {
+    if (normalized.startsWith(alias)) {
+      const tail = normalized.slice(alias.length).trim()
+      return { alias, tail }
+    }
+  }
+  return null
 }
 
 async function handlePlainCommand(session, content) {
@@ -710,11 +729,14 @@ exports.apply = (ctx) => {
     const commandResult = await handlePlainCommand(session, content)
     if (commandResult) return commandResult
 
-    const atAlias = parseAtAlias(content)
-    if (atAlias) {
-      const atMessage = await sendAliasMention(session, atAlias)
-      if (atMessage) return atMessage
-      return TEXT.aliasNotFound(atAlias)
+    const atRaw = parseAtAlias(content)
+    if (atRaw) {
+      const resolved = await resolveAtAlias(session, atRaw)
+      if (resolved) {
+        const atMessage = await sendAliasMention(session, resolved.alias, resolved.tail)
+        if (atMessage) return atMessage
+      }
+      return TEXT.aliasNotFound(atRaw)
     }
 
     return next()
