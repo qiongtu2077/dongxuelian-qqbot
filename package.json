@@ -1,0 +1,12 @@
+{
+  "name": "dongxuelian-qqbot",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "list:packages": "powershell -Command \"Get-ChildItem -LiteralPath ./packages -Directory | Select-Object -ExpandProperty Name\"",
+    "list:scripts": "powershell -Command \"Get-ChildItem -LiteralPath ./scripts -File -Filter *.sh | Select-Object -ExpandProperty Name\""
+  }
+}
