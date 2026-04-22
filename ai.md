@@ -5,7 +5,7 @@ mkdir -p /root/koishi-app/node_modules/koishi-plugin-dongxuelian-ai/lib
 cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-ai/package.json <<'EOF'
 {
   "name": "koishi-plugin-dongxuelian-ai",
-  "version": "0.2.50",
+  "version": "0.2.51",
   "main": "lib/index.js"
 }
 EOF
@@ -15,7 +15,7 @@ const path = require('path')
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '0.2.50'
+const PLUGIN_VERSION = '0.2.51'
 const KEY_FILE = '/root/koishi-app/data/ai-openai-key.txt'
 const MODEL_FILE = '/root/koishi-app/data/ai-model.txt'
 const BASE_URL_FILE = '/root/koishi-app/data/ai-base-url.txt'
@@ -179,6 +179,13 @@ function stripMentions(text = '') {
     .trim()
 }
 
+function collapseRepeatedBotCalls(text = '') {
+  return String(text)
+    .replace(/(?:\s*@?(?:东雪莲(?:opus)?|莲莲)\s*){2,}/gi, ' @东雪莲 ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 // 输入净化：移除常见 prompt injection 结构标签，防止角色标签注入（PCFI 思路）
 function sanitizeUserInput(text = '') {
   return String(text)
@@ -208,6 +215,28 @@ function extractAtIds(text = '') {
   }
 
   return ids
+}
+
+function countAtIdOccurrences(text = '', targetId = '') {
+  const source = String(text)
+  const botId = String(targetId || '')
+  if (!botId) return 0
+
+  let count = 0
+  const patterns = [
+    /<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi,
+    /\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi,
+  ]
+
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0
+    let match
+    while ((match = pattern.exec(source))) {
+      if (String(match[1]) === botId) count += 1
+    }
+  }
+
+  return count
 }
 
 function containsBlockedRichContent(text = '') {
@@ -254,6 +283,11 @@ function isDirectAtBot(session) {
   const botId = String(session.selfId || session.bot?.selfId || '')
   if (!botId) return false
   return extractAtIds(session.content || '').includes(botId)
+}
+
+function getBotMentionCount(session) {
+  const botId = String(session.selfId || session.bot?.selfId || '')
+  return countAtIdOccurrences(session.content || '', botId)
 }
 
 function hasOtherMentions(session) {
@@ -774,7 +808,7 @@ exports.apply = (ctx) => {
 
   ctx.middleware(async (session, next) => {
     const content = session.content || ''
-    const plain = stripMentions(content)
+    const plain = collapseRepeatedBotCalls(stripMentions(content))
 
     if (!plain && !isDirectAtBot(session)) return next()
     if (containsBlockedRichContent(content)) return next()
@@ -806,6 +840,7 @@ exports.apply = (ctx) => {
     }
 
     const directAt = isDirectAtBot(session)
+    const botMentionCount = getBotMentionCount(session)
     const otherMentions = hasOtherMentions(session)
     const isPrivate = !!session.isDirect
     const inGuild = !isPrivate
@@ -826,6 +861,10 @@ exports.apply = (ctx) => {
 
     const userText = normalizeText(plain)
     if (!userText) return next()
+
+    if (botMentionCount > 1) {
+      ctx.logger('dongxuelian-ai').info(`collapsed repeated @bot mentions: ${botMentionCount}`)
+    }
 
     // 按频道排队，群聊最多4条，私聊最多2条
     const maxDepth = inGuild ? 4 : 2
@@ -884,7 +923,7 @@ if (!inserted) {
 fs.writeFileSync(configFile, lines.join('\n'), 'utf8')
 console.log('enabled dongxuelian-ai in koishi.yml')
 EOF
-printf '\nInstalled koishi-plugin-dongxuelian-ai 0.2.50\n'
+printf '\nInstalled koishi-plugin-dongxuelian-ai 0.2.51\n'
 systemctl restart koishi
 printf 'Restarted koishi. Check logs with:\n'
 printf 'journalctl -u koishi -n 120 --no-pager | grep dongxuelian-ai\n'
