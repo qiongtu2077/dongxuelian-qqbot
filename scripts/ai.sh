@@ -5,7 +5,7 @@ mkdir -p /root/koishi-app/node_modules/koishi-plugin-dongxuelian-ai/lib
 cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-ai/package.json <<'EOF'
 {
   "name": "koishi-plugin-dongxuelian-ai",
-  "version": "0.2.51",
+  "version": "0.2.52",
   "main": "lib/index.js"
 }
 EOF
@@ -15,7 +15,7 @@ const path = require('path')
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '0.2.51'
+const PLUGIN_VERSION = '0.2.52'
 const KEY_FILE = '/root/koishi-app/data/ai-openai-key.txt'
 const MODEL_FILE = '/root/koishi-app/data/ai-model.txt'
 const BASE_URL_FILE = '/root/koishi-app/data/ai-base-url.txt'
@@ -23,6 +23,10 @@ const SKILLS_DIR = '/root/koishi-app/data/ai-skills'
 const RANDOM_TRIGGER_RATE_BASE = Number(process.env.AI_RANDOM_TRIGGER_RATE || 0.008)
 const RANDOM_TRIGGER_WARMUP = 50
 const RANDOM_TRIGGER_RAMP = 0.02
+// 主动回复白名单：只在这些群触发 AI 随机主动回复；留空则全群触发
+const GROUP_RANDOM_WHITELIST = new Set([
+  // '123456789',
+])
 const REQUEST_TIMEOUT = Number(process.env.AI_REQUEST_TIMEOUT_MS || 40000)
 const MAX_OUTPUT_CHARS = 120
 const MAX_HISTORY_ROUNDS = 50
@@ -846,7 +850,8 @@ exports.apply = (ctx) => {
     const inGuild = !isPrivate
     const nameMentioned = /莲莲|东雪莲/.test(plain)
     const channelKey = String(session.guildId || session.channelId || 'private')
-    const isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned
+    const inRandomWhitelist = GROUP_RANDOM_WHITELIST.size === 0 || GROUP_RANDOM_WHITELIST.has(channelKey)
+    const isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist
     const randomTriggered = isRandomCandidate && Math.random() < getRandomTriggerRate(channelKey)
 
     if (isRandomCandidate) {
@@ -923,7 +928,7 @@ if (!inserted) {
 fs.writeFileSync(configFile, lines.join('\n'), 'utf8')
 console.log('enabled dongxuelian-ai in koishi.yml')
 EOF
-printf '\nInstalled koishi-plugin-dongxuelian-ai 0.2.51\n'
+printf '\nInstalled koishi-plugin-dongxuelian-ai 0.2.52\n'
 systemctl restart koishi
 printf 'Restarted koishi. Check logs with:\n'
 printf 'journalctl -u koishi -n 120 --no-pager | grep dongxuelian-ai\n'
