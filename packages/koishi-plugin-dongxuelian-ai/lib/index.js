@@ -791,6 +791,29 @@ async function chat(session, userText, ctx) {
   return finalReply
 }
 
+function splitSentences(text) {
+  const raw = normalizeText(text)
+  if (!raw) return [raw]
+  // 按句尾标点切句，最多拆成 3 段
+  const parts = raw
+    .split(/(?<=[。！？!?…\u2026]+)/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+  if (parts.length <= 1) return [raw]
+  if (parts.length <= 3) return parts
+  // 超过 3 段时把第 3 段起合并
+  return [parts[0], parts[1], parts.slice(2).join('')]
+}
+
+async function sendReply(session, reply) {
+  const parts = splitSentences(reply)
+  const msgId = session.messageId
+  const quotePrefix = msgId ? `<quote id="${msgId}"/>` : ''
+  for (let i = 0; i < parts.length; i++) {
+    await session.send(i === 0 ? quotePrefix + parts[i] : parts[i])
+  }
+}
+
 exports.apply = (ctx) => {
   ctx.on('ready', async () => {
     await loadConfig(true)
@@ -838,7 +861,7 @@ exports.apply = (ctx) => {
     const inGuild = !isPrivate
     const nameMentioned = /莲莲|东雪莲/.test(plain)
     const channelKey = String(session.guildId || session.channelId || 'private')
-    const inRandomWhitelist = GROUP_RANDOM_WHITELIST.size === 0 || GROUP_RANDOM_WHITELIST.has(channelKey)
+    const inRandomWhitelist = GROUP_RANDOM_WHITELIST.size > 0 && GROUP_RANDOM_WHITELIST.has(channelKey)
     const isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist
     const randomTriggered = isRandomCandidate && Math.random() < getRandomTriggerRate(channelKey)
 
@@ -863,7 +886,7 @@ exports.apply = (ctx) => {
     const maxDepth = inGuild ? 4 : 2
     enqueueForChannel(channelKey, () =>
       chat(session, userText, ctx)
-        .then(reply => session.send(reply))
+        .then(reply => sendReply(session, reply))
         .catch(err => {
           ctx.logger('dongxuelian-ai').warn(err)
           return session.send('东雪莲暂时无法连接。')
