@@ -1,4 +1,4 @@
-﻿exports.name = 'dongxuelian-help'
+exports.name = 'dongxuelian-help'
 
 const PLUGIN_VERSION = '0.4.3'
 

@@ -1,4 +1,4 @@
-﻿exports.name = 'group-leave-notice'
+exports.name = 'group-leave-notice'
 
 const PLUGIN_VERSION = '0.1.0'
 

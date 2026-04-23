@@ -1,4 +1,4 @@
-﻿const { segment } = require('koishi')
+const { segment } = require('koishi')
 const fs = require('fs/promises')
 const path = require('path')
 

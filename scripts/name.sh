@@ -1,3 +1,5 @@
+rm -rf /root/koishi-app/node_modules/koishi-plugin-dongxuelian-ai
+rm -rf /root/koishi-app/node_modules/koishi-plugin-group-name-at
 mkdir -p /root/koishi-app/node_modules/koishi-plugin-group-name-at/lib
 cat > /root/koishi-app/node_modules/koishi-plugin-group-name-at/package.json <<'EOF'
 {
@@ -763,5 +765,51 @@ exports.apply = (ctx) => {
   })
 }
 EOF
-printf '\nInstalled koishi-plugin-group-name-at 0.4.5\n'
+node <<'EOF'
+const fs = require('fs')
+
+const configFile = '/root/koishi-app/koishi.yml'
+const pluginLine = 'group-name-at: {}'
+
+let text = fs.readFileSync(configFile, 'utf8')
+fs.copyFileSync(configFile, configFile + '.bak-group-name-at')
+
+const lines = text
+  .split(/\r?\n/)
+  .filter(line => !/^\s*dongxuelian-ai(?::[a-z0-9]+)?:\s*\{\}\s*$/.test(line))
+  .filter(line => !/^\s*group-name-at(?::[a-z0-9]+)?:\s*\{\}\s*$/.test(line))
+let inserted = false
+
+for (let index = 0; index < lines.length; index += 1) {
+  const match = lines[index].match(/^(\s*)group:basic:\s*$/)
+  if (match) {
+    lines.splice(index + 1, 0, match[1] + '  ' + pluginLine)
+    inserted = true
+    break
+  }
+}
+
+if (!inserted) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^(\s*)plugins:\s*$/)
+    if (match) {
+      lines.splice(index + 1, 0, match[1] + '  ' + pluginLine)
+      inserted = true
+      break
+    }
+  }
+}
+
+if (!inserted) {
+  lines.push('')
+  lines.push('plugins:')
+  lines.push('  ' + pluginLine)
+}
+
+fs.writeFileSync(configFile, lines.join('\n'), 'utf8')
+console.log('enabled group-name-at in koishi.yml and disabled dongxuelian-ai')
+EOF
+printf '\nInstalled koishi-plugin-group-name-at 0.4.7\n'
 systemctl restart koishi
+printf 'Restarted koishi. Check logs with:\n'
+printf 'journalctl -u koishi -n 120 --no-pager\n'

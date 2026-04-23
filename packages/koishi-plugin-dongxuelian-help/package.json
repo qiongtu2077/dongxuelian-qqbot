@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "koishi-plugin-dongxuelian-help",
   "version": "0.4.3",
   "main": "lib/index.js"

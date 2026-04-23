@@ -1,13 +1,12 @@
 # 东雪莲QQBot-极致嘴臭
 
-本项目是一套基于 `Koishi + NapCat + OneBot` 的 QQ 机器人部署仓库，当前采用 `md + sh + js` 共存结构，主要目标是：
+本分支是无 AI 版本：保留昵称、集合、帮助、退群提醒、戳一戳和视频解析，移除 AI 聊天模块。项目基于 `Koishi + NapCat + OneBot`，当前采用 `md + sh + js` 共存结构，主要目标是：
 
 - 给普通用户一套能直接复制到服务器执行的部署脚本
 - 给维护者保留清晰的插件边界、部署顺序和文档说明
 - 逐步从“脚本集合”整理成“脚本交付 + 标准源码结构”并存的项目
 
 如果你只想把机器人跑起来，看“快速部署”。
-不会的直接问AI，下次还填非常简单  
 如果你关心仓库为什么不是全 `.sh`、为什么要保留 `.md` 和 `.js`，看标题十。
 
 ---
@@ -41,7 +40,7 @@
 
 1. `NapCat` 登录 QQ，并把消息通过 `OneBot` 协议暴露出来
 2. `Koishi` 作为机器人框架接收 `NapCat` 的消息
-3. 本仓库里的各插件挂到 `Koishi` 上，负责昵称、帮助、AI、视频、退群提醒等功能
+3. 本仓库里的各插件挂到 `Koishi` 上，负责昵称、帮助、视频、退群提醒等功能
 
 也就是说：
 
@@ -245,38 +244,13 @@ scp cookies.txt root@你的服务器IP:/root/bilibili-cookies.txt
 
 然后执行 `scripts/vedio.sh`。
 
-### 5. AI 插件
+### 5. 禁用旧 AI 模块
 
-执行 `scripts/ai.sh` 之前，需要先准备配置文件：
+如果服务器之前部署过 AI 版本，先执行：
 
-#### API Key
+打开 `scripts/disable-ai.sh`，复制全文，粘贴到服务器执行。
 
-```bash
-mkdir -p /root/koishi-app/data
-echo "sk-你的APIKey" > /root/koishi-app/data/ai-openai-key.txt
-```
-
-#### 模型名
-
-```bash
-echo "qwen-plus" > /root/koishi-app/data/ai-model.txt
-```
-
-#### Base URL
-
-```bash
-echo "https://dashscope.aliyuncs.com/compatible-mode/v1" > /root/koishi-app/data/ai-base-url.txt
-```
-
-#### 可选 Skill
-
-```bash
-mkdir -p /root/koishi-app/data/ai-skills
-```
-
-把 `SKILL.md` 类文件放到这个目录即可。
-
-然后执行 `scripts/ai.sh`。
+其他 `scripts/*.sh` 在部署时也会自动移除旧的 `dongxuelian-ai` 配置，避免无 AI 分支里残留聊天模块。
 
 ---
 
@@ -314,7 +288,6 @@ pm2 restart koishi
 ```text
 group-name-at loaded
 dongxuelian-help loaded
-dongxuelian-ai loaded
 local-video-sender loaded
 group-leave-notice loaded
 ```
@@ -324,7 +297,6 @@ group-leave-notice loaded
 - `help东雪莲`
 - `help集合`
 - `查看全部昵称`
-- `AI状态`
 
 如果某个插件没加载，优先检查：
 
@@ -366,7 +338,6 @@ group-leave-notice loaded
 但插件本体逻辑不是 shell 擅长的领域。像这些内容更适合用 `js/ts`：
 
 - 消息解析
-- AI 对话逻辑
 - OneBot / Koishi 插件处理
 - 上下文记忆
 - 越狱检测
@@ -438,16 +409,6 @@ group-leave-notice loaded
 |------|------|
 | `help东雪莲` | 查看总帮助 |
 | `help集合` | 查看集合帮助 |
-
-### AI
-
-| 指令 | 说明 |
-|------|------|
-| `AI状态` | 查看 AI 当前配置摘要 |
-| `AI重载` | 重载 AI 配置与 Skills |
-| `@东雪莲 ...` | 直接触发 AI 回复 |
-
----
 
 ## 十二、维护说明
 
