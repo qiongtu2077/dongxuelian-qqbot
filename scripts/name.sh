@@ -178,8 +178,16 @@ function extractMentionIds(content = '') {
   return ids
 }
 
-function stripMentions(content = '') {
+// 清理回复/引用片段，避免“回复消息时的 CQ / quote 标签”干扰指令识别。
+function stripReplySegments(content = '') {
   return String(content)
+    .replace(/<quote(?:\s+[^>]*?)?id="[^"]+"[^>]*\/?>/gi, ' ')
+    .replace(/<reply(?:\s+[^>]*?)?id="[^"]+"[^>]*\/?>/gi, ' ')
+    .replace(/\[CQ:(?:reply|quote),[^\]]*\]/gi, ' ')
+}
+
+function stripMentions(content = '') {
+  return stripReplySegments(content)
     .replace(/<at(?:\s+[^>]*?)?id="\d+"[^>]*\/?>/gi, ' ')
     .replace(/\[CQ:at,[^\]]*?(?:qq|id)=\d+[^\]]*\]/gi, ' ')
     .replace(/\s+/g, ' ')
