@@ -806,15 +806,12 @@ async function chat(session, userText, ctx) {
 function splitSentences(text) {
   const raw = normalizeText(text)
   if (!raw) return [raw]
-  // 按句尾标点切句，最多拆成 3 段
+  // 按句尾标点拆成多条消息，模拟真人逐句发送
   const parts = raw
     .split(/(?<=[。！？!?…\u2026]+)/)
     .map(s => s.trim())
     .filter(s => s.length > 0)
-  if (parts.length <= 1) return [raw]
-  if (parts.length <= 3) return parts
-  // 超过 3 段时把第 3 段起合并
-  return [parts[0], parts[1], parts.slice(2).join('')]
+  return parts.length > 1 ? parts : [raw]
 }
 
 async function sendReply(session, reply) {
