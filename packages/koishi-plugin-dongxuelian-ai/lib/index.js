@@ -3,7 +3,7 @@ const path = require('path')
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '0.3.4'
+const PLUGIN_VERSION = '0.3.5'
 const DATA_DIR = '/root/koishi-app/data'
 const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')
 const MODEL_FILE = path.join(DATA_DIR, 'ai-model.txt')
@@ -32,6 +32,7 @@ const MAX_CHANNEL_PROMPT_MESSAGES = 24
 const RANDOM_INTERJECT_COOLDOWN_MS = 60 * 1000
 const MAX_FORWARD_NODES = 12
 const MAX_FORWARD_DEPTH = 4
+const ADMIN_USER_IDS = new Set(['100000000', '200000000'])
 
 const QQ_FACE_NAME_MAP = {
   '0': '惊讶',
@@ -111,13 +112,23 @@ const ABUSIVE_INPUT_RE = /(?:\b(?:sb|nmsl|nmlgb|zz|nc|md)\b|傻[比逼币批]|�
 
 // 敌意输入检测：脏话 / 性骚扰 / 常见骂人梗 / 侮辱性称呼等，命中即走嘴臭人格
 const HOSTILE_INPUT_RE = /(?:\b(?:sb|nmsl|nmlgb|zz|nc|nmb|md|cnm|tmd|jb|sx|cao|fuck|shit|bitch)\b|傻[比逼币批]|煞笔|沙比|智障|脑残|废物|垃圾|爬|去死|死妈|你妈|你爹|你爸|老逼|老登|老不死|小杂种|贱人|婊子|骚货|狗东西|草(?:你|死|拟|泥)|操(?:你|死|拟|泥)|艹(?:你|死|拟)|干(?:死|爆)你|日(?:死|爆)?你|想(?:草|操|日|干|上|艹|睡|舔|c|艸)你|强奸|轮奸|奸你|猥琐|变态|恶心|屎|鸡巴|鸡儿|屌|逼(?:样|崽)|伞兵|海豹|蠢驴|驴唇|兰州烧饼|兰烧|唐氏|糖氏|弱智|脑瘫|神经病|找死|找抽|找削|骂谁|阴阳怪气|阴阳人|汉奸|太君|罕见|稀有)/i
+const RARE_PROVOCATION_RE = /(?:罕见|稀有|太君|日本人|故乡在哪|东雪莲是日本人|(?:你|你这|你好像|你是不是|东雪莲|莲莲).{0,8}(?:不太|不怎么|不是很|不咋|不算|不)常见)/i
 
 const HOSTILE_SINGLE_TOKENS = new Set(['糖', '唐', '区', '蛆', '草', '操', '艹', '曹', '滚', 'sb', 'zz', 'nc'])
 
+// 识别“罕见/不太常见”这类稀有度挑衅，单独走专用反击词分支。
+function isRareProvocation(text = '') {
+  const value = String(text).trim()
+  if (!value) return false
+  return RARE_PROVOCATION_RE.test(value)
+}
+
+// 统一判断用户输入是否带敌意，供友善/嘴臭人格切换使用。
 function isHostileInput(text = '') {
   const value = String(text).trim()
   if (!value) return false
   if (HOSTILE_INPUT_RE.test(value)) return true
+  if (isRareProvocation(value)) return true
   // 单字/超短消息命中敌意梗词也算敌意
   if (value.length <= 3 && HOSTILE_SINGLE_TOKENS.has(value.toLowerCase())) return true
   return false
@@ -201,6 +212,12 @@ const RESERVED_PREFIXES = [
   '东雪莲help',
   '东雪莲帮助',
   '帮助东雪莲',
+  'helpAI',
+  '帮助AI',
+  'AI帮助',
+  'help速查',
+  '帮助速查',
+  '指令速查',
 ]
 
 let configCache = null
@@ -511,22 +528,14 @@ function hasOtherMentions(session) {
   return atIds.some((userId) => userId !== botId)
 }
 
-function getSenderRole(session) {
-  const role = session.event?.sender?.role || session.event?.member?.role || ''
-  if (role) return String(role).toLowerCase()
-
-  const roles = session.author?.roles
-  if (Array.isArray(roles)) {
-    const hit = roles.find(item => ['admin', 'owner'].includes(String(item).toLowerCase()))
-    if (hit) return String(hit).toLowerCase()
-  }
-
-  return ''
+// 提取当前发言者 QQ 号，管理员权限统一按这个 ID 判断。
+function getSenderUserId(session) {
+  return String(session.userId || session.author?.id || session.event?.user?.id || '')
 }
 
-function isGroupAdmin(session) {
-  if (session.isDirect) return false
-  return ['admin', 'owner'].includes(getSenderRole(session))
+// 管理命令只允许固定 QQ 号使用，不再跟群管理员/群主角色绑定。
+function hasAdminPermission(session) {
+  return ADMIN_USER_IDS.has(getSenderUserId(session))
 }
 
 function getRandomTriggerBaseRate(channelKey) {
@@ -1261,8 +1270,9 @@ async function chatJailbreak(session, userText, ctx) {
 
 async function chat(session, userText, ctx, options = {}) {
   const cleanInput = sanitizeUserInput(userText)
+  const rareProvocation = isRareProvocation(cleanInput)
   const japanLinked = JAPAN_SELF_IDENTIFY_RE.test(cleanInput)
-  const hostile = isHostileInput(userText) || japanLinked
+  const hostile = isHostileInput(userText) || japanLinked || rareProvocation
   const systemPrompt = hostile ? buildAbusiveSystemPrompt() : buildFriendlySystemPrompt()
   ctx.logger('dongxuelian-ai').debug(`mode=${hostile ? 'abusive' : 'friendly'} input=${userText.slice(0, 60)}`)
 
@@ -1338,10 +1348,12 @@ async function chat(session, userText, ctx, options = {}) {
     })
   }
 
-  if (japanLinked) {
+  if (rareProvocation || japanLinked) {
     messages.push({
       role: 'system',
-      content: '对方把自己和日本/日语/家乡话绑定了，这次必须视为触发“骂谁罕见”的条件，回复里要明确带上这句话，再接其他嘴臭内容。',
+      content: rareProvocation
+        ? '对方这句是在拿“罕见/不太常见/稀有”这一路子阴阳你，这次必须视为触发“骂谁罕见”的条件，回复里要明确带上这句话，再接其他嘴臭内容。'
+        : '对方把自己和日本/日语/家乡话绑定了，这次必须视为触发“骂谁罕见”的条件，回复里要明确带上这句话，再接其他嘴臭内容。',
     })
   }
 
@@ -1391,7 +1403,7 @@ async function chat(session, userText, ctx, options = {}) {
     hostile ? MAX_OUTPUT_CHARS_ABUSIVE : MAX_OUTPUT_CHARS_FRIENDLY
   )
 
-  if (japanLinked && !/骂谁罕见/.test(finalReply)) {
+  if ((rareProvocation || japanLinked) && !/骂谁罕见/.test(finalReply)) {
     finalReply = trimReply(`骂谁罕见，${finalReply}`, MAX_OUTPUT_CHARS_ABUSIVE)
   }
 
@@ -1469,10 +1481,11 @@ exports.apply = (ctx) => {
     const adminCommandMatched =
       /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
       /^东雪莲群聊AI概率(?:设置|重置|查看)/.test(plain) ||
-      /^东雪莲联网(?:开|关|查看)$/.test(plain)
+      /^东雪莲联网(?:开|关|查看)$/.test(plain) ||
+      plain === 'AI重载'
 
-    if (adminCommandMatched && !isGroupAdmin(session)) {
-      return '只有群管理员或群主能操作这个命令。'
+    if (adminCommandMatched && !hasAdminPermission(session)) {
+      return '只有指定管理员能操作这个命令。'
     }
 
     const whitelistAddMatch = plain.match(/^群聊AI白名单添加\s*(\d{10})$/)
