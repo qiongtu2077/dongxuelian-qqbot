@@ -1,21 +1,23 @@
 ﻿const fs = require('fs/promises')
 const path = require('path')
+const { analyzeIncomingMessage, normalizeText } = require('./message-reader')
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '0.3.5'
+const PLUGIN_VERSION = '0.3.10'
 const DATA_DIR = '/root/koishi-app/data'
 const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')
 const MODEL_FILE = path.join(DATA_DIR, 'ai-model.txt')
 const BASE_URL_FILE = path.join(DATA_DIR, 'ai-base-url.txt')
 const SKILLS_DIR = path.join(DATA_DIR, 'ai-skills')
+const EVENT_DUMP_DIR = path.join(DATA_DIR, 'ai-event-dumps')
 const RANDOM_WHITELIST_FILE = path.join(DATA_DIR, 'ai-random-whitelist.json')
 const RANDOM_RATE_FILE = path.join(DATA_DIR, 'ai-random-rate.json')
 const SEARCH_ENABLED_FILE = path.join(DATA_DIR, 'ai-enable-search.txt')
 const RANDOM_TRIGGER_RATE_BASE = Number(process.env.AI_RANDOM_TRIGGER_RATE || 0.008)
 const RANDOM_TRIGGER_WARMUP = 50
 const RANDOM_TRIGGER_RAMP = 0.02
-// 主动回复白名单：只在这些群触发 AI 随机主动回复；留空则全群触发
+// 主动回复白名单：只在这些群触发 AI 随机主动回复；留空则全群禁用
 const DEFAULT_GROUP_RANDOM_WHITELIST = new Set([
   // '123456789',
 ])
@@ -29,60 +31,13 @@ const MAX_REPEAT_CHECK_HISTORY = 3
 const MAX_REPLY_FINGERPRINT_HISTORY = 100
 const MAX_CHANNEL_SHARED_MESSAGES = 100
 const MAX_CHANNEL_PROMPT_MESSAGES = 24
-const RANDOM_INTERJECT_COOLDOWN_MS = 60 * 1000
+const MAX_THREAD_CONTEXT_MESSAGES = 12
+const MAX_REPLY_CHAIN_DEPTH = 6
+const EVENT_DUMP_ARM_EXPIRE_MS = 10 * 60 * 1000
 const MAX_FORWARD_NODES = 12
 const MAX_FORWARD_DEPTH = 4
 const ADMIN_USER_IDS = new Set(['100000000', '200000000'])
-
-const QQ_FACE_NAME_MAP = {
-  '0': '惊讶',
-  '1': '撇嘴',
-  '2': '色',
-  '3': '发呆',
-  '4': '得意',
-  '5': '流泪',
-  '6': '害羞',
-  '9': '大哭',
-  '10': '尴尬',
-  '11': '发怒',
-  '12': '调皮',
-  '13': '呲牙',
-  '14': '微笑',
-  '16': '酷',
-  '18': '抓狂',
-  '20': '偷笑',
-  '21': '可爱',
-  '27': '流汗',
-  '28': '憨笑',
-  '30': '奋斗',
-  '32': '疑问',
-  '34': '晕',
-  '39': '再见',
-  '49': '拥抱',
-  '59': '便便',
-  '66': '爱心',
-  '74': '太阳',
-  '75': '月亮',
-  '76': '赞',
-  '77': '踩',
-  '78': '握手',
-  '79': '胜利',
-  '85': '飞吻',
-  '96': '冷汗',
-  '97': '擦汗',
-  '98': '抠鼻',
-  '99': '鼓掌',
-  '100': '糗大了',
-  '101': '坏笑',
-  '102': '左哼哼',
-  '103': '右哼哼',
-  '104': '哈欠',
-  '106': '委屈',
-  '109': '亲亲',
-  '111': '可怜',
-  '174': 'doge',
-  '182': '笑哭',
-}
+const NUMERIC_GROUP_ID_RE = /^\d+$/
 
 const OVERUSED_REPLY_PATTERNS = [
   /你妈的话你信不信我帮你转达/,
@@ -229,10 +184,10 @@ let randomWhitelistCache = new Set(DEFAULT_GROUP_RANDOM_WHITELIST)
 let randomRateCache = new Map()
 const conversationLastActiveAt = new Map()
 const channelSharedCache = new Map()
-const channelLastInterjectionAt = new Map()
 const channelQueues = new Map()
 const channelQueueDepth = new Map()
 const channelMissCount = new Map()
+const armedEventDumpCache = new Map()
 
 function enqueueForChannel(channelKey, fn, maxDepth) {
   const depth = channelQueueDepth.get(channelKey) || 0
@@ -255,142 +210,12 @@ function getRandomTriggerRate(channelKey) {
   return baseRate + (miss - RANDOM_TRIGGER_WARMUP) * RANDOM_TRIGGER_RAMP
 }
 
-function normalizeText(text = '') {
-  return String(text).replace(/\s+/g, ' ').trim()
-}
-
-function stripUrls(text = '') {
-  return String(text).replace(/https?:\/\/\S+/gi, ' ')
-}
-
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function getRandomDelayMs() {
   return 500 + Math.floor(Math.random() * 501)
-}
-
-function normalizeQQFaceName(name = '', id = '') {
-  const raw = normalizeText(String(name || '').replace(/^\/+/, ''))
-  if (raw && !/^\d+$/.test(raw)) return raw
-  return QQ_FACE_NAME_MAP[String(id || '')] || (id ? `QQ表情#${id}` : 'QQ表情')
-}
-
-function summarizeForwardNodes(nodes, depth = 0) {
-  if (!Array.isArray(nodes) || depth > MAX_FORWARD_DEPTH) return ''
-
-  return nodes
-    .slice(0, MAX_FORWARD_NODES)
-    .map((node) => {
-      const type = String(node?.type || '')
-      const data = node?.data || {}
-
-      if (type === 'forward') {
-        return summarizeForwardNodes(data.content, depth + 1)
-      }
-
-      if (type !== 'node') return ''
-
-      const nickname = sanitizeUserName(data.nickname || data.name || data.user_id || data.uin || '群友')
-      const content = extractSegmentText(data.content, { includeFace: true, includeForward: true, depth: depth + 1 })
-      if (!content) return ''
-      return `${nickname}：${content}`
-    })
-    .filter(Boolean)
-    .join('；')
-}
-
-function extractSegmentText(segments, options = {}) {
-  const {
-    includeFace = true,
-    includeForward = true,
-    includeMediaLabel = false,
-    depth = 0,
-  } = options
-
-  if (!Array.isArray(segments) || depth > MAX_FORWARD_DEPTH) return ''
-
-  const parts = []
-  for (const segment of segments) {
-    const type = String(segment?.type || '')
-    const data = segment?.data || {}
-
-    if (type === 'text') {
-      if (data.text) parts.push(String(data.text))
-      continue
-    }
-
-    if (type === 'at') {
-      if (String(data.qq || data.id || '') === 'all') parts.push('@全体')
-      continue
-    }
-
-    if (type === 'face') {
-      if (includeFace) {
-        parts.push(`【QQ表情：${normalizeQQFaceName(data.text || data.raw || data.name, data.id)}】`)
-      }
-      continue
-    }
-
-    if (type === 'mface') {
-      if (includeFace) parts.push('【QQ表情包】')
-      continue
-    }
-
-    if (type === 'forward') {
-      if (!includeForward) continue
-      const summary = summarizeForwardNodes(data.content, depth + 1)
-      parts.push(summary ? `【转发消息：${summary}】` : '【转发消息】')
-      continue
-    }
-
-    if (type === 'node') {
-      if (!includeForward) continue
-      const nickname = sanitizeUserName(data.nickname || data.name || data.user_id || data.uin || '群友')
-      const nested = extractSegmentText(data.content, { includeFace, includeForward, includeMediaLabel, depth: depth + 1 })
-      if (nested) parts.push(`${nickname}：${nested}`)
-      continue
-    }
-
-    if (includeMediaLabel && ['image', 'record', 'video', 'file'].includes(type)) {
-      parts.push('【非文本消息】')
-    }
-  }
-
-  return normalizeText(parts.join(' '))
-}
-
-function extractContentFallback(content = '', forMemory = false) {
-  const text = String(content)
-    .replace(/<quote\b[^>]*\/?>/gi, ' ')
-    .replace(/<at\b[^>]*?name="([^"]+)"[^>]*\/?>/gi, ' @$1 ')
-    .replace(/<at\b[^>]*?id="([^"]+)"[^>]*\/?>/gi, ' ')
-    .replace(/\[CQ:reply,[^\]]+\]/gi, ' ')
-    .replace(/\[CQ:at,[^\]]+\]/gi, ' ')
-    .replace(/\[CQ:face,[^\]]*?id=(\d+)[^\]]*\]/gi, (_, id) => forMemory ? ' ' : ` 【QQ表情：${normalizeQQFaceName('', id)}】 `)
-    .replace(/<face\b[^>]*?name="([^"]+)"[^>]*\/?>/gi, (_, name) => forMemory ? ' ' : ` 【QQ表情：${normalizeQQFaceName(name)}】 `)
-    .replace(/<face\b[^>]*?id="([^"]+)"[^>]*\/?>/gi, (_, id) => forMemory ? ' ' : ` 【QQ表情：${normalizeQQFaceName('', id)}】 `)
-    .replace(/\[CQ:forward,[^\]]+\]/gi, ' 【转发消息】 ')
-    .replace(/<forward\b[^>]*\/?>/gi, ' 【转发消息】 ')
-    .replace(/\[CQ:(?:image|img|mface|record|video|file|json|xml|share),[^\]]+\]/gi, ' ')
-    .replace(/<(?:img|image|audio|video|file|json|xml|mface)[^>]*\/?>/gi, ' ')
-
-  const withoutLinks = forMemory ? stripUrls(text) : text
-  return normalizeText(withoutLinks)
-}
-
-function analyzeIncomingMessage(session) {
-  const rawSegments = Array.isArray(session.event?.message) ? session.event.message : []
-  if (!rawSegments.length) {
-    const plain = extractContentFallback(session.content || '', false)
-    const memory = extractContentFallback(session.content || '', true)
-    return { plain, memory }
-  }
-
-  const plain = extractSegmentText(rawSegments, { includeFace: true, includeForward: true })
-  const memory = normalizeText(stripUrls(extractSegmentText(rawSegments, { includeFace: false, includeForward: true })))
-  return { plain, memory }
 }
 
 function stripMentions(text = '') {
@@ -542,8 +367,10 @@ function getRandomTriggerBaseRate(channelKey) {
   return randomRateCache.get(String(channelKey || '')) || RANDOM_TRIGGER_RATE_BASE
 }
 
+// 白名单为空时视为全群禁用主动回复，只有显式加入的群才允许触发。
 function getRandomWhitelistStatus(channelKey) {
-  return randomWhitelistCache.size === 0 || randomWhitelistCache.has(String(channelKey || ''))
+  if (randomWhitelistCache.size === 0) return false
+  return randomWhitelistCache.has(String(channelKey || ''))
 }
 
 function formatPercent(rate = 0) {
@@ -576,12 +403,170 @@ async function writeJsonFile(file, value) {
   await fs.writeFile(file, JSON.stringify(value, null, 2), 'utf8')
 }
 
+// --- 原始事件抓取 --- //
+
+// 清理过期的一次性抓取状态，避免命令挂太久。
+function getArmedEventDump(channelKey = '') {
+  const key = String(channelKey || '')
+  const state = armedEventDumpCache.get(key)
+  if (!state) return null
+  if (Date.now() - state.armedAt > EVENT_DUMP_ARM_EXPIRE_MS) {
+    armedEventDumpCache.delete(key)
+    return null
+  }
+  return state
+}
+
+// 开启当前频道的下一条事件抓取。
+function armEventDump(session) {
+  const channelKey = getChannelKey(session)
+  const state = {
+    armedAt: Date.now(),
+    armedBy: getSenderUserId(session),
+  }
+  armedEventDumpCache.set(channelKey, state)
+  return state
+}
+
+// 取消当前频道的下一条事件抓取。
+function clearArmedEventDump(channelKey = '') {
+  armedEventDumpCache.delete(String(channelKey || ''))
+}
+
+// 生成安全文件名，避免把群号和消息号直接拼出非法路径。
+function sanitizeFileToken(value = '') {
+  return String(value || '').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80) || 'unknown'
+}
+
+// 安全序列化复杂对象，避免循环引用或 bigint 把抓取过程搞挂。
+function safeJsonStringify(value) {
+  const visited = new WeakSet()
+  return JSON.stringify(value, (key, current) => {
+    if (typeof current === 'bigint') return current.toString()
+    if (typeof current === 'function') return `[Function ${current.name || 'anonymous'}]`
+    if (current && typeof current === 'object') {
+      if (visited.has(current)) return '[Circular]'
+      visited.add(current)
+    }
+    return current
+  }, 2)
+}
+
+// 把当前会话的原始 event 和解析结果落盘，供后续精修消息记录解析。
+async function dumpSessionEvent(session, analyzed, plain, memoryText) {
+  const now = new Date()
+  const dateStamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+  const timeStamp = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`
+  const channelToken = sanitizeFileToken(getChannelKey(session))
+  const messageToken = sanitizeFileToken(session.messageId || 'no-message-id')
+  const fileName = `ai-event-${dateStamp}-${timeStamp}-${channelToken}-${messageToken}.json`
+  const filePath = path.join(EVENT_DUMP_DIR, fileName)
+
+  const payload = {
+    capturedAt: now.toISOString(),
+    analyzed,
+    session: {
+      platform: session.platform,
+      type: session.type,
+      subtype: session.subtype,
+      selfId: session.selfId,
+      userId: session.userId,
+      channelId: session.channelId,
+      guildId: session.guildId,
+      messageId: session.messageId,
+      content: session.content,
+      plain,
+      memoryText,
+      author: session.author,
+      quote: session.quote,
+      event: session.event,
+    },
+  }
+
+  await fs.mkdir(EVENT_DUMP_DIR, { recursive: true })
+  await fs.writeFile(filePath, safeJsonStringify(payload), 'utf8')
+  return filePath
+}
+
 function parseEnabledText(value = '') {
   return /^(?:1|true|on|yes|开|开启)$/i.test(String(value).trim())
 }
 
-function isSearchCapableConfig(config = {}) {
-  return /aliyuncs\.com|dashscope/i.test(String(config.baseURL || ''))
+// --- 联网搜索 --- //
+
+// 解析接口域名，统一给联网能力判断使用。
+function getBaseHostname(baseURL = '') {
+  try {
+    return new URL(String(baseURL || '')).hostname.toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+// 判断是否为 DashScope / 百炼的 OpenAI 兼容接口。
+function isDashScopeConfig(config = {}) {
+  const hostname = getBaseHostname(config.baseURL)
+  return hostname.includes('dashscope') || hostname.endsWith('aliyuncs.com')
+}
+
+// 判断是否为 OpenAI 官方接口。
+function isOpenAIOfficialConfig(config = {}) {
+  const hostname = getBaseHostname(config.baseURL)
+  return hostname === 'api.openai.com' || hostname.endsWith('.openai.com')
+}
+
+// 汇总当前接口的联网搜索能力，避免命令提示和请求逻辑各写一套判断。
+function getSearchCapability(config = {}) {
+  const model = String(config.model || '').trim()
+
+  if (isDashScopeConfig(config)) {
+    return {
+      supported: true,
+      mode: 'dashscope-chat',
+      label: 'DashScope Chat Completions `enable_search`',
+    }
+  }
+
+  if (isOpenAIOfficialConfig(config)) {
+    if (/^(gpt-5-search-api|gpt-4o-search-preview|gpt-4o-mini-search-preview)$/i.test(model)) {
+      return {
+        supported: true,
+        mode: 'openai-chat-search',
+        label: 'OpenAI Chat Completions `web_search_options`',
+      }
+    }
+
+    if (/^gpt-4\.1-nano$/i.test(model)) {
+      return {
+        supported: false,
+        mode: 'openai-unsupported-model',
+        label: 'OpenAI `web_search` 不支持 `gpt-4.1-nano`',
+      }
+    }
+
+    return {
+      supported: true,
+      mode: 'openai-responses',
+      label: 'OpenAI Responses API `web_search`',
+    }
+  }
+
+  return {
+    supported: false,
+    mode: 'unknown',
+    label: '当前 Base URL 未识别为已支持的联网接口',
+  }
+}
+
+// 生成联网状态文本，给命令输出和状态页复用。
+function formatSearchStatus(config = {}) {
+  const capability = getSearchCapability(config)
+  return [
+    `东雪莲联网：${config.searchEnabled ? '开' : '关'}`,
+    `当前模型：${config.model || '(未设置)'}`,
+    `接口模式：${capability.label}`,
+    `联网能力：${capability.supported ? '支持' : '不支持'}`,
+  ].join('\n')
 }
 
 async function loadRuntimeSettings(force = false) {
@@ -594,7 +579,7 @@ async function loadRuntimeSettings(force = false) {
 
   randomWhitelistCache = new Set(
     Array.isArray(whitelist)
-      ? whitelist.map(item => String(item || '').trim()).filter(item => /^\d{10}$/.test(item))
+      ? whitelist.map(item => String(item || '').trim()).filter(item => NUMERIC_GROUP_ID_RE.test(item))
       : [...DEFAULT_GROUP_RANDOM_WHITELIST]
   )
 
@@ -603,7 +588,7 @@ async function loadRuntimeSettings(force = false) {
     for (const [channelId, rawRate] of Object.entries(rateMap)) {
       const normalizedId = String(channelId || '').trim()
       const numericRate = Number(rawRate)
-      if (!/^\d{10}$/.test(normalizedId)) continue
+      if (!NUMERIC_GROUP_ID_RE.test(normalizedId)) continue
       if (!Number.isFinite(numericRate) || numericRate <= 0 || numericRate > 1) continue
       nextRateMap.set(normalizedId, numericRate)
     }
@@ -705,7 +690,7 @@ function clearConversationHistory() {
   replyFingerprintCache = new Map()
   conversationLastActiveAt.clear()
   channelSharedCache.clear()
-  channelLastInterjectionAt.clear()
+  armedEventDumpCache.clear()
 }
 
 function clearUserConversationHistory(session) {
@@ -745,7 +730,8 @@ function getRecentUserMessages(session, limit = 3) {
     .slice(-limit)
 }
 
-function saveSharedChannelTurn(session, speakerName, content, role = 'user') {
+// 保存群聊消息摘要，给主动插话和跨人回复理解提供线程上下文。
+function saveSharedChannelTurn(session, speakerName, content, role = 'user', metadata = {}) {
   const channelKey = getChannelKey(session)
   const value = normalizeText(content)
   if (!value) return
@@ -759,6 +745,10 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user') {
     role,
     speakerName: sanitizeUserName(speakerName || (role === 'assistant' ? '东雪莲' : '群友')),
     content: value,
+    messageId: String(metadata.messageId || ''),
+    replyToId: String(metadata.replyToId || ''),
+    mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(item => String(item || '')).filter(Boolean) : [],
+    hasMessageRecordCue: !!metadata.hasMessageRecordCue,
     ts: Date.now(),
   }
 
@@ -766,23 +756,109 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user') {
   channelSharedCache.set(channelKey, current.concat(entry).slice(-MAX_CHANNEL_SHARED_MESSAGES))
 }
 
-function getSharedContextNote(session, currentUserId = '') {
-  const channelKey = getChannelKey(session)
-  const items = (channelSharedCache.get(channelKey) || [])
-    .filter(item => item.content)
-    .slice(-MAX_CHANNEL_PROMPT_MESSAGES)
+// 按消息 ID 反查最近群聊记录，供 reply 链和话题链路拼接使用。
+function findChannelMessageById(channelKey, messageId = '') {
+  if (!messageId) return null
+  const items = channelSharedCache.get(channelKey) || []
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (String(items[index].messageId || '') === String(messageId)) return items[index]
+  }
+  return null
+}
 
+// 追溯 reply 链，尽量把当前回复关联到正确的话题上下文里。
+function collectReplyChain(channelKey, replyToId = '') {
+  const chain = []
+  let currentReplyId = String(replyToId || '')
+
+  for (let depth = 0; currentReplyId && depth < MAX_REPLY_CHAIN_DEPTH; depth += 1) {
+    const hit = findChannelMessageById(channelKey, currentReplyId)
+    if (!hit) break
+    chain.push(hit)
+    currentReplyId = String(hit.replyToId || '')
+  }
+
+  return chain
+}
+
+// 生成引用消息提示，避免用户回“这是什么”时模型对聊天记录卡片乱脑补。
+function getQuotedMessageNote(session, options = {}) {
+  const channelKey = getChannelKey(session)
+  const replyChain = collectReplyChain(channelKey, options.replyToId)
+  if (!replyChain.length) return ''
+
+  const quoted = replyChain[0]
+  if (!quoted.content) return ''
+
+  if (quoted.hasMessageRecordCue) {
+    return [
+      '当前用户正在回复一条聊天记录/转发消息卡片。',
+      `你目前只读到了这段可见文本：${quoted.content}`,
+      '如果卡片正文没有读出来，就明确说只看到了预览，不要编造卡片里不存在的细节。',
+    ].join('\n')
+  }
+
+  return [
+    '当前用户正在回复上一条消息。',
+    `被回复内容：${quoted.content}`,
+    '优先把这句理解为对上一条消息的承接，不要突然跳去别的话题。',
+  ].join('\n')
+}
+
+// 根据 reply、@关系和最近提到当前用户的消息，尽量只截取当前子话题的上下文。
+function getSharedContextNote(session, currentUserId = '', options = {}) {
+  const channelKey = getChannelKey(session)
+  const currentUserKey = String(currentUserId || '')
+  const items = (channelSharedCache.get(channelKey) || []).filter(item => item.content)
   if (!items.length) return ''
 
-  const lines = items
-    .filter(item => item.userId !== String(currentUserId || '') || item.role === 'assistant')
+  const replyChain = collectReplyChain(channelKey, options.replyToId)
+  const focusUserIds = new Set([currentUserKey].filter(Boolean))
+  const focusMessageIds = new Set()
+  const mentionUserIds = Array.isArray(options.mentionUserIds)
+    ? options.mentionUserIds.map(item => String(item || '')).filter(Boolean)
+    : []
+
+  mentionUserIds.forEach((userId) => focusUserIds.add(userId))
+  replyChain.forEach((item) => {
+    if (item.userId) focusUserIds.add(String(item.userId))
+    if (item.messageId) focusMessageIds.add(String(item.messageId))
+  })
+
+  if (!replyChain.length && currentUserKey) {
+    items
+      .slice(-MAX_THREAD_CONTEXT_MESSAGES)
+      .filter(item => item.userId !== currentUserKey && item.mentionUserIds.includes(currentUserKey))
+      .forEach((item) => {
+        if (item.userId) focusUserIds.add(String(item.userId))
+        item.mentionUserIds.forEach((userId) => focusUserIds.add(String(userId)))
+      })
+  }
+
+  let scopedItems = items.filter((item) => {
+    if (item.role === 'assistant') return false
+    if (focusMessageIds.has(String(item.messageId || ''))) return true
+    if (focusUserIds.has(String(item.userId || ''))) return true
+    return item.mentionUserIds.some(userId => focusUserIds.has(String(userId)))
+  })
+
+  if (!scopedItems.length && options.randomTriggered && currentUserKey) {
+    scopedItems = items.filter(item => item.role !== 'assistant' && item.userId === currentUserKey)
+  }
+
+  if (!scopedItems.length) {
+    scopedItems = items.filter(item => item.role !== 'assistant').slice(-Math.min(MAX_THREAD_CONTEXT_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES))
+  }
+
+  const lines = scopedItems
+    .slice(-Math.min(MAX_THREAD_CONTEXT_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES))
     .map(item => `${item.speakerName}(${item.role === 'assistant' ? '东雪莲' : '群友'})：${item.content}`)
     .filter(Boolean)
 
   if (!lines.length) return ''
   return [
-    '[群聊最近纯文本消息背景]',
-    '下面是最近群聊里出现的纯文本内容。你可以自然理解并串联不同人的话题，但不要机械复读。',
+    '[群聊当前话题背景]',
+    '下面只保留当前回复链或当前参与者相关的纯文本消息。优先理解这一个子话题，不要把别人的并行聊天混进来。',
     ...lines,
   ].join('\n')
 }
@@ -1156,10 +1232,8 @@ function buildAbusiveSystemPrompt() {
   ].join('\n')
 }
 
-async function callOpenAI(messages) {
-  const config = await loadConfig()
-  if (!config.apiKey) throw new Error('AI key file is empty.')
-
+// 统一请求 OpenAI 兼容的 Chat Completions 接口。
+async function requestChatCompletions(messages, config, extraBody = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
 
@@ -1175,8 +1249,8 @@ async function callOpenAI(messages) {
         model: config.model,
         temperature: 0.9,
         max_tokens: 160,
-        enable_thinking: false,
-        ...(isSearchCapableConfig(config) ? { enable_search: !!config.searchEnabled } : {}),
+        ...(isDashScopeConfig(config) ? { enable_thinking: false } : {}),
+        ...extraBody,
         messages,
       }),
     })
@@ -1193,6 +1267,99 @@ async function callOpenAI(messages) {
   } finally {
     clearTimeout(timer)
   }
+}
+
+// 把 Chat 风格消息转成 Responses API 所需的 input 结构。
+function buildResponsesInput(messages = []) {
+  return messages
+    .filter(item => item && item.content)
+    .map(item => ({
+      role: item.role === 'assistant' ? 'assistant' : item.role === 'system' ? 'system' : 'user',
+      content: [{
+        type: 'input_text',
+        text: String(item.content),
+      }],
+    }))
+}
+
+// 从 Responses API 返回值中提取最终文本。
+function extractResponsesText(data = {}) {
+  if (typeof data.output_text === 'string' && data.output_text.trim()) {
+    return data.output_text.trim()
+  }
+
+  const parts = []
+  for (const item of Array.isArray(data.output) ? data.output : []) {
+    if (item?.type !== 'message') continue
+    for (const content of Array.isArray(item.content) ? item.content : []) {
+      if ((content?.type === 'output_text' || content?.type === 'text') && content.text) {
+        parts.push(String(content.text))
+      }
+    }
+  }
+
+  const joined = normalizeText(parts.join(' '))
+  if (!joined) throw new Error('Empty model response.')
+  return joined
+}
+
+// 通过 OpenAI 官方 Responses API 调用 `web_search` 工具。
+async function requestOpenAIResponsesWithSearch(messages, config) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
+
+  try {
+    const response = await fetch(config.baseURL + '/responses', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: config.model,
+        temperature: 0.9,
+        max_output_tokens: 160,
+        input: buildResponsesInput(messages),
+        tools: [{ type: 'web_search' }],
+      }),
+    })
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(`HTTP ${response.status} ${text}`.trim())
+    }
+
+    const data = await response.json()
+    return extractResponsesText(data)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// 按当前接口能力选择普通对话或联网检索调用方式。
+async function callOpenAI(messages) {
+  const config = await loadConfig()
+  if (!config.apiKey) throw new Error('AI key file is empty.')
+
+  const capability = getSearchCapability(config)
+  if (!config.searchEnabled || !capability.supported) {
+    return requestChatCompletions(messages, config)
+  }
+
+  if (capability.mode === 'dashscope-chat') {
+    return requestChatCompletions(messages, config, { enable_search: true })
+  }
+
+  if (capability.mode === 'openai-chat-search') {
+    return requestChatCompletions(messages, config, { web_search_options: {} })
+  }
+
+  if (capability.mode === 'openai-responses') {
+    return requestOpenAIResponsesWithSearch(messages, config)
+  }
+
+  return requestChatCompletions(messages, config)
 }
 
 function trimReply(text = '', maxChars = MAX_OUTPUT_CHARS_FRIENDLY) {
@@ -1247,7 +1414,7 @@ async function chatJailbreak(session, userText, ctx) {
         model: config.model,
         temperature: 1.1,
         max_tokens: 60,
-        enable_thinking: false,
+        ...(isDashScopeConfig(config) ? { enable_thinking: false } : {}),
         messages: [
           { role: 'system', content: jailbreakSystemPrompt },
           { role: 'user', content: `越狱消息原文：${userText.slice(0, 200)}` },
@@ -1318,6 +1485,10 @@ async function chat(session, userText, ctx, options = {}) {
 
   if (options.sharedContextNote) {
     messages.push({ role: 'system', content: options.sharedContextNote })
+  }
+
+  if (options.quotedMessageNote) {
+    messages.push({ role: 'system', content: options.quotedMessageNote })
   }
 
   if (options.randomTriggered) {
@@ -1462,10 +1633,24 @@ exports.apply = (ctx) => {
 
     await loadRuntimeSettings()
 
-    const analyzed = analyzeIncomingMessage(session)
+    const analyzed = analyzeIncomingMessage(session, { sanitizeUserName })
     const plain = collapseRepeatedBotCalls(stripMentions(analyzed.plain || content))
     const memoryText = normalizeText(stripMentions(analyzed.memory || plain))
     const directAt = isDirectAtBot(session)
+    const armedEventDump = getArmedEventDump(getChannelKey(session))
+    if (armedEventDump) {
+      try {
+        const dumpPath = await dumpSessionEvent(session, analyzed, plain, memoryText)
+        clearArmedEventDump(getChannelKey(session))
+        ctx.logger('dongxuelian-ai').info(`captured raw session event: ${dumpPath}`)
+        await session.send(`已抓到原始事件：${dumpPath}`)
+      } catch (error) {
+        clearArmedEventDump(getChannelKey(session))
+        ctx.logger('dongxuelian-ai').warn(error)
+        await session.send('原始事件抓取失败。')
+      }
+    }
+
     if (!plain && !directAt) return next()
     if (isReservedCommand(plain)) return next()
 
@@ -1480,22 +1665,23 @@ exports.apply = (ctx) => {
     )
     const adminCommandMatched =
       /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
-      /^东雪莲群聊AI概率(?:设置|重置|查看)/.test(plain) ||
-      /^东雪莲联网(?:开|关|查看)$/.test(plain) ||
+      /^东雪莲群聊AI概率(?:设置|重置)$/.test(plain) ||
+      /^东雪莲联网(?:开|关)$/.test(plain) ||
+      /^AI抓事件(?:查看|取消)?$/.test(plain) ||
       plain === 'AI重载'
 
     if (adminCommandMatched && !hasAdminPermission(session)) {
       return '只有指定管理员能操作这个命令。'
     }
 
-    const whitelistAddMatch = plain.match(/^群聊AI白名单添加\s*(\d{10})$/)
+    const whitelistAddMatch = plain.match(/^群聊AI白名单添加\s*(\d+)$/)
     if (whitelistAddMatch) {
       randomWhitelistCache.add(whitelistAddMatch[1])
       await writeJsonFile(RANDOM_WHITELIST_FILE, [...randomWhitelistCache])
       return `已加入群聊AI白名单：${whitelistAddMatch[1]}`
     }
 
-    const whitelistDeleteMatch = plain.match(/^群聊AI白名单删除\s*(\d{10})$/)
+    const whitelistDeleteMatch = plain.match(/^群聊AI白名单删除\s*(\d+)$/)
     if (whitelistDeleteMatch) {
       randomWhitelistCache.delete(whitelistDeleteMatch[1])
       await writeJsonFile(RANDOM_WHITELIST_FILE, [...randomWhitelistCache])
@@ -1504,17 +1690,33 @@ exports.apply = (ctx) => {
 
     if (/^群聊AI白名单(?:查看|列表)$/.test(plain)) {
       const whitelist = [...randomWhitelistCache]
-      return whitelist.length ? `群聊AI白名单：\n${whitelist.join('\n')}` : '当前白名单为空，等同于所有群都允许主动回复。'
+      return whitelist.length ? `群聊AI白名单：\n${whitelist.join('\n')}` : '当前白名单为空，等同于所有群都禁止主动回复。'
     }
 
-    const rateSetMatch = plain.match(/^东雪莲群聊AI概率设置\s*(\d{1,2}(?:\.\d+)?)%$/)
+    if (plain === 'AI抓事件') {
+      armEventDump(session)
+      return `已开始抓取当前会话的下一条原始事件。\n请把目标消息再发一遍，触发后会写入：${EVENT_DUMP_DIR}`
+    }
+
+    if (plain === 'AI抓事件查看') {
+      const armed = getArmedEventDump(channelKey)
+      if (!armed) return '当前没有待抓取的原始事件。'
+      return `原始事件抓取：已开启\n抓取人：${armed.armedBy || '(未知)'}\n剩余有效期：约${Math.max(1, Math.ceil((EVENT_DUMP_ARM_EXPIRE_MS - (Date.now() - armed.armedAt)) / 60000))}分钟`
+    }
+
+    if (plain === 'AI抓事件取消') {
+      clearArmedEventDump(channelKey)
+      return '已取消当前会话的原始事件抓取。'
+    }
+
+    const rateSetMatch = plain.match(/^东雪莲群聊AI概率设置\s*((?:100(?:\.0+)?)|(?:\d{1,2}(?:\.\d+)?))%$/)
     if (rateSetMatch) {
       if (!inGuild) return '这个命令只能在群里用。'
       const rate = Number(rateSetMatch[1]) / 100
       if (!Number.isFinite(rate) || rate <= 0 || rate > 1) return '概率范围只能是 0% 到 100% 之间。'
       randomRateCache.set(channelKey, rate)
       await writeJsonFile(RANDOM_RATE_FILE, Object.fromEntries(randomRateCache))
-      return `本群主动回复基础概率已设置为 ${formatPercent(rate)}。50条未触发后仍按每条 +${formatPercent(RANDOM_TRIGGER_RAMP)} 递增。`
+      return `本群主动回复基础概率已设置为 ${formatPercent(rate)}。50条未触发后仍按每条 +${formatPercent(RANDOM_TRIGGER_RAMP)} 递增。本群东雪莲AI聊天状态：${getRandomWhitelistStatus(channelKey) ? '开' : '关'}`
     }
 
     if (/^东雪莲群聊AI概率重置$/.test(plain)) {
@@ -1533,7 +1735,10 @@ exports.apply = (ctx) => {
       const config = await loadConfig(true)
       config.searchEnabled = true
       await writeTextFile(SEARCH_ENABLED_FILE, 'on')
-      return isSearchCapableConfig(config) ? '东雪莲联网已开启。' : '联网开关已打开，但当前接口不一定支持联网搜索。'
+      const capability = getSearchCapability(config)
+      return capability.supported
+        ? `东雪莲联网已开启。\n接口模式：${capability.label}`
+        : `联网开关已打开，但当前接口不支持联网搜索。\n接口模式：${capability.label}`
     }
 
     if (/^东雪莲联网关$/.test(plain)) {
@@ -1545,7 +1750,7 @@ exports.apply = (ctx) => {
 
     if (/^东雪莲联网查看$/.test(plain)) {
       const config = await loadConfig(true)
-      return `东雪莲联网：${config.searchEnabled ? '开' : '关'}`
+      return formatSearchStatus(config)
     }
 
     if (plain === 'AI状态') {
@@ -1557,9 +1762,10 @@ exports.apply = (ctx) => {
         `模型：${config.model || '(未设置)'}`,
         `Base URL：${config.baseURL || '(未设置)'}`,
         `联网：${config.searchEnabled ? '开' : '关'}`,
+        `联网模式：${getSearchCapability(config).label}`,
         `Skills：${skillsCache.length} 个`,
         `当前群基础触发率：${formatPercent(getRandomTriggerBaseRate(channelKey))}`,
-        `当前群白名单状态：${getRandomWhitelistStatus(channelKey) ? '允许主动回复' : '未加入白名单'}`,
+        `当前群白名单状态：${getRandomWhitelistStatus(channelKey) ? '允许主动回复' : '禁止主动回复'}`,
         `随机触发率规则：热身${RANDOM_TRIGGER_WARMUP}条后每条+${formatPercent(RANDOM_TRIGGER_RAMP)}`,
       ].join('\n')
     }
@@ -1575,29 +1781,45 @@ exports.apply = (ctx) => {
 
     const botMentionCount = getBotMentionCount(session)
     const otherMentions = hasOtherMentions(session)
+    const mentionUserIds = extractAtIds(session.content || '')
+      .map(userId => String(userId))
+      .filter(userId => userId && userId !== String(session.selfId || session.bot?.selfId || ''))
     const nameMentioned = /莲莲|东雪莲/.test(plain)
     const inRandomWhitelist = getRandomWhitelistStatus(channelKey)
-    const isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist
-    const withinInterjectCooldown = Date.now() - (channelLastInterjectionAt.get(channelKey) || 0) >= RANDOM_INTERJECT_COOLDOWN_MS
-    const randomTriggered = isRandomCandidate && withinInterjectCooldown && Math.random() < getRandomTriggerRate(channelKey)
+    const isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply
+    const randomTriggered = isRandomCandidate && Math.random() < getRandomTriggerRate(channelKey)
 
     if (isRandomCandidate) {
       if (randomTriggered) {
         channelMissCount.set(channelKey, 0)
-        channelLastInterjectionAt.set(channelKey, Date.now())
       } else {
         channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
       }
     }
 
     const userText = normalizeText(plain)
-    const sharedContextNote = getSharedContextNote(session, session.userId || session.author?.id || session.username)
+    const currentUserId = session.userId || session.author?.id || session.username
+    const sharedContextNote = getSharedContextNote(session, currentUserId, {
+      replyToId: analyzed.replyToId,
+      mentionUserIds,
+      randomTriggered,
+    })
+    const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId })
+    const sharedRecordText = memoryText || (analyzed.hasMessageRecordCue ? normalizeText(analyzed.plain || '') : '')
 
-    if (inGuild && memoryText) {
-      saveSharedChannelTurn(session, userName, memoryText, 'user')
+    if (inGuild && sharedRecordText) {
+      saveSharedChannelTurn(session, userName, sharedRecordText, 'user', {
+        messageId: session.messageId,
+        replyToId: analyzed.replyToId,
+        mentionUserIds,
+        hasMessageRecordCue: analyzed.hasMessageRecordCue,
+      })
     }
 
     if (!isPrivate && !directAt && !nameMentioned && !randomTriggered) return next()
+    if ((directAt || nameMentioned) && analyzed.shouldSkipForRandomReply && !analyzed.hasUsableText) {
+      return session.send('我不识图，也不读文件链接。发文字。')
+    }
     if (!userText) return next()
 
     if (botMentionCount > 1) {
@@ -1606,7 +1828,7 @@ exports.apply = (ctx) => {
 
     const maxDepth = inGuild ? 4 : 2
     enqueueForChannel(channelKey, () =>
-      chat(session, userText, ctx, { randomTriggered, sharedContextNote })
+      chat(session, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote })
         .then(reply => sendReply(session, reply))
         .catch(err => {
           ctx.logger('dongxuelian-ai').warn(err)
