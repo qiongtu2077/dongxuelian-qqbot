@@ -2,14 +2,14 @@ mkdir -p /root/koishi-app/node_modules/koishi-plugin-dongxuelian-help/lib
 cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-help/package.json <<'EOF'
 {
   "name": "koishi-plugin-dongxuelian-help",
-  "version": "0.4.4",
+  "version": "0.4.9",
   "main": "lib/index.js"
 }
 EOF
 cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-help/lib/index.js <<'EOF'
 exports.name = 'dongxuelian-help'
 
-const PLUGIN_VERSION = '0.4.4'
+const PLUGIN_VERSION = '0.4.9'
 
 // 统一压缩消息里的多余空白，方便做精确指令匹配。
 function normalizeText(text = '') {
@@ -37,23 +37,25 @@ function renderAiHelp() {
     '【常用】',
     '@东雪莲 你的问题',
     'AI状态',
-    'AI重载 仅限管理员',
+    'AI重载（bot管理员）',
     '',
     '【群聊主动回复】',
     '东雪莲群聊AI概率查看',
-    '东雪莲群聊AI概率设置5%',
-    '东雪莲群聊AI概率重置',
-    '群聊AI白名单查看',
-    '群聊AI白名单添加1234567890',
-    '群聊AI白名单删除1234567890',
+    '东雪莲群聊AI概率设置X%（bot管理员）',
+    '东雪莲群聊AI概率重置（bot管理员）',
+    '群聊AI白名单查看（bot管理员）',
+    '群聊AI白名单添加群号（bot管理员）',
+    '群聊AI白名单删除群号（bot管理员）',
     '',
     '【联网】',
     '东雪莲联网查看',
-    '东雪莲联网开',
-    '东雪莲联网关',
+    '东雪莲联网开（bot管理员）',
+    '东雪莲联网关（bot管理员）',
     '',
-    '【权限】',
-    '管理员仅限 QQ 100000000 / 200000000',
+    '【抓取原始事件】',
+    'AI抓事件（bot管理员）',
+    'AI抓事件查看（bot管理员）',
+    'AI抓事件取消（bot管理员）',
   ].join('\n')
 }
 
@@ -108,9 +110,12 @@ function renderQuickReference() {
     '@东雪莲 你的问题',
     'AI状态',
     'AI重载 仅限管理员',
-    '东雪莲联网开/关/查看 仅限管理员',
-    '东雪莲群聊AI概率设置5% / 重置 / 查看 仅限管理员',
+    '东雪莲联网查看',
+    '东雪莲联网开 / 关 仅限管理员',
+    '东雪莲群聊AI概率查看',
+    '东雪莲群聊AI概率设置5% / 重置 仅限管理员',
     '群聊AI白名单添加/删除/查看 仅限管理员',
+    'AI抓事件 / 查看 / 取消 仅限管理员',
     '',
     '【集合】',
     '@A用户 昵称 名称A',
@@ -119,8 +124,6 @@ function renderQuickReference() {
     '集合添加 / 集合删除 / 查看集合 / 集合列表',
     '集合交集 / 集合并集 / 集合差集',
     'at集合A / at名称A',
-    '',
-    '管理员仅限 QQ 100000000 / 200000000',
   ].join('\n')
 }
 
@@ -152,5 +155,49 @@ exports.apply = (ctx) => {
   })
 }
 EOF
-printf '\nInstalled koishi-plugin-dongxuelian-help 0.4.4\n'
+node <<'EOF'
+const fs = require('fs')
+
+const configFile = '/root/koishi-app/koishi.yml'
+const pluginLine = 'dongxuelian-help: {}'
+
+let text = fs.readFileSync(configFile, 'utf8')
+
+fs.copyFileSync(configFile, configFile + '.bak-dongxuelian-help')
+
+const lines = text
+  .split(/\r?\n/)
+  .filter(line => !/^\s*dongxuelian-help(?::[a-z0-9]+)?:\s*\{\}\s*$/.test(line))
+let inserted = false
+
+for (let index = 0; index < lines.length; index += 1) {
+  const match = lines[index].match(/^(\s*)group:basic:\s*$/)
+  if (match) {
+    lines.splice(index + 1, 0, match[1] + '  ' + pluginLine)
+    inserted = true
+    break
+  }
+}
+
+if (!inserted) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^(\s*)plugins:\s*$/)
+    if (match) {
+      lines.splice(index + 1, 0, match[1] + '  ' + pluginLine)
+      inserted = true
+      break
+    }
+  }
+}
+
+if (!inserted) {
+  lines.push('')
+  lines.push('plugins:')
+  lines.push('  ' + pluginLine)
+}
+
+fs.writeFileSync(configFile, lines.join('\n'), 'utf8')
+console.log('enabled dongxuelian-help in koishi.yml')
+EOF
+printf '\nInstalled koishi-plugin-dongxuelian-help 0.4.9\n'
 systemctl restart koishi
