@@ -5,7 +5,7 @@ mkdir -p /root/koishi-app/node_modules/koishi-plugin-dongxuelian-ai/lib
 cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-ai/package.json <<'EOF'
 {
   "name": "koishi-plugin-dongxuelian-ai",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "main": "lib/index.js"
 }
 EOF
@@ -343,7 +343,7 @@ const { analyzeIncomingMessage, normalizeText } = require('./message-reader')
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '0.3.10'
+const PLUGIN_VERSION = '0.3.11'
 const DATA_DIR = '/root/koishi-app/data'
 const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')
 const MODEL_FILE = path.join(DATA_DIR, 'ai-model.txt')
@@ -2156,8 +2156,11 @@ exports.apply = (ctx) => {
     }
 
     if (!isPrivate && !directAt && !nameMentioned && !randomTriggered) return next()
-    if ((directAt || nameMentioned) && analyzed.shouldSkipForRandomReply && !analyzed.hasUsableText) {
-      return session.send('我不识图，也不读文件链接。发文字。')
+    if ((directAt || nameMentioned) && !analyzed.hasUsableText) {
+      if (analyzed.hasVisual || analyzed.hasFile || analyzed.hasLink || analyzed.hasEmbed) {
+        await session.send('我不识图，也不读文件链接。发文字。')
+      }
+      return
     }
     if (!userText) return next()
 
