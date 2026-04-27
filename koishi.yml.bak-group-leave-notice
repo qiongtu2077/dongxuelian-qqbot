@@ -1,0 +1,12 @@
+plugins:
+  server:emicam:
+    port: 5140
+    selfUrl: http://localhost:5140
+  adapter-onebot:xtqqgv:
+    protocol: ws
+    selfId: '3651312852'
+    endpoint: ws://127.0.0.1:8080/onebot/v11/ws
+  group-name-at:nyxxfd: {}
+  dongxuelian-help:rlmpxx: {}
+  dongxuelian-ai:hdi04m: {}
+  dongxuelian-poke:nxf8l0: {}
