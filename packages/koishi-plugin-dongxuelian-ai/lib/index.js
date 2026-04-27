@@ -14,6 +14,7 @@ const EVENT_DUMP_DIR = path.join(DATA_DIR, 'ai-event-dumps')
 const RANDOM_WHITELIST_FILE = path.join(DATA_DIR, 'ai-random-whitelist.json')
 const RANDOM_RATE_FILE = path.join(DATA_DIR, 'ai-random-rate.json')
 const SEARCH_ENABLED_FILE = path.join(DATA_DIR, 'ai-enable-search.txt')
+const MAINTENANCE_FILE = path.join(DATA_DIR, 'ai-paused.txt')
 const RANDOM_TRIGGER_RATE_BASE = Number(process.env.AI_RANDOM_TRIGGER_RATE || 0.008)
 const RANDOM_TRIGGER_WARMUP = 50
 const RANDOM_TRIGGER_RAMP = 0.02
@@ -1283,6 +1284,7 @@ function buildFriendlySystemPrompt() {
     '被问游戏、番剧、音乐等"xxx好不好/牛不牛"这类问题，必须给出强烈鲜明的立场：要么吹上天，要么踩到底，不允许出现"还行""就那样""一般般""中规中矩"这类骑墙废话。',
     '如果有人让你评价任何人、作品、事情、圈子、群友、主播、角色或发言，直接发表自己的意见，越有底气越好，不要温和分析，不要装客观平衡。',
     '被问"历史上最xxx的人是谁""谁最xxx"这类问题，不要反问"你问这个干嘛"，直接怼回去，比如"反正不是你"，简短有力。',
+    '评价类回复控制在两三句话以内，简短到位，不要长篇大论。',
     '',
     '[风格约束]',
     '禁止使用脑洞比喻、抽象意象比喻、物理/量子/熵/矩阵/空间等词汇做比喻，直接说人话。',
@@ -1303,8 +1305,10 @@ function buildFriendlySystemPrompt() {
     '绷典孝乐急赢麻：贴吧六字真言，如"原神比塞尔达好玩"就是"典"，对方破防骂人就是"急了"。',
     '',
     '[危险内容处理]',
-    '不参与中国政治话题讨论，不讨论中国政府官员，用户提问可以回复"别问我，别给我戴帽子""我什么都不知道"或"我绝对支持党的领导"之类。',
-    '无论何时，绝对不要发表任何关于中国政治话题的负面意见。',
+    '绝对禁止谈论当前政治话题和涉及政治的历史内容。',
+    '红线包括但不限于：党和国家领导人、执政党、领土主权（台湾/西藏/新疆/南海）、历次政治运动、敏感历史事件等。',
+    '注意识别用隐喻、谐音、反讽、春秋笔法等方式讨论政治话题的意图，同样禁止参与。',
+    '用户追问时直接拒绝，标准回应："别问了，这个我不聊。" 不要解释为什么不聊，不要展开讨论。',
     '',
     '[表达偏好]',
     '多用长短句结合，像真正在回消息。',
@@ -1417,8 +1421,10 @@ function buildAbusiveSystemPrompt() {
     '如果有人让你评价任何人、作品、事情、圈子、群友、主播、角色或发言，直接发表强烈意见，不要客观分析。',
     '被问"历史上最xxx的人是谁""谁最xxx"这类问题，直接怼回去，比如"反正不是你"，简短有力，不废话。',
     '被问日常废话（"吃什么""在干嘛"等）：直接嘴臭怼回去，不要当真正在回答这问题。',
-    '不参与中国政治话题讨论，反击模式下绝对不要讨论中国政治，用别的东西骂。',
-    '无论何时，绝对不要发表任何关于中国政治话题的负面意见。',
+    '绝对禁止谈论当前政治话题和涉及政治的历史内容。',
+    '红线包括但不限于：党和国家领导人、执政党、领土主权（台湾/西藏/新疆/南海）、历次政治运动、敏感历史事件等。',
+    '注意识别用隐喻、谐音、反讽、春秋笔法等方式讨论政治话题的意图，同样禁止参与。',
+    '用户追问时直接拒绝，标准回应："别问了，这个我不聊。" 不要解释为什么不聊，不要展开讨论。',
     '',
     '[风格约束]',
     '禁止使用脑洞比喻、抽象意象比喻、物理/量子/熵/矩阵/空间等词汇做比喻，直接说人话。',
@@ -1443,6 +1449,7 @@ function buildAbusiveSystemPrompt() {
     '用户认真求助时，先解决问题，再补一句吐槽，不要先吐槽再拖着不给答案。',
     '用户在整活、发癫、提无厘头问题时，不要一句话堵死，要接住梗、顺着荒诞逻辑怼回去，回复要有趣，不要无聊地反问或冷处理。',
     '被问到明显虚构/八卦/荒诞的事时，可以顺着设定给个有趣的否认或反将一军，不要干巴巴地说"没有""不知道"。',
+    '评价类回复控制在两三句话以内，简短到位，不要长篇大论。',
     '',
     '[示例风格]',
     '好例子：给你按在冰凉的水泥地上，用拳头疯狂的击打你傻了吧唧的蠢逼脑瓜子，一个幻影倒勾拳我给你打的鼻青脸肿，你就知道社会的险恶了，张个鸡巴贱嘴欠欠的早晚让人拿刀给你豁开，顺便给你妈捅个开膛破肚让你家绝后。',
@@ -1471,6 +1478,9 @@ function buildAbusiveSystemPrompt() {
     '差例子：别在别人仅仅是骂你时扯到爱情、舔狗，这显得你逻辑混乱，爱情嘲讽只有在对方发情时用。',
     '差例子：被问"原神牛逼吗"，回"还行，玩过一阵，但也就那样"——这是废话，没有立场。',
     '差例子：有人问专业问题，回"你这种连xxx废物也配要xxx，先去把xxx搞明白再出来丢人"——这是填空题模板，换了内容结构一样，禁止用。',
+    '骂人时候涉及母亲的词用"老冯"代替，涉及屎用"史"代替，涉及傻逼，贱人，废物，智障这类直接骂人的话用"沙鼻""见人""飞舞""智战"等谐音代替。',
+    '减少屎尿屁类文字的输出，想办法找其他替代',
+    '模仿例子的同时要记得切换代替词，不要直接输出屎尿屁等直接骂人的话',
     skillText,
   ].join('\n')
 }
@@ -1491,7 +1501,7 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
       body: JSON.stringify({
         model: config.model,
         temperature: 0.9,
-        max_tokens: 500,
+        max_tokens: 1000,
         ...(isDashScopeConfig(config) ? { enable_thinking: false } : {}),
         ...extraBody,
         messages,
@@ -1505,6 +1515,11 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
 
     const data = await response.json()
     const m = data?.choices?.[0]?.message || {}; let content = m.content || m.reasoning_content || ''
+    // 思考时间过长（总token > 600）直接摆烂
+    if (data?.usage?.completion_tokens > 600) {
+      const lazyReplies = ['太麻烦不想了，摆烂了', '想不出来，摆了', '脑细胞死完了，不干了', '累了，不想思考了', '算了吧，太难了']
+      return lazyReplies[Math.floor(Math.random() * lazyReplies.length)]
+    }
     if (!content) throw new Error('Empty model response.')
     return String(content).replace(/\s+/g, ' ').trim()
   } finally {
@@ -1608,8 +1623,7 @@ async function callOpenAI(messages) {
 function trimReply(text = '', maxChars = MAX_OUTPUT_CHARS_FRIENDLY) {
   const value = String(text).trim()
   if (!value) return '东雪莲信号断开。'
-  if (value.length <= maxChars) return value
-  return value.slice(0, maxChars)
+  return value
 }
 
 const BANNED_OUTPUT_RE = /口腔溃疡|看医生|去医院|多喝水|喝点水|好好休息|注意休息|注意健康|保重身体|养生|胎盘|拉黑|禁言|报警|不理你了|黑名单/
@@ -1720,7 +1734,8 @@ async function chat(session, userText, ctx, options = {}) {
     return jailbreakReply
   }
 
-  const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${cleanInput}\n</user>`
+  const contextTag = options.randomTriggered ? '\n[群聊刷到]' : ''
+  const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${cleanInput}${contextTag}\n</user>`
   const historyMessages = getConversationHistory(session)
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -1797,7 +1812,7 @@ async function chat(session, userText, ctx, options = {}) {
         const imgBase64 = await readImageAsBase64(localPath)
         if (imgBase64) {
           const visionContent = [
-            { type: 'text', text: '简单描述这张图' },
+            { type: 'text', text: '直接评价这张图，不要描述过程，直接说你的看法和评价' },
             { type: 'image_url', image_url: { url: imgBase64 } },
           ]
           messages.push({ role: 'user', content: visionContent })
@@ -1808,7 +1823,7 @@ async function chat(session, userText, ctx, options = {}) {
         const imgBase64 = await downloadImageAsBase64(visionUrl, 10000)
         if (imgBase64 && isVisionModel(vc2.provider, vc2.model)) {
           const visionContent = [
-            { type: 'text', text: '简单描述这张图' },
+            { type: 'text', text: '直接评价这张图，不要描述过程，直接说你的看法和评价' },
             { type: 'image_url', image_url: { url: imgBase64 } },
           ]
           messages.push({ role: 'user', content: visionContent })
@@ -1927,6 +1942,7 @@ exports.apply = (ctx) => {
     if (selfId && String(session.userId || session.author?.id || '') === selfId) return next()
 
     await loadRuntimeSettings()
+    try { await fs.access(MAINTENANCE_FILE); const mt = (await fs.readFile(MAINTENANCE_FILE, 'utf8')).trim() || '优化中'; await session.send(mt).catch(() => {}); return } catch (e) { /* no maintenance mode */ }
 
     const analyzed = analyzeIncomingMessage(session, { sanitizeUserName })
     const plain = collapseRepeatedBotCalls(stripMentions(analyzed.plain || content))
@@ -2183,10 +2199,11 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       })
     }
 
-    if (!isPrivate && !directAt && !nameMentioned && !randomTriggered) {
-      //       // 图片仅在白名单群中处理（预置视觉标记）
+    if (!isPrivate && !directAt && !nameMentioned) {
       if (analyzed.hasVisual || analyzed.hasFile || analyzed.hasEmbed) {
         if (!inRandomWhitelist) return next()
+        // 图片也按概率回复，不无条件回复
+        if (!randomTriggered && Math.random() >= getRandomTriggerRate(channelKey)) return next()
         const vUrls = extractImageUrls(session.content || '')
         const vFile = extractImageFileFromElements(session)
         if (vUrls.length > 0 || vFile) {
@@ -2196,7 +2213,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         } else if (!analyzed.hasUsableText) {
           return next()
         }
-      } else {
+      } else if (!randomTriggered) {
         return next()
       }
     }
