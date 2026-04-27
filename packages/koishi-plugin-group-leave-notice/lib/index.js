@@ -1,4 +1,4 @@
-﻿exports.name = 'group-leave-notice'
+exports.name = 'group-leave-notice'
 
 const PLUGIN_VERSION = '0.1.0'
 
@@ -15,12 +15,12 @@ async function sendLeaveNotice(session) {
   const userId = getUserId(session)
   if (!guildId || !userId) return
 
-  await session.bot.sendMessage(guildId, `${userId} 退群了`)
+  await session.bot.sendMessage(guildId, userId + ' 退群了')
 }
 
 exports.apply = (ctx) => {
   ctx.on('ready', () => {
-    ctx.logger('group-leave-notice').info(`group-leave-notice ${PLUGIN_VERSION} loaded`)
+    ctx.logger('group-leave-notice').info('group-leave-notice ' + PLUGIN_VERSION + ' loaded')
   })
 
   ctx.on('guild-member-removed', async (session) => {
