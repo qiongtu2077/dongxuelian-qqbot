@@ -301,7 +301,7 @@ function analyzeIncomingMessage(session, options = {}) {
 
   const hasMessageRecordCue = features.hasForward || MESSAGE_RECORD_CUE_RE.test(plain) || MESSAGE_RECORD_CUE_RE.test(rawContent)
   const hasUsableText = !!memory
-  const shouldSkipForRandomReply = !hasUsableText || features.hasFile || (features.hasLink && !features.hasVisual) || features.hasEmbed
+  const shouldSkipForRandomReply = (!hasUsableText && !features.hasVisual) || features.hasFile || (features.hasLink && !features.hasVisual) || features.hasEmbed
 
   return {
     plain,
