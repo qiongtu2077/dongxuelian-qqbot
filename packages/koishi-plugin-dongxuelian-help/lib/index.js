@@ -1,10 +1,18 @@
 exports.name = 'dongxuelian-help'
 
-const PLUGIN_VERSION = '0.4.9'
+const PLUGIN_VERSION = '0.5.5'
 
 // 统一压缩消息里的多余空白，方便做精确指令匹配。
 function normalizeText(text = '') {
   return String(text).replace(/\s+/g, ' ').trim()
+}
+
+function stripMentions(text = '') {
+  return String(text)
+    .replace(/<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi, ' ')
+    .replace(/\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 // 根帮助菜单：列出当前可查看的子菜单与速查入口。
@@ -29,6 +37,13 @@ function renderAiHelp() {
     '@东雪莲 你的问题',
     'AI状态',
     'AI重载（bot管理员）',
+    '',
+    '【切换模型】',
+    '切换模型（查看供应商列表）',
+    '供应商 opencode（查看 OpenCode Go 模型列表）',
+    '供应商 deepseek（查看 DeepSeek 官方模型列表）',
+    '切换<模型名>（切换到指定模型）',
+    '可用模型（查看所有供应商的模型列表）',
     '',
     '【群聊主动回复】',
     '东雪莲群聊AI概率查看',
@@ -124,7 +139,7 @@ exports.apply = (ctx) => {
   })
 
   ctx.middleware((session, next) => {
-    const plain = normalizeText(session.content || '')
+    const plain = normalizeText(stripMentions(session.content || ''))
 
     if (plain === 'help东雪莲' || plain === '帮助东雪莲' || plain === '东雪莲help' || plain === '东雪莲帮助') {
       return renderRootHelp()

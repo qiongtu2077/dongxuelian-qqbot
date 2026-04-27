@@ -1,19 +1,27 @@
 mkdir -p /root/koishi-app/node_modules/koishi-plugin-dongxuelian-help/lib
-cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-help/package.json <<'EOF'
+cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-help/package.json <<'ENDOFKOISHICODE'
 {
   "name": "koishi-plugin-dongxuelian-help",
-  "version": "0.4.9",
+  "version": "0.5.5",
   "main": "lib/index.js"
 }
-EOF
-cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-help/lib/index.js <<'EOF'
+ENDOFKOISHICODE
+cat > /root/koishi-app/node_modules/koishi-plugin-dongxuelian-help/lib/index.js <<'ENDOFKOISHICODE'
 exports.name = 'dongxuelian-help'
 
-const PLUGIN_VERSION = '0.4.9'
+const PLUGIN_VERSION = '0.5.5'
 
 // 统一压缩消息里的多余空白，方便做精确指令匹配。
 function normalizeText(text = '') {
   return String(text).replace(/\s+/g, ' ').trim()
+}
+
+function stripMentions(text = '') {
+  return String(text)
+    .replace(/<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi, ' ')
+    .replace(/\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 // 根帮助菜单：列出当前可查看的子菜单与速查入口。
@@ -38,6 +46,13 @@ function renderAiHelp() {
     '@东雪莲 你的问题',
     'AI状态',
     'AI重载（bot管理员）',
+    '',
+    '【切换模型】',
+    '切换模型（查看供应商列表）',
+    '供应商 opencode（查看 OpenCode Go 模型列表）',
+    '供应商 deepseek（查看 DeepSeek 官方模型列表）',
+    '切换<模型名>（切换到指定模型）',
+    '可用模型（查看所有供应商的模型列表）',
     '',
     '【群聊主动回复】',
     '东雪莲群聊AI概率查看',
@@ -133,7 +148,7 @@ exports.apply = (ctx) => {
   })
 
   ctx.middleware((session, next) => {
-    const plain = normalizeText(session.content || '')
+    const plain = normalizeText(stripMentions(session.content || ''))
 
     if (plain === 'help东雪莲' || plain === '帮助东雪莲' || plain === '东雪莲help' || plain === '东雪莲帮助') {
       return renderRootHelp()
@@ -154,50 +169,9 @@ exports.apply = (ctx) => {
     return next()
   })
 }
-EOF
-node <<'EOF'
-const fs = require('fs')
 
-const configFile = '/root/koishi-app/koishi.yml'
-const pluginLine = 'dongxuelian-help: {}'
-
-let text = fs.readFileSync(configFile, 'utf8')
-
-fs.copyFileSync(configFile, configFile + '.bak-dongxuelian-help')
-
-const lines = text
-  .split(/\r?\n/)
-  .filter(line => !/^\s*dongxuelian-help(?::[a-z0-9]+)?:\s*\{\}\s*$/.test(line))
-let inserted = false
-
-for (let index = 0; index < lines.length; index += 1) {
-  const match = lines[index].match(/^(\s*)group:basic:\s*$/)
-  if (match) {
-    lines.splice(index + 1, 0, match[1] + '  ' + pluginLine)
-    inserted = true
-    break
-  }
-}
-
-if (!inserted) {
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = lines[index].match(/^(\s*)plugins:\s*$/)
-    if (match) {
-      lines.splice(index + 1, 0, match[1] + '  ' + pluginLine)
-      inserted = true
-      break
-    }
-  }
-}
-
-if (!inserted) {
-  lines.push('')
-  lines.push('plugins:')
-  lines.push('  ' + pluginLine)
-}
-
-fs.writeFileSync(configFile, lines.join('\n'), 'utf8')
-console.log('enabled dongxuelian-help in koishi.yml')
-EOF
-printf '\nInstalled koishi-plugin-dongxuelian-help 0.4.9\n'
-systemctl restart koishi
+ENDOFKOISHICODE
+node <<'SCRIPT'
+const fs=require("fs");const c="/root/koishi-app/koishi.yml";let t=fs.readFileSync(c,"utf8");let ec=0;for(const x of t.split(/\r?\n/))if(/^\s*koishi-plugin-dongxuelian-help(?::[a-z0-9]+)?\s*:/.test(x))ec++;if(ec===1){console.log("already enabled");process.exit(0)}if(ec>1){const f=[];let k=false;for(const x of t.split(/\r?\n/)){if(/^\s*koishi-plugin-dongxuelian-help(?::[a-z0-9]+)?\s*:/.test(x)){if(!k){f.push(x);k=true}}else f.push(x)}fs.writeFileSync(c,f.join("\n"),"utf8");console.log("cleaned duplicates");process.exit(0)}fs.copyFileSync(c,c+".bak-koishi-plugin-dongxuelian-help");const l=t.split(/\r?\n/);let ins=false;for(let i=0;i<l.length;i++){const m=l[i].match(/^(\s*)group:basic:\s*$/);if(m){l.splice(i+1,0,m[1]+"  koishi-plugin-dongxuelian-help: {}");ins=true;break}}if(!ins)for(let i=0;i<l.length;i++){const m=l[i].match(/^(\s*)plugins:\s*$/);if(m){l.splice(i+1,0,m[1]+"  koishi-plugin-dongxuelian-help: {}");ins=true;break}}if(!ins){l.push("");l.push("plugins:");l.push("  koishi-plugin-dongxuelian-help: {}")}fs.writeFileSync(c,l.join("\n"),"utf8");console.log("enabled")
+SCRIPT
+printf "\nInstalled koishi-plugin-dongxuelian-help 0.5.5\n"

@@ -1,5 +1,0 @@
-﻿{
-  "name": "koishi-plugin-local-video-sender",
-  "version": "0.2.0",
-  "main": "lib/index.js"
-}

@@ -5,8 +5,21 @@
   "workspaces": [
     "packages/*"
   ],
-  "scripts": {
-    "list:packages": "powershell -Command \"Get-ChildItem -LiteralPath ./packages -Directory | Select-Object -ExpandProperty Name\"",
-    "list:scripts": "powershell -Command \"Get-ChildItem -LiteralPath ./scripts -File -Filter *.sh | Select-Object -ExpandProperty Name\""
+  "dependencies": {
+    "koishi": "^4.18.11",
+    "@koishijs/plugin-server": "^3.2.9",
+    "@koishijs/plugin-http": "^0.6.3",
+    "@koishijs/plugin-proxy-agent": "^0.3.3",
+    "koishi-plugin-adapter-onebot": "^6.9.3",
+    "group-name-at": "file:packages/group-name-at",
+    "dongxuelian-help": "file:packages/dongxuelian-help",
+    "dongxuelian-ai": "file:packages/dongxuelian-ai",
+    "dongxuelian-poke": "file:packages/dongxuelian-poke",
+    "koishi-plugin-defense": "file:packages/koishi-plugin-defense",
+    "koishi-plugin-local-video-sender": "file:packages/koishi-plugin-local-video-sender",
+    "koishi-plugin-group-leave-notice": "file:packages/koishi-plugin-group-leave-notice"
+  },
+  "overrides": {
+    "@satorijs/core": "3.7.0"
   }
 }
