@@ -1,4 +1,4 @@
-const QQ_FACE_NAME_MAP = {
+﻿const QQ_FACE_NAME_MAP = {
   '0': '惊讶',
   '1': '撇嘴',
   '2': '色',
@@ -50,6 +50,8 @@ const QQ_FACE_NAME_MAP = {
 
 const MESSAGE_RECORD_CUE_RE = /聊天记录|转发消息|查看\d+条转发消息/
 const URL_RE = /https?:\/\/\S+/gi
+const MAX_FORWARD_NODES = 50
+const MAX_FORWARD_DEPTH = 4
 const URL_TEST_RE = /https?:\/\/\S+/i
 
 // 统一压缩消息里的多余空白，避免后续匹配被格式噪音影响。
@@ -173,10 +175,13 @@ function collectFallbackFeatures(content = '') {
 
 // 汇总转发节点文本，尽量把聊天记录转成可读句子。
 function summarizeForwardNodes(nodes, depth = 0, sanitizeUserName) {
-  if (!Array.isArray(nodes) || depth > 4) return ''
+  if (!Array.isArray(nodes) || depth > MAX_FORWARD_DEPTH) return ''
 
-  return nodes
-    .slice(0, 12)
+  const indent = depth > 0 ? '  '.repeat(depth) + '└─ ' : ''
+  const prefix = depth > 0 ? indent + '[内层转发] ' : '[对话] '
+
+  const items = nodes
+    .slice(0, MAX_FORWARD_NODES)
     .map((node) => {
       const type = String(node?.type || '')
       const data = node?.data || {}
@@ -190,7 +195,14 @@ function summarizeForwardNodes(nodes, depth = 0, sanitizeUserName) {
       return `${nickname}：${content}`
     })
     .filter(Boolean)
-    .join('；')
+
+  let result = prefix + items.join('；')
+
+  if (nodes.length > MAX_FORWARD_NODES) {
+    result += '；……还有' + (nodes.length - MAX_FORWARD_NODES) + '条消息未显示'
+  }
+
+  return result
 }
 
 // 把消息段提取成纯文本，供模型输入和上下文记忆使用。
@@ -318,6 +330,8 @@ function analyzeIncomingMessage(session, options = {}) {
 }
 
 module.exports = {
+  summarizeForwardNodes,
+  sanitizeDisplayName,
   analyzeIncomingMessage,
   normalizeText,
   stripUrls,

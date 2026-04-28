@@ -1,1 +1,1 @@
-deepseek-chat
+qwen3.5-plus

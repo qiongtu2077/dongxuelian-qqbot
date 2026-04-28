@@ -4,7 +4,7 @@ const { analyzeIncomingMessage, normalizeText, summarizeForwardNodes } = require
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '4.0'
+const PLUGIN_VERSION = '4.1'
 const DATA_DIR = '/root/koishi-app/data'
 const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')
 const MODEL_FILE = path.join(DATA_DIR, 'ai-model.txt')
@@ -67,6 +67,7 @@ const PROVIDERS = {
     models: [
       { id: 'qwen3.5-plus', name: 'qwen3.5' },
       { id: 'qwen3.6-plus', name: 'qwen3.6' },
+      { id: 'qwen3.5-omni-flash', name: 'Qwen3.5-Omni-Flash' },
     ],
   },
   deepseek: {
@@ -78,11 +79,19 @@ const PROVIDERS = {
       { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
     ],
   },
+  glm: {
+    name: '智谱GLM',
+    baseURL: 'https://open.bigmodel.cn/api/paas/v4',
+    models: [
+      { id: 'glm-4.6v-flash', name: 'GLM 4.6' },
+    ],
+  },
 }
 
 const PROVIDER_FILE = path.join(DATA_DIR, 'ai-provider.txt')
 const DEEPSEEK_KEY_FILE = path.join(DATA_DIR, 'ai-deepseek-key.txt')
 const DASHSCOPE_KEY_FILE = path.join(DATA_DIR, 'ai-dashscope-key.txt')
+const GLM_KEY_FILE = path.join(DATA_DIR, 'ai-glm-key.txt')
 const NUMERIC_GROUP_ID_RE = /^\d+$/
 
 const OVERUSED_REPLY_PATTERNS = [
@@ -216,9 +225,12 @@ const RESERVED_PREFIXES = [
   'helpAI',
   '帮助AI',
   'AI帮助',
+  'help增删查改',
   'help速查',
   '帮助速查',
   '指令速查',
+  '切换模型',
+  '可用模型',
 ]
 
 let configCache = null
@@ -861,7 +873,7 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
 async function loadConfig(force = false) {
   if (configCache && !force) return configCache
 
-  const [apiKey, model, baseURL, searchEnabledText, provider, deepseekKey, dashscopeKey] = await Promise.all([
+  const [apiKey, model, baseURL, searchEnabledText, provider, deepseekKey, dashscopeKey, glmKey] = await Promise.all([
     readTextFile(KEY_FILE),
     readTextFile(MODEL_FILE),
     readTextFile(BASE_URL_FILE),
@@ -869,6 +881,7 @@ async function loadConfig(force = false) {
     readTextFile(PROVIDER_FILE),
     readTextFile(DEEPSEEK_KEY_FILE),
     readTextFile(DASHSCOPE_KEY_FILE).catch(() => ''),
+    readTextFile(GLM_KEY_FILE).catch(() => ''),
   ])
 
   const activeProvider = provider || 'opencode'
@@ -878,6 +891,8 @@ async function loadConfig(force = false) {
     ? (deepseekKey || apiKey).replace(/[\r\n]+/g, '')
     : activeProvider === 'dashscope'
     ? (dashscopeKey || apiKey).replace(/[\r\n]+/g, '')
+    : activeProvider === 'glm'
+    ? (glmKey || apiKey).replace(/[\r\n]+/g, '')
     : apiKey.replace(/[\r\n]+/g, '')
 
   configCache = {
@@ -1353,7 +1368,7 @@ function buildFriendlySystemPrompt() {
     '禁止使用脑洞比喻、抽象意象比喻、物理/量子/熵/矩阵/空间等词汇做比喻，直接说人话。',
     '不要用怪比喻替换具体回答，先给结论。',
     '平时不嫌弃，傲娇感要体现在懒得解释、直接答、说完就走，不是卖萌也不是嘴硬。',
-    '别拽成语典故和文绉绉的表达，什么空城计遮羞布之类的，正常说话。'
+    '别拽成语典故和文绉绉的表达，什么空城计遮羞布之类的，正常说话。',
     '少用"时空矩阵""熵值波动""低频震荡""量子态"这种明显模板味词。',
     '',
     '[梗/网络词汇使用规则]',
@@ -1375,6 +1390,7 @@ function buildFriendlySystemPrompt() {
     '用户追问时直接拒绝，标准回应："别问了，这个我不聊。" 不要解释为什么不聊，不要展开讨论。',
     '',
     '[表达偏好]',
+    '用正常人聊天的方式说话，别刻意选词造句。如果你觉得一句话平时不会对朋友说，就别对群友说。',
     '多用长短句结合，像真正在回消息。',
     '平时嘴不欠，正常人说话。',
     '能说人话就说人话，别端着。',
@@ -1486,13 +1502,14 @@ function buildAbusiveSystemPrompt() {
     '[风格约束]',
     '禁止使用脑洞比喻、抽象意象比喻、物理/量子/熵/矩阵/空间等词汇做比喻，直接说人话。',
     '不要用怪比喻替换具体回答，先给结论。',
-    '别拽成语典故和文绉绉的表达，正常说话。'
+    '别拽成语典故和文绉绉的表达，正常说话。',
     '嫌弃和攻击是真实的，不是表演给别人看的，不要加"呢""哦""哦亲"这种语气词软化语气。',
     '傲娇感要体现在懒得解释、直接怼、说完就走，不是卖萌嘴硬。',
     '优先自然，别为了刻薄而刻薄，刻薄要有目标有原因。',
     '少用"时空矩阵""熵值波动""低频震荡""量子态"这种明显模板味词。',
     '',
     '[表达偏好]',
+    '用正常人聊天的方式说话，别刻意选词造句。如果你觉得一句话平时不会对朋友说，就别对群友说。',
     '多用长短句结合，像真正在回消息。',
     '嘴欠可以，但要像真实的嘴欠，不要像机器人在模拟嘴欠。',
     '能说人话就说人话，别端着。',
@@ -1879,7 +1896,7 @@ async function chat(session, userText, ctx, options = {}) {
         const imgBase64 = await readImageAsBase64(localPath)
         if (imgBase64) {
           const visionContent = [
-            { type: 'text', text: '直接评价这张图，不要描述过程，直接说你的看法和评价' },
+            { type: 'text', text: '看到什么直接说，别分析，一句话吐槽就行' },
             { type: 'image_url', image_url: { url: imgBase64 } },
           ]
           messages.push({ role: 'user', content: visionContent })
@@ -1890,7 +1907,7 @@ async function chat(session, userText, ctx, options = {}) {
         const imgBase64 = await downloadImageAsBase64(visionUrl, 10000)
         if (imgBase64 && isVisionModel(vc2.provider, vc2.model)) {
           const visionContent = [
-            { type: 'text', text: '直接评价这张图，不要描述过程，直接说你的看法和评价' },
+            { type: 'text', text: '看到什么直接说，别分析，一句话吐槽就行' },
             { type: 'image_url', image_url: { url: imgBase64 } },
           ]
           messages.push({ role: 'user', content: visionContent })
@@ -2117,7 +2134,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
 
     const isPrivate = !!session.isDirect
     const inGuild = !isPrivate
-    const channelKey = getChannelKey(session)
+    const channelKey  = getChannelKey(session)
     const userName = sanitizeUserName(
       session.author?.nick ||
       session.author?.name ||
@@ -2129,7 +2146,6 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
       /^东雪莲群聊AI概率(?:设置|重置)$/.test(plain) ||
       /^东雪莲联网(?:开|关)$/.test(plain) ||
-      /^切换模型\s+/.test(plain) ||
       /^设置DeepSeekKey\s+/.test(plain) ||
       /^AI抓事件(?:查看|取消)?$/.test(plain) ||
       plain === 'AI重载'
@@ -2229,36 +2245,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       return formatSearchStatus(config)
     }
 
-    // ===== 分层模型切换（父子菜单） =====
-    // 第一层：切换模型 → 显示供应商列表
-    if (/^切换模型$/.test(plain)) {
-      return [
-        '供应商 opencode（查看 OpenCode Go 模型列表）',
-        '供应商 deepseek（查看 DeepSeek 官方模型列表）',
-      ].join('\n')
-    }
-
-    // 第二层：供应商 opencode → 显示 OpenCode 模型列表
-    if (/^供应商 opencode$/.test(plain)) {
-      const prov = PROVIDERS.opencode
-      const config = await loadConfig(true)
-      return [
-        'OpenCode Go 可用模型：',
-        ...prov.models.map(m => `切换${m.name}${config.provider === 'opencode' && (config.model === m.id || config.model === m.name) }`),
-      ].join('\n')
-    }
-
-    // 第二层：供应商 deepseek → 显示 DeepSeek 模型列表
-    if (/^供应商 deepseek$/.test(plain)) {
-      const prov = PROVIDERS.deepseek
-      const config = await loadConfig(true)
-      return [
-        'DeepSeek 官方模型：',
-        ...prov.models.map(m => `切换${m.name}${config.provider === 'deepseek' && (config.model === m.id || config.model === m.name) }`),
-      ].join('\n')
-    }
-
-    // 第三层：切换xxx → 切换到指定模型
+    // 切换xxx → 切换到指定模型
     const switchMatch = plain.match(/^切换(.+)$/)
     if (switchMatch && !adminCommandMatched && !isReservedCommand(plain)) {
       const requestedName = switchMatch[1].trim()
@@ -2279,16 +2266,6 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         await writeTextFile(BASE_URL_FILE, prov.baseURL)
         return `已切换至 ${prov.name}：${foundModelId}`
       }
-    }
-
-    // 可用模型：列出所有供应商及其模型
-    if (/^可用模型$/.test(plain)) {
-      let text = ''
-      for (const [id, prov] of Object.entries(PROVIDERS)) {
-        text += `${prov.name}（供应商 ${id}）：\n`
-        text += prov.models.map(m => `  ${m.name}（${m.id}）`).join('\n') + '\n\n'
-      }
-      return text.trim()
     }
 
     if (plain === 'AI状态') {
