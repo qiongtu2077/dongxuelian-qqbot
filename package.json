@@ -6,18 +6,19 @@
     "packages/*"
   ],
   "dependencies": {
-    "koishi": "^4.18.11",
-    "@koishijs/plugin-server": "^3.2.9",
     "@koishijs/plugin-http": "^0.6.3",
     "@koishijs/plugin-proxy-agent": "^0.3.3",
-    "koishi-plugin-adapter-onebot": "^6.9.3",
-    "group-name-at": "file:packages/group-name-at",
-    "dongxuelian-help": "file:packages/dongxuelian-help",
+    "@koishijs/plugin-server": "^3.2.9",
     "dongxuelian-ai": "file:packages/dongxuelian-ai",
+    "dongxuelian-help": "file:packages/dongxuelian-help",
     "dongxuelian-poke": "file:packages/dongxuelian-poke",
+    "group-name-at": "file:packages/group-name-at",
+    "koishi": "^4.18.11",
+    "koishi-plugin-adapter-onebot": "^6.9.3",
     "koishi-plugin-defense": "file:packages/koishi-plugin-defense",
+    "koishi-plugin-group-leave-notice": "file:packages/koishi-plugin-group-leave-notice",
     "koishi-plugin-local-video-sender": "file:packages/koishi-plugin-local-video-sender",
-    "koishi-plugin-group-leave-notice": "file:packages/koishi-plugin-group-leave-notice"
+    "sharp": "^0.34.5"
   },
   "overrides": {
     "@satorijs/core": "3.7.0"
