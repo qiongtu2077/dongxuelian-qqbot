@@ -29,7 +29,7 @@ const MAX_OUTPUT_CHARS_FRIENDLY = 80
 const MAX_OUTPUT_CHARS_ABUSIVE = 150
 const MAX_HISTORY_MESSAGES = 100
 const CONVERSATION_EXPIRE_MS = 10 * 60 * 1000
-const MAX_REPLY_RETRIES = 2
+const MAX_REPLY_RETRIES = 5
 const MAX_REPEAT_CHECK_HISTORY = 3
 const MAX_REPLY_FINGERPRINT_HISTORY = 100
 const MAX_CHANNEL_SHARED_MESSAGES = 100
@@ -2517,7 +2517,7 @@ async function chat(session, userText, ctx, options = {}) {
   if (hasBannedOutput(finalReply)) {
     ctx.logger('dongxuelian-ai').warn(`banned word persists after retry, forcing fallback. reply: ${finalReply}`)
     finalReply = hostile ? (ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : pickRepeatedFallbackReply(session)) : '这活别找我，换个工具。'
-  } else if (shouldRetryRepeatedReply(session, finalReply)) {
+  } else if (shouldRetryRepeatedReply(session, finalReply.replace(/\[图:[^\[\]]+\]/g, '').trim())) {
     ctx.logger('dongxuelian-ai').warn(`reply is still repetitive after retry, forcing fallback. reply: ${finalReply}`)
     finalReply = hostile
       ? (ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : pickRepeatedFallbackReply(session))
