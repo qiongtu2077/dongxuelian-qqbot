@@ -24,46 +24,6 @@ function stripMentions(text = '') {
     .trim()
 }
 
-const PROVIDERS = {
-  opencode: {
-    name: 'OpenCode Go',
-    baseURL: 'https://opencode.ai/zen/go/v1',
-    models: [
-      { id: 'glm-5', name: 'GLM-5' },
-      { id: 'glm-5.1', name: 'GLM-5.1' },
-      { id: 'kimi-k2.5', name: 'Kimi K2.5' },
-      { id: 'kimi-k2.6', name: 'Kimi K2.6' },
-      { id: 'deepseek-v4-pro', name: 'DSv4pro' },
-      { id: 'deepseek-v4-flash', name: 'DSv4' },
-      { id: 'mimo-v2-pro', name: 'MiMo-V2-Pro' },
-      { id: 'mimo-v2-omni', name: 'MiMo-V2-Omni' },
-      { id: 'mimo-v2.5-pro', name: 'MiMo-V2.5-Pro' },
-      { id: 'mimo-v2.5', name: 'MiMo-V2.5' },
-      { id: 'minimax-m2.7', name: 'MiniMax M2.7' },
-      { id: 'minimax-m2.5', name: 'MiniMax M2.5' },
-      { id: 'qwen3.6-plus', name: '千问3.6' },
-      { id: 'qwen3.5-plus', name: '千问3.5' },
-    ],
-  },
-  dashscope: {
-    name: '阿里云',
-    baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    models: [
-      { id: 'qwen3.5-plus', name: 'qwen3.5' },
-      { id: 'qwen3.6-plus', name: 'qwen3.6' },
-    ],
-  },
-  deepseek: {
-    name: 'DeepSeek 官方',
-    baseURL: 'https://api.deepseek.com',
-    models: [
-      { id: 'deepseek-chat', name: 'deepseek-chat' },
-      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
-      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
-    ],
-  },
-}
-
 // 根帮助菜单：列出当前可查看的子菜单与速查入口。
 function renderRootHelp() {
   return [
@@ -83,24 +43,17 @@ function renderAiHelp() {
     'helpAI / 帮助AI / AI帮助',
     '',
     '【常用】',
-    '【切换模型】',
-    '【群聊主动回复】',
-    '【联网】',
-    '【抓取原始事件】',
-  ].join('\n')
-}
-
-function renderCommonHelp() {
-  return [
-    '【常用】',
     '@东雪莲 你的问题',
     'AI状态',
     'AI重载（bot管理员）',
-  ].join('\n')
-}
-
-function renderGroupReplyHelp() {
-  return [
+    '',
+    '【切换模型】',
+    '切换模型（查看供应商列表）',
+    '供应商 opencode（查看 OpenCode Go 模型列表）',
+    '供应商 deepseek（查看 DeepSeek 官方模型列表）',
+    '切换<模型名>（切换到指定模型）',
+    '可用模型（查看所有供应商的模型列表）',
+    '',
     '【群聊主动回复】',
     '东雪莲群聊AI概率查看',
     '东雪莲群聊AI概率设置X%（bot管理员）',
@@ -108,20 +61,12 @@ function renderGroupReplyHelp() {
     '群聊AI白名单查看（bot管理员）',
     '群聊AI白名单添加群号（bot管理员）',
     '群聊AI白名单删除群号（bot管理员）',
-  ].join('\n')
-}
-
-function renderNetworkHelp() {
-  return [
+    '',
     '【联网】',
     '东雪莲联网查看',
     '东雪莲联网开（bot管理员）',
     '东雪莲联网关（bot管理员）',
-  ].join('\n')
-}
-
-function renderEventHelp() {
-  return [
+    '',
     '【抓取原始事件】',
     'AI抓事件（bot管理员）',
     'AI抓事件查看（bot管理员）',
@@ -197,33 +142,6 @@ function renderQuickReference() {
   ].join('\n')
 }
 
-function renderSwitchModels() {
-  return [
-    '供应商 opencode（查看 OpenCode Go 模型列表）',
-    '供应商 dashscope（查看阿里云 DashScope 模型列表）',
-    '供应商 deepseek（查看 DeepSeek 官方模型列表）',
-  ].join('\n')
-}
-
-function renderProviderModels(providerId) {
-  const id = String(providerId).toLowerCase()
-  const prov = PROVIDERS[id] || Object.values(PROVIDERS).find(p => p.name.toLowerCase() === id)
-  if (!prov) return `未找到供应商「${providerId}」`
-  return [
-    `${prov.name} 可用模型：`,
-    ...prov.models.map(m => `切换${m.name}`),
-  ].join('\n')
-}
-
-function renderAvailableModels() {
-  let text = ''
-  for (const [, prov] of Object.entries(PROVIDERS)) {
-    text += `${prov.name}：\n`
-    text += prov.models.map(m => `  ${m.name}（${m.id}）`).join('\n') + '\n\n'
-  }
-  return text.trim()
-}
-
 exports.apply = (ctx) => {
   ctx.on('ready', () => {
     ctx.logger('dongxuelian-help').info(`dongxuelian-help ${PLUGIN_VERSION} loaded`)
@@ -248,41 +166,12 @@ exports.apply = (ctx) => {
       return renderQuickReference()
     }
 
-    if (plain === '常用') {
-      return renderCommonHelp()
-    }
-
-    if (plain === '群聊主动回复') {
-      return renderGroupReplyHelp()
-    }
-
-    if (plain === '联网') {
-      return renderNetworkHelp()
-    }
-
-    if (plain === '抓取原始事件') {
-      return renderEventHelp()
-    }
-
-    if (plain === '切换模型') {
-      return renderSwitchModels()
-    }
-
-    if (plain === '可用模型') {
-      return renderAvailableModels()
-    }
-
-    const providerMatch = plain.match(/^供应商\s+(.+)$/)
-    if (providerMatch) {
-      return renderProviderModels(providerMatch[1])
-    }
-
     return next()
   })
 }
 
 ENDOFKOISHICODE
 node <<'SCRIPT'
-const fs=require("fs");const c="/root/koishi-app/koishi.yml";let t=fs.readFileSync(c,"utf8");let ec=0;for(const x of t.split(/\r?\n/))if(/^\s*dongxuelian-help(?::[a-z0-9]+)?\s*:/.test(x))ec++;if(ec===1){console.log("already enabled");process.exit(0)}if(ec>1){const f=[];let k=false;for(const x of t.split(/\r?\n/)){if(/^\s*dongxuelian-help(?::[a-z0-9]+)?\s*:/.test(x)){if(!k){f.push(x);k=true}}else f.push(x)}fs.writeFileSync(c,f.join("\n"),"utf8");console.log("cleaned duplicates");process.exit(0)}fs.copyFileSync(c,c+".bak-help");const l=t.split(/\r?\n/);let ins=false;for(let i=0;i<l.length;i++){const m=l[i].match(/^(\s*)group:basic:\s*$/);if(m){l.splice(i+1,0,m[1]+"  dongxuelian-help: {}");ins=true;break}}if(!ins)for(let i=0;i<l.length;i++){const m=l[i].match(/^(\s*)plugins:\s*$/);if(m){l.splice(i+1,0,m[1]+"  dongxuelian-help: {}");ins=true;break}}if(!ins){l.push("");l.push("plugins:");l.push("  dongxuelian-help: {}")}fs.writeFileSync(c,l.join("\n"),"utf8");console.log("enabled")
+const fs=require("fs");const c="/root/koishi-app/koishi.yml";let t=fs.readFileSync(c,"utf8");let ec=0;for(const x of t.split(/\r?\n/))if(/^\s*koishi-plugin-dongxuelian-help(?::[a-z0-9]+)?\s*:/.test(x))ec++;if(ec===1){console.log("already enabled");process.exit(0)}if(ec>1){const f=[];let k=false;for(const x of t.split(/\r?\n/)){if(/^\s*koishi-plugin-dongxuelian-help(?::[a-z0-9]+)?\s*:/.test(x)){if(!k){f.push(x);k=true}}else f.push(x)}fs.writeFileSync(c,f.join("\n"),"utf8");console.log("cleaned duplicates");process.exit(0)}fs.copyFileSync(c,c+".bak-koishi-plugin-dongxuelian-help");const l=t.split(/\r?\n/);let ins=false;for(let i=0;i<l.length;i++){const m=l[i].match(/^(\s*)group:basic:\s*$/);if(m){l.splice(i+1,0,m[1]+"  koishi-plugin-dongxuelian-help: {}");ins=true;break}}if(!ins)for(let i=0;i<l.length;i++){const m=l[i].match(/^(\s*)plugins:\s*$/);if(m){l.splice(i+1,0,m[1]+"  koishi-plugin-dongxuelian-help: {}");ins=true;break}}if(!ins){l.push("");l.push("plugins:");l.push("  koishi-plugin-dongxuelian-help: {}")}fs.writeFileSync(c,l.join("\n"),"utf8");console.log("enabled")
 SCRIPT
-printf "\nInstalled dongxuelian-help 0.5.5\n"
+printf "\nInstalled koishi-plugin-dongxuelian-help 0.5.5\n"
