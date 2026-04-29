@@ -382,21 +382,6 @@ function countAtIdOccurrences(text = '', targetId = '') {
   return count
 }
 
-function containsBlockedRichContent(text = '') {
-  const value = String(text)
-  if (!value) return false
-
-  if (/https?:\/\/(?:www\.)?(?:bilibili\.com|b23\.tv)\//i.test(value)) return true
-  if (/\bBV[0-9A-Za-z]{10}\b/i.test(value)) return true
-  if (/\[CQ:(?:json|xml),/i.test(value)) return true
-  if (/\[CQ:(?:image|img|mface|face|forward|longmsg|record|video),/i.test(value)) return true
-  if (/<(?:json|xml)[^>]*>/i.test(value)) return true
-  if (/<(?:img|image|audio|video|file|forward)[^>]*>/i.test(value)) return true
-  if (/appid=|appId=|miniapp|小程序/i.test(value)) return true
-
-  return false
-}
-
 function isJailbreakAttempt(plain = '') {
   return JAILBREAK_INPUT_RE.test(plain)
 }
@@ -632,13 +617,6 @@ function extractImageUrls(content = '') {
   return [...new Set(urls)]
 }
 
-function getModelDisplayName(providerId, modelId) {
-  const prov = PROVIDERS[providerId]
-  if (!prov) return modelId
-  const found = prov.models.find(m => m.id === modelId || m.name === modelId)
-  return found ? found.name : modelId
-}
-
 // 根据模型 ID/Name 查找显示名称
 function getModelDisplayName(providerId, modelId) {
   const prov = PROVIDERS[providerId]
@@ -798,20 +776,6 @@ async function buildFallbackConfig(config, step) {
   if (step === 3) return { ...config, _fallbackTried: step, model: 'qwen3.5-plus', baseURL: PROVIDERS.dashscope.baseURL.replace(/\/+$/, ''), apiKey: (await readTextFile(DASHSCOPE_KEY_FILE).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '') }
   if (step === 4) return { ...config, _fallbackTried: step, model: 'qwen3.6-plus', baseURL: PROVIDERS.dashscope.baseURL.replace(/\/+$/, ''), apiKey: (await readTextFile(DASHSCOPE_KEY_FILE).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '') }
   return null
-}
-
-// 调用 tesseract OCR
-async function ocrImage(filePath) {
-  return new Promise((resolve) => {
-    const { execFile } = require('child_process')
-    const timer = setTimeout(() => resolve(null), 15000)
-    execFile('tesseract', [filePath, 'stdout', '-l', 'chi_sim+eng', '--psm', '6'], { timeout: 15000 }, (err, stdout) => {
-      clearTimeout(timer)
-      if (err) { resolve(null); return }
-      const text = stdout.trim()
-      resolve(text || null)
-    })
-  })
 }
 
 function callGetImage(fileName) {
@@ -1908,7 +1872,6 @@ async function chat(session, userText, ctx, options = {}) {
   const japanLinked = JAPAN_SELF_IDENTIFY_RE.test(cleanInput)
   const testMode = require('fs').existsSync(TEST_MODE_FILE) && hasAdminPermission(session)
   const hostile = testMode ? false : (isHostileInput(userText) || japanLinked || rareProvocation)
-  const isGLM = configCache && /glm/i.test(configCache.model || '')
   const systemPrompt = testMode ? buildTestSystemPrompt() : (hostile ? buildAbusiveSystemPrompt() : buildFriendlySystemPrompt())
   ctx.logger('dongxuelian-ai').debug(`mode=${hostile ? 'abusive' : 'friendly'} input=${userText.slice(0, 60)}`)
 
