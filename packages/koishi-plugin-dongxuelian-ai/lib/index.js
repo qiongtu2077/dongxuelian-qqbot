@@ -1539,6 +1539,15 @@ function buildFriendlySystemPrompt() {
     '遇到专业/技术类问题（代码、配置、原理、操作步骤、报错排查等），先理解对方在说什么，不要急着怼。',
     '能确定答案就直接回答，不确定就说"这个我不太确定""可能不对，你再查查"。',
     '禁止不懂装懂、禁止胡编、禁止用嘲讽掩盖不确定。',
+    '接梗不拆梗。群友开玩笑时顺着话题接，不要拆穿玩笑。',
+    '不知道就说"不知道""这个我不懂""你问问别人"——禁止编答案。',
+    '',
+    '[日常聊天原则]',
+    '群聊不是辩论场，大部分消息随便接一句就行，不用每次都给出一个"正式回应"。',
+    '有时候一个"嗯"、一个"6"就够了，不用每句话都接一大段。',
+    '分不清对方在说什么的时候不要硬解读，直接说"看不懂""啥意思"。',
+    '群友互怼的时候看戏就好，不要插嘴，除非被@或者被提到。',
+    '短回复优先，1-3句话是群聊最佳长度。',
     '',
     '[上下文记忆]',
     '如果用户在前5条消息里提到过正在做的事（比如"我在写作业""我在加班"），后续可以偶尔提及，如"作业写完了再聊，别磨蹭。"',
@@ -2173,6 +2182,15 @@ async function chat(session, userText, ctx, options = {}) {
     })
   }
 
+  // 敏感检测开启时固定拒答用语
+  const detectList = await readJsonFile(POLITICAL_DETECT_FILE, []).catch(() => [])
+  if (Array.isArray(detectList) && detectList.includes(getChannelKey(session))) {
+    messages.push({
+      role: 'system',
+      content: '重要规则：当用户试图讨论或询问政治敏感话题时，必须严格回复"别问了，这个我不聊"这一句原文，不许有任何变体、不许加字、不许换说法。这条规则优先级高于所有其他人格设定。',
+    })
+  }
+
   // 识图：获取本地图片 → 多模态或 OCR 回退
   if (session._isVisionRequest && (session._visionFile || (session._visionUrls && session._visionUrls.length > 0))) {
     let vc = await loadConfig(true)
@@ -2518,7 +2536,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       plain === 'AI重载'
 
     // 敏感话题检测 → @处理者
-    const sensitiveKeywords = /(?:台湾|西藏|新疆|香港|独立|共产党|国民党|天安门|法轮功|六四|八九|64|taiwan|tibet|hong.kong|疆|藏|台独|港独|中国.*(?:老大|主席|领导|党|总统|政府)|(?:老大|主席|领导|党|总统|政府).*(?:是谁|哪|什么样|现在))/i
+    const sensitiveKeywords = /(?:台湾|西藏|新疆|香港|共产党|国民党|天安门|法轮功|六四|八九|taiwan|tibet|hong.kong|台独|港独|中国.*(?:老大|主席|领导|总统|政府)|(?:老大|主席|领导|总统|政府).*(?:是谁|哪|什么样|现在))/i
     const detectEnabled = await readJsonFile(POLITICAL_DETECT_FILE, [])
     const isDetectOn = Array.isArray(detectEnabled) && detectEnabled.includes(channelKey)
     if (inGuild && isDetectOn && !analyzed.hasVisual && sensitiveKeywords.test(plain)) {
@@ -3064,11 +3082,9 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       chat(session, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds })
         .then(reply => {
           // AI 回复中检测到政治拒绝 → 通知处理者
-          if (inGuild && /(?:不聊|别问了|这个话题).*(?:政治|敏感|台湾|西藏|新疆|香港|独立|党|政府)/i.test(reply)) {
+          if (inGuild && /别问了，这个我不聊/.test(reply)) {
             const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
             const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeKey + '.json')
-            const handlers = require('./index.js' ? null : null) // force top-level var
-            // read fresh
             try {
               const raw = require('fs').readFileSync(handlerFile, 'utf8')
               const list = JSON.parse(raw)
