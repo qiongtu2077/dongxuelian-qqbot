@@ -4,7 +4,7 @@ const { analyzeIncomingMessage, normalizeText, summarizeForwardNodes } = require
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '5.0'
+const PLUGIN_VERSION = '0.5'
 const DATA_DIR = '/root/koishi-app/data'
 const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')
 const MODEL_FILE = path.join(DATA_DIR, 'ai-model.txt')
