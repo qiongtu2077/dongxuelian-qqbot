@@ -61,7 +61,17 @@ const PROVIDERS = {
       { id: 'glm-4.6v-flash', name: 'GLM 4.6' },
     ],
   },
+  mimorium: {
+    name: '小米',
+    baseURL: 'https://platform.mimorium.com',
+    models: [
+      { id: 'mimo-v2.5-pro', name: 'mimo 2.5' },
+      { id: 'mimo-v2-omni', name: 'mimo v2' },
+    ],
+  },
 }
+
+
 
 // 根帮助菜单：列出当前可查看的子菜单与速查入口。
 function renderRootHelp() {
@@ -86,6 +96,7 @@ function renderAiHelp() {
     '【群聊主动回复】',
     '【联网】',
     '【抓取原始事件】',
+    '【白名单黑名单管理】',
   ].join('\n')
 }
 
@@ -95,6 +106,16 @@ function renderCommonHelp() {
     '@东雪莲 你的问题',
     'AI状态',
     'AI重载（bot管理员）',
+  ].join('\n')
+}
+
+function renderBlacklistHelp() {
+  return [
+    '【白名单黑名单管理】',
+    '用户黑名单添加／删除／查看',
+    '解除上限群白名单添加／删除／查看',
+    '视频黑名单添加群／删除群',
+    '视频黑名单查看',
   ].join('\n')
 }
 
@@ -198,10 +219,11 @@ function renderQuickReference() {
 
 function renderSwitchModels() {
   return [
-    '供应商 opencode（查看 OpenCode Go 模型列表）',
-    '供应商 dashscope（查看阿里云 DashScope 模型列表）',
-    '供应商 deepseek（查看 DeepSeek 官方模型列表）',
-    '供应商 glm（查看智谱GLM模型列表）',
+    '供应商 opencode',
+    '供应商 dashscope',
+    '供应商 deepseek',
+    '供应商 glm',
+    '供应商 mimorium',
   ].join('\n')
 }
 
@@ -262,6 +284,10 @@ exports.apply = (ctx) => {
 
     if (plain === '抓取原始事件') {
       return renderEventHelp()
+    }
+
+    if (plain === '黑名单管理') {
+      return renderBlacklistHelp()
     }
 
     if (plain === '切换模型') {
