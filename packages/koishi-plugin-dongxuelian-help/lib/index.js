@@ -82,6 +82,7 @@ function renderRootHelp() {
     '- helpAI / 帮助AI / AI帮助',
     '- help集合 / 帮助集合',
     '- 指令速查 / help速查 / 帮助速查',
+    '- 人格',
   ].join('\n')
 }
 
@@ -97,6 +98,7 @@ function renderAiHelp() {
     '【联网】',
     '【抓取原始事件】',
     '【白名单黑名单管理】',
+    '【人格】',
   ].join('\n')
 }
 
@@ -146,6 +148,17 @@ function renderEventHelp() {
     'AI抓事件（bot管理员）',
     'AI抓事件查看（bot管理员）',
     'AI抓事件取消（bot管理员）',
+  ].join('\n')
+}
+
+function renderPersonaHelp() {
+  return [
+    '【人格】',
+    '东雪莲人格（bot管理员）',
+    '东雪莲人格列表（bot管理员）',
+    '东雪莲人格切换 <名称>（bot管理员）',
+    '东雪莲人格重置（bot管理员）',
+    '东雪莲嘴臭 开/关（bot管理员）',
   ].join('\n')
 }
 
@@ -206,6 +219,12 @@ function renderQuickReference() {
     '东雪莲群聊AI概率设置5% / 重置 仅限管理员',
     '群聊AI白名单添加/删除/查看 仅限管理员',
     'AI抓事件 / 查看 / 取消 仅限管理员',
+    '',
+    '【人格】',
+    '东雪莲人格 / 东雪莲人格列表 仅限管理员',
+    '东雪莲人格切换 <名称> 仅限管理员',
+    '东雪莲人格重置 仅限管理员',
+    '东雪莲嘴臭 开/关 仅限管理员',
     '',
     '【集合】',
     '@A用户 昵称 名称A',
@@ -288,6 +307,10 @@ exports.apply = (ctx) => {
 
     if (plain === '黑名单管理') {
       return renderBlacklistHelp()
+    }
+
+    if (plain === '人格') {
+      return renderPersonaHelp()
     }
 
     if (plain === '切换模型') {
