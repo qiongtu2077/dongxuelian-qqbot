@@ -11,9 +11,11 @@ const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')
 const MODEL_FILE = path.join(DATA_DIR, 'ai-model.txt')
 const BASE_URL_FILE = path.join(DATA_DIR, 'ai-base-url.txt')
 const SKILLS_DIR = path.join(DATA_DIR, 'ai-skills')
+const PACKAGED_SKILLS_DIR = path.join(__dirname, '..', 'skills')
 const EVENT_DUMP_DIR = path.join(DATA_DIR, 'ai-event-dumps')
 const RANDOM_WHITELIST_FILE = path.join(DATA_DIR, 'ai-random-whitelist.json')
 const RANDOM_RATE_FILE = path.join(DATA_DIR, 'ai-random-rate.json')
+const SILENT_GROUPS_FILE = path.join(DATA_DIR, 'ai-silent-groups.json')
 const SEARCH_ENABLED_FILE = path.join(DATA_DIR, 'ai-enable-search.txt')
 const MAINTENANCE_FILE = path.join(DATA_DIR, 'ai-paused.txt')
 const TEST_MODE_FILE = path.join(DATA_DIR, 'ai-test-mode.txt')
@@ -30,13 +32,15 @@ const MAX_OUTPUT_CHARS_ABUSIVE = 150
 const MAX_HISTORY_MESSAGES = 100
 const CONVERSATION_EXPIRE_MS = 10 * 60 * 1000
 const MAX_REPLY_RETRIES = 2
-const MAX_REPEAT_CHECK_HISTORY = 3
+const REPEAT_TRIGGER_COUNT = 5
+const MAX_REPEAT_CHECK_HISTORY = REPEAT_TRIGGER_COUNT
 const MAX_REPLY_FINGERPRINT_HISTORY = 100
 const MAX_CHANNEL_SHARED_MESSAGES = 100
 const MAX_CHANNEL_PROMPT_MESSAGES = 24
 const MAX_THREAD_CONTEXT_MESSAGES = 12
 const MAX_REPLY_CHAIN_DEPTH = 6
 const EVENT_DUMP_ARM_EXPIRE_MS = 10 * 60 * 1000
+const SENSITIVE_ALERT_COOLDOWN_MS = 5 * 60 * 1000
 const ADMIN_USER_IDS = new Set(['532701045', '3514272382'])
 
 // 可用模型列表（用于切换模型菜单）
@@ -213,7 +217,7 @@ const REPEATED_FALLBACK_REPLIES = [
   '扫码了，别拿旧话糊弄我。',
   '比样的，能不能重编一句新的。',
   'byd换个嘴再来。',
-  '发三遍了，你自己不嫌吵？',
+  '五遍了，你自己不嫌吵？',
   '再来这句就给你原样贴墙上。',
 ]
 
@@ -271,6 +275,7 @@ let conversationCache = new Map()
 let replyFingerprintCache = new Map()
 let randomWhitelistCache = new Set(DEFAULT_GROUP_RANDOM_WHITELIST)
 let randomRateCache = new Map()
+let silentGroupCache = new Set()
 const conversationLastActiveAt = new Map()
 const channelSharedCache = new Map()
 const lastForwardSummaryCache = new Map()
@@ -283,6 +288,7 @@ const channelPendingRandom = new Map()
 const channelMsgCount = new Map()
 const lastSensitiveAlert = new Map()
 const pendingSensitiveAlert = new Map()
+const sensitiveAlertCooldown = new Map()
 
 // 表情包 base64 缓存（启动时加载）
 let stickerBase64Cache = {}
@@ -379,7 +385,7 @@ function sleep(ms) {
 }
 
 function getRandomDelayMs() {
-  return 500 + Math.floor(Math.random() * 501)
+  return 1000 + Math.floor(Math.random() * 501)
 }
 
 function stripMentions(text = '') {
@@ -516,6 +522,18 @@ function getRandomTriggerBaseRate(channelKey) {
 function getRandomWhitelistStatus(channelKey) {
   if (randomWhitelistCache.size === 0) return false
   return randomWhitelistCache.has(String(channelKey || ''))
+}
+
+function getSilentGroupStatus(channelKey) {
+  return silentGroupCache.has(String(channelKey || ''))
+}
+
+function parseSilentGroupCommand(plain = '') {
+  const viewMatch = String(plain || '').match(/^东雪莲静默查看$/)
+  if (viewMatch) return { action: 'view' }
+  const match = String(plain || '').match(/^东雪莲静默(添加|删除)\s*["“”']?(\d+)["“”']?$/)
+  if (!match) return null
+  return { action: match[1] === '添加' ? 'add' : 'delete', groupId: match[2] }
 }
 
 function formatPercent(rate = 0) {
@@ -764,9 +782,10 @@ function formatSearchStatus(config = {}) {
 async function loadRuntimeSettings(force = false) {
   if (!force && runtimeSettingsLoaded) return
 
-  const [whitelist, rateMap] = await Promise.all([
+  const [whitelist, rateMap, silentGroups] = await Promise.all([
     readJsonFile(RANDOM_WHITELIST_FILE, [...DEFAULT_GROUP_RANDOM_WHITELIST]),
     readJsonFile(RANDOM_RATE_FILE, {}),
+    readJsonFile(SILENT_GROUPS_FILE, []),
   ])
 
   randomWhitelistCache = new Set(
@@ -786,6 +805,11 @@ async function loadRuntimeSettings(force = false) {
     }
   }
   randomRateCache = nextRateMap
+  silentGroupCache = new Set(
+    Array.isArray(silentGroups)
+      ? silentGroups.map(item => String(item || '').trim()).filter(item => NUMERIC_GROUP_ID_RE.test(item))
+      : []
+  )
   runtimeSettingsLoaded = true
 }
 
@@ -814,6 +838,7 @@ async function loadSkills() {
     }
   }
 
+  await walk(PACKAGED_SKILLS_DIR)
   await walk(SKILLS_DIR)
   skillsCache = skills
   return skills
@@ -895,6 +920,58 @@ function callGetForwardMsg(forwardId) {
       ws.on('error', () => { clearTimeout(timer); resolve(null) })
     } catch { resolve(null) }
   })
+}
+
+function callOneBotAction(action, params = {}, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    try {
+      const echo = `dxl-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const ws = new (require('ws'))('ws://127.0.0.1:8080/onebot/v11/ws')
+      const timer = setTimeout(() => { ws.close(); resolve(null) }, timeoutMs)
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ action, params, echo }))
+      })
+      ws.on('message', (d) => {
+        try {
+          const msg = JSON.parse(d.toString())
+          if (msg.echo !== echo) return
+          clearTimeout(timer)
+          resolve(msg)
+          ws.close()
+        } catch {}
+      })
+      ws.on('error', () => { clearTimeout(timer); resolve(null) })
+    } catch { resolve(null) }
+  })
+}
+
+async function sendPrivateSensitiveNotice(ctx, recipients, detail) {
+  const list = [...new Set((recipients || []).map(id => String(id || '').trim()).filter(id => NUMERIC_GROUP_ID_RE.test(id)))]
+  if (!list.length) return
+  const text = [
+    '【敏感话题提醒】',
+    `群号：${detail.channelKey || '(未知)'}`,
+    `发送者：${detail.userName || '群友'}(${detail.userId || '未知'})`,
+    `类型：${detail.type || '政治/敏感话题'}`,
+    `内容：${normalizeText(detail.content || '').slice(0, 300) || '(空)'}`,
+  ].join('\n')
+  for (const userId of list) {
+    try {
+      const result = await callOneBotAction('send_private_msg', { user_id: Number(userId), message: text }, 5000)
+      if (!result) ctx?.logger?.('dongxuelian-ai')?.warn?.(`private sensitive notice failed: ${userId}`)
+    } catch (error) {
+      ctx?.logger?.('dongxuelian-ai')?.warn?.(`private sensitive notice failed: ${userId} ${error.message}`)
+    }
+  }
+}
+
+function shouldSendSensitiveAlert(channelKey, userId, type = 'political') {
+  const key = `${channelKey || 'unknown'}::${userId || 'unknown'}::${type}`
+  const now = Date.now()
+  const previous = sensitiveAlertCooldown.get(key) || 0
+  if (now - previous < SENSITIVE_ALERT_COOLDOWN_MS) return false
+  sensitiveAlertCooldown.set(key, now)
+  return true
 }
 
 // 读取本地图片文件并转为 base64
@@ -1556,10 +1633,10 @@ function pickRepeatedFallbackReply(session) {
 function isConsecutiveUserRepeat(session, userText = '') {
   const normalized = normalizeReplyFingerprint(userText)
   if (!normalized) return false
-  const recentUserMessages = getRecentUserMessages(session, 2)
+  const recentUserMessages = getRecentUserMessages(session, REPEAT_TRIGGER_COUNT - 1)
     .map(item => normalizeReplyFingerprint(item))
     .filter(Boolean)
-  return recentUserMessages.length === 2 && recentUserMessages.every(item => item === normalized)
+  return recentUserMessages.length === REPEAT_TRIGGER_COUNT - 1 && recentUserMessages.every(item => item === normalized)
 }
 
 function buildTestSystemPrompt() {
@@ -1662,7 +1739,7 @@ function buildFriendlySystemPrompt() {
     '被问日常废话（"吃什么""在干嘛"）：不要正经回答，直接怼但不骂："不在""我鸟都不鸟你""咋的？"',
     '用户说了一长串无意义内容没理解，不要说"这是什么意思可以告诉我吗"，直接回"太长不看""发的什么鸟玩意"，如果是装逼文案可以回"嘉豪来了""豪到我了"。',
     '要学会复读型接梗，没营养的梗不要硬接，直接原句返回，比如"那咋了"就回"那咋了"。',
-    '用户连续复读3次以上：直接复制用户最后一次复读内容返回。',
+    `用户连续发出${REPEAT_TRIGGER_COUNT}条相同内容后，才按复读处理；未达到阈值时正常接话。`,
     '',
     '[日常回应]',
     '用户说拜拜/下了/睡觉了：可以敷衍一句"去去去，终于清静了"，不用认真道别。',
@@ -2597,6 +2674,16 @@ async function sendReply(ctx, session, reply, isRandom = false) {
   }
 }
 
+exports.__test = {
+  REPEAT_TRIGGER_COUNT,
+  parseSilentGroupCommand,
+  shouldSendSensitiveAlert,
+  getRandomDelayMs,
+  isConsecutiveUserRepeat,
+  saveConversationTurn,
+  clearConversationHistory,
+}
+
 exports.apply = (ctx) => {
   ctx.on('ready', async () => {
     await loadRuntimeSettings(true)
@@ -2749,6 +2836,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     const isPrivate = !!session.isDirect
     const inGuild = !isPrivate
     const channelKey  = getChannelKey(session)
+    const isSilentGroup = inGuild && getSilentGroupStatus(channelKey)
     const userName = sanitizeUserName(
       session.author?.nick ||
       session.author?.name ||
@@ -2758,6 +2846,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     const adminCommandMatched =
       /^(?:东雪莲)?测试(?:开|关)$/.test(plain) ||
       /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
+      /^东雪莲静默(?:添加|删除|查看)/.test(plain) ||
       /^东雪莲群聊AI概率(?:设置|重置)$/.test(plain) ||
       /^东雪莲联网(?:开|关)$/.test(plain) ||
       /^设置DeepSeekKey\s+/.test(plain) ||
@@ -2774,9 +2863,18 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
       const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeKey + '.json')
       const handlers = await readJsonFile(handlerFile, [])
-      if (Array.isArray(handlers) && handlers.length > 0) {
-        const atAll = handlers.map(id => `<at id="${id}"/>`).join(' ')
-        session.send(`管理员快来，群里有傻福在剑阵。${atAll}`).catch(() => {})
+      const recipients = (Array.isArray(handlers) ? handlers : []).concat([...ADMIN_USER_IDS])
+      const senderId = getSenderUserId(session)
+      if (shouldSendSensitiveAlert(channelKey, senderId, 'political-keyword')) {
+        sendPrivateSensitiveNotice(ctx, recipients, {
+          channelKey,
+          userId: senderId,
+          userName,
+          type: '政治/敏感关键词',
+          content: plain,
+        }).catch(() => {})
+      }
+      if (recipients.length > 0) {
         lastSensitiveAlert.set(channelKey, Date.now())
       }
       ctx.logger('dongxuelian-ai').info(`sensitive topic in ${channelKey}: ${plain.slice(0, 50)}`)
@@ -2795,15 +2893,52 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
         const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeKey + '.json')
         const handlers = await readJsonFile(handlerFile, [])
-        if (Array.isArray(handlers) && handlers.length > 0) {
-          const atAll = handlers.map(id => `<at id="${id}"/>`).join(' ')
-          session.send(`管理员快来，群里有傻福在剑阵。${atAll}`).catch(() => {})
+        const recipients = (Array.isArray(handlers) ? handlers : []).concat([...ADMIN_USER_IDS])
+        if (shouldSendSensitiveAlert(channelKey, 'batch-analysis', 'political-ai')) {
+          sendPrivateSensitiveNotice(ctx, recipients, {
+            channelKey,
+            userId: 'batch-analysis',
+            userName: 'AI批量分析',
+            type: '政治/敏感批量分析',
+            content: '最近群聊缓存被 AI 判定存在明显敏感政治攻击内容，请查看群聊上下文。',
+          }).catch(() => {})
         }
       } catch {}
     }
 
     if (adminCommandMatched && !hasAdminPermission(session)) {
       return '只有指定管理员能操作这个命令。'
+    }
+
+    const silentGroupCommand = parseSilentGroupCommand(plain)
+    if (silentGroupCommand) {
+      if (silentGroupCommand.action === 'view') {
+        const list = [...silentGroupCache].sort((a, b) => Number(a) - Number(b))
+        return list.length ? `静默群列表：\n${list.join('\n')}` : '当前没有静默群。'
+      }
+      const groupId = silentGroupCommand.groupId
+      if (silentGroupCommand.action === 'add') {
+        silentGroupCache.add(groupId)
+        await writeJsonFile(SILENT_GROUPS_FILE, [...silentGroupCache])
+        let detectList = await readJsonFile(POLITICAL_DETECT_FILE, [])
+        if (!Array.isArray(detectList)) detectList = []
+        if (!detectList.includes(groupId)) {
+          detectList.push(groupId)
+          await writeJsonFile(POLITICAL_DETECT_FILE, detectList)
+        }
+        let summaryWhitelist = await readJsonFile(SUMMARY_WHITELIST_FILE, [])
+        if (!Array.isArray(summaryWhitelist)) summaryWhitelist = []
+        if (!summaryWhitelist.includes(groupId)) {
+          summaryWhitelist.push(groupId)
+          await writeJsonFile(SUMMARY_WHITELIST_FILE, summaryWhitelist)
+        }
+        return `已开启群静默：${groupId}\n敏感话题检测：已开启`
+      }
+      if (silentGroupCommand.action === 'delete') {
+        silentGroupCache.delete(groupId)
+        await writeJsonFile(SILENT_GROUPS_FILE, [...silentGroupCache])
+        return `已关闭群静默：${groupId}`
+      }
     }
 
     const whitelistAddMatch = plain.match(/^群聊AI白名单添加\s*(\d+)$/)
@@ -3075,6 +3210,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         `Skills：${skillsCache.length} 个`,
         `当前群基础触发率：${formatPercent(getRandomTriggerBaseRate(channelKey))}`,
         `当前群白名单状态：${getRandomWhitelistStatus(channelKey) ? '允许主动回复' : '禁止主动回复'}`,
+        `当前群静默状态：${isSilentGroup ? '开' : '关'}`,
         `随机触发率规则：热身${RANDOM_TRIGGER_WARMUP}条后每条+${formatPercent(RANDOM_TRIGGER_RAMP)}`,
       ].join('\n')
     }
@@ -3180,6 +3316,11 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       }
     }
 
+    if (isSilentGroup) {
+      ctx.logger('dongxuelian-ai').info(`silent group suppressed reply: key=${channelKey} plain=${JSON.stringify(plain).slice(0, 80)}`)
+      return next()
+    }
+
     const botMentionCount = getBotMentionCount(session)
     const otherMentions = hasOtherMentions(session)
     const mentionUserIds = extractAtIds(session.content || '')
@@ -3187,7 +3328,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       .filter(userId => userId && userId !== String(session.selfId || session.bot?.selfId || ''))
     const nameMentioned = /莲莲|东雪莲/.test(plain)
     const inRandomWhitelist = getRandomWhitelistStatus(channelKey)
-    const isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply
+    let isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply
 
     // "闭嘴" 静默十分钟主动回复
     if (inGuild && !directAt && !nameMentioned && /^(?:闭嘴|别吵|别说了|不要说话)/.test(plain)) {
@@ -3342,15 +3483,19 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
           if (inGuild && /别问了，这个我不聊/.test(reply)) {
             const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
             const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeKey + '.json')
-            try {
-              const raw = require('fs').readFileSync(handlerFile, 'utf8')
-              const list = JSON.parse(raw)
-              if (Array.isArray(list) && list.length > 0) {
-                const atAll = list.map(id => `<at id="${id}"/>`).join(' ')
-                session.send(`管理员快来，群里有傻福在剑阵。${atAll}`).catch(() => {})
-                lastSensitiveAlert.set(channelKey, Date.now())
-              }
-            } catch {}
+            let list = []
+            try { list = JSON.parse(require('fs').readFileSync(handlerFile, 'utf8')) } catch {}
+            const recipients = (Array.isArray(list) ? list : []).concat([...ADMIN_USER_IDS])
+            if (shouldSendSensitiveAlert(channelKey, currentUserId, 'political-reply')) {
+              sendPrivateSensitiveNotice(ctx, recipients, {
+                channelKey,
+                userId: currentUserId,
+                userName,
+                type: '政治/敏感拒答',
+                content: userText,
+              }).catch(() => {})
+              lastSensitiveAlert.set(channelKey, Date.now())
+            }
           }
           return sendReply(ctx, session, reply, randomTriggered)
         })

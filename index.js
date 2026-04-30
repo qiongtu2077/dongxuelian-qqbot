@@ -264,7 +264,7 @@ function sleep(ms) {
 }
 
 function getRandomDelayMs() {
-  return 500 + Math.floor(Math.random() * 501)
+  return 1000 + Math.floor(Math.random() * 501)
 }
 
 function stripMentions(text = '') {
@@ -2220,7 +2220,7 @@ exports.apply = (ctx) => {
       .filter(userId => userId && userId !== String(session.selfId || session.bot?.selfId || ''))
     const nameMentioned = /莲莲|东雪莲/.test(plain)
     const inRandomWhitelist = getRandomWhitelistStatus(channelKey)
-    const isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply
+    let isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply
     const randomTriggered = isRandomCandidate && Math.random() < getRandomTriggerRate(channelKey)
 
     if (inGuild && !directAt && !nameMentioned) {

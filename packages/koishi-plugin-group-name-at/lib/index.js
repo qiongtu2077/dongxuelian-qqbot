@@ -6,12 +6,15 @@ exports.name = 'group-name-at'
 
 const PLUGIN_VERSION = '0.4.7'
 const DATA_FILE = '/root/koishi-app/data/nickname-collections.json'
+const BLACKLIST_FILE = '/root/koishi-app/data/nickname-collection-blacklist.json'
 const CONFIRM_TIMEOUT = 60 * 1000
 //黑名单
-const GROUP_BLACKLIST = new Set([
+const DEFAULT_GROUP_BLACKLIST = new Set([
   '942033342',
   // '123456789',
 ])
+const NUMERIC_GROUP_ID_RE = /^\d+$/
+const ADMIN_USER_IDS = new Set(['532701045', '3514272382'])
 
 const CMD = {
   alias: '昵称',
@@ -74,6 +77,8 @@ const TEXT = {
 
 let nicknameStore = { scopes: {} }
 let storeLoaded = false
+let runtimeLoaded = false
+let groupBlacklistCache = new Set(DEFAULT_GROUP_BLACKLIST)
 const pendingConfirms = new Map()
 
 function getScopeId(session) {
@@ -88,7 +93,69 @@ function getGroupBlacklistCandidates(session) {
 }
 
 function isBlacklistedGroup(session) {
-  return getGroupBlacklistCandidates(session).some(groupId => GROUP_BLACKLIST.has(groupId))
+  return getGroupBlacklistCandidates(session).some(groupId => groupBlacklistCache.has(groupId))
+}
+
+function getSenderUserId(session) {
+  return String(session.userId || session.author?.id || session.event?.user?.id || '')
+}
+
+function hasAdminPermission(session) {
+  return ADMIN_USER_IDS.has(getSenderUserId(session))
+}
+
+async function readJsonFile(file, fallback) {
+  try {
+    return JSON.parse(await fs.readFile(file, 'utf8'))
+  } catch {
+    return fallback
+  }
+}
+
+async function writeJsonFile(file, value) {
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(file, JSON.stringify(value, null, 2), 'utf8')
+}
+
+async function loadRuntimeSettings(force = false) {
+  if (!force && runtimeLoaded) return
+  const raw = await readJsonFile(BLACKLIST_FILE, [...DEFAULT_GROUP_BLACKLIST])
+  groupBlacklistCache = new Set(
+    Array.isArray(raw)
+      ? raw.map(item => String(item || '').trim()).filter(item => NUMERIC_GROUP_ID_RE.test(item))
+      : [...DEFAULT_GROUP_BLACKLIST]
+  )
+  runtimeLoaded = true
+}
+
+function parseNicknameBlacklistCommand(plain = '') {
+  const value = normalizeName(plain)
+  if (value === '昵称集合黑名单查看') return { action: 'view' }
+  const match = value.match(/^昵称集合黑名单(添加群|删除群)\s*(\d+)$/)
+  if (!match) return null
+  return { action: match[1] === '添加群' ? 'add' : 'delete', groupId: match[2] }
+}
+
+async function handleNicknameBlacklistCommand(session, plain) {
+  const command = parseNicknameBlacklistCommand(plain)
+  if (!command) return null
+  if (!hasAdminPermission(session)) return '只有指定管理员能操作这个命令。'
+  await loadRuntimeSettings()
+  if (command.action === 'view') {
+    const list = [...groupBlacklistCache].sort((a, b) => Number(a) - Number(b))
+    return list.length ? `昵称集合黑名单群：\n${list.join('\n')}` : '昵称集合黑名单为空。'
+  }
+  if (command.action === 'add') {
+    groupBlacklistCache.add(command.groupId)
+    await writeJsonFile(BLACKLIST_FILE, [...groupBlacklistCache])
+    return `昵称集合已加入群黑名单：${command.groupId}`
+  }
+  if (command.action === 'delete') {
+    groupBlacklistCache.delete(command.groupId)
+    await writeJsonFile(BLACKLIST_FILE, [...groupBlacklistCache])
+    return `昵称集合已移出群黑名单：${command.groupId}`
+  }
+  return null
 }
 
 function normalizeName(name = '') {
@@ -714,6 +781,7 @@ exports.apply = (ctx) => {
   ctx.on('ready', async () => {
     try {
       await ensureStore()
+      await loadRuntimeSettings(true)
       ctx.logger('group-name-at').info(`group-name-at ${PLUGIN_VERSION} loaded: ${DATA_FILE}`)
     } catch (error) {
       ctx.logger('group-name-at').warn(error.message)
@@ -721,15 +789,19 @@ exports.apply = (ctx) => {
   })
 
   ctx.command('nicklist', 'list aliases in current group').action(async ({ session }) => {
+    await loadRuntimeSettings()
     if (isBlacklistedGroup(session)) return
 
     return listEntries(session, 'alias')
   })
 
   ctx.middleware(async (session, next) => {
-    if (isBlacklistedGroup(session)) return next()
-
+    await loadRuntimeSettings()
     const content = session.content || ''
+    const blacklistCommandResult = await handleNicknameBlacklistCommand(session, content)
+    if (blacklistCommandResult) return blacklistCommandResult
+
+    if (isBlacklistedGroup(session)) return next()
 
     const bindAction = parseAliasBind(content)
     if (bindAction) return bindAlias(session, bindAction.alias, bindAction.targetUserId)
@@ -752,4 +824,8 @@ exports.apply = (ctx) => {
 
     return next()
   })
+}
+
+exports.__test = {
+  parseNicknameBlacklistCommand,
 }
