@@ -120,6 +120,11 @@ const channelTodayCache = new Map()
 const lastEmotionCache = new Map()
 const NUMERIC_GROUP_ID_RE = /^\d+$/
 
+// 提取 / 计数 @ 用 ID 的两个常用正则提为模块级常量，避免每条消息都重复构造。
+// 注意：这两个正则带 /g 标志，在使用前必须显式重置 lastIndex。
+const AT_ID_PATTERN_XML = /<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi
+const AT_ID_PATTERN_CQ = /\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi
+
 const OVERUSED_REPLY_PATTERNS = [
   /你妈的话你信不信我帮你转达/,
   /你照镜子说的/,
@@ -413,22 +418,22 @@ function sanitizeUserName(name = '') {
 }
 
 function extractAtIds(text = '') {
-  const ids = []
   const source = String(text)
-  const patterns = [
-    /<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi,
-    /\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi,
-  ]
-
+  // 用 Set 去重，避免大量 @ 时 Array.includes 的 O(n) 查找。
+  const seen = new Set()
+  const ids = []
+  const patterns = [AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ]
   for (const pattern of patterns) {
     pattern.lastIndex = 0
     let match
     while ((match = pattern.exec(source))) {
-      const userId = String(match[1])
-      if (!ids.includes(userId)) ids.push(userId)
+      const userId = match[1]
+      if (!seen.has(userId)) {
+        seen.add(userId)
+        ids.push(userId)
+      }
     }
   }
-
   return ids
 }
 
@@ -438,16 +443,12 @@ function countAtIdOccurrences(text = '', targetId = '') {
   if (!botId) return 0
 
   let count = 0
-  const patterns = [
-    /<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi,
-    /\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi,
-  ]
-
+  const patterns = [AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ]
   for (const pattern of patterns) {
     pattern.lastIndex = 0
     let match
     while ((match = pattern.exec(source))) {
-      if (String(match[1]) === botId) count += 1
+      if (match[1] === botId) count += 1
     }
   }
 
@@ -1436,19 +1437,31 @@ function normalizeReplyFingerprint(text = '') {
     .trim()
 }
 
-function longestCommonSubstringLength(a, b) {
-  const m = a.length
-  const n = b.length
+// LCS 主判据是 lcs/shorter >= 0.5，因此只关心 lcs 是否超过阈值。
+// 优化点：
+// 1. 总让较短串作内层循环，dp 长度从 max(m,n)+1 缩到 min(m,n)+1。
+// 2. 一旦 lcs 达到阈值立即返回，避免完整 O(m*n) 扫描。
+function longestCommonSubstringLength(a, b, threshold = Infinity) {
+  if (!a || !b) return 0
+  let outer = a, inner = b
+  if (inner.length > outer.length) { outer = b; inner = a }
+  const innerLen = inner.length
+  const outerLen = outer.length
+  const dp = new Array(innerLen + 1).fill(0)
   let maxLen = 0
-  const dp = new Array(n + 1).fill(0)
-  for (let i = 1; i <= m; i++) {
+  for (let i = 1; i <= outerLen; i++) {
     let prev = 0
-    for (let j = 1; j <= n; j++) {
+    const ci = outer.charCodeAt(i - 1)
+    for (let j = 1; j <= innerLen; j++) {
       const temp = dp[j]
-      if (a[i - 1] === b[j - 1]) {
-        dp[j] = prev + 1
-        if (dp[j] > maxLen) maxLen = dp[j]
-      } else {
+      if (ci === inner.charCodeAt(j - 1)) {
+        const cur = prev + 1
+        dp[j] = cur
+        if (cur > maxLen) {
+          maxLen = cur
+          if (maxLen >= threshold) return maxLen
+        }
+      } else if (temp !== 0) {
         dp[j] = 0
       }
       prev = temp
@@ -1457,17 +1470,36 @@ function longestCommonSubstringLength(a, b) {
   return maxLen
 }
 
+// 廉价的字符集 Jaccard 上界估计：两串的字符集交集大小是 LCS 长度的上界。
+// 如果连字符集都不够重叠，就不可能达到相似度阈值，可以直接放弃 LCS。
+function charSetJaccardOverlap(a, b) {
+  const sa = new Set()
+  for (let i = 0; i < a.length; i++) sa.add(a.charCodeAt(i))
+  let intersect = 0
+  const sb = new Set()
+  for (let i = 0; i < b.length; i++) {
+    const c = b.charCodeAt(i)
+    if (sb.has(c)) continue
+    sb.add(c)
+    if (sa.has(c)) intersect++
+  }
+  return intersect
+}
+
 function isReplyTooSimilar(left = '', right = '') {
   const normalizedLeft = normalizeReplyFingerprint(left)
   const normalizedRight = normalizeReplyFingerprint(right)
   if (!normalizedLeft || !normalizedRight) return false
   if (normalizedLeft === normalizedRight) return true
-  if (Math.min(normalizedLeft.length, normalizedRight.length) < 8) return false
-  if (normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)) return true
-  // 最长公共子串超过较短串长度的 50%，判定为句式结构雷同
-  const lcs = longestCommonSubstringLength(normalizedLeft, normalizedRight)
   const shorter = Math.min(normalizedLeft.length, normalizedRight.length)
-  return lcs / shorter >= 0.5
+  if (shorter < 8) return false
+  if (normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)) return true
+  // LCS 不可能大于双方共有字符种数；先做 O(n+m) 的廉价上界检查。
+  const threshold = Math.ceil(shorter * 0.5)
+  if (charSetJaccardOverlap(normalizedLeft, normalizedRight) < threshold) return false
+  // 最长公共子串超过较短串长度的 50%，判定为句式结构雷同
+  const lcs = longestCommonSubstringLength(normalizedLeft, normalizedRight, threshold)
+  return lcs >= threshold
 }
 
 function isOverusedReply(reply = '') {

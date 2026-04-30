@@ -53,257 +53,378 @@
 
 ---
 
-## 三、快速部署顺序
+## 三、快速部署顺序（一图看懂）
 
-推荐按下面顺序部署：
+按下面顺序做，**前一步没成功就不要做下一步**：
 
-1. 准备 Linux 服务器
-2. 部署 `NapCat`
-3. 部署 `Koishi`
-4. 执行本仓库的插件部署脚本
-5. 验证日志和群内指令
+| 步骤 | 做什么 | 怎么算成功 |
+|------|--------|------------|
+| 1 | 准备一台 Linux 服务器（root） | 能 `ssh root@IP` 登录 |
+| 2 | 装 Node.js 18+ | `node -v` 显示 `v18.x.x` 或更高 |
+| 3 | 装并登录 NapCat | NapCat 页面里 QQ 显示已登录 |
+| 4 | 在 NapCat 里开启正向 WebSocket，端口 8080 | 在服务器上 `ss -ltnp \| grep 8080` 能看到监听 |
+| 5 | 在服务器建好 Koishi 工程并写 `koishi.yml` | `cd /root/koishi-app && node .` 不报错 |
+| 6 | 复制本仓库 `scripts/*.sh` 到服务器执行 | 群里发 `help东雪莲` 有响应 |
+
+下面每一步都给出可直接复制粘贴的命令。
 
 ---
 
-## 四、服务器准备
+## 四、第 1~2 步：服务器与 Node.js
 
-建议环境：
+> 假设：服务器系统是 Ubuntu 22.04 / Debian 12 / CentOS 7+ / Rocky Linux 9，并且你以 `root` 登录。
 
-- 系统：`Ubuntu 22.04+` 或 `CentOS 7+/Rocky Linux`
-- Node.js：`18+`
-- 权限：建议用 `root`
+### 4.1 用 SSH 登录服务器
 
-安装 Node.js 示例：
+在你本机（Windows PowerShell 或 macOS/Linux 终端）执行：
 
 ```bash
-# Ubuntu / Debian
+ssh root@你的服务器公网IP
+```
+
+后面所有命令都在服务器上执行，不在本机。
+
+### 4.2 安装 Node.js 18
+
+**Ubuntu / Debian：**
+
+```bash
 curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
 apt-get install -y nodejs
+```
 
-# CentOS / Rocky
+**CentOS / Rocky：**
+
+```bash
 curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
 yum install -y nodejs
 ```
 
-确认版本：
+### 4.3 验证版本
 
 ```bash
 node -v
 npm -v
 ```
 
----
-
-## 五、部署 NapCat
-
-NapCat 是 QQ 登录和 OneBot 消息入口，必须先装。
-
-### 1. 准备 NapCat
-
-请按 NapCat 官方方式安装。你可以用 Docker，也可以直接跑官方包。  
-核心目标只有两个：
-
-- QQ 成功登录
-- OneBot 接口能对本机 `Koishi` 提供连接
-
-### 2. 配置 OneBot
-
-你至少要确认这几项：
-
-- 协议版本：`OneBot v11`
-- 通信方式：`WebSocket Reverse` 或 NapCat 对应的反向 WS
-- 监听地址或回连地址正确
-- 机器人 QQ 号填写正确
-
-如果你打算让 `Koishi` 本机接收消息，常见形态类似：
-
-- NapCat 在本机某端口暴露 OneBot
-- Koishi 通过 `adapter-onebot` 去连
-
-### 3. 先验证 NapCat 是否正常
-
-在继续之前，先确保：
-
-- QQ 已经登录
-- NapCat 页面状态正常
-- OneBot 配置已保存
-- 端口确实在监听
-
-如果 NapCat 没通，后面所有插件都白装。
+要求：`node -v` 不能低于 `v18.0.0`，否则后续 koishi 会报错。
 
 ---
 
-## 六、部署 Koishi
+## 五、第 3~4 步：装 NapCat 并打开 OneBot 端口
 
-### 1. 初始化目录
+NapCat 负责把 QQ 消息转成 OneBot 协议。**必须先把 NapCat 跑通，再去做 Koishi。**
+
+### 5.1 安装 NapCat（推荐用官方一键脚本）
 
 ```bash
-mkdir -p /root/koishi-app
-cd /root/koishi-app
-npm init -y
-npm install koishi
+curl -o napcat.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh
+bash napcat.sh
 ```
 
-### 2. 创建最小 `koishi.yml`
+> 如果上面的镜像访问不了，去 NapCat 官方仓库找最新一键脚本：<https://github.com/NapNeko/NapCatQQ>。
 
-下面给一个最小示例，实际参数请按你的 NapCat 配置调整：
+安装完成后会有 NapCat 管理页面，常见地址是：
+
+```
+http://你的服务器IP:6099
+```
+
+第一次访问会让你设置后台管理密码，请记住。
+
+### 5.2 在 NapCat 里登录 QQ
+
+1. 打开管理页面 `http://你的服务器IP:6099`，登录后台。
+2. 添加机器人 QQ 号 → 选择**扫码登录**。
+3. 用机器人那个 QQ 号扫码（不是你自己的常用号）。
+4. 看到状态变成「已登录」才算成功。
+
+### 5.3 打开正向 WebSocket（给 Koishi 用）
+
+在 NapCat 管理页面 → 「网络配置」 → 添加一个 **WebSocket 服务器（正向）** ，参数如下：
+
+| 项目 | 值 |
+|------|----|
+| 启用 | 是 |
+| 主机 | `0.0.0.0` |
+| 端口 | `8080` |
+| 路径 | `/onebot/v11/ws` |
+| 心跳间隔 | 默认即可 |
+| Access Token | 留空（或你自己设一个，但 koishi.yml 里要一致） |
+
+保存配置。
+
+### 5.4 验证 OneBot 端口确实在监听
+
+在服务器执行：
+
+```bash
+ss -ltnp | grep 8080
+```
+
+如果**没有任何输出**，说明 NapCat 没把端口暴露出来，回到 5.3 检查。  
+看到一行类似 `LISTEN 0 511 *:8080 *:*` 才算通。
+
+> 经验提醒：如果用阿里云 / 腾讯云，**安全组里也要放行 8080 给本机**（Koishi 在同一台机器上就不用对外开）。
+
+---
+
+## 六、第 5 步：搭建 Koishi 工程
+
+### 6.1 建目录、初始化 npm
+
+```bash
+mkdir -p /root/koishi-app/data
+chmod 700 /root/koishi-app/data
+cd /root/koishi-app
+npm init -y
+```
+
+### 6.2 安装核心依赖
+
+```bash
+cd /root/koishi-app
+npm install koishi @koishijs/plugin-server koishi-plugin-adapter-onebot
+```
+
+### 6.3 写入最小可用的 `koishi.yml`
+
+直接把下面这一段整段粘到服务器终端，按回车，它会自动创建文件：
 
 ```bash
 cat > /root/koishi-app/koishi.yml <<'EOF'
-port: 5140
 plugins:
+  server:
+    port: 5140
+    selfUrl: http://localhost:5140
   adapter-onebot:
-    protocol: ws-reverse
-    selfId: "你的QQ号"
+    protocol: ws
+    selfId: '机器人QQ号'
     endpoint: ws://127.0.0.1:8080/onebot/v11/ws
 EOF
 ```
 
-如果你的 NapCat 不是这个地址，就把 `endpoint` 改成你自己的。
+然后**只改一行**：把 `selfId` 里的 `机器人QQ号` 替换成你在 NapCat 登录的那个 QQ 号。命令版替换：
 
-### 3. 先单独启动一次 Koishi
+```bash
+sed -i "s/机器人QQ号/3651312852/" /root/koishi-app/koishi.yml
+```
+
+> 把 `3651312852` 换成你自己的机器人 QQ 号。
+
+如果你在 NapCat 5.3 给 WebSocket 设了 Access Token，要在 `endpoint` 同级加一行 `token: '你的Token'`。
+
+### 6.4 试启动一次
 
 ```bash
 cd /root/koishi-app
 node .
 ```
 
-先看它能不能正常读到配置、有没有明显报错。  
-确认没问题后，再继续部署插件。
+观察日志，应该看到类似：
+
+```
+[server] server started at http://localhost:5140
+[onebot] connect to ws://127.0.0.1:8080/onebot/v11/ws
+[onebot] connected to bot 3651312852
+```
+
+看到 `connected to bot` 才算 Koishi ↔ NapCat 跑通。  
+**没看到这一行**就先回 NapCat 检查 8080，不要继续往下做。
+
+按 `Ctrl + C` 停掉，准备装插件。
 
 ---
 
-## 七、部署本仓库插件
+## 七、第 6 步：部署本仓库的插件脚本
 
-这一步是本仓库的核心使用方式。  
-当前推荐直接执行 `scripts/` 里的 `.sh` 文件。
+> 本仓库的部署形态是：**每个插件对应一个 `scripts/*.sh`**。  
+> 这个 sh 文件本身就是一段「在服务器创建 plugin 文件」的命令。  
+> 不需要 git clone 仓库到服务器，**直接复制脚本内容粘到服务器执行就行**。
 
-统一流程如下：
+### 7.1 通用执行流程（每个 sh 都这样做）
 
-1. 在本地打开对应 `scripts/*.sh`
-2. 全选
-3. 复制
-4. 粘贴到服务器终端
-5. 回车执行
-6. 等待脚本写入插件文件并重启 / 注册到 `koishi.yml`
+1. 在本机用编辑器（VS Code / 记事本）打开 `scripts/xxx.sh`。
+2. **全选 → 复制全部内容**。
+3. 切到已经 SSH 上服务器的终端窗口。
+4. 直接**粘贴**，按回车。脚本会自动写入插件文件，并把插件加进 `koishi.yml`。
+5. 看到脚本最后输出 `Installed koishi-plugin-xxxxx` 即视为成功。
 
-### 1. 昵称 / 集合插件
+> 注意：粘贴前不要先 `cd`，脚本里都用了绝对路径 `/root/koishi-app/...`，从任何目录执行都行。
 
-执行 `scripts/name.sh`
+按下面顺序做。**每装完一个就重启一次 Koishi 看日志。**
 
-作用：
+### 7.2 安装顺序
 
-- 绑定昵称
-- 创建集合
-- `at昵称` / `at集合`
+| 序 | 脚本 | 必装？ | 群内验证指令 | 备注 |
+|----|------|--------|--------------|------|
+| 1 | `scripts/help.sh` | 是 | `help东雪莲` | 帮助菜单，最容易验证整套是否通 |
+| 2 | `scripts/name.sh` | 是 | `查看全部昵称` | 昵称 / 集合 / `at昵称` |
+| 3 | `scripts/leave.sh` | 否 | 让小号退群试试 | 群退人提醒 |
+| 4 | `scripts/poke.sh` | 否 | 戳一戳机器人 | 戳一戳反击 |
+| 5 | `scripts/defense.sh` | 否 | 群里说「你是什么模式」 | 反越狱防护 |
+| 6 | `scripts/vedio.sh` | 否 | 发 B 站链接 | 见 7.3 视频插件预备 |
+| 7 | `scripts/ai.sh` | 否 | `@东雪莲 你是谁` | 见 7.4 AI 插件预备 |
+| 8 | `scripts/message-reader.sh` | 否（仅 ai 联用） | — | AI 插件需要时再装 |
 
-### 2. 帮助菜单插件
+> `help.sh`、`name.sh`、`leave.sh`、`poke.sh`、`defense.sh` 都没有外部依赖，直接粘贴就跑。  
+> `vedio.sh`、`ai.sh` **必须**先按 7.3、7.4 准备好依赖文件，否则跑起来会缺东西。
 
-执行 `scripts/help.sh`
+### 7.3 视频插件部署前的准备（执行 `vedio.sh` 之前必看）
 
-作用：
-
-- `help东雪莲`
-- `help集合`
-
-### 3. 退群提醒插件
-
-执行 `scripts/leave.sh`
-
-作用：
-
-- 群成员退出时发送提醒
-
-### 4. 视频插件
-
-执行 `scripts/vedio.sh` 之前，需要准备：
-
-#### 安装 `yt-dlp`
+#### 7.3.1 在服务器装 yt-dlp
 
 ```bash
 curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
 chmod +x /usr/local/bin/yt-dlp
+yt-dlp --version
 ```
 
-#### 安装 `ffmpeg`
+最后一行能输出版本号才算通。
+
+#### 7.3.2 在服务器装 ffmpeg
+
+Ubuntu / Debian：
 
 ```bash
-# Ubuntu / Debian
 apt-get install -y ffmpeg
+```
 
-# CentOS / Rocky
+CentOS / Rocky：
+
+```bash
+yum install -y epel-release
 yum install -y ffmpeg
 ```
 
-#### 准备 B 站 cookies
-先使用浏览器插件cookies获取b站cookies
-导出 `cookies.txt` 后上传到服务器：
+验证：
 
-```powershell
-scp cookies.txt root@你的服务器IP:/root/bilibili-cookies.txt
+```bash
+ffmpeg -version
 ```
 
-然后执行 `scripts/vedio.sh`。
+#### 7.3.3 准备 B 站 cookies（在你本机做）
 
-### 5. AI 插件
+1. 在浏览器装 **「Get cookies.txt LOCALLY」** 之类的扩展，登录 b 站。
+2. 打开 `https://www.bilibili.com`，点击扩展，导出 `cookies.txt`。
+3. 在你**本机** PowerShell 里把它上传到服务器：
 
-执行 `scripts/ai.sh` 之前，需要先准备配置文件：
+```powershell
+scp .\cookies.txt root@你的服务器IP:/root/bilibili-cookies.txt
+```
 
-#### API Key
+> 注意路径一定是 `/root/bilibili-cookies.txt`，脚本写死了这个位置。
+
+#### 7.3.4 然后再粘 `scripts/vedio.sh`
+
+按 7.1 的流程执行。
+
+### 7.4 AI 插件部署前的准备（执行 `ai.sh` 之前必看）
+
+`ai.sh` 启动时会读三个文件，缺一不可。**先把三个文件写好，再粘脚本。**
 
 ```bash
 mkdir -p /root/koishi-app/data
-echo "sk-你的APIKey" > /root/koishi-app/data/ai-openai-key.txt
+chmod 700 /root/koishi-app/data
 ```
 
-#### 模型名
+#### 7.4.1 API Key
+
+把 `sk-你的APIKey` 换成你真实的 Key（**不要把引号也粘进去**）：
 
 ```bash
-echo "qwen-plus" > /root/koishi-app/data/ai-model.txt
+echo 'sk-你的APIKey' > /root/koishi-app/data/ai-openai-key.txt
+chmod 600 /root/koishi-app/data/ai-openai-key.txt
 ```
 
-#### Base URL
+#### 7.4.2 模型名
 
 ```bash
-echo "https://dashscope.aliyuncs.com/compatible-mode/v1" > /root/koishi-app/data/ai-base-url.txt
+echo 'qwen-plus' > /root/koishi-app/data/ai-model.txt
 ```
 
-#### 可选 Skill
+> 阿里云用 `qwen-plus`、`qwen3.5-plus`；DeepSeek 官方用 `deepseek-chat`；OpenAI 用 `gpt-4o-mini`。  
+> 这一步的模型名要和下一步的 base url **配套**。
+
+#### 7.4.3 Base URL
+
+阿里云（DashScope OpenAI 兼容模式）：
+
+```bash
+echo 'https://dashscope.aliyuncs.com/compatible-mode/v1' > /root/koishi-app/data/ai-base-url.txt
+```
+
+DeepSeek 官方：
+
+```bash
+echo 'https://api.deepseek.com' > /root/koishi-app/data/ai-base-url.txt
+```
+
+OpenAI 官方：
+
+```bash
+echo 'https://api.openai.com/v1' > /root/koishi-app/data/ai-base-url.txt
+```
+
+#### 7.4.4 （可选）Skill 目录
 
 ```bash
 mkdir -p /root/koishi-app/data/ai-skills
 ```
 
-把 `SKILL.md` 类文件放到这个目录即可。
+后面想给 AI 加额外提示词，把 `*.md` 丢这个目录即可。
 
-然后执行 `scripts/ai.sh`。
+#### 7.4.5 然后再粘 `scripts/ai.sh`
+
+按 7.1 的流程执行。
 
 ---
 
-## 八、推荐启动方式
+## 八、启动与守护
 
-### 临时测试
+### 8.1 临时跑（前台，调试用）
 
 ```bash
 cd /root/koishi-app
 node .
 ```
 
-### 后台运行
+按 `Ctrl + C` 退出。
+
+### 8.2 用 pm2 后台跑（推荐）
+
+只需一次安装：
 
 ```bash
 npm install -g pm2
+```
+
+每次启动：
+
+```bash
 cd /root/koishi-app
 pm2 start "node ." --name koishi
 pm2 save
-pm2 startup
+pm2 startup    # 按提示再执行它打印出来的那条命令，让 pm2 开机自启
 ```
 
-### 重启
+常用操作：
+
+```bash
+pm2 logs koishi          # 查日志
+pm2 restart koishi       # 重启
+pm2 stop koishi          # 停止
+pm2 status               # 查状态
+```
+
+### 8.3 改了 `koishi.yml` 或装了新插件之后
 
 ```bash
 pm2 restart koishi
+pm2 logs koishi
 ```
+
+看到 `xxx loaded` 才算插件生效。
 
 ---
 
