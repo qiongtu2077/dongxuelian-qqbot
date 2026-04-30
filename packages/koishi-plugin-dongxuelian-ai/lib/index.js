@@ -40,7 +40,6 @@ const MAX_CHANNEL_PROMPT_MESSAGES = 24
 const MAX_THREAD_CONTEXT_MESSAGES = 12
 const MAX_REPLY_CHAIN_DEPTH = 6
 const EVENT_DUMP_ARM_EXPIRE_MS = 10 * 60 * 1000
-const SENSITIVE_ALERT_COOLDOWN_MS = 5 * 60 * 1000
 const ADMIN_USER_IDS = new Set(['532701045', '3514272382'])
 
 // 可用模型列表（用于切换模型菜单）
@@ -288,7 +287,6 @@ const channelPendingRandom = new Map()
 const channelMsgCount = new Map()
 const lastSensitiveAlert = new Map()
 const pendingSensitiveAlert = new Map()
-const sensitiveAlertCooldown = new Map()
 
 // 表情包 base64 缓存（启动时加载）
 let stickerBase64Cache = {}
@@ -920,58 +918,6 @@ function callGetForwardMsg(forwardId) {
       ws.on('error', () => { clearTimeout(timer); resolve(null) })
     } catch { resolve(null) }
   })
-}
-
-function callOneBotAction(action, params = {}, timeoutMs = 5000) {
-  return new Promise((resolve) => {
-    try {
-      const echo = `dxl-${Date.now()}-${Math.random().toString(36).slice(2)}`
-      const ws = new (require('ws'))('ws://127.0.0.1:8080/onebot/v11/ws')
-      const timer = setTimeout(() => { ws.close(); resolve(null) }, timeoutMs)
-      ws.on('open', () => {
-        ws.send(JSON.stringify({ action, params, echo }))
-      })
-      ws.on('message', (d) => {
-        try {
-          const msg = JSON.parse(d.toString())
-          if (msg.echo !== echo) return
-          clearTimeout(timer)
-          resolve(msg)
-          ws.close()
-        } catch {}
-      })
-      ws.on('error', () => { clearTimeout(timer); resolve(null) })
-    } catch { resolve(null) }
-  })
-}
-
-async function sendPrivateSensitiveNotice(ctx, recipients, detail) {
-  const list = [...new Set((recipients || []).map(id => String(id || '').trim()).filter(id => NUMERIC_GROUP_ID_RE.test(id)))]
-  if (!list.length) return
-  const text = [
-    '【敏感话题提醒】',
-    `群号：${detail.channelKey || '(未知)'}`,
-    `发送者：${detail.userName || '群友'}(${detail.userId || '未知'})`,
-    `类型：${detail.type || '政治/敏感话题'}`,
-    `内容：${normalizeText(detail.content || '').slice(0, 300) || '(空)'}`,
-  ].join('\n')
-  for (const userId of list) {
-    try {
-      const result = await callOneBotAction('send_private_msg', { user_id: Number(userId), message: text }, 5000)
-      if (!result) ctx?.logger?.('dongxuelian-ai')?.warn?.(`private sensitive notice failed: ${userId}`)
-    } catch (error) {
-      ctx?.logger?.('dongxuelian-ai')?.warn?.(`private sensitive notice failed: ${userId} ${error.message}`)
-    }
-  }
-}
-
-function shouldSendSensitiveAlert(channelKey, userId, type = 'political') {
-  const key = `${channelKey || 'unknown'}::${userId || 'unknown'}::${type}`
-  const now = Date.now()
-  const previous = sensitiveAlertCooldown.get(key) || 0
-  if (now - previous < SENSITIVE_ALERT_COOLDOWN_MS) return false
-  sensitiveAlertCooldown.set(key, now)
-  return true
 }
 
 // 读取本地图片文件并转为 base64
@@ -2677,7 +2623,6 @@ async function sendReply(ctx, session, reply, isRandom = false) {
 exports.__test = {
   REPEAT_TRIGGER_COUNT,
   parseSilentGroupCommand,
-  shouldSendSensitiveAlert,
   getRandomDelayMs,
   isConsecutiveUserRepeat,
   saveConversationTurn,
@@ -2864,17 +2809,9 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeKey + '.json')
       const handlers = await readJsonFile(handlerFile, [])
       const recipients = (Array.isArray(handlers) ? handlers : []).concat([...ADMIN_USER_IDS])
-      const senderId = getSenderUserId(session)
-      if (shouldSendSensitiveAlert(channelKey, senderId, 'political-keyword')) {
-        sendPrivateSensitiveNotice(ctx, recipients, {
-          channelKey,
-          userId: senderId,
-          userName,
-          type: '政治/敏感关键词',
-          content: plain,
-        }).catch(() => {})
-      }
       if (recipients.length > 0) {
+        const mention = recipients.map(id => h.at(id)).join(' ')
+        await session.send(`${mention} 管理员快来，群里有傻福在剑阵`)
         lastSensitiveAlert.set(channelKey, Date.now())
       }
       ctx.logger('dongxuelian-ai').info(`sensitive topic in ${channelKey}: ${plain.slice(0, 50)}`)
@@ -2894,14 +2831,10 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeKey + '.json')
         const handlers = await readJsonFile(handlerFile, [])
         const recipients = (Array.isArray(handlers) ? handlers : []).concat([...ADMIN_USER_IDS])
-        if (shouldSendSensitiveAlert(channelKey, 'batch-analysis', 'political-ai')) {
-          sendPrivateSensitiveNotice(ctx, recipients, {
-            channelKey,
-            userId: 'batch-analysis',
-            userName: 'AI批量分析',
-            type: '政治/敏感批量分析',
-            content: '最近群聊缓存被 AI 判定存在明显敏感政治攻击内容，请查看群聊上下文。',
-          }).catch(() => {})
+        if (recipients.length > 0) {
+          const mention = recipients.map(id => h.at(id)).join(' ')
+          await session.send(`${mention} 管理员快来，群里有傻福在剑阵`)
+          lastSensitiveAlert.set(channelKey, Date.now())
         }
       } catch {}
     }
@@ -3486,14 +3419,9 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
             let list = []
             try { list = JSON.parse(require('fs').readFileSync(handlerFile, 'utf8')) } catch {}
             const recipients = (Array.isArray(list) ? list : []).concat([...ADMIN_USER_IDS])
-            if (shouldSendSensitiveAlert(channelKey, currentUserId, 'political-reply')) {
-              sendPrivateSensitiveNotice(ctx, recipients, {
-                channelKey,
-                userId: currentUserId,
-                userName,
-                type: '政治/敏感拒答',
-                content: userText,
-              }).catch(() => {})
+            if (recipients.length > 0) {
+              const mention = recipients.map(id => h.at(id)).join(' ')
+              session.send(`${mention} 管理员快来，群里有傻福在剑阵`).catch(() => {})
               lastSensitiveAlert.set(channelKey, Date.now())
             }
           }

@@ -39,10 +39,6 @@ assert.deepStrictEqual(t.parseSilentGroupCommand('东雪莲静默删除"123456"'
 assert.deepStrictEqual(t.parseSilentGroupCommand('东雪莲静默查看'), { action: 'view' })
 assert.strictEqual(t.parseSilentGroupCommand('东雪莲静默添加abc'), null)
 
-const cooldownKey = String(Date.now())
-assert.strictEqual(t.shouldSendSensitiveAlert('g' + cooldownKey, 'u' + cooldownKey, 'political'), true)
-assert.strictEqual(t.shouldSendSensitiveAlert('g' + cooldownKey, 'u' + cooldownKey, 'political'), false)
-
 for (let i = 0; i < 100; i += 1) {
   const delay = t.getRandomDelayMs()
   assert(delay >= 1000 && delay <= 1500, `delay out of range: ${delay}`)
