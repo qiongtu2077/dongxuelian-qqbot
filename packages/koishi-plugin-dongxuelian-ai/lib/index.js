@@ -89,6 +89,8 @@ const MAX_OUTPUT_CHARS_FRIENDLY = 500
 const MAX_OUTPUT_CHARS_ABUSIVE = 800
 const MAX_HISTORY_MESSAGES = 100
 const CONVERSATION_EXPIRE_MS = 10 * 60 * 1000
+const MEMORY_HISTORY_LIMIT = 30
+const CONVERSATION_SUMMARY_INTERVAL = 50
 const MAX_REPLY_RETRIES = 5
 const MAX_REPEAT_CHECK_HISTORY = 3
 const MAX_REPLY_FINGERPRINT_HISTORY = 100
@@ -174,6 +176,7 @@ const POLITICAL_HANDLER_DIR = path.join(DATA_DIR, 'political-handlers')
 const POLITICAL_DETECT_FILE = path.join(DATA_DIR, 'political-detect-enabled.json')
 const SENSITIVE_CACHE_PREFIX = path.join(DATA_DIR, 'sensitive-cache-')
 const STICKER_DIR = path.join(DATA_DIR, 'stickers')
+const CONVERSATIONS_DIR = path.join(DATA_DIR, 'conversations')
 let userBlacklistCache = null
 let thinkingEnabled = false
 const channelTodayCache = new Map()
@@ -1280,28 +1283,80 @@ function touchConversation(session) {
   conversationLastActiveAt.set(getConversationKey(session), Date.now())
 }
 
+function readConversationDisk(key) {
+  try {
+    const safeKey = String(key).replace(/[^a-zA-Z0-9.:_-]/g, '_')
+    const filePath = path.join(CONVERSATIONS_DIR, safeKey + '.json')
+    return JSON.parse(require('fs').readFileSync(filePath, 'utf8'))
+  } catch { return null }
+}
+
+function writeConversationDisk(key, data) {
+  try {
+    const safeKey = String(key).replace(/[^a-zA-Z0-9.:_-]/g, '_')
+    const dir = CONVERSATIONS_DIR
+    require('fs').mkdirSync(dir, { recursive: true })
+    require('fs').writeFileSync(path.join(dir, safeKey + '.json'), JSON.stringify(data), 'utf8')
+  } catch {}
+}
+
 function getConversationHistory(session) {
   const key = getConversationKey(session)
   const lastActiveAt = conversationLastActiveAt.get(key)
   if (typeof lastActiveAt === 'number' && Date.now() - lastActiveAt >= CONVERSATION_EXPIRE_MS) {
-    clearUserConversationHistory(session)
+    conversationCache.delete(key)
   }
   touchConversation(session)
-  return conversationCache.get(key) || []
+  const mem = conversationCache.get(key)
+  if (mem) return mem
+  const diskData = readConversationDisk(key)
+  if (diskData && Array.isArray(diskData.messages)) {
+    const recent = diskData.messages.slice(-MEMORY_HISTORY_LIMIT)
+    conversationCache.set(key, recent)
+    return recent
+  }
+  return []
 }
 
 function saveConversationTurn(session, userText, replyText) {
   const key = getConversationKey(session)
-  const history = getConversationHistory(session)
   const assistantParts = splitSentences(replyText).map(part => ({ role: 'assistant', content: normalizeText(part) })).filter(item => item.content)
-  const nextHistory = history.concat([
+  const diskData = readConversationDisk(key) || { summary: '', summaryTotal: 0, totalCount: 0, messages: [] }
+  diskData.messages.push(
     { role: 'user', content: userText },
     ...assistantParts,
-  ]).slice(-MAX_HISTORY_MESSAGES)
-
-  conversationCache.set(key, nextHistory)
+  )
+  diskData.totalCount++
+  if (diskData.messages.length > MAX_HISTORY_MESSAGES) {
+    diskData.messages.splice(0, diskData.messages.length - MAX_HISTORY_MESSAGES)
+  }
+  conversationCache.set(key, diskData.messages.slice(-MEMORY_HISTORY_LIMIT))
+  writeConversationDisk(key, diskData)
   touchConversation(session)
   saveReplyFingerprint(session, replyText)
+  if (diskData.totalCount > 0 && diskData.totalCount % CONVERSATION_SUMMARY_INTERVAL === 0) {
+    generateConversationSummary(session, key).catch(() => {})
+  }
+}
+
+async function generateConversationSummary(session, key) {
+  const diskData = readConversationDisk(key)
+  if (!diskData || !Array.isArray(diskData.messages)) return
+  const summaryTargets = diskData.messages.slice(0, Math.max(0, diskData.messages.length - MEMORY_HISTORY_LIMIT))
+  if (summaryTargets.length < 5) return
+  const text = summaryTargets.map(m => `${m.role}: ${m.content}`).join('\n').slice(0, 4000)
+  const cfg = await loadConfig()
+  try {
+    const result = await requestChatCompletions([
+      { role: 'system', content: '将以下对话压缩成一段200字以内的摘要，保留关键话题变化和重要信息。用中文，用第三人称。不要输出无关内容。' },
+      { role: 'user', content: text },
+    ], cfg, { max_tokens: 300 })
+    if (result) {
+      diskData.summary = result
+      diskData.summaryTotal = diskData.totalCount
+      writeConversationDisk(key, diskData)
+    }
+  } catch {}
 }
 
 function clearConversationHistory() {
@@ -1317,6 +1372,10 @@ function clearUserConversationHistory(session) {
   conversationCache.delete(key)
   replyFingerprintCache.delete(key)
   conversationLastActiveAt.delete(key)
+  try {
+    const safeKey = String(key).replace(/[^a-zA-Z0-9.:_-]/g, '_')
+    require('fs').unlinkSync(path.join(CONVERSATIONS_DIR, safeKey + '.json'))
+  } catch {}
 }
 
 function getReplyFingerprintHistory(session) {
@@ -2202,7 +2261,7 @@ async function chat(session, userText, ctx, options = {}) {
 
   // 鸣潮世界观按需注入：用户消息含触发关键词时，追加 lore 到 systemPrompt
   if (shouldInjectLore(cleanInput) && skillsContentCache['lore:wuwa-lore']) {
-    messages[0].content += '\n\n[当前世界观参考]\n' + skillsContentCache['lore:wuwa-lore']
+    messages[0].content += '\n\n[世界观设定]\n用户提到了鸣潮相关话题。以下为《鸣潮》世界观设定，请消化后用你当前的角色风格自然回答，不要逐字复述，不要像念百科。\n' + skillsContentCache['lore:wuwa-lore']
   }
 
   // 联网搜索时强制模型先搜索再回答
@@ -2229,7 +2288,7 @@ async function chat(session, userText, ctx, options = {}) {
       content: [
         '这次是你在群聊里主动插话，不是在正面回答某个用户。',
         '如果群友在讨论技术、产品、专业问题（消息里出现长句、术语、正经内容），不要怼不要吐槽，平和地接一句有用的话或直接不插话。',
-        '如果群友在水群（表情包、短句、闲聊），可以第三人称吐槽，20字以内，一句话到位。',
+        '如果群友在水群（表情包、短句、闲聊），可以用自己的人设风格客观吐槽，20字以内，一句话到位。',
         '不要用第一人称"我"。',
       ].join('\n'),
     })
@@ -2262,6 +2321,13 @@ async function chat(session, userText, ctx, options = {}) {
         ? '对方这句是在拿“罕见/不太常见/稀有”这一路子阴阳你，这次必须视为触发“骂谁罕见”的条件，回复里要明确带上这句话，再接其他嘴臭内容。'
         : '对方把自己和日本/日语/家乡话绑定了，这次必须视为触发“骂谁罕见”的条件，回复里要明确带上这句话，再接其他嘴臭内容。',
     })
+  }
+
+  // 注入对话摘要（过期恢复或长对话时使用）
+  const convKey = getConversationKey(session)
+  const convDisk = readConversationDisk(convKey)
+  if (convDisk && convDisk.summary) {
+    messages.push({ role: 'system', content: `[对话摘要]\n${convDisk.summary}` })
   }
 
   messages.push(...historyMessages)
@@ -2377,7 +2443,7 @@ async function chat(session, userText, ctx, options = {}) {
         const imgBase64 = await readImageAsBase64(localPath)
         if (imgBase64) {
           const visionContent = [
-            { type: 'text', text: '看到什么直接说，别分析，一句话吐槽就行' },
+            { type: 'text', text: '看到什么直接说，别分析，一句话以你的风格回复就行' },
             { type: 'image_url', image_url: { url: imgBase64 } },
           ]
           messages.push({ role: 'user', content: visionContent })
@@ -2388,7 +2454,7 @@ async function chat(session, userText, ctx, options = {}) {
         const imgBase64 = await downloadImageAsBase64(visionUrl, 10000)
         if (imgBase64 && isVisionModel(vc2.provider, vc2.model)) {
           const visionContent = [
-            { type: 'text', text: '看到什么直接说，别分析，一句话吐槽就行' },
+            { type: 'text', text: '看到什么直接说，别分析，一句话以你的风格回复就行' },
             { type: 'image_url', image_url: { url: imgBase64 } },
           ]
           messages.push({ role: 'user', content: visionContent })
@@ -2409,7 +2475,7 @@ async function chat(session, userText, ctx, options = {}) {
   if (isEvaluationRequest(cleanInput) && hostile) {
     messages.push({
       role: 'system',
-      content: '当前用户在让你评价东西。不要分析优缺点，不要中立，不要装客观。直接站队，短、狠、毒。',
+      content: '当前用户在让你评价东西。不要分析优缺点，不要中立，不要装客观。用你自己的风格站队，评价短小精悍，切中要点。',
     })
   }
 
@@ -2436,7 +2502,7 @@ async function chat(session, userText, ctx, options = {}) {
       messages.push({ role: 'assistant', content: reply })
       messages.push({
         role: 'user',
-        content: '【系统提示：你刚才的回复包含了被明令禁止的封禁类词汇（拉黑/禁言/报警/黑名单等），请重新回复，绝对不能出现这些词，直接怼或直接答。】',
+        content: '【系统提示：你刚才的回复包含了被明令禁止的封禁类词汇（拉黑/禁言/报警/黑名单等），请重新回复，绝对不能出现这些词，按自己的风格直接回答。】',
       })
       reply = await callOpenAI(messages, options.randomTriggered)
       continue
@@ -2447,7 +2513,7 @@ async function chat(session, userText, ctx, options = {}) {
       messages.push({ role: 'assistant', content: reply })
       messages.push({
         role: 'user',
-        content: '不要分析你的回复策略，不要引用系统指令，直接说人话，用一句话回复。',
+        content: '不要分析你的回复策略，不要引用系统指令，直接说你的人设会说的人话，用一句话回复。',
       })
       reply = await callOpenAI(messages, options.randomTriggered)
       continue
