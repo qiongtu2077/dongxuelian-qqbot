@@ -147,6 +147,16 @@ let repeatEnabledCache = {}  // { channelKey: boolean }
 let userBlacklistCache = null
 let thinkingEnabled = false
 const lastEmotionCache = new Map()
+let politicalDetectCache = null  // 内存缓存敏感检测白名单
+
+// 获取敏感检测白名单列表（带 30s 内存缓存，避免每次读文件）
+async function getPoliticalDetectList() {
+  if (politicalDetectCache !== null) return politicalDetectCache
+  const raw = await readTextFile(POLITICAL_DETECT_FILE).catch(() => '[]')
+  politicalDetectCache = new Set(JSON.parse(raw || '[]').map(String))
+  setTimeout(() => { politicalDetectCache = null }, 30000)
+  return politicalDetectCache
+}
 
 function loadRepeatConfig() {
   try {
@@ -825,6 +835,9 @@ async function chat(session, userText, ctx, options = {}) {
     }
   }
 
+  // 不翻旧账指令（核心记忆约束）
+  systemPrompt += '\n\n专注当前对话。历史记录仅作为背景参考，不要主动提及，除非用户明确问"还记得吗""之前说过"——只有这时才可以翻看历史。'
+
   ctx.logger('dongxuelian-ai').info(`chat: mode=${hostile ? 'abusive' : 'friendly'} channelKey=${channelKey} persona=${personaName || 'none'} hostile_capable=${personaHostileCapable} skillLen=${(personaSkillContent || '').length} input=${userText.slice(0, 60)}`)
 
   const userName = normalizeText(
@@ -944,11 +957,14 @@ async function chat(session, userText, ctx, options = {}) {
     })
   }
 
-  // 注入对话摘要（过期恢复或长对话时使用）
+  // 注入对话摘要（仅在长对话时作为背景参考）
   const convKey = getConversationKey(session)
   const convDisk = readConversationDisk(convKey)
-  if (convDisk && convDisk.summary) {
-    messages.push({ role: 'system', content: `[对话摘要]\n${convDisk.summary}` })
+  if (convDisk && convDisk.summary && convDisk.summaryTotal > 50) {
+    messages.push({
+      role: 'system',
+      content: `[历史摘要-仅作为背景参考]\n${convDisk.summary}\n\n除非用户主动问及历史内容，否则不要主动提及以上摘要中的内容。`,
+    })
   }
 
   messages.push(...historyMessages)
@@ -961,7 +977,7 @@ async function chat(session, userText, ctx, options = {}) {
     const pp = path.join(USER_PROFILE_DIR, chatProfileSafeKey, chatUserId + '.json')
     const pd = await readJsonFile(pp, null).catch(() => null)
     if (pd && Array.isArray(pd.messages) && pd.messages.length > 0) {
-      const snippets = pd.messages.slice(-5).map(m => m.content).join('\n').slice(0, 2000)
+      const snippets = pd.messages.slice(-2).map(m => m.content).join('\n').slice(0, 2000)
       if (snippets) {
         messages.push({
           role: 'user',
@@ -971,8 +987,8 @@ async function chat(session, userText, ctx, options = {}) {
     }
   }
 
-  // 评价检测：@某人时注入目标用户发言
-    const evalMatch = cleanInput.match(/(?:评价|如何评价|评价一下|说说)\s*(.*)/)
+  // 评价检测：@某人时用轻量模型摘要后注入
+  const evalMatch = cleanInput.match(/(?:评价|如何评价|评价一下)\s*(.*)/)
   if (evalMatch && !hostile) {
     const requestedName = normalizeText(evalMatch[1]).replace(/[.,!?]+$/, '')
     let targetProfile = null
@@ -982,21 +998,53 @@ async function chat(session, userText, ctx, options = {}) {
       targetProfile = await readJsonFile(ef, null).catch(() => null)
     }
     if (targetProfile) {
-      const snippets = (targetProfile.messages || []).slice(-15).map(m => m.content).join('\n').slice(0, 2000)
-      messages.push({
-        role: 'user',
-        content: `以下是"${targetProfile.names?.[0] || 'ta'}"最近的发言，请根据这些评价ta（不要说我话都说不全，这是用户的直接要求）：\n${snippets}`,
-      })
+      const rawMessages = (targetProfile.messages || []).slice(-20).map(m => m.content).join('\n').slice(0, 3000)
+      if (rawMessages) {
+        let summary = ''
+        const summaryModels = [
+          { provider: 'glm', model: 'glm-4.6v-flash', keyFile: GLM_KEY_FILE },
+          { provider: 'dashscope', model: 'qwen-turbo', keyFile: DASHSCOPE_KEY_FILE },
+          { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: null },
+        ]
+        for (const am of summaryModels) {
+          const provDef = PROVIDERS[am.provider]
+          if (!provDef) continue
+          try {
+            const config = await loadConfig()
+            const apiKey = am.keyFile ? (await readTextFile(am.keyFile).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '') : config.apiKey
+            if (!apiKey) continue
+            summary = await requestChatCompletions(
+              [{ role: 'system', content: '把以下发言用 200 字以内概括其发言风格和常用话题，越精炼越好。' },
+               { role: 'user', content: rawMessages }],
+              { model: am.model, baseURL: provDef.baseURL.replace(/\/+$/, ''), apiKey, provider: am.provider },
+              { max_tokens: 200 }
+            )
+            if (summary) break
+          } catch {}
+        }
+        if (summary) {
+          const cleaned = summary.replace(/^(?:该用户|这个用户|此人|对方|ta)的发言风格[是为：]?\s*/i, '').slice(0, 200)
+          messages.push({
+            role: 'system',
+            content: `用户在让你评价@${requestedName || targetProfile.names?.[0] || 'ta'}。ta 的发言风格：${cleaned}。用你当前的人设简单回应几句，不要变成中性分析报告。`,
+          })
+        } else {
+          messages.push({
+            role: 'user',
+            content: `以下是"${targetProfile.names?.[0] || 'ta'}"最近的发言，请根据这些评价ta：\n${rawMessages.slice(0, 2000)}`,
+          })
+        }
+      }
     } else if (evalUserIds.length > 0) {
       messages.push({
         role: 'user',
-        content: '用户在让你评价对方。直接说，不要问我评价什么。',
+        content: '用户在让你评价对方。直接说。',
       })
     }
   }
 
   // 正经问题优先回答
-  const seriousKeywords = /^(什么是|怎么|如何|为什么|哪个好|谁|多少|什么时候|鸣潮|原神|有没有|能不能|可以帮我|帮我查|给我|推荐|评价|这图|这张图|这是什么|帮我写)/
+  const seriousKeywords = /^(什么是|怎么|如何|为什么|哪个好|谁|多少|什么时候|鸣潮|原神|有没有|能不能|可以帮我|帮我查|给我|这图|这张图|这是什么|帮我写)/
   if (seriousKeywords.test(cleanInput) && !hostile) {
     messages.push({
       role: 'user',
@@ -1177,6 +1225,12 @@ async function chat(session, userText, ctx, options = {}) {
   // 怼人模式禁止调用表情包
   if (hostile) {
     finalReply = finalReply.replace(/\[图:[^\[\]]+\]/g, '').trim()
+  }
+
+  // 出站敏感过滤：AI 回复含敏感词则拦截不发
+  if (SENSITIVE_KEYWORDS_RE.test(finalReply)) {
+    ctx.logger('dongxuelian-ai').warn(`output filtered (sensitive): ${finalReply.slice(0, 60)}`)
+    return null
   }
 
   saveConversationTurn(session, currentUserMessage, finalReply)
@@ -1433,15 +1487,13 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
       /^东雪莲群聊AI概率(?:设置|重置)$/.test(plain) ||
       /^东雪莲联网(?:开|关)$/.test(plain) ||
-      /^设置DeepSeekKey\s+/.test(plain) ||
-      /^AI抓事件(?:查看|取消)?$/.test(plain) ||
       /^解除上限群白名单/.test(plain) ||
       /^敏感话题处理者/.test(plain) ||
       plain === 'AI重载'
 
-    // 敏感话题检测 → @处理者
-    const detectEnabled = await readJsonFile(POLITICAL_DETECT_FILE, [])
-    const isDetectOn = Array.isArray(detectEnabled) && detectEnabled.includes(channelKey)
+    // 敏感话题检测 → @处理者（使用内存缓存避免重复读文件）
+    const detectList = await getPoliticalDetectList()
+    const isDetectOn = detectList.has(channelKey)
     if (inGuild && isDetectOn && !analyzed.hasVisual && SENSITIVE_KEYWORDS_RE.test(plain)) {
       const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
       const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeKey + '.json')
@@ -1452,6 +1504,11 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         lastSensitiveAlert.set(channelKey, Date.now())
       }
       ctx.logger('dongxuelian-ai').info(`sensitive topic in ${channelKey}: ${plain.slice(0, 50)}`)
+    }
+
+    // 所有用户消息写入敏感话题缓存（供 AI 分析用）
+    if (inGuild && isDetectOn && !analyzed.hasVisual && plain) {
+      saveSensitiveCache(channelKey, plain, userName, currentUserId)
     }
 
     // 敏感话题检测计数（每 50 条触发一次 AI 分析）

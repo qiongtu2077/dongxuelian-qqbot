@@ -113,12 +113,6 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
         }
       }
     } catch {}
-    if (role === 'user' && value) {
-      try {
-        const detectList = require('fs').existsSync(POLITICAL_DETECT_FILE) ? JSON.parse(require('fs').readFileSync(POLITICAL_DETECT_FILE, 'utf8').trim() || '[]') : []
-        if (Array.isArray(detectList) && detectList.includes(channelKey)) saveSensitiveCache(channelKey, value, sanitizeUserName(String(speakerName || '群友')), userId)
-      } catch {}
-    }
   }
   if (role === 'user' && value) { saveUserProfile(userId, sanitizeUserName(String(speakerName || '群友')), value, channelKey).catch(() => {}) }
 }
