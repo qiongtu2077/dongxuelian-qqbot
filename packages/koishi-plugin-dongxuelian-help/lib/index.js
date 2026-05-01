@@ -130,6 +130,7 @@ function renderGroupReplyHelp() {
     '群聊AI白名单查看（bot管理员）',
     '群聊AI白名单添加群号（bot管理员）',
     '群聊AI白名单删除群号（bot管理员）',
+    '东雪莲复读开 / 关 / 状态',
   ].join('\n')
 }
 
@@ -153,11 +154,15 @@ function renderEventHelp() {
 
 function renderPersonaHelp() {
   return [
-    '【人格】',
-    '东雪莲人格',
-    '东雪莲人格列表',
+    '【人格（用户级）】',
+    '东雪莲我的人格 / 东雪莲人格查看',
     '东雪莲人格切换 <名称>',
+    '东雪莲人格列表',
     '东雪莲人格重置',
+    '【人格（群级·管理员）】',
+    '东雪莲群人格',
+    '东雪莲群人格切换 <名称>',
+    '东雪莲群人格重置',
     '东雪莲嘴臭 开/关',
   ].join('\n')
 }
@@ -215,6 +220,7 @@ function renderQuickReference() {
     'AI重载 仅限管理员',
     '东雪莲联网查看',
     '东雪莲联网开 / 关 仅限管理员',
+    '东雪莲复读开 / 关 / 状态',
     '东雪莲群聊AI概率查看',
     '东雪莲群聊AI概率设置5% / 重置 仅限管理员',
     '群聊AI白名单添加/删除/查看 仅限管理员',
@@ -225,6 +231,14 @@ function renderQuickReference() {
     '东雪莲人格切换 <名称>',
     '东雪莲人格重置',
     '东雪莲嘴臭 开/关',
+    '',
+    '【其他】',
+    '东雪莲测试开 / 关 仅限管理员',
+    '东雪莲思考开 / 关',
+    '敏感话题检测开 / 关 / 查看',
+    '敏感话题处理者添加 / 删除 / 查看',
+    '今日情绪',
+    '用户黑名单添加 / 删除 / 查看',
     '',
     '【集合】',
     '@A用户 昵称 名称A',
@@ -293,6 +307,10 @@ exports.apply = (ctx) => {
       return renderCommonHelp()
     }
 
+    if (plain === '其他') {
+      return renderCommonHelp()
+    }
+
     if (plain === '群聊主动回复') {
       return renderGroupReplyHelp()
     }
@@ -305,7 +323,7 @@ exports.apply = (ctx) => {
       return renderEventHelp()
     }
 
-    if (plain === '黑名单管理') {
+    if (plain === '黑名单管理' || plain === '白名单黑名单管理') {
       return renderBlacklistHelp()
     }
 

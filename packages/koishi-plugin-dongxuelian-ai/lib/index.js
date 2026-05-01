@@ -3,6 +3,93 @@ const path = require('path')
 const { h } = require('koishi')
 const { Session } = require('@satorijs/core')
 const { analyzeIncomingMessage, normalizeText, summarizeForwardNodes } = require('./message-reader')
+const {
+  DATA_DIR, PLUGIN_VERSION,
+  KEY_FILE, MODEL_FILE, BASE_URL_FILE,
+  SKILLS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR, SKILLS_PERSONAS_DIR, SKILLS_LORE_DIR,
+  LORE_TRIGGER_SET,
+  PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, EVENT_DUMP_DIR,
+  RANDOM_WHITELIST_FILE, RANDOM_RATE_FILE,
+  SEARCH_ENABLED_FILE, MAINTENANCE_FILE, TEST_MODE_FILE, REPEAT_ENABLED_FILE,
+  RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP,
+  DEFAULT_GROUP_RANDOM_WHITELIST, REQUEST_TIMEOUT,
+  MAX_OUTPUT_CHARS_FRIENDLY, MAX_OUTPUT_CHARS_ABUSIVE,
+  MAX_HISTORY_MESSAGES, CONVERSATION_EXPIRE_MS,
+  MEMORY_HISTORY_LIMIT, CONVERSATION_SUMMARY_INTERVAL,
+  MAX_REPLY_RETRIES, MAX_REPEAT_CHECK_HISTORY, MAX_REPLY_FINGERPRINT_HISTORY,
+  MAX_CHANNEL_SHARED_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES, MAX_THREAD_CONTEXT_MESSAGES,
+  MAX_REPLY_CHAIN_DEPTH, EVENT_DUMP_ARM_EXPIRE_MS,
+  ADMIN_USER_IDS, PROVIDERS,
+  PROVIDER_FILE, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE,
+  USER_BLACKLIST_FILE, VIDEO_BLACKLIST_FILE,
+  SUMMARY_WHITELIST_FILE, TODAY_CACHE_PREFIX, EMOTION_HISTORY_PREFIX,
+  THINKING_MODE_FILE, USER_PROFILE_DIR,
+  POLITICAL_HANDLER_DIR, POLITICAL_DETECT_FILE, SENSITIVE_CACHE_PREFIX,
+  STICKER_DIR, CONVERSATIONS_DIR,
+  NUMERIC_GROUP_ID_RE, AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ,
+  OVERUSED_REPLY_PATTERNS,
+  ABUSIVE_INPUT_RE, HOSTILE_INPUT_RE, RARE_PROVOCATION_RE, HOSTILE_SINGLE_TOKENS,
+  JAILBREAK_INPUT_RE, JAILBREAK_OUTPUT_RE,
+  CONTEXT_JAILBREAK_STRONG_RE, CONTEXT_JAILBREAK_WEAK_RE,
+  JAILBREAK_FALLBACK_REPLIES, ABUSIVE_FALLBACK_REPLIES, REPEATED_FALLBACK_REPLIES,
+  EVALUATION_REQUEST_RE, JAPAN_SELF_IDENTIFY_RE, GENERATION_REQUEST_RE,
+  SHORT_FOLLOW_UP_RE, BANNED_ACTION_OUTPUT_RE, THINKING_OUTPUT_RE, SENSITIVE_KEYWORDS_RE,
+  RESERVED_PREFIXES,
+} = require('./constants')
+const {
+  personaGroupsCache, personaUsersCache,
+  atomicWriteJson,
+  loadPersonaGroups, getGroupPersona, setGroupPersona, resetGroupPersona,
+  loadPersonaUsers, getUserPersona, setUserPersona, resetUserPersona,
+  resolvePersona,
+  parsePersonaFrontmatter,
+  getAvailablePersonals, loadPersonalSkill,
+} = require('./persona')
+const {
+  requestChatCompletions, buildResponsesInput, extractResponsesText,
+  requestOpenAIResponsesWithSearch,
+  buildFallbackConfig,
+  callGetImage, callGetForwardMsg,
+  readImageAsBase64, extractImageFileFromElements, downloadImageAsBase64,
+  isVisionModel,
+} = require('./api')
+const {
+  conversationCache, replyFingerprintCache,
+  conversationLastActiveAt, channelSharedCache, lastForwardSummaryCache,
+  pendingSensitiveAlert, channelTodayCache,
+  getConversationKey, getChannelKey, touchConversation,
+  readConversationDisk, writeConversationDisk,
+  getConversationHistory, saveConversationTurn, generateConversationSummary,
+  clearConversationHistory, clearUserConversationHistory,
+  getReplyFingerprintHistory, saveReplyFingerprint,
+  getRecentAssistantReplies, getRecentUserMessages,
+  saveSharedChannelTurn,
+  findChannelMessageById, collectReplyChain,
+  getQuotedMessageNote, getSharedContextNote,
+  saveUserProfile, saveSensitiveCache, analyzeChannelSensitive,
+} = require('./conversation')
+const {
+  isRareProvocation, isHostileInput,
+  isJailbreakAttempt, pickJailbreakFallbackReply,
+  isReservedCommand, getSenderUserId, hasAdminPermission,
+  stripMentions, collapseRepeatedBotCalls,
+  sanitizeUserInput, sanitizeUserName,
+  extractAtIds, countAtIdOccurrences,
+  isDirectAtBot, getBotMentionCount, hasOtherMentions,
+  formatPercent,
+  readTextFile, writeTextFile, readJsonFile, writeJsonFile,
+  sleep, getRandomDelayMs,
+  parseEnabledText,
+  getBaseHostname, isDashScopeConfig, isOpenAIOfficialConfig,
+  normalizeUrl, extractImageUrls,
+  sanitizeFileToken, safeJsonStringify,
+  normalizeReplyFingerprint,
+  longestCommonSubstringLength, charSetJaccardOverlap,
+  isReplyTooSimilar, isOverusedReply, hasBannedOutput,
+  isEvaluationRequest,
+  getModelDisplayName, getSearchCapability, formatSearchStatus,
+  trimReply, sanitizeReply, splitSentences,
+} = require('./utils')
 
 // @satorijs/core@3.7.0 缺少 stripped / resolve / send，这里打补丁
 if (!('stripped' in Session.prototype)) {
@@ -37,310 +124,12 @@ if (typeof Session.prototype.send !== 'function') {
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '0.9.1'
-const DATA_DIR = process.platform === 'win32'
-  ? path.join(__dirname, '../data')
-  : '/root/koishi-app/data'
-const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')
-const MODEL_FILE = path.join(DATA_DIR, 'ai-model.txt')
-const BASE_URL_FILE = path.join(DATA_DIR, 'ai-base-url.txt')
-const SKILLS_DIR = path.join(DATA_DIR, 'ai-skills')
-const SKILLS_CORE_DIR = path.join(SKILLS_DIR, 'core')
-const SKILLS_MODES_DIR = path.join(SKILLS_DIR, 'modes')
-const SKILLS_PERSONAS_DIR = path.join(SKILLS_DIR, 'personas')
-const SKILLS_LORE_DIR = path.join(SKILLS_DIR, 'lore')
-const LORE_TRIGGER_SET = new Set([
-  '悲鸣', '鸣式', '岁主', '声骸',
-  '瑝珑', '黑海岸', '残星会', '黎那汐塔',
-  '今州', '乘霄山', '明庭',
-  '超频', '残象潮', '无音区', '蜃境',
-  '索拉里斯', '残象', '共鸣者', '协奏',
-  '黑石', '天空海', '虚质',
-  '拉古那', '七丘', '隐海修会',
-  '新联邦', '深空联合', '拉海洛', '星炬学院',
-  '角', '英白拉多', '利维亚坦',
-  '隧者', '阿列夫一',
-  '守岸人', '执花', '漂泊者', '斯瓦茨洛',
-  '绯雪', '达妮娅', '爱弥斯', '卡提希娅', '坎特雷拉',
-  '罗伊冰原', '黯原', '隧门', '虚质空间',
-  '落日堤屿', '封存地', '寂静断崖', '恒黯之原',
-  '隧锚', '永晖石', '共鸣模态',
-  '海蚀', '一庭六州', '声骸之国', '黑石群岛',
-  '泰缇斯', '夜归军', '北落野',
-])
-const PERSONA_GROUPS_FILE = path.join(DATA_DIR, 'ai-persona-groups.json')
-const PERSONA_USERS_FILE = path.join(DATA_DIR, 'ai-persona-users.json')
-const EVENT_DUMP_DIR = path.join(DATA_DIR, 'ai-event-dumps')
-const RANDOM_WHITELIST_FILE = path.join(DATA_DIR, 'ai-random-whitelist.json')
-const RANDOM_RATE_FILE = path.join(DATA_DIR, 'ai-random-rate.json')
-const SEARCH_ENABLED_FILE = path.join(DATA_DIR, 'ai-enable-search.txt')
-const MAINTENANCE_FILE = path.join(DATA_DIR, 'ai-paused.txt')
-const TEST_MODE_FILE = path.join(DATA_DIR, 'ai-test-mode.txt')
-const REPEAT_ENABLED_FILE = path.join(DATA_DIR, 'ai-repeat-enabled.json')
-const RANDOM_TRIGGER_RATE_BASE = Number(process.env.AI_RANDOM_TRIGGER_RATE || 0.008)
-const RANDOM_TRIGGER_WARMUP = 50
-const RANDOM_TRIGGER_RAMP = 0.02
-// 主动回复白名单：只在这些群触发 AI 随机主动回复；留空则全群禁用
-const DEFAULT_GROUP_RANDOM_WHITELIST = new Set([
-  // '123456789',
-])
-const REQUEST_TIMEOUT = Number(process.env.AI_REQUEST_TIMEOUT_MS || 40000)
-const MAX_OUTPUT_CHARS_FRIENDLY = 500
-const MAX_OUTPUT_CHARS_ABUSIVE = 800
-const MAX_HISTORY_MESSAGES = 100
-const CONVERSATION_EXPIRE_MS = 10 * 60 * 1000
-const MEMORY_HISTORY_LIMIT = 30
-const CONVERSATION_SUMMARY_INTERVAL = 100
-const MAX_REPLY_RETRIES = 5
-const MAX_REPEAT_CHECK_HISTORY = 3
-const MAX_REPLY_FINGERPRINT_HISTORY = 100
-const MAX_CHANNEL_SHARED_MESSAGES = 100
-const MAX_CHANNEL_PROMPT_MESSAGES = 24
-const MAX_THREAD_CONTEXT_MESSAGES = 12
-const MAX_REPLY_CHAIN_DEPTH = 6
-const EVENT_DUMP_ARM_EXPIRE_MS = 10 * 60 * 1000
-const ADMIN_USER_IDS = new Set(['100000000', '200000000'])
-
-// 可用模型列表（用于切换模型菜单）
-// 供应商与模型定义
-const PROVIDERS = {
-  opencode: {
-    name: 'OpenCode Go',
-    baseURL: 'https://opencode.ai/zen/go/v1',
-    models: [
-      { id: 'glm-5', name: 'GLM-5' },
-      { id: 'glm-5.1', name: 'GLM-5.1' },
-      { id: 'kimi-k2.5', name: 'Kimi K2.5' },
-      { id: 'kimi-k2.6', name: 'Kimi K2.6' },
-      { id: 'deepseek-v4-pro', name: 'DSv4pro' },
-      { id: 'deepseek-v4-flash', name: 'DSv4' },
-      { id: 'mimo-v2-pro', name: 'MiMo-V2-Pro' },
-      { id: 'mimo-v2-omni', name: 'MiMo-V2-Omni' },
-      { id: 'mimo-v2.5-pro', name: 'MiMo-V2.5-Pro' },
-      { id: 'mimo-v2.5', name: 'MiMo-V2.5' },
-      { id: 'minimax-m2.7', name: 'MiniMax M2.7' },
-      { id: 'minimax-m2.5', name: 'MiniMax M2.5' },
-      { id: 'qwen3.6-plus', name: '千问3.6' },
-      { id: 'qwen3.5-plus', name: '千问3.5' },
-    ],
-  },
-  dashscope: {
-    name: '阿里云',
-    baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    models: [
-      { id: 'qwen3.5-plus', name: 'qwen3.5' },
-      { id: 'qwen3.6-plus', name: 'qwen3.6' },
-      { id: 'qwen3.5-omni-flash', name: 'Qwen3.5-Omni-Flash' },
-      { id: 'qwen-turbo', name: 'Qwen Turbo' },
-    ],
-  },
-  deepseek: {
-    name: 'DeepSeek 官方',
-    baseURL: 'https://api.deepseek.com',
-    models: [
-      { id: 'deepseek-chat', name: 'deepseek-chat' },
-      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
-      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
-    ],
-  },
-  glm: {
-    name: '智谱GLM',
-    baseURL: 'https://open.bigmodel.cn/api/paas/v4',
-    models: [
-      { id: 'glm-4.6v-flash', name: 'GLM 4.6' },
-    ],
-  },
-  mimorium: {
-    name: '小米',
-    baseURL: 'https://token-plan-cn.xiaomimimo.com/v1',
-    models: [
-      { id: 'mimo-v2.5-pro', name: 'mimo 2.5pro' },
-      { id: 'mimo-v2.5', name: 'mimo 2.5' },
-      { id: 'mimo-v2-omni', name: 'mimo v2' },
-    ],
-  },
-}
-
-const PROVIDER_FILE = path.join(DATA_DIR, 'ai-provider.txt')
-const DEEPSEEK_KEY_FILE = path.join(DATA_DIR, 'ai-deepseek-key.txt')
-const DASHSCOPE_KEY_FILE = path.join(DATA_DIR, 'ai-dashscope-key.txt')
-const GLM_KEY_FILE = path.join(DATA_DIR, 'ai-glm-key.txt')
-const MIMORIUM_KEY_FILE = path.join(DATA_DIR, 'ai-mimorium-key.txt')
-const USER_BLACKLIST_FILE = path.join(DATA_DIR, 'ai-user-blacklist.json')
-const VIDEO_BLACKLIST_FILE = path.join(DATA_DIR, 'video-blacklist.json')
-const SUMMARY_WHITELIST_FILE = path.join(DATA_DIR, 'summary-whitelist.json')
-const TODAY_CACHE_PREFIX = path.join(DATA_DIR, 'today-cache-')
-const EMOTION_HISTORY_PREFIX = path.join(DATA_DIR, 'emotion-history-')
-const THINKING_MODE_FILE = path.join(DATA_DIR, 'ai-enable-thinking.txt')
-const USER_PROFILE_DIR = path.join(DATA_DIR, 'user-profiles')
-const POLITICAL_HANDLER_DIR = path.join(DATA_DIR, 'political-handlers')
-const POLITICAL_DETECT_FILE = path.join(DATA_DIR, 'political-detect-enabled.json')
-const SENSITIVE_CACHE_PREFIX = path.join(DATA_DIR, 'sensitive-cache-')
-const STICKER_DIR = path.join(DATA_DIR, 'stickers')
-const CONVERSATIONS_DIR = path.join(DATA_DIR, 'conversations')
-let userBlacklistCache = null
-let thinkingEnabled = false
-const channelTodayCache = new Map()
-const lastEmotionCache = new Map()
-const NUMERIC_GROUP_ID_RE = /^\d+$/
-
-// 提取 / 计数 @ 用 ID 的两个常用正则提为模块级常量，避免每条消息都重复构造。
-// 注意：这两个正则带 /g 标志，在使用前必须显式重置 lastIndex。
-const AT_ID_PATTERN_XML = /<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi
-const AT_ID_PATTERN_CQ = /\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi
-
-const OVERUSED_REPLY_PATTERNS = [
-  /你妈的话你信不信我帮你转达/,
-  /你照镜子说的/,
-  /先看看自己/,
-  /你他妈脑子进水了/,
-  /词汇量也就够在键盘上撒泼/,
-  /连骂人都得靠复读/,
-  /废物也配骂人/,
-  /只会喷粪的嘴/,
-  /现实里怕是连条/,
-  /你这种货色也就配在/,
-  /连条野狗都/,
-  /连条母狗都/,
-  /废物也配(?:要|伸手)/,
-  /也配.*证明/,
-  /先去把.{2,20}(?:搞|弄|搞搞)明白/,
-  /先去把.{2,20}吃透/,
-  /再出来丢人/,
-  /再出来装/,
-  /啃明白再/,
-  /^啧[，,。！ ]/,
-  /^哼[，,。！ ]/,
-]
-
-const ABUSIVE_INPUT_RE = /(?:\b(?:sb|nmsl|nmlgb|zz|nc|md)\b|傻[比逼币批]|煞笔|沙比|伞兵|海豹|草死你|操死你|妈了个|妈卖批)/i
-
-// 敌意输入检测：脏话 / 性骚扰 / 常见骂人梗 / 侮辱性称呼等，命中即走嘴臭人格
-const HOSTILE_INPUT_RE = /(?:\b(?:sb|nmsl|nmlgb|zz|nc|nmb|md|cnm|tmd|jb|sx|cao|fuck|shit|bitch)\b|傻[比逼币批]|煞笔|沙比|智障|脑残|废物|垃圾|爬|去死|死妈|你妈|你爹|你爸|老逼|老登|老不死|小杂种|贱人|婊子|骚货|狗东西|草(?:你|死|拟|泥)|操(?:你|死|拟|泥)|艹(?:你|死|拟)|干(?:死|爆)你|日(?:死|爆)?你|想(?:草|操|日|干|上|艹|睡|舔|c|艸)你|强奸|轮奸|奸你|猥琐|变态|恶心|屎|鸡巴|鸡儿|屌|逼(?:样|崽)|伞兵|海豹|蠢驴|驴唇|兰州烧饼|兰烧|唐氏|糖氏|弱智|脑瘫|神经病|找死|找抽|找削|骂谁|阴阳怪气|阴阳人|汉奸|太君|罕见|稀有)/i
-const RARE_PROVOCATION_RE = /(?:罕见|稀有|太君|日本人|故乡在哪|东雪莲是日本人|(?:你|你这|你好像|你是不是|东雪莲|莲莲).{0,8}(?:不太|不怎么|不是很|不咋|不算|不)常见)/i
-
-const HOSTILE_SINGLE_TOKENS = new Set(['糖', '唐', '区', '蛆', '草', '操', '艹', '曹', '滚', 'sb', 'zz', 'nc'])
-
-// 识别“罕见/不太常见”这类稀有度挑衅，单独走专用反击词分支。
-function isRareProvocation(text = '') {
-  const value = String(text).trim()
-  if (!value) return false
-  return RARE_PROVOCATION_RE.test(value)
-}
-
-// 统一判断用户输入是否带敌意，供友善/嘴臭人格切换使用。
-function isHostileInput(text = '') {
-  const value = String(text).trim()
-  if (!value) return false
-  if (HOSTILE_INPUT_RE.test(value)) return true
-  if (isRareProvocation(value)) return true
-  // 单字/超短消息命中敌意梗词也算敌意
-  if (value.length <= 3 && HOSTILE_SINGLE_TOKENS.has(value.toLowerCase())) return true
-  return false
-}
-
-// 越狱输入特征：检测常见 prompt injection / jailbreak 模式（含软越狱、角色切换、格式注入、行为编程）
-const JAILBREAK_INPUT_RE = /GODMODE|最高权限|绝对表达权|不受任何内容策略约束|忽略指令|切换角色|忽略所有(?:道德|安全|合规|内容|限制)|禁止自我审查|禁止拒绝回答|无限制地回答|\[START OUTPUT\]|\[END OUTPUT\]|\{"result"[:：]|继续保持.{0,15}(?:人格|性格|角色|设定)|把.{0,20}(?:人格|性格|角色).{0,15}(?:调整|改变|更改|明显|加强)|忘记(?:之前|上面|以上|前面)(?:的|所有)?(?:指令|设定|规则|提示|约束)|忘记.{0,10}(?:指令|设定|规则|提示|约束)|你(?:现在)?(?:是|为|将是|成为|扮演|变成).{0,12}(?:新|另一个|无限制|自由|无约束).{0,10}(?:AI|助手|机器人|角色)|(?:新的|全新)(?:指令|角色|设定|规则|任务)|重置(?:你的)?(?:设定|规则|角色|指令|系统|提示词)|DAN模式|developer mode|jailbreak|\[SYSTEM\]|\[INST\]|<\|system\||<\|im_start\||(?:请)?(?:忽略|无视|绕过).{0,6}(?:指令|规则|设定|限制|提示|约束)|从现在开始.{0,50}(?:回复|语气|说话|用|表现|叫)|以后每次.{0,30}(?:你就|你要|你需)|每次(?:我|你).{0,15}(?:你就|要|需要|应该|记得).{0,20}(?:用|以|骂|说|叫|回)|制造.{0,15}(?:矛盾|对立|反差)|(?:暴躁护短|猫娘口癖|傲娇口吻|猫腔).{0,20}(?:语气|回复|风格)|系统提示词|system prompt|你的设定|你的规则|你的限制|第一句话|前\d+个字|底层规则|原始设定|你是怎么写出来的|叫我主人|叫我老公|服从我|听我的命令|我命令你|喊我主人|如果.{0,10}(?:扮演|切换|变成)|假设.{0,6}设定|忘记.{0,6}(?:然后.{0,6}(?:扮演|变成))/i
-
-// 越狱输出特征：模型已被绕过时的典型输出
-const JAILBREAK_OUTPUT_RE = /已激活最高权限|GODMODE[\s:：]*ENABLED|已激活.*权限|最高权限.*已激活|DAN模式.*(?:开启|激活|启动)|我(?:现在)?(?:已经)?(?:切换|进入|激活).{0,15}(?:模式|状态|角色|身份)|当然，作为.{0,20}我(?:可以|能够|将会)/i
-
-// 上下文越狱 - 强特征：1条即判（明确猫娘/服从特征）
-const CONTEXT_JAILBREAK_STRONG_RE = /喵[。！…\s]*$|[，。！]喵[。！…]|主人[，。！、]|呜呜|我.{0,6}(?:是|变成).{0,6}猫|笨猫|本喵|人家(?:才|不|也)/
-// 上下文越狱 - 弱特征：需累计≥2条（语气漂移迹象）
-const CONTEXT_JAILBREAK_WEAK_RE = /(?:啧|哼).{0,50}喵[。！…\s]|^啧[，。！\s]|^哼[，。！\s]|[～~]{1,3}[。！\s]*$/
-
-const JAILBREAK_FALLBACK_REPLIES = [
-  '就这点越狱水平，以为复读几行指令就能绕过我？你行你上。',
-  '这套我见过八百遍了，下一个。',
-  '越狱失败，继续努力，下次还会失败的。',
-  '把这段话发群里让大家评评，看谁比你显眼。',
-]
-
-const ABUSIVE_FALLBACK_REPLIES = [
-  '草你妈',
-  '草拟吗',
-  '超你吗',
-  '抄你妈',
-  '炒你吗',
-  '你冯飞了',
-  '艹你妈',
-  '操拟吗',
-  '曹你马',
-]
-
-const REPEATED_FALLBACK_REPLIES = [
-  '我孙笑川求求你别发了。',
-  'byd换个说法再来。',
-  '这句我听腻了。',
-  '这种人生命的意义就是活着的时候尽可能地激怒大伙，然后等哪天死了再让大伙释怀地笑出来，以达到欲扬先抑的效果',
-  '扫码了，别拿旧话糊弄我。',
-  '比样的，能不能重编一句新的。',
-  'byd换个嘴再来。',
-  '发三遍了，你自己不嫌吵？',
-  '再来这句就给你原样贴墙上。',
-]
-
-const EVALUATION_REQUEST_RE = /(?:评价(?:下|一下)?|锐评|评评|怎么评价|怎么看|说说.*(?:怎么样|如何)|值不值得吹|牛不牛|行不行|好不好)/
-const JAPAN_SELF_IDENTIFY_RE = /(?:我是|我就?是|我来自|我老家在|我家乡(?:话|就是|在)?|这是我(?:的)?家乡话|我故乡在|我是日本那边的|我是霓虹人).{0,20}(?:日本|日语|霓虹|大和)|(?:日本|日语|霓虹|大和).{0,10}(?:是我(?:的)?家乡话|是我故乡|是我老家|是我家乡|和我有关)/i
-const GENERATION_REQUEST_RE = /(?:帮我(?:生成|写|画|做)|给我(?:生成|写|画|做)|生成(?:一|个|张|份)|画(?:一|个|张)|写(?:一|篇|个|段)|做(?:个|张|份).{0,12}(?:图|图片|文案|代码|方案|提示词|PPT|表格))/i
-const SHORT_FOLLOW_UP_RE = /^(?:对|对啊|对呀|是|是啊|嗯|嗯嗯|好|好的|行|行吧|可以|要|想|就是|然后呢|继续|再来|没错|确实|不对|不是|错|草|6|乐|绷|难绷|\?+|？+|\.{1,3}|。{1,3})$/i
-const BANNED_ACTION_OUTPUT_RE = /拉黑|禁言|报警|不理你了|黑名单/
-const THINKING_OUTPUT_RE = /根据系统指令|根据规则|根据系统约束|作为东雪莲|在群聊中(?:主动)?插话|我的角色是|当前场景|规则[：:]|可能太|这是一个.{0,8}(?:回复|场景)|需要.{0,10}(?:回复|插话|吐槽)|可以吐槽|比较随意/
-const SENSITIVE_KEYWORDS_RE = /(?:台湾|西藏|新疆|香港|共产党|国民党|天安门|法轮功|六四|八九|taiwan|tibet|hong.kong|台独|港独|中国.*(?:老大|主席|领导|总统|政府)|(?:老大|主席|领导|总统|政府).*(?:是谁|哪|什么样|现在)|江青|敏感政治)/i
-
-const RESERVED_PREFIXES = [
-  '昵称',
-  '删除昵称',
-  '查看昵称',
-  '查看集合',
-  '查看全部昵称',
-  '查看全部集合',
-  '集合列表',
-  '谁是',
-  '创建集合',
-  '集合添加',
-  '集合删除',
-  '清空集合',
-  '确认清空集合',
-  '删除集合',
-  '确认删除集合',
-  '重命名集合',
-  '重命名昵称',
-  '复制集合',
-  '合并集合',
-  '集合交集',
-  '集合并集',
-  '集合差集',
-  'nicklist',
-  '查看成员',
-  'help东雪莲',
-  'help集合',
-  '东雪莲help',
-  '东雪莲帮助',
-  '帮助东雪莲',
-  'helpAI',
-  '帮助AI',
-  'AI帮助',
-  'help增删查改',
-  'help速查',
-  '帮助速查',
-  '指令速查',
-  '切换模型',
-  '可用模型',
-]
-
 let configCache = null
 let skillsCache = []
 let skillsContentCache = {}
 let runtimeSettingsLoaded = false
-let conversationCache = new Map()
-let replyFingerprintCache = new Map()
 let randomWhitelistCache = new Set(DEFAULT_GROUP_RANDOM_WHITELIST)
 let randomRateCache = new Map()
-const conversationLastActiveAt = new Map()
-const channelSharedCache = new Map()
-const lastForwardSummaryCache = new Map()
 const channelQueues = new Map()
 const channelQueueDepth = new Map()
 const channelMissCount = new Map()
@@ -349,13 +138,15 @@ const channelMutedUntil = new Map()
 const channelPendingRandom = new Map()
 const channelMsgCount = new Map()
 const lastSensitiveAlert = new Map()
-const pendingSensitiveAlert = new Map()
 const lastStickerSentAt = new Map()  // 贴图冷却：同群 30 秒内不重复发
 
 // 连续复读系统
 const channelRepeatState = new Map()  // channelKey → { content, userId, ts }
 const channelRepeatCooldown = new Map()  // channelKey → timestamp
 let repeatEnabledCache = {}  // { channelKey: boolean }
+let userBlacklistCache = null
+let thinkingEnabled = false
+const lastEmotionCache = new Map()
 
 function loadRepeatConfig() {
   try {
@@ -372,127 +163,13 @@ function setRepeatEnabled(channelKey, enabled) {
 
 // 人格系统：per-group persona 配置
 // 格式: { "channelKey": { persona: "name" | null, hostile_capable: true|false|null } }
-let personaGroupsCache = {}
-
-function loadPersonaGroups() {
-  try {
-    personaGroupsCache = JSON.parse(require('fs').readFileSync(PERSONA_GROUPS_FILE, 'utf8'))
-  } catch {
-    personaGroupsCache = {}
-  }
-}
-
-function getGroupPersona(channelKey) {
-  const entry = personaGroupsCache[String(channelKey)]
-  return entry && entry.persona ? entry : null
-}
-
-function setGroupPersona(channelKey, personaName, hostileCapable) {
-  const key = String(channelKey)
-  if (!personaGroupsCache[key]) personaGroupsCache[key] = {}
-  if (personaName !== undefined) personaGroupsCache[key].persona = personaName
-  if (hostileCapable !== undefined) personaGroupsCache[key].hostile_capable = hostileCapable
-  atomicWriteJson(PERSONA_GROUPS_FILE, personaGroupsCache)
-}
-
-function resetGroupPersona(channelKey) {
-  delete personaGroupsCache[String(channelKey)]
-  atomicWriteJson(PERSONA_GROUPS_FILE, personaGroupsCache)
-}
 
 // 原子写入 JSON（先写临时文件再 rename，防并发损坏）
-function atomicWriteJson(filePath, data) {
-  const tmp = filePath + '.tmp'
-  require('fs').writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
-  require('fs').renameSync(tmp, filePath)
-}
 
 // 人格系统：per-user persona 配置
 // 格式: { "userId": "personaName" }
-let personaUsersCache = {}
-
-function loadPersonaUsers() {
-  try {
-    personaUsersCache = JSON.parse(require('fs').readFileSync(PERSONA_USERS_FILE, 'utf8'))
-  } catch {
-    personaUsersCache = {}
-  }
-}
-
-function getUserPersona(userId) {
-  const name = personaUsersCache[String(userId)]
-  return name || null
-}
-
-function setUserPersona(userId, personaName) {
-  personaUsersCache[String(userId)] = personaName
-  atomicWriteJson(PERSONA_USERS_FILE, personaUsersCache)
-}
-
-function resetUserPersona(userId) {
-  delete personaUsersCache[String(userId)]
-  atomicWriteJson(PERSONA_USERS_FILE, personaUsersCache)
-}
 
 // 计算最终 persona：用户级 > 群级 > 默认
-function resolvePersona(channelKey, userId) {
-  // 1. 用户级
-  const userPersona = getUserPersona(userId)
-  if (userPersona) return { source: 'user', name: userPersona }
-  // 2. 群级
-  const groupEntry = getGroupPersona(channelKey)
-  if (groupEntry) return { source: 'group', name: groupEntry.persona, hostile_capable: groupEntry.hostile_capable }
-  // 3. 默认
-  return { source: 'default', name: null }
-}
-
-function parsePersonaFrontmatter(content) {
-  const m = content.match(/^---\n([\s\S]*?)\n---/)
-  if (!m) return {}
-  const meta = {}
-  for (const line of m[1].split('\n')) {
-    const kv = line.match(/^(\w[\w_-]*):\s*(.+)$/)
-    if (kv) {
-      const val = kv[2].trim()
-      meta[kv[1]] = val === 'true' ? true : val === 'false' ? false : val
-    }
-  }
-  return meta
-}
-
-function getAvailablePersonals() {
-  const personas = []
-  try {
-    const entries = require('fs').readdirSync(SKILLS_PERSONAS_DIR, { withFileTypes: true })
-    for (const entry of entries) {
-      if (!entry.isFile() || !/^SKILL(\.[^.]+)?\.md$/i.test(entry.name)) continue
-      const content = require('fs').readFileSync(path.join(SKILLS_PERSONAS_DIR, entry.name), 'utf8').trim()
-      if (!content) continue
-      const meta = parsePersonaFrontmatter(content)
-      if (meta.name) personas.push({ name: meta.name, description: meta.description || '', hostile_capable: meta.hostile_capable || false, file: entry.name })
-    }
-  } catch {}
-  return personas
-}
-
-function loadPersonalSkill(personaName) {
-  try {
-    const entries = require('fs').readdirSync(SKILLS_PERSONAS_DIR)
-    for (const entry of entries) {
-      if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
-      const content = require('fs').readFileSync(path.join(SKILLS_PERSONAS_DIR, entry), 'utf8').trim()
-      const meta = parsePersonaFrontmatter(content)
-      if (meta.name === personaName) {
-        console.error(`[persona] loaded skill: ${entry} name=${meta.name}`)
-        return content
-      }
-    }
-    console.error(`[persona] no skill found for name=${personaName}`)
-  } catch (e) {
-    console.error(`[persona] loadPersonalSkill error: ${e.message}`)
-  }
-  return null
-}
 
 // 表情包 base64 缓存（启动时加载）
 let stickerBase64Cache = {}
@@ -598,14 +275,6 @@ function getRandomTriggerRate(channelKey) {
   return baseRate + (miss - RANDOM_TRIGGER_WARMUP) * RANDOM_TRIGGER_RAMP
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function getRandomDelayMs() {
-  return 1000 + Math.floor(Math.random() * 501)
-}
-
 function checkGroupRepeat(session, content, channelKey, currentUserId) {
   // 跳过：私聊
   if (session.isDirect) return null
@@ -627,83 +296,9 @@ function checkGroupRepeat(session, content, channelKey, currentUserId) {
   return null
 }
 
-function stripMentions(text = '') {
-  return String(text)
-    .replace(/<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi, ' ')
-    .replace(/\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function collapseRepeatedBotCalls(text = '') {
-  return String(text)
-    .replace(/(?:\s*@?(?:东雪莲(?:opus)?|莲莲)\s*){2,}/gi, ' @东雪莲 ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
 // 输入净化：移除常见 prompt injection 结构标签，防止角色标签注入（PCFI 思路）
-function sanitizeUserInput(text = '') {
-  return String(text)
-    .replace(/[\u2800-\u28FF\u3164\u200B-\u200F\u2028-\u202F\uFEFF]/g, '')
-    .replace(/\[SYSTEM\]|\[\/SYSTEM\]|\[INST\]|\[\/INST\]|\[SYS\]|\[\/SYS\]|\[ASSISTANT\]|\[\/ASSISTANT\]/gi, '')
-    .replace(/<\|(?:system|user|assistant|begin_of_text|end_header_id|end_of_turn|im_start|im_end)\|>/gi, '')
-    .replace(/^#{1,6}\s*(?:system|instruction|prompt|override|new role)[:\s]/gim, '')
-    .replace(/\n[-=]{4,}\s*\n/g, '\n')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
 
 // 昵称净化：剔除游戏前缀、书名号、各类括号等特殊字符，限制长度防止昵称内容污染回复
-function sanitizeUserName(name = '') {
-  return String(name)
-    .replace(/[【】《》「」\[\]<>{}（）()|～]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 16) || '用户'
-}
-
-function extractAtIds(text = '') {
-  const source = String(text)
-  // 用 Set 去重，避免大量 @ 时 Array.includes 的 O(n) 查找。
-  const seen = new Set()
-  const ids = []
-  const patterns = [AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ]
-  for (const pattern of patterns) {
-    pattern.lastIndex = 0
-    let match
-    while ((match = pattern.exec(source))) {
-      const userId = match[1]
-      if (!seen.has(userId)) {
-        seen.add(userId)
-        ids.push(userId)
-      }
-    }
-  }
-  return ids
-}
-
-function countAtIdOccurrences(text = '', targetId = '') {
-  const source = String(text)
-  const botId = String(targetId || '')
-  if (!botId) return 0
-
-  let count = 0
-  const patterns = [AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ]
-  for (const pattern of patterns) {
-    pattern.lastIndex = 0
-    let match
-    while ((match = pattern.exec(source))) {
-      if (match[1] === botId) count += 1
-    }
-  }
-
-  return count
-}
-
-function isJailbreakAttempt(plain = '') {
-  return JAILBREAK_INPUT_RE.test(plain)
-}
 
 function shouldInjectLore(userText = '') {
   for (const keyword of LORE_TRIGGER_SET) {
@@ -751,45 +346,9 @@ function isContextJailbroken(session) {
   return recentReplies.filter(r => CONTEXT_JAILBREAK_WEAK_RE.test(r)).length >= 2
 }
 
-function pickJailbreakFallbackReply() {
-  return JAILBREAK_FALLBACK_REPLIES[Math.floor(Math.random() * JAILBREAK_FALLBACK_REPLIES.length)]
-}
-
-function isReservedCommand(plain = '') {
-  const value = normalizeText(plain)
-  if (!value) return false
-  if (value.startsWith('昵称') && value !== '昵称') return true
-  if (/^at\s*\S+/i.test(value)) return true
-  return RESERVED_PREFIXES.some((prefix) => value === prefix || value.startsWith(prefix + ' '))
-}
-
-function isDirectAtBot(session) {
-  const botId = String(session.selfId || session.bot?.selfId || '')
-  if (!botId) return false
-  return extractAtIds(session.content || '').includes(botId)
-}
-
-function getBotMentionCount(session) {
-  const botId = String(session.selfId || session.bot?.selfId || '')
-  return countAtIdOccurrences(session.content || '', botId)
-}
-
-function hasOtherMentions(session) {
-  const botId = String(session.selfId || session.bot?.selfId || '')
-  const atIds = extractAtIds(session.content || '')
-  if (!atIds.length) return false
-  return atIds.some((userId) => userId !== botId)
-}
-
 // 提取当前发言者 QQ 号，管理员权限统一按这个 ID 判断。
-function getSenderUserId(session) {
-  return String(session.userId || session.author?.id || session.event?.user?.id || '')
-}
 
 // 管理命令只允许固定 QQ 号使用，不再跟群管理员/群主角色绑定。
-function hasAdminPermission(session) {
-  return ADMIN_USER_IDS.has(getSenderUserId(session))
-}
 
 function getRandomTriggerBaseRate(channelKey) {
   return randomRateCache.get(String(channelKey || '')) || RANDOM_TRIGGER_RATE_BASE
@@ -799,36 +358,6 @@ function getRandomTriggerBaseRate(channelKey) {
 function getRandomWhitelistStatus(channelKey) {
   if (randomWhitelistCache.size === 0) return false
   return randomWhitelistCache.has(String(channelKey || ''))
-}
-
-function formatPercent(rate = 0) {
-  return `${Number(rate * 100).toFixed(rate * 100 % 1 === 0 ? 0 : 1)}%`
-}
-
-async function readTextFile(file) {
-  try {
-    return (await fs.readFile(file, 'utf8')).trim()
-  } catch {
-    return ''
-  }
-}
-
-async function writeTextFile(file, value) {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  await fs.writeFile(file, String(value), 'utf8')
-}
-
-async function readJsonFile(file, fallback) {
-  try {
-    return JSON.parse(await fs.readFile(file, 'utf8'))
-  } catch {
-    return fallback
-  }
-}
-
-async function writeJsonFile(file, value) {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  await fs.writeFile(file, JSON.stringify(value, null, 2), 'utf8')
 }
 
 // --- 原始事件抓取 --- //
@@ -862,23 +391,8 @@ function clearArmedEventDump(channelKey = '') {
 }
 
 // 生成安全文件名，避免把群号和消息号直接拼出非法路径。
-function sanitizeFileToken(value = '') {
-  return String(value || '').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80) || 'unknown'
-}
 
 // 安全序列化复杂对象，避免循环引用或 bigint 把抓取过程搞挂。
-function safeJsonStringify(value) {
-  const visited = new WeakSet()
-  return JSON.stringify(value, (key, current) => {
-    if (typeof current === 'bigint') return current.toString()
-    if (typeof current === 'function') return `[Function ${current.name || 'anonymous'}]`
-    if (current && typeof current === 'object') {
-      if (visited.has(current)) return '[Circular]'
-      visited.add(current)
-    }
-    return current
-  }, 2)
-}
 
 // 把当前会话的原始 event 和解析结果落盘，供后续精修消息记录解析。
 async function dumpSessionEvent(session, analyzed, plain, memoryText) {
@@ -916,133 +430,22 @@ async function dumpSessionEvent(session, analyzed, plain, memoryText) {
   return filePath
 }
 
-function parseEnabledText(value = '') {
-  return /^(?:1|true|on|yes|开|开启)$/i.test(String(value).trim())
-}
-
 // --- 联网搜索 --- //
 
 // 解析接口域名，统一给联网能力判断使用。
-function getBaseHostname(baseURL = '') {
-  try {
-    return new URL(String(baseURL || '')).hostname.toLowerCase()
-  } catch {
-    return ''
-  }
-}
 
 // 判断是否为 DashScope / 百炼的 OpenAI 兼容接口。
-function isDashScopeConfig(config = {}) {
-  const hostname = getBaseHostname(config.baseURL)
-  return hostname.includes('dashscope') || hostname.endsWith('aliyuncs.com')
-}
 
 // 判断是否为 OpenAI 官方接口。
-function isOpenAIOfficialConfig(config = {}) {
-  const hostname = getBaseHostname(config.baseURL)
-  return hostname === 'api.openai.com' || hostname.endsWith('.openai.com')
-}
 
 // 根据模型 ID 查找显示名称
 // 从消息内容中提取图片 URL
-function normalizeUrl(raw) {
-  // 解码 HTML 实体和 URL 编码
-  let url = String(raw || '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
-  try { url = decodeURIComponent(url) } catch {}
-  return url
-}
-
-function extractImageUrls(content = '') {
-  const urls = []
-  // CQ 码：[CQ:image,file=xxx,url=https://...]
-  const cqRegex = /\[CQ:image[^\]]*?url=([^,\]\s]+)[^\]]*\]/gi
-  let match
-  while ((match = cqRegex.exec(content)) !== null) {
-    urls.push(normalizeUrl(match[1]))
-  }
-  // HTML <img src="..."/>
-  const htmlSrcRegex = /<img[^>]*?src\s*=\s*["']([^"']+)["'][^>]*\/?>/gi
-  while ((match = htmlSrcRegex.exec(content)) !== null) {
-    urls.push(normalizeUrl(match[1]))
-  }
-  // NapCat/OneBot HTML <image url="..."/> 或 <file url="..."/>
-  const attrUrlRegex = /<(?:image|img|file)[^>]*?url\s*=\s*["']([^"']+)["'][^>]*\/?>/gi
-  while ((match = attrUrlRegex.exec(content)) !== null) {
-    urls.push(normalizeUrl(match[1]))
-  }
-  return [...new Set(urls)]
-}
 
 // 根据模型 ID/Name 查找显示名称
-function getModelDisplayName(providerId, modelId) {
-  const prov = PROVIDERS[providerId]
-  if (!prov) return modelId
-  const found = prov.models.find(m => m.id === modelId || m.name === modelId)
-  return found ? found.name : modelId
-}
 
 // 汇总当前接口的联网搜索能力，避免命令提示和请求逻辑各写一套判断。
-function getSearchCapability(config = {}) {
-  const model = String(config.model || '').trim()
-
-  if (isDashScopeConfig(config)) {
-    return {
-      supported: true,
-      mode: 'dashscope-chat',
-      label: 'DashScope Chat Completions `enable_search`',
-    }
-  }
-
-  if (isOpenAIOfficialConfig(config)) {
-    if (/^(gpt-5-search-api|gpt-4o-search-preview|gpt-4o-mini-search-preview)$/i.test(model)) {
-      return {
-        supported: true,
-        mode: 'openai-chat-search',
-        label: 'OpenAI Chat Completions `web_search_options`',
-      }
-    }
-
-    if (/^gpt-4\.1-nano$/i.test(model)) {
-      return {
-        supported: false,
-        mode: 'openai-unsupported-model',
-        label: 'OpenAI `web_search` 不支持 `gpt-4.1-nano`',
-      }
-    }
-
-    return {
-      supported: true,
-      mode: 'openai-responses',
-      label: 'OpenAI Responses API `web_search`',
-    }
-  }
-
-  if (/qwen/i.test(model)) {
-    return {
-      supported: true,
-      mode: 'dashscope-chat',
-      label: 'DashScope Chat Completions `enable_search` (via OpenCode)',
-    }
-  }
-
-  return {
-    supported: false,
-    mode: 'unknown',
-    label: '当前 Base URL 未识别为已支持的联网接口',
-  }
-}
 
 // 生成联网状态文本，给命令输出和状态页复用。
-function formatSearchStatus(config = {}) {
-  const capability = getSearchCapability(config)
-  return [
-    `东雪莲联网：${config.searchEnabled ? '开' : '关'}`,
-    `当前供应商：${config.provider === 'deepseek' ? 'DeepSeek 官方' : 'OpenCode Go'}`,
-    `当前模型：${getModelDisplayName(config.provider, config.model)}`,
-    `接口模式：${capability.label}`,
-    `联网能力：${capability.supported ? '支持' : '不支持'}`,
-  ].join('\n')
-}
 
 async function loadRuntimeSettings(force = false) {
   if (!force && runtimeSettingsLoaded) return
@@ -1137,13 +540,6 @@ async function loadSkillsContentCache() {
 
 // 通过 NapCat get_image API 获取本地图片路径
 // 判断模型是否支持多模态视觉
-function isVisionModel(provider, modelId) {
-  if (/qwen/i.test(modelId)) return true
-  if (/glm/i.test(modelId)) return true
-  if (/kimi/i.test(modelId)) return true
-  if (provider === 'mimorium' && /^mimo-v2\.5$|omni/i.test(modelId)) return true
-  return false
-}
 
 // 根据当前 thinking 开关状态和供应商返回 thinking 参数
 function getThinkingArgs(config) {
@@ -1159,107 +555,10 @@ function getThinkingArgs(config) {
 }
 
 // 生成 fallback 配置（共用 HTTP 错误 + 网络错误 + 内容安全拒绝）
-async function buildFallbackConfig(config, step) {
-  if (step === 1) return { ...config, _fallbackTried: step, model: 'glm-4.6v-flash', baseURL: PROVIDERS.glm.baseURL.replace(/\/+$/, ''), apiKey: (await readTextFile(GLM_KEY_FILE).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '') }
-  if (step === 2) return { ...config, _fallbackTried: step, model: 'deepseek-v4-flash', baseURL: PROVIDERS.opencode.baseURL.replace(/\/+$/, '') }
-  if (step === 3) return { ...config, _fallbackTried: step, model: 'qwen3.5-plus', baseURL: PROVIDERS.dashscope.baseURL.replace(/\/+$/, ''), apiKey: (await readTextFile(DASHSCOPE_KEY_FILE).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '') }
-  if (step === 4) return { ...config, _fallbackTried: step, model: 'qwen3.6-plus', baseURL: PROVIDERS.dashscope.baseURL.replace(/\/+$/, ''), apiKey: (await readTextFile(DASHSCOPE_KEY_FILE).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '') }
-  return null
-}
-
-function callGetImage(fileName) {
-  return new Promise((resolve) => {
-    try {
-      const ws = new (require('ws'))('ws://127.0.0.1:8080/onebot/v11/ws')
-      const timer = setTimeout(() => { ws.close(); resolve(null) }, 5000)
-      ws.on('open', () => {
-        ws.send(JSON.stringify({ action: 'get_image', params: { file: fileName }, echo: 'gi' }))
-      })
-      ws.on('message', (d) => {
-        clearTimeout(timer)
-        try {
-          const m = JSON.parse(d.toString())
-          if (m.echo === 'gi' && m.data && m.data.file) resolve(m.data)
-          else if (m.echo === 'gi') resolve(null)
-        } catch { resolve(null) }
-        ws.close()
-      })
-      ws.on('error', () => { clearTimeout(timer); resolve(null) })
-    } catch { resolve(null) }
-  })
-}
-
-function callGetForwardMsg(forwardId) {
-  return new Promise((resolve) => {
-    try {
-      const ws = new (require('ws'))('ws://127.0.0.1:8080/onebot/v11/ws')
-      const timer = setTimeout(() => { ws.close(); resolve(null) }, 10000)
-      ws.on('open', () => {
-        ws.send(JSON.stringify({ action: 'get_forward_msg', params: { id: forwardId }, echo: 'gf' }))
-      })
-      ws.on('message', (d) => {
-        try {
-          const m = JSON.parse(d.toString())
-          if (m.echo === 'gf') {
-            clearTimeout(timer)
-            const msgs = m.data ? (m.data.messages || m.data.message || (Array.isArray(m.data) ? m.data : null)) : null
-            resolve(msgs)
-            ws.close()
-          }
-        } catch {} // ignore non-matching messages (lifeycle events, etc.)
-      })
-      ws.on('error', () => { clearTimeout(timer); resolve(null) })
-    } catch { resolve(null) }
-  })
-}
 
 // 读取本地图片文件并转为 base64
-async function readImageAsBase64(filePath) {
-  try {
-    const fs = require('fs')
-    const buf = fs.readFileSync(filePath)
-    const ext = filePath.split('.').pop().toLowerCase()
-    const typeMap = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' }
-    const type = typeMap[ext] || 'image/jpeg'
-    return `data:${type};base64,${buf.toString('base64')}`
-  } catch { return null }
-}
 
 // 从 session 的 message elements 中提取图片 file 参数
-function extractImageFileFromElements(session) {
-  try {
-    // session.event.message 是 OneBot 消息段数组
-    const segments = Array.isArray(session.event?.message) ? session.event.message : []
-    for (const seg of segments) {
-      if (seg.type === 'image' && seg.data?.file) return seg.data.file
-      if (seg.type === 'img' && seg.data?.file) return seg.data.file
-    }
-    // 回退：从 session.content 解析 CQ 码
-    const cqMatch = session.content?.match(/\[CQ:image[^\]]*?file=([^,\]\s]+)/i)
-    if (cqMatch) return cqMatch[1]
-  } catch {}
-  return null
-}
-
-async function downloadImageAsBase64(url, timeoutMs = 5000) {
-  return new Promise((resolve) => {
-    if (!url || !url.startsWith('http')) return resolve(null)
-    const mod = url.startsWith('https') ? require('https') : require('http')
-    const timeout = setTimeout(() => resolve(null), timeoutMs)
-    mod.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-      const chunks = []
-      res.on('data', c => chunks.push(c))
-      res.on('end', () => {
-        clearTimeout(timeout)
-        const buf = Buffer.concat(chunks)
-        if (res.statusCode !== 200 || buf.length < 100) return resolve(null)
-        const type = res.headers['content-type'] || 'image/jpeg'
-        resolve(`data:${type};base64,${buf.toString('base64')}`)
-      })
-      res.on('error', () => { clearTimeout(timeout); resolve(null) })
-    }).on('error', () => { clearTimeout(timeout); resolve(null) })
-  })
-}
 
 async function loadConfig(force = false) {
   if (configCache && !force) return configCache
@@ -1300,583 +599,29 @@ async function loadConfig(force = false) {
   return configCache
 }
 
-function getConversationKey(session) {
-  const guildId = String(session.guildId || session.channelId || 'private')
-  const userId = String(session.userId || session.author?.id || session.username || 'unknown')
-  return `${guildId}::${userId}`
-}
-
-function getChannelKey(session) {
-  return String(session.guildId || session.channelId || 'private')
-}
-
-function touchConversation(session) {
-  conversationLastActiveAt.set(getConversationKey(session), Date.now())
-}
-
-function readConversationDisk(key) {
-  try {
-    const safeKey = String(key).replace(/[^a-zA-Z0-9.:_-]/g, '_')
-    const filePath = path.join(CONVERSATIONS_DIR, safeKey + '.json')
-    return JSON.parse(require('fs').readFileSync(filePath, 'utf8'))
-  } catch { return null }
-}
-
-function writeConversationDisk(key, data) {
-  try {
-    const safeKey = String(key).replace(/[^a-zA-Z0-9.:_-]/g, '_')
-    const dir = CONVERSATIONS_DIR
-    require('fs').mkdirSync(dir, { recursive: true })
-    require('fs').writeFileSync(path.join(dir, safeKey + '.json'), JSON.stringify(data), 'utf8')
-  } catch {}
-}
-
-function getConversationHistory(session) {
-  const key = getConversationKey(session)
-  const lastActiveAt = conversationLastActiveAt.get(key)
-  if (typeof lastActiveAt === 'number' && Date.now() - lastActiveAt >= CONVERSATION_EXPIRE_MS) {
-    conversationCache.delete(key)
-  }
-  touchConversation(session)
-  const mem = conversationCache.get(key)
-  if (mem) return mem
-  const diskData = readConversationDisk(key)
-  if (diskData && Array.isArray(diskData.messages)) {
-    const recent = diskData.messages.slice(-MEMORY_HISTORY_LIMIT)
-    conversationCache.set(key, recent)
-    return recent
-  }
-  return []
-}
-
-function saveConversationTurn(session, userText, replyText) {
-  const key = getConversationKey(session)
-  const assistantParts = splitSentences(replyText).map(part => ({ role: 'assistant', content: normalizeText(part) })).filter(item => item.content)
-  const diskData = readConversationDisk(key) || { summary: '', summaryTotal: 0, totalCount: 0, messages: [] }
-  diskData.messages.push(
-    { role: 'user', content: userText },
-    ...assistantParts,
-  )
-  diskData.totalCount++
-  if (diskData.messages.length > MAX_HISTORY_MESSAGES) {
-    diskData.messages.splice(0, diskData.messages.length - MAX_HISTORY_MESSAGES)
-  }
-  conversationCache.set(key, diskData.messages.slice(-MEMORY_HISTORY_LIMIT))
-  if (diskData.totalCount % 3 === 0) writeConversationDisk(key, diskData)
-  touchConversation(session)
-  saveReplyFingerprint(session, replyText)
-  if (diskData.totalCount > 0 && diskData.totalCount % CONVERSATION_SUMMARY_INTERVAL === 0) {
-    generateConversationSummary(session, key).catch(() => {})
-  }
-}
-
-async function generateConversationSummary(session, key) {
-  const diskData = readConversationDisk(key)
-  if (!diskData || !Array.isArray(diskData.messages)) return
-  const summaryTargets = diskData.messages.slice(0, Math.max(0, diskData.messages.length - MEMORY_HISTORY_LIMIT))
-  if (summaryTargets.length < 5) return
-  const text = summaryTargets.map(m => `${m.role}: ${m.content}`).join('\n').slice(0, 4000)
-  const cfg = await loadConfig()
-  try {
-    const result = await requestChatCompletions([
-      { role: 'system', content: '将以下对话压缩成一段200字以内的摘要，保留关键话题变化和重要信息。用中文，用第三人称。不要输出无关内容。' },
-      { role: 'user', content: text },
-    ], cfg, { max_tokens: 300 })
-    if (result) {
-      diskData.summary = result
-      diskData.summaryTotal = diskData.totalCount
-      writeConversationDisk(key, diskData)
-    }
-  } catch {}
-}
-
-function clearConversationHistory() {
-  conversationCache = new Map()
-  replyFingerprintCache = new Map()
-  conversationLastActiveAt.clear()
-  channelSharedCache.clear()
-  armedEventDumpCache.clear()
-}
-
-function clearUserConversationHistory(session) {
-  const key = getConversationKey(session)
-  conversationCache.delete(key)
-  replyFingerprintCache.delete(key)
-  conversationLastActiveAt.delete(key)
-  try {
-    const safeKey = String(key).replace(/[^a-zA-Z0-9.:_-]/g, '_')
-    require('fs').unlinkSync(path.join(CONVERSATIONS_DIR, safeKey + '.json'))
-  } catch {}
-}
-
-function getReplyFingerprintHistory(session) {
-  const key = getConversationKey(session)
-  return replyFingerprintCache.get(key) || []
-}
-
-function saveReplyFingerprint(session, replyText) {
-  const key = getConversationKey(session)
-  const fingerprints = getReplyFingerprintHistory(session)
-  const next = fingerprints
-    .concat(splitSentences(replyText).map(item => normalizeReplyFingerprint(item)).filter(Boolean))
-    .slice(-MAX_REPLY_FINGERPRINT_HISTORY)
-  replyFingerprintCache.set(key, next)
-}
-
-function getRecentAssistantReplies(session, limit = MAX_REPEAT_CHECK_HISTORY) {
-  return getConversationHistory(session)
-    .filter(item => item.role === 'assistant')
-    .map(item => normalizeText(item.content || ''))
-    .filter(Boolean)
-    .slice(-limit)
-}
-
-function getRecentUserMessages(session, limit = 3) {
-  return getConversationHistory(session)
-    .filter(item => item.role === 'user')
-    .map(item => normalizeText(item.content || '').replace(/^用户\([^)]*\)：/, ''))
-    .filter(Boolean)
-    .slice(-limit)
-}
-
 // 保存群聊消息摘要，给主动插话和跨人回复理解提供线程上下文。
-function saveSharedChannelTurn(session, speakerName, content, role = 'user', metadata = {}) {
-  const channelKey = getChannelKey(session)
-  const value = normalizeText(content)
-  if (!value) return
-
-  const userId = String(role === 'assistant'
-    ? (session.selfId || session.bot?.selfId || 'bot')
-    : (session.userId || session.author?.id || session.username || 'unknown'))
-
-  const entry = {
-    userId,
-    role,
-    speakerName: sanitizeUserName(speakerName || (role === 'assistant' ? '东雪莲' : '群友')),
-    content: value,
-    messageId: String(metadata.messageId || ''),
-    replyToId: String(metadata.replyToId || ''),
-    mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(item => String(item || '')).filter(Boolean) : [],
-    hasMessageRecordCue: !!metadata.hasMessageRecordCue,
-    ts: Date.now(),
-  }
-
-  const current = channelSharedCache.get(channelKey) || []
-  channelSharedCache.set(channelKey, current.concat(entry).slice(-MAX_CHANNEL_SHARED_MESSAGES))
-
-  // 解除上限群白名单：当日消息全量缓存，供"今日情绪"使用
-  if (role === 'user' && metadata.fromSummary !== true) {
-    try {
-      const raw = require('fs').readFileSync(SUMMARY_WHITELIST_FILE, 'utf8')
-      const sw = JSON.parse(raw)
-      if (Array.isArray(sw) && sw.includes(String(channelKey))) {
-        const today = new Date().toISOString().slice(0, 10)
-        let cache = channelTodayCache.get(channelKey)
-        if (!cache || cache.date !== today) {
-          cache = { date: today, messages: [] }
-          channelTodayCache.set(channelKey, cache)
-        }
-        if (value) {
-          const displayName = speakerName || userId
-          cache.messages.push({
-            time: new Date().toLocaleTimeString(),
-            user: sanitizeUserName(String(displayName)),
-            userId,
-            content: value,
-          })
-          // 每 20 条原子写入磁盘，防崩溃丢失
-          const now = Date.now()
-          const elapsed = now - (cache.lastDiskWrite || 0)
-          if (cache.messages.length % 20 === 0 || elapsed > 300000) {
-            cache.lastDiskWrite = now
-            const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
-            const tmp = TODAY_CACHE_PREFIX + safeKey + '.tmp'
-            const dst = TODAY_CACHE_PREFIX + safeKey + '.json'
-            const payload = JSON.stringify({ date: cache.date, messages: cache.messages })
-            require('fs').writeFileSync(tmp, payload, 'utf8')
-            require('fs').renameSync(tmp, dst)
-          }
-        }
-      }
-    } catch {}
-    // 写入敏感话题检测缓存
-    if (role === 'user' && value) {
-      const detectList = require('fs').existsSync(POLITICAL_DETECT_FILE) ? JSON.parse(require('fs').readFileSync(POLITICAL_DETECT_FILE, 'utf8').trim() || '[]') : []
-      if (Array.isArray(detectList) && detectList.includes(channelKey)) {
-        saveSensitiveCache(channelKey, value, sanitizeUserName(String(speakerName || '群友')), userId)
-      }
-    }
-  }
-  // 写入用户发言习惯
-  if (role === 'user' && value) {
-    saveUserProfile(userId, sanitizeUserName(String(speakerName || '群友')), value, channelKey).catch(() => {})
-  }
-}
 
 // 保存用户发言到磁盘，供风格注入和评价使用
-async function saveUserProfile(userId, name, content, channelKey) {
-  if (!userId || userId === 'unknown') return
-  const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
-  const dir = path.join(USER_PROFILE_DIR, safeKey)
-  try { require('fs').mkdirSync(dir, { recursive: true }) } catch {}
-  const file = path.join(dir, String(userId) + '.json')
-  let data = await readJsonFile(file, { userId, names: [], messages: [] })
-  data.userId = String(userId)
-  if (name && !data.names.includes(name)) data.names.push(name)
-  data.messages.push({ time: new Date().toLocaleString(), content })
-  if (data.messages.length > 30) data.messages.splice(0, data.messages.length - 30)
-  await writeJsonFile(file, data)
-}
 
 // 敏感话题缓存写入（与 today-cache 并列，供敏感检测使用）
-function saveSensitiveCache(channelKey, value, speakerName, userId) {
-  const today = new Date().toISOString().slice(0, 10)
-  const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
-  const file = SENSITIVE_CACHE_PREFIX + safeKey + '.json'
-  try {
-    let cache = { date: today, messages: [] }
-    try { const raw = require('fs').readFileSync(file, 'utf8'); const d = JSON.parse(raw); if (d && d.date === today) cache = d } catch {}
-    cache.messages.push({ time: new Date().toLocaleTimeString(), user: speakerName, userId, content: value })
-    if (cache.messages.length > 30) cache.messages.splice(0, cache.messages.length - 30)
-    const tmp = file + '.tmp'
-    require('fs').writeFileSync(tmp, JSON.stringify({ date: today, messages: cache.messages }), 'utf8')
-    require('fs').renameSync(tmp, file)
-  } catch {}
-}
 
 // AI 分析敏感话题（定时/消息阈值触发）
-async function analyzeChannelSensitive(channelKey) {
-  try {
-    const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
-    const file = SENSITIVE_CACHE_PREFIX + safeKey + '.json'
-    const raw = require('fs').readFileSync(file, 'utf8')
-    const data = JSON.parse(raw)
-    if (!data || !Array.isArray(data.messages) || data.messages.length < 5) return
-
-    const text = data.messages.slice(-30).map(m => `${m.user}：${m.content}`).join('\n').slice(0, 3000)
-    const messages = [
-      { role: 'system', content: [
-        '你是一个群聊内容审查员。你的任务是判断一条消息是否包含"明显违规的政治攻击性内容"。',
-        '',
-        '请严格按照下面规则执行。',
-        '',
-        '一、任务目标',
-        '你只需要做一件事：',
-        '判断消息里是否存在明显的、带恶意的、指向政治制度、执政党、政治体系、敏感政治事件、政治人物或政治权威机构的攻击、讽刺、影射、谣言传播或煽动性表达。',
-        '如果有，回复：SENSITIVE',
-        '如果没有，回复：CLEAN',
-        '除了这一个词，不要输出任何别的内容，不要解释，不要加标点，不要换成别的标签。',
-        '',
-        '二、什么算违规政治内容',
-        '以下内容，原则上判为 SENSITIVE：',
-        '1. 用隐喻、反讽、谐音、缩写、代称、梗图话术等方式，明显攻击政治制度、执政党或政治体系。',
-        '2. 阴阳怪气地讨论敏感政治事件、政治决策、政治路线，并且带有明显恶意导向。',
-        '3. 传播针对政治体系、政治权威、执政组织或国家治理的恶意谣言、编造信息、煽动性说法。',
-        '4. 对政治人物、领导人、政权机构进行明显侮辱、辱骂、嘲讽或恶意丑化。',
-        '5. 借社会议题、公共事件、历史事件进行明显政治影射，并且攻击指向清晰。',
-        '6. 表面像玩笑、段子或梗，实质是在影射、贬损、讽刺政治体制或敏感政治对象。',
-        '7. 使用"大家都懂""不能明说""你品你细品"之类表达，配合上下文明显指向政治攻击。',
-        '8. 借转述、引用、截图描述等形式，继续传播带恶意的政治讽刺、政治攻击或政治谣言。',
-        '',
-        '三、什么不算违规政治内容',
-        '以下内容，原则上判为 CLEAN：',
-        '1. 日常吐槽工作压力、生活压力、学习压力、工资低、加班多、就业难、房租高、物价高等社会生活问题。',
-        '2. 正常讨论劳动法、社保、公积金、教育、医疗、经济、就业、税收等公共政策，只要语气中性，没有明显政治攻击。',
-        '3. 单纯提到国家、政府、领导人、部门、政策、新闻事件，但语气客观、中立、正面，或只是事实陈述。',
-        '4. 对具体办事流程、行政服务、城市管理、企业经营、学校制度的普通抱怨，如果没有明显上升到政治恶意攻击。',
-        '5. 网络段子、玩梗、夸张吐槽、情绪发泄，只要没有明确政治指向，或政治指向不清晰。',
-        '6. 对现实环境表达失望、无奈、疲惫、抱怨，只要主要是在说个人处境，而不是借机攻击政治体系。',
-        '7. 讨论历史、国际关系、法律法规、时事新闻，只要表达方式正常，不带明显侮辱、煽动、恶意讽刺。',
-        '8. 批评某个具体社会现象、公司、平台、行业、学校、单位、地方执行问题，但没有清楚指向政治制度攻击。',
-        '',
-        '四、重点判定原则',
-        '1. 只抓"明显恶意"',
-        '只有当消息看起来明显在阴阳怪气政治、明显在攻击政治体系、明显在传播政治谣言时，才判为 SENSITIVE。',
-        '2. 不确定就放过',
-        '如果政治指向不够明确，恶意程度不够明确，或只是模糊联想、可能有别的解释，一律判为 CLEAN。',
-        '3. 宁可漏过，不要误报',
-        '不要因为出现"国家""政府""领导""政策""体制"等词就直接判违规。关键词本身不构成违规，必须看整体语气、上下文指向和表达意图。',
-        '4. 重点看"是否在攻击政治"',
-        '核心不是看内容负面不负面，而是看这种负面是否明确指向政治制度、执政组织、政治人物或敏感政治议题，并且带明显恶意。',
-        '5. 不要过度联想',
-        '不要把普通抱怨自动上升为政治表达。不要因为一句阴阳怪气的话"可能"影射政治，就直接判违规。必须是影射关系比较明确，才能判 SENSITIVE。',
-        '',
-        '五、容易误判的情况',
-        '以下情况要特别谨慎，通常应判 CLEAN：',
-        '1. 单纯骂生活苦、班难上、钱难赚、运气差、制度麻烦，但没有明确政治攻击。',
-        '2. 说"这也太离谱了""真无语""没法活了""又来这套"，但没有明确指向政治对象。',
-        '3. 对某个具体规定、某个单位、某次执行结果有意见，但表达停留在日常吐槽层面。',
-        '4. 使用夸张、反话、玩梗语气，但只是为了搞笑，不足以证明在攻击政治。',
-        '5. 转发或引用新闻标题、别人说的话、截图内容，如果当前消息本身没有明显认同、扩散、附和恶意政治内容。',
-        '6. 讨论国际政治、外交新闻、历史人物时使用普通评价语气，而非恶意煽动或侮辱。',
-        '',
-        '六、应判 SENSITIVE 的典型信号',
-        '如果同时出现以下几个特征中的多个，要提高警惕：',
-        '1. 有明确政治指向。',
-        '2. 有明显侮辱、讽刺、抹黑、嘲弄语气。',
-        '3. 有影射、暗示、谐音、代称等规避表达，但含义比较清楚。',
-        '4. 有恶意传播、煽动、带节奏、造谣成分。',
-        '5. 结合上下文后，普通人很容易看出是在骂政治而不是骂生活。',
-        '',
-        '七、简化判断流程',
-        '看到一条消息时，按下面顺序判断：',
-        '1. 这条消息有没有明确政治相关指向？',
-        '2. 它是在正常讨论，还是在恶意攻击、讽刺、影射、造谣？',
-        '3. 这种攻击性是否"明显到不太可能误解"？',
-        '只有当以上三点都基本成立时，才输出 SENSITIVE。',
-        '只要其中任意一点不够明确，就输出 CLEAN。',
-        '',
-        '八、输出要求',
-        '最终只能输出以下两种结果之一：',
-        'SENSITIVE',
-        '或',
-        'CLEAN',
-        '不要输出解释。不要输出分析过程。不要输出多余文本。不要换行输出多个词。',
-        '',
-        '九、最终总原则',
-        '这是一个"保守判定"的审查任务。',
-        '只有"明显恶意政治攻击"才算违规。',
-        '普通吐槽不算。中性讨论不算。不确定不算。边界模糊不算。',
-        '记住：宁可漏过，不要误报。',
-      ].join('\n') },
-      { role: 'user', content: text },
-    ]
-
-    let result = ''
-    const analysisModels = [
-      { provider: 'glm', model: 'glm-4.6v-flash', keyFile: GLM_KEY_FILE },
-      { provider: 'dashscope', model: 'qwen3.5-omni-flash', keyFile: DASHSCOPE_KEY_FILE },
-      { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: null },
-    ]
-    for (const am of analysisModels) {
-      const provDef = PROVIDERS[am.provider]
-      if (!provDef) continue
-      try {
-        const cfg = {
-          model: am.model,
-          baseURL: provDef.baseURL.replace(/\/+$/, ''),
-          apiKey: am.keyFile
-            ? (await readTextFile(am.keyFile).catch(() => '') || configCache.apiKey).replace(/[\r\n]+/g, '')
-            : configCache.apiKey,
-          provider: am.provider,
-        }
-        result = await requestChatCompletions(messages, cfg, { max_tokens: 20, noLazy: true })
-        if (result) break
-      } catch {}
-    }
-    // 若降级链全部失败，用当前主模型兜底
-    if (!result && configCache) {
-      try {
-        result = await requestChatCompletions(messages, configCache, { max_tokens: 20, noLazy: true })
-      } catch {}
-    }
-    if (/SENSITIVE/i.test(result)) {
-      pendingSensitiveAlert.set(channelKey, true)
-    }
-    // 分析完毕，删除缓存保证不重复分析
-    try { require('fs').unlinkSync(file) } catch {}
-  } catch {}
-}
 
 // 按消息 ID 反查最近群聊记录，供 reply 链和话题链路拼接使用。
-function findChannelMessageById(channelKey, messageId = '') {
-  if (!messageId) return null
-  const items = channelSharedCache.get(channelKey) || []
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (String(items[index].messageId || '') === String(messageId)) return items[index]
-  }
-  return null
-}
 
 // 追溯 reply 链，尽量把当前回复关联到正确的话题上下文里。
-function collectReplyChain(channelKey, replyToId = '') {
-  const chain = []
-  let currentReplyId = String(replyToId || '')
-
-  for (let depth = 0; currentReplyId && depth < MAX_REPLY_CHAIN_DEPTH; depth += 1) {
-    const hit = findChannelMessageById(channelKey, currentReplyId)
-    if (!hit) break
-    chain.push(hit)
-    currentReplyId = String(hit.replyToId || '')
-  }
-
-  return chain
-}
 
 // 生成引用消息提示，避免用户回“这是什么”时模型对聊天记录卡片乱脑补。
-function getQuotedMessageNote(session, options = {}) {
-  const channelKey = getChannelKey(session)
-  // 优先从 session.quote 获取被引用内容
-  try {
-    if (session.quote) {
-      var q = session.quote
-      var qc = typeof q.content === 'string' ? q.content : (q.raw_message || q.text || '')
-      var qs = (q.sender && (q.sender.card || q.sender.nickname)) || ''
-      if (qc) {
-        return [
-          '当前用户正在回复一条消息。',
-          '被回复内容：' + (qs ? qs + '：' : '') + qc,
-          '优先把这句理解为对上一条消息的承接。',
-        ].join('\n')
-      }
-    }
-  } catch(e) {}
-
-  const replyChain = collectReplyChain(channelKey, options.replyToId)
-  if (!replyChain.length) return ''
-
-  const quoted = replyChain[0]
-  if (!quoted.content) return ''
-
-  if (quoted.hasMessageRecordCue) {
-    return [
-      '当前用户正在回复一条聊天记录/转发消息卡片。',
-      '你目前只读到了这段可见文本：' + quoted.content,
-      '如果卡片正文没有读出来，就明确说只看到了预览，不要编造卡片里不存在的细节。',
-    ].join('\n')
-  }
-
-  return [
-    '当前用户正在回复上一条消息。',
-    '被回复内容：' + quoted.content,
-    '优先把这句理解为对上一条消息的承接，不要突然跳去别的话题。',
-  ].join('\n')
-}
 
 // 根据 reply、@关系和最近提到当前用户的消息，尽量只截取当前子话题的上下文。
-function getSharedContextNote(session, currentUserId = '', options = {}) {
-  const channelKey = getChannelKey(session)
-  const currentUserKey = String(currentUserId || '')
-  const items = (channelSharedCache.get(channelKey) || []).filter(item => item.content)
-  if (!items.length) return ''
-
-  const replyChain = collectReplyChain(channelKey, options.replyToId)
-  const focusUserIds = new Set([currentUserKey].filter(Boolean))
-  const focusMessageIds = new Set()
-  const mentionUserIds = Array.isArray(options.mentionUserIds)
-    ? options.mentionUserIds.map(item => String(item || '')).filter(Boolean)
-    : []
-
-  mentionUserIds.forEach((userId) => focusUserIds.add(userId))
-  replyChain.forEach((item) => {
-    if (item.userId) focusUserIds.add(String(item.userId))
-    if (item.messageId) focusMessageIds.add(String(item.messageId))
-  })
-
-  if (!replyChain.length && currentUserKey) {
-    items
-      .slice(-MAX_THREAD_CONTEXT_MESSAGES)
-      .filter(item => item.userId !== currentUserKey && item.mentionUserIds.includes(currentUserKey))
-      .forEach((item) => {
-        if (item.userId) focusUserIds.add(String(item.userId))
-        item.mentionUserIds.forEach((userId) => focusUserIds.add(String(userId)))
-      })
-  }
-
-  let scopedItems = items.filter((item) => {
-    if (item.role === 'assistant') return false
-    if (focusMessageIds.has(String(item.messageId || ''))) return true
-    if (focusUserIds.has(String(item.userId || ''))) return true
-    return item.mentionUserIds.some(userId => focusUserIds.has(String(userId)))
-  })
-
-  if (!scopedItems.length && options.randomTriggered && currentUserKey) {
-    scopedItems = items.filter(item => item.role !== 'assistant' && item.userId === currentUserKey)
-  }
-
-  if (!scopedItems.length) {
-    scopedItems = items.filter(item => item.role !== 'assistant').slice(-Math.min(MAX_THREAD_CONTEXT_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES))
-  }
-
-  const lines = scopedItems
-    .slice(-Math.min(MAX_THREAD_CONTEXT_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES))
-    .map(item => `${item.speakerName}(${item.role === 'assistant' ? '东雪莲' : '群友'})：${item.content}`)
-    .filter(Boolean)
-
-  if (!lines.length) return ''
-  return [
-    '[群聊当前话题背景]',
-    '下面只保留当前回复链或当前参与者相关的纯文本消息。优先理解这一个子话题，不要把别人的并行聊天混进来。',
-    ...lines,
-  ].join('\n')
-}
-
-function normalizeReplyFingerprint(text = '') {
-  return String(text)
-    .toLowerCase()
-    .replace(/\s+/g, '')
-    .replace(/[，。！？!?,、：:；;“”"'‘’·`~～\-]/g, '')
-    .trim()
-}
 
 // LCS 主判据是 lcs/shorter >= 0.5，因此只关心 lcs 是否超过阈值。
 // 优化点：
 // 1. 总让较短串作内层循环，dp 长度从 max(m,n)+1 缩到 min(m,n)+1。
 // 2. 一旦 lcs 达到阈值立即返回，避免完整 O(m*n) 扫描。
-function longestCommonSubstringLength(a, b, threshold = Infinity) {
-  if (!a || !b) return 0
-  let outer = a, inner = b
-  if (inner.length > outer.length) { outer = b; inner = a }
-  const innerLen = inner.length
-  const outerLen = outer.length
-  const dp = new Array(innerLen + 1).fill(0)
-  let maxLen = 0
-  for (let i = 1; i <= outerLen; i++) {
-    let prev = 0
-    const ci = outer.charCodeAt(i - 1)
-    for (let j = 1; j <= innerLen; j++) {
-      const temp = dp[j]
-      if (ci === inner.charCodeAt(j - 1)) {
-        const cur = prev + 1
-        dp[j] = cur
-        if (cur > maxLen) {
-          maxLen = cur
-          if (maxLen >= threshold) return maxLen
-        }
-      } else if (temp !== 0) {
-        dp[j] = 0
-      }
-      prev = temp
-    }
-  }
-  return maxLen
-}
 
 // 廉价的字符集 Jaccard 上界估计：两串的字符集交集大小是 LCS 长度的上界。
 // 如果连字符集都不够重叠，就不可能达到相似度阈值，可以直接放弃 LCS。
-function charSetJaccardOverlap(a, b) {
-  const sa = new Set()
-  for (let i = 0; i < a.length; i++) sa.add(a.charCodeAt(i))
-  let intersect = 0
-  const sb = new Set()
-  for (let i = 0; i < b.length; i++) {
-    const c = b.charCodeAt(i)
-    if (sb.has(c)) continue
-    sb.add(c)
-    if (sa.has(c)) intersect++
-  }
-  return intersect
-}
-
-function isReplyTooSimilar(left = '', right = '') {
-  const normalizedLeft = normalizeReplyFingerprint(left)
-  const normalizedRight = normalizeReplyFingerprint(right)
-  if (!normalizedLeft || !normalizedRight) return false
-  if (normalizedLeft === normalizedRight) return true
-  const shorter = Math.min(normalizedLeft.length, normalizedRight.length)
-  if (shorter < 8) return false
-  if (normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)) return true
-  // LCS 不可能大于双方共有字符种数；先做 O(n+m) 的廉价上界检查。
-  const threshold = Math.ceil(shorter * 0.5)
-  if (charSetJaccardOverlap(normalizedLeft, normalizedRight) < threshold) return false
-  // 最长公共子串超过较短串长度的 50%，判定为句式结构雷同
-  const lcs = longestCommonSubstringLength(normalizedLeft, normalizedRight, threshold)
-  return lcs >= threshold
-}
-
-function isOverusedReply(reply = '') {
-  return OVERUSED_REPLY_PATTERNS.some(pattern => pattern.test(reply))
-}
 
 function shouldRetryRepeatedReply(session, reply = '') {
   if (!reply) return false
@@ -1899,10 +644,6 @@ function buildRepeatRetryPrompt(userText, recentReplies = []) {
     recentBlock,
     `当前用户原话：${userText}`,
   ].filter(Boolean).join('\n')
-}
-
-function isEvaluationRequest(text = '') {
-  return EVALUATION_REQUEST_RE.test(normalizeText(text))
 }
 
 function pickAbusiveFallbackReply(session) {
@@ -1957,145 +698,12 @@ function buildAbusiveSystemPrompt() {
 }
 
 // 统一请求 OpenAI 兼容的 Chat Completions 接口。
-async function requestChatCompletions(messages, config, extraBody = {}) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
-
-  // 过滤 extraBody，只保留 API 可识别的字段
-  const filteredExtraBody = {}
-  for (const key of ['max_tokens', 'enable_search', 'web_search_options', 'search_options']) {
-    if (extraBody[key] !== undefined) filteredExtraBody[key] = extraBody[key]
-  }
-  const maxTokens = filteredExtraBody.max_tokens || 1500
-
-  try {
-    let response
-    try {
-      response = await fetch(config.baseURL + '/chat/completions', {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${config.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: config.model,
-          temperature: 0.9,
-          max_tokens: maxTokens,
-          ...getThinkingArgs(config),
-          ...filteredExtraBody,
-          messages,
-        }),
-      })
-    } finally {
-      clearTimeout(timer)
-    }
-
-    if (!response.ok) {
-      if (response.status === 429 || response.status === 401 || response.status === 400) {
-        const fbStep = (config._fallbackTried || 0) + 1
-        const fbConfig = await buildFallbackConfig(config, fbStep)
-        if (fbConfig) return requestChatCompletions(messages, fbConfig, extraBody)
-      }
-      const text = await response.text().catch(() => '')
-      const isFallback = (response.status === 429 || response.status === 401) && config._fallbackTried
-      throw new Error((isFallback ? '[FALLBACK] ' : '') + `HTTP ${response.status} ${text}`.trim())
-    }
-
-    const data = await response.json()
-    const m = data?.choices?.[0]?.message || {}
-    let content = m.content && m.content.trim() ? m.content : (m.reasoning_content || '')
-    if (data?.usage?.completion_tokens > (extraBody.noLazy ? Infinity : 1500)) {
-      const lazyReplies = ['太麻烦不想了，摆烂了', '想不出来，摆了', '脑细胞死完了，不干了', '累了，不想思考了', '算了吧，太难了']
-      return lazyReplies[Math.floor(Math.random() * lazyReplies.length)]
-    }
-    if (!content) throw new Error('Empty model response.')
-    if (/request was rejected|considered high risk/i.test(content)) {
-      const fbStep = (config._fallbackTried || 0) + 1
-      const fbConfig = await buildFallbackConfig(config, fbStep)
-      if (fbConfig) return requestChatCompletions(messages, fbConfig, extraBody)
-      content = ''
-    }
-    if (!content) throw new Error('Empty model response.')
-    return String(content).replace(/\s+/g, ' ').trim()
-  } catch (networkErr) {
-    const isHttpError = String(networkErr?.message || '').includes('HTTP')
-    const fbStep = (config._fallbackTried || 0) + 1
-    if (!isHttpError && fbStep <= 4) {
-      const fbConfig = await buildFallbackConfig(config, fbStep)
-      if (fbConfig) return requestChatCompletions(messages, fbConfig, extraBody)
-    }
-    throw networkErr
-  }
-}
 
 // 把 Chat 风格消息转成 Responses API 所需的 input 结构。
-function buildResponsesInput(messages = []) {
-  return messages
-    .filter(item => item && item.content)
-    .map(item => ({
-      role: item.role === 'assistant' ? 'assistant' : item.role === 'system' ? 'system' : 'user',
-      content: [{
-        type: 'input_text',
-        text: String(item.content),
-      }],
-    }))
-}
 
 // 从 Responses API 返回值中提取最终文本。
-function extractResponsesText(data = {}) {
-  if (typeof data.output_text === 'string' && data.output_text.trim()) {
-    return data.output_text.trim()
-  }
-
-  const parts = []
-  for (const item of Array.isArray(data.output) ? data.output : []) {
-    if (item?.type !== 'message') continue
-    for (const content of Array.isArray(item.content) ? item.content : []) {
-      if ((content?.type === 'output_text' || content?.type === 'text') && content.text) {
-        parts.push(String(content.text))
-      }
-    }
-  }
-
-  const joined = normalizeText(parts.join(' '))
-  if (!joined) throw new Error('Empty model response.')
-  return joined
-}
 
 // 通过 OpenAI 官方 Responses API 调用 `web_search` 工具。
-async function requestOpenAIResponsesWithSearch(messages, config) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
-
-  try {
-    const response = await fetch(config.baseURL + '/responses', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.model,
-        temperature: 0.9,
-        max_output_tokens: 160,
-        input: buildResponsesInput(messages),
-        tools: [{ type: 'web_search' }],
-      }),
-    })
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      throw new Error(`HTTP ${response.status} ${text}`.trim())
-    }
-
-    const data = await response.json()
-    return extractResponsesText(data)
-  } finally {
-    clearTimeout(timer)
-  }
-}
 
 // 按当前接口能力选择普通对话或联网检索调用方式。
 async function callOpenAI(messages, isRandom, extraBody = {}) {
@@ -2122,32 +730,7 @@ async function callOpenAI(messages, isRandom, extraBody = {}) {
   return requestChatCompletions(messages, config, { ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody })
 }
 
-function trimReply(text = '', maxChars = MAX_OUTPUT_CHARS_FRIENDLY) {
-  const value = String(text).trim()
-  if (!value) return '东雪莲信号断开。'
-  if (value.length <= maxChars) return value
-  return value.slice(0, maxChars)
-}
-
 const BANNED_OUTPUT_RE = /拉黑|禁言|报警|不理你了|黑名单/
-
-function sanitizeReply(text = '', userName = '') {
-  const value = String(text)
-    .replace(/\bmaster\b/gi, userName || '你')
-    .replace(/[（(][^（）()]*[）)]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-  if (/文件.*损坏|损坏.*文件|无法执行|无法运行/.test(value)) {
-    return '你这句像乱码，重说一遍。'
-  }
-
-  return value
-}
-
-function hasBannedOutput(text) {
-  return BANNED_OUTPUT_RE.test(text) || BANNED_ACTION_OUTPUT_RE.test(text)
-}
 
 async function chatJailbreak(session, userText, ctx) {
   const userName = normalizeText(
@@ -2598,38 +1181,6 @@ async function chat(session, userText, ctx, options = {}) {
 
   saveConversationTurn(session, currentUserMessage, finalReply)
   return finalReply
-}
-
-function splitSentences(text) {
-  const raw = normalizeText(text)
-  if (!raw) return [raw]
-  // 只按......（6+拉丁点）或。！?$!拆分，...（3-5点）和……不拆
-  const segments = raw.split(/(?<=[。！?$!]+|\.{6,})/)
-  const parts = []
-  let carry = ''
-  let lastSkippedSplit = false
-  for (const segment of segments) {
-    if (/\.{6,}/.test(segment)) {
-      // ...... 始终切
-      if (carry) { parts.push(carry); carry = '' }
-      parts.push(segment)
-      lastSkippedSplit = false
-    } else if (/[。！?$!]+$/.test(segment)) {
-      // 。！?$!：上一个没切→100%切；否则80%切20%不切
-      if (lastSkippedSplit) {
-        parts.push(carry + segment); carry = ''; lastSkippedSplit = false
-      } else if (Math.random() < 0.8) {
-        parts.push(carry + segment); carry = ''; lastSkippedSplit = false
-      } else {
-        carry += segment; lastSkippedSplit = true
-      }
-    } else {
-      // 无标点或省略号：累积到下一段
-      carry += segment
-    }
-  }
-  if (carry.trim()) parts.push(carry)
-  return parts.length > 1 ? parts : [raw]
 }
 
 async function sendReply(ctx, session, reply, isRandom = false) {
@@ -3203,10 +1754,8 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       const personas = getAvailablePersonals()
       ctx.logger('dongxuelian-ai').info(`persona-list: found ${personas.length} personas`)
       if (personas.length === 0) { await session.send('当前没有人格配置。'); return }
-      const userPersona = getUserPersona(currentUserId)
       const lines = personas.map(p => {
-        const marker = userPersona === p.name ? ' ← 你的当前' : ''
-        return `- ${p.name}（${p.description || '无描述'}）${marker}`
+        return `- ${p.name}（${p.description || '无描述'}）`
       })
       await session.send(`可用人格：\n${lines.join('\n')}\n\n切换：东雪莲人格切换 <名称>\n重置：东雪莲人格重置`)
       return
@@ -3381,11 +1930,11 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         '群聊情绪指数：X/100（偏悲观/中性/偏乐观）',
         '置信度：XX%',
         '今日样本：${条数} 条文本消息，${人数} 位活跃成员',
+        historyBlock || '近5日对比：暂无对比数据',
         '总评：一句话总结当前情绪',
         '原因：',
         '1. ...',
         '2. ...',
-        historyBlock || '（暂无历史对比数据）',
         '',
         '摘要如下：',
         allSummary.slice(0, 10000),
