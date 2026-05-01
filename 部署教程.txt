@@ -1,0 +1,190 @@
+东雪莲 Bot 服务器部署教程
+============================
+
+准备工作
+--------
+1. 一台 Linux 服务器（Ubuntu 22.04 推荐），能 ssh 连接
+2. 一个 QQ 号（用于 Bot 登录）
+3. 一个 DeepSeek API key（必填），以及可选的 mimorium / opencode / dashscope / GLM key
+
+
+方式一：首次部署（setup.sh 一键部署）
+--------------------------------------
+
+1. 下载 setup.sh 到服务器
+
+   scp E:\莲莲Bot\setup.sh root@服务器IP:/root/
+
+2. ssh 登录服务器
+
+   ssh root@服务器IP -p 端口
+
+3. 编辑 setup.sh 顶部两个参数
+
+   QQ_NUMBER=" Bot 登录用的 QQ 号 "
+   ADMIN_QQ=" 你的 QQ 号（管理员） "
+
+4. 运行
+
+   bash setup.sh
+
+5. 看到二维码 → 掏出手机 QQ 扫码登录
+
+6. 按提示输入 API key（DeepSeek 必填，其余可选）
+
+7. 完成，bot 自动启动
+
+
+方式二：手动部署（适合想自己控制每一步）
+----------------------------------------
+
+1. 安装 Node.js 18+
+
+   curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+   apt-get install -y nodejs
+
+2. 安装系统依赖
+
+   apt-get update
+   apt-get install -y curl wget git unzip jq xvfb screen procps \
+     tesseract-ocr tesseract-ocr-chi-sim ffmpeg python3 python3-pip
+   pip3 install yt-dlp
+
+3. 克隆仓库
+
+   git clone https://github.com/qiongtu2077/dongxuelian-qqbot.git /root/koishi-app
+   cd /root/koishi-app
+   npm install
+
+4. 安装 NapCat
+
+   curl -k -L -# -o napcat.sh "https://nclatest.znin.net/NapNeko/NapCat-Installer/raw/main/install.sh"
+   bash napcat.sh --docker n --cli y --proxy 0 --force
+
+5. 写入 NapCat 配置
+
+   NAPCAT_CONFIG="/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config"
+   mkdir -p "$NAPCAT_CONFIG"
+
+   cat > "$NAPCAT_CONFIG/napcat.json" <<'EOF'
+   { "fileLog": false, "consoleLog": true, "packetBackend": "auto",
+     "webui": { "port": 6099, "token": "123" } }
+   EOF
+
+   cat > "$NAPCAT_CONFIG/onebot11_你的QQ号.json" <<EOF
+   { "network": { "websocketServers": [
+     { "name": "WebSocket Server", "enable": true,
+       "host": "127.0.0.1", "port": 8080 }
+   ] } }
+   EOF
+
+6. 创建数据目录和初始配置
+
+   DATA_DIR="/root/koishi-app/data"
+   mkdir -p "$DATA_DIR/ai-skills/core" "$DATA_DIR/ai-skills/personas" \
+     "$DATA_DIR/ai-skills/modes" "$DATA_DIR/ai-skills/lore" \
+     "$DATA_DIR/user-profiles" "$DATA_DIR/conversations" \
+     "$DATA_DIR/ai-event-dumps" "$DATA_DIR/political-handlers"
+   cp -rn packages/koishi-plugin-dongxuelian-ai/data/ai-skills/* "$DATA_DIR/ai-skills/"
+   echo "opencode" > "$DATA_DIR/ai-provider.txt"
+   echo "deepseek-v4-flash" > "$DATA_DIR/ai-model.txt"
+   echo "https://opencode.ai/zen/go/v1" > "$DATA_DIR/ai-base-url.txt"
+   echo "[]" > "$DATA_DIR/ai-random-whitelist.json"
+   echo "[]" > "$DATA_DIR/ai-user-blacklist.json"
+   echo "{}" > "$DATA_DIR/ai-repeat-enabled.json"
+   echo "off" > "$DATA_DIR/ai-enable-search.txt"
+   echo "off" > "$DATA_DIR/ai-enable-thinking.txt"
+
+7. 写入 koishi.yml
+
+   cat > /root/koishi-app/koishi.yml <<EOF
+   plugins:
+     server:emicam:
+       port: 5140
+       selfUrl: http://localhost:5140
+     adapter-onebot:xtqqgv:
+       protocol: ws
+       selfId: '你的QQ号'
+       endpoint: ws://127.0.0.1:8080/onebot/v11/ws
+     group-name-at:nyxxfd: {}
+     dongxuelian-help:rlmpxx: {}
+     dongxuelian-ai:hdi04m: {}
+     dongxuelian-poke:nxf8l0: {}
+     koishi-plugin-defense:xlyp9f: {}
+     local-video-sender:k2w0u7: {}
+     group-leave-notice:h6lfrz: {}
+   EOF
+
+8. 启动 NapCat 并扫码
+
+   screen -dmS napcat bash -c \
+     "xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox -q 你的QQ号"
+
+   然后 screen -r napcat 查看二维码，扫码登录
+   Ctrl+A 然后 D 分离 screen
+
+9. 写入 API key 文件
+
+   echo "sk-你的deepseekkey" > /root/koishi-app/data/ai-deepseek-key.txt
+   echo "deepseek" > /root/koishi-app/data/ai-provider.txt
+   echo "deepseek-chat" > /root/koishi-app/data/ai-model.txt
+   echo "https://api.deepseek.com" > /root/koishi-app/data/ai-base-url.txt
+
+   可选的 key（按需）：
+   echo "tp-xxx" > /root/koishi-app/data/ai-mimorium-key.txt
+   echo "sk-xxx" > /root/koishi-app/data/ai-openai-key.txt
+   echo "sk-xxx" > /root/koishi-app/data/ai-dashscope-key.txt
+
+10. 启动 Koishi
+
+    cd /root/koishi-app
+    nohup npx koishi start >> koishi.log 2>&1 &
+
+11. 验证
+
+    tail -f /root/koishi-app/koishi.log
+    看到 "dongxuelian-ai dongxuelian-ai 0.9.x loaded" 即成功
+
+
+更新部署（已有服务器，只更新代码）
+------------------------------------
+
+上传改过的文件：
+
+  scp packages/koishi-plugin-dongxuelian-ai/lib/*.js \
+    root@服务器IP:/root/koishi-app/packages/koishi-plugin-dongxuelian-ai/lib/
+  scp packages/koishi-plugin-dongxuelian-help/lib/index.js \
+    root@服务器IP:/root/koishi-app/packages/koishi-plugin-dongxuelian-help/lib/
+
+上传 SKILL 文件（如果有修改）：
+
+  scp packages/koishi-plugin-dongxuelian-ai/data/ai-skills/core/* \
+    root@服务器IP:/root/koishi-app/data/ai-skills/core/
+  scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.长离.md" \
+    "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.椿.md" \
+    root@服务器IP:/root/koishi-app/data/ai-skills/personas/
+
+或者用 deploy.sh（复制到服务器后执行）：
+
+  bash /root/koishi-app/deploy.sh
+
+
+常用命令
+--------
+
+查看 bot 日志：     tail -f /root/koishi-app/koishi.log
+重启 Koishi：      bash /root/koishi-app/deploy.sh
+查看 NapCat：      screen -r napcat（Ctrl+A D 分离）
+重启 NapCat：      screen -S napcat -X quit; screen -dmS napcat \
+                    bash -c "xvfb-run -a /root/Napcat/opt/QQ/qq \
+                    --no-sandbox -q 你的QQ号"
+
+
+注意事项
+--------
+
+1. 杀进程用 pkill -f 'koishi/lib/worker'，不要用 pkill -f "start"
+2. SCP 文件用二进制传输，不要用 PowerShell 管道（会转 UTF-16 损坏中文）
+3. API key 格式：DeepSeek=sk-*, mimorium=tp-*, opencode=sk-*, dashscope=sk-*
+4. 更新代码后如果新增了依赖，服务器上要重新 npm install
+5. 如果修改了 koishi.yml，需要重启 bot 才能生效
