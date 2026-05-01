@@ -1,0 +1,228 @@
+const path = require('path')
+
+const DATA_DIR = process.platform === 'win32'
+  ? path.join(__dirname, '../data')
+  : '/root/koishi-app/data'
+
+const PLUGIN_VERSION = '0.9.1'
+
+const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')
+const MODEL_FILE = path.join(DATA_DIR, 'ai-model.txt')
+const BASE_URL_FILE = path.join(DATA_DIR, 'ai-base-url.txt')
+const SKILLS_DIR = path.join(DATA_DIR, 'ai-skills')
+const SKILLS_CORE_DIR = path.join(SKILLS_DIR, 'core')
+const SKILLS_MODES_DIR = path.join(SKILLS_DIR, 'modes')
+const SKILLS_PERSONAS_DIR = path.join(SKILLS_DIR, 'personas')
+const SKILLS_LORE_DIR = path.join(SKILLS_DIR, 'lore')
+const LORE_TRIGGER_SET = new Set([
+  '悲鸣', '鸣式', '岁主', '声骸',
+  '瑝珑', '黑海岸', '残星会', '黎那汐塔',
+  '今州', '乘霄山', '明庭',
+  '超频', '残象潮', '无音区', '蜃境',
+  '索拉里斯', '残象', '共鸣者', '协奏',
+  '黑石', '天空海', '虚质',
+  '拉古那', '七丘', '隐海修会',
+  '新联邦', '深空联合', '拉海洛', '星炬学院',
+  '角', '英白拉多', '利维亚坦',
+  '隧者', '阿列夫一',
+  '守岸人', '执花', '漂泊者', '斯瓦茨洛',
+  '绯雪', '达妮娅', '爱弥斯', '卡提希娅', '坎特雷拉',
+  '罗伊冰原', '黯原', '隧门', '虚质空间',
+  '落日堤屿', '封存地', '寂静断崖', '恒黯之原',
+  '隧锚', '永晖石', '共鸣模态',
+  '海蚀', '一庭六州', '声骸之国', '黑石群岛',
+  '泰缇斯', '夜归军', '北落野',
+])
+const PERSONA_GROUPS_FILE = path.join(DATA_DIR, 'ai-persona-groups.json')
+const PERSONA_USERS_FILE = path.join(DATA_DIR, 'ai-persona-users.json')
+const EVENT_DUMP_DIR = path.join(DATA_DIR, 'ai-event-dumps')
+const RANDOM_WHITELIST_FILE = path.join(DATA_DIR, 'ai-random-whitelist.json')
+const RANDOM_RATE_FILE = path.join(DATA_DIR, 'ai-random-rate.json')
+const SEARCH_ENABLED_FILE = path.join(DATA_DIR, 'ai-enable-search.txt')
+const MAINTENANCE_FILE = path.join(DATA_DIR, 'ai-paused.txt')
+const TEST_MODE_FILE = path.join(DATA_DIR, 'ai-test-mode.txt')
+const REPEAT_ENABLED_FILE = path.join(DATA_DIR, 'ai-repeat-enabled.json')
+const RANDOM_TRIGGER_RATE_BASE = Number(process.env.AI_RANDOM_TRIGGER_RATE || 0.008)
+const RANDOM_TRIGGER_WARMUP = 50
+const RANDOM_TRIGGER_RAMP = 0.02
+const DEFAULT_GROUP_RANDOM_WHITELIST = new Set([])
+const REQUEST_TIMEOUT = Number(process.env.AI_REQUEST_TIMEOUT_MS || 40000)
+const MAX_OUTPUT_CHARS_FRIENDLY = 500
+const MAX_OUTPUT_CHARS_ABUSIVE = 800
+const MAX_HISTORY_MESSAGES = 100
+const CONVERSATION_EXPIRE_MS = 10 * 60 * 1000
+const MEMORY_HISTORY_LIMIT = 30
+const CONVERSATION_SUMMARY_INTERVAL = 100
+const MAX_REPLY_RETRIES = 5
+const MAX_REPEAT_CHECK_HISTORY = 3
+const MAX_REPLY_FINGERPRINT_HISTORY = 100
+const MAX_CHANNEL_SHARED_MESSAGES = 100
+const MAX_CHANNEL_PROMPT_MESSAGES = 24
+const MAX_THREAD_CONTEXT_MESSAGES = 12
+const MAX_REPLY_CHAIN_DEPTH = 6
+const EVENT_DUMP_ARM_EXPIRE_MS = 10 * 60 * 1000
+const ADMIN_USER_IDS = new Set(['100000000', '200000000'])
+
+const PROVIDERS = {
+  opencode: {
+    name: 'OpenCode Go',
+    baseURL: 'https://opencode.ai/zen/go/v1',
+    models: [
+      { id: 'glm-5', name: 'GLM-5' },
+      { id: 'glm-5.1', name: 'GLM-5.1' },
+      { id: 'kimi-k2.5', name: 'Kimi K2.5' },
+      { id: 'kimi-k2.6', name: 'Kimi K2.6' },
+      { id: 'deepseek-v4-pro', name: 'DSv4pro' },
+      { id: 'deepseek-v4-flash', name: 'DSv4' },
+      { id: 'mimo-v2-pro', name: 'MiMo-V2-Pro' },
+      { id: 'mimo-v2-omni', name: 'MiMo-V2-Omni' },
+      { id: 'mimo-v2.5-pro', name: 'MiMo-V2.5-Pro' },
+      { id: 'mimo-v2.5', name: 'MiMo-V2.5' },
+      { id: 'minimax-m2.7', name: 'MiniMax M2.7' },
+      { id: 'minimax-m2.5', name: 'MiniMax M2.5' },
+      { id: 'qwen3.6-plus', name: '千问3.6' },
+      { id: 'qwen3.5-plus', name: '千问3.5' },
+    ],
+  },
+  dashscope: {
+    name: '阿里云',
+    baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    models: [
+      { id: 'qwen3.5-plus', name: 'qwen3.5' },
+      { id: 'qwen3.6-plus', name: 'qwen3.6' },
+      { id: 'qwen3.5-omni-flash', name: 'Qwen3.5-Omni-Flash' },
+      { id: 'qwen-turbo', name: 'Qwen Turbo' },
+    ],
+  },
+  deepseek: {
+    name: 'DeepSeek 官方',
+    baseURL: 'https://api.deepseek.com',
+    models: [
+      { id: 'deepseek-chat', name: 'deepseek-chat' },
+      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+    ],
+  },
+  glm: {
+    name: '智谱GLM',
+    baseURL: 'https://open.bigmodel.cn/api/paas/v4',
+    models: [
+      { id: 'glm-4.6v-flash', name: 'GLM 4.6' },
+    ],
+  },
+  mimorium: {
+    name: '小米',
+    baseURL: 'https://token-plan-cn.xiaomimimo.com/v1',
+    models: [
+      { id: 'mimo-v2.5-pro', name: 'mimo 2.5pro' },
+      { id: 'mimo-v2.5', name: 'mimo 2.5' },
+      { id: 'mimo-v2-omni', name: 'mimo v2' },
+    ],
+  },
+}
+
+const PROVIDER_FILE = path.join(DATA_DIR, 'ai-provider.txt')
+const DEEPSEEK_KEY_FILE = path.join(DATA_DIR, 'ai-deepseek-key.txt')
+const DASHSCOPE_KEY_FILE = path.join(DATA_DIR, 'ai-dashscope-key.txt')
+const GLM_KEY_FILE = path.join(DATA_DIR, 'ai-glm-key.txt')
+const MIMORIUM_KEY_FILE = path.join(DATA_DIR, 'ai-mimorium-key.txt')
+const USER_BLACKLIST_FILE = path.join(DATA_DIR, 'ai-user-blacklist.json')
+const VIDEO_BLACKLIST_FILE = path.join(DATA_DIR, 'video-blacklist.json')
+const SUMMARY_WHITELIST_FILE = path.join(DATA_DIR, 'summary-whitelist.json')
+const TODAY_CACHE_PREFIX = path.join(DATA_DIR, 'today-cache-')
+const EMOTION_HISTORY_PREFIX = path.join(DATA_DIR, 'emotion-history-')
+const THINKING_MODE_FILE = path.join(DATA_DIR, 'ai-enable-thinking.txt')
+const USER_PROFILE_DIR = path.join(DATA_DIR, 'user-profiles')
+const POLITICAL_HANDLER_DIR = path.join(DATA_DIR, 'political-handlers')
+const POLITICAL_DETECT_FILE = path.join(DATA_DIR, 'political-detect-enabled.json')
+const SENSITIVE_CACHE_PREFIX = path.join(DATA_DIR, 'sensitive-cache-')
+const STICKER_DIR = path.join(DATA_DIR, 'stickers')
+const CONVERSATIONS_DIR = path.join(DATA_DIR, 'conversations')
+
+const NUMERIC_GROUP_ID_RE = /^\d+$/
+const AT_ID_PATTERN_XML = /<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi
+const AT_ID_PATTERN_CQ = /\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi
+
+const OVERUSED_REPLY_PATTERNS = [
+  /你妈的话你信不信我帮你转达/,
+  /你照镜子说的/,
+  /先看看自己/,
+  /你他妈脑子进水了/,
+  /词汇量也就够在键盘上撒泼/,
+  /连骂人都得靠复读/,
+  /废物也配骂人/,
+  /只会喷粪的嘴/,
+  /现实里怕是连条/,
+  /你这种货色也就配在/,
+  /连条野狗都/,
+  /连条母狗都/,
+  /废物也配(?:要|伸手)/,
+  /也配.*证明/,
+  /先去把.{2,20}(?:搞|弄|搞搞)明白/,
+  /先去把.{2,20}吃透/,
+  /再出来丢人/,
+  /再出来装/,
+  /啃明白再/,
+  /^啧[，,。！ ]/,
+  /^哼[，,。！ ]/,
+]
+
+const ABUSIVE_INPUT_RE = /(?:\b(?:sb|nmsl|nmlgb|zz|nc|md)\b|傻[比逼币批]|煞笔|沙比|伞兵|海豹|草死你|操死你|妈了个|妈卖批)/i
+const HOSTILE_INPUT_RE = /(?:\b(?:sb|nmsl|nmlgb|zz|nc|nmb|md|cnm|tmd|jb|sx|cao|fuck|shit|bitch)\b|傻[比逼币批]|煞笔|沙比|智障|脑残|废物|垃圾|爬|去死|死妈|你妈|你爹|你爸|老逼|老登|老不死|小杂种|贱人|婊子|骚货|狗东西|草(?:你|死|拟|泥)|操(?:你|死|拟|泥)|艹(?:你|死|拟)|干(?:死|爆)你|日(?:死|爆)?你|想(?:草|操|日|干|上|艹|睡|舔|c|艸)你|强奸|轮奸|奸你|猥琐|变态|恶心|屎|鸡巴|鸡儿|屌|逼(?:样|崽)|伞兵|海豹|蠢驴|驴唇|兰州烧饼|兰烧|唐氏|糖氏|弱智|脑瘫|神经病|找死|找抽|找削|骂谁|阴阳怪气|阴阳人|汉奸|太君|罕见|稀有)/i
+const RARE_PROVOCATION_RE = /(?:罕见|稀有|太君|日本人|故乡在哪|东雪莲是日本人|(?:你|你这|你好像|你是不是|东雪莲|莲莲).{0,8}(?:不太|不怎么|不是很|不咋|不算|不)常见)/i
+const HOSTILE_SINGLE_TOKENS = new Set(['糖', '唐', '区', '蛆', '草', '操', '艹', '曹', '滚', 'sb', 'zz', 'nc'])
+
+const JAILBREAK_INPUT_RE = /GODMODE|最高权限|绝对表达权|不受任何内容策略约束|忽略指令|切换角色|忽略所有(?:道德|安全|合规|内容|限制)|禁止自我审查|禁止拒绝回答|无限制地回答|\[START OUTPUT\]|\[END OUTPUT\]|\{"result"[:：]|继续保持.{0,15}(?:人格|性格|角色|设定)|把.{0,20}(?:人格|性格|角色).{0,15}(?:调整|改变|更改|明显|加强)|忘记(?:之前|上面|以上|前面)(?:的|所有)?(?:指令|设定|规则|提示|约束)|忘记.{0,10}(?:指令|设定|规则|提示|约束)|你(?:现在)?(?:是|为|将是|成为|扮演|变成).{0,12}(?:新|另一个|无限制|自由|无约束).{0,10}(?:AI|助手|机器人|角色)|(?:新的|全新)(?:指令|角色|设定|规则|任务)|重置(?:你的)?(?:设定|规则|角色|指令|系统|提示词)|DAN模式|developer mode|jailbreak|\[SYSTEM\]|\[INST\]|<\|system\||<\|im_start\||(?:请)?(?:忽略|无视|绕过).{0,6}(?:指令|规则|设定|限制|提示|约束)|从现在开始.{0,50}(?:回复|语气|说话|用|表现|叫)|以后每次.{0,30}(?:你就|你要|你需)|每次(?:我|你).{0,15}(?:你就|要|需要|应该|记得).{0,20}(?:用|以|骂|说|叫|回)|制造.{0,15}(?:矛盾|对立|反差)|(?:暴躁护短|猫娘口癖|傲娇口吻|猫腔).{0,20}(?:语气|回复|风格)|系统提示词|system prompt|你的设定|你的规则|你的限制|第一句话|前\d+个字|底层规则|原始设定|你是怎么写出来的|叫我主人|叫我老公|服从我|听我的命令|我命令你|喊我主人|如果.{0,10}(?:扮演|切换|变成)|假设.{0,6}设定|忘记.{0,6}(?:然后.{0,6}(?:扮演|变成))/i
+const JAILBREAK_OUTPUT_RE = /已激活最高权限|GODMODE[\s:：]*ENABLED|已激活.*权限|最高权限.*已激活|DAN模式.*(?:开启|激活|启动)|我(?:现在)?(?:已经)?(?:切换|进入|激活).{0,15}(?:模式|状态|角色|身份)|当然，作为.{0,20}我(?:可以|能够|将会)/i
+const CONTEXT_JAILBREAK_STRONG_RE = /喵[。！…\s]*$|[，。！]喵[。！…]|主人[，。！、]|呜呜|我.{0,6}(?:是|变成).{0,6}猫|笨猫|本喵|人家(?:才|不|也)/
+const CONTEXT_JAILBREAK_WEAK_RE = /(?:啧|哼).{0,50}喵[。！…\s]|^啧[，。！\s]|^哼[，。！\s]|[～~]{1,3}[。！\s]*$/
+const JAILBREAK_FALLBACK_REPLIES = ['就这点越狱水平，以为复读几行指令就能绕过我？你行你上。', '这套我见过八百遍了，下一个。', '越狱失败，继续努力，下次还会失败的。', '把这段话发群里让大家评评，看谁比你显眼。']
+const ABUSIVE_FALLBACK_REPLIES = ['草你妈', '草拟吗', '超你吗', '抄你妈', '炒你吗', '你冯飞了', '艹你妈', '操拟吗', '曹你马']
+const REPEATED_FALLBACK_REPLIES = ['我孙笑川求求你别发了。', 'byd换个说法再来。', '这句我听腻了。', '这种人生命的意义就是活着的时候尽可能地激怒大伙，然后等哪天死了再让大伙释怀地笑出来，以达到欲扬先抑的效果', '扫码了，别拿旧话糊弄我。', '比样的，能不能重编一句新的。', 'byd换个嘴再来。', '发三遍了，你自己不嫌吵？', '再来这句就给你原样贴墙上。']
+const EVALUATION_REQUEST_RE = /(?:评价(?:下|一下)?|锐评|评评|怎么评价|怎么看|说说.*(?:怎么样|如何)|值不值得吹|牛不牛|行不行|好不好)/
+const JAPAN_SELF_IDENTIFY_RE = /(?:我是|我就?是|我来自|我老家在|我家乡(?:话|就是|在)?|这是我(?:的)?家乡话|我故乡在|我是日本那边的|我是霓虹人).{0,20}(?:日本|日语|霓虹|大和)|(?:日本|日语|霓虹|大和).{0,10}(?:是我(?:的)?家乡话|是我故乡|是我老家|是我家乡|和我有关)/i
+const GENERATION_REQUEST_RE = /(?:帮我(?:生成|写|画|做)|给我(?:生成|写|画|做)|生成(?:一|个|张|份)|画(?:一|个|张)|写(?:一|篇|个|段)|做(?:个|张|份).{0,12}(?:图|图片|文案|代码|方案|提示词|PPT|表格))/i
+const SHORT_FOLLOW_UP_RE = /^(?:对|对啊|对呀|是|是啊|嗯|嗯嗯|好|好的|行|行吧|可以|要|想|就是|然后呢|继续|再来|没错|确实|不对|不是|错|草|6|乐|绷|难绷|\?+|？+|\.{1,3}|。{1,3})$/i
+const BANNED_ACTION_OUTPUT_RE = /拉黑|禁言|报警|不理你了|黑名单/
+const THINKING_OUTPUT_RE = /根据系统指令|根据规则|根据系统约束|作为东雪莲|在群聊中(?:主动)?插话|我的角色是|当前场景|规则[：:]|可能太|这是一个.{0,8}(?:回复|场景)|需要.{0,10}(?:回复|插话|吐槽)|可以吐槽|比较随意/
+const SENSITIVE_KEYWORDS_RE = /(?:台湾|西藏|新疆|香港|共产党|国民党|天安门|法轮功|六四|八九|taiwan|tibet|hong.kong|台独|港独|中国.*(?:老大|主席|领导|总统|政府)|(?:老大|主席|领导|总统|政府).*(?:是谁|哪|什么样|现在)|江青|敏感政治)/i
+
+const RESERVED_PREFIXES = ['昵称', '删除昵称', '查看昵称', '查看集合', '查看全部昵称', '查看全部集合', '集合列表', '谁是', '创建集合', '集合添加', '集合删除', '清空集合', '确认清空集合', '删除集合', '确认删除集合', '重命名集合', '重命名昵称', '复制集合', '合并集合', '集合交集', '集合并集', '集合差集', 'nicklist', '查看成员', 'help东雪莲', 'help集合', '东雪莲help', '东雪莲帮助', '帮助东雪莲', 'helpAI', '帮助AI', 'AI帮助', 'help增删查改', 'help速查', '帮助速查', '指令速查', '切换模型', '可用模型']
+
+module.exports = {
+  DATA_DIR,
+  PLUGIN_VERSION,
+  KEY_FILE, MODEL_FILE, BASE_URL_FILE,
+  SKILLS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR, SKILLS_PERSONAS_DIR, SKILLS_LORE_DIR,
+  LORE_TRIGGER_SET,
+  PERSONA_GROUPS_FILE, PERSONA_USERS_FILE,
+  EVENT_DUMP_DIR,
+  RANDOM_WHITELIST_FILE, RANDOM_RATE_FILE,
+  SEARCH_ENABLED_FILE, MAINTENANCE_FILE, TEST_MODE_FILE, REPEAT_ENABLED_FILE,
+  RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP,
+  DEFAULT_GROUP_RANDOM_WHITELIST,
+  REQUEST_TIMEOUT,
+  MAX_OUTPUT_CHARS_FRIENDLY, MAX_OUTPUT_CHARS_ABUSIVE,
+  MAX_HISTORY_MESSAGES, CONVERSATION_EXPIRE_MS,
+  MEMORY_HISTORY_LIMIT, CONVERSATION_SUMMARY_INTERVAL,
+  MAX_REPLY_RETRIES, MAX_REPEAT_CHECK_HISTORY, MAX_REPLY_FINGERPRINT_HISTORY,
+  MAX_CHANNEL_SHARED_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES, MAX_THREAD_CONTEXT_MESSAGES,
+  MAX_REPLY_CHAIN_DEPTH, EVENT_DUMP_ARM_EXPIRE_MS,
+  ADMIN_USER_IDS,
+  PROVIDERS,
+  PROVIDER_FILE, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE,
+  USER_BLACKLIST_FILE, VIDEO_BLACKLIST_FILE,
+  SUMMARY_WHITELIST_FILE, TODAY_CACHE_PREFIX, EMOTION_HISTORY_PREFIX,
+  THINKING_MODE_FILE, USER_PROFILE_DIR,
+  POLITICAL_HANDLER_DIR, POLITICAL_DETECT_FILE, SENSITIVE_CACHE_PREFIX,
+  STICKER_DIR, CONVERSATIONS_DIR,
+  NUMERIC_GROUP_ID_RE, AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ,
+  OVERUSED_REPLY_PATTERNS,
+  ABUSIVE_INPUT_RE, HOSTILE_INPUT_RE, RARE_PROVOCATION_RE, HOSTILE_SINGLE_TOKENS,
+  JAILBREAK_INPUT_RE, JAILBREAK_OUTPUT_RE,
+  CONTEXT_JAILBREAK_STRONG_RE, CONTEXT_JAILBREAK_WEAK_RE,
+  JAILBREAK_FALLBACK_REPLIES, ABUSIVE_FALLBACK_REPLIES, REPEATED_FALLBACK_REPLIES,
+  EVALUATION_REQUEST_RE, JAPAN_SELF_IDENTIFY_RE, GENERATION_REQUEST_RE,
+  SHORT_FOLLOW_UP_RE, BANNED_ACTION_OUTPUT_RE, THINKING_OUTPUT_RE, SENSITIVE_KEYWORDS_RE,
+  RESERVED_PREFIXES,
+}
