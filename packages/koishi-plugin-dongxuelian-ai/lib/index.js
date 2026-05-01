@@ -83,6 +83,9 @@ if (typeof Session.prototype.send !== 'function') {
     return this.bot.sendMessage(this.channelId, content, this.guildId)
   }
 }
+if (typeof Session.prototype.text !== 'function') {
+  Session.prototype.text = function(key) { return key || '' }
+}
 
 exports.name = 'dongxuelian-ai'
 
