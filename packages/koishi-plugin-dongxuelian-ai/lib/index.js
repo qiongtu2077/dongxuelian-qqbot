@@ -37,7 +37,7 @@ if (typeof Session.prototype.send !== 'function') {
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '0.9'
+const PLUGIN_VERSION = '0.9.1'
 const DATA_DIR = process.platform === 'win32'
   ? path.join(__dirname, '../data')
   : '/root/koishi-app/data'
@@ -131,6 +131,7 @@ const PROVIDERS = {
       { id: 'qwen3.5-plus', name: 'qwen3.5' },
       { id: 'qwen3.6-plus', name: 'qwen3.6' },
       { id: 'qwen3.5-omni-flash', name: 'Qwen3.5-Omni-Flash' },
+      { id: 'qwen-turbo', name: 'Qwen Turbo' },
     ],
   },
   deepseek: {
@@ -707,6 +708,36 @@ function isJailbreakAttempt(plain = '') {
 function shouldInjectLore(userText = '') {
   for (const keyword of LORE_TRIGGER_SET) {
     if (userText.includes(keyword)) return true
+  }
+  return false
+}
+
+// 话题检测：glm免费主模型 → qwen-turbo兜底 → 都失败则跳过
+async function detectTopicSwitch(lastMsg, currentMsg) {
+  if (!lastMsg || !currentMsg) return false
+  const prompt = [
+    { role: 'system', content: '判断用户是否切换了话题。只回复 YES 或 NO。' },
+    { role: 'user', content: `上一条消息：${lastMsg.slice(0, 200)}\n当前消息：${currentMsg.slice(0, 200)}` },
+  ]
+  const models = [
+    { provider: 'glm', model: 'glm-4.6v-flash', keyFile: GLM_KEY_FILE },
+    { provider: 'dashscope', model: 'qwen-turbo', keyFile: DASHSCOPE_KEY_FILE },
+  ]
+  for (const am of models) {
+    const provDef = PROVIDERS[am.provider]
+    if (!provDef) continue
+    try {
+      const cfg = {
+        model: am.model,
+        baseURL: provDef.baseURL.replace(/\/+$/, ''),
+        apiKey: am.keyFile ? (await readTextFile(am.keyFile).catch(() => '') || '').replace(/[\r\n]+/g, '') : '',
+        provider: am.provider,
+      }
+      if (!cfg.apiKey) continue
+      const result = await requestChatCompletions(prompt, cfg, { max_tokens: 5 })
+      if (/^YES/i.test(result)) return true
+      if (/^NO/i.test(result)) return false
+    } catch {}
   }
   return false
 }
@@ -2255,6 +2286,13 @@ async function chat(session, userText, ctx, options = {}) {
   var quotedTag = qc2 ? '\n[引用内容]' + qc2 + '\n[以上是对方说的话，不是在对你说]' : ''
   const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${fwdInput}${contextTag}${quotedTag}\n</user>`
   const historyMessages = getConversationHistory(session)
+
+  // 话题检测：对比上一条消息和当前消息，切换了则清历史
+  const lastUserMsg = getRecentUserMessages(session, 1).pop()
+  if (lastUserMsg && await detectTopicSwitch(lastUserMsg, cleanInput)) {
+    clearUserConversationHistory(session)
+  }
+
   const messages = [
     { role: 'system', content: systemPrompt },
   ]
@@ -2940,6 +2978,9 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     // 视频黑名单管理
     const vidBlAddG = plain.match(/^视频黑名单添加群\s*(\d+)$/)
     if (vidBlAddG) {
+      if (!inGuild) return '这个命令只能在群里使用。'
+      const isGA = session.event?.sender?.role === 'owner' || session.event?.sender?.role === 'admin'
+      if (!isGA && !hasAdminPermission(session)) return '只有群主、管理员或bot管理员才能操作。'
       const bl = await readJsonFile(VIDEO_BLACKLIST_FILE, { groups: [], users: [] })
       if (!Array.isArray(bl.groups)) bl.groups = []
       if (!bl.groups.includes(vidBlAddG[1])) bl.groups.push(vidBlAddG[1])
@@ -2948,6 +2989,9 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     }
     const vidBlDelG = plain.match(/^视频黑名单删除群\s*(\d+)$/)
     if (vidBlDelG) {
+      if (!inGuild) return '这个命令只能在群里使用。'
+      const isGA = session.event?.sender?.role === 'owner' || session.event?.sender?.role === 'admin'
+      if (!isGA && !hasAdminPermission(session)) return '只有群主、管理员或bot管理员才能操作。'
       const bl = await readJsonFile(VIDEO_BLACKLIST_FILE, { groups: [], users: [] })
       if (Array.isArray(bl.groups)) bl.groups = bl.groups.filter(g => g !== vidBlDelG[1])
       await writeJsonFile(VIDEO_BLACKLIST_FILE, bl)
@@ -3054,6 +3098,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     const rateSetMatch = plain.match(/^东雪莲群聊AI概率设置\s*((?:100(?:\.0+)?)|(?:\d{1,2}(?:\.\d+)?))%$/)
     if (rateSetMatch) {
       if (!inGuild) return '这个命令只能在群里用。'
+      if (!isGroupAdmin && !hasAdminPermission(session)) return '只有群主、群管理员或bot管理员才能设置概率。'
       const rate = Number(rateSetMatch[1]) / 100
       if (!Number.isFinite(rate) || rate <= 0 || rate > 1) return '概率范围只能是 0% 到 100% 之间。'
       randomRateCache.set(channelKey, rate)
