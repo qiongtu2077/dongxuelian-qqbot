@@ -37,7 +37,7 @@ if (typeof Session.prototype.send !== 'function') {
 
 exports.name = 'dongxuelian-ai'
 
-const PLUGIN_VERSION = '0.8'
+const PLUGIN_VERSION = '0.9'
 const DATA_DIR = process.platform === 'win32'
   ? path.join(__dirname, '../data')
   : '/root/koishi-app/data'
@@ -90,7 +90,7 @@ const MAX_OUTPUT_CHARS_ABUSIVE = 800
 const MAX_HISTORY_MESSAGES = 100
 const CONVERSATION_EXPIRE_MS = 10 * 60 * 1000
 const MEMORY_HISTORY_LIMIT = 30
-const CONVERSATION_SUMMARY_INTERVAL = 50
+const CONVERSATION_SUMMARY_INTERVAL = 100
 const MAX_REPLY_RETRIES = 5
 const MAX_REPEAT_CHECK_HISTORY = 3
 const MAX_REPLY_FINGERPRINT_HISTORY = 100
@@ -1331,7 +1331,7 @@ function saveConversationTurn(session, userText, replyText) {
     diskData.messages.splice(0, diskData.messages.length - MAX_HISTORY_MESSAGES)
   }
   conversationCache.set(key, diskData.messages.slice(-MEMORY_HISTORY_LIMIT))
-  writeConversationDisk(key, diskData)
+  if (diskData.totalCount % 3 === 0) writeConversationDisk(key, diskData)
   touchConversation(session)
   saveReplyFingerprint(session, replyText)
   if (diskData.totalCount > 0 && diskData.totalCount % CONVERSATION_SUMMARY_INTERVAL === 0) {
