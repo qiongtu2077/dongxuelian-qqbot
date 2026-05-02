@@ -237,7 +237,7 @@ function sanitizeReply(text = '', userName = '') {
 function splitSentences(text) {
   const raw = normalizeText(text)
   if (!raw) return [raw]
-  const segments = raw.split(/(?<=[。！？!?\n]+|\.{6,})/)
+  const segments = raw.split(/(?<=[。！？!?]+|\.{6,})/)
   const parts = []
   let carry = ''
   let lastSkippedSplit = false

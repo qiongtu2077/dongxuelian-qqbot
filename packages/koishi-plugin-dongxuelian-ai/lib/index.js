@@ -693,12 +693,12 @@ function isConsecutiveUserRepeat(session, userText = '') {
 }
 
 function buildTestSystemPrompt() {
-  return skillsContentCache['mode:test'] || ''
+  return skillsContentCache['mode:persona-test'] || ''
 }
 
 function buildFriendlySystemPrompt() {
   const core = skillsContentCache['core:persona-core'] || ''
-  const mode = skillsContentCache['mode:friendly'] || ''
+  const mode = skillsContentCache['mode:persona-friendly'] || ''
   return core + '\n\n' + mode
 }
 
@@ -707,11 +707,11 @@ function buildFriendlySafetyFramework() {
 }
 
 function buildFriendlyPersona() {
-  return skillsContentCache['mode:friendly'] || ''
+  return skillsContentCache['mode:persona-friendly'] || ''
 }
 
 function buildAbusiveSystemPrompt() {
-  return skillsContentCache['mode:abusive'] || ''
+  return skillsContentCache['mode:persona-abusive'] || ''
 }
 
 // 统一请求 OpenAI 兼容的 Chat Completions 接口。
