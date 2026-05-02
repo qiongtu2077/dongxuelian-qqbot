@@ -238,6 +238,74 @@ try {
 } catch (e) {
   check('gitignore parse', false, e.message)
 }
+try {
+  const scriptsDir = path.join(ROOT, 'scripts')
+  const deployHelper = fs.readFileSync(path.join(scriptsDir, 'deploy-package.sh'), 'utf8')
+  const scriptMap = {
+    'ai.sh': 'koishi-plugin-dongxuelian-ai',
+    'help.sh': 'koishi-plugin-dongxuelian-help',
+    'name.sh': 'koishi-plugin-group-name-at',
+    'poke.sh': 'koishi-plugin-dongxuelian-poke',
+    'defense.sh': 'koishi-plugin-defense',
+    'leave.sh': 'koishi-plugin-group-leave-notice',
+    'vedio.sh': 'koishi-plugin-local-video-sender',
+  }
+  check('deploy helper exists', deployHelper.includes('deploy-package.sh <package-dir>'))
+  check('deploy helper uses package source', deployHelper.includes('REPO_ROOT') && deployHelper.includes('/packages/'))
+  check('deploy helper syntax checks js', deployHelper.includes('node -c "$js_file"'))
+  check('deploy helper refuses unsafe destination', deployHelper.includes('Refusing to remove unsafe destination'))
+  check('deploy helper normalizes old koishi keys', deployHelper.includes('renamed koishi entry'))
+  for (const [scriptName, packageDir] of Object.entries(scriptMap)) {
+    const src = fs.readFileSync(path.join(scriptsDir, scriptName), 'utf8')
+    check(`${scriptName} deploys ${packageDir}`, src.includes('deploy-package.sh') && src.includes(packageDir))
+  }
+  const aiDeploy = fs.readFileSync(path.join(scriptsDir, 'ai.sh'), 'utf8')
+  const readerDeploy = fs.readFileSync(path.join(scriptsDir, 'message-reader.sh'), 'utf8')
+  const allDeployScripts = fs.readdirSync(scriptsDir)
+    .filter(name => name.endsWith('.sh'))
+    .map(name => fs.readFileSync(path.join(scriptsDir, name), 'utf8'))
+    .join('\n')
+  check('ai deploy copies ai-skills', aiDeploy.includes('--copy-ai-skills'))
+  check('message-reader deploys full AI package', readerDeploy.includes('exec sh "$SCRIPT_DIR/ai.sh"'))
+  check('deploy scripts no embedded package overwrite', !allDeployScripts.includes('cat > /root/koishi-app/node_modules'))
+  check('deploy scripts no stale AI version', !allDeployScripts.includes('0.3.11'))
+} catch (e) {
+  check('deploy scripts scan', false, e.message)
+}
+
+try {
+  const helpSrc = fs.readFileSync(path.join(HELP, 'index.js'), 'utf8')
+  const renderDefs = new Set([...helpSrc.matchAll(/function\s+(render\w+)\s*\(/g)].map(m => m[1]))
+  const renderCalls = [...helpSrc.matchAll(/return\s+(render\w+)\s*\(/g)].map(m => m[1])
+  const missing = [...new Set(renderCalls.filter(name => !renderDefs.has(name)))]
+  check('help render functions complete', missing.length === 0, missing.join(', '))
+  check('renderCollectionHelp exists', renderDefs.has('renderCollectionHelp'))
+  check('renderQuickReference exists', renderDefs.has('renderQuickReference'))
+  check('renderSensitiveHelp exists', renderDefs.has('renderSensitiveHelp'))
+} catch (e) {
+  check('help render function scan', false, e.message)
+}
+try {
+  const constantsSrc = fs.readFileSync(path.join(LIB, 'constants.js'), 'utf8')
+  const requiredReserved = ['\u5e2e\u52a9\u96c6\u5408', '\u5e38\u7528', '\u5176\u4ed6', '\u7fa4\u804a\u4e3b\u52a8\u56de\u590d', '\u8054\u7f51', '\u6293\u53d6\u539f\u59cb\u4e8b\u4ef6', '\u9ed1\u540d\u5355\u7ba1\u7406', '\u767d\u540d\u5355\u9ed1\u540d\u5355\u7ba1\u7406', '\u4eba\u683c', '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b']
+  const missingReserved = requiredReserved.filter(item => !constantsSrc.includes("'" + item + "'"))
+  check('help submenu commands reserved', missingReserved.length === 0, missingReserved.join(', '))
+} catch (e) {
+  check('reserved command scan', false, e.message)
+}
+try {
+  const aiIndexSrc = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8')
+  check('political detect cache reset function exists', aiIndexSrc.includes('function resetPoliticalDetectCache()'))
+  const openIdx = aiIndexSrc.indexOf("plain === '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b\u5f00'")
+  const closeIdx = aiIndexSrc.indexOf("plain === '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b\u5173'")
+  const viewIdx = aiIndexSrc.indexOf("plain === '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b\u67e5\u770b'")
+  const openBlock = aiIndexSrc.slice(openIdx, closeIdx)
+  const closeBlock = aiIndexSrc.slice(closeIdx, viewIdx)
+  check('political detect open resets cache', openBlock.includes('resetPoliticalDetectCache()'))
+  check('political detect close resets cache', closeBlock.includes('resetPoliticalDetectCache()'))
+} catch (e) {
+  check('political detect cache scan', false, e.message)
+}
 
 // ===== 11. 跨文件引用校验 =====
 console.log('\n\x1b[1m=== 11. 跨文件引用 ===\x1b[0m')

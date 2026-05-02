@@ -239,18 +239,18 @@ node .
 ## 七、第 6 步：部署本仓库的插件脚本
 
 > 本仓库的部署形态是：**每个插件对应一个 `scripts/*.sh`**。  
-> 这个 sh 文件本身就是一段「在服务器创建 plugin 文件」的命令。  
-> 不需要 git clone 仓库到服务器，**直接复制脚本内容粘到服务器执行就行**。
+> 现在脚本不再内嵌旧版插件源码，而是从仓库里的 `packages/*` 同步当前插件代码到服务器。
+> 执行脚本前需要先把本仓库同步到服务器，并在仓库根目录运行对应脚本。
 
 ### 7.1 通用执行流程（每个 sh 都这样做）
 
-1. 在本机用编辑器（VS Code / 记事本）打开 `scripts/xxx.sh`。
-2. **全选 → 复制全部内容**。
-3. 切到已经 SSH 上服务器的终端窗口。
-4. 直接**粘贴**，按回车。脚本会自动写入插件文件，并把插件加进 `koishi.yml`。
+1. 先把仓库同步到服务器，例如放在 `/root/koishi-app/repo`。
+2. SSH 到服务器后进入仓库根目录：`cd /root/koishi-app/repo`。
+3. 执行对应脚本，例如：`sh scripts/help.sh`。
+4. 脚本会把 `packages/对应插件` 复制到 `/root/koishi-app/node_modules/`，并把插件加进 `koishi.yml`。
 5. 看到脚本最后输出 `Installed koishi-plugin-xxxxx` 即视为成功。
 
-> 注意：粘贴前不要先 `cd`，脚本里都用了绝对路径 `/root/koishi-app/...`，从任何目录执行都行。
+> 注意：默认 Koishi 目录仍是 `/root/koishi-app`。如果你的 Koishi 装在其他目录，可以这样执行：`KOISHI_APP_DIR=/你的/koishi目录 sh scripts/help.sh`。
 
 按下面顺序做。**每装完一个就重启一次 Koishi 看日志。**
 
@@ -265,9 +265,9 @@ node .
 | 5 | `scripts/defense.sh` | 否 | 群里说「你是什么模式」 | 反越狱防护 |
 | 6 | `scripts/vedio.sh` | 否 | 发 B 站链接 | 见 7.3 视频插件预备 |
 | 7 | `scripts/ai.sh` | 否 | `@东雪莲 你是谁` | 见 7.4 AI 插件预备 |
-| 8 | `scripts/message-reader.sh` | 否（仅 ai 联用） | — | AI 插件需要时再装 |
+| 8 | `scripts/message-reader.sh` | 否（仅 ai 联用） | — | 兼容旧入口；现在会部署完整 AI 插件 |
 
-> `help.sh`、`name.sh`、`leave.sh`、`poke.sh`、`defense.sh` 都没有外部依赖，直接粘贴就跑。  
+> `help.sh`、`name.sh`、`leave.sh`、`poke.sh`、`defense.sh` 都没有额外运行依赖，但需要从仓库根目录执行。
 > `vedio.sh`、`ai.sh` **必须**先按 7.3、7.4 准备好依赖文件，否则跑起来会缺东西。
 
 ### 7.3 视频插件部署前的准备（执行 `vedio.sh` 之前必看）
@@ -579,7 +579,7 @@ group-leave-notice loaded
 
 如果你要继续维护这个仓库，建议遵守以下原则：
 
-- 部署脚本保持“纯可执行内容”
+- 部署脚本保持“只做部署，不内嵌插件业务源码”
 - 解释、约束、交接统一写进 `进度.md`
 - 先保证服务器可直接部署，再逐步整理源码结构
 - 每次改动后同步检查版本号、安装提示和 `README`
