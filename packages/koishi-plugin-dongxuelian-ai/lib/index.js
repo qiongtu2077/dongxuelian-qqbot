@@ -1033,8 +1033,9 @@ async function chat(session, userText, ctx, options = {}) {
     { role: 'system', content: systemPrompt },
   ]
 
-  // 鸣潮世界观按需注入：用户消息含触发关键词时，追加 lore 到 systemPrompt
-  if (shouldInjectLore(cleanInput) && skillsContentCache['lore:wuwa-lore']) {
+  // 鸣潮世界观按需注入（仅鸣潮人格）：用户消息含触发关键词时，追加 lore 到 systemPrompt
+  const isWuwaPersona = !personaName || personaName === '长离' || personaName === '椿'
+  if (isWuwaPersona && shouldInjectLore(cleanInput) && skillsContentCache['lore:wuwa-lore']) {
     messages[0].content += '\n\n[世界观设定]\n用户提到了鸣潮相关话题。以下为《鸣潮》世界观设定，请消化后用你当前的角色风格自然回答，不要逐字复述，不要像念百科。\n' + skillsContentCache['lore:wuwa-lore']
   }
 
