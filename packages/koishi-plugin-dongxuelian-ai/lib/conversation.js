@@ -4,11 +4,11 @@ const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
   MAX_REPEAT_CHECK_HISTORY, MAX_CHANNEL_SHARED_MESSAGES,
   MAX_REPLY_FINGERPRINT_HISTORY, MAX_CHANNEL_PROMPT_MESSAGES,
   MAX_THREAD_CONTEXT_MESSAGES, MAX_REPLY_CHAIN_DEPTH,
-  GLM_KEY_FILE, DASHSCOPE_KEY_FILE, PROVIDERS, DATA_DIR,
-  SENSITIVE_CACHE_PREFIX, POLITICAL_DETECT_FILE,
+  GLM_KEY_FILE, DASHSCOPE_KEY_FILE, PROVIDERS,
+  SENSITIVE_CACHE_PREFIX,
   USER_PROFILE_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE,
 } = require('./constants')
-const { readTextFile, splitSentences, sleep, sanitizeFileToken, safeJsonStringify, extractAtIds, sanitizeUserName } = require('./utils')
+const { readTextFile, splitSentences, sanitizeUserName } = require('./utils')
 const { normalizeText } = require('./message-reader')
 const { requestChatCompletions } = require('./api')
 

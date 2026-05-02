@@ -1,5 +1,5 @@
 const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE } = require('./constants')
-const { readTextFile, isDashScopeConfig, isOpenAIOfficialConfig } = require('./utils')
+const { readTextFile, isDashScopeConfig } = require('./utils')
 
 function buildResponsesInput(messages = []) {
   return messages.filter(item => item && item.content).map(item => ({

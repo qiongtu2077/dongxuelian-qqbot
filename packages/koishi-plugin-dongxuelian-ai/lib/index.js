@@ -22,7 +22,7 @@ const {
   ADMIN_USER_IDS, PROVIDERS,
   PROVIDER_FILE, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE,
   USER_BLACKLIST_FILE, VIDEO_BLACKLIST_FILE,
-  SUMMARY_WHITELIST_FILE, TODAY_CACHE_PREFIX, EMOTION_HISTORY_PREFIX,
+  SUMMARY_WHITELIST_FILE, TODAY_CACHE_PREFIX,
   THINKING_MODE_FILE, USER_PROFILE_DIR,
   POLITICAL_HANDLER_DIR, POLITICAL_DETECT_FILE, SENSITIVE_CACHE_PREFIX,
   STICKER_DIR, CONVERSATIONS_DIR,
@@ -172,7 +172,7 @@ function setRepeatEnabled(channelKey, enabled) {
 }
 
 // 人格系统：per-group persona 配置
-// 格式: { "channelKey": { persona: "name" | null, hostile_capable: true|false|null } }
+// 格式: { "channelKey": { persona: "name" | null } }
 
 // 原子写入 JSON（先写临时文件再 rename，防并发损坏）
 
@@ -706,10 +706,6 @@ function buildFriendlySafetyFramework() {
   return skillsContentCache['core:persona-core'] || ''
 }
 
-function buildFriendlyPersona() {
-  return skillsContentCache['mode:persona-friendly'] || ''
-}
-
 function buildAbusiveSystemPrompt() {
   return skillsContentCache['mode:persona-abusive'] || ''
 }
@@ -746,8 +742,6 @@ async function callOpenAI(messages, isRandom, extraBody = {}) {
 
   return requestChatCompletions(messages, config, { ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody })
 }
-
-const BANNED_OUTPUT_RE = /拉黑|禁言|报警|不理你了|黑名单/
 
 async function chatJailbreak(session, userText, ctx) {
   const userName = normalizeText(
@@ -1271,13 +1265,16 @@ async function sendReply(ctx, session, reply, isRandom = false) {
     let part = parts[i].replace(/。$/, '').trim()
     if (!part) continue
     // 引用回复时替换昵称为"你"
-    if (i === 0 && quotePrefix && userName && part.includes(userName)) {
-      const esc = userName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      part = part
-        .replace(new RegExp('^' + esc + '[，,、]?'), '')
-        .replace(new RegExp('[，,]' + esc + '$'), '，你')
-        .replace(new RegExp(esc, 'g'), '你')
-    }
+      // [暂禁用] 昵称替换：原意图是防止 AI 引用回复时重复昵称，
+      // 但全局替换导致 AI 对用户的称呼被强制替换为"你"，效果诡异。
+      // 后续优化思路：只替换引用消息中非 AI 主动提及的昵称，或不替换。
+      // if (i === 0 && quotePrefix && userName && part.includes(userName)) {
+      //   const esc = userName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      //   part = part
+      //     .replace(new RegExp('^' + esc + '[，,、]?'), '')
+      //     .replace(new RegExp('[，,]' + esc + '$'), '，你')
+      //     .replace(new RegExp(esc, 'g'), '你')
+      // }
     await session.send(i === 0 ? quotePrefix + part : part)
     saveSharedChannelTurn(session, '东雪莲', part, 'assistant')
     if (i < parts.length - 1) {
@@ -1831,14 +1828,11 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       const entry = getGroupPersona(channelKey)
       if (!entry) { await session.send(`当前群：默认模式（无群级人格）`); return }
       const meta = parsePersonaFrontmatter(loadPersonalSkill(entry.persona) || '')
-      const hostileStatus = entry.hostile_capable !== null && entry.hostile_capable !== undefined
-        ? (entry.hostile_capable ? '开（指令覆盖）' : '关（指令覆盖）')
-        : (meta.hostile_capable ? '开（默认）' : '关（默认）')
       let groupUserCount = 0
       for (const [uid, pName] of Object.entries(personaUsersCache)) {
         if (!pName) groupUserCount++
       }
-      await session.send(`群级人格：${entry.persona}\n嘴臭能力：${hostileStatus}\n使用群级人格的用户：${groupUserCount} 人`)
+      await session.send(`群级人格：${entry.persona}\n使用群级人格的用户：${groupUserCount} 人`)
       return
     }
 
@@ -1849,7 +1843,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       const personas = getAvailablePersonals()
       const found = personas.find(p => p.name === targetName)
       if (!found) { await session.send(`未找到人格"${targetName}"。可用：${personas.map(p => p.name).join('、')}`); return }
-      setGroupPersona(channelKey, targetName, null)
+      setGroupPersona(channelKey, targetName)
       await session.send(`已设置群级人格：${targetName}`)
       return
     }
@@ -1860,16 +1854,6 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       resetGroupPersona(channelKey)
       await session.send('已重置群级人格。所有未切换个人人格的用户将使用默认东雪莲。')
       return
-    }
-
-    if (plain === '东雪莲嘴臭开' || plain === '东雪莲嘴臭关') {
-      if (!hasAdminPermission(session)) { await session.send('只有管理员才能设置嘴臭能力。'); return }
-      if (!inGuild) { await session.send('嘴臭设置只能在群里用。'); return }
-      const entry = getGroupPersona(channelKey)
-      if (!entry) return '当前无人格设置，嘴臭由系统自动判断，无需手动开关。'
-      const enable = plain === '东雪莲嘴臭开'
-      setGroupPersona(channelKey, undefined, enable)
-      return `人格"${entry.persona}"的嘴臭能力已${enable ? '开启' : '关闭'}。`
     }
 
     // === 复读开关 ===
@@ -2044,7 +2028,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     const mentionUserIds = extractAtIds(session.content || '')
       .map(userId => String(userId))
       .filter(userId => userId && userId !== String(session.selfId || session.bot?.selfId || ''))
-    const nameMentioned = /莲莲|东雪莲/.test(plain)
+    const nameMentioned = !resolvePersona(channelKey, currentUserId).name && /莲莲|东雪莲/.test(plain)
     const inRandomWhitelist = getRandomWhitelistStatus(channelKey)
     let isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply
 

@@ -331,9 +331,6 @@ function analyzeIncomingMessage(session, options = {}) {
 
 module.exports = {
   summarizeForwardNodes,
-  sanitizeDisplayName,
   analyzeIncomingMessage,
   normalizeText,
-  stripUrls,
-  extractReplyMessageId,
 }
