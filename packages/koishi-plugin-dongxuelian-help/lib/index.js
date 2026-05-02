@@ -63,7 +63,7 @@ const PROVIDERS = {
   },
   mimorium: {
     name: '小米',
-    baseURL: 'https://platform.mimorium.com',
+    baseURL: 'https://token-plan-cn.xiaomimimo.com/v1',
     models: [
       { id: 'mimo-v2.5-pro', name: 'mimo 2.5' },
       { id: 'mimo-v2-omni', name: 'mimo v2' },

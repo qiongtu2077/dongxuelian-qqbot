@@ -195,7 +195,6 @@ async function analyzeChannelSensitive(channelKey) {
         if (result) break
       } catch {}
     }
-    if (!result && false) { /* try with main model */ }
     if (/SENSITIVE/i.test(result)) { pendingSensitiveAlert.set(channelKey, true) }
     try { require('fs').unlinkSync(file) } catch {}
   } catch {}

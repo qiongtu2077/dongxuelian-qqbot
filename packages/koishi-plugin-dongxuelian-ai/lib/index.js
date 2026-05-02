@@ -76,7 +76,7 @@ const {
   isDirectAtBot, getBotMentionCount, hasOtherMentions,
   formatPercent,
   readTextFile, writeTextFile, readJsonFile, writeJsonFile,
-  sleep, getRandomDelayMs,
+  sleep, getRandomDelayMs, shouldTriggerRandom,
   parseEnabledText,
   getBaseHostname, isDashScopeConfig, isOpenAIOfficialConfig,
   normalizeUrl, extractImageUrls,
@@ -171,6 +171,13 @@ function resetPoliticalDetectCache() {
   politicalDetectCache = null
 }
 
+function clearSensitiveRuntimeState(channelKey) {
+  const key = String(channelKey)
+  channelMsgCount.delete(key)
+  lastSensitiveAlert.delete(key)
+  pendingSensitiveAlert.delete(key)
+}
+
 function loadRepeatConfig() {
   try {
     repeatEnabledCache = JSON.parse(require('fs').readFileSync(REPEAT_ENABLED_FILE, 'utf8'))
@@ -259,7 +266,6 @@ const STICKER_MAP = [
   { kw: '不支持', file: '不支持.jpg' },
   { kw: '搞笑了', file: '搞笑.jpg' },
   { kw: '搞笑', file: '搞笑.jpg' },
-  { kw: '呵呵', file: '呵呵.jpg' },
   { kw: '哈哈', file: '搞笑.jpg' },
   { kw: '乐', file: '搞笑.jpg' },
   { kw: '草', file: '搞笑.jpg' },
@@ -948,7 +954,7 @@ async function chat(session, userText, ctx, options = {}) {
     personaSkillContent = loadPersonalSkill(personaName)
   }
 
-  const hostile = testMode ? false : (!personaName && (isHostileInput(userText) || japanLinked || rareProvocation))
+  const hostile = testMode ? false : (!personaName && (isHostileInput(cleanInput) || japanLinked || rareProvocation))
 
   // 构建系统提示词：安全框架 + 人格（有人格时替换友善人设，无人格时用默认）
   let systemPrompt
@@ -1432,7 +1438,7 @@ async function sendReply(ctx, session, reply, isRandom = false) {
     }
     return ''
   }).trim()
-  // 关键词自动匹配（最长优先，40% 概率，跳过否定语境）
+  // 关键词自动匹配（最长优先，30% 概率，跳过否定语境）
   if (!reply.includes('[CQ:image')) {
     const autoSkip = new Set(['喜欢你'])
     const matched = STICKER_MAP.find(s =>
@@ -1469,11 +1475,12 @@ async function sendReply(ctx, session, reply, isRandom = false) {
   }
   // 发送收集到的表情包图片；fallback 只在 sticker 图片这里触发，不接管普通文本。
   const stickerChannelKey = getChannelKey(session)
+  const stickerBatchStart = Date.now()
+  const lastStickerAtBeforeBatch = lastStickerSentAt.get(stickerChannelKey) || 0
   for (const sticker of pendingStickers) {
     const now = Date.now()
-    const lastStickerAt = lastStickerSentAt.get(stickerChannelKey) || 0
-    if (now - lastStickerAt < STICKER_GLOBAL_COOLDOWN_MS) {
-      ctx.logger('dongxuelian-ai').info(`sticker global cooldown active (${Math.ceil((STICKER_GLOBAL_COOLDOWN_MS - (now - lastStickerAt)) / 1000)}s remaining), skipping ${sticker.file}`)
+    if (stickerBatchStart - lastStickerAtBeforeBatch < STICKER_GLOBAL_COOLDOWN_MS) {
+      ctx.logger('dongxuelian-ai').info(`sticker global cooldown active (${Math.ceil((STICKER_GLOBAL_COOLDOWN_MS - (stickerBatchStart - lastStickerAtBeforeBatch)) / 1000)}s remaining), skipping ${sticker.file}`)
       continue
     }
 
@@ -1495,13 +1502,14 @@ async function sendReply(ctx, session, reply, isRandom = false) {
 
 exports.buildRepeatCandidate = buildRepeatCandidate
 exports.checkGroupRepeat = checkGroupRepeat
-exports._setRepeatEnabledForTest = (channelKey, enabled) => {
-  const key = String(channelKey)
-  repeatEnabledCache[key] = !!enabled
-  clearRepeatState(key)
-}
-exports._clearRepeatStateForTest = (channelKey) => {
-  clearRepeatState(channelKey)
+if (process.env.DONGXUELIAN_TEST_HOOKS === '1') {
+  exports._testOnly = {
+    chat,
+    sendReply,
+    loadStickerCache,
+    clearSensitiveRuntimeState,
+    resetPoliticalDetectCache,
+  }
 }
 
 exports.apply = (ctx) => {
@@ -1575,8 +1583,8 @@ exports.apply = (ctx) => {
           if (!mt) mt = ''
           var cqFwdMatch = mt.match(/\[CQ:forward,id=(\d+)/)
           if (cqFwdMatch) {
-            ctx.logger('dongxuelian-ai').info('cq inner: id=' + cqFwdMatch[1] + ' result=' + (cqInnerData ? 'ok' : 'null'))
             var cqInnerData = await callGetForwardMsg(cqFwdMatch[1])
+            ctx.logger('dongxuelian-ai').info('cq inner: id=' + cqFwdMatch[1] + ' result=' + (cqInnerData ? 'ok' : 'null'))
             if (cqInnerData) {
               var cqInnerArr = Array.isArray(cqInnerData) ? cqInnerData : (cqInnerData.messages || null)
               if (cqInnerArr) {
@@ -1684,7 +1692,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
       const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeKey + '.json')
       const handlers = await readJsonFile(handlerFile, [])
-      if (Array.isArray(handlers) && handlers.length > 0) {
+      if (Array.isArray(handlers) && handlers.length > 0 && Date.now() - (lastSensitiveAlert.get(channelKey) || 0) > 30000) {
         const atAll = handlers.map(id => `<at id="${id}"/>`).join(' ')
         session.send(`管理员快来，群里有傻福在剑阵。${atAll}`).catch(() => {})
         lastSensitiveAlert.set(channelKey, Date.now())
@@ -1844,6 +1852,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       if (!Array.isArray(list)) list = []
       if (!list.includes(channelKey)) { list.push(channelKey); await writeJsonFile(POLITICAL_DETECT_FILE, list) }
       resetPoliticalDetectCache()
+      clearSensitiveRuntimeState(channelKey)
       // 自动加入白名单，确保敏感缓存有数据
       let sw = await readJsonFile(SUMMARY_WHITELIST_FILE, [])
       if (!Array.isArray(sw)) sw = []
@@ -1857,6 +1866,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       let list = await readJsonFile(POLITICAL_DETECT_FILE, [])
       if (Array.isArray(list)) { list = list.filter(k => k !== channelKey); await writeJsonFile(POLITICAL_DETECT_FILE, list) }
       resetPoliticalDetectCache()
+      clearSensitiveRuntimeState(channelKey)
       return '敏感话题检测已关闭。'
     }
     if (plain === '敏感话题检测查看') {
@@ -1978,7 +1988,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         const timer = setTimeout(() => {
           const p = channelPendingRandom.get(channelKey)
           channelPendingRandom.delete(channelKey)
-          if (p && Math.random() < getRandomTriggerRate(channelKey)) {
+          if (p && shouldTriggerRandom(getRandomTriggerRate(channelKey))) {
             channelMissCount.set(channelKey, 0)
             enqueueForChannel(channelKey, () => chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote, quotedMessageNote, forwardSummaryText }), 4)
           } else {
@@ -1988,7 +1998,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         channelPendingRandom.set(channelKey, { timer, combinedText: plain })
       }
     }
-    const randomTriggered = isRandomCandidate && Math.random() < getRandomTriggerRate(channelKey)
+    const randomTriggered = isRandomCandidate && shouldTriggerRandom(getRandomTriggerRate(channelKey))
 
     if (inGuild && !directAt && !nameMentioned) {
       ctx.logger('dongxuelian-ai').info(`random-reply debug: key=${channelKey} whitelist=${inRandomWhitelist} candidate=${isRandomCandidate} triggered=${randomTriggered} rate=${getRandomTriggerRate(channelKey)} skip=${analyzed.shouldSkipForRandomReply} hasUsableText=${analyzed.hasUsableText} hasLink=${analyzed.hasLink} hasVisual=${analyzed.hasVisual} hasFile=${analyzed.hasFile} hasEmbed=${analyzed.hasEmbed} directAt=${directAt} otherMentions=${otherMentions} nameMentioned=${nameMentioned} whitelistSize=${randomWhitelistCache.size}`)
@@ -2035,7 +2045,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       if (analyzed.hasVisual || analyzed.hasFile || analyzed.hasEmbed) {
         if (!inRandomWhitelist) return next()
         // 图片也按概率回复，不无条件回复
-        if (!randomTriggered && Math.random() >= getRandomTriggerRate(channelKey)) return next()
+        if (!randomTriggered && !shouldTriggerRandom(getRandomTriggerRate(channelKey))) return next()
         const vUrls = extractImageUrls(session.content || '')
         const vFile = extractImageFileFromElements(session)
         if (vUrls.length > 0 || vFile) {
@@ -2107,7 +2117,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
             try {
               const raw = require('fs').readFileSync(handlerFile, 'utf8')
               const list = JSON.parse(raw)
-              if (Array.isArray(list) && list.length > 0) {
+              if (Array.isArray(list) && list.length > 0 && Date.now() - (lastSensitiveAlert.get(channelKey) || 0) > 30000) {
                 const atAll = list.map(id => `<at id="${id}"/>`).join(' ')
                 session.send(`管理员快来，群里有傻福在剑阵。${atAll}`).catch(() => {})
                 lastSensitiveAlert.set(channelKey, Date.now())
