@@ -117,6 +117,8 @@ async function readJsonFile(file, fallback) { try { return JSON.parse(await requ
 
 async function writeJsonFile(file, value) { const fs = require('fs/promises'); await fs.mkdir(require('path').dirname(file), { recursive: true }); await fs.writeFile(file, JSON.stringify(value, null, 2), 'utf8') }
 
+async function safeUnlink(file) { try { await require('fs/promises').unlink(file); return true } catch { return false } }
+
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
 
 function getRandomDelayMs() { return 1000 + Math.floor(Math.random() * 501) }
@@ -274,6 +276,7 @@ module.exports = {
   isDirectAtBot, getBotMentionCount, hasOtherMentions,
   formatPercent,
   readTextFile, writeTextFile, readJsonFile, writeJsonFile,
+  safeUnlink,
   sleep, getRandomDelayMs,
   parseEnabledText,
   getBaseHostname, isDashScopeConfig, isOpenAIOfficialConfig,

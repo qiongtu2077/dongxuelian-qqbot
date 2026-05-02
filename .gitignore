@@ -4,6 +4,15 @@ dist/
 Thumbs.db
 
 /data/
+packages/*/data/*.txt
+packages/*/data/*key*
+packages/*/data/user-profiles/
+packages/*/data/conversations/
+packages/*/data/*cache*
+packages/*/data/*dump*
+packages/*/data/ai-persona-users.json
+!packages/koishi-plugin-dongxuelian-ai/data/ai-skills/
+!packages/koishi-plugin-dongxuelian-ai/data/ai-skills/**
 koishi.yml
 *.bak-*
 package-lock.json

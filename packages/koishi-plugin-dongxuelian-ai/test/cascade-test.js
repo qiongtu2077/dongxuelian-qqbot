@@ -23,6 +23,7 @@ const modPaths = {
   persona: path.join(LIB, 'persona'),
   api: path.join(LIB, 'api'),
   conversation: path.join(LIB, 'conversation'),
+  handler: path.join(LIB, 'handler'),
 }
 const loaded = {}
 for (const [name, mp] of Object.entries(modPaths)) {
@@ -38,7 +39,7 @@ try {
 
 // ===== 2. 函数去重（所有文件） =====
 console.log('\n\x1b[1m=== 2. 函数去重 ===\x1b[0m')
-const files = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js']
+const files = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js']
 const all = []
 for (const f of files) {
   const content = fs.readFileSync(path.join(LIB, f), 'utf8')
@@ -86,6 +87,7 @@ const utilsExpected = [
   'collapseRepeatedBotCalls',
   'isDirectAtBot', 'formatPercent', 'readTextFile', 'writeTextFile',
   'readJsonFile', 'writeJsonFile',
+  'safeUnlink',
   'sleep', 'extractImageUrls', 'normalizeReplyFingerprint',
   'isReplyTooSimilar', 'isOverusedReply', 'hasBannedOutput',
   'getModelDisplayName', 'sanitizeReply', 'trimReply',
@@ -145,7 +147,7 @@ for (const ps of personas) {
 console.log('\n\x1b[1m=== 8. API 函数 ===\x1b[0m')
 const api = loaded.api
 const apiExpected = [
-  'requestChatCompletions', 'buildFallbackConfig', 'buildResponsesInput', 'extractResponsesText',
+  'requestChatCompletions', 'buildFallbackConfig', 'getFallbackSteps', 'buildResponsesInput', 'extractResponsesText',
   'requestOpenAIResponsesWithSearch',
   'isVisionModel', 'callGetImage',
   'readImageAsBase64', 'downloadImageAsBase64', 'extractImageFileFromElements',
@@ -178,6 +180,11 @@ if (convMissing.length) {
   check(`conversation: ${Object.keys(conv).filter(k => typeof conv[k] === 'function').length} 个函数`, true)
 }
 
+// ===== 9.5 Handler 函数 =====
+console.log('\n\x1b[1m=== 9.5 Handler 函数 ===\x1b[0m')
+const handler = loaded.handler
+check('handler.handleCommand exported', typeof handler.handleCommand === 'function')
+
 // ===== 10. 主 index.js 关键函数 =====
 console.log('\n\x1b[1m=== 10. index.js 关键函数 ===\x1b[0m')
 try {
@@ -196,6 +203,40 @@ try {
   check(`exports.name = "${main.name}"`, main.name === 'dongxuelian-ai')
 } catch (e) {
   check('index.js 加载', false, e.message)
+}
+
+// ===== 10.5 Repo health =====
+console.log('\n\x1b[1m=== 10.5 Repo health ===\x1b[0m')
+try {
+  const rootPkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
+  check('package scripts.test', !!rootPkg.scripts && rootPkg.scripts.test === 'node packages/koishi-plugin-dongxuelian-ai/test/cascade-test.js')
+  check('package scripts.check', !!rootPkg.scripts && typeof rootPkg.scripts.check === 'string' && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js'))
+  check('package scripts.start', !!rootPkg.scripts && rootPkg.scripts.start === 'node start.js')
+} catch (e) {
+  check('package scripts parse', false, e.message)
+}
+try {
+  const aiPkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'packages/koishi-plugin-dongxuelian-ai/package.json'), 'utf8'))
+  check('PLUGIN_VERSION matches package.json', c.PLUGIN_VERSION === aiPkg.version, `${c.PLUGIN_VERSION} !== ${aiPkg.version}`)
+} catch (e) {
+  check('AI package version parse', false, e.message)
+}
+try {
+  const fallbackSteps = api.getFallbackSteps()
+  const summary = fallbackSteps.map(s => `${s.provider}:${s.model}:${s.keyFile ? path.basename(s.keyFile) : ''}`).join('|')
+  check('fallback order stable', summary === 'glm:glm-4.6v-flash:ai-glm-key.txt|opencode:deepseek-v4-flash:|dashscope:qwen3.5-plus:ai-dashscope-key.txt|dashscope:qwen3.6-plus:ai-dashscope-key.txt', summary)
+} catch (e) {
+  check('fallback order stable', false, e.message)
+}
+try {
+  const gitignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8')
+  check('gitignore package txt data', gitignore.includes('packages/*/data/*.txt'))
+  check('gitignore package key data', gitignore.includes('packages/*/data/*key*'))
+  check('gitignore package user profiles', gitignore.includes('packages/*/data/user-profiles/'))
+  check('gitignore package conversations', gitignore.includes('packages/*/data/conversations/'))
+  check('gitignore keeps ai-skills', gitignore.includes('!packages/koishi-plugin-dongxuelian-ai/data/ai-skills/**'))
+} catch (e) {
+  check('gitignore parse', false, e.message)
 }
 
 // ===== 11. 跨文件引用校验 =====

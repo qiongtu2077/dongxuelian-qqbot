@@ -96,12 +96,32 @@ async function requestOpenAIResponsesWithSearch(messages, config) {
   } finally { clearTimeout(timer) }
 }
 
+const FALLBACK_STEPS = [
+  { model: 'glm-4.6v-flash', provider: 'glm', keyFile: GLM_KEY_FILE },
+  { model: 'deepseek-v4-flash', provider: 'opencode' },
+  { model: 'qwen3.5-plus', provider: 'dashscope', keyFile: DASHSCOPE_KEY_FILE },
+  { model: 'qwen3.6-plus', provider: 'dashscope', keyFile: DASHSCOPE_KEY_FILE },
+]
+
 async function buildFallbackConfig(config, step) {
-  if (step === 1) return { ...config, _fallbackTried: step, model: 'glm-4.6v-flash', baseURL: PROVIDERS.glm.baseURL.replace(/\/+$/, ''), apiKey: (await readTextFile(GLM_KEY_FILE).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '') }
-  if (step === 2) return { ...config, _fallbackTried: step, model: 'deepseek-v4-flash', baseURL: PROVIDERS.opencode.baseURL.replace(/\/+$/, '') }
-  if (step === 3) return { ...config, _fallbackTried: step, model: 'qwen3.5-plus', baseURL: PROVIDERS.dashscope.baseURL.replace(/\/+$/, ''), apiKey: (await readTextFile(DASHSCOPE_KEY_FILE).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '') }
-  if (step === 4) return { ...config, _fallbackTried: step, model: 'qwen3.6-plus', baseURL: PROVIDERS.dashscope.baseURL.replace(/\/+$/, ''), apiKey: (await readTextFile(DASHSCOPE_KEY_FILE).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '') }
-  return null
+  const fallback = FALLBACK_STEPS[step - 1]
+  if (!fallback) return null
+  const provider = PROVIDERS[fallback.provider]
+  if (!provider) return null
+  const next = {
+    ...config,
+    _fallbackTried: step,
+    model: fallback.model,
+    baseURL: provider.baseURL.replace(/\/+$/, ''),
+  }
+  if (fallback.keyFile) {
+    next.apiKey = (await readTextFile(fallback.keyFile).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '')
+  }
+  return next
+}
+
+function getFallbackSteps() {
+  return FALLBACK_STEPS.map(item => ({ ...item }))
 }
 
 function callGetImage(fileName) {
@@ -160,7 +180,7 @@ function isVisionModel(provider, modelId) {
 module.exports = {
   requestChatCompletions, buildResponsesInput, extractResponsesText,
   requestOpenAIResponsesWithSearch,
-  buildFallbackConfig,
+  buildFallbackConfig, getFallbackSteps,
   callGetImage, callGetForwardMsg,
   readImageAsBase64, extractImageFileFromElements, downloadImageAsBase64,
   isVisionModel,
