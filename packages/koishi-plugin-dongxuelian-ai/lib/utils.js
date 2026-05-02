@@ -111,17 +111,45 @@ function formatPercent(rate = 0) { return `${Number(rate * 100).toFixed(rate * 1
 
 async function readTextFile(file) { try { return (await require('fs/promises').readFile(file, 'utf8')).trim() } catch { return '' } }
 
-async function writeTextFile(file, value) { const fs = require('fs/promises'); await fs.mkdir(require('path').dirname(file), { recursive: true }); await fs.writeFile(file, String(value), 'utf8') }
+async function writeFileAtomic(file, value) {
+  const fs = require('fs/promises')
+  const path = require('path')
+  const dir = path.dirname(file)
+  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`)
+  await fs.mkdir(dir, { recursive: true })
+  try {
+    await fs.writeFile(tmp, String(value), 'utf8')
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        await fs.rename(tmp, file)
+        return
+      } catch (error) {
+        if (!['EEXIST', 'EPERM'].includes(error && error.code) || attempt === 7) throw error
+        try { await fs.unlink(file) } catch {}
+        await new Promise(resolve => setTimeout(resolve, attempt + 1))
+      }
+    }
+  } catch (error) {
+    try { await fs.unlink(tmp) } catch {}
+    throw error
+  }
+}
+
+async function writeTextFile(file, value) { await writeFileAtomic(file, String(value)) }
 
 async function readJsonFile(file, fallback) { try { return JSON.parse(await require('fs/promises').readFile(file, 'utf8')) } catch { return fallback } }
 
-async function writeJsonFile(file, value) { const fs = require('fs/promises'); await fs.mkdir(require('path').dirname(file), { recursive: true }); await fs.writeFile(file, JSON.stringify(value, null, 2), 'utf8') }
+async function writeJsonFile(file, value) { await writeFileAtomic(file, JSON.stringify(value, null, 2)) }
 
 async function safeUnlink(file) { try { await require('fs/promises').unlink(file); return true } catch { return false } }
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
 
 function getRandomDelayMs() { return 1000 + Math.floor(Math.random() * 501) }
+
+function shouldTriggerRandom(rate, randomFn = Math.random) {
+  return randomFn() < Number(rate)
+}
 
 function parseEnabledText(value = '') { return /^(?:1|true|on|yes|开|开启)$/i.test(String(value).trim()) }
 
@@ -285,7 +313,7 @@ module.exports = {
   formatPercent,
   readTextFile, writeTextFile, readJsonFile, writeJsonFile,
   safeUnlink,
-  sleep, getRandomDelayMs,
+  sleep, getRandomDelayMs, shouldTriggerRandom,
   parseEnabledText,
   getBaseHostname, isDashScopeConfig, isOpenAIOfficialConfig,
   normalizeUrl, extractImageUrls,

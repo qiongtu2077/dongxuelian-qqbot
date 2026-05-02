@@ -5,7 +5,9 @@
   "scripts": {
     "start": "node start.js",
     "check": "node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js && node -c packages/koishi-plugin-dongxuelian-help/lib/index.js && node -c packages/koishi-plugin-group-name-at/lib/index.js && node -c packages/koishi-plugin-defense/lib/index.js && node -c packages/koishi-plugin-local-video-sender/lib/index.js && node -c packages/koishi-plugin-group-leave-notice/lib/index.js && node -c packages/koishi-plugin-dongxuelian-poke/lib/index.js",
-    "test": "node packages/koishi-plugin-dongxuelian-ai/test/cascade-test.js"
+    "test:quick": "node packages/koishi-plugin-dongxuelian-ai/test/cascade-test.js",
+    "test:scenario": "node packages/koishi-plugin-dongxuelian-ai/test/scenario-test.js",
+    "test": "npm run test:quick && npm run test:scenario"
   },
   "workspaces": [
     "packages/*"

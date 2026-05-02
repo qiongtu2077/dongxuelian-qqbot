@@ -16,6 +16,11 @@ function checkSentIncludes(t, label, result, needle) {
   t.check(label, sent.some(item => item.includes(needle)), `${JSON.stringify(needle)} not found. ${formatResult(result)}`)
 }
 
+function checkSentNonEmpty(t, label, result) {
+  const sent = asTextList(result.sent)
+  t.check(label, sent.length > 0, formatResult(result))
+}
+
 function checkSentExcludes(t, label, result, needle) {
   const sent = asTextList(result.sent)
   t.check(label, !sent.some(item => item.includes(needle)), `${JSON.stringify(needle)} leaked. ${formatResult(result)}`)
@@ -45,6 +50,7 @@ function checkNoInternalCall(t, label, result, method) {
 module.exports = {
   formatResult,
   checkSentIncludes,
+  checkSentNonEmpty,
   checkSentExcludes,
   checkNoLeak,
   checkNextCalled,

@@ -143,6 +143,7 @@ async function buildFallbackConfig(config, step) {
   const next = {
     ...config,
     _fallbackTried: step,
+    provider: fallback.provider,
     model: fallback.model,
     baseURL: provider.baseURL.replace(/\/+$/, ''),
   }

@@ -1502,15 +1502,6 @@ async function sendReply(ctx, session, reply, isRandom = false) {
 
 exports.buildRepeatCandidate = buildRepeatCandidate
 exports.checkGroupRepeat = checkGroupRepeat
-if (process.env.DONGXUELIAN_TEST_HOOKS === '1') {
-  exports._testOnly = {
-    chat,
-    sendReply,
-    loadStickerCache,
-    clearSensitiveRuntimeState,
-    resetPoliticalDetectCache,
-  }
-}
 
 exports.apply = (ctx) => {
   ctx.on('ready', async () => {

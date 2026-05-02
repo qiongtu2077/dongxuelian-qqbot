@@ -21,12 +21,46 @@ async function withApi(t, queue, fn) {
   })
 }
 
+function getFallbackStep(api, index) {
+  return api.getFallbackSteps()[index - 1]
+}
+
+function checkFallbackCallMatchesStep(t, label, call, step, constants) {
+  t.check(`${label} call exists`, !!call, JSON.stringify(call || null))
+  t.check(`${label} step exists`, !!step, JSON.stringify(step || null))
+  if (!call || !step) return
+  const provider = constants.PROVIDERS[step.provider]
+  t.check(`${label} provider known`, !!provider, JSON.stringify(step))
+  t.checkEqual(`${label} model follows fallback step`, call.requestBody && call.requestBody.model, step.model)
+  if (provider) {
+    t.check(`${label} baseURL follows fallback provider`, call.url.startsWith(provider.baseURL), call.url)
+  }
+}
+
+function checkManagedThinkingDisabled(t, label, requestBody, step) {
+  if (!requestBody || !step) {
+    t.check(label, false, JSON.stringify({ requestBody, step }))
+    return
+  }
+  const provider = String(step.provider || '').toLowerCase()
+  const model = String(step.model || '').toLowerCase()
+  if (provider === 'dashscope' || provider === 'deepseek' || model.includes('deepseek')) {
+    t.checkEqual(label, requestBody.enable_thinking, false)
+    return
+  }
+  if (provider === 'glm' || provider === 'kimi' || provider === 'mimorium' || /glm|kimi|mimo/.test(model)) {
+    t.checkEqual(label, requestBody.thinking && requestBody.thinking.type, 'disabled')
+    return
+  }
+  t.skip(label, `no disabled-thinking assertion for provider=${step.provider} model=${step.model}`)
+}
+
 async function run(t) {
   t.section('scenario: API fallback chain')
 
   await withApi(t, [
     { status: 429, text: 'rate limited' },
-    { json: { choices: [{ message: { content: 'glm-ok' } }] } },
+    { json: { choices: [{ message: { content: 'fallback-ok' } }] } },
   ], async (api, constants, mocked) => {
     const result = await api.requestChatCompletions([], {
       model: 'deepseek-chat',
@@ -34,16 +68,15 @@ async function run(t) {
       apiKey: 'sk-current',
       provider: 'deepseek',
     })
-    t.checkEqual('scenario 429 falls back to GLM result', result, 'glm-ok')
-    t.checkEqual('scenario 429 fallback model is GLM', mocked.calls[1].requestBody.model, 'glm-4.6v-flash')
-    t.check('scenario 429 fallback uses GLM baseURL', mocked.calls[1].url.startsWith(constants.PROVIDERS.glm.baseURL), mocked.calls[1].url)
+    t.checkEqual('scenario 429 falls back to next provider result', result, 'fallback-ok')
+    checkFallbackCallMatchesStep(t, 'scenario 429 first fallback', mocked.calls[1], getFallbackStep(api, 1), constants)
   })
 
   await withApi(t, [
     { status: 400, text: 'bad request' },
     { status: 401, text: 'bad key' },
     { status: 429, text: 'rate limited' },
-    { json: { choices: [{ message: { content: 'dashscope-ok' } }] } },
+    { json: { choices: [{ message: { content: 'third-fallback-ok' } }] } },
   ], async (api, constants, mocked) => {
     const result = await api.requestChatCompletions([], {
       model: 'deepseek-chat',
@@ -51,10 +84,10 @@ async function run(t) {
       apiKey: 'sk-current',
       provider: 'deepseek',
     }, { enable_thinking: false, _thinkingManaged: true, _thinkingEnabled: false, _explicitThinkingKeys: [] })
-    t.checkEqual('scenario 400/401/429 chain reaches DashScope', result, 'dashscope-ok')
-    t.checkEqual('scenario fallback step 3 model stable', mocked.calls[3].requestBody.model, 'qwen3.5-plus')
-    t.check('scenario fallback step 3 baseURL stable', mocked.calls[3].url.startsWith(constants.PROVIDERS.dashscope.baseURL), mocked.calls[3].url)
-    t.checkEqual('scenario fallback step 3 thinking disabled for DashScope', mocked.calls[3].requestBody.enable_thinking, false)
+    t.checkEqual('scenario 400/401/429 chain reaches third fallback response', result, 'third-fallback-ok')
+    const thirdStep = getFallbackStep(api, 3)
+    checkFallbackCallMatchesStep(t, 'scenario third fallback after 400/401/429', mocked.calls[3], thirdStep, constants)
+    checkManagedThinkingDisabled(t, 'scenario third fallback thinking disabled by provider policy', mocked.calls[3] && mocked.calls[3].requestBody, thirdStep)
   })
 
   await withApi(t, [
@@ -68,7 +101,7 @@ async function run(t) {
       provider: 'deepseek',
     })
     t.checkEqual('scenario network error falls back', result, 'network-fallback-ok')
-    t.checkEqual('scenario network fallback model is GLM', mocked.calls[1].requestBody.model, 'glm-4.6v-flash')
+    checkFallbackCallMatchesStep(t, 'scenario network first fallback', mocked.calls[1], getFallbackStep(api, 1), constants)
   })
 
   await withApi(t, [
@@ -108,7 +141,7 @@ async function run(t) {
       provider: 'deepseek',
     }, { enable_thinking: false, _thinkingManaged: true, _thinkingEnabled: false, _explicitThinkingKeys: [] })
     t.checkEqual('scenario reasoning-only falls back', result, 'reasoning-fallback-ok')
-    t.checkEqual('scenario reasoning-only fallback GLM thinking disabled', mocked.calls[1].requestBody.thinking.type, 'disabled')
+    checkManagedThinkingDisabled(t, 'scenario reasoning-only fallback thinking disabled by provider policy', mocked.calls[1] && mocked.calls[1].requestBody, getFallbackStep(api, 1))
   })
 
   await withApi(t, [

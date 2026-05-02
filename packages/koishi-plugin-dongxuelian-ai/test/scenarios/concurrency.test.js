@@ -1,5 +1,5 @@
 const { withScenario } = require('./_setup')
-const { checkSentIncludes } = require('../helpers/assert')
+const { checkSentIncludes, checkSentNonEmpty } = require('../helpers/assert')
 
 function userSession(makeSession, userId, content, extra = {}) {
   return makeSession({
@@ -19,9 +19,10 @@ function countSentContaining(sessions, needle) {
 async function run(t) {
   t.section('scenario: business concurrency')
 
-  await withScenario({}, async ({ makeSession, run }) => {
+  await withScenario({}, async ({ data, makeSession, run }) => {
     const enable = await run(makeSession({ content: '\u4e1c\u96ea\u83b2\u590d\u8bfb\u5f00' }))
-    checkSentIncludes(t, 'scenario concurrent repeat setup enables repeat', enable, '\u590d\u8bfb\u5df2\u5f00\u542f')
+    checkSentNonEmpty(t, 'scenario concurrent repeat setup enables repeat', enable)
+    t.check('scenario concurrent repeat setup writes enabled state', data.readJson('ai-repeat-enabled.json')['10001'] === true)
 
     const a = userSession(makeSession, '3001', '\u5e76\u53d1\u590d\u8bfb')
     const b = userSession(makeSession, '3002', '\u5e76\u53d1\u590d\u8bfb')

@@ -1,8 +1,8 @@
 const path = require('path')
 
-const DATA_DIR = process.platform === 'win32'
+const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || (process.platform === 'win32'
   ? path.join(__dirname, '../data')
-  : '/root/koishi-app/data'
+  : '/root/koishi-app/data')
 
 const PLUGIN_VERSION = '0.9.5'
 const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')

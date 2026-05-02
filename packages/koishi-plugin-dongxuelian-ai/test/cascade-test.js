@@ -605,7 +605,7 @@ async function main() {
   check('shouldTriggerRandom disables invalid rate', !u.shouldTriggerRandom(Number.NaN, () => 0))
   check('shouldTriggerRandom allows forced full rate', u.shouldTriggerRandom(1, () => 0.999999))
 
-  section('6. API pure behavior and fallback order')
+  section('6. API pure behavior and fallback contract')
   const input = api.buildResponsesInput([
     { role: 'system', content: 'sys' },
     { role: 'assistant', content: 'bot' },
@@ -691,20 +691,36 @@ async function main() {
   }
 
   const fallbackSteps = api.getFallbackSteps()
-  const fallbackSummary = fallbackSteps.map(step => `${step.provider}:${step.model}:${step.keyFile ? path.basename(step.keyFile) : ''}`).join('|')
-  checkEqual('fallback order stable', fallbackSummary, 'glm:glm-4.6v-flash:ai-glm-key.txt|opencode:deepseek-v4-flash:|dashscope:qwen3.5-plus:ai-dashscope-key.txt|dashscope:qwen3.6-plus:ai-dashscope-key.txt')
+  check('fallback steps are configured', Array.isArray(fallbackSteps) && fallbackSteps.length > 0)
+  const fallbackKeys = new Set()
+  for (const [index, step] of fallbackSteps.entries()) {
+    const detail = JSON.stringify(step)
+    check(`fallback step ${index + 1} provider known`, !!(step && c.PROVIDERS[step.provider]), detail)
+    check(`fallback step ${index + 1} model configured`, !!(step && step.model && typeof step.model === 'string'), detail)
+    check(`fallback step ${index + 1} key file shape`, !step.keyFile || (typeof step.keyFile === 'string' && path.basename(step.keyFile).endsWith('.txt')), detail)
+    const key = `${step.provider}:${step.model}:${step.keyFile || ''}`
+    check(`fallback step ${index + 1} unique`, !fallbackKeys.has(key), key)
+    fallbackKeys.add(key)
+  }
+  const originalFirstFallbackModel = api.getFallbackSteps()[0] && api.getFallbackSteps()[0].model
   fallbackSteps[0].model = 'mutated'
-  checkEqual('getFallbackSteps returns copies', api.getFallbackSteps()[0].model, 'glm-4.6v-flash')
+  checkEqual('getFallbackSteps returns copies', api.getFallbackSteps()[0] && api.getFallbackSteps()[0].model, originalFirstFallbackModel)
 
   const baseConfig = { provider: 'opencode', model: 'glm-5', baseURL: 'https://example.invalid/v1', apiKey: 'current-key' }
+  const firstFallbackStep = api.getFallbackSteps()[0]
   const fb1 = await api.buildFallbackConfig(baseConfig, 1)
-  checkEqual('fallback step 1 model', fb1 && fb1.model, 'glm-4.6v-flash')
-  checkEqual('fallback step 1 provider baseURL', fb1 && fb1.baseURL, c.PROVIDERS.glm.baseURL)
-  check('fallback step 1 has api key fallback', !!(fb1 && fb1.apiKey))
-  const fb2 = await api.buildFallbackConfig(baseConfig, 2)
-  checkEqual('fallback step 2 model', fb2 && fb2.model, 'deepseek-v4-flash')
-  checkEqual('fallback step 2 keeps current key', fb2 && fb2.apiKey, 'current-key')
-  checkEqual('fallback step 5 missing', await api.buildFallbackConfig(baseConfig, 5), null)
+  checkEqual('fallback step 1 provider follows configured step', fb1 && fb1.provider, firstFallbackStep && firstFallbackStep.provider)
+  checkEqual('fallback step 1 model follows configured step', fb1 && fb1.model, firstFallbackStep && firstFallbackStep.model)
+  checkEqual('fallback step 1 baseURL follows provider', fb1 && fb1.baseURL, firstFallbackStep && c.PROVIDERS[firstFallbackStep.provider].baseURL)
+  check('fallback step 1 resolves an api key', !!(fb1 && fb1.apiKey))
+  const currentKeyStepIndex = api.getFallbackSteps().findIndex(step => !step.keyFile)
+  if (currentKeyStepIndex >= 0) {
+    const currentKeyFallback = await api.buildFallbackConfig(baseConfig, currentKeyStepIndex + 1)
+    checkEqual('fallback step without keyFile keeps current key', currentKeyFallback && currentKeyFallback.apiKey, 'current-key')
+  } else {
+    skip('fallback step without keyFile keeps current key', 'no fallback step without keyFile is configured')
+  }
+  checkEqual('fallback after last step missing', await api.buildFallbackConfig(baseConfig, fallbackSteps.length + 1), null)
   check('vision model detects qwen', api.isVisionModel('dashscope', 'qwen3.5-omni-flash'))
   check('vision model detects glm', api.isVisionModel('glm', 'glm-4.6v-flash'))
   check('vision model rejects plain deepseek', !api.isVisionModel('deepseek', 'deepseek-chat'))

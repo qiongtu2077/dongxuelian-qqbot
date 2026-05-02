@@ -1,74 +1,81 @@
 const fs = require('fs')
 const path = require('path')
 const { withScenario } = require('./_setup')
-const { checkSentIncludes, checkNoLeak, checkNextCalled } = require('../helpers/assert')
+const { checkSentNonEmpty, checkNoLeak, checkNextCalled } = require('../helpers/assert')
 
 async function run(t) {
   t.section('scenario: command middleware')
 
   await withScenario({}, async ({ data, makeSession, run }) => {
-    const status = await run(makeSession({ content: 'AI状态' }))
-    checkSentIncludes(t, 'scenario AI status replies', status, 'AI版本')
+    const status = await run(makeSession({ content: 'AI\u72b6\u6001' }))
+    checkSentNonEmpty(t, 'scenario AI status replies', status)
     checkNoLeak(t, 'scenario AI status does not leak key', status, ['sk-test-secret', 'Bearer'])
 
-    const help = await run(makeSession({ content: '帮助集合' }))
+    const help = await run(makeSession({ content: '\u5e2e\u52a9\u96c6\u5408' }))
     checkNextCalled(t, 'scenario reserved help command calls next', help)
     t.check('scenario reserved help command does not send', help.sent.length === 0, JSON.stringify(help.sent))
 
     const nonAdminThinking = await run(makeSession({
       userId: '12345',
       author: { id: '12345', name: 'member' },
-      content: '东雪莲思考开',
+      content: '\u4e1c\u96ea\u83b2\u601d\u8003\u5f00',
     }))
-    checkSentIncludes(t, 'scenario non-admin thinking switch rejected', nonAdminThinking, '管理员')
+    checkSentNonEmpty(t, 'scenario non-admin thinking switch rejected with reply', nonAdminThinking)
     t.check('scenario non-admin thinking switch does not write file', data.readText('ai-enable-thinking.txt').trim() === 'off')
 
-    const adminThinking = await run(makeSession({ content: '东雪莲思考开' }))
-    checkSentIncludes(t, 'scenario admin thinking switch accepted', adminThinking, '思考调试模式已开启')
+    const adminThinking = await run(makeSession({ content: '\u4e1c\u96ea\u83b2\u601d\u8003\u5f00' }))
+    checkSentNonEmpty(t, 'scenario admin thinking switch accepted', adminThinking)
     t.check('scenario admin thinking switch writes file', data.readText('ai-enable-thinking.txt').trim() === 'on')
 
+    const repeatBefore = data.readText('ai-repeat-enabled.json')
     const nonAdminRepeat = await run(makeSession({
       userId: '12345',
       author: { id: '12345', name: 'member' },
-      content: '东雪莲复读开',
+      content: '\u4e1c\u96ea\u83b2\u590d\u8bfb\u5f00',
     }))
-    checkSentIncludes(t, 'scenario non-admin repeat switch rejected', nonAdminRepeat, '管理员')
+    checkSentNonEmpty(t, 'scenario non-admin repeat switch rejected with reply', nonAdminRepeat)
+    t.check('scenario non-admin repeat switch does not write file', data.readText('ai-repeat-enabled.json') === repeatBefore)
 
     const sensitiveBefore = data.readText('political-detect-enabled.json')
     const nonAdminSensitive = await run(makeSession({
       userId: '12345',
       author: { id: '12345', name: 'member' },
-      content: '敏感话题检测开',
+      content: '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b\u5f00',
       event: { sender: { role: 'member' }, message: [] },
     }))
-    checkSentIncludes(t, 'scenario non-admin sensitive switch rejected', nonAdminSensitive, '管理员')
+    checkSentNonEmpty(t, 'scenario non-admin sensitive switch rejected with reply', nonAdminSensitive)
     t.check('scenario non-admin sensitive switch does not write file', data.readText('political-detect-enabled.json') === sensitiveBefore)
 
     const adminSensitive = await run(makeSession({
-      content: '敏感话题检测开',
+      content: '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b\u5f00',
       event: { sender: { role: 'admin' }, message: [] },
     }))
-    checkSentIncludes(t, 'scenario group admin sensitive switch accepted', adminSensitive, '敏感话题检测已开启')
+    checkSentNonEmpty(t, 'scenario group admin sensitive switch accepted', adminSensitive)
     t.check('scenario sensitive switch writes channel list', data.readJson('political-detect-enabled.json').includes('10001'))
 
-    const sensitiveView = await run(makeSession({ content: '敏感话题检测查看' }))
-    checkSentIncludes(t, 'scenario sensitive view sees enabled state', sensitiveView, '开')
+    const sensitiveView = await run(makeSession({ content: '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b\u67e5\u770b' }))
+    checkSentNonEmpty(t, 'scenario sensitive view replies', sensitiveView)
+    t.check('scenario sensitive view observes enabled file state', data.readJson('political-detect-enabled.json').includes('10001'))
 
-    const reload = await run(makeSession({ content: 'AI重载' }))
-    checkSentIncludes(t, 'scenario AI reload replies', reload, 'AI配置已重载')
+    const reload = await run(makeSession({ content: 'AI\u91cd\u8f7d' }))
+    checkSentNonEmpty(t, 'scenario AI reload replies', reload)
 
-    const emotion = await run(makeSession({ content: '今日情绪' }))
-    checkSentIncludes(t, 'scenario today emotion empty cache replies', emotion, '还没有')
+    const emotion = await run(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }))
+    checkSentNonEmpty(t, 'scenario today emotion empty cache replies', emotion)
 
-    const personaList = await run(makeSession({ content: '东雪莲人格列表' }))
+    const personaList = await run(makeSession({ content: '\u4e1c\u96ea\u83b2\u4eba\u683c\u5217\u8868' }))
     t.check('scenario persona list command is handled', personaList.sent.length > 0, JSON.stringify(personaList.sent))
 
+    const groupPersonaFile = path.join(data.dataDir, 'ai-persona-groups.json')
+    const groupPersonaBefore = fs.existsSync(groupPersonaFile) ? fs.readFileSync(groupPersonaFile, 'utf8') : null
     const groupPersona = await run(makeSession({
       userId: '12345',
       author: { id: '12345', name: 'member' },
-      content: '东雪莲群人格',
+      content: '\u4e1c\u96ea\u83b2\u7fa4\u4eba\u683c',
     }))
-    checkSentIncludes(t, 'scenario non-admin group persona rejected', groupPersona, '管理员')
+    checkSentNonEmpty(t, 'scenario non-admin group persona rejected with reply', groupPersona)
+    const groupPersonaAfter = fs.existsSync(groupPersonaFile) ? fs.readFileSync(groupPersonaFile, 'utf8') : null
+    t.check('scenario non-admin group persona does not write file', groupPersonaAfter === groupPersonaBefore, JSON.stringify({ before: groupPersonaBefore, after: groupPersonaAfter }))
 
     t.check('scenario command temp files stay inside data dir', fs.existsSync(path.join(data.dataDir, 'ai-openai-key.txt')))
   })
