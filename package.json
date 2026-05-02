@@ -7,6 +7,7 @@
     "check": "node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js && node -c packages/koishi-plugin-dongxuelian-ai/lib/chat.js && node -c packages/koishi-plugin-dongxuelian-ai/lib/reply.js && node -c packages/koishi-plugin-dongxuelian-help/lib/index.js && node -c packages/koishi-plugin-group-name-at/lib/index.js && node -c packages/koishi-plugin-defense/lib/index.js && node -c packages/koishi-plugin-local-video-sender/lib/index.js && node -c packages/koishi-plugin-group-leave-notice/lib/index.js && node -c packages/koishi-plugin-dongxuelian-poke/lib/index.js",
     "test:quick": "node packages/koishi-plugin-dongxuelian-ai/test/cascade-test.js",
     "test:scenario": "node packages/koishi-plugin-dongxuelian-ai/test/scenario-test.js",
+    "test:plugins": "node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js",
     "test": "npm run test:quick && npm run test:scenario"
   },
   "workspaces": [

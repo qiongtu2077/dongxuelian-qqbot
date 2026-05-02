@@ -2,13 +2,16 @@ const { segment } = require('koishi')
 const { execFile } = require('child_process')
 const fs = require('fs/promises')
 const path = require('path')
+const { pathToFileURL } = require('url')
 
 exports.name = 'local-video-sender'
 
-const YTDLP = '/usr/local/bin/yt-dlp'
-const COOKIES = '/root/bilibili-cookies.txt'
-const WORKDIR = '/root/koishi-bili-downloads'
-const MAX_SIZE = 200 * 1024 * 1024
+const DEFAULT_MAX_SIZE = 200 * 1024 * 1024
+const YTDLP = process.env.BILI_YTDLP || '/usr/local/bin/yt-dlp'
+const COOKIES = process.env.BILI_COOKIES_FILE || '/root/bilibili-cookies.txt'
+const WORKDIR = process.env.BILI_WORKDIR || '/root/koishi-bili-downloads'
+const MAX_SIZE = parsePositiveInteger(process.env.BILI_MAX_SIZE_BYTES, DEFAULT_MAX_SIZE)
+const TEST_VIDEO_FILE = process.env.BILI_TEST_VIDEO_FILE || '/root/test_bili.mp4'
 const MIN_720_HEIGHT = 700
 const MAX_720_HEIGHT = 720
 const PREFERRED_MAX_HEIGHT = 720
@@ -20,6 +23,26 @@ const GROUP_BLACKLIST = new Set([ '942033342'
 ])
 
 const recentParseHistory = new Map()
+
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback
+}
+
+function toFileUrl(filePath) {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(String(filePath))) return String(filePath)
+  return pathToFileURL(filePath).href
+}
+
+function getRuntimeConfig() {
+  return {
+    ytdlp: YTDLP,
+    cookies: COOKIES,
+    workdir: WORKDIR,
+    maxSize: MAX_SIZE,
+    testVideoFile: TEST_VIDEO_FILE,
+  }
+}
 
 const FORMAT_CANDIDATES = [
   { format: '30064+30280', label: '720P AVC' },
@@ -371,7 +394,7 @@ async function probeVideo(url) {
   return { info, picked }
 }
 
-async function downloadAndSend(ctx, session, url, source = url) {
+async function downloadAndSend(ctx, session, url, source = url, deps = {}) {
   if (isBlacklistedGroup(session)) {
     return
   }
@@ -385,12 +408,21 @@ async function downloadAndSend(ctx, session, url, source = url) {
 
   const recentEntry = rememberRecentParse(session, initialKeys, now)
 
-  await fs.mkdir(WORKDIR, { recursive: true })
+  const fsApi = deps.fs || fs
+  const runCommand = deps.run || run
+  const probe = deps.probeVideo || probeVideo
+
+  try {
+    await fsApi.mkdir(WORKDIR, { recursive: true })
+  } catch (error) {
+    ctx.logger('bvidl').warn(error.message)
+    return 'Failed to prepare download directory. Please check logs later.'
+  }
 
   let info
   let picked
   try {
-    const result = await probeVideo(url)
+    const result = await probe(url)
     if (result.error) return result.error
     info = result.info
     picked = result.picked
@@ -412,7 +444,7 @@ async function downloadAndSend(ctx, session, url, source = url) {
   const outputFile = path.join(WORKDIR, `${id}.mp4`)
 
   try {
-    await run(YTDLP, [
+    await runCommand(YTDLP, [
       '--cookies', COOKIES,
       '-f', picked.format,
       '--merge-output-format', 'mp4',
@@ -420,16 +452,16 @@ async function downloadAndSend(ctx, session, url, source = url) {
       url,
     ], { timeout: 10 * 60 * 1000 })
 
-    const stat = await fs.stat(outputFile)
+    const stat = await fsApi.stat(outputFile)
     if (stat.size > MAX_SIZE) {
-      await fs.rm(outputFile, { force: true }).catch(() => {})
+      await fsApi.rm(outputFile, { force: true }).catch(() => {})
       return `Video is too large. Please watch it on Bilibili. Actual size: ${formatBytes(stat.size)}`
     }
 
     await session.send(segment.video(`file://${outputFile}`))
-    await fs.rm(outputFile, { force: true }).catch(() => {})
+    await fsApi.rm(outputFile, { force: true }).catch(() => {})
   } catch (error) {
-    await fs.rm(outputFile, { force: true }).catch(() => {})
+    await fsApi.rm(outputFile, { force: true }).catch(() => {})
     ctx.logger('bvidl').warn(error.stderr || error.message)
     return 'Failed to download or send video. Please check logs later.'
   }
@@ -437,7 +469,7 @@ async function downloadAndSend(ctx, session, url, source = url) {
 
 exports.apply = (ctx) => {
   ctx.command('sendtestvideo', 'send local test video').action(() => {
-    return segment.video('file:///root/test_bili.mp4')
+    return segment.video(toFileUrl(TEST_VIDEO_FILE))
   })
 
   ctx.command('bvidl <text:text>', 'download and send Bilibili video').action(async ({ session }, text) => {
@@ -460,3 +492,12 @@ exports.apply = (ctx) => {
     return downloadAndSend(ctx, session, url, content)
   })
 }
+
+exports.extractBiliUrl = extractBiliUrl
+exports.buildBiliKeys = buildBiliKeys
+exports.pickFormat = pickFormat
+exports.downloadAndSend = downloadAndSend
+exports.getRuntimeConfig = getRuntimeConfig
+exports.isRecentDuplicateParse = isRecentDuplicateParse
+exports.rememberRecentParse = rememberRecentParse
+exports.clearRecentParseHistory = () => recentParseHistory.clear()

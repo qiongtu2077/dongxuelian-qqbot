@@ -5,7 +5,8 @@ const path = require('path')
 exports.name = 'group-name-at'
 
 const PLUGIN_VERSION = '0.4.7'
-const DATA_FILE = '/root/koishi-app/data/nickname-collections.json'
+const DEFAULT_DATA_DIR = process.env.DONGXUELIAN_DATA_DIR || '/root/koishi-app/data'
+const DATA_FILE = process.env.GROUP_NAME_AT_DATA_FILE || path.join(DEFAULT_DATA_DIR, 'nickname-collections.json')
 const CONFIRM_TIMEOUT = 60 * 1000
 //黑名单
 const GROUP_BLACKLIST = new Set([
@@ -70,11 +71,36 @@ const TEXT = {
   memberNoAlias: (label) => `${label} 暂时没有昵称，也不在任何集合里。`,
   memberTitle: (label) => `${label} 的昵称 / 集合：`,
   setTitle: (type, left, right) => `${type}：${left} / ${right}`,
+  storeReadFailed: '昵称数据读取失败，请检查文件格式或权限。',
+  storeSaveFailed: '昵称数据保存失败，请检查文件权限。',
 }
 
 let nicknameStore = { scopes: {} }
 let storeLoaded = false
+let storeLoadError = null
 const pendingConfirms = new Map()
+
+class StoreAccessError extends Error {
+  constructor(userMessage, cause) {
+    super(cause && cause.message ? cause.message : String(cause || userMessage))
+    this.name = 'StoreAccessError'
+    this.code = 'GROUP_NAME_AT_STORE_ACCESS'
+    this.userMessage = userMessage
+    this.cause = cause
+  }
+}
+
+function createStoreAccessError(userMessage, cause) {
+  return new StoreAccessError(userMessage, cause)
+}
+
+function handleStoreAccessError(ctx, error) {
+  if (error && error.code === 'GROUP_NAME_AT_STORE_ACCESS') {
+    ctx.logger('group-name-at').warn(error.message)
+    return error.userMessage
+  }
+  throw error
+}
 
 function getScopeId(session) {
   return String(session.guildId || session.channelId || 'global')
@@ -105,14 +131,28 @@ function afterCommand(input, command) {
   return null
 }
 
+function parseCommandPair(plain, command) {
+  const value = afterCommand(plain, command)
+  if (!value) return null
+  const args = splitWords(value)
+  return args.length >= 2 ? [args[0], args[1]] : null
+}
+
 async function ensureStore() {
-  if (storeLoaded) return
+  if (storeLoaded) {
+    if (storeLoadError) throw createStoreAccessError(TEXT.storeReadFailed, storeLoadError)
+    return
+  }
   try {
     const raw = await fs.readFile(DATA_FILE, 'utf8')
     const parsed = JSON.parse(raw)
     if (parsed && typeof parsed === 'object') nicknameStore = parsed
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error
+    if (error.code !== 'ENOENT') {
+      storeLoadError = error
+      storeLoaded = true
+      throw createStoreAccessError(TEXT.storeReadFailed, error)
+    }
   }
 
   if (!nicknameStore.scopes || typeof nicknameStore.scopes !== 'object') {
@@ -123,8 +163,12 @@ async function ensureStore() {
 }
 
 async function saveStore() {
-  await fs.mkdir(path.dirname(DATA_FILE), { recursive: true })
-  await fs.writeFile(DATA_FILE, JSON.stringify(nicknameStore, null, 2), 'utf8')
+  try {
+    await fs.mkdir(path.dirname(DATA_FILE), { recursive: true })
+    await fs.writeFile(DATA_FILE, JSON.stringify(nicknameStore, null, 2), 'utf8')
+  } catch (error) {
+    throw createStoreAccessError(TEXT.storeSaveFailed, error)
+  }
 }
 
 function getScopeStore(session) {
@@ -674,24 +718,15 @@ async function handlePlainCommand(session, content) {
   if (value) return clearCollection(session, value, false)
 
   for (const command of [CMD.renameCollection, CMD.renameAlias]) {
-    value = afterCommand(plain, command)
-    if (value) {
-      const args = splitWords(value)
-      if (args.length >= 2) return renameEntry(session, args[0], args[1])
-    }
+    const args = parseCommandPair(plain, command)
+    if (args) return renameEntry(session, args[0], args[1])
   }
 
-  value = afterCommand(plain, CMD.copyCollection)
-  if (value) {
-    const args = splitWords(value)
-    if (args.length >= 2) return copyCollection(session, args[0], args[1])
-  }
+  const copyArgs = parseCommandPair(plain, CMD.copyCollection)
+  if (copyArgs) return copyCollection(session, copyArgs[0], copyArgs[1])
 
-  value = afterCommand(plain, CMD.mergeCollection)
-  if (value) {
-    const args = splitWords(value)
-    if (args.length >= 2) return mergeCollection(session, args[0], args[1])
-  }
+  const mergeArgs = parseCommandPair(plain, CMD.mergeCollection)
+  if (mergeArgs) return mergeCollection(session, mergeArgs[0], mergeArgs[1])
 
   const setCommands = [
     [CMD.intersectCollection, '交集'],
@@ -700,11 +735,8 @@ async function handlePlainCommand(session, content) {
   ]
 
   for (const [command, type] of setCommands) {
-    value = afterCommand(plain, command)
-    if (value) {
-      const args = splitWords(value)
-      if (args.length >= 2) return collectionSet(session, args[0], args[1], type)
-    }
+    const args = parseCommandPair(plain, command)
+    if (args) return collectionSet(session, args[0], args[1], type)
   }
 
   return null
@@ -723,33 +755,41 @@ exports.apply = (ctx) => {
   ctx.command('nicklist', 'list aliases in current group').action(async ({ session }) => {
     if (isBlacklistedGroup(session)) return
 
-    return listEntries(session, 'alias')
+    try {
+      return await listEntries(session, 'alias')
+    } catch (error) {
+      return handleStoreAccessError(ctx, error)
+    }
   })
 
   ctx.middleware(async (session, next) => {
     if (isBlacklistedGroup(session)) return next()
 
-    const content = session.content || ''
+    try {
+      const content = session.content || ''
 
-    const bindAction = parseAliasBind(content)
-    if (bindAction) return bindAlias(session, bindAction.alias, bindAction.targetUserId)
+      const bindAction = parseAliasBind(content)
+      if (bindAction) return await bindAlias(session, bindAction.alias, bindAction.targetUserId)
 
-    const deleteAction = parseAliasDelete(content, session)
-    if (deleteAction) return removeAliasBinding(session, deleteAction.alias, deleteAction.targetUserId)
+      const deleteAction = parseAliasDelete(content, session)
+      if (deleteAction) return await removeAliasBinding(session, deleteAction.alias, deleteAction.targetUserId)
 
-    const commandResult = await handlePlainCommand(session, content)
-    if (commandResult) return commandResult
+      const commandResult = await handlePlainCommand(session, content)
+      if (commandResult) return commandResult
 
-    const atRaw = parseAtAlias(content)
-    if (atRaw) {
-      const resolved = await resolveAtAlias(session, atRaw)
-      if (resolved) {
-        const atMessage = await sendAliasMention(session, resolved.alias, resolved.tail)
-        if (atMessage) return atMessage
+      const atRaw = parseAtAlias(content)
+      if (atRaw) {
+        const resolved = await resolveAtAlias(session, atRaw)
+        if (resolved) {
+          const atMessage = await sendAliasMention(session, resolved.alias, resolved.tail)
+          if (atMessage) return atMessage
+        }
+        return TEXT.aliasNotFound(atRaw)
       }
-      return TEXT.aliasNotFound(atRaw)
-    }
 
-    return next()
+      return next()
+    } catch (error) {
+      return handleStoreAccessError(ctx, error)
+    }
   })
 }
