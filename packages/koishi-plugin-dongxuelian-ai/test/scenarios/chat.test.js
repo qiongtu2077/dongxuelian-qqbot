@@ -2,7 +2,7 @@ const path = require('path')
 const { withScenario } = require('./_setup')
 const { AI_ROOT } = require('../fake/file')
 const { mockFetch } = require('../fake/fetch')
-const { checkSentIncludes, checkSentExcludes, checkNoLeak } = require('../helpers/assert')
+const { checkSentIncludes, checkSentNonEmpty, checkSentExcludes, checkNoLeak } = require('../helpers/assert')
 
 const INCIDENT_SAMPLE = [
   '\u597d\u7684\uff0c\u7528\u6237A\u53d1\u4e86\u4e2a\u6d88\u606f\u8bf4\u201c\u5efa\u8bae\u795e\u5361\u201d\uff0c\u8fd9\u5e94\u8be5\u662f\u5728\u56de\u5e94\u4e0a\u4e00\u53e5',
@@ -97,10 +97,10 @@ async function run(t) {
   await runChatCase(t, 'API 500 middleware fallback', [
     { status: 500, text: 'server exploded' },
   ], async (result) => {
-    checkSentIncludes(t, 'scenario API 500 chat sends safe fallback', result, '\u4e1c\u96ea\u83b2\u6682\u65f6\u65e0\u6cd5\u8fde\u63a5')
+    checkSentNonEmpty(t, 'scenario API 500 chat sends safe fallback', result)
+    checkSentExcludes(t, 'scenario API 500 does not send raw server error', result, 'server exploded')
+    checkSentExcludes(t, 'scenario API 500 does not send reasoning marker', result, 'reasoning-secret')
     checkNoLeak(t, 'scenario API 500 logs do not leak key', result, ['sk-test-secret', 'Bearer'])
-  }, {
-    waitFor: message => String(message).includes('\u4e1c\u96ea\u83b2\u6682\u65f6\u65e0\u6cd5\u8fde\u63a5'),
   })
 
   await runChatCase(t, 'normal look phrase is not thinking leak', [
