@@ -84,7 +84,7 @@ const {
   normalizeReplyFingerprint,
   longestCommonSubstringLength, charSetJaccardOverlap,
   isReplyTooSimilar, isOverusedReply, hasBannedOutput,
-  isEvaluationRequest,
+  isThinkingLeak, isEvaluationRequest,
   getSearchCapability,
   trimReply, sanitizeReply, splitSentences,
 } = require('./utils')
@@ -136,10 +136,15 @@ const channelMutedUntil = new Map()
 const channelPendingRandom = new Map()
 const channelMsgCount = new Map()
 const lastSensitiveAlert = new Map()
-const lastStickerSentAt = new Map()  // 贴图冷却：同群 30 秒内不重复发
+const lastStickerSentAt = new Map()  // 贴图冷却：同群短时间内不重复发
+const lastStickerFileSentAt = new Map()  // 同群同图冷却，避免单图刷屏
 
 // 连续复读系统
-const channelRepeatState = new Map()  // channelKey → { content, userId, ts }
+const REPEAT_TRIGGER_COOLDOWN_MS = 30000
+const REPEAT_MATCH_WINDOW_MS = 120000
+const STICKER_GLOBAL_COOLDOWN_MS = 30000
+const STICKER_FILE_COOLDOWN_MS = 120000
+const channelRepeatState = new Map()  // channelKey → { key, reply, kind, userId, ts }
 const channelRepeatCooldown = new Map()  // channelKey → timestamp
 let repeatEnabledCache = {}  // { channelKey: boolean }
 let userBlacklistCache = null
@@ -174,8 +179,16 @@ function loadRepeatConfig() {
   }
 }
 
+function clearRepeatState(channelKey) {
+  const key = String(channelKey)
+  channelRepeatState.delete(key)
+  channelRepeatCooldown.delete(key)
+}
+
 function setRepeatEnabled(channelKey, enabled) {
-  repeatEnabledCache[String(channelKey)] = enabled
+  const key = String(channelKey)
+  repeatEnabledCache[key] = enabled
+  clearRepeatState(key)
   atomicWriteJson(REPEAT_ENABLED_FILE, repeatEnabledCache)
 }
 
@@ -293,23 +306,138 @@ function getRandomTriggerRate(channelKey) {
   return baseRate + (miss - RANDOM_TRIGGER_WARMUP) * RANDOM_TRIGGER_RAMP
 }
 
-function checkGroupRepeat(session, content, channelKey, currentUserId) {
+function getSegmentData(segment) {
+  return segment?.data || segment?.attrs || {}
+}
+
+function getSessionMessageSegments(session) {
+  const message = session?.event?.message
+  if (Array.isArray(message)) return message
+  if (Array.isArray(message?.elements)) return message.elements
+  if (Array.isArray(session?.event?.message?.content)) return session.event.message.content
+  return []
+}
+
+function extractStructuredFaceIds(session) {
+  const segments = getSessionMessageSegments(session)
+  if (!segments.length) return null
+
+  const ids = []
+  for (const segment of segments) {
+    const type = String(segment?.type || '').toLowerCase()
+    const data = getSegmentData(segment)
+
+    if (type === 'text') {
+      const text = data.text ?? data.content ?? ''
+      if (!normalizeText(String(text))) continue
+      return null
+    }
+
+    // @ 段不参与复读内容。主流程已排除直呼 bot / @其他人的触发场景。
+    if (type === 'at') continue
+
+    if (type === 'face') {
+      const id = String(data.id ?? data.qq ?? data.face_id ?? data.faceId ?? '').trim()
+      if (!/^\d+$/.test(id)) return null
+      ids.push(id)
+      continue
+    }
+
+    return null
+  }
+
+  return ids.length ? ids : null
+}
+
+function extractContentFaceIds(content = '') {
+  const value = String(content || '')
+  if (!value.trim()) return null
+
+  const ids = []
+  const tokenRe = /(\[CQ:face,[^\]]*?\bid=(\d+)[^\]]*\])|(<face\b[^>]*?\bid="(\d+)"[^>]*\/?>)/gi
+  const remainder = value.replace(tokenRe, (_, cqToken, cqId, htmlToken, htmlId) => {
+    ids.push(cqId || htmlId)
+    return ''
+  })
+
+  return ids.length && !remainder.trim() ? ids : null
+}
+
+function buildFaceRepeatCandidate(faceIds) {
+  const ids = faceIds.map(id => String(id))
+  return {
+    key: ids.map(id => `face:${id}`).join('|'),
+    reply: ids.map(id => `<face id="${id}"/>`).join(''),
+    kind: 'face',
+    supported: true,
+  }
+}
+
+function buildUnsupportedRepeatCandidate(reason) {
+  return {
+    key: '',
+    reply: '',
+    kind: 'unsupported',
+    supported: false,
+    reason,
+  }
+}
+
+function buildRepeatCandidate(session, plain, analyzed = {}) {
+  const structuredFaceIds = extractStructuredFaceIds(session)
+  if (structuredFaceIds) return buildFaceRepeatCandidate(structuredFaceIds)
+
+  const contentFaceIds = extractContentFaceIds(session?.content || '')
+  if (contentFaceIds) return buildFaceRepeatCandidate(contentFaceIds)
+
+  if (analyzed.hasFile) return buildUnsupportedRepeatCandidate('file')
+  if (analyzed.hasEmbed || analyzed.hasMessageRecordCue) return buildUnsupportedRepeatCandidate('embed')
+  if (analyzed.hasVisual) return buildUnsupportedRepeatCandidate('visual')
+
+  const text = normalizeText(String(plain || '')).trim()
+  if (!text) return buildUnsupportedRepeatCandidate('empty')
+
+  return {
+    key: `text:${text}`,
+    reply: text,
+    kind: 'text',
+    supported: true,
+  }
+}
+
+function checkGroupRepeat(session, candidate, channelKey, currentUserId, now = Date.now()) {
   // 跳过：私聊
   if (session.isDirect) return null
   // 跳过：未开启
   if (!repeatEnabledCache[channelKey]) return null
-  // 跳过：内容为空
-  if (!content) return null
-  // 跳过：30秒冷却
-  const lastTs = channelRepeatCooldown.get(channelKey) || 0
-  if (Date.now() - lastTs < 30000) return null
+  // 跳过：内容为空或不支持复读；同时截断连续复读链，避免跨媒体误触发
+  if (!candidate || !candidate.supported || !candidate.key || !candidate.reply) {
+    channelRepeatState.delete(channelKey)
+    return null
+  }
   // 比较上一条消息
   const last = channelRepeatState.get(channelKey)
   // 更新状态（先更新再判断，避免自己和自己比）
-  channelRepeatState.set(channelKey, { content, userId: currentUserId, ts: Date.now() })
-  if (last && last.userId !== currentUserId && last.content === content) {
-    channelRepeatCooldown.set(channelKey, Date.now())
-    return content
+  channelRepeatState.set(channelKey, {
+    key: candidate.key,
+    reply: candidate.reply,
+    kind: candidate.kind,
+    userId: currentUserId,
+    ts: now,
+  })
+
+  // 冷却中不触发，但上面的状态仍然刷新，避免冷却结束后拿旧消息误触发
+  const lastTs = channelRepeatCooldown.get(channelKey) || 0
+  if (lastTs && now - lastTs < REPEAT_TRIGGER_COOLDOWN_MS) return null
+
+  if (
+    last &&
+    last.userId !== currentUserId &&
+    last.key === candidate.key &&
+    now - last.ts <= REPEAT_MATCH_WINDOW_MS
+  ) {
+    channelRepeatCooldown.set(channelKey, now)
+    return candidate
   }
   return null
 }
@@ -730,25 +858,30 @@ function buildAbusiveSystemPrompt() {
 async function callOpenAI(messages, isRandom, extraBody = {}) {
   const config = await loadConfig()
   if (!config.apiKey) throw new Error('AI key file is empty.')
+  const managedThinkingMeta = {
+    _thinkingManaged: true,
+    _thinkingEnabled: thinkingEnabled,
+    _explicitThinkingKeys: ['enable_thinking', 'thinking'].filter(key => extraBody[key] !== undefined),
+  }
 
   const capability = getSearchCapability(config)
   if (!config.searchEnabled || !capability.supported) {
-    return requestChatCompletions(messages, config, { ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody })
+    return requestChatCompletions(messages, config, { ...getThinkingArgs(config), ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody, ...managedThinkingMeta })
   }
 
   if (capability.mode === 'dashscope-chat') {
-    return requestChatCompletions(messages, config, { enable_search: true, search_options: { forced_search: true }, ...extraBody })
+    return requestChatCompletions(messages, config, { ...getThinkingArgs(config), enable_search: true, search_options: { forced_search: true }, ...extraBody, ...managedThinkingMeta })
   }
 
   if (capability.mode === 'openai-chat-search') {
-    return requestChatCompletions(messages, config, { web_search_options: {}, ...extraBody })
+    return requestChatCompletions(messages, config, { ...getThinkingArgs(config), web_search_options: {}, ...extraBody, ...managedThinkingMeta })
   }
 
   if (capability.mode === 'openai-responses') {
     return requestOpenAIResponsesWithSearch(messages, config)
   }
 
-  return requestChatCompletions(messages, config, { ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody })
+  return requestChatCompletions(messages, config, { ...getThinkingArgs(config), ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody, ...managedThinkingMeta })
 }
 
 async function chatJailbreak(session, userText, ctx) {
@@ -1183,8 +1316,8 @@ async function chat(session, userText, ctx, options = {}) {
       continue
     }
 
-    if (THINKING_OUTPUT_RE.test(reply)) {
-      ctx.logger('dongxuelian-ai').warn(`thinking output in reply, retrying. original: ${reply.slice(0, 60)}`)
+    if (isThinkingLeak(reply) || THINKING_OUTPUT_RE.test(reply)) {
+      ctx.logger('dongxuelian-ai').warn('thinking output in reply, retrying with sanitized prompt')
       messages.push({ role: 'assistant', content: reply })
       messages.push({
         role: 'user',
@@ -1209,7 +1342,7 @@ async function chat(session, userText, ctx, options = {}) {
     hostile ? MAX_OUTPUT_CHARS_ABUSIVE : MAX_OUTPUT_CHARS_FRIENDLY
   )
 
-  if (THINKING_OUTPUT_RE.test(finalReply)) {
+  if (isThinkingLeak(finalReply) || THINKING_OUTPUT_RE.test(finalReply)) {
     const simple = hostile ? '少来这套。' : ['想白嫖直说', '就这？', '咋了', '难绷'][Math.floor(Math.random() * 4)]
     finalReply = simple
   }
@@ -1237,6 +1370,47 @@ async function chat(session, userText, ctx, options = {}) {
   return finalReply
 }
 
+async function sendStickerImage(ctx, session, sticker) {
+  const logger = ctx.logger('dongxuelian-ai')
+  const image = typeof sticker === 'string' ? sticker : sticker?.image
+  const file = typeof sticker === 'string' ? '' : sticker?.file
+  if (!image) return false
+
+  let internalError = null
+  const bot = session.bot
+  const userId = session.userId
+  const isDirect = !!session.isDirect
+
+  if (bot?.internal && userId) {
+    try {
+      const segArr = [{ type: 'image', data: { file: image } }]
+      if (isDirect) {
+        await bot.internal.sendPrivateMsg(userId, segArr)
+      } else {
+        if (!session.guildId) throw new Error('missing guildId for group sticker send')
+        await bot.internal.sendGroupMsg(session.guildId, segArr)
+      }
+      logger.info(`sticker sent via internal API${file ? `: ${file}` : ''}`)
+      return true
+    } catch (error) {
+      internalError = error
+      logger.warn(`sticker internal send failed${file ? ` (${file})` : ''}: ${error.message}`)
+    }
+  } else {
+    logger.warn(`sticker internal API not available${file ? ` (${file})` : ''}, trying Koishi image fallback`)
+  }
+
+  try {
+    await session.send(h.image(image))
+    logger.info(`sticker sent via Koishi image fallback${file ? `: ${file}` : ''}`)
+    return true
+  } catch (error) {
+    const internalMsg = internalError ? `; internal=${internalError.message}` : ''
+    logger.error(`sticker fallback send failed${file ? ` (${file})` : ''}: ${error.message}${internalMsg}`)
+    return false
+  }
+}
+
 async function sendReply(ctx, session, reply, isRandom = false) {
   // 图片文件转 base64 CQ 码（使用缓存）
   const stickerToCQ = (file) => {
@@ -1245,11 +1419,16 @@ async function sendReply(ctx, session, reply, isRandom = false) {
   }
   // 替换 AI 主动调用的 [图:xxx] 并收集图片 base64
   const pendingStickers = []
+  const addPendingSticker = (file) => {
+    const image = stickerToCQ(file)
+    if (image && !pendingStickers.some(sticker => sticker.file === file)) {
+      pendingStickers.push({ file, image })
+    }
+  }
   reply = reply.replace(/\[图:(.+?)\]/g, (m, name) => {
     const match = STICKER_MAP.find(s => s.kw === name)
     if (match) {
-      const b64 = stickerToCQ(match.file)
-      if (b64) pendingStickers.push(b64)
+      addPendingSticker(match.file)
     }
     return ''
   }).trim()
@@ -1261,8 +1440,7 @@ async function sendReply(ctx, session, reply, isRandom = false) {
       !STICKER_NEG_RE_MAP.get(s.kw).test(reply)
     )
     if (matched && Math.random() < 0.3) {
-      const b64 = stickerToCQ(matched.file)
-      if (b64 && !pendingStickers.includes(b64)) pendingStickers.push(b64)
+      addPendingSticker(matched.file)
     }
   }
   const parts = splitSentences(reply)
@@ -1289,37 +1467,41 @@ async function sendReply(ctx, session, reply, isRandom = false) {
       await sleep(getRandomDelayMs())
     }
   }
-  // 发送收集到的表情包图片（带 30 秒冷却）
+  // 发送收集到的表情包图片；fallback 只在 sticker 图片这里触发，不接管普通文本。
   const stickerChannelKey = getChannelKey(session)
-  const now = Date.now()
-  const lastStickerAt = lastStickerSentAt.get(stickerChannelKey) || 0
-  if (now - lastStickerAt < 30000 && pendingStickers.length > 0) {
-    ctx.logger('dongxuelian-ai').info(`sticker cooldown active (${Math.ceil((30000 - (now - lastStickerAt)) / 1000)}s remaining), skipping`)
-  } else {
-    for (const b64 of pendingStickers) {
-      ctx.logger('dongxuelian-ai').info(`sending sticker, base64 length=${b64.length}`)
-      try {
-        // 尝试用 internal API 直接发送，绕过 session.send 的段编码
-        const bot = session.bot
-        const userId = session.userId
-        const isDirect = !!session.isDirect
-        if (bot?.internal && userId) {
-          const segArr = [{ type: 'image', data: { file: b64 } }]
-          if (isDirect) {
-            await bot.internal.sendPrivateMsg(userId, segArr)
-          } else {
-            await bot.internal.sendGroupMsg(session.guildId, segArr)
-          }
-          ctx.logger('dongxuelian-ai').info('sticker sent via internal API')
-        } else {
-          ctx.logger('dongxuelian-ai').warn('internal API not available, cannot send sticker')
-        }
-        lastStickerSentAt.set(stickerChannelKey, Date.now())
-      } catch (e) {
-        ctx.logger('dongxuelian-ai').error(`sticker send failed: ${e.message}`)
-      }
+  for (const sticker of pendingStickers) {
+    const now = Date.now()
+    const lastStickerAt = lastStickerSentAt.get(stickerChannelKey) || 0
+    if (now - lastStickerAt < STICKER_GLOBAL_COOLDOWN_MS) {
+      ctx.logger('dongxuelian-ai').info(`sticker global cooldown active (${Math.ceil((STICKER_GLOBAL_COOLDOWN_MS - (now - lastStickerAt)) / 1000)}s remaining), skipping ${sticker.file}`)
+      continue
+    }
+
+    const stickerFileKey = `${stickerChannelKey}:${sticker.file}`
+    const lastFileAt = lastStickerFileSentAt.get(stickerFileKey) || 0
+    if (now - lastFileAt < STICKER_FILE_COOLDOWN_MS) {
+      ctx.logger('dongxuelian-ai').info(`sticker file cooldown active (${Math.ceil((STICKER_FILE_COOLDOWN_MS - (now - lastFileAt)) / 1000)}s remaining), skipping ${sticker.file}`)
+      continue
+    }
+
+    const sent = await sendStickerImage(ctx, session, sticker)
+    if (sent) {
+      const sentAt = Date.now()
+      lastStickerSentAt.set(stickerChannelKey, sentAt)
+      lastStickerFileSentAt.set(stickerFileKey, sentAt)
     }
   }
+}
+
+exports.buildRepeatCandidate = buildRepeatCandidate
+exports.checkGroupRepeat = checkGroupRepeat
+exports._setRepeatEnabledForTest = (channelKey, enabled) => {
+  const key = String(channelKey)
+  repeatEnabledCache[key] = !!enabled
+  clearRepeatState(key)
+}
+exports._clearRepeatStateForTest = (channelKey) => {
+  clearRepeatState(channelKey)
 }
 
 exports.apply = (ctx) => {
@@ -1490,6 +1672,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
       /^东雪莲群聊AI概率(?:设置|重置)$/.test(plain) ||
       /^东雪莲联网(?:开|关)$/.test(plain) ||
+      /^东雪莲思考(?:开|关)$/.test(plain) ||
       /^解除上限群白名单/.test(plain) ||
       /^敏感话题处理者/.test(plain) ||
       plain === 'AI重载'
@@ -1775,10 +1958,11 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
 
     // 连续复读检测（在随机回复之前，2人相同→bot跟第3条）
     if (inGuild && !directAt && !otherMentions) {
-      const repeatContent = checkGroupRepeat(session, plain, channelKey, currentUserId)
-      if (repeatContent) {
-        ctx.logger('dongxuelian-ai').info(`repeat triggered in ${channelKey}: "${repeatContent.slice(0, 30)}"`)
-        await session.send(repeatContent)
+      const repeatCandidate = buildRepeatCandidate(session, plain, analyzed)
+      const repeatResult = checkGroupRepeat(session, repeatCandidate, channelKey, currentUserId)
+      if (repeatResult) {
+        ctx.logger('dongxuelian-ai').info(`repeat triggered in ${channelKey}: kind=${repeatResult.kind} key="${repeatResult.key.slice(0, 80)}"`)
+        await session.send(repeatResult.reply)
         return next()
       }
     }

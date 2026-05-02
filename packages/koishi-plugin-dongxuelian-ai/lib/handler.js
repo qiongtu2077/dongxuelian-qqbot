@@ -57,15 +57,17 @@ async function handleCommand(session, ctx, state) {
   }
 
   if (plain === '东雪莲思考开') {
+    if (!hasAdminPermission(session)) return handled('只有指定管理员能操作这个命令。')
     await writeTextFile(THINKING_MODE_FILE, 'on')
     setThinkingEnabled(true)
-    return handled('思考模式已开启，模型将输出推理过程。')
+    return handled('思考调试模式已开启；可见回复仍会过滤推理过程。')
   }
 
   if (plain === '东雪莲思考关') {
+    if (!hasAdminPermission(session)) return handled('只有指定管理员能操作这个命令。')
     await writeTextFile(THINKING_MODE_FILE, 'off')
     setThinkingEnabled(false)
-    return handled('思考模式已关闭。')
+    return handled('思考调试模式已关闭；可见回复仍会过滤推理过程。')
   }
 
   if (/^东雪莲联网开$/.test(plain)) {

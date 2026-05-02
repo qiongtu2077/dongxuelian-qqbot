@@ -194,6 +194,14 @@ function isOverusedReply(reply = '') {
 
 function hasBannedOutput(text) { return BANNED_ACTION_OUTPUT_RE.test(text) || OVERUSED_REPLY_PATTERNS.some(p => p.test(text)) }
 
+const THINKING_LEAK_RE = /(?:^|[\n。！？!?]\s*)(?:好的[，,]?)?用户.{0,30}发了个消息说[“"].{0,120}[”"].{0,60}(?:这应该是|应该是在|是在回应)|我(?:得|要|来)?(?:先)?看看(?:现在)?是什么情况|我记得.{0,30}(?:性格设定|人设|设定)|这个(?:场景|情况|上下文).{0,30}(?:看起来|应该是)|我应该.{0,40}(?:回应|回复|接话|吐槽)|我得.{0,30}(?:接上|顺着).{0,30}(?:话茬|意思)|可以顺着.{0,30}(?:意思|话茬).{0,30}(?:说|回复)|我现在(?:处于|是).{0,30}(?:模式|人设|角色)|对方没有敌意|正常聊天/
+
+function isThinkingLeak(text = '') {
+  const value = normalizeText(text)
+  if (!value || value.length < 6) return false
+  return THINKING_LEAK_RE.test(value)
+}
+
 function isEvaluationRequest(text = '') { return EVALUATION_REQUEST_RE.test(normalizeText(text)) }
 
 function getModelDisplayName(providerId, modelId) {
@@ -285,7 +293,7 @@ module.exports = {
   normalizeReplyFingerprint,
   longestCommonSubstringLength, charSetJaccardOverlap,
   isReplyTooSimilar, isOverusedReply, hasBannedOutput,
-  isEvaluationRequest,
+  isThinkingLeak, isEvaluationRequest,
   getModelDisplayName, getSearchCapability, formatSearchStatus,
   trimReply, sanitizeReply, splitSentences,
 }

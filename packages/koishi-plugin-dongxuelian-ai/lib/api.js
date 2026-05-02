@@ -22,12 +22,38 @@ function extractResponsesText(data = {}) {
   return joined
 }
 
+function buildManagedThinkingArgs(config = {}, enabled = false) {
+  const model = String(config.model || '')
+  if (!enabled) {
+    if (isDashScopeConfig(config)) return { enable_thinking: false }
+    if (/glm|mimo|kimi/i.test(model)) return { thinking: { type: 'disabled' } }
+    if (/deepseek/i.test(model)) return { enable_thinking: false }
+    return {}
+  }
+  if (isDashScopeConfig(config)) return { enable_thinking: true }
+  if (/glm|mimo|kimi/i.test(model)) return { thinking: { type: 'enabled' } }
+  return {}
+}
+
+function rebuildFallbackExtraBody(extraBody = {}, config = {}) {
+  if (!extraBody._thinkingManaged) return extraBody
+  const next = { ...extraBody }
+  const explicit = new Set(Array.isArray(extraBody._explicitThinkingKeys) ? extraBody._explicitThinkingKeys : [])
+  if (!explicit.has('enable_thinking')) delete next.enable_thinking
+  if (!explicit.has('thinking')) delete next.thinking
+  const managed = buildManagedThinkingArgs(config, !!extraBody._thinkingEnabled)
+  for (const [key, value] of Object.entries(managed)) {
+    if (!explicit.has(key)) next[key] = value
+  }
+  return next
+}
+
 async function requestChatCompletions(messages, config, extraBody = {}) {
   const controller = new AbortController()
   const timeout = config._fallbackTried ? 10000 : REQUEST_TIMEOUT
   const timer = setTimeout(() => controller.abort(), timeout)
   const filteredExtraBody = {}
-  for (const key of ['max_tokens', 'enable_search', 'web_search_options', 'search_options']) {
+  for (const key of ['max_tokens', 'enable_search', 'web_search_options', 'search_options', 'enable_thinking', 'thinking']) {
     if (extraBody[key] !== undefined) filteredExtraBody[key] = extraBody[key]
   }
   const maxTokens = filteredExtraBody.max_tokens || 1500
@@ -48,7 +74,7 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
       if (response.status === 429 || response.status === 401 || response.status === 400) {
         const fbStep = (config._fallbackTried || 0) + 1
         const fbConfig = await buildFallbackConfig(config, fbStep)
-        if (fbConfig) return requestChatCompletions(messages, fbConfig, extraBody)
+        if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
       }
       const text = await response.text().catch(() => '')
       const isFallback = (response.status === 429 || response.status === 401) && config._fallbackTried
@@ -56,12 +82,18 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
     }
     const data = await response.json()
     const m = data?.choices?.[0]?.message || {}
-    let content = m.content && m.content.trim() ? m.content : (m.reasoning_content || '')
+    let content = m.content && m.content.trim() ? m.content : ''
+    if (!content && m.reasoning_content) {
+      console.warn('[dongxuelian-ai] reasoning-only model response dropped')
+      const fbStep = (config._fallbackTried || 0) + 1
+      const fbConfig = await buildFallbackConfig(config, fbStep)
+      if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
+    }
     if (!content) throw new Error('Empty model response.')
     if (/request was rejected|considered high risk/i.test(content)) {
       const fbStep = (config._fallbackTried || 0) + 1
       const fbConfig = await buildFallbackConfig(config, fbStep)
-      if (fbConfig) return requestChatCompletions(messages, fbConfig, extraBody)
+      if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
       content = ''
     }
     if (!content) throw new Error('Empty model response.')
@@ -71,7 +103,7 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
     const fbStep = (config._fallbackTried || 0) + 1
     if (!isHttpError && fbStep <= 4) {
       const fbConfig = await buildFallbackConfig(config, fbStep)
-      if (fbConfig) return requestChatCompletions(messages, fbConfig, extraBody)
+      if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
     }
     throw networkErr
   }
