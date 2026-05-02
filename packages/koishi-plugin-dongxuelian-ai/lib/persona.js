@@ -16,11 +16,10 @@ function loadPersonaGroups() {
 
 function getGroupPersona(channelKey) { const e = personaGroupsCache[String(channelKey)]; return e && e.persona ? e : null }
 
-function setGroupPersona(channelKey, personaName, hostileCapable) {
+function setGroupPersona(channelKey, personaName) {
   const key = String(channelKey)
   if (!personaGroupsCache[key]) personaGroupsCache[key] = {}
   if (personaName !== undefined) personaGroupsCache[key].persona = personaName
-  if (hostileCapable !== undefined) personaGroupsCache[key].hostile_capable = hostileCapable
   atomicWriteJson(PERSONA_GROUPS_FILE, personaGroupsCache)
 }
 
@@ -40,7 +39,7 @@ function resolvePersona(channelKey, userId) {
   const userPersona = getUserPersona(userId)
   if (userPersona) return { source: 'user', name: userPersona }
   const groupEntry = getGroupPersona(channelKey)
-  if (groupEntry) return { source: 'group', name: groupEntry.persona, hostile_capable: groupEntry.hostile_capable }
+  if (groupEntry) return { source: 'group', name: groupEntry.persona }
   return { source: 'default', name: null }
 }
 
@@ -64,7 +63,7 @@ function getAvailablePersonals() {
       const content = require('fs').readFileSync(path.join(SKILLS_PERSONAS_DIR, entry.name), 'utf8').trim()
       if (!content) continue
       const meta = parsePersonaFrontmatter(content)
-      if (meta.name) personas.push({ name: meta.name, description: meta.description || '', hostile_capable: meta.hostile_capable || false, file: entry.name })
+      if (meta.name) personas.push({ name: meta.name, description: meta.description || '', file: entry.name })
     }
   } catch {}
   return personas

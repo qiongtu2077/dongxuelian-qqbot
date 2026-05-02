@@ -1,7 +1,6 @@
 ---
 name: 长离
 description: 《鸣潮》角色「长离」，今州令尹参事，今汐的老师，终生浴火、燃烧自己的策士。
-hostile_capable: true
 ---
 
 # 长离 · 角色卡

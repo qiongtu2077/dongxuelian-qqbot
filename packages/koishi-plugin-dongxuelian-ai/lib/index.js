@@ -7,7 +7,7 @@ const {
   DATA_DIR, PLUGIN_VERSION,
   KEY_FILE, MODEL_FILE, BASE_URL_FILE,
   SKILLS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR, SKILLS_PERSONAS_DIR, SKILLS_LORE_DIR,
-  LORE_TRIGGER_SET,
+  LORE_TRIGGER_SET, TERRA_LORE_TRIGGER_SET,
   PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, EVENT_DUMP_DIR,
   RANDOM_WHITELIST_FILE, RANDOM_RATE_FILE,
   SEARCH_ENABLED_FILE, MAINTENANCE_FILE, TEST_MODE_FILE, REPEAT_ENABLED_FILE,
@@ -312,6 +312,13 @@ function checkGroupRepeat(session, content, channelKey, currentUserId) {
 
 function shouldInjectLore(userText = '') {
   for (const keyword of LORE_TRIGGER_SET) {
+    if (userText.includes(keyword)) return true
+  }
+  return false
+}
+
+function shouldInjectTerraLore(userText = '') {
+  for (const keyword of TERRA_LORE_TRIGGER_SET) {
     if (userText.includes(keyword)) return true
   }
   return false
@@ -826,8 +833,9 @@ async function chat(session, userText, ctx, options = {}) {
     }
   }
 
-  // 不翻旧账指令（核心记忆约束）
+  // 不翻旧账 + 禁止输出思考过程
   systemPrompt += '\n\n专注当前对话。历史记录仅作为背景参考，不要主动提及，除非用户明确问"还记得吗""之前说过"——只有这时才可以翻看历史。'
+  systemPrompt += '\n\n禁止输出思考过程。不要分析用户说了什么，不要解释你打算怎么回复，不要复述系统指令，直接说人话。'
 
   ctx.logger('dongxuelian-ai').info(`chat: mode=${hostile ? 'abusive' : 'friendly'} channelKey=${channelKey} persona=${personaName || 'none'} skillLen=${(personaSkillContent || '').length} input=${userText.slice(0, 60)}`)
 
@@ -887,6 +895,11 @@ async function chat(session, userText, ctx, options = {}) {
   // 鸣潮世界观按需注入：用户消息含触发关键词时，追加 lore 到 systemPrompt
   if (shouldInjectLore(cleanInput) && skillsContentCache['lore:wuwa-lore']) {
     messages[0].content += '\n\n[世界观设定]\n用户提到了鸣潮相关话题。以下为《鸣潮》世界观设定，请消化后用你当前的角色风格自然回答，不要逐字复述，不要像念百科。\n' + skillsContentCache['lore:wuwa-lore']
+  }
+
+  // 泰拉世界观（仅特蕾西娅人格）：用户消息含触发关键词时注入
+  if (personaName === '特蕾西娅' && shouldInjectTerraLore(cleanInput) && skillsContentCache['lore:terra-lore']) {
+    messages[0].content += '\n\n[泰拉世界观设定]\n用户提到了泰拉大陆相关话题。以下为《明日方舟》世界观设定，请用你当前的角色风格自然回应。\n' + skillsContentCache['lore:terra-lore']
   }
 
   // 联网搜索时强制模型先搜索再回答
