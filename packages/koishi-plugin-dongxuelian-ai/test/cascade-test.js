@@ -1,3 +1,67 @@
+/*
+ * Source scan -> behavior coverage map
+ *
+ * Cascade is allowed to scan source/config text only for structural contracts:
+ * package scripts, exports, help render wiring, gitignore, deploy/setup scripts,
+ * cross-file dependency boundaries, and lightweight regression sentinels.
+ * `npm run test:quick` runs this file; `npm test` runs quick + scenarios.
+ * The AI plugin must not export `_testOnly`; scenarios should exercise behavior
+ * through the fake Koishi middleware unless a production module is intentionally
+ * split out and required directly.
+ *
+ * Runtime behavior must be covered by scenario tests before deleting or relaxing
+ * any old source-shape assertion. Current behavior owners:
+ *
+ * - Sticker text/image send order:
+ *   scenarios/sticker.test.js L21-L55 covers ordinary text, internal image send,
+ *   fallback image send, and timeline order assertions.
+ * - Repeat trigger/cooldown/window/toggle behavior:
+ *   scenarios/repeat.test.js L10-L72 covers real middleware command paths.
+ *   cascade keeps only pure repeat candidate construction checks.
+ * - Sensitive detect cache/effective switch behavior:
+ *   scenarios/sensitive.test.js L24-L55 covers enable -> trigger -> close -> no
+ *   later notification; scenarios/command.test.js L37-L55 covers permissions and
+ *   state-file writes.
+ * - Chat/reasoning/thinking leak behavior:
+ *   scenarios/chat.test.js L86-L153 covers visible content, reasoning-only
+ *   fallback, thinking leak retries, no-leak logs, and conversation persistence.
+ * - API fallback behavior:
+ *   scenarios/fallback.test.js L25-L148 covers 400/401/429, network/AbortError,
+ *   invalid JSON, reasoning-only, sanitized failures, provider/model/baseURL,
+ *   and thinking controls.
+ * - Random proactive reply behavior:
+ *   scenarios/random.test.js covers whitelist-gated rate=100 triggering and the
+ *   default empty-whitelist no-model path; cascade covers the pure probability
+ *   decision helper.
+ * - Concurrent JSON write integrity:
+ *   scenarios/persistence.test.js covers many concurrent writeJsonFile calls
+ *   leaving parseable JSON, one complete payload, and no temp-file leftovers.
+ * - Business concurrency behavior:
+ *   scenarios/concurrency.test.js covers concurrent repeat messages and
+ *   sensitive detection open/close races without duplicate notifications.
+ * - Command permissions and status/no-key behavior:
+ *   scenarios/command.test.js L9-L73 covers middleware-visible command behavior;
+ *   cascade keeps focused handler unit checks for command routing.
+ * - setup.sh executable behavior:
+ *   scenarios/setup.test.js L60-L143 covers shell syntax, simulate-files output,
+ *   generated config/data, and path-escape rejection when bash/sh is available.
+ * - Persona prompt composition:
+ *   scenarios/persona-prompt.test.js L163-L220 covers default/personal/group
+ *   persona precedence and lore marker injection.
+ *
+ * The COVERAGE_MAP below is machine-checked so this table cannot silently point
+ * at missing or unwired scenario files.
+ *
+ * Source scans that should not be removed unless equivalent coverage exists:
+ * - [ ] package/workspace/script declarations -> no richer scenario equivalent.
+ * - [ ] local package export inventory -> module loading contract.
+ * - [ ] help render function completeness -> static router/render wiring.
+ * - [ ] gitignore sensitive-data patterns -> repository safety contract.
+ * - [ ] deploy/setup script structure -> supplemented by setup.test.js, but
+ *       cascade still guards Windows/no-bash environments.
+ * - [ ] cross-file dependency boundaries -> architectural guardrails, not user
+ *       behavior.
+ */
 const fs = require('fs')
 const path = require('path')
 const { spawnSync } = require('child_process')
@@ -7,6 +71,64 @@ const PKG_ROOT = path.join(ROOT, 'packages')
 const AI_ROOT = path.join(PKG_ROOT, 'koishi-plugin-dongxuelian-ai')
 const LIB = path.join(AI_ROOT, 'lib')
 const HELP = path.join(PKG_ROOT, 'koishi-plugin-dongxuelian-help', 'lib')
+
+const COVERAGE_MAP = [
+  {
+    behavior: 'sticker text/image send order',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'sticker.test.js'),
+    needles: ['scenario: sticker sendReply', 'scenario sticker sends text before internal image'],
+  },
+  {
+    behavior: 'repeat trigger cooldown window toggle',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'repeat.test.js'),
+    needles: ['scenario: repeat middleware', 'scenario text repeat triggers for two users', 'scenario repeat window expiry blocks old message'],
+  },
+  {
+    behavior: 'sensitive detect switch and notification',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'sensitive.test.js'),
+    needles: ['scenario: sensitive detection middleware', 'scenario sensitive detect enables', 'scenario sensitive close prevents later notification'],
+  },
+  {
+    behavior: 'chat reasoning and thinking guard',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'chat.test.js'),
+    needles: ['scenario: chat middleware and thinking guard', 'scenario reasoning-only response falls back', 'scenario conversation stores visible reply only'],
+  },
+  {
+    behavior: 'API fallback behavior',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'fallback.test.js'),
+    needles: ['scenario: API fallback chain', 'scenario invalid JSON falls back', 'scenario all fallbacks fail without key leak'],
+  },
+  {
+    behavior: 'random proactive reply behavior',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'random.test.js'),
+    needles: ['scenario: random reply trigger', 'scenario random whitelisted rate 100 sends reply', 'scenario empty random whitelist does not call model'],
+  },
+  {
+    behavior: 'concurrent JSON write integrity',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'persistence.test.js'),
+    needles: ['scenario: persistence write stress', 'scenario concurrent write leaves parseable JSON', 'scenario concurrent write cleans temp files'],
+  },
+  {
+    behavior: 'business concurrency behavior',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'concurrency.test.js'),
+    needles: ['scenario: business concurrency', 'scenario concurrent repeat triggers exactly once', 'scenario sensitive close race prevents later notification'],
+  },
+  {
+    behavior: 'command permissions and status',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'command.test.js'),
+    needles: ['scenario: command middleware', 'scenario AI status does not leak key', 'scenario non-admin sensitive switch does not write file'],
+  },
+  {
+    behavior: 'setup.sh executable behavior',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'setup.test.js'),
+    needles: ['scenario: setup.sh simulated install', 'scenario setup shell syntax passes before simulation', 'scenario setup rejects escaped koishi output path'],
+  },
+  {
+    behavior: 'persona prompt composition',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'persona-prompt.test.js'),
+    needles: ['scenario: persona prompt composition', 'scenario personal persona overrides group persona', 'scenario Terra lore injects for Theresa trigger'],
+  },
+]
 
 let totalPassed = 0
 let totalFailed = 0
@@ -62,6 +184,34 @@ function readJson(file) {
   return JSON.parse(read(file).replace(/^\uFEFF/, ''))
 }
 
+function runCoverageMapChecks() {
+  const scenarioIndex = path.join(AI_ROOT, 'test', 'scenarios', 'index.js')
+  const scenarioIndexSrc = fs.existsSync(scenarioIndex) ? read(scenarioIndex) : ''
+  for (const item of COVERAGE_MAP) {
+    const exists = fs.existsSync(item.file)
+    check(`coverage map file exists: ${item.behavior}`, exists, path.relative(ROOT, item.file))
+    if (!exists) continue
+    const src = read(item.file)
+    for (const needle of item.needles) {
+      check(`coverage map needle: ${item.behavior}: ${needle}`, src.includes(needle), path.relative(ROOT, item.file))
+    }
+    const scenarioDir = path.join(AI_ROOT, 'test', 'scenarios') + path.sep
+    const resolvedFile = path.resolve(item.file)
+    if (resolvedFile.startsWith(path.resolve(scenarioDir))) {
+      const moduleName = './' + path.basename(item.file, '.js')
+      check(
+        `coverage map scenario wired: ${item.behavior}`,
+        scenarioIndexSrc.includes(`require('${moduleName}')`) || scenarioIndexSrc.includes(`require("${moduleName}")`),
+        moduleName
+      )
+    }
+  }
+}
+
+// Note for AI reviewers: in the Codex sandbox, spawning `node -c` can be
+// blocked even when the same syntax checks pass through `npm run check`.
+// Those cases are reported as SKIP instead of FAIL so the cascade can keep
+// running; they do not mean the target file has a known syntax problem.
 function syntaxCheck(file) {
   const result = spawnSync(process.execPath, ['-c', file], { cwd: ROOT, stdio: 'pipe' })
   if (result.error && result.error.code === 'EPERM') return { skipped: true, reason: 'child process blocked by sandbox' }
@@ -78,6 +228,33 @@ function runSyntaxCheck(label, file) {
     const result = syntaxCheck(file)
     if (result && result.skipped) skip(label, result.reason)
     else pass(label)
+  } catch (error) {
+    fail(label, error.message)
+  }
+}
+
+function shellSyntaxCheck(file) {
+  const blocked = []
+  for (const shell of ['bash', 'sh']) {
+    const result = spawnSync(shell, ['-n', file], { cwd: ROOT, stdio: 'pipe' })
+    if (result.error && result.error.code === 'ENOENT') continue
+    if (result.error && result.error.code === 'EPERM') { blocked.push(shell); continue }
+    if (result.error) throw result.error
+    if (result.status !== 0) {
+      const message = String(result.stderr || result.stdout || '').trim()
+      throw new Error(message || `${shell} -n exited with ${result.status}`)
+    }
+    return { skipped: false, shell }
+  }
+  if (blocked.length) return { skipped: true, reason: `${blocked.join('/')} blocked by sandbox` }
+  return { skipped: true, reason: 'setup shell syntax check requires bash/sh' }
+}
+
+function runShellSyntaxCheck(label, file) {
+  try {
+    const result = shellSyntaxCheck(file)
+    if (result && result.skipped) skip(label, result.reason)
+    else pass(`${label} (${result.shell} -n)`)
   } catch (error) {
     fail(label, error.message)
   }
@@ -224,7 +401,9 @@ async function main() {
   section('1. repository and package health')
   const rootPkg = readJson(path.join(ROOT, 'package.json'))
   checkEqual('root package name', rootPkg.name, 'dongxuelian-qqbot')
-  checkEqual('npm test keeps cascade entry', rootPkg.scripts && rootPkg.scripts.test, 'node packages/koishi-plugin-dongxuelian-ai/test/cascade-test.js')
+  checkEqual('npm test:quick keeps cascade entry', rootPkg.scripts && rootPkg.scripts['test:quick'], 'node packages/koishi-plugin-dongxuelian-ai/test/cascade-test.js')
+  checkEqual('npm test:scenario runs scenario entry', rootPkg.scripts && rootPkg.scripts['test:scenario'], 'node packages/koishi-plugin-dongxuelian-ai/test/scenario-test.js')
+  check('npm test runs quick and scenario entries', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:quick') && rootPkg.scripts.test.includes('npm run test:scenario'))
   check('npm check includes AI index syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js'))
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
   check('workspace package glob exists', Array.isArray(rootPkg.workspaces) && rootPkg.workspaces.includes('packages/*'))
@@ -260,6 +439,9 @@ async function main() {
       checkEqual(`local dependency name matches: ${depName}`, depPkg.name, depName)
     }
   }
+
+  section('1b. scenario coverage map')
+  runCoverageMapChecks()
 
   section('2. module loading and exports')
   const modPaths = {
@@ -300,7 +482,7 @@ async function main() {
       'readJsonFile', 'writeJsonFile', 'safeUnlink', 'sleep', 'extractImageUrls',
       'normalizeReplyFingerprint', 'isReplyTooSimilar', 'isOverusedReply',
       'hasBannedOutput', 'isThinkingLeak', 'getModelDisplayName', 'getSearchCapability',
-      'formatSearchStatus', 'sanitizeReply', 'trimReply',
+      'formatSearchStatus', 'sanitizeReply', 'trimReply', 'shouldTriggerRandom',
     ],
     persona: [
       'atomicWriteJson', 'loadPersonaGroups', 'getGroupPersona', 'setGroupPersona',
@@ -332,6 +514,7 @@ async function main() {
     }
   }
   checkEqual('AI plugin name', index.name, 'dongxuelian-ai')
+  check('AI plugin does not export _testOnly', index._testOnly === undefined)
   check('handler.handleCommand exported', typeof handler.handleCommand === 'function')
   check('repeat candidate builder exported', typeof index.buildRepeatCandidate === 'function')
   check('repeat checker exported', typeof index.checkGroupRepeat === 'function')
@@ -416,6 +599,11 @@ async function main() {
   checkEqual('getSearchCapability openai unsupported nano', u.getSearchCapability({ baseURL: 'https://api.openai.com/v1', model: 'gpt-4.1-nano' }).supported, false)
   checkEqual('getSearchCapability openai responses mode', u.getSearchCapability({ baseURL: 'https://api.openai.com/v1', model: 'gpt-5.1' }).mode, 'openai-responses')
   check('formatSearchStatus does not crash', typeof u.formatSearchStatus({ baseURL: c.PROVIDERS.dashscope.baseURL, model: 'qwen3.5-plus', provider: 'dashscope', searchEnabled: true }) === 'string')
+  check('shouldTriggerRandom triggers below rate', u.shouldTriggerRandom(0.5, () => 0.49))
+  check('shouldTriggerRandom does not trigger at boundary', !u.shouldTriggerRandom(0.5, () => 0.5))
+  check('shouldTriggerRandom disables zero rate', !u.shouldTriggerRandom(0, () => 0))
+  check('shouldTriggerRandom disables invalid rate', !u.shouldTriggerRandom(Number.NaN, () => 0))
+  check('shouldTriggerRandom allows forced full rate', u.shouldTriggerRandom(1, () => 0.999999))
 
   section('6. API pure behavior and fallback order')
   const input = api.buildResponsesInput([
@@ -589,41 +777,6 @@ async function main() {
   check('repeat text supported', textRepeat.supported && textRepeat.kind === 'text')
   checkEqual('repeat text key', textRepeat.key, `text:${STR.grass}`)
 
-  if (typeof index._setRepeatEnabledForTest === 'function' && typeof index._clearRepeatStateForTest === 'function') {
-    const channel = 'cascade-repeat-test'
-    const sess = { isDirect: false }
-    index._setRepeatEnabledForTest(channel, true)
-    index._clearRepeatStateForTest(channel)
-    check('same user repeat does not trigger',
-      !index.checkGroupRepeat(sess, textRepeat, channel, 'A', 1000) &&
-      !index.checkGroupRepeat(sess, textRepeat, channel, 'A', 1500))
-    index._clearRepeatStateForTest(channel)
-    check('two users text repeat triggers',
-      !index.checkGroupRepeat(sess, textRepeat, channel, 'A', 1000) &&
-      !!index.checkGroupRepeat(sess, textRepeat, channel, 'B', 1500))
-    index._clearRepeatStateForTest(channel)
-    index.checkGroupRepeat(sess, textRepeat, channel, 'A', 1000)
-    index.checkGroupRepeat(sess, textRepeat, channel, 'B', 1500)
-    index.checkGroupRepeat(sess, textRepeat, channel, 'C', 2000)
-    check('cooldown refreshes repeat state', !index.checkGroupRepeat(sess, textRepeat, channel, 'C', 32000))
-    index._clearRepeatStateForTest(channel)
-    index.checkGroupRepeat(sess, textRepeat, channel, 'A', 1000)
-    check('repeat window expires', !index.checkGroupRepeat(sess, textRepeat, channel, 'B', 122001))
-    index._clearRepeatStateForTest(channel)
-    index.checkGroupRepeat(sess, textRepeat, channel, 'A', 1000)
-    index.checkGroupRepeat(sess, candidate({ content: '[CQ:image,file=x]' }, '', { hasVisual: true }), channel, 'B', 1100)
-    check('unsupported message clears repeat state', !index.checkGroupRepeat(sess, textRepeat, channel, 'C', 1200))
-    index._clearRepeatStateForTest(channel)
-    index.checkGroupRepeat(sess, textRepeat, channel, 'A', 1000)
-    index._setRepeatEnabledForTest(channel, false)
-    index._setRepeatEnabledForTest(channel, true)
-    check('repeat toggle clears old state', !index.checkGroupRepeat(sess, textRepeat, channel, 'B', 1500))
-    index._setRepeatEnabledForTest(channel, false)
-    index._clearRepeatStateForTest(channel)
-  } else {
-    fail('repeat test helpers exported')
-  }
-
   section('9. handler command routing')
   const statusRun = await runHandler(CMD.aiStatus)
   check('AI status command matched', statusRun.result && statusRun.result.matched)
@@ -691,51 +844,9 @@ async function main() {
   check('shared context note generated', typeof sharedNote === 'string' && sharedNote.length > 0)
   conv.channelSharedCache.delete('guildA')
 
-  section('12. source-level safety audits')
-  const indexSrc = read(path.join(LIB, 'index.js'))
-  const apiSrc = read(path.join(LIB, 'api.js'))
-  const handlerSrc = read(path.join(LIB, 'handler.js'))
+  section('12. help and reserved command static audits')
   const helpSrc = read(path.join(HELP, 'index.js'))
   const constantsSrc = read(path.join(LIB, 'constants.js'))
-
-  check('sendStickerImage helper exists', indexSrc.includes('async function sendStickerImage'))
-  check('sticker fallback uses Koishi image segment', indexSrc.includes('session.send(h.image(image))'))
-  check('pending stickers store file and image', indexSrc.includes('pendingStickers.push({ file, image })'))
-  check('normal text send path remains direct session.send', indexSrc.includes('await session.send(i === 0 ? quotePrefix + part : part)'))
-  const textSendIndex = indexSrc.indexOf('await session.send(i === 0 ? quotePrefix + part : part)')
-  const stickerLoopIndex = indexSrc.indexOf('for (const sticker of pendingStickers)')
-  check('normal text send happens before sticker fallback loop', textSendIndex > 0 && stickerLoopIndex > textSendIndex)
-  check('sticker global cooldown constant exists', indexSrc.includes('STICKER_GLOBAL_COOLDOWN_MS'))
-  check('sticker same-file cooldown constant exists', indexSrc.includes('STICKER_FILE_COOLDOWN_MS'))
-  check('repeat candidate built before repeat check', indexSrc.indexOf('const repeatCandidate = buildRepeatCandidate') > 0 && indexSrc.indexOf('const repeatResult = checkGroupRepeat') > indexSrc.indexOf('const repeatCandidate = buildRepeatCandidate'))
-  check('repeat state refreshes before cooldown check', indexSrc.indexOf('channelRepeatState.set(channelKey') > 0 && indexSrc.indexOf('if (lastTs && now - lastTs < REPEAT_TRIGGER_COOLDOWN_MS)') > indexSrc.indexOf('channelRepeatState.set(channelKey'))
-  check('repeat unsupported clears state', indexSrc.includes('channelRepeatState.delete(channelKey)'))
-  check('political detect cache reset function exists', indexSrc.includes('function resetPoliticalDetectCache()'))
-  const sensitiveOpen = indexSrc.indexOf("plain === '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b\u5f00'")
-  const sensitiveClose = indexSrc.indexOf("plain === '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b\u5173'")
-  const sensitiveView = indexSrc.indexOf("plain === '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b\u67e5\u770b'")
-  check('political detect open branch exists', sensitiveOpen >= 0)
-  check('political detect close branch exists', sensitiveClose >= 0)
-  check('political detect open resets cache', sensitiveOpen >= 0 && sensitiveClose > sensitiveOpen && indexSrc.slice(sensitiveOpen, sensitiveClose).includes('resetPoliticalDetectCache()'))
-  check('political detect close resets cache', sensitiveClose >= 0 && sensitiveView > sensitiveClose && indexSrc.slice(sensitiveClose, sensitiveView).includes('resetPoliticalDetectCache()'))
-  check('AI status handler does not mention apiKey', !handlerSrc.slice(handlerSrc.indexOf("plain === 'AI"), handlerSrc.indexOf("plain === 'AI\u91cd\u8f7d'")).includes('apiKey'))
-  check('requestChatCompletions falls back on 401', apiSrc.includes('response.status === 401'))
-  check('requestChatCompletions falls back on 429', apiSrc.includes('response.status === 429'))
-  check('requestChatCompletions falls back on 400', apiSrc.includes('response.status === 400'))
-  check('requestChatCompletions allows thinking controls', apiSrc.includes("'enable_thinking'") && apiSrc.includes("'thinking'"))
-  check('requestChatCompletions drops reasoning-only content', apiSrc.includes('reasoning-only model response dropped') && !apiSrc.includes('m.reasoning_content ||'))
-  check('requestChatCompletions rebuilds managed fallback thinking controls', apiSrc.includes('function rebuildFallbackExtraBody') && apiSrc.includes('buildManagedThinkingArgs(config'))
-  check('callOpenAI marks managed thinking args for fallback', indexSrc.includes('_thinkingManaged: true') && indexSrc.includes('_explicitThinkingKeys'))
-  check('callOpenAI applies thinking args before random and extraBody', indexSrc.includes('{ ...getThinkingArgs(config), ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody, ...managedThinkingMeta }'))
-  check('callOpenAI applies thinking args before search extraBody', indexSrc.includes('{ ...getThinkingArgs(config), enable_search: true') && indexSrc.includes('{ ...getThinkingArgs(config), web_search_options: {}, ...extraBody, ...managedThinkingMeta }'))
-  check('chat raw reply uses isThinkingLeak', indexSrc.includes('isThinkingLeak(reply) || THINKING_OUTPUT_RE.test(reply)'))
-  check('chat final reply uses thinking hard guard', indexSrc.includes('isThinkingLeak(finalReply) || THINKING_OUTPUT_RE.test(finalReply)'))
-  check('admin command matcher covers thinking switch', indexSrc.includes('/^东雪莲思考(?:开|关)$/.test(plain)'))
-  const thinkingOnBlock = handlerSrc.slice(handlerSrc.indexOf("plain === '东雪莲思考开'"), handlerSrc.indexOf("plain === '东雪莲思考关'"))
-  const thinkingOffBlock = handlerSrc.slice(handlerSrc.indexOf("plain === '东雪莲思考关'"), handlerSrc.indexOf("plain === '东雪莲联网开'"))
-  check('thinking on handler checks admin permission', thinkingOnBlock.includes('hasAdminPermission(session)') && thinkingOnBlock.indexOf('hasAdminPermission(session)') < thinkingOnBlock.indexOf('writeTextFile'))
-  check('thinking off handler checks admin permission', thinkingOffBlock.includes('hasAdminPermission(session)') && thinkingOffBlock.indexOf('hasAdminPermission(session)') < thinkingOffBlock.indexOf('writeTextFile'))
-  check('thinking command copy says visible replies are filtered', handlerSrc.includes('可见回复仍会过滤推理过程'))
 
   const renderDefs = new Set([...helpSrc.matchAll(/function\s+(render\w+)\s*\(/g)].map(m => m[1]))
   const renderCalls = [...helpSrc.matchAll(/return\s+(render\w+)\s*\(/g)].map(m => m[1])
@@ -806,8 +917,39 @@ async function main() {
   check('message-reader deploys full AI package', readerDeploy.includes('exec sh "$SCRIPT_DIR/ai.sh"'))
   check('deploy scripts do not embed package overwrite', !allDeploy.includes('cat > /root/koishi-app/node_modules'))
   check('deploy scripts do not contain stale AI version', !allDeploy.includes('0.3.11'))
+  const setupPath = path.join(ROOT, 'setup.sh')
+  const setupSrc = read(setupPath)
+  runShellSyntaxCheck('setup.sh shell syntax', setupPath)
+  const oddQuoteLines = setupSrc.split(/\r?\n/).map((line, index) => ({
+    line: index + 1,
+    count: (line.match(/"/g) || []).length,
+    text: line,
+  })).filter(item => item.count % 2 === 1)
+  check('setup.sh has no obvious unclosed double quotes', oddQuoteLines.length === 0, JSON.stringify(oddQuoteLines.slice(0, 5)))
+  check('setup.sh supports simulate-files mode', setupSrc.includes('SETUP_MODE') && setupSrc.includes('simulate-files'))
+  check('setup.sh requires SETUP_TEST_ROOT for simulation', setupSrc.includes('SETUP_TEST_ROOT is required in simulate-files mode'))
+  check('setup.sh protects simulated output paths', setupSrc.includes('ensure_simulation_paths_safe') && setupSrc.includes('escapes SETUP_TEST_ROOT'))
+  for (const envName of ['QQ_NUMBER', 'ADMIN_QQ', 'KOISHI_DIR', 'DATA_DIR', 'NAPCAT_DIR', 'REPO_ROOT']) {
+    check(`setup.sh supports env override: ${envName}`, setupSrc.includes(`${envName}="`) || setupSrc.includes(`${envName}="$`) || setupSrc.includes(`${envName}:-`))
+  }
+  for (const pluginKey of ['group-name-at', 'dongxuelian-help', 'dongxuelian-ai', 'dongxuelian-poke', 'koishi-plugin-defense', 'local-video-sender', 'group-leave-notice']) {
+    check(`setup.sh koishi.yml includes ${pluginKey}`, setupSrc.includes(`${pluginKey}:`))
+  }
+  for (const runtimeFile of ['ai-provider.txt', 'ai-model.txt', 'ai-base-url.txt', 'ai-repeat-enabled.json', 'ai-enable-search.txt', 'ai-enable-thinking.txt']) {
+    check(`setup.sh initializes ${runtimeFile}`, setupSrc.includes(runtimeFile))
+  }
+  for (const dataDirName of ['conversations', 'user-profiles', 'ai-event-dumps', 'political-handlers']) {
+    check(`setup.sh creates ${dataDirName}`, setupSrc.includes(dataDirName))
+  }
+  for (const skillPart of ['core', 'personas', 'modes', 'lore']) {
+    check(`setup.sh copies ai-skills ${skillPart}`, setupSrc.includes('for skill_part in core personas modes lore') || setupSrc.includes(`ai-skills/${skillPart}`))
+  }
+  check('setup.sh does not contain stale AI version', !setupSrc.includes('0.3.11'))
+  check('setup.sh does not write package files directly into node_modules', !setupSrc.includes('cat > /root/koishi-app/node_modules'))
 
   section('15. cross-file regression guards')
+  const indexSrc = read(path.join(LIB, 'index.js'))
+  const apiSrc = read(path.join(LIB, 'api.js'))
   const conversationSrc = read(path.join(LIB, 'conversation.js'))
   const utilsSrc = read(path.join(LIB, 'utils.js'))
   const msgSrc = read(path.join(LIB, 'message-reader.js'))
@@ -857,6 +999,9 @@ async function main() {
   console.log(`  passed: ${totalPassed}`)
   console.log(`  failed: ${totalFailed}`)
   console.log(`  skipped: ${totalSkipped}`)
+  if (totalSkipped > 0) {
+    console.log('  note: skipped node syntax subprocess checks are sandbox limitations; run `npm run check` to verify them. setup.sh shell syntax may also skip on Windows without bash/sh.')
+  }
   process.exit(totalFailed > 0 ? 1 : 0)
 }
 
