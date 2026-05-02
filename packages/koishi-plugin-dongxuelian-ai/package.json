@@ -1,5 +1,5 @@
 {
   "name": "koishi-plugin-dongxuelian-ai",
-  "version": "0.3.11",
+  "version": "0.9.5",
   "main": "lib/index.js"
 }

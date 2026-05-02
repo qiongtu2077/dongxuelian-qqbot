@@ -4,7 +4,7 @@ const DATA_DIR = process.platform === 'win32'
   ? path.join(__dirname, '../data')
   : '/root/koishi-app/data'
 
-const PLUGIN_VERSION = '0.9.1'
+const PLUGIN_VERSION = '0.9.5'
 const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')
 const MODEL_FILE = path.join(DATA_DIR, 'ai-model.txt')
 const BASE_URL_FILE = path.join(DATA_DIR, 'ai-base-url.txt')

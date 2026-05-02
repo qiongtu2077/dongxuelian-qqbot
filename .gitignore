@@ -3,7 +3,7 @@ dist/
 .DS_Store
 Thumbs.db
 
-data/
+/data/
 koishi.yml
 *.bak-*
 package-lock.json
