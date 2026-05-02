@@ -405,6 +405,8 @@ async function main() {
   checkEqual('npm test:scenario runs scenario entry', rootPkg.scripts && rootPkg.scripts['test:scenario'], 'node packages/koishi-plugin-dongxuelian-ai/test/scenario-test.js')
   check('npm test runs quick and scenario entries', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:quick') && rootPkg.scripts.test.includes('npm run test:scenario'))
   check('npm check includes AI index syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js'))
+  check('npm check includes AI chat syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/chat.js'))
+  check('npm check includes AI reply syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/reply.js'))
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
   check('workspace package glob exists', Array.isArray(rootPkg.workspaces) && rootPkg.workspaces.includes('packages/*'))
 
@@ -452,6 +454,8 @@ async function main() {
     conversation: path.join(LIB, 'conversation'),
     handler: path.join(LIB, 'handler'),
     messageReader: path.join(LIB, 'message-reader'),
+    chat: path.join(LIB, 'chat'),
+    reply: path.join(LIB, 'reply'),
     index: path.join(LIB, 'index'),
     help: path.join(HELP, 'index'),
   }
@@ -506,6 +510,14 @@ async function main() {
       'getRecentUserMessages', 'findChannelMessageById', 'collectReplyChain',
       'getQuotedMessageNote', 'getSharedContextNote',
     ],
+    chat: [
+      'chat', 'loadConfig', 'resetConfigCache', 'loadSkills',
+      'loadSkillsContentCache', 'callOpenAI', 'getThinkingArgs',
+      'getSkillsCount', 'getThinkingEnabled', 'setThinkingEnabled',
+    ],
+    reply: [
+      'loadStickerCache', 'sendReply',
+    ],
   }
   for (const [moduleName, names] of Object.entries(expectedExports)) {
     const target = modules[moduleName]
@@ -550,6 +562,8 @@ async function main() {
     path.join(LIB, 'utils.js'),
     path.join(LIB, 'persona.js'),
     path.join(LIB, 'message-reader.js'),
+    path.join(LIB, 'chat.js'),
+    path.join(LIB, 'reply.js'),
     path.join(HELP, 'index.js'),
     __filename,
   ]
@@ -557,7 +571,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'reply.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
