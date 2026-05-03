@@ -12,9 +12,7 @@ const {
   JAILBREAK_INPUT_RE,
 } = require('./rulesets/jailbreak')
 
-const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || (process.platform === 'win32'
-  ? path.join(__dirname, '../data')
-  : '/root/koishi-app/data')
+const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(__dirname, '../data')
 
 const PLUGIN_VERSION = '0.10.0'
 const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')

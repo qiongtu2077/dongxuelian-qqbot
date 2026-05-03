@@ -5,7 +5,7 @@ const path = require('path')
 exports.name = 'group-name-at'
 
 const PLUGIN_VERSION = '0.4.7'
-const DEFAULT_DATA_DIR = process.env.DONGXUELIAN_DATA_DIR || '/root/koishi-app/data'
+const DEFAULT_DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(__dirname, '../data')
 const DATA_FILE = process.env.GROUP_NAME_AT_DATA_FILE || path.join(DEFAULT_DATA_DIR, 'nickname-collections.json')
 const CONFIRM_TIMEOUT = 60 * 1000
 //黑名单

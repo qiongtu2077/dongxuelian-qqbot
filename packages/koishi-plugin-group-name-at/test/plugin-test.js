@@ -113,12 +113,12 @@ async function send(ctx, content, overrides) {
 async function withIsolatedPlugin(fn) {
   const oldEnv = {
     GROUP_NAME_AT_DATA_FILE: process.env.GROUP_NAME_AT_DATA_FILE,
-    DONGXUELIAN_DATA_DIR: process.env.DONGXUELIAN_DATA_DIR,
+    DONGXUELIAN_AI_DATA_DIR: process.env.DONGXUELIAN_AI_DATA_DIR,
   }
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'group-name-at-'))
   const dataDir = path.join(tmpRoot, 'data')
   const dataFile = path.join(dataDir, 'nickname-collections.json')
-  process.env.DONGXUELIAN_DATA_DIR = dataDir
+  process.env.DONGXUELIAN_AI_DATA_DIR = dataDir
   process.env.GROUP_NAME_AT_DATA_FILE = dataFile
   delete require.cache[PLUGIN_PATH]
 
@@ -131,8 +131,8 @@ async function withIsolatedPlugin(fn) {
     delete require.cache[PLUGIN_PATH]
     if (oldEnv.GROUP_NAME_AT_DATA_FILE === undefined) delete process.env.GROUP_NAME_AT_DATA_FILE
     else process.env.GROUP_NAME_AT_DATA_FILE = oldEnv.GROUP_NAME_AT_DATA_FILE
-    if (oldEnv.DONGXUELIAN_DATA_DIR === undefined) delete process.env.DONGXUELIAN_DATA_DIR
-    else process.env.DONGXUELIAN_DATA_DIR = oldEnv.DONGXUELIAN_DATA_DIR
+    if (oldEnv.DONGXUELIAN_AI_DATA_DIR === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
+    else process.env.DONGXUELIAN_AI_DATA_DIR = oldEnv.DONGXUELIAN_AI_DATA_DIR
     fs.rmSync(tmpRoot, { recursive: true, force: true })
   }
 }
