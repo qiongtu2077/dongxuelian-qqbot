@@ -426,6 +426,9 @@ async function main() {
   check('npm check includes AI chat syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/chat.js'))
   check('npm check includes AI reply syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/reply.js'))
   check('npm check includes AI repeat syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/repeat.js'))
+  check('npm check includes AI forward syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/forward.js'))
+  check('npm check includes AI vision syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/vision.js'))
+  check('npm check includes AI sensitive syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/sensitive.js'))
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
   check('workspace package glob exists', Array.isArray(rootPkg.workspaces) && rootPkg.workspaces.includes('packages/*'))
 
@@ -476,6 +479,9 @@ async function main() {
     chat: path.join(LIB, 'chat'),
     reply: path.join(LIB, 'reply'),
     repeat: path.join(LIB, 'repeat'),
+    forward: path.join(LIB, 'forward'),
+    vision: path.join(LIB, 'vision'),
+    sensitive: path.join(LIB, 'sensitive'),
     index: path.join(LIB, 'index'),
     help: path.join(HELP, 'index'),
   }
@@ -542,6 +548,18 @@ async function main() {
       'loadRepeatConfig', 'setRepeatEnabled', 'getRepeatEnabledCache',
       'buildRepeatCandidate', 'checkGroupRepeat',
     ],
+    forward: [
+      'resolveForwardSummary',
+    ],
+    vision: [
+      'markSessionForVision', 'isVisionSession', 'getVisionPayload',
+      'clearVisionSession', 'prepareVisionRequest', 'appendVisionMessage',
+    ],
+    sensitive: [
+      'getPoliticalDetectList', 'resetPoliticalDetectCache',
+      'clearSensitiveRuntimeState', 'notifySensitiveHandlers',
+      'handleSensitiveMessage',
+    ],
   }
   for (const [moduleName, names] of Object.entries(expectedExports)) {
     const target = modules[moduleName]
@@ -554,6 +572,7 @@ async function main() {
   check('handler.handleCommand exported', typeof handler.handleCommand === 'function')
   check('repeat candidate builder exported', typeof index.buildRepeatCandidate === 'function')
   check('repeat checker exported', typeof index.checkGroupRepeat === 'function')
+  check('vision session key list exported', Array.isArray(modules.vision.VISION_SESSION_KEYS) && modules.vision.VISION_SESSION_KEYS.length === 3)
 
   section('3. constants and provider invariants')
   const requiredConstants = [
@@ -589,6 +608,9 @@ async function main() {
     path.join(LIB, 'chat.js'),
     path.join(LIB, 'reply.js'),
     path.join(LIB, 'repeat.js'),
+    path.join(LIB, 'forward.js'),
+    path.join(LIB, 'vision.js'),
+    path.join(LIB, 'sensitive.js'),
     path.join(HELP, 'index.js'),
     __filename,
   ]
@@ -596,7 +618,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'reply.js', 'repeat.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'reply.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))

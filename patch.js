@@ -1,3 +1,13 @@
+/* ==========================================================================
+ * @satorijs/core@3.7.0 兼容性补丁
+ *
+ * 适配范围：本项目的 package.json overrides 锁定 @satorijs/core@3.7.0。
+ *           Koishi 4.x 需要 core@^4.6.0，但 adapter-onebot 依赖 core@^3.0.0。
+ *           overrides 强制用 3.7.0 解决版本冲突，但 3.7.0 的 Session 原型
+ *           缺少 stripped、resolve、send 三个方法，导致插件启动报错。
+ *
+ * 未来升级到 Koishi 5 / @satorijs/core@^4.x 后，此文件可删除。
+ * ========================================================================== */
 const { Session, Bot } = require('@satorijs/core')
 
 if (!Session.prototype.resolve) {

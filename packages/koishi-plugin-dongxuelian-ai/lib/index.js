@@ -1,4 +1,18 @@
-﻿const fs = require('fs/promises')
+﻿/* ==========================================================================
+ * 东雪莲 AI 插件 — 核心入口
+ *
+ * 拆分/修改前先阅读：
+ *   - 教训总结.md（代码拆分 5 步法、部署教训）
+ *   - 测试文件维护指南.md（新增模块的 check/test 同步清单）
+ *
+ * 红线：
+ *   1. 拆模块时先加后删，每步 node -c + npm run test:quick 验证
+ *   2. 行为变更优先加 scenario，不要加源码字符串扫描
+ *   3. 新模块只从 constants/utils/api/conversation/persona 导入，
+ *      不反向 import index.js
+ *   4. 非必要不要在此文件加职责，优先考虑独立模块
+ * ========================================================================== */
+const fs = require('fs/promises')
 const path = require('path')
 const { Session } = require('@satorijs/core')
 const { handleCommand } = require('./handler')

@@ -23,7 +23,7 @@ const {
   requestOpenAIResponsesWithSearch,
   isVisionModel,
 } = require('./api')
-const { isVisionSession, getVisionPayload, clearVisionSession, appendVisionMessage } = require('./vision')
+const { isVisionSession, clearVisionSession, appendVisionMessage } = require('./vision')
 const {
   getConversationKey, getChannelKey,
   readConversationDisk,
@@ -749,47 +749,13 @@ async function chat(session, userText, ctx, options = {}) {
         return '我不识图。'
       }
     }
-    const visionPayload = getVisionPayload(session)
-    const visionFile = visionPayload.file
-    const visionUrl = visionPayload.urls && visionPayload.urls[0]
-    clearVisionSession(session)
-    try {
-      const vc2 = vc
-      let localPath = null
-      if (visionFile) {
-        const imgInfo = await callGetImage(visionFile)
-        if (imgInfo && imgInfo.file) localPath = imgInfo.file
-      }
-      // 判断当前模型是否支持视觉
-      if (isVisionModel(vc2.provider, vc2.model) && localPath) {
-        const imgBase64 = await readImageAsBase64(localPath)
-        if (imgBase64) {
-          const visionContent = [
-            { type: 'text', text: '看到什么直接说，别分析，一句话以你的风格回复就行' },
-            { type: 'image_url', image_url: { url: imgBase64 } },
-          ]
-          messages.push({ role: 'user', content: visionContent })
-        } else {
-          return '图片读取失败，换个图试试？'
-        }
-      } else if (visionUrl) {
-        const imgBase64 = await downloadImageAsBase64(visionUrl, 10000)
-        if (imgBase64 && isVisionModel(vc2.provider, vc2.model)) {
-          const visionContent = [
-            { type: 'text', text: '看到什么直接说，别分析，一句话以你的风格回复就行' },
-            { type: 'image_url', image_url: { url: imgBase64 } },
-          ]
-          messages.push({ role: 'user', content: visionContent })
-        } else {
-          return '图片无法访问，换个图试试？'
-        }
-      } else {
-        return '图片无法访问，换个图试试？'
-      }
-    } catch (e) {
-      ctx.logger('dongxuelian-ai').warn('Vision: ' + (e && e.message ? e.message : e))
-      return '图片识别失败，换个图试试？'
-    }
+    const visionResult = await appendVisionMessage(messages, session, vc, ctx, {
+      promptText: '看到什么直接说，别分析，一句话以你的风格回复就行',
+      readFailReply: '图片读取失败，换个图试试？',
+      inaccessibleReply: '图片无法访问，换个图试试？',
+      identifyFailReply: '图片识别失败，换个图试试？',
+    })
+    if (!visionResult.ok) return visionResult.reply
   } else {
     messages.push({ role: 'user', content: isolatedUserMessage })
   }
