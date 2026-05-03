@@ -963,8 +963,8 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       ctx.logger('dongxuelian-ai').info(`random-reply debug: key=${channelKey} whitelist=${inRandomWhitelist} candidate=${isRandomCandidate} triggered=${randomTriggered} rate=${getRandomTriggerRate(channelKey)} skip=${analyzed.shouldSkipForRandomReply} hasUsableText=${analyzed.hasUsableText} hasLink=${analyzed.hasLink} hasVisual=${analyzed.hasVisual} hasFile=${analyzed.hasFile} hasEmbed=${analyzed.hasEmbed} directAt=${directAt} otherMentions=${otherMentions} nameMentioned=${nameMentioned} whitelistSize=${randomWhitelistCache.size}`)
     }
 
-    if (isRandomCandidate) {
-      if (randomTriggered) {
+    if (inGuild && !directAt && !nameMentioned && inRandomWhitelist) {
+      if (isRandomCandidate && randomTriggered) {
         channelMissCount.set(channelKey, 0)
       } else {
         channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
