@@ -213,6 +213,21 @@ async function run() {
     check('duplicate parse skips second probe', probeCount === 1, `probeCount=${probeCount}`)
   })
 
+  section('boundary and edge cases')
+  await withIsolatedPlugin(async ({ plugin }) => {
+    var noUrl = plugin.extractBiliUrl('今天天气不错')
+    check('boundary: non-Bili text returns null', noUrl === null, JSON.stringify(noUrl))
+
+    var emptyFormat = plugin.pickFormat({ formats: [] })
+    check('boundary: empty formats returns null', emptyFormat === null, JSON.stringify(emptyFormat))
+
+    var noVideoFormat = plugin.pickFormat({ formats: [{ format_id: 'a1', vcodec: 'none', acodec: 'mp4a', abr: 128 }] })
+    check('boundary: audio-only format returns null', noVideoFormat === null, JSON.stringify(noVideoFormat))
+
+    var shortUrl = plugin.extractBiliUrl('BV1xx411c7mD')
+    check('boundary: bare BV id extracts as canonical URL', shortUrl === 'https://www.bilibili.com/video/BV1xx411c7mD', shortUrl)
+  })
+
   console.log(`\n=== local-video-sender summary ===`)
   console.log(`  passed: ${passed}`)
   console.log(`  failed: ${failed}`)

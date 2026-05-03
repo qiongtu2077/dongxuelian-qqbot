@@ -59,7 +59,7 @@ const {
   isDirectAtBot, getBotMentionCount, hasOtherMentions,
   formatPercent,
   readTextFile, writeTextFile, readJsonFile, writeJsonFile,
-  shouldTriggerRandom,
+  shouldTriggerRandom, calculateWillFactor,
   normalizeUrl, extractImageUrls,
   sanitizeFileToken, safeJsonStringify,
 } = require('./utils')
@@ -105,6 +105,7 @@ const channelQueueDepth = new Map()
 const channelMissCount = new Map()
 const armedEventDumpCache = new Map()
 const channelMutedUntil = new Map()
+const lastRandomReplyTs = new Map()
 const channelPendingRandom = new Map()
 const channelMsgCount = new Map()
 const lastSensitiveAlert = new Map()
@@ -527,31 +528,31 @@ exports.apply = (ctx) => {
 
     // 合并转发：提取 ID 并拉取内容
     let forwardSummaryText = ''
-    var fwdM = content.match(/(?:\[CQ:forward,id=([^,\]]+)\])|<forward\s+id="([^"]+)"\/>/)
-    var fwdId = fwdM ? (fwdM[1] || fwdM[2]) : null
+    const fwdM = content.match(/(?:\[CQ:forward,id=([^,\]]+)\])|<forward\s+id="([^"]+)"\/>/)
+    const fwdId = fwdM ? (fwdM[1] || fwdM[2]) : null
     if (fwdId) {
-      var fwdData = await callGetForwardMsg(fwdId)
+      let fwdData = await callGetForwardMsg(fwdId)
       ctx.logger('dongxuelian-ai').info('fwd fetch result: ' + (fwdData ? 'ok' : 'null') + ' len=' + (Array.isArray(fwdData) ? fwdData.length : (fwdData && fwdData.messages ? fwdData.messages.length : '?')))
       if (fwdData && Array.isArray(fwdData)) {
-        var cn = (await Promise.all(fwdData.map(async function(n) {
+        let cn = (await Promise.all(fwdData.map(async function(n) {
           if (n.type === 'node' && n.data) return n
-          var s = n.sender || {}
-          var nk = (s.card || s.nickname || '').replace(/[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g, '').trim() || '群友'
-          var mt = n.raw_message || ''
+          let s = n.sender || {}
+          let nk = (s.card || s.nickname || '').replace(/[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g, '').trim() || '群友'
+          let mt = n.raw_message || ''
           // 处理原始 CQ 码中的嵌套转发
           if (!mt) mt = ''
-          var cqFwdMatch = mt.match(/\[CQ:forward,id=(\d+)/)
+          let cqFwdMatch = mt.match(/\[CQ:forward,id=(\d+)/)
           if (cqFwdMatch) {
-            var cqInnerData = await callGetForwardMsg(cqFwdMatch[1])
+            let cqInnerData = await callGetForwardMsg(cqFwdMatch[1])
             ctx.logger('dongxuelian-ai').info('cq inner: id=' + cqFwdMatch[1] + ' result=' + (cqInnerData ? 'ok' : 'null'))
             if (cqInnerData) {
-              var cqInnerArr = Array.isArray(cqInnerData) ? cqInnerData : (cqInnerData.messages || null)
+              let cqInnerArr = Array.isArray(cqInnerData) ? cqInnerData : (cqInnerData.messages || null)
               if (cqInnerArr) {
-                var cqInnerCn = (await Promise.all(cqInnerArr.map(async function(cn) {
+                let cqInnerCn = (await Promise.all(cqInnerArr.map(async function(cn) {
                   if (cn.type === 'node' && cn.data) return cn
-                  var cs = cn.sender || {}
-                  var cnk = (cs.card || cs.nickname || '').replace(/[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g, '').trim() || '群友'
-                  var cmt = cn.raw_message || ''
+                  let cs = cn.sender || {}
+                  let cnk = (cs.card || cs.nickname || '').replace(/[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g, '').trim() || '群友'
+                  let cmt = cn.raw_message || ''
                   if (cn.message && Array.isArray(cn.message)) {
                     cmt = cn.message.map(function(cm){if(cm.type==='text')return cm.data&&cm.data.text||'';if(cm.type==='face')return'【表情】';if(cm.type==='at')return'@'+(cm.data&&(cm.data.name||cm.data.qq||''));if(cm.type==='image')return'【图片】';return'【消息】'}).filter(Boolean).join('')
                   }
@@ -563,22 +564,22 @@ exports.apply = (ctx) => {
             }
             if (!mt || mt.indexOf('[CQ:forward')>=0) mt = '[嵌套转发：内容暂不可见]'
           } else if (n.message && Array.isArray(n.message)) {
-            var fwdIdx = -1
-            for (var fi = 0; fi < n.message.length; fi++) {
+            let fwdIdx = -1
+            for (let fi = 0; fi < n.message.length; fi++) {
               if (n.message[fi].type === 'forward' || n.message[fi].type === 'node') { fwdIdx = fi; break }
             }
             if (fwdIdx >= 0) {
-              var nestedId = n.message[fwdIdx].data && (n.message[fwdIdx].data.id || n.message[fwdIdx].data['forward-id'] || n.message[fwdIdx].data.res_id)
+              let nestedId = n.message[fwdIdx].data && (n.message[fwdIdx].data.id || n.message[fwdIdx].data['forward-id'] || n.message[fwdIdx].data.res_id)
               if (nestedId) {
-                var nestedData = await callGetForwardMsg(nestedId)
+                let nestedData = await callGetForwardMsg(nestedId)
                 if (nestedData) {
-                  var nestedArr = Array.isArray(nestedData) ? nestedData : (nestedData.messages || null)
+                  let nestedArr = Array.isArray(nestedData) ? nestedData : (nestedData.messages || null)
                   if (nestedArr) {
-                    var nestedCn = (await Promise.all(nestedArr.map(async function(nn) {
+                    let nestedCn = (await Promise.all(nestedArr.map(async function(nn) {
                       if (nn.type === 'node' && nn.data) return nn
-                      var ss = nn.sender || {}
-                      var nnk = (ss.card || ss.nickname || '').replace(/[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g, '').trim() || '群友'
-                      var nmt = nn.raw_message || ''
+                      let ss = nn.sender || {}
+                      let nnk = (ss.card || ss.nickname || '').replace(/[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g, '').trim() || '群友'
+                      let nmt = nn.raw_message || ''
                       if (nn.message && Array.isArray(nn.message)) {
                         nmt = nn.message.map(function(mm){if(mm.type==='text')return mm.data&&mm.data.text||'';if(mm.type==='face')return'【表情】';if(mm.type==='at')return'@'+(mm.data&&(mm.data.name||mm.data.qq||''));if(mm.type==='image')return'【图片】';return'【消息】'}).filter(Boolean).join('')
                       }
@@ -910,6 +911,12 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     const nameMentioned = !resolvePersona(channelKey, currentUserId).name && /莲莲|东雪莲/.test(plain)
     const inRandomWhitelist = getRandomWhitelistStatus(channelKey)
     let isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply
+    // 30秒冷却：触发后不再次主动发言
+    if (lastRandomReplyTs.has(channelKey) && Date.now() - (lastRandomReplyTs.get(channelKey) || 0) < 30000) {
+      isRandomCandidate = false
+    }
+    var willFactor = calculateWillFactor(channelKey, resolvePersona(channelKey, currentUserId).name, channelSharedCache)
+    var finalTriggerRate = Math.min(getRandomTriggerBaseRate(channelKey) * willFactor, 1.0)
 
     // "闭嘴" 静默十分钟主动回复
     if (inGuild && !directAt && !nameMentioned && /^(?:闭嘴|别吵|别说了|不要说话)/.test(plain)) {
@@ -957,7 +964,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         channelPendingRandom.set(channelKey, { timer, combinedText: plain })
       }
     }
-    const randomTriggered = isRandomCandidate && shouldTriggerRandom(getRandomTriggerRate(channelKey))
+    var randomTriggered = isRandomCandidate && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))
 
     if (inGuild && !directAt && !nameMentioned) {
       ctx.logger('dongxuelian-ai').info(`random-reply debug: key=${channelKey} whitelist=${inRandomWhitelist} candidate=${isRandomCandidate} triggered=${randomTriggered} rate=${getRandomTriggerRate(channelKey)} skip=${analyzed.shouldSkipForRandomReply} hasUsableText=${analyzed.hasUsableText} hasLink=${analyzed.hasLink} hasVisual=${analyzed.hasVisual} hasFile=${analyzed.hasFile} hasEmbed=${analyzed.hasEmbed} directAt=${directAt} otherMentions=${otherMentions} nameMentioned=${nameMentioned} whitelistSize=${randomWhitelistCache.size}`)
@@ -966,6 +973,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     if (inGuild && !directAt && !nameMentioned && inRandomWhitelist) {
       if (isRandomCandidate && randomTriggered) {
         channelMissCount.set(channelKey, 0)
+        lastRandomReplyTs.set(channelKey, Date.now())
       } else {
         channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
       }

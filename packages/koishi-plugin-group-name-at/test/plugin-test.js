@@ -189,6 +189,25 @@ async function run() {
     check('corrupt json warning is logged', ctx.logs.some(log => log.level === 'warn'))
   })
 
+  section('boundary and edge cases')
+  await withIsolatedPlugin(async ({ ctx, dataFile }) => {
+    let result
+
+    result = await send(ctx, '查看集合 不存在的集合')
+    check('boundary: view nonexistent collection returns friendly message', result.sent.some(item => item.includes('未找到') || item.includes('不存在')), JSON.stringify(result.sent))
+
+    result = await send(ctx, '删除用户名 不存在的昵称')
+    check('boundary: delete nonexistent alias does not crash', result.sent.length === 0 || result.sent.some(item => typeof item === 'string'), JSON.stringify(result.sent))
+
+    result = await send(ctx, '创建集合 测试组 <at id="777"/>')
+    check('boundary: create first collection returns success', result.sent.some(item => item.includes('已创建')), JSON.stringify(result.sent))
+    result = await send(ctx, '创建集合 测试组 <at id="777"/>')
+    check('boundary: duplicate creation does not crash', !result.sent.some(item => item.includes('崩溃') || item.includes('错误')), JSON.stringify(result.sent))
+
+    result = await send(ctx, 'at集合名称 测试组')
+    check('boundary: mention collection returns mention or notice', result.sent.length > 0, JSON.stringify(result.sent))
+  })
+
   console.log(`\n=== group-name-at summary ===`)
   console.log(`  passed: ${passed}`)
   console.log(`  failed: ${failed}`)

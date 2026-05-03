@@ -1027,7 +1027,63 @@ async function main() {
   }
   check('THINKING_OUTPUT_RE remains available', constantsSrc.includes('THINKING_OUTPUT_RE'))
 
-  section('summary')
+  section('17. memory system behavior')
+  var tmpMem = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'cascade-mem-'))
+  try {
+    var oldDir = process.env.DONGXUELIAN_AI_DATA_DIR
+    process.env.DONGXUELIAN_AI_DATA_DIR = tmpMem
+    delete require.cache[require('path').join(__dirname, '..', 'lib', 'constants')]
+    delete require.cache[require('path').join(__dirname, '..', 'lib', 'conversation')]
+    delete require.cache[require('path').join(__dirname, '..', 'lib', 'utils')]
+    var memConv = require(require('path').join(__dirname, '..', 'lib', 'conversation'))
+
+    await memConv.writeMemory('mem-u1', '', 'mem-g1', 'apple')
+    await memConv.writeMemory('mem-u1', '', 'mem-g1', 'banana')
+    var sum2 = await memConv.getMemorySummary('mem-u1', 'mem-g1')
+    check('memory: write 2 items produces non-empty summary', !!sum2 && sum2.includes('apple'), sum2 || '(empty)')
+
+    await memConv.deleteMemory('mem-u1', 'mem-g1', 'apple')
+    var sumDel = await memConv.getMemorySummary('mem-u1', 'mem-g1')
+    check('memory: delete removes item', sumDel.includes('banana') && !sumDel.includes('apple'), sumDel)
+
+    await memConv.writeMemory('mem-u1', '', 'mem-g1', 'banana')
+    var sumDedup = await memConv.getMemorySummary('mem-u1', 'mem-g1')
+    check('memory: duplicate write does not add duplicate', sumDedup.indexOf('banana') === sumDedup.lastIndexOf('banana'), sumDedup)
+
+    var emptySum = await memConv.getMemorySummary('mem-u2', 'mem-g2')
+    check('memory: no memory returns empty string', emptySum === '', emptySum || '(truthy)')
+
+    await memConv.writeMemory('mem-u3', '', 'mem-g3', 'a')
+    await memConv.writeMemory('mem-u3', '', 'mem-g3', 'b')
+    await memConv.writeMemory('mem-u3', '', 'mem-g3', 'c')
+    await memConv.writeMemory('mem-u3', '', 'mem-g3', 'd')
+    await memConv.writeMemory('mem-u3', '', 'mem-g3', 'e')
+    var sum5 = await memConv.getMemorySummary('mem-u3', 'mem-g3')
+    check('memory: more than 5 items returns 3', sum5.split('、').length === 3, sum5)
+  } finally {
+    delete require.cache[require('path').join(__dirname, '..', 'lib', 'constants')]
+    delete require.cache[require('path').join(__dirname, '..', 'lib', 'conversation')]
+    delete require.cache[require('path').join(__dirname, '..', 'lib', 'utils')]
+    if (oldDir) process.env.DONGXUELIAN_AI_DATA_DIR = oldDir
+    else delete process.env.DONGXUELIAN_AI_DATA_DIR
+    try { require('fs').rmSync(tmpMem, { recursive: true, force: true }) } catch {}
+  }
+
+  section('17.5 willFactor behavior')
+  var fakeShared = new Map()
+  var now = Date.now()
+  fakeShared.set('cold', [{ ts: now - 500 }])
+  fakeShared.set('hot',  Array.from({length:25}, function(_,i){ return {ts: now - i*1000} }))
+  var coldFactor = u.calculateWillFactor('cold', null, fakeShared)
+  var hotFactor  = u.calculateWillFactor('hot', null, fakeShared)
+  check('willFactor: cold group > hot group', coldFactor > hotFactor, coldFactor + ' vs ' + hotFactor)
+
+  var chunCold  = u.calculateWillFactor('cold', '椿', fakeShared)
+  var changliCold = u.calculateWillFactor('cold', '长离', fakeShared)
+  check('willFactor: 椿 > 长离 (same group)', chunCold > changliCold, chunCold + ' vs ' + changliCold)
+
+  var zeroMsgs = u.calculateWillFactor('empty-g', null, new Map())
+  check('willFactor: no channel cache returns default', zeroMsgs > 0, zeroMsgs)
   console.log(`  passed: ${totalPassed}`)
   console.log(`  failed: ${totalFailed}`)
   console.log(`  skipped: ${totalSkipped}`)
