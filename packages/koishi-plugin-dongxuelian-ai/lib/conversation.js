@@ -146,7 +146,7 @@ async function writeMemory(userId, name, channelKey, text) {
   let data = await readJsonFile(file, { userId, names: [], messages: [], memory: [] })
   data.userId = String(userId)
   if (!Array.isArray(data.memory)) data.memory = []
-  var existing = data.memory.findIndex(function(m) { return m.text === text })
+  const existing = data.memory.findIndex(function(m) { return m.text === text })
   if (existing >= 0) { data.memory[existing].ts = Date.now(); data.memory[existing].confirmCount = (data.memory[existing].confirmCount || 0) + 1 }
   else { data.memory.push({ text: text, ts: Date.now(), confirmCount: 1 }) }
   if (data.memory.length > 10) data.memory.splice(0, data.memory.length - 10)
@@ -156,7 +156,7 @@ async function writeMemory(userId, name, channelKey, text) {
 async function deleteMemory(userId, channelKey, text) {
   const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
   const file = path.join(USER_PROFILE_DIR, safeKey, String(userId) + '.json')
-  var data = await readJsonFile(file, null)
+  const data = await readJsonFile(file, null)
   if (!data || !Array.isArray(data.memory)) return
   data.memory = data.memory.filter(function(m) { return m.text !== text })
   await writeJsonFile(file, data)
@@ -165,9 +165,9 @@ async function deleteMemory(userId, channelKey, text) {
 async function getMemorySummary(userId, channelKey) {
   const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
   const file = path.join(USER_PROFILE_DIR, safeKey, String(userId) + '.json')
-  var data = await readJsonFile(file, null)
+  const data = await readJsonFile(file, null)
   if (!data || !Array.isArray(data.memory) || !data.memory.length) return ''
-  var confirmed = data.memory.filter(function(m) { return (m.confirmCount || 0) > 0 }).slice(-3)
+  const confirmed = data.memory.filter(function(m) { return (m.confirmCount || 0) > 0 }).slice(-3)
   if (!confirmed.length) return ''
   return '记住的：' + confirmed.map(function(m) { return m.text }).join('、')
 }

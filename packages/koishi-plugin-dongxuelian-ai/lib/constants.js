@@ -36,6 +36,7 @@ const SEARCH_ENABLED_FILE = path.join(DATA_DIR, 'ai-enable-search.txt')
 const MAINTENANCE_FILE = path.join(DATA_DIR, 'ai-paused.txt')
 const TEST_MODE_FILE = path.join(DATA_DIR, 'ai-test-mode.txt')
 const REPEAT_ENABLED_FILE = path.join(DATA_DIR, 'ai-repeat-enabled.json')
+const ADMIN_IDS_FILE = path.join(DATA_DIR, 'ai-admin-ids.json')
 const RANDOM_TRIGGER_RATE_BASE = Number(process.env.AI_RANDOM_TRIGGER_RATE || 0.008)
 const RANDOM_TRIGGER_WARMUP = 50
 const RANDOM_TRIGGER_RAMP = 0.02
@@ -55,7 +56,6 @@ const MAX_CHANNEL_PROMPT_MESSAGES = 24
 const MAX_THREAD_CONTEXT_MESSAGES = 12
 const MAX_REPLY_CHAIN_DEPTH = 6
 const EVENT_DUMP_ARM_EXPIRE_MS = 10 * 60 * 1000
-const ADMIN_USER_IDS = new Set(['100000000', '200000000'])
 
 const PROVIDERS = {
   opencode: { name: 'OpenCode Go', baseURL: 'https://opencode.ai/zen/go/v1', models: [
@@ -101,13 +101,13 @@ const JAILBREAK_FALLBACK_REPLIES = ['就这点越狱水平，以为复读几行�
 const ABUSIVE_FALLBACK_REPLIES = ['草你妈', '草拟吗', '超你吗', '抄你妈', '炒你吗', '你冯飞了', '艹你妈', '操拟吗', '曹你马']
 const REPEATED_FALLBACK_REPLIES = ['我孙笑川求求你别发了。', 'byd换个说法再来。', '这句我听腻了。', '这种人生命的意义就是活着的时候尽可能地激怒大伙，然后等哪天死了再让大伙释怀地笑出来，以达到欲扬先抑的效果', '扫码了，别拿旧话糊弄我。', '比样的，能不能重编一句新的。', 'byd换个嘴再来。', '发三遍了，你自己不嫌吵？', '再来这句就给你原样贴墙上。']
 
-const EVALUATION_REQUEST_RE = /(?:评价(?:下|一下)?|锐评|评评|怎么评价|怎么看|说说.*(?:怎么样|如何)|值不值得吹|牛不牛|行不行|好不好)/
+const EVALUATION_REQUEST_RE = /(?:评价(?:下|一下)?|锐评|评评|怎么评价|怎么看|说说.{0,200}(?:怎么样|如何)|值不值得吹|牛不牛|行不行|好不好)/
 const JAPAN_SELF_IDENTIFY_RE = /(?:我是|我就?是|我来自|我老家在|我家乡(?:话|就是|在)?|这是我(?:的)?家乡话|我故乡在|我是日本那边的|我是霓虹人).{0,20}(?:日本|日语|霓虹|大和)|(?:日本|日语|霓虹|大和).{0,10}(?:是我(?:的)?家乡话|是我故乡|是我老家|是我家乡|和我有关)/i
 const GENERATION_REQUEST_RE = /(?:帮我(?:生成|写|画|做)|给我(?:生成|写|画|做)|生成(?:一|个|张|份)|画(?:一|个|张)|写(?:一|篇|个|段)|做(?:个|张|份).{0,12}(?:图|图片|文案|代码|方案|提示词|PPT|表格))/i
 const SHORT_FOLLOW_UP_RE = /^(?:对|对啊|对呀|是|是啊|嗯|嗯嗯|好|好的|行|行吧|可以|要|想|就是|然后呢|继续|再来|没错|确实|不对|不是|错|草|6|乐|绷|难绷|\?+|？+|\.{1,3}|。{1,3})$/i
 const BANNED_ACTION_OUTPUT_RE = /拉黑|禁言|报警|不理你了|黑名单/
 const THINKING_OUTPUT_RE = /根据系统(?:指令|规则|约束|提示)|作为\S+?(?:这个角色|的(?:人设|风格))|在群聊(?:场景|里)|从上下文看|群聊场景下|我需要以|我应该[：:]|可以用\S+?的人设|我的角色是|当前场景|规则[：:]|可能太|这是一个.{0,8}(?:回复|场景)|需要.{0,10}(?:回复|插话|吐槽)|可以吐槽|比较随意/
-const SENSITIVE_KEYWORDS_RE = /(?:台湾|西藏|新疆|香港|共产党|国民党|天安门|法轮功|六四|八九|taiwan|tibet|hong.kong|台独|港独|中国.*(?:老大|主席|领导|总统|政府)|(?:老大|主席|领导|总统|政府).*(?:是谁|哪|什么样|现在)|江青|敏感政治)/i
+const SENSITIVE_KEYWORDS_RE = /(?:台湾|西藏|新疆|香港|共产党|国民党|天安门|法轮功|六四|八九|taiwan|tibet|hong.kong|台独|港独|中国.{0,200}(?:老大|主席|领导|总统|政府)|(?:老大|主席|领导|总统|政府).{0,200}(?:是谁|哪|什么样|现在)|江青|敏感政治)/i
 const RESERVED_PREFIXES = ['昵称', '删除昵称', '查看昵称', '查看集合', '查看全部昵称', '查看全部集合', '集合列表', '谁是', '创建集合', '集合添加', '集合删除', '清空集合', '确认清空集合', '删除集合', '确认删除集合', '重命名集合', '重命名昵称', '复制集合', '合并集合', '集合交集', '集合并集', '集合差集', 'nicklist', '查看成员', 'help东雪莲', 'help集合', '东雪莲help', '东雪莲帮助', '帮助东雪莲', 'helpAI', '帮助AI', 'AI帮助', 'help增删查改', 'help速查', '帮助速查', '指令速查', '切换模型', '可用模型', '帮助集合', '常用', '其他', '群聊主动回复', '联网', '抓取原始事件', '黑名单管理', '白名单黑名单管理', '人格', '敏感话题检测']
 
 module.exports = {
@@ -116,7 +116,7 @@ module.exports = {
   SKILLS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR, SKILLS_PERSONAS_DIR, SKILLS_LORE_DIR,
   LORE_TRIGGER_SET, TERRA_LORE_TRIGGER_SET,
   PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, EVENT_DUMP_DIR,
-  RANDOM_WHITELIST_FILE, RANDOM_RATE_FILE,
+  RANDOM_WHITELIST_FILE, RANDOM_RATE_FILE, ADMIN_IDS_FILE,
   SEARCH_ENABLED_FILE, MAINTENANCE_FILE, TEST_MODE_FILE, REPEAT_ENABLED_FILE,
   RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP,
   DEFAULT_GROUP_RANDOM_WHITELIST, REQUEST_TIMEOUT,
@@ -126,7 +126,7 @@ module.exports = {
   MAX_REPLY_RETRIES, MAX_REPEAT_CHECK_HISTORY, MAX_REPLY_FINGERPRINT_HISTORY,
   MAX_CHANNEL_SHARED_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES, MAX_THREAD_CONTEXT_MESSAGES,
   MAX_REPLY_CHAIN_DEPTH, EVENT_DUMP_ARM_EXPIRE_MS,
-  ADMIN_USER_IDS, PROVIDERS,
+  PROVIDERS,
   PROVIDER_FILE, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE,
   USER_BLACKLIST_FILE, VIDEO_BLACKLIST_FILE,
   SUMMARY_WHITELIST_FILE, TODAY_CACHE_PREFIX,

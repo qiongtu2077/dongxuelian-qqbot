@@ -6,25 +6,66 @@
 const {
   KEY_FILE, MODEL_FILE, BASE_URL_FILE,
   SEARCH_ENABLED_FILE,
+  ADMIN_IDS_FILE,
   PROVIDERS, PROVIDER_FILE, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE,
 } = require('./constants')
-const {
-  readTextFile,
-  parseEnabledText,
-  isDashScopeConfig,
-} = require('./utils')
+const fs = require('fs')
+const fsp = require('fs/promises')
 
 let configCache = null
+let adminUserIdsCache = null
 let thinkingEnabled = false
+
+const DEFAULT_ADMIN_USER_IDS = ['100000000', '200000000']
+
+async function readRuntimeTextFile(file) {
+  try { return (await fsp.readFile(file, 'utf8')).trim() } catch { return '' }
+}
+
+function parseRuntimeEnabledText(value = '') {
+  return /^(?:1|true|on|yes|\u5f00|\u5f00\u542f)$/i.test(String(value).trim())
+}
+
+function getRuntimeBaseHostname(baseURL = '') {
+  try { return new URL(String(baseURL || '')).hostname.toLowerCase() } catch { return '' }
+}
+
+function isRuntimeDashScopeConfig(config = {}) {
+  const hostname = getRuntimeBaseHostname(config.baseURL)
+  return hostname.includes('dashscope') || hostname.endsWith('aliyuncs.com')
+}
+
+function readAdminUserIdsFile() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ADMIN_IDS_FILE, 'utf8'))
+    if (!Array.isArray(parsed)) return null
+    const ids = parsed
+      .map(value => value === null || value === undefined ? '' : String(value).trim())
+      .filter(Boolean)
+    return ids.length ? new Set(ids) : null
+  } catch {
+    return null
+  }
+}
+
+function getAdminUserIds(force = false) {
+  if (adminUserIdsCache && !force) return adminUserIdsCache
+  adminUserIdsCache = readAdminUserIdsFile() || new Set(DEFAULT_ADMIN_USER_IDS)
+  return adminUserIdsCache
+}
+
+function isAdminUserId(userId) {
+  return getAdminUserIds().has(String(userId || '').trim())
+}
 
 function getThinkingArgs(config) {
   if (!thinkingEnabled) {
-    if (isDashScopeConfig(config)) return { enable_thinking: false }
+    if (isRuntimeDashScopeConfig(config)) return { enable_thinking: false }
     if (/glm|mimo|kimi/i.test(config.model || '')) return { thinking: { type: 'disabled' } }
     if (/deepseek/i.test(config.model || '')) return { enable_thinking: false }
     return {}
   }
-  if (isDashScopeConfig(config)) return { enable_thinking: true }
+  if (isRuntimeDashScopeConfig(config)) return { enable_thinking: true }
   if (/glm|mimo|kimi/i.test(config.model || '')) return { thinking: { type: 'enabled' } }
   return {}
 }
@@ -33,15 +74,15 @@ async function loadConfig(force = false) {
   if (configCache && !force) return configCache
 
   const [apiKey, model, baseURL, searchEnabledText, provider, deepseekKey, dashscopeKey, glmKey, mimoriumKey] = await Promise.all([
-    readTextFile(KEY_FILE),
-    readTextFile(MODEL_FILE),
-    readTextFile(BASE_URL_FILE),
-    readTextFile(SEARCH_ENABLED_FILE),
-    readTextFile(PROVIDER_FILE),
-    readTextFile(DEEPSEEK_KEY_FILE),
-    readTextFile(DASHSCOPE_KEY_FILE).catch(() => ''),
-    readTextFile(GLM_KEY_FILE).catch(() => ''),
-    readTextFile(MIMORIUM_KEY_FILE).catch(() => ''),
+    readRuntimeTextFile(KEY_FILE),
+    readRuntimeTextFile(MODEL_FILE),
+    readRuntimeTextFile(BASE_URL_FILE),
+    readRuntimeTextFile(SEARCH_ENABLED_FILE),
+    readRuntimeTextFile(PROVIDER_FILE),
+    readRuntimeTextFile(DEEPSEEK_KEY_FILE),
+    readRuntimeTextFile(DASHSCOPE_KEY_FILE).catch(() => ''),
+    readRuntimeTextFile(GLM_KEY_FILE).catch(() => ''),
+    readRuntimeTextFile(MIMORIUM_KEY_FILE).catch(() => ''),
   ])
 
   const activeProvider = provider || 'opencode'
@@ -61,7 +102,7 @@ async function loadConfig(force = false) {
     apiKey: resolvedApiKey,
     model: model || (providerDef ? providerDef.models[0].id : 'gpt-4o-mini'),
     baseURL: resolvedBaseURL,
-    searchEnabled: parseEnabledText(searchEnabledText),
+    searchEnabled: parseRuntimeEnabledText(searchEnabledText),
     provider: activeProvider,
   }
 
@@ -70,6 +111,7 @@ async function loadConfig(force = false) {
 
 function resetConfigCache() {
   configCache = null
+  adminUserIdsCache = null
 }
 
 function getThinkingEnabled() {
@@ -84,6 +126,8 @@ module.exports = {
   loadConfig,
   resetConfigCache,
   getThinkingArgs,
+  getAdminUserIds,
+  isAdminUserId,
   getThinkingEnabled,
   setThinkingEnabled,
 }

@@ -1,72 +1,61 @@
 /*
- * Source scan -> behavior coverage map
+ * 源码扫描 → 行为覆盖映射
  *
- * Cascade is allowed to scan source/config text only for structural contracts:
- * package scripts, exports, help render wiring, gitignore, deploy/setup scripts,
- * cross-file dependency boundaries, and lightweight regression sentinels.
- * `npm run test:quick` runs this file; `npm test` runs quick + scenarios.
- * The AI plugin must not export `_testOnly`; scenarios should exercise behavior
- * through the fake Koishi middleware unless a production module is intentionally
- * split out and required directly.
+ * Cascade 只允许对以下结构性契约做源码/配置扫描：
+ * package scripts、导出、help 路由、gitignore、部署脚本、
+ * 跨文件依赖边界、轻量回归哨兵。
+ * `npm run test:quick` 运行本文件；`npm test` 运行 quick + scenarios + plugins。
+ * AI 插件禁止导出 `_testOnly`；场景测试应通过 fake Koishi middleware 验证行为，
+ * 除非某个生产模块被明确拆分出来并直接 require。
  *
- * Runtime behavior must be covered by scenario tests before deleting or relaxing
- * any old source-shape assertion. Current behavior owners:
+ * 运行时行为必须由 scenario 测试覆盖后，才能删除或放松任何旧源码断言。
+ * 当前行为归属：
  *
- * - Sticker text/image send order:
- *   scenarios/sticker.test.js L21-L55 covers ordinary text, internal image send,
- *   fallback image send, and timeline order assertions.
- * - Repeat trigger/cooldown/window/toggle behavior:
- *   scenarios/repeat.test.js L10-L72 covers real middleware command paths.
- *   cascade keeps only pure repeat candidate construction checks.
- * - Forward summary resolution:
- *   scenarios/forward.test.js covers CQ/HTML forward IDs, nested forward
- *   content, missing IDs, and lastForwardSummaryCache writes.
- * - Vision session field ownership:
- *   scenarios/vision.test.js covers current-image, quoted-image, plain-text,
- *   and cleanup behavior through the vision module API.
- * - Sensitive detect cache/effective switch behavior:
- *   scenarios/sensitive.test.js L24-L55 covers enable -> trigger -> close -> no
- *   later notification; scenarios/command.test.js L37-L55 covers permissions and
- *   state-file writes.
- * - Chat/reasoning/thinking leak behavior:
- *   scenarios/chat.test.js L86-L153 covers visible content, reasoning-only
- *   fallback, thinking leak retries, no-leak logs, and conversation persistence.
- * - API fallback behavior:
- *   scenarios/fallback.test.js L25-L148 covers 400/401/429, network/AbortError,
- *   invalid JSON, reasoning-only, sanitized failures, provider/model/baseURL,
- *   and thinking controls.
- * - Random proactive reply behavior:
- *   scenarios/random.test.js covers whitelist-gated rate=100 triggering and the
- *   default empty-whitelist no-model path; cascade covers the pure probability
- *   decision helper.
- * - Concurrent JSON write integrity:
- *   scenarios/persistence.test.js covers many concurrent writeJsonFile calls
- *   leaving parseable JSON, one complete payload, and no temp-file leftovers.
- * - Business concurrency behavior:
- *   scenarios/concurrency.test.js covers concurrent repeat messages and
- *   sensitive detection open/close races without duplicate notifications.
- * - Command permissions and status/no-key behavior:
- *   scenarios/command.test.js L9-L73 covers middleware-visible command behavior;
- *   cascade keeps focused handler unit checks for command routing.
- * - setup.sh executable behavior:
- *   scenarios/setup.test.js L60-L143 covers shell syntax, simulate-files output,
- *   generated config/data, and path-escape rejection when bash/sh is available.
- * - Persona prompt composition:
- *   scenarios/persona-prompt.test.js L163-L220 covers default/personal/group
- *   persona precedence and lore marker injection.
+ * - Sticker 文本/图片发送顺序：
+ *   scenarios/sticker.test.js L21-L55 覆盖纯文本、内部图片发送、fallback 图片发送、时间线顺序
+ * - 复读触发/冷却/窗口/开关：
+ *   scenarios/repeat.test.js L10-L72 覆盖真实中间件命令路径；
+ *   cascade 只保留纯复读候选构造检查
+ * - 转发消息摘要：
+ *   scenarios/forward.test.js 覆盖 CQ/HTML forward ID、嵌套转发、缺失 ID、lastForwardSummaryCache 写入
+ * - 图片会话标记：
+ *   scenarios/vision.test.js 覆盖当前图片、引用图片、纯文本、清理行为
+ * - 敏感检测缓存/开关：
+ *   scenarios/sensitive.test.js L24-L55 覆盖开启→触发→关闭→不重复通知；
+ *   scenarios/command.test.js L37-L55 覆盖权限和状态文件写入
+ * - 聊天/推理/thinking leak：
+ *   scenarios/chat.test.js L86-L153 覆盖可见内容、reasoning-only fallback、
+ *   thinking leak 重试、无 leak 日志、对话持久化
+ * - API fallback：
+ *   scenarios/fallback.test.js L25-L148 覆盖 400/401/429、网络错误/AbortError、
+ *   无效 JSON、reasoning-only、安全错、provider/model/baseURL、thinking 控制
+ * - 随机主动回复：
+ *   scenarios/random.test.js 覆盖白名单 rate=100 触发和空白名单不走模型；
+ *   cascade 覆盖纯概率判断
+ * - 并发 JSON 写入：
+ *   scenarios/persistence.test.js 覆盖大量并发 writeJsonFile 后 JSON 仍可解析、
+ *   仅一份完整数据、无残留临时文件
+ * - 业务并发：
+ *   scenarios/concurrency.test.js 覆盖并发复读和敏感检测开/关竞态、不重复通知
+ * - 命令权限和状态/无泄漏：
+ *   scenarios/command.test.js L9-L73 覆盖中间件可见的命令行为；
+ *   cascade 保留 handler 单元检查
+ * - setup.sh 可执行行为：
+ *   scenarios/setup.test.js L60-L143 覆盖 shell 语法、模拟文件输出、
+ *   生成配置/数据、路径注入拒绝（bash/sh 可用时）
+ * - 人格 prompt 组合：
+ *   scenarios/persona-prompt.test.js L163-L220 覆盖默认/个人/群组人格优先级
+ *   和 lore marker 注入
  *
- * The COVERAGE_MAP below is machine-checked so this table cannot silently point
- * at missing or unwired scenario files.
+ * 下面的 COVERAGE_MAP 由机器校验，确保不会悄无声息地指向缺失或未挂载的 scenario。
  *
- * Source scans that should not be removed unless equivalent coverage exists:
- * - [ ] package/workspace/script declarations -> no richer scenario equivalent.
- * - [ ] local package export inventory -> module loading contract.
- * - [ ] help render function completeness -> static router/render wiring.
- * - [ ] gitignore sensitive-data patterns -> repository safety contract.
- * - [ ] deploy/setup script structure -> supplemented by setup.test.js, but
- *       cascade still guards Windows/no-bash environments.
- * - [ ] cross-file dependency boundaries -> architectural guardrails, not user
- *       behavior.
+ * 以下源码扫描除非有等价场景覆盖，否则不应删除：
+ * - [ ] package/workspace/script 声明 → 无更丰富的场景可替代
+ * - [ ] 本地包导出清单 → 模块加载契约
+ * - [ ] help 渲染函数完整性 → 静态路由/渲染接线
+ * - [ ] gitignore 敏感数据模式 → 仓库安全契约
+ * - [ ] 部署/setup 脚本结构 → 由 setup.test.js 补充，但 cascade 仍守卫 Windows/无 bash 环境
+ * - [ ] 跨文件依赖边界 → 架构护栏，非用户行为
  */
 const fs = require('fs')
 const path = require('path')
@@ -224,10 +213,10 @@ function runCoverageMapChecks() {
   }
 }
 
-// Note for AI reviewers: in the Codex sandbox, spawning `node -c` can be
-// blocked even when the same syntax checks pass through `npm run check`.
-// Those cases are reported as SKIP instead of FAIL so the cascade can keep
-// running; they do not mean the target file has a known syntax problem.
+// 注意：在 Codex 沙箱中，`node -c` 子进程可能被拦截，
+// 即使同样的文件通过 `npm run check` 语法检查无问题。
+// 此类情况标记为 SKIP 而非 FAIL，让 cascade 继续执行；
+// 不代表目标文件有语法问题。
 function syntaxCheck(file) {
   const result = spawnSync(process.execPath, ['-c', file], { cwd: ROOT, stdio: 'pipe' })
   if (result.error && result.error.code === 'EPERM') return { skipped: true, reason: 'child process blocked by sandbox' }
@@ -421,7 +410,7 @@ async function main() {
   checkEqual('npm test:scenario runs scenario entry', rootPkg.scripts && rootPkg.scripts['test:scenario'], 'node packages/koishi-plugin-dongxuelian-ai/test/scenario-test.js')
   checkEqual('npm test:plugins runs auxiliary plugin tests', rootPkg.scripts && rootPkg.scripts['test:plugins'], 'node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js')
   check('npm test runs quick and scenario entries', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:quick') && rootPkg.scripts.test.includes('npm run test:scenario'))
-  check('npm test keeps plugin tests separate for now', rootPkg.scripts && rootPkg.scripts.test && !rootPkg.scripts.test.includes('test:plugins'))
+  check('npm test includes plugin tests', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:plugins'))
   check('npm check includes AI index syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js'))
   check('npm check includes AI chat syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/chat.js'))
   check('npm check includes AI jailbreak ruleset syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/rulesets/jailbreak.js'))
@@ -552,6 +541,7 @@ async function main() {
     ],
     runtimeConfig: [
       'loadConfig', 'resetConfigCache', 'getThinkingArgs',
+      'getAdminUserIds', 'isAdminUserId',
       'getThinkingEnabled', 'setThinkingEnabled',
     ],
     reply: [
@@ -603,7 +593,7 @@ async function main() {
     'SKILLS_LORE_DIR', 'PROVIDERS', 'SENSITIVE_KEYWORDS_RE', 'CONVERSATIONS_DIR',
     'USER_PROFILE_DIR', 'REQUEST_TIMEOUT', 'TERRA_LORE_TRIGGER_SET',
     'RESERVED_PREFIXES', 'POLITICAL_DETECT_FILE', 'STICKER_DIR',
-    'JAILBREAK_INPUT_RE', 'JAILBREAK_INPUT_PATTERNS',
+    'ADMIN_IDS_FILE', 'JAILBREAK_INPUT_RE', 'JAILBREAK_INPUT_PATTERNS',
   ]
   for (const name of requiredConstants) check(`constant exists: ${name}`, c[name] !== undefined)
   const aiPkg = readJson(path.join(AI_ROOT, 'package.json'))
@@ -617,7 +607,9 @@ async function main() {
   }
   check('default random whitelist is empty', c.DEFAULT_GROUP_RANDOM_WHITELIST instanceof Set && c.DEFAULT_GROUP_RANDOM_WHITELIST.size === 0)
   check('random base rate is low by default', c.RANDOM_TRIGGER_RATE_BASE > 0 && c.RANDOM_TRIGGER_RATE_BASE <= 0.02)
-  check('admin ids configured', c.ADMIN_USER_IDS instanceof Set && c.ADMIN_USER_IDS.size > 0)
+  check('admin ids file configured', typeof c.ADMIN_IDS_FILE === 'string' && c.ADMIN_IDS_FILE.includes('ai-admin-ids.json'))
+  check('runtime admin ids fallback configured', modules.runtimeConfig.getAdminUserIds(true) instanceof Set && modules.runtimeConfig.getAdminUserIds().size > 0)
+  check('runtime admin id lookup works', modules.runtimeConfig.isAdminUserId('100000000'))
 
   section('4. syntax and duplicate function scan')
   const syntaxFiles = [
@@ -1045,7 +1037,7 @@ async function main() {
   for (const pluginKey of ['group-name-at', 'dongxuelian-help', 'dongxuelian-ai', 'dongxuelian-poke', 'koishi-plugin-defense', 'local-video-sender', 'group-leave-notice']) {
     check(`setup.sh koishi.yml includes ${pluginKey}`, setupSrc.includes(`${pluginKey}:`))
   }
-  for (const runtimeFile of ['ai-provider.txt', 'ai-model.txt', 'ai-base-url.txt', 'ai-repeat-enabled.json', 'ai-enable-search.txt', 'ai-enable-thinking.txt']) {
+  for (const runtimeFile of ['ai-provider.txt', 'ai-model.txt', 'ai-base-url.txt', 'ai-repeat-enabled.json', 'ai-enable-search.txt', 'ai-enable-thinking.txt', 'ai-admin-ids.json']) {
     check(`setup.sh initializes ${runtimeFile}`, setupSrc.includes(runtimeFile))
   }
   for (const dataDirName of ['conversations', 'user-profiles', 'ai-event-dumps', 'political-handlers']) {
@@ -1075,6 +1067,19 @@ async function main() {
   check('index.js has no local BANNED_OUTPUT_RE duplicate', !indexSrc.includes('const BANNED_OUTPUT_RE'))
   check('index.js has no removed buildFriendlyPersona reference', !indexSrc.includes('buildFriendlyPersona'))
   check('chat.js keeps block-scoped declarations', !/\bvar\b/.test(chatSrc))
+  const libJsFiles = []
+  function collectLibJsFiles(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name)
+      if (entry.isDirectory()) collectLibJsFiles(file)
+      else if (entry.isFile() && entry.name.endsWith('.js')) libJsFiles.push(file)
+    }
+  }
+  collectLibJsFiles(LIB)
+  for (const file of libJsFiles) {
+    const rel = path.relative(AI_ROOT, file)
+    check(`lib file has no var: ${rel}`, !/\bvar\b/.test(read(file)))
+  }
 
   section('16. thinking leak guard')
   const thinkingLeakSample = [

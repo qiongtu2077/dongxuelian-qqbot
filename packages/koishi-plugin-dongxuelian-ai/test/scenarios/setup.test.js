@@ -102,9 +102,12 @@ async function run(t) {
     for (const dir of ['conversations', 'user-profiles', 'ai-event-dumps', 'political-handlers']) {
       t.check(`scenario setup data dir exists: ${dir}`, fs.existsSync(path.join(dataDir, dir)))
     }
-    for (const file of ['ai-provider.txt', 'ai-model.txt', 'ai-base-url.txt', 'ai-repeat-enabled.json', 'ai-enable-search.txt', 'ai-enable-thinking.txt']) {
+    for (const file of ['ai-provider.txt', 'ai-model.txt', 'ai-base-url.txt', 'ai-repeat-enabled.json', 'ai-enable-search.txt', 'ai-enable-thinking.txt', 'ai-admin-ids.json']) {
       t.check(`scenario setup runtime file exists: ${file}`, fs.existsSync(path.join(dataDir, file)))
     }
+    const adminIds = readJson(path.join(dataDir, 'ai-admin-ids.json'))
+    t.check('scenario setup admin ids includes primary admin', adminIds.includes('100000000'), JSON.stringify(adminIds))
+    t.check('scenario setup admin ids includes secondary admin', adminIds.includes('200000000'), JSON.stringify(adminIds))
     for (const skillPart of ['core', 'personas', 'modes', 'lore']) {
       const dir = path.join(dataDir, 'ai-skills', skillPart)
       t.check(`scenario setup skill dir populated: ${skillPart}`, hasFiles(dir), dir)

@@ -132,6 +132,11 @@ create_data_files() {
   echo "https://opencode.ai/zen/go/v1" > "$DATA_DIR/ai-base-url.txt"
   echo "[]" > "$DATA_DIR/ai-random-whitelist.json"
   echo "[]" > "$DATA_DIR/ai-user-blacklist.json"
+  if [ "$ADMIN_QQ" = "100000000" ] || [ "$ADMIN_QQ" = "200000000" ]; then
+    printf '["100000000","200000000"]\n' > "$DATA_DIR/ai-admin-ids.json"
+  else
+    printf '["100000000","200000000","%s"]\n' "$ADMIN_QQ" > "$DATA_DIR/ai-admin-ids.json"
+  fi
   echo "{}" > "$DATA_DIR/ai-repeat-enabled.json"
   echo "[]" > "$DATA_DIR/ai-random-rate.json"
   echo "off" > "$DATA_DIR/ai-enable-search.txt"

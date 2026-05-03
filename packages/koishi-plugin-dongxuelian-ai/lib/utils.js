@@ -8,13 +8,14 @@
 const { normalizeText } = require('./message-reader')
 const {
   AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ,
-  RESERVED_PREFIXES, ADMIN_USER_IDS,
+  RESERVED_PREFIXES,
   JAILBREAK_INPUT_RE, JAILBREAK_FALLBACK_REPLIES,
   OVERUSED_REPLY_PATTERNS,
   BANNED_ACTION_OUTPUT_RE, EVALUATION_REQUEST_RE,
   RARE_PROVOCATION_RE, HOSTILE_INPUT_RE, HOSTILE_SINGLE_TOKENS,
   PROVIDERS, MAX_OUTPUT_CHARS_FRIENDLY,
 } = require('./constants')
+const { isAdminUserId } = require('./runtime-config')
 
 function isRareProvocation(text = '') {
   const value = String(text).trim()
@@ -47,7 +48,7 @@ function isReservedCommand(plain = '') {
 
 function getSenderUserId(session) { return String(session.userId || session.author?.id || session.event?.user?.id || '') }
 
-function hasAdminPermission(session) { return ADMIN_USER_IDS.has(getSenderUserId(session)) }
+function hasAdminPermission(session) { return isAdminUserId(getSenderUserId(session)) }
 
 function stripMentions(text = '') {
   return String(text)
@@ -279,8 +280,8 @@ function sanitizeReply(text = '', userName = '') {
 
 function calculateWillFactor(channelKey, personaName, channelSharedCache) {
   const msgCount = (channelSharedCache.get(channelKey) || []).filter(function(m) { return Date.now() - m.ts < 60000 }).length
-  var crowdFactor = msgCount > 20 ? 0.3 : msgCount > 10 ? 0.6 : msgCount > 5 ? 0.9 : msgCount > 2 ? 1.2 : 1.5
-  var personaFactor = { '长离': 0.8, '椿': 1.3, '特蕾西娅': 0.9 }[personaName] || 1.0
+  const crowdFactor = msgCount > 20 ? 0.3 : msgCount > 10 ? 0.6 : msgCount > 5 ? 0.9 : msgCount > 2 ? 1.2 : 1.5
+  const personaFactor = { '长离': 0.8, '椿': 1.3, '特蕾西娅': 0.9 }[personaName] || 1.0
   return Math.round(Math.min(crowdFactor * personaFactor, 2.0) * 100) / 100
 }
 

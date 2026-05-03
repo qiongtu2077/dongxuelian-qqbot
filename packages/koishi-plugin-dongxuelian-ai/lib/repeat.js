@@ -55,8 +55,7 @@ function extractStructuredFaceIds(session) {
       return null
     }
 
-    // @ segments are not part of repeat content. The main flow already filters
-    // direct bot calls and messages that mention other users.
+    // @ 段不属于复读内容。主流程已过滤 @bot 和提及他人的消息。
     if (type === 'at') continue
 
     if (type === 'face') {

@@ -49,6 +49,7 @@ const {
 const {
   loadConfig, resetConfigCache,
   getThinkingEnabled, setThinkingEnabled,
+  isAdminUserId,
 } = require('./runtime-config')
 const {
   DATA_DIR, PLUGIN_VERSION,
@@ -59,7 +60,6 @@ const {
   DEFAULT_GROUP_RANDOM_WHITELIST,
   MAX_CHANNEL_SHARED_MESSAGES,
   EVENT_DUMP_ARM_EXPIRE_MS,
-  ADMIN_USER_IDS,
   USER_BLACKLIST_FILE, VIDEO_BLACKLIST_FILE,
   SUMMARY_WHITELIST_FILE, TODAY_CACHE_PREFIX,
   THINKING_MODE_FILE,
@@ -357,7 +357,7 @@ exports.apply = (ctx) => {
     if (selfId && String(session.userId || session.author?.id || '') === selfId) return next()
 
     await loadRuntimeSettings()
-    try { await fs.access(MAINTENANCE_FILE); const mt = (await fs.readFile(MAINTENANCE_FILE, 'utf8')).trim() || '优化中'; await session.send(mt).catch(() => {}); return } catch (e) { /* no maintenance mode */ }
+    try { await fs.access(MAINTENANCE_FILE); const mt = (await fs.readFile(MAINTENANCE_FILE, 'utf8')).trim() || '优化中'; await session.send(mt).catch(() => {}); return } catch (e) { /* 无维护模式 */ }
 
     const analyzed = analyzeIncomingMessage(session, { sanitizeUserName })
     const plain = collapseRepeatedBotCalls(stripMentions(analyzed.plain || content))
@@ -450,7 +450,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     const userBlAdd = plain.match(/^用户黑名单添加\s*(\d+)$/)
     if (userBlAdd) {
       const uid = userBlAdd[1]
-      if (ADMIN_USER_IDS.has(uid)) return '不能对管理员添加黑名单。'
+      if (isAdminUserId(uid)) return '不能对管理员添加黑名单。'
       await ensureUserBlacklistCache()
       userBlacklistCache.add(uid)
       await writeJsonFile(USER_BLACKLIST_FILE, [...userBlacklistCache])
@@ -638,8 +638,8 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     if (lastRandomReplyTs.has(channelKey) && Date.now() - (lastRandomReplyTs.get(channelKey) || 0) < 30000) {
       isRandomCandidate = false
     }
-    var willFactor = calculateWillFactor(channelKey, resolvePersona(channelKey, currentUserId).name, channelSharedCache)
-    var finalTriggerRate = Math.min(getRandomTriggerBaseRate(channelKey) * willFactor, 1.0)
+    const willFactor = calculateWillFactor(channelKey, resolvePersona(channelKey, currentUserId).name, channelSharedCache)
+    const finalTriggerRate = Math.min(getRandomTriggerBaseRate(channelKey) * willFactor, 1.0)
 
     // "闭嘴" 静默十分钟主动回复
     if (inGuild && !directAt && !nameMentioned && /^(?:闭嘴|别吵|别说了|不要说话)/.test(plain)) {
@@ -687,7 +687,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         channelPendingRandom.set(channelKey, { timer, combinedText: plain })
       }
     }
-    var randomTriggered = isRandomCandidate && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))
+    const randomTriggered = isRandomCandidate && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))
 
     if (inGuild && !directAt && !nameMentioned) {
       ctx.logger('dongxuelian-ai').info(`random-reply debug: key=${channelKey} whitelist=${inRandomWhitelist} candidate=${isRandomCandidate} triggered=${randomTriggered} rate=${getRandomTriggerRate(channelKey)} skip=${analyzed.shouldSkipForRandomReply} hasUsableText=${analyzed.hasUsableText} hasLink=${analyzed.hasLink} hasVisual=${analyzed.hasVisual} hasFile=${analyzed.hasFile} hasEmbed=${analyzed.hasEmbed} directAt=${directAt} otherMentions=${otherMentions} nameMentioned=${nameMentioned} whitelistSize=${randomWhitelistCache.size}`)

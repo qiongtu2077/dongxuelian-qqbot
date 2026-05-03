@@ -79,6 +79,24 @@ async function run(t) {
 
     t.check('scenario command temp files stay inside data dir', fs.existsSync(path.join(data.dataDir, 'ai-openai-key.txt')))
   })
+
+  await withScenario({ data: { adminUserIds: ['999001'] } }, async ({ data, makeSession, run }) => {
+    const oldDefaultAdmin = await run(makeSession({ content: '\u4e1c\u96ea\u83b2\u601d\u8003\u5f00' }))
+    checkSentNonEmpty(t, 'scenario custom admin config rejects old default admin', oldDefaultAdmin)
+    t.check('scenario custom admin config leaves thinking disabled for old default admin', data.readText('ai-enable-thinking.txt').trim() === 'off')
+
+    const customAdmin = await run(makeSession({
+      userId: '999001',
+      author: { id: '999001', name: 'custom-admin', nick: 'custom-admin' },
+      content: '\u4e1c\u96ea\u83b2\u601d\u8003\u5f00',
+    }))
+    checkSentNonEmpty(t, 'scenario custom admin config accepts configured admin', customAdmin)
+    t.check('scenario custom admin config writes thinking file', data.readText('ai-enable-thinking.txt').trim() === 'on')
+
+    const blacklistConfiguredAdmin = await run(makeSession({ content: '\u7528\u6237\u9ed1\u540d\u5355\u6dfb\u52a0 999001' }))
+    checkSentNonEmpty(t, 'scenario user blacklist refuses configured admin id', blacklistConfiguredAdmin)
+    t.check('scenario user blacklist does not store configured admin id', !data.readJson('ai-user-blacklist.json').includes('999001'))
+  })
 }
 
 module.exports = { run }
