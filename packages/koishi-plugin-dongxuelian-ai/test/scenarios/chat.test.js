@@ -30,7 +30,7 @@ async function withFetch(mocked, fn) {
 }
 
 async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
-  await withScenario({ fakeTimers: false }, async ({ harness, makeSession, run }) => {
+  await withScenario({}, async ({ harness, makeSession, run }) => {
     const mocked = mockFetch(fetchQueue)
     await withFetch(mocked, async () => {
       const session = makeSession(options.session || {})

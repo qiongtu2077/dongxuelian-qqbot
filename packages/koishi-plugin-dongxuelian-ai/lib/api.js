@@ -1,3 +1,8 @@
+/**
+ * MODULE: AI API 调用。
+ * 职责: requestChatCompletions + fallback 链 + 图片/转发拉取。
+ * 边界: 不存 conversation，不做业务判断。结果返回给调用方（chat.js）处理。
+ */
 const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE } = require('./constants')
 const { readTextFile, isDashScopeConfig } = require('./utils')
 
@@ -157,28 +162,57 @@ function getFallbackSteps() {
   return FALLBACK_STEPS.map(item => ({ ...item }))
 }
 
-function callGetImage(fileName) {
+function callOneBotWs(action, params, echo, timeoutMs, extractData) {
   return new Promise((resolve) => {
+    let ws = null
+    let timer = null
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      try { if (ws) ws.close() } catch {}
+      resolve(value || null)
+    }
+
     try {
-      const ws = new (require('ws'))('ws://127.0.0.1:8080/onebot/v11/ws')
-      const timer = setTimeout(() => { ws.close(); resolve(null) }, 5000)
-      ws.on('open', () => { ws.send(JSON.stringify({ action: 'get_image', params: { file: fileName }, echo: 'gi' })) })
-      ws.on('message', (d) => { clearTimeout(timer); try { const m = JSON.parse(d.toString()); if (m.echo === 'gi' && m.data && m.data.file) resolve(m.data); else if (m.echo === 'gi') resolve(null); ws.close() } catch { resolve(null); ws.close() } })
-      ws.on('error', () => { clearTimeout(timer); resolve(null) })
-    } catch { resolve(null) }
+      ws = new (require('ws'))('ws://127.0.0.1:8080/onebot/v11/ws')
+      timer = setTimeout(() => finish(null), timeoutMs)
+      ws.on('open', () => {
+        try { ws.send(JSON.stringify({ action, params, echo })) } catch { finish(null) }
+      })
+      ws.on('message', (d) => {
+        let message = null
+        try { message = JSON.parse(d.toString()) } catch { return finish(null) }
+        if (message.echo !== echo) return
+        try { finish(extractData(message)) } catch { finish(null) }
+      })
+      ws.on('error', () => finish(null))
+      ws.on('close', () => finish(null))
+    } catch {
+      finish(null)
+    }
   })
 }
 
+function callGetImage(fileName) {
+  return callOneBotWs(
+    'get_image',
+    { file: fileName },
+    'gi',
+    5000,
+    message => (message.data && message.data.file ? message.data : null)
+  )
+}
+
 function callGetForwardMsg(forwardId) {
-  return new Promise((resolve) => {
-    try {
-      const ws = new (require('ws'))('ws://127.0.0.1:8080/onebot/v11/ws')
-      const timer = setTimeout(() => { ws.close(); resolve(null) }, 10000)
-      ws.on('open', () => { ws.send(JSON.stringify({ action: 'get_forward_msg', params: { id: forwardId }, echo: 'gf' })) })
-      ws.on('message', (d) => { try { const m = JSON.parse(d.toString()); if (m.echo === 'gf') { clearTimeout(timer); const msgs = m.data ? (m.data.messages || m.data.message || (Array.isArray(m.data) ? m.data : null)) : null; resolve(msgs); ws.close() } } catch {} })
-      ws.on('error', () => { clearTimeout(timer); resolve(null) })
-    } catch { resolve(null) }
-  })
+  return callOneBotWs(
+    'get_forward_msg',
+    { id: forwardId },
+    'gf',
+    10000,
+    message => (message.data ? (message.data.messages || message.data.message || (Array.isArray(message.data) ? message.data : null)) : null)
+  )
 }
 
 async function readImageAsBase64(filePath) {
@@ -196,12 +230,36 @@ function extractImageFileFromElements(session) {
 
 async function downloadImageAsBase64(url, timeoutMs = 5000) {
   return new Promise((resolve) => {
-    if (!url || !url.startsWith('http')) return resolve(null)
-    const mod = url.startsWith('https') ? require('https') : require('http')
-    const timeout = setTimeout(() => resolve(null), timeoutMs)
-    mod.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-      const chunks = []; res.on('data', c => chunks.push(c)); res.on('end', () => { clearTimeout(timeout); const buf = Buffer.concat(chunks); resolve(`data:${res.headers['content-type'] || 'image/jpeg'};base64,${buf.toString('base64')}`) }); res.on('error', () => { clearTimeout(timeout); resolve(null) })
-    }).on('error', () => { clearTimeout(timeout); resolve(null) })
+    let request = null
+    let timer = null
+    let settled = false
+    const finishDownload = (value) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(value || null)
+    }
+
+    if (!url || !url.startsWith('http')) return finishDownload(null)
+    try {
+      const mod = url.startsWith('https') ? require('https') : require('http')
+      timer = setTimeout(() => {
+        try { if (request) request.destroy() } catch {}
+        finishDownload(null)
+      }, timeoutMs)
+      request = mod.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+        const chunks = []
+        res.on('data', c => chunks.push(c))
+        res.on('end', () => {
+          const buf = Buffer.concat(chunks)
+          finishDownload(`data:${res.headers['content-type'] || 'image/jpeg'};base64,${buf.toString('base64')}`)
+        })
+        res.on('error', () => finishDownload(null))
+      })
+      request.on('error', () => finishDownload(null))
+    } catch {
+      finishDownload(null)
+    }
   })
 }
 

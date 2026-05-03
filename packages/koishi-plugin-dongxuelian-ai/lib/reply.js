@@ -1,3 +1,8 @@
+/**
+ * MODULE: 消息发送。
+ * 职责: sendReply + sticker 发送 + 输出过滤（括号/敏感词）。
+ * 边界: 不调 AI API，不存 conversation（saveSharedChannelTurn 等由调用方负责）。
+ */
 const fs = require('fs')
 const path = require('path')
 const { h } = require('koishi')
@@ -127,7 +132,14 @@ async function sendStickerImage(ctx, session, sticker) {
   }
 }
 
-async function sendReply(ctx, session, reply, isRandom = false) {
+function resolveNow(options) {
+  if (typeof options?.now === 'function') return options.now
+  if (typeof options?.time?.now === 'function') return options.time.now
+  return Date.now
+}
+
+async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
+  const nowMs = resolveNow(options)
   // 图片文件转 base64 CQ 码（使用缓存）
   const stickerToCQ = (file) => {
     const b64 = stickerBase64Cache[file]
@@ -187,10 +199,10 @@ async function sendReply(ctx, session, reply, isRandom = false) {
   }
   // 发送收集到的表情包图片；fallback 只在 sticker 图片这里触发，不接管普通文本。
   const stickerChannelKey = getChannelKey(session)
-  const stickerBatchStart = Date.now()
+  const stickerBatchStart = nowMs()
   const lastStickerAtBeforeBatch = lastStickerSentAt.get(stickerChannelKey) || 0
   for (const sticker of pendingStickers) {
-    const now = Date.now()
+    const now = nowMs()
     if (stickerBatchStart - lastStickerAtBeforeBatch < STICKER_GLOBAL_COOLDOWN_MS) {
       ctx.logger('dongxuelian-ai').info(`sticker global cooldown active (${Math.ceil((STICKER_GLOBAL_COOLDOWN_MS - (stickerBatchStart - lastStickerAtBeforeBatch)) / 1000)}s remaining), skipping ${sticker.file}`)
       continue
@@ -205,7 +217,7 @@ async function sendReply(ctx, session, reply, isRandom = false) {
 
     const sent = await sendStickerImage(ctx, session, sticker)
     if (sent) {
-      const sentAt = Date.now()
+      const sentAt = nowMs()
       lastStickerSentAt.set(stickerChannelKey, sentAt)
       lastStickerFileSentAt.set(stickerFileKey, sentAt)
     }

@@ -1,4 +1,9 @@
-﻿const QQ_FACE_NAME_MAP = {
+﻿/**
+ * MODULE: QQ 消息解析。
+ * 职责: normalizeText / 表情提取 / 图片/文件/转发检测 / 消息段分析。
+ * 边界: 纯函数，无状态，无 IO，不调 AI API。
+ */
+const QQ_FACE_NAME_MAP = {
   '0': '惊讶',
   '1': '撇嘴',
   '2': '色',

@@ -15,7 +15,7 @@ function applyPlugin(plugin, harness) {
 function createScenario(options = {}) {
   const data = createTestDataDir(options.data || {})
   const restoreEnv = withDataEnv(data.dataDir)
-  const clock = options.fakeTimers === false ? null : installFakeTimers(options.now || 1700000000000)
+  const clock = options.fakeTimers === true ? installFakeTimers(options.now || 1700000000000) : null
   const originalElementWarn = h.warn
   if (options.silenceElementWarnings !== false) h.warn = () => {}
   const plugin = reloadPlugin()

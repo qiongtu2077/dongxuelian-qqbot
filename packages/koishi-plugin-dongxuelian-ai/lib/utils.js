@@ -1,3 +1,10 @@
+/**
+ * CODE REVIEW CHECKLIST（每次修改必须完成）:
+ * 1. 是否引入了新的 require 循环依赖？（绝对禁止 require('./index')）
+ * 2. 新增函数是否已在 cascade-test.js 的 expectedExports 注册？
+ * 3. Promise 路径是否所有 reject 都有 catch？
+ * 4. 修改的 Map/缓存是否有大小限制和过期机制？
+ */
 const { normalizeText } = require('./message-reader')
 const {
   AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ,

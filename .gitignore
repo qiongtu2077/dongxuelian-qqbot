@@ -18,3 +18,4 @@ koishi.yml
 package-lock.json
 *.b64
 tmp_*.js
+*.log

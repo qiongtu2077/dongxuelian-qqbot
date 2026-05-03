@@ -23,6 +23,17 @@ async function run(t) {
   await withScenario({}, async ({ harness, makeSession }) => {
     const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    const mocked = makeForwardMock({})
+    const session = makeSession({ guildId: '10000', channelId: '10000', content: 'plain message without forward id' })
+    const summary = await resolveForwardSummary(session, session.content, harness.ctx, mocked)
+    t.check('scenario forward plain message returns empty summary', summary === '', JSON.stringify(summary))
+    t.check('scenario forward plain message does not call API', mocked.calls.length === 0, mocked.calls.join(','))
+    t.check('scenario forward plain message does not write cache', !conversation.lastForwardSummaryCache.has('10000'), conversation.lastForwardSummaryCache.get('10000') || '')
+  })
+
+  await withScenario({}, async ({ harness, makeSession }) => {
+    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const mocked = makeForwardMock({
       cqroot: [textNode('Alice', 'hello from cq forward')],
     })
@@ -74,6 +85,27 @@ async function run(t) {
     const summary = await resolveForwardSummary(session, session.content, harness.ctx, mocked)
     t.check('scenario forward structured nested calls inner id', mocked.calls.join(',') === 'root,nested', mocked.calls.join(','))
     t.check('scenario forward structured nested includes inner text', summary.includes('structured nested text'), summary)
+  })
+
+  await withScenario({}, async ({ harness, makeSession }) => {
+    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
+    const mocked = makeForwardMock({
+      root: [{
+        sender: { nickname: 'Segments' },
+        message: [
+          { type: 'text', data: { text: 'segment text' } },
+          { type: 'face', data: { id: '76' } },
+          { type: 'at', data: { qq: '42' } },
+          { type: 'image', data: { file: 'x.png' } },
+        ],
+      }],
+    })
+    const session = makeSession({ content: '[CQ:forward,id=root]' })
+    const summary = await resolveForwardSummary(session, session.content, harness.ctx, mocked)
+    t.check('scenario forward segment message includes text', summary.includes('segment text'), summary)
+    t.check('scenario forward segment message includes at target', summary.includes('@42'), summary)
+    t.check('scenario forward segment message includes face label', summary.includes('銆愯〃鎯呫€?'), summary)
+    t.check('scenario forward segment message includes image label', summary.includes('銆愬浘鐗囥€?'), summary)
   })
 
   await withScenario({}, async ({ harness, makeSession }) => {

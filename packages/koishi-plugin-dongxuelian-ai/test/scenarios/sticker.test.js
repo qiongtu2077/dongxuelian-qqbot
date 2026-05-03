@@ -101,28 +101,27 @@ async function run(t) {
     })
   })
 
-  await withScenario({}, async ({ harness, makeSession, run, ready, clock }) => {
+  await withScenario({}, async ({ harness, makeSession, ready }) => {
     await ready()
-    const mocked = mockFetch()
-    const queueReply = (text) => {
-      mocked.queue.length = 0
-      mocked.push(...Array.from({ length: 5 }, () => ({ json: { choices: [{ message: { content: text } }] } })))
-    }
-    await withFetch(mocked, async () => {
-      queueReply(TEXT.firstHappy)
-      const first = await triggerBotReply(makeSession, run, TEXT.firstHappy)
-      await first.waitForInternalCall(call => call.method === 'sendGroupMsg')
-      queueReply(TEXT.secondHappy)
-      const second = await triggerBotReply(makeSession, run, TEXT.secondHappy)
-      const result = resultFor(second, harness)
-      checkSentIncludes(t, 'scenario sticker cooldown still sends text', result, 'beta-two')
-      t.check('scenario sticker cooldown skips image', second.internalCalls.length === 0, JSON.stringify(second.internalCalls))
-      await clock.tick(121000)
-      queueReply(TEXT.thirdHappy)
-      const third = await triggerBotReply(makeSession, run, TEXT.thirdHappy)
-      await third.waitForInternalCall(call => call.method === 'sendGroupMsg')
-      t.check('scenario sticker sends again after cooldowns', third.internalCalls.length === 1, JSON.stringify(third.internalCalls))
-    })
+    const { sendReply } = require('../../lib/reply')
+    let now = 1700000000000
+    const time = { now: () => now }
+
+    const first = makeSession({ content: 'direct sticker cooldown one' })
+    await sendReply(harness.ctx, first, TEXT.firstHappy, false, { time })
+    await first.waitForInternalCall(call => call.method === 'sendGroupMsg')
+
+    const second = makeSession({ content: 'direct sticker cooldown two' })
+    await sendReply(harness.ctx, second, TEXT.secondHappy, false, { time })
+    const result = resultFor(second, harness)
+    checkSentIncludes(t, 'scenario sticker cooldown still sends text', result, 'beta-two')
+    t.check('scenario sticker cooldown skips image', second.internalCalls.length === 0, JSON.stringify(second.internalCalls))
+
+    now += 121000
+    const third = makeSession({ content: 'direct sticker cooldown three' })
+    await sendReply(harness.ctx, third, TEXT.thirdHappy, false, { time })
+    await third.waitForInternalCall(call => call.method === 'sendGroupMsg')
+    t.check('scenario sticker sends again after cooldowns', third.internalCalls.length === 1, JSON.stringify(third.internalCalls))
   })
 
   await withScenario({}, async ({ harness, makeSession, run, ready }) => {

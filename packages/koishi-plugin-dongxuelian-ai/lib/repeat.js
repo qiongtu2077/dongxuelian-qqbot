@@ -1,3 +1,8 @@
+/**
+ * MODULE: 复读检测。
+ * 状态: channelRepeatState / channelRepeatCooldown（按 channelKey 索引）。
+ * 边界: 不调 AI API，不改 conversation，只存指纹和冷却。
+ */
 const fs = require('fs')
 const { REPEAT_ENABLED_FILE } = require('./constants')
 const { atomicWriteJson } = require('./persona')
@@ -150,6 +155,13 @@ function checkGroupRepeat(session, candidate, channelKey, currentUserId, now = D
     now - last.ts <= REPEAT_MATCH_WINDOW_MS
   ) {
     channelRepeatCooldown.set(channelKey, now)
+    channelRepeatState.set(channelKey, {
+      key: '__fired__',
+      reply: '',
+      kind: 'fired',
+      userId: currentUserId,
+      ts: now,
+    })
     return candidate
   }
   return null

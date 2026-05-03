@@ -1,3 +1,8 @@
+/**
+ * MODULE: 敏感话题检测。
+ * 职责: 政治敏感关键词检测、handler 通知、运行时状态管理。
+ * 边界: 不调 AI API，不改 conversation 持久层。检测结果通过 notifySensitiveHandlers 分发。
+ */
 const path = require('path')
 const {
   POLITICAL_DETECT_FILE,
@@ -19,9 +24,10 @@ const {
 const channelMsgCount = new Map()
 const lastSensitiveAlert = new Map()
 let politicalDetectCache = null
+let politicalDetectCacheExpiresAt = 0
 
 async function getPoliticalDetectList() {
-  if (politicalDetectCache !== null) return politicalDetectCache
+  if (politicalDetectCache !== null && Date.now() < politicalDetectCacheExpiresAt) return politicalDetectCache
   const raw = await readTextFile(POLITICAL_DETECT_FILE).catch(() => '[]')
   try {
     const parsed = JSON.parse(raw || '[]')
@@ -30,12 +36,13 @@ async function getPoliticalDetectList() {
     console.warn(`[dongxuelian-ai] political detect list parse failed: ${error.message}`)
     politicalDetectCache = new Set()
   }
-  setTimeout(() => { politicalDetectCache = null }, 30000)
+  politicalDetectCacheExpiresAt = Date.now() + 30000
   return politicalDetectCache
 }
 
 function resetPoliticalDetectCache() {
   politicalDetectCache = null
+  politicalDetectCacheExpiresAt = 0
 }
 
 function clearSensitiveRuntimeState(channelKey) {

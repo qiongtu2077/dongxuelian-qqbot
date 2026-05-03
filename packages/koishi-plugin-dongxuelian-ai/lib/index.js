@@ -2,6 +2,7 @@
  * 东雪莲 AI 插件 — 核心入口
  *
  * 拆分/修改前先阅读：
+ *   - AI协作规则.md（架构红线、修改规范、测试规范）
  *   - 教训总结.md（代码拆分 5 步法、部署教训）
  *   - 测试文件维护指南.md（新增模块的 check/test 同步清单）
  *
@@ -11,6 +12,12 @@
  *   3. 新模块只从 constants/utils/api/conversation/persona 导入，
  *      不反向 import index.js
  *   4. 非必要不要在此文件加职责，优先考虑独立模块
+ *
+ * ARCHITECTURE CONSTRAINT:
+ * - 本文件是路由入口，职责：中间件编排 + apply() 注册 + 状态初始化。
+ * - 禁止在此文件新增 Map/Set/全局缓存。新状态归属到对应子模块。
+ * - 禁止在此文件直接调用 AI API 或低层 IO。统一走 api.js / utils.js。
+ * - 新增函数超过 50 行 → 独立模块。
  * ========================================================================== */
 const fs = require('fs/promises')
 const path = require('path')
@@ -35,12 +42,14 @@ const {
 } = require('./repeat')
 const {
   chat,
-  loadConfig, resetConfigCache,
   loadSkills, loadSkillsContentCache,
   callOpenAI,
   getSkillsCount,
-  getThinkingEnabled, setThinkingEnabled,
 } = require('./chat')
+const {
+  loadConfig, resetConfigCache,
+  getThinkingEnabled, setThinkingEnabled,
+} = require('./runtime-config')
 const {
   DATA_DIR, PLUGIN_VERSION,
   PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, EVENT_DUMP_DIR,

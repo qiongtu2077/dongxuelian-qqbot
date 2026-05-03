@@ -1,3 +1,9 @@
+/**
+ * MODULE: 命令路由。
+ * 边界: 只做命令匹配和参数校验，不调 AI API，不改 conversation。
+ *       调用方（index.js middleware）负责执行结果。
+ * 接近 300 行，新增逻辑须谨慎。
+ */
 const path = require('path')
 const {
   DATA_DIR, PLUGIN_VERSION,

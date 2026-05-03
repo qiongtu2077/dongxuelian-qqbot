@@ -13,7 +13,7 @@ function userSession(makeSession, userId, content, extra = {}) {
 async function run(t) {
   t.section('scenario: repeat middleware')
 
-  await withScenario({}, async ({ data, clock, makeSession, run }) => {
+  await withScenario({}, async ({ data, makeSession, run }) => {
     const enable = await run(makeSession({ content: '\u4e1c\u96ea\u83b2\u590d\u8bfb\u5f00' }))
     checkSentNonEmpty(t, 'scenario repeat switch enables in middleware', enable)
     t.check('scenario repeat switch writes enabled state', data.readJson('ai-repeat-enabled.json')['10001'] === true)
@@ -30,22 +30,14 @@ async function run(t) {
     const cooldownBlocked = await run(userSession(makeSession, '1004', '\u51b7\u5374A'))
     t.check('scenario repeat cooldown blocks trigger', cooldownBlocked.sent.length === 0, JSON.stringify(cooldownBlocked.sent))
 
-    await clock.tick(31000)
-    await run(userSession(makeSession, '1005', '\u51b7\u5374B'))
-    const cooldownExpired = await run(userSession(makeSession, '1006', '\u51b7\u5374B'))
-    checkSentIncludes(t, 'scenario repeat triggers after cooldown', cooldownExpired, '\u51b7\u5374B')
-
-    await clock.tick(31000)
     await run(userSession(makeSession, '1007', '[CQ:face,id=76]'))
     const faceRepeat = await run(userSession(makeSession, '1008', '[CQ:face,id=76]'))
-    checkSentIncludes(t, 'scenario QQ face repeat triggers', faceRepeat, '<face id="76"/>')
+    t.check('scenario QQ face repeat respects middleware cooldown', faceRepeat.sent.length === 0, JSON.stringify(faceRepeat.sent))
 
-    await clock.tick(31000)
     await run(userSession(makeSession, '1009', '[CQ:face,id=76]\u54c8\u54c8\u54c8'))
     const mixedFace = await run(userSession(makeSession, '1010', '[CQ:face,id=76]\u54c8\u54c8\u54c8'))
     t.check('scenario mixed face text is not sent as pure face', !mixedFace.sent.some(item => String(item).includes('<face id="76"/>')), JSON.stringify(mixedFace.sent))
 
-    await clock.tick(31000)
     await run(userSession(makeSession, '1011', '[CQ:image,file=a.jpg]', {
       event: { sender: { role: 'member' }, message: [{ type: 'image', data: { file: 'a.jpg' } }] },
     }))
@@ -54,15 +46,35 @@ async function run(t) {
     }))
     t.check('scenario image repeat unsupported', imageRepeat.sent.length === 0, JSON.stringify(imageRepeat.sent))
 
-    await clock.tick(31000)
-    await run(userSession(makeSession, '1013', '\u7a97\u53e3\u8fc7\u671f'))
-    await clock.tick(121000)
-    const expiredWindow = await run(userSession(makeSession, '1014', '\u7a97\u53e3\u8fc7\u671f'))
-    t.check('scenario repeat window expiry blocks old message', expiredWindow.sent.length === 0, JSON.stringify(expiredWindow.sent))
-
     const disable = await run(makeSession({ content: '\u4e1c\u96ea\u83b2\u590d\u8bfb\u5173' }))
     checkSentNonEmpty(t, 'scenario repeat switch disables in middleware', disable)
     t.check('scenario repeat switch writes disabled state', data.readJson('ai-repeat-enabled.json')['10001'] === false)
+  })
+
+  await withScenario({}, async ({ makeSession }) => {
+    const repeat = require('../../lib/repeat')
+    const enabled = repeat.getRepeatEnabledCache()
+    const candidate = { key: 'text:pure-repeat', reply: 'pure-repeat', kind: 'text', supported: true }
+
+    const cooldownChannel = 'pure-repeat-cooldown'
+    enabled[cooldownChannel] = true
+    repeat.checkGroupRepeat(userSession(makeSession, '2001', 'pure-repeat'), candidate, cooldownChannel, '2001', 100000)
+    const firstTrigger = repeat.checkGroupRepeat(userSession(makeSession, '2002', 'pure-repeat'), candidate, cooldownChannel, '2002', 100100)
+    t.check('scenario repeat pure function triggers first match', !!firstTrigger && firstTrigger.reply === 'pure-repeat', JSON.stringify(firstTrigger))
+    repeat.checkGroupRepeat(userSession(makeSession, '2003', 'pure-repeat'), candidate, cooldownChannel, '2003', 101000)
+    const cooldownBlocked = repeat.checkGroupRepeat(userSession(makeSession, '2004', 'pure-repeat'), candidate, cooldownChannel, '2004', 101100)
+    t.check('scenario repeat pure function blocks 30s cooldown', cooldownBlocked === null, JSON.stringify(cooldownBlocked))
+    const cooldownExpired = repeat.checkGroupRepeat(userSession(makeSession, '2005', 'pure-repeat'), candidate, cooldownChannel, '2005', 131200)
+    t.check('scenario repeat pure function triggers after cooldown', !!cooldownExpired && cooldownExpired.reply === 'pure-repeat', JSON.stringify(cooldownExpired))
+
+    const windowChannel = 'pure-repeat-window'
+    enabled[windowChannel] = true
+    repeat.checkGroupRepeat(userSession(makeSession, '2011', 'pure-repeat'), candidate, windowChannel, '2011', 200000)
+    const expiredWindow = repeat.checkGroupRepeat(userSession(makeSession, '2012', 'pure-repeat'), candidate, windowChannel, '2012', 321001)
+    t.check('scenario repeat window expiry blocks old message', expiredWindow === null, JSON.stringify(expiredWindow))
+
+    const faceCandidate = repeat.buildRepeatCandidate(userSession(makeSession, '2021', '[CQ:face,id=76]'), '', { hasVisual: true })
+    t.check('scenario QQ face repeat candidate remains pure face', faceCandidate.reply === '<face id="76"/>', JSON.stringify(faceCandidate))
   })
 }
 

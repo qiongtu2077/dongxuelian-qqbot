@@ -1,3 +1,10 @@
+/**
+ * MODULE: 对话/记忆/印象持久层。
+ * 职责: 对话历史读写、记忆系统（writeMemory/deleteMemory/getMemorySummary）、
+ *       用户画像、复读指纹缓存、共享频道上下文。
+ * 状态: replyFingerprintCache / sharedChannelCache / 各 Map 按 channelKey 索引。
+ * 边界: 不调 AI API。读操作返回数据，写操作落盘。
+ */
 const path = require('path')
 const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
   CONVERSATION_EXPIRE_MS, CONVERSATION_SUMMARY_INTERVAL,
@@ -11,6 +18,7 @@ const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
 const { readTextFile, readJsonFile, writeJsonFile, splitSentences, sanitizeUserName } = require('./utils')
 const { normalizeText } = require('./message-reader')
 const { requestChatCompletions } = require('./api')
+const { loadConfig } = require('./runtime-config')
 
 let conversationCache = new Map()
 let replyFingerprintCache = new Map()
@@ -61,7 +69,6 @@ async function generateConversationSummary(key) {
   if (!diskData || !Array.isArray(diskData.messages) || diskData.messages.length < 5 + MEMORY_HISTORY_LIMIT) return
   const targets = diskData.messages.slice(0, Math.max(0, diskData.messages.length - MEMORY_HISTORY_LIMIT))
   const text = targets.map(m => `${m.role}: ${m.content}`).join('\n').slice(0, 4000)
-  const { loadConfig } = require('./index')
   try {
     const cfg = await loadConfig()
     const result = await requestChatCompletions([{ role: 'system', content: '将以下对话压缩成一段200字以内的摘要，保留关键话题变化和重要信息。用中文，用第三人称。' }, { role: 'user', content: text }], cfg, { max_tokens: 300 })
@@ -223,7 +230,7 @@ async function analyzeChannelSensitive(channelKey) {
     for (const am of models) {
       const provDef = PROVIDERS[am.provider]; if (!provDef) continue
       try {
-        const { loadConfig } = require('./index'); const cfg = await loadConfig()
+        const cfg = await loadConfig()
         const apiKey = am.keyFile ? (await readTextFile(am.keyFile).catch(() => '') || cfg.apiKey).replace(/[\r\n]+/g, '') : cfg.apiKey
         if (!apiKey) continue
         result = await requestChatCompletions(messages, { model: am.model, baseURL: provDef.baseURL.replace(/\/+$/, ''), apiKey, provider: am.provider }, { max_tokens: 20 })

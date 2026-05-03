@@ -13,7 +13,6 @@ async function run(t) {
   t.section('scenario: random reply trigger')
 
   await withScenario({
-    fakeTimers: false,
     data: {
       randomWhitelist: ['10001'],
       randomRate: { 10001: 1 },
@@ -37,7 +36,6 @@ async function run(t) {
   })
 
   await withScenario({
-    fakeTimers: false,
     data: {
       randomWhitelist: [],
       randomRate: { 10001: 1 },

@@ -1,3 +1,8 @@
+/**
+ * MODULE: 图片会话标记。
+ * 职责: 标记 session 是否含待处理图片、提取图片 payload、追加视觉消息到 messages。
+ * 边界: 只操作 session 标记和 messages 数组尾部，不调 AI API，不改 conversation 持久层。
+ */
 const {
   callGetImage,
   readImageAsBase64,

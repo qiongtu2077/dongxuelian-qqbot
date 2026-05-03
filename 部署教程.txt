@@ -257,10 +257,10 @@
   - 在 koishi.yml 中注册插件（如果尚未注册）
   - 支持设置部署目标目录（通过 KOISHI_APP_DIR 环境变量）
 
-方式 C：deploy.sh（已经部署完成后快速重启）
+方式 C：远程一键重启（已经部署完成后快速重启）
   如果你只是修改了 koishi.yml 或 data 目录下的配置文件，不需要更新代码：
 
-  ssh root@服务器IP "bash /root/koishi-app/deploy.sh"
+  ssh root@服务器IP "cd /root/koishi-app && pkill -f 'koishi/lib/worker' && sleep 3 && npx koishi start"
 
 
 环境变量覆盖

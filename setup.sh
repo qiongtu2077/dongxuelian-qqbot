@@ -296,7 +296,7 @@ if tail -3 koishi.log | grep -q 'dongxuelian-ai.*0.9'; then
   log "Deploy finished. Koishi has started."
   echo ""
   echo "  Logs: tail -f /root/koishi-app/koishi.log"
-  echo "  Restart bot: bash /root/koishi-app/deploy.sh"
+  echo "  Restart bot: pkill -f 'koishi/lib/worker'; sleep 3; npx koishi start"
   echo "  Web console: http://SERVER_IP:5140"
 else
   warn "Koishi is starting. Check logs manually: tail -f /root/koishi-app/koishi.log"
