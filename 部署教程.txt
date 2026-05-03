@@ -206,46 +206,91 @@
 更新部署（已有服务器，只更新代码）
 ------------------------------------
 
-1. 上传改过的 JS 文件到服务器
+方式 A：全量更新（精简版）
+  从本地仓库根目录：
+  scp packages/koishi-plugin-dongxuelian-ai/lib/*.js \
+    root@服务器IP:/root/koishi-app/packages/koishi-plugin-dongxuelian-ai/lib/
+  scp packages/koishi-plugin-dongxuelian-help/lib/index.js \
+    root@服务器IP:/root/koishi-app/packages/koishi-plugin-dongxuelian-help/lib/
+  scp packages/koishi-plugin-group-name-at/lib/index.js \
+    root@服务器IP:/root/koishi-app/packages/koishi-plugin-group-name-at/lib/
+  scp packages/koishi-plugin-local-video-sender/lib/index.js \
+    root@服务器IP:/root/koishi-app/packages/koishi-plugin-local-video-sender/lib/
+  scp packages/koishi-plugin-dongxuelian-ai/data/ai-skills/core/* \
+    root@服务器IP:/root/koishi-app/data/ai-skills/core/
+  scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.长离.md" \
+    root@服务器IP:/root/koishi-app/data/ai-skills/personas/
+  scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.椿.md" \
+    root@服务器IP:/root/koishi-app/data/ai-skills/personas/
+  scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.特蕾西娅.md" \
+    root@服务器IP:/root/koishi-app/data/ai-skills/personas/
+  # 重启 Koishi
+  ssh root@服务器IP "pkill -f 'koishi/lib/worker'; sleep 3; cd /root/koishi-app && npx koishi start"
 
-   在本地仓库目录下执行：
-   scp packages/koishi-plugin-dongxuelian-ai/lib/*.js \
-     root@服务器IP:/root/koishi-app/packages/koishi-plugin-dongxuelian-ai/lib/
-   scp packages/koishi-plugin-dongxuelian-help/lib/index.js \
-     root@服务器IP:/root/koishi-app/packages/koishi-plugin-dongxuelian-help/lib/
+方式 B：scripts/ 按插件更新（推荐）
+  scripts/ 目录下每个插件都有独立的部署脚本，共享 deploy-package.sh 工具：
 
-2. 上传 SKILL 文件（如果有修改）
+  scripts/
+  ├── deploy-package.sh     ← 共享部署工具（语法检查、koishi.yml 注册、安全路径校验）
+  ├── ai.sh                 ← 部署 AI 插件（含 SKILL 文件）
+  ├── help.sh               ← 部署 help 插件
+  ├── name.sh               ← 部署 group-name-at 插件
+  ├── poke.sh               ← 部署 poke 插件
+  ├── defense.sh            ← 部署 defense 插件
+  ├── leave.sh              ← 部署 group-leave-notice 插件
+  ├── vedio.sh              ← 部署 local-video-sender 插件
+  └── message-reader.sh     ← 部署 message-reader.js
 
-   scp packages/koishi-plugin-dongxuelian-ai/data/ai-skills/core/* \
-     root@服务器IP:/root/koishi-app/data/ai-skills/core/
-   scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.长离.md" \
-     root@服务器IP:/root/koishi-app/data/ai-skills/personas/
-   scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.椿.md" \
-     root@服务器IP:/root/koishi-app/data/ai-skills/personas/
+  在本地仓库根目录执行：
 
-   或者，如果你修改了 koishi.yml，也要上传：
-   scp koishi.yml root@服务器IP:/root/koishi-app/
+  单个插件更新：
+  bash scripts/ai.sh          # 只更新 AI 插件（含语法检查 + koishi.yml 注册）
+  bash scripts/help.sh        # 只更新 help 插件
+  bash scripts/name.sh        # 只更新群昵称插件
 
-3. 重启 Koishi
+  全部更新：
+  for f in scripts/*.sh; do bash "$f"; done
 
-   服务器上执行：
-   pkill -f 'koishi/lib/worker'
-   sleep 3
-   cd /root/koishi-app && npx koishi start
+  每个脚本会自动：
+  - 从 packages/ 复制文件到服务器的 node_modules 对应目录
+  - 对每个 .js 文件执行 node -c 语法检查
+  - 在 koishi.yml 中注册插件（如果尚未注册）
+  - 支持设置部署目标目录（通过 KOISHI_APP_DIR 环境变量）
 
-   也可以用 deploy.sh（上传到服务器后）：
-   bash /root/koishi-app/deploy.sh
+方式 C：deploy.sh（已经部署完成后快速重启）
+  如果你只是修改了 koishi.yml 或 data 目录下的配置文件，不需要更新代码：
+
+  ssh root@服务器IP "bash /root/koishi-app/deploy.sh"
+
+
+环境变量覆盖
+--------------
+
+部署时可设置环境变量覆盖默认路径，避免依赖服务器特定路径：
+
+  DONGXUELIAN_DATA_DIR     → data 目录（默认 /root/koishi-app/data）
+  GROUP_NAME_AT_DATA_FILE  → 群昵称数据文件（默认 $DATA_DIR/nickname-collections.json）
+  BILI_COOKIES_FILE        → B站 cookies（默认 /root/bilibili-cookies.txt）
+  BILI_WORKDIR             → 视频下载目录（默认 /root/koishi-bili-downloads）
+  BILI_MAX_SIZE_BYTES      → 视频大小限制（默认 200MB）
+  BILI_TEST_VIDEO_FILE     → 测试视频路径（默认 /root/test_bili.mp4）
+  KOISHI_APP_DIR           → Koishi 部署目录（默认 /root/koishi-app，scripts/ 部署用）
+
+  例：
+  DONGXUELIAN_DATA_DIR=/custom/data bash scripts/ai.sh
 
 
 常用命令
 --------
 
-查看 bot 日志：           tail -f /root/koishi-app/koishi.log
-重启 Koishi：            pkill -f 'koishi/lib/worker'; sleep 3; cd /root/koishi-app && npx koishi start
-查看 NapCat：            screen -r napcat（Ctrl+A D 分离）
-重启 NapCat：            screen -S napcat -X quit
-                         screen -dmS napcat bash -c \
-                           "xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox -q 你的QQ号"
+查看 bot 日志：              tail -f /root/koishi-app/koishi.log
+重启 Koishi：               pkill -f 'koishi/lib/worker'; sleep 3; cd /root/koishi-app && npx koishi start
+查看 NapCat（看二维码）：    screen -r napcat（Ctrl+A D 分离）
+重启 NapCat：               screen -S napcat -X quit
+                             screen -dmS napcat bash -c \
+                               "xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox -q 你的QQ号"
+运行测试：                  cd /root/koishi-app && npm test
+仅跑插件测试：               cd /root/koishi-app && npm run test:plugins
 
 
 注意事项
@@ -269,3 +314,6 @@
 5. 如果修改了 koishi.yml，需要重启 Koishi 才能生效
 
 6. NapCat 首次启动必须扫码登录，这是唯一需要人工操作的步骤
+
+7. scripts/ 部署脚本会在部署前自动对每个 .js 文件执行 node -c 语法检查，
+   检查不通过时部署会停止，不会损坏已运行的 bot
