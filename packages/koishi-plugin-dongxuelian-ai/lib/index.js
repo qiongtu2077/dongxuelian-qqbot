@@ -5,6 +5,13 @@ const { handleCommand } = require('./handler')
 const { analyzeIncomingMessage, normalizeText, summarizeForwardNodes } = require('./message-reader')
 const { loadStickerCache, sendReply } = require('./reply')
 const {
+  loadRepeatConfig,
+  setRepeatEnabled,
+  getRepeatEnabledCache,
+  buildRepeatCandidate,
+  checkGroupRepeat,
+} = require('./repeat')
+const {
   chat,
   loadConfig, resetConfigCache,
   loadSkills, loadSkillsContentCache,
@@ -16,10 +23,9 @@ const {
   DATA_DIR, PLUGIN_VERSION,
   PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, EVENT_DUMP_DIR,
   RANDOM_WHITELIST_FILE, RANDOM_RATE_FILE,
-  MAINTENANCE_FILE, REPEAT_ENABLED_FILE,
+  MAINTENANCE_FILE,
   RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP,
   DEFAULT_GROUP_RANDOM_WHITELIST,
-  MAX_REPEAT_CHECK_HISTORY,
   MAX_CHANNEL_SHARED_MESSAGES,
   EVENT_DUMP_ARM_EXPIRE_MS,
   ADMIN_USER_IDS,
@@ -32,7 +38,6 @@ const {
   SENSITIVE_KEYWORDS_RE,
 } = require('./constants')
 const {
-  atomicWriteJson,
   loadPersonaGroups,
   loadPersonaUsers,
   resolvePersona,
@@ -110,12 +115,6 @@ const channelPendingRandom = new Map()
 const channelMsgCount = new Map()
 const lastSensitiveAlert = new Map()
 
-// 连续复读系统
-const REPEAT_TRIGGER_COOLDOWN_MS = 30000
-const REPEAT_MATCH_WINDOW_MS = 120000
-const channelRepeatState = new Map()  // channelKey → { key, reply, kind, userId, ts }
-const channelRepeatCooldown = new Map()  // channelKey → timestamp
-let repeatEnabledCache = {}  // { channelKey: boolean }
 let userBlacklistCache = null
 const lastEmotionCache = new Map()
 let politicalDetectCache = null  // 内存缓存敏感检测白名单
@@ -144,27 +143,6 @@ function clearSensitiveRuntimeState(channelKey) {
   channelMsgCount.delete(key)
   lastSensitiveAlert.delete(key)
   pendingSensitiveAlert.delete(key)
-}
-
-function loadRepeatConfig() {
-  try {
-    repeatEnabledCache = JSON.parse(require('fs').readFileSync(REPEAT_ENABLED_FILE, 'utf8'))
-  } catch {
-    repeatEnabledCache = {}
-  }
-}
-
-function clearRepeatState(channelKey) {
-  const key = String(channelKey)
-  channelRepeatState.delete(key)
-  channelRepeatCooldown.delete(key)
-}
-
-function setRepeatEnabled(channelKey, enabled) {
-  const key = String(channelKey)
-  repeatEnabledCache[key] = enabled
-  clearRepeatState(key)
-  atomicWriteJson(REPEAT_ENABLED_FILE, repeatEnabledCache)
 }
 
 // 人格系统：per-group persona 配置
@@ -202,142 +180,6 @@ function getRandomTriggerRate(channelKey) {
   const miss = channelMissCount.get(channelKey) || 0
   if (miss < RANDOM_TRIGGER_WARMUP) return baseRate
   return baseRate + (miss - RANDOM_TRIGGER_WARMUP) * RANDOM_TRIGGER_RAMP
-}
-
-function getSegmentData(segment) {
-  return segment?.data || segment?.attrs || {}
-}
-
-function getSessionMessageSegments(session) {
-  const message = session?.event?.message
-  if (Array.isArray(message)) return message
-  if (Array.isArray(message?.elements)) return message.elements
-  if (Array.isArray(session?.event?.message?.content)) return session.event.message.content
-  return []
-}
-
-function extractStructuredFaceIds(session) {
-  const segments = getSessionMessageSegments(session)
-  if (!segments.length) return null
-
-  const ids = []
-  for (const segment of segments) {
-    const type = String(segment?.type || '').toLowerCase()
-    const data = getSegmentData(segment)
-
-    if (type === 'text') {
-      const text = data.text ?? data.content ?? ''
-      if (!normalizeText(String(text))) continue
-      return null
-    }
-
-    // @ 段不参与复读内容。主流程已排除直呼 bot / @其他人的触发场景。
-    if (type === 'at') continue
-
-    if (type === 'face') {
-      const id = String(data.id ?? data.qq ?? data.face_id ?? data.faceId ?? '').trim()
-      if (!/^\d+$/.test(id)) return null
-      ids.push(id)
-      continue
-    }
-
-    return null
-  }
-
-  return ids.length ? ids : null
-}
-
-function extractContentFaceIds(content = '') {
-  const value = String(content || '')
-  if (!value.trim()) return null
-
-  const ids = []
-  const tokenRe = /(\[CQ:face,[^\]]*?\bid=(\d+)[^\]]*\])|(<face\b[^>]*?\bid="(\d+)"[^>]*\/?>)/gi
-  const remainder = value.replace(tokenRe, (_, cqToken, cqId, htmlToken, htmlId) => {
-    ids.push(cqId || htmlId)
-    return ''
-  })
-
-  return ids.length && !remainder.trim() ? ids : null
-}
-
-function buildFaceRepeatCandidate(faceIds) {
-  const ids = faceIds.map(id => String(id))
-  return {
-    key: ids.map(id => `face:${id}`).join('|'),
-    reply: ids.map(id => `<face id="${id}"/>`).join(''),
-    kind: 'face',
-    supported: true,
-  }
-}
-
-function buildUnsupportedRepeatCandidate(reason) {
-  return {
-    key: '',
-    reply: '',
-    kind: 'unsupported',
-    supported: false,
-    reason,
-  }
-}
-
-function buildRepeatCandidate(session, plain, analyzed = {}) {
-  const structuredFaceIds = extractStructuredFaceIds(session)
-  if (structuredFaceIds) return buildFaceRepeatCandidate(structuredFaceIds)
-
-  const contentFaceIds = extractContentFaceIds(session?.content || '')
-  if (contentFaceIds) return buildFaceRepeatCandidate(contentFaceIds)
-
-  if (analyzed.hasFile) return buildUnsupportedRepeatCandidate('file')
-  if (analyzed.hasEmbed || analyzed.hasMessageRecordCue) return buildUnsupportedRepeatCandidate('embed')
-  if (analyzed.hasVisual) return buildUnsupportedRepeatCandidate('visual')
-
-  const text = normalizeText(String(plain || '')).trim()
-  if (!text) return buildUnsupportedRepeatCandidate('empty')
-
-  return {
-    key: `text:${text}`,
-    reply: text,
-    kind: 'text',
-    supported: true,
-  }
-}
-
-function checkGroupRepeat(session, candidate, channelKey, currentUserId, now = Date.now()) {
-  // 跳过：私聊
-  if (session.isDirect) return null
-  // 跳过：未开启
-  if (!repeatEnabledCache[channelKey]) return null
-  // 跳过：内容为空或不支持复读；同时截断连续复读链，避免跨媒体误触发
-  if (!candidate || !candidate.supported || !candidate.key || !candidate.reply) {
-    channelRepeatState.delete(channelKey)
-    return null
-  }
-  // 比较上一条消息
-  const last = channelRepeatState.get(channelKey)
-  // 更新状态（先更新再判断，避免自己和自己比）
-  channelRepeatState.set(channelKey, {
-    key: candidate.key,
-    reply: candidate.reply,
-    kind: candidate.kind,
-    userId: currentUserId,
-    ts: now,
-  })
-
-  // 冷却中不触发，但上面的状态仍然刷新，避免冷却结束后拿旧消息误触发
-  const lastTs = channelRepeatCooldown.get(channelKey) || 0
-  if (lastTs && now - lastTs < REPEAT_TRIGGER_COOLDOWN_MS) return null
-
-  if (
-    last &&
-    last.userId !== currentUserId &&
-    last.key === candidate.key &&
-    now - last.ts <= REPEAT_MATCH_WINDOW_MS
-  ) {
-    channelRepeatCooldown.set(channelKey, now)
-    return candidate
-  }
-  return null
 }
 
 // 输入净化：移除常见 prompt injection 结构标签，防止角色标签注入（PCFI 思路）
@@ -896,7 +738,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       setThinkingEnabled,
       resetConfigCache,
       getSkillsCount,
-      channelMissCount, repeatEnabledCache, channelTodayCache, lastEmotionCache,
+      channelMissCount, repeatEnabledCache: getRepeatEnabledCache(), channelTodayCache, lastEmotionCache,
     })
     if (commandResult.matched) {
       if (Object.prototype.hasOwnProperty.call(commandResult, 'response')) return commandResult.response

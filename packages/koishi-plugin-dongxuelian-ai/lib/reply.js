@@ -166,6 +166,8 @@ async function sendReply(ctx, session, reply, isRandom = false) {
   for (let i = 0; i < parts.length; i++) {
     let part = parts[i].replace(/。$/, '').trim()
     if (!part) continue
+    part = part.replace(/[（(][^）)]*[）)]/g, '').trim()
+    if (!part) continue
     // 引用回复时替换昵称为"你"
       // [暂禁用] 昵称替换：原意图是防止 AI 引用回复时重复昵称，
       // 但全局替换导致 AI 对用户的称呼被强制替换为"你"，效果诡异。

@@ -409,6 +409,7 @@ async function main() {
   check('npm check includes AI index syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js'))
   check('npm check includes AI chat syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/chat.js'))
   check('npm check includes AI reply syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/reply.js'))
+  check('npm check includes AI repeat syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/repeat.js'))
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
   check('workspace package glob exists', Array.isArray(rootPkg.workspaces) && rootPkg.workspaces.includes('packages/*'))
 
@@ -458,6 +459,7 @@ async function main() {
     messageReader: path.join(LIB, 'message-reader'),
     chat: path.join(LIB, 'chat'),
     reply: path.join(LIB, 'reply'),
+    repeat: path.join(LIB, 'repeat'),
     index: path.join(LIB, 'index'),
     help: path.join(HELP, 'index'),
   }
@@ -520,6 +522,10 @@ async function main() {
     reply: [
       'loadStickerCache', 'sendReply',
     ],
+    repeat: [
+      'loadRepeatConfig', 'setRepeatEnabled', 'getRepeatEnabledCache',
+      'buildRepeatCandidate', 'checkGroupRepeat',
+    ],
   }
   for (const [moduleName, names] of Object.entries(expectedExports)) {
     const target = modules[moduleName]
@@ -566,6 +572,7 @@ async function main() {
     path.join(LIB, 'message-reader.js'),
     path.join(LIB, 'chat.js'),
     path.join(LIB, 'reply.js'),
+    path.join(LIB, 'repeat.js'),
     path.join(HELP, 'index.js'),
     __filename,
   ]
@@ -573,7 +580,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'reply.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'reply.js', 'repeat.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -1026,6 +1033,13 @@ async function main() {
     check(`isThinkingLeak allows: ${sample}`, !u.isThinkingLeak(sample))
   }
   check('THINKING_OUTPUT_RE remains available', constantsSrc.includes('THINKING_OUTPUT_RE'))
+
+  section('16.5 semantic profile guard')
+  check('semantic: triple hit blocked', u.isSemanticProfile('韩国那个姓金的将军就是狗屎'))
+  check('semantic: region+insult only NOT blocked', !u.isSemanticProfile('韩国队踢得像狗屎'))
+  check('semantic: name+insult only NOT blocked', !u.isSemanticProfile('那个姓金的真是狗屎'))
+  check('semantic: normal chat NOT blocked', !u.isSemanticProfile('今天天气不错'))
+  check('semantic: empty text NOT blocked', !u.isSemanticProfile(''))
 
   section('17. memory system behavior')
   var tmpMem = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'cascade-mem-'))

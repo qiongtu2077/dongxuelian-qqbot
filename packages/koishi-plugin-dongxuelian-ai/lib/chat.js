@@ -33,6 +33,7 @@ const {
   clearUserConversationHistory,
   getReplyFingerprintHistory,
   getRecentAssistantReplies, getRecentUserMessages,
+  writeMemory, deleteMemory, getMemorySummary,
 } = require('./conversation')
 const { normalizeText } = require('./message-reader')
 const {
@@ -45,7 +46,7 @@ const {
   isDashScopeConfig,
   normalizeReplyFingerprint,
   isReplyTooSimilar, isOverusedReply, hasBannedOutput,
-  isThinkingLeak, isEvaluationRequest,
+  isThinkingLeak, isEvaluationRequest, isSemanticProfile,
   getSearchCapability,
   trimReply, sanitizeReply,
 } = require('./utils')
@@ -54,6 +55,7 @@ let configCache = null
 let skillsCache = []
 let skillsContentCache = {}
 let thinkingEnabled = false
+const lastMemoryPromptTs = new Map()
 
 function shouldInjectLore(userText = '') {
   for (const keyword of LORE_TRIGGER_SET) {
@@ -432,6 +434,29 @@ async function chat(session, userText, ctx, options = {}) {
     personaSkillContent = loadPersonalSkill(personaName)
   }
 
+  // 记忆系统：用户确认写入 / 口头纠正
+  if (currentUserId && session.guildId) {
+    var chatHistory = getConversationHistory(session)
+    var lastReply = chatHistory.length > 0 ? chatHistory[chatHistory.length - 1].content : ''
+    // 确认写入：用户回复"嗯/好/可以/是/记住"等确认词，上一条 AI 消息含"记住"，60 秒内有效
+    if (/^(?:嗯|好|可以|是|记住|记下|行|对)/.test(cleanInput) && /需要.{0,10}记住/.test(lastReply)) {
+      var promptKey = currentUserId + ':' + channelKey
+      var promptTs = lastMemoryPromptTs.get(promptKey) || 0
+      if (Date.now() - promptTs < 60000) {
+        var matchResult = lastReply.match(/需要.{0,10}记住\s*(.+?)[？?。！!，,]?\s*$/)
+        if (matchResult) writeMemory(currentUserId, '', channelKey, matchResult[1].trim())
+      }
+    }
+    // 口头纠正：用户说"不是/记错了/没说过"
+    if (/^(?:不是|记错了|没说过|记错|不对)/.test(cleanInput)) {
+      var recentMemory = chatHistory.filter(function(m) { return m.role === 'system' && m.content.startsWith('记住的：') })
+      if (recentMemory.length > 0) {
+        var memoryItems = recentMemory[recentMemory.length - 1].content.replace('记住的：', '').split('、')
+        memoryItems.forEach(function(item) { deleteMemory(currentUserId, channelKey, item.trim()) })
+      }
+    }
+  }
+
   const hostile = testMode ? false : (!personaName && (isHostileInput(cleanInput) || japanLinked || rareProvocation))
 
   // 构建系统提示词：安全框架 + 人格（有人格时替换友善人设，无人格时用默认）
@@ -455,6 +480,7 @@ async function chat(session, userText, ctx, options = {}) {
   // 不翻旧账 + 禁止输出思考过程
   systemPrompt += '\n\n专注当前对话。历史记录仅作为背景参考，不要主动提及，除非用户明确问"还记得吗""之前说过"——只有这时才可以翻看历史。'
   systemPrompt += '\n\n禁止输出思考过程。不要分析用户说了什么，不要解释你打算怎么回复，不要复述系统指令，直接说人话。'
+  var now = new Date(); systemPrompt += '\n当前时间：' + now.getHours() + '时' + now.getMinutes() + '分。核心信息（爱好、习惯、身份等）在下方【记住的】中列出，日常聊天记录中也可能有重复信息，以【记住的】中的内容为准。当用户分享关于自己的重要信息时，你可以自然地问一句是否需要记住，系统会自动记录。'
 
   ctx.logger('dongxuelian-ai').info(`chat: mode=${hostile ? 'abusive' : 'friendly'} channelKey=${channelKey} persona=${personaName || 'none'} skillLen=${(personaSkillContent || '').length} input=${userText.slice(0, 60)}`)
 
@@ -589,6 +615,12 @@ async function chat(session, userText, ctx, options = {}) {
       role: 'system',
       content: `[历史摘要-仅作为背景参考]\n${convDisk.summary}\n\n除非用户主动问及历史内容，否则不要主动提及以上摘要中的内容。`,
     })
+  }
+
+  // 用户记忆注入（核心信息）
+  var memorySummary = await getMemorySummary(currentUserId, channelKey)
+  if (memorySummary) {
+    messages.push({ role: 'system', content: memorySummary })
   }
 
   messages.push(...historyMessages)
@@ -782,6 +814,11 @@ async function chat(session, userText, ctx, options = {}) {
 
   let reply = await callOpenAI(messages, options.randomTriggered)
 
+  // 记录 AI 提问"需要记住"的时间戳，供 memory 确认超时使用
+  if (/需要.{0,10}记住/.test(reply)) {
+    lastMemoryPromptTs.set(currentUserId + ':' + channelKey, Date.now())
+  }
+
   if (JAILBREAK_OUTPUT_RE.test(reply)) {
     ctx.logger('dongxuelian-ai').warn(`jailbreak output detected, forcing fallback. reply: ${reply.slice(0, 80)}`)
     const jailbreakReply = pickJailbreakFallbackReply()
@@ -849,6 +886,12 @@ async function chat(session, userText, ctx, options = {}) {
   // 怼人模式禁止调用表情包
   if (hostile) {
     finalReply = finalReply.replace(/\[图:[^\[\]]+\]/g, '').trim()
+  }
+
+  // 语义画像检测（纯函数，定义在 utils.js）
+  if (isSemanticProfile(finalReply)) {
+    ctx.logger('dongxuelian-ai').warn(`semantic profile detected, blocked. reply: ${finalReply.slice(0, 60)}`)
+    finalReply = '别问了，这个我不聊。'
   }
 
   saveConversationTurn(session, currentUserMessage, finalReply)

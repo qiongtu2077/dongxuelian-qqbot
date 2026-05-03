@@ -270,6 +270,32 @@ function sanitizeReply(text = '', userName = '') {
   return t || text
 }
 
+function calculateWillFactor(channelKey, personaName, channelSharedCache) {
+  const msgCount = (channelSharedCache.get(channelKey) || []).filter(function(m) { return Date.now() - m.ts < 60000 }).length
+  var crowdFactor = msgCount > 20 ? 0.3 : msgCount > 10 ? 0.6 : msgCount > 5 ? 0.9 : msgCount > 2 ? 1.2 : 1.5
+  var personaFactor = { '长离': 0.8, '椿': 1.3, '特蕾西娅': 0.9 }[personaName] || 1.0
+  return Math.round(Math.min(crowdFactor * personaFactor, 2.0) * 100) / 100
+}
+
+function isSemanticProfile(text) {
+  const hasRegionHint = /韩国|南韩|朝鲜|北方|隔壁|半岛|三八线|韩美|平壤|首尔|韩朝/.test(text)
+  const hasNameHint = /姓金|金家|金氏|朴|崔|将军|元帅|领袖|最高领导人|元首|委员长/.test(text)
+  const hasInsult = /狗屎|垃圾|废物|傻逼|狗屁|恶心|粪|屎|反动|独裁|暴政|可笑|荒唐|病态/.test(text)
+  return hasRegionHint && hasNameHint && hasInsult
+}
+
+function getSegmentData(segment) {
+  return segment?.data || segment?.attrs || {}
+}
+
+function getSessionMessageSegments(session) {
+  const message = session?.event?.message
+  if (Array.isArray(message)) return message
+  if (Array.isArray(message?.elements)) return message.elements
+  if (Array.isArray(session?.event?.message?.content)) return session.event.message.content
+  return []
+}
+
 function splitSentences(text) {
   const raw = normalizeText(text)
   if (!raw) return [raw]
@@ -322,6 +348,8 @@ module.exports = {
   longestCommonSubstringLength, charSetJaccardOverlap,
   isReplyTooSimilar, isOverusedReply, hasBannedOutput,
   isThinkingLeak, isEvaluationRequest,
+  calculateWillFactor, isSemanticProfile,
+  getSegmentData, getSessionMessageSegments,
   getModelDisplayName, getSearchCapability, formatSearchStatus,
   trimReply, sanitizeReply, splitSentences,
 }
