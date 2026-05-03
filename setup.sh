@@ -292,7 +292,7 @@ cd "$KOISHI_DIR"
 nohup npx koishi start >> koishi.log 2>&1 &
 sleep 10
 
-if tail -3 koishi.log | grep -q 'dongxuelian-ai.*0.9'; then
+if tail -3 koishi.log | grep -q 'dongxuelian-ai.*0.10'; then
   log "Deploy finished. Koishi has started."
   echo ""
   echo "  Logs: tail -f /root/koishi-app/koishi.log"
