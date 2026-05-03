@@ -1,6 +1,11 @@
 const { makeCtx, makeSession, runMiddleware, installFakeTimers, flushAsync } = require('../fake/koishi')
 const { createTestDataDir, reloadPlugin, withDataEnv } = require('../fake/file')
 const { h } = require('koishi')
+const { setTimeout: realSetTimeout } = require('timers')
+
+function realSleep(ms) {
+  return new Promise(resolve => realSetTimeout(resolve, ms))
+}
 
 function applyPlugin(plugin, harness) {
   plugin.apply(harness.ctx)
@@ -29,9 +34,15 @@ function createScenario(options = {}) {
     },
     async teardown() {
       await flushAsync(20)
+      for (let i = 0; i < 3; i += 1) {
+        await realSleep(50)
+        if (clock) await clock.tick(100)
+        await flushAsync(10)
+      }
       if (clock) clock.uninstall()
       h.warn = originalElementWarn
       restoreEnv()
+      await realSleep(50)
       data.cleanup()
       await flushAsync(2)
     },

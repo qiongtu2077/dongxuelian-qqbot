@@ -18,6 +18,12 @@
  * - Repeat trigger/cooldown/window/toggle behavior:
  *   scenarios/repeat.test.js L10-L72 covers real middleware command paths.
  *   cascade keeps only pure repeat candidate construction checks.
+ * - Forward summary resolution:
+ *   scenarios/forward.test.js covers CQ/HTML forward IDs, nested forward
+ *   content, missing IDs, and lastForwardSummaryCache writes.
+ * - Vision session field ownership:
+ *   scenarios/vision.test.js covers current-image, quoted-image, plain-text,
+ *   and cleanup behavior through the vision module API.
  * - Sensitive detect cache/effective switch behavior:
  *   scenarios/sensitive.test.js L24-L55 covers enable -> trigger -> close -> no
  *   later notification; scenarios/command.test.js L37-L55 covers permissions and
@@ -97,6 +103,16 @@ const COVERAGE_MAP = [
     behavior: 'API fallback behavior',
     file: path.join(AI_ROOT, 'test', 'scenarios', 'fallback.test.js'),
     needles: ['scenario: API fallback chain', 'scenario invalid JSON falls back', 'scenario all fallbacks fail without key leak'],
+  },
+  {
+    behavior: 'forward summary resolution',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'forward.test.js'),
+    needles: ['scenario: forward summary resolution', 'scenario forward nested CQ calls inner id', 'scenario forward empty array keeps current summary behavior'],
+  },
+  {
+    behavior: 'vision session field ownership',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'vision.test.js'),
+    needles: ['scenario: vision session helpers', 'scenario vision quoted image marks session', 'scenario vision clear removes current image marker'],
   },
   {
     behavior: 'random proactive reply behavior',

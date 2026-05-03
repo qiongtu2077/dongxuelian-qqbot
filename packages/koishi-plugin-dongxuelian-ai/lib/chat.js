@@ -21,11 +21,9 @@ const { resolvePersona, loadPersonalSkill } = require('./persona')
 const {
   requestChatCompletions,
   requestOpenAIResponsesWithSearch,
-  callGetImage,
-  readImageAsBase64,
-  downloadImageAsBase64,
   isVisionModel,
 } = require('./api')
+const { isVisionSession, getVisionPayload, clearVisionSession, appendVisionMessage } = require('./vision')
 const {
   getConversationKey, getChannelKey,
   readConversationDisk,
@@ -727,7 +725,7 @@ async function chat(session, userText, ctx, options = {}) {
   }
 
   // 识图：获取本地图片 → 多模态或 OCR 回退
-  if (session._isVisionRequest && (session._visionFile || (session._visionUrls && session._visionUrls.length > 0))) {
+  if (isVisionSession(session)) {
     let vc = await loadConfig(true)
     if (!isVisionModel(vc.provider, vc.model)) {
       const visionFallbacks = [
@@ -747,15 +745,14 @@ async function chat(session, userText, ctx, options = {}) {
         }
       }
       if (!used) {
-        delete session._isVisionRequest; delete session._visionUrls; delete session._visionFile
+        clearVisionSession(session)
         return '我不识图。'
       }
     }
-    const visionFile = session._visionFile
-    const visionUrl = session._visionUrls && session._visionUrls[0]
-    delete session._isVisionRequest
-    delete session._visionUrls
-    delete session._visionFile
+    const visionPayload = getVisionPayload(session)
+    const visionFile = visionPayload.file
+    const visionUrl = visionPayload.urls && visionPayload.urls[0]
+    clearVisionSession(session)
     try {
       const vc2 = vc
       let localPath = null

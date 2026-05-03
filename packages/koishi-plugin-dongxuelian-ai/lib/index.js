@@ -2,8 +2,16 @@
 const path = require('path')
 const { Session } = require('@satorijs/core')
 const { handleCommand } = require('./handler')
-const { analyzeIncomingMessage, normalizeText, summarizeForwardNodes } = require('./message-reader')
+const { analyzeIncomingMessage, normalizeText } = require('./message-reader')
 const { loadStickerCache, sendReply } = require('./reply')
+const { resolveForwardSummary } = require('./forward')
+const { prepareVisionRequest, isVisionSession } = require('./vision')
+const {
+  resetPoliticalDetectCache,
+  clearSensitiveRuntimeState,
+  notifySensitiveHandlers,
+  handleSensitiveMessage,
+} = require('./sensitive')
 const {
   loadRepeatConfig,
   setRepeatEnabled,
@@ -35,7 +43,6 @@ const {
   POLITICAL_HANDLER_DIR, POLITICAL_DETECT_FILE, SENSITIVE_CACHE_PREFIX,
   CONVERSATIONS_DIR,
   NUMERIC_GROUP_ID_RE,
-  SENSITIVE_KEYWORDS_RE,
 } = require('./constants')
 const {
   loadPersonaGroups,
@@ -43,18 +50,13 @@ const {
   resolvePersona,
 } = require('./persona')
 const {
-  callGetForwardMsg,
-  extractImageFileFromElements,
-} = require('./api')
-const {
-  channelSharedCache, lastForwardSummaryCache,
-  pendingSensitiveAlert, channelTodayCache,
+  channelSharedCache,
+  channelTodayCache,
   getChannelKey,
-  clearUserConversationHistory,
   saveSharedChannelTurn,
   findChannelMessageById, collectReplyChain,
   getQuotedMessageNote, getSharedContextNote,
-  saveSensitiveCache, analyzeChannelSensitive,
+  analyzeChannelSensitive,
 } = require('./conversation')
 const {
   isReservedCommand, getSenderUserId, hasAdminPermission,
@@ -65,7 +67,7 @@ const {
   formatPercent,
   readTextFile, writeTextFile, readJsonFile, writeJsonFile,
   shouldTriggerRandom, calculateWillFactor,
-  normalizeUrl, extractImageUrls,
+  normalizeUrl,
   sanitizeFileToken, safeJsonStringify,
 } = require('./utils')
 
@@ -112,38 +114,9 @@ const armedEventDumpCache = new Map()
 const channelMutedUntil = new Map()
 const lastRandomReplyTs = new Map()
 const channelPendingRandom = new Map()
-const channelMsgCount = new Map()
-const lastSensitiveAlert = new Map()
 
 let userBlacklistCache = null
 const lastEmotionCache = new Map()
-let politicalDetectCache = null  // 内存缓存敏感检测白名单
-
-// 获取敏感检测白名单列表（带 30s 内存缓存，避免每次读文件）
-async function getPoliticalDetectList() {
-  if (politicalDetectCache !== null) return politicalDetectCache
-  const raw = await readTextFile(POLITICAL_DETECT_FILE).catch(() => '[]')
-  try {
-    const parsed = JSON.parse(raw || '[]')
-    politicalDetectCache = new Set(Array.isArray(parsed) ? parsed.map(String) : [])
-  } catch (error) {
-    console.warn(`[dongxuelian-ai] political detect list parse failed: ${error.message}`)
-    politicalDetectCache = new Set()
-  }
-  setTimeout(() => { politicalDetectCache = null }, 30000)
-  return politicalDetectCache
-}
-
-function resetPoliticalDetectCache() {
-  politicalDetectCache = null
-}
-
-function clearSensitiveRuntimeState(channelKey) {
-  const key = String(channelKey)
-  channelMsgCount.delete(key)
-  lastSensitiveAlert.delete(key)
-  pendingSensitiveAlert.delete(key)
-}
 
 // 人格系统：per-group persona 配置
 // 格式: { "channelKey": { persona: "name" | null } }
@@ -368,83 +341,7 @@ exports.apply = (ctx) => {
     const memoryText = normalizeText(stripMentions(analyzed.memory || plain))
     const directAt = isDirectAtBot(session)
 
-    // 合并转发：提取 ID 并拉取内容
-    let forwardSummaryText = ''
-    const fwdM = content.match(/(?:\[CQ:forward,id=([^,\]]+)\])|<forward\s+id="([^"]+)"\/>/)
-    const fwdId = fwdM ? (fwdM[1] || fwdM[2]) : null
-    if (fwdId) {
-      let fwdData = await callGetForwardMsg(fwdId)
-      ctx.logger('dongxuelian-ai').info('fwd fetch result: ' + (fwdData ? 'ok' : 'null') + ' len=' + (Array.isArray(fwdData) ? fwdData.length : (fwdData && fwdData.messages ? fwdData.messages.length : '?')))
-      if (fwdData && Array.isArray(fwdData)) {
-        let cn = (await Promise.all(fwdData.map(async function(n) {
-          if (n.type === 'node' && n.data) return n
-          let s = n.sender || {}
-          let nk = (s.card || s.nickname || '').replace(/[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g, '').trim() || '群友'
-          let mt = n.raw_message || ''
-          // 处理原始 CQ 码中的嵌套转发
-          if (!mt) mt = ''
-          let cqFwdMatch = mt.match(/\[CQ:forward,id=(\d+)/)
-          if (cqFwdMatch) {
-            let cqInnerData = await callGetForwardMsg(cqFwdMatch[1])
-            ctx.logger('dongxuelian-ai').info('cq inner: id=' + cqFwdMatch[1] + ' result=' + (cqInnerData ? 'ok' : 'null'))
-            if (cqInnerData) {
-              let cqInnerArr = Array.isArray(cqInnerData) ? cqInnerData : (cqInnerData.messages || null)
-              if (cqInnerArr) {
-                let cqInnerCn = (await Promise.all(cqInnerArr.map(async function(cn) {
-                  if (cn.type === 'node' && cn.data) return cn
-                  let cs = cn.sender || {}
-                  let cnk = (cs.card || cs.nickname || '').replace(/[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g, '').trim() || '群友'
-                  let cmt = cn.raw_message || ''
-                  if (cn.message && Array.isArray(cn.message)) {
-                    cmt = cn.message.map(function(cm){if(cm.type==='text')return cm.data&&cm.data.text||'';if(cm.type==='face')return'【表情】';if(cm.type==='at')return'@'+(cm.data&&(cm.data.name||cm.data.qq||''));if(cm.type==='image')return'【图片】';return'【消息】'}).filter(Boolean).join('')
-                  }
-                  if (!cmt) return null
-                  return {type:'node',data:{nickname:cnk,content:[{type:'text',data:{text:cmt}}]}}
-                }))).filter(Boolean)
-                mt = require('./message-reader').summarizeForwardNodes(cqInnerCn, 0, function(x){return x})
-              }
-            }
-            if (!mt || mt.indexOf('[CQ:forward')>=0) mt = '[嵌套转发：内容暂不可见]'
-          } else if (n.message && Array.isArray(n.message)) {
-            let fwdIdx = -1
-            for (let fi = 0; fi < n.message.length; fi++) {
-              if (n.message[fi].type === 'forward' || n.message[fi].type === 'node') { fwdIdx = fi; break }
-            }
-            if (fwdIdx >= 0) {
-              let nestedId = n.message[fwdIdx].data && (n.message[fwdIdx].data.id || n.message[fwdIdx].data['forward-id'] || n.message[fwdIdx].data.res_id)
-              if (nestedId) {
-                let nestedData = await callGetForwardMsg(nestedId)
-                if (nestedData) {
-                  let nestedArr = Array.isArray(nestedData) ? nestedData : (nestedData.messages || null)
-                  if (nestedArr) {
-                    let nestedCn = (await Promise.all(nestedArr.map(async function(nn) {
-                      if (nn.type === 'node' && nn.data) return nn
-                      let ss = nn.sender || {}
-                      let nnk = (ss.card || ss.nickname || '').replace(/[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g, '').trim() || '群友'
-                      let nmt = nn.raw_message || ''
-                      if (nn.message && Array.isArray(nn.message)) {
-                        nmt = nn.message.map(function(mm){if(mm.type==='text')return mm.data&&mm.data.text||'';if(mm.type==='face')return'【表情】';if(mm.type==='at')return'@'+(mm.data&&(mm.data.name||mm.data.qq||''));if(mm.type==='image')return'【图片】';return'【消息】'}).filter(Boolean).join('')
-                      }
-                      if (!nmt) return null
-                      return {type:'node',data:{nickname:nnk,content:[{type:'text',data:{text:nmt}}]}}
-                    }))).filter(Boolean)
-                    mt = summarizeForwardNodes(nestedCn, 0, function(x){return x})
-                  }
-                }
-              }
-              if (!mt || mt.indexOf('[CQ:forward')>=0) mt = '[嵌套转发：内容暂不可见]'
-            } else {
-              mt = n.message.map(function(m){if(m.type==='text')return m.data&&m.data.text||'';if(m.type==='face')return'【表情】';if(m.type==='at')return'@'+(m.data&&(m.data.name||m.data.qq||''));if(m.type==='image')return'【图片】';return'【消息】'}).filter(Boolean).join('')
-            }
-          }
-          if (!mt) return null
-          return {type:'node',data:{nickname:nk,content:[{type:'text',data:{text:mt}}]}}
-        }))).filter(Boolean)
-        forwardSummaryText = summarizeForwardNodes(cn, 0, function(x){return x})
-    ctx.logger("dongxuelian-ai").info("fwd summary len: " + (forwardSummaryText ? forwardSummaryText.length : 0) + " text: " + (forwardSummaryText || "(empty)").slice(0, 100).replace(/\n/g, "\\n"))
-        if (forwardSummaryText) lastForwardSummaryCache.set(getChannelKey(session), forwardSummaryText)
-      }
-    }
+    const forwardSummaryText = await resolveForwardSummary(session, content, ctx)
 
     const armedEventDump = getArmedEventDump(getChannelKey(session))
     if (armedEventDump) {
@@ -487,54 +384,15 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       /^敏感话题处理者/.test(plain) ||
       plain === 'AI重载'
 
-    // 敏感话题检测 → @处理者（使用内存缓存避免重复读文件）
-    const detectList = await getPoliticalDetectList()
-    const isDetectOn = detectList.has(channelKey)
-    if (inGuild && isDetectOn && !analyzed.hasVisual && SENSITIVE_KEYWORDS_RE.test(plain)) {
-      const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
-      const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeKey + '.json')
-      const handlers = await readJsonFile(handlerFile, [])
-      if (Array.isArray(handlers) && handlers.length > 0 && Date.now() - (lastSensitiveAlert.get(channelKey) || 0) > 30000) {
-        const atAll = handlers.map(id => `<at id="${id}"/>`).join(' ')
-        session.send(`管理员快来，群里有傻福在剑阵。${atAll}`).catch(() => {})
-        lastSensitiveAlert.set(channelKey, Date.now())
-      }
-      ctx.logger('dongxuelian-ai').info(`sensitive topic in ${channelKey}: ${plain.slice(0, 50)}`)
-      // 清除该群的共享上下文和该用户的对话记忆
-      channelSharedCache.delete(channelKey)
-      clearUserConversationHistory(session)
-      channelMsgCount.delete(channelKey)
-      lastEmotionCache.delete(channelKey)
-    }
-
-    // 所有用户消息写入敏感话题缓存（供 AI 分析用）
-    if (inGuild && isDetectOn && !analyzed.hasVisual && plain) {
-      saveSensitiveCache(channelKey, plain, userName, currentUserId)
-    }
-
-    // 敏感话题检测计数（每 50 条触发一次 AI 分析）
-    if (isDetectOn && inGuild && !analyzed.hasVisual) {
-      const count = (channelMsgCount.get(channelKey) || 0) + 1
-      channelMsgCount.set(channelKey, count)
-      if (count % 50 === 0) analyzeChannelSensitive(channelKey).catch(() => {})
-    }
-    // 检查待通知标记（AI 分析判定敏感时触发）
-    if (isDetectOn && pendingSensitiveAlert.get(channelKey)) {
-      pendingSensitiveAlert.delete(channelKey)
-      // 清除该群的共享上下文（AI 分析判定整个群氛围敏感）
-      channelSharedCache.delete(channelKey)
-      channelMsgCount.delete(channelKey)
-      lastEmotionCache.delete(channelKey)
-      try {
-        const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
-        const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeKey + '.json')
-        const handlers = await readJsonFile(handlerFile, [])
-        if (Array.isArray(handlers) && handlers.length > 0) {
-          const atAll = handlers.map(id => `<at id="${id}"/>`).join(' ')
-          session.send(`管理员快来，群里有傻福在剑阵。${atAll}`).catch(() => {})
-        }
-      } catch {}
-    }
+    await handleSensitiveMessage(session, ctx, {
+      inGuild,
+      channelKey,
+      analyzed,
+      plain,
+      userName,
+      currentUserId,
+      lastEmotionCache,
+    })
 
     if (adminCommandMatched && !hasAdminPermission(session)) {
       return '只有指定管理员能操作这个命令。'
@@ -855,13 +713,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         if (!inRandomWhitelist) return next()
         // 图片也按概率回复，不无条件回复
         if (!randomTriggered && !shouldTriggerRandom(getRandomTriggerRate(channelKey))) return next()
-        const vUrls = extractImageUrls(session.content || '')
-        const vFile = extractImageFileFromElements(session)
-        if (vUrls.length > 0 || vFile) {
-          session._visionUrls = vUrls
-          session._visionFile = vFile
-          session._isVisionRequest = true
-        } else if (!analyzed.hasUsableText) {
+        if (!prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: true, includeQuote: false }) && !analyzed.hasUsableText) {
           return next()
         }
       } else if (!randomTriggered) {
@@ -870,37 +722,11 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     }
 
     // 引用/回复中的图片：当前消息不含图，但被引用的消息可能含图片
-    if (!analyzed.hasVisual && !analyzed.hasFile && !analyzed.hasEmbed && session.quote) {
-      let qc = ''
-      let quotedFile = null
-      try {
-        if (typeof session.quote.content === 'string') qc = session.quote.content
-        else if (Array.isArray(session.quote.message)) {
-          qc = session.quote.message.map(s => s.data?.url || s.data?.file || '').filter(Boolean).join(' ')
-          // 直接从 quote.message 段提取 file
-          const imgSeg = session.quote.message.find(s => s.type === 'image')
-          if (imgSeg && imgSeg.data?.file) quotedFile = imgSeg.data.file
-        }
-      } catch {}
-      if (qc) {
-        const quotedUrls = extractImageUrls(qc)
-        if (quotedUrls.length > 0 || quotedFile) {
-          session._visionUrls = quotedUrls
-          session._visionFile = quotedFile
-          session._isVisionRequest = true
-        }
-      }
-    }
+    prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: false, includeQuote: true })
 
     if ((directAt || nameMentioned || isPrivate) && (analyzed.hasVisual || analyzed.hasFile || analyzed.hasEmbed)) {
       // 有图片 → 尝试识图
-      const imgUrls = extractImageUrls(session.content || '')
-      const imgFile = extractImageFileFromElements(session)
-      if (imgUrls.length > 0 || imgFile) {
-        session._visionUrls = imgUrls
-        session._visionFile = imgFile
-        session._isVisionRequest = true
-      } else if (!analyzed.hasUsableText) {
+      if (!prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: true, includeQuote: false }) && !analyzed.hasUsableText) {
         await session.send('我不识图，也不读文件链接。发文字。')
         return
       }
@@ -909,7 +735,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       return
     }
     if (session._skipVision) { delete session._skipVision; return next() }
-    if (!userText && !session._isVisionRequest) return next()
+    if (!userText && !isVisionSession(session)) return next()
 
     if (botMentionCount > 1) {
       ctx.logger('dongxuelian-ai').info(`collapsed repeated @bot mentions: ${botMentionCount}`)
@@ -921,17 +747,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
         .then(reply => {
           // AI 回复中检测到政治拒绝 → 通知处理者
           if (inGuild && /别问了，这个我不聊/.test(reply)) {
-            const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
-            const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeKey + '.json')
-            try {
-              const raw = require('fs').readFileSync(handlerFile, 'utf8')
-              const list = JSON.parse(raw)
-              if (Array.isArray(list) && list.length > 0 && Date.now() - (lastSensitiveAlert.get(channelKey) || 0) > 30000) {
-                const atAll = list.map(id => `<at id="${id}"/>`).join(' ')
-                session.send(`管理员快来，群里有傻福在剑阵。${atAll}`).catch(() => {})
-                lastSensitiveAlert.set(channelKey, Date.now())
-              }
-            } catch {}
+            notifySensitiveHandlers(session, channelKey, { throttle: true }).catch(() => {})
           }
           return sendReply(ctx, session, reply, randomTriggered)
         })

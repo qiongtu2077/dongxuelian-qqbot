@@ -96,6 +96,7 @@ function createTestDataDir(options = {}) {
           return
         } catch (error) {
           if (i === 4) throw error
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
         }
       }
     },

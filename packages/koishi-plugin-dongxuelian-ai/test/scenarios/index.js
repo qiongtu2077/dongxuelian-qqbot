@@ -4,6 +4,8 @@ const repeat = require('./repeat.test')
 const sticker = require('./sticker.test')
 const sensitive = require('./sensitive.test')
 const fallback = require('./fallback.test')
+const forward = require('./forward.test')
+const vision = require('./vision.test')
 const random = require('./random.test')
 const persistence = require('./persistence.test')
 const concurrency = require('./concurrency.test')
@@ -17,6 +19,8 @@ const SCENARIOS = [
   sticker,
   sensitive,
   fallback,
+  forward,
+  vision,
   random,
   persistence,
   concurrency,
