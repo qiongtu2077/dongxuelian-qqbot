@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap');
+
+:root {
+  --bg: #0f1923;
+  --card: #1a2634;
+  --card-hover: #1f2d3d;
+  --border: #2a3a4a;
+  --accent: #39C5BB;
+  --accent2: #5EEAD4;
+  --accent3: #A7E7E3;
+  --pink: #F472B6;
+  --yellow: #FCD34D;
+  --orange: #FB923C;
+  --purple: #A78BFA;
+  --text: #E2E8F0;
+  --text2: #94A3B8;
+  --text3: #64748B;
+  --radius: 16px;
+  --radius-sm: 10px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.3);
+}}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }}
+
+body {
+  font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  padding: 32px;
+  min-width: 900px;
+}}
+
+.wrap {
+  max-width: 860px;
+  margin: 0 auto;
+}}
+
+/* === Header === */
+.header {
+  text-align: center;
+  margin-bottom: 36px;
+  position: relative;
+}}
+
+.header::before {
+  content: '';
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 120px;
+  height: 4px;
+  background: linear-gradient(90deg, var(--accent), var(--pink), var(--yellow));
+  border-radius: 2px;
+}}
+
+.header h1 {
+  font-size: 28px;
+  font-weight: 900;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 8px;
+  letter-spacing: 2px;
+}}
+
+.header .date {
+  font-size: 14px;
+  color: var(--text3);
+  font-weight: 500;
+}}
+
+/* === Stats Grid === */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 32px;
+}}
+
+.stat-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 16px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.2s, box-shadow 0.2s;
+}}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}}
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: var(--radius) var(--radius) 0 0;
+}}
+
+.stat-card:nth-child(1)::before { background: linear-gradient(90deg, var(--accent), var(--accent2)); }}
+.stat-card:nth-child(2)::before { background: linear-gradient(90deg, var(--pink), var(--orange)); }}
+.stat-card:nth-child(3)::before { background: linear-gradient(90deg, var(--yellow), var(--orange)); }}
+.stat-card:nth-child(4)::before { background: linear-gradient(90deg, var(--purple), var(--pink)); }}
+
+.stat-icon {
+  font-size: 28px;
+  margin-bottom: 8px;
+}}
+
+.stat-num {
+  font-size: 32px;
+  font-weight: 900;
+  color: var(--text);
+  line-height: 1.2;
+  margin-bottom: 4px;
+}}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text3);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}}
+
+/* === Peak === */
+.peak {
+  background: linear-gradient(135deg, rgba(57,197,187,0.15), rgba(244,114,182,0.1));
+  border: 1px solid rgba(57,197,187,0.3);
+  border-radius: var(--radius);
+  padding: 16px 24px;
+  margin-bottom: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}}
+
+.peak-label {
+  font-size: 14px;
+  color: var(--accent);
+  font-weight: 700;
+}}
+
+.peak-time {
+  font-size: 20px;
+  font-weight: 900;
+  color: var(--text);
+}}
+
+/* === Section Header === */
+.section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  margin-top: 36px;
+}}
+
+.section-bar {
+  width: 4px;
+  height: 24px;
+  background: linear-gradient(180deg, var(--accent), var(--accent2));
+  border-radius: 2px;
+}}
+
+.section-bar.pink {
+  background: linear-gradient(180deg, var(--pink), var(--orange));
+}}
+
+.section-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}}
+
+/* === Chart === */
+.chart-container {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  margin-bottom: 16px;
+}}
+
+/* === Topic Cards === */
+.topic-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  transition: border-color 0.2s;
+}}
+
+.topic-card:hover {
+  border-color: var(--accent);
+}}
+
+.topic-num {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: var(--bg);
+  font-weight: 900;
+  font-size: 14px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}}
+
+.topic-body {
+  flex: 1;
+  min-width: 0;
+}}
+
+.topic-title {
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 6px;
+  color: var(--text);
+}}
+
+.topic-detail {
+  font-size: 13px;
+  color: var(--text2);
+  line-height: 1.6;
+  margin-bottom: 10px;
+}}
+
+.topic-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}}
+
+.ptag {
+  background: rgba(57,197,187,0.15);
+  color: var(--accent);
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+}}
+
+.topic-deco {
+  font-size: 24px;
+  opacity: 0.3;
+  flex-shrink: 0;
+}}
+
+/* === Profile Cards === */
+.profiles {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}}
+
+.profile-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  transition: transform 0.2s;
+}}
+
+.profile-card:hover {
+  transform: translateY(-2px);
+}}
+
+.profile-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}}
+
+.avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 900;
+  font-size: 18px;
+  flex-shrink: 0;
+  background-size: cover;
+  background-position: center;
+  border: 2px solid var(--border);
+}}
+
+.profile-info {
+  min-width: 0;
+}}
+
+.profile-name {
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}}
+
+.mbti-tag {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: bold;
+  margin-left: 4px;
+}}
+
+.profile-role {
+  display: inline-block;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: var(--bg);
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 4px;
+}}
+
+.profile-desc {
+  font-size: 13px;
+  color: var(--text2);
+  line-height: 1.5;
+}}
+
+/* === Quote Cards === */
+.quote-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 14px;
+  border-left: 4px solid var(--accent);
+}}
+
+.quote-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}}
+
+.avatar-sm {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  flex-shrink: 0;
+}}
+
+.quote-sender {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text);
+}}
+
+.quote-bubble {
+  background: rgba(57,197,187,0.08);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  font-size: 14px;
+  line-height: 1.7;
+  margin-bottom: 12px;
+  color: var(--text);
+  border: 1px solid rgba(57,197,187,0.15);
+}}
+
+.quote-comment-label {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 700;
+  margin-bottom: 4px;
+}}
+
+.quote-comment {
+  font-size: 13px;
+  color: var(--pink);
+  font-style: italic;
+  line-height: 1.5;
+}}
+
+/* === Quality Review === */
+.qr-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+}}
+
+.qr-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}}
+
+.qr-title {
+  font-weight: 900;
+  font-size: 18px;
+  margin-bottom: 4px;
+}}
+
+.qr-subtitle {
+  font-size: 13px;
+  color: var(--text3);
+}}
+
+.qr-token {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  color: var(--text3);
+  background: rgba(57,197,187,0.1);
+  padding: 4px 10px;
+  border-radius: 8px;
+}}
+
+.qr-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  gap: 3px;
+  margin-bottom: 20px;
+}}
+
+.qr-bar-seg {
+  border-radius: 5px;
+  transition: flex 0.3s;
+}}
+
+.qr-dims {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}}
+
+.qr-dim {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+}}
+
+.qr-dim-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}}
+
+.qr-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}}
+
+.qr-dim-name {
+  font-weight: 700;
+  font-size: 13px;
+}}
+
+.qr-dim-pct {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  color: var(--text3);
+  margin-left: auto;
+}}
+
+.qr-dim-comment {
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.5;
+}}
+
+.qr-summary {
+  background: linear-gradient(135deg, rgba(57,197,187,0.2), rgba(244,114,182,0.15));
+  border: 1px solid rgba(57,197,187,0.3);
+  border-radius: var(--radius-sm);
+  padding: 16px 20px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text);
+}}
+
+.qr-summary-label {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 6px;
+  color: var(--accent);
+}}
+
+/* === Footer === */
+.footer {
+  margin-top: 40px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text3);
+}}
+
+.footer-brand {
+  font-family: 'Courier New', monospace;
+  color: var(--accent);
+}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>📊 群聊日常分析看板</h1>
+    <div class="date">分析日期 // {{date}}</div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-icon">📊</div>
+      <div class="stat-num">{{totalMessages}}</div>
+      <div class="stat-label">今日消息�?/div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">👥</div>
+      <div class="stat-num">{{activeMembers}}</div>
+      <div class="stat-label">活跃成员�?/div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">😊</div>
+      <div class="stat-num">{{emojiCount}}</div>
+      <div class="stat-label">表情互动</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">💬</div>
+      <div class="stat-num">{{totalChars}}</div>
+      <div class="stat-label">今日字数累计</div>
+    </div>
+  </div>
+
+  <!-- Peak -->
+  <div class="peak">
+    <div class="peak-label">🔥 峰值活跃时间段</div>
+    <div class="peak-time">{{peakHour}}</div>
+  </div>
+
+  <!-- Chart -->
+  <div class="section">
+    <div class="section-bar"></div>
+    <div class="section-title">📈 24小时活动</div>
+  </div>
+  <div class="chart-container">
+    {{chartHtml}}
+  </div>
+
+  <!-- Topics -->
+  <div class="section">
+    <div class="section-bar"></div>
+    <div class="section-title">📌 话题总结</div>
+  </div>
+  {{topicsHtml}}
+
+  <!-- Profiles -->
+  <div class="section">
+    <div class="section-bar pink"></div>
+    <div class="section-title">👤 群友画像</div>
+  </div>
+  <div class="profiles">
+    {{profilesHtml}}
+  </div>
+
+  <!-- Quotes -->
+  <div class="section">
+    <div class="section-bar pink"></div>
+    <div class="section-title">�?今日圣经</div>
+  </div>
+  {{quotesHtml}}
+
+  <!-- Quality Review -->
+  <div class="section">
+    <div class="section-bar"></div>
+    <div class="section-title">💬 群聊锐评</div>
+  </div>
+  {{qualityHtml}}
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-brand">koishi-plugin-daily-report</div>
+    <div>Generated at {{timestamp}}</div>
+  </div>
+
+</div>
+</body>
+</html>

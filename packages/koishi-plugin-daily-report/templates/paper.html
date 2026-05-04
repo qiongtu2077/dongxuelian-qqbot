@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>群聊日报模板预览</title>
+<style>
+:root {
+  --paper: #fbfaf7;
+  --ink: #1f2933;
+  --muted: #6b7280;
+  --line: #d8ddd8;
+  --teal: #1aa6a6;
+  --teal-deep: #0f766e;
+  --rose: #d94678;
+  --amber: #d99a22;
+  --violet: #7c5cff;
+  --blue: #3578e5;
+  --green: #3b8f5a;
+  --panel: #ffffff;
+  --soft-teal: #e6f6f4;
+  --soft-rose: #fde8ef;
+  --soft-amber: #fff3d6;
+  --soft-violet: #eeeafe;
+  --shadow: 0 14px 32px rgba(20, 38, 45, 0.12);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background:
+    linear-gradient(90deg, rgba(31, 41, 51, 0.04) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(31, 41, 51, 0.04) 1px, transparent 1px),
+    #e9efed;
+  background-size: 28px 28px;
+  color: var(--ink);
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", Arial, sans-serif;
+}
+.page {
+  width: 880px;
+  margin: 0 auto;
+  padding: 28px;
+}
+.sheet {
+  position: relative;
+  overflow: hidden;
+  min-height: 100vh;
+  border: 1px solid rgba(31, 41, 51, 0.12);
+  border-radius: 18px;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+}
+.sheet::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 12px;
+  background: linear-gradient(90deg, var(--teal), var(--rose), var(--amber), var(--violet));
+}
+.inner { position: relative; padding: 34px; }
+.masthead {
+  display: grid;
+  grid-template-columns: 1fr 210px;
+  gap: 24px;
+  align-items: end;
+  padding: 22px 0 24px;
+  border-bottom: 1px solid var(--line);
+}
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(26, 166, 166, 0.25);
+  border-radius: 999px;
+  background: var(--soft-teal);
+  color: var(--teal-deep);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+h1 {
+  margin: 12px 0 8px;
+  font-size: 42px;
+  line-height: 1.08;
+  letter-spacing: 0;
+}
+.sub {
+  max-width: 560px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.75;
+}
+.date-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  padding: 16px;
+}
+.date-card .label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.date-card .date {
+  margin-top: 8px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--teal-deep);
+}
+.date-card .time {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin: 22px 0;
+}
+.metric {
+  min-height: 112px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  padding: 15px;
+}
+.metric .top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.chip {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 900;
+}
+.chip.teal { background: var(--teal); }
+.chip.rose { background: var(--rose); }
+.chip.amber { background: var(--amber); }
+.chip.violet { background: var(--violet); }
+.metric .num {
+  margin-top: 18px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 900;
+}
+.metric .note {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  padding: 18px;
+}
+.peak {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 178px;
+  background:
+    linear-gradient(135deg, rgba(26,166,166,0.14), rgba(217,70,120,0.10)),
+    #fff;
+}
+.peak-label {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+.peak-time {
+  margin-top: 10px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 46px;
+  font-weight: 900;
+  color: var(--teal-deep);
+}
+.peak-desc {
+  margin-top: 12px;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.7;
+}
+.mood-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mood-tags span {
+  padding: 7px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+.mood-tags span:nth-child(1) { background: var(--soft-teal); color: var(--teal-deep); }
+.mood-tags span:nth-child(2) { background: var(--soft-rose); color: var(--rose); }
+.mood-tags span:nth-child(3) { background: var(--soft-amber); color: #8a5b10; }
+.mood-tags span:nth-child(4) { background: var(--soft-violet); color: var(--violet); }
+.section {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 28px 0 14px;
+}
+.section h2 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0;
+}
+.section .hint {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+.chart {
+  height: 180px;
+  display: grid;
+  grid-template-columns: repeat(24, 1fr);
+  gap: 6px;
+  align-items: end;
+  padding: 18px 10px 26px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+}
+.bar {
+  position: relative;
+  min-height: 8px;
+  border-radius: 999px 999px 4px 4px;
+  background: var(--teal);
+}
+.bar.hot { background: var(--rose); }
+.bar.warm { background: var(--amber); }
+.bar.cool { background: var(--blue); }
+.bar::after {
+  content: attr(data-hour);
+  position: absolute;
+  left: 50%;
+  bottom: -20px;
+  transform: translateX(-50%);
+  color: var(--muted);
+  font-size: 10px;
+}
+.topic-list {
+  display: grid;
+  gap: 12px;
+}
+.topic {
+  display: grid;
+  grid-template-columns: 58px 1fr;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  padding: 16px;
+}
+.topic-no {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: var(--soft-teal);
+  color: var(--teal-deep);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-weight: 900;
+}
+.topic h3 {
+  margin: 0 0 7px;
+  font-size: 17px;
+}
+.topic p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.75;
+}
+.people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.people span {
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 700;
+}
+.profiles {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.profile {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  padding: 15px;
+}
+.profile-head {
+  display: grid;
+  grid-template-columns: 46px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+.avatar {
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: var(--teal);
+  color: #fff;
+  font-weight: 900;
+}
+.profile strong {
+  display: block;
+  font-size: 15px;
+}
+.role {
+  display: inline-flex;
+  margin-top: 5px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--soft-rose);
+  color: var(--rose);
+  font-size: 12px;
+  font-weight: 800;
+}
+.profile p {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+.quotes {
+  display: grid;
+  gap: 12px;
+}
+.quote {
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--rose);
+  border-radius: 16px;
+  background: var(--panel);
+  padding: 16px 18px;
+}
+.quote blockquote {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.7;
+  font-weight: 700;
+}
+.quote figcaption {
+  margin-top: 10px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.quality {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  padding: 18px;
+}
+.quality-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.quality-title h3 {
+  margin: 0;
+  font-size: 20px;
+}
+.quality-title p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.score {
+  min-width: 76px;
+  height: 54px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: var(--ink);
+  color: #fff;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 24px;
+  font-weight: 900;
+}
+.stack {
+  display: flex;
+  overflow: hidden;
+  height: 12px;
+  border-radius: 999px;
+  margin: 18px 0;
+  background: #edf0f2;
+}
+.stack div:nth-child(1) { width: 35%; background: var(--teal); }
+.stack div:nth-child(2) { width: 24%; background: var(--rose); }
+.stack div:nth-child(3) { width: 21%; background: var(--amber); }
+.stack div:nth-child(4) { width: 20%; background: var(--violet); }
+.dims {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.dim {
+  border-radius: 12px;
+  background: #f7f8f8;
+  padding: 12px;
+}
+.dim b {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.dim p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.summary {
+  margin-top: 14px;
+  border-radius: 14px;
+  background: var(--soft-amber);
+  padding: 14px;
+  color: #6f4d12;
+  font-size: 13px;
+  line-height: 1.75;
+}
+.footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 28px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.mono { font-family: "Cascadia Mono", Consolas, monospace; }
+</style>
+</head>
+<body>
+<main class="page">
+  <article class="sheet">
+    <div class="inner">
+      <header class="masthead">
+        <div>
+          <div class="eyebrow">GROUP DAILY REPORT</div>
+          <h1>群聊日报</h1>
+          <p class="sub">把一天的聊天浓缩成一张可读的报告：谁最活跃、什么时候最热闹、聊了什么、留下了哪些离谱金句。</p>
+        </div>
+        <aside class="date-card">
+          <div class="label">分析日期</div>
+          <div class="date">2026.05.05</div>
+          <div class="time">生成时间 23:59 / Asia Shanghai</div>
+        </aside>
+      </header>
+
+      <section class="metrics">
+        <div class="metric">
+          <div class="top"><span>消息数</span><span class="chip teal">M</span></div>
+          <div class="num">1284</div>
+          <div class="note">较昨日 +18%</div>
+        </div>
+        <div class="metric">
+          <div class="top"><span>活跃成员</span><span class="chip rose">U</span></div>
+          <div class="num">37</div>
+          <div class="note">核心发言 12 人</div>
+        </div>
+        <div class="metric">
+          <div class="top"><span>表情互动</span><span class="chip amber">E</span></div>
+          <div class="num">219</div>
+          <div class="note">斗图浓度偏高</div>
+        </div>
+        <div class="metric">
+          <div class="top"><span>文字总量</span><span class="chip violet">T</span></div>
+          <div class="num">42k</div>
+          <div class="note">约 28 篇小作文</div>
+        </div>
+      </section>
+
+      <section class="hero-grid">
+        <div class="panel peak">
+          <div>
+            <div class="peak-label">峰值活跃时段</div>
+            <div class="peak-time">21:00</div>
+          </div>
+          <p class="peak-desc">晚饭后全群开始集中发力，从游戏抽卡一路滑向人生哲学，最后以表情包大战收尾。</p>
+        </div>
+        <div class="panel">
+          <div class="peak-label">今日气质</div>
+          <div class="mood-tags" style="margin-top:14px">
+            <span>高密度插话</span>
+            <span>轻微发癫</span>
+            <span>抽卡玄学</span>
+            <span>稳定跑题</span>
+          </div>
+          <p class="peak-desc">整体氛围热闹但不失控，属于“看起来很乱，其实每个人都知道自己在乱什么”的典型群聊。</p>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>24 小时活跃曲线</h2>
+        <span class="hint">messages / hour</span>
+      </section>
+      <div class="chart">
+        <div class="bar cool" data-hour="00" style="height:18%"></div>
+        <div class="bar cool" data-hour="" style="height:10%"></div>
+        <div class="bar cool" data-hour="02" style="height:8%"></div>
+        <div class="bar cool" data-hour="" style="height:7%"></div>
+        <div class="bar cool" data-hour="04" style="height:6%"></div>
+        <div class="bar cool" data-hour="" style="height:9%"></div>
+        <div class="bar" data-hour="06" style="height:16%"></div>
+        <div class="bar" data-hour="" style="height:22%"></div>
+        <div class="bar" data-hour="08" style="height:38%"></div>
+        <div class="bar" data-hour="" style="height:46%"></div>
+        <div class="bar warm" data-hour="10" style="height:52%"></div>
+        <div class="bar warm" data-hour="" style="height:44%"></div>
+        <div class="bar" data-hour="12" style="height:35%"></div>
+        <div class="bar" data-hour="" style="height:41%"></div>
+        <div class="bar warm" data-hour="14" style="height:58%"></div>
+        <div class="bar warm" data-hour="" style="height:64%"></div>
+        <div class="bar" data-hour="16" style="height:49%"></div>
+        <div class="bar" data-hour="" style="height:55%"></div>
+        <div class="bar warm" data-hour="18" style="height:68%"></div>
+        <div class="bar hot" data-hour="" style="height:78%"></div>
+        <div class="bar hot" data-hour="20" style="height:88%"></div>
+        <div class="bar hot" data-hour="" style="height:100%"></div>
+        <div class="bar warm" data-hour="22" style="height:72%"></div>
+        <div class="bar" data-hour="" style="height:43%"></div>
+      </div>
+
+      <section class="section">
+        <h2>话题总结</h2>
+        <span class="hint">top topics</span>
+      </section>
+      <div class="topic-list">
+        <article class="topic">
+          <div class="topic-no">01</div>
+          <div>
+            <h3>抽卡玄学与角色强度争论</h3>
+            <p>从“垫池子有没有意义”聊到“谁才是版本答案”，中途穿插三次晒卡、两次破防和一次假装理性分析。</p>
+            <div class="people"><span>莲莲</span><span>敏感大感头</span><span>菜狗荒显</span></div>
+          </div>
+        </article>
+        <article class="topic">
+          <div class="topic-no">02</div>
+          <div>
+            <h3>服务器部署和神秘报错</h3>
+            <p>围绕机器人部署脚本展开，群友们在日志、权限、路径之间反复横跳，最后靠一条不起眼的配置解决问题。</p>
+            <div class="people"><span>折腾大师</span><span>半夜修 bug 人</span></div>
+          </div>
+        </article>
+      </div>
+
+      <section class="section">
+        <h2>群友画像</h2>
+        <span class="hint">user titles</span>
+      </section>
+      <div class="profiles">
+        <article class="profile">
+          <div class="profile-head">
+            <div class="avatar">莲</div>
+            <div><strong>莲莲</strong><span class="role">气氛拐弯专家</span></div>
+          </div>
+          <p>总能在讨论快要严肃起来的时候扔出一句让全群偏航的话，是今日跑题曲线的主要推手。</p>
+        </article>
+        <article class="profile">
+          <div class="profile-head">
+            <div class="avatar" style="background:var(--rose)">感</div>
+            <div><strong>敏感大感头</strong><span class="role">问题挖掘机</span></div>
+          </div>
+          <p>持续提出看似简单但会牵出三层技术债的问题，属于群聊里的质量保证部门。</p>
+        </article>
+      </div>
+
+      <section class="section">
+        <h2>今日金句</h2>
+        <span class="hint">golden quotes</span>
+      </section>
+      <div class="quotes">
+        <figure class="quote">
+          <blockquote>“这个测试不是红了，是在提醒我们它还有尊严。”</blockquote>
+          <figcaption><span>来自：半夜修 bug 人</span><span>点评：精准，且略带工伤味。</span></figcaption>
+        </figure>
+        <figure class="quote">
+          <blockquote>“先别急着重构，先确认它到底是不是活的。”</blockquote>
+          <figcaption><span>来自：折腾大师</span><span>点评：冷静得像刚吃完降压药。</span></figcaption>
+        </figure>
+      </div>
+
+      <section class="section">
+        <h2>群聊质量锐评</h2>
+        <span class="hint">quality review</span>
+      </section>
+      <div class="quality">
+        <div class="quality-title">
+          <div>
+            <h3>热闹、能跑题，但有用</h3>
+            <p>今天的群聊信息密度不低，虽然表达方式偶尔像把会议纪要扔进了洗衣机。</p>
+          </div>
+          <div class="score">86</div>
+        </div>
+        <div class="stack"><div></div><div></div><div></div><div></div></div>
+        <div class="dims">
+          <div class="dim"><b>技术含量 35%</b><p>部署、测试、路径配置都聊到了，含金量在线。</p></div>
+          <div class="dim"><b>情绪波动 24%</b><p>破防边缘反复试探，但还没有真正爆炸。</p></div>
+          <div class="dim"><b>娱乐浓度 21%</b><p>表情包和吐槽稳定供应，阅读体验不错。</p></div>
+          <div class="dim"><b>跑题比例 20%</b><p>有跑偏，但每次都能神奇地绕回来。</p></div>
+        </div>
+        <div class="summary">总评：今天是典型的“看起来吵，实际推进了不少事”。建议保留这种高能状态，但给关键结论多留几句落地记录。</div>
+      </div>
+
+      <footer class="footer">
+        <span class="mono">koishi-plugin-daily-report</span>
+        <span>Preview template only · Not wired into renderer</span>
+      </footer>
+    </div>
+  </article>
+</main>
+</body>
+</html>
