@@ -97,6 +97,7 @@ function renderAiHelp() {
     '【群聊主动回复】',
     '【联网】',
     '【抓取原始事件】',
+    '【集合】',
     '【敏感话题检测】',
     '【白名单黑名单管理】',
     '【人格】',
@@ -289,12 +290,16 @@ exports.apply = (ctx) => {
       return renderEventHelp()
     }
 
-    if (plain === '黑名单管理' || plain === '白名单黑名单管理') {
+    if (plain === '黑名单管理' || plain === '白名单黑名单管理' || plain === '黑名单白名单管理') {
       return renderBlacklistHelp()
     }
 
     if (plain === '人格') {
       return renderPersonaHelp()
+    }
+
+    if (plain === '集合') {
+      return renderCollectionHelp()
     }
 
     if (plain === '敏感话题检测') {
