@@ -98,6 +98,7 @@ function renderAiHelp() {
     '【联网】',
     '【抓取原始事件】',
     '【集合】',
+    '【记忆】',
     '【敏感话题检测】',
     '【白名单黑名单管理】',
     '【人格】',
@@ -111,10 +112,21 @@ function renderCommonHelp() {
     'AI状态',
     '- AI诊断（bot管理员）',
     'AI重载（bot管理员）',
-    '东雪莲忘记我',
-    '东雪莲清空群记忆（群管理员）',
+    '东雪莲帮我选 A 还是 B',
+    '东雪莲吐槽我',
+    '东雪莲帮我说话 <内容>',
     '东雪莲复读开 / 关 / 状态',
     '今日情绪',
+  ].join('\n')
+}
+
+function renderMemoryHelp() {
+  return [
+    '【记忆】',
+    '记住xxx（直接写入记忆）',
+    '东雪莲忘记我（需二次确认）',
+    '东雪莲清空群记忆（群管理员）',
+    '东雪莲群记忆定时 <小时>（群管理员）',
   ].join('\n')
 }
 
@@ -191,6 +203,11 @@ function renderQuickReference() {
     '\u654f\u611f\u8bdd\u9898\u5904\u7406\u8005\u6dfb\u52a0 / \u5220\u9664 / \u67e5\u770b',
     '\u7528\u6237\u9ed1\u540d\u5355\u6dfb\u52a0 / \u5220\u9664 / \u67e5\u770b',
     '\u89c6\u9891\u9ed1\u540d\u5355\u6dfb\u52a0\u7fa4 / \u5220\u9664\u7fa4 / \u67e5\u770b',
+    '\u4e1c\u96ea\u83b2\u5e2e\u6211\u9009 A \u8fd8\u662f B',
+    '\u4e1c\u96ea\u83b2\u5410\u69fd\u6211',
+    '\u4e1c\u96ea\u83b2\u5e2e\u6211\u8bf4\u8bdd <\u5185\u5bb9>',
+    '\u4e1c\u96ea\u83b2\u5fd8\u8bb0\u6211',
+    '\u8bb0\u4f4fxxx\uff08\u76f4\u63a5\u5199\u5165\u8bb0\u5fc6\uff09',
   ].join('\n')
 }
 
@@ -306,6 +323,10 @@ exports.apply = (ctx) => {
       return renderCollectionHelp()
     }
 
+    if (plain === '记忆') {
+      return renderMemoryHelp()
+    }
+
     if (plain === '敏感话题检测') {
       return renderSensitiveHelp()
     }
@@ -319,20 +340,21 @@ exports.apply = (ctx) => {
     }
 
     // #4 /help xxx 模糊搜索
-    const helpSearchMatch = plain.match(/^help(.+)/)
+    const helpSearchMatch = plain.match(/^\/?help\s*(.+)/)
     if (helpSearchMatch) {
       const keyword = helpSearchMatch[1].trim()
       if (!keyword) return ''
       const allRenderers = [
-        renderRootHelp, renderAiHelp, renderCommonHelp, renderGroupReplyHelp,
-        renderNetworkHelp, renderEventHelp, renderCollectionHelp,
+        renderRootHelp, renderAiHelp, renderCommonHelp, renderMemoryHelp,
+        renderGroupReplyHelp, renderNetworkHelp, renderEventHelp, renderCollectionHelp,
         renderBlacklistHelp, renderSensitiveHelp, renderPersonaHelp,
         renderSwitchModels, renderAvailableModels, renderQuickReference,
       ]
       const allText = allRenderers.map(fn => fn()).join('\n')
       const matchedLines = allText.split('\n').filter(line => line.includes(keyword))
       if (!matchedLines.length) return '未找到相关帮助。'
-      return matchedLines.slice(0, 5).map(line => line.trim()).join('\n')
+      const lines = matchedLines.slice(0, 5).map(line => line.trim())
+      return `/help${keyword} 结果：\n${lines.map(l => `- ${l}`).join('\n')}`
     }
 
     const providerMatch = plain.match(/^供应商\s+(.+)$/)
