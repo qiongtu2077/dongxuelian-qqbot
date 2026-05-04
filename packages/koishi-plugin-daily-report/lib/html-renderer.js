@@ -285,25 +285,62 @@ function findBrowser() {
   return null
 }
 
+// 信号量：限制并发Puppeteer实例（最多2个）
+let activeRenderers = 0
+const MAX_RENDERERS = 2
+const RENDER_TIMEOUT = 30000 // 30秒超时
+
 async function renderHtmlToImage(htmlContent) {
+  // 等待信号量
+  while (activeRenderers >= MAX_RENDERERS) {
+    await new Promise(r => setTimeout(r, 500))
+  }
+  activeRenderers++
+
   const puppeteer = require('puppeteer-core')
   const browserPath = findBrowser()
   if (!browserPath) {
+    activeRenderers--
     throw new Error('未找到Chrome/Chromium浏览器，请安装: apt install chromium-browser')
   }
-  const browser = await puppeteer.launch({
-    executablePath: browserPath, headless: 'new',
-    args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'],
-  })
+
+  let browser = null
   try {
+    browser = await puppeteer.launch({
+      executablePath: browserPath, headless: 'new',
+      args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'],
+    })
+
+    // 超时保护
+    const timeoutId = setTimeout(async () => {
+      if (browser) {
+        try { await browser.close() } catch {}
+        browser = null
+      }
+    }, RENDER_TIMEOUT)
+
     const page = await browser.newPage()
     await page.setViewport({ width: 880, height: 800 })
-    await page.setContent(htmlContent, { waitUntil: 'networkidle0' })
+    await page.setContent(htmlContent, { waitUntil: 'networkidle0', timeout: 15000 })
     await page.evaluateHandle('document.fonts.ready')
     const bodyH = await page.evaluate(() => document.body.scrollHeight)
     await page.setViewport({ width: 880, height: bodyH + 40 })
-    return await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 880, height: bodyH + 40 } })
-  } finally { await browser.close() }
+    const screenshot = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 880, height: bodyH + 40 } })
+
+    clearTimeout(timeoutId)
+    return screenshot
+  } catch (err) {
+    // 确保浏览器被关闭
+    if (browser) {
+      try { await browser.close() } catch {}
+    }
+    throw err
+  } finally {
+    if (browser) {
+      try { await browser.close() } catch {}
+    }
+    activeRenderers--
+  }
 }
 
 async function renderReport(data, analysis) {
