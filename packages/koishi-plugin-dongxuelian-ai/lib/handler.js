@@ -19,7 +19,7 @@ const {
   resolvePersona,
   getAvailablePersonals,
 } = require('./persona')
-const { clearConversationHistory } = require('./conversation')
+const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory } = require('./conversation')
 const {
   hasAdminPermission, isReservedCommand,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
@@ -96,6 +96,20 @@ async function handleCommand(session, ctx, state) {
   if (/^东雪莲联网查看$/.test(plain)) {
     const config = await loadConfig(true)
     return handled(formatSearchStatus(config))
+  }
+
+  if (plain === '东雪莲忘记我') {
+    await clearUserMemory(currentUserId, channelKey)
+    clearUserConversationHistory(session)
+    return handled('已清空我对你的记忆。')
+  }
+
+  if (plain === '东雪莲清空群记忆') {
+    if (!inGuild) return handled('这个命令只能在群里用。')
+    if (!hasAdminPermission(session)) return handled('只有管理员才能清空群记忆。')
+    clearConversationHistory()
+    await clearGroupMemory(channelKey)
+    return handled('已清空本群的记忆。')
   }
 
   ctx.logger('dongxuelian-ai').info(`persona-check: plain=${JSON.stringify(plain)} len=${plain.length} charCodes=${Array.from(plain).map(c => c.charCodeAt(0)).join(',')}`)

@@ -530,6 +530,7 @@ async function main() {
       'getReplyFingerprintHistory', 'saveReplyFingerprint', 'getRecentAssistantReplies',
       'getRecentUserMessages', 'findChannelMessageById', 'collectReplyChain',
       'getQuotedMessageNote', 'getSharedContextNote',
+      'writeMemory', 'deleteMemory', 'clearUserMemory', 'clearGroupMemory', 'getMemorySummary',
     ],
     chat: [
       'chat', 'loadConfig', 'resetConfigCache', 'loadSkills',

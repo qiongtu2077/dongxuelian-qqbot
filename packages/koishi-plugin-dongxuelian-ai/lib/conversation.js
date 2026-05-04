@@ -162,6 +162,37 @@ async function deleteMemory(userId, channelKey, text) {
   await writeJsonFile(file, data)
 }
 
+async function clearUserMemory(userId, channelKey) {
+  const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
+  const file = path.join(USER_PROFILE_DIR, safeKey, userId + '.json')
+  try {
+    const data = await readJsonFile(file, null)
+    if (data && Array.isArray(data.memory)) {
+      data.memory = []
+      await writeJsonFile(file, data)
+    }
+  } catch {}
+}
+
+async function clearGroupMemory(channelKey) {
+  const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
+  const dir = path.join(USER_PROFILE_DIR, safeKey)
+  try {
+    const files = await fsp.readdir(dir)
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue
+      const filePath = path.join(dir, file)
+      try {
+        const data = await readJsonFile(filePath, null)
+        if (data && Array.isArray(data.memory)) {
+          data.memory = []
+          await writeJsonFile(filePath, data)
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
 async function getMemorySummary(userId, channelKey) {
   const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
   const file = path.join(USER_PROFILE_DIR, safeKey, String(userId) + '.json')
@@ -256,5 +287,5 @@ module.exports = {
   findChannelMessageById, collectReplyChain,
   getQuotedMessageNote, getSharedContextNote,
   saveUserProfile, saveSensitiveCache, analyzeChannelSensitive,
-  writeMemory, deleteMemory, getMemorySummary,
+  writeMemory, deleteMemory, clearUserMemory, clearGroupMemory, getMemorySummary,
 }
