@@ -110,25 +110,14 @@ function buildProfilesHtml(userTitles) {
   return html + '</div>'
 }
 
-// 构建今日圣经HTML
-function buildQuotesHtml(goldenQuotes, messages) {
+// 构建今日圣经HTML（goldenQuotes已自带userId，无userId的已过滤）
+function buildQuotesHtml(goldenQuotes) {
   if (!goldenQuotes || !goldenQuotes.length) return ''
-
-  // 从消息中建立 name→userId 映射，用于抓QQ头像
-  const nameToUserId = new Map()
-  if (messages && messages.length) {
-    for (const msg of messages) {
-      if (msg.user && msg.userId && !nameToUserId.has(msg.user)) {
-        nameToUserId.set(msg.user, msg.userId)
-      }
-    }
-  }
 
   let html = `<div class="sec"><div class="bar pk"></div><div class="sec-t">✝ 今日圣经</div></div>`
   for (const q of goldenQuotes) {
-    const userId = nameToUserId.get(q.sender)
-    const avatarUrl = userId
-      ? `https://q1.qlogo.cn/g?b=qq&nk=${userId}&s=100`
+    const avatarUrl = q.userId
+      ? `https://q1.qlogo.cn/g?b=qq&nk=${q.userId}&s=100`
       : ''
     const avatarStyle = avatarUrl
       ? `background-image:url('${avatarUrl}');background-size:cover;background-position:center`
@@ -169,7 +158,7 @@ function buildQualityHtml(qr, tokenUsage) {
 function renderTemplate(template, data, analysis, templateName) {
   const topicsHtml = buildTopicsHtml(analysis.topics)
   const profilesHtml = buildProfilesHtml(analysis.userTitles)
-  const quotesHtml = buildQuotesHtml(analysis.goldenQuotes, data.messages)
+  const quotesHtml = buildQuotesHtml(analysis.goldenQuotes)
   const qualityHtml = buildQualityHtml(analysis.qualityReview, analysis.tokenUsage)
   // paper模板用CSS柱状图，其他用SVG
   const chartHtml = templateName === 'paper.html'

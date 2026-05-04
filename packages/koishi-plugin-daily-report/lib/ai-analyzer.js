@@ -66,10 +66,29 @@ function safeParseJSON(text) {
 }
 
 async function analyzeBasic(compressed, messages) {
+  // 构建昵称→QQ号映射表，确保金句能抓到头像
+  const nameToUserId = new Map()
+  if (messages && messages.length) {
+    for (const msg of messages) {
+      if (msg.user && msg.userId && !nameToUserId.has(msg.user)) {
+        nameToUserId.set(msg.user, msg.userId)
+      }
+    }
+  }
+  const memberMapStr = JSON.stringify(Object.fromEntries(nameToUserId))
+
   const prompt = `你是群聊分析师。根据以下压缩后的群聊摘要，完成两项任务：
 
 1. 提取4-5个主要话题（标题6-12字，摘要50-80字，参与成员）
 2. 精选3条最有趣/有梗的金句（发言者、原话、简短点评）
+
+重要规则：
+- 金句的sender必须使用原始消息中的确切昵称，不能用"群友""某人"等泛称
+- userId必须从以下映射表中查找，查不到的不要编造
+- 如果无法确定某条金句的发送者对应映射表中的哪个用户，则不生成该条金句
+
+用户昵称→QQ号映射表：
+${memberMapStr}
 
 压缩摘要：
 ${compressed.slice(0, 6000)}
@@ -77,7 +96,7 @@ ${compressed.slice(0, 6000)}
 输出JSON：
 {
   "topics": [{"id":1,"title":"标题","summary":"摘要","participants":["用户1"]}],
-  "goldenQuotes": [{"sender":"用户","content":"原话","reason":"点评"}]
+  "goldenQuotes": [{"sender":"昵称","userId":"QQ号","content":"原话","reason":"点评"}]
 }`
 
   try {
@@ -142,13 +161,13 @@ async function analyzeWithAI(data, full = false) {
       const basic = basicResult.status === 'fulfilled' ? basicResult.value : {}
       const fullR = fullResult.status === 'fulfilled' ? fullResult.value : {}
       result.topics = basic.topics || []
-      result.goldenQuotes = basic.goldenQuotes || []
+      result.goldenQuotes = filterGoldenQuotes(basic.goldenQuotes, data.messages)
       result.userTitles = fullR.userTitles || []
       result.qualityReview = fullR.qualityReview || null
     } else {
       const basicResult = await analyzeBasic(compressed, data.messages)
       result.topics = basicResult.topics || []
-      result.goldenQuotes = basicResult.goldenQuotes || []
+      result.goldenQuotes = filterGoldenQuotes(basicResult.goldenQuotes, data.messages)
     }
 
     // token估算：中文约2字符=1 token，加上prompt开销
@@ -170,3 +189,21 @@ async function analyzeWithAI(data, full = false) {
 }
 
 module.exports = { analyzeWithAI }
+
+// 过滤金句：用消息映射表验证userId，无匹配的丢弃
+function filterGoldenQuotes(quotes, messages) {
+  if (!quotes || !quotes.length || !messages || !messages.length) return quotes || []
+  const nameToUserId = new Map()
+  for (const msg of messages) {
+    if (msg.user && msg.userId && !nameToUserId.has(msg.user)) {
+      nameToUserId.set(msg.user, msg.userId)
+    }
+  }
+  return quotes.filter(q => {
+    if (!q.sender) return false
+    const mappedId = nameToUserId.get(q.sender)
+    if (!mappedId) return false
+    q.userId = mappedId
+    return true
+  })
+}
