@@ -67,19 +67,19 @@ function buildHtml(data, analysis) {
       </div>`
   }
 
-  // 群友画像
+  // 群友画像（QQ头像URL）
   let profilesHtml = ''
   for (const t of userTitles) {
     const mbti = t.mbti ? `<span class="mbti-tag">${esc(t.mbti)}</span>` : ''
-    // 根据MBTI生成头像颜色
-    const colors = ['#39C5BB','#F8BBD0','#fff9c4','#e0f2f1','#F472B6','#A7E7E3']
-    const ci = Math.abs(t.name.charCodeAt(0) || 0) % colors.length
-    const avatarColor = colors[ci]
-    const initial = (t.name || '?')[0]
+    const avatarUrl = t.userId ? `https://q1.qlogo.cn/g?b=qq&nk=${esc(t.userId)}&s=100` : ''
+    const avatarStyle = avatarUrl
+      ? `background-image:url('${avatarUrl}');background-size:cover;background-position:center`
+      : `background:#39C5BB`
+    const avatarContent = avatarUrl ? '' : esc((t.name || '?')[0])
     profilesHtml += `
       <div class="profile-card">
         <div class="profile-head">
-          <div class="avatar" style="background:${avatarColor}">${esc(initial)}</div>
+          <div class="avatar" style="${avatarStyle}">${avatarContent}</div>
           <div class="profile-info">
             <div class="profile-name">${esc(t.name)} ${mbti}</div>
             <div class="profile-role">${esc(t.title)}</div>
@@ -101,7 +101,7 @@ function buildHtml(data, analysis) {
           <span class="quote-name">${esc(q.sender)}</span>
         </div>
         <div class="quote-bubble">${esc(q.content)}</div>
-        <div class="quote-comment">💬 Miku 锐评</div>
+        <div class="quote-comment">💬 莲莲锐评</div>
         <div class="quote-comment-text">${esc(q.reason)}</div>
       </div>`
   }
@@ -134,6 +134,11 @@ function buildHtml(data, analysis) {
     }
     gradientBar += '</div>'
 
+    // token消耗显示
+    const tokenDisplay = analysis.tokenUsage && analysis.tokenUsage.totalTokens
+      ? `<span style="font-family:monospace;font-size:0.75rem;color:#7F8C8D;margin-left:auto">Token: ${analysis.tokenUsage.totalTokens}</span>`
+      : ''
+
     qualityHtml = `
       <div class="qr-card">
         <div class="qr-header-row">
@@ -141,12 +146,15 @@ function buildHtml(data, analysis) {
             <div class="qr-title">${esc(qr.title)}</div>
             <div class="qr-subtitle">${esc(qr.subtitle)}</div>
           </div>
-          <div class="qr-deco-icon">💬</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            ${tokenDisplay}
+            <div class="qr-deco-icon">💬</div>
+          </div>
         </div>
         ${gradientBar}
         ${dimsHtml}
         <div class="qr-summary">
-          <span class="qr-summary-label">🔊 Miku 综合点评</span>
+          <span class="qr-summary-label">🔊 莲莲点评</span>
           ${esc(qr.summary)}
         </div>
       </div>`

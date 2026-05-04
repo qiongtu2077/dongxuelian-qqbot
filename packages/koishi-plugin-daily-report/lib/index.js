@@ -10,30 +10,31 @@ const { TIMEOUTS } = require('./config')
 const { collectReportData } = require('./data-collector')
 const { analyzeWithAI } = require('./ai-analyzer')
 const { renderReport } = require('./html-renderer')
-const { generateMockAnalysis } = require('./mock-data')
 
-// 冷却机制（带过期清理）
+// 冷却机制
 const cooldown = new Map()
-const COOLDOWN_CLEANUP_INTERVAL = 600000
 
-function cleanupCooldown() {
+// 白名单缓存（避免每次同步读文件）
+let whitelistCache = null
+let whitelistCacheTime = 0
+const WHITELIST_CACHE_TTL = 60000 // 1分钟刷新
+
+function getWhitelist() {
   const now = Date.now()
-  for (const [key, ts] of cooldown) {
-    if (now - ts > TIMEOUTS.cooldown) cooldown.delete(key)
+  if (whitelistCache && now - whitelistCacheTime < WHITELIST_CACHE_TTL) {
+    return whitelistCache
   }
-}
-
-// 读取主插件的白名单
-function isGroupWhitelisted(channelKey) {
   const dataDir = process.env.DONGXUELIAN_AI_DATA_DIR
-  if (!dataDir) return false
+  if (!dataDir) { whitelistCache = []; return whitelistCache }
   try {
     const raw = fs.readFileSync(path.join(dataDir, 'summary-whitelist.json'), 'utf8')
-    const whitelist = JSON.parse(raw)
-    return Array.isArray(whitelist) && whitelist.includes(String(channelKey))
+    const arr = JSON.parse(raw)
+    whitelistCache = Array.isArray(arr) ? arr.map(String) : []
   } catch {
-    return false
+    whitelistCache = []
   }
+  whitelistCacheTime = now
+  return whitelistCache
 }
 
 exports.name = 'daily-report'
@@ -41,13 +42,14 @@ exports.name = 'daily-report'
 exports.apply = (ctx) => {
   ctx.on('ready', () => {
     ctx.logger('daily-report').info('daily-report loaded')
-    setInterval(cleanupCooldown, COOLDOWN_CLEANUP_INTERVAL)
   })
 
   ctx.middleware(async (session, next) => {
     const content = session.content || ''
+    const isFull = content === '群聊详细日报' || content === '/群聊详细日报'
+    const isBasic = content === '群聊日报' || content === '/群聊日报'
 
-    if (content === '群聊日报' || content === '/群聊日报') {
+    if (isFull || isBasic) {
       const channelKey = session.guildId || session.channelId || 'private'
 
       if (!session.guildId) {
@@ -56,7 +58,8 @@ exports.apply = (ctx) => {
       }
 
       // 白名单检查
-      if (!isGroupWhitelisted(channelKey)) {
+      const whitelist = getWhitelist()
+      if (!whitelist.includes(String(channelKey))) {
         await session.send('本群未启用日报功能，请联系管理员添加白名单。')
         return
       }
@@ -76,31 +79,20 @@ exports.apply = (ctx) => {
       }
 
       // 发送提示
-      await session.send('正在生成群聊日报，请稍候...')
+      const modeLabel = isFull ? '详细日报' : '日报'
+      await session.send(`正在生成群聊${modeLabel}，请稍候...`)
 
       try {
-        let analysis
-        try {
-          analysis = await analyzeWithAI(data)
-        } catch (aiErr) {
-          ctx.logger('daily-report').warn(`AI分析失败，使用演示数据: ${aiErr.message}`)
-          analysis = generateMockAnalysis(data)
-        }
-
-        if (!analysis.topics.length && !analysis.userTitles.length && !analysis.goldenQuotes.length) {
-          ctx.logger('daily-report').warn('AI分析返回空结果，使用演示数据')
-          analysis = generateMockAnalysis(data)
-        }
-
+        const analysis = await analyzeWithAI(data, isFull)
         const imageBuffer = await renderReport(data, analysis)
         const base64 = imageBuffer.toString('base64')
-        await session.send(h.image(`base64://${base64}`))
+        await session.send(h.image(`data:image/png;base64,${base64}`))
 
         cooldown.set(channelKey, Date.now())
-        ctx.logger('daily-report').info(`日报生成成功: ${data.date}, ${data.totalMessages}条消息`)
+        ctx.logger('daily-report').info(`${modeLabel}生成成功: ${data.date}, ${data.totalMessages}条消息`)
       } catch (err) {
-        ctx.logger('daily-report').error(`日报生成失败: ${err.message}`)
-        await session.send('日报生成失败了，请稍后再试。')
+        ctx.logger('daily-report').error(`${modeLabel}生成失败: ${err.message}`)
+        await session.send(`${modeLabel}生成失败了，请稍后再试。`)
       }
       return
     }
