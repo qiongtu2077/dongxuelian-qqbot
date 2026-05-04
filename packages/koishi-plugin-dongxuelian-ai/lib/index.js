@@ -625,6 +625,8 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       if (Object.prototype.hasOwnProperty.call(commandResult, 'response')) return commandResult.response
       return
     }
+    // 以 / 开头且非命令的消息交给后续插件处理（如 dongxuelian-help 的 /help 搜索）
+    if (plain.startsWith('/')) return next()
 
     const botMentionCount = getBotMentionCount(session)
     const otherMentions = hasOtherMentions(session)
