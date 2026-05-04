@@ -617,12 +617,15 @@ async function chat(session, userText, ctx, options = {}) {
             const config = await loadConfig()
             const apiKey = am.keyFile ? (await readTextFile(am.keyFile).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '') : config.apiKey
             if (!apiKey) continue
+            const ac = new AbortController()
+            const timer = setTimeout(() => ac.abort(), 8000)
             summary = await requestChatCompletions(
               [{ role: 'system', content: '把以下发言用 200 字以内概括其发言风格和常用话题，越精炼越好。' },
                { role: 'user', content: rawMessages }],
               { model: am.model, baseURL: provDef.baseURL.replace(/\/+$/, ''), apiKey, provider: am.provider },
-              { max_tokens: 200 }
+              { max_tokens: 200, signal: ac.signal }
             )
+            clearTimeout(timer)
             if (summary) break
           } catch {}
         }

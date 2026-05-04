@@ -29,6 +29,15 @@ const {
 
 const forgetPendingConfirm = new Map()
 
+function isGroupAdmin(session) {
+  if (!session?.event?.sender?.role) return false
+  return session.event.sender.role === 'owner' || session.event.sender.role === 'admin'
+}
+
+function isGroupAdminOrBotAdmin(session) {
+  return isGroupAdmin(session) || hasAdminPermission(session)
+}
+
 function handled(response) {
   return { matched: true, response }
 }
@@ -129,7 +138,7 @@ async function handleCommand(session, ctx, state) {
 
   if (plain === '东雪莲清空群记忆') {
     if (!inGuild) return handled('这个命令只能在群里用。')
-    if (!hasAdminPermission(session)) return handled('只有管理员才能清空群记忆。')
+    if (!isGroupAdminOrBotAdmin(session)) return handled('只有群管理员/群主才能清空群记忆。')
     clearConversationHistory()
     await clearGroupMemory(channelKey)
     return handled('已清空本群的记忆。')
@@ -171,15 +180,15 @@ async function handleCommand(session, ctx, state) {
 
   // #7 群记忆定时清空
   if (plain.startsWith('东雪莲群记忆定时') && plain !== '东雪莲群记忆定时') {
-    if (!hasAdminPermission(session)) return handled('只有管理员才能设置。')
+    if (!isGroupAdminOrBotAdmin(session)) return handled('只有群管理员/群主才能设置。')
     if (!inGuild) return handled('这个命令只能在群里用。')
     const value = plain.slice(7).trim()
     if (value === '关') {
       try { await safeUnlink(path.join(DATA_DIR, 'memory-timers', String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_') + '.json')) } catch {}
       return handled('群记忆定时清空已关闭。')
     }
-    const hours = parseInt(value)
-    if (!hours || hours < 1 || hours > 168) return handled('请设置 1-168 小时。例如：东雪莲群记忆定时 3')
+    const hours = parseFloat(value)
+    if (!isFinite(hours) || hours < 0.5 || hours > 168) return handled('请设置 0.5-168 小时。例如：东雪莲群记忆定时 3')
     const timerData = { intervalHours: hours, lastClearTs: Date.now() }
     const timerFile = path.join(DATA_DIR, 'memory-timers', String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_') + '.json')
     try { require('fs').mkdirSync(path.join(DATA_DIR, 'memory-timers'), { recursive: true }) } catch {}
@@ -232,7 +241,7 @@ async function handleCommand(session, ctx, state) {
   }
 
   if (plain === '东雪莲群人格') {
-    if (!hasAdminPermission(session)) { await session.send('只有管理员才能查看群级人格。'); return handled() }
+    if (!isGroupAdminOrBotAdmin(session)) { await session.send('只有群管理员/群主才能查看群级人格。'); return handled() }
     const entry = getGroupPersona(channelKey)
     if (!entry) { await session.send('当前群：默认模式（无群级人格）'); return handled() }
     let groupUserCount = 0
@@ -244,7 +253,7 @@ async function handleCommand(session, ctx, state) {
   }
 
   if (plain.startsWith('东雪莲群人格切换') && plain !== '东雪莲群人格切换') {
-    if (!hasAdminPermission(session)) { await session.send('只有管理员才能设置群级人格。'); return handled() }
+    if (!isGroupAdminOrBotAdmin(session)) { await session.send('只有群管理员/群主才能设置群级人格。'); return handled() }
     if (!inGuild) { await session.send('群级人格设置只能在群里用。'); return handled() }
     const targetName = plain.slice(8).trim()
     const personas = getAvailablePersonals()
@@ -256,7 +265,7 @@ async function handleCommand(session, ctx, state) {
   }
 
   if (plain === '东雪莲群人格重置') {
-    if (!hasAdminPermission(session)) { await session.send('只有管理员才能重置群级人格。'); return handled() }
+    if (!isGroupAdminOrBotAdmin(session)) { await session.send('只有群管理员/群主才能重置群级人格。'); return handled() }
     if (!inGuild) { await session.send('群级人格重置只能在群里用。'); return handled() }
     resetGroupPersona(channelKey)
     await session.send('已重置群级人格。所有未切换个人人格的用户将使用默认东雪莲。')

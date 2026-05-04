@@ -3,9 +3,10 @@
  * 职责: 依次测试各已配置供应商的连通性，返回状态报告。
  * 边界: 不修改 conversation，不修改运行时配置。只读探测。
  */
-const { PROVIDERS } = require('./constants')
+const { PROVIDERS, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE, KEY_FILE } = require('./constants')
 const { loadConfig } = require('./runtime-config')
 const { requestChatCompletions } = require('./api')
+const fsp = require('fs/promises')
 
 const HEALTH_CACHE_TTL = 60000
 const PROBE_TIMEOUT = 5000
@@ -68,6 +69,10 @@ async function testProvider(providerId, providerDef, allKeys) {
   }
 }
 
+async function readHealthKeyFile(file) {
+  try { return (await fsp.readFile(file, 'utf8')).trim() } catch { return '' }
+}
+
 async function runHealthCheck(force = false) {
   const now = Date.now()
   if (!force && healthCache && now - healthCacheTs < HEALTH_CACHE_TTL) {
@@ -77,10 +82,12 @@ async function runHealthCheck(force = false) {
   const config = await loadConfig()
   const defaultKey = config.apiKey
 
-  const deepseekKey = ''
-  const dashscopeKey = ''
-  const glmKey = ''
-  const mimoriumKey = ''
+  const [deepseekKey, dashscopeKey, glmKey, mimoriumKey] = await Promise.all([
+    readHealthKeyFile(DEEPSEEK_KEY_FILE),
+    readHealthKeyFile(DASHSCOPE_KEY_FILE),
+    readHealthKeyFile(GLM_KEY_FILE),
+    readHealthKeyFile(MIMORIUM_KEY_FILE),
+  ])
 
   const results = []
   for (const [providerId, providerDef] of Object.entries(PROVIDERS)) {
