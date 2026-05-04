@@ -82,7 +82,7 @@ exports.apply = (ctx) => {
       await session.send(`正在生成群聊${modeLabel}，请稍候...`)
 
       try {
-        const analysis = await analyzeWithAI(data, isFull)
+        const analysis = isFull ? await analyzeWithAI(data, true) : {}
         const imageBuffer = await renderReport(data, analysis)
         const base64 = imageBuffer.toString('base64')
         await session.send(h.image(`data:image/png;base64,${base64}`))

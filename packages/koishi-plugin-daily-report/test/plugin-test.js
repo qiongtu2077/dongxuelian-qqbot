@@ -158,6 +158,11 @@ testMiddleware('你好', '123').then(nonReport => {
 }).then(privateResult => {
   check('私聊日报被拒绝', privateResult.session._sent.some(s => s.includes('群里使用')))
 
+  // 测试详细日报命令匹配
+  return testMiddleware('群聊详细日报', '123')
+}).then(fullResult => {
+  check('群聊详细日报命令被拦截', !fullResult.nextCalled)
+
   // 清理
   delete process.env.DONGXUELIAN_AI_DATA_DIR
 
