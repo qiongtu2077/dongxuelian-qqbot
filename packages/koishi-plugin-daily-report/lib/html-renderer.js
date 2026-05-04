@@ -5,6 +5,7 @@
  */
 const fs = require('fs')
 const path = require('path')
+const { FORCE_TEMPLATE } = require('./config')
 
 const TEMPLATES_DIR = path.join(__dirname, '..', 'templates')
 
@@ -26,11 +27,20 @@ function loadTemplates() {
   }))
 }
 
-// 随机选择模板
+// 时段选择模板：6:00-18:00用light，18:00-6:00用dark（支持FORCE_TEMPLATE调试）
 function selectTemplate() {
   const templates = loadTemplates()
   if (templates.length === 0) throw new Error('没有可用模板')
-  return templates[Math.floor(Math.random() * templates.length)]
+  if (FORCE_TEMPLATE) {
+    const found = templates.find(t => t.name === FORCE_TEMPLATE)
+    if (found) return found
+    console.warn(`[daily-report] 强制模板 ${FORCE_TEMPLATE} 不存在，回退时段选择`)
+  }
+  const hour = new Date().getHours()
+  const preferred = (hour >= 6 && hour < 18) ? 'light.html' : 'dark.html'
+  const found = templates.find(t => t.name === preferred)
+  if (found) return found
+  return templates[0]
 }
 
 // 构建24小时柱状图SVG（用于light/dark模板）
@@ -101,13 +111,30 @@ function buildProfilesHtml(userTitles) {
 }
 
 // 构建今日圣经HTML
-function buildQuotesHtml(goldenQuotes) {
+function buildQuotesHtml(goldenQuotes, messages) {
   if (!goldenQuotes || !goldenQuotes.length) return ''
+
+  // 从消息中建立 name→userId 映射，用于抓QQ头像
+  const nameToUserId = new Map()
+  if (messages && messages.length) {
+    for (const msg of messages) {
+      if (msg.user && msg.userId && !nameToUserId.has(msg.user)) {
+        nameToUserId.set(msg.user, msg.userId)
+      }
+    }
+  }
+
   let html = `<div class="sec"><div class="bar pk"></div><div class="sec-t">✝ 今日圣经</div></div>`
   for (const q of goldenQuotes) {
-    const colors = ['#39C5BB','#A7E7E3','#F8BBD0','#e0f2f1']
-    const ci = Math.abs((q.sender||'').charCodeAt(0)||0) % colors.length
-    html += `<div class="quote-block"><div class="quote-user"><div class="avatar" style="width:28px;height:28px;font-size:.7rem;background:${colors[ci]}">${esc((q.sender||'?')[0])}</div><span class="quote-name">${esc(q.sender)}</span></div><div class="quote-bubble">${esc(q.content)}</div><div class="quote-comment">💬 莲莲锐评</div><div class="quote-comment-text">${esc(q.reason)}</div></div>`
+    const userId = nameToUserId.get(q.sender)
+    const avatarUrl = userId
+      ? `https://q1.qlogo.cn/g?b=qq&nk=${userId}&s=100`
+      : ''
+    const avatarStyle = avatarUrl
+      ? `background-image:url('${avatarUrl}');background-size:cover;background-position:center`
+      : `background:#39C5BB`
+    const avatarContent = avatarUrl ? '' : esc((q.sender||'?')[0])
+    html += `<div class="quote-block"><div class="quote-user"><div class="avatar" style="width:28px;height:28px;font-size:.7rem;${avatarStyle}">${avatarContent}</div><span class="quote-name">${esc(q.sender)}</span></div><div class="quote-bubble">${esc(q.content)}</div><div class="quote-comment">💬 莲莲锐评</div><div class="quote-comment-text">${esc(q.reason)}</div></div>`
   }
   return html
 }
@@ -142,7 +169,7 @@ function buildQualityHtml(qr, tokenUsage) {
 function renderTemplate(template, data, analysis, templateName) {
   const topicsHtml = buildTopicsHtml(analysis.topics)
   const profilesHtml = buildProfilesHtml(analysis.userTitles)
-  const quotesHtml = buildQuotesHtml(analysis.goldenQuotes)
+  const quotesHtml = buildQuotesHtml(analysis.goldenQuotes, data.messages)
   const qualityHtml = buildQualityHtml(analysis.qualityReview, analysis.tokenUsage)
   // paper模板用CSS柱状图，其他用SVG
   const chartHtml = templateName === 'paper.html'

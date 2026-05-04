@@ -6,7 +6,7 @@
 const { h } = require('koishi')
 const fs = require('fs')
 const path = require('path')
-const { TIMEOUTS } = require('./config')
+const { TIMEOUTS, DATA_DIR } = require('./config')
 const { collectReportData } = require('./data-collector')
 const { analyzeWithAI } = require('./ai-analyzer')
 const { renderReport } = require('./html-renderer')
@@ -24,10 +24,9 @@ function getWhitelist() {
   if (whitelistCache && now - whitelistCacheTime < WHITELIST_CACHE_TTL) {
     return whitelistCache
   }
-  const dataDir = process.env.DONGXUELIAN_AI_DATA_DIR
-  if (!dataDir) { whitelistCache = []; return whitelistCache }
+  if (!DATA_DIR) { whitelistCache = []; return whitelistCache }
   try {
-    const raw = fs.readFileSync(path.join(dataDir, 'summary-whitelist.json'), 'utf8')
+    const raw = fs.readFileSync(path.join(DATA_DIR, 'summary-whitelist.json'), 'utf8')
     const arr = JSON.parse(raw)
     whitelistCache = Array.isArray(arr) ? arr.map(String) : []
   } catch {
