@@ -14,6 +14,7 @@ function buildBarChart(hourlyActivity) {
   const chartH = 120
   const gap = 4
   const totalW = 24 * (barW + gap)
+  const svgH = chartH + 40 // 增加高度给数字留空间
   let bars = ''
 
   const colors = ['#39C5BB', '#39C5BB', '#39C5BB', '#39C5BB', '#39C5BB', '#39C5BB',
@@ -28,16 +29,18 @@ function buildBarChart(hourlyActivity) {
     const c = hourlyActivity[i] === max ? '#F472B6' : colors[i]
     bars += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${c}"/>`
     if (hourlyActivity[i] > 0) {
-      bars += `<text x="${x + barW/2}" y="${y - 4}" text-anchor="middle" font-size="9" fill="#7F8C8D" font-family="Arial">${hourlyActivity[i]}</text>`
+      // 数字位置：柱子顶部上方6px，确保不超出视口
+      const textY = Math.max(y - 6, 12)
+      bars += `<text x="${x + barW/2}" y="${textY}" text-anchor="middle" font-size="10" font-weight="bold" fill="#7F8C8D" font-family="Arial">${hourlyActivity[i]}</text>`
     }
   }
 
   let labels = ''
   for (let i = 0; i < 24; i += 2) {
-    labels += `<text x="${i * (barW + gap) + barW/2}" y="${chartH + 14}" text-anchor="middle" font-size="10" fill="#7F8C8D" font-family="Arial">${String(i).padStart(2,'0')}时</text>`
+    labels += `<text x="${i * (barW + gap) + barW/2}" y="${chartH + 16}" text-anchor="middle" font-size="10" fill="#7F8C8D" font-family="Arial">${String(i).padStart(2,'0')}时</text>`
   }
 
-  return `<svg width="${totalW}" height="${chartH + 20}" viewBox="0 0 ${totalW} ${chartH + 20}" style="display:block;margin:0 auto">
+  return `<svg width="${totalW}" height="${svgH}" viewBox="0 0 ${totalW} ${svgH}" style="display:block;margin:0 auto">
     <g transform="translate(0,0)">${bars}</g>${labels}</svg>`
 }
 
@@ -178,7 +181,7 @@ body{font-family:'Microsoft YaHei','PingFang SC','Noto Sans SC',sans-serif;color
 .st-num{font-family:Arial;font-size:1.8rem;font-weight:800}
 .st-txt{font-size:.75rem;color:var(--ts);font-weight:bold}
 .peak{background:linear-gradient(135deg,var(--mb),var(--ml));color:#fff;border-radius:var(--r);padding:22px 30px;margin-bottom:25px;position:relative;overflow:hidden}
-.peak::after{content:"MIKU";position:absolute;right:20px;top:50%;transform:translateY(-50%);font-family:'Arial Black';font-size:110px;font-weight:900;color:rgba(255,255,255,0.15)}
+.peak::after{content:"LIAN";position:absolute;right:20px;top:50%;transform:translateY(-50%);font-family:'Arial Black';font-size:110px;font-weight:900;color:rgba(255,255,255,0.15)}
 .peak-lbl{font-size:.9rem;font-weight:bold}
 .peak-time{font-family:'Arial Black';font-size:2.2rem;font-weight:900;margin-top:4px}
 .sec{display:flex;align-items:center;margin:28px 0 16px;padding-bottom:8px;border-bottom:1px solid var(--bl)}

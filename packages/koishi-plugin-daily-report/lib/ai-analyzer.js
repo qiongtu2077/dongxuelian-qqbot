@@ -123,10 +123,16 @@ async function analyzeWithAI(data, full = false) {
       result.goldenQuotes = basicResult.goldenQuotes || []
     }
 
+    // token估算：中文约2字符=1 token，加上prompt开销
+    // 压缩阶段：N批 × 200 tokens
+    // 分析阶段：1-2次调用 × 1500 tokens
+    const batches = Math.ceil(data.messages.length / 100)
+    const compressTokens = batches * 200
+    const analysisTokens = full ? 3500 : 2000
     result.tokenUsage = {
-      promptTokens: compressed.length * 2,
+      promptTokens: compressTokens + analysisTokens,
       completionTokens: 0,
-      totalTokens: compressed.length * 2,
+      totalTokens: compressTokens + analysisTokens,
     }
   } catch (err) {
     console.error('[ai-analyzer] 分析失败:', err.message)
