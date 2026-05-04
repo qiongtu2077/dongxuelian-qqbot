@@ -20,6 +20,7 @@ const {
   getAvailablePersonals,
 } = require('./persona')
 const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory } = require('./conversation')
+const { runHealthCheck, formatHealthReport } = require('./health-check')
 const {
   hasAdminPermission, isReservedCommand,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
@@ -250,6 +251,12 @@ async function handleCommand(session, ctx, state) {
       `当前群白名单状态：${getRandomWhitelistStatus(channelKey) ? '允许主动回复' : '禁止主动回复'}`,
       `随机触发率规则：热身${RANDOM_TRIGGER_WARMUP}条后每条+${formatPercent(RANDOM_TRIGGER_RAMP)}`,
     ].join('\n'))
+  }
+
+  if (plain === 'AI诊断') {
+    if (!hasAdminPermission(session)) return handled('只有 bot 管理员才能使用 AI 诊断。')
+    const report = await runHealthCheck(true)
+    return handled(formatHealthReport(report))
   }
 
   if (plain === 'AI重载') {

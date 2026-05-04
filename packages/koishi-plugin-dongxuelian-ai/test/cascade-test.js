@@ -421,6 +421,7 @@ async function main() {
   check('npm check includes AI forward syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/forward.js'))
   check('npm check includes AI vision syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/vision.js'))
   check('npm check includes AI sensitive syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/sensitive.js'))
+  check('npm check includes AI health-check syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/health-check.js'))
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
   check('workspace package glob exists', Array.isArray(rootPkg.workspaces) && rootPkg.workspaces.includes('packages/*'))
 
@@ -477,6 +478,7 @@ async function main() {
     forward: path.join(LIB, 'forward'),
     vision: path.join(LIB, 'vision'),
     sensitive: path.join(LIB, 'sensitive'),
+    healthCheck: path.join(LIB, 'health-check'),
     index: path.join(LIB, 'index'),
     help: path.join(HELP, 'index'),
   }
@@ -570,6 +572,9 @@ async function main() {
       'clearSensitiveRuntimeState', 'notifySensitiveHandlers',
       'handleSensitiveMessage',
     ],
+    healthCheck: [
+      'runHealthCheck', 'formatHealthReport', 'resetHealthCache',
+    ],
   }
   for (const [moduleName, names] of Object.entries(expectedExports)) {
     const target = modules[moduleName]
@@ -630,6 +635,7 @@ async function main() {
     path.join(LIB, 'forward.js'),
     path.join(LIB, 'vision.js'),
     path.join(LIB, 'sensitive.js'),
+    path.join(LIB, 'health-check.js'),
     path.join(HELP, 'index.js'),
     __filename,
   ]
@@ -637,7 +643,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
