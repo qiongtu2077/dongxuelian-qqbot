@@ -33,7 +33,7 @@ function selectTemplate() {
   return templates[Math.floor(Math.random() * templates.length)]
 }
 
-// 构建24小时柱状图SVG
+// 构建24小时柱状图SVG（用于light/dark模板）
 function buildBarChart(hourlyActivity) {
   const max = Math.max(...hourlyActivity, 1)
   const barW = 28, chartH = 120, gap = 4
@@ -58,6 +58,18 @@ function buildBarChart(hourlyActivity) {
     labels += `<text x="${i*(barW+gap)+barW/2}" y="${chartH+16}" text-anchor="middle" font-size="10" fill="#7F8C8D" font-family="Arial">${String(i).padStart(2,'0')}时</text>`
   }
   return `<svg width="${totalW}" height="${svgH}" viewBox="0 0 ${totalW} ${svgH}" style="display:block;margin:0 auto"><g>${bars}</g>${labels}</svg>`
+}
+
+// 构建CSS柱状图（用于paper模板）
+function buildCssBarChart(hourlyActivity) {
+  const max = Math.max(...hourlyActivity, 1)
+  let bars = ''
+  for (let i = 0; i < 24; i++) {
+    const pct = Math.max((hourlyActivity[i] / max) * 100, 3)
+    const cls = hourlyActivity[i] === max ? 'hot' : hourlyActivity[i] > max * 0.6 ? 'warm' : hourlyActivity[i] > max * 0.3 ? '' : 'cool'
+    bars += `<div class="bar ${cls}" style="height:${pct}%"></div>`
+  }
+  return bars
 }
 
 // 构建话题HTML
@@ -127,12 +139,15 @@ function buildQualityHtml(qr, tokenUsage) {
 }
 
 // 替换模板变量
-function renderTemplate(template, data, analysis) {
+function renderTemplate(template, data, analysis, templateName) {
   const topicsHtml = buildTopicsHtml(analysis.topics)
   const profilesHtml = buildProfilesHtml(analysis.userTitles)
   const quotesHtml = buildQuotesHtml(analysis.goldenQuotes)
   const qualityHtml = buildQualityHtml(analysis.qualityReview, analysis.tokenUsage)
-  const chartHtml = buildBarChart(data.hourlyActivity || new Array(24).fill(0))
+  // paper模板用CSS柱状图，其他用SVG
+  const chartHtml = templateName === 'paper.html'
+    ? buildCssBarChart(data.hourlyActivity || new Array(24).fill(0))
+    : buildBarChart(data.hourlyActivity || new Array(24).fill(0))
 
   const placeholders = {
     '{{date}}': esc(data.date),
@@ -214,7 +229,7 @@ async function renderHtmlToImage(htmlContent) {
 // 主入口：随机选模板 + 渲染 + 截图
 async function renderReport(data, analysis) {
   const template = selectTemplate()
-  const html = renderTemplate(template.content, data, analysis)
+  const html = renderTemplate(template.content, data, analysis, template.name)
   return renderHtmlToImage(html)
 }
 
