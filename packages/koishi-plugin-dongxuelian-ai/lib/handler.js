@@ -19,13 +19,15 @@ const {
   resolvePersona,
   getAvailablePersonals,
 } = require('./persona')
-const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory } = require('./conversation')
+const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory, getMemorySummary, getConversationHistory } = require('./conversation')
 const { runHealthCheck, formatHealthReport } = require('./health-check')
 const {
   hasAdminPermission, isReservedCommand,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
   formatPercent, getModelDisplayName, getSearchCapability, formatSearchStatus,
 } = require('./utils')
+
+const forgetPendingConfirm = new Map()
 
 function handled(response) {
   return { matched: true, response }
@@ -99,10 +101,30 @@ async function handleCommand(session, ctx, state) {
     return handled(formatSearchStatus(config))
   }
 
+  // #2 忘记我二次确认
   if (plain === '东雪莲忘记我') {
+    const forgetKey = 'forget:' + channelKey + ':' + currentUserId
+    forgetPendingConfirm.set(forgetKey, Date.now())
+    return handled('确定要清空我对你的所有记忆吗？再次发送「确认忘记我」即可。')
+  }
+
+  if (plain === '确认忘记我') {
+    const forgetKey = 'forget:' + channelKey + ':' + currentUserId
+    const ts = forgetPendingConfirm.get(forgetKey) || 0
+    if (!ts || Date.now() - ts > 60000) return handled('确认超时，请重新发送「东雪莲忘记我」。')
+    forgetPendingConfirm.delete(forgetKey)
     await clearUserMemory(currentUserId, channelKey)
     clearUserConversationHistory(session)
     return handled('已清空我对你的记忆。')
+  }
+
+  // #3 随机选 A/B
+  if (plain.startsWith('东雪莲帮我选') && plain.includes('还是')) {
+    const m = plain.match(/选\s*(.+?)\s*还是\s*(.+)/)
+    if (m) {
+      const chosen = Math.random() < 0.5 ? m[1].trim() : m[2].trim()
+      return handled(`我投了个骰子……${chosen}！`)
+    }
   }
 
   if (plain === '东雪莲清空群记忆') {
@@ -111,6 +133,58 @@ async function handleCommand(session, ctx, state) {
     clearConversationHistory()
     await clearGroupMemory(channelKey)
     return handled('已清空本群的记忆。')
+  }
+
+  // #5 东雪莲吐槽我
+  if (plain === '东雪莲吐槽我') {
+    const memorySummary = await getMemorySummary(currentUserId, channelKey)
+    let promptText
+    if (memorySummary) {
+      promptText = `根据我对你的了解：${memorySummary}\n用你现在的性格和语气，根据这些记忆狠狠吐槽我。简短一点，30字以内。`
+    } else {
+      const recentHistory = getConversationHistory(session)
+      const recentText = recentHistory.slice(-5).map(m => m.content).filter(Boolean).join('；')
+      promptText = `最近群聊消息：${recentText || '没什么特别的事'}\n用你现在的性格和语气，随便吐个槽。简短一点，30字以内。`
+    }
+    const result = await callOpenAI([
+      { role: 'system', content: promptText },
+      { role: 'user', content: '吐槽我' },
+    ], false, { max_tokens: 100 })
+    if (result) return handled(result)
+    return handled('没什么好吐槽的。')
+  }
+
+  // #6 帮我说话
+  if (plain.startsWith('东雪莲帮我说话') && plain.length > 7) {
+    const target = plain.slice(7).trim() || ''
+    let contextNote = ''
+    if (session.quote?.content) contextNote += `\n引用消息：${session.quote.content.slice(0, 200)}`
+    if (session.quote?.elements) contextNote += `\n引用包含图片/文件等`
+    const promptText = `用你现在的性格和语气，帮我吐槽以下这件事/这个人。注意你是以你自己的身份说，不要让对方知道是我让你说的。\n${contextNote}\n吐槽对象：${target || '没什么具体对象，随便吐个槽'}`
+    const result = await callOpenAI([
+      { role: 'system', content: promptText },
+      { role: 'user', content: target || '帮我说话' },
+    ], false, { max_tokens: 200 })
+    if (result) return handled(result)
+    return handled('没什么好说的。')
+  }
+
+  // #7 群记忆定时清空
+  if (plain.startsWith('东雪莲群记忆定时') && plain !== '东雪莲群记忆定时') {
+    if (!hasAdminPermission(session)) return handled('只有管理员才能设置。')
+    if (!inGuild) return handled('这个命令只能在群里用。')
+    const value = plain.slice(7).trim()
+    if (value === '关') {
+      try { await safeUnlink(path.join(DATA_DIR, 'memory-timers', String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_') + '.json')) } catch {}
+      return handled('群记忆定时清空已关闭。')
+    }
+    const hours = parseInt(value)
+    if (!hours || hours < 1 || hours > 168) return handled('请设置 1-168 小时。例如：东雪莲群记忆定时 3')
+    const timerData = { intervalHours: hours, lastClearTs: Date.now() }
+    const timerFile = path.join(DATA_DIR, 'memory-timers', String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_') + '.json')
+    try { require('fs').mkdirSync(path.join(DATA_DIR, 'memory-timers'), { recursive: true }) } catch {}
+    await writeJsonFile(timerFile, timerData)
+    return handled(`群记忆定时清空已设为每 ${hours} 小时清空一次。下次清空后会自动重置计时。`)
   }
 
   ctx.logger('dongxuelian-ai').info(`persona-check: plain=${JSON.stringify(plain)} len=${plain.length} charCodes=${Array.from(plain).map(c => c.charCodeAt(0)).join(',')}`)

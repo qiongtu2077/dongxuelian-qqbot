@@ -14,6 +14,7 @@ const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
   GLM_KEY_FILE, DASHSCOPE_KEY_FILE, PROVIDERS,
   SENSITIVE_CACHE_PREFIX,
   USER_PROFILE_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE,
+  DATA_DIR,
 } = require('./constants')
 const { readTextFile, readJsonFile, writeJsonFile, splitSentences, sanitizeUserName } = require('./utils')
 const { normalizeText } = require('./message-reader')
@@ -233,7 +234,15 @@ function getSharedContextNote(session, currentUserId = '', options = {}) {
   let scoped = items.filter(item => { if (item.role === 'assistant') return false; if (focusMessageIds.has(String(item.messageId || ''))) return true; if (focusUserIds.has(String(item.userId || ''))) return true; return item.mentionUserIds.some(u => focusUserIds.has(String(u))) })
   if (!scoped.length && options.randomTriggered && currentUserId) scoped = items.filter(item => item.role !== 'assistant' && item.userId === currentUserId)
   if (!scoped.length) scoped = items.filter(item => item.role !== 'assistant').slice(-Math.min(MAX_THREAD_CONTEXT_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES))
-  const lines = scoped.slice(-Math.min(MAX_THREAD_CONTEXT_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES)).map(item => `${item.speakerName}(${item.role === 'assistant' ? '东雪莲' : '群友'})：${item.content}`).filter(Boolean)
+  const IDLE_GAP_MS = 10 * 60 * 1000
+  const itemsToMap = scoped.slice(-Math.min(MAX_THREAD_CONTEXT_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES))
+  const lines = []
+  for (let i = 0; i < itemsToMap.length; i++) {
+    if (i > 0 && itemsToMap[i].ts && itemsToMap[i - 1].ts && itemsToMap[i].ts - itemsToMap[i - 1].ts > IDLE_GAP_MS) {
+      lines.push('[--- 以下是与当前无关的旧消息 ---]')
+    }
+    lines.push(`${itemsToMap[i].speakerName}(${itemsToMap[i].role === 'assistant' ? '东雪莲' : '群友'})：${itemsToMap[i].content}`)
+  }
   if (!lines.length) return ''
   return `[群聊当前话题背景]\n下面只保留当前回复链或当前参与者相关的纯文本消息。优先理解这一个子话题，不要把别人的并行聊天混进来。\n${lines.join('\n')}`
 }
@@ -273,6 +282,28 @@ async function analyzeChannelSensitive(channelKey) {
   } catch {}
 }
 
+const MEMORY_TIMER_DIR = path.join(DATA_DIR, 'memory-timers')
+
+function getMemoryTimerKey(channelKey) {
+  return String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
+}
+
+function readMemoryTimer(channelKey) {
+  const file = path.join(MEMORY_TIMER_DIR, getMemoryTimerKey(channelKey) + '.json')
+  try {
+    const data = JSON.parse(require('fs').readFileSync(file, 'utf8'))
+    if (data && data.intervalHours > 0 && data.intervalHours <= 168) return data
+  } catch {}
+  return null
+}
+
+function checkMemoryTimerExpired(channelKey) {
+  const timer = readMemoryTimer(channelKey)
+  if (!timer) return false
+  const elapsed = Date.now() - (timer.lastClearTs || 0)
+  return elapsed >= timer.intervalHours * 3600 * 1000
+}
+
 module.exports = {
   conversationCache, replyFingerprintCache,
   conversationLastActiveAt, channelSharedCache, lastForwardSummaryCache,
@@ -288,4 +319,5 @@ module.exports = {
   getQuotedMessageNote, getSharedContextNote,
   saveUserProfile, saveSensitiveCache, analyzeChannelSensitive,
   writeMemory, deleteMemory, clearUserMemory, clearGroupMemory, getMemorySummary,
+  readMemoryTimer, checkMemoryTimerExpired,
 }

@@ -318,6 +318,23 @@ exports.apply = (ctx) => {
       return renderAvailableModels()
     }
 
+    // #4 /help xxx 模糊搜索
+    const helpSearchMatch = plain.match(/^help(.+)/)
+    if (helpSearchMatch) {
+      const keyword = helpSearchMatch[1].trim()
+      if (!keyword) return ''
+      const allRenderers = [
+        renderRootHelp, renderAiHelp, renderCommonHelp, renderGroupReplyHelp,
+        renderNetworkHelp, renderEventHelp, renderCollectionHelp,
+        renderBlacklistHelp, renderSensitiveHelp, renderPersonaHelp,
+        renderSwitchModels, renderAvailableModels, renderQuickReference,
+      ]
+      const allText = allRenderers.map(fn => fn()).join('\n')
+      const matchedLines = allText.split('\n').filter(line => line.includes(keyword))
+      if (!matchedLines.length) return '未找到相关帮助。'
+      return matchedLines.slice(0, 5).map(line => line.trim()).join('\n')
+    }
+
     const providerMatch = plain.match(/^供应商\s+(.+)$/)
     if (providerMatch) {
       return renderProviderModels(providerMatch[1])

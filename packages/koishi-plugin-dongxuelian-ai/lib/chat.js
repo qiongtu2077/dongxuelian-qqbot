@@ -36,7 +36,8 @@ const {
   getConversationHistory, saveConversationTurn,
   clearUserConversationHistory,
   getRecentAssistantReplies, getRecentUserMessages,
-  writeMemory, deleteMemory, getMemorySummary,
+  writeMemory, deleteMemory, getMemorySummary, clearGroupMemory,
+  checkMemoryTimerExpired, readMemoryTimer,
 } = require('./conversation')
 const { normalizeText } = require('./message-reader')
 const {
@@ -326,8 +327,20 @@ async function chat(session, userText, ctx, options = {}) {
   const japanLinked = JAPAN_SELF_IDENTIFY_RE.test(cleanInput)
   const testMode = require('fs').existsSync(TEST_MODE_FILE) && hasAdminPermission(session)
 
-  // 人格系统：用户级 > 群级 > 默认（必须在 hostile 之前，因为 hostile 需要 personaName）
+  // #7 群记忆定时清空检查
   const channelKey = getChannelKey(session)
+  if (session.guildId && checkMemoryTimerExpired(channelKey)) {
+    clearGroupMemory(channelKey)
+    const timer = readMemoryTimer(channelKey)
+    if (timer) {
+      timer.lastClearTs = Date.now()
+      const timerFile = path.join(DATA_DIR, 'memory-timers', String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_') + '.json')
+      try { require('fs').mkdirSync(path.join(DATA_DIR, 'memory-timers'), { recursive: true }) } catch {}
+      try { require('fs').writeFileSync(timerFile, JSON.stringify(timer), 'utf8') } catch {}
+    }
+  }
+
+  // 人格系统：用户级 > 群级 > 默认（必须在 hostile 之前，因为 hostile 需要 personaName）
   const currentUserId = session.userId || session.author?.id || session.username || ''
   const personaResolution = resolvePersona(channelKey, currentUserId)
   let personaName = personaResolution.name
@@ -336,6 +349,15 @@ async function chat(session, userText, ctx, options = {}) {
   if (testMode) personaName = null
   if (personaName) {
     personaSkillContent = loadPersonalSkill(personaName)
+  }
+
+  // 主动记忆写入：用户说"记住XXX"直接存，跳过AI反问
+  if (currentUserId && session.guildId && /^(?:记住|记下)\s+/.test(cleanInput)) {
+    const text = cleanInput.replace(/^(?:记住|记下)\s+/, '').trim()
+    if (text) {
+      writeMemory(currentUserId, '', channelKey, text)
+      return
+    }
   }
 
   // 记忆系统：用户确认写入 / 口头纠正

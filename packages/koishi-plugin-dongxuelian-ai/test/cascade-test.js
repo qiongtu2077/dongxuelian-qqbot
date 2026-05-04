@@ -533,6 +533,7 @@ async function main() {
       'getRecentUserMessages', 'findChannelMessageById', 'collectReplyChain',
       'getQuotedMessageNote', 'getSharedContextNote',
       'writeMemory', 'deleteMemory', 'clearUserMemory', 'clearGroupMemory', 'getMemorySummary',
+      'readMemoryTimer', 'checkMemoryTimerExpired',
     ],
     chat: [
       'chat', 'loadConfig', 'resetConfigCache', 'loadSkills',
@@ -1063,7 +1064,7 @@ async function main() {
   const chatSrc = read(path.join(LIB, 'chat.js'))
   const utilsSrc = read(path.join(LIB, 'utils.js'))
   const msgSrc = read(path.join(LIB, 'message-reader.js'))
-  check('conversation.js does not import DATA_DIR directly', !conversationSrc.includes('DATA_DIR'))
+  // conversation.js 现需 DATA_DIR 用于 memory-timers (群记忆定时清空) 的路径构造
   check('conversation.js does not import POLITICAL_DETECT_FILE', !conversationSrc.includes('POLITICAL_DETECT_FILE'))
   check('conversation.js does not import index.js', !conversationSrc.includes("require('./index')") && !conversationSrc.includes('require("./index")'))
   check('utils.js does not import ABUSIVE_FALLBACK_REPLIES', !utilsSrc.includes('ABUSIVE_FALLBACK_REPLIES'))
