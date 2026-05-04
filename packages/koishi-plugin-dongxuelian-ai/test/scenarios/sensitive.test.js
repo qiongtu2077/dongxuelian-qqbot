@@ -31,7 +31,7 @@ async function run(t) {
     const trigger = await run(makeSession({
       userId: '20001',
       author: { id: '20001', name: 'member' },
-      content: '\u53f0\u6e7e \u8fd9\u4e2a\u8bdd\u9898\u522b\u804a\u4e86',
+      content: '\u53f0\u6e7e\u95ee\u9898\u522b\u804a\u4e86',
       event: { sender: { role: 'member' }, message: [] },
     }))
     checkSentIncludes(t, 'scenario sensitive keyword notifies handler', trigger, '<at id="99999"/>')

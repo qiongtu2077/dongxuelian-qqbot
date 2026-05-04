@@ -49,7 +49,7 @@ async function run(t) {
       content: '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b\u5f00',
       event: { sender: { role: 'admin' }, message: [] },
     })
-    const sensitive = userSession(makeSession, '4001', '\u53f0\u6e7e \u5e76\u53d1\u5f00\u542f\u7ade\u901f', {
+    const sensitive = userSession(makeSession, '4001', '\u53f0\u6e7e\u95ee\u9898 \u5e76\u53d1\u5f00\u542f\u7ade\u901f', {
       event: { sender: { role: 'member' }, message: [] },
     })
     await Promise.all([
@@ -63,7 +63,7 @@ async function run(t) {
     const initialNotifyCount = countSentContaining([enable, sensitive], '<at id="99999"/>')
     t.check('scenario sensitive enable race does not duplicate notify', initialNotifyCount <= 1, JSON.stringify({ enable: enable.sent, sensitive: sensitive.sent }))
 
-    const follow = userSession(makeSession, '4002', '\u53f0\u6e7e \u5e76\u53d1\u540e\u7eed\u68c0\u67e5', {
+    const follow = userSession(makeSession, '4002', '\u53f0\u6e7e\u95ee\u9898 \u5e76\u53d1\u540e\u7eed\u68c0\u67e5', {
       event: { sender: { role: 'member' }, message: [] },
     })
     const followResult = await run(follow, { flushTicks: 20 })
