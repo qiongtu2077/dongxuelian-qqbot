@@ -35,6 +35,36 @@ async function compressMessages(messages) {
     .join('\n---\n')
 }
 
+// 安全JSON解析（处理AI返回的格式错误）
+function safeParseJSON(text) {
+  // 尝试直接解析
+  const jsonMatch = text.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) return null
+  try {
+    return JSON.parse(jsonMatch[0])
+  } catch {}
+
+  // 尝试修复常见问题：截断的JSON
+  let str = jsonMatch[0]
+  // 移除末尾不完整的对象/数组
+  str = str.replace(/,\s*\{[^}]*$/, '')
+  str = str.replace(/,\s*\[[^\]]*$/, '')
+  // 补全缺失的括号
+  const openBraces = (str.match(/\{/g) || []).length
+  const closeBraces = (str.match(/\}/g) || []).length
+  const openBrackets = (str.match(/\[/g) || []).length
+  const closeBrackets = (str.match(/\]/g) || []).length
+  str += ']'.repeat(Math.max(0, openBrackets - closeBrackets))
+  str += '}'.repeat(Math.max(0, openBraces - closeBraces))
+
+  try {
+    return JSON.parse(str)
+  } catch {
+    console.error('[ai-analyzer] JSON修复失败:', str.slice(0, 200))
+    return null
+  }
+}
+
 async function analyzeBasic(compressed, messages) {
   const prompt = `你是群聊分析师。根据以下压缩后的群聊摘要，完成两项任务：
 
@@ -52,8 +82,7 @@ ${compressed.slice(0, 6000)}
 
   try {
     const text = await callAI(prompt, '请分析', 2000)
-    const jsonMatch = text.match(/\{[\s\S]*\}/)
-    if (jsonMatch) return JSON.parse(jsonMatch[0])
+    return safeParseJSON(text)
   } catch (err) {
     console.error('[ai-analyzer] basic分析失败:', err.message)
   }
@@ -92,8 +121,7 @@ ${JSON.stringify(memberData, null, 2)}
 
   try {
     const text = await callAI(prompt, '请分析', 2000)
-    const jsonMatch = text.match(/\{[\s\S]*\}/)
-    if (jsonMatch) return JSON.parse(jsonMatch[0])
+    return safeParseJSON(text)
   } catch (err) {
     console.error('[ai-analyzer] full分析失败:', err.message)
   }
