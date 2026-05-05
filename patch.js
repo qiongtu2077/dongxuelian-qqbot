@@ -44,10 +44,15 @@ if (!Session.prototype.send) {
 }
 
 // @satorijs/core@3.7.0 缺失 text() 方法
-// adapter-onebot 发送消息失败时的错误处理会调用 text()
+// adapter-onebot 发送消息失败时的错误处理会调用 session.text()
 if (!Session.prototype.text) {
-  Session.prototype.text = function(...args) {
-    if (typeof this.element?.toString === 'function') return this.element.toString(...args)
-    return String(args[0] || '')
+  Session.prototype.text = function() {
+    const elements = this.event?.message?.elements
+    if (!elements) return ''
+    return elements
+      .filter(e => e.type === 'text')
+      .map(e => e.attrs?.content || '')
+      .join('')
+      .trim()
   }
 }
