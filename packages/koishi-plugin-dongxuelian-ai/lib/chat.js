@@ -719,7 +719,7 @@ async function chat(session, userText, ctx, options = {}) {
       }
     }
     const visionResult = await appendVisionMessage(messages, session, vc, ctx, {
-      promptText: '看到什么直接说，别分析，一句话以你的风格回复就行',
+      promptText: '看到图了。结合当前群聊话题，用你的风格简单说一句',
       readFailReply: '图片读取失败，换个图试试？',
       inaccessibleReply: '图片无法访问，换个图试试？',
       identifyFailReply: '图片识别失败，换个图试试？',

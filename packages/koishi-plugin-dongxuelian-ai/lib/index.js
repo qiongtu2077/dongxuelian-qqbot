@@ -753,6 +753,8 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     if (!isPrivate && !directAt && !nameMentioned) {
       if (analyzed.hasVisual || analyzed.hasFile || analyzed.hasEmbed) {
         if (!inRandomWhitelist) return next()
+        // 跳过 emoji/sticker/gif 表情包
+        if (/Qzone|Emoji|Sticker|gif/i.test(content)) return next()
         // 图片也按概率回复，不无条件回复
         if (!randomTriggered && !shouldTriggerRandom(getRandomTriggerRate(channelKey))) return next()
         if (!prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: true, includeQuote: false }) && !analyzed.hasUsableText) {
