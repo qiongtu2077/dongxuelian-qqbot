@@ -1,6 +1,10 @@
 <template>
-  <div class="app">
-    <h1>Bot Dashboard</h1>
+  <LoginPage v-if="!loggedIn" @logged-in="loggedIn = true" />
+  <div v-else class="app">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
+      <h1 style="margin:0">Bot Dashboard</h1>
+      <button class="btn btn-sm" style="background:#2a3a4a;color:#94A3B8;border:1px solid #2a3a4a" @click="logout">退出登录</button>
+    </div>
 
     <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap">
       <button v-for="t in tabs" :key="t.id" class="btn btn-sm"
@@ -20,6 +24,7 @@
 
 <script>
 import { ref } from 'vue'
+import LoginPage from './components/LoginPage.vue'
 import ConfigPanel from './components/ConfigPanel.vue'
 import KeyManager from './components/KeyManager.vue'
 import PersonaPanel from './components/PersonaPanel.vue'
@@ -29,8 +34,9 @@ import WhitelistPanel from './components/WhitelistPanel.vue'
 import StatusPanel from './components/StatusPanel.vue'
 
 export default {
-  components: { ConfigPanel, KeyManager, PersonaPanel, CommandBrowser, CommandList, WhitelistPanel, StatusPanel },
+  components: { LoginPage, ConfigPanel, KeyManager, PersonaPanel, CommandBrowser, CommandList, WhitelistPanel, StatusPanel },
   setup() {
+    const loggedIn = ref(!!localStorage.getItem('dashboard_token'))
     const tabs = [
       { id: 'config', label: '模型配置' },
       { id: 'keys', label: 'API Keys' },
@@ -41,7 +47,13 @@ export default {
       { id: 'status', label: '状态' },
     ]
     const activeTab = ref('features')
-    return { tabs, activeTab }
+
+    function logout() {
+      localStorage.removeItem('dashboard_token')
+      loggedIn.value = false
+    }
+
+    return { loggedIn, tabs, activeTab, logout }
   }
 }
 </script>

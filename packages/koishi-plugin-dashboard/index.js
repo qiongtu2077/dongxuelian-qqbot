@@ -1,8 +1,24 @@
 const fs = require('fs')
 const path = require('path')
 const http = require('http')
+const crypto = require('crypto')
 
 exports.name = 'dashboard'
+
+const PASSWORD = process.env.DASHBOARD_PASSWORD || 'Aa123456~'
+
+function createToken() {
+  const raw = PASSWORD + ':' + (Date.now() + 86400000)
+  return crypto.createHash('sha256').update(raw).digest('hex')
+}
+
+function validateToken(token) {
+  if (!token) return false
+  const hash = createToken()
+  // Check against current and previous day (tolerate 1 day clock skew)
+  const yesterday = crypto.createHash('sha256').update(PASSWORD + ':' + (Date.now() - 86400000)).digest('hex')
+  return token === hash || token === yesterday
+}
 
 exports.apply = (ctx) => {
   const PLUGIN_ROOT = __dirname
@@ -15,15 +31,45 @@ exports.apply = (ctx) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
     const pathname = url.pathname
 
-    // CORS
+    // CORS（允许带 Authorization 头）
     res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
       res.end()
       return
+    }
+
+    // 登录接口（不需要 token）
+    if (pathname === '/dashboard/api/login' && req.method === 'POST') {
+      let body = ''
+      req.on('data', c => body += c)
+      req.on('end', () => {
+        try {
+          const { password } = JSON.parse(body)
+          if (password === PASSWORD) {
+            const token = createToken()
+            return json(res, { ok: true, token })
+          }
+          return json(res, { ok: false, message: '密码错误' }, 401)
+        } catch {
+          return json(res, { ok: false, message: '无效请求' }, 400)
+        }
+      })
+      return
+    }
+
+    // 检查其他 API 路由的 token
+    if (pathname.startsWith('/dashboard/api/')) {
+      const auth = req.headers['authorization'] || ''
+      const token = auth.replace(/^Bearer\s+/i, '')
+      if (!validateToken(token)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, message: '请先登录', code: 'AUTH_REQUIRED' }))
+        return
+      }
     }
 
     // API 路由

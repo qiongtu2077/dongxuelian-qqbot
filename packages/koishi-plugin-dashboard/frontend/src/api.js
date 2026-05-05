@@ -1,19 +1,46 @@
-const BASE = 'http://localhost:5150/dashboard/api'
+const BASE = '/dashboard/api'
+
+function headers() {
+  const h = { 'Content-Type': 'application/json' }
+  const token = localStorage.getItem('dashboard_token')
+  if (token) h['Authorization'] = 'Bearer ' + token
+  return h
+}
 
 async function get(path) {
-  const res = await fetch(BASE + path)
+  const res = await fetch(BASE + path, { headers: headers() })
+  if (res.status === 401) {
+    localStorage.removeItem('dashboard_token')
+    window.location.reload()
+    return { ok: false, data: null }
+  }
   return { ok: res.ok, data: await res.json() }
 }
 
 async function put(path, data) {
   const res = await fetch(BASE + path, {
     method: 'PUT',
+    headers: headers(),
+    body: JSON.stringify(data),
+  })
+  if (res.status === 401) {
+    localStorage.removeItem('dashboard_token')
+    window.location.reload()
+    return { ok: false, data: null }
+  }
+  return { ok: res.ok, data: await res.json() }
+}
+
+async function post(path, data) {
+  const res = await fetch(BASE + path, {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
   return { ok: res.ok, data: await res.json() }
 }
 
+export async function login(password) { return post('/login', { password }) }
 export async function fetchStatus() { return get('/status') }
 export async function fetchProviders() { return get('/providers') }
 export async function fetchConfig() { return get('/config') }
