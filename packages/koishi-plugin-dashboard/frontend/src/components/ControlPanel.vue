@@ -30,15 +30,21 @@
 
     <!-- QQ 管理 -->
     <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <h2 style="margin:0 0 4px">QQ 管理</h2>
-          <div style="font-size:13px;color:#64748B">切换 QQ 账号、查看登录状态</div>
+      <div>
+        <h2 style="margin:0 0 4px">QQ 管理</h2>
+        <div style="font-size:13px;color:#64748B;margin-bottom:12px">
+          当前 QQ：<span style="font-family:monospace;color:#39C5BB">{{ status.qq || '未知' }}</span>
         </div>
-        <button class="btn btn-sm" @click="showNapcat = !showNapcat">{{ showNapcat ? '关闭' : '打开' }}</button>
-      </div>
-      <div v-if="showNapcat" style="margin-top:12px;border-radius:8px;overflow:hidden;background:#0f1923">
-        <iframe src="/webui/" style="width:100%;height:600px;border:none"></iframe>
+        <div style="background:#0f1923;border-radius:8px;padding:14px 16px;font-size:13px;line-height:1.7">
+          <div style="color:#94A3B8;margin-bottom:8px">切换 QQ 需要打开 NapCat 管理界面：</div>
+          <div style="background:#1a2634;border-radius:6px;padding:10px 14px;font-family:monospace;font-size:12px;color:#39C5BB;margin-bottom:10px">
+            # 新建终端，运行：<br />
+            ssh -L 6099:localhost:6099 root@YOUR_SERVER_IP<br /><br />
+            # 然后浏览器打开：<br />
+            http://localhost:6099/webui/
+          </div>
+          <a href="http://localhost:6099/webui/" target="_blank" class="btn btn-sm" style="display:inline-block;text-decoration:none">打开 NapCat 管理面板</a>
+        </div>
       </div>
     </div>
 
@@ -77,7 +83,6 @@ export default {
     const resultMsg = ref(null)
     const maintenanceOn = ref(false)
     const maintLoading = ref(false)
-    const showNapcat = ref(false)
 
     async function loadStatus() {
       const res = await botStatus()
@@ -118,7 +123,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, showConfirm, resultMsg, maintenanceOn, maintLoading, doStart, confirmStop, doStop, toggleMaintenance, showNapcat }
+    return { status, acting, showConfirm, resultMsg, maintenanceOn, maintLoading, doStart, confirmStop, doStop, toggleMaintenance }
   }
 }
 </script>

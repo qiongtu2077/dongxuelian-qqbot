@@ -15,6 +15,59 @@ function validateToken(token) {
   return token === createToken()
 }
 
+// NapCat WebUI 代理（自动读取 webui.json 中的 token）
+function getNapcatToken() {
+  if (getNapcatToken._cached) return getNapcatToken._cached
+  const candidates = [
+    '/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json',
+    process.env.NAPCAT_CONFIG || '',
+  ].filter(Boolean)
+  for (const p of candidates) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(p, 'utf8'))
+      if (cfg.token) { getNapcatToken._cached = cfg.token; return cfg.token }
+    } catch {}
+  }
+  return ''
+}
+
+function napcatProxy(req, res, targetPath) {
+  const host = process.env.NAPCAT_HOST || '127.0.0.1'
+  const port = process.env.NAPCAT_PORT || 6099
+  const token = process.env.NAPCAT_TOKEN || getNapcatToken()
+  const opts = { hostname: host, port, path: targetPath, method: req.method, headers: { ...req.headers, host: host + ':' + port } }
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token
+  const proxyReq = http.request(opts, (proxyRes) => {
+    // token 失效时降级重试（去掉 token）
+    if (proxyRes.statusCode === 401 && token) {
+      opts.headers['Authorization'] = ''
+      http.request(opts, (r2) => { napcatRespond(res, r2, token) }).on('error', (e) => { res.writeHead(502); res.end('proxy error: ' + e.message) }).end()
+      proxyRes.resume()
+      return
+    }
+    napcatRespond(res, proxyRes, token)
+  })
+  proxyReq.on('error', (e) => { res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('proxy error: ' + e.message) })
+  req.pipe(proxyReq)
+}
+
+function napcatRespond(res, proxyRes, token) {
+  const contentType = proxyRes.headers['content-type'] || ''
+  // HTML 响应：注入 token 到 localStorage，让 WebUI 能读到
+  if (contentType.includes('text/html') && token) {
+    let body = ''
+    proxyRes.on('data', c => body += c)
+    proxyRes.on('end', () => {
+      const injected = body.replace('</head>', `<script>localStorage.setItem('token','${token}');</script></head>`)
+      res.writeHead(proxyRes.statusCode, { ...proxyRes.headers, 'content-length': Buffer.byteLength(injected) })
+      res.end(injected)
+    })
+    return
+  }
+  res.writeHead(proxyRes.statusCode, proxyRes.headers)
+  proxyRes.pipe(res)
+}
+
 exports.apply = (ctx) => {
   const PLUGIN_ROOT = __dirname
   const AI_LIB = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'lib')
@@ -189,31 +242,13 @@ exports.apply = (ctx) => {
 
     // NapCat WebUI 代理
     if (pathname.startsWith('/webui/') || pathname === '/webui') {
-      const target = pathname + url.search
-      const napcatHost = process.env.NAPCAT_HOST || '127.0.0.1'
-      const napcatPort = process.env.NAPCAT_PORT || 6099
-      const opts = { hostname: napcatHost, port: napcatPort, path: target, method: req.method, headers: { ...req.headers, host: napcatHost + ':' + napcatPort } }
-      const proxyReq = http.request(opts, (proxyRes) => {
-        res.writeHead(proxyRes.statusCode, proxyRes.headers)
-        proxyRes.pipe(res)
-      })
-      proxyReq.on('error', (e) => { res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('proxy error: ' + e.message) })
-      req.pipe(proxyReq)
+      napcatProxy(req, res, pathname + url.search)
       return
     }
 
     // NapCat API 代理
     if (pathname.startsWith('/api/') && !pathname.startsWith('/dashboard/api/')) {
-      const target = pathname + url.search
-      const napcatHost = process.env.NAPCAT_HOST || '127.0.0.1'
-      const napcatPort = process.env.NAPCAT_PORT || 6099
-      const opts = { hostname: napcatHost, port: napcatPort, path: target, method: req.method, headers: { ...req.headers, host: napcatHost + ':' + napcatPort } }
-      const proxyReq = http.request(opts, (proxyRes) => {
-        res.writeHead(proxyRes.statusCode, proxyRes.headers)
-        proxyRes.pipe(res)
-      })
-      proxyReq.on('error', (e) => { res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('proxy error: ' + e.message) })
-      req.pipe(proxyReq)
+      napcatProxy(req, res, pathname + url.search)
       return
     }
 
@@ -223,7 +258,14 @@ exports.apply = (ctx) => {
       try {
         const out = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()
         const running = out.split('\n').filter(Boolean).length
-        return json(res, { running: running > 0, workers: running })
+        // 读取当前 QQ 号
+        let qq = ''
+        try {
+          const yml = fs.readFileSync(path.join(KOISHI_DIR, 'koishi.yml'), 'utf8')
+          const m = yml.match(/selfId:\s*['\"]?(\d+)['\"]?/)
+          if (m) qq = m[1]
+        } catch {}
+        return json(res, { running: running > 0, workers: running, qq })
       } catch {
         return json(res, { running: false, workers: 0 })
       }
