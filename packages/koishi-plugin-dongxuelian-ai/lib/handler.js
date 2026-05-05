@@ -9,6 +9,7 @@ const {
   DATA_DIR, PLUGIN_VERSION,
   PROVIDERS, PROVIDER_FILE, MODEL_FILE, BASE_URL_FILE,
   SEARCH_ENABLED_FILE, TEST_MODE_FILE, THINKING_MODE_FILE,
+  HOSTILE_MODE_FILE,
   RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP,
 } = require('./constants')
 const {
@@ -67,6 +68,18 @@ async function handleCommand(session, ctx, state) {
     clearConversationHistory()
     channelMissCount.delete(channelKey)
     return handled('\u6d4b\u8bd5\u6a21\u5f0f\u5df2\u5173\u95ed\uff0c\u6062\u590d\u6b63\u5e38\u4eba\u683c\u3002')
+  }
+
+  if (/^(?:东雪莲)?嘴臭开$/.test(plain)) {
+    if (!hasAdminPermission(session)) return handled('只有管理员能操作这个命令。')
+    try { require('fs').writeFileSync(HOSTILE_MODE_FILE, 'on') } catch (e) { ctx.logger('dongxuelian-ai').warn(`hostile mode enable failed: ${e.message}`) }
+    return handled('嘴臭模式已开启。被攻击时反击值 ≥ 90 将使用嘴臭人格。')
+  }
+
+  if (/^(?:东雪莲)?嘴臭关$/.test(plain)) {
+    if (!hasAdminPermission(session)) return handled('只有管理员能操作这个命令。')
+    await safeUnlink(HOSTILE_MODE_FILE)
+    return handled('嘴臭模式已关闭。被攻击时反击值 ≥ 90 将保持阴阳人格。')
   }
 
   if (/^东雪莲群聊AI概率查看$/.test(plain)) {

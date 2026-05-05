@@ -408,7 +408,7 @@ async function main() {
   checkEqual('root package name', rootPkg.name, 'dongxuelian-qqbot')
   checkEqual('npm test:quick keeps cascade entry', rootPkg.scripts && rootPkg.scripts['test:quick'], 'node packages/koishi-plugin-dongxuelian-ai/test/cascade-test.js')
   checkEqual('npm test:scenario runs scenario entry', rootPkg.scripts && rootPkg.scripts['test:scenario'], 'node packages/koishi-plugin-dongxuelian-ai/test/scenario-test.js')
-  checkEqual('npm test:plugins runs auxiliary plugin tests', rootPkg.scripts && rootPkg.scripts['test:plugins'], 'node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js')
+  checkEqual('npm test:plugins runs auxiliary plugin tests', rootPkg.scripts && rootPkg.scripts['test:plugins'], 'node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js && node packages/koishi-plugin-daily-report/test/plugin-test.js')
   check('npm test runs quick and scenario entries', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:quick') && rootPkg.scripts.test.includes('npm run test:scenario'))
   check('npm test includes plugin tests', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:plugins'))
   check('npm check includes AI index syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js'))
@@ -478,6 +478,7 @@ async function main() {
     forward: path.join(LIB, 'forward'),
     vision: path.join(LIB, 'vision'),
     sensitive: path.join(LIB, 'sensitive'),
+    retaliation: path.join(LIB, 'retaliation'),
     healthCheck: path.join(LIB, 'health-check'),
     index: path.join(LIB, 'index'),
     help: path.join(HELP, 'index'),
@@ -576,6 +577,9 @@ async function main() {
     healthCheck: [
       'runHealthCheck', 'formatHealthReport', 'resetHealthCache',
     ],
+    retaliation: [
+      'calculateRetaliationScore',
+    ],
   }
   for (const [moduleName, names] of Object.entries(expectedExports)) {
     const target = modules[moduleName]
@@ -636,6 +640,7 @@ async function main() {
     path.join(LIB, 'forward.js'),
     path.join(LIB, 'vision.js'),
     path.join(LIB, 'sensitive.js'),
+    path.join(LIB, 'retaliation.js'),
     path.join(LIB, 'health-check.js'),
     path.join(HELP, 'index.js'),
     __filename,
@@ -644,7 +649,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
