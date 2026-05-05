@@ -36,14 +36,22 @@
           当前 QQ：<span style="font-family:monospace;color:#39C5BB">{{ status.qq || '未知' }}</span>
         </div>
         <div style="background:#0f1923;border-radius:8px;padding:14px 16px;font-size:13px;line-height:1.7">
-          <div style="color:#94A3B8;margin-bottom:8px">切换 QQ 需要打开 NapCat 管理界面：</div>
-          <div style="background:#1a2634;border-radius:6px;padding:10px 14px;font-family:monospace;font-size:12px;color:#39C5BB;margin-bottom:10px">
-            # 新建终端，运行：<br />
-            ssh -L 6099:localhost:6099 root@YOUR_SERVER_IP<br /><br />
-            # 然后浏览器打开：<br />
-            http://localhost:6099/webui/
+          <div style="margin-bottom:8px">服务器 IP</div>
+          <input v-model="sshHost" @change="saveSSHHost" placeholder="服务器 IP 或域名" style="width:100%;margin-bottom:16px;font-family:monospace" />
+          <div style="margin-bottom:12px">复制 SSH 命令到终端运行</div>
+          <div style="display:flex;gap:8px;margin-bottom:16px">
+            <code id="ssh-cmd" style="flex:1;background:#1a2634;border-radius:6px;padding:10px 14px;font-size:12px;color:#39C5BB;font-family:monospace">ssh -L 6099:localhost:6099 {{ sshUser }}@{{ sshHost || '服务器IP' }}</code>
+            <button class="btn btn-sm" style="white-space:nowrap" @click="copyText('ssh-cmd')">复制</button>
           </div>
-          <a href="http://localhost:6099/webui/" target="_blank" class="btn btn-sm" style="display:inline-block;text-decoration:none">打开 NapCat 管理面板</a>
+
+          <div style="margin-bottom:8px">NapCat Token</div>
+          <div style="display:flex;gap:8px;margin-bottom:16px">
+            <code id="napcat-token" style="flex:1;background:#1a2634;border-radius:6px;padding:10px 14px;font-size:12px;color:#FCD34D;font-family:monospace">{{ napcatToken || '加载中...' }}</code>
+            <button class="btn btn-sm" style="white-space:nowrap" @click="copyText('napcat-token')">复制</button>
+          </div>
+
+          <a :href="'http://localhost:6099/webui/'" target="_blank" class="btn btn-sm" style="display:inline-block;text-decoration:none">打开 NapCat 管理面板</a>
+          <div v-if="copiedMsg" style="margin-top:8px;font-size:12px;color:#39C5BB">{{ copiedMsg }}</div>
         </div>
       </div>
     </div>
@@ -72,7 +80,7 @@
 
 <script>
 import { ref, onMounted } from 'vue'
-import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance } from '../api'
+import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo } from '../api'
 
 export default {
   name: 'ControlPanel',
@@ -83,6 +91,10 @@ export default {
     const resultMsg = ref(null)
     const maintenanceOn = ref(false)
     const maintLoading = ref(false)
+    const napcatToken = ref('')
+    const copiedMsg = ref('')
+    const sshHost = ref(localStorage.getItem('dashboard_ssh_host') || '')
+    const sshUser = ref('root')
 
     async function loadStatus() {
       const res = await botStatus()
@@ -93,8 +105,32 @@ export default {
       const res = await fetchMaintenance()
       if (res.ok) maintenanceOn.value = res.data.enabled
     }
+    async function loadQQToken() {
+      const res = await fetchQQToken()
+      if (res.ok && res.data?.token) napcatToken.value = res.data.token
+    }
+    async function loadSSHInfo() {
+      const res = await fetchSSHInfo()
+      if (res.ok && res.data) {
+        if (res.data.host && !sshHost.value) sshHost.value = res.data.host
+        if (res.data.user) sshUser.value = res.data.user
+      }
+    }
+    function saveSSHHost() {
+      localStorage.setItem('dashboard_ssh_host', sshHost.value)
+    }
 
-    onMounted(() => { loadStatus(); loadMaintenance() })
+    onMounted(() => { loadStatus(); loadMaintenance(); loadQQToken(); loadSSHInfo() })
+
+    function copyText(id) {
+      const el = document.getElementById(id)
+      if (!el) return
+      const text = el.textContent || el.innerText
+      navigator.clipboard.writeText(text.trim()).then(() => {
+        copiedMsg.value = '已复制'
+        setTimeout(() => copiedMsg.value = '', 2000)
+      })
+    }
 
     async function doStart() {
       acting.value = true; resultMsg.value = null
@@ -123,7 +159,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, showConfirm, resultMsg, maintenanceOn, maintLoading, doStart, confirmStop, doStop, toggleMaintenance }
+    return { status, acting, showConfirm, resultMsg, maintenanceOn, maintLoading, napcatToken, copiedMsg, sshHost, sshUser, copyText, saveSSHHost, doStart, confirmStop, doStop, toggleMaintenance }
   }
 }
 </script>

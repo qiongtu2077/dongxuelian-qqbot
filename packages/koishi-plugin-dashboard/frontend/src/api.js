@@ -57,3 +57,5 @@ export async function startBot() { return post('/bot/start', {}) }
 export async function stopBot() { return post('/bot/stop', {}) }
 export async function fetchMaintenance() { return get('/maintenance') }
 export async function setMaintenance(enabled) { return put('/maintenance', { enabled }) }
+export async function fetchQQToken() { return get('/qq/token') }
+export async function fetchSSHInfo() { return get('/qq/ssh-info') }

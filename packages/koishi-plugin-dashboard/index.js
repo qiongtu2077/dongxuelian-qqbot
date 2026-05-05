@@ -2,6 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const http = require('http')
 const crypto = require('crypto')
+const os = require('os')
 
 exports.name = 'dashboard'
 
@@ -188,6 +189,19 @@ exports.apply = (ctx) => {
       } catch { return json(res, []) }
     }
 
+    // API: 获取 NapCat Token（用于登录 WebUI）
+    if (pathname === '/dashboard/api/qq/token' && req.method === 'GET') {
+      const token = process.env.NAPCAT_TOKEN || getNapcatToken()
+      return json(res, { token })
+    }
+
+    // API: 获取 SSH 连接信息
+    if (pathname === '/dashboard/api/qq/ssh-info' && req.method === 'GET') {
+      const host = process.env.DASHBOARD_SSH_HOST || ''
+      const user = process.env.DASHBOARD_SSH_USER || 'root'
+      return json(res, { host, user, port: 22 })
+    }
+
     // API: 获取所有 Key 文件状态
     if (pathname === '/dashboard/api/keys' && req.method === 'GET') {
       const keyFiles = [
@@ -240,9 +254,12 @@ exports.apply = (ctx) => {
       return json(res, COMMANDS_DATA)
     }
 
-    // NapCat WebUI 代理
+    // NapCat WebUI 代理（注入 token 参数，让 WebUI 能读到）
     if (pathname.startsWith('/webui/') || pathname === '/webui') {
-      napcatProxy(req, res, pathname + url.search)
+      const nToken = process.env.NAPCAT_TOKEN || getNapcatToken()
+      const sep = url.search ? '&' : '?'
+      const targetPath = pathname + url.search + (nToken ? sep + 'webui_token=' + nToken : '')
+      napcatProxy(req, res, targetPath)
       return
     }
 
