@@ -27,6 +27,7 @@ const {
   hasAdminPermission, isReservedCommand,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
   formatPercent, getModelDisplayName, getSearchCapability, formatSearchStatus,
+  extractAtIds,
 } = require('./utils')
 
 const forgetPendingConfirm = new Map()
@@ -99,9 +100,11 @@ async function handleCommand(session, ctx, state) {
     }
     const userId = String(currentUserId || '')
     if (!userId) return handled('无法获取用户信息。')
-    const atMe = cache.messages.filter(m =>
-      Array.isArray(m.mentionUserIds) && m.mentionUserIds.includes(userId)
-    )
+    const atMe = cache.messages.filter(m => {
+      if (Array.isArray(m.mentionUserIds) && m.mentionUserIds.includes(userId)) return true
+      if (m.content && extractAtIds(m.content).includes(userId)) return true
+      return false
+    })
     if (!atMe.length) return handled('今天还没有人 @你。')
     const slice = atMe.slice(-10)
     const lines = slice.map((m, i) => `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}:\n${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 60)}`)
@@ -125,9 +128,11 @@ async function handleCommand(session, ctx, state) {
       return handled('今天还没有收录足够消息。')
     }
     const userId = String(currentUserId || '')
-    const atMe = cache.messages.filter(m =>
-      Array.isArray(m.mentionUserIds) && m.mentionUserIds.includes(userId)
-    )
+    const atMe = cache.messages.filter(m => {
+      if (Array.isArray(m.mentionUserIds) && m.mentionUserIds.includes(userId)) return true
+      if (m.content && extractAtIds(m.content).includes(userId)) return true
+      return false
+    })
     if (targetIdx < 0 || targetIdx >= atMe.length) return handled('编号超出范围。')
     const cacheIdx = cache.messages.indexOf(atMe[targetIdx])
     if (cacheIdx === -1) return handled('未找到该消息。')
