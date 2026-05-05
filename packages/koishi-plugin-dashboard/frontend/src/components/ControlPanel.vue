@@ -32,34 +32,45 @@
     <div class="card">
       <div>
         <h2 style="margin:0 0 4px">QQ 管理</h2>
-        <div style="font-size:13px;color:#64748B;margin-bottom:12px">
+        <div style="font-size:13px;color:#94A3B8;margin-bottom:16px">
           当前 QQ：<span style="font-family:monospace;color:#39C5BB">{{ status.qq || '未知' }}</span>
         </div>
-        <div style="background:#0f1923;border-radius:8px;padding:14px 16px;font-size:13px;line-height:1.7">
-          <div style="margin-bottom:8px">服务器 IP</div>
-          <input v-model="sshHost" @change="saveSSHHost" placeholder="服务器 IP 或域名" style="width:100%;margin-bottom:16px;font-family:monospace" />
-          <div style="margin-bottom:12px">复制 SSH 命令到终端运行</div>
-          <div style="display:flex;gap:8px;margin-bottom:16px">
+
+        <!-- 步骤一：SSH 隧道 -->
+        <div style="background:#0f1923;border-radius:8px;padding:14px 16px;font-size:13px;margin-bottom:12px">
+          <div style="color:#39C5BB;font-weight:700;margin-bottom:8px">步骤一：输入你的服务器 IP 地址</div>
+          <div style="font-size:12px;color:#64748B;margin-bottom:6px">在电脑的 CMD 终端复制下面的指令开启隧道（请不要关掉）</div>
+          <input v-model="sshHost" @change="saveSSHHost" placeholder="服务器 IP 或域名" style="width:100%;margin-bottom:8px;font-family:monospace" />
+          <div style="display:flex;gap:8px">
             <code id="ssh-cmd" style="flex:1;background:#1a2634;border-radius:6px;padding:10px 14px;font-size:12px;color:#39C5BB;font-family:monospace">ssh -L 6099:localhost:6099 {{ sshUser }}@{{ sshHost || '服务器IP' }}</code>
             <button class="btn btn-sm" style="white-space:nowrap" @click="copyText('ssh-cmd')">复制</button>
           </div>
+        </div>
 
-          <div style="margin-bottom:8px">NapCat Token</div>
-          <div style="display:flex;gap:8px;margin-bottom:16px">
+        <!-- 步骤二：NapCat 扫码 -->
+        <div style="background:#0f1923;border-radius:8px;padding:14px 16px;font-size:13px;margin-bottom:12px">
+          <div style="color:#FCD34D;font-weight:700;margin-bottom:8px">步骤二：在 NapCat 扫码登新号</div>
+          <div style="display:flex;gap:8px;margin-bottom:8px">
             <code id="napcat-token" style="flex:1;background:#1a2634;border-radius:6px;padding:10px 14px;font-size:12px;color:#FCD34D;font-family:monospace">{{ napcatToken || '加载中...' }}</code>
             <button class="btn btn-sm" style="white-space:nowrap" @click="copyText('napcat-token')">复制</button>
           </div>
-
-          <a :href="'http://localhost:6099/webui/'" target="_blank" class="btn btn-sm" style="display:inline-block;text-decoration:none">打开 NapCat 管理面板</a>
-          <div v-if="copiedMsg" style="margin-top:8px;font-size:12px;color:#39C5BB">{{ copiedMsg }}</div>
+          <a href="http://localhost:6099/webui/" target="_blank" class="btn btn-sm" style="display:inline-block;text-decoration:none">打开 NapCat 管理面板</a>
         </div>
 
-        <div style="background:#0f1923;border-radius:8px;padding:14px 16px;font-size:13px;line-height:1.7;margin-top:12px">
-          <div style="margin-bottom:8px">切换 QQ 号</div>
+        <!-- 警告分隔 -->
+        <div style="background:rgba(244,114,182,0.1);border:1px solid rgba(244,114,182,0.3);border-radius:8px;padding:10px 14px;font-size:12px;color:#F472B6;margin-bottom:12px">
+          ⚠ 请先在 NapCat 完成扫码登录，再进行第三步
+        </div>
+
+        <!-- 步骤三：更新 Koishi -->
+        <div style="background:#0f1923;border-radius:8px;padding:14px 16px;font-size:13px">
+          <div style="color:#39C5BB;font-weight:700;margin-bottom:8px">步骤三：更新 Koishi QQ 号</div>
           <input v-model="newSelfId" placeholder="输入新 QQ 号" style="width:100%;margin-bottom:8px;font-family:monospace" />
           <button class="btn btn-sm" @click="saveSelfId" :disabled="savingSelfId">{{ savingSelfId ? '保存中...' : '保存并重启 Koishi' }}</button>
           <div v-if="selfIdMsg" style="margin-top:8px;font-size:12px" :style="{color: selfIdMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ selfIdMsg.text }}</div>
         </div>
+
+        <div v-if="copiedMsg" style="margin-top:8px;font-size:12px;color:#39C5BB;text-align:center">{{ copiedMsg }}</div>
       </div>
     </div>
 

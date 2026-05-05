@@ -186,6 +186,42 @@ const server = http.createServer((req, res) => {
     } catch { return json(res, []) }
   }
 
+  if (pathname === '/dashboard/api/personas' && req.method === 'POST') {
+    let body = ''
+    req.on('data', c => body += c)
+    req.on('end', () => {
+      try {
+        const { name, description, lore, content } = JSON.parse(body)
+        if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
+        const sanitized = name.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '')
+        const filePath = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'data', 'ai-skills', 'personas', 'SKILL.' + sanitized + '.md')
+        if (fs.existsSync(filePath)) return json(res, { ok: false, message: '同名人格已存在' }, 400)
+        const loreLine = lore && lore !== 'none' ? '\nlore: ' + lore : ''
+        const md = '---\nname: ' + sanitized + '\ndescription: ' + (description || '') + loreLine + '\n---\n\n' + content
+        fs.writeFileSync(filePath, md, 'utf8')
+        json(res, { ok: true, message: '人格 ' + sanitized + ' 已创建' })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  // 可用世界观列表
+  if (pathname === '/dashboard/api/lore-list' && req.method === 'GET') {
+    try {
+      const loreDir = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'data', 'ai-skills', 'lore')
+      const files = fs.readdirSync(loreDir).filter(f => f.endsWith('.md'))
+      const list = files.map(f => {
+        const raw = fs.readFileSync(path.join(loreDir, f), 'utf8')
+        const m = raw.match(/^---\n([\s\S]*?)\n---/)
+        const name = m?.[1]?.match(/name:\s*(\S+)/)?.[1] || f.replace('SKILL.', '').replace('.md', '')
+        const desc = m?.[1]?.match(/description:\s*(.+)/)?.[1] || ''
+        return { id: name, description: desc, file: f }
+      })
+      list.unshift({ id: 'none', description: '不绑定任何世界观', file: '' })
+      return json(res, list)
+    } catch { return json(res, [{ id: 'none', description: '不绑定任何世界观', file: '' }]) }
+  }
+
   if (pathname === '/dashboard/api/modes' && req.method === 'GET') {
     try {
       const dir = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'data', 'ai-skills', 'modes')
@@ -200,9 +236,44 @@ const server = http.createServer((req, res) => {
     } catch { return json(res, []) }
   }
 
+  // 白名单/黑名单管理
+  const whitelistFiles = {
+    summary: { file: 'summary-whitelist.json', label: '解除上限群白名单', type: 'array' },
+    random: { file: 'ai-random-whitelist.json', label: '群聊AI白名单', type: 'array' },
+    userBlacklist: { file: 'ai-user-blacklist.json', label: '用户黑名单', type: 'array' },
+    videoBlacklist: { file: 'video-blacklist.json', label: '视频黑名单', type: 'object', default: { groups: [], users: [] } },
+  }
+
   if (pathname === '/dashboard/api/whitelist' && req.method === 'GET') {
-    try { return json(res, JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'summary-whitelist.json'), 'utf8'))) }
-    catch { return json(res, []) }
+    const result = {}
+    for (const [key, cfg] of Object.entries(whitelistFiles)) {
+      try {
+        result[key] = { label: cfg.label, data: JSON.parse(fs.readFileSync(path.join(DATA_DIR, cfg.file), 'utf8')) }
+      } catch {
+        result[key] = { label: cfg.label, data: cfg.default || [] }
+      }
+    }
+    return json(res, result)
+  }
+
+  if (pathname === '/dashboard/api/whitelist' && req.method === 'PUT') {
+    let body = ''
+    req.on('data', c => body += c)
+    req.on('end', () => {
+      try {
+        const { type, data } = JSON.parse(body)
+        const cfg = whitelistFiles[type]
+        if (!cfg) return json(res, { ok: false, message: '无效类型' }, 400)
+        writeFileSync(path.join(DATA_DIR, cfg.file), JSON.stringify(data, null, 2))
+        // 通知主插件刷新缓存
+        try {
+          const { resetConfigCache } = require(path.join(AI_LIB, 'runtime-config'))
+          resetConfigCache()
+        } catch {}
+        json(res, { ok: true, message: cfg.label + ' 已更新' })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
   }
 
   if (pathname === '/dashboard/api/keys' && req.method === 'GET') {

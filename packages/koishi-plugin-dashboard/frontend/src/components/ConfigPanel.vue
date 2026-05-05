@@ -21,26 +21,17 @@
       <button class="btn" @click="saveConfig" :disabled="saving">{{ saving ? '保存中...' : '保存配置' }}</button>
       <div v-if="msg" class="msg" :class="msg.type">{{ msg.text }}</div>
     </div>
-
-    <div class="card">
-      <h2>可用模式</h2>
-      <div v-for="m in modes" :key="m.name" class="grp">
-        <div class="grp-name">{{ m.name }}</div>
-        <div class="grp-desc">{{ m.description || '无描述' }}</div>
-      </div>
-    </div>
   </div>
 </template>
 
 <script>
 import { ref, computed, onMounted } from 'vue'
-import { fetchConfig, fetchProviders, fetchModes, updateConfig } from '../api'
+import { fetchConfig, fetchProviders, updateConfig } from '../api'
 
 export default {
   name: 'ConfigPanel',
   setup() {
     const providers = ref({})
-    const modes = ref([])
     const selectedProvider = ref('deepseek')
     const selectedModel = ref('')
     const baseUrl = ref('')
@@ -53,11 +44,10 @@ export default {
     })
 
     onMounted(async () => {
-      const [pRes, mRes, cRes] = await Promise.all([
-        fetchProviders(), fetchModes(), fetchConfig()
+      const [pRes, cRes] = await Promise.all([
+        fetchProviders(), fetchConfig()
       ])
       if (pRes.ok) providers.value = pRes.data
-      if (mRes.ok) modes.value = mRes.data
       if (cRes.ok) {
         selectedProvider.value = cRes.data.provider || 'deepseek'
         selectedModel.value = cRes.data.model || ''
@@ -89,7 +79,7 @@ export default {
       saving.value = false
     }
 
-    return { providers, modes, selectedProvider, selectedModel, baseUrl, currentModels, saving, msg, onProviderChange, saveConfig }
+    return { providers, selectedProvider, selectedModel, baseUrl, currentModels, saving, msg, onProviderChange, saveConfig }
   }
 }
 </script>

@@ -3,12 +3,7 @@
  * 边界: 只定义静态配置，不含业务逻辑。
  */
 
-// 数据目录（优先环境变量，fallback到主插件data目录）
-const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR
-  || require('path').join(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'data')
-if (!process.env.DONGXUELIAN_AI_DATA_DIR) {
-  console.warn('[daily-report] 未设置 DONGXUELIAN_AI_DATA_DIR，使用 fallback:', DATA_DIR)
-}
+const { DATA_DIR } = require('../../koishi-plugin-dongxuelian-ai/lib/constants')
 
 // 限时配置
 const TIMEOUTS = {

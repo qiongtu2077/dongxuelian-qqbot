@@ -1,7 +1,7 @@
 <template>
   <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f1923">
     <div style="background:#1a2634;border:1px solid #2a3a4a;border-radius:16px;padding:40px;width:380px;max-width:90vw">
-      <h1 style="color:#39C5BB;font-size:22px;text-align:center;margin-bottom:8px">Bot Dashboard</h1>
+      <h1 style="color:#39C5BB;font-size:22px;text-align:center;margin-bottom:8px">莲莲 Bot 控制台</h1>
       <p style="color:#64748B;font-size:14px;text-align:center;margin-bottom:28px">请输入密码以继续</p>
 
       <input

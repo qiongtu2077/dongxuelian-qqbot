@@ -2,7 +2,7 @@
   <LoginPage v-if="!loggedIn" @logged-in="loggedIn = true" />
   <div v-else class="app">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
-      <h1 style="margin:0">Bot Dashboard</h1>
+      <h1 style="margin:0">莲莲 Bot 控制台</h1>
       <button class="btn btn-sm" style="background:#2a3a4a;color:#94A3B8;border:1px solid #2a3a4a" @click="logout">退出登录</button>
     </div>
 

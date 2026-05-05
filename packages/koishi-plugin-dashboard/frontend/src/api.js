@@ -48,10 +48,13 @@ export async function updateConfig(data) { return put('/config', data) }
 export async function fetchPersonas() { return get('/personas') }
 export async function fetchModes() { return get('/modes') }
 export async function fetchWhitelist() { return get('/whitelist') }
+export async function updateWhitelist(type, data) { return put('/whitelist', { type, data }) }
 export async function fetchKeys() { return get('/keys') }
 export async function updateKey(file, value) { return put('/keys', { file, value }) }
 export async function fetchFeatures() { return get('/features') }
 export async function fetchCommands() { return get('/commands') }
+export async function fetchLoreList() { return get('/lore-list') }
+export async function createPersona(data) { return post('/personas', data) }
 export async function botStatus() { return get('/bot/status') }
 export async function startBot() { return post('/bot/start', {}) }
 export async function stopBot() { return post('/bot/stop', {}) }

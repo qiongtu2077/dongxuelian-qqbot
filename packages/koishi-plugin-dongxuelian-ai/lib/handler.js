@@ -320,11 +320,7 @@ async function handleCommand(session, ctx, state) {
     if (!isGroupAdminOrBotAdmin(session)) { await session.send('只有群管理员/群主才能查看群级人格。'); return handled() }
     const entry = getGroupPersona(channelKey)
     if (!entry) { await session.send('当前群：默认模式（无群级人格）'); return handled() }
-    let groupUserCount = 0
-    for (const [, pName] of Object.entries(personaUsersCache)) {
-      if (!pName) groupUserCount++
-    }
-    await session.send(`群级人格：${entry.persona}\n使用群级人格的用户：${groupUserCount} 人`)
+    await session.send(`群级人格：${entry.persona}`)
     return handled()
   }
 

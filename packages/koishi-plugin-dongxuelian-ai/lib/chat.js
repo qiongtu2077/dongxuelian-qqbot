@@ -501,15 +501,23 @@ async function chat(session, userText, ctx, options = {}) {
     { role: 'system', content: systemPrompt },
   ]
 
-  // 鸣潮世界观按需注入（仅鸣潮人格）：用户消息含触发关键词时，追加 lore 到 systemPrompt
-  const isWuwaPersona = !personaName || personaName === '长离' || personaName === '椿'
-  if (isWuwaPersona && shouldInjectLore(cleanInput) && skillsContentCache['lore:wuwa-lore']) {
-    messages[0].content += '\n\n[世界观设定]\n用户提到了鸣潮相关话题。以下为《鸣潮》世界观设定，请消化后用你当前的角色风格自然回答，不要逐字复述，不要像念百科。\n' + skillsContentCache['lore:wuwa-lore']
+  // 世界观按需注入：从人格文件的 frontmatter 读取 lore 绑定
+  let personaLore = ''
+  if (personaName && personaSkillContent) {
+    const lm = personaSkillContent.match(/^---\n([\s\S]*?)\n---/)
+    if (lm) {
+      const loreLine = lm[1].match(/^lore:\s*(\S+)/m)
+      if (loreLine) personaLore = loreLine[1]
+    }
+  } else if (!personaName) {
+    personaLore = 'wuwa-lore'  // 默认人格可触发鸣潮世界观
   }
-
-  // 泰拉世界观（仅特蕾西娅人格）：用户消息含触发关键词时注入
-  if (personaName === '特蕾西娅' && shouldInjectTerraLore(cleanInput) && skillsContentCache['lore:terra-lore']) {
-    messages[0].content += '\n\n[泰拉世界观设定]\n用户提到了泰拉大陆相关话题。以下为《明日方舟》世界观设定，请用你当前的角色风格自然回应。\n' + skillsContentCache['lore:terra-lore']
+  if (personaLore && personaLore !== 'none' && skillsContentCache['lore:' + personaLore]) {
+    const triggerFn = personaLore === 'terra-lore' ? shouldInjectTerraLore : shouldInjectLore
+    if (triggerFn(cleanInput)) {
+      const label = personaLore === 'terra-lore' ? '泰拉世界观设定' : '世界观设定'
+      messages[0].content += '\n\n[' + label + ']\n用户提到了相关话题。以下为世界观设定，请消化后用你当前的角色风格自然回答，不要逐字复述，不要像念百科。\n' + skillsContentCache['lore:' + personaLore]
+    }
   }
 
   // 联网搜索时强制模型先搜索再回答
