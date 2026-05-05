@@ -91,9 +91,25 @@ check('data-collector exports collectReportData', typeof dataCollector.collectRe
 
 const aiAnalyzer = require(AI_ANALYZER_PATH)
 check('ai-analyzer exports analyzeWithAI', typeof aiAnalyzer.analyzeWithAI === 'function')
+check('ai-analyzer exports full fallback builder', typeof aiAnalyzer.buildFallbackFullAnalysis === 'function')
 
 const htmlRenderer = require(HTML_RENDERER_PATH)
 check('html-renderer exports renderReport', typeof htmlRenderer.renderReport === 'function')
+
+section('AI fallback unit')
+const fallbackFull = aiAnalyzer.buildFallbackFullAnalysis({
+  totalMessages: 120,
+  activeMembers: 8,
+  emojiCount: 12,
+  totalChars: 3000,
+  peakHour: '21:00-21:59',
+  topMembers: [
+    { name: 'user-a', userId: '10001', msgCount: 40 },
+    { name: 'user-b', userId: '10002', msgCount: 25 },
+  ],
+})
+check('full fallback creates user title cards', Array.isArray(fallbackFull.userTitles) && fallbackFull.userTitles.length === 2)
+check('full fallback creates quality review', fallbackFull.qualityReview && Array.isArray(fallbackFull.qualityReview.dimensions) && fallbackFull.qualityReview.dimensions.length > 0)
 
 // ===== 3. models 单元测试 =====
 section('models 单元测试')
@@ -119,7 +135,6 @@ const dc = require(DATA_COLLECTOR_PATH)
 // 测试空目录
 const emptyResult = dc.collectReportData('nonexistent-group-' + Date.now())
 check('collectReportData returns null for missing cache', emptyResult === null)
-
 // ===== 5. index 中间件注册 =====
 section('index 中间件注册')
 const plugin = reloadPlugin()

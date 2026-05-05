@@ -15,6 +15,8 @@ function collectReportData(channelKey) {
   if (!DATA_DIR) return null
 
   const key = safeKey(channelKey)
+  const today = new Date().toISOString().slice(0, 10)
+
   const cacheFile = path.join(DATA_DIR, `today-cache-${key}.json`)
 
   let cache = null
@@ -25,7 +27,6 @@ function collectReportData(channelKey) {
     return null
   }
 
-  const today = new Date().toISOString().slice(0, 10)
   if (!cache || cache.date !== today || !cache.messages || !Array.isArray(cache.messages) || cache.messages.length === 0) {
     return null
   }
