@@ -7,6 +7,7 @@ set -e
 APP_DIR="/root/koishi-app"
 LOG_FILE="$APP_DIR/koishi.log"
 DATA_DIR="$APP_DIR/data"
+DASHBOARD_DIR="$APP_DIR/packages/koishi-plugin-dashboard"
 
 echo "[$(date)] 开始重启 bot..."
 
@@ -14,6 +15,7 @@ echo "[$(date)] 开始重启 bot..."
 echo "杀旧进程..."
 pkill -9 -f 'koishi/lib/worker' 2>/dev/null || true
 pkill -9 -f 'node.*koishi start' 2>/dev/null || true
+pkill -9 -f 'standalone.js' 2>/dev/null || true
 sleep 4
 
 # 2. 确认端口已释放
@@ -23,23 +25,31 @@ if ss -tlnp | grep -q ':5140'; then
 fi
 echo "端口 5140 已释放"
 
-# 3. 写时间戳标记，区分新旧日志
+# 3. 启动 Dashboard 独立服务（不受 koishi 影响）
+echo "启动 Dashboard..."
+cd "$DASHBOARD_DIR"
+DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" nohup node standalone.js >> "$LOG_FILE" 2>&1 &
+echo "Dashboard PID: $!"
+sleep 2
+
+# 4. 写时间戳标记，区分新旧日志
 MARKER="=== RESTART $(date +%Y%m%d%H%M%S) ==="
 echo "$MARKER" >> "$LOG_FILE"
 
-# 4. 启动 bot
-echo "启动 bot..."
+# 5. 启动 koishi
+echo "启动 koishi..."
 cd "$APP_DIR"
 DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" nohup node node_modules/.bin/koishi start >> "$LOG_FILE" 2>&1 &
-echo "PID: $!"
+echo "Koishi PID: $!"
 
-# 5. 等待并验证（只查标记之后的 20 行，防止旧日志欺骗）
+# 6. 等待并验证（只查标记之后的 20 行，防止旧日志欺骗）
 sleep 15
 LOG_TAIL=$(tail -20 "$LOG_FILE")
 
 if echo "$LOG_TAIL" | grep -q 'daily-report loaded' && \
    echo "$LOG_TAIL" | grep -q 'adapter connect to server'; then
   echo "启动成功 ✓"
+  echo "   dashboard running"
   echo "   daily-report loaded"
   echo "   adapter connected"
 elif ss -tlnp | grep -q ':5140' && ps aux | grep -q 'koishi/lib/worker'; then
