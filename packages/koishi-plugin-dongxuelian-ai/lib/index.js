@@ -368,7 +368,13 @@ exports.apply = (ctx) => {
     if (selfId && String(session.userId || session.author?.id || '') === selfId) return next()
 
     await loadRuntimeSettings()
-    try { await fs.access(MAINTENANCE_FILE); const mt = (await fs.readFile(MAINTENANCE_FILE, 'utf8')).trim() || '优化中'; await session.send(mt).catch(() => {}); return } catch (e) { /* 无维护模式 */ }
+    try {
+      await fs.access(MAINTENANCE_FILE)
+      if (!session.isDirect && !isDirectAtBot(session)) return next()
+      const mt = (await fs.readFile(MAINTENANCE_FILE, 'utf8')).trim() || '优化中'
+      await session.send(mt).catch(() => {})
+      return
+    } catch {}
 
     const analyzed = analyzeIncomingMessage(session, { sanitizeUserName })
     const plain = collapseRepeatedBotCalls(stripMentions(analyzed.plain || content))
