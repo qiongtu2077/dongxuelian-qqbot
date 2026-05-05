@@ -5,7 +5,7 @@
  */
 const { loadConfig } = require('../../koishi-plugin-dongxuelian-ai/lib/runtime-config')
 const { requestChatCompletions } = require('../../koishi-plugin-dongxuelian-ai/lib/api')
-const { createDefaultAnalysisResult } = require('./models')
+const { createDefaultAnalysisResult, createUserTitle } = require('./models')
 
 async function callAI(systemPrompt, userMessage, maxTokens = 1500) {
   const config = await loadConfig()
@@ -101,7 +101,8 @@ ${compressed.slice(0, 6000)}
 
   try {
     const text = await callAI(prompt, '请分析', 2000)
-    return safeParseJSON(text)
+    const parsed = safeParseJSON(text)
+    return parsed || { topics: [], goldenQuotes: [] }
   } catch (err) {
     console.error('[ai-analyzer] basic分析失败:', err.message)
   }
@@ -139,12 +140,81 @@ ${JSON.stringify(memberData, null, 2)}
 }`
 
   try {
-    const text = await callAI(prompt, '请分析', 2000)
-    return safeParseJSON(text)
+    const text = await callAI(prompt, '请分析', 3000)
+    const parsed = safeParseJSON(text)
+    return parsed || { userTitles: [], qualityReview: null }
   } catch (err) {
     console.error('[ai-analyzer] full分析失败:', err.message)
   }
   return { userTitles: [], qualityReview: null }
+}
+
+function buildFallbackUserTitles(data) {
+  const members = Array.isArray(data.topMembers) ? data.topMembers.slice(0, 6) : []
+  const titles = ['高频发言担当', '话题推进器', '稳定插话人', '气氛补给站', '边角料捕手', '潜在节奏点']
+  return members.map((member, index) => {
+    const msgCount = Number(member.msgCount || 0)
+    const percent = data.totalMessages ? Math.round(msgCount * 100 / data.totalMessages) : 0
+    const name = member.name || '群友'
+    const reason = `今天发言 ${msgCount} 条，约占全群 ${percent}%，是本群可见度较高的活跃成员。`
+    return createUserTitle(name, member.userId || '', titles[index] || '活跃群友', reason, '')
+  })
+}
+
+function buildFallbackQualityReview(data) {
+  const totalMessages = Number(data.totalMessages || 0)
+  const activeMembers = Number(data.activeMembers || 0)
+  const emojiCount = Number(data.emojiCount || 0)
+  const emojiRate = totalMessages ? Math.round(emojiCount * 100 / totalMessages) : 0
+  return {
+    title: '今日群聊热度在线',
+    subtitle: `${totalMessages} 条消息，${activeMembers} 位成员参与，峰值出现在 ${data.peakHour || '未知时段'}`,
+    dimensions: [
+      {
+        name: '聊天活跃度',
+        percentage: 40,
+        comment: `全天累计 ${totalMessages} 条消息，峰值时段清晰，群聊热度不低。`,
+        color: '#39C5BB',
+      },
+      {
+        name: '成员参与度',
+        percentage: 25,
+        comment: `${activeMembers} 位成员参与发言，核心发言者撑起了主要讨论。`,
+        color: '#A7E7E3',
+      },
+      {
+        name: '信息密度',
+        percentage: 20,
+        comment: `累计文字约 ${data.totalChars || 0} 字，适合提炼成话题和金句。`,
+        color: '#FCD34D',
+      },
+      {
+        name: '表情浓度',
+        percentage: 15,
+        comment: `表情互动 ${emojiCount} 次，约占消息量 ${emojiRate}%，气氛有明显波动。`,
+        color: '#F472B6',
+      },
+    ],
+    summary: '整体来看，今天的群聊有明确活跃高峰和核心发言成员，内容足够支撑日报复盘；如果话题再集中一点，阅读价值还能继续上升。',
+  }
+}
+
+function buildFallbackFullAnalysis(data) {
+  return {
+    userTitles: buildFallbackUserTitles(data),
+    qualityReview: buildFallbackQualityReview(data),
+  }
+}
+
+function completeFullAnalysis(result, data) {
+  const fallback = buildFallbackFullAnalysis(data)
+  if (!Array.isArray(result.userTitles) || result.userTitles.length === 0) {
+    result.userTitles = fallback.userTitles
+  }
+  if (!result.qualityReview || typeof result.qualityReview !== 'object') {
+    result.qualityReview = fallback.qualityReview
+  }
+  return result
 }
 
 async function analyzeWithAI(data, full = false) {
@@ -164,6 +234,7 @@ async function analyzeWithAI(data, full = false) {
       result.goldenQuotes = filterGoldenQuotes(basic.goldenQuotes, data.messages)
       result.userTitles = fullR.userTitles || []
       result.qualityReview = fullR.qualityReview || null
+      completeFullAnalysis(result, data)
     } else {
       const basicResult = await analyzeBasic(compressed, data.messages)
       result.topics = basicResult.topics || []
@@ -183,12 +254,13 @@ async function analyzeWithAI(data, full = false) {
     }
   } catch (err) {
     console.error('[ai-analyzer] 分析失败:', err.message)
+    if (full) completeFullAnalysis(result, data)
   }
 
   return result
 }
 
-module.exports = { analyzeWithAI }
+module.exports = { analyzeWithAI, buildFallbackFullAnalysis }
 
 // 过滤金句：用消息映射表验证userId，无匹配的丢弃
 function filterGoldenQuotes(quotes, messages) {
