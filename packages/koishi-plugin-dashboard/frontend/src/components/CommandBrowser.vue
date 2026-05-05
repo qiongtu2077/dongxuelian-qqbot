@@ -2,15 +2,15 @@
   <div>
     <div class="card">
       <h2>功能介绍</h2>
-      <p style="color:#94A3B8;font-size:14px;margin-bottom:12px">Bot 的各个功能模块，点击跳转查看详情</p>
+      <p style="color:var(--text2);font-size:14px;margin-bottom:12px">Bot 的各个功能模块，点击跳转查看详情</p>
       <input v-model="search" placeholder="搜索功能..." style="width:100%" />
     </div>
 
-    <div v-if="search && !filtered.length" class="card" style="color:#64748B;text-align:center">
+    <div v-if="search && !filtered.length" class="card" style="color:var(--text3);text-align:center">
       无匹配结果
     </div>
 
-    <div v-for="f in filtered" :key="f.id" :id="'feat-' + f.id" class="card feature-card" :style="{borderLeft: '3px solid ' + (activeId === f.id ? '#39C5BB' : '#2a3a4a')}">
+    <div v-for="f in filtered" :key="f.id" :id="'feat-' + f.id" class="card feature-card" :style="{borderLeft: '3px solid ' + (activeId === f.id ? '#39C5BB' : 'var(--border)')}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
         <h2 style="color:#39C5BB;margin-bottom:4px">{{ f.title }}</h2>
         <span v-if="activeId === f.id" style="font-size:12px;color:#39C5BB">▼ 展开中</span>
@@ -86,9 +86,9 @@ export default {
 
 <style>
 .feature-card { transition: border-color .2s }
-.detail-box { margin-top: 12px; padding: 12px 16px; background: #0f1923; border-radius: 8px }
-.detail-label { font-size: 12px; font-weight: 700; color: #64748B; text-transform: uppercase; margin-bottom: 6px }
-.detail-text { font-size: 14px; line-height: 1.7; color: #E2E8F0 }
+.detail-box { margin-top: 12px; padding: 12px 16px; background: var(--input); border-radius: 8px }
+.detail-label { font-size: 12px; font-weight: 700; color: var(--text3); text-transform: uppercase; margin-bottom: 6px }
+.detail-text { font-size: 14px; line-height: 1.7; color: var(--text) }
 .usage { font-size: 13px; line-height: 1.8; color: #39C5BB; font-family: monospace; white-space: pre-wrap; margin: 0 }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px) } to { opacity: 1; transform: translateY(0) } }
 </style>

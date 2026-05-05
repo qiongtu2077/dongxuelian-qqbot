@@ -1,7 +1,7 @@
 <template>
   <div class="card">
     <h2>自定义人格</h2>
-    <div v-if="!personas.length" style="color:#64748B;font-size:14px">无自定义人格</div>
+    <div v-if="!personas.length" style="color:var(--text3);font-size:14px">无自定义人格</div>
     <div v-for="p in personas" :key="p.name" class="grp">
       <div class="grp-name">{{ p.name }}</div>
       <div class="grp-desc">{{ p.description || '无描述' }}</div>
@@ -12,22 +12,22 @@
     <h2>创建新人格</h2>
     <div style="display:grid;gap:12px">
       <div>
-        <div style="font-size:13px;color:#94A3B8;margin-bottom:4px">名称</div>
-        <input v-model="newName" placeholder="人格名称，如：新角色" style="width:100%" />
-      </div>
-      <div>
-        <div style="font-size:13px;color:#94A3B8;margin-bottom:4px">描述</div>
-        <input v-model="newDesc" placeholder="一句话描述" style="width:100%" />
-      </div>
-      <div>
-        <div style="font-size:13px;color:#94A3B8;margin-bottom:4px">世界观绑定</div>
-        <select v-model="newLore" style="width:100%">
-          <option v-for="l in loreList" :key="l.id" :value="l.id">{{ l.description ? l.id + ' - ' + l.description : l.id }}</option>
-        </select>
-      </div>
-      <div>
-        <div style="font-size:13px;color:#94A3B8;margin-bottom:4px">人格内容（提示词）</div>
-        <textarea v-model="newContent" rows="10" placeholder="在此编写人格的提示词..." style="width:100%;background:#0f1923;border:1px solid #2a3a4a;border-radius:8px;padding:10px 14px;color:#E2E8F0;font-size:13px;font-family:monospace;resize:vertical"></textarea>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:4px">名称</div>
+          <input v-model="newName" placeholder="人格名称，如：新角色" style="width:100%" />
+        </div>
+        <div>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:4px">描述</div>
+          <input v-model="newDesc" placeholder="一句话描述" style="width:100%" />
+        </div>
+        <div>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:4px">世界观绑定</div>
+          <select v-model="newLore" style="width:100%">
+            <option v-for="l in loreList" :key="l.id" :value="l.id">{{ l.description ? l.id + ' - ' + l.description : l.id }}</option>
+          </select>
+        </div>
+        <div>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:4px">人格内容（提示词）</div>
+          <textarea v-model="newContent" rows="10" placeholder="在此编写人格的提示词..." style="width:100%;background:var(--input);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-size:13px;font-family:monospace;resize:vertical"></textarea>
       </div>
       <div>
         <button class="btn" @click="doCreate" :disabled="creating">{{ creating ? '创建中...' : '创建人格' }}</button>
@@ -70,6 +70,7 @@ export default {
         lore: newLore.value,
         content: newContent.value,
       })
+      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('创建人格需要管理员密码', doCreate); return }
       if (res.ok) {
         createMsg.value = { type: 'ok', text: res.data?.message || '创建成功' }
         newName.value = ''; newDesc.value = ''; newContent.value = ''

@@ -1,14 +1,14 @@
 <template>
   <div class="card">
     <h2>API Key 管理</h2>
-    <div style="color:#64748B;font-size:13px;margin-bottom:16px">
+    <div style="color:var(--text3);font-size:13px;margin-bottom:16px">
       修改后自动热加载，无需重启
     </div>
     <div v-for="k in keys" :key="k.file" class="grp">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div>
           <div class="grp-name">{{ k.label }}</div>
-          <div style="font-size:12px;color:#64748B;font-family:monospace">{{ k.exists ? k.prefix : '（未设置）' }}</div>
+          <div style="font-size:12px;color:var(--text3);font-family:monospace">{{ k.exists ? k.prefix : '（未设置）' }}</div>
         </div>
         <button class="btn btn-sm" @click="editKey(k)">编辑</button>
       </div>
@@ -19,7 +19,7 @@
       <input v-model="editValue" style="width:100%;font-family:monospace" :placeholder="'输入新的 ' + editing.file" />
       <div style="display:flex;gap:8px;margin-top:8px">
         <button class="btn btn-sm" @click="saveKey" :disabled="saving">{{ saving ? '保存中...' : '保存' }}</button>
-        <button class="btn btn-sm" style="background:#2a3a4a;color:#94A3B8" @click="editing=null">取消</button>
+        <button class="btn btn-sm" style="background:var(--border);color:var(--text2)" @click="editing=null">取消</button>
       </div>
       <div v-if="keyMsg" style="margin-top:8px;font-size:13px" :style="{color: keyMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ keyMsg.text }}</div>
     </div>
@@ -56,6 +56,7 @@ export default {
       keyMsg.value = null
       try {
         const res = await updateKey(editing.value.file, editValue.value.trim())
+        if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('修改 Key 需要管理员密码', saveKey); return }
         if (res.ok) {
           keyMsg.value = { type: 'ok', text: 'Key 已更新并热加载' }
           const reload = await fetchKeys()

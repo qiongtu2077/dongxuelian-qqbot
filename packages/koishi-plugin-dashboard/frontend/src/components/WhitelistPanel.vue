@@ -2,11 +2,11 @@
   <div v-for="(wl, key) in lists" :key="key" class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <h2 style="margin:0">{{ wl.label }}</h2>
-      <span style="font-size:12px;color:#64748B">{{ getCount(wl) }} 条</span>
+      <span style="font-size:12px;color:var(--text3)">{{ getCount(wl) }} 条</span>
     </div>
 
     <!-- 空状态 -->
-    <div v-if="isEmpty(wl)" style="color:#64748B;font-size:14px;margin-bottom:12px">暂无数据</div>
+    <div v-if="isEmpty(wl)" style="color:var(--text3);font-size:14px;margin-bottom:12px">暂无数据</div>
 
     <!-- 列表 -->
     <div v-for="(item, idx) in getItems(wl)" :key="idx" class="grp" style="display:flex;justify-content:space-between;align-items:center">
@@ -30,6 +30,7 @@ import { fetchWhitelist, updateWhitelist } from '../api'
 
 export default {
   name: 'WhitelistPanel',
+  components: { },
   setup() {
     const lists = ref({})
     const newValues = reactive({})
@@ -93,6 +94,10 @@ export default {
       }
 
       const res = await updateWhitelist(key, newData)
+      if (res.code === 'ADMIN_REQUIRED') {
+        window.showAdminDialog && window.showAdminDialog('修改白名单需要管理员密码', () => addItem(key))
+        return
+      }
       if (res.ok) {
         msgs[key] = { type: 'ok', text: '已添加' }
         newValues[key] = ''
@@ -118,9 +123,17 @@ export default {
         else newData.users = (newData.users || []).filter(u => u !== raw)
       }
       const res = await updateWhitelist(key, newData)
+      if (res.code === 'ADMIN_REQUIRED') {
+        window.showAdminDialog && window.showAdminDialog('修改白名单需要管理员密码', () => removeItem(key, idx))
+        return
+      }
       if (res.ok) { msgs[key] = { type: 'ok', text: '已删除' }; load() }
       else msgs[key] = { type: 'err', text: res.data?.message || '删除失败' }
       setTimeout(() => msgs[key] = null, 2000)
+    }
+
+    function retryPending() {
+      if (adminPending.value) { const fn = adminPending.value; adminPending.value = null; fn() }
     }
 
     return { lists, newValues, msgs, isEmpty, getCount, getItems, inputPlaceholder, getRawItems, addItem, removeItem }

@@ -11,6 +11,14 @@ const crypto = require('crypto')
 const os = require('os')
 const { execSync, exec } = require('child_process')
 
+// ====== 全局异常兜底（防止单请求崩溃整个进程） ======
+process.on('uncaughtException', (err) => {
+  console.error('[dashboard] UNCAUGHT EXCEPTION:', err.stack || err.message)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[dashboard] UNHANDLED REJECTION:', reason?.stack || reason)
+})
+
 // ====== 路径配置 ======
 const PLUGIN_ROOT = __dirname
 const AI_LIB = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'lib')
@@ -19,6 +27,10 @@ const DIST_DIR = path.join(PLUGIN_ROOT, 'frontend', 'dist')
 const PORT = process.env.DASHBOARD_PORT || 5150
 const KOISHI_DIR = process.env.KOISHI_DIR || path.join(PLUGIN_ROOT, '..', '..')
 const PASSWORD = process.env.DASHBOARD_PASSWORD || 'Aa123456~'
+const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || 'a1=A2=a3'
+
+const ADMIN_PWD_FILE = path.join(DATA_DIR, 'dashboard-admin-pwd.txt')
+const ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-access-pwd.txt')
 
 // ====== 工具函数 ======
 function json(res, data, status = 200) {
@@ -47,6 +59,33 @@ function createToken() {
 
 function validateToken(token) {
   return token === createToken()
+}
+
+// ====== 管理员密码系统 ======
+function getAdminPassword() {
+  return readFileSync(ADMIN_PWD_FILE) || ADMIN_PASSWORD
+}
+function getAccessPassword() {
+  return readFileSync(ACCESS_PWD_FILE) || PASSWORD
+}
+function createAdminToken() {
+  return crypto.createHash('sha256').update('admin:' + getAdminPassword()).digest('hex')
+}
+function validateAdminToken(token) {
+  return token === createAdminToken()
+}
+// 更新 access token 后需要刷新登录，所以也更新 PASSWORD 常量
+function reloadAccessPassword() {
+  const pwd = getAccessPassword()
+}
+
+function requireAdmin(req, res) {
+  const token = (req.headers['x-admin-token'] || '').trim()
+  if (!token || !validateAdminToken(token)) {
+    json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403)
+    return false
+  }
+  return true
 }
 
 // ====== NapCat Token ======
@@ -123,8 +162,44 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const { password } = JSON.parse(body)
-        if (password === PASSWORD) return json(res, { ok: true, token: createToken() })
+        if (password === getAccessPassword()) return json(res, { ok: true, token: createToken() })
         return json(res, { ok: false, message: '密码错误' }, 401)
+      } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
+    })
+    return
+  }
+
+  // 管理员验证（不需要普通登录）
+  if (pathname === '/dashboard/api/admin/verify' && req.method === 'POST') {
+    let body = ''
+    req.on('data', c => body += c)
+    req.on('end', () => {
+      try {
+        const { password } = JSON.parse(body)
+        if (password === getAdminPassword()) return json(res, { ok: true, token: createAdminToken() })
+        return json(res, { ok: false, message: '管理员密码错误' }, 401)
+      } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
+    })
+    return
+  }
+
+  // 修改密码
+  if (pathname === '/dashboard/api/auth/password' && req.method === 'PUT') {
+    let body = ''
+    req.on('data', c => body += c)
+    req.on('end', () => {
+      try {
+        const { type, oldPassword, newPassword } = JSON.parse(body)
+        if (!oldPassword || !newPassword || newPassword.length < 4) return json(res, { ok: false, message: '密码长度不能少于4位' }, 400)
+        if (oldPassword !== getAdminPassword()) return json(res, { ok: false, message: '管理员密码错误' }, 401)
+        if (type === 'admin') {
+          writeFileSync(ADMIN_PWD_FILE, newPassword)
+          return json(res, { ok: true, message: '管理员密码已更新' })
+        } else if (type === 'access') {
+          writeFileSync(ACCESS_PWD_FILE, newPassword)
+          return json(res, { ok: true, message: '访问密码已更新，请重新登录' })
+        }
+        return json(res, { ok: false, message: '无效类型' }, 400)
       } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
     })
     return
@@ -163,6 +238,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/dashboard/api/config' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
     let body = ''
     req.on('data', c => body += c)
     req.on('end', () => {
@@ -187,6 +263,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/dashboard/api/personas' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
     let body = ''
     req.on('data', c => body += c)
     req.on('end', () => {
@@ -257,6 +334,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/dashboard/api/whitelist' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
     let body = ''
     req.on('data', c => body += c)
     req.on('end', () => {
@@ -291,6 +369,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/dashboard/api/keys' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
     let body = ''
     req.on('data', c => body += c)
     req.on('end', () => {
@@ -341,6 +420,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/dashboard/api/bot/start' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
     exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`, (err) => {
       if (err) log('start bot failed: ' + err.message)
     })
@@ -348,6 +428,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/dashboard/api/bot/stop' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
     try {
       execSync("pkill -9 -f 'koishi'", { timeout: 5000 })
       return json(res, { ok: true, message: '已停止所有 koishi 进程' })
@@ -359,6 +440,7 @@ const server = http.createServer((req, res) => {
     return json(res, { enabled: !!readFileSync(path.join(DATA_DIR, 'ai-paused.txt')) })
   }
   if (pathname === '/dashboard/api/maintenance' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
     let body = ''
     req.on('data', c => body += c)
     req.on('end', () => {
@@ -394,6 +476,7 @@ const server = http.createServer((req, res) => {
     } catch { return json(res, { selfId: '' }) }
   }
   if (pathname === '/dashboard/api/qq/selfid' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
     let body = ''
     req.on('data', c => body += c)
     req.on('end', () => {

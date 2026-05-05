@@ -13,7 +13,7 @@
       </div>
     </div>
 
-    <div v-if="!filtered.length" class="card" style="color:#64748B;text-align:center">
+    <div v-if="!filtered.length" class="card" style="color:var(--text3);text-align:center">
       无匹配结果
     </div>
   </div>
