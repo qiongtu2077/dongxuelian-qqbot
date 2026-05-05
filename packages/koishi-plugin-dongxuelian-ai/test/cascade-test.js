@@ -133,6 +133,11 @@ const COVERAGE_MAP = [
     file: path.join(AI_ROOT, 'test', 'scenarios', 'persona-prompt.test.js'),
     needles: ['scenario: persona prompt composition', 'scenario personal persona overrides group persona', 'scenario Terra lore injects for Theresa trigger'],
   },
+  {
+    behavior: 'retaliation score calculation',
+    file: path.join(AI_ROOT, 'lib', 'retaliation.js'),
+    needles: [],
+  },
 ]
 
 let totalPassed = 0
@@ -422,6 +427,8 @@ async function main() {
   check('npm check includes AI vision syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/vision.js'))
   check('npm check includes AI sensitive syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/sensitive.js'))
   check('npm check includes AI health-check syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/health-check.js'))
+  check('npm check includes AI retaliation syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/retaliation.js'))
+  check('npm check includes dashboard standalone syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dashboard/standalone.js'))
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
   check('workspace package glob exists', Array.isArray(rootPkg.workspaces) && rootPkg.workspaces.includes('packages/*'))
 

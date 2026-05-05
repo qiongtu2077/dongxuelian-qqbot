@@ -216,4 +216,6 @@ const COMMANDS_DATA = [
   ]},
 ]
 
-module.exports = { FEATURES_DATA, COMMANDS_DATA }
+exports.name = 'dashboard'
+exports.FEATURES_DATA = FEATURES_DATA
+exports.COMMANDS_DATA = COMMANDS_DATA
