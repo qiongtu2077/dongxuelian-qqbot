@@ -83,7 +83,7 @@ async function handleCommand(session, ctx, state) {
     return handled('嘴臭模式已关闭。被攻击时反击值 ≥ 90 将保持阴阳人格。')
   }
 
-  if (/^谁(?:@|at)我$/.test(plain)) {
+  if (/^谁(?:艾特|@)我$/.test(plain)) {
     if (!inGuild) return handled('这个命令只能在群里用。')
     const sw = await readJsonFile(SUMMARY_WHITELIST_FILE, [])
     if (!Array.isArray(sw) || !sw.includes(String(channelKey))) {
@@ -103,8 +103,36 @@ async function handleCommand(session, ctx, state) {
       Array.isArray(m.mentionUserIds) && m.mentionUserIds.includes(userId)
     )
     if (!atMe.length) return handled('今天还没有人 @你。')
-    const lines = atMe.slice(-10).map(m => `${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''} @了你：${(m.content || '').replace(/【[^】]*】/g, '').slice(0, 30)}`)
-    return handled(`今天有 ${atMe.length} 条消息 @了你（显示最近${Math.min(atMe.length, 10)}条）：\n${lines.join('\n')}`)
+    const slice = atMe.slice(-10)
+    const lines = slice.map((m, i) => `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}:\n${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 60)}`)
+    const total = atMe.length
+    const shown = Math.min(total, 10)
+    let reply = `今天有 ${total} 条消息 @了你（显示最近${shown}条）：\n\n${lines.join('\n\n')}`
+    if (total > shown) reply += `\n\n${shown}/${total}`
+    reply += `\n\n如需查看上下文可定位消息，示例：\n定位消息 ${slice[slice.length - 1].messageId || '1'}`
+    return handled(reply)
+  }
+
+  if (/^定位消息\s+(\S+)$/.test(plain)) {
+    const targetId = RegExp.$1
+    if (!inGuild) return handled('这个命令只能在群里用。')
+    const today = new Date().toISOString().slice(0, 10)
+    const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
+    const cacheFile = path.join(DATA_DIR, 'today-cache-' + safeKey + '.json')
+    let cache = null
+    try { cache = JSON.parse(require('fs').readFileSync(cacheFile, 'utf8')) } catch {}
+    if (!cache || cache.date !== today || !Array.isArray(cache.messages)) {
+      return handled('今天还没有收录足够消息。')
+    }
+    const idx = cache.messages.findIndex(m => String(m.messageId || '') === String(targetId))
+    if (idx === -1) return handled('未找到该消息。')
+    const start = Math.max(0, idx - 2)
+    const end = Math.min(cache.messages.length, idx + 3)
+    const ctx = cache.messages.slice(start, end).map((m, i) => {
+      const prefix = start + i === idx ? '→ ' : '  '
+      return `${prefix}${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}：${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 80)}`
+    }).join('\n')
+    return handled(`消息上下文（共${cache.messages.length}条）：\n\n${ctx}`)
   }
 
   if (/^东雪莲群聊AI概率查看$/.test(plain)) {

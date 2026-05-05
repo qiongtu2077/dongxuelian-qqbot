@@ -100,7 +100,8 @@ function getRecentUserMessages(session, limit = 3) { return getConversationHisto
 function saveSharedChannelTurn(session, speakerName, content, role = 'user', metadata = {}) {
   const channelKey = getChannelKey(session)
   const value = normalizeText(content)
-  if (!value) return
+  const hasMentions = Array.isArray(metadata.mentionUserIds) && metadata.mentionUserIds.length > 0
+  if (!value && !hasMentions) return
   const userId = String(role === 'assistant' ? (session.selfId || session.bot?.selfId || 'bot') : (session.userId || session.author?.id || session.username || 'unknown'))
   const entry = { userId, role, speakerName: sanitizeUserName(speakerName || (role === 'assistant' ? '东雪莲' : '群友')), content: value, messageId: String(metadata.messageId || ''), replyToId: String(metadata.replyToId || ''), mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [], hasMessageRecordCue: !!metadata.hasMessageRecordCue, ts: Date.now() }
   const current = channelSharedCache.get(channelKey) || []
@@ -111,8 +112,8 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
       if (Array.isArray(sw) && sw.includes(String(channelKey))) {
         const today = new Date().toISOString().slice(0, 10); let cache = channelTodayCache.get(channelKey)
         if (!cache || cache.date !== today) { cache = { date: today, messages: [] }; channelTodayCache.set(channelKey, cache) }
-        if (value) {
-          const displayName = speakerName || userId; cache.messages.push({ time: new Date().toLocaleTimeString(), user: sanitizeUserName(String(displayName)), userId, content: value, mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [] })
+        if (value || hasMentions) {
+          const displayName = speakerName || userId; cache.messages.push({ time: new Date().toLocaleTimeString(), user: sanitizeUserName(String(displayName)), userId, content: value || '', messageId: String(metadata.messageId || ''), mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [] })
           const now = Date.now(); const elapsed = now - (cache.lastDiskWrite || 0)
           if (cache.messages.length % 20 === 0 || elapsed > 300000) {
             cache.lastDiskWrite = now; const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_'); const tmp = TODAY_CACHE_PREFIX + safeKey + '.tmp'; const dst = TODAY_CACHE_PREFIX + safeKey + '.json'
