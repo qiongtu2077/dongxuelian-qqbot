@@ -186,6 +186,59 @@ exports.apply = (ctx) => {
       return json(res, COMMANDS_DATA)
     }
 
+    // API: Bot 状态
+    if (pathname === '/dashboard/api/bot/status' && req.method === 'GET') {
+      const { execSync } = require('child_process')
+      try {
+        const out = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()
+        const running = out.split('\n').filter(Boolean).length
+        return json(res, { running: running > 0, workers: running })
+      } catch {
+        return json(res, { running: false, workers: 0 })
+      }
+    }
+
+    // API: 启动 Bot
+    if (pathname === '/dashboard/api/bot/start' && req.method === 'POST') {
+      const { exec } = require('child_process')
+      exec('bash /root/koishi-app/restart.sh', (err) => {
+        if (err) ctx.logger('dashboard').error('start bot failed: ' + err.message)
+      })
+      return json(res, { ok: true, message: '启动命令已发送' })
+    }
+
+    // API: 停止 Bot
+    if (pathname === '/dashboard/api/bot/stop' && req.method === 'POST') {
+      const { execSync } = require('child_process')
+      try {
+        execSync("pkill -9 -f 'koishi'", { timeout: 5000 })
+        return json(res, { ok: true, message: '已停止所有 koishi 进程' })
+      } catch (e) {
+        return json(res, { ok: false, message: e.message })
+      }
+    }
+
+    // API: 维护模式
+    if (pathname === '/dashboard/api/maintenance' && req.method === 'GET') {
+      const paused = readFileSync(path.join(DATA_DIR, 'ai-paused.txt')) === 'on'
+      return json(res, { enabled: paused })
+    }
+
+    if (pathname === '/dashboard/api/maintenance' && req.method === 'PUT') {
+      let body = ''
+      req.on('data', c => body += c)
+      req.on('end', () => {
+        try {
+          const { enabled } = JSON.parse(body)
+          writeFileSync(path.join(DATA_DIR, 'ai-paused.txt'), enabled ? 'on' : '')
+          return json(res, { ok: true, message: enabled ? '维护模式已开启' : '维护模式已关闭' })
+        } catch (e) {
+          return json(res, { ok: false, message: e.message }, 400)
+        }
+      })
+      return
+    }
+
     // 静态文件
     const serveFile = (filePath) => {
       if (fs.existsSync(filePath)) {

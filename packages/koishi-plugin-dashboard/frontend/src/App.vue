@@ -13,6 +13,7 @@
     </div>
 
     <ConfigPanel v-if="activeTab === 'config'" />
+    <ControlPanel v-else-if="activeTab === 'control'" />
     <KeyManager v-else-if="activeTab === 'keys'" />
     <PersonaPanel v-else-if="activeTab === 'persona'" />
     <CommandBrowser v-else-if="activeTab === 'features'" />
@@ -26,6 +27,7 @@
 import { ref } from 'vue'
 import LoginPage from './components/LoginPage.vue'
 import ConfigPanel from './components/ConfigPanel.vue'
+import ControlPanel from './components/ControlPanel.vue'
 import KeyManager from './components/KeyManager.vue'
 import PersonaPanel from './components/PersonaPanel.vue'
 import CommandBrowser from './components/CommandBrowser.vue'
@@ -34,10 +36,11 @@ import WhitelistPanel from './components/WhitelistPanel.vue'
 import StatusPanel from './components/StatusPanel.vue'
 
 export default {
-  components: { LoginPage, ConfigPanel, KeyManager, PersonaPanel, CommandBrowser, CommandList, WhitelistPanel, StatusPanel },
+  components: { LoginPage, ControlPanel, ConfigPanel, KeyManager, PersonaPanel, CommandBrowser, CommandList, WhitelistPanel, StatusPanel },
   setup() {
     const loggedIn = ref(!!localStorage.getItem('dashboard_token'))
     const tabs = [
+      { id: 'control', label: '控制' },
       { id: 'config', label: '模型配置' },
       { id: 'keys', label: 'API Keys' },
       { id: 'persona', label: '人格管理' },

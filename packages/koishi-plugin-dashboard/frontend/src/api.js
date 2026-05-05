@@ -52,3 +52,8 @@ export async function fetchKeys() { return get('/keys') }
 export async function updateKey(file, value) { return put('/keys', { file, value }) }
 export async function fetchFeatures() { return get('/features') }
 export async function fetchCommands() { return get('/commands') }
+export async function botStatus() { return get('/bot/status') }
+export async function startBot() { return post('/bot/start', {}) }
+export async function stopBot() { return post('/bot/stop', {}) }
+export async function fetchMaintenance() { return get('/maintenance') }
+export async function setMaintenance(enabled) { return put('/maintenance', { enabled }) }
