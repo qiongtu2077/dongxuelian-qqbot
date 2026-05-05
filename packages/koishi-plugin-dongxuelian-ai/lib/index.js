@@ -94,7 +94,7 @@ const {
   sanitizeFileToken, safeJsonStringify,
 } = require('./utils')
 
-// @satorijs/core@3.7.0 缺少 stripped / resolve / send，这里打补丁
+// @satorijs/core@3.7.0 缺少 stripped / resolve / send / text，这里打补丁
 if (!('stripped' in Session.prototype)) {
   Object.defineProperty(Session.prototype, 'stripped', {
     get: function() {
@@ -122,6 +122,17 @@ if (typeof Session.prototype.send !== 'function') {
       throw new Error('Bot not available for sending')
     }
     return this.bot.sendMessage(this.channelId, content, this.guildId)
+  }
+}
+if (typeof Session.prototype.text !== 'function') {
+  Session.prototype.text = function() {
+    const elements = this.event?.message?.elements
+    if (!elements) return ''
+    return elements
+      .filter(e => e.type === 'text')
+      .map(e => e.attrs?.content || '')
+      .join('')
+      .trim()
   }
 }
 
