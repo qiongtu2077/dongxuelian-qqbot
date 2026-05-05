@@ -1,0 +1,22 @@
+* { margin: 0; padding: 0; box-sizing: border-box }
+body { font-family: -apple-system, 'Microsoft YaHei', sans-serif; background: #0f1923; color: #E2E8F0; min-height: 100vh }
+.app { max-width: 1100px; margin: 0 auto; padding: 32px 24px }
+h1 { font-size: 24px; font-weight: 800; color: #39C5BB; margin-bottom: 24px }
+h2 { font-size: 16px; font-weight: 700; margin-bottom: 12px; color: #94A3B8; text-transform: uppercase; letter-spacing: 1px }
+.card { background: #1a2634; border: 1px solid #2a3a4a; border-radius: 12px; padding: 20px; margin-bottom: 20px }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px }
+.row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px }
+.row label { min-width: 80px; font-size: 14px; color: #94A3B8 }
+select, input { background: #0f1923; border: 1px solid #2a3a4a; border-radius: 8px; padding: 8px 12px; color: #E2E8F0; font-size: 14px; flex: 1 }
+select:focus, input:focus { outline: none; border-color: #39C5BB }
+.btn { background: #39C5BB; color: #0f1923; border: none; border-radius: 8px; padding: 8px 20px; font-weight: 700; font-size: 14px; cursor: pointer }
+.btn:hover { background: #5EEAD4 }
+.btn-sm { padding: 4px 12px; font-size: 12px }
+.tag { display: inline-block; background: rgba(57,197,187,0.15); color: #39C5BB; padding: 2px 10px; border-radius: 20px; font-size: 12px; margin: 2px }
+.msg { background: #0f1923; border-radius: 8px; padding: 12px 16px; margin-top: 12px; font-size: 14px; line-height: 1.6 }
+.msg.ok { border-left: 3px solid #39C5BB }
+.msg.err { border-left: 3px solid #F472B6; color: #F472B6 }
+.grp { border-bottom: 1px solid #2a3a4a; padding: 12px 0 }
+.grp:last-child { border-bottom: none }
+.grp-name { font-weight: 700; font-size: 14px; margin-bottom: 4px }
+.grp-desc { font-size: 13px; color: #94A3B8 }

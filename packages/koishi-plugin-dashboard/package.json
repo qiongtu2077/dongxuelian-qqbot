@@ -1,0 +1,9 @@
+{
+  "name": "koishi-plugin-dashboard",
+  "version": "0.1.0",
+  "main": "index.js",
+  "koishi": {
+    "description": "Bot 管理面板",
+    "service": {}
+  }
+}

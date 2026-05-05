@@ -21,6 +21,7 @@
     "koishi": "^4.18.11",
     "koishi-plugin-adapter-onebot": "^6.9.3",
     "koishi-plugin-daily-report": "file:packages/koishi-plugin-daily-report",
+    "koishi-plugin-dashboard": "file:packages/koishi-plugin-dashboard",
     "koishi-plugin-defense": "file:packages/koishi-plugin-defense",
     "koishi-plugin-dongxuelian-ai": "file:packages/koishi-plugin-dongxuelian-ai",
     "koishi-plugin-dongxuelian-help": "file:packages/koishi-plugin-dongxuelian-help",
