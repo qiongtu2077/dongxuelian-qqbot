@@ -8,16 +8,11 @@ exports.name = 'dashboard'
 const PASSWORD = process.env.DASHBOARD_PASSWORD || 'Aa123456~'
 
 function createToken() {
-  const raw = PASSWORD + ':' + (Date.now() + 86400000)
-  return crypto.createHash('sha256').update(raw).digest('hex')
+  return crypto.createHash('sha256').update('dashboard:' + PASSWORD).digest('hex')
 }
 
 function validateToken(token) {
-  if (!token) return false
-  const hash = createToken()
-  // Check against current and previous day (tolerate 1 day clock skew)
-  const yesterday = crypto.createHash('sha256').update(PASSWORD + ':' + (Date.now() - 86400000)).digest('hex')
-  return token === hash || token === yesterday
+  return token === createToken()
 }
 
 exports.apply = (ctx) => {
