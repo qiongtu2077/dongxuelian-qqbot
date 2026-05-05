@@ -66,7 +66,11 @@ function processMessages(messages, today) {
   let totalChars = 0
   for (const msg of messages) {
     if (!msg.content) continue
-    const text = msg.content.replace(/\[CQ:[^\]]+\]/g, '').trim()
+    const text = msg.content
+      .replace(/\[CQ:[^\]]+\]/g, '')
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/【[^】]*】/g, '')
+      .trim()
     totalChars += text.length
   }
 
