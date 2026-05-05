@@ -485,7 +485,9 @@ async function chat(session, userText, ctx, options = {}) {
       }
     }
   } catch (e) {}
-  const quotedTag = qc2 ? '\n[引用内容]' + qc2 + '\n[以上是对方说的话，不是在对你说]' : ''
+  let quoteAuthor = ''
+  try { if (session.quote) quoteAuthor = session.quote.nickname || session.quote.author || session.quote.userId || '' } catch (e) {}
+  const quotedTag = qc2 ? '\n[引用 ' + (quoteAuthor || '消息') + ' 的原话]\n' + qc2 + '\n[以上是引用内容，不是 ' + safeUserName + ' 说的]' : ''
   const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${fwdInput}${contextTag}${quotedTag}\n</user>`
   const historyMessages = getConversationHistory(session)
 
