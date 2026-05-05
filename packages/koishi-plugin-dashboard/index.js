@@ -187,25 +187,32 @@ exports.apply = (ctx) => {
       return json(res, COMMANDS_DATA)
     }
 
-    // NapCat 代理（转发到 WebUI）
-    if (pathname.startsWith('/dashboard/napcat/')) {
-      const napcatPath = pathname.replace('/dashboard/napcat/', '')
+    // NapCat WebUI 代理
+    if (pathname.startsWith('/webui/') || pathname === '/webui') {
+      const target = pathname + url.search
       const napcatHost = process.env.NAPCAT_HOST || '127.0.0.1'
       const napcatPort = process.env.NAPCAT_PORT || 6099
-      const napcatToken = process.env.NAPCAT_TOKEN || ''
-      const opts = {
-        hostname: napcatHost,
-        port: napcatPort,
-        path: '/' + napcatPath + url.search,
-        method: req.method,
-        headers: { ...req.headers, host: napcatHost + ':' + napcatPort },
-      }
-      if (napcatToken) opts.headers['Authorization'] = 'Bearer ' + napcatToken
+      const opts = { hostname: napcatHost, port: napcatPort, path: target, method: req.method, headers: { ...req.headers, host: napcatHost + ':' + napcatPort } }
       const proxyReq = http.request(opts, (proxyRes) => {
         res.writeHead(proxyRes.statusCode, proxyRes.headers)
         proxyRes.pipe(res)
       })
-      proxyReq.on('error', () => { res.writeHead(502); res.end('NapCat proxy error') })
+      proxyReq.on('error', (e) => { res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('proxy error: ' + e.message) })
+      req.pipe(proxyReq)
+      return
+    }
+
+    // NapCat API 代理
+    if (pathname.startsWith('/api/') && !pathname.startsWith('/dashboard/api/')) {
+      const target = pathname + url.search
+      const napcatHost = process.env.NAPCAT_HOST || '127.0.0.1'
+      const napcatPort = process.env.NAPCAT_PORT || 6099
+      const opts = { hostname: napcatHost, port: napcatPort, path: target, method: req.method, headers: { ...req.headers, host: napcatHost + ':' + napcatPort } }
+      const proxyReq = http.request(opts, (proxyRes) => {
+        res.writeHead(proxyRes.statusCode, proxyRes.headers)
+        proxyRes.pipe(res)
+      })
+      proxyReq.on('error', (e) => { res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('proxy error: ' + e.message) })
       req.pipe(proxyReq)
       return
     }

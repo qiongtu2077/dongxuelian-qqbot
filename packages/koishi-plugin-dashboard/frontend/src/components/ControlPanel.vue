@@ -38,7 +38,7 @@
         <button class="btn btn-sm" @click="showNapcat = !showNapcat">{{ showNapcat ? '关闭' : '打开' }}</button>
       </div>
       <div v-if="showNapcat" style="margin-top:12px;border-radius:8px;overflow:hidden;background:#0f1923">
-        <iframe src="/dashboard/napcat/" style="width:100%;height:600px;border:none" @load="iframeLoaded = true"></iframe>
+        <iframe src="/webui/" style="width:100%;height:600px;border:none"></iframe>
       </div>
     </div>
 
