@@ -314,6 +314,33 @@ const server = http.createServer((req, res) => {
     })
   }
 
+  // QQ 号切换
+  if (pathname === '/dashboard/api/qq/selfid' && req.method === 'GET') {
+    try {
+      const yml = fs.readFileSync(path.join(KOISHI_DIR, 'koishi.yml'), 'utf8')
+      const m = yml.match(/selfId:\s*['\"]?(\d+)['\"]?/)
+      return json(res, { selfId: m ? m[1] : '' })
+    } catch { return json(res, { selfId: '' }) }
+  }
+  if (pathname === '/dashboard/api/qq/selfid' && req.method === 'PUT') {
+    let body = ''
+    req.on('data', c => body += c)
+    req.on('end', () => {
+      try {
+        const { selfId } = JSON.parse(body)
+        if (!selfId || !/^\d+$/.test(selfId)) return json(res, { ok: false, message: '无效 QQ 号' }, 400)
+        const ymlPath = path.join(KOISHI_DIR, 'koishi.yml')
+        let yml = fs.readFileSync(ymlPath, 'utf8')
+        yml = yml.replace(/(selfId:\s*['\"]?)\d+(['\"]?)/, '$1' + selfId + '$2')
+        fs.writeFileSync(ymlPath, yml, 'utf8')
+        // 自动重启 koishi
+        exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`)
+        json(res, { ok: true, message: 'QQ 号已更新，Koishi 正在重启...' })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
   // NapCat 管理
   if (pathname === '/dashboard/api/napcat/status' && req.method === 'GET') {
     try {

@@ -59,3 +59,5 @@ export async function fetchMaintenance() { return get('/maintenance') }
 export async function setMaintenance(enabled) { return put('/maintenance', { enabled }) }
 export async function fetchQQToken() { return get('/qq/token') }
 export async function fetchSSHInfo() { return get('/qq/ssh-info') }
+export async function fetchSelfId() { return get('/qq/selfid') }
+export async function updateSelfId(selfId) { return put('/qq/selfid', { selfId }) }

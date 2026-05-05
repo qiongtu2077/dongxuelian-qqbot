@@ -53,6 +53,13 @@
           <a :href="'http://localhost:6099/webui/'" target="_blank" class="btn btn-sm" style="display:inline-block;text-decoration:none">打开 NapCat 管理面板</a>
           <div v-if="copiedMsg" style="margin-top:8px;font-size:12px;color:#39C5BB">{{ copiedMsg }}</div>
         </div>
+
+        <div style="background:#0f1923;border-radius:8px;padding:14px 16px;font-size:13px;line-height:1.7;margin-top:12px">
+          <div style="margin-bottom:8px">切换 QQ 号</div>
+          <input v-model="newSelfId" placeholder="输入新 QQ 号" style="width:100%;margin-bottom:8px;font-family:monospace" />
+          <button class="btn btn-sm" @click="saveSelfId" :disabled="savingSelfId">{{ savingSelfId ? '保存中...' : '保存并重启 Koishi' }}</button>
+          <div v-if="selfIdMsg" style="margin-top:8px;font-size:12px" :style="{color: selfIdMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ selfIdMsg.text }}</div>
+        </div>
       </div>
     </div>
 
@@ -80,7 +87,7 @@
 
 <script>
 import { ref, onMounted } from 'vue'
-import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo } from '../api'
+import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo, fetchSelfId, updateSelfId } from '../api'
 
 export default {
   name: 'ControlPanel',
@@ -95,6 +102,9 @@ export default {
     const copiedMsg = ref('')
     const sshHost = ref(localStorage.getItem('dashboard_ssh_host') || '')
     const sshUser = ref('root')
+    const newSelfId = ref('')
+    const savingSelfId = ref(false)
+    const selfIdMsg = ref(null)
 
     async function loadStatus() {
       const res = await botStatus()
@@ -116,11 +126,24 @@ export default {
         if (res.data.user) sshUser.value = res.data.user
       }
     }
+    async function loadSelfId() {
+      const res = await fetchSelfId()
+      if (res.ok && res.data?.selfId) newSelfId.value = res.data.selfId
+    }
+    async function saveSelfId() {
+      if (!newSelfId.value.trim() || !/^\d+$/.test(newSelfId.value.trim())) {
+        selfIdMsg.value = { type: 'err', text: '无效 QQ 号' }; return
+      }
+      savingSelfId.value = true; selfIdMsg.value = null
+      const res = await updateSelfId(newSelfId.value.trim())
+      selfIdMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已保存，Koishi 正在重启' : '保存失败') }
+      savingSelfId.value = false
+    }
     function saveSSHHost() {
       localStorage.setItem('dashboard_ssh_host', sshHost.value)
     }
 
-    onMounted(() => { loadStatus(); loadMaintenance(); loadQQToken(); loadSSHInfo() })
+    onMounted(() => { loadStatus(); loadMaintenance(); loadQQToken(); loadSSHInfo(); loadSelfId() })
 
     function copyText(id) {
       const el = document.getElementById(id)
@@ -159,7 +182,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, showConfirm, resultMsg, maintenanceOn, maintLoading, napcatToken, copiedMsg, sshHost, sshUser, copyText, saveSSHHost, doStart, confirmStop, doStop, toggleMaintenance }
+    return { status, acting, showConfirm, resultMsg, maintenanceOn, maintLoading, napcatToken, copiedMsg, sshHost, sshUser, newSelfId, savingSelfId, selfIdMsg, copyText, saveSSHHost, saveSelfId, doStart, confirmStop, doStop, toggleMaintenance }
   }
 }
 </script>
