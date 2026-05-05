@@ -28,15 +28,17 @@
       <div v-if="resultMsg" class="msg" :class="resultMsg.type" style="margin-top:12px">{{ resultMsg.text }}</div>
     </div>
 
-    <!-- 停止确认弹窗 -->
-    <div v-if="showConfirm" style="position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:100">
-      <div style="background:#1a2634;border:1px solid #2a3a4a;border-radius:16px;padding:32px;width:360px;max-width:90vw">
-        <h2 style="color:#F472B6;margin-bottom:12px">确认停止</h2>
-        <p style="color:#94A3B8;font-size:14px;margin-bottom:20px">确定要停止所有 koishi 进程吗？Bot 将下线，群聊不会响应。</p>
-        <div style="display:flex;gap:12px">
-          <button class="btn" style="background:#F472B6;flex:1" @click="doStop">确认停止</button>
-          <button class="btn" style="background:#2a3a4a;color:#94A3B8;flex:1" @click="showConfirm=false">取消</button>
+    <!-- QQ 管理 -->
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <h2 style="margin:0 0 4px">QQ 管理</h2>
+          <div style="font-size:13px;color:#64748B">切换 QQ 账号、查看登录状态</div>
         </div>
+        <button class="btn btn-sm" @click="showNapcat = !showNapcat">{{ showNapcat ? '关闭' : '打开' }}</button>
+      </div>
+      <div v-if="showNapcat" style="margin-top:12px;border-radius:8px;overflow:hidden;background:#0f1923">
+        <iframe src="/dashboard/napcat/" style="width:100%;height:600px;border:none" @load="iframeLoaded = true"></iframe>
       </div>
     </div>
 
@@ -75,6 +77,7 @@ export default {
     const resultMsg = ref(null)
     const maintenanceOn = ref(false)
     const maintLoading = ref(false)
+    const showNapcat = ref(false)
 
     async function loadStatus() {
       const res = await botStatus()
@@ -115,7 +118,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, showConfirm, resultMsg, maintenanceOn, maintLoading, doStart, confirmStop, doStop, toggleMaintenance }
+    return { status, acting, showConfirm, resultMsg, maintenanceOn, maintLoading, doStart, confirmStop, doStop, toggleMaintenance, showNapcat }
   }
 }
 </script>

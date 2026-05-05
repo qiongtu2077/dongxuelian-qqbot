@@ -20,7 +20,8 @@ exports.apply = (ctx) => {
   const AI_LIB = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'lib')
   const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'data')
   const DIST_DIR = path.join(PLUGIN_ROOT, 'frontend', 'dist')
-  const PORT = 5150
+  const PORT = process.env.DASHBOARD_PORT || 5150
+  const KOISHI_DIR = process.env.KOISHI_DIR || path.join(PLUGIN_ROOT, '..', '..')
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
@@ -186,6 +187,29 @@ exports.apply = (ctx) => {
       return json(res, COMMANDS_DATA)
     }
 
+    // NapCat 代理（转发到 WebUI）
+    if (pathname.startsWith('/dashboard/napcat/')) {
+      const napcatPath = pathname.replace('/dashboard/napcat/', '')
+      const napcatHost = process.env.NAPCAT_HOST || '127.0.0.1'
+      const napcatPort = process.env.NAPCAT_PORT || 6099
+      const napcatToken = process.env.NAPCAT_TOKEN || ''
+      const opts = {
+        hostname: napcatHost,
+        port: napcatPort,
+        path: '/' + napcatPath + url.search,
+        method: req.method,
+        headers: { ...req.headers, host: napcatHost + ':' + napcatPort },
+      }
+      if (napcatToken) opts.headers['Authorization'] = 'Bearer ' + napcatToken
+      const proxyReq = http.request(opts, (proxyRes) => {
+        res.writeHead(proxyRes.statusCode, proxyRes.headers)
+        proxyRes.pipe(res)
+      })
+      proxyReq.on('error', () => { res.writeHead(502); res.end('NapCat proxy error') })
+      req.pipe(proxyReq)
+      return
+    }
+
     // API: Bot 状态
     if (pathname === '/dashboard/api/bot/status' && req.method === 'GET') {
       const { execSync } = require('child_process')
@@ -201,7 +225,7 @@ exports.apply = (ctx) => {
     // API: 启动 Bot
     if (pathname === '/dashboard/api/bot/start' && req.method === 'POST') {
       const { exec } = require('child_process')
-      exec('bash /root/koishi-app/restart.sh', (err) => {
+      exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`, (err) => {
         if (err) ctx.logger('dashboard').error('start bot failed: ' + err.message)
       })
       return json(res, { ok: true, message: '启动命令已发送' })
@@ -220,7 +244,7 @@ exports.apply = (ctx) => {
 
     // API: 维护模式
     if (pathname === '/dashboard/api/maintenance' && req.method === 'GET') {
-      const paused = readFileSync(path.join(DATA_DIR, 'ai-paused.txt')) === 'on'
+      const paused = !!readFileSync(path.join(DATA_DIR, 'ai-paused.txt'))
       return json(res, { enabled: paused })
     }
 
@@ -230,7 +254,12 @@ exports.apply = (ctx) => {
       req.on('end', () => {
         try {
           const { enabled } = JSON.parse(body)
-          writeFileSync(path.join(DATA_DIR, 'ai-paused.txt'), enabled ? 'on' : '')
+          const maintFile = path.join(DATA_DIR, 'ai-paused.txt')
+          if (enabled) {
+            writeFileSync(maintFile, '优化中，别急')
+          } else {
+            try { fs.unlinkSync(maintFile) } catch {}
+          }
           return json(res, { ok: true, message: enabled ? '维护模式已开启' : '维护模式已关闭' })
         } catch (e) {
           return json(res, { ok: false, message: e.message }, 400)
