@@ -24,7 +24,7 @@ fi
 echo "端口 5140 已释放"
 
 # 3. 写时间戳标记，区分新旧日志
-MARKER="=== RESTART $(date +%Y-%m-%d %H:%M:%S) ==="
+MARKER="=== RESTART $(date +%Y%m%d%H%M%S) ==="
 echo "$MARKER" >> "$LOG_FILE"
 
 # 4. 启动 bot

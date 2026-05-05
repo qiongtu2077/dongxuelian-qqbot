@@ -10,6 +10,7 @@ const {
   PROVIDERS, PROVIDER_FILE, MODEL_FILE, BASE_URL_FILE,
   SEARCH_ENABLED_FILE, TEST_MODE_FILE, THINKING_MODE_FILE,
   HOSTILE_MODE_FILE,
+  SUMMARY_WHITELIST_FILE,
   RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP,
 } = require('./constants')
 const {
@@ -80,6 +81,30 @@ async function handleCommand(session, ctx, state) {
     if (!hasAdminPermission(session)) return handled('只有管理员能操作这个命令。')
     await safeUnlink(HOSTILE_MODE_FILE)
     return handled('嘴臭模式已关闭。被攻击时反击值 ≥ 90 将保持阴阳人格。')
+  }
+
+  if (/^谁(?:@|at)我$/.test(plain)) {
+    if (!inGuild) return handled('这个命令只能在群里用。')
+    const sw = await readJsonFile(SUMMARY_WHITELIST_FILE, [])
+    if (!Array.isArray(sw) || !sw.includes(String(channelKey))) {
+      return handled('本群未启用该功能，请联系管理员添加白名单。')
+    }
+    const today = new Date().toISOString().slice(0, 10)
+    const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
+    const cacheFile = path.join(DATA_DIR, 'today-cache-' + safeKey + '.json')
+    let cache = null
+    try { cache = JSON.parse(require('fs').readFileSync(cacheFile, 'utf8')) } catch {}
+    if (!cache || cache.date !== today || !Array.isArray(cache.messages)) {
+      return handled('今天还没有收录足够消息，稍后再试。')
+    }
+    const userId = String(currentUserId || '')
+    if (!userId) return handled('无法获取用户信息。')
+    const atMe = cache.messages.filter(m =>
+      Array.isArray(m.mentionUserIds) && m.mentionUserIds.includes(userId)
+    )
+    if (!atMe.length) return handled('今天还没有人 @你。')
+    const lines = atMe.slice(-10).map(m => `${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''} @了你：${(m.content || '').replace(/【[^】]*】/g, '').slice(0, 30)}`)
+    return handled(`今天有 ${atMe.length} 条消息 @了你（显示最近${Math.min(atMe.length, 10)}条）：\n${lines.join('\n')}`)
   }
 
   if (/^东雪莲群聊AI概率查看$/.test(plain)) {
