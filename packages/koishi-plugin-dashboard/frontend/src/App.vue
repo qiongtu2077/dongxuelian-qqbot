@@ -2,14 +2,16 @@
   <div class="app">
     <h1>Bot Dashboard</h1>
 
-    <div style="display:flex;gap:8px;margin-bottom:24px">
+    <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap">
       <button v-for="t in tabs" :key="t.id" class="btn btn-sm"
         :style="activeTab === t.id ? { background: '#39C5BB' } : { background: '#1a2634', color: '#94A3B8', border: '1px solid #2a3a4a' }"
         @click="activeTab = t.id">{{ t.label }}</button>
     </div>
 
     <ConfigPanel v-if="activeTab === 'config'" />
+    <KeyManager v-else-if="activeTab === 'keys'" />
     <PersonaPanel v-else-if="activeTab === 'persona'" />
+    <CommandBrowser v-else-if="activeTab === 'commands'" />
     <WhitelistPanel v-else-if="activeTab === 'whitelist'" />
     <StatusPanel v-else-if="activeTab === 'status'" />
   </div>
@@ -18,20 +20,24 @@
 <script>
 import { ref } from 'vue'
 import ConfigPanel from './components/ConfigPanel.vue'
+import KeyManager from './components/KeyManager.vue'
 import PersonaPanel from './components/PersonaPanel.vue'
+import CommandBrowser from './components/CommandBrowser.vue'
 import WhitelistPanel from './components/WhitelistPanel.vue'
 import StatusPanel from './components/StatusPanel.vue'
 
 export default {
-  components: { ConfigPanel, PersonaPanel, WhitelistPanel, StatusPanel },
+  components: { ConfigPanel, KeyManager, PersonaPanel, CommandBrowser, WhitelistPanel, StatusPanel },
   setup() {
     const tabs = [
       { id: 'config', label: '模型配置' },
+      { id: 'keys', label: 'API Keys' },
       { id: 'persona', label: '人格管理' },
+      { id: 'commands', label: '功能介绍' },
       { id: 'whitelist', label: '白名单' },
       { id: 'status', label: '状态' },
     ]
-    const activeTab = ref('config')
+    const activeTab = ref('commands')
     return { tabs, activeTab }
   }
 }

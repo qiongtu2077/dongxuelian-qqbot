@@ -1,0 +1,51 @@
+<template>
+  <div>
+    <div class="card">
+      <h2>指令速查</h2>
+      <input v-model="search" placeholder="搜索指令..." style="width:100%;margin-bottom:16px" />
+    </div>
+
+    <div v-for="group in filtered" :key="group.category" class="card">
+      <h2>{{ group.category }}</h2>
+      <div v-for="c in group.commands" :key="c.cmd" class="grp">
+        <div class="grp-name" style="font-family:monospace;color:#39C5BB">{{ c.cmd }}</div>
+        <div class="grp-desc">{{ c.desc }}</div>
+      </div>
+    </div>
+
+    <div v-if="!filtered.length" class="card" style="color:#64748B;text-align:center">
+      无匹配结果
+    </div>
+  </div>
+</template>
+
+<script>
+import { ref, computed, onMounted } from 'vue'
+import { fetchCommands } from '../api'
+
+export default {
+  name: 'CommandBrowser',
+  setup() {
+    const commands = ref([])
+    const search = ref('')
+
+    const filtered = computed(() => {
+      const q = search.value.trim().toLowerCase()
+      if (!q) return commands.value
+      return commands.value.map(g => ({
+        category: g.category,
+        commands: g.commands.filter(c =>
+          c.cmd.toLowerCase().includes(q) || c.desc.toLowerCase().includes(q)
+        ),
+      })).filter(g => g.commands.length > 0)
+    })
+
+    onMounted(async () => {
+      const res = await fetchCommands()
+      if (res.ok) commands.value = res.data
+    })
+
+    return { commands, search, filtered }
+  }
+}
+</script>

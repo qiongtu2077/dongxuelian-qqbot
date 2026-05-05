@@ -21,3 +21,6 @@ export async function updateConfig(data) { return put('/config', data) }
 export async function fetchPersonas() { return get('/personas') }
 export async function fetchModes() { return get('/modes') }
 export async function fetchWhitelist() { return get('/whitelist') }
+export async function fetchKeys() { return get('/keys') }
+export async function updateKey(file, value) { return put('/keys', { file, value }) }
+export async function fetchCommands() { return get('/commands') }
