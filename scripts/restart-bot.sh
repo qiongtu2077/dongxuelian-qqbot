@@ -23,22 +23,30 @@ if ss -tlnp | grep -q ':5140'; then
 fi
 echo "端口 5140 已释放"
 
-# 3. 清空日志（可选，保留最近几次）
-# tail -n 1000 "$LOG_FILE" > "${LOG_FILE}.prev" 2>/dev/null || true
+# 3. 写时间戳标记，区分新旧日志
+MARKER="=== RESTART $(date +%Y-%m-%d %H:%M:%S) ==="
+echo "$MARKER" >> "$LOG_FILE"
 
 # 4. 启动 bot
 echo "启动 bot..."
 cd "$APP_DIR"
 DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" nohup node node_modules/.bin/koishi start >> "$LOG_FILE" 2>&1 &
-PID=$!
-echo "启动中 (PID=$PID) ..."
+echo "PID: $!"
 
-# 5. 等待并验证
+# 5. 等待并验证（只查标记之后的 20 行，防止旧日志欺骗）
 sleep 15
-if grep -q 'daily-report loaded' "$LOG_FILE" && grep -q 'adapter connect to server' "$LOG_FILE"; then
+LOG_TAIL=$(tail -20 "$LOG_FILE")
+
+if echo "$LOG_TAIL" | grep -q 'daily-report loaded' && \
+   echo "$LOG_TAIL" | grep -q 'adapter connect to server'; then
   echo "启动成功 ✓"
   echo "   daily-report loaded"
   echo "   adapter connected"
+elif ss -tlnp | grep -q ':5140' && ps aux | grep -q 'koishi/lib/worker'; then
+  echo "启动成功（进程+端口确认）✓"
 else
-  echo "警告: 启动可能有异常，请检查日志: tail -20 $LOG_FILE"
+  echo "启动失败 ✗"
+  echo "--- 最后 20 行日志 ---"
+  tail -20 "$LOG_FILE"
+  exit 1
 fi
