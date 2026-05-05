@@ -109,7 +109,8 @@ async function handleCommand(session, ctx, state) {
     const shown = Math.min(total, 10)
     let reply = `今天有 ${total} 条消息 @了你（显示最近${shown}条）：\n\n${lines.join('\n\n')}`
     if (total > shown) reply += `\n\n${shown}/${total}`
-    reply += `\n\n如需查看上下文可定位消息，示例：\n定位消息 ${slice[slice.length - 1].messageId || '1'}`
+    const lastId = slice[slice.length - 1].messageId
+    if (lastId) reply += `\n\n如需查看上下文可定位消息，示例：\n定位消息 ${lastId}`
     return handled(reply)
   }
 
