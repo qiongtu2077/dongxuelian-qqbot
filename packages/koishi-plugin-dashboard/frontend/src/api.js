@@ -24,3 +24,4 @@ export async function fetchWhitelist() { return get('/whitelist') }
 export async function fetchKeys() { return get('/keys') }
 export async function updateKey(file, value) { return put('/keys', { file, value }) }
 export async function fetchFeatures() { return get('/features') }
+export async function fetchCommands() { return get('/commands') }

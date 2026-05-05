@@ -66,6 +66,7 @@ export default {
     }
 
     function scrollTo(id) {
+      search.value = ''
       activeId.value = id
       setTimeout(() => {
         const el = document.getElementById('feat-' + id)

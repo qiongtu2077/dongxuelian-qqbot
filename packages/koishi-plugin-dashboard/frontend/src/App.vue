@@ -11,7 +11,8 @@
     <ConfigPanel v-if="activeTab === 'config'" />
     <KeyManager v-else-if="activeTab === 'keys'" />
     <PersonaPanel v-else-if="activeTab === 'persona'" />
-    <CommandBrowser v-else-if="activeTab === 'commands'" />
+    <CommandBrowser v-else-if="activeTab === 'features'" />
+    <CommandList v-else-if="activeTab === 'commands'" />
     <WhitelistPanel v-else-if="activeTab === 'whitelist'" />
     <StatusPanel v-else-if="activeTab === 'status'" />
   </div>
@@ -23,21 +24,23 @@ import ConfigPanel from './components/ConfigPanel.vue'
 import KeyManager from './components/KeyManager.vue'
 import PersonaPanel from './components/PersonaPanel.vue'
 import CommandBrowser from './components/CommandBrowser.vue'
+import CommandList from './components/CommandList.vue'
 import WhitelistPanel from './components/WhitelistPanel.vue'
 import StatusPanel from './components/StatusPanel.vue'
 
 export default {
-  components: { ConfigPanel, KeyManager, PersonaPanel, CommandBrowser, WhitelistPanel, StatusPanel },
+  components: { ConfigPanel, KeyManager, PersonaPanel, CommandBrowser, CommandList, WhitelistPanel, StatusPanel },
   setup() {
     const tabs = [
       { id: 'config', label: '模型配置' },
       { id: 'keys', label: 'API Keys' },
       { id: 'persona', label: '人格管理' },
-      { id: 'commands', label: '功能介绍' },
+      { id: 'features', label: '功能介绍' },
+      { id: 'commands', label: '指令速查' },
       { id: 'whitelist', label: '白名单' },
       { id: 'status', label: '状态' },
     ]
-    const activeTab = ref('commands')
+    const activeTab = ref('features')
     return { tabs, activeTab }
   }
 }
