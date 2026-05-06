@@ -21,6 +21,8 @@
 | `进度.md` | 变更记录、规范、交接说明 |
 | `教程.md` | 面向使用者的补充教程 |
 | `scripts/*.sh` | 可直接在 Linux 服务器执行的部署脚本 |
+| `scripts/deploy-and-restart.bat` | Windows 一键部署+重启脚本 |
+| `packages/koishi-plugin-dashboard/` | Dashboard 独立服务器 + 一键部署面板 |
 | `packages/*/lib/index.js` | 各插件当前可运行的 JS 代码 |
 | `packages/*/package.json` | 各插件的标准包信息 |
 | `package.json` | 仓库根配置，声明 workspaces |
@@ -585,3 +587,51 @@ group-leave-notice loaded
 - 每次改动后同步检查版本号、安装提示和 `README`
 
 当前仓库优先服务“能部署、能跑、能维护”，不是做成一个空壳模板仓库。
+
+---
+
+## 十三、Dashboard 一键部署面板
+
+Dashboard（`packages/koishi-plugin-dashboard/`）自带一键部署面板，可在浏览器中配置远程服务器信息并执行部署。
+
+### 启动本地 Dashboard
+
+```bash
+cd packages/koishi-plugin-dashboard
+node standalone.js
+```
+
+浏览器打开 `http://localhost:5150/dashboard/`，进入「部署」Tab。
+
+### 部署配置
+
+| 字段 | 说明 |
+|------|------|
+| 服务器地址 | `root@服务器IP` 格式 |
+| 应用目录 | 远程服务器上的 Koishi 应用目录（默认 `/root/koishi-app`） |
+| 访问密码 / 管理员密码 | 部署到新服务器时设置（留空使用默认密码 `123456`） |
+| B 站 Cookies | 可选，视频插件需要，从浏览器导出的 `cookies.txt` |
+
+### 部署流程
+
+1. 填写服务器地址 → 保存配置
+2. （可选）上传 B 站 Cookies、设置密码
+3. 点「开始部署」→ 实时查看部署日志
+4. 部署完成后点「打开已部署面板」进入远程服务器的 Dashboard
+
+### 部署内容
+
+一键部署自动推送：
+
+- 所有插件 `lib/` 代码 + `package.json`
+- Dashboard `standalone.js` + 前端 `dist/`
+- `ai-skills/` 数据文件
+- API Key 等配置文件
+- `restart.sh` + `watchdog.sh` 脚本
+- 自动安装 `yt-dlp`（视频插件依赖）
+- 自动创建 `/root/koishi-bili-downloads` 目录
+
+### 密码安全
+
+部署面板中的密码设置只对**目标服务器**生效（通过 SSH 写入远端文件），不影响当前运行中的 Dashboard。如已在服务器上手动改过密码，部署时不会覆盖。
+
