@@ -39,7 +39,8 @@ function json(res, data, status = 200) {
 }
 
 function readFileSync(p) {
-  try { return fs.readFileSync(p, 'utf8').trim() } catch { return '' }
+  try { if (fs.statSync(p).isFile()) return fs.readFileSync(p, 'utf8').trim() } catch {}
+  return ''
 }
 
 function writeFileSync(p, content) {
@@ -510,15 +511,17 @@ const server = http.createServer((req, res) => {
 
   // 静态文件
   const serveFile = (filePath) => {
-    if (fs.existsSync(filePath)) {
-      const ext = path.extname(filePath)
-      const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' }[ext] || 'application/octet-stream'
-      res.writeHead(200, { 'Content-Type': mime })
-      res.end(fs.readFileSync(filePath))
-    } else {
-      res.writeHead(404)
-      res.end('Not Found')
-    }
+    try {
+      if (fs.statSync(filePath).isFile()) {
+        const ext = path.extname(filePath)
+        const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' }[ext] || 'application/octet-stream'
+        res.writeHead(200, { 'Content-Type': mime })
+        res.end(fs.readFileSync(filePath))
+        return
+      }
+    } catch {}
+    res.writeHead(404)
+    res.end('Not Found')
   }
   const reqPath = pathname.replace(/^\/dashboard\//, '')
   serveFile(path.join(DIST_DIR, reqPath || 'index.html'))
