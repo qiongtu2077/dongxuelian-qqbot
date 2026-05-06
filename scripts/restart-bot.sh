@@ -1,10 +1,13 @@
 #!/bin/bash
 # 重启 Koishi Bot（服务器端）
 # 用法: ssh root@host "bash /root/koishi-app/restart.sh"
+# 可通过环境变量覆盖: KOISHI_APP_DIR, KOISHI_PORT, DASHBOARD_PORT
 
 set -e
 
-APP_DIR="/root/koishi-app"
+APP_DIR="${KOISHI_APP_DIR:-/root/koishi-app}"
+KOISHI_PORT="${KOISHI_PORT:-5140}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-5150}"
 LOG_FILE="$APP_DIR/koishi.log"
 DATA_DIR="$APP_DIR/data"
 DASHBOARD_DIR="$APP_DIR/packages/koishi-plugin-dashboard"
@@ -18,14 +21,14 @@ pkill -9 -f 'node.*koishi start' 2>/dev/null || true
 sleep 4
 
 # 2. 确认端口已释放
-if ss -tlnp | grep -q ':5140'; then
-  echo "错误: 端口 5140 仍被占用，停止重启"
+if ss -tlnp | grep -q ":$KOISHI_PORT"; then
+  echo "错误: 端口 $KOISHI_PORT 仍被占用，停止重启"
   exit 1
 fi
-echo "端口 5140 已释放"
+echo "端口 $KOISHI_PORT 已释放"
 
 # 3. 确保 Dashboard 在运行（如果没启动则启动）
-if ! ss -tlnp | grep -q ':5150'; then
+if ! ss -tlnp | grep -q ":$DASHBOARD_PORT"; then
   echo "启动 Dashboard..."
   cd "$DASHBOARD_DIR"
   DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" nohup node standalone.js >> "$LOG_FILE" 2>&1 &
@@ -58,7 +61,7 @@ for i in $(seq 1 20); do
     echo "   adapter connected"
     exit 0
   fi
-  if ss -tlnp | grep -q ':5140' && ps aux | grep -q 'koishi/lib/worker'; then
+  if ss -tlnp | grep -q ":$KOISHI_PORT" && ps aux | grep -q 'koishi/lib/worker'; then
     echo "启动成功 ✓（${i}秒，进程+端口确认）"
     exit 0
   fi

@@ -39,6 +39,12 @@ export default {
 
     function onMove(e) {
       lastMoveTime = Date.now()
+      const last = points[points.length - 1]
+      if (last) {
+        const dx = e.clientX - last.x
+        const dy = e.clientY - last.y
+        if (dx * dx + dy * dy < 4) return
+      }
       points.push({ x: e.clientX, y: e.clientY })
       if (points.length > MAX_POINTS) points.shift()
     }
@@ -53,35 +59,47 @@ export default {
       // 鼠标停止后：旧点平滑移向下一个点，靠近后删除
       const idle = Date.now() - lastMoveTime
       if (idle > 200 && points.length > 3) {
-        points[0].x += (points[1].x - points[0].x) * 0.1
-        points[0].y += (points[1].y - points[0].y) * 0.1
+        points[0].x += (points[1].x - points[0].x) * 0.15
+        points[0].y += (points[1].y - points[0].y) * 0.15
         const dx = points[1].x - points[0].x
         const dy = points[1].y - points[0].y
         if (dx * dx + dy * dy < 1) points.shift()
       }
 
-      // 线条拖尾
+      // 线条拖尾 — Catmull-Rom 采样为填充圆，无接头折角
       if (points.length > 2) {
-        for (let i = 1; i < points.length; i++) {
-          const p0 = points[i - 1]
+        const n = points.length
+        for (let i = 0; i < n - 1; i++) {
           const p1 = points[i]
-          const ratio = i / points.length
-          const alpha = ratio * 0.3
-          const mix = (i / points.length) * (palette.length - 1)
-          const idx = Math.floor(mix)
-          const frac = mix - idx
-          const c0 = palette[Math.min(idx, palette.length - 1)]
-          const c1 = palette[Math.min(idx + 1, palette.length - 1)]
-          const r = Math.round(c0[0] + (c1[0] - c0[0]) * frac)
-          const g = Math.round(c0[1] + (c1[1] - c0[1]) * frac)
-          const b = Math.round(c0[2] + (c1[2] - c0[2]) * frac)
-          ctx.beginPath()
-          ctx.moveTo(p0.x, p0.y)
-          ctx.lineTo(p1.x, p1.y)
-          ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`
-          ctx.lineWidth = 2
-          ctx.lineCap = 'round'
-          ctx.stroke()
+          const p2 = points[i + 1]
+          const p0 = points[Math.max(0, i - 1)]
+          const p3 = points[Math.min(i + 2, n - 1)]
+          const cp1x = p1.x + (p2.x - p0.x) / 6
+          const cp1y = p1.y + (p2.y - p0.y) / 6
+          const cp2x = p2.x - (p3.x - p1.x) / 6
+          const cp2y = p2.y - (p3.y - p1.y) / 6
+          const segLen = Math.sqrt((p2.x - p1.x) * (p2.x - p1.x) + (p2.y - p1.y) * (p2.y - p1.y))
+          const steps = Math.max(8, Math.ceil(segLen / 2.0))
+          for (let s = 0; s < steps; s++) {
+            const t = s / steps
+            const omt = 1 - t
+            const x = omt*omt*omt*p1.x + 3*omt*omt*t*cp1x + 3*omt*t*t*cp2x + t*t*t*p2.x
+            const y = omt*omt*omt*p1.y + 3*omt*omt*t*cp1y + 3*omt*t*t*cp2y + t*t*t*p2.y
+            const pos = (i + t) / (n - 1)
+            const alpha = pos * 0.3
+            const mix = pos * (palette.length - 1)
+            const idx = Math.floor(mix)
+            const frac = mix - idx
+            const c0 = palette[Math.min(idx, palette.length - 1)]
+            const c1 = palette[Math.min(idx + 1, palette.length - 1)]
+            const r = Math.round(c0[0] + (c1[0] - c0[0]) * frac)
+            const g = Math.round(c0[1] + (c1[1] - c0[1]) * frac)
+            const b = Math.round(c0[2] + (c1[2] - c0[2]) * frac)
+            ctx.beginPath()
+            ctx.arc(x, y, 0.7, 0, Math.PI * 2)
+            ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`
+            ctx.fill()
+          }
         }
       }
 
@@ -130,6 +148,7 @@ export default {
     }
 
     onMounted(() => {
+      if ('ontouchstart' in window || navigator.maxTouchPoints > 0) return
       if (canvasRef.value) ctx = canvasRef.value.getContext('2d')
       resize()
       window.addEventListener('resize', resize)

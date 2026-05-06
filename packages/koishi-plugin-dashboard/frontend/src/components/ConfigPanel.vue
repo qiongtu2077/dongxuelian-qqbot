@@ -4,15 +4,11 @@
       <h2>供应商和模型</h2>
       <div class="row">
         <label>供应商</label>
-        <select v-model="selectedProvider" @change="onProviderChange">
-          <option v-for="(v, k) in providers" :key="k" :value="k">{{ v.name }}</option>
-        </select>
+        <SelectBox v-model="selectedProvider" :options="providerOpts" @update:modelValue="onProviderChange" />
       </div>
       <div class="row">
         <label>模型</label>
-        <select v-model="selectedModel">
-          <option v-for="m in currentModels" :key="m.id" :value="m.id">{{ m.name }}</option>
-        </select>
+        <SelectBox v-model="selectedModel" :options="modelOpts" />
       </div>
       <div class="row">
         <label>API 地址</label>
@@ -27,9 +23,11 @@
 <script>
 import { ref, computed, onMounted } from 'vue'
 import { fetchConfig, fetchProviders, updateConfig } from '../api'
+import SelectBox from './SelectBox.vue'
 
 export default {
   name: 'ConfigPanel',
+  components: { SelectBox },
   setup() {
     const providers = ref({})
     const selectedProvider = ref('deepseek')
@@ -42,6 +40,8 @@ export default {
       const p = providers.value[selectedProvider.value]
       return p ? p.models : []
     })
+    const providerOpts = computed(() => Object.keys(providers.value).map(k => ({ value: k, label: providers.value[k].name })))
+    const modelOpts = computed(() => currentModels.value.map(m => ({ value: m.id, label: m.name })))
 
     onMounted(async () => {
       const [pRes, cRes] = await Promise.all([
@@ -80,7 +80,7 @@ export default {
       saving.value = false
     }
 
-    return { providers, selectedProvider, selectedModel, baseUrl, currentModels, saving, msg, onProviderChange, saveConfig }
+    return { providers, selectedProvider, selectedModel, baseUrl, currentModels, providerOpts, modelOpts, saving, msg, onProviderChange, saveConfig }
   }
 }
 </script>

@@ -71,6 +71,7 @@ const {
   loadPersonaGroups,
   loadPersonaUsers,
   resolvePersona,
+  loadPersonalSkill,
 } = require('./persona')
 const {
   channelSharedCache,
@@ -650,14 +651,16 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     const mentionUserIds = extractAtIds(session.content || '')
       .map(userId => String(userId))
       .filter(userId => userId && userId !== String(session.selfId || session.bot?.selfId || ''))
-    const nameMentioned = !resolvePersona(channelKey, currentUserId).name && /莲莲|东雪莲/.test(plain)
+    const currentPersonaName = resolvePersona(channelKey, currentUserId).name
+    const personaWillContent = currentPersonaName ? loadPersonalSkill(currentPersonaName) : null
+    const nameMentioned = !currentPersonaName && /莲莲|东雪莲/.test(plain)
     const inRandomWhitelist = getRandomWhitelistStatus(channelKey)
     let isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply
     // 30秒冷却：触发后不再次主动发言
     if (lastRandomReplyTs.has(channelKey) && Date.now() - (lastRandomReplyTs.get(channelKey) || 0) < 30000) {
       isRandomCandidate = false
     }
-    const willFactor = calculateWillFactor(channelKey, resolvePersona(channelKey, currentUserId).name, channelSharedCache)
+    const willFactor = calculateWillFactor(channelKey, currentPersonaName, channelSharedCache, personaWillContent)
     const finalTriggerRate = Math.min(getRandomTriggerBaseRate(channelKey) * willFactor, 1.0)
 
     // "闭嘴" 静默十分钟主动回复

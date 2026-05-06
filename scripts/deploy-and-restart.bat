@@ -5,8 +5,8 @@ REM 如果不传文件名，默认同步所有 lib/ + templates/
 
 setlocal enabledelayedexpansion
 
-set SERVER=root@YOUR_SERVER_IP
-set REMOTE_DIR=/root/koishi-app/packages/koishi-plugin-daily-report
+if "%DEPLOY_SERVER%"=="" ( set SERVER=root@YOUR_SERVER_IP ) else ( set SERVER=%DEPLOY_SERVER% )
+if "%REMOTE_DIR%"=="" ( set REMOTE_DIR=/root/koishi-app/packages/koishi-plugin-daily-report ) else ( set REMOTE_DIR=%REMOTE_DIR% )
 
 if "%1"=="" (
   echo 同步全部 lib/ + templates/ ...

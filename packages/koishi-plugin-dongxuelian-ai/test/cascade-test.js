@@ -1191,8 +1191,8 @@ async function main() {
   var hotFactor  = u.calculateWillFactor('hot', null, fakeShared)
   check('willFactor: cold group > hot group', coldFactor > hotFactor, coldFactor + ' vs ' + hotFactor)
 
-  var chunCold  = u.calculateWillFactor('cold', '椿', fakeShared)
-  var changliCold = u.calculateWillFactor('cold', '长离', fakeShared)
+  var chunCold  = u.calculateWillFactor('cold', '椿', fakeShared, '---\nname: 椿\nwill: 1.3\n---\n\ncontent')
+  var changliCold = u.calculateWillFactor('cold', '长离', fakeShared, '---\nname: 长离\nwill: 0.8\n---\n\ncontent')
   check('willFactor: 椿 > 长离 (same group)', chunCold > changliCold, chunCold + ' vs ' + changliCold)
 
   var zeroMsgs = u.calculateWillFactor('empty-g', null, new Map())

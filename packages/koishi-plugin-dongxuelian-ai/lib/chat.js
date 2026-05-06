@@ -410,7 +410,7 @@ async function chat(session, userText, ctx, options = {}) {
     systemPrompt = skillsContentCache['mode:persona-yinyang'] || buildAbusiveSystemPrompt()
   } else {
     if (personaName && personaSkillContent) {
-      systemPrompt = buildFriendlySafetyFramework() + '\n\n' + personaSkillContent
+      systemPrompt = buildFriendlySafetyFramework() + '\n\n' + personaSkillContent.replace(/^---\n[\s\S]*?\n---\n\n?/, '')
     } else {
       systemPrompt = buildFriendlySystemPrompt()
     }

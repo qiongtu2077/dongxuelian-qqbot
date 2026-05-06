@@ -76,12 +76,12 @@ function getAvailablePersonals() {
 
 function loadPersonalSkill(personaName) {
   try {
-    const entries = require('fs').readdirSync(SKILLS_PERSONAS_DIR)
+    const entries = require('fs').readdirSync(SKILLS_PERSONAS_DIR, { withFileTypes: true })
     for (const entry of entries) {
-      if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
-      const content = require('fs').readFileSync(path.join(SKILLS_PERSONAS_DIR, entry), 'utf8').trim()
+      if (!entry.isFile() || !/^SKILL(\.[^.]+)?\.md$/i.test(entry.name)) continue
+      const content = require('fs').readFileSync(path.join(SKILLS_PERSONAS_DIR, entry.name), 'utf8').trim()
       const meta = parsePersonaFrontmatter(content)
-      if (meta.name === personaName) { console.error(`[persona] loaded skill: ${entry} name=${meta.name}`); return content }
+      if (meta.name === personaName) { console.error(`[persona] loaded skill: ${entry.name} name=${meta.name}`); return content }
     }
     console.error(`[persona] no skill found for name=${personaName}`)
   } catch (e) { console.error(`[persona] loadPersonalSkill error: ${e.message}`) }
