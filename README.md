@@ -590,18 +590,48 @@ group-leave-notice loaded
 
 ---
 
-## 十三、Dashboard 一键部署面板
+## 十三、Dashboard 控制台界面
 
-Dashboard（`packages/koishi-plugin-dashboard/`）自带一键部署面板，可在浏览器中配置远程服务器信息并执行部署。
+Dashboard（`packages/koishi-plugin-dashboard/`）是一个独立 HTTP 服务器，提供浏览器控制台管理 Bot。
 
-### 启动本地 Dashboard
+### 启动
 
 ```bash
 cd packages/koishi-plugin-dashboard
 node standalone.js
 ```
 
-浏览器打开 `http://localhost:5150/dashboard/`，进入「部署」Tab。
+浏览器打开 `http://localhost:5150/dashboard/`。
+
+### 功能模块
+
+| Tab | 功能 |
+|-----|------|
+| 控制 | Bot 启停、维护模式、QQ 管理（SSH 隧道指令 + NapCat Token + 切换 QQ 号） |
+| 模型配置 | 选择供应商和模型，编辑 API 地址 |
+| API Keys | 管理各供应商 API Key，查看 Token 用量柱状图（近 7 天） |
+| 人格管理 | 创建/编辑/删除自定义人格，绑定世界观，调整主动性 will 值 |
+| 功能介绍 | 浏览器式卡片布局，查看所有功能说明 |
+| 指令速查 | 一页速查表 |
+| 白名单 | 管理四个列表（解除上限群白名单/群聊AI白名单/用户黑名单/视频黑名单） |
+| 密码 | 修改访问密码和管理员密码 |
+| **部署** | 一键部署到远程服务器（见下方） |
+| 状态 | 诊断信息 |
+
+### 技术特性
+
+- **独立进程**：不依赖 Koishi，单独运行在 5150 端口，Koishi 重启不影响控制台
+- **双主题**：深色/浅色模式切换
+- **字体优化**：英文字体 Inter + 标题字体 ZCOOL KuaiLe（站酷快乐体）+ 等宽字体 JetBrains Mono
+- **管理员密码系统**：敏感操作需二次验证，1 小时 token 过期
+- **本地模式**：检测到 Bot 未运行时锁定非部署功能，部署后自动解锁
+- **拖尾特效**：Canvas 鼠标拖尾，Catmull-Rom 曲线采样，手机端自动禁用
+
+---
+
+## 十四、一键部署面板
+
+部署面板是 Dashboard 内置的功能，可在浏览器中配置远程服务器信息并执行全量部署。
 
 ### 部署配置
 
@@ -615,7 +645,7 @@ node standalone.js
 ### 部署流程
 
 1. 填写服务器地址 → 保存配置
-2. （可选）上传 B 站 Cookies、设置密码
+2. （可选）展开密码设置、上传 B 站 Cookies
 3. 点「开始部署」→ 实时查看部署日志
 4. 部署完成后点「打开已部署面板」进入远程服务器的 Dashboard
 
@@ -633,5 +663,10 @@ node standalone.js
 
 ### 密码安全
 
-部署面板中的密码设置只对**目标服务器**生效（通过 SSH 写入远端文件），不影响当前运行中的 Dashboard。如已在服务器上手动改过密码，部署时不会覆盖。
+部署面板中的密码设置只对**目标服务器**生效（通过 SSH 写入远端文件），不影响当前运行中的 Dashboard。
+
+### 部署注意事项
+
+- 需要本机已配置 SSH 密钥认证（`~/.ssh/id_rsa`）
+- 部署面板可独立使用：**在任何有 Node.js 的机器上**运行 `node standalone.js`，即获得一个完整的一键部署工具
 
