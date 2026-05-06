@@ -128,10 +128,12 @@ export default {
         return
       }
       if (id !== activeTab.value) {
-        const r = 100 + Math.floor(Math.random() * 156)
-        const g = 100 + Math.floor(Math.random() * 156)
-        const b = 100 + Math.floor(Math.random() * 156)
-        event.currentTarget.style.setProperty('--pulse-rgb', `${r}, ${g}, ${b}`)
+        const pulseColors = [
+          [57, 197, 187], [244, 114, 182], [252, 211, 77],
+          [167, 139, 250], [251, 146, 60], [52, 211, 153],
+        ]
+        const c = pulseColors[Math.floor(Math.random() * pulseColors.length)]
+        event.currentTarget.style.setProperty('--pulse-rgb', `${c[0]}, ${c[1]}, ${c[2]}`)
         pulsingTab.value = id
         setTimeout(() => { pulsingTab.value = null }, 600)
       }

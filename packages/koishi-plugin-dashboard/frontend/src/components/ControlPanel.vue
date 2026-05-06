@@ -36,6 +36,11 @@
           当前 QQ：<span style="font-family:monospace;color:#39C5BB">{{ status.qq || '未知' }}</span>
         </div>
 
+        <!-- 安全提示 -->
+        <div style="font-size:15px;font-weight:800;color:#F472B6;text-align:center;padding:12px;margin-bottom:12px;background:rgba(244,114,182,0.12);border:2px solid #F472B6;border-radius:8px">
+          ⚠ 请严格按照步骤执行，没看完的仔细看
+        </div>
+
         <!-- 步骤一：SSH 隧道 -->
         <div style="background:var(--input);border-radius:8px;padding:14px 16px;font-size:13px;margin-bottom:12px">
           <div style="color:#39C5BB;font-weight:700;margin-bottom:8px">步骤一：输入你的服务器 IP 地址</div>
@@ -50,6 +55,7 @@
         <!-- 步骤二：NapCat 扫码 -->
         <div style="background:var(--input);border-radius:8px;padding:14px 16px;font-size:13px;margin-bottom:12px">
           <div style="color:#FCD34D;font-weight:700;margin-bottom:8px">步骤二：在 NapCat 扫码登新号</div>
+          <div style="font-size:12px;color:var(--text3);margin-bottom:6px">复制下方的 NapCat Token，打开 NapCat 管理面板粘贴登录</div>
           <div style="display:flex;gap:8px;margin-bottom:8px">
             <code id="napcat-token" style="flex:1;background:var(--input);border-radius:6px;padding:10px 14px;font-size:12px;color:#FCD34D;font-family:monospace">{{ napcatToken || '加载中...' }}</code>
             <button class="btn btn-sm" style="white-space:nowrap" @click="copyText('napcat-token')">复制</button>

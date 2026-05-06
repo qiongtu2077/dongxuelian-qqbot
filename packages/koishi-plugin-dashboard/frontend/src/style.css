@@ -6,17 +6,18 @@
   --text2: #94A3B8;
   --text3: #64748B;
   --input: rgba(15, 25, 35, 0.8);
-  --accent: #39C5BB;
-  --accent2: #2A9D95;
-  --accentDim: rgba(57, 197, 187, 0.12);
-  --hover: rgba(57,197,187,0.12);
-  --hoverLight: rgba(57,197,187,0.04);
-  --shadow: rgba(57,197,187,0.12);
+  --accent: #2dd4bf;
+  --accent2: #14b8a6;
+  --accentDim: rgba(45, 212, 191, 0.12);
+  --hover: rgba(45,212,191,0.12);
+  --hoverLight: rgba(45,212,191,0.04);
+  --shadow: rgba(45,212,191,0.12);
   --danger: #F472B6;
   --tabBg: rgba(26, 38, 52, 0.6);
   --tabColor: #94A3B8;
   --tabBorder: rgba(42, 58, 74, 0.4);
-  --tabActive: #39C5BB;
+  --tabActive: #2dd4bf;
+  --btnText: #0f1923;
 }
 
 [data-theme="light"] {
@@ -27,14 +28,17 @@
   --text2: #64748b;
   --text3: #94a3b8;
   --input: rgba(241, 245, 249, 0.8);
-  --accentDim: rgba(57, 197, 187, 0.08);
-  --hover: rgba(57,197,187,0.07);
-  --hoverLight: rgba(57,197,187,0.03);
-  --shadow: rgba(57,197,187,0.08);
+  --accent: #5eead4;
+  --accent2: #2dd4bf;
+  --accentDim: rgba(94, 234, 212, 0.2);
+  --hover: rgba(94,234,212,0.12);
+  --hoverLight: rgba(94,234,212,0.06);
+  --shadow: rgba(45,212,191,0.15);
   --tabBg: rgba(255, 255, 255, 0.5);
   --tabColor: #64748b;
   --tabBorder: rgba(226, 232, 240, 0.6);
-  --tabActive: #39C5BB;
+  --tabActive: #5eead4;
+  --btnText: #ffffff;
 }
 
 [data-theme="light"] body {
@@ -52,7 +56,7 @@
 * { margin: 0; padding: 0; box-sizing: border-box }
 
 body {
-  font-family: -apple-system, 'Microsoft YaHei', sans-serif;
+  font-family: 'Inter', -apple-system, 'Microsoft YaHei', sans-serif;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
@@ -63,6 +67,7 @@ body {
 
 h1 {
   font-size: 24px; font-weight: 800; margin-bottom: 24px;
+  font-family: 'ZCOOL KuaiLe', cursive;
   background: linear-gradient(135deg, #39C5BB, #5EEAD4, #FCD34D);
   -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
 }
@@ -97,13 +102,18 @@ h2 {
 select, input {
   background: var(--input); border: 1px solid var(--border); border-radius: 8px;
   padding: 8px 12px; color: var(--text); font-size: 14px; flex: 1;
+  font-family: 'Inter', -apple-system, 'Microsoft YaHei', sans-serif;
   transition: border-color .2s, background .3s;
 }
 select:focus, input:focus { outline: none; border-color: var(--accent) }
 
+code, pre, [style*="monospace"] {
+  font-family: 'JetBrains Mono', 'Consolas', monospace !important;
+}
+
 .btn {
   background: linear-gradient(135deg, var(--accent), var(--accent2));
-  color: #0f1923; border: none; border-radius: 8px;
+  color: var(--btnText); border: none; border-radius: 8px;
   padding: 8px 20px; font-weight: 700; font-size: 14px;
   cursor: pointer; transition: transform .15s, box-shadow .2s;
 }
@@ -132,19 +142,19 @@ select:focus, input:focus { outline: none; border-color: var(--accent) }
 
 .tab-btn.active {
   background: linear-gradient(135deg, var(--accent), var(--accent2));
-  color: #0f1923;
+  color: var(--btnText);
   border-color: transparent;
-  box-shadow: 0 2px 12px rgba(57,197,187,0.25);
+  box-shadow: 0 2px 12px var(--shadow);
 }
 
 /* 按钮点击脉冲（通过JS加class触发） */
 .tab-btn.pulse {
-  animation: tabPulse .6s ease forwards;
+  animation: tabPulse .8s ease forwards;
 }
 
 @keyframes tabPulse {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(var(--pulse-rgb, 57, 197, 187), 0.6) }
-  40% { transform: scale(1.06); box-shadow: 0 0 20px 6px rgba(var(--pulse-rgb, 57, 197, 187), 0.3) }
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(var(--pulse-rgb, 57, 197, 187), 0.5) }
+  35% { transform: scale(1.04); box-shadow: 0 0 18px 5px rgba(var(--pulse-rgb, 57, 197, 187), 0.25) }
   100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(var(--pulse-rgb, 57, 197, 187), 0) }
 }
 
