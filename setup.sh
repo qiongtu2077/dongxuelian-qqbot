@@ -14,11 +14,30 @@ GIT_REPO="${GIT_REPO:-https://github.com/qiongtu2077/dongxuelian-qqbot.git}"
 SETUP_MODE="${SETUP_MODE:-install}"
 SETUP_TEST_ROOT="${SETUP_TEST_ROOT:-}"
 
+normalize_path() {
+  case "$1" in
+    [A-Za-z]:\\*|[A-Za-z]:/*)
+      if command -v cygpath >/dev/null 2>&1; then
+        cygpath -u "$1"
+      else
+        printf '%s\n' "$1"
+      fi
+      ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$SCRIPT_DIR}"
 KOISHI_DIR="${KOISHI_DIR:-/root/koishi-app}"
 DATA_DIR="${DATA_DIR:-$KOISHI_DIR/data}"
 NAPCAT_DIR="${NAPCAT_DIR:-/root/Napcat}"
+
+SETUP_TEST_ROOT="$(normalize_path "$SETUP_TEST_ROOT")"
+REPO_ROOT="$(normalize_path "$REPO_ROOT")"
+KOISHI_DIR="$(normalize_path "$KOISHI_DIR")"
+DATA_DIR="$(normalize_path "$DATA_DIR")"
+NAPCAT_DIR="$(normalize_path "$NAPCAT_DIR")"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 log() { echo -e "${GREEN}[$(date +'%H:%M:%S')]${NC} $1"; }
