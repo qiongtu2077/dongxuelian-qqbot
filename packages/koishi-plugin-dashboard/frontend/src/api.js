@@ -108,6 +108,7 @@ export async function fetchWhitelist() { return get('/whitelist') }
 export async function updateWhitelist(type, data) { return put('/whitelist', { type, data }, true) }
 export async function fetchKeys() { return get('/keys') }
 export async function updateKey(file, value) { return put('/keys', { file, value }, true) }
+export async function fetchKeyUsage() { return get('/keys/usage') }
 export async function fetchFeatures() { return get('/features') }
 export async function fetchCommands() { return get('/commands') }
 export async function fetchLoreList() { return get('/lore-list') }

@@ -1,5 +1,5 @@
 <template>
-  <canvas ref="canvasRef" style="position:fixed;inset:0;z-index:9999;pointerEvents:none"></canvas>
+  <canvas v-if="!isMobile" ref="canvasRef" style="position:fixed;inset:0;z-index:9999;pointerEvents:none"></canvas>
 </template>
 
 <script>
@@ -9,6 +9,7 @@ export default {
   name: 'CursorGlow',
   setup() {
     const canvasRef = ref(null)
+    const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0
     let ctx = null
     let animId = null
     let points = []
@@ -148,8 +149,8 @@ export default {
     }
 
     onMounted(() => {
-      if ('ontouchstart' in window || navigator.maxTouchPoints > 0) return
-      if (canvasRef.value) ctx = canvasRef.value.getContext('2d')
+      if (isMobile || !canvasRef.value) return
+      ctx = canvasRef.value.getContext('2d')
       resize()
       window.addEventListener('resize', resize)
       window.addEventListener('mousemove', onMove)
@@ -162,7 +163,7 @@ export default {
       cancelAnimationFrame(animId)
     })
 
-    return { canvasRef }
+    return { canvasRef, isMobile }
   }
 }
 </script>

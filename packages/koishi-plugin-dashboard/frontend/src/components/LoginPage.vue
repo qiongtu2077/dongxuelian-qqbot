@@ -5,12 +5,12 @@
       <p style="color:var(--text2);font-size:14px;text-align:center;margin-bottom:28px">请输入密码以继续</p>
 
       <input
+        ref="inputRef"
         v-model="password"
         type="password"
         placeholder="密码"
         style="width:100%;margin-bottom:16px"
         @keyup.enter="doLogin"
-        autofocus
       />
 
       <button class="btn" style="width:100%" @click="doLogin" :disabled="loading">
@@ -23,7 +23,7 @@
 </template>
 
 <script>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { login } from '../api'
 
 export default {
@@ -32,6 +32,13 @@ export default {
     const password = ref('')
     const loading = ref(false)
     const error = ref('')
+    const inputRef = ref(null)
+
+    onMounted(() => {
+      if (!('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
+        inputRef.value?.focus()
+      }
+    })
 
     async function doLogin() {
       if (!password.value.trim()) return
@@ -51,7 +58,7 @@ export default {
       loading.value = false
     }
 
-    return { password, loading, error, doLogin }
+    return { password, loading, error, inputRef, doLogin }
   }
 }
 </script>

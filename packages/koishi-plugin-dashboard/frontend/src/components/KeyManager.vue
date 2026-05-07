@@ -24,11 +24,36 @@
       <div v-if="keyMsg" style="margin-top:8px;font-size:13px" :style="{color: keyMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ keyMsg.text }}</div>
     </div>
   </div>
+
+  <div class="card">
+    <h2>Token 用量</h2>
+    <div v-if="!chartDays.length" style="color:var(--text3);font-size:13px">暂无用量数据</div>
+    <div v-else>
+      <div style="margin-bottom:8px;display:flex;gap:12px;flex-wrap:wrap">
+        <div v-for="p in chartProviders" :key="p.key" style="display:flex;align-items:center;gap:4px;font-size:12px">
+          <span :style="{width:10,height:10,borderRadius:2,background:p.color}"></span>
+          <span style="color:var(--text2)">{{ p.label }}</span>
+        </div>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:4px;height:140px;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div v-for="d in chartDays" :key="d.date" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%">
+          <div style="width:100%;display:flex;flex-direction:column-reverse;border-radius:4px 4px 0 0;overflow:hidden;transition:height .3s" :style="{height: d.pct + '%', minHeight: d.total ? 4 : 0}">
+            <div v-for="s in d.segments" :key="s.provider"
+              :style="{height: s.pct + '%', background: s.color, transition: 'height .3s'}"></div>
+          </div>
+          <span style="font-size:9px;color:var(--text3);margin-top:4px;white-space:nowrap">{{ d.date.slice(5) }}</span>
+        </div>
+      </div>
+      <div v-if="totalStr" style="margin-top:8px;font-size:12px;color:var(--text2);text-align:center">近7天总用量：{{ totalStr }}</div>
+    </div>
+  </div>
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
-import { fetchKeys, updateKey } from '../api'
+import { ref, computed, onMounted } from 'vue'
+import { fetchKeys, updateKey, fetchKeyUsage } from '../api'
+
+const COLORS = ['#2dd4bf', '#fb923c', '#6366f1', '#f472b6', '#facc15']
 
 export default {
   name: 'KeyManager',
@@ -39,9 +64,42 @@ export default {
     const saving = ref(false)
     const keyMsg = ref(null)
 
+    const rawUsage = ref({ days: [], providers: [] })
+
+    const chartProviders = computed(() => rawUsage.value.providers.map((p, i) => ({ ...p, color: COLORS[i % COLORS.length] })))
+
+    const chartDays = computed(() => {
+      const days = rawUsage.value.days.slice(-7)
+      const maxTotal = Math.max(...days.map(d => {
+        let t = 0
+        for (const p of rawUsage.value.providers) t += d[p.key] || 0
+        return t
+      }), 1)
+      return days.map(d => {
+        const segments = []
+        let total = 0
+        for (const p of rawUsage.value.providers) {
+          const v = d[p.key] || 0
+          if (v > 0) {
+            total += v
+            segments.push({ provider: p.key, count: v, color: COLORS[rawUsage.value.providers.indexOf(p) % COLORS.length], pct: (v / maxTotal) * 100 })
+          }
+        }
+        return { date: d.date, total, pct: (total / maxTotal) * 100, segments }
+      })
+    })
+
+    const totalStr = computed(() => {
+      const days = rawUsage.value.days.slice(-7)
+      let t = 0
+      for (const d of days) for (const p of rawUsage.value.providers) t += d[p.key] || 0
+      return t > 0 ? t.toLocaleString() + ' tokens' : ''
+    })
+
     onMounted(async () => {
-      const res = await fetchKeys()
-      if (res.ok) keys.value = res.data
+      const [kRes, uRes] = await Promise.all([fetchKeys(), fetchKeyUsage()])
+      if (kRes.ok) keys.value = kRes.data
+      if (uRes.ok) rawUsage.value = uRes.data
     })
 
     function editKey(k) {
@@ -69,7 +127,7 @@ export default {
       saving.value = false
     }
 
-    return { keys, editing, editValue, saving, keyMsg, editKey, saveKey }
+    return { keys, editing, editValue, saving, keyMsg, chartProviders, chartDays, totalStr, editKey, saveKey }
   }
 }
 </script>

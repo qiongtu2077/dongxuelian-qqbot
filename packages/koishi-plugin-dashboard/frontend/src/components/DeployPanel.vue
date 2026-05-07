@@ -1,5 +1,23 @@
 <template>
   <div class="card">
+    <details style="font-size:13px;color:var(--text2);margin-bottom:12px">
+      <summary style="cursor:pointer;font-weight:700;color:var(--accent)">📖 使用说明（点击展开）</summary>
+      <div style="margin-top:8px;line-height:1.7;background:var(--input);border-radius:8px;padding:14px 16px;font-size:12px;color:var(--text2)">
+        <p><b>什么是部署面板？</b>在浏览器里配置远程服务器信息，一键将本地所有插件、前端、配置文件推送到远程服务器并重启 Bot。适合初次部署或日常更新。</p>
+        <p><b>前置条件</b>：本机已配置 SSH 密钥认证（<code>~/.ssh/id_rsa</code>），能免密码 <code>ssh root@服务器IP</code>。</p>
+        <p><b>使用步骤：</b></p>
+        <ol style="margin-left:16px">
+          <li>填写服务器地址（如 <code>root@120.55.246.12</code>）和应用目录 → 保存配置</li>
+          <li>（可选）展开密码设置，填写目标服务器的访问密码和管理员密码；留空则使用默认密码 <code>123456</code></li>
+          <li>（可选）视频插件需要 B 站 Cookies，按提示从浏览器导出 <code>cookies.txt</code> 上传</li>
+          <li>点「开始部署」→ 实时查看部署日志，约 30 秒完成</li>
+          <li>部署完成后点「打开已部署面板」进入远程服务器的 Dashboard</li>
+        </ol>
+        <p><b>部署内容</b>：所有插件代码、Dashboard 前端 + 后端、数据文件、API Key、重启脚本、视频插件依赖（yt-dlp）。</p>
+        <p><b>注意事项</b>：密码设置只对目标服务器生效，不影响当前运行中的控制台。部署面板可独立使用——任何有 Node.js 的机器上运行 <code>node standalone.js</code> 即可获得完整部署工具。</p>
+      </div>
+    </details>
+
     <h2>部署配置</h2>
     <div style="display:grid;gap:12px">
       <div>

@@ -34,6 +34,7 @@ const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || '123456'
 
 const ADMIN_PWD_FILE = path.join(DATA_DIR, 'dashboard-admin-pwd.txt')
 const ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-access-pwd.txt')
+const LEGACY_ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-pwd.txt')
 
 // ====== 工具函数 ======
 function json(res, data, status = 200) {
@@ -56,9 +57,23 @@ function log(msg) {
   console.log(`[dashboard] ${msg}`)
 }
 
+function shellQuote(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'"
+}
+
+function remoteDataFile(appDir, filename) {
+  return String(appDir).replace(/\/+$/, '') + '/data/' + filename
+}
+
+function remoteWriteFileCommand(server, filePath, content) {
+  const dir = filePath.replace(/\/[^/]*$/, '')
+  const remoteCmd = `mkdir -p ${shellQuote(dir)} && printf %s ${shellQuote(content)} > ${shellQuote(filePath)}`
+  return `ssh ${server} ${shellQuote(remoteCmd)}`
+}
+
 // ====== Auth ======
 function createToken() {
-  return crypto.createHash('sha256').update('dashboard:' + PASSWORD).digest('hex')
+  return crypto.createHash('sha256').update('dashboard:' + getAccessPassword()).digest('hex')
 }
 
 function validateToken(token) {
@@ -70,7 +85,7 @@ function getAdminPassword() {
   return readFileSync(ADMIN_PWD_FILE) || ADMIN_PASSWORD
 }
 function getAccessPassword() {
-  return readFileSync(ACCESS_PWD_FILE) || PASSWORD
+  return readFileSync(ACCESS_PWD_FILE) || readFileSync(LEGACY_ACCESS_PWD_FILE) || PASSWORD
 }
 function createAdminToken() {
   return crypto.createHash('sha256').update('admin:' + getAdminPassword()).digest('hex')
@@ -166,7 +181,9 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const { password } = JSON.parse(body)
-        if (password === getAccessPassword()) return json(res, { ok: true, token: createToken() })
+        const stored = getAccessPassword()
+        const match = password === stored
+        if (match) return json(res, { ok: true, token: createToken() })
         return json(res, { ok: false, message: '密码错误' }, 401)
       } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
     })
@@ -189,13 +206,13 @@ const server = http.createServer((req, res) => {
 
   // 修改密码
   if (pathname === '/dashboard/api/auth/password' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
     let body = ''
     req.on('data', c => body += c)
     req.on('end', () => {
       try {
-        const { type, oldPassword, newPassword } = JSON.parse(body)
-        if (!oldPassword || !newPassword || newPassword.length < 4) return json(res, { ok: false, message: '密码长度不能少于4位' }, 400)
-        if (oldPassword !== getAdminPassword()) return json(res, { ok: false, message: '管理员密码错误' }, 401)
+        const { type, newPassword } = JSON.parse(body)
+        if (!newPassword || newPassword.length < 4) return json(res, { ok: false, message: '新密码长度不能少于4位' }, 400)
         if (type === 'admin') {
           writeFileSync(ADMIN_PWD_FILE, newPassword)
           return json(res, { ok: true, message: '管理员密码已更新' })
@@ -543,6 +560,29 @@ const server = http.createServer((req, res) => {
     }))
   }
 
+  if (pathname === '/dashboard/api/keys/usage' && req.method === 'GET') {
+    try {
+      const usageFile = path.join(DATA_DIR, 'token-usage.json')
+      if (!fs.existsSync(usageFile)) return json(res, { days: [], providers: [] })
+      const raw = fs.readFileSync(usageFile, 'utf8')
+      const data = JSON.parse(raw)
+      const providerSet = new Set()
+      const days = Object.keys(data).sort().slice(-30).map(date => {
+        const day = { date }
+        for (const [prov, count] of Object.entries(data[date] || {})) {
+          day[prov] = count
+          providerSet.add(prov)
+        }
+        return day
+      })
+      const providers = [...providerSet].map(p => ({
+        key: p,
+        label: p === 'opencode' ? 'OpenCode' : p === 'glm' ? 'GLM' : p === 'dashscope' ? '阿里云' : p === 'deepseek' ? 'DeepSeek' : p === 'mimorium' ? 'MiMo' : p,
+      }))
+      return json(res, { days, providers })
+    } catch { return json(res, { days: [], providers: [] }) }
+  }
+
   if (pathname === '/dashboard/api/keys' && req.method === 'PUT') {
     if (!requireAdmin(req, res)) return
     let body = ''
@@ -755,8 +795,8 @@ const server = http.createServer((req, res) => {
         cmds.push(`scp ${DATA_DIR}/ai-*-ids.json ${s}:${d}/data/ 2>/dev/null || true`)
         cmds.push(`scp ${DATA_DIR}/video-blacklist.json ${s}:${d}/data/ 2>/dev/null || true`)
         cmds.push(`scp ${DATA_DIR}/bilibili-cookies.txt ${s}:${d}/data/../ 2>/dev/null || true`)
-        if (cfg.accessPwd) cmds.push(`ssh ${s} "echo '${cfg.accessPwd}' > ${d}/data/dashboard-pwd.txt"`)
-        if (cfg.adminPwd) cmds.push(`ssh ${s} "echo '${cfg.adminPwd}' > ${d}/data/dashboard-admin-pwd.txt"`)
+        if (cfg.accessPwd) cmds.push(remoteWriteFileCommand(s, remoteDataFile(d, 'dashboard-access-pwd.txt'), cfg.accessPwd))
+        if (cfg.adminPwd) cmds.push(remoteWriteFileCommand(s, remoteDataFile(d, 'dashboard-admin-pwd.txt'), cfg.adminPwd))
         cmds.push(`echo "视频插件环境..."`)
         cmds.push(`ssh ${s} "mkdir -p /root/koishi-bili-downloads"`)
         cmds.push(`ssh ${s} "which yt-dlp >/dev/null 2>&1 || (curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp)"`)

@@ -5,6 +5,22 @@
  */
 const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE } = require('./constants')
 const { readTextFile, isDashScopeConfig } = require('./utils')
+const { atomicWriteJson } = require('./persona')
+const fs = require('fs')
+const path = require('path')
+
+function trackUsage(provider, tokens) {
+  try {
+    const { DATA_DIR } = require('./constants')
+    const file = path.join(DATA_DIR, 'token-usage.json')
+    let data = {}
+    try { data = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
+    const today = new Date().toISOString().slice(0, 10)
+    if (!data[today]) data[today] = {}
+    data[today][provider] = (data[today][provider] || 0) + tokens
+    atomicWriteJson(file, data)
+  } catch {}
+}
 
 function buildResponsesInput(messages = []) {
   return messages.filter(item => item && item.content).map(item => ({
@@ -86,6 +102,7 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
       throw new Error((isFallback ? '[FALLBACK] ' : '') + `HTTP ${response.status} ${text}`.trim())
     }
     const data = await response.json()
+    if (data?.usage?.total_tokens) trackUsage(config?.provider || 'unknown', data.usage.total_tokens)
     const m = data?.choices?.[0]?.message || {}
     let content = m.content && m.content.trim() ? m.content : ''
     if (!content && m.reasoning_content) {
@@ -129,6 +146,7 @@ async function requestOpenAIResponsesWithSearch(messages, config) {
     })
     if (!response.ok) { const text = await response.text().catch(() => ''); throw new Error(`HTTP ${response.status} ${text}`.trim()) }
     const data = await response.json()
+    if (data?.usage?.total_tokens) trackUsage(config?.provider || 'unknown', data.usage.total_tokens)
     return extractResponsesText(data)
   } finally { clearTimeout(timer) }
 }

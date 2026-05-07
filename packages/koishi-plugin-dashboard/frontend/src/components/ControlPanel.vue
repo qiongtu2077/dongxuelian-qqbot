@@ -42,9 +42,9 @@
         </div>
 
         <!-- 步骤一：SSH 隧道 -->
-        <div style="background:var(--input);border-radius:8px;padding:14px 16px;font-size:13px;margin-bottom:12px">
-          <div style="color:#39C5BB;font-weight:700;margin-bottom:8px">步骤一：输入你的服务器 IP 地址</div>
-          <div style="font-size:12px;color:var(--text3);margin-bottom:6px">在电脑的 CMD 终端复制下面的指令开启隧道（请不要关掉）</div>
+        <div style="background:rgba(99,102,241,0.08);border-left:3px solid #6366f1;border-radius:8px;padding:14px 16px;font-size:13px;margin-bottom:12px">
+          <div style="color:#6366f1;font-weight:800;margin-bottom:8px;font-size:14px">步骤一：输入你的服务器 IP 地址</div>
+          <div style="font-size:12px;color:var(--text3);margin-bottom:6px">在电脑的 CMD 终端复制下面的指令开启隧道（<span style="color:#F472B6;font-weight:700">请不要关掉</span>）</div>
           <input v-model="sshHost" @change="saveSSHHost" placeholder="服务器 IP 或域名" style="width:100%;margin-bottom:8px;font-family:monospace" />
           <div style="display:flex;gap:8px">
             <code id="ssh-cmd" style="flex:1;background:var(--input);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--accent);font-family:monospace">ssh -L 6099:localhost:6099 {{ sshUser }}@{{ sshHost || '服务器IP' }}</code>
@@ -53,9 +53,9 @@
         </div>
 
         <!-- 步骤二：NapCat 扫码 -->
-        <div style="background:var(--input);border-radius:8px;padding:14px 16px;font-size:13px;margin-bottom:12px">
-          <div style="color:#FCD34D;font-weight:700;margin-bottom:8px">步骤二：在 NapCat 扫码登新号</div>
-          <div style="font-size:12px;color:var(--text3);margin-bottom:6px">复制下方的 NapCat Token，打开 NapCat 管理面板粘贴登录</div>
+        <div style="background:rgba(251,146,60,0.08);border-left:3px solid #fb923c;border-radius:8px;padding:14px 16px;font-size:13px;margin-bottom:12px">
+          <div style="color:#fb923c;font-weight:800;margin-bottom:8px;font-size:14px">步骤二：在 NapCat 扫码登新号</div>
+          <div style="font-size:12px;color:var(--text3);margin-bottom:6px">复制下方的 <span style="color:#FCD34D;font-weight:700">NapCat Token</span>，打开 NapCat 管理面板粘贴登录</div>
           <div style="display:flex;gap:8px;margin-bottom:8px">
             <code id="napcat-token" style="flex:1;background:var(--input);border-radius:6px;padding:10px 14px;font-size:12px;color:#FCD34D;font-family:monospace">{{ napcatToken || '加载中...' }}</code>
             <button class="btn btn-sm" style="white-space:nowrap" @click="copyText('napcat-token')">复制</button>
@@ -69,8 +69,8 @@
         </div>
 
         <!-- 步骤三：更新 Koishi -->
-        <div style="background:var(--input);border-radius:8px;padding:14px 16px;font-size:13px">
-          <div style="color:#39C5BB;font-weight:700;margin-bottom:8px">步骤三：更新 Koishi QQ 号</div>
+        <div style="background:rgba(52,211,153,0.08);border-left:3px solid #34d399;border-radius:8px;padding:14px 16px;font-size:13px">
+          <div style="color:#34d399;font-weight:800;margin-bottom:8px;font-size:14px">步骤三：更新 Koishi QQ 号</div>
           <input v-model="newSelfId" placeholder="输入新 QQ 号" style="width:100%;margin-bottom:8px;font-family:monospace" />
           <button class="btn btn-sm" @click="saveSelfId" :disabled="savingSelfId">{{ savingSelfId ? '保存中...' : '保存并重启 Koishi' }}</button>
           <div v-if="selfIdMsg" style="margin-top:8px;font-size:12px" :style="{color: selfIdMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ selfIdMsg.text }}</div>

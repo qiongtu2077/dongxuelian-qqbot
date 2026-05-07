@@ -5,8 +5,8 @@
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;position:relative;z-index:1">
       <h1 style="margin:0">莲莲 Bot 控制台</h1>
       <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn-sm" style="background:var(--tabBg);color:var(--tabColor);border:1px solid var(--tabBorder);font-size:16px;line-height:1" @click="toggleTheme">{{ themeIcon }}</button>
-        <button class="btn btn-sm" style="background:var(--tabBg);color:var(--tabColor);border:1px solid var(--tabBorder)" @click="logout">退出登录</button>
+        <button class="btn btn-sm" style="background:linear-gradient(135deg,var(--accent),var(--accent2));color:var(--btnText);border:none;font-size:13px;line-height:1" @click="toggleTheme">{{ themeIcon }}</button>
+        <button class="btn btn-sm" style="background:var(--danger);color:#fff;border:none;font-size:13px" @click="logout">退出登录</button>
       </div>
     </div>
 
@@ -97,6 +97,7 @@ export default {
     const deployedAt = ref(false)
 
     async function checkDeployed() {
+      if (!loggedIn.value) return
       const res = await fetchDeployConfig()
       const localUnlock = localStorage.getItem('lianlian_unlocked') === 'true'
       deployedAt.value = !!(res.ok && res.data?.deployedAt) || localUnlock

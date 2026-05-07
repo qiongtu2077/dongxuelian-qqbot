@@ -33,10 +33,9 @@ export default {
 
     async function changeAccess() {
       if (!accessNew.value.trim()) return
-      // 使用预先缓存的 admin token 或弹出管理员验证
       accessLoading.value = true; accessMsg.value = null
-      const res = await changePassword('access', adminOld.value, accessNew.value.trim())
-      if (res.code === 'ADMIN_REQUIRED') { accessMsg.value = { type: 'err', text: '需要管理员密码' }; accessLoading.value = false; return }
+      const res = await changePassword('access', '', accessNew.value.trim())
+      if (res.code === 'ADMIN_REQUIRED') { accessLoading.value = false; window.showAdminDialog && window.showAdminDialog('修改访问密码需要管理员密码', changeAccess); return }
       accessMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '访问密码已更新，请重新登录' : '修改失败') }
       if (res.ok) accessNew.value = ''
       accessLoading.value = false
