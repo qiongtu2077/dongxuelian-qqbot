@@ -1,0 +1,44 @@
+{
+  "name": "dongxuelian-dashboard",
+  "version": "1.0.0",
+  "description": "莲莲 Bot 控制台 - 桌面版",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win",
+    "pack": "electron-builder --win --dir"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.dongxuelian.dashboard",
+    "productName": "莲莲Bot控制台",
+    "electronVersion": "35.0.0",
+    "directories": {
+      "output": "../../dist-desktop"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../koishi-plugin-dashboard",
+        "to": "dashboard",
+        "filter": ["standalone.js", "frontend/dist/**"]
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "莲莲Bot控制台"
+    }
+  }
+}
