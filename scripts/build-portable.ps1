@@ -5,8 +5,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path "$PSScriptRoot\.."
-$PortableDir = "$OutDir\莲莲BOT-v$Version"
-$ZipFile = "$OutDir\莲莲BOT-v$Version.zip"
+$PortableDir = "$OutDir\lianlian-bot-v$Version"
+$ZipFile = "$OutDir\lianlian-bot-v$Version.zip"
 
 Write-Host "=== 构建便携版 v$Version ===" -ForegroundColor Cyan
 
