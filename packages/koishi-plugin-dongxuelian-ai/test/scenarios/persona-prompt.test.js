@@ -50,6 +50,7 @@ function writePromptMarkerSkills(data) {
     '---',
     `name: ${TEXT.theresa}`,
     'description: test Theresa persona',
+    'lore: terra-lore',
     '---',
     MARKERS.theresa,
   ].join('\n'))

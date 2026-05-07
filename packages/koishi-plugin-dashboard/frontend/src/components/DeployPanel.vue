@@ -47,6 +47,7 @@
     </div>
 
     <button class="btn" @click="doDeploy" :disabled="deploying">{{ deploying ? '部署中...' : '开始部署' }}</button>
+    <span v-if="deployMsg" style="margin-left:12px;font-size:13px" :style="{color: deployMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ deployMsg.text }}</span>
 
     <div v-if="logLines.length" style="margin-top:12px;background:var(--input);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;font-family:monospace;max-height:400px;overflow:auto;white-space:pre-wrap;line-height:1.5">
       <div v-for="(line, i) in logLines" :key="i" :style="{color: line.startsWith('❌') ? '#F472B6' : line.startsWith('$') ? 'var(--accent)' : line.includes('✅') ? '#39C5BB' : 'var(--text2)'}">{{ line }}</div>
@@ -60,8 +61,8 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
-import { fetchDeployConfig, saveDeployConfig, runDeploy, fetchDeployProgress, confirmDeployed } from '../api'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { fetchDeployConfig, saveDeployConfig, runDeploy, fetchDeployProgress, confirmDeployed, getAdminToken } from '../api'
 
 export default {
   name: 'DeployPanel',
@@ -73,6 +74,7 @@ export default {
     const deploying = ref(false)
     const logLines = ref([])
     const deployDone = ref(false)
+    const deployMsg = ref(null)
     const cookiesName = ref('')
     const accessPwd = ref('')
     const adminPwd = ref('')
@@ -86,7 +88,11 @@ export default {
         const base64 = reader.result.split(',')[1]
         await fetch('/dashboard/api/deploy/upload', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(localStorage.getItem('dashboard_token') ? { Authorization: 'Bearer ' + localStorage.getItem('dashboard_token') } : {}),
+            ...(getAdminToken() ? { 'X-Admin-Token': getAdminToken() } : {}),
+          },
           body: JSON.stringify({ name: 'bilibili-cookies.txt', data: base64 }),
         })
       }
@@ -110,30 +116,41 @@ export default {
 
     let pollTimer = null
 
+    onUnmounted(() => {
+      if (pollTimer) clearTimeout(pollTimer)
+    })
+
     async function doDeploy() {
       if (!server.value.trim() || !appDir.value.trim()) { logLines.value = ['❌ 请先填写并保存部署配置']; return }
-      logLines.value = []; deployDone.value = false; deploying.value = true
+      if (pollTimer) clearTimeout(pollTimer)
+      logLines.value = []; deployDone.value = false; deployMsg.value = null; deploying.value = true
       const res = await runDeploy({ server: server.value.trim(), appDir: appDir.value.trim(), accessPwd: accessPwd.value, adminPwd: adminPwd.value })
       if (res.code === 'ADMIN_REQUIRED') { deploying.value = false; window.showAdminDialog && window.showAdminDialog('部署需要管理员密码', doDeploy); return }
       if (!res.ok || !res.data?.taskId) { logLines.value = ['❌ 启动部署失败']; deploying.value = false; return }
       const taskId = res.data.taskId
-      pollTimer = setInterval(async () => {
+      let delay = 700
+      const poll = async () => {
         const pRes = await fetchDeployProgress(taskId)
         if (pRes.ok && pRes.data?.lines) {
           logLines.value = pRes.data.lines.filter(l => l)
-            if (pRes.data.done) {
-              clearInterval(pollTimer); deploying.value = false
-              const success = pRes.data.lines.some(l => l.includes('✅') || l.includes('DONE'))
-              if (success) {
-                deployDone.value = true
-                await confirmDeployed()
-                location.reload()
-              } else {
-                deployDone.value = false
-              }
+          if (pRes.data.done) {
+            deploying.value = false
+            const success = pRes.data.success === true || pRes.data.lines.some(l => l.includes('✅') || l.includes('DONE'))
+            if (success) {
+              deployDone.value = true
+              const confirm = await confirmDeployed()
+              deployMsg.value = { type: confirm.ok ? 'ok' : 'err', text: confirm.ok ? '部署记录已更新' : (confirm.data?.message || '部署记录更新失败') }
+            } else {
+              deployDone.value = false
+              deployMsg.value = { type: 'err', text: '部署失败，请查看日志' }
             }
+            return
+          }
         }
-      }, 500)
+        delay = Math.min(delay + 300, 2500)
+        pollTimer = setTimeout(poll, delay)
+      }
+      pollTimer = setTimeout(poll, delay)
     }
 
     function openRemote() {
@@ -141,7 +158,7 @@ export default {
       window.open('http://' + host + ':5150/dashboard/', '_blank')
     }
 
-    return { server, appDir, saving, saveMsg, deploying, logLines, deployDone, cookiesName, accessPwd, adminPwd, onCookiesFile, doSave, doDeploy, openRemote }
+    return { server, appDir, saving, saveMsg, deploying, logLines, deployDone, deployMsg, cookiesName, accessPwd, adminPwd, onCookiesFile, doSave, doDeploy, openRemote }
   }
 }
 </script>

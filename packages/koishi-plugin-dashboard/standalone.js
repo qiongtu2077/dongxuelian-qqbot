@@ -150,8 +150,8 @@ const server = http.createServer((req, res) => {
   const pathname = url.pathname
 
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-Token')
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204)
@@ -492,6 +492,7 @@ const server = http.createServer((req, res) => {
   const whitelistFiles = {
     summary: { file: 'summary-whitelist.json', label: '解除上限群白名单', type: 'array' },
     random: { file: 'ai-random-whitelist.json', label: '群聊AI白名单', type: 'array' },
+    silence: { file: 'ai-silence-whitelist.json', label: '群聊AI静默白名单', type: 'array' },
     userBlacklist: { file: 'ai-user-blacklist.json', label: '用户黑名单', type: 'array' },
     videoBlacklist: { file: 'video-blacklist.json', label: '视频黑名单', type: 'object', default: { groups: [], users: [] } },
   }
@@ -794,8 +795,9 @@ const server = http.createServer((req, res) => {
       if (!fs.existsSync(logFile)) return json(res, { ok: false, lines: [], done: false })
       const raw = fs.readFileSync(logFile, 'utf8').trim()
       const lines = raw ? raw.split('\n') : []
-      const done = lines.length > 0 && lines[lines.length - 1] === 'DONE'
-      return json(res, { ok: true, lines, done })
+      const lastLine = lines.length > 0 ? lines[lines.length - 1] : ''
+      const done = lastLine === 'DONE' || lastLine === 'FAIL'
+      return json(res, { ok: true, lines, done, success: lastLine === 'DONE' })
     } catch { return json(res, { ok: false, lines: [], done: false }) }
   }
 

@@ -41,7 +41,7 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import LoginPage from './components/LoginPage.vue'
 import CursorGlow from './components/CursorGlow.vue'
 import ConfigPanel from './components/ConfigPanel.vue'
@@ -103,7 +103,15 @@ export default {
       deployed.value = !!(res.ok && (res.data?.botRunning || res.data?.deployedAt)) || localUnlock
       if (deployed.value && activeTab.value === 'deploy') activeTab.value = 'features'
     }
-    onMounted(checkDeployed)
+    function handleAuthExpired() {
+      loggedIn.value = false
+    }
+
+    onMounted(() => {
+      checkDeployed()
+      window.addEventListener('dashboard-auth-expired', handleAuthExpired)
+    })
+    onUnmounted(() => window.removeEventListener('dashboard-auth-expired', handleAuthExpired))
 
     function onAdminVerified() {
       if (adminPending.value) { const fn = adminPending.value; adminPending.value = null; fn() }

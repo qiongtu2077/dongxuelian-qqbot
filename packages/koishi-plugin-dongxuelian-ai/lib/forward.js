@@ -1,11 +1,10 @@
 /**
  * MODULE: 转发消息解析。
  * 职责: resolveForwardSummary — 提取合并转发中的消息摘要。
- * 边界: 纯函数 + 缓存操作，不调 AI API，不改 conversation 持久层。
+ * 边界: 纯函数式摘要解析，不调 AI API，不改 conversation 持久层。
  */
 const { callGetForwardMsg } = require('./api')
 const { summarizeForwardNodes } = require('./message-reader')
-const { getChannelKey, lastForwardSummaryCache } = require('./conversation')
 
 const FORWARD_ID_RE = /(?:\[CQ:forward,id=([^,\]]+)\])|<forward\s+id="([^"]+)"\/>/
 const BLANK_NICK_CHARS_RE = /[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g
@@ -140,7 +139,6 @@ async function resolveForwardSummary(session, content, ctx, options = {}) {
   if (logger) {
     logger.info('fwd summary len: ' + (forwardSummaryText ? forwardSummaryText.length : 0) + ' text: ' + (forwardSummaryText || '(empty)').slice(0, 100).replace(/\n/g, '\\n'))
   }
-  if (forwardSummaryText) lastForwardSummaryCache.set(getChannelKey(session), forwardSummaryText)
   return forwardSummaryText
 }
 

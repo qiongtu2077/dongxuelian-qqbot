@@ -31,15 +31,19 @@ function headers(admin = false) {
 function handle401(res) {
   if (res.status === 401) {
     localStorage.removeItem('dashboard_token')
-    window.location.reload()
+    window.dispatchEvent(new CustomEvent('dashboard-auth-expired'))
     return true
   }
   return false
 }
 
+function authExpiredResult() {
+  return { ok: false, data: { message: '登录已过期，请重新登录', code: 'AUTH_EXPIRED' }, code: 'AUTH_EXPIRED' }
+}
+
 async function get(path) {
   const res = await fetch(BASE + path, { headers: headers() })
-  if (handle401(res)) return { ok: false, data: null }
+  if (handle401(res)) return authExpiredResult()
   return { ok: res.ok, data: await res.json() }
 }
 
@@ -53,7 +57,7 @@ async function put(path, data, admin = false) {
     const j = await res.json()
     return { ok: false, data: j, code: j.code }
   }
-  if (handle401(res)) return { ok: false, data: null }
+  if (handle401(res)) return authExpiredResult()
   return { ok: res.ok, data: await res.json() }
 }
 
@@ -67,7 +71,7 @@ async function del(path, data, admin = false) {
     const j = await res.json()
     return { ok: false, data: j, code: j.code }
   }
-  if (handle401(res)) return { ok: false, data: null }
+  if (handle401(res)) return authExpiredResult()
   return { ok: res.ok, data: await res.json() }
 }
 
@@ -81,7 +85,7 @@ async function post(path, data, admin = false) {
     const j = await res.json()
     return { ok: false, data: j, code: j.code }
   }
-  if (handle401(res)) return { ok: false, data: null }
+  if (handle401(res)) return authExpiredResult()
   return { ok: res.ok, data: await res.json() }
 }
 

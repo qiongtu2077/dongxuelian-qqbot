@@ -17,7 +17,7 @@
  *   scenarios/repeat.test.js L10-L72 覆盖真实中间件命令路径；
  *   cascade 只保留纯复读候选构造检查
  * - 转发消息摘要：
- *   scenarios/forward.test.js 覆盖 CQ/HTML forward ID、嵌套转发、缺失 ID、lastForwardSummaryCache 写入
+ *   scenarios/forward.test.js 覆盖 CQ/HTML forward ID、嵌套转发、缺失 ID 和摘要返回值
  * - 图片会话标记：
  *   scenarios/vision.test.js 覆盖当前图片、引用图片、纯文本、清理行为
  * - 敏感检测缓存/开关：
@@ -586,7 +586,7 @@ async function main() {
       'runHealthCheck', 'formatHealthReport', 'resetHealthCache',
     ],
     retaliation: [
-      'calculateRetaliationScore',
+      'calculateRetaliationScore', 'detectRareHostile',
     ],
   }
   for (const [moduleName, names] of Object.entries(expectedExports)) {
@@ -612,7 +612,7 @@ async function main() {
     'SKILLS_LORE_DIR', 'PROVIDERS', 'SENSITIVE_KEYWORDS_RE', 'CONVERSATIONS_DIR',
     'USER_PROFILE_DIR', 'REQUEST_TIMEOUT', 'TERRA_LORE_TRIGGER_SET',
     'RESERVED_PREFIXES', 'POLITICAL_DETECT_FILE', 'STICKER_DIR',
-    'ADMIN_IDS_FILE', 'JAILBREAK_INPUT_RE', 'JAILBREAK_INPUT_PATTERNS',
+    'ADMIN_IDS_FILE', 'SILENCE_WHITELIST_FILE', 'JAILBREAK_INPUT_RE', 'JAILBREAK_INPUT_PATTERNS',
   ]
   for (const name of requiredConstants) check(`constant exists: ${name}`, c[name] !== undefined)
   const aiPkg = readJson(path.join(AI_ROOT, 'package.json'))

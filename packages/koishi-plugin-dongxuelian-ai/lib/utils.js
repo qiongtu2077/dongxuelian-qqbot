@@ -159,8 +159,6 @@ function shouldTriggerRandom(rate, randomFn = Math.random) {
   return randomFn() < Number(rate)
 }
 
-function parseEnabledText(value = '') { return /^(?:1|true|on|yes|开|开启)$/i.test(String(value).trim()) }
-
 function getBaseHostname(baseURL = '') { try { return new URL(String(baseURL || '')).hostname.toLowerCase() } catch { return '' } }
 
 function isDashScopeConfig(config = {}) { const hostname = getBaseHostname(config.baseURL); return hostname.includes('dashscope') || hostname.endsWith('aliyuncs.com') }
@@ -364,7 +362,6 @@ module.exports = {
   readTextFile, writeTextFile, readJsonFile, writeJsonFile,
   safeUnlink,
   sleep, getRandomDelayMs, shouldTriggerRandom,
-  parseEnabledText,
   getBaseHostname, isDashScopeConfig, isOpenAIOfficialConfig,
   normalizeUrl, extractImageUrls,
   sanitizeFileToken, safeJsonStringify,

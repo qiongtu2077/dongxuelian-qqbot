@@ -8,8 +8,8 @@ const fs = require('fs')
 const path = require('path')
 const { TIMEOUTS, DATA_DIR } = require('./config')
 const { collectReportData } = require('./data-collector')
-const { analyzeWithAI } = require('./ai-analyzer')
-const { renderReport } = require('./html-renderer')
+const { analyzeWithAI, buildFallbackFullAnalysis } = require('./ai-analyzer')
+const { renderReport, findBrowser } = require('./html-renderer')
 
 // 冷却机制
 const cooldown = new Map()
@@ -41,6 +41,7 @@ exports.name = 'daily-report'
 exports.apply = (ctx) => {
   ctx.on('ready', () => {
     ctx.logger('daily-report').info('daily-report loaded')
+    if (!findBrowser()) ctx.logger('daily-report').warn('未找到 Chrome/Chromium，日报图片渲染会失败。')
   })
 
   ctx.middleware(async (session, next) => {
@@ -71,9 +72,9 @@ exports.apply = (ctx) => {
       }
 
       // 收集数据
-      const data = collectReportData(channelKey)
-      if (!data || data.messages.length === 0) {
-        await session.send('今天还没有收录足够消息，稍后再试。')
+      const data = collectReportData(channelKey, { detailedError: true })
+      if (!data || data.ok === false || data.messages.length === 0) {
+        await session.send(data?.message || '今天还没有收录足够消息，稍后再试。')
         return
       }
 
@@ -82,7 +83,15 @@ exports.apply = (ctx) => {
       await session.send(`正在生成群聊${modeLabel}，请稍候...`)
 
       try {
-        const analysis = isFull ? await analyzeWithAI(data, true) : {}
+        let analysis = {}
+        if (isFull) {
+          try {
+            analysis = await analyzeWithAI(data, true)
+          } catch (error) {
+            ctx.logger('daily-report').warn(`详细日报AI分析失败，降级基础分析: ${error.message}`)
+            analysis = buildFallbackFullAnalysis(data)
+          }
+        }
         const imageBuffer = await renderReport(data, analysis)
         const base64 = imageBuffer.toString('base64')
         await session.send(h.image(`data:image/png;base64,${base64}`))

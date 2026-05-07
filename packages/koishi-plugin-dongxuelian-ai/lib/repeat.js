@@ -13,7 +13,6 @@ const REPEAT_TRIGGER_COOLDOWN_MS = 30000
 const REPEAT_MATCH_WINDOW_MS = 120000
 const channelRepeatState = new Map()
 const channelRepeatCooldown = new Map()
-const channelLastFiredReply = new Map()
 let repeatEnabledCache = {}
 
 function loadRepeatConfig() {
@@ -32,7 +31,6 @@ function clearRepeatState(channelKey) {
   const key = String(channelKey)
   channelRepeatState.delete(key)
   channelRepeatCooldown.delete(key)
-  channelLastFiredReply.delete(key)
 }
 
 function setRepeatEnabled(channelKey, enabled) {
@@ -155,8 +153,6 @@ function checkGroupRepeat(session, candidate, channelKey, currentUserId, now = D
     last.key === candidate.key &&
     now - last.ts <= REPEAT_MATCH_WINDOW_MS
   ) {
-    if (channelLastFiredReply.get(channelKey) === candidate.reply) return null
-    channelLastFiredReply.set(channelKey, candidate.reply)
     channelRepeatCooldown.set(channelKey, now)
     channelRepeatState.set(channelKey, {
       key: '__fired__',

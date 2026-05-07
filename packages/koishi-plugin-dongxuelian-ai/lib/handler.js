@@ -27,7 +27,7 @@ const {
   hasAdminPermission, isReservedCommand,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
   formatPercent, getModelDisplayName, getSearchCapability, formatSearchStatus,
-  extractAtIds,
+  extractAtIds, todayCst,
 } = require('./utils')
 
 const forgetPendingConfirm = new Map()
@@ -90,7 +90,7 @@ async function handleCommand(session, ctx, state) {
     if (!Array.isArray(sw) || !sw.includes(String(channelKey))) {
       return handled('本群未启用该功能，请联系管理员添加白名单。')
     }
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayCst()
     const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
     const cacheFile = path.join(DATA_DIR, 'today-cache-' + safeKey + '.json')
     let cache = null
@@ -119,7 +119,7 @@ async function handleCommand(session, ctx, state) {
   if (/^定位消息\s+(\d+)$/.test(plain)) {
     const targetIdx = parseInt(RegExp.$1, 10) - 1
     if (!inGuild) return handled('这个命令只能在群里用。')
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayCst()
     const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
     const cacheFile = path.join(DATA_DIR, 'today-cache-' + safeKey + '.json')
     let cache = null
@@ -404,8 +404,9 @@ async function handleCommand(session, ctx, state) {
       `当前群人格：${personaEntry?.persona || '默认'}`,
       `当前群基础触发率：${formatPercent(getRandomTriggerBaseRate(channelKey))}`,
       `当前群白名单状态：${getRandomWhitelistStatus(channelKey) ? '允许主动回复' : '禁止主动回复'}`,
+      state.getSilenceWhitelistStatus ? `当前群静默状态：${state.getSilenceWhitelistStatus(channelKey) ? '静默AI回复' : '正常回复'}` : '',
       `随机触发率规则：热身${RANDOM_TRIGGER_WARMUP}条后每条+${formatPercent(RANDOM_TRIGGER_RAMP)}`,
-    ].join('\n'))
+    ].filter(Boolean).join('\n'))
   }
 
   if (plain === 'AI诊断') {
@@ -427,7 +428,7 @@ async function handleCommand(session, ctx, state) {
 
   if (plain === '今日情绪') {
     if (!inGuild) return handled('这个命令只能在群里用。')
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayCst()
     const cache = channelTodayCache.get(channelKey)
     if (!cache || cache.date !== today || !cache.messages.length) return handled('今天还没有收录消息。')
     const users = new Set(cache.messages.map(m => m.userId)).size
@@ -453,7 +454,7 @@ async function handleCommand(session, ctx, state) {
     const safeChannelKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
     const historyFile = path.join(DATA_DIR, 'emotion-history-' + safeChannelKey + '.json')
     const historyData = await readJsonFile(historyFile, [])
-    const todayDate = new Date().toISOString().slice(0, 10)
+    const todayDate = todayCst()
     const recentHistory = Array.isArray(historyData) ? historyData.filter(h => h.date !== todayDate).slice(-4) : []
     const historyBlock = recentHistory.length
       ? '近5日对比：\n' + recentHistory.map(h => `${h.date} 指数${h.score}/100 ${h.summary}`).join('\n')
@@ -490,13 +491,12 @@ async function handleCommand(session, ctx, state) {
           const existingIdx = historyData.findIndex(h => h.date === todayDate)
           if (existingIdx >= 0) historyData.splice(existingIdx, 1)
           historyData.push({ date: todayDate, score: parseInt(scoreMatch[1]), summary })
-          const cutoff = new Date()
-          cutoff.setDate(cutoff.getDate() - 5)
-          const cutoffStr = cutoff.toISOString().slice(0, 10)
+          const cutoffStr = new Date(Date.now() - 5 * 24 * 3600 * 1000 + 8 * 3600 * 1000).toISOString().slice(0, 10)
           const filtered = historyData.filter(h => h.date >= cutoffStr)
           historyData.length = 0
           historyData.push(...filtered)
           await writeJsonFile(historyFile, historyData)
+          ctx.logger('dongxuelian-ai').info(`emotion history saved: file=${historyFile} date=${todayDate} entries=${historyData.length}`)
         }
       } catch (historyErr) {
         ctx.logger('dongxuelian-ai').warn(`emotion history save failed: ${historyErr.message}`)

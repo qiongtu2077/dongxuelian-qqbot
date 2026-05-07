@@ -30,6 +30,14 @@ function reloadPlugin() {
   return require(PLUGIN_PATH)
 }
 
+function reloadDataCollector(dataDir) {
+  if (dataDir) process.env.DONGXUELIAN_AI_DATA_DIR = dataDir
+  delete require.cache[require.resolve(path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'constants.js'))]
+  delete require.cache[require.resolve(path.resolve(__dirname, '..', 'lib', 'config.js'))]
+  delete require.cache[DATA_COLLECTOR_PATH]
+  return require(DATA_COLLECTOR_PATH)
+}
+
 function makeCtx() {
   const middlewareList = []
   const events = new Map()
@@ -88,6 +96,7 @@ check('models exports createGoldenQuote', typeof models.createGoldenQuote === 'f
 
 const dataCollector = require(DATA_COLLECTOR_PATH)
 check('data-collector exports collectReportData', typeof dataCollector.collectReportData === 'function')
+check('data-collector exports parseMessageHour', typeof dataCollector.parseMessageHour === 'function')
 
 const aiAnalyzer = require(AI_ANALYZER_PATH)
 check('ai-analyzer exports analyzeWithAI', typeof aiAnalyzer.analyzeWithAI === 'function')
@@ -135,6 +144,27 @@ const dc = require(DATA_COLLECTOR_PATH)
 // 测试空目录
 const emptyResult = dc.collectReportData('nonexistent-group-' + Date.now())
 check('collectReportData returns null for missing cache', emptyResult === null)
+
+const tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-test-'))
+const dcTmp = reloadDataCollector(tmpDataDir)
+const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+const cacheFile = path.join(tmpDataDir, 'today-cache-123456789.json')
+fs.writeFileSync(cacheFile, JSON.stringify({
+  date: today,
+  messages: [
+    { time: '12:30:00 AM', user: 'A', userId: '1', content: '凌晨消息' },
+    { time: '12:30:00 PM', user: 'B', userId: '2', content: '中午消息' },
+    { time: '3:30:00 PM', user: 'C', userId: '3', content: '下午消息 https://example.com' },
+  ],
+}), 'utf8')
+const parsedReport = dcTmp.collectReportData('123456789')
+check('collectReportData parses valid today cache', parsedReport && parsedReport.totalMessages === 3)
+check('12 AM maps to hour 0', parsedReport && parsedReport.hourlyActivity[0] === 1)
+check('12 PM maps to hour 12', parsedReport && parsedReport.hourlyActivity[12] === 1)
+check('3 PM maps to hour 15', parsedReport && parsedReport.hourlyActivity[15] === 1)
+fs.writeFileSync(cacheFile, '{bad json', 'utf8')
+const corrupt = dcTmp.collectReportData('123456789', { detailedError: true })
+check('collectReportData reports corrupt JSON', corrupt && corrupt.reason === 'invalid-json')
 // ===== 5. index 中间件注册 =====
 section('index 中间件注册')
 const plugin = reloadPlugin()

@@ -22,18 +22,15 @@ async function run(t) {
 
   await withScenario({}, async ({ harness, makeSession }) => {
     const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
-    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const mocked = makeForwardMock({})
     const session = makeSession({ guildId: '10000', channelId: '10000', content: 'plain message without forward id' })
     const summary = await resolveForwardSummary(session, session.content, harness.ctx, mocked)
     t.check('scenario forward plain message returns empty summary', summary === '', JSON.stringify(summary))
     t.check('scenario forward plain message does not call API', mocked.calls.length === 0, mocked.calls.join(','))
-    t.check('scenario forward plain message does not write cache', !conversation.lastForwardSummaryCache.has('10000'), conversation.lastForwardSummaryCache.get('10000') || '')
   })
 
   await withScenario({}, async ({ harness, makeSession }) => {
     const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
-    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const mocked = makeForwardMock({
       cqroot: [textNode('Alice', 'hello from cq forward')],
     })
@@ -41,7 +38,6 @@ async function run(t) {
     const summary = await resolveForwardSummary(session, session.content, harness.ctx, mocked)
     t.check('scenario forward CQ summary includes sender', summary.includes('Alice'), summary)
     t.check('scenario forward CQ summary includes text', summary.includes('hello from cq forward'), summary)
-    t.check('scenario forward CQ writes lastForwardSummaryCache', (conversation.lastForwardSummaryCache.get('10001') || '').includes('hello from cq forward'), conversation.lastForwardSummaryCache.get('10001') || '')
     t.check('scenario forward CQ calls expected id', mocked.calls.join(',') === 'cqroot', mocked.calls.join(','))
   })
 
@@ -110,19 +106,16 @@ async function run(t) {
 
   await withScenario({}, async ({ harness, makeSession }) => {
     const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
-    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const mocked = makeForwardMock({
       empty: [],
     })
     const missingSession = makeSession({ guildId: '10002', channelId: '10002', content: '[CQ:forward,id=missing]' })
     const missingSummary = await resolveForwardSummary(missingSession, missingSession.content, harness.ctx, mocked)
     t.check('scenario forward missing id returns empty summary', missingSummary === '', JSON.stringify(missingSummary))
-    t.check('scenario forward missing id does not write cache', !conversation.lastForwardSummaryCache.has('10002'), conversation.lastForwardSummaryCache.get('10002') || '')
 
     const emptySession = makeSession({ guildId: '10003', channelId: '10003', content: '[CQ:forward,id=empty]' })
     const emptySummary = await resolveForwardSummary(emptySession, emptySession.content, harness.ctx, mocked)
     t.check('scenario forward empty array keeps current summary behavior', typeof emptySummary === 'string' && emptySummary.length > 0, JSON.stringify(emptySummary))
-    t.check('scenario forward empty array writes current cache behavior', conversation.lastForwardSummaryCache.get('10003') === emptySummary, conversation.lastForwardSummaryCache.get('10003') || '')
   })
 }
 

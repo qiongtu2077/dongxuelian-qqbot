@@ -25,7 +25,6 @@ let conversationCache = new Map()
 let replyFingerprintCache = new Map()
 const conversationLastActiveAt = new Map()
 const channelSharedCache = new Map()
-const lastForwardSummaryCache = new Map()
 const pendingSensitiveAlert = new Map()
 const channelTodayCache = new Map()
 
@@ -307,7 +306,7 @@ function checkMemoryTimerExpired(channelKey) {
 
 module.exports = {
   conversationCache, replyFingerprintCache,
-  conversationLastActiveAt, channelSharedCache, lastForwardSummaryCache,
+  conversationLastActiveAt, channelSharedCache,
   pendingSensitiveAlert, channelTodayCache,
   getConversationKey, getChannelKey, touchConversation,
   readConversationDisk, writeConversationDisk,

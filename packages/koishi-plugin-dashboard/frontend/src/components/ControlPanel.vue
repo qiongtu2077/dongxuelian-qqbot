@@ -76,7 +76,7 @@
           <div v-if="selfIdMsg" style="margin-top:8px;font-size:12px" :style="{color: selfIdMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ selfIdMsg.text }}</div>
         </div>
 
-        <div v-if="copiedMsg" style="margin-top:8px;font-size:12px;color:#39C5BB;text-align:center">{{ copiedMsg }}</div>
+        <div v-if="copiedMsg" style="margin-top:8px;font-size:12px;text-align:center" :style="{color: copiedMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ copiedMsg.text }}</div>
       </div>
     </div>
 
@@ -202,12 +202,24 @@ export default {
       const el = document.getElementById(id)
       if (!el) return
       const text = el.textContent || el.innerText
+      if (!isCopyableText(text)) {
+        copiedMsg.value = { type: 'err', text: '当前没有可复制内容' }
+        setTimeout(() => copiedMsg.value = null, 2000)
+        return
+      }
       try {
         navigator.clipboard.writeText(text.trim()).then(() => {
-          copiedMsg.value = '已复制'
-          setTimeout(() => copiedMsg.value = '', 2000)
+          copiedMsg.value = { type: 'ok', text: '已复制' }
+          setTimeout(() => copiedMsg.value = null, 2000)
         }).catch(() => fallbackCopy(text))
       } catch { fallbackCopy(text) }
+    }
+
+    function isCopyableText(text) {
+      const value = String(text || '').trim()
+      if (!value) return false
+      if (value === '加载中...' || value.includes('服务器IP')) return false
+      return true
     }
 
     function fallbackCopy(text) {
@@ -216,9 +228,9 @@ export default {
       ta.style.position = 'fixed'; ta.style.opacity = '0'
       document.body.appendChild(ta)
       ta.select()
-      try { document.execCommand('copy'); copiedMsg.value = '已复制' } catch {}
+      try { document.execCommand('copy'); copiedMsg.value = { type: 'ok', text: '已复制' } } catch { copiedMsg.value = { type: 'err', text: '复制失败' } }
       document.body.removeChild(ta)
-      setTimeout(() => copiedMsg.value = '', 2000)
+      setTimeout(() => copiedMsg.value = null, 2000)
     }
 
     async function doStart() {
