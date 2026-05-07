@@ -271,7 +271,8 @@ async function analyzeChannelSensitive(channelKey) {
     for (const am of models) {
       const provDef = PROVIDERS[am.provider]; if (!provDef) continue
       try {
-        const cfg = await loadConfig()
+    const cfg = await loadConfig()
+    cfg.purpose = 'analysis'
         const apiKey = am.keyFile ? (await readTextFile(am.keyFile).catch(() => '') || cfg.apiKey).replace(/[\r\n]+/g, '') : cfg.apiKey
         if (!apiKey) continue
         result = await requestChatCompletions(messages, { model: am.model, baseURL: provDef.baseURL.replace(/\/+$/, ''), apiKey, provider: am.provider }, { max_tokens: 20 })

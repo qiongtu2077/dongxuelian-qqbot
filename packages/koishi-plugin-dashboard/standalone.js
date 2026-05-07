@@ -45,12 +45,35 @@ const MODES_DIR = path.join(DATA_DIR, 'ai-skills', 'modes')
 const DIST_DIR = path.join(PLUGIN_ROOT, 'frontend', 'dist')
 const PORT = process.env.DASHBOARD_PORT || 5150
 const KOISHI_DIR = process.env.KOISHI_DIR || path.join(PLUGIN_ROOT, '..', '..')
-const PASSWORD = process.env.DASHBOARD_PASSWORD || '123456'
+const PASSWORD = process.env.DASHBOARD_PASSWORD || ''
 const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || '123456'
 
 const ADMIN_PWD_FILE = path.join(DATA_DIR, 'dashboard-admin-pwd.txt')
 const ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-access-pwd.txt')
 const LEGACY_ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-pwd.txt')
+const CUSTOM_PROVIDERS_FILE = path.join(DATA_DIR, 'ai-providers-custom.json')
+const FALLBACK_CHAINS_FILE = path.join(DATA_DIR, 'ai-fallback-chains.json')
+
+// ====== 默认 fallback 链（按 AI 用途分类） ======
+const DEFAULT_FALLBACK_CHAINS = {
+  chat: [
+    { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: 'ai-openai-key.txt' },
+    { provider: 'deepseek', model: 'deepseek-chat', keyFile: 'ai-deepseek-key.txt' },
+    { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
+    { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
+    { provider: 'mimorium', model: 'mimo-v2.5-pro', keyFile: 'ai-mimorium-key.txt' },
+  ],
+  vision: [
+    { provider: 'dashscope', model: 'qwen3.5-omni-flash', keyFile: 'ai-dashscope-key.txt' },
+    { provider: 'opencode', model: 'mimo-v2-omni', keyFile: 'ai-openai-key.txt' },
+    { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
+  ],
+  analysis: [
+    { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: 'ai-openai-key.txt' },
+    { provider: 'deepseek', model: 'deepseek-chat', keyFile: 'ai-deepseek-key.txt' },
+    { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
+  ],
+}
 
 // ====== 工具函数 ======
 function json(res, data, status = 200) {
@@ -276,7 +299,19 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/providers' && req.method === 'GET') {
     const { PROVIDERS } = require(path.join(AI_LIB, 'constants'))
-    return json(res, PROVIDERS)
+    const merged = { ...PROVIDERS }
+    try {
+      const raw = fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8')
+      const custom = JSON.parse(raw)
+      if (Array.isArray(custom)) {
+        for (const p of custom) {
+          if (p.id && p.name && p.baseURL) {
+            merged[p.id] = { name: p.name, baseURL: p.baseURL, models: Array.isArray(p.models) ? p.models : [] }
+          }
+        }
+      }
+    } catch {}
+    return json(res, merged)
   }
 
   if (pathname === '/dashboard/api/config' && req.method === 'GET') {
@@ -612,12 +647,96 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  // 自定义供应商管理
+  if (pathname === '/dashboard/api/providers/custom' && req.method === 'GET') {
+    try {
+      const raw = fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8')
+      return json(res, JSON.parse(raw))
+    } catch { return json(res, []) }
+  }
+  if (pathname === '/dashboard/api/providers/custom' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const data = JSON.parse(body)
+        if (!Array.isArray(data)) return json(res, { ok: false, message: '参数错误' }, 400)
+        fs.writeFileSync(CUSTOM_PROVIDERS_FILE + '.tmp', JSON.stringify(data, null, 2), 'utf8')
+        fs.renameSync(CUSTOM_PROVIDERS_FILE + '.tmp', CUSTOM_PROVIDERS_FILE)
+        json(res, { ok: true, message: '自定义供应商已更新' })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  // Fallback 链管理
+  if (pathname === '/dashboard/api/fallback' && req.method === 'GET') {
+    try {
+      const raw = fs.readFileSync(FALLBACK_CHAINS_FILE, 'utf8')
+      const data = JSON.parse(raw)
+      return json(res, { chains: data, defaults: DEFAULT_FALLBACK_CHAINS })
+    } catch { return json(res, { chains: DEFAULT_FALLBACK_CHAINS, defaults: DEFAULT_FALLBACK_CHAINS }) }
+  }
+  if (pathname === '/dashboard/api/fallback' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const { chains } = JSON.parse(body)
+        if (!chains || typeof chains !== 'object') return json(res, { ok: false, message: '参数错误' }, 400)
+        const tmp = FALLBACK_CHAINS_FILE + '.tmp'
+        fs.writeFileSync(tmp, JSON.stringify(chains, null, 2), 'utf8')
+        fs.renameSync(tmp, FALLBACK_CHAINS_FILE)
+        json(res, { ok: true, message: 'Fallback 链已更新' })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
   if (pathname === '/dashboard/api/features' && req.method === 'GET') {
     return json(res, require('./index').FEATURES_DATA || [])
   }
 
   if (pathname === '/dashboard/api/commands' && req.method === 'GET') {
     return json(res, require('./index').COMMANDS_DATA || [])
+  }
+
+  // 管理员列表管理
+  const ADMIN_IDS_FILE = path.join(DATA_DIR, 'ai-admin-ids.json')
+
+  if (pathname === '/dashboard/api/admin-ids' && req.method === 'GET') {
+    try {
+      const raw = fs.readFileSync(ADMIN_IDS_FILE, 'utf8')
+      const ids = JSON.parse(raw)
+      return json(res, { ids: Array.isArray(ids) ? ids : [] })
+    } catch {
+      // 文件不存在时返回默认管理员
+      const defaults = ['532701045', '3514272382']
+      try {
+        const tmp = ADMIN_IDS_FILE + '.tmp'
+        fs.writeFileSync(tmp, JSON.stringify(defaults, null, 2), 'utf8')
+        fs.renameSync(tmp, ADMIN_IDS_FILE)
+      } catch {}
+      return json(res, { ids: defaults })
+    }
+  }
+
+  if (pathname === '/dashboard/api/admin-ids' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const { ids } = JSON.parse(body)
+        if (!Array.isArray(ids)) return json(res, { ok: false, message: '参数错误' }, 400)
+        const cleaned = ids.map(String).filter(Boolean)
+        const tmp = ADMIN_IDS_FILE + '.tmp'
+        fs.writeFileSync(tmp, JSON.stringify(cleaned, null, 2), 'utf8')
+        fs.renameSync(tmp, ADMIN_IDS_FILE)
+        try {
+          const { resetConfigCache } = require(path.join(AI_LIB, 'runtime-config'))
+          resetConfigCache()
+        } catch {}
+        return json(res, { ok: true, message: '管理员列表已更新' })
+      } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
+    })
+    return
   }
 
   // NapCat 代理
@@ -643,6 +762,17 @@ const server = http.createServer((req, res) => {
       } catch {}
       return json(res, { running: running > 0, workers: running, qq })
     } catch { return json(res, { running: false, workers: 0 }) }
+  }
+
+  // Bot 活动日志
+  if (pathname === '/dashboard/api/bot/activity' && req.method === 'GET') {
+    try {
+      const logFile = path.join(KOISHI_DIR, 'koishi.log')
+      if (!fs.existsSync(logFile)) return json(res, { lines: [] })
+      const out = execSync('tail -n 100 ' + shellQuote(logFile), { timeout: 5000, encoding: 'utf8', maxBuffer: 1024 * 1024 })
+      const lines = out.trim().split('\n').filter(l => l.includes('entry-debug') || l.includes('chat') || l.includes('repeat') || l.includes('random-reply') || l.includes('banned') || l.includes('sticker'))
+      return json(res, { lines, total: lines.length })
+    } catch { return json(res, { lines: [] }) }
   }
 
   if (pathname === '/dashboard/api/bot/start' && req.method === 'POST') {

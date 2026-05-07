@@ -247,6 +247,7 @@ function buildAbusiveSystemPrompt() {
 async function callOpenAI(messages, isRandom, extraBody = {}) {
   const config = await loadConfig()
   if (!config.apiKey) throw new Error('AI key file is empty.')
+  config.purpose = 'chat'
   const thinkingEnabled = getThinkingEnabled()
   const managedThinkingMeta = {
     _thinkingManaged: true,

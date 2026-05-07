@@ -80,6 +80,24 @@
       </div>
     </div>
 
+    <!-- Bot 管理员管理 -->
+    <div class="card">
+      <h2>Bot 管理员</h2>
+      <div style="font-size:13px;color:var(--text3);margin-bottom:12px">管理 Bot 的操作管理员 QQ 号，拥有执行敏感命令的权限</div>
+      <div v-if="adminIds.length">
+        <div v-for="(id, idx) in adminIds" :key="idx" class="grp" style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-family:monospace;font-size:14px">{{ id }}</span>
+          <button class="btn btn-sm" style="background:rgba(244,114,182,0.2);color:#F472B6" :disabled="savingAdmin" @click="removeAdmin(idx)">删除</button>
+        </div>
+      </div>
+      <div v-else style="color:var(--text3);font-size:13px;margin-bottom:8px">暂无管理员</div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <input v-model="newAdminId" placeholder="输入 QQ 号" style="flex:1;font-family:monospace" @keyup.enter="addAdmin" />
+        <button class="btn btn-sm" :disabled="savingAdmin || !newAdminId.trim()" @click="addAdmin">{{ savingAdmin ? '保存中...' : '添加' }}</button>
+      </div>
+      <div v-if="adminMsg" style="margin-top:8px;font-size:12px" :style="{color: adminMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ adminMsg.text }}</div>
+    </div>
+
     <!-- 诊断 -->
     <div class="card">
       <h2>诊断</h2>
@@ -112,7 +130,7 @@
 
 <script>
 import { ref, onMounted, onActivated } from 'vue'
-import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo, fetchSelfId, updateSelfId } from '../api'
+import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo, fetchSelfId, updateSelfId, fetchAdminIds, updateAdminIds } from '../api'
 
 export default {
   name: 'ControlPanel',
@@ -131,6 +149,10 @@ export default {
     const savingSelfId = ref(false)
     const selfIdMsg = ref(null)
     const diagMsg = ref('')
+    const adminIds = ref([])
+    const newAdminId = ref('')
+    const savingAdmin = ref(false)
+    const adminMsg = ref(null)
 
     // KeepAlive 缓存激活时重置状态
     onActivated(() => {
@@ -180,11 +202,48 @@ export default {
 
     function onAdminVerified() {
     }
+    async function loadAdminIds() {
+      const res = await fetchAdminIds()
+      if (res.ok && Array.isArray(res.data?.ids)) adminIds.value = res.data.ids
+    }
+
+    async function addAdmin() {
+      const id = newAdminId.value.trim()
+      if (!id) return
+      if (adminIds.value.includes(id)) { adminMsg.value = { type: 'err', text: '该 QQ 号已是管理员' }; return }
+      savingAdmin.value = true; adminMsg.value = null
+      const updated = [...adminIds.value, id]
+      const res = await updateAdminIds(updated)
+      if (res.code === 'ADMIN_REQUIRED') { savingAdmin.value = false; window.showAdminDialog && window.showAdminDialog('修改管理员需要管理员密码', addAdmin); return }
+      if (res.ok) {
+        adminIds.value = updated
+        newAdminId.value = ''
+        adminMsg.value = { type: 'ok', text: '管理员已添加' }
+      } else {
+        adminMsg.value = { type: 'err', text: res.data?.message || '添加失败' }
+      }
+      savingAdmin.value = false
+    }
+
+    async function removeAdmin(idx) {
+      savingAdmin.value = true; adminMsg.value = null
+      const updated = adminIds.value.filter((_, i) => i !== idx)
+      const res = await updateAdminIds(updated)
+      if (res.code === 'ADMIN_REQUIRED') { savingAdmin.value = false; window.showAdminDialog && window.showAdminDialog('修改管理员需要管理员密码', () => removeAdmin(idx)); return }
+      if (res.ok) {
+        adminIds.value = updated
+        adminMsg.value = { type: 'ok', text: '管理员已删除' }
+      } else {
+        adminMsg.value = { type: 'err', text: res.data?.message || '删除失败' }
+      }
+      savingAdmin.value = false
+    }
+
     function saveSSHHost() {
       localStorage.setItem('dashboard_ssh_host', sshHost.value)
     }
 
-    onMounted(() => { loadStatus(); loadMaintenance(); loadQQToken(); loadSSHInfo(); loadSelfId() })
+    onMounted(() => { loadStatus(); loadMaintenance(); loadQQToken(); loadSSHInfo(); loadSelfId(); loadAdminIds() })
 
     async function testStartBot() {
       diagMsg.value = '发起请求...'
@@ -274,7 +333,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, resultMsg, maintenanceOn, maintLoading, napcatToken, copiedMsg, sshHost, sshUser, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, saveSSHHost, saveSelfId, doStart, doStop, toggleMaintenance, testStartBot }
+    return { status, acting, resultMsg, maintenanceOn, maintLoading, napcatToken, copiedMsg, sshHost, sshUser, newSelfId, savingSelfId, selfIdMsg, diagMsg, adminIds, newAdminId, savingAdmin, adminMsg, copyText, saveSSHHost, saveSelfId, doStart, doStop, toggleMaintenance, testStartBot, addAdmin, removeAdmin, loadAdminIds }
   }
 }
 </script>

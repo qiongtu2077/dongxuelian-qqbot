@@ -130,8 +130,15 @@ export async function botStatus() { return get('/bot/status') }
 export async function startBot() { return post('/bot/start', {}, true) }
 export async function stopBot() { return post('/bot/stop', {}, true) }
 export async function fetchMaintenance() { return get('/maintenance') }
+export async function fetchActivity() { return get('/bot/activity') }
 export async function setMaintenance(enabled) { return put('/maintenance', { enabled }, true) }
 export async function fetchQQToken() { return get('/qq/token') }
 export async function fetchSSHInfo() { return get('/qq/ssh-info') }
 export async function fetchSelfId() { return get('/qq/selfid') }
 export async function updateSelfId(selfId) { return put('/qq/selfid', { selfId }, true) }
+export async function fetchAdminIds() { return get('/admin-ids') }
+export async function updateAdminIds(ids) { return put('/admin-ids', { ids }, true) }
+export async function fetchCustomProviders() { return get('/providers/custom') }
+export async function saveCustomProviders(data) { return put('/providers/custom', data, true) }
+export async function fetchFallbackChains() { return get('/fallback') }
+export async function saveFallbackChains(chains) { return put('/fallback', { chains }, true) }

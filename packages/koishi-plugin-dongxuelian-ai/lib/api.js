@@ -158,8 +158,56 @@ const FALLBACK_STEPS = [
   { model: 'qwen3.6-plus', provider: 'dashscope', keyFile: DASHSCOPE_KEY_FILE },
 ]
 
-async function buildFallbackConfig(config, step) {
-  const fallback = FALLBACK_STEPS[step - 1]
+const DEFAULT_CHAINS = {
+  chat: [
+    { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: '' },
+    { provider: 'deepseek', model: 'deepseek-chat', keyFile: 'ai-deepseek-key.txt' },
+    { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
+    { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
+    { provider: 'mimorium', model: 'mimo-v2.5-pro', keyFile: 'ai-mimorium-key.txt' },
+  ],
+  vision: [
+    { provider: 'dashscope', model: 'qwen3.5-omni-flash', keyFile: 'ai-dashscope-key.txt' },
+    { provider: 'opencode', model: 'mimo-v2-omni', keyFile: '' },
+    { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
+  ],
+  analysis: [
+    { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: '' },
+    { provider: 'deepseek', model: 'deepseek-chat', keyFile: 'ai-deepseek-key.txt' },
+    { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
+  ],
+}
+
+let customFallbackCache = null
+
+function loadCustomFallbackChains() {
+  try {
+    const { DATA_DIR } = require('./constants')
+    const file = path.join(DATA_DIR, 'ai-fallback-chains.json')
+    if (fs.existsSync(file)) {
+      const raw = fs.readFileSync(file, 'utf8')
+      const data = JSON.parse(raw)
+      customFallbackCache = data
+      return data
+    }
+  } catch {}
+  customFallbackCache = null
+  return null
+}
+
+function getFallbackSteps(purpose) {
+  if (purpose) {
+    const custom = loadCustomFallbackChains()
+    if (custom && custom[purpose]) return custom[purpose].map(item => ({ ...item }))
+    if (DEFAULT_CHAINS[purpose]) return DEFAULT_CHAINS[purpose].map(item => ({ ...item }))
+  }
+  return FALLBACK_STEPS.map(item => ({ ...item }))
+}
+
+async function buildFallbackConfig(config, step, purpose) {
+  purpose = purpose || config.purpose || null
+  const steps = getFallbackSteps(purpose)
+  const fallback = steps[step - 1]
   if (!fallback) return null
   const provider = PROVIDERS[fallback.provider]
   if (!provider) return null
@@ -171,13 +219,10 @@ async function buildFallbackConfig(config, step) {
     baseURL: provider.baseURL.replace(/\/+$/, ''),
   }
   if (fallback.keyFile) {
-    next.apiKey = (await readTextFile(fallback.keyFile).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '')
+    const keyPath = path.join(require('./constants').DATA_DIR, fallback.keyFile)
+    next.apiKey = (await readTextFile(keyPath).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '')
   }
   return next
-}
-
-function getFallbackSteps() {
-  return FALLBACK_STEPS.map(item => ({ ...item }))
 }
 
 function callOneBotWs(action, params, echo, timeoutMs, extractData) {
