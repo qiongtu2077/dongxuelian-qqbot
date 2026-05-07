@@ -16,7 +16,7 @@ const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
   USER_PROFILE_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE,
   DATA_DIR,
 } = require('./constants')
-const { readTextFile, readJsonFile, writeJsonFile, splitSentences, sanitizeUserName } = require('./utils')
+const { readTextFile, readJsonFile, writeJsonFile, splitSentences, sanitizeUserName, todayCst, timeCst } = require('./utils')
 const { normalizeText } = require('./message-reader')
 const { requestChatCompletions } = require('./api')
 const { loadConfig } = require('./runtime-config')
@@ -110,10 +110,10 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
     try {
       const raw = require('fs').readFileSync(SUMMARY_WHITELIST_FILE, 'utf8'); const sw = JSON.parse(raw)
       if (Array.isArray(sw) && sw.includes(String(channelKey))) {
-        const today = new Date().toISOString().slice(0, 10); let cache = channelTodayCache.get(channelKey)
+        const today = todayCst(); let cache = channelTodayCache.get(channelKey)
         if (!cache || cache.date !== today) { cache = { date: today, messages: [] }; channelTodayCache.set(channelKey, cache) }
         if (value || hasMentions) {
-          const displayName = speakerName || userId; cache.messages.push({ time: new Date().toLocaleTimeString(), user: sanitizeUserName(String(displayName)), userId, content: value || '', messageId: String(metadata.messageId || ''), mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [] })
+          const displayName = speakerName || userId; cache.messages.push({ time: timeCst(), user: sanitizeUserName(String(displayName)), userId, content: value || '', messageId: String(metadata.messageId || ''), mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [] })
           const now = Date.now(); const elapsed = now - (cache.lastDiskWrite || 0)
           if (cache.messages.length % 20 === 0 || elapsed > 300000) {
             cache.lastDiskWrite = now; const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_'); const tmp = TODAY_CACHE_PREFIX + safeKey + '.tmp'; const dst = TODAY_CACHE_PREFIX + safeKey + '.json'

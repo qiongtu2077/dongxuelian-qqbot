@@ -278,6 +278,15 @@ function sanitizeReply(text = '', userName = '') {
   return t || text
 }
 
+/** 返回北京时间（UTC+8）日期字符串 YYYY-MM-DD，在北京时间 0:00 切换 */
+function todayCst() {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+/** 返回北京时间 24 小时制时间字符串 HH:MM:SS */
+function timeCst() {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(11, 19)
+}
+
 function calculateWillFactor(channelKey, personaName, channelSharedCache, personaSkillContent) {
   const msgCount = (channelSharedCache.get(channelKey) || []).filter(function(m) { return Date.now() - m.ts < 60000 }).length
   const crowdFactor = msgCount > 20 ? 0.3 : msgCount > 10 ? 0.6 : msgCount > 5 ? 0.9 : msgCount > 2 ? 1.2 : 1.5
@@ -367,4 +376,5 @@ module.exports = {
   getSegmentData, getSessionMessageSegments,
   getModelDisplayName, getSearchCapability, formatSearchStatus,
   trimReply, sanitizeReply, splitSentences,
+  todayCst, timeCst,
 }

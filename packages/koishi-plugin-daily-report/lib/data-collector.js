@@ -7,6 +7,11 @@ const path = require('path')
 
 const { DATA_DIR } = require('./config')
 
+/** 返回北京时间（UTC+8）日期字符串，确保在北京时间 0:00 切换 */
+function todayCst() {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+
 function safeKey(channelKey) {
   return String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
 }
@@ -15,7 +20,7 @@ function collectReportData(channelKey) {
   if (!DATA_DIR) return null
 
   const key = safeKey(channelKey)
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayCst()
 
   const cacheFile = path.join(DATA_DIR, `today-cache-${key}.json`)
 
@@ -78,7 +83,11 @@ function processMessages(messages, today) {
   const hourlyActivity = new Array(24).fill(0)
   for (const msg of messages) {
     if (!msg.time) continue
-    const hour = parseInt(msg.time.split(':')[0], 10)
+    // 兼容旧版 12h 制缓存（如 "3:30:00 PM"）和新版 24h 制（如 "15:30:00"）
+    const timeParts = msg.time.split(':')
+    let hour = parseInt(timeParts[0], 10)
+    if (msg.time.includes('PM') && hour !== 12) hour += 12
+    else if (msg.time.includes('AM') && hour === 12) hour = 0
     if (!isNaN(hour) && hour >= 0 && hour < 24) {
       hourlyActivity[hour]++
     }

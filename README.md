@@ -18,11 +18,13 @@
 |------|------|
 | `README.md` | 中文总说明与部署入口 |
 | `指令速查.md` | 指令语法说明 |
-| `进度.md` | 变更记录、规范、交接说明 |
 | `教程.md` | 面向使用者的补充教程 |
+| `progress.md` | 开发变更记录与阶段进度 |
+| `教训总结.md` | **AI 改项目必读**：代码设计、部署、测试教训 |
 | `scripts/*.sh` | 可直接在 Linux 服务器执行的部署脚本 |
 | `scripts/deploy-and-restart.bat` | Windows 一键部署+重启脚本 |
 | `packages/koishi-plugin-dashboard/` | Dashboard 独立服务器 + 一键部署面板 |
+| `packages/koishi-plugin-daily-report/` | 群聊详细日报插件 |
 | `packages/*/lib/index.js` | 各插件当前可运行的 JS 代码 |
 | `packages/*/package.json` | 各插件的标准包信息 |
 | `package.json` | 仓库根配置，声明 workspaces |
@@ -525,7 +527,7 @@ group-leave-notice loaded
 
 建议最终整理成三层：
 
-- `README.md / 指令速查.md / 进度.md`：中文文档层
+- `README.md / 指令速查.md / 教程.md / progress.md / 教训总结.md`：中文文档层
 - `scripts/*.sh`：部署执行层
 - `packages/*`：代码维护层
 
@@ -582,7 +584,8 @@ group-leave-notice loaded
 如果你要继续维护这个仓库，建议遵守以下原则：
 
 - 部署脚本保持“只做部署，不内嵌插件业务源码”
-- 解释、约束、交接统一写进 `进度.md`
+- 部署/代码教训写进 `教训总结.md`，AI 每次改项目前必须先读
+- 通用变更记录优先写进 `progress.md`，专题内容拆到对应文档
 - 先保证服务器可直接部署，再逐步整理源码结构
 - 每次改动后同步检查版本号、安装提示和 `README`
 

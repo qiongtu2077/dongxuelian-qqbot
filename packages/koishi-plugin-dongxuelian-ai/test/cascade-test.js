@@ -518,6 +518,7 @@ async function main() {
       'normalizeReplyFingerprint', 'isReplyTooSimilar', 'isOverusedReply',
       'hasBannedOutput', 'isThinkingLeak', 'getModelDisplayName', 'getSearchCapability',
       'formatSearchStatus', 'sanitizeReply', 'trimReply', 'shouldTriggerRandom',
+      'todayCst', 'timeCst',
     ],
     persona: [
       'atomicWriteJson', 'loadPersonaGroups', 'getGroupPersona', 'setGroupPersona',

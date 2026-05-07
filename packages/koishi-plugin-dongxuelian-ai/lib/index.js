@@ -93,6 +93,7 @@ const {
   shouldTriggerRandom, calculateWillFactor,
   normalizeUrl,
   sanitizeFileToken, safeJsonStringify,
+  todayCst,
 } = require('./utils')
 
 // @satorijs/core@3.7.0 缺少 stripped / resolve / send / text，这里打补丁
@@ -336,7 +337,7 @@ exports.apply = (ctx) => {
     // 恢复今日情绪磁盘缓存
     try {
       const files = require('fs').readdirSync(DATA_DIR).filter(f => f.startsWith('today-cache-') && f.endsWith('.json'))
-      const today = new Date().toISOString().slice(0, 10)
+      const today = todayCst()
       for (const f of files) {
         try {
           const raw = require('fs').readFileSync(path.join(DATA_DIR, f), 'utf8')
