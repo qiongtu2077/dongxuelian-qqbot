@@ -278,6 +278,13 @@ function sanitizeReply(text = '', userName = '') {
   return t || text
 }
 
+function todayCst() {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+function timeCst() {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(11, 19)
+}
+
 function calculateWillFactor(channelKey, personaName, channelSharedCache, personaSkillContent) {
   const msgCount = (channelSharedCache.get(channelKey) || []).filter(function(m) { return Date.now() - m.ts < 60000 }).length
   const crowdFactor = msgCount > 20 ? 0.3 : msgCount > 10 ? 0.6 : msgCount > 5 ? 0.9 : msgCount > 2 ? 1.2 : 1.5
@@ -367,4 +374,5 @@ module.exports = {
   getSegmentData, getSessionMessageSegments,
   getModelDisplayName, getSearchCapability, formatSearchStatus,
   trimReply, sanitizeReply, splitSentences,
+  todayCst, timeCst,
 }

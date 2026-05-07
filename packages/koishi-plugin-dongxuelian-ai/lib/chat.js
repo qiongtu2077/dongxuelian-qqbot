@@ -24,7 +24,7 @@ const {
   SHORT_FOLLOW_UP_RE, SENSITIVE_KEYWORDS_RE,
 } = require('./constants')
 const { resolvePersona, loadPersonalSkill } = require('./persona')
-const { calculateRetaliationScore } = require('./retaliation')
+const { calculateRetaliationScore, detectRareHostile } = require('./retaliation')
 const {
   requestChatCompletions,
   requestOpenAIResponsesWithSearch,
@@ -387,7 +387,8 @@ async function chat(session, userText, ctx, options = {}) {
   // 反击值系统：三态（0=友善, 1=阴阳, 2=嘴臭），自定义人格时绕过
   let retaliationLevel = 0
   if (!testMode && !personaName) {
-    const hostileInputDetected = isHostileInput(cleanInput) || japanLinked || rareProvocation
+    let hostileInputDetected = isHostileInput(cleanInput) || japanLinked || rareProvocation
+    if (!hostileInputDetected) hostileInputDetected = await detectRareHostile(cleanInput)
     if (hostileInputDetected) {
       const score = await calculateRetaliationScore(cleanInput, currentUserId, channelSharedCache, channelKey)
       if (score >= 90 && require('fs').existsSync(HOSTILE_MODE_FILE)) {

@@ -54,7 +54,7 @@ const {
 const {
   DATA_DIR, PLUGIN_VERSION,
   PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, EVENT_DUMP_DIR,
-  RANDOM_WHITELIST_FILE, RANDOM_RATE_FILE,
+  RANDOM_WHITELIST_FILE, SILENCE_WHITELIST_FILE, RANDOM_RATE_FILE,
   MAINTENANCE_FILE,
   RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP,
   DEFAULT_GROUP_RANDOM_WHITELIST,
@@ -93,6 +93,7 @@ const {
   shouldTriggerRandom, calculateWillFactor,
   normalizeUrl,
   sanitizeFileToken, safeJsonStringify,
+  todayCst,
 } = require('./utils')
 
 // @satorijs/core@3.7.0 缺少 stripped / resolve / send / text，这里打补丁
@@ -141,6 +142,7 @@ exports.name = 'dongxuelian-ai'
 
 let runtimeSettingsLoaded = false
 let randomWhitelistCache = new Set(DEFAULT_GROUP_RANDOM_WHITELIST)
+let silenceWhitelistCache = new Set()
 let randomRateCache = new Map()
 const channelQueues = new Map()
 const channelQueueDepth = new Map()
@@ -200,8 +202,11 @@ function getRandomTriggerBaseRate(channelKey) {
 
 // 白名单为空时视为全群禁用主动回复，只有显式加入的群才允许触发。
 function getRandomWhitelistStatus(channelKey) {
-  if (randomWhitelistCache.size === 0) return false
   return randomWhitelistCache.has(String(channelKey || ''))
+}
+
+function getSilenceWhitelistStatus(channelKey) {
+  return silenceWhitelistCache.has(String(channelKey || ''))
 }
 
 // --- 原始事件抓取 --- //
@@ -294,8 +299,9 @@ async function dumpSessionEvent(session, analyzed, plain, memoryText) {
 async function loadRuntimeSettings(force = false) {
   if (!force && runtimeSettingsLoaded) return
 
-  const [whitelist, rateMap] = await Promise.all([
+  const [whitelist, silenceWhitelist, rateMap] = await Promise.all([
     readJsonFile(RANDOM_WHITELIST_FILE, [...DEFAULT_GROUP_RANDOM_WHITELIST]),
+    readJsonFile(SILENCE_WHITELIST_FILE, []),
     readJsonFile(RANDOM_RATE_FILE, {}),
   ])
 
@@ -303,6 +309,12 @@ async function loadRuntimeSettings(force = false) {
     Array.isArray(whitelist)
       ? whitelist.map(item => String(item || '').trim()).filter(item => NUMERIC_GROUP_ID_RE.test(item))
       : [...DEFAULT_GROUP_RANDOM_WHITELIST]
+  )
+
+  silenceWhitelistCache = new Set(
+    Array.isArray(silenceWhitelist)
+      ? silenceWhitelist.map(item => String(item || '').trim()).filter(item => NUMERIC_GROUP_ID_RE.test(item))
+      : []
   )
 
   const nextRateMap = new Map()
@@ -336,7 +348,7 @@ exports.apply = (ctx) => {
     // 恢复今日情绪磁盘缓存
     try {
       const files = require('fs').readdirSync(DATA_DIR).filter(f => f.startsWith('today-cache-') && f.endsWith('.json'))
-      const today = new Date().toISOString().slice(0, 10)
+      const today = todayCst()
       for (const f of files) {
         try {
           const raw = require('fs').readFileSync(path.join(DATA_DIR, f), 'utf8')
@@ -418,6 +430,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     const adminCommandMatched =
       /^(?:东雪莲)?测试(?:开|关)$/.test(plain) ||
       /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
+      /^群聊AI静默白名单(?:添加|删除|查看|列表)/.test(plain) ||
       /^东雪莲群聊AI概率(?:设置|重置)$/.test(plain) ||
       /^东雪莲联网(?:开|关)$/.test(plain) ||
       /^东雪莲思考(?:开|关)$/.test(plain) ||
@@ -456,6 +469,25 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     if (/^群聊AI白名单(?:查看|列表)$/.test(plain)) {
       const whitelist = [...randomWhitelistCache]
       return whitelist.length ? `群聊AI白名单：\n${whitelist.join('\n')}` : '当前白名单为空，等同于所有群都禁止主动回复。'
+    }
+
+    const silenceAddMatch = plain.match(/^群聊AI静默白名单添加\s*(\d+)$/)
+    if (silenceAddMatch) {
+      silenceWhitelistCache.add(silenceAddMatch[1])
+      await writeJsonFile(SILENCE_WHITELIST_FILE, [...silenceWhitelistCache])
+      return `已加入群聊AI静默白名单：${silenceAddMatch[1]}`
+    }
+
+    const silenceDeleteMatch = plain.match(/^群聊AI静默白名单删除\s*(\d+)$/)
+    if (silenceDeleteMatch) {
+      silenceWhitelistCache.delete(silenceDeleteMatch[1])
+      await writeJsonFile(SILENCE_WHITELIST_FILE, [...silenceWhitelistCache])
+      return `已移出群聊AI静默白名单：${silenceDeleteMatch[1]}`
+    }
+
+    if (/^群聊AI静默白名单(?:查看|列表)$/.test(plain)) {
+      const whitelist = [...silenceWhitelistCache]
+      return whitelist.length ? `群聊AI静默白名单：\n${whitelist.join('\n')}` : '群聊AI静默白名单为空。'
     }
 
     // 用户黑名单管理
@@ -633,6 +665,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       plain, inGuild, channelKey, currentUserId, adminCommandMatched,
       loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache,
       callOpenAI, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus,
+      getSilenceWhitelistStatus,
       getThinkingEnabled,
       setThinkingEnabled,
       resetConfigCache,
@@ -662,6 +695,11 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     }
     const willFactor = calculateWillFactor(channelKey, currentPersonaName, channelSharedCache, personaWillContent)
     const finalTriggerRate = Math.min(getRandomTriggerBaseRate(channelKey) * willFactor, 1.0)
+
+    if (inGuild && getSilenceWhitelistStatus(channelKey)) {
+      ctx.logger('dongxuelian-ai').info(`silent whitelist skipped AI reply in ${channelKey}`)
+      return next()
+    }
 
     // "闭嘴" 静默十分钟主动回复
     if (inGuild && !directAt && !nameMentioned && /^(?:闭嘴|别吵|别说了|不要说话)/.test(plain)) {
