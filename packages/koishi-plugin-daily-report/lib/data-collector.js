@@ -68,6 +68,7 @@ function processMessages(messages, today) {
   for (const msg of messages) {
     if (!msg.content) continue
     const text = msg.content
+      .replace(/<[^>]+>/g, '')
       .replace(/\[CQ:[^\]]+\]/g, '')
       .replace(/https?:\/\/\S+/g, '')
       .replace(/【[^】]*】/g, '')

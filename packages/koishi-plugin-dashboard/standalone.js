@@ -71,6 +71,25 @@ function remoteWriteFileCommand(server, filePath, content) {
   return `ssh ${server} ${shellQuote(remoteCmd)}`
 }
 
+// 版本指纹：对关键代码文件做 hash，不依赖 git
+function computeFingerprint() {
+  try {
+    const repoRoot = path.join(PLUGIN_ROOT, '..', '..')
+    const keyFiles = [
+      'packages/koishi-plugin-dongxuelian-ai/lib/index.js',
+      'packages/koishi-plugin-dashboard/standalone.js',
+      'packages/koishi-plugin-daily-report/lib/index.js',
+      'packages/koishi-plugin-dongxuelian-ai/lib/chat.js',
+      'packages/koishi-plugin-dongxuelian-ai/lib/handler.js',
+    ]
+    const hash = crypto.createHash('md5')
+    for (const f of keyFiles) {
+      try { hash.update(fs.readFileSync(path.join(repoRoot, f))) } catch {}
+    }
+    return hash.digest('hex').slice(0, 8)
+  } catch { return 'unknown' }
+}
+
 // ====== Auth ======
 function createToken() {
   return crypto.createHash('sha256').update('dashboard:' + getAccessPassword()).digest('hex')
@@ -509,7 +528,6 @@ const server = http.createServer((req, res) => {
   const whitelistFiles = {
     summary: { file: 'summary-whitelist.json', label: '解除上限群白名单', type: 'array' },
     random: { file: 'ai-random-whitelist.json', label: '群聊AI白名单', type: 'array' },
-    silence: { file: 'ai-silence-whitelist.json', label: '群聊AI静默白名单', type: 'array' },
     userBlacklist: { file: 'ai-user-blacklist.json', label: '用户黑名单', type: 'array' },
     videoBlacklist: { file: 'video-blacklist.json', label: '视频黑名单', type: 'object', default: { groups: [], users: [] } },
   }
@@ -734,9 +752,20 @@ const server = http.createServer((req, res) => {
       const cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8'))
       let botRunning = false
       try { execSync('ss -tlnp | grep -q :5140', { stdio: 'ignore' }); botRunning = true } catch {}
+      cfg._localFingerprint = computeFingerprint()
       return json(res, { ...cfg, botRunning })
     }
-    catch { return json(res, { server: '', appDir: '/root/koishi-app', botRunning: false }) }
+    catch { return json(res, { server: '', appDir: '/root/koishi-app', botRunning: false, _localFingerprint: computeFingerprint() }) }
+  }
+
+  if (pathname === '/dashboard/api/deploy/check-update' && req.method === 'GET') {
+    const local = computeFingerprint()
+    let deployed = ''
+    try {
+      const cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8'))
+      deployed = cfg.deployFingerprint || ''
+    } catch {}
+    return json(res, { local, deployed, upToDate: local === deployed })
   }
 
   if (pathname === '/dashboard/api/deploy/config' && req.method === 'PUT') {
@@ -769,6 +798,7 @@ const server = http.createServer((req, res) => {
         const log = (msg) => { try { fs.appendFileSync(logFile, msg + '\n', 'utf8') } catch {} }
         json(res, { ok: true, taskId })
 
+        const isUpdate = cfg.mode === 'update'
         const repoRoot = path.join(PLUGIN_ROOT, '..', '..')
         const s = cfg.server
         const d = cfg.appDir
@@ -779,33 +809,30 @@ const server = http.createServer((req, res) => {
           'koishi-plugin-dongxuelian-poke', 'koishi-plugin-daily-report',
         ]
         const cmds = []
-        cmds.push(`echo "创建远程目录..."`)
-        cmds.push(`ssh -o StrictHostKeyChecking=no ${s} "mkdir -p ${d}/data/ai-skills ${d}/packages/koishi-plugin-dashboard/frontend/dist ${d}/scripts"`)
+        if (!isUpdate) {
+          cmds.push(`echo "创建远程目录..."`)
+          cmds.push(`ssh -o StrictHostKeyChecking=no ${s} "mkdir -p ${d}/data/ai-skills ${d}/packages/koishi-plugin-dashboard/frontend/dist ${d}/scripts"`)
+        }
         for (const pkg of pkgs) {
           cmds.push(`echo "→ ${pkg}"`)
-          cmds.push(`scp -r ${repoRoot}/packages/${pkg}/lib/* ${s}:${d}/node_modules/${pkg}/lib/ 2>/dev/null || true`)
-          cmds.push(`scp ${repoRoot}/packages/${pkg}/package.json ${s}:${d}/node_modules/${pkg}/ 2>/dev/null || true`)
+          cmds.push(`scp -o StrictHostKeyChecking=no -r ${repoRoot}/packages/${pkg}/lib/* ${s}:${d}/node_modules/${pkg}/lib/ 2>/dev/null || true`)
+          cmds.push(`scp -o StrictHostKeyChecking=no ${repoRoot}/packages/${pkg}/package.json ${s}:${d}/node_modules/${pkg}/ 2>/dev/null || true`)
         }
         cmds.push(`echo "Dashboard 前端..."`)
-        cmds.push(`scp ${PLUGIN_ROOT}/standalone.js ${s}:${d}/packages/koishi-plugin-dashboard/`)
-        cmds.push(`scp -r ${DIST_DIR}/* ${s}:${d}/packages/koishi-plugin-dashboard/frontend/dist/`)
-        cmds.push(`echo "ai-skills 数据..."`)
-        cmds.push(`scp -r ${repoRoot}/packages/koishi-plugin-dongxuelian-ai/data/ai-skills/. ${s}:${d}/data/ai-skills/`)
-        cmds.push(`echo "配置文件..."`)
-        cmds.push(`scp ${DATA_DIR}/ai-*.txt ${s}:${d}/data/ 2>/dev/null || true`)
-        cmds.push(`scp ${DATA_DIR}/ai-*-ids.json ${s}:${d}/data/ 2>/dev/null || true`)
-        cmds.push(`scp ${DATA_DIR}/video-blacklist.json ${s}:${d}/data/ 2>/dev/null || true`)
-        cmds.push(`scp ${DATA_DIR}/bilibili-cookies.txt ${s}:${d}/data/../ 2>/dev/null || true`)
-        if (cfg.accessPwd) cmds.push(remoteWriteFileCommand(s, remoteDataFile(d, 'dashboard-access-pwd.txt'), cfg.accessPwd))
-        if (cfg.adminPwd) cmds.push(remoteWriteFileCommand(s, remoteDataFile(d, 'dashboard-admin-pwd.txt'), cfg.adminPwd))
-        cmds.push(`echo "视频插件环境..."`)
-        cmds.push(`ssh ${s} "mkdir -p /root/koishi-bili-downloads"`)
-        cmds.push(`ssh ${s} "which yt-dlp >/dev/null 2>&1 || (curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp)"`)
+        cmds.push(`scp -o StrictHostKeyChecking=no ${PLUGIN_ROOT}/standalone.js ${s}:${d}/packages/koishi-plugin-dashboard/`)
+        cmds.push(`scp -o StrictHostKeyChecking=no -r ${DIST_DIR}/* ${s}:${d}/packages/koishi-plugin-dashboard/frontend/dist/`)
+        if (!isUpdate) {
+          cmds.push(`echo "视频插件环境..."`)
+          cmds.push(`ssh ${s} "mkdir -p /root/koishi-bili-downloads"`)
+          cmds.push(`ssh ${s} "which yt-dlp >/dev/null 2>&1 || (curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp)"`)
+        }
         cmds.push(`echo "重启脚本..."`)
-        cmds.push(`scp ${repoRoot}/scripts/restart-bot.sh ${s}:${d}/restart.sh`)
-        cmds.push(`scp ${repoRoot}/scripts/watchdog.sh ${s}:${d}/scripts/watchdog.sh`)
-        cmds.push(`echo "确保 package.json..."`)
-        cmds.push(`ssh ${s} "for p in ${pkgs.join(' ')}; do test -f ${d}/node_modules/\$p/package.json || echo '{}' > ${d}/node_modules/\$p/package.json; done"`)
+        cmds.push(`scp -o StrictHostKeyChecking=no ${repoRoot}/scripts/restart-bot.sh ${s}:${d}/restart.sh 2>/dev/null || true`)
+        cmds.push(`scp -o StrictHostKeyChecking=no ${repoRoot}/scripts/watchdog.sh ${s}:${d}/scripts/watchdog.sh 2>/dev/null || true`)
+        if (!isUpdate) {
+          cmds.push(`echo "确保 package.json..."`)
+          cmds.push(`ssh ${s} "for p in ${pkgs.join(' ')}; do test -f ${d}/node_modules/\$p/package.json || echo '{}' > ${d}/node_modules/\$p/package.json; done"`)
+        }
         cmds.push(`echo "重启 Bot..."`)
         cmds.push(`ssh ${s} "bash ${d}/restart.sh"`)
         cmds.push(`echo "✅ 部署完成"`)
@@ -844,8 +871,10 @@ const server = http.createServer((req, res) => {
   if (pathname === '/dashboard/api/deploy/confirm' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
     try {
-      const cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8') || '{}')
+      let cfg = {}
+      try { cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8')) } catch {}
       cfg.deployedAt = Date.now()
+      cfg.deployFingerprint = computeFingerprint()
       const tmp = DEPLOY_CONFIG_FILE + '.tmp'
       fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8')
       fs.renameSync(tmp, DEPLOY_CONFIG_FILE)

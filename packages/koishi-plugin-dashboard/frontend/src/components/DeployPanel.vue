@@ -65,6 +65,9 @@
     </div>
 
     <button class="btn" @click="doDeploy" :disabled="deploying">{{ deploying ? '部署中...' : '开始部署' }}</button>
+    <button class="btn" @click="doUpdate" :disabled="updating || !updateAvailable" style="margin-left:8px;background:var(--tabBg);color:var(--tabColor);border:1px solid var(--tabBorder)">{{ updating ? '更新中...' : '更新部署' }}</button>
+    <button class="btn btn-sm" @click="doCheckUpdate" :disabled="checking" style="margin-left:8px;background:transparent;border:1px solid var(--accent);color:var(--accent)">{{ checking ? '检查中...' : '检查更新' }}</button>
+    <div v-if="updateStatus" style="margin-top:8px;font-size:13px" :style="{color: updateStatus.type === 'ok' ? '#39C5BB' : updateStatus.type === 'info' ? 'var(--text2)' : '#F472B6'}">{{ updateStatus.text }}</div>
     <span v-if="deployMsg" style="margin-left:12px;font-size:13px" :style="{color: deployMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ deployMsg.text }}</span>
 
     <div v-if="logLines.length" style="margin-top:12px;background:var(--input);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;font-family:monospace;max-height:400px;overflow:auto;white-space:pre-wrap;line-height:1.5">
@@ -80,7 +83,7 @@
 
 <script>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { fetchDeployConfig, saveDeployConfig, runDeploy, fetchDeployProgress, confirmDeployed, getAdminToken } from '../api'
+import { fetchDeployConfig, saveDeployConfig, runDeploy, fetchDeployProgress, confirmDeployed, checkDeployUpdate, getAdminToken } from '../api'
 
 export default {
   name: 'DeployPanel',
@@ -93,6 +96,10 @@ export default {
     const logLines = ref([])
     const deployDone = ref(false)
     const deployMsg = ref(null)
+    const updateStatus = ref(null)
+    const updateAvailable = ref(false)
+    const checking = ref(false)
+    const updating = ref(false)
     const cookiesName = ref('')
     const accessPwd = ref('')
     const adminPwd = ref('')
@@ -176,7 +183,63 @@ export default {
       window.open('http://' + host + ':5150/dashboard/', '_blank')
     }
 
-    return { server, appDir, saving, saveMsg, deploying, logLines, deployDone, deployMsg, cookiesName, accessPwd, adminPwd, onCookiesFile, doSave, doDeploy, openRemote }
+    async function doCheckUpdate() {
+      if (!server.value.trim()) { updateStatus.value = { type: 'err', text: '请先填写服务器地址' }; return }
+      checking.value = true; updateStatus.value = null
+      const res = await checkDeployUpdate()
+      if (res.ok && res.data) {
+        const d = res.data
+        updateAvailable.value = !d.upToDate
+        updateStatus.value = {
+          type: d.upToDate ? 'ok' : 'info',
+          text: d.upToDate ? '本地指纹: ' + d.local + ' | 远端指纹: ' + d.deployed + ' — 已是最新版本' : '本地指纹: ' + d.local + ' | 远端指纹: ' + d.deployed + ' — 有可用更新',
+        }
+      } else {
+        updateStatus.value = { type: 'err', text: '检查更新失败，请确认配置正确' }
+      }
+      checking.value = false
+    }
+
+    async function doUpdate() {
+      if (!server.value.trim() || !appDir.value.trim()) { logLines.value = ['❌ 请先填写并保存部署配置']; return }
+      if (pollTimer) clearTimeout(pollTimer)
+      logLines.value = []; deployDone.value = false; deployMsg.value = null; updateStatus.value = null; updating.value = true
+      const res = await runDeploy({ server: server.value.trim(), appDir: appDir.value.trim(), mode: 'update' })
+      if (res.code === 'ADMIN_REQUIRED') { updating.value = false; window.showAdminDialog && window.showAdminDialog('更新部署需要管理员密码', doUpdate); return }
+      if (!res.ok || !res.data?.taskId) { logLines.value = ['❌ 启动更新失败']; updating.value = false; return }
+      const taskId = res.data.taskId
+      let delay = 700
+      const poll = async () => {
+        const pRes = await fetchDeployProgress(taskId)
+        if (pRes.ok && pRes.data?.lines) {
+          logLines.value = pRes.data.lines.filter(l => l)
+          if (pRes.data.done) {
+            updating.value = false
+            const success = pRes.data.success === true || pRes.data.lines.some(l => l.includes('✅') || l.includes('DONE'))
+            if (success) {
+              deployDone.value = true
+              const confirm = await confirmDeployed()
+              if (confirm.code === 'ADMIN_REQUIRED') { updating.value = false; window.showAdminDialog && window.showAdminDialog('更新部署需要管理员密码', doUpdate); return }
+              if (confirm.ok) {
+                updateStatus.value = { type: 'ok', text: '更新完成，Bot 已重启' }
+                updateAvailable.value = false
+              } else {
+                updateStatus.value = { type: 'err', text: '更新完成，但版本记录更新失败，请确认管理员密码' }
+                updateAvailable.value = true
+              }
+            } else {
+              updateStatus.value = { type: 'err', text: '更新失败，请查看日志' }
+            }
+            return
+          }
+        }
+        delay = Math.min(delay + 300, 2500)
+        pollTimer = setTimeout(poll, delay)
+      }
+      pollTimer = setTimeout(poll, delay)
+    }
+
+    return { server, appDir, saving, saveMsg, deploying, logLines, deployDone, deployMsg, cookiesName, accessPwd, adminPwd, onCookiesFile, doSave, doDeploy, doCheckUpdate, doUpdate, openRemote, updateStatus, updateAvailable, checking, updating }
   }
 }
 </script>

@@ -125,6 +125,7 @@ export async function saveDeployConfig(data) { return put('/deploy/config', data
 export async function runDeploy(data) { return post('/deploy/run', data, true) }
 export async function fetchDeployProgress(taskId) { return get('/deploy/progress/' + encodeURIComponent(taskId)) }
 export async function confirmDeployed() { return post('/deploy/confirm', {}, true) }
+export async function checkDeployUpdate() { return get('/deploy/check-update') }
 export async function botStatus() { return get('/bot/status') }
 export async function startBot() { return post('/bot/start', {}, true) }
 export async function stopBot() { return post('/bot/stop', {}, true) }
