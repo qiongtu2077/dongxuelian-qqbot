@@ -29,7 +29,7 @@ function headers(admin = false) {
 }
 
 function handle401(res) {
-  if (res.status === 401) {
+  if (res.status === 401 && localStorage.getItem('dashboard_token')) {
     localStorage.removeItem('dashboard_token')
     window.location.reload()
     return true

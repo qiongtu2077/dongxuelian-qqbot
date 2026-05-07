@@ -3,7 +3,6 @@
  * Dashboard 以独立进程运行，不依赖 koishi 生命周期
  */
 exports.name = 'dashboard'
-
 exports.apply = (ctx) => {
   ctx.logger('dashboard').info('dashboard running as standalone on port ' + (process.env.DASHBOARD_PORT || 5150))
 }
@@ -216,6 +215,5 @@ const COMMANDS_DATA = [
   ]},
 ]
 
-exports.name = 'dashboard'
 exports.FEATURES_DATA = FEATURES_DATA
 exports.COMMANDS_DATA = COMMANDS_DATA

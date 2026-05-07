@@ -35,7 +35,16 @@ export default {
     const inputRef = ref(null)
 
     onMounted(() => {
-      if (!('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
+      if (window.electronAPI && !localStorage.getItem('dashboard_token')) {
+        // Electron 本地模式自动登录
+        ;(async () => {
+          const res = await login('local')
+          if (res.ok && res.data?.token) {
+            localStorage.setItem('dashboard_token', res.data.token)
+            emit('logged-in')
+          }
+        })()
+      } else if (!('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
         inputRef.value?.focus()
       }
     })

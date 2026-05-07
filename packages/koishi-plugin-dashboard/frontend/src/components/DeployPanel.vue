@@ -7,7 +7,7 @@
         <p><b>前置条件</b>：本机已配置 SSH 密钥认证（<code>~/.ssh/id_rsa</code>），能免密码 <code>ssh root@服务器IP</code>。</p>
         <p><b>使用步骤：</b></p>
         <ol style="margin-left:16px">
-          <li>填写服务器地址（如 <code>root@120.55.246.12</code>）和应用目录 → 保存配置</li>
+           <li>填写服务器地址（如 <code>root@your-server.com</code>）和应用目录 → 保存配置</li>
           <li>（可选）展开密码设置，填写目标服务器的访问密码和管理员密码；留空则使用默认密码 <code>123456</code></li>
           <li>（可选）视频插件需要 B 站 Cookies，按提示从浏览器导出 <code>cookies.txt</code> 上传</li>
           <li>点「开始部署」→ 实时查看部署日志，约 30 秒完成</li>
@@ -22,7 +22,7 @@
     <div style="display:grid;gap:12px">
       <div>
         <div style="font-size:13px;color:var(--text2);margin-bottom:4px">服务器地址</div>
-        <input v-model="server" placeholder="root@120.55.246.12" style="width:100%" />
+        <input v-model="server" placeholder="root@your-server.com" style="width:100%" />
       </div>
       <div>
         <div style="font-size:13px;color:var(--text2);margin-bottom:4px">应用目录</div>
@@ -41,9 +41,10 @@
           </div>
         </div>
       </details>
-      <div>
+      <div style="display:flex;gap:8px;align-items:center">
         <button class="btn" @click="doSave" :disabled="saving">{{ saving ? '保存中...' : '保存配置' }}</button>
-        <span v-if="saveMsg" style="margin-left:12px;font-size:13px" :style="{color: saveMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ saveMsg.text }}</span>
+        <button class="btn" @click="connectRemote" :disabled="!server.trim() || connecting" style="background:linear-gradient(135deg,#6366f1,#8b5cf6)">{{ connecting ? '连接中...' : '🔗 连接远程' }}</button>
+        <span v-if="saveMsg" style="margin-left:4px;font-size:13px" :style="{color: saveMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ saveMsg.text }}</span>
       </div>
     </div>
   </div>
@@ -76,7 +77,10 @@
 
     <div v-if="deployDone" style="margin-top:12px;display:flex;gap:8px;align-items:center">
       <span style="color:#39C5BB;font-weight:700">✅ 部署完成</span>
-      <button class="btn btn-sm" @click="openRemote" v-if="server">打开已部署面板</button>
+      <button class="btn btn-sm" @click="openRemote">打开已部署面板</button>
+    </div>
+    <div v-else-if="server.trim() && !deploying" style="margin-top:12px">
+      <button class="btn btn-sm" @click="openRemote" style="background:transparent;border:1px solid #6366f1;color:#6366f1">🔗 查看远程 Dashboard</button>
     </div>
   </div>
 </template>
@@ -103,6 +107,7 @@ export default {
     const cookiesName = ref('')
     const accessPwd = ref('')
     const adminPwd = ref('')
+    const connecting = ref(false)
 
     function onCookiesFile(e) {
       const file = e.target.files?.[0]
@@ -165,6 +170,11 @@ export default {
               deployDone.value = true
               const confirm = await confirmDeployed()
               deployMsg.value = { type: confirm.ok ? 'ok' : 'err', text: confirm.ok ? '部署记录已更新' : (confirm.data?.message || '部署记录更新失败') }
+              if (window.electronAPI && server.value) {
+                const host = server.value.replace(/^root@/, '').replace(/:.*$/, '')
+                window.electronAPI.setRemote(host)
+                setTimeout(() => window.electronAPI.switchMode('remote'), 1000)
+              }
             } else {
               deployDone.value = false
               deployMsg.value = { type: 'err', text: '部署失败，请查看日志' }
@@ -180,7 +190,26 @@ export default {
 
     function openRemote() {
       const host = server.value.replace(/^root@/, '').replace(/:.*$/, '')
-      window.open('http://' + host + ':5150/dashboard/', '_blank')
+      if (window.electronAPI) {
+        window.electronAPI.setRemote(host)
+        window.electronAPI.switchMode('remote')
+      } else {
+        window.open('http://' + host + ':5150/dashboard/', '_blank')
+      }
+    }
+
+    async function connectRemote() {
+      const host = server.value.replace(/^root@/, '').replace(/:.*$/, '')
+      if (!host) { saveMsg.value = { type: 'err', text: '请先填写服务器地址' }; return }
+      connecting.value = true
+      saveMsg.value = null
+      if (window.electronAPI) {
+        window.electronAPI.setRemote(host)
+        window.electronAPI.switchMode('remote')
+      } else {
+        window.open('http://' + host + ':5150/dashboard/', '_blank')
+      }
+      setTimeout(() => { connecting.value = false }, 3000)
     }
 
     async function doCheckUpdate() {
@@ -227,6 +256,11 @@ export default {
                 updateStatus.value = { type: 'err', text: '更新完成，但版本记录更新失败，请确认管理员密码' }
                 updateAvailable.value = true
               }
+              if (window.electronAPI && server.value) {
+                const host = server.value.replace(/^root@/, '').replace(/:.*$/, '')
+                window.electronAPI.setRemote(host)
+                setTimeout(() => window.electronAPI.switchMode('remote'), 1000)
+              }
             } else {
               updateStatus.value = { type: 'err', text: '更新失败，请查看日志' }
             }
@@ -239,7 +273,13 @@ export default {
       pollTimer = setTimeout(poll, delay)
     }
 
-    return { server, appDir, saving, saveMsg, deploying, logLines, deployDone, deployMsg, cookiesName, accessPwd, adminPwd, onCookiesFile, doSave, doDeploy, doCheckUpdate, doUpdate, openRemote, updateStatus, updateAvailable, checking, updating }
+    return {
+      server, appDir, saving, saveMsg, deploying, logLines, deployDone, deployMsg,
+      cookiesName, accessPwd, adminPwd, connecting,
+      onCookiesFile, doSave, doDeploy, doCheckUpdate, doUpdate,
+      openRemote, connectRemote,
+      updateStatus, updateAvailable, checking, updating,
+    }
   }
 }
 </script>
