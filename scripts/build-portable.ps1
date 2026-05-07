@@ -71,10 +71,14 @@ foreach ($pkg in $pkgs) {
   $src = "$Root\packages\$pkg"
   $dst = "$PortableDir\packages\$pkg"
   if (Test-Path $src) {
-    Copy-Item $src $dst -Recurse -Exclude "node_modules","data","frontend/node_modules","frontend/dist/assets" -ErrorAction SilentlyContinue
+    Copy-Item $src $dst -Recurse -Exclude "node_modules","frontend/node_modules" -ErrorAction SilentlyContinue
   }
 }
-# 重新复制 frontend/dist 的 assets（被上面的 exclude 跳过了）
+# 安全清理：删除所有 data/ 目录中的 API Key 等敏感文件（防止泄露）
+Write-Host "安全清理敏感文件..." -ForegroundColor Yellow
+Get-ChildItem "$PortableDir\packages" -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq "data" } | ForEach-Object { Remove-Item $_.FullName -Recurse -Force; Write-Host "  deleted: $($_.FullName)" -ForegroundColor DarkYellow }
+# 重新复制 frontend/dist（被上面的 exclude 漏了）
+if (Test-Path "$Root\packages\koishi-plugin-dashboard\frontend\dist\assets") {
 if (Test-Path "$Root\packages\koishi-plugin-dashboard\frontend\dist\assets") {
   New-Item -ItemType Directory -Path "$PortableDir\packages\koishi-plugin-dashboard\frontend\dist\assets" -Force | Out-Null
   Copy-Item "$Root\packages\koishi-plugin-dashboard\frontend\dist\assets\*" "$PortableDir\packages\koishi-plugin-dashboard\frontend\dist\assets"
