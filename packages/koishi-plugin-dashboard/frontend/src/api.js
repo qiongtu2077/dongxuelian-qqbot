@@ -31,19 +31,15 @@ function headers(admin = false) {
 function handle401(res) {
   if (res.status === 401) {
     localStorage.removeItem('dashboard_token')
-    window.dispatchEvent(new CustomEvent('dashboard-auth-expired'))
+    window.location.reload()
     return true
   }
   return false
 }
 
-function authExpiredResult() {
-  return { ok: false, data: { message: '登录已过期，请重新登录', code: 'AUTH_EXPIRED' }, code: 'AUTH_EXPIRED' }
-}
-
 async function get(path) {
   const res = await fetch(BASE + path, { headers: headers() })
-  if (handle401(res)) return authExpiredResult()
+  if (handle401(res)) return { ok: false, data: null }
   return { ok: res.ok, data: await res.json() }
 }
 
@@ -57,21 +53,7 @@ async function put(path, data, admin = false) {
     const j = await res.json()
     return { ok: false, data: j, code: j.code }
   }
-  if (handle401(res)) return authExpiredResult()
-  return { ok: res.ok, data: await res.json() }
-}
-
-async function del(path, data, admin = false) {
-  const res = await fetch(BASE + path, {
-    method: 'DELETE',
-    headers: headers(admin),
-    body: JSON.stringify(data),
-  })
-  if (res.status === 403) {
-    const j = await res.json()
-    return { ok: false, data: j, code: j.code }
-  }
-  if (handle401(res)) return authExpiredResult()
+  if (handle401(res)) return { ok: false, data: null }
   return { ok: res.ok, data: await res.json() }
 }
 
@@ -85,7 +67,7 @@ async function post(path, data, admin = false) {
     const j = await res.json()
     return { ok: false, data: j, code: j.code }
   }
-  if (handle401(res)) return authExpiredResult()
+  if (handle401(res)) return { ok: false, data: null }
   return { ok: res.ok, data: await res.json() }
 }
 
@@ -116,18 +98,6 @@ export async function fetchFeatures() { return get('/features') }
 export async function fetchCommands() { return get('/commands') }
 export async function fetchLoreList() { return get('/lore-list') }
 export async function createPersona(data) { return post('/personas', data, true) }
-export async function updatePersona(data) { return put('/personas', data, true) }
-export async function deletePersona(name) { return del('/personas', { name }, true) }
-export async function fetchPersona(name) { return get('/personas?name=' + encodeURIComponent(name)) }
-export async function fetchLores() { return get('/lores') }
-export async function createLore(data) { return post('/lores', data, true) }
-export async function updateLore(data) { return put('/lores', data, true) }
-export async function deleteLore(name) { return del('/lores', { name }, true) }
-export async function fetchDeployConfig() { return get('/deploy/config') }
-export async function saveDeployConfig(data) { return put('/deploy/config', data, true) }
-export async function runDeploy(data) { return post('/deploy/run', data, true) }
-export async function fetchDeployProgress(taskId) { return get('/deploy/progress/' + encodeURIComponent(taskId)) }
-export async function confirmDeployed() { return post('/deploy/confirm', {}, true) }
 export async function botStatus() { return get('/bot/status') }
 export async function startBot() { return post('/bot/start', {}, true) }
 export async function stopBot() { return post('/bot/stop', {}, true) }

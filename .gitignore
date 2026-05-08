@@ -19,5 +19,3 @@ package-lock.json
 *.b64
 tmp_*.js
 *.log
-test-report.png
-packages/*/data/summary-whitelist.json

@@ -24,7 +24,7 @@ const {
   SHORT_FOLLOW_UP_RE, SENSITIVE_KEYWORDS_RE,
 } = require('./constants')
 const { resolvePersona, loadPersonalSkill } = require('./persona')
-const { calculateRetaliationScore, detectRareHostile } = require('./retaliation')
+const { calculateRetaliationScore } = require('./retaliation')
 const {
   requestChatCompletions,
   requestOpenAIResponsesWithSearch,
@@ -387,8 +387,7 @@ async function chat(session, userText, ctx, options = {}) {
   // 反击值系统：三态（0=友善, 1=阴阳, 2=嘴臭），自定义人格时绕过
   let retaliationLevel = 0
   if (!testMode && !personaName) {
-    let hostileInputDetected = isHostileInput(cleanInput) || japanLinked || rareProvocation
-    if (!hostileInputDetected) hostileInputDetected = await detectRareHostile(cleanInput)
+    const hostileInputDetected = isHostileInput(cleanInput) || japanLinked || rareProvocation
     if (hostileInputDetected) {
       const score = await calculateRetaliationScore(cleanInput, currentUserId, channelSharedCache, channelKey)
       if (score >= 90 && require('fs').existsSync(HOSTILE_MODE_FILE)) {
@@ -411,7 +410,7 @@ async function chat(session, userText, ctx, options = {}) {
     systemPrompt = skillsContentCache['mode:persona-yinyang'] || buildAbusiveSystemPrompt()
   } else {
     if (personaName && personaSkillContent) {
-      systemPrompt = buildFriendlySafetyFramework() + '\n\n' + personaSkillContent.replace(/^---\n[\s\S]*?\n---\n\n?/, '')
+      systemPrompt = buildFriendlySafetyFramework() + '\n\n' + personaSkillContent
     } else {
       systemPrompt = buildFriendlySystemPrompt()
     }

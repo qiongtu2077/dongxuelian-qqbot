@@ -6,34 +6,6 @@
 const { loadConfig } = require('./runtime-config')
 const { requestChatCompletions } = require('./api')
 
-const RARE_HOSTILE_CUE_RE = /(?:(?:东雪莲|莲莲|bot|机器人|你).{0,10}(?:废物|废|蠢|傻|烂|垃圾|小丑|恶心|爬|滚|死|贱|欠|nt|sb|🤡|🖕)|(?:废物|废|蠢|傻|烂|垃圾|小丑|恶心|爬|滚|死|贱|nt|sb|🤡|🖕).{0,10}(?:东雪莲|莲莲|bot|机器人|你)|\b(?:fuck|wtf|stupid|idiot|moron|trash|clown)\b)/i
-
-async function detectRareHostile(cleanInput) {
-  const text = String(cleanInput || '').trim()
-  if (!text) return false
-  if (!RARE_HOSTILE_CUE_RE.test(text)) return false
-
-  try {
-    const config = await loadConfig()
-    const result = await requestChatCompletions([
-      {
-        role: 'system',
-        content: [
-          '你是一个轻量敌意判断器。判断用户消息是否在攻击、辱骂、挑衅或恶意戏弄机器人本身。',
-          '只判断是否需要进入反击评分，不要评价内容，不要解释。',
-          '普通玩笑、正常吐槽、无明确攻击对象的脏话、第三方转述，都回答 NO。',
-          '针对机器人的隐晦辱骂、外语骂人、侮辱性 emoji、谐音绕写、连续上下文攻击，回答 YES。',
-          '只输出 YES 或 NO。',
-        ].join('\n'),
-      },
-      { role: 'user', content: text.slice(0, 240) },
-    ], config, { max_tokens: 5 })
-    if (/^YES\b/i.test(String(result).trim())) return true
-    if (/^NO\b/i.test(String(result).trim())) return false
-  } catch {}
-  return false
-}
-
 async function calculateRetaliationScore(cleanInput, userId, channelSharedCache, channelKey) {
   // 从共享缓存提取该用户最近 10 条消息（只取 role === 'user'）
   const recent = (channelSharedCache.get(channelKey) || [])
@@ -66,4 +38,4 @@ async function calculateRetaliationScore(cleanInput, userId, channelSharedCache,
   return 0
 }
 
-module.exports = { calculateRetaliationScore, detectRareHostile }
+module.exports = { calculateRetaliationScore }

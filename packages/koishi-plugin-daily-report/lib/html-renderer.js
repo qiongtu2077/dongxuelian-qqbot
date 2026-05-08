@@ -13,7 +13,6 @@ const TEMPLATES_DIR = path.join(__dirname, '..', 'templates')
 let activeRenderers = 0
 const MAX_RENDERERS = 2
 const RENDER_TIMEOUT = 30000
-const MAX_SCREENSHOT_HEIGHT = 3200
 
 function esc(str) {
   return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -230,12 +229,8 @@ async function renderHtmlToImage(htmlContent) {
     await page.setContent(htmlContent, { waitUntil: 'networkidle0', timeout: 15000 })
     await page.evaluateHandle('document.fonts.ready')
     const bodyH = await page.evaluate(() => document.body.scrollHeight)
-    const shotHeight = Math.min(bodyH + 40, MAX_SCREENSHOT_HEIGHT)
-    if (bodyH + 40 > MAX_SCREENSHOT_HEIGHT) {
-      console.warn(`[daily-report] report screenshot truncated: ${bodyH + 40}px -> ${MAX_SCREENSHOT_HEIGHT}px`)
-    }
-    await page.setViewport({ width: 880, height: shotHeight })
-    const screenshot = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 880, height: shotHeight } })
+    await page.setViewport({ width: 880, height: bodyH + 40 })
+    const screenshot = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 880, height: bodyH + 40 } })
     clearTimeout(timeoutId)
     return screenshot
   } catch (err) {
@@ -254,4 +249,4 @@ async function renderReport(data, analysis) {
   return renderHtmlToImage(html)
 }
 
-module.exports = { renderReport, findBrowser }
+module.exports = { renderReport }

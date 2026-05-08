@@ -159,6 +159,8 @@ function shouldTriggerRandom(rate, randomFn = Math.random) {
   return randomFn() < Number(rate)
 }
 
+function parseEnabledText(value = '') { return /^(?:1|true|on|yes|开|开启)$/i.test(String(value).trim()) }
+
 function getBaseHostname(baseURL = '') { try { return new URL(String(baseURL || '')).hostname.toLowerCase() } catch { return '' } }
 
 function isDashScopeConfig(config = {}) { const hostname = getBaseHostname(config.baseURL); return hostname.includes('dashscope') || hostname.endsWith('aliyuncs.com') }
@@ -276,26 +278,10 @@ function sanitizeReply(text = '', userName = '') {
   return t || text
 }
 
-/** 返回北京时间（UTC+8）日期字符串 YYYY-MM-DD，在北京时间 0:00 切换 */
-function todayCst() {
-  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
-}
-/** 返回北京时间 24 小时制时间字符串 HH:MM:SS */
-function timeCst() {
-  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(11, 19)
-}
-
-function calculateWillFactor(channelKey, personaName, channelSharedCache, personaSkillContent) {
+function calculateWillFactor(channelKey, personaName, channelSharedCache) {
   const msgCount = (channelSharedCache.get(channelKey) || []).filter(function(m) { return Date.now() - m.ts < 60000 }).length
   const crowdFactor = msgCount > 20 ? 0.3 : msgCount > 10 ? 0.6 : msgCount > 5 ? 0.9 : msgCount > 2 ? 1.2 : 1.5
-  let personaFactor = 1.0
-  if (personaName && personaSkillContent) {
-    const m = personaSkillContent.match(/^---\n([\s\S]*?)\n---/)
-    if (m) {
-      const willLine = m[1].match(/^will:\s*([\d.]+)/m)
-      if (willLine) personaFactor = parseFloat(willLine[1])
-    }
-  }
+  const personaFactor = { '长离': 0.8, '椿': 1.3, '特蕾西娅': 0.9 }[personaName] || 1.0
   return Math.round(Math.min(crowdFactor * personaFactor, 2.0) * 100) / 100
 }
 
@@ -362,6 +348,7 @@ module.exports = {
   readTextFile, writeTextFile, readJsonFile, writeJsonFile,
   safeUnlink,
   sleep, getRandomDelayMs, shouldTriggerRandom,
+  parseEnabledText,
   getBaseHostname, isDashScopeConfig, isOpenAIOfficialConfig,
   normalizeUrl, extractImageUrls,
   sanitizeFileToken, safeJsonStringify,
@@ -373,5 +360,4 @@ module.exports = {
   getSegmentData, getSessionMessageSegments,
   getModelDisplayName, getSearchCapability, formatSearchStatus,
   trimReply, sanitizeReply, splitSentences,
-  todayCst, timeCst,
 }
