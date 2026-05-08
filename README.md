@@ -1,675 +1,614 @@
 # 东雪莲QQBot-极致嘴臭
 
-本项目是一套基于 `Koishi + NapCat + OneBot` 的 QQ 机器人部署仓库，当前采用 `md + sh + js` 共存结构，主要目标是：
+本项目是一套基于 `Koishi + NapCat + OneBot` 的 QQ 机器人部署仓库。当前采用 `md + sh + js` 共存结构：文档负责说明和交接，脚本负责部署，插件代码负责实际运行。
 
-- 给普通用户一套能直接复制到服务器执行的部署脚本
-- 给维护者保留清晰的插件边界、部署顺序和文档说明
-- 逐步从“脚本集合”整理成“脚本交付 + 标准源码结构”并存的项目
+项目目标很直接：让普通用户能用网页控制台把机器人部署到 Linux 服务器上，同时让维护者能继续按插件边界迭代功能。
 
-如果你只想把机器人跑起来，看“快速部署”。
-不会的直接问AI，下次还填非常简单  
-如果你关心仓库为什么不是全 `.sh`、为什么要保留 `.md` 和 `.js`，看标题十。
+准备材料：
 
----
+- 一台自己的电脑，最好是win。
+- （可选）一台 Linux 服务器，2 核 2G 起步即可。
+- 一个机器人 QQ 号，建议不要使用主号，注意账号风控。
+- 可选：AI 供应商 API Key、B 站 cookies。
 
-## 一、当前仓库结构
+部署方式：
 
-| 路径 | 作用 |
-|------|------|
-| `README.md` | 中文总说明与部署入口 |
-| `指令速查.md` | 指令语法说明 |
-| `教程.md` | 面向使用者的补充教程 |
-| `progress.md` | 开发变更记录与阶段进度 |
-| `教训总结.md` | **AI 改项目必读**：代码设计、部署、测试教训 |
-| `scripts/*.sh` | 可直接在 Linux 服务器执行的部署脚本 |
-| `scripts/deploy-and-restart.bat` | Windows 一键部署+重启脚本 |
-| `packages/koishi-plugin-dashboard/` | Dashboard 独立服务器 + 一键部署面板 |
-| `packages/koishi-plugin-daily-report/` | 群聊详细日报插件 |
-| `packages/*/lib/index.js` | 各插件当前可运行的 JS 代码 |
-| `packages/*/package.json` | 各插件的标准包信息 |
-| `package.json` | 仓库根配置，声明 workspaces |
-
-当前分工是：
-
-- 中文 `md`：保留文档、说明、教程、交接
-- `sh`：保留可直接执行的部署脚本
-- `js`：保留真正的插件逻辑代码
-
-这样既能快速部署，也比“全部代码塞进 Markdown”更容易 review 和维护。
+- 可选本地部署或服务器部署
+- 使用 Web 前端部署：看「二、Web 前端快速部署」。
+- 使用 exe 软件部署：看「三、exe部署」，目前先不展开。
 
 ---
 
-## 二、整体架构
+## 一、当前功能一览
+
+| 模块 | 对应代码 | 主要能力 |
+|------|----------|----------|
+| Dashboard 控制台 | `packages/koishi-plugin-dashboard/` | 独立 Web 管理面板、Bot 启停、维护模式、QQ 号切换、远程一键部署、密码管理 |
+| AI 对话 | `packages/koishi-plugin-dongxuelian-ai/` | @ 触发、私聊触发、群聊概率主动回复、模型切换、联网搜索、上下文记忆、人格系统 |
+| 帮助菜单 | `packages/koishi-plugin-dongxuelian-help/` | `help东雪莲`、`helpAI`、`help集合`、`指令速查` 等菜单 |
+| 昵称与集合 | `packages/koishi-plugin-group-name-at/` | 昵称绑定、集合管理、集合运算、`at昵称` / `at集合` 批量艾特 |
+| B 站视频发送 | `packages/koishi-plugin-local-video-sender/` | 自动识别 B 站链接、调用 `yt-dlp` 下载 720P 优先视频并发送 |
+| 群聊日报 | `packages/koishi-plugin-daily-report/` | `群聊日报`、`群聊详细日报`，生成群聊统计和图片日报 |
+| 退群提醒 | `packages/koishi-plugin-group-leave-notice/` | 监听成员退群事件并在群内提醒 |
+| 戳一戳回应 | `packages/koishi-plugin-dongxuelian-poke/` | 收到戳一戳后调用 NapCat OneBot 扩展接口回戳 |
+| 对话防护 | `packages/koishi-plugin-defense/` | 拦截常见提示词套话、角色覆盖、格式控制等输入 |
+
+其他已经接入的能力：
+
+- 支持 OpenCode Go、DeepSeek 官方、阿里云 DashScope、智谱 GLM、小米 MiMo 等供应商。
+- 支持 API Key、模型、Base URL 在 Dashboard 中热更新。
+- 支持用户级人格、群级人格、世界观 lore、系统模式 modes。
+- 支持用户黑名单、群聊 AI 白名单、静默白名单、视频黑名单、解除上限群白名单。
+- 支持敏感话题检测、处理者通知、原始事件抓取、今日情绪分析、谁艾特我、定位消息。
+- 支持 Dashboard 独立守护，Koishi 重启不影响控制台。
+
+---
+
+## 二、Web 前端快速部署
+
+### 2.1 先配置服务器安全组
+
+先在云服务器安全组里放行需要用到的端口。
+
+| 端口 | 用途 | 建议 |
+|------|------|------|
+| `5150` | Dashboard 独立控制台 | 需要从浏览器访问，必须放行 |
+| `6099` | NapCat 后台管理页 | 可以公网放行，也可以只通过 SSH 隧道访问 |
+| `8080` | NapCat 给 Koishi 连接的 OneBot WebSocket | Koishi 和 NapCat 同机时建议只监听本机；新手可先按图放行排错 |
+| `5140` | Koishi server 插件端口 | 通常不需要对公网开放，除非你明确要访问 Koishi 自身服务 |
+| `22` | SSH 登录服务器 | 必须能从你的电脑连上，建议限制来源 IP |
+
+配置好后如图：
+
+![安全组端口配置示意图](./image/image3.png)
+
+> 当前主线配置以 `setup.sh` 和 Dashboard 部署逻辑为准：NapCat OneBot WebSocket 默认使用 `8080`。如果你手动改成 `8081`，NapCat 和 `koishi.yml` 必须同时一致。
+
+### 2.2 打开 Dashboard
+
+部署完成后访问：
+
+```text
+http://服务器IP:5150/dashboard/
+```
+
+默认密码：
+
+| 类型 | 默认值 | 说明 |
+|------|--------|------|
+| 访问密码 | `123456` | 登录 Dashboard 用 |
+| 管理员密码 | `123456` | 修改配置、部署、启停 Bot 等敏感操作会二次验证 |
+
+![Dashboard 页面示意图](./image/image.png)
+
+
+如果已经部署过服务器，可以点击「我已部署，解锁」进入完整功能页；也可以继续使用「部署」Tab 更新远程服务器代码。
+B 站视频搬运功能需要浏览器导出的 `cookies.txt`。部署面板里可以上传，部署时会自动推送到远程服务器。
+
+### 2.3 按控制台里的步骤操作
+
+QQ 管理页会给出 SSH 隧道指令、NapCat Token、QQ 号更新入口。
+
+![操作步骤示意图](image/QQ管理.png)
+
+在「密码」页可以修改访问密码和管理员密码。
+
+![密码配置示意图](image/密码.png)
+
+在「模型配置」页选择供应商、模型和 API 地址。
+
+![模型配置示意图](image/模型配置.png)
+
+在「API Keys」页配置各供应商密钥。
+
+![API Key 配置示意图](image/API.png)
+
+
+
+### 2.4 本地启动 Dashboard 部署工具
+
+如果你是在自己的电脑上先启动部署面板，再把 Bot 部署到远程服务器，可以这样做：
+
+```bash
+npm install
+cd packages/koishi-plugin-dashboard
+node standalone.js
+```
+
+然后在浏览器打开：
+
+```text
+http://localhost:5150/dashboard/
+```
+
+如果你改过前端源码，先重新构建前端：
+
+```bash
+cd packages/koishi-plugin-dashboard/frontend
+npm install
+npm run build
+```
+
+### 2.5 一键部署面板会做什么
+
+Dashboard 的「部署」Tab 会通过 SSH / SCP 把本地项目推送到远程服务器，默认目标目录是 `/root/koishi-app`。
+
+部署内容包括：
+
+- 所有插件的 `lib/` 代码和 `package.json`。
+- Dashboard 的 `standalone.js` 与前端 `dist/`。
+- `ai-skills/` 人格、世界观、模式等数据文件。
+- 当前本地已有的 AI 配置文件和黑白名单文件。
+- `restart.sh` 与 `watchdog.sh`。
+- B 站 cookies 文件（如果你上传了）。
+- `yt-dlp` 和 `/root/koishi-bili-downloads` 视频下载目录。
+
+部署前确认：
+
+- 本机能直接 `ssh root@服务器IP` 登录。
+- 服务器有 Node.js 18 或更高版本。
+- 服务器安全组至少开放 `22` 和 `5150`。
+- 机器人 QQ 已能在 NapCat 中扫码登录。
+
+---
+
+##三、exe部署
+正在施工
+
+---
+
+## 四、整体架构
 
 机器人消息链路如下：
 
-1. `NapCat` 登录 QQ，并把消息通过 `OneBot` 协议暴露出来
-2. `Koishi` 作为机器人框架接收 `NapCat` 的消息
-3. 本仓库里的各插件挂到 `Koishi` 上，负责昵称、帮助、AI、视频、退群提醒等功能
+```text
+QQ 账号
+  ↓
+NapCat 登录 QQ，并暴露 OneBot WebSocket
+  ↓ ws://127.0.0.1:8080/onebot/v11/ws
+Koishi adapter-onebot 接收消息
+  ↓
+本仓库 packages/* 插件处理消息
+  ↓
+需要时调用 AI API / 本地数据 / yt-dlp / Puppeteer 渲染
+```
 
 也就是说：
 
-- `NapCat` 负责“连 QQ”
-- `Koishi` 负责“跑插件”
-- 本仓库负责“部署这些插件”
+- `NapCat` 负责连接 QQ。
+- `Koishi` 负责加载插件和分发消息。
+- 本仓库负责提供插件、部署脚本、Dashboard 控制台和数据文件。
 
-如果没有先把 `NapCat` 跑起来，后面的 `Koishi` 和插件都无法正常收发消息。
+如果 NapCat 没有先跑通，Koishi 和插件就无法正常收发群消息。
 
----
+### 4.1 当前仓库结构
 
-## 三、快速部署顺序（一图看懂）
+| 路径 | 作用 |
+|------|------|
+| `README.md` | 项目总入口、部署说明、维护说明 |
+| `指令速查.md` | 面向群内使用者的命令速查 |
+| `教程.md` | AI + Skill 接入说明 |
+| `部署教程.txt` | 更偏传统手工部署的教程备份 |
+| `开发总结.md` / `教训总结.md` | 维护记录、踩坑总结、架构决策 |
+| `setup.sh` | Linux 一次性安装脚本，偏维护/初始化使用 |
+| `scripts/*.sh` | 单插件部署脚本、重启脚本、守护脚本 |
+| `packages/koishi-plugin-dashboard/` | Dashboard 独立服务器和 Vue 前端 |
+| `packages/koishi-plugin-dongxuelian-ai/` | AI 主插件、人格、记忆、敏感检测、模型调用 |
+| `packages/koishi-plugin-daily-report/` | 群聊日报采集、AI 分析、HTML 图片渲染 |
+| `packages/*/lib/` | 各 Koishi 插件实际运行代码 |
+| `image/` | README 和部署说明用截图 |
 
-按下面顺序做，**前一步没成功就不要做下一步**：
+### 4.2 插件加载配置示例
 
-| 步骤 | 做什么 | 怎么算成功 |
-|------|--------|------------|
-| 1 | 准备一台 Linux 服务器（root） | 能 `ssh root@IP` 登录 |
-| 2 | 装 Node.js 18+ | `node -v` 显示 `v18.x.x` 或更高 |
-| 3 | 装并登录 NapCat | NapCat 页面里 QQ 显示已登录 |
-| 4 | 在 NapCat 里开启正向 WebSocket，端口 8080 | 在服务器上 `ss -ltnp \| grep 8080` 能看到监听 |
-| 5 | 在服务器建好 Koishi 工程并写 `koishi.yml` | `cd /root/koishi-app && node .` 不报错 |
-| 6 | 复制本仓库 `scripts/*.sh` 到服务器执行 | 群里发 `help东雪莲` 有响应 |
+服务器上的 `koishi.yml` 最小结构大致如下：
 
-下面每一步都给出可直接复制粘贴的命令。
-
----
-
-## 四、第 1~2 步：服务器与 Node.js
-
-> 假设：服务器系统是 Ubuntu 22.04 / Debian 12 / CentOS 7+ / Rocky Linux 9，并且你以 `root` 登录。
-
-### 4.1 用 SSH 登录服务器
-
-在你本机（Windows PowerShell 或 macOS/Linux 终端）执行：
-
-```bash
-ssh root@你的服务器公网IP
-```
-
-后面所有命令都在服务器上执行，不在本机。
-
-### 4.2 安装 Node.js 18
-
-**Ubuntu / Debian：**
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-apt-get install -y nodejs
-```
-
-**CentOS / Rocky：**
-
-```bash
-curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
-yum install -y nodejs
-```
-
-### 4.3 验证版本
-
-```bash
-node -v
-npm -v
-```
-
-要求：`node -v` 不能低于 `v18.0.0`，否则后续 koishi 会报错。
-
----
-
-## 五、第 3~4 步：装 NapCat 并打开 OneBot 端口
-
-NapCat 负责把 QQ 消息转成 OneBot 协议。**必须先把 NapCat 跑通，再去做 Koishi。**
-
-### 5.1 安装 NapCat（推荐用官方一键脚本）
-
-```bash
-curl -o napcat.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh
-bash napcat.sh
-```
-
-> 如果上面的镜像访问不了，去 NapCat 官方仓库找最新一键脚本：<https://github.com/NapNeko/NapCatQQ>。
-
-安装完成后会有 NapCat 管理页面，常见地址是：
-
-```
-http://你的服务器IP:6099
-```
-
-第一次访问会让你设置后台管理密码，请记住。
-
-### 5.2 在 NapCat 里登录 QQ
-
-1. 打开管理页面 `http://你的服务器IP:6099`，登录后台。
-2. 添加机器人 QQ 号 → 选择**扫码登录**。
-3. 用机器人那个 QQ 号扫码（不是你自己的常用号）。
-4. 看到状态变成「已登录」才算成功。
-
-### 5.3 打开正向 WebSocket（给 Koishi 用）
-
-在 NapCat 管理页面 → 「网络配置」 → 添加一个 **WebSocket 服务器（正向）** ，参数如下：
-
-| 项目 | 值 |
-|------|----|
-| 启用 | 是 |
-| 主机 | `0.0.0.0` |
-| 端口 | `8080` |
-| 路径 | `/onebot/v11/ws` |
-| 心跳间隔 | 默认即可 |
-| Access Token | 留空（或你自己设一个，但 koishi.yml 里要一致） |
-
-保存配置。
-
-### 5.4 验证 OneBot 端口确实在监听
-
-在服务器执行：
-
-```bash
-ss -ltnp | grep 8080
-```
-
-如果**没有任何输出**，说明 NapCat 没把端口暴露出来，回到 5.3 检查。  
-看到一行类似 `LISTEN 0 511 *:8080 *:*` 才算通。
-
-> 经验提醒：如果用阿里云 / 腾讯云，**安全组里也要放行 8080 给本机**（Koishi 在同一台机器上就不用对外开）。
-
----
-
-## 六、第 5 步：搭建 Koishi 工程
-
-### 6.1 建目录、初始化 npm
-
-```bash
-mkdir -p /root/koishi-app/data
-chmod 700 /root/koishi-app/data
-cd /root/koishi-app
-npm init -y
-```
-
-### 6.2 安装核心依赖
-
-```bash
-cd /root/koishi-app
-npm install koishi @koishijs/plugin-server koishi-plugin-adapter-onebot
-```
-
-### 6.3 写入最小可用的 `koishi.yml`
-
-直接把下面这一段整段粘到服务器终端，按回车，它会自动创建文件：
-
-```bash
-cat > /root/koishi-app/koishi.yml <<'EOF'
+```yaml
 plugins:
-  server:
+  server:emicam:
     port: 5140
     selfUrl: http://localhost:5140
-  adapter-onebot:
+  adapter-onebot:xtqqgv:
     protocol: ws
     selfId: '机器人QQ号'
     endpoint: ws://127.0.0.1:8080/onebot/v11/ws
-EOF
+  group-name-at:nyxxfd: {}
+  dongxuelian-help:rlmpxx: {}
+  dongxuelian-ai:hdi04m: {}
+  dongxuelian-poke:nxf8l0: {}
+  koishi-plugin-defense:xlyp9f: {}
+  local-video-sender:k2w0u7: {}
+  group-leave-notice:h6lfrz: {}
+  daily-report: {}
 ```
 
-然后**只改一行**：把 `selfId` 里的 `机器人QQ号` 替换成你在 NapCat 登录的那个 QQ 号。命令版替换：
-
-```bash
-sed -i "s/机器人QQ号/3651312852/" /root/koishi-app/koishi.yml
-```
-
-> 把 `3651312852` 换成你自己的机器人 QQ 号。
-
-如果你在 NapCat 5.3 给 WebSocket 设了 Access Token，要在 `endpoint` 同级加一行 `token: '你的Token'`。
-
-### 6.4 试启动一次
-
-```bash
-cd /root/koishi-app
-node .
-```
-
-观察日志，应该看到类似：
-
-```
-[server] server started at http://localhost:5140
-[onebot] connect to ws://127.0.0.1:8080/onebot/v11/ws
-[onebot] connected to bot 3651312852
-```
-
-看到 `connected to bot` 才算 Koishi ↔ NapCat 跑通。  
-**没看到这一行**就先回 NapCat 检查 8080，不要继续往下做。
-
-按 `Ctrl + C` 停掉，准备装插件。
+插件键名后面的随机后缀是 Koishi 常见写法，不要求固定；关键是插件名和对应包已经安装到 `node_modules`。
 
 ---
 
-## 七、第 6 步：部署本仓库的插件脚本
+## 五、常用指令速查
 
-> 本仓库的部署形态是：**每个插件对应一个 `scripts/*.sh`**。  
-> 现在脚本不再内嵌旧版插件源码，而是从仓库里的 `packages/*` 同步当前插件代码到服务器。
-> 执行脚本前需要先把本仓库同步到服务器，并在仓库根目录运行对应脚本。
+更多完整命令见 `指令速查.md`，Dashboard 里也有「指令速查」Tab。
 
-### 7.1 通用执行流程（每个 sh 都这样做）
+### 5.1 帮助菜单
 
-1. 先把仓库同步到服务器，例如放在 `/root/koishi-app/repo`。
-2. SSH 到服务器后进入仓库根目录：`cd /root/koishi-app/repo`。
-3. 执行对应脚本，例如：`sh scripts/help.sh`。
-4. 脚本会把 `packages/对应插件` 复制到 `/root/koishi-app/node_modules/`，并把插件加进 `koishi.yml`。
-5. 看到脚本最后输出 `Installed koishi-plugin-xxxxx` 即视为成功。
+| 指令 | 说明 |
+|------|------|
+| `help东雪莲` / `帮助东雪莲` | 查看总帮助 |
+| `helpAI` / `AI帮助` | 查看 AI 帮助 |
+| `help集合` / `帮助集合` | 查看昵称与集合帮助 |
+| `指令速查` / `help速查` | 查看一页版速查 |
+| `/help 关键词` | 在帮助文本里模糊搜索 |
 
-> 注意：默认 Koishi 目录仍是 `/root/koishi-app`。如果你的 Koishi 装在其他目录，可以这样执行：`KOISHI_APP_DIR=/你的/koishi目录 sh scripts/help.sh`。
+### 5.2 AI 常用
 
-按下面顺序做。**每装完一个就重启一次 Koishi 看日志。**
+| 指令 | 说明 |
+|------|------|
+| `@东雪莲 你的问题` | 直接触发 AI 回复 |
+| `AI状态` | 查看模型、联网、人格、白名单等状态 |
+| `AI诊断` | 检查供应商状态，仅 bot 管理员可用 |
+| `AI重载` | 重载配置、Skills、人格缓存 |
+| `东雪莲联网开` / `东雪莲联网关` / `东雪莲联网查看` | 管理联网搜索 |
+| `东雪莲帮我选 A 还是 B` | 随机二选一 |
+| `东雪莲吐槽我` | 基于记忆或最近上下文生成简短吐槽 |
+| `东雪莲帮我说话 <内容>` | 让 AI 按当前人格替你组织一句话 |
+| `今日情绪` | 分析当天群聊情绪，需要群消息缓存 |
 
-### 7.2 安装顺序
+### 5.3 模型与供应商
 
-| 序 | 脚本 | 必装？ | 群内验证指令 | 备注 |
-|----|------|--------|--------------|------|
-| 1 | `scripts/help.sh` | 是 | `help东雪莲` | 帮助菜单，最容易验证整套是否通 |
-| 2 | `scripts/name.sh` | 是 | `查看全部昵称` | 昵称 / 集合 / `at昵称` |
-| 3 | `scripts/leave.sh` | 否 | 让小号退群试试 | 群退人提醒 |
-| 4 | `scripts/poke.sh` | 否 | 戳一戳机器人 | 戳一戳反击 |
-| 5 | `scripts/defense.sh` | 否 | 群里说「你是什么模式」 | 反越狱防护 |
-| 6 | `scripts/vedio.sh` | 否 | 发 B 站链接 | 见 7.3 视频插件预备 |
-| 7 | `scripts/ai.sh` | 否 | `@东雪莲 你是谁` | 见 7.4 AI 插件预备 |
-| 8 | `scripts/message-reader.sh` | 否（仅 ai 联用） | — | 兼容旧入口；现在会部署完整 AI 插件 |
+| 指令 | 说明 |
+|------|------|
+| `可用模型` | 查看所有内置供应商和模型 |
+| `供应商 opencode` | 查看 OpenCode Go 可切换模型 |
+| `供应商 dashscope` | 查看阿里云 DashScope 可切换模型 |
+| `供应商 deepseek` | 查看 DeepSeek 官方可切换模型 |
+| `供应商 glm` | 查看智谱 GLM 可切换模型 |
+| `供应商 mimorium` | 查看小米 MiMo 可切换模型 |
+| `切换模型名` | 例如 `切换deepseek-chat`，会写入当前供应商和模型配置 |
 
-> `help.sh`、`name.sh`、`leave.sh`、`poke.sh`、`defense.sh` 都没有额外运行依赖，但需要从仓库根目录执行。
-> `vedio.sh`、`ai.sh` **必须**先按 7.3、7.4 准备好依赖文件，否则跑起来会缺东西。
+### 5.4 人格与记忆
 
-### 7.3 视频插件部署前的准备（执行 `vedio.sh` 之前必看）
+| 指令 | 说明 |
+|------|------|
+| `东雪莲我的人格` / `东雪莲人格查看` | 查看当前用户人格 |
+| `东雪莲人格列表` | 查看可用人格 |
+| `东雪莲人格切换 <名称>` | 切换个人专属人格 |
+| `东雪莲人格重置` | 重置个人专属人格 |
+| `东雪莲群人格` | 查看群级人格，群管理员/群主可用 |
+| `东雪莲群人格切换 <名称>` | 设置群级人格，群管理员/群主可用 |
+| `东雪莲群人格重置` | 重置群级人格 |
+| `记住xxx` | 写入用户记忆 |
+| `东雪莲忘记我` → `确认忘记我` | 清空当前用户记忆 |
+| `东雪莲清空群记忆` | 清空本群记忆，群管理员/群主可用 |
+| `东雪莲群记忆定时 <小时>` | 设置群记忆定时清空 |
 
-#### 7.3.1 在服务器装 yt-dlp
+### 5.5 群聊控制和白名单
 
-```bash
-curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-chmod +x /usr/local/bin/yt-dlp
-yt-dlp --version
-```
+| 指令 | 说明 |
+|------|------|
+| `东雪莲群聊AI概率查看` | 查看本群主动回复基础概率 |
+| `东雪莲群聊AI概率设置5%` | 设置本群主动回复概率 |
+| `东雪莲群聊AI概率重置` | 恢复默认主动回复概率 |
+| `群聊AI白名单添加 <群号>` / `删除 <群号>` / `查看` | 管理允许主动回复的群 |
+| `群聊AI静默白名单添加 <群号>` / `删除 <群号>` / `查看` | 管理只记录不回复的群 |
+| `解除上限群白名单添加 <群号>` / `删除 <群号>` / `查看` | 管理日报、谁艾特我、消息缓存等高级功能白名单 |
+| `用户黑名单添加 <QQ号>` / `删除 <QQ号>` / `查看` | 管理不被 AI 处理的用户 |
+| `视频黑名单添加群 <群号>` / `删除群 <群号>` / `查看` | 管理不自动解析视频的群 |
 
-最后一行能输出版本号才算通。
+### 5.6 昵称、集合和批量艾特
 
-#### 7.3.2 在服务器装 ffmpeg
+| 指令 | 说明 |
+|------|------|
+| `@A 昵称 名称A` | 给用户 A 绑定昵称 |
+| `删除昵称 名称A` / `删除昵称 名称A @A` | 删除昵称绑定 |
+| `查看昵称 名称A` / `谁是 名称A` | 查看昵称对应成员 |
+| `查看成员 @A` | 查看某人的昵称和集合 |
+| `查看全部昵称` / `nicklist` | 查看本群全部单人昵称 |
+| `创建集合 集合A @A @B` | 创建多人集合 |
+| `集合添加 集合A @A` / `集合删除 集合A @A` | 增删集合成员 |
+| `查看集合 集合A` / `查看全部集合` / `集合列表` | 查看集合 |
+| `清空集合 集合A` → `确认清空集合 集合A` | 二次确认清空集合 |
+| `删除集合 集合A` → `确认删除集合 集合A` | 二次确认删除集合 |
+| `重命名集合 A B` / `复制集合 A B` / `合并集合 A B` | 集合维护 |
+| `集合交集 A B` / `集合并集 A B` / `集合差集 A B` | 集合运算 |
+| `at名称A` / `at集合A` | 批量艾特昵称或集合成员 |
 
-Ubuntu / Debian：
+### 5.7 日报、视频和事件工具
 
-```bash
-apt-get install -y ffmpeg
-```
+| 指令 | 说明 |
+|------|------|
+| `群聊日报` | 生成基础统计日报，需要解除上限群白名单 |
+| `群聊详细日报` | 调用 AI 生成详细分析日报 |
+| `谁艾特我` / `谁@我` | 查看今天谁在群里 @ 了你 |
+| `定位消息 <编号>` | 查看 `谁艾特我` 结果的上下文 |
+| `bvidl <B站链接或BV号>` | 手动下载并发送 B 站视频 |
+| 直接发送 B 站链接 | 自动解析并发送视频，受视频黑名单控制 |
+| `sendtestvideo` | 发送本地测试视频 |
+| `AI抓事件` / `AI抓事件查看` / `AI抓事件取消` | 抓取下一条原始事件，维护调试用 |
 
-CentOS / Rocky：
+### 5.8 敏感检测和调试开关
 
-```bash
-yum install -y epel-release
-yum install -y ffmpeg
-```
-
-验证：
-
-```bash
-ffmpeg -version
-```
-
-#### 7.3.3 准备 B 站 cookies（在你本机做）
-
-1. 在浏览器装 **「Get cookies.txt LOCALLY」** 之类的扩展，登录 b 站。
-2. 打开 `https://www.bilibili.com`，点击扩展，导出 `cookies.txt`。
-3. 在你**本机** PowerShell 里把它上传到服务器：
-
-```powershell
-scp .\cookies.txt root@你的服务器IP:/root/bilibili-cookies.txt
-```
-
-> 注意路径一定是 `/root/bilibili-cookies.txt`，脚本写死了这个位置。
-
-#### 7.3.4 然后再粘 `scripts/vedio.sh`
-
-按 7.1 的流程执行。
-
-### 7.4 AI 插件部署前的准备（执行 `ai.sh` 之前必看）
-
-`ai.sh` 启动时会读三个文件，缺一不可。**先把三个文件写好，再粘脚本。**
-
-```bash
-mkdir -p /root/koishi-app/data
-chmod 700 /root/koishi-app/data
-```
-
-#### 7.4.1 API Key
-
-把 `sk-你的APIKey` 换成你真实的 Key（**不要把引号也粘进去**）：
-
-```bash
-echo 'sk-你的APIKey' > /root/koishi-app/data/ai-openai-key.txt
-chmod 600 /root/koishi-app/data/ai-openai-key.txt
-```
-
-#### 7.4.2 模型名
-
-```bash
-echo 'qwen-plus' > /root/koishi-app/data/ai-model.txt
-```
-
-> 阿里云用 `qwen-plus`、`qwen3.5-plus`；DeepSeek 官方用 `deepseek-chat`；OpenAI 用 `gpt-4o-mini`。  
-> 这一步的模型名要和下一步的 base url **配套**。
-
-#### 7.4.3 Base URL
-
-阿里云（DashScope OpenAI 兼容模式）：
-
-```bash
-echo 'https://dashscope.aliyuncs.com/compatible-mode/v1' > /root/koishi-app/data/ai-base-url.txt
-```
-
-DeepSeek 官方：
-
-```bash
-echo 'https://api.deepseek.com' > /root/koishi-app/data/ai-base-url.txt
-```
-
-OpenAI 官方：
-
-```bash
-echo 'https://api.openai.com/v1' > /root/koishi-app/data/ai-base-url.txt
-```
-
-#### 7.4.4 （可选）Skill 目录
-
-```bash
-mkdir -p /root/koishi-app/data/ai-skills
-```
-
-后面想给 AI 加额外提示词，把 `*.md` 丢这个目录即可。
-
-#### 7.4.5 然后再粘 `scripts/ai.sh`
-
-按 7.1 的流程执行。
+| 指令 | 说明 |
+|------|------|
+| `敏感话题检测开` / `敏感话题检测关` / `敏感话题检测查看` | 管理本群敏感话题检测 |
+| `敏感话题处理者添加 <QQ号>` / `删除 <QQ号>` / `查看` | 管理检测通知人 |
+| `东雪莲复读开` / `东雪莲复读关` / `东雪莲复读状态` | 管理连续复读功能 |
+| `东雪莲测试开` / `东雪莲测试关` | 管理员测试模式 |
+| `东雪莲嘴臭开` / `东雪莲嘴臭关` | 管理高强度反击人格开关 |
+| `东雪莲思考开` / `东雪莲思考关` | 管理思考调试开关 |
 
 ---
 
-## 八、启动与守护
+## 六、配置文件和数据目录
 
-### 8.1 临时跑（前台，调试用）
-
-```bash
-cd /root/koishi-app
-node .
-```
-
-按 `Ctrl + C` 退出。
-
-### 8.2 用 pm2 后台跑（推荐）
-
-只需一次安装：
-
-```bash
-npm install -g pm2
-```
-
-每次启动：
-
-```bash
-cd /root/koishi-app
-pm2 start "node ." --name koishi
-pm2 save
-pm2 startup    # 按提示再执行它打印出来的那条命令，让 pm2 开机自启
-```
-
-常用操作：
-
-```bash
-pm2 logs koishi          # 查日志
-pm2 restart koishi       # 重启
-pm2 stop koishi          # 停止
-pm2 status               # 查状态
-```
-
-### 8.3 改了 `koishi.yml` 或装了新插件之后
-
-```bash
-pm2 restart koishi
-pm2 logs koishi
-```
-
-看到 `xxx loaded` 才算插件生效。
-
----
-
-## 九、如何验证是否部署成功
-
-先看日志里有没有这些关键词（不过我一般不看）：
+核心数据目录由 `DONGXUELIAN_AI_DATA_DIR` 控制。服务器部署时默认是：
 
 ```text
-group-name-at loaded
-dongxuelian-help loaded
-dongxuelian-ai loaded
-local-video-sender loaded
-group-leave-notice loaded
+/root/koishi-app/data
 ```
 
-再去群里做简单验证：
+本地开发时默认是：
 
-- `help东雪莲`
-- `help集合`
-- `查看全部昵称`
-- `AI状态`
+```text
+packages/koishi-plugin-dongxuelian-ai/data
+```
 
-如果某个插件没加载，优先检查：
+常见文件：
 
-- `koishi.yml` 里有没有对应插件配置
-- 对应脚本有没有执行完整
-- 服务器上插件目录有没有被正确写入
+| 文件 | 说明 |
+|------|------|
+| `ai-provider.txt` | 当前 AI 供应商 |
+| `ai-model.txt` | 当前模型 |
+| `ai-base-url.txt` | 当前 OpenAI 兼容 API 地址 |
+| `ai-openai-key.txt` | OpenCode / OpenAI 兼容 Key |
+| `ai-deepseek-key.txt` | DeepSeek 官方 Key |
+| `ai-dashscope-key.txt` | 阿里云 DashScope Key |
+| `ai-glm-key.txt` | 智谱 GLM Key |
+| `ai-mimorium-key.txt` | 小米 MiMo Key |
+| `ai-skills/` | core、modes、personas、lore 等 Skill 文件 |
+| `ai-persona-users.json` | 用户级人格绑定 |
+| `ai-persona-groups.json` | 群级人格绑定 |
+| `ai-random-whitelist.json` | 群聊 AI 主动回复白名单 |
+| `ai-silence-whitelist.json` | 群聊 AI 静默白名单 |
+| `summary-whitelist.json` | 日报、谁艾特我、消息缓存等高级功能白名单 |
+| `ai-user-blacklist.json` | 用户黑名单 |
+| `video-blacklist.json` | 视频解析黑名单 |
+| `dashboard-access-pwd.txt` | Dashboard 访问密码 |
+| `dashboard-admin-pwd.txt` | Dashboard 管理员密码 |
+| `today-cache-*.json` | 群聊当日缓存 |
+| `conversations/` | 对话上下文和摘要 |
+| `user-profiles/` | 用户记忆和画像 |
+
+常见环境变量：
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `DASHBOARD_PORT` | `5150` | Dashboard 监听端口 |
+| `DASHBOARD_PASSWORD` | `123456` | 首次访问密码默认值 |
+| `DASHBOARD_ADMIN_PASSWORD` | `123456` | 首次管理员密码默认值 |
+| `DONGXUELIAN_AI_DATA_DIR` | 插件内 `data` | AI 和 Dashboard 共享数据目录 |
+| `KOISHI_APP_DIR` | `/root/koishi-app` | 重启脚本和守护脚本使用的 Koishi 目录 |
+| `KOISHI_PORT` | `5140` | Koishi server 端口 |
+| `NAPCAT_HOST` | `127.0.0.1` | Dashboard 代理 NapCat 的地址 |
+| `NAPCAT_PORT` | `6099` | Dashboard 代理 NapCat 的端口 |
+| `BILI_YTDLP` | `/usr/local/bin/yt-dlp` | 视频插件使用的 yt-dlp 路径 |
+| `BILI_COOKIES_FILE` | `/root/bilibili-cookies.txt` | B 站 cookies 文件路径 |
+| `BILI_WORKDIR` | `/root/koishi-bili-downloads` | 视频临时下载目录 |
+| `BILI_MAX_SIZE_BYTES` | `209715200` | 单个视频最大大小，默认 200MB |
+
+---
+
+## 七、启动、重启和守护
+
+### 7.1 服务器上重启 Bot
+
+一键部署会把重启脚本放到目标目录：
+
+```bash
+bash /root/koishi-app/restart.sh
+```
+
+这个脚本会：
+
+1. 停掉旧 Koishi 进程。
+2. 检查 `5140` 是否释放。
+3. 确保 Dashboard `5150` 正在运行。
+4. 启动 Koishi。
+5. 通过日志和端口确认启动结果。
+
+### 7.2 Dashboard 守护脚本
+
+`scripts/watchdog.sh` 会每 10 秒检查 `5150`，Dashboard 崩溃后自动拉起：
+
+```bash
+nohup bash /root/koishi-app/scripts/watchdog.sh > /root/koishi-app/packages/koishi-plugin-dashboard/watchdog.log 2>&1 &
+```
+
+### 7.3 查看日志
+
+```bash
+tail -f /root/koishi-app/koishi.log
+```
+
+常见成功日志关键词：
+
+```text
+dashboard running on http://localhost:5150/dashboard/
+dongxuelian-ai 0.11.0 loaded
+group-name-at 0.4.7 loaded
+daily-report loaded
+adapter connect to server
+```
+
+---
+
+## 八、本地开发和测试
+
+安装依赖：
+
+```bash
+npm install
+```
+
+语法检查：
+
+```bash
+npm run check
+```
+
+快速测试：
+
+```bash
+npm run test:quick
+```
+
+场景测试：
+
+```bash
+npm run test:scenario
+```
+
+插件测试：
+
+```bash
+npm run test:plugins
+```
+
+完整测试：
+
+```bash
+npm test
+```
+
+Dashboard 前端开发：
+
+```bash
+cd packages/koishi-plugin-dashboard/frontend
+npm install
+npm run dev
+```
+
+Dashboard 前端构建：
+
+```bash
+cd packages/koishi-plugin-dashboard/frontend
+npm run build
+```
+
+更多测试细节见 `TESTING.md`。
+
+---
+
+## 九、单插件脚本部署
+
+如果不用 Dashboard 一键部署，也可以在服务器上手动执行 `scripts/*.sh`。这些脚本会把 `packages/*` 里的代码复制到 `/root/koishi-app/node_modules/`，并把插件写入 `koishi.yml`。
+
+默认 Koishi 目录是 `/root/koishi-app`。如果你的目录不同，可以设置：
+
+```bash
+KOISHI_APP_DIR=/你的/koishi目录 sh scripts/help.sh
+```
+
+常见脚本：
+
+| 脚本 | 部署内容 | 验证方式 |
+|------|----------|----------|
+| `scripts/help.sh` | 帮助菜单 | 群里发 `help东雪莲` |
+| `scripts/name.sh` | 昵称和集合 | 群里发 `查看全部昵称` |
+| `scripts/ai.sh` | AI 主插件和 Skills | 群里发 `AI状态` 或 @ 机器人 |
+| `scripts/vedio.sh` | B 站视频插件 | 群里发 B 站链接 |
+| `scripts/defense.sh` | 对话防护插件 | @ 机器人并发送常见套话测试 |
+| `scripts/poke.sh` | 戳一戳回应 | 戳一戳机器人 |
+| `scripts/leave.sh` | 退群提醒 | 小号退群测试 |
+| `scripts/restart-bot.sh` | 服务器重启脚本 | `bash /root/koishi-app/restart.sh` |
+| `scripts/watchdog.sh` | Dashboard 守护脚本 | 检查 `5150` 端口 |
 
 ---
 
 ## 十、常见问题
 
-### 1. 为什么现在是 `md + sh + js` 共存？
+### 10.1 Dashboard 打不开
 
-因为本仓库当前同时服务两类人：
-
-- 只想把机器人快速跑起来的实际使用者
-- 需要继续维护、排错、迭代插件的维护者
-
-现在的折中方案是：
-
-- 中文说明留在 `md`
-- 部署动作留在 `sh`
-- 插件本体逻辑留在 `js`
-
-这样不会把所有东西都混成一种文件。
-
-### 2. 为什么不全都写成 `.sh`？
-
-不是不能写成 `.sh`，而是职责不同。
-
-`sh` 更适合做这些事：
-
-- 建目录
-- 写文件
-- 拷贝产物
-- 重启服务
-- 改配置文件
-
-但插件本体逻辑不是 shell 擅长的领域。像这些内容更适合用 `js/ts`：
-
-- 消息解析
-- AI 对话逻辑
-- OneBot / Koishi 插件处理
-- 上下文记忆
-- 越狱检测
-- 重复回复检测
-
-所以更合理的分工其实是：
-
-- `.sh`：部署层
-- `.js/.ts`：插件逻辑层
-- `.md`：中文文档、部署教程、交接记录
-
-本仓库现在已经开始拆分：
-
-- 保留 `scripts/*.sh` 作为部署入口
-- 保留 `packages/*` 作为代码入口
-- 保留中文 `md` 作为说明入口
-
-### 3. 我是否应该把这些都改成 `.ts`？
-
-如果后面要长期维护，当然可以逐步迁移到 `ts`。  
-但当前先保留 `js` 有两个现实原因：
-
-- 服务器最终运行的还是 `js`
-- 当前仓库先把“结构拆开”比“立刻全量 TS 化”更重要
-
-后续更合理的路线是：
-
-- 先稳定 `sh + js + md`
-- 再逐步补 `src/*.ts`
-- 最后用构建产物生成 `lib/index.js`
-
-### 4. 这个仓库以后应该往哪里整理？
-
-建议最终整理成三层：
-
-- `README.md / 指令速查.md / 教程.md / progress.md / 教训总结.md`：中文文档层
-- `scripts/*.sh`：部署执行层
-- `packages/*`：代码维护层
-
-这样既不牺牲部署效率，也能提升可维护性。
-
----
-
-## 十一、常用指令速查
-
-### 昵称 / 集合
-
-| 指令 | 说明 |
-|------|------|
-| `@A用户 昵称 名字` | 绑定昵称 |
-| `查看昵称 名字` | 查看昵称绑定的成员 |
-| `查看成员 @A用户` | 查看某人的所有昵称 / 集合 |
-| `查看全部昵称` | 列出本群所有单人昵称 |
-| `创建集合 集合名 @A @B` | 创建多人集合 |
-| `集合添加 集合名 @A` | 向集合添加成员 |
-| `集合删除 集合名 @A` | 从集合移除成员 |
-| `查看集合 集合名` | 查看集合成员 |
-| `查看全部集合` | 列出本群所有集合 |
-| `复制集合 A B` | 把集合 A 复制为 B |
-| `合并集合 A B` | 把 B 合并进 A |
-| `集合交集 A B` | 输出 A∩B |
-| `集合并集 A B` | 输出 A∪B |
-| `集合差集 A B` | 输出 A-B |
-| `at昵称` / `at集合` | 批量艾特 |
-
-### 帮助
-
-| 指令 | 说明 |
-|------|------|
-| `help东雪莲` | 查看总帮助 |
-| `helpAI` | 查看 AI 帮助 |
-| `help集合` | 查看集合帮助 |
-| `指令速查` | 查看一页版速查 |
-
-### AI
-
-| 指令 | 说明 |
-|------|------|
-| `AI状态` | 查看 AI 当前配置摘要 |
-| `AI重载` | 重载 AI 配置与 Skills，仅限管理员 |
-| `@东雪莲 ...` | 直接触发 AI 回复 |
-| `东雪莲联网开/关/查看` | 联网开关，仅限管理员 |
-| `东雪莲群聊AI概率设置/重置/查看` | 调整群聊主动回复概率，仅限管理员 |
-| `群聊AI白名单添加/删除/查看` | 管理主动回复白名单，仅限管理员 |
-
----
-
-## 十二、维护说明
-
-如果你要继续维护这个仓库，建议遵守以下原则：
-
-- 部署脚本保持“只做部署，不内嵌插件业务源码”
-- 部署/代码教训写进 `教训总结.md`，AI 每次改项目前必须先读
-- 通用变更记录优先写进 `progress.md`，专题内容拆到对应文档
-- 先保证服务器可直接部署，再逐步整理源码结构
-- 每次改动后同步检查版本号、安装提示和 `README`
-
-当前仓库优先服务“能部署、能跑、能维护”，不是做成一个空壳模板仓库。
-
----
-
-## 十三、Dashboard 控制台界面
-
-Dashboard（`packages/koishi-plugin-dashboard/`）是一个独立 HTTP 服务器，提供浏览器控制台管理 Bot。
-
-### 启动
+先查端口和进程：
 
 ```bash
-cd packages/koishi-plugin-dashboard
-node standalone.js
+ss -tlnp | grep 5150
+tail -f /root/koishi-app/koishi.log
 ```
 
-浏览器打开 `http://localhost:5150/dashboard/`。
+检查项：
 
-### 功能模块
+- 服务器安全组是否放行 `5150`。
+- `DASHBOARD_PORT` 是否被改过。
+- `packages/koishi-plugin-dashboard/frontend/dist/` 是否存在。
+- `watchdog.sh` 是否正在守护 Dashboard。
 
-| Tab | 功能 |
-|-----|------|
-| 控制 | Bot 启停、维护模式、QQ 管理（SSH 隧道指令 + NapCat Token + 切换 QQ 号） |
-| 模型配置 | 选择供应商和模型，编辑 API 地址 |
-| API Keys | 管理各供应商 API Key，查看 Token 用量柱状图（近 7 天） |
-| 人格管理 | 创建/编辑/删除自定义人格，绑定世界观，调整主动性 will 值 |
-| 功能介绍 | 浏览器式卡片布局，查看所有功能说明 |
-| 指令速查 | 一页速查表 |
-| 白名单 | 管理四个列表（解除上限群白名单/群聊AI白名单/用户黑名单/视频黑名单） |
-| 密码 | 修改访问密码和管理员密码 |
-| **部署** | 一键部署到远程服务器（见下方） |
-| 状态 | 诊断信息 |
+### 10.2 Koishi 连不上 NapCat
 
-### 技术特性
+检查 NapCat WebSocket 是否监听：
 
-- **独立进程**：不依赖 Koishi，单独运行在 5150 端口，Koishi 重启不影响控制台
-- **双主题**：深色/浅色模式切换
-- **字体优化**：英文字体 Inter + 标题字体 ZCOOL KuaiLe（站酷快乐体）+ 等宽字体 JetBrains Mono
-- **管理员密码系统**：敏感操作需二次验证，1 小时 token 过期
-- **本地模式**：检测到 Bot 未运行时锁定非部署功能，部署后自动解锁
-- **拖尾特效**：Canvas 鼠标拖尾，Catmull-Rom 曲线采样，手机端自动禁用
+```bash
+ss -ltnp | grep 8080
+```
+
+检查项：
+
+- NapCat 是否登录了机器人 QQ。
+- NapCat 是否启用了正向 WebSocket。
+- `koishi.yml` 里的 `endpoint` 是否和 NapCat 端口一致。
+- `selfId` 是否是机器人 QQ 号。
+- 如果设置了 Access Token，NapCat 和 Koishi 必须一致。
+
+### 10.3 AI 不回复
+
+优先看：
+
+- `AI状态` 是否能正常返回。
+- 供应商、模型、Base URL 是否匹配。
+- 对应 API Key 文件是否存在。
+- 群是否在 `群聊AI白名单` 中。
+- 群是否在 `群聊AI静默白名单` 中。
+- 用户是否在 `用户黑名单` 中。
+- 是否开启了维护模式。
+
+### 10.4 日报没有数据
+
+日报依赖消息缓存。检查：
+
+- 群号是否在 `解除上限群白名单` 中。
+- 今天是否已经有足够群消息。
+- 服务器是否能找到 Chrome / Chromium；否则图片渲染会失败。
+- `群聊详细日报` 会调用 AI，API 配置失败时会降级或报错。
+
+### 10.5 B 站视频发不出来
+
+检查：
+
+- `yt-dlp` 是否安装：`yt-dlp --version`。
+- `BILI_COOKIES_FILE` 指向的 cookies 文件是否存在。
+- 视频是否超过 `BILI_MAX_SIZE_BYTES`。
+- 群是否在视频黑名单中。
+- 服务器是否安装了合并视频所需的基础环境。
+
+### 10.6 5141 或 80 是不是本项目端口
+
+当前项目主线代码没有使用 `5141` 或 `80` 作为业务监听端口。如果云防火墙里有这两个端口，多半是旧规则、其他服务或反向代理规则。
 
 ---
 
-## 十四、一键部署面板
+## 十一、维护说明
 
-部署面板是 Dashboard 内置的功能，可在浏览器中配置远程服务器信息并执行全量部署。
+这个仓库当前优先服务“能部署、能跑、能维护”。维护时建议遵守：
 
-### 部署配置
+- 部署脚本只做部署，不内嵌插件业务源码。
+- 插件逻辑放在 `packages/*/lib/`，不要继续把大段 JS 塞回 Markdown。
+- 修改 AI 主插件前先看 `AI协作规则.md`、`教训总结.md`、`TESTING.md`。
+- 通用变更写进 `progress.md`，专题经验写进对应文档。
+- 改 Dashboard 前端后记得在 `packages/koishi-plugin-dashboard/frontend/` 里重新 `npm run build`。
+- 改插件后至少跑 `npm run check`，风险高的改动继续跑 `npm test`。
+- 修改端口、数据目录、部署路径时，同时检查 README、`setup.sh`、`scripts/restart-bot.sh`、`packages/koishi-plugin-dashboard/standalone.js`。
 
-| 字段 | 说明 |
-|------|------|
-| 服务器地址 | `root@服务器IP` 格式 |
-| 应用目录 | 远程服务器上的 Koishi 应用目录（默认 `/root/koishi-app`） |
-| 访问密码 / 管理员密码 | 部署到新服务器时设置（留空使用默认密码 `123456`） |
-| B 站 Cookies | 可选，视频插件需要，从浏览器导出的 `cookies.txt` |
+当前推荐继续沿着三层结构维护：
 
-### 部署流程
-
-1. 填写服务器地址 → 保存配置
-2. （可选）展开密码设置、上传 B 站 Cookies
-3. 点「开始部署」→ 实时查看部署日志
-4. 部署完成后点「打开已部署面板」进入远程服务器的 Dashboard
-
-### 部署内容
-
-一键部署自动推送：
-
-- 所有插件 `lib/` 代码 + `package.json`
-- Dashboard `standalone.js` + 前端 `dist/`
-- `ai-skills/` 数据文件
-- API Key 等配置文件
-- `restart.sh` + `watchdog.sh` 脚本
-- 自动安装 `yt-dlp`（视频插件依赖）
-- 自动创建 `/root/koishi-bili-downloads` 目录
-
-### 密码安全
-
-部署面板中的密码设置只对**目标服务器**生效（通过 SSH 写入远端文件），不影响当前运行中的 Dashboard。
-
-### 部署注意事项
-
-- 需要本机已配置 SSH 密钥认证（`~/.ssh/id_rsa`）
-- 部署面板可独立使用：**在任何有 Node.js 的机器上**运行 `node standalone.js`，即获得一个完整的一键部署工具
-
+- `README.md` / `指令速查.md` / `教程.md` / `progress.md` / `教训总结.md`：中文文档层。
+- `scripts/*.sh`：部署执行层。
+- `packages/*`：插件代码层。
