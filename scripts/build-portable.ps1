@@ -29,7 +29,7 @@ foreach ($d in $dirs) { New-Item -ItemType Directory -Path $d -Force | Out-Null 
 # 3. 复制 Electron 运行时
 Write-Host "[3/7] 复制 Electron 运行时..." -ForegroundColor Yellow
 $electronDist = "$Root\node_modules\electron\dist"
-Copy-Item "$electronDist\electron.exe" "$PortableDir\莲莲BOT.exe"
+Copy-Item "$electronDist\electron.exe" "$PortableDir\LianLianBot.exe"
 Copy-Item "$electronDist\chrome_*.pak" $PortableDir
 Copy-Item "$electronDist\d3dcompiler_47.dll" $PortableDir
 Copy-Item "$electronDist\ffmpeg.dll" $PortableDir
@@ -74,11 +74,10 @@ foreach ($pkg in $pkgs) {
     Copy-Item $src $dst -Recurse -Exclude "node_modules","frontend/node_modules" -ErrorAction SilentlyContinue
   }
 }
-# 安全清理：删除所有 data/ 目录中的 API Key 等敏感文件（防止泄露）
-Write-Host "安全清理敏感文件..." -ForegroundColor Yellow
+# security cleanup: delete all data/ dirs to prevent key leakage
+Write-Host "cleaning sensitive files..." -ForegroundColor Yellow
 Get-ChildItem "$PortableDir\packages" -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq "data" } | ForEach-Object { Remove-Item $_.FullName -Recurse -Force; Write-Host "  deleted: $($_.FullName)" -ForegroundColor DarkYellow }
-# 重新复制 frontend/dist（被上面的 exclude 漏了）
-if (Test-Path "$Root\packages\koishi-plugin-dashboard\frontend\dist\assets") {
+# re-copy frontend/dist (skipped by exclude pattern above)
 if (Test-Path "$Root\packages\koishi-plugin-dashboard\frontend\dist\assets") {
   New-Item -ItemType Directory -Path "$PortableDir\packages\koishi-plugin-dashboard\frontend\dist\assets" -Force | Out-Null
   Copy-Item "$Root\packages\koishi-plugin-dashboard\frontend\dist\assets\*" "$PortableDir\packages\koishi-plugin-dashboard\frontend\dist\assets"
@@ -91,14 +90,14 @@ if (Test-Path "$Root\packages\koishi-plugin-dashboard\frontend\dist\index.html")
 Write-Host "[7/7] 创建启动脚本..." -ForegroundColor Yellow
 @"
 @echo off
-start "" "%~dp0莲莲BOT.exe"
-"@ | Set-Content "$PortableDir\启动莲莲BOT.bat" -Encoding ASCII
+start "" "%~dp0LianLianBot.exe"
+"@ | Set-Content "$PortableDir\start.bat" -Encoding ASCII
 
 # 8. 嵌入图标
 Write-Host "嵌入图标..." -ForegroundColor Yellow
 $rcedit = "$Root\node_modules\rcedit\bin\rcedit-x64.exe"
 if (Test-Path $rcedit) {
-  & $rcedit "$PortableDir\莲莲BOT.exe" --set-icon "$PortableDir\resources\app\icon.ico" 2>$null
+  & $rcedit "$PortableDir\LianLianBot.exe" --set-icon "$PortableDir\resources\app\icon.ico" 2>$null
 }
 
 # 9. 打包 zip
