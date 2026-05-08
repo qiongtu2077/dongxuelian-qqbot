@@ -29,6 +29,89 @@ const { analyzeIncomingMessage, normalizeText } = require('./message-reader')
 const { loadStickerCache, sendReply } = require('./reply')
 const { resolveForwardSummary } = require('./forward')
 const { prepareVisionRequest, isVisionSession } = require('./vision')
+
+// ===== @satorijs/core@3.7.0 兼容补丁：Session 缺失方法 =====
+function __patchBuildStripped(session) {
+  if (session._stripped && typeof session._stripped === 'object') return session._stripped
+  var source = Array.isArray(session.elements) ? session.elements : Array.isArray(session.event?.message?.elements) ? session.event.message.elements : []
+  var elements = source.slice()
+  var hasAt = false, appel = false, atSelf = false
+  var selfId = String(session.selfId || session.bot?.selfId || session.event?.selfId || '')
+  var quoteUserId = String(session.quote?.user?.id || '')
+  while (elements[0]?.type === 'at') {
+    var id = String(elements.shift()?.attrs?.id || '')
+    if (selfId && id === selfId) { atSelf = true; appel = true }
+    if (!quoteUserId || id !== quoteUserId) hasAt = true
+    while (elements[0]?.type === 'text' && !String(elements[0].attrs?.content || '').trim()) { elements.shift() }
+  }
+  var content = elements.map(function(e) {
+    if (!e) return ''
+    if (e.type === 'text') return String(e.attrs?.content || '')
+    if (e.type === 'at') { var id = e.attrs?.id || ''; return id ? '<at id="' + id + '"/>' : '' }
+    return ''
+  }).join('').trim()
+  if (!hasAt) {
+    var nicknames = session?.app?.koishi?.config?.nickname || session?.app?.config?.nickname || []
+    var list = Array.isArray(nicknames) ? nicknames : [nicknames]
+    var val = content
+    if (val.startsWith('@')) val = val.slice(1)
+    for (var i = 0; i < list.length; i++) {
+      var name = String(list[i] || '')
+      if (!name || !val.startsWith(name)) continue
+      var rest = val.slice(name.length)
+      var match = /^([,\uFF0C\u3001\s]+|$)/.exec(rest)
+      if (!match) continue
+      appel = true; content = rest.slice(match[0].length).trim(); break
+    }
+  }
+  session._stripped = { hasAt: hasAt, content: content, appel: appel, atSelf: atSelf, prefix: null }
+  return session._stripped
+}
+
+function __patchInstallAccessors(target) {
+  if (!target || target.__dongxuelianStrippedPatch) return
+  Object.defineProperty(target, 'stripped', { configurable: true, enumerable: false,
+    get: function() { return __patchBuildStripped(this) },
+    set: function(v) { if (v && typeof v === 'object') this._stripped = v; else if (v === undefined) this._stripped = undefined }
+  })
+  Object.defineProperty(target, 'parsed', { configurable: true, enumerable: false,
+    get: function() { return this.stripped }, set: function(v) { this.stripped = v }
+  })
+  Object.defineProperty(target, '__dongxuelianStrippedPatch', { value: true, configurable: true, enumerable: false })
+}
+
+// 安装到 Session 原型
+__patchInstallAccessors(KoishiSession && KoishiSession.prototype)
+
+// 包装 Bot.prototype.session()
+var __origSession = KoishiBot.prototype.session
+if (!__origSession.__dongxuelianPatched) {
+  KoishiBot.prototype.session = function(event) {
+    var s = __origSession.call(this, event)
+    if (!s || typeof s !== 'object') return s
+    try { if (s.stripped !== undefined) return s } catch (e) {}
+    __patchInstallAccessors(s)
+    return s
+  }
+  KoishiBot.prototype.session.__dongxuelianPatched = true
+}
+
+// Resolve
+if (!KoishiSession.prototype.resolve) {
+  KoishiSession.prototype.resolve = function(value) {
+    if (typeof value === 'function') return value(this)
+    return value
+  }
+}
+
+// Send（需 h.normalize 解析 CQ 码）
+if (!KoishiSession.prototype.send) {
+  KoishiSession.prototype.send = async function(content) {
+    if (!this.bot || typeof this.bot.sendMessage !== 'function') throw new Error('Bot not available for sending')
+    return this.bot.sendMessage(this.channelId, require('koishi').h.normalize(content), this.guildId)
+  }
+}
+
 const {
   resetPoliticalDetectCache,
   clearSensitiveRuntimeState,
