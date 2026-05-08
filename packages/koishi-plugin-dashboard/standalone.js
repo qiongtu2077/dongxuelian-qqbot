@@ -1116,7 +1116,7 @@ const server = http.createServer((req, res) => {
 })
 
 server.listen(PORT, () => {
-  log(`dashboard running on http://localhost:${PORT}/dashboard/`)
+  log(`LianBoard running on http://localhost:${PORT}/dashboard/`)
   log(`bot control: start/stop/maintenance`)
   log(`napcat proxy: /webui/ -> NapCat WebUI`)
   if (!getAccessPassword() && !isLocalAuthBypass()) log('WARNING: dashboard access password is not configured; login is disabled')
