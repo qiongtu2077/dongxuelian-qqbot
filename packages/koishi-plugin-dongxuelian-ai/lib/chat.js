@@ -510,6 +510,7 @@ async function chat(session, userText, ctx, options = {}) {
       const loreLine = lm[1].match(/^lore:\s*(\S+)/m)
       if (loreLine) personaLore = loreLine[1]
     }
+    if (!personaLore && personaName === '特蕾西娅') personaLore = 'terra-lore'
   } else if (!personaName) {
     personaLore = 'wuwa-lore'  // 默认人格可触发鸣潮世界观
   }

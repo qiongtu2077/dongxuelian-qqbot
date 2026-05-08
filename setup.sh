@@ -19,6 +19,8 @@ normalize_path() {
     [A-Za-z]:\\*|[A-Za-z]:/*)
       if command -v cygpath >/dev/null 2>&1; then
         cygpath -u "$1"
+      elif command -v wslpath >/dev/null 2>&1; then
+        wslpath -u "$1"
       else
         printf '%s\n' "$1"
       fi
@@ -313,14 +315,15 @@ log "API keys written"
 # ==========================================
 log "Starting Koishi..."
 cd "$KOISHI_DIR"
-nohup npx koishi start >> koishi.log 2>&1 &
+export DONGXUELIAN_AI_DATA_DIR="$DATA_DIR"
+nohup node "$KOISHI_DIR/node_modules/koishi/bin.js" start >> koishi.log 2>&1 &
 sleep 10
 
-if tail -3 koishi.log | grep -q 'dongxuelian-ai.*0.11'; then
+if tail -20 koishi.log | grep -q 'adapter connect to server'; then
   log "Deploy finished. Koishi has started."
   echo ""
   echo "  Logs: tail -f /root/koishi-app/koishi.log"
-  echo "  Restart bot: pkill -f 'koishi/lib/worker'; sleep 3; npx koishi start"
+  echo "  Restart bot: pkill -f 'koishi/lib/worker'; sleep 3; node /root/koishi-app/node_modules/koishi/bin.js start"
   echo "  Web console: http://SERVER_IP:5140"
 else
   warn "Koishi is starting. Check logs manually: tail -f /root/koishi-app/koishi.log"

@@ -245,8 +245,9 @@ function runSyntaxCheck(label, file) {
 
 function shellSyntaxCheck(file) {
   const blocked = []
+  const shellPath = path.relative(ROOT, file).replace(/\\/g, '/') || file
   for (const shell of ['bash', 'sh']) {
-    const result = spawnSync(shell, ['-n', file], { cwd: ROOT, stdio: 'pipe' })
+    const result = spawnSync(shell, ['-n', shellPath], { cwd: ROOT, stdio: 'pipe' })
     if (result.error && result.error.code === 'ENOENT') continue
     if (result.error && result.error.code === 'EPERM') { blocked.push(shell); continue }
     if (result.error) throw result.error
@@ -1035,12 +1036,24 @@ async function main() {
   }
   const aiDeploy = read(path.join(scriptsDir, 'ai.sh'))
   const readerDeploy = read(path.join(scriptsDir, 'message-reader.sh'))
+  const restartBot = read(path.join(scriptsDir, 'restart-bot.sh'))
+  const dashboardStandalone = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'standalone.js'))
   const allDeploy = fs.readdirSync(scriptsDir).filter(name => name.endsWith('.sh')).map(name => read(path.join(scriptsDir, name))).join('\n')
   check('ai deploy copies ai-skills', aiDeploy.includes('--copy-ai-skills'))
   check('message-reader deploys full AI package', readerDeploy.includes('exec sh "$SCRIPT_DIR/ai.sh"'))
   check('deploy scripts do not embed package overwrite', !allDeploy.includes('cat > /root/koishi-app/node_modules'))
   check('deploy scripts do not contain stale AI version', !allDeploy.includes('0.3.11'))
+  check('dashboard deploy does not copy removed patch.js', !dashboardStandalone.includes('/patch.js') && !dashboardStandalone.includes('patch.js ${s}'))
+  check('dashboard stop avoids broad koishi pkill', !dashboardStandalone.includes("pkill -9 -f 'koishi'"))
+  check('dashboard explicit local auth bypass only', dashboardStandalone.includes('function isLocalAuthBypass') && dashboardStandalone.includes('GLOBAL_LOCAL_MODE'))
+  check('dashboard rejects missing access password', dashboardStandalone.includes('access password is not configured'))
+  check('restart-bot uses local koishi binary', restartBot.includes('node "$APP_DIR/node_modules/koishi/bin.js" start'))
+  check('restart-bot does not use stale koishi.config.js', !restartBot.includes('koishi.config.js'))
+  check('restart-bot checks adapter connect log', restartBot.includes('adapter connect to server'))
+  check('restart-bot checks 5140 http health', restartBot.includes('curl -fsS "http://127.0.0.1:$KOISHI_PORT"'))
   const setupPath = path.join(ROOT, 'setup.sh')
+  const setupBuffer = fs.readFileSync(setupPath)
+  check('setup.sh is text without NUL bytes', !setupBuffer.includes(0))
   const setupSrc = read(setupPath)
   runShellSyntaxCheck('setup.sh shell syntax', setupPath)
   const oddQuoteLines = setupSrc.split(/\r?\n/).map((line, index) => ({
@@ -1069,6 +1082,8 @@ async function main() {
   }
   check('setup.sh does not contain stale AI version', !setupSrc.includes('0.3.11'))
   check('setup.sh does not write package files directly into node_modules', !setupSrc.includes('cat > /root/koishi-app/node_modules'))
+  check('setup.sh does not use patch preload', !setupSrc.includes('NODE_OPTIONS') && !setupSrc.includes('patch.js'))
+  check('setup.sh starts koishi with local binary', setupSrc.includes('node "$KOISHI_DIR/node_modules/koishi/bin.js" start'))
 
   section('15. cross-file regression guards')
   const indexSrc = read(path.join(LIB, 'index.js'))
@@ -1087,6 +1102,8 @@ async function main() {
   check('message-reader does not export sanitizeDisplayName', !/^\s{2}sanitizeDisplayName,/m.test(msgSrc))
   check('index.js has no local BANNED_OUTPUT_RE duplicate', !indexSrc.includes('const BANNED_OUTPUT_RE'))
   check('index.js has no removed buildFriendlyPersona reference', !indexSrc.includes('buildFriendlyPersona'))
+  check('index.js does not install content-based session.text fallback', !indexSrc.includes('prototype.text') || indexSrc.includes('.i18n('))
+  check('index.js does not reference patch preload env', !indexSrc.includes('DONGXUELIAN_KOISHI_PATCH') && !indexSrc.includes('NODE_OPTIONS'))
   check('chat.js keeps block-scoped declarations', !/\bvar\b/.test(chatSrc))
   const libJsFiles = []
   function collectLibJsFiles(dir) {

@@ -3,18 +3,25 @@
 # 用法: ssh root@host "bash /root/koishi-app/restart.sh"
 # 可通过环境变量覆盖: KOISHI_APP_DIR, KOISHI_PORT, DASHBOARD_PORT
 
-set -e
-
 APP_DIR="${KOISHI_APP_DIR:-/root/koishi-app}"
 KOISHI_PORT="${KOISHI_PORT:-5140}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-5150}"
 LOG_FILE="$APP_DIR/koishi.log"
 DATA_DIR="$APP_DIR/data"
 DASHBOARD_DIR="$APP_DIR/packages/koishi-plugin-dashboard"
+NODE_MODULES="$APP_DIR/node_modules"
+
+start_koishi() {
+  cd "$APP_DIR" || exit 1
+  export NODE_PATH="$NODE_MODULES"
+  export DONGXUELIAN_AI_DATA_DIR="$DATA_DIR"
+  nohup node "$APP_DIR/node_modules/koishi/bin.js" start >> "$LOG_FILE" 2>&1 &
+  KOISHI_PID=$!
+}
 
 echo "[$(date)] 开始重启 bot..."
 
-# 1. 杀干净所有 koishi 进程（包括孤儿进程），不杀 standalone.js
+# 1. 杀干净所有 koishi 进程
 echo "杀旧进程..."
 pkill -9 -f 'koishi/lib/worker' 2>/dev/null || true
 pkill -9 -f 'node.*koishi start' 2>/dev/null || true
@@ -27,43 +34,45 @@ if ss -tlnp | grep -q ":$KOISHI_PORT"; then
 fi
 echo "端口 $KOISHI_PORT 已释放"
 
-# 3. 确保 Dashboard 在运行（如果没启动则启动）
+# 3. 确保 Dashboard 在运行
 if ! ss -tlnp | grep -q ":$DASHBOARD_PORT"; then
   echo "启动 Dashboard..."
-  cd "$DASHBOARD_DIR"
-  DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" nohup node standalone.js >> "$LOG_FILE" 2>&1 &
+  cd "$DASHBOARD_DIR" || exit 1
+  DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" NODE_PATH="$NODE_MODULES" nohup node standalone.js >> "$LOG_FILE" 2>&1 &
   echo "Dashboard PID: $!"
   sleep 2
 else
   echo "Dashboard 已在运行"
 fi
 
-# 4. 写时间戳标记，区分新旧日志
+# 4. 写时间戳标记
 MARKER="=== RESTART $(date +%Y%m%d%H%M%S) ==="
 echo "$MARKER" >> "$LOG_FILE"
 
-# 5. 启动 koishi
+# 5. 启动 koishi（使用本地 binary，不用全局 /usr/bin/koishi）
 echo "启动 koishi..."
-cd "$APP_DIR"
-DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" nohup node node_modules/.bin/koishi start >> "$LOG_FILE" 2>&1 &
-echo "Koishi PID: $!"
+start_koishi
+echo "Koishi PID: $KOISHI_PID"
 
-# 6. 轮询等待（逐秒检查，最多 20 秒，不等满时间）
+# 6. 轮询等待
 echo "等待 koishi 启动..."
 for i in $(seq 1 20); do
   sleep 1
-  LOG_TAIL=$(tail -20 "$LOG_FILE")
-  if echo "$LOG_TAIL" | grep -q 'daily-report loaded' && \
+  LOG_TAIL=$(tail -40 "$LOG_FILE")
+  if ss -tlnp | grep -q ":$KOISHI_PORT" && \
+     ps aux | grep -q 'koishi/lib/worker' && \
+     curl -fsS "http://127.0.0.1:$KOISHI_PORT" >/dev/null 2>&1 && \
      echo "$LOG_TAIL" | grep -q 'adapter connect to server'; then
     echo "启动成功 ✓（${i}秒）"
-    echo "   dashboard running"
-    echo "   daily-report loaded"
-    echo "   adapter connected"
+    echo "  port listening"
+    echo "  http healthy"
+    echo "  adapter connected"
     exit 0
   fi
-  if ss -tlnp | grep -q ":$KOISHI_PORT" && ps aux | grep -q 'koishi/lib/worker'; then
-    echo "启动成功 ✓（${i}秒，进程+端口确认）"
-    exit 0
+  if ! kill -0 "$KOISHI_PID" 2>/dev/null; then
+    echo "警告: 进程已退出，尝试重新启动..."
+    tail -10 "$LOG_FILE" | grep -E "error|Error|cannot" | tail -3 || true
+    start_koishi
   fi
 done
 

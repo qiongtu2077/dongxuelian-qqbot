@@ -38,6 +38,7 @@ async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
       const beforeCalls = mocked.calls.length
       let result = await run(session, { flushTicks: 120 })
       await session.waitForSend(options.waitFor || (() => true))
+      await new Promise(resolve => setImmediate(resolve))
       result = {
         ...result,
         sent: session.sent,
@@ -98,6 +99,11 @@ async function run(t) {
     { status: 500, text: 'server exploded' },
   ], async (result) => {
     checkSentNonEmpty(t, 'scenario API 500 chat sends safe fallback', result)
+    t.check(
+      'scenario API 500 fallback logs safe reply send',
+      result.logs.some(item => item.name === 'dongxuelian-ai' && item.msg.includes('reply sent: random=false parts=')),
+      JSON.stringify(result.logs.slice(-8))
+    )
     checkSentExcludes(t, 'scenario API 500 does not send raw server error', result, 'server exploded')
     checkSentExcludes(t, 'scenario API 500 does not send reasoning marker', result, 'reasoning-secret')
     checkNoLeak(t, 'scenario API 500 logs do not leak key', result, ['sk-test-secret', 'Bearer'])

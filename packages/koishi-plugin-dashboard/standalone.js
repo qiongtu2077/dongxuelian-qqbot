@@ -19,6 +19,22 @@ process.on('unhandledRejection', (reason) => {
   console.error('[dashboard] UNHANDLED REJECTION:', reason?.stack || reason)
 })
 
+const MAX_BODY_SIZE = 1024 * 512 // 512KB 请求体上限
+
+function collectBody(req, res, callback) {
+  let body = ''
+  req.on('data', c => {
+    body += c
+    if (Buffer.byteLength(body) > MAX_BODY_SIZE) {
+      res.writeHead(413, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, message: '请求体过大' }))
+      req.destroy()
+      return
+    }
+  })
+  req.on('end', () => callback(body))
+}
+
 // ====== 路径配置 ======
 const PLUGIN_ROOT = __dirname
 const AI_LIB = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'lib')
@@ -29,11 +45,35 @@ const MODES_DIR = path.join(DATA_DIR, 'ai-skills', 'modes')
 const DIST_DIR = path.join(PLUGIN_ROOT, 'frontend', 'dist')
 const PORT = process.env.DASHBOARD_PORT || 5150
 const KOISHI_DIR = process.env.KOISHI_DIR || path.join(PLUGIN_ROOT, '..', '..')
-const PASSWORD = process.env.DASHBOARD_PASSWORD || '123456'
+const PASSWORD = process.env.DASHBOARD_PASSWORD || ''
 const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || '123456'
 
 const ADMIN_PWD_FILE = path.join(DATA_DIR, 'dashboard-admin-pwd.txt')
 const ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-access-pwd.txt')
+const LEGACY_ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-pwd.txt')
+const CUSTOM_PROVIDERS_FILE = path.join(DATA_DIR, 'ai-providers-custom.json')
+const FALLBACK_CHAINS_FILE = path.join(DATA_DIR, 'ai-fallback-chains.json')
+
+// ====== 默认 fallback 链（按 AI 用途分类） ======
+const DEFAULT_FALLBACK_CHAINS = {
+  chat: [
+    { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: 'ai-openai-key.txt' },
+    { provider: 'deepseek', model: 'deepseek-chat', keyFile: 'ai-deepseek-key.txt' },
+    { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
+    { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
+    { provider: 'mimorium', model: 'mimo-v2.5-pro', keyFile: 'ai-mimorium-key.txt' },
+  ],
+  vision: [
+    { provider: 'dashscope', model: 'qwen3.5-omni-flash', keyFile: 'ai-dashscope-key.txt' },
+    { provider: 'opencode', model: 'mimo-v2-omni', keyFile: 'ai-openai-key.txt' },
+    { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
+  ],
+  analysis: [
+    { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: 'ai-openai-key.txt' },
+    { provider: 'deepseek', model: 'deepseek-chat', keyFile: 'ai-deepseek-key.txt' },
+    { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
+  ],
+}
 
 // ====== 工具函数 ======
 function json(res, data, status = 200) {
@@ -56,9 +96,51 @@ function log(msg) {
   console.log(`[dashboard] ${msg}`)
 }
 
+function isLocalAuthBypass() {
+  return /^(?:1|true|yes|on)$/i.test(String(process.env.GLOBAL_LOCAL_MODE || '').trim())
+}
+
+function stopKoishiProcesses() {
+  execSync("pkill -9 -f 'koishi/lib/worker' 2>/dev/null || true", { timeout: 5000 })
+  execSync("pkill -9 -f 'node.*koishi start' 2>/dev/null || true", { timeout: 5000 })
+}
+
+function shellQuote(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'"
+}
+
+function remoteDataFile(appDir, filename) {
+  return String(appDir).replace(/\/+$/, '') + '/data/' + filename
+}
+
+function remoteWriteFileCommand(server, filePath, content) {
+  const dir = filePath.replace(/\/[^/]*$/, '')
+  const remoteCmd = `mkdir -p ${shellQuote(dir)} && printf %s ${shellQuote(content)} > ${shellQuote(filePath)}`
+  return `ssh ${server} ${shellQuote(remoteCmd)}`
+}
+
+// 版本指纹：对关键代码文件做 hash，不依赖 git
+function computeFingerprint() {
+  try {
+    const repoRoot = path.join(PLUGIN_ROOT, '..', '..')
+    const keyFiles = [
+      'packages/koishi-plugin-dongxuelian-ai/lib/index.js',
+      'packages/koishi-plugin-dashboard/standalone.js',
+      'packages/koishi-plugin-daily-report/lib/index.js',
+      'packages/koishi-plugin-dongxuelian-ai/lib/chat.js',
+      'packages/koishi-plugin-dongxuelian-ai/lib/handler.js',
+    ]
+    const hash = crypto.createHash('md5')
+    for (const f of keyFiles) {
+      try { hash.update(fs.readFileSync(path.join(repoRoot, f))) } catch {}
+    }
+    return hash.digest('hex').slice(0, 8)
+  } catch { return 'unknown' }
+}
+
 // ====== Auth ======
 function createToken() {
-  return crypto.createHash('sha256').update('dashboard:' + PASSWORD).digest('hex')
+  return crypto.createHash('sha256').update('dashboard:' + getAccessPassword()).digest('hex')
 }
 
 function validateToken(token) {
@@ -70,7 +152,7 @@ function getAdminPassword() {
   return readFileSync(ADMIN_PWD_FILE) || ADMIN_PASSWORD
 }
 function getAccessPassword() {
-  return readFileSync(ACCESS_PWD_FILE) || PASSWORD
+  return readFileSync(ACCESS_PWD_FILE) || readFileSync(LEGACY_ACCESS_PWD_FILE) || PASSWORD
 }
 function createAdminToken() {
   return crypto.createHash('sha256').update('admin:' + getAdminPassword()).digest('hex')
@@ -78,10 +160,7 @@ function createAdminToken() {
 function validateAdminToken(token) {
   return token === createAdminToken()
 }
-// 更新 access token 后需要刷新登录，所以也更新 PASSWORD 常量
-function reloadAccessPassword() {
-  const pwd = getAccessPassword()
-}
+
 
 function requireAdmin(req, res) {
   const token = (req.headers['x-admin-token'] || '').trim()
@@ -161,12 +240,17 @@ const server = http.createServer((req, res) => {
 
   // 登录
   if (pathname === '/dashboard/api/login' && req.method === 'POST') {
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { password } = JSON.parse(body)
-        if (password === getAccessPassword()) return json(res, { ok: true, token: createToken() })
+        const stored = getAccessPassword()
+        if (!stored && !isLocalAuthBypass()) {
+          log('login rejected: access password is not configured')
+          return json(res, { ok: false, message: '访问密码未配置' }, 503)
+        }
+        const match = isLocalAuthBypass() || (!!stored && password === stored)
+        if (match) return json(res, { ok: true, token: createToken() })
+        log('login failed')
         return json(res, { ok: false, message: '密码错误' }, 401)
       } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
     })
@@ -175,9 +259,7 @@ const server = http.createServer((req, res) => {
 
   // 管理员验证（不需要普通登录）
   if (pathname === '/dashboard/api/admin/verify' && req.method === 'POST') {
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { password } = JSON.parse(body)
         if (password === getAdminPassword()) return json(res, { ok: true, token: createAdminToken() })
@@ -189,13 +271,11 @@ const server = http.createServer((req, res) => {
 
   // 修改密码
   if (pathname === '/dashboard/api/auth/password' && req.method === 'PUT') {
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
       try {
-        const { type, oldPassword, newPassword } = JSON.parse(body)
-        if (!oldPassword || !newPassword || newPassword.length < 4) return json(res, { ok: false, message: '密码长度不能少于4位' }, 400)
-        if (oldPassword !== getAdminPassword()) return json(res, { ok: false, message: '管理员密码错误' }, 401)
+        const { type, newPassword } = JSON.parse(body)
+        if (!newPassword || newPassword.length < 4) return json(res, { ok: false, message: '新密码长度不能少于4位' }, 400)
         if (type === 'admin') {
           writeFileSync(ADMIN_PWD_FILE, newPassword)
           return json(res, { ok: true, message: '管理员密码已更新' })
@@ -209,8 +289,8 @@ const server = http.createServer((req, res) => {
     return
   }
 
-  // Auth 检查
-  if (pathname.startsWith('/dashboard/api/')) {
+  // Auth 检查（显式本地模式自动放行）
+  if (pathname.startsWith('/dashboard/api/') && !isLocalAuthBypass()) {
     const auth = req.headers['authorization'] || ''
     const token = auth.replace(/^Bearer\s+/i, '')
     if (!validateToken(token)) {
@@ -230,7 +310,19 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/providers' && req.method === 'GET') {
     const { PROVIDERS } = require(path.join(AI_LIB, 'constants'))
-    return json(res, PROVIDERS)
+    const merged = { ...PROVIDERS }
+    try {
+      const raw = fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8')
+      const custom = JSON.parse(raw)
+      if (Array.isArray(custom)) {
+        for (const p of custom) {
+          if (p.id && p.name && p.baseURL) {
+            merged[p.id] = { name: p.name, baseURL: p.baseURL, models: Array.isArray(p.models) ? p.models : [] }
+          }
+        }
+      }
+    } catch {}
+    return json(res, merged)
   }
 
   if (pathname === '/dashboard/api/config' && req.method === 'GET') {
@@ -243,9 +335,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/config' && req.method === 'PUT') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const data = JSON.parse(body)
         if (data.provider !== undefined) writeFileSync(path.join(DATA_DIR, 'ai-provider.txt'), data.provider)
@@ -283,9 +373,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/personas' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { name, description, lore, will, content } = JSON.parse(body)
         if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
@@ -304,9 +392,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/personas' && req.method === 'DELETE') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { name } = JSON.parse(body)
         if (!name) return json(res, { ok: false, message: '名称不能为空' }, 400)
@@ -331,9 +417,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/personas' && req.method === 'PUT') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { name, description, lore, will, content } = JSON.parse(body)
         if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
@@ -400,9 +484,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/lores' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { name, description, content } = JSON.parse(body)
         if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
@@ -419,9 +501,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/lores' && req.method === 'PUT') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { name, description, content } = JSON.parse(body)
         if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
@@ -448,9 +528,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/lores' && req.method === 'DELETE') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { name } = JSON.parse(body)
         if (!name) return json(res, { ok: false, message: '名称不能为空' }, 400)
@@ -492,7 +570,6 @@ const server = http.createServer((req, res) => {
   const whitelistFiles = {
     summary: { file: 'summary-whitelist.json', label: '解除上限群白名单', type: 'array' },
     random: { file: 'ai-random-whitelist.json', label: '群聊AI白名单', type: 'array' },
-    silence: { file: 'ai-silence-whitelist.json', label: '群聊AI静默白名单', type: 'array' },
     userBlacklist: { file: 'ai-user-blacklist.json', label: '用户黑名单', type: 'array' },
     videoBlacklist: { file: 'video-blacklist.json', label: '视频黑名单', type: 'object', default: { groups: [], users: [] } },
   }
@@ -511,9 +588,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/whitelist' && req.method === 'PUT') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { type, data } = JSON.parse(body)
         const cfg = whitelistFiles[type]
@@ -544,11 +619,32 @@ const server = http.createServer((req, res) => {
     }))
   }
 
+  if (pathname === '/dashboard/api/keys/usage' && req.method === 'GET') {
+    try {
+      const usageFile = path.join(DATA_DIR, 'token-usage.json')
+      if (!fs.existsSync(usageFile)) return json(res, { days: [], providers: [] })
+      const raw = fs.readFileSync(usageFile, 'utf8')
+      const data = JSON.parse(raw)
+      const providerSet = new Set()
+      const days = Object.keys(data).sort().slice(-30).map(date => {
+        const day = { date }
+        for (const [prov, count] of Object.entries(data[date] || {})) {
+          day[prov] = count
+          providerSet.add(prov)
+        }
+        return day
+      })
+      const providers = [...providerSet].map(p => ({
+        key: p,
+        label: p === 'opencode' ? 'OpenCode' : p === 'glm' ? 'GLM' : p === 'dashscope' ? '阿里云' : p === 'deepseek' ? 'DeepSeek' : p === 'mimorium' ? 'MiMo' : p,
+      }))
+      return json(res, { days, providers })
+    } catch { return json(res, { days: [], providers: [] }) }
+  }
+
   if (pathname === '/dashboard/api/keys' && req.method === 'PUT') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const data = JSON.parse(body)
         const file = data.file
@@ -562,12 +658,96 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  // 自定义供应商管理
+  if (pathname === '/dashboard/api/providers/custom' && req.method === 'GET') {
+    try {
+      const raw = fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8')
+      return json(res, JSON.parse(raw))
+    } catch { return json(res, []) }
+  }
+  if (pathname === '/dashboard/api/providers/custom' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const data = JSON.parse(body)
+        if (!Array.isArray(data)) return json(res, { ok: false, message: '参数错误' }, 400)
+        fs.writeFileSync(CUSTOM_PROVIDERS_FILE + '.tmp', JSON.stringify(data, null, 2), 'utf8')
+        fs.renameSync(CUSTOM_PROVIDERS_FILE + '.tmp', CUSTOM_PROVIDERS_FILE)
+        json(res, { ok: true, message: '自定义供应商已更新' })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  // Fallback 链管理
+  if (pathname === '/dashboard/api/fallback' && req.method === 'GET') {
+    try {
+      const raw = fs.readFileSync(FALLBACK_CHAINS_FILE, 'utf8')
+      const data = JSON.parse(raw)
+      return json(res, { chains: data, defaults: DEFAULT_FALLBACK_CHAINS })
+    } catch { return json(res, { chains: DEFAULT_FALLBACK_CHAINS, defaults: DEFAULT_FALLBACK_CHAINS }) }
+  }
+  if (pathname === '/dashboard/api/fallback' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const { chains } = JSON.parse(body)
+        if (!chains || typeof chains !== 'object') return json(res, { ok: false, message: '参数错误' }, 400)
+        const tmp = FALLBACK_CHAINS_FILE + '.tmp'
+        fs.writeFileSync(tmp, JSON.stringify(chains, null, 2), 'utf8')
+        fs.renameSync(tmp, FALLBACK_CHAINS_FILE)
+        json(res, { ok: true, message: 'Fallback 链已更新' })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
   if (pathname === '/dashboard/api/features' && req.method === 'GET') {
     return json(res, require('./index').FEATURES_DATA || [])
   }
 
   if (pathname === '/dashboard/api/commands' && req.method === 'GET') {
     return json(res, require('./index').COMMANDS_DATA || [])
+  }
+
+  // 管理员列表管理
+  const ADMIN_IDS_FILE = path.join(DATA_DIR, 'ai-admin-ids.json')
+
+  if (pathname === '/dashboard/api/admin-ids' && req.method === 'GET') {
+    try {
+      const raw = fs.readFileSync(ADMIN_IDS_FILE, 'utf8')
+      const ids = JSON.parse(raw)
+      return json(res, { ids: Array.isArray(ids) ? ids : [] })
+    } catch {
+      // 文件不存在时返回默认管理员
+      const defaults = ['100000000', '200000000']
+      try {
+        const tmp = ADMIN_IDS_FILE + '.tmp'
+        fs.writeFileSync(tmp, JSON.stringify(defaults, null, 2), 'utf8')
+        fs.renameSync(tmp, ADMIN_IDS_FILE)
+      } catch {}
+      return json(res, { ids: defaults })
+    }
+  }
+
+  if (pathname === '/dashboard/api/admin-ids' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const { ids } = JSON.parse(body)
+        if (!Array.isArray(ids)) return json(res, { ok: false, message: '参数错误' }, 400)
+        const cleaned = ids.map(String).filter(Boolean)
+        const tmp = ADMIN_IDS_FILE + '.tmp'
+        fs.writeFileSync(tmp, JSON.stringify(cleaned, null, 2), 'utf8')
+        fs.renameSync(tmp, ADMIN_IDS_FILE)
+        try {
+          const { resetConfigCache } = require(path.join(AI_LIB, 'runtime-config'))
+          resetConfigCache()
+        } catch {}
+        return json(res, { ok: true, message: '管理员列表已更新' })
+      } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
+    })
+    return
   }
 
   // NapCat 代理
@@ -595,6 +775,17 @@ const server = http.createServer((req, res) => {
     } catch { return json(res, { running: false, workers: 0 }) }
   }
 
+  // Bot 活动日志
+  if (pathname === '/dashboard/api/bot/activity' && req.method === 'GET') {
+    try {
+      const logFile = path.join(KOISHI_DIR, 'koishi.log')
+      if (!fs.existsSync(logFile)) return json(res, { lines: [] })
+      const out = execSync('tail -n 100 ' + shellQuote(logFile), { timeout: 5000, encoding: 'utf8', maxBuffer: 1024 * 1024 })
+      const lines = out.trim().split('\n').filter(l => l.includes('entry-debug') || l.includes('chat') || l.includes('repeat') || l.includes('random-reply') || l.includes('banned') || l.includes('sticker'))
+      return json(res, { lines, total: lines.length })
+    } catch { return json(res, { lines: [] }) }
+  }
+
   if (pathname === '/dashboard/api/bot/start' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
     exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`, (err) => {
@@ -606,7 +797,7 @@ const server = http.createServer((req, res) => {
   if (pathname === '/dashboard/api/bot/stop' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
     try {
-      execSync("pkill -9 -f 'koishi'", { timeout: 5000 })
+      stopKoishiProcesses()
       return json(res, { ok: true, message: '已停止所有 koishi 进程' })
     } catch (e) { return json(res, { ok: false, message: e.message }) }
   }
@@ -617,9 +808,7 @@ const server = http.createServer((req, res) => {
   }
   if (pathname === '/dashboard/api/maintenance' && req.method === 'PUT') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { enabled } = JSON.parse(body)
         const f = path.join(DATA_DIR, 'ai-paused.txt')
@@ -653,9 +842,7 @@ const server = http.createServer((req, res) => {
   }
   if (pathname === '/dashboard/api/qq/selfid' && req.method === 'PUT') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { selfId } = JSON.parse(body)
         if (!selfId || !/^\d+$/.test(selfId)) return json(res, { ok: false, message: '无效 QQ 号' }, 400)
@@ -679,7 +866,9 @@ const server = http.createServer((req, res) => {
     } catch { return json(res, { running: false }) }
   }
   if (pathname === '/dashboard/api/napcat/restart' && req.method === 'POST') {
-    const qq = process.env.DASHBOARD_QQ_NUMBER || '123456789'
+    const raw = process.env.DASHBOARD_QQ_NUMBER || '123456789'
+    const qq = raw.replace(/[^0-9]/g, '')
+    if (!qq) return json(res, { ok: false, message: '无效 QQ 号' }, 400)
     exec("screen -S napcat -X quit 2>/dev/null; sleep 2; screen -dmS napcat bash -c 'xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox -q " + qq + "'")
     return json(res, { ok: true, message: 'NapCat 重启命令已发送' })
   }
@@ -694,16 +883,25 @@ const server = http.createServer((req, res) => {
       const cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8'))
       let botRunning = false
       try { execSync('ss -tlnp | grep -q :5140', { stdio: 'ignore' }); botRunning = true } catch {}
+      cfg._localFingerprint = computeFingerprint()
       return json(res, { ...cfg, botRunning })
     }
-    catch { return json(res, { server: '', appDir: '/root/koishi-app', botRunning: false }) }
+    catch { return json(res, { server: '', appDir: '/root/koishi-app', botRunning: false, _localFingerprint: computeFingerprint() }) }
+  }
+
+  if (pathname === '/dashboard/api/deploy/check-update' && req.method === 'GET') {
+    const local = computeFingerprint()
+    let deployed = ''
+    try {
+      const cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8'))
+      deployed = cfg.deployFingerprint || ''
+    } catch {}
+    return json(res, { local, deployed, upToDate: local === deployed })
   }
 
   if (pathname === '/dashboard/api/deploy/config' && req.method === 'PUT') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const cfg = JSON.parse(body)
         if (!cfg.server || !cfg.appDir) return json(res, { ok: false, message: '服务器地址和应用目录不能为空' }, 400)
@@ -718,9 +916,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/deploy/run' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const cfg = JSON.parse(body)
         if (!cfg.server || !cfg.appDir) return json(res, { ok: false, message: '配置不完整' }, 400)
@@ -729,6 +925,7 @@ const server = http.createServer((req, res) => {
         const log = (msg) => { try { fs.appendFileSync(logFile, msg + '\n', 'utf8') } catch {} }
         json(res, { ok: true, taskId })
 
+        const isUpdate = cfg.mode === 'update'
         const repoRoot = path.join(PLUGIN_ROOT, '..', '..')
         const s = cfg.server
         const d = cfg.appDir
@@ -739,33 +936,30 @@ const server = http.createServer((req, res) => {
           'koishi-plugin-dongxuelian-poke', 'koishi-plugin-daily-report',
         ]
         const cmds = []
-        cmds.push(`echo "创建远程目录..."`)
-        cmds.push(`ssh -o StrictHostKeyChecking=no ${s} "mkdir -p ${d}/data/ai-skills ${d}/packages/koishi-plugin-dashboard/frontend/dist ${d}/scripts"`)
+        if (!isUpdate) {
+          cmds.push(`echo "创建远程目录..."`)
+          cmds.push(`ssh -o StrictHostKeyChecking=no ${s} "mkdir -p ${d}/data/ai-skills ${d}/packages/koishi-plugin-dashboard/frontend/dist ${d}/scripts"`)
+        }
         for (const pkg of pkgs) {
           cmds.push(`echo "→ ${pkg}"`)
-          cmds.push(`scp -r ${repoRoot}/packages/${pkg}/lib/* ${s}:${d}/node_modules/${pkg}/lib/ 2>/dev/null || true`)
-          cmds.push(`scp ${repoRoot}/packages/${pkg}/package.json ${s}:${d}/node_modules/${pkg}/ 2>/dev/null || true`)
+          cmds.push(`scp -o StrictHostKeyChecking=no -r ${repoRoot}/packages/${pkg}/lib/* ${s}:${d}/node_modules/${pkg}/lib/ 2>/dev/null || true`)
+          cmds.push(`scp -o StrictHostKeyChecking=no ${repoRoot}/packages/${pkg}/package.json ${s}:${d}/node_modules/${pkg}/ 2>/dev/null || true`)
         }
         cmds.push(`echo "Dashboard 前端..."`)
-        cmds.push(`scp ${PLUGIN_ROOT}/standalone.js ${s}:${d}/packages/koishi-plugin-dashboard/`)
-        cmds.push(`scp -r ${DIST_DIR}/* ${s}:${d}/packages/koishi-plugin-dashboard/frontend/dist/`)
-        cmds.push(`echo "ai-skills 数据..."`)
-        cmds.push(`scp -r ${repoRoot}/packages/koishi-plugin-dongxuelian-ai/data/ai-skills/. ${s}:${d}/data/ai-skills/`)
-        cmds.push(`echo "配置文件..."`)
-        cmds.push(`scp ${DATA_DIR}/ai-*.txt ${s}:${d}/data/ 2>/dev/null || true`)
-        cmds.push(`scp ${DATA_DIR}/ai-*-ids.json ${s}:${d}/data/ 2>/dev/null || true`)
-        cmds.push(`scp ${DATA_DIR}/video-blacklist.json ${s}:${d}/data/ 2>/dev/null || true`)
-        cmds.push(`scp ${DATA_DIR}/bilibili-cookies.txt ${s}:${d}/data/../ 2>/dev/null || true`)
-        if (cfg.accessPwd) cmds.push(`ssh ${s} "echo '${cfg.accessPwd}' > ${d}/data/dashboard-pwd.txt"`)
-        if (cfg.adminPwd) cmds.push(`ssh ${s} "echo '${cfg.adminPwd}' > ${d}/data/dashboard-admin-pwd.txt"`)
-        cmds.push(`echo "视频插件环境..."`)
-        cmds.push(`ssh ${s} "mkdir -p /root/koishi-bili-downloads"`)
-        cmds.push(`ssh ${s} "which yt-dlp >/dev/null 2>&1 || (curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp)"`)
+        cmds.push(`scp -o StrictHostKeyChecking=no ${PLUGIN_ROOT}/standalone.js ${s}:${d}/packages/koishi-plugin-dashboard/`)
+        cmds.push(`scp -o StrictHostKeyChecking=no -r ${DIST_DIR}/* ${s}:${d}/packages/koishi-plugin-dashboard/frontend/dist/`)
+        if (!isUpdate) {
+          cmds.push(`echo "视频插件环境..."`)
+          cmds.push(`ssh ${s} "mkdir -p /root/koishi-bili-downloads"`)
+          cmds.push(`ssh ${s} "which yt-dlp >/dev/null 2>&1 || (curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp)"`)
+        }
         cmds.push(`echo "重启脚本..."`)
-        cmds.push(`scp ${repoRoot}/scripts/restart-bot.sh ${s}:${d}/restart.sh`)
-        cmds.push(`scp ${repoRoot}/scripts/watchdog.sh ${s}:${d}/scripts/watchdog.sh`)
-        cmds.push(`echo "确保 package.json..."`)
-        cmds.push(`ssh ${s} "for p in ${pkgs.join(' ')}; do test -f ${d}/node_modules/\$p/package.json || echo '{}' > ${d}/node_modules/\$p/package.json; done"`)
+        cmds.push(`scp -o StrictHostKeyChecking=no ${repoRoot}/scripts/restart-bot.sh ${s}:${d}/restart.sh 2>/dev/null || true`)
+        cmds.push(`scp -o StrictHostKeyChecking=no ${repoRoot}/scripts/watchdog.sh ${s}:${d}/scripts/watchdog.sh 2>/dev/null || true`)
+        if (!isUpdate) {
+          cmds.push(`echo "确保 package.json..."`)
+          cmds.push(`ssh ${s} "for p in ${pkgs.join(' ')}; do test -f ${d}/node_modules/\$p/package.json || echo '{}' > ${d}/node_modules/\$p/package.json; done"`)
+        }
         cmds.push(`echo "重启 Bot..."`)
         cmds.push(`ssh ${s} "bash ${d}/restart.sh"`)
         cmds.push(`echo "✅ 部署完成"`)
@@ -804,8 +998,10 @@ const server = http.createServer((req, res) => {
   if (pathname === '/dashboard/api/deploy/confirm' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
     try {
-      const cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8') || '{}')
+      let cfg = {}
+      try { cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8')) } catch {}
       cfg.deployedAt = Date.now()
+      cfg.deployFingerprint = computeFingerprint()
       const tmp = DEPLOY_CONFIG_FILE + '.tmp'
       fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8')
       fs.renameSync(tmp, DEPLOY_CONFIG_FILE)
@@ -816,9 +1012,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/deploy/upload' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
-    let body = ''
-    req.on('data', c => body += c)
-    req.on('end', () => {
+    collectBody(req, res, (body) => {
       try {
         const { name, data } = JSON.parse(body)
         if (!name || !data) return json(res, { ok: false, message: '文件名或内容为空' }, 400)
@@ -829,6 +1023,78 @@ const server = http.createServer((req, res) => {
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })
     return
+  }
+
+  // 环境检测
+  if (pathname === '/dashboard/api/env/check' && req.method === 'GET') {
+    const result = { nodejs: { found: false, version: '' }, napcat: { found: false, path: '' }, workDir: { exists: false, path: KOISHI_DIR }, port: { port: 5140, available: true } }
+    try {
+      const out = execSync('node --version', { timeout: 3000, encoding: 'utf8' }).trim()
+      result.nodejs = { found: true, version: out }
+    } catch {}
+    try {
+      const napcatDir = '/root/Napcat'
+      if (require('fs').existsSync(napcatDir)) result.napcat = { found: true, path: napcatDir }
+    } catch {}
+    try { result.workDir.exists = require('fs').existsSync(KOISHI_DIR) } catch {}
+    try {
+      execSync('ss -tlnp | grep -q :5140', { timeout: 2000, stdio: 'ignore' })
+      result.port.available = false
+    } catch { result.port.available = true }
+    return json(res, result)
+  }
+
+  // 本地部署
+  let localBotProcess = null
+
+  if (pathname === '/dashboard/api/deploy/local' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const cfg = JSON.parse(body)
+        const workDir = cfg.workDir || KOISHI_DIR
+        if (!cfg.qq) return json(res, { ok: false, message: 'QQ 号不能为空' }, 400)
+        // 确保目录存在
+        const dirs = [path.join(workDir, 'data'), path.join(workDir, 'node_modules')]
+        for (const d of dirs) { try { require('fs').mkdirSync(d, { recursive: true }) } catch {} }
+        // 复制插件包
+        const pkgs = ['koishi-plugin-dongxuelian-ai','koishi-plugin-dongxuelian-help','koishi-plugin-group-name-at','koishi-plugin-defense','koishi-plugin-local-video-sender','koishi-plugin-group-leave-notice','koishi-plugin-dongxuelian-poke','koishi-plugin-daily-report']
+        for (const pkg of pkgs) {
+          const src = path.join(PLUGIN_ROOT, '..', pkg)
+          const dst = path.join(workDir, 'node_modules', pkg)
+          if (require('fs').existsSync(src)) {
+            try { execSync(`cp -r "${src}/lib" "${dst}/" 2>/dev/null; cp "${src}/package.json" "${dst}/" 2>/dev/null || true`, { timeout: 10000, stdio: 'ignore' }) } catch {}
+          }
+        }
+        // 写入配置文件
+        writeFileSync(path.join(workDir, 'data', 'ai-provider.txt'), cfg.provider || 'opencode')
+        writeFileSync(path.join(workDir, 'data', 'ai-model.txt'), cfg.model || '')
+        writeFileSync(path.join(workDir, 'data', 'ai-base-url.txt'), cfg.baseUrl || '')
+        if (cfg.apiKey) writeFileSync(path.join(workDir, 'data', 'ai-openai-key.txt'), cfg.apiKey)
+        if (cfg.adminIds) writeFileSync(path.join(workDir, 'data', 'ai-admin-ids.json'), JSON.stringify(cfg.adminIds, null, 2))
+        // 生成 koishi.yml
+        const yml = `port: 5140\nselfUrl: http://localhost:5140\nplugins:\n  adapter-onebot:\n    protocol: ws\n    selfId: '${cfg.qq}'\n    endpoint: ws://127.0.0.1:8081/onebot/v11/ws\n  dongxuelian-ai: {}\n  dongxuelian-help: {}\n  group-name-at: {}\n  defense: {}\n  local-video-sender: {}\n  group-leave-notice: {}\n  dongxuelian-poke: {}\n  daily-report: {}\n`
+        writeFileSync(path.join(workDir, 'koishi.yml'), yml)
+        json(res, { ok: true, message: '本地部署配置已写入，请使用 koishi start 启动' })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/bot/local-status' && req.method === 'GET') {
+    try {
+      const out = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()
+      const running = out.split('\n').filter(Boolean).length
+      return json(res, { running: running > 0, workers: running })
+    } catch { return json(res, { running: false, workers: 0 }) }
+  }
+
+  if (pathname === '/dashboard/api/bot/local-stop' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    try {
+      stopKoishiProcesses()
+      return json(res, { ok: true, message: '本地 Bot 已停止' })
+    } catch (e) { return json(res, { ok: false, message: e.message }) }
   }
 
   // 静态文件
@@ -853,6 +1119,8 @@ server.listen(PORT, () => {
   log(`dashboard running on http://localhost:${PORT}/dashboard/`)
   log(`bot control: start/stop/maintenance`)
   log(`napcat proxy: /webui/ -> NapCat WebUI`)
+  if (!getAccessPassword() && !isLocalAuthBypass()) log('WARNING: dashboard access password is not configured; login is disabled')
+  if (!readFileSync(ADMIN_PWD_FILE) && !process.env.DASHBOARD_ADMIN_PASSWORD) log('WARNING: dashboard admin password is using default 123456; change it before exposing the service')
 })
 
 process.on('SIGINT', () => { log('shutting down'); server.close(); process.exit(0) })

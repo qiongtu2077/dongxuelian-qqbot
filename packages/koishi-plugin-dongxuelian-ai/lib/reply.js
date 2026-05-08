@@ -175,12 +175,14 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
   const msgId = session.messageId
   const quotePrefix = msgId && (!isRandom || Math.random() < 0.2) ? `<quote id="${msgId}"/>` : ''
   const userName = (session.author?.nick || session.author?.name || session.username || '').replace(/[\s\u200b-\u200f\ufeff]+/g, '').trim()
+  let sentParts = 0
   for (let i = 0; i < parts.length; i++) {
     let part = parts[i].replace(/。$/, '').trim()
     if (!part) continue
     part = part.replace(/[（(][^）)]*[）)]/g, '').trim()
     if (!part) continue
     await session.send(i === 0 ? quotePrefix + part : part)
+    sentParts++
     saveSharedChannelTurn(session, '东雪莲', part, 'assistant')
     if (i < parts.length - 1) {
       await sleep(getRandomDelayMs())
@@ -211,6 +213,7 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
       lastStickerFileSentAt.set(stickerFileKey, sentAt)
     }
   }
+  ctx.logger('dongxuelian-ai').info(`reply sent: random=${isRandom} parts=${sentParts}`)
 }
 
 module.exports = {

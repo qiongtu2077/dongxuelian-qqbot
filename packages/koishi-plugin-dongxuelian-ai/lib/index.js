@@ -1,4 +1,4 @@
-﻿/* ==========================================================================
+/* ==========================================================================
  * 东雪莲 AI 插件 — 核心入口
  *
  * 拆分/修改前先阅读：
@@ -21,7 +21,9 @@
  * ========================================================================== */
 const fs = require('fs/promises')
 const path = require('path')
-const { Session } = require('@satorijs/core')
+const satoriCore = require('@satorijs/core')
+const KoishiSession = satoriCore.Session
+const KoishiBot = satoriCore.Bot
 const { handleCommand } = require('./handler')
 const { analyzeIncomingMessage, normalizeText } = require('./message-reader')
 const { loadStickerCache, sendReply } = require('./reply')
@@ -49,12 +51,12 @@ const {
 const {
   loadConfig, resetConfigCache,
   getThinkingEnabled, setThinkingEnabled,
-  isAdminUserId,
+  isAdminUserId, getAdminUserIds,
 } = require('./runtime-config')
 const {
   DATA_DIR, PLUGIN_VERSION,
   PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, EVENT_DUMP_DIR,
-  RANDOM_WHITELIST_FILE, SILENCE_WHITELIST_FILE, RANDOM_RATE_FILE,
+  RANDOM_WHITELIST_FILE, RANDOM_RATE_FILE,
   MAINTENANCE_FILE,
   RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP,
   DEFAULT_GROUP_RANDOM_WHITELIST,
@@ -96,45 +98,124 @@ const {
   todayCst,
 } = require('./utils')
 
-// @satorijs/core@3.7.0 缺少 stripped / resolve / send / text，这里打补丁
-if (!('stripped' in Session.prototype)) {
-  Object.defineProperty(Session.prototype, 'stripped', {
-    get: function() {
-      const elements = this.event?.message?.elements || []
-      const filtered = elements.filter(e => e.type !== 'at' && e.type !== 'sharp')
-      const hasAt = elements.some(e => e.type === 'at')
-      const appel = hasAt && elements.some(e => e.type === 'at' && e.attrs?.id === this.bot?.selfId)
-      const content = filtered.map(e => {
-        if (e.type === 'text') return e.attrs?.content || ''
-        return ''
-      }).join('').trim()
-      return { elements: filtered, content, hasAt, appel, prefix: '' }
-    }
-  })
+// @satorijs/core@3.7.0 缺少 stripped / parsed / resolve / send，这里随插件加载安装兼容补丁。
+function patchElementText(element) {
+  if (!element) return ''
+  if (typeof element === 'string') return element
+  if (element.type === 'text') return String(element.attrs?.content || '')
+  if (element.type === 'at') {
+    const id = element.attrs?.id || element.attrs?.qq || element.attrs?.userId || element.attrs?.user_id || ''
+    return id ? `<at id="${id}"/>` : ''
+  }
+  if (typeof element.toString === 'function' && element.toString !== Object.prototype.toString) {
+    const text = String(element)
+    return text === '[object Object]' ? '' : text
+  }
+  return ''
 }
-if (typeof Session.prototype.resolve !== 'function') {
-  Session.prototype.resolve = function(value) {
+
+function patchElementsToText(elements) {
+  return Array.isArray(elements) ? elements.map(element => patchElementText(element)).join('') : ''
+}
+
+function patchElementId(element) {
+  return String(element?.attrs?.id || element?.attrs?.qq || element?.attrs?.userId || element?.attrs?.user_id || '')
+}
+
+function patchStripNickname(session, content) {
+  const nicknames = session?.app?.koishi?.config?.nickname || session?.app?.config?.nickname || []
+  const list = Array.isArray(nicknames) ? nicknames : [nicknames]
+  let value = String(content || '')
+  if (value.startsWith('@')) value = value.slice(1)
+  for (const rawName of list) {
+    const name = String(rawName || '')
+    if (!name || !value.startsWith(name)) continue
+    const rest = value.slice(name.length)
+    const match = /^([,\uFF0C\u3001\s]+|$)/.exec(rest)
+    if (!match) continue
+    return rest.slice(match[0].length).trim()
+  }
+  return null
+}
+
+function patchBuildStripped(session) {
+  if (session._stripped && typeof session._stripped === 'object') return session._stripped
+  const source = Array.isArray(session.elements) ? session.elements : Array.isArray(session.event?.message?.elements) ? session.event.message.elements : []
+  const elements = source.slice()
+  let hasAt = false
+  let appel = false
+  let atSelf = false
+  const selfId = String(session.selfId || session.bot?.selfId || session.event?.selfId || '')
+  const quoteUserId = String(session.quote?.user?.id || '')
+  while (elements[0]?.type === 'at') {
+    const id = patchElementId(elements.shift())
+    if (selfId && id === selfId) {
+      atSelf = true
+      appel = true
+    }
+    if (!quoteUserId || id !== quoteUserId) hasAt = true
+    while (elements[0]?.type === 'text' && !String(elements[0].attrs?.content || '').trim()) elements.shift()
+  }
+  let content = patchElementsToText(elements).trim()
+  if (!hasAt) {
+    const stripped = patchStripNickname(session, content)
+    if (stripped !== null) {
+      appel = true
+      content = stripped
+    }
+  }
+  session._stripped = { hasAt, content, appel, atSelf, prefix: null }
+  return session._stripped
+}
+
+function patchInstallAccessors(target) {
+  if (!target || Object.prototype.hasOwnProperty.call(target, '__dongxuelianStrippedPatch')) return
+  Object.defineProperty(target, 'stripped', {
+    configurable: true,
+    enumerable: false,
+    get() { return patchBuildStripped(this) },
+    set(value) { if (value && typeof value === 'object') this._stripped = value; else if (value === undefined) this._stripped = undefined },
+  })
+  Object.defineProperty(target, 'parsed', {
+    configurable: true,
+    enumerable: false,
+    get() { return this.stripped },
+    set(value) { this.stripped = value },
+  })
+  Object.defineProperty(target, '__dongxuelianStrippedPatch', { configurable: true, enumerable: false, value: true })
+}
+
+function patchEnsureSession(session) {
+  if (!session || typeof session !== 'object') return session
+  try { if (session.stripped !== undefined) return session } catch {}
+  patchInstallAccessors(session)
+  return session
+}
+
+patchInstallAccessors(KoishiSession && KoishiSession.prototype)
+
+const originalSessionFactory = KoishiBot && KoishiBot.prototype && KoishiBot.prototype.session
+if (originalSessionFactory && !originalSessionFactory.__dongxuelianPatched) {
+  KoishiBot.prototype.session = function(event) {
+    const session = originalSessionFactory.call(this, event)
+    return patchEnsureSession(session)
+  }
+  KoishiBot.prototype.session.__dongxuelianPatched = true
+}
+
+if (KoishiSession && KoishiSession.prototype && !KoishiSession.prototype.resolve) {
+  KoishiSession.prototype.resolve = function(value) {
     if (typeof value === 'function') return value(this)
     return value
   }
 }
-if (typeof Session.prototype.send !== 'function') {
-  Session.prototype.send = async function(content) {
+
+if (KoishiSession && KoishiSession.prototype && !KoishiSession.prototype.send) {
+  KoishiSession.prototype.send = async function(content) {
     if (!this.bot || typeof this.bot.sendMessage !== 'function') {
       throw new Error('Bot not available for sending')
     }
     return this.bot.sendMessage(this.channelId, content, this.guildId)
-  }
-}
-if (typeof Session.prototype.text !== 'function') {
-  Session.prototype.text = function() {
-    const elements = this.event?.message?.elements
-    if (!elements) return ''
-    return elements
-      .filter(e => e.type === 'text')
-      .map(e => e.attrs?.content || '')
-      .join('')
-      .trim()
   }
 }
 
@@ -142,7 +223,6 @@ exports.name = 'dongxuelian-ai'
 
 let runtimeSettingsLoaded = false
 let randomWhitelistCache = new Set(DEFAULT_GROUP_RANDOM_WHITELIST)
-let silenceWhitelistCache = new Set()
 let randomRateCache = new Map()
 const channelQueues = new Map()
 const channelQueueDepth = new Map()
@@ -151,6 +231,17 @@ const armedEventDumpCache = new Map()
 const channelMutedUntil = new Map()
 const lastRandomReplyTs = new Map()
 const channelPendingRandom = new Map()
+
+const sendFailState = {
+  streak: 0,
+  lastFailAt: 0,
+  lastNotifyAt: 0,
+  restrictedUntil: 0,
+  maxStreak: 10,
+  cooldownMs: 5 * 60 * 1000,
+  restrictDurationMs: 60 * 60 * 1000,
+  notifyIntervalMs: 30 * 1000,
+}
 
 let userBlacklistCache = null
 const lastEmotionCache = new Map()
@@ -187,6 +278,7 @@ function enqueueForChannel(channelKey, fn, maxDepth) {
 
 function getRandomTriggerRate(channelKey) {
   const baseRate = getRandomTriggerBaseRate(channelKey)
+  if (!baseRate || baseRate <= 0) return 0
   const miss = channelMissCount.get(channelKey) || 0
   if (miss < RANDOM_TRIGGER_WARMUP) return baseRate
   return baseRate + (miss - RANDOM_TRIGGER_WARMUP) * RANDOM_TRIGGER_RAMP
@@ -202,12 +294,7 @@ function getRandomTriggerBaseRate(channelKey) {
 
 // 白名单为空时视为全群禁用主动回复，只有显式加入的群才允许触发。
 function getRandomWhitelistStatus(channelKey) {
-  if (randomWhitelistCache.size === 0) return false
   return randomWhitelistCache.has(String(channelKey || ''))
-}
-
-function getSilenceWhitelistStatus(channelKey) {
-  return silenceWhitelistCache.has(String(channelKey || ''))
 }
 
 // --- 原始事件抓取 --- //
@@ -300,9 +387,8 @@ async function dumpSessionEvent(session, analyzed, plain, memoryText) {
 async function loadRuntimeSettings(force = false) {
   if (!force && runtimeSettingsLoaded) return
 
-  const [whitelist, silenceWhitelist, rateMap] = await Promise.all([
+  const [whitelist, rateMap] = await Promise.all([
     readJsonFile(RANDOM_WHITELIST_FILE, [...DEFAULT_GROUP_RANDOM_WHITELIST]),
-    readJsonFile(SILENCE_WHITELIST_FILE, []),
     readJsonFile(RANDOM_RATE_FILE, {}),
   ])
 
@@ -310,12 +396,6 @@ async function loadRuntimeSettings(force = false) {
     Array.isArray(whitelist)
       ? whitelist.map(item => String(item || '').trim()).filter(item => NUMERIC_GROUP_ID_RE.test(item))
       : [...DEFAULT_GROUP_RANDOM_WHITELIST]
-  )
-
-  silenceWhitelistCache = new Set(
-    Array.isArray(silenceWhitelist)
-      ? silenceWhitelist.map(item => String(item || '').trim()).filter(item => NUMERIC_GROUP_ID_RE.test(item))
-      : []
   )
 
   const nextRateMap = new Map()
@@ -330,6 +410,64 @@ async function loadRuntimeSettings(force = false) {
   }
   randomRateCache = nextRateMap
   runtimeSettingsLoaded = true
+}
+
+async function notifyAdminsSendFailure(ctx, bot) {
+  const admins = getAdminUserIds(true)
+  const msg = '⚠️ 连续发送失败，已进入消息受限状态'
+  await Promise.allSettled(
+    [...admins].map(async (id) => {
+      try {
+        if (typeof bot?.sendPrivateMessage === 'function') {
+          await bot.sendPrivateMessage(id, msg)
+        } else if (bot?.internal?.sendPrivateMsg) {
+          await bot.internal.sendPrivateMsg(id, msg)
+        }
+      } catch (error) {
+        ctx.logger('dongxuelian-ai').warn('notify admin send failure: ' + error.message)
+      }
+    })
+  )
+}
+
+async function safeSendReply(ctx, session, reply, isRandom = false) {
+  const now = Date.now()
+  if (sendFailState.streak > 0 && now - sendFailState.lastFailAt > sendFailState.cooldownMs) {
+    sendFailState.streak = 0
+  }
+  if (now < sendFailState.restrictedUntil) {
+    if (!isDirectAtBot(session)) {
+      ctx.logger('dongxuelian-ai').warn('safeSendReply: restricted, skipping reply')
+      return
+    }
+    try {
+      return await session.send('我被盯上了，有内鬼终止交易')
+    } catch (error) {
+      ctx.logger('dongxuelian-ai').error(`safeSendReply: restricted notice failed: ${error.message}`)
+      return
+    }
+  }
+  try {
+    await sendReply(ctx, session, reply, isRandom)
+    sendFailState.streak = 0
+    sendFailState.lastFailAt = 0
+  } catch (error) {
+    sendFailState.streak++
+    sendFailState.lastFailAt = now
+    ctx.logger('dongxuelian-ai').error(`safeSendReply: send failed (streak=${sendFailState.streak}): ${error.message}`)
+    if (sendFailState.streak <= 2) {
+      sendFailState.lastNotifyAt = now
+      notifyAdminsSendFailure(ctx, session.bot).catch(() => {})
+    } else if (now - sendFailState.lastNotifyAt > sendFailState.notifyIntervalMs) {
+      sendFailState.lastNotifyAt = now
+      notifyAdminsSendFailure(ctx, session.bot).catch(() => {})
+    }
+    if (sendFailState.streak >= sendFailState.maxStreak) {
+      sendFailState.restrictedUntil = now + sendFailState.restrictDurationMs
+      ctx.logger('dongxuelian-ai').warn(`safeSendReply: restricted for 1 hour due to ${sendFailState.streak} consecutive send failures`)
+    }
+    throw error
+  }
 }
 
 exports.buildRepeatCandidate = buildRepeatCandidate
@@ -431,7 +569,6 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     const adminCommandMatched =
       /^(?:东雪莲)?测试(?:开|关)$/.test(plain) ||
       /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
-      /^群聊AI静默白名单(?:添加|删除|查看|列表)/.test(plain) ||
       /^东雪莲群聊AI概率(?:设置|重置)$/.test(plain) ||
       /^东雪莲联网(?:开|关)$/.test(plain) ||
       /^东雪莲思考(?:开|关)$/.test(plain) ||
@@ -470,25 +607,6 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     if (/^群聊AI白名单(?:查看|列表)$/.test(plain)) {
       const whitelist = [...randomWhitelistCache]
       return whitelist.length ? `群聊AI白名单：\n${whitelist.join('\n')}` : '当前白名单为空，等同于所有群都禁止主动回复。'
-    }
-
-    const silenceAddMatch = plain.match(/^群聊AI静默白名单添加\s*(\d+)$/)
-    if (silenceAddMatch) {
-      silenceWhitelistCache.add(silenceAddMatch[1])
-      await writeJsonFile(SILENCE_WHITELIST_FILE, [...silenceWhitelistCache])
-      return `已加入群聊AI静默白名单：${silenceAddMatch[1]}`
-    }
-
-    const silenceDeleteMatch = plain.match(/^群聊AI静默白名单删除\s*(\d+)$/)
-    if (silenceDeleteMatch) {
-      silenceWhitelistCache.delete(silenceDeleteMatch[1])
-      await writeJsonFile(SILENCE_WHITELIST_FILE, [...silenceWhitelistCache])
-      return `已移出群聊AI静默白名单：${silenceDeleteMatch[1]}`
-    }
-
-    if (/^群聊AI静默白名单(?:查看|列表)$/.test(plain)) {
-      const whitelist = [...silenceWhitelistCache]
-      return whitelist.length ? `群聊AI静默白名单：\n${whitelist.join('\n')}` : '群聊AI静默白名单为空。'
     }
 
     // 用户黑名单管理
@@ -666,7 +784,6 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       plain, inGuild, channelKey, currentUserId, adminCommandMatched,
       loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache,
       callOpenAI, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus,
-      getSilenceWhitelistStatus,
       getThinkingEnabled,
       setThinkingEnabled,
       resetConfigCache,
@@ -696,29 +813,6 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     }
     const willFactor = calculateWillFactor(channelKey, currentPersonaName, channelSharedCache, personaWillContent)
     const finalTriggerRate = Math.min(getRandomTriggerBaseRate(channelKey) * willFactor, 1.0)
-
-    const userText = normalizeText(plain)
-    const sharedContextNote = getSharedContextNote(session, currentUserId, {
-      replyToId: analyzed.replyToId,
-      mentionUserIds,
-      randomTriggered: false,
-    })
-    const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId })
-    const sharedRecordText = memoryText || (analyzed.hasMessageRecordCue ? normalizeText(analyzed.plain || '') : '')
-
-    if (inGuild && sharedRecordText) {
-      saveSharedChannelTurn(session, userName, sharedRecordText, 'user', {
-        messageId: session.messageId,
-        replyToId: analyzed.replyToId,
-        mentionUserIds,
-        hasMessageRecordCue: analyzed.hasMessageRecordCue,
-      })
-    }
-
-    if (inGuild && getSilenceWhitelistStatus(channelKey)) {
-      ctx.logger('dongxuelian-ai').info(`silent whitelist skipped AI reply in ${channelKey}`)
-      return next()
-    }
 
     // "闭嘴" 静默十分钟主动回复
     if (inGuild && !directAt && !nameMentioned && /^(?:闭嘴|别吵|别说了|不要说话)/.test(plain)) {
@@ -758,12 +852,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
           channelPendingRandom.delete(channelKey)
           if (p && shouldTriggerRandom(getRandomTriggerRate(channelKey))) {
             channelMissCount.set(channelKey, 0)
-            const delayedSharedContextNote = getSharedContextNote(session, currentUserId, {
-              replyToId: analyzed.replyToId,
-              mentionUserIds,
-              randomTriggered: true,
-            })
-            enqueueForChannel(channelKey, () => chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: delayedSharedContextNote, quotedMessageNote, forwardSummaryText }), 4)
+            enqueueForChannel(channelKey, () => chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote, quotedMessageNote, forwardSummaryText }), 4)
           } else {
             channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
           }
@@ -786,12 +875,23 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       }
     }
 
-    const activeSharedContextNote = getSharedContextNote(session, currentUserId, {
+    const userText = normalizeText(plain)
+    const sharedContextNote = getSharedContextNote(session, currentUserId, {
       replyToId: analyzed.replyToId,
       mentionUserIds,
       randomTriggered,
     })
-    const sharedContextForChat = randomTriggered ? activeSharedContextNote : sharedContextNote
+    const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId })
+    const sharedRecordText = memoryText || (analyzed.hasMessageRecordCue ? normalizeText(analyzed.plain || '') : '')
+
+    if (inGuild && sharedRecordText) {
+      saveSharedChannelTurn(session, userName, sharedRecordText, 'user', {
+        messageId: session.messageId,
+        replyToId: analyzed.replyToId,
+        mentionUserIds,
+        hasMessageRecordCue: analyzed.hasMessageRecordCue,
+      })
+    }
 
 // 用户黑名单：群聊中不回复，但仍记录消息供上下文使用
     if (inGuild && !hasAdminPermission(session)) {
@@ -841,13 +941,13 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
 
     const maxDepth = inGuild ? 4 : 2
     enqueueForChannel(channelKey, () =>
-      chat(session, userText, ctx, { randomTriggered, sharedContextNote: sharedContextForChat, quotedMessageNote, forwardSummaryText, mentionUserIds })
+      chat(session, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds })
         .then(reply => {
           // AI 回复中检测到政治拒绝 → 通知处理者
           if (inGuild && /别问了，这个我不聊/.test(reply)) {
             notifySensitiveHandlers(session, channelKey, { throttle: true }).catch(() => {})
           }
-          return sendReply(ctx, session, reply, randomTriggered)
+          return safeSendReply(ctx, session, reply, randomTriggered)
         })
         .catch(err => {
           ctx.logger('dongxuelian-ai').warn(err)
@@ -855,7 +955,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
                 err && err.message && err.message.includes('Empty model') ? '我摆了，懒得回' :
                 err && err.message && /data_inspection|DataInspection|inappropriate content/i.test(err.message) ? '这个图不合适，不说了吧' :
                 '东雪莲暂时无法连接。'
-          return session.send(msg)
+          return safeSendReply(ctx, session, msg, randomTriggered)
         })
     , maxDepth)
   })

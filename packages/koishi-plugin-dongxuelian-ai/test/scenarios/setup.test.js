@@ -33,6 +33,10 @@ function outputOf(result) {
   return `${result.stdout || ''}\n${result.stderr || ''}`
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
 function isInsideDirectory(target, root) {
   const targetReal = fs.realpathSync(target)
   const rootReal = fs.realpathSync(root)
@@ -41,10 +45,14 @@ function isInsideDirectory(target, root) {
 }
 
 function runSetup(shell, env) {
-  return spawnSync(shell, [path.join(ROOT, 'setup.sh')], {
+  const setupScript = path.relative(ROOT, path.join(ROOT, 'setup.sh')).replace(/\\/g, '/')
+  const assignments = Object.entries(env)
+    .map(([key, value]) => `${key}=${shellQuote(value)}`)
+    .join(' ')
+  return spawnSync(shell, ['-c', `${assignments} ${shell} ${shellQuote(setupScript)}`], {
     cwd: ROOT,
     encoding: 'utf8',
-    env: { ...process.env, ...env },
+    env: process.env,
   })
 }
 
@@ -57,7 +65,8 @@ async function run(t) {
     return
   }
 
-  const syntax = spawnSync(shell, ['-n', path.join(ROOT, 'setup.sh')], { cwd: ROOT, encoding: 'utf8' })
+  const setupScript = path.relative(ROOT, path.join(ROOT, 'setup.sh')).replace(/\\/g, '/')
+  const syntax = spawnSync(shell, ['-n', setupScript], { cwd: ROOT, encoding: 'utf8' })
   t.check('scenario setup shell syntax passes before simulation', syntax.status === 0, outputOf(syntax))
 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dongxuelian-setup-test-'))
