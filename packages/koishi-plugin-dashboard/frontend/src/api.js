@@ -149,3 +149,4 @@ export async function downloadNapcat(url) { return post('/deploy/napcat-download
 export async function localBotStatus() { return get('/bot/local-status') }
 export async function localBotStop() { return post('/bot/local-stop', {}, true) }
 export async function rebuildFrontend() { return post('/frontend/rebuild', {}, true) }
+export async function rebuildFrontendStatus() { return get('/frontend/rebuild-status') }

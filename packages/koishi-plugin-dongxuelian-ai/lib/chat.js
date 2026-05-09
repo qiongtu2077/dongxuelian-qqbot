@@ -590,10 +590,10 @@ async function chat(session, userText, ctx, options = {}) {
     })
   }
 
-  // 用户记忆注入（核心信息）
+  // 用户记忆注入（核心信息，加前缀防止翻旧账）
   const memorySummary = await getMemorySummary(currentUserId, channelKey)
   if (memorySummary) {
-    messages.push({ role: 'system', content: memorySummary })
+    messages.push({ role: 'system', content: `[记住的信息-仅作背景]\n${memorySummary}\n\n除非用户主动问起，否则不要主动提及以上记住的内容。你只需要根据当前问题回答即可。` })
   }
 
   messages.push(...historyMessages)

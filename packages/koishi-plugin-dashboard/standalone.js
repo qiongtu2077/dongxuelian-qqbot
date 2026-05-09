@@ -212,6 +212,9 @@ function downloadToRuntime(url, callback) {
   req.on('error', callback)
 }
 
+// 前端重建状态
+let rebuildStatus = { state: 'idle', message: '' }
+
 // 版本指纹：对关键代码文件做 hash，不依赖 git
 function computeFingerprint() {
   try {
@@ -1101,17 +1104,26 @@ const server = http.createServer((req, res) => {
         const FE_DIR = path.join(PLUGIN_ROOT, 'frontend')
         if (pathname === '/dashboard/api/frontend/rebuild' && req.method === 'POST') {
           if (!requireAdmin(req, res)) return
-          exec(`cd "${FE_DIR}" && cp -r dist dist.bak && npm run build && rm -rf dist.bak`,
+          if (rebuildStatus.state === 'building') {
+            return json(res, { ok: false, message: '正在构建中，请等待完成' })
+          }
+          rebuildStatus = { state: 'building', message: '' }
+          exec(`cd "${FE_DIR}" && cp -r dist dist.bak && npm run build 2>/dev/null && rm -rf dist.bak`,
             (err) => {
               if (err) {
                 exec(`cd "${FE_DIR}" && rm -rf dist && mv dist.bak dist`, () => {})
+                rebuildStatus = { state: 'failed', message: '构建失败，已自动回退' }
                 log('frontend rebuild failed, rolled back')
               } else {
+                rebuildStatus = { state: 'success', message: '前端构建成功，请刷新页面' }
                 log('frontend rebuild success')
               }
             }
           )
-          return json(res, { ok: true, message: '前端重建已启动，完成后刷新页面即可' })
+          return json(res, { ok: true, message: '前端构建已启动' })
+        }
+        if (pathname === '/dashboard/api/frontend/rebuild-status' && req.method === 'GET') {
+          return json(res, rebuildStatus)
         }
       const tmp = DEPLOY_CONFIG_FILE + '.tmp'
       fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8')

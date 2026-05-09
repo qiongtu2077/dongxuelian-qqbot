@@ -76,7 +76,7 @@
 
 <script>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { checkDeployUpdate, checkLocalEnv, confirmDeploy, deployLocal, downloadNapcat, fetchDeployConfig, getDeployProgress, rebuildFrontend, runDeploy, updateDeployConfig, uploadDeploy } from '../api'
+import { checkDeployUpdate, checkLocalEnv, confirmDeploy, deployLocal, downloadNapcat, fetchDeployConfig, getDeployProgress, rebuildFrontend, rebuildFrontendStatus, runDeploy, updateDeployConfig, uploadDeploy } from '../api'
 
 export default {
   name: 'DeployPanel',
@@ -182,8 +182,23 @@ export default {
       rebuilding.value = true; remoteMsg.value = null
       const res = await rebuildFrontend()
       if (withAdminRetry(res, '重建前端需要管理员密码', doRebuildFrontend)) { rebuilding.value = false; return }
-      remoteMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '前端重建完成，请刷新页面' : '重建失败') }
-      rebuilding.value = false
+      if (!res.ok) { remoteMsg.value = { type: 'err', text: res.data?.message || '启动失败' }; rebuilding.value = false; return }
+      remoteMsg.value = { type: 'ok', text: '前端构建中...' }
+      // 轮询构建状态
+      const timer = setInterval(async () => {
+        const sr = await rebuildFrontendStatus()
+        if (sr.ok) {
+          if (sr.data.state === 'success') {
+            clearInterval(timer); rebuilding.value = false
+            remoteMsg.value = { type: 'ok', text: '前端构建成功，请刷新页面' }
+          } else if (sr.data.state === 'failed') {
+            clearInterval(timer); rebuilding.value = false
+            remoteMsg.value = { type: 'err', text: sr.data.message || '构建失败' }
+          }
+        }
+      }, 2000)
+      // 60秒超时
+      setTimeout(() => { clearInterval(timer); if (rebuilding.value) { rebuilding.value = false; remoteMsg.value = { type: 'err', text: '构建超时' } } }, 65000)
     }
 
     async function startRemoteDeploy() {
