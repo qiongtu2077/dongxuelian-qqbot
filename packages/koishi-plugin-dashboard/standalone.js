@@ -97,8 +97,11 @@ function log(msg) {
   console.log(`[dashboard] ${msg}`)
 }
 
-function isLocalAuthBypass() {
-  return /^(?:1|true|yes|on)$/i.test(String(process.env.GLOBAL_LOCAL_MODE || '').trim())
+function isLocalAuthBypass(req) {
+  if (/^(?:1|true|yes|on)$/i.test(String(process.env.GLOBAL_LOCAL_MODE || '').trim())) return true
+  if (!req) return false
+  const host = req.headers?.host || ''
+  return /^(?:localhost|127\.0\.0\.1|::1)(?::\d+)?$/i.test(host.trim())
 }
 
 function stopKoishiProcesses() {
@@ -336,11 +339,11 @@ const server = http.createServer((req, res) => {
       try {
         const { password } = JSON.parse(body)
         const stored = getAccessPassword()
-        if (!stored && !isLocalAuthBypass()) {
+        if (!stored && !isLocalAuthBypass(req)) {
           log('login rejected: access password is not configured')
           return json(res, { ok: false, message: '访问密码未配置' }, 503)
         }
-        const match = isLocalAuthBypass() || (!!stored && password === stored)
+        const match = isLocalAuthBypass(req) || (!!stored && password === stored)
         if (match) return json(res, { ok: true, token: createToken() })
         log('login failed')
         return json(res, { ok: false, message: '密码错误' }, 401)

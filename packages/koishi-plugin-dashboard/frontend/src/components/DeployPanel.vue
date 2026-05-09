@@ -56,10 +56,10 @@
       <div class="row"><label>模式</label><select v-model="remote.mode"><option value="install">首次安装</option><option value="update">更新代码</option></select></div>
 
       <div class="deploy-actions">
-        <button class="btn btn-sm" type="button" @click="loadRemoteConfig">读取配置</button>
-        <button class="btn btn-sm" type="button" @click="saveRemoteConfig" :disabled="savingRemote">{{ savingRemote ? '保存中...' : '保存配置' }}</button>
+        <button class="btn btn-sm" type="button" @click="loadRemoteConfig">自动填入服务器地址</button>
+        <button class="btn btn-sm" type="button" @click="saveRemoteConfig" :disabled="savingRemote">{{ savingRemote ? '保存中...' : '保存服务器地址' }}</button>
         <button class="btn btn-sm" type="button" @click="checkRemoteUpdate">检查更新</button>
-        <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="deploying">{{ deploying ? '部署中...' : '开始部署' }}</button>
+        <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="deploying">{{ deploying ? '部署中...' : '开始部署/更新' }}</button>
       </div>
 
       <div style="margin-top:12px">
