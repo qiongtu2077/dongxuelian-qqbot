@@ -7,7 +7,7 @@
         <div class="grp-desc">{{ corePersona.description || '无描述' }}</div>
       </div>
       <button class="btn-sm" @click="startPersonaEdit(corePersona.name)"
-        style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">编辑</button>
+        style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">{{ personaEditing === corePersona.name ? '加载中...' : '编辑' }}</button>
     </div>
   </div>
 
@@ -19,7 +19,7 @@
         <div class="grp-desc">{{ p.description || '无描述' }}</div>
       </div>
       <button class="btn-sm" @click="startPersonaEdit(p.name)"
-        style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">编辑</button>
+        style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">{{ personaEditing === p.name ? '加载中...' : '编辑' }}</button>
     </div>
   </div>
 
@@ -32,15 +32,15 @@
         <div class="grp-desc">{{ p.description || '无描述' }}</div>
       </div>
       <button class="btn-sm" @click="startPersonaEdit(p.name)"
-        style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">编辑</button>
+        style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">{{ personaEditing === p.name ? '加载中...' : '编辑' }}</button>
       <button class="btn-sm" @click="doPersonaDelete(p.name)"
         :style="{ background: personaDeleting === p.name ? 'var(--tabBg)' : 'transparent', border: '1px solid var(--danger)', color: 'var(--danger)', flexShrink: 0 }"
         :disabled="personaDeleting === p.name">{{ personaDeleting === p.name ? '删除中' : '删除' }}</button>
     </div>
   </div>
 
-  <div class="card">
-    <h2>创建新人格</h2>
+  <div class="card" ref="personaEditSection">
+    <h2>创建/修改人格</h2>
     <div style="display:grid;gap:12px">
       <div>
           <div style="font-size:13px;color:var(--text2);margin-bottom:4px">名称</div>
@@ -77,13 +77,13 @@
         <div class="grp-desc">{{ l.description || '无描述' }}</div>
       </div>
       <button class="btn-sm" @click="startLoreEdit(l)"
-        style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">编辑</button>
+        style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">{{ loreEditing === l.name ? '加载中...' : '编辑' }}</button>
       <button class="btn-sm" @click="doLoreDelete(l.name)"
         :style="{ background: loreDeleting === l.name ? 'var(--tabBg)' : 'transparent', border: '1px solid var(--danger)', color: 'var(--danger)', flexShrink: 0 }"
         :disabled="loreDeleting === l.name">{{ loreDeleting === l.name ? '删除中' : '删除' }}</button>
     </div>
 
-    <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">
+    <div ref="loreEditSection" style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">
       <div style="font-size:13px;color:var(--text2);margin-bottom:8px">{{ loreEditing ? '编辑世界观' : '创建世界观' }}</div>
       <div style="display:grid;gap:8px">
         <input v-model="loreFormName" placeholder="世界观标识（如：my-lore）" style="width:100%" :disabled="!!loreEditing" />
@@ -100,7 +100,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { fetchPersonas, fetchPersonaDetail, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore } from '../api'
 
 export default {
@@ -116,6 +116,9 @@ export default {
     const creating = ref(false)
     const createMsg = ref(null)
     const personaDeleting = ref(null)
+    const personaEditing = ref(null)
+    const personaEditSection = ref(null)
+    const loreEditSection = ref(null)
 
     const lores = ref([])
     const loreFormName = ref('')
@@ -163,6 +166,7 @@ export default {
 
     function cancelEdit() {
       editingName.value = null
+      personaEditing.value = null
       newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'
       createMsg.value = null
     }
@@ -170,6 +174,7 @@ export default {
     async function startPersonaEdit(name) {
       const p = personas.value.find(x => x.name === name)
       if (!p) return
+      personaEditing.value = name
       editingName.value = name
       newName.value = p.name
       newDesc.value = p.description || ''
@@ -184,6 +189,11 @@ export default {
         newLore.value = 'none'
       }
       createMsg.value = null
+      personaEditing.value = null
+      nextTick(() => {
+        const el = personaEditSection.value
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
     }
 
     async function doPersonaDelete(name) {
@@ -210,6 +220,10 @@ export default {
       loreFormDesc.value = l.description || ''
       loreFormContent.value = l.content || ''
       loreMsg.value = null
+      nextTick(() => {
+        const el = loreEditSection.value
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
     }
 
     function cancelLoreEdit() {
@@ -250,7 +264,7 @@ export default {
       loreDeleting.value = null
     }
 
-    return { personas, corePersona, defaultModes, regularPersonas, loreList, newName, newDesc, newLore, newContent, editingName, creating, createMsg, personaDeleting, doCreate, cancelEdit,
+    return { personas, corePersona, defaultModes, regularPersonas, loreList, newName, newDesc, newLore, newContent, editingName, creating, createMsg, personaDeleting, personaEditing, personaEditSection, loreEditSection, doCreate, cancelEdit,
       startPersonaEdit, doPersonaDelete,
       lores, loreFormName, loreFormDesc, loreFormContent, loreSaving, loreMsg, loreDeleting, loreEditing,
       startLoreEdit, cancelLoreEdit, doLoreSave, doLoreDelete }
