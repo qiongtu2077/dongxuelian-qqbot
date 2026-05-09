@@ -1097,7 +1097,22 @@ const server = http.createServer((req, res) => {
       let cfg = {}
       try { cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8')) } catch {}
       cfg.deployedAt = Date.now()
-      cfg.deployFingerprint = computeFingerprint()
+        cfg.deployFingerprint = computeFingerprint()
+        const FE_DIR = path.join(PLUGIN_ROOT, 'frontend')
+        if (pathname === '/dashboard/api/frontend/rebuild' && req.method === 'POST') {
+          if (!requireAdmin(req, res)) return
+          exec(`cd "${FE_DIR}" && cp -r dist dist.bak && npm run build && rm -rf dist.bak`,
+            (err) => {
+              if (err) {
+                exec(`cd "${FE_DIR}" && rm -rf dist && mv dist.bak dist`, () => {})
+                log('frontend rebuild failed, rolled back')
+              } else {
+                log('frontend rebuild success')
+              }
+            }
+          )
+          return json(res, { ok: true, message: '前端重建已启动，完成后刷新页面即可' })
+        }
       const tmp = DEPLOY_CONFIG_FILE + '.tmp'
       fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8')
       fs.renameSync(tmp, DEPLOY_CONFIG_FILE)

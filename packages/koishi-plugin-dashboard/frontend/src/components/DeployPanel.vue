@@ -60,6 +60,7 @@
         <button class="btn btn-sm" type="button" @click="saveRemoteConfig" :disabled="savingRemote">{{ savingRemote ? '保存中...' : '保存服务器地址' }}</button>
         <button class="btn btn-sm" type="button" @click="checkRemoteUpdate">检查更新</button>
         <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="deploying">{{ deploying ? '部署中...' : '开始部署/更新' }}</button>
+        <button class="btn btn-sm btn-ghost" type="button" @click="doRebuildFrontend" :disabled="rebuilding">{{ rebuilding ? '构建中...' : '重建前端' }}</button>
       </div>
 
       <div style="margin-top:12px">
@@ -75,7 +76,7 @@
 
 <script>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { checkDeployUpdate, checkLocalEnv, confirmDeploy, deployLocal, downloadNapcat, fetchDeployConfig, getDeployProgress, runDeploy, updateDeployConfig, uploadDeploy } from '../api'
+import { checkDeployUpdate, checkLocalEnv, confirmDeploy, deployLocal, downloadNapcat, fetchDeployConfig, getDeployProgress, rebuildFrontend, runDeploy, updateDeployConfig, uploadDeploy } from '../api'
 
 export default {
   name: 'DeployPanel',
@@ -95,6 +96,7 @@ export default {
     const localDeploying = ref(false)
     const savingRemote = ref(false)
     const deploying = ref(false)
+    const rebuilding = ref(false)
     let progressTimer = null
 
     const portSummary = computed(() => {
@@ -174,6 +176,14 @@ export default {
       const res = await checkDeployUpdate()
       if (res.ok) remoteMsg.value = { type: 'ok', text: res.data.upToDate ? '远程记录已是最新版本' : `本地 ${res.data.local}，远程 ${res.data.deployed || '未记录'}` }
       else remoteMsg.value = { type: 'err', text: '检查更新失败' }
+    }
+
+    async function doRebuildFrontend() {
+      rebuilding.value = true; remoteMsg.value = null
+      const res = await rebuildFrontend()
+      if (withAdminRetry(res, '重建前端需要管理员密码', doRebuildFrontend)) { rebuilding.value = false; return }
+      remoteMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '前端重建完成，请刷新页面' : '重建失败') }
+      rebuilding.value = false
     }
 
     async function startRemoteDeploy() {
