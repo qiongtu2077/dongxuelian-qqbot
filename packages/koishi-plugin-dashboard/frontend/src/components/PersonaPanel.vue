@@ -148,8 +148,9 @@ export default {
       // API 列表接口不返回 content/lore，单独请求详情
       const detail = await fetchPersonaDetail(name)
       if (detail.ok && detail.data) {
-        newContent.value = detail.data.content || ''
-        newLore.value = detail.data.lore || 'none'
+        const d = detail.data.data || detail.data
+        newContent.value = d.content || ''
+        newLore.value = d.lore || 'none'
       } else {
         newContent.value = ''
         newLore.value = 'none'
