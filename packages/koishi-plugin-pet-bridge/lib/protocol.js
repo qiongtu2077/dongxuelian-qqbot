@@ -114,7 +114,11 @@ function handleToggleThinking(payload) {
 
 function handleToggleMaintenance(payload) {
   const enabled = !!payload.enabled
-  writeTextFileSync(MAINTENANCE_FILE, enabled ? '1' : '0')
+  if (enabled) {
+    writeTextFileSync(MAINTENANCE_FILE, '优化中，别急~')
+  } else {
+    try { fs.unlinkSync(MAINTENANCE_FILE) } catch {}
+  }
   return { success: true, payload: { maintenanceEnabled: enabled } }
 }
 
