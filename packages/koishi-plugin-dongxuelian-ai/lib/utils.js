@@ -276,7 +276,8 @@ function sanitizeReply(text = '', userName = '') {
   let t = String(text).replace(/^(根据|作为|我是|我的角色)\S{0,20}[:：，。\s]?/g, '').trim()
   if (userName) {
     const esc = userName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    t = t.replace(new RegExp('(?<!的)' + esc + '(?![，,、]?\\s*你)', 'g'), '你')
+    t = t.replace(new RegExp('(?<!的)' + esc + '(?=[，,。！!？?]?\\s*$)'), '')
+    t = t.replace(new RegExp('(?<!的)' + esc + '(?![，,、。！!？?]?\\s*你)', 'g'), '你')
   }
   return t || text
 }
