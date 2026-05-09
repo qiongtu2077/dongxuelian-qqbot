@@ -6,7 +6,7 @@
  */
 const { loadConfig, resetConfigCache, getThinkingEnabled, setThinkingEnabled } = require('koishi-plugin-dongxuelian-ai/lib/runtime-config')
 const { requestChatCompletions } = require('koishi-plugin-dongxuelian-ai/lib/api')
-const { getAvailablePersonals, loadPersonalSkill } = require('koishi-plugin-dongxuelian-ai/lib/persona')
+const { getAvailablePersonals, loadPersonalSkill, setUserPersona, getUserPersona } = require('koishi-plugin-dongxuelian-ai/lib/persona')
 const { getMemorySummary } = require('koishi-plugin-dongxuelian-ai/lib/conversation')
 const { PROVIDER_FILE, MODEL_FILE, SEARCH_ENABLED_FILE, MAINTENANCE_FILE, THINKING_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_WHITELIST_FILE } = require('koishi-plugin-dongxuelian-ai/lib/constants')
 const fs = require('fs')
@@ -155,7 +155,13 @@ function handleSwitchPersona(payload) {
   if (!name) return { success: false, payload: { error: 'missing persona name' } }
   const skill = loadPersonalSkill(name)
   if (!skill) return { success: false, payload: { error: 'persona not found' } }
+  setUserPersona('desktop-user', name)
   return { success: true, payload: { persona: name } }
+}
+
+function handleGetCurrentPersona() {
+  const current = getUserPersona('desktop-user') || 'default'
+  return { success: true, payload: { persona: current } }
 }
 
 async function handleChat(payload) {
@@ -163,8 +169,9 @@ async function handleChat(payload) {
   if (!text) return { success: false, payload: { error: 'missing text' } }
   const config = await loadConfig()
   const messages = []
-  if (persona) {
-    const skillContent = loadPersonalSkill(persona)
+  const personaName = persona || getUserPersona('desktop-user') || null
+  if (personaName && personaName !== 'default') {
+    const skillContent = loadPersonalSkill(personaName)
     if (skillContent) {
       const body = skillContent.replace(/^---[\s\S]*?---\n?/, '').trim()
       if (body) messages.push({ role: 'system', content: body })
@@ -195,6 +202,7 @@ async function handleMessage(msg) {
       else if (qt === 'personas') result = handlePersonas()
       else if (qt === 'memory') result = await handleMemory(payload)
       else if (qt === 'summaries') result = handleSummaries()
+      else if (qt === 'current_persona') result = handleGetCurrentPersona()
       else result = { success: false, payload: { error: 'unknown query type: ' + qt } }
     } else if (type === 'command') {
       const action = payload && payload.action

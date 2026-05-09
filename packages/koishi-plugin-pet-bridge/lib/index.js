@@ -15,9 +15,9 @@ exports.apply = (ctx, config) => {
   const logger = ctx.logger('pet-bridge')
 
   ctx.on('ready', () => {
-    const wss = new WebSocketServer({ port })
+    const wss = new WebSocketServer({ port, host: '127.0.0.1' })
 
-    logger.info('pet-bridge: WS server listening on port ' + port)
+    logger.info('pet-bridge: WS server listening on 127.0.0.1:' + port)
 
     wss.on('connection', (ws) => {
       ws.on('message', async (raw) => {
