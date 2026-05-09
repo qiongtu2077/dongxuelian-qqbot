@@ -21,18 +21,23 @@ exports.apply = (ctx, config) => {
 
     wss.on('connection', (ws) => {
       ws.on('message', async (raw) => {
+        let msgId = null
         try {
           const msg = JSON.parse(raw.toString())
+          msgId = msg.id
           const response = await handleMessage(msg)
           if (ws.readyState === 1) ws.send(JSON.stringify(response))
         } catch (err) {
+          logger.warn(`message error: ${err.message}`)
           if (ws.readyState === 1) {
-            ws.send(JSON.stringify({ type: 'response', id: null, success: false, payload: { error: err.message } }))
+            ws.send(JSON.stringify({ type: 'response', id: msgId, success: false, payload: { error: err.message } }))
           }
         }
       })
 
-      ws.on('error', () => {})
+      ws.on('error', (err) => {
+        logger.warn(`WS error: ${err.message}`)
+      })
     })
 
     ctx.on('dispose', () => {

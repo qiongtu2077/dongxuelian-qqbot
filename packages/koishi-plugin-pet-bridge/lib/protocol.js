@@ -51,9 +51,9 @@ function callOneBot(action, params) {
         if (msg.status === 'ok') finish(msg)
         else finish(null)
       })
-      ws.on('error', () => finish(null))
+      ws.on('error', (e) => { console.error('[pet-bridge] callOneBot WS error:', e.message); finish(null) })
       ws.on('close', () => finish(null))
-    } catch { finish(null) }
+    } catch (e) { console.error('[pet-bridge] callOneBot connect error:', e.message); finish(null) }
   })
 }
 
@@ -171,6 +171,13 @@ function handleGetCurrentPersona() {
 async function handleChat(payload) {
   const { text, persona } = payload
   if (!text) return { success: false, payload: { error: 'missing text' } }
+
+  // 维护模式检查：与 bot index.js 逻辑一致
+  if (require('fs').existsSync(MAINTENANCE_FILE)) {
+    const mt = require('fs').readFileSync(MAINTENANCE_FILE, 'utf8').trim() || '优化中，别急~'
+    return { success: true, payload: { reply: mt } }
+  }
+
   const config = await loadConfig()
   const messages = []
   const personaName = persona || getUserPersona('desktop-user') || null
