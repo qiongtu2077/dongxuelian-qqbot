@@ -2,9 +2,16 @@
   <div class="card">
     <h2>自定义人格</h2>
     <div v-if="!personas.length" style="color:var(--text3);font-size:14px">无自定义人格</div>
-    <div v-for="p in personas" :key="p.name" class="grp">
-      <div class="grp-name">{{ p.name }}</div>
-      <div class="grp-desc">{{ p.description || '无描述' }}</div>
+    <div v-for="p in personas" :key="p.name" class="grp" style="display:flex;align-items:center;gap:8px">
+      <div style="flex:1;min-width:0">
+        <div class="grp-name">{{ p.name }}</div>
+        <div class="grp-desc">{{ p.description || '无描述' }}</div>
+      </div>
+      <button class="btn-sm" @click="startPersonaEdit(p.name)"
+        style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">编辑</button>
+      <button class="btn-sm" @click="doPersonaDelete(p.name)"
+        :style="{ background: personaDeleting === p.name ? 'var(--tabBg)' : 'transparent', border: '1px solid var(--danger)', color: 'var(--danger)', flexShrink: 0 }"
+        :disabled="personaDeleting === p.name">{{ personaDeleting === p.name ? '删除中' : '删除' }}</button>
     </div>
   </div>
 
@@ -69,7 +76,7 @@
 
 <script>
 import { ref, onMounted } from 'vue'
-import { fetchPersonas, fetchLoreList, createPersona, fetchLores, createLore, updateLore, deleteLore } from '../api'
+import { fetchPersonas, fetchLoreList, createPersona, deletePersona, fetchLores, createLore, updateLore, deleteLore } from '../api'
 
 export default {
   name: 'PersonaPanel',
@@ -82,6 +89,7 @@ export default {
     const newContent = ref('')
     const creating = ref(false)
     const createMsg = ref(null)
+    const personaDeleting = ref(null)
 
     const lores = ref([])
     const loreFormName = ref('')
@@ -121,6 +129,30 @@ export default {
         createMsg.value = { type: 'err', text: res.data?.message || '创建失败' }
       }
       creating.value = false
+    }
+
+    function startPersonaEdit(name) {
+      const p = personas.value.find(x => x.name === name)
+      if (!p) return
+      newName.value = p.name
+      newDesc.value = p.description || ''
+      newContent.value = p.content || ''
+      newLore.value = p.lore || 'none'
+      createMsg.value = null
+    }
+
+    async function doPersonaDelete(name) {
+      personaDeleting.value = name; createMsg.value = null
+      const res = await deletePersona(name)
+      if (res.code === 'ADMIN_REQUIRED') { personaDeleting.value = null; window.showAdminDialog && window.showAdminDialog('删除人格需要管理员密码', () => doPersonaDelete(name)); return }
+      if (res.ok) {
+        createMsg.value = { type: 'ok', text: '删除成功' }
+        const pRes = await fetchPersonas()
+        if (pRes.ok) personas.value = pRes.data
+      } else {
+        createMsg.value = { type: 'err', text: res.data?.message || '删除失败' }
+      }
+      personaDeleting.value = null
     }
 
     function resetLoreForm() {
@@ -173,7 +205,8 @@ export default {
       loreDeleting.value = null
     }
 
-    return { personas, loreList, newName, newDesc, newLore, newContent, creating, createMsg, doCreate,
+    return { personas, loreList, newName, newDesc, newLore, newContent, creating, createMsg, personaDeleting, doCreate,
+      startPersonaEdit, doPersonaDelete,
       lores, loreFormName, loreFormDesc, loreFormContent, loreSaving, loreMsg, loreDeleting, loreEditing,
       startLoreEdit, cancelLoreEdit, doLoreSave, doLoreDelete }
   }
