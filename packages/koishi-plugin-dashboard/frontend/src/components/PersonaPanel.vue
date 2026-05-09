@@ -1,15 +1,27 @@
 <template>
+  <div v-if="corePersona" class="card">
+    <h2>核心规则 <span style="margin-left:6px;font-size:11px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 5px;vertical-align:middle">核心</span></h2>
+    <div class="grp" style="display:flex;align-items:center;gap:8px">
+      <div style="flex:1;min-width:0">
+        <div class="grp-name">{{ corePersona.name }}</div>
+        <div class="grp-desc">{{ corePersona.description || '无描述' }}</div>
+      </div>
+      <button class="btn-sm" @click="startPersonaEdit(corePersona.name)"
+        style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">编辑</button>
+    </div>
+  </div>
+
   <div class="card">
     <h2>自定义人格</h2>
-    <div v-if="!personas.length" style="color:var(--text3);font-size:14px">无自定义人格</div>
-    <div v-for="p in personas" :key="p.name" class="grp" style="display:flex;align-items:center;gap:8px">
+    <div v-if="!regularPersonas.length" style="color:var(--text3);font-size:14px">无自定义人格</div>
+    <div v-for="p in regularPersonas" :key="p.name" class="grp" style="display:flex;align-items:center;gap:8px">
       <div style="flex:1;min-width:0">
-        <div class="grp-name">{{ p.name }}<span v-if="p.type === 'core'" style="margin-left:6px;font-size:11px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 5px">核心</span></div>
+        <div class="grp-name">{{ p.name }}</div>
         <div class="grp-desc">{{ p.description || '无描述' }}</div>
       </div>
       <button class="btn-sm" @click="startPersonaEdit(p.name)"
         style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">编辑</button>
-      <button v-if="p.type !== 'core'" class="btn-sm" @click="doPersonaDelete(p.name)"
+      <button class="btn-sm" @click="doPersonaDelete(p.name)"
         :style="{ background: personaDeleting === p.name ? 'var(--tabBg)' : 'transparent', border: '1px solid var(--danger)', color: 'var(--danger)', flexShrink: 0 }"
         :disabled="personaDeleting === p.name">{{ personaDeleting === p.name ? '删除中' : '删除' }}</button>
     </div>
@@ -76,7 +88,7 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { fetchPersonas, fetchPersonaDetail, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore } from '../api'
 
 export default {
@@ -109,6 +121,9 @@ export default {
       if (loRes.ok) lores.value = loRes.data
     }
     onMounted(load)
+
+    const corePersona = computed(() => personas.value.find(p => p.type === 'core'))
+    const regularPersonas = computed(() => personas.value.filter(p => p.type !== 'core'))
 
     async function doCreate() {
       if (!newName.value.trim()) { createMsg.value = { type: 'err', text: '请输入名称' }; return }
@@ -222,7 +237,7 @@ export default {
       loreDeleting.value = null
     }
 
-    return { personas, loreList, newName, newDesc, newLore, newContent, editingName, creating, createMsg, personaDeleting, doCreate, cancelEdit,
+    return { personas, corePersona, regularPersonas, loreList, newName, newDesc, newLore, newContent, editingName, creating, createMsg, personaDeleting, doCreate, cancelEdit,
       startPersonaEdit, doPersonaDelete,
       lores, loreFormName, loreFormDesc, loreFormContent, loreSaving, loreMsg, loreDeleting, loreEditing,
       startLoreEdit, cancelLoreEdit, doLoreSave, doLoreDelete }
