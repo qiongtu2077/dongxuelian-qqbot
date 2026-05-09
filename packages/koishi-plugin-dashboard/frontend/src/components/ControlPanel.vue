@@ -160,7 +160,7 @@ export default {
     async function loadQQToken() {
       const res = await fetchQQToken()
       if (res.code === 'ADMIN_REQUIRED') {
-        window.showAdminDialog && window.showAdminDialog('查看 NapCat Token 需要管理员密码', loadQQToken)
+        window.showAdminDialog && window.showAdminDialog('查看 NapCat Token 需要服务器密码', loadQQToken)
         return
       }
       if (res.ok && res.data?.token) napcatToken.value = res.data.token
@@ -184,7 +184,7 @@ export default {
       try {
         const res = await updateSelfId(newSelfId.value.trim())
         if (res.code === 'ADMIN_REQUIRED') {
-          window.showAdminDialog && window.showAdminDialog('更换 QQ 号需要管理员密码', saveSelfId)
+          window.showAdminDialog && window.showAdminDialog('更换 QQ 号需要服务器密码', saveSelfId)
           return
         }
         selfIdMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已保存，Koishi 正在重启' : '保存失败') }
@@ -249,7 +249,7 @@ export default {
       try {
         const res = await startBot()
         if (res.code === 'ADMIN_REQUIRED') {
-          window.showAdminDialog && window.showAdminDialog('启动 Bot 需要管理员密码', doStart)
+          window.showAdminDialog && window.showAdminDialog('启动 Bot 需要服务器密码', doStart)
           return
         }
         resultMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已发送启动命令，等待 15 秒验证...' : '启动失败') }
@@ -264,7 +264,7 @@ export default {
       try {
         const res = await stopBot()
         if (res.code === 'ADMIN_REQUIRED') {
-          window.showAdminDialog && window.showAdminDialog('停止 Bot 需要管理员密码', doStop)
+          window.showAdminDialog && window.showAdminDialog('停止 Bot 需要服务器密码', doStop)
           return
         }
         resultMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已停止' : '停止失败') }
@@ -277,7 +277,7 @@ export default {
       maintLoading.value = true
       const res = await setMaintenance(maintenanceOn.value)
       if (res.code === 'ADMIN_REQUIRED') {
-        window.showAdminDialog && window.showAdminDialog('维护模式需要管理员密码', () => toggleMaintenance())
+        window.showAdminDialog && window.showAdminDialog('维护模式需要服务器密码', () => toggleMaintenance())
         maintLoading.value = false
         return
       }

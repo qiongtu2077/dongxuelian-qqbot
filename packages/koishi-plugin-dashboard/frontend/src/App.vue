@@ -1,8 +1,10 @@
 <template>
   <LoginPage v-if="!loggedIn" @logged-in="onLoggedIn" />
   <AdminGatePage v-else-if="!adminReady" :message="adminMsg" :allow-cancel="adminCanCancel" @verified="onAdminVerified" @cancel="onAdminCancel" />
-  <div v-else class="app" style="position:relative">
-    <CursorGlow />
+  <template v-else>
+    <LoginBackdrop v-if="!deployUnlocked" />
+    <div class="app" style="position:relative">
+      <CursorGlow />
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;position:relative;z-index:1">
       <h1 style="margin:0">莲莲 Bot 控制台</h1>
       <div style="display:flex;gap:8px;align-items:center">
@@ -34,7 +36,8 @@
         <StatusPanel v-else-if="activeTab === 'status'" key="status" />
       </KeepAlive>
     </div>
-  </div>
+    </div>
+  </template>
 </template>
 
 <script>
@@ -42,6 +45,7 @@ import { computed, ref } from 'vue'
 import { clearAdminToken } from './api'
 import LoginPage from './components/LoginPage.vue'
 import AdminGatePage from './components/AdminGatePage.vue'
+import LoginBackdrop from './components/LoginBackdrop.vue'
 import ThemeSwitcher from './components/ThemeSwitcher.vue'
 import DeployPanel from './components/DeployPanel.vue'
 import CursorGlow from './components/CursorGlow.vue'
@@ -56,7 +60,7 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import StatusPanel from './components/StatusPanel.vue'
 
 export default {
-  components: { LoginPage, AdminGatePage, ThemeSwitcher, DeployPanel, CursorGlow, ControlPanel, ConfigPanel, KeyManager, PersonaPanel, CommandBrowser, CommandList, WhitelistPanel, SettingsPanel, StatusPanel },
+  components: { LoginPage, AdminGatePage, LoginBackdrop, ThemeSwitcher, DeployPanel, CursorGlow, ControlPanel, ConfigPanel, KeyManager, PersonaPanel, CommandBrowser, CommandList, WhitelistPanel, SettingsPanel, StatusPanel },
   setup() {
     const loggedIn = ref(!!localStorage.getItem('dashboard_token'))
     const adminReady = ref(true)
@@ -78,7 +82,8 @@ export default {
       return themes.some(item => item.id === value) ? value : 'dark-gold'
     }
 
-    const theme = ref(normalizeTheme(localStorage.getItem('dashboard_theme') || 'dark-gold'))
+    const defaultTheme = window.dongxuelianDeployer ? 'light' : 'dark-gold'
+    const theme = ref(normalizeTheme(localStorage.getItem('dashboard_theme') || defaultTheme))
     const currentThemeLabel = computed(() => themes.find(item => item.id === theme.value)?.label || '暗金')
 
     function applyTheme(t) {
@@ -109,12 +114,12 @@ export default {
     const tabs = computed(() => deployUnlocked.value ? allTabs : allTabs.filter(item => item.id === 'deploy'))
     const activeTab = ref(deployUnlocked.value ? (localStorage.getItem('dashboard_active_tab') || 'features') : 'deploy')
     const pulsingTab = ref(null)
-    const adminMsg = ref('请输入管理员密码进入控制台')
+    const adminMsg = ref('请输入服务器密码')
     const adminPending = ref(null)
 
     function onLoggedIn() {
       loggedIn.value = true
-      adminMsg.value = '需要管理员密码'
+      adminMsg.value = '需要服务器密码'
       adminCanCancel.value = false
       adminReady.value = true
       activeTab.value = localStorage.getItem('dashboard_deploy_unlocked') === 'true' ? 'features' : 'deploy'
@@ -134,7 +139,7 @@ export default {
 
     window.showAdminDialog = (msg, onVerified) => {
       clearAdminToken()
-      adminMsg.value = msg || '需要管理员密码'
+      adminMsg.value = msg || '需要服务器密码'
       adminPending.value = onVerified
       adminCanCancel.value = true
       adminReady.value = false

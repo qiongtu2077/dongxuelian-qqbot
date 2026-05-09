@@ -70,7 +70,7 @@ export default {
         lore: newLore.value,
         content: newContent.value,
       })
-      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('创建人格需要管理员密码', doCreate); return }
+      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('创建人格需要服务器密码', doCreate); creating.value = false; return }
       if (res.ok) {
         createMsg.value = { type: 'ok', text: res.data?.message || '创建成功' }
         newName.value = ''; newDesc.value = ''; newContent.value = ''

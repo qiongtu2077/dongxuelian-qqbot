@@ -258,6 +258,15 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   background: #080808;
 }
 
+.page-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: #080808;
+}
+
 .login-bg {
   position: absolute;
   inset: 0;

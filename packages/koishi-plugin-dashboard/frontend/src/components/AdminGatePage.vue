@@ -1,13 +1,13 @@
 <template>
   <div class="gate-page">
     <div class="gate-panel">
-      <div class="gate-kicker">Admin Access</div>
+      <div class="gate-kicker">Server Access</div>
       <h1 class="gate-title">莲莲 Bot 控制台</h1>
       <p class="gate-copy">{{ message }}</p>
 
       <PasswordField
         v-model="password"
-        placeholder="管理员密码"
+        placeholder="服务器密码"
         autocomplete="current-password"
         autofocus
         @enter="submit"
@@ -32,7 +32,7 @@ export default {
   name: 'AdminGatePage',
   components: { PasswordField },
   props: {
-    message: { type: String, default: '请输入管理员密码进入控制台' },
+    message: { type: String, default: '请输入服务器密码' },
     allowCancel: { type: Boolean, default: false },
   },
   emits: ['verified', 'cancel'],

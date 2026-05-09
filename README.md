@@ -77,7 +77,9 @@ http://服务器IP:5150/dashboard/
 | 类型 | 默认值 | 说明 |
 |------|--------|------|
 | 访问密码 | 无固定默认 | 登录 Dashboard 用；进入网站的第一个界面只需要这个密码 |
-| 管理员密码 | `123456` | 修改配置、部署、启停 Bot、修改密码等敏感操作会二次验证 |
+| 服务器密码 | `123456` | 修改配置、部署、启停 Bot、修改密码等敏感操作会二次验证 |
+
+另外，SSH 登录服务器使用的是服务器系统账号密码，不属于 Dashboard 密码体系，不会写进前端或仓库。
 
 ![Dashboard 页面示意图](./image/image.png)
 
@@ -91,7 +93,7 @@ QQ 管理页会给出 SSH 隧道指令、NapCat Token、QQ 号更新入口。
 
 ![操作步骤示意图](image/QQ管理.png)
 
-在「密码」页可以修改访问密码和管理员密码。
+在「密码」页可以修改访问密码和服务器密码。
 
 ![密码配置示意图](image/密码.png)
 
@@ -166,6 +168,8 @@ Windows 本地部署会在当前项目目录内准备运行环境：
 
 Windows EXE 部署器入口在 `local-deployer/`。
 
+源码目录里可以直接双击根目录的 `启动本地部署器.bat`。它会检查 Node.js、自动安装本地部署器依赖，然后拉起桌面窗口。
+
 开发运行：
 
 ```powershell
@@ -182,12 +186,16 @@ npm install
 npm run build:win
 ```
 
+也可以在根目录双击 `构建Windows部署器.bat`，它会先构建 Dashboard 前端，再打包 Windows 部署器。若最终产物只有一个 EXE，Release 附件直接上传这个 EXE；若 electron-builder 输出了多个文件，则用 `local-deployer/release/lianlian-bot-windows-deployer.zip` 作为 Release 附件。
+
+卸载源码版本地部署器可以双击 `卸载本地部署器.bat`。默认只清理依赖和构建产物，不删除 `data/`、`runtime/`、`koishi.yml`、`start-local.bat`；输入 `YES` 才会彻底删除这些运行时文件。
+
 EXE 的职责是启动本地 Dashboard，并复用 Dashboard 的「部署」页完成两类任务：
 
 - Windows 本地部署：所有下载、日志、NapCat 文件都放当前项目目录的 `runtime/` 下。
 - 远程 Linux 部署：填写 SSH 目标和应用目录后推送更新。
 
-访问密码和管理员密码仍由 Dashboard 环境变量或 `data/` 下的密码文件管理，不写入 EXE 代码。
+访问密码和服务器密码仍由 Dashboard 环境变量或 `data/` 下的密码文件管理，不写入 EXE 代码。EXE 成品建议作为 GitHub Release 附件发布，不提交到主分支。
 
 ---
 
@@ -407,7 +415,7 @@ packages/koishi-plugin-dongxuelian-ai/data
 | `ai-user-blacklist.json` | 用户黑名单 |
 | `video-blacklist.json` | 视频解析黑名单 |
 | `dashboard-access-pwd.txt` | Dashboard 访问密码 |
-| `dashboard-admin-pwd.txt` | Dashboard 管理员密码 |
+| `dashboard-admin-pwd.txt` | Dashboard 服务器密码（敏感操作二次验证，文件名保留兼容旧版本） |
 | `today-cache-*.json` | 群聊当日缓存 |
 | `conversations/` | 对话上下文和摘要 |
 | `user-profiles/` | 用户记忆和画像 |
@@ -418,7 +426,7 @@ packages/koishi-plugin-dongxuelian-ai/data
 |----------|--------|------|
 | `DASHBOARD_PORT` | `5150` | Dashboard 监听端口 |
 | `DASHBOARD_PASSWORD` | 空 | 首次访问密码默认值；为空且没有 `dashboard-access-pwd.txt` 时禁止登录 |
-| `DASHBOARD_ADMIN_PASSWORD` | `123456` | 首次管理员密码默认值 |
+| `DASHBOARD_ADMIN_PASSWORD` | `123456` | 首次服务器密码默认值（变量名保留兼容旧版本） |
 | `DONGXUELIAN_AI_DATA_DIR` | 插件内 `data` | AI 和 Dashboard 共享数据目录 |
 | `KOISHI_APP_DIR` | `/root/koishi-app` | 重启脚本和守护脚本使用的 Koishi 目录 |
 | `KOISHI_PORT` | `5140` | Koishi server 端口 |

@@ -71,7 +71,7 @@ export default {
           model: selectedModel.value,
           baseUrl: baseUrl.value || undefined,
         })
-        if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('修改配置需要管理员密码', saveConfig); saving.value = false; return }
+        if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('修改配置需要服务器密码', saveConfig); saving.value = false; return }
         if (res.ok) msg.value = { type: 'ok', text: '配置已保存并热加载' }
         else msg.value = { type: 'err', text: res.data?.message || '保存失败' }
       } catch (e) {

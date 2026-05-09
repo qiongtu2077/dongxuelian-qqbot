@@ -56,7 +56,7 @@ export default {
       keyMsg.value = null
       try {
         const res = await updateKey(editing.value.file, editValue.value.trim())
-        if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('修改 Key 需要管理员密码', saveKey); saving.value = false; return }
+        if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('修改 Key 需要服务器密码', saveKey); saving.value = false; return }
         if (res.ok) {
           keyMsg.value = { type: 'ok', text: 'Key 已更新并热加载' }
           const reload = await fetchKeys()

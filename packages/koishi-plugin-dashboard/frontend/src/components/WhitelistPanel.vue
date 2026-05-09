@@ -105,7 +105,7 @@ export default {
 
       const res = await updateWhitelist(key, newData)
       if (res.code === 'ADMIN_REQUIRED') {
-        window.showAdminDialog && window.showAdminDialog('修改白名单需要管理员密码', () => addItem(key))
+        window.showAdminDialog && window.showAdminDialog('修改白名单需要服务器密码', () => addItem(key))
         return
       }
       if (res.ok) {
@@ -134,7 +134,7 @@ export default {
       }
       const res = await updateWhitelist(key, newData)
       if (res.code === 'ADMIN_REQUIRED') {
-        window.showAdminDialog && window.showAdminDialog('修改白名单需要管理员密码', () => removeItem(key, idx))
+        window.showAdminDialog && window.showAdminDialog('修改白名单需要服务器密码', () => removeItem(key, idx))
         return
       }
       if (res.ok) { msgs[key] = { type: 'ok', text: '已删除' }; load() }

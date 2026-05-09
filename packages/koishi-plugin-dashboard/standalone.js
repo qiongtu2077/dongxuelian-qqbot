@@ -237,7 +237,7 @@ function validateToken(token) {
   return token === createToken()
 }
 
-// ====== 管理员密码系统 ======
+// ====== 服务器密码系统（敏感操作二次验证） ======
 function getAdminPassword() {
   return readFileSync(ADMIN_PWD_FILE) || ADMIN_PASSWORD
 }
@@ -255,7 +255,7 @@ function validateAdminToken(token) {
 function requireAdmin(req, res) {
   const token = (req.headers['x-admin-token'] || '').trim()
   if (!token || !validateAdminToken(token)) {
-    json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403)
+    json(res, { ok: false, message: '需要服务器密码验证', code: 'ADMIN_REQUIRED' }, 403)
     return false
   }
   return true
@@ -355,7 +355,7 @@ const server = http.createServer((req, res) => {
       try {
         const { password } = JSON.parse(body)
         if (password === getAdminPassword()) return json(res, { ok: true, token: createAdminToken() })
-        return json(res, { ok: false, message: '管理员密码错误' }, 401)
+        return json(res, { ok: false, message: '服务器密码错误' }, 401)
       } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
     })
     return
@@ -370,7 +370,7 @@ const server = http.createServer((req, res) => {
         if (!newPassword || newPassword.length < 4) return json(res, { ok: false, message: '新密码长度不能少于4位' }, 400)
         if (type === 'admin') {
           writeFileSync(ADMIN_PWD_FILE, newPassword)
-          return json(res, { ok: true, message: '管理员密码已更新' })
+          return json(res, { ok: true, message: '服务器密码已更新' })
         } else if (type === 'access') {
           writeFileSync(ACCESS_PWD_FILE, newPassword)
           return json(res, { ok: true, message: '访问密码已更新，请重新登录' })
@@ -1248,7 +1248,7 @@ server.listen(PORT, () => {
   log(`bot control: start/stop/maintenance`)
   log(`napcat proxy: /webui/ -> NapCat WebUI`)
   if (!getAccessPassword() && !isLocalAuthBypass()) log('WARNING: dashboard access password is not configured; login is disabled')
-  if (!readFileSync(ADMIN_PWD_FILE) && !process.env.DASHBOARD_ADMIN_PASSWORD) log('WARNING: dashboard admin password is using default 123456; change it before exposing the service')
+  if (!readFileSync(ADMIN_PWD_FILE) && !process.env.DASHBOARD_ADMIN_PASSWORD) log('WARNING: dashboard server password is using default 123456; change it before exposing the service')
 })
 
 process.on('SIGINT', () => { log('shutting down'); server.close(); process.exit(0) })

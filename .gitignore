@@ -19,3 +19,4 @@ package-lock.json
 *.b64
 tmp_*.js
 *.log
+local-deployer/release/

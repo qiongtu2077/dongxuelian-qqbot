@@ -1,12 +1,13 @@
 const BASE = '/dashboard/api'
-const ADMIN_TOKEN_KEY = 'dashboard_admin_token'
+const SERVER_TOKEN_KEY = 'dashboard_server_token'
+const LEGACY_ADMIN_TOKEN_KEY = 'dashboard_admin_token'
 
 function getAdminToken() {
   try {
-    const raw = localStorage.getItem(ADMIN_TOKEN_KEY)
+    const raw = localStorage.getItem(SERVER_TOKEN_KEY) || localStorage.getItem(LEGACY_ADMIN_TOKEN_KEY)
     if (!raw) return ''
     const { token, expires } = JSON.parse(raw)
-    if (Date.now() > expires) { localStorage.removeItem(ADMIN_TOKEN_KEY); return '' }
+    if (Date.now() > expires) { clearAdminToken(); return '' }
     return token
   } catch { return '' }
 }
@@ -14,11 +15,13 @@ function getAdminToken() {
 function setAdminToken(token) {
   // 1 小时有效期
   const data = JSON.stringify({ token, expires: Date.now() + 3600000 })
-  localStorage.setItem(ADMIN_TOKEN_KEY, data)
+  localStorage.setItem(SERVER_TOKEN_KEY, data)
+  localStorage.removeItem(LEGACY_ADMIN_TOKEN_KEY)
 }
 
 function clearAdminToken() {
-  localStorage.removeItem(ADMIN_TOKEN_KEY)
+  localStorage.removeItem(SERVER_TOKEN_KEY)
+  localStorage.removeItem(LEGACY_ADMIN_TOKEN_KEY)
 }
 
 function headers(admin = false) {

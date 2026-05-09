@@ -8,7 +8,8 @@
     "start": "electron .",
     "check": "node scripts/check-env.cjs",
     "setup-local": "node scripts/setup-local.cjs",
-    "build:win": "electron-builder --win portable"
+    "build:win": "electron-builder --win portable",
+    "release:win": "node scripts/build-release.cjs"
   },
   "devDependencies": {
     "electron": "^33.4.11",
