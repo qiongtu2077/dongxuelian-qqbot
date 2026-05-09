@@ -4,12 +4,12 @@
     <div v-if="!personas.length" style="color:var(--text3);font-size:14px">无自定义人格</div>
     <div v-for="p in personas" :key="p.name" class="grp" style="display:flex;align-items:center;gap:8px">
       <div style="flex:1;min-width:0">
-        <div class="grp-name">{{ p.name }}</div>
+        <div class="grp-name">{{ p.name }}<span v-if="p.type === 'core'" style="margin-left:6px;font-size:11px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 5px">核心</span></div>
         <div class="grp-desc">{{ p.description || '无描述' }}</div>
       </div>
       <button class="btn-sm" @click="startPersonaEdit(p.name)"
         style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">编辑</button>
-      <button class="btn-sm" @click="doPersonaDelete(p.name)"
+      <button v-if="p.type !== 'core'" class="btn-sm" @click="doPersonaDelete(p.name)"
         :style="{ background: personaDeleting === p.name ? 'var(--tabBg)' : 'transparent', border: '1px solid var(--danger)', color: 'var(--danger)', flexShrink: 0 }"
         :disabled="personaDeleting === p.name">{{ personaDeleting === p.name ? '删除中' : '删除' }}</button>
     </div>

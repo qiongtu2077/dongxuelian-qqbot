@@ -3,7 +3,7 @@
  * 职责: 加载/保存/查询群组和个人人格配置。
  * 边界: 只操作人格配置文件和缓存，不调 AI API，不改 conversation。
  */
-const { PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, SKILLS_PERSONAS_DIR } = require('./constants')
+const { PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, SKILLS_PERSONAS_DIR, SKILLS_CORE_DIR } = require('./constants')
 const path = require('path')
 
 let personaGroupsCache = {}
@@ -61,30 +61,37 @@ function parsePersonaFrontmatter(content) {
 
 function getAvailablePersonals() {
   const personas = []
-  try {
-    const entries = require('fs').readdirSync(SKILLS_PERSONAS_DIR, { withFileTypes: true })
-    for (const entry of entries) {
-      if (!entry.isFile() || !/^SKILL(\.[^.]+)?\.md$/i.test(entry.name)) continue
-      const content = require('fs').readFileSync(path.join(SKILLS_PERSONAS_DIR, entry.name), 'utf8').trim()
-      if (!content) continue
-      const meta = parsePersonaFrontmatter(content)
-      if (meta.name) personas.push({ name: meta.name, description: meta.description || '', file: entry.name })
-    }
-  } catch {}
+  function scanDir(dir, type) {
+    try {
+      const entries = require('fs').readdirSync(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!entry.isFile() || !/^SKILL(\.[^.]+)?\.md$/i.test(entry.name)) continue
+        const content = require('fs').readFileSync(path.join(dir, entry.name), 'utf8').trim()
+        if (!content) continue
+        const meta = parsePersonaFrontmatter(content)
+        if (meta.name) personas.push({ name: meta.name, description: meta.description || '', file: entry.name, type, dir })
+      }
+    } catch {}
+  }
+  scanDir(SKILLS_PERSONAS_DIR, 'persona')
+  scanDir(SKILLS_CORE_DIR, 'core')
   return personas
 }
 
 function loadPersonalSkill(personaName) {
-  try {
-    const entries = require('fs').readdirSync(SKILLS_PERSONAS_DIR)
-    for (const entry of entries) {
-      if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
-      const content = require('fs').readFileSync(path.join(SKILLS_PERSONAS_DIR, entry), 'utf8').trim()
-      const meta = parsePersonaFrontmatter(content)
-      if (meta.name === personaName) { console.error(`[persona] loaded skill: ${entry} name=${meta.name}`); return content }
-    }
-    console.error(`[persona] no skill found for name=${personaName}`)
-  } catch (e) { console.error(`[persona] loadPersonalSkill error: ${e.message}`) }
+  const dirs = [SKILLS_PERSONAS_DIR, SKILLS_CORE_DIR]
+  for (const dir of dirs) {
+    try {
+      const entries = require('fs').readdirSync(dir)
+      for (const entry of entries) {
+        if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
+        const content = require('fs').readFileSync(path.join(dir, entry), 'utf8').trim()
+        const meta = parsePersonaFrontmatter(content)
+        if (meta.name === personaName) { console.error(`[persona] loaded skill: ${entry} name=${meta.name}`); return content }
+      }
+    } catch {}
+  }
+  console.error(`[persona] no skill found for name=${personaName}`)
   return null
 }
 

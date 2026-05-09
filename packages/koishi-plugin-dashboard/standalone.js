@@ -41,6 +41,7 @@ const PLUGIN_ROOT = __dirname
 const AI_LIB = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'lib')
 const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'data')
 const PERSONAS_DIR = path.join(DATA_DIR, 'ai-skills', 'personas')
+const CORE_DIR = path.join(DATA_DIR, 'ai-skills', 'core')
 const LORES_DIR = path.join(DATA_DIR, 'ai-skills', 'lore')
 const MODES_DIR = path.join(DATA_DIR, 'ai-skills', 'modes')
 const DIST_DIR = path.join(PLUGIN_ROOT, 'frontend', 'dist')
@@ -465,7 +466,7 @@ const server = http.createServer((req, res) => {
         const bodyContent = m ? content.slice(m[0].length) : content
         return json(res, { ok: true, data: { name, description: meta.description || '', lore: meta.lore || '', will: meta.will || 1.0, content: bodyContent } })
       }
-      return json(res, getAvailablePersonals().map(p => ({ name: p.name, description: p.description })))
+      return json(res, getAvailablePersonals().map(p => ({ name: p.name, description: p.description, type: p.type || 'persona' })))
     } catch { return json(res, []) }
   }
 
@@ -494,6 +495,8 @@ const server = http.createServer((req, res) => {
       try {
         const { name } = JSON.parse(body)
         if (!name) return json(res, { ok: false, message: '名称不能为空' }, 400)
+        const all = require(path.join(AI_LIB, 'persona')).getAvailablePersonals()
+        if (all.find(p => p.name === name)?.type === 'core') return json(res, { ok: false, message: '核心规则不可删除' }, 400)
         const files = fs.readdirSync(PERSONAS_DIR).filter(f => /^SKILL(\.[^.]+)?\.md$/i.test(f))
         let deleted = false
         for (const f of files) {
@@ -519,20 +522,24 @@ const server = http.createServer((req, res) => {
       try {
         const { name, description, lore, will, content } = JSON.parse(body)
         if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
-        const files = fs.readdirSync(PERSONAS_DIR).filter(f => /^SKILL(\.[^.]+)?\.md$/i.test(f))
+        const searchDirs = [PERSONAS_DIR, CORE_DIR]
         let found = false
-        for (const f of files) {
-          const raw = fs.readFileSync(path.join(PERSONAS_DIR, f), 'utf8')
-          const m = raw.match(/^---\n([\s\S]*?)\n---/)
-          const metaName = m?.[1]?.match(/name:\s*(.+)/)?.[1]?.trim()
-          if (metaName === name) {
-            const loreLine = lore && lore !== 'none' ? '\nlore: ' + lore : ''
-            const willLine = will !== undefined && will !== '' ? '\nwill: ' + parseFloat(will) : '\nwill: 1.0'
-            const md = '---\nname: ' + name + '\ndescription: ' + (description || '') + loreLine + willLine + '\n---\n\n' + content
-            fs.writeFileSync(path.join(PERSONAS_DIR, f), md, 'utf8')
-            found = true
-            break
+        for (const dir of searchDirs) {
+          const files = fs.readdirSync(dir).filter(f => /^SKILL(\.[^.]+)?\.md$/i.test(f))
+          for (const f of files) {
+            const raw = fs.readFileSync(path.join(dir, f), 'utf8')
+            const m = raw.match(/^---\n([\s\S]*?)\n---/)
+            const metaName = m?.[1]?.match(/name:\s*(.+)/)?.[1]?.trim()
+            if (metaName === name) {
+              const loreLine = lore && lore !== 'none' ? '\nlore: ' + lore : ''
+              const willLine = will !== undefined && will !== '' ? '\nwill: ' + parseFloat(will) : '\nwill: 1.0'
+              const md = '---\nname: ' + name + '\ndescription: ' + (description || '') + loreLine + willLine + '\n---\n\n' + content
+              fs.writeFileSync(path.join(dir, f), md, 'utf8')
+              found = true
+              break
+            }
           }
+          if (found) break
         }
         if (!found) return json(res, { ok: false, message: '未找到人格 ' + name }, 404)
         json(res, { ok: true, message: '人格 ' + name + ' 已更新' })
