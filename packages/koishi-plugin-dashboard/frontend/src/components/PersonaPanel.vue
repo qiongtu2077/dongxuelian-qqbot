@@ -77,7 +77,7 @@
 
 <script>
 import { ref, onMounted } from 'vue'
-import { fetchPersonas, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore } from '../api'
+import { fetchPersonas, fetchPersonaDetail, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore } from '../api'
 
 export default {
   name: 'PersonaPanel',
@@ -139,14 +139,21 @@ export default {
       createMsg.value = null
     }
 
-    function startPersonaEdit(name) {
+    async function startPersonaEdit(name) {
       const p = personas.value.find(x => x.name === name)
       if (!p) return
       editingName.value = name
       newName.value = p.name
       newDesc.value = p.description || ''
-      newContent.value = p.content || ''
-      newLore.value = p.lore || 'none'
+      // API 列表接口不返回 content/lore，单独请求详情
+      const detail = await fetchPersonaDetail(name)
+      if (detail.ok && detail.data) {
+        newContent.value = detail.data.content || ''
+        newLore.value = detail.data.lore || 'none'
+      } else {
+        newContent.value = ''
+        newLore.value = 'none'
+      }
       createMsg.value = null
     }
 
