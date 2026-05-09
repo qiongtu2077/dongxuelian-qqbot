@@ -123,6 +123,7 @@ export async function fetchFeatures() { return get('/features') }
 export async function fetchCommands() { return get('/commands') }
 export async function fetchLoreList() { return get('/lore-list') }
 export async function createPersona(data) { return post('/personas', data, true) }
+export async function updatePersona(data) { return put('/personas', data, true) }
 export async function deletePersona(name) { return del('/personas', { name }, true) }
 export async function fetchLores() { return get('/lores') }
 export async function createLore(data) { return post('/lores', data, true) }

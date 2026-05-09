@@ -36,9 +36,10 @@
           <div style="font-size:13px;color:var(--text2);margin-bottom:4px">人格内容（提示词）</div>
           <textarea v-model="newContent" rows="10" placeholder="在此编写人格的提示词..." style="width:100%;background:var(--input);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-size:13px;font-family:monospace;resize:vertical"></textarea>
       </div>
-      <div>
-        <button class="btn" @click="doCreate" :disabled="creating">{{ creating ? '创建中...' : '创建人格' }}</button>
-        <div v-if="createMsg" style="margin-top:8px;font-size:13px" :style="{color: createMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ createMsg.text }}</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn" @click="doCreate" :disabled="creating">{{ creating ? '保存中...' : (editingName ? '保存修改' : '创建人格') }}</button>
+        <button v-if="editingName" class="btn btn-sm" @click="cancelEdit" style="background:var(--tabBg);color:var(--text2);border:1px solid var(--border)">取消</button>
+        <div v-if="createMsg" style="font-size:13px" :style="{color: createMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ createMsg.text }}</div>
       </div>
     </div>
   </div>
@@ -76,7 +77,7 @@
 
 <script>
 import { ref, onMounted } from 'vue'
-import { fetchPersonas, fetchLoreList, createPersona, deletePersona, fetchLores, createLore, updateLore, deleteLore } from '../api'
+import { fetchPersonas, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore } from '../api'
 
 export default {
   name: 'PersonaPanel',
@@ -87,6 +88,7 @@ export default {
     const newDesc = ref('')
     const newLore = ref('none')
     const newContent = ref('')
+    const editingName = ref(null)
     const creating = ref(false)
     const createMsg = ref(null)
     const personaDeleting = ref(null)
@@ -112,28 +114,35 @@ export default {
       if (!newName.value.trim()) { createMsg.value = { type: 'err', text: '请输入名称' }; return }
       if (!newContent.value.trim()) { createMsg.value = { type: 'err', text: '请输入人格内容' }; return }
       creating.value = true; createMsg.value = null
-      const res = await createPersona({
+      const payload = {
         name: newName.value.trim(),
         description: newDesc.value.trim(),
         lore: newLore.value,
         content: newContent.value,
-      })
-      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('创建人格需要服务器密码', doCreate); creating.value = false; return }
+      }
+      const res = editingName.value ? await updatePersona(payload) : await createPersona(payload)
+      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog((editingName.value ? '更新' : '创建') + '人格需要服务器密码', doCreate); creating.value = false; return }
       if (res.ok) {
-        createMsg.value = { type: 'ok', text: res.data?.message || '创建成功' }
-        newName.value = ''; newDesc.value = ''; newContent.value = ''
-        // 重新加载人格列表
+        createMsg.value = { type: 'ok', text: res.data?.message || (editingName.value ? '更新成功' : '创建成功') }
+        newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; editingName.value = null
         const pRes = await fetchPersonas()
         if (pRes.ok) personas.value = pRes.data
       } else {
-        createMsg.value = { type: 'err', text: res.data?.message || '创建失败' }
+        createMsg.value = { type: 'err', text: res.data?.message || (editingName.value ? '更新失败' : '创建失败') }
       }
       creating.value = false
+    }
+
+    function cancelEdit() {
+      editingName.value = null
+      newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'
+      createMsg.value = null
     }
 
     function startPersonaEdit(name) {
       const p = personas.value.find(x => x.name === name)
       if (!p) return
+      editingName.value = name
       newName.value = p.name
       newDesc.value = p.description || ''
       newContent.value = p.content || ''
@@ -205,7 +214,7 @@ export default {
       loreDeleting.value = null
     }
 
-    return { personas, loreList, newName, newDesc, newLore, newContent, creating, createMsg, personaDeleting, doCreate,
+    return { personas, loreList, newName, newDesc, newLore, newContent, editingName, creating, createMsg, personaDeleting, doCreate, cancelEdit,
       startPersonaEdit, doPersonaDelete,
       lores, loreFormName, loreFormDesc, loreFormContent, loreSaving, loreMsg, loreDeleting, loreEditing,
       startLoreEdit, cancelLoreEdit, doLoreSave, doLoreDelete }
