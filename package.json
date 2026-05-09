@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "dongxuelian-qqbot",
   "private": true,
   "version": "0.11.0",
@@ -35,4 +35,7 @@
   "overrides": {
     "@satorijs/core": "3.7.0"
   }
+}
+,
+    "koishi-plugin-pet-bridge": "file:packages/koishi-plugin-pet-bridge"
 }
