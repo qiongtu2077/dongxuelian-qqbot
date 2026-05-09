@@ -11,6 +11,18 @@
     </div>
   </div>
 
+  <div v-if="defaultModes.length" class="card">
+    <h2>默认人格</h2>
+    <div v-for="p in defaultModes" :key="p.name" class="grp" style="display:flex;align-items:center;gap:8px">
+      <div style="flex:1;min-width:0">
+        <div class="grp-name">{{ p.name }}</div>
+        <div class="grp-desc">{{ p.description || '无描述' }}</div>
+      </div>
+      <button class="btn-sm" @click="startPersonaEdit(p.name)"
+        style="background:transparent;border:1px solid var(--accent);color:var(--accent);flex-shrink:0">编辑</button>
+    </div>
+  </div>
+
   <div class="card">
     <h2>自定义人格</h2>
     <div v-if="!regularPersonas.length" style="color:var(--text3);font-size:14px">无自定义人格</div>
@@ -123,7 +135,8 @@ export default {
     onMounted(load)
 
     const corePersona = computed(() => personas.value.find(p => p.type === 'core'))
-    const regularPersonas = computed(() => personas.value.filter(p => p.type !== 'core'))
+    const defaultModes = computed(() => personas.value.filter(p => p.type === 'mode'))
+    const regularPersonas = computed(() => personas.value.filter(p => p.type !== 'core' && p.type !== 'mode'))
 
     async function doCreate() {
       if (!newName.value.trim()) { createMsg.value = { type: 'err', text: '请输入名称' }; return }
@@ -237,7 +250,7 @@ export default {
       loreDeleting.value = null
     }
 
-    return { personas, corePersona, regularPersonas, loreList, newName, newDesc, newLore, newContent, editingName, creating, createMsg, personaDeleting, doCreate, cancelEdit,
+    return { personas, corePersona, defaultModes, regularPersonas, loreList, newName, newDesc, newLore, newContent, editingName, creating, createMsg, personaDeleting, doCreate, cancelEdit,
       startPersonaEdit, doPersonaDelete,
       lores, loreFormName, loreFormDesc, loreFormContent, loreSaving, loreMsg, loreDeleting, loreEditing,
       startLoreEdit, cancelLoreEdit, doLoreSave, doLoreDelete }

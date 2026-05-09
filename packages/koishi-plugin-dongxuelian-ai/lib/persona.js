@@ -3,7 +3,7 @@
  * 职责: 加载/保存/查询群组和个人人格配置。
  * 边界: 只操作人格配置文件和缓存，不调 AI API，不改 conversation。
  */
-const { PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, SKILLS_PERSONAS_DIR, SKILLS_CORE_DIR } = require('./constants')
+const { PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, SKILLS_PERSONAS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR } = require('./constants')
 const path = require('path')
 
 let personaGroupsCache = {}
@@ -75,11 +75,12 @@ function getAvailablePersonals() {
   }
   scanDir(SKILLS_PERSONAS_DIR, 'persona')
   scanDir(SKILLS_CORE_DIR, 'core')
+  scanDir(SKILLS_MODES_DIR, 'mode')
   return personas
 }
 
 function loadPersonalSkill(personaName) {
-  const dirs = [SKILLS_PERSONAS_DIR, SKILLS_CORE_DIR]
+  const dirs = [SKILLS_PERSONAS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR]
   for (const dir of dirs) {
     try {
       const entries = require('fs').readdirSync(dir)

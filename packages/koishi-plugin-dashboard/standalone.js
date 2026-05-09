@@ -497,6 +497,7 @@ const server = http.createServer((req, res) => {
         if (!name) return json(res, { ok: false, message: '名称不能为空' }, 400)
         const all = require(path.join(AI_LIB, 'persona')).getAvailablePersonals()
         if (all.find(p => p.name === name)?.type === 'core') return json(res, { ok: false, message: '核心规则不可删除' }, 400)
+        if (all.find(p => p.name === name)?.type === 'mode') return json(res, { ok: false, message: '默认人格不可删除' }, 400)
         const files = fs.readdirSync(PERSONAS_DIR).filter(f => /^SKILL(\.[^.]+)?\.md$/i.test(f))
         let deleted = false
         for (const f of files) {
@@ -522,7 +523,7 @@ const server = http.createServer((req, res) => {
       try {
         const { name, description, lore, will, content } = JSON.parse(body)
         if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
-        const searchDirs = [PERSONAS_DIR, CORE_DIR]
+        const searchDirs = [PERSONAS_DIR, CORE_DIR, MODES_DIR]
         let found = false
         for (const dir of searchDirs) {
           const files = fs.readdirSync(dir).filter(f => /^SKILL(\.[^.]+)?\.md$/i.test(f))

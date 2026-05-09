@@ -153,3 +153,9 @@ export async function localBotStatus() { return get('/bot/local-status') }
 export async function localBotStop() { return post('/bot/local-stop', {}, true) }
 export async function rebuildFrontend() { return post('/frontend/rebuild', {}, true) }
 export async function rebuildFrontendStatus() { return get('/frontend/rebuild-status') }
+export async function fetchFallbackChains() { return get('/fallback') }
+export async function saveFallbackChains(chains) { return put('/fallback', { chains }, true) }
+export async function fetchCustomProviders() { return get('/providers/custom') }
+export async function saveCustomProviders(data) { return put('/providers/custom', data, true) }
+export async function fetchAdminIds() { return get('/admin-ids') }
+export async function updateAdminIds(ids) { return put('/admin-ids', { ids }, true) }
