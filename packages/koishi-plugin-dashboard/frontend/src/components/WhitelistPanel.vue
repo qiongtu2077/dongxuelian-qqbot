@@ -16,6 +16,10 @@
 
     <!-- 添加 -->
     <div style="display:flex;gap:8px;margin-top:12px">
+      <select v-if="isObjectList(wl)" v-model="newTypes[key]" style="flex:0 0 96px">
+        <option value="groups">群</option>
+        <option value="users">用户</option>
+      </select>
       <input v-model="newValues[key]" :placeholder="inputPlaceholder(wl)" style="flex:1;font-family:monospace" @keyup.enter="addItem(key)" />
       <button class="btn btn-sm" @click="addItem(key)">添加</button>
     </div>
@@ -34,6 +38,7 @@ export default {
   setup() {
     const lists = ref({})
     const newValues = reactive({})
+    const newTypes = reactive({})
     const msgs = reactive({})
 
     async function load() {
@@ -46,6 +51,10 @@ export default {
       if (Array.isArray(wl.data)) return wl.data.length === 0
       if (typeof wl.data === 'object') return !wl.data.groups?.length && !wl.data.users?.length
       return true
+    }
+
+    function isObjectList(wl) {
+      return wl && typeof wl.data === 'object' && !Array.isArray(wl.data)
     }
 
     function getCount(wl) {
@@ -63,7 +72,7 @@ export default {
     }
 
     function inputPlaceholder(wl) {
-      if (wl.label.includes('视频')) return '群号 或 用户QQ号'
+      if (isObjectList(wl)) return '群号或用户 QQ 号'
       if (wl.label.includes('用户')) return '用户 QQ 号'
       return '群号'
     }
@@ -87,10 +96,11 @@ export default {
         if (wl.data.includes(val)) { msgs[key] = { type: 'err', text: '已存在' }; return }
         newData = [...wl.data, val]
       } else {
-        const isGroup = /^\d+$/.test(val)
         newData = { ...wl.data }
-        if (isGroup) newData.groups = [...(newData.groups || []), val]
-        else newData.users = [...(newData.users || []), val]
+        const bucket = newTypes[key] || 'groups'
+        const exists = (newData[bucket] || []).includes(val)
+        if (exists) { msgs[key] = { type: 'err', text: '已存在' }; return }
+        newData[bucket] = [...(newData[bucket] || []), val]
       }
 
       const res = await updateWhitelist(key, newData)
@@ -132,11 +142,7 @@ export default {
       setTimeout(() => msgs[key] = null, 2000)
     }
 
-    function retryPending() {
-      if (adminPending.value) { const fn = adminPending.value; adminPending.value = null; fn() }
-    }
-
-    return { lists, newValues, msgs, isEmpty, getCount, getItems, inputPlaceholder, getRawItems, addItem, removeItem }
+    return { lists, newValues, newTypes, msgs, isEmpty, isObjectList, getCount, getItems, inputPlaceholder, getRawItems, addItem, removeItem }
   }
 }
 </script>

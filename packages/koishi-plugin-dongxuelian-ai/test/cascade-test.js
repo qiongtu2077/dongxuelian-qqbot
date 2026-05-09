@@ -13,7 +13,7 @@
  *
  * - Sticker 文本/图片发送顺序：
  *   scenarios/sticker.test.js L21-L55 覆盖纯文本、内部图片发送、fallback 图片发送、时间线顺序
- * - 复读触发/冷却/窗口/开关：
+ * - 复读触发/当前组去重/窗口/开关：
  *   scenarios/repeat.test.js L10-L72 覆盖真实中间件命令路径；
  *   cascade 只保留纯复读候选构造检查
  * - 转发消息摘要：

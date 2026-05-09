@@ -822,6 +822,7 @@ const server = http.createServer((req, res) => {
 
   // QQ 管理
   if (pathname === '/dashboard/api/qq/token' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
     return json(res, { token: process.env.NAPCAT_TOKEN || getNapcatToken() })
   }
   if (pathname === '/dashboard/api/qq/ssh-info' && req.method === 'GET') {

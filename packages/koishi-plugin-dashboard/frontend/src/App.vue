@@ -1,5 +1,6 @@
 <template>
-  <LoginPage v-if="!loggedIn" @logged-in="loggedIn = true" />
+  <LoginPage v-if="!loggedIn" @logged-in="onLoggedIn" />
+  <AdminGatePage v-else-if="!adminReady" :message="adminMsg" :allow-cancel="adminCanCancel" @verified="onAdminVerified" @cancel="onAdminCancel" />
   <div v-else class="app" style="position:relative">
     <CursorGlow />
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;position:relative;z-index:1">
@@ -29,14 +30,14 @@
         <StatusPanel v-else-if="activeTab === 'status'" key="status" />
       </KeepAlive>
     </div>
-    <!-- 全局管理员验证弹窗 -->
-    <AdminDialog ref="globalAdmin" :message="adminMsg" @verified="onAdminVerified" @cancel="adminPending=null" />
   </div>
 </template>
 
 <script>
 import { ref } from 'vue'
+import { getAdminToken, clearAdminToken } from './api'
 import LoginPage from './components/LoginPage.vue'
+import AdminGatePage from './components/AdminGatePage.vue'
 import CursorGlow from './components/CursorGlow.vue'
 import ConfigPanel from './components/ConfigPanel.vue'
 import ControlPanel from './components/ControlPanel.vue'
@@ -47,12 +48,13 @@ import CommandList from './components/CommandList.vue'
 import WhitelistPanel from './components/WhitelistPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import StatusPanel from './components/StatusPanel.vue'
-import AdminDialog from './components/AdminDialog.vue'
 
 export default {
-  components: { LoginPage, CursorGlow, ControlPanel, ConfigPanel, KeyManager, PersonaPanel, CommandBrowser, CommandList, WhitelistPanel, SettingsPanel, StatusPanel, AdminDialog },
+  components: { LoginPage, AdminGatePage, CursorGlow, ControlPanel, ConfigPanel, KeyManager, PersonaPanel, CommandBrowser, CommandList, WhitelistPanel, SettingsPanel, StatusPanel },
   setup() {
     const loggedIn = ref(!!localStorage.getItem('dashboard_token'))
+    const adminReady = ref(!loggedIn.value || !!getAdminToken())
+    const adminCanCancel = ref(false)
     const theme = ref(localStorage.getItem('dashboard_theme') || 'dark')
     const themeIcon = ref(theme.value === 'dark' ? '切换浅色' : '切换深色')
 
@@ -81,19 +83,34 @@ export default {
     ]
     const activeTab = ref('features')
     const pulsingTab = ref(null)
-    const globalAdmin = ref(null)
-    const adminMsg = ref('需要管理员密码')
+    const adminMsg = ref('请输入管理员密码进入控制台')
     const adminPending = ref(null)
 
+    function onLoggedIn() {
+      loggedIn.value = true
+      adminMsg.value = '请输入管理员密码进入控制台'
+      adminCanCancel.value = false
+      adminReady.value = !!getAdminToken()
+    }
+
     function onAdminVerified() {
+      adminReady.value = true
+      adminCanCancel.value = false
       if (adminPending.value) { const fn = adminPending.value; adminPending.value = null; fn() }
     }
 
-    // 全局管理员验证入口：子组件通过 window 调用
+    function onAdminCancel() {
+      adminPending.value = null
+      adminCanCancel.value = false
+      adminReady.value = true
+    }
+
     window.showAdminDialog = (msg, onVerified) => {
-      adminMsg.value = msg
+      clearAdminToken()
+      adminMsg.value = msg || '需要管理员密码'
       adminPending.value = onVerified
-      globalAdmin.value?.show()
+      adminCanCancel.value = true
+      adminReady.value = false
     }
 
     function doSwitchTab(id) {
@@ -106,10 +123,12 @@ export default {
 
     function logout() {
       localStorage.removeItem('dashboard_token')
+      clearAdminToken()
       loggedIn.value = false
+      adminReady.value = true
     }
 
-    return { loggedIn, tabs, activeTab, pulsingTab, globalAdmin, adminMsg, logout, themeIcon, toggleTheme, doSwitchTab }
+    return { loggedIn, adminReady, adminCanCancel, tabs, activeTab, pulsingTab, adminMsg, onLoggedIn, onAdminVerified, onAdminCancel, logout, themeIcon, toggleTheme, doSwitchTab }
   }
 }
 </script>

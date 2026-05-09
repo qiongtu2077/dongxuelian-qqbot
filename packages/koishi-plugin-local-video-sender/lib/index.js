@@ -1,5 +1,6 @@
 const { segment } = require('koishi')
 const { execFile } = require('child_process')
+const fsSync = require('fs')
 const fs = require('fs/promises')
 const path = require('path')
 const { pathToFileURL } = require('url')
@@ -10,6 +11,8 @@ const DEFAULT_MAX_SIZE = 200 * 1024 * 1024
 const YTDLP = process.env.BILI_YTDLP || '/usr/local/bin/yt-dlp'
 const COOKIES = process.env.BILI_COOKIES_FILE || '/root/bilibili-cookies.txt'
 const WORKDIR = process.env.BILI_WORKDIR || '/root/koishi-bili-downloads'
+const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'data')
+const VIDEO_BLACKLIST_FILE = process.env.BILI_VIDEO_BLACKLIST_FILE || path.join(DATA_DIR, 'video-blacklist.json')
 const MAX_SIZE = parsePositiveInteger(process.env.BILI_MAX_SIZE_BYTES, DEFAULT_MAX_SIZE)
 const TEST_VIDEO_FILE = process.env.BILI_TEST_VIDEO_FILE || '/root/test_bili.mp4'
 const MIN_720_HEIGHT = 700
@@ -17,12 +20,14 @@ const MAX_720_HEIGHT = 720
 const PREFERRED_MAX_HEIGHT = 720
 const DUPLICATE_WINDOW_MS = 60 * 1000
 const DUPLICATE_HISTORY_LIMIT = 3
-//黑名单
-const GROUP_BLACKLIST = new Set([ '942033342'
-  // '123456789',
-])
+const LEGACY_GROUP_BLACKLIST = new Set(['942033342'])
 
 const recentParseHistory = new Map()
+let videoBlacklistCache = {
+  fingerprint: '',
+  groups: new Set(LEGACY_GROUP_BLACKLIST),
+  users: new Set(),
+}
 
 function parsePositiveInteger(value, fallback) {
   const parsed = Number(value)
@@ -41,6 +46,7 @@ function getRuntimeConfig() {
     workdir: WORKDIR,
     maxSize: MAX_SIZE,
     testVideoFile: TEST_VIDEO_FILE,
+    videoBlacklistFile: VIDEO_BLACKLIST_FILE,
   }
 }
 
@@ -160,8 +166,54 @@ function getGroupBlacklistCandidates(session) {
   return [...new Set(ids.filter(Boolean))]
 }
 
+function getUserBlacklistCandidates(session) {
+  return uniqueStrings([
+    session.userId,
+    session.author?.id,
+    session.event?.user?.id,
+    session.event?.sender?.userId,
+    session.event?.sender?.id,
+  ])
+}
+
+function getFileFingerprint(filePath) {
+  try {
+    const stat = fsSync.statSync(filePath)
+    return `${stat.mtimeMs}:${stat.size}`
+  } catch {
+    return 'missing'
+  }
+}
+
+function loadVideoBlacklist(force = false) {
+  const fingerprint = getFileFingerprint(VIDEO_BLACKLIST_FILE)
+  if (!force && videoBlacklistCache.fingerprint === fingerprint) return videoBlacklistCache
+
+  let groups = [...LEGACY_GROUP_BLACKLIST]
+  let users = []
+  if (fingerprint !== 'missing') {
+    try {
+      const raw = JSON.parse(fsSync.readFileSync(VIDEO_BLACKLIST_FILE, 'utf8'))
+      groups = Array.isArray(raw) ? raw : Array.isArray(raw.groups) ? raw.groups : []
+      users = raw && typeof raw === 'object' && Array.isArray(raw.users) ? raw.users : []
+    } catch {
+      groups = [...LEGACY_GROUP_BLACKLIST]
+      users = []
+    }
+  }
+
+  videoBlacklistCache = {
+    fingerprint,
+    groups: new Set(uniqueStrings(groups)),
+    users: new Set(uniqueStrings(users)),
+  }
+  return videoBlacklistCache
+}
+
 function isBlacklistedGroup(session) {
-  return getGroupBlacklistCandidates(session).some(groupId => GROUP_BLACKLIST.has(groupId))
+  const blacklist = loadVideoBlacklist()
+  return getGroupBlacklistCandidates(session).some(groupId => blacklist.groups.has(groupId)) ||
+    getUserBlacklistCandidates(session).some(userId => blacklist.users.has(userId))
 }
 
 function pruneRecentParseHistory(session, now = Date.now()) {
@@ -212,6 +264,23 @@ function getCanonicalBiliUrl(info = {}) {
     return `https://www.bilibili.com/video/${bvMatch[0]}/`
   }
   return source ? source.split('?')[0] : ''
+}
+
+function getShortestBiliUrl(info = {}) {
+  const values = [
+    info.webpage_url,
+    info.original_url,
+    info.url,
+    info.id,
+    info.display_id,
+  ].filter(Boolean)
+
+  for (const value of values) {
+    const match = String(value).match(/\bBV[0-9A-Za-z]{10}\b/i)
+    if (match) return `https://b23.tv/${match[0]}`
+  }
+
+  return getCanonicalBiliUrl(info)
 }
 
 function safeNumber(value) {
@@ -364,11 +433,11 @@ function formatDuration(seconds) {
 }
 
 function formatVideoInfo(info, picked) {
-  const canonicalUrl = getCanonicalBiliUrl(info)
+  const shortestUrl = getShortestBiliUrl(info)
   return [
     info.title || 'Unknown title',
     segment.image(info.thumbnail),
-    canonicalUrl,
+    shortestUrl,
   ].filter(Boolean).join('\n')
 }
 
@@ -496,8 +565,11 @@ exports.apply = (ctx) => {
 exports.extractBiliUrl = extractBiliUrl
 exports.buildBiliKeys = buildBiliKeys
 exports.pickFormat = pickFormat
+exports.getShortestBiliUrl = getShortestBiliUrl
 exports.downloadAndSend = downloadAndSend
 exports.getRuntimeConfig = getRuntimeConfig
+exports.isBlacklistedGroup = isBlacklistedGroup
+exports.loadVideoBlacklist = loadVideoBlacklist
 exports.isRecentDuplicateParse = isRecentDuplicateParse
 exports.rememberRecentParse = rememberRecentParse
 exports.clearRecentParseHistory = () => recentParseHistory.clear()

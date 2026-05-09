@@ -1,7 +1,7 @@
 /**
  * MODULE: 复读检测。
- * 状态: channelRepeatState / channelRepeatCooldown（按 channelKey 索引）。
- * 边界: 不调 AI API，不改 conversation，只存指纹和冷却。
+ * 状态: channelRepeatState（按 channelKey 索引）。
+ * 边界: 不调 AI API，不改 conversation，只存当前复读组指纹。
  */
 const fs = require('fs')
 const { REPEAT_ENABLED_FILE } = require('./constants')
@@ -9,10 +9,8 @@ const { atomicWriteJson } = require('./persona')
 const { normalizeText } = require('./message-reader')
 const { getSegmentData, getSessionMessageSegments } = require('./utils')
 
-const REPEAT_TRIGGER_COOLDOWN_MS = 30000
 const REPEAT_MATCH_WINDOW_MS = 120000
 const channelRepeatState = new Map()
-const channelRepeatCooldown = new Map()
 let repeatEnabledCache = {}
 
 function loadRepeatConfig() {
@@ -30,7 +28,6 @@ function getRepeatEnabledCache() {
 function clearRepeatState(channelKey) {
   const key = String(channelKey)
   channelRepeatState.delete(key)
-  channelRepeatCooldown.delete(key)
 }
 
 function setRepeatEnabled(channelKey, enabled) {
@@ -136,33 +133,40 @@ function checkGroupRepeat(session, candidate, channelKey, currentUserId, now = D
   }
 
   const last = channelRepeatState.get(channelKey)
-  channelRepeatState.set(channelKey, {
+  const startsNewGroup = !last || last.key !== candidate.key || now - last.ts > REPEAT_MATCH_WINDOW_MS
+
+  if (startsNewGroup) {
+    channelRepeatState.set(channelKey, {
+      key: candidate.key,
+      reply: candidate.reply,
+      kind: candidate.kind,
+      userId: currentUserId,
+      ts: now,
+      fired: false,
+    })
+    return null
+  }
+
+  const nextState = {
     key: candidate.key,
     reply: candidate.reply,
     kind: candidate.kind,
     userId: currentUserId,
     ts: now,
-  })
-
-  const lastTs = channelRepeatCooldown.get(channelKey) || 0
-  if (lastTs && now - lastTs < REPEAT_TRIGGER_COOLDOWN_MS) return null
+    fired: !!last.fired,
+  }
 
   if (
-    last &&
+    !last.fired &&
     last.userId !== currentUserId &&
-    last.key === candidate.key &&
     now - last.ts <= REPEAT_MATCH_WINDOW_MS
   ) {
-    channelRepeatCooldown.set(channelKey, now)
-    channelRepeatState.set(channelKey, {
-      key: '__fired__',
-      reply: '',
-      kind: 'fired',
-      userId: currentUserId,
-      ts: now,
-    })
+    nextState.fired = true
+    channelRepeatState.set(channelKey, nextState)
     return candidate
   }
+
+  channelRepeatState.set(channelKey, nextState)
   return null
 }
 

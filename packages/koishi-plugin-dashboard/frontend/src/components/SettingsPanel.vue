@@ -2,15 +2,15 @@
   <div class="card">
     <h2>访问密码</h2>
     <div style="color:var(--text2);font-size:13px;margin-bottom:12px">登录 Dashboard 所需的密码</div>
-    <input v-model="accessNew" type="password" placeholder="新访问密码" style="width:100%;margin-bottom:8px" />
+    <PasswordField v-model="accessNew" placeholder="新访问密码" autocomplete="new-password" @enter="changeAccess" />
     <button class="btn btn-sm" @click="changeAccess" :disabled="accessLoading">{{ accessLoading ? '修改中...' : '修改访问密码' }}</button>
     <div v-if="accessMsg" style="margin-top:8px;font-size:12px" :style="{color: accessMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ accessMsg.text }}</div>
   </div>
   <div class="card">
     <h2>管理员密码</h2>
     <div style="color:var(--text2);font-size:13px;margin-bottom:12px">敏感操作（重启Bot、更换API等）所需的二级密码</div>
-    <input v-model="adminOld" type="password" placeholder="当前管理员密码" style="width:100%;margin-bottom:8px" />
-    <input v-model="adminNew" type="password" placeholder="新管理员密码" style="width:100%;margin-bottom:8px" />
+    <PasswordField v-model="adminOld" placeholder="当前管理员密码" autocomplete="current-password" @enter="changeAdmin" />
+    <PasswordField v-model="adminNew" placeholder="新管理员密码" autocomplete="new-password" @enter="changeAdmin" />
     <button class="btn btn-sm" @click="changeAdmin" :disabled="adminLoading">{{ adminLoading ? '修改中...' : '修改管理员密码' }}</button>
     <div v-if="adminMsg" style="margin-top:8px;font-size:12px" :style="{color: adminMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ adminMsg.text }}</div>
   </div>
@@ -19,9 +19,11 @@
 <script>
 import { ref } from 'vue'
 import { changePassword } from '../api'
+import PasswordField from './PasswordField.vue'
 
 export default {
   name: 'SettingsPanel',
+  components: { PasswordField },
   setup() {
     const accessNew = ref('')
     const accessLoading = ref(false)

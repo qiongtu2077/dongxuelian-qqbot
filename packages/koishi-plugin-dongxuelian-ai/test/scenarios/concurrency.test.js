@@ -36,7 +36,7 @@ async function run(t) {
 
     const c = userSession(makeSession, '3003', '\u5e76\u53d1\u590d\u8bfb')
     const third = await run(c, { flushTicks: 20 })
-    t.check('scenario concurrent repeat cooldown blocks immediate third echo', !third.sent.some(item => String(item).includes('\u5e76\u53d1\u590d\u8bfb')), JSON.stringify(third.sent))
+    t.check('scenario concurrent repeat group blocks immediate third echo', !third.sent.some(item => String(item).includes('\u5e76\u53d1\u590d\u8bfb')), JSON.stringify(third.sent))
   })
 
   await withScenario({}, async ({ data, makeSession, run }) => {

@@ -360,7 +360,7 @@ async function handleCommand(session, ctx, state) {
 
   if (plain === '东雪莲复读状态') {
     const enabled = repeatEnabledCache[channelKey]
-    return handled(`本群连续复读：${enabled ? '开启' : '关闭'}（默认关闭，30秒冷却）`)
+    return handled(`本群连续复读：${enabled ? '开启' : '关闭'}（默认关闭，同一复读组只跟一次）`)
   }
 
   const switchMatch = plain.match(/^切换(.+)$/)

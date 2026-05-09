@@ -78,12 +78,15 @@ async function withIsolatedPlugin(fn) {
     BILI_WORKDIR: process.env.BILI_WORKDIR,
     BILI_MAX_SIZE_BYTES: process.env.BILI_MAX_SIZE_BYTES,
     BILI_TEST_VIDEO_FILE: process.env.BILI_TEST_VIDEO_FILE,
+    DONGXUELIAN_AI_DATA_DIR: process.env.DONGXUELIAN_AI_DATA_DIR,
   }
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-video-sender-'))
+  const dataDir = path.join(tmpRoot, 'data')
   process.env.BILI_COOKIES_FILE = path.join(tmpRoot, 'cookies.txt')
   process.env.BILI_WORKDIR = path.join(tmpRoot, 'downloads')
   process.env.BILI_MAX_SIZE_BYTES = '1024'
   process.env.BILI_TEST_VIDEO_FILE = path.join(tmpRoot, 'test-video.mp4')
+  process.env.DONGXUELIAN_AI_DATA_DIR = dataDir
   delete require.cache[PLUGIN_PATH]
 
   try {
@@ -119,6 +122,7 @@ async function run() {
     check('workdir path uses env override', config.workdir === path.join(tmpRoot, 'downloads'), JSON.stringify(config))
     check('max size uses env override', config.maxSize === 1024, JSON.stringify(config))
     check('test video path uses env override', config.testVideoFile === path.join(tmpRoot, 'test-video.mp4'), JSON.stringify(config))
+    check('video blacklist path uses shared data dir', config.videoBlacklistFile === path.join(tmpRoot, 'data', 'video-blacklist.json'), JSON.stringify(config))
 
     const bvUrl = plugin.extractBiliUrl('看看这个 BV1xx411c7mD')
     check('extracts BV id as canonical URL', bvUrl === 'https://www.bilibili.com/video/BV1xx411c7mD', bvUrl)
@@ -129,6 +133,7 @@ async function run() {
     const keys = plugin.buildBiliKeys('BV1xx411c7mD https://www.bilibili.com/video/BV1xx411c7mD/?spm_id_from=1')
     check('builds normalized BV key', keys.includes('bv:1xx411c7md'), JSON.stringify(keys))
     check('builds normalized URL key', keys.includes('url:www.bilibili.com/video/bv1xx411c7md'), JSON.stringify(keys))
+    check('builds shortest BV link for preview', plugin.getShortestBiliUrl(sampleInfo()) === 'https://b23.tv/BV1xx411c7mD', plugin.getShortestBiliUrl(sampleInfo()))
   })
 
   section('format picking')
@@ -174,8 +179,18 @@ async function run() {
     )
     check('oversize video returns user-visible refusal', String(tooLarge).includes('Video is too large'), String(tooLarge))
     check('oversize video sends info before refusal', session.sent.some(item => item.includes('Demo Video')), JSON.stringify(session.sent))
+    check('oversize video sends short Bili link before refusal', session.sent.some(item => item.includes('https://b23.tv/BV1xx411c7mD')), JSON.stringify(session.sent))
     check('oversize video does not run downloader', !runCalled)
     check('workdir remains inside temp root', fs.existsSync(path.join(tmpRoot, 'downloads')))
+
+    const dataDir = path.join(tmpRoot, 'data')
+    fs.mkdirSync(dataDir, { recursive: true })
+    fs.writeFileSync(path.join(dataDir, 'video-blacklist.json'), JSON.stringify({ groups: ['10001'], users: [] }), 'utf8')
+    check('video blacklist blocks configured group', plugin.isBlacklistedGroup(makeSession({ guildId: '10001', channelId: '10001' })))
+    fs.writeFileSync(path.join(dataDir, 'video-blacklist.json'), JSON.stringify({ groups: [], users: ['100000000'] }), 'utf8')
+    check('video blacklist reloads and blocks configured user', plugin.isBlacklistedGroup(makeSession({ guildId: '10002', channelId: '10002', userId: '100000000' })))
+    fs.writeFileSync(path.join(dataDir, 'video-blacklist.json'), JSON.stringify({ groups: [], users: [] }), 'utf8')
+    check('video blacklist reloads cleared file', !plugin.isBlacklistedGroup(makeSession({ guildId: '10002', channelId: '10002', userId: '100000000' })))
 
     plugin.clearRecentParseHistory()
     let probeCount = 0

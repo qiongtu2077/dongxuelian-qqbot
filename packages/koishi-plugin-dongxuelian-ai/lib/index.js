@@ -33,33 +33,38 @@ const { prepareVisionRequest, isVisionSession } = require('./vision')
 // ===== @satorijs/core@3.7.0 兼容补丁：Session 缺失方法 =====
 function __patchBuildStripped(session) {
   if (session._stripped && typeof session._stripped === 'object') return session._stripped
-  var source = Array.isArray(session.elements) ? session.elements : Array.isArray(session.event?.message?.elements) ? session.event.message.elements : []
-  var elements = source.slice()
-  var hasAt = false, appel = false, atSelf = false
-  var selfId = String(session.selfId || session.bot?.selfId || session.event?.selfId || '')
-  var quoteUserId = String(session.quote?.user?.id || '')
+  const source = Array.isArray(session.elements) ? session.elements : Array.isArray(session.event?.message?.elements) ? session.event.message.elements : []
+  const elements = source.slice()
+  let hasAt = false
+  let appel = false
+  let atSelf = false
+  const selfId = String(session.selfId || session.bot?.selfId || session.event?.selfId || '')
+  const quoteUserId = String(session.quote?.user?.id || '')
   while (elements[0]?.type === 'at') {
-    var id = String(elements.shift()?.attrs?.id || '')
+    const id = String(elements.shift()?.attrs?.id || '')
     if (selfId && id === selfId) { atSelf = true; appel = true }
     if (!quoteUserId || id !== quoteUserId) hasAt = true
     while (elements[0]?.type === 'text' && !String(elements[0].attrs?.content || '').trim()) { elements.shift() }
   }
-  var content = elements.map(function(e) {
-    if (!e) return ''
-    if (e.type === 'text') return String(e.attrs?.content || '')
-    if (e.type === 'at') { var id = e.attrs?.id || ''; return id ? '<at id="' + id + '"/>' : '' }
+  let content = elements.map(function(element) {
+    if (!element) return ''
+    if (element.type === 'text') return String(element.attrs?.content || '')
+    if (element.type === 'at') {
+      const id = element.attrs?.id || ''
+      return id ? '<at id="' + id + '"/>' : ''
+    }
     return ''
   }).join('').trim()
   if (!hasAt) {
-    var nicknames = session?.app?.koishi?.config?.nickname || session?.app?.config?.nickname || []
-    var list = Array.isArray(nicknames) ? nicknames : [nicknames]
-    var val = content
+    const nicknames = session?.app?.koishi?.config?.nickname || session?.app?.config?.nickname || []
+    const list = Array.isArray(nicknames) ? nicknames : [nicknames]
+    let val = content
     if (val.startsWith('@')) val = val.slice(1)
-    for (var i = 0; i < list.length; i++) {
-      var name = String(list[i] || '')
+    for (let index = 0; index < list.length; index++) {
+      const name = String(list[index] || '')
       if (!name || !val.startsWith(name)) continue
-      var rest = val.slice(name.length)
-      var match = /^([,\uFF0C\u3001\s]+|$)/.exec(rest)
+      const rest = val.slice(name.length)
+      const match = /^([,\uFF0C\u3001\s]+|$)/.exec(rest)
       if (!match) continue
       appel = true; content = rest.slice(match[0].length).trim(); break
     }
@@ -84,14 +89,14 @@ function __patchInstallAccessors(target) {
 __patchInstallAccessors(KoishiSession && KoishiSession.prototype)
 
 // 包装 Bot.prototype.session()
-var __origSession = KoishiBot.prototype.session
+const __origSession = KoishiBot.prototype.session
 if (!__origSession.__dongxuelianPatched) {
   KoishiBot.prototype.session = function(event) {
-    var s = __origSession.call(this, event)
-    if (!s || typeof s !== 'object') return s
-    try { if (s.stripped !== undefined) return s } catch (e) {}
-    __patchInstallAccessors(s)
-    return s
+    const session = __origSession.call(this, event)
+    if (!session || typeof session !== 'object') return session
+    try { if (session.stripped !== undefined) return session } catch (error) {}
+    __patchInstallAccessors(session)
+    return session
   }
   KoishiBot.prototype.session.__dongxuelianPatched = true
 }
@@ -305,6 +310,7 @@ if (KoishiSession && KoishiSession.prototype && !KoishiSession.prototype.send) {
 exports.name = 'dongxuelian-ai'
 
 let runtimeSettingsLoaded = false
+let runtimeSettingsFingerprint = ''
 let randomWhitelistCache = new Set(DEFAULT_GROUP_RANDOM_WHITELIST)
 let randomRateCache = new Map()
 const channelQueues = new Map()
@@ -327,6 +333,7 @@ const sendFailState = {
 }
 
 let userBlacklistCache = null
+let userBlacklistFingerprint = ''
 const lastEmotionCache = new Map()
 
 // 人格系统：per-group persona 配置
@@ -467,8 +474,26 @@ async function dumpSessionEvent(session, analyzed, plain, memoryText) {
 
 // 生成联网状态文本，给命令输出和状态页复用。
 
+async function getFileFingerprint(filePath) {
+  try {
+    const stat = await fs.stat(filePath)
+    return `${stat.mtimeMs}:${stat.size}`
+  } catch {
+    return 'missing'
+  }
+}
+
+async function getRuntimeSettingsFingerprint() {
+  const [whitelistStamp, rateStamp] = await Promise.all([
+    getFileFingerprint(RANDOM_WHITELIST_FILE),
+    getFileFingerprint(RANDOM_RATE_FILE),
+  ])
+  return `${whitelistStamp}|${rateStamp}`
+}
+
 async function loadRuntimeSettings(force = false) {
-  if (!force && runtimeSettingsLoaded) return
+  const fingerprint = await getRuntimeSettingsFingerprint()
+  if (!force && runtimeSettingsLoaded && fingerprint === runtimeSettingsFingerprint) return
 
   const [whitelist, rateMap] = await Promise.all([
     readJsonFile(RANDOM_WHITELIST_FILE, [...DEFAULT_GROUP_RANDOM_WHITELIST]),
@@ -493,6 +518,17 @@ async function loadRuntimeSettings(force = false) {
   }
   randomRateCache = nextRateMap
   runtimeSettingsLoaded = true
+  runtimeSettingsFingerprint = fingerprint
+}
+
+async function loadUserBlacklist(force = false) {
+  const fingerprint = await getFileFingerprint(USER_BLACKLIST_FILE)
+  if (!force && userBlacklistCache !== null && fingerprint === userBlacklistFingerprint) return userBlacklistCache
+
+  const raw = await readJsonFile(USER_BLACKLIST_FILE, [])
+  userBlacklistCache = new Set(Array.isArray(raw) ? raw.map(String) : [])
+  userBlacklistFingerprint = fingerprint
+  return userBlacklistCache
 }
 
 async function notifyAdminsSendFailure(ctx, bot) {
@@ -694,10 +730,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
 
     // 用户黑名单管理
     const ensureUserBlacklistCache = async () => {
-      if (userBlacklistCache === null) {
-        const raw = await readJsonFile(USER_BLACKLIST_FILE, [])
-        userBlacklistCache = new Set(Array.isArray(raw) ? raw.map(String) : [])
-      }
+      await loadUserBlacklist()
     }
     const userBlAdd = plain.match(/^用户黑名单添加\s*(\d+)$/)
     if (userBlAdd) {
@@ -706,6 +739,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       await ensureUserBlacklistCache()
       userBlacklistCache.add(uid)
       await writeJsonFile(USER_BLACKLIST_FILE, [...userBlacklistCache])
+      userBlacklistFingerprint = await getFileFingerprint(USER_BLACKLIST_FILE)
       return `已添加用户黑名单：${uid}`
     }
     const userBlDel = plain.match(/^用户黑名单删除\s*(\d+)$/)
@@ -713,6 +747,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       await ensureUserBlacklistCache()
       userBlacklistCache.delete(userBlDel[1])
       await writeJsonFile(USER_BLACKLIST_FILE, [...userBlacklistCache])
+      userBlacklistFingerprint = await getFileFingerprint(USER_BLACKLIST_FILE)
       return `已移出用户黑名单：${userBlDel[1]}`
     }
     if (plain === '用户黑名单查看') {
@@ -978,13 +1013,8 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
 
 // 用户黑名单：群聊中不回复，但仍记录消息供上下文使用
     if (inGuild && !hasAdminPermission(session)) {
-      if (userBlacklistCache === null) {
-        const raw = await readJsonFile(USER_BLACKLIST_FILE, [])
-        if (userBlacklistCache === null) {
-          userBlacklistCache = new Set(Array.isArray(raw) ? raw.map(String) : [])
-        }
-      }
-      if (userBlacklistCache.has(String(currentUserId))) return next()
+      const userBlacklist = await loadUserBlacklist()
+      if (userBlacklist.has(String(currentUserId))) return next()
     }
 
     if (!isPrivate && !directAt && !nameMentioned) {

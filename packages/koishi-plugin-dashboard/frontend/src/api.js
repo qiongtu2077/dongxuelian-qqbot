@@ -17,6 +17,10 @@ function setAdminToken(token) {
   localStorage.setItem(ADMIN_TOKEN_KEY, data)
 }
 
+function clearAdminToken() {
+  localStorage.removeItem(ADMIN_TOKEN_KEY)
+}
+
 function headers(admin = false) {
   const h = { 'Content-Type': 'application/json' }
   const token = localStorage.getItem('dashboard_token')
@@ -37,8 +41,12 @@ function handle401(res) {
   return false
 }
 
-async function get(path) {
-  const res = await fetch(BASE + path, { headers: headers() })
+async function get(path, admin = false) {
+  const res = await fetch(BASE + path, { headers: headers(admin) })
+  if (res.status === 403) {
+    const j = await res.json()
+    return { ok: false, data: j, code: j.code }
+  }
   if (handle401(res)) return { ok: false, data: null }
   return { ok: res.ok, data: await res.json() }
 }
@@ -83,7 +91,7 @@ async function postPlain(path, data) {
 export async function login(password) { return postPlain('/login', { password }) }
 export async function verifyAdmin(password) { return postPlain('/admin/verify', { password }) }
 export async function changePassword(type, oldPassword, newPassword) { return put('/auth/password', { type, oldPassword, newPassword }, true) }
-export { setAdminToken, getAdminToken }
+export { setAdminToken, getAdminToken, clearAdminToken }
 export async function fetchStatus() { return get('/status') }
 export async function fetchProviders() { return get('/providers') }
 export async function fetchConfig() { return get('/config') }
@@ -103,7 +111,7 @@ export async function startBot() { return post('/bot/start', {}, true) }
 export async function stopBot() { return post('/bot/stop', {}, true) }
 export async function fetchMaintenance() { return get('/maintenance') }
 export async function setMaintenance(enabled) { return put('/maintenance', { enabled }, true) }
-export async function fetchQQToken() { return get('/qq/token') }
+export async function fetchQQToken() { return get('/qq/token', true) }
 export async function fetchSSHInfo() { return get('/qq/ssh-info') }
 export async function fetchSelfId() { return get('/qq/selfid') }
 export async function updateSelfId(selfId) { return put('/qq/selfid', { selfId }, true) }

@@ -26,16 +26,28 @@ async function run(t) {
     const sameUser = await run(userSession(makeSession, '1001', '\u540c\u4e00\u4e2a\u4eba'))
     t.check('scenario same user repeat does not trigger', sameUser.sent.length === 0, JSON.stringify(sameUser.sent))
 
-    await run(userSession(makeSession, '1003', '\u51b7\u5374A'))
-    const cooldownBlocked = await run(userSession(makeSession, '1004', '\u51b7\u5374A'))
-    t.check('scenario repeat cooldown blocks trigger', cooldownBlocked.sent.length === 0, JSON.stringify(cooldownBlocked.sent))
+    await run(userSession(makeSession, '1003', '\u540c\u7ec4A'))
+    const groupFirst = await run(userSession(makeSession, '1004', '\u540c\u7ec4A'))
+    checkSentIncludes(t, 'scenario repeat group triggers first match', groupFirst, '\u540c\u7ec4A')
+    const groupDuplicate = await run(userSession(makeSession, '1005', '\u540c\u7ec4A'))
+    t.check('scenario repeat group blocks duplicate trigger', groupDuplicate.sent.length === 0, JSON.stringify(groupDuplicate.sent))
 
-    await run(userSession(makeSession, '1007', '[CQ:face,id=76]'))
-    const faceRepeat = await run(userSession(makeSession, '1008', '[CQ:face,id=76]'))
-    t.check('scenario QQ face repeat respects middleware cooldown', faceRepeat.sent.length === 0, JSON.stringify(faceRepeat.sent))
+    await run(userSession(makeSession, '1006', '\u6362\u4e00\u53e5'))
+    const groupReset = await run(userSession(makeSession, '1007', '\u6362\u4e00\u53e5'))
+    checkSentIncludes(t, 'scenario repeat new text can trigger after previous group', groupReset, '\u6362\u4e00\u53e5')
 
-    await run(userSession(makeSession, '1009', '[CQ:face,id=76]\u54c8\u54c8\u54c8'))
-    const mixedFace = await run(userSession(makeSession, '1010', '[CQ:face,id=76]\u54c8\u54c8\u54c8'))
+    await run(userSession(makeSession, '1008', '\u540c\u7ec4A'))
+    const oldTextNewGroup = await run(userSession(makeSession, '1009', '\u540c\u7ec4A'))
+    checkSentIncludes(t, 'scenario repeat old text can trigger after group changes', oldTextNewGroup, '\u540c\u7ec4A')
+
+    await run(userSession(makeSession, '1013', '[CQ:face,id=76]'))
+    const faceRepeat = await run(userSession(makeSession, '1014', '[CQ:face,id=76]'))
+    checkSentIncludes(t, 'scenario QQ face repeat triggers after text group', faceRepeat, '<face id="76"/>')
+    const faceDuplicate = await run(userSession(makeSession, '1015', '[CQ:face,id=76]'))
+    t.check('scenario QQ face repeat blocks duplicate in same group', faceDuplicate.sent.length === 0, JSON.stringify(faceDuplicate.sent))
+
+    await run(userSession(makeSession, '1016', '[CQ:face,id=76]\u54c8\u54c8\u54c8'))
+    const mixedFace = await run(userSession(makeSession, '1017', '[CQ:face,id=76]\u54c8\u54c8\u54c8'))
     t.check('scenario mixed face text is not sent as pure face', !mixedFace.sent.some(item => String(item).includes('<face id="76"/>')), JSON.stringify(mixedFace.sent))
 
     await run(userSession(makeSession, '1011', '[CQ:image,file=a.jpg]', {
@@ -61,11 +73,17 @@ async function run(t) {
     repeat.checkGroupRepeat(userSession(makeSession, '2001', 'pure-repeat'), candidate, cooldownChannel, '2001', 100000)
     const firstTrigger = repeat.checkGroupRepeat(userSession(makeSession, '2002', 'pure-repeat'), candidate, cooldownChannel, '2002', 100100)
     t.check('scenario repeat pure function triggers first match', !!firstTrigger && firstTrigger.reply === 'pure-repeat', JSON.stringify(firstTrigger))
-    repeat.checkGroupRepeat(userSession(makeSession, '2003', 'pure-repeat'), candidate, cooldownChannel, '2003', 101000)
-    const cooldownBlocked = repeat.checkGroupRepeat(userSession(makeSession, '2004', 'pure-repeat'), candidate, cooldownChannel, '2004', 101100)
-    t.check('scenario repeat pure function blocks 30s cooldown', cooldownBlocked === null, JSON.stringify(cooldownBlocked))
-    const cooldownExpired = repeat.checkGroupRepeat(userSession(makeSession, '2005', 'pure-repeat'), candidate, cooldownChannel, '2005', 131200)
-    t.check('scenario repeat pure function triggers after cooldown', !!cooldownExpired && cooldownExpired.reply === 'pure-repeat', JSON.stringify(cooldownExpired))
+    const duplicateBlocked = repeat.checkGroupRepeat(userSession(makeSession, '2003', 'pure-repeat'), candidate, cooldownChannel, '2003', 101000)
+    t.check('scenario repeat pure function blocks duplicate same group', duplicateBlocked === null, JSON.stringify(duplicateBlocked))
+
+    const nextCandidate = { key: 'text:next-repeat', reply: 'next-repeat', kind: 'text', supported: true }
+    repeat.checkGroupRepeat(userSession(makeSession, '2004', 'next-repeat'), nextCandidate, cooldownChannel, '2004', 101100)
+    const nextTrigger = repeat.checkGroupRepeat(userSession(makeSession, '2005', 'next-repeat'), nextCandidate, cooldownChannel, '2005', 101200)
+    t.check('scenario repeat pure function triggers after text changes', !!nextTrigger && nextTrigger.reply === 'next-repeat', JSON.stringify(nextTrigger))
+
+    repeat.checkGroupRepeat(userSession(makeSession, '2006', 'pure-repeat'), candidate, cooldownChannel, '2006', 101300)
+    const oldTextNewGroup = repeat.checkGroupRepeat(userSession(makeSession, '2007', 'pure-repeat'), candidate, cooldownChannel, '2007', 101400)
+    t.check('scenario repeat pure function allows old text in new group', !!oldTextNewGroup && oldTextNewGroup.reply === 'pure-repeat', JSON.stringify(oldTextNewGroup))
 
     const windowChannel = 'pure-repeat-window'
     enabled[windowChannel] = true

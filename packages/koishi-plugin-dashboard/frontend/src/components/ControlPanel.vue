@@ -50,9 +50,16 @@
         <!-- 步骤二：NapCat 扫码 -->
         <div style="background:var(--input);border-radius:8px;padding:14px 16px;font-size:13px;margin-bottom:12px">
           <div style="color:#FCD34D;font-weight:700;margin-bottom:8px">步骤二：在 NapCat 扫码登新号</div>
-          <div style="display:flex;gap:8px;margin-bottom:8px">
-            <code id="napcat-token" style="flex:1;background:var(--input);border-radius:6px;padding:10px 14px;font-size:12px;color:#FCD34D;font-family:monospace">{{ napcatToken || '加载中...' }}</code>
-            <button class="btn btn-sm" style="white-space:nowrap" @click="copyText('napcat-token')">复制</button>
+          <div class="secret-line" style="margin-bottom:8px">
+            <code id="napcat-token" style="flex:1;background:var(--input);border-radius:6px;padding:10px 14px;font-size:12px;color:#FCD34D;font-family:monospace">{{ displayNapcatToken }}</code>
+            <button class="icon-btn" type="button" :aria-label="showNapcatToken ? '隐藏 token' : '显示 token'" @click="showNapcatToken = !showNapcatToken">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+                <circle cx="12" cy="12" r="3" />
+                <path v-if="!showNapcatToken" d="M4 20 20 4" class="eye-slash" />
+              </svg>
+            </button>
+            <button class="btn btn-sm" style="white-space:nowrap" @click="copyValue(napcatToken)">复制</button>
           </div>
           <a href="http://localhost:6099/webui/" target="_blank" class="btn btn-sm" style="display:inline-block;text-decoration:none">打开 NapCat 管理面板</a>
         </div>
@@ -101,11 +108,10 @@
       </div>
     </div>
   </div>
-  <!-- 管理员验证弹窗（全局，由 App.vue 提供） -->
 </template>
 
 <script>
-import { ref, onMounted, onActivated } from 'vue'
+import { computed, ref, onMounted, onActivated } from 'vue'
 import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo, fetchSelfId, updateSelfId } from '../api'
 
 export default {
@@ -118,7 +124,17 @@ export default {
     const maintenanceOn = ref(false)
     const maintLoading = ref(false)
     const napcatToken = ref('')
+    const showNapcatToken = ref(false)
     const copiedMsg = ref('')
+    const displayNapcatToken = computed(() => showNapcatToken.value ? (napcatToken.value || '加载中...') : maskSecret(napcatToken.value))
+
+    function maskSecret(value) {
+      const raw = String(value || '')
+      if (!raw) return '加载中...'
+      if (raw.length <= 3) return raw
+      return raw.slice(0, 3) + '*'.repeat(raw.length - 3)
+    }
+
     const sshHost = ref(localStorage.getItem('dashboard_ssh_host') || '')
     const sshUser = ref('root')
     const newSelfId = ref('')
@@ -143,6 +159,10 @@ export default {
     }
     async function loadQQToken() {
       const res = await fetchQQToken()
+      if (res.code === 'ADMIN_REQUIRED') {
+        window.showAdminDialog && window.showAdminDialog('查看 NapCat Token 需要管理员密码', loadQQToken)
+        return
+      }
       if (res.ok && res.data?.token) napcatToken.value = res.data.token
     }
     async function loadSSHInfo() {
@@ -172,8 +192,6 @@ export default {
       } finally { savingSelfId.value = false }
     }
 
-    function onAdminVerified() {
-    }
     function saveSSHHost() {
       localStorage.setItem('dashboard_ssh_host', sshHost.value)
     }
@@ -198,6 +216,17 @@ export default {
       const text = el.textContent || el.innerText
       try {
         navigator.clipboard.writeText(text.trim()).then(() => {
+          copiedMsg.value = '已复制'
+          setTimeout(() => copiedMsg.value = '', 2000)
+        }).catch(() => fallbackCopy(text))
+      } catch { fallbackCopy(text) }
+    }
+
+    function copyValue(value) {
+      const text = String(value || '').trim()
+      if (!text) return
+      try {
+        navigator.clipboard.writeText(text).then(() => {
           copiedMsg.value = '已复制'
           setTimeout(() => copiedMsg.value = '', 2000)
         }).catch(() => fallbackCopy(text))
@@ -256,7 +285,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, resultMsg, maintenanceOn, maintLoading, napcatToken, copiedMsg, sshHost, sshUser, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, saveSSHHost, saveSelfId, doStart, doStop, toggleMaintenance, testStartBot }
+    return { status, acting, resultMsg, maintenanceOn, maintLoading, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, sshHost, sshUser, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, saveSSHHost, saveSelfId, doStart, doStop, toggleMaintenance, testStartBot }
   }
 }
 </script>
