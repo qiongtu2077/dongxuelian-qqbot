@@ -1,0 +1,39 @@
+{
+  "name": "dongxuelian-windows-deployer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows local and remote deployment shell for Dongxuelian Koishi bot",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "check": "node scripts/check-env.cjs",
+    "setup-local": "node scripts/setup-local.cjs",
+    "build:win": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "cn.dongxuelian.qqbot.deployer",
+    "productName": "莲莲Bot部署器",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "scripts/**/*"
+    ],
+    "extraResources": [
+      { "from": "../packages", "to": "app/packages" },
+      { "from": "../scripts", "to": "app/scripts" },
+      { "from": "../package.json", "to": "app/package.json" },
+      { "from": "../start.js", "to": "app/start.js" },
+      { "from": "../koishi.example.yml", "to": "app/koishi.example.yml" }
+    ],
+    "win": {
+      "target": "portable"
+    }
+  }
+}

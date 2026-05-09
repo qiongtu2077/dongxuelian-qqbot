@@ -38,7 +38,7 @@ export default {
       // 使用预先缓存的 admin token 或弹出管理员验证
       accessLoading.value = true; accessMsg.value = null
       const res = await changePassword('access', adminOld.value, accessNew.value.trim())
-      if (res.code === 'ADMIN_REQUIRED') { accessMsg.value = { type: 'err', text: '需要管理员密码' }; accessLoading.value = false; return }
+      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('修改访问密码需要管理员密码', changeAccess); accessLoading.value = false; return }
       accessMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '访问密码已更新，请重新登录' : '修改失败') }
       if (res.ok) accessNew.value = ''
       accessLoading.value = false
@@ -48,7 +48,7 @@ export default {
       if (!adminOld.value.trim() || !adminNew.value.trim()) return
       adminLoading.value = true; adminMsg.value = null
       const res = await changePassword('admin', adminOld.value, adminNew.value.trim())
-      if (res.code === 'ADMIN_REQUIRED') { adminMsg.value = { type: 'err', text: '当前管理员密码错误' }; adminLoading.value = false; return }
+      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('修改管理员密码需要当前管理员密码', changeAdmin); adminLoading.value = false; return }
       adminMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '管理员密码已更新' : '修改失败') }
       if (res.ok) { adminOld.value = ''; adminNew.value = '' }
       adminLoading.value = false

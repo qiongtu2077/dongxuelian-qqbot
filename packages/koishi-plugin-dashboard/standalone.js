@@ -7,6 +7,7 @@
 const fs = require('fs')
 const path = require('path')
 const http = require('http')
+const https = require('https')
 const crypto = require('crypto')
 const os = require('os')
 const { execSync, exec } = require('child_process')
@@ -101,6 +102,10 @@ function isLocalAuthBypass() {
 }
 
 function stopKoishiProcesses() {
+  if (process.platform === 'win32') {
+    execSync('powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match \'node\' -and $_.CommandLine -match \'koishi\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"', { timeout: 8000, stdio: 'ignore' })
+    return
+  }
   execSync("pkill -9 -f 'koishi/lib/worker' 2>/dev/null || true", { timeout: 5000 })
   execSync("pkill -9 -f 'node.*koishi start' 2>/dev/null || true", { timeout: 5000 })
 }
@@ -117,6 +122,91 @@ function remoteWriteFileCommand(server, filePath, content) {
   const dir = filePath.replace(/\/[^/]*$/, '')
   const remoteCmd = `mkdir -p ${shellQuote(dir)} && printf %s ${shellQuote(content)} > ${shellQuote(filePath)}`
   return `ssh ${server} ${shellQuote(remoteCmd)}`
+}
+
+function isInsidePath(parent, child) {
+  const rel = path.relative(path.resolve(parent), path.resolve(child))
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel))
+}
+
+function copyRecursiveSync(src, dst) {
+  if (!fs.existsSync(src)) return
+  const stat = fs.statSync(src)
+  if (stat.isDirectory()) {
+    fs.mkdirSync(dst, { recursive: true })
+    for (const entry of fs.readdirSync(src)) copyRecursiveSync(path.join(src, entry), path.join(dst, entry))
+    return
+  }
+  fs.mkdirSync(path.dirname(dst), { recursive: true })
+  fs.copyFileSync(src, dst)
+}
+
+function getCommandVersion(command) {
+  try { return execSync(command, { timeout: 3000, encoding: 'utf8' }).trim() } catch { return '' }
+}
+
+function checkPortAvailable(port) {
+  try {
+    const cmd = process.platform === 'win32'
+      ? `netstat -ano | findstr ":${port}"`
+      : `ss -tlnp | grep -q :${port}`
+    const out = execSync(cmd, { timeout: 3000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return process.platform === 'win32' ? !out.trim() : false
+  } catch { return true }
+}
+
+function runtimePath(...parts) {
+  return path.join(KOISHI_DIR, 'runtime', ...parts)
+}
+
+function writeRuntimeLayout() {
+  const dirs = [
+    runtimePath(),
+    runtimePath('downloads'),
+    runtimePath('logs'),
+    runtimePath('napcat'),
+    path.join(KOISHI_DIR, 'data'),
+    path.join(KOISHI_DIR, 'node_modules'),
+  ]
+  for (const dir of dirs) fs.mkdirSync(dir, { recursive: true })
+}
+
+function testChinesePathWrite(dir) {
+  try {
+    const testFile = path.join(dir, '中文路径写入测试.tmp')
+    fs.writeFileSync(testFile, 'ok', 'utf8')
+    const ok = fs.readFileSync(testFile, 'utf8') === 'ok'
+    fs.unlinkSync(testFile)
+    return { ok }
+  } catch (e) { return { ok: false, message: e.message } }
+}
+
+function downloadToRuntime(url, callback) {
+  let parsed
+  try { parsed = new URL(url) } catch { callback(new Error('下载地址无效')); return }
+  if (!['http:', 'https:'].includes(parsed.protocol)) { callback(new Error('只支持 http/https 下载地址')); return }
+  writeRuntimeLayout()
+  const name = decodeURIComponent(path.basename(parsed.pathname || 'napcat-download')).replace(/[<>:"/\\|?*]/g, '_') || 'napcat-download.bin'
+  const filePath = runtimePath('downloads', name)
+  const client = parsed.protocol === 'https:' ? https : http
+  const req = client.get(parsed, (response) => {
+    if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+      response.resume()
+      downloadToRuntime(response.headers.location, callback)
+      return
+    }
+    if (response.statusCode !== 200) {
+      response.resume()
+      callback(new Error('下载失败：HTTP ' + response.statusCode))
+      return
+    }
+    const stream = fs.createWriteStream(filePath)
+    response.pipe(stream)
+    stream.on('finish', () => stream.close(() => callback(null, filePath)))
+    stream.on('error', callback)
+  })
+  req.setTimeout(120000, () => req.destroy(new Error('下载超时')))
+  req.on('error', callback)
 }
 
 // 版本指纹：对关键代码文件做 hash，不依赖 git
@@ -175,6 +265,8 @@ function requireAdmin(req, res) {
 function getNapcatToken() {
   if (getNapcatToken._cached) return getNapcatToken._cached
   const candidates = [
+    path.join(KOISHI_DIR, 'runtime', 'napcat', 'config', 'webui.json'),
+    path.join(KOISHI_DIR, 'runtime', 'NapCat', 'config', 'webui.json'),
     '/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json',
     process.env.NAPCAT_CONFIG || '',
   ].filter(Boolean)
@@ -1017,6 +1109,7 @@ const server = http.createServer((req, res) => {
       try {
         const { name, data } = JSON.parse(body)
         if (!name || !data) return json(res, { ok: false, message: '文件名或内容为空' }, 400)
+        if (name.includes('..') || name.includes('/') || name.includes('\\')) return json(res, { ok: false, message: '无效文件名' }, 400)
         const filePath = path.join(DATA_DIR, name)
         const buf = Buffer.from(data, 'base64')
         fs.writeFileSync(filePath, buf)
@@ -1028,21 +1121,37 @@ const server = http.createServer((req, res) => {
 
   // 环境检测
   if (pathname === '/dashboard/api/env/check' && req.method === 'GET') {
-    const result = { nodejs: { found: false, version: '' }, napcat: { found: false, path: '' }, workDir: { exists: false, path: KOISHI_DIR }, port: { port: 5140, available: true } }
-    try {
-      const out = execSync('node --version', { timeout: 3000, encoding: 'utf8' }).trim()
-      result.nodejs = { found: true, version: out }
-    } catch {}
-    try {
-      const napcatDir = '/root/Napcat'
-      if (require('fs').existsSync(napcatDir)) result.napcat = { found: true, path: napcatDir }
-    } catch {}
-    try { result.workDir.exists = require('fs').existsSync(KOISHI_DIR) } catch {}
-    try {
-      execSync('ss -tlnp | grep -q :5140', { timeout: 2000, stdio: 'ignore' })
-      result.port.available = false
-    } catch { result.port.available = true }
-    return json(res, result)
+    try { writeRuntimeLayout() } catch {}
+    const nodeVersion = getCommandVersion('node --version')
+    const npmVersion = getCommandVersion('npm --version')
+    const napcatCandidates = [
+      runtimePath('napcat'),
+      path.join(KOISHI_DIR, 'NapCat'),
+      process.env.NAPCAT_DIR || '',
+      process.platform === 'win32' ? path.join(KOISHI_DIR, 'runtime', 'NapCat') : '/root/Napcat',
+    ].filter(Boolean)
+    let napcat = { found: false, path: runtimePath('napcat') }
+    for (const candidate of napcatCandidates) {
+      try {
+        if (fs.existsSync(candidate) && fs.readdirSync(candidate).length > 0) { napcat = { found: true, path: candidate }; break }
+      } catch {}
+    }
+    return json(res, {
+      platform: process.platform,
+      projectDir: path.resolve(KOISHI_DIR),
+      runtimeDir: runtimePath(),
+      node: { found: !!nodeVersion, version: nodeVersion },
+      npm: { found: !!npmVersion, version: npmVersion },
+      workDir: { exists: fs.existsSync(KOISHI_DIR), path: path.resolve(KOISHI_DIR), writable: fs.existsSync(KOISHI_DIR) },
+      pathEncoding: testChinesePathWrite(runtimePath('logs')),
+      ports: {
+        5140: { available: checkPortAvailable(5140) },
+        5150: { available: checkPortAvailable(Number(PORT)) },
+        8080: { available: checkPortAvailable(8080) },
+        6099: { available: checkPortAvailable(6099) },
+      },
+      napcat,
+    })
   }
 
   // 本地部署
@@ -1053,30 +1162,45 @@ const server = http.createServer((req, res) => {
     collectBody(req, res, (body) => {
       try {
         const cfg = JSON.parse(body)
-        const workDir = cfg.workDir || KOISHI_DIR
-        if (!cfg.qq) return json(res, { ok: false, message: 'QQ 号不能为空' }, 400)
-        // 确保目录存在
-        const dirs = [path.join(workDir, 'data'), path.join(workDir, 'node_modules')]
-        for (const d of dirs) { try { require('fs').mkdirSync(d, { recursive: true }) } catch {} }
-        // 复制插件包
+        const workDir = path.resolve(KOISHI_DIR)
+        const qq = String(cfg.qq || '').trim()
+        if (!/^\d+$/.test(qq)) return json(res, { ok: false, message: 'QQ 号不能为空或格式错误' }, 400)
+        if (!isInsidePath(KOISHI_DIR, workDir)) return json(res, { ok: false, message: '本地部署目录必须在当前项目目录内' }, 400)
+        writeRuntimeLayout()
         const pkgs = ['koishi-plugin-dongxuelian-ai','koishi-plugin-dongxuelian-help','koishi-plugin-group-name-at','koishi-plugin-defense','koishi-plugin-local-video-sender','koishi-plugin-group-leave-notice','koishi-plugin-dongxuelian-poke','koishi-plugin-daily-report']
         for (const pkg of pkgs) {
           const src = path.join(PLUGIN_ROOT, '..', pkg)
           const dst = path.join(workDir, 'node_modules', pkg)
           if (require('fs').existsSync(src)) {
-            try { execSync(`cp -r "${src}/lib" "${dst}/" 2>/dev/null; cp "${src}/package.json" "${dst}/" 2>/dev/null || true`, { timeout: 10000, stdio: 'ignore' }) } catch {}
+            copyRecursiveSync(path.join(src, 'lib'), path.join(dst, 'lib'))
+            copyRecursiveSync(path.join(src, 'package.json'), path.join(dst, 'package.json'))
           }
         }
-        // 写入配置文件
         writeFileSync(path.join(workDir, 'data', 'ai-provider.txt'), cfg.provider || 'opencode')
         writeFileSync(path.join(workDir, 'data', 'ai-model.txt'), cfg.model || '')
         writeFileSync(path.join(workDir, 'data', 'ai-base-url.txt'), cfg.baseUrl || '')
         if (cfg.apiKey) writeFileSync(path.join(workDir, 'data', 'ai-openai-key.txt'), cfg.apiKey)
         if (cfg.adminIds) writeFileSync(path.join(workDir, 'data', 'ai-admin-ids.json'), JSON.stringify(cfg.adminIds, null, 2))
-        // 生成 koishi.yml
-        const yml = `port: 5140\nselfUrl: http://localhost:5140\nplugins:\n  adapter-onebot:\n    protocol: ws\n    selfId: '${cfg.qq}'\n    endpoint: ws://127.0.0.1:8081/onebot/v11/ws\n  dongxuelian-ai: {}\n  dongxuelian-help: {}\n  group-name-at: {}\n  defense: {}\n  local-video-sender: {}\n  group-leave-notice: {}\n  dongxuelian-poke: {}\n  daily-report: {}\n`
+        const yml = `port: 5140\nselfUrl: http://localhost:5140\nplugins:\n  adapter-onebot:\n    protocol: ws\n    selfId: '${qq}'\n    endpoint: ws://127.0.0.1:8080/onebot/v11/ws\n  dongxuelian-ai: {}\n  dongxuelian-help: {}\n  group-name-at: {}\n  defense: {}\n  local-video-sender: {}\n  group-leave-notice: {}\n  dongxuelian-poke: {}\n  daily-report: {}\n`
         writeFileSync(path.join(workDir, 'koishi.yml'), yml)
-        json(res, { ok: true, message: '本地部署配置已写入，请使用 koishi start 启动' })
+        const helper = `@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif not exist node_modules ( npm install )\r\nnpx koishi start\r\n`
+        fs.writeFileSync(path.join(workDir, 'start-local.bat'), helper, 'utf8')
+        json(res, { ok: true, message: '本地部署配置已写入，运行 start-local.bat 启动 Koishi，NapCat 使用 8080 OneBot WebSocket' })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/deploy/napcat-download' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const { url } = JSON.parse(body)
+        if (!url) return json(res, { ok: false, message: '下载地址不能为空' }, 400)
+        downloadToRuntime(url, (err, filePath) => {
+          if (err) return json(res, { ok: false, message: err.message }, 400)
+          json(res, { ok: true, message: 'NapCat 包已下载到 ' + filePath, path: filePath })
+        })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })
     return
@@ -1084,6 +1208,9 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/bot/local-status' && req.method === 'GET') {
     try {
+      if (process.platform === 'win32') {
+        return json(res, { running: !checkPortAvailable(5140), workers: !checkPortAvailable(5140) ? 1 : 0 })
+      }
       const out = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()
       const running = out.split('\n').filter(Boolean).length
       return json(res, { running: running > 0, workers: running })

@@ -115,3 +115,15 @@ export async function fetchQQToken() { return get('/qq/token', true) }
 export async function fetchSSHInfo() { return get('/qq/ssh-info') }
 export async function fetchSelfId() { return get('/qq/selfid') }
 export async function updateSelfId(selfId) { return put('/qq/selfid', { selfId }, true) }
+export async function fetchDeployConfig() { return get('/deploy/config') }
+export async function updateDeployConfig(data) { return put('/deploy/config', data, true) }
+export async function checkDeployUpdate() { return get('/deploy/check-update') }
+export async function runDeploy(data) { return post('/deploy/run', data, true) }
+export async function getDeployProgress(taskId) { return get('/deploy/progress/' + encodeURIComponent(taskId)) }
+export async function confirmDeploy() { return post('/deploy/confirm', {}, true) }
+export async function uploadDeploy(name, data) { return post('/deploy/upload', { name, data }, true) }
+export async function deployLocal(data) { return post('/deploy/local', data, true) }
+export async function checkLocalEnv() { return get('/env/check') }
+export async function downloadNapcat(url) { return post('/deploy/napcat-download', { url }, true) }
+export async function localBotStatus() { return get('/bot/local-status') }
+export async function localBotStop() { return post('/bot/local-stop', {}, true) }
