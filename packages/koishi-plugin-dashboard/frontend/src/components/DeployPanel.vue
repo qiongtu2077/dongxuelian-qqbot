@@ -134,7 +134,7 @@ export default {
       downloading.value = true
       localMsg.value = null
       const res = await downloadNapcat(napcatUrl.value.trim())
-      if (withAdminRetry(res, '下载 NapCat 需要服务器密码', doDownloadNapcat)) { downloading.value = false; return }
+      if (withAdminRetry(res, '下载 NapCat 需要管理员密码', doDownloadNapcat)) { downloading.value = false; return }
       localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? 'NapCat 已下载到 runtime/downloads' : '下载失败') }
       downloading.value = false
       if (res.ok) await checkEnv()
@@ -148,7 +148,7 @@ export default {
       localDeploying.value = true
       localMsg.value = null
       const res = await deployLocal({ ...local, qq: local.qq.trim() })
-      if (withAdminRetry(res, '生成本地部署配置需要服务器密码', writeLocalConfig)) { localDeploying.value = false; return }
+      if (withAdminRetry(res, '生成本地部署配置需要管理员密码', writeLocalConfig)) { localDeploying.value = false; return }
       localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '本地配置已生成' : '生成失败') }
       localDeploying.value = false
       if (res.ok) await checkEnv()
@@ -168,7 +168,7 @@ export default {
     async function saveRemoteConfig() {
       savingRemote.value = true
       const res = await updateDeployConfig(remote)
-      if (withAdminRetry(res, '保存部署配置需要服务器密码', saveRemoteConfig)) { savingRemote.value = false; return }
+      if (withAdminRetry(res, '保存部署配置需要管理员密码', saveRemoteConfig)) { savingRemote.value = false; return }
       remoteMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '配置已保存' : '保存失败') }
       savingRemote.value = false
     }
@@ -206,7 +206,7 @@ export default {
       deploying.value = true
       logs.value = []
       const res = await runDeploy(remote)
-      if (withAdminRetry(res, '执行远程部署需要服务器密码', startRemoteDeploy)) { deploying.value = false; return }
+      if (withAdminRetry(res, '执行远程部署需要管理员密码', startRemoteDeploy)) { deploying.value = false; return }
       if (!res.ok || !res.data?.taskId) {
         remoteMsg.value = { type: 'err', text: res.data?.message || '启动部署失败' }
         deploying.value = false
@@ -238,7 +238,7 @@ export default {
       reader.onload = async () => {
         const base64 = String(reader.result || '').split(',')[1]
         const res = await uploadDeploy('bilibili-cookies.txt', base64)
-        if (withAdminRetry(res, '上传 cookies 需要服务器密码', () => uploadCookie(event))) return
+        if (withAdminRetry(res, '上传 cookies 需要管理员密码', () => uploadCookie(event))) return
         remoteMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? 'cookies 已上传' : '上传失败') }
       }
       reader.readAsDataURL(file)

@@ -155,7 +155,7 @@ export default {
         content: newContent.value,
       }
       const res = editingName.value ? await updatePersona(payload) : await createPersona(payload)
-      if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog((editingName.value ? '更新' : '创建') + '人格需要服务器密码', doCreate); creating.value = false; return }
+      if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog((editingName.value ? '更新' : '创建') + '人格需要管理员密码', doCreate); creating.value = false; return }
       if (res.ok) {
         createMsg.value = { type: 'ok', text: res.data?.message || (editingName.value ? '更新成功' : '创建成功') }
         newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; editingName.value = null

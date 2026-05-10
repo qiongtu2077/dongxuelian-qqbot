@@ -245,7 +245,7 @@ function validateToken(token) {
   return token === createToken()
 }
 
-// ====== 服务器密码系统（敏感操作二次验证） ======
+// ====== 管理员密码系统（敏感操作二次验证） ======
 function getAdminPassword() {
   return readFileSync(ADMIN_PWD_FILE) || ADMIN_PASSWORD
 }
@@ -276,7 +276,7 @@ function requireAdmin(req, res) {
   if (isLocalAuthBypass(req)) return true
   const token = (req.headers['x-admin-token'] || '').trim()
   if (!token || !validateAdminToken(token)) {
-    json(res, { ok: false, message: '需要服务器密码验证', code: 'ADMIN_REQUIRED' }, 403)
+    json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403)
     return false
   }
   return true
@@ -377,7 +377,7 @@ const server = http.createServer((req, res) => {
       try {
         const { password } = JSON.parse(body)
         if (password === getAdminPassword()) return json(res, { ok: true, token: createAdminToken() })
-        return json(res, { ok: false, message: '服务器密码错误' }, 401)
+        return json(res, { ok: false, message: '管理员密码错误' }, 401)
       } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
     })
     return
@@ -388,12 +388,13 @@ const server = http.createServer((req, res) => {
     if (!requireAdmin(req, res)) return
     collectBody(req, res, (body) => {
       try {
-        const { type, newPassword } = JSON.parse(body)
+        const { type, oldPassword, newPassword } = JSON.parse(body)
         if (!newPassword || newPassword.length < 3) return json(res, { ok: false, message: '新密码长度不能少于3位' }, 400)
         if (!/^[A-Za-z0-9_~!@#$%^&*()\-+=\[\]{}<>,.?/|\\:;"'`]+$/.test(newPassword)) {
           return json(res, { ok: false, message: '密码仅支持大小写字母、数字、下划线和常见特殊字符' }, 400)
         }
         if (type === 'admin') {
+          if (oldPassword !== getAdminPassword()) return json(res, { ok: false, message: '当前管理员密码错误' }, 401)
           writeFileSync(ADMIN_PWD_FILE, newPassword)
           return json(res, { ok: true, message: '管理员密码已更新' })
         } else if (type === 'access') {

@@ -185,7 +185,8 @@ export default {
     async function loadQQToken() {
       const res = await fetchQQToken()
       if (res.code === 'ADMIN_REQUIRED') {
-        napcatToken.value = '需要管理员验证'
+        if (showAdminDialog) showAdminDialog('查看 NapCat Token 需要管理员密码', loadQQToken)
+        napcatToken.value = '需要管理员密码验证'
         tokenIsReal.value = false
         return
       }
@@ -212,7 +213,11 @@ export default {
       savingSelfId.value = true; selfIdMsg.value = null
       try {
         const res = await updateSelfId(newSelfId.value.trim())
-        if (res.code === 'ADMIN_REQUIRED') { selfIdMsg.value = { type: 'err', text: '需要管理员权限' }; savingSelfId.value = false; return }
+        if (res.code === 'ADMIN_REQUIRED') {
+          if (showAdminDialog) showAdminDialog('更换 QQ 号需要管理员密码', saveSelfId)
+          savingSelfId.value = false
+          return
+        }
         selfIdMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已保存，Koishi 正在重启' : '保存失败') }
       } catch (e) { selfIdMsg.value = { type: 'err', text: e.message }
       } finally { savingSelfId.value = false }
@@ -278,7 +283,11 @@ export default {
       acting.value = true; resultMsg.value = null
       try {
         const res = await startBot()
-        if (res.code === 'ADMIN_REQUIRED') { resultMsg.value = { type: 'err', text: '需要管理员权限' }; acting.value = false; return }
+        if (res.code === 'ADMIN_REQUIRED') {
+          if (showAdminDialog) showAdminDialog('启动 Bot 需要管理员密码', doStart)
+          acting.value = false
+          return
+        }
         resultMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已发送启动命令，等待 15 秒验证...' : '启动失败') }
         if (res.ok) {
           pendingVerify.value = true
@@ -292,17 +301,27 @@ export default {
       acting.value = true; resultMsg.value = null
       try {
         const res = await stopBot()
-        if (res.code === 'ADMIN_REQUIRED') { resultMsg.value = { type: 'err', text: '需要管理员权限' }; acting.value = false; return }
+        if (res.code === 'ADMIN_REQUIRED') {
+          if (showAdminDialog) showAdminDialog('停止 Bot 需要管理员密码', doStop)
+          acting.value = false
+          return
+        }
         resultMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已停止' : '停止失败') }
         loadStatus()
       } catch (e) { resultMsg.value = { type: 'err', text: e.message }
       } finally { acting.value = false }
     }
 
-    async function toggleMaintenance() {
+    async function toggleMaintenance(targetValue = maintenanceOn.value) {
+      maintenanceOn.value = targetValue
       maintLoading.value = true
-      const res = await setMaintenance(maintenanceOn.value)
-      if (res.code === 'ADMIN_REQUIRED') { maintenanceOn.value = !maintenanceOn.value; maintLoading.value = false; return }
+      const res = await setMaintenance(targetValue)
+      if (res.code === 'ADMIN_REQUIRED') {
+        maintenanceOn.value = !targetValue
+        if (showAdminDialog) showAdminDialog('维护模式需要管理员密码', () => toggleMaintenance(targetValue))
+        maintLoading.value = false
+        return
+      }
       if (!res.ok) maintenanceOn.value = !maintenanceOn.value
       maintLoading.value = false
     }

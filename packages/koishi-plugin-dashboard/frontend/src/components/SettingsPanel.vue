@@ -40,7 +40,7 @@ export default {
 
     async function changeAccess() {
       if (!accessNew.value.trim()) return
-      // 使用预先缓存的服务器 token 或弹出服务器密码验证
+      // 使用预先缓存的管理员 token 或弹出管理员密码验证
       accessLoading.value = true; accessMsg.value = null
       const res = await changePassword('access', adminOld.value, accessNew.value.trim())
       if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('修改访问密码需要管理员密码', changeAccess); accessLoading.value = false; return }
