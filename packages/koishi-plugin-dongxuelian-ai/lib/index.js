@@ -573,6 +573,12 @@ async function safeSendReply(ctx, session, reply, isRandom = false) {
     sendFailState.streak = 0
     sendFailState.lastFailAt = 0
   } catch (error) {
+    const errMsg = String(error?.message || '')
+    // 只对 retcode 1200（QQ 风控）走冻结逻辑，其他错误直接抛
+    if (!/retcode:\s*1200/.test(errMsg)) {
+      ctx.logger('dongxuelian-ai').warn(`safeSendReply: non-1200 error skipped: ${errMsg.slice(0, 120)}`)
+      throw error
+    }
     sendFailState.streak++
     sendFailState.lastFailAt = now
     ctx.logger('dongxuelian-ai').error(`safeSendReply: send failed (streak=${sendFailState.streak}): ${error.message}`)
