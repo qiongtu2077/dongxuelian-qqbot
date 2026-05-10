@@ -989,6 +989,28 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  // 发送节流配置
+  if (pathname === '/dashboard/api/throttle' && req.method === 'GET') {
+    try {
+      const raw = readFileSync(path.join(DATA_DIR, 'ai-throttle-config.json'))
+      return json(res, JSON.parse(raw))
+    } catch { return json(res, { maxPerMinute: 10 }) }
+  }
+  if (pathname === '/dashboard/api/throttle' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const data = JSON.parse(body)
+        if (typeof data.maxPerMinute !== 'number' || data.maxPerMinute < 1) {
+          return json(res, { ok: false, message: 'maxPerMinute 必须 >= 1' }, 400)
+        }
+        writeFileSync(path.join(DATA_DIR, 'ai-throttle-config.json'), JSON.stringify({ maxPerMinute: data.maxPerMinute }, null, 2))
+        json(res, { ok: true, message: '节流配置已更新' })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
   // QQ 管理
   if (pathname === '/dashboard/api/qq/token' && req.method === 'GET') {
     if (!requireAdmin(req, res)) return

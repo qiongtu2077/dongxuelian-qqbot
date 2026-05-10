@@ -6,13 +6,14 @@
 const fs = require('fs')
 const path = require('path')
 const { h } = require('koishi')
-const { STICKER_DIR } = require('./constants')
+const { STICKER_DIR, THROTTLE_CONFIG_FILE } = require('./constants')
 const { getChannelKey, saveSharedChannelTurn } = require('./conversation')
-const { splitSentences, sleep, getRandomDelayMs } = require('./utils')
+const { splitSentences, sleep, getRandomDelayMs, readJsonFile } = require('./utils')
 
 const STICKER_GLOBAL_COOLDOWN_MS = 30000
 const STICKER_FILE_COOLDOWN_MS = 120000
 const lastStickerSentAt = new Map()
+const throttleWindow = new Map()
 const lastStickerFileSentAt = new Map()
 
 let stickerBase64Cache = {}
@@ -140,6 +141,22 @@ function resolveNow(options) {
 
 async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
   const nowMs = resolveNow(options)
+  // 全局发送节流：检查该频道是否超过每分钟上限
+  try {
+    const cfg = JSON.parse(fs.readFileSync(THROTTLE_CONFIG_FILE, 'utf8'))
+    const maxPerMin = parseInt(cfg.maxPerMinute, 10) || 0
+    if (maxPerMin > 0) {
+      const windowKey = String(session.guildId || session.channelId || 'default')
+      let entries = throttleWindow.get(windowKey) || []
+      entries = entries.filter(function(e) { return nowMs - e < 60000 })
+      if (entries.length >= maxPerMin) {
+        ctx.logger('dongxuelian-ai').warn(`sendReply throttled: ${windowKey} (${entries.length}/${maxPerMin})`)
+        return
+      }
+      entries.push(nowMs)
+      throttleWindow.set(windowKey, entries)
+    }
+  } catch {} // 配置文件不存在或不合法时直接放行
   // 图片文件转 base64 CQ 码（使用缓存）
   const stickerToCQ = (file) => {
     const b64 = stickerBase64Cache[file]

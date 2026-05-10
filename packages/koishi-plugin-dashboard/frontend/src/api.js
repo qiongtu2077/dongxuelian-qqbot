@@ -175,3 +175,5 @@ export async function fetchCustomProviders() { return get('/providers/custom') }
 export async function saveCustomProviders(data) { return put('/providers/custom', data, true) }
 export async function fetchAdminIds() { return get('/admin-ids') }
 export async function updateAdminIds(ids) { return put('/admin-ids', { ids }, true) }
+export async function fetchThrottle() { return get('/throttle') }
+export async function saveThrottle(data) { return put('/throttle', data, true) }

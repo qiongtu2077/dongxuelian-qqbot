@@ -326,7 +326,7 @@ const sendFailState = {
   lastFailAt: 0,
   lastNotifyAt: 0,
   restrictedUntil: 0,
-  maxStreak: 10,
+  maxStreak: 2,
   cooldownMs: 5 * 60 * 1000,
   restrictDurationMs: 60 * 60 * 1000,
   notifyIntervalMs: 30 * 1000,
@@ -555,15 +555,17 @@ async function safeSendReply(ctx, session, reply, isRandom = false) {
     sendFailState.streak = 0
   }
   if (now < sendFailState.restrictedUntil) {
-    if (!isDirectAtBot(session)) {
-      ctx.logger('dongxuelian-ai').warn('safeSendReply: restricted, skipping reply')
-      return
-    }
-    try {
-      return await session.send('我被盯上了，有内鬼终止交易')
-    } catch (error) {
-      ctx.logger('dongxuelian-ai').error(`safeSendReply: restricted notice failed: ${error.message}`)
-      return
+    if (!hasAdminPermission(session)) {
+      if (!isDirectAtBot(session)) {
+        ctx.logger('dongxuelian-ai').warn('safeSendReply: restricted, skipping reply')
+        return
+      }
+      try {
+        return await session.send('我被盯上了，有内鬼终止交易')
+      } catch (error) {
+        ctx.logger('dongxuelian-ai').error(`safeSendReply: restricted notice failed: ${error.message}`)
+        return
+      }
     }
   }
   try {
