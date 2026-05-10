@@ -112,12 +112,23 @@
         </label>
       </div>
     </div>
+
+    <div class="card">
+      <h2>发送节流</h2>
+      <div style="font-size:13px;color:var(--text3);margin-bottom:8px">每分钟最多发送消息数，超出部分静默丢弃，防止风控（每个群独立计算）</div>
+      <div class="row">
+        <label>每分钟上限</label>
+        <input v-model.number="throttleMax" type="number" min="1" max="60" style="width:80px" />
+      </div>
+      <button class="btn" @click="saveThrottleConfig" :disabled="savingThrottle">{{ savingThrottle ? '保存中...' : '保存节流配置' }}</button>
+      <div v-if="throttleMsg" class="msg" :class="throttleMsg.type">{{ throttleMsg.text }}</div>
+    </div>
   </div>
 </template>
 
 <script>
 import { computed, ref, onMounted, onActivated, inject } from 'vue'
-import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo, fetchSelfId, updateSelfId } from '../api'
+import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo, fetchSelfId, updateSelfId, fetchThrottle, saveThrottle } from '../api'
 
 export default {
   name: 'ControlPanel',
@@ -130,6 +141,9 @@ export default {
     const resultMsg = ref(null)
     const maintenanceOn = ref(false)
     const maintLoading = ref(false)
+    const throttleMax = ref(20)
+    const savingThrottle = ref(false)
+    const throttleMsg = ref(null)
     const napcatToken = ref('')
     const tokenIsReal = ref(false)
     const showNapcatToken = ref(false)
@@ -238,7 +252,21 @@ export default {
       saveSSHHost()
     }
 
-    onMounted(() => { loadStatus(); loadMaintenance(); loadSSHInfo(); loadSelfId() })
+    onMounted(() => { loadStatus(); loadMaintenance(); loadSSHInfo(); loadSelfId(); loadThrottle() })
+
+    async function loadThrottle() {
+      const res = await fetchThrottle()
+      if (res.ok) throttleMax.value = res.data.maxPerMinute || 20
+    }
+
+    async function saveThrottleConfig() {
+      savingThrottle.value = true; throttleMsg.value = null
+      const res = await saveThrottle({ maxPerMinute: throttleMax.value })
+      if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('保存节流配置需要管理员密码', saveThrottleConfig); savingThrottle.value = false; return }
+      if (res.ok) throttleMsg.value = { type: 'ok', text: '节流配置已保存' }
+      else throttleMsg.value = { type: 'err', text: res.data?.message || '保存失败' }
+      savingThrottle.value = false
+    }
 
     async function testStartBot() {
       diagMsg.value = '发起请求...'
@@ -336,7 +364,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, requestQQToken, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, toggleMaintenance, testStartBot, sshUser }
+    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, throttleMax, savingThrottle, throttleMsg, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, requestQQToken, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, toggleMaintenance, saveThrottleConfig, testStartBot, sshUser }
   }
 }
 </script>

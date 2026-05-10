@@ -209,7 +209,12 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
       //     .replace(new RegExp('[，,]' + esc + '$'), '，你')
       //     .replace(new RegExp(esc, 'g'), '你')
       // }
-    await session.send(i === 0 ? quotePrefix + part : part)
+    try {
+      await session.send(i === 0 ? quotePrefix + part : part)
+    } catch (sendError) {
+      ctx.logger('dongxuelian-ai').warn(`sendReply failed: ${sendError?.message || sendError}`)
+      throw sendError
+    }
     sentParts++
     saveSharedChannelTurn(session, '东雪莲', part, 'assistant')
     if (i < parts.length - 1) {

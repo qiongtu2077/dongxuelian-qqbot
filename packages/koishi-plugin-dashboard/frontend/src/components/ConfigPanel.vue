@@ -84,23 +84,12 @@
       </div>
       <div v-if="fallbackMsg" class="msg" :class="fallbackMsg.type" style="margin-top:8px">{{ fallbackMsg.text }}</div>
     </div>
-
-    <div class="card">
-      <h2>发送节流</h2>
-      <div style="font-size:13px;color:var(--text3);margin-bottom:8px">每分钟最多发送消息数，超出部分静默丢弃，防止风控</div>
-      <div class="row">
-        <label>每分钟上限</label>
-        <input v-model.number="throttleMax" type="number" min="1" max="60" style="width:80px" />
-      </div>
-      <button class="btn" @click="saveThrottleConfig" :disabled="savingThrottle">{{ savingThrottle ? '保存中...' : '保存节流配置' }}</button>
-      <div v-if="throttleMsg" class="msg" :class="throttleMsg.type">{{ throttleMsg.text }}</div>
-    </div>
   </div>
 </template>
 
 <script>
 import { ref, computed, inject, onMounted } from 'vue'
-import { fetchConfig, fetchProviders, updateConfig, fetchFallbackChains, saveFallbackChains, fetchCustomProviders, saveCustomProviders, fetchThrottle, saveThrottle } from '../api'
+import { fetchConfig, fetchProviders, updateConfig, fetchFallbackChains, saveFallbackChains, fetchCustomProviders, saveCustomProviders } from '../api'
 
 const LIGHTWEIGHT_MAIN_TOGGLE_KEY = 'cfg_lightweight_main'
 
@@ -130,9 +119,6 @@ export default {
     const allProviders = ref({})
     const savingFallback = ref(false)
     const fallbackMsg = ref(null)
-    const throttleMax = ref(10)
-    const savingThrottle = ref(false)
-    const throttleMsg = ref(null)
 
     const lightweightMainToggle = ref(localStorage.getItem(LIGHTWEIGHT_MAIN_TOGGLE_KEY) !== '0')
 
@@ -165,8 +151,8 @@ export default {
 
     onMounted(async () => {
       try {
-        const [pRes, cRes, fRes, cpRes, tRes] = await Promise.all([
-          fetchProviders(), fetchConfig(), fetchFallbackChains(), fetchCustomProviders(), fetchThrottle()
+        const [pRes, cRes, fRes, cpRes] = await Promise.all([
+          fetchProviders(), fetchConfig(), fetchFallbackChains(), fetchCustomProviders()
         ])
         if (pRes.ok) providers.value = pRes.data
         if (cRes.ok) {
@@ -189,10 +175,9 @@ export default {
                   })
                 : []
             })
-          })
-        }
-        if (tRes.ok) throttleMax.value = tRes.data.maxPerMinute || 10
-        buildAllProviders()
+        })
+      }
+      buildAllProviders()
       } catch (e) {
         console.error('[ConfigPanel] load failed:', e)
       }
@@ -314,7 +299,6 @@ export default {
       allProviders, onFbProviderChange,
       fallbackCards, lightweightMainToggle,
       addFallbackStep, removeFallbackStep, resetFallbackCard, saveFallback,
-      throttleMax, savingThrottle, throttleMsg, saveThrottleConfig,
     }
   }
 }

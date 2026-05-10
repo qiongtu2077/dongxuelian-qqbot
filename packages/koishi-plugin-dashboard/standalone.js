@@ -994,7 +994,7 @@ const server = http.createServer((req, res) => {
     try {
       const raw = readFileSync(path.join(DATA_DIR, 'ai-throttle-config.json'))
       return json(res, JSON.parse(raw))
-    } catch { return json(res, { maxPerMinute: 10 }) }
+    } catch { return json(res, { maxPerMinute: 20 }) }
   }
   if (pathname === '/dashboard/api/throttle' && req.method === 'PUT') {
     if (!requireAdmin(req, res)) return
