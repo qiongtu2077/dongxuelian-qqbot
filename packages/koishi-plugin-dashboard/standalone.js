@@ -86,8 +86,12 @@ function json(res, data, status = 200) {
 }
 
 function readFileSync(p) {
-  try { if (fs.statSync(p).isFile()) return fs.readFileSync(p, 'utf8').trim() } catch {}
+  try { if (fs.statSync(p).isFile()) return fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '').trim() } catch {}
   return ''
+}
+
+function readUtf8(p) {
+  try { return fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '') } catch { return '' }
 }
 
 function writeFileSync(p, content) {
@@ -494,7 +498,7 @@ const server = http.createServer((req, res) => {
       if (name) {
         const content = loadPersonalSkill(name)
         if (!content) return json(res, { ok: false, message: '未找到人格' }, 404)
-        const m = content.match(/^---\n([\s\S]*?)\n---\n\n?/)
+        const m = String(content || '').replace(/^\uFEFF/, '').match(/^---\n([\s\S]*?)\n---\n\n?/)
         let meta = {}
         if (m) {
           for (const line of m[1].split('\n')) {
@@ -541,7 +545,7 @@ const server = http.createServer((req, res) => {
         const files = fs.readdirSync(PERSONAS_DIR).filter(f => /^SKILL(\.[^.]+)?\.md$/i.test(f))
         let deleted = false
         for (const f of files) {
-          const raw = fs.readFileSync(path.join(PERSONAS_DIR, f), 'utf8')
+          const raw = String(fs.readFileSync(path.join(PERSONAS_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '')
           const m = raw.match(/^---\n([\s\S]*?)\n---/)
           const metaName = m?.[1]?.match(/name:\s*(.+)/)?.[1]?.trim()
           if (metaName === name) {
@@ -568,7 +572,7 @@ const server = http.createServer((req, res) => {
         for (const dir of searchDirs) {
           const files = fs.readdirSync(dir).filter(f => /^SKILL(\.[^.]+)?\.md$/i.test(f))
           for (const f of files) {
-            const raw = fs.readFileSync(path.join(dir, f), 'utf8')
+            const raw = String(fs.readFileSync(path.join(dir, f), 'utf8') || '').replace(/^\uFEFF/, '')
             const m = raw.match(/^---\n([\s\S]*?)\n---/)
             const metaName = m?.[1]?.match(/name:\s*(.+)/)?.[1]?.trim()
             if (metaName === name) {
@@ -596,7 +600,7 @@ const server = http.createServer((req, res) => {
       const loreDir = LORES_DIR
       const files = fs.readdirSync(loreDir).filter(f => f.endsWith('.md'))
       const list = files.map(f => {
-        const raw = fs.readFileSync(path.join(loreDir, f), 'utf8')
+        const raw = String(fs.readFileSync(path.join(loreDir, f), 'utf8') || '').replace(/^\uFEFF/, '')
         const m = raw.match(/^---\n([\s\S]*?)\n---/)
         const name = m?.[1]?.match(/name:\s*(\S+)/)?.[1] || f.replace('SKILL.', '').replace('.md', '')
         const desc = m?.[1]?.match(/description:\s*(.+)/)?.[1] || ''
@@ -612,7 +616,7 @@ const server = http.createServer((req, res) => {
       const loreDir = LORES_DIR
       const files = fs.readdirSync(loreDir).filter(f => f.endsWith('.md'))
       return json(res, files.map(f => {
-        const raw = fs.readFileSync(path.join(loreDir, f), 'utf8')
+        const raw = String(fs.readFileSync(path.join(loreDir, f), 'utf8') || '').replace(/^\uFEFF/, '')
         const m = raw.match(/^---\n([\s\S]*?)\n---\n\n?/)
         let name = '', description = '', content = raw
         if (m) {
@@ -656,7 +660,7 @@ const server = http.createServer((req, res) => {
         const files = fs.readdirSync(loreDir).filter(f => f.endsWith('.md'))
         let found = false
         for (const f of files) {
-          const raw = fs.readFileSync(path.join(loreDir, f), 'utf8')
+          const raw = String(fs.readFileSync(path.join(loreDir, f), 'utf8') || '').replace(/^\uFEFF/, '')
           const m = raw.match(/^---\n([\s\S]*?)\n---/)
           const metaName = m?.[1]?.match(/name:\s*(.+)/)?.[1]?.trim()
           if (metaName === name) {
@@ -683,7 +687,7 @@ const server = http.createServer((req, res) => {
         const files = fs.readdirSync(loreDir).filter(f => f.endsWith('.md'))
         let deleted = false
         for (const f of files) {
-          const raw = fs.readFileSync(path.join(loreDir, f), 'utf8')
+          const raw = String(fs.readFileSync(path.join(loreDir, f), 'utf8') || '').replace(/^\uFEFF/, '')
           const m = raw.match(/^---\n([\s\S]*?)\n---/)
           const metaName = m?.[1]?.match(/name:\s*(.+)/)?.[1]?.trim()
           if (metaName === name) {
@@ -704,7 +708,7 @@ const server = http.createServer((req, res) => {
       const dir = MODES_DIR
       const files = fs.readdirSync(dir).filter(f => f.endsWith('.md'))
       return json(res, files.map(f => {
-        const raw = fs.readFileSync(path.join(dir, f), 'utf8')
+        const raw = String(fs.readFileSync(path.join(dir, f), 'utf8') || '').replace(/^\uFEFF/, '')
         const m = raw.match(/^---\n([\s\S]*?)\n---/)
         const name = m?.[1]?.match(/name:\s*(\S+)/)?.[1] || f.replace('.md', '')
         const desc = m?.[1]?.match(/description:\s*(.+)/)?.[1] || ''
