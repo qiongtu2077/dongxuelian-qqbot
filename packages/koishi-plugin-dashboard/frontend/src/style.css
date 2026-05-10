@@ -16,6 +16,9 @@
   --shadow: rgba(244, 196, 48, 0.16);
   --danger: #ff5f79;
   --info: #29c7d9;
+  --success: #39C5BB;
+  --error: #F472B6;
+  --grid: rgba(255, 230, 143, 0.035);
   --tabBg: rgba(21, 22, 20, 0.72);
   --tabColor: #c9c2ac;
   --tabBorder: rgba(255, 230, 143, 0.18);
@@ -39,6 +42,9 @@
   --shadow: rgba(0, 0, 0, 0.1);
   --danger: #e11d48;
   --info: #0891b2;
+  --success: #0d9488;
+  --error: #e11d48;
+  --grid: rgba(0, 0, 0, 0.025);
   --tabBg: rgba(255, 255, 255, 0.92);
   --tabColor: rgba(0, 0, 0, 0.72);
   --tabBorder: rgba(0, 0, 0, 0.1);
@@ -49,48 +55,54 @@
   --bg: #f4fbf5; --surface: #e8f5ea; --card: rgba(255,255,255,0.92); --border: rgba(22,101,52,0.18);
   --text: #102a19; --text2: #365b43; --text3: #6b8b73; --input: rgba(255,255,255,0.94);
   --accent: #2f9e44; --accent2: #95d5b2; --accentDim: rgba(47,158,68,0.16); --hover: rgba(47,158,68,0.12); --hoverLight: rgba(47,158,68,0.06); --shadow: rgba(47,158,68,0.16);
-  --danger: #dc2626; --info: #0f766e; --tabBg: rgba(255,255,255,0.82); --tabColor: #365b43; --tabBorder: rgba(22,101,52,0.16); --tabActive: #0f2f1a;
+  --danger: #dc2626; --info: #0f766e; --success: #15803d; --error: #dc2626; --grid: rgba(22,101,52,0.04);
+  --tabBg: rgba(255,255,255,0.82); --tabColor: #365b43; --tabBorder: rgba(22,101,52,0.16); --tabActive: #0f2f1a;
 }
 
 [data-theme="monet-purple"] {
   --bg: #f7f4ff; --surface: #eef2ff; --card: rgba(255,255,255,0.9); --border: rgba(109,40,217,0.18);
   --text: #241a3b; --text2: #5b5270; --text3: #8d82a8; --input: rgba(255,255,255,0.94);
   --accent: #8b5cf6; --accent2: #38bdf8; --accentDim: rgba(139,92,246,0.16); --hover: rgba(139,92,246,0.12); --hoverLight: rgba(56,189,248,0.08); --shadow: rgba(139,92,246,0.18);
-  --danger: #e11d48; --info: #0284c7; --tabBg: rgba(255,255,255,0.82); --tabColor: #5b5270; --tabBorder: rgba(109,40,217,0.16); --tabActive: #3b236f;
+  --danger: #e11d48; --info: #0284c7; --success: #7c3aed; --error: #e11d48; --grid: rgba(139,92,246,0.035);
+  --tabBg: rgba(255,255,255,0.82); --tabColor: #5b5270; --tabBorder: rgba(109,40,217,0.16); --tabActive: #3b236f;
 }
 
 [data-theme="crimson-red"] {
   --bg: #160b0d; --surface: #241114; --card: rgba(36,17,20,0.92); --border: rgba(248,113,113,0.22);
   --text: #fff0f0; --text2: #f3b6b6; --text3: #a96d6d; --input: rgba(10,5,6,0.86);
   --accent: #ef4444; --accent2: #ffd4d4; --accentDim: rgba(239,68,68,0.16); --hover: rgba(239,68,68,0.14); --hoverLight: rgba(255,212,212,0.06); --shadow: rgba(239,68,68,0.18);
-  --danger: #fb7185; --info: #f59e0b; --tabBg: rgba(36,17,20,0.74); --tabColor: #f3b6b6; --tabBorder: rgba(248,113,113,0.18); --tabActive: #ef4444;
+  --danger: #fb7185; --info: #f59e0b; --success: #f59e0b; --error: #fb7185; --grid: rgba(248,113,113,0.03);
+  --tabBg: rgba(36,17,20,0.74); --tabColor: #f3b6b6; --tabBorder: rgba(248,113,113,0.18); --tabActive: #ef4444;
 }
 
 [data-theme="sakura-pink"] {
   --bg: #fff6fa; --surface: #ffe4ef; --card: rgba(255,255,255,0.92); --border: rgba(236,72,153,0.18);
   --text: #3b0a23; --text2: #7a3157; --text3: #b36b8c; --input: rgba(255,255,255,0.94);
   --accent: #ec4899; --accent2: #fbcfe8; --accentDim: rgba(236,72,153,0.16); --hover: rgba(236,72,153,0.12); --hoverLight: rgba(236,72,153,0.06); --shadow: rgba(236,72,153,0.16);
-  --danger: #dc2626; --info: #7c3aed; --tabBg: rgba(255,255,255,0.82); --tabColor: #7a3157; --tabBorder: rgba(236,72,153,0.16); --tabActive: #831843;
+  --danger: #dc2626; --info: #7c3aed; --success: #7c3aed; --error: #dc2626; --grid: rgba(236,72,153,0.03);
+  --tabBg: rgba(255,255,255,0.82); --tabColor: #7a3157; --tabBorder: rgba(236,72,153,0.16); --tabActive: #831843;
 }
 
 [data-theme="ocean-cyan"] {
   --bg: #ecfeff; --surface: #cffafe; --card: rgba(255,255,255,0.9); --border: rgba(8,145,178,0.2);
   --text: #083344; --text2: #155e75; --text3: #5f93a2; --input: rgba(255,255,255,0.94);
   --accent: #0891b2; --accent2: #67e8f9; --accentDim: rgba(8,145,178,0.16); --hover: rgba(8,145,178,0.12); --hoverLight: rgba(103,232,249,0.12); --shadow: rgba(8,145,178,0.16);
-  --danger: #e11d48; --info: #2563eb; --tabBg: rgba(255,255,255,0.82); --tabColor: #155e75; --tabBorder: rgba(8,145,178,0.16); --tabActive: #164e63;
+  --danger: #e11d48; --info: #2563eb; --success: #0d9488; --error: #e11d48; --grid: rgba(8,145,178,0.03);
+  --tabBg: rgba(255,255,255,0.82); --tabColor: #155e75; --tabBorder: rgba(8,145,178,0.16); --tabActive: #164e63;
 }
 
 [data-theme="graphite-blue"] {
   --bg: #0f172a; --surface: #111827; --card: rgba(17,24,39,0.92); --border: rgba(147,197,253,0.2);
   --text: #e5edf9; --text2: #b6c4d8; --text3: #71839c; --input: rgba(5,10,20,0.84);
   --accent: #60a5fa; --accent2: #dbeafe; --accentDim: rgba(96,165,250,0.16); --hover: rgba(96,165,250,0.14); --hoverLight: rgba(219,234,254,0.06); --shadow: rgba(96,165,250,0.18);
-  --danger: #fb7185; --info: #22d3ee; --tabBg: rgba(17,24,39,0.76); --tabColor: #b6c4d8; --tabBorder: rgba(147,197,253,0.18); --tabActive: #60a5fa;
+  --danger: #fb7185; --info: #22d3ee; --success: #22d3ee; --error: #fb7185; --grid: rgba(147,197,253,0.03);
+  --tabBg: rgba(17,24,39,0.76); --tabColor: #b6c4d8; --tabBorder: rgba(147,197,253,0.18); --tabActive: #60a5fa;
 }
 
 [data-theme="light"] body {
   background:
-    linear-gradient(90deg, rgba(0,0,0,0.025) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(0,0,0,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+    linear-gradient(180deg, var(--grid) 1px, transparent 1px),
     linear-gradient(180deg, #ffffff, #f8f9fc 45%, #f5f7fa);
   background-size: 50px 50px, 50px 50px, auto;
 }
@@ -108,8 +120,8 @@
 body {
   font-family: -apple-system, 'Microsoft YaHei', sans-serif;
   background:
-    linear-gradient(90deg, rgba(255,230,143,0.035) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(255,230,143,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+    linear-gradient(180deg, var(--grid) 1px, transparent 1px),
     var(--bg);
   background-size: 44px 44px, 44px 44px, auto;
   color: var(--text);
@@ -139,7 +151,8 @@ h2 {
   padding: 20px;
   margin-bottom: 20px;
   animation: cardIn .35s ease both;
-  transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease, background .3s ease;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.12), inset 0 1px 1px rgba(255,255,255,0.05);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.3s, box-shadow 0.3s, background .3s ease;
   position: relative;
   overflow: hidden;
 }
@@ -154,9 +167,9 @@ h2 {
 }
 
 .card:hover {
-  transform: translateY(-1px);
+  transform: translateY(-2px);
   border-color: var(--accent);
-  box-shadow: 0 12px 30px var(--shadow);
+  box-shadow: 0 16px 48px var(--shadow), inset 0 1px 1px rgba(255,255,255,0.1);
 }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px }
@@ -174,10 +187,12 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   background: linear-gradient(135deg, var(--accent), var(--accent2));
   color: #11110d; border: none; border-radius: 6px;
   padding: 8px 20px; font-weight: 700; font-size: 14px;
-  cursor: pointer; transition: transform .15s, box-shadow .2s;
+  cursor: pointer;
+  box-shadow: 0 4px 12px var(--shadow);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.btn:hover { transform: translateY(-1px); box-shadow: 0 4px 16px var(--shadow) }
-.btn:active { transform: translateY(0) }
+.btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px var(--shadow) }
+.btn:active { transform: translateY(0); box-shadow: 0 2px 8px var(--shadow) }
 .btn-sm { padding: 4px 12px; font-size: 12px }
 
 /* Tab 按钮 */
@@ -203,7 +218,7 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   background: linear-gradient(135deg, var(--accent), var(--accent2));
   color: #11110d;
   border-color: transparent;
-  box-shadow: 0 2px 14px rgba(244,196,48,0.28);
+  box-shadow: 0 2px 14px var(--shadow);
 }
 
 /* 按钮点击脉冲（通过JS加class触发） */
@@ -212,9 +227,9 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
 }
 
 @keyframes tabPulse {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(244,196,48,0.55) }
-  40% { transform: scale(1.04); box-shadow: 0 0 20px 6px rgba(244,196,48,0.24) }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(244,196,48,0) }
+  0% { transform: scale(1); box-shadow: 0 0 0 0 var(--shadow) }
+  40% { transform: scale(1.04); box-shadow: 0 0 20px 6px var(--shadow) }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 transparent }
 }
 
 .tag {
@@ -222,7 +237,7 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   padding: 2px 10px; border-radius: 20px; font-size: 12px; margin: 2px;
   transition: background .2s;
 }
-.tag:hover { background: rgba(244,196,48,0.22) }
+.tag:hover { background: var(--hover) }
 
 .msg {
   background: var(--input); border-radius: 6px; padding: 12px 16px;
@@ -276,19 +291,31 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   inset: 0;
   background-size: cover;
   background-position: center;
-  transform: scale(1.03);
+  transform: scale(1.02);
+  opacity: 0;
+  transition: opacity 1.6s ease, transform 9s ease;
+  will-change: opacity, transform;
+  backface-visibility: hidden;
+}
+
+.login-bg.ready {
   opacity: 0;
 }
 
-.login-bg.active {
+.login-bg.active.ready {
   opacity: 1;
-  transition: opacity 1.2s ease, transform 5s ease;
-  transform: scale(1.06);
+  transform: scale(1.08);
 }
 
-.login-bg.leaving {
-  opacity: 0;
-  transition: opacity 1.2s ease;
+@media (prefers-reduced-motion: reduce) {
+  .login-bg {
+    transition: opacity .35s ease;
+    transform: scale(1.04);
+  }
+}
+
+.backdrop-dim {
+  opacity: 0.12;
 }
 
 .login-vignette {
@@ -600,3 +627,78 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
 .fade-enter-active, .fade-leave-active { transition: opacity .15s ease, transform .15s ease }
 .fade-enter-from { opacity: 0; transform: translateY(8px) }
 .fade-leave-to { opacity: 0; transform: translateY(-8px) }
+
+/* 2. 终端风代码块 (给 ControlPanel 使用) */
+.terminal-block {
+  background: #0d1117;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px; 
+  padding: 12px 16px;
+  font-family: 'Fira Code', Consolas, monospace;
+  font-size: 13px; 
+  color: #58a6ff;
+  display: flex; 
+  justify-content: space-between; 
+  align-items: center; 
+  gap: 12px;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+}
+.terminal-block code { 
+  flex: 1; 
+  overflow-wrap: anywhere; 
+}
+
+/* 3. 状态徽章 (给 ControlPanel 使用) */
+.badge {
+  display: inline-flex; 
+  align-items: center; 
+  gap: 6px;
+  padding: 4px 10px; 
+  border-radius: 20px; 
+  font-size: 12px; 
+  font-weight: 700;
+}
+.badge.running { 
+  background: color-mix(in srgb, var(--success) 15%, transparent); 
+  color: var(--success); 
+  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent); 
+}
+.badge.stopped { 
+  background: color-mix(in srgb, var(--error) 15%, transparent); 
+  color: var(--error); 
+  border: 1px solid color-mix(in srgb, var(--error) 30%, transparent); 
+}
+
+/* 4. 呼吸动画指示灯 (给 ControlPanel 使用) */
+.status-dot { 
+  width: 8px; 
+  height: 8px; 
+  border-radius: 50%; 
+  display: inline-block; 
+}
+.status-dot.active { 
+  background-color: var(--success); 
+  box-shadow: 0 0 8px var(--success); 
+  animation: pulse-dot 2s infinite ease-in-out; 
+}
+.status-dot.offline { 
+  background-color: var(--error); 
+}
+@keyframes pulse-dot { 
+  0% { transform: scale(0.9); opacity: 0.7; } 
+  50% { transform: scale(1.2); opacity: 1; box-shadow: 0 0 12px var(--success); } 
+  100% { transform: scale(0.9); opacity: 0.7; } 
+}
+
+/* 5. 丝滑的 Tab 切换动画 (给 App.vue 使用) */
+.tab-fade-enter-active, .tab-fade-leave-active { 
+  transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.4, 0, 0.2, 1); 
+}
+.tab-fade-enter-from { 
+  opacity: 0; 
+  transform: translateY(8px); 
+}
+.tab-fade-leave-to { 
+  opacity: 0; 
+  transform: translateY(-8px); 
+}

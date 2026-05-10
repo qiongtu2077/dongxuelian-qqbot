@@ -24,7 +24,7 @@
 </template>
 
 <script>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { login } from '../api'
 import LoginBackdrop from './LoginBackdrop.vue'
 import PasswordField from './PasswordField.vue'
@@ -37,7 +37,7 @@ export default {
     const loading = ref(false)
     const error = ref('')
     async function doLogin() {
-      if (!password.value.trim()) return
+      if (!password.value.trim() && !window.dongxuelianDeployer) return
       loading.value = true
       error.value = ''
       try {
@@ -53,6 +53,10 @@ export default {
       }
       loading.value = false
     }
+
+    onMounted(() => {
+      if (window.dongxuelianDeployer) doLogin()
+    })
 
     return { password, loading, error, doLogin }
   }

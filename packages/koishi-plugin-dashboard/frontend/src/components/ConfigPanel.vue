@@ -66,12 +66,13 @@
 </template>
 
 <script>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, inject, onMounted } from 'vue'
 import { fetchConfig, fetchProviders, updateConfig, fetchFallbackChains, saveFallbackChains, fetchCustomProviders, saveCustomProviders } from '../api'
 
 export default {
   name: 'ConfigPanel',
   setup() {
+    const showAdminDialog = inject('showAdminDialog')
     const providers = ref({})
     const selectedProvider = ref('deepseek')
     const selectedModel = ref('')
@@ -125,7 +126,7 @@ export default {
           model: selectedModel.value,
           baseUrl: baseUrl.value || undefined,
         })
-        if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('修改配置需要服务器密码', saveConfig); saving.value = false; return }
+        if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('修改配置需要服务器密码', saveConfig); saving.value = false; return }
         if (res.ok) msg.value = { type: 'ok', text: '配置已保存并热加载' }
         else msg.value = { type: 'err', text: res.data?.message || '保存失败' }
       } catch (e) { msg.value = { type: 'err', text: e.message } }
@@ -149,7 +150,7 @@ export default {
         models: cp.models.map(m => m.trim()).filter(Boolean)
       })).filter(cp => cp.id && cp.name)
       const res = await saveCustomProviders(cleaned)
-      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('保存自定义供应商需要服务器密码', saveCustomProvidersAction); savingCustom.value = false; return }
+      if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('保存自定义供应商需要服务器密码', saveCustomProvidersAction); savingCustom.value = false; return }
       if (res.ok) customMsg.value = { type: 'ok', text: '自定义供应商已保存' }
       else customMsg.value = { type: 'err', text: res.data?.message || '保存失败' }
       savingCustom.value = false
@@ -176,7 +177,7 @@ export default {
     async function saveFallback() {
       savingFallback.value = true; fallbackMsg.value = null
       const res = await saveFallbackChains(fallbackChains.value)
-      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('保存 Fallback 链需要服务器密码', saveFallback); savingFallback.value = false; return }
+      if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('保存 Fallback 链需要服务器密码', saveFallback); savingFallback.value = false; return }
       if (res.ok) fallbackMsg.value = { type: 'ok', text: 'Fallback 链已保存' }
       else fallbackMsg.value = { type: 'err', text: res.data?.message || '保存失败' }
       savingFallback.value = false

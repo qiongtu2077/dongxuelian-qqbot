@@ -8,7 +8,7 @@
     <div v-for="group in filtered" :key="group.category" class="card">
       <h2>{{ group.category }}</h2>
       <div v-for="c in group.commands" :key="c.cmd" class="grp">
-        <div class="grp-name" style="font-family:monospace;color:#39C5BB">{{ c.cmd }}</div>
+        <div class="grp-name" style="font-family:monospace;color:var(--accent)">{{ c.cmd }}</div>
         <div class="grp-desc">{{ c.desc }}</div>
       </div>
     </div>

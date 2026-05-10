@@ -38,7 +38,8 @@ function headers(admin = false) {
 function handle401(res) {
   if (res.status === 401) {
     localStorage.removeItem('dashboard_token')
-    window.location.reload()
+    // 抛出自定义事件，让 App.vue 去优雅处理退出，而不是暴力刷新
+    window.dispatchEvent(new Event('auth-expired')) 
     return true
   }
   return false

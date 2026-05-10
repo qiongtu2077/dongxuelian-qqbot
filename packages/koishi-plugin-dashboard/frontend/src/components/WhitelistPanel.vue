@@ -11,7 +11,7 @@
     <!-- 列表 -->
     <div v-for="(item, idx) in getItems(wl)" :key="idx" class="grp" style="display:flex;justify-content:space-between;align-items:center">
       <span style="font-family:monospace;font-size:14px">{{ item }}</span>
-      <button class="btn btn-sm" style="background:rgba(244,114,182,0.2);color:#F472B6" @click="removeItem(key, idx)">删除</button>
+      <button class="btn btn-sm" style="background:color-mix(in srgb, var(--error) 20%, transparent);color:var(--error)" @click="removeItem(key, idx)">删除</button>
     </div>
 
     <!-- 添加 -->
@@ -24,18 +24,18 @@
       <button class="btn btn-sm" @click="addItem(key)">添加</button>
     </div>
 
-    <div v-if="msgs[key]" style="margin-top:8px;font-size:12px" :style="{color: msgs[key]?.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ msgs[key]?.text }}</div>
+    <div v-if="msgs[key]" style="margin-top:8px;font-size:12px" :style="{color: msgs[key]?.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ msgs[key]?.text }}</div>
   </div>
 </template>
 
 <script>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, inject, onMounted } from 'vue'
 import { fetchWhitelist, updateWhitelist } from '../api'
 
 export default {
   name: 'WhitelistPanel',
-  components: { },
   setup() {
+    const showAdminDialog = inject('showAdminDialog')
     const lists = ref({})
     const newValues = reactive({})
     const newTypes = reactive({})
@@ -105,7 +105,7 @@ export default {
 
       const res = await updateWhitelist(key, newData)
       if (res.code === 'ADMIN_REQUIRED') {
-        window.showAdminDialog && window.showAdminDialog('修改白名单需要服务器密码', () => addItem(key))
+        if (showAdminDialog) showAdminDialog('修改白名单需要服务器密码', () => addItem(key))
         return
       }
       if (res.ok) {
@@ -134,7 +134,7 @@ export default {
       }
       const res = await updateWhitelist(key, newData)
       if (res.code === 'ADMIN_REQUIRED') {
-        window.showAdminDialog && window.showAdminDialog('修改白名单需要服务器密码', () => removeItem(key, idx))
+        if (showAdminDialog) showAdminDialog('修改白名单需要服务器密码', () => removeItem(key, idx))
         return
       }
       if (res.ok) { msgs[key] = { type: 'ok', text: '已删除' }; load() }

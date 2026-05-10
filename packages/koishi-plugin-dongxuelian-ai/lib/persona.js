@@ -59,7 +59,7 @@ function parsePersonaFrontmatter(content) {
   return meta
 }
 
-function getAvailablePersonals() {
+function getAvailablePersonals({ userFacing = false } = {}) {
   const personas = []
   function scanDir(dir, type) {
     try {
@@ -74,8 +74,10 @@ function getAvailablePersonals() {
     } catch {}
   }
   scanDir(SKILLS_PERSONAS_DIR, 'persona')
-  scanDir(SKILLS_CORE_DIR, 'core')
-  scanDir(SKILLS_MODES_DIR, 'mode')
+  if (!userFacing) {
+    scanDir(SKILLS_CORE_DIR, 'core')
+    scanDir(SKILLS_MODES_DIR, 'mode')
+  }
   return personas
 }
 

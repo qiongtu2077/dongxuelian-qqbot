@@ -13,7 +13,7 @@ function startDashboard(appRoot) {
   const standalone = path.join(appRoot, 'packages', 'koishi-plugin-dashboard', 'standalone.js')
   dashboardProcess = spawn(process.execPath, [standalone], {
     cwd: appRoot,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', KOISHI_DIR: appRoot, DASHBOARD_PORT: process.env.DASHBOARD_PORT || '5150' },
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', GLOBAL_LOCAL_MODE: '1', KOISHI_DIR: appRoot, DASHBOARD_PORT: process.env.DASHBOARD_PORT || '5150' },
     stdio: 'ignore',
     windowsHide: true,
   })

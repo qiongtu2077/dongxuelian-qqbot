@@ -24,7 +24,7 @@
 </template>
 
 <script>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { verifyAdmin, setAdminToken } from '../api'
 import PasswordField from './PasswordField.vue'
 
@@ -42,7 +42,7 @@ export default {
     const error = ref('')
 
     async function submit() {
-      if (!password.value.trim()) return
+      if (!password.value.trim() && !window.dongxuelianDeployer) return
       loading.value = true
       error.value = ''
       try {
@@ -65,6 +65,10 @@ export default {
       error.value = ''
       emit('cancel')
     }
+
+    onMounted(() => {
+      if (window.dongxuelianDeployer) submit()
+    })
 
     return { password, loading, error, submit, cancel }
   },

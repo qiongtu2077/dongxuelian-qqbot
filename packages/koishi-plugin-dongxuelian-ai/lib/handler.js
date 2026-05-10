@@ -291,7 +291,7 @@ async function handleCommand(session, ctx, state) {
   if (plain.startsWith('东雪莲人格切换 ') && plain.length > 7) {
     if (!inGuild) { await session.send('人格切换只能在群里用。'); return handled() }
     const targetName = plain.slice(7).trim()
-    const personas = getAvailablePersonals()
+    const personas = getAvailablePersonals({ userFacing: true })
     const found = personas.find(p => p.name === targetName)
     if (!found) { await session.send(`未找到人格"${targetName}"。可用：${personas.map(p => p.name).join('、')}`); return handled() }
     setUserPersona(currentUserId, targetName)
@@ -308,7 +308,7 @@ async function handleCommand(session, ctx, state) {
 
   if (plain === '东雪莲人格列表') {
     ctx.logger('dongxuelian-ai').info('persona-list matched, loading...')
-    const personas = getAvailablePersonals()
+    const personas = getAvailablePersonals({ userFacing: true })
     ctx.logger('dongxuelian-ai').info(`persona-list: found ${personas.length} personas`)
     if (personas.length === 0) { await session.send('当前没有人格配置。'); return handled() }
     const lines = personas.map(p => `- ${p.name}（${p.description || '无描述'}）`)
@@ -328,7 +328,7 @@ async function handleCommand(session, ctx, state) {
     if (!isGroupAdminOrBotAdmin(session)) { await session.send('只有群管理员/群主才能设置群级人格。'); return handled() }
     if (!inGuild) { await session.send('群级人格设置只能在群里用。'); return handled() }
     const targetName = plain.slice(8).trim()
-    const personas = getAvailablePersonals()
+    const personas = getAvailablePersonals({ userFacing: true })
     const found = personas.find(p => p.name === targetName)
     if (!found) { await session.send(`未找到人格"${targetName}"。可用：${personas.map(p => p.name).join('、')}`); return handled() }
     setGroupPersona(channelKey, targetName)

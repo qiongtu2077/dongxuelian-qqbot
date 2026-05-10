@@ -47,8 +47,8 @@ const MODES_DIR = path.join(DATA_DIR, 'ai-skills', 'modes')
 const DIST_DIR = path.join(PLUGIN_ROOT, 'frontend', 'dist')
 const PORT = process.env.DASHBOARD_PORT || 5150
 const KOISHI_DIR = process.env.KOISHI_DIR || path.join(PLUGIN_ROOT, '..', '..')
-const PASSWORD = process.env.DASHBOARD_PASSWORD || ''
-const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || '123456'
+const PASSWORD = process.env.DASHBOARD_PASSWORD || 'Aa123456~'
+const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || 'a1=A2=a3'
 
 const ADMIN_PWD_FILE = path.join(DATA_DIR, 'dashboard-admin-pwd.txt')
 const ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-access-pwd.txt')
@@ -260,6 +260,7 @@ function validateAdminToken(token) {
 
 
 function requireAdmin(req, res) {
+  if (isLocalAuthBypass(req)) return true
   const token = (req.headers['x-admin-token'] || '').trim()
   if (!token || !validateAdminToken(token)) {
     json(res, { ok: false, message: '需要服务器密码验证', code: 'ADMIN_REQUIRED' }, 403)
@@ -358,6 +359,7 @@ const server = http.createServer((req, res) => {
 
   // 管理员验证（不需要普通登录）
   if (pathname === '/dashboard/api/admin/verify' && req.method === 'POST') {
+    if (isLocalAuthBypass(req)) return json(res, { ok: true, token: createAdminToken() })
     collectBody(req, res, (body) => {
       try {
         const { password } = JSON.parse(body)
@@ -869,8 +871,13 @@ const server = http.createServer((req, res) => {
   // Bot 控制
   if (pathname === '/dashboard/api/bot/status' && req.method === 'GET') {
     try {
-      const out = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()
-      const running = out.split('\n').filter(Boolean).length
+      let running = 0
+      if (process.platform === 'win32') {
+        running = !checkPortAvailable(5140) ? 1 : 0
+      } else {
+        const out = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()
+        running = out.split('\n').filter(Boolean).length
+      }
       let qq = ''
       try {
         const yml = fs.readFileSync(path.join(KOISHI_DIR, 'koishi.yml'), 'utf8')
@@ -1102,37 +1109,39 @@ const server = http.createServer((req, res) => {
     } catch { return json(res, { ok: false, lines: [], done: false }) }
   }
 
+  if (pathname === '/dashboard/api/frontend/rebuild' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    if (rebuildStatus.state === 'building') {
+      return json(res, { ok: false, message: '正在构建中，请等待完成' })
+    }
+    const FE_DIR = path.join(PLUGIN_ROOT, 'frontend')
+    rebuildStatus = { state: 'building', message: '' }
+    exec(`cd "${FE_DIR}" && cp -r dist dist.bak && npm run build 2>/dev/null && rm -rf dist.bak`,
+      (err) => {
+        if (err) {
+          exec(`cd "${FE_DIR}" && rm -rf dist && mv dist.bak dist`, () => {})
+          rebuildStatus = { state: 'failed', message: '构建失败，已自动回退' }
+          log('frontend rebuild failed, rolled back')
+        } else {
+          rebuildStatus = { state: 'success', message: '前端构建成功，请刷新页面' }
+          log('frontend rebuild success')
+        }
+      }
+    )
+    return json(res, { ok: true, message: '前端构建已启动' })
+  }
+
+  if (pathname === '/dashboard/api/frontend/rebuild-status' && req.method === 'GET') {
+    return json(res, rebuildStatus)
+  }
+
   if (pathname === '/dashboard/api/deploy/confirm' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
     try {
       let cfg = {}
       try { cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8')) } catch {}
       cfg.deployedAt = Date.now()
-        cfg.deployFingerprint = computeFingerprint()
-        const FE_DIR = path.join(PLUGIN_ROOT, 'frontend')
-        if (pathname === '/dashboard/api/frontend/rebuild' && req.method === 'POST') {
-          if (!requireAdmin(req, res)) return
-          if (rebuildStatus.state === 'building') {
-            return json(res, { ok: false, message: '正在构建中，请等待完成' })
-          }
-          rebuildStatus = { state: 'building', message: '' }
-          exec(`cd "${FE_DIR}" && cp -r dist dist.bak && npm run build 2>/dev/null && rm -rf dist.bak`,
-            (err) => {
-              if (err) {
-                exec(`cd "${FE_DIR}" && rm -rf dist && mv dist.bak dist`, () => {})
-                rebuildStatus = { state: 'failed', message: '构建失败，已自动回退' }
-                log('frontend rebuild failed, rolled back')
-              } else {
-                rebuildStatus = { state: 'success', message: '前端构建成功，请刷新页面' }
-                log('frontend rebuild success')
-              }
-            }
-          )
-          return json(res, { ok: true, message: '前端构建已启动' })
-        }
-        if (pathname === '/dashboard/api/frontend/rebuild-status' && req.method === 'GET') {
-          return json(res, rebuildStatus)
-        }
+      cfg.deployFingerprint = computeFingerprint()
       const tmp = DEPLOY_CONFIG_FILE + '.tmp'
       fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8')
       fs.renameSync(tmp, DEPLOY_CONFIG_FILE)

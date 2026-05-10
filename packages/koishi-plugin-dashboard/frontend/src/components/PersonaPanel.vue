@@ -63,7 +63,7 @@
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn" @click="doCreate" :disabled="creating">{{ creating ? '保存中...' : (editingName ? '保存修改' : '创建人格') }}</button>
         <button v-if="editingName" class="btn btn-sm" @click="cancelEdit" style="background:var(--tabBg);color:var(--text2);border:1px solid var(--border)">取消</button>
-        <div v-if="createMsg" style="font-size:13px" :style="{color: createMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ createMsg.text }}</div>
+        <div v-if="createMsg" style="font-size:13px" :style="{color: createMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ createMsg.text }}</div>
       </div>
     </div>
   </div>
@@ -93,19 +93,20 @@
           <button class="btn" @click="doLoreSave" :disabled="loreSaving">{{ loreSaving ? '保存中...' : (loreEditing ? '保存' : '创建') }}</button>
           <button v-if="loreEditing" class="btn" @click="cancelLoreEdit" style="background:var(--tabBg);color:var(--text2);border:1px solid var(--border)">取消</button>
         </div>
-        <div v-if="loreMsg" style="font-size:13px" :style="{color: loreMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ loreMsg.text }}</div>
+        <div v-if="loreMsg" style="font-size:13px" :style="{color: loreMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ loreMsg.text }}</div>
       </div>
     </div>
   </div>
 </template>
 
 <script>
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, inject, onMounted, nextTick } from 'vue'
 import { fetchPersonas, fetchPersonaDetail, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore } from '../api'
 
 export default {
   name: 'PersonaPanel',
   setup() {
+    const showAdminDialog = inject('showAdminDialog')
     const personas = ref([])
     const loreList = ref([])
     const newName = ref('')
@@ -152,7 +153,7 @@ export default {
         content: newContent.value,
       }
       const res = editingName.value ? await updatePersona(payload) : await createPersona(payload)
-      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog((editingName.value ? '更新' : '创建') + '人格需要服务器密码', doCreate); creating.value = false; return }
+      if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog((editingName.value ? '更新' : '创建') + '人格需要服务器密码', doCreate); creating.value = false; return }
       if (res.ok) {
         createMsg.value = { type: 'ok', text: res.data?.message || (editingName.value ? '更新成功' : '创建成功') }
         newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; editingName.value = null
@@ -199,7 +200,7 @@ export default {
     async function doPersonaDelete(name) {
       personaDeleting.value = name; createMsg.value = null
       const res = await deletePersona(name)
-      if (res.code === 'ADMIN_REQUIRED') { personaDeleting.value = null; window.showAdminDialog && window.showAdminDialog('删除人格需要管理员密码', () => doPersonaDelete(name)); return }
+      if (res.code === 'ADMIN_REQUIRED') { personaDeleting.value = null; if (showAdminDialog) showAdminDialog('删除人格需要管理员密码', () => doPersonaDelete(name)); return }
       if (res.ok) {
         createMsg.value = { type: 'ok', text: '删除成功' }
         const pRes = await fetchPersonas()
@@ -236,7 +237,7 @@ export default {
       loreSaving.value = true; loreMsg.value = null
       const payload = { name: loreFormName.value.trim(), description: loreFormDesc.value.trim(), content: loreFormContent.value }
       const res = loreEditing.value ? await updateLore(payload) : await createLore(payload)
-      if (res.code === 'ADMIN_REQUIRED') { loreSaving.value = false; window.showAdminDialog && window.showAdminDialog((loreEditing.value ? '编辑' : '创建') + '世界观需要管理员密码', doLoreSave); return }
+      if (res.code === 'ADMIN_REQUIRED') { loreSaving.value = false; if (showAdminDialog) showAdminDialog((loreEditing.value ? '编辑' : '创建') + '世界观需要管理员密码', doLoreSave); return }
       if (res.ok) {
         loreMsg.value = { type: 'ok', text: res.data?.message || (loreEditing.value ? '更新成功' : '创建成功') }
         if (!loreEditing.value) resetLoreForm(); else cancelLoreEdit()
@@ -252,7 +253,7 @@ export default {
     async function doLoreDelete(name) {
       loreDeleting.value = name; loreMsg.value = null
       const res = await deleteLore(name)
-      if (res.code === 'ADMIN_REQUIRED') { loreDeleting.value = null; window.showAdminDialog && window.showAdminDialog('删除世界观需要管理员密码', () => doLoreDelete(name)); return }
+      if (res.code === 'ADMIN_REQUIRED') { loreDeleting.value = null; if (showAdminDialog) showAdminDialog('删除世界观需要管理员密码', () => doLoreDelete(name)); return }
       if (res.ok) {
         loreMsg.value = { type: 'ok', text: res.data?.message || '删除成功' }
         const [loRes, lRes] = await Promise.all([fetchLores(), fetchLoreList()])

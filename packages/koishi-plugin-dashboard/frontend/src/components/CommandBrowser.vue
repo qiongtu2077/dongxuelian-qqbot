@@ -10,14 +10,14 @@
       无匹配结果
     </div>
 
-    <div v-for="f in filtered" :key="f.id" :id="'feat-' + f.id" class="card feature-card" :style="{borderLeft: '3px solid ' + (activeId === f.id ? '#39C5BB' : 'var(--border)')}">
+    <div v-for="f in filtered" :key="f.id" :id="'feat-' + f.id" class="card feature-card" :style="{borderLeft: '3px solid ' + (activeId === f.id ? 'var(--accent)' : 'var(--border)')}">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <h2 style="color:#39C5BB;margin-bottom:4px">{{ f.title }}</h2>
-        <span v-if="activeId === f.id" style="font-size:12px;color:#39C5BB">▼ 展开中</span>
+        <h2 style="color:var(--accent);margin-bottom:4px">{{ f.title }}</h2>
+        <span v-if="activeId === f.id" style="font-size:12px;color:var(--accent)">▼ 展开中</span>
       </div>
-      <div style="color:#94A3B8;font-size:14px;margin-bottom:12px">{{ f.summary }}</div>
+      <div style="color:var(--text2);font-size:14px;margin-bottom:12px">{{ f.summary }}</div>
 
-      <div v-if="activeId === f.id" style="animation:fadeIn .2s">
+      <div v-if="activeId === f.id" style="animation:detailSlideIn .2s ease both">
         <div class="detail-box">
           <div class="detail-label">功能介绍</div>
           <div class="detail-text">{{ f.detail }}</div>
@@ -89,6 +89,6 @@ export default {
 .detail-box { margin-top: 12px; padding: 12px 16px; background: var(--input); border-radius: 8px }
 .detail-label { font-size: 12px; font-weight: 700; color: var(--text3); text-transform: uppercase; margin-bottom: 6px }
 .detail-text { font-size: 14px; line-height: 1.7; color: var(--text) }
-.usage { font-size: 13px; line-height: 1.8; color: #39C5BB; font-family: monospace; white-space: pre-wrap; margin: 0 }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(-4px) } to { opacity: 1; transform: translateY(0) } }
+.usage { font-size: 13px; line-height: 1.8; color: var(--accent); font-family: monospace; white-space: pre-wrap; margin: 0 }
+@keyframes detailSlideIn { from { opacity: 0; transform: translateY(-4px) } to { opacity: 1; transform: translateY(0) } }
 </style>

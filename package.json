@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "dongxuelian-qqbot",
   "private": true,
   "version": "0.11.0",
@@ -29,13 +29,11 @@
     "koishi-plugin-group-leave-notice": "file:packages/koishi-plugin-group-leave-notice",
     "koishi-plugin-group-name-at": "file:packages/koishi-plugin-group-name-at",
     "koishi-plugin-local-video-sender": "file:packages/koishi-plugin-local-video-sender",
+    "koishi-plugin-pet-bridge": "file:packages/koishi-plugin-pet-bridge",
     "puppeteer-core": "^24.42.0",
     "sharp": "^0.34.5"
   },
   "overrides": {
     "@satorijs/core": "3.7.0"
   }
-}
-,
-    "koishi-plugin-pet-bridge": "file:packages/koishi-plugin-pet-bridge"
 }

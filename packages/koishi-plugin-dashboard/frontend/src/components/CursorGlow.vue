@@ -1,5 +1,5 @@
 <template>
-  <canvas ref="canvasRef" style="position:fixed;inset:0;z-index:9999;pointerEvents:none"></canvas>
+  <canvas ref="canvasRef" style="position:fixed;inset:0;z-index:9999;pointer-events:none"></canvas>
 </template>
 
 <script>

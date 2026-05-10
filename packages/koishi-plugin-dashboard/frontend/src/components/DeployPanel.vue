@@ -75,7 +75,7 @@
 </template>
 
 <script>
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { checkDeployUpdate, checkLocalEnv, confirmDeploy, deployLocal, downloadNapcat, fetchDeployConfig, getDeployProgress, rebuildFrontend, rebuildFrontendStatus, runDeploy, updateDeployConfig, uploadDeploy } from '../api'
 
 export default {
@@ -83,6 +83,7 @@ export default {
   props: { locked: { type: Boolean, default: false } },
   emits: ['unlocked'],
   setup() {
+    const showAdminDialog = inject('showAdminDialog')
     const mode = ref('local')
     const local = reactive({ qq: '', provider: 'opencode', model: 'deepseek-v4-flash', baseUrl: 'https://opencode.ai/zen/go/v1', apiKey: '' })
     const remote = reactive({ server: '', appDir: '/root/koishi-app', mode: 'update' })
@@ -106,7 +107,7 @@ export default {
 
     function withAdminRetry(res, message, retry) {
       if (res?.code === 'ADMIN_REQUIRED') {
-        window.showAdminDialog && window.showAdminDialog(message, retry)
+        if (showAdminDialog) showAdminDialog(message, retry)
         return true
       }
       return false
@@ -252,7 +253,7 @@ export default {
       if (progressTimer) clearInterval(progressTimer)
     })
 
-    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, checking, downloading, localDeploying, savingRemote, deploying, portSummary, checkEnv, doDownloadNapcat, writeLocalConfig, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, uploadCookie }
+    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, checking, downloading, localDeploying, savingRemote, deploying, rebuilding, portSummary, checkEnv, doDownloadNapcat, writeLocalConfig, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie }
   },
 }
 </script>

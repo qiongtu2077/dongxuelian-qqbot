@@ -1,94 +1,96 @@
 <template>
   <div>
-    <!-- Bot 状态卡片 -->
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <h2 style="margin:0">Bot 状态</h2>
-        <span v-if="status.loading" style="color:var(--text3)">检测中...</span>
-        <span v-else :style="{color: status.running ? '#39C5BB' : '#F472B6', fontSize:'14px', fontWeight:'700'}">
-          {{ status.running ? '● 运行中' : '● 已停止' }}
+    <div class="card" style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <h2 style="margin:0 0 8px 0">Bot 运行节点</h2>
+        <div style="font-size:13px;color:var(--text3)">
+          Worker 并发进程：{{ status.workers || 0 }}
+        </div>
+      </div>
+      <div>
+        <span v-if="status.loading" class="badge" style="color:var(--text3)">检测中...</span>
+        <span v-else :class="['badge', status.running ? 'running' : 'stopped']">
+          <span :class="['status-dot', status.running ? 'active' : 'offline']"></span>
+          {{ status.running ? 'Online - 运行中' : 'Offline - 已停止' }}
         </span>
       </div>
-      <div v-if="status.running" style="font-size:13px;color:var(--text3);margin-top:4px">
-        Worker 数量：{{ status.workers }}
-      </div>
     </div>
 
-    <!-- 控制按钮 -->
     <div class="card">
-      <h2>控制</h2>
+      <h2>引擎控制</h2>
       <div style="display:flex;gap:12px;flex-wrap:wrap">
-        <button class="btn" @click="doStart" :disabled="acting || status.running">
-          {{ acting ? '执行中...' : '▶ 启动 Bot' }}
+        <button class="btn" @click="doStart" :disabled="acting || pendingVerify || status.running">
+          {{ acting ? '节点拉起中...' : pendingVerify ? '启动验证中...' : '▶ 启动引擎' }}
         </button>
-        <button class="btn" style="background:#F472B6" @click="doStop" :disabled="acting || !status.running">
-          {{ acting ? '执行中...' : '■ 停止 Bot' }}
+        <button class="btn btn-ghost" style="border-color:var(--danger);color:var(--danger)" @click="doStop" :disabled="acting || pendingVerify || !status.running">
+          {{ acting ? '终止信号发送中...' : '■ 强制停止' }}
         </button>
       </div>
-      <div v-if="resultMsg" class="msg" :class="resultMsg.type" style="margin-top:12px">{{ resultMsg.text }}</div>
+      <div v-if="resultMsg" class="msg" :class="resultMsg.type" style="margin-top:16px">{{ resultMsg.text }}</div>
     </div>
 
-    <!-- QQ 管理 -->
     <div class="card">
       <div>
-        <h2 style="margin:0 0 4px">QQ 管理</h2>
-          <div style="font-size:13px;color:var(--text2);margin-bottom:16px">
-          当前 QQ：<span style="font-family:monospace;color:#39C5BB">{{ status.qq || '未知' }}</span>
+        <h2 style="margin:0 0 16px">网络协议与终端配置</h2>
+        <div style="font-size:14px;color:var(--text2);margin-bottom:20px;display:flex;align-items:center;gap:8px">
+          当前挂载 QQ 标识：<span class="badge running" style="font-family:monospace;font-size:14px">{{ status.qq || '未挂载' }}</span>
         </div>
 
-        <!-- 步骤一：SSH 隧道 -->
-        <div style="background:var(--input);border-radius:8px;padding:14px 16px;font-size:13px;margin-bottom:12px">
-          <div style="color:#39C5BB;font-weight:700;margin-bottom:8px">步骤一：输入你的服务器 IP 地址</div>
-          <div style="font-size:12px;color:var(--text3);margin-bottom:6px">在电脑的 CMD 终端复制下面的指令开启隧道（请不要关掉）</div>
-          <input v-model="sshHost" @change="saveSSHHost" placeholder="服务器 IP 或域名" style="width:100%;margin-bottom:8px;font-family:monospace" />
-          <div style="display:flex;gap:8px">
-            <code id="ssh-cmd" style="flex:1;background:var(--input);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--accent);font-family:monospace">ssh -L 6099:localhost:6099 {{ sshUser }}@{{ sshHost || '服务器IP' }}</code>
-            <button class="btn btn-sm" style="white-space:nowrap" @click="copyText('ssh-cmd')">复制</button>
-          </div>
-        </div>
-
-        <!-- 步骤二：NapCat 扫码 -->
-        <div style="background:var(--input);border-radius:8px;padding:14px 16px;font-size:13px;margin-bottom:12px">
-          <div style="color:#FCD34D;font-weight:700;margin-bottom:8px">步骤二：在 NapCat 扫码登新号</div>
-          <div class="secret-line" style="margin-bottom:8px">
-            <code id="napcat-token" style="flex:1;background:var(--input);border-radius:6px;padding:10px 14px;font-size:12px;color:#FCD34D;font-family:monospace">{{ displayNapcatToken }}</code>
-            <button class="icon-btn" type="button" :aria-label="showNapcatToken ? '隐藏 token' : '显示 token'" @click="showNapcatToken = !showNapcatToken">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
-                <circle cx="12" cy="12" r="3" />
-                <path v-if="!showNapcatToken" d="M4 20 20 4" class="eye-slash" />
-              </svg>
+        <div style="margin-bottom:24px">
+          <div style="color:var(--info);font-weight:700;margin-bottom:8px;font-size:14px">Step 1：建立安全隧道 (SSH Port Forwarding)</div>
+          <div style="font-size:13px;color:var(--text3);margin-bottom:12px">在宿主机终端执行以下指令，映射 6099 端口至本地。</div>
+          <input v-model="sshHost" @change="saveSSHHost" placeholder="输入服务器 IP 或域名自动生成指令" style="width:100%;max-width:300px;margin-bottom:12px;font-family:monospace" />
+          <div class="terminal-block">
+            <code id="ssh-cmd">ssh -L 6099:localhost:6099 {{ sshUser }}@{{ sshHost || '服务器IP' }}</code>
+            <button class="icon-btn" style="border-color:rgba(255,255,255,0.2);color:#fff" @click="copyText('ssh-cmd')" title="复制命令">
+              <svg viewBox="0 0 24 24" width="16" height="16"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
-            <button class="btn btn-sm" style="white-space:nowrap" @click="copyValue(napcatToken)">复制</button>
           </div>
-          <a href="http://localhost:6099/webui/" target="_blank" class="btn btn-sm" style="display:inline-block;text-decoration:none">打开 NapCat 管理面板</a>
         </div>
 
-        <!-- 警告分隔 -->
-        <div style="background:rgba(244,114,182,0.1);border:1px solid rgba(244,114,182,0.3);border-radius:8px;padding:10px 14px;font-size:12px;color:#F472B6;margin-bottom:12px">
-          ⚠ 请先在 NapCat 完成扫码登录，再进行第三步
+        <div style="margin-bottom:24px">
+          <div style="color:var(--accent);font-weight:700;margin-bottom:8px;font-size:14px">Step 2：协议端身份验证 (NapCat Auth)</div>
+          <div class="terminal-block" style="border-color:rgba(244,196,48,0.3)">
+            <code id="napcat-token" style="color:var(--accent)">{{ displayNapcatToken }}</code>
+            <div style="display:flex;gap:8px">
+              <button class="icon-btn" style="border:none;background:transparent" @click="showNapcatToken = !showNapcatToken" :title="showNapcatToken ? '隐藏 Token' : '显示 Token'">
+                <svg viewBox="0 0 24 24" width="16" height="16">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                  <circle cx="12" cy="12" r="3"></circle>
+                  <path v-if="!showNapcatToken" d="M4 20 20 4" style="stroke:var(--danger)" />
+                </svg>
+              </button>
+              <button class="icon-btn" style="border-color:rgba(255,255,255,0.2);color:#fff" @click="copyValue(napcatToken)" title="复制 Token">
+                <svg viewBox="0 0 24 24" width="16" height="16"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+              </button>
+            </div>
+          </div>
+          <a href="http://localhost:6099/webui/" target="_blank" class="btn btn-ghost btn-sm" style="margin-top:12px;text-decoration:none;display:inline-block">→ 打开 WebUI 控制台扫码</a>
         </div>
 
-        <!-- 步骤三：更新 Koishi -->
-        <div style="background:var(--input);border-radius:8px;padding:14px 16px;font-size:13px">
-          <div style="color:#39C5BB;font-weight:700;margin-bottom:8px">步骤三：更新 Koishi QQ 号</div>
-          <input v-model="newSelfId" placeholder="输入新 QQ 号" style="width:100%;margin-bottom:8px;font-family:monospace" />
-          <button class="btn btn-sm" @click="saveSelfId" :disabled="savingSelfId">{{ savingSelfId ? '保存中...' : '保存并重启 Koishi' }}</button>
-          <div v-if="selfIdMsg" style="margin-top:8px;font-size:12px" :style="{color: selfIdMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ selfIdMsg.text }}</div>
+        <div style="background:rgba(244,114,182,0.1);border-left:4px solid var(--danger);border-radius:0 8px 8px 0;padding:12px 16px;font-size:13px;color:#fca5a5;margin-bottom:24px">
+          ⚠ 必须在 WebUI 中扫码登录新账号并确保在线，才能执行下一步覆盖操作。
         </div>
 
-        <div v-if="copiedMsg" style="margin-top:8px;font-size:12px;color:#39C5BB;text-align:center">{{ copiedMsg }}</div>
+        <div>
+          <div style="color:var(--info);font-weight:700;margin-bottom:8px;font-size:14px">Step 3：热重载监听目标</div>
+          <div style="display:flex;gap:12px;max-width:400px;align-items:center">
+            <input v-model="newSelfId" placeholder="输入新的监听 QQ 号" style="font-family:monospace" />
+            <button class="btn btn-sm" @click="saveSelfId" :disabled="savingSelfId" style="white-space:nowrap">{{ savingSelfId ? '覆写中...' : '重载配置' }}</button>
+          </div>
+          <div v-if="selfIdMsg" style="margin-top:12px;font-size:13px" :style="{color: selfIdMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ selfIdMsg.text }}</div>
+        </div>
+
+        <div v-if="copiedMsg" style="margin-top:16px;font-size:13px;color:var(--accent);text-align:center;font-weight:700;animation:fadeIn 0.2s">{{ copiedMsg }}</div>
       </div>
     </div>
 
-    <!-- 诊断 -->
     <div class="card">
-      <h2>诊断</h2>
+      <h2>诊断测试</h2>
       <button class="btn btn-sm" @click="testStartBot">测试 startBot API</button>
       <div v-if="diagMsg" class="msg" style="margin-top:8px;font-size:12px;white-space:pre-wrap;font-family:monospace">{{ diagMsg }}</div>
     </div>
 
-    <!-- 维护模式 -->
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div>
@@ -98,10 +100,10 @@
         <label style="position:relative;display:inline-block;width:48px;height:26px;cursor:pointer">
           <input type="checkbox" v-model="maintenanceOn" @change="toggleMaintenance" :disabled="maintLoading" style="opacity:0;width:0;height:0" />
           <span :style="{
-            position:'absolute',inset:0,background:maintenanceOn ? '#39C5BB' : 'var(--border)',borderRadius:'13px',transition:'.2s'
+            position:'absolute',inset:0,background:maintenanceOn ? 'var(--success)' : 'var(--border)',borderRadius:'13px',transition:'.2s'
           }">
             <span :style="{
-              position:'absolute',top:'3px',left:maintenanceOn ? '25px' : '3px',width:'20px',height:'20px',background:'#fff',borderRadius:'50%',transition:'.2s'
+              position:'absolute',top:'3px',left:maintenanceOn ? '25px' : '3px',width:'20px',height:'20px',background:'#fff',borderRadius:'50%',transition:'.2s',boxShadow:'0 2px 4px rgba(0,0,0,0.2)'
             }"></span>
           </span>
         </label>
@@ -111,15 +113,18 @@
 </template>
 
 <script>
-import { computed, ref, onMounted, onActivated } from 'vue'
+import { computed, ref, onMounted, onActivated, inject } from 'vue'
 import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo, fetchSelfId, updateSelfId } from '../api'
 
 export default {
   name: 'ControlPanel',
-  components: { },
   setup() {
+    // 注入 App.vue 提供的全局弹窗方法
+    const showAdminDialog = inject('showAdminDialog')
+
     const status = ref({ loading: true, running: false, workers: 0 })
     const acting = ref(false)
+    const pendingVerify = ref(false)
     const resultMsg = ref(null)
     const maintenanceOn = ref(false)
     const maintLoading = ref(false)
@@ -142,7 +147,6 @@ export default {
     const selfIdMsg = ref(null)
     const diagMsg = ref('')
 
-    // KeepAlive 缓存激活时重置状态
     onActivated(() => {
       acting.value = false
       loadStatus()
@@ -160,7 +164,7 @@ export default {
     async function loadQQToken() {
       const res = await fetchQQToken()
       if (res.code === 'ADMIN_REQUIRED') {
-        window.showAdminDialog && window.showAdminDialog('查看 NapCat Token 需要服务器密码', loadQQToken)
+        if (showAdminDialog) showAdminDialog('查看 NapCat Token 需要服务器密码', loadQQToken)
         return
       }
       if (res.ok && res.data?.token) napcatToken.value = res.data.token
@@ -184,7 +188,7 @@ export default {
       try {
         const res = await updateSelfId(newSelfId.value.trim())
         if (res.code === 'ADMIN_REQUIRED') {
-          window.showAdminDialog && window.showAdminDialog('更换 QQ 号需要服务器密码', saveSelfId)
+          if (showAdminDialog) showAdminDialog('更换 QQ 号需要服务器密码', saveSelfId)
           return
         }
         selfIdMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已保存，Koishi 正在重启' : '保存失败') }
@@ -206,7 +210,6 @@ export default {
       } catch (e) {
         diagMsg.value = '异常: ' + e.message
       }
-      // 3 秒后清除
       setTimeout(() => diagMsg.value = '', 8000)
     }
 
@@ -249,12 +252,14 @@ export default {
       try {
         const res = await startBot()
         if (res.code === 'ADMIN_REQUIRED') {
-          window.showAdminDialog && window.showAdminDialog('启动 Bot 需要服务器密码', doStart)
+          if (showAdminDialog) showAdminDialog('启动 Bot 需要服务器密码', doStart)
           return
         }
         resultMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已发送启动命令，等待 15 秒验证...' : '启动失败') }
-        if (res.ok) setTimeout(loadStatus, 15000)
-        else loadStatus()
+        if (res.ok) {
+          pendingVerify.value = true
+          setTimeout(() => { loadStatus(); pendingVerify.value = false }, 15000)
+        } else loadStatus()
       } catch (e) { resultMsg.value = { type: 'err', text: e.message }
       } finally { acting.value = false }
     }
@@ -264,7 +269,7 @@ export default {
       try {
         const res = await stopBot()
         if (res.code === 'ADMIN_REQUIRED') {
-          window.showAdminDialog && window.showAdminDialog('停止 Bot 需要服务器密码', doStop)
+          if (showAdminDialog) showAdminDialog('停止 Bot 需要服务器密码', doStop)
           return
         }
         resultMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已停止' : '停止失败') }
@@ -277,7 +282,7 @@ export default {
       maintLoading.value = true
       const res = await setMaintenance(maintenanceOn.value)
       if (res.code === 'ADMIN_REQUIRED') {
-        window.showAdminDialog && window.showAdminDialog('维护模式需要服务器密码', () => toggleMaintenance())
+        if (showAdminDialog) showAdminDialog('维护模式需要服务器密码', () => toggleMaintenance())
         maintLoading.value = false
         return
       }
@@ -285,7 +290,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, resultMsg, maintenanceOn, maintLoading, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, sshHost, sshUser, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, saveSSHHost, saveSelfId, doStart, doStop, toggleMaintenance, testStartBot }
+    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, sshHost, sshUser, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, saveSSHHost, saveSelfId, doStart, doStop, toggleMaintenance, testStartBot }
   }
 }
 </script>

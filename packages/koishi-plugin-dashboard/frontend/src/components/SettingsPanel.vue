@@ -4,7 +4,7 @@
     <div style="color:var(--text2);font-size:13px;margin-bottom:12px">登录 Dashboard 所需的密码</div>
     <PasswordField v-model="accessNew" placeholder="新访问密码" autocomplete="new-password" @enter="changeAccess" />
     <button class="btn btn-sm" @click="changeAccess" :disabled="accessLoading">{{ accessLoading ? '修改中...' : '修改访问密码' }}</button>
-    <div v-if="accessMsg" style="margin-top:8px;font-size:12px" :style="{color: accessMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ accessMsg.text }}</div>
+    <div v-if="accessMsg" style="margin-top:8px;font-size:12px" :style="{color: accessMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ accessMsg.text }}</div>
   </div>
   <div class="card">
     <h2>服务器密码</h2>
@@ -12,12 +12,12 @@
     <PasswordField v-model="adminOld" placeholder="当前服务器密码" autocomplete="current-password" @enter="changeAdmin" />
     <PasswordField v-model="adminNew" placeholder="新服务器密码" autocomplete="new-password" @enter="changeAdmin" />
     <button class="btn btn-sm" @click="changeAdmin" :disabled="adminLoading">{{ adminLoading ? '修改中...' : '修改服务器密码' }}</button>
-    <div v-if="adminMsg" style="margin-top:8px;font-size:12px" :style="{color: adminMsg.type === 'ok' ? '#39C5BB' : '#F472B6'}">{{ adminMsg.text }}</div>
+    <div v-if="adminMsg" style="margin-top:8px;font-size:12px" :style="{color: adminMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ adminMsg.text }}</div>
   </div>
 </template>
 
 <script>
-import { ref } from 'vue'
+import { inject, ref } from 'vue'
 import { changePassword, clearAdminToken } from '../api'
 import PasswordField from './PasswordField.vue'
 
@@ -25,6 +25,7 @@ export default {
   name: 'SettingsPanel',
   components: { PasswordField },
   setup() {
+    const showAdminDialog = inject('showAdminDialog')
     const accessNew = ref('')
     const accessLoading = ref(false)
     const accessMsg = ref(null)
@@ -38,7 +39,7 @@ export default {
       // 使用预先缓存的服务器 token 或弹出服务器密码验证
       accessLoading.value = true; accessMsg.value = null
       const res = await changePassword('access', adminOld.value, accessNew.value.trim())
-      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('修改访问密码需要服务器密码', changeAccess); accessLoading.value = false; return }
+      if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('修改访问密码需要服务器密码', changeAccess); accessLoading.value = false; return }
       accessMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '访问密码已更新，请重新登录' : '修改失败') }
       if (res.ok) accessNew.value = ''
       accessLoading.value = false
@@ -48,7 +49,7 @@ export default {
       if (!adminOld.value.trim() || !adminNew.value.trim()) return
       adminLoading.value = true; adminMsg.value = null
       const res = await changePassword('admin', adminOld.value, adminNew.value.trim())
-      if (res.code === 'ADMIN_REQUIRED') { window.showAdminDialog && window.showAdminDialog('修改服务器密码需要当前服务器密码', changeAdmin); adminLoading.value = false; return }
+      if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('修改服务器密码需要当前服务器密码', changeAdmin); adminLoading.value = false; return }
       adminMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '服务器密码已更新' : '修改失败') }
       if (res.ok) { clearAdminToken(); adminOld.value = ''; adminNew.value = '' }
       adminLoading.value = false
