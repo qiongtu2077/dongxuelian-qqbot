@@ -428,7 +428,7 @@ const server = http.createServer((req, res) => {
   }
 
   // Auth 检查（显式本地模式自动放行）
-  if (pathname.startsWith('/dashboard/api/') && !isLocalAuthBypass()) {
+  if (pathname.startsWith('/dashboard/api/') && !isLocalAuthBypass(req)) {
     const auth = req.headers['authorization'] || ''
     const token = auth.replace(/^Bearer\s+/i, '')
     if (!validateToken(token)) {

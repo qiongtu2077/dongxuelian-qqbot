@@ -39,6 +39,7 @@ const {
   getRecentAssistantReplies, getRecentUserMessages,
   writeMemory, deleteMemory, getMemorySummary, clearGroupMemory,
   checkMemoryTimerExpired, readMemoryTimer,
+  channelSharedCache,
 } = require('./conversation')
 const { normalizeText } = require('./message-reader')
 const {
@@ -552,13 +553,22 @@ async function chat(session, userText, ctx, options = {}) {
     })
   }
 
-  if (!personaName && (rareProvocation || japanLinked)) {
-    messages.push({
-      role: 'system',
-      content: rareProvocation
-        ? '对方这句是在拿“罕见/不太常见/稀有”这一路子阴阳你，这次必须视为触发“骂谁罕见”的条件，回复里要明确带上这句话，再接其他嘴臭内容。'
-        : '对方把自己和日本/日语/家乡话绑定了，这次必须视为触发“骂谁罕见”的条件，回复里要明确带上这句话，再接其他嘴臭内容。',
-    })
+  if (rareProvocation || japanLinked) {
+    let rareContext = ''
+    if (retaliationLevel === 0) {
+      rareContext = rareProvocation
+        ? '对方这句是在拿"罕见/不太常见/稀有"这一路子调侃你，保持友善语气在回复里带上"骂谁罕见"就行。'
+        : '对方把自己和日本/日语/家乡话绑定了，保持友善语气在回复里带上"骂谁罕见"就行。'
+    } else if (retaliationLevel === 1) {
+      rareContext = rareProvocation
+        ? '对方这句是在拿"罕见/不太常见/稀有"这一路子阴阳你，这次必须视为触发"骂谁罕见"的条件，回复里要明确带上这句话，再阴阳怪气接其他内容。'
+        : '对方把自己和日本/日语/家乡话绑定了，这次必须视为触发"骂谁罕见"的条件，回复里要明确带上这句话，再阴阳怪气接其他内容。'
+    } else {
+      rareContext = rareProvocation
+        ? '对方这句是在拿"罕见/不太常见/稀有"这一路子阴阳你，这次必须视为触发"骂谁罕见"的条件，回复里要明确带上这句话，再接其他嘴臭内容。'
+        : '对方把自己和日本/日语/家乡话绑定了，这次必须视为触发"骂谁罕见"的条件，回复里要明确带上这句话，再接其他嘴臭内容。'
+    }
+    messages.push({ role: 'system', content: rareContext })
   }
 
   // 注入对话摘要（仅在长对话时作为背景参考）
@@ -795,8 +805,9 @@ async function chat(session, userText, ctx, options = {}) {
     finalReply = simple
   }
 
-  if (!personaName && (rareProvocation || japanLinked) && !/骂谁罕见/.test(finalReply)) {
-    finalReply = trimReply(`骂谁罕见，${finalReply}`, MAX_OUTPUT_CHARS_ABUSIVE)
+  if ((rareProvocation || japanLinked) && !/骂谁罕见/.test(finalReply)) {
+    const rareTrimLen = retaliationLevel >= 2 ? MAX_OUTPUT_CHARS_ABUSIVE : retaliationLevel === 1 ? MAX_OUTPUT_CHARS_YINYANG : MAX_OUTPUT_CHARS_FRIENDLY
+    finalReply = trimReply(`骂谁罕见，${finalReply}`, rareTrimLen)
   }
 
   if (hasBannedOutput(finalReply)) {
