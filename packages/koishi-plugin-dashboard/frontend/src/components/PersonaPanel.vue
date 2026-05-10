@@ -64,7 +64,7 @@
             <span style="font-size:13px;color:var(--text);min-width:30px;text-align:right">{{ newWill }}</span>
           </div>
         </div>
-        <div>
+        <div v-if="editingType === 'persona'">
           <div style="font-size:13px;color:var(--text2);margin-bottom:4px">NSFW 策略</div>
           <select v-model="newNsfw" style="width:100%">
             <option value="none">不参与（默认）</option>
@@ -132,6 +132,7 @@ export default {
     const newNsfw = ref('none')
     const newContent = ref('')
     const editingName = ref(null)
+    const editingType = ref(null)
     const creating = ref(false)
     const createMsg = ref(null)
     const personaDeleting = ref(null)
@@ -176,7 +177,7 @@ export default {
       if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog((editingName.value ? '更新' : '创建') + '人格需要管理员密码', doCreate); creating.value = false; return }
       if (res.ok) {
         createMsg.value = { type: 'ok', text: res.data?.message || (editingName.value ? '更新成功' : '创建成功') }
-        newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; newWill.value = 1.0; newNsfw.value = 'none'; editingName.value = null
+        newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; newWill.value = 1.0; newNsfw.value = 'none'; editingName.value = null; editingType.value = null
         const pRes = await fetchPersonas()
         if (pRes.ok) personas.value = pRes.data
       } else {
@@ -187,6 +188,7 @@ export default {
 
     function cancelEdit() {
       editingName.value = null
+      editingType.value = null
       personaEditing.value = null
       newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; newWill.value = 1.0; newNsfw.value = 'none'
       createMsg.value = null
@@ -197,6 +199,7 @@ export default {
       if (!p) return
       personaEditing.value = name
       editingName.value = name
+      editingType.value = p.type || 'persona'
       newName.value = p.name
       newDesc.value = p.description || ''
       // API 列表接口不返回 content/lore，单独请求详情
@@ -289,7 +292,7 @@ export default {
       loreDeleting.value = null
     }
 
-    return { personas, corePersona, defaultModes, regularPersonas, loreList, newName, newDesc, newLore, newWill, newNsfw, newContent, editingName, creating, createMsg, personaDeleting, personaEditing, personaEditSection, loreEditSection, doCreate, cancelEdit,
+    return { personas, corePersona, defaultModes, regularPersonas, loreList, newName, newDesc, newLore, newWill, newNsfw, newContent, editingName, editingType, creating, createMsg, personaDeleting, personaEditing, personaEditSection, loreEditSection, doCreate, cancelEdit,
       startPersonaEdit, doPersonaDelete,
       lores, loreFormName, loreFormDesc, loreFormContent, loreSaving, loreMsg, loreDeleting, loreEditing,
       startLoreEdit, cancelLoreEdit, doLoreSave, doLoreDelete }
