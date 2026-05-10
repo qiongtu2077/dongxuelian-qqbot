@@ -31,9 +31,7 @@
             <div style="font-size:12px;color:var(--text2);margin-bottom:10px;line-height:1.6">
               请通过 SSH 登录服务器，执行以下命令查看重置令牌：
             </div>
-            <div style="background:#0d1117;border-radius:6px;padding:8px 12px;font-family:monospace;font-size:12px;color:#58a6ff;margin-bottom:10px;word-break:break-all">
-              cat data/password-reset-token.txt
-            </div>
+            <code class="code-snippet">cat data/password-reset-token.txt</code>
             <input v-model="resetToken" placeholder="粘贴重置令牌" style="width:100%;font-family:monospace;font-size:13px;margin-bottom:8px" />
             <button class="btn btn-sm" style="width:100%" @click="doReset" :disabled="resetting">{{ resetting ? '重置中...' : '重置所有密码' }}</button>
             <div v-if="resetMsg" style="margin-top:8px;font-size:12px;text-align:center" :style="{color: resetMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ resetMsg.text }}</div>

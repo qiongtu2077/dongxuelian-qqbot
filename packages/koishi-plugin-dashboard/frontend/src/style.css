@@ -23,6 +23,11 @@
   --tabColor: #c9c2ac;
   --tabBorder: rgba(255, 230, 143, 0.18);
   --tabActive: #f4c430;
+  --code-bg: #141618;
+  --code-text: #c9d1d9;
+  --code-border: rgba(255, 230, 143, 0.2);
+  --code-accent: var(--info);
+  --code-inset: inset 0 2px 5px rgba(0, 0, 0, 0.45);
 }
 
 [data-theme="light"] {
@@ -49,6 +54,11 @@
   --tabColor: rgba(0, 0, 0, 0.72);
   --tabBorder: rgba(0, 0, 0, 0.1);
   --tabActive: #0a0a0a;
+  --code-bg: #eef1f6;
+  --code-text: rgba(15, 23, 42, 0.92);
+  --code-border: rgba(0, 0, 0, 0.1);
+  --code-accent: var(--info);
+  --code-inset: inset 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 [data-theme="forest-green"] {
@@ -57,6 +67,7 @@
   --accent: #2f9e44; --accent2: #95d5b2; --accentDim: rgba(47,158,68,0.16); --hover: rgba(47,158,68,0.12); --hoverLight: rgba(47,158,68,0.06); --shadow: rgba(47,158,68,0.16);
   --danger: #dc2626; --info: #0f766e; --success: #15803d; --error: #dc2626; --grid: rgba(22,101,52,0.04);
   --tabBg: rgba(255,255,255,0.82); --tabColor: #365b43; --tabBorder: rgba(22,101,52,0.16); --tabActive: #0f2f1a;
+  --code-bg: #e4efe6; --code-text: #102a19; --code-border: rgba(22,101,52,0.22); --code-accent: var(--info); --code-inset: inset 0 1px 2px rgba(22,101,52,0.06);
 }
 
 [data-theme="monet-purple"] {
@@ -65,6 +76,7 @@
   --accent: #8b5cf6; --accent2: #38bdf8; --accentDim: rgba(139,92,246,0.16); --hover: rgba(139,92,246,0.12); --hoverLight: rgba(56,189,248,0.08); --shadow: rgba(139,92,246,0.18);
   --danger: #e11d48; --info: #0284c7; --success: #7c3aed; --error: #e11d48; --grid: rgba(139,92,246,0.035);
   --tabBg: rgba(255,255,255,0.82); --tabColor: #5b5270; --tabBorder: rgba(109,40,217,0.16); --tabActive: #3b236f;
+  --code-bg: #e9e6f7; --code-text: #241a3b; --code-border: rgba(109,40,217,0.2); --code-accent: var(--info); --code-inset: inset 0 1px 2px rgba(109,40,217,0.08);
 }
 
 [data-theme="crimson-red"] {
@@ -73,6 +85,7 @@
   --accent: #ef4444; --accent2: #ffd4d4; --accentDim: rgba(239,68,68,0.16); --hover: rgba(239,68,68,0.14); --hoverLight: rgba(255,212,212,0.06); --shadow: rgba(239,68,68,0.18);
   --danger: #fb7185; --info: #f59e0b; --success: #f59e0b; --error: #fb7185; --grid: rgba(248,113,113,0.03);
   --tabBg: rgba(36,17,20,0.74); --tabColor: #f3b6b6; --tabBorder: rgba(248,113,113,0.18); --tabActive: #ef4444;
+  --code-bg: #1c1214; --code-text: #fde8e8; --code-border: rgba(248,113,113,0.25); --code-accent: var(--info); --code-inset: inset 0 2px 5px rgba(0,0,0,0.4);
 }
 
 [data-theme="sakura-pink"] {
@@ -81,6 +94,7 @@
   --accent: #ec4899; --accent2: #fbcfe8; --accentDim: rgba(236,72,153,0.16); --hover: rgba(236,72,153,0.12); --hoverLight: rgba(236,72,153,0.06); --shadow: rgba(236,72,153,0.16);
   --danger: #dc2626; --info: #7c3aed; --success: #7c3aed; --error: #dc2626; --grid: rgba(236,72,153,0.03);
   --tabBg: rgba(255,255,255,0.82); --tabColor: #7a3157; --tabBorder: rgba(236,72,153,0.16); --tabActive: #831843;
+  --code-bg: #fceaf3; --code-text: #3b0a23; --code-border: rgba(236,72,153,0.22); --code-accent: #9333ea; --code-inset: inset 0 1px 2px rgba(236,72,153,0.08);
 }
 
 [data-theme="ocean-cyan"] {
@@ -89,6 +103,7 @@
   --accent: #0891b2; --accent2: #67e8f9; --accentDim: rgba(8,145,178,0.16); --hover: rgba(8,145,178,0.12); --hoverLight: rgba(103,232,249,0.12); --shadow: rgba(8,145,178,0.16);
   --danger: #e11d48; --info: #2563eb; --success: #0d9488; --error: #e11d48; --grid: rgba(8,145,178,0.03);
   --tabBg: rgba(255,255,255,0.82); --tabColor: #155e75; --tabBorder: rgba(8,145,178,0.16); --tabActive: #164e63;
+  --code-bg: #dff4f8; --code-text: #083344; --code-border: rgba(8,145,178,0.22); --code-accent: var(--info); --code-inset: inset 0 1px 2px rgba(8,145,178,0.08);
 }
 
 [data-theme="graphite-blue"] {
@@ -97,6 +112,7 @@
   --accent: #60a5fa; --accent2: #dbeafe; --accentDim: rgba(96,165,250,0.16); --hover: rgba(96,165,250,0.14); --hoverLight: rgba(219,234,254,0.06); --shadow: rgba(96,165,250,0.18);
   --danger: #fb7185; --info: #22d3ee; --success: #22d3ee; --error: #fb7185; --grid: rgba(147,197,253,0.03);
   --tabBg: rgba(17,24,39,0.76); --tabColor: #b6c4d8; --tabBorder: rgba(147,197,253,0.18); --tabActive: #60a5fa;
+  --code-bg: #1e293b; --code-text: #e2e8f0; --code-border: rgba(147,197,253,0.22); --code-accent: var(--info); --code-inset: inset 0 2px 5px rgba(0,0,0,0.35);
 }
 
 [data-theme="light"] body {
@@ -679,10 +695,10 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   margin-top: 14px;
   max-height: 320px;
   overflow: auto;
-  border: 1px solid var(--border);
+  border: 1px solid var(--code-border);
   border-radius: 8px;
-  background: rgba(0,0,0,0.28);
-  color: var(--text2);
+  background: var(--code-bg);
+  color: var(--code-text);
   padding: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -718,24 +734,53 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
 .fade-enter-from { opacity: 0; transform: translateY(8px) }
 .fade-leave-to { opacity: 0; transform: translateY(-8px) }
 
-/* 2. 终端风代码块 (给 ControlPanel 使用) */
+/* 2. 终端/代码块（随主题 --code-* 变量） */
 .terminal-block {
-  background: #0d1117;
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 8px; 
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 8px;
   padding: 12px 16px;
   font-family: 'Fira Code', Consolas, monospace;
-  font-size: 13px; 
-  color: #58a6ff;
-  display: flex; 
-  justify-content: space-between; 
-  align-items: center; 
+  font-size: 13px;
+  color: var(--code-text);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   gap: 12px;
-  box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+  box-shadow: var(--code-inset);
 }
-.terminal-block code { 
-  flex: 1; 
-  overflow-wrap: anywhere; 
+.terminal-block code {
+  flex: 1;
+  overflow-wrap: anywhere;
+  color: inherit;
+}
+.terminal-block--emphasis {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--code-border));
+}
+.terminal-block--emphasis code {
+  color: var(--code-accent);
+}
+.terminal-block .icon-btn {
+  border-color: var(--code-border);
+  color: var(--code-text);
+  background: transparent;
+}
+.terminal-block .icon-btn:hover {
+  color: var(--code-accent);
+  border-color: var(--code-accent);
+}
+
+.code-snippet {
+  display: block;
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  color: var(--code-text);
+  word-break: break-all;
+  margin-bottom: 10px;
 }
 
 /* 3. 状态徽章 (给 ControlPanel 使用) */

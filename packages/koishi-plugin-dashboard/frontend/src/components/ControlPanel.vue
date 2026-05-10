@@ -39,10 +39,10 @@
         <div style="margin-bottom:24px">
           <div style="color:var(--info);font-weight:700;margin-bottom:8px;font-size:14px">Step 1：建立安全隧道 (SSH Port Forwarding)</div>
           <div style="font-size:13px;color:var(--text3);margin-bottom:12px">在宿主机终端执行以下指令，映射 6099 端口至本地。</div>
-          <input v-model="sshHost" @change="saveSSHHost" placeholder="输入服务器 IP 或域名自动生成指令" style="width:100%;max-width:300px;margin-bottom:12px;font-family:monospace" />
+          <input v-model="sshHost" @blur="onSSHHostBlur" @change="saveSSHHost" placeholder="仅填 IP 或域名（勿粘贴 http:// 整段地址）" style="width:100%;max-width:360px;margin-bottom:12px;font-family:monospace" />
           <div class="terminal-block">
-            <code id="ssh-cmd">ssh -L 6099:localhost:6099 {{ sshUser }}@{{ sshHost || '服务器IP' }}</code>
-            <button class="icon-btn" style="border-color:rgba(255,255,255,0.2);color:#fff" @click="copyText('ssh-cmd')" title="复制命令">
+            <code id="ssh-cmd">ssh -L 6099:localhost:6099 {{ sshUser }}@{{ sshHostDisplay }}</code>
+            <button class="icon-btn" type="button" @click="copyText('ssh-cmd')" title="复制命令">
               <svg viewBox="0 0 24 24" width="16" height="16"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
           </div>
@@ -50,17 +50,17 @@
 
         <div style="margin-bottom:24px">
           <div style="color:var(--accent);font-weight:700;margin-bottom:8px;font-size:14px">Step 2：协议端身份验证 (NapCat Auth)</div>
-          <div class="terminal-block" style="border-color:rgba(244,196,48,0.3)">
-            <code id="napcat-token" style="color:var(--accent)">{{ displayNapcatToken }}</code>
+          <div class="terminal-block terminal-block--emphasis">
+            <code id="napcat-token">{{ displayNapcatToken }}</code>
             <div style="display:flex;gap:8px">
-              <button class="icon-btn" style="border:none;background:transparent" @click="showNapcatToken = !showNapcatToken" :title="showNapcatToken ? '隐藏 Token' : '显示 Token'">
+              <button class="icon-btn" type="button" style="border:none;background:transparent" @click="showNapcatToken = !showNapcatToken" :title="showNapcatToken ? '隐藏 Token' : '显示 Token'">
                 <svg viewBox="0 0 24 24" width="16" height="16">
                   <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
                   <circle cx="12" cy="12" r="3"></circle>
                   <path v-if="!showNapcatToken" d="M4 20 20 4" style="stroke:var(--danger)" />
                 </svg>
               </button>
-              <button class="icon-btn" style="border-color:rgba(255,255,255,0.2);color:#fff" @click="copyValue(napcatToken)" title="复制 Token">
+              <button class="icon-btn" type="button" @click="copyValue(napcatToken)" title="复制 Token">
                 <svg viewBox="0 0 24 24" width="16" height="16"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
               </button>
             </div>
@@ -143,7 +143,25 @@ export default {
       return raw.slice(0, 3) + '*'.repeat(raw.length - 3)
     }
 
-    const sshHost = ref(localStorage.getItem('dashboard_ssh_host') || '')
+    function normalizeSSHHost(raw) {
+      let s = String(raw ?? '').trim()
+      if (!s) return ''
+      s = s.replace(/^https?:\/\//i, '')
+      s = s.split('/')[0].split('?')[0].split('#')[0]
+      let host = s
+      const atIdx = host.lastIndexOf('@')
+      if (atIdx >= 0) host = host.slice(atIdx + 1)
+      host = host.replace(/:([0-9]+)$/, '')
+      return host.trim()
+    }
+
+    const sshHost = ref(normalizeSSHHost(localStorage.getItem('dashboard_ssh_host') || ''))
+
+    const sshHostDisplay = computed(() => {
+      const h = normalizeSSHHost(sshHost.value)
+      return h || '服务器IP'
+    })
+
     const sshUser = ref('root')
     const newSelfId = ref('')
     const savingSelfId = ref(false)
@@ -179,7 +197,7 @@ export default {
     async function loadSSHInfo() {
       const res = await fetchSSHInfo()
       if (res.ok && res.data) {
-        if (res.data.host && !sshHost.value) sshHost.value = res.data.host
+        if (res.data.host && !sshHost.value) sshHost.value = normalizeSSHHost(res.data.host)
         if (res.data.user) sshUser.value = res.data.user
       }
     }
@@ -201,7 +219,12 @@ export default {
     }
 
     function saveSSHHost() {
+      sshHost.value = normalizeSSHHost(sshHost.value)
       localStorage.setItem('dashboard_ssh_host', sshHost.value)
+    }
+
+    function onSSHHostBlur() {
+      saveSSHHost()
     }
 
     onMounted(() => { loadStatus(); loadMaintenance(); loadQQToken(); loadSSHInfo(); loadSelfId() })
@@ -284,7 +307,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, sshHost, sshUser, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, saveSSHHost, saveSelfId, doStart, doStop, toggleMaintenance, testStartBot }
+    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, toggleMaintenance, testStartBot, sshUser }
   }
 }
 </script>
