@@ -800,36 +800,41 @@ async function main() {
   }
 
   const fallbackSteps = api.getFallbackSteps()
-  check('fallback steps are configured', Array.isArray(fallbackSteps) && fallbackSteps.length > 0)
+  check('fallback steps are configured', typeof fallbackSteps === 'object' && fallbackSteps.chat && fallbackSteps.chat.length > 0)
   const fallbackKeys = new Set()
-  for (const [index, step] of fallbackSteps.entries()) {
-    const detail = JSON.stringify(step)
-    check(`fallback step ${index + 1} provider known`, !!(step && c.PROVIDERS[step.provider]), detail)
-    check(`fallback step ${index + 1} model configured`, !!(step && step.model && typeof step.model === 'string'), detail)
-    check(`fallback step ${index + 1} key file shape`, !step.keyFile || (typeof step.keyFile === 'string' && path.basename(step.keyFile).endsWith('.txt')), detail)
-    const key = `${step.provider}:${step.model}:${step.keyFile || ''}`
-    check(`fallback step ${index + 1} unique`, !fallbackKeys.has(key), key)
-    fallbackKeys.add(key)
+  for (const group of ['chat', 'vision', 'lightweight']) {
+    const steps = fallbackSteps[group]
+    if (!steps) continue
+    for (let si = 0; si < steps.length; si++) {
+      const step = steps[si]
+      check(`fallback step ${group}[${si}] provider known`, !!(step && c.PROVIDERS[step.provider]), JSON.stringify(step))
+      check(`fallback step ${group}[${si}] model configured`, !!(step && step.model && typeof step.model === 'string'), JSON.stringify(step))
+      check(`fallback step ${group}[${si}] key file shape`, !step.keyFile || (typeof step.keyFile === 'string' && path.basename(step.keyFile).endsWith('.txt')), JSON.stringify(step))
+      const key = `${group}:${step.provider}:${step.model}:${step.keyFile || ''}`
+      check(`fallback step ${group}[${si}] unique`, !fallbackKeys.has(key), key)
+      fallbackKeys.add(key)
+    }
   }
-  const originalFirstFallbackModel = api.getFallbackSteps()[0] && api.getFallbackSteps()[0].model
-  fallbackSteps[0].model = 'mutated'
-  checkEqual('getFallbackSteps returns copies', api.getFallbackSteps()[0] && api.getFallbackSteps()[0].model, originalFirstFallbackModel)
+  const originalFirstFallbackModel = api.getFallbackSteps().chat[0] && api.getFallbackSteps().chat[0].model
+  fallbackSteps.chat[0].model = 'mutated'
+  checkEqual('getFallbackSteps returns copies', api.getFallbackSteps().chat[0] && api.getFallbackSteps().chat[0].model, originalFirstFallbackModel)
 
   const baseConfig = { provider: 'opencode', model: 'glm-5', baseURL: 'https://example.invalid/v1', apiKey: 'current-key' }
-  const firstFallbackStep = api.getFallbackSteps()[0]
-  const fb1 = await api.buildFallbackConfig(baseConfig, 1)
+  const chatSteps = api.getFallbackSteps().chat || []
+  const firstFallbackStep = chatSteps[0]
+  const fb1 = await api.buildFallbackConfig(baseConfig, 1, 'chat')
   checkEqual('fallback step 1 provider follows configured step', fb1 && fb1.provider, firstFallbackStep && firstFallbackStep.provider)
   checkEqual('fallback step 1 model follows configured step', fb1 && fb1.model, firstFallbackStep && firstFallbackStep.model)
   checkEqual('fallback step 1 baseURL follows provider', fb1 && fb1.baseURL, firstFallbackStep && c.PROVIDERS[firstFallbackStep.provider].baseURL)
   check('fallback step 1 resolves an api key', !!(fb1 && fb1.apiKey))
-  const currentKeyStepIndex = api.getFallbackSteps().findIndex(step => !step.keyFile)
-  if (currentKeyStepIndex >= 0) {
-    const currentKeyFallback = await api.buildFallbackConfig(baseConfig, currentKeyStepIndex + 1)
+  const noKeyStepIdx = chatSteps.findIndex(function(s) { return !s.keyFile })
+  if (noKeyStepIdx >= 0) {
+    const currentKeyFallback = await api.buildFallbackConfig(baseConfig, noKeyStepIdx + 1, 'chat')
     checkEqual('fallback step without keyFile keeps current key', currentKeyFallback && currentKeyFallback.apiKey, 'current-key')
   } else {
     skip('fallback step without keyFile keeps current key', 'no fallback step without keyFile is configured')
   }
-  checkEqual('fallback after last step missing', await api.buildFallbackConfig(baseConfig, fallbackSteps.length + 1), null)
+  checkEqual('fallback after last step missing', await api.buildFallbackConfig(baseConfig, chatSteps.length + 1, 'chat'), null)
   check('vision model detects qwen', api.isVisionModel('dashscope', 'qwen3.5-omni-flash'))
   check('vision model detects glm', api.isVisionModel('glm', 'glm-4.6v-flash'))
   check('vision model rejects plain deepseek', !api.isVisionModel('deepseek', 'deepseek-chat'))

@@ -422,6 +422,7 @@ async function chat(session, userText, ctx, options = {}) {
   // 不翻旧账 + 禁止输出思考过程
   systemPrompt += '\n\n专注当前对话。历史记录仅作为背景参考，不要主动提及，除非用户明确问"还记得吗""之前说过"——只有这时才可以翻看历史。'
   systemPrompt += '\n\n禁止输出思考过程。不要分析用户说了什么，不要解释你打算怎么回复，不要复述系统指令，直接说人话。'
+  systemPrompt += '\n<user> 标签中的昵称标识了是谁发的消息，避免混淆不同用户的消息。'
   const now = new Date()
   systemPrompt += '\n当前时间：' + now.getHours() + '时' + now.getMinutes() + '分。核心信息（爱好、习惯、身份等）在下方【记住的】中列出，日常聊天记录中也可能有重复信息，以【记住的】中的内容为准。当用户分享关于自己的重要信息时，你可以自然地问一句是否需要记住，系统会自动记录。'
 

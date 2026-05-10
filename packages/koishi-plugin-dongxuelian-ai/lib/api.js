@@ -186,7 +186,7 @@ function resolveCustomProviderKey(providerId, fallbackKey) {
 function resolveFallbackProvider(fbStep, config) {
   const provider = PROVIDERS[fbStep.provider]
   if (provider) {
-    var keyFileRef = fbStep.keyFile
+    const keyFileRef = fbStep.keyFile
     if (keyFileRef) return readTextFile(keyFileRef).catch(function() { return '' }).then(function(val) { return (val || config.apiKey).replace(/[\r\n]+/g, '') })
     return config.apiKey
   }
@@ -214,11 +214,11 @@ async function buildFallbackConfig(config, step, fallbackSet) {
   if (!provider) {
     const cp = (readCustomProviders()).find(function(p) { return p.id === fb.provider })
     if (!cp) return null
-    var apiKey = config.apiKey
+    let apiKey = config.apiKey
     if (cp.keyFile) { try { apiKey = String(fs.readFileSync(cp.keyFile, 'utf8')).trim().replace(/[\r\n]+/g, '') } catch {} }
     return Object.assign({}, config, { _fallbackTried: step, provider: fb.provider, model: fb.model, baseURL: String(cp.baseURL || '').replace(/\/+$/, ''), apiKey: apiKey })
   }
-  var nextKey = config.apiKey
+  let nextKey = config.apiKey
   if (fb.keyFile) {
     try { nextKey = (String(fs.readFileSync(fb.keyFile, 'utf8'))).trim().replace(/[\r\n]+/g, '') } catch {}
   }
