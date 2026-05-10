@@ -595,7 +595,7 @@ async function safeSendReply(ctx, session, reply, isRandom = false) {
       // 30 分钟后再次通知管理员（避开风控窗口）
       setTimeout(function() {
         const admins = getAdminUserIds(true)
-        const unlockMsg = '🔓 1 小时冻结期已到，BOT 已自动解除发送限制。如果仍无法发送请检查 NapCat 状态。'
+        const unlockMsg = '🔓 30 分钟已过，风控可能已解除。BOT 冻结期还剩约 30 分钟，届时自动恢复。急需使用可重启 BOT。'
         Promise.allSettled([...admins].map(function(id) {
           try {
             if (typeof session?.bot?.sendPrivateMessage === 'function') {
