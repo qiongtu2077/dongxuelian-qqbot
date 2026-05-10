@@ -531,7 +531,7 @@ async function main() {
     api: [
       'requestChatCompletions', 'buildFallbackConfig', 'getFallbackSteps',
       'buildResponsesInput', 'extractResponsesText', 'requestOpenAIResponsesWithSearch',
-      'isVisionModel', 'callGetImage', 'callGetForwardMsg', 'readImageAsBase64',
+      'isVisionModel', 'callGetImage', 'callGetForwardMsg', 'sendForwardMsg', 'readImageAsBase64',
       'downloadImageAsBase64', 'extractImageFileFromElements',
     ],
     conversation: [

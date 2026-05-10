@@ -23,6 +23,7 @@ const {
 } = require('./persona')
 const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory, getMemorySummary, getConversationHistory } = require('./conversation')
 const { runHealthCheck, formatHealthReport } = require('./health-check')
+const { sendForwardMsg } = require('./api')
 const {
   hasAdminPermission, isReservedCommand,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
@@ -501,7 +502,19 @@ async function handleCommand(session, ctx, state) {
       }
 
       ctx.logger('dongxuelian-ai').info(`emotion analysis done: ${trimmed.slice(0, 80)}`)
-      return handled(trimmed)
+      const botUin = session.selfId || session.bot?.selfId || ''
+      const forwardResult = await sendForwardMsg(channelKey, [{
+        type: 'node',
+        data: {
+          name: '今日情绪分析',
+          uin: botUin,
+          content: [{ type: 'text', data: { text: trimmed } }],
+        },
+      }]).catch(function() { return null })
+      if (!forwardResult) {
+        return handled(trimmed)
+      }
+      return handled(null)
     } catch (err) {
       ctx.logger('dongxuelian-ai').warn(`emotion analysis failed: ${err.message}`)
       return handled('情绪分析失败了，稍后再试。')
