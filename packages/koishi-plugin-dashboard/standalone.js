@@ -1004,7 +1004,9 @@ const server = http.createServer((req, res) => {
         if (typeof data.maxPerMinute !== 'number' || data.maxPerMinute < 1) {
           return json(res, { ok: false, message: 'maxPerMinute 必须 >= 1' }, 400)
         }
-        writeFileSync(path.join(DATA_DIR, 'ai-throttle-config.json'), JSON.stringify({ maxPerMinute: data.maxPerMinute }, null, 2))
+        const f = path.join(DATA_DIR, 'ai-throttle-config.json')
+        fs.writeFileSync(f + '.tmp', JSON.stringify({ maxPerMinute: data.maxPerMinute }, null, 2), 'utf8')
+        fs.renameSync(f + '.tmp', f)
         json(res, { ok: true, message: '节流配置已更新' })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })

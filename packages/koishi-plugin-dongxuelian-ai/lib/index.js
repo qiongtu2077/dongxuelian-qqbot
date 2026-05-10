@@ -569,9 +569,11 @@ async function safeSendReply(ctx, session, reply, isRandom = false) {
     }
   }
   try {
-    await sendReply(ctx, session, reply, isRandom)
-    sendFailState.streak = 0
-    sendFailState.lastFailAt = 0
+    const sentCount = await sendReply(ctx, session, reply, isRandom)
+    if (sentCount > 0) {
+      sendFailState.streak = 0
+      sendFailState.lastFailAt = 0
+    }
   } catch (error) {
     const errMsg = String(error?.message || '')
     // 只对 retcode 1200（QQ 风控）走冻结逻辑，其他错误直接抛

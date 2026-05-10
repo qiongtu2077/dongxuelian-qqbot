@@ -261,7 +261,9 @@ export default {
 
     async function saveThrottleConfig() {
       savingThrottle.value = true; throttleMsg.value = null
-      const res = await saveThrottle({ maxPerMinute: throttleMax.value })
+      const val = parseInt(throttleMax.value, 10)
+      if (isNaN(val) || val < 1) { throttleMsg.value = { type: 'err', text: '每分钟上限必须 >= 1' }; savingThrottle.value = false; return }
+      const res = await saveThrottle({ maxPerMinute: val })
       if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('保存节流配置需要管理员密码', saveThrottleConfig); savingThrottle.value = false; return }
       if (res.ok) throttleMsg.value = { type: 'ok', text: '节流配置已保存' }
       else throttleMsg.value = { type: 'err', text: res.data?.message || '保存失败' }
