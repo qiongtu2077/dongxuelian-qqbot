@@ -73,6 +73,7 @@ const {
 let skillsCache = []
 let skillsContentCache = {}
 const lastMemoryPromptTs = new Map()
+const hostileLevelCache = new Map()
 
 function shouldInjectLore(userText = '') {
   for (const keyword of LORE_TRIGGER_SET) {
@@ -367,17 +368,31 @@ async function chat(session, userText, ctx, options = {}) {
     }
   }
 
-  // 反击值系统：三态（0=友善, 1=阴阳, 2=嘴臭），自定义人格时绕过
+  // 反击值系统：三态（0=友善, 1=阴阳, 2=嘴臭），自定义人格时绕过 + 仇恨缓存 30s
   let retaliationLevel = 0
   if (!testMode && !personaName) {
     const hostileInputDetected = isHostileInput(cleanInput) || japanLinked || rareProvocation
+    let newLevel = 0
     if (hostileInputDetected) {
       const score = await calculateRetaliationScore(cleanInput, currentUserId, channelSharedCache, channelKey)
       if (score >= 90 && require('fs').existsSync(HOSTILE_MODE_FILE)) {
-        retaliationLevel = 2
+        newLevel = 2
       } else if (score >= 60) {
-        retaliationLevel = 1
+        newLevel = 1
       }
+    }
+    const cacheKey = channelKey + ':' + currentUserId
+    const cached = hostileLevelCache.get(cacheKey)
+    if (cached && cached.expireAt > Date.now()) {
+      if (hostileInputDetected) {
+        retaliationLevel = Math.max(newLevel, cached.level)
+      } else {
+        retaliationLevel = Math.max(0, cached.level - 1)
+      }
+      hostileLevelCache.set(cacheKey, { level: retaliationLevel, expireAt: Date.now() + 30000 })
+    } else if (hostileInputDetected) {
+      retaliationLevel = newLevel
+      hostileLevelCache.set(cacheKey, { level: retaliationLevel, expireAt: Date.now() + 30000 })
     }
   }
   const hostile = retaliationLevel >= 2  // 嘴臭 only（兼容下游引用）
