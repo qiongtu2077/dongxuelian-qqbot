@@ -586,6 +586,18 @@ async function safeSendReply(ctx, session, reply, isRandom = false) {
     if (sendFailState.streak >= sendFailState.maxStreak) {
       sendFailState.restrictedUntil = now + sendFailState.restrictDurationMs
       ctx.logger('dongxuelian-ai').warn(`safeSendReply: restricted for 1 hour due to ${sendFailState.streak} consecutive send failures`)
+      // 30 分钟后再次通知管理员（避开风控窗口）
+      setTimeout(function() {
+        const admins = getAdminUserIds(true)
+        const unlockMsg = '🔓 1 小时冻结期已到，BOT 已自动解除发送限制。如果仍无法发送请检查 NapCat 状态。'
+        Promise.allSettled([...admins].map(function(id) {
+          try {
+            if (typeof session?.bot?.sendPrivateMessage === 'function') {
+              return session.bot.sendPrivateMessage(id, unlockMsg)
+            }
+          } catch {}
+        }))
+      }, 30 * 60 * 1000)
     }
     throw error
   }
