@@ -512,7 +512,7 @@ async function main() {
   const expectedExports = {
     utils: [
       'splitSentences', 'sanitizeUserName', 'sanitizeUserInput', 'isJailbreakAttempt',
-      'isHostileInput', 'isRareProvocation', 'getSenderUserId', 'hasAdminPermission',
+      'isHostileInput', 'isRareProvocation', 'isWideRareProvocation', 'getSenderUserId', 'hasAdminPermission',
       'stripMentions', 'collapseRepeatedBotCalls', 'isDirectAtBot', 'getBotMentionCount',
       'hasOtherMentions', 'formatPercent', 'readTextFile', 'writeTextFile',
       'readJsonFile', 'writeJsonFile', 'safeUnlink', 'sleep', 'extractImageUrls',
@@ -613,6 +613,7 @@ async function main() {
     'SKILLS_DIR', 'SKILLS_CORE_DIR', 'SKILLS_MODES_DIR', 'SKILLS_PERSONAS_DIR',
     'SKILLS_LORE_DIR', 'PROVIDERS', 'SENSITIVE_KEYWORDS_RE', 'CONVERSATIONS_DIR',
     'USER_PROFILE_DIR', 'REQUEST_TIMEOUT', 'TERRA_LORE_TRIGGER_SET',
+    'CUSTOM_PROVIDERS_FILE', 'FALLBACK_CHAINS_FILE',
     'RESERVED_PREFIXES', 'POLITICAL_DETECT_FILE', 'STICKER_DIR',
     'ADMIN_IDS_FILE', 'JAILBREAK_INPUT_RE', 'JAILBREAK_INPUT_PATTERNS',
   ]
