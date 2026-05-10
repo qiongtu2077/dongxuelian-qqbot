@@ -112,7 +112,7 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
   } catch (networkErr) {
     const isHttpError = String(networkErr?.message || '').includes('HTTP')
     const fbStep = (config._fallbackTried || 0) + 1
-    if (!isHttpError && fbStep <= 4) {
+    if (!isHttpError && fbStep <= 5) {
       const fbConfig = await buildFallbackConfig(config, fbStep, fallbackSet)
       if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
     }

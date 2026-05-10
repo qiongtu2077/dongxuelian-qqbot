@@ -168,6 +168,7 @@ async function run(t) {
     { error: new Error('net3') },
     { error: new Error('net4') },
     { error: new Error('net5') },
+    { error: new Error('net6') },
   ], async (api) => {
     try {
       await api.requestChatCompletions([], {

@@ -330,6 +330,7 @@ const sendFailState = {
   cooldownMs: 5 * 60 * 1000,
   restrictDurationMs: 60 * 60 * 1000,
   notifyIntervalMs: 30 * 1000,
+  notifyScheduled: false,
 }
 
 let userBlacklistCache = null
@@ -551,6 +552,10 @@ async function notifyAdminsSendFailure(ctx, bot) {
 
 async function safeSendReply(ctx, session, reply, isRandom = false) {
   const now = Date.now()
+  // 冻结到期后重置通知标记
+  if (now >= sendFailState.restrictedUntil && sendFailState.notifyScheduled) {
+    sendFailState.notifyScheduled = false
+  }
   if (sendFailState.streak > 0 && now - sendFailState.lastFailAt > sendFailState.cooldownMs) {
     sendFailState.streak = 0
   }
@@ -592,20 +597,24 @@ async function safeSendReply(ctx, session, reply, isRandom = false) {
       notifyAdminsSendFailure(ctx, session.bot).catch(() => {})
     }
     if (sendFailState.streak >= sendFailState.maxStreak) {
-      sendFailState.restrictedUntil = now + sendFailState.restrictDurationMs
-      ctx.logger('dongxuelian-ai').warn(`safeSendReply: restricted for 1 hour due to ${sendFailState.streak} consecutive send failures`)
-      // 30 分钟后再次通知管理员（避开风控窗口）
-      setTimeout(function() {
-        const admins = getAdminUserIds(true)
-        const unlockMsg = '🔓 30 分钟已过，风控可能已解除。BOT 冻结期还剩约 30 分钟，届时自动恢复。急需使用可重启 BOT。'
-        Promise.allSettled([...admins].map(function(id) {
-          try {
-            if (typeof session?.bot?.sendPrivateMessage === 'function') {
-              return session.bot.sendPrivateMessage(id, unlockMsg)
-            }
-          } catch {}
-        }))
-      }, 30 * 60 * 1000)
+      if (now >= sendFailState.restrictedUntil) {
+        sendFailState.restrictedUntil = now + sendFailState.restrictDurationMs
+        ctx.logger('dongxuelian-ai').warn(`safeSendReply: restricted for 1 hour due to ${sendFailState.streak} consecutive send failures`)
+      }
+      if (!sendFailState.notifyScheduled) {
+        sendFailState.notifyScheduled = true
+        setTimeout(function() {
+          const admins = getAdminUserIds(true)
+          const unlockMsg = '🔓 30 分钟已过，风控可能已解除。BOT 冻结期还剩约 30 分钟，届时自动恢复。急需使用可重启 BOT。'
+          Promise.allSettled([...admins].map(function(id) {
+            try {
+              if (typeof session?.bot?.sendPrivateMessage === 'function') {
+                return session.bot.sendPrivateMessage(id, unlockMsg)
+              }
+            } catch {}
+          }))
+        }, 30 * 60 * 1000)
+      }
     }
     throw error
   }
