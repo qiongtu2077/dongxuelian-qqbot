@@ -1,4 +1,19 @@
 <template>
+  <div class="card" style="display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <h2 style="margin:0">黑白名单管理</h2>
+      <div style="font-size:13px;color:var(--text3);margin-top:4px">每 3 秒自动同步，QQ 指令修改也会实时反映</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <span v-if="refreshMsg" style="font-size:12px;color:var(--success);animation:fadeIn .2s">{{ refreshMsg }}</span>
+      <button class="btn btn-sm" @click="manualRefresh" :disabled="refreshing">
+        {{ refreshing ? '刷新中...' : '刷新全部' }}
+      </button>
+    </div>
+  </div>
+
+  <div v-if="loadError" class="card" style="color:var(--error);font-size:13px">加载失败：{{ loadError }}</div>
+
   <div v-for="(wl, key) in lists" :key="key" class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <h2 style="margin:0">{{ wl.label }}</h2>
@@ -40,11 +55,24 @@ export default {
     const newValues = reactive({})
     const newTypes = reactive({})
     const msgs = reactive({})
+    const refreshing = ref(false)
+    const refreshMsg = ref('')
     let pollTimer = null
 
+    const loadError = ref('')
+
     async function load() {
-      const res = await fetchWhitelist()
-      if (res.ok) lists.value = res.data
+      try {
+        const res = await fetchWhitelist()
+        if (res.ok && res.data) {
+          lists.value = res.data
+          loadError.value = ''
+        } else {
+          loadError.value = res.data?.message || '加载失败'
+        }
+      } catch (e) {
+        loadError.value = e.message
+      }
     }
 
     function startPoll() {
@@ -53,6 +81,14 @@ export default {
     }
     function stopPoll() {
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+    }
+
+    async function manualRefresh() {
+      refreshing.value = true
+      await load()
+      refreshing.value = false
+      refreshMsg.value = '已刷新'
+      setTimeout(() => refreshMsg.value = '', 2000)
     }
 
     onMounted(() => { load(); startPoll() })
@@ -155,7 +191,7 @@ export default {
       setTimeout(() => msgs[key] = null, 2000)
     }
 
-    return { lists, newValues, newTypes, msgs, isEmpty, isObjectList, getCount, getItems, inputPlaceholder, getRawItems, addItem, removeItem }
+    return { lists, newValues, newTypes, msgs, loadError, refreshing, refreshMsg, manualRefresh, isEmpty, isObjectList, getCount, getItems, inputPlaceholder, getRawItems, addItem, removeItem }
   }
 }
 </script>

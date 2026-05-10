@@ -95,20 +95,24 @@ export default {
     })
 
     onMounted(async () => {
-      const [pRes, cRes, fRes, cpRes] = await Promise.all([
-        fetchProviders(), fetchConfig(), fetchFallbackChains(), fetchCustomProviders()
-      ])
-      if (pRes.ok) providers.value = pRes.data
-      if (cRes.ok) {
-        selectedProvider.value = cRes.data.provider || 'deepseek'
-        selectedModel.value = cRes.data.model || ''
-        baseUrl.value = cRes.data.baseUrl || ''
+      try {
+        const [pRes, cRes, fRes, cpRes] = await Promise.all([
+          fetchProviders(), fetchConfig(), fetchFallbackChains(), fetchCustomProviders()
+        ])
+        if (pRes.ok) providers.value = pRes.data
+        if (cRes.ok) {
+          selectedProvider.value = cRes.data.provider || 'deepseek'
+          selectedModel.value = cRes.data.model || ''
+          baseUrl.value = cRes.data.baseUrl || ''
+        }
+        if (fRes.ok) {
+          fallbackChains.value = fRes.data.chains || {}
+          defaultFallback.value = fRes.data.default || {}
+        }
+        if (cpRes.ok) customProviders.value = cpRes.data || []
+      } catch (e) {
+        console.error('[ConfigPanel] load failed:', e)
       }
-      if (fRes.ok) {
-        fallbackChains.value = fRes.data.chains || {}
-        defaultFallback.value = fRes.data.default || {}
-      }
-      if (cpRes.ok) customProviders.value = cpRes.data || []
     })
 
     function onProviderChange() {

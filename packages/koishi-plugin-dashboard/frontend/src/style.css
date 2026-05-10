@@ -264,17 +264,58 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   display: grid;
   place-items: center;
   padding: 24px;
-  background: linear-gradient(135deg,
-    color-mix(in srgb, var(--bg, #0f0c29) 70%, var(--accent, #6366f1) 30%) 0%,
-    color-mix(in srgb, var(--bg, #302b63) 50%, var(--accent, #a855f7) 50%) 100%);
+  background: transparent;
 }
 
 .login-page {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg,
-    color-mix(in srgb, var(--bg, #0f0c29) 70%, var(--accent, #6366f1) 30%) 0%,
-    color-mix(in srgb, var(--bg, #302b63) 50%, var(--accent, #a855f7) 50%) 100%);
+  background: transparent;
+  display: flex;
+  min-height: 100vh;
+}
+
+.login-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.login-sidebar {
+  width: 28%;
+  min-width: 320px;
+  max-width: 480px;
+  height: 100vh;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  background: color-mix(in srgb, var(--card) 40%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 32px rgba(0,0,0,0.3);
+  animation: sidebarIn .4s ease both;
+  overflow-y: auto;
+}
+
+.login-sidebar::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--accent), var(--accent2), var(--info));
+}
+
+.login-sidebar-inner {
+  padding: 36px 28px;
+}
+
+@keyframes sidebarIn {
+  from { opacity: 0; transform: translateX(24px) }
+  to   { opacity: 1; transform: translateX(0) }
 }
 
 .page-backdrop {
@@ -342,15 +383,6 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   overflow: hidden;
 }
 
-.draggable-panel {
-  cursor: grab;
-  user-select: none;
-  transition: box-shadow .2s, border-color .3s;
-}
-
-.draggable-panel:active {
-  cursor: grabbing;
-}
 
 .gate-panel::before {
   content: "";
@@ -664,6 +696,22 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   .secret-line code { flex-basis: 100% }
   .deploy-hero { flex-direction: column; align-items: stretch }
   .segmented { width: 100%; display: grid; grid-template-columns: 1fr }
+
+  .login-page { flex-direction: column }
+  .login-spacer { display: none }
+  .login-sidebar {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    height: auto;
+    min-height: 100vh;
+    border-left: none;
+    box-shadow: none;
+  }
+  .login-sidebar::before {
+    top: 0; left: 0; right: 0; bottom: auto;
+    width: auto; height: 3px;
+  }
 }
 
 .fade-enter-active, .fade-leave-active { transition: opacity .15s ease, transform .15s ease }

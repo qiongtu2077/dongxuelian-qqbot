@@ -356,7 +356,16 @@ exports.apply = (ctx) => {
       const allText = allRenderers.map(fn => fn()).join('\n')
       const matchedLines = allText.split('\n').filter(line => line.includes(keyword))
       if (!matchedLines.length) return '未找到相关帮助。'
-      const lines = matchedLines.slice(0, 15).map(line => line.trim())
+      const seen = new Set()
+      const lines = matchedLines
+        .map(l => l.trim())
+        .filter(l => {
+          if (!l || /^【.*】$/.test(l) || seen.has(l)) return false
+          seen.add(l)
+          return true
+        })
+        .slice(0, 15)
+      if (!lines.length) return '未找到相关帮助。'
       return `/help${keyword} 结果：\n${lines.map(l => `- ${l.replace(/^-\s*/, '')}`).join('\n')}`
     }
 

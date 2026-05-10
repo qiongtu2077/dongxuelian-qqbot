@@ -128,9 +128,13 @@ export default {
     const maintenanceOn = ref(false)
     const maintLoading = ref(false)
     const napcatToken = ref('')
+    const tokenIsReal = ref(false)
     const showNapcatToken = ref(false)
     const copiedMsg = ref('')
-    const displayNapcatToken = computed(() => showNapcatToken.value ? (napcatToken.value || '加载中...') : maskSecret(napcatToken.value))
+    const displayNapcatToken = computed(() => {
+      if (!tokenIsReal.value) return napcatToken.value || '加载中...'
+      return showNapcatToken.value ? napcatToken.value : maskSecret(napcatToken.value)
+    })
 
     function maskSecret(value) {
       const raw = String(value || '')
@@ -164,9 +168,13 @@ export default {
       const res = await fetchQQToken()
       if (res.code === 'ADMIN_REQUIRED') {
         napcatToken.value = '需要管理员验证'
+        tokenIsReal.value = false
         return
       }
-      if (res.ok && res.data?.token) napcatToken.value = res.data.token
+      if (res.ok && res.data?.token) {
+        napcatToken.value = res.data.token
+        tokenIsReal.value = true
+      }
     }
     async function loadSSHInfo() {
       const res = await fetchSSHInfo()

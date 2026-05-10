@@ -45,56 +45,70 @@ function handle401(res) {
   return false
 }
 
+function withTimeout(ms = 10000) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), ms)
+  return { signal: ctrl.signal, clear: () => clearTimeout(timer) }
+}
+
 async function get(path, admin = false) {
-  const res = await fetch(BASE + path, { headers: headers(admin) })
-  if (res.status === 403) {
-    const j = await res.json()
-    return { ok: false, data: j, code: j.code }
+  const { signal, clear } = withTimeout()
+  try {
+    const res = await fetch(BASE + path, { headers: headers(admin), signal })
+    clear()
+    if (res.status === 403) { const j = await res.json(); return { ok: false, data: j, code: j.code } }
+    if (handle401(res)) return { ok: false, data: null }
+    return { ok: res.ok, data: await res.json() }
+  } catch (e) {
+    clear()
+    if (e.name === 'AbortError') return { ok: false, data: { message: '请求超时' } }
+    return { ok: false, data: { message: e.message } }
   }
-  if (handle401(res)) return { ok: false, data: null }
-  return { ok: res.ok, data: await res.json() }
 }
 
 async function put(path, data, admin = false) {
-  const res = await fetch(BASE + path, {
-    method: 'PUT',
-    headers: headers(admin),
-    body: JSON.stringify(data),
-  })
-  if (res.status === 403) {
-    const j = await res.json()
-    return { ok: false, data: j, code: j.code }
+  const { signal, clear } = withTimeout()
+  try {
+    const res = await fetch(BASE + path, { method: 'PUT', headers: headers(admin), body: JSON.stringify(data), signal })
+    clear()
+    if (res.status === 403) { const j = await res.json(); return { ok: false, data: j, code: j.code } }
+    if (handle401(res)) return { ok: false, data: null }
+    return { ok: res.ok, data: await res.json() }
+  } catch (e) {
+    clear()
+    if (e.name === 'AbortError') return { ok: false, data: { message: '请求超时' } }
+    return { ok: false, data: { message: e.message } }
   }
-  if (handle401(res)) return { ok: false, data: null }
-  return { ok: res.ok, data: await res.json() }
 }
 
 async function del(path, data, admin = false) {
-  const res = await fetch(BASE + path, {
-    method: 'DELETE',
-    headers: headers(admin),
-    body: JSON.stringify(data),
-  })
-  if (res.status === 403) {
-    const j = await res.json()
-    return { ok: false, data: j, code: j.code }
+  const { signal, clear } = withTimeout()
+  try {
+    const res = await fetch(BASE + path, { method: 'DELETE', headers: headers(admin), body: JSON.stringify(data), signal })
+    clear()
+    if (res.status === 403) { const j = await res.json(); return { ok: false, data: j, code: j.code } }
+    if (handle401(res)) return { ok: false, data: null }
+    return { ok: res.ok, data: await res.json() }
+  } catch (e) {
+    clear()
+    if (e.name === 'AbortError') return { ok: false, data: { message: '请求超时' } }
+    return { ok: false, data: { message: e.message } }
   }
-  if (handle401(res)) return { ok: false, data: null }
-  return { ok: res.ok, data: await res.json() }
 }
 
 async function post(path, data, admin = false) {
-  const res = await fetch(BASE + path, {
-    method: 'POST',
-    headers: headers(admin),
-    body: JSON.stringify(data),
-  })
-  if (res.status === 403) {
-    const j = await res.json()
-    return { ok: false, data: j, code: j.code }
+  const { signal, clear } = withTimeout()
+  try {
+    const res = await fetch(BASE + path, { method: 'POST', headers: headers(admin), body: JSON.stringify(data), signal })
+    clear()
+    if (res.status === 403) { const j = await res.json(); return { ok: false, data: j, code: j.code } }
+    if (handle401(res)) return { ok: false, data: null }
+    return { ok: res.ok, data: await res.json() }
+  } catch (e) {
+    clear()
+    if (e.name === 'AbortError') return { ok: false, data: { message: '请求超时' } }
+    return { ok: false, data: { message: e.message } }
   }
-  if (handle401(res)) return { ok: false, data: null }
-  return { ok: res.ok, data: await res.json() }
 }
 
 async function postPlain(path, data) {
