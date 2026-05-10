@@ -332,12 +332,24 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   padding: 36px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--card);
+  background: color-mix(in srgb, var(--card) 50%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   box-shadow: 0 18px 54px rgba(0,0,0,0.28);
   animation: cardIn .35s ease both;
   position: relative;
   z-index: 1;
   overflow: hidden;
+}
+
+.draggable-panel {
+  cursor: grab;
+  user-select: none;
+  transition: box-shadow .2s, border-color .3s;
+}
+
+.draggable-panel:active {
+  cursor: grabbing;
 }
 
 .gate-panel::before {
@@ -472,6 +484,36 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   background: rgba(0, 0, 0, 0.34);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+}
+
+.admin-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.admin-modal-card {
+  width: 400px;
+  max-width: 100%;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 22px 64px rgba(0,0,0,0.36);
+  animation: cardIn .2s ease both;
+}
+
+.admin-modal-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 16px;
 }
 
 .theme-modal {

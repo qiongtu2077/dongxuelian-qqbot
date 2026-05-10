@@ -29,7 +29,7 @@
 </template>
 
 <script>
-import { ref, reactive, inject, onMounted } from 'vue'
+import { ref, reactive, inject, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { fetchWhitelist, updateWhitelist } from '../api'
 
 export default {
@@ -40,12 +40,25 @@ export default {
     const newValues = reactive({})
     const newTypes = reactive({})
     const msgs = reactive({})
+    let pollTimer = null
 
     async function load() {
       const res = await fetchWhitelist()
       if (res.ok) lists.value = res.data
     }
-    onMounted(load)
+
+    function startPoll() {
+      stopPoll()
+      pollTimer = setInterval(load, 3000)
+    }
+    function stopPoll() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+    }
+
+    onMounted(() => { load(); startPoll() })
+    onUnmounted(stopPoll)
+    onActivated(startPoll)
+    onDeactivated(stopPoll)
 
     function isEmpty(wl) {
       if (Array.isArray(wl.data)) return wl.data.length === 0

@@ -1,6 +1,5 @@
 <template>
   <LoginPage v-if="!loggedIn" @logged-in="onLoggedIn" />
-  <AdminGatePage v-else-if="!adminReady" :message="adminMsg" :allow-cancel="adminCanCancel" @verified="onAdminVerified" @cancel="onAdminCancel" />
   <template v-else>
     <LoginBackdrop :class="{ 'backdrop-dim': deployUnlocked }" />
     <div class="app">
@@ -30,6 +29,7 @@
         </Transition>
       </div>
     </div>
+    <AdminModal :visible="adminModalOpen" :message="adminModalMsg" @verified="onAdminModalVerified" @cancel="onAdminModalCancel" />
   </template>
 </template>
 
@@ -37,9 +37,9 @@
 import { computed, ref, provide, onMounted, onUnmounted } from 'vue'
 import { clearAdminToken } from './api'
 import LoginPage from './components/LoginPage.vue'
-import AdminGatePage from './components/AdminGatePage.vue'
 import LoginBackdrop from './components/LoginBackdrop.vue'
 import ThemeSwitcher from './components/ThemeSwitcher.vue'
+import AdminModal from './components/AdminModal.vue'
 import DeployPanel from './components/DeployPanel.vue'
 import CursorGlow from './components/CursorGlow.vue'
 import ConfigPanel from './components/ConfigPanel.vue'
@@ -52,7 +52,6 @@ import WhitelistPanel from './components/WhitelistPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import StatusPanel from './components/StatusPanel.vue'
 
-// 映射 tab ID 到组件
 const componentMap = {
   deploy: DeployPanel, control: ControlPanel, config: ConfigPanel, keys: KeyManager,
   persona: PersonaPanel, features: CommandBrowser, commands: CommandList,
@@ -60,11 +59,9 @@ const componentMap = {
 }
 
 export default {
-  components: { LoginPage, AdminGatePage, LoginBackdrop, ThemeSwitcher, CursorGlow },
+  components: { LoginPage, LoginBackdrop, ThemeSwitcher, CursorGlow, AdminModal },
   setup() {
     const loggedIn = ref(!!localStorage.getItem('dashboard_token'))
-    const adminReady = ref(true)
-    const adminCanCancel = ref(false)
     const themePickerOpen = ref(false)
     const themes = [
       { id: 'dark-gold', label: '暗金', desc: '黑底金线，适合长期盯控制台', colors: ['#0c0d0c', '#f4c430', '#fff1a8'] },
@@ -94,37 +91,36 @@ export default {
     const allTabs = [
       { id: 'deploy', label: '部署' }, { id: 'control', label: '终端控制' }, { id: 'config', label: '模型配置' },
       { id: 'keys', label: 'API Keys' }, { id: 'persona', label: '人格实验室' }, { id: 'features', label: '功能地图' },
-      { id: 'commands', label: '指令速查' }, { id: 'whitelist', label: '拦截白名单' }, { id: 'settings', label: '安全设置' },
-      { id: 'status', label: '系统状态' }
+      { id: 'commands', label: '指令速查' }, { id: 'whitelist', label: '拦截白名单' },
+      { id: 'settings', label: '安全设置' }, { id: 'status', label: '系统状态' }
     ]
     const tabs = computed(() => deployUnlocked.value ? allTabs : allTabs.filter(item => item.id === 'deploy'))
     const activeTab = ref(deployUnlocked.value ? (localStorage.getItem('dashboard_active_tab') || 'features') : 'deploy')
     const activeComponent = computed(() => componentMap[activeTab.value] || DeployPanel)
 
-    const adminMsg = ref('请输入服务器密码')
-    const adminPending = ref(null)
-
     function onLoggedIn() {
-      loggedIn.value = true; adminMsg.value = '需要服务器密码'; adminCanCancel.value = false; adminReady.value = true
+      loggedIn.value = true
       activeTab.value = localStorage.getItem('dashboard_deploy_unlocked') === 'true' ? 'features' : 'deploy'
     }
 
-    function onAdminVerified() {
-      adminReady.value = true; adminCanCancel.value = false
-      if (adminPending.value) { const fn = adminPending.value; adminPending.value = null; fn() }
-    }
+    const adminModalOpen = ref(false)
+    const adminModalMsg = ref('请输入管理员密码')
+    let adminModalCallback = null
 
-    function onAdminCancel() { adminPending.value = null; adminCanCancel.value = false; adminReady.value = true }
-
-    // 优雅的 Provide 替代 window 全局挂载
     const showAdminDialog = (msg, onVerified) => {
-      clearAdminToken()
-      adminMsg.value = msg || '需要服务器密码'
-      adminPending.value = onVerified
-      adminCanCancel.value = true
-      adminReady.value = false
+      adminModalMsg.value = msg || '请输入管理员密码'
+      adminModalCallback = onVerified || null
+      adminModalOpen.value = true
     }
-    provide('showAdminDialog', showAdminDialog) // 供子组件注入使用
+    function onAdminModalVerified() {
+      adminModalOpen.value = false
+      if (adminModalCallback) { const fn = adminModalCallback; adminModalCallback = null; fn() }
+    }
+    function onAdminModalCancel() {
+      adminModalOpen.value = false
+      adminModalCallback = null
+    }
+    provide('showAdminDialog', showAdminDialog)
 
     function doSwitchTab(id) {
       activeTab.value = id
@@ -139,14 +135,14 @@ export default {
 
     function logout() {
       localStorage.removeItem('dashboard_token'); clearAdminToken()
-      loggedIn.value = false; adminReady.value = true
+      loggedIn.value = false
     }
 
     // 监听 401 事件优雅退出
     onMounted(() => { window.addEventListener('auth-expired', logout) })
     onUnmounted(() => { window.removeEventListener('auth-expired', logout) })
 
-    return { loggedIn, adminReady, adminCanCancel, themePickerOpen, themes, theme, currentThemeLabel, deployUnlocked, tabs, activeTab, activeComponent, adminMsg, onLoggedIn, onAdminVerified, onAdminCancel, unlockDeploy, logout, setTheme, doSwitchTab }
+    return { loggedIn, themePickerOpen, themes, theme, currentThemeLabel, deployUnlocked, tabs, activeTab, activeComponent, adminModalOpen, adminModalMsg, onLoggedIn, onAdminModalVerified, onAdminModalCancel, unlockDeploy, logout, setTheme, doSwitchTab }
   }
 }
 </script>

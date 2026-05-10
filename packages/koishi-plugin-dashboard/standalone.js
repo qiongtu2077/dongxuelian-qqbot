@@ -47,12 +47,13 @@ const MODES_DIR = path.join(DATA_DIR, 'ai-skills', 'modes')
 const DIST_DIR = path.join(PLUGIN_ROOT, 'frontend', 'dist')
 const PORT = process.env.DASHBOARD_PORT || 5150
 const KOISHI_DIR = process.env.KOISHI_DIR || path.join(PLUGIN_ROOT, '..', '..')
-const PASSWORD = process.env.DASHBOARD_PASSWORD || 'Aa123456~'
-const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || 'a1=A2=a3'
+const PASSWORD = process.env.DASHBOARD_PASSWORD || '123'
+const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || '123'
 
 const ADMIN_PWD_FILE = path.join(DATA_DIR, 'dashboard-admin-pwd.txt')
 const ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-access-pwd.txt')
 const LEGACY_ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-pwd.txt')
+const RESET_TOKEN_FILE = path.join(DATA_DIR, 'password-reset-token.txt')
 const CUSTOM_PROVIDERS_FILE = path.join(DATA_DIR, 'ai-providers-custom.json')
 const FALLBACK_CHAINS_FILE = path.join(DATA_DIR, 'ai-fallback-chains.json')
 
@@ -258,6 +259,18 @@ function validateAdminToken(token) {
   return token === createAdminToken()
 }
 
+function generateResetToken() {
+  const token = crypto.randomBytes(16).toString('hex')
+  try {
+    fs.mkdirSync(path.dirname(RESET_TOKEN_FILE), { recursive: true })
+    fs.writeFileSync(RESET_TOKEN_FILE, token, 'utf8')
+  } catch (e) { log('WARNING: 无法写入重置令牌文件: ' + e.message) }
+  return token
+}
+
+function getResetToken() {
+  return readFileSync(RESET_TOKEN_FILE) || ''
+}
 
 function requireAdmin(req, res) {
   if (isLocalAuthBypass(req)) return true
@@ -376,15 +389,37 @@ const server = http.createServer((req, res) => {
     collectBody(req, res, (body) => {
       try {
         const { type, newPassword } = JSON.parse(body)
-        if (!newPassword || newPassword.length < 4) return json(res, { ok: false, message: '新密码长度不能少于4位' }, 400)
+        if (!newPassword || newPassword.length < 3) return json(res, { ok: false, message: '新密码长度不能少于3位' }, 400)
+        if (!/^[A-Za-z0-9_~!@#$%^&*()\-+=\[\]{}<>,.?/|\\:;"'`]+$/.test(newPassword)) {
+          return json(res, { ok: false, message: '密码仅支持大小写字母、数字、下划线和常见特殊字符' }, 400)
+        }
         if (type === 'admin') {
           writeFileSync(ADMIN_PWD_FILE, newPassword)
-          return json(res, { ok: true, message: '服务器密码已更新' })
+          return json(res, { ok: true, message: '管理员密码已更新' })
         } else if (type === 'access') {
           writeFileSync(ACCESS_PWD_FILE, newPassword)
           return json(res, { ok: true, message: '访问密码已更新，请重新登录' })
         }
         return json(res, { ok: false, message: '无效类型' }, 400)
+      } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
+    })
+    return
+  }
+
+  // 忘记密码 - 通过重置令牌恢复默认密码
+  if (pathname === '/dashboard/api/auth/reset-password' && req.method === 'POST') {
+    collectBody(req, res, (body) => {
+      try {
+        const { resetToken } = JSON.parse(body)
+        const stored = getResetToken()
+        if (!stored || !resetToken || resetToken.trim() !== stored.trim()) {
+          return json(res, { ok: false, message: '重置令牌无效' }, 403)
+        }
+        try { fs.unlinkSync(ACCESS_PWD_FILE) } catch {}
+        try { fs.unlinkSync(ADMIN_PWD_FILE) } catch {}
+        try { fs.unlinkSync(LEGACY_ACCESS_PWD_FILE) } catch {}
+        generateResetToken()
+        return json(res, { ok: true, message: '所有密码已重置为默认值 123，请登录后在安全设置中修改' })
       } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
     })
     return
@@ -1115,19 +1150,32 @@ const server = http.createServer((req, res) => {
       return json(res, { ok: false, message: '正在构建中，请等待完成' })
     }
     const FE_DIR = path.join(PLUGIN_ROOT, 'frontend')
+    if (!fs.existsSync(path.join(FE_DIR, 'node_modules'))) {
+      return json(res, { ok: false, message: '前端依赖未安装，请先在 frontend 目录执行 npm install' })
+    }
     rebuildStatus = { state: 'building', message: '' }
-    exec(`cd "${FE_DIR}" && cp -r dist dist.bak && npm run build 2>/dev/null && rm -rf dist.bak`,
-      (err) => {
-        if (err) {
-          exec(`cd "${FE_DIR}" && rm -rf dist && mv dist.bak dist`, () => {})
-          rebuildStatus = { state: 'failed', message: '构建失败，已自动回退' }
-          log('frontend rebuild failed, rolled back')
-        } else {
-          rebuildStatus = { state: 'success', message: '前端构建成功，请刷新页面' }
-          log('frontend rebuild success')
-        }
+    const isWin = process.platform === 'win32'
+    const backupCmd = isWin
+      ? `cd /d "${FE_DIR}" && if exist dist (xcopy /E /I /Q /Y dist dist.bak >nul) & npm run build`
+      : `cd "${FE_DIR}" && [ -d dist ] && cp -r dist dist.bak; npm run build`
+    const rollbackCmd = isWin
+      ? `cd /d "${FE_DIR}" && if exist dist.bak (rmdir /S /Q dist 2>nul & ren dist.bak dist)`
+      : `cd "${FE_DIR}" && rm -rf dist && mv dist.bak dist`
+    const cleanupCmd = isWin
+      ? `cd /d "${FE_DIR}" && if exist dist.bak (rmdir /S /Q dist.bak)`
+      : `cd "${FE_DIR}" && rm -rf dist.bak`
+    exec(backupCmd, { timeout: 120000 }, (err, stdout, stderr) => {
+      if (err) {
+        exec(rollbackCmd, () => {})
+        const detail = (stderr || err.message || '').slice(0, 200)
+        rebuildStatus = { state: 'failed', message: '构建失败，已自动回退。' + (detail ? ' 原因: ' + detail : '') }
+        log('frontend rebuild failed: ' + detail)
+      } else {
+        exec(cleanupCmd, () => {})
+        rebuildStatus = { state: 'success', message: '前端构建成功，请刷新页面' }
+        log('frontend rebuild success')
       }
-    )
+    })
     return json(res, { ok: true, message: '前端构建已启动' })
   }
 
@@ -1290,12 +1338,15 @@ const server = http.createServer((req, res) => {
   serveFile(path.join(DIST_DIR, reqPath || 'index.html'))
 })
 
+if (!getResetToken()) generateResetToken()
+
 server.listen(PORT, () => {
   log(`LianBoard running on http://localhost:${PORT}/dashboard/`)
   log(`bot control: start/stop/maintenance`)
   log(`napcat proxy: /webui/ -> NapCat WebUI`)
+  log(`密码重置令牌文件: ${RESET_TOKEN_FILE}`)
   if (!getAccessPassword() && !isLocalAuthBypass()) log('WARNING: dashboard access password is not configured; login is disabled')
-  if (!readFileSync(ADMIN_PWD_FILE) && !process.env.DASHBOARD_ADMIN_PASSWORD) log('WARNING: dashboard server password is using default 123456; change it before exposing the service')
+  if (!readFileSync(ADMIN_PWD_FILE) && !process.env.DASHBOARD_ADMIN_PASSWORD) log('WARNING: 管理员密码使用默认值 123，请登录后在安全设置中修改')
 })
 
 process.on('SIGINT', () => { log('shutting down'); server.close(); process.exit(0) })

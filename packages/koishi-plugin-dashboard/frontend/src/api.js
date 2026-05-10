@@ -109,6 +109,7 @@ async function postPlain(path, data) {
 export async function login(password) { return postPlain('/login', { password }) }
 export async function verifyAdmin(password) { return postPlain('/admin/verify', { password }) }
 export async function changePassword(type, oldPassword, newPassword) { return put('/auth/password', { type, oldPassword, newPassword }, true) }
+export async function resetPassword(resetToken) { return postPlain('/auth/reset-password', { resetToken }) }
 export { setAdminToken, getAdminToken, clearAdminToken }
 export async function fetchStatus() { return get('/status') }
 export async function fetchProviders() { return get('/providers') }
