@@ -22,7 +22,8 @@ async function withApi(t, queue, fn) {
 }
 
 function getFallbackStep(api, index) {
-  return api.getFallbackSteps()[index - 1]
+  const fb = api.getFallbackSteps()
+  return (fb.chat || [])[index - 1]
 }
 
 function checkFallbackCallMatchesStep(t, label, call, step, constants) {
