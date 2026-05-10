@@ -503,7 +503,7 @@ const server = http.createServer((req, res) => {
           }
         }
         const bodyContent = m ? content.slice(m[0].length) : content
-        return json(res, { ok: true, data: { name, description: meta.description || '', lore: meta.lore || '', will: meta.will || 1.0, content: bodyContent } })
+        return json(res, { ok: true, data: { name, description: meta.description || '', lore: meta.lore || '', will: meta.will || 1.0, nsfw: meta.nsfw || 'none', content: bodyContent } })
       }
       return json(res, getAvailablePersonals().map(p => ({ name: p.name, description: p.description, type: p.type || 'persona' })))
     } catch { return json(res, []) }
@@ -513,14 +513,15 @@ const server = http.createServer((req, res) => {
     if (!requireAdmin(req, res)) return
     collectBody(req, res, (body) => {
       try {
-        const { name, description, lore, will, content } = JSON.parse(body)
+        const { name, description, lore, will, nsfw, content } = JSON.parse(body)
         if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
         const sanitized = name.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '')
         const filePath = path.join(PERSONAS_DIR, 'SKILL.' + sanitized + '.md')
         if (fs.existsSync(filePath)) return json(res, { ok: false, message: '同名人格已存在' }, 400)
         const loreLine = lore && lore !== 'none' ? '\nlore: ' + lore : ''
         const willLine = will !== undefined && will !== '' ? '\nwill: ' + parseFloat(will) : '\nwill: 1.0'
-        const md = '---\nname: ' + sanitized + '\ndescription: ' + (description || '') + loreLine + willLine + '\n---\n\n' + content
+        const nsfwLine = nsfw && nsfw !== 'none' ? '\nnsfw: ' + nsfw : ''
+        const md = '---\nname: ' + sanitized + '\ndescription: ' + (description || '') + loreLine + willLine + nsfwLine + '\n---\n\n' + content
         fs.writeFileSync(filePath, md, 'utf8')
         json(res, { ok: true, message: '人格 ' + sanitized + ' 已创建' })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
@@ -560,7 +561,7 @@ const server = http.createServer((req, res) => {
     if (!requireAdmin(req, res)) return
     collectBody(req, res, (body) => {
       try {
-        const { name, description, lore, will, content } = JSON.parse(body)
+        const { name, description, lore, will, nsfw, content } = JSON.parse(body)
         if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
         const searchDirs = [PERSONAS_DIR, CORE_DIR, MODES_DIR]
         let found = false
@@ -573,7 +574,8 @@ const server = http.createServer((req, res) => {
             if (metaName === name) {
               const loreLine = lore && lore !== 'none' ? '\nlore: ' + lore : ''
               const willLine = will !== undefined && will !== '' ? '\nwill: ' + parseFloat(will) : '\nwill: 1.0'
-              const md = '---\nname: ' + name + '\ndescription: ' + (description || '') + loreLine + willLine + '\n---\n\n' + content
+              const nsfwLine = nsfw && nsfw !== 'none' ? '\nnsfw: ' + nsfw : ''
+              const md = '---\nname: ' + name + '\ndescription: ' + (description || '') + loreLine + willLine + nsfwLine + '\n---\n\n' + content
               fs.writeFileSync(path.join(dir, f), md, 'utf8')
               found = true
               break

@@ -504,6 +504,15 @@ async function chat(session, userText, ctx, options = {}) {
     { role: 'system', content: systemPrompt },
   ]
 
+  // NSFW 策略：自定义人格中 nsfw: reply 时注入适度宽松指引
+  if (personaName && personaSkillContent) {
+    const nsfwMatch = personaSkillContent.match(/^nsfw:\s*(.+)$/m)
+    const nsfwVal = nsfwMatch ? nsfwMatch[1].trim() : ''
+    if (nsfwVal === 'reply') {
+      messages.push({ role: 'system', content: '【适度宽松】用户可以聊成人话题，可以自然接话，不要刻意回避，但也不要主动引导或深入描写。保持你的人格风格。' })
+    }
+  }
+
   // 世界观按需注入：从人格文件的 frontmatter 读取 lore 绑定
   let personaLore = ''
   if (personaName && personaSkillContent) {

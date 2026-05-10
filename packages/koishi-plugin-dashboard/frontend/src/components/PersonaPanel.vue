@@ -65,6 +65,13 @@
           </div>
         </div>
         <div>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:4px">NSFW 策略</div>
+          <select v-model="newNsfw" style="width:100%">
+            <option value="none">不参与（默认）</option>
+            <option value="reply">可以接话</option>
+          </select>
+        </div>
+        <div>
           <div style="font-size:13px;color:var(--text2);margin-bottom:4px">人格内容（提示词）</div>
           <textarea v-model="newContent" rows="10" placeholder="在此编写人格的提示词..." style="width:100%;background:var(--input);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-size:13px;font-family:monospace;resize:vertical"></textarea>
       </div>
@@ -122,6 +129,7 @@ export default {
     const newDesc = ref('')
     const newLore = ref('none')
     const newWill = ref(1.0)
+    const newNsfw = ref('none')
     const newContent = ref('')
     const editingName = ref(null)
     const creating = ref(false)
@@ -161,13 +169,14 @@ export default {
         description: newDesc.value.trim(),
         lore: newLore.value,
         will: newWill.value,
+        nsfw: newNsfw.value,
         content: newContent.value,
       }
       const res = editingName.value ? await updatePersona(payload) : await createPersona(payload)
       if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog((editingName.value ? '更新' : '创建') + '人格需要管理员密码', doCreate); creating.value = false; return }
       if (res.ok) {
         createMsg.value = { type: 'ok', text: res.data?.message || (editingName.value ? '更新成功' : '创建成功') }
-        newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; newWill.value = 1.0; editingName.value = null
+        newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; newWill.value = 1.0; newNsfw.value = 'none'; editingName.value = null
         const pRes = await fetchPersonas()
         if (pRes.ok) personas.value = pRes.data
       } else {
@@ -179,7 +188,7 @@ export default {
     function cancelEdit() {
       editingName.value = null
       personaEditing.value = null
-      newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; newWill.value = 1.0
+      newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; newWill.value = 1.0; newNsfw.value = 'none'
       createMsg.value = null
     }
 
@@ -197,10 +206,12 @@ export default {
         newContent.value = d.content || ''
         newLore.value = d.lore || 'none'
         newWill.value = parseFloat(d.will) || 1.0
+        newNsfw.value = d.nsfw || 'none'
       } else {
         newContent.value = ''
         newLore.value = 'none'
         newWill.value = 1.0
+        newNsfw.value = 'none'
       }
       createMsg.value = null
       personaEditing.value = null
@@ -278,7 +289,7 @@ export default {
       loreDeleting.value = null
     }
 
-    return { personas, corePersona, defaultModes, regularPersonas, loreList, newName, newDesc, newLore, newWill, newContent, editingName, creating, createMsg, personaDeleting, personaEditing, personaEditSection, loreEditSection, doCreate, cancelEdit,
+    return { personas, corePersona, defaultModes, regularPersonas, loreList, newName, newDesc, newLore, newWill, newNsfw, newContent, editingName, creating, createMsg, personaDeleting, personaEditing, personaEditSection, loreEditSection, doCreate, cancelEdit,
       startPersonaEdit, doPersonaDelete,
       lores, loreFormName, loreFormDesc, loreFormContent, loreSaving, loreMsg, loreDeleting, loreEditing,
       startLoreEdit, cancelLoreEdit, doLoreSave, doLoreDelete }
