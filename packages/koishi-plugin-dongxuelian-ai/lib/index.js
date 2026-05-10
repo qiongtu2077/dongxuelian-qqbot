@@ -926,7 +926,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     const inRandomWhitelist = getRandomWhitelistStatus(channelKey)
     let isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply
     // 30秒冷却：触发后不再次主动发言
-    if (lastRandomReplyTs.has(channelKey) && Date.now() - (lastRandomReplyTs.get(channelKey) || 0) < 30000) {
+    if (lastRandomReplyTs.has(channelKey) && Date.now() - (lastRandomReplyTs.get(channelKey) || 0) < 15000) {
       isRandomCandidate = false
     }
     const willFactor = calculateWillFactor(channelKey, currentPersonaName, channelSharedCache, personaWillContent)

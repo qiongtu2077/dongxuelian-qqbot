@@ -12,7 +12,7 @@ const {
   JAILBREAK_INPUT_RE, JAILBREAK_FALLBACK_REPLIES,
   OVERUSED_REPLY_PATTERNS,
   BANNED_ACTION_OUTPUT_RE, EVALUATION_REQUEST_RE,
-  RARE_PROVOCATION_RE, HOSTILE_INPUT_RE, HOSTILE_SINGLE_TOKENS,
+  RARE_PROVOCATION_RE, WIDE_RARE_PROVOKE_RE, HOSTILE_INPUT_RE, HOSTILE_SINGLE_TOKENS,
   PROVIDERS, MAX_OUTPUT_CHARS_FRIENDLY,
 } = require('./constants')
 const { isAdminUserId } = require('./runtime-config')
@@ -21,6 +21,12 @@ function isRareProvocation(text = '') {
   const value = String(text).trim()
   if (!value) return false
   return RARE_PROVOCATION_RE.test(value)
+}
+
+function isWideRareProvocation(text = '') {
+  const value = String(text).trim()
+  if (!value) return false
+  return WIDE_RARE_PROVOKE_RE.test(value)
 }
 
 function isHostileInput(text = '') {
@@ -390,7 +396,7 @@ function todayCstMinusDays(daysBack) {
 }
 
 module.exports = {
-  isRareProvocation, isHostileInput,
+  isRareProvocation, isWideRareProvocation, isHostileInput,
   isJailbreakAttempt, pickJailbreakFallbackReply,
   isReservedCommand, getSenderUserId, hasAdminPermission,
   stripMentions, collapseRepeatedBotCalls,

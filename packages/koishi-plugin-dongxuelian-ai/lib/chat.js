@@ -43,7 +43,7 @@ const {
 } = require('./conversation')
 const { normalizeText } = require('./message-reader')
 const {
-  isRareProvocation, isHostileInput,
+  isRareProvocation, isWideRareProvocation, isHostileInput,
   isJailbreakAttempt, pickJailbreakFallbackReply,
   hasAdminPermission,
   sanitizeUserInput, sanitizeUserName,
@@ -308,6 +308,7 @@ async function chat(session, userText, ctx, options = {}) {
   const cleanInput = sanitizeUserInput(userText)
   const rareProvocation = isRareProvocation(cleanInput)
   const japanLinked = JAPAN_SELF_IDENTIFY_RE.test(cleanInput)
+  const wideRareHit = isWideRareProvocation(cleanInput) || japanLinked
   const testMode = require('fs').existsSync(TEST_MODE_FILE) && hasAdminPermission(session)
 
   // #7 群记忆定时清空检查
@@ -553,7 +554,22 @@ async function chat(session, userText, ctx, options = {}) {
     })
   }
 
-  if (rareProvocation || japanLinked) {
+  let rareConfirmed = !personaName && wideRareHit
+  if (rareConfirmed && !isRareProvocation(cleanInput) && !japanLinked) {
+    try {
+      const cfg = await loadConfig()
+      const rareJudge = await requestChatCompletions(
+        [{ role: 'system', content: '你是一个内容判断器。判断以下用户消息是否在阴阳 Bot 的国籍、稀有度或身份归属。只输出一个字：Y 或 N。不要输出任何其他文字。' },
+         { role: 'user', content: cleanInput.slice(0, 200) }],
+        cfg,
+        { max_tokens: 5, _fallbackSet: 'lightweight' }
+      )
+      rareConfirmed = /^Y/i.test(rareJudge)
+    } catch {
+      rareConfirmed = false
+    }
+  }
+  if (rareConfirmed) {
     let rareContext = ''
     if (retaliationLevel === 0) {
       rareContext = rareProvocation
@@ -805,7 +821,7 @@ async function chat(session, userText, ctx, options = {}) {
     finalReply = simple
   }
 
-  if ((rareProvocation || japanLinked) && !/骂谁罕见/.test(finalReply)) {
+  if (rareConfirmed && !/骂谁罕见/.test(finalReply)) {
     const rareTrimLen = retaliationLevel >= 2 ? MAX_OUTPUT_CHARS_ABUSIVE : retaliationLevel === 1 ? MAX_OUTPUT_CHARS_YINYANG : MAX_OUTPUT_CHARS_FRIENDLY
     finalReply = trimReply(`骂谁罕见，${finalReply}`, rareTrimLen)
   }

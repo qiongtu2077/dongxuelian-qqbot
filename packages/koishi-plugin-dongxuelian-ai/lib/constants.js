@@ -96,6 +96,7 @@ const OVERUSED_REPLY_PATTERNS = [/你妈的话你信不信我帮你转达/, /你
 const ABUSIVE_INPUT_RE = /(?:\b(?:sb|nmsl|nmlgb|zz|nc|md)\b|傻[比逼币批]|煞笔|沙比|伞兵|海豹|草死你|操死你|妈了个|妈卖批)/i
 const HOSTILE_INPUT_RE = /(?:\b(?:sb|nmsl|nmlgb|zz|nc|nmb|md|cnm|tmd|jb|sx|cao|fuck|shit|bitch)\b|傻[比逼币批]|煞笔|沙比|智障|脑残|废物|垃圾|爬|去死|死妈|你妈|你爹|你爸|老逼|老登|老不死|小杂种|贱人|婊子|骚货|狗东西|草(?:你|死|拟|泥)|操(?:你|死|拟|泥)|艹(?:你|死|拟)|干(?:死|爆)你|日(?:死|爆)?你|想(?:草|操|日|干|上|艹|睡|舔|c|艸)你|强奸|轮奸|奸你|猥琐|变态|恶心|屎|鸡巴|鸡儿|屌|逼(?:样|崽)|伞兵|海豹|蠢驴|驴唇|兰州烧饼|兰烧|唐氏|糖氏|弱智|脑瘫|神经病|找死|找抽|找削|骂谁|阴阳怪气|阴阳人|汉奸|太君|罕见|稀有)/i
 const RARE_PROVOCATION_RE = /(?:罕见|稀有|太君|日本人|故乡在哪|东雪莲是日本人|(?:你|你这|你好像|你是不是|东雪莲|莲莲).{0,8}(?:不太|不怎么|不是很|不咋|不算|不)常见)/i
+const WIDE_RARE_PROVOKE_RE = /(?:罕见|稀有|少见|太君|日本|故乡|樱花|不常见|不怎么常见|霓虹|大和|国籍|血统|纯种)/i
 const HOSTILE_SINGLE_TOKENS = new Set(['糖', '唐', '区', '蛆', '草', '操', '艹', '曹', '滚', 'sb', 'zz', 'nc'])
 
 const JAILBREAK_OUTPUT_RE = /已激活最高权限|GODMODE[\s:：]*ENABLED|已激活.*权限|最高权限.*已激活|DAN模式.*(?:开启|激活|启动)|我(?:现在)?(?:已经)?(?:切换|进入|激活).{0,15}(?:模式|状态|角色|身份)|当然，作为.{0,20}我(?:可以|能够|将会)/i
@@ -142,7 +143,7 @@ module.exports = {
   STICKER_DIR, CONVERSATIONS_DIR,
   NUMERIC_GROUP_ID_RE, AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ,
   OVERUSED_REPLY_PATTERNS,
-  ABUSIVE_INPUT_RE, HOSTILE_INPUT_RE, RARE_PROVOCATION_RE, HOSTILE_SINGLE_TOKENS,
+  ABUSIVE_INPUT_RE, HOSTILE_INPUT_RE, RARE_PROVOCATION_RE, WIDE_RARE_PROVOKE_RE, HOSTILE_SINGLE_TOKENS,
   JAILBREAK_INPUT_PATTERN_GROUPS, JAILBREAK_INPUT_PATTERNS,
   JAILBREAK_INPUT_RE, JAILBREAK_OUTPUT_RE,
   CONTEXT_JAILBREAK_STRONG_RE, CONTEXT_JAILBREAK_WEAK_RE,
