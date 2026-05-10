@@ -282,10 +282,14 @@ function sanitizeReply(text = '', userName = '') {
   return t || text
 }
 
-function calculateWillFactor(channelKey, personaName, channelSharedCache) {
+function calculateWillFactor(channelKey, personaName, channelSharedCache, personaContent) {
   const msgCount = (channelSharedCache.get(channelKey) || []).filter(function(m) { return Date.now() - m.ts < 60000 }).length
   const crowdFactor = msgCount > 20 ? 0.3 : msgCount > 10 ? 0.6 : msgCount > 5 ? 0.9 : msgCount > 2 ? 1.2 : 1.5
-  const personaFactor = { '长离': 0.8, '椿': 1.3, '特蕾西娅': 0.9 }[personaName] || 1.0
+  let personaFactor = 1.0
+  if (personaContent) {
+    const willMatch = personaContent.match(/^will:\s*([\d.]+)$/m)
+    if (willMatch) personaFactor = parseFloat(willMatch[1])
+  }
   return Math.round(Math.min(crowdFactor * personaFactor, 2.0) * 100) / 100
 }
 

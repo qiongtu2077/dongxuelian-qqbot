@@ -3,8 +3,10 @@
  * 职责: requestChatCompletions + fallback 链 + 图片/转发拉取。
  * 边界: 不存 conversation，不做业务判断。结果返回给调用方（chat.js）处理。
  */
-const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE } = require('./constants')
+const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE, MIMORIUM_KEY_FILE, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE, DATA_DIR } = require('./constants')
 const { readTextFile, isDashScopeConfig } = require('./utils')
+const path = require('path')
+const fs = require('fs')
 
 function buildResponsesInput(messages = []) {
   return messages.filter(item => item && item.content).map(item => ({
@@ -54,6 +56,10 @@ function rebuildFallbackExtraBody(extraBody = {}, config = {}) {
 }
 
 async function requestChatCompletions(messages, config, extraBody = {}) {
+  const fallbackSet = extraBody._fallbackSet || 'chat'
+  if (!config._originalConfig && !config._fallbackTried) {
+    config._originalConfig = { model: config.model, provider: config.provider, baseURL: config.baseURL, apiKey: config.apiKey }
+  }
   const controller = new AbortController()
   const timeout = config._fallbackTried ? 10000 : REQUEST_TIMEOUT
   const timer = setTimeout(() => controller.abort(), timeout)
@@ -78,7 +84,7 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
     if (!response.ok) {
       if (response.status === 429 || response.status === 401 || response.status === 400) {
         const fbStep = (config._fallbackTried || 0) + 1
-        const fbConfig = await buildFallbackConfig(config, fbStep)
+        const fbConfig = await buildFallbackConfig(config, fbStep, fallbackSet)
         if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
       }
       const text = await response.text().catch(() => '')
@@ -91,13 +97,13 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
     if (!content && m.reasoning_content) {
       console.warn('[dongxuelian-ai] reasoning-only model response dropped')
       const fbStep = (config._fallbackTried || 0) + 1
-      const fbConfig = await buildFallbackConfig(config, fbStep)
+      const fbConfig = await buildFallbackConfig(config, fbStep, fallbackSet)
       if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
     }
     if (!content) throw new Error('Empty model response.')
     if (/request was rejected|considered high risk/i.test(content)) {
       const fbStep = (config._fallbackTried || 0) + 1
-      const fbConfig = await buildFallbackConfig(config, fbStep)
+      const fbConfig = await buildFallbackConfig(config, fbStep, fallbackSet)
       if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
       content = ''
     }
@@ -107,7 +113,7 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
     const isHttpError = String(networkErr?.message || '').includes('HTTP')
     const fbStep = (config._fallbackTried || 0) + 1
     if (!isHttpError && fbStep <= 4) {
-      const fbConfig = await buildFallbackConfig(config, fbStep)
+      const fbConfig = await buildFallbackConfig(config, fbStep, fallbackSet)
       if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
     }
     throw networkErr
@@ -133,33 +139,98 @@ async function requestOpenAIResponsesWithSearch(messages, config) {
   } finally { clearTimeout(timer) }
 }
 
-const FALLBACK_STEPS = [
+const DEFAULT_CHAT_FALLBACK = [
   { model: 'glm-4.6v-flash', provider: 'glm', keyFile: GLM_KEY_FILE },
-  { model: 'deepseek-v4-flash', provider: 'opencode' },
+  { model: 'deepseek-v4-flash', provider: 'opencode', keyFile: null },
+  { model: 'qwen3.5-omni-flash', provider: 'dashscope', keyFile: DASHSCOPE_KEY_FILE },
   { model: 'qwen3.5-plus', provider: 'dashscope', keyFile: DASHSCOPE_KEY_FILE },
-  { model: 'qwen3.6-plus', provider: 'dashscope', keyFile: DASHSCOPE_KEY_FILE },
 ]
 
-async function buildFallbackConfig(config, step) {
-  const fallback = FALLBACK_STEPS[step - 1]
-  if (!fallback) return null
-  const provider = PROVIDERS[fallback.provider]
-  if (!provider) return null
-  const next = {
-    ...config,
-    _fallbackTried: step,
-    provider: fallback.provider,
-    model: fallback.model,
-    baseURL: provider.baseURL.replace(/\/+$/, ''),
+const DEFAULT_VISION_FALLBACK = [
+  { model: 'glm-4.6v-flash', provider: 'glm', keyFile: GLM_KEY_FILE },
+  { model: 'mimo-v2-omni', provider: 'mimorium', keyFile: MIMORIUM_KEY_FILE },
+  { model: 'qwen3.5-omni-flash', provider: 'dashscope', keyFile: DASHSCOPE_KEY_FILE },
+  { model: 'qwen3.5-plus', provider: 'dashscope', keyFile: DASHSCOPE_KEY_FILE },
+]
+
+const FALLBACK_DEFAULTS = {
+  chat: DEFAULT_CHAT_FALLBACK,
+  vision: DEFAULT_VISION_FALLBACK,
+  lightweight: DEFAULT_CHAT_FALLBACK,
+}
+
+function readFallbackSteps() {
+  try {
+    const raw = fs.readFileSync(FALLBACK_CHAINS_FILE, 'utf8')
+    const data = JSON.parse(raw)
+    if (data && data.chains) return data.chains
+  } catch {}
+  return null
+}
+
+function readCustomProviders() {
+  try {
+    const raw = fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8')
+    return JSON.parse(raw)
+  } catch {}
+  return []
+}
+
+function resolveCustomProviderKey(providerId, fallbackKey) {
+  const custom = readCustomProviders()
+  const cp = custom.find(function(p) { return p.id === providerId })
+  if (!cp || !cp.keyFile) return fallbackKey
+  try { return String(fs.readFileSync(cp.keyFile, 'utf8')).trim().replace(/[\r\n]+/g, '') } catch { return fallbackKey }
+}
+
+function resolveFallbackProvider(fbStep, config) {
+  const provider = PROVIDERS[fbStep.provider]
+  if (provider) {
+    var keyFileRef = fbStep.keyFile
+    if (keyFileRef) return readTextFile(keyFileRef).catch(function() { return '' }).then(function(val) { return (val || config.apiKey).replace(/[\r\n]+/g, '') })
+    return config.apiKey
   }
-  if (fallback.keyFile) {
-    next.apiKey = (await readTextFile(fallback.keyFile).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '')
+  const custom = readCustomProviders()
+  const cp = custom.find(function(p) { return p.id === fbStep.provider })
+  if (!cp) return config.apiKey
+  if (cp.keyFile) {
+    try { return String(fs.readFileSync(cp.keyFile, 'utf8')).trim().replace(/[\r\n]+/g, '') } catch {}
   }
-  return next
+  return config.apiKey
+}
+
+async function buildFallbackConfig(config, step, fallbackSet) {
+  const chain = FALLBACK_DEFAULTS[fallbackSet] || DEFAULT_CHAT_FALLBACK
+  const custom = readFallbackSteps()
+  const steps = (custom && custom[fallbackSet]) ? custom[fallbackSet] : chain
+  const fb = steps[step - 1]
+  if (!fb) {
+    if (config._originalConfig && !config._isOriginalRetry) {
+      return Object.assign({}, config._originalConfig, { _fallbackTried: step, _isOriginalRetry: true })
+    }
+    return null
+  }
+  const provider = PROVIDERS[fb.provider]
+  if (!provider) {
+    const cp = (readCustomProviders()).find(function(p) { return p.id === fb.provider })
+    if (!cp) return null
+    var apiKey = config.apiKey
+    if (cp.keyFile) { try { apiKey = String(fs.readFileSync(cp.keyFile, 'utf8')).trim().replace(/[\r\n]+/g, '') } catch {} }
+    return Object.assign({}, config, { _fallbackTried: step, provider: fb.provider, model: fb.model, baseURL: String(cp.baseURL || '').replace(/\/+$/, ''), apiKey: apiKey })
+  }
+  var nextKey = config.apiKey
+  if (fb.keyFile) {
+    try { nextKey = (String(fs.readFileSync(fb.keyFile, 'utf8'))).trim().replace(/[\r\n]+/g, '') } catch {}
+  }
+  return Object.assign({}, config, { _fallbackTried: step, provider: fb.provider, model: fb.model, baseURL: String(provider.baseURL).replace(/\/+$/, ''), apiKey: nextKey })
 }
 
 function getFallbackSteps() {
-  return FALLBACK_STEPS.map(item => ({ ...item }))
+  return {
+    chat: DEFAULT_CHAT_FALLBACK.map(function(item) { return Object.assign({}, item) }),
+    vision: DEFAULT_VISION_FALLBACK.map(function(item) { return Object.assign({}, item) }),
+    lightweight: DEFAULT_CHAT_FALLBACK.map(function(item) { return Object.assign({}, item) }),
+  }
 }
 
 function callOneBotWs(action, params, echo, timeoutMs, extractData) {
@@ -264,8 +335,18 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
 }
 
 function isVisionModel(provider, modelId) {
-  if (/qwen/i.test(modelId)) return true; if (/glm/i.test(modelId)) return true; if (/kimi/i.test(modelId)) return true
-  if (provider === 'mimorium' && /^mimo-v2\.5$|omni/i.test(modelId)) return true; return false
+  // 1. 查内置 PROVIDERS 的 vision 标记
+  const p = PROVIDERS[provider]
+  if (p) {
+    const m = p.models.find(function(x) { return x.id === modelId })
+    if (m) return !!m.vision
+  }
+  // 2. 查自定义供应商
+  const custom = readCustomProviders()
+  const cp = custom.find(function(x) { return x.id === provider })
+  if (cp) return cp.models && cp.models.some(function(x) { return x.id === modelId && x.vision })
+  // 3. fallback 正则（兼容旧数据）
+  return /qwen|glm|kimi|omni/i.test(modelId)
 }
 
 module.exports = {

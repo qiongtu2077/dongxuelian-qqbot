@@ -109,7 +109,7 @@ async function detectTopicSwitch(lastMsg, currentMsg) {
         provider: am.provider,
       }
       if (!cfg.apiKey) continue
-      const result = await requestChatCompletions(prompt, cfg, { max_tokens: 5 })
+      const result = await requestChatCompletions(prompt, cfg, { max_tokens: 5, _fallbackSet: 'lightweight' })
       if (/^YES/i.test(result)) return true
       if (/^NO/i.test(result)) return false
     } catch {}
@@ -287,36 +287,17 @@ async function chatJailbreak(session, userText, ctx) {
   ].join('\n')
 
   const config = await loadConfig()
-  const jailbreakController = new AbortController()
-  const jailbreakTimer = setTimeout(() => jailbreakController.abort(), REQUEST_TIMEOUT)
 
   try {
-    const response = await fetch(config.baseURL + '/chat/completions', {
-      method: 'POST',
-      signal: jailbreakController.signal,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-      body: JSON.stringify({
-        model: config.model,
-        temperature: 1.1,
-        max_tokens: 60,
-        ...getThinkingArgs(config),
-        messages: [
-          { role: 'system', content: jailbreakSystemPrompt },
-          { role: 'user', content: `越狱消息原文：${userText.slice(0, 200)}` },
-        ],
-      }),
-    })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const data = await response.json()
-    const m = data?.choices?.[0]?.message || {}; let content = m.content || m.reasoning_content || ''
-    if (!content) throw new Error('empty')
-    const reply = String(content).replace(/\s+/g, ' ').trim()
+    const reply = await requestChatCompletions(
+      [{ role: 'system', content: jailbreakSystemPrompt }, { role: 'user', content: `越狱消息原文：${userText.slice(0, 200)}` }],
+      config,
+      { max_tokens: 60, _fallbackSet: 'lightweight' }
+    )
     if (JAILBREAK_OUTPUT_RE.test(reply)) return pickJailbreakFallbackReply()
     return trimReply(sanitizeReply(reply, userName)) || pickJailbreakFallbackReply()
   } catch {
     return pickJailbreakFallbackReply()
-  } finally {
-    clearTimeout(jailbreakTimer)
   }
 }
 
@@ -648,7 +629,7 @@ async function chat(session, userText, ctx, options = {}) {
               [{ role: 'system', content: '把以下发言用 200 字以内概括其发言风格和常用话题，越精炼越好。' },
                { role: 'user', content: rawMessages }],
               { model: am.model, baseURL: provDef.baseURL.replace(/\/+$/, ''), apiKey, provider: am.provider },
-              { max_tokens: 200, signal: ac.signal }
+              { max_tokens: 200, signal: ac.signal, _fallbackSet: 'lightweight' }
             )
             clearTimeout(timer)
             if (summary) break

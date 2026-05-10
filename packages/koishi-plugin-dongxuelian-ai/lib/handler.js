@@ -444,7 +444,7 @@ async function handleCommand(session, ctx, state) {
       batches.push(callOpenAI([
         { role: 'system', content: '你是群聊消息摘要助手。将以下群聊记录压缩成一段100字以内的摘要，保留主要话题和情绪倾向。不要评价，只摘要。' },
         { role: 'user', content: batchText.slice(0, 4000) },
-      ], false))
+      ], false, { _fallbackSet: 'lightweight' }))
     }
     const summaries = await Promise.all(batches)
     const allSummary = summaries.filter(Boolean).join('\n---\n')
@@ -479,7 +479,7 @@ async function handleCommand(session, ctx, state) {
       const result = await callOpenAI([
         { role: 'system', content: emotionPrompt },
         { role: 'user', content: `群 ${channelKey} 今日情绪分析` },
-      ], false, { max_tokens: 600, noLazy: true })
+      ], false, { max_tokens: 600, noLazy: true, _fallbackSet: 'lightweight' })
       const trimmed = result.length > 600 ? result.slice(0, 597) + '...' : result
       lastEmotionCache.set(channelKey, { text: trimmed, ts: Date.now() })
 

@@ -31,7 +31,7 @@ async function calculateRetaliationScore(cleanInput, userId, channelSharedCache,
 
 只输出一个 0-100 的整数。不要输出任何其他文字。` },
       { role: 'user', content: `用户最近消息：\n${history}` },
-    ], config, { max_tokens: 10 })
+    ], config, { max_tokens: 10, _fallbackSet: 'lightweight' })
     const score = parseInt(String(text).trim(), 10)
     if (!isNaN(score)) return Math.max(0, Math.min(100, score))
   } catch {}

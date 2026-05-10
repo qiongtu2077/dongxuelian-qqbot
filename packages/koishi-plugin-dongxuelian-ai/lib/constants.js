@@ -61,11 +61,11 @@ const EVENT_DUMP_ARM_EXPIRE_MS = 10 * 60 * 1000
 
 const PROVIDERS = {
   opencode: { name: 'OpenCode Go', baseURL: 'https://opencode.ai/zen/go/v1', models: [
-    { id: 'glm-5', name: 'GLM-5' }, { id: 'glm-5.1', name: 'GLM-5.1' }, { id: 'kimi-k2.5', name: 'Kimi K2.5' }, { id: 'kimi-k2.6', name: 'Kimi K2.6' }, { id: 'deepseek-v4-pro', name: 'DSv4pro' }, { id: 'deepseek-v4-flash', name: 'DSv4' }, { id: 'mimo-v2-pro', name: 'MiMo-V2-Pro' }, { id: 'mimo-v2-omni', name: 'MiMo-V2-Omni' }, { id: 'mimo-v2.5-pro', name: 'MiMo-V2.5-Pro' }, { id: 'mimo-v2.5', name: 'MiMo-V2.5' }, { id: 'minimax-m2.7', name: 'MiniMax M2.7' }, { id: 'minimax-m2.5', name: 'MiniMax M2.5' }, { id: 'qwen3.6-plus', name: '千问3.6' }, { id: 'qwen3.5-plus', name: '千问3.5' }] },
-  dashscope: { name: '阿里云', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: [{ id: 'qwen3.5-plus', name: 'qwen3.5' }, { id: 'qwen3.6-plus', name: 'qwen3.6' }, { id: 'qwen3.5-omni-flash', name: 'Qwen3.5-Omni-Flash' }, { id: 'qwen-turbo', name: 'Qwen Turbo' }] },
-  deepseek: { name: 'DeepSeek 官方', baseURL: 'https://api.deepseek.com', models: [{ id: 'deepseek-chat', name: 'deepseek-chat' }, { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }, { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' }] },
-  glm: { name: '智谱GLM', baseURL: 'https://open.bigmodel.cn/api/paas/v4', models: [{ id: 'glm-4.6v-flash', name: 'GLM 4.6' }] },
-  mimorium: { name: '小米', baseURL: 'https://token-plan-cn.xiaomimimo.com/v1', models: [{ id: 'mimo-v2.5-pro', name: 'mimo 2.5pro' }, { id: 'mimo-v2.5', name: 'mimo 2.5' }, { id: 'mimo-v2-omni', name: 'mimo v2' }] },
+    { id: 'glm-5', name: 'GLM-5', vision: true }, { id: 'glm-5.1', name: 'GLM-5.1', vision: true }, { id: 'kimi-k2.5', name: 'Kimi K2.5', vision: true }, { id: 'kimi-k2.6', name: 'Kimi K2.6', vision: true }, { id: 'deepseek-v4-pro', name: 'DSv4pro', vision: false }, { id: 'deepseek-v4-flash', name: 'DSv4', vision: false }, { id: 'mimo-v2-pro', name: 'MiMo-V2-Pro', vision: false }, { id: 'mimo-v2-omni', name: 'MiMo-V2-Omni', vision: true }, { id: 'mimo-v2.5-pro', name: 'MiMo-V2.5-Pro', vision: false }, { id: 'mimo-v2.5', name: 'MiMo-V2.5', vision: false }, { id: 'minimax-m2.7', name: 'MiniMax M2.7', vision: false }, { id: 'minimax-m2.5', name: 'MiniMax M2.5', vision: false }, { id: 'qwen3.6-plus', name: '千问3.6', vision: true }, { id: 'qwen3.5-plus', name: '千问3.5', vision: true }] },
+  dashscope: { name: '阿里云', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: [{ id: 'qwen3.5-plus', name: 'qwen3.5', vision: true }, { id: 'qwen3.6-plus', name: 'qwen3.6', vision: true }, { id: 'qwen3.5-omni-flash', name: 'Qwen3.5-Omni-Flash', vision: true }, { id: 'qwen-turbo', name: 'Qwen Turbo', vision: true }] },
+  deepseek: { name: 'DeepSeek 官方', baseURL: 'https://api.deepseek.com', models: [{ id: 'deepseek-chat', name: 'deepseek-chat', vision: false }, { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', vision: false }, { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', vision: false }] },
+  glm: { name: '智谱GLM', baseURL: 'https://open.bigmodel.cn/api/paas/v4', models: [{ id: 'glm-4.6v-flash', name: 'GLM 4.6', vision: true }] },
+  mimorium: { name: '小米', baseURL: 'https://token-plan-cn.xiaomimimo.com/v1', models: [{ id: 'mimo-v2.5-pro', name: 'mimo 2.5pro', vision: false }, { id: 'mimo-v2.5', name: 'mimo 2.5', vision: false }, { id: 'mimo-v2-omni', name: 'mimo v2', vision: true }] },
 }
 
 const PROVIDER_FILE = path.join(DATA_DIR, 'ai-provider.txt')
@@ -73,6 +73,8 @@ const DEEPSEEK_KEY_FILE = path.join(DATA_DIR, 'ai-deepseek-key.txt')
 const DASHSCOPE_KEY_FILE = path.join(DATA_DIR, 'ai-dashscope-key.txt')
 const GLM_KEY_FILE = path.join(DATA_DIR, 'ai-glm-key.txt')
 const MIMORIUM_KEY_FILE = path.join(DATA_DIR, 'ai-mimorium-key.txt')
+const CUSTOM_PROVIDERS_FILE = path.join(DATA_DIR, 'ai-providers-custom.json')
+const FALLBACK_CHAINS_FILE = path.join(DATA_DIR, 'ai-fallback-chains.json')
 const USER_BLACKLIST_FILE = path.join(DATA_DIR, 'ai-user-blacklist.json')
 const VIDEO_BLACKLIST_FILE = path.join(DATA_DIR, 'video-blacklist.json')
 const SUMMARY_WHITELIST_FILE = path.join(DATA_DIR, 'summary-whitelist.json')
@@ -132,6 +134,7 @@ module.exports = {
   MAX_REPLY_CHAIN_DEPTH, EVENT_DUMP_ARM_EXPIRE_MS,
   PROVIDERS,
   PROVIDER_FILE, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE,
+  CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE,
   USER_BLACKLIST_FILE, VIDEO_BLACKLIST_FILE,
   SUMMARY_WHITELIST_FILE, TODAY_CACHE_PREFIX,
   THINKING_MODE_FILE, USER_PROFILE_DIR,

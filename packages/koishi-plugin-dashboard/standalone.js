@@ -60,20 +60,21 @@ const FALLBACK_CHAINS_FILE = path.join(DATA_DIR, 'ai-fallback-chains.json')
 // ====== 默认 fallback 链（按 AI 用途分类） ======
 const DEFAULT_FALLBACK_CHAINS = {
   chat: [
-    { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: 'ai-openai-key.txt' },
-    { provider: 'deepseek', model: 'deepseek-chat', keyFile: 'ai-deepseek-key.txt' },
-    { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
     { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
-    { provider: 'mimorium', model: 'mimo-v2.5-pro', keyFile: 'ai-mimorium-key.txt' },
+    { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: 'ai-openai-key.txt' },
+    { provider: 'dashscope', model: 'qwen3.5-omni-flash', keyFile: 'ai-dashscope-key.txt' },
+    { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
   ],
   vision: [
-    { provider: 'dashscope', model: 'qwen3.5-omni-flash', keyFile: 'ai-dashscope-key.txt' },
-    { provider: 'opencode', model: 'mimo-v2-omni', keyFile: 'ai-openai-key.txt' },
     { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
+    { provider: 'mimorium', model: 'mimo-v2-omni', keyFile: 'ai-mimorium-key.txt' },
+    { provider: 'dashscope', model: 'qwen3.5-omni-flash', keyFile: 'ai-dashscope-key.txt' },
+    { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
   ],
-  analysis: [
+  lightweight: [
+    { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
     { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: 'ai-openai-key.txt' },
-    { provider: 'deepseek', model: 'deepseek-chat', keyFile: 'ai-deepseek-key.txt' },
+    { provider: 'dashscope', model: 'qwen3.5-omni-flash', keyFile: 'ai-dashscope-key.txt' },
     { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
   ],
 }
@@ -825,11 +826,24 @@ const server = http.createServer((req, res) => {
 
   // Fallback 链管理
   if (pathname === '/dashboard/api/fallback' && req.method === 'GET') {
+    function buildProviderMap() {
+      const ps = {}
+      const pDefs = require(path.join(AI_LIB, 'constants')).PROVIDERS
+      for (const key of Object.keys(pDefs)) ps[key] = pDefs[key]
+      try {
+        const customRaw = fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8')
+        const custom = JSON.parse(customRaw)
+        if (Array.isArray(custom)) custom.forEach(function(p) { if (p.id) ps[p.id] = p })
+      } catch {}
+      return ps
+    }
     try {
       const raw = fs.readFileSync(FALLBACK_CHAINS_FILE, 'utf8')
       const data = JSON.parse(raw)
-      return json(res, { chains: data, defaults: DEFAULT_FALLBACK_CHAINS })
-    } catch { return json(res, { chains: DEFAULT_FALLBACK_CHAINS, defaults: DEFAULT_FALLBACK_CHAINS }) }
+      return json(res, { chains: data, defaults: DEFAULT_FALLBACK_CHAINS, providers: buildProviderMap() })
+    } catch {
+      return json(res, { chains: DEFAULT_FALLBACK_CHAINS, defaults: DEFAULT_FALLBACK_CHAINS, providers: buildProviderMap() })
+    }
   }
   if (pathname === '/dashboard/api/fallback' && req.method === 'PUT') {
     if (!requireAdmin(req, res)) return
