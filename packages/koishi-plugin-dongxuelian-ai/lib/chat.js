@@ -386,10 +386,15 @@ async function chat(session, userText, ctx, options = {}) {
     if (cached && cached.expireAt > Date.now()) {
       if (hostileInputDetected) {
         retaliationLevel = Math.max(newLevel, cached.level)
+        hostileLevelCache.set(cacheKey, { level: retaliationLevel, expireAt: Date.now() + 30000 })
       } else {
         retaliationLevel = Math.max(0, cached.level - 1)
+        if (retaliationLevel === 0) {
+          hostileLevelCache.delete(cacheKey)
+        } else {
+          hostileLevelCache.set(cacheKey, { level: retaliationLevel, expireAt: Date.now() + 30000 })
+        }
       }
-      hostileLevelCache.set(cacheKey, { level: retaliationLevel, expireAt: Date.now() + 30000 })
     } else if (hostileInputDetected) {
       retaliationLevel = newLevel
       hostileLevelCache.set(cacheKey, { level: retaliationLevel, expireAt: Date.now() + 30000 })
