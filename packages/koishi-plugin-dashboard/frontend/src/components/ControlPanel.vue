@@ -49,7 +49,10 @@
         </div>
 
         <div style="margin-bottom:24px">
-          <div style="color:var(--accent);font-weight:700;margin-bottom:8px;font-size:14px">Step 2：协议端身份验证 (NapCat Auth)</div>
+          <div style="color:var(--accent);font-weight:700;margin-bottom:8px;font-size:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span>Step 2：协议端身份验证 (NapCat Auth)</span>
+            <button class="btn btn-sm btn-ghost" type="button" @click="requestQQToken">查看 NapCat token</button>
+          </div>
           <div class="terminal-block terminal-block--emphasis">
             <code id="napcat-token">{{ displayNapcatToken }}</code>
             <div style="display:flex;gap:8px">
@@ -132,7 +135,7 @@ export default {
     const showNapcatToken = ref(false)
     const copiedMsg = ref('')
     const displayNapcatToken = computed(() => {
-      if (!tokenIsReal.value) return napcatToken.value || '加载中...'
+      if (!tokenIsReal.value) return napcatToken.value || '点击查看 NapCat token 后显示'
       return showNapcatToken.value ? napcatToken.value : maskSecret(napcatToken.value)
     })
 
@@ -186,7 +189,7 @@ export default {
       const res = await fetchQQToken()
       if (res.code === 'ADMIN_REQUIRED') {
         if (showAdminDialog) showAdminDialog('查看 NapCat Token 需要管理员密码', loadQQToken)
-        napcatToken.value = '需要管理员密码验证'
+        napcatToken.value = '点击[查看 NapCat token]后显示'
         tokenIsReal.value = false
         return
       }
@@ -194,6 +197,9 @@ export default {
         napcatToken.value = res.data.token
         tokenIsReal.value = true
       }
+    }
+    function requestQQToken() {
+      loadQQToken()
     }
     async function loadSSHInfo() {
       const res = await fetchSSHInfo()
@@ -232,7 +238,7 @@ export default {
       saveSSHHost()
     }
 
-    onMounted(() => { loadStatus(); loadMaintenance(); loadQQToken(); loadSSHInfo(); loadSelfId() })
+    onMounted(() => { loadStatus(); loadMaintenance(); loadSSHInfo(); loadSelfId() })
 
     async function testStartBot() {
       diagMsg.value = '发起请求...'
@@ -258,6 +264,10 @@ export default {
     }
 
     function copyValue(value) {
+      if (!tokenIsReal.value) {
+        window.alert('不验证密码就想获得token？')
+        return
+      }
       const text = String(value || '').trim()
       if (!text) return
       try {
@@ -326,7 +336,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, toggleMaintenance, testStartBot, sshUser }
+    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, requestQQToken, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, toggleMaintenance, testStartBot, sshUser }
   }
 }
 </script>
