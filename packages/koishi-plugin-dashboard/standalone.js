@@ -39,7 +39,7 @@ function collectBody(req, res, callback) {
 // ====== 路径配置 ======
 const PLUGIN_ROOT = __dirname
 const AI_LIB = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'lib')
-const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'data')
+const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(KOISHI_DIR, 'data') || path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'data')
 const PERSONAS_DIR = path.join(DATA_DIR, 'ai-skills', 'personas')
 const CORE_DIR = path.join(DATA_DIR, 'ai-skills', 'core')
 const LORES_DIR = path.join(DATA_DIR, 'ai-skills', 'lore')
