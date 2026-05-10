@@ -1,4 +1,5 @@
 <template>
+  <div class="tab-panel-root">
   <div class="card" style="display:flex;justify-content:space-between;align-items:center">
     <div>
       <h2 style="margin:0">黑白名单管理</h2>
@@ -40,6 +41,7 @@
     </div>
 
     <div v-if="msgs[key]" style="margin-top:8px;font-size:12px" :style="{color: msgs[key]?.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ msgs[key]?.text }}</div>
+  </div>
   </div>
 </template>
 

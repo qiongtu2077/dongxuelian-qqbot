@@ -27,7 +27,7 @@ const {
   hasAdminPermission, isReservedCommand,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
   formatPercent, getModelDisplayName, getSearchCapability, formatSearchStatus,
-  extractAtIds,
+  extractAtIds, todayCst, todayCstMinusDays,
 } = require('./utils')
 
 const forgetPendingConfirm = new Map()
@@ -90,7 +90,7 @@ async function handleCommand(session, ctx, state) {
     if (!Array.isArray(sw) || !sw.includes(String(channelKey))) {
       return handled('本群未启用该功能，请联系管理员添加白名单。')
     }
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayCst()
     const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
     const cacheFile = path.join(DATA_DIR, 'today-cache-' + safeKey + '.json')
     let cache = null
@@ -119,7 +119,7 @@ async function handleCommand(session, ctx, state) {
   if (/^定位消息\s+(\d+)$/.test(plain)) {
     const targetIdx = parseInt(RegExp.$1, 10) - 1
     if (!inGuild) return handled('这个命令只能在群里用。')
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayCst()
     const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
     const cacheFile = path.join(DATA_DIR, 'today-cache-' + safeKey + '.json')
     let cache = null
@@ -427,7 +427,7 @@ async function handleCommand(session, ctx, state) {
 
   if (plain === '今日情绪') {
     if (!inGuild) return handled('这个命令只能在群里用。')
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayCst()
     const cache = channelTodayCache.get(channelKey)
     if (!cache || cache.date !== today || !cache.messages.length) return handled('今天还没有收录消息。')
     const users = new Set(cache.messages.map(m => m.userId)).size
@@ -453,7 +453,7 @@ async function handleCommand(session, ctx, state) {
     const safeChannelKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
     const historyFile = path.join(DATA_DIR, 'emotion-history-' + safeChannelKey + '.json')
     const historyData = await readJsonFile(historyFile, [])
-    const todayDate = new Date().toISOString().slice(0, 10)
+    const todayDate = today
     const recentHistory = Array.isArray(historyData) ? historyData.filter(h => h.date !== todayDate).slice(-4) : []
     const historyBlock = recentHistory.length
       ? '近5日对比：\n' + recentHistory.map(h => `${h.date} 指数${h.score}/100 ${h.summary}`).join('\n')
@@ -490,9 +490,7 @@ async function handleCommand(session, ctx, state) {
           const existingIdx = historyData.findIndex(h => h.date === todayDate)
           if (existingIdx >= 0) historyData.splice(existingIdx, 1)
           historyData.push({ date: todayDate, score: parseInt(scoreMatch[1]), summary })
-          const cutoff = new Date()
-          cutoff.setDate(cutoff.getDate() - 5)
-          const cutoffStr = cutoff.toISOString().slice(0, 10)
+          const cutoffStr = todayCstMinusDays(5)
           const filtered = historyData.filter(h => h.date >= cutoffStr)
           historyData.length = 0
           historyData.push(...filtered)

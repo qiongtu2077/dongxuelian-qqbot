@@ -6,16 +6,39 @@ const fs = require('fs')
 const path = require('path')
 
 const { DATA_DIR } = require('./config')
+const { todayCst, getShanghaiHourFromTs } = require('../../koishi-plugin-dongxuelian-ai/lib/utils')
 
 function safeKey(channelKey) {
   return String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
+}
+
+/** 旧缓存 time 字符串解析为 0–23（尽力兼容 24h / 12h en-US） */
+function hourFromLegacyTimeString(timeStr) {
+  if (!timeStr || typeof timeStr !== 'string') return NaN
+  const s = timeStr.trim()
+  const m24 = s.match(/^(\d{1,2}):(\d{2})/)
+  if (!m24) return NaN
+  let h = parseInt(m24[1], 10)
+  const rest = s.slice(m24[0].length).toUpperCase()
+  if (rest.includes('PM') && h < 12) h += 12
+  if (rest.includes('AM') && h === 12) h = 0
+  if (h >= 0 && h < 24) return h
+  return NaN
+}
+
+function messageHourShanghai(msg) {
+  if (msg && typeof msg.ts === 'number' && Number.isFinite(msg.ts)) {
+    const h = getShanghaiHourFromTs(msg.ts)
+    if (!isNaN(h) && h >= 0 && h < 24) return h
+  }
+  return hourFromLegacyTimeString(msg && msg.time)
 }
 
 function collectReportData(channelKey) {
   if (!DATA_DIR) return null
 
   const key = safeKey(channelKey)
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayCst()
 
   const cacheFile = path.join(DATA_DIR, `today-cache-${key}.json`)
 
@@ -77,8 +100,7 @@ function processMessages(messages, today) {
 
   const hourlyActivity = new Array(24).fill(0)
   for (const msg of messages) {
-    if (!msg.time) continue
-    const hour = parseInt(msg.time.split(':')[0], 10)
+    const hour = messageHourShanghai(msg)
     if (!isNaN(hour) && hour >= 0 && hour < 24) {
       hourlyActivity[hour]++
     }
@@ -107,4 +129,4 @@ function processMessages(messages, today) {
   }
 }
 
-module.exports = { collectReportData }
+module.exports = { collectReportData, processMessages, messageHourShanghai }

@@ -1063,11 +1063,21 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
           return safeSendReply(ctx, session, reply, randomTriggered)
         })
         .catch(err => {
-          ctx.logger('dongxuelian-ai').warn(err)
-          const msg = err && err.message && err.message.includes('fallback') ? '我寄了' :
-                err && err.message && err.message.includes('Empty model') ? '我摆了，懒得回' :
-                err && err.message && /data_inspection|DataInspection|inappropriate content/i.test(err.message) ? '这个图不合适，不说了吧' :
-                '东雪莲暂时无法连接。'
+          const m = err && err.message ? String(err.message) : ''
+          const code = err && err.code ? String(err.code) : ''
+          ctx.logger('dongxuelian-ai').warn(`chat failed: name=${err && err.name} code=${code} message=${m}`)
+          let msg = '东雪莲暂时无法连接。'
+          if (/fallback/i.test(m)) msg = '我寄了'
+          else if (/Empty model/i.test(m)) msg = '我摆了，懒得回'
+          else if (/data_inspection|DataInspection|inappropriate content|content_filter|content policy|moderation|safety|审核|风控|ResponsibleAIPolicy|ResponsibleAI|blocked|censored/i.test(m)) {
+            msg = /data_inspection|DataInspection|inappropriate content|图/i.test(m) ? '这个图不合适，不说了吧' : '这话我接不了，换一句吧。'
+          } else if (/timeout|ETIMEDOUT|aborted|AbortError|deadline/i.test(m) || /TIMED_OUT|ETIMEDOUT/i.test(code)) {
+            msg = '请求超时了，一会再来。'
+          } else if (/ECONNRESET|ECONNREFUSED|ENOTFOUND|ENETUNREACH|socket hang|TLS|SSL|fetch failed/i.test(m) || /^ECONN/.test(code)) {
+            msg = '网络抖了一下，一会再来。'
+          } else if (/429|rate limit|too many requests|quota/i.test(m)) {
+            msg = '请求太勤了，稍后再试。'
+          }
           return safeSendReply(ctx, session, msg, randomTriggered)
         })
     , maxDepth)

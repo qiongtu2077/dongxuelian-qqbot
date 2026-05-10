@@ -1,4 +1,5 @@
 <template>
+  <div class="tab-panel-root">
   <div v-if="corePersona" class="card">
     <h2>核心规则 <span style="margin-left:6px;font-size:11px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 5px;vertical-align:middle">核心</span></h2>
     <div class="grp" style="display:flex;align-items:center;gap:8px">
@@ -96,6 +97,7 @@
         <div v-if="loreMsg" style="font-size:13px" :style="{color: loreMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ loreMsg.text }}</div>
       </div>
     </div>
+  </div>
   </div>
 </template>
 

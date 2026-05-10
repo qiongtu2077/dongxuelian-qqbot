@@ -340,6 +340,51 @@ function splitSentences(text) {
   return parts.filter(Boolean)
 }
 
+/** 中国（上海）日历日 YYYY-MM-DD，与 TODAY_CACHE / 群日报对齐 */
+const SHANGHAI_TZ = 'Asia/Shanghai'
+
+function todayCst(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: SHANGHAI_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+  const pickYmd = (t) => parts.find((p) => p.type === t)?.value
+  return `${pickYmd('year')}-${pickYmd('month')}-${pickYmd('day')}`
+}
+
+/** 上海时区 24 小时制 HH:mm:ss，供 today-cache 展示与兼容旧解析 */
+function formatShanghaiTime24h(ts = Date.now()) {
+  const p = new Intl.DateTimeFormat('en-GB', {
+    timeZone: SHANGHAI_TZ,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(ts))
+  const pickHms = (t) => p.find((x) => x.type === t)?.value
+  return `${pickHms('hour')}:${pickHms('minute')}:${pickHms('second')}`
+}
+
+/** 0–23，供 24 小时分布图 */
+function getShanghaiHourFromTs(ts) {
+  const h = new Intl.DateTimeFormat('en-GB', {
+    timeZone: SHANGHAI_TZ,
+    hour: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(ts)).find((x) => x.type === 'hour')?.value
+  return h !== undefined ? parseInt(h, 10) : NaN
+}
+
+/** 上海日历上 todayYmd 往前 n 天（字符串 YYYY-MM-DD），用于情绪历史截断 */
+function todayCstMinusDays(daysBack) {
+  const ymd = todayCst()
+  const d = new Date(`${ymd}T12:00:00+08:00`)
+  d.setDate(d.getDate() - daysBack)
+  return todayCst(d)
+}
+
 module.exports = {
   isRareProvocation, isHostileInput,
   isJailbreakAttempt, pickJailbreakFallbackReply,
@@ -364,4 +409,5 @@ module.exports = {
   getSegmentData, getSessionMessageSegments,
   getModelDisplayName, getSearchCapability, formatSearchStatus,
   trimReply, sanitizeReply, splitSentences,
+  todayCst, formatShanghaiTime24h, getShanghaiHourFromTs, todayCstMinusDays,
 }

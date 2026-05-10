@@ -6,6 +6,7 @@
 const fs = require('fs')
 const path = require('path')
 const { FORCE_TEMPLATE } = require('./config')
+const { getShanghaiHourFromTs } = require('../../koishi-plugin-dongxuelian-ai/lib/utils')
 
 const TEMPLATES_DIR = path.join(__dirname, '..', 'templates')
 
@@ -36,7 +37,7 @@ function selectTemplate() {
     if (found) return found
     console.warn(`[daily-report] 强制模板 ${FORCE_TEMPLATE} 不存在，回退时段选择`)
   }
-  const hour = new Date().getHours()
+  const hour = getShanghaiHourFromTs(Date.now())
   const preferred = (hour >= 6 && hour < 18) ? 'light.html' : 'dark.html'
   const found = templates.find(t => t.name === preferred)
   if (found) return found

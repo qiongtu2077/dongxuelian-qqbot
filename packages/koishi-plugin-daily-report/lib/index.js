@@ -11,6 +11,13 @@ const { collectReportData } = require('./data-collector')
 const { analyzeWithAI } = require('./ai-analyzer')
 const { renderReport } = require('./html-renderer')
 
+let flushTodayCacheToDisk = () => {}
+try {
+  ({ flushTodayCacheToDisk } = require('../../koishi-plugin-dongxuelian-ai/lib/conversation'))
+} catch {
+  /* 独立安装路径异常时仅跳过 flush */
+}
+
 // 冷却机制
 const cooldown = new Map()
 
@@ -68,6 +75,13 @@ exports.apply = (ctx) => {
       if (Date.now() - lastReport < TIMEOUTS.cooldown) {
         await session.send('日报生成太频繁了，1分钟后再试。')
         return
+      }
+
+      // 与内存 today-cache 对齐后再读盘（避免条数/时间与「今日情绪」不一致）
+      try {
+        if (typeof flushTodayCacheToDisk === 'function') flushTodayCacheToDisk(channelKey)
+      } catch (e) {
+        ctx.logger('daily-report').warn(`flush today-cache failed: ${e.message}`)
       }
 
       // 收集数据

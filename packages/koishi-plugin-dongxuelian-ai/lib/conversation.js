@@ -6,6 +6,7 @@
  * 边界: 不调 AI API。读操作返回数据，写操作落盘。
  */
 const path = require('path')
+const fsp = require('fs/promises')
 const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
   CONVERSATION_EXPIRE_MS, CONVERSATION_SUMMARY_INTERVAL,
   MAX_REPEAT_CHECK_HISTORY, MAX_CHANNEL_SHARED_MESSAGES,
@@ -16,7 +17,7 @@ const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
   USER_PROFILE_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE,
   DATA_DIR,
 } = require('./constants')
-const { readTextFile, readJsonFile, writeJsonFile, splitSentences, sanitizeUserName } = require('./utils')
+const { readTextFile, readJsonFile, writeJsonFile, splitSentences, sanitizeUserName, todayCst, formatShanghaiTime24h } = require('./utils')
 const { normalizeText } = require('./message-reader')
 const { requestChatCompletions } = require('./api')
 const { loadConfig } = require('./runtime-config')
@@ -97,6 +98,19 @@ function getRecentAssistantReplies(session, limit = MAX_REPEAT_CHECK_HISTORY) { 
 
 function getRecentUserMessages(session, limit = 3) { return getConversationHistory(session).filter(m => m.role === 'user').slice(-limit).map(m => m.content) }
 
+function flushTodayCacheToDisk(channelKey) {
+  const cache = channelTodayCache.get(channelKey)
+  if (!cache || !Array.isArray(cache.messages)) return
+  const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
+  const tmp = TODAY_CACHE_PREFIX + safeKey + '.tmp'
+  const dst = TODAY_CACHE_PREFIX + safeKey + '.json'
+  try {
+    require('fs').writeFileSync(tmp, JSON.stringify({ date: cache.date, messages: cache.messages }), 'utf8')
+    require('fs').renameSync(tmp, dst)
+    cache.lastDiskWrite = Date.now()
+  } catch {}
+}
+
 function saveSharedChannelTurn(session, speakerName, content, role = 'user', metadata = {}) {
   const channelKey = getChannelKey(session)
   const value = normalizeText(content)
@@ -110,14 +124,23 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
     try {
       const raw = require('fs').readFileSync(SUMMARY_WHITELIST_FILE, 'utf8'); const sw = JSON.parse(raw)
       if (Array.isArray(sw) && sw.includes(String(channelKey))) {
-        const today = new Date().toISOString().slice(0, 10); let cache = channelTodayCache.get(channelKey)
+        const today = todayCst(); let cache = channelTodayCache.get(channelKey)
         if (!cache || cache.date !== today) { cache = { date: today, messages: [] }; channelTodayCache.set(channelKey, cache) }
         if (value || hasMentions) {
-          const displayName = speakerName || userId; cache.messages.push({ time: new Date().toLocaleTimeString(), user: sanitizeUserName(String(displayName)), userId, content: value || '', messageId: String(metadata.messageId || ''), mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [] })
+          const displayName = speakerName || userId
+          const ts = Date.now()
+          cache.messages.push({
+            time: formatShanghaiTime24h(ts),
+            ts,
+            user: sanitizeUserName(String(displayName)),
+            userId,
+            content: value || '',
+            messageId: String(metadata.messageId || ''),
+            mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [],
+          })
           const now = Date.now(); const elapsed = now - (cache.lastDiskWrite || 0)
           if (cache.messages.length % 20 === 0 || elapsed > 300000) {
-            cache.lastDiskWrite = now; const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_'); const tmp = TODAY_CACHE_PREFIX + safeKey + '.tmp'; const dst = TODAY_CACHE_PREFIX + safeKey + '.json'
-            require('fs').writeFileSync(tmp, JSON.stringify({ date: cache.date, messages: cache.messages }), 'utf8'); require('fs').renameSync(tmp, dst)
+            flushTodayCacheToDisk(channelKey)
           }
         }
       }
@@ -321,4 +344,5 @@ module.exports = {
   saveUserProfile, saveSensitiveCache, analyzeChannelSensitive,
   writeMemory, deleteMemory, clearUserMemory, clearGroupMemory, getMemorySummary,
   readMemoryTimer, checkMemoryTimerExpired,
+  flushTodayCacheToDisk,
 }
