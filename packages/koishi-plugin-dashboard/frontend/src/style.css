@@ -156,8 +156,8 @@ body {
 }
 
 .app.sidebar-collapsed {
-  width: min(1180px, calc(100vw - 64px - 48px));
-  margin-left: calc(64px + max(24px, calc((100vw - 64px - 1180px) / 2)));
+  width: min(1180px, calc(100vw - 48px));
+  margin-left: auto;
 }
 
 .app-head {
@@ -750,21 +750,29 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
 }
 
 @media (max-width: 760px) {
-  .app,
-  .app.sidebar-collapsed {
+  .app {
     width: calc(100vw - 56px);
     margin-left: 56px;
     padding: 28px 18px;
+  }
+  .app.sidebar-collapsed {
+    width: 100%;
+    margin-left: 0;
+    padding: 78px 18px 28px;
   }
   .app-head { align-items: flex-start; flex-direction: column; gap: 8px }
 }
 
 @media (max-width: 640px) {
-  .app,
-  .app.sidebar-collapsed {
+  .app {
     width: calc(100vw - 56px);
     margin-left: 56px;
     padding: 24px 14px;
+  }
+  .app.sidebar-collapsed {
+    width: 100%;
+    margin-left: 0;
+    padding: 76px 14px 24px;
   }
   .app-head { align-items: flex-start; flex-direction: column; gap: 8px }
   .gate-panel { padding: 28px 22px }

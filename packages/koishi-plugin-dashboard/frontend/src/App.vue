@@ -94,10 +94,10 @@ export default {
 
     const deployUnlocked = ref(localStorage.getItem('dashboard_deploy_unlocked') === 'true')
     const allTabs = [
-      { id: 'deploy', label: '部署', icon: '署' }, { id: 'control', label: '终端控制', icon: '端' }, { id: 'config', label: '模型配置', icon: '模' },
-      { id: 'keys', label: 'API Keys', icon: '钥' }, { id: 'persona', label: '人格实验室', icon: '格' }, { id: 'features', label: '功能地图', icon: '图' },
-      { id: 'commands', label: '指令速查', icon: '令' }, { id: 'whitelist', label: '黑白名单', icon: '名' },
-      { id: 'settings', label: '安全设置', icon: '安' }, { id: 'logs', label: '日志中心', icon: '志' }, { id: 'status', label: '系统状态', icon: '态' }
+      { id: 'deploy', label: '部署' }, { id: 'control', label: '终端控制' }, { id: 'config', label: '模型配置' },
+      { id: 'keys', label: 'API Keys' }, { id: 'persona', label: '人格实验室' }, { id: 'features', label: '功能地图' },
+      { id: 'commands', label: '指令速查' }, { id: 'whitelist', label: '黑白名单' },
+      { id: 'settings', label: '安全设置' }, { id: 'logs', label: '日志中心' }, { id: 'status', label: '系统状态' }
     ]
     const tabs = computed(() => deployUnlocked.value ? allTabs : allTabs.filter(item => item.id === 'deploy'))
     const activeTab = ref(deployUnlocked.value ? (localStorage.getItem('dashboard_active_tab') || 'features') : 'deploy')

@@ -17,7 +17,7 @@
       </div>
     </div>
 
-    <nav class="sidebar-nav" aria-label="功能导航">
+    <nav v-if="expanded" class="sidebar-nav" aria-label="功能导航">
       <button
         v-for="tab in tabs"
         :key="tab.id"
@@ -28,12 +28,11 @@
         :aria-current="activeTab === tab.id ? 'page' : undefined"
         @click="$emit('switch-tab', tab.id)"
       >
-        <span class="sidebar-icon" aria-hidden="true">{{ tab.icon }}</span>
         <span class="sidebar-label">{{ tab.label }}</span>
       </button>
     </nav>
 
-    <div class="sidebar-foot">
+    <div v-if="expanded" class="sidebar-foot">
       <button class="sidebar-item sidebar-action" type="button" :title="'界面风格：' + currentThemeLabel" @click="$emit('open-theme')">
         <span class="sidebar-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 3 3 0 0 1-3 3h-1.5a2 2 0 0 0-1.5 3.32A9 9 0 0 0 12 3Z"/><circle cx="7.5" cy="10" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="14" cy="7" r="1"/><circle cx="16.5" cy="10" r="1"/></svg>
@@ -66,7 +65,9 @@ export default {
 <style scoped>
 .dashboard-sidebar {
   position: fixed;
-  inset: 0 auto 0 0;
+  top: 0;
+  left: 0;
+  bottom: 0;
   width: clamp(220px, 17vw, 320px);
   z-index: 12;
   display: flex;
@@ -76,12 +77,21 @@ export default {
   box-shadow: 10px 0 32px rgba(0, 0, 0, 0.2);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  transition: width .32s cubic-bezier(.4, 0, .2, 1), box-shadow .32s ease;
+  transition: width .32s cubic-bezier(.4, 0, .2, 1), height .32s cubic-bezier(.4, 0, .2, 1), border-color .2s, box-shadow .32s ease, background .2s;
   overflow: hidden;
 }
 
 .dashboard-sidebar.collapsed {
+  bottom: auto;
   width: 64px;
+  height: 72px;
+  background: transparent;
+  border-right-color: transparent;
+  border-bottom: 1px solid transparent;
+  border-bottom-right-radius: 8px;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .sidebar-head {
@@ -91,6 +101,13 @@ export default {
   gap: 12px;
   padding: 16px 14px;
   border-bottom: 1px solid var(--border);
+}
+
+.collapsed .sidebar-head {
+  justify-content: center;
+  gap: 0;
+  padding: 16px 14px;
+  border-bottom-color: transparent;
 }
 
 .sidebar-toggle,
@@ -151,8 +168,8 @@ export default {
   font-size: 12px;
 }
 
-.collapsed .sidebar-brand,
-.collapsed .sidebar-label {
+.collapsed .sidebar-brand {
+  display: none;
   opacity: 0;
   transform: translateX(-8px);
   pointer-events: none;
@@ -173,7 +190,7 @@ export default {
   min-height: 42px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 0;
   padding: 8px 10px;
   border-radius: 6px;
   font-size: 14px;
@@ -215,10 +232,8 @@ export default {
   border-top: 1px solid var(--border);
 }
 
-.collapsed .sidebar-item {
-  justify-content: center;
-  padding-left: 8px;
-  padding-right: 8px;
+.sidebar-action {
+  gap: 10px;
 }
 
 @media (max-width: 760px) {
@@ -228,8 +243,10 @@ export default {
   }
   .dashboard-sidebar.collapsed {
     width: 56px;
+    height: 64px;
   }
-  .sidebar-head { padding: 14px 10px; }
+  .sidebar-head,
+  .collapsed .sidebar-head { padding: 14px 10px; }
   .sidebar-nav,
   .sidebar-foot { padding-left: 8px; padding-right: 8px; }
 }
