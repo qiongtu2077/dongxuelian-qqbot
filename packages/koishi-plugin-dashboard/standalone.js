@@ -57,6 +57,8 @@ const RESET_TOKEN_FILE = path.join(DATA_DIR, 'password-reset-token.txt')
 const CUSTOM_PROVIDERS_FILE = path.join(DATA_DIR, 'ai-providers-custom.json')
 const FALLBACK_CHAINS_FILE = path.join(DATA_DIR, 'ai-fallback-chains.json')
 const DEBUG_LOG_CONFIG_FILE = path.join(DATA_DIR, 'debug-log-config.json')
+const MAX_LOG_LIMIT = 6000
+let logEntryCache = { file: '', size: -1, mtimeMs: -1, entries: [] }
 
 // ====== 默认 fallback 链（按 AI 用途分类） ======
 const DEFAULT_FALLBACK_CHAINS = {
@@ -195,21 +197,41 @@ function writeLoggingConfig(data) {
 function clampLogLimit(value) {
   const parsed = parseInt(value, 10)
   if (!Number.isFinite(parsed)) return 200
-  return Math.max(1, Math.min(5000, parsed))
+  return Math.max(1, Math.min(MAX_LOG_LIMIT, parsed))
 }
 
 function readLastLogLines(file, limit) {
+  return readLastLogItems(file, limit).map(item => item.text)
+}
+
+function readLastLogItems(file, limit = MAX_LOG_LIMIT) {
   if (!fs.existsSync(file)) return []
   const stat = fs.statSync(file)
-  const maxBytes = Math.min(stat.size, Math.max(256 * 1024, Math.min(8 * 1024 * 1024, limit * 900)))
+  const maxBytes = Math.min(stat.size, Math.max(512 * 1024, Math.min(12 * 1024 * 1024, clampLogLimit(limit) * 1200)))
   const buffer = Buffer.alloc(maxBytes)
   const fd = fs.openSync(file, 'r')
+  const startOffset = stat.size - maxBytes
   try {
-    fs.readSync(fd, buffer, 0, maxBytes, stat.size - maxBytes)
+    fs.readSync(fd, buffer, 0, maxBytes, startOffset)
   } finally {
     fs.closeSync(fd)
   }
-  return buffer.toString('utf8').split(/\r?\n/).filter(Boolean)
+  let lineStart = 0
+  if (startOffset > 0) {
+    const firstBreak = buffer.indexOf(10)
+    if (firstBreak >= 0) lineStart = firstBreak + 1
+  }
+  const items = []
+  for (let cursor = lineStart; cursor < buffer.length;) {
+    let lineEnd = buffer.indexOf(10, cursor)
+    if (lineEnd < 0) lineEnd = buffer.length
+    if (lineEnd > cursor) {
+      const raw = buffer.slice(cursor, lineEnd).toString('utf8').replace(/\r$/, '')
+      if (raw) items.push({ id: startOffset + cursor, text: raw })
+    }
+    cursor = lineEnd + 1
+  }
+  return items.slice(-clampLogLimit(limit))
 }
 
 function classifyLogLevel(line = '') {
@@ -225,17 +247,42 @@ function detectLogModule(line = '') {
   return known.find(name => lower.includes(name)) || 'runtime'
 }
 
-function parseLogLine(line, index) {
-  const tsMatch = String(line).match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?|\d{2}:\d{2}:\d{2}/)
+function parseLogLine(item, index) {
+  const line = typeof item === 'object' && item ? String(item.text || '') : String(item || '')
+  const structured = line.match(/^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+\[([IWED])\]\s+([^\s]+)\s*(.*)$/)
+  const tsMatch = structured ? null : line.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?|\d{2}:\d{2}:\d{2}/)
   const level = classifyLogLevel(line)
+  const moduleName = structured ? structured[3] : detectLogModule(line)
+  const message = structured ? (structured[4] || '').trim() : line.replace(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?\s*/, '').trim()
   return {
-    id: index,
+    id: typeof item === 'object' && Number.isFinite(item.id) ? item.id : index,
     level,
     levelName: level === 'E' ? 'error' : level === 'W' ? 'warn' : level === 'D' ? 'debug' : 'info',
-    module: detectLogModule(line),
-    time: tsMatch ? tsMatch[0] : '',
-    text: String(line),
+    module: moduleName,
+    time: structured ? structured[1] : (tsMatch ? tsMatch[0] : ''),
+    message,
+    text: line,
   }
+}
+
+function readLastLogEntries(file) {
+  try {
+    const stat = fs.statSync(file)
+    if (logEntryCache.file === file && logEntryCache.size === stat.size && logEntryCache.mtimeMs === stat.mtimeMs) return logEntryCache.entries
+    const entries = readLastLogItems(file, MAX_LOG_LIMIT).map(parseLogLine)
+    logEntryCache = { file, size: stat.size, mtimeMs: stat.mtimeMs, entries }
+    return entries
+  } catch {
+    return logEntryCache.file === file ? logEntryCache.entries : []
+  }
+}
+
+function buildLogFilterKey(options = {}, limit) {
+  const levels = String(options.levels || 'I,W,E,D').split(',').map(item => item.trim().toUpperCase()).filter(Boolean).sort().join(',')
+  const moduleFilter = String(options.module || 'all').trim().toLowerCase() || 'all'
+  const query = String(options.q || '').trim().toLowerCase()
+  const errorsOnly = /^(?:1|true|yes|on)$/i.test(String(options.errorsOnly || '').trim()) ? '1' : '0'
+  return [limit, levels, moduleFilter, query, errorsOnly].join('|')
 }
 
 function getFilteredLogEntries(options = {}) {
@@ -245,13 +292,21 @@ function getFilteredLogEntries(options = {}) {
   const moduleFilter = String(options.module || '').trim().toLowerCase()
   const query = String(options.q || '').trim().toLowerCase()
   const errorsOnly = /^(?:1|true|yes|on)$/i.test(String(options.errorsOnly || '').trim())
-  let entries = readLastLogLines(logFile, limit).map(parseLogLine)
+  let entries = readLastLogEntries(logFile)
   if (errorsOnly) entries = entries.filter(item => item.level === 'E')
   else entries = entries.filter(item => levels.has(item.level))
   if (moduleFilter && moduleFilter !== 'all') entries = entries.filter(item => item.module.toLowerCase().includes(moduleFilter) || item.text.toLowerCase().includes(moduleFilter))
-  if (query) entries = entries.filter(item => item.text.toLowerCase().includes(query))
-  entries = entries.slice(-limit)
-  return { entries, lines: entries.map(item => item.text), total: entries.length, limit, file: logFile, config: readLoggingConfig() }
+  if (query) entries = entries.filter(item => item.text.toLowerCase().includes(query) || item.message.toLowerCase().includes(query))
+  const total = entries.length
+  const since = Number.parseInt(options.since, 10)
+  const filterKey = buildLogFilterKey(options, limit)
+  const filterChanged = !!options.filterKey && String(options.filterKey) !== filterKey
+  const windowEntries = entries.slice(-limit)
+  const newEntries = Number.isFinite(since) && since > 0 && !filterChanged
+    ? entries.filter(item => item.id > since).slice(-limit)
+    : windowEntries
+  const lastId = entries.length ? entries[entries.length - 1].id : (Number.isFinite(since) ? since : 0)
+  return { entries: windowEntries, lines: windowEntries.map(item => item.text), total, limit, file: logFile, config: readLoggingConfig(), filterKey, filterChanged, lastId, newEntries, newCount: newEntries.length, truncated: total > limit }
 }
 
 function runtimePath(...parts) {
@@ -1059,6 +1114,8 @@ const server = http.createServer((req, res) => {
         module: url.searchParams.get('module'),
         q: url.searchParams.get('q'),
         errorsOnly: url.searchParams.get('errorsOnly'),
+        since: url.searchParams.get('since'),
+        filterKey: url.searchParams.get('filterKey'),
       }))
     } catch { return json(res, { entries: [], lines: [], total: 0 }) }
   }

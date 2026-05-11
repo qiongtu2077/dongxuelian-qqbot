@@ -145,7 +145,52 @@ body {
   overflow-x: hidden;
 }
 
-.app { max-width: 1100px; margin: 0 auto; padding: 32px 24px; position: relative; z-index: 1 }
+.app {
+  width: min(1180px, calc(100vw - clamp(220px, 17vw, 320px) - 48px));
+  margin: 0 auto;
+  margin-left: calc(clamp(220px, 17vw, 320px) + max(24px, calc((100vw - clamp(220px, 17vw, 320px) - 1180px) / 2)));
+  padding: 32px 24px;
+  position: relative;
+  z-index: 1;
+  transition: margin-left .32s cubic-bezier(.4, 0, .2, 1), width .32s cubic-bezier(.4, 0, .2, 1), padding .2s ease;
+}
+
+.app.sidebar-collapsed {
+  width: min(1180px, calc(100vw - 64px - 48px));
+  margin-left: calc(64px + max(24px, calc((100vw - 64px - 1180px) / 2)));
+}
+
+.app-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 28px;
+  position: relative;
+  z-index: 1;
+}
+
+.app-head h1 { margin: 0 }
+
+.active-view-label {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input);
+  color: var(--text2);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.sidebar-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  background: rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
 
 h1 {
   font-size: 24px; font-weight: 800; margin-bottom: 24px;
@@ -704,8 +749,24 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   white-space: pre-wrap;
 }
 
+@media (max-width: 760px) {
+  .app,
+  .app.sidebar-collapsed {
+    width: calc(100vw - 56px);
+    margin-left: 56px;
+    padding: 28px 18px;
+  }
+  .app-head { align-items: flex-start; flex-direction: column; gap: 8px }
+}
+
 @media (max-width: 640px) {
-  .app { padding: 24px 14px }
+  .app,
+  .app.sidebar-collapsed {
+    width: calc(100vw - 56px);
+    margin-left: 56px;
+    padding: 24px 14px;
+  }
+  .app-head { align-items: flex-start; flex-direction: column; gap: 8px }
   .gate-panel { padding: 28px 22px }
   .gate-actions { flex-direction: column }
   .secret-line { flex-wrap: wrap }

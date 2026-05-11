@@ -2,24 +2,24 @@
   <LoginPage v-if="!loggedIn" @logged-in="onLoggedIn" />
   <template v-else>
     <LoginBackdrop :class="{ 'backdrop-dim': deployUnlocked }" />
-    <div class="app">
+    <Sidebar
+      :tabs="tabs"
+      :active-tab="activeTab"
+      :expanded="sidebarExpanded"
+      :current-theme-label="currentThemeLabel"
+      @toggle="toggleSidebar"
+      @switch-tab="doSwitchTab"
+      @open-theme="themePickerOpen = true"
+      @logout="logout"
+    />
+    <div v-if="isMobileSidebarOpen" class="sidebar-scrim" @click="setSidebarExpanded(false)"></div>
+    <div class="app" :class="{ 'sidebar-collapsed': !sidebarExpanded }">
       <CursorGlow />
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:32px;position:relative;z-index:1">
-        <h1 style="margin:0">LianBoard 控制中心</h1>
-        <div style="display:flex;gap:12px;align-items:center">
-          <button class="icon-btn" type="button" :aria-label="'界面风格：' + currentThemeLabel" @click="themePickerOpen = true">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 3 3 0 0 1-3 3h-1.5a2 2 0 0 0-1.5 3.32A9 9 0 0 0 12 3Z" /><circle cx="7.5" cy="10" r="1" /><circle cx="10" cy="7" r="1" /><circle cx="14" cy="7" r="1" /><circle cx="16.5" cy="10" r="1" /></svg>
-          </button>
-          <button class="btn btn-ghost btn-sm" @click="logout">退出登录</button>
-        </div>
+      <div class="app-head">
+        <h1>LianBoard 控制中心</h1>
+        <span class="active-view-label">{{ activeTabLabel }}</span>
       </div>
       <ThemeSwitcher :visible="themePickerOpen" :themes="themes" :current="theme" @select="setTheme" @close="themePickerOpen = false" />
-
-      <div style="display:flex;gap:10px;margin-bottom:28px;flex-wrap:wrap;position:relative;z-index:1">
-        <button v-for="t in tabs" :key="t.id"
-          :class="['tab-btn', { active: activeTab === t.id }]"
-          @click="doSwitchTab(t.id)">{{ t.label }}</button>
-      </div>
 
       <div style="position:relative;z-index:1">
         <Transition name="tab-fade" mode="out-in">
@@ -38,6 +38,7 @@ import { computed, ref, provide, onMounted, onUnmounted } from 'vue'
 import { clearAdminToken } from './api'
 import LoginPage from './components/LoginPage.vue'
 import LoginBackdrop from './components/LoginBackdrop.vue'
+import Sidebar from './components/Sidebar.vue'
 import ThemeSwitcher from './components/ThemeSwitcher.vue'
 import AdminModal from './components/AdminModal.vue'
 import DeployPanel from './components/DeployPanel.vue'
@@ -60,9 +61,12 @@ const componentMap = {
 }
 
 export default {
-  components: { LoginPage, LoginBackdrop, ThemeSwitcher, CursorGlow, AdminModal },
+  components: { LoginPage, LoginBackdrop, Sidebar, ThemeSwitcher, CursorGlow, AdminModal },
   setup() {
     const loggedIn = ref(!!localStorage.getItem('dashboard_token'))
+    const isMobileViewport = ref(window.matchMedia('(max-width: 760px)').matches)
+    const sidebarStored = localStorage.getItem('dashboard_sidebar_expanded')
+    const sidebarExpanded = ref(sidebarStored === null ? !isMobileViewport.value : sidebarStored === 'true')
     const themePickerOpen = ref(false)
     const themes = [
       { id: 'dark-gold', label: '暗金', desc: '黑底金线，适合长期盯控制台', colors: ['#0c0d0c', '#f4c430', '#fff1a8'] },
@@ -90,14 +94,16 @@ export default {
 
     const deployUnlocked = ref(localStorage.getItem('dashboard_deploy_unlocked') === 'true')
     const allTabs = [
-      { id: 'deploy', label: '部署' }, { id: 'control', label: '终端控制' }, { id: 'config', label: '模型配置' },
-      { id: 'keys', label: 'API Keys' }, { id: 'persona', label: '人格实验室' }, { id: 'features', label: '功能地图' },
-      { id: 'commands', label: '指令速查' }, { id: 'whitelist', label: '黑白名单' },
-      { id: 'settings', label: '安全设置' }, { id: 'logs', label: '日志中心' }, { id: 'status', label: '系统状态' }
+      { id: 'deploy', label: '部署', icon: '署' }, { id: 'control', label: '终端控制', icon: '端' }, { id: 'config', label: '模型配置', icon: '模' },
+      { id: 'keys', label: 'API Keys', icon: '钥' }, { id: 'persona', label: '人格实验室', icon: '格' }, { id: 'features', label: '功能地图', icon: '图' },
+      { id: 'commands', label: '指令速查', icon: '令' }, { id: 'whitelist', label: '黑白名单', icon: '名' },
+      { id: 'settings', label: '安全设置', icon: '安' }, { id: 'logs', label: '日志中心', icon: '志' }, { id: 'status', label: '系统状态', icon: '态' }
     ]
     const tabs = computed(() => deployUnlocked.value ? allTabs : allTabs.filter(item => item.id === 'deploy'))
     const activeTab = ref(deployUnlocked.value ? (localStorage.getItem('dashboard_active_tab') || 'features') : 'deploy')
     const activeComponent = computed(() => componentMap[activeTab.value] || DeployPanel)
+    const activeTabLabel = computed(() => tabs.value.find(item => item.id === activeTab.value)?.label || '部署')
+    const isMobileSidebarOpen = computed(() => isMobileViewport.value && sidebarExpanded.value)
 
     function onLoggedIn() {
       loggedIn.value = true
@@ -126,7 +132,15 @@ export default {
     function doSwitchTab(id) {
       activeTab.value = id
       if (deployUnlocked.value) localStorage.setItem('dashboard_active_tab', id)
+      if (isMobileViewport.value) setSidebarExpanded(false)
     }
+
+    function setSidebarExpanded(value) {
+      sidebarExpanded.value = !!value
+      localStorage.setItem('dashboard_sidebar_expanded', sidebarExpanded.value ? 'true' : 'false')
+    }
+
+    function toggleSidebar() { setSidebarExpanded(!sidebarExpanded.value) }
 
     function unlockDeploy() {
       deployUnlocked.value = true
@@ -139,11 +153,22 @@ export default {
       loggedIn.value = false
     }
 
-    // 监听 401 事件优雅退出
-    onMounted(() => { window.addEventListener('auth-expired', logout) })
-    onUnmounted(() => { window.removeEventListener('auth-expired', logout) })
+    function handleResize() { isMobileViewport.value = window.matchMedia('(max-width: 760px)').matches }
+    function handleKeydown(event) { if (event.key === 'Escape' && isMobileSidebarOpen.value) setSidebarExpanded(false) }
 
-    return { loggedIn, themePickerOpen, themes, theme, currentThemeLabel, deployUnlocked, tabs, activeTab, activeComponent, adminModalOpen, adminModalMsg, onLoggedIn, onAdminModalVerified, onAdminModalCancel, unlockDeploy, logout, setTheme, doSwitchTab }
+    // 监听 401 事件优雅退出
+    onMounted(() => {
+      window.addEventListener('auth-expired', logout)
+      window.addEventListener('resize', handleResize)
+      window.addEventListener('keydown', handleKeydown)
+    })
+    onUnmounted(() => {
+      window.removeEventListener('auth-expired', logout)
+      window.removeEventListener('resize', handleResize)
+      window.removeEventListener('keydown', handleKeydown)
+    })
+
+    return { loggedIn, sidebarExpanded, isMobileSidebarOpen, themePickerOpen, themes, theme, currentThemeLabel, deployUnlocked, tabs, activeTab, activeTabLabel, activeComponent, adminModalOpen, adminModalMsg, onLoggedIn, onAdminModalVerified, onAdminModalCancel, unlockDeploy, logout, setTheme, doSwitchTab, setSidebarExpanded, toggleSidebar }
   }
 }
 </script>
