@@ -10,7 +10,7 @@ const http = require('http')
 const https = require('https')
 const crypto = require('crypto')
 const os = require('os')
-const { execSync, exec } = require('child_process')
+const { execSync, exec, execFileSync } = require('child_process')
 
 // ====== 全局异常兜底（防止单请求崩溃整个进程） ======
 process.on('uncaughtException', (err) => {
@@ -57,6 +57,8 @@ const RESET_TOKEN_FILE = path.join(DATA_DIR, 'password-reset-token.txt')
 const CUSTOM_PROVIDERS_FILE = path.join(DATA_DIR, 'ai-providers-custom.json')
 const FALLBACK_CHAINS_FILE = path.join(DATA_DIR, 'ai-fallback-chains.json')
 const DEBUG_LOG_CONFIG_FILE = path.join(DATA_DIR, 'debug-log-config.json')
+const LOCAL_DEPLOY_MANIFEST_FILE = path.join(DATA_DIR, 'dashboard-local-deploy-manifest.json')
+const LOCAL_NAPCAT_DIR_FILE = path.join(DATA_DIR, 'dashboard-napcat-dir.txt')
 const MAX_LOG_LIMIT = 6000
 let logEntryCache = { file: '', size: -1, mtimeMs: -1, entries: [] }
 
@@ -272,14 +274,327 @@ function getCommandVersion(command) {
   try { return execSync(command, { timeout: 3000, encoding: 'utf8' }).trim() } catch { return '' }
 }
 
-function checkPortAvailable(port) {
+function getCommandInfo(command, minMajor = 0) {
+  const version = getCommandVersion(command + ' --version')
+  const major = Number.parseInt(String(version).replace(/^v/i, '').split('.')[0], 10)
+  return {
+    found: !!version,
+    version,
+    source: 'PATH',
+    ok: !!version && (!minMajor || major >= minMajor),
+    reason: version ? (!minMajor || major >= minMajor ? '命令可用' : `版本过低，需要 ${minMajor}+`) : '当前 Dashboard 进程 PATH 中未找到命令',
+  }
+}
+
+function checkPortState(port) {
+  const value = Number(port)
+  if (!Number.isInteger(value) || value < 1 || value > 65535) return { available: false, status: 'invalid', reason: '端口号无效' }
+  const script = `
+const net = require('net')
+const port = Number(process.argv[1])
+const server = net.createServer()
+server.unref()
+server.once('error', err => {
+  if (err && err.code === 'EADDRINUSE') process.exit(2)
+  if (err && err.code === 'EACCES') process.exit(3)
+  console.error(err && (err.code || err.message) || 'unknown')
+  process.exit(4)
+})
+server.listen({ port, host: '127.0.0.1', exclusive: true }, () => server.close(() => process.exit(0)))
+`
   try {
-    const cmd = process.platform === 'win32'
-      ? `netstat -ano | findstr ":${port}"`
-      : `ss -tlnp | grep -q :${port}`
-    const out = execSync(cmd, { timeout: 3000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-    return process.platform === 'win32' ? !out.trim() : false
-  } catch { return true }
+    execFileSync(process.execPath, ['-e', script, String(value)], { timeout: 5000, stdio: ['ignore', 'ignore', 'pipe'] })
+    return { available: true, status: 'free', reason: '端口可监听' }
+  } catch (e) {
+    if (e.status === 2) return { available: false, status: 'occupied', reason: '端口已有监听进程' }
+    if (e.status === 3) return { available: false, status: 'denied', reason: '没有权限监听该端口' }
+    return { available: false, status: 'unknown', reason: String(e.stderr || e.message || '端口检测失败').trim() }
+  }
+}
+
+function checkPortAvailable(port) {
+  return checkPortState(port).available
+}
+
+function toProjectRel(filePath) {
+  return path.relative(path.resolve(KOISHI_DIR), path.resolve(filePath)).replace(/\\/g, '/')
+}
+
+function resolveProjectRel(rel) {
+  const normalized = String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!normalized || normalized.includes('\0') || normalized.split('/').includes('..')) throw new Error('invalid local deploy path')
+  const full = path.resolve(KOISHI_DIR, normalized)
+  if (!isInsidePath(KOISHI_DIR, full)) throw new Error('local deploy path is outside project directory')
+  return full
+}
+
+function fileSha256(filePath) {
+  try { return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex') } catch { return '' }
+}
+
+function readLocalDeployManifest() {
+  try { return JSON.parse(fs.readFileSync(LOCAL_DEPLOY_MANIFEST_FILE, 'utf8')) } catch { return { version: 1, files: [] } }
+}
+
+function backupLocalDeployFile(filePath, rel, timestamp) {
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return ''
+  const backupRel = path.posix.join('data', 'backups', 'dashboard-local-deploy', String(timestamp), rel.replace(/[<>:"|?*]/g, '_'))
+  const backupPath = resolveProjectRel(backupRel)
+  fs.mkdirSync(path.dirname(backupPath), { recursive: true })
+  fs.copyFileSync(filePath, backupPath)
+  return backupRel
+}
+
+function writeTrackedLocalFile(rel, content, options, timestamp) {
+  const cfg = options || {}
+  const filePath = resolveProjectRel(rel)
+  const text = String(content)
+  const existed = fs.existsSync(filePath)
+  const beforeHash = existed ? fileSha256(filePath) : ''
+  const unchanged = existed && fs.readFileSync(filePath, 'utf8') === text
+  const backup = unchanged ? '' : backupLocalDeployFile(filePath, rel, timestamp)
+  if (!unchanged) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, text, 'utf8')
+  }
+  const hash = fileSha256(filePath)
+  return {
+    path: rel,
+    action: unchanged ? 'unchanged' : (existed ? 'overwritten' : 'created'),
+    backup,
+    beforeHash,
+    sha256: hash,
+    deleteByDefault: cfg.deleteByDefault !== false,
+    sensitive: !!cfg.sensitive,
+    kind: cfg.kind || 'config',
+  }
+}
+
+function writeLocalDeployManifest(manifest) {
+  fs.mkdirSync(path.dirname(LOCAL_DEPLOY_MANIFEST_FILE), { recursive: true })
+  fs.writeFileSync(LOCAL_DEPLOY_MANIFEST_FILE + '.tmp', JSON.stringify(manifest, null, 2), 'utf8')
+  fs.renameSync(LOCAL_DEPLOY_MANIFEST_FILE + '.tmp', LOCAL_DEPLOY_MANIFEST_FILE)
+}
+
+function getProjectDependencyStatus() {
+  const packageLock = path.join(KOISHI_DIR, 'package-lock.json')
+  const nodeModules = path.join(KOISHI_DIR, 'node_modules')
+  const required = ['koishi', 'koishi-plugin-adapter-onebot']
+  const packages = Object.fromEntries(required.map(name => [name, fs.existsSync(path.join(nodeModules, name, 'package.json'))]))
+  const ready = fs.existsSync(nodeModules) && required.every(name => packages[name])
+  return {
+    ready,
+    nodeModules: { exists: fs.existsSync(nodeModules), path: nodeModules },
+    packageLock: { exists: fs.existsSync(packageLock), path: packageLock },
+    packages,
+    reason: ready ? '项目依赖已安装' : '源码存在不代表依赖已安装，请先运行 npm install 或生成本地配置后启动脚本自动安装',
+  }
+}
+
+function inspectChinesePathWrite(dir) {
+  if (!fs.existsSync(dir)) return { ok: false, skipped: true, message: 'runtime/logs 尚未创建，生成配置或下载时会创建' }
+  return testChinesePathWrite(dir)
+}
+
+function uniquePaths(paths) {
+  const seen = new Set()
+  return paths.filter(item => {
+    const key = path.resolve(item).toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function findNapcatMarkers(root) {
+  const markers = []
+  const archives = []
+  let count = 0
+  function walk(dir, depth) {
+    if (depth > 4 || count > 240) return
+    let entries = []
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      if (count > 240) return
+      count += 1
+      const full = path.join(dir, entry.name)
+      const rel = path.relative(root, full).replace(/\\/g, '/')
+      if (entry.isDirectory()) {
+        if (!['node_modules', 'resources', 'config', 'app'].includes(entry.name) && depth >= 2) continue
+        walk(full, depth + 1)
+        continue
+      }
+      if (!entry.isFile()) continue
+      if (/^napcat.*\.(exe|bat|cmd|js|mjs)$/i.test(entry.name) || /NapCat.*\.exe$/i.test(entry.name)) markers.push({ path: full, rel, type: 'entry' })
+      else if (/^config\/webui\.json$/i.test(rel)) markers.push({ path: full, rel, type: 'config' })
+      else if (/^package\.json$/i.test(entry.name)) {
+        try {
+          const pkg = JSON.parse(fs.readFileSync(full, 'utf8'))
+          if (/napcat/i.test(String(pkg.name || '') + ' ' + String(pkg.description || ''))) markers.push({ path: full, rel, type: 'package' })
+        } catch {}
+      } else if (/\.(zip|7z|rar|tar\.gz)$/i.test(entry.name)) archives.push({ path: full, rel })
+    }
+  }
+  walk(root, 0)
+  return { markers, archives }
+}
+
+function inspectNapcatCandidate(candidate) {
+  const result = { path: candidate, exists: false, found: false, status: 'missing', reason: '路径不存在' }
+  try {
+    const stat = fs.statSync(candidate)
+    result.exists = true
+    if (stat.isFile()) {
+      const name = path.basename(candidate)
+      if (/napcat.*\.(exe|bat|cmd|zip|7z)$/i.test(name)) return { ...result, found: /\.(exe|bat|cmd)$/i.test(name), status: /\.(exe|bat|cmd)$/i.test(name) ? 'installed' : 'partial', entry: candidate, reason: /\.(exe|bat|cmd)$/i.test(name) ? '找到 NapCat 启动文件' : '只发现下载包，尚未解压安装' }
+      return { ...result, status: 'partial', reason: '路径是文件但不是 NapCat 启动文件' }
+    }
+    if (!stat.isDirectory()) return { ...result, status: 'partial', reason: '路径不是目录' }
+    const entries = fs.readdirSync(candidate)
+    if (!entries.length) return { ...result, status: 'partial', reason: '目录为空' }
+    const { markers, archives } = findNapcatMarkers(candidate)
+    if (markers.length) return { ...result, found: true, status: 'installed', entry: markers[0].path, reason: '找到 NapCat 启动或配置标记', markers: markers.slice(0, 8) }
+    if (archives.length) return { ...result, status: 'partial', reason: '目录里只有下载包或压缩包，尚未解压安装', archives: archives.slice(0, 8) }
+    return { ...result, status: 'partial', reason: '目录存在但未找到 NapCat 启动文件' }
+  } catch (e) {
+    return { ...result, status: 'unknown', reason: e.message }
+  }
+}
+
+function detectNapcatInstallation() {
+  const expectedPath = runtimePath('napcat')
+  const candidates = uniquePaths([
+    expectedPath,
+    readFileSync(LOCAL_NAPCAT_DIR_FILE),
+    path.join(KOISHI_DIR, 'NapCat'),
+    process.env.NAPCAT_DIR || '',
+    process.platform === 'win32' ? path.join(KOISHI_DIR, 'runtime', 'NapCat') : '/root/Napcat',
+  ].filter(Boolean))
+  const inspected = candidates.map(inspectNapcatCandidate)
+  const installed = inspected.find(item => item.found)
+  const partial = inspected.find(item => item.exists)
+  const selected = installed || partial || inspected[0] || { found: false, path: expectedPath, status: 'missing', reason: '未找到 NapCat' }
+  return {
+    found: !!installed,
+    status: installed ? 'installed' : (partial ? 'partial' : 'missing'),
+    path: selected.path,
+    expectedPath,
+    entry: selected.entry || '',
+    reason: selected.reason || (installed ? '已安装' : '未检测到 NapCat'),
+    candidates: inspected.map(item => ({ path: item.path, exists: item.exists, status: item.status, reason: item.reason, entry: item.entry || '' })),
+  }
+}
+
+function psQuote(value) {
+  return "'" + String(value).replace(/'/g, "''") + "'"
+}
+
+function validateNapcatInstallDir(input) {
+  const raw = String(input || '').trim() || runtimePath('napcat')
+  const dir = path.resolve(raw)
+  if (process.platform === 'win32') {
+    const lower = dir.toLowerCase()
+    const root = path.parse(dir).root.toLowerCase()
+    const blocked = [process.env.WINDIR, process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean).map(item => path.resolve(item).toLowerCase())
+    if (lower === root || blocked.some(item => lower === item || lower.startsWith(item + path.sep.toLowerCase()))) throw new Error('不能安装到系统根目录、Windows 目录或 Program Files')
+  }
+  fs.mkdirSync(dir, { recursive: true })
+  const testFile = path.join(dir, '.napcat-install-write-test')
+  fs.writeFileSync(testFile, 'ok', 'utf8')
+  fs.unlinkSync(testFile)
+  return dir
+}
+
+function httpsGetJson(url, callback) {
+  const req = https.get(url, { headers: { 'User-Agent': 'LianBoard-Dashboard' } }, response => {
+    if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+      response.resume()
+      httpsGetJson(response.headers.location, callback)
+      return
+    }
+    if (response.statusCode !== 200) {
+      response.resume()
+      callback(new Error('GitHub API 请求失败：HTTP ' + response.statusCode))
+      return
+    }
+    let body = ''
+    response.setEncoding('utf8')
+    response.on('data', chunk => { body += chunk })
+    response.on('end', () => { try { callback(null, JSON.parse(body)) } catch (e) { callback(e) } })
+  })
+  req.setTimeout(30000, () => req.destroy(new Error('GitHub API 请求超时')))
+  req.on('error', callback)
+}
+
+function pickNapcatWindowsAsset(release) {
+  const assets = Array.isArray(release?.assets) ? release.assets : []
+  const zipAssets = assets.filter(item => /\.zip$/i.test(item.name || '') && !/(linux|darwin|mac|android|arm64|aarch64)/i.test(item.name || ''))
+  return zipAssets.find(item => /(win|windows)/i.test(item.name || '')) || zipAssets[0] || null
+}
+
+function downloadNapcatWindowsRelease(installDir, callback) {
+  httpsGetJson('https://api.github.com/repos/NapNeko/NapCatQQ/releases/latest', (apiErr, release) => {
+    if (apiErr) return callback(apiErr)
+    const asset = pickNapcatWindowsAsset(release)
+    if (!asset?.browser_download_url) {
+      const names = (release?.assets || []).map(item => item.name).filter(Boolean).join(', ')
+      return callback(new Error('未找到可自动安装的 Windows zip 资产' + (names ? '，候选：' + names : '')))
+    }
+    downloadToRuntime(asset.browser_download_url, (downloadErr, filePath) => {
+      if (downloadErr) return callback(downloadErr)
+      try {
+        execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `New-Item -ItemType Directory -Force -Path ${psQuote(installDir)} | Out-Null; Expand-Archive -LiteralPath ${psQuote(filePath)} -DestinationPath ${psQuote(installDir)} -Force`], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
+        callback(null, { asset: asset.name, filePath, installDir })
+      } catch (e) {
+        callback(new Error('下载完成但解压失败：' + String(e.stderr || e.message || '').trim()), { asset: asset.name, filePath, installDir })
+      }
+    })
+  })
+}
+
+function buildLocalConfigPreview() {
+  const manifest = readLocalDeployManifest()
+  const files = []
+  const manifestFiles = Array.isArray(manifest.files) ? manifest.files : []
+  const byPath = new Map(manifestFiles.map(item => [item.path, item]))
+  for (const rel of ['koishi.yml', 'start-local.bat']) {
+    if (!byPath.has(rel)) byPath.set(rel, { path: rel, deleteByDefault: true, kind: 'config', reason: '标准本地部署文件' })
+  }
+  if (fs.existsSync(LOCAL_DEPLOY_MANIFEST_FILE)) byPath.set(toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE), { path: toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE), deleteByDefault: true, kind: 'manifest', reason: '本地部署清单' })
+  for (const item of byPath.values()) {
+    let filePath = ''
+    try { filePath = resolveProjectRel(item.path) } catch (e) { files.push({ path: item.path, action: 'error', reason: e.message }); continue }
+    let stat = null
+    try { stat = fs.statSync(filePath) } catch {}
+    if (!stat) { files.push({ path: item.path, action: 'missing', reason: '文件不存在' }); continue }
+    if (!stat.isFile()) { files.push({ path: item.path, action: 'keep', size: stat.size, reason: '不是普通文件' }); continue }
+    if (item.sensitive || item.deleteByDefault === false) { files.push({ path: item.path, action: 'keep', size: stat.size, reason: '受保护文件' }); continue }
+    const currentHash = fileSha256(filePath)
+    if (item.sha256 && currentHash && item.sha256 !== currentHash) { files.push({ path: item.path, action: 'keep', size: stat.size, reason: '文件已被手动修改，默认保留', sha256: currentHash }); continue }
+    files.push({ path: item.path, action: 'delete', size: stat.size, reason: item.reason || '本工具生成的本地部署配置', sha256: currentHash })
+  }
+  const protectedPaths = ['runtime/napcat', 'runtime/downloads', 'data/ai-openai-key.txt', 'data/ai-deepseek-key.txt', 'data/ai-dashscope-key.txt', 'data/user-profiles', 'runtime/logs']
+    .filter(rel => fs.existsSync(resolveProjectRel(rel)))
+    .map(rel => ({ path: rel, action: 'keep', reason: '用户数据或运行时文件默认保留' }))
+  return { ok: true, files, protected: protectedPaths, manifest: { exists: fs.existsSync(LOCAL_DEPLOY_MANIFEST_FILE), path: toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE) } }
+}
+
+function deleteLocalConfigFiles() {
+  const preview = buildLocalConfigPreview()
+  const deleted = []
+  const kept = []
+  const errors = []
+  for (const item of preview.files) {
+    if (item.action !== 'delete') { kept.push(item); continue }
+    try {
+      const full = resolveProjectRel(item.path)
+      fs.unlinkSync(full)
+      deleted.push({ path: item.path, size: item.size, status: 'ok' })
+    } catch (e) {
+      errors.push({ path: item.path, reason: e.message })
+    }
+  }
+  return { ok: errors.length === 0, deleted, kept: kept.concat(preview.protected || []), errors }
 }
 
 function normalizeLoggingConfig(input = {}) {
@@ -427,15 +742,17 @@ function runtimePath(...parts) {
   return path.join(KOISHI_DIR, 'runtime', ...parts)
 }
 
-function writeRuntimeLayout() {
+function writeRuntimeLayout(options = {}) {
+  const includeNapcat = options.includeNapcat !== false
+  const includeNodeModules = options.includeNodeModules !== false
   const dirs = [
     runtimePath(),
     runtimePath('downloads'),
     runtimePath('logs'),
-    runtimePath('napcat'),
     path.join(KOISHI_DIR, 'data'),
-    path.join(KOISHI_DIR, 'node_modules'),
   ]
+  if (includeNapcat) dirs.push(runtimePath('napcat'))
+  if (includeNodeModules) dirs.push(path.join(KOISHI_DIR, 'node_modules'))
   for (const dir of dirs) fs.mkdirSync(dir, { recursive: true })
 }
 
@@ -453,7 +770,7 @@ function downloadToRuntime(url, callback) {
   let parsed
   try { parsed = new URL(url) } catch { callback(new Error('下载地址无效')); return }
   if (!['http:', 'https:'].includes(parsed.protocol)) { callback(new Error('只支持 http/https 下载地址')); return }
-  writeRuntimeLayout()
+  writeRuntimeLayout({ includeNapcat: false, includeNodeModules: false })
   const name = decodeURIComponent(path.basename(parsed.pathname || 'napcat-download')).replace(/[<>:"/\\|?*]/g, '_') || 'napcat-download.bin'
   const filePath = runtimePath('downloads', name)
   const client = parsed.protocol === 'https:' ? https : http
@@ -1196,7 +1513,7 @@ const server = http.createServer((req, res) => {
     try {
       let running = 0
       if (process.platform === 'win32') {
-        running = !checkPortAvailable(5140) ? 1 : 0
+        running = checkPortState(5140).status === 'occupied' ? 1 : 0
       } else {
         const out = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()
         running = out.split('\n').filter(Boolean).length
@@ -1566,36 +1883,24 @@ const server = http.createServer((req, res) => {
 
   // 环境检测
   if (pathname === '/dashboard/api/env/check' && req.method === 'GET') {
-    try { writeRuntimeLayout() } catch {}
-    const nodeVersion = getCommandVersion('node --version')
-    const npmVersion = getCommandVersion('npm --version')
-    const napcatCandidates = [
-      runtimePath('napcat'),
-      path.join(KOISHI_DIR, 'NapCat'),
-      process.env.NAPCAT_DIR || '',
-      process.platform === 'win32' ? path.join(KOISHI_DIR, 'runtime', 'NapCat') : '/root/Napcat',
-    ].filter(Boolean)
-    let napcat = { found: false, path: runtimePath('napcat') }
-    for (const candidate of napcatCandidates) {
-      try {
-        if (fs.existsSync(candidate) && fs.readdirSync(candidate).length > 0) { napcat = { found: true, path: candidate }; break }
-      } catch {}
-    }
+    const nodeInfo = getCommandInfo('node', 18)
+    const npmInfo = getCommandInfo('npm')
+    const dependencyStatus = getProjectDependencyStatus()
+    const portList = [5140, Number(PORT), 8080, 6099]
+    const ports = {}
+    for (const port of portList) ports[port] = checkPortState(port)
     return json(res, {
       platform: process.platform,
       projectDir: path.resolve(KOISHI_DIR),
       runtimeDir: runtimePath(),
-      node: { found: !!nodeVersion, version: nodeVersion },
-      npm: { found: !!npmVersion, version: npmVersion },
-      workDir: { exists: fs.existsSync(KOISHI_DIR), path: path.resolve(KOISHI_DIR), writable: fs.existsSync(KOISHI_DIR) },
-      pathEncoding: testChinesePathWrite(runtimePath('logs')),
-      ports: {
-        5140: { available: checkPortAvailable(5140) },
-        5150: { available: checkPortAvailable(Number(PORT)) },
-        8080: { available: checkPortAvailable(8080) },
-        6099: { available: checkPortAvailable(6099) },
-      },
-      napcat,
+      node: nodeInfo,
+      npm: npmInfo,
+      dependencies: dependencyStatus,
+      localConfig: buildLocalConfigPreview(),
+      workDir: { exists: fs.existsSync(KOISHI_DIR), path: path.resolve(KOISHI_DIR), writable: null, reason: '环境检测不写入项目目录' },
+      pathEncoding: inspectChinesePathWrite(runtimePath('logs')),
+      ports,
+      napcat: detectNapcatInstallation(),
     })
   }
 
@@ -1609,29 +1914,58 @@ const server = http.createServer((req, res) => {
         const cfg = JSON.parse(body)
         const workDir = path.resolve(KOISHI_DIR)
         const qq = String(cfg.qq || '').trim()
+        const provider = String(cfg.provider || 'opencode').trim() || 'opencode'
+        const model = String(cfg.model || '').trim()
+        const baseUrl = String(cfg.baseUrl || '').trim()
         if (!/^\d+$/.test(qq)) return json(res, { ok: false, message: 'QQ 号不能为空或格式错误' }, 400)
+        if (!/^[A-Za-z0-9._-]+$/.test(provider)) return json(res, { ok: false, message: '供应商名称格式错误' }, 400)
+        if (!model) return json(res, { ok: false, message: '模型不能为空' }, 400)
+        if (baseUrl) { try { const parsed = new URL(baseUrl); if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('bad') } catch { return json(res, { ok: false, message: 'API 地址必须是 http/https URL' }, 400) } }
         if (!isInsidePath(KOISHI_DIR, workDir)) return json(res, { ok: false, message: '本地部署目录必须在当前项目目录内' }, 400)
         writeRuntimeLayout()
         const pkgs = ['koishi-plugin-dongxuelian-ai','koishi-plugin-dongxuelian-help','koishi-plugin-group-name-at','koishi-plugin-defense','koishi-plugin-local-video-sender','koishi-plugin-group-leave-notice','koishi-plugin-dongxuelian-poke','koishi-plugin-daily-report']
+        const copiedPlugins = []
         for (const pkg of pkgs) {
           const src = path.join(PLUGIN_ROOT, '..', pkg)
           const dst = path.join(workDir, 'node_modules', pkg)
-          if (require('fs').existsSync(src)) {
+          if (fs.existsSync(src)) {
             copyRecursiveSync(path.join(src, 'lib'), path.join(dst, 'lib'))
             copyRecursiveSync(path.join(src, 'package.json'), path.join(dst, 'package.json'))
+            copiedPlugins.push(pkg)
           }
         }
-        writeFileSync(path.join(workDir, 'data', 'ai-provider.txt'), cfg.provider || 'opencode')
-        writeFileSync(path.join(workDir, 'data', 'ai-model.txt'), cfg.model || '')
-        writeFileSync(path.join(workDir, 'data', 'ai-base-url.txt'), cfg.baseUrl || '')
-        if (cfg.apiKey) writeFileSync(path.join(workDir, 'data', 'ai-openai-key.txt'), cfg.apiKey)
-        if (cfg.adminIds) writeFileSync(path.join(workDir, 'data', 'ai-admin-ids.json'), JSON.stringify(cfg.adminIds, null, 2))
+        const timestamp = Date.now()
+        const files = []
+        files.push(writeTrackedLocalFile('data/ai-provider.txt', provider + '\n', { deleteByDefault: true, kind: 'provider' }, timestamp))
+        files.push(writeTrackedLocalFile('data/ai-model.txt', model + '\n', { deleteByDefault: true, kind: 'model' }, timestamp))
+        files.push(writeTrackedLocalFile('data/ai-base-url.txt', baseUrl + '\n', { deleteByDefault: true, kind: 'baseUrl' }, timestamp))
+        if (cfg.apiKey) files.push(writeTrackedLocalFile('data/ai-openai-key.txt', String(cfg.apiKey).trim() + '\n', { deleteByDefault: false, sensitive: true, kind: 'apiKey' }, timestamp))
+        if (cfg.adminIds) files.push(writeTrackedLocalFile('data/ai-admin-ids.json', JSON.stringify(cfg.adminIds, null, 2) + '\n', { deleteByDefault: false, sensitive: true, kind: 'adminIds' }, timestamp))
         const yml = `port: 5140\nselfUrl: http://localhost:5140\nplugins:\n  adapter-onebot:\n    protocol: ws\n    selfId: '${qq}'\n    endpoint: ws://127.0.0.1:8080/onebot/v11/ws\n  dongxuelian-ai: {}\n  dongxuelian-help: {}\n  group-name-at: {}\n  defense: {}\n  local-video-sender: {}\n  group-leave-notice: {}\n  dongxuelian-poke: {}\n  daily-report: {}\n`
-        writeFileSync(path.join(workDir, 'koishi.yml'), yml)
+        files.push(writeTrackedLocalFile('koishi.yml', yml, { deleteByDefault: true, kind: 'koishiConfig' }, timestamp))
         const helper = `@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif not exist node_modules ( npm install )\r\nnpx koishi start\r\n`
-        fs.writeFileSync(path.join(workDir, 'start-local.bat'), helper, 'utf8')
-        json(res, { ok: true, message: '本地部署配置已写入，运行 start-local.bat 启动 Koishi，NapCat 使用 8080 OneBot WebSocket' })
+        files.push(writeTrackedLocalFile('start-local.bat', helper, { deleteByDefault: true, kind: 'startScript' }, timestamp))
+        const manifest = { version: 1, generatedAt: timestamp, qq, onebotEndpoint: 'ws://127.0.0.1:8080/onebot/v11/ws', files }
+        writeLocalDeployManifest(manifest)
+        json(res, { ok: true, message: 'Koishi 本地配置已写入，运行 start-local.bat 启动 Koishi，NapCat 使用 8080 OneBot WebSocket', files, copiedPlugins, manifest: { path: toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE), generatedAt: timestamp } })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/deploy/local-config-preview' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try { return json(res, buildLocalConfigPreview()) }
+    catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/deploy/local-config-delete' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, () => {
+      try {
+        const result = deleteLocalConfigFiles()
+        return json(res, { ...result, message: result.errors.length ? '部分配置未能删除' : 'Koishi 本地配置已删除' }, result.errors.length ? 400 : 200)
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
     })
     return
   }
@@ -1651,10 +1985,28 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  if (pathname === '/dashboard/api/deploy/napcat-windows-download' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        if (process.platform !== 'win32') return json(res, { ok: false, message: '自动安装 NapCat（Windows）只能在 Windows 部署器中使用' }, 400)
+        const { installDir } = JSON.parse(body || '{}')
+        const targetDir = validateNapcatInstallDir(installDir)
+        downloadNapcatWindowsRelease(targetDir, (err, detail = {}) => {
+          if (err) return json(res, { ok: false, message: err.message, ...detail }, 400)
+          writeFileSync(LOCAL_NAPCAT_DIR_FILE, targetDir)
+          json(res, { ok: true, message: 'NapCat（Windows）已下载并解压', ...detail, napcat: detectNapcatInstallation() })
+        })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
   if (pathname === '/dashboard/api/bot/local-status' && req.method === 'GET') {
     try {
       if (process.platform === 'win32') {
-        return json(res, { running: !checkPortAvailable(5140), workers: !checkPortAvailable(5140) ? 1 : 0 })
+        const port = checkPortState(5140)
+        return json(res, { running: port.status === 'occupied', workers: port.status === 'occupied' ? 1 : 0, port })
       }
       const out = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()
       const running = out.split('\n').filter(Boolean).length

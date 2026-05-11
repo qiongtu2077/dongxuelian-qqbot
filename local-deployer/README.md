@@ -38,3 +38,12 @@ npm run build:win
 - 运行日志建议放到 `runtime/logs/`。
 - OneBot WebSocket 使用 `ws://127.0.0.1:8080/onebot/v11/ws`。
 - Dashboard 入口只需要访问密码；修改配置、部署、Key、密码等敏感操作仍需要管理员密码。SSH 登录服务器的系统密码不写入部署器代码。
+
+## Windows 本地部署页按钮说明
+
+- `检测环境` 只读取当前状态，不创建 NapCat 安装目录，也不会把残留目录当作已安装。NapCat 必须检测到可信启动文件或配置标记才显示为已安装。
+- `下载 NapCat（Windows）` 是主流程按钮，只在 Windows 环境且未检测到 NapCat 时显示。部署器窗口中可用系统目录选择框，普通浏览器中需要手填 Dashboard 所在机器上的安装路径，默认建议 `runtime/napcat/`。
+- `下载直链包` 只把用户粘贴的下载地址保存到 `runtime/downloads/`，不等同于安装 NapCat。
+- `打开 NapCat 发布页` 是手动下载入口，用于查看版本或自行下载安装包。
+- `生成 Koishi 本地配置` 会写入 `koishi.yml`、`start-local.bat` 和必要的 `data/ai-*.txt` 配置，并记录 `data/dashboard-local-deploy-manifest.json`，方便后续预览和安全删除。
+- `删除 Koishi 配置` 会先展示删除预览，只删除本工具生成且未被手动修改的 Koishi 启动配置；默认保留 NapCat、下载包、API Key、用户资料、日志和插件源码。

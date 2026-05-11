@@ -57,7 +57,7 @@
     <div class="card log-output">
       <div v-if="loading && !entries.length" class="empty">加载中...</div>
       <div v-else-if="!entries.length" class="empty">暂无匹配日志</div>
-      <div v-else class="log-list">
+      <div v-else ref="logListRef" class="log-list themed-scrollbar">
         <div v-for="entry in entries" :key="entry.id" :class="['log-line', 'level-' + entry.level.toLowerCase()]">
           <span class="level-mark">{{ entry.level }}</span>
           <span class="log-time">{{ entry.time || '--:--:--' }}</span>
@@ -70,7 +70,7 @@
 </template>
 
 <script>
-import { inject, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { inject, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { fetchLogs, fetchLoggingConfig, saveLoggingConfig } from '../api'
 
 export default {
@@ -96,6 +96,7 @@ export default {
     const loaded = ref(false)
     const idleRefreshes = ref(0)
     const refreshDelay = ref(5000)
+    const logListRef = ref(null)
     const levelOptions = [
       { id: 'I', label: '信息' },
       { id: 'W', label: '警告' },
@@ -107,6 +108,13 @@ export default {
     async function loadConfig() {
       const res = await fetchLoggingConfig()
       if (res.ok && res.data?.config) debugEnabled.value = !!res.data.config.enabled
+    }
+
+    function scrollLogsToBottom() {
+      nextTick(() => {
+        const el = logListRef.value
+        if (el) el.scrollTop = el.scrollHeight
+      })
     }
 
     async function loadLogs(options = {}) {
@@ -144,6 +152,7 @@ export default {
           if (data.newCount > 0) { idleRefreshes.value = 0; refreshDelay.value = 5000 }
           else { idleRefreshes.value += 1; refreshDelay.value = idleRefreshes.value >= 3 ? 10000 : 5000 }
           if (data.config) debugEnabled.value = !!data.config.enabled
+          scrollLogsToBottom()
         } else {
           message.value = { type: 'err', text: res.data?.message || '日志读取失败' }
         }
@@ -216,11 +225,11 @@ export default {
     function stopTimer() { if (timer) clearTimeout(timer); timer = null }
 
     watch(autoRefresh, enabled => { if (enabled) { loadLogs(); startTimer() } else stopTimer() })
-    onMounted(() => { loadConfig(); loadLogs({ reset: true }); startTimer() })
-    onActivated(() => { loadConfig(); resetAndLoadLogs() })
+    onMounted(() => { loadConfig(); loadLogs({ reset: true }); startTimer(); scrollLogsToBottom() })
+    onActivated(() => { loadConfig(); resetAndLoadLogs(); scrollLogsToBottom() })
     onUnmounted(stopTimer)
 
-    return { entries, total, loading, refreshing, message, limit, limits, moduleFilter, query, errorsOnly, autoRefresh, debugEnabled, levels, levelOptions, loadLogs, resetAndLoadLogs, toggleLevel, saveDebugToggle, copyResults }
+    return { entries, total, loading, refreshing, message, limit, limits, moduleFilter, query, errorsOnly, autoRefresh, debugEnabled, levels, levelOptions, logListRef, loadLogs, resetAndLoadLogs, toggleLevel, saveDebugToggle, copyResults }
   }
 }
 </script>
@@ -256,16 +265,9 @@ export default {
   max-height: 64vh;
   overflow: auto;
   padding-right: 6px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--accent) var(--input);
   font-family: ui-monospace, SFMono-Regular, Consolas, 'Microsoft YaHei Mono', monospace;
   font-size: 12px;
 }
-.log-list::-webkit-scrollbar { width: 10px; height: 10px; }
-.log-list::-webkit-scrollbar-track { background: var(--input); border: 1px solid var(--border); border-radius: 999px; }
-.log-list::-webkit-scrollbar-thumb { background: linear-gradient(180deg, var(--accent), var(--accent2)); border: 2px solid var(--input); border-radius: 999px; background-clip: padding-box; }
-.log-list::-webkit-scrollbar-thumb:hover { box-shadow: 0 0 12px var(--shadow); border-color: var(--border); }
-.log-list::-webkit-scrollbar-corner { background: var(--input); }
 .log-line { display: grid; grid-template-columns: 34px minmax(20ch, 22ch) minmax(13ch, 16ch) minmax(0, 1fr); gap: 10px; align-items: start; padding: 8px 10px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid transparent; }
 .level-mark { font-weight: 900; text-align: center; border-radius: 4px; color: #11110d; background: var(--accent); }
 .level-w .level-mark { background: #f59e0b; }
@@ -285,7 +287,4 @@ export default {
   .log-text { grid-column: 1 / -1; }
 }
 
-@media (min-width: 1800px) {
-  .log-list::-webkit-scrollbar { width: 12px; height: 12px; }
-}
 </style>

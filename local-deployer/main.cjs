@@ -1,8 +1,9 @@
-const { app, BrowserWindow, shell } = require('electron')
+const { app, BrowserWindow, shell, dialog, ipcMain } = require('electron')
 const path = require('path')
 const { spawn } = require('child_process')
 
 let dashboardProcess = null
+let mainWindow = null
 
 function resolveAppRoot() {
   if (app.isPackaged) return path.join(process.resourcesPath, 'app')
@@ -32,6 +33,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   })
+  mainWindow = win
   win.loadURL('http://127.0.0.1:5150/dashboard/')
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
@@ -39,8 +41,21 @@ function createWindow() {
   })
 }
 
+function registerIpc() {
+  ipcMain.handle('select-directory', async (_event, defaultPath) => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择 NapCat 安装目录',
+      defaultPath: defaultPath || undefined,
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (result.canceled || !result.filePaths.length) return ''
+    return result.filePaths[0]
+  })
+}
+
 app.whenReady().then(() => {
   const appRoot = resolveAppRoot()
+  registerIpc()
   startDashboard(appRoot)
   setTimeout(createWindow, 900)
 })

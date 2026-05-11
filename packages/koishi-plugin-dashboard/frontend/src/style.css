@@ -240,10 +240,34 @@ h2 {
 
 select, input {
   background: var(--input); border: 1px solid var(--border); border-radius: 6px;
-  padding: 8px 12px; color: var(--text); font-size: 14px; flex: 1;
-  transition: border-color .2s, background .3s;
+  min-height: 38px; padding: 8px 12px; color: var(--text); font-size: 14px; flex: 1;
+  transition: border-color .2s, background .3s, box-shadow .2s;
 }
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 34px;
+  background:
+    linear-gradient(45deg, transparent 50%, var(--text2) 50%) calc(100% - 18px) 50% / 6px 6px no-repeat,
+    linear-gradient(135deg, var(--text2) 50%, transparent 50%) calc(100% - 13px) 50% / 6px 6px no-repeat,
+    var(--input);
+  cursor: pointer;
+}
+select:hover, input:hover { border-color: color-mix(in srgb, var(--accent) 54%, var(--border)) }
 select:focus, input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accentDim) }
+select option { background: var(--surface); color: var(--text) }
+.themed-select { width: 100% }
+
+.themed-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) var(--input);
+}
+
+.themed-scrollbar::-webkit-scrollbar { width: 10px; height: 10px }
+.themed-scrollbar::-webkit-scrollbar-track { background: var(--input); border: 1px solid var(--border); border-radius: 999px }
+.themed-scrollbar::-webkit-scrollbar-thumb { background: linear-gradient(180deg, var(--accent), var(--accent2)); border: 2px solid var(--input); border-radius: 999px; background-clip: padding-box }
+.themed-scrollbar::-webkit-scrollbar-thumb:hover { box-shadow: 0 0 12px var(--shadow); border-color: var(--border) }
+.themed-scrollbar::-webkit-scrollbar-corner { background: var(--input) }
 
 .btn {
   background: linear-gradient(135deg, var(--accent), var(--accent2));
@@ -498,6 +522,10 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   border: 1px solid var(--border);
 }
 
+.btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, var(--border)) }
+.btn-danger:hover { color: #fff; background: color-mix(in srgb, var(--danger) 28%, var(--input)); border-color: var(--danger) }
+.btn-danger-solid { background: linear-gradient(135deg, var(--danger), var(--error)); color: #fff }
+
 .password-field {
   position: relative;
   display: flex;
@@ -710,6 +738,15 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
 
 .deploy-actions a { text-decoration: none; display: inline-flex; align-items: center }
 
+.path-control {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  min-width: 0;
+}
+
+.path-control input { min-width: 0 }
+
 .deploy-status {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -733,9 +770,61 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
 }
 
 .status-item code { overflow-wrap: anywhere }
+.status-item small {
+  display: block;
+  color: var(--text3);
+  font-size: 12px;
+  line-height: 1.45;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
 .ok-text { color: var(--accent) }
 .warn-text { color: var(--info) }
 .err-text { color: var(--danger) }
+
+.delete-preview {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+  padding: 12px;
+}
+
+.preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.preview-head strong { color: var(--text) }
+.preview-head span { display: block; color: var(--text3); font-size: 12px; margin-top: 4px }
+
+.preview-list {
+  display: grid;
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.preview-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: start;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--card) 44%, transparent);
+}
+
+.preview-row span { font-size: 12px; font-weight: 900; color: var(--text) }
+.preview-row code { min-width: 0; overflow-wrap: anywhere }
+.preview-row small { grid-column: 2; color: var(--text3); line-height: 1.45 }
+.preview-delete { border-color: color-mix(in srgb, var(--danger) 46%, var(--border)) }
+.preview-keep, .preview-missing { opacity: .76 }
 
 .deploy-log {
   margin-top: 14px;
@@ -782,6 +871,9 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
   .secret-line code { flex-basis: 100% }
   .deploy-hero { flex-direction: column; align-items: stretch }
   .segmented { width: 100%; display: grid; grid-template-columns: 1fr }
+  .path-control { flex-direction: column }
+  .preview-row { grid-template-columns: 1fr }
+  .preview-row small { grid-column: 1 }
 
   .login-page { flex-direction: column }
   .login-spacer { display: none }

@@ -96,8 +96,8 @@ async function del(path, data, admin = false) {
   }
 }
 
-async function post(path, data, admin = false) {
-  const { signal, clear } = withTimeout()
+async function post(path, data, admin = false, timeoutMs = 10000) {
+  const { signal, clear } = withTimeout(timeoutMs)
   try {
     const res = await fetch(BASE + path, { method: 'POST', headers: headers(admin), body: JSON.stringify(data), signal })
     clear()
@@ -164,7 +164,10 @@ export async function confirmDeploy() { return post('/deploy/confirm', {}, true)
 export async function uploadDeploy(name, data) { return post('/deploy/upload', { name, data }, true) }
 export async function deployLocal(data) { return post('/deploy/local', data, true) }
 export async function checkLocalEnv() { return get('/env/check') }
-export async function downloadNapcat(url) { return post('/deploy/napcat-download', { url }, true) }
+export async function downloadNapcat(url) { return post('/deploy/napcat-download', { url }, true, 180000) }
+export async function downloadNapcatWindows(installDir) { return post('/deploy/napcat-windows-download', { installDir }, true, 240000) }
+export async function previewLocalConfigDelete() { return get('/deploy/local-config-preview', true) }
+export async function deleteLocalConfig() { return post('/deploy/local-config-delete', {}, true) }
 export async function localBotStatus() { return get('/bot/local-status') }
 export async function localBotStop() { return post('/bot/local-stop', {}, true) }
 export async function rebuildFrontend() { return post('/frontend/rebuild', {}, true) }

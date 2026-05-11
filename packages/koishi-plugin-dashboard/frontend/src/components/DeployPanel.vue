@@ -26,23 +26,49 @@
       <div class="row"><label>模型</label><input v-model="local.model" placeholder="deepseek-v4-flash" /></div>
       <div class="row"><label>API 地址</label><input v-model="local.baseUrl" placeholder="留空使用项目默认" /></div>
       <div class="row"><label>API Key</label><input v-model="local.apiKey" placeholder="可先留空，之后在 API Keys 页填写" /></div>
-      <div class="row"><label>NapCat URL</label><input v-model="napcatUrl" placeholder="可选：填写直链后下载到 runtime/downloads" /></div>
+      <div class="row"><label>NapCat 目录</label><div class="path-control"><input v-model="napcatInstallDir" placeholder="默认 runtime/napcat" /><button v-if="canChooseDirectory" class="btn btn-sm btn-ghost" type="button" @click="chooseNapcatDir">选择目录</button></div></div>
+      <div class="row"><label>NapCat URL</label><input v-model="napcatUrl" placeholder="可选：手动下载包直链，仅保存到 runtime/downloads" /></div>
 
       <div class="deploy-actions">
         <button class="btn btn-sm" type="button" @click="checkEnv" :disabled="checking">{{ checking ? '检测中...' : '检测环境' }}</button>
-        <button class="btn btn-sm" type="button" @click="doDownloadNapcat" :disabled="downloading">{{ downloading ? '下载中...' : '下载 NapCat 包' }}</button>
-        <a class="btn btn-sm btn-ghost" href="https://github.com/NapNeko/NapCatQQ/releases/latest" target="_blank">打开官方下载页</a>
-        <button class="btn btn-sm" type="button" @click="writeLocalConfig" :disabled="localDeploying">{{ localDeploying ? '写入中...' : '生成本地配置' }}</button>
+        <button v-if="isWindows && !env?.napcat?.found" class="btn btn-sm" type="button" @click="doDownloadWindowsNapcat" :disabled="installingNapcat">{{ installingNapcat ? '安装中...' : '下载 NapCat（Windows）' }}</button>
+        <button class="btn btn-sm btn-ghost" type="button" @click="doDownloadNapcat" :disabled="downloading">{{ downloading ? '下载中...' : '下载直链包' }}</button>
+        <a class="btn btn-sm btn-ghost" href="https://github.com/NapNeko/NapCatQQ/releases/latest" target="_blank">打开 NapCat 发布页</a>
+        <button class="btn btn-sm" type="button" @click="writeLocalConfig" :disabled="localDeploying">{{ localDeploying ? '写入中...' : '生成 Koishi 本地配置' }}</button>
+        <button class="btn btn-sm btn-ghost btn-danger" type="button" @click="previewDeleteConfig" :disabled="previewingDelete || deletingConfig">{{ previewingDelete ? '读取中...' : '删除 Koishi 配置' }}</button>
       </div>
 
       <div v-if="env" class="deploy-status">
         <div class="status-item"><span>项目目录</span><code>{{ env.projectDir }}</code></div>
         <div class="status-item"><span>runtime</span><code>{{ env.runtimeDir }}</code></div>
-        <div class="status-item"><span>Node.js</span><b :class="env.node?.found ? 'ok-text' : 'err-text'">{{ env.node?.found ? env.node.version : '未检测到' }}</b></div>
-        <div class="status-item"><span>npm</span><b :class="env.npm?.found ? 'ok-text' : 'err-text'">{{ env.npm?.found ? env.npm.version : '未检测到' }}</b></div>
-        <div class="status-item"><span>中文路径读写</span><b :class="env.pathEncoding?.ok ? 'ok-text' : 'err-text'">{{ env.pathEncoding?.ok ? '通过' : '失败' }}</b></div>
+        <div class="status-item"><span>Node.js</span><b :class="env.node?.ok ? 'ok-text' : 'err-text'">{{ env.node?.version || '未检测到' }}</b><small>{{ env.node?.reason }}</small></div>
+        <div class="status-item"><span>npm</span><b :class="env.npm?.found ? 'ok-text' : 'err-text'">{{ env.npm?.version || '未检测到' }}</b><small>{{ env.npm?.reason }}</small></div>
+        <div class="status-item"><span>项目依赖</span><b :class="env.dependencies?.ready ? 'ok-text' : 'warn-text'">{{ env.dependencies?.ready ? '已安装' : '未完整安装' }}</b><small>{{ env.dependencies?.reason }}</small></div>
+        <div class="status-item"><span>Koishi 配置</span><b :class="localConfigReady ? 'ok-text' : 'warn-text'">{{ localConfigReady ? '已生成' : '未生成' }}</b><small>{{ localConfigSummary }}</small></div>
+        <div class="status-item"><span>中文路径读写</span><b :class="env.pathEncoding?.ok ? 'ok-text' : 'warn-text'">{{ env.pathEncoding?.ok ? '通过' : (env.pathEncoding?.skipped ? '未检测' : '失败') }}</b><small>{{ env.pathEncoding?.message }}</small></div>
         <div class="status-item"><span>端口</span><code>{{ portSummary }}</code></div>
-        <div class="status-item"><span>NapCat</span><b :class="env.napcat?.found ? 'ok-text' : 'warn-text'">{{ env.napcat?.found ? '已发现' : '未放入 runtime/napcat' }}</b></div>
+        <div class="status-item"><span>NapCat</span><b :class="napcatStatusClass">{{ napcatStatusText }}</b><small>{{ env.napcat?.reason }}</small><code v-if="env.napcat?.entry || env.napcat?.path">{{ env.napcat?.entry || env.napcat?.path }}</code></div>
+      </div>
+
+      <div v-if="deletePreview" class="delete-preview">
+        <div class="preview-head">
+          <div>
+            <strong>删除预览</strong>
+            <span>{{ deleteCandidates.length }} 个文件将删除，{{ keptCandidates.length }} 个项目会保留</span>
+          </div>
+          <button class="icon-btn" type="button" title="关闭" @click="deletePreview = null">×</button>
+        </div>
+        <div class="preview-list themed-scrollbar">
+          <div v-for="item in previewRows" :key="item.path" :class="['preview-row', 'preview-' + item.action]">
+            <span>{{ formatPreviewAction(item.action) }}</span>
+            <code>{{ item.path }}</code>
+            <small>{{ item.reason }}<template v-if="item.size"> · {{ formatSize(item.size) }}</template></small>
+          </div>
+        </div>
+        <div class="deploy-actions">
+          <button class="btn btn-sm btn-danger-solid" type="button" @click="confirmDeleteConfig" :disabled="deletingConfig || !deleteCandidates.length">{{ deletingConfig ? '删除中...' : '确认删除预览中的配置' }}</button>
+          <button class="btn btn-sm btn-ghost" type="button" @click="deletePreview = null" :disabled="deletingConfig">取消</button>
+        </div>
       </div>
 
       <div v-if="localMsg" class="msg" :class="localMsg.type">{{ localMsg.text }}</div>
@@ -53,7 +79,7 @@
       <div class="grp-desc" style="margin-bottom:14px">需要本机可以直接 SSH 到服务器。部署会推送插件代码、Dashboard 前端和必要脚本到远程目录。</div>
       <div class="row"><label>服务器</label><input v-model="remote.server" placeholder="root@服务器IP" /></div>
       <div class="row"><label>应用目录</label><input v-model="remote.appDir" placeholder="/root/koishi-app" /></div>
-      <div class="row"><label>模式</label><select v-model="remote.mode"><option value="install">实验性首次安装</option><option value="update">更新已有部署</option></select></div>
+      <div class="row"><label>模式</label><select v-model="remote.mode" class="themed-select"><option value="install">实验性首次安装</option><option value="update">更新已有部署</option></select></div>
 
       <div class="deploy-actions">
         <button class="btn btn-sm" type="button" @click="loadRemoteConfig">自动填入服务器地址</button>
@@ -69,14 +95,14 @@
       </div>
 
       <div v-if="remoteMsg" class="msg" :class="remoteMsg.type">{{ remoteMsg.text }}</div>
-      <pre v-if="logs.length" class="deploy-log">{{ logs.join('\n') }}</pre>
+      <pre v-if="logs.length" ref="deployLogRef" class="deploy-log themed-scrollbar">{{ logs.join('\n') }}</pre>
     </div>
   </div>
 </template>
 
 <script>
-import { computed, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { checkDeployUpdate, checkLocalEnv, confirmDeploy, deployLocal, downloadNapcat, fetchDeployConfig, getDeployProgress, rebuildFrontend, rebuildFrontendStatus, runDeploy, updateDeployConfig, uploadDeploy } from '../api'
+import { computed, inject, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { checkDeployUpdate, checkLocalEnv, confirmDeploy, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, previewLocalConfigDelete, rebuildFrontend, rebuildFrontendStatus, runDeploy, updateDeployConfig, uploadDeploy } from '../api'
 
 export default {
   name: 'DeployPanel',
@@ -92,17 +118,44 @@ export default {
     const remoteMsg = ref(null)
     const logs = ref([])
     const napcatUrl = ref('')
+    const napcatInstallDir = ref('')
+    const deletePreview = ref(null)
+    const deployLogRef = ref(null)
     const checking = ref(false)
     const downloading = ref(false)
+    const installingNapcat = ref(false)
     const localDeploying = ref(false)
+    const previewingDelete = ref(false)
+    const deletingConfig = ref(false)
     const savingRemote = ref(false)
     const deploying = ref(false)
     const rebuilding = ref(false)
     let progressTimer = null
 
+    const deployerBridge = computed(() => (typeof window !== 'undefined' ? window.dongxuelianDeployer : null))
+    const isWindows = computed(() => (env.value?.platform || deployerBridge.value?.platform) === 'win32')
+    const canChooseDirectory = computed(() => typeof deployerBridge.value?.selectDirectory === 'function')
+    const deleteCandidates = computed(() => (deletePreview.value?.files || []).filter(item => item.action === 'delete'))
+    const keptCandidates = computed(() => (deletePreview.value?.files || []).filter(item => item.action !== 'delete').concat(deletePreview.value?.protected || []))
+    const previewRows = computed(() => (deletePreview.value ? [...(deletePreview.value.files || []), ...(deletePreview.value.protected || [])] : []))
+    const localConfigReady = computed(() => (env.value?.localConfig?.files || []).some(item => item.action === 'delete' && ['koishi.yml', 'start-local.bat'].includes(item.path)))
+    const localConfigSummary = computed(() => {
+      const files = env.value?.localConfig?.files || []
+      const deletable = files.filter(item => item.action === 'delete').map(item => item.path)
+      return deletable.length ? deletable.join('、') : '未检测到本工具生成的 koishi.yml/start-local.bat'
+    })
+    const napcatStatusText = computed(() => {
+      const status = env.value?.napcat?.status
+      if (env.value?.napcat?.found) return '已安装'
+      if (status === 'partial') return '安装不完整'
+      if (status === 'unknown') return '状态未知'
+      return '未安装'
+    })
+    const napcatStatusClass = computed(() => env.value?.napcat?.found ? 'ok-text' : (env.value?.napcat?.status === 'missing' ? 'warn-text' : 'err-text'))
     const portSummary = computed(() => {
       const ports = env.value?.ports || {}
-      return Object.keys(ports).map(port => `${port}:${ports[port].available ? '空闲' : '占用'}`).join('  ')
+      const labels = { free: '空闲', occupied: '占用', denied: '无权限', unknown: '未知', invalid: '无效' }
+      return Object.keys(ports).map(port => `${port}:${labels[ports[port].status] || (ports[port].available ? '空闲' : '占用')}`).join('  ')
     })
 
     function withAdminRetry(res, message, retry) {
@@ -113,12 +166,24 @@ export default {
       return false
     }
 
+    function syncNapcatInstallDir(data) {
+      if (!napcatInstallDir.value) napcatInstallDir.value = data?.napcat?.expectedPath || (data?.runtimeDir ? `${data.runtimeDir}\\napcat` : '')
+    }
+
+    function scrollDeployLogToBottom() {
+      nextTick(() => {
+        const el = deployLogRef.value
+        if (el) el.scrollTop = el.scrollHeight
+      })
+    }
+
     async function checkEnv() {
       checking.value = true
       localMsg.value = null
       const res = await checkLocalEnv()
       if (res.ok) {
         env.value = res.data
+        syncNapcatInstallDir(res.data)
         localMsg.value = { type: 'ok', text: '环境检测完成' }
       } else {
         localMsg.value = { type: 'err', text: res.data?.message || '环境检测失败' }
@@ -126,16 +191,33 @@ export default {
       checking.value = false
     }
 
+    async function chooseNapcatDir() {
+      const picker = deployerBridge.value?.selectDirectory
+      if (!picker) return
+      const selected = await picker(napcatInstallDir.value)
+      if (selected) napcatInstallDir.value = selected
+    }
+
+    async function doDownloadWindowsNapcat() {
+      installingNapcat.value = true
+      localMsg.value = { type: 'ok', text: '正在下载并解压 NapCat（Windows），请稍等...' }
+      const res = await downloadNapcatWindows(napcatInstallDir.value)
+      if (withAdminRetry(res, '下载并安装 NapCat 需要管理员密码', doDownloadWindowsNapcat)) { installingNapcat.value = false; return }
+      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? 'NapCat 已安装' : '安装失败') }
+      installingNapcat.value = false
+      if (res.ok) await checkEnv()
+    }
+
     async function doDownloadNapcat() {
       if (!napcatUrl.value.trim()) {
-        localMsg.value = { type: 'err', text: '请粘贴 NapCat 包直链，或点击官方下载页手动下载后放入 runtime/napcat' }
+        localMsg.value = { type: 'err', text: '请粘贴 NapCat 包直链，或点击 NapCat 发布页手动下载' }
         return
       }
       downloading.value = true
       localMsg.value = null
       const res = await downloadNapcat(napcatUrl.value.trim())
       if (withAdminRetry(res, '下载 NapCat 需要管理员密码', doDownloadNapcat)) { downloading.value = false; return }
-      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? 'NapCat 已下载到 runtime/downloads' : '下载失败') }
+      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? 'NapCat 包已下载到 runtime/downloads' : '下载失败') }
       downloading.value = false
       if (res.ok) await checkEnv()
     }
@@ -148,10 +230,36 @@ export default {
       localDeploying.value = true
       localMsg.value = null
       const res = await deployLocal({ ...local, qq: local.qq.trim() })
-      if (withAdminRetry(res, '生成本地部署配置需要管理员密码', writeLocalConfig)) { localDeploying.value = false; return }
-      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '本地配置已生成' : '生成失败') }
+      if (withAdminRetry(res, '生成 Koishi 本地配置需要管理员密码', writeLocalConfig)) { localDeploying.value = false; return }
+      const files = res.data?.files || []
+      const changed = files.filter(item => item.action !== 'unchanged').length
+      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? `Koishi 本地配置已生成，写入 ${changed} 个文件` : '生成失败') }
+      deletePreview.value = null
       localDeploying.value = false
       if (res.ok) await checkEnv()
+    }
+
+    async function previewDeleteConfig() {
+      previewingDelete.value = true
+      localMsg.value = null
+      const res = await previewLocalConfigDelete()
+      if (withAdminRetry(res, '删除 Koishi 配置前需要管理员密码', previewDeleteConfig)) { previewingDelete.value = false; return }
+      if (res.ok) deletePreview.value = res.data
+      else localMsg.value = { type: 'err', text: res.data?.message || '读取删除预览失败' }
+      previewingDelete.value = false
+    }
+
+    async function confirmDeleteConfig() {
+      if (!deleteCandidates.value.length) return
+      deletingConfig.value = true
+      localMsg.value = null
+      const res = await deleteLocalConfig()
+      if (withAdminRetry(res, '删除 Koishi 配置需要管理员密码', confirmDeleteConfig)) { deletingConfig.value = false; return }
+      const deleted = res.data?.deleted?.length || 0
+      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? `已删除 ${deleted} 个配置文件` : '删除失败') }
+      deletingConfig.value = false
+      deletePreview.value = null
+      await checkEnv()
     }
 
     async function loadRemoteConfig() {
@@ -185,7 +293,6 @@ export default {
       if (withAdminRetry(res, '重建前端需要管理员密码', doRebuildFrontend)) { rebuilding.value = false; return }
       if (!res.ok) { remoteMsg.value = { type: 'err', text: res.data?.message || '启动失败' }; rebuilding.value = false; return }
       remoteMsg.value = { type: 'ok', text: '前端构建中...' }
-      // 轮询构建状态
       const timer = setInterval(async () => {
         const sr = await rebuildFrontendStatus()
         if (sr.ok) {
@@ -198,7 +305,6 @@ export default {
           }
         }
       }, 2000)
-      // 150秒超时，略大于后端 120 秒构建超时
       setTimeout(() => { clearInterval(timer); if (rebuilding.value) { rebuilding.value = false; remoteMsg.value = { type: 'err', text: '构建超时' } } }, 150000)
     }
 
@@ -247,16 +353,31 @@ export default {
       reader.readAsDataURL(file)
     }
 
+    function formatSize(size) {
+      if (!size) return '0 B'
+      if (size < 1024) return size + ' B'
+      if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB'
+      return (size / 1024 / 1024).toFixed(1) + ' MB'
+    }
+
+    function formatPreviewAction(action) {
+      return ({ delete: '删除', keep: '保留', missing: '缺失', error: '错误' })[action] || action
+    }
+
+    watch(logs, scrollDeployLogToBottom)
+    watch(mode, value => { if (value === 'remote') scrollDeployLogToBottom() })
+
     onMounted(() => {
       checkEnv()
       loadRemoteConfig()
+      scrollDeployLogToBottom()
     })
-
+    onActivated(scrollDeployLogToBottom)
     onUnmounted(() => {
       if (progressTimer) clearInterval(progressTimer)
     })
 
-    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, checking, downloading, localDeploying, savingRemote, deploying, rebuilding, portSummary, checkEnv, doDownloadNapcat, writeLocalConfig, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie }
+    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, deployLogRef, checking, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, savingRemote, deploying, rebuilding, isWindows, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, checkEnv, chooseNapcatDir, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, previewDeleteConfig, confirmDeleteConfig, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction }
   },
 }
 </script>
