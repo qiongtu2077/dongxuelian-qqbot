@@ -39,6 +39,7 @@ function collectBody(req, res, callback) {
 // ====== 路径配置 ======
 const PLUGIN_ROOT = __dirname
 const AI_LIB = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'lib')
+const KOISHI_DIR = process.env.KOISHI_DIR || path.join(PLUGIN_ROOT, '..', '..')
 const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(KOISHI_DIR, 'data') || path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'data')
 const PERSONAS_DIR = path.join(DATA_DIR, 'ai-skills', 'personas')
 const CORE_DIR = path.join(DATA_DIR, 'ai-skills', 'core')
@@ -46,7 +47,6 @@ const LORES_DIR = path.join(DATA_DIR, 'ai-skills', 'lore')
 const MODES_DIR = path.join(DATA_DIR, 'ai-skills', 'modes')
 const DIST_DIR = path.join(PLUGIN_ROOT, 'frontend', 'dist')
 const PORT = process.env.DASHBOARD_PORT || 5150
-const KOISHI_DIR = process.env.KOISHI_DIR || path.join(PLUGIN_ROOT, '..', '..')
 const PASSWORD = process.env.DASHBOARD_PASSWORD || '123'
 const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || '123'
 
