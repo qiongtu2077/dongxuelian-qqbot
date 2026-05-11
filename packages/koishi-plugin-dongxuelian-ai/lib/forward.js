@@ -6,6 +6,7 @@
 const { callGetForwardMsg } = require('./api')
 const { summarizeForwardNodes } = require('./message-reader')
 const { getChannelKey, lastForwardSummaryCache } = require('./conversation')
+const { logDebug } = require('./logging-config')
 
 const FORWARD_ID_RE = /(?:\[CQ:forward,id=([^,\]]+)\])|<forward\s+id="([^"]+)"\/>/
 const BLANK_NICK_CHARS_RE = /[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g
@@ -129,17 +130,12 @@ async function resolveForwardSummary(session, content, ctx, options = {}) {
   if (!forwardId) return ''
 
   const forwardData = await getForwardMsg(forwardId)
-  const logger = getLogger(ctx)
-  if (logger) {
-    logger.info('fwd fetch result: ' + (forwardData ? 'ok' : 'null') + ' len=' + getForwardLength(forwardData))
-  }
+  logDebug(ctx, 'forward', 'fetch result=' + (forwardData ? 'ok' : 'null') + ' len=' + getForwardLength(forwardData))
   if (!forwardData || !Array.isArray(forwardData)) return ''
 
   const nodes = await normalizeForwardNodes(forwardData, getForwardMsg, ctx)
   const forwardSummaryText = summarizeNodes(nodes)
-  if (logger) {
-    logger.info('fwd summary len: ' + (forwardSummaryText ? forwardSummaryText.length : 0) + ' text: ' + (forwardSummaryText || '(empty)').slice(0, 100).replace(/\n/g, '\\n'))
-  }
+  logDebug(ctx, 'forward', 'summary len=' + (forwardSummaryText ? forwardSummaryText.length : 0))
   if (forwardSummaryText) lastForwardSummaryCache.set(getChannelKey(session), forwardSummaryText)
   return forwardSummaryText
 }

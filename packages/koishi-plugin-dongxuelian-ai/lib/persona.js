@@ -4,6 +4,7 @@
  * 边界: 只操作人格配置文件和缓存，不调 AI API，不改 conversation。
  */
 const { PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, SKILLS_PERSONAS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR } = require('./constants')
+const { isDebugLogEnabled } = require('./logging-config')
 const path = require('path')
 
 let personaGroupsCache = {}
@@ -90,11 +91,14 @@ function loadPersonalSkill(personaName) {
         if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
         const content = require('fs').readFileSync(path.join(dir, entry), 'utf8').trim()
         const meta = parsePersonaFrontmatter(content)
-        if (meta.name === personaName) { console.error(`[persona] loaded skill: ${entry} name=${meta.name}`); return content }
+        if (meta.name === personaName) {
+          if (isDebugLogEnabled('persona')) console.warn(`[dongxuelian-ai] persona skill loaded: ${entry} name=${meta.name}`)
+          return content
+        }
       }
     } catch {}
   }
-  console.error(`[persona] no skill found for name=${personaName}`)
+  if (isDebugLogEnabled('persona')) console.warn(`[dongxuelian-ai] persona skill not found: ${personaName}`)
   return null
 }
 

@@ -13,6 +13,7 @@ const {
   readTextFile,
   readJsonFile,
 } = require('./utils')
+const { logDebug } = require('./logging-config')
 const {
   channelSharedCache,
   pendingSensitiveAlert,
@@ -84,7 +85,7 @@ async function handleSensitiveMessage(session, ctx, params = {}) {
   const isDetectOn = detectList.has(channelKey)
   if (inGuild && isDetectOn && !analyzed.hasVisual && SENSITIVE_KEYWORDS_RE.test(plain)) {
     await notifySensitiveHandlers(session, channelKey, { throttle: true })
-    ctx.logger('dongxuelian-ai').info(`sensitive topic in ${channelKey}: ${plain.slice(0, 50)}`)
+    logDebug(ctx, 'sensitive', `sensitive topic channel=${channelKey} textLen=${String(plain || '').length}`)
     channelSharedCache.delete(channelKey)
     clearUserConversationHistory(session)
     channelMsgCount.delete(channelKey)

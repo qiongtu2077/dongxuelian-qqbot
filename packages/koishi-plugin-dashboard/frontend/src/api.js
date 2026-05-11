@@ -177,3 +177,15 @@ export async function fetchAdminIds() { return get('/admin-ids') }
 export async function updateAdminIds(ids) { return put('/admin-ids', { ids }, true) }
 export async function fetchThrottle() { return get('/throttle') }
 export async function saveThrottle(data) { return put('/throttle', data, true) }
+export async function fetchLogs(params = {}) {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue
+    if (Array.isArray(value)) query.set(key, value.join(','))
+    else query.set(key, String(value))
+  }
+  const suffix = query.toString() ? '?' + query.toString() : ''
+  return get('/bot/activity' + suffix)
+}
+export async function fetchLoggingConfig() { return get('/logging') }
+export async function saveLoggingConfig(data) { return put('/logging', data, true) }

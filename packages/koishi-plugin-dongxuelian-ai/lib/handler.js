@@ -30,6 +30,7 @@ const {
   formatPercent, getModelDisplayName, getSearchCapability, formatSearchStatus,
   extractAtIds, todayCst, todayCstMinusDays,
 } = require('./utils')
+const { logDebug } = require('./logging-config')
 
 const forgetPendingConfirm = new Map()
 
@@ -48,6 +49,106 @@ function handled(response) {
 
 function notHandled() {
   return { matched: false }
+}
+
+function clampInteger(value, min, max, fallback) {
+  const number = parseInt(value, 10)
+  if (!Number.isFinite(number)) return fallback
+  return Math.max(min, Math.min(max, number))
+}
+
+function cleanEmotionText(value = '', max = 120) {
+  return String(value || '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max)
+}
+
+function normalizeEmotionMood(score, mood = '') {
+  const value = String(mood || '')
+  if (/悲|低|消沉|焦虑|负/.test(value)) return '偏悲观'
+  if (/乐|活跃|积极|高涨|正/.test(value)) return '偏乐观'
+  if (/中|平/.test(value)) return '中性'
+  if (score >= 65) return '偏乐观'
+  if (score <= 40) return '偏悲观'
+  return '中性'
+}
+
+function parseJsonObject(text = '') {
+  const raw = String(text || '').trim()
+  if (!raw) return null
+  try { return JSON.parse(raw) } catch {}
+  const match = raw.match(/\{[\s\S]*\}/)
+  if (!match) return null
+  try { return JSON.parse(match[0]) } catch { return null }
+}
+
+function normalizeEmotionReasons(value, fallbackSummary) {
+  const source = Array.isArray(value) ? value : String(value || '').split(/(?:\d+[.、]\s*|[；;])/)
+  const reasons = source.map(item => cleanEmotionText(item, 90)).filter(Boolean)
+  if (reasons.length >= 2) return reasons.slice(0, 4)
+  if (reasons.length === 1) return [reasons[0], '群聊样本仍在积累，结论以当前收录文本为准。']
+  return [fallbackSummary || '聊天内容整体较平稳，没有明显单一情绪压倒其他话题。', '群聊样本仍在积累，结论以当前收录文本为准。']
+}
+
+function parseEmotionAnalysis(rawText, stats, summaryText = '') {
+  const parsed = parseJsonObject(rawText)
+  const text = String(rawText || '')
+  const fallbackSummary = cleanEmotionText(summaryText || text, 90) || '今天整体情绪比较平稳。'
+  const scoreMatch = text.match(/(?:score|指数)[^\d]*(\d{1,3})/i)
+  const confidenceMatch = text.match(/(?:confidence|置信度)[^\d]*(\d{1,3})/i)
+  const score = clampInteger(parsed?.score ?? parsed?.emotionScore ?? scoreMatch?.[1], 0, 100, 50)
+  const confidence = clampInteger(parsed?.confidence ?? confidenceMatch?.[1], 0, 100, stats.messageCount >= 50 ? 78 : 65)
+  const summary = cleanEmotionText(parsed?.summary || parsed?.comment || parsed?.overall || fallbackSummary, 120) || fallbackSummary
+  const mood = normalizeEmotionMood(score, parsed?.mood || parsed?.label)
+  const reasons = normalizeEmotionReasons(parsed?.reasons || parsed?.reason, summary)
+  const keywords = Array.isArray(parsed?.keywords)
+    ? parsed.keywords.map(item => cleanEmotionText(item, 16)).filter(Boolean).slice(0, 6)
+    : []
+  return { score, confidence, mood, summary, reasons, keywords }
+}
+
+function normalizeEmotionHistoryItem(item) {
+  if (!item || typeof item !== 'object' || !item.date) return null
+  const score = clampInteger(item.score, 0, 100, 50)
+  return {
+    date: String(item.date),
+    score,
+    mood: normalizeEmotionMood(score, item.mood),
+    summary: cleanEmotionText(item.summary || item.text || '', 70),
+  }
+}
+
+function renderEmotionReport(analysis, stats, history = []) {
+  const lines = [
+    `群聊情绪指数：${analysis.score}/100（${analysis.mood}）`,
+    `置信度：${analysis.confidence}%`,
+    `今日样本：${stats.messageCount} 条文本消息，${stats.userCount} 位活跃成员`,
+    '',
+  ]
+  if (history.length) {
+    lines.push('近5日对比：')
+    for (const item of history) {
+      const suffix = item.summary ? ` ${item.summary}` : ''
+      lines.push(`- ${item.date}：${item.score}/100（${item.mood}）${suffix}`)
+    }
+  } else {
+    lines.push('近5日对比：暂无对比数据')
+  }
+  lines.push('', `总评：${analysis.summary}`, '原因：')
+  analysis.reasons.forEach((reason, index) => lines.push(`${index + 1}. ${reason}`))
+  if (analysis.keywords.length) lines.push('', `关键词：${analysis.keywords.join('、')}`)
+  return lines.join('\n').trim()
+}
+
+function trimEmotionCache(map) {
+  const ttl = 5 * 60 * 1000
+  const now = Date.now()
+  for (const [key, value] of map.entries()) {
+    if (!value || now - (value.ts || 0) > ttl) map.delete(key)
+  }
+  while (map.size > 200) map.delete(map.keys().next().value)
 }
 
 async function handleCommand(session, ctx, state) {
@@ -273,7 +374,7 @@ async function handleCommand(session, ctx, state) {
     return handled(`群记忆定时清空已设为每 ${hours} 小时清空一次。下次清空后会自动重置计时。`)
   }
 
-  ctx.logger('dongxuelian-ai').info(`persona-check: plain=${JSON.stringify(plain)} len=${plain.length} charCodes=${Array.from(plain).map(c => c.charCodeAt(0)).join(',')}`)
+  logDebug(ctx, 'persona', `persona-check plain=${JSON.stringify(plain)} len=${plain.length} charCodes=${Array.from(plain).map(c => c.charCodeAt(0)).join(',')}`)
 
   if (plain === '东雪莲我的人格' || plain === '东雪莲人格查看') {
     const userPersona = getUserPersona(currentUserId)
@@ -308,9 +409,9 @@ async function handleCommand(session, ctx, state) {
   }
 
   if (plain === '东雪莲人格列表') {
-    ctx.logger('dongxuelian-ai').info('persona-list matched, loading...')
+    logDebug(ctx, 'persona', 'persona-list matched, loading')
     const personas = getAvailablePersonals({ userFacing: true })
-    ctx.logger('dongxuelian-ai').info(`persona-list: found ${personas.length} personas`)
+    logDebug(ctx, 'persona', `persona-list found=${personas.length}`)
     if (personas.length === 0) { await session.send('当前没有人格配置。'); return handled() }
     const lines = personas.map(p => `- ${p.name}（${p.description || '无描述'}）`)
     await session.send(`可用人格：\n${lines.join('\n')}\n\n切换：东雪莲人格切换 <名称>\n重置：东雪莲人格重置`)
@@ -436,6 +537,7 @@ async function handleCommand(session, ctx, state) {
 
     const cached = lastEmotionCache.get(channelKey)
     if (cached && Date.now() - cached.ts < 300000) return handled(cached.text)
+    if (cached) lastEmotionCache.delete(channelKey)
 
     const batchSize = 100
     const batches = []
@@ -445,33 +547,27 @@ async function handleCommand(session, ctx, state) {
       batches.push(callOpenAI([
         { role: 'system', content: '你是群聊消息摘要助手。将以下群聊记录压缩成一段100字以内的摘要，保留主要话题和情绪倾向。不要评价，只摘要。' },
         { role: 'user', content: batchText.slice(0, 4000) },
-      ], false, { _fallbackSet: 'lightweight' }))
+      ], false, { _fallbackSet: 'lightweight' }).catch(() => ''))
     }
     const summaries = await Promise.all(batches)
-    const allSummary = summaries.filter(Boolean).join('\n---\n')
+    const allSummary = summaries.filter(Boolean).join('\n---\n') || msgs.slice(-80).map(m => `[${m.time}] ${m.user}：${m.content}`).join('\n').slice(0, 8000)
 
     await loadConfig(true)
     const safeChannelKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
     const historyFile = path.join(DATA_DIR, 'emotion-history-' + safeChannelKey + '.json')
     const historyData = await readJsonFile(historyFile, [])
     const todayDate = today
-    const recentHistory = Array.isArray(historyData) ? historyData.filter(h => h.date !== todayDate).slice(-4) : []
-    const historyBlock = recentHistory.length
-      ? '近5日对比：\n' + recentHistory.map(h => `${h.date} 指数${h.score}/100 ${h.summary}`).join('\n')
-      : ''
+    const recentHistory = (Array.isArray(historyData) ? historyData : [])
+      .map(normalizeEmotionHistoryItem)
+      .filter(item => item && item.date !== todayDate)
+      .slice(-5)
 
     const emotionPrompt = [
       '你是一个群聊情绪分析师。以下是一天中每段群聊记录的摘要，请分析整体情绪状态。',
       `今日样本：${msgs.length} 条消息，${users} 位活跃成员。`,
-      '请严格按照以下格式输出，不要额外解释，总字数控制在600字以内：',
-      '群聊情绪指数：X/100（偏悲观/中性/偏乐观）',
-      '置信度：XX%',
-      '今日样本：${条数} 条文本消息，${人数} 位活跃成员',
-      historyBlock || '近5日对比：暂无对比数据',
-      '总评：一句话总结当前情绪',
-      '原因：',
-      '1. ...',
-      '2. ...',
+      '只输出 JSON，不要 Markdown，不要解释。格式：',
+      '{"score":0到100整数,"confidence":0到100整数,"mood":"偏悲观/中性/偏乐观","summary":"一句话总结","reasons":["原因1","原因2"],"keywords":["关键词"]}',
+      recentHistory.length ? '近5日对比：\n' + recentHistory.map(h => `${h.date} ${h.score}/100 ${h.summary}`).join('\n') : '近5日对比：暂无对比数据',
       '',
       '摘要如下：',
       allSummary.slice(0, 10000),
@@ -481,38 +577,32 @@ async function handleCommand(session, ctx, state) {
         { role: 'system', content: emotionPrompt },
         { role: 'user', content: `群 ${channelKey} 今日情绪分析` },
       ], false, { max_tokens: 600, noLazy: true, _fallbackSet: 'lightweight' })
-      const trimmed = result.length > 600 ? result.slice(0, 597) + '...' : result
-      lastEmotionCache.set(channelKey, { text: trimmed, ts: Date.now() })
+      const analysis = parseEmotionAnalysis(result, { messageCount: msgs.length, userCount: users }, allSummary)
+      const rendered = renderEmotionReport(analysis, { messageCount: msgs.length, userCount: users }, recentHistory)
+      lastEmotionCache.set(channelKey, { text: rendered, ts: Date.now() })
+      trimEmotionCache(lastEmotionCache)
 
       try {
-        const scoreMatch = trimmed.match(/指数[：:]?\s*(\d+)/)
-        if (scoreMatch) {
-          const summary = trimmed.replace(/\n/g, ' ').slice(0, 200)
-          const existingIdx = historyData.findIndex(h => h.date === todayDate)
-          if (existingIdx >= 0) historyData.splice(existingIdx, 1)
-          historyData.push({ date: todayDate, score: parseInt(scoreMatch[1]), summary })
-          const cutoffStr = todayCstMinusDays(5)
-          const filtered = historyData.filter(h => h.date >= cutoffStr)
-          historyData.length = 0
-          historyData.push(...filtered)
-          await writeJsonFile(historyFile, historyData)
-        }
+        const safeHistory = (Array.isArray(historyData) ? historyData : []).filter(item => item && item.date !== todayDate)
+        safeHistory.push({ date: todayDate, score: analysis.score, confidence: analysis.confidence, mood: analysis.mood, summary: analysis.summary, reasons: analysis.reasons })
+        const cutoffStr = todayCstMinusDays(5)
+        await writeJsonFile(historyFile, safeHistory.filter(h => h.date >= cutoffStr))
       } catch (historyErr) {
         ctx.logger('dongxuelian-ai').warn(`emotion history save failed: ${historyErr.message}`)
       }
 
-      ctx.logger('dongxuelian-ai').info(`emotion analysis done: ${trimmed.slice(0, 80)}`)
+      logDebug(ctx, 'emotion', `analysis done channel=${channelKey} score=${analysis.score} messages=${msgs.length}`)
       const botUin = session.selfId || session.bot?.selfId || ''
-      const forwardResult = await sendForwardMsg(channelKey, [{
+      const forwardResult = state.disableForward ? null : await sendForwardMsg(channelKey, [{
         type: 'node',
         data: {
           name: '今日情绪分析',
           uin: botUin,
-          content: [{ type: 'text', data: { text: trimmed } }],
+          content: [{ type: 'text', data: { text: rendered } }],
         },
-      }]).catch(function() { return null })
+      }], 1500).catch(function() { return null })
       if (!forwardResult) {
-        return handled(trimmed)
+        return handled(rendered)
       }
       return handled(null)
     } catch (err) {

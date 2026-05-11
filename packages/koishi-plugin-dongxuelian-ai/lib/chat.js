@@ -69,6 +69,7 @@ const {
   getThinkingEnabled,
   setThinkingEnabled,
 } = require('./runtime-config')
+const { isDebugLogEnabled, logDebug } = require('./logging-config')
 
 let skillsCache = []
 let skillsContentCache = {}
@@ -154,7 +155,7 @@ async function loadSkills() {
         const content = (await fs.readFile(fullPath, 'utf8')).trim()
         if (content) skills.push(content)
       } catch (e) {
-        console.error(`[skills] failed to load ${fullPath}: ${e.message}`)
+        if (isDebugLogEnabled('skills')) console.warn(`[dongxuelian-ai] skill load failed: ${path.basename(fullPath)} ${e.message}`)
       }
     }
   }
@@ -427,7 +428,7 @@ async function chat(session, userText, ctx, options = {}) {
   systemPrompt += '\n当前时间：' + now.getHours() + '时' + now.getMinutes() + '分。核心信息（爱好、习惯、身份等）在下方【记住的】中列出，日常聊天记录中也可能有重复信息，以【记住的】中的内容为准。当用户分享关于自己的重要信息时，你可以自然地问一句是否需要记住，系统会自动记录。'
 
   const modeLabel = retaliationLevel === 2 ? 'abusive' : retaliationLevel === 1 ? 'yin-yang' : 'friendly'
-  ctx.logger('dongxuelian-ai').info(`chat: mode=${modeLabel} channelKey=${channelKey} persona=${personaName || 'none'} skillLen=${(personaSkillContent || '').length} input=${userText.slice(0, 60)}`)
+  logDebug(ctx, 'chat', `mode=${modeLabel} channelKey=${channelKey} persona=${personaName || 'none'} skillLen=${(personaSkillContent || '').length} inputLen=${String(userText || '').length}`)
 
   const userName = normalizeText(
     session.author?.nick ||

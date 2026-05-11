@@ -100,8 +100,8 @@ async function run(t) {
   ], async (result) => {
     checkSentNonEmpty(t, 'scenario API 500 chat sends safe fallback', result)
     t.check(
-      'scenario API 500 fallback logs safe reply send',
-      result.logs.some(item => item.name === 'dongxuelian-ai' && item.msg.includes('reply sent: random=false parts=')),
+      'scenario API 500 fallback does not require send debug log',
+      !result.logs.some(item => item.name === 'dongxuelian-ai' && item.msg.includes('reply sent:') && item.msg.includes('server exploded')),
       JSON.stringify(result.logs.slice(-8))
     )
     checkSentExcludes(t, 'scenario API 500 does not send raw server error', result, 'server exploded')

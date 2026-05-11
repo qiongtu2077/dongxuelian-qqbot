@@ -30,6 +30,42 @@ const lastForwardSummaryCache = new Map()
 const pendingSensitiveAlert = new Map()
 const channelTodayCache = new Map()
 
+const CHANNEL_RUNTIME_CACHE_TTL_MS = 6 * 60 * 60 * 1000
+const MAX_CHANNEL_RUNTIME_CACHE_ENTRIES = 200
+const STATS_FILE_RETENTION_DAYS = 6
+
+function safeChannelKey(value = '') {
+  return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_') || 'unknown'
+}
+
+function getLastMessageTs(items = []) {
+  if (!Array.isArray(items) || !items.length) return 0
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const ts = Number(items[i]?.ts || 0)
+    if (ts > 0) return ts
+  }
+  return 0
+}
+
+function pruneMapByActivity(map, getLastTs, now = Date.now()) {
+  for (const [key, value] of map.entries()) {
+    const ts = Number(getLastTs(value)) || 0
+    if (ts > 0 && now - ts > CHANNEL_RUNTIME_CACHE_TTL_MS) map.delete(key)
+  }
+  if (map.size <= MAX_CHANNEL_RUNTIME_CACHE_ENTRIES) return
+  const ordered = [...map.entries()]
+    .map(([key, value]) => [key, Number(getLastTs(value)) || 0])
+    .sort((left, right) => left[1] - right[1])
+  while (map.size > MAX_CHANNEL_RUNTIME_CACHE_ENTRIES && ordered.length) {
+    map.delete(ordered.shift()[0])
+  }
+}
+
+function trimChannelRuntimeCaches(now = Date.now()) {
+  pruneMapByActivity(channelSharedCache, items => getLastMessageTs(items), now)
+  pruneMapByActivity(channelTodayCache, cache => Number(cache?.updatedAt || cache?.lastDiskWrite || getLastMessageTs(cache?.messages)), now)
+}
+
 function getConversationKey(session) { return `${String(session.guildId || session.channelId || 'private')}::${String(session.userId || session.author?.id || session.username || 'unknown')}` }
 
 function getChannelKey(session) { return String(session.guildId || session.channelId || 'private') }
@@ -101,7 +137,7 @@ function getRecentUserMessages(session, limit = 3) { return getConversationHisto
 function flushTodayCacheToDisk(channelKey) {
   const cache = channelTodayCache.get(channelKey)
   if (!cache || !Array.isArray(cache.messages)) return
-  const safeKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
+  const safeKey = safeChannelKey(channelKey)
   const tmp = TODAY_CACHE_PREFIX + safeKey + '.tmp'
   const dst = TODAY_CACHE_PREFIX + safeKey + '.json'
   try {
@@ -120,15 +156,17 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
   const entry = { userId, role, speakerName: sanitizeUserName(speakerName || (role === 'assistant' ? '东雪莲' : '群友')), content: value, messageId: String(metadata.messageId || ''), replyToId: String(metadata.replyToId || ''), mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [], hasMessageRecordCue: !!metadata.hasMessageRecordCue, ts: Date.now() }
   const current = channelSharedCache.get(channelKey) || []
   channelSharedCache.set(channelKey, current.concat(entry).slice(-MAX_CHANNEL_SHARED_MESSAGES))
+  trimChannelRuntimeCaches()
   if (role === 'user' && metadata.fromSummary !== true) {
     try {
       const raw = require('fs').readFileSync(SUMMARY_WHITELIST_FILE, 'utf8'); const sw = JSON.parse(raw)
       if (Array.isArray(sw) && sw.includes(String(channelKey))) {
         const today = todayCst(); let cache = channelTodayCache.get(channelKey)
-        if (!cache || cache.date !== today) { cache = { date: today, messages: [] }; channelTodayCache.set(channelKey, cache) }
+        if (!cache || cache.date !== today) { cache = { date: today, messages: [], updatedAt: Date.now() }; channelTodayCache.set(channelKey, cache) }
         if (value || hasMentions) {
           const displayName = speakerName || userId
           const ts = Date.now()
+          cache.updatedAt = ts
           cache.messages.push({
             time: formatShanghaiTime24h(ts),
             ts,
@@ -147,6 +185,41 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
     } catch {}
   }
   if (role === 'user' && value) { saveUserProfile(userId, sanitizeUserName(String(speakerName || '群友')), value, channelKey).catch(() => {}) }
+}
+
+async function cleanupDailyStatsFiles() {
+  const cutoffStr = todayCstMinusDays(STATS_FILE_RETENTION_DAYS)
+  let files = []
+  try { files = await fsp.readdir(DATA_DIR) } catch { return { removed: 0, compacted: 0 } }
+  let removed = 0
+  let compacted = 0
+  for (const file of files) {
+    const filePath = path.join(DATA_DIR, file)
+    if (/^today-cache-.+\.json$/.test(file)) {
+      try {
+        const data = await readJsonFile(filePath, null)
+        if (data && typeof data.date === 'string' && data.date < cutoffStr) {
+          await fsp.unlink(filePath)
+          removed += 1
+        }
+      } catch {}
+      continue
+    }
+    if (/^emotion-history-.+\.json$/.test(file)) {
+      try {
+        const data = await readJsonFile(filePath, null)
+        if (!Array.isArray(data)) continue
+        const filtered = data.filter(item => item && typeof item.date === 'string' && item.date >= cutoffStr)
+        if (filtered.length !== data.length) {
+          if (filtered.length) await writeJsonFile(filePath, filtered)
+          else await fsp.unlink(filePath)
+          compacted += 1
+        }
+      } catch {}
+    }
+  }
+  trimChannelRuntimeCaches()
+  return { removed, compacted }
 }
 
 async function saveUserProfile(userId, name, content, channelKey) {
@@ -345,4 +418,5 @@ module.exports = {
   writeMemory, deleteMemory, clearUserMemory, clearGroupMemory, getMemorySummary,
   readMemoryTimer, checkMemoryTimerExpired,
   flushTodayCacheToDisk,
+  trimChannelRuntimeCaches, cleanupDailyStatsFiles,
 }

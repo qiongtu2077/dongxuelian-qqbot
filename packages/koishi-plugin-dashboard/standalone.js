@@ -56,6 +56,7 @@ const LEGACY_ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-pwd.txt')
 const RESET_TOKEN_FILE = path.join(DATA_DIR, 'password-reset-token.txt')
 const CUSTOM_PROVIDERS_FILE = path.join(DATA_DIR, 'ai-providers-custom.json')
 const FALLBACK_CHAINS_FILE = path.join(DATA_DIR, 'ai-fallback-chains.json')
+const DEBUG_LOG_CONFIG_FILE = path.join(DATA_DIR, 'debug-log-config.json')
 
 // ====== 默认 fallback 链（按 AI 用途分类） ======
 const DEFAULT_FALLBACK_CHAINS = {
@@ -163,6 +164,94 @@ function checkPortAvailable(port) {
     const out = execSync(cmd, { timeout: 3000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
     return process.platform === 'win32' ? !out.trim() : false
   } catch { return true }
+}
+
+function normalizeLoggingConfig(input = {}) {
+  const source = input && typeof input === 'object' ? input : {}
+  const enabled = !!(Object.prototype.hasOwnProperty.call(source, 'enabled') ? source.enabled : source.debug)
+  const modules = {}
+  if (source.modules && typeof source.modules === 'object' && !Array.isArray(source.modules)) {
+    for (const [key, value] of Object.entries(source.modules)) {
+      if (key) modules[String(key)] = !!value
+    }
+  }
+  return { enabled, debug: enabled, modules, updatedAt: Number(source.updatedAt) || 0 }
+}
+
+function readLoggingConfig() {
+  try { return normalizeLoggingConfig(JSON.parse(fs.readFileSync(DEBUG_LOG_CONFIG_FILE, 'utf8') || '{}')) } catch {}
+  const envEnabled = /^(?:1|true|on|yes)$/i.test(String(process.env.DONGXUELIAN_DEBUG || '').trim())
+  return normalizeLoggingConfig({ enabled: envEnabled, updatedAt: 0 })
+}
+
+function writeLoggingConfig(data) {
+  const next = normalizeLoggingConfig({ ...data, updatedAt: Date.now() })
+  fs.mkdirSync(path.dirname(DEBUG_LOG_CONFIG_FILE), { recursive: true })
+  fs.writeFileSync(DEBUG_LOG_CONFIG_FILE + '.tmp', JSON.stringify(next, null, 2), 'utf8')
+  fs.renameSync(DEBUG_LOG_CONFIG_FILE + '.tmp', DEBUG_LOG_CONFIG_FILE)
+  return next
+}
+
+function clampLogLimit(value) {
+  const parsed = parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return 200
+  return Math.max(1, Math.min(5000, parsed))
+}
+
+function readLastLogLines(file, limit) {
+  if (!fs.existsSync(file)) return []
+  const stat = fs.statSync(file)
+  const maxBytes = Math.min(stat.size, Math.max(256 * 1024, Math.min(8 * 1024 * 1024, limit * 900)))
+  const buffer = Buffer.alloc(maxBytes)
+  const fd = fs.openSync(file, 'r')
+  try {
+    fs.readSync(fd, buffer, 0, maxBytes, stat.size - maxBytes)
+  } finally {
+    fs.closeSync(fd)
+  }
+  return buffer.toString('utf8').split(/\r?\n/).filter(Boolean)
+}
+
+function classifyLogLevel(line = '') {
+  if (/\[D\]|\bdebug\b|debug:/i.test(line)) return 'D'
+  if (/\[E\]|\berror\b|uncaught|exception|failed|fail:/i.test(line)) return 'E'
+  if (/\[W\]|\bwarn\b|warning/i.test(line)) return 'W'
+  return 'I'
+}
+
+function detectLogModule(line = '') {
+  const known = ['dongxuelian-ai', 'dashboard', 'koishi', 'adapter-onebot', 'onebot', 'napcat', 'daily-report']
+  const lower = String(line).toLowerCase()
+  return known.find(name => lower.includes(name)) || 'runtime'
+}
+
+function parseLogLine(line, index) {
+  const tsMatch = String(line).match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?|\d{2}:\d{2}:\d{2}/)
+  const level = classifyLogLevel(line)
+  return {
+    id: index,
+    level,
+    levelName: level === 'E' ? 'error' : level === 'W' ? 'warn' : level === 'D' ? 'debug' : 'info',
+    module: detectLogModule(line),
+    time: tsMatch ? tsMatch[0] : '',
+    text: String(line),
+  }
+}
+
+function getFilteredLogEntries(options = {}) {
+  const limit = clampLogLimit(options.limit)
+  const logFile = path.join(KOISHI_DIR, 'koishi.log')
+  const levels = new Set(String(options.levels || 'I,W,E,D').split(',').map(item => item.trim().toUpperCase()).filter(Boolean))
+  const moduleFilter = String(options.module || '').trim().toLowerCase()
+  const query = String(options.q || '').trim().toLowerCase()
+  const errorsOnly = /^(?:1|true|yes|on)$/i.test(String(options.errorsOnly || '').trim())
+  let entries = readLastLogLines(logFile, limit).map(parseLogLine)
+  if (errorsOnly) entries = entries.filter(item => item.level === 'E')
+  else entries = entries.filter(item => levels.has(item.level))
+  if (moduleFilter && moduleFilter !== 'all') entries = entries.filter(item => item.module.toLowerCase().includes(moduleFilter) || item.text.toLowerCase().includes(moduleFilter))
+  if (query) entries = entries.filter(item => item.text.toLowerCase().includes(query))
+  entries = entries.slice(-limit)
+  return { entries, lines: entries.map(item => item.text), total: entries.length, limit, file: logFile, config: readLoggingConfig() }
 }
 
 function runtimePath(...parts) {
@@ -944,15 +1033,34 @@ const server = http.createServer((req, res) => {
     } catch { return json(res, { running: false, workers: 0 }) }
   }
 
+  // 日志开关配置
+  if (pathname === '/dashboard/api/logging' && req.method === 'GET') {
+    return json(res, { ok: true, config: readLoggingConfig() })
+  }
+
+  if (pathname === '/dashboard/api/logging' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const config = writeLoggingConfig(data)
+        return json(res, { ok: true, config, message: config.enabled ? '调试日志已开启' : '调试日志已关闭' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
   // Bot 活动日志
   if (pathname === '/dashboard/api/bot/activity' && req.method === 'GET') {
     try {
-      const logFile = path.join(KOISHI_DIR, 'koishi.log')
-      if (!fs.existsSync(logFile)) return json(res, { lines: [] })
-      const out = execSync('tail -n 100 ' + shellQuote(logFile), { timeout: 5000, encoding: 'utf8', maxBuffer: 1024 * 1024 })
-      const lines = out.trim().split('\n').filter(l => l.includes('entry-debug') || l.includes('chat') || l.includes('repeat') || l.includes('random-reply') || l.includes('banned') || l.includes('sticker'))
-      return json(res, { lines, total: lines.length })
-    } catch { return json(res, { lines: [] }) }
+      return json(res, getFilteredLogEntries({
+        limit: url.searchParams.get('limit'),
+        levels: url.searchParams.get('levels'),
+        module: url.searchParams.get('module'),
+        q: url.searchParams.get('q'),
+        errorsOnly: url.searchParams.get('errorsOnly'),
+      }))
+    } catch { return json(res, { entries: [], lines: [], total: 0 }) }
   }
 
   if (pathname === '/dashboard/api/bot/start' && req.method === 'POST') {

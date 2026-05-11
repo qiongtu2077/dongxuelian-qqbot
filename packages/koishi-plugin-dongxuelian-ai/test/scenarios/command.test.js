@@ -6,7 +6,7 @@ const { checkSentNonEmpty, checkNoLeak, checkNextCalled } = require('../helpers/
 async function run(t) {
   t.section('scenario: command middleware')
 
-  await withScenario({}, async ({ data, makeSession, run }) => {
+  await withScenario({}, async ({ data, harness, makeSession, run }) => {
     const status = await run(makeSession({ content: 'AI\u72b6\u6001' }))
     checkSentNonEmpty(t, 'scenario AI status replies', status)
     checkNoLeak(t, 'scenario AI status does not leak key', status, ['sk-test-secret', 'Bearer'])
@@ -62,6 +62,44 @@ async function run(t) {
 
     const emotion = await run(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }))
     checkSentNonEmpty(t, 'scenario today emotion empty cache replies', emotion)
+
+    const handler = require('../../lib/handler')
+    const { todayCst, todayCstMinusDays } = require('../../lib/utils')
+    const today = todayCst()
+    data.writeJson('emotion-history-10001.json', [{ date: todayCstMinusDays(1), score: 42, summary: '旧格式摘要' }])
+    const emotionCache = new Map([['10001', {
+      date: today,
+      messages: [
+        { time: '10:00:01', ts: Date.now(), user: 'Alice', userId: 'u1', content: '今天活动很热闹' },
+        { time: '10:01:02', ts: Date.now(), user: 'Bob', userId: 'u2', content: '大家都在聊新版本' },
+        { time: '10:02:03', ts: Date.now(), user: 'Alice', userId: 'u1', content: '气氛还不错' },
+      ],
+    }]])
+    let modelCalls = 0
+    const state = {
+      plain: '\u4eca\u65e5\u60c5\u7eea',
+      inGuild: true,
+      channelKey: '10001',
+      currentUserId: '100000000',
+      channelTodayCache: emotionCache,
+      lastEmotionCache: new Map(),
+      disableForward: true,
+      async loadConfig() {},
+      async callOpenAI(messages) {
+        modelCalls += 1
+        const prompt = messages.map(item => item.content).join('\n')
+        if (prompt.includes('只输出 JSON')) return JSON.stringify({ score: 76, confidence: 84, mood: '偏乐观', summary: '讨论热度高，整体偏积极。', reasons: ['成员围绕新版本持续互动', '负面表达很少'], keywords: ['新版本', '活动'] })
+        return '新版本讨论多，互动热度高，整体偏积极。'
+      },
+    }
+    const structuredEmotion = await handler.handleCommand(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }), harness.ctx, state)
+    const emotionText = structuredEmotion.response || ''
+    t.check('scenario today emotion keeps line breaks', emotionText.includes('\n原因：\n1. ') && emotionText.includes('\n2. '), JSON.stringify(emotionText))
+    t.check('scenario today emotion renders real sample stats', emotionText.includes('今日样本：3 条文本消息，2 位活跃成员'), emotionText)
+    t.check('scenario today emotion has no template placeholders', !emotionText.includes('${条数}') && !emotionText.includes('${人数}'), emotionText)
+    t.check('scenario today emotion reads old history format', emotionText.includes('旧格式摘要'), emotionText)
+    const cachedEmotion = await handler.handleCommand(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }), harness.ctx, state)
+    t.check('scenario today emotion cache reuses rendered text', cachedEmotion.response === emotionText && modelCalls === 2, JSON.stringify({ cached: cachedEmotion.response, modelCalls }))
 
     const personaList = await run(makeSession({ content: '\u4e1c\u96ea\u83b2\u4eba\u683c\u5217\u8868' }))
     t.check('scenario persona list command is handled', personaList.sent.length > 0, JSON.stringify(personaList.sent))

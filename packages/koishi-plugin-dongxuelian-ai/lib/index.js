@@ -171,6 +171,7 @@ const {
   findChannelMessageById, collectReplyChain,
   getQuotedMessageNote, getSharedContextNote,
   analyzeChannelSensitive,
+  trimChannelRuntimeCaches, cleanupDailyStatsFiles,
 } = require('./conversation')
 const {
   isReservedCommand, getSenderUserId, hasAdminPermission,
@@ -185,6 +186,7 @@ const {
   sanitizeFileToken, safeJsonStringify,
   todayCst,
 } = require('./utils')
+const { logDebug } = require('./logging-config')
 
 // @satorijs/core@3.7.0 缺少 stripped / parsed / resolve / send，这里随插件加载安装兼容补丁。
 function patchElementText(element) {
@@ -386,6 +388,29 @@ function getRandomTriggerBaseRate(channelKey) {
 // 白名单为空时视为全群禁用主动回复，只有显式加入的群才允许触发。
 function getRandomWhitelistStatus(channelKey) {
   return randomWhitelistCache.has(String(channelKey || ''))
+}
+
+function getNextShanghaiMidnightDelayMs(now = Date.now()) {
+  const [year, month, day] = todayCst(new Date(now)).split('-').map(Number)
+  const nextMidnightUtc = Date.UTC(year, month - 1, day, 16, 0, 0, 0)
+  return Math.max(1000, nextMidnightUtc - now)
+}
+
+function scheduleDailyStatsCleanup(ctx) {
+  const run = async () => {
+    try {
+      const result = await cleanupDailyStatsFiles()
+      trimChannelRuntimeCaches()
+      logDebug(ctx, 'cleanup', `daily stats cleanup removed=${result.removed} compacted=${result.compacted}`)
+    } catch (error) {
+      ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${error.message}`)
+    } finally {
+      const timer = setTimeout(run, getNextShanghaiMidnightDelayMs())
+      if (timer && typeof timer.unref === 'function') timer.unref()
+    }
+  }
+  const timer = setTimeout(run, getNextShanghaiMidnightDelayMs())
+  if (timer && typeof timer.unref === 'function') timer.unref()
 }
 
 // --- 原始事件抓取 --- //
@@ -644,11 +669,14 @@ exports.apply = (ctx) => {
           const data = JSON.parse(raw)
           if (data && data.date === today && Array.isArray(data.messages) && data.messages.length > 0) {
             const key = f.replace('today-cache-', '').replace('.json', '')
-            channelTodayCache.set(key, { date: today, messages: data.messages })
+            channelTodayCache.set(key, { date: today, messages: data.messages, updatedAt: Date.now() })
           }
         } catch {}
       }
     } catch {}
+    trimChannelRuntimeCaches()
+    cleanupDailyStatsFiles().catch(error => ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${error.message}`))
+    scheduleDailyStatsCleanup(ctx)
     ctx.logger('dongxuelian-ai').info(`dongxuelian-ai ${PLUGIN_VERSION} loaded`)
   })
 
@@ -701,8 +729,8 @@ exports.apply = (ctx) => {
 
     if (!plain && !directAt) return next()
 
-    ctx.logger('dongxuelian-ai').info(`entry-debug: userId=${session.userId} isDirect=${!!session.isDirect} guildId=${session.guildId} type=${session.type} subtype=${session.subtype} contentLen=${(session.content||'').length}`)
-ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plain).slice(0, 100)} directAt=${directAt} isDirect=${!!session.isDirect}`)
+    logDebug(ctx, 'middleware', `entry userId=${session.userId} isDirect=${!!session.isDirect} guildId=${session.guildId} type=${session.type} subtype=${session.subtype} contentLen=${(session.content || '').length}`)
+    logDebug(ctx, 'middleware', `plain=${JSON.stringify(plain).slice(0, 100)} directAt=${directAt} isDirect=${!!session.isDirect}`)
 
     if (isReservedCommand(plain)) return next()
 
@@ -982,7 +1010,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
       const repeatCandidate = buildRepeatCandidate(session, plain, analyzed)
       const repeatResult = checkGroupRepeat(session, repeatCandidate, channelKey, currentUserId)
       if (repeatResult) {
-        ctx.logger('dongxuelian-ai').info(`repeat triggered in ${channelKey}: kind=${repeatResult.kind} key="${repeatResult.key.slice(0, 80)}"`)
+        ctx.logger('dongxuelian-ai').info(`repeat triggered in ${channelKey}: kind=${repeatResult.kind} keyLen=${String(repeatResult.key || '').length}`)
         await session.send(repeatResult.reply)
         return next()
       }
@@ -1012,7 +1040,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     const randomTriggered = isRandomCandidate && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))
 
     if (inGuild && !directAt && !nameMentioned) {
-      ctx.logger('dongxuelian-ai').info(`random-reply debug: key=${channelKey} whitelist=${inRandomWhitelist} candidate=${isRandomCandidate} triggered=${randomTriggered} rate=${getRandomTriggerRate(channelKey)} skip=${analyzed.shouldSkipForRandomReply} hasUsableText=${analyzed.hasUsableText} hasLink=${analyzed.hasLink} hasVisual=${analyzed.hasVisual} hasFile=${analyzed.hasFile} hasEmbed=${analyzed.hasEmbed} directAt=${directAt} otherMentions=${otherMentions} nameMentioned=${nameMentioned} whitelistSize=${randomWhitelistCache.size}`)
+      logDebug(ctx, 'random', `key=${channelKey} whitelist=${inRandomWhitelist} candidate=${isRandomCandidate} triggered=${randomTriggered} rate=${getRandomTriggerRate(channelKey)} skip=${analyzed.shouldSkipForRandomReply} hasUsableText=${analyzed.hasUsableText} hasLink=${analyzed.hasLink} hasVisual=${analyzed.hasVisual} hasFile=${analyzed.hasFile} hasEmbed=${analyzed.hasEmbed} directAt=${directAt} otherMentions=${otherMentions} nameMentioned=${nameMentioned} whitelistSize=${randomWhitelistCache.size}`)
     }
 
     if (inGuild && !directAt && !nameMentioned && inRandomWhitelist) {
@@ -1080,7 +1108,7 @@ ctx.logger('dongxuelian-ai').info(`middleware-debug: plain=${JSON.stringify(plai
     if (!userText && !isVisionSession(session)) return next()
 
     if (botMentionCount > 1) {
-      ctx.logger('dongxuelian-ai').info(`collapsed repeated @bot mentions: ${botMentionCount}`)
+      logDebug(ctx, 'middleware', `collapsed repeated @bot mentions: ${botMentionCount}`)
     }
 
     const maxDepth = inGuild ? 4 : 2

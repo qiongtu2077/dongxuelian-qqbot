@@ -9,6 +9,7 @@ const { h } = require('koishi')
 const { STICKER_DIR, THROTTLE_CONFIG_FILE } = require('./constants')
 const { getChannelKey, saveSharedChannelTurn } = require('./conversation')
 const { splitSentences, sleep, getRandomDelayMs, readJsonFile } = require('./utils')
+const { logDebug } = require('./logging-config')
 
 const STICKER_GLOBAL_COOLDOWN_MS = 30000
 const STICKER_FILE_COOLDOWN_MS = 120000
@@ -228,14 +229,14 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
   for (const sticker of pendingStickers) {
     const now = nowMs()
     if (stickerBatchStart - lastStickerAtBeforeBatch < STICKER_GLOBAL_COOLDOWN_MS) {
-      ctx.logger('dongxuelian-ai').info(`sticker global cooldown active (${Math.ceil((STICKER_GLOBAL_COOLDOWN_MS - (stickerBatchStart - lastStickerAtBeforeBatch)) / 1000)}s remaining), skipping ${sticker.file}`)
+      logDebug(ctx, 'reply', `sticker global cooldown ${Math.ceil((STICKER_GLOBAL_COOLDOWN_MS - (stickerBatchStart - lastStickerAtBeforeBatch)) / 1000)}s skip=${sticker.file}`)
       continue
     }
 
     const stickerFileKey = `${stickerChannelKey}:${sticker.file}`
     const lastFileAt = lastStickerFileSentAt.get(stickerFileKey) || 0
     if (now - lastFileAt < STICKER_FILE_COOLDOWN_MS) {
-      ctx.logger('dongxuelian-ai').info(`sticker file cooldown active (${Math.ceil((STICKER_FILE_COOLDOWN_MS - (now - lastFileAt)) / 1000)}s remaining), skipping ${sticker.file}`)
+      logDebug(ctx, 'reply', `sticker file cooldown ${Math.ceil((STICKER_FILE_COOLDOWN_MS - (now - lastFileAt)) / 1000)}s skip=${sticker.file}`)
       continue
     }
 
@@ -246,7 +247,7 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
       lastStickerFileSentAt.set(stickerFileKey, sentAt)
     }
   }
-  ctx.logger('dongxuelian-ai').info(`reply sent: random=${isRandom} parts=${sentParts}`)
+  logDebug(ctx, 'reply', `sent random=${isRandom} parts=${sentParts}`)
   return sentParts
 }
 
