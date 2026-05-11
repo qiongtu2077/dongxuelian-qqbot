@@ -53,13 +53,13 @@
       <div class="grp-desc" style="margin-bottom:14px">需要本机可以直接 SSH 到服务器。部署会推送插件代码、Dashboard 前端和必要脚本到远程目录。</div>
       <div class="row"><label>服务器</label><input v-model="remote.server" placeholder="root@服务器IP" /></div>
       <div class="row"><label>应用目录</label><input v-model="remote.appDir" placeholder="/root/koishi-app" /></div>
-      <div class="row"><label>模式</label><select v-model="remote.mode"><option value="install">首次安装</option><option value="update">更新代码</option></select></div>
+      <div class="row"><label>模式</label><select v-model="remote.mode"><option value="install">实验性首次安装</option><option value="update">更新已有部署</option></select></div>
 
       <div class="deploy-actions">
         <button class="btn btn-sm" type="button" @click="loadRemoteConfig">自动填入服务器地址</button>
         <button class="btn btn-sm" type="button" @click="saveRemoteConfig" :disabled="savingRemote">{{ savingRemote ? '保存中...' : '保存服务器地址' }}</button>
         <button class="btn btn-sm" type="button" @click="checkRemoteUpdate">检查更新</button>
-        <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="deploying">{{ deploying ? '部署中...' : '开始部署/更新' }}</button>
+        <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="deploying">{{ deploying ? '部署中...' : '开始远程操作' }}</button>
         <button class="btn btn-sm btn-ghost" type="button" @click="doRebuildFrontend" :disabled="rebuilding">{{ rebuilding ? '构建中...' : '重建前端' }}</button>
       </div>
 
@@ -194,12 +194,12 @@ export default {
             remoteMsg.value = { type: 'ok', text: '前端构建成功，请刷新页面' }
           } else if (sr.data.state === 'failed') {
             clearInterval(timer); rebuilding.value = false
-            remoteMsg.value = { type: 'err', text: sr.data.message || '构建失败' }
+            remoteMsg.value = { type: 'err', text: (sr.data.message || '构建失败') + (sr.data.detail ? '：' + sr.data.detail : '') }
           }
         }
       }, 2000)
-      // 60秒超时
-      setTimeout(() => { clearInterval(timer); if (rebuilding.value) { rebuilding.value = false; remoteMsg.value = { type: 'err', text: '构建超时' } } }, 65000)
+      // 150秒超时，略大于后端 120 秒构建超时
+      setTimeout(() => { clearInterval(timer); if (rebuilding.value) { rebuilding.value = false; remoteMsg.value = { type: 'err', text: '构建超时' } } }, 150000)
     }
 
     async function startRemoteDeploy() {
@@ -226,7 +226,10 @@ export default {
           progressTimer = null
           deploying.value = false
           remoteMsg.value = { type: res.data.success ? 'ok' : 'err', text: res.data.success ? '部署完成' : '部署失败，请查看日志' }
-          if (res.data.success) await confirmDeploy()
+          if (res.data.success) {
+            const confirm = await confirmDeploy()
+            if (!confirm.ok) remoteMsg.value = { type: 'err', text: '部署成功，但版本记录写入失败' }
+          }
         }
       }, 1500)
     }

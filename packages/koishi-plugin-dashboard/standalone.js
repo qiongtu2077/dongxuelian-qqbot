@@ -110,8 +110,16 @@ function log(msg) {
 function isLocalAuthBypass(req) {
   if (/^(?:1|true|yes|on)$/i.test(String(process.env.GLOBAL_LOCAL_MODE || '').trim())) return true
   if (!req) return false
-  const host = req.headers?.host || ''
-  return /^(?:localhost|127\.0\.0\.1|::1)(?::\d+)?$/i.test(host.trim())
+  return isLoopbackAddress(getRemoteAddress(req))
+}
+
+function getRemoteAddress(req) {
+  return String(req?.socket?.remoteAddress || req?.connection?.remoteAddress || '').trim()
+}
+
+function isLoopbackAddress(address) {
+  const value = String(address || '').trim()
+  return value === '127.0.0.1' || value === '::1' || value === '::ffff:127.0.0.1'
 }
 
 function stopKoishiProcesses() {
@@ -127,19 +135,125 @@ function shellQuote(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'"
 }
 
-function remoteDataFile(appDir, filename) {
-  return String(appDir).replace(/\/+$/, '') + '/data/' + filename
+function commandQuote(value) {
+  const text = String(value)
+  if (process.platform !== 'win32') return shellQuote(text)
+  return '"' + text.replace(/"/g, '""') + '"'
 }
 
-function remoteWriteFileCommand(server, filePath, content) {
-  const dir = filePath.replace(/\/[^/]*$/, '')
-  const remoteCmd = `mkdir -p ${shellQuote(dir)} && printf %s ${shellQuote(content)} > ${shellQuote(filePath)}`
-  return `ssh ${server} ${shellQuote(remoteCmd)}`
+function validateDeployServer(server) {
+  const value = String(server || '').trim()
+  if (!value) throw new Error('deploy server is required')
+  if (/[\s;|`$<>"'\\]/.test(value) || value.includes('$(')) throw new Error('invalid deploy server')
+  const user = '(?:[A-Za-z0-9._-]+@)?'
+  const hostname = '(?:[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)'
+  const ipv4 = '(?:\\d{1,3}\\.){3}\\d{1,3}'
+  const ipv6 = '\\[[0-9A-Fa-f:.]+\\]'
+  const re = new RegExp('^' + user + '(?:' + hostname + '|' + ipv4 + '|' + ipv6 + ')$')
+  if (!re.test(value)) throw new Error('invalid deploy server')
+  return value
+}
+
+function validateDeployAppDir(appDir) {
+  const value = String(appDir || '').trim().replace(/\/+$/, '') || '/'
+  if (!value.startsWith('/')) throw new Error('appDir must be an absolute Linux path')
+  if (/[\s;&|`$()<>"'\\]/.test(value)) throw new Error('invalid appDir')
+  return value
+}
+
+function validateDeployTarget(cfg) {
+  return {
+    ...cfg,
+    server: validateDeployServer(cfg?.server),
+    appDir: validateDeployAppDir(cfg?.appDir),
+    mode: cfg?.mode === 'install' ? 'install' : 'update',
+  }
+}
+
+function writeDeployFingerprint(file, extra = {}) {
+  let cfg = {}
+  try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
+  Object.assign(cfg, extra)
+  cfg.deployedAt = Date.now()
+  cfg.deployFingerprint = computeFingerprint()
+  const tmp = file + '.tmp'
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8')
+  fs.renameSync(tmp, file)
+  return cfg.deployFingerprint
+}
+
+function remoteJoin(base, ...parts) {
+  const root = validateDeployAppDir(base)
+  const suffix = parts.map(part => String(part || '').replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/')
+  return suffix ? root.replace(/\/+$/, '') + '/' + suffix : root
+}
+
+function sshCommand(server, remoteCmd) {
+  return `ssh -o StrictHostKeyChecking=no ${server} ${commandQuote(remoteCmd)}`
+}
+
+function scpRemoteTarget(server, remotePath) {
+  const targetPath = String(remotePath || '')
+  if (!targetPath.startsWith('/') || /[\s;&|`$()<>"'\\]/.test(targetPath)) throw new Error('invalid remote path')
+  return `${server}:${targetPath}`
+}
+
+function scpCommand(source, target, options = {}) {
+  const recursive = options.recursive ? '-r ' : ''
+  return `scp -o StrictHostKeyChecking=no ${recursive}${commandQuote(source)} ${target}`
 }
 
 function isInsidePath(parent, child) {
   const rel = path.relative(path.resolve(parent), path.resolve(child))
   return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel))
+}
+
+function listFilesRecursive(root, predicate) {
+  const result = []
+  function walk(dir) {
+    let entries = []
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    entries.sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (!predicate || predicate(full)) result.push(full)
+    }
+  }
+  walk(root)
+  return result
+}
+
+function hashFile(hash, repoRoot, filePath) {
+  try {
+    const rel = path.relative(repoRoot, filePath).replace(/\\/g, '/')
+    hash.update(rel)
+    hash.update('\0')
+    hash.update(fs.readFileSync(filePath))
+    hash.update('\0')
+  } catch {}
+}
+
+function hasFrontendDistAssets(distDir = DIST_DIR) {
+  const indexFile = path.join(distDir, 'index.html')
+  const assetsDir = path.join(distDir, 'assets')
+  if (!fs.existsSync(indexFile) || !fs.existsSync(assetsDir)) return false
+  try { return fs.readdirSync(assetsDir).some(name => /\.js$/i.test(name)) }
+  catch { return false }
+}
+
+function assertFrontendDistReady() {
+  if (!hasFrontendDistAssets()) throw new Error('frontend dist is missing or incomplete; rebuild frontend first')
+}
+
+function rollbackFrontendDist(distDir, backupDir) {
+  try { fs.rmSync(distDir, { recursive: true, force: true }) }
+  catch (e) { return 'remove incomplete dist failed: ' + e.message }
+  try {
+    if (fs.existsSync(backupDir)) fs.renameSync(backupDir, distDir)
+  } catch (e) { return 'restore previous dist failed: ' + e.message }
+  return ''
 }
 
 function copyRecursiveSync(src, dst) {
@@ -364,22 +478,31 @@ function downloadToRuntime(url, callback) {
 }
 
 // 前端重建状态
-let rebuildStatus = { state: 'idle', message: '' }
+let rebuildStatus = { state: 'idle', message: '', detail: '', startedAt: 0, finishedAt: 0 }
 
 // 版本指纹：对关键代码文件做 hash，不依赖 git
 function computeFingerprint() {
   try {
     const repoRoot = path.join(PLUGIN_ROOT, '..', '..')
-    const keyFiles = [
-      'packages/koishi-plugin-dongxuelian-ai/lib/index.js',
-      'packages/koishi-plugin-dashboard/standalone.js',
-      'packages/koishi-plugin-daily-report/lib/index.js',
-      'packages/koishi-plugin-dongxuelian-ai/lib/chat.js',
-      'packages/koishi-plugin-dongxuelian-ai/lib/handler.js',
-    ]
     const hash = crypto.createHash('md5')
-    for (const f of keyFiles) {
-      try { hash.update(fs.readFileSync(path.join(repoRoot, f))) } catch {}
+    const add = rel => hashFile(hash, repoRoot, path.join(repoRoot, rel))
+    add('packages/koishi-plugin-dashboard/standalone.js')
+    add('packages/koishi-plugin-dashboard/frontend/dist/index.html')
+    add('scripts/restart-bot.sh')
+    add('scripts/watchdog.sh')
+    for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'dist', 'assets'))) {
+      hashFile(hash, repoRoot, file)
+    }
+    const packagesDir = path.join(repoRoot, 'packages')
+    let packageNames = []
+    try { packageNames = fs.readdirSync(packagesDir).sort() } catch {}
+    for (const pkg of packageNames) {
+      const pkgDir = path.join(packagesDir, pkg)
+      try { if (!fs.statSync(pkgDir).isDirectory()) continue } catch { continue }
+      add(`packages/${pkg}/package.json`)
+      for (const file of listFilesRecursive(path.join(pkgDir, 'lib'), f => /\.js$/i.test(f))) {
+        hashFile(hash, repoRoot, file)
+      }
     }
     return hash.digest('hex').slice(0, 8)
   } catch { return 'unknown' }
@@ -1262,8 +1385,7 @@ const server = http.createServer((req, res) => {
     if (!requireAdmin(req, res)) return
     collectBody(req, res, (body) => {
       try {
-        const cfg = JSON.parse(body)
-        if (!cfg.server || !cfg.appDir) return json(res, { ok: false, message: '服务器地址和应用目录不能为空' }, 400)
+        const cfg = validateDeployTarget(JSON.parse(body))
         const tmp = DEPLOY_CONFIG_FILE + '.tmp'
         fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8')
         fs.renameSync(tmp, DEPLOY_CONFIG_FILE)
@@ -1277,14 +1399,17 @@ const server = http.createServer((req, res) => {
     if (!requireAdmin(req, res)) return
     collectBody(req, res, (body) => {
       try {
-        const cfg = JSON.parse(body)
+        const cfg = validateDeployTarget(JSON.parse(body))
+        if (cfg.mode === 'install') {
+          return json(res, { ok: false, message: 'First-time install is not automated yet. Please run setup.sh or a local installer first.' }, 400)
+        }
+        assertFrontendDistReady()
         if (!cfg.server || !cfg.appDir) return json(res, { ok: false, message: '配置不完整' }, 400)
         const taskId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
         const logFile = path.join(DEPLOY_TASKS_DIR, taskId + '.log')
         const log = (msg) => { try { fs.appendFileSync(logFile, msg + '\n', 'utf8') } catch {} }
         json(res, { ok: true, taskId })
 
-        const isUpdate = cfg.mode === 'update'
         const repoRoot = path.join(PLUGIN_ROOT, '..', '..')
         const s = cfg.server
         const d = cfg.appDir
@@ -1295,37 +1420,40 @@ const server = http.createServer((req, res) => {
           'koishi-plugin-dongxuelian-poke', 'koishi-plugin-daily-report',
         ]
         const cmds = []
-        if (!isUpdate) {
-          cmds.push(`echo "创建远程目录..."`)
-          cmds.push(`ssh -o StrictHostKeyChecking=no ${s} "mkdir -p ${d}/data/ai-skills ${d}/packages/koishi-plugin-dashboard/frontend/dist ${d}/scripts"`)
-        }
+        const dashboardDir = remoteJoin(d, 'packages', 'koishi-plugin-dashboard')
+        const dashboardDistDir = remoteJoin(dashboardDir, 'frontend', 'dist')
+        const scriptsDir = remoteJoin(d, 'scripts')
+        const dataDir = remoteJoin(d, 'data')
+        const existingInstallCheck = `test -f ${shellQuote(remoteJoin(d, 'node_modules', 'koishi', 'bin.js'))} && (test -f ${shellQuote(remoteJoin(d, 'koishi.config.js'))} || test -f ${shellQuote(remoteJoin(d, 'koishi.yml'))})`
+        cmds.push(`echo "preflight"`)
+        cmds.push(sshCommand(s, existingInstallCheck))
+        cmds.push(`echo "prepare dirs"`)
+        cmds.push(sshCommand(s, `mkdir -p ${[dataDir, dashboardDir, dashboardDistDir, scriptsDir].concat(pkgs.map(pkg => remoteJoin(d, 'node_modules', pkg, 'lib'))).map(shellQuote).join(' ')}`))
         for (const pkg of pkgs) {
           cmds.push(`echo "→ ${pkg}"`)
-          cmds.push(`scp -o StrictHostKeyChecking=no -r ${repoRoot}/packages/${pkg}/lib/* ${s}:${d}/node_modules/${pkg}/lib/ 2>/dev/null || true`)
-          cmds.push(`scp -o StrictHostKeyChecking=no ${repoRoot}/packages/${pkg}/package.json ${s}:${d}/node_modules/${pkg}/ 2>/dev/null || true`)
+          cmds.push(scpCommand(path.join(repoRoot, 'packages', pkg, 'lib'), scpRemoteTarget(s, remoteJoin(d, 'node_modules', pkg)), { recursive: true }))
+          cmds.push(scpCommand(path.join(repoRoot, 'packages', pkg, 'package.json'), scpRemoteTarget(s, remoteJoin(d, 'node_modules', pkg, 'package.json'))))
         }
         cmds.push(`echo "Dashboard 前端..."`)
-        cmds.push(`scp -o StrictHostKeyChecking=no ${PLUGIN_ROOT}/standalone.js ${s}:${d}/packages/koishi-plugin-dashboard/`)
-        cmds.push(`scp -o StrictHostKeyChecking=no -r ${DIST_DIR}/* ${s}:${d}/packages/koishi-plugin-dashboard/frontend/dist/`)
-        if (!isUpdate) {
-          cmds.push(`echo "视频插件环境..."`)
-          cmds.push(`ssh ${s} "mkdir -p /root/koishi-bili-downloads"`)
-          cmds.push(`ssh ${s} "which yt-dlp >/dev/null 2>&1 || (curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp)"`)
-        }
+        cmds.push(scpCommand(path.join(PLUGIN_ROOT, 'standalone.js'), scpRemoteTarget(s, remoteJoin(dashboardDir, 'standalone.js'))))
+        cmds.push(scpCommand(DIST_DIR, scpRemoteTarget(s, remoteJoin(dashboardDir, 'frontend')), { recursive: true }))
         cmds.push(`echo "重启脚本..."`)
-        cmds.push(`scp -o StrictHostKeyChecking=no ${repoRoot}/scripts/restart-bot.sh ${s}:${d}/restart.sh 2>/dev/null || true`)
-        cmds.push(`scp -o StrictHostKeyChecking=no ${repoRoot}/scripts/watchdog.sh ${s}:${d}/scripts/watchdog.sh 2>/dev/null || true`)
-        if (!isUpdate) {
-          cmds.push(`echo "确保 package.json..."`)
-          cmds.push(`ssh ${s} "for p in ${pkgs.join(' ')}; do test -f ${d}/node_modules/\$p/package.json || echo '{}' > ${d}/node_modules/\$p/package.json; done"`)
-        }
+        cmds.push(scpCommand(path.join(repoRoot, 'scripts', 'restart-bot.sh'), scpRemoteTarget(s, remoteJoin(d, 'restart.sh'))))
+        if (fs.existsSync(path.join(repoRoot, 'scripts', 'watchdog.sh'))) cmds.push(scpCommand(path.join(repoRoot, 'scripts', 'watchdog.sh'), scpRemoteTarget(s, remoteJoin(scriptsDir, 'watchdog.sh'))))
+        if (fs.existsSync(path.join(DATA_DIR, 'bilibili-cookies.txt'))) cmds.push(scpCommand(path.join(DATA_DIR, 'bilibili-cookies.txt'), scpRemoteTarget(s, '/root/bilibili-cookies.txt')))
         cmds.push(`echo "重启 Bot..."`)
-        cmds.push(`ssh ${s} "bash ${d}/restart.sh"`)
+        cmds.push(sshCommand(s, `bash ${shellQuote(remoteJoin(d, 'restart.sh'))}`))
+        cmds.push(sshCommand(s, `if ss -tlnp | grep -q :5140 || curl -fsS http://127.0.0.1:5140 >/dev/null; then exit 0; fi; echo ${shellQuote('health check failed; last koishi.log lines:')}; tail -30 ${shellQuote(remoteJoin(d, 'koishi.log'))}; exit 1`))
         cmds.push(`echo "✅ 部署完成"`)
 
         let idx = 0
         function runNext() {
-          if (idx >= cmds.length) { log('DONE'); return }
+          if (idx >= cmds.length) {
+            try { writeDeployFingerprint(DEPLOY_CONFIG_FILE, { server: s, appDir: d, mode: cfg.mode }) }
+            catch (e) { log('warning: deploy fingerprint write failed: ' + e.message) }
+            log('DONE')
+            return
+          }
           log('$ ' + cmds[idx])
           exec(cmds[idx], { cwd: repoRoot, timeout: 60000 }, (err, stdout, stderr) => {
             if (stdout) log(stdout.trim())
@@ -1363,27 +1491,35 @@ const server = http.createServer((req, res) => {
     if (!fs.existsSync(path.join(FE_DIR, 'node_modules'))) {
       return json(res, { ok: false, message: '前端依赖未安装，请先在 frontend 目录执行 npm install' })
     }
-    rebuildStatus = { state: 'building', message: '' }
-    const isWin = process.platform === 'win32'
-    const backupCmd = isWin
-      ? `cd /d "${FE_DIR}" && if exist dist (xcopy /E /I /Q /Y dist dist.bak >nul) & npm run build`
-      : `cd "${FE_DIR}" && [ -d dist ] && cp -r dist dist.bak; npm run build`
-    const rollbackCmd = isWin
-      ? `cd /d "${FE_DIR}" && if exist dist.bak (rmdir /S /Q dist 2>nul & ren dist.bak dist)`
-      : `cd "${FE_DIR}" && rm -rf dist && mv dist.bak dist`
-    const cleanupCmd = isWin
-      ? `cd /d "${FE_DIR}" && if exist dist.bak (rmdir /S /Q dist.bak)`
-      : `cd "${FE_DIR}" && rm -rf dist.bak`
-    exec(backupCmd, { timeout: 120000 }, (err, stdout, stderr) => {
-      if (err) {
-        exec(rollbackCmd, () => {})
-        const detail = (stderr || err.message || '').slice(0, 200)
-        rebuildStatus = { state: 'failed', message: '构建失败，已自动回退。' + (detail ? ' 原因: ' + detail : '') }
-        log('frontend rebuild failed: ' + detail)
-      } else {
-        exec(cleanupCmd, () => {})
-        rebuildStatus = { state: 'success', message: '前端构建成功，请刷新页面' }
+    const distDir = path.join(FE_DIR, 'dist')
+    const backupDir = path.join(FE_DIR, 'dist.bak')
+    try {
+      fs.rmSync(backupDir, { recursive: true, force: true })
+      if (fs.existsSync(distDir)) fs.renameSync(distDir, backupDir)
+    } catch (e) {
+      return json(res, { ok: false, message: 'frontend backup failed: ' + e.message }, 500)
+    }
+    rebuildStatus = { state: 'building', message: 'building', detail: '', startedAt: Date.now(), finishedAt: 0 }
+    exec('npm run build', { cwd: FE_DIR, timeout: 120000 }, (err, stdout, stderr) => {
+      try {
+        if (err) {
+          const rollbackError = rollbackFrontendDist(distDir, backupDir)
+          const detail = [stderr || err.message || '', rollbackError].filter(Boolean).join('\n').slice(-600)
+          rebuildStatus = { state: 'failed', message: 'frontend build failed and rolled back', detail, startedAt: rebuildStatus.startedAt, finishedAt: Date.now() }
+          log('frontend rebuild failed: ' + detail)
+          return
+        }
+        if (!hasFrontendDistAssets(distDir)) {
+          const rollbackError = rollbackFrontendDist(distDir, backupDir)
+          rebuildStatus = { state: 'failed', message: 'frontend dist is incomplete and rolled back', detail: rollbackError, startedAt: rebuildStatus.startedAt, finishedAt: Date.now() }
+          return
+        }
+        fs.rmSync(backupDir, { recursive: true, force: true })
+        rebuildStatus = { state: 'success', message: 'frontend build success', detail: '', startedAt: rebuildStatus.startedAt, finishedAt: Date.now() }
         log('frontend rebuild success')
+      } catch (e) {
+        rebuildStatus = { state: 'failed', message: 'frontend rebuild cleanup failed', detail: e.message, startedAt: rebuildStatus.startedAt, finishedAt: Date.now() }
+        log('frontend rebuild cleanup failed: ' + e.message)
       }
     })
     return json(res, { ok: true, message: '前端构建已启动' })
@@ -1414,11 +1550,12 @@ const server = http.createServer((req, res) => {
       try {
         const { name, data } = JSON.parse(body)
         if (!name || !data) return json(res, { ok: false, message: '文件名或内容为空' }, 400)
-        if (name.includes('..') || name.includes('/') || name.includes('\\')) return json(res, { ok: false, message: '无效文件名' }, 400)
-        const filePath = path.join(DATA_DIR, name)
+        if (name !== 'bilibili-cookies.txt') return json(res, { ok: false, message: 'only bilibili-cookies.txt can be uploaded here' }, 400)
+        const filePath = path.join(DATA_DIR, 'bilibili-cookies.txt')
         const buf = Buffer.from(data, 'base64')
+        fs.mkdirSync(DATA_DIR, { recursive: true })
         fs.writeFileSync(filePath, buf)
-        json(res, { ok: true, message: name + ' 已保存到本地，部署时将自动推送' })
+        json(res, { ok: true, message: 'bilibili-cookies.txt 已保存到本地，部署时将自动推送' })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })
     return
@@ -1530,22 +1667,37 @@ const server = http.createServer((req, res) => {
     } catch (e) { return json(res, { ok: false, message: e.message }) }
   }
 
-  // 静态文件
+  if (pathname === '/dashboard') {
+    res.writeHead(302, { Location: '/dashboard/' })
+    res.end()
+    return
+  }
+
   const serveFile = (filePath) => {
     try {
+      if (!isInsidePath(DIST_DIR, filePath)) {
+        res.writeHead(403)
+        res.end('Forbidden')
+        return true
+      }
       if (fs.statSync(filePath).isFile()) {
         const ext = path.extname(filePath)
         const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' }[ext] || 'application/octet-stream'
-        res.writeHead(200, { 'Content-Type': mime })
+        const rel = path.relative(DIST_DIR, filePath).replace(/\\/g, '/')
+        const cache = rel === 'index.html' ? 'no-cache' : (rel.startsWith('assets/') ? 'public, max-age=31536000, immutable' : 'public, max-age=3600')
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': cache })
         res.end(fs.readFileSync(filePath))
-        return
+        return true
       }
     } catch {}
+    return false
+  }
+  let reqPath = pathname.replace(/^\/dashboard\/?/, '')
+  try { reqPath = decodeURIComponent(reqPath) } catch {}
+  if (serveFile(path.join(DIST_DIR, reqPath || 'index.html'))) return
+  if (!pathname.startsWith('/dashboard/api/') && serveFile(path.join(DIST_DIR, 'index.html'))) return
     res.writeHead(404)
     res.end('Not Found')
-  }
-  const reqPath = pathname.replace(/^\/dashboard\//, '')
-  serveFile(path.join(DIST_DIR, reqPath || 'index.html'))
 })
 
 if (!getResetToken()) generateResetToken()
