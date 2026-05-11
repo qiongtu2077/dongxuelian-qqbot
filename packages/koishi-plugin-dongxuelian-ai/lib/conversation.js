@@ -17,7 +17,7 @@ const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
   USER_PROFILE_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE,
   DATA_DIR,
 } = require('./constants')
-const { readTextFile, readJsonFile, writeJsonFile, splitSentences, sanitizeUserName, todayCst, formatShanghaiTime24h } = require('./utils')
+const { readTextFile, readJsonFile, writeJsonFile, splitSentences, sanitizeUserName, todayCst, todayCstMinusDays, formatShanghaiTime24h } = require('./utils')
 const { normalizeText } = require('./message-reader')
 const { requestChatCompletions } = require('./api')
 const { loadConfig } = require('./runtime-config')

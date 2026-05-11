@@ -68,7 +68,7 @@ export default {
   top: 0;
   left: 0;
   bottom: 0;
-  width: clamp(220px, 17vw, 320px);
+  width: var(--dashboard-sidebar-width, clamp(154px, 11.9vw, 224px));
   z-index: 12;
   display: flex;
   flex-direction: column;
@@ -153,7 +153,10 @@ export default {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1;
   white-space: nowrap;
+  text-align: center;
+  font-family: KaiTi, STKaiti, '楷体', serif;
   transition: opacity .22s ease, transform .22s ease;
 }
 
@@ -190,12 +193,14 @@ export default {
   min-height: 42px;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 0;
   padding: 8px 10px;
   border-radius: 6px;
   font-size: 14px;
   font-weight: 800;
-  text-align: left;
+  text-align: center;
+  font-family: KaiTi, STKaiti, '楷体', serif;
 }
 
 .sidebar-item.active {
@@ -218,6 +223,8 @@ export default {
 
 .sidebar-label {
   min-width: 0;
+  width: 100%;
+  text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -238,7 +245,7 @@ export default {
 
 @media (max-width: 760px) {
   .dashboard-sidebar {
-    width: min(82vw, 300px);
+    width: min(57.4vw, 210px);
     box-shadow: 12px 0 34px rgba(0, 0, 0, 0.26);
   }
   .dashboard-sidebar.collapsed {

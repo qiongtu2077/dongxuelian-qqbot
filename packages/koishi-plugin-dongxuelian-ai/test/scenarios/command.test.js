@@ -76,6 +76,8 @@ async function run(t) {
       ],
     }]])
     let modelCalls = 0
+    let imageRenderCalls = 0
+    let promptLimitSeen = false
     const state = {
       plain: '\u4eca\u65e5\u60c5\u7eea',
       inGuild: true,
@@ -83,23 +85,63 @@ async function run(t) {
       currentUserId: '100000000',
       channelTodayCache: emotionCache,
       lastEmotionCache: new Map(),
-      disableForward: true,
       async loadConfig() {},
       async callOpenAI(messages) {
         modelCalls += 1
         const prompt = messages.map(item => item.content).join('\n')
-        if (prompt.includes('只输出 JSON')) return JSON.stringify({ score: 76, confidence: 84, mood: '偏乐观', summary: '讨论热度高，整体偏积极。', reasons: ['成员围绕新版本持续互动', '负面表达很少'], keywords: ['新版本', '活动'] })
+        if (prompt.includes('只输出 JSON')) {
+          promptLimitSeen = prompt.includes('不得超过1500字') && prompt.includes('每条300字以内')
+          return JSON.stringify({ score: 76, confidence: 84, mood: '偏乐观', summary: '讨论热度高，整体偏积极。', reasons: ['成员围绕新版本持续互动', '负面表达很少'], keywords: ['新版本', '活动'] })
+        }
         return '新版本讨论多，互动热度高，整体偏积极。'
+      },
+      async renderEmotionImage(analysis, stats, history) {
+        imageRenderCalls += 1
+        t.check('scenario today emotion image gets real sample stats', stats.messageCount === 3 && stats.userCount === 2, JSON.stringify(stats))
+        t.check('scenario today emotion image reads old history format', history.some(item => item.summary === '旧格式摘要'), JSON.stringify(history))
+        t.check('scenario today emotion image gets bounded analysis', analysis.summary.length <= 80 && analysis.reasons.every(reason => reason.length <= 300), JSON.stringify(analysis))
+        return Buffer.from('emotion-image-ok')
       },
     }
     const structuredEmotion = await handler.handleCommand(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }), harness.ctx, state)
-    const emotionText = structuredEmotion.response || ''
-    t.check('scenario today emotion keeps line breaks', emotionText.includes('\n原因：\n1. ') && emotionText.includes('\n2. '), JSON.stringify(emotionText))
-    t.check('scenario today emotion renders real sample stats', emotionText.includes('今日样本：3 条文本消息，2 位活跃成员'), emotionText)
-    t.check('scenario today emotion has no template placeholders', !emotionText.includes('${条数}') && !emotionText.includes('${人数}'), emotionText)
-    t.check('scenario today emotion reads old history format', emotionText.includes('旧格式摘要'), emotionText)
+    const emotionImage = String(structuredEmotion.response || '')
+    t.check('scenario today emotion returns image', emotionImage.includes('data:image/png;base64,ZW1vdGlvbi1pbWFnZS1vaw=='), emotionImage)
+    t.check('scenario today emotion prompt caps display text', promptLimitSeen)
+    t.check('scenario today emotion renders image once', imageRenderCalls === 1, String(imageRenderCalls))
     const cachedEmotion = await handler.handleCommand(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }), harness.ctx, state)
-    t.check('scenario today emotion cache reuses rendered text', cachedEmotion.response === emotionText && modelCalls === 2, JSON.stringify({ cached: cachedEmotion.response, modelCalls }))
+    t.check('scenario today emotion cache reuses image response', cachedEmotion.response === structuredEmotion.response && modelCalls === 2, JSON.stringify({ cached: String(cachedEmotion.response), modelCalls }))
+
+    let fallbackModelCalls = 0
+    let fallbackRenderCalls = 0
+    let fallbackPromptSeen = false
+    const fallbackState = {
+      plain: '\u4eca\u65e5\u60c5\u7eea',
+      inGuild: true,
+      channelKey: '10001',
+      currentUserId: '100000000',
+      channelTodayCache: emotionCache,
+      lastEmotionCache: new Map(),
+      async loadConfig() {},
+      async callOpenAI(messages) {
+        fallbackModelCalls += 1
+        const prompt = messages.map(item => item.content).join('\n')
+        if (prompt.includes('500字以内')) {
+          fallbackPromptSeen = true
+          return '图片生成失败后的短文本回退。'.repeat(80)
+        }
+        if (prompt.includes('只输出 JSON')) return JSON.stringify({ score: 68, confidence: 77, mood: '偏乐观', summary: '互动稳定，气氛偏积极。', reasons: ['成员仍在围绕版本交流', '整体反馈比较轻松'], keywords: ['版本', '互动'] })
+        return '版本讨论稳定，整体偏积极。'
+      },
+      async renderEmotionImage() {
+        fallbackRenderCalls += 1
+        throw new Error('forced image failure')
+      },
+    }
+    const fallbackEmotion = await handler.handleCommand(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }), harness.ctx, fallbackState)
+    const fallbackText = String(fallbackEmotion.response || '')
+    t.check('scenario today emotion retries image twice', fallbackRenderCalls === 2, String(fallbackRenderCalls))
+    t.check('scenario today emotion regenerates fallback text', fallbackPromptSeen && fallbackModelCalls === 3, JSON.stringify({ fallbackPromptSeen, fallbackModelCalls }))
+    t.check('scenario today emotion fallback text capped at 500', fallbackText.length <= 500 && !fallbackText.includes('data:image/png'), JSON.stringify({ length: fallbackText.length, fallbackText }))
 
     const personaList = await run(makeSession({ content: '\u4e1c\u96ea\u83b2\u4eba\u683c\u5217\u8868' }))
     t.check('scenario persona list command is handled', personaList.sent.length > 0, JSON.stringify(personaList.sent))

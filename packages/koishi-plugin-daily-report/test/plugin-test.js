@@ -95,6 +95,7 @@ check('ai-analyzer exports full fallback builder', typeof aiAnalyzer.buildFallba
 
 const htmlRenderer = require(HTML_RENDERER_PATH)
 check('html-renderer exports renderReport', typeof htmlRenderer.renderReport === 'function')
+check('html-renderer exports renderHtmlToImage', typeof htmlRenderer.renderHtmlToImage === 'function')
 
 section('AI fallback unit')
 const fallbackFull = aiAnalyzer.buildFallbackFullAnalysis({

@@ -5,6 +5,7 @@
  * 接近 300 行，新增逻辑须谨慎。
  */
 const path = require('path')
+const { h } = require('koishi')
 const {
   DATA_DIR, PLUGIN_VERSION,
   PROVIDERS, PROVIDER_FILE, MODEL_FILE, BASE_URL_FILE,
@@ -23,7 +24,7 @@ const {
 } = require('./persona')
 const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory, getMemorySummary, getConversationHistory } = require('./conversation')
 const { runHealthCheck, formatHealthReport } = require('./health-check')
-const { sendForwardMsg } = require('./api')
+const { renderEmotionImage } = require('./emotion-renderer')
 const {
   hasAdminPermission, isReservedCommand,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
@@ -33,6 +34,8 @@ const {
 const { logDebug } = require('./logging-config')
 
 const forgetPendingConfirm = new Map()
+const EMOTION_IMAGE_TEXT_LIMIT = 1500
+const EMOTION_FALLBACK_TEXT_LIMIT = 500
 
 function isGroupAdmin(session) {
   if (!session?.event?.sender?.role) return false
@@ -65,6 +68,23 @@ function cleanEmotionText(value = '', max = 120) {
     .slice(0, max)
 }
 
+function limitPlainText(value = '', max = 500) {
+  const text = String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[\t ]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  if (text.length <= max) return text
+  return text.slice(0, Math.max(0, max - 3)).trim() + '...'
+}
+
+function truncateEmotionText(value = '', max = 120) {
+  const text = cleanEmotionText(value, max + 20)
+  if (text.length <= max) return text
+  return text.slice(0, Math.max(0, max - 3)).trim() + '...'
+}
+
 function normalizeEmotionMood(score, mood = '') {
   const value = String(mood || '')
   if (/悲|低|消沉|焦虑|负/.test(value)) return '偏悲观'
@@ -86,7 +106,7 @@ function parseJsonObject(text = '') {
 
 function normalizeEmotionReasons(value, fallbackSummary) {
   const source = Array.isArray(value) ? value : String(value || '').split(/(?:\d+[.、]\s*|[；;])/)
-  const reasons = source.map(item => cleanEmotionText(item, 90)).filter(Boolean)
+  const reasons = source.map(item => cleanEmotionText(item, 300)).filter(Boolean)
   if (reasons.length >= 2) return reasons.slice(0, 4)
   if (reasons.length === 1) return [reasons[0], '群聊样本仍在积累，结论以当前收录文本为准。']
   return [fallbackSummary || '聊天内容整体较平稳，没有明显单一情绪压倒其他话题。', '群聊样本仍在积累，结论以当前收录文本为准。']
@@ -95,12 +115,12 @@ function normalizeEmotionReasons(value, fallbackSummary) {
 function parseEmotionAnalysis(rawText, stats, summaryText = '') {
   const parsed = parseJsonObject(rawText)
   const text = String(rawText || '')
-  const fallbackSummary = cleanEmotionText(summaryText || text, 90) || '今天整体情绪比较平稳。'
+  const fallbackSummary = cleanEmotionText(summaryText || text, 80) || '今天整体情绪比较平稳。'
   const scoreMatch = text.match(/(?:score|指数)[^\d]*(\d{1,3})/i)
   const confidenceMatch = text.match(/(?:confidence|置信度)[^\d]*(\d{1,3})/i)
   const score = clampInteger(parsed?.score ?? parsed?.emotionScore ?? scoreMatch?.[1], 0, 100, 50)
   const confidence = clampInteger(parsed?.confidence ?? confidenceMatch?.[1], 0, 100, stats.messageCount >= 50 ? 78 : 65)
-  const summary = cleanEmotionText(parsed?.summary || parsed?.comment || parsed?.overall || fallbackSummary, 120) || fallbackSummary
+  const summary = cleanEmotionText(parsed?.summary || parsed?.comment || parsed?.overall || fallbackSummary, 80) || fallbackSummary
   const mood = normalizeEmotionMood(score, parsed?.mood || parsed?.label)
   const reasons = normalizeEmotionReasons(parsed?.reasons || parsed?.reason, summary)
   const keywords = Array.isArray(parsed?.keywords)
@@ -140,6 +160,76 @@ function renderEmotionReport(analysis, stats, history = []) {
   analysis.reasons.forEach((reason, index) => lines.push(`${index + 1}. ${reason}`))
   if (analysis.keywords.length) lines.push('', `关键词：${analysis.keywords.join('、')}`)
   return lines.join('\n').trim()
+}
+
+function limitEmotionAnalysisForImage(analysis, stats, history = [], max = EMOTION_IMAGE_TEXT_LIMIT) {
+  const base = {
+    ...analysis,
+    summary: truncateEmotionText(analysis.summary, 80),
+    reasons: (Array.isArray(analysis.reasons) ? analysis.reasons : [])
+      .map(reason => truncateEmotionText(reason, 300))
+      .filter(Boolean)
+      .slice(0, 4),
+    keywords: (Array.isArray(analysis.keywords) ? analysis.keywords : [])
+      .map(keyword => truncateEmotionText(keyword, 16))
+      .filter(Boolean)
+      .slice(0, 6),
+  }
+  if (renderEmotionReport(base, stats, history).length <= max) return base
+
+  for (const reasonLimit of [240, 200, 160, 120, 90, 70, 50]) {
+    const candidate = {
+      ...base,
+      reasons: base.reasons.map(reason => truncateEmotionText(reason, reasonLimit)),
+    }
+    if (renderEmotionReport(candidate, stats, history).length <= max) return candidate
+  }
+
+  return {
+    ...base,
+    summary: truncateEmotionText(base.summary, 60),
+    reasons: base.reasons.slice(0, 2).map(reason => truncateEmotionText(reason, 50)),
+    keywords: [],
+  }
+}
+
+async function renderEmotionImageWithRetry(ctx, renderImage, analysis, stats, history, channelKey) {
+  let lastError = null
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await renderImage(analysis, stats, history)
+    } catch (err) {
+      lastError = err
+      ctx.logger('dongxuelian-ai').warn(`emotion image render failed channel=${channelKey} attempt=${attempt}: ${err.message}`)
+    }
+  }
+  throw lastError || new Error('emotion image render failed')
+}
+
+async function generateShortEmotionFallback(callOpenAI, analysis, stats, history, renderedText) {
+  const prompt = [
+    '今日情绪图片生成失败。请根据以下结构化结果，重新生成一段500字以内的纯文本群聊情绪报告。',
+    '必须包含：情绪指数、置信度、今日样本、近5日对比简述、总评、最多3条原因。',
+    '不要输出 JSON，不要 Markdown 表格，不要超过500字。',
+    '',
+    `情绪指数：${analysis.score}/100（${analysis.mood}）`,
+    `置信度：${analysis.confidence}%`,
+    `今日样本：${stats.messageCount} 条文本消息，${stats.userCount} 位活跃成员`,
+    history.length ? '近5日对比：\n' + history.map(item => `${item.date} ${item.score}/100 ${item.summary || ''}`).join('\n') : '近5日对比：暂无对比数据',
+    `总评：${analysis.summary}`,
+    `原因：${analysis.reasons.slice(0, 3).join('；')}`,
+    analysis.keywords.length ? `关键词：${analysis.keywords.join('、')}` : '',
+  ].filter(Boolean).join('\n')
+
+  try {
+    const fallback = await callOpenAI([
+      { role: 'system', content: prompt },
+      { role: 'user', content: '重新生成今日情绪文本回退' },
+    ], false, { max_tokens: 500, noLazy: true, _fallbackSet: 'lightweight' })
+    return limitPlainText(fallback, EMOTION_FALLBACK_TEXT_LIMIT) || limitPlainText(renderedText, EMOTION_FALLBACK_TEXT_LIMIT)
+  } catch {
+    return limitPlainText(renderedText, EMOTION_FALLBACK_TEXT_LIMIT)
+  }
 }
 
 function trimEmotionCache(map) {
@@ -536,7 +626,7 @@ async function handleCommand(session, ctx, state) {
     const msgs = cache.messages
 
     const cached = lastEmotionCache.get(channelKey)
-    if (cached && Date.now() - cached.ts < 300000) return handled(cached.text)
+    if (cached && Date.now() - cached.ts < 300000) return handled(cached.response || cached.text)
     if (cached) lastEmotionCache.delete(channelKey)
 
     const batchSize = 100
@@ -545,7 +635,7 @@ async function handleCommand(session, ctx, state) {
       const batch = msgs.slice(i, i + batchSize)
       const batchText = batch.map(m => `[${m.time}] ${m.user}：${m.content}`).join('\n')
       batches.push(callOpenAI([
-        { role: 'system', content: '你是群聊消息摘要助手。将以下群聊记录压缩成一段100字以内的摘要，保留主要话题和情绪倾向。不要评价，只摘要。' },
+        { role: 'system', content: '你是群聊消息摘要助手。将以下群聊记录压缩成一段100字以内的摘要，保留主要话题和情绪倾向。不要评价，只摘要。不得扩写，不得输出分析报告。' },
         { role: 'user', content: batchText.slice(0, 4000) },
       ], false, { _fallbackSet: 'lightweight' }).catch(() => ''))
     }
@@ -565,8 +655,9 @@ async function handleCommand(session, ctx, state) {
     const emotionPrompt = [
       '你是一个群聊情绪分析师。以下是一天中每段群聊记录的摘要，请分析整体情绪状态。',
       `今日样本：${msgs.length} 条消息，${users} 位活跃成员。`,
+      '输出内容将用于图片展示。summary、reasons、keywords 中用于展示的中文正文总量不得超过1500字。summary 控制在80字以内；reasons 最多4条，每条300字以内；keywords 最多6个短词。',
       '只输出 JSON，不要 Markdown，不要解释。格式：',
-      '{"score":0到100整数,"confidence":0到100整数,"mood":"偏悲观/中性/偏乐观","summary":"一句话总结","reasons":["原因1","原因2"],"keywords":["关键词"]}',
+      '{"score":0到100整数,"confidence":0到100整数,"mood":"偏悲观/中性/偏乐观","summary":"80字以内总结","reasons":["每条300字以内，最多4条"],"keywords":["短关键词，最多6个"]}',
       recentHistory.length ? '近5日对比：\n' + recentHistory.map(h => `${h.date} ${h.score}/100 ${h.summary}`).join('\n') : '近5日对比：暂无对比数据',
       '',
       '摘要如下：',
@@ -577,14 +668,14 @@ async function handleCommand(session, ctx, state) {
         { role: 'system', content: emotionPrompt },
         { role: 'user', content: `群 ${channelKey} 今日情绪分析` },
       ], false, { max_tokens: 600, noLazy: true, _fallbackSet: 'lightweight' })
-      const analysis = parseEmotionAnalysis(result, { messageCount: msgs.length, userCount: users }, allSummary)
-      const rendered = renderEmotionReport(analysis, { messageCount: msgs.length, userCount: users }, recentHistory)
-      lastEmotionCache.set(channelKey, { text: rendered, ts: Date.now() })
-      trimEmotionCache(lastEmotionCache)
+      const stats = { messageCount: msgs.length, userCount: users }
+      const analysis = parseEmotionAnalysis(result, stats, allSummary)
+      const displayAnalysis = limitEmotionAnalysisForImage(analysis, stats, recentHistory)
+      const rendered = renderEmotionReport(displayAnalysis, stats, recentHistory)
 
       try {
         const safeHistory = (Array.isArray(historyData) ? historyData : []).filter(item => item && item.date !== todayDate)
-        safeHistory.push({ date: todayDate, score: analysis.score, confidence: analysis.confidence, mood: analysis.mood, summary: analysis.summary, reasons: analysis.reasons })
+        safeHistory.push({ date: todayDate, score: displayAnalysis.score, confidence: displayAnalysis.confidence, mood: displayAnalysis.mood, summary: displayAnalysis.summary, reasons: displayAnalysis.reasons })
         const cutoffStr = todayCstMinusDays(5)
         await writeJsonFile(historyFile, safeHistory.filter(h => h.date >= cutoffStr))
       } catch (historyErr) {
@@ -592,19 +683,20 @@ async function handleCommand(session, ctx, state) {
       }
 
       logDebug(ctx, 'emotion', `analysis done channel=${channelKey} score=${analysis.score} messages=${msgs.length}`)
-      const botUin = session.selfId || session.bot?.selfId || ''
-      const forwardResult = state.disableForward ? null : await sendForwardMsg(channelKey, [{
-        type: 'node',
-        data: {
-          name: '今日情绪分析',
-          uin: botUin,
-          content: [{ type: 'text', data: { text: rendered } }],
-        },
-      }], 1500).catch(function() { return null })
-      if (!forwardResult) {
-        return handled(rendered)
+      const renderImage = state.renderEmotionImage || renderEmotionImage
+      try {
+        const imageBuffer = await renderEmotionImageWithRetry(ctx, renderImage, displayAnalysis, stats, recentHistory, channelKey)
+        const imageBase64 = Buffer.isBuffer(imageBuffer) ? imageBuffer.toString('base64') : Buffer.from(imageBuffer).toString('base64')
+        const imageMessage = h.image(`data:image/png;base64,${imageBase64}`)
+        lastEmotionCache.set(channelKey, { response: imageMessage, text: rendered, ts: Date.now() })
+        trimEmotionCache(lastEmotionCache)
+        return handled(imageMessage)
+      } catch (imageErr) {
+        const fallbackText = await generateShortEmotionFallback(callOpenAI, displayAnalysis, stats, recentHistory, rendered)
+        lastEmotionCache.set(channelKey, { text: fallbackText, ts: Date.now() })
+        trimEmotionCache(lastEmotionCache)
+        return handled(fallbackText)
       }
-      return handled(null)
     } catch (err) {
       ctx.logger('dongxuelian-ai').warn(`emotion analysis failed: ${err.message}`)
       return handled('情绪分析失败了，稍后再试。')

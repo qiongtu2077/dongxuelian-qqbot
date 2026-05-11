@@ -250,4 +250,4 @@ async function renderReport(data, analysis) {
   return renderHtmlToImage(html)
 }
 
-module.exports = { renderReport }
+module.exports = { renderReport, renderHtmlToImage }
