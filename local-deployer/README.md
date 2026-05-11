@@ -47,3 +47,8 @@ npm run build:win
 - `打开 NapCat 发布页` 是手动下载入口，用于查看版本或自行下载安装包。
 - `生成 Koishi 本地配置` 会写入 `koishi.yml`、`start-local.bat` 和必要的 `data/ai-*.txt` 配置，并记录 `data/dashboard-local-deploy-manifest.json`，方便后续预览和安全删除。
 - `删除 Koishi 配置` 会先展示删除预览，只删除本工具生成且未被手动修改的 Koishi 启动配置；默认保留 NapCat、下载包、API Key、用户资料、日志和插件源码。
+- `一键卸载本地部署环境` 位于危险区。点击后会先要求管理员密码，通过后再弹出主题化确认窗口，列出环境文件和用户数据。
+  - 环境文件默认删除：项目 `node_modules/`、Dashboard 前端依赖、本地部署器依赖和构建产物、`runtime/napcat/`、`runtime/downloads/`、`koishi.yml`、`start-local.bat`、本地部署清单和备份。
+  - 用户数据默认保留：API Key、管理员 ID、用户资料、会话/记忆、运行日志、cookies、白名单/黑名单和其他 `data/` 运行数据。用户在确认窗口里取消保留后才会删除。
+  - 系统全局 Node.js/npm 只检测和报告，不自动卸载。只有项目目录内或本工具清单记录的 Node/npm 依赖、便携 Node、npm 产物会被删除。
+  - 自定义 NapCat 目录只有在被本工具记录、能验证为 NapCat 目录且不属于系统/用户根目录时才会自动删除；否则会提示用户手动处理。

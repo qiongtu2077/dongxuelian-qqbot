@@ -826,6 +826,146 @@ select option { background: var(--surface); color: var(--text) }
 .preview-delete { border-color: color-mix(in srgb, var(--danger) 46%, var(--border)) }
 .preview-keep, .preview-missing { opacity: .76 }
 
+.danger-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 16px;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 9%, var(--input));
+  padding: 12px;
+}
+
+.danger-zone strong { display: block; color: var(--danger); margin-bottom: 4px }
+.danger-zone span { display: block; color: var(--text3); font-size: 12px; line-height: 1.45 }
+
+.uninstall-backdrop { z-index: 45 }
+
+.uninstall-modal {
+  width: min(920px, 100%);
+  max-height: min(86vh, 780px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 24px 76px rgba(0,0,0,0.38);
+  padding: 20px;
+  animation: cardIn .2s ease both;
+}
+
+.uninstall-modal .modal-head p {
+  margin-top: 6px;
+  color: var(--text3);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.uninstall-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.uninstall-summary > div {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+  padding: 10px;
+}
+
+.uninstall-summary span,
+.uninstall-summary small { display: block; color: var(--text3); font-size: 12px }
+.uninstall-summary b { display: block; color: var(--text); margin: 4px 0; overflow-wrap: anywhere }
+
+.uninstall-warning-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.uninstall-warning-list > div {
+  border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 10%, var(--input));
+  color: var(--text2);
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.uninstall-warning-list code { display: block; margin-top: 4px; overflow-wrap: anywhere }
+
+.uninstall-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--input) 82%, transparent);
+  padding: 12px;
+  margin-top: 12px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.section-head strong { color: var(--text) }
+.section-head span { display: block; color: var(--text3); font-size: 12px; margin-top: 4px }
+.mini-actions { display: flex; gap: 8px; flex-wrap: wrap }
+
+.uninstall-list {
+  display: grid;
+  gap: 7px;
+  max-height: 238px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.uninstall-list.compact { max-height: 150px }
+
+.uninstall-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(0, 1.2fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--card) 48%, transparent);
+  padding: 9px 10px;
+}
+
+label.uninstall-row { cursor: pointer }
+.uninstall-row input { width: 18px; min-height: 18px; flex: 0 0 auto; accent-color: var(--accent) }
+.uninstall-row:has(input) { grid-template-columns: 22px minmax(150px, 1fr) minmax(0, 1.2fr) auto }
+.uninstall-row strong { color: var(--text); font-size: 13px }
+.uninstall-row small { display: block; color: var(--text3); font-size: 12px; line-height: 1.45; margin-top: 3px }
+.uninstall-row code { min-width: 0; overflow-wrap: anywhere }
+.uninstall-row b { color: var(--text2); font-size: 12px; white-space: nowrap }
+.uninstall-row.delete { border-color: color-mix(in srgb, var(--danger) 44%, var(--border)) }
+.uninstall-row.keep { border-color: color-mix(in srgb, var(--success) 34%, var(--border)); opacity: .92 }
+
+.confirm-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 36%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--input));
+  padding: 11px 12px;
+  margin-top: 14px;
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.confirm-check input { width: 18px; min-height: 18px; flex: 0 0 auto; accent-color: var(--danger) }
+.uninstall-actions { justify-content: flex-end }
+
 .deploy-log {
   margin-top: 14px;
   max-height: 320px;
@@ -872,6 +1012,12 @@ select option { background: var(--surface); color: var(--text) }
   .deploy-hero { flex-direction: column; align-items: stretch }
   .segmented { width: 100%; display: grid; grid-template-columns: 1fr }
   .path-control { flex-direction: column }
+  .danger-zone { flex-direction: column; align-items: stretch }
+  .uninstall-summary { grid-template-columns: 1fr }
+  .section-head { flex-direction: column; align-items: stretch }
+  .uninstall-row, .uninstall-row:has(input) { grid-template-columns: 1fr }
+  .uninstall-row input { grid-row: 1 }
+  .uninstall-row b { white-space: normal }
   .preview-row { grid-template-columns: 1fr }
   .preview-row small { grid-column: 1 }
 

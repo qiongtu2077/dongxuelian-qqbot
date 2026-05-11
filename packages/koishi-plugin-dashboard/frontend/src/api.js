@@ -51,8 +51,8 @@ function withTimeout(ms = 10000) {
   return { signal: ctrl.signal, clear: () => clearTimeout(timer) }
 }
 
-async function get(path, admin = false) {
-  const { signal, clear } = withTimeout()
+async function get(path, admin = false, timeoutMs = 10000) {
+  const { signal, clear } = withTimeout(timeoutMs)
   try {
     const res = await fetch(BASE + path, { headers: headers(admin), signal })
     clear()
@@ -168,6 +168,8 @@ export async function downloadNapcat(url) { return post('/deploy/napcat-download
 export async function downloadNapcatWindows(installDir) { return post('/deploy/napcat-windows-download', { installDir }, true, 240000) }
 export async function previewLocalConfigDelete() { return get('/deploy/local-config-preview', true) }
 export async function deleteLocalConfig() { return post('/deploy/local-config-delete', {}, true) }
+export async function previewLocalUninstall() { return get('/deploy/local-uninstall-preview', true, 60000) }
+export async function confirmLocalUninstall(options) { return post('/deploy/local-uninstall', { ...(options || {}), confirm: true }, true, 180000) }
 export async function localBotStatus() { return get('/bot/local-status') }
 export async function localBotStop() { return post('/bot/local-stop', {}, true) }
 export async function rebuildFrontend() { return post('/frontend/rebuild', {}, true) }

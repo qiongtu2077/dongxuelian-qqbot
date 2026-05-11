@@ -71,10 +71,90 @@
         </div>
       </div>
 
+      <div class="danger-zone">
+        <div>
+          <strong>危险区</strong>
+          <span>部署失败或想重新来过时，可清理本项目安装/生成的本地环境。系统全局 Node.js/npm 只报告，不自动删除。</span>
+        </div>
+        <button class="btn btn-sm btn-danger-solid" type="button" @click="previewLocalUninstallFlow" :disabled="previewingUninstall || uninstalling">{{ previewingUninstall ? '读取中...' : '一键卸载本地部署环境' }}</button>
+      </div>
+
       <div v-if="localMsg" class="msg" :class="localMsg.type">{{ localMsg.text }}</div>
     </div>
 
-    <div v-else class="card">
+    <div v-if="uninstallPreview" class="modal-backdrop uninstall-backdrop">
+      <div class="uninstall-modal themed-scrollbar">
+        <div class="modal-head">
+          <div>
+            <h2 class="modal-title">一键卸载确认</h2>
+            <p>环境文件默认删除；用户数据默认保留。取消保留后，确认卸载时会一并删除。</p>
+          </div>
+          <button class="icon-btn" type="button" title="关闭" @click="closeUninstallPreview" :disabled="uninstalling">×</button>
+        </div>
+
+        <div class="uninstall-summary">
+          <div><span>环境文件</span><b>{{ uninstallDeleteItems.length }}</b><small>{{ formatSize(uninstallBaseDeleteSize) }}</small></div>
+          <div><span>用户数据</span><b>{{ uninstallUserDataItems.length }}</b><small>{{ formatSize(uninstallUserDataSize) }}</small></div>
+          <div><span>本次将删</span><b>{{ formatSize(uninstallSelectedDeleteSize) }}</b><small>{{ uninstallSelectedDeleteCount }} 项</small></div>
+        </div>
+
+        <div v-if="uninstallWarnings.length" class="uninstall-warning-list">
+          <div v-for="item in uninstallWarnings" :key="item.key || item.path || item.message">{{ item.message || item.reason }}<code v-if="item.path">{{ item.path }}</code></div>
+        </div>
+
+        <section class="uninstall-section">
+          <div class="section-head"><strong>环境文件</strong><span>这些是本项目安装或生成的可重建文件</span></div>
+          <div class="uninstall-list themed-scrollbar">
+            <div v-for="item in uninstallDeleteItems" :key="item.key" class="uninstall-row delete">
+              <div><strong>{{ item.label }}</strong><small>{{ item.reason }}</small></div>
+              <code>{{ formatUninstallPaths(item) }}</code>
+              <b>{{ formatSize(item.size) }}</b>
+            </div>
+          </div>
+        </section>
+
+        <section class="uninstall-section">
+          <div class="section-head">
+            <div><strong>用户数据</strong><span>默认保留；关闭开关后会删除对应数据</span></div>
+            <div class="mini-actions">
+              <button class="btn btn-sm btn-ghost" type="button" @click="setAllUserDataKeep(true)" :disabled="uninstalling">全部保留</button>
+              <button class="btn btn-sm btn-ghost btn-danger" type="button" @click="setAllUserDataKeep(false)" :disabled="uninstalling">全部删除</button>
+            </div>
+          </div>
+          <div class="uninstall-list themed-scrollbar">
+            <label v-for="item in uninstallUserDataItems" :key="item.key" :class="['uninstall-row', shouldKeepUserData(item) ? 'keep' : 'delete']">
+              <input type="checkbox" :checked="shouldKeepUserData(item)" @change="setUserDataKeep(item, $event.target.checked)" :disabled="uninstalling" />
+              <div><strong>{{ item.label }}</strong><small>{{ item.reason }}</small></div>
+              <code>{{ formatUninstallPaths(item) }}</code>
+              <b>{{ shouldKeepUserData(item) ? '保留' : formatSize(item.size) }}</b>
+            </label>
+          </div>
+        </section>
+
+        <section v-if="uninstallKeepItems.length" class="uninstall-section">
+          <div class="section-head"><strong>不会自动删除</strong><span>系统级工具或无法证明归属的路径</span></div>
+          <div class="uninstall-list compact themed-scrollbar">
+            <div v-for="item in uninstallKeepItems" :key="item.label + item.path" class="uninstall-row keep">
+              <div><strong>{{ item.label }}</strong><small>{{ item.reason }}</small></div>
+              <code>{{ item.path }}</code>
+              <b>{{ item.version || '保留' }}</b>
+            </div>
+          </div>
+        </section>
+
+        <label class="confirm-check">
+          <input type="checkbox" v-model="uninstallConfirmed" :disabled="uninstalling" />
+          <span>我确认卸载本地部署环境，并理解未保留的用户数据会被删除。</span>
+        </label>
+
+        <div class="deploy-actions uninstall-actions">
+          <button class="btn btn-sm btn-danger-solid" type="button" @click="confirmLocalUninstallFlow" :disabled="uninstalling || !uninstallConfirmed">{{ uninstalling ? '卸载中...' : '确认一键卸载' }}</button>
+          <button class="btn btn-sm btn-ghost" type="button" @click="closeUninstallPreview" :disabled="uninstalling">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="mode === 'remote'" class="card">
       <h2>远程 Linux 部署</h2>
       <div class="grp-desc" style="margin-bottom:14px">需要本机可以直接 SSH 到服务器。部署会推送插件代码、Dashboard 前端和必要脚本到远程目录。</div>
       <div class="row"><label>服务器</label><input v-model="remote.server" placeholder="root@服务器IP" /></div>
@@ -102,7 +182,7 @@
 
 <script>
 import { computed, inject, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { checkDeployUpdate, checkLocalEnv, confirmDeploy, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, previewLocalConfigDelete, rebuildFrontend, rebuildFrontendStatus, runDeploy, updateDeployConfig, uploadDeploy } from '../api'
+import { checkDeployUpdate, checkLocalEnv, confirmDeploy, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, runDeploy, updateDeployConfig, uploadDeploy } from '../api'
 
 export default {
   name: 'DeployPanel',
@@ -120,6 +200,9 @@ export default {
     const napcatUrl = ref('')
     const napcatInstallDir = ref('')
     const deletePreview = ref(null)
+    const uninstallPreview = ref(null)
+    const deleteUserDataKeys = ref([])
+    const uninstallConfirmed = ref(false)
     const deployLogRef = ref(null)
     const checking = ref(false)
     const downloading = ref(false)
@@ -127,6 +210,8 @@ export default {
     const localDeploying = ref(false)
     const previewingDelete = ref(false)
     const deletingConfig = ref(false)
+    const previewingUninstall = ref(false)
+    const uninstalling = ref(false)
     const savingRemote = ref(false)
     const deploying = ref(false)
     const rebuilding = ref(false)
@@ -157,6 +242,15 @@ export default {
       const labels = { free: '空闲', occupied: '占用', denied: '无权限', unknown: '未知', invalid: '无效' }
       return Object.keys(ports).map(port => `${port}:${labels[ports[port].status] || (ports[port].available ? '空闲' : '占用')}`).join('  ')
     })
+    const uninstallDeleteItems = computed(() => uninstallPreview.value?.deleteItems || [])
+    const uninstallUserDataItems = computed(() => uninstallPreview.value?.userDataItems || [])
+    const uninstallKeepItems = computed(() => uninstallPreview.value?.keepItems || [])
+    const uninstallWarnings = computed(() => uninstallPreview.value?.warnings || [])
+    const uninstallBaseDeleteSize = computed(() => uninstallDeleteItems.value.reduce((sum, item) => sum + (item.size || 0), 0))
+    const uninstallUserDataSize = computed(() => uninstallUserDataItems.value.reduce((sum, item) => sum + (item.size || 0), 0))
+    const uninstallSelectedUserDataItems = computed(() => uninstallUserDataItems.value.filter(item => deleteUserDataKeys.value.includes(item.key)))
+    const uninstallSelectedDeleteSize = computed(() => uninstallBaseDeleteSize.value + uninstallSelectedUserDataItems.value.reduce((sum, item) => sum + (item.size || 0), 0))
+    const uninstallSelectedDeleteCount = computed(() => uninstallDeleteItems.value.length + uninstallSelectedUserDataItems.value.length)
 
     function withAdminRetry(res, message, retry) {
       if (res?.code === 'ADMIN_REQUIRED') {
@@ -259,6 +353,65 @@ export default {
       localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? `已删除 ${deleted} 个配置文件` : '删除失败') }
       deletingConfig.value = false
       deletePreview.value = null
+      await checkEnv()
+    }
+
+    async function previewLocalUninstallFlow() {
+      previewingUninstall.value = true
+      localMsg.value = null
+      const res = await previewLocalUninstall()
+      if (withAdminRetry(res, '一键卸载需要管理员密码', previewLocalUninstallFlow)) { previewingUninstall.value = false; return }
+      if (res.ok) {
+        uninstallPreview.value = res.data
+        deleteUserDataKeys.value = []
+        uninstallConfirmed.value = false
+      } else {
+        localMsg.value = { type: 'err', text: res.data?.message || '读取卸载预览失败' }
+      }
+      previewingUninstall.value = false
+    }
+
+    function closeUninstallPreview() {
+      if (uninstalling.value) return
+      uninstallPreview.value = null
+      deleteUserDataKeys.value = []
+      uninstallConfirmed.value = false
+    }
+
+    function shouldKeepUserData(item) {
+      return !deleteUserDataKeys.value.includes(item.key)
+    }
+
+    function setUserDataKeep(item, keep) {
+      const keys = new Set(deleteUserDataKeys.value)
+      if (keep) keys.delete(item.key)
+      else keys.add(item.key)
+      deleteUserDataKeys.value = [...keys]
+    }
+
+    function setAllUserDataKeep(keep) {
+      deleteUserDataKeys.value = keep ? [] : uninstallUserDataItems.value.map(item => item.key)
+    }
+
+    function formatUninstallPaths(item) {
+      const paths = item.paths || []
+      if (!paths.length) return ''
+      if (paths.length === 1) return paths[0].path
+      return `${paths[0].path} 等 ${paths.length} 项`
+    }
+
+    async function confirmLocalUninstallFlow() {
+      if (!uninstallConfirmed.value) return
+      uninstalling.value = true
+      localMsg.value = null
+      const res = await confirmLocalUninstall({ deleteUserDataKeys: deleteUserDataKeys.value })
+      if (withAdminRetry(res, '一键卸载需要管理员密码', confirmLocalUninstallFlow)) { uninstalling.value = false; return }
+      const deleted = res.data?.deleted?.length || 0
+      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? `一键卸载完成，删除 ${deleted} 项` : '一键卸载失败') }
+      uninstalling.value = false
+      uninstallPreview.value = null
+      deleteUserDataKeys.value = []
+      uninstallConfirmed.value = false
       await checkEnv()
     }
 
@@ -377,7 +530,7 @@ export default {
       if (progressTimer) clearInterval(progressTimer)
     })
 
-    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, deployLogRef, checking, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, savingRemote, deploying, rebuilding, isWindows, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, checkEnv, chooseNapcatDir, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, previewDeleteConfig, confirmDeleteConfig, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction }
+    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, checking, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, savingRemote, deploying, rebuilding, isWindows, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, checkEnv, chooseNapcatDir, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction }
   },
 }
 </script>
