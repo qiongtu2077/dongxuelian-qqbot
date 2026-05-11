@@ -166,6 +166,13 @@ export async function deployLocal(data) { return post('/deploy/local', data, tru
 export async function checkLocalEnv() { return get('/env/check') }
 export async function downloadNapcat(url) { return post('/deploy/napcat-download', { url }, true, 180000) }
 export async function downloadNapcatWindows(installDir) { return post('/deploy/napcat-windows-download', { installDir }, true, 240000) }
+export async function startNpmInstall() { return post('/deploy/npm-install', {}, true, 10000) }
+export async function npmInstallStatus() { return get('/deploy/npm-install-status') }
+export async function startNapcat() { return post('/deploy/napcat-start', {}, true, 10000) }
+export async function napcatDeployStatus() { return get('/deploy/napcat-status') }
+export async function startKoishiLocal() { return post('/deploy/koishi-start', {}, true, 10000) }
+export async function koishiDeployStatus() { return get('/deploy/koishi-status') }
+export async function localReadyCheck() { return get('/deploy/local-ready-check') }
 export async function previewLocalConfigDelete() { return get('/deploy/local-config-preview', true) }
 export async function deleteLocalConfig() { return post('/deploy/local-config-delete', {}, true) }
 export async function previewLocalUninstall() { return get('/deploy/local-uninstall-preview', true, 60000) }

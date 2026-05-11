@@ -778,6 +778,205 @@ select option { background: var(--surface); color: var(--text) }
   margin-top: 6px;
   overflow-wrap: anywhere;
 }
+
+.local-wizard-card { overflow: visible }
+
+.local-wizard-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.local-wizard-head .btn { flex: 0 0 auto }
+
+.flow-sentence {
+  margin: 14px 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+  color: var(--text2);
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.station-map {
+  --station-line: color-mix(in srgb, var(--border) 72%, var(--text3));
+  display: grid;
+  grid-template-columns: repeat(8, minmax(86px, 1fr));
+  gap: 0;
+  margin: 8px 0 18px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.station-node {
+  position: relative;
+  min-width: 86px;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text3);
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.station-node::before {
+  content: "";
+  position: absolute;
+  top: 15px;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--station-line);
+  z-index: 0;
+}
+
+.station-node:first-child::before { left: 50% }
+.station-node:last-child::before { right: 50% }
+
+.station-dot {
+  position: relative;
+  z-index: 1;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--station-line);
+  background: var(--surface);
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 900;
+  box-shadow: 0 0 0 4px var(--card);
+}
+
+.station-title {
+  min-height: 34px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  text-align: center;
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.station-node small {
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.station-node.active .station-dot,
+.station-running .station-dot {
+  border-color: var(--accent);
+  color: #11110d;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+}
+
+.station-success .station-dot,
+.station-skipped .station-dot {
+  border-color: var(--success);
+  color: #fff;
+  background: var(--success);
+}
+
+.station-waiting .station-dot {
+  border-color: var(--info);
+  color: #fff;
+  background: var(--info);
+}
+
+.station-failed .station-dot {
+  border-color: var(--danger);
+  color: #fff;
+  background: var(--danger);
+}
+
+.station-node.active .station-title { color: var(--text) }
+.station-success .station-title { color: var(--success) }
+.station-failed .station-title { color: var(--danger) }
+.station-waiting .station-title { color: var(--info) }
+
+.local-warning {
+  border: 1px solid color-mix(in srgb, var(--danger) 46%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 10%, var(--input));
+  color: var(--danger);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 14px;
+}
+
+.local-wizard-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, .85fr) minmax(320px, 1.15fr);
+  gap: 14px;
+}
+
+.local-panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--input) 84%, transparent);
+  padding: 12px;
+}
+
+.local-config-panel .row { align-items: flex-start }
+
+.inline-note {
+  color: var(--text3);
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 4px 0 10px;
+}
+
+.advanced-options {
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.advanced-options summary {
+  color: var(--text2);
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+
+.station-detail-body p {
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.ready-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+  padding: 12px;
+}
+
+.ready-panel strong { color: var(--text); white-space: nowrap }
+.ready-panel span { color: var(--text2); font-size: 13px; line-height: 1.5; flex: 1 }
+.ready-ok { border-color: color-mix(in srgb, var(--success) 42%, var(--border)) }
+.ready-warn { border-color: color-mix(in srgb, var(--info) 42%, var(--border)) }
+.ready-links { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end }
 .ok-text { color: var(--accent) }
 .warn-text { color: var(--info) }
 .err-text { color: var(--danger) }
@@ -991,6 +1190,11 @@ label.uninstall-row { cursor: pointer }
     padding: 78px 18px 28px;
   }
   .app-head { align-items: flex-start; flex-direction: column; gap: 8px }
+  .local-wizard-head { flex-direction: column; align-items: stretch }
+  .local-wizard-head .btn { width: 100% }
+  .local-wizard-layout { grid-template-columns: 1fr }
+  .ready-panel { flex-direction: column; align-items: stretch }
+  .ready-links { justify-content: flex-start }
 }
 
 @media (max-width: 640px) {
@@ -1011,6 +1215,25 @@ label.uninstall-row { cursor: pointer }
   .secret-line code { flex-basis: 100% }
   .deploy-hero { flex-direction: column; align-items: stretch }
   .segmented { width: 100%; display: grid; grid-template-columns: 1fr }
+  .station-map {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    overflow-x: visible;
+  }
+  .station-node {
+    min-width: 0;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    justify-items: start;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--input);
+    padding: 8px 10px;
+  }
+  .station-node::before { display: none }
+  .station-title { min-height: 0; text-align: left; justify-content: flex-start }
   .path-control { flex-direction: column }
   .danger-zone { flex-direction: column; align-items: stretch }
   .uninstall-summary { grid-template-columns: 1fr }

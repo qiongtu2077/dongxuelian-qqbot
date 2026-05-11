@@ -39,11 +39,33 @@ npm run build:win
 - OneBot WebSocket 使用 `ws://127.0.0.1:8080/onebot/v11/ws`。
 - Dashboard 入口只需要访问密码；修改配置、部署、Key、密码等敏感操作仍需要管理员密码。SSH 登录服务器的系统密码不写入部署器代码。
 
+## 从 0 到可用
+
+Windows 本地部署页默认认为当前这台 Windows 虚拟机或测试机就是部署目标。看到 Windows 盘符、当前项目目录和本机 runtime 目录时，说明正在操作正确的机器。
+
+页面会按地铁站点图追踪完整流程：`环境检测 -> 安装 NapCat -> 生成配置 -> npm install -> 启动 NapCat -> 等待扫码 -> 启动 Koishi -> 健康检查`。
+
+最少步骤：
+
+1. 双击根目录 `启动本地部署器.bat`，打开 Dashboard 部署页。
+2. 点击 `检测环境`，确认 Node.js 18+、npm、端口和项目目录状态。
+3. 填写机器人 QQ。`API Key` 可以留空，留空不会阻塞部署；部署完成后再到 API Keys 页补充即可。
+4. 点击 `一键准备并启动`，向导会自动安装 NapCat、生成 Koishi 配置、执行 `npm install` 并启动 NapCat。
+5. 到 `等待扫码` 站点时，用机器人 QQ 扫码登录 NapCat，然后点击 `我已扫码，继续`。
+6. 向导启动 Koishi 并执行健康检查。若 AI Key 仍为空，结果会显示“基础可用”：QQ 登录、OneBot 和 Koishi 可用，但 AI 回复暂不可用。
+
+端口要求：Dashboard `5150`，Koishi `5140`，NapCat WebUI `6099`，OneBot WebSocket `8080`。如果端口被占用，环境检测会在对应站点显示原因。
+
 ## Windows 本地部署页按钮说明
 
+- `一键准备并启动` 会按站点图顺序执行：环境检测、安装 NapCat、生成配置、`npm install`、启动 NapCat，然后暂停等待扫码。
 - `检测环境` 只读取当前状态，不创建 NapCat 安装目录，也不会把残留目录当作已安装。NapCat 必须检测到可信启动文件或配置标记才显示为已安装。
-- `下载 NapCat（Windows）` 是主流程按钮，只在 Windows 环境且未检测到 NapCat 时显示。部署器窗口中可用系统目录选择框，普通浏览器中需要手填 Dashboard 所在机器上的安装路径，默认建议 `runtime/napcat/`。
-- `下载直链包` 只把用户粘贴的下载地址保存到 `runtime/downloads/`，不等同于安装 NapCat。
+- `一键安装 NapCat（Windows，官方包）` 是主流程按钮，只在 Windows 环境可用。部署器窗口中可用系统目录选择框，普通浏览器中需要手填 Dashboard 所在机器上的安装路径，默认建议 `runtime/napcat/`。
+- `执行 npm install` 会在项目根目录安装依赖，并把日志写入 `runtime/logs/npm-install.log`。
+- `启动 NapCat` 会启动本机 NapCat，日志写入 `runtime/logs/napcat.log`。扫码登录必须由用户手动完成。
+- `启动 Koishi` 会启动本机 Koishi，日志写入 `runtime/logs/koishi-local.log`。
+- `健康检查` 会汇总 Node/npm、项目依赖、NapCat、OneBot、Koishi 和 AI Key 状态。AI Key 未配置时不算部署失败，只会提示 AI 回复暂不可用。
+- `下载直链包` 位于高级设置，只把用户粘贴的下载地址保存到 `runtime/downloads/`，不等同于安装 NapCat。
 - `打开 NapCat 发布页` 是手动下载入口，用于查看版本或自行下载安装包。
 - `生成 Koishi 本地配置` 会写入 `koishi.yml`、`start-local.bat` 和必要的 `data/ai-*.txt` 配置，并记录 `data/dashboard-local-deploy-manifest.json`，方便后续预览和安全删除。
 - `删除 Koishi 配置` 会先展示删除预览，只删除本工具生成且未被手动修改的 Koishi 启动配置；默认保留 NapCat、下载包、API Key、用户资料、日志和插件源码。

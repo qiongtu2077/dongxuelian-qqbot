@@ -10,7 +10,7 @@ const http = require('http')
 const https = require('https')
 const crypto = require('crypto')
 const os = require('os')
-const { execSync, exec, execFileSync } = require('child_process')
+const { execSync, exec, execFileSync, spawn } = require('child_process')
 
 // ====== 全局异常兜底（防止单请求崩溃整个进程） ======
 process.on('uncaughtException', (err) => {
@@ -549,7 +549,11 @@ function httpsGetJson(url, callback) {
 function pickNapcatWindowsAsset(release) {
   const assets = Array.isArray(release?.assets) ? release.assets : []
   const zipAssets = assets.filter(item => /\.zip$/i.test(item.name || '') && !/(linux|darwin|mac|android|arm64|aarch64)/i.test(item.name || ''))
-  return zipAssets.find(item => /(win|windows)/i.test(item.name || '')) || zipAssets[0] || null
+  return zipAssets.find(item => /^NapCat\.Shell\.Windows\.Node\.zip$/i.test(item.name || ''))
+    || zipAssets.find(item => /^NapCat\.Shell\.Windows\.OneKey\.zip$/i.test(item.name || ''))
+    || zipAssets.find(item => /(win|windows)/i.test(item.name || ''))
+    || zipAssets[0]
+    || null
 }
 
 function downloadNapcatWindowsRelease(installDir, callback) {
@@ -1101,6 +1105,192 @@ function downloadToRuntime(url, callback) {
   req.on('error', callback)
 }
 
+const localTasks = {
+  npmInstall: { label: 'npm install', logFile: runtimePath('logs', 'npm-install.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null },
+  napcat: { label: 'NapCat', logFile: runtimePath('logs', 'napcat.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null },
+  koishi: { label: 'Koishi', logFile: runtimePath('logs', 'koishi-local.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null },
+}
+
+function appendLocalTaskLog(task, chunk) {
+  try {
+    fs.mkdirSync(path.dirname(task.logFile), { recursive: true })
+    fs.appendFileSync(task.logFile, String(chunk), 'utf8')
+  } catch {}
+}
+
+function getTaskPublicStatus(key, extra = {}) {
+  const task = localTasks[key]
+  return {
+    state: task.state,
+    running: !!task.running,
+    startedAt: task.startedAt,
+    finishedAt: task.finishedAt,
+    exitCode: task.exitCode,
+    error: task.error,
+    pid: task.pid,
+    command: task.command,
+    cwd: task.cwd,
+    logFile: task.logFile,
+    logLines: readLastLogLines(task.logFile, 160),
+    ...extra,
+  }
+}
+
+function spawnLocalTask(key, command, args = [], options = {}) {
+  const task = localTasks[key]
+  if (!task) throw new Error('unknown local task')
+  if (task.running && task.process && !task.process.killed) return { alreadyRunning: true, status: getTaskPublicStatus(key) }
+  fs.mkdirSync(path.dirname(task.logFile), { recursive: true })
+  task.state = 'running'
+  task.running = true
+  task.startedAt = Date.now()
+  task.finishedAt = 0
+  task.exitCode = null
+  task.error = ''
+  task.pid = 0
+  task.command = [command].concat(args).join(' ')
+  task.cwd = options.cwd || KOISHI_DIR
+  fs.writeFileSync(task.logFile, `[${new Date().toISOString()}] $ ${task.command}\n`, 'utf8')
+  const child = spawn(command, args, {
+    cwd: task.cwd,
+    env: { ...process.env, ...(options.env || {}) },
+    windowsHide: true,
+    shell: options.shell === true,
+  })
+  task.process = child
+  task.pid = child.pid || 0
+  child.stdout?.on('data', chunk => appendLocalTaskLog(task, chunk))
+  child.stderr?.on('data', chunk => appendLocalTaskLog(task, chunk))
+  child.on('error', err => {
+    task.error = err.message
+    task.state = 'failed'
+    task.running = false
+    task.finishedAt = Date.now()
+    appendLocalTaskLog(task, `\n[${new Date().toISOString()}] ERROR ${err.message}\n`)
+  })
+  child.on('close', code => {
+    task.running = false
+    task.process = null
+    task.exitCode = code
+    task.finishedAt = Date.now()
+    task.state = code === 0 ? 'success' : 'failed'
+    appendLocalTaskLog(task, `\n[${new Date().toISOString()}] EXIT ${code}\n`)
+  })
+  return { alreadyRunning: false, status: getTaskPublicStatus(key) }
+}
+
+function getAiKeyStatus(providerInput) {
+  const provider = String(providerInput || readFileSync(path.join(DATA_DIR, 'ai-provider.txt')) || 'opencode').trim() || 'opencode'
+  const keyFiles = {
+    opencode: path.join(DATA_DIR, 'ai-openai-key.txt'),
+    deepseek: path.join(DATA_DIR, 'ai-deepseek-key.txt'),
+    dashscope: path.join(DATA_DIR, 'ai-dashscope-key.txt'),
+    glm: path.join(DATA_DIR, 'ai-glm-key.txt'),
+    mimorium: path.join(DATA_DIR, 'ai-mimorium-key.txt'),
+  }
+  const file = keyFiles[provider] || keyFiles.opencode
+  const value = readFileSync(file)
+  return {
+    provider,
+    configured: !!value.trim(),
+    path: isInsidePath(KOISHI_DIR, file) ? toProjectRel(file) : file,
+    reason: value.trim() ? 'AI Key 已配置' : 'AI Key 未配置，基础部署可继续，AI 回复暂不可用',
+  }
+}
+
+function getNapcatStartEntry() {
+  const detected = detectNapcatInstallation()
+  const entryRe = /\.(exe|bat|cmd|js|mjs)$/i
+  const direct = detected.entry && entryRe.test(detected.entry) ? detected.entry : ''
+  if (direct) return { detected, entry: direct }
+  const roots = uniquePaths([detected.path, detected.expectedPath, readFileSync(LOCAL_NAPCAT_DIR_FILE)].filter(Boolean))
+  for (const root of roots) {
+    const marker = findNapcatMarkers(root).markers.find(item => item.type === 'entry' && entryRe.test(item.path))
+    if (marker) return { detected, entry: marker.path }
+  }
+  return { detected, entry: '' }
+}
+
+function getNapcatLoginHint() {
+  const lines = readLastLogLines(localTasks.napcat.logFile, 220).join('\n')
+  if (/登录成功|已登录|login\s+success|account.*online/i.test(lines)) return { status: 'ok', reason: '日志显示 NapCat 已登录' }
+  if (/二维码|扫码|qrcode|scan|login/i.test(lines)) return { status: 'waiting', reason: 'NapCat 已启动，等待扫码或登录确认' }
+  return { status: 'unknown', reason: '暂未能从日志确认登录状态，请在 NapCat WebUI 或控制台完成扫码' }
+}
+
+function getLocalNapcatDeployStatus() {
+  const detected = detectNapcatInstallation()
+  const webuiPort = checkPortState(6099)
+  const onebotPort = checkPortState(8080)
+  const token = process.env.NAPCAT_TOKEN || getNapcatToken()
+  const login = getNapcatLoginHint()
+  return getTaskPublicStatus('napcat', {
+    found: detected.found,
+    installation: detected,
+    running: localTasks.napcat.running || webuiPort.status === 'occupied' || onebotPort.status === 'occupied',
+    webuiPort,
+    onebotPort,
+    webuiUrl: 'http://127.0.0.1:6099/',
+    tokenAvailable: !!token,
+    login,
+  })
+}
+
+function getLocalKoishiDeployStatus() {
+  const port = checkPortState(5140)
+  const lines = readLastLogLines(localTasks.koishi.logFile, 220).join('\n')
+  const loaded = /adapter-onebot|dongxuelian-ai|server listening|app started|koishi/i.test(lines)
+  return getTaskPublicStatus('koishi', {
+    running: localTasks.koishi.running || port.status === 'occupied',
+    port,
+    loaded,
+    url: 'http://127.0.0.1:5140/',
+  })
+}
+
+function getLocalNpmInstallStatus() {
+  return getTaskPublicStatus('npmInstall', { dependencies: getProjectDependencyStatus() })
+}
+
+function buildLocalReadyCheck() {
+  const nodeInfo = getCommandInfo('node', 18)
+  const npmInfo = getCommandInfo('npm')
+  const dependencies = getProjectDependencyStatus()
+  const localConfig = buildLocalConfigPreview()
+  const napcat = getLocalNapcatDeployStatus()
+  const koishi = getLocalKoishiDeployStatus()
+  const aiKey = getAiKeyStatus()
+  const checks = {
+    node: nodeInfo.ok,
+    npm: npmInfo.found,
+    dependencies: dependencies.ready,
+    localConfig: (localConfig.files || []).some(item => item.action === 'delete' && item.path === 'koishi.yml'),
+    napcatInstalled: napcat.found,
+    napcatStarted: napcat.running,
+    onebotPort: napcat.onebotPort.status === 'occupied',
+    koishiStarted: koishi.running,
+    aiKey: aiKey.configured,
+  }
+  const basicReady = checks.node && checks.npm && checks.dependencies && checks.localConfig && checks.napcatInstalled && checks.napcatStarted && checks.onebotPort && checks.koishiStarted
+  return {
+    ok: true,
+    basicReady,
+    fullyReady: basicReady && checks.aiKey,
+    checks,
+    node: nodeInfo,
+    npm: npmInfo,
+    dependencies,
+    localConfig,
+    napcat,
+    koishi,
+    aiKey,
+    dashboardUrl: `http://127.0.0.1:${PORT}/dashboard/`,
+    koishiUrl: 'http://127.0.0.1:5140/',
+    napcatUrl: 'http://127.0.0.1:6099/',
+    message: basicReady ? (aiKey.configured ? '本地部署已完成，AI Key 已配置' : '基础部署已完成，AI Key 未配置，AI 回复暂不可用') : '本地部署尚未完全就绪，请查看未通过的检查项',
+  }
+}
+
 // 前端重建状态
 let rebuildStatus = { state: 'idle', message: '', detail: '', startedAt: 0, finishedAt: 0 }
 
@@ -1181,7 +1371,9 @@ function requireAdmin(req, res) {
 // ====== NapCat Token ======
 function getNapcatToken() {
   if (getNapcatToken._cached) return getNapcatToken._cached
+  const recordedDir = readFileSync(LOCAL_NAPCAT_DIR_FILE)
   const candidates = [
+    recordedDir ? path.join(recordedDir, 'config', 'webui.json') : '',
     path.join(KOISHI_DIR, 'runtime', 'napcat', 'config', 'webui.json'),
     path.join(KOISHI_DIR, 'runtime', 'NapCat', 'config', 'webui.json'),
     '/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json',
@@ -2249,15 +2441,17 @@ const server = http.createServer((req, res) => {
         files.push(writeTrackedLocalFile('data/ai-provider.txt', provider + '\n', { deleteByDefault: true, kind: 'provider' }, timestamp))
         files.push(writeTrackedLocalFile('data/ai-model.txt', model + '\n', { deleteByDefault: true, kind: 'model' }, timestamp))
         files.push(writeTrackedLocalFile('data/ai-base-url.txt', baseUrl + '\n', { deleteByDefault: true, kind: 'baseUrl' }, timestamp))
-        if (cfg.apiKey) files.push(writeTrackedLocalFile('data/ai-openai-key.txt', String(cfg.apiKey).trim() + '\n', { deleteByDefault: false, sensitive: true, kind: 'apiKey' }, timestamp))
+        const inputApiKey = String(cfg.apiKey || '').trim()
+        if (inputApiKey) files.push(writeTrackedLocalFile('data/ai-openai-key.txt', inputApiKey + '\n', { deleteByDefault: false, sensitive: true, kind: 'apiKey' }, timestamp))
         if (cfg.adminIds) files.push(writeTrackedLocalFile('data/ai-admin-ids.json', JSON.stringify(cfg.adminIds, null, 2) + '\n', { deleteByDefault: false, sensitive: true, kind: 'adminIds' }, timestamp))
         const yml = `port: 5140\nselfUrl: http://localhost:5140\nplugins:\n  adapter-onebot:\n    protocol: ws\n    selfId: '${qq}'\n    endpoint: ws://127.0.0.1:8080/onebot/v11/ws\n  dongxuelian-ai: {}\n  dongxuelian-help: {}\n  group-name-at: {}\n  defense: {}\n  local-video-sender: {}\n  group-leave-notice: {}\n  dongxuelian-poke: {}\n  daily-report: {}\n`
         files.push(writeTrackedLocalFile('koishi.yml', yml, { deleteByDefault: true, kind: 'koishiConfig' }, timestamp))
         const helper = `@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif not exist node_modules ( npm install )\r\nnpx koishi start\r\n`
         files.push(writeTrackedLocalFile('start-local.bat', helper, { deleteByDefault: true, kind: 'startScript' }, timestamp))
-        const manifest = { version: 1, generatedAt: timestamp, qq, onebotEndpoint: 'ws://127.0.0.1:8080/onebot/v11/ws', files }
+        const aiKey = getAiKeyStatus(provider)
+        const manifest = { version: 1, generatedAt: timestamp, qq, onebotEndpoint: 'ws://127.0.0.1:8080/onebot/v11/ws', aiKeyConfigured: aiKey.configured, files }
         writeLocalDeployManifest(manifest)
-        json(res, { ok: true, message: 'Koishi 本地配置已写入，运行 start-local.bat 启动 Koishi，NapCat 使用 8080 OneBot WebSocket', files, copiedPlugins, manifest: { path: toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE), generatedAt: timestamp } })
+        json(res, { ok: true, message: aiKey.configured ? 'Koishi 本地配置已写入，NapCat 使用 8080 OneBot WebSocket' : 'Koishi 本地配置已写入；AI Key 未配置，基础部署可继续，AI 回复暂不可用', files, copiedPlugins, aiKeyConfigured: aiKey.configured, aiKey, manifest: { path: toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE), generatedAt: timestamp } })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })
     return
@@ -2329,6 +2523,70 @@ const server = http.createServer((req, res) => {
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })
     return
+  }
+
+  if (pathname === '/dashboard/api/deploy/npm-install' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const dependencies = getProjectDependencyStatus()
+      if (dependencies.ready) return json(res, { ok: true, skipped: true, message: '项目依赖已安装', status: getLocalNpmInstallStatus() })
+      const npmInfo = getCommandInfo('npm')
+      if (!npmInfo.found) return json(res, { ok: false, message: '当前 Windows 本机未找到 npm，请先安装 Node.js 18+/20+ 后重新检测环境', npm: npmInfo }, 400)
+      const started = spawnLocalTask('npmInstall', 'npm', ['install'], { cwd: KOISHI_DIR, shell: process.platform === 'win32' })
+      return json(res, { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : 'npm install 已启动', status: getLocalNpmInstallStatus() })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/deploy/npm-install-status' && req.method === 'GET') {
+    return json(res, { ok: true, status: getLocalNpmInstallStatus() })
+  }
+
+  if (pathname === '/dashboard/api/deploy/napcat-start' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    try {
+      if (process.platform !== 'win32') return json(res, { ok: false, message: '启动 NapCat 只能在当前 Windows 部署目标机上执行' }, 400)
+      const current = getLocalNapcatDeployStatus()
+      if (current.running) return json(res, { ok: true, message: 'NapCat 看起来已经在运行', status: current })
+      const { detected, entry } = getNapcatStartEntry()
+      if (!detected.found || !entry) return json(res, { ok: false, message: detected.reason || '未找到可启动的 NapCat，请先安装官方 Windows 包', napcat: detected }, 400)
+      const ext = path.extname(entry).toLowerCase()
+      const cwd = path.dirname(entry)
+      let command = entry
+      let args = []
+      if (ext === '.bat' || ext === '.cmd') { command = 'cmd.exe'; args = ['/d', '/c', entry] }
+      else if (ext === '.js' || ext === '.mjs') { command = 'node'; args = [entry] }
+      spawnLocalTask('napcat', command, args, { cwd })
+      return json(res, { ok: true, message: 'NapCat 已启动，请等待 WebUI 或控制台二维码出现后扫码登录', status: getLocalNapcatDeployStatus() })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/deploy/napcat-status' && req.method === 'GET') {
+    return json(res, { ok: true, status: getLocalNapcatDeployStatus() })
+  }
+
+  if (pathname === '/dashboard/api/deploy/koishi-start' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const current = getLocalKoishiDeployStatus()
+      if (current.running) return json(res, { ok: true, message: 'Koishi 看起来已经在运行', status: current })
+      const dependencies = getProjectDependencyStatus()
+      if (!dependencies.ready) return json(res, { ok: false, message: '项目依赖尚未完整安装，请先执行 npm install 站点', dependencies }, 400)
+      if (process.platform === 'win32' && fs.existsSync(path.join(KOISHI_DIR, 'start-local.bat'))) {
+        spawnLocalTask('koishi', 'cmd.exe', ['/d', '/c', path.join(KOISHI_DIR, 'start-local.bat')], { cwd: KOISHI_DIR })
+      } else {
+        spawnLocalTask('koishi', 'npm', ['exec', '--', 'koishi', 'start'], { cwd: KOISHI_DIR, shell: process.platform === 'win32' })
+      }
+      return json(res, { ok: true, message: 'Koishi 已启动，正在等待 5140 端口和 OneBot 连接', status: getLocalKoishiDeployStatus() })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/deploy/koishi-status' && req.method === 'GET') {
+    return json(res, { ok: true, status: getLocalKoishiDeployStatus() })
+  }
+
+  if (pathname === '/dashboard/api/deploy/local-ready-check' && req.method === 'GET') {
+    try { return json(res, buildLocalReadyCheck()) }
+    catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
 
   if (pathname === '/dashboard/api/bot/local-status' && req.method === 'GET') {
