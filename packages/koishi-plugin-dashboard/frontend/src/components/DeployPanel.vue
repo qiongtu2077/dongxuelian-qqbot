@@ -115,6 +115,25 @@
         </div>
       </div>
 
+      <div v-if="activeLocalStep === 'npm' && npmFailureGuide" class="repair-guide">
+        <div class="repair-guide-head">
+          <div>
+            <strong>{{ npmFailureGuide.title }}</strong>
+            <span>{{ npmFailureGuide.summary }}</span>
+          </div>
+          <button v-if="npmGuideCommands.length" class="btn btn-sm btn-ghost" type="button" @click="copyNpmFixCommands">复制修复命令</button>
+        </div>
+        <ol>
+          <li v-for="step in npmFailureGuide.fixSteps" :key="step">{{ step }}</li>
+        </ol>
+        <div v-if="npmGuideCommands.length" class="repair-command-list">
+          <code v-for="command in npmGuideCommands" :key="command">{{ command }}</code>
+        </div>
+        <div v-if="npmDiagnosticRows.length" class="repair-diagnostics">
+          <span v-for="row in npmDiagnosticRows" :key="row.label"><b>{{ row.label }}</b>{{ row.value }}</span>
+        </div>
+      </div>
+
       <pre v-if="canRunWindowsLocalDeploy && currentLocalLogLines.length" ref="localLogRef" class="deploy-log themed-scrollbar">{{ currentLocalLogLines.join('\n') }}</pre>
 
       <div v-if="canRunWindowsLocalDeploy && deletePreview" class="delete-preview">
@@ -364,6 +383,21 @@ export default {
       if (activeLocalStep.value === 'koishi' || activeLocalStep.value === 'health') return koishiTaskStatus.value?.logLines || []
       return []
     })
+    const npmFailureGuide = computed(() => npmTaskStatus.value?.failureGuide || null)
+    const npmGuideCommands = computed(() => npmFailureGuide.value?.commands || [])
+    const npmDiagnosticRows = computed(() => {
+      const diag = npmFailureGuide.value?.diagnostics
+      if (!diag) return []
+      const rows = [
+        ['HTTP_PROXY', diag.env?.HTTP_PROXY],
+        ['HTTPS_PROXY', diag.env?.HTTPS_PROXY],
+        ['NO_PROXY', diag.env?.NO_PROXY],
+        ['npm proxy', diag.config?.proxy],
+        ['npm https-proxy', diag.config?.httpsProxy],
+        ['npm registry', diag.config?.registry],
+      ]
+      return rows.filter(([, value]) => value).map(([label, value]) => ({ label, value }))
+    })
     const uninstallDeleteItems = computed(() => uninstallPreview.value?.deleteItems || [])
     const uninstallUserDataItems = computed(() => uninstallPreview.value?.userDataItems || [])
     const uninstallKeepItems = computed(() => uninstallPreview.value?.keepItems || [])
@@ -526,11 +560,13 @@ export default {
       installingNapcat.value = true
       activeLocalStep.value = 'install'
       setStepStatus('install', 'running')
-      localMsg.value = { type: 'ok', text: '正在下载并解压 NapCat（Windows），请稍等...' }
+      localMsg.value = { type: 'ok', text: '正在下载 NapCat 官方 OneKey 包，并优先使用 tar.exe 解压，请稍等...' }
       const res = await downloadNapcatWindows(napcatInstallDir.value)
       if (withAdminRetry(res, '下载并安装 NapCat 需要管理员密码', doDownloadWindowsNapcat)) { installingNapcat.value = false; return }
-      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? 'NapCat 已安装' : '安装失败') }
-      setStepStatus('install', res.ok ? 'success' : 'failed')
+      const manualSteps = res.data?.manualSteps || []
+      const messageText = [res.data?.message || (res.ok ? 'NapCat OneKey 包已处理' : '安装失败')].concat(manualSteps.length ? ['手动处理步骤：', ...manualSteps.map((step, index) => `${index + 1}. ${step}`)] : []).join('\n')
+      localMsg.value = { type: res.ok && !res.data?.needsManualSetup ? 'ok' : 'err', text: messageText }
+      setStepStatus('install', res.ok && !res.data?.needsManualSetup ? 'success' : 'failed')
       installingNapcat.value = false
       if (res.ok) await checkEnv()
     }
@@ -914,6 +950,17 @@ export default {
       return ({ delete: '删除', keep: '保留', missing: '缺失', error: '错误' })[action] || action
     }
 
+    async function copyNpmFixCommands() {
+      const text = npmGuideCommands.value.join('\n')
+      if (!text) return
+      try {
+        await navigator.clipboard?.writeText(text)
+        localMsg.value = { type: 'ok', text: '修复命令已复制。执行后请重新打开部署器或点击“执行 npm install”重试。' }
+      } catch {
+        localMsg.value = { type: 'err', text: '复制失败，请手动选择命令文本复制。' }
+      }
+    }
+
     watch(logs, scrollDeployLogToBottom)
     watch(currentLocalLogLines, scrollLocalLogToBottom)
     watch(mode, value => {
@@ -936,7 +983,7 @@ export default {
       if (localStatusTimer) clearInterval(localStatusTimer)
     })
 
-    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction }
+    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction, copyNpmFixCommands }
   },
 }
 </script>

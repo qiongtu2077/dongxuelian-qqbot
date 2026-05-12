@@ -333,6 +333,7 @@ select option { background: var(--surface); color: var(--text) }
   background: var(--input); border-radius: var(--radius-md); padding: 12px 16px;
   margin-top: 12px; font-size: 14px; line-height: 1.6;
   animation: fadeIn .25s ease;
+  white-space: pre-wrap;
 }
 .msg.ok { border-left: 3px solid var(--accent) }
 .msg.err { border-left: 3px solid var(--danger); color: var(--danger) }
@@ -789,6 +790,70 @@ select option { background: var(--surface); color: var(--text) }
   justify-content: center;
 }
 
+.repair-guide {
+  margin: 12px 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border));
+  border-left: 4px solid var(--danger);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--input));
+  color: var(--text);
+  padding: 14px;
+}
+
+.repair-guide-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.repair-guide-head strong,
+.repair-guide-head span { display: block }
+.repair-guide-head strong { color: var(--danger); margin-bottom: 4px }
+.repair-guide-head span { color: var(--text2); font-size: 13px; line-height: 1.55 }
+
+.repair-guide ol {
+  margin: 12px 0 0 20px;
+  padding: 0;
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.repair-command-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.repair-command-list code {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0,0,0,.28);
+  color: var(--accent);
+  padding: 7px 9px;
+  overflow-wrap: anywhere;
+}
+
+.repair-diagnostics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.repair-diagnostics span {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text2);
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.repair-diagnostics b { color: var(--text); margin-right: 6px }
+
 .local-wizard-card { overflow: visible }
 
 .local-wizard-head {
@@ -1223,11 +1288,13 @@ label.uninstall-row { cursor: pointer }
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  min-width: 0;
 }
 
-.gallery-aspect-tabs { margin: 0 }
+.gallery-aspect-tabs { margin: 0; max-width: 100% }
 
 .gallery-add,
+.gallery-remove-toggle,
 .gallery-empty-add {
   width: 42px;
   height: 42px;
@@ -1243,10 +1310,38 @@ label.uninstall-row { cursor: pointer }
   transition: transform .18s ease, box-shadow .2s ease, opacity .2s ease;
 }
 
+.gallery-remove-toggle {
+  background: color-mix(in srgb, var(--danger) 78%, var(--card));
+  color: #fff;
+  font-size: 30px;
+}
+
+.gallery-remove-toggle.active {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 24%, transparent), 0 10px 28px var(--shadow);
+}
+
 .gallery-add:hover,
+.gallery-remove-toggle:hover,
 .gallery-empty-add:hover { transform: translateY(-1px); box-shadow: 0 14px 34px var(--shadow) }
 .gallery-add:disabled,
+.gallery-remove-toggle:disabled,
 .gallery-empty-add:disabled { opacity: .58; cursor: wait; transform: none }
+
+.gallery-bulk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--input));
+  padding: 10px 12px;
+  color: var(--text2);
+  font-size: 13px;
+}
+
+.gallery-bulk-bar > div { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end }
 
 .gallery-empty {
   min-height: 260px;
@@ -1275,7 +1370,10 @@ label.uninstall-row { cursor: pointer }
   aspect-ratio: var(--gallery-aspect);
   border-radius: 8px;
   perspective: 700px;
+  cursor: pointer;
 }
+
+.gallery-card.is-bulk { cursor: copy }
 
 .gallery-card__rotator {
   --tilt-left-right: 0deg;
@@ -1297,6 +1395,7 @@ label.uninstall-row { cursor: pointer }
 }
 
 .gallery-card:hover .gallery-card__rotator { box-shadow: 0 22px 52px var(--shadow), 0 4px 14px rgba(0,0,0,.22) }
+.gallery-card.selected .gallery-card__rotator { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 60%, transparent), 0 22px 52px var(--shadow) }
 
 .gallery-card__front,
 .gallery-card__front > * {
@@ -1360,33 +1459,96 @@ label.uninstall-row { cursor: pointer }
   opacity: calc((.18 * var(--effect-intensity)) + var(--effect-intensity) * var(--pointer-from-center) * .72);
 }
 
-.gallery-delete {
+.gallery-select-mark {
   position: absolute;
   top: 8px;
   right: 8px;
   z-index: 3;
-  border: 1px solid color-mix(in srgb, var(--danger) 52%, var(--border));
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--card) 84%, transparent);
-  color: var(--danger);
-  padding: 5px 8px;
-  font-size: 12px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid color-mix(in srgb, var(--danger) 58%, var(--border));
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--card) 86%, transparent);
+  color: #fff;
+  font-size: 14px;
   font-weight: 900;
+}
+
+.gallery-card.selected .gallery-select-mark { background: var(--danger) }
+
+.gallery-preview-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0,0,0,.52);
+}
+
+.gallery-preview-shell {
+  position: relative;
+  width: min(86vw, 1120px);
+  height: min(78vh, 760px);
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  box-shadow: 0 26px 80px rgba(0,0,0,.45);
+  overflow: visible;
+  padding: 42px;
+}
+
+.gallery-preview-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 5;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--text2);
+  font-size: 28px;
+  line-height: 1;
   cursor: pointer;
-  opacity: 0;
-  transform: translateY(-4px);
-  transition: opacity .18s ease, transform .18s ease, background .2s ease;
 }
 
-.gallery-card:hover .gallery-delete,
-.gallery-delete:focus-visible {
-  opacity: 1;
-  transform: translateY(0);
+.gallery-preview-close:hover { color: var(--danger) }
+
+.gallery-preview-card {
+  width: min(100%, 980px);
+  height: min(100%, 640px);
+  max-width: calc(100% - 52px);
+  max-height: calc(100% - 52px);
+  aspect-ratio: auto;
+  cursor: grab;
+  perspective: 900px;
 }
 
-.gallery-delete:hover { background: color-mix(in srgb, var(--danger) 12%, var(--card)) }
+.gallery-preview-card:active { cursor: grabbing }
+.gallery-preview-card .gallery-card__front img { object-fit: contain; background: #060708 }
+.gallery-preview-card .gallery-card__rotator { box-shadow: 0 18px 58px rgba(0,0,0,.36) }
+
 
 @media (max-width: 760px) {
+  .gallery-preview-backdrop { padding: 12px }
+  .gallery-preview-shell {
+    width: calc(100vw - 24px);
+    height: min(76vh, 620px);
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+    padding: 34px 18px 24px;
+  }
+  .gallery-preview-card {
+    max-width: calc(100% - 24px);
+    max-height: calc(100% - 24px);
+  }
   .app {
     width: calc(100vw - 56px);
     margin-left: 56px;

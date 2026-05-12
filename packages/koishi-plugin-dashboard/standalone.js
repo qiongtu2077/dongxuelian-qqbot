@@ -64,6 +64,7 @@ const GALLERY_MAX_BYTES = 8 * 1024 * 1024
 const GALLERY_MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }
 const MAX_LOG_LIMIT = 6000
 let logEntryCache = { file: '', size: -1, mtimeMs: -1, entries: [] }
+let npmDiagnosticsCache = { at: 0, data: null }
 
 // ====== 默认 fallback 链（按 AI 用途分类） ======
 const DEFAULT_FALLBACK_CHAINS = {
@@ -496,7 +497,8 @@ function findNapcatMarkers(root) {
         continue
       }
       if (!entry.isFile()) continue
-      if (/^napcat.*\.(exe|bat|cmd|js|mjs)$/i.test(entry.name) || /NapCat.*\.exe$/i.test(entry.name)) markers.push({ path: full, rel, type: 'entry' })
+      if (/^NapCatInstaller\.exe$/i.test(entry.name)) markers.push({ path: full, rel, type: 'installer' })
+      else if (/^napcat.*\.(exe|bat|cmd|js|mjs)$/i.test(entry.name) || /^NapCatWinBootMain\.exe$/i.test(entry.name) || /NapCat.*\.exe$/i.test(entry.name)) markers.push({ path: full, rel, type: 'entry' })
       else if (/^config\/webui\.json$/i.test(rel)) markers.push({ path: full, rel, type: 'config' })
       else if (/^package\.json$/i.test(entry.name)) {
         try {
@@ -508,6 +510,25 @@ function findNapcatMarkers(root) {
   }
   walk(root, 0)
   return { markers, archives }
+}
+
+function rankNapcatEntry(filePath) {
+  const name = path.basename(filePath || '')
+  if (/^napcat\.bat$/i.test(name)) return 0
+  if (/^napcat\.cmd$/i.test(name)) return 1
+  if (/^NapCatWinBootMain\.exe$/i.test(name)) return 2
+  if (/^napcat.*\.exe$/i.test(name)) return 3
+  if (/\.(bat|cmd)$/i.test(name)) return 4
+  if (/\.(js|mjs)$/i.test(name)) return 5
+  if (/NapCat.*\.exe$/i.test(name)) return 6
+  return 20
+}
+
+function sortNapcatEntries(markers = []) {
+  return markers
+    .filter(item => item?.type === 'entry')
+    .slice()
+    .sort((a, b) => rankNapcatEntry(a.path) - rankNapcatEntry(b.path) || String(a.rel || a.path).localeCompare(String(b.rel || b.path)))
 }
 
 function inspectNapcatCandidate(candidate) {
@@ -524,7 +545,8 @@ function inspectNapcatCandidate(candidate) {
     const entries = fs.readdirSync(candidate)
     if (!entries.length) return { ...result, status: 'partial', reason: '目录为空' }
     const { markers, archives } = findNapcatMarkers(candidate)
-    if (markers.length) return { ...result, found: true, status: 'installed', entry: markers[0].path, reason: '找到 NapCat 启动或配置标记', markers: markers.slice(0, 8) }
+    const entryMarkers = sortNapcatEntries(markers)
+    if (entryMarkers.length || markers.some(item => item.type === 'config')) return { ...result, found: true, status: 'installed', entry: entryMarkers[0]?.path || '', reason: '找到 NapCat 启动或配置标记', markers: markers.slice(0, 8) }
     if (archives.length) return { ...result, status: 'partial', reason: '目录里只有下载包或压缩包，尚未解压安装', archives: archives.slice(0, 8) }
     return { ...result, status: 'partial', reason: '目录存在但未找到 NapCat 启动文件' }
   } catch (e) {
@@ -604,11 +626,73 @@ function httpsGetJson(url, callback) {
 function pickNapcatWindowsAsset(release) {
   const assets = Array.isArray(release?.assets) ? release.assets : []
   const zipAssets = assets.filter(item => /\.zip$/i.test(item.name || '') && !/(linux|darwin|mac|android|arm64|aarch64)/i.test(item.name || ''))
-  return zipAssets.find(item => /^NapCat\.Shell\.Windows\.Node\.zip$/i.test(item.name || ''))
-    || zipAssets.find(item => /^NapCat\.Shell\.Windows\.OneKey\.zip$/i.test(item.name || ''))
+  return zipAssets.find(item => /^NapCat\.Shell\.Windows\.OneKey\.zip$/i.test(item.name || ''))
+    || zipAssets.find(item => /^NapCat\.Shell\.Windows\.Node\.zip$/i.test(item.name || ''))
     || zipAssets.find(item => /(win|windows)/i.test(item.name || ''))
     || zipAssets[0]
     || null
+}
+
+function findFilesRecursive(root, matcher, maxDepth = 6, maxCount = 600) {
+  const matches = []
+  let count = 0
+  function walk(dir, depth) {
+    if (depth > maxDepth || count > maxCount) return
+    let entries = []
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      if (count > maxCount) return
+      count += 1
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(full, depth + 1)
+      else if (entry.isFile() && matcher(entry.name, full)) matches.push(full)
+    }
+  }
+  walk(root, 0)
+  return matches
+}
+
+function extractZipArchive(archivePath, destinationDir) {
+  fs.rmSync(destinationDir, { recursive: true, force: true })
+  fs.mkdirSync(destinationDir, { recursive: true })
+  const attempts = []
+  try {
+    execFileSync('tar.exe', ['-xf', archivePath, '-C', destinationDir], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
+    return { method: 'tar.exe', attempts }
+  } catch (e) {
+    attempts.push({ method: 'tar.exe', error: String(e.stderr || e.message || '').trim() })
+  }
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `Expand-Archive -LiteralPath ${psQuote(archivePath)} -DestinationPath ${psQuote(destinationDir)} -Force`], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
+    return { method: 'PowerShell Expand-Archive', attempts }
+  } catch (e) {
+    attempts.push({ method: 'PowerShell Expand-Archive', error: String(e.stderr || e.message || '').trim() })
+    const message = attempts.map(item => `${item.method}: ${item.error || '失败'}`).join('；')
+    const err = new Error('自动解压失败：' + message)
+    err.attempts = attempts
+    throw err
+  }
+}
+
+function runNapcatInstallerIfPresent(stagingDir) {
+  const installers = findFilesRecursive(stagingDir, name => /^NapCatInstaller\.exe$/i.test(name), 6, 800)
+  if (!installers.length) return { ran: false, ok: false, reason: '未找到 NapCatInstaller.exe，可手动运行解压目录内的安装器' }
+  const installer = installers[0]
+  try {
+    execFileSync(installer, [], { cwd: path.dirname(installer), timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false })
+    return { ran: true, ok: true, path: installer, reason: 'NapCatInstaller.exe 已执行' }
+  } catch (e) {
+    return { ran: true, ok: false, path: installer, reason: 'NapCatInstaller.exe 执行失败或被中断：' + String(e.stderr || e.message || '').trim() }
+  }
+}
+
+function buildNapcatManualSteps(archivePath, installDir) {
+  return [
+    `打开下载包：${archivePath}`,
+    `把压缩包完整解压到：${installDir}`,
+    '进入解压出的 NapCat.XXXX.Shell 目录，运行 NapCatInstaller.exe 等待自动配置完成。',
+    '确认目录里出现 napcat.bat 或 NapCatWinBootMain.exe 后，回到部署器点击“检测环境”。',
+  ]
 }
 
 function downloadNapcatWindowsRelease(installDir, callback) {
@@ -621,11 +705,29 @@ function downloadNapcatWindowsRelease(installDir, callback) {
     }
     downloadToRuntime(asset.browser_download_url, (downloadErr, filePath) => {
       if (downloadErr) return callback(downloadErr)
+      const stagingDir = runtimePath('napcat-install-' + Date.now().toString(36))
       try {
-        execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `New-Item -ItemType Directory -Force -Path ${psQuote(installDir)} | Out-Null; Expand-Archive -LiteralPath ${psQuote(filePath)} -DestinationPath ${psQuote(installDir)} -Force`], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
-        callback(null, { asset: asset.name, filePath, installDir })
+        const extraction = extractZipArchive(filePath, stagingDir)
+        const installer = runNapcatInstallerIfPresent(stagingDir)
+        fs.mkdirSync(installDir, { recursive: true })
+        copyRecursiveSync(stagingDir, installDir)
+        const detected = inspectNapcatCandidate(installDir)
+        const needsManualSetup = !detected.found || (installer.ran && !installer.ok)
+        callback(null, {
+          asset: asset.name,
+          filePath,
+          installDir,
+          extraction,
+          installer,
+          napcat: detected,
+          needsManualSetup,
+          manualSteps: needsManualSetup ? buildNapcatManualSteps(filePath, installDir) : [],
+          message: needsManualSetup ? 'NapCat OneKey 包已下载并解压，但仍需要按提示完成安装器配置' : 'NapCat OneKey 包已下载、解压并完成检测',
+        })
       } catch (e) {
-        callback(new Error('下载完成但解压失败：' + String(e.stderr || e.message || '').trim()), { asset: asset.name, filePath, installDir })
+        callback(new Error('NapCat 下载完成但自动解压/安装失败：' + String(e.message || '').trim()), { asset: asset.name, filePath, installDir, manualSteps: buildNapcatManualSteps(filePath, installDir), attempts: e.attempts || [] })
+      } finally {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
       }
     })
   })
@@ -679,7 +781,7 @@ function installPortableNodeWindows(callback) {
       try {
         fs.rmSync(stagingDir, { recursive: true, force: true })
         fs.mkdirSync(stagingDir, { recursive: true })
-        execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `Expand-Archive -LiteralPath ${psQuote(archivePath)} -DestinationPath ${psQuote(stagingDir)} -Force`], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
+        extractZipArchive(archivePath, stagingDir)
         const nodeRoot = findExtractedNodeRoot(stagingDir)
         if (!nodeRoot) throw new Error('Node zip 解压后未找到 node.exe')
         fs.rmSync(targetDir, { recursive: true, force: true })
@@ -925,6 +1027,17 @@ function deleteGalleryImage(id) {
   if (!fs.existsSync(fullPath)) throw new Error('图片不存在')
   fs.unlinkSync(fullPath)
   return { id }
+}
+
+function deleteGalleryImages(ids) {
+  const list = Array.isArray(ids) ? ids : [ids]
+  const deleted = []
+  const errors = []
+  for (const id of list) {
+    try { deleted.push(deleteGalleryImage(id)) }
+    catch (e) { errors.push({ id, message: e.message }) }
+  }
+  return { deleted, errors }
 }
 
 function isBlockedDeletePath(filePath) {
@@ -1360,6 +1473,93 @@ function getTaskPublicStatus(key, extra = {}) {
   }
 }
 
+function redactProxyValue(value) {
+  const text = String(value || '').trim()
+  if (!text || text === 'null' || text === 'undefined') return ''
+  return text.replace(/(https?:\/\/)([^/@\s]+)@/i, '$1***@')
+}
+
+function runNpmConfigGet(name) {
+  const npm = getLocalToolCommand('npm')
+  try {
+    const args = ['config', 'get', name]
+    const output = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(npm)
+      ? execFileSync('cmd.exe', ['/d', '/c', npm, ...args], { cwd: KOISHI_DIR, env: getLocalToolEnv(), timeout: 8000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      : execFileSync(npm, args, { cwd: KOISHI_DIR, env: getLocalToolEnv(), timeout: 8000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    return redactProxyValue(output)
+  } catch { return '' }
+}
+
+function collectNpmInstallDiagnostics(force = false) {
+  const now = Date.now()
+  if (!force && npmDiagnosticsCache.data && now - npmDiagnosticsCache.at < 10000) return npmDiagnosticsCache.data
+  const env = {
+    HTTP_PROXY: redactProxyValue(process.env.HTTP_PROXY || process.env.http_proxy),
+    HTTPS_PROXY: redactProxyValue(process.env.HTTPS_PROXY || process.env.https_proxy),
+    NO_PROXY: redactProxyValue(process.env.NO_PROXY || process.env.no_proxy),
+  }
+  const config = {
+    proxy: runNpmConfigGet('proxy'),
+    httpsProxy: runNpmConfigGet('https-proxy'),
+    registry: redactProxyValue(runNpmConfigGet('registry')) || 'https://registry.npmjs.org/',
+  }
+  const data = { env, config, checkedAt: now }
+  npmDiagnosticsCache = { at: now, data }
+  return data
+}
+
+function commandListForNpmProxyFix(hasNpmProxy, hasEnvProxy) {
+  const commands = []
+  if (hasNpmProxy) {
+    commands.push('npm config delete proxy')
+    commands.push('npm config delete https-proxy')
+  }
+  commands.push('npm config set registry https://registry.npmmirror.com')
+  if (hasEnvProxy) {
+    commands.push('setx HTTP_PROXY ""')
+    commands.push('setx HTTPS_PROXY ""')
+  }
+  return commands
+}
+
+function buildNpmInstallFailureGuide(logLines = [], diagnostics = null) {
+  const text = Array.isArray(logLines) ? logLines.join('\n') : String(logLines || '')
+  const diag = diagnostics || collectNpmInstallDiagnostics()
+  const hasNpmProxy = !!(diag.config?.proxy || diag.config?.httpsProxy)
+  const hasEnvProxy = !!(diag.env?.HTTP_PROXY || diag.env?.HTTPS_PROXY)
+  if (!text.trim()) return null
+
+  const refused = /ECONNREFUSED/i.test(text)
+  const inline = text.match(/ECONNREFUSED[^\n]*(127(?:\.\d+){3}|localhost)(?::(\d+))?/i)
+  const addressMatch = text.match(/address:\s*['"]?([^,'"\s}]+)/i)
+  const portMatch = text.match(/port:\s*['"]?(\d+)/i)
+  const proxyHost = inline?.[1] || addressMatch?.[1] || ''
+  const proxyPort = inline?.[2] || portMatch?.[1] || ''
+  if (refused && (proxyHost || proxyPort)) {
+    const endpoint = [proxyHost || '127.0.0.1', proxyPort].filter(Boolean).join(':')
+    return {
+      code: 'NPM_PROXY_REFUSED',
+      title: 'npm 连接本机代理失败',
+      summary: `npm 正在通过本机代理 ${endpoint} 访问 npm registry，但这个端口连不上。通常是代理软件没有启动、端口变了，或 npm 里残留了旧代理配置。`,
+      fixSteps: [
+        `如果你需要代理，请先打开代理软件，并确认它监听的是 ${endpoint}。`,
+        '如果你不需要代理，请复制下面的命令到 PowerShell 执行，清除 npm 代理配置。',
+        '如果公司/校园网需要镜像源，可以保留代理软件，或先切到 npm 镜像源再重试。',
+        '处理完成后，回到部署器点击“执行 npm install”。',
+      ],
+      commands: commandListForNpmProxyFix(hasNpmProxy, hasEnvProxy),
+      diagnostics: diag,
+    }
+  }
+  if (/EAI_AGAIN|ENOTFOUND/i.test(text)) return { code: 'NPM_DNS_FAILED', title: 'npm 域名解析失败', summary: 'npm 无法解析 registry 域名，通常是 DNS、网络或代理配置问题。', fixSteps: ['确认电脑可以打开 npm registry 或 npm 镜像源网站。', '切换网络或 DNS 后重试。', '如果使用代理，请确认代理软件已启动。'], commands: ['npm config set registry https://registry.npmmirror.com'], diagnostics: diag }
+  if (/ETIMEDOUT|ESOCKETTIMEDOUT|network timeout/i.test(text)) return { code: 'NPM_TIMEOUT', title: 'npm 下载超时', summary: 'npm registry 响应太慢或网络被代理/防火墙阻断。', fixSteps: ['先确认网络稳定。', '可以切换到 npm 镜像源后重试。', '如果使用代理，请确认代理软件运行正常。'], commands: ['npm config set registry https://registry.npmmirror.com'], diagnostics: diag }
+  if (/SELF_SIGNED_CERT|CERT_HAS_EXPIRED|unable to verify the first certificate/i.test(text)) return { code: 'NPM_CERT_FAILED', title: 'npm 证书校验失败', summary: '网络代理或证书环境让 npm 无法校验证书。', fixSteps: ['优先检查代理软件的 HTTPS 解密/证书设置。', '确认系统时间正确。', '不要随意关闭 strict-ssl，除非你明确知道当前网络环境需要这样做。'], commands: ['npm config get strict-ssl'], diagnostics: diag }
+  if (/\bEACCES\b|\bEPERM\b|permission denied/i.test(text)) return { code: 'NPM_PERMISSION_FAILED', title: 'npm 写入文件失败', summary: 'npm 没有权限写入项目目录，或文件正被其他进程占用。', fixSteps: ['关闭正在占用项目目录的终端、编辑器或杀毒拦截。', '确认部署器所在目录可写，不要放在 Program Files 等系统目录。', '重新打开部署器后再试一次。'], commands: [], diagnostics: diag }
+  if (/\bE401\b|\bE403\b|unauthorized|forbidden/i.test(text)) return { code: 'NPM_AUTH_FAILED', title: 'npm registry 权限错误', summary: '当前 registry 拒绝访问，可能是私有源认证过期或 registry 配错。', fixSteps: ['检查 npm registry 是否应为公开源。', '如果不需要私有源，切换到 npm 镜像源后重试。'], commands: ['npm config get registry', 'npm config set registry https://registry.npmmirror.com'], diagnostics: diag }
+  if (/npm error/i.test(text)) return { code: 'NPM_FAILED', title: 'npm install 失败', summary: 'npm install 已退出，部署器暂时无法判断唯一原因。请先查看下方原始日志里最靠前的 npm error。', fixSteps: ['优先处理日志中第一条 npm error。', '确认网络、代理、磁盘权限和项目目录可写。', '处理后点击“执行 npm install”重试。'], commands: ['npm config get registry'], diagnostics: diag }
+  return null
+}
+
 function getBlockedLocalTaskStatus(key, extra = {}) {
   const target = getLocalDeployTarget()
   return getTaskPublicStatus(key, {
@@ -1382,6 +1582,7 @@ function spawnLocalTask(key, command, args = [], options = {}) {
   task.finishedAt = 0
   task.exitCode = null
   task.error = ''
+  task.diagnostics = options.diagnostics || null
   task.pid = 0
   task.command = [command].concat(args).join(' ')
   task.cwd = options.cwd || KOISHI_DIR
@@ -1440,7 +1641,7 @@ function getNapcatStartEntry() {
   if (direct) return { detected, entry: direct }
   const roots = uniquePaths([detected.path, detected.expectedPath, readFileSync(LOCAL_NAPCAT_DIR_FILE)].filter(Boolean))
   for (const root of roots) {
-    const marker = findNapcatMarkers(root).markers.find(item => item.type === 'entry' && entryRe.test(item.path))
+    const marker = sortNapcatEntries(findNapcatMarkers(root).markers).find(item => entryRe.test(item.path))
     if (marker) return { detected, entry: marker.path }
   }
   return { detected, entry: '' }
@@ -1508,7 +1709,9 @@ function getLocalNpmInstallStatus() {
   if (!target.canRunWindowsLocalDeploy) {
     return getBlockedLocalTaskStatus('npmInstall', { dependencies: { ready: false, reason: target.blockedReason } })
   }
-  return getTaskPublicStatus('npmInstall', { dependencies: getProjectDependencyStatus() })
+  const status = getTaskPublicStatus('npmInstall', { dependencies: getProjectDependencyStatus() })
+  const guide = buildNpmInstallFailureGuide(status.logLines, localTasks.npmInstall.diagnostics)
+  return { ...status, failureGuide: guide }
 }
 
 function buildLocalReadyCheck() {
@@ -2684,8 +2887,10 @@ const server = http.createServer((req, res) => {
     if (!requireAdmin(req, res)) return
     collectBody(req, res, (body) => {
       try {
-        const { id } = JSON.parse(body || '{}')
-        return json(res, { ok: true, deleted: deleteGalleryImage(id), message: '图片已删除' })
+        const { id, ids } = JSON.parse(body || '{}')
+        const result = deleteGalleryImages(Array.isArray(ids) ? ids : id)
+        const ok = result.errors.length === 0
+        return json(res, { ok, ...result, message: ok ? `已删除 ${result.deleted.length} 张图片` : `已删除 ${result.deleted.length} 张图片，${result.errors.length} 张删除失败` }, ok ? 200 : 400)
       } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
     })
     return
@@ -2857,7 +3062,7 @@ const server = http.createServer((req, res) => {
         downloadNapcatWindowsRelease(targetDir, (err, detail = {}) => {
           if (err) return json(res, { ok: false, message: err.message, ...detail }, 400)
           writeFileSync(LOCAL_NAPCAT_DIR_FILE, targetDir)
-          json(res, { ok: true, message: 'NapCat（Windows）已下载并解压', ...detail, napcat: detectNapcatInstallation() })
+          json(res, { ok: true, message: detail.message || 'NapCat（Windows）OneKey 包已下载并解压', ...detail, napcat: detectNapcatInstallation() })
         })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })
@@ -2886,7 +3091,8 @@ const server = http.createServer((req, res) => {
       if (dependencies.ready) return json(res, { ok: true, skipped: true, message: '项目依赖已安装', status: getLocalNpmInstallStatus() })
       const npmInfo = getCommandInfo('npm')
       if (!npmInfo.found) return json(res, { ok: false, message: '当前 Windows 本机未找到 npm，请先安装便携 Node/npm 后重新检测环境', npm: npmInfo }, 400)
-      const started = spawnLocalTask('npmInstall', getLocalToolCommand('npm'), ['install'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32' }))
+      const diagnostics = collectNpmInstallDiagnostics(true)
+      const started = spawnLocalTask('npmInstall', getLocalToolCommand('npm'), ['install'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', diagnostics }))
       return json(res, { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : 'npm install 已启动', status: getLocalNpmInstallStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
@@ -2908,6 +3114,7 @@ const server = http.createServer((req, res) => {
       let command = entry
       let args = []
       if (ext === '.bat' || ext === '.cmd') { command = 'cmd.exe'; args = ['/d', '/c', entry] }
+      else if (/^NapCatWinBootMain\.exe$/i.test(path.basename(entry))) { args = ['10001'] }
       else if (ext === '.js' || ext === '.mjs') { command = getLocalToolCommand('node'); args = [entry] }
       spawnLocalTask('napcat', command, args, getLocalTaskOptions({ cwd }))
       return json(res, { ok: true, message: 'NapCat 已启动，请等待 WebUI 或控制台二维码出现后扫码登录', status: getLocalNapcatDeployStatus() })

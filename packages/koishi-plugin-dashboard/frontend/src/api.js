@@ -204,4 +204,4 @@ export async function fetchLoggingConfig() { return get('/logging') }
 export async function saveLoggingConfig(data) { return put('/logging', data, true) }
 export async function fetchGalleryImages() { return get('/gallery') }
 export async function uploadGalleryImage(data) { return post('/gallery', data, true, 60000) }
-export async function deleteGalleryImage(id) { return del('/gallery', { id }, true) }
+export async function deleteGalleryImage(idOrIds) { return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, true) }
