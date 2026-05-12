@@ -26,6 +26,22 @@ async function run(t) {
     const vision = require(path.join(AI_ROOT, 'lib', 'vision.js'))
     const session = makeSession({
       content: '这张图是什么',
+      event: { sender: { role: 'member' }, message: [{ type: 'image', data: { url: 'http://example.test/structured-current.jpg' } }] },
+    })
+    const marked = vision.prepareVisionRequest(session, { hasVisual: true, hasFile: false, hasEmbed: false }, {
+      content: session.content,
+      allowCurrentMessage: true,
+      includeQuote: false,
+    })
+    const payload = vision.getVisionPayload(session)
+    t.check('scenario vision current structured url marks session', marked && vision.isVisionSession(session), JSON.stringify(payload))
+    t.check('scenario vision current structured url captures url', payload.urls.includes('http://example.test/structured-current.jpg'), JSON.stringify(payload))
+  })
+
+  await withScenario({}, async ({ makeSession }) => {
+    const vision = require(path.join(AI_ROOT, 'lib', 'vision.js'))
+    const session = makeSession({
+      content: '这张图是什么',
       quote: {
         message: [{ type: 'image', data: { file: 'quoted.jpg', url: 'http://example.test/quoted.jpg' } }],
       },

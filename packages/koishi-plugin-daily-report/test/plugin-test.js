@@ -97,6 +97,57 @@ const htmlRenderer = require(HTML_RENDERER_PATH)
 check('html-renderer exports renderReport', typeof htmlRenderer.renderReport === 'function')
 check('html-renderer exports renderHtmlToImage', typeof htmlRenderer.renderHtmlToImage === 'function')
 
+async function testRendererTimeoutCleanup() {
+  section('html-renderer failure cleanup')
+  const originalExistsSync = fs.existsSync
+  const originalSetTimeout = global.setTimeout
+  const originalClearTimeout = global.clearTimeout
+  const puppeteerPath = require.resolve('puppeteer-core')
+  const originalPuppeteerCache = require.cache[puppeteerPath]
+  const timeoutToken = { id: 'render-timeout' }
+  let timeoutCreated = false
+  let timeoutCleared = false
+  let browserClosed = false
+
+  fs.existsSync = value => String(value || '').includes('chrome') || originalExistsSync(value)
+  global.setTimeout = () => { timeoutCreated = true; return timeoutToken }
+  global.clearTimeout = token => { if (token === timeoutToken) timeoutCleared = true }
+  require.cache[puppeteerPath] = {
+    id: puppeteerPath,
+    filename: puppeteerPath,
+    loaded: true,
+    exports: {
+      async launch() {
+        return {
+          async newPage() { throw new Error('new page failed') },
+          async close() { browserClosed = true },
+        }
+      },
+    },
+  }
+
+  try {
+    delete require.cache[HTML_RENDERER_PATH]
+    const renderer = require(HTML_RENDERER_PATH)
+    try {
+      await renderer.renderHtmlToImage('<html><body>fail</body></html>')
+      check('renderHtmlToImage mock failure throws', false)
+    } catch (error) {
+      check('renderHtmlToImage mock failure throws', error.message === 'new page failed', error.message)
+    }
+    check('renderHtmlToImage clears timeout on failure', timeoutCreated && timeoutCleared, JSON.stringify({ timeoutCreated, timeoutCleared }))
+    check('renderHtmlToImage closes browser on failure', browserClosed, JSON.stringify({ browserClosed }))
+  } finally {
+    fs.existsSync = originalExistsSync
+    global.setTimeout = originalSetTimeout
+    global.clearTimeout = originalClearTimeout
+    if (originalPuppeteerCache) require.cache[puppeteerPath] = originalPuppeteerCache
+    else delete require.cache[puppeteerPath]
+    delete require.cache[HTML_RENDERER_PATH]
+    require(HTML_RENDERER_PATH)
+  }
+}
+
 section('AI fallback unit')
 const fallbackFull = aiAnalyzer.buildFallbackFullAnalysis({
   totalMessages: 120,
@@ -181,6 +232,9 @@ testMiddleware('你好', '123').then(nonReport => {
 
   // 清理
   delete process.env.DONGXUELIAN_AI_DATA_DIR
+
+  return testRendererTimeoutCleanup()
+}).then(() => {
 
   // ===== 总结 =====
   console.log(`\n=== daily-report 测试总结 ===`)

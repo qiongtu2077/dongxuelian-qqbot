@@ -32,6 +32,15 @@ function getVisionPayload(session) {
   }
 }
 
+function getCurrentImageUrlsFromSegments(session) {
+  const segments = Array.isArray(session?.event?.message) ? session.event.message : []
+  return segments
+    .filter(segment => segment && segment.type === 'image')
+    .map(segment => segment.data && segment.data.url || '')
+    .map(String)
+    .filter(Boolean)
+}
+
 function isVisionSession(session) {
   if (!session || !session._isVisionRequest) return false
   const payload = getVisionPayload(session)
@@ -61,7 +70,7 @@ function getQuotedVisionPayload(session) {
 function prepareVisionRequest(session, analyzed = {}, context = {}) {
   const content = context.content === undefined ? session?.content || '' : context.content
   if (context.allowCurrentMessage) {
-    const urls = extractImageUrls(content || '')
+    const urls = [...new Set(extractImageUrls(content || '').concat(getCurrentImageUrlsFromSegments(session)))]
     const file = extractImageFileFromElements(session)
     if (markSessionForVision(session, urls, file)) return true
   }

@@ -3,7 +3,7 @@
 async function pokeBack(session, ctx) {
   const userId = String(session.userId || '')
   const guildId = String(session.guildId || '')
-  if (!userId) return
+  if (!userId || !guildId) return
 
   const internal = session.bot?.internal
   if (!internal || typeof internal._request !== 'function') {

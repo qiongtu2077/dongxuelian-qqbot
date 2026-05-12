@@ -131,9 +131,11 @@ async function resolveForwardSummary(session, content, ctx, options = {}) {
 
   const forwardData = await getForwardMsg(forwardId)
   logDebug(ctx, 'forward', 'fetch result=' + (forwardData ? 'ok' : 'null') + ' len=' + getForwardLength(forwardData))
-  if (!forwardData || !Array.isArray(forwardData)) return ''
+  const forwardMessages = normalizeForwardMessages(forwardData)
+  if (!forwardMessages || forwardMessages.length === 0) return ''
 
-  const nodes = await normalizeForwardNodes(forwardData, getForwardMsg, ctx)
+  const nodes = await normalizeForwardNodes(forwardMessages, getForwardMsg, ctx)
+  if (nodes.length === 0) return ''
   const forwardSummaryText = summarizeNodes(nodes)
   logDebug(ctx, 'forward', 'summary len=' + (forwardSummaryText ? forwardSummaryText.length : 0))
   if (forwardSummaryText) lastForwardSummaryCache.set(getChannelKey(session), forwardSummaryText)

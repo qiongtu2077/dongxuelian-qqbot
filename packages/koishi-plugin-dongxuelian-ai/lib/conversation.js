@@ -328,8 +328,8 @@ function findChannelMessageById(channelKey, messageId = '') {
 }
 
 function collectReplyChain(channelKey, replyToId = '') {
-  if (!replyToId) return []; const result = []; let currentId = replyToId; const maxDepth = MAX_REPLY_CHAIN_DEPTH
-  for (let i = 0; i < maxDepth; i++) { const msg = findChannelMessageById(channelKey, currentId); if (!msg) break; result.push(msg); currentId = msg.messageId }
+  if (!replyToId) return []; const result = []; let currentId = replyToId; const maxDepth = MAX_REPLY_CHAIN_DEPTH; const visited = new Set()
+  for (let i = 0; i < maxDepth; i++) { if (visited.has(String(currentId))) break; visited.add(String(currentId)); const msg = findChannelMessageById(channelKey, currentId); if (!msg) break; result.push(msg); currentId = msg.replyToId }
   return result
 }
 
