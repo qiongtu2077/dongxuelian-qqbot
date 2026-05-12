@@ -21,14 +21,15 @@
       <div class="local-wizard-head">
         <div>
           <h2>Windows 本地部署向导</h2>
-          <div class="grp-desc">当前这台 Windows 机器就是部署目标。所有运行时文件默认放在当前项目的 runtime/ 下；NapCat 扫码登录后，Koishi 使用 127.0.0.1:8080 连接。</div>
+          <p class="deploy-software-note">windows本地部署需要使用软件</p>
+          <div class="grp-desc">{{ localDeployDescription }}</div>
         </div>
-        <button class="btn" type="button" @click="runLocalWizard" :disabled="autoDeploying">{{ autoDeploying ? '部署流程进行中...' : '一键准备并启动' }}</button>
+        <button v-if="canRunWindowsLocalDeploy" class="btn" type="button" @click="runLocalWizard" :disabled="autoDeploying">{{ autoDeploying ? '部署流程进行中...' : '一键准备并启动' }}</button>
       </div>
 
-      <div class="flow-sentence">{{ localFlowText }}</div>
+      <div v-if="canRunWindowsLocalDeploy" class="flow-sentence">{{ localFlowText }}</div>
 
-      <div class="station-map" role="list" aria-label="本地部署步骤">
+      <div v-if="canRunWindowsLocalDeploy" class="station-map" role="list" aria-label="本地部署步骤">
         <button v-for="(step, index) in wizardSteps" :key="step.id" type="button" :class="['station-node', 'station-' + step.status, { active: activeLocalStep === step.id }]" @click="activeLocalStep = step.id">
           <span class="station-dot">{{ index + 1 }}</span>
           <span class="station-title">{{ step.title }}</span>
@@ -36,11 +37,14 @@
         </button>
       </div>
 
-      <div v-if="env && !isWindows" class="local-warning">
-        当前 Dashboard 后端不是 Windows。请在要部署的 Windows 虚拟机或测试机里启动本地部署器，再执行这条本地部署流程。
+      <div v-if="localDeployBlocked" class="local-warning local-blocked-panel">
+        <strong>当前不是 Windows 本地部署器</strong>
+        <span>{{ localDeployBlockedReason }}</span>
+        <span>{{ localDeployTargetSummary }}</span>
+        <button class="btn btn-sm btn-ghost" type="button" @click="mode = 'remote'">切换到远程 Linux 部署</button>
       </div>
 
-      <div class="local-wizard-layout">
+      <div v-if="canRunWindowsLocalDeploy" class="local-wizard-layout">
         <section class="local-panel local-config-panel">
           <div class="section-head"><strong>最少配置</strong><span>机器人 QQ 必填，AI Key 可以先留空</span></div>
           <div class="row"><label>机器人 QQ</label><input v-model="local.qq" placeholder="机器人 QQ 号" /></div>
@@ -83,7 +87,14 @@
         </section>
       </div>
 
-      <div v-if="env" class="deploy-status">
+      <div v-if="env && localDeployBlocked" class="deploy-status local-target-status">
+        <div class="status-item"><span>检测目标</span><b>{{ env.host?.platform }} / {{ env.host?.arch }}</b><small>{{ env.host?.hostname }}</small></div>
+        <div class="status-item"><span>项目目录</span><code>{{ env.projectDir }}</code></div>
+        <div class="status-item"><span>runtime</span><code>{{ env.runtimeDir }}</code></div>
+        <div class="status-item"><span>Windows 本地部署</span><b class="err-text">不可在此执行</b><small>这不是浏览器所在 Windows 电脑，而是 Dashboard 后端机器。</small></div>
+      </div>
+
+      <div v-if="env && canRunWindowsLocalDeploy" class="deploy-status">
         <div class="status-item"><span>当前机器</span><b>{{ env.host?.platform }} / {{ env.host?.arch }}</b><small>{{ env.host?.hostname }}</small></div>
         <div class="status-item"><span>项目目录</span><code>{{ env.projectDir }}</code></div>
         <div class="status-item"><span>runtime</span><code>{{ env.runtimeDir }}</code></div>
@@ -95,7 +106,7 @@
         <div class="status-item"><span>NapCat</span><b :class="napcatStatusClass">{{ napcatStatusText }}</b><small>{{ env.napcat?.reason }}</small><code v-if="env.napcat?.entry || env.napcat?.path">{{ env.napcat?.entry || env.napcat?.path }}</code></div>
       </div>
 
-      <div v-if="readyCheck" class="ready-panel" :class="readyCheck.basicReady ? 'ready-ok' : 'ready-warn'">
+      <div v-if="readyCheck && canRunWindowsLocalDeploy" class="ready-panel" :class="readyCheck.basicReady ? 'ready-ok' : 'ready-warn'">
         <strong>{{ readyCheck.fullyReady ? '完全可用' : (readyCheck.basicReady ? '基础可用' : '尚未就绪') }}</strong>
         <span>{{ readyCheck.message }}</span>
         <div class="ready-links">
@@ -105,9 +116,9 @@
         </div>
       </div>
 
-      <pre v-if="currentLocalLogLines.length" ref="localLogRef" class="deploy-log themed-scrollbar">{{ currentLocalLogLines.join('\n') }}</pre>
+      <pre v-if="canRunWindowsLocalDeploy && currentLocalLogLines.length" ref="localLogRef" class="deploy-log themed-scrollbar">{{ currentLocalLogLines.join('\n') }}</pre>
 
-      <div v-if="deletePreview" class="delete-preview">
+      <div v-if="canRunWindowsLocalDeploy && deletePreview" class="delete-preview">
         <div class="preview-head">
           <div>
             <strong>删除预览</strong>
@@ -128,7 +139,7 @@
         </div>
       </div>
 
-      <div class="danger-zone">
+      <div v-if="canRunWindowsLocalDeploy" class="danger-zone">
         <div>
           <strong>危险区</strong>
           <span>部署失败或想重新来过时，可清理本项目安装/生成的本地环境。系统全局 Node.js/npm 只报告，不自动删除。</span>
@@ -139,7 +150,7 @@
       <div v-if="localMsg" class="msg" :class="localMsg.type">{{ localMsg.text }}</div>
     </div>
 
-    <div v-if="uninstallPreview" class="modal-backdrop uninstall-backdrop">
+    <div v-if="canRunWindowsLocalDeploy && uninstallPreview" class="modal-backdrop uninstall-backdrop">
       <div class="uninstall-modal themed-scrollbar">
         <div class="modal-head">
           <div>
@@ -300,7 +311,20 @@ export default {
     const stationState = reactive(Object.fromEntries(localStepDefs.map(step => [step.id, 'pending'])))
 
     const deployerBridge = computed(() => (typeof window !== 'undefined' ? window.dongxuelianDeployer : null))
-    const isWindows = computed(() => (env.value?.platform || deployerBridge.value?.platform) === 'win32')
+    const localDeployTarget = computed(() => env.value?.localDeployTarget || null)
+    const backendPlatform = computed(() => localDeployTarget.value?.platform || env.value?.host?.platform || env.value?.platform || '')
+    const isWindows = computed(() => (backendPlatform.value || deployerBridge.value?.platform) === 'win32')
+    const canRunWindowsLocalDeploy = computed(() => localDeployTarget.value ? !!localDeployTarget.value.canRunWindowsLocalDeploy : isWindows.value)
+    const localDeployBlocked = computed(() => !!env.value && !canRunWindowsLocalDeploy.value)
+    const localDeployBlockedReason = computed(() => localDeployTarget.value?.blockedReason || '当前 Dashboard 后端不是 Windows，不能执行 Windows 本地部署。')
+    const localDeployTargetSummary = computed(() => {
+      const host = env.value?.host || {}
+      const dir = env.value?.projectDir || ''
+      return `当前检测目标：${host.platform || backendPlatform.value || 'unknown'} / ${host.arch || localDeployTarget.value?.arch || 'unknown'}，项目目录：${dir || '未检测'}`
+    })
+    const localDeployDescription = computed(() => canRunWindowsLocalDeploy.value
+      ? '当前 Dashboard 后端机器就是 Windows 本地部署目标。所有运行时文件默认放在当前项目的 runtime/ 下；NapCat 扫码登录后，Koishi 使用 127.0.0.1:8080 连接。'
+      : '当前页面只能显示 Dashboard 后端机器状态。远端 Linux Dashboard 不能检测浏览器所在的 Windows 电脑；请打开 Windows 部署器软件后再执行本地部署。')
     const canChooseDirectory = computed(() => typeof deployerBridge.value?.selectDirectory === 'function')
     const deleteCandidates = computed(() => (deletePreview.value?.files || []).filter(item => item.action === 'delete'))
     const keptCandidates = computed(() => (deletePreview.value?.files || []).filter(item => item.action !== 'delete').concat(deletePreview.value?.protected || []))
@@ -384,7 +408,22 @@ export default {
       if (stationState[step] !== undefined) stationState[step] = status
     }
 
+    function resetWizardSteps() {
+      for (const step of localStepDefs) stationState[step.id] = 'pending'
+    }
+
+    function ensureWindowsLocalDeploy() {
+      if (canRunWindowsLocalDeploy.value) return true
+      resetWizardSteps()
+      localMsg.value = { type: 'err', text: localDeployBlockedReason.value }
+      return false
+    }
+
     function updateWizardFromSignals() {
+      if (!canRunWindowsLocalDeploy.value) {
+        resetWizardSteps()
+        return
+      }
       if (env.value) {
         setStepStatus('env', env.value.node?.ok && env.value.npm?.found ? 'success' : 'failed')
         setStepStatus('install', env.value.napcat?.found ? 'success' : (stationState.install === 'running' ? 'running' : 'pending'))
@@ -412,6 +451,14 @@ export default {
     }
 
     async function refreshLocalTaskStatuses(includeReady = false) {
+      if (!canRunWindowsLocalDeploy.value) {
+        npmTaskStatus.value = null
+        napcatTaskStatus.value = null
+        koishiTaskStatus.value = null
+        if (includeReady) readyCheck.value = null
+        resetWizardSteps()
+        return
+      }
       const [npmRes, napcatRes, koishiRes] = await Promise.all([npmInstallStatus(), napcatDeployStatus(), koishiDeployStatus()])
       if (npmRes.ok) npmTaskStatus.value = npmRes.data.status
       if (napcatRes.ok) napcatTaskStatus.value = napcatRes.data.status
@@ -447,6 +494,16 @@ export default {
       if (res.ok) {
         env.value = res.data
         syncNapcatInstallDir(res.data)
+        if (!canRunWindowsLocalDeploy.value) {
+          resetWizardSteps()
+          readyCheck.value = null
+          npmTaskStatus.value = null
+          napcatTaskStatus.value = null
+          koishiTaskStatus.value = null
+          localMsg.value = { type: 'err', text: localDeployBlockedReason.value }
+          checking.value = false
+          return
+        }
         localMsg.value = { type: 'ok', text: '环境检测完成' }
         updateWizardFromSignals()
         await refreshLocalTaskStatuses(false)
@@ -465,6 +522,7 @@ export default {
     }
 
     async function doDownloadWindowsNapcat() {
+      if (!ensureWindowsLocalDeploy()) return
       installingNapcat.value = true
       activeLocalStep.value = 'install'
       setStepStatus('install', 'running')
@@ -478,6 +536,7 @@ export default {
     }
 
     async function doDownloadNapcat() {
+      if (!ensureWindowsLocalDeploy()) return
       if (!napcatUrl.value.trim()) {
         localMsg.value = { type: 'err', text: '请粘贴 NapCat 包直链，或点击 NapCat 发布页手动下载' }
         return
@@ -492,6 +551,7 @@ export default {
     }
 
     async function writeLocalConfig() {
+      if (!ensureWindowsLocalDeploy()) return
       if (!/^\d+$/.test(local.qq.trim())) {
         localMsg.value = { type: 'err', text: '请先填写机器人 QQ 号' }
         activeLocalStep.value = 'config'
@@ -514,6 +574,7 @@ export default {
     }
 
     async function runNpmInstallStep() {
+      if (!ensureWindowsLocalDeploy()) return
       installingDeps.value = true
       activeLocalStep.value = 'npm'
       setStepStatus('npm', 'running')
@@ -543,6 +604,7 @@ export default {
     }
 
     async function startNapcatStep() {
+      if (!ensureWindowsLocalDeploy()) return
       startingNapcat.value = true
       activeLocalStep.value = 'napcat-start'
       setStepStatus('napcat-start', 'running')
@@ -570,6 +632,7 @@ export default {
     }
 
     async function startKoishiStep() {
+      if (!ensureWindowsLocalDeploy()) return
       startingKoishi.value = true
       activeLocalStep.value = 'koishi'
       setStepStatus('koishi', 'running')
@@ -595,6 +658,7 @@ export default {
     }
 
     async function runReadyCheckStep() {
+      if (!ensureWindowsLocalDeploy()) return
       checkingReady.value = true
       activeLocalStep.value = 'health'
       setStepStatus('health', 'running')
@@ -612,6 +676,7 @@ export default {
     }
 
     async function continueAfterScan() {
+      if (!ensureWindowsLocalDeploy()) return
       setStepStatus('scan', 'success')
       await refreshLocalTaskStatuses(false)
       await startKoishiStep()
@@ -626,7 +691,7 @@ export default {
       localMsg.value = null
       try {
         await checkEnv()
-        if (!isWindows.value) throw new Error('请在要部署的 Windows 虚拟机或测试机里启动本地部署器')
+        if (!ensureWindowsLocalDeploy()) throw new Error(localDeployBlockedReason.value)
         if (!env.value?.node?.ok || !env.value?.npm?.found) throw new Error('Node.js 或 npm 未就绪，请先安装 Node.js 18+/20+ 后重新检测')
         if (!env.value?.napcat?.found) {
           await doDownloadWindowsNapcat()
@@ -645,6 +710,7 @@ export default {
     }
 
     async function previewDeleteConfig() {
+      if (!ensureWindowsLocalDeploy()) return
       previewingDelete.value = true
       localMsg.value = null
       const res = await previewLocalConfigDelete()
@@ -655,6 +721,7 @@ export default {
     }
 
     async function confirmDeleteConfig() {
+      if (!ensureWindowsLocalDeploy()) return
       if (!deleteCandidates.value.length) return
       deletingConfig.value = true
       localMsg.value = null
@@ -668,6 +735,7 @@ export default {
     }
 
     async function previewLocalUninstallFlow() {
+      if (!ensureWindowsLocalDeploy()) return
       previewingUninstall.value = true
       localMsg.value = null
       const res = await previewLocalUninstall()
@@ -712,6 +780,7 @@ export default {
     }
 
     async function confirmLocalUninstallFlow() {
+      if (!ensureWindowsLocalDeploy()) return
       if (!uninstallConfirmed.value) return
       uninstalling.value = true
       localMsg.value = null
@@ -832,7 +901,7 @@ export default {
     watch(currentLocalLogLines, scrollLocalLogToBottom)
     watch(mode, value => {
       if (value === 'remote') scrollDeployLogToBottom()
-      if (value === 'local') refreshLocalTaskStatuses(false)
+      if (value === 'local' && canRunWindowsLocalDeploy.value) refreshLocalTaskStatuses(false)
     })
 
     onMounted(() => {
@@ -840,7 +909,7 @@ export default {
       loadRemoteConfig()
       refreshLocalTaskStatuses(false)
       localStatusTimer = setInterval(() => {
-        if (mode.value === 'local') refreshLocalTaskStatuses(false)
+        if (mode.value === 'local' && canRunWindowsLocalDeploy.value) refreshLocalTaskStatuses(false)
       }, 3500)
       scrollDeployLogToBottom()
     })
@@ -850,7 +919,7 @@ export default {
       if (localStatusTimer) clearInterval(localStatusTimer)
     })
 
-    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, readyCheck, savingRemote, deploying, rebuilding, isWindows, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, checkEnv, chooseNapcatDir, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction }
+    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, checkEnv, chooseNapcatDir, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction }
   },
 }
 </script>

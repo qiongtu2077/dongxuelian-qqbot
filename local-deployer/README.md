@@ -1,9 +1,18 @@
-# Windows 本地部署器
+# LianBoard Windows 部署器
 
-这个目录是后续打包 EXE 的入口，目标是让同一个 Windows 程序完成两件事：
+这个目录是打包 Windows 桌面软件的入口。部署器不是只做安装向导，它会在 Windows 本机启动完整 Dashboard 后端，并把 Web 前端作为桌面控制台打开，所以可以作为 Bot 部署和调试软件使用。
+
+它会让同一个 Windows 程序完成这些事：
 
 - Windows 本机部署：在当前项目目录下生成 `runtime/`、`data/`、`koishi.yml`、`start-local.bat`，不写入 C 盘系统目录。
 - 远程 Linux 部署：打开 Dashboard 的部署页，填写 `root@服务器IP` 和远程目录后通过 SSH/SCP 推送更新。
+- Bot 调试：启动/停止 Bot、查看日志、切换模型、编辑 API Keys、管理人格、黑白名单、安全设置和系统状态。
+
+路径约定：
+
+- 部署器源码：`local-deployer/`
+- Electron Builder 中间产物：`local-deployer/dist/`
+- 最终发布产物：`local-deployer/release/`
 
 ## 开发运行
 
@@ -13,7 +22,7 @@ npm install
 npm run start
 ```
 
-启动后会打开 `http://127.0.0.1:5150/dashboard/`。访问密码和管理员密码仍由 Dashboard 环境变量或数据文件管理，不在代码里硬编码。部署器窗口默认使用 Dashboard 的浅色风格。
+启动后会打开 `http://127.0.0.1:5150/dashboard/`。访问密码和管理员密码仍由 Dashboard 环境变量或数据文件管理，不在代码里硬编码。部署器窗口默认使用 Dashboard 的浅色风格，并保留主题切换。
 
 在源码目录里，普通用户可以直接双击根目录的 `启动本地部署器.bat`，不需要手动进入命令行。
 
@@ -27,7 +36,9 @@ npm run build:win
 
 输出为 `dist/` 下的 Windows portable EXE。打包会把根目录的 `packages/`、`scripts/`、`package.json`、`start.js`、`koishi.example.yml` 作为资源带入。
 
-根目录的 `构建Windows部署器.bat` 会自动安装依赖、构建 Dashboard 前端并打包部署器。若只有一个 EXE，就把该 EXE 放入 GitHub Release 附件；若产物包含多个文件，则使用 `local-deployer/release/lianlian-bot-windows-deployer.zip`。
+根目录的 `构建Windows部署器.bat` 会自动安装依赖、构建 Dashboard 前端并打包部署器。构建脚本会把最终可分发文件整理到 `local-deployer/release/`。若只有一个 EXE，就直接发布该 EXE；若产物包含多个文件，则发布 `local-deployer/release/lianlian-bot-windows-deployer.zip`。
+
+如果要把部署器跟代码一起推送到 GitHub，需要将 `local-deployer/release/` 中的 EXE/ZIP 一并加入提交。注意 GitHub 单文件大小限制为 100 MiB，构建后需要确认产物大小未超限。
 
 根目录的 `卸载本地部署器.bat` 用于清理本地部署器依赖、构建产物和可选运行时数据。默认保留 `data/` 与 `runtime/`，避免误删 Key、记忆和 NapCat 文件。
 
@@ -41,7 +52,9 @@ npm run build:win
 
 ## 从 0 到可用
 
-Windows 本地部署页默认认为当前这台 Windows 虚拟机或测试机就是部署目标。看到 Windows 盘符、当前项目目录和本机 runtime 目录时，说明正在操作正确的机器。
+Windows 本地部署页只认当前 Dashboard 后端所在机器。只有使用 Windows 部署器软件，后端才会运行在你的 Windows 本机并检测真实本机环境。看到 Windows 盘符、当前项目目录和本机 runtime 目录时，说明正在操作正确的机器。
+
+如果页面显示 `linux/x64`、`/root/koishi-app` 或其他 Linux 路径，说明你正在访问远端 Linux Dashboard。此时不能执行 Windows 本地部署，也不能把远端服务器状态当成本机状态；请改用 Windows 部署器软件，或切换到“远程 Linux 部署”。
 
 页面会按地铁站点图追踪完整流程：`环境检测 -> 安装 NapCat -> 生成配置 -> npm install -> 启动 NapCat -> 等待扫码 -> 启动 Koishi -> 健康检查`。
 

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, dialog, ipcMain } = require('electron')
+const { app, BrowserWindow, shell, dialog, ipcMain, clipboard } = require('electron')
 const path = require('path')
 const { spawn } = require('child_process')
 
@@ -26,7 +26,7 @@ function createWindow() {
     height: 780,
     minWidth: 920,
     minHeight: 640,
-    title: '莲莲Bot部署器',
+    title: 'LianBoard Windows 部署器',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -51,6 +51,35 @@ function registerIpc() {
     if (result.canceled || !result.filePaths.length) return ''
     return result.filePaths[0]
   })
+  ipcMain.handle('open-external', async (_event, url) => {
+    const value = String(url || '').trim()
+    if (!/^https?:\/\//i.test(value) && !/^mailto:/i.test(value)) return false
+    await shell.openExternal(value)
+    return true
+  })
+  ipcMain.handle('open-path', async (_event, targetPath) => {
+    const value = String(targetPath || '').trim()
+    if (!value) return 'empty path'
+    return shell.openPath(value)
+  })
+  ipcMain.handle('show-item-in-folder', async (_event, targetPath) => {
+    const value = String(targetPath || '').trim()
+    if (!value) return false
+    shell.showItemInFolder(value)
+    return true
+  })
+  ipcMain.handle('copy-text', async (_event, text) => {
+    clipboard.writeText(String(text || ''))
+    return true
+  })
+  ipcMain.handle('get-app-info', async () => ({
+    name: app.getName(),
+    version: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    packaged: app.isPackaged,
+    userData: app.getPath('userData'),
+  }))
 }
 
 app.whenReady().then(() => {

@@ -27,7 +27,19 @@
       "scripts/**/*"
     ],
     "extraResources": [
-      { "from": "../packages", "to": "app/packages" },
+      {
+        "from": "../packages",
+        "to": "app/packages",
+        "filter": [
+          "**/*",
+          "!**/node_modules/**",
+          "!**/test/**",
+          "!**/frontend/node_modules/**",
+          "!**/frontend/src/**",
+          "!**/frontend/public/**",
+          "!**/frontend/package-lock.json"
+        ]
+      },
       { "from": "../scripts", "to": "app/scripts" },
       { "from": "../package.json", "to": "app/package.json" },
       { "from": "../start.js", "to": "app/start.js" },

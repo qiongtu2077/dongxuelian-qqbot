@@ -109,8 +109,12 @@ function log(msg) {
   console.log(`[dashboard] ${msg}`)
 }
 
+function isGlobalLocalMode() {
+  return /^(?:1|true|yes|on)$/i.test(String(process.env.GLOBAL_LOCAL_MODE || '').trim())
+}
+
 function isLocalAuthBypass(req) {
-  if (/^(?:1|true|yes|on)$/i.test(String(process.env.GLOBAL_LOCAL_MODE || '').trim())) return true
+  if (isGlobalLocalMode()) return true
   if (!req) return false
   return isLoopbackAddress(getRemoteAddress(req))
 }
@@ -483,12 +487,16 @@ function inspectNapcatCandidate(candidate) {
 
 function detectNapcatInstallation() {
   const expectedPath = runtimePath('napcat')
+  if (process.platform !== 'win32') {
+    const reason = `当前 Dashboard 后端是 ${process.platform}/${process.arch}，Windows 本地部署需要在 Windows 部署器软件中运行。远端网页不能检测浏览器所在的 Windows 电脑。`
+    return { found: false, status: 'unsupported', path: '', expectedPath, entry: '', reason, candidates: [] }
+  }
   const candidates = uniquePaths([
     expectedPath,
     readFileSync(LOCAL_NAPCAT_DIR_FILE),
     path.join(KOISHI_DIR, 'NapCat'),
     process.env.NAPCAT_DIR || '',
-    process.platform === 'win32' ? path.join(KOISHI_DIR, 'runtime', 'NapCat') : '/root/Napcat',
+    path.join(KOISHI_DIR, 'runtime', 'NapCat'),
   ].filter(Boolean))
   const inspected = candidates.map(inspectNapcatCandidate)
   const installed = inspected.find(item => item.found)
@@ -1053,6 +1061,33 @@ function runtimePath(...parts) {
   return path.join(KOISHI_DIR, 'runtime', ...parts)
 }
 
+function getLocalDeployTarget() {
+  const isWindowsBackend = process.platform === 'win32'
+  const blockedReason = isWindowsBackend ? '' : `当前 Dashboard 后端是 ${process.platform}/${process.arch}，Windows 本地部署需要在 Windows 部署器软件中运行。远端网页只能检测服务器，不能检测浏览器所在的 Windows 电脑。`
+  return {
+    kind: 'dashboard-backend',
+    scope: 'backend-machine',
+    platform: process.platform,
+    arch: process.arch,
+    hostname: os.hostname(),
+    projectDir: path.resolve(KOISHI_DIR),
+    runtimeDir: runtimePath(),
+    isWindowsBackend,
+    isLocalDeployer: isGlobalLocalMode(),
+    canRunWindowsLocalDeploy: isWindowsBackend,
+    blocked: !isWindowsBackend,
+    blockedReason,
+    guidance: isWindowsBackend ? '当前 Dashboard 后端运行在 Windows，可作为本地部署目标。' : '请在要部署的 Windows 本机启动部署器软件，并访问 http://127.0.0.1:5150/dashboard/。',
+  }
+}
+
+function requireWindowsLocalDeployTarget(req, res) {
+  const target = getLocalDeployTarget()
+  if (target.canRunWindowsLocalDeploy) return true
+  json(res, { ok: false, blocked: true, localDeployTarget: target, message: target.blockedReason }, 403)
+  return false
+}
+
 function writeRuntimeLayout(options = {}) {
   const includeNapcat = options.includeNapcat !== false
   const includeNodeModules = options.includeNodeModules !== false
@@ -1134,6 +1169,17 @@ function getTaskPublicStatus(key, extra = {}) {
     logLines: readLastLogLines(task.logFile, 160),
     ...extra,
   }
+}
+
+function getBlockedLocalTaskStatus(key, extra = {}) {
+  const target = getLocalDeployTarget()
+  return getTaskPublicStatus(key, {
+    blocked: true,
+    localDeployTarget: target,
+    running: false,
+    message: target.blockedReason,
+    ...extra,
+  })
 }
 
 function spawnLocalTask(key, command, args = [], options = {}) {
@@ -1219,6 +1265,18 @@ function getNapcatLoginHint() {
 }
 
 function getLocalNapcatDeployStatus() {
+  const target = getLocalDeployTarget()
+  if (!target.canRunWindowsLocalDeploy) {
+    return getBlockedLocalTaskStatus('napcat', {
+      found: false,
+      installation: detectNapcatInstallation(),
+      webuiPort: { available: false, status: 'unsupported', reason: target.blockedReason },
+      onebotPort: { available: false, status: 'unsupported', reason: target.blockedReason },
+      webuiUrl: '',
+      tokenAvailable: false,
+      login: { status: 'blocked', reason: target.blockedReason },
+    })
+  }
   const detected = detectNapcatInstallation()
   const webuiPort = checkPortState(6099)
   const onebotPort = checkPortState(8080)
@@ -1237,6 +1295,14 @@ function getLocalNapcatDeployStatus() {
 }
 
 function getLocalKoishiDeployStatus() {
+  const target = getLocalDeployTarget()
+  if (!target.canRunWindowsLocalDeploy) {
+    return getBlockedLocalTaskStatus('koishi', {
+      port: { available: false, status: 'unsupported', reason: target.blockedReason },
+      loaded: false,
+      url: '',
+    })
+  }
   const port = checkPortState(5140)
   const lines = readLastLogLines(localTasks.koishi.logFile, 220).join('\n')
   const loaded = /adapter-onebot|dongxuelian-ai|server listening|app started|koishi/i.test(lines)
@@ -1249,10 +1315,37 @@ function getLocalKoishiDeployStatus() {
 }
 
 function getLocalNpmInstallStatus() {
+  const target = getLocalDeployTarget()
+  if (!target.canRunWindowsLocalDeploy) {
+    return getBlockedLocalTaskStatus('npmInstall', { dependencies: { ready: false, reason: target.blockedReason } })
+  }
   return getTaskPublicStatus('npmInstall', { dependencies: getProjectDependencyStatus() })
 }
 
 function buildLocalReadyCheck() {
+  const target = getLocalDeployTarget()
+  if (!target.canRunWindowsLocalDeploy) {
+    const checks = { node: false, npm: false, dependencies: false, localConfig: false, napcatInstalled: false, napcatStarted: false, onebotPort: false, koishiStarted: false, aiKey: false }
+    return {
+      ok: true,
+      blocked: true,
+      localDeployTarget: target,
+      basicReady: false,
+      fullyReady: false,
+      checks,
+      node: { ok: false, reason: target.blockedReason },
+      npm: { found: false, reason: target.blockedReason },
+      dependencies: { ready: false, reason: target.blockedReason },
+      localConfig: { ok: true, files: [], protected: [] },
+      napcat: getLocalNapcatDeployStatus(),
+      koishi: getLocalKoishiDeployStatus(),
+      aiKey: getAiKeyStatus(),
+      dashboardUrl: '',
+      koishiUrl: '',
+      napcatUrl: '',
+      message: target.blockedReason,
+    }
+  }
   const nodeInfo = getCommandInfo('node', 18)
   const npmInfo = getCommandInfo('npm')
   const dependencies = getProjectDependencyStatus()
@@ -1274,6 +1367,8 @@ function buildLocalReadyCheck() {
   const basicReady = checks.node && checks.npm && checks.dependencies && checks.localConfig && checks.napcatInstalled && checks.napcatStarted && checks.onebotPort && checks.koishiStarted
   return {
     ok: true,
+    blocked: false,
+    localDeployTarget: target,
     basicReady,
     fullyReady: basicReady && checks.aiKey,
     checks,
@@ -2382,6 +2477,7 @@ const server = http.createServer((req, res) => {
 
   // 环境检测
   if (pathname === '/dashboard/api/env/check' && req.method === 'GET') {
+    const localDeployTarget = getLocalDeployTarget()
     const nodeInfo = getCommandInfo('node', 18)
     const npmInfo = getCommandInfo('npm')
     const dependencyStatus = getProjectDependencyStatus()
@@ -2392,6 +2488,9 @@ const server = http.createServer((req, res) => {
     return json(res, {
       platform: process.platform,
       host: { platform: process.platform, arch: process.arch, hostname: os.hostname() },
+      localDeployTarget,
+      blocked: localDeployTarget.blocked,
+      blockedReason: localDeployTarget.blockedReason,
       projectDir: path.resolve(KOISHI_DIR),
       runtimeDir: runtimePath(),
       node: nodeInfo,
@@ -2411,6 +2510,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/deploy/local' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
     collectBody(req, res, (body) => {
       try {
         const cfg = JSON.parse(body)
@@ -2459,12 +2559,14 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/deploy/local-config-preview' && req.method === 'GET') {
     if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
     try { return json(res, buildLocalConfigPreview()) }
     catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
 
   if (pathname === '/dashboard/api/deploy/local-config-delete' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
     collectBody(req, res, () => {
       try {
         const result = deleteLocalConfigFiles()
@@ -2476,12 +2578,14 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/deploy/local-uninstall-preview' && req.method === 'GET') {
     if (!requireStrictAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
     try { return json(res, buildLocalUninstallPreview()) }
     catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
 
   if (pathname === '/dashboard/api/deploy/local-uninstall' && req.method === 'POST') {
     if (!requireStrictAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
     collectBody(req, res, (body) => {
       try {
         const cfg = JSON.parse(body || '{}')
@@ -2495,6 +2599,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/deploy/napcat-download' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
     collectBody(req, res, (body) => {
       try {
         const { url } = JSON.parse(body)
@@ -2510,9 +2615,9 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/deploy/napcat-windows-download' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
     collectBody(req, res, (body) => {
       try {
-        if (process.platform !== 'win32') return json(res, { ok: false, message: '自动安装 NapCat（Windows）只能在 Windows 部署器中使用' }, 400)
         const { installDir } = JSON.parse(body || '{}')
         const targetDir = validateNapcatInstallDir(installDir)
         downloadNapcatWindowsRelease(targetDir, (err, detail = {}) => {
@@ -2527,6 +2632,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/deploy/npm-install' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
     try {
       const dependencies = getProjectDependencyStatus()
       if (dependencies.ready) return json(res, { ok: true, skipped: true, message: '项目依赖已安装', status: getLocalNpmInstallStatus() })
@@ -2543,8 +2649,8 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/deploy/napcat-start' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
     try {
-      if (process.platform !== 'win32') return json(res, { ok: false, message: '启动 NapCat 只能在当前 Windows 部署目标机上执行' }, 400)
       const current = getLocalNapcatDeployStatus()
       if (current.running) return json(res, { ok: true, message: 'NapCat 看起来已经在运行', status: current })
       const { detected, entry } = getNapcatStartEntry()
@@ -2566,6 +2672,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/deploy/koishi-start' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
     try {
       const current = getLocalKoishiDeployStatus()
       if (current.running) return json(res, { ok: true, message: 'Koishi 看起来已经在运行', status: current })
@@ -2591,6 +2698,8 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/bot/local-status' && req.method === 'GET') {
     try {
+      const target = getLocalDeployTarget()
+      if (!target.canRunWindowsLocalDeploy) return json(res, { running: false, workers: 0, blocked: true, localDeployTarget: target, message: target.blockedReason })
       if (process.platform === 'win32') {
         const port = checkPortState(5140)
         return json(res, { running: port.status === 'occupied', workers: port.status === 'occupied' ? 1 : 0, port })
@@ -2603,6 +2712,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/bot/local-stop' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
     try {
       stopKoishiProcesses()
       return json(res, { ok: true, message: '本地 Bot 已停止' })

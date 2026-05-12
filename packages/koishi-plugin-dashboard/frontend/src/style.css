@@ -29,6 +29,10 @@
   --code-accent: var(--info);
   --code-inset: inset 0 2px 5px rgba(0, 0, 0, 0.45);
   --dashboard-sidebar-width: clamp(154px, 11.9vw, 224px);
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
 }
 
 [data-theme="light"] {
@@ -176,7 +180,7 @@ body {
 .active-view-label {
   flex: 0 0 auto;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--input);
   color: var(--text2);
   padding: 6px 10px;
@@ -209,7 +213,7 @@ h2 {
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   padding: 20px;
   margin-bottom: 20px;
   animation: cardIn .35s ease both;
@@ -239,7 +243,7 @@ h2 {
 .row label { min-width: 80px; font-size: 14px; color: var(--text2) }
 
 select, input {
-  background: var(--input); border: 1px solid var(--border); border-radius: 6px;
+  background: var(--input); border: 1px solid var(--border); border-radius: var(--radius-md);
   min-height: 38px; padding: 8px 12px; color: var(--text); font-size: 14px; flex: 1;
   transition: border-color .2s, background .3s, box-shadow .2s;
 }
@@ -271,7 +275,7 @@ select option { background: var(--surface); color: var(--text) }
 
 .btn {
   background: linear-gradient(135deg, var(--accent), var(--accent2));
-  color: #11110d; border: none; border-radius: 6px;
+  color: #11110d; border: none; border-radius: var(--radius-md);
   padding: 8px 20px; font-weight: 700; font-size: 14px;
   cursor: pointer;
   box-shadow: 0 4px 12px var(--shadow);
@@ -287,7 +291,7 @@ select option { background: var(--surface); color: var(--text) }
   color: var(--tabColor);
   border: 1px solid var(--tabBorder);
   padding: 6px 18px; font-size: 14px;
-  border-radius: 6px; font-weight: 700;
+  border-radius: var(--radius-md); font-weight: 700;
   cursor: pointer;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -326,7 +330,7 @@ select option { background: var(--surface); color: var(--text) }
 .tag:hover { background: var(--hover) }
 
 .msg {
-  background: var(--input); border-radius: 6px; padding: 12px 16px;
+  background: var(--input); border-radius: var(--radius-md); padding: 12px 16px;
   margin-top: 12px; font-size: 14px; line-height: 1.6;
   animation: fadeIn .25s ease;
 }
@@ -335,7 +339,7 @@ select option { background: var(--surface); color: var(--text) }
 
 .grp {
   border-bottom: 1px solid var(--border); padding: 12px 0;
-  transition: background .15s; border-radius: 6px; padding-left: 8px; padding-right: 8px;
+  transition: background .15s; border-radius: var(--radius-md); padding-left: 8px; padding-right: 8px;
 }
 .grp:hover { background: var(--hoverLight) }
 .grp:last-child { border-bottom: none }
@@ -542,7 +546,7 @@ select option { background: var(--surface); color: var(--text) }
   width: 34px;
   height: 34px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--input);
   color: var(--text2);
   display: inline-flex;
@@ -790,6 +794,21 @@ select option { background: var(--surface); color: var(--text) }
 
 .local-wizard-head .btn { flex: 0 0 auto }
 
+.deploy-software-note {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  margin: -4px 0 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--accentDim);
+  color: var(--accent2);
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
 .flow-sentence {
   margin: 14px 0 16px;
   border: 1px solid var(--border);
@@ -908,13 +927,31 @@ select option { background: var(--surface); color: var(--text) }
 
 .local-warning {
   border: 1px solid color-mix(in srgb, var(--danger) 46%, var(--border));
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--danger) 10%, var(--input));
   color: var(--danger);
   padding: 10px 12px;
   font-size: 13px;
   line-height: 1.5;
   margin-bottom: 14px;
+}
+
+.local-blocked-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.local-blocked-panel strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.local-blocked-panel span {
+  color: var(--text2);
+}
+
+.local-blocked-panel .btn {
+  justify-self: start;
 }
 
 .local-wizard-layout {
@@ -926,7 +963,7 @@ select option { background: var(--surface); color: var(--text) }
 .local-panel {
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--input) 84%, transparent);
   padding: 12px;
 }
