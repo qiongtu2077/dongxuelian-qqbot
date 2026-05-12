@@ -37,6 +37,7 @@ const {
   getConversationHistory, saveConversationTurn,
   clearUserConversationHistory,
   getRecentAssistantReplies, getRecentUserMessages,
+  normalizeUserMessageForPrompt,
   writeMemory, deleteMemory, getMemorySummary, clearGroupMemory,
   checkMemoryTimerExpired, readMemoryTimer,
   channelSharedCache,
@@ -437,7 +438,7 @@ async function chat(session, userText, ctx, options = {}) {
     '用户'
   )
   const safeUserName = sanitizeUserName(userName)
-  const currentUserMessage = `用户(${safeUserName})：${cleanInput}`
+  const currentUserMessage = `<user>\n昵称：${safeUserName}\n发言：${cleanInput}\n</user>`
 
   if (isConsecutiveUserRepeat(session, cleanInput)) {
     const repeatedReply = Math.random() < 0.5
@@ -494,7 +495,7 @@ async function chat(session, userText, ctx, options = {}) {
   try { if (session.quote) quoteAuthor = session.quote.nickname || session.quote.author || session.quote.userId || '' } catch (e) {}
   const quotedTag = qc2 ? '\n[引用 ' + (quoteAuthor || '消息') + ' 的原话]\n' + qc2 + '\n[以上是引用内容，不是 ' + safeUserName + ' 说的]' : ''
   const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${fwdInput}${contextTag}${quotedTag}\n</user>`
-  const historyMessages = getConversationHistory(session)
+  const historyMessages = getConversationHistory(session).map(normalizeUserMessageForPrompt)
 
   // 话题检测：对比上一条消息和当前消息，切换了则清历史
   const lastUserMsg = getRecentUserMessages(session, 1).pop()

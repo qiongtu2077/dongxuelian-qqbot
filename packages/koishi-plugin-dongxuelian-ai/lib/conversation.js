@@ -132,7 +132,29 @@ function saveReplyFingerprint(session, replyText) {
 
 function getRecentAssistantReplies(session, limit = MAX_REPEAT_CHECK_HISTORY) { return getReplyFingerprintHistory(session).filter(item => item.content).slice(-limit).map(item => item.content) }
 
-function getRecentUserMessages(session, limit = 3) { return getConversationHistory(session).filter(m => m.role === 'user').slice(-limit).map(m => m.content) }
+function parseUserMessageEnvelope(content = '') {
+  const text = String(content || '').trim()
+  const wrapped = text.match(/^<user>\r?\n昵称：(.+?)\r?\n发言：([\s\S]*)\r?\n<\/user>$/)
+  if (wrapped) return { nickname: wrapped[1].trim(), content: wrapped[2].trim(), wrapped: true }
+  const legacy = text.match(/^用户\((.+?)\)[：:]([\s\S]*)$/)
+  if (legacy) return { nickname: legacy[1].trim(), content: legacy[2].trim(), wrapped: false }
+  return { nickname: '', content: text, wrapped: false }
+}
+
+function getUserMessageContent(content = '') {
+  return parseUserMessageEnvelope(content).content
+}
+
+function normalizeUserMessageForPrompt(message) {
+  if (!message || message.role !== 'user') return message
+  const parsed = parseUserMessageEnvelope(message.content)
+  if (parsed.wrapped || !parsed.nickname) return message
+  return Object.assign({}, message, {
+    content: `<user>\n昵称：${parsed.nickname}\n发言：${parsed.content}\n</user>`,
+  })
+}
+
+function getRecentUserMessages(session, limit = 3) { return getConversationHistory(session).filter(m => m.role === 'user').slice(-limit).map(m => getUserMessageContent(m.content)) }
 
 function flushTodayCacheToDisk(channelKey) {
   const cache = channelTodayCache.get(channelKey)
@@ -411,6 +433,7 @@ module.exports = {
   clearConversationHistory, clearUserConversationHistory,
   getReplyFingerprintHistory, saveReplyFingerprint,
   getRecentAssistantReplies, getRecentUserMessages,
+  parseUserMessageEnvelope, getUserMessageContent, normalizeUserMessageForPrompt,
   saveSharedChannelTurn,
   findChannelMessageById, collectReplyChain,
   getQuotedMessageNote, getSharedContextNote,
