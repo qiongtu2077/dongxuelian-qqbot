@@ -514,6 +514,17 @@ select option { background: var(--surface); color: var(--text) }
   margin-top: 14px;
 }
 
+.local-alert-backdrop { z-index: 52 }
+.local-alert-text {
+  margin: 0;
+  color: var(--text2);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.local-alert-card .gate-actions { justify-content: flex-end }
+.local-alert-card .gate-actions .btn { width: auto; min-width: 96px }
+
 .gate-error {
   color: var(--danger);
   font-size: 13px;

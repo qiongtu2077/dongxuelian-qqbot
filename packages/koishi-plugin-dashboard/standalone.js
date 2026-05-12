@@ -534,13 +534,15 @@ function getProjectDependencyStatus() {
   const nodeModules = path.join(KOISHI_DIR, 'node_modules')
   const required = ['koishi', 'koishi-plugin-adapter-onebot']
   const packages = Object.fromEntries(required.map(name => [name, fs.existsSync(path.join(nodeModules, name, 'package.json'))]))
+  const missing = required.filter(name => !packages[name])
   const ready = fs.existsSync(nodeModules) && required.every(name => packages[name])
   return {
     ready,
     nodeModules: { exists: fs.existsSync(nodeModules), path: nodeModules },
     packageLock: { exists: fs.existsSync(packageLock), path: packageLock },
     packages,
-    reason: ready ? '项目依赖已安装' : '源码存在不代表依赖已安装，请先运行 npm install 或生成本地配置后启动脚本自动安装',
+    missing,
+    reason: ready ? '项目依赖已安装' : `项目依赖未完整安装${missing.length ? '，缺少：' + missing.join('、') : ''}`,
   }
 }
 
@@ -579,7 +581,7 @@ function findNapcatMarkers(root) {
       }
       if (!entry.isFile()) continue
       if (/^NapCatInstaller\.exe$/i.test(entry.name)) markers.push({ path: full, rel, type: 'installer' })
-      else if (/^napcat.*\.(exe|bat|cmd|js|mjs)$/i.test(entry.name) || /^NapCatWinBootMain\.exe$/i.test(entry.name) || /NapCat.*\.exe$/i.test(entry.name)) markers.push({ path: full, rel, type: 'entry' })
+      else if ((/^napcat.*\.(exe|bat|cmd|js|mjs)$/i.test(entry.name) && !/kill/i.test(entry.name)) || /^NapCatWinBootMain\.exe$/i.test(entry.name) || /NapCat.*\.exe$/i.test(entry.name)) markers.push({ path: full, rel, type: 'entry' })
       else if (/^config\/webui\.json$/i.test(rel)) markers.push({ path: full, rel, type: 'config' })
       else if (/^package\.json$/i.test(entry.name)) {
         try {
@@ -595,8 +597,8 @@ function findNapcatMarkers(root) {
 
 function rankNapcatEntry(filePath) {
   const name = path.basename(filePath || '')
-  if (/^napcat\.bat$/i.test(name)) return 0
-  if (/^napcat\.cmd$/i.test(name)) return 1
+  if (/^napcat\.quick\.(bat|cmd)$/i.test(name)) return 0
+  if (/^napcat\.(bat|cmd)$/i.test(name)) return 1
   if (/^NapCatWinBootMain\.exe$/i.test(name)) return 2
   if (/^napcat.*\.exe$/i.test(name)) return 3
   if (/\.(bat|cmd)$/i.test(name)) return 4
@@ -610,6 +612,18 @@ function sortNapcatEntries(markers = []) {
     .filter(item => item?.type === 'entry')
     .slice()
     .sort((a, b) => rankNapcatEntry(a.path) - rankNapcatEntry(b.path) || String(a.rel || a.path).localeCompare(String(b.rel || b.path)))
+}
+
+function findNapcatQQExecutable(root) {
+  for (const candidate of [path.join(root, 'QQ.exe'), path.join(root, 'bootmain', 'QQ.exe')]) {
+    try { if (fs.statSync(candidate).isFile()) return candidate } catch {}
+  }
+  return ''
+}
+
+function entryRequiresBundledQQ(entry) {
+  const name = path.basename(entry?.path || entry || '')
+  return /^(?:napcat(?:\.quick)?\.(?:bat|cmd)|NapCatWinBootMain\.exe)$/i.test(name)
 }
 
 function inspectNapcatCandidate(candidate) {
@@ -627,7 +641,9 @@ function inspectNapcatCandidate(candidate) {
     if (!entries.length) return { ...result, status: 'partial', reason: '目录为空' }
     const { markers, archives } = findNapcatMarkers(candidate)
     const entryMarkers = sortNapcatEntries(markers)
-    if (entryMarkers.length || markers.some(item => item.type === 'config')) return { ...result, found: true, status: 'installed', entry: entryMarkers[0]?.path || '', reason: '找到 NapCat 启动或配置标记', markers: markers.slice(0, 8) }
+    const qqExecutable = findNapcatQQExecutable(candidate)
+    if (entryMarkers.some(entryRequiresBundledQQ) && !qqExecutable) return { ...result, status: 'partial', entry: entryMarkers[0]?.path || '', reason: 'NapCat 启动文件存在，但 bootmain/QQ.exe 缺失，当前包不完整或未完成安装', markers: markers.slice(0, 8) }
+    if (entryMarkers.length || markers.some(item => item.type === 'config')) return { ...result, found: true, status: 'installed', entry: entryMarkers[0]?.path || '', reason: '找到 NapCat 启动或配置标记', markers: markers.slice(0, 8), qqExecutable }
     if (archives.length) return { ...result, status: 'partial', reason: '目录里只有下载包或压缩包，尚未解压安装', archives: archives.slice(0, 8) }
     return { ...result, status: 'partial', reason: '目录存在但未找到 NapCat 启动文件' }
   } catch (e) {
@@ -659,7 +675,7 @@ function detectNapcatInstallation() {
     expectedPath,
     entry: selected.entry || '',
     reason: selected.reason || (installed ? '已安装' : '未检测到 NapCat'),
-    candidates: inspected.map(item => ({ path: item.path, exists: item.exists, status: item.status, reason: item.reason, entry: item.entry || '' })),
+    candidates: inspected.map(item => ({ path: item.path, exists: item.exists, status: item.status, reason: item.reason, entry: item.entry || '', qqExecutable: item.qqExecutable || '' })),
   }
 }
 
@@ -2038,6 +2054,7 @@ function getNapcatStartEntry() {
 
 function getNapcatLoginHint() {
   const lines = readLastLogLines(localTasks.napcat.logFile, 220).join('\n')
+  if (/Usage:\s*\.\\NapCatWinBootMain\.exe\s+<quickLogin>|Error Code:\s*2|Process Path:.*QQ\.exe/i.test(lines)) return { status: 'failed', reason: 'NapCat 启动入口失败：当前包可能缺少 bootmain/QQ.exe，或启动脚本缺少 quickLogin 参数。请重新安装官方 Windows 包后重试。' }
   if (/登录成功|已登录|login\s+success|account.*online/i.test(lines)) return { status: 'ok', reason: '日志显示 NapCat 已登录' }
   if (/二维码|扫码|qrcode|scan|login/i.test(lines)) return { status: 'waiting', reason: 'NapCat 已启动，等待扫码或登录确认' }
   return { status: 'unknown', reason: '暂未能从日志确认登录状态，请在 NapCat WebUI 或控制台完成扫码' }
@@ -2234,6 +2251,10 @@ function getResetToken() {
   return readFileSync(RESET_TOKEN_FILE) || ''
 }
 
+function shouldGenerateResetTokenOnStartup() {
+  return !isLocalAuthBypass()
+}
+
 function requireAdmin(req, res) {
   if (isLocalAuthBypass(req)) return true
   const token = (req.headers['x-admin-token'] || '').trim()
@@ -2280,7 +2301,13 @@ function napcatProxy(req, res, targetPath) {
     }
     napcatRespond(res, proxyRes, token)
   })
-  proxyReq.on('error', () => { res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('NapCat proxy error') })
+  proxyReq.on('error', () => {
+    const status = getLocalNapcatDeployStatus()
+    const tail = (status.logLines || []).slice(-12).join('\n')
+    const detail = ['NapCat WebUI 代理失败：127.0.0.1:6099 当前没有响应。', status.login?.reason || status.installation?.reason || '', tail ? '最近 NapCat 日志：\n' + tail : ''].filter(Boolean).join('\n\n')
+    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' })
+    res.end(detail)
+  })
   req.pipe(proxyReq)
 }
 
@@ -3617,15 +3644,17 @@ const server = http.createServer((req, res) => {
     res.end('Not Found')
 })
 
-if (!getResetToken()) generateResetToken()
+if (shouldGenerateResetTokenOnStartup() && !getResetToken()) generateResetToken()
 
 server.listen(PORT, () => {
   log(`LianBoard running on http://localhost:${PORT}/dashboard/`)
   log(`bot control: start/stop/maintenance`)
   log(`napcat proxy: /webui/ -> NapCat WebUI`)
-  log(`密码重置令牌文件: ${RESET_TOKEN_FILE}`)
-  if (!getAccessPassword() && !isLocalAuthBypass()) log('WARNING: dashboard access password is not configured; login is disabled')
-  if (!readFileSync(ADMIN_PWD_FILE) && !process.env.DASHBOARD_ADMIN_PASSWORD) log('WARNING: 管理员密码使用默认值 123，请登录后在安全设置中修改')
+  if (!isLocalAuthBypass()) {
+    log(`密码重置令牌文件: ${RESET_TOKEN_FILE}`)
+    if (!getAccessPassword()) log('WARNING: dashboard access password is not configured; login is disabled')
+    if (!readFileSync(ADMIN_PWD_FILE) && !process.env.DASHBOARD_ADMIN_PASSWORD) log('WARNING: 管理员密码使用默认值 123，请登录后在安全设置中修改')
+  }
 })
 
 process.on('SIGINT', () => { log('shutting down'); server.close(); process.exit(0) })

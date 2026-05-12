@@ -172,6 +172,16 @@
       <div v-if="localMsg" class="msg" :class="localMsg.type">{{ localMsg.text }}</div>
     </div>
 
+    <div v-if="localAlert" class="modal-backdrop local-alert-backdrop" @click.self="closeLocalAlert">
+      <div class="admin-modal-card local-alert-card" role="dialog" aria-modal="true" aria-labelledby="local-alert-title">
+        <h2 id="local-alert-title" class="admin-modal-title">提示</h2>
+        <p class="local-alert-text">{{ localAlert }}</p>
+        <div class="gate-actions">
+          <button class="btn" type="button" autofocus @click="closeLocalAlert">确定</button>
+        </div>
+      </div>
+    </div>
+
     <div v-if="canRunWindowsLocalDeploy && uninstallPreview" class="modal-backdrop uninstall-backdrop">
       <div class="uninstall-modal themed-scrollbar">
         <div class="modal-head">
@@ -285,6 +295,7 @@ export default {
     const remote = reactive({ server: '', appDir: '/root/koishi-app', mode: 'update' })
     const env = ref(null)
     const localMsg = ref(null)
+    const localAlert = ref('')
     const remoteMsg = ref(null)
     const logs = ref([])
     const napcatUrl = ref('')
@@ -447,6 +458,30 @@ export default {
       return false
     }
 
+    function showLocalAlert(text) {
+      localAlert.value = text
+    }
+
+    function closeLocalAlert() {
+      localAlert.value = ''
+    }
+
+    function validateLocalQQ(useAlert = false) {
+      if (/^\d+$/.test(local.qq.trim())) return true
+      const text = '请先填入bot挂载的qq号'
+      localMsg.value = { type: 'err', text }
+      activeLocalStep.value = 'config'
+      setStepStatus('config', 'failed')
+      if (useAlert) showLocalAlert(text)
+      return false
+    }
+
+    function shouldUsePortableNodeForWizard() {
+      const packaged = !!window.dongxuelianDeployer
+      if (!env.value?.node?.ok || !env.value?.npm?.found) return true
+      return packaged && (!env.value?.node?.ownedByProject || !env.value?.npm?.ownedByProject)
+    }
+
     function syncNapcatInstallDir(data) {
       if (!napcatInstallDir.value) napcatInstallDir.value = data?.napcat?.expectedPath || (data?.runtimeDir ? `${data.runtimeDir}\\napcat` : '')
     }
@@ -571,9 +606,25 @@ export default {
           updateWizardFromSignals()
           scrollLocalLogToBottom()
           if (res.data.status?.login?.status === 'ok') return true
+          if (res.data.status?.login?.status === 'failed') throw new Error(taskFailureText('scan', res.data.status, res.data.status.login.reason || 'NapCat 启动失败，请查看日志后重试'))
           if (res.data.status?.state === 'failed' && !res.data.status?.running) throw new Error(taskFailureText('scan', res.data.status, 'NapCat 进程已退出，请查看日志后重试'))
         }
         await new Promise(resolve => setTimeout(resolve, 1500))
+      }
+      return false
+    }
+
+    async function waitForNpmDependenciesReady() {
+      for (let i = 0; i < 30; i += 1) {
+        const res = await npmInstallStatus()
+        if (res.ok) {
+          npmTaskStatus.value = res.data.status
+          updateWizardFromSignals()
+          scrollLocalLogToBottom()
+          if (res.data.status?.dependencies?.ready) return true
+          if (res.data.status?.state === 'failed') return false
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000))
       }
       return false
     }
@@ -660,12 +711,7 @@ export default {
 
     async function writeLocalConfig() {
       if (!ensureWindowsLocalDeploy()) return
-      if (!/^\d+$/.test(local.qq.trim())) {
-        localMsg.value = { type: 'err', text: '请先填入bot挂载qq号' }
-        activeLocalStep.value = 'config'
-        setStepStatus('config', 'failed')
-        return
-      }
+      if (!validateLocalQQ(true)) return
       localDeploying.value = true
       activeLocalStep.value = 'config'
       setStepStatus('config', 'running')
@@ -700,11 +746,13 @@ export default {
         setStepStatus('npm', 'skipped')
       } else {
         try {
-          await waitForLocalTask(npmInstallStatus, status => { npmTaskStatus.value = status }, 'npm', status => !status.running && (status.dependencies?.ready || status.state === 'failed'))
-          setStepStatus('npm', npmTaskStatus.value?.dependencies?.ready ? 'success' : 'failed')
+          await waitForLocalTask(npmInstallStatus, status => { npmTaskStatus.value = status }, 'npm', status => !status.running && (status.state === 'success' || status.state === 'failed'))
+          const ready = npmTaskStatus.value?.state === 'success' && await waitForNpmDependenciesReady()
+          setStepStatus('npm', ready ? 'success' : 'failed')
           if (!npmTaskStatus.value?.dependencies?.ready) {
             const guide = npmTaskStatus.value?.failureGuide
-            localMsg.value = { type: 'err', text: taskFailureText('npm', npmTaskStatus.value, guide?.code === 'NPM_PROXY_REFUSED' ? '项目依赖安装仍被本机代理阻断，请点击“一键修复代理并重试”或检查代理软件端口。' : (guide?.title || 'npm install 未完成，请查看日志后重试')) }
+            const fallback = guide?.code === 'NPM_PROXY_REFUSED' ? '项目依赖安装仍被本机代理阻断，请点击“一键修复代理并重试”或检查代理软件端口。' : (guide?.title || npmTaskStatus.value?.dependencies?.reason || 'npm install 未完成，请查看日志后重试')
+            localMsg.value = { type: 'err', text: taskFailureText('npm', npmTaskStatus.value, fallback) }
           }
         } catch (e) {
           setStepStatus('npm', 'failed')
@@ -735,9 +783,10 @@ export default {
       if (res.data?.status) npmTaskStatus.value = res.data.status
       localMsg.value = { type: 'ok', text: res.data?.message || 'npm 代理已处理，正在重新安装依赖...' }
       try {
-        await waitForLocalTask(npmInstallStatus, status => { npmTaskStatus.value = status }, 'npm', status => !status.running && (status.dependencies?.ready || status.state === 'failed'))
-        setStepStatus('npm', npmTaskStatus.value?.dependencies?.ready ? 'success' : 'failed')
-        if (!npmTaskStatus.value?.dependencies?.ready) localMsg.value = { type: 'err', text: taskFailureText('npm', npmTaskStatus.value, 'npm install 未完成，请查看日志后重试') }
+        await waitForLocalTask(npmInstallStatus, status => { npmTaskStatus.value = status }, 'npm', status => !status.running && (status.state === 'success' || status.state === 'failed'))
+        const ready = npmTaskStatus.value?.state === 'success' && await waitForNpmDependenciesReady()
+        setStepStatus('npm', ready ? 'success' : 'failed')
+        if (!npmTaskStatus.value?.dependencies?.ready) localMsg.value = { type: 'err', text: taskFailureText('npm', npmTaskStatus.value, npmTaskStatus.value?.dependencies?.reason || 'npm install 未完成，请查看日志后重试') }
       } catch (e) {
         setStepStatus('npm', 'failed')
         localMsg.value = { type: 'err', text: e.message || 'npm install 等待失败' }
@@ -764,10 +813,11 @@ export default {
       }
       if (res.data?.status) napcatTaskStatus.value = res.data.status
       try {
-        await waitForLocalTask(napcatDeployStatus, status => { napcatTaskStatus.value = status }, 'napcat-start', status => status.webuiPort?.status === 'occupied' || status.onebotPort?.status === 'occupied' || status.state === 'failed')
+        await waitForLocalTask(napcatDeployStatus, status => { napcatTaskStatus.value = status }, 'napcat-start', status => status.webuiPort?.status === 'occupied' || status.onebotPort?.status === 'occupied' || status.state === 'failed' || status.login?.status === 'failed')
         setStepStatus('napcat-start', (napcatTaskStatus.value?.webuiPort?.status === 'occupied' || napcatTaskStatus.value?.onebotPort?.status === 'occupied') ? 'success' : 'failed')
         setStepStatus('scan', napcatTaskStatus.value?.login?.status === 'ok' ? 'success' : 'waiting')
         activeLocalStep.value = 'scan'
+        if (napcatTaskStatus.value?.login?.status === 'failed') throw new Error(taskFailureText('napcat-start', napcatTaskStatus.value, napcatTaskStatus.value.login.reason || 'NapCat 启动失败'))
         if (napcatTaskStatus.value?.state === 'failed' && !napcatTaskStatus.value?.running) throw new Error(taskFailureText('napcat-start', napcatTaskStatus.value, 'NapCat 启动失败'))
         localMsg.value = { type: 'ok', text: 'NapCat 已启动。请使用机器人 QQ 扫码登录，部署器会自动检测登录成功并继续。' }
       } catch (e) {
@@ -834,20 +884,15 @@ export default {
     }
 
     async function runLocalWizard() {
-      if (!/^\d+$/.test(local.qq.trim())) {
-        localMsg.value = { type: 'err', text: '请先填入bot挂载qq号' }
-        activeLocalStep.value = 'config'
-        setStepStatus('config', 'failed')
-        return
-      }
+      if (!validateLocalQQ(true)) return
       autoDeploying.value = true
       localMsg.value = null
       try {
         await checkEnv()
         if (!ensureWindowsLocalDeploy()) throw new Error(localDeployBlockedReason.value)
-        if (!env.value?.node?.ok || !env.value?.npm?.found) {
+        if (shouldUsePortableNodeForWizard()) {
           await installPortableNodeStep()
-          if (!env.value?.node?.ok || !env.value?.npm?.found) throw new Error('Node.js 或 npm 未就绪，请先安装便携 Node/npm 后重新检测')
+          if (shouldUsePortableNodeForWizard()) throw new Error('部署器便携 Node/npm 未就绪，请先安装便携 Node/npm 后重新检测')
         }
         if (!env.value?.napcat?.found) {
           await doDownloadWindowsNapcat()
@@ -1089,7 +1134,7 @@ export default {
       if (localStatusTimer) clearInterval(localStatusTimer)
     })
 
-    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction, copyNpmFixCommands }
+    return { mode, local, remote, env, localMsg, localAlert, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, closeLocalAlert, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction, copyNpmFixCommands }
   },
 }
 </script>

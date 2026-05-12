@@ -4,7 +4,7 @@
 
 它会让同一个 Windows 程序完成这些事：
 
-- Windows 本机部署：源码版在当前项目目录下生成运行文件；打包版在首次点击安装、生成配置或一键部署等写入动作时创建 EXE 同级的 `LianLianBOT/`，所有运行文件都集中放在里面。
+- Windows 本机部署：源码版在当前项目目录下生成运行文件；打包版在首次点击安装、生成配置或一键部署等写入动作时创建 EXE 同级的 `LianLianBOT/`，所有运行文件都集中放在里面，单纯启动 EXE 不会生成密码重置令牌或工作目录。
 - 便携运行环境：未检测到 Node.js/npm 时，可以把官方 Node.js LTS 安装到 `runtime/node/`（打包版对应 `LianLianBOT/runtime/node/`），一键卸载时会作为本项目环境文件删除。Node.js 官方 Windows zip 自带 `node.exe`、`npm.cmd`、`npx.cmd`，所以没有单独的 npm 安装包。
 - 远程 Linux 部署：打开 Dashboard 的部署页，填写 `root@服务器IP` 和远程目录后通过 SSH/SCP 推送更新。
 - Bot 调试：启动/停止 Bot、查看日志、切换模型、编辑 API Keys、管理人格、黑白名单和系统状态。Electron 本地部署器模式不会显示访问密码页或管理员密码弹窗；远程 Dashboard 仍保留密码保护。
@@ -76,11 +76,11 @@ Windows 本地部署页只认当前 Dashboard 后端所在机器。只有使用 
 
 ## Windows 本地部署页按钮说明
 
-- `一键配置环境并启动` 会先校验机器人 QQ。未填写时会提示“请先填入bot挂载qq号”，本次点击不执行环境检测，也不会创建 `LianLianBOT/`。填写后按站点图顺序执行：环境检测、安装 NapCat、生成配置、`npm install`、启动 NapCat、等待扫码、启动 Koishi、健康检查。
+- `一键配置环境并启动` 会先校验机器人 QQ。未填写时会弹窗提示“请先填入bot挂载的qq号”，本次点击不执行环境检测，也不会创建 `LianLianBOT/`。填写后按站点图顺序执行：环境检测、安装便携 Node/npm、安装 NapCat、生成配置、`npm install`、启动 NapCat、等待扫码、启动 Koishi、健康检查。打包版一键部署会要求使用项目内便携 Node/npm。
 - `检测环境` 只读取当前状态，不创建 NapCat 安装目录，也不会把残留目录当作已安装。NapCat 必须检测到可信启动文件或配置标记才显示为已安装。
 - `安装便携 Node/npm` 会下载官方 Windows Node.js LTS zip，解压到 `runtime/node/`，后续 `npm install`、Koishi 启动和 `.js` 入口都会优先使用它。这个 zip 已包含 npm，npm 状态卡检查的是 `npm.cmd` 是否可用。
 - `一键安装 NapCat（Windows，官方包）` 是主流程按钮，只在 Windows 环境可用。部署器窗口中可用系统目录选择框，普通浏览器中需要手填 Dashboard 所在机器上的安装路径，默认建议 `runtime/napcat/`。
-- `执行 npm install` 会在项目根目录安装依赖，并把日志写入 `runtime/logs/npm-install.log`。项目依赖状态卡检查的是 `node_modules` 中 Koishi 和本 Bot 依赖是否完整，不等同于 npm 命令本身。检测到失效的 `127.0.0.1` 本机代理时，部署器会自动清理本次 npm 安装环境并设置 `https://registry.npmmirror.com` 后再启动安装；失败向导仍保留“一键修复代理并重试”。
+- `执行 npm install` 会在项目根目录安装依赖，并把日志写入 `runtime/logs/npm-install.log`。项目依赖状态卡检查的是 `node_modules` 中 Koishi 和本 Bot 依赖是否完整，不等同于 npm 命令本身。检测到失效的 `127.0.0.1` 本机代理时，部署器会自动清理本次 npm 安装环境并设置 `https://registry.npmmirror.com` 后再启动安装；任务退出后会继续复核缺失依赖，失败向导仍保留“一键修复代理并重试”。
 - `启动 NapCat` 会启动本机 NapCat，日志写入 `runtime/logs/napcat.log`。扫码登录必须由用户手动完成。
 - `启动 Koishi` 会启动本机 Koishi，日志写入 `runtime/logs/koishi-local.log`。
 - `健康检查` 会汇总 Node/npm、项目依赖、NapCat、OneBot、Koishi 和 AI Key 状态。AI Key 未配置时不算部署失败，只会提示 AI 回复暂不可用。
