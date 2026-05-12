@@ -296,6 +296,26 @@ function sendForwardMsg(groupId, nodes, timeoutMs = 10000) {
   )
 }
 
+function getGroupMemberInfo(groupId, userId, timeoutMs = 800) {
+  return callOneBotWs(
+    'get_group_member_info',
+    { group_id: Number(groupId), user_id: Number(userId), no_cache: false },
+    'ggmi',
+    timeoutMs,
+    message => (message.retcode === 0 || message.status === 'ok') && message.data ? message.data : null
+  )
+}
+
+function getGroupInfo(groupId, timeoutMs = 800) {
+  return callOneBotWs(
+    'get_group_info',
+    { group_id: Number(groupId), no_cache: false },
+    'ggi',
+    timeoutMs,
+    message => (message.retcode === 0 || message.status === 'ok') && message.data ? message.data : null
+  )
+}
+
 async function readImageAsBase64(filePath) {
   try { const buf = require('fs').readFileSync(filePath); const ext = filePath.split('.').pop().toLowerCase(); const m = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' }; return `data:${m[ext] || 'image/jpeg'};base64,${buf.toString('base64')}` } catch { return null }
 }
@@ -363,7 +383,7 @@ module.exports = {
   requestChatCompletions, buildResponsesInput, extractResponsesText,
   requestOpenAIResponsesWithSearch,
   buildFallbackConfig, getFallbackSteps,
-  callGetImage, callGetForwardMsg, sendForwardMsg,
+  callGetImage, callGetForwardMsg, sendForwardMsg, getGroupMemberInfo, getGroupInfo,
   readImageAsBase64, extractImageFileFromElements, downloadImageAsBase64,
   isVisionModel,
 }

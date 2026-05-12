@@ -134,6 +134,11 @@ const COVERAGE_MAP = [
     needles: ['scenario: persona prompt composition', 'scenario personal persona overrides group persona', 'scenario Terra lore injects for Theresa trigger'],
   },
   {
+    behavior: 'send guard platform mute and rate limit',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'send-guard.test.js'),
+    needles: ['scenario: send guard platform mute and rate limit', 'scenario send guard skips bot member mute', 'scenario send guard retries sanitized rate limit reply'],
+  },
+  {
     behavior: 'retaliation score calculation',
     file: path.join(AI_ROOT, 'lib', 'retaliation.js'),
     needles: [],
@@ -487,6 +492,7 @@ async function main() {
     vision: path.join(LIB, 'vision'),
     sensitive: path.join(LIB, 'sensitive'),
     retaliation: path.join(LIB, 'retaliation'),
+    sendGuard: path.join(LIB, 'send-guard'),
     healthCheck: path.join(LIB, 'health-check'),
     index: path.join(LIB, 'index'),
     help: path.join(HELP, 'index'),
@@ -531,7 +537,7 @@ async function main() {
     api: [
       'requestChatCompletions', 'buildFallbackConfig', 'getFallbackSteps',
       'buildResponsesInput', 'extractResponsesText', 'requestOpenAIResponsesWithSearch',
-      'isVisionModel', 'callGetImage', 'callGetForwardMsg', 'sendForwardMsg', 'readImageAsBase64',
+      'isVisionModel', 'callGetImage', 'callGetForwardMsg', 'sendForwardMsg', 'getGroupMemberInfo', 'getGroupInfo', 'readImageAsBase64',
       'downloadImageAsBase64', 'extractImageFileFromElements',
     ],
     conversation: [
@@ -589,6 +595,11 @@ async function main() {
     ],
     retaliation: [
       'calculateRetaliationScore',
+    ],
+    sendGuard: [
+      'classifySendError', 'sanitizeForRateLimit', 'computeBackoffMs',
+      'sleepForRateLimitRetry', 'getSendChannelKey', 'getCachedPlatformMuteStatus',
+      'markPlatformMute', 'clearPlatformMute', 'checkPlatformMuteStatus',
     ],
   }
   for (const [moduleName, names] of Object.entries(expectedExports)) {
@@ -652,6 +663,7 @@ async function main() {
     path.join(LIB, 'vision.js'),
     path.join(LIB, 'sensitive.js'),
     path.join(LIB, 'retaliation.js'),
+    path.join(LIB, 'send-guard.js'),
     path.join(LIB, 'health-check.js'),
     path.join(HELP, 'index.js'),
     __filename,
@@ -660,7 +672,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))

@@ -213,6 +213,7 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
     try {
       await session.send(i === 0 ? quotePrefix + part : part)
     } catch (sendError) {
+      sendError.sentParts = sentParts
       ctx.logger('dongxuelian-ai').warn(`sendReply failed: ${sendError?.message || sendError}`)
       throw sendError
     }

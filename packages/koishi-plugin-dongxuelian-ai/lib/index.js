@@ -29,6 +29,15 @@ const { analyzeIncomingMessage, normalizeText } = require('./message-reader')
 const { loadStickerCache, sendReply } = require('./reply')
 const { resolveForwardSummary } = require('./forward')
 const { prepareVisionRequest, isVisionSession } = require('./vision')
+const {
+  classifySendError,
+  sanitizeForRateLimit,
+  sleepForRateLimitRetry,
+  getCachedPlatformMuteStatus,
+  markPlatformMute,
+  clearPlatformMute,
+  checkPlatformMuteStatus,
+} = require('./send-guard')
 
 // ===== @satorijs/core@3.7.0 兼容补丁：Session 缺失方法 =====
 function __patchBuildStripped(session) {
@@ -575,6 +584,49 @@ async function notifyAdminsSendFailure(ctx, bot) {
   )
 }
 
+function resetSendFailState() {
+  sendFailState.streak = 0
+  sendFailState.lastFailAt = 0
+}
+
+function logPlatformMute(ctx, status, prefix = 'safeSendReply') {
+  const until = status?.until ? new Date(status.until).toISOString() : 'unknown'
+  ctx.logger('dongxuelian-ai').warn(`${prefix}: platform muted, skipping reply (${status?.reason || '平台禁言'}, until=${until})`)
+}
+
+async function handleRateLimitedSendFailure(ctx, session, error, now) {
+  sendFailState.streak++
+  sendFailState.lastFailAt = now
+  ctx.logger('dongxuelian-ai').error(`safeSendReply: rate limited (streak=${sendFailState.streak}): ${error.message}`)
+  if (sendFailState.streak <= 2) {
+    sendFailState.lastNotifyAt = now
+    notifyAdminsSendFailure(ctx, session.bot).catch(() => {})
+  } else if (now - sendFailState.lastNotifyAt > sendFailState.notifyIntervalMs) {
+    sendFailState.lastNotifyAt = now
+    notifyAdminsSendFailure(ctx, session.bot).catch(() => {})
+  }
+  if (sendFailState.streak >= sendFailState.maxStreak) {
+    if (now >= sendFailState.restrictedUntil) {
+      sendFailState.restrictedUntil = now + sendFailState.restrictDurationMs
+      ctx.logger('dongxuelian-ai').warn(`safeSendReply: restricted for 1 hour due to ${sendFailState.streak} consecutive rate-limit failures`)
+    }
+    if (!sendFailState.notifyScheduled) {
+      sendFailState.notifyScheduled = true
+      setTimeout(function() {
+        const admins = getAdminUserIds(true)
+        const unlockMsg = '🔓 30 分钟已过，风控可能已解除。BOT 冻结期还剩约 30 分钟，届时自动恢复。急需使用可重启 BOT。'
+        Promise.allSettled([...admins].map(function(id) {
+          try {
+            if (typeof session?.bot?.sendPrivateMessage === 'function') {
+              return session.bot.sendPrivateMessage(id, unlockMsg)
+            }
+          } catch {}
+        }))
+      }, 30 * 60 * 1000)
+    }
+  }
+}
+
 async function safeSendReply(ctx, session, reply, isRandom = false) {
   const now = Date.now()
   // 冻结到期后重置通知标记
@@ -598,50 +650,48 @@ async function safeSendReply(ctx, session, reply, isRandom = false) {
       }
     }
   }
-  try {
-    const sentCount = await sendReply(ctx, session, reply, isRandom)
-    if (sentCount > 0) {
-      sendFailState.streak = 0
-      sendFailState.lastFailAt = 0
-    }
-  } catch (error) {
-    const errMsg = String(error?.message || '')
-    // 只对 retcode 1200（QQ 风控）走冻结逻辑，其他错误直接抛
-    if (!/retcode:\s*1200/.test(errMsg)) {
-      ctx.logger('dongxuelian-ai').warn(`safeSendReply: non-1200 error skipped: ${errMsg.slice(0, 120)}`)
+  const cachedMute = getCachedPlatformMuteStatus(session, now)
+  if (cachedMute.muted) {
+    logPlatformMute(ctx, cachedMute)
+    return
+  }
+  const activeMute = await checkPlatformMuteStatus(session)
+  if (activeMute.muted) {
+    const marked = markPlatformMute(session, activeMute)
+    logPlatformMute(ctx, marked)
+    return
+  }
+
+  let currentReply = reply
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const sentCount = await sendReply(ctx, session, currentReply, isRandom)
+      if (sentCount > 0) {
+        resetSendFailState()
+        clearPlatformMute(session)
+      }
+      return
+    } catch (error) {
+      const classified = classifySendError(error)
+      if (classified.type === 'muted') {
+        const marked = markPlatformMute(session, { reason: classified.reason })
+        logPlatformMute(ctx, marked, 'safeSendReply: send error')
+        return
+      }
+      if (classified.type !== 'rate-limit') {
+        ctx.logger('dongxuelian-ai').warn(`safeSendReply: non-rate-limit error skipped: ${classified.message.slice(0, 120)}`)
+        throw error
+      }
+      if (attempt === 0 && Number(error?.sentParts || 0) === 0) {
+        const cleaned = sanitizeForRateLimit(currentReply)
+        currentReply = cleaned || currentReply
+        ctx.logger('dongxuelian-ai').warn('safeSendReply: rate limited, retrying once with sanitized content')
+        await sleepForRateLimitRetry(ctx, attempt)
+        continue
+      }
+      await handleRateLimitedSendFailure(ctx, session, error, Date.now())
       throw error
     }
-    sendFailState.streak++
-    sendFailState.lastFailAt = now
-    ctx.logger('dongxuelian-ai').error(`safeSendReply: send failed (streak=${sendFailState.streak}): ${error.message}`)
-    if (sendFailState.streak <= 2) {
-      sendFailState.lastNotifyAt = now
-      notifyAdminsSendFailure(ctx, session.bot).catch(() => {})
-    } else if (now - sendFailState.lastNotifyAt > sendFailState.notifyIntervalMs) {
-      sendFailState.lastNotifyAt = now
-      notifyAdminsSendFailure(ctx, session.bot).catch(() => {})
-    }
-    if (sendFailState.streak >= sendFailState.maxStreak) {
-      if (now >= sendFailState.restrictedUntil) {
-        sendFailState.restrictedUntil = now + sendFailState.restrictDurationMs
-        ctx.logger('dongxuelian-ai').warn(`safeSendReply: restricted for 1 hour due to ${sendFailState.streak} consecutive send failures`)
-      }
-      if (!sendFailState.notifyScheduled) {
-        sendFailState.notifyScheduled = true
-        setTimeout(function() {
-          const admins = getAdminUserIds(true)
-          const unlockMsg = '🔓 30 分钟已过，风控可能已解除。BOT 冻结期还剩约 30 分钟，届时自动恢复。急需使用可重启 BOT。'
-          Promise.allSettled([...admins].map(function(id) {
-            try {
-              if (typeof session?.bot?.sendPrivateMessage === 'function') {
-                return session.bot.sendPrivateMessage(id, unlockMsg)
-              }
-            } catch {}
-          }))
-        }, 30 * 60 * 1000)
-      }
-    }
-    throw error
   }
 }
 
