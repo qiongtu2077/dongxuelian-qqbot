@@ -665,33 +665,36 @@ export default {
     }
 
     async function doDownloadWindowsNapcat() {
-      if (!ensureWindowsLocalDeploy()) return
+      if (!ensureWindowsLocalDeploy()) return false
       installingNapcat.value = true
       activeLocalStep.value = 'install'
       setStepStatus('install', 'running')
       localMsg.value = { type: 'ok', text: '正在下载 NapCat 官方 OneKey 包，并优先使用 tar.exe 解压，请稍等...' }
       const res = await downloadNapcatWindows(napcatInstallDir.value)
-      if (withAdminRetry(res, '下载并安装 NapCat 需要管理员密码', doDownloadWindowsNapcat)) { installingNapcat.value = false; return }
+      if (withAdminRetry(res, '下载并安装 NapCat 需要管理员密码', doDownloadWindowsNapcat)) { installingNapcat.value = false; return false }
       const manualSteps = res.data?.manualSteps || []
       const messageText = [res.data?.message || (res.ok ? 'NapCat OneKey 包已处理' : '安装失败')].concat(manualSteps.length ? ['手动处理步骤：', ...manualSteps.map((step, index) => `${index + 1}. ${step}`)] : []).join('\n')
-      localMsg.value = { type: res.ok && !res.data?.needsManualSetup ? 'ok' : 'err', text: messageText }
-      setStepStatus('install', res.ok && !res.data?.needsManualSetup ? 'success' : 'failed')
+      const success = res.ok && !res.data?.needsManualSetup
+      localMsg.value = { type: success ? 'ok' : 'err', text: messageText }
+      setStepStatus('install', success ? 'success' : 'failed')
       installingNapcat.value = false
-      if (res.ok) await checkEnv()
+      if (success) await checkEnv()
+      return success
     }
 
     async function installPortableNodeStep() {
-      if (!ensureWindowsLocalDeploy()) return
+      if (!ensureWindowsLocalDeploy()) return false
       installingNode.value = true
       activeLocalStep.value = 'env'
       setStepStatus('env', 'running')
       localMsg.value = { type: 'ok', text: '正在安装便携 Node/npm 到 runtime/node，请稍等...' }
       const res = await installPortableNode()
-      if (withAdminRetry(res, '安装便携 Node/npm 需要管理员密码', installPortableNodeStep)) { installingNode.value = false; return }
+      if (withAdminRetry(res, '安装便携 Node/npm 需要管理员密码', installPortableNodeStep)) { installingNode.value = false; return false }
       localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '便携 Node/npm 已安装' : '安装失败') }
       setStepStatus('env', res.ok ? 'success' : 'failed')
       installingNode.value = false
-      await checkEnv()
+      if (res.ok) await checkEnv()
+      return !!res.ok
     }
 
     async function doDownloadNapcat() {
@@ -891,11 +894,11 @@ export default {
         await checkEnv()
         if (!ensureWindowsLocalDeploy()) throw new Error(localDeployBlockedReason.value)
         if (shouldUsePortableNodeForWizard()) {
-          await installPortableNodeStep()
+          if (!await installPortableNodeStep()) throw new Error(localMsg.value?.text || '部署器便携 Node/npm 安装失败，请查看上方错误后重试')
           if (shouldUsePortableNodeForWizard()) throw new Error('部署器便携 Node/npm 未就绪，请先安装便携 Node/npm 后重新检测')
         }
         if (!env.value?.napcat?.found) {
-          await doDownloadWindowsNapcat()
+          if (!await doDownloadWindowsNapcat()) throw new Error(localMsg.value?.text || 'NapCat 未安装完成，请检查安装日志后重试')
           if (!env.value?.napcat?.found) throw new Error('NapCat 未安装完成，请检查安装日志后重试')
         }
         await writeLocalConfig()

@@ -36,7 +36,7 @@
       <article v-for="(image, index) in images" :key="image.id" :class="['gallery-card', foilCardClass(image), { 'is-bulk': bulkDeleteMode, selected: isSelected(image.id) }]" @click="onCardClick(image, index)" @pointermove="moveCard" @pointerleave="resetCard" @pointercancel="resetCard">
         <div class="gallery-card__rotator">
           <div class="gallery-card__front">
-            <img :src="image.url" :alt="image.name" loading="lazy" />
+            <img :src="image.url" :alt="image.name" loading="lazy" @error="onImageError(image)" />
             <div class="gallery-card__shine"></div>
             <div class="gallery-card__texture"></div>
             <div class="gallery-card__glare"></div>
@@ -53,7 +53,7 @@
           <article ref="previewCardRef" :class="['gallery-preview-card', 'gallery-card', foilCardClass(previewImage)]" @pointermove="previewPointerMove" @pointercancel="previewPointerLeave" @pointerleave="previewPointerLeave">
             <div class="gallery-card__rotator">
               <div class="gallery-card__front">
-                <img :src="previewImage.url" :alt="previewImage.name" />
+                <img :src="previewImage.url" :alt="previewImage.name" @error="onImageError(previewImage)" />
                 <div class="gallery-card__shine"></div>
                 <div class="gallery-card__texture"></div>
                 <div class="gallery-card__glare"></div>
@@ -186,6 +186,15 @@ function fileToDataUrl(file) {
   })
 }
 
+function preloadGalleryImage(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(true)
+    image.onerror = () => reject(new Error('图片已上传，但浏览器无法读取图片文件'))
+    image.src = url
+  })
+}
+
 export default {
   name: 'GalleryPanel',
   setup() {
@@ -236,14 +245,20 @@ export default {
       try {
         const dataUrl = await fileToDataUrl(file)
         const res = await uploadGalleryImage({ name: file.name, type: file.type, data: dataUrl })
-        if (withAdminRetry(res, () => uploadFile(file))) { uploading.value = false; return }
         if (!res.ok) throw new Error(res.data?.message || '上传失败')
-        images.value = [res.data.image].concat(images.value)
+        const image = res.data.image
+        await preloadGalleryImage(image.url)
+        images.value = [image].concat(images.value)
         message.value = { type: 'ok', text: '图片已加入莲莲图集' }
       } catch (error) {
         message.value = { type: 'err', text: error.message || '上传失败' }
+        await loadImages()
       }
       uploading.value = false
+    }
+    function onImageError(image) {
+      if (!image?.name) return
+      message.value = { type: 'err', text: `图片无法显示：${image.name}` }
     }
     async function onFileChange(event) {
       const files = Array.from(event.target.files || [])
@@ -330,7 +345,7 @@ export default {
     onMounted(() => { loadImages(); window.addEventListener('keydown', onKeydown) })
     onActivated(loadImages)
     onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
-    return { images, loading, uploading, deletingId, message, fileInput, aspectMode, aspectOptions, galleryStyle, bulkDeleteMode, selectedCount, previewImage, previewCardRef, foilOptions, currentFoilStyle, updatingStyle, foilCardClass, setPreviewFoilStyle, openUpload, onFileChange, toggleBulkDelete, isSelected, clearSelection, deleteSelectedImages, onCardClick, closePreview, moveCard, resetCard, previewPointerMove, previewPointerLeave }
+    return { images, loading, uploading, deletingId, message, fileInput, aspectMode, aspectOptions, galleryStyle, bulkDeleteMode, selectedCount, previewImage, previewCardRef, foilOptions, currentFoilStyle, updatingStyle, foilCardClass, setPreviewFoilStyle, openUpload, onFileChange, onImageError, toggleBulkDelete, isSelected, clearSelection, deleteSelectedImages, onCardClick, closePreview, moveCard, resetCard, previewPointerMove, previewPointerLeave }
   },
 }
 </script>

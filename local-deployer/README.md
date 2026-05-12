@@ -5,7 +5,7 @@
 它会让同一个 Windows 程序完成这些事：
 
 - Windows 本机部署：源码版在当前项目目录下生成运行文件；打包版在首次点击安装、生成配置或一键部署等写入动作时创建 EXE 同级的 `LianLianBOT/`，所有运行文件都集中放在里面，单纯启动 EXE 不会生成密码重置令牌或工作目录。
-- 便携运行环境：未检测到 Node.js/npm 时，可以把官方 Node.js LTS 安装到 `runtime/node/`（打包版对应 `LianLianBOT/runtime/node/`），一键卸载时会作为本项目环境文件删除。Node.js 官方 Windows zip 自带 `node.exe`、`npm.cmd`、`npx.cmd`，所以没有单独的 npm 安装包。
+- 便携运行环境：未检测到 Node.js/npm 时，可以把官方 Node.js LTS 安装到 `runtime/node/`（打包版对应 `LianLianBOT/runtime/node/`），一键卸载时会作为本项目环境文件删除。Node.js 官方 Windows zip 自带 `node.exe`、`npm.cmd`、`npx.cmd`，所以没有单独的 npm 安装包；自动安装会清理旧暂存目录和半成品目录，路径冲突会显示具体位置。
 - 远程 Linux 部署：打开 Dashboard 的部署页，填写 `root@服务器IP` 和远程目录后通过 SSH/SCP 推送更新。
 - Bot 调试：启动/停止 Bot、查看日志、切换模型、编辑 API Keys、管理人格、黑白名单和系统状态。Electron 本地部署器模式不会显示访问密码页或管理员密码弹窗；远程 Dashboard 仍保留密码保护。
 
@@ -84,7 +84,7 @@ Windows 本地部署页只认当前 Dashboard 后端所在机器。只有使用 
 - `启动 NapCat` 会启动本机 NapCat，日志写入 `runtime/logs/napcat.log`。扫码登录必须由用户手动完成。
 - `启动 Koishi` 会启动本机 Koishi，日志写入 `runtime/logs/koishi-local.log`。
 - `健康检查` 会汇总 Node/npm、项目依赖、NapCat、OneBot、Koishi 和 AI Key 状态。AI Key 未配置时不算部署失败，只会提示 AI 回复暂不可用。
-- `莲莲图集` 可以上传图片、按 16:9/4:3/9:16 查看，并在图片详情右侧选择 A-G 闪卡样式；样式按图片保存，默认无闪卡效果。
+- `莲莲图集` 可以普通登录上传图片、按 16:9/4:3/9:16 查看，并在图片详情右侧选择 A-G 闪卡样式；样式按图片保存，默认无闪卡效果。图集图片地址对浏览器图片标签公开读取，避免上传成功但预览加载失败。
 - `下载直链包` 位于高级设置，只把用户粘贴的下载地址保存到 `runtime/downloads/`，不等同于安装 NapCat。
 - `打开 NapCat 发布页` 是手动下载入口，用于查看版本或自行下载安装包。
 - `生成 Koishi 本地配置` 会写入 `koishi.yml`、`start-local.bat` 和必要的 `data/ai-*.txt` 配置，并记录 `data/dashboard-local-deploy-manifest.json`，方便后续预览和安全删除。

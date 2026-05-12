@@ -281,11 +281,15 @@ function copyRecursiveSync(src, dst) {
   if (!fs.existsSync(src)) return
   const stat = fs.statSync(src)
   if (stat.isDirectory()) {
+    assertParentDirectories(dst)
+    if (fs.existsSync(dst) && !fs.statSync(dst).isDirectory()) throw pathConflictError(dst)
     fs.mkdirSync(dst, { recursive: true })
     for (const entry of fs.readdirSync(src)) copyRecursiveSync(path.join(src, entry), path.join(dst, entry))
     return
   }
+  assertParentDirectories(dst)
   fs.mkdirSync(path.dirname(dst), { recursive: true })
+  if (fs.existsSync(dst) && fs.statSync(dst).isDirectory()) throw pathConflictError(dst, '目标路径已经是目录，无法覆盖为文件')
   fs.copyFileSync(src, dst)
 }
 
@@ -332,7 +336,90 @@ function describeFsError(e, fallback = '') {
   const code = e && e.code ? String(e.code) : ''
   if (code === 'ENOTDIR') return '路径冲突：目标路径的某一级已经是文件，不是目录。请删除冲突文件后重试。' + (e.path ? ` 冲突路径：${e.path}` : '')
   if (code === 'EACCES' || code === 'EPERM') return '权限不足或文件被占用。请关闭占用程序，或把部署器移动到可写目录后重试。' + (e.path ? ` 路径：${e.path}` : '')
+  if (code === 'EBUSY' || code === 'ENOTEMPTY') return '文件正在被占用或目录未能清空。请关闭 NapCat/QQ/Node 相关进程后重试。' + (e.path ? ` 路径：${e.path}` : '')
   return fallback || String(e?.message || e || '未知错误')
+}
+
+function sleepSync(ms) {
+  if (!ms) return
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function pathConflictError(conflictPath, message = '路径冲突：目标路径的某一级已经是文件，不是目录') {
+  const error = new Error(message + '：' + conflictPath)
+  error.code = 'ENOTDIR'
+  error.path = conflictPath
+  return error
+}
+
+function assertParentDirectories(targetPath) {
+  const resolved = path.resolve(targetPath)
+  const root = path.parse(resolved).root
+  const parts = path.relative(root, path.dirname(resolved)).split(path.sep).filter(Boolean)
+  let current = root
+  for (const part of parts) {
+    current = path.join(current, part)
+    if (fs.existsSync(current) && !fs.statSync(current).isDirectory()) throw pathConflictError(current)
+  }
+}
+
+function isRetriableFsError(error) {
+  return ['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY'].includes(String(error?.code || ''))
+}
+
+function removePathWithRetry(targetPath, options = {}) {
+  const retries = Number.isFinite(options.retries) ? options.retries : 5
+  const delayMs = Number.isFinite(options.delayMs) ? options.delayMs : 180
+  let lastError = null
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      fs.rmSync(targetPath, { recursive: true, force: true, maxRetries: 2, retryDelay: delayMs })
+      if (!fs.existsSync(targetPath)) return true
+      lastError = new Error('路径仍然存在，可能被占用：' + targetPath)
+      lastError.code = 'EBUSY'
+      lastError.path = targetPath
+    } catch (error) {
+      lastError = error
+      if (!isRetriableFsError(error)) break
+    }
+    if (attempt < retries) sleepSync(delayMs * (attempt + 1))
+  }
+  if (lastError) throw lastError
+  return !fs.existsSync(targetPath)
+}
+
+function ensureCleanDirectory(dir) {
+  assertParentDirectories(dir)
+  removePathWithRetry(dir)
+  if (fs.existsSync(dir)) throw pathConflictError(dir, '目标目录清理失败')
+  fs.mkdirSync(dir, { recursive: true })
+}
+
+function cleanupRuntimeInstallStaging(prefix) {
+  const runtimeDir = runtimePath()
+  if (!fs.existsSync(runtimeDir)) return []
+  const removed = []
+  let entries = []
+  try { entries = fs.readdirSync(runtimeDir, { withFileTypes: true }) } catch { return removed }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.toLowerCase().startsWith(prefix.toLowerCase())) continue
+    const fullPath = path.join(runtimeDir, entry.name)
+    try { removePathWithRetry(fullPath); removed.push(fullPath) } catch {}
+  }
+  return removed
+}
+
+function galleryImageUrl(fileName, stat) {
+  const version = stat?.mtimeMs ? String(Math.floor(stat.mtimeMs)) : String(Date.now())
+  return '/dashboard/api/gallery/image/' + encodeURIComponent(fileName) + '?v=' + version
+}
+
+function validateGalleryImageMagic(buffer, mime) {
+  if (mime === 'image/png' && buffer.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return true
+  if (mime === 'image/jpeg' && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer.length > 3) return true
+  if (mime === 'image/gif' && /^(?:GIF87a|GIF89a)$/.test(buffer.slice(0, 6).toString('ascii'))) return true
+  if (mime === 'image/webp' && buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP') return true
+  return false
 }
 
 function getCommandVersion(command) {
@@ -829,8 +916,7 @@ function extractZipArchive(archivePath, destinationDir) {
   if (!stat.isFile()) throw new Error('解压源路径不是文件：' + archivePath)
   if (stat.size <= 0) throw new Error('解压源文件为空：' + archivePath)
   if (!hasZipMagic(archivePath)) throw new Error('解压源文件不是有效 zip 包：' + archivePath)
-  fs.rmSync(destinationDir, { recursive: true, force: true })
-  fs.mkdirSync(destinationDir, { recursive: true })
+  ensureCleanDirectory(destinationDir)
   const attempts = []
   try {
     execFileSync('tar.exe', ['-xf', archivePath, '-C', destinationDir], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -843,6 +929,7 @@ function extractZipArchive(archivePath, destinationDir) {
     return { method: 'PowerShell Expand-Archive', attempts, archivePath, destinationDir, size: stat.size }
   } catch (e) {
     attempts.push({ method: 'PowerShell Expand-Archive', code: e.status || e.code || '', error: String(e.stderr || e.message || '').trim() })
+    try { removePathWithRetry(destinationDir) } catch {}
     const message = attempts.map(item => `${item.method}: ${item.error || '失败'}`).join('；')
     const err = new Error('自动解压失败：' + message)
     err.attempts = attempts
@@ -866,6 +953,33 @@ function runNapcatInstallerIfPresent(stagingDir) {
   }
 }
 
+function findNapcatCopyRoot(stagingDir) {
+  const candidates = [stagingDir]
+  function walk(dir, depth) {
+    if (depth >= 3) return
+    let entries = []
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const full = path.join(dir, entry.name)
+      candidates.push(full)
+      walk(full, depth + 1)
+    }
+  }
+  walk(stagingDir, 0)
+  const inspected = candidates.map(dir => inspectNapcatCandidate(dir))
+  const installed = inspected
+    .filter(item => item.found)
+    .sort((a, b) => {
+      const aDepth = a.entry ? path.relative(a.path, a.entry).split(path.sep).filter(Boolean).length : 99
+      const bDepth = b.entry ? path.relative(b.path, b.entry).split(path.sep).filter(Boolean).length : 99
+      return aDepth - bDepth || b.path.length - a.path.length
+    })[0]
+  if (installed?.path) return installed.path
+  const partial = inspected.find(item => item.exists && item.status === 'partial' && /启动文件|配置|安装器|bootmain/i.test(item.reason || ''))
+  return partial?.path || stagingDir
+}
+
 function buildNapcatManualSteps(archivePath, installDir) {
   return [
     `打开下载包：${archivePath}`,
@@ -887,12 +1001,15 @@ function downloadNapcatWindowsRelease(installDir, callback) {
       if (downloadErr) return callback(downloadErr)
       const stagingDir = runtimePath('napcat-install-' + Date.now().toString(36))
       try {
+        cleanupRuntimeInstallStaging('napcat-install-')
+        removePathWithRetry(installDir)
         const extraction = extractZipArchive(filePath, stagingDir)
         const installer = runNapcatInstallerIfPresent(stagingDir)
         fs.mkdirSync(installDir, { recursive: true })
-        const content = fs.readdirSync(stagingDir)
+        const sourceRoot = findNapcatCopyRoot(stagingDir)
+        const content = fs.readdirSync(sourceRoot)
         if (!content.length) throw new Error('NapCat zip 解压后目录为空')
-        copyRecursiveSync(stagingDir, installDir)
+        copyRecursiveSync(sourceRoot, installDir)
         const detected = inspectNapcatCandidate(installDir)
         const needsManualSetup = !detected.found || (installer.ran && !installer.ok)
         callback(null, {
@@ -908,10 +1025,11 @@ function downloadNapcatWindowsRelease(installDir, callback) {
           message: needsManualSetup ? 'NapCat OneKey 包已下载并解压，但仍需要按提示完成安装器配置' : 'NapCat OneKey 包已下载、解压并完成检测',
         })
       } catch (e) {
+        try { removePathWithRetry(installDir) } catch {}
         const readable = describeFsError(e, String(e.message || '').trim())
         callback(new Error('NapCat 下载完成但自动解压/安装失败：' + readable), { asset: asset.name, filePath, download, installDir, manualSteps: buildNapcatManualSteps(filePath, installDir), attempts: e.attempts || [], stage: e.stage || 'install', archivePath: e.archivePath || filePath, fileSize: e.fileSize })
       } finally {
-        fs.rmSync(stagingDir, { recursive: true, force: true })
+        try { removePathWithRetry(stagingDir) } catch {}
       }
     })
   })
@@ -963,24 +1081,26 @@ function installPortableNodeWindows(callback) {
       const stagingDir = runtimePath('node-install-' + Date.now().toString(36))
       const targetDir = getPortableNodeDir()
       try {
-        fs.rmSync(stagingDir, { recursive: true, force: true })
-        fs.mkdirSync(stagingDir, { recursive: true })
+        cleanupRuntimeInstallStaging('node-install-')
+        ensureCleanDirectory(stagingDir)
         extractZipArchive(archivePath, stagingDir)
         const nodeRoot = findExtractedNodeRoot(stagingDir)
         if (!nodeRoot) throw new Error('Node zip 解压后未找到 node.exe')
-        fs.rmSync(targetDir, { recursive: true, force: true })
-        fs.mkdirSync(targetDir, { recursive: true })
+        ensureCleanDirectory(targetDir)
         copyRecursiveSync(nodeRoot, targetDir)
+        for (const rel of ['node.exe', 'npm.cmd', 'npx.cmd']) {
+          if (process.platform === 'win32' && !fs.existsSync(path.join(targetDir, rel))) throw new Error('便携 Node/npm 安装不完整，缺少：' + rel)
+        }
         const node = getCommandInfo('node', 18)
         const npm = getCommandInfo('npm')
         if (!node.ok || !node.ownedByProject) throw new Error('便携 Node 校验失败：' + (node.reason || 'node 不可用'))
         if (!npm.found || !npm.ownedByProject) throw new Error('便携 npm 校验失败：' + (npm.reason || 'npm 不可用'))
         callback(null, { skipped: false, message: '便携 Node/npm 已安装到 runtime/node', asset, archivePath, download, installDir: targetDir, node, npm })
       } catch (e) {
-        fs.rmSync(targetDir, { recursive: true, force: true })
+        try { removePathWithRetry(targetDir) } catch {}
         callback(new Error('便携 Node/npm 安装失败：' + describeFsError(e, String(e.stderr || e.message || '').trim())), { asset, archivePath, download, installDir: targetDir, attempts: e.attempts || [], stage: e.stage || 'install' })
       } finally {
-        fs.rmSync(stagingDir, { recursive: true, force: true })
+        try { removePathWithRetry(stagingDir) } catch {}
       }
     })
   })
@@ -1217,7 +1337,7 @@ function toGalleryItem(fileName, metadata = null) {
     size: stat.size,
     mtimeMs: stat.mtimeMs,
     mime: galleryMimeFromName(fileName),
-    url: '/dashboard/api/gallery/image/' + encodeURIComponent(fileName),
+    url: galleryImageUrl(fileName, stat),
     foilStyle: getGalleryFoilStyle(galleryMetadata, fileName),
   }
 }
@@ -1246,11 +1366,17 @@ function writeGalleryImage(input = {}) {
   const buffer = Buffer.from(raw, 'base64')
   if (!buffer.length) throw new Error('图片内容为空')
   if (buffer.length > GALLERY_MAX_BYTES) throw new Error('图片不能超过 8MB')
+  if (!validateGalleryImageMagic(buffer, mime)) throw new Error('图片格式校验失败，请上传真实的 PNG、JPG、WebP 或 GIF 图片')
   fs.mkdirSync(GALLERY_DIR, { recursive: true })
   const safeName = sanitizeGalleryBaseName(input.name)
   const fileName = `${Date.now()}-${crypto.randomBytes(3).toString('hex')}-${safeName}.${ext}`
   const fullPath = resolveGalleryId(fileName)
   fs.writeFileSync(fullPath, buffer)
+  const written = fs.statSync(fullPath)
+  if (!written.isFile() || written.size <= 0) {
+    try { fs.unlinkSync(fullPath) } catch {}
+    throw new Error('图片写入失败，请检查 data/gallery 目录权限')
+  }
   const metadata = readGalleryMetadata()
   metadata[fileName] = { ...(metadata[fileName] || {}), foilStyle: null }
   writeGalleryMetadata(metadata)
@@ -1436,6 +1562,7 @@ function stopLocalDeployProcessesForUninstall() {
   const script = `$self = ${process.pid}; $paths = @(${psPaths}); $procs = Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and ($_.Name -match 'node|napcat|qq|electron|koishi') }; foreach ($proc in $procs) { $text = (($proc.CommandLine, $proc.ExecutablePath) -join ' '); foreach ($item in $paths) { if ($item -and $item.Length -gt 3 -and $text -like ('*' + $item + '*')) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue; break } } }`
   try {
     execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 10000, stdio: ['ignore', 'ignore', 'pipe'] })
+    sleepSync(600)
     return []
   } catch (e) {
     return [{ type: 'warning', message: '停止本项目相关进程时遇到问题：' + String(e.stderr || e.message || '').trim() }]
@@ -1445,7 +1572,8 @@ function stopLocalDeployProcessesForUninstall() {
 function removeTarget(target) {
   assertSafeUninstallTarget(target)
   const summary = summarizePath(target.fullPath)
-  fs.rmSync(target.fullPath, { recursive: true, force: true })
+  removePathWithRetry(target.fullPath)
+  if (fs.existsSync(target.fullPath)) throw new Error('目标仍然存在，可能被占用：' + target.fullPath)
   return { path: target.path, size: summary.size, count: summary.count, status: 'ok' }
 }
 
@@ -1471,6 +1599,12 @@ function runLocalUninstall(options = {}) {
     for (const target of item.targets || []) {
       try { deleted.push({ ...removeTarget(target), item: item.key, label: item.label }) }
       catch (e) { errors.push({ path: target.path, item: item.key, label: item.label, reason: e.message }) }
+    }
+  }
+  for (const target of listExistingProjectChildren('runtime', name => /^(?:napcat|node)-install-/i.test(name)).concat(['runtime/napcat', 'runtime/NapCat'].map(existingProjectTarget).filter(Boolean))) {
+    if (!fs.existsSync(target.fullPath)) continue
+    if (selectedItems.some(item => item.key === 'runtime-install-staging' || item.key === 'napcat-runtime')) {
+      errors.push({ path: target.path, item: 'residual-runtime', label: '残留运行环境', reason: '卸载后路径仍存在，可能被 NapCat/QQ/Node 占用：' + target.fullPath })
     }
   }
   pruneEmptyProjectDirs(deleteAllUserData)
@@ -2418,7 +2552,8 @@ const server = http.createServer((req, res) => {
   }
 
   // Auth 检查（显式本地模式自动放行）
-  if (pathname.startsWith('/dashboard/api/') && !isLocalAuthBypass(req)) {
+  const isPublicGalleryImage = pathname.startsWith('/dashboard/api/gallery/image/') && req.method === 'GET'
+  if (pathname.startsWith('/dashboard/api/') && !isPublicGalleryImage && !isLocalAuthBypass(req)) {
     const auth = req.headers['authorization'] || ''
     const token = auth.replace(/^Bearer\s+/i, '')
     if (!validateToken(token)) {
@@ -3289,7 +3424,6 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/dashboard/api/gallery' && req.method === 'POST') {
-    if (!requireAdmin(req, res)) return
     collectBody(req, res, (body) => {
       try {
         const item = writeGalleryImage(JSON.parse(body || '{}'))
@@ -3329,15 +3463,17 @@ const server = http.createServer((req, res) => {
       const id = decodeURIComponent(pathname.slice('/dashboard/api/gallery/image/'.length))
       const filePath = resolveGalleryId(id)
       if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-        res.writeHead(404)
-        res.end('Not Found')
+        log('gallery image not found: ' + filePath)
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+        res.end('Gallery image not found')
         return
       }
       res.writeHead(200, { 'Content-Type': galleryMimeFromName(id), 'Cache-Control': 'public, max-age=3600' })
       res.end(fs.readFileSync(filePath))
-    } catch {
-      res.writeHead(400)
-      res.end('Bad Request')
+    } catch (e) {
+      log('gallery image request failed: ' + (e.message || e))
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
+      res.end('Gallery image request failed: ' + (e.message || 'Bad Request'))
     }
     return
   }

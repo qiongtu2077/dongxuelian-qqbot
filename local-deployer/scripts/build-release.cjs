@@ -35,6 +35,7 @@ const releaseReadme = [
   '- 用户需要先完整解压 zip，再运行解压目录里的 EXE；不要在压缩包预览窗口中直接运行。',
   '- 打包版只会在用户点击安装、生成配置或一键部署等写入动作时创建 `LianLianBOT/` 工作目录；单纯启动 EXE 不会生成密码重置令牌。',
   '- `LianLianBOT/` 会集中保存环境、依赖、配置、下载包、NapCat、图集和日志。',
+  '- v1.1.4 起，Node/npm、NapCat 自动安装和一键卸载会重试清理半成品目录；莲莲图集上传不需要管理员密码，图片预览可由浏览器直接读取。',
   '- 构建脚本会清理并重建本目录；发布前请重新运行 `npm --prefix local-deployer run release:win`。',
   '',
 ].join('\r\n')
@@ -78,6 +79,7 @@ const notes = [
   '- NapCat 日志在 `LianLianBOT/runtime/logs/napcat.log`。',
   '- Koishi 日志在 `LianLianBOT/runtime/logs/koishi-local.log`。',
   '- 部署失败时，界面会停在失败站点并显示日志路径和最后几行日志。',
+  '- Node/npm 与 NapCat 自动安装会清理旧暂存目录和半成品目录；如果仍被占用，会显示具体路径方便关闭进程后重试。',
   '',
   '卸载和重装：',
   '',
@@ -86,6 +88,7 @@ const notes = [
   '- 用户数据默认保留：API Key、管理员 ID、用户资料、会话/记忆、莲莲图集、运行日志、cookies、白名单/黑名单等。',
   '- 如果你在确认窗口里选择删除全部用户数据，卸载完成后会尽量清到只剩 `莲莲Bot部署器.exe` 和这个 `README.txt`。',
   '- 想整体迁移时，复制整个 `LianLianBOT-Deployer/` 文件夹即可。',
+  '- 莲莲图集上传不需要管理员密码；图片显示接口允许浏览器直接读取，上传后会校验真实图片格式。',
   '',
 ].join('\r\n')
 fs.writeFileSync(path.join(packageDir, 'README.txt'), notes, 'utf8')
