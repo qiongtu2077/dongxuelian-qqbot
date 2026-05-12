@@ -187,16 +187,16 @@ npm install
 npm run build:win
 ```
 
-也可以在根目录双击 `构建Windows部署器.bat`，它会先构建 Dashboard 前端，再打包 Windows 部署器。若最终产物只有一个 EXE，Release 附件直接上传这个 EXE；若 electron-builder 输出了多个文件，则用 `local-deployer/release/lianlian-bot-windows-deployer.zip` 作为 Release 附件。
+也可以在根目录双击 `构建Windows部署器.bat`，它会先构建 Dashboard 前端，再打包 Windows 部署器。Release 附件统一上传 `local-deployer/release/LianLianBOT-Deployer-v版本号.zip`，不再裸传 EXE。用户需要先完整解压 zip，再运行解压目录里的 `莲莲Bot部署器.exe`。
 
 卸载源码版本地部署器可以双击 `卸载本地部署器.bat`。默认只清理依赖和构建产物，不删除 `data/`、`runtime/`、`koishi.yml`、`start-local.bat`；输入 `YES` 才会彻底删除这些运行时文件。
 
-EXE 的职责是启动本地 Dashboard，并复用 Dashboard 的「部署」页完成两类任务：
+EXE 的职责是启动本地 Dashboard，并复用 Dashboard 的「部署」页完成两类任务。打包版首次运行时，会在 EXE 所在目录旁创建 `LianLianBOT/` 工作目录；所有可写入的环境、配置、依赖、下载包和日志都集中放到这里，避免写进 Electron 临时解包目录。
 
-- Windows 本地部署：所有下载、日志、便携 Node/npm、NapCat 文件都放当前项目目录的 `runtime/` 下。
+- Windows 本地部署：所有下载、日志、便携 Node/npm、NapCat 文件都放 `LianLianBOT/runtime/` 下，项目依赖放 `LianLianBOT/node_modules/`，Dashboard 与 Bot 配置放 `LianLianBOT/data/`。
 - 远程 Linux 部署：填写 SSH 目标和应用目录后推送更新。
 
-访问密码和管理员密码仍由 Dashboard 环境变量或 `data/` 下的密码文件管理，不写入 EXE 代码。EXE 成品建议作为 GitHub Release 附件发布，不提交到主分支。
+访问密码和管理员密码仍由 Dashboard 环境变量或 `LianLianBOT/data/` 下的密码文件管理，不写入 EXE 代码。Release 成品以 zip 附件发布；解压后的整个 `LianLianBOT-Deployer/` 文件夹可以整体备份、迁移或删除。
 
 ---
 

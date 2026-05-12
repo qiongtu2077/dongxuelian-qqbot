@@ -278,6 +278,13 @@ function copyRecursiveSync(src, dst) {
   fs.copyFileSync(src, dst)
 }
 
+function describeFsError(e, fallback = '') {
+  const code = e && e.code ? String(e.code) : ''
+  if (code === 'ENOTDIR') return '路径冲突：目标路径的某一级已经是文件，不是目录。请删除冲突文件后重试。' + (e.path ? ` 冲突路径：${e.path}` : '')
+  if (code === 'EACCES' || code === 'EPERM') return '权限不足或文件被占用。请关闭占用程序，或把部署器移动到可写目录后重试。' + (e.path ? ` 路径：${e.path}` : '')
+  return fallback || String(e?.message || e || '未知错误')
+}
+
 function getCommandVersion(command) {
   try { return execSync(command, { timeout: 3000, encoding: 'utf8' }).trim() } catch { return '' }
 }
@@ -633,6 +640,79 @@ function pickNapcatWindowsAsset(release) {
     || null
 }
 
+function safeDecodeURIComponent(value) {
+  try { return decodeURIComponent(value) } catch { return value }
+}
+
+function sanitizeDownloadName(name, fallback = 'download.bin') {
+  const cleaned = safeDecodeURIComponent(String(name || '')).replace(/^['"]|['"]$/g, '').replace(/[<>":/\\|?*\x00-\x1f]/g, '_').trim()
+  return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : fallback
+}
+
+function getContentDispositionFileName(header) {
+  const value = String(header || '')
+  const star = value.match(/filename\*\s*=\s*(?:UTF-8''|utf-8'')?([^;\r\n]+)/i)
+  if (star?.[1]) return sanitizeDownloadName(star[1])
+  const normal = value.match(/filename\s*=\s*("[^"]+"|[^;\r\n]+)/i)
+  return normal?.[1] ? sanitizeDownloadName(normal[1]) : ''
+}
+
+function ensureExtension(name, ext) {
+  const suffix = String(ext || '').trim()
+  if (!suffix) return name
+  const normalized = suffix.startsWith('.') ? suffix : '.' + suffix
+  return name.toLowerCase().endsWith(normalized.toLowerCase()) ? name : name + normalized
+}
+
+function hasZipMagic(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r')
+    const buffer = Buffer.alloc(4)
+    const read = fs.readSync(fd, buffer, 0, 4, 0)
+    fs.closeSync(fd)
+    return read >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b && [0x03, 0x05, 0x07].includes(buffer[2])
+  } catch { return false }
+}
+
+function validateDownloadedFile(filePath, options = {}) {
+  const stat = fs.statSync(filePath)
+  const minBytes = Number(options.minBytes || 0)
+  if (minBytes && stat.size < minBytes) throw new Error(`下载文件过小：${stat.size} 字节，可能是网络错误页或下载不完整`)
+  const expectsZip = /\.zip$/i.test(String(options.expectedExt || '')) || /zip/i.test(String(options.expectedContentType || '')) || /\.zip$/i.test(filePath)
+  if (expectsZip && !hasZipMagic(filePath)) throw new Error('下载文件不是有效 zip 包，可能下载到了 HTML 错误页或被代理改写')
+  return { path: filePath, size: stat.size, name: path.basename(filePath) }
+}
+
+function getDownloadFileName(parsed, response, options = {}) {
+  const contentType = String(response.headers['content-type'] || '')
+  let name = options.preferredName || getContentDispositionFileName(response.headers['content-disposition']) || sanitizeDownloadName(path.basename(parsed.pathname || ''), 'download.bin')
+  if ((!path.extname(name) || /^[0-9a-f-]{16,}$/i.test(name)) && /zip/i.test(contentType)) name = ensureExtension(name, '.zip')
+  if (options.expectedExt) name = ensureExtension(name, options.expectedExt)
+  return sanitizeDownloadName(name, 'download.bin')
+}
+
+function getLocalWorkDirSafety() {
+  const projectDir = path.resolve(KOISHI_DIR)
+  const runtimeDir = runtimePath()
+  const tempDir = path.resolve(os.tmpdir()).toLowerCase()
+  const values = [projectDir, runtimeDir].map(item => item.toLowerCase())
+  const reasons = []
+  if (values.some(item => item === tempDir || item.startsWith(tempDir + path.sep.toLowerCase()))) reasons.push('工作目录位于系统临时目录')
+  if (values.some(item => /[\\/]resources[\\/]app(?:[\\/]|$)/i.test(item))) reasons.push('工作目录位于 Electron 资源临时目录')
+  const fallbackReason = String(process.env.LIANLIAN_WORKSPACE_FALLBACK_REASON || '').trim()
+  if (fallbackReason) reasons.push(fallbackReason)
+  return {
+    ok: reasons.length === 0,
+    isTempRuntime: reasons.length > 0,
+    reasons,
+    projectDir,
+    runtimeDir,
+    workspaceRoot: process.env.LIANLIAN_WORKSPACE_ROOT || projectDir,
+    resourceRoot: process.env.LIANLIAN_RESOURCE_ROOT || '',
+    packaged: /^(?:1|true|yes|on)$/i.test(String(process.env.LIANLIAN_PACKAGED || '').trim()),
+  }
+}
+
 function findFilesRecursive(root, matcher, maxDepth = 6, maxCount = 600) {
   const matches = []
   let count = 0
@@ -653,23 +733,32 @@ function findFilesRecursive(root, matcher, maxDepth = 6, maxCount = 600) {
 }
 
 function extractZipArchive(archivePath, destinationDir) {
+  if (!fs.existsSync(archivePath)) throw new Error('解压源文件不存在：' + archivePath)
+  const stat = fs.statSync(archivePath)
+  if (!stat.isFile()) throw new Error('解压源路径不是文件：' + archivePath)
+  if (stat.size <= 0) throw new Error('解压源文件为空：' + archivePath)
+  if (!hasZipMagic(archivePath)) throw new Error('解压源文件不是有效 zip 包：' + archivePath)
   fs.rmSync(destinationDir, { recursive: true, force: true })
   fs.mkdirSync(destinationDir, { recursive: true })
   const attempts = []
   try {
     execFileSync('tar.exe', ['-xf', archivePath, '-C', destinationDir], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
-    return { method: 'tar.exe', attempts }
+    return { method: 'tar.exe', attempts, archivePath, destinationDir, size: stat.size }
   } catch (e) {
-    attempts.push({ method: 'tar.exe', error: String(e.stderr || e.message || '').trim() })
+    attempts.push({ method: 'tar.exe', code: e.status || e.code || '', error: String(e.stderr || e.message || '').trim() })
   }
   try {
     execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `Expand-Archive -LiteralPath ${psQuote(archivePath)} -DestinationPath ${psQuote(destinationDir)} -Force`], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
-    return { method: 'PowerShell Expand-Archive', attempts }
+    return { method: 'PowerShell Expand-Archive', attempts, archivePath, destinationDir, size: stat.size }
   } catch (e) {
-    attempts.push({ method: 'PowerShell Expand-Archive', error: String(e.stderr || e.message || '').trim() })
+    attempts.push({ method: 'PowerShell Expand-Archive', code: e.status || e.code || '', error: String(e.stderr || e.message || '').trim() })
     const message = attempts.map(item => `${item.method}: ${item.error || '失败'}`).join('；')
     const err = new Error('自动解压失败：' + message)
     err.attempts = attempts
+    err.stage = 'extract'
+    err.archivePath = archivePath
+    err.destinationDir = destinationDir
+    err.fileSize = stat.size
     throw err
   }
 }
@@ -703,19 +792,22 @@ function downloadNapcatWindowsRelease(installDir, callback) {
       const names = (release?.assets || []).map(item => item.name).filter(Boolean).join(', ')
       return callback(new Error('未找到可自动安装的 Windows zip 资产' + (names ? '，候选：' + names : '')))
     }
-    downloadToRuntime(asset.browser_download_url, (downloadErr, filePath) => {
+    downloadToRuntime(asset.browser_download_url, { preferredName: asset.name, expectedExt: '.zip', minBytes: 128 * 1024 }, (downloadErr, filePath, download) => {
       if (downloadErr) return callback(downloadErr)
       const stagingDir = runtimePath('napcat-install-' + Date.now().toString(36))
       try {
         const extraction = extractZipArchive(filePath, stagingDir)
         const installer = runNapcatInstallerIfPresent(stagingDir)
         fs.mkdirSync(installDir, { recursive: true })
+        const content = fs.readdirSync(stagingDir)
+        if (!content.length) throw new Error('NapCat zip 解压后目录为空')
         copyRecursiveSync(stagingDir, installDir)
         const detected = inspectNapcatCandidate(installDir)
         const needsManualSetup = !detected.found || (installer.ran && !installer.ok)
         callback(null, {
           asset: asset.name,
           filePath,
+          download,
           installDir,
           extraction,
           installer,
@@ -725,7 +817,8 @@ function downloadNapcatWindowsRelease(installDir, callback) {
           message: needsManualSetup ? 'NapCat OneKey 包已下载并解压，但仍需要按提示完成安装器配置' : 'NapCat OneKey 包已下载、解压并完成检测',
         })
       } catch (e) {
-        callback(new Error('NapCat 下载完成但自动解压/安装失败：' + String(e.message || '').trim()), { asset: asset.name, filePath, installDir, manualSteps: buildNapcatManualSteps(filePath, installDir), attempts: e.attempts || [] })
+        const readable = describeFsError(e, String(e.message || '').trim())
+        callback(new Error('NapCat 下载完成但自动解压/安装失败：' + readable), { asset: asset.name, filePath, download, installDir, manualSteps: buildNapcatManualSteps(filePath, installDir), attempts: e.attempts || [], stage: e.stage || 'install', archivePath: e.archivePath || filePath, fileSize: e.fileSize })
       } finally {
         fs.rmSync(stagingDir, { recursive: true, force: true })
       }
@@ -774,7 +867,7 @@ function installPortableNodeWindows(callback) {
     let asset
     try { asset = pickNodeWindowsRelease(releases) }
     catch (e) { return callback(e) }
-    downloadToRuntime(asset.url, (downloadErr, archivePath) => {
+    downloadToRuntime(asset.url, { preferredName: asset.fileName, expectedExt: '.zip', minBytes: 1024 * 1024 }, (downloadErr, archivePath, download) => {
       if (downloadErr) return callback(downloadErr)
       const stagingDir = runtimePath('node-install-' + Date.now().toString(36))
       const targetDir = getPortableNodeDir()
@@ -791,10 +884,10 @@ function installPortableNodeWindows(callback) {
         const npm = getCommandInfo('npm')
         if (!node.ok || !node.ownedByProject) throw new Error('便携 Node 校验失败：' + (node.reason || 'node 不可用'))
         if (!npm.found || !npm.ownedByProject) throw new Error('便携 npm 校验失败：' + (npm.reason || 'npm 不可用'))
-        callback(null, { skipped: false, message: '便携 Node/npm 已安装到 runtime/node', asset, archivePath, installDir: targetDir, node, npm })
+        callback(null, { skipped: false, message: '便携 Node/npm 已安装到 runtime/node', asset, archivePath, download, installDir: targetDir, node, npm })
       } catch (e) {
         fs.rmSync(targetDir, { recursive: true, force: true })
-        callback(new Error('便携 Node/npm 安装失败：' + String(e.stderr || e.message || '').trim()), { asset, archivePath, installDir: targetDir })
+        callback(new Error('便携 Node/npm 安装失败：' + describeFsError(e, String(e.stderr || e.message || '').trim())), { asset, archivePath, download, installDir: targetDir, attempts: e.attempts || [], stage: e.stage || 'install' })
       } finally {
         fs.rmSync(stagingDir, { recursive: true, force: true })
       }
@@ -1365,6 +1458,7 @@ function runtimePath(...parts) {
 
 function getLocalDeployTarget() {
   const isWindowsBackend = process.platform === 'win32'
+  const workDirSafety = getLocalWorkDirSafety()
   const blockedReason = isWindowsBackend ? '' : `当前 Dashboard 后端是 ${process.platform}/${process.arch}，Windows 本地部署需要在 Windows 部署器软件中运行。远端网页只能检测服务器，不能检测浏览器所在的 Windows 电脑。`
   return {
     kind: 'dashboard-backend',
@@ -1374,6 +1468,7 @@ function getLocalDeployTarget() {
     hostname: os.hostname(),
     projectDir: path.resolve(KOISHI_DIR),
     runtimeDir: runtimePath(),
+    workspace: workDirSafety,
     isWindowsBackend,
     isLocalDeployer: isGlobalLocalMode(),
     canRunWindowsLocalDeploy: isWindowsBackend,
@@ -1414,18 +1509,19 @@ function testChinesePathWrite(dir) {
   } catch (e) { return { ok: false, message: e.message } }
 }
 
-function downloadToRuntime(url, callback) {
+function downloadToRuntime(url, options, callback) {
+  if (typeof options === 'function') { callback = options; options = {} }
+  options = options || {}
   let parsed
   try { parsed = new URL(url) } catch { callback(new Error('下载地址无效')); return }
   if (!['http:', 'https:'].includes(parsed.protocol)) { callback(new Error('只支持 http/https 下载地址')); return }
   writeRuntimeLayout({ includeNapcat: false, includeNodeModules: false })
-  const name = decodeURIComponent(path.basename(parsed.pathname || 'napcat-download')).replace(/[<>:"/\\|?*]/g, '_') || 'napcat-download.bin'
-  const filePath = runtimePath('downloads', name)
   const client = parsed.protocol === 'https:' ? https : http
   const req = client.get(parsed, (response) => {
     if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
       response.resume()
-      downloadToRuntime(response.headers.location, callback)
+      const nextUrl = new URL(response.headers.location, parsed).toString()
+      downloadToRuntime(nextUrl, options, callback)
       return
     }
     if (response.statusCode !== 200) {
@@ -1433,9 +1529,14 @@ function downloadToRuntime(url, callback) {
       callback(new Error('下载失败：HTTP ' + response.statusCode))
       return
     }
+    const name = getDownloadFileName(parsed, response, options)
+    const filePath = runtimePath('downloads', name)
     const stream = fs.createWriteStream(filePath)
     response.pipe(stream)
-    stream.on('finish', () => stream.close(() => callback(null, filePath)))
+    stream.on('finish', () => stream.close(() => {
+      try { callback(null, filePath, validateDownloadedFile(filePath, { ...options, expectedContentType: response.headers['content-type'] })) }
+      catch (e) { callback(e, filePath) }
+    }))
     stream.on('error', callback)
   })
   req.setTimeout(120000, () => req.destroy(new Error('下载超时')))
@@ -1490,9 +1591,45 @@ function runNpmConfigGet(name) {
   } catch { return '' }
 }
 
+function psCommandArg(value) {
+  return "'" + String(value).replace(/'/g, "''") + "'"
+}
+
+function formatLocalNpmCommand(args = []) {
+  const npm = getLocalToolCommand('npm')
+  if (process.platform === 'win32') {
+    const prefix = npm === 'npm' ? 'npm' : '& ' + psCommandArg(npm)
+    return [prefix].concat(args.map(psCommandArg)).join(' ')
+  }
+  return [shellQuote(npm)].concat(args.map(shellQuote)).join(' ')
+}
+
+function getNoProxyEnvOverrides() {
+  return {
+    HTTP_PROXY: '',
+    HTTPS_PROXY: '',
+    http_proxy: '',
+    https_proxy: '',
+    npm_config_proxy: '',
+    npm_config_https_proxy: '',
+  }
+}
+
+function runNpmCommand(args, options = {}) {
+  const npm = getLocalToolCommand('npm')
+  const env = getLocalToolEnv(options.env || {})
+  if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(npm)) {
+    return execFileSync('cmd.exe', ['/d', '/c', npm, ...args], { cwd: options.cwd || KOISHI_DIR, env, timeout: options.timeout || 12000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  }
+  return execFileSync(npm, args, { cwd: options.cwd || KOISHI_DIR, env, timeout: options.timeout || 12000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+}
+
 function collectNpmInstallDiagnostics(force = false) {
   const now = Date.now()
   if (!force && npmDiagnosticsCache.data && now - npmDiagnosticsCache.at < 10000) return npmDiagnosticsCache.data
+  const nodeInfo = getCommandInfo('node', 18)
+  const npmInfo = getCommandInfo('npm')
+  const workspace = getLocalWorkDirSafety()
   const env = {
     HTTP_PROXY: redactProxyValue(process.env.HTTP_PROXY || process.env.http_proxy),
     HTTPS_PROXY: redactProxyValue(process.env.HTTPS_PROXY || process.env.https_proxy),
@@ -1503,22 +1640,43 @@ function collectNpmInstallDiagnostics(force = false) {
     httpsProxy: runNpmConfigGet('https-proxy'),
     registry: redactProxyValue(runNpmConfigGet('registry')) || 'https://registry.npmjs.org/',
   }
-  const data = { env, config, checkedAt: now }
+  const data = {
+    env,
+    config,
+    checkedAt: now,
+    workspace,
+    paths: {
+      projectDir: path.resolve(KOISHI_DIR),
+      runtimeDir: runtimePath(),
+      portableNodeDir: getPortableNodeDir(),
+      nodeModulesPath: path.join(KOISHI_DIR, 'node_modules'),
+    },
+    tools: {
+      nodeSourcePath: nodeInfo.sourcePath || '',
+      nodeSource: nodeInfo.source || '',
+      npmSourcePath: npmInfo.sourcePath || '',
+      npmSource: npmInfo.source || '',
+      npmCommand: getLocalToolCommand('npm'),
+    },
+    dependencies: getProjectDependencyStatus(),
+  }
   npmDiagnosticsCache = { at: now, data }
   return data
 }
 
 function commandListForNpmProxyFix(hasNpmProxy, hasEnvProxy) {
   const commands = []
+  if (hasEnvProxy && process.platform === 'win32') {
+    commands.push('$env:HTTP_PROXY = ""')
+    commands.push('$env:HTTPS_PROXY = ""')
+    commands.push('$env:http_proxy = ""')
+    commands.push('$env:https_proxy = ""')
+  }
   if (hasNpmProxy) {
-    commands.push('npm config delete proxy')
-    commands.push('npm config delete https-proxy')
+    commands.push(formatLocalNpmCommand(['config', 'delete', 'proxy']))
+    commands.push(formatLocalNpmCommand(['config', 'delete', 'https-proxy']))
   }
-  commands.push('npm config set registry https://registry.npmmirror.com')
-  if (hasEnvProxy) {
-    commands.push('setx HTTP_PROXY ""')
-    commands.push('setx HTTPS_PROXY ""')
-  }
+  commands.push(formatLocalNpmCommand(['config', 'set', 'registry', 'https://registry.npmmirror.com']))
   return commands
 }
 
@@ -1543,21 +1701,50 @@ function buildNpmInstallFailureGuide(logLines = [], diagnostics = null) {
       summary: `npm 正在通过本机代理 ${endpoint} 访问 npm registry，但这个端口连不上。通常是代理软件没有启动、端口变了，或 npm 里残留了旧代理配置。`,
       fixSteps: [
         `如果你需要代理，请先打开代理软件，并确认它监听的是 ${endpoint}。`,
-        '如果你不需要代理，请复制下面的命令到 PowerShell 执行，清除 npm 代理配置。',
-        '如果公司/校园网需要镜像源，可以保留代理软件，或先切到 npm 镜像源再重试。',
-        '处理完成后，回到部署器点击“执行 npm install”。',
+        '如果你不需要代理，优先点击“一键修复代理并重试”，部署器会用内部 npm 路径执行修复并清理本次 npm install 的代理环境。',
+        '下面的命令已使用部署器实际 npm 路径；普通 PowerShell 里没有全局 npm 时也可以复制执行。',
+        '处理完成后，回到部署器点击“执行 npm install”或“一键修复代理并重试”。',
       ],
       commands: commandListForNpmProxyFix(hasNpmProxy, hasEnvProxy),
       diagnostics: diag,
     }
   }
-  if (/EAI_AGAIN|ENOTFOUND/i.test(text)) return { code: 'NPM_DNS_FAILED', title: 'npm 域名解析失败', summary: 'npm 无法解析 registry 域名，通常是 DNS、网络或代理配置问题。', fixSteps: ['确认电脑可以打开 npm registry 或 npm 镜像源网站。', '切换网络或 DNS 后重试。', '如果使用代理，请确认代理软件已启动。'], commands: ['npm config set registry https://registry.npmmirror.com'], diagnostics: diag }
-  if (/ETIMEDOUT|ESOCKETTIMEDOUT|network timeout/i.test(text)) return { code: 'NPM_TIMEOUT', title: 'npm 下载超时', summary: 'npm registry 响应太慢或网络被代理/防火墙阻断。', fixSteps: ['先确认网络稳定。', '可以切换到 npm 镜像源后重试。', '如果使用代理，请确认代理软件运行正常。'], commands: ['npm config set registry https://registry.npmmirror.com'], diagnostics: diag }
-  if (/SELF_SIGNED_CERT|CERT_HAS_EXPIRED|unable to verify the first certificate/i.test(text)) return { code: 'NPM_CERT_FAILED', title: 'npm 证书校验失败', summary: '网络代理或证书环境让 npm 无法校验证书。', fixSteps: ['优先检查代理软件的 HTTPS 解密/证书设置。', '确认系统时间正确。', '不要随意关闭 strict-ssl，除非你明确知道当前网络环境需要这样做。'], commands: ['npm config get strict-ssl'], diagnostics: diag }
+  if (/EAI_AGAIN|ENOTFOUND/i.test(text)) return { code: 'NPM_DNS_FAILED', title: 'npm 域名解析失败', summary: 'npm 无法解析 registry 域名，通常是 DNS、网络或代理配置问题。', fixSteps: ['确认电脑可以打开 npm registry 或 npm 镜像源网站。', '切换网络或 DNS 后重试。', '如果使用代理，请确认代理软件已启动。'], commands: [formatLocalNpmCommand(['config', 'set', 'registry', 'https://registry.npmmirror.com'])], diagnostics: diag }
+  if (/ETIMEDOUT|ESOCKETTIMEDOUT|network timeout/i.test(text)) return { code: 'NPM_TIMEOUT', title: 'npm 下载超时', summary: 'npm registry 响应太慢或网络被代理/防火墙阻断。', fixSteps: ['先确认网络稳定。', '可以切换到 npm 镜像源后重试。', '如果使用代理，请确认代理软件运行正常。'], commands: [formatLocalNpmCommand(['config', 'set', 'registry', 'https://registry.npmmirror.com'])], diagnostics: diag }
+  if (/SELF_SIGNED_CERT|CERT_HAS_EXPIRED|unable to verify the first certificate/i.test(text)) return { code: 'NPM_CERT_FAILED', title: 'npm 证书校验失败', summary: '网络代理或证书环境让 npm 无法校验证书。', fixSteps: ['优先检查代理软件的 HTTPS 解密/证书设置。', '确认系统时间正确。', '不要随意关闭 strict-ssl，除非你明确知道当前网络环境需要这样做。'], commands: [formatLocalNpmCommand(['config', 'get', 'strict-ssl'])], diagnostics: diag }
   if (/\bEACCES\b|\bEPERM\b|permission denied/i.test(text)) return { code: 'NPM_PERMISSION_FAILED', title: 'npm 写入文件失败', summary: 'npm 没有权限写入项目目录，或文件正被其他进程占用。', fixSteps: ['关闭正在占用项目目录的终端、编辑器或杀毒拦截。', '确认部署器所在目录可写，不要放在 Program Files 等系统目录。', '重新打开部署器后再试一次。'], commands: [], diagnostics: diag }
-  if (/\bE401\b|\bE403\b|unauthorized|forbidden/i.test(text)) return { code: 'NPM_AUTH_FAILED', title: 'npm registry 权限错误', summary: '当前 registry 拒绝访问，可能是私有源认证过期或 registry 配错。', fixSteps: ['检查 npm registry 是否应为公开源。', '如果不需要私有源，切换到 npm 镜像源后重试。'], commands: ['npm config get registry', 'npm config set registry https://registry.npmmirror.com'], diagnostics: diag }
-  if (/npm error/i.test(text)) return { code: 'NPM_FAILED', title: 'npm install 失败', summary: 'npm install 已退出，部署器暂时无法判断唯一原因。请先查看下方原始日志里最靠前的 npm error。', fixSteps: ['优先处理日志中第一条 npm error。', '确认网络、代理、磁盘权限和项目目录可写。', '处理后点击“执行 npm install”重试。'], commands: ['npm config get registry'], diagnostics: diag }
+  if (/\bE401\b|\bE403\b|unauthorized|forbidden/i.test(text)) return { code: 'NPM_AUTH_FAILED', title: 'npm registry 权限错误', summary: '当前 registry 拒绝访问，可能是私有源认证过期或 registry 配错。', fixSteps: ['检查 npm registry 是否应为公开源。', '如果不需要私有源，切换到 npm 镜像源后重试。'], commands: [formatLocalNpmCommand(['config', 'get', 'registry']), formatLocalNpmCommand(['config', 'set', 'registry', 'https://registry.npmmirror.com'])], diagnostics: diag }
+  if (/npm error/i.test(text)) return { code: 'NPM_FAILED', title: 'npm install 失败', summary: 'npm install 已退出，部署器暂时无法判断唯一原因。请先查看下方原始日志里最靠前的 npm error。', fixSteps: ['优先处理日志中第一条 npm error。', '确认网络、代理、磁盘权限和项目目录可写。', '处理后点击“执行 npm install”重试。'], commands: [formatLocalNpmCommand(['config', 'get', 'registry'])], diagnostics: diag }
   return null
+}
+
+function startNpmInstallTask(extraEnv = {}, diagnostics = null) {
+  return spawnLocalTask('npmInstall', getLocalToolCommand('npm'), ['install'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', env: extraEnv, diagnostics: diagnostics || collectNpmInstallDiagnostics(true) }))
+}
+
+function repairNpmProxyAndStartInstall() {
+  const dependencies = getProjectDependencyStatus()
+  if (dependencies.ready) return { ok: true, skipped: true, message: '项目依赖已安装', actions: [], status: getLocalNpmInstallStatus() }
+  const npmInfo = getCommandInfo('npm')
+  if (!npmInfo.found) return { ok: false, message: '当前 Windows 本机未找到 npm，请先安装便携 Node/npm 后重新检测环境', npm: npmInfo }
+  const cleanEnv = getNoProxyEnvOverrides()
+  const actions = []
+  for (const args of [
+    ['config', 'delete', 'proxy'],
+    ['config', 'delete', 'https-proxy'],
+    ['config', 'set', 'registry', 'https://registry.npmmirror.com'],
+  ]) {
+    try {
+      runNpmCommand(args, { env: cleanEnv })
+      actions.push({ command: formatLocalNpmCommand(args), ok: true })
+    } catch (e) {
+      actions.push({ command: formatLocalNpmCommand(args), ok: false, message: String(e.stderr || e.message || '').trim() })
+    }
+  }
+  const diagnostics = collectNpmInstallDiagnostics(true)
+  diagnostics.repair = { actions, envClearedForRetry: true }
+  const started = startNpmInstallTask(cleanEnv, diagnostics)
+  return { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : '已清理本次部署器 npm 代理并重新启动 npm install', actions, status: getLocalNpmInstallStatus() }
 }
 
 function getBlockedLocalTaskStatus(key, extra = {}) {
@@ -3043,9 +3230,9 @@ const server = http.createServer((req, res) => {
       try {
         const { url } = JSON.parse(body)
         if (!url) return json(res, { ok: false, message: '下载地址不能为空' }, 400)
-        downloadToRuntime(url, (err, filePath) => {
+        downloadToRuntime(url, { preferredName: 'napcat-manual.zip', expectedExt: '.zip', minBytes: 128 * 1024 }, (err, filePath, download) => {
           if (err) return json(res, { ok: false, message: err.message }, 400)
-          json(res, { ok: true, message: 'NapCat 包已下载到 ' + filePath, path: filePath })
+          json(res, { ok: true, message: 'NapCat 包已下载到 ' + filePath, path: filePath, download })
         })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })
@@ -3092,8 +3279,17 @@ const server = http.createServer((req, res) => {
       const npmInfo = getCommandInfo('npm')
       if (!npmInfo.found) return json(res, { ok: false, message: '当前 Windows 本机未找到 npm，请先安装便携 Node/npm 后重新检测环境', npm: npmInfo }, 400)
       const diagnostics = collectNpmInstallDiagnostics(true)
-      const started = spawnLocalTask('npmInstall', getLocalToolCommand('npm'), ['install'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', diagnostics }))
+      const started = startNpmInstallTask({}, diagnostics)
       return json(res, { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : 'npm install 已启动', status: getLocalNpmInstallStatus() })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/deploy/npm-repair-and-install' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
+    try {
+      const result = repairNpmProxyAndStartInstall()
+      return json(res, result, result.ok ? 200 : 400)
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
 

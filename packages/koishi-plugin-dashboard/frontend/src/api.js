@@ -168,6 +168,7 @@ export async function downloadNapcat(url) { return post('/deploy/napcat-download
 export async function downloadNapcatWindows(installDir) { return post('/deploy/napcat-windows-download', { installDir }, true, 240000) }
 export async function installPortableNode() { return post('/deploy/node-windows-install', {}, true, 240000) }
 export async function startNpmInstall() { return post('/deploy/npm-install', {}, true, 10000) }
+export async function repairNpmProxyAndInstall() { return post('/deploy/npm-repair-and-install', {}, true, 10000) }
 export async function npmInstallStatus() { return get('/deploy/npm-install-status') }
 export async function startNapcat() { return post('/deploy/napcat-start', {}, true, 10000) }
 export async function napcatDeployStatus() { return get('/deploy/napcat-status') }

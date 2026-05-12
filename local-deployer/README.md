@@ -4,8 +4,8 @@
 
 它会让同一个 Windows 程序完成这些事：
 
-- Windows 本机部署：在当前项目目录下生成 `runtime/`、`data/`、`koishi.yml`、`start-local.bat`，不写入 C 盘系统目录。
-- 便携运行环境：未检测到 Node.js/npm 时，可以把官方 Node.js LTS 安装到 `runtime/node/`，一键卸载时会作为本项目环境文件删除。
+- Windows 本机部署：源码版在当前项目目录下生成运行文件；打包版会在 EXE 同级目录创建 `LianLianBOT/`，所有运行文件都集中放在里面。
+- 便携运行环境：未检测到 Node.js/npm 时，可以把官方 Node.js LTS 安装到 `runtime/node/`（打包版对应 `LianLianBOT/runtime/node/`），一键卸载时会作为本项目环境文件删除。
 - 远程 Linux 部署：打开 Dashboard 的部署页，填写 `root@服务器IP` 和远程目录后通过 SSH/SCP 推送更新。
 - Bot 调试：启动/停止 Bot、查看日志、切换模型、编辑 API Keys、管理人格、黑白名单、安全设置和系统状态。
 
@@ -37,18 +37,21 @@ npm run build:win
 
 输出为 `dist/` 下的 Windows portable EXE。打包会把根目录的 `packages/`、`scripts/`、`package.json`、`start.js`、`koishi.example.yml` 作为资源带入。
 
-根目录的 `构建Windows部署器.bat` 会自动安装依赖、构建 Dashboard 前端并打包部署器。构建脚本会把最终可分发文件整理到 `local-deployer/release/`。若只有一个 EXE，就直接发布该 EXE；若产物包含多个文件，则发布 `local-deployer/release/lianlian-bot-windows-deployer.zip`。
+根目录的 `构建Windows部署器.bat` 会自动安装依赖、构建 Dashboard 前端并打包部署器。构建脚本会把最终可分发文件整理到 `local-deployer/release/`，并统一生成 `LianLianBOT-Deployer-v版本号.zip`。Release 只上传这个 zip，不裸传 EXE。
 
-如果要把部署器跟代码一起推送到 GitHub，需要将 `local-deployer/release/` 中的 EXE/ZIP 一并加入提交。注意 GitHub 单文件大小限制为 100 MiB，构建后需要确认产物大小未超限。
+用户需要先完整解压 zip，再运行解压目录里的 `莲莲Bot部署器.exe`。不要在压缩包预览窗口里直接双击运行。首次运行会在 EXE 同级目录创建 `LianLianBOT/`，用于保存环境、依赖、配置、下载包和日志。
+
+如果要把部署器发布到 GitHub Release，请上传 `local-deployer/release/` 中的 zip。注意 GitHub 单文件大小限制为 100 MiB，构建后需要确认产物大小未超限。
 
 根目录的 `卸载本地部署器.bat` 用于清理本地部署器依赖、构建产物和可选运行时数据。默认保留 `data/` 与 `runtime/`，避免误删 Key、记忆和 NapCat 文件。
 
 ## 本地部署约束
 
-- 下载包默认放到根目录 `runtime/downloads/`。
-- 便携 Node/npm 默认放到根目录 `runtime/node/`。
-- NapCat 建议解压到 `runtime/napcat/`。
-- 运行日志建议放到 `runtime/logs/`。
+- 源码版下载包默认放到根目录 `runtime/downloads/`；打包版放到 `LianLianBOT/runtime/downloads/`。
+- 便携 Node/npm 默认放到 `runtime/node/`；打包版放到 `LianLianBOT/runtime/node/`。
+- NapCat 建议解压到 `runtime/napcat/`；打包版放到 `LianLianBOT/runtime/napcat/`。
+- 运行日志建议放到 `runtime/logs/`；打包版放到 `LianLianBOT/runtime/logs/`。
+- Dashboard 密码、API Key、图集、用户资料和其他可写配置放到 `data/`；打包版对应 `LianLianBOT/data/`。
 - OneBot WebSocket 使用 `ws://127.0.0.1:8080/onebot/v11/ws`。
 - Dashboard 入口只需要访问密码；修改配置、部署、Key、密码等敏感操作仍需要管理员密码。SSH 登录服务器的系统密码不写入部署器代码。
 

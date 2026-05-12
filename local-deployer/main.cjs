@@ -1,20 +1,83 @@
 const { app, BrowserWindow, shell, dialog, ipcMain, clipboard } = require('electron')
+const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
 
 let dashboardProcess = null
 let mainWindow = null
+let appPaths = null
 
-function resolveAppRoot() {
-  if (app.isPackaged) return path.join(process.resourcesPath, 'app')
-  return path.resolve(__dirname, '..')
+function resolveResourceRoot() {
+  return app.isPackaged ? path.join(process.resourcesPath, 'app') : path.resolve(__dirname, '..')
 }
 
-function startDashboard(appRoot) {
-  const standalone = path.join(appRoot, 'packages', 'koishi-plugin-dashboard', 'standalone.js')
+function resolveExecutableDir() {
+  if (process.env.PORTABLE_EXECUTABLE_DIR) return process.env.PORTABLE_EXECUTABLE_DIR
+  if (process.env.PORTABLE_EXECUTABLE_FILE) return path.dirname(process.env.PORTABLE_EXECUTABLE_FILE)
+  return path.dirname(process.execPath)
+}
+
+function ensureWritableDir(dir) {
+  fs.mkdirSync(dir, { recursive: true })
+  const probe = path.join(dir, '.write-test-' + Date.now().toString(36))
+  fs.writeFileSync(probe, 'ok', 'utf8')
+  fs.unlinkSync(probe)
+}
+
+function copyResource(sourceRoot, targetRoot, relativePath, options = {}) {
+  const source = path.join(sourceRoot, relativePath)
+  const target = path.join(targetRoot, relativePath)
+  if (!fs.existsSync(source)) return
+  if (options.replace) fs.rmSync(target, { recursive: true, force: true })
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.cpSync(source, target, { recursive: true, force: true })
+}
+
+function syncWorkspace(resourceRoot, workspaceRoot) {
+  ensureWritableDir(workspaceRoot)
+  for (const dir of ['packages', 'scripts']) copyResource(resourceRoot, workspaceRoot, dir, { replace: true })
+  for (const file of ['package.json', 'package-lock.json', 'start.js', 'koishi.example.yml']) copyResource(resourceRoot, workspaceRoot, file, { replace: true })
+  for (const dir of ['data', 'runtime', path.join('runtime', 'downloads'), path.join('runtime', 'logs'), path.join('runtime', 'napcat')]) {
+    fs.mkdirSync(path.join(workspaceRoot, dir), { recursive: true })
+  }
+  fs.writeFileSync(path.join(workspaceRoot, '.lianlian-workspace.json'), JSON.stringify({
+    version: app.getVersion(),
+    resourceRoot,
+    workspaceRoot,
+    updatedAt: new Date().toISOString(),
+  }, null, 2), 'utf8')
+}
+
+function resolveAppPaths() {
+  const resourceRoot = resolveResourceRoot()
+  if (!app.isPackaged) return { resourceRoot, workspaceRoot: resourceRoot, fallbackReason: '' }
+  const preferredRoot = path.join(resolveExecutableDir(), 'LianLianBOT')
+  try {
+    syncWorkspace(resourceRoot, preferredRoot)
+    return { resourceRoot, workspaceRoot: preferredRoot, fallbackReason: '' }
+  } catch (e) {
+    const fallbackRoot = path.join(app.getPath('userData'), 'LianLianBOT')
+    syncWorkspace(resourceRoot, fallbackRoot)
+    return { resourceRoot, workspaceRoot: fallbackRoot, fallbackReason: `EXE 所在目录不可写，已改用用户数据目录：${e.message}` }
+  }
+}
+
+function startDashboard(paths) {
+  const standalone = path.join(paths.workspaceRoot, 'packages', 'koishi-plugin-dashboard', 'standalone.js')
   dashboardProcess = spawn(process.execPath, [standalone], {
-    cwd: appRoot,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', GLOBAL_LOCAL_MODE: '1', KOISHI_DIR: appRoot, DASHBOARD_PORT: process.env.DASHBOARD_PORT || '5150' },
+    cwd: paths.workspaceRoot,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+      GLOBAL_LOCAL_MODE: '1',
+      LIANLIAN_PACKAGED: app.isPackaged ? '1' : '0',
+      LIANLIAN_RESOURCE_ROOT: paths.resourceRoot,
+      LIANLIAN_WORKSPACE_ROOT: paths.workspaceRoot,
+      LIANLIAN_WORKSPACE_FALLBACK_REASON: paths.fallbackReason || '',
+      KOISHI_DIR: paths.workspaceRoot,
+      DONGXUELIAN_AI_DATA_DIR: path.join(paths.workspaceRoot, 'data'),
+      DASHBOARD_PORT: process.env.DASHBOARD_PORT || '5150',
+    },
     stdio: 'ignore',
     windowsHide: true,
   })
@@ -78,15 +141,21 @@ function registerIpc() {
     platform: process.platform,
     arch: process.arch,
     packaged: app.isPackaged,
+    resourceRoot: appPaths?.resourceRoot || '',
+    workspaceRoot: appPaths?.workspaceRoot || '',
+    fallbackReason: appPaths?.fallbackReason || '',
     userData: app.getPath('userData'),
   }))
 }
 
 app.whenReady().then(() => {
-  const appRoot = resolveAppRoot()
+  appPaths = resolveAppPaths()
   registerIpc()
-  startDashboard(appRoot)
+  startDashboard(appPaths)
   setTimeout(createWindow, 900)
+  if (appPaths.fallbackReason) {
+    setTimeout(() => dialog.showMessageBox(mainWindow, { type: 'warning', title: '部署器工作目录已切换', message: appPaths.fallbackReason, detail: '建议把部署器 ZIP 完整解压到可写目录后，再运行 EXE。' }).catch(() => {}), 1500)
+  }
 })
 
 app.on('window-all-closed', () => app.quit())

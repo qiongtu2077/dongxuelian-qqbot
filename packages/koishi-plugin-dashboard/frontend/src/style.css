@@ -807,6 +807,13 @@ select option { background: var(--surface); color: var(--text) }
   gap: 14px;
 }
 
+.repair-guide-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .repair-guide-head strong,
 .repair-guide-head span { display: block }
 .repair-guide-head strong { color: var(--danger); margin-bottom: 4px }
