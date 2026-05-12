@@ -333,6 +333,7 @@ select option { background: var(--surface); color: var(--text) }
   background: var(--input); border-radius: var(--radius-md); padding: 12px 16px;
   margin-top: 12px; font-size: 14px; line-height: 1.6;
   animation: fadeIn .25s ease;
+  white-space: pre-wrap;
 }
 .msg.ok { border-left: 3px solid var(--accent) }
 .msg.err { border-left: 3px solid var(--danger); color: var(--danger) }
@@ -783,6 +784,83 @@ select option { background: var(--surface); color: var(--text) }
   overflow-wrap: anywhere;
 }
 
+.status-action {
+  margin-top: 10px;
+  width: 100%;
+  justify-content: center;
+}
+
+.repair-guide {
+  margin: 12px 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border));
+  border-left: 4px solid var(--danger);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--input));
+  color: var(--text);
+  padding: 14px;
+}
+
+.repair-guide-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.repair-guide-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.repair-guide-head strong,
+.repair-guide-head span { display: block }
+.repair-guide-head strong { color: var(--danger); margin-bottom: 4px }
+.repair-guide-head span { color: var(--text2); font-size: 13px; line-height: 1.55 }
+
+.repair-guide ol {
+  margin: 12px 0 0 20px;
+  padding: 0;
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.repair-command-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.repair-command-list code {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0,0,0,.28);
+  color: var(--accent);
+  padding: 7px 9px;
+  overflow-wrap: anywhere;
+}
+
+.repair-diagnostics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.repair-diagnostics span {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text2);
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.repair-diagnostics b { color: var(--text); margin-right: 6px }
+
 .local-wizard-card { overflow: visible }
 
 .local-wizard-head {
@@ -793,21 +871,6 @@ select option { background: var(--surface); color: var(--text) }
 }
 
 .local-wizard-head .btn { flex: 0 0 auto }
-
-.deploy-software-note {
-  display: inline-flex;
-  align-items: center;
-  min-height: 26px;
-  margin: -4px 0 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
-  border-radius: var(--radius-sm);
-  background: var(--accentDim);
-  color: var(--accent2);
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 900;
-  line-height: 1.35;
-}
 
 .flow-sentence {
   margin: 14px 0 16px;
@@ -1215,7 +1278,410 @@ label.uninstall-row { cursor: pointer }
   white-space: pre-wrap;
 }
 
+.gallery-panel { min-width: 0 }
+
+.gallery-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.gallery-toolbar h2 { margin-bottom: 6px }
+
+.gallery-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.gallery-aspect-tabs { margin: 0; max-width: 100% }
+
+.gallery-add,
+.gallery-empty-add {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #11110d;
+  font-size: 28px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 10px 28px var(--shadow);
+  transition: transform .18s ease, box-shadow .2s ease, opacity .2s ease;
+}
+
+.gallery-remove-toggle {
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 12%, var(--input));
+  color: color-mix(in srgb, var(--danger) 78%, var(--text));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 8px 22px var(--shadow);
+  transition: transform .18s ease, box-shadow .2s ease, background .2s ease, color .2s ease;
+}
+
+.gallery-remove-toggle svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gallery-remove-toggle.active {
+  background: color-mix(in srgb, var(--danger) 82%, var(--card));
+  color: #fff;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 24%, transparent), 0 10px 28px var(--shadow);
+}
+
+.gallery-add:hover,
+.gallery-remove-toggle:hover,
+.gallery-empty-add:hover { transform: translateY(-1px); box-shadow: 0 14px 34px var(--shadow) }
+.gallery-add:disabled,
+.gallery-remove-toggle:disabled,
+.gallery-empty-add:disabled { opacity: .58; cursor: wait; transform: none }
+
+.gallery-bulk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--input));
+  padding: 10px 12px;
+  color: var(--text2);
+  font-size: 13px;
+}
+
+.gallery-bulk-bar > div { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end }
+
+.gallery-empty {
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  color: var(--text2);
+}
+
+.gallery-empty-add {
+  width: 78px;
+  height: 78px;
+  font-size: 48px;
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.gallery-card {
+  width: 100%;
+  min-width: 0;
+  aspect-ratio: var(--gallery-aspect);
+  border-radius: 8px;
+  perspective: 700px;
+  cursor: pointer;
+}
+
+.gallery-card.is-bulk { cursor: copy }
+
+.gallery-card__rotator {
+  --tilt-left-right: 0deg;
+  --tilt-up-down: 0deg;
+  --pointer-x: 50%;
+  --pointer-y: 50%;
+  --pointer-from-center: 0;
+  --effect-intensity: 0;
+  --background-x: 50%;
+  --background-y: 50%;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  border-radius: inherit;
+  transform: rotateY(var(--tilt-left-right)) rotateX(var(--tilt-up-down));
+  transform-origin: center;
+  box-shadow: 0 16px 38px rgba(0,0,0,.28), 0 2px 10px rgba(0,0,0,.2);
+  transition: box-shadow .2s ease;
+}
+
+.gallery-card:hover .gallery-card__rotator { box-shadow: 0 22px 52px var(--shadow), 0 4px 14px rgba(0,0,0,.22) }
+.gallery-card.selected .gallery-card__rotator { box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 60%, transparent), 0 22px 52px var(--shadow) }
+
+.gallery-card__front,
+.gallery-card__front > * {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.gallery-card__front {
+  position: relative;
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #111318;
+  isolation: isolate;
+}
+
+.gallery-card__front img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  z-index: 0;
+}
+
+.gallery-card__shine,
+.gallery-card__texture,
+.gallery-card__glare {
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+}
+
+.gallery-card--foil-a .gallery-card__shine,
+.gallery-card--foil-c .gallery-card__shine,
+.gallery-card--foil-e .gallery-card__shine {
+  background-image:
+    repeating-linear-gradient(-33deg, hsl(2, 70%, 47%) 6%, hsl(228, 60%, 64%) 12%, hsl(176, 55%, 39%) 18%, hsl(123, 68%, 35%) 24%, hsl(283, 75%, 57%) 30%, hsl(2, 70%, 47%) 36%),
+    radial-gradient(farthest-corner circle at var(--pointer-x) var(--pointer-y), hsla(189, 76%, 77%, .58) 0%, hsla(147, 59%, 77%, .48) 25%, hsla(271, 55%, 69%, .48) 50%, hsla(355, 56%, 72%, .5) 75%);
+  background-blend-mode: color-dodge, soft-light;
+  background-position: var(--background-x) var(--background-y), var(--background-x) var(--background-y);
+  background-size: 900% 900%, 180% 180%;
+  mix-blend-mode: color-dodge;
+  filter: brightness(calc((var(--pointer-from-center) * .45) + .48)) contrast(1.6) saturate(1.1);
+  opacity: var(--effect-intensity);
+}
+
+.gallery-card--foil-b .gallery-card__texture,
+.gallery-card--foil-c .gallery-card__texture,
+.gallery-card--foil-e .gallery-card__texture {
+  background-image:
+    repeating-linear-gradient(0deg, hsl(283, 100%, 73%) 6%, hsl(2, 100%, 73%) 12%, hsl(53, 100%, 69%) 18%, hsl(93, 100%, 69%) 24%, hsl(176, 100%, 76%) 30%, hsl(228, 100%, 74%) 36%, hsl(283, 100%, 73%) 42%),
+    repeating-linear-gradient(133deg, rgba(14,21,46,.76) 0%, rgba(220,255,255,.54) 3.8%, rgba(14,21,46,.78) 10%, rgba(14,21,46,.78) 12%);
+  background-blend-mode: hue, hard-light;
+  background-position: 0% var(--background-y), var(--background-x) var(--background-y);
+  background-size: 200% 700%, 300% 100%;
+  mix-blend-mode: lighten;
+  opacity: calc((.28 * var(--effect-intensity)) + var(--effect-intensity) * var(--pointer-from-center) * .42);
+}
+
+.gallery-card--foil-d .gallery-card__glare,
+.gallery-card--foil-e .gallery-card__glare {
+  background-image: radial-gradient(farthest-corner circle at var(--pointer-x) var(--pointer-y), hsla(0,0%,100%,.74) 0%, hsla(0,0%,100%,.24) 24%, hsl(0,0%,0%) 120%);
+  filter: brightness(1.05) contrast(1.1);
+  mix-blend-mode: hard-light;
+  opacity: calc((.18 * var(--effect-intensity)) + var(--effect-intensity) * var(--pointer-from-center) * .72);
+}
+
+.gallery-card--foil-f .gallery-card__shine,
+.gallery-card--foil-g .gallery-card__shine {
+  background-image:
+    radial-gradient(farthest-corner circle at var(--pointer-x) var(--pointer-y), rgba(255,255,255,.86) 0%, rgba(117,224,255,.34) 20%, rgba(255,132,214,.28) 40%, transparent 70%),
+    conic-gradient(from 120deg at var(--background-x) var(--background-y), #ff6f91, #ffd166, #7bd88f, #56cfe1, #9b5de5, #ff6f91),
+    repeating-linear-gradient(115deg, rgba(255,255,255,.2) 0 2px, rgba(15,23,42,.48) 2px 5px, rgba(255,255,255,.08) 5px 8px);
+  background-blend-mode: screen, color-dodge, soft-light;
+  background-size: 160% 160%, 260% 260%, 220% 220%;
+  background-position: var(--pointer-x) var(--pointer-y), var(--background-x) var(--background-y), var(--background-x) var(--background-y);
+  mix-blend-mode: color-dodge;
+  filter: saturate(1.45) contrast(1.25) brightness(calc(.55 + var(--pointer-from-center) * .65));
+  opacity: calc(var(--effect-intensity) * .86);
+}
+
+.gallery-card--foil-f .gallery-card__texture,
+.gallery-card--foil-g .gallery-card__texture {
+  background-image:
+    repeating-linear-gradient(52deg, rgba(255,255,255,.22) 0 1px, rgba(255,255,255,0) 1px 7px),
+    repeating-linear-gradient(-18deg, rgba(255,255,255,.16) 0 2px, rgba(20,20,26,.38) 2px 6px);
+  background-position: var(--background-x) var(--background-y);
+  background-size: 180% 180%, 240% 240%;
+  mix-blend-mode: overlay;
+  opacity: calc(var(--effect-intensity) * (.18 + var(--pointer-from-center) * .38));
+}
+
+.gallery-card--foil-g .gallery-card__glare {
+  background-image: radial-gradient(farthest-corner circle at var(--pointer-x) var(--pointer-y), rgba(255,255,255,.92) 0%, rgba(255,255,255,.32) 22%, rgba(255,255,255,0) 56%, rgba(0,0,0,.62) 120%);
+  mix-blend-mode: hard-light;
+  filter: brightness(calc(1 + var(--pointer-from-center) * .24)) contrast(1.16);
+  opacity: calc(var(--effect-intensity) * (.2 + var(--pointer-from-center) * .62));
+}
+
+.gallery-select-mark {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid color-mix(in srgb, var(--danger) 58%, var(--border));
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--card) 86%, transparent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.gallery-card.selected .gallery-select-mark { background: var(--danger) }
+
+.gallery-preview-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0,0,0,.52);
+}
+
+.gallery-preview-shell {
+  position: relative;
+  width: min(96vw, 1400px);
+  height: min(88vh, 840px);
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  display: block;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+  padding: 18px 74px 18px 18px;
+}
+
+.gallery-preview-stage {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  align-items: center;
+}
+
+.gallery-preview-close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 5;
+  width: 42px;
+  height: 42px;
+  border: 0;
+  background: transparent;
+  color: var(--text2);
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.gallery-preview-close:hover { color: var(--danger) }
+
+.gallery-preview-card {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: auto;
+  cursor: pointer;
+  perspective: 900px;
+  touch-action: none;
+}
+
+.gallery-preview-card .gallery-card__front img { object-fit: contain; background: #060708 }
+.gallery-preview-card .gallery-card__rotator { box-shadow: 0 18px 58px rgba(0,0,0,.36) }
+
+.gallery-foil-picker {
+  position: absolute;
+  top: 72px;
+  right: 18px;
+  bottom: 18px;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  justify-content: center;
+}
+
+.gallery-foil-picker button {
+  width: 42px;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card) 76%, rgba(0,0,0,.3));
+  color: var(--text2);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(0,0,0,.22);
+  transition: transform .16s ease, color .2s ease, background .2s ease, box-shadow .2s ease;
+}
+
+.gallery-foil-picker button:hover,
+.gallery-foil-picker button.active {
+  transform: translateY(-1px);
+  color: #11110d;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  box-shadow: 0 12px 24px rgba(0,0,0,.28);
+}
+
+.gallery-foil-picker button:disabled {
+  cursor: wait;
+  opacity: .68;
+  transform: none;
+}
+
+
 @media (max-width: 760px) {
+  .gallery-preview-backdrop { padding: 12px }
+  .gallery-preview-shell {
+    width: calc(100vw - 24px);
+    height: min(88vh, 720px);
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+    padding: 42px 10px 68px;
+  }
+  .gallery-preview-stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 12px;
+  }
+  .gallery-preview-card {
+    max-width: 100%;
+    max-height: 100%;
+  }
+  .gallery-foil-picker {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    top: auto;
+    bottom: 14px;
+    grid-auto-flow: column;
+    grid-auto-columns: 42px;
+    overflow-x: auto;
+    justify-content: start;
+    padding: 2px 4px 6px;
+  }
+  .gallery-preview-close {
+    top: 2px;
+    right: 8px;
+  }
   .app {
     width: calc(100vw - 56px);
     margin-left: 56px;

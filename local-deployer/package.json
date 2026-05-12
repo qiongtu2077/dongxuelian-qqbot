@@ -1,6 +1,6 @@
 {
   "name": "dongxuelian-windows-deployer",
-  "version": "0.1.0",
+  "version": "1.1.2",
   "private": true,
   "description": "Windows local and remote deployment shell for Dongxuelian Koishi bot",
   "main": "main.cjs",
@@ -42,6 +42,7 @@
       },
       { "from": "../scripts", "to": "app/scripts" },
       { "from": "../package.json", "to": "app/package.json" },
+      { "from": "../package-lock.json", "to": "app/package-lock.json" },
       { "from": "../start.js", "to": "app/start.js" },
       { "from": "../koishi.example.yml", "to": "app/koishi.example.yml" }
     ],

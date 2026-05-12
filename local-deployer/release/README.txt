@@ -1,9 +1,8 @@
-# LianBoard Windows 部署器
+# 莲莲 Bot Windows 部署器 release 目录
 
-- 双击 EXE 会启动本地 Dashboard 窗口，可用于 Windows 本地部署、远程 Linux 部署和 Bot 调试。
-- 部署器包含完整 Web 控制台：部署、终端控制、模型配置、API Keys、人格、黑白名单、日志和系统状态。
-- Windows 本地部署必须在本软件中执行；远端 Linux Dashboard 不能检测你的 Windows 本机环境。
-- 界面默认使用 Web 的浅色风格，并保留主题切换。
-- 访问密码和服务器密码不会写进 EXE。
-- 运行时文件默认放在当前目录的 runtime/ 和 data/。
-- 卸载源码版请运行根目录的 卸载本地部署器.bat。
+- 正式发布附件只上传 `LianLianBOT-Deployer-v版本号.zip`，不要单独上传裸 EXE。
+- zip 内包含 `LianLianBOT-Deployer/` 顶层目录、`莲莲Bot部署器.exe` 和用户 README。
+- 用户需要先完整解压 zip，再运行解压目录里的 EXE；不要在压缩包预览窗口中直接运行。
+- 打包版只会在用户点击安装、生成配置或一键部署等写入动作时创建 `LianLianBOT/` 工作目录。
+- `LianLianBOT/` 会集中保存环境、依赖、配置、下载包、NapCat、图集和日志。
+- 构建脚本会清理并重建本目录；发布前请重新运行 `npm --prefix local-deployer run release:win`。

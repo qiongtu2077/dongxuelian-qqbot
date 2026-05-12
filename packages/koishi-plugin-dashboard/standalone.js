@@ -20,7 +20,7 @@ process.on('unhandledRejection', (reason) => {
   console.error('[dashboard] UNHANDLED REJECTION:', reason?.stack || reason)
 })
 
-const MAX_BODY_SIZE = 1024 * 512 // 512KB 请求体上限
+const MAX_BODY_SIZE = 16 * 1024 * 1024 // 16MB，请求体包含图集上传的 base64 图片
 
 function collectBody(req, res, callback) {
   let body = ''
@@ -59,8 +59,23 @@ const FALLBACK_CHAINS_FILE = path.join(DATA_DIR, 'ai-fallback-chains.json')
 const DEBUG_LOG_CONFIG_FILE = path.join(DATA_DIR, 'debug-log-config.json')
 const LOCAL_DEPLOY_MANIFEST_FILE = path.join(DATA_DIR, 'dashboard-local-deploy-manifest.json')
 const LOCAL_NAPCAT_DIR_FILE = path.join(DATA_DIR, 'dashboard-napcat-dir.txt')
+const GALLERY_DIR = path.join(DATA_DIR, 'gallery')
+const GALLERY_METADATA_FILE = path.join(GALLERY_DIR, 'metadata.json')
+const GALLERY_MAX_BYTES = 8 * 1024 * 1024
+const GALLERY_MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }
+const GALLERY_FOIL_STYLES = new Set(['A', 'B', 'C', 'D', 'E', 'F', 'G'])
+const NPM_PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'npm_config_proxy', 'npm_config_https_proxy', 'npm_config_all_proxy', 'NPM_CONFIG_PROXY', 'NPM_CONFIG_HTTPS_PROXY', 'NPM_CONFIG_ALL_PROXY']
 const MAX_LOG_LIMIT = 6000
 let logEntryCache = { file: '', size: -1, mtimeMs: -1, entries: [] }
+let npmDiagnosticsCache = { at: 0, data: null }
+
+function isPackagedLocalWorkspace() {
+  return /^(?:1|true|yes|on)$/i.test(String(process.env.LIANLIAN_PACKAGED || '').trim())
+}
+
+function getResourceRoot() {
+  return path.resolve(process.env.LIANLIAN_RESOURCE_ROOT || path.join(PLUGIN_ROOT, '..', '..'))
+}
 
 // ====== 默认 fallback 链（按 AI 用途分类） ======
 const DEFAULT_FALLBACK_CHAINS = {
@@ -274,6 +289,52 @@ function copyRecursiveSync(src, dst) {
   fs.copyFileSync(src, dst)
 }
 
+function copyWorkspaceResource(sourceRoot, targetRoot, relativePath, options = {}) {
+  const source = path.join(sourceRoot, relativePath)
+  const target = path.join(targetRoot, relativePath)
+  if (!fs.existsSync(source)) return false
+  if (options.replace) fs.rmSync(target, { recursive: true, force: true })
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  copyRecursiveSync(source, target)
+  return true
+}
+
+function ensureWritableDir(dir) {
+  fs.mkdirSync(dir, { recursive: true })
+  const probe = path.join(dir, '.write-test-' + Date.now().toString(36))
+  fs.writeFileSync(probe, 'ok', 'utf8')
+  fs.unlinkSync(probe)
+}
+
+function ensurePackagedWorkspace(options = {}) {
+  if (!isPackagedLocalWorkspace()) return { ok: true, skipped: true, workspaceRoot: path.resolve(KOISHI_DIR), resourceRoot: getResourceRoot() }
+  const resourceRoot = getResourceRoot()
+  const workspaceRoot = path.resolve(process.env.LIANLIAN_WORKSPACE_ROOT || KOISHI_DIR)
+  if (workspaceRoot.toLowerCase() === resourceRoot.toLowerCase()) return { ok: true, skipped: true, workspaceRoot, resourceRoot }
+  ensureWritableDir(workspaceRoot)
+  for (const dir of ['packages', 'scripts']) copyWorkspaceResource(resourceRoot, workspaceRoot, dir, { replace: true })
+  for (const file of ['package.json', 'package-lock.json', 'start.js', 'koishi.example.yml']) copyWorkspaceResource(resourceRoot, workspaceRoot, file, { replace: true })
+  const dirs = [path.join(workspaceRoot, 'data'), path.join(workspaceRoot, 'runtime'), path.join(workspaceRoot, 'runtime', 'downloads'), path.join(workspaceRoot, 'runtime', 'logs')]
+  if (options.includeNapcat !== false) dirs.push(path.join(workspaceRoot, 'runtime', 'napcat'))
+  for (const dir of dirs) fs.mkdirSync(dir, { recursive: true })
+  let version = ''
+  try { version = JSON.parse(fs.readFileSync(path.join(resourceRoot, 'package.json'), 'utf8')).version || '' } catch {}
+  fs.writeFileSync(path.join(workspaceRoot, '.lianlian-workspace.json'), JSON.stringify({
+    version,
+    resourceRoot,
+    workspaceRoot,
+    updatedAt: new Date().toISOString(),
+  }, null, 2), 'utf8')
+  return { ok: true, skipped: false, workspaceRoot, resourceRoot, version }
+}
+
+function describeFsError(e, fallback = '') {
+  const code = e && e.code ? String(e.code) : ''
+  if (code === 'ENOTDIR') return '路径冲突：目标路径的某一级已经是文件，不是目录。请删除冲突文件后重试。' + (e.path ? ` 冲突路径：${e.path}` : '')
+  if (code === 'EACCES' || code === 'EPERM') return '权限不足或文件被占用。请关闭占用程序，或把部署器移动到可写目录后重试。' + (e.path ? ` 路径：${e.path}` : '')
+  return fallback || String(e?.message || e || '未知错误')
+}
+
 function getCommandVersion(command) {
   try { return execSync(command, { timeout: 3000, encoding: 'utf8' }).trim() } catch { return '' }
 }
@@ -288,6 +349,72 @@ function getCommandPath(command) {
   } catch { return '' }
 }
 
+function getPortableNodeDir() {
+  return runtimePath('node')
+}
+
+function getPortableToolPath(command) {
+  const dir = getPortableNodeDir()
+  const names = process.platform === 'win32'
+    ? { node: ['node.exe'], npm: ['npm.cmd', 'npm.bat'], npx: ['npx.cmd', 'npx.bat'] }
+    : { node: ['bin/node', 'node'], npm: ['bin/npm', 'npm'], npx: ['bin/npx', 'npx'] }
+  for (const name of names[command] || []) {
+    const fullPath = path.join(dir, ...name.split('/'))
+    if (fs.existsSync(fullPath)) return fullPath
+  }
+  return ''
+}
+
+function getLocalToolEnv(extra = {}) {
+  const env = { ...process.env, ...extra }
+  const nodeDir = getPortableNodeDir()
+  const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') || 'PATH'
+  if (fs.existsSync(nodeDir)) env[pathKey] = [nodeDir, env[pathKey]].filter(Boolean).join(path.delimiter)
+  return env
+}
+
+function getToolVersion(toolPath) {
+  if (!toolPath) return ''
+  try {
+    if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(toolPath)) {
+      return execFileSync('cmd.exe', ['/d', '/c', toolPath, '--version'], { timeout: 5000, encoding: 'utf8', env: getLocalToolEnv(), stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    }
+    return execFileSync(toolPath, ['--version'], { timeout: 5000, encoding: 'utf8', env: getLocalToolEnv(), stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch { return '' }
+}
+
+function getLocalToolCommand(command) {
+  return getPortableToolPath(command) || command
+}
+
+function getLocalTaskOptions(options = {}) {
+  return { ...options, env: getLocalToolEnv(options.env || {}) }
+}
+
+function normalizeProxyValue(value) {
+  const text = String(value || '').trim()
+  if (!text || /^(?:null|undefined|false)$/i.test(text)) return ''
+  return text
+}
+
+function parseProxyEndpoint(value) {
+  const text = normalizeProxyValue(value)
+  if (!text) return null
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : 'http://' + text
+  try {
+    const parsed = new URL(withProtocol)
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, '')
+    const port = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80))
+    if (!hostname || !Number.isInteger(port)) return null
+    return { raw: redactProxyValue(text), hostname, port, protocol: parsed.protocol.replace(/:$/, '') }
+  } catch { return null }
+}
+
+function isLoopbackProxyHost(hostname) {
+  const value = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '')
+  return value === 'localhost' || value === '::1' || /^127(?:\.\d{1,3}){3}$/.test(value)
+}
+
 function isProjectOwnedTool(toolPath) {
   if (!toolPath) return false
   const resolved = path.resolve(toolPath)
@@ -295,14 +422,16 @@ function isProjectOwnedTool(toolPath) {
 }
 
 function getCommandInfo(command, minMajor = 0) {
-  const version = getCommandVersion(command + ' --version')
+  const portablePath = getPortableToolPath(command)
+  const portableVersion = getToolVersion(portablePath)
+  const sourcePath = portableVersion ? portablePath : getCommandPath(command)
+  const version = portableVersion || getCommandVersion(command + ' --version')
   const major = Number.parseInt(String(version).replace(/^v/i, '').split('.')[0], 10)
-  const sourcePath = getCommandPath(command)
   const ownedByProject = isProjectOwnedTool(sourcePath)
   return {
     found: !!version,
     version,
-    source: 'PATH',
+    source: ownedByProject ? 'runtime/node' : 'PATH',
     sourcePath,
     ownedByProject,
     ok: !!version && (!minMajor || major >= minMajor),
@@ -449,7 +578,8 @@ function findNapcatMarkers(root) {
         continue
       }
       if (!entry.isFile()) continue
-      if (/^napcat.*\.(exe|bat|cmd|js|mjs)$/i.test(entry.name) || /NapCat.*\.exe$/i.test(entry.name)) markers.push({ path: full, rel, type: 'entry' })
+      if (/^NapCatInstaller\.exe$/i.test(entry.name)) markers.push({ path: full, rel, type: 'installer' })
+      else if (/^napcat.*\.(exe|bat|cmd|js|mjs)$/i.test(entry.name) || /^NapCatWinBootMain\.exe$/i.test(entry.name) || /NapCat.*\.exe$/i.test(entry.name)) markers.push({ path: full, rel, type: 'entry' })
       else if (/^config\/webui\.json$/i.test(rel)) markers.push({ path: full, rel, type: 'config' })
       else if (/^package\.json$/i.test(entry.name)) {
         try {
@@ -461,6 +591,25 @@ function findNapcatMarkers(root) {
   }
   walk(root, 0)
   return { markers, archives }
+}
+
+function rankNapcatEntry(filePath) {
+  const name = path.basename(filePath || '')
+  if (/^napcat\.bat$/i.test(name)) return 0
+  if (/^napcat\.cmd$/i.test(name)) return 1
+  if (/^NapCatWinBootMain\.exe$/i.test(name)) return 2
+  if (/^napcat.*\.exe$/i.test(name)) return 3
+  if (/\.(bat|cmd)$/i.test(name)) return 4
+  if (/\.(js|mjs)$/i.test(name)) return 5
+  if (/NapCat.*\.exe$/i.test(name)) return 6
+  return 20
+}
+
+function sortNapcatEntries(markers = []) {
+  return markers
+    .filter(item => item?.type === 'entry')
+    .slice()
+    .sort((a, b) => rankNapcatEntry(a.path) - rankNapcatEntry(b.path) || String(a.rel || a.path).localeCompare(String(b.rel || b.path)))
 }
 
 function inspectNapcatCandidate(candidate) {
@@ -477,7 +626,8 @@ function inspectNapcatCandidate(candidate) {
     const entries = fs.readdirSync(candidate)
     if (!entries.length) return { ...result, status: 'partial', reason: '目录为空' }
     const { markers, archives } = findNapcatMarkers(candidate)
-    if (markers.length) return { ...result, found: true, status: 'installed', entry: markers[0].path, reason: '找到 NapCat 启动或配置标记', markers: markers.slice(0, 8) }
+    const entryMarkers = sortNapcatEntries(markers)
+    if (entryMarkers.length || markers.some(item => item.type === 'config')) return { ...result, found: true, status: 'installed', entry: entryMarkers[0]?.path || '', reason: '找到 NapCat 启动或配置标记', markers: markers.slice(0, 8) }
     if (archives.length) return { ...result, status: 'partial', reason: '目录里只有下载包或压缩包，尚未解压安装', archives: archives.slice(0, 8) }
     return { ...result, status: 'partial', reason: '目录存在但未找到 NapCat 启动文件' }
   } catch (e) {
@@ -518,6 +668,7 @@ function psQuote(value) {
 }
 
 function validateNapcatInstallDir(input) {
+  ensurePackagedWorkspace()
   const raw = String(input || '').trim() || runtimePath('napcat')
   const dir = path.resolve(raw)
   if (process.platform === 'win32') {
@@ -557,11 +708,155 @@ function httpsGetJson(url, callback) {
 function pickNapcatWindowsAsset(release) {
   const assets = Array.isArray(release?.assets) ? release.assets : []
   const zipAssets = assets.filter(item => /\.zip$/i.test(item.name || '') && !/(linux|darwin|mac|android|arm64|aarch64)/i.test(item.name || ''))
-  return zipAssets.find(item => /^NapCat\.Shell\.Windows\.Node\.zip$/i.test(item.name || ''))
-    || zipAssets.find(item => /^NapCat\.Shell\.Windows\.OneKey\.zip$/i.test(item.name || ''))
+  return zipAssets.find(item => /^NapCat\.Shell\.Windows\.OneKey\.zip$/i.test(item.name || ''))
+    || zipAssets.find(item => /^NapCat\.Shell\.Windows\.Node\.zip$/i.test(item.name || ''))
     || zipAssets.find(item => /(win|windows)/i.test(item.name || ''))
     || zipAssets[0]
     || null
+}
+
+function safeDecodeURIComponent(value) {
+  try { return decodeURIComponent(value) } catch { return value }
+}
+
+function sanitizeDownloadName(name, fallback = 'download.bin') {
+  const cleaned = safeDecodeURIComponent(String(name || '')).replace(/^['"]|['"]$/g, '').replace(/[<>":/\\|?*\x00-\x1f]/g, '_').trim()
+  return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : fallback
+}
+
+function getContentDispositionFileName(header) {
+  const value = String(header || '')
+  const star = value.match(/filename\*\s*=\s*(?:UTF-8''|utf-8'')?([^;\r\n]+)/i)
+  if (star?.[1]) return sanitizeDownloadName(star[1])
+  const normal = value.match(/filename\s*=\s*("[^"]+"|[^;\r\n]+)/i)
+  return normal?.[1] ? sanitizeDownloadName(normal[1]) : ''
+}
+
+function ensureExtension(name, ext) {
+  const suffix = String(ext || '').trim()
+  if (!suffix) return name
+  const normalized = suffix.startsWith('.') ? suffix : '.' + suffix
+  return name.toLowerCase().endsWith(normalized.toLowerCase()) ? name : name + normalized
+}
+
+function hasZipMagic(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r')
+    const buffer = Buffer.alloc(4)
+    const read = fs.readSync(fd, buffer, 0, 4, 0)
+    fs.closeSync(fd)
+    return read >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b && [0x03, 0x05, 0x07].includes(buffer[2])
+  } catch { return false }
+}
+
+function validateDownloadedFile(filePath, options = {}) {
+  const stat = fs.statSync(filePath)
+  const minBytes = Number(options.minBytes || 0)
+  if (minBytes && stat.size < minBytes) throw new Error(`下载文件过小：${stat.size} 字节，可能是网络错误页或下载不完整`)
+  const expectsZip = /\.zip$/i.test(String(options.expectedExt || '')) || /zip/i.test(String(options.expectedContentType || '')) || /\.zip$/i.test(filePath)
+  if (expectsZip && !hasZipMagic(filePath)) throw new Error('下载文件不是有效 zip 包，可能下载到了 HTML 错误页或被代理改写')
+  return { path: filePath, size: stat.size, name: path.basename(filePath) }
+}
+
+function getDownloadFileName(parsed, response, options = {}) {
+  const contentType = String(response.headers['content-type'] || '')
+  let name = options.preferredName || getContentDispositionFileName(response.headers['content-disposition']) || sanitizeDownloadName(path.basename(parsed.pathname || ''), 'download.bin')
+  if ((!path.extname(name) || /^[0-9a-f-]{16,}$/i.test(name)) && /zip/i.test(contentType)) name = ensureExtension(name, '.zip')
+  if (options.expectedExt) name = ensureExtension(name, options.expectedExt)
+  return sanitizeDownloadName(name, 'download.bin')
+}
+
+function getLocalWorkDirSafety() {
+  const projectDir = path.resolve(KOISHI_DIR)
+  const runtimeDir = runtimePath()
+  const tempDir = path.resolve(os.tmpdir()).toLowerCase()
+  const values = [projectDir, runtimeDir].map(item => item.toLowerCase())
+  const reasons = []
+  if (values.some(item => item === tempDir || item.startsWith(tempDir + path.sep.toLowerCase()))) reasons.push('工作目录位于系统临时目录')
+  if (values.some(item => /[\\/]resources[\\/]app(?:[\\/]|$)/i.test(item))) reasons.push('工作目录位于 Electron 资源临时目录')
+  const fallbackReason = String(process.env.LIANLIAN_WORKSPACE_FALLBACK_REASON || '').trim()
+  if (fallbackReason) reasons.push(fallbackReason)
+  return {
+    ok: reasons.length === 0,
+    isTempRuntime: reasons.length > 0,
+    reasons,
+    projectDir,
+    runtimeDir,
+    workspaceRoot: process.env.LIANLIAN_WORKSPACE_ROOT || projectDir,
+    resourceRoot: process.env.LIANLIAN_RESOURCE_ROOT || '',
+    packaged: /^(?:1|true|yes|on)$/i.test(String(process.env.LIANLIAN_PACKAGED || '').trim()),
+  }
+}
+
+function findFilesRecursive(root, matcher, maxDepth = 6, maxCount = 600) {
+  const matches = []
+  let count = 0
+  function walk(dir, depth) {
+    if (depth > maxDepth || count > maxCount) return
+    let entries = []
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      if (count > maxCount) return
+      count += 1
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(full, depth + 1)
+      else if (entry.isFile() && matcher(entry.name, full)) matches.push(full)
+    }
+  }
+  walk(root, 0)
+  return matches
+}
+
+function extractZipArchive(archivePath, destinationDir) {
+  if (!fs.existsSync(archivePath)) throw new Error('解压源文件不存在：' + archivePath)
+  const stat = fs.statSync(archivePath)
+  if (!stat.isFile()) throw new Error('解压源路径不是文件：' + archivePath)
+  if (stat.size <= 0) throw new Error('解压源文件为空：' + archivePath)
+  if (!hasZipMagic(archivePath)) throw new Error('解压源文件不是有效 zip 包：' + archivePath)
+  fs.rmSync(destinationDir, { recursive: true, force: true })
+  fs.mkdirSync(destinationDir, { recursive: true })
+  const attempts = []
+  try {
+    execFileSync('tar.exe', ['-xf', archivePath, '-C', destinationDir], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
+    return { method: 'tar.exe', attempts, archivePath, destinationDir, size: stat.size }
+  } catch (e) {
+    attempts.push({ method: 'tar.exe', code: e.status || e.code || '', error: String(e.stderr || e.message || '').trim() })
+  }
+  try {
+    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `Expand-Archive -LiteralPath ${psQuote(archivePath)} -DestinationPath ${psQuote(destinationDir)} -Force`], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
+    return { method: 'PowerShell Expand-Archive', attempts, archivePath, destinationDir, size: stat.size }
+  } catch (e) {
+    attempts.push({ method: 'PowerShell Expand-Archive', code: e.status || e.code || '', error: String(e.stderr || e.message || '').trim() })
+    const message = attempts.map(item => `${item.method}: ${item.error || '失败'}`).join('；')
+    const err = new Error('自动解压失败：' + message)
+    err.attempts = attempts
+    err.stage = 'extract'
+    err.archivePath = archivePath
+    err.destinationDir = destinationDir
+    err.fileSize = stat.size
+    throw err
+  }
+}
+
+function runNapcatInstallerIfPresent(stagingDir) {
+  const installers = findFilesRecursive(stagingDir, name => /^NapCatInstaller\.exe$/i.test(name), 6, 800)
+  if (!installers.length) return { ran: false, ok: false, reason: '未找到 NapCatInstaller.exe，可手动运行解压目录内的安装器' }
+  const installer = installers[0]
+  try {
+    execFileSync(installer, [], { cwd: path.dirname(installer), timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false })
+    return { ran: true, ok: true, path: installer, reason: 'NapCatInstaller.exe 已执行' }
+  } catch (e) {
+    return { ran: true, ok: false, path: installer, reason: 'NapCatInstaller.exe 执行失败或被中断：' + String(e.stderr || e.message || '').trim() }
+  }
+}
+
+function buildNapcatManualSteps(archivePath, installDir) {
+  return [
+    `打开下载包：${archivePath}`,
+    `把压缩包完整解压到：${installDir}`,
+    '进入解压出的 NapCat.XXXX.Shell 目录，运行 NapCatInstaller.exe 等待自动配置完成。',
+    '确认目录里出现 napcat.bat 或 NapCatWinBootMain.exe 后，回到部署器点击“检测环境”。',
+  ]
 }
 
 function downloadNapcatWindowsRelease(installDir, callback) {
@@ -572,13 +867,104 @@ function downloadNapcatWindowsRelease(installDir, callback) {
       const names = (release?.assets || []).map(item => item.name).filter(Boolean).join(', ')
       return callback(new Error('未找到可自动安装的 Windows zip 资产' + (names ? '，候选：' + names : '')))
     }
-    downloadToRuntime(asset.browser_download_url, (downloadErr, filePath) => {
+    downloadToRuntime(asset.browser_download_url, { preferredName: asset.name, expectedExt: '.zip', minBytes: 128 * 1024 }, (downloadErr, filePath, download) => {
       if (downloadErr) return callback(downloadErr)
+      const stagingDir = runtimePath('napcat-install-' + Date.now().toString(36))
       try {
-        execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `New-Item -ItemType Directory -Force -Path ${psQuote(installDir)} | Out-Null; Expand-Archive -LiteralPath ${psQuote(filePath)} -DestinationPath ${psQuote(installDir)} -Force`], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
-        callback(null, { asset: asset.name, filePath, installDir })
+        const extraction = extractZipArchive(filePath, stagingDir)
+        const installer = runNapcatInstallerIfPresent(stagingDir)
+        fs.mkdirSync(installDir, { recursive: true })
+        const content = fs.readdirSync(stagingDir)
+        if (!content.length) throw new Error('NapCat zip 解压后目录为空')
+        copyRecursiveSync(stagingDir, installDir)
+        const detected = inspectNapcatCandidate(installDir)
+        const needsManualSetup = !detected.found || (installer.ran && !installer.ok)
+        callback(null, {
+          asset: asset.name,
+          filePath,
+          download,
+          installDir,
+          extraction,
+          installer,
+          napcat: detected,
+          needsManualSetup,
+          manualSteps: needsManualSetup ? buildNapcatManualSteps(filePath, installDir) : [],
+          message: needsManualSetup ? 'NapCat OneKey 包已下载并解压，但仍需要按提示完成安装器配置' : 'NapCat OneKey 包已下载、解压并完成检测',
+        })
       } catch (e) {
-        callback(new Error('下载完成但解压失败：' + String(e.stderr || e.message || '').trim()), { asset: asset.name, filePath, installDir })
+        const readable = describeFsError(e, String(e.message || '').trim())
+        callback(new Error('NapCat 下载完成但自动解压/安装失败：' + readable), { asset: asset.name, filePath, download, installDir, manualSteps: buildNapcatManualSteps(filePath, installDir), attempts: e.attempts || [], stage: e.stage || 'install', archivePath: e.archivePath || filePath, fileSize: e.fileSize })
+      } finally {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
+      }
+    })
+  })
+}
+
+function pickNodeWindowsRelease(releases) {
+  const arch = process.arch === 'arm64' ? 'arm64' : (process.arch === 'x64' ? 'x64' : '')
+  if (!arch) throw new Error('当前架构暂不支持自动安装便携 Node：' + process.arch)
+  const list = Array.isArray(releases) ? releases : []
+  const selected = list.find(item => item?.lts && /^v\d+\.\d+\.\d+$/.test(String(item.version || '')))
+  if (!selected) throw new Error('未找到 Node.js LTS 版本信息')
+  const version = selected.version
+  const fileName = `node-${version}-win-${arch}.zip`
+  return {
+    version,
+    arch,
+    fileName,
+    url: `https://nodejs.org/dist/${version}/${fileName}`,
+  }
+}
+
+function findExtractedNodeRoot(stagingDir) {
+  const direct = path.join(stagingDir, 'node.exe')
+  if (fs.existsSync(direct)) return stagingDir
+  let entries = []
+  try { entries = fs.readdirSync(stagingDir, { withFileTypes: true }) } catch { return '' }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const candidate = path.join(stagingDir, entry.name)
+    if (fs.existsSync(path.join(candidate, 'node.exe'))) return candidate
+  }
+  return ''
+}
+
+function installPortableNodeWindows(callback) {
+  if (process.platform !== 'win32') return callback(new Error('便携 Node/npm 自动安装只支持 Windows 本地部署器'))
+  const currentNode = getCommandInfo('node', 18)
+  const currentNpm = getCommandInfo('npm')
+  if (currentNode.ok && currentNpm.found && currentNode.ownedByProject && currentNpm.ownedByProject) {
+    return callback(null, { skipped: true, message: '项目便携 Node/npm 已安装', node: currentNode, npm: currentNpm })
+  }
+  httpsGetJson('https://nodejs.org/dist/index.json', (apiErr, releases) => {
+    if (apiErr) return callback(apiErr)
+    let asset
+    try { asset = pickNodeWindowsRelease(releases) }
+    catch (e) { return callback(e) }
+    downloadToRuntime(asset.url, { preferredName: asset.fileName, expectedExt: '.zip', minBytes: 1024 * 1024 }, (downloadErr, archivePath, download) => {
+      if (downloadErr) return callback(downloadErr)
+      const stagingDir = runtimePath('node-install-' + Date.now().toString(36))
+      const targetDir = getPortableNodeDir()
+      try {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
+        fs.mkdirSync(stagingDir, { recursive: true })
+        extractZipArchive(archivePath, stagingDir)
+        const nodeRoot = findExtractedNodeRoot(stagingDir)
+        if (!nodeRoot) throw new Error('Node zip 解压后未找到 node.exe')
+        fs.rmSync(targetDir, { recursive: true, force: true })
+        fs.mkdirSync(targetDir, { recursive: true })
+        copyRecursiveSync(nodeRoot, targetDir)
+        const node = getCommandInfo('node', 18)
+        const npm = getCommandInfo('npm')
+        if (!node.ok || !node.ownedByProject) throw new Error('便携 Node 校验失败：' + (node.reason || 'node 不可用'))
+        if (!npm.found || !npm.ownedByProject) throw new Error('便携 npm 校验失败：' + (npm.reason || 'npm 不可用'))
+        callback(null, { skipped: false, message: '便携 Node/npm 已安装到 runtime/node', asset, archivePath, download, installDir: targetDir, node, npm })
+      } catch (e) {
+        fs.rmSync(targetDir, { recursive: true, force: true })
+        callback(new Error('便携 Node/npm 安装失败：' + describeFsError(e, String(e.stderr || e.message || '').trim())), { asset, archivePath, download, installDir: targetDir, attempts: e.attempts || [], stage: e.stage || 'install' })
+      } finally {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
       }
     })
   })
@@ -630,6 +1016,7 @@ function deleteLocalConfigFiles() {
 }
 
 function requireStrictAdmin(req, res) {
+  if (isLocalAuthBypass(req)) return true
   const token = (req.headers['x-admin-token'] || '').trim()
   if (!token || !validateAdminToken(token)) {
     json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403)
@@ -742,6 +1129,154 @@ function listReleaseArtifacts() {
     .filter(target => fs.existsSync(target.fullPath))
 }
 
+function listExistingProjectChildren(parentRel, matcher) {
+  const parent = resolveProjectRel(parentRel)
+  if (!fs.existsSync(parent)) return []
+  let entries = []
+  try { entries = fs.readdirSync(parent, { withFileTypes: true }) } catch { return [] }
+  return entries
+    .filter(entry => matcher(entry.name, entry))
+    .map(entry => projectTarget(path.posix.join(parentRel, entry.name)))
+    .filter(target => fs.existsSync(target.fullPath))
+}
+
+function listPackagedWorkspaceResourceTargets() {
+  if (!isPackagedLocalWorkspace()) return []
+  return ['packages', 'scripts', 'package.json', 'package-lock.json', 'start.js', 'koishi.example.yml', '.lianlian-workspace.json']
+    .map(existingProjectTarget)
+    .filter(Boolean)
+}
+
+function sanitizeGalleryBaseName(name) {
+  const base = path.basename(String(name || 'image')).replace(/\.[^.]+$/, '')
+  return (base.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'image')
+}
+
+function resolveGalleryId(id) {
+  const value = String(id || '').trim()
+  if (!/^[A-Za-z0-9._-]+$/.test(value) || value !== path.basename(value)) throw new Error('图像 ID 无效')
+  const fullPath = path.join(GALLERY_DIR, value)
+  if (!isInsidePath(GALLERY_DIR, fullPath)) throw new Error('图像路径越界')
+  return fullPath
+}
+
+function galleryMimeFromName(name) {
+  const ext = path.extname(String(name || '')).toLowerCase()
+  return ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' })[ext] || 'application/octet-stream'
+}
+
+function normalizeGalleryStyle(value) {
+  const text = String(value ?? '').trim().toUpperCase()
+  if (!text || text === 'NONE' || text === 'NULL') return null
+  if (!GALLERY_FOIL_STYLES.has(text)) throw new Error('闪卡样式无效')
+  return text
+}
+
+function readGalleryMetadata() {
+  try {
+    const data = JSON.parse(fs.readFileSync(GALLERY_METADATA_FILE, 'utf8') || '{}')
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+  } catch { return {} }
+}
+
+function writeGalleryMetadata(metadata) {
+  fs.mkdirSync(GALLERY_DIR, { recursive: true })
+  const tmp = GALLERY_METADATA_FILE + '.tmp'
+  fs.writeFileSync(tmp, JSON.stringify(metadata || {}, null, 2), 'utf8')
+  fs.renameSync(tmp, GALLERY_METADATA_FILE)
+}
+
+function getGalleryFoilStyle(metadata, fileName) {
+  try { return normalizeGalleryStyle(metadata?.[fileName]?.foilStyle) }
+  catch { return null }
+}
+
+function toGalleryItem(fileName, metadata = null) {
+  const galleryMetadata = metadata || readGalleryMetadata()
+  const fullPath = resolveGalleryId(fileName)
+  const stat = fs.statSync(fullPath)
+  return {
+    id: fileName,
+    name: fileName.replace(/^\d+-[a-f0-9]+-/, ''),
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    mime: galleryMimeFromName(fileName),
+    url: '/dashboard/api/gallery/image/' + encodeURIComponent(fileName),
+    foilStyle: getGalleryFoilStyle(galleryMetadata, fileName),
+  }
+}
+
+function listGalleryImages() {
+  fs.mkdirSync(GALLERY_DIR, { recursive: true })
+  const metadata = readGalleryMetadata()
+  let entries = []
+  try { entries = fs.readdirSync(GALLERY_DIR, { withFileTypes: true }) } catch { return [] }
+  return entries
+    .filter(entry => entry.isFile() && /\.(?:png|jpe?g|webp|gif)$/i.test(entry.name))
+    .map(entry => {
+      try { return toGalleryItem(entry.name, metadata) }
+      catch { return null }
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+}
+
+function writeGalleryImage(input = {}) {
+  const mime = String(input.type || '').toLowerCase()
+  const ext = GALLERY_MIME_EXT[mime]
+  if (!ext) throw new Error('只支持 PNG、JPG、WebP 或 GIF 图片')
+  const raw = String(input.data || '').replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '')
+  if (!raw) throw new Error('图片内容为空')
+  const buffer = Buffer.from(raw, 'base64')
+  if (!buffer.length) throw new Error('图片内容为空')
+  if (buffer.length > GALLERY_MAX_BYTES) throw new Error('图片不能超过 8MB')
+  fs.mkdirSync(GALLERY_DIR, { recursive: true })
+  const safeName = sanitizeGalleryBaseName(input.name)
+  const fileName = `${Date.now()}-${crypto.randomBytes(3).toString('hex')}-${safeName}.${ext}`
+  const fullPath = resolveGalleryId(fileName)
+  fs.writeFileSync(fullPath, buffer)
+  const metadata = readGalleryMetadata()
+  metadata[fileName] = { ...(metadata[fileName] || {}), foilStyle: null }
+  writeGalleryMetadata(metadata)
+  return toGalleryItem(fileName, metadata)
+}
+
+function deleteGalleryImage(id) {
+  const fullPath = resolveGalleryId(id)
+  if (!fs.existsSync(fullPath)) throw new Error('图片不存在')
+  fs.unlinkSync(fullPath)
+  return { id }
+}
+
+function deleteGalleryImages(ids) {
+  const list = Array.isArray(ids) ? ids : [ids]
+  const metadata = readGalleryMetadata()
+  let metadataChanged = false
+  const deleted = []
+  const errors = []
+  for (const id of list) {
+    try {
+      deleted.push(deleteGalleryImage(id))
+      if (Object.prototype.hasOwnProperty.call(metadata, id)) {
+        delete metadata[id]
+        metadataChanged = true
+      }
+    }
+    catch (e) { errors.push({ id, message: e.message }) }
+  }
+  if (metadataChanged) writeGalleryMetadata(metadata)
+  return { deleted, errors }
+}
+
+function updateGalleryImageStyle(id, foilStyle) {
+  const fullPath = resolveGalleryId(id)
+  if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) throw new Error('图片不存在')
+  const metadata = readGalleryMetadata()
+  metadata[id] = { ...(metadata[id] || {}), foilStyle: normalizeGalleryStyle(foilStyle) }
+  writeGalleryMetadata(metadata)
+  return toGalleryItem(id, metadata)
+}
+
 function isBlockedDeletePath(filePath) {
   const resolved = path.resolve(filePath)
   const lower = resolved.toLowerCase()
@@ -807,7 +1342,9 @@ function buildLocalUninstallPreview() {
   pushUninstallItem(deleteItems, createUninstallItem('local-deployer-node-modules', '本地部署器依赖', 'Electron 本地部署器依赖，可重新安装', [existingProjectTarget('local-deployer/node_modules')].filter(Boolean)))
   pushUninstallItem(deleteItems, createUninstallItem('local-deployer-dist', '本地部署器构建产物', '打包输出，可重新构建', [existingProjectTarget('local-deployer/dist')].filter(Boolean)))
   pushUninstallItem(deleteItems, createUninstallItem('local-deployer-release-artifacts', '本地部署器发布包', '保留 release/README.txt，只清理生成的发布附件', listReleaseArtifacts()))
+  pushUninstallItem(deleteItems, createUninstallItem('packaged-workspace-resources', '部署器同步的运行资源', '打包版 EXE 自动同步出来的 packages、scripts 和项目清单，可由部署器重新生成', listPackagedWorkspaceResourceTargets()))
   pushUninstallItem(deleteItems, createUninstallItem('runtime-node', '项目便携 Node', '仅删除项目 runtime/node 中由本项目管理的 Node', [existingProjectTarget('runtime/node')].filter(Boolean)))
+  pushUninstallItem(deleteItems, createUninstallItem('runtime-install-staging', '安装临时解压目录', 'NapCat/Node 安装过程中产生的 napcat-install-* 与 node-install-* 暂存目录', listExistingProjectChildren('runtime', name => /^(?:napcat|node)-install-/i.test(name))))
   pushUninstallItem(deleteItems, createUninstallItem('local-koishi-config', 'Koishi 本地配置', '本地部署生成的 Koishi 配置和启动脚本', ['koishi.yml', 'start-local.bat'].map(existingProjectTarget).filter(Boolean)))
   pushUninstallItem(deleteItems, createUninstallItem('local-deploy-runtime-config', '本地部署运行配置', '供应商、模型、baseUrl、部署清单和备份', ['data/ai-provider.txt', 'data/ai-model.txt', 'data/ai-base-url.txt', 'data/dashboard-local-deploy-manifest.json', 'data/dashboard-napcat-dir.txt', 'data/backups/dashboard-local-deploy'].map(existingProjectTarget).filter(Boolean)))
   pushUninstallItem(deleteItems, createUninstallItem('napcat-runtime', 'NapCat 安装目录', '默认 runtime/napcat 安装目录', [existingProjectTarget('runtime/napcat'), existingProjectTarget('runtime/NapCat')].filter(Boolean)))
@@ -850,6 +1387,10 @@ function buildLocalUninstallPreview() {
   if (conversationTarget) excludedData.add('data/conversations')
   pushUninstallItem(userDataItems, createUninstallItem('conversations', '会话与记忆', '聊天上下文、会话缓存和记忆数据，默认保留', [conversationTarget].filter(Boolean), { kind: 'userData', defaultKeep: true }))
 
+  const galleryTarget = existingProjectTarget('data/gallery')
+  if (galleryTarget) excludedData.add('data/gallery')
+  pushUninstallItem(userDataItems, createUninstallItem('gallery-images', '莲莲图集', '用户上传的图集图片，默认保留', [galleryTarget].filter(Boolean), { kind: 'userData', defaultKeep: true }))
+
   const logTarget = existingProjectTarget('runtime/logs')
   pushUninstallItem(userDataItems, createUninstallItem('runtime-logs', '运行日志', 'Koishi、Dashboard 和部署过程日志，默认保留', [logTarget].filter(Boolean), { kind: 'userData', defaultKeep: true }))
 
@@ -874,9 +1415,9 @@ function buildLocalUninstallPreview() {
 
 function stopLocalDeployProcessesForUninstall() {
   if (process.platform !== 'win32') return [{ type: 'info', message: '非 Windows 后端未执行进程停止' }]
-  const roots = uniquePaths([path.resolve(KOISHI_DIR), runtimePath('napcat'), runtimePath('NapCat'), readFileSync(LOCAL_NAPCAT_DIR_FILE)].filter(Boolean))
+  const roots = uniquePaths([path.resolve(KOISHI_DIR), runtimePath(), runtimePath('napcat'), runtimePath('NapCat'), readFileSync(LOCAL_NAPCAT_DIR_FILE)].filter(Boolean))
   const psPaths = roots.map(item => psQuote(path.resolve(item))).join(',')
-  const script = `$self = ${process.pid}; $paths = @(${psPaths}); $procs = Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -and ($_.Name -match 'node|napcat|qq|electron') -and ($_.CommandLine -match 'koishi|napcat|start-local|onebot') }; foreach ($proc in $procs) { foreach ($item in $paths) { if ($item -and $item.Length -gt 3 -and $proc.CommandLine -like ('*' + $item + '*')) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue; break } } }`
+  const script = `$self = ${process.pid}; $paths = @(${psPaths}); $procs = Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and ($_.Name -match 'node|napcat|qq|electron|koishi') }; foreach ($proc in $procs) { $text = (($proc.CommandLine, $proc.ExecutablePath) -join ' '); foreach ($item in $paths) { if ($item -and $item.Length -gt 3 -and $text -like ('*' + $item + '*')) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue; break } } }`
   try {
     execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 10000, stdio: ['ignore', 'ignore', 'pipe'] })
     return []
@@ -892,15 +1433,19 @@ function removeTarget(target) {
   return { path: target.path, size: summary.size, count: summary.count, status: 'ok' }
 }
 
-function pruneEmptyProjectDirs() {
-  for (const rel of ['runtime', 'data/backups', 'data']) {
+function pruneEmptyProjectDirs(removeWorkspaceRoot = false) {
+  for (const rel of ['runtime/downloads', 'runtime/logs', 'runtime', 'data/backups/dashboard-local-deploy', 'data/backups', 'data']) {
     try { fs.rmdirSync(resolveProjectRel(rel)) } catch {}
+  }
+  if (removeWorkspaceRoot && isPackagedLocalWorkspace()) {
+    try { fs.rmdirSync(path.resolve(KOISHI_DIR)) } catch {}
   }
 }
 
 function runLocalUninstall(options = {}) {
   const preview = buildLocalUninstallPreview()
   const deleteUserDataKeys = new Set(Array.isArray(options.deleteUserDataKeys) ? options.deleteUserDataKeys.map(String) : [])
+  const deleteAllUserData = preview.userDataItems.every(item => deleteUserDataKeys.has(item.key))
   const selectedItems = preview.deleteItems.concat(preview.userDataItems.filter(item => deleteUserDataKeys.has(item.key)))
   const deleted = []
   const kept = preview.keepItems.concat(preview.userDataItems.filter(item => !deleteUserDataKeys.has(item.key)))
@@ -912,7 +1457,7 @@ function runLocalUninstall(options = {}) {
       catch (e) { errors.push({ path: target.path, item: item.key, label: item.label, reason: e.message }) }
     }
   }
-  pruneEmptyProjectDirs()
+  pruneEmptyProjectDirs(deleteAllUserData)
   return { ok: errors.length === 0, deleted, kept, warnings, errors, message: errors.length ? '一键卸载完成，但有项目未能删除' : '一键卸载完成' }
 }
 
@@ -1063,6 +1608,7 @@ function runtimePath(...parts) {
 
 function getLocalDeployTarget() {
   const isWindowsBackend = process.platform === 'win32'
+  const workDirSafety = getLocalWorkDirSafety()
   const blockedReason = isWindowsBackend ? '' : `当前 Dashboard 后端是 ${process.platform}/${process.arch}，Windows 本地部署需要在 Windows 部署器软件中运行。远端网页只能检测服务器，不能检测浏览器所在的 Windows 电脑。`
   return {
     kind: 'dashboard-backend',
@@ -1072,6 +1618,7 @@ function getLocalDeployTarget() {
     hostname: os.hostname(),
     projectDir: path.resolve(KOISHI_DIR),
     runtimeDir: runtimePath(),
+    workspace: workDirSafety,
     isWindowsBackend,
     isLocalDeployer: isGlobalLocalMode(),
     canRunWindowsLocalDeploy: isWindowsBackend,
@@ -1089,6 +1636,7 @@ function requireWindowsLocalDeployTarget(req, res) {
 }
 
 function writeRuntimeLayout(options = {}) {
+  ensurePackagedWorkspace(options)
   const includeNapcat = options.includeNapcat !== false
   const includeNodeModules = options.includeNodeModules !== false
   const dirs = [
@@ -1112,18 +1660,20 @@ function testChinesePathWrite(dir) {
   } catch (e) { return { ok: false, message: e.message } }
 }
 
-function downloadToRuntime(url, callback) {
+function downloadToRuntime(url, options, callback) {
+  if (typeof options === 'function') { callback = options; options = {} }
+  options = options || {}
   let parsed
   try { parsed = new URL(url) } catch { callback(new Error('下载地址无效')); return }
   if (!['http:', 'https:'].includes(parsed.protocol)) { callback(new Error('只支持 http/https 下载地址')); return }
-  writeRuntimeLayout({ includeNapcat: false, includeNodeModules: false })
-  const name = decodeURIComponent(path.basename(parsed.pathname || 'napcat-download')).replace(/[<>:"/\\|?*]/g, '_') || 'napcat-download.bin'
-  const filePath = runtimePath('downloads', name)
+  try { writeRuntimeLayout({ includeNapcat: false, includeNodeModules: false }) }
+  catch (e) { callback(new Error('准备本地部署工作目录失败：' + describeFsError(e))); return }
   const client = parsed.protocol === 'https:' ? https : http
   const req = client.get(parsed, (response) => {
     if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
       response.resume()
-      downloadToRuntime(response.headers.location, callback)
+      const nextUrl = new URL(response.headers.location, parsed).toString()
+      downloadToRuntime(nextUrl, options, callback)
       return
     }
     if (response.statusCode !== 200) {
@@ -1131,9 +1681,14 @@ function downloadToRuntime(url, callback) {
       callback(new Error('下载失败：HTTP ' + response.statusCode))
       return
     }
+    const name = getDownloadFileName(parsed, response, options)
+    const filePath = runtimePath('downloads', name)
     const stream = fs.createWriteStream(filePath)
     response.pipe(stream)
-    stream.on('finish', () => stream.close(() => callback(null, filePath)))
+    stream.on('finish', () => stream.close(() => {
+      try { callback(null, filePath, validateDownloadedFile(filePath, { ...options, expectedContentType: response.headers['content-type'] })) }
+      catch (e) { callback(e, filePath) }
+    }))
     stream.on('error', callback)
   })
   req.setTimeout(120000, () => req.destroy(new Error('下载超时')))
@@ -1171,6 +1726,229 @@ function getTaskPublicStatus(key, extra = {}) {
   }
 }
 
+function redactProxyValue(value) {
+  const text = String(value || '').trim()
+  if (!text || text === 'null' || text === 'undefined') return ''
+  return text.replace(/(https?:\/\/)([^/@\s]+)@/i, '$1***@')
+}
+
+function runNpmConfigGet(name) {
+  const npm = getLocalToolCommand('npm')
+  try {
+    const args = ['config', 'get', name]
+    const output = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(npm)
+      ? execFileSync('cmd.exe', ['/d', '/c', npm, ...args], { cwd: KOISHI_DIR, env: getLocalToolEnv(), timeout: 8000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      : execFileSync(npm, args, { cwd: KOISHI_DIR, env: getLocalToolEnv(), timeout: 8000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    return redactProxyValue(output)
+  } catch { return '' }
+}
+
+function psCommandArg(value) {
+  return "'" + String(value).replace(/'/g, "''") + "'"
+}
+
+function formatLocalNpmCommand(args = []) {
+  const npm = getLocalToolCommand('npm')
+  if (process.platform === 'win32') {
+    const prefix = npm === 'npm' ? 'npm' : '& ' + psCommandArg(npm)
+    return [prefix].concat(args.map(psCommandArg)).join(' ')
+  }
+  return [shellQuote(npm)].concat(args.map(shellQuote)).join(' ')
+}
+
+function getNoProxyEnvOverrides() {
+  return Object.fromEntries(NPM_PROXY_ENV_KEYS.map(key => [key, '']))
+}
+
+function runNpmCommand(args, options = {}) {
+  const npm = getLocalToolCommand('npm')
+  const env = getLocalToolEnv(options.env || {})
+  if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(npm)) {
+    return execFileSync('cmd.exe', ['/d', '/c', npm, ...args], { cwd: options.cwd || KOISHI_DIR, env, timeout: options.timeout || 12000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  }
+  return execFileSync(npm, args, { cwd: options.cwd || KOISHI_DIR, env, timeout: options.timeout || 12000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+}
+
+function collectNpmInstallDiagnostics(force = false) {
+  const now = Date.now()
+  if (!force && npmDiagnosticsCache.data && now - npmDiagnosticsCache.at < 10000) return npmDiagnosticsCache.data
+  const nodeInfo = getCommandInfo('node', 18)
+  const npmInfo = getCommandInfo('npm')
+  const workspace = getLocalWorkDirSafety()
+  const env = {
+    HTTP_PROXY: redactProxyValue(process.env.HTTP_PROXY || process.env.http_proxy),
+    HTTPS_PROXY: redactProxyValue(process.env.HTTPS_PROXY || process.env.https_proxy),
+    ALL_PROXY: redactProxyValue(process.env.ALL_PROXY || process.env.all_proxy),
+    NO_PROXY: redactProxyValue(process.env.NO_PROXY || process.env.no_proxy),
+    npm_config_proxy: redactProxyValue(process.env.npm_config_proxy || process.env.NPM_CONFIG_PROXY),
+    npm_config_https_proxy: redactProxyValue(process.env.npm_config_https_proxy || process.env.NPM_CONFIG_HTTPS_PROXY),
+    npm_config_all_proxy: redactProxyValue(process.env.npm_config_all_proxy || process.env.NPM_CONFIG_ALL_PROXY),
+  }
+  const config = {
+    proxy: runNpmConfigGet('proxy'),
+    httpsProxy: runNpmConfigGet('https-proxy'),
+    registry: redactProxyValue(runNpmConfigGet('registry')) || 'https://registry.npmjs.org/',
+  }
+  const data = {
+    env,
+    config,
+    checkedAt: now,
+    workspace,
+    paths: {
+      projectDir: path.resolve(KOISHI_DIR),
+      runtimeDir: runtimePath(),
+      portableNodeDir: getPortableNodeDir(),
+      nodeModulesPath: path.join(KOISHI_DIR, 'node_modules'),
+    },
+    tools: {
+      nodeSourcePath: nodeInfo.sourcePath || '',
+      nodeSource: nodeInfo.source || '',
+      npmSourcePath: npmInfo.sourcePath || '',
+      npmSource: npmInfo.source || '',
+      npmCommand: getLocalToolCommand('npm'),
+    },
+    dependencies: getProjectDependencyStatus(),
+  }
+  data.proxy = diagnoseNpmProxy(data)
+  npmDiagnosticsCache = { at: now, data }
+  return data
+}
+
+function collectNpmProxyCandidates(diagnostics = {}) {
+  const candidates = []
+  for (const [key, value] of Object.entries(diagnostics.env || {})) {
+    if (/^no_proxy$/i.test(key)) continue
+    const endpoint = parseProxyEndpoint(value)
+    if (endpoint) candidates.push({ source: 'env', key, ...endpoint })
+  }
+  for (const [key, value] of Object.entries({ proxy: diagnostics.config?.proxy, httpsProxy: diagnostics.config?.httpsProxy })) {
+    const endpoint = parseProxyEndpoint(value)
+    if (endpoint) candidates.push({ source: 'npm config', key, ...endpoint })
+  }
+  return candidates
+}
+
+function diagnoseNpmProxy(diagnostics = {}) {
+  const candidates = collectNpmProxyCandidates(diagnostics)
+  const loopback = candidates.filter(item => isLoopbackProxyHost(item.hostname))
+  const staleLoopback = []
+  for (const item of loopback) {
+    const portState = checkPortState(item.port)
+    if (portState.status !== 'occupied') staleLoopback.push({ ...item, portState })
+  }
+  return {
+    candidates,
+    loopback,
+    staleLoopback,
+    shouldBypass: staleLoopback.length > 0,
+    reason: staleLoopback.length ? `检测到失效本机代理 ${staleLoopback.map(item => `${item.hostname}:${item.port}`).join('、')}` : (loopback.length ? '检测到本机代理端口正在监听' : ''),
+  }
+}
+
+function repairNpmProxyConfig(env = getNoProxyEnvOverrides()) {
+  const actions = []
+  for (const args of [
+    ['config', 'delete', 'proxy'],
+    ['config', 'delete', 'https-proxy'],
+    ['config', 'set', 'registry', 'https://registry.npmmirror.com'],
+  ]) {
+    try {
+      runNpmCommand(args, { env })
+      actions.push({ command: formatLocalNpmCommand(args), ok: true })
+    } catch (e) {
+      actions.push({ command: formatLocalNpmCommand(args), ok: false, message: String(e.stderr || e.message || '').trim() })
+    }
+  }
+  return actions
+}
+
+function prepareNpmInstallRun(options = {}) {
+  const forceRepair = !!options.forceRepair
+  const diagnostics = collectNpmInstallDiagnostics(true)
+  const proxy = diagnostics.proxy || diagnoseNpmProxy(diagnostics)
+  const shouldClean = forceRepair || proxy.shouldBypass
+  const env = shouldClean ? getNoProxyEnvOverrides() : {}
+  const repair = {
+    forced: forceRepair,
+    automatic: !forceRepair && proxy.shouldBypass,
+    envClearedForRetry: shouldClean,
+    reason: shouldClean ? (proxy.reason || '已清理本次 npm install 的代理环境') : '',
+    actions: [],
+  }
+  if (shouldClean) repair.actions = repairNpmProxyConfig(env)
+  diagnostics.proxy = proxy
+  diagnostics.repair = repair
+  return { env, diagnostics, repair }
+}
+
+function commandListForNpmProxyFix(hasNpmProxy, hasEnvProxy) {
+  const commands = []
+  if (hasEnvProxy && process.platform === 'win32') {
+    for (const key of NPM_PROXY_ENV_KEYS) commands.push(`$env:${key} = ""`)
+  }
+  if (hasNpmProxy) {
+    commands.push(formatLocalNpmCommand(['config', 'delete', 'proxy']))
+    commands.push(formatLocalNpmCommand(['config', 'delete', 'https-proxy']))
+  }
+  commands.push(formatLocalNpmCommand(['config', 'set', 'registry', 'https://registry.npmmirror.com']))
+  return commands
+}
+
+function buildNpmInstallFailureGuide(logLines = [], diagnostics = null) {
+  const text = Array.isArray(logLines) ? logLines.join('\n') : String(logLines || '')
+  const diag = diagnostics || collectNpmInstallDiagnostics()
+  const hasNpmProxy = !!(diag.config?.proxy || diag.config?.httpsProxy)
+  const hasEnvProxy = Object.entries(diag.env || {}).some(([key, value]) => !/^no_proxy$/i.test(key) && !!value)
+  if (!text.trim()) return null
+
+  const refused = /ECONNREFUSED/i.test(text)
+  const inline = text.match(/ECONNREFUSED[^\n]*(127(?:\.\d+){3}|localhost)(?::(\d+))?/i)
+  const addressMatch = text.match(/address:\s*['"]?([^,'"\s}]+)/i)
+  const portMatch = text.match(/port:\s*['"]?(\d+)/i)
+  const proxyHost = inline?.[1] || addressMatch?.[1] || ''
+  const proxyPort = inline?.[2] || portMatch?.[1] || ''
+  if (refused && (proxyHost || proxyPort)) {
+    const endpoint = [proxyHost || '127.0.0.1', proxyPort].filter(Boolean).join(':')
+    return {
+      code: 'NPM_PROXY_REFUSED',
+      title: 'npm 连接本机代理失败',
+      summary: `npm 正在通过本机代理 ${endpoint} 访问 npm registry，但这个端口连不上。通常是代理软件没有启动、端口变了，或 npm 里残留了旧代理配置。`,
+      fixSteps: [
+        `如果你需要代理，请先打开代理软件，并确认它监听的是 ${endpoint}。`,
+        diag.repair?.envClearedForRetry ? '部署器已尝试清理本次 npm install 的代理环境；如果仍失败，请确认是否还有系统代理或安全软件接管了连接。' : '如果你不需要代理，优先点击“一键修复代理并重试”，部署器会用内部 npm 路径执行修复并清理本次 npm install 的代理环境。',
+        '下面的命令已使用部署器实际 npm 路径；普通 PowerShell 里没有全局 npm 时也可以复制执行。',
+        '处理完成后，回到部署器点击“执行 npm install”或“一键修复代理并重试”。',
+      ],
+      commands: commandListForNpmProxyFix(hasNpmProxy, hasEnvProxy),
+      diagnostics: diag,
+    }
+  }
+  if (/EAI_AGAIN|ENOTFOUND/i.test(text)) return { code: 'NPM_DNS_FAILED', title: 'npm 域名解析失败', summary: 'npm 无法解析 registry 域名，通常是 DNS、网络或代理配置问题。', fixSteps: ['确认电脑可以打开 npm registry 或 npm 镜像源网站。', '切换网络或 DNS 后重试。', '如果使用代理，请确认代理软件已启动。'], commands: [formatLocalNpmCommand(['config', 'set', 'registry', 'https://registry.npmmirror.com'])], diagnostics: diag }
+  if (/ETIMEDOUT|ESOCKETTIMEDOUT|network timeout/i.test(text)) return { code: 'NPM_TIMEOUT', title: 'npm 下载超时', summary: 'npm registry 响应太慢或网络被代理/防火墙阻断。', fixSteps: ['先确认网络稳定。', '可以切换到 npm 镜像源后重试。', '如果使用代理，请确认代理软件运行正常。'], commands: [formatLocalNpmCommand(['config', 'set', 'registry', 'https://registry.npmmirror.com'])], diagnostics: diag }
+  if (/SELF_SIGNED_CERT|CERT_HAS_EXPIRED|unable to verify the first certificate/i.test(text)) return { code: 'NPM_CERT_FAILED', title: 'npm 证书校验失败', summary: '网络代理或证书环境让 npm 无法校验证书。', fixSteps: ['优先检查代理软件的 HTTPS 解密/证书设置。', '确认系统时间正确。', '不要随意关闭 strict-ssl，除非你明确知道当前网络环境需要这样做。'], commands: [formatLocalNpmCommand(['config', 'get', 'strict-ssl'])], diagnostics: diag }
+  if (/\bEACCES\b|\bEPERM\b|permission denied/i.test(text)) return { code: 'NPM_PERMISSION_FAILED', title: 'npm 写入文件失败', summary: 'npm 没有权限写入项目目录，或文件正被其他进程占用。', fixSteps: ['关闭正在占用项目目录的终端、编辑器或杀毒拦截。', '确认部署器所在目录可写，不要放在 Program Files 等系统目录。', '重新打开部署器后再试一次。'], commands: [], diagnostics: diag }
+  if (/\bE401\b|\bE403\b|unauthorized|forbidden/i.test(text)) return { code: 'NPM_AUTH_FAILED', title: 'npm registry 权限错误', summary: '当前 registry 拒绝访问，可能是私有源认证过期或 registry 配错。', fixSteps: ['检查 npm registry 是否应为公开源。', '如果不需要私有源，切换到 npm 镜像源后重试。'], commands: [formatLocalNpmCommand(['config', 'get', 'registry']), formatLocalNpmCommand(['config', 'set', 'registry', 'https://registry.npmmirror.com'])], diagnostics: diag }
+  if (/npm error/i.test(text)) return { code: 'NPM_FAILED', title: 'npm install 失败', summary: 'npm install 已退出，部署器暂时无法判断唯一原因。请先查看下方原始日志里最靠前的 npm error。', fixSteps: ['优先处理日志中第一条 npm error。', '确认网络、代理、磁盘权限和项目目录可写。', '处理后点击“执行 npm install”重试。'], commands: [formatLocalNpmCommand(['config', 'get', 'registry'])], diagnostics: diag }
+  return null
+}
+
+function startNpmInstallTask(options = {}) {
+  ensurePackagedWorkspace({ includeNapcat: false })
+  const prepared = options.prepared || prepareNpmInstallRun({ forceRepair: !!options.forceRepair })
+  return spawnLocalTask('npmInstall', getLocalToolCommand('npm'), ['install'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', env: { ...prepared.env, ...(options.env || {}) }, diagnostics: prepared.diagnostics }))
+}
+
+function repairNpmProxyAndStartInstall() {
+  ensurePackagedWorkspace({ includeNapcat: false })
+  const dependencies = getProjectDependencyStatus()
+  if (dependencies.ready) return { ok: true, skipped: true, message: '项目依赖已安装', actions: [], status: getLocalNpmInstallStatus() }
+  const npmInfo = getCommandInfo('npm')
+  if (!npmInfo.found) return { ok: false, message: '当前 Windows 本机未找到 npm，请先安装便携 Node/npm 后重新检测环境', npm: npmInfo }
+  const prepared = prepareNpmInstallRun({ forceRepair: true })
+  const started = startNpmInstallTask({ prepared })
+  return { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : '已清理本次部署器 npm 代理并重新启动 npm install', actions: prepared.repair.actions, status: getLocalNpmInstallStatus() }
+}
+
 function getBlockedLocalTaskStatus(key, extra = {}) {
   const target = getLocalDeployTarget()
   return getTaskPublicStatus(key, {
@@ -1193,6 +1971,7 @@ function spawnLocalTask(key, command, args = [], options = {}) {
   task.finishedAt = 0
   task.exitCode = null
   task.error = ''
+  task.diagnostics = options.diagnostics || null
   task.pid = 0
   task.command = [command].concat(args).join(' ')
   task.cwd = options.cwd || KOISHI_DIR
@@ -1251,7 +2030,7 @@ function getNapcatStartEntry() {
   if (direct) return { detected, entry: direct }
   const roots = uniquePaths([detected.path, detected.expectedPath, readFileSync(LOCAL_NAPCAT_DIR_FILE)].filter(Boolean))
   for (const root of roots) {
-    const marker = findNapcatMarkers(root).markers.find(item => item.type === 'entry' && entryRe.test(item.path))
+    const marker = sortNapcatEntries(findNapcatMarkers(root).markers).find(item => entryRe.test(item.path))
     if (marker) return { detected, entry: marker.path }
   }
   return { detected, entry: '' }
@@ -1319,7 +2098,9 @@ function getLocalNpmInstallStatus() {
   if (!target.canRunWindowsLocalDeploy) {
     return getBlockedLocalTaskStatus('npmInstall', { dependencies: { ready: false, reason: target.blockedReason } })
   }
-  return getTaskPublicStatus('npmInstall', { dependencies: getProjectDependencyStatus() })
+  const status = getTaskPublicStatus('npmInstall', { dependencies: getProjectDependencyStatus() })
+  const guide = buildNpmInstallFailureGuide(status.logLines, localTasks.npmInstall.diagnostics)
+  return { ...status, failureGuide: guide }
 }
 
 function buildLocalReadyCheck() {
@@ -2475,6 +3256,65 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  if (pathname === '/dashboard/api/gallery' && req.method === 'GET') {
+    try { return json(res, { ok: true, images: listGalleryImages(), maxBytes: GALLERY_MAX_BYTES }) }
+    catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/gallery' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const item = writeGalleryImage(JSON.parse(body || '{}'))
+        return json(res, { ok: true, image: item, message: '图片已加入莲莲图集' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/gallery' && req.method === 'DELETE') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const { id, ids } = JSON.parse(body || '{}')
+        const result = deleteGalleryImages(Array.isArray(ids) ? ids : id)
+        const ok = result.errors.length === 0
+        return json(res, { ok, ...result, message: ok ? `已删除 ${result.deleted.length} 张图片` : `已删除 ${result.deleted.length} 张图片，${result.errors.length} 张删除失败` }, ok ? 200 : 400)
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/gallery/style' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const { id, foilStyle } = JSON.parse(body || '{}')
+        const image = updateGalleryImageStyle(id, foilStyle)
+        return json(res, { ok: true, image, message: '闪卡样式已保存' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname.startsWith('/dashboard/api/gallery/image/') && req.method === 'GET') {
+    try {
+      const id = decodeURIComponent(pathname.slice('/dashboard/api/gallery/image/'.length))
+      const filePath = resolveGalleryId(id)
+      if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+        res.writeHead(404)
+        res.end('Not Found')
+        return
+      }
+      res.writeHead(200, { 'Content-Type': galleryMimeFromName(id), 'Cache-Control': 'public, max-age=3600' })
+      res.end(fs.readFileSync(filePath))
+    } catch {
+      res.writeHead(400)
+      res.end('Bad Request')
+    }
+    return
+  }
+
   // 环境检测
   if (pathname === '/dashboard/api/env/check' && req.method === 'GET') {
     const localDeployTarget = getLocalDeployTarget()
@@ -2546,7 +3386,7 @@ const server = http.createServer((req, res) => {
         if (cfg.adminIds) files.push(writeTrackedLocalFile('data/ai-admin-ids.json', JSON.stringify(cfg.adminIds, null, 2) + '\n', { deleteByDefault: false, sensitive: true, kind: 'adminIds' }, timestamp))
         const yml = `port: 5140\nselfUrl: http://localhost:5140\nplugins:\n  adapter-onebot:\n    protocol: ws\n    selfId: '${qq}'\n    endpoint: ws://127.0.0.1:8080/onebot/v11/ws\n  dongxuelian-ai: {}\n  dongxuelian-help: {}\n  group-name-at: {}\n  defense: {}\n  local-video-sender: {}\n  group-leave-notice: {}\n  dongxuelian-poke: {}\n  daily-report: {}\n`
         files.push(writeTrackedLocalFile('koishi.yml', yml, { deleteByDefault: true, kind: 'koishiConfig' }, timestamp))
-        const helper = `@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif not exist node_modules ( npm install )\r\nnpx koishi start\r\n`
+        const helper = `@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif exist "%~dp0runtime\\node\\node.exe" set "PATH=%~dp0runtime\\node;%PATH%"\r\nif not exist node_modules ( call npm install )\r\ncall npm exec -- koishi start\r\n`
         files.push(writeTrackedLocalFile('start-local.bat', helper, { deleteByDefault: true, kind: 'startScript' }, timestamp))
         const aiKey = getAiKeyStatus(provider)
         const manifest = { version: 1, generatedAt: timestamp, qq, onebotEndpoint: 'ws://127.0.0.1:8080/onebot/v11/ws', aiKeyConfigured: aiKey.configured, files }
@@ -2604,9 +3444,9 @@ const server = http.createServer((req, res) => {
       try {
         const { url } = JSON.parse(body)
         if (!url) return json(res, { ok: false, message: '下载地址不能为空' }, 400)
-        downloadToRuntime(url, (err, filePath) => {
+        downloadToRuntime(url, { preferredName: 'napcat-manual.zip', expectedExt: '.zip', minBytes: 128 * 1024 }, (err, filePath, download) => {
           if (err) return json(res, { ok: false, message: err.message }, 400)
-          json(res, { ok: true, message: 'NapCat 包已下载到 ' + filePath, path: filePath })
+          json(res, { ok: true, message: 'NapCat 包已下载到 ' + filePath, path: filePath, download })
         })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })
@@ -2623,7 +3463,21 @@ const server = http.createServer((req, res) => {
         downloadNapcatWindowsRelease(targetDir, (err, detail = {}) => {
           if (err) return json(res, { ok: false, message: err.message, ...detail }, 400)
           writeFileSync(LOCAL_NAPCAT_DIR_FILE, targetDir)
-          json(res, { ok: true, message: 'NapCat（Windows）已下载并解压', ...detail, napcat: detectNapcatInstallation() })
+          json(res, { ok: true, message: detail.message || 'NapCat（Windows）OneKey 包已下载并解压', ...detail, napcat: detectNapcatInstallation() })
+        })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/deploy/node-windows-install' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
+    collectBody(req, res, () => {
+      try {
+        installPortableNodeWindows((err, detail = {}) => {
+          if (err) return json(res, { ok: false, message: err.message, ...detail }, 400)
+          json(res, { ok: true, ...detail, message: detail.message || '便携 Node/npm 已安装' })
         })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })
@@ -2637,9 +3491,19 @@ const server = http.createServer((req, res) => {
       const dependencies = getProjectDependencyStatus()
       if (dependencies.ready) return json(res, { ok: true, skipped: true, message: '项目依赖已安装', status: getLocalNpmInstallStatus() })
       const npmInfo = getCommandInfo('npm')
-      if (!npmInfo.found) return json(res, { ok: false, message: '当前 Windows 本机未找到 npm，请先安装 Node.js 18+/20+ 后重新检测环境', npm: npmInfo }, 400)
-      const started = spawnLocalTask('npmInstall', 'npm', ['install'], { cwd: KOISHI_DIR, shell: process.platform === 'win32' })
+      if (!npmInfo.found) return json(res, { ok: false, message: '当前 Windows 本机未找到 npm，请先安装便携 Node/npm 后重新检测环境', npm: npmInfo }, 400)
+      const prepared = prepareNpmInstallRun()
+      const started = startNpmInstallTask({ prepared })
       return json(res, { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : 'npm install 已启动', status: getLocalNpmInstallStatus() })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/deploy/npm-repair-and-install' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
+    try {
+      const result = repairNpmProxyAndStartInstall()
+      return json(res, result, result.ok ? 200 : 400)
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
 
@@ -2660,8 +3524,9 @@ const server = http.createServer((req, res) => {
       let command = entry
       let args = []
       if (ext === '.bat' || ext === '.cmd') { command = 'cmd.exe'; args = ['/d', '/c', entry] }
-      else if (ext === '.js' || ext === '.mjs') { command = 'node'; args = [entry] }
-      spawnLocalTask('napcat', command, args, { cwd })
+      else if (/^NapCatWinBootMain\.exe$/i.test(path.basename(entry))) { args = ['10001'] }
+      else if (ext === '.js' || ext === '.mjs') { command = getLocalToolCommand('node'); args = [entry] }
+      spawnLocalTask('napcat', command, args, getLocalTaskOptions({ cwd }))
       return json(res, { ok: true, message: 'NapCat 已启动，请等待 WebUI 或控制台二维码出现后扫码登录', status: getLocalNapcatDeployStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
@@ -2679,9 +3544,9 @@ const server = http.createServer((req, res) => {
       const dependencies = getProjectDependencyStatus()
       if (!dependencies.ready) return json(res, { ok: false, message: '项目依赖尚未完整安装，请先执行 npm install 站点', dependencies }, 400)
       if (process.platform === 'win32' && fs.existsSync(path.join(KOISHI_DIR, 'start-local.bat'))) {
-        spawnLocalTask('koishi', 'cmd.exe', ['/d', '/c', path.join(KOISHI_DIR, 'start-local.bat')], { cwd: KOISHI_DIR })
+        spawnLocalTask('koishi', 'cmd.exe', ['/d', '/c', path.join(KOISHI_DIR, 'start-local.bat')], getLocalTaskOptions({ cwd: KOISHI_DIR }))
       } else {
-        spawnLocalTask('koishi', 'npm', ['exec', '--', 'koishi', 'start'], { cwd: KOISHI_DIR, shell: process.platform === 'win32' })
+        spawnLocalTask('koishi', getLocalToolCommand('npm'), ['exec', '--', 'koishi', 'start'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32' }))
       }
       return json(res, { ok: true, message: 'Koishi 已启动，正在等待 5140 端口和 OneBot 连接', status: getLocalKoishiDeployStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }

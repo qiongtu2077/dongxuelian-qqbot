@@ -23,7 +23,7 @@
 
 | 模块 | 对应代码 | 主要能力 |
 |------|----------|----------|
-| Dashboard 控制台 | `packages/koishi-plugin-dashboard/` | 独立 Web 管理面板、Bot 启停、维护模式、QQ 号切换、Windows 本地部署、远程一键部署、密码管理 |
+| Dashboard 控制台 | `packages/koishi-plugin-dashboard/` | 独立 Web 管理面板、Bot 启停、维护模式、QQ 号切换、Windows 本地部署、远程一键部署、密码管理、莲莲图集 |
 | AI 对话 | `packages/koishi-plugin-dongxuelian-ai/` | @ 触发、私聊触发、群聊概率主动回复、模型切换、联网搜索、上下文记忆、人格系统 |
 | 帮助菜单 | `packages/koishi-plugin-dongxuelian-help/` | `help东雪莲`、`helpAI`、`help集合`、`指令速查` 等菜单 |
 | 昵称与集合 | `packages/koishi-plugin-group-name-at/` | 昵称绑定、集合管理、集合运算、`at昵称` / `at集合` 批量艾特 |
@@ -137,10 +137,13 @@ Dashboard 的「部署」Tab 有两个模式。
 
 Windows 本地部署会在当前项目目录内准备运行环境：
 
-- 创建 `runtime/downloads/`、`runtime/logs/`、`runtime/napcat/` 和 `data/`。
+- 未检测到 Node.js/npm 时，可安装便携 Node/npm 到 `runtime/node/`，由本部署器管理并可在一键卸载时删除。部署器下载的是 Node.js 官方 Windows LTS zip，包内自带 `node.exe`、`npm.cmd`、`npx.cmd`，所以安装便携 Node/npm 会同时获得 npm。
+- 源码版按需创建 `runtime/downloads/`、`runtime/logs/`、`runtime/napcat/` 和 `data/`；打包版只有在点击安装、生成配置或一键部署等写入动作时才创建 EXE 同级的 `LianLianBOT/` 工作目录。
 - 检测 Node.js、npm、中文路径写入和 `5140`、`5150`、`8080`、`6099` 端口状态。
 - 生成 `koishi.yml` 和 `start-local.bat`。
+- `npm` 状态卡只表示 npm 命令程序是否可用；`项目依赖` 状态卡表示本项目 `node_modules` 是否已通过 `npm install` 安装完整。若 npm 继承了失效的 `127.0.0.1` 本机代理，部署器会在执行 `npm install` 前自动清理本次安装环境并切换到 npm 镜像源。
 - 写入 AI 供应商、模型、Base URL、API Key 等本地配置。
+- 莲莲图集支持上传图片、16:9/4:3/9:16 展示、A-G 闪卡样式选择和按图片持久化；详情窗口右侧选择样式，鼠标悬停移动即可触发闪卡旋转和回弹。
 - OneBot WebSocket 固定使用 `ws://127.0.0.1:8080/onebot/v11/ws`。
 
 远程 Linux 部署会通过 SSH / SCP 把本地项目推送到远程服务器，默认目标目录是 `/root/koishi-app`。
@@ -186,16 +189,16 @@ npm install
 npm run build:win
 ```
 
-也可以在根目录双击 `构建Windows部署器.bat`，它会先构建 Dashboard 前端，再打包 Windows 部署器。若最终产物只有一个 EXE，Release 附件直接上传这个 EXE；若 electron-builder 输出了多个文件，则用 `local-deployer/release/lianlian-bot-windows-deployer.zip` 作为 Release 附件。
+也可以在根目录双击 `构建Windows部署器.bat`，它会先构建 Dashboard 前端，再打包 Windows 部署器。Release 附件统一上传 `local-deployer/release/LianLianBOT-Deployer-v版本号.zip`，不再裸传 EXE。用户需要先完整解压 zip，再运行解压目录里的 `莲莲Bot部署器.exe`。
 
 卸载源码版本地部署器可以双击 `卸载本地部署器.bat`。默认只清理依赖和构建产物，不删除 `data/`、`runtime/`、`koishi.yml`、`start-local.bat`；输入 `YES` 才会彻底删除这些运行时文件。
 
-EXE 的职责是启动本地 Dashboard，并复用 Dashboard 的「部署」页完成两类任务：
+EXE 的职责是启动本地 Dashboard，并复用 Dashboard 的「部署」页完成两类任务。打包版仅启动或检测环境时不会创建工作目录；首次点击安装 Node/NapCat、生成配置或一键部署时，才会在 EXE 所在目录旁创建 `LianLianBOT/`。所有可写入的环境、配置、依赖、下载包、图集和日志都集中放到这里，避免写进 Electron 临时解包目录。
 
-- Windows 本地部署：所有下载、日志、NapCat 文件都放当前项目目录的 `runtime/` 下。
+- Windows 本地部署：所有下载、日志、便携 Node/npm、NapCat 文件都放 `LianLianBOT/runtime/` 下，项目依赖放 `LianLianBOT/node_modules/`，Dashboard 与 Bot 配置放 `LianLianBOT/data/`。
 - 远程 Linux 部署：填写 SSH 目标和应用目录后推送更新。
 
-访问密码和管理员密码仍由 Dashboard 环境变量或 `data/` 下的密码文件管理，不写入 EXE 代码。EXE 成品建议作为 GitHub Release 附件发布，不提交到主分支。
+源码 Web Dashboard 仍使用访问密码和管理员密码；Electron 本地部署器模式会自动进入，不显示访问密码页、管理员密码弹窗或重置密码框。删除和一键卸载只保留确认弹窗，不需要输入密码。Release 成品以 zip 附件发布；解压后的整个 `LianLianBOT-Deployer/` 文件夹可以整体备份、迁移或删除。
 
 ---
 
