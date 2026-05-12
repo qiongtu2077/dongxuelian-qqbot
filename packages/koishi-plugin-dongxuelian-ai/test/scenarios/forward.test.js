@@ -59,6 +59,19 @@ async function run(t) {
 
   await withScenario({}, async ({ harness, makeSession }) => {
     const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    const mocked = makeForwardMock({
+      objectRoot: { messages: [textNode('ObjectShape', 'hello from object messages')] },
+    })
+    const session = makeSession({ guildId: '10004', channelId: '10004', content: '[CQ:forward,id=objectRoot]' })
+    const summary = await resolveForwardSummary(session, session.content, harness.ctx, mocked)
+    t.check('scenario forward object messages summary includes sender', summary.includes('ObjectShape'), summary)
+    t.check('scenario forward object messages summary includes text', summary.includes('hello from object messages'), summary)
+    t.check('scenario forward object messages writes cache', (conversation.lastForwardSummaryCache.get('10004') || '').includes('hello from object messages'), conversation.lastForwardSummaryCache.get('10004') || '')
+  })
+
+  await withScenario({}, async ({ harness, makeSession }) => {
+    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
     const mocked = makeForwardMock({
       root: [textNode('Outer', '[CQ:forward,id=12345]')],
       12345: [textNode('Inner', 'nested cq forward text')],
@@ -121,8 +134,8 @@ async function run(t) {
 
     const emptySession = makeSession({ guildId: '10003', channelId: '10003', content: '[CQ:forward,id=empty]' })
     const emptySummary = await resolveForwardSummary(emptySession, emptySession.content, harness.ctx, mocked)
-    t.check('scenario forward empty array keeps current summary behavior', typeof emptySummary === 'string' && emptySummary.length > 0, JSON.stringify(emptySummary))
-    t.check('scenario forward empty array writes current cache behavior', conversation.lastForwardSummaryCache.get('10003') === emptySummary, conversation.lastForwardSummaryCache.get('10003') || '')
+    t.check('scenario forward empty array returns empty summary', emptySummary === '', JSON.stringify(emptySummary))
+    t.check('scenario forward empty array does not write cache', !conversation.lastForwardSummaryCache.has('10003'), conversation.lastForwardSummaryCache.get('10003') || '')
   })
 }
 

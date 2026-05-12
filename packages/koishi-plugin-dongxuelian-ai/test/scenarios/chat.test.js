@@ -34,6 +34,7 @@ async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
     const mocked = mockFetch(fetchQueue)
     await withFetch(mocked, async () => {
       const session = makeSession(options.session || {})
+      if (typeof options.setup === 'function') await options.setup(session, { harness, mocked })
       session.content = atBot(session, options.input || '\u4f60\u597d')
       const beforeCalls = mocked.calls.length
       let result = await run(session, { flushTicks: 120 })
@@ -117,9 +118,50 @@ async function run(t) {
     const history = conversation.getConversationHistory(session)
     t.check('scenario conversation stores visible reply only', history.some(item => item.content && item.content.includes('\u4f60\u770b\u770b\u8fd9\u4e2a\u4e5f\u6ca1\u95ee\u9898')), JSON.stringify(history))
     t.check('scenario conversation does not store reasoning text', !history.some(item => item.content && item.content.includes('reasoning-secret')), JSON.stringify(history))
+    const userTurn = history.find(item => item.role === 'user')
+    t.check('scenario conversation stores user turn in isolated envelope', userTurn && /^<user>\n/.test(userTurn.content) && userTurn.content.includes('\n\u53d1\u8a00\uff1a\u4f60\u770b\u770b\u8fd9\u4e2a\n</user>'), JSON.stringify(history))
   }, {
     input: '\u4f60\u770b\u770b\u8fd9\u4e2a',
     waitFor: message => String(message).includes('\u4f60\u770b\u770b\u8fd9\u4e2a\u4e5f\u6ca1\u95ee\u9898'),
+  })
+
+  await runChatCase(t, 'legacy user history is isolated before model request', [
+    { json: { choices: [{ message: { content: 'NO' } }] } },
+    { json: { choices: [{ message: { content: 'legacy-ok' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario legacy history sends reply', result, 'legacy-ok')
+    const chatCall = calls.find(call => {
+      const body = call && call.requestBody || {}
+      const messages = Array.isArray(body.messages) ? body.messages : []
+      return messages.some(item => item.role === 'assistant' && item.content === 'old reply')
+    })
+    const body = chatCall && chatCall.requestBody || {}
+    const messages = Array.isArray(body.messages) ? body.messages : []
+    const legacyTurn = messages.find(item => item.role === 'user' && String(item.content || '').includes('Alice') && String(item.content || '').includes('\u4f60\u597d\uff1a\u6d4b\u8bd5'))
+    t.check('scenario legacy history user turn wrapped for prompt', legacyTurn && legacyTurn.content === '<user>\n\u6635\u79f0\uff1aAlice\n\u53d1\u8a00\uff1a\u4f60\u597d\uff1a\u6d4b\u8bd5\n</user>', JSON.stringify(messages))
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    const stripped = [
+      conversation.getUserMessageContent('\u7528\u6237(Alice)\uff1a\u4f60\u597d\uff1a\u6d4b\u8bd5'),
+      conversation.getUserMessageContent('<user>\n\u6635\u79f0\uff1aBob\n\u53d1\u8a00\uff1a\u591a\u884c\u7b2c\u4e00\u884c\n\u591a\u884c\u7b2c\u4e8c\u884c\n</user>'),
+    ]
+    t.check('scenario recent user messages strip legacy and new envelopes', stripped.includes('\u4f60\u597d\uff1a\u6d4b\u8bd5') && stripped.includes('\u591a\u884c\u7b2c\u4e00\u884c\n\u591a\u884c\u7b2c\u4e8c\u884c'), JSON.stringify(stripped))
+  }, {
+    input: '\u7ee7\u7eed',
+    session: {
+      userId: 'legacy-user',
+      author: { id: 'legacy-user', name: 'Bob', nick: 'Bob' },
+    },
+    setup(session) {
+      const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+      conversation.saveConversationTurn(session, '\u7528\u6237(Alice)\uff1a\u4f60\u597d\uff1a\u6d4b\u8bd5', 'old reply')
+      conversation.writeConversationDisk(conversation.getConversationKey(session), {
+        summary: '',
+        summaryTotal: 0,
+        totalCount: 1,
+        messages: conversation.getConversationHistory(session),
+      })
+    },
+    waitFor: message => String(message).includes('legacy-ok'),
   })
 }
 

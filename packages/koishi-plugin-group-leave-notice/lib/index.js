@@ -3,7 +3,7 @@ exports.name = 'group-leave-notice'
 const PLUGIN_VERSION = '0.1.0'
 
 function getGuildId(session) {
-  return session.guildId || session.event?.guild?.id || session.event?.channel?.id
+  return session.channelId || session.guildId || session.event?.guild?.id || session.event?.channel?.id
 }
 
 function getUserId(session) {
@@ -13,7 +13,7 @@ function getUserId(session) {
 async function sendLeaveNotice(session) {
   const guildId = getGuildId(session)
   const userId = getUserId(session)
-  if (!guildId || !userId) return
+  if (!guildId || !userId || typeof session.bot?.sendMessage !== 'function') return
 
   await session.bot.sendMessage(guildId, userId + ' 退群了')
 }

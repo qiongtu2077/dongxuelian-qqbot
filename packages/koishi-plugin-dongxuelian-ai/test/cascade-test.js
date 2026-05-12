@@ -96,7 +96,7 @@ const COVERAGE_MAP = [
   {
     behavior: 'forward summary resolution',
     file: path.join(AI_ROOT, 'test', 'scenarios', 'forward.test.js'),
-    needles: ['scenario: forward summary resolution', 'scenario forward nested CQ calls inner id', 'scenario forward empty array keeps current summary behavior'],
+    needles: ['scenario: forward summary resolution', 'scenario forward nested CQ calls inner id', 'scenario forward empty array returns empty summary'],
   },
   {
     behavior: 'vision session field ownership',
@@ -419,7 +419,7 @@ async function main() {
   checkEqual('root package name', rootPkg.name, 'dongxuelian-qqbot')
   checkEqual('npm test:quick keeps cascade entry', rootPkg.scripts && rootPkg.scripts['test:quick'], 'node packages/koishi-plugin-dongxuelian-ai/test/cascade-test.js')
   checkEqual('npm test:scenario runs scenario entry', rootPkg.scripts && rootPkg.scripts['test:scenario'], 'node packages/koishi-plugin-dongxuelian-ai/test/scenario-test.js')
-  checkEqual('npm test:plugins runs auxiliary plugin tests', rootPkg.scripts && rootPkg.scripts['test:plugins'], 'node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js && node packages/koishi-plugin-daily-report/test/plugin-test.js')
+  checkEqual('npm test:plugins runs auxiliary plugin tests', rootPkg.scripts && rootPkg.scripts['test:plugins'], 'node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js && node packages/koishi-plugin-daily-report/test/plugin-test.js && node packages/koishi-plugin-dongxuelian-poke/test/plugin-test.js && node packages/koishi-plugin-group-leave-notice/test/plugin-test.js')
   check('npm test runs quick and scenario entries', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:quick') && rootPkg.scripts.test.includes('npm run test:scenario'))
   check('npm test includes plugin tests', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:plugins'))
   check('npm check includes AI index syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js'))
@@ -547,7 +547,8 @@ async function main() {
       'saveUserProfile', 'saveSensitiveCache', 'analyzeChannelSensitive',
       'clearConversationHistory', 'clearUserConversationHistory',
       'getReplyFingerprintHistory', 'saveReplyFingerprint', 'getRecentAssistantReplies',
-      'getRecentUserMessages', 'findChannelMessageById', 'flushTodayCacheToDisk', 'collectReplyChain',
+      'getRecentUserMessages', 'parseUserMessageEnvelope', 'getUserMessageContent',
+      'normalizeUserMessageForPrompt', 'findChannelMessageById', 'flushTodayCacheToDisk', 'collectReplyChain',
       'getQuotedMessageNote', 'getSharedContextNote',
       'writeMemory', 'deleteMemory', 'clearUserMemory', 'clearGroupMemory', 'getMemorySummary',
       'readMemoryTimer', 'checkMemoryTimerExpired',
@@ -980,9 +981,18 @@ async function main() {
   conv.channelSharedCache.set('guildA', [
     { userId: 'userA', role: 'user', speakerName: 'Alice', content: 'first', messageId: 'm1', replyToId: '', mentionUserIds: [], ts: 1 },
     { userId: 'userB', role: 'user', speakerName: 'Bob', content: 'second', messageId: 'm2', replyToId: 'm1', mentionUserIds: ['userA'], ts: 2 },
+    { userId: 'userC', role: 'user', speakerName: 'Carol', content: 'third', messageId: 'm3', replyToId: 'm2', mentionUserIds: [], ts: 3 },
   ])
   check('findChannelMessageById returns message', conv.findChannelMessageById('guildA', 'm1').content === 'first')
   checkEqual('collectReplyChain follows message id', conv.collectReplyChain('guildA', 'm2')[0].content, 'second')
+  const replyChain = conv.collectReplyChain('guildA', 'm3').map(item => item.content)
+  checkEqual('collectReplyChain follows parent reply ids', replyChain.join(' > '), 'third > second > first')
+  conv.channelSharedCache.set('guildLoop', [
+    { userId: 'userA', role: 'user', speakerName: 'Alice', content: 'loop-a', messageId: 'loop-a', replyToId: 'loop-b', mentionUserIds: [], ts: 1 },
+    { userId: 'userB', role: 'user', speakerName: 'Bob', content: 'loop-b', messageId: 'loop-b', replyToId: 'loop-a', mentionUserIds: [], ts: 2 },
+  ])
+  checkEqual('collectReplyChain stops on reply cycle', conv.collectReplyChain('guildLoop', 'loop-a').map(item => item.content).join(' > '), 'loop-a > loop-b')
+  conv.channelSharedCache.delete('guildLoop')
   const sharedNote = conv.getSharedContextNote(convSession, 'userA', { mentionUserIds: ['userB'] })
   check('shared context note generated', typeof sharedNote === 'string' && sharedNote.length > 0)
   conv.channelSharedCache.delete('guildA')

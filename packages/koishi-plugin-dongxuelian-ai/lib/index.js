@@ -1040,6 +1040,9 @@ exports.apply = (ctx) => {
     }
     const willFactor = calculateWillFactor(channelKey, currentPersonaName, channelSharedCache, personaWillContent)
     const finalTriggerRate = Math.min(getRandomTriggerBaseRate(channelKey) * willFactor, 1.0)
+    const userText = normalizeText(plain)
+    const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId })
+    const sharedRecordText = memoryText || (analyzed.hasMessageRecordCue ? normalizeText(analyzed.plain || '') : '')
 
     // "闭嘴" 静默十分钟主动回复
     if (inGuild && !directAt && !nameMentioned && /^(?:闭嘴|别吵|别说了|不要说话)/.test(plain)) {
@@ -1074,17 +1077,22 @@ exports.apply = (ctx) => {
       if (recentMsgs?.length >= 2 && (Date.now() - (recentMsgs[recentMsgs.length - 1]?.ts || 0)) < 10000) {
         isRandomCandidate = false
         clearTimeout(channelPendingRandom.get(channelKey)?.timer)
+        const pendingSharedContextNote = getSharedContextNote(session, currentUserId, {
+          replyToId: analyzed.replyToId,
+          mentionUserIds,
+          randomTriggered: true,
+        })
         const timer = setTimeout(() => {
           const p = channelPendingRandom.get(channelKey)
           channelPendingRandom.delete(channelKey)
           if (p && shouldTriggerRandom(getRandomTriggerRate(channelKey))) {
             channelMissCount.set(channelKey, 0)
-            enqueueForChannel(channelKey, () => chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote, quotedMessageNote, forwardSummaryText }), 4)
+            enqueueForChannel(channelKey, () => chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText }).then(reply => safeSendReply(ctx, session, reply, true)), 4)
           } else {
             channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
           }
         }, 15000)
-        channelPendingRandom.set(channelKey, { timer, combinedText: plain })
+        channelPendingRandom.set(channelKey, { timer, combinedText: plain, sharedContextNote: pendingSharedContextNote, quotedMessageNote, forwardSummaryText })
       }
     }
     const randomTriggered = isRandomCandidate && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))
@@ -1102,14 +1110,11 @@ exports.apply = (ctx) => {
       }
     }
 
-    const userText = normalizeText(plain)
     const sharedContextNote = getSharedContextNote(session, currentUserId, {
       replyToId: analyzed.replyToId,
       mentionUserIds,
       randomTriggered,
     })
-    const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId })
-    const sharedRecordText = memoryText || (analyzed.hasMessageRecordCue ? normalizeText(analyzed.plain || '') : '')
 
     if (inGuild && sharedRecordText) {
       saveSharedChannelTurn(session, userName, sharedRecordText, 'user', {

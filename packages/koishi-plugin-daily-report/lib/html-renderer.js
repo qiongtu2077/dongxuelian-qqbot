@@ -216,12 +216,13 @@ async function renderHtmlToImage(htmlContent) {
   }
 
   let browser = null
+  let timeoutId = null
   try {
     browser = await puppeteer.launch({
       executablePath: browserPath, headless: 'new',
       args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'],
     })
-    const timeoutId = setTimeout(async () => {
+    timeoutId = setTimeout(async () => {
       if (browser) { try { await browser.close() } catch {} browser = null }
     }, RENDER_TIMEOUT)
 
@@ -232,12 +233,12 @@ async function renderHtmlToImage(htmlContent) {
     const bodyH = await page.evaluate(() => document.body.scrollHeight)
     await page.setViewport({ width: 880, height: bodyH + 40 })
     const screenshot = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 880, height: bodyH + 40 } })
-    clearTimeout(timeoutId)
     return screenshot
   } catch (err) {
     if (browser) { try { await browser.close() } catch {} }
     throw err
   } finally {
+    if (timeoutId) clearTimeout(timeoutId)
     if (browser) { try { await browser.close() } catch {} }
     activeRenderers--
   }
