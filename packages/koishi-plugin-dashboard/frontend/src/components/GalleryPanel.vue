@@ -50,7 +50,7 @@
       <section class="gallery-preview-shell" aria-label="图片预览" @contextmenu.prevent="closePreview">
         <button class="gallery-preview-close" type="button" aria-label="关闭预览" title="关闭预览" @click="closePreview">×</button>
         <div class="gallery-preview-stage">
-          <article ref="previewCardRef" :class="['gallery-preview-card', 'gallery-card', foilCardClass(previewImage)]" @pointerdown="previewPointerDown" @pointermove="previewPointerMove" @pointerup="previewPointerUp" @pointercancel="previewPointerUp" @pointerleave="previewPointerLeave">
+          <article ref="previewCardRef" :class="['gallery-preview-card', 'gallery-card', foilCardClass(previewImage)]" @pointermove="previewPointerMove" @pointercancel="previewPointerLeave" @pointerleave="previewPointerLeave">
             <div class="gallery-card__rotator">
               <div class="gallery-card__front">
                 <img :src="previewImage.url" :alt="previewImage.name" />
@@ -163,22 +163,6 @@ function applyPointerToCard(event, card, divisor = 4.2) {
   setSpringTarget(state.background, { x: mapRange(pointer.x, 0, 100, 37, 63), y: mapRange(pointer.y, 0, 100, 33, 67) })
   startAnimation(rotator, state)
 }
-function applyDragToCard(event, card, drag) {
-  const rotator = card.querySelector('.gallery-card__rotator')
-  if (!rotator) return
-  const state = getCardState(rotator)
-  clearTimeout(state.resetTimer)
-  state.resetTimer = null
-  state.settings = interactSettings
-  const rect = card.getBoundingClientRect()
-  const pointer = { x: round(clamp(((event.clientX - rect.left) / rect.width) * 100)), y: round(clamp(((event.clientY - rect.top) / rect.height) * 100)) }
-  const dragX = clamp(((event.clientX - drag.startX) / Math.max(rect.width, 1)) * 64, -26, 26)
-  const dragY = clamp(-((event.clientY - drag.startY) / Math.max(rect.height, 1)) * 64, -26, 26)
-  setSpringTarget(state.rotation, { x: round(dragX), y: round(dragY) })
-  setSpringTarget(state.pointer, { x: pointer.x, y: pointer.y, effectIntensity: 1 })
-  setSpringTarget(state.background, { x: mapRange(pointer.x, 0, 100, 37, 63), y: mapRange(pointer.y, 0, 100, 33, 67) })
-  startAnimation(rotator, state)
-}
 function resetCardTarget(card, delay = 360) {
   const rotator = card.querySelector('.gallery-card__rotator')
   if (!rotator) return
@@ -217,7 +201,6 @@ export default {
     const selectedIds = ref(new Set())
     const previewIndex = ref(-1)
     const previewCardRef = ref(null)
-    const previewDrag = ref(null)
     const updatingStyle = ref(false)
     const aspectOptions = [
       { id: 'auto', label: '自适应' },
@@ -305,7 +288,6 @@ export default {
     function closePreview() {
       if (previewCardRef.value) resetCardTarget(previewCardRef.value, 0)
       previewIndex.value = -1
-      previewDrag.value = null
     }
     function foilCardClass(image) { return image?.foilStyle ? `gallery-card--foil-${String(image.foilStyle).toLowerCase()}` : '' }
     function replaceImage(updated) {
@@ -332,26 +314,14 @@ export default {
     }
     function moveCard(event) {
       if (bulkDeleteMode.value) return
-      applyPointerToCard(event, event.currentTarget, 4.2)
+      applyPointerToCard(event, event.currentTarget, 3.5)
     }
     function resetCard(event) { resetCardTarget(event.currentTarget) }
-    function previewPointerDown(event) {
-      if (event.button !== 0) return
-      previewDrag.value = { startX: event.clientX, startY: event.clientY, pointerId: event.pointerId }
-      event.currentTarget.setPointerCapture?.(event.pointerId)
-    }
     function previewPointerMove(event) {
-      if (!previewDrag.value) return
-      applyDragToCard(event, event.currentTarget, previewDrag.value)
-    }
-    function previewPointerUp(event) {
-      if (!previewDrag.value) return
-      previewDrag.value = null
-      try { event.currentTarget.releasePointerCapture?.(event.pointerId) } catch {}
-      resetCardTarget(event.currentTarget, 220)
+      applyPointerToCard(event, event.currentTarget, 3.1)
     }
     function previewPointerLeave(event) {
-      if (!previewDrag.value) resetCardTarget(event.currentTarget, 220)
+      resetCardTarget(event.currentTarget, 500)
     }
     function onKeydown(event) {
       if (event.key === 'Escape' && previewImage.value) closePreview()
@@ -360,7 +330,7 @@ export default {
     onMounted(() => { loadImages(); window.addEventListener('keydown', onKeydown) })
     onActivated(loadImages)
     onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
-    return { images, loading, uploading, deletingId, message, fileInput, aspectMode, aspectOptions, galleryStyle, bulkDeleteMode, selectedCount, previewImage, previewCardRef, foilOptions, currentFoilStyle, updatingStyle, foilCardClass, setPreviewFoilStyle, openUpload, onFileChange, toggleBulkDelete, isSelected, clearSelection, deleteSelectedImages, onCardClick, closePreview, moveCard, resetCard, previewPointerDown, previewPointerMove, previewPointerUp, previewPointerLeave }
+    return { images, loading, uploading, deletingId, message, fileInput, aspectMode, aspectOptions, galleryStyle, bulkDeleteMode, selectedCount, previewImage, previewCardRef, foilOptions, currentFoilStyle, updatingStyle, foilCardClass, setPreviewFoilStyle, openUpload, onFileChange, toggleBulkDelete, isSelected, clearSelection, deleteSelectedImages, onCardClick, closePreview, moveCard, resetCard, previewPointerMove, previewPointerLeave }
   },
 }
 </script>

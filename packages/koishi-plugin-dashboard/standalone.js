@@ -69,6 +69,14 @@ const MAX_LOG_LIMIT = 6000
 let logEntryCache = { file: '', size: -1, mtimeMs: -1, entries: [] }
 let npmDiagnosticsCache = { at: 0, data: null }
 
+function isPackagedLocalWorkspace() {
+  return /^(?:1|true|yes|on)$/i.test(String(process.env.LIANLIAN_PACKAGED || '').trim())
+}
+
+function getResourceRoot() {
+  return path.resolve(process.env.LIANLIAN_RESOURCE_ROOT || path.join(PLUGIN_ROOT, '..', '..'))
+}
+
 // ====== 默认 fallback 链（按 AI 用途分类） ======
 const DEFAULT_FALLBACK_CHAINS = {
   chat: [
@@ -279,6 +287,45 @@ function copyRecursiveSync(src, dst) {
   }
   fs.mkdirSync(path.dirname(dst), { recursive: true })
   fs.copyFileSync(src, dst)
+}
+
+function copyWorkspaceResource(sourceRoot, targetRoot, relativePath, options = {}) {
+  const source = path.join(sourceRoot, relativePath)
+  const target = path.join(targetRoot, relativePath)
+  if (!fs.existsSync(source)) return false
+  if (options.replace) fs.rmSync(target, { recursive: true, force: true })
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  copyRecursiveSync(source, target)
+  return true
+}
+
+function ensureWritableDir(dir) {
+  fs.mkdirSync(dir, { recursive: true })
+  const probe = path.join(dir, '.write-test-' + Date.now().toString(36))
+  fs.writeFileSync(probe, 'ok', 'utf8')
+  fs.unlinkSync(probe)
+}
+
+function ensurePackagedWorkspace(options = {}) {
+  if (!isPackagedLocalWorkspace()) return { ok: true, skipped: true, workspaceRoot: path.resolve(KOISHI_DIR), resourceRoot: getResourceRoot() }
+  const resourceRoot = getResourceRoot()
+  const workspaceRoot = path.resolve(process.env.LIANLIAN_WORKSPACE_ROOT || KOISHI_DIR)
+  if (workspaceRoot.toLowerCase() === resourceRoot.toLowerCase()) return { ok: true, skipped: true, workspaceRoot, resourceRoot }
+  ensureWritableDir(workspaceRoot)
+  for (const dir of ['packages', 'scripts']) copyWorkspaceResource(resourceRoot, workspaceRoot, dir, { replace: true })
+  for (const file of ['package.json', 'package-lock.json', 'start.js', 'koishi.example.yml']) copyWorkspaceResource(resourceRoot, workspaceRoot, file, { replace: true })
+  const dirs = [path.join(workspaceRoot, 'data'), path.join(workspaceRoot, 'runtime'), path.join(workspaceRoot, 'runtime', 'downloads'), path.join(workspaceRoot, 'runtime', 'logs')]
+  if (options.includeNapcat !== false) dirs.push(path.join(workspaceRoot, 'runtime', 'napcat'))
+  for (const dir of dirs) fs.mkdirSync(dir, { recursive: true })
+  let version = ''
+  try { version = JSON.parse(fs.readFileSync(path.join(resourceRoot, 'package.json'), 'utf8')).version || '' } catch {}
+  fs.writeFileSync(path.join(workspaceRoot, '.lianlian-workspace.json'), JSON.stringify({
+    version,
+    resourceRoot,
+    workspaceRoot,
+    updatedAt: new Date().toISOString(),
+  }, null, 2), 'utf8')
+  return { ok: true, skipped: false, workspaceRoot, resourceRoot, version }
 }
 
 function describeFsError(e, fallback = '') {
@@ -621,6 +668,7 @@ function psQuote(value) {
 }
 
 function validateNapcatInstallDir(input) {
+  ensurePackagedWorkspace()
   const raw = String(input || '').trim() || runtimePath('napcat')
   const dir = path.resolve(raw)
   if (process.platform === 'win32') {
@@ -968,6 +1016,7 @@ function deleteLocalConfigFiles() {
 }
 
 function requireStrictAdmin(req, res) {
+  if (isLocalAuthBypass(req)) return true
   const token = (req.headers['x-admin-token'] || '').trim()
   if (!token || !validateAdminToken(token)) {
     json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403)
@@ -1078,6 +1127,24 @@ function listReleaseArtifacts() {
     .filter(entry => entry.name !== 'README.txt')
     .map(entry => projectTarget(path.posix.join('local-deployer', 'release', entry.name)))
     .filter(target => fs.existsSync(target.fullPath))
+}
+
+function listExistingProjectChildren(parentRel, matcher) {
+  const parent = resolveProjectRel(parentRel)
+  if (!fs.existsSync(parent)) return []
+  let entries = []
+  try { entries = fs.readdirSync(parent, { withFileTypes: true }) } catch { return [] }
+  return entries
+    .filter(entry => matcher(entry.name, entry))
+    .map(entry => projectTarget(path.posix.join(parentRel, entry.name)))
+    .filter(target => fs.existsSync(target.fullPath))
+}
+
+function listPackagedWorkspaceResourceTargets() {
+  if (!isPackagedLocalWorkspace()) return []
+  return ['packages', 'scripts', 'package.json', 'package-lock.json', 'start.js', 'koishi.example.yml', '.lianlian-workspace.json']
+    .map(existingProjectTarget)
+    .filter(Boolean)
 }
 
 function sanitizeGalleryBaseName(name) {
@@ -1275,7 +1342,9 @@ function buildLocalUninstallPreview() {
   pushUninstallItem(deleteItems, createUninstallItem('local-deployer-node-modules', '本地部署器依赖', 'Electron 本地部署器依赖，可重新安装', [existingProjectTarget('local-deployer/node_modules')].filter(Boolean)))
   pushUninstallItem(deleteItems, createUninstallItem('local-deployer-dist', '本地部署器构建产物', '打包输出，可重新构建', [existingProjectTarget('local-deployer/dist')].filter(Boolean)))
   pushUninstallItem(deleteItems, createUninstallItem('local-deployer-release-artifacts', '本地部署器发布包', '保留 release/README.txt，只清理生成的发布附件', listReleaseArtifacts()))
+  pushUninstallItem(deleteItems, createUninstallItem('packaged-workspace-resources', '部署器同步的运行资源', '打包版 EXE 自动同步出来的 packages、scripts 和项目清单，可由部署器重新生成', listPackagedWorkspaceResourceTargets()))
   pushUninstallItem(deleteItems, createUninstallItem('runtime-node', '项目便携 Node', '仅删除项目 runtime/node 中由本项目管理的 Node', [existingProjectTarget('runtime/node')].filter(Boolean)))
+  pushUninstallItem(deleteItems, createUninstallItem('runtime-install-staging', '安装临时解压目录', 'NapCat/Node 安装过程中产生的 napcat-install-* 与 node-install-* 暂存目录', listExistingProjectChildren('runtime', name => /^(?:napcat|node)-install-/i.test(name))))
   pushUninstallItem(deleteItems, createUninstallItem('local-koishi-config', 'Koishi 本地配置', '本地部署生成的 Koishi 配置和启动脚本', ['koishi.yml', 'start-local.bat'].map(existingProjectTarget).filter(Boolean)))
   pushUninstallItem(deleteItems, createUninstallItem('local-deploy-runtime-config', '本地部署运行配置', '供应商、模型、baseUrl、部署清单和备份', ['data/ai-provider.txt', 'data/ai-model.txt', 'data/ai-base-url.txt', 'data/dashboard-local-deploy-manifest.json', 'data/dashboard-napcat-dir.txt', 'data/backups/dashboard-local-deploy'].map(existingProjectTarget).filter(Boolean)))
   pushUninstallItem(deleteItems, createUninstallItem('napcat-runtime', 'NapCat 安装目录', '默认 runtime/napcat 安装目录', [existingProjectTarget('runtime/napcat'), existingProjectTarget('runtime/NapCat')].filter(Boolean)))
@@ -1346,9 +1415,9 @@ function buildLocalUninstallPreview() {
 
 function stopLocalDeployProcessesForUninstall() {
   if (process.platform !== 'win32') return [{ type: 'info', message: '非 Windows 后端未执行进程停止' }]
-  const roots = uniquePaths([path.resolve(KOISHI_DIR), runtimePath('napcat'), runtimePath('NapCat'), readFileSync(LOCAL_NAPCAT_DIR_FILE)].filter(Boolean))
+  const roots = uniquePaths([path.resolve(KOISHI_DIR), runtimePath(), runtimePath('napcat'), runtimePath('NapCat'), readFileSync(LOCAL_NAPCAT_DIR_FILE)].filter(Boolean))
   const psPaths = roots.map(item => psQuote(path.resolve(item))).join(',')
-  const script = `$self = ${process.pid}; $paths = @(${psPaths}); $procs = Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -and ($_.Name -match 'node|napcat|qq|electron') -and ($_.CommandLine -match 'koishi|napcat|start-local|onebot') }; foreach ($proc in $procs) { foreach ($item in $paths) { if ($item -and $item.Length -gt 3 -and $proc.CommandLine -like ('*' + $item + '*')) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue; break } } }`
+  const script = `$self = ${process.pid}; $paths = @(${psPaths}); $procs = Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and ($_.Name -match 'node|napcat|qq|electron|koishi') }; foreach ($proc in $procs) { $text = (($proc.CommandLine, $proc.ExecutablePath) -join ' '); foreach ($item in $paths) { if ($item -and $item.Length -gt 3 -and $text -like ('*' + $item + '*')) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue; break } } }`
   try {
     execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 10000, stdio: ['ignore', 'ignore', 'pipe'] })
     return []
@@ -1364,15 +1433,19 @@ function removeTarget(target) {
   return { path: target.path, size: summary.size, count: summary.count, status: 'ok' }
 }
 
-function pruneEmptyProjectDirs() {
-  for (const rel of ['runtime', 'data/backups', 'data']) {
+function pruneEmptyProjectDirs(removeWorkspaceRoot = false) {
+  for (const rel of ['runtime/downloads', 'runtime/logs', 'runtime', 'data/backups/dashboard-local-deploy', 'data/backups', 'data']) {
     try { fs.rmdirSync(resolveProjectRel(rel)) } catch {}
+  }
+  if (removeWorkspaceRoot && isPackagedLocalWorkspace()) {
+    try { fs.rmdirSync(path.resolve(KOISHI_DIR)) } catch {}
   }
 }
 
 function runLocalUninstall(options = {}) {
   const preview = buildLocalUninstallPreview()
   const deleteUserDataKeys = new Set(Array.isArray(options.deleteUserDataKeys) ? options.deleteUserDataKeys.map(String) : [])
+  const deleteAllUserData = preview.userDataItems.every(item => deleteUserDataKeys.has(item.key))
   const selectedItems = preview.deleteItems.concat(preview.userDataItems.filter(item => deleteUserDataKeys.has(item.key)))
   const deleted = []
   const kept = preview.keepItems.concat(preview.userDataItems.filter(item => !deleteUserDataKeys.has(item.key)))
@@ -1384,7 +1457,7 @@ function runLocalUninstall(options = {}) {
       catch (e) { errors.push({ path: target.path, item: item.key, label: item.label, reason: e.message }) }
     }
   }
-  pruneEmptyProjectDirs()
+  pruneEmptyProjectDirs(deleteAllUserData)
   return { ok: errors.length === 0, deleted, kept, warnings, errors, message: errors.length ? '一键卸载完成，但有项目未能删除' : '一键卸载完成' }
 }
 
@@ -1563,6 +1636,7 @@ function requireWindowsLocalDeployTarget(req, res) {
 }
 
 function writeRuntimeLayout(options = {}) {
+  ensurePackagedWorkspace(options)
   const includeNapcat = options.includeNapcat !== false
   const includeNodeModules = options.includeNodeModules !== false
   const dirs = [
@@ -1592,7 +1666,8 @@ function downloadToRuntime(url, options, callback) {
   let parsed
   try { parsed = new URL(url) } catch { callback(new Error('下载地址无效')); return }
   if (!['http:', 'https:'].includes(parsed.protocol)) { callback(new Error('只支持 http/https 下载地址')); return }
-  writeRuntimeLayout({ includeNapcat: false, includeNodeModules: false })
+  try { writeRuntimeLayout({ includeNapcat: false, includeNodeModules: false }) }
+  catch (e) { callback(new Error('准备本地部署工作目录失败：' + describeFsError(e))); return }
   const client = parsed.protocol === 'https:' ? https : http
   const req = client.get(parsed, (response) => {
     if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
@@ -1858,11 +1933,13 @@ function buildNpmInstallFailureGuide(logLines = [], diagnostics = null) {
 }
 
 function startNpmInstallTask(options = {}) {
+  ensurePackagedWorkspace({ includeNapcat: false })
   const prepared = options.prepared || prepareNpmInstallRun({ forceRepair: !!options.forceRepair })
   return spawnLocalTask('npmInstall', getLocalToolCommand('npm'), ['install'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', env: { ...prepared.env, ...(options.env || {}) }, diagnostics: prepared.diagnostics }))
 }
 
 function repairNpmProxyAndStartInstall() {
+  ensurePackagedWorkspace({ includeNapcat: false })
   const dependencies = getProjectDependencyStatus()
   if (dependencies.ready) return { ok: true, skipped: true, message: '项目依赖已安装', actions: [], status: getLocalNpmInstallStatus() }
   const npmInfo = getCommandInfo('npm')

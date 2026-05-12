@@ -1,5 +1,5 @@
 <template>
-  <LoginPage v-if="!loggedIn" @logged-in="onLoggedIn" />
+  <LoginPage v-if="!loggedIn && !isElectronDeployer" @logged-in="onLoggedIn" />
   <template v-else>
     <LoginBackdrop :class="{ 'backdrop-dim': deployUnlocked }" />
     <Sidebar
@@ -28,7 +28,7 @@
         </Transition>
       </div>
     </div>
-    <AdminModal :visible="adminModalOpen" :message="adminModalMsg" @verified="onAdminModalVerified" @cancel="onAdminModalCancel" />
+    <AdminModal v-if="!isElectronDeployer" :visible="adminModalOpen" :message="adminModalMsg" @verified="onAdminModalVerified" @cancel="onAdminModalCancel" />
   </template>
 </template>
 
@@ -63,7 +63,8 @@ const componentMap = {
 export default {
   components: { LoginPage, LoginBackdrop, Sidebar, ThemeSwitcher, AdminModal },
   setup() {
-    const loggedIn = ref(!!localStorage.getItem('dashboard_token'))
+    const isElectronDeployer = !!window.dongxuelianDeployer
+    const loggedIn = ref(isElectronDeployer || !!localStorage.getItem('dashboard_token'))
     const isMobileViewport = ref(window.matchMedia('(max-width: 760px)').matches)
     const sidebarStored = localStorage.getItem('dashboard_sidebar_expanded')
     const sidebarExpanded = ref(sidebarStored === null ? !isMobileViewport.value : sidebarStored === 'true')
@@ -99,8 +100,10 @@ export default {
       { id: 'commands', label: '指令速查' }, { id: 'whitelist', label: '黑白名单' },
       { id: 'settings', label: '安全设置' }, { id: 'logs', label: '日志中心' }, { id: 'status', label: '系统状态' }, { id: 'gallery', label: '莲莲图集' }
     ]
-    const tabs = computed(() => deployUnlocked.value ? allTabs : allTabs.filter(item => item.id === 'deploy'))
-    const activeTab = ref(deployUnlocked.value ? (localStorage.getItem('dashboard_active_tab') || 'features') : 'deploy')
+    const visibleTabs = computed(() => isElectronDeployer ? allTabs.filter(item => item.id !== 'settings') : allTabs)
+    const tabs = computed(() => deployUnlocked.value ? visibleTabs.value : visibleTabs.value.filter(item => item.id === 'deploy'))
+    const initialActiveTab = deployUnlocked.value ? (localStorage.getItem('dashboard_active_tab') || 'features') : 'deploy'
+    const activeTab = ref(isElectronDeployer && initialActiveTab === 'settings' ? 'deploy' : initialActiveTab)
     const activeComponent = computed(() => componentMap[activeTab.value] || DeployPanel)
     const activeTabLabel = computed(() => tabs.value.find(item => item.id === activeTab.value)?.label || '部署')
     const isMobileSidebarOpen = computed(() => isMobileViewport.value && sidebarExpanded.value)
@@ -115,6 +118,10 @@ export default {
     let adminModalCallback = null
 
     const showAdminDialog = (msg, onVerified) => {
+      if (isElectronDeployer) {
+        if (onVerified) onVerified()
+        return
+      }
       adminModalMsg.value = msg || '请输入管理员密码'
       adminModalCallback = onVerified || null
       adminModalOpen.value = true
@@ -149,6 +156,7 @@ export default {
     }
 
     function logout() {
+      if (isElectronDeployer) { loggedIn.value = true; return }
       localStorage.removeItem('dashboard_token'); clearAdminToken()
       loggedIn.value = false
     }
@@ -168,7 +176,7 @@ export default {
       window.removeEventListener('keydown', handleKeydown)
     })
 
-    return { loggedIn, sidebarExpanded, isMobileSidebarOpen, themePickerOpen, themes, theme, currentThemeLabel, deployUnlocked, tabs, activeTab, activeTabLabel, activeComponent, adminModalOpen, adminModalMsg, onLoggedIn, onAdminModalVerified, onAdminModalCancel, unlockDeploy, logout, setTheme, doSwitchTab, setSidebarExpanded, toggleSidebar }
+    return { isElectronDeployer, loggedIn, sidebarExpanded, isMobileSidebarOpen, themePickerOpen, themes, theme, currentThemeLabel, deployUnlocked, tabs, activeTab, activeTabLabel, activeComponent, adminModalOpen, adminModalMsg, onLoggedIn, onAdminModalVerified, onAdminModalCancel, unlockDeploy, logout, setTheme, doSwitchTab, setSidebarExpanded, toggleSidebar }
   }
 }
 </script>

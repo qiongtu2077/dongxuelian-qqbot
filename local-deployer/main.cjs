@@ -53,19 +53,18 @@ function resolveAppPaths() {
   if (!app.isPackaged) return { resourceRoot, workspaceRoot: resourceRoot, fallbackReason: '' }
   const preferredRoot = path.join(resolveExecutableDir(), 'LianLianBOT')
   try {
-    syncWorkspace(resourceRoot, preferredRoot)
+    ensureWritableDir(resolveExecutableDir())
     return { resourceRoot, workspaceRoot: preferredRoot, fallbackReason: '' }
   } catch (e) {
     const fallbackRoot = path.join(app.getPath('userData'), 'LianLianBOT')
-    syncWorkspace(resourceRoot, fallbackRoot)
     return { resourceRoot, workspaceRoot: fallbackRoot, fallbackReason: `EXE 所在目录不可写，已改用用户数据目录：${e.message}` }
   }
 }
 
 function startDashboard(paths) {
-  const standalone = path.join(paths.workspaceRoot, 'packages', 'koishi-plugin-dashboard', 'standalone.js')
+  const standalone = path.join(paths.resourceRoot, 'packages', 'koishi-plugin-dashboard', 'standalone.js')
   dashboardProcess = spawn(process.execPath, [standalone], {
-    cwd: paths.workspaceRoot,
+    cwd: paths.resourceRoot,
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',

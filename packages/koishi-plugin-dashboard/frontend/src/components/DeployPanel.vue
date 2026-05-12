@@ -391,7 +391,7 @@ export default {
     const activeStationHint = computed(() => {
       const step = activeStation.value
       if (!step) return ''
-      if (step.id === 'scan') return '扫码是唯一需要你手动完成的步骤。登录后点击“我已扫码，继续”，系统会启动 Koishi 并做健康检查。'
+      if (step.id === 'scan') return '扫码是唯一需要你手动完成的步骤。部署器会自动检测登录成功并继续启动 Koishi；超时后也可以手动继续。'
       if (step.id === 'health' && readyCheck.value) return readyCheck.value.message || step.description
       if (step.id === 'config') return '只要求填写机器人 QQ。AI Key 可以留空，之后在 API Keys 页补充。'
       if (step.id === 'npm') return 'npm 命令随便携 Node 一起安装；这里安装的是本 Bot 项目的 node_modules 依赖。若检测到失效的 127.0.0.1 代理，部署器会先清理本次安装环境再启动 npm install。'
@@ -536,11 +536,20 @@ export default {
       scrollLocalLogToBottom()
     }
 
+    function taskFailureText(step, status, fallback) {
+      const title = localStepDefs.find(item => item.id === step)?.title || step
+      const logFile = status?.logFile ? `日志文件：${status.logFile}` : ''
+      const tail = (status?.logLines || []).slice(-8).join('\n')
+      return [fallback || `${title} 未完成`, logFile, tail ? `最后日志：\n${tail}` : ''].filter(Boolean).join('\n')
+    }
+
     async function waitForLocalTask(fetcher, assign, step, isDone) {
+      let lastStatus = null
       for (let i = 0; i < 240; i += 1) {
         const res = await fetcher()
         if (res.ok) {
           assign(res.data.status)
+          lastStatus = res.data.status
           updateWizardFromSignals()
           scrollLocalLogToBottom()
           if (isDone(res.data.status)) return res.data.status
@@ -548,7 +557,25 @@ export default {
         await new Promise(resolve => setTimeout(resolve, 1500))
       }
       setStepStatus(step, 'failed')
-      throw new Error('等待步骤完成超时')
+      throw new Error(taskFailureText(step, lastStatus, '等待步骤完成超时'))
+    }
+
+    async function waitForNapcatLogin() {
+      activeLocalStep.value = 'scan'
+      setStepStatus('scan', 'waiting')
+      localMsg.value = { type: 'ok', text: 'NapCat 已启动。请使用机器人 QQ 扫码登录，部署器会自动检测登录成功并继续。' }
+      for (let i = 0; i < 240; i += 1) {
+        const res = await napcatDeployStatus()
+        if (res.ok) {
+          napcatTaskStatus.value = res.data.status
+          updateWizardFromSignals()
+          scrollLocalLogToBottom()
+          if (res.data.status?.login?.status === 'ok') return true
+          if (res.data.status?.state === 'failed' && !res.data.status?.running) throw new Error(taskFailureText('scan', res.data.status, 'NapCat 进程已退出，请查看日志后重试'))
+        }
+        await new Promise(resolve => setTimeout(resolve, 1500))
+      }
+      return false
     }
 
     async function checkEnv() {
@@ -634,7 +661,7 @@ export default {
     async function writeLocalConfig() {
       if (!ensureWindowsLocalDeploy()) return
       if (!/^\d+$/.test(local.qq.trim())) {
-        localMsg.value = { type: 'err', text: '请先填写机器人 QQ 号' }
+        localMsg.value = { type: 'err', text: '请先填入bot挂载qq号' }
         activeLocalStep.value = 'config'
         setStepStatus('config', 'failed')
         return
@@ -664,7 +691,7 @@ export default {
       if (withAdminRetry(res, '执行 npm install 需要管理员密码', runNpmInstallStep)) { installingDeps.value = false; return }
       if (!res.ok) {
         setStepStatus('npm', 'failed')
-        localMsg.value = { type: 'err', text: res.data?.message || 'npm install 启动失败' }
+        localMsg.value = { type: 'err', text: taskFailureText('npm', res.data?.status, res.data?.message || 'npm install 启动失败') }
         installingDeps.value = false
         return
       }
@@ -677,7 +704,7 @@ export default {
           setStepStatus('npm', npmTaskStatus.value?.dependencies?.ready ? 'success' : 'failed')
           if (!npmTaskStatus.value?.dependencies?.ready) {
             const guide = npmTaskStatus.value?.failureGuide
-            localMsg.value = { type: 'err', text: guide?.code === 'NPM_PROXY_REFUSED' ? '项目依赖安装仍被本机代理阻断，请点击“一键修复代理并重试”或检查代理软件端口。' : (guide?.title || 'npm install 未完成，请查看日志后重试') }
+            localMsg.value = { type: 'err', text: taskFailureText('npm', npmTaskStatus.value, guide?.code === 'NPM_PROXY_REFUSED' ? '项目依赖安装仍被本机代理阻断，请点击“一键修复代理并重试”或检查代理软件端口。' : (guide?.title || 'npm install 未完成，请查看日志后重试')) }
           }
         } catch (e) {
           setStepStatus('npm', 'failed')
@@ -685,7 +712,8 @@ export default {
         }
       }
       installingDeps.value = false
-      await checkEnv()
+      if (npmTaskStatus.value?.dependencies?.ready) await checkEnv()
+      else await refreshLocalTaskStatuses(false)
     }
 
     async function repairNpmProxyFlow() {
@@ -709,13 +737,15 @@ export default {
       try {
         await waitForLocalTask(npmInstallStatus, status => { npmTaskStatus.value = status }, 'npm', status => !status.running && (status.dependencies?.ready || status.state === 'failed'))
         setStepStatus('npm', npmTaskStatus.value?.dependencies?.ready ? 'success' : 'failed')
+        if (!npmTaskStatus.value?.dependencies?.ready) localMsg.value = { type: 'err', text: taskFailureText('npm', npmTaskStatus.value, 'npm install 未完成，请查看日志后重试') }
       } catch (e) {
         setStepStatus('npm', 'failed')
         localMsg.value = { type: 'err', text: e.message || 'npm install 等待失败' }
       }
       repairingNpm.value = false
       installingDeps.value = false
-      await checkEnv()
+      if (npmTaskStatus.value?.dependencies?.ready) await checkEnv()
+      else await refreshLocalTaskStatuses(false)
     }
 
     async function startNapcatStep() {
@@ -728,7 +758,7 @@ export default {
       if (withAdminRetry(res, '启动 NapCat 需要管理员密码', startNapcatStep)) { startingNapcat.value = false; return }
       if (!res.ok) {
         setStepStatus('napcat-start', 'failed')
-        localMsg.value = { type: 'err', text: res.data?.message || 'NapCat 启动失败' }
+        localMsg.value = { type: 'err', text: taskFailureText('napcat-start', res.data?.status, res.data?.message || 'NapCat 启动失败') }
         startingNapcat.value = false
         return
       }
@@ -738,7 +768,8 @@ export default {
         setStepStatus('napcat-start', (napcatTaskStatus.value?.webuiPort?.status === 'occupied' || napcatTaskStatus.value?.onebotPort?.status === 'occupied') ? 'success' : 'failed')
         setStepStatus('scan', napcatTaskStatus.value?.login?.status === 'ok' ? 'success' : 'waiting')
         activeLocalStep.value = 'scan'
-        localMsg.value = { type: 'ok', text: 'NapCat 已启动。请使用机器人 QQ 扫码登录，完成后点击“我已扫码，继续”。' }
+        if (napcatTaskStatus.value?.state === 'failed' && !napcatTaskStatus.value?.running) throw new Error(taskFailureText('napcat-start', napcatTaskStatus.value, 'NapCat 启动失败'))
+        localMsg.value = { type: 'ok', text: 'NapCat 已启动。请使用机器人 QQ 扫码登录，部署器会自动检测登录成功并继续。' }
       } catch (e) {
         setStepStatus('napcat-start', 'failed')
         localMsg.value = { type: 'err', text: e.message || 'NapCat 启动等待失败' }
@@ -756,7 +787,7 @@ export default {
       if (withAdminRetry(res, '启动 Koishi 需要管理员密码', startKoishiStep)) { startingKoishi.value = false; return }
       if (!res.ok) {
         setStepStatus('koishi', 'failed')
-        localMsg.value = { type: 'err', text: res.data?.message || 'Koishi 启动失败' }
+        localMsg.value = { type: 'err', text: taskFailureText('koishi', res.data?.status, res.data?.message || 'Koishi 启动失败') }
         startingKoishi.value = false
         return
       }
@@ -764,6 +795,7 @@ export default {
       try {
         await waitForLocalTask(koishiDeployStatus, status => { koishiTaskStatus.value = status }, 'koishi', status => status.port?.status === 'occupied' || status.state === 'failed')
         setStepStatus('koishi', koishiTaskStatus.value?.port?.status === 'occupied' ? 'success' : 'failed')
+        if (koishiTaskStatus.value?.state === 'failed' && koishiTaskStatus.value?.port?.status !== 'occupied') throw new Error(taskFailureText('koishi', koishiTaskStatus.value, 'Koishi 启动失败'))
       } catch (e) {
         setStepStatus('koishi', 'failed')
         localMsg.value = { type: 'err', text: e.message || 'Koishi 启动等待失败' }
@@ -802,6 +834,12 @@ export default {
     }
 
     async function runLocalWizard() {
+      if (!/^\d+$/.test(local.qq.trim())) {
+        localMsg.value = { type: 'err', text: '请先填入bot挂载qq号' }
+        activeLocalStep.value = 'config'
+        setStepStatus('config', 'failed')
+        return
+      }
       autoDeploying.value = true
       localMsg.value = null
       try {
@@ -820,6 +858,9 @@ export default {
         await runNpmInstallStep()
         if (!env.value?.dependencies?.ready) throw new Error(npmFailureGuide.value?.code === 'NPM_PROXY_REFUSED' ? '项目依赖安装被失效本机代理阻断，请停在 npm install 步骤处理后继续。' : 'npm install 未完成，请查看日志后重试')
         await startNapcatStep()
+        const loginOk = await waitForNapcatLogin()
+        if (loginOk) await continueAfterScan()
+        else localMsg.value = { type: 'ok', text: 'NapCat 已启动，但还没有检测到扫码成功。请完成扫码后点击“我已扫码，继续”。' }
       } catch (e) {
         localMsg.value = { type: 'err', text: e.message || '本地部署流程中断' }
       } finally {

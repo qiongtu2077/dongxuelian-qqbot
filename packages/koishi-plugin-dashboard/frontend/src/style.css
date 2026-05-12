@@ -1555,8 +1555,8 @@ label.uninstall-row { cursor: pointer }
 
 .gallery-preview-shell {
   position: relative;
-  width: min(92vw, 1180px);
-  height: min(82vh, 760px);
+  width: min(96vw, 1400px);
+  height: min(88vh, 840px);
   max-width: calc(100vw - 48px);
   max-height: calc(100vh - 48px);
   display: block;
@@ -1565,25 +1565,25 @@ label.uninstall-row { cursor: pointer }
   background: transparent;
   box-shadow: none;
   overflow: visible;
-  padding: 42px 58px 28px 28px;
+  padding: 18px 74px 18px 18px;
 }
 
 .gallery-preview-stage {
   width: 100%;
   height: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 52px;
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   align-items: center;
 }
 
 .gallery-preview-close {
   position: absolute;
-  top: 2px;
-  right: 6px;
+  top: 18px;
+  right: 18px;
   z-index: 5;
-  width: 32px;
-  height: 32px;
+  width: 42px;
+  height: 42px;
   border: 0;
   background: transparent;
   color: var(--text2);
@@ -1600,17 +1600,21 @@ label.uninstall-row { cursor: pointer }
   max-width: 100%;
   max-height: 100%;
   aspect-ratio: auto;
-  cursor: grab;
+  cursor: pointer;
   perspective: 900px;
   touch-action: none;
 }
 
-.gallery-preview-card:active { cursor: grabbing }
 .gallery-preview-card .gallery-card__front img { object-fit: contain; background: #060708 }
 .gallery-preview-card .gallery-card__rotator { box-shadow: 0 18px 58px rgba(0,0,0,.36) }
 
 .gallery-foil-picker {
+  position: absolute;
+  top: 72px;
+  right: 18px;
+  bottom: 18px;
   display: grid;
+  align-content: start;
   gap: 8px;
   justify-content: center;
 }
@@ -1648,10 +1652,10 @@ label.uninstall-row { cursor: pointer }
   .gallery-preview-backdrop { padding: 12px }
   .gallery-preview-shell {
     width: calc(100vw - 24px);
-    height: min(82vh, 680px);
+    height: min(88vh, 720px);
     max-width: calc(100vw - 24px);
     max-height: calc(100vh - 24px);
-    padding: 38px 10px 16px;
+    padding: 42px 10px 68px;
   }
   .gallery-preview-stage {
     grid-template-columns: 1fr;
@@ -1663,6 +1667,11 @@ label.uninstall-row { cursor: pointer }
     max-height: 100%;
   }
   .gallery-foil-picker {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    top: auto;
+    bottom: 14px;
     grid-auto-flow: column;
     grid-auto-columns: 42px;
     overflow-x: auto;
@@ -1671,7 +1680,7 @@ label.uninstall-row { cursor: pointer }
   }
   .gallery-preview-close {
     top: 2px;
-    right: 4px;
+    right: 8px;
   }
   .app {
     width: calc(100vw - 56px);
