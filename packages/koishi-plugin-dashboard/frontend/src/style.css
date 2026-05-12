@@ -750,6 +750,18 @@ select option { background: var(--surface); color: var(--text) }
 
 .deploy-actions a { text-decoration: none; display: inline-flex; align-items: center }
 
+.deploy-action-notes {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--text3);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.deploy-action-notes p { margin: 0 }
+.deploy-action-notes strong { color: var(--text2); font-weight: 900 }
+
 .path-control {
   display: flex;
   flex: 1;
@@ -1553,29 +1565,35 @@ label.uninstall-row { cursor: pointer }
 .gallery-preview-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 30;
+  z-index: 90;
   display: grid;
-  place-items: center;
-  padding: 24px;
-  background: rgba(0,0,0,.52);
+  place-items: stretch;
+  padding: 16px;
+  background: rgba(0,0,0,.68);
 }
 
 .gallery-preview-shell {
+  --gallery-preview-controls: 54px;
+  --gallery-preview-gap: 14px;
   position: relative;
-  width: min(96vw, 1400px);
-  height: min(88vh, 840px);
-  max-width: calc(100vw - 48px);
-  max-height: calc(100vh - 48px);
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
   display: block;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
   overflow: visible;
-  padding: 18px 74px 18px 18px;
+  isolation: isolate;
+  padding: 0 calc(var(--gallery-preview-controls) + var(--gallery-preview-gap)) 0 0;
 }
 
 .gallery-preview-stage {
+  position: relative;
+  z-index: 2;
   width: 100%;
   height: 100%;
   display: grid;
@@ -1586,26 +1604,32 @@ label.uninstall-row { cursor: pointer }
 
 .gallery-preview-close {
   position: absolute;
-  top: 18px;
-  right: 18px;
-  z-index: 5;
+  top: 0;
+  right: 0;
+  z-index: 6;
   width: 42px;
   height: 42px;
   border: 0;
-  background: transparent;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card) 66%, rgba(0,0,0,.45));
   color: var(--text2);
   font-size: 28px;
   line-height: 1;
   cursor: pointer;
+  box-shadow: 0 10px 22px rgba(0,0,0,.24);
 }
 
 .gallery-preview-close:hover { color: var(--danger) }
 
 .gallery-preview-card {
+  position: relative;
+  z-index: 4;
   width: 100%;
   height: 100%;
   max-width: 100%;
   max-height: 100%;
+  min-width: 0;
+  min-height: 0;
   aspect-ratio: auto;
   cursor: pointer;
   perspective: 900px;
@@ -1613,17 +1637,21 @@ label.uninstall-row { cursor: pointer }
 }
 
 .gallery-preview-card .gallery-card__front img { object-fit: contain; background: #060708 }
-.gallery-preview-card .gallery-card__rotator { box-shadow: 0 18px 58px rgba(0,0,0,.36) }
+.gallery-preview-card .gallery-card__rotator { position: relative; z-index: 5; box-shadow: 0 18px 58px rgba(0,0,0,.36) }
 
 .gallery-foil-picker {
   position: absolute;
-  top: 72px;
-  right: 18px;
-  bottom: 18px;
+  top: 54px;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
   display: grid;
   align-content: start;
   gap: 8px;
   justify-content: center;
+  width: var(--gallery-preview-controls);
+  overflow-y: auto;
+  padding-bottom: 4px;
 }
 
 .gallery-foil-picker button {
@@ -1656,18 +1684,20 @@ label.uninstall-row { cursor: pointer }
 
 
 @media (max-width: 760px) {
-  .gallery-preview-backdrop { padding: 12px }
+  .gallery-preview-backdrop { padding: 10px }
   .gallery-preview-shell {
-    width: calc(100vw - 24px);
-    height: min(88vh, 720px);
-    max-width: calc(100vw - 24px);
-    max-height: calc(100vh - 24px);
-    padding: 42px 10px 68px;
+    --gallery-preview-controls: 48px;
+    --gallery-preview-gap: 10px;
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    padding: 0 calc(var(--gallery-preview-controls) + var(--gallery-preview-gap)) 0 0;
   }
   .gallery-preview-stage {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) auto;
-    gap: 12px;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0;
   }
   .gallery-preview-card {
     max-width: 100%;
@@ -1675,19 +1705,21 @@ label.uninstall-row { cursor: pointer }
   }
   .gallery-foil-picker {
     position: absolute;
-    left: 10px;
-    right: 10px;
-    top: auto;
-    bottom: 14px;
-    grid-auto-flow: column;
-    grid-auto-columns: 42px;
-    overflow-x: auto;
-    justify-content: start;
-    padding: 2px 4px 6px;
+    left: auto;
+    right: 0;
+    top: 52px;
+    bottom: 0;
+    width: var(--gallery-preview-controls);
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+    justify-content: center;
+    padding: 0 0 4px;
   }
   .gallery-preview-close {
-    top: 2px;
-    right: 8px;
+    top: 0;
+    right: 0;
   }
   .app {
     width: calc(100vw - 56px);

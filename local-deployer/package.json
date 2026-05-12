@@ -1,6 +1,6 @@
 {
   "name": "dongxuelian-windows-deployer",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "private": true,
   "description": "Windows local and remote deployment shell for Dongxuelian Koishi bot",
   "main": "main.cjs",

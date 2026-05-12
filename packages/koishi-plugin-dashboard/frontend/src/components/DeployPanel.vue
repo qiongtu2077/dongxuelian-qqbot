@@ -268,6 +268,10 @@
         <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="deploying">{{ deploying ? '部署中...' : '开始远程操作' }}</button>
         <button class="btn btn-sm btn-ghost" type="button" @click="doRebuildFrontend" :disabled="rebuilding">{{ rebuilding ? '构建中...' : '重建前端' }}</button>
       </div>
+      <div class="deploy-action-notes" aria-label="远程部署按钮说明">
+        <p><strong>开始远程操作：</strong>把当前 Dashboard 后端所在机器上的本地插件代码、前端 dist 和脚本通过 SSH/SCP 推送到上面的 Linux 应用目录，不会从 GitHub 拉取。</p>
+        <p><strong>重建前端：</strong>只在当前 Dashboard 后端所在机器本地执行前端构建并刷新本机 dist；需要更新远端页面时，构建成功后再点开始远程操作。</p>
+      </div>
 
       <div style="margin-top:12px">
         <input ref="cookieInput" type="file" accept=".txt" style="display:none" @change="uploadCookie" />

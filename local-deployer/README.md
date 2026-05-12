@@ -84,7 +84,8 @@ Windows 本地部署页只认当前 Dashboard 后端所在机器。只有使用 
 - `启动 NapCat` 会启动本机 NapCat，日志写入 `runtime/logs/napcat.log`。扫码登录必须由用户手动完成。
 - `启动 Koishi` 会启动本机 Koishi，日志写入 `runtime/logs/koishi-local.log`。
 - `健康检查` 会汇总 Node/npm、项目依赖、NapCat、OneBot、Koishi 和 AI Key 状态。AI Key 未配置时不算部署失败，只会提示 AI 回复暂不可用。
-- `莲莲图集` 可以普通登录上传图片、按 16:9/4:3/9:16 查看，并在图片详情右侧选择 A-G 闪卡样式；样式按图片保存，默认无闪卡效果。图集图片地址对浏览器图片标签公开读取，避免上传成功但预览加载失败。
+- `莲莲图集` 可以普通登录上传图片、按 16:9/4:3/9:16 查看，并在图片详情最右侧选择 A-G 闪卡样式；关闭按钮和样式选择不会压在图片上，样式按图片保存，默认无闪卡效果。图集图片地址对浏览器图片标签公开读取，避免上传成功但预览加载失败。
+- 远程 Linux 部署里的 `开始远程操作` 和 `重建前端` 都只读取当前 Dashboard 后端所在机器的本地文件，不会从 GitHub 拉取；如果 Dashboard 跑在云服务器上，本地就指那台云服务器。
 - `下载直链包` 位于高级设置，只把用户粘贴的下载地址保存到 `runtime/downloads/`，不等同于安装 NapCat。
 - `打开 NapCat 发布页` 是手动下载入口，用于查看版本或自行下载安装包。
 - `生成 Koishi 本地配置` 会写入 `koishi.yml`、`start-local.bat` 和必要的 `data/ai-*.txt` 配置，并记录 `data/dashboard-local-deploy-manifest.json`，方便后续预览和安全删除。
