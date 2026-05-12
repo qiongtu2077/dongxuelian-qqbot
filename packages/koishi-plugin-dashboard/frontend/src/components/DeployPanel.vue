@@ -21,7 +21,6 @@
       <div class="local-wizard-head">
         <div>
           <h2>Windows 本地部署向导</h2>
-          <p class="deploy-software-note">windows本地部署需要使用软件</p>
           <div class="grp-desc">{{ localDeployDescription }}</div>
         </div>
         <button v-if="canRunWindowsLocalDeploy" class="btn" type="button" @click="runLocalWizard" :disabled="autoDeploying">{{ autoDeploying ? '部署流程进行中...' : '一键准备并启动' }}</button>
@@ -98,12 +97,12 @@
         <div class="status-item"><span>当前机器</span><b>{{ env.host?.platform }} / {{ env.host?.arch }}</b><small>{{ env.host?.hostname }}</small></div>
         <div class="status-item"><span>项目目录</span><code>{{ env.projectDir }}</code></div>
         <div class="status-item"><span>runtime</span><code>{{ env.runtimeDir }}</code></div>
-        <div class="status-item"><span>Node.js</span><b :class="env.node?.ok ? 'ok-text' : 'err-text'">{{ env.node?.version || '未检测到' }}</b><small>{{ env.node?.sourcePath || env.node?.reason }}</small></div>
-        <div class="status-item"><span>npm</span><b :class="env.npm?.found ? 'ok-text' : 'err-text'">{{ env.npm?.version || '未检测到' }}</b><small>{{ env.npm?.sourcePath || env.npm?.reason }}</small></div>
-        <div class="status-item"><span>项目依赖</span><b :class="env.dependencies?.ready ? 'ok-text' : 'warn-text'">{{ env.dependencies?.ready ? '已安装' : '未完整安装' }}</b><small>{{ env.dependencies?.reason }}</small></div>
-        <div class="status-item"><span>Koishi 配置</span><b :class="localConfigReady ? 'ok-text' : 'warn-text'">{{ localConfigReady ? '已生成' : '未生成' }}</b><small>{{ localConfigSummary }}</small></div>
+        <div class="status-item"><span>Node.js</span><b :class="env.node?.ok ? 'ok-text' : 'err-text'">{{ env.node?.version || '未检测到' }}</b><small>{{ env.node?.sourcePath || env.node?.reason }}</small><button v-if="!env.node?.ok" class="btn btn-sm status-action" type="button" @click="installPortableNodeStep" :disabled="installingNode">{{ installingNode ? '安装中...' : '安装便携 Node/npm' }}</button></div>
+        <div class="status-item"><span>npm</span><b :class="env.npm?.found ? 'ok-text' : 'err-text'">{{ env.npm?.version || '未检测到' }}</b><small>{{ env.npm?.sourcePath || env.npm?.reason }}</small><button v-if="!env.npm?.found" class="btn btn-sm status-action" type="button" @click="installPortableNodeStep" :disabled="installingNode">{{ installingNode ? '安装中...' : '安装便携 Node/npm' }}</button></div>
+        <div class="status-item"><span>项目依赖</span><b :class="env.dependencies?.ready ? 'ok-text' : 'warn-text'">{{ env.dependencies?.ready ? '已安装' : '未完整安装' }}</b><small>{{ env.dependencies?.reason }}</small><button v-if="!env.dependencies?.ready" class="btn btn-sm status-action" type="button" @click="runNpmInstallStep" :disabled="installingDeps || !env.npm?.found">{{ installingDeps ? '安装中...' : '执行 npm install' }}</button></div>
+        <div class="status-item"><span>Koishi 配置</span><b :class="localConfigReady ? 'ok-text' : 'warn-text'">{{ localConfigReady ? '已生成' : '未生成' }}</b><small>{{ localConfigSummary }}</small><button v-if="!localConfigReady" class="btn btn-sm status-action" type="button" @click="writeLocalConfig" :disabled="localDeploying">{{ localDeploying ? '写入中...' : '生成配置' }}</button></div>
         <div class="status-item"><span>端口</span><code>{{ portSummary }}</code></div>
-        <div class="status-item"><span>NapCat</span><b :class="napcatStatusClass">{{ napcatStatusText }}</b><small>{{ env.napcat?.reason }}</small><code v-if="env.napcat?.entry || env.napcat?.path">{{ env.napcat?.entry || env.napcat?.path }}</code></div>
+        <div class="status-item"><span>NapCat</span><b :class="napcatStatusClass">{{ napcatStatusText }}</b><small>{{ env.napcat?.reason }}</small><code v-if="env.napcat?.entry || env.napcat?.path">{{ env.napcat?.entry || env.napcat?.path }}</code><button v-if="!env.napcat?.found" class="btn btn-sm status-action" type="button" @click="doDownloadWindowsNapcat" :disabled="installingNapcat || !isWindows">{{ installingNapcat ? '安装中...' : '安装 NapCat' }}</button></div>
       </div>
 
       <div v-if="readyCheck && canRunWindowsLocalDeploy" class="ready-panel" :class="readyCheck.basicReady ? 'ready-ok' : 'ready-warn'">
@@ -250,7 +249,7 @@
 
 <script>
 import { computed, inject, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { checkDeployUpdate, checkLocalEnv, confirmDeploy, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, koishiDeployStatus, localReadyCheck, napcatDeployStatus, npmInstallStatus, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, runDeploy, startKoishiLocal, startNapcat, startNpmInstall, updateDeployConfig, uploadDeploy } from '../api'
+import { checkDeployUpdate, checkLocalEnv, confirmDeploy, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, installPortableNode, koishiDeployStatus, localReadyCheck, napcatDeployStatus, npmInstallStatus, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, runDeploy, startKoishiLocal, startNapcat, startNpmInstall, updateDeployConfig, uploadDeploy } from '../api'
 
 export default {
   name: 'DeployPanel',
@@ -273,6 +272,7 @@ export default {
     const uninstallConfirmed = ref(false)
     const deployLogRef = ref(null)
     const checking = ref(false)
+    const installingNode = ref(false)
     const downloading = ref(false)
     const installingNapcat = ref(false)
     const localDeploying = ref(false)
@@ -535,6 +535,20 @@ export default {
       if (res.ok) await checkEnv()
     }
 
+    async function installPortableNodeStep() {
+      if (!ensureWindowsLocalDeploy()) return
+      installingNode.value = true
+      activeLocalStep.value = 'env'
+      setStepStatus('env', 'running')
+      localMsg.value = { type: 'ok', text: '正在安装便携 Node/npm 到 runtime/node，请稍等...' }
+      const res = await installPortableNode()
+      if (withAdminRetry(res, '安装便携 Node/npm 需要管理员密码', installPortableNodeStep)) { installingNode.value = false; return }
+      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '便携 Node/npm 已安装' : '安装失败') }
+      setStepStatus('env', res.ok ? 'success' : 'failed')
+      installingNode.value = false
+      await checkEnv()
+    }
+
     async function doDownloadNapcat() {
       if (!ensureWindowsLocalDeploy()) return
       if (!napcatUrl.value.trim()) {
@@ -692,7 +706,10 @@ export default {
       try {
         await checkEnv()
         if (!ensureWindowsLocalDeploy()) throw new Error(localDeployBlockedReason.value)
-        if (!env.value?.node?.ok || !env.value?.npm?.found) throw new Error('Node.js 或 npm 未就绪，请先安装 Node.js 18+/20+ 后重新检测')
+        if (!env.value?.node?.ok || !env.value?.npm?.found) {
+          await installPortableNodeStep()
+          if (!env.value?.node?.ok || !env.value?.npm?.found) throw new Error('Node.js 或 npm 未就绪，请先安装便携 Node/npm 后重新检测')
+        }
         if (!env.value?.napcat?.found) {
           await doDownloadWindowsNapcat()
           if (!env.value?.napcat?.found) throw new Error('NapCat 未安装完成，请检查安装日志后重试')
@@ -919,7 +936,7 @@ export default {
       if (localStatusTimer) clearInterval(localStatusTimer)
     })
 
-    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, checkEnv, chooseNapcatDir, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction }
+    return { mode, local, remote, env, localMsg, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction }
   },
 }
 </script>

@@ -14,7 +14,6 @@
     />
     <div v-if="isMobileSidebarOpen" class="sidebar-scrim" @click="setSidebarExpanded(false)"></div>
     <div class="app" :class="{ 'sidebar-collapsed': !sidebarExpanded }">
-      <CursorGlow />
       <div class="app-head">
         <h1>LianBoard 控制中心</h1>
         <span class="active-view-label">{{ activeTabLabel }}</span>
@@ -42,7 +41,6 @@ import Sidebar from './components/Sidebar.vue'
 import ThemeSwitcher from './components/ThemeSwitcher.vue'
 import AdminModal from './components/AdminModal.vue'
 import DeployPanel from './components/DeployPanel.vue'
-import CursorGlow from './components/CursorGlow.vue'
 import ConfigPanel from './components/ConfigPanel.vue'
 import ControlPanel from './components/ControlPanel.vue'
 import KeyManager from './components/KeyManager.vue'
@@ -53,15 +51,17 @@ import WhitelistPanel from './components/WhitelistPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import StatusPanel from './components/StatusPanel.vue'
 import LogPanel from './components/LogPanel.vue'
+import GalleryPanel from './components/GalleryPanel.vue'
 
 const componentMap = {
   deploy: DeployPanel, control: ControlPanel, config: ConfigPanel, keys: KeyManager,
   persona: PersonaPanel, features: CommandBrowser, commands: CommandList,
-  whitelist: WhitelistPanel, settings: SettingsPanel, status: StatusPanel, logs: LogPanel
+  whitelist: WhitelistPanel, settings: SettingsPanel, status: StatusPanel, logs: LogPanel,
+  gallery: GalleryPanel
 }
 
 export default {
-  components: { LoginPage, LoginBackdrop, Sidebar, ThemeSwitcher, CursorGlow, AdminModal },
+  components: { LoginPage, LoginBackdrop, Sidebar, ThemeSwitcher, AdminModal },
   setup() {
     const loggedIn = ref(!!localStorage.getItem('dashboard_token'))
     const isMobileViewport = ref(window.matchMedia('(max-width: 760px)').matches)
@@ -97,7 +97,7 @@ export default {
       { id: 'deploy', label: '部署' }, { id: 'control', label: '终端控制' }, { id: 'config', label: '模型配置' },
       { id: 'keys', label: 'API Keys' }, { id: 'persona', label: '人格实验室' }, { id: 'features', label: '功能地图' },
       { id: 'commands', label: '指令速查' }, { id: 'whitelist', label: '黑白名单' },
-      { id: 'settings', label: '安全设置' }, { id: 'logs', label: '日志中心' }, { id: 'status', label: '系统状态' }
+      { id: 'settings', label: '安全设置' }, { id: 'gallery', label: '莲莲图集' }, { id: 'logs', label: '日志中心' }, { id: 'status', label: '系统状态' }
     ]
     const tabs = computed(() => deployUnlocked.value ? allTabs : allTabs.filter(item => item.id === 'deploy'))
     const activeTab = ref(deployUnlocked.value ? (localStorage.getItem('dashboard_active_tab') || 'features') : 'deploy')

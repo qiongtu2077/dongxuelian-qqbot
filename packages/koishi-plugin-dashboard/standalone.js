@@ -20,7 +20,7 @@ process.on('unhandledRejection', (reason) => {
   console.error('[dashboard] UNHANDLED REJECTION:', reason?.stack || reason)
 })
 
-const MAX_BODY_SIZE = 1024 * 512 // 512KB 请求体上限
+const MAX_BODY_SIZE = 16 * 1024 * 1024 // 16MB，请求体包含图集上传的 base64 图片
 
 function collectBody(req, res, callback) {
   let body = ''
@@ -59,6 +59,9 @@ const FALLBACK_CHAINS_FILE = path.join(DATA_DIR, 'ai-fallback-chains.json')
 const DEBUG_LOG_CONFIG_FILE = path.join(DATA_DIR, 'debug-log-config.json')
 const LOCAL_DEPLOY_MANIFEST_FILE = path.join(DATA_DIR, 'dashboard-local-deploy-manifest.json')
 const LOCAL_NAPCAT_DIR_FILE = path.join(DATA_DIR, 'dashboard-napcat-dir.txt')
+const GALLERY_DIR = path.join(DATA_DIR, 'gallery')
+const GALLERY_MAX_BYTES = 8 * 1024 * 1024
+const GALLERY_MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }
 const MAX_LOG_LIMIT = 6000
 let logEntryCache = { file: '', size: -1, mtimeMs: -1, entries: [] }
 
@@ -288,6 +291,48 @@ function getCommandPath(command) {
   } catch { return '' }
 }
 
+function getPortableNodeDir() {
+  return runtimePath('node')
+}
+
+function getPortableToolPath(command) {
+  const dir = getPortableNodeDir()
+  const names = process.platform === 'win32'
+    ? { node: ['node.exe'], npm: ['npm.cmd', 'npm.bat'], npx: ['npx.cmd', 'npx.bat'] }
+    : { node: ['bin/node', 'node'], npm: ['bin/npm', 'npm'], npx: ['bin/npx', 'npx'] }
+  for (const name of names[command] || []) {
+    const fullPath = path.join(dir, ...name.split('/'))
+    if (fs.existsSync(fullPath)) return fullPath
+  }
+  return ''
+}
+
+function getLocalToolEnv(extra = {}) {
+  const env = { ...process.env, ...extra }
+  const nodeDir = getPortableNodeDir()
+  const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') || 'PATH'
+  if (fs.existsSync(nodeDir)) env[pathKey] = [nodeDir, env[pathKey]].filter(Boolean).join(path.delimiter)
+  return env
+}
+
+function getToolVersion(toolPath) {
+  if (!toolPath) return ''
+  try {
+    if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(toolPath)) {
+      return execFileSync('cmd.exe', ['/d', '/c', toolPath, '--version'], { timeout: 5000, encoding: 'utf8', env: getLocalToolEnv(), stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    }
+    return execFileSync(toolPath, ['--version'], { timeout: 5000, encoding: 'utf8', env: getLocalToolEnv(), stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch { return '' }
+}
+
+function getLocalToolCommand(command) {
+  return getPortableToolPath(command) || command
+}
+
+function getLocalTaskOptions(options = {}) {
+  return { ...options, env: getLocalToolEnv(options.env || {}) }
+}
+
 function isProjectOwnedTool(toolPath) {
   if (!toolPath) return false
   const resolved = path.resolve(toolPath)
@@ -295,14 +340,16 @@ function isProjectOwnedTool(toolPath) {
 }
 
 function getCommandInfo(command, minMajor = 0) {
-  const version = getCommandVersion(command + ' --version')
+  const portablePath = getPortableToolPath(command)
+  const portableVersion = getToolVersion(portablePath)
+  const sourcePath = portableVersion ? portablePath : getCommandPath(command)
+  const version = portableVersion || getCommandVersion(command + ' --version')
   const major = Number.parseInt(String(version).replace(/^v/i, '').split('.')[0], 10)
-  const sourcePath = getCommandPath(command)
   const ownedByProject = isProjectOwnedTool(sourcePath)
   return {
     found: !!version,
     version,
-    source: 'PATH',
+    source: ownedByProject ? 'runtime/node' : 'PATH',
     sourcePath,
     ownedByProject,
     ok: !!version && (!minMajor || major >= minMajor),
@@ -584,6 +631,75 @@ function downloadNapcatWindowsRelease(installDir, callback) {
   })
 }
 
+function pickNodeWindowsRelease(releases) {
+  const arch = process.arch === 'arm64' ? 'arm64' : (process.arch === 'x64' ? 'x64' : '')
+  if (!arch) throw new Error('当前架构暂不支持自动安装便携 Node：' + process.arch)
+  const list = Array.isArray(releases) ? releases : []
+  const selected = list.find(item => item?.lts && /^v\d+\.\d+\.\d+$/.test(String(item.version || '')))
+  if (!selected) throw new Error('未找到 Node.js LTS 版本信息')
+  const version = selected.version
+  const fileName = `node-${version}-win-${arch}.zip`
+  return {
+    version,
+    arch,
+    fileName,
+    url: `https://nodejs.org/dist/${version}/${fileName}`,
+  }
+}
+
+function findExtractedNodeRoot(stagingDir) {
+  const direct = path.join(stagingDir, 'node.exe')
+  if (fs.existsSync(direct)) return stagingDir
+  let entries = []
+  try { entries = fs.readdirSync(stagingDir, { withFileTypes: true }) } catch { return '' }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const candidate = path.join(stagingDir, entry.name)
+    if (fs.existsSync(path.join(candidate, 'node.exe'))) return candidate
+  }
+  return ''
+}
+
+function installPortableNodeWindows(callback) {
+  if (process.platform !== 'win32') return callback(new Error('便携 Node/npm 自动安装只支持 Windows 本地部署器'))
+  const currentNode = getCommandInfo('node', 18)
+  const currentNpm = getCommandInfo('npm')
+  if (currentNode.ok && currentNpm.found && currentNode.ownedByProject && currentNpm.ownedByProject) {
+    return callback(null, { skipped: true, message: '项目便携 Node/npm 已安装', node: currentNode, npm: currentNpm })
+  }
+  httpsGetJson('https://nodejs.org/dist/index.json', (apiErr, releases) => {
+    if (apiErr) return callback(apiErr)
+    let asset
+    try { asset = pickNodeWindowsRelease(releases) }
+    catch (e) { return callback(e) }
+    downloadToRuntime(asset.url, (downloadErr, archivePath) => {
+      if (downloadErr) return callback(downloadErr)
+      const stagingDir = runtimePath('node-install-' + Date.now().toString(36))
+      const targetDir = getPortableNodeDir()
+      try {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
+        fs.mkdirSync(stagingDir, { recursive: true })
+        execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `Expand-Archive -LiteralPath ${psQuote(archivePath)} -DestinationPath ${psQuote(stagingDir)} -Force`], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] })
+        const nodeRoot = findExtractedNodeRoot(stagingDir)
+        if (!nodeRoot) throw new Error('Node zip 解压后未找到 node.exe')
+        fs.rmSync(targetDir, { recursive: true, force: true })
+        fs.mkdirSync(targetDir, { recursive: true })
+        copyRecursiveSync(nodeRoot, targetDir)
+        const node = getCommandInfo('node', 18)
+        const npm = getCommandInfo('npm')
+        if (!node.ok || !node.ownedByProject) throw new Error('便携 Node 校验失败：' + (node.reason || 'node 不可用'))
+        if (!npm.found || !npm.ownedByProject) throw new Error('便携 npm 校验失败：' + (npm.reason || 'npm 不可用'))
+        callback(null, { skipped: false, message: '便携 Node/npm 已安装到 runtime/node', asset, archivePath, installDir: targetDir, node, npm })
+      } catch (e) {
+        fs.rmSync(targetDir, { recursive: true, force: true })
+        callback(new Error('便携 Node/npm 安装失败：' + String(e.stderr || e.message || '').trim()), { asset, archivePath, installDir: targetDir })
+      } finally {
+        fs.rmSync(stagingDir, { recursive: true, force: true })
+      }
+    })
+  })
+}
+
 function buildLocalConfigPreview() {
   const manifest = readLocalDeployManifest()
   const files = []
@@ -742,6 +858,75 @@ function listReleaseArtifacts() {
     .filter(target => fs.existsSync(target.fullPath))
 }
 
+function sanitizeGalleryBaseName(name) {
+  const base = path.basename(String(name || 'image')).replace(/\.[^.]+$/, '')
+  return (base.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'image')
+}
+
+function resolveGalleryId(id) {
+  const value = String(id || '').trim()
+  if (!/^[A-Za-z0-9._-]+$/.test(value) || value !== path.basename(value)) throw new Error('图像 ID 无效')
+  const fullPath = path.join(GALLERY_DIR, value)
+  if (!isInsidePath(GALLERY_DIR, fullPath)) throw new Error('图像路径越界')
+  return fullPath
+}
+
+function galleryMimeFromName(name) {
+  const ext = path.extname(String(name || '')).toLowerCase()
+  return ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' })[ext] || 'application/octet-stream'
+}
+
+function toGalleryItem(fileName) {
+  const fullPath = resolveGalleryId(fileName)
+  const stat = fs.statSync(fullPath)
+  return {
+    id: fileName,
+    name: fileName.replace(/^\d+-[a-f0-9]+-/, ''),
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    mime: galleryMimeFromName(fileName),
+    url: '/dashboard/api/gallery/image/' + encodeURIComponent(fileName),
+  }
+}
+
+function listGalleryImages() {
+  fs.mkdirSync(GALLERY_DIR, { recursive: true })
+  let entries = []
+  try { entries = fs.readdirSync(GALLERY_DIR, { withFileTypes: true }) } catch { return [] }
+  return entries
+    .filter(entry => entry.isFile() && /\.(?:png|jpe?g|webp|gif)$/i.test(entry.name))
+    .map(entry => {
+      try { return toGalleryItem(entry.name) }
+      catch { return null }
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+}
+
+function writeGalleryImage(input = {}) {
+  const mime = String(input.type || '').toLowerCase()
+  const ext = GALLERY_MIME_EXT[mime]
+  if (!ext) throw new Error('只支持 PNG、JPG、WebP 或 GIF 图片')
+  const raw = String(input.data || '').replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '')
+  if (!raw) throw new Error('图片内容为空')
+  const buffer = Buffer.from(raw, 'base64')
+  if (!buffer.length) throw new Error('图片内容为空')
+  if (buffer.length > GALLERY_MAX_BYTES) throw new Error('图片不能超过 8MB')
+  fs.mkdirSync(GALLERY_DIR, { recursive: true })
+  const safeName = sanitizeGalleryBaseName(input.name)
+  const fileName = `${Date.now()}-${crypto.randomBytes(3).toString('hex')}-${safeName}.${ext}`
+  const fullPath = resolveGalleryId(fileName)
+  fs.writeFileSync(fullPath, buffer)
+  return toGalleryItem(fileName)
+}
+
+function deleteGalleryImage(id) {
+  const fullPath = resolveGalleryId(id)
+  if (!fs.existsSync(fullPath)) throw new Error('图片不存在')
+  fs.unlinkSync(fullPath)
+  return { id }
+}
+
 function isBlockedDeletePath(filePath) {
   const resolved = path.resolve(filePath)
   const lower = resolved.toLowerCase()
@@ -849,6 +1034,10 @@ function buildLocalUninstallPreview() {
   const conversationTarget = existingProjectTarget('data/conversations')
   if (conversationTarget) excludedData.add('data/conversations')
   pushUninstallItem(userDataItems, createUninstallItem('conversations', '会话与记忆', '聊天上下文、会话缓存和记忆数据，默认保留', [conversationTarget].filter(Boolean), { kind: 'userData', defaultKeep: true }))
+
+  const galleryTarget = existingProjectTarget('data/gallery')
+  if (galleryTarget) excludedData.add('data/gallery')
+  pushUninstallItem(userDataItems, createUninstallItem('gallery-images', '莲莲图集', '用户上传的图集图片，默认保留', [galleryTarget].filter(Boolean), { kind: 'userData', defaultKeep: true }))
 
   const logTarget = existingProjectTarget('runtime/logs')
   pushUninstallItem(userDataItems, createUninstallItem('runtime-logs', '运行日志', 'Koishi、Dashboard 和部署过程日志，默认保留', [logTarget].filter(Boolean), { kind: 'userData', defaultKeep: true }))
@@ -2475,6 +2664,51 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  if (pathname === '/dashboard/api/gallery' && req.method === 'GET') {
+    try { return json(res, { ok: true, images: listGalleryImages(), maxBytes: GALLERY_MAX_BYTES }) }
+    catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/gallery' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const item = writeGalleryImage(JSON.parse(body || '{}'))
+        return json(res, { ok: true, image: item, message: '图片已加入莲莲图集' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/gallery' && req.method === 'DELETE') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const { id } = JSON.parse(body || '{}')
+        return json(res, { ok: true, deleted: deleteGalleryImage(id), message: '图片已删除' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname.startsWith('/dashboard/api/gallery/image/') && req.method === 'GET') {
+    try {
+      const id = decodeURIComponent(pathname.slice('/dashboard/api/gallery/image/'.length))
+      const filePath = resolveGalleryId(id)
+      if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+        res.writeHead(404)
+        res.end('Not Found')
+        return
+      }
+      res.writeHead(200, { 'Content-Type': galleryMimeFromName(id), 'Cache-Control': 'public, max-age=3600' })
+      res.end(fs.readFileSync(filePath))
+    } catch {
+      res.writeHead(400)
+      res.end('Bad Request')
+    }
+    return
+  }
+
   // 环境检测
   if (pathname === '/dashboard/api/env/check' && req.method === 'GET') {
     const localDeployTarget = getLocalDeployTarget()
@@ -2546,7 +2780,7 @@ const server = http.createServer((req, res) => {
         if (cfg.adminIds) files.push(writeTrackedLocalFile('data/ai-admin-ids.json', JSON.stringify(cfg.adminIds, null, 2) + '\n', { deleteByDefault: false, sensitive: true, kind: 'adminIds' }, timestamp))
         const yml = `port: 5140\nselfUrl: http://localhost:5140\nplugins:\n  adapter-onebot:\n    protocol: ws\n    selfId: '${qq}'\n    endpoint: ws://127.0.0.1:8080/onebot/v11/ws\n  dongxuelian-ai: {}\n  dongxuelian-help: {}\n  group-name-at: {}\n  defense: {}\n  local-video-sender: {}\n  group-leave-notice: {}\n  dongxuelian-poke: {}\n  daily-report: {}\n`
         files.push(writeTrackedLocalFile('koishi.yml', yml, { deleteByDefault: true, kind: 'koishiConfig' }, timestamp))
-        const helper = `@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif not exist node_modules ( npm install )\r\nnpx koishi start\r\n`
+        const helper = `@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif exist "%~dp0runtime\\node\\node.exe" set "PATH=%~dp0runtime\\node;%PATH%"\r\nif not exist node_modules ( call npm install )\r\ncall npm exec -- koishi start\r\n`
         files.push(writeTrackedLocalFile('start-local.bat', helper, { deleteByDefault: true, kind: 'startScript' }, timestamp))
         const aiKey = getAiKeyStatus(provider)
         const manifest = { version: 1, generatedAt: timestamp, qq, onebotEndpoint: 'ws://127.0.0.1:8080/onebot/v11/ws', aiKeyConfigured: aiKey.configured, files }
@@ -2630,6 +2864,20 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  if (pathname === '/dashboard/api/deploy/node-windows-install' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    if (!requireWindowsLocalDeployTarget(req, res)) return
+    collectBody(req, res, () => {
+      try {
+        installPortableNodeWindows((err, detail = {}) => {
+          if (err) return json(res, { ok: false, message: err.message, ...detail }, 400)
+          json(res, { ok: true, ...detail, message: detail.message || '便携 Node/npm 已安装' })
+        })
+      } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
   if (pathname === '/dashboard/api/deploy/npm-install' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
     if (!requireWindowsLocalDeployTarget(req, res)) return
@@ -2637,8 +2885,8 @@ const server = http.createServer((req, res) => {
       const dependencies = getProjectDependencyStatus()
       if (dependencies.ready) return json(res, { ok: true, skipped: true, message: '项目依赖已安装', status: getLocalNpmInstallStatus() })
       const npmInfo = getCommandInfo('npm')
-      if (!npmInfo.found) return json(res, { ok: false, message: '当前 Windows 本机未找到 npm，请先安装 Node.js 18+/20+ 后重新检测环境', npm: npmInfo }, 400)
-      const started = spawnLocalTask('npmInstall', 'npm', ['install'], { cwd: KOISHI_DIR, shell: process.platform === 'win32' })
+      if (!npmInfo.found) return json(res, { ok: false, message: '当前 Windows 本机未找到 npm，请先安装便携 Node/npm 后重新检测环境', npm: npmInfo }, 400)
+      const started = spawnLocalTask('npmInstall', getLocalToolCommand('npm'), ['install'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32' }))
       return json(res, { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : 'npm install 已启动', status: getLocalNpmInstallStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
@@ -2660,8 +2908,8 @@ const server = http.createServer((req, res) => {
       let command = entry
       let args = []
       if (ext === '.bat' || ext === '.cmd') { command = 'cmd.exe'; args = ['/d', '/c', entry] }
-      else if (ext === '.js' || ext === '.mjs') { command = 'node'; args = [entry] }
-      spawnLocalTask('napcat', command, args, { cwd })
+      else if (ext === '.js' || ext === '.mjs') { command = getLocalToolCommand('node'); args = [entry] }
+      spawnLocalTask('napcat', command, args, getLocalTaskOptions({ cwd }))
       return json(res, { ok: true, message: 'NapCat 已启动，请等待 WebUI 或控制台二维码出现后扫码登录', status: getLocalNapcatDeployStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
@@ -2679,9 +2927,9 @@ const server = http.createServer((req, res) => {
       const dependencies = getProjectDependencyStatus()
       if (!dependencies.ready) return json(res, { ok: false, message: '项目依赖尚未完整安装，请先执行 npm install 站点', dependencies }, 400)
       if (process.platform === 'win32' && fs.existsSync(path.join(KOISHI_DIR, 'start-local.bat'))) {
-        spawnLocalTask('koishi', 'cmd.exe', ['/d', '/c', path.join(KOISHI_DIR, 'start-local.bat')], { cwd: KOISHI_DIR })
+        spawnLocalTask('koishi', 'cmd.exe', ['/d', '/c', path.join(KOISHI_DIR, 'start-local.bat')], getLocalTaskOptions({ cwd: KOISHI_DIR }))
       } else {
-        spawnLocalTask('koishi', 'npm', ['exec', '--', 'koishi', 'start'], { cwd: KOISHI_DIR, shell: process.platform === 'win32' })
+        spawnLocalTask('koishi', getLocalToolCommand('npm'), ['exec', '--', 'koishi', 'start'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32' }))
       }
       return json(res, { ok: true, message: 'Koishi 已启动，正在等待 5140 端口和 OneBot 连接', status: getLocalKoishiDeployStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }

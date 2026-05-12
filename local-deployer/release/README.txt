@@ -5,5 +5,5 @@
 - Windows 本地部署必须在本软件中执行；远端 Linux Dashboard 不能检测你的 Windows 本机环境。
 - 界面默认使用 Web 的浅色风格，并保留主题切换。
 - 访问密码和服务器密码不会写进 EXE。
-- 运行时文件默认放在当前目录的 runtime/ 和 data/。
+- 运行时文件默认放在当前目录的 runtime/ 和 data/，便携 Node/npm 会放在 runtime/node/。
 - 卸载源码版请运行根目录的 卸载本地部署器.bat。

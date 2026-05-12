@@ -166,6 +166,7 @@ export async function deployLocal(data) { return post('/deploy/local', data, tru
 export async function checkLocalEnv() { return get('/env/check') }
 export async function downloadNapcat(url) { return post('/deploy/napcat-download', { url }, true, 180000) }
 export async function downloadNapcatWindows(installDir) { return post('/deploy/napcat-windows-download', { installDir }, true, 240000) }
+export async function installPortableNode() { return post('/deploy/node-windows-install', {}, true, 240000) }
 export async function startNpmInstall() { return post('/deploy/npm-install', {}, true, 10000) }
 export async function npmInstallStatus() { return get('/deploy/npm-install-status') }
 export async function startNapcat() { return post('/deploy/napcat-start', {}, true, 10000) }
@@ -201,3 +202,6 @@ export async function fetchLogs(params = {}) {
 }
 export async function fetchLoggingConfig() { return get('/logging') }
 export async function saveLoggingConfig(data) { return put('/logging', data, true) }
+export async function fetchGalleryImages() { return get('/gallery') }
+export async function uploadGalleryImage(data) { return post('/gallery', data, true, 60000) }
+export async function deleteGalleryImage(id) { return del('/gallery', { id }, true) }

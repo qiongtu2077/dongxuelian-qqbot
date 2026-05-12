@@ -137,6 +137,7 @@ Dashboard 的「部署」Tab 有两个模式。
 
 Windows 本地部署会在当前项目目录内准备运行环境：
 
+- 未检测到 Node.js/npm 时，可安装便携 Node/npm 到 `runtime/node/`，由本部署器管理并可在一键卸载时删除。
 - 创建 `runtime/downloads/`、`runtime/logs/`、`runtime/napcat/` 和 `data/`。
 - 检测 Node.js、npm、中文路径写入和 `5140`、`5150`、`8080`、`6099` 端口状态。
 - 生成 `koishi.yml` 和 `start-local.bat`。
@@ -192,7 +193,7 @@ npm run build:win
 
 EXE 的职责是启动本地 Dashboard，并复用 Dashboard 的「部署」页完成两类任务：
 
-- Windows 本地部署：所有下载、日志、NapCat 文件都放当前项目目录的 `runtime/` 下。
+- Windows 本地部署：所有下载、日志、便携 Node/npm、NapCat 文件都放当前项目目录的 `runtime/` 下。
 - 远程 Linux 部署：填写 SSH 目标和应用目录后推送更新。
 
 访问密码和管理员密码仍由 Dashboard 环境变量或 `data/` 下的密码文件管理，不写入 EXE 代码。EXE 成品建议作为 GitHub Release 附件发布，不提交到主分支。

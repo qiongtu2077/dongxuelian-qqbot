@@ -783,6 +783,12 @@ select option { background: var(--surface); color: var(--text) }
   overflow-wrap: anywhere;
 }
 
+.status-action {
+  margin-top: 10px;
+  width: 100%;
+  justify-content: center;
+}
+
 .local-wizard-card { overflow: visible }
 
 .local-wizard-head {
@@ -793,21 +799,6 @@ select option { background: var(--surface); color: var(--text) }
 }
 
 .local-wizard-head .btn { flex: 0 0 auto }
-
-.deploy-software-note {
-  display: inline-flex;
-  align-items: center;
-  min-height: 26px;
-  margin: -4px 0 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
-  border-radius: var(--radius-sm);
-  background: var(--accentDim);
-  color: var(--accent2);
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 900;
-  line-height: 1.35;
-}
 
 .flow-sentence {
   margin: 14px 0 16px;
@@ -1214,6 +1205,186 @@ label.uninstall-row { cursor: pointer }
   line-height: 1.55;
   white-space: pre-wrap;
 }
+
+.gallery-panel { min-width: 0 }
+
+.gallery-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.gallery-toolbar h2 { margin-bottom: 6px }
+
+.gallery-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.gallery-aspect-tabs { margin: 0 }
+
+.gallery-add,
+.gallery-empty-add {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #11110d;
+  font-size: 28px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 10px 28px var(--shadow);
+  transition: transform .18s ease, box-shadow .2s ease, opacity .2s ease;
+}
+
+.gallery-add:hover,
+.gallery-empty-add:hover { transform: translateY(-1px); box-shadow: 0 14px 34px var(--shadow) }
+.gallery-add:disabled,
+.gallery-empty-add:disabled { opacity: .58; cursor: wait; transform: none }
+
+.gallery-empty {
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  color: var(--text2);
+}
+
+.gallery-empty-add {
+  width: 78px;
+  height: 78px;
+  font-size: 48px;
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.gallery-card {
+  width: 100%;
+  min-width: 0;
+  aspect-ratio: var(--gallery-aspect);
+  border-radius: 8px;
+  perspective: 700px;
+}
+
+.gallery-card__rotator {
+  --tilt-left-right: 0deg;
+  --tilt-up-down: 0deg;
+  --pointer-x: 50%;
+  --pointer-y: 50%;
+  --pointer-from-center: 0;
+  --effect-intensity: 0;
+  --background-x: 50%;
+  --background-y: 50%;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  border-radius: inherit;
+  transform: rotateY(var(--tilt-left-right)) rotateX(var(--tilt-up-down));
+  transform-origin: center;
+  box-shadow: 0 16px 38px rgba(0,0,0,.28), 0 2px 10px rgba(0,0,0,.2);
+  transition: box-shadow .2s ease;
+}
+
+.gallery-card:hover .gallery-card__rotator { box-shadow: 0 22px 52px var(--shadow), 0 4px 14px rgba(0,0,0,.22) }
+
+.gallery-card__front,
+.gallery-card__front > * {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.gallery-card__front {
+  position: relative;
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #111318;
+  isolation: isolate;
+}
+
+.gallery-card__front img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  z-index: 0;
+}
+
+.gallery-card__shine,
+.gallery-card__texture,
+.gallery-card__glare {
+  pointer-events: none;
+  z-index: 1;
+  opacity: var(--effect-intensity);
+}
+
+.gallery-card__shine {
+  background-image:
+    repeating-linear-gradient(-33deg, hsl(2, 70%, 47%) 6%, hsl(228, 60%, 64%) 12%, hsl(176, 55%, 39%) 18%, hsl(123, 68%, 35%) 24%, hsl(283, 75%, 57%) 30%, hsl(2, 70%, 47%) 36%),
+    radial-gradient(farthest-corner circle at var(--pointer-x) var(--pointer-y), hsla(189, 76%, 77%, .58) 0%, hsla(147, 59%, 77%, .48) 25%, hsla(271, 55%, 69%, .48) 50%, hsla(355, 56%, 72%, .5) 75%);
+  background-blend-mode: color-dodge, soft-light;
+  background-position: var(--background-x) var(--background-y), var(--background-x) var(--background-y);
+  background-size: 900% 900%, 180% 180%;
+  mix-blend-mode: color-dodge;
+  filter: brightness(calc((var(--pointer-from-center) * .45) + .48)) contrast(1.6) saturate(1.1);
+}
+
+.gallery-card__texture {
+  background-image:
+    repeating-linear-gradient(0deg, hsl(283, 100%, 73%) 6%, hsl(2, 100%, 73%) 12%, hsl(53, 100%, 69%) 18%, hsl(93, 100%, 69%) 24%, hsl(176, 100%, 76%) 30%, hsl(228, 100%, 74%) 36%, hsl(283, 100%, 73%) 42%),
+    repeating-linear-gradient(133deg, rgba(14,21,46,.76) 0%, rgba(220,255,255,.54) 3.8%, rgba(14,21,46,.78) 10%, rgba(14,21,46,.78) 12%);
+  background-blend-mode: hue, hard-light;
+  background-position: 0% var(--background-y), var(--background-x) var(--background-y);
+  background-size: 200% 700%, 300% 100%;
+  mix-blend-mode: lighten;
+  opacity: calc((.28 * var(--effect-intensity)) + var(--effect-intensity) * var(--pointer-from-center) * .42);
+}
+
+.gallery-card__glare {
+  background-image: radial-gradient(farthest-corner circle at var(--pointer-x) var(--pointer-y), hsla(0,0%,100%,.74) 0%, hsla(0,0%,100%,.24) 24%, hsl(0,0%,0%) 120%);
+  filter: brightness(1.05) contrast(1.1);
+  mix-blend-mode: hard-light;
+  opacity: calc((.18 * var(--effect-intensity)) + var(--effect-intensity) * var(--pointer-from-center) * .72);
+}
+
+.gallery-delete {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  border: 1px solid color-mix(in srgb, var(--danger) 52%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--card) 84%, transparent);
+  color: var(--danger);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity .18s ease, transform .18s ease, background .2s ease;
+}
+
+.gallery-card:hover .gallery-delete,
+.gallery-delete:focus-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.gallery-delete:hover { background: color-mix(in srgb, var(--danger) 12%, var(--card)) }
 
 @media (max-width: 760px) {
   .app {
