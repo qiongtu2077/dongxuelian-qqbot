@@ -23,7 +23,7 @@
           <h2>Windows 本地部署向导</h2>
           <div class="grp-desc">{{ localDeployDescription }}</div>
         </div>
-        <button v-if="canRunWindowsLocalDeploy" class="btn" type="button" @click="runLocalWizard" :disabled="autoDeploying">{{ autoDeploying ? '部署流程进行中...' : '一键准备并启动' }}</button>
+        <button v-if="canRunWindowsLocalDeploy" class="btn" type="button" @click="runLocalWizard" :disabled="autoDeploying">{{ autoDeploying ? '环境配置中...' : '一键配置环境并启动' }}</button>
       </div>
 
       <div v-if="canRunWindowsLocalDeploy" class="flow-sentence">{{ localFlowText }}</div>
@@ -98,9 +98,9 @@
         <div class="status-item"><span>项目目录</span><code>{{ env.projectDir }}</code></div>
         <div class="status-item"><span>runtime</span><code>{{ env.runtimeDir }}</code></div>
         <div v-if="workspaceStatusText" class="status-item"><span>工作目录</span><b :class="workspaceSafe ? 'ok-text' : 'warn-text'">{{ workspaceStatusText }}</b><small>{{ workspaceStatusHint }}</small></div>
-        <div class="status-item"><span>Node.js</span><b :class="env.node?.ok ? 'ok-text' : 'err-text'">{{ env.node?.version || '未检测到' }}</b><small>{{ env.node?.sourcePath || env.node?.reason }}</small><button v-if="!env.node?.ok" class="btn btn-sm status-action" type="button" @click="installPortableNodeStep" :disabled="installingNode">{{ installingNode ? '安装中...' : '安装便携 Node/npm' }}</button></div>
-        <div class="status-item"><span>npm</span><b :class="env.npm?.found ? 'ok-text' : 'err-text'">{{ env.npm?.version || '未检测到' }}</b><small>{{ env.npm?.sourcePath || env.npm?.reason }}</small><button v-if="!env.npm?.found" class="btn btn-sm status-action" type="button" @click="installPortableNodeStep" :disabled="installingNode">{{ installingNode ? '安装中...' : '安装便携 Node/npm' }}</button></div>
-        <div class="status-item"><span>项目依赖</span><b :class="env.dependencies?.ready ? 'ok-text' : 'warn-text'">{{ env.dependencies?.ready ? '已安装' : '未完整安装' }}</b><small>{{ env.dependencies?.reason }}</small><button v-if="!env.dependencies?.ready" class="btn btn-sm status-action" type="button" @click="runNpmInstallStep" :disabled="installingDeps || !env.npm?.found">{{ installingDeps ? '安装中...' : '执行 npm install' }}</button></div>
+        <div class="status-item"><span>Node.js</span><b :class="env.node?.ok ? 'ok-text' : 'err-text'">{{ env.node?.version || '未检测到' }}</b><small>{{ env.node?.sourcePath || env.node?.reason }}</small><small>便携 Node 官方包内自带 npm.cmd 与 npx.cmd。</small><button v-if="!env.node?.ok" class="btn btn-sm status-action" type="button" @click="installPortableNodeStep" :disabled="installingNode">{{ installingNode ? '安装中...' : '安装便携 Node/npm' }}</button></div>
+        <div class="status-item"><span>npm</span><b :class="env.npm?.found ? 'ok-text' : 'err-text'">{{ env.npm?.version || '未检测到' }}</b><small>{{ env.npm?.sourcePath || env.npm?.reason }}</small><small>这里检查 npm 命令程序是否存在，不代表项目依赖已安装。</small><button v-if="!env.npm?.found" class="btn btn-sm status-action" type="button" @click="installPortableNodeStep" :disabled="installingNode">{{ installingNode ? '安装中...' : '安装便携 Node/npm' }}</button></div>
+        <div class="status-item"><span>项目依赖</span><b :class="env.dependencies?.ready ? 'ok-text' : 'warn-text'">{{ env.dependencies?.ready ? '已安装' : '未完整安装' }}</b><small>{{ env.dependencies?.reason }}</small><small>这里检查 node_modules 中 Koishi 与本项目依赖是否已由 npm install 安装完成。</small><button v-if="!env.dependencies?.ready" class="btn btn-sm status-action" type="button" @click="runNpmInstallStep" :disabled="installingDeps || !env.npm?.found">{{ installingDeps ? '安装中...' : '执行 npm install' }}</button></div>
         <div class="status-item"><span>Koishi 配置</span><b :class="localConfigReady ? 'ok-text' : 'warn-text'">{{ localConfigReady ? '已生成' : '未生成' }}</b><small>{{ localConfigSummary }}</small><button v-if="!localConfigReady" class="btn btn-sm status-action" type="button" @click="writeLocalConfig" :disabled="localDeploying">{{ localDeploying ? '写入中...' : '生成配置' }}</button></div>
         <div class="status-item"><span>端口</span><code>{{ portSummary }}</code></div>
         <div class="status-item"><span>NapCat</span><b :class="napcatStatusClass">{{ napcatStatusText }}</b><small>{{ env.napcat?.reason }}</small><code v-if="env.napcat?.entry || env.napcat?.path">{{ env.napcat?.entry || env.napcat?.path }}</code><button v-if="!env.napcat?.found" class="btn btn-sm status-action" type="button" @click="doDownloadWindowsNapcat" :disabled="installingNapcat || !isWindows">{{ installingNapcat ? '安装中...' : '安装 NapCat' }}</button></div>
@@ -394,6 +394,7 @@ export default {
       if (step.id === 'scan') return '扫码是唯一需要你手动完成的步骤。登录后点击“我已扫码，继续”，系统会启动 Koishi 并做健康检查。'
       if (step.id === 'health' && readyCheck.value) return readyCheck.value.message || step.description
       if (step.id === 'config') return '只要求填写机器人 QQ。AI Key 可以留空，之后在 API Keys 页补充。'
+      if (step.id === 'npm') return 'npm 命令随便携 Node 一起安装；这里安装的是本 Bot 项目的 node_modules 依赖。若检测到失效的 127.0.0.1 代理，部署器会先清理本次安装环境再启动 npm install。'
       return step.description
     })
     const currentLocalLogLines = computed(() => {
@@ -407,13 +408,22 @@ export default {
     const npmDiagnosticRows = computed(() => {
       const diag = npmFailureGuide.value?.diagnostics
       if (!diag) return []
+      const staleProxy = diag.proxy?.staleLoopback?.map(item => `${item.key}:${item.hostname}:${item.port}`).join('、')
+      const repairActions = diag.repair?.actions?.map(item => `${item.ok ? 'OK' : 'FAIL'} ${item.command}`).join('；')
       const rows = [
         ['HTTP_PROXY', diag.env?.HTTP_PROXY],
         ['HTTPS_PROXY', diag.env?.HTTPS_PROXY],
+        ['ALL_PROXY', diag.env?.ALL_PROXY],
+        ['npm_config_proxy', diag.env?.npm_config_proxy],
+        ['npm_config_https_proxy', diag.env?.npm_config_https_proxy],
+        ['npm_config_all_proxy', diag.env?.npm_config_all_proxy],
         ['NO_PROXY', diag.env?.NO_PROXY],
         ['npm proxy', diag.config?.proxy],
         ['npm https-proxy', diag.config?.httpsProxy],
         ['npm registry', diag.config?.registry],
+        ['代理诊断', diag.proxy?.reason || staleProxy],
+        ['自动清理', diag.repair?.envClearedForRetry ? (diag.repair.automatic ? '已自动执行' : '已手动执行') : '未执行'],
+        ['清理动作', repairActions],
         ['npm path', diag.tools?.npmSourcePath],
         ['workdir', diag.paths?.projectDir],
       ]
@@ -665,6 +675,10 @@ export default {
         try {
           await waitForLocalTask(npmInstallStatus, status => { npmTaskStatus.value = status }, 'npm', status => !status.running && (status.dependencies?.ready || status.state === 'failed'))
           setStepStatus('npm', npmTaskStatus.value?.dependencies?.ready ? 'success' : 'failed')
+          if (!npmTaskStatus.value?.dependencies?.ready) {
+            const guide = npmTaskStatus.value?.failureGuide
+            localMsg.value = { type: 'err', text: guide?.code === 'NPM_PROXY_REFUSED' ? '项目依赖安装仍被本机代理阻断，请点击“一键修复代理并重试”或检查代理软件端口。' : (guide?.title || 'npm install 未完成，请查看日志后重试') }
+          }
         } catch (e) {
           setStepStatus('npm', 'failed')
           localMsg.value = { type: 'err', text: e.message || 'npm install 等待失败' }
@@ -804,7 +818,7 @@ export default {
         await writeLocalConfig()
         if (!localConfigReady.value) throw new Error('Koishi 本地配置未生成，请检查机器人 QQ 和管理员验证')
         await runNpmInstallStep()
-        if (!env.value?.dependencies?.ready) throw new Error('npm install 未完成，请查看日志后重试')
+        if (!env.value?.dependencies?.ready) throw new Error(npmFailureGuide.value?.code === 'NPM_PROXY_REFUSED' ? '项目依赖安装被失效本机代理阻断，请停在 npm install 步骤处理后继续。' : 'npm install 未完成，请查看日志后重试')
         await startNapcatStep()
       } catch (e) {
         localMsg.value = { type: 'err', text: e.message || '本地部署流程中断' }

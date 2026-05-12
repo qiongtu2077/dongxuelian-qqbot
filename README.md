@@ -137,11 +137,13 @@ Dashboard 的「部署」Tab 有两个模式。
 
 Windows 本地部署会在当前项目目录内准备运行环境：
 
-- 未检测到 Node.js/npm 时，可安装便携 Node/npm 到 `runtime/node/`，由本部署器管理并可在一键卸载时删除。
+- 未检测到 Node.js/npm 时，可安装便携 Node/npm 到 `runtime/node/`，由本部署器管理并可在一键卸载时删除。部署器下载的是 Node.js 官方 Windows LTS zip，包内自带 `node.exe`、`npm.cmd`、`npx.cmd`，所以安装便携 Node/npm 会同时获得 npm。
 - 创建 `runtime/downloads/`、`runtime/logs/`、`runtime/napcat/` 和 `data/`。
 - 检测 Node.js、npm、中文路径写入和 `5140`、`5150`、`8080`、`6099` 端口状态。
 - 生成 `koishi.yml` 和 `start-local.bat`。
+- `npm` 状态卡只表示 npm 命令程序是否可用；`项目依赖` 状态卡表示本项目 `node_modules` 是否已通过 `npm install` 安装完整。若 npm 继承了失效的 `127.0.0.1` 本机代理，部署器会在执行 `npm install` 前自动清理本次安装环境并切换到 npm 镜像源。
 - 写入 AI 供应商、模型、Base URL、API Key 等本地配置。
+- 莲莲图集支持上传图片、16:9/4:3/9:16 展示、A-G 闪卡样式选择和按图片持久化；默认不启用闪卡样式。
 - OneBot WebSocket 固定使用 `ws://127.0.0.1:8080/onebot/v11/ws`。
 
 远程 Linux 部署会通过 SSH / SCP 把本地项目推送到远程服务器，默认目标目录是 `/root/koishi-app`。

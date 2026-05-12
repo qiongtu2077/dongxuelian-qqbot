@@ -60,8 +60,11 @@ const DEBUG_LOG_CONFIG_FILE = path.join(DATA_DIR, 'debug-log-config.json')
 const LOCAL_DEPLOY_MANIFEST_FILE = path.join(DATA_DIR, 'dashboard-local-deploy-manifest.json')
 const LOCAL_NAPCAT_DIR_FILE = path.join(DATA_DIR, 'dashboard-napcat-dir.txt')
 const GALLERY_DIR = path.join(DATA_DIR, 'gallery')
+const GALLERY_METADATA_FILE = path.join(GALLERY_DIR, 'metadata.json')
 const GALLERY_MAX_BYTES = 8 * 1024 * 1024
 const GALLERY_MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }
+const GALLERY_FOIL_STYLES = new Set(['A', 'B', 'C', 'D', 'E', 'F', 'G'])
+const NPM_PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'npm_config_proxy', 'npm_config_https_proxy', 'npm_config_all_proxy', 'NPM_CONFIG_PROXY', 'NPM_CONFIG_HTTPS_PROXY', 'NPM_CONFIG_ALL_PROXY']
 const MAX_LOG_LIMIT = 6000
 let logEntryCache = { file: '', size: -1, mtimeMs: -1, entries: [] }
 let npmDiagnosticsCache = { at: 0, data: null }
@@ -339,6 +342,30 @@ function getLocalToolCommand(command) {
 
 function getLocalTaskOptions(options = {}) {
   return { ...options, env: getLocalToolEnv(options.env || {}) }
+}
+
+function normalizeProxyValue(value) {
+  const text = String(value || '').trim()
+  if (!text || /^(?:null|undefined|false)$/i.test(text)) return ''
+  return text
+}
+
+function parseProxyEndpoint(value) {
+  const text = normalizeProxyValue(value)
+  if (!text) return null
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : 'http://' + text
+  try {
+    const parsed = new URL(withProtocol)
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, '')
+    const port = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80))
+    if (!hostname || !Number.isInteger(port)) return null
+    return { raw: redactProxyValue(text), hostname, port, protocol: parsed.protocol.replace(/:$/, '') }
+  } catch { return null }
+}
+
+function isLoopbackProxyHost(hostname) {
+  const value = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '')
+  return value === 'localhost' || value === '::1' || /^127(?:\.\d{1,3}){3}$/.test(value)
 }
 
 function isProjectOwnedTool(toolPath) {
@@ -1071,7 +1098,34 @@ function galleryMimeFromName(name) {
   return ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' })[ext] || 'application/octet-stream'
 }
 
-function toGalleryItem(fileName) {
+function normalizeGalleryStyle(value) {
+  const text = String(value ?? '').trim().toUpperCase()
+  if (!text || text === 'NONE' || text === 'NULL') return null
+  if (!GALLERY_FOIL_STYLES.has(text)) throw new Error('闪卡样式无效')
+  return text
+}
+
+function readGalleryMetadata() {
+  try {
+    const data = JSON.parse(fs.readFileSync(GALLERY_METADATA_FILE, 'utf8') || '{}')
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+  } catch { return {} }
+}
+
+function writeGalleryMetadata(metadata) {
+  fs.mkdirSync(GALLERY_DIR, { recursive: true })
+  const tmp = GALLERY_METADATA_FILE + '.tmp'
+  fs.writeFileSync(tmp, JSON.stringify(metadata || {}, null, 2), 'utf8')
+  fs.renameSync(tmp, GALLERY_METADATA_FILE)
+}
+
+function getGalleryFoilStyle(metadata, fileName) {
+  try { return normalizeGalleryStyle(metadata?.[fileName]?.foilStyle) }
+  catch { return null }
+}
+
+function toGalleryItem(fileName, metadata = null) {
+  const galleryMetadata = metadata || readGalleryMetadata()
   const fullPath = resolveGalleryId(fileName)
   const stat = fs.statSync(fullPath)
   return {
@@ -1081,17 +1135,19 @@ function toGalleryItem(fileName) {
     mtimeMs: stat.mtimeMs,
     mime: galleryMimeFromName(fileName),
     url: '/dashboard/api/gallery/image/' + encodeURIComponent(fileName),
+    foilStyle: getGalleryFoilStyle(galleryMetadata, fileName),
   }
 }
 
 function listGalleryImages() {
   fs.mkdirSync(GALLERY_DIR, { recursive: true })
+  const metadata = readGalleryMetadata()
   let entries = []
   try { entries = fs.readdirSync(GALLERY_DIR, { withFileTypes: true }) } catch { return [] }
   return entries
     .filter(entry => entry.isFile() && /\.(?:png|jpe?g|webp|gif)$/i.test(entry.name))
     .map(entry => {
-      try { return toGalleryItem(entry.name) }
+      try { return toGalleryItem(entry.name, metadata) }
       catch { return null }
     })
     .filter(Boolean)
@@ -1112,7 +1168,10 @@ function writeGalleryImage(input = {}) {
   const fileName = `${Date.now()}-${crypto.randomBytes(3).toString('hex')}-${safeName}.${ext}`
   const fullPath = resolveGalleryId(fileName)
   fs.writeFileSync(fullPath, buffer)
-  return toGalleryItem(fileName)
+  const metadata = readGalleryMetadata()
+  metadata[fileName] = { ...(metadata[fileName] || {}), foilStyle: null }
+  writeGalleryMetadata(metadata)
+  return toGalleryItem(fileName, metadata)
 }
 
 function deleteGalleryImage(id) {
@@ -1124,13 +1183,31 @@ function deleteGalleryImage(id) {
 
 function deleteGalleryImages(ids) {
   const list = Array.isArray(ids) ? ids : [ids]
+  const metadata = readGalleryMetadata()
+  let metadataChanged = false
   const deleted = []
   const errors = []
   for (const id of list) {
-    try { deleted.push(deleteGalleryImage(id)) }
+    try {
+      deleted.push(deleteGalleryImage(id))
+      if (Object.prototype.hasOwnProperty.call(metadata, id)) {
+        delete metadata[id]
+        metadataChanged = true
+      }
+    }
     catch (e) { errors.push({ id, message: e.message }) }
   }
+  if (metadataChanged) writeGalleryMetadata(metadata)
   return { deleted, errors }
+}
+
+function updateGalleryImageStyle(id, foilStyle) {
+  const fullPath = resolveGalleryId(id)
+  if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) throw new Error('图片不存在')
+  const metadata = readGalleryMetadata()
+  metadata[id] = { ...(metadata[id] || {}), foilStyle: normalizeGalleryStyle(foilStyle) }
+  writeGalleryMetadata(metadata)
+  return toGalleryItem(id, metadata)
 }
 
 function isBlockedDeletePath(filePath) {
@@ -1605,14 +1682,7 @@ function formatLocalNpmCommand(args = []) {
 }
 
 function getNoProxyEnvOverrides() {
-  return {
-    HTTP_PROXY: '',
-    HTTPS_PROXY: '',
-    http_proxy: '',
-    https_proxy: '',
-    npm_config_proxy: '',
-    npm_config_https_proxy: '',
-  }
+  return Object.fromEntries(NPM_PROXY_ENV_KEYS.map(key => [key, '']))
 }
 
 function runNpmCommand(args, options = {}) {
@@ -1633,7 +1703,11 @@ function collectNpmInstallDiagnostics(force = false) {
   const env = {
     HTTP_PROXY: redactProxyValue(process.env.HTTP_PROXY || process.env.http_proxy),
     HTTPS_PROXY: redactProxyValue(process.env.HTTPS_PROXY || process.env.https_proxy),
+    ALL_PROXY: redactProxyValue(process.env.ALL_PROXY || process.env.all_proxy),
     NO_PROXY: redactProxyValue(process.env.NO_PROXY || process.env.no_proxy),
+    npm_config_proxy: redactProxyValue(process.env.npm_config_proxy || process.env.NPM_CONFIG_PROXY),
+    npm_config_https_proxy: redactProxyValue(process.env.npm_config_https_proxy || process.env.NPM_CONFIG_HTTPS_PROXY),
+    npm_config_all_proxy: redactProxyValue(process.env.npm_config_all_proxy || process.env.NPM_CONFIG_ALL_PROXY),
   }
   const config = {
     proxy: runNpmConfigGet('proxy'),
@@ -1660,17 +1734,82 @@ function collectNpmInstallDiagnostics(force = false) {
     },
     dependencies: getProjectDependencyStatus(),
   }
+  data.proxy = diagnoseNpmProxy(data)
   npmDiagnosticsCache = { at: now, data }
   return data
+}
+
+function collectNpmProxyCandidates(diagnostics = {}) {
+  const candidates = []
+  for (const [key, value] of Object.entries(diagnostics.env || {})) {
+    if (/^no_proxy$/i.test(key)) continue
+    const endpoint = parseProxyEndpoint(value)
+    if (endpoint) candidates.push({ source: 'env', key, ...endpoint })
+  }
+  for (const [key, value] of Object.entries({ proxy: diagnostics.config?.proxy, httpsProxy: diagnostics.config?.httpsProxy })) {
+    const endpoint = parseProxyEndpoint(value)
+    if (endpoint) candidates.push({ source: 'npm config', key, ...endpoint })
+  }
+  return candidates
+}
+
+function diagnoseNpmProxy(diagnostics = {}) {
+  const candidates = collectNpmProxyCandidates(diagnostics)
+  const loopback = candidates.filter(item => isLoopbackProxyHost(item.hostname))
+  const staleLoopback = []
+  for (const item of loopback) {
+    const portState = checkPortState(item.port)
+    if (portState.status !== 'occupied') staleLoopback.push({ ...item, portState })
+  }
+  return {
+    candidates,
+    loopback,
+    staleLoopback,
+    shouldBypass: staleLoopback.length > 0,
+    reason: staleLoopback.length ? `检测到失效本机代理 ${staleLoopback.map(item => `${item.hostname}:${item.port}`).join('、')}` : (loopback.length ? '检测到本机代理端口正在监听' : ''),
+  }
+}
+
+function repairNpmProxyConfig(env = getNoProxyEnvOverrides()) {
+  const actions = []
+  for (const args of [
+    ['config', 'delete', 'proxy'],
+    ['config', 'delete', 'https-proxy'],
+    ['config', 'set', 'registry', 'https://registry.npmmirror.com'],
+  ]) {
+    try {
+      runNpmCommand(args, { env })
+      actions.push({ command: formatLocalNpmCommand(args), ok: true })
+    } catch (e) {
+      actions.push({ command: formatLocalNpmCommand(args), ok: false, message: String(e.stderr || e.message || '').trim() })
+    }
+  }
+  return actions
+}
+
+function prepareNpmInstallRun(options = {}) {
+  const forceRepair = !!options.forceRepair
+  const diagnostics = collectNpmInstallDiagnostics(true)
+  const proxy = diagnostics.proxy || diagnoseNpmProxy(diagnostics)
+  const shouldClean = forceRepair || proxy.shouldBypass
+  const env = shouldClean ? getNoProxyEnvOverrides() : {}
+  const repair = {
+    forced: forceRepair,
+    automatic: !forceRepair && proxy.shouldBypass,
+    envClearedForRetry: shouldClean,
+    reason: shouldClean ? (proxy.reason || '已清理本次 npm install 的代理环境') : '',
+    actions: [],
+  }
+  if (shouldClean) repair.actions = repairNpmProxyConfig(env)
+  diagnostics.proxy = proxy
+  diagnostics.repair = repair
+  return { env, diagnostics, repair }
 }
 
 function commandListForNpmProxyFix(hasNpmProxy, hasEnvProxy) {
   const commands = []
   if (hasEnvProxy && process.platform === 'win32') {
-    commands.push('$env:HTTP_PROXY = ""')
-    commands.push('$env:HTTPS_PROXY = ""')
-    commands.push('$env:http_proxy = ""')
-    commands.push('$env:https_proxy = ""')
+    for (const key of NPM_PROXY_ENV_KEYS) commands.push(`$env:${key} = ""`)
   }
   if (hasNpmProxy) {
     commands.push(formatLocalNpmCommand(['config', 'delete', 'proxy']))
@@ -1684,7 +1823,7 @@ function buildNpmInstallFailureGuide(logLines = [], diagnostics = null) {
   const text = Array.isArray(logLines) ? logLines.join('\n') : String(logLines || '')
   const diag = diagnostics || collectNpmInstallDiagnostics()
   const hasNpmProxy = !!(diag.config?.proxy || diag.config?.httpsProxy)
-  const hasEnvProxy = !!(diag.env?.HTTP_PROXY || diag.env?.HTTPS_PROXY)
+  const hasEnvProxy = Object.entries(diag.env || {}).some(([key, value]) => !/^no_proxy$/i.test(key) && !!value)
   if (!text.trim()) return null
 
   const refused = /ECONNREFUSED/i.test(text)
@@ -1701,7 +1840,7 @@ function buildNpmInstallFailureGuide(logLines = [], diagnostics = null) {
       summary: `npm 正在通过本机代理 ${endpoint} 访问 npm registry，但这个端口连不上。通常是代理软件没有启动、端口变了，或 npm 里残留了旧代理配置。`,
       fixSteps: [
         `如果你需要代理，请先打开代理软件，并确认它监听的是 ${endpoint}。`,
-        '如果你不需要代理，优先点击“一键修复代理并重试”，部署器会用内部 npm 路径执行修复并清理本次 npm install 的代理环境。',
+        diag.repair?.envClearedForRetry ? '部署器已尝试清理本次 npm install 的代理环境；如果仍失败，请确认是否还有系统代理或安全软件接管了连接。' : '如果你不需要代理，优先点击“一键修复代理并重试”，部署器会用内部 npm 路径执行修复并清理本次 npm install 的代理环境。',
         '下面的命令已使用部署器实际 npm 路径；普通 PowerShell 里没有全局 npm 时也可以复制执行。',
         '处理完成后，回到部署器点击“执行 npm install”或“一键修复代理并重试”。',
       ],
@@ -1718,8 +1857,9 @@ function buildNpmInstallFailureGuide(logLines = [], diagnostics = null) {
   return null
 }
 
-function startNpmInstallTask(extraEnv = {}, diagnostics = null) {
-  return spawnLocalTask('npmInstall', getLocalToolCommand('npm'), ['install'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', env: extraEnv, diagnostics: diagnostics || collectNpmInstallDiagnostics(true) }))
+function startNpmInstallTask(options = {}) {
+  const prepared = options.prepared || prepareNpmInstallRun({ forceRepair: !!options.forceRepair })
+  return spawnLocalTask('npmInstall', getLocalToolCommand('npm'), ['install'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', env: { ...prepared.env, ...(options.env || {}) }, diagnostics: prepared.diagnostics }))
 }
 
 function repairNpmProxyAndStartInstall() {
@@ -1727,24 +1867,9 @@ function repairNpmProxyAndStartInstall() {
   if (dependencies.ready) return { ok: true, skipped: true, message: '项目依赖已安装', actions: [], status: getLocalNpmInstallStatus() }
   const npmInfo = getCommandInfo('npm')
   if (!npmInfo.found) return { ok: false, message: '当前 Windows 本机未找到 npm，请先安装便携 Node/npm 后重新检测环境', npm: npmInfo }
-  const cleanEnv = getNoProxyEnvOverrides()
-  const actions = []
-  for (const args of [
-    ['config', 'delete', 'proxy'],
-    ['config', 'delete', 'https-proxy'],
-    ['config', 'set', 'registry', 'https://registry.npmmirror.com'],
-  ]) {
-    try {
-      runNpmCommand(args, { env: cleanEnv })
-      actions.push({ command: formatLocalNpmCommand(args), ok: true })
-    } catch (e) {
-      actions.push({ command: formatLocalNpmCommand(args), ok: false, message: String(e.stderr || e.message || '').trim() })
-    }
-  }
-  const diagnostics = collectNpmInstallDiagnostics(true)
-  diagnostics.repair = { actions, envClearedForRetry: true }
-  const started = startNpmInstallTask(cleanEnv, diagnostics)
-  return { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : '已清理本次部署器 npm 代理并重新启动 npm install', actions, status: getLocalNpmInstallStatus() }
+  const prepared = prepareNpmInstallRun({ forceRepair: true })
+  const started = startNpmInstallTask({ prepared })
+  return { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : '已清理本次部署器 npm 代理并重新启动 npm install', actions: prepared.repair.actions, status: getLocalNpmInstallStatus() }
 }
 
 function getBlockedLocalTaskStatus(key, extra = {}) {
@@ -3083,6 +3208,18 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  if (pathname === '/dashboard/api/gallery/style' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const { id, foilStyle } = JSON.parse(body || '{}')
+        const image = updateGalleryImageStyle(id, foilStyle)
+        return json(res, { ok: true, image, message: '闪卡样式已保存' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
   if (pathname.startsWith('/dashboard/api/gallery/image/') && req.method === 'GET') {
     try {
       const id = decodeURIComponent(pathname.slice('/dashboard/api/gallery/image/'.length))
@@ -3278,8 +3415,8 @@ const server = http.createServer((req, res) => {
       if (dependencies.ready) return json(res, { ok: true, skipped: true, message: '项目依赖已安装', status: getLocalNpmInstallStatus() })
       const npmInfo = getCommandInfo('npm')
       if (!npmInfo.found) return json(res, { ok: false, message: '当前 Windows 本机未找到 npm，请先安装便携 Node/npm 后重新检测环境', npm: npmInfo }, 400)
-      const diagnostics = collectNpmInstallDiagnostics(true)
-      const started = startNpmInstallTask({}, diagnostics)
+      const prepared = prepareNpmInstallRun()
+      const started = startNpmInstallTask({ prepared })
       return json(res, { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : 'npm install 已启动', status: getLocalNpmInstallStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }

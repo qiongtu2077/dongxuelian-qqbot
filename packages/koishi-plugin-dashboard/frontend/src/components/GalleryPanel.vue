@@ -11,7 +11,9 @@
         </div>
         <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none" @change="onFileChange" />
         <button class="gallery-add" type="button" title="上传图片" aria-label="上传图片" @click="openUpload" :disabled="uploading">+</button>
-        <button class="gallery-remove-toggle" type="button" title="批量删除" aria-label="批量删除" :class="{ active: bulkDeleteMode }" @click="toggleBulkDelete">-</button>
+        <button class="gallery-remove-toggle" type="button" title="批量删除" aria-label="批量删除" :class="{ active: bulkDeleteMode }" @click="toggleBulkDelete">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 15h10l1-15"/><path d="M10 10v7"/><path d="M14 10v7"/></svg>
+        </button>
       </div>
     </div>
 
@@ -31,7 +33,7 @@
     </div>
 
     <div v-else class="gallery-grid" :style="galleryStyle">
-      <article v-for="(image, index) in images" :key="image.id" :class="['gallery-card', { 'is-bulk': bulkDeleteMode, selected: isSelected(image.id) }]" @click="onCardClick(image, index)" @pointermove="moveCard" @pointerleave="resetCard" @pointercancel="resetCard">
+      <article v-for="(image, index) in images" :key="image.id" :class="['gallery-card', foilCardClass(image), { 'is-bulk': bulkDeleteMode, selected: isSelected(image.id) }]" @click="onCardClick(image, index)" @pointermove="moveCard" @pointerleave="resetCard" @pointercancel="resetCard">
         <div class="gallery-card__rotator">
           <div class="gallery-card__front">
             <img :src="image.url" :alt="image.name" loading="lazy" />
@@ -47,16 +49,21 @@
     <div v-if="previewImage" class="gallery-preview-backdrop" @click.self="closePreview" @contextmenu.prevent="closePreview">
       <section class="gallery-preview-shell" aria-label="图片预览" @contextmenu.prevent="closePreview">
         <button class="gallery-preview-close" type="button" aria-label="关闭预览" title="关闭预览" @click="closePreview">×</button>
-        <article ref="previewCardRef" class="gallery-preview-card gallery-card" @pointerdown="previewPointerDown" @pointermove="previewPointerMove" @pointerup="previewPointerUp" @pointercancel="previewPointerUp" @pointerleave="previewPointerUp">
-          <div class="gallery-card__rotator">
-            <div class="gallery-card__front">
-              <img :src="previewImage.url" :alt="previewImage.name" />
-              <div class="gallery-card__shine"></div>
-              <div class="gallery-card__texture"></div>
-              <div class="gallery-card__glare"></div>
+        <div class="gallery-preview-stage">
+          <article ref="previewCardRef" :class="['gallery-preview-card', 'gallery-card', foilCardClass(previewImage)]" @pointerdown="previewPointerDown" @pointermove="previewPointerMove" @pointerup="previewPointerUp" @pointercancel="previewPointerUp" @pointerleave="previewPointerLeave">
+            <div class="gallery-card__rotator">
+              <div class="gallery-card__front">
+                <img :src="previewImage.url" :alt="previewImage.name" />
+                <div class="gallery-card__shine"></div>
+                <div class="gallery-card__texture"></div>
+                <div class="gallery-card__glare"></div>
+              </div>
             </div>
-          </div>
-        </article>
+          </article>
+          <aside class="gallery-foil-picker" aria-label="闪卡样式">
+            <button v-for="option in foilOptions" :key="option.id" type="button" :class="{ active: currentFoilStyle === option.value }" :disabled="updatingStyle" :title="option.title" @click="setPreviewFoilStyle(option.value)">{{ option.label }}</button>
+          </aside>
+        </div>
       </section>
     </div>
   </div>
@@ -64,7 +71,7 @@
 
 <script>
 import { computed, inject, onActivated, onBeforeUnmount, onMounted, ref } from 'vue'
-import { deleteGalleryImage, fetchGalleryImages, uploadGalleryImage } from '../api'
+import { deleteGalleryImage, fetchGalleryImages, updateGalleryImageStyle, uploadGalleryImage } from '../api'
 
 const STOP_THRESHOLD = 0.001
 const interactSettings = { stiffness: 0.066, damping: 0.25 }
@@ -156,6 +163,22 @@ function applyPointerToCard(event, card, divisor = 4.2) {
   setSpringTarget(state.background, { x: mapRange(pointer.x, 0, 100, 37, 63), y: mapRange(pointer.y, 0, 100, 33, 67) })
   startAnimation(rotator, state)
 }
+function applyDragToCard(event, card, drag) {
+  const rotator = card.querySelector('.gallery-card__rotator')
+  if (!rotator) return
+  const state = getCardState(rotator)
+  clearTimeout(state.resetTimer)
+  state.resetTimer = null
+  state.settings = interactSettings
+  const rect = card.getBoundingClientRect()
+  const pointer = { x: round(clamp(((event.clientX - rect.left) / rect.width) * 100)), y: round(clamp(((event.clientY - rect.top) / rect.height) * 100)) }
+  const dragX = clamp(((event.clientX - drag.startX) / Math.max(rect.width, 1)) * 64, -26, 26)
+  const dragY = clamp(-((event.clientY - drag.startY) / Math.max(rect.height, 1)) * 64, -26, 26)
+  setSpringTarget(state.rotation, { x: round(dragX), y: round(dragY) })
+  setSpringTarget(state.pointer, { x: pointer.x, y: pointer.y, effectIntensity: 1 })
+  setSpringTarget(state.background, { x: mapRange(pointer.x, 0, 100, 37, 63), y: mapRange(pointer.y, 0, 100, 33, 67) })
+  startAnimation(rotator, state)
+}
 function resetCardTarget(card, delay = 360) {
   const rotator = card.querySelector('.gallery-card__rotator')
   if (!rotator) return
@@ -194,16 +217,22 @@ export default {
     const selectedIds = ref(new Set())
     const previewIndex = ref(-1)
     const previewCardRef = ref(null)
-    const previewDragging = ref(false)
+    const previewDrag = ref(null)
+    const updatingStyle = ref(false)
     const aspectOptions = [
       { id: 'auto', label: '自适应' },
       { id: '16-9', label: '16:9' },
       { id: '4-3', label: '4:3' },
       { id: '9-16', label: '9:16' },
     ]
+    const foilOptions = [
+      { id: 'none', value: null, label: '无', title: '无闪卡样式' },
+      ...['A', 'B', 'C', 'D', 'E', 'F', 'G'].map(id => ({ id, value: id, label: id, title: `闪卡样式 ${id}` })),
+    ]
     const galleryStyle = computed(() => ({ '--gallery-aspect': ({ auto: '1 / 1', '16-9': '16 / 9', '4-3': '4 / 3', '9-16': '9 / 16' })[aspectMode.value] || '1 / 1' }))
     const selectedCount = computed(() => selectedIds.value.size)
     const previewImage = computed(() => images.value[previewIndex.value] || null)
+    const currentFoilStyle = computed(() => previewImage.value?.foilStyle || null)
 
     function withAdminRetry(res, retry) {
       if (res?.code !== 'ADMIN_REQUIRED') return false
@@ -276,7 +305,26 @@ export default {
     function closePreview() {
       if (previewCardRef.value) resetCardTarget(previewCardRef.value, 0)
       previewIndex.value = -1
-      previewDragging.value = false
+      previewDrag.value = null
+    }
+    function foilCardClass(image) { return image?.foilStyle ? `gallery-card--foil-${String(image.foilStyle).toLowerCase()}` : '' }
+    function replaceImage(updated) {
+      images.value = images.value.map(item => item.id === updated.id ? { ...item, ...updated } : item)
+    }
+    async function setPreviewFoilStyle(foilStyle) {
+      const image = previewImage.value
+      if (!image || updatingStyle.value || image.foilStyle === foilStyle) return
+      const previous = image.foilStyle || null
+      replaceImage({ ...image, foilStyle })
+      updatingStyle.value = true
+      const res = await updateGalleryImageStyle(image.id, foilStyle)
+      if (withAdminRetry(res, () => setPreviewFoilStyle(foilStyle))) { replaceImage({ ...image, foilStyle: previous }); updatingStyle.value = false; return }
+      if (res.ok) replaceImage(res.data.image || { ...image, foilStyle })
+      else {
+        replaceImage({ ...image, foilStyle: previous })
+        message.value = { type: 'err', text: res.data?.message || '保存闪卡样式失败' }
+      }
+      updatingStyle.value = false
     }
     function onCardClick(image, index) {
       if (bulkDeleteMode.value) { toggleSelected(image.id); return }
@@ -289,19 +337,21 @@ export default {
     function resetCard(event) { resetCardTarget(event.currentTarget) }
     function previewPointerDown(event) {
       if (event.button !== 0) return
-      previewDragging.value = true
+      previewDrag.value = { startX: event.clientX, startY: event.clientY, pointerId: event.pointerId }
       event.currentTarget.setPointerCapture?.(event.pointerId)
-      applyPointerToCard(event, event.currentTarget, 7)
     }
     function previewPointerMove(event) {
-      if (!previewDragging.value) return
-      applyPointerToCard(event, event.currentTarget, 7)
+      if (!previewDrag.value) return
+      applyDragToCard(event, event.currentTarget, previewDrag.value)
     }
     function previewPointerUp(event) {
-      if (!previewDragging.value) return
-      previewDragging.value = false
+      if (!previewDrag.value) return
+      previewDrag.value = null
       try { event.currentTarget.releasePointerCapture?.(event.pointerId) } catch {}
       resetCardTarget(event.currentTarget, 220)
+    }
+    function previewPointerLeave(event) {
+      if (!previewDrag.value) resetCardTarget(event.currentTarget, 220)
     }
     function onKeydown(event) {
       if (event.key === 'Escape' && previewImage.value) closePreview()
@@ -310,7 +360,7 @@ export default {
     onMounted(() => { loadImages(); window.addEventListener('keydown', onKeydown) })
     onActivated(loadImages)
     onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
-    return { images, loading, uploading, deletingId, message, fileInput, aspectMode, aspectOptions, galleryStyle, bulkDeleteMode, selectedCount, previewImage, previewCardRef, openUpload, onFileChange, toggleBulkDelete, isSelected, clearSelection, deleteSelectedImages, onCardClick, closePreview, moveCard, resetCard, previewPointerDown, previewPointerMove, previewPointerUp }
+    return { images, loading, uploading, deletingId, message, fileInput, aspectMode, aspectOptions, galleryStyle, bulkDeleteMode, selectedCount, previewImage, previewCardRef, foilOptions, currentFoilStyle, updatingStyle, foilCardClass, setPreviewFoilStyle, openUpload, onFileChange, toggleBulkDelete, isSelected, clearSelection, deleteSelectedImages, onCardClick, closePreview, moveCard, resetCard, previewPointerDown, previewPointerMove, previewPointerUp, previewPointerLeave }
   },
 }
 </script>

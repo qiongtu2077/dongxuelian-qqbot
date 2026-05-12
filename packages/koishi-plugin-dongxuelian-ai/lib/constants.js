@@ -14,7 +14,7 @@ const {
 
 const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(__dirname, '../data')
 
-const PLUGIN_VERSION = '1.1.0'
+const PLUGIN_VERSION = '1.1.1'
 const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')
 const MODEL_FILE = path.join(DATA_DIR, 'ai-model.txt')
 const BASE_URL_FILE = path.join(DATA_DIR, 'ai-base-url.txt')

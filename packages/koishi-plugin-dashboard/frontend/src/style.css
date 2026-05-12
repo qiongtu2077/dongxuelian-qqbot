@@ -1301,7 +1301,6 @@ label.uninstall-row { cursor: pointer }
 .gallery-aspect-tabs { margin: 0; max-width: 100% }
 
 .gallery-add,
-.gallery-remove-toggle,
 .gallery-empty-add {
   width: 42px;
   height: 42px;
@@ -1318,12 +1317,33 @@ label.uninstall-row { cursor: pointer }
 }
 
 .gallery-remove-toggle {
-  background: color-mix(in srgb, var(--danger) 78%, var(--card));
-  color: #fff;
-  font-size: 30px;
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 12%, var(--input));
+  color: color-mix(in srgb, var(--danger) 78%, var(--text));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 8px 22px var(--shadow);
+  transition: transform .18s ease, box-shadow .2s ease, background .2s ease, color .2s ease;
+}
+
+.gallery-remove-toggle svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .gallery-remove-toggle.active {
+  background: color-mix(in srgb, var(--danger) 82%, var(--card));
+  color: #fff;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 24%, transparent), 0 10px 28px var(--shadow);
 }
 
@@ -1434,10 +1454,12 @@ label.uninstall-row { cursor: pointer }
 .gallery-card__glare {
   pointer-events: none;
   z-index: 1;
-  opacity: var(--effect-intensity);
+  opacity: 0;
 }
 
-.gallery-card__shine {
+.gallery-card--foil-a .gallery-card__shine,
+.gallery-card--foil-c .gallery-card__shine,
+.gallery-card--foil-e .gallery-card__shine {
   background-image:
     repeating-linear-gradient(-33deg, hsl(2, 70%, 47%) 6%, hsl(228, 60%, 64%) 12%, hsl(176, 55%, 39%) 18%, hsl(123, 68%, 35%) 24%, hsl(283, 75%, 57%) 30%, hsl(2, 70%, 47%) 36%),
     radial-gradient(farthest-corner circle at var(--pointer-x) var(--pointer-y), hsla(189, 76%, 77%, .58) 0%, hsla(147, 59%, 77%, .48) 25%, hsla(271, 55%, 69%, .48) 50%, hsla(355, 56%, 72%, .5) 75%);
@@ -1446,9 +1468,12 @@ label.uninstall-row { cursor: pointer }
   background-size: 900% 900%, 180% 180%;
   mix-blend-mode: color-dodge;
   filter: brightness(calc((var(--pointer-from-center) * .45) + .48)) contrast(1.6) saturate(1.1);
+  opacity: var(--effect-intensity);
 }
 
-.gallery-card__texture {
+.gallery-card--foil-b .gallery-card__texture,
+.gallery-card--foil-c .gallery-card__texture,
+.gallery-card--foil-e .gallery-card__texture {
   background-image:
     repeating-linear-gradient(0deg, hsl(283, 100%, 73%) 6%, hsl(2, 100%, 73%) 12%, hsl(53, 100%, 69%) 18%, hsl(93, 100%, 69%) 24%, hsl(176, 100%, 76%) 30%, hsl(228, 100%, 74%) 36%, hsl(283, 100%, 73%) 42%),
     repeating-linear-gradient(133deg, rgba(14,21,46,.76) 0%, rgba(220,255,255,.54) 3.8%, rgba(14,21,46,.78) 10%, rgba(14,21,46,.78) 12%);
@@ -1459,11 +1484,44 @@ label.uninstall-row { cursor: pointer }
   opacity: calc((.28 * var(--effect-intensity)) + var(--effect-intensity) * var(--pointer-from-center) * .42);
 }
 
-.gallery-card__glare {
+.gallery-card--foil-d .gallery-card__glare,
+.gallery-card--foil-e .gallery-card__glare {
   background-image: radial-gradient(farthest-corner circle at var(--pointer-x) var(--pointer-y), hsla(0,0%,100%,.74) 0%, hsla(0,0%,100%,.24) 24%, hsl(0,0%,0%) 120%);
   filter: brightness(1.05) contrast(1.1);
   mix-blend-mode: hard-light;
   opacity: calc((.18 * var(--effect-intensity)) + var(--effect-intensity) * var(--pointer-from-center) * .72);
+}
+
+.gallery-card--foil-f .gallery-card__shine,
+.gallery-card--foil-g .gallery-card__shine {
+  background-image:
+    radial-gradient(farthest-corner circle at var(--pointer-x) var(--pointer-y), rgba(255,255,255,.86) 0%, rgba(117,224,255,.34) 20%, rgba(255,132,214,.28) 40%, transparent 70%),
+    conic-gradient(from 120deg at var(--background-x) var(--background-y), #ff6f91, #ffd166, #7bd88f, #56cfe1, #9b5de5, #ff6f91),
+    repeating-linear-gradient(115deg, rgba(255,255,255,.2) 0 2px, rgba(15,23,42,.48) 2px 5px, rgba(255,255,255,.08) 5px 8px);
+  background-blend-mode: screen, color-dodge, soft-light;
+  background-size: 160% 160%, 260% 260%, 220% 220%;
+  background-position: var(--pointer-x) var(--pointer-y), var(--background-x) var(--background-y), var(--background-x) var(--background-y);
+  mix-blend-mode: color-dodge;
+  filter: saturate(1.45) contrast(1.25) brightness(calc(.55 + var(--pointer-from-center) * .65));
+  opacity: calc(var(--effect-intensity) * .86);
+}
+
+.gallery-card--foil-f .gallery-card__texture,
+.gallery-card--foil-g .gallery-card__texture {
+  background-image:
+    repeating-linear-gradient(52deg, rgba(255,255,255,.22) 0 1px, rgba(255,255,255,0) 1px 7px),
+    repeating-linear-gradient(-18deg, rgba(255,255,255,.16) 0 2px, rgba(20,20,26,.38) 2px 6px);
+  background-position: var(--background-x) var(--background-y);
+  background-size: 180% 180%, 240% 240%;
+  mix-blend-mode: overlay;
+  opacity: calc(var(--effect-intensity) * (.18 + var(--pointer-from-center) * .38));
+}
+
+.gallery-card--foil-g .gallery-card__glare {
+  background-image: radial-gradient(farthest-corner circle at var(--pointer-x) var(--pointer-y), rgba(255,255,255,.92) 0%, rgba(255,255,255,.32) 22%, rgba(255,255,255,0) 56%, rgba(0,0,0,.62) 120%);
+  mix-blend-mode: hard-light;
+  filter: brightness(calc(1 + var(--pointer-from-center) * .24)) contrast(1.16);
+  opacity: calc(var(--effect-intensity) * (.2 + var(--pointer-from-center) * .62));
 }
 
 .gallery-select-mark {
@@ -1497,24 +1555,32 @@ label.uninstall-row { cursor: pointer }
 
 .gallery-preview-shell {
   position: relative;
-  width: min(86vw, 1120px);
-  height: min(78vh, 760px);
+  width: min(92vw, 1180px);
+  height: min(82vh, 760px);
   max-width: calc(100vw - 48px);
   max-height: calc(100vh - 48px);
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--card) 88%, transparent);
-  box-shadow: 0 26px 80px rgba(0,0,0,.45);
+  display: block;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   overflow: visible;
-  padding: 42px;
+  padding: 42px 58px 28px 28px;
+}
+
+.gallery-preview-stage {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px;
+  gap: 18px;
+  align-items: center;
 }
 
 .gallery-preview-close {
   position: absolute;
-  top: 10px;
-  right: 12px;
+  top: 2px;
+  right: 6px;
   z-index: 5;
   width: 32px;
   height: 32px;
@@ -1529,32 +1595,83 @@ label.uninstall-row { cursor: pointer }
 .gallery-preview-close:hover { color: var(--danger) }
 
 .gallery-preview-card {
-  width: min(100%, 980px);
-  height: min(100%, 640px);
-  max-width: calc(100% - 52px);
-  max-height: calc(100% - 52px);
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
   aspect-ratio: auto;
   cursor: grab;
   perspective: 900px;
+  touch-action: none;
 }
 
 .gallery-preview-card:active { cursor: grabbing }
 .gallery-preview-card .gallery-card__front img { object-fit: contain; background: #060708 }
 .gallery-preview-card .gallery-card__rotator { box-shadow: 0 18px 58px rgba(0,0,0,.36) }
 
+.gallery-foil-picker {
+  display: grid;
+  gap: 8px;
+  justify-content: center;
+}
+
+.gallery-foil-picker button {
+  width: 42px;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card) 76%, rgba(0,0,0,.3));
+  color: var(--text2);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(0,0,0,.22);
+  transition: transform .16s ease, color .2s ease, background .2s ease, box-shadow .2s ease;
+}
+
+.gallery-foil-picker button:hover,
+.gallery-foil-picker button.active {
+  transform: translateY(-1px);
+  color: #11110d;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  box-shadow: 0 12px 24px rgba(0,0,0,.28);
+}
+
+.gallery-foil-picker button:disabled {
+  cursor: wait;
+  opacity: .68;
+  transform: none;
+}
+
 
 @media (max-width: 760px) {
   .gallery-preview-backdrop { padding: 12px }
   .gallery-preview-shell {
     width: calc(100vw - 24px);
-    height: min(76vh, 620px);
+    height: min(82vh, 680px);
     max-width: calc(100vw - 24px);
     max-height: calc(100vh - 24px);
-    padding: 34px 18px 24px;
+    padding: 38px 10px 16px;
+  }
+  .gallery-preview-stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 12px;
   }
   .gallery-preview-card {
-    max-width: calc(100% - 24px);
-    max-height: calc(100% - 24px);
+    max-width: 100%;
+    max-height: 100%;
+  }
+  .gallery-foil-picker {
+    grid-auto-flow: column;
+    grid-auto-columns: 42px;
+    overflow-x: auto;
+    justify-content: start;
+    padding: 2px 4px 6px;
+  }
+  .gallery-preview-close {
+    top: 2px;
+    right: 4px;
   }
   .app {
     width: calc(100vw - 56px);
