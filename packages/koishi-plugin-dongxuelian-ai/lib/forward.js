@@ -10,8 +10,8 @@ const { logDebug } = require('./logging-config')
 
 const FORWARD_ID_RE = /(?:\[CQ:forward,id=([^,\]]+)\])|<forward\s+id="([^"]+)"\/>/
 const BLANK_NICK_CHARS_RE = /[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g
-const DEFAULT_FORWARD_NICKNAME = '缇ゅ弸'
-const NESTED_FORWARD_UNAVAILABLE = '[宓屽杞彂锛氬唴瀹规殏涓嶅彲瑙乚'
+const DEFAULT_FORWARD_NICKNAME = '群友'
+const NESTED_FORWARD_UNAVAILABLE = '[嵌套转发：内容暂不可读]'
 
 function getLogger(ctx) {
   return ctx && typeof ctx.logger === 'function' ? ctx.logger('dongxuelian-ai') : null
@@ -40,10 +40,10 @@ function normalizeNickname(sender = {}) {
 
 function messageSegmentToText(segment) {
   if (segment.type === 'text') return segment.data && segment.data.text || ''
-  if (segment.type === 'face') return '銆愯〃鎯呫€?'
+  if (segment.type === 'face') return '【表情】'
   if (segment.type === 'at') return '@' + (segment.data && (segment.data.name || segment.data.qq || ''))
-  if (segment.type === 'image') return '銆愬浘鐗囥€?'
-  return '銆愭秷鎭€?'
+  if (segment.type === 'image') return '【图片】'
+  return '【消息】'
 }
 
 function messageSegmentsToText(segments) {

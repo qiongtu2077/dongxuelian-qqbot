@@ -22,6 +22,7 @@ const {
   CONTEXT_JAILBREAK_STRONG_RE, CONTEXT_JAILBREAK_WEAK_RE,
   JAPAN_SELF_IDENTIFY_RE, GENERATION_REQUEST_RE,
   SHORT_FOLLOW_UP_RE, SENSITIVE_KEYWORDS_RE,
+  BANNED_ACTION_OUTPUT_RE,
 } = require('./constants')
 const { resolvePersona, loadPersonalSkill } = require('./persona')
 const { calculateRetaliationScore } = require('./retaliation')
@@ -810,10 +811,13 @@ async function chat(session, userText, ctx, options = {}) {
     if (hasBannedOutput(reply)) {
       ctx.logger('dongxuelian-ai').warn(`banned word in reply, retrying. original: ${reply}`)
       messages.push({ role: 'assistant', content: reply })
-      messages.push({
-        role: 'user',
-        content: '【系统提示：你刚才的回复包含了被明令禁止的封禁类词汇（拉黑/禁言/报警/黑名单等），请重新回复，绝对不能出现这些词，按自己的风格直接回答。】',
-      })
+      const bannedMatch = reply.match(BANNED_ACTION_OUTPUT_RE)
+      const overusedMatch = reply.match(/^[啧哼]/)
+      const specific = bannedMatch ? `"${bannedMatch[0]}"` : overusedMatch ? `"${overusedMatch[0]}"` : ''
+      const instruction = specific
+        ? `【系统提示：你刚才的回复包含了被禁止的${specific}，请重新回复，绝对不能出现${specific}，按你的风格直接回答。】`
+        : '【系统提示：你刚才的回复包含了被明令禁止的封禁类词汇（拉黑/禁言/报警/黑名单等），请重新回复，绝对不能出现这些词，按自己的风格直接回答。】'
+      messages.push({ role: 'user', content: instruction })
       reply = await callOpenAI(messages, options.randomTriggered)
       continue
     }
@@ -860,13 +864,15 @@ async function chat(session, userText, ctx, options = {}) {
 
   if (hasBannedOutput(finalReply)) {
     ctx.logger('dongxuelian-ai').warn(`banned word persists after retry, forcing fallback. reply: ${finalReply}`)
-    finalReply = retaliationLevel >= 1 ? (ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : pickRepeatedFallbackReply(session)) : '这活别找我，换个工具。'
+    if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : pickRepeatedFallbackReply(session)
+    else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(session)
+    else finalReply = '这活别找我，换个工具。'
   } else if (shouldRetryRepeatedReply(session, stripStickerMarkersForGuard(finalReply))) {
     ctx.logger('dongxuelian-ai').warn(`reply is still repetitive after retry, forcing fallback. reply: ${finalReply}`)
-    finalReply = retaliationLevel >= 1
-      ? (ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : pickRepeatedFallbackReply(session))
-      : '行吧，换个话题。'
-    }
+    if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : pickRepeatedFallbackReply(session)
+    else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(session)
+    else finalReply = '我还有事，下次再说。'
+  }
 
   // 反击模式禁止调用表情包
   if (retaliationLevel >= 1) {

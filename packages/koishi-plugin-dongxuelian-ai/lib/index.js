@@ -1085,7 +1085,7 @@ exports.apply = (ctx) => {
         const timer = setTimeout(() => {
           const p = channelPendingRandom.get(channelKey)
           channelPendingRandom.delete(channelKey)
-          if (p && shouldTriggerRandom(getRandomTriggerRate(channelKey))) {
+          if (p && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))) {
             channelMissCount.set(channelKey, 0)
             enqueueForChannel(channelKey, () => chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText }).then(reply => safeSendReply(ctx, session, reply, true)), 4)
           } else {

@@ -117,8 +117,8 @@ async function run(t) {
     const summary = await resolveForwardSummary(session, session.content, harness.ctx, mocked)
     t.check('scenario forward segment message includes text', summary.includes('segment text'), summary)
     t.check('scenario forward segment message includes at target', summary.includes('@42'), summary)
-    t.check('scenario forward segment message includes face label', summary.includes('銆愯〃鎯呫€?'), summary)
-    t.check('scenario forward segment message includes image label', summary.includes('銆愬浘鐗囥€?'), summary)
+    t.check('scenario forward segment message includes face label', summary.includes('【表情】'), summary)
+    t.check('scenario forward segment message includes image label', summary.includes('【图片】'), summary)
   })
 
   await withScenario({}, async ({ harness, makeSession }) => {

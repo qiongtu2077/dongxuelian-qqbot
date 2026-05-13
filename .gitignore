@@ -20,3 +20,4 @@ package-lock.json
 tmp_*.js
 *.log
 local-deployer/release/
+.claude/settings.local.json
