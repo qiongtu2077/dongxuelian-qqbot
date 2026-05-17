@@ -29,30 +29,6 @@ function ensureWritableDir(dir) {
   fs.unlinkSync(probe)
 }
 
-function copyResource(sourceRoot, targetRoot, relativePath, options = {}) {
-  const source = path.join(sourceRoot, relativePath)
-  const target = path.join(targetRoot, relativePath)
-  if (!fs.existsSync(source)) return
-  if (options.replace) fs.rmSync(target, { recursive: true, force: true })
-  fs.mkdirSync(path.dirname(target), { recursive: true })
-  fs.cpSync(source, target, { recursive: true, force: true })
-}
-
-function syncWorkspace(resourceRoot, workspaceRoot) {
-  ensureWritableDir(workspaceRoot)
-  for (const dir of ['packages', 'scripts']) copyResource(resourceRoot, workspaceRoot, dir, { replace: true })
-  for (const file of ['package.json', 'package-lock.json', 'start.js', 'koishi.example.yml']) copyResource(resourceRoot, workspaceRoot, file, { replace: true })
-  for (const dir of ['data', 'runtime', path.join('runtime', 'downloads'), path.join('runtime', 'logs'), path.join('runtime', 'napcat')]) {
-    fs.mkdirSync(path.join(workspaceRoot, dir), { recursive: true })
-  }
-  fs.writeFileSync(path.join(workspaceRoot, '.lianlian-workspace.json'), JSON.stringify({
-    version: app.getVersion(),
-    resourceRoot,
-    workspaceRoot,
-    updatedAt: new Date().toISOString(),
-  }, null, 2), 'utf8')
-}
-
 function resolveAppPaths() {
   const resourceRoot = resolveResourceRoot()
   if (!app.isPackaged) return { resourceRoot, workspaceRoot: resourceRoot, fallbackReason: '' }
@@ -223,10 +199,15 @@ function registerIpc() {
     await shell.openExternal(value)
     return true
   })
-  ipcMain.handle('open-path', async (_event, targetPath) => {
-    const value = String(targetPath || '').trim()
-    if (!value) return 'empty path'
-    return shell.openPath(value)
+  ipcMain.handle('open-path', (_, p) => {
+    const resolved = path.resolve(p)
+    const roots = [appPaths.workspaceRoot, appPaths.resourceRoot].filter(Boolean)
+    const allowed = roots.some(root => {
+      const r = path.resolve(root)
+      return resolved === r || resolved.startsWith(r + path.sep)
+    })
+    if (!allowed) return 'blocked'
+    return shell.openPath(resolved)
   })
   ipcMain.handle('show-item-in-folder', async (_event, targetPath) => {
     const value = String(targetPath || '').trim()

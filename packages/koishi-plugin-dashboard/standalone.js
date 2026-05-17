@@ -2848,7 +2848,10 @@ function napcatRespond(res, proxyRes, token) {
     let body = ''
     proxyRes.on('data', c => body += c)
     proxyRes.on('end', () => {
-      const injected = body.replace('</head>', `<script>localStorage.setItem('token','${token}');</script></head>`)
+      const safeToken = String(token || '').replace(/[<>&'"\\]/g, c =>
+        ({'<':'&lt;','>':'&gt;','&':'&amp;',"'":"\\'",'"':'&quot;','\\':'\\\\'})[c] || c
+      )
+      const injected = body.replace('</head>', `<script>localStorage.setItem('token','${safeToken}');</script></head>`)
       res.writeHead(proxyRes.statusCode, { ...proxyRes.headers, 'content-length': Buffer.byteLength(injected) })
       res.end(injected)
     })
