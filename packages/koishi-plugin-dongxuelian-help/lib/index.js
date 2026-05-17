@@ -81,7 +81,7 @@ function renderRootHelp() {
     '可用子菜单：',
     '- helpAI / 帮助AI / AI帮助',
     '- help集合 / 帮助集合',
-    '- 指令速查 / help速查 / 帮助速查',
+    '- 其他帮助 / 指令速查',
     '- 人格',
   ].join('\n')
 }
@@ -192,24 +192,15 @@ function renderCollectionHelp() {
 
 function renderQuickReference() {
   return [
-    '\u3010\u6307\u4ee4\u901f\u67e5\u3011',
-    'help\u4e1c\u96ea\u83b2\uff1a\u67e5\u770b\u603b\u83dc\u5355',
-    'helpAI\uff1a\u67e5\u770b AI \u83dc\u5355',
-    'help\u96c6\u5408\uff1a\u67e5\u770b\u6635\u79f0\u4e0e\u96c6\u5408\u547d\u4ee4',
-    'AI\u72b6\u6001\uff1a\u67e5\u770b AI \u5f53\u524d\u914d\u7f6e',
-    'AI\u91cd\u8f7d\uff1a\u91cd\u8f7d AI \u914d\u7f6e',
-    'AI\u8bca\u65ad\uff1a\u68c0\u67e5\u5404\u4f9b\u5e94\u5546\u72b6\u6001',
-    '\u4e1c\u96ea\u83b2\u8054\u7f51\u5f00 / \u5173 / \u67e5\u770b',
-    '\u4e1c\u96ea\u83b2\u7fa4\u804aAI\u6982\u7387\u67e5\u770b / \u8bbe\u7f6eX% / \u91cd\u7f6e',
-    '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b\u5f00 / \u5173 / \u67e5\u770b',
-    '\u654f\u611f\u8bdd\u9898\u5904\u7406\u8005\u6dfb\u52a0 / \u5220\u9664 / \u67e5\u770b',
-    '\u7528\u6237\u9ed1\u540d\u5355\u6dfb\u52a0 / \u5220\u9664 / \u67e5\u770b',
-    '\u89c6\u9891\u9ed1\u540d\u5355\u6dfb\u52a0\u7fa4 / \u5220\u9664\u7fa4 / \u67e5\u770b',
-    '\u4e1c\u96ea\u83b2\u5e2e\u6211\u9009 A \u8fd8\u662f B',
-    '\u4e1c\u96ea\u83b2\u5410\u69fd\u6211',
-    '\u4e1c\u96ea\u83b2\u5e2e\u6211\u8bf4\u8bdd <\u5185\u5bb9>',
-    '\u4e1c\u96ea\u83b2\u5fd8\u8bb0\u6211',
-    '\u8bb0\u4f4fxxx\uff08\u76f4\u63a5\u5199\u5165\u8bb0\u5fc6\uff09',
+    '【其他帮助】',
+    'help东雪莲：查看总菜单',
+    '今日情绪',
+    '群聊日报 / 群聊详细日报',
+    '谁艾特我 / 谁@我',
+    '东雪莲复读开 / 关 / 状态',
+    '东雪莲测试开 / 关',
+    '东雪莲嘴臭开 / 关（管理员）',
+    '东雪莲思考开 / 关',
   ].join('\n')
 }
 
@@ -290,15 +281,11 @@ exports.apply = (ctx) => {
       return renderCollectionHelp()
     }
 
-    if (plain === '指令速查' || plain === 'help速查' || plain === '帮助速查') {
+    if (plain === '指令速查' || plain === 'help速查' || plain === '帮助速查' || plain === '其他帮助' || plain === '其他') {
       return renderQuickReference()
     }
 
     if (plain === '常用') {
-      return renderCommonHelp()
-    }
-
-    if (plain === '其他') {
       return renderCommonHelp()
     }
 
