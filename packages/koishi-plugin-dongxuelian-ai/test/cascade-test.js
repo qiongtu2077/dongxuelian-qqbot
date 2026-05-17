@@ -1774,7 +1774,7 @@ async function main() {
   }
 
   for (const command of [
-    CMD.helpCollection, CMD.common, CMD.other, CMD.groupReply, CMD.network,
+    CMD.helpCollection, CMD.common, CMD.groupReply, CMD.network,
     CMD.eventDump, CMD.blacklist, CMD.whitelistBlacklist, CMD.persona, CMD.sensitive,
     CMD.quickRef,
   ]) {

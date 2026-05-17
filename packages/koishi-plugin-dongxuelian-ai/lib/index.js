@@ -304,7 +304,7 @@ function handleChatResult(chatResult, { ctx, session, channelKey, currentUserId,
       const raw = agentResult.reply || '(搜索未获取有效结果)'
       const { sanitizeReply, trimReply, stripMarkdownForQQ, MAX_OUTPUT_CHARS_FRIENDLY, hasBannedOutput } = require('./utils')
       const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply-guard')
-      const { JAILBREAK_OUTPUT_RE, pickJailbreakFallbackReply } = require('./constants')
+      const { JAILBREAK_OUTPUT_RE } = require('./constants')
       let filtered = raw
       if (JAILBREAK_OUTPUT_RE.test(filtered)) filtered = pickJailbreakFallbackReply()
       if (hasBannedOutput(filtered)) filtered = '这活别找我，换个工具。'

@@ -9,6 +9,7 @@
 const fs = require('fs/promises')
 const path = require('path')
 const {
+  DATA_DIR,
   SKILLS_CORE_DIR, SKILLS_MODES_DIR, SKILLS_LORE_DIR,
   LORE_TRIGGER_SET, TERRA_LORE_TRIGGER_SET,
   TEST_MODE_FILE, HOSTILE_MODE_FILE,

@@ -446,13 +446,7 @@ function confirmKey(session, action, alias) {
 
 function askConfirm(session, action, alias) {
   const key = confirmKey(session, action, alias)
-  const now = Date.now()
-  const old = pendingConfirms.get(key)
-  if (old && old > now) {
-    pendingConfirms.delete(key)
-    return true
-  }
-  pendingConfirms.set(key, now + CONFIRM_TIMEOUT)
+  pendingConfirms.set(key, Date.now() + CONFIRM_TIMEOUT)
   return false
 }
 
