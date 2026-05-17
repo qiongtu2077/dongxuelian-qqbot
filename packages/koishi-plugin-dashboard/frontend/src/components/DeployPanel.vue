@@ -337,6 +337,7 @@ export default {
     let progressTimer = null
     let localStatusTimer = null
     let localStatusLoading = false
+    let localStatusPending = false
     let rebuildTimer = null
     let rebuildTimeout = null
 
@@ -559,7 +560,10 @@ export default {
     }
 
     async function refreshLocalTaskStatuses(includeReady = false) {
-      if (localStatusLoading) return
+      if (localStatusLoading) {
+        localStatusPending = true
+        return
+      }
       localStatusLoading = true
       try {
         if (!canRunWindowsLocalDeploy.value) {
@@ -582,6 +586,10 @@ export default {
         scrollLocalLogToBottom()
       } finally {
         localStatusLoading = false
+        if (localStatusPending) {
+          localStatusPending = false
+          refreshLocalTaskStatuses(includeReady)
+        }
       }
     }
 

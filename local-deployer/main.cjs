@@ -109,46 +109,29 @@ function startDashboard(paths) {
  * @returns {Promise<boolean>} true when server responds
  */
 function waitForDashboardHttpReady(portStr) {
-  const maxAttempts = 20
+  const totalTimeoutMs = 15000
   const intervalMs = 500
+  const perRequestTimeoutMs = 2000
   const pathPart = '/dashboard/'
   return new Promise(resolve => {
-    let attemptsUsed = 0
+    const startTime = Date.now()
+    function elapsed() { return Date.now() - startTime }
     function scheduleRetry() {
-      if (attemptsUsed >= maxAttempts) {
-        resolve(false)
-        return
-      }
+      if (elapsed() >= totalTimeoutMs) { resolve(false); return }
       setTimeout(doAttempt, intervalMs)
     }
     function doAttempt() {
-      if (attemptsUsed >= maxAttempts) {
-        resolve(false)
-        return
-      }
-      attemptsUsed += 1
+      if (elapsed() >= totalTimeoutMs) { resolve(false); return }
       const req = http.get(
-        {
-          hostname: '127.0.0.1',
-          port: portStr,
-          path: pathPart,
-          timeout: intervalMs + 4000,
-        },
+        { hostname: '127.0.0.1', port: portStr, path: pathPart, timeout: perRequestTimeoutMs },
         res => {
-          try {
-            res.resume()
-          } catch {}
+          try { res.resume() } catch {}
           if (res.statusCode >= 200 && res.statusCode < 500) resolve(true)
           else scheduleRetry()
         },
       )
       req.on('error', scheduleRetry)
-      req.on('timeout', () => {
-        try {
-          req.destroy()
-        } catch {}
-        scheduleRetry()
-      })
+      req.on('timeout', () => { try { req.destroy() } catch {}; scheduleRetry() })
     }
     doAttempt()
   })
@@ -176,7 +159,7 @@ async function createWindow() {
   if (!ready) {
     dialog.showErrorBox(
       '控制台未就绪',
-      '在十秒内未能连上仪表盘服务（本地端口 ' + DASHBOARD_PORT + '）。请稍后重试或检查是否被防火墙拦截。',
+      '在 15 秒内未能连上仪表盘服务（本地端口 ' + DASHBOARD_PORT + '）。请稍后重试或检查是否被防火墙拦截。',
     )
     win.destroy()
     return

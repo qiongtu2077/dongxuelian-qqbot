@@ -2111,6 +2111,13 @@ function runtimePath(...parts) {
   return path.join(KOISHI_DIR, 'runtime', ...parts)
 }
 
+/** Block private/link-local/metadata-style hosts from server-side downloads (SSRF mitigation). */
+function isBlockedDownloadHost(hostname) {
+  const h = String(hostname || '')
+  if (/^::1$/i.test(h)) return true
+  return /^(?:127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|0\.|localhost$|\[::1\])/i.test(h)
+}
+
 function getLocalDeployTarget() {
   const isWindowsBackend = process.platform === 'win32'
   const workDirSafety = getLocalWorkDirSafety()
@@ -2129,7 +2136,7 @@ function getLocalDeployTarget() {
     canRunWindowsLocalDeploy: isWindowsBackend,
     blocked: !isWindowsBackend,
     blockedReason,
-    guidance: isWindowsBackend ? '当前 Dashboard 后端运行在 Windows，可作为本地部署目标。' : '请在要部署的 Windows 本机启动部署器软件，并访问 http://127.0.0.1:5150/dashboard/。',
+    guidance: isWindowsBackend ? '当前 Dashboard 后端运行在 Windows，可作为本地部署目标。' : `请在要部署的 Windows 本机启动部署器软件，并访问 http://127.0.0.1:${PORT}/dashboard/。`,
   }
 }
 
@@ -2177,6 +2184,7 @@ function downloadToRuntime(url, options, callback) {
   let parsed
   try { parsed = new URL(url) } catch { finish(new Error('下载地址无效')); return }
   if (!['http:', 'https:'].includes(parsed.protocol)) { finish(new Error('只支持 http/https 下载地址')); return }
+  if (isBlockedDownloadHost(parsed.hostname)) { finish(new Error('blocked: private or local download host')); return }
   try { writeRuntimeLayout({ includeNapcat: false, includeNodeModules: false }) }
   catch (e) { finish(new Error('准备本地部署工作目录失败：' + describeFsError(e))); return }
   const client = parsed.protocol === 'https:' ? https : http
@@ -2874,7 +2882,6 @@ function requireAdmin(req, res) {
 
 // ====== NapCat Token ======
 function getNapcatToken() {
-  if (getNapcatToken._cached) return getNapcatToken._cached
   const recordedDir = readFileSync(LOCAL_NAPCAT_DIR_FILE)
   const candidates = [
     recordedDir ? path.join(recordedDir, 'config', 'webui.json') : '',
@@ -2883,10 +2890,28 @@ function getNapcatToken() {
     '/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json',
     process.env.NAPCAT_CONFIG || '',
   ].filter(Boolean)
+  try {
+    const cachePath = getNapcatToken._cachePath
+    if (cachePath) {
+      const st = fs.statSync(cachePath)
+      if (getNapcatToken._mtimeMs === st.mtimeMs && typeof getNapcatToken._cached === 'string') {
+        return getNapcatToken._cached
+      }
+    }
+  } catch {}
+  getNapcatToken._cached = ''
+  getNapcatToken._mtimeMs = 0
+  getNapcatToken._cachePath = ''
   for (const p of candidates) {
     try {
+      const st = fs.statSync(p)
       const cfg = JSON.parse(fs.readFileSync(p, 'utf8'))
-      if (cfg.token) { getNapcatToken._cached = cfg.token; return cfg.token }
+      if (cfg.token) {
+        getNapcatToken._cached = cfg.token
+        getNapcatToken._mtimeMs = st.mtimeMs
+        getNapcatToken._cachePath = p
+        return cfg.token
+      }
     } catch {}
   }
   return ''
@@ -2921,7 +2946,8 @@ function napcatProxy(req, res, targetPath) {
 
 function napcatRespond(res, proxyRes, token) {
   const contentType = proxyRes.headers['content-type'] || ''
-  if (contentType.includes('text/html') && token) {
+  const contentLength = parseInt(proxyRes.headers['content-length'] || '0', 10)
+  if (contentType.includes('text/html') && token && contentLength > 0 && contentLength <= 1024 * 1024) {
     let body = ''
     proxyRes.on('data', c => body += c)
     proxyRes.on('end', () => {
