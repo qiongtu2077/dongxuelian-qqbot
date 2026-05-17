@@ -76,6 +76,7 @@ function collectBody(req, res, callback) {
 const PLUGIN_ROOT = __dirname
 const AI_LIB = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'lib')
 const KOISHI_DIR = process.env.KOISHI_DIR || path.join(PLUGIN_ROOT, '..', '..')
+const KOISHI_PID_FILE = path.join(path.resolve(KOISHI_DIR), 'koishi.pid')
 const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(KOISHI_DIR, 'data') || path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'data')
 const PERSONAS_DIR = path.join(DATA_DIR, 'ai-skills', 'personas')
 const CORE_DIR = path.join(DATA_DIR, 'ai-skills', 'core')
@@ -288,7 +289,7 @@ function isGlobalLocalMode() {
 }
 
 function isLocalAuthBypass(req) {
-  if (isGlobalLocalMode()) return true
+  // Even GLOBAL_LOCAL_MODE=1 requires loopback (127.0.0.1, ::1, ::ffff:127.0.0.1).
   if (!req) return false
   return isLoopbackAddress(getRemoteAddress(req))
 }
@@ -303,8 +304,40 @@ function isLoopbackAddress(address) {
 }
 
 function stopKoishiProcesses() {
+  let pid = 0
+  try {
+    const raw = String(fs.readFileSync(KOISHI_PID_FILE, 'utf8') || '').trim().split(/\r?\n/, 2)[0] || ''
+    pid = parseInt(raw, 10)
+  } catch {}
+  if (!(Number.isFinite(pid) && pid > 0)) pid = 0
+
+  if (pid > 0) {
+    if (process.platform === 'win32') {
+      try {
+        execSync(`taskkill /PID ${pid} /F /T`, { timeout: 8000, stdio: 'ignore' })
+      } catch {}
+    } else {
+      try {
+        process.kill(pid, 'SIGTERM')
+      } catch {
+        try {
+          execSync(`/bin/sh -lc 'kill -TERM ${pid} 2>/dev/null; kill -KILL ${pid} 2>/dev/null || true'`, { timeout: 4000, stdio: 'ignore' })
+        } catch {}
+      }
+    }
+    try {
+      fs.unlinkSync(KOISHI_PID_FILE)
+    } catch {}
+    return
+  }
+
+  /** Windows: only processes whose command line includes this workspace dir and koishi. */
   if (process.platform === 'win32') {
-    execSync('powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match \'node\' -and $_.CommandLine -match \'koishi\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"', { timeout: 8000, stdio: 'ignore' })
+    const dirLit = commandQuote(path.resolve(KOISHI_DIR))
+    execSync(
+      `powershell -NoProfile -Command "$d=${dirLit}; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains([string]$d) -and ($_.CommandLine -match 'koishi') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"`,
+      { timeout: 8000, stdio: 'ignore' },
+    )
     return
   }
   execSync("pkill -9 -f 'koishi/lib/worker' 2>/dev/null || true", { timeout: 5000 })
@@ -2475,6 +2508,12 @@ function spawnLocalTask(key, command, args = [], options = {}) {
   })
   task.process = child
   task.pid = child.pid || 0
+  if (key === 'koishi') {
+    try {
+      fs.mkdirSync(path.dirname(KOISHI_PID_FILE), { recursive: true })
+      fs.writeFileSync(KOISHI_PID_FILE, String(task.pid), 'utf8')
+    } catch {}
+  }
   child.stdout?.on('data', chunk => appendLocalTaskLog(task, chunk))
   child.stderr?.on('data', chunk => appendLocalTaskLog(task, chunk))
   child.on('error', err => {
@@ -2491,6 +2530,13 @@ function spawnLocalTask(key, command, args = [], options = {}) {
     task.finishedAt = Date.now()
     task.state = code === 0 ? 'success' : 'failed'
     appendLocalTaskLog(task, `\n[${new Date().toISOString()}] EXIT ${code}\n`)
+    if (key === 'koishi') {
+      try {
+        const cur = String(fs.readFileSync(KOISHI_PID_FILE, 'utf8') || '').trim()
+        const curPid = parseInt(cur.split(/\r?\n/, 2)[0] || '', 10)
+        if (Number.isFinite(curPid) && curPid === child.pid) fs.unlinkSync(KOISHI_PID_FILE)
+      } catch {}
+    }
   })
   return { alreadyRunning: false, status: getTaskPublicStatus(key) }
 }
@@ -2737,7 +2783,7 @@ function getResetToken() {
 }
 
 function shouldGenerateResetTokenOnStartup() {
-  return !isLocalAuthBypass()
+  return !isGlobalLocalMode()
 }
 
 function requireAdmin(req, res) {
@@ -4663,11 +4709,11 @@ const server = http.createServer(async (req, res) => {
 
 if (shouldGenerateResetTokenOnStartup() && !getResetToken()) generateResetToken()
 
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   log(`LianBoard running on http://localhost:${PORT}/dashboard/`)
   log(`bot control: start/stop/maintenance`)
   log(`napcat proxy: /webui/ -> NapCat WebUI`)
-  if (!isLocalAuthBypass()) {
+  if (!isGlobalLocalMode()) {
     log(`密码重置令牌文件: ${RESET_TOKEN_FILE}`)
     if (!getAccessPassword()) log('WARNING: dashboard access password is not configured; login is disabled')
     if (!readFileSync(ADMIN_PWD_FILE) && !process.env.DASHBOARD_ADMIN_PASSWORD) log('WARNING: 管理员密码使用默认值 123，请登录后在安全设置中修改')

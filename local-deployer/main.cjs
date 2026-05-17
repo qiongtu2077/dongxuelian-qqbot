@@ -1,11 +1,16 @@
 const { app, BrowserWindow, shell, dialog, ipcMain, clipboard } = require('electron')
 const fs = require('fs')
+const http = require('http')
 const path = require('path')
 const { spawn } = require('child_process')
+
+/** Same default as standalone dashboard; overridden by DASHBOARD_PORT env when set */
+const DASHBOARD_PORT = String(process.env.DASHBOARD_PORT || '5150')
 
 let dashboardProcess = null
 let mainWindow = null
 let appPaths = null
+let isAppQuitting = false
 
 function resolveResourceRoot() {
   return app.isPackaged ? path.join(process.resourcesPath, 'app') : path.resolve(__dirname, '..')
@@ -61,6 +66,18 @@ function resolveAppPaths() {
   }
 }
 
+function cleanupDashboardProcess() {
+  const child = dashboardProcess
+  dashboardProcess = null
+  if (!child || child.killed) return
+  try {
+    child.removeAllListeners()
+  } catch {}
+  try {
+    child.kill()
+  } catch {}
+}
+
 function startDashboard(paths) {
   const standalone = path.join(paths.resourceRoot, 'packages', 'koishi-plugin-dashboard', 'standalone.js')
   dashboardProcess = spawn(process.execPath, [standalone], {
@@ -75,14 +92,93 @@ function startDashboard(paths) {
       LIANLIAN_WORKSPACE_FALLBACK_REASON: paths.fallbackReason || '',
       KOISHI_DIR: paths.workspaceRoot,
       DONGXUELIAN_AI_DATA_DIR: path.join(paths.workspaceRoot, 'data'),
-      DASHBOARD_PORT: process.env.DASHBOARD_PORT || '5150',
+      DASHBOARD_PORT,
     },
     stdio: 'ignore',
     windowsHide: true,
   })
+  const child = dashboardProcess
+  child.on('error', (err) => {
+    console.error('[dashboard-process] spawn error', err)
+    if (dashboardProcess === child) dashboardProcess = null
+    dialog.showMessageBox({
+      type: 'error',
+      title: '无法启动控制台',
+      message: '仪表盘子进程未能启动。',
+      detail: String(err && err.message ? err.message : err),
+    })
+  })
+  child.on('exit', (code, signal) => {
+    if (dashboardProcess === child) dashboardProcess = null
+    try {
+      child.removeAllListeners()
+    } catch {}
+    const failed = typeof code === 'number' && code !== 0
+    if (failed && !isAppQuitting) {
+      const detailParts = []
+      if (signal) detailParts.push(`signal=${signal}`)
+      detailParts.push(`exit=${code}`)
+      dialog.showMessageBox({
+        type: 'error',
+        title: '控制台进程已崩溃',
+        message: `仪表盘后端进程非正常退出（退出码 ${code}）。`,
+        detail: detailParts.join('\n'),
+      })
+    }
+  })
 }
 
-function createWindow() {
+/**
+ * Poll until GET /dashboard/ responds or attempts exhausted.
+ * @returns {Promise<boolean>} true when server responds
+ */
+function waitForDashboardHttpReady(portStr) {
+  const maxAttempts = 20
+  const intervalMs = 500
+  const pathPart = '/dashboard/'
+  return new Promise(resolve => {
+    let attemptsUsed = 0
+    function scheduleRetry() {
+      if (attemptsUsed >= maxAttempts) {
+        resolve(false)
+        return
+      }
+      setTimeout(doAttempt, intervalMs)
+    }
+    function doAttempt() {
+      if (attemptsUsed >= maxAttempts) {
+        resolve(false)
+        return
+      }
+      attemptsUsed += 1
+      const req = http.get(
+        {
+          hostname: '127.0.0.1',
+          port: portStr,
+          path: pathPart,
+          timeout: intervalMs + 4000,
+        },
+        res => {
+          try {
+            res.resume()
+          } catch {}
+          if (res.statusCode >= 200 && res.statusCode < 500) resolve(true)
+          else scheduleRetry()
+        },
+      )
+      req.on('error', scheduleRetry)
+      req.on('timeout', () => {
+        try {
+          req.destroy()
+        } catch {}
+        scheduleRetry()
+      })
+    }
+    doAttempt()
+  })
+}
+
+async function createWindow() {
   const win = new BrowserWindow({
     width: 1180,
     height: 780,
@@ -96,11 +192,19 @@ function createWindow() {
     },
   })
   mainWindow = win
-  win.loadURL('http://127.0.0.1:5150/dashboard/')
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
   })
+  const ready = await waitForDashboardHttpReady(DASHBOARD_PORT)
+  if (!ready) {
+    dialog.showErrorBox(
+      '控制台未就绪',
+      '在十秒内未能连上仪表盘服务（本地端口 ' + DASHBOARD_PORT + '）。请稍后重试或检查是否被防火墙拦截。',
+    )
+    return
+  }
+  win.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}/dashboard/`)
 }
 
 function registerIpc() {
@@ -151,7 +255,7 @@ app.whenReady().then(() => {
   appPaths = resolveAppPaths()
   registerIpc()
   startDashboard(appPaths)
-  setTimeout(createWindow, 900)
+  void createWindow()
   if (appPaths.fallbackReason) {
     setTimeout(() => dialog.showMessageBox(mainWindow, { type: 'warning', title: '部署器工作目录已切换', message: appPaths.fallbackReason, detail: '建议把部署器 ZIP 完整解压到可写目录后，再运行 EXE。' }).catch(() => {}), 1500)
   }
@@ -159,5 +263,6 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => app.quit())
 app.on('before-quit', () => {
-  if (dashboardProcess && !dashboardProcess.killed) dashboardProcess.kill()
+  isAppQuitting = true
+  cleanupDashboardProcess()
 })

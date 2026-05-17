@@ -1,6 +1,6 @@
-# LianBoard Windows 部署器
+# LianLianBot Windows Deployer
 
-这个目录是打包 Windows 桌面软件的入口。部署器不是只做安装向导，它会在 Windows 本机启动完整 Dashboard 后端，并把 Web 前端作为桌面控制台打开，所以可以作为 Bot 部署和调试软件使用。
+这个目录是打包 LianLianBot Windows 桌面软件的入口。当前主线保留 Electron 作为部署器外壳：它会在 Windows 本机启动完整 Dashboard 后端，并把 Web 前端作为桌面控制台打开，所以可以作为 Bot 部署、运行和调试软件使用。
 
 它会让同一个 Windows 程序完成这些事：
 
