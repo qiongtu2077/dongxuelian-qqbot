@@ -372,8 +372,8 @@ function getLinuxNapcatQQExecutable() {
 }
 
 function getLegacyNapcatStatus() {
-  const webuiPort = Number(process.env.NAPCAT_PORT || 6099)
-  const onebotPort = Number(process.env.NAPCAT_ONEBOT_PORT || 8080)
+  const webuiPort = resolveNapcatWebuiListenPort()
+  const onebotPort = resolveNapcatOnebotListenPort()
   const webui = checkPortState(webuiPort)
   const onebot = checkPortState(onebotPort)
   let processLines = []
@@ -2576,6 +2576,76 @@ function getNapcatStartEntry() {
   return { detected, entry: '' }
 }
 
+function listNapcatConfigDirs() {
+  const recordedDir = readFileSync(LOCAL_NAPCAT_DIR_FILE)
+  const dirs = [
+    recordedDir ? path.join(recordedDir, 'config') : '',
+    path.join(KOISHI_DIR, 'runtime', 'napcat', 'config'),
+    path.join(KOISHI_DIR, 'runtime', 'NapCat', 'config'),
+    '/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config',
+  ].filter(Boolean)
+  const extra = String(process.env.NAPCAT_CONFIG || '').trim()
+  if (extra) {
+    try {
+      const st = fs.statSync(extra)
+      dirs.push(st.isDirectory() ? extra : path.dirname(extra))
+    } catch {}
+  }
+  return uniquePaths(dirs)
+}
+
+function readNapcatWebuiPortFromConfigFiles() {
+  for (const dir of listNapcatConfigDirs()) {
+    const webUiPath = path.join(dir, 'webui.json')
+    try {
+      const cfg = JSON.parse(fs.readFileSync(webUiPath, 'utf8'))
+      const n = Number(cfg.port)
+      if (Number.isFinite(n) && n > 0 && n <= 65535) return n
+    } catch {}
+    const napcatPath = path.join(dir, 'napcat.json')
+    try {
+      const cfg = JSON.parse(fs.readFileSync(napcatPath, 'utf8'))
+      const nested = cfg.webui && cfg.webui.port != null ? Number(cfg.webui.port) : NaN
+      if (Number.isFinite(nested) && nested > 0 && nested <= 65535) return nested
+    } catch {}
+  }
+  return null
+}
+
+function resolveNapcatWebuiListenPort() {
+  const raw = String(process.env.NAPCAT_PORT || '').trim()
+  if (raw) {
+    const n = Number(raw)
+    if (Number.isFinite(n) && n > 0 && n <= 65535) return n
+  }
+  const fromCfg = readNapcatWebuiPortFromConfigFiles()
+  return fromCfg != null ? fromCfg : 6099
+}
+
+function resolveNapcatOnebotListenPort() {
+  const raw = String(process.env.NAPCAT_ONEBOT_PORT || '').trim()
+  if (raw) {
+    const n = Number(raw)
+    if (Number.isFinite(n) && n > 0 && n <= 65535) return n
+  }
+  return 8080
+}
+
+function resolveKoishiListenPort() {
+  const raw = String(process.env.KOISHI_PORT || '').trim()
+  if (raw) {
+    const n = Number(raw)
+    if (Number.isFinite(n) && n > 0 && n <= 65535) return n
+  }
+  const yml = readUtf8(path.join(KOISHI_DIR, 'koishi.yml'))
+  const m = String(yml).match(/^\s*port:\s*(\d+)/m)
+  if (m) {
+    const n = Number(m[1])
+    if (Number.isFinite(n) && n > 0 && n <= 65535) return n
+  }
+  return 5140
+}
+
 function getNapcatLoginHint() {
   const lines = readLastLogLines(localTasks.napcat.logFile, 220).join('\n')
   if (/Usage:\s*\.\\NapCatWinBootMain\.exe\s+<quickLogin>|Error Code:\s*2|Process Path:.*QQ\.exe/i.test(lines)) return { status: 'failed', reason: 'NapCat 启动入口失败：当前包可能缺少 bootmain/QQ.exe，或启动脚本缺少 quickLogin 参数。请重新安装官方 Windows 包后重试。' }
@@ -2598,8 +2668,10 @@ function getLocalNapcatDeployStatus() {
     })
   }
   const detected = detectNapcatInstallation()
-  const webuiPort = checkPortState(6099)
-  const onebotPort = checkPortState(8080)
+  const webuiListen = resolveNapcatWebuiListenPort()
+  const onebotListen = resolveNapcatOnebotListenPort()
+  const webuiPort = checkPortState(webuiListen)
+  const onebotPort = checkPortState(onebotListen)
   const token = process.env.NAPCAT_TOKEN || getNapcatToken()
   const login = getNapcatLoginHint()
   return getTaskPublicStatus('napcat', {
@@ -2608,7 +2680,7 @@ function getLocalNapcatDeployStatus() {
     running: localTasks.napcat.running || webuiPort.status === 'occupied' || onebotPort.status === 'occupied',
     webuiPort,
     onebotPort,
-    webuiUrl: 'http://127.0.0.1:6099/',
+    webuiUrl: 'http://127.0.0.1:' + webuiListen + '/',
     tokenAvailable: !!token,
     login,
   })
@@ -2623,14 +2695,15 @@ function getLocalKoishiDeployStatus() {
       url: '',
     })
   }
-  const port = checkPortState(5140)
+  const koishiListen = resolveKoishiListenPort()
+  const port = checkPortState(koishiListen)
   const lines = readLastLogLines(localTasks.koishi.logFile, 220).join('\n')
   const loaded = /adapter-onebot|dongxuelian-ai|server listening|app started|koishi/i.test(lines)
   return getTaskPublicStatus('koishi', {
     running: localTasks.koishi.running || port.status === 'occupied',
     port,
     loaded,
-    url: 'http://127.0.0.1:5140/',
+    url: 'http://127.0.0.1:' + koishiListen + '/',
   })
 }
 
@@ -2702,8 +2775,8 @@ function buildLocalReadyCheck() {
     koishi,
     aiKey,
     dashboardUrl: `http://127.0.0.1:${PORT}/dashboard/`,
-    koishiUrl: 'http://127.0.0.1:5140/',
-    napcatUrl: 'http://127.0.0.1:6099/',
+    koishiUrl: 'http://127.0.0.1:' + resolveKoishiListenPort() + '/',
+    napcatUrl: 'http://127.0.0.1:' + resolveNapcatWebuiListenPort() + '/',
     message: basicReady ? (aiKey.configured ? '本地部署已完成，AI Key 已配置' : '基础部署已完成，AI Key 未配置，AI 回复暂不可用') : '本地部署尚未完全就绪，请查看未通过的检查项',
   }
 }
@@ -2822,7 +2895,7 @@ function getNapcatToken() {
 // ====== NapCat 代理 ======
 function napcatProxy(req, res, targetPath) {
   const host = process.env.NAPCAT_HOST || '127.0.0.1'
-  const port = process.env.NAPCAT_PORT || 6099
+  const port = resolveNapcatWebuiListenPort()
   const token = process.env.NAPCAT_TOKEN || getNapcatToken()
   const opts = { hostname: host, port, path: targetPath, method: req.method, headers: { ...req.headers, host: host + ':' + port } }
   if (token) opts.headers['Authorization'] = 'Bearer ' + token
@@ -2838,7 +2911,8 @@ function napcatProxy(req, res, targetPath) {
   proxyReq.on('error', () => {
     const status = getLocalNapcatDeployStatus()
     const tail = (status.logLines || []).slice(-12).join('\n')
-    const detail = ['NapCat WebUI 代理失败：127.0.0.1:6099 当前没有响应。', status.login?.reason || status.installation?.reason || '', tail ? '最近 NapCat 日志：\n' + tail : ''].filter(Boolean).join('\n\n')
+    const napPort = resolveNapcatWebuiListenPort()
+    const detail = ['NapCat WebUI 代理失败：127.0.0.1:' + napPort + ' 当前没有响应。', status.login?.reason || status.installation?.reason || '', tail ? '最近 NapCat 日志：\n' + tail : ''].filter(Boolean).join('\n\n')
     res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' })
     res.end(detail)
   })
@@ -3448,7 +3522,7 @@ const server = http.createServer(async (req, res) => {
   if (pathname.startsWith('/webui/') || pathname === '/webui') {
     const nToken = process.env.NAPCAT_TOKEN || getNapcatToken()
     const sep = url.search ? '&' : '?'
-    return napcatProxy(req, res, pathname + url.search + (nToken ? sep + 'webui_token=' + nToken : ''))
+    return napcatProxy(req, res, pathname + url.search + (nToken ? sep + 'webui_token=' + encodeURIComponent(nToken) : ''))
   }
   if (pathname.startsWith('/api/') && !pathname.startsWith('/dashboard/api/')) {
     return napcatProxy(req, res, pathname + url.search)
@@ -3926,7 +4000,7 @@ const server = http.createServer(async (req, res) => {
     try {
       let running = 0
       if (process.platform === 'win32') {
-        running = checkPortState(5140).status === 'occupied' ? 1 : 0
+        running = checkPortState(resolveKoishiListenPort()).status === 'occupied' ? 1 : 0
       } else {
         const out = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()
         running = out.split('\n').filter(Boolean).length
@@ -4390,7 +4464,7 @@ const server = http.createServer(async (req, res) => {
     const npmInfo = getCommandInfo('npm')
     const dependencyStatus = getProjectDependencyStatus()
     const uninstallPreview = buildLocalUninstallPreview()
-    const portList = [5140, Number(PORT), 8080, 6099]
+    const portList = [resolveKoishiListenPort(), Number(PORT), resolveNapcatOnebotListenPort(), resolveNapcatWebuiListenPort()]
     const ports = {}
     for (const port of portList) ports[port] = checkPortState(port)
     return json(res, {
@@ -4627,7 +4701,7 @@ const server = http.createServer(async (req, res) => {
       } else {
         spawnLocalTask('koishi', getLocalToolCommand('npm'), ['exec', '--', 'koishi', 'start'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32' }))
       }
-      return json(res, { ok: true, message: 'Koishi 已启动，正在等待 5140 端口和 OneBot 连接', status: getLocalKoishiDeployStatus() })
+      return json(res, { ok: true, message: 'Koishi 已启动，正在等待 ' + resolveKoishiListenPort() + ' 端口和 OneBot 连接', status: getLocalKoishiDeployStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
 
@@ -4645,7 +4719,7 @@ const server = http.createServer(async (req, res) => {
       const target = getLocalDeployTarget()
       if (!target.canRunWindowsLocalDeploy) return json(res, { running: false, workers: 0, blocked: true, localDeployTarget: target, message: target.blockedReason })
       if (process.platform === 'win32') {
-        const port = checkPortState(5140)
+        const port = checkPortState(resolveKoishiListenPort())
         return json(res, { running: port.status === 'occupied', workers: port.status === 'occupied' ? 1 : 0, port })
       }
       const out = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()

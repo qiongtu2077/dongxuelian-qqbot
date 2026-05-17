@@ -161,13 +161,13 @@ async function createWindow() {
     minWidth: 920,
     minHeight: 640,
     title: 'LianBoard Windows 部署器',
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   })
-  mainWindow = win
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
@@ -178,9 +178,21 @@ async function createWindow() {
       '控制台未就绪',
       '在十秒内未能连上仪表盘服务（本地端口 ' + DASHBOARD_PORT + '）。请稍后重试或检查是否被防火墙拦截。',
     )
+    win.destroy()
     return
   }
-  win.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}/dashboard/`)
+  try {
+    await win.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}/dashboard/`)
+  } catch {
+    dialog.showErrorBox(
+      '加载失败',
+      '仪表盘页面未能加载（http://127.0.0.1:' + DASHBOARD_PORT + '/dashboard/）。请检查本地服务是否正常。',
+    )
+    win.destroy()
+    return
+  }
+  mainWindow = win
+  win.show()
 }
 
 function registerIpc() {
@@ -211,9 +223,16 @@ function registerIpc() {
   })
   ipcMain.handle('show-item-in-folder', async (_event, targetPath) => {
     const value = String(targetPath || '').trim()
-    if (!value) return false
-    shell.showItemInFolder(value)
-    return true
+    if (!value) return 'empty path'
+    const resolved = path.resolve(value)
+    const roots = [appPaths.workspaceRoot, appPaths.resourceRoot].filter(Boolean)
+    const allowed = roots.some(root => {
+      const r = path.resolve(root)
+      return resolved === r || resolved.startsWith(r + path.sep)
+    })
+    if (!allowed) return 'blocked'
+    shell.showItemInFolder(resolved)
+    return 'ok'
   })
   ipcMain.handle('copy-text', async (_event, text) => {
     clipboard.writeText(String(text || ''))

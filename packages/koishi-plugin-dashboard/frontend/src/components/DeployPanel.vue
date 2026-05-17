@@ -1129,6 +1129,16 @@ export default {
     async function copyNpmFixCommands() {
       const text = npmGuideCommands.value.join('\n')
       if (!text) return
+      const bridge = getDongxuelianDeployerBridge?.()
+      if (bridge?.copyText) {
+        try {
+          await bridge.copyText(text)
+          localMsg.value = { type: 'ok', text: '部署器 npm 命令已复制。命令包含实际 npm 路径；执行后可点击“执行 npm install”，也可以直接点“一键修复代理并重试”。' }
+        } catch {
+          localMsg.value = { type: 'err', text: '复制失败，请手动选择命令文本复制。' }
+        }
+        return
+      }
       try {
         await navigator.clipboard?.writeText(text)
         localMsg.value = { type: 'ok', text: '部署器 npm 命令已复制。命令包含实际 npm 路径；执行后可点击“执行 npm install”，也可以直接点“一键修复代理并重试”。' }
