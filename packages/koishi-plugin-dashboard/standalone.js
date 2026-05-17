@@ -2374,9 +2374,9 @@ function diagnoseNpmProxy(diagnostics = {}) {
 function repairNpmProxyConfig(env = getNoProxyEnvOverrides()) {
   const actions = []
   for (const args of [
-    ['config', 'delete', 'proxy'],
-    ['config', 'delete', 'https-proxy'],
-    ['config', 'set', 'registry', 'https://registry.npmmirror.com'],
+    ['config', 'delete', 'proxy', '--location=project'],
+    ['config', 'delete', 'https-proxy', '--location=project'],
+    ['config', 'set', 'registry', 'https://registry.npmmirror.com', '--location=project'],
   ]) {
     try {
       runNpmCommand(args, { env })
@@ -4524,7 +4524,15 @@ const server = http.createServer(async (req, res) => {
         files.push(writeTrackedLocalFile('data/ai-model.txt', model + '\n', { deleteByDefault: true, kind: 'model' }, timestamp))
         files.push(writeTrackedLocalFile('data/ai-base-url.txt', baseUrl + '\n', { deleteByDefault: true, kind: 'baseUrl' }, timestamp))
         const inputApiKey = String(cfg.apiKey || '').trim()
-        if (inputApiKey) files.push(writeTrackedLocalFile('data/ai-openai-key.txt', inputApiKey + '\n', { deleteByDefault: false, sensitive: true, kind: 'apiKey' }, timestamp))
+        const keyFiles = {
+          opencode: 'ai-openai-key.txt',
+          deepseek: 'ai-deepseek-key.txt',
+          dashscope: 'ai-dashscope-key.txt',
+          glm: 'ai-glm-key.txt',
+          mimorium: 'ai-mimorium-key.txt',
+        }
+        const keyFile = keyFiles[provider] || keyFiles.opencode
+        if (inputApiKey) files.push(writeTrackedLocalFile('data/' + keyFile, inputApiKey + '\n', { deleteByDefault: false, sensitive: true, kind: 'apiKey' }, timestamp))
         if (cfg.adminIds) files.push(writeTrackedLocalFile('data/ai-admin-ids.json', JSON.stringify(cfg.adminIds, null, 2) + '\n', { deleteByDefault: false, sensitive: true, kind: 'adminIds' }, timestamp))
         const yml = `port: 5140\nselfUrl: http://localhost:5140\nplugins:\n  adapter-onebot:\n    protocol: ws\n    selfId: '${qq}'\n    endpoint: ws://127.0.0.1:8080/onebot/v11/ws\n  dongxuelian-ai: {}\n  dongxuelian-help: {}\n  group-name-at: {}\n  defense: {}\n  local-video-sender: {}\n  group-leave-notice: {}\n  dongxuelian-poke: {}\n  daily-report: {}\n`
         files.push(writeTrackedLocalFile('koishi.yml', yml, { deleteByDefault: true, kind: 'koishiConfig' }, timestamp))
