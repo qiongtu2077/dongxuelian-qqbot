@@ -113,7 +113,7 @@ const {
   shouldTriggerRandom, calculateWillFactor,
   normalizeUrl, extractImageUrls,
   sanitizeFileToken, safeJsonStringify,
-  todayCst,
+  todayCst, stripMarkdownForQQ,
 } = require('./utils')
 const { logDebug } = require('./logging-config')
 const { heuristicRoute, buildExplicitSearchRunOptions } = require('./agent/router')
@@ -302,7 +302,7 @@ function handleChatResult(chatResult, { ctx, session, channelKey, currentUserId,
     }).then(agentResult => {
       recordAgentChatResult({ session, userMessage: userText, userName, userId: currentUserId, channelKey, agentResult })
       const raw = agentResult.reply || '(搜索未获取有效结果)'
-      const { sanitizeReply, trimReply, MAX_OUTPUT_CHARS_FRIENDLY, hasBannedOutput } = require('./utils')
+      const { sanitizeReply, trimReply, stripMarkdownForQQ, MAX_OUTPUT_CHARS_FRIENDLY, hasBannedOutput } = require('./utils')
       const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply-guard')
       const { JAILBREAK_OUTPUT_RE, pickJailbreakFallbackReply } = require('./constants')
       let filtered = raw
@@ -310,7 +310,7 @@ function handleChatResult(chatResult, { ctx, session, channelKey, currentUserId,
       if (hasBannedOutput(filtered)) filtered = '这活别找我，换个工具。'
       if (isUnsafeThinkingReply(filtered)) filtered = '我还有事，下次再说。'
       if (hasInternalContextLeak(filtered)) filtered = '我刚刚串台了，重说一句。'
-      filtered = trimReply(sanitizeReply(filtered, userName), MAX_OUTPUT_CHARS_FRIENDLY)
+      filtered = trimReply(stripMarkdownForQQ(sanitizeReply(filtered, userName)), MAX_OUTPUT_CHARS_FRIENDLY)
       return safeSendReply(ctx, session, filtered, false)
     }).catch(error => {
       ctx.logger('dongxuelian-ai').warn(`chat heavy-tool agent failed: ${error.message}`)
@@ -1199,7 +1199,7 @@ exports.apply = (ctx) => {
             })
             const finalReply = handleChatResult(chatReply, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered })
             if (finalReply !== null) return safeSendReply(ctx, session, finalReply, randomTriggered)
-            return safeSendReply(ctx, session, agentReplyText.slice(0, 500), randomTriggered)
+            return safeSendReply(ctx, session, stripMarkdownForQQ(agentReplyText).slice(0, 500), randomTriggered)
           }).catch(error => {
             const code = error && error.code ? String(error.code) : ''
             if (code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED') return safeSendReply(ctx, session, error.message, randomTriggered)

@@ -56,7 +56,7 @@ const {
   hasBannedOutput,
   isEvaluationRequest, isSemanticProfile,
   getSearchCapability,
-  trimReply, sanitizeReply,
+  trimReply, sanitizeReply, stripMarkdownForQQ,
 } = require('./utils')
 const {
   shouldRetryRepeatedReply,
@@ -526,7 +526,7 @@ async function chat(session, userText, ctx, options = {}) {
     }
     const retellTime = `当前时间：${now.getFullYear()}年${pad2(now.getMonth()+1)}月${pad2(now.getDate())}日 ${pad2(now.getHours())}时${pad2(now.getMinutes())}分。`
     const agentMessages = [
-      { role: 'system', content: '简短转述以下信息给用户。不要提及工具、搜索过程。结果太长只说重点。' },
+      { role: 'system', content: '简短转述以下信息给用户。不要提及工具、搜索过程。结果太长只说重点。用纯文本回复，禁止使用 markdown、标题(#)、加粗(**)、列表(-)、代码块(`)等任何格式标记。' },
       { role: 'system', content: retellTime },
       { role: 'system', content: `以下是工具查到的信息：\n${agentText}` },
     ]
@@ -541,7 +541,7 @@ async function chat(session, userText, ctx, options = {}) {
     if (hasBannedOutput(agentReply)) agentReply = '这活别找我，换个工具。'
     if (isUnsafeThinkingReply(agentReply)) agentReply = '我还有事，下次再说。'
     if (hasInternalContextLeak(agentReply)) agentReply = '我刚刚串台了，重说一句。'
-    let agentFinal = trimReply(sanitizeReply(agentReply, userName),
+    let agentFinal = trimReply(stripMarkdownForQQ(sanitizeReply(agentReply, userName)),
       retaliationLevel === 2 ? MAX_OUTPUT_CHARS_ABUSIVE : retaliationLevel === 1 ? MAX_OUTPUT_CHARS_YINYANG : MAX_OUTPUT_CHARS_FRIENDLY)
     if (isSemanticProfile(agentFinal)) agentFinal = '别问了，这个我不聊。'
     saveConversationTurn(session, currentUserMessage, agentFinal)

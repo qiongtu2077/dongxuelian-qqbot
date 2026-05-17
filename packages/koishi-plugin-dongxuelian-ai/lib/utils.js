@@ -359,6 +359,19 @@ function getSessionMessageSegments(session) {
   return []
 }
 
+function stripMarkdownForQQ(text) {
+  let t = String(text)
+  t = t.replace(/^#{1,6}\s+/gm, '')
+  t = t.replace(/\*\*([^*]+)\*\*/g, '$1')
+  t = t.replace(/\*([^*]+)\*/g, '$1')
+  t = t.replace(/`([^`]+)`/g, '$1')
+  t = t.replace(/^[-*+]\s+/gm, '')
+  t = t.replace(/^\d+\.\s+/gm, '')
+  t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+  t = t.replace(/\n{3,}/g, '\n\n')
+  return t.trim()
+}
+
 function splitSentences(text) {
   const raw = normalizeText(text)
   if (!raw) return [raw]
@@ -459,6 +472,6 @@ module.exports = {
   calculateWillFactor, isSemanticProfile,
   getSegmentData, getSessionMessageSegments,
   getModelDisplayName, getSearchCapability, formatSearchStatus,
-  trimReply, sanitizeReply, splitSentences,
+  trimReply, sanitizeReply, stripMarkdownForQQ, splitSentences,
   todayCst, formatShanghaiTime24h, getShanghaiHourFromTs, todayCstMinusDays,
 }
