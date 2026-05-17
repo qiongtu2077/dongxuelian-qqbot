@@ -68,7 +68,11 @@
               </button>
             </div>
           </div>
-          <a href="http://localhost:6099/webui/" target="_blank" class="btn btn-ghost btn-sm" style="margin-top:12px;text-decoration:none;display:inline-block">→ 打开 WebUI 控制台扫码</a>
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <button class="btn btn-sm" type="button" @click="doRestartNapcat" :disabled="restartingNapcat">{{ restartingNapcat ? '重启中...' : '重启 NapCat' }}</button>
+            <a href="http://localhost:6099/webui/" target="_blank" class="btn btn-ghost btn-sm" style="text-decoration:none">→ 打开 WebUI 控制台扫码</a>
+          </div>
+          <div v-if="napcatRestartMsg" style="margin-top:8px;font-size:13px" :style="{color: napcatRestartMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ napcatRestartMsg.text }}</div>
         </div>
 
         <div style="background:rgba(244,114,182,0.1);border-left:4px solid var(--danger);border-radius:0 8px 8px 0;padding:12px 16px;font-size:13px;color:#fca5a5;margin-bottom:24px">
@@ -127,8 +131,8 @@
 </template>
 
 <script>
-import { computed, ref, onMounted, onActivated, inject } from 'vue'
-import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo, fetchSelfId, updateSelfId, fetchThrottle, saveThrottle } from '../api'
+import { computed, ref, onMounted, inject } from 'vue'
+import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo, fetchSelfId, updateSelfId, fetchThrottle, saveThrottle, restartNapcat } from '../api'
 
 export default {
   name: 'ControlPanel',
@@ -148,6 +152,8 @@ export default {
     const tokenIsReal = ref(false)
     const showNapcatToken = ref(false)
     const copiedMsg = ref('')
+    const restartingNapcat = ref(false)
+    const napcatRestartMsg = ref(null)
     const displayNapcatToken = computed(() => {
       if (!tokenIsReal.value) return napcatToken.value || '点击查看 NapCat token 后显示'
       return showNapcatToken.value ? napcatToken.value : maskSecret(napcatToken.value)
@@ -184,11 +190,6 @@ export default {
     const savingSelfId = ref(false)
     const selfIdMsg = ref(null)
     const diagMsg = ref('')
-
-    onActivated(() => {
-      acting.value = false
-      loadStatus()
-    })
 
     async function loadStatus() {
       const res = await botStatus()
@@ -352,6 +353,21 @@ export default {
       } finally { acting.value = false }
     }
 
+    async function doRestartNapcat() {
+      restartingNapcat.value = true; napcatRestartMsg.value = null
+      try {
+        const res = await restartNapcat()
+        if (res.code === 'ADMIN_REQUIRED') {
+          if (showAdminDialog) showAdminDialog('重启 NapCat 需要管理员密码', doRestartNapcat)
+          restartingNapcat.value = false
+          return
+        }
+        napcatRestartMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? 'NapCat 重启命令已发送，等待 10 秒后刷新状态...' : '重启失败') }
+        if (res.ok) setTimeout(() => loadStatus(), 10000)
+      } catch (e) { napcatRestartMsg.value = { type: 'err', text: e.message }
+      } finally { restartingNapcat.value = false }
+    }
+
     async function toggleMaintenance(targetValue = maintenanceOn.value) {
       maintenanceOn.value = targetValue
       maintLoading.value = true
@@ -366,7 +382,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, throttleMax, savingThrottle, throttleMsg, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, requestQQToken, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, toggleMaintenance, saveThrottleConfig, testStartBot, sshUser }
+    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, throttleMax, savingThrottle, throttleMsg, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, restartingNapcat, napcatRestartMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, requestQQToken, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, doRestartNapcat, toggleMaintenance, saveThrottleConfig, testStartBot, sshUser }
   }
 }
 </script>

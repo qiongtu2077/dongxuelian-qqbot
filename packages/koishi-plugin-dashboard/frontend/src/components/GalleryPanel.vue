@@ -70,7 +70,7 @@
 </template>
 
 <script>
-import { computed, inject, onActivated, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { deleteGalleryImage, fetchGalleryImages, updateGalleryImageStyle, uploadGalleryImage } from '../api'
 
 const STOP_THRESHOLD = 0.001
@@ -343,7 +343,6 @@ export default {
     }
 
     onMounted(() => { loadImages(); window.addEventListener('keydown', onKeydown) })
-    onActivated(loadImages)
     onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     return { images, loading, uploading, deletingId, message, fileInput, aspectMode, aspectOptions, galleryStyle, bulkDeleteMode, selectedCount, previewImage, previewCardRef, foilOptions, currentFoilStyle, updatingStyle, foilCardClass, setPreviewFoilStyle, openUpload, onFileChange, onImageError, toggleBulkDelete, isSelected, clearSelection, deleteSelectedImages, onCardClick, closePreview, moveCard, resetCard, previewPointerMove, previewPointerLeave }
   },

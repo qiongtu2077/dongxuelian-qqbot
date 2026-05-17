@@ -21,19 +21,55 @@ process.on('unhandledRejection', (reason) => {
 })
 
 const MAX_BODY_SIZE = 16 * 1024 * 1024 // 16MB，请求体包含图集上传的 base64 图片
+const EFFECTIVE_MAX_BODY_SIZE = parsePositiveInt(process.env.DASHBOARD_MAX_BODY_SIZE, 10 * 1024 * 1024, 1024 * 1024, MAX_BODY_SIZE)
+const MAX_DOWNLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLOAD_BYTES, 256 * 1024 * 1024, 8 * 1024 * 1024, 2 * 1024 * 1024 * 1024)
+const MAX_STATIC_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_STATIC_FILE_BYTES, 32 * 1024 * 1024, 1024 * 1024, 256 * 1024 * 1024)
+const MAX_DEPLOY_TASK_LOG_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DEPLOY_TASK_LOG_BYTES, 512 * 1024, 64 * 1024, 4 * 1024 * 1024)
+const MAX_AGENT_PREVIEW_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_AGENT_PREVIEW_MAX_BYTES, 512 * 1024, 64 * 1024, 2 * 1024 * 1024)
+const MAX_SMALL_TEXT_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_SMALL_TEXT_FILE_BYTES, 1024 * 1024, 4 * 1024, 4 * 1024 * 1024)
+const MAX_GALLERY_METADATA_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_METADATA_MAX_BYTES, 256 * 1024, 16 * 1024, 1024 * 1024)
+const MAX_DEPLOY_UPLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_DEPLOY_UPLOAD_MAX_BYTES, 1024 * 1024, 4 * 1024, 4 * 1024 * 1024)
+const HASH_CHUNK_BYTES = 64 * 1024
+
+function parsePositiveInt(value, fallback, min, max) {
+  const parsed = parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
 
 function collectBody(req, res, callback) {
-  let body = ''
+  const chunks = []
+  let total = 0
+  let rejected = false
+  const declared = parseInt(req.headers['content-length'], 10)
+  if (Number.isFinite(declared) && declared > EFFECTIVE_MAX_BODY_SIZE) {
+    res.writeHead(413, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, message: '请求体过大' }))
+    req.destroy()
+    return
+  }
   req.on('data', c => {
-    body += c
-    if (Buffer.byteLength(body) > MAX_BODY_SIZE) {
+    if (rejected) return
+    total += c.length
+    if (total > EFFECTIVE_MAX_BODY_SIZE) {
+      rejected = true
       res.writeHead(413, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: false, message: '请求体过大' }))
       req.destroy()
       return
     }
+    chunks.push(c)
   })
-  req.on('end', () => callback(body))
+  req.on('end', () => {
+    if (rejected) return
+    rejected = true
+    callback(Buffer.concat(chunks).toString('utf8'))
+  })
+  req.on('error', () => {
+    if (rejected) return
+    rejected = true
+    try { json(res, { ok: false, message: '请求读取失败' }, 400) } catch {}
+  })
 }
 
 // ====== 路径配置 ======
@@ -45,7 +81,10 @@ const PERSONAS_DIR = path.join(DATA_DIR, 'ai-skills', 'personas')
 const CORE_DIR = path.join(DATA_DIR, 'ai-skills', 'core')
 const LORES_DIR = path.join(DATA_DIR, 'ai-skills', 'lore')
 const MODES_DIR = path.join(DATA_DIR, 'ai-skills', 'modes')
-const DIST_DIR = path.join(PLUGIN_ROOT, 'frontend', 'dist')
+const FE_DIR = path.join(PLUGIN_ROOT, 'frontend')
+const DIST_DIR = path.join(FE_DIR, 'dist')
+const AGENT_CONSOLE_DIR = path.join(PLUGIN_ROOT, '..', 'agent-console')
+const AGENT_CONSOLE_DIST_DIR = path.join(AGENT_CONSOLE_DIR, 'dist')
 const PORT = process.env.DASHBOARD_PORT || 5150
 const PASSWORD = process.env.DASHBOARD_PASSWORD || '123'
 const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || '123'
@@ -68,6 +107,119 @@ const NPM_PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_prox
 const MAX_LOG_LIMIT = 6000
 let logEntryCache = { file: '', size: -1, mtimeMs: -1, entries: [] }
 let npmDiagnosticsCache = { at: 0, data: null }
+
+function isAgentPathInside(target, root) {
+  const absTarget = path.resolve(String(target || ''))
+  const absRoot = path.resolve(String(root || ''))
+  const left = process.platform === 'win32' ? absTarget.toLowerCase() : absTarget
+  const right = process.platform === 'win32' ? absRoot.toLowerCase() : absRoot
+  return left === right || left.startsWith(right + path.sep)
+}
+
+async function resolveAgentWorkspacePath(target) {
+  const guard = require(path.join(AI_LIB, 'agent', 'path-guard'))
+  return guard.assertExistingAgentPathInsideRoots(String(target || ''), '路径')
+}
+
+async function resolveAgentUploadTarget(root, name) {
+  const guard = require(path.join(AI_LIB, 'agent', 'path-guard'))
+  const base = String(root || '').trim() || await guard.resolveAgentDefaultRoot()
+  const safeName = path.basename(String(name || '').replace(/[\\/:*?"<>|]+/g, '_')).slice(0, 160)
+  if (!safeName) throw new Error('文件名不能为空')
+  const target = path.join(base, safeName)
+  return guard.assertNewAgentPathInsideRoots(target, '上传文件', true)
+}
+
+async function listAgentWorkspaceFiles({ root, query = '', limit = 120 } = {}) {
+  const guard = require(path.join(AI_LIB, 'agent', 'path-guard'))
+  const base = root ? String(root) : await guard.resolveAgentDefaultRoot()
+  const { abs } = await guard.assertExistingAgentPathInsideRoots(base, '目录')
+  const stat = await fs.promises.stat(abs)
+  if (!stat.isDirectory()) throw new Error('不是目录：' + abs)
+  const max = Math.max(1, Math.min(300, parseInt(limit, 10) || 120))
+  const needle = String(query || '').trim().toLowerCase()
+  const ignored = new Set(['.git', 'node_modules', 'dist', 'dist-portable', 'tmp'])
+  const items = []
+  async function walk(dir, depth) {
+    if (items.length >= max || depth > 4) return
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      if (items.length >= max) return
+      if (entry.isDirectory() && ignored.has(entry.name)) continue
+      const full = path.join(dir, entry.name)
+      if (!isAgentPathInside(full, abs)) continue
+      const rel = path.relative(abs, full) || entry.name
+      const matches = !needle || rel.toLowerCase().includes(needle)
+      let itemStat = null
+      if (matches) itemStat = await fs.promises.stat(full).catch(() => null)
+      if (matches && itemStat) {
+        items.push({
+          path: full,
+          rel,
+          name: entry.name,
+          type: entry.isDirectory() ? 'dir' : entry.isFile() ? 'file' : 'other',
+          size: itemStat.size,
+          mtimeMs: itemStat.mtimeMs,
+          injectable: entry.isFile() && itemStat.size <= MAX_AGENT_PREVIEW_FILE_BYTES,
+        })
+      }
+      if (entry.isDirectory()) await walk(full, depth + 1)
+    }
+  }
+  await walk(abs, 0)
+  return { root: abs, files: items }
+}
+
+async function previewAgentWorkspaceFile(target) {
+  const { abs } = await resolveAgentWorkspacePath(target)
+  const stat = await fs.promises.stat(abs)
+  if (!stat.isFile()) throw new Error('不是文件：' + abs)
+  const meta = { path: abs, name: path.basename(abs), size: stat.size, mtimeMs: stat.mtimeMs, binary: false, truncated: false, content: '' }
+  if (stat.size > MAX_AGENT_PREVIEW_FILE_BYTES) {
+    meta.truncated = true
+    return meta
+  }
+  const buffer = await fs.promises.readFile(abs)
+  if (buffer.includes(0)) {
+    meta.binary = true
+    return meta
+  }
+  const content = buffer.toString('utf8')
+  meta.truncated = content.length > 12000
+  meta.content = content.slice(0, 12000)
+  return meta
+}
+
+async function getAgentEffectiveReadRoots() {
+  const guard = require(path.join(AI_LIB, 'agent', 'path-guard'))
+  return guard.getAgentPathAllowedRoots()
+}
+
+function getAgentEnvStatus() {
+  const constants = require(path.join(AI_LIB, 'constants'))
+  const files = [
+    ['ai-openai-key.txt', constants.KEY_FILE],
+    ['ai-deepseek-key.txt', constants.DEEPSEEK_KEY_FILE],
+    ['ai-dashscope-key.txt', constants.DASHSCOPE_KEY_FILE],
+    ['ai-glm-key.txt', constants.GLM_KEY_FILE],
+    ['ai-mimorium-key.txt', constants.MIMORIUM_KEY_FILE],
+    ['ai-provider.txt', constants.PROVIDER_FILE],
+    ['ai-model.txt', constants.MODEL_FILE],
+    ['ai-base-url.txt', constants.BASE_URL_FILE],
+    ['ai-enable-search.txt', constants.SEARCH_ENABLED_FILE],
+  ]
+  return files.map(([name, file]) => {
+    const exists = fs.existsSync(file)
+    let size = 0
+    let configured = false
+    try {
+      const stat = fs.statSync(file)
+      size = stat.size
+      configured = stat.size > 0 && String(fs.readFileSync(file, 'utf8')).trim().length > 0
+    } catch {}
+    return { name, exists, configured, size }
+  })
+}
 
 function isPackagedLocalWorkspace() {
   return /^(?:1|true|yes|on)$/i.test(String(process.env.LIANLIAN_PACKAGED || '').trim())
@@ -105,13 +257,20 @@ function json(res, data, status = 200) {
   res.end(JSON.stringify(data))
 }
 
-function readFileSync(p) {
-  try { if (fs.statSync(p).isFile()) return fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '').trim() } catch {}
+function readFileSync(p, maxBytes = MAX_SMALL_TEXT_FILE_BYTES) {
+  try {
+    const stat = fs.statSync(p)
+    if (stat.isFile() && stat.size <= maxBytes) return fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '').trim()
+  } catch {}
   return ''
 }
 
-function readUtf8(p) {
-  try { return fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '') } catch { return '' }
+function readUtf8(p, maxBytes = MAX_SMALL_TEXT_FILE_BYTES) {
+  try {
+    const stat = fs.statSync(p)
+    if (stat.isFile() && stat.size <= maxBytes) return fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '')
+  } catch {}
+  return ''
 }
 
 function writeFileSync(p, content) {
@@ -160,6 +319,51 @@ function commandQuote(value) {
   const text = String(value)
   if (process.platform !== 'win32') return shellQuote(text)
   return '"' + text.replace(/"/g, '""') + '"'
+}
+
+function getLinuxNapcatQQExecutable() {
+  const napcatDir = String(process.env.NAPCAT_DIR || '').trim()
+  const candidates = [
+    process.env.NAPCAT_QQ_EXECUTABLE || '',
+    process.env.NAPCAT_QQ_PATH || '',
+    napcatDir ? path.join(napcatDir, 'opt', 'QQ', 'qq') : '',
+    napcatDir ? path.join(napcatDir, 'qq') : '',
+    path.join(KOISHI_DIR, 'Napcat', 'opt', 'QQ', 'qq'),
+    path.join(KOISHI_DIR, 'NapCat', 'opt', 'QQ', 'qq'),
+    '/root/Napcat/opt/QQ/qq',
+  ].filter(Boolean)
+  return uniquePaths(candidates).find(item => fs.existsSync(item)) || candidates[0] || '/root/Napcat/opt/QQ/qq'
+}
+
+function getLegacyNapcatStatus() {
+  const webuiPort = Number(process.env.NAPCAT_PORT || 6099)
+  const onebotPort = Number(process.env.NAPCAT_ONEBOT_PORT || 8080)
+  const webui = checkPortState(webuiPort)
+  const onebot = checkPortState(onebotPort)
+  let processLines = []
+  try {
+    const output = execSync('ps -eo pid=,args=', { encoding: 'utf8', timeout: 3000 })
+    processLines = output.split(/\r?\n/).map(line => line.trim()).filter(line => {
+      if (!line) return false
+      if (/\/opt\/QQ\/qq(?:\s|$)/.test(line)) return true
+      if (/\bxvfb-run\b/.test(line) && /\/opt\/QQ\/qq/.test(line)) return true
+      if (/\bXvfb\b/.test(line)) return true
+      if (/\bSCREEN\b/.test(line) && /\bnapcat\b/i.test(line)) return true
+      return false
+    })
+  } catch {}
+  const running = processLines.length > 0 || webui.status === 'occupied' || onebot.status === 'occupied'
+  const login = onebot.status === 'occupied' ? 'online' : (webui.status === 'occupied' ? 'waiting-login' : 'offline')
+  return {
+    running,
+    login,
+    webui: webui.status === 'occupied',
+    onebot: onebot.status === 'occupied',
+    webuiPort,
+    onebotPort,
+    qqExecutable: getLinuxNapcatQQExecutable(),
+    processes: processLines.slice(0, 12),
+  }
 }
 
 function validateDeployServer(server) {
@@ -248,24 +452,61 @@ function listFilesRecursive(root, predicate) {
 
 function hashFile(hash, repoRoot, filePath) {
   try {
+    const stat = fs.statSync(filePath)
+    if (!stat.isFile()) return
     const rel = path.relative(repoRoot, filePath).replace(/\\/g, '/')
     hash.update(rel)
     hash.update('\0')
-    hash.update(fs.readFileSync(filePath))
+    const fd = fs.openSync(filePath, 'r')
+    const buffer = Buffer.alloc(Math.min(HASH_CHUNK_BYTES, Math.max(1, stat.size || 1)))
+    try {
+      let position = 0
+      while (position < stat.size) {
+        const bytesRead = fs.readSync(fd, buffer, 0, Math.min(buffer.length, stat.size - position), position)
+        if (!bytesRead) break
+        hash.update(buffer.subarray(0, bytesRead))
+        position += bytesRead
+      }
+    } finally {
+      fs.closeSync(fd)
+    }
     hash.update('\0')
   } catch {}
+}
+
+function getFrontendDistAssetRefs(distDir = DIST_DIR) {
+  const indexFile = path.join(distDir, 'index.html')
+  let html = ''
+  try { html = fs.readFileSync(indexFile, 'utf8') } catch { return [] }
+  const refs = new Set()
+  const re = /(?:src|href)=["']\/dashboard\/(assets\/[^"']+)["']/g
+  let match
+  while ((match = re.exec(html))) refs.add(match[1])
+  return [...refs]
 }
 
 function hasFrontendDistAssets(distDir = DIST_DIR) {
   const indexFile = path.join(distDir, 'index.html')
   const assetsDir = path.join(distDir, 'assets')
   if (!fs.existsSync(indexFile) || !fs.existsSync(assetsDir)) return false
-  try { return fs.readdirSync(assetsDir).some(name => /\.js$/i.test(name)) }
-  catch { return false }
+  const refs = getFrontendDistAssetRefs(distDir)
+  if (!refs.length) return false
+  if (!refs.every(ref => fs.existsSync(path.join(distDir, ref)))) return false
+  return refs.some(ref => /\.js$/i.test(ref))
 }
 
-function assertFrontendDistReady() {
-  if (!hasFrontendDistAssets()) throw new Error('frontend dist is missing or incomplete; rebuild frontend first')
+function assertFrontendDistReady(distDir = DIST_DIR) {
+  if (!hasFrontendDistAssets(distDir)) throw new Error('frontend dist is missing or incomplete; rebuild frontend first')
+}
+
+function assertFrontendBuildSourceReady(feDir = FE_DIR) {
+  const required = ['package.json', 'index.html', 'vite.config.js', 'src']
+  for (const name of required) {
+    if (!fs.existsSync(path.join(feDir, name))) throw new Error('frontend source is missing: ' + path.join(feDir, name))
+  }
+  if (!fs.existsSync(path.join(feDir, 'node_modules'))) {
+    throw new Error('前端依赖未安装，请先在 frontend 目录执行 npm install')
+  }
 }
 
 function rollbackFrontendDist(distDir, backupDir) {
@@ -275,6 +516,59 @@ function rollbackFrontendDist(distDir, backupDir) {
     if (fs.existsSync(backupDir)) fs.renameSync(backupDir, distDir)
   } catch (e) { return 'restore previous dist failed: ' + e.message }
   return ''
+}
+
+function buildFrontendDist(options = {}, callback) {
+  const feDir = options.feDir || FE_DIR
+  const distDir = options.distDir || DIST_DIR
+  const backupDir = options.backupDir || path.join(feDir, 'dist.bak')
+  const startedAt = Date.now()
+  const logFn = typeof options.log === 'function' ? options.log : () => {}
+  const updateStatus = typeof options.updateStatus === 'function' ? options.updateStatus : null
+  const done = typeof callback === 'function' ? callback : () => {}
+
+  try {
+    assertFrontendBuildSourceReady(feDir)
+    logFn('frontend build source: ' + feDir)
+    logFn('frontend build dist: ' + distDir)
+    fs.rmSync(backupDir, { recursive: true, force: true })
+    if (fs.existsSync(distDir)) fs.renameSync(distDir, backupDir)
+  } catch (e) {
+    if (updateStatus) updateStatus({ state: 'failed', message: 'frontend build preparation failed', detail: e.message, startedAt, finishedAt: Date.now() })
+    done(e)
+    return false
+  }
+
+  if (updateStatus) updateStatus({ state: 'building', message: 'building', detail: '', startedAt, finishedAt: 0 })
+  logFn('frontend build start: npm run build')
+  exec('npm run build', { cwd: feDir, timeout: 120000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+    try {
+      if (stdout) logFn(stdout.trim())
+      if (stderr) logFn(stderr.trim())
+      if (err) {
+        const rollbackError = rollbackFrontendDist(distDir, backupDir)
+        const detail = [stderr || err.message || '', rollbackError].filter(Boolean).join('\n').slice(-1200)
+        if (updateStatus) updateStatus({ state: 'failed', message: 'frontend build failed and rolled back', detail, startedAt, finishedAt: Date.now() })
+        done(new Error(detail || 'frontend build failed'))
+        return
+      }
+      if (!hasFrontendDistAssets(distDir)) {
+        const rollbackError = rollbackFrontendDist(distDir, backupDir)
+        const detail = rollbackError || 'frontend dist is incomplete'
+        if (updateStatus) updateStatus({ state: 'failed', message: 'frontend dist is incomplete and rolled back', detail, startedAt, finishedAt: Date.now() })
+        done(new Error(detail))
+        return
+      }
+      fs.rmSync(backupDir, { recursive: true, force: true })
+      if (updateStatus) updateStatus({ state: 'success', message: 'frontend build success', detail: '', startedAt, finishedAt: Date.now() })
+      logFn('frontend build success')
+      done(null)
+    } catch (e) {
+      if (updateStatus) updateStatus({ state: 'failed', message: 'frontend rebuild cleanup failed', detail: e.message, startedAt, finishedAt: Date.now() })
+      done(e)
+    }
+  })
+  return true
 }
 
 function copyRecursiveSync(src, dst) {
@@ -569,7 +863,25 @@ function resolveProjectRel(rel) {
 }
 
 function fileSha256(filePath) {
-  try { return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex') } catch { return '' }
+  try {
+    const stat = fs.statSync(filePath)
+    if (!stat.isFile()) return ''
+    const hash = crypto.createHash('sha256')
+    const fd = fs.openSync(filePath, 'r')
+    const buffer = Buffer.alloc(Math.min(HASH_CHUNK_BYTES, Math.max(1, stat.size || 1)))
+    try {
+      let position = 0
+      while (position < stat.size) {
+        const bytesRead = fs.readSync(fd, buffer, 0, Math.min(buffer.length, stat.size - position), position)
+        if (!bytesRead) break
+        hash.update(buffer.subarray(0, bytesRead))
+        position += bytesRead
+      }
+    } finally {
+      fs.closeSync(fd)
+    }
+    return hash.digest('hex')
+  } catch { return '' }
 }
 
 function readLocalDeployManifest() {
@@ -856,6 +1168,7 @@ function validateDownloadedFile(filePath, options = {}) {
   const stat = fs.statSync(filePath)
   const minBytes = Number(options.minBytes || 0)
   if (minBytes && stat.size < minBytes) throw new Error(`下载文件过小：${stat.size} 字节，可能是网络错误页或下载不完整`)
+  if (stat.size > MAX_DOWNLOAD_BYTES) throw new Error(`下载文件过大：${stat.size} bytes`)
   const expectsZip = /\.zip$/i.test(String(options.expectedExt || '')) || /zip/i.test(String(options.expectedContentType || '')) || /\.zip$/i.test(filePath)
   if (expectsZip && !hasZipMagic(filePath)) throw new Error('下载文件不是有效 zip 包，可能下载到了 HTML 错误页或被代理改写')
   return { path: filePath, size: stat.size, name: path.basename(filePath) }
@@ -1310,6 +1623,8 @@ function normalizeGalleryStyle(value) {
 
 function readGalleryMetadata() {
   try {
+    const stat = fs.statSync(GALLERY_METADATA_FILE)
+    if (!stat.isFile() || stat.size > MAX_GALLERY_METADATA_BYTES) return {}
     const data = JSON.parse(fs.readFileSync(GALLERY_METADATA_FILE, 'utf8') || '{}')
     return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
   } catch { return {} }
@@ -1318,7 +1633,9 @@ function readGalleryMetadata() {
 function writeGalleryMetadata(metadata) {
   fs.mkdirSync(GALLERY_DIR, { recursive: true })
   const tmp = GALLERY_METADATA_FILE + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify(metadata || {}, null, 2), 'utf8')
+  const text = JSON.stringify(metadata || {}, null, 2)
+  if (Buffer.byteLength(text, 'utf8') > MAX_GALLERY_METADATA_BYTES) throw new Error('图集元数据过大，请先清理图集')
+  fs.writeFileSync(tmp, text, 'utf8')
   fs.renameSync(tmp, GALLERY_METADATA_FILE)
 }
 
@@ -1363,6 +1680,8 @@ function writeGalleryImage(input = {}) {
   if (!ext) throw new Error('只支持 PNG、JPG、WebP 或 GIF 图片')
   const raw = String(input.data || '').replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '')
   if (!raw) throw new Error('图片内容为空')
+  const estimatedBytes = Math.floor(raw.replace(/\s+/g, '').length * 3 / 4)
+  if (estimatedBytes > GALLERY_MAX_BYTES) throw new Error('图片不能超过 8MB')
   const buffer = Buffer.from(raw, 'base64')
   if (!buffer.length) throw new Error('图片内容为空')
   if (buffer.length > GALLERY_MAX_BYTES) throw new Error('图片不能超过 8MB')
@@ -1650,7 +1969,7 @@ function readLastLogLines(file, limit) {
 function readLastLogItems(file, limit = MAX_LOG_LIMIT) {
   if (!fs.existsSync(file)) return []
   const stat = fs.statSync(file)
-  const maxBytes = Math.min(stat.size, Math.max(512 * 1024, Math.min(12 * 1024 * 1024, clampLogLimit(limit) * 1200)))
+  const maxBytes = Math.min(stat.size, Math.max(256 * 1024, Math.min(4 * 1024 * 1024, clampLogLimit(limit) * 900)))
   const buffer = Buffer.alloc(maxBytes)
   const fd = fs.openSync(file, 'r')
   const startOffset = stat.size - maxBytes
@@ -1813,36 +2132,57 @@ function testChinesePathWrite(dir) {
 function downloadToRuntime(url, options, callback) {
   if (typeof options === 'function') { callback = options; options = {} }
   options = options || {}
+  let settled = false
+  const finish = (...args) => {
+    if (settled) return
+    settled = true
+    callback(...args)
+  }
   let parsed
-  try { parsed = new URL(url) } catch { callback(new Error('下载地址无效')); return }
-  if (!['http:', 'https:'].includes(parsed.protocol)) { callback(new Error('只支持 http/https 下载地址')); return }
+  try { parsed = new URL(url) } catch { finish(new Error('下载地址无效')); return }
+  if (!['http:', 'https:'].includes(parsed.protocol)) { finish(new Error('只支持 http/https 下载地址')); return }
   try { writeRuntimeLayout({ includeNapcat: false, includeNodeModules: false }) }
-  catch (e) { callback(new Error('准备本地部署工作目录失败：' + describeFsError(e))); return }
+  catch (e) { finish(new Error('准备本地部署工作目录失败：' + describeFsError(e))); return }
   const client = parsed.protocol === 'https:' ? https : http
   const req = client.get(parsed, (response) => {
     if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
       response.resume()
       const nextUrl = new URL(response.headers.location, parsed).toString()
-      downloadToRuntime(nextUrl, options, callback)
+      downloadToRuntime(nextUrl, options, finish)
       return
     }
     if (response.statusCode !== 200) {
       response.resume()
-      callback(new Error('下载失败：HTTP ' + response.statusCode))
+      finish(new Error('下载失败：HTTP ' + response.statusCode))
+      return
+    }
+    const declared = parseInt(response.headers['content-length'], 10)
+    if (Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES) {
+      response.resume()
+      finish(new Error('下载文件过大：' + declared + ' bytes'))
       return
     }
     const name = getDownloadFileName(parsed, response, options)
     const filePath = runtimePath('downloads', name)
     const stream = fs.createWriteStream(filePath)
+    let received = 0
+    response.on('data', chunk => {
+      received += chunk.length
+      if (received > MAX_DOWNLOAD_BYTES) {
+        finish(new Error('下载文件过大：' + received + ' bytes'), filePath)
+        try { req.destroy(new Error('下载文件过大：' + received + ' bytes')) } catch {}
+        try { stream.destroy() } catch {}
+      }
+    })
     response.pipe(stream)
     stream.on('finish', () => stream.close(() => {
-      try { callback(null, filePath, validateDownloadedFile(filePath, { ...options, expectedContentType: response.headers['content-type'] })) }
-      catch (e) { callback(e, filePath) }
+      try { finish(null, filePath, validateDownloadedFile(filePath, { ...options, expectedContentType: response.headers['content-type'] })) }
+      catch (e) { finish(e, filePath) }
     }))
-    stream.on('error', callback)
+    stream.on('error', finish)
   })
   req.setTimeout(120000, () => req.destroy(new Error('下载超时')))
-  req.on('error', callback)
+  req.on('error', finish)
 }
 
 const localTasks = {
@@ -2131,6 +2471,7 @@ function spawnLocalTask(key, command, args = [], options = {}) {
     env: { ...process.env, ...(options.env || {}) },
     windowsHide: true,
     shell: options.shell === true,
+    maxBuffer: 512 * 1024,
   })
   task.process = child
   task.pid = child.pid || 0
@@ -2328,9 +2669,19 @@ function computeFingerprint() {
     const hash = crypto.createHash('md5')
     const add = rel => hashFile(hash, repoRoot, path.join(repoRoot, rel))
     add('packages/koishi-plugin-dashboard/standalone.js')
+    add('packages/koishi-plugin-dashboard/frontend/index.html')
+    add('packages/koishi-plugin-dashboard/frontend/package.json')
+    add('packages/koishi-plugin-dashboard/frontend/package-lock.json')
+    add('packages/koishi-plugin-dashboard/frontend/vite.config.js')
     add('packages/koishi-plugin-dashboard/frontend/dist/index.html')
     add('scripts/restart-bot.sh')
     add('scripts/watchdog.sh')
+    for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'src'))) {
+      hashFile(hash, repoRoot, file)
+    }
+    for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'public'))) {
+      hashFile(hash, repoRoot, file)
+    }
     for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'dist', 'assets'))) {
       hashFile(hash, repoRoot, file)
     }
@@ -2462,7 +2813,7 @@ function napcatRespond(res, proxyRes, token) {
 }
 
 // ====== HTTP 服务器 ======
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
   const pathname = url.pathname
 
@@ -2497,11 +2848,11 @@ const server = http.createServer((req, res) => {
 
   // 管理员验证（不需要普通登录）
   if (pathname === '/dashboard/api/admin/verify' && req.method === 'POST') {
-    if (isLocalAuthBypass(req)) return json(res, { ok: true, token: createAdminToken() })
+    if (isLocalAuthBypass(req)) return json(res, { ok: true, token: createAdminToken(), accessToken: createToken() })
     collectBody(req, res, (body) => {
       try {
         const { password } = JSON.parse(body)
-        if (password === getAdminPassword()) return json(res, { ok: true, token: createAdminToken() })
+        if (password === getAdminPassword()) return json(res, { ok: true, token: createAdminToken(), accessToken: createToken() })
         return json(res, { ok: false, message: '管理员密码错误' }, 401)
       } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
     })
@@ -3045,6 +3396,473 @@ const server = http.createServer((req, res) => {
     return napcatProxy(req, res, pathname + url.search)
   }
 
+  if (pathname === '/dashboard/api/tools' && req.method === 'GET') {
+    try {
+      const registry = require(path.join(AI_LIB, 'agent', 'tools', 'registry'))
+      const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig(true)
+      const tools = Object.values(registry.toolRegistry).map(tool => ({
+        name: tool.definition.name,
+        description: tool.definition.description || '',
+        dangerous: !!tool.dangerous,
+        external: tool.definition.name === 'web_search',
+        defaultChannels: tool.defaultChannels || ['dashboard', 'qq'],
+        channels: {
+          qq: !!agentConfig.channels?.qq?.tools?.[tool.definition.name],
+          dashboard: !!agentConfig.channels?.dashboard?.tools?.[tool.definition.name],
+        },
+      }))
+      return json(res, { ok: true, tools })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  const toolEnableMatch = pathname.match(/^\/dashboard\/api\/tools\/([^/]+)\/enabled$/)
+  if (toolEnableMatch && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const toolName = decodeURIComponent(toolEnableMatch[1])
+        const channel = ['qq', 'dashboard'].includes(data.channel) ? data.channel : 'dashboard'
+        const registry = require(path.join(AI_LIB, 'agent', 'tools', 'registry'))
+        if (!registry.toolRegistry[toolName]) return json(res, { ok: false, message: '未知工具' }, 404)
+        const saved = await require(path.join(AI_LIB, 'agent', 'config')).setToolEnabled(channel, toolName, !!data.enabled)
+        return json(res, { ok: true, config: saved })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/tools/pending' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const p = require(path.join(AI_LIB, 'agent', 'pending')).getPendingTool('dashboard', 'dashboard')
+      const pending = require(path.join(AI_LIB, 'agent', 'pending')).listPendingTools()
+      return json(res, { ok: true, pending: pending.length ? pending : (p ? [{ id: p.id, toolName: p.toolName, expireAt: p.expireAt }] : []) })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  const toolApproveMatch = pathname.match(/^\/dashboard\/api\/tools\/pending\/([^/]+)\/approve$/)
+  if (toolApproveMatch && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    ;(async () => {
+      try {
+        const pending = require(path.join(AI_LIB, 'agent', 'pending'))
+        const pendingId = decodeURIComponent(toolApproveMatch[1])
+        const findPendingById = pending.findPendingToolById || pending.getPendingToolById || (id => (pending.listPendingTools && pending.listPendingTools().find(item => item.id === id)) || null)
+        const p = findPendingById(pendingId)
+        if (!p) return json(res, { ok: false, message: '没有匹配的待确认工具' }, 404)
+        const engine = require(path.join(AI_LIB, 'agent', 'engine'))
+        const result = await engine.resumePending({ channelKey: p.channelKey, userId: p.userId, channel: p.channel || 'dashboard', expectedId: pendingId })
+        return json(res, { ok: !result.message || !!result.reply, toolName: p.toolName, reply: result.reply || '', result: result.reply || result.message || '', message: result.message || '' }, result.status || 200)
+      } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    })()
+    return
+  }
+
+  // Agent 工具配置与控制台
+  if (pathname === '/dashboard/api/agent/config' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig(true)
+      const registry = require(path.join(AI_LIB, 'agent', 'tools', 'registry'))
+      const safety = require(path.join(AI_LIB, 'agent', 'safety'))
+      const stats = require(path.join(AI_LIB, 'agent', 'stats')).getStats()
+      const skills = require(path.join(AI_LIB, 'agent', 'skills')).listAgentSkills()
+      const personas = require(path.join(AI_LIB, 'agent', 'persona-context')).listAgentPersonasForConsole()
+      const effectiveReadRoots = await getAgentEffectiveReadRoots()
+      const qqEnabledTools = new Set(registry.getToolDefinitions('qq').map(item => item.function.name))
+      const dashboardEnabledTools = new Set(registry.getToolDefinitions('dashboard').map(item => item.function.name))
+      const tools = registry.getToolSummaries().map(tool => ({
+        ...tool,
+        qqEnabled: qqEnabledTools.has(tool.name),
+        dashboardEnabled: dashboardEnabledTools.has(tool.name),
+      }))
+      return json(res, { ok: true, config: agentConfig, mode: safety.getMode(), stats, tools, skills, personas, effectiveReadRoots })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  if (pathname === '/dashboard/api/agent/personas' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig(true)
+      const personas = require(path.join(AI_LIB, 'agent', 'persona-context')).listAgentPersonasForConsole()
+      return json(res, { ok: true, personas, persona: agentConfig.persona || { dashboardPersona: '', qqInheritChatPersona: true } })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  if (pathname === '/dashboard/api/agent/persona' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const agentConfig = require(path.join(AI_LIB, 'agent', 'config'))
+        const current = agentConfig.getAgentConfig()
+        const personaName = String(data.dashboardPersona || '').trim()
+        const personas = require(path.join(AI_LIB, 'agent', 'persona-context')).listAgentPersonasForConsole()
+        if (personaName && !personas.some(item => item.name === personaName)) return json(res, { ok: false, message: '未知人格：' + personaName }, 400)
+        current.persona = {
+          dashboardPersona: personaName,
+          qqInheritChatPersona: data.qqInheritChatPersona === undefined ? current.persona?.qqInheritChatPersona !== false : !!data.qqInheritChatPersona,
+        }
+        const saved = await agentConfig.saveAgentConfig(current)
+        return json(res, { ok: true, persona: saved.persona, message: 'Agent 人格已更新' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/agent/stats' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const stats = require(path.join(AI_LIB, 'agent', 'stats')).getStats()
+      return json(res, { ok: true, stats })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  if (pathname === '/dashboard/api/agent/queue' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const queue = require(path.join(AI_LIB, 'agent', 'queue')).getAgentQueueStats()
+      return json(res, { ok: true, queue })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  if (pathname === '/dashboard/api/agent/files' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const query = url.searchParams.get('q') || ''
+      const root = url.searchParams.get('root') || ''
+      const limit = url.searchParams.get('limit') || 120
+      const result = await listAgentWorkspaceFiles({ root, query, limit })
+      return json(res, { ok: true, ...result })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/agent/file' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const file = url.searchParams.get('path') || ''
+      return json(res, { ok: true, file: await previewAgentWorkspaceFile(file) })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/agent/file/download' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const { abs } = await resolveAgentWorkspacePath(url.searchParams.get('path') || '')
+      const stat = await fs.promises.stat(abs)
+      if (!stat.isFile()) return json(res, { ok: false, message: '不是文件' }, 400)
+      if (stat.size > MAX_DOWNLOAD_BYTES) return json(res, { ok: false, message: '文件过大，拒绝下载' }, 413)
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(path.basename(abs))}"`,
+      })
+      fs.createReadStream(abs).pipe(res)
+      return
+    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/agent/file/upload' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const content = String(data.content || '')
+        if (Buffer.byteLength(content, 'utf8') > 1024 * 1024) return json(res, { ok: false, message: '上传文件过大' }, 413)
+        if (content.length > 2 * 1024 * 1024) return json(res, { ok: false, message: '上传文件过大' }, 413)
+        const { abs } = await resolveAgentUploadTarget(data.root, data.name)
+        await fs.promises.mkdir(path.dirname(abs), { recursive: true })
+        await fs.promises.writeFile(abs, content, 'utf8')
+        return json(res, { ok: true, file: { path: abs, name: path.basename(abs), size: Buffer.byteLength(content) } })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/agent/env' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const runtime = await require(path.join(AI_LIB, 'runtime-config')).loadConfig(true)
+      return json(res, {
+        ok: true,
+        env: getAgentEnvStatus(),
+        runtime: {
+          provider: runtime.provider,
+          model: runtime.model,
+          baseURL: runtime.baseURL,
+          apiKeyConfigured: !!runtime.apiKey,
+          searchEnabled: !!runtime.searchEnabled,
+        },
+      })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  if (pathname === '/dashboard/api/agent/shell-guard' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const guard = require(path.join(AI_LIB, 'agent', 'tools', 'shell-guard'))
+      const categories = guard.listShellGuardRules()
+      const ruleCount = categories.reduce((sum, item) => sum + item.count, 0)
+      return json(res, { ok: true, enabled: true, ruleCount, categories })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  if (pathname === '/dashboard/api/agent/plans' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const plans = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-store')).listPlans(80)
+      return json(res, { ok: true, plans })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  const planDetailMatchApi = pathname.match(/^\/dashboard\/api\/agent\/plans\/([^/]+)$/)
+  if (planDetailMatchApi && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const plan = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-store')).loadPlan(decodeURIComponent(planDetailMatchApi[1]))
+      if (!plan) return json(res, { ok: false, message: '计划不存在' }, 404)
+      return json(res, { ok: true, plan })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  if (pathname === '/dashboard/api/agent/plans' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const goal = String(data.goal || data.title || '').trim()
+        const rawTasks = Array.isArray(data.tasks) ? data.tasks : []
+        if (!goal && rawTasks.length === 0) return json(res, { ok: false, message: '计划目标不能为空。' }, 400)
+        const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig()
+        if (!agentConfig.planMode?.enabled) return json(res, { ok: false, message: '计划模式当前未开启。' }, 400)
+        const tasks = rawTasks.length
+          ? rawTasks.map(item => typeof item === 'string' ? { desc: item } : item)
+          : goal.split(/(?:[;；]|\n|，然后|然后|再)/).map(item => item.trim()).filter(Boolean).slice(0, 8).map(desc => ({ desc }))
+        const fallbackTasks = tasks.length >= 2 ? tasks : [
+          { desc: `理解目标：${goal}` },
+          { desc: '收集必要信息并执行可用工具' },
+          { desc: '整理结果并汇报完成状态' },
+        ]
+        const plan = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-engine')).createPlan({
+          title: goal.slice(0, 80) || 'Dashboard Agent 计划',
+          tasks: fallbackTasks,
+          channel: 'dashboard',
+          channelKey: 'dashboard',
+          userId: String(data.userId || 'dashboard'),
+          userName: String(data.userName || 'Dashboard'),
+        })
+        return json(res, { ok: true, plan })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  const planResumeMatchApi = pathname.match(/^\/dashboard\/api\/agent\/plans\/([^/]+)\/resume$/)
+  if (planResumeMatchApi && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const result = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-runner')).resumePlan({
+          planId: decodeURIComponent(planResumeMatchApi[1]),
+          channelKey: 'dashboard',
+          userId: String(data.userId || 'dashboard'),
+          userName: String(data.userName || 'Dashboard'),
+          channel: 'dashboard',
+        })
+        return json(res, { ok: true, ...result })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  const planAbandonMatchApi = pathname.match(/^\/dashboard\/api\/agent\/plans\/([^/]+)\/abandon$/)
+  if (planAbandonMatchApi && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const plan = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-engine')).abandonPlan({
+          planId: decodeURIComponent(planAbandonMatchApi[1]),
+          reason: data.reason || 'Agent Console 放弃计划',
+        })
+        return json(res, { ok: true, plan })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/agent/push-log' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const log = require(path.join(AI_LIB, 'agent', 'push')).listPushLog(80)
+      return json(res, { ok: true, log })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  if (pathname === '/dashboard/api/agent/crons' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const cron = require(path.join(AI_LIB, 'agent', 'cron'))
+      const data = await cron.loadCrons()
+      const history = await cron.listCronHistory(50)
+      return json(res, { ok: true, crons: data.crons, history })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  if (pathname === '/dashboard/api/agent/crons' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const cron = await require(path.join(AI_LIB, 'agent', 'cron')).registerCron(data)
+        return json(res, { ok: true, cron })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  const cronRunMatchApi = pathname.match(/^\/dashboard\/api\/agent\/crons\/([^/]+)\/run$/)
+  if (cronRunMatchApi && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const result = await require(path.join(AI_LIB, 'agent', 'cron')).runCronNow(decodeURIComponent(cronRunMatchApi[1]))
+      return json(res, { ok: true, result })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  const cronDeleteMatchApi = pathname.match(/^\/dashboard\/api\/agent\/crons\/([^/]+)$/)
+  if (cronDeleteMatchApi && req.method === 'DELETE') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const removed = await require(path.join(AI_LIB, 'agent', 'cron')).unregisterCron(decodeURIComponent(cronDeleteMatchApi[1]))
+      return json(res, { ok: true, removed })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  }
+
+  if (pathname === '/dashboard/api/agent/config' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const agentConfig = require(path.join(AI_LIB, 'agent', 'config'))
+        const safety = require(path.join(AI_LIB, 'agent', 'safety'))
+        const saved = await agentConfig.saveAgentConfig(data.config || data)
+        if (data.mode) await safety.setMode(data.mode)
+        return json(res, { ok: true, config: saved, mode: safety.getMode(), message: 'Agent 配置已更新' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/agent/sessions' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const sessions = require(path.join(AI_LIB, 'agent', 'sessions')).listAgentSessions()
+      return json(res, { ok: true, sessions })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  const sessionDetailMatch = pathname.match(/^\/dashboard\/api\/agent\/sessions\/(.+)$/)
+  if (sessionDetailMatch && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const id = decodeURIComponent(sessionDetailMatch[1])
+      const session = require(path.join(AI_LIB, 'agent', 'sessions')).getAgentSession(id)
+      if (!session) return json(res, { ok: false, message: '会话不存在' }, 404)
+      return json(res, { ok: true, session })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  if (pathname === '/dashboard/api/agent/chat' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const message = String(data.message || '').trim()
+        const enableThinking = !!data.enableThinking
+        const agentMode = !!data.agentMode
+        if (!message) return json(res, { ok: false, message: '消息不能为空' }, 400)
+        const engine = require(path.join(AI_LIB, 'agent', 'engine'))
+        const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig()
+        const queue = require(path.join(AI_LIB, 'agent', 'queue'))
+        queue.configureAgentQueue(agentConfig.queue || {})
+        const history = require(path.join(AI_LIB, 'agent', 'messages')).sanitizeAgentHistory(data.history)
+        const searchRunOptions = require(path.join(AI_LIB, 'agent', 'router')).buildExplicitSearchRunOptions(message)
+        const result = await queue.enqueueAgentTask({
+          channelKey: 'dashboard',
+          userId: String(data.userId || 'dashboard'),
+          timeoutMs: agentConfig.queue?.timeoutMs,
+          fn: () => engine.run({
+            userMessage: message,
+            userName: String(data.userName || 'Dashboard'),
+            userId: String(data.userId || 'dashboard'),
+            channelKey: 'dashboard',
+            channel: 'dashboard',
+            history,
+            enableThinking,
+            agentMode,
+            ...searchRunOptions,
+          }),
+        })
+        if (result && result.reply && !(result.pendingId)) {
+          require(path.join(AI_LIB, 'agent-chat-bridge')).recordAgentChatResult({
+            session: null,
+            userMessage: message,
+            userName: String(data.userName || 'Dashboard'),
+            userId: String(data.userId || 'dashboard'),
+            channelKey: 'dashboard',
+            agentResult: result,
+          })
+        }
+        return json(res, { ok: true, ...result })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/agent/confirm' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const pending = require(path.join(AI_LIB, 'agent', 'pending'))
+        const data = JSON.parse(body || '{}')
+        const expectedId = String(data.pendingId || '')
+        const findPendingById = pending.findPendingToolById || pending.getPendingToolById || (id => (pending.listPendingTools && pending.listPendingTools().find(item => item.id === id)) || null)
+        const p = expectedId ? findPendingById(expectedId) : pending.getPendingTool('dashboard', 'dashboard')
+        if (!p) return json(res, { ok: false, message: '没有待确认工具' }, 404)
+        const engine = require(path.join(AI_LIB, 'agent', 'engine'))
+        const queue = require(path.join(AI_LIB, 'agent', 'queue'))
+        const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig()
+        queue.configureAgentQueue(agentConfig.queue || {})
+        const result = await queue.enqueueAgentTask({
+          channelKey: p.channelKey,
+          userId: p.userId,
+          timeoutMs: agentConfig.queue?.timeoutMs,
+          fn: () => engine.resumePending({ channelKey: p.channelKey, userId: p.userId, channel: p.channel || 'dashboard', expectedId }),
+        })
+        return json(res, { ok: !result.message || !!result.reply, toolName: p.toolName, reply: result.reply || '', result: result.reply || result.message || '', message: result.message || '' }, result.status || 200)
+      } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/agent/reject' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const pending = require(path.join(AI_LIB, 'agent', 'pending'))
+        const data = JSON.parse(body || '{}')
+        const pendingId = String(data.pendingId || '')
+        if (!pendingId) return json(res, { ok: false, message: 'pendingId 不能为空' }, 400)
+        const ok = pending.clearPendingToolById(pendingId)
+        if (!ok) return json(res, { ok: false, message: '没有匹配的待确认工具' }, 404)
+        return json(res, { ok: true, message: '已拒绝工具请求' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    })
+    return
+  }
+
   // Bot 控制
   if (pathname === '/dashboard/api/bot/status' && req.method === 'GET') {
     try {
@@ -3099,7 +3917,7 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/dashboard/api/bot/start' && req.method === 'POST') {
     if (!requireAdmin(req, res)) return
-    exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`, (err) => {
+    exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`, { maxBuffer: 512 * 1024 }, (err) => {
       if (err) log('start bot failed: ' + err.message)
     })
     return json(res, { ok: true, message: '启动命令已发送' })
@@ -3187,7 +4005,7 @@ const server = http.createServer((req, res) => {
         yml = yml.replace(/(selfId:\s*['\"]?)\d+(['\"]?)/, '$1' + selfId + '$2')
         fs.writeFileSync(ymlPath, yml, 'utf8')
         // 自动重启 koishi
-        exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`)
+        exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`, { maxBuffer: 512 * 1024 })
         json(res, { ok: true, message: 'QQ 号已更新，Koishi 正在重启...' })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })
@@ -3196,17 +4014,24 @@ const server = http.createServer((req, res) => {
 
   // NapCat 管理
   if (pathname === '/dashboard/api/napcat/status' && req.method === 'GET') {
-    try {
-      execSync("ps aux | grep 'qq.*--no-sandbox' | grep -v grep", { encoding: 'utf8', timeout: 3000 })
-      return json(res, { running: true })
-    } catch { return json(res, { running: false }) }
+    return json(res, getLegacyNapcatStatus())
   }
   if (pathname === '/dashboard/api/napcat/restart' && req.method === 'POST') {
     const raw = process.env.DASHBOARD_QQ_NUMBER || '123456789'
     const qq = raw.replace(/[^0-9]/g, '')
     if (!qq) return json(res, { ok: false, message: '无效 QQ 号' }, 400)
-    exec("screen -S napcat -X quit 2>/dev/null; sleep 2; screen -dmS napcat bash -c 'xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox -q " + qq + "'")
-    return json(res, { ok: true, message: 'NapCat 重启命令已发送' })
+    const qqExecutable = getLinuxNapcatQQExecutable()
+    const logFile = process.env.NAPCAT_LOG_FILE || '/root/napcat.log'
+    const args = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '-q', qq]
+    const inner = ['xvfb-run', '-a', qqExecutable].concat(args).map(shellQuote).join(' ') + ' >> ' + shellQuote(logFile) + ' 2>&1'
+    const command = [
+      'screen -S napcat -X quit 2>/dev/null || true',
+      'sleep 2',
+      'printf %s\\\\n ' + shellQuote('=== DASHBOARD NAPCAT RESTART ' + new Date().toISOString() + ' ===') + ' >> ' + shellQuote(logFile),
+      'screen -dmS napcat bash -lc ' + shellQuote(inner),
+    ].join('; ')
+    exec(command, { maxBuffer: 512 * 1024 })
+    return json(res, { ok: true, message: 'NapCat 重启命令已发送', qqExecutable, args })
   }
 
   // ==== 部署管理 ====
@@ -3257,69 +4082,104 @@ const server = http.createServer((req, res) => {
         if (cfg.mode === 'install') {
           return json(res, { ok: false, message: 'First-time install is not automated yet. Please run setup.sh or a local installer first.' }, 400)
         }
-        assertFrontendDistReady()
+        if (rebuildStatus.state === 'building') return json(res, { ok: false, message: '前端正在构建中，请等待完成' }, 400)
         if (!cfg.server || !cfg.appDir) return json(res, { ok: false, message: '配置不完整' }, 400)
         const taskId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
         const logFile = path.join(DEPLOY_TASKS_DIR, taskId + '.log')
         const log = (msg) => { try { fs.appendFileSync(logFile, msg + '\n', 'utf8') } catch {} }
         json(res, { ok: true, taskId })
 
-        const repoRoot = path.join(PLUGIN_ROOT, '..', '..')
-        const s = cfg.server
-        const d = cfg.appDir
-        const pkgs = [
-          'koishi-plugin-dongxuelian-ai', 'koishi-plugin-dongxuelian-help',
-          'koishi-plugin-group-name-at', 'koishi-plugin-defense',
-          'koishi-plugin-local-video-sender', 'koishi-plugin-group-leave-notice',
-          'koishi-plugin-dongxuelian-poke', 'koishi-plugin-daily-report',
-        ]
-        const cmds = []
-        const dashboardDir = remoteJoin(d, 'packages', 'koishi-plugin-dashboard')
-        const dashboardDistDir = remoteJoin(dashboardDir, 'frontend', 'dist')
-        const scriptsDir = remoteJoin(d, 'scripts')
-        const dataDir = remoteJoin(d, 'data')
-        const existingInstallCheck = `test -f ${shellQuote(remoteJoin(d, 'node_modules', 'koishi', 'bin.js'))} && (test -f ${shellQuote(remoteJoin(d, 'koishi.config.js'))} || test -f ${shellQuote(remoteJoin(d, 'koishi.yml'))})`
-        cmds.push(`echo "preflight"`)
-        cmds.push(sshCommand(s, existingInstallCheck))
-        cmds.push(`echo "prepare dirs"`)
-        cmds.push(sshCommand(s, `mkdir -p ${[dataDir, dashboardDir, dashboardDistDir, scriptsDir].concat(pkgs.map(pkg => remoteJoin(d, 'node_modules', pkg, 'lib'))).map(shellQuote).join(' ')}`))
-        for (const pkg of pkgs) {
-          cmds.push(`echo "→ ${pkg}"`)
-          cmds.push(scpCommand(path.join(repoRoot, 'packages', pkg, 'lib'), scpRemoteTarget(s, remoteJoin(d, 'node_modules', pkg)), { recursive: true }))
-          cmds.push(scpCommand(path.join(repoRoot, 'packages', pkg, 'package.json'), scpRemoteTarget(s, remoteJoin(d, 'node_modules', pkg, 'package.json'))))
-        }
-        cmds.push(`echo "Dashboard 前端..."`)
-        cmds.push(scpCommand(path.join(PLUGIN_ROOT, 'standalone.js'), scpRemoteTarget(s, remoteJoin(dashboardDir, 'standalone.js'))))
-        cmds.push(scpCommand(DIST_DIR, scpRemoteTarget(s, remoteJoin(dashboardDir, 'frontend')), { recursive: true }))
-        cmds.push(`echo "重启脚本..."`)
-        const restartScript = fs.existsSync(path.join(repoRoot, 'scripts', 'restart-bot.sh'))
-          ? path.join(repoRoot, 'scripts', 'restart-bot.sh')
-          : path.join(repoRoot, 'restart-bot.sh')
-        cmds.push(scpCommand(restartScript, scpRemoteTarget(s, remoteJoin(d, 'restart.sh'))))
-        if (fs.existsSync(path.join(repoRoot, 'scripts', 'watchdog.sh'))) cmds.push(scpCommand(path.join(repoRoot, 'scripts', 'watchdog.sh'), scpRemoteTarget(s, remoteJoin(scriptsDir, 'watchdog.sh'))))
-        if (fs.existsSync(path.join(DATA_DIR, 'bilibili-cookies.txt'))) cmds.push(scpCommand(path.join(DATA_DIR, 'bilibili-cookies.txt'), scpRemoteTarget(s, '/root/bilibili-cookies.txt')))
-        cmds.push(`echo "重启 Bot..."`)
-        cmds.push(sshCommand(s, `bash ${shellQuote(remoteJoin(d, 'restart.sh'))}`))
-        cmds.push(sshCommand(s, `if ss -tlnp | grep -q :5140 || curl -fsS http://127.0.0.1:5140 >/dev/null; then exit 0; fi; echo ${shellQuote('health check failed; last koishi.log lines:')}; tail -30 ${shellQuote(remoteJoin(d, 'koishi.log'))}; exit 1`))
-        cmds.push(`echo "✅ 部署完成"`)
-
-        let idx = 0
-        function runNext() {
-          if (idx >= cmds.length) {
-            try { writeDeployFingerprint(DEPLOY_CONFIG_FILE, { server: s, appDir: d, mode: cfg.mode }) }
-            catch (e) { log('warning: deploy fingerprint write failed: ' + e.message) }
-            log('DONE')
+        log('开始远程刷新部署：先重建当前 Dashboard 后端机器上的前端源码')
+        buildFrontendDist({
+          log,
+          updateStatus: status => { rebuildStatus = status },
+        }, (buildErr) => {
+          if (buildErr) {
+            log('❌ 前端构建失败，已停止远程部署：' + buildErr.message)
+            log('FAIL')
             return
           }
-          log('$ ' + cmds[idx])
-          exec(cmds[idx], { cwd: repoRoot, timeout: 60000 }, (err, stdout, stderr) => {
-            if (stdout) log(stdout.trim())
-            if (stderr) log(stderr.trim())
-            if (err) { log('❌ ' + err.message); log('FAIL'); return }
-            idx++; runNext()
-          })
-        }
-        runNext()
+
+          const repoRoot = path.join(PLUGIN_ROOT, '..', '..')
+          const s = cfg.server
+          const d = cfg.appDir
+          const pkgs = [
+            'koishi-plugin-dongxuelian-ai', 'koishi-plugin-dongxuelian-help',
+            'koishi-plugin-group-name-at', 'koishi-plugin-defense',
+            'koishi-plugin-local-video-sender', 'koishi-plugin-group-leave-notice',
+            'koishi-plugin-dongxuelian-poke', 'koishi-plugin-daily-report',
+          ]
+          const cmds = []
+          const dashboardDir = remoteJoin(d, 'packages', 'koishi-plugin-dashboard')
+          const dashboardFrontendDir = remoteJoin(dashboardDir, 'frontend')
+          const dashboardSrcDir = remoteJoin(dashboardFrontendDir, 'src')
+          const dashboardSrcNextDir = remoteJoin(dashboardFrontendDir, 'src.next')
+          const dashboardPublicDir = remoteJoin(dashboardFrontendDir, 'public')
+          const dashboardPublicNextDir = remoteJoin(dashboardFrontendDir, 'public.next')
+          const dashboardDistDir = remoteJoin(dashboardFrontendDir, 'dist')
+          const dashboardDistNextDir = remoteJoin(dashboardFrontendDir, 'dist.next')
+          const scriptsDir = remoteJoin(d, 'scripts')
+          const dataDir = remoteJoin(d, 'data')
+          const existingInstallCheck = `test -f ${shellQuote(remoteJoin(d, 'node_modules', 'koishi', 'bin.js'))} && (test -f ${shellQuote(remoteJoin(d, 'koishi.config.js'))} || test -f ${shellQuote(remoteJoin(d, 'koishi.yml'))})`
+          cmds.push(`echo "preflight"`)
+          cmds.push(sshCommand(s, existingInstallCheck))
+          cmds.push(`echo "prepare dirs"`)
+          cmds.push(sshCommand(s, `mkdir -p ${[dataDir, dashboardDir, dashboardFrontendDir, scriptsDir].concat(pkgs.map(pkg => remoteJoin(d, 'node_modules', pkg, 'lib'))).map(shellQuote).join(' ')}`))
+          for (const pkg of pkgs) {
+            cmds.push(`echo "→ ${pkg}"`)
+            cmds.push(scpCommand(path.join(repoRoot, 'packages', pkg, 'lib'), scpRemoteTarget(s, remoteJoin(d, 'node_modules', pkg)), { recursive: true }))
+            cmds.push(scpCommand(path.join(repoRoot, 'packages', pkg, 'package.json'), scpRemoteTarget(s, remoteJoin(d, 'node_modules', pkg, 'package.json'))))
+          }
+          cmds.push(`echo "Dashboard 后端和前端源码..."`)
+          cmds.push(scpCommand(path.join(PLUGIN_ROOT, 'standalone.js'), scpRemoteTarget(s, remoteJoin(dashboardDir, 'standalone.js'))))
+          for (const name of ['index.html', 'package.json', 'package-lock.json', 'vite.config.js']) {
+            const localFile = path.join(FE_DIR, name)
+            if (fs.existsSync(localFile)) cmds.push(scpCommand(localFile, scpRemoteTarget(s, remoteJoin(dashboardFrontendDir, name))))
+          }
+          cmds.push(sshCommand(s, `rm -rf ${shellQuote(dashboardSrcNextDir)}`))
+          cmds.push(scpCommand(path.join(FE_DIR, 'src'), scpRemoteTarget(s, dashboardSrcNextDir), { recursive: true }))
+          cmds.push(sshCommand(s, `rm -rf ${shellQuote(dashboardSrcDir)} && mv ${shellQuote(dashboardSrcNextDir)} ${shellQuote(dashboardSrcDir)}`))
+          if (fs.existsSync(path.join(FE_DIR, 'public'))) {
+            cmds.push(sshCommand(s, `rm -rf ${shellQuote(dashboardPublicNextDir)}`))
+            cmds.push(scpCommand(path.join(FE_DIR, 'public'), scpRemoteTarget(s, dashboardPublicNextDir), { recursive: true }))
+            cmds.push(sshCommand(s, `rm -rf ${shellQuote(dashboardPublicDir)} && mv ${shellQuote(dashboardPublicNextDir)} ${shellQuote(dashboardPublicDir)}`))
+          } else {
+            cmds.push(sshCommand(s, `rm -rf ${shellQuote(dashboardPublicDir)} ${shellQuote(dashboardPublicNextDir)}`))
+          }
+          cmds.push(`echo "Dashboard 前端 dist..."`)
+          cmds.push(sshCommand(s, `rm -rf ${shellQuote(dashboardDistNextDir)}`))
+          cmds.push(scpCommand(DIST_DIR, scpRemoteTarget(s, dashboardDistNextDir), { recursive: true }))
+          cmds.push(sshCommand(s, `test -f ${shellQuote(remoteJoin(dashboardDistNextDir, 'index.html'))} && ls ${shellQuote(remoteJoin(dashboardDistNextDir, 'assets'))}/*.js >/dev/null 2>&1 && rm -rf ${shellQuote(dashboardDistDir)} && mv ${shellQuote(dashboardDistNextDir)} ${shellQuote(dashboardDistDir)}`))
+          cmds.push(`echo "重启脚本..."`)
+          const restartScript = fs.existsSync(path.join(repoRoot, 'scripts', 'restart-bot.sh'))
+            ? path.join(repoRoot, 'scripts', 'restart-bot.sh')
+            : path.join(repoRoot, 'restart-bot.sh')
+          cmds.push(scpCommand(restartScript, scpRemoteTarget(s, remoteJoin(d, 'restart.sh'))))
+          if (fs.existsSync(path.join(repoRoot, 'scripts', 'watchdog.sh'))) cmds.push(scpCommand(path.join(repoRoot, 'scripts', 'watchdog.sh'), scpRemoteTarget(s, remoteJoin(scriptsDir, 'watchdog.sh'))))
+          if (fs.existsSync(path.join(DATA_DIR, 'bilibili-cookies.txt'))) cmds.push(scpCommand(path.join(DATA_DIR, 'bilibili-cookies.txt'), scpRemoteTarget(s, '/root/bilibili-cookies.txt')))
+          cmds.push(`echo "重启 Bot..."`)
+          cmds.push(sshCommand(s, `bash ${shellQuote(remoteJoin(d, 'restart.sh'))}`))
+          cmds.push(sshCommand(s, `if ss -tlnp | grep -q :5140 || curl -fsS http://127.0.0.1:5140 >/dev/null; then exit 0; fi; echo ${shellQuote('health check failed; last koishi.log lines:')}; tail -30 ${shellQuote(remoteJoin(d, 'koishi.log'))}; exit 1`))
+          cmds.push(`echo "✅ 部署完成"`)
+
+          let idx = 0
+          function runNext() {
+            if (idx >= cmds.length) {
+              try { writeDeployFingerprint(DEPLOY_CONFIG_FILE, { server: s, appDir: d, mode: cfg.mode }) }
+              catch (e) { log('warning: deploy fingerprint write failed: ' + e.message) }
+              log('DONE')
+              return
+            }
+            log('$ ' + cmds[idx])
+            exec(cmds[idx], { cwd: repoRoot, timeout: 120000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+              if (stdout) log(stdout.trim())
+              if (stderr) log(stderr.trim())
+              if (err) { log('❌ ' + err.message); log('FAIL'); return }
+              idx++; runNext()
+            })
+          }
+          runNext()
+        })
       } catch (e) { json(res, { ok: false, message: e.message }, 400) }
     })
     return
@@ -3331,7 +4191,13 @@ const server = http.createServer((req, res) => {
     try {
       const logFile = path.join(DEPLOY_TASKS_DIR, taskId + '.log')
       if (!fs.existsSync(logFile)) return json(res, { ok: false, lines: [], done: false })
-      const raw = fs.readFileSync(logFile, 'utf8').trim()
+      const stat = fs.statSync(logFile)
+      const start = Math.max(0, stat.size - MAX_DEPLOY_TASK_LOG_BYTES)
+      const fd = fs.openSync(logFile, 'r')
+      const buffer = Buffer.alloc(stat.size - start)
+      try { fs.readSync(fd, buffer, 0, buffer.length, start) }
+      finally { fs.closeSync(fd) }
+      const raw = buffer.toString('utf8').trim()
       const lines = raw ? raw.split('\n') : []
       const lastLine = lines.length > 0 ? lines[lines.length - 1] : ''
       const done = lastLine === 'DONE' || lastLine === 'FAIL'
@@ -3344,41 +4210,13 @@ const server = http.createServer((req, res) => {
     if (rebuildStatus.state === 'building') {
       return json(res, { ok: false, message: '正在构建中，请等待完成' })
     }
-    const FE_DIR = path.join(PLUGIN_ROOT, 'frontend')
-    if (!fs.existsSync(path.join(FE_DIR, 'node_modules'))) {
-      return json(res, { ok: false, message: '前端依赖未安装，请先在 frontend 目录执行 npm install' })
-    }
-    const distDir = path.join(FE_DIR, 'dist')
-    const backupDir = path.join(FE_DIR, 'dist.bak')
-    try {
-      fs.rmSync(backupDir, { recursive: true, force: true })
-      if (fs.existsSync(distDir)) fs.renameSync(distDir, backupDir)
-    } catch (e) {
-      return json(res, { ok: false, message: 'frontend backup failed: ' + e.message }, 500)
-    }
-    rebuildStatus = { state: 'building', message: 'building', detail: '', startedAt: Date.now(), finishedAt: 0 }
-    exec('npm run build', { cwd: FE_DIR, timeout: 120000 }, (err, stdout, stderr) => {
-      try {
-        if (err) {
-          const rollbackError = rollbackFrontendDist(distDir, backupDir)
-          const detail = [stderr || err.message || '', rollbackError].filter(Boolean).join('\n').slice(-600)
-          rebuildStatus = { state: 'failed', message: 'frontend build failed and rolled back', detail, startedAt: rebuildStatus.startedAt, finishedAt: Date.now() }
-          log('frontend rebuild failed: ' + detail)
-          return
-        }
-        if (!hasFrontendDistAssets(distDir)) {
-          const rollbackError = rollbackFrontendDist(distDir, backupDir)
-          rebuildStatus = { state: 'failed', message: 'frontend dist is incomplete and rolled back', detail: rollbackError, startedAt: rebuildStatus.startedAt, finishedAt: Date.now() }
-          return
-        }
-        fs.rmSync(backupDir, { recursive: true, force: true })
-        rebuildStatus = { state: 'success', message: 'frontend build success', detail: '', startedAt: rebuildStatus.startedAt, finishedAt: Date.now() }
-        log('frontend rebuild success')
-      } catch (e) {
-        rebuildStatus = { state: 'failed', message: 'frontend rebuild cleanup failed', detail: e.message, startedAt: rebuildStatus.startedAt, finishedAt: Date.now() }
-        log('frontend rebuild cleanup failed: ' + e.message)
-      }
+    const started = buildFrontendDist({
+      log: msg => log('frontend rebuild: ' + msg),
+      updateStatus: status => { rebuildStatus = status },
+    }, (err) => {
+      if (err) log('frontend rebuild failed: ' + err.message)
     })
+    if (!started) return json(res, { ok: false, message: rebuildStatus.detail || '前端构建启动失败' }, 500)
     return json(res, { ok: true, message: '前端构建已启动' })
   }
 
@@ -3409,7 +4247,11 @@ const server = http.createServer((req, res) => {
         if (!name || !data) return json(res, { ok: false, message: '文件名或内容为空' }, 400)
         if (name !== 'bilibili-cookies.txt') return json(res, { ok: false, message: 'only bilibili-cookies.txt can be uploaded here' }, 400)
         const filePath = path.join(DATA_DIR, 'bilibili-cookies.txt')
-        const buf = Buffer.from(data, 'base64')
+        const raw = String(data || '').trim()
+        const estimatedBytes = Math.floor(raw.length * 3 / 4)
+        if (estimatedBytes > MAX_DEPLOY_UPLOAD_BYTES) return json(res, { ok: false, message: '上传文件过大' }, 413)
+        const buf = Buffer.from(raw, 'base64')
+        if (buf.length > MAX_DEPLOY_UPLOAD_BYTES) return json(res, { ok: false, message: '上传文件过大' }, 413)
         fs.mkdirSync(DATA_DIR, { recursive: true })
         fs.writeFileSync(filePath, buf)
         json(res, { ok: true, message: 'bilibili-cookies.txt 已保存到本地，部署时将自动推送' })
@@ -3447,7 +4289,6 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/dashboard/api/gallery/style' && req.method === 'PUT') {
-    if (!requireAdmin(req, res)) return
     collectBody(req, res, (body) => {
       try {
         const { id, foilStyle } = JSON.parse(body || '{}')
@@ -3468,8 +4309,14 @@ const server = http.createServer((req, res) => {
         res.end('Gallery image not found')
         return
       }
+      const stat = fs.statSync(filePath)
+      if (stat.size > GALLERY_MAX_BYTES) {
+        res.writeHead(413, { 'Content-Type': 'text/plain; charset=utf-8' })
+        res.end('Gallery image is too large')
+        return
+      }
       res.writeHead(200, { 'Content-Type': galleryMimeFromName(id), 'Cache-Control': 'public, max-age=3600' })
-      res.end(fs.readFileSync(filePath))
+      fs.createReadStream(filePath).pipe(res)
     } catch (e) {
       log('gallery image request failed: ' + (e.message || e))
       res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
@@ -3753,28 +4600,62 @@ const server = http.createServer((req, res) => {
     return
   }
 
-  const serveFile = (filePath) => {
+  if (pathname === '/agent') {
+    res.writeHead(302, { Location: '/agent/' })
+    res.end()
+    return
+  }
+
+  const serveStaticFile = (rootDir, filePath) => {
     try {
-      if (!isInsidePath(DIST_DIR, filePath)) {
+      if (!isInsidePath(rootDir, filePath)) {
         res.writeHead(403)
         res.end('Forbidden')
         return true
       }
-      if (fs.statSync(filePath).isFile()) {
+      const stat = fs.statSync(filePath)
+      if (stat.isFile()) {
+        if (stat.size > MAX_STATIC_FILE_BYTES) {
+          res.writeHead(413, { 'Content-Type': 'text/plain; charset=utf-8' })
+          res.end('File too large')
+          return true
+        }
         const ext = path.extname(filePath)
-        const mime = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' }[ext] || 'application/octet-stream'
-        const rel = path.relative(DIST_DIR, filePath).replace(/\\/g, '/')
+        const mime = { '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' }[ext] || 'application/octet-stream'
+        const rel = path.relative(rootDir, filePath).replace(/\\/g, '/')
         const cache = rel === 'index.html' ? 'no-cache' : (rel.startsWith('assets/') ? 'public, max-age=31536000, immutable' : 'public, max-age=3600')
         res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': cache })
-        res.end(fs.readFileSync(filePath))
+        fs.createReadStream(filePath).pipe(res)
         return true
       }
     } catch {}
     return false
   }
+  const serveFile = (filePath) => serveStaticFile(DIST_DIR, filePath)
+  const serveAgentFile = (filePath) => serveStaticFile(AGENT_CONSOLE_DIST_DIR, filePath)
+
+  if (pathname.startsWith('/agent/')) {
+    let agentReqPath = pathname.replace(/^\/agent\/?/, '')
+    try { agentReqPath = decodeURIComponent(agentReqPath) } catch {}
+    if (serveAgentFile(path.join(AGENT_CONSOLE_DIST_DIR, agentReqPath || 'index.html'))) return
+    if (pathname.startsWith('/agent/assets/')) {
+      res.writeHead(404)
+      res.end('Not Found')
+      return
+    }
+    if (serveAgentFile(path.join(AGENT_CONSOLE_DIST_DIR, 'index.html'))) return
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+    res.end('Agent Console dist not found. Run npm run build --prefix packages/agent-console')
+    return
+  }
   let reqPath = pathname.replace(/^\/dashboard\/?/, '')
   try { reqPath = decodeURIComponent(reqPath) } catch {}
   if (serveFile(path.join(DIST_DIR, reqPath || 'index.html'))) return
+  if (pathname.startsWith('/dashboard/assets/') || pathname.startsWith('/dashboard/backgrounds/')) {
+    res.writeHead(404)
+    res.end('Not Found')
+    return
+  }
   if (!pathname.startsWith('/dashboard/api/') && serveFile(path.join(DIST_DIR, 'index.html'))) return
     res.writeHead(404)
     res.end('Not Found')

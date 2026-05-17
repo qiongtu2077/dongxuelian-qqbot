@@ -21,11 +21,9 @@
       <ThemeSwitcher :visible="themePickerOpen" :themes="themes" :current="theme" @select="setTheme" @close="themePickerOpen = false" />
 
       <div style="position:relative;z-index:1">
-        <Transition name="tab-fade" mode="out-in">
-          <KeepAlive>
-            <component :is="activeComponent" :key="activeTab" :locked="!deployUnlocked" @unlocked="unlockDeploy" />
-          </KeepAlive>
-        </Transition>
+        <KeepAlive>
+          <component :is="activeComponent" :key="activeTab" :locked="!deployUnlocked" @unlocked="unlockDeploy" />
+        </KeepAlive>
       </div>
     </div>
     <AdminModal v-if="!isElectronDeployer" :visible="adminModalOpen" :message="adminModalMsg" @verified="onAdminModalVerified" @cancel="onAdminModalCancel" />
@@ -52,12 +50,13 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import StatusPanel from './components/StatusPanel.vue'
 import LogPanel from './components/LogPanel.vue'
 import GalleryPanel from './components/GalleryPanel.vue'
+import AgentPanel from './components/AgentPanel.vue'
 
 const componentMap = {
   deploy: DeployPanel, control: ControlPanel, config: ConfigPanel, keys: KeyManager,
   persona: PersonaPanel, features: CommandBrowser, commands: CommandList,
   whitelist: WhitelistPanel, settings: SettingsPanel, status: StatusPanel, logs: LogPanel,
-  gallery: GalleryPanel
+  gallery: GalleryPanel, agent: AgentPanel
 }
 
 export default {
@@ -76,12 +75,13 @@ export default {
       { id: 'monet-purple', label: '莫奈紫', desc: '雾紫、青蓝和浅灰的柔和组合', colors: ['#f7f4ff', '#8b5cf6', '#38bdf8'] },
       { id: 'ocean-cyan', label: '海盐青', desc: '青蓝主色，信息面板更清透', colors: ['#ecfeff', '#0891b2', '#155e75'] },
       { id: 'graphite-blue', label: '石墨蓝', desc: '冷静灰蓝，适合夜间运维', colors: ['#0f172a', '#60a5fa', '#dbeafe'] },
+      { id: 'clear-water', label: '清水紫', desc: '深蓝紫底色，像清澈水面一样轻透', colors: ['#071225', '#7dd3fc', '#8b5cf6'] },
       { id: 'crimson-red', label: '赤焰红', desc: '深暗底色配红色强调，适合警戒感', colors: ['#160b0d', '#ef4444', '#ffd4d4'] },
       { id: 'sakura-pink', label: '樱花粉', desc: '柔美粉白配桃红点缀，清新甜美', colors: ['#fff6fa', '#ec4899', '#fbcfe8'] },
     ]
 
-    function normalizeTheme(value) { return themes.some(item => item.id === value) ? value : 'dark-gold' }
-    const defaultTheme = window.dongxuelianDeployer ? 'light' : 'dark-gold'
+    function normalizeTheme(value) { return themes.some(item => item.id === value) ? value : 'clear-water' }
+    const defaultTheme = window.dongxuelianDeployer ? 'light' : 'clear-water'
     const theme = ref(normalizeTheme(localStorage.getItem('dashboard_theme') || defaultTheme))
     const currentThemeLabel = computed(() => themes.find(item => item.id === theme.value)?.label || '暗金')
 
@@ -98,7 +98,7 @@ export default {
       { id: 'deploy', label: '部署' }, { id: 'control', label: '终端控制' }, { id: 'config', label: '模型配置' },
       { id: 'keys', label: 'API Keys' }, { id: 'persona', label: '人格实验室' }, { id: 'features', label: '功能地图' },
       { id: 'commands', label: '指令速查' }, { id: 'whitelist', label: '黑白名单' },
-      { id: 'settings', label: '安全设置' }, { id: 'logs', label: '日志中心' }, { id: 'status', label: '系统状态' }, { id: 'gallery', label: '莲莲图集' }
+      { id: 'settings', label: '安全设置' }, { id: 'agent', label: 'Agent 控制台' }, { id: 'logs', label: '日志中心' }, { id: 'status', label: '系统状态' }, { id: 'gallery', label: '莲莲图集' }
     ]
     const visibleTabs = computed(() => isElectronDeployer ? allTabs.filter(item => item.id !== 'settings') : allTabs)
     const tabs = computed(() => deployUnlocked.value ? visibleTabs.value : visibleTabs.value.filter(item => item.id === 'deploy'))
@@ -107,6 +107,8 @@ export default {
     const activeComponent = computed(() => componentMap[activeTab.value] || DeployPanel)
     const activeTabLabel = computed(() => tabs.value.find(item => item.id === activeTab.value)?.label || '部署')
     const isMobileSidebarOpen = computed(() => isMobileViewport.value && sidebarExpanded.value)
+    let tabSwitchUnlockTimer = null
+    let tabSwitchLocked = false
 
     function onLoggedIn() {
       loggedIn.value = true
@@ -137,6 +139,16 @@ export default {
     provide('showAdminDialog', showAdminDialog)
 
     function doSwitchTab(id) {
+      if (id === 'agent') {
+        window.location.href = '/agent/'
+        return
+      }
+      if (id === activeTab.value) return
+      if (!tabs.value.some(item => item.id === id)) return
+      if (tabSwitchLocked) return
+      tabSwitchLocked = true
+      if (tabSwitchUnlockTimer) clearTimeout(tabSwitchUnlockTimer)
+      tabSwitchUnlockTimer = setTimeout(() => { tabSwitchLocked = false; tabSwitchUnlockTimer = null }, 150)
       activeTab.value = id
       if (deployUnlocked.value) localStorage.setItem('dashboard_active_tab', id)
       if (isMobileViewport.value) setSidebarExpanded(false)
@@ -174,6 +186,7 @@ export default {
       window.removeEventListener('auth-expired', logout)
       window.removeEventListener('resize', handleResize)
       window.removeEventListener('keydown', handleKeydown)
+      if (tabSwitchUnlockTimer) clearTimeout(tabSwitchUnlockTimer)
     })
 
     return { isElectronDeployer, loggedIn, sidebarExpanded, isMobileSidebarOpen, themePickerOpen, themes, theme, currentThemeLabel, deployUnlocked, tabs, activeTab, activeTabLabel, activeComponent, adminModalOpen, adminModalMsg, onLoggedIn, onAdminModalVerified, onAdminModalCancel, unlockDeploy, logout, setTheme, doSwitchTab, setSidebarExpanded, toggleSidebar }

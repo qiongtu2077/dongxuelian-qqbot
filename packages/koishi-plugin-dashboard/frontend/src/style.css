@@ -120,6 +120,37 @@
   --code-bg: #1e293b; --code-text: #e2e8f0; --code-border: rgba(147,197,253,0.22); --code-accent: var(--info); --code-inset: inset 0 2px 5px rgba(0,0,0,0.35);
 }
 
+[data-theme="clear-water"] {
+  --bg: #071225;
+  --surface: rgba(7, 16, 31, 0.2);
+  --card: rgba(7, 16, 31, 0.04);
+  --border: rgba(210, 232, 255, 0.14);
+  --text: rgba(240, 247, 255, 0.94);
+  --text2: rgba(218, 230, 248, 0.68);
+  --text3: rgba(218, 230, 248, 0.42);
+  --input: rgba(255, 255, 255, 0.018);
+  --accent: #7dd3fc;
+  --accent2: #8b5cf6;
+  --accentDim: rgba(125, 211, 252, 0.11);
+  --hover: rgba(255, 255, 255, 0.034);
+  --hoverLight: rgba(255, 255, 255, 0.018);
+  --shadow: rgba(37, 99, 235, 0.08);
+  --danger: #fb7185;
+  --info: #7dd3fc;
+  --success: #5eead4;
+  --error: #f0abfc;
+  --grid: rgba(255, 255, 255, 0.034);
+  --tabBg: rgba(255, 255, 255, 0.018);
+  --tabColor: rgba(218, 230, 248, 0.68);
+  --tabBorder: rgba(210, 232, 255, 0.085);
+  --tabActive: rgba(240, 247, 255, 0.94);
+  --code-bg: rgba(2, 6, 23, 0.18);
+  --code-text: rgba(226, 232, 240, 0.9);
+  --code-border: rgba(210, 232, 255, 0.11);
+  --code-accent: var(--accent);
+  --code-inset: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
 [data-theme="light"] body {
   background:
     linear-gradient(90deg, var(--grid) 1px, transparent 1px),
@@ -134,6 +165,49 @@
 
 [data-theme="light"] .card:hover {
   box-shadow: 0 10px 28px rgba(16,16,14,0.08);
+}
+
+[data-theme="clear-water"] body {
+  background:
+    radial-gradient(circle at 16% 16%, rgba(37, 99, 235, 0.42), transparent 30%),
+    radial-gradient(circle at 76% 18%, rgba(139, 92, 246, 0.36), transparent 34%),
+    radial-gradient(circle at 84% 78%, rgba(14, 165, 233, 0.24), transparent 34%),
+    linear-gradient(135deg, #071225 0%, #10163a 42%, #170f32 72%, #07101f 100%);
+  background-size: auto;
+}
+
+[data-theme="clear-water"] body::before {
+  content: '';
+  position: fixed;
+  inset: -18%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    conic-gradient(from 190deg at 35% 25%, rgba(125, 211, 252, 0.20), transparent 18%, rgba(139, 92, 246, 0.22), transparent 38%, rgba(56, 189, 248, 0.18), transparent 62%, rgba(192, 132, 252, 0.20), transparent 82%, rgba(125, 211, 252, 0.20)),
+    radial-gradient(circle at 44% 24%, rgba(255,255,255,0.10), transparent 26%),
+    radial-gradient(circle at 64% 78%, rgba(99,102,241,0.16), transparent 34%);
+  filter: blur(28px);
+  opacity: 0.86;
+  animation: clearWaterFlow 16s ease-in-out infinite alternate;
+}
+
+[data-theme="clear-water"] body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255,255,255,0.03) 1px, transparent 1px),
+    radial-gradient(circle at 50% 0%, rgba(255,255,255,0.10), transparent 44%),
+    linear-gradient(180deg, rgba(2,6,23,0.04), rgba(2,6,23,0.28));
+  background-size: 44px 44px, 44px 44px, auto, auto;
+}
+
+@keyframes clearWaterFlow {
+  from { transform: translate3d(-22px, -16px, 0) rotate(-6deg) scale(1.02) }
+  to { transform: translate3d(26px, 20px, 0) rotate(4deg) scale(1.07) }
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box }
@@ -179,13 +253,16 @@ body {
 
 .active-view-label {
   flex: 0 0 auto;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, rgba(255,255,255,0.08));
   border-radius: var(--radius-sm);
-  background: var(--input);
+  background: color-mix(in srgb, var(--input) 18%, transparent);
   color: var(--text2);
   padding: 6px 10px;
   font-size: 13px;
   font-weight: 800;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+  backdrop-filter: blur(7px) saturate(1.26);
+  -webkit-backdrop-filter: blur(7px) saturate(1.26);
 }
 
 .sidebar-scrim {
@@ -209,29 +286,56 @@ h2 {
 }
 
 .card {
-  background: color-mix(in srgb, var(--card) 69%, transparent);
-  backdrop-filter: blur(16px) saturate(1.24) contrast(1.01);
-  -webkit-backdrop-filter: blur(16px) saturate(1.24) contrast(1.01);
-  border: 1px solid color-mix(in srgb, var(--border) 72%, rgba(255,255,255,0.12));
-  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.024), rgba(255,255,255,0.002) 52%, rgba(255,255,255,0.010)),
+    color-mix(in srgb, var(--card) 8%, transparent);
+  backdrop-filter: blur(9px) saturate(1.38) contrast(1.05);
+  -webkit-backdrop-filter: blur(9px) saturate(1.38) contrast(1.05);
+  border: 1px solid color-mix(in srgb, var(--border) 58%, rgba(255,255,255,0.08));
+  border-radius: 30px;
   padding: 20px;
   margin-bottom: 20px;
   animation: cardIn .35s ease both;
-  box-shadow: 0 18px 42px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.055);
+  box-shadow:
+    0 18px 62px rgba(0,0,0,0.12),
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 0 -1px 0 rgba(255,255,255,0.02);
   transition: transform .2s cubic-bezier(.2, .8, .2, 1), border-color .2s, box-shadow .2s, background .2s ease;
   position: relative;
   overflow: hidden;
 }
 
 .card::before {
-  content: none;
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(120deg, rgba(255,255,255,0.052), transparent 16%, transparent 82%, rgba(255,255,255,0.024)),
+    radial-gradient(circle at 16% 0%, rgba(255,255,255,0.04), transparent 34%);
+  opacity: .4;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.card::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: 29px;
+  pointer-events: none;
+  border: 1px solid rgba(255,255,255,0.026);
 }
 
 .card:hover {
   transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--border) 52%, var(--accent));
-  background: color-mix(in srgb, var(--card) 73%, transparent);
-  box-shadow: 0 20px 46px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.07);
+  border-color: color-mix(in srgb, var(--border) 48%, var(--accent));
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.032), rgba(255,255,255,0.004) 52%, rgba(255,255,255,0.012)),
+    color-mix(in srgb, var(--card) 11%, transparent);
+  box-shadow:
+    0 20px 68px rgba(0,0,0,0.14),
+    inset 0 1px 0 rgba(255,255,255,0.14),
+    inset 0 -1px 0 rgba(255,255,255,0.024);
 }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px }
@@ -239,8 +343,11 @@ h2 {
 .row label { min-width: 80px; font-size: 14px; color: var(--text2) }
 
 select, input {
-  background: var(--input); border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--input) 18%, transparent); border: 1px solid color-mix(in srgb, var(--border) 55%, rgba(255,255,255,0.08)); border-radius: var(--radius-md);
   min-height: 38px; padding: 8px 12px; color: var(--text); font-size: 14px; flex: 1;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+  backdrop-filter: blur(7px) saturate(1.26);
+  -webkit-backdrop-filter: blur(7px) saturate(1.26);
   transition: border-color .2s, background .3s, box-shadow .2s;
 }
 select {
@@ -250,7 +357,7 @@ select {
   background:
     linear-gradient(45deg, transparent 50%, var(--text2) 50%) calc(100% - 18px) 50% / 6px 6px no-repeat,
     linear-gradient(135deg, var(--text2) 50%, transparent 50%) calc(100% - 13px) 50% / 6px 6px no-repeat,
-    var(--input);
+    color-mix(in srgb, var(--input) 18%, transparent);
   cursor: pointer;
 }
 select:hover, input:hover { border-color: color-mix(in srgb, var(--accent) 54%, var(--border)) }
@@ -270,27 +377,30 @@ select option { background: var(--surface); color: var(--text) }
 .themed-scrollbar::-webkit-scrollbar-corner { background: var(--input) }
 
 .btn {
-  background: linear-gradient(135deg, var(--accent), var(--accent2));
-  color: #11110d; border: none; border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--text); border: 1px solid color-mix(in srgb, var(--border) 40%, rgba(255,255,255,0.04)); border-radius: var(--radius-md);
   padding: 8px 20px; font-weight: 700; font-size: 14px;
   cursor: pointer;
-  box-shadow: 0 4px 12px var(--shadow);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--shadow) 40%, transparent), inset 0 1px 0 rgba(255,255,255,0.06);
+  backdrop-filter: blur(12px) saturate(1.06);
+  -webkit-backdrop-filter: blur(12px) saturate(1.06);
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px var(--shadow) }
-.btn:active { transform: translateY(0); box-shadow: 0 2px 8px var(--shadow) }
+.btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px color-mix(in srgb, var(--shadow) 50%, transparent), inset 0 1px 0 rgba(255,255,255,0.08) }
+.btn:active { transform: translateY(0); box-shadow: 0 1px 6px color-mix(in srgb, var(--shadow) 35%, transparent) }
 .btn-sm { padding: 4px 12px; font-size: 12px }
 
 /* Tab 按钮 */
 .tab-btn {
-  background: var(--tabBg);
+  background: color-mix(in srgb, var(--tabBg) 22%, transparent);
   color: var(--tabColor);
-  border: 1px solid var(--tabBorder);
+  border: 1px solid color-mix(in srgb, var(--tabBorder) 58%, rgba(255,255,255,0.08));
   padding: 6px 18px; font-size: 14px;
   border-radius: var(--radius-md); font-weight: 700;
   cursor: pointer;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+  backdrop-filter: blur(7px) saturate(1.26);
+  -webkit-backdrop-filter: blur(7px) saturate(1.26);
   transition: background .3s ease, color .3s ease, border-color .3s ease, box-shadow .3s ease, transform .15s;
   position: relative; overflow: hidden;
 }
@@ -301,10 +411,10 @@ select option { background: var(--surface); color: var(--text) }
 }
 
 .tab-btn.active {
-  background: linear-gradient(135deg, var(--accent), var(--accent2));
-  color: #11110d;
-  border-color: transparent;
-  box-shadow: 0 2px 14px var(--shadow);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--border) 48%, var(--accent));
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow) 55%, transparent), inset 0 1px 0 rgba(255,255,255,0.08);
 }
 
 /* 按钮点击脉冲（通过JS加class触发） */
@@ -326,10 +436,14 @@ select option { background: var(--surface); color: var(--text) }
 .tag:hover { background: var(--hover) }
 
 .msg {
-  background: var(--input); border-radius: var(--radius-md); padding: 12px 16px;
+  background: color-mix(in srgb, var(--input) 18%, transparent); border-radius: var(--radius-md); padding: 12px 16px;
   margin-top: 12px; font-size: 14px; line-height: 1.6;
   animation: fadeIn .25s ease;
   white-space: pre-wrap;
+  border: 1px solid color-mix(in srgb, var(--border) 45%, rgba(255,255,255,0.06));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+  backdrop-filter: blur(7px) saturate(1.26);
+  -webkit-backdrop-filter: blur(7px) saturate(1.26);
 }
 .msg.ok { border-left: 3px solid var(--accent) }
 .msg.err { border-left: 3px solid var(--danger); color: var(--danger) }
@@ -529,9 +643,9 @@ select option { background: var(--surface); color: var(--text) }
 }
 
 .btn-ghost {
-  background: var(--input);
+  background: transparent;
   color: var(--text2);
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
 }
 
 .btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, var(--border)) }
@@ -1737,6 +1851,18 @@ label.uninstall-row { cursor: pointer }
   .local-wizard-layout { grid-template-columns: 1fr }
   .ready-panel { flex-direction: column; align-items: stretch }
   .ready-links { justify-content: flex-start }
+  .theme-modal {
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .theme-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .modal-backdrop {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 @media (max-width: 640px) {

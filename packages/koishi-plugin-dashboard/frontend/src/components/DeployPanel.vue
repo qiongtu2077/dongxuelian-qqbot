@@ -256,7 +256,7 @@
 
     <div v-if="mode === 'remote'" class="card">
       <h2>远程 Linux 部署</h2>
-      <div class="grp-desc" style="margin-bottom:14px">需要本机可以直接 SSH 到服务器。部署会推送插件代码、Dashboard 前端和必要脚本到远程目录。</div>
+      <div class="grp-desc" style="margin-bottom:14px">需要本机可以直接 SSH 到服务器。部署会先重建当前 Dashboard 后端机器上的最新前端，再上传插件代码、前端源码、全新 dist 和必要脚本到远程目录。</div>
       <div class="row"><label>服务器</label><input v-model="remote.server" placeholder="root@服务器IP" /></div>
       <div class="row"><label>应用目录</label><input v-model="remote.appDir" placeholder="/root/koishi-app" /></div>
       <div class="row"><label>模式</label><select v-model="remote.mode" class="themed-select"><option value="install">实验性首次安装</option><option value="update">更新已有部署</option></select></div>
@@ -265,12 +265,12 @@
         <button class="btn btn-sm" type="button" @click="loadRemoteConfig">自动填入服务器地址</button>
         <button class="btn btn-sm" type="button" @click="saveRemoteConfig" :disabled="savingRemote">{{ savingRemote ? '保存中...' : '保存服务器地址' }}</button>
         <button class="btn btn-sm" type="button" @click="checkRemoteUpdate">检查更新</button>
-        <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="deploying">{{ deploying ? '部署中...' : '开始远程操作' }}</button>
-        <button class="btn btn-sm btn-ghost" type="button" @click="doRebuildFrontend" :disabled="rebuilding">{{ rebuilding ? '构建中...' : '重建前端' }}</button>
+        <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="deploying || rebuilding">{{ deploying ? '部署中...' : '重建并部署到远端' }}</button>
+        <button class="btn btn-sm btn-ghost" type="button" @click="doRebuildFrontend" :disabled="rebuilding || deploying">{{ rebuilding ? '构建中...' : '重建前端' }}</button>
       </div>
       <div class="deploy-action-notes" aria-label="远程部署按钮说明">
-        <p><strong>开始远程操作：</strong>把当前 Dashboard 后端所在机器上的本地插件代码、前端 dist 和脚本通过 SSH/SCP 推送到上面的 Linux 应用目录，不会从 GitHub 拉取。</p>
-        <p><strong>重建前端：</strong>只在当前 Dashboard 后端所在机器本地执行前端构建并刷新本机 dist；需要更新远端页面时，构建成功后再点开始远程操作。</p>
+        <p><strong>重建并部署到远端：</strong>会先在当前 Dashboard 后端机器重建最新前端源码，再上传插件代码、前端源码和新的 dist；远端旧 dist 会被清理后切换为新 dist，并执行重启脚本。</p>
+        <p><strong>重建前端：</strong>只在当前 Dashboard 后端所在机器本地执行构建并刷新本机 dist；需要更新服务器页面时，直接点“重建并部署到远端”。</p>
       </div>
 
       <div style="margin-top:12px">
@@ -335,6 +335,9 @@ export default {
     const rebuilding = ref(false)
     let progressTimer = null
     let localStatusTimer = null
+    let localStatusLoading = false
+    let rebuildTimer = null
+    let rebuildTimeout = null
 
     const localFlowText = '环境检测 -> 安装 NapCat -> 生成配置 -> npm install -> 启动 NapCat -> 等待扫码 -> 启动 Koishi -> 健康检查'
     const localStepDefs = [
@@ -555,24 +558,30 @@ export default {
     }
 
     async function refreshLocalTaskStatuses(includeReady = false) {
-      if (!canRunWindowsLocalDeploy.value) {
-        npmTaskStatus.value = null
-        napcatTaskStatus.value = null
-        koishiTaskStatus.value = null
-        if (includeReady) readyCheck.value = null
-        resetWizardSteps()
-        return
+      if (localStatusLoading) return
+      localStatusLoading = true
+      try {
+        if (!canRunWindowsLocalDeploy.value) {
+          npmTaskStatus.value = null
+          napcatTaskStatus.value = null
+          koishiTaskStatus.value = null
+          if (includeReady) readyCheck.value = null
+          resetWizardSteps()
+          return
+        }
+        const [npmRes, napcatRes, koishiRes] = await Promise.all([npmInstallStatus(), napcatDeployStatus(), koishiDeployStatus()])
+        if (npmRes.ok) npmTaskStatus.value = npmRes.data.status
+        if (napcatRes.ok) napcatTaskStatus.value = napcatRes.data.status
+        if (koishiRes.ok) koishiTaskStatus.value = koishiRes.data.status
+        if (includeReady) {
+          const readyRes = await localReadyCheck()
+          if (readyRes.ok) readyCheck.value = readyRes.data
+        }
+        updateWizardFromSignals()
+        scrollLocalLogToBottom()
+      } finally {
+        localStatusLoading = false
       }
-      const [npmRes, napcatRes, koishiRes] = await Promise.all([npmInstallStatus(), napcatDeployStatus(), koishiDeployStatus()])
-      if (npmRes.ok) npmTaskStatus.value = npmRes.data.status
-      if (napcatRes.ok) napcatTaskStatus.value = napcatRes.data.status
-      if (koishiRes.ok) koishiTaskStatus.value = koishiRes.data.status
-      if (includeReady) {
-        const readyRes = await localReadyCheck()
-        if (readyRes.ok) readyCheck.value = readyRes.data
-      }
-      updateWizardFromSignals()
-      scrollLocalLogToBottom()
     }
 
     function taskFailureText(step, status, fallback) {
@@ -1031,25 +1040,33 @@ export default {
       else remoteMsg.value = { type: 'err', text: '检查更新失败' }
     }
 
+    function clearRebuildPolling() {
+      if (rebuildTimer) clearInterval(rebuildTimer)
+      if (rebuildTimeout) clearTimeout(rebuildTimeout)
+      rebuildTimer = null
+      rebuildTimeout = null
+    }
+
     async function doRebuildFrontend() {
+      clearRebuildPolling()
       rebuilding.value = true; remoteMsg.value = null
       const res = await rebuildFrontend()
       if (withAdminRetry(res, '重建前端需要管理员密码', doRebuildFrontend)) { rebuilding.value = false; return }
       if (!res.ok) { remoteMsg.value = { type: 'err', text: res.data?.message || '启动失败' }; rebuilding.value = false; return }
       remoteMsg.value = { type: 'ok', text: '前端构建中...' }
-      const timer = setInterval(async () => {
+      rebuildTimer = setInterval(async () => {
         const sr = await rebuildFrontendStatus()
         if (sr.ok) {
           if (sr.data.state === 'success') {
-            clearInterval(timer); rebuilding.value = false
+            clearRebuildPolling(); rebuilding.value = false
             remoteMsg.value = { type: 'ok', text: '前端构建成功，请刷新页面' }
           } else if (sr.data.state === 'failed') {
-            clearInterval(timer); rebuilding.value = false
+            clearRebuildPolling(); rebuilding.value = false
             remoteMsg.value = { type: 'err', text: (sr.data.message || '构建失败') + (sr.data.detail ? '：' + sr.data.detail : '') }
           }
         }
       }, 2000)
-      setTimeout(() => { clearInterval(timer); if (rebuilding.value) { rebuilding.value = false; remoteMsg.value = { type: 'err', text: '构建超时' } } }, 150000)
+      rebuildTimeout = setTimeout(() => { clearRebuildPolling(); if (rebuilding.value) { rebuilding.value = false; remoteMsg.value = { type: 'err', text: '构建超时' } } }, 150000)
     }
 
     async function startRemoteDeploy() {
@@ -1127,9 +1144,8 @@ export default {
     })
 
     onMounted(() => {
-      checkEnv()
-      loadRemoteConfig()
-      refreshLocalTaskStatuses(false)
+      checkEnv().catch(() => {})
+      loadRemoteConfig().catch(() => {})
       localStatusTimer = setInterval(() => {
         if (mode.value === 'local' && canRunWindowsLocalDeploy.value) refreshLocalTaskStatuses(false)
       }, 3500)
@@ -1139,6 +1155,7 @@ export default {
     onUnmounted(() => {
       if (progressTimer) clearInterval(progressTimer)
       if (localStatusTimer) clearInterval(localStatusTimer)
+      clearRebuildPolling()
     })
 
     return { mode, local, remote, env, localMsg, localAlert, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, closeLocalAlert, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction, copyNpmFixCommands }

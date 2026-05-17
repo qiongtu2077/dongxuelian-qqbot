@@ -70,7 +70,7 @@
 </template>
 
 <script>
-import { inject, nextTick, onActivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { fetchLogs, fetchLoggingConfig, saveLoggingConfig } from '../api'
 
 export default {
@@ -104,6 +104,7 @@ export default {
       { id: 'D', label: '调试' },
     ]
     let timer = null
+    let logsLoading = false
 
     async function loadConfig() {
       const res = await fetchLoggingConfig()
@@ -118,6 +119,8 @@ export default {
     }
 
     async function loadLogs(options = {}) {
+      if (logsLoading) return
+      logsLoading = true
       const reset = !!options.reset
       const incremental = !reset && loaded.value && lastFilterKey.value
       loading.value = reset || !loaded.value
@@ -157,6 +160,7 @@ export default {
           message.value = { type: 'err', text: res.data?.message || '日志读取失败' }
         }
       } finally {
+        logsLoading = false
         loading.value = false
         refreshing.value = false
       }
@@ -226,7 +230,8 @@ export default {
 
     watch(autoRefresh, enabled => { if (enabled) { loadLogs(); startTimer() } else stopTimer() })
     onMounted(() => { loadConfig(); loadLogs({ reset: true }); startTimer(); scrollLogsToBottom() })
-    onActivated(() => { loadConfig(); resetAndLoadLogs(); scrollLogsToBottom() })
+    onActivated(() => { startTimer(); scrollLogsToBottom() })
+    onDeactivated(stopTimer)
     onUnmounted(stopTimer)
 
     return { entries, total, loading, refreshing, message, limit, limits, moduleFilter, query, errorsOnly, autoRefresh, debugEnabled, levels, levelOptions, logListRef, loadLogs, resetAndLoadLogs, toggleLevel, saveDebugToggle, copyResults }

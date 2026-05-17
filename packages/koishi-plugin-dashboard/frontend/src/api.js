@@ -13,8 +13,8 @@ function getAdminToken() {
 }
 
 function setAdminToken(token) {
-  // 1 小时有效期
-  const data = JSON.stringify({ token, expires: Date.now() + 3600000 })
+  // 12 小时有效期
+  const data = JSON.stringify({ token, expires: Date.now() + 43200000 })
   localStorage.setItem(SERVER_TOKEN_KEY, data)
   localStorage.removeItem(LEGACY_ADMIN_TOKEN_KEY)
 }
@@ -172,6 +172,7 @@ export async function repairNpmProxyAndInstall() { return post('/deploy/npm-repa
 export async function npmInstallStatus() { return get('/deploy/npm-install-status') }
 export async function startNapcat() { return post('/deploy/napcat-start', {}, true, 10000) }
 export async function napcatDeployStatus() { return get('/deploy/napcat-status') }
+export async function restartNapcat() { return post('/napcat/restart', {}, true, 15000) }
 export async function startKoishiLocal() { return post('/deploy/koishi-start', {}, true, 10000) }
 export async function koishiDeployStatus() { return get('/deploy/koishi-status') }
 export async function localReadyCheck() { return get('/deploy/local-ready-check') }
@@ -203,7 +204,19 @@ export async function fetchLogs(params = {}) {
 }
 export async function fetchLoggingConfig() { return get('/logging') }
 export async function saveLoggingConfig(data) { return put('/logging', data, true) }
+export async function fetchAgentConfig() { return get('/agent/config', true) }
+export async function saveAgentConfig(data) { return put('/agent/config', data, true) }
+export async function fetchAgentPersonas() { return get('/agent/personas', true) }
+export async function saveAgentPersona(data) { return put('/agent/persona', data, true) }
+export async function sendAgentMessage(message, history = []) { return post('/agent/chat', { message, history }, true, 60000) }
+export async function confirmAgentTool(pendingId = '') { return post('/agent/confirm', { pendingId }, true, 60000) }
+export async function rejectAgentTool(pendingId = '') { return post('/agent/reject', { pendingId }, true) }
+export async function fetchPendingAgentTools() { return get('/tools/pending', true) }
+export async function fetchAgentSessions() { return get('/agent/sessions', true) }
+export async function fetchAgentSession(id) { return get('/agent/sessions/' + encodeURIComponent(id), true) }
 export async function fetchGalleryImages() { return get('/gallery') }
 export async function uploadGalleryImage(data) { return post('/gallery', data, false, 60000) }
 export async function deleteGalleryImage(idOrIds) { return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, true) }
-export async function updateGalleryImageStyle(id, foilStyle) { return put('/gallery/style', { id, foilStyle }, true) }
+export async function updateGalleryImageStyle(id, foilStyle) { return put('/gallery/style', { id, foilStyle }, false) }
+
+export async function fetchKeysUsage() { return get('/keys/usage') }

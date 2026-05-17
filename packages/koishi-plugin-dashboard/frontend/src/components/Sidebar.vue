@@ -73,17 +73,14 @@ export default {
   display: flex;
   flex-direction: column;
   isolation: isolate;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.034), rgba(255, 255, 255, 0.012) 52%, rgba(255, 255, 255, 0.004) 100%),
-    rgba(255, 255, 255, 0.01);
-  border-right: 1px solid rgba(255, 255, 255, 0.07);
+  background: transparent;
+  border-right: 1px solid color-mix(in srgb, var(--border) 58%, rgba(255,255,255,0.08));
   box-shadow:
-    7px 0 26px rgba(0, 0, 0, 0.12),
-    inset 1px 0 0 rgba(255, 255, 255, 0.09),
-    inset -1px 0 0 rgba(255, 255, 255, 0.028);
-  backdrop-filter: blur(62px) saturate(1.78) contrast(1.01);
-  -webkit-backdrop-filter: blur(62px) saturate(1.78) contrast(1.01);
-  transition: width .32s cubic-bezier(.4, 0, .2, 1), height .32s cubic-bezier(.4, 0, .2, 1), border-color .2s, box-shadow .32s ease, background .2s;
+    0 20px 70px rgba(0, 0, 0, 0.1),
+    inset 1px 0 0 rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(8px) saturate(1.4) contrast(1.05);
+  -webkit-backdrop-filter: blur(8px) saturate(1.4) contrast(1.05);
+  transition: width 0.32s cubic-bezier(0.4, 0, 0.2, 1), height 0.32s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s, box-shadow 0.32s ease, background 0.2s;
   overflow: hidden;
 }
 
@@ -97,35 +94,33 @@ export default {
 }
 
 .dashboard-sidebar::before {
-  inset: -18%;
+  inset: -1px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.023), transparent 30%, rgba(255, 255, 255, 0.008)),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.016), transparent 62%);
-  opacity: .34;
-  filter: blur(22px);
+    linear-gradient(105deg, rgba(255,255,255,0.03), rgba(255,255,255,0.002) 48%, color-mix(in srgb, var(--accent) 4%, transparent)),
+    color-mix(in srgb, var(--card) 5%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--border) 48%, rgba(255,255,255,0.06));
+  filter: none;
+  opacity: 1;
+  animation: none;
 }
 
 .dashboard-sidebar::after {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.014), transparent 18%);
-  opacity: .22;
+  content: none;
 }
 
 .dashboard-sidebar.collapsed {
   bottom: auto;
   width: 64px;
   height: 72px;
-  background:
-    linear-gradient(150deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.014) 54%, rgba(255, 255, 255, 0.006)),
-    rgba(255, 255, 255, 0.012);
-  border-right-color: rgba(255, 255, 255, 0.07);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.058);
+  background: transparent;
+  border-right-color: color-mix(in srgb, var(--border) 58%, rgba(255,255,255,0.08));
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, rgba(255,255,255,0.06));
   border-bottom-right-radius: 12px;
   box-shadow:
-    10px 12px 26px rgba(0, 0, 0, 0.14),
-    inset 1px 0 0 rgba(255, 255, 255, 0.08),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.04);
-  backdrop-filter: blur(52px) saturate(1.52) contrast(1.01);
-  -webkit-backdrop-filter: blur(52px) saturate(1.52) contrast(1.01);
+    0 12px 40px rgba(0, 0, 0, 0.1),
+    inset 1px 0 0 rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(8px) saturate(1.4) contrast(1.05);
+  -webkit-backdrop-filter: blur(8px) saturate(1.4) contrast(1.05);
 }
 
 .sidebar-head {
@@ -134,7 +129,7 @@ export default {
   align-items: center;
   gap: 12px;
   padding: 16px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.062);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 44%, rgba(255,255,255,0.06));
   position: relative;
   z-index: 1;
 }
@@ -147,8 +142,8 @@ export default {
 }
 
 .sidebar-toggle {
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid color-mix(in srgb, var(--border) 52%, rgba(255,255,255,0.08));
+  background: color-mix(in srgb, var(--input) 18%, transparent);
   color: var(--text2);
   cursor: pointer;
   transition: color .18s, background .18s, transform .14s cubic-bezier(.2, .8, .2, 1), box-shadow .18s;
@@ -263,7 +258,7 @@ export default {
   justify-content: center;
   gap: 0;
   padding: 8px 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.058);
+  border-top: 1px solid color-mix(in srgb, var(--border) 40%, rgba(255,255,255,0.06));
   border-radius: 0;
   font-size: 14px;
   font-weight: 700;
@@ -275,54 +270,31 @@ export default {
 
 .sidebar-nav .sidebar-item:last-child,
 .sidebar-foot .sidebar-item:last-child {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.052);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 38%, rgba(255,255,255,0.05));
 }
 
 .sidebar-item.active {
   color: var(--text);
-  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 11%, transparent), transparent 72%);
-  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 48%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 34%, transparent), inset 0 1px 0 rgba(255,255,255,0.08);
 }
 
 .sidebar-item.active::before {
-  content: '';
-  position: absolute;
-  inset: 4px 2px;
-  border-radius: 999px;
-  background:
-    radial-gradient(80% 150% at 50% 50%, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.026) 46%, transparent 72%),
-    linear-gradient(90deg, color-mix(in srgb, var(--accent) 9%, transparent), rgba(115, 215, 255, 0.02), transparent 82%);
-  opacity: .28;
-  transform: scaleX(.92) scaleY(.72);
-  filter: blur(7px);
-  box-shadow: none;
-  transition: opacity .18s ease, transform .24s cubic-bezier(.18, .86, .28, 1), filter .2s ease, box-shadow .16s ease;
+  content: none;
 }
 
 .sidebar-item.active::after {
-  content: '';
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  top: 50%;
-  height: 18px;
-  border-radius: 999px;
-  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.034) 56%, transparent 78%);
-  opacity: 0;
-  transform: translateY(-50%) scaleX(.46) scaleY(.45);
-  filter: blur(9px);
-  pointer-events: none;
-  transition: opacity .18s ease, transform .22s cubic-bezier(.18, .9, .22, 1), filter .16s ease;
+  content: none;
 }
 
 .sidebar-item:not(.active)::before,
 .sidebar-item:not(.active)::after {
-  content: '';
-  position: absolute;
+  content: none;
   pointer-events: none;
 }
 
 .sidebar-item:not(.active)::before {
+  content: '';
   inset: 4px 2px;
   border-radius: 999px;
   background:
@@ -330,49 +302,24 @@ export default {
     linear-gradient(90deg, color-mix(in srgb, var(--accent) 9%, transparent), rgba(115, 215, 255, 0.02), transparent 82%);
   opacity: 0;
   transform: scaleX(.88) scaleY(.72);
-  filter: blur(7px);
+  filter: none;
   box-shadow: none;
-  transition: opacity .18s ease, transform .24s cubic-bezier(.18, .86, .28, 1), filter .2s ease, box-shadow .16s ease;
-}
-
-.sidebar-item:not(.active)::after {
-  left: 12px;
-  right: 12px;
-  top: 50%;
-  height: 18px;
-  border-radius: 999px;
-  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.034) 56%, transparent 78%);
-  opacity: 0;
-  transform: translateY(-50%) scaleX(.46) scaleY(.45);
-  filter: blur(9px);
-  transition: opacity .18s ease, transform .22s cubic-bezier(.18, .9, .22, 1), filter .16s ease;
+  transition: opacity .14s ease, transform .16s ease;
 }
 
 .sidebar-item:hover::before {
   opacity: .44;
   transform: scaleX(1.04) scaleY(.82);
-  filter: blur(8px);
-}
-
-.sidebar-item:hover::after {
-  opacity: .3;
-  transform: translateY(-50%) scaleX(.86) scaleY(.62);
+  filter: none;
 }
 
 .sidebar-item:active::before {
   opacity: .9;
   transform: scaleX(1.12) scaleY(.5);
-  filter: blur(12px);
+  filter: none;
   box-shadow:
     inset 0 10px 22px rgba(0, 0, 0, 0.24),
     inset 0 -4px 12px rgba(255, 255, 255, 0.052);
-  transition-duration: .08s;
-}
-
-.sidebar-item:active::after {
-  opacity: .74;
-  transform: translateY(-50%) scaleX(1.18) scaleY(.92);
-  filter: blur(13px);
   transition-duration: .08s;
 }
 
@@ -412,7 +359,7 @@ export default {
   flex-direction: column;
   gap: 0;
   padding: 12px 10px 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-top: 1px solid color-mix(in srgb, var(--border) 44%, rgba(255,255,255,0.06));
   position: relative;
   z-index: 1;
 }
@@ -421,18 +368,35 @@ export default {
   gap: 10px;
 }
 
+@keyframes waterRipple {
+  0% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.3; }
+  25% { transform: translate3d(8px, -4px, 0) scale(1.02); opacity: 0.4; }
+  50% { transform: translate3d(-4px, 6px, 0) scale(0.98); opacity: 0.35; }
+  75% { transform: translate3d(6px, -2px, 0) scale(1.01); opacity: 0.38; }
+  100% { transform: translate3d(-2px, 0, 0) scale(1); opacity: 0.3; }
+}
+
 @media (max-width: 760px) {
   .dashboard-sidebar {
     width: min(57.4vw, 210px);
     box-shadow:
-      8px 0 28px rgba(0, 0, 0, 0.18),
-      inset 1px 0 0 rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(46px) saturate(1.48) contrast(1.01);
-    -webkit-backdrop-filter: blur(46px) saturate(1.48) contrast(1.01);
+      0 14px 36px rgba(0, 0, 0, 0.08),
+      inset 1px 0 0 rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(4px) saturate(1.2);
+    -webkit-backdrop-filter: blur(4px) saturate(1.2);
+    transition: transform 0.2s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  }
+  .dashboard-sidebar::before,
+  .dashboard-sidebar::after {
+    content: none;
   }
   .dashboard-sidebar.collapsed {
     width: 56px;
     height: 64px;
+  }
+  .sidebar-item::before,
+  .sidebar-item::after {
+    content: none !important;
   }
   .sidebar-head,
   .collapsed .sidebar-head { padding: 14px 10px; }
