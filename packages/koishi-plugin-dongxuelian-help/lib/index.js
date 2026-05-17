@@ -281,7 +281,7 @@ exports.apply = (ctx) => {
       return renderCollectionHelp()
     }
 
-    if (plain === '指令速查' || plain === 'help速查' || plain === '帮助速查' || plain === '其他帮助' || plain === '其他') {
+    if (plain === '指令速查' || plain === 'help速查' || plain === '帮助速查' || plain === '其他帮助') {
       return renderQuickReference()
     }
 
