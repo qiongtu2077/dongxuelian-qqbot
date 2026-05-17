@@ -139,6 +139,11 @@ const COVERAGE_MAP = [
     needles: ['scenario: send guard platform mute and rate limit', 'scenario send guard skips bot member mute', 'scenario send guard retries sanitized rate limit reply'],
   },
   {
+    behavior: 'dashboard standalone deployer security helpers',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'deployer.test.js'),
+    needles: ['scenario: dashboard deployer security', 'deployer isLocalAuthBypass rejects non-loopback with GLOBAL_LOCAL_MODE', 'deployer KOISHI_PID_FILE follows KOISHI_DIR env'],
+  },
+  {
     behavior: 'retaliation score calculation',
     file: path.join(AI_ROOT, 'lib', 'retaliation.js'),
     needles: [],

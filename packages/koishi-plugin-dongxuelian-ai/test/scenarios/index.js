@@ -17,6 +17,7 @@ const e2eSimulation = require('./e2e-simulation.test')
 const autoMemory = require('./auto-memory.test')
 const skillMarket = require('./skill-market.test')
 const voiceTts = require('./voice-tts.test')
+const deployer = require('./deployer.test')
 
 const SCENARIOS = [
   command,
@@ -38,6 +39,7 @@ const SCENARIOS = [
   autoMemory,
   skillMarket,
   voiceTts,
+  deployer,
 ]
 
 async function runScenarioTests(t) {

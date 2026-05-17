@@ -4710,18 +4710,27 @@ const server = http.createServer(async (req, res) => {
     res.end('Not Found')
 })
 
-if (shouldGenerateResetTokenOnStartup() && !getResetToken()) generateResetToken()
+module.exports = {
+  isLoopbackAddress,
+  isLocalAuthBypass,
+  getRemoteAddress,
+  KOISHI_PID_FILE,
+}
 
-server.listen(PORT, '127.0.0.1', () => {
-  log(`LianBoard running on http://localhost:${PORT}/dashboard/`)
-  log(`bot control: start/stop/maintenance`)
-  log(`napcat proxy: /webui/ -> NapCat WebUI`)
-  if (!isGlobalLocalMode()) {
-    log(`密码重置令牌文件: ${RESET_TOKEN_FILE}`)
-    if (!getAccessPassword()) log('WARNING: dashboard access password is not configured; login is disabled')
-    if (!readFileSync(ADMIN_PWD_FILE) && !process.env.DASHBOARD_ADMIN_PASSWORD) log('WARNING: 管理员密码使用默认值 123，请登录后在安全设置中修改')
-  }
-})
+if (require.main === module) {
+  if (shouldGenerateResetTokenOnStartup() && !getResetToken()) generateResetToken()
 
-process.on('SIGINT', () => { log('shutting down'); server.close(); process.exit(0) })
-process.on('SIGTERM', () => { log('shutting down'); server.close(); process.exit(0) })
+  server.listen(PORT, '127.0.0.1', () => {
+    log(`LianBoard running on http://localhost:${PORT}/dashboard/`)
+    log(`bot control: start/stop/maintenance`)
+    log(`napcat proxy: /webui/ -> NapCat WebUI`)
+    if (!isGlobalLocalMode()) {
+      log(`密码重置令牌文件: ${RESET_TOKEN_FILE}`)
+      if (!getAccessPassword()) log('WARNING: dashboard access password is not configured; login is disabled')
+      if (!readFileSync(ADMIN_PWD_FILE) && !process.env.DASHBOARD_ADMIN_PASSWORD) log('WARNING: 管理员密码使用默认值 123，请登录后在安全设置中修改')
+    }
+  })
+
+  process.on('SIGINT', () => { log('shutting down'); server.close(); process.exit(0) })
+  process.on('SIGTERM', () => { log('shutting down'); server.close(); process.exit(0) })
+}
