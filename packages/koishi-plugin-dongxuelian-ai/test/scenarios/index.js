@@ -17,7 +17,12 @@ const e2eSimulation = require('./e2e-simulation.test')
 const autoMemory = require('./auto-memory.test')
 const skillMarket = require('./skill-market.test')
 const voiceTts = require('./voice-tts.test')
+<<<<<<< HEAD
 const deployer = require('./deployer.test')
+=======
+const dashboardE2e = require('./dashboard-e2e.test')
+const deployer = require('./deployer.test'))
+>>>>>>> 25e0f07 (test(deployer): 安全函数集成测试 �?loopback/auth/PID 覆盖)
 
 const SCENARIOS = [
   command,
@@ -39,7 +44,12 @@ const SCENARIOS = [
   autoMemory,
   skillMarket,
   voiceTts,
+<<<<<<< HEAD
   deployer,
+=======
+  dashboardE2e,
+  deployer,)
+>>>>>>> 25e0f07 (test(deployer): 安全函数集成测试 �?loopback/auth/PID 覆盖)
 ]
 
 async function runScenarioTests(t) {
