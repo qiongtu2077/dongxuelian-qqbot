@@ -123,6 +123,21 @@ async function run(t) {
     t.check('auto-memory: stats has interval', stats.interval === 8)
     t.check('auto-memory: stats has memoryDir', stats.memoryDir.includes('agent-memory-dashboard'))
 
+    // Test 11: model failure silently skipped (no crash, no new file)
+    const dailyFilesBefore = fs.existsSync(dailyDir) ? fs.readdirSync(dailyDir) : []
+    global.fetch = async () => { throw new Error('network timeout') }
+    autoMemory.resetAutoMemoryCounter('failuser')
+    for (let i = 0; i < 7; i++) autoMemory.shouldTrigger('failuser')
+    let threw = false
+    try {
+      await autoMemory.onAgentReplyComplete({ userId: 'failuser', channel: 'dashboard', messages: fakeMessages })
+      await new Promise(r => setTimeout(r, 100))
+    } catch { threw = true }
+    t.check('auto-memory: model failure does not throw', !threw)
+    const dailyFilesAfter = fs.existsSync(dailyDir) ? fs.readdirSync(dailyDir) : []
+    const newFailFiles = dailyFilesAfter.filter(f => f.startsWith('failuser'))
+    t.check('auto-memory: model failure writes no daily file', newFailFiles.length === 0)
+
   } finally {
     global.fetch = originalFetch
     process.env.DONGXUELIAN_AI_DATA_DIR = originalDataDir
