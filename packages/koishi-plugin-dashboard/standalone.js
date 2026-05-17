@@ -4592,7 +4592,18 @@ const server = http.createServer(async (req, res) => {
       let command = entry
       let args = []
       if (ext === '.bat' || ext === '.cmd') { command = 'cmd.exe'; args = ['/d', '/c', entry] }
-      else if (/^NapCatWinBootMain\.exe$/i.test(path.basename(entry))) { args = ['10001'] }
+      else if (/^NapCatWinBootMain\.exe$/i.test(path.basename(entry))) {
+        const qq = String(readLocalDeployManifest().qq || '').trim()
+        if (!/^\d+$/.test(qq)) {
+          const detail = fs.existsSync(LOCAL_DEPLOY_MANIFEST_FILE)
+            ? '本地部署清单中缺少有效 qq 字段或格式错误'
+            : `未找到 ${toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE)}，请先完成本地部署并填写 QQ 号`
+          const msg = `无法启动 NapCat（NapCatWinBootMain 需要登录 QQ 号）：${detail}`
+          log(msg)
+          return json(res, { ok: false, message: msg, napcat: detected }, 400)
+        }
+        args = [qq]
+      }
       else if (ext === '.js' || ext === '.mjs') { command = getLocalToolCommand('node'); args = [entry] }
       spawnLocalTask('napcat', command, args, getLocalTaskOptions({ cwd }))
       return json(res, { ok: true, message: 'NapCat 已启动，请等待 WebUI 或控制台二维码出现后扫码登录', status: getLocalNapcatDeployStatus() })
@@ -4729,6 +4740,11 @@ module.exports = {
 if (require.main === module) {
   if (shouldGenerateResetTokenOnStartup() && !getResetToken()) generateResetToken()
 
+  server.on('error', err => {
+    if (err && err.code === 'EADDRINUSE') log(`端口 ${PORT} 已被占用`)
+    else console.error('[dashboard] HTTP 服务器错误:', err.stack || err.message || err)
+    process.exit(1)
+  })
   server.listen(PORT, '127.0.0.1', () => {
     log(`LianBoard running on http://localhost:${PORT}/dashboard/`)
     log(`bot control: start/stop/maintenance`)

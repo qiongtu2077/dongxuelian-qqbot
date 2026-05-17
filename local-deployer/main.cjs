@@ -232,15 +232,26 @@ function registerIpc() {
   }))
 }
 
-app.whenReady().then(() => {
-  appPaths = resolveAppPaths()
-  registerIpc()
-  startDashboard(appPaths)
-  void createWindow()
-  if (appPaths.fallbackReason) {
-    setTimeout(() => dialog.showMessageBox(mainWindow, { type: 'warning', title: '部署器工作目录已切换', message: appPaths.fallbackReason, detail: '建议把部署器 ZIP 完整解压到可写目录后，再运行 EXE。' }).catch(() => {}), 1500)
-  }
-})
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+  app.whenReady().then(() => {
+    appPaths = resolveAppPaths()
+    registerIpc()
+    startDashboard(appPaths)
+    void createWindow()
+    if (appPaths.fallbackReason) {
+      setTimeout(() => dialog.showMessageBox(mainWindow, { type: 'warning', title: '部署器工作目录已切换', message: appPaths.fallbackReason, detail: '建议把部署器 ZIP 完整解压到可写目录后，再运行 EXE。' }).catch(() => {}), 1500)
+    }
+  })
+}
 
 app.on('window-all-closed', () => app.quit())
 app.on('before-quit', () => {
