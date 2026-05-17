@@ -30,11 +30,12 @@ async function withFetch(mocked, fn) {
 }
 
 async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
-  await withScenario({}, async ({ harness, makeSession, run }) => {
+  await withScenario({}, async ({ harness, makeSession, run, data }) => {
     const mocked = mockFetch(fetchQueue)
     await withFetch(mocked, async () => {
       const session = makeSession(options.session || {})
-      if (typeof options.setup === 'function') await options.setup(session, { harness, mocked })
+      if (options.autoRoute) data.writeJson('ai-tool-config.json', { channels: { qq: { enabled: true, tools: { get_current_time: true, calculate: true } }, dashboard: { enabled: true, tools: {} } }, autoRoute: { qq: { enabled: true }, dashboard: { enabled: false } }, dangerousPolicy: 'confirm', enabledSkills: [], readFileRoots: [] })
+      if (typeof options.setup === 'function') await options.setup(session, { harness, mocked, data })
       session.content = atBot(session, options.input || '\u4f60\u597d')
       const beforeCalls = mocked.calls.length
       let result = await run(session, { flushTicks: 120 })
@@ -67,6 +68,168 @@ async function run(t) {
     waitFor: message => String(message).includes('final-visible'),
   })
 
+  await runChatCase(t, 'agent auto route stays off by default', [
+    { json: { choices: [{ message: { content: 'normal-time-answer' } }] } },
+  ], async (result, mocked) => {
+    checkSentIncludes(t, 'scenario agent auto route default off uses normal chat', result, 'normal-time-answer')
+    t.check('scenario agent auto route default off uses single call', mocked.calls.length === 1, `calls=${mocked.calls.length}`)
+  }, {
+    input: '现在几点了',
+    waitFor: message => String(message).includes('normal-time-answer'),
+  })
+
+  await runChatCase(t, 'agent auto route ignores casual greeting', [
+    { json: { choices: [{ message: { content: 'greeting-ok' } }] } },
+  ], async (result, mocked) => {
+    checkSentIncludes(t, 'scenario agent auto route ignores casual greeting', result, 'greeting-ok')
+    t.check('scenario casual greeting uses normal chat only', mocked.calls.length === 1, `calls=${mocked.calls.length}`)
+  }, {
+    input: '你好',
+    waitFor: message => String(message).includes('greeting-ok'),
+  })
+
+  await runChatCase(t, 'agent auto route handles time question', [
+    { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-time', type: 'function', function: { name: 'get_current_time', arguments: '{}' } }] } }] } },
+    { json: { choices: [{ message: { content: 'agent-time-ok' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario agent auto route sends tool answer', result, 'agent-time-ok')
+    t.check('scenario agent auto route used tool request', calls.length === 2 && Array.isArray(calls[0].requestBody.tools), JSON.stringify(calls.map(call => Object.keys(call.requestBody))))
+    t.check('scenario agent auto route exposed time tool', calls[0].requestBody.tools.some(item => item.function && item.function.name === 'get_current_time'), JSON.stringify(calls[0].requestBody.tools))
+  }, {
+    input: '现在几点了',
+    autoRoute: true,
+    waitFor: message => String(message).includes('agent-time-ok'),
+  })
+
+  await runChatCase(t, 'explicit web_search request routes to Agent even when auto route disabled', [
+    { json: { choices: [{ message: { content: 'agent-search-raw' } }] } },
+    { json: { choices: [{ message: { content: 'agent-search-retold' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario explicit web_search request sends chat reply', result, 'agent-search-retold')
+    t.check('scenario explicit web_search uses agent then chat (2 calls)', calls.length === 2, `calls=${calls.length}`)
+    const agentPrompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
+    t.check('scenario explicit web_search agent prompt has search instruction', agentPrompt.includes('必须先调用 web_search'), agentPrompt.slice(0, 300))
+    t.check('scenario explicit web_search request exposes web_search', calls[0].requestBody.tools.some(item => item.function && item.function.name === 'web_search'), JSON.stringify(calls[0].requestBody.tools))
+    t.check('scenario explicit web_search chat call has agent context', JSON.stringify(calls[1].requestBody.messages || []).includes('工具查到的信息'), JSON.stringify(calls[1].requestBody.messages))
+  }, {
+    input: '调用web_search查鸣潮最新角色是谁',
+    setup(session) {
+      const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
+      webSearch.__scenarioOriginalExecute = webSearch.execute
+      webSearch.execute = async () => '已搜索：鸣潮 最新角色\n搜索结果：绯雪与达妮娅'
+    },
+    waitFor: message => String(message).includes('agent-search-retold'),
+  })
+  try {
+    const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
+    if (webSearch.__scenarioOriginalExecute) {
+      webSearch.execute = webSearch.__scenarioOriginalExecute
+      delete webSearch.__scenarioOriginalExecute
+    }
+  } catch {}
+
+  await runChatCase(t, 'QQ Agent runs in direct mode and chat retells with minimal prompt', [
+    { json: { choices: [{ message: { content: 'agent-direct-raw' } }] } },
+    { json: { choices: [{ message: { content: 'agent-persona-retold' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario QQ Agent direct mode sends persona reply', result, 'agent-persona-retold')
+    const agentPrompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
+    t.check('scenario QQ Agent prompt includes direct mode marker', agentPrompt.includes('Agent 直连模式'), agentPrompt)
+    const chatPrompt = JSON.stringify(calls[1]?.requestBody?.messages || [])
+    t.check('scenario QQ Agent chat call includes agent context', chatPrompt.includes('工具查到的信息'), chatPrompt)
+    t.check('scenario QQ Agent chat call includes core persona', chatPrompt.includes('简短转述'), chatPrompt)
+  }, {
+    input: '搜一下现在最新的天气是什么',
+    async setup(session, { data }) {
+      data.writeText('ai-skills/core/SKILL.persona-core.md', [
+        '---',
+        'name: persona-core',
+        '---',
+        'AGENT_CORE_MARKER',
+      ].join('\n'))
+      data.writeText('ai-skills/personas/SKILL.agent-marker.md', [
+        '---',
+        'name: Agent测试人格',
+        'description: agent persona test',
+        '---',
+        'AGENT_PERSONA_MARKER',
+      ].join('\n'))
+      data.writeJson('ai-persona-users.json', { [session.userId]: 'Agent测试人格' })
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      persona.loadPersonaUsers()
+      const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
+      await chatModule.loadSkillsContentCache()
+    },
+    waitFor: message => String(message).includes('agent-persona-retold'),
+  })
+
+  await runChatCase(t, 'QQ Agent direct mode skips persona, chat applies it', [
+    { json: { choices: [{ message: { content: 'agent-no-persona-raw' } }] } },
+    { json: { choices: [{ message: { content: 'agent-chat-persona-ok' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario QQ Agent chat persona reply', result, 'agent-chat-persona-ok')
+    const agentPrompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
+    t.check('scenario QQ Agent direct mode excludes user persona in agent call', !agentPrompt.includes('AMIS_AGENT_MARKER') && !agentPrompt.includes('当前人格：爱弥斯'), agentPrompt)
+    t.check('scenario QQ Agent direct mode uses direct prompt', agentPrompt.includes('Agent 直连模式') && agentPrompt.includes('不需要角色扮演'), agentPrompt)
+  }, {
+    input: '帮我查一下最新的鸣潮角色是谁',
+    setup(session, { data }) {
+      data.writeText('ai-skills/personas/SKILL.amis.md', [
+        '---',
+        'name: 爱弥斯',
+        'description: personal persona test',
+        '---',
+        'AMIS_AGENT_MARKER',
+      ].join('\n'))
+      data.writeText('ai-skills/personas/SKILL.changli.md', [
+        '---',
+        'name: 长离',
+        'description: group persona test',
+        '---',
+        'CHANG_LI_AGENT_MARKER',
+      ].join('\n'))
+      data.writeJson('ai-persona-users.json', { [session.userId]: '爱弥斯' })
+      data.writeJson('ai-persona-groups.json', { [session.guildId]: { persona: '长离' } })
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      persona.loadPersonaUsers()
+      persona.loadPersonaGroups()
+    },
+    waitFor: message => String(message).includes('agent-chat-persona-ok'),
+  })
+
+  await runChatCase(t, 'QQ Agent skill prompt uses compact index', [
+    { json: { choices: [{ message: { content: 'agent-skill-index-raw' } }] } },
+    { json: { choices: [{ message: { content: 'agent-skill-index-ok' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario QQ Agent compact skill prompt reply', result, 'agent-skill-index-ok')
+    const prompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
+    t.check('scenario QQ Agent prompt includes compact skill index', prompt.includes('轻量索引') && prompt.includes('read_agent_skill'), prompt)
+    t.check('scenario QQ Agent prompt does not inject full skill body', !prompt.includes('LONG_SKILL_BODY_SHOULD_NOT_BE_IN_PROMPT'), prompt)
+    t.check('scenario QQ Agent exposes read_agent_skill but not read_file', calls[0].requestBody.tools.some(item => item.function?.name === 'read_agent_skill') && !calls[0].requestBody.tools.some(item => item.function?.name === 'read_file'), JSON.stringify(calls[0].requestBody.tools))
+  }, {
+    input: '搜一下最新的 pptx 技能资料是什么',
+    setup(session, { data }) {
+      data.writeText('ai-skills/docs/pptx/SKILL.md', [
+        '---',
+        'name: pptx',
+        'description: compact prompt test',
+        '---',
+        'LONG_SKILL_BODY_SHOULD_NOT_BE_IN_PROMPT',
+      ].join('\n'))
+      data.writeJson('ai-tool-config.json', {
+        channels: {
+          qq: { enabled: true, tools: { get_current_time: true, calculate: true, web_search: true, read_agent_skill: true } },
+          dashboard: { enabled: true, tools: {} },
+        },
+        autoRoute: { qq: { enabled: false }, dashboard: { enabled: false } },
+        dangerousPolicy: 'confirm',
+        enabledSkills: ['pptx'],
+        readFileRoots: [],
+      })
+    },
+    waitFor: message => String(message).includes('agent-skill-index-ok'),
+  })
+
   await runChatCase(t, 'reasoning-only fallback', [
     { json: { choices: [{ message: { content: '', reasoning_content: 'reasoning-secret' } }] } },
     { json: { choices: [{ message: { content: 'fallback-visible' } }] } },
@@ -87,6 +250,52 @@ async function run(t) {
     checkNoLeak(t, 'scenario thinking retry logs do not include leak body', result, ['\u6211\u5f97\u770b\u770b\u73b0\u5728\u662f\u4ec0\u4e48\u60c5\u51b5', 'reasoning-secret', 'sk-test-secret'])
   }, {
     waitFor: message => String(message).includes('\u5efa\u8bae\u795e\u5361'),
+  })
+
+  await runChatCase(t, 'internal cache prompt leak retries', [
+    { json: { choices: [{ message: { content: '这是你在本群的发言： 昵称：你 发言：要是机械臂就算了 [群聊刷到]' } }] } },
+    { json: { choices: [{ message: { content: '机器人动作确实挺流畅' } }] } },
+  ], async (result) => {
+    checkSentIncludes(t, 'scenario internal prompt leak retries to clean reply', result, '机器人动作确实挺流畅')
+    checkSentExcludes(t, 'scenario internal prompt leak does not send profile marker', result, '这是你在本群的发言')
+    checkSentExcludes(t, 'scenario internal prompt leak does not send nickname marker', result, '昵称：')
+  }, {
+    input: '这个机器人怎么这么流畅',
+    waitFor: message => String(message).includes('机器人动作确实挺流畅'),
+  })
+
+  await runChatCase(t, 'user profile prompt is internal system context', [
+    { json: { choices: [{ message: { content: 'profile-context-ok' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario user profile internal context sends reply', result, 'profile-context-ok')
+    const messages = calls[0]?.requestBody?.messages || []
+    const profileMessage = messages.find(item => String(item.content || '').includes('[内部参考-用户近期发言风格]'))
+    t.check('scenario user profile context uses system role', profileMessage && profileMessage.role === 'system', JSON.stringify(messages))
+    t.check('scenario user profile context is not user role', !messages.some(item => item.role === 'user' && String(item.content || '').includes('这是tester在本群的发言')), JSON.stringify(messages))
+  }, {
+    input: '继续说',
+    setup(session, { data }) {
+      data.writeJson(`user-profiles/${session.guildId}/${session.userId}.json`, {
+        userId: session.userId,
+        names: ['tester'],
+        messages: [{ content: '要是机械臂就算了' }],
+      })
+    },
+    waitFor: message => String(message).includes('profile-context-ok'),
+  })
+
+  await runChatCase(t, 'quoted bot message is marked as self quote', [
+    { json: { choices: [{ message: { content: 'self-quote-ok' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario quoted self message sends reply', result, 'self-quote-ok')
+    const prompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
+    t.check('scenario quoted self prompt marks own reply', prompt.includes('引用你自己历史回复') && prompt.includes('不要攻击自己'), prompt)
+  }, {
+    input: '？',
+    session: {
+      quote: { content: '这都能联想到核废水，你这脑回路也是没谁了', userId: '90000' },
+    },
+    waitFor: message => String(message).includes('self-quote-ok'),
   })
 
   await runChatCase(t, 'persistent thinking leak fallback', Array.from({ length: 7 }, () => ({
@@ -123,6 +332,38 @@ async function run(t) {
   }, {
     input: '\u4f60\u770b\u770b\u8fd9\u4e2a',
     waitFor: message => String(message).includes('\u4f60\u770b\u770b\u8fd9\u4e2a\u4e5f\u6ca1\u95ee\u9898'),
+  })
+
+  await runChatCase(t, 'QQ Agent search context bridges into normal chat follow-up', [
+    { json: { choices: [{ message: { content: 'NO' } }] } },
+    { json: { choices: [{ message: { content: 'normal follow-up answer' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario agent bridge sends follow-up reply', result, 'normal follow-up answer')
+    const followUpCall = calls.find(call => JSON.stringify(call.requestBody?.messages || []).includes('最近 Agent 工具上下文'))
+    const prompt = JSON.stringify(followUpCall?.requestBody?.messages || [])
+    t.check('scenario normal chat sees recent agent search summary', prompt.includes('已搜索：鸣潮 最新角色') && prompt.includes('不要说自己没搜索'), prompt)
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    const history = conversation.getConversationHistory(session)
+    t.check('scenario agent bridge stores agent reply in conversation history', history.some(item => item.role === 'assistant' && item.content.includes('agent searched answer')), JSON.stringify(history))
+  }, {
+    input: '你刚刚搜到哪些东西',
+    setup(session) {
+      const bridge = require(path.join(AI_ROOT, 'lib', 'agent-chat-bridge.js'))
+      bridge.clearAgentChatBridge()
+      bridge.recordAgentChatResult({
+        session,
+        userMessage: '调用web_search查鸣潮最新角色',
+        userName: 'tester',
+        userId: session.userId,
+        channelKey: session.guildId,
+        agentResult: {
+          reply: 'agent searched answer',
+          toolCalls: 1,
+          toolResults: [{ name: 'web_search', result: '已搜索：鸣潮 最新角色\n搜索结果：\n1. 官方公告\n   https://wutheringwaves.kurogames.com/news/mock\n   库洛官方公告公开新共鸣者。' }],
+        },
+      })
+    },
+    waitFor: message => String(message).includes('normal follow-up answer'),
   })
 
   await runChatCase(t, 'legacy user history is isolated before model request', [

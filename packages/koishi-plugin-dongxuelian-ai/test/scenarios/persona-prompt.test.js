@@ -82,6 +82,13 @@ function userSession(makeSession, userId, content = '') {
   })
 }
 
+function getPromptText(call) {
+  const body = call && call.requestBody
+  const messages = body && body.messages
+  if (!Array.isArray(messages)) return ''
+  return messages.filter(item => item && item.role === 'system').map(item => String(item.content || '')).join('\n\n')
+}
+
 function getSystemPrompt(call) {
   const body = call && call.requestBody
   const messages = body && body.messages
@@ -163,7 +170,7 @@ async function withPromptScenario(fn) {
           describeCalls(newCalls, captureMarker)
         )
         if (matches.length === 0) return ''
-        return getSystemPrompt(matches[matches.length - 1])
+        return getPromptText(matches[matches.length - 1])
       }
       await fn({ capturePrompt, makeSession, run, mocked })
     } finally {

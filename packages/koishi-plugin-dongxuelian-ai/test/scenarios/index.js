@@ -12,6 +12,11 @@ const concurrency = require('./concurrency.test')
 const setup = require('./setup.test')
 const personaPrompt = require('./persona-prompt.test')
 const sendGuard = require('./send-guard.test')
+const agentPhase3 = require('./agent-phase3.test')
+const e2eSimulation = require('./e2e-simulation.test')
+const autoMemory = require('./auto-memory.test')
+const skillMarket = require('./skill-market.test')
+const voiceTts = require('./voice-tts.test')
 
 const SCENARIOS = [
   command,
@@ -28,6 +33,11 @@ const SCENARIOS = [
   setup,
   personaPrompt,
   sendGuard,
+  agentPhase3,
+  e2eSimulation,
+  autoMemory,
+  skillMarket,
+  voiceTts,
 ]
 
 async function runScenarioTests(t) {
