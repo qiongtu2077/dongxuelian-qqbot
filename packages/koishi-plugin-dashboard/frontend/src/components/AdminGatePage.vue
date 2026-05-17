@@ -5,7 +5,12 @@
       <h1 class="gate-title">莲莲 Bot 控制台</h1>
       <p class="gate-copy">{{ message }}</p>
 
+      <p v-if="electronDeployer" class="gate-copy" style="color:var(--text2);font-size:13px">
+        打包部署器模式下将自动验证。
+      </p>
+
       <PasswordField
+        v-if="!electronDeployer"
         v-model="password"
         placeholder="管理员密码"
         autocomplete="current-password"
@@ -13,9 +18,13 @@
         @enter="submit"
       />
 
-      <div class="gate-actions">
+      <div v-if="!electronDeployer" class="gate-actions">
         <button class="btn" @click="submit" :disabled="loading">{{ loading ? '验证中...' : '进入控制台' }}</button>
         <button v-if="allowCancel" class="btn btn-ghost" @click="cancel" :disabled="loading">取消</button>
+      </div>
+
+      <div v-if="electronDeployer && loading" class="gate-actions">
+        <span class="gate-copy" style="color:var(--text3)">正在验证…</span>
       </div>
 
       <div v-if="error" class="gate-error">{{ error }}</div>
@@ -26,6 +35,7 @@
 <script>
 import { ref, onMounted } from 'vue'
 import { verifyAdmin, setAdminToken } from '../api'
+import { isElectronDeployerEnv } from '../electron-deployer'
 import PasswordField from './PasswordField.vue'
 
 export default {
@@ -37,12 +47,13 @@ export default {
   },
   emits: ['verified', 'cancel'],
   setup(props, { emit }) {
+    const electronDeployer = isElectronDeployerEnv()
     const password = ref('')
     const loading = ref(false)
     const error = ref('')
 
     async function submit() {
-      if (!password.value.trim() && !window.dongxuelianDeployer) return
+      if (!password.value.trim() && !electronDeployer) return
       loading.value = true
       error.value = ''
       try {
@@ -67,10 +78,10 @@ export default {
     }
 
     onMounted(() => {
-      if (window.dongxuelianDeployer) submit()
+      if (electronDeployer) submit()
     })
 
-    return { password, loading, error, submit, cancel }
+    return { electronDeployer, password, loading, error, submit, cancel }
   },
 }
 </script>

@@ -84,11 +84,17 @@ const LORES_DIR = path.join(DATA_DIR, 'ai-skills', 'lore')
 const MODES_DIR = path.join(DATA_DIR, 'ai-skills', 'modes')
 const FE_DIR = path.join(PLUGIN_ROOT, 'frontend')
 const DIST_DIR = path.join(FE_DIR, 'dist')
+
+/** Electron / 打包部署器：`GLOBAL_LOCAL_MODE=1`，仅监听回环并完成鉴权免检 */
+function isGlobalLocalMode() {
+  return /^(?:1|true|yes|on)$/i.test(String(process.env.GLOBAL_LOCAL_MODE || '').trim())
+}
+
 const AGENT_CONSOLE_DIR = path.join(PLUGIN_ROOT, '..', 'agent-console')
 const AGENT_CONSOLE_DIST_DIR = path.join(AGENT_CONSOLE_DIR, 'dist')
 const PORT = process.env.DASHBOARD_PORT || 5150
-const PASSWORD = process.env.DASHBOARD_PASSWORD || '123'
-const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || '123'
+const PASSWORD = process.env.DASHBOARD_PASSWORD || (isGlobalLocalMode() ? '' : '123')
+const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || (isGlobalLocalMode() ? '' : '123')
 
 const ADMIN_PWD_FILE = path.join(DATA_DIR, 'dashboard-admin-pwd.txt')
 const ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-access-pwd.txt')
@@ -284,13 +290,10 @@ function log(msg) {
   console.log(`[dashboard] ${msg}`)
 }
 
-function isGlobalLocalMode() {
-  return /^(?:1|true|yes|on)$/i.test(String(process.env.GLOBAL_LOCAL_MODE || '').trim())
-}
-
 function isLocalAuthBypass(req) {
-  // Even GLOBAL_LOCAL_MODE=1 requires loopback (127.0.0.1, ::1, ::ffff:127.0.0.1).
   if (!req) return false
+  // 远端独立部署：即使经本机 nginx 反向代理到 127.0.0.1，也不得免检（须带登录 token）。
+  if (!isGlobalLocalMode()) return false
   return isLoopbackAddress(getRemoteAddress(req))
 }
 
@@ -2910,6 +2913,9 @@ const server = http.createServer(async (req, res) => {
 
   // 修改密码
   if (pathname === '/dashboard/api/auth/password' && req.method === 'PUT') {
+    if (isLocalAuthBypass(req)) {
+      return json(res, { ok: false, message: '本地部署器不包含密码登录，此项已关闭', code: 'AUTH_DISABLED_LOCAL' }, 400)
+    }
     if (!requireAdmin(req, res)) return
     collectBody(req, res, (body) => {
       try {
@@ -2934,6 +2940,9 @@ const server = http.createServer(async (req, res) => {
 
   // 忘记密码 - 通过重置令牌恢复默认密码
   if (pathname === '/dashboard/api/auth/reset-password' && req.method === 'POST') {
+    if (isLocalAuthBypass(req)) {
+      return json(res, { ok: false, message: '本地部署器不包含密码登录，此项已关闭', code: 'AUTH_DISABLED_LOCAL' }, 400)
+    }
     collectBody(req, res, (body) => {
       try {
         const { resetToken } = JSON.parse(body)

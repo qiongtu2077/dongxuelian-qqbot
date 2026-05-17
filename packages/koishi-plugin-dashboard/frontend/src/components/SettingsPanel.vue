@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div v-if="!isElectronDeployer">
     <div class="card">
       <h2>访问密码</h2>
       <div style="color:var(--text2);font-size:13px;margin-bottom:8px">登录 Dashboard 所需的密码</div>
@@ -30,6 +30,7 @@ export default {
   components: { PasswordField },
   setup() {
     const showAdminDialog = inject('showAdminDialog')
+    const isElectronDeployer = inject('isElectronDeployer', false)
     const accessNew = ref('')
     const accessLoading = ref(false)
     const accessMsg = ref(null)
@@ -59,7 +60,7 @@ export default {
       adminLoading.value = false
     }
 
-    return { accessNew, accessLoading, accessMsg, adminOld, adminNew, adminLoading, adminMsg, changeAccess, changeAdmin }
+    return { isElectronDeployer, accessNew, accessLoading, accessMsg, adminOld, adminNew, adminLoading, adminMsg, changeAccess, changeAdmin }
   }
 }
 </script>

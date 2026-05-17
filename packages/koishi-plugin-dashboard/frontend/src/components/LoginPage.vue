@@ -6,6 +6,7 @@
       <div class="login-sidebar-inner">
         <div class="gate-kicker">LianBoard</div>
         <h1 class="gate-title">莲莲 Bot 控制台</h1>
+        <template v-if="!electronDeployer">
         <p class="gate-copy">请输入访问密码以继续</p>
 
         <PasswordField
@@ -37,6 +38,13 @@
             <div v-if="resetMsg" style="margin-top:8px;font-size:12px;text-align:center" :style="{color: resetMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ resetMsg.text }}</div>
           </div>
         </Transition>
+        </template>
+
+        <p v-else class="gate-copy" style="color:var(--text2);font-size:13px;margin-top:8px">
+          打包部署器模式，直接进入控制台。
+        </p>
+
+        <div v-if="electronDeployer && loading" style="margin-top:12px;color:var(--text3);font-size:13px;text-align:center">正在登录…</div>
       </div>
     </div>
   </div>
@@ -45,6 +53,7 @@
 <script>
 import { ref, onMounted } from 'vue'
 import { login, resetPassword } from '../api'
+import { isElectronDeployerEnv } from '../electron-deployer'
 import LoginBackdrop from './LoginBackdrop.vue'
 import PasswordField from './PasswordField.vue'
 
@@ -52,6 +61,7 @@ export default {
   name: 'LoginPage',
   components: { LoginBackdrop, PasswordField },
   setup(props, { emit }) {
+    const electronDeployer = isElectronDeployerEnv()
     const password = ref('')
     const loading = ref(false)
     const error = ref('')
@@ -61,11 +71,11 @@ export default {
     const resetMsg = ref(null)
 
     onMounted(() => {
-      if (window.dongxuelianDeployer) doLogin()
+      if (electronDeployer) doLogin()
     })
 
     async function doLogin() {
-      if (!password.value.trim() && !window.dongxuelianDeployer) return
+      if (!password.value.trim() && !electronDeployer) return
       loading.value = true
       error.value = ''
       try {
@@ -100,7 +110,7 @@ export default {
       resetting.value = false
     }
 
-    return { password, loading, error, doLogin, showReset, resetToken, resetting, resetMsg, doReset }
+    return { electronDeployer, password, loading, error, doLogin, showReset, resetToken, resetting, resetMsg, doReset }
   }
 }
 </script>

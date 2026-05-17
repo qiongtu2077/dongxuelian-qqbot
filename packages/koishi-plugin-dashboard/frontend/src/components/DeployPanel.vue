@@ -286,6 +286,7 @@
 
 <script>
 import { computed, inject, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { getDongxuelianDeployerBridge, isElectronDeployerEnv } from '../electron-deployer'
 import { checkDeployUpdate, checkLocalEnv, confirmDeploy, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, installPortableNode, koishiDeployStatus, localReadyCheck, napcatDeployStatus, npmInstallStatus, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, repairNpmProxyAndInstall, runDeploy, startKoishiLocal, startNapcat, startNpmInstall, updateDeployConfig, uploadDeploy } from '../api'
 
 export default {
@@ -352,7 +353,7 @@ export default {
     ]
     const stationState = reactive(Object.fromEntries(localStepDefs.map(step => [step.id, 'pending'])))
 
-    const deployerBridge = computed(() => (typeof window !== 'undefined' ? window.dongxuelianDeployer : null))
+    const deployerBridge = computed(() => getDongxuelianDeployerBridge())
     const localDeployTarget = computed(() => env.value?.localDeployTarget || null)
     const backendPlatform = computed(() => localDeployTarget.value?.platform || env.value?.host?.platform || env.value?.platform || '')
     const isWindows = computed(() => (backendPlatform.value || deployerBridge.value?.platform) === 'win32')
@@ -484,7 +485,7 @@ export default {
     }
 
     function shouldUsePortableNodeForWizard() {
-      const packaged = !!window.dongxuelianDeployer
+      const packaged = isElectronDeployerEnv()
       if (!env.value?.node?.ok || !env.value?.npm?.found) return true
       return packaged && (!env.value?.node?.ownedByProject || !env.value?.npm?.ownedByProject)
     }

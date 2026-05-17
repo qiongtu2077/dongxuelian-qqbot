@@ -141,7 +141,7 @@ const COVERAGE_MAP = [
   {
     behavior: 'dashboard standalone deployer security helpers',
     file: path.join(AI_ROOT, 'test', 'scenarios', 'deployer.test.js'),
-    needles: ['scenario: dashboard deployer security', 'deployer isLocalAuthBypass rejects non-loopback with GLOBAL_LOCAL_MODE', 'deployer KOISHI_PID_FILE follows KOISHI_DIR env'],
+    needles: ['scenario: dashboard deployer security', 'deployer isLocalAuthBypass rejects loopback without GLOBAL_LOCAL_MODE', 'deployer isLocalAuthBypass rejects non-loopback with GLOBAL_LOCAL_MODE', 'deployer KOISHI_PID_FILE follows KOISHI_DIR env'],
   },
   {
     behavior: 'retaliation score calculation',
@@ -448,6 +448,7 @@ async function main() {
   check('npm check includes AI agent tool syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/calculator.js'))
   check('npm check includes AI retaliation syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/retaliation.js'))
   check('npm check includes dashboard standalone syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dashboard/standalone.js'))
+  check('npm check includes dashboard electron deployer helper syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dashboard/frontend/src/electron-deployer.js'))
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
   check('workspace package glob exists', Array.isArray(rootPkg.workspaces) && rootPkg.workspaces.includes('packages/*'))
 
@@ -1850,6 +1851,8 @@ async function main() {
   check('dashboard agent API returns skill index', dashboardStandalone.includes("agent', 'skills") && dashboardStandalone.includes('listAgentSkills'))
   check('dashboard exposes agent persona API', dashboardStandalone.includes("/dashboard/api/agent/personas") && dashboardStandalone.includes("/dashboard/api/agent/persona") && dashboardStandalone.includes('listAgentPersonasForConsole'))
   const dashboardAppSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'App.vue'))
+  const dashboardElectronDeployerSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'electron-deployer.js'))
+  check('dashboard shares electron deployer detection helper', dashboardAppSrc.includes('electron-deployer') && dashboardElectronDeployerSrc.includes('dongxuelianExpose?.dongxuelianDeployer') && dashboardElectronDeployerSrc.includes('getDongxuelianDeployerBridge'))
   const dashboardAgentPanelSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'components', 'AgentPanel.vue'))
   check('dashboard sidebar includes agent panel tab', dashboardAppSrc.includes("id: 'agent'") && dashboardAppSrc.includes('AgentPanel'))
   check('dashboard agent panel manages tools and skills', dashboardAgentPanelSrc.includes('fetchAgentConfig') && dashboardAgentPanelSrc.includes('Skill 索引') && dashboardAgentPanelSrc.includes('read_agent_skill'))

@@ -39,7 +39,7 @@
         </span>
         <span class="sidebar-label">主题：{{ currentThemeLabel }}</span>
       </button>
-      <button class="sidebar-item sidebar-action" type="button" title="退出登录" @click="$emit('logout')">
+      <button v-if="!suppressLogout" class="sidebar-item sidebar-action" type="button" title="退出登录" @click="$emit('logout')">
         <span class="sidebar-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
         </span>
@@ -56,6 +56,7 @@ export default {
     tabs: { type: Array, required: true },
     activeTab: { type: String, required: true },
     expanded: { type: Boolean, required: true },
+    suppressLogout: { type: Boolean, default: false },
     currentThemeLabel: { type: String, required: true },
   },
   emits: ['toggle', 'switch-tab', 'open-theme', 'logout'],

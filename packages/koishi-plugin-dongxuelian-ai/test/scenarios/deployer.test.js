@@ -17,6 +17,7 @@ async function run(t) {
 
   try {
     delete process.env.KOISHI_DIR
+    delete process.env.GLOBAL_LOCAL_MODE
     const dash = freshRequireStandalone()
 
     t.check('deployer isLoopback accepts 127.0.0.1', dash.isLoopbackAddress('127.0.0.1'))
@@ -31,6 +32,11 @@ async function run(t) {
     t.checkEqual('deployer getRemoteAddress falls back to connection.remoteAddress', dash.getRemoteAddress({ connection: { remoteAddress: '1.2.3.4' } }), '1.2.3.4')
     t.checkEqual('deployer getRemoteAddress prefers socket over connection', dash.getRemoteAddress({ socket: { remoteAddress: '::1' }, connection: { remoteAddress: '9.9.9.9' } }), '::1')
     t.checkEqual('deployer getRemoteAddress empty when missing', dash.getRemoteAddress({}), '')
+
+    t.check(
+      'deployer isLocalAuthBypass rejects loopback without GLOBAL_LOCAL_MODE',
+      !dash.isLocalAuthBypass({ socket: { remoteAddress: '127.0.0.1' } }),
+    )
 
     process.env.GLOBAL_LOCAL_MODE = '1'
     t.check(

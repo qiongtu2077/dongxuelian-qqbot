@@ -6,6 +6,7 @@
       :tabs="tabs"
       :active-tab="activeTab"
       :expanded="sidebarExpanded"
+      :suppress-logout="isElectronDeployer"
       :current-theme-label="currentThemeLabel"
       @toggle="toggleSidebar"
       @switch-tab="doSwitchTab"
@@ -33,6 +34,7 @@
 <script>
 import { computed, ref, provide, onMounted, onUnmounted } from 'vue'
 import { clearAdminToken } from './api'
+import { isElectronDeployerEnv } from './electron-deployer'
 import LoginPage from './components/LoginPage.vue'
 import LoginBackdrop from './components/LoginBackdrop.vue'
 import Sidebar from './components/Sidebar.vue'
@@ -62,7 +64,7 @@ const componentMap = {
 export default {
   components: { LoginPage, LoginBackdrop, Sidebar, ThemeSwitcher, AdminModal },
   setup() {
-    const isElectronDeployer = !!window.dongxuelianDeployer
+    const isElectronDeployer = isElectronDeployerEnv()
     const loggedIn = ref(isElectronDeployer || !!localStorage.getItem('dashboard_token'))
     const isMobileViewport = ref(window.matchMedia('(max-width: 760px)').matches)
     const sidebarStored = localStorage.getItem('dashboard_sidebar_expanded')
@@ -81,7 +83,7 @@ export default {
     ]
 
     function normalizeTheme(value) { return themes.some(item => item.id === value) ? value : 'clear-water' }
-    const defaultTheme = window.dongxuelianDeployer ? 'light' : 'clear-water'
+    const defaultTheme = isElectronDeployer ? 'light' : 'clear-water'
     const theme = ref(normalizeTheme(localStorage.getItem('dashboard_theme') || defaultTheme))
     const currentThemeLabel = computed(() => themes.find(item => item.id === theme.value)?.label || '暗金')
 
@@ -137,6 +139,7 @@ export default {
       adminModalCallback = null
     }
     provide('showAdminDialog', showAdminDialog)
+    provide('isElectronDeployer', isElectronDeployer)
 
     function doSwitchTab(id) {
       if (id === 'agent') {
