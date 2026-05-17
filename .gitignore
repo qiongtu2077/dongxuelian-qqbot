@@ -1,5 +1,7 @@
 node_modules/
 dist/
+!packages/agent-console/dist/
+!packages/agent-console/dist/**
 .DS_Store
 Thumbs.db
 

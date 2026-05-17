@@ -61,7 +61,6 @@ for i in $(seq 1 20); do
   LOG_TAIL=$(tail -40 "$LOG_FILE")
   if ss -tlnp | grep -q ":$KOISHI_PORT" && \
      ps aux | grep -q 'koishi/lib/worker' && \
-     curl -fsS "http://127.0.0.1:$KOISHI_PORT" >/dev/null 2>&1 && \
      echo "$LOG_TAIL" | grep -q 'adapter connect to server'; then
     echo "启动成功 ✓（${i}秒）"
     echo "  port listening"

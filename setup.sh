@@ -134,7 +134,7 @@ EOF
 
 copy_ai_skills() {
   skill_src="$REPO_ROOT/packages/koishi-plugin-dongxuelian-ai/data/ai-skills"
-  for skill_part in core personas modes lore; do
+  for skill_part in core personas modes lore docs; do
     mkdir -p "$DATA_DIR/ai-skills/$skill_part"
     cp -rn "$skill_src/$skill_part/"* "$DATA_DIR/ai-skills/$skill_part/" 2>/dev/null || true
   done
@@ -142,7 +142,7 @@ copy_ai_skills() {
 
 create_data_files() {
   log "Creating data directory..."
-  mkdir -p "$DATA_DIR/ai-skills/core" "$DATA_DIR/ai-skills/personas" "$DATA_DIR/ai-skills/modes" "$DATA_DIR/ai-skills/lore"
+  mkdir -p "$DATA_DIR/ai-skills/core" "$DATA_DIR/ai-skills/personas" "$DATA_DIR/ai-skills/modes" "$DATA_DIR/ai-skills/lore" "$DATA_DIR/ai-skills/docs"
   mkdir -p "$DATA_DIR/user-profiles" "$DATA_DIR/conversations" "$DATA_DIR/ai-event-dumps"
   mkdir -p "$DATA_DIR/political-handlers"
 

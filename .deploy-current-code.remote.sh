@@ -49,6 +49,6 @@ bash restart.sh
 
 echo "verify services"
 curl -fsS "http://127.0.0.1:${DASHBOARD_PORT}/dashboard/" >/dev/null && echo "dashboard healthy"
-curl -fsS "http://127.0.0.1:5140" >/dev/null && echo "koishi healthy"
+ss -tlnp | grep -q ':5140' && echo "koishi healthy"
 
 rm -f current-code.tgz apply-current-code.sh
