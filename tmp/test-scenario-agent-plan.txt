@@ -1,0 +1,324 @@
+
+> dongxuelian-qqbot@1.1.5 test:scenario
+> node packages/koishi-plugin-dongxuelian-ai/test/scenario-test.js
+
+
+=== scenario: command middleware ===
+  OK   scenario AI status replies
+  OK   scenario AI status does not leak key
+  OK   scenario reserved help command calls next
+  OK   scenario reserved help command does not send
+  OK   scenario non-admin thinking switch rejected with reply
+  OK   scenario non-admin thinking switch does not write file
+  OK   scenario admin thinking switch accepted
+  OK   scenario admin thinking switch writes file
+  OK   scenario non-admin repeat switch rejected with reply
+  OK   scenario non-admin repeat switch does not write file
+  OK   scenario non-admin sensitive switch rejected with reply
+  OK   scenario non-admin sensitive switch does not write file
+  OK   scenario group admin sensitive switch accepted
+  OK   scenario sensitive switch writes channel list
+  OK   scenario sensitive view replies
+  OK   scenario sensitive view observes enabled file state
+  OK   scenario AI reload replies
+  OK   scenario agent auto route switch replies
+  OK   scenario agent auto route writes config
+  OK   scenario non-admin tool switch rejected
+  OK   scenario non-admin tool switch does not write enabled tool
+  OK   scenario admin tool switch accepted
+  OK   scenario admin tool switch writes enabled tool
+  OK   scenario agent skill list replies
+  OK   scenario agent skill list shows fixture persona
+  OK   scenario non-admin agent skill switch rejected
+  OK   scenario non-admin agent skill switch does not write enabled skill
+  OK   scenario admin agent skill switch accepted
+  OK   scenario admin agent skill switch writes enabled skill
+  OK   scenario today emotion empty cache replies
+  OK   scenario today emotion image gets real sample stats
+  OK   scenario today emotion image reads old history format
+  OK   scenario today emotion image gets bounded analysis
+  OK   scenario today emotion returns image
+  OK   scenario today emotion prompt caps display text
+  OK   scenario today emotion renders image once
+  OK   scenario today emotion cache reuses image response
+  OK   scenario today emotion retries image twice
+  OK   scenario today emotion regenerates fallback text
+  OK   scenario today emotion fallback text capped at 500
+  OK   scenario persona list command is handled
+  OK   scenario non-admin group persona rejected with reply
+  OK   scenario non-admin group persona does not write file
+  OK   scenario command temp files stay inside data dir
+  OK   scenario custom admin config rejects old default admin
+  OK   scenario custom admin config leaves thinking disabled for old default admin
+  OK   scenario custom admin config accepts configured admin
+  OK   scenario custom admin config writes thinking file
+  OK   scenario user blacklist refuses configured admin id
+  OK   scenario user blacklist does not store configured admin id
+
+=== scenario: chat middleware and thinking guard ===
+  OK   scenario chat sends visible content
+  OK   scenario chat does not send reasoning content
+  OK   scenario chat visible content logs do not leak key
+  OK   scenario agent auto route default off uses normal chat
+  OK   scenario agent auto route default off has no tool schema
+  OK   scenario agent auto route ignores casual greeting
+  OK   scenario casual greeting uses normal chat only
+  OK   scenario agent auto route sends tool answer
+  OK   scenario agent auto route used tool request
+  OK   scenario agent auto route exposed time tool
+  OK   scenario reasoning-only response falls back
+  OK   scenario reasoning-only is never sent
+  OK   scenario reasoning-only used fallback request
+  OK   scenario thinking leak retries to clean reply
+  OK   scenario thinking leak sample is not sent
+  OK   scenario thinking retry logs do not include leak body
+  OK   scenario persistent thinking leak produces fallback reply
+  OK   scenario persistent thinking leak not sent
+  OK   scenario API 500 chat sends safe fallback
+  OK   scenario API 500 fallback does not require send debug log
+  OK   scenario API 500 does not send raw server error
+  OK   scenario API 500 does not send reasoning marker
+  OK   scenario API 500 logs do not leak key
+  OK   scenario normal look phrase is not thinking leak
+  OK   scenario conversation stores visible reply only
+  OK   scenario conversation does not store reasoning text
+  OK   scenario conversation stores user turn in isolated envelope
+  OK   scenario legacy history sends reply
+  OK   scenario legacy history user turn wrapped for prompt
+  OK   scenario recent user messages strip legacy and new envelopes
+
+=== scenario: repeat middleware ===
+  OK   scenario repeat switch enables in middleware
+  OK   scenario repeat switch writes enabled state
+  OK   scenario text repeat triggers for two users
+  OK   scenario same user repeat does not trigger
+  OK   scenario repeat group triggers first match
+  OK   scenario repeat group blocks duplicate trigger
+  OK   scenario repeat new text can trigger after previous group
+  OK   scenario repeat old text can trigger after group changes
+  OK   scenario QQ face repeat triggers after text group
+  OK   scenario QQ face repeat blocks duplicate in same group
+  OK   scenario mixed face text is not sent as pure face
+  OK   scenario image repeat unsupported
+  OK   scenario repeat switch disables in middleware
+  OK   scenario repeat switch writes disabled state
+  OK   scenario repeat pure function triggers first match
+  OK   scenario repeat pure function blocks duplicate same group
+  OK   scenario repeat pure function triggers after text changes
+  OK   scenario repeat pure function allows old text in new group
+  OK   scenario repeat window expiry blocks old message
+  OK   scenario QQ face repeat candidate remains pure face
+
+=== scenario: sticker sendReply ===
+  OK   scenario ordinary text sends normally
+  OK   scenario ordinary text does not use sticker internal path
+  OK   scenario ordinary text records only session send
+  OK   scenario sticker text part sends once
+  OK   scenario sticker internal send succeeds
+  OK   scenario sticker success does not fallback image to session.send
+  OK   scenario sticker sends text before internal image
+  OK   scenario sticker internal failure attempted
+  OK   scenario sticker internal failure falls back to session image
+  OK   scenario sticker fallback happens after text and failed internal image
+  OK   scenario sticker cooldown still sends text
+  OK   scenario sticker cooldown skips image
+  OK   scenario sticker sends again after cooldowns
+  OK   scenario second sticker file text sends
+  OK   scenario second sticker file sends image
+  OK   scenario unknown sticker keeps current text behavior
+  OK   scenario unknown sticker does not send image
+
+=== scenario: sensitive detection middleware ===
+  OK   scenario sensitive non-admin rejected with reply
+  OK   scenario sensitive non-admin leaves detect file empty
+  OK   scenario sensitive handler add replies
+  OK   scenario sensitive handler file written
+  OK   scenario sensitive detect enables
+  OK   scenario sensitive detect list includes channel
+  OK   scenario sensitive keyword notifies handler
+  OK   scenario sensitive detect closes
+  OK   scenario sensitive detect list removes channel
+  OK   scenario sensitive close prevents later notification
+  OK   scenario sensitive view sees disabled state
+  OK   scenario sensitive view observes disabled file state
+
+=== scenario: API fallback chain ===
+  OK   scenario 429 falls back to next provider result
+  OK   scenario 429 first fallback call exists
+  OK   scenario 429 first fallback step exists
+  OK   scenario 429 first fallback provider known
+  OK   scenario 429 first fallback model follows fallback step
+  OK   scenario 429 first fallback baseURL follows fallback provider
+  OK   scenario 400/401/429 chain reaches third fallback response
+  OK   scenario third fallback after 400/401/429 call exists
+  OK   scenario third fallback after 400/401/429 step exists
+  OK   scenario third fallback after 400/401/429 provider known
+  OK   scenario third fallback after 400/401/429 model follows fallback step
+  OK   scenario third fallback after 400/401/429 baseURL follows fallback provider
+  OK   scenario third fallback thinking disabled by provider policy
+  OK   scenario network error falls back
+  OK   scenario network first fallback call exists
+  OK   scenario network first fallback step exists
+  OK   scenario network first fallback provider known
+  OK   scenario network first fallback model follows fallback step
+  OK   scenario network first fallback baseURL follows fallback provider
+  OK   scenario AbortError falls back
+  OK   scenario invalid JSON falls back
+  OK   scenario reasoning-only falls back
+  OK   scenario reasoning-only fallback thinking disabled by provider policy
+  OK   scenario HTTP 500 throws sanitized HTTP error
+  OK   scenario all fallbacks fail without key leak
+
+=== scenario: forward summary resolution ===
+  OK   scenario forward plain message returns empty summary
+  OK   scenario forward plain message does not call API
+  OK   scenario forward plain message does not write cache
+  OK   scenario forward CQ summary includes sender
+  OK   scenario forward CQ summary includes text
+  OK   scenario forward CQ writes lastForwardSummaryCache
+  OK   scenario forward CQ calls expected id
+  OK   scenario forward HTML summary includes sender
+  OK   scenario forward HTML summary includes text
+  OK   scenario forward HTML calls expected id
+  OK   scenario forward object messages summary includes sender
+  OK   scenario forward object messages summary includes text
+  OK   scenario forward object messages writes cache
+  OK   scenario forward nested CQ calls inner id
+  OK   scenario forward nested CQ includes inner text
+  OK   scenario forward structured nested calls inner id
+  OK   scenario forward structured nested includes inner text
+  OK   scenario forward segment message includes text
+  OK   scenario forward segment message includes at target
+  OK   scenario forward segment message includes face label
+  OK   scenario forward segment message includes image label
+  OK   scenario forward missing id returns empty summary
+  OK   scenario forward missing id does not write cache
+  OK   scenario forward empty array returns empty summary
+  OK   scenario forward empty array does not write cache
+
+=== scenario: vision session helpers ===
+  OK   scenario vision current image marks session
+  OK   scenario vision current image captures file
+  OK   scenario vision clear removes current image marker
+  OK   scenario vision current structured url marks session
+  OK   scenario vision current structured url captures url
+  OK   scenario vision quoted image marks session
+  OK   scenario vision quoted image captures file
+  OK   scenario vision plain text does not mark session
+
+=== scenario: random reply trigger ===
+  OK   scenario random whitelisted rate 100 sends reply
+  OK   scenario random trigger calls model once
+  OK   scenario empty random whitelist calls next
+  OK   scenario empty random whitelist sends nothing
+  OK   scenario empty random whitelist does not call model
+  OK   scenario delayed random scheduling returns through next
+  OK   scenario delayed random timer sends reply without TDZ crash
+  OK   scenario delayed random calls model after timer
+
+=== scenario: persistence write stress ===
+  OK   scenario concurrent write leaves parseable JSON
+  OK   scenario concurrent write leaves one complete payload
+  OK   scenario concurrent write cleans temp files
+  OK   scenario readJsonFile reads final JSON after stress
+
+=== scenario: business concurrency ===
+  OK   scenario concurrent repeat setup enables repeat
+  OK   scenario concurrent repeat setup writes enabled state
+  OK   scenario concurrent repeat triggers exactly once
+  OK   scenario concurrent repeat group blocks immediate third echo
+  OK   scenario sensitive enable race leaves detect file enabled
+  OK   scenario sensitive enable race does not duplicate notify
+  OK   scenario sensitive enable race follow-up notifies if race message came first
+  OK   scenario sensitive close race leaves detect file disabled
+  OK   scenario sensitive close race does not duplicate notify
+  OK   scenario sensitive close race prevents later notification
+
+=== scenario: setup.sh simulated install ===
+  OK   scenario setup shell syntax passes before simulation
+  OK   scenario setup simulation exits successfully
+  OK   scenario setup simulation skips real install steps
+  OK   scenario setup koishi selfId written
+  OK   scenario setup koishi onebot endpoint written
+  OK   scenario setup koishi includes group-name-at
+  OK   scenario setup koishi includes dongxuelian-help
+  OK   scenario setup koishi includes dongxuelian-ai
+  OK   scenario setup koishi includes dongxuelian-poke
+  OK   scenario setup koishi includes koishi-plugin-defense
+  OK   scenario setup koishi includes local-video-sender
+  OK   scenario setup koishi includes group-leave-notice
+  OK   scenario setup napcat webui port written
+  OK   scenario setup onebot websocket port written
+  OK   scenario setup data dir exists: conversations
+  OK   scenario setup data dir exists: user-profiles
+  OK   scenario setup data dir exists: ai-event-dumps
+  OK   scenario setup data dir exists: political-handlers
+  OK   scenario setup runtime file exists: ai-provider.txt
+  OK   scenario setup runtime file exists: ai-model.txt
+  OK   scenario setup runtime file exists: ai-base-url.txt
+  OK   scenario setup runtime file exists: ai-repeat-enabled.json
+  OK   scenario setup runtime file exists: ai-enable-search.txt
+  OK   scenario setup runtime file exists: ai-enable-thinking.txt
+  OK   scenario setup runtime file exists: ai-admin-ids.json
+  OK   scenario setup admin ids includes primary admin
+  OK   scenario setup admin ids includes secondary admin
+  OK   scenario setup skill dir populated: core
+  OK   scenario setup skill dir populated: personas
+  OK   scenario setup skill dir populated: modes
+  OK   scenario setup skill dir populated: lore
+  OK   scenario setup output path stays under temp root
+  OK   scenario setup output path stays under temp root
+  OK   scenario setup output path stays under temp root
+  OK   scenario setup output path stays under temp root
+  OK   scenario setup output path stays under temp root
+  OK   scenario setup rejects escaped koishi output path
+  OK   scenario setup escape does not write koishi config outside temp root
+  OK   scenario setup rejects escaped napcat output path
+  OK   scenario setup escape does not write napcat config outside temp root
+
+=== scenario: persona prompt composition ===
+  OK   scenario persona prompt captures main chat request
+  OK   scenario default prompt includes core safety
+  OK   scenario default prompt includes default Dongxuelian persona
+  OK   scenario default prompt excludes Theresa persona
+  OK   scenario default prompt excludes Changli persona
+  OK   scenario persona prompt captures main chat request
+  OK   scenario personal Theresa prompt includes core safety
+  OK   scenario personal Theresa prompt includes Theresa persona
+  OK   scenario personal Theresa prompt excludes default Dongxuelian persona
+  OK   scenario personal Theresa prompt excludes Changli persona
+  OK   scenario persona prompt captures main chat request
+  OK   scenario group persona applies to user without personal persona
+  OK   scenario group persona excludes default persona
+  OK   scenario persona prompt captures main chat request
+  OK   scenario personal persona overrides group persona
+  OK   scenario personal override excludes group Theresa persona
+  OK   scenario persona prompt captures main chat request
+  OK   scenario persona reset returns to default persona
+  OK   scenario persona reset removes Theresa persona
+  OK   scenario persona prompt captures main chat request
+  OK   scenario Terra lore does not inject for default persona
+  OK   scenario persona prompt captures main chat request
+  OK   scenario Terra lore injects for Theresa trigger
+  OK   scenario Terra lore keeps Theresa persona marker
+  OK   scenario persona prompt captures main chat request
+  OK   scenario Wuwa lore injects for Wuwa trigger
+  OK   scenario Wuwa lore keeps default persona marker
+  OK   scenario Wuwa lore does not imply Theresa persona
+
+=== scenario: send guard platform mute and rate limit ===
+  OK   scenario send guard skips bot member mute
+  OK   scenario send guard logs member mute
+  OK   scenario send guard skips group all mute
+  OK   scenario send guard logs group all mute
+  OK   scenario send guard allows uncertain mute query
+  OK   scenario send guard retries sanitized rate limit reply
+  OK   scenario send guard sanitized retry removes url
+  OK   scenario send guard logs rate-limit retry
+  OK   scenario send guard mute error does not send fallback notice
+  OK   scenario send guard mute error does not notify admins as rate limit
+
+=== scenario summary ===
+  passed: 287
+  failed: 0
+  skipped: 0

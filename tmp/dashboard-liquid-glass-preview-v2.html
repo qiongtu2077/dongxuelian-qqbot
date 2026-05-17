@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Liquid Glass Sidebar Preview v2</title>
+  <style>
+    :root {
+      --bg: #070a10;
+      --text: #f0f2f8;
+      --text2: rgba(240, 242, 248, .68);
+      --text3: rgba(240, 242, 248, .36);
+      --accent: #f4c430;
+      --cyan: #73d7ff;
+      --pink: #f7a7d6;
+      font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", Segoe UI, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 22% 16%, rgba(244, 196, 48, .18), transparent 30%),
+        radial-gradient(circle at 68% 12%, rgba(115, 215, 255, .2), transparent 32%),
+        radial-gradient(circle at 78% 78%, rgba(247, 167, 214, .15), transparent 34%),
+        linear-gradient(138deg, #070a10 0%, #0f172a 38%, #0a0f18 100%);
+      overflow: hidden;
+    }
+
+    .backdrop {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    .backdrop::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        repeating-conic-gradient(rgba(115, 215, 255, .15) 0deg 90deg, transparent 90deg 180deg) 0 0 / 80px 80px,
+        repeating-conic-gradient(rgba(244, 196, 48, .1) 0deg 90deg, transparent 90deg 180deg) 40px 40px / 80px 80px;
+    }
+
+    .orb {
+      position: absolute;
+      border-radius: 999px;
+      filter: blur(16px);
+      opacity: .8;
+      animation: drift 22s ease-in-out infinite alternate;
+    }
+
+    .orb.one {
+      width: 320px; height: 320px;
+      left: 160px; top: 80px;
+      background: radial-gradient(circle, rgba(244, 196, 48, .4), rgba(244, 196, 48, .08) 56%, transparent 70%);
+    }
+
+    .orb.two {
+      width: 400px; height: 400px;
+      right: 180px; top: 60px;
+      background: radial-gradient(circle, rgba(115, 215, 255, .35), rgba(115, 215, 255, .07) 58%, transparent 72%);
+      animation-delay: -7s;
+    }
+
+    .orb.three {
+      width: 360px; height: 360px;
+      right: 80px; bottom: -60px;
+      background: radial-gradient(circle, rgba(247, 167, 214, .3), rgba(247, 167, 214, .05) 58%, transparent 72%);
+      animation-delay: -13s;
+    }
+
+    .test-grid {
+      position: fixed;
+      inset: 0;
+      z-index: 5;
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      grid-template-rows: repeat(4, 1fr);
+      gap: 8px;
+      padding: 20px;
+      pointer-events: none;
+    }
+
+    .test-grid span {
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      font-weight: 800;
+      color: rgba(255, 255, 255, .5);
+      text-shadow: 0 2px 8px rgba(0,0,0,.5);
+    }
+
+    .test-grid span:nth-child(1) { background: #e74c3c; }
+    .test-grid span:nth-child(2) { background: #e67e22; }
+    .test-grid span:nth-child(3) { background: #f1c40f; }
+    .test-grid span:nth-child(4) { background: #2ecc71; }
+    .test-grid span:nth-child(5) { background: #1abc9c; }
+    .test-grid span:nth-child(6) { background: #3498db; }
+    .test-grid span:nth-child(7) { background: #9b59b6; }
+    .test-grid span:nth-child(8) { background: #e84393; }
+    .test-grid span:nth-child(9) { background: #fd79a8; }
+    .test-grid span:nth-child(10) { background: #00b894; }
+    .test-grid span:nth-child(11) { background: #0984e3; }
+    .test-grid span:nth-child(12) { background: #6c5ce7; }
+
+    .dashboard {
+      position: relative;
+      min-height: 100vh;
+      padding: 34px 42px 34px 240px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 28px;
+    }
+
+    h1 { margin: 0; font-size: 30px; letter-spacing: 0; }
+
+    .pill {
+      border: 1px solid rgba(255, 255, 255, .08);
+      background: rgba(255, 255, 255, .035);
+      color: var(--text2);
+      border-radius: 999px;
+      padding: 7px 14px;
+      font-size: 13px;
+      backdrop-filter: blur(20px);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      min-height: 140px;
+      border: 1px solid rgba(255, 255, 255, .07);
+      border-radius: 14px;
+      background: color-mix(in srgb, rgba(255, 255, 255, .04) 65%, transparent);
+      box-shadow: 0 20px 48px rgba(0, 0, 0, .15);
+      backdrop-filter: blur(24px) saturate(1.1);
+      -webkit-backdrop-filter: blur(24px) saturate(1.1);
+      padding: 18px;
+      position: relative;
+      overflow: hidden;
+      transition: transform .2s cubic-bezier(.2, .8, .2, 1), border-color .2s, background .2s;
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(160deg, rgba(255, 255, 255, .04), transparent 40%);
+      pointer-events: none;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(255, 255, 255, .1);
+      background: color-mix(in srgb, rgba(255, 255, 255, .045) 65%, transparent);
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 16px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--text2);
+      line-height: 1.6;
+      font-size: 14px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .wide {
+      grid-column: span 2;
+      min-height: 220px;
+      background:
+        linear-gradient(135deg, color-mix(in srgb, rgba(244, 196, 48, .08) 60%, transparent), transparent 36%),
+        linear-gradient(150deg, color-mix(in srgb, rgba(115, 215, 255, .06) 60%, transparent), transparent 52%),
+        color-mix(in srgb, rgba(255, 255, 255, .035) 65%, transparent);
+    }
+
+    .liquid-sidebar {
+      position: fixed;
+      inset: 0 auto 0 0;
+      width: 200px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      isolation: isolate;
+      overflow: hidden;
+      background: rgba(255, 255, 255, .004);
+      border-right: 1px solid rgba(255, 255, 255, .02);
+      box-shadow:
+        2px 0 36px rgba(0, 0, 0, .05),
+        inset 1px 0 0 rgba(255, 255, 255, .03);
+      backdrop-filter: blur(100px) saturate(1.06);
+      -webkit-backdrop-filter: blur(100px) saturate(1.06);
+    }
+
+    .liquid-sidebar::before {
+      content: "";
+      position: absolute;
+      inset: -40%;
+      background: linear-gradient(180deg, rgba(255, 255, 255, .006), transparent 40%);
+      filter: blur(40px);
+      opacity: .2;
+      pointer-events: none;
+      animation: liquidFlow 18s ease-in-out infinite alternate;
+    }
+
+    .liquid-sidebar::after {
+      content: none;
+    }
+
+    .head, .nav, .foot { position: relative; z-index: 1; }
+
+    .head {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, .035);
+    }
+
+    .toggle {
+      width: 34px; height: 34px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, .05);
+      color: var(--text2);
+      background: rgba(255, 255, 255, .01);
+      display: grid;
+      place-items: center;
+      font-size: 16px;
+      cursor: pointer;
+      transition: transform .14s cubic-bezier(.2, .8, .2, 1), background .18s, color .18s;
+    }
+
+    .toggle:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, .028);
+    }
+
+    .toggle:active {
+      transform: scale(.93);
+      background: rgba(255, 255, 255, .014);
+      box-shadow: inset 0 3px 10px rgba(0, 0, 0, .18);
+    }
+
+    .brand { flex: 1; text-align: center; min-width: 0; }
+
+    .brand strong {
+      display: block;
+      font-family: KaiTi, STKaiti, serif;
+      font-size: 18px;
+      line-height: 1.1;
+      letter-spacing: 1px;
+    }
+
+    .brand span {
+      display: block;
+      color: var(--text3);
+      font-size: 11px;
+      margin-top: 2px;
+    }
+
+    .nav {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 14px 8px;
+    }
+
+    .item {
+      position: relative;
+      min-height: 40px;
+      border: 0;
+      border-top: 1px solid rgba(255, 255, 255, .03);
+      background: transparent;
+      color: var(--text2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 700;
+      font-family: KaiTi, STKaiti, serif;
+      overflow: hidden;
+      cursor: pointer;
+      letter-spacing: 2px;
+      transition: color .18s ease, background .16s ease;
+    }
+
+    .item:last-child { border-bottom: 1px solid rgba(255, 255, 255, .028); }
+
+    .item::before {
+      content: "";
+      position: absolute;
+      inset: 3px 2px;
+      border-radius: 999px;
+      background:
+        radial-gradient(80% 150% at 50% 50%, rgba(255, 255, 255, .05), rgba(255, 255, 255, .015) 46%, transparent 72%),
+        linear-gradient(90deg, rgba(244, 196, 48, .02), rgba(115, 215, 255, .012), transparent 82%);
+      opacity: 0;
+      transform: scaleX(.86) scaleY(.68);
+      filter: blur(8px);
+      transition: opacity .2s ease, transform .26s cubic-bezier(.18, .86, .28, 1), filter .2s ease;
+    }
+
+    .item::after {
+      content: "";
+      position: absolute;
+      left: 14px; right: 14px;
+      top: 50%;
+      height: 16px;
+      border-radius: 999px;
+      background: radial-gradient(closest-side, rgba(255, 255, 255, .08), rgba(255, 255, 255, .022) 56%, transparent 78%);
+      opacity: 0;
+      transform: translateY(-50%) scaleX(.4) scaleY(.4);
+      filter: blur(10px);
+      pointer-events: none;
+      transition: opacity .2s ease, transform .24s cubic-bezier(.18, .9, .22, 1), filter .18s ease;
+    }
+
+    .item:hover { color: var(--text); }
+
+    .item:hover::before {
+      opacity: .35;
+      transform: scaleX(1.02) scaleY(.78);
+      filter: blur(9px);
+    }
+
+    .item:hover::after {
+      opacity: .22;
+      transform: translateY(-50%) scaleX(.78) scaleY(.56);
+    }
+
+    .item:active::before {
+      opacity: .7;
+      transform: scaleX(1.1) scaleY(.46);
+      filter: blur(14px);
+      box-shadow: inset 0 8px 20px rgba(0, 0, 0, .18), inset 0 -3px 10px rgba(255, 255, 255, .03);
+      transition-duration: .08s;
+    }
+
+    .item:active::after {
+      opacity: .55;
+      transform: translateY(-50%) scaleX(1.08) scaleY(.82);
+      filter: blur(14px);
+      transition-duration: .08s;
+    }
+
+    .item span {
+      position: relative;
+      z-index: 1;
+      transition: transform .16s cubic-bezier(.18, .86, .28, 1);
+    }
+
+    .item.active {
+      color: var(--text);
+      background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 6%, transparent), transparent 72%);
+      box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 32%, transparent);
+    }
+
+    .item.active::before {
+      opacity: .2;
+      transform: scaleX(.9) scaleY(.68);
+    }
+
+    .foot {
+      padding: 10px 8px 14px;
+      border-top: 1px solid rgba(255, 255, 255, .04);
+    }
+
+    .note {
+      position: fixed;
+      right: 28px;
+      bottom: 22px;
+      max-width: 380px;
+      color: rgba(240, 242, 248, .5);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    @keyframes drift {
+      0% { transform: translate3d(-16px, 8px, 0) scale(1); }
+      100% { transform: translate3d(20px, -10px, 0) scale(1.05); }
+    }
+
+    @keyframes liquidFlow {
+      0% { transform: translate3d(-20px, -18px, 0) skewX(-4deg) scale(1.02); }
+      50% { transform: translate3d(6px, 12px, 0) skewX(-1deg) scale(1.05); }
+      100% { transform: translate3d(18px, -6px, 0) skewX(-6deg) scale(1.03); }
+    }
+
+    @keyframes ribbonDrift {
+      0% { translate: -20px -12px; scale: 1 .92; }
+      50% { translate: 14px 10px; scale: 1.06 1; }
+      100% { translate: 24px -6px; scale: .96 1.04; }
+    }
+  </style>
+</head>
+<body>
+  <div class="backdrop">
+    <div class="orb one"></div>
+    <div class="orb two"></div>
+    <div class="orb three"></div>
+  </div>
+
+  <div class="test-grid">
+    <span>A</span><span>B</span><span>C</span><span>D</span><span>E</span><span>F</span>
+    <span>G</span><span>H</span><span>I</span><span>J</span><span>K</span><span>L</span>
+    <span>M</span><span>N</span><span>O</span><span>P</span><span>Q</span><span>R</span>
+    <span>S</span><span>T</span><span>U</span><span>V</span><span>W</span><span>X</span>
+  </div>
+
+  <aside class="liquid-sidebar" aria-label="主菜单">
+    <div class="head">
+      <div class="toggle">☰</div>
+      <div class="brand">
+        <strong>LianBoard</strong>
+        <span>控制中心</span>
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="item active"><span>状态总览</span></button>
+      <button class="item"><span>日志查看</span></button>
+      <button class="item"><span>插件管理</span></button>
+      <button class="item"><span>部署更新</span></button>
+      <button class="item"><span>数据文件</span></button>
+      <button class="item"><span>系统设置</span></button>
+    </nav>
+    <div class="foot">
+      <button class="item"><span>主题样式</span></button>
+      <button class="item"><span>退出登录</span></button>
+    </div>
+  </aside>
+
+  <main class="dashboard">
+    <div class="topbar">
+      <h1>Dashboard</h1>
+      <span class="pill">Liquid Glass v2 · lighter & airier</span>
+    </div>
+    <section class="grid">
+      <div class="card wide">
+        <strong>群聊活跃趋势</strong>
+        <p>侧栏透明度大幅提升，背景光晕可以直接穿透玻璃层。边框降到最低可辨度，完全靠模糊和光晕区分层次。</p>
+      </div>
+      <div class="card">
+        <strong>插件状态</strong>
+        <p>取消高对比水纹，改用极低透明度的渐变条纹 + 呼吸动画模拟液体流动。</p>
+      </div>
+      <div class="card">
+        <strong>今日消息</strong>
+        <p>14,287</p>
+      </div>
+      <div class="card">
+        <strong>发送保护</strong>
+        <p>正常</p>
+      </div>
+      <div class="card">
+        <strong>一键更新</strong>
+        <p>等待部署</p>
+      </div>
+    </section>
+  </main>
+
+  <p class="note">背景色块用来测试侧栏透明度——色块越清晰地透过来，说明玻璃越透。v2 目标：底色 .004 alpha，blur 100px，saturate 1.06，几乎零边框。</p>
+</body>
+</html>

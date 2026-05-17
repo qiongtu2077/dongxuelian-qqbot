@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "channels": {
+    "qq": {
+      "enabled": true,
+      "tools": {
+        "get_current_time": true,
+        "calculate": true,
+        "web_search": true,
+        "read_agent_skill": true,
+        "read_file": false,
+        "list_files": false,
+        "find_files": false,
+        "write_file": false,
+        "edit_file": false,
+        "execute_shell": false,
+        "browser_action": true,
+        "append_file": false,
+        "grep_search": false,
+        "execute_javascript": false,
+        "send_file_to_user": true,
+        "get_token_usage": true,
+        "set_user_timezone": false,
+        "query_logs": false,
+        "create_plan": true,
+        "update_task_status": true,
+        "check_plan_status": true,
+        "finish_plan": true,
+        "abandon_plan": true,
+        "remember_memory": false,
+        "search_memory": false,
+        "forget_memory": false,
+        "list_memory": false
+      }
+    },
+    "dashboard": {
+      "enabled": true,
+      "tools": {
+        "get_current_time": true,
+        "calculate": true,
+        "web_search": true,
+        "read_agent_skill": true,
+        "read_file": true,
+        "list_files": true,
+        "find_files": true,
+        "write_file": true,
+        "edit_file": true,
+        "execute_shell": true,
+        "browser_action": true,
+        "append_file": true,
+        "grep_search": true,
+        "execute_javascript": true,
+        "send_file_to_user": false,
+        "get_token_usage": true,
+        "set_user_timezone": true,
+        "query_logs": true,
+        "create_plan": true,
+        "update_task_status": true,
+        "check_plan_status": true,
+        "finish_plan": true,
+        "abandon_plan": true,
+        "remember_memory": true,
+        "search_memory": true,
+        "forget_memory": true,
+        "list_memory": true
+      }
+    }
+  },
+  "dangerousPolicy": "auto",
+  "autoRoute": {
+    "qq": {
+      "enabled": false
+    },
+    "dashboard": {
+      "enabled": false
+    }
+  },
+  "enabledSkills": [],
+  "persona": {
+    "dashboardPersona": "",
+    "qqInheritChatPersona": true
+  },
+  "readFileRoots": [],
+  "queue": {
+    "maxGlobal": 3,
+    "maxPerChannel": 3,
+    "maxPendingPerUser": 1,
+    "timeoutMs": 90000
+  },
+  "planMode": {
+    "enabled": true,
+    "autoCreate": false
+  },
+  "push": {
+    "enabled": false,
+    "dailyLimit": 5
+  },
+  "cron": {
+    "enabled": false
+  },
+  "memory": {
+    "enabled": true,
+    "adminOnly": true
+  }
+}

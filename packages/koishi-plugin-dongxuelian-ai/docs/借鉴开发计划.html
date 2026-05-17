@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>莲莲Bot 借鉴开发计划</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text2: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --orange: #f0883e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 40px 20px;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 28px; margin-bottom: 8px; color: #fff; border-bottom: 2px solid var(--accent); padding-bottom: 12px; }
+  h2 { font-size: 22px; color: var(--accent); margin-top: 40px; margin-bottom: 16px; padding-left: 12px; border-left: 4px solid var(--accent); }
+  h3 { font-size: 18px; color: var(--purple); margin-top: 28px; margin-bottom: 12px; }
+  h4 { font-size: 16px; color: var(--orange); margin-top: 20px; margin-bottom: 10px; }
+  p { margin-bottom: 12px; color: var(--text); }
+  blockquote { background: var(--surface); border-left: 4px solid var(--yellow); padding: 16px 20px; margin: 16px 0; border-radius: 0 8px 8px 0; }
+  blockquote p { color: var(--text2); margin-bottom: 8px; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+  th, td { padding: 10px 14px; border: 1px solid var(--border); text-align: left; }
+  th { background: var(--surface); color: var(--accent); font-weight: 600; }
+  tr:nth-child(even) { background: rgba(22, 27, 34, 0.5); }
+  pre { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 16px 0; font-size: 13px; line-height: 1.5; }
+  code { font-family: 'Fira Code', Consolas, monospace; font-size: 13px; }
+  :not(pre) > code { background: rgba(88, 166, 255, 0.1); color: var(--accent); padding: 2px 6px; border-radius: 4px; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+  ul, ol { padding-left: 24px; margin: 12px 0; }
+  li { margin-bottom: 6px; }
+  strong { color: #fff; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; margin-right: 4px; }
+  .badge-green { background: rgba(63, 185, 80, 0.2); color: var(--green); }
+  .badge-yellow { background: rgba(210, 153, 34, 0.2); color: var(--yellow); }
+  .badge-red { background: rgba(248, 81, 73, 0.2); color: var(--red); }
+  .badge-purple { background: rgba(188, 140, 255, 0.2); color: var(--purple); }
+  .toc { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; margin: 20px 0; }
+  .toc h3 { margin-top: 0; color: var(--accent); }
+  .toc ul { list-style: none; padding-left: 0; }
+  .toc a { color: var(--text2); font-size: 14px; }
+  .toc a:hover { color: var(--accent); }
+  .highlight-box { background: rgba(88, 166, 255, 0.08); border: 1px solid rgba(88, 166, 255, 0.3); border-radius: 8px; padding: 16px 20px; margin: 16px 0; }
+  .phase-box { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 16px 0; }
+  .phase-box h3 { margin-top: 0; }
+</style>
+</head>
+<body>
+
+<h1>🧩 莲莲Bot 借鉴 QwenPaw &amp; Claude Code：Agent 能力渐进式开发计划</h1>
+
+<blockquote>
+  <p><strong>目标：</strong>在不破坏莲莲Bot现有 QQ 聊天人格、风控、记忆、Dashboard 和部署链路的前提下，逐步引入 Agent 工具调用、Token/上下文优化、工具安全审批、浏览器自动化和前端控制台能力。</p>
+  <p><strong>核心原则：</strong>先做最小可用闭环，再扩工具；先 Dashboard 管理闭环，再放到 QQ；先只读工具，再危险工具；先可观测和可回滚，再追求功能完整。</p>
+</blockquote>
+
+<div class="toc">
+  <h3>📑 目录</h3>
+  <ul>
+    <li><a href="#s0">0. 当前计划需要修正的问题</a></li>
+    <li><a href="#s1">1. 借鉴来源与可复用设计</a></li>
+    <li><a href="#s2">2. 总体架构</a></li>
+    <li><a href="#s3">3. Token 与缓存优化</a></li>
+    <li><a href="#s4">4. 工具系统</a></li>
+    <li><a href="#s5">5. 安全系统</a></li>
+    <li><a href="#s6">6. ReAct Engine</a></li>
+    <li><a href="#s7">7. 浏览器自动化</a></li>
+    <li><a href="#s8">8. Dashboard 控制台</a></li>
+    <li><a href="#s9">9. Skill 市场</a></li>
+    <li><a href="#s10">10. 分阶段实施路线</a></li>
+    <li><a href="#s11">11. 测试策略</a></li>
+    <li><a href="#s12">12. 风险与对策</a></li>
+    <li><a href="#s13">13. 最小可交付版本定义</a></li>
+    <li><a href="#s14">14. 与原计划的主要差异</a></li>
+    <li><a href="#s15">15. 推荐下一步</a></li>
+  </ul>
+</div>
+
+<hr>
+
+<h2 id="s0">0. 当前计划需要修正的问题</h2>
+<p>原计划方向正确，但太像"大爆炸式移植"。改为 <strong>6 个阶段</strong>，每个阶段都有验收、回滚点和不做事项。</p>
+<ol>
+  <li><strong>核心聊天链路风险太高</strong>：<code>chat.js</code> 直接嵌 ReAct 循环容易影响普通聊天。</li>
+  <li><strong>浏览器全量移植过早</strong>：应先做 6~8 个核心动作。</li>
+  <li><strong>安全和前端审批必须先于危险工具</strong>。</li>
+  <li><strong>Claude Code 的缓存优化</strong>：更可靠的做法是静态 prompt 稳定化 + 动态 prompt 后置 + 工具 schema 分层。</li>
+  <li><strong>Skill 市场不是第一阶段能力</strong>。</li>
+</ol>
+
+<hr>
+
+<h2 id="s1">1. 借鉴来源与可复用设计</h2>
+<h3>1.1 QwenPaw</h3>
+<table>
+  <tr><th>来源</th><th>可借鉴设计</th><th>落地方式</th></tr>
+  <tr><td><code>tool_guard_mixin.py</code></td><td>工具调用前置拦截、审批 pending</td><td><code>tool-safety.js</code>，block/confirm/auto 三档</td></tr>
+  <tr><td><code>light_context_manager.py</code></td><td>工具结果截断，超长结果保存</td><td><code>agent-context.js</code></td></tr>
+  <tr><td><code>browser_control.py</code></td><td>单 browser 工具 + action 参数</td><td>先核心 action 子集</td></tr>
+  <tr><td>ToolGuard UI/approval</td><td>管理员审批危险动作</td><td>Dashboard 审批优先</td></tr>
+</table>
+<h3>1.2 Claude Code</h3>
+<table>
+  <tr><th>设计</th><th>落地方式</th></tr>
+  <tr><td>Prompt/cache 稳定性</td><td><code>chat.js</code> 拆分 core system 与 dynamic system</td></tr>
+  <tr><td>Tool schema 控制</td><td>QQ 默认少工具，Dashboard 可多工具</td></tr>
+  <tr><td>Tool result pruning</td><td>统一 <code>truncateResult()</code></td></tr>
+  <tr><td>Hooks/审批思想</td><td><code>executeTool()</code> 前后插 safety、日志和统计</td></tr>
+</table>
+
+<hr>
+
+<h2 id="s2">2. 总体架构</h2>
+<div class="highlight-box"><strong>核心原则：</strong>不要把 ReAct 直接塞进普通聊天主路径。新增独立 Agent Engine。</div>
+<pre><code>QQ 普通聊天 → chat.js 原有链路（默认不变）
+QQ Agent 模式 → agent-engine.js → api.js / tool-registry.js / tool-safety.js
+Dashboard Agent → standalone.js → agent-engine.js（同一套）</code></pre>
+
+<h3>2.1 推荐新增文件</h3>
+<pre><code>lib/agent/
+├── engine.js          # ReAct 主循环
+├── messages.js        # system 分层
+├── context.js         # token 估算、结果截断
+├── stats.js           # 统计
+├── pending.js         # pending 确认
+├── safety.js          # block/confirm/auto
+└── tools/
+    ├── registry.js    # 工具注册
+    ├── get-time.js
+    ├── calculator.js
+    ├── read-file.js
+    ├── web-search.js
+    ├── browser.js     # 第二/三阶段
+    ├── write-file.js  # 危险工具
+    └── shell.js       # 危险工具</code></pre>
+
+<hr>
+
+<h2 id="s3">3. Token 与缓存优化</h2>
+<h3>四层策略</h3>
+<table>
+  <tr><th>层级</th><th>内容</th><th>第一阶段</th></tr>
+  <tr><td>L1 静态 System 稳定化</td><td>core/persona/rules 尽量固定，动态后置</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>L2 工具 schema 分层</td><td>QQ 少工具，Dashboard 按开关暴露</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>L3 工具结果截断/外置</td><td>超长结果截断，完整结果存临时文件</td><td><span class="badge badge-green">✅</span></td></tr>
+  <tr><td>L4 上下文压缩</td><td>超阈值时摘要旧 tool 结果</td><td><span class="badge badge-yellow">第二阶段</span></td></tr>
+</table>
+
+<hr>
+
+<h2 id="s4">4. 工具系统</h2>
+<h3>工具分批实现</h3>
+<h4><span class="badge badge-green">P0</span> 只读最小闭环</h4>
+<table><tr><th>工具</th><th>渠道</th></tr>
+<tr><td><code>get_current_time</code></td><td>QQ + Dashboard</td></tr>
+<tr><td><code>calculator</code></td><td>QQ + Dashboard</td></tr>
+<tr><td><code>web_search</code></td><td>Dashboard + QQ confirm</td></tr></table>
+
+<h4><span class="badge badge-yellow">P1</span> 文件只读</h4>
+<table><tr><th>工具</th><th>渠道</th></tr>
+<tr><td><code>read_file</code></td><td>Dashboard 开，QQ 关</td></tr>
+<tr><td><code>list_files</code></td><td>Dashboard 开，QQ 关</td></tr></table>
+
+<h4><span class="badge badge-red">P2</span> 危险工具</h4>
+<table><tr><th>工具</th><th>默认</th></tr>
+<tr><td><code>write_file</code></td><td>Dashboard confirm，QQ 关</td></tr>
+<tr><td><code>execute_shell</code></td><td>默认关</td></tr></table>
+
+<hr>
+
+<h2 id="s5">5. 安全系统</h2>
+<h3>安全模式</h3>
+<table><tr><th>模式</th><th>行为</th><th>默认</th></tr>
+<tr><td><code>block</code></td><td>危险工具一律拒绝</td><td><span class="badge badge-green">QQ</span></td></tr>
+<tr><td><code>confirm</code></td><td>pending 等待确认</td><td><span class="badge badge-yellow">Dashboard</span></td></tr>
+<tr><td><code>auto</code></td><td>自动执行但做检查</td><td><span class="badge badge-purple">仅本地</span></td></tr></table>
+
+<h3>安全检查</h3>
+<table><tr><th>检查</th><th>第一阶段</th></tr>
+<tr><td>未知工具拒绝</td><td>✅</td></tr>
+<tr><td>渠道过滤</td><td>✅</td></tr>
+<tr><td>路径越权</td><td>✅</td></tr>
+<tr><td>命令黑名单</td><td>P2</td></tr>
+<tr><td>超时</td><td>✅</td></tr>
+<tr><td>频率限制</td><td>✅</td></tr>
+<tr><td>审计日志</td><td>✅</td></tr></table>
+
+<hr>
+
+<h2 id="s6">6. ReAct Engine</h2>
+<pre><code>buildAgentMessages() → requestChatCompletions(messages, { tools })
+→ 如果没有 tool_calls → 返回最终文本
+→ 执行每个 tool_call（串行）
+→ tool result 追加到 scratchpad
+→ 最多循环 3~5 次</code></pre>
+<p><strong>边界：</strong>最多 5 轮、每轮最多 3 个工具、每个工具有 timeout。tool result 不进入普通聊天历史。</p>
+
+<hr>
+
+<h2 id="s7">7. 浏览器自动化</h2>
+<h3>第一批 action</h3>
+<table><tr><th>action</th><th>必要性</th></tr>
+<tr><td><code>start</code> / <code>stop</code></td><td><span class="badge badge-green">必需</span></td></tr>
+<tr><td><code>navigate</code> / <code>snapshot</code></td><td><span class="badge badge-green">必需</span></td></tr>
+<tr><td><code>click</code> / <code>type</code></td><td><span class="badge badge-green">必需</span></td></tr>
+<tr><td><code>screenshot</code> / <code>wait_for</code></td><td><span class="badge badge-green">必需</span></td></tr></table>
+
+<hr>
+
+<h2 id="s8">8. Dashboard 控制台</h2>
+<h3>API 路由</h3>
+<pre><code>第一阶段：工具状态和审批
+GET  /dashboard/api/tools
+PUT  /dashboard/api/tools/:name/enabled
+GET  /dashboard/api/tools/pending
+POST /dashboard/api/tools/pending/:id/approve
+
+第二阶段：Agent Chat
+POST /dashboard/api/agent/chat
+GET  /dashboard/api/agent/sessions</code></pre>
+
+<hr>
+
+<h2 id="s9">9. Skill 市场</h2>
+<div class="highlight-box"><strong>后置，不进入 P0。</strong>等 Agent Engine、工具注册、安全审批稳定后再做。</div>
+
+<hr>
+
+<h2 id="s10">10. 分阶段实施路线</h2>
+<div class="phase-box"><h3>📦 Phase 0：准备和保护网</h3><p>保证改动可测、可回滚。梳理 api.js、chat.js，新增测试夹具。</p></div>
+<div class="phase-box"><h3>🛠️ Phase 1：只读 Agent MVP</h3><p>新增 agent/engine.js，api.js 支持 tool_calls，QQ "莲莲工具 现在几点"。</p></div>
+<div class="phase-box"><h3>🔐 Phase 2：安全与配置闭环</h3><p>safety.js + pending.js + Dashboard 工具管理 API。</p></div>
+<div class="phase-box"><h3>📁 Phase 3：文件和搜索工具</h3><p>web_search、read_file、write_file（仅 Dashboard confirm）。</p></div>
+<div class="phase-box"><h3>🖥️ Phase 4：Dashboard Agent 控制台</h3><p>AgentPanel.vue：工具开关、审批队列、调用统计。</p></div>
+<div class="phase-box"><h3>🌐 Phase 5：浏览器核心动作</h3><p>browser.js 核心 8 action + idle watchdog。</p></div>
+<div class="phase-box"><h3>📦 Phase 6：上下文压缩与 Skill 市场</h3><p>context.js compact + skill-hub CLI。</p></div>
+
+<hr>
+
+<h2 id="s11">11. 测试策略</h2>
+<table><tr><th>测试</th><th>目的</th></tr>
+<tr><td><code>api.tool-calls.test.js</code></td><td>content 为空但 tool_calls 存在时不判失败</td></tr>
+<tr><td><code>agent-engine.test.js</code></td><td>ReAct 循环、最大轮次停止</td></tr>
+<tr><td><code>tool-registry.test.js</code></td><td>渠道过滤、禁用工具不可见</td></tr>
+<tr><td><code>tool-safety.test.js</code></td><td>block/confirm/auto、pending 绑定</td></tr>
+<tr><td><code>handler-agent-command.test.js</code></td><td>显式命令不影响普通聊天</td></tr></table>
+
+<hr>
+
+<h2 id="s12">12. 风险与对策</h2>
+<table><tr><th>风险</th><th>等级</th><th>对策</th></tr>
+<tr><td>ReAct 影响普通聊天</td><td><span class="badge badge-red">高</span></td><td>Agent Engine 独立</td></tr>
+<tr><td>tool_calls 被 fallback 吞掉</td><td><span class="badge badge-red">高</span></td><td>api.js 测试覆盖</td></tr>
+<tr><td>危险工具越权</td><td><span class="badge badge-red">高</span></td><td>默认关闭 + confirm</td></tr>
+<tr><td>QQ 群误触确认</td><td><span class="badge badge-yellow">中</span></td><td>pendingId 绑定用户</td></tr>
+<tr><td>工具结果撑爆上下文</td><td><span class="badge badge-yellow">中</span></td><td>统一截断 + 外置</td></tr></table>
+
+<hr>
+
+<h2 id="s13">13. 最小可交付版本</h2>
+<div class="highlight-box">
+<ol>
+  <li>QQ 显式命令能调用 <code>get_current_time</code> / <code>calculator</code></li>
+  <li>Dashboard 能看到工具列表、开关和调用日志</li>
+  <li><code>api.js</code> 正确支持 tool_calls 和 fallback</li>
+  <li>普通聊天完全不受影响</li>
+  <li>所有工具调用都有审计日志和结果截断</li>
+</ol>
+</div>
+
+<hr>
+
+<h2 id="s14">14. 与原计划的主要差异</h2>
+<table><tr><th>原计划</th><th>修订后</th></tr>
+<tr><td>直接在 chat.js 嵌 ReAct</td><td>新增独立 agent/engine.js</td></tr>
+<tr><td>10 天做完全部</td><td>6 个阶段，可验收可回滚</td></tr>
+<tr><td>浏览器 34 action</td><td>先 8 个核心 action</td></tr>
+<tr><td>工具首轮发送、第二轮不发</td><td>每轮保持 schema 稳定</td></tr>
+<tr><td>Skill 市场较早进入</td><td>后置到最后</td></tr>
+<tr><td>危险工具列入早期</td><td>默认关闭，安全系统完成后上线</td></tr></table>
+
+<hr>
+
+<h2 id="s15">15. 推荐下一步</h2>
+<div class="highlight-box">
+<p>先做 <strong>Phase 0 + Phase 1</strong>：</p>
+<ul>
+  <li><code>lib/api.js</code> — tools/tool_calls 支持</li>
+  <li><code>lib/agent/engine.js</code> — ReAct 主循环</li>
+  <li><code>lib/agent/tools/registry.js</code> — 工具注册</li>
+  <li><code>lib/agent/tools/get-time.js</code> + <code>calculator.js</code></li>
+  <li><code>lib/agent/context.js</code> — 结果截断</li>
+  <li><code>lib/handler.js</code> — 显式 Agent 命令</li>
+  <li>对应测试</li>
+</ul>
+<p><strong>不要先做浏览器、文件写入、shell、Skill 市场。</strong></p>
+</div>
+
+<p style="text-align:center;color:var(--text2);margin-top:40px;font-size:13px;">莲莲Bot Agent 开发计划 v2.0 · 2026-05-14</p>
+
+</body>
+</html>

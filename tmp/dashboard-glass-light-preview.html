@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LianBoard lighter glass preview</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0 }
+    body {
+      width: 1800px;
+      min-height: 1080px;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", Segoe UI, sans-serif;
+      color: #f7f4e8;
+      background:
+        radial-gradient(circle at 15% 12%, rgba(244, 196, 48, .22), transparent 24%),
+        radial-gradient(circle at 78% 16%, rgba(96, 165, 250, .24), transparent 28%),
+        radial-gradient(circle at 84% 82%, rgba(244, 114, 182, .16), transparent 30%),
+        linear-gradient(90deg, rgba(255, 230, 143, .035) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(255, 230, 143, .026) 1px, transparent 1px),
+        #0c0d0c;
+      background-size: auto, auto, auto, 44px 44px, 44px 44px, auto;
+    }
+    .note {
+      position: fixed;
+      left: 28px;
+      top: 20px;
+      z-index: 20;
+      color: rgba(247, 244, 232, .78);
+      font-size: 15px;
+      letter-spacing: .02em;
+    }
+    .strip {
+      position: fixed;
+      inset: 56px 28px 28px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+    }
+    .preview {
+      position: relative;
+      overflow: hidden;
+      border-radius: 24px;
+      background:
+        linear-gradient(90deg, rgba(255, 230, 143, .025) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(255, 230, 143, .02) 1px, transparent 1px),
+        radial-gradient(circle at 27% 22%, rgba(244, 196, 48, .22), transparent 25%),
+        radial-gradient(circle at 80% 22%, rgba(96, 165, 250, .24), transparent 30%),
+        linear-gradient(135deg, #0c0d0c, #111827 46%, #090b10);
+      background-size: 38px 38px, 38px 38px, auto, auto, auto;
+      border: 1px solid rgba(255, 255, 255, .075);
+    }
+    .preview::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(0,0,0,.18), transparent 42%, rgba(0,0,0,.15)),
+        linear-gradient(180deg, rgba(0,0,0,.16), rgba(0,0,0,.42));
+      pointer-events: none;
+    }
+    .variant-title {
+      position: absolute;
+      left: 22px;
+      right: 22px;
+      bottom: 18px;
+      z-index: 4;
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 16px;
+      color: rgba(247, 244, 232, .7);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .variant-title strong {
+      display: block;
+      color: #fff7d9;
+      font-size: 20px;
+      margin-bottom: 4px;
+    }
+    .app {
+      position: absolute;
+      inset: 0;
+      padding: 30px 22px 30px 178px;
+      z-index: 2;
+    }
+    .app-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 22px;
+    }
+    h1 {
+      font-size: 23px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #f7f4e8, #f4c430, #fff1a8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .active-view-label {
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 800;
+      color: rgba(247,244,232,.72);
+      background: rgba(8, 9, 8, .28);
+      border: 1px solid rgba(255, 230, 143, .13);
+      backdrop-filter: blur(12px);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .card {
+      min-height: 132px;
+      border-radius: 14px;
+      padding: 18px;
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255, 230, 143, var(--card-border));
+      background: rgba(21, 22, 20, var(--card-alpha));
+      box-shadow: 0 var(--card-shadow-y) var(--card-shadow-blur) rgba(0,0,0,var(--card-shadow-alpha)), inset 0 1px 0 rgba(255,255,255,var(--card-inset));
+      backdrop-filter: blur(var(--card-blur)) saturate(var(--sat)) contrast(1.01);
+      -webkit-backdrop-filter: blur(var(--card-blur)) saturate(var(--sat)) contrast(1.01);
+    }
+    .card.wide { grid-column: 1 / -1; min-height: 182px }
+    .card strong { display: block; font-size: 15px; margin-bottom: 12px; color: rgba(247,244,232,.92) }
+    .card p { color: rgba(201,194,172,.76); font-size: 12px; line-height: 1.7 }
+    .metric { display: flex; align-items: end; gap: 8px; margin-top: 12px }
+    .metric b { font-size: 32px; color: #fff7d9 }
+    .metric span { color: rgba(201,194,172,.62); padding-bottom: 5px; font-size: 12px }
+    .wave { position: absolute; left: 18px; right: 18px; bottom: 18px; height: 54px; opacity: .75 }
+    .wave path { fill: none; stroke-linecap: round }
+    .sidebar {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 148px;
+      z-index: 3;
+      display: flex;
+      flex-direction: column;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,var(--side-hi)), rgba(255,255,255,var(--side-mid)) 54%, rgba(255,255,255,var(--side-low))),
+        rgba(255,255,255,var(--side-base));
+      border-right: 1px solid rgba(255,255,255,var(--side-border));
+      box-shadow: 7px 0 var(--side-shadow-blur) rgba(0,0,0,var(--side-shadow)), inset 1px 0 0 rgba(255,255,255,var(--side-inset));
+      backdrop-filter: blur(var(--side-blur)) saturate(var(--sat)) contrast(1.01);
+      -webkit-backdrop-filter: blur(var(--side-blur)) saturate(var(--sat)) contrast(1.01);
+      overflow: hidden;
+    }
+    .sidebar::before {
+      content: '';
+      position: absolute;
+      inset: -18%;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,var(--side-glow)), transparent 32%, rgba(255,255,255,.006)),
+        radial-gradient(circle at 20% 12%, rgba(244,196,48,var(--accent-glow)), transparent 30%),
+        radial-gradient(circle at 92% 30%, rgba(96,165,250,var(--blue-glow)), transparent 36%);
+      filter: blur(var(--glow-blur));
+      opacity: var(--glow-opacity);
+    }
+    .sidebar-head { min-height: 72px; display: flex; align-items: center; gap: 10px; padding: 16px 12px; border-bottom: 1px solid rgba(255,255,255,var(--head-line)); position: relative; z-index: 1 }
+    .toggle { width: 34px; height: 34px; flex: 0 0 34px; border-radius: 6px; border: 1px solid rgba(255,255,255,.09); background: rgba(255,255,255,.018); color: rgba(247,244,232,.74); display: grid; place-items: center; box-shadow: inset 0 1px 0 rgba(255,255,255,.06) }
+    .brand { text-align: center; flex: 1; font-family: KaiTi, STKaiti, '楷体', serif }
+    .brand strong { display: block; font-size: 17px; line-height: 1.1 }
+    .brand span { display: block; margin-top: 2px; color: rgba(201,194,172,.52); font-size: 11px }
+    .nav { position: relative; z-index: 1; padding: 14px 10px; display: flex; flex-direction: column; gap: 0 }
+    .item { min-height: 42px; border: 0; border-radius: 8px; background: transparent; color: rgba(201,194,172,.82); font-weight: 700; letter-spacing: .02em; text-align: center }
+    .item.active { background: rgba(244,196,48,var(--active-alpha)); color: #fff7d9; box-shadow: inset 0 1px 0 rgba(255,255,255,var(--active-inset)) }
+    .foot { position: relative; z-index: 1; margin-top: auto; padding: 12px 10px 18px; border-top: 1px solid rgba(255,255,255,var(--head-line)) }
+    .preview.air {
+      --card-alpha: .31; --card-border: .135; --card-blur: 22px; --card-shadow-y: 12px; --card-shadow-blur: 30px; --card-shadow-alpha: .12; --card-inset: .07;
+      --side-hi: .024; --side-mid: .008; --side-low: .002; --side-base: .004; --side-border: .052; --side-inset: .075; --side-shadow: .08; --side-shadow-blur: 22px; --side-blur: 42px;
+      --side-glow: .012; --accent-glow: .05; --blue-glow: .045; --glow-blur: 18px; --glow-opacity: .24; --head-line: .044; --active-alpha: .105; --active-inset: .08; --sat: 1.42;
+    }
+    .preview.crystal {
+      --card-alpha: .25; --card-border: .17; --card-blur: 28px; --card-shadow-y: 10px; --card-shadow-blur: 24px; --card-shadow-alpha: .10; --card-inset: .095;
+      --side-hi: .018; --side-mid: .006; --side-low: .001; --side-base: .002; --side-border: .07; --side-inset: .105; --side-shadow: .065; --side-shadow-blur: 18px; --side-blur: 48px;
+      --side-glow: .007; --accent-glow: .035; --blue-glow: .035; --glow-blur: 14px; --glow-opacity: .18; --head-line: .05; --active-alpha: .08; --active-inset: .12; --sat: 1.62;
+    }
+    .preview.mist {
+      --card-alpha: .36; --card-border: .10; --card-blur: 18px; --card-shadow-y: 8px; --card-shadow-blur: 22px; --card-shadow-alpha: .085; --card-inset: .045;
+      --side-hi: .014; --side-mid: .005; --side-low: .001; --side-base: .003; --side-border: .045; --side-inset: .058; --side-shadow: .055; --side-shadow-blur: 18px; --side-blur: 34px;
+      --side-glow: .008; --accent-glow: .025; --blue-glow: .032; --glow-blur: 18px; --glow-opacity: .16; --head-line: .035; --active-alpha: .075; --active-inset: .055; --sat: 1.25;
+    }
+  </style>
+</head>
+<body>
+  <div class="note">基于当前 Dashboard 配置生成：Sidebar.vue + style.css。目标：更透明、更轻、保留暗金主题识别。</div>
+  <div class="strip">
+    <section class="preview air">
+      <aside class="sidebar">
+        <div class="sidebar-head"><div class="toggle">≡</div><div class="brand"><strong>LianBoard</strong><span>控制中心</span></div></div>
+        <div class="nav"><button class="item active">部署</button><button class="item">终端控制</button><button class="item">模型配置</button><button class="item">人格实验室</button><button class="item">日志中心</button></div>
+        <div class="foot"><button class="item">主题：暗金</button><button class="item">退出登录</button></div>
+      </aside>
+      <main class="app">
+        <div class="app-head"><h1>LianBoard 控制中心</h1><span class="active-view-label">部署</span></div>
+        <div class="grid">
+          <article class="card wide"><strong>部署概览</strong><p>卡片底色从当前 dark-gold 的 0.92 降到更通透的玻璃层，背景网格和光斑能明显透出来。</p><svg class="wave" viewBox="0 0 420 54"><path d="M0 36 C58 10 94 48 148 22 S250 18 305 34 370 38 420 12" stroke="#f4c430" stroke-width="3" opacity=".5"/><path d="M0 46 C70 30 105 52 160 36 S250 28 320 44 376 48 420 30" stroke="#60a5fa" stroke-width="3" opacity=".35"/></svg></article>
+          <article class="card"><strong>今日消息</strong><div class="metric"><b>12.4k</b><span>条</span></div></article>
+          <article class="card"><strong>运行状态</strong><p>正常运行，轻阴影。</p></article>
+        </div>
+      </main>
+      <div class="variant-title"><div><strong>Airy</strong>整体最轻，阴影和侧栏底色都降下来。</div><span>推荐先试</span></div>
+    </section>
+    <section class="preview crystal">
+      <aside class="sidebar"><div class="sidebar-head"><div class="toggle">≡</div><div class="brand"><strong>LianBoard</strong><span>控制中心</span></div></div><div class="nav"><button class="item active">部署</button><button class="item">终端控制</button><button class="item">模型配置</button><button class="item">人格实验室</button><button class="item">日志中心</button></div><div class="foot"><button class="item">主题：暗金</button><button class="item">退出登录</button></div></aside>
+      <main class="app"><div class="app-head"><h1>LianBoard 控制中心</h1><span class="active-view-label">部署</span></div><div class="grid"><article class="card wide"><strong>部署概览</strong><p>底色最透明，但保留更清楚的细边线和高饱和 blur，比较像薄玻璃片。</p><svg class="wave" viewBox="0 0 420 54"><path d="M0 36 C58 10 94 48 148 22 S250 18 305 34 370 38 420 12" stroke="#f4c430" stroke-width="3" opacity=".5"/><path d="M0 46 C70 30 105 52 160 36 S250 28 320 44 376 48 420 30" stroke="#60a5fa" stroke-width="3" opacity=".35"/></svg></article><article class="card"><strong>今日消息</strong><div class="metric"><b>12.4k</b><span>条</span></div></article><article class="card"><strong>运行状态</strong><p>边缘更亮，体积更薄。</p></article></div></main>
+      <div class="variant-title"><div><strong>Crystal</strong>最通透，靠细边框维持可读性。</div><span>最玻璃</span></div>
+    </section>
+    <section class="preview mist">
+      <aside class="sidebar"><div class="sidebar-head"><div class="toggle">≡</div><div class="brand"><strong>LianBoard</strong><span>控制中心</span></div></div><div class="nav"><button class="item active">部署</button><button class="item">终端控制</button><button class="item">模型配置</button><button class="item">人格实验室</button><button class="item">日志中心</button></div><div class="foot"><button class="item">主题：暗金</button><button class="item">退出登录</button></div></aside>
+      <main class="app"><div class="app-head"><h1>LianBoard 控制中心</h1><span class="active-view-label">部署</span></div><div class="grid"><article class="card wide"><strong>部署概览</strong><p>透明度提升但 blur 和饱和度更克制，视觉最稳，不会太炫。</p><svg class="wave" viewBox="0 0 420 54"><path d="M0 36 C58 10 94 48 148 22 S250 18 305 34 370 38 420 12" stroke="#f4c430" stroke-width="3" opacity=".5"/><path d="M0 46 C70 30 105 52 160 36 S250 28 320 44 376 48 420 30" stroke="#60a5fa" stroke-width="3" opacity=".35"/></svg></article><article class="card"><strong>今日消息</strong><div class="metric"><b>12.4k</b><span>条</span></div></article><article class="card"><strong>运行状态</strong><p>更像轻雾面玻璃。</p></article></div></main>
+      <div class="variant-title"><div><strong>Mist</strong>轻量但更保守，可读性最好。</div><span>最稳</span></div>
+    </section>
+  </div>
+</body>
+</html>

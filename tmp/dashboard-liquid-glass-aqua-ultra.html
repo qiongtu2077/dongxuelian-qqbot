@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LianBoard Aqua Glass Ultra Transparent HTML</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0 }
+    :root {
+      --title: rgba(7, 22, 34, .9);
+      --text2: rgba(16, 48, 68, .70);
+      --muted: rgba(16, 48, 68, .50);
+      --accent: #0ea5e9;
+      --line: rgba(255, 255, 255, .30);
+      --hairline: rgba(255, 255, 255, .20);
+      --glass: rgba(255, 255, 255, .105);
+      --glass-hi: rgba(255, 255, 255, .30);
+      --glass-lo: rgba(255, 255, 255, .045);
+      --shadow: rgba(37, 99, 235, .10);
+      --dark-shadow: rgba(15, 23, 42, .10);
+    }
+    body {
+      min-height: 100vh;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Microsoft YaHei", Segoe UI, sans-serif;
+      color: var(--title);
+      background:
+        radial-gradient(circle at 18% 14%, rgba(125, 211, 252, .42), transparent 26%),
+        radial-gradient(circle at 78% 10%, rgba(186, 230, 253, .38), transparent 28%),
+        radial-gradient(circle at 72% 86%, rgba(196, 181, 253, .26), transparent 34%),
+        radial-gradient(circle at 28% 72%, rgba(255, 255, 255, .55), transparent 32%),
+        linear-gradient(135deg, #eefcff 0%, #c8f1fb 36%, #e5ecff 72%, #f4f8ff 100%);
+    }
+    body::before {
+      content: '';
+      position: fixed;
+      inset: -18%;
+      background:
+        conic-gradient(from 210deg at 24% 26%, rgba(255,255,255,.72), rgba(125,211,252,.30), rgba(196,181,253,.22), rgba(255,255,255,.58), rgba(125,211,252,.30), rgba(255,255,255,.72)),
+        radial-gradient(circle at 62% 24%, rgba(255,255,255,.62), transparent 28%),
+        radial-gradient(circle at 86% 62%, rgba(14,165,233,.18), transparent 30%);
+      filter: blur(42px);
+      opacity: .70;
+      animation: flow 13s ease-in-out infinite alternate;
+    }
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.14) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(255,255,255,.10) 1px, transparent 1px),
+        radial-gradient(circle at 50% 0%, rgba(255,255,255,.24), transparent 44%),
+        linear-gradient(180deg, rgba(255,255,255,.10), rgba(4, 12, 24, .09));
+      background-size: 44px 44px, 44px 44px, auto, auto;
+      pointer-events: none;
+    }
+    @keyframes flow {
+      from { transform: translate3d(-24px, -18px, 0) rotate(-8deg) scale(1.02) }
+      to { transform: translate3d(28px, 24px, 0) rotate(5deg) scale(1.08) }
+    }
+    .page {
+      position: relative;
+      z-index: 1;
+      width: 100vw;
+      height: 100vh;
+      min-width: 1180px;
+      min-height: 760px;
+      overflow: hidden;
+    }
+    .dashboard-sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: clamp(154px, 11.9vw, 224px);
+      z-index: 12;
+      display: flex;
+      flex-direction: column;
+      isolation: isolate;
+      overflow: hidden;
+      background:
+        linear-gradient(100deg, rgba(255,255,255,.16), rgba(255,255,255,.052) 48%, rgba(255,255,255,.018)),
+        rgba(255, 255, 255, .035);
+      border-right: 1px solid rgba(255,255,255,.24);
+      box-shadow:
+        7px 0 28px rgba(14, 165, 233, .08),
+        inset 1px 0 0 rgba(255,255,255,.32),
+        inset -1px 0 0 rgba(255,255,255,.08);
+      backdrop-filter: blur(58px) saturate(1.9) contrast(1.02);
+      -webkit-backdrop-filter: blur(58px) saturate(1.9) contrast(1.02);
+    }
+    .dashboard-sidebar::before {
+      content: '';
+      position: absolute;
+      inset: -22%;
+      z-index: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 18% 12%, rgba(255,255,255,.56), transparent 25%),
+        radial-gradient(circle at 92% 30%, rgba(14,165,233,.22), transparent 34%),
+        radial-gradient(circle at 2% 76%, rgba(196,181,253,.20), transparent 34%),
+        linear-gradient(180deg, rgba(255,255,255,.10), transparent 34%, rgba(255,255,255,.025));
+      filter: blur(18px);
+      opacity: .74;
+    }
+    .sidebar-head, .sidebar-nav, .sidebar-foot { position: relative; z-index: 1 }
+    .sidebar-head {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 14px;
+      border-bottom: 1px solid rgba(255,255,255,.19);
+    }
+    .sidebar-toggle {
+      width: 36px;
+      height: 36px;
+      flex: 0 0 36px;
+      border-radius: 11px;
+      border: 1px solid rgba(255,255,255,.30);
+      background: rgba(255,255,255,.10);
+      color: rgba(8, 24, 38, .74);
+      display: grid;
+      place-items: center;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.34);
+      backdrop-filter: blur(24px) saturate(1.6);
+      -webkit-backdrop-filter: blur(24px) saturate(1.6);
+    }
+    .sidebar-brand {
+      min-width: 0;
+      flex: 1;
+      white-space: nowrap;
+      text-align: center;
+      font-family: KaiTi, STKaiti, '楷体', serif;
+    }
+    .sidebar-brand strong { display: block; color: var(--title); font-size: 18px; line-height: 1.1 }
+    .sidebar-brand span { display: block; margin-top: 2px; color: var(--muted); font-size: 12px }
+    .sidebar-nav {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 14px 10px;
+    }
+    .sidebar-foot {
+      padding: 12px 10px 18px;
+      border-top: 1px solid rgba(255,255,255,.16);
+    }
+    .sidebar-item {
+      width: 100%;
+      min-height: 42px;
+      border: 0;
+      border-radius: 14px;
+      background: transparent;
+      color: var(--text2);
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 750;
+      text-align: center;
+      transition: background .16s, transform .16s, color .16s, box-shadow .16s;
+    }
+    .sidebar-item:hover {
+      color: var(--title);
+      background: rgba(255,255,255,.085);
+    }
+    .sidebar-item.active {
+      color: rgba(4, 28, 44, .92);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.36), rgba(255,255,255,.10)),
+        rgba(14,165,233,.08);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.44),
+        0 8px 24px rgba(14,165,233,.10);
+      backdrop-filter: blur(28px) saturate(1.5);
+      -webkit-backdrop-filter: blur(28px) saturate(1.5);
+    }
+    .app {
+      width: min(1180px, calc(100vw - clamp(154px, 11.9vw, 224px) - 48px));
+      margin: 0 auto;
+      margin-left: calc(clamp(154px, 11.9vw, 224px) + max(24px, calc((100vw - clamp(154px, 11.9vw, 224px) - 1180px) / 2)));
+      padding: 32px 24px;
+      position: relative;
+      z-index: 1;
+    }
+    .app-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    h1 {
+      font-size: 25px;
+      font-weight: 850;
+      letter-spacing: -.02em;
+      color: var(--title);
+      text-shadow: 0 14px 42px rgba(14, 165, 233, .12);
+    }
+    .active-view-label {
+      flex: 0 0 auto;
+      border: 1px solid rgba(255,255,255,.30);
+      border-radius: 999px;
+      background: rgba(255,255,255,.105);
+      color: var(--text2);
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 800;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.32);
+      backdrop-filter: blur(24px) saturate(1.55);
+      -webkit-backdrop-filter: blur(24px) saturate(1.55);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+    }
+    .card {
+      position: relative;
+      overflow: hidden;
+      min-height: 150px;
+      border-radius: 26px;
+      padding: 22px;
+      border: 1px solid rgba(255,255,255,.31);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.24), rgba(255,255,255,.055)),
+        rgba(255,255,255,.075);
+      box-shadow:
+        0 18px 52px rgba(15, 23, 42, .09),
+        0 8px 28px rgba(14, 165, 233, .07),
+        inset 0 1px 0 rgba(255,255,255,.46),
+        inset 0 -1px 0 rgba(255,255,255,.08);
+      backdrop-filter: blur(42px) saturate(1.85) contrast(1.02);
+      -webkit-backdrop-filter: blur(42px) saturate(1.85) contrast(1.02);
+    }
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(255,255,255,.44), transparent 36%),
+        linear-gradient(118deg, transparent 12%, rgba(255,255,255,.13) 46%, transparent 64%);
+    }
+    .card::after {
+      content: '';
+      position: absolute;
+      inset: 1px;
+      border-radius: 25px;
+      border: 1px solid rgba(255,255,255,.11);
+      pointer-events: none;
+    }
+    .card.wide { grid-column: 1 / -1; min-height: 230px }
+    .card strong {
+      position: relative;
+      z-index: 1;
+      display: block;
+      color: var(--title);
+      font-size: 17px;
+      margin-bottom: 12px;
+      letter-spacing: -.01em;
+    }
+    .card p {
+      position: relative;
+      z-index: 1;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.75;
+      max-width: 760px;
+    }
+    .row {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      border: 0;
+      border-radius: 16px;
+      padding: 10px 18px;
+      font-weight: 850;
+      color: rgba(4, 28, 44, .92);
+      background: linear-gradient(135deg, rgba(125,211,252,.72), rgba(255,255,255,.62));
+      box-shadow: 0 8px 24px rgba(14,165,233,.12), inset 0 1px 0 rgba(255,255,255,.38);
+      backdrop-filter: blur(18px) saturate(1.4);
+      -webkit-backdrop-filter: blur(18px) saturate(1.4);
+    }
+    .pill, .tab-btn {
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.27);
+      background: rgba(255,255,255,.09);
+      color: var(--text2);
+      font-size: 12px;
+      font-weight: 760;
+      padding: 8px 12px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.26);
+      backdrop-filter: blur(20px) saturate(1.5);
+      -webkit-backdrop-filter: blur(20px) saturate(1.5);
+    }
+    .tab-btn.active {
+      color: rgba(4, 28, 44, .92);
+      background: rgba(255,255,255,.22);
+      border-color: rgba(255,255,255,.36);
+    }
+    .metric {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: end;
+      gap: 8px;
+      margin-top: 18px;
+    }
+    .metric b { color: var(--title); font-size: 44px; letter-spacing: -.04em }
+    .metric span { color: var(--muted); font-size: 13px; padding-bottom: 7px }
+    .liquid-line {
+      position: absolute;
+      left: 24px;
+      right: 24px;
+      bottom: 22px;
+      height: 76px;
+      opacity: .86;
+    }
+    .liquid-line path {
+      fill: none;
+      stroke-linecap: round;
+      filter: drop-shadow(0 8px 16px rgba(14,165,233,.16));
+    }
+    .mock-input {
+      position: relative;
+      z-index: 1;
+      margin-top: 16px;
+      min-height: 40px;
+      border-radius: 15px;
+      border: 1px solid rgba(255,255,255,.25);
+      background: rgba(255,255,255,.075);
+      color: var(--text2);
+      display: flex;
+      align-items: center;
+      padding: 0 13px;
+      font-size: 13px;
+      backdrop-filter: blur(22px) saturate(1.5);
+      -webkit-backdrop-filter: blur(22px) saturate(1.5);
+    }
+    @media (max-width: 760px) {
+      .page { min-width: 0; min-height: 0 }
+      .dashboard-sidebar { width: 64px; height: 72px; bottom: auto; border-bottom-right-radius: 18px }
+      .sidebar-brand, .sidebar-nav, .sidebar-foot { display: none }
+      .app { width: 100%; margin-left: 0; padding: 92px 16px 24px }
+      .grid { grid-template-columns: 1fr }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <aside class="dashboard-sidebar" aria-label="主菜单">
+      <div class="sidebar-head">
+        <button class="sidebar-toggle" type="button" aria-label="收起菜单">≡</button>
+        <div class="sidebar-brand"><strong>LianBoard</strong><span>控制中心</span></div>
+      </div>
+      <nav class="sidebar-nav" aria-label="功能导航">
+        <button class="sidebar-item active" type="button">部署</button>
+        <button class="sidebar-item" type="button">终端控制</button>
+        <button class="sidebar-item" type="button">模型配置</button>
+        <button class="sidebar-item" type="button">API Keys</button>
+        <button class="sidebar-item" type="button">人格实验室</button>
+        <button class="sidebar-item" type="button">功能地图</button>
+        <button class="sidebar-item" type="button">日志中心</button>
+      </nav>
+      <div class="sidebar-foot">
+        <button class="sidebar-item" type="button">主题：冰蓝玻璃</button>
+        <button class="sidebar-item" type="button">退出登录</button>
+      </div>
+    </aside>
+
+    <main class="app">
+      <div class="app-head">
+        <h1>LianBoard 控制中心</h1>
+        <span class="active-view-label">部署</span>
+      </div>
+
+      <section class="grid">
+        <article class="card wide">
+          <strong>部署概览</strong>
+          <p>这是更透明的 Aqua Glass：卡片填充和侧栏底色继续降低，依靠高 blur、细白边、内高光和柔和流光维持玻璃轮廓。</p>
+          <div class="row">
+            <button class="btn">开始部署</button>
+            <span class="pill">NapCat 已连接</span>
+            <span class="pill">Koishi 正常</span>
+            <span class="pill">WebSocket 运行中</span>
+          </div>
+          <svg class="liquid-line" viewBox="0 0 760 76" aria-hidden="true">
+            <path d="M0 48 C110 12 176 66 282 30 S458 24 566 50 680 58 760 18" stroke="#0ea5e9" stroke-width="4"/>
+            <path d="M0 62 C126 40 196 74 314 50 S496 38 612 62 704 68 760 46" stroke="#8b5cf6" stroke-width="4" opacity=".45"/>
+          </svg>
+        </article>
+
+        <article class="card">
+          <strong>今日消息</strong>
+          <p>背景能更明显透出来，卡片像浮在光雾上。</p>
+          <div class="metric"><b>12.4k</b><span>条</span></div>
+        </article>
+
+        <article class="card">
+          <strong>运行状态</strong>
+          <p>透明度更高，但保留内高光和细边线，避免完全看不清边界。</p>
+          <div class="row"><span class="tab-btn active">在线</span><span class="tab-btn">低延迟</span></div>
+        </article>
+
+        <article class="card">
+          <strong>模型配置</strong>
+          <p>输入框也使用同一套薄玻璃层。</p>
+          <div class="mock-input">claude-opus-4-7 · liquid-glass</div>
+        </article>
+
+        <article class="card">
+          <strong>日志中心</strong>
+          <p>轻量阴影代替厚重黑影，整体更接近系统级透明面板。</p>
+          <div class="row"><span class="pill">INFO</span><span class="pill">deploy ready</span></div>
+        </article>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

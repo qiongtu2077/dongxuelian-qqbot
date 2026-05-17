@@ -1,0 +1,5 @@
+const path = require('path')
+const AI_LIB = path.join(__dirname, '..', 'koishi-plugin-dongxuelian-ai', 'lib')
+const r = require(path.join(AI_LIB, 'agent', 'tools', 'registry'))
+console.log('typeof getToolSummaries:', typeof r.getToolSummaries)
+console.log('keys:', Object.keys(r).join(', '))

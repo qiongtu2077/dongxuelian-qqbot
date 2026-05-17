@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LianBoard iOS 26 Liquid Glass Preview</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0 }
+    body {
+      width: 2160px;
+      min-height: 1280px;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Microsoft YaHei", Segoe UI, sans-serif;
+      color: rgba(255, 255, 255, .92);
+      background: #071018;
+    }
+    .board {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 28px;
+      padding: 34px;
+      background:
+        radial-gradient(circle at 12% 16%, rgba(126, 231, 255, .26), transparent 24%),
+        radial-gradient(circle at 50% 8%, rgba(180, 147, 255, .24), transparent 26%),
+        radial-gradient(circle at 86% 18%, rgba(255, 190, 228, .2), transparent 28%),
+        linear-gradient(135deg, #071018 0%, #101827 46%, #0a111c 100%);
+    }
+    .shot {
+      position: relative;
+      min-width: 0;
+      overflow: hidden;
+      border-radius: 36px;
+      isolation: isolate;
+      border: 1px solid rgba(255,255,255,.11);
+      background: var(--scene-bg);
+      box-shadow: 0 28px 80px rgba(0,0,0,.24);
+    }
+    .shot::before {
+      content: '';
+      position: absolute;
+      inset: -20%;
+      background: var(--flow);
+      filter: blur(34px);
+      opacity: var(--flow-opacity);
+      transform: rotate(-8deg);
+      animation: drift 10s ease-in-out infinite alternate;
+      z-index: 0;
+    }
+    .shot::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(255,255,255,.018) 1px, transparent 1px),
+        radial-gradient(circle at 50% 0%, rgba(255,255,255,.16), transparent 42%),
+        linear-gradient(180deg, rgba(0,0,0,.06), rgba(0,0,0,.24));
+      background-size: 42px 42px, 42px 42px, auto, auto;
+      pointer-events: none;
+      z-index: 1;
+    }
+    @keyframes drift {
+      from { transform: translate3d(-18px, -10px, 0) rotate(-10deg) scale(1.02) }
+      to { transform: translate3d(22px, 18px, 0) rotate(-4deg) scale(1.08) }
+    }
+    .dashboard-sidebar {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 178px;
+      z-index: 5;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background:
+        linear-gradient(102deg, rgba(255,255,255,var(--side-hi)), rgba(255,255,255,var(--side-mid)) 48%, rgba(255,255,255,var(--side-low))),
+        rgba(255,255,255,var(--side-base));
+      border-right: 1px solid rgba(255,255,255,var(--side-line));
+      box-shadow:
+        10px 0 42px rgba(0,0,0,var(--side-shadow)),
+        inset 1px 0 0 rgba(255,255,255,var(--side-inset)),
+        inset -1px 0 0 rgba(255,255,255,var(--side-inner-line));
+      backdrop-filter: blur(var(--side-blur)) saturate(var(--sat)) contrast(1.02);
+      -webkit-backdrop-filter: blur(var(--side-blur)) saturate(var(--sat)) contrast(1.02);
+    }
+    .dashboard-sidebar::before {
+      content: '';
+      position: absolute;
+      inset: -22%;
+      background:
+        radial-gradient(circle at 28% 12%, rgba(255,255,255,var(--side-sheen)), transparent 26%),
+        radial-gradient(circle at 88% 38%, var(--side-orb-a), transparent 34%),
+        radial-gradient(circle at 12% 78%, var(--side-orb-b), transparent 36%),
+        linear-gradient(180deg, rgba(255,255,255,.03), transparent 40%, rgba(255,255,255,.012));
+      filter: blur(20px);
+      opacity: .9;
+      pointer-events: none;
+    }
+    .sidebar-head, .sidebar-nav, .sidebar-foot { position: relative; z-index: 1 }
+    .sidebar-head {
+      min-height: 86px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 20px 15px;
+      border-bottom: 1px solid rgba(255,255,255,var(--thin-line));
+    }
+    .sidebar-toggle {
+      width: 38px; height: 38px; flex: 0 0 38px;
+      display: grid; place-items: center;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,var(--button-line));
+      background: rgba(255,255,255,var(--button-bg));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.14);
+      color: rgba(255,255,255,.86);
+      font-size: 20px;
+    }
+    .sidebar-brand { flex: 1; text-align: center; font-family: KaiTi, STKaiti, '楷体', serif; white-space: nowrap }
+    .sidebar-brand strong { display: block; font-size: 19px; line-height: 1.1; color: var(--title) }
+    .sidebar-brand span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px }
+    .sidebar-nav { flex: 1; padding: 16px 12px; display: flex; flex-direction: column; gap: 4px }
+    .sidebar-foot { padding: 14px 12px 20px; border-top: 1px solid rgba(255,255,255,var(--thin-line)) }
+    .sidebar-item {
+      min-height: 44px;
+      border: 0;
+      border-radius: 14px;
+      background: transparent;
+      color: var(--text2);
+      font-weight: 760;
+      font-size: 13px;
+      letter-spacing: .02em;
+      text-align: center;
+    }
+    .sidebar-item.active {
+      color: var(--active-text);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,var(--active-hi)), rgba(255,255,255,var(--active-lo))),
+        var(--active-tint);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,var(--active-inset)),
+        0 8px 24px var(--active-shadow);
+    }
+    .app {
+      position: absolute;
+      inset: 0;
+      z-index: 4;
+      padding: 42px 34px 38px 216px;
+    }
+    .app-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 28px;
+    }
+    h1 {
+      font-size: 30px;
+      font-weight: 850;
+      letter-spacing: -.02em;
+      color: var(--title);
+      text-shadow: 0 12px 36px rgba(0,0,0,.16);
+    }
+    .active-view-label {
+      border: 1px solid rgba(255,255,255,var(--chip-line));
+      border-radius: 999px;
+      padding: 8px 13px;
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--text2);
+      background: rgba(255,255,255,var(--chip-bg));
+      backdrop-filter: blur(18px) saturate(1.4);
+      -webkit-backdrop-filter: blur(18px) saturate(1.4);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+    }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px }
+    .card {
+      position: relative;
+      overflow: hidden;
+      min-height: 150px;
+      border-radius: 26px;
+      padding: 22px;
+      border: 1px solid rgba(255,255,255,var(--card-line));
+      background:
+        linear-gradient(135deg, rgba(255,255,255,var(--card-hi)), rgba(255,255,255,var(--card-lo))),
+        var(--card-tint);
+      box-shadow:
+        0 var(--shadow-y) var(--shadow-blur) rgba(0,0,0,var(--shadow-alpha)),
+        inset 0 1px 0 rgba(255,255,255,var(--card-inset)),
+        inset 0 -1px 0 rgba(255,255,255,var(--card-bottom));
+      backdrop-filter: blur(var(--card-blur)) saturate(var(--sat)) contrast(1.02);
+      -webkit-backdrop-filter: blur(var(--card-blur)) saturate(var(--sat)) contrast(1.02);
+    }
+    .card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(255,255,255,var(--card-glow)), transparent 38%),
+        linear-gradient(120deg, transparent, rgba(255,255,255,var(--sweep)) 42%, transparent 58%);
+      pointer-events: none;
+    }
+    .card.wide { grid-column: 1 / -1; min-height: 218px }
+    .card strong { position: relative; z-index: 1; display: block; color: var(--title); font-size: 17px; margin-bottom: 12px; letter-spacing: -.01em }
+    .card p { position: relative; z-index: 1; color: var(--muted); font-size: 13px; line-height: 1.75; max-width: 86% }
+    .row { position: relative; z-index: 1; display: flex; align-items: center; gap: 10px; margin-top: 14px }
+    .pill {
+      border-radius: 999px;
+      padding: 8px 12px;
+      border: 1px solid rgba(255,255,255,var(--chip-line));
+      background: rgba(255,255,255,var(--chip-bg));
+      color: var(--text2);
+      font-size: 12px;
+      font-weight: 760;
+    }
+    .btn {
+      position: relative; z-index: 1;
+      border: 0;
+      border-radius: 16px;
+      padding: 10px 18px;
+      font-weight: 850;
+      color: var(--button-text);
+      background: var(--button-grad);
+      box-shadow: 0 8px 24px var(--active-shadow), inset 0 1px 0 rgba(255,255,255,.22);
+    }
+    .metric { position: relative; z-index: 1; display: flex; align-items: end; gap: 8px; margin-top: 18px }
+    .metric b { color: var(--title); font-size: 42px; letter-spacing: -.04em }
+    .metric span { color: var(--muted); font-size: 13px; padding-bottom: 7px }
+    .liquid-line { position: absolute; left: 24px; right: 24px; bottom: 22px; height: 74px; opacity: var(--line-opacity) }
+    .liquid-line path { fill: none; stroke-linecap: round; filter: drop-shadow(0 8px 16px var(--line-shadow)) }
+    .theme-label {
+      position: absolute;
+      left: 28px; right: 28px; bottom: 24px;
+      z-index: 6;
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .theme-label strong { display: block; color: var(--title); font-size: 24px; margin-bottom: 4px; letter-spacing: -.02em }
+    .theme-label span { font-weight: 850; color: var(--accent) }
+
+    .aqua {
+      --scene-bg: radial-gradient(circle at 30% 20%, rgba(116, 232, 255, .3), transparent 28%), radial-gradient(circle at 82% 12%, rgba(220, 248, 255, .18), transparent 30%), linear-gradient(135deg, #eafaff 0%, #c9edf6 38%, #dfe9ff 100%);
+      --flow: radial-gradient(circle at 12% 30%, rgba(255,255,255,.78), transparent 25%), radial-gradient(circle at 60% 16%, rgba(93, 215, 255, .52), transparent 28%), radial-gradient(circle at 78% 70%, rgba(180, 147, 255, .36), transparent 34%);
+      --flow-opacity: .72; --title: rgba(8, 24, 38, .9); --text2: rgba(16, 48, 68, .72); --muted: rgba(16, 48, 68, .54); --accent: #0ea5e9;
+      --side-hi: .24; --side-mid: .12; --side-low: .045; --side-base: .10; --side-line: .36; --side-inset: .42; --side-inner-line: .14; --side-shadow: .10; --side-blur: 44px; --side-sheen: .46; --side-orb-a: rgba(14,165,233,.3); --side-orb-b: rgba(180,147,255,.26);
+      --thin-line: .22; --button-line: .34; --button-bg: .22; --active-text: rgba(6,30,46,.92); --active-hi: .52; --active-lo: .2; --active-tint: rgba(14,165,233,.12); --active-inset: .56; --active-shadow: rgba(14,165,233,.18);
+      --chip-line: .32; --chip-bg: .20; --card-line: .36; --card-hi: .46; --card-lo: .17; --card-tint: rgba(255,255,255,.20); --card-inset: .52; --card-bottom: .1; --card-blur: 32px; --card-glow: .54; --sweep: .18; --shadow-y: 20px; --shadow-blur: 54px; --shadow-alpha: .11; --sat: 1.72; --button-text: rgba(4, 28, 44, .9); --button-grad: linear-gradient(135deg, #7dd3fc, #dbeafe); --line-opacity: .8; --line-shadow: rgba(14,165,233,.18);
+    }
+    .aurora {
+      --scene-bg: radial-gradient(circle at 22% 18%, rgba(103, 232, 249, .24), transparent 26%), radial-gradient(circle at 78% 18%, rgba(244, 114, 182, .22), transparent 30%), radial-gradient(circle at 50% 82%, rgba(167, 139, 250, .28), transparent 34%), linear-gradient(135deg, #08111f 0%, #151a35 50%, #0b1020 100%);
+      --flow: radial-gradient(circle at 18% 24%, rgba(103,232,249,.48), transparent 24%), radial-gradient(circle at 62% 18%, rgba(167,139,250,.54), transparent 30%), radial-gradient(circle at 86% 62%, rgba(244,114,182,.42), transparent 34%);
+      --flow-opacity: .72; --title: rgba(250, 252, 255, .94); --text2: rgba(232, 240, 255, .74); --muted: rgba(232, 240, 255, .56); --accent: #a78bfa;
+      --side-hi: .13; --side-mid: .045; --side-low: .014; --side-base: .028; --side-line: .16; --side-inset: .20; --side-inner-line: .06; --side-shadow: .16; --side-blur: 52px; --side-sheen: .20; --side-orb-a: rgba(103,232,249,.24); --side-orb-b: rgba(244,114,182,.2);
+      --thin-line: .12; --button-line: .18; --button-bg: .07; --active-text: rgba(255,255,255,.95); --active-hi: .22; --active-lo: .07; --active-tint: rgba(167,139,250,.14); --active-inset: .22; --active-shadow: rgba(167,139,250,.22);
+      --chip-line: .16; --chip-bg: .075; --card-line: .18; --card-hi: .18; --card-lo: .055; --card-tint: rgba(255,255,255,.055); --card-inset: .20; --card-bottom: .04; --card-blur: 34px; --card-glow: .22; --sweep: .11; --shadow-y: 22px; --shadow-blur: 60px; --shadow-alpha: .2; --sat: 1.68; --button-text: rgba(255,255,255,.94); --button-grad: linear-gradient(135deg, #67e8f9, #a78bfa 54%, #f0abfc); --line-opacity: .85; --line-shadow: rgba(167,139,250,.26);
+    }
+    .pearl {
+      --scene-bg: radial-gradient(circle at 18% 16%, rgba(255,255,255,.52), transparent 24%), radial-gradient(circle at 78% 22%, rgba(214, 232, 255, .58), transparent 30%), radial-gradient(circle at 72% 78%, rgba(255, 221, 238, .46), transparent 34%), linear-gradient(135deg, #fafafa 0%, #eef5fb 48%, #f8eef6 100%);
+      --flow: radial-gradient(circle at 16% 22%, rgba(255,255,255,.9), transparent 25%), radial-gradient(circle at 62% 18%, rgba(191,219,254,.58), transparent 30%), radial-gradient(circle at 86% 68%, rgba(251,207,232,.54), transparent 34%);
+      --flow-opacity: .8; --title: rgba(25, 33, 48, .88); --text2: rgba(43, 55, 76, .7); --muted: rgba(43, 55, 76, .52); --accent: #60a5fa;
+      --side-hi: .30; --side-mid: .14; --side-low: .06; --side-base: .13; --side-line: .34; --side-inset: .48; --side-inner-line: .12; --side-shadow: .08; --side-blur: 36px; --side-sheen: .48; --side-orb-a: rgba(96,165,250,.18); --side-orb-b: rgba(251,207,232,.22);
+      --thin-line: .22; --button-line: .28; --button-bg: .18; --active-text: rgba(25,33,48,.9); --active-hi: .48; --active-lo: .18; --active-tint: rgba(96,165,250,.1); --active-inset: .52; --active-shadow: rgba(96,165,250,.14);
+      --chip-line: .28; --chip-bg: .18; --card-line: .32; --card-hi: .52; --card-lo: .20; --card-tint: rgba(255,255,255,.18); --card-inset: .56; --card-bottom: .1; --card-blur: 26px; --card-glow: .58; --sweep: .18; --shadow-y: 18px; --shadow-blur: 46px; --shadow-alpha: .09; --sat: 1.34; --button-text: rgba(25,33,48,.92); --button-grad: linear-gradient(135deg, #dbeafe, #ffffff 48%, #fce7f3); --line-opacity: .7; --line-shadow: rgba(96,165,250,.14);
+    }
+  </style>
+</head>
+<body>
+  <div class="board">
+    <section class="shot aqua">
+      <aside class="dashboard-sidebar">
+        <div class="sidebar-head"><div class="sidebar-toggle">≡</div><div class="sidebar-brand"><strong>LianBoard</strong><span>控制中心</span></div></div>
+        <nav class="sidebar-nav"><button class="sidebar-item active">部署</button><button class="sidebar-item">终端控制</button><button class="sidebar-item">模型配置</button><button class="sidebar-item">人格实验室</button><button class="sidebar-item">日志中心</button></nav>
+        <div class="sidebar-foot"><button class="sidebar-item">主题：流光玻璃</button><button class="sidebar-item">退出登录</button></div>
+      </aside>
+      <main class="app">
+        <div class="app-head"><h1>LianBoard 控制中心</h1><span class="active-view-label">部署</span></div>
+        <div class="grid">
+          <article class="card wide"><strong>部署概览</strong><p>冰蓝透明玻璃，卡片低 alpha、大 blur、细白边，背景光斑和网格能自然透过。</p><div class="row"><button class="btn">开始部署</button><span class="pill">NapCat 已连接</span><span class="pill">Koishi 正常</span></div><svg class="liquid-line" viewBox="0 0 560 74"><path d="M0 48 C84 14 130 64 205 30 S340 22 418 48 500 56 560 18" stroke="#0ea5e9" stroke-width="4"/><path d="M0 62 C92 42 148 72 230 50 S365 38 450 60 520 68 560 46" stroke="#a78bfa" stroke-width="4" opacity=".58"/></svg></article>
+          <article class="card"><strong>今日消息</strong><div class="metric"><b>12.4k</b><span>条</span></div></article>
+          <article class="card"><strong>系统状态</strong><p>透明度最高，适合突出轻盈感。</p></article>
+        </div>
+      </main>
+      <div class="theme-label"><div><strong>Aqua Glass</strong>偏 iOS 冰蓝透明，最轻、最通透。</div><span>透明感</span></div>
+    </section>
+    <section class="shot aurora">
+      <aside class="dashboard-sidebar"><div class="sidebar-head"><div class="sidebar-toggle">≡</div><div class="sidebar-brand"><strong>LianBoard</strong><span>控制中心</span></div></div><nav class="sidebar-nav"><button class="sidebar-item active">部署</button><button class="sidebar-item">终端控制</button><button class="sidebar-item">模型配置</button><button class="sidebar-item">人格实验室</button><button class="sidebar-item">日志中心</button></nav><div class="sidebar-foot"><button class="sidebar-item">主题：流光玻璃</button><button class="sidebar-item">退出登录</button></div></aside>
+      <main class="app"><div class="app-head"><h1>LianBoard 控制中心</h1><span class="active-view-label">部署</span></div><div class="grid"><article class="card wide"><strong>部署概览</strong><p>蓝紫粉柔光叠层更明显，强调流动感和空间感，适合做夜间 Liquid Glass。</p><div class="row"><button class="btn">开始部署</button><span class="pill">NapCat 已连接</span><span class="pill">Koishi 正常</span></div><svg class="liquid-line" viewBox="0 0 560 74"><path d="M0 48 C84 14 130 64 205 30 S340 22 418 48 500 56 560 18" stroke="#67e8f9" stroke-width="4"/><path d="M0 62 C92 42 148 72 230 50 S365 38 450 60 520 68 560 46" stroke="#f0abfc" stroke-width="4" opacity=".66"/></svg></article><article class="card"><strong>今日消息</strong><div class="metric"><b>12.4k</b><span>条</span></div></article><article class="card"><strong>系统状态</strong><p>氛围最强，但比 Aqua 稍暗。</p></article></div></main>
+      <div class="theme-label"><div><strong>Aurora Flow</strong>蓝紫粉柔光流动，最有“流光”感。</div><span>流动感</span></div>
+    </section>
+    <section class="shot pearl">
+      <aside class="dashboard-sidebar"><div class="sidebar-head"><div class="sidebar-toggle">≡</div><div class="sidebar-brand"><strong>LianBoard</strong><span>控制中心</span></div></div><nav class="sidebar-nav"><button class="sidebar-item active">部署</button><button class="sidebar-item">终端控制</button><button class="sidebar-item">模型配置</button><button class="sidebar-item">人格实验室</button><button class="sidebar-item">日志中心</button></nav><div class="sidebar-foot"><button class="sidebar-item">主题：流光玻璃</button><button class="sidebar-item">退出登录</button></div></aside>
+      <main class="app"><div class="app-head"><h1>LianBoard 控制中心</h1><span class="active-view-label">部署</span></div><div class="grid"><article class="card wide"><strong>部署概览</strong><p>乳白雾面玻璃，边缘柔和、可读性最好，更接近优雅柔和的系统级界面。</p><div class="row"><button class="btn">开始部署</button><span class="pill">NapCat 已连接</span><span class="pill">Koishi 正常</span></div><svg class="liquid-line" viewBox="0 0 560 74"><path d="M0 48 C84 14 130 64 205 30 S340 22 418 48 500 56 560 18" stroke="#60a5fa" stroke-width="4"/><path d="M0 62 C92 42 148 72 230 50 S365 38 450 60 520 68 560 46" stroke="#f9a8d4" stroke-width="4" opacity=".52"/></svg></article><article class="card"><strong>今日消息</strong><div class="metric"><b>12.4k</b><span>条</span></div></article><article class="card"><strong>系统状态</strong><p>最柔和稳重，长时间使用不累。</p></article></div></main>
+      <div class="theme-label"><div><strong>Pearl Mist</strong>乳白雾面玻璃，最柔和、最稳。</div><span>柔和感</span></div>
+    </section>
+  </div>
+</body>
+</html>

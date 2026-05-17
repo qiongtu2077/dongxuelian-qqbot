@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Water Glass Sidebar Preview v3</title>
+  <style>
+    :root {
+      --bg: #070a10;
+      --text: #f0f2f8;
+      --text2: rgba(240, 242, 248, .7);
+      --text3: rgba(240, 242, 248, .35);
+      --accent: #f4c430;
+      font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", Segoe UI, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 22% 16%, rgba(244, 196, 48, .18), transparent 30%),
+        radial-gradient(circle at 68% 12%, rgba(115, 215, 255, .2), transparent 32%),
+        radial-gradient(circle at 78% 78%, rgba(247, 167, 214, .15), transparent 34%),
+        linear-gradient(138deg, #070a10 0%, #0f172a 38%, #0a0f18 100%);
+      overflow: hidden;
+    }
+
+    .backdrop {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    .backdrop::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        repeating-conic-gradient(rgba(115, 215, 255, .15) 0deg 90deg, transparent 90deg 180deg) 0 0 / 80px 80px,
+        repeating-conic-gradient(rgba(244, 196, 48, .1) 0deg 90deg, transparent 90deg 180deg) 40px 40px / 80px 80px;
+    }
+
+    .orb {
+      position: absolute;
+      border-radius: 999px;
+      filter: blur(16px);
+      opacity: .8;
+      animation: drift 22s ease-in-out infinite alternate;
+    }
+
+    .orb.one {
+      width: 320px; height: 320px;
+      left: 160px; top: 80px;
+      background: radial-gradient(circle, rgba(244, 196, 48, .4), rgba(244, 196, 48, .08) 56%, transparent 70%);
+    }
+
+    .orb.two {
+      width: 400px; height: 400px;
+      right: 180px; top: 60px;
+      background: radial-gradient(circle, rgba(115, 215, 255, .35), rgba(115, 215, 255, .07) 58%, transparent 72%);
+      animation-delay: -7s;
+    }
+
+    .orb.three {
+      width: 360px; height: 360px;
+      right: 80px; bottom: -60px;
+      background: radial-gradient(circle, rgba(247, 167, 214, .3), rgba(247, 167, 214, .05) 58%, transparent 72%);
+      animation-delay: -13s;
+    }
+
+    .test-grid {
+      position: fixed;
+      inset: 0;
+      z-index: 5;
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      grid-template-rows: repeat(4, 1fr);
+      gap: 8px;
+      padding: 20px;
+      pointer-events: none;
+    }
+
+    .test-grid span {
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      font-weight: 800;
+      color: rgba(255, 255, 255, .5);
+      text-shadow: 0 2px 8px rgba(0,0,0,.5);
+    }
+
+    .test-grid span:nth-child(1) { background: #e74c3c; }
+    .test-grid span:nth-child(2) { background: #e67e22; }
+    .test-grid span:nth-child(3) { background: #f1c40f; }
+    .test-grid span:nth-child(4) { background: #2ecc71; }
+    .test-grid span:nth-child(5) { background: #1abc9c; }
+    .test-grid span:nth-child(6) { background: #3498db; }
+    .test-grid span:nth-child(7) { background: #9b59b6; }
+    .test-grid span:nth-child(8) { background: #e84393; }
+    .test-grid span:nth-child(9) { background: #fd79a8; }
+    .test-grid span:nth-child(10) { background: #00b894; }
+    .test-grid span:nth-child(11) { background: #0984e3; }
+    .test-grid span:nth-child(12) { background: #6c5ce7; }
+    .test-grid span:nth-child(13) { background: #d63031; }
+    .test-grid span:nth-child(14) { background: #e17055; }
+    .test-grid span:nth-child(15) { background: #fdcb6e; }
+    .test-grid span:nth-child(16) { background: #00cec9; }
+    .test-grid span:nth-child(17) { background: #81ecec; }
+    .test-grid span:nth-child(18) { background: #74b9ff; }
+    .test-grid span:nth-child(19) { background: #a29bfe; }
+    .test-grid span:nth-child(20) { background: #fd79a8; }
+    .test-grid span:nth-child(21) { background: #636e72; }
+    .test-grid span:nth-child(22) { background: #b2bec3; }
+    .test-grid span:nth-child(23) { background: #dfe6e9; }
+    .test-grid span:nth-child(24) { background: #ffeaa7; }
+
+    .dashboard {
+      position: relative;
+      min-height: 100vh;
+      padding: 34px 42px 34px 240px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 28px;
+    }
+
+    h1 { margin: 0; font-size: 30px; letter-spacing: 0; }
+
+    .pill {
+      border: 1px solid rgba(255, 255, 255, .08);
+      background: rgba(255, 255, 255, .035);
+      color: var(--text2);
+      border-radius: 999px;
+      padding: 7px 14px;
+      font-size: 13px;
+      backdrop-filter: blur(20px);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      min-height: 140px;
+      border: 1px solid rgba(255, 255, 255, .07);
+      border-radius: 14px;
+      background: color-mix(in srgb, rgba(255, 255, 255, .04) 65%, transparent);
+      box-shadow: 0 20px 48px rgba(0, 0, 0, .15);
+      backdrop-filter: blur(24px) saturate(1.1);
+      -webkit-backdrop-filter: blur(24px) saturate(1.1);
+      padding: 18px;
+      position: relative;
+      overflow: hidden;
+      transition: transform .2s cubic-bezier(.2, .8, .2, 1), border-color .2s, background .2s;
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(160deg, rgba(255, 255, 255, .04), transparent 40%);
+      pointer-events: none;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(255, 255, 255, .1);
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 16px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--text2);
+      line-height: 1.6;
+      font-size: 14px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .wide {
+      grid-column: span 2;
+      min-height: 220px;
+      background:
+        linear-gradient(135deg, color-mix(in srgb, rgba(244, 196, 48, .08) 60%, transparent), transparent 36%),
+        linear-gradient(150deg, color-mix(in srgb, rgba(115, 215, 255, .06) 60%, transparent), transparent 52%),
+        color-mix(in srgb, rgba(255, 255, 255, .035) 65%, transparent);
+    }
+
+    /* ===== Water Glass Sidebar ===== */
+    .water-sidebar {
+      position: fixed;
+      inset: 0 auto 0 0;
+      width: 200px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      isolation: isolate;
+      overflow: hidden;
+      /* 完全透明底色，不贡献任何白色 */
+      background: transparent;
+      /* 极致微弱的边线，仅保证"这里有东西" */
+      border-right: 1px solid rgba(255, 255, 255, .003);
+      box-shadow:
+        inset 1px 0 0 rgba(255, 255, 255, .01),
+        inset -1px -1px 0 rgba(255, 255, 255, .002);
+      /* 极致模糊，不产生雾感 */
+      backdrop-filter: blur(200px);
+      -webkit-backdrop-filter: blur(200px);
+    }
+
+    /* 水面波纹层 — 极致微弱的流动光线 */
+    .water-sidebar::before {
+      content: "";
+      position: absolute;
+      inset: -60%;
+      background:
+        repeating-linear-gradient(
+          90deg,
+          transparent,
+          transparent 100px,
+          rgba(255, 255, 255, .0008) 100px,
+          rgba(255, 255, 255, .0008) 101px,
+          transparent 101px,
+          transparent 200px
+        ),
+        repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent 80px,
+          rgba(115, 215, 255, .0006) 80px,
+          rgba(115, 215, 255, .0006) 81px,
+          transparent 81px,
+          transparent 160px
+        );
+      filter: blur(1px);
+      opacity: .35;
+      pointer-events: none;
+      animation: waterRipple 16s ease-in-out infinite;
+      transform-origin: center;
+    }
+
+    /* 水面折射光斑 — 极淡 */
+    .water-sidebar::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 60% 30% at 30% 20%, rgba(255, 255, 255, .006), transparent 70%),
+        radial-gradient(ellipse 40% 20% at 70% 60%, rgba(115, 215, 255, .004), transparent 60%),
+        radial-gradient(ellipse 50% 25% at 50% 80%, rgba(255, 255, 255, .005), transparent 65%);
+      opacity: .4;
+      pointer-events: none;
+      animation: caustics 18s ease-in-out infinite alternate;
+    }
+
+    .head, .nav, .foot { position: relative; z-index: 1; }
+
+    .head {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, .006);
+    }
+
+    .toggle {
+      width: 34px; height: 34px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, .008);
+      color: var(--text2);
+      background: rgba(255, 255, 255, .002);
+      display: grid;
+      place-items: center;
+      font-size: 16px;
+      cursor: pointer;
+      transition: transform .14s cubic-bezier(.2, .8, .2, 1), background .18s, color .18s;
+    }
+
+    .toggle:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, .01);
+      border-color: rgba(255, 255, 255, .03);
+    }
+
+    .toggle:active {
+      transform: scale(.93);
+    }
+
+    .brand { flex: 1; text-align: center; min-width: 0; }
+
+    .brand strong {
+      display: block;
+      font-family: KaiTi, STKaiti, serif;
+      font-size: 18px;
+      line-height: 1.1;
+      letter-spacing: 1px;
+      text-shadow: 0 1px 12px rgba(0, 0, 0, .3);
+    }
+
+    .brand span {
+      display: block;
+      color: var(--text3);
+      font-size: 11px;
+      margin-top: 2px;
+    }
+
+    .nav {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 14px 8px;
+    }
+
+    .item {
+      position: relative;
+      min-height: 40px;
+      border: 0;
+      border-top: 1px solid rgba(255, 255, 255, .01);
+      background: transparent;
+      color: var(--text2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 700;
+      font-family: KaiTi, STKaiti, serif;
+      overflow: hidden;
+      cursor: pointer;
+      letter-spacing: 2px;
+      transition: color .18s ease;
+    }
+
+    .item:last-child { border-bottom: 1px solid rgba(255, 255, 255, .008); }
+
+    .item::before {
+      content: "";
+      position: absolute;
+      inset: 3px 2px;
+      border-radius: 999px;
+      background: radial-gradient(80% 150% at 50% 50%, rgba(255, 255, 255, .018), rgba(255, 255, 255, .005) 46%, transparent 72%);
+      opacity: 0;
+      transform: scaleX(.86) scaleY(.68);
+      filter: blur(8px);
+      transition: opacity .2s ease, transform .26s cubic-bezier(.18, .86, .28, 1);
+    }
+
+    .item::after {
+      content: "";
+      position: absolute;
+      left: 14px; right: 14px;
+      top: 50%;
+      height: 14px;
+      border-radius: 999px;
+      background: radial-gradient(closest-side, rgba(255, 255, 255, .03), rgba(255, 255, 255, .008) 56%, transparent 78%);
+      opacity: 0;
+      transform: translateY(-50%) scaleX(.4) scaleY(.35);
+      filter: blur(10px);
+      pointer-events: none;
+      transition: opacity .2s ease, transform .24s cubic-bezier(.18, .9, .22, 1);
+    }
+
+    .item:hover { color: var(--text); }
+
+    .item:hover::before {
+      opacity: .15;
+      transform: scaleX(1.02) scaleY(.78);
+      filter: blur(9px);
+    }
+
+    .item:hover::after {
+      opacity: .1;
+      transform: translateY(-50%) scaleX(.78) scaleY(.5);
+    }
+
+    .item:active::before {
+      opacity: .3;
+      transform: scaleX(1.1) scaleY(.42);
+      filter: blur(14px);
+      transition-duration: .08s;
+    }
+
+    .item:active::after {
+      opacity: .22;
+      transform: translateY(-50%) scaleX(1.08) scaleY(.72);
+      filter: blur(14px);
+      transition-duration: .08s;
+    }
+
+    .item span {
+      position: relative;
+      z-index: 1;
+      transition: transform .16s cubic-bezier(.18, .86, .28, 1);
+    }
+
+    .item.active {
+      color: var(--text);
+      background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 3%, transparent), transparent 72%);
+      box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 15%, transparent);
+    }
+
+    .item.active::before {
+      opacity: .08;
+      transform: scaleX(.9) scaleY(.65);
+    }
+
+    .foot {
+      padding: 10px 8px 14px;
+      border-top: 1px solid rgba(255, 255, 255, .012);
+    }
+
+    .note {
+      position: fixed;
+      right: 28px;
+      bottom: 22px;
+      max-width: 420px;
+      color: rgba(240, 242, 248, .5);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    @keyframes drift {
+      0% { transform: translate3d(-16px, 8px, 0) scale(1); }
+      100% { transform: translate3d(20px, -10px, 0) scale(1.05); }
+    }
+
+    @keyframes waterRipple {
+      0% { transform: translate3d(0, 0, 0) scale(1); opacity: .4; }
+      25% { transform: translate3d(8px, -4px, 0) scale(1.02); opacity: .55; }
+      50% { transform: translate3d(-4px, 6px, 0) scale(.98); opacity: .45; }
+      75% { transform: translate3d(6px, -2px, 0) scale(1.01); opacity: .5; }
+      100% { transform: translate3d(-2px, 0, 0) scale(1); opacity: .4; }
+    }
+
+    @keyframes caustics {
+      0% { transform: translate3d(0, 0, 0) scale(1); opacity: .5; }
+      33% { transform: translate3d(12px, -8px, 0) scale(1.04); opacity: .65; }
+      66% { transform: translate3d(-6px, 10px, 0) scale(.97); opacity: .45; }
+      100% { transform: translate3d(8px, -4px, 0) scale(1.02); opacity: .55; }
+    }
+  </style>
+</head>
+<body>
+  <div class="backdrop">
+    <div class="orb one"></div>
+    <div class="orb two"></div>
+    <div class="orb three"></div>
+  </div>
+
+  <div class="test-grid">
+    <span>A</span><span>B</span><span>C</span><span>D</span><span>E</span><span>F</span>
+    <span>G</span><span>H</span><span>I</span><span>J</span><span>K</span><span>L</span>
+    <span>M</span><span>N</span><span>O</span><span>P</span><span>Q</span><span>R</span>
+    <span>S</span><span>T</span><span>U</span><span>V</span><span>W</span><span>X</span>
+  </div>
+
+  <!-- Water Glass Sidebar -->
+  <aside class="water-sidebar" aria-label="主菜单">
+    <div class="head">
+      <div class="toggle">☰</div>
+      <div class="brand">
+        <strong>LianBoard</strong>
+        <span>控制中心</span>
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="item active"><span>状态总览</span></button>
+      <button class="item"><span>日志查看</span></button>
+      <button class="item"><span>插件管理</span></button>
+      <button class="item"><span>部署更新</span></button>
+      <button class="item"><span>数据文件</span></button>
+      <button class="item"><span>系统设置</span></button>
+    </nav>
+    <div class="foot">
+      <button class="item"><span>主题样式</span></button>
+      <button class="item"><span>退出登录</span></button>
+    </div>
+  </aside>
+
+  <main class="dashboard">
+    <div class="topbar">
+      <h1>Dashboard</h1>
+      <span class="pill">Water Glass v3 · ripple refraction</span>
+    </div>
+    <section class="grid">
+      <div class="card wide">
+        <strong>水玻璃效果</strong>
+        <p>侧栏几乎完全透明，背景色块直接透过来。只有一层极淡的水纹光晕 + 边缘折射高光来提示"这里有块玻璃"。</p>
+      </div>
+      <div class="card">
+        <strong>不靠模糊</strong>
+        <p>blur(120px) 只是为了消除像素锯齿，不对背景产生可见模糊。真正的水玻璃不会把背后的东西弄模糊。</p>
+      </div>
+      <div class="card">
+        <strong>光斑漂移</strong>
+        <p>::after 层模拟水中折射的 caustics 光斑，缓慢漂移。alpha 不超过 .025，几乎不可见但增加水感。</p>
+      </div>
+      <div class="card">
+        <strong>水纹呼吸</strong>
+        <p>::before 层用极淡的网格线 + 缓慢位移动画模拟水面波纹。只有仔细看才能察觉。</p>
+      </div>
+      <div class="card">
+        <strong>边缘光</strong>
+        <p>右侧边框 .012，左侧 inset 高光 .04。模拟水的表面张力和折射边缘光。</p>
+      </div>
+    </section>
+  </main>
+
+  <p class="note">v3 final：background transparent，blur 200px 仅防锯齿，无 saturate。所有边框 alpha ≤ .012，hover 反馈降到最低可辨度。目标是"你知道这里有个侧栏，但背景的色块几乎完全透过来"。</p>
+</body>
+</html>

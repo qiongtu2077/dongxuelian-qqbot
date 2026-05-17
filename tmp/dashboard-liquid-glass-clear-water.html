@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LianBoard Clear Water Glass</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0 }
+    :root {
+      --text: rgba(240, 247, 255, .94);
+      --text2: rgba(218, 230, 248, .68);
+      --text3: rgba(218, 230, 248, .42);
+      --edge: rgba(210, 232, 255, .24);
+      --edge-soft: rgba(210, 232, 255, .12);
+      --aqua: #7dd3fc;
+      --blue: #2563eb;
+      --violet: #8b5cf6;
+      --pink: #c084fc;
+    }
+    body {
+      min-height: 100vh;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Microsoft YaHei", Segoe UI, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 16% 16%, rgba(37, 99, 235, .42), transparent 30%),
+        radial-gradient(circle at 76% 18%, rgba(139, 92, 246, .36), transparent 34%),
+        radial-gradient(circle at 84% 78%, rgba(14, 165, 233, .24), transparent 34%),
+        linear-gradient(135deg, #071225 0%, #10163a 42%, #170f32 72%, #07101f 100%);
+    }
+    body::before {
+      content: '';
+      position: fixed;
+      inset: -18%;
+      background:
+        conic-gradient(from 190deg at 35% 25%, rgba(125, 211, 252, .20), transparent 18%, rgba(139, 92, 246, .22), transparent 38%, rgba(56, 189, 248, .18), transparent 62%, rgba(192, 132, 252, .20), transparent 82%, rgba(125, 211, 252, .20)),
+        radial-gradient(circle at 44% 24%, rgba(255,255,255,.10), transparent 26%),
+        radial-gradient(circle at 64% 78%, rgba(99,102,241,.16), transparent 34%);
+      filter: blur(28px);
+      opacity: .86;
+      animation: slow-water 16s ease-in-out infinite alternate;
+      pointer-events: none;
+    }
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.040) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(255,255,255,.030) 1px, transparent 1px),
+        radial-gradient(circle at 50% 0%, rgba(255,255,255,.10), transparent 44%),
+        linear-gradient(180deg, rgba(2,6,23,.04), rgba(2,6,23,.28));
+      background-size: 44px 44px, 44px 44px, auto, auto;
+      pointer-events: none;
+    }
+    @keyframes slow-water {
+      from { transform: translate3d(-22px, -16px, 0) rotate(-6deg) scale(1.02) }
+      to { transform: translate3d(26px, 20px, 0) rotate(4deg) scale(1.07) }
+    }
+    .background-depth {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .depth-panel {
+      position: absolute;
+      border-radius: 30px;
+      background: linear-gradient(135deg, rgba(125,211,252,.16), rgba(139,92,246,.10));
+      border: 1px solid rgba(255,255,255,.08);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+    }
+    .depth-panel.one { left: 278px; top: 82px; width: 670px; height: 220px }
+    .depth-panel.two { right: 110px; top: 118px; width: 390px; height: 260px; opacity: .76 }
+    .depth-panel.three { left: 650px; bottom: 78px; width: 540px; height: 180px; opacity: .58 }
+    .depth-line { position: absolute; height: 12px; border-radius: 999px; background: rgba(255,255,255,.11) }
+    .depth-line.a { left: 326px; top: 138px; width: 440px }
+    .depth-line.b { left: 326px; top: 176px; width: 590px; opacity: .72 }
+    .depth-line.c { right: 160px; top: 208px; width: 280px; opacity: .62 }
+    .depth-orb { position: absolute; border-radius: 999px; filter: blur(10px); opacity: .42 }
+    .depth-orb.a { width: 260px; height: 260px; left: 188px; bottom: 88px; background: rgba(14,165,233,.28) }
+    .depth-orb.b { width: 320px; height: 320px; right: 190px; bottom: 70px; background: rgba(139,92,246,.28) }
+
+    .page {
+      position: relative;
+      z-index: 1;
+      width: 100vw;
+      height: 100vh;
+      min-width: 1180px;
+      min-height: 760px;
+      overflow: hidden;
+    }
+    .clear-glass {
+      position: relative;
+      isolation: isolate;
+      border: 1px solid rgba(210, 232, 255, .14);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.024), rgba(255,255,255,.002) 52%, rgba(255,255,255,.010)),
+        rgba(7, 16, 31, .012);
+      box-shadow:
+        0 18px 62px rgba(0,0,0,.12),
+        inset 0 1px 0 rgba(255,255,255,.12),
+        inset 0 -1px 0 rgba(255,255,255,.020);
+      backdrop-filter: blur(9px) saturate(1.38) contrast(1.05);
+      -webkit-backdrop-filter: blur(9px) saturate(1.38) contrast(1.05);
+    }
+    .clear-glass::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      pointer-events: none;
+      background:
+        linear-gradient(120deg, rgba(255,255,255,.052), transparent 16%, transparent 82%, rgba(255,255,255,.024)),
+        radial-gradient(circle at 16% 0%, rgba(255,255,255,.040), transparent 34%);
+      opacity: .40;
+      mix-blend-mode: screen;
+    }
+    .clear-glass::after {
+      content: '';
+      position: absolute;
+      inset: 1px;
+      border-radius: inherit;
+      pointer-events: none;
+      border: 1px solid rgba(255,255,255,.026);
+    }
+
+    .dashboard-sidebar {
+      position: fixed;
+      top: 22px;
+      left: 22px;
+      bottom: 22px;
+      width: clamp(164px, 12vw, 224px);
+      z-index: 12;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-radius: 30px;
+      backdrop-filter: blur(8px) saturate(1.40) contrast(1.05);
+      -webkit-backdrop-filter: blur(8px) saturate(1.40) contrast(1.05);
+    }
+    .dashboard-sidebar::before {
+      content: '';
+      position: absolute;
+      inset: -1px;
+      z-index: -1;
+      border-radius: inherit;
+      background:
+        linear-gradient(105deg, rgba(255,255,255,.030), rgba(255,255,255,.002) 48%, rgba(125,211,252,.012)),
+        rgba(5, 12, 25, .014);
+      border: 1px solid rgba(210,232,255,.12);
+      box-shadow:
+        0 20px 70px rgba(0,0,0,.10),
+        inset 0 1px 0 rgba(255,255,255,.10);
+    }
+    .sidebar-head, .sidebar-nav, .sidebar-foot { position: relative; z-index: 1 }
+    .sidebar-head {
+      min-height: 74px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 17px 14px;
+      border-bottom: 1px solid rgba(210,232,255,.070);
+    }
+    .sidebar-toggle {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 38px;
+      border-radius: 15px;
+      border: 1px solid rgba(210,232,255,.11);
+      background: rgba(255,255,255,.018);
+      color: rgba(240,247,255,.72);
+      display: grid;
+      place-items: center;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+      backdrop-filter: blur(10px) saturate(1.35);
+      -webkit-backdrop-filter: blur(10px) saturate(1.35);
+    }
+    .sidebar-brand { flex: 1; min-width: 0; white-space: nowrap; text-align: center; font-family: KaiTi, STKaiti, '楷体', serif }
+    .sidebar-brand strong { display: block; color: var(--text); font-size: 18px; line-height: 1.1 }
+    .sidebar-brand span { display: block; margin-top: 2px; color: var(--text3); font-size: 12px }
+    .sidebar-nav { flex: 1; padding: 14px 10px; display: flex; flex-direction: column; gap: 2px }
+    .sidebar-foot { padding: 12px 10px 18px; border-top: 1px solid rgba(210,232,255,.060) }
+    .sidebar-item {
+      width: 100%;
+      min-height: 42px;
+      border: 0;
+      border-radius: 16px;
+      background: transparent;
+      color: var(--text2);
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 760;
+      text-align: center;
+      transition: background .16s, transform .16s, color .16s, box-shadow .16s;
+    }
+    .sidebar-item:hover { color: var(--text); background: rgba(255,255,255,.035) }
+    .sidebar-item.active {
+      color: rgba(246,250,255,.94);
+      background: rgba(255,255,255,.030);
+      border: 1px solid rgba(210,232,255,.10);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.080), 0 8px 24px rgba(37,99,235,.055);
+      backdrop-filter: blur(7px) saturate(1.32);
+      -webkit-backdrop-filter: blur(7px) saturate(1.32);
+    }
+
+    .app {
+      width: min(1180px, calc(100vw - clamp(164px, 12vw, 224px) - 86px));
+      margin-left: calc(clamp(164px, 12vw, 224px) + 62px);
+      padding: 38px 24px;
+      position: relative;
+      z-index: 2;
+    }
+    .app-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    h1 {
+      font-size: 25px;
+      font-weight: 850;
+      letter-spacing: -.02em;
+      color: var(--text);
+      text-shadow: 0 18px 48px rgba(0,0,0,.22);
+    }
+    .active-view-label {
+      flex: 0 0 auto;
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--text2);
+    }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px }
+    .card {
+      min-height: 150px;
+      border-radius: 30px;
+      padding: 22px;
+      overflow: hidden;
+    }
+    .card.wide { grid-column: 1 / -1; min-height: 230px }
+    .card strong { position: relative; z-index: 1; display: block; color: var(--text); font-size: 17px; margin-bottom: 12px; letter-spacing: -.01em }
+    .card p { position: relative; z-index: 1; color: var(--text2); font-size: 13px; line-height: 1.75; max-width: 760px }
+    .row { position: relative; z-index: 1; display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap }
+    .btn {
+      border: 1px solid rgba(210,232,255,.11);
+      border-radius: 17px;
+      padding: 10px 18px;
+      font-weight: 850;
+      color: rgba(246,250,255,.94);
+      background: rgba(255,255,255,.024);
+      box-shadow: 0 8px 28px rgba(37,99,235,.060), inset 0 1px 0 rgba(255,255,255,.080);
+      backdrop-filter: blur(7px) saturate(1.28);
+      -webkit-backdrop-filter: blur(7px) saturate(1.28);
+    }
+    .pill, .tab-btn, .active-view-label, .mock-input {
+      border: 1px solid rgba(210,232,255,.085);
+      background: rgba(255,255,255,.018);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.060);
+      backdrop-filter: blur(7px) saturate(1.26);
+      -webkit-backdrop-filter: blur(7px) saturate(1.26);
+    }
+    .pill, .tab-btn {
+      border-radius: 999px;
+      color: var(--text2);
+      font-size: 12px;
+      font-weight: 760;
+      padding: 8px 12px;
+    }
+    .tab-btn.active { color: var(--text); background: rgba(255,255,255,.034); border-color: rgba(210,232,255,.13) }
+    .metric { position: relative; z-index: 1; display: flex; align-items: end; gap: 8px; margin-top: 18px }
+    .metric b { color: var(--text); font-size: 44px; letter-spacing: -.04em }
+    .metric span { color: var(--text3); font-size: 13px; padding-bottom: 7px }
+    .liquid-line { position: absolute; left: 24px; right: 24px; bottom: 22px; height: 76px; opacity: .62 }
+    .liquid-line path { fill: none; stroke-linecap: round; filter: drop-shadow(0 8px 18px rgba(37,99,235,.12)) }
+    .mock-input {
+      position: relative;
+      z-index: 1;
+      margin-top: 16px;
+      min-height: 40px;
+      border-radius: 17px;
+      color: var(--text2);
+      display: flex;
+      align-items: center;
+      padding: 0 13px;
+      font-size: 13px;
+    }
+    .notification-example {
+      position: fixed;
+      right: 64px;
+      top: 54px;
+      z-index: 20;
+      width: 520px;
+      min-height: 92px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding: 16px 22px;
+      border-radius: 34px;
+    }
+    .notification-icon {
+      width: 56px;
+      height: 56px;
+      border-radius: 16px;
+      background: rgba(255,255,255,.86);
+      display: grid;
+      place-items: center;
+      color: #111;
+      font-size: 28px;
+      box-shadow: 0 12px 36px rgba(0,0,0,.18);
+    }
+    .notification-title { font-weight: 850; font-size: 18px; margin-bottom: 3px }
+    .notification-copy { color: var(--text2); font-size: 14px }
+    .notification-time { margin-left: auto; align-self: flex-start; color: var(--text3); font-weight: 760 }
+  </style>
+</head>
+<body>
+  <div class="background-depth" aria-hidden="true">
+    <div class="depth-panel one"></div>
+    <div class="depth-panel two"></div>
+    <div class="depth-panel three"></div>
+    <div class="depth-line a"></div>
+    <div class="depth-line b"></div>
+    <div class="depth-line c"></div>
+    <div class="depth-orb a"></div>
+    <div class="depth-orb b"></div>
+  </div>
+
+  <div class="notification-example clear-glass" aria-hidden="true">
+    <div class="notification-icon">💧</div>
+    <div>
+      <div class="notification-title">LianBoard</div>
+      <div class="notification-copy">清水感玻璃：低填充、低模糊、高透光</div>
+    </div>
+    <div class="notification-time">现在</div>
+  </div>
+
+  <div class="page">
+    <aside class="dashboard-sidebar" aria-label="主菜单">
+      <div class="sidebar-head">
+        <button class="sidebar-toggle" type="button" aria-label="收起菜单">≡</button>
+        <div class="sidebar-brand"><strong>LianBoard</strong><span>控制中心</span></div>
+      </div>
+      <nav class="sidebar-nav" aria-label="功能导航">
+        <button class="sidebar-item active" type="button">部署</button>
+        <button class="sidebar-item" type="button">终端控制</button>
+        <button class="sidebar-item" type="button">模型配置</button>
+        <button class="sidebar-item" type="button">API Keys</button>
+        <button class="sidebar-item" type="button">人格实验室</button>
+        <button class="sidebar-item" type="button">功能地图</button>
+        <button class="sidebar-item" type="button">日志中心</button>
+      </nav>
+      <div class="sidebar-foot">
+        <button class="sidebar-item" type="button">主题：清水蓝紫</button>
+        <button class="sidebar-item" type="button">退出登录</button>
+      </div>
+    </aside>
+
+    <main class="app">
+      <div class="app-head">
+        <h1>LianBoard 控制中心</h1>
+        <span class="active-view-label">部署</span>
+      </div>
+
+      <section class="grid">
+        <article class="card wide clear-glass">
+          <strong>部署概览</strong>
+          <p>这版不再走毛玻璃：blur 降低，填充接近透明，靠深沉蓝紫背景、折射边缘和轻微高光形成像清水一样透光的玻璃层。</p>
+          <div class="row">
+            <button class="btn">开始部署</button>
+            <span class="pill">NapCat 已连接</span>
+            <span class="pill">Koishi 正常</span>
+            <span class="pill">WebSocket 运行中</span>
+          </div>
+          <svg class="liquid-line" viewBox="0 0 760 76" aria-hidden="true">
+            <path d="M0 48 C110 12 176 66 282 30 S458 24 566 50 680 58 760 18" stroke="rgba(125,211,252,.70)" stroke-width="4"/>
+            <path d="M0 62 C126 40 196 74 314 50 S496 38 612 62 704 68 760 46" stroke="rgba(168,85,247,.54)" stroke-width="4" opacity=".80"/>
+          </svg>
+        </article>
+
+        <article class="card clear-glass">
+          <strong>今日消息</strong>
+          <p>背景内容应该清楚透出来，只被轻微折射和柔化。</p>
+          <div class="metric"><b>12.4k</b><span>条</span></div>
+        </article>
+
+        <article class="card clear-glass">
+          <strong>运行状态</strong>
+          <p>不再依赖厚重白雾，边缘像水面一样轻。</p>
+          <div class="row"><span class="tab-btn active">在线</span><span class="tab-btn">低延迟</span></div>
+        </article>
+
+        <article class="card clear-glass">
+          <strong>模型配置</strong>
+          <p>深蓝紫配色更沉静，透明度比上一版高。</p>
+          <div class="mock-input">claude-opus-4-7 · clear water glass</div>
+        </article>
+
+        <article class="card clear-glass">
+          <strong>日志中心</strong>
+          <p>如果觉得还不够透，下一步应该继续降低背景 alpha，而不是继续加 blur。</p>
+          <div class="row"><span class="pill">INFO</span><span class="pill">deploy ready</span></div>
+        </article>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
