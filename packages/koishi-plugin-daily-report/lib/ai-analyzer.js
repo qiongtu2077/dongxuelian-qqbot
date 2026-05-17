@@ -7,6 +7,16 @@ const { loadConfig } = require('../../koishi-plugin-dongxuelian-ai/lib/runtime-c
 const { requestChatCompletions } = require('../../koishi-plugin-dongxuelian-ai/lib/api')
 const { createDefaultAnalysisResult, createUserTitle } = require('./models')
 
+const COMPRESS_BATCH_SIZE = parsePositiveInt(process.env.DAILY_REPORT_COMPRESS_BATCH_SIZE, 100, 20, 200)
+const MAX_COMPRESS_BATCHES = parsePositiveInt(process.env.DAILY_REPORT_MAX_COMPRESS_BATCHES, 20, 1, 60)
+const MAX_COMPRESSED_CHARS = parsePositiveInt(process.env.DAILY_REPORT_MAX_COMPRESSED_CHARS, 12000, 2000, 40000)
+
+function parsePositiveInt(value, fallback, min, max) {
+  const parsed = parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
 async function callAI(systemPrompt, userMessage, maxTokens = 1500) {
   const config = await loadConfig()
   const result = await requestChatCompletions([
@@ -17,22 +27,24 @@ async function callAI(systemPrompt, userMessage, maxTokens = 1500) {
 }
 
 async function compressMessages(messages) {
-  const batchSize = 100
-  const batches = []
-  for (let i = 0; i < messages.length; i += batchSize) {
-    const batch = messages.slice(i, i + batchSize)
+  const limited = (Array.isArray(messages) ? messages : []).slice(-COMPRESS_BATCH_SIZE * MAX_COMPRESS_BATCHES)
+  const results = []
+  for (let i = 0; i < limited.length; i += COMPRESS_BATCH_SIZE) {
+    const batch = limited.slice(i, i + COMPRESS_BATCH_SIZE)
     const batchText = batch.map(m => `[${m.time}] ${m.user}：${m.content}`).join('\n')
-    batches.push(callAI(
-      '你是群聊摘要助手。将以下群聊记录压缩成100字以内的摘要，保留主要话题和有趣对话。不要评价，只摘要。',
-      batchText.slice(0, 4000),
-      200
-    ))
+    try {
+      const summary = await callAI(
+        '你是群聊摘要助手。将以下群聊记录压缩成100字以内的摘要，保留主要话题和有趣对话。不要评价，只摘要。',
+        batchText.slice(0, 4000),
+        200
+      )
+      if (summary) results.push(summary)
+    } catch {}
+    if (results.join('\n---\n').length >= MAX_COMPRESSED_CHARS) break
   }
-  const results = await Promise.allSettled(batches)
   return results
-    .filter(r => r.status === 'fulfilled' && r.value)
-    .map(r => r.value)
     .join('\n---\n')
+    .slice(0, MAX_COMPRESSED_CHARS)
 }
 
 // 安全JSON解析（处理AI返回的格式错误）
@@ -244,7 +256,7 @@ async function analyzeWithAI(data, full = false) {
     // token估算：中文约2字符=1 token，加上prompt开销
     // 压缩阶段：N批 × 200 tokens
     // 分析阶段：1-2次调用 × 1500 tokens
-    const batches = Math.ceil(data.messages.length / 100)
+    const batches = Math.min(MAX_COMPRESS_BATCHES, Math.ceil(data.messages.length / COMPRESS_BATCH_SIZE))
     const compressTokens = batches * 200
     const analysisTokens = full ? 3500 : 2000
     result.tokenUsage = {

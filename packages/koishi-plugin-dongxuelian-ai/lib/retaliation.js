@@ -18,7 +18,7 @@ async function calculateRetaliationScore(cleanInput, userId, channelSharedCache,
 
   try {
     const config = await loadConfig()
-    const text = await requestChatCompletions([
+    const textObj = await requestChatCompletions([
       { role: 'system', content: `你是一个对话氛围分析器。根据以下群聊记录，判断当前用户对机器人的敌意程度。
 
 评分标准（只看这个用户发了什么，不要看 bot 说了什么）：
@@ -32,6 +32,7 @@ async function calculateRetaliationScore(cleanInput, userId, channelSharedCache,
 只输出一个 0-100 的整数。不要输出任何其他文字。` },
       { role: 'user', content: `用户最近消息：\n${history}` },
     ], config, { max_tokens: 10, _fallbackSet: 'lightweight' })
+    const text = typeof textObj === 'string' ? textObj : textObj.content
     const score = parseInt(String(text).trim(), 10)
     if (!isNaN(score)) return Math.max(0, Math.min(100, score))
   } catch {}

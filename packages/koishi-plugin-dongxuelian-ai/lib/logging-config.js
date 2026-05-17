@@ -5,6 +5,7 @@ const { DATA_DIR } = require('./constants')
 
 const DEBUG_LOG_CONFIG_FILE = path.join(DATA_DIR, 'debug-log-config.json')
 const CONFIG_CHECK_INTERVAL_MS = 2000
+const MAX_DEBUG_LOG_CONFIG_BYTES = 128 * 1024
 
 let cachedConfig = null
 let cachedMtimeMs = 0
@@ -39,6 +40,7 @@ function readDebugLogConfig(force = false) {
 
   try {
     const stat = fs.statSync(DEBUG_LOG_CONFIG_FILE)
+    if (!stat.isFile() || stat.size > MAX_DEBUG_LOG_CONFIG_BYTES) throw new Error('debug log config too large')
     if (!force && cachedConfig && cachedFromFile && stat.mtimeMs === cachedMtimeMs) return cachedConfig
     const parsed = JSON.parse(fs.readFileSync(DEBUG_LOG_CONFIG_FILE, 'utf8') || '{}')
     cachedConfig = normalizeDebugLogConfig(parsed)

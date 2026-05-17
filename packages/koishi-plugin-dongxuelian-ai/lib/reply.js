@@ -13,23 +13,55 @@ const { logDebug } = require('./logging-config')
 
 const STICKER_GLOBAL_COOLDOWN_MS = 30000
 const STICKER_FILE_COOLDOWN_MS = 120000
+const MAX_STICKER_FILE_BYTES = 2 * 1024 * 1024
+const MAX_STICKER_INDEX_FILES = 200
+const MAX_STICKER_CACHE_FILES = 12
 const lastStickerSentAt = new Map()
 const throttleWindow = new Map()
 const lastStickerFileSentAt = new Map()
 
-let stickerBase64Cache = {}
+let stickerFileIndex = new Map()
+let stickerBase64Cache = new Map()
 
 function loadStickerCache() {
   try {
-    stickerBase64Cache = {}
+    stickerFileIndex = new Map()
+    stickerBase64Cache = new Map()
     const files = fs.readdirSync(STICKER_DIR)
-    for (const f of files) {
-      const buf = fs.readFileSync(path.join(STICKER_DIR, f))
+    for (const f of files.slice(0, MAX_STICKER_INDEX_FILES)) {
+      const filePath = path.join(STICKER_DIR, f)
+      const stat = fs.statSync(filePath)
+      if (!stat.isFile() || stat.size > MAX_STICKER_FILE_BYTES) continue
       const ext = f.split('.').pop().toLowerCase()
       const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif' }[ext] || 'image/jpeg'
-      stickerBase64Cache[f] = `base64://${buf.toString('base64')}`
+      stickerFileIndex.set(f, { filePath, mime, size: stat.size })
     }
   } catch {}
+}
+
+function getStickerImage(file) {
+  if (!file) return ''
+  if (stickerBase64Cache.has(file)) {
+    const image = stickerBase64Cache.get(file)
+    stickerBase64Cache.delete(file)
+    stickerBase64Cache.set(file, image)
+    return image
+  }
+  const meta = stickerFileIndex.get(file)
+  if (!meta) return ''
+  try {
+    const stat = fs.statSync(meta.filePath)
+    if (!stat.isFile() || stat.size > MAX_STICKER_FILE_BYTES) return ''
+    const image = `base64://${fs.readFileSync(meta.filePath).toString('base64')}`
+    stickerBase64Cache.set(file, image)
+    while (stickerBase64Cache.size > MAX_STICKER_CACHE_FILES) {
+      const oldest = stickerBase64Cache.keys().next().value
+      stickerBase64Cache.delete(oldest)
+    }
+    return image
+  } catch {
+    return ''
+  }
 }
 
 // 表情包映射（按关键词长度降序，最长优先）
@@ -160,8 +192,7 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
   } catch {} // 配置文件不存在或不合法时直接放行
   // 图片文件转 base64 CQ 码（使用缓存）
   const stickerToCQ = (file) => {
-    const b64 = stickerBase64Cache[file]
-    return b64 ? b64 : ''
+    return getStickerImage(file)
   }
   // 替换 AI 主动调用的 [图:xxx] 并收集图片 base64
   const pendingStickers = []
@@ -211,14 +242,15 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
       //     .replace(new RegExp(esc, 'g'), '你')
       // }
     try {
-      await session.send(i === 0 ? quotePrefix + part : part)
+      const sentResult = await session.send(i === 0 ? quotePrefix + part : part)
+      const sentMessageId = sentResult && (sentResult.messageId || sentResult.message_id || sentResult.id)
+      saveSharedChannelTurn(session, '东雪莲', part, 'assistant', { messageId: sentMessageId || '' })
     } catch (sendError) {
       sendError.sentParts = sentParts
       ctx.logger('dongxuelian-ai').warn(`sendReply failed: ${sendError?.message || sendError}`)
       throw sendError
     }
     sentParts++
-    saveSharedChannelTurn(session, '东雪莲', part, 'assistant')
     if (i < parts.length - 1) {
       await sleep(getRandomDelayMs())
     }

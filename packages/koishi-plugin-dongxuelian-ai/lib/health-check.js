@@ -45,13 +45,14 @@ async function testProvider(providerId, providerDef, allKeys) {
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT)
-    const result = await requestChatCompletions(
+    const resultObj = await requestChatCompletions(
       [{ role: 'user', content: 'hi' }],
       probeConfig,
       { max_tokens: 1, signal: controller.signal }
     )
     clearTimeout(timer)
     const latency = Date.now() - start
+    const result = typeof resultObj === 'string' ? resultObj : resultObj.content
     if (result) {
       return { provider: providerDef.name, status: 'ok', latency }
     }

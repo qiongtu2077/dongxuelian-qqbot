@@ -9,6 +9,34 @@ const path = require('path')
 
 let personaGroupsCache = {}
 let personaUsersCache = {}
+const MAX_PERSONA_CONFIG_BYTES = parsePersonaPositiveInt(process.env.DONGXUELIAN_PERSONA_CONFIG_MAX_BYTES, 256 * 1024, 4 * 1024, 1024 * 1024)
+const MAX_PERSONA_SKILL_BYTES = parsePersonaPositiveInt(process.env.DONGXUELIAN_PERSONA_SKILL_MAX_BYTES, 256 * 1024, 8 * 1024, 2 * 1024 * 1024)
+
+function parsePersonaPositiveInt(value, fallback, min, max) {
+  const parsed = parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
+function readTextIfSmall(file, maxBytes) {
+  try {
+    const fs = require('fs')
+    const stat = fs.statSync(file)
+    if (!stat.isFile() || stat.size > maxBytes) return ''
+    return fs.readFileSync(file, 'utf8').trim()
+  } catch {
+    return ''
+  }
+}
+
+function readJsonIfSmall(file, fallback) {
+  try {
+    const text = readTextIfSmall(file, MAX_PERSONA_CONFIG_BYTES)
+    return text ? JSON.parse(text) : fallback
+  } catch {
+    return fallback
+  }
+}
 
 function atomicWriteJson(filePath, data) {
   const tmp = filePath + '.tmp'
@@ -17,7 +45,7 @@ function atomicWriteJson(filePath, data) {
 }
 
 function loadPersonaGroups() {
-  try { personaGroupsCache = JSON.parse(require('fs').readFileSync(PERSONA_GROUPS_FILE, 'utf8')) } catch { personaGroupsCache = {} }
+  personaGroupsCache = readJsonIfSmall(PERSONA_GROUPS_FILE, {})
 }
 
 function getGroupPersona(channelKey) { const e = personaGroupsCache[String(channelKey)]; return e && e.persona ? e : null }
@@ -32,7 +60,7 @@ function setGroupPersona(channelKey, personaName) {
 function resetGroupPersona(channelKey) { delete personaGroupsCache[String(channelKey)]; atomicWriteJson(PERSONA_GROUPS_FILE, personaGroupsCache) }
 
 function loadPersonaUsers() {
-  try { personaUsersCache = JSON.parse(require('fs').readFileSync(PERSONA_USERS_FILE, 'utf8')) } catch { personaUsersCache = {} }
+  personaUsersCache = readJsonIfSmall(PERSONA_USERS_FILE, {})
 }
 
 function getUserPersona(userId) { return personaUsersCache[String(userId)] || null }
@@ -67,7 +95,7 @@ function getAvailablePersonals({ userFacing = false } = {}) {
       const entries = require('fs').readdirSync(dir, { withFileTypes: true })
       for (const entry of entries) {
         if (!entry.isFile() || !/^SKILL(\.[^.]+)?\.md$/i.test(entry.name)) continue
-        const content = require('fs').readFileSync(path.join(dir, entry.name), 'utf8').trim()
+        const content = readTextIfSmall(path.join(dir, entry.name), MAX_PERSONA_SKILL_BYTES)
         if (!content) continue
         const meta = parsePersonaFrontmatter(content)
         if (meta.name) personas.push({ name: meta.name, description: meta.description || '', file: entry.name, type, dir })
@@ -89,7 +117,7 @@ function loadPersonalSkill(personaName) {
       const entries = require('fs').readdirSync(dir)
       for (const entry of entries) {
         if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
-        const content = require('fs').readFileSync(path.join(dir, entry), 'utf8').trim()
+        const content = readTextIfSmall(path.join(dir, entry), MAX_PERSONA_SKILL_BYTES)
         const meta = parsePersonaFrontmatter(content)
         if (meta.name === personaName) {
           if (isDebugLogEnabled('persona')) console.warn(`[dongxuelian-ai] persona skill loaded: ${entry} name=${meta.name}`)

@@ -8,6 +8,72 @@ const { readTextFile, isDashScopeConfig } = require('./utils')
 const path = require('path')
 const fs = require('fs')
 
+const MAX_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_IMAGE_BYTES, 4 * 1024 * 1024, 128 * 1024, 16 * 1024 * 1024)
+const MAX_REMOTE_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_REMOTE_IMAGE_BYTES, MAX_IMAGE_BYTES, 128 * 1024, 16 * 1024 * 1024)
+const MAX_API_CONFIG_FILE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_API_CONFIG_MAX_BYTES, 256 * 1024, 4 * 1024, 1024 * 1024)
+const MAX_API_KEY_FILE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_API_KEY_MAX_BYTES, 64 * 1024, 1 * 1024, 256 * 1024)
+
+function parseApiPositiveInt(value, fallback, min, max) {
+  const parsed = parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
+const TOKEN_USAGE_FILE = path.join(DATA_DIR, 'token-usage.json')
+let _tokenUsageCache = null
+let _tokenUsageFlushTimer = null
+
+function recordTokenUsage(provider, tokens) {
+  if (!provider || !tokens || tokens <= 0) return
+  const date = new Date().toISOString().slice(0, 10)
+  if (!_tokenUsageCache) {
+    try {
+      const raw = fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')
+      _tokenUsageCache = JSON.parse(raw)
+    } catch { _tokenUsageCache = {} }
+  }
+  if (!_tokenUsageCache[date]) _tokenUsageCache[date] = {}
+  _tokenUsageCache[date][provider] = (_tokenUsageCache[date][provider] || 0) + tokens
+  if (!_tokenUsageFlushTimer) {
+    _tokenUsageFlushTimer = setTimeout(() => {
+      _tokenUsageFlushTimer = null
+      try { fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(_tokenUsageCache, null, 2)) } catch {}
+    }, 5000)
+  }
+}
+
+function flushTokenUsage() {
+  if (_tokenUsageCache && _tokenUsageFlushTimer) {
+    clearTimeout(_tokenUsageFlushTimer)
+    _tokenUsageFlushTimer = null
+    try { fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(_tokenUsageCache, null, 2)) } catch {}
+  }
+}
+
+function mimeFromImagePath(filePath = '') {
+  const ext = String(filePath || '').split('.').pop().toLowerCase()
+  return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' }[ext] || 'image/jpeg'
+}
+
+function readApiTextFileSync(file, maxBytes = MAX_API_KEY_FILE_BYTES) {
+  try {
+    const stat = fs.statSync(file)
+    if (!stat.isFile() || stat.size > maxBytes) return ''
+    return String(fs.readFileSync(file, 'utf8')).trim()
+  } catch {
+    return ''
+  }
+}
+
+function readApiJsonFileSync(file, fallback, maxBytes = MAX_API_CONFIG_FILE_BYTES) {
+  try {
+    const text = readApiTextFileSync(file, maxBytes)
+    return text ? JSON.parse(text) : fallback
+  } catch {
+    return fallback
+  }
+}
+
 function buildResponsesInput(messages = []) {
   return messages.filter(item => item && item.content).map(item => ({
     role: item.role === 'assistant' ? 'assistant' : item.role === 'system' ? 'system' : 'user',
@@ -33,7 +99,6 @@ function buildManagedThinkingArgs(config = {}, enabled = false) {
   const model = String(config.model || '')
   if (!enabled) {
     if (isDashScopeConfig(config)) return { enable_thinking: false }
-    if (/glm|mimo|kimi/i.test(model)) return { thinking: { type: 'disabled' } }
     if (/deepseek/i.test(model)) return { enable_thinking: false }
     return {}
   }
@@ -55,19 +120,43 @@ function rebuildFallbackExtraBody(extraBody = {}, config = {}) {
   return next
 }
 
-async function requestChatCompletions(messages, config, extraBody = {}) {
+function normalizeMessagesForProvider(messages = [], config = {}) {
+  if (!isDashScopeConfig(config)) return messages
+  const result = []
+  let firstSystem = null
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!message || !message.content) continue
+    if (message.role === 'system') {
+      if (!firstSystem) {
+        firstSystem = { ...message, content: String(message.content) }
+        result.push(firstSystem)
+      } else {
+        firstSystem.content += '\n\n' + String(message.content)
+      }
+    } else {
+      result.push(message)
+    }
+  }
+  return result
+}
+
+async function requestChatCompletions(messages, config, extraBody = {}, tools = null) {
   const fallbackSet = extraBody._fallbackSet || 'chat'
   if (!config._originalConfig && !config._fallbackTried) {
     config._originalConfig = { model: config.model, provider: config.provider, baseURL: config.baseURL, apiKey: config.apiKey }
   }
   const controller = new AbortController()
-  const timeout = config._fallbackTried ? 10000 : REQUEST_TIMEOUT
+  const requestedTimeout = Number(extraBody._timeoutMs)
+  const timeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+    ? Math.max(1000, Math.min(REQUEST_TIMEOUT, requestedTimeout))
+    : config._fallbackTried ? 10000 : REQUEST_TIMEOUT
   const timer = setTimeout(() => controller.abort(), timeout)
   const filteredExtraBody = {}
   for (const key of ['max_tokens', 'enable_search', 'web_search_options', 'search_options', 'enable_thinking', 'thinking']) {
     if (extraBody[key] !== undefined) filteredExtraBody[key] = extraBody[key]
   }
   const maxTokens = filteredExtraBody.max_tokens || 1500
+  const providerMessages = normalizeMessagesForProvider(messages, config)
   try {
     let response
     try {
@@ -76,8 +165,9 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
         body: JSON.stringify({
           model: config.model, temperature: 0.9, max_tokens: maxTokens,
-          ...(isDashScopeConfig(config) ? { enable_thinking: false } : {}),
-          ...filteredExtraBody, messages,
+          ...buildManagedThinkingArgs(config, !!extraBody._thinkingEnabled),
+          ...filteredExtraBody, messages: providerMessages,
+          ...(tools && Array.isArray(tools) && tools.length ? { tools, tool_choice: 'auto' } : {}),
         }),
       })
     } finally { clearTimeout(timer) }
@@ -85,36 +175,49 @@ async function requestChatCompletions(messages, config, extraBody = {}) {
       if (response.status === 429 || response.status === 401 || response.status === 400) {
         const fbStep = (config._fallbackTried || 0) + 1
         const fbConfig = await buildFallbackConfig(config, fbStep, fallbackSet)
-        if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
+        if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig), tools)
       }
       const text = await response.text().catch(() => '')
       const isFallback = (response.status === 429 || response.status === 401) && config._fallbackTried
       throw new Error((isFallback ? '[FALLBACK] ' : '') + `HTTP ${response.status} ${text}`.trim())
     }
     const data = await response.json()
+    const usageTokens = data?.usage?.total_tokens || 0
+    if (usageTokens > 0) recordTokenUsage(config.provider || 'unknown', usageTokens)
     const m = data?.choices?.[0]?.message || {}
+
+    // tool_calls 必须在 content 判空之前检查
+    if (tools && m.tool_calls && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+      return { type: 'tool_calls', tool_calls: m.tool_calls, message: m, reasoning: m.reasoning_content || '' }
+    }
+
     let content = m.content && m.content.trim() ? m.content : ''
-    if (!content && m.reasoning_content) {
-      console.warn('[dongxuelian-ai] reasoning-only model response dropped')
+    const reasoning = m.reasoning_content || ''
+
+    if (content && /<think>[\s\S]*?<\/think>/i.test(content)) {
+      content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+    }
+
+    if (!content && reasoning) {
       const fbStep = (config._fallbackTried || 0) + 1
       const fbConfig = await buildFallbackConfig(config, fbStep, fallbackSet)
-      if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
+      if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig), tools)
+      return { type: 'text', content: '', reasoning }
     }
-    if (!content) throw new Error('Empty model response.')
-    if (/request was rejected|considered high risk/i.test(content)) {
+    if (!content) {
+      if (config._fallbackTried) return { type: 'text', content: '', reasoning }
       const fbStep = (config._fallbackTried || 0) + 1
       const fbConfig = await buildFallbackConfig(config, fbStep, fallbackSet)
-      if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
-      content = ''
+      if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig), tools)
+      return { type: 'text', content: '', reasoning }
     }
-    if (!content) throw new Error('Empty model response.')
-    return String(content).replace(/\s+/g, ' ').trim()
+    return { type: 'text', content: String(content).replace(/\s+/g, ' ').trim(), reasoning }
   } catch (networkErr) {
     const isHttpError = String(networkErr?.message || '').includes('HTTP')
     const fbStep = (config._fallbackTried || 0) + 1
     if (!isHttpError && fbStep <= 5) {
       const fbConfig = await buildFallbackConfig(config, fbStep, fallbackSet)
-      if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig))
+      if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig), tools)
     }
     throw networkErr
   }
@@ -135,6 +238,8 @@ async function requestOpenAIResponsesWithSearch(messages, config) {
     })
     if (!response.ok) { const text = await response.text().catch(() => ''); throw new Error(`HTTP ${response.status} ${text}`.trim()) }
     const data = await response.json()
+    const usageTokens = data?.usage?.total_tokens || 0
+    if (usageTokens > 0) recordTokenUsage(config.provider || 'unknown', usageTokens)
     return extractResponsesText(data)
   } finally { clearTimeout(timer) }
 }
@@ -160,27 +265,21 @@ const FALLBACK_DEFAULTS = {
 }
 
 function readFallbackSteps() {
-  try {
-    const raw = fs.readFileSync(FALLBACK_CHAINS_FILE, 'utf8')
-    const data = JSON.parse(raw)
-    if (data && data.chains) return data.chains
-  } catch {}
+  const data = readApiJsonFileSync(FALLBACK_CHAINS_FILE, null)
+  if (data && data.chains) return data.chains
   return null
 }
 
 function readCustomProviders() {
-  try {
-    const raw = fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8')
-    return JSON.parse(raw)
-  } catch {}
-  return []
+  const data = readApiJsonFileSync(CUSTOM_PROVIDERS_FILE, [])
+  return Array.isArray(data) ? data : []
 }
 
 function resolveCustomProviderKey(providerId, fallbackKey) {
   const custom = readCustomProviders()
   const cp = custom.find(function(p) { return p.id === providerId })
   if (!cp || !cp.keyFile) return fallbackKey
-  try { return String(fs.readFileSync(cp.keyFile, 'utf8')).trim().replace(/[\r\n]+/g, '') } catch { return fallbackKey }
+  return readApiTextFileSync(cp.keyFile).replace(/[\r\n]+/g, '') || fallbackKey
 }
 
 function resolveFallbackProvider(fbStep, config) {
@@ -194,7 +293,8 @@ function resolveFallbackProvider(fbStep, config) {
   const cp = custom.find(function(p) { return p.id === fbStep.provider })
   if (!cp) return config.apiKey
   if (cp.keyFile) {
-    try { return String(fs.readFileSync(cp.keyFile, 'utf8')).trim().replace(/[\r\n]+/g, '') } catch {}
+    const key = readApiTextFileSync(cp.keyFile).replace(/[\r\n]+/g, '')
+    if (key) return key
   }
   return config.apiKey
 }
@@ -215,12 +315,12 @@ async function buildFallbackConfig(config, step, fallbackSet) {
     const cp = (readCustomProviders()).find(function(p) { return p.id === fb.provider })
     if (!cp) return null
     let apiKey = config.apiKey
-    if (cp.keyFile) { try { apiKey = String(fs.readFileSync(cp.keyFile, 'utf8')).trim().replace(/[\r\n]+/g, '') } catch {} }
+    if (cp.keyFile) apiKey = readApiTextFileSync(cp.keyFile).replace(/[\r\n]+/g, '') || apiKey
     return Object.assign({}, config, { _fallbackTried: step, provider: fb.provider, model: fb.model, baseURL: String(cp.baseURL || '').replace(/\/+$/, ''), apiKey: apiKey })
   }
   let nextKey = config.apiKey
   if (fb.keyFile) {
-    try { nextKey = (String(fs.readFileSync(fb.keyFile, 'utf8'))).trim().replace(/[\r\n]+/g, '') } catch {}
+    nextKey = readApiTextFileSync(fb.keyFile).replace(/[\r\n]+/g, '') || nextKey
   }
   return Object.assign({}, config, { _fallbackTried: step, provider: fb.provider, model: fb.model, baseURL: String(provider.baseURL).replace(/\/+$/, ''), apiKey: nextKey })
 }
@@ -282,7 +382,7 @@ function callGetForwardMsg(forwardId) {
     { id: forwardId },
     'gf',
     10000,
-    message => (message.data ? (message.data.messages || message.data.message || (Array.isArray(message.data) ? message.data : null)) : null)
+    message => message.data ? (message.data.messages || message.data.message || (Array.isArray(message.data) ? message.data : null)) : null
   )
 }
 
@@ -317,7 +417,14 @@ function getGroupInfo(groupId, timeoutMs = 800) {
 }
 
 async function readImageAsBase64(filePath) {
-  try { const buf = require('fs').readFileSync(filePath); const ext = filePath.split('.').pop().toLowerCase(); const m = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' }; return `data:${m[ext] || 'image/jpeg'};base64,${buf.toString('base64')}` } catch { return null }
+  try {
+    const stat = fs.statSync(filePath)
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_IMAGE_BYTES) return null
+    const buf = fs.readFileSync(filePath)
+    return `data:${mimeFromImagePath(filePath)};base64,${buf.toString('base64')}`
+  } catch {
+    return null
+  }
 }
 
 function extractImageFileFromElements(session) {
@@ -349,11 +456,39 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
         finishDownload(null)
       }, timeoutMs)
       request = mod.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+        const status = Number(res.statusCode || 0)
+        if (status >= 300 && status < 400 && res.headers.location) {
+          res.resume()
+          return finishDownload(null)
+        }
+        if (status !== 200) {
+          res.resume()
+          return finishDownload(null)
+        }
+        const type = String(res.headers['content-type'] || 'image/jpeg').split(';')[0].trim().toLowerCase()
+        if (type && !/^image\/(?:png|jpe?g|gif|webp|bmp)$/.test(type)) {
+          res.resume()
+          return finishDownload(null)
+        }
+        const declared = parseInt(res.headers['content-length'], 10)
+        if (Number.isFinite(declared) && declared > MAX_REMOTE_IMAGE_BYTES) {
+          res.resume()
+          return finishDownload(null)
+        }
         const chunks = []
-        res.on('data', c => chunks.push(c))
+        let received = 0
+        res.on('data', c => {
+          received += c.length
+          if (received > MAX_REMOTE_IMAGE_BYTES) {
+            try { if (request) request.destroy() } catch {}
+            return finishDownload(null)
+          }
+          chunks.push(c)
+        })
         res.on('end', () => {
           const buf = Buffer.concat(chunks)
-          finishDownload(`data:${res.headers['content-type'] || 'image/jpeg'};base64,${buf.toString('base64')}`)
+          if (!buf.length || buf.length > MAX_REMOTE_IMAGE_BYTES) return finishDownload(null)
+          finishDownload(`data:${type || 'image/jpeg'};base64,${buf.toString('base64')}`)
         })
         res.on('error', () => finishDownload(null))
       })
@@ -380,10 +515,10 @@ function isVisionModel(provider, modelId) {
 }
 
 module.exports = {
-  requestChatCompletions, buildResponsesInput, extractResponsesText,
+  requestChatCompletions, normalizeMessagesForProvider, buildResponsesInput, extractResponsesText,
   requestOpenAIResponsesWithSearch,
   buildFallbackConfig, getFallbackSteps,
   callGetImage, callGetForwardMsg, sendForwardMsg, getGroupMemberInfo, getGroupInfo,
   readImageAsBase64, extractImageFileFromElements, downloadImageAsBase64,
-  isVisionModel,
+  isVisionModel, recordTokenUsage, flushTokenUsage,
 }

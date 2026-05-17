@@ -17,9 +17,15 @@ let adminUserIdsCache = null
 let thinkingEnabled = false
 
 const DEFAULT_ADMIN_USER_IDS = ['100000000', '200000000']
+const MAX_RUNTIME_TEXT_BYTES = 64 * 1024
+const MAX_ADMIN_IDS_BYTES = 128 * 1024
 
 async function readRuntimeTextFile(file) {
-  try { return (await fsp.readFile(file, 'utf8')).trim() } catch { return '' }
+  try {
+    const stat = await fsp.stat(file)
+    if (!stat.isFile() || stat.size > MAX_RUNTIME_TEXT_BYTES) return ''
+    return (await fsp.readFile(file, 'utf8')).trim()
+  } catch { return '' }
 }
 
 function parseRuntimeEnabledText(value = '') {
@@ -37,6 +43,8 @@ function isRuntimeDashScopeConfig(config = {}) {
 
 function readAdminUserIdsFile() {
   try {
+    const stat = fs.statSync(ADMIN_IDS_FILE)
+    if (!stat.isFile() || stat.size > MAX_ADMIN_IDS_BYTES) return null
     const parsed = JSON.parse(fs.readFileSync(ADMIN_IDS_FILE, 'utf8'))
     if (!Array.isArray(parsed)) return null
     const ids = parsed

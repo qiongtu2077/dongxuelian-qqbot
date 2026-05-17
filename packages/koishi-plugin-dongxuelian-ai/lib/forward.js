@@ -11,7 +11,7 @@ const { logDebug } = require('./logging-config')
 const FORWARD_ID_RE = /(?:\[CQ:forward,id=([^,\]]+)\])|<forward\s+id="([^"]+)"\/>/
 const BLANK_NICK_CHARS_RE = /[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g
 const DEFAULT_FORWARD_NICKNAME = '群友'
-const NESTED_FORWARD_UNAVAILABLE = '[嵌套转发：内容暂不可读]'
+const NESTED_FORWARD_UNAVAILABLE = '这个转发链接太深啦，我看不到里面是什么'
 
 function getLogger(ctx) {
   return ctx && typeof ctx.logger === 'function' ? ctx.logger('dongxuelian-ai') : null

@@ -29,6 +29,9 @@ const { analyzeIncomingMessage, normalizeText } = require('./message-reader')
 const { loadStickerCache, sendReply } = require('./reply')
 const { resolveForwardSummary } = require('./forward')
 const { prepareVisionRequest, isVisionSession } = require('./vision')
+const { storeImageUrl, cacheImageFile } = require('./image-store')
+const { enqueueAnalysis } = require('./image-analyzer')
+const { transcribeVoice } = require('./voice')
 const {
   classifySendError,
   sanitizeForRateLimit,
@@ -39,92 +42,6 @@ const {
   checkPlatformMuteStatus,
 } = require('./send-guard')
 
-// ===== @satorijs/core@3.7.0 兼容补丁：Session 缺失方法 =====
-function __patchBuildStripped(session) {
-  if (session._stripped && typeof session._stripped === 'object') return session._stripped
-  const source = Array.isArray(session.elements) ? session.elements : Array.isArray(session.event?.message?.elements) ? session.event.message.elements : []
-  const elements = source.slice()
-  let hasAt = false
-  let appel = false
-  let atSelf = false
-  const selfId = String(session.selfId || session.bot?.selfId || session.event?.selfId || '')
-  const quoteUserId = String(session.quote?.user?.id || '')
-  while (elements[0]?.type === 'at') {
-    const id = String(elements.shift()?.attrs?.id || '')
-    if (selfId && id === selfId) { atSelf = true; appel = true }
-    if (!quoteUserId || id !== quoteUserId) hasAt = true
-    while (elements[0]?.type === 'text' && !String(elements[0].attrs?.content || '').trim()) { elements.shift() }
-  }
-  let content = elements.map(function(element) {
-    if (!element) return ''
-    if (element.type === 'text') return String(element.attrs?.content || '')
-    if (element.type === 'at') {
-      const id = element.attrs?.id || ''
-      return id ? '<at id="' + id + '"/>' : ''
-    }
-    return ''
-  }).join('').trim()
-  if (!hasAt) {
-    const nicknames = session?.app?.koishi?.config?.nickname || session?.app?.config?.nickname || []
-    const list = Array.isArray(nicknames) ? nicknames : [nicknames]
-    let val = content
-    if (val.startsWith('@')) val = val.slice(1)
-    for (let index = 0; index < list.length; index++) {
-      const name = String(list[index] || '')
-      if (!name || !val.startsWith(name)) continue
-      const rest = val.slice(name.length)
-      const match = /^([,\uFF0C\u3001\s]+|$)/.exec(rest)
-      if (!match) continue
-      appel = true; content = rest.slice(match[0].length).trim(); break
-    }
-  }
-  session._stripped = { hasAt: hasAt, content: content, appel: appel, atSelf: atSelf, prefix: null }
-  return session._stripped
-}
-
-function __patchInstallAccessors(target) {
-  if (!target || target.__dongxuelianStrippedPatch) return
-  Object.defineProperty(target, 'stripped', { configurable: true, enumerable: false,
-    get: function() { return __patchBuildStripped(this) },
-    set: function(v) { if (v && typeof v === 'object') this._stripped = v; else if (v === undefined) this._stripped = undefined }
-  })
-  Object.defineProperty(target, 'parsed', { configurable: true, enumerable: false,
-    get: function() { return this.stripped }, set: function(v) { this.stripped = v }
-  })
-  Object.defineProperty(target, '__dongxuelianStrippedPatch', { value: true, configurable: true, enumerable: false })
-}
-
-// 安装到 Session 原型
-__patchInstallAccessors(KoishiSession && KoishiSession.prototype)
-
-// 包装 Bot.prototype.session()
-const __origSession = KoishiBot.prototype.session
-if (!__origSession.__dongxuelianPatched) {
-  KoishiBot.prototype.session = function(event) {
-    const session = __origSession.call(this, event)
-    if (!session || typeof session !== 'object') return session
-    try { if (session.stripped !== undefined) return session } catch (error) {}
-    __patchInstallAccessors(session)
-    return session
-  }
-  KoishiBot.prototype.session.__dongxuelianPatched = true
-}
-
-// Resolve
-if (!KoishiSession.prototype.resolve) {
-  KoishiSession.prototype.resolve = function(value) {
-    if (typeof value === 'function') return value(this)
-    return value
-  }
-}
-
-// Send（需 h.normalize 解析 CQ 码）
-if (!KoishiSession.prototype.send) {
-  KoishiSession.prototype.send = async function(content) {
-    if (!this.bot || typeof this.bot.sendMessage !== 'function') throw new Error('Bot not available for sending')
-    return this.bot.sendMessage(this.channelId, require('koishi').h.normalize(content), this.guildId)
-  }
-}
 
 const {
   resetPoliticalDetectCache,
@@ -189,13 +106,20 @@ const {
   extractAtIds,
   isDirectAtBot, getBotMentionCount, hasOtherMentions,
   formatPercent,
+  isJailbreakAttempt,
+  sanitizeUserInput,
+  pickJailbreakFallbackReply,
   readTextFile, writeTextFile, readJsonFile, writeJsonFile,
   shouldTriggerRandom, calculateWillFactor,
-  normalizeUrl,
+  normalizeUrl, extractImageUrls,
   sanitizeFileToken, safeJsonStringify,
   todayCst,
 } = require('./utils')
 const { logDebug } = require('./logging-config')
+const { heuristicRoute, buildExplicitSearchRunOptions } = require('./agent/router')
+const agentEngine = require('./agent/engine')
+const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue')
+const { recordAgentChatResult } = require('./agent-chat-bridge')
 
 // @satorijs/core@3.7.0 缺少 stripped / parsed / resolve / send，这里随插件加载安装兼容补丁。
 function patchElementText(element) {
@@ -314,7 +238,7 @@ if (KoishiSession && KoishiSession.prototype && !KoishiSession.prototype.send) {
     if (!this.bot || typeof this.bot.sendMessage !== 'function') {
       throw new Error('Bot not available for sending')
     }
-    return this.bot.sendMessage(this.channelId, content, this.guildId)
+    return this.bot.sendMessage(this.channelId, require('koishi').h.normalize(content), this.guildId)
   }
 }
 
@@ -348,6 +272,11 @@ let userBlacklistCache = null
 let userBlacklistFingerprint = ''
 const lastEmotionCache = new Map()
 
+function restoreTodayCacheEntry(key, data) {
+  if (!data || data.date !== todayCst() || !Array.isArray(data.messages) || data.messages.length <= 0) return
+  channelTodayCache.set(key, { date: data.date, messages: data.messages.slice(-3000), updatedAt: Date.now() })
+}
+
 // 人格系统：per-group persona 配置
 // 格式: { "channelKey": { persona: "name" | null } }
 
@@ -357,6 +286,39 @@ const lastEmotionCache = new Map()
 // 格式: { "userId": "personaName" }
 
 // 计算最终 persona：用户级 > 群级 > 默认
+
+function handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered }) {
+  if (chatResult && typeof chatResult === 'object' && chatResult.heavyToolsRequested) {
+    safeSendReply(ctx, session, chatResult.text, randomTriggered)
+    const agentConfig = require('./agent/config').getAgentConfig()
+    configureAgentQueue(agentConfig.queue || {})
+    const searchQuery = chatResult.heavyToolsRequested.find(t => t.name === 'web_search')?.args?.query || userText
+    const searchRunOptions = buildExplicitSearchRunOptions(searchQuery)
+    enqueueAgentTask({
+      channelKey,
+      userId: currentUserId,
+      timeoutMs: agentConfig.queue?.timeoutMs,
+      fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, agentMode: true, ...searchRunOptions }),
+    }).then(agentResult => {
+      recordAgentChatResult({ session, userMessage: userText, userName, userId: currentUserId, channelKey, agentResult })
+      const raw = agentResult.reply || '(搜索未获取有效结果)'
+      const { sanitizeReply, trimReply, MAX_OUTPUT_CHARS_FRIENDLY, hasBannedOutput } = require('./utils')
+      const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply-guard')
+      const { JAILBREAK_OUTPUT_RE, pickJailbreakFallbackReply } = require('./constants')
+      let filtered = raw
+      if (JAILBREAK_OUTPUT_RE.test(filtered)) filtered = pickJailbreakFallbackReply()
+      if (hasBannedOutput(filtered)) filtered = '这活别找我，换个工具。'
+      if (isUnsafeThinkingReply(filtered)) filtered = '我还有事，下次再说。'
+      if (hasInternalContextLeak(filtered)) filtered = '我刚刚串台了，重说一句。'
+      filtered = trimReply(sanitizeReply(filtered, userName), MAX_OUTPUT_CHARS_FRIENDLY)
+      return safeSendReply(ctx, session, filtered, false)
+    }).catch(error => {
+      ctx.logger('dongxuelian-ai').warn(`chat heavy-tool agent failed: ${error.message}`)
+    })
+    return null
+  }
+  return typeof chatResult === 'string' ? chatResult : (chatResult?.text || chatResult || '')
+}
 
 function enqueueForChannel(channelKey, fn, maxDepth) {
   const existing = channelQueues.get(channelKey) || Promise.resolve()
@@ -719,7 +681,7 @@ exports.apply = (ctx) => {
           const data = JSON.parse(raw)
           if (data && data.date === today && Array.isArray(data.messages) && data.messages.length > 0) {
             const key = f.replace('today-cache-', '').replace('.json', '')
-            channelTodayCache.set(key, { date: today, messages: data.messages, updatedAt: Date.now() })
+            restoreTodayCacheEntry(key, data)
           }
         } catch {}
       }
@@ -727,6 +689,15 @@ exports.apply = (ctx) => {
     trimChannelRuntimeCaches()
     cleanupDailyStatsFiles().catch(error => ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${error.message}`))
     scheduleDailyStatsCleanup(ctx)
+    try {
+      const agentConfig = require('./agent/config').getAgentConfig()
+      configureAgentQueue(agentConfig.queue || {})
+      const bot = Array.isArray(ctx.bots) ? ctx.bots[0] : ctx.bot
+      const count = await require('./agent/cron').startCronScheduler({ bot, engine: agentEngine })
+      if (agentConfig.cron?.enabled) ctx.logger('dongxuelian-ai').info(`agent cron scheduler restored ${count} task(s)`)
+    } catch (error) {
+      ctx.logger('dongxuelian-ai').warn(`agent cron scheduler restore failed: ${error.message}`)
+    }
     ctx.logger('dongxuelian-ai').info(`dongxuelian-ai ${PLUGIN_VERSION} loaded`)
   })
 
@@ -757,7 +728,7 @@ exports.apply = (ctx) => {
     } catch {}
 
     const analyzed = analyzeIncomingMessage(session, { sanitizeUserName })
-    const plain = collapseRepeatedBotCalls(stripMentions(analyzed.plain || content))
+    let plain = collapseRepeatedBotCalls(stripMentions(analyzed.plain || ''))
     const memoryText = normalizeText(stripMentions(analyzed.memory || plain))
     const directAt = isDirectAtBot(session)
 
@@ -777,7 +748,7 @@ exports.apply = (ctx) => {
       }
     }
 
-    if (!plain && !directAt) return next()
+    if (!plain && !directAt && !session.isDirect && !analyzed.hasVisual && !analyzed.hasAudio) return next()
 
     logDebug(ctx, 'middleware', `entry userId=${session.userId} isDirect=${!!session.isDirect} guildId=${session.guildId} type=${session.type} subtype=${session.subtype} contentLen=${(session.content || '').length}`)
     logDebug(ctx, 'middleware', `plain=${JSON.stringify(plain).slice(0, 100)} directAt=${directAt} isDirect=${!!session.isDirect}`)
@@ -787,6 +758,40 @@ exports.apply = (ctx) => {
     const isPrivate = !!session.isDirect
     const inGuild = !isPrivate
     const channelKey  = getChannelKey(session)
+
+    if (analyzed.hasVisual && channelKey && session.messageId) {
+      const segments = Array.isArray(session.event?.message) ? session.event.message : []
+      const imgSeg = segments.find(s => s.type === 'image')
+      const imgFile = imgSeg?.data?.file || null
+      const imgUrl = imgSeg?.data?.url || ''
+      if (imgUrl && /^https?:\/\//.test(imgUrl)) {
+        storeImageUrl(channelKey, session.messageId, imgUrl, imgFile)
+      } else if (imgSeg) {
+        const fallbackUrl = extractImageUrls(content)[0]
+        if (fallbackUrl) storeImageUrl(channelKey, session.messageId, fallbackUrl, imgFile)
+      }
+      if (!plain.includes('[图片]')) plain = (plain ? plain + ' ' : '') + '[图片]'
+      enqueueAnalysis(channelKey, session.messageId)
+    }
+
+    if (analyzed.hasAudio && (session.isDirect || directAt)) {
+      try {
+        const { loadConfig } = require('./runtime-config')
+        const cfg = await loadConfig()
+        const transcribed = await Promise.race([
+          transcribeVoice(session, cfg),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('asr timeout')), 10000)),
+        ])
+        if (transcribed) {
+          plain = `[语音转文字：${transcribed}]`
+        } else {
+          plain = '[语音消息]'
+        }
+      } catch {
+        plain = '[语音消息]'
+      }
+    }
+
     const currentUserId = session.userId || session.author?.id || session.username
     const userName = sanitizeUserName(
       session.author?.nick ||
@@ -1087,12 +1092,12 @@ exports.apply = (ctx) => {
           channelPendingRandom.delete(channelKey)
           if (p && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))) {
             channelMissCount.set(channelKey, 0)
-            enqueueForChannel(channelKey, () => chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText }).then(reply => safeSendReply(ctx, session, reply, true)), 4)
+            enqueueForChannel(channelKey, () => chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId }).then(chatResult => { let reply = handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true }); if (reply) { reply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply; safeSendReply(ctx, session, reply, true) } }), 4)
           } else {
             channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
           }
         }, 15000)
-        channelPendingRandom.set(channelKey, { timer, combinedText: plain, sharedContextNote: pendingSharedContextNote, quotedMessageNote, forwardSummaryText })
+        channelPendingRandom.set(channelKey, { timer, combinedText: plain, sharedContextNote: pendingSharedContextNote, quotedMessageNote, forwardSummaryText, replyToId: analyzed.replyToId })
       }
     }
     const randomTriggered = isRandomCandidate && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))
@@ -1167,33 +1172,85 @@ exports.apply = (ctx) => {
     }
 
     const maxDepth = inGuild ? 4 : 2
-    enqueueForChannel(channelKey, () =>
-      chat(session, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds })
-        .then(reply => {
-          // AI 回复中检测到政治拒绝 → 通知处理者
-          if (inGuild && /别问了，这个我不聊/.test(reply)) {
-            notifySensitiveHandlers(session, channelKey, { throttle: true }).catch(() => {})
-          }
+    enqueueForChannel(channelKey, async () => {
+      try {
+        let route = heuristicRoute(userText, 'qq')
+        if (isJailbreakAttempt(sanitizeUserInput(userText))) {
+          const reply = pickJailbreakFallbackReply()
           return safeSendReply(ctx, session, reply, randomTriggered)
-        })
-        .catch(err => {
-          const m = err && err.message ? String(err.message) : ''
-          const code = err && err.code ? String(err.code) : ''
-          ctx.logger('dongxuelian-ai').warn(`chat failed: name=${err && err.name} code=${code} message=${m}`)
-          let msg = '东雪莲暂时无法连接。'
-          if (/fallback/i.test(m)) msg = '我寄了'
-          else if (/Empty model/i.test(m)) msg = '我摆了，懒得回'
-          else if (/data_inspection|DataInspection|inappropriate content|content_filter|content policy|moderation|safety|审核|风控|ResponsibleAIPolicy|ResponsibleAI|blocked|censored/i.test(m)) {
-            msg = /data_inspection|DataInspection|inappropriate content|图/i.test(m) ? '这个图不合适，不说了吧' : '这话我接不了，换一句吧。'
-          } else if (/timeout|ETIMEDOUT|aborted|AbortError|deadline/i.test(m) || /TIMED_OUT|ETIMEDOUT/i.test(code)) {
-            msg = '请求超时了，一会再来。'
-          } else if (/ECONNRESET|ECONNREFUSED|ENOTFOUND|ENETUNREACH|socket hang|TLS|SSL|fetch failed/i.test(m) || /^ECONN/.test(code)) {
-            msg = '网络抖了一下，一会再来。'
-          } else if (/429|rate limit|too many requests|quota/i.test(m)) {
-            msg = '请求太勤了，稍后再试。'
-          }
-          return safeSendReply(ctx, session, msg, randomTriggered)
-        })
-    , maxDepth)
+        }
+        if (route.useAgent) {
+          logDebug(ctx, 'agent', `auto-route reason=${route.reason} channel=${channelKey}`)
+          const searchRunOptions = buildExplicitSearchRunOptions(userText)
+          const agentConfig = require('./agent/config').getAgentConfig()
+          configureAgentQueue(agentConfig.queue || {})
+          enqueueAgentTask({
+            channelKey,
+            userId: currentUserId,
+            timeoutMs: agentConfig.queue?.timeoutMs,
+            fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, agentMode: true, ...searchRunOptions }),
+          }).then(async agentResult => {
+            recordAgentChatResult({ session, userMessage: userText, userName, userId: currentUserId, channelKey, agentResult })
+            const agentReplyText = agentResult.reply || '(未获取有效回复)'
+            const chatReply = await chat(session, userText, ctx, {
+              randomTriggered,
+              isAgentResult: true,
+              agentResultText: agentReplyText,
+            })
+            const finalReply = handleChatResult(chatReply, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered })
+            if (finalReply !== null) return safeSendReply(ctx, session, finalReply, randomTriggered)
+            return safeSendReply(ctx, session, agentReplyText.slice(0, 500), randomTriggered)
+          }).catch(error => {
+            const code = error && error.code ? String(error.code) : ''
+            if (code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED') return safeSendReply(ctx, session, error.message, randomTriggered)
+            ctx.logger('dongxuelian-ai').warn(`agent auto-route failed: ${error.message}`)
+            return safeSendReply(ctx, session, 'Agent 暂时不可用。', randomTriggered)
+          })
+          return
+        }
+        const chatResult = await chat(session, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId })
+        const reply = handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered })
+        if (!reply) return
+        if (randomTriggered && inGuild) {
+          try {
+            const { shouldTriggerRandomVoice, markChannelCooldown, synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice, extractVoiceStyle, stripVoiceStyleTag } = require('./tts')
+            if (shouldTriggerRandomVoice(channelKey)) {
+              const resolved = resolvePersona(channelKey, currentUserId)
+              const voiceOpts = resolvePersonaVoice(resolved.name)
+              const styleOverride = extractVoiceStyle(reply)
+              if (styleOverride) voiceOpts.style = styleOverride
+              const ttsText = stripVoiceStyleTag(reply)
+              const buf = await synthesizeSpeech(ttsText, voiceOpts)
+              if (buf) {
+                const sent = await sendVoiceMessage(session, buf)
+                if (sent) { markChannelCooldown(channelKey); return }
+              }
+            }
+          } catch {}
+        }
+        if (inGuild && /别问了，这个我不聊/.test(reply)) {
+          notifySensitiveHandlers(session, channelKey, { throttle: true }).catch(() => {})
+        }
+        const finalReply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply
+        return safeSendReply(ctx, session, finalReply, randomTriggered)
+      } catch (err) {
+        const m = err && err.message ? String(err.message) : ''
+        const code = err && err.code ? String(err.code) : ''
+        ctx.logger('dongxuelian-ai').warn(`chat failed: name=${err && err.name} code=${code} message=${m}`)
+        let msg = '东雪莲暂时无法连接。'
+        if (/fallback/i.test(m)) msg = '我寄了'
+        else if (/Empty model/i.test(m)) msg = '我摆了，懒得回'
+        else if (/data_inspection|DataInspection|inappropriate content|content_filter|content policy|moderation|safety|审核|风控|ResponsibleAIPolicy|ResponsibleAI|blocked|censored/i.test(m)) {
+          msg = /data_inspection|DataInspection|inappropriate content|图/i.test(m) ? '这个图不合适，不说了吧' : '这话我接不了，换一句吧。'
+        } else if (/timeout|ETIMEDOUT|aborted|AbortError|deadline/i.test(m) || /TIMED_OUT|ETIMEDOUT/i.test(code)) {
+          msg = '请求超时了，一会再来。'
+        } else if (/ECONNRESET|ECONNREFUSED|ENOTFOUND|ENETUNREACH|socket hang|TLS|SSL|fetch failed/i.test(m) || /^ECONN/.test(code)) {
+          msg = '网络抖了一下，一会再来。'
+        } else if (/429|rate limit|too many requests|quota/i.test(m)) {
+          msg = '请求太勤了，稍后再试。'
+        }
+        return safeSendReply(ctx, session, msg, randomTriggered)
+      }
+    }, maxDepth)
   })
 }

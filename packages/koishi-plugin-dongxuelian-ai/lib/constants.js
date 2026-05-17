@@ -18,6 +18,9 @@ const PLUGIN_VERSION = '1.1.5'
 const KEY_FILE = path.join(DATA_DIR, 'ai-openai-key.txt')
 const MODEL_FILE = path.join(DATA_DIR, 'ai-model.txt')
 const BASE_URL_FILE = path.join(DATA_DIR, 'ai-base-url.txt')
+const VOICES_DIR = path.join(DATA_DIR, 'ai-voices')
+const TTS_TEMP_DIR = path.join(DATA_DIR, 'tts-temp')
+const VOICE_CONFIG_FILE = path.join(DATA_DIR, 'ai-voice-config.json')
 const SKILLS_DIR = path.join(DATA_DIR, 'ai-skills')
 const SKILLS_CORE_DIR = path.join(SKILLS_DIR, 'core')
 const SKILLS_MODES_DIR = path.join(SKILLS_DIR, 'modes')
@@ -87,6 +90,9 @@ const POLITICAL_DETECT_FILE = path.join(DATA_DIR, 'political-detect-enabled.json
 const SENSITIVE_CACHE_PREFIX = path.join(DATA_DIR, 'sensitive-cache-')
 const STICKER_DIR = path.join(DATA_DIR, 'stickers')
 const CONVERSATIONS_DIR = path.join(DATA_DIR, 'conversations')
+const TOOL_MODE_FILE = path.join(DATA_DIR, 'ai-tool-mode.txt')
+const TOOL_CONFIG_FILE = path.join(DATA_DIR, 'ai-tool-config.json')
+const MAX_TOOL_ROUNDS = 5
 
 const NUMERIC_GROUP_ID_RE = /^\d+$/
 const AT_ID_PATTERN_XML = /<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi
@@ -119,6 +125,7 @@ const RESERVED_PREFIXES = ['昵称', '删除昵称', '查看昵称', '查看集�
 module.exports = {
   DATA_DIR, PLUGIN_VERSION,
   KEY_FILE, MODEL_FILE, BASE_URL_FILE,
+  VOICES_DIR, TTS_TEMP_DIR, VOICE_CONFIG_FILE,
   SKILLS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR, SKILLS_PERSONAS_DIR, SKILLS_LORE_DIR,
   LORE_TRIGGER_SET, TERRA_LORE_TRIGGER_SET,
   PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, EVENT_DUMP_DIR,
@@ -142,6 +149,7 @@ module.exports = {
   THINKING_MODE_FILE, USER_PROFILE_DIR,
   POLITICAL_HANDLER_DIR, POLITICAL_DETECT_FILE, SENSITIVE_CACHE_PREFIX,
   STICKER_DIR, CONVERSATIONS_DIR,
+  TOOL_MODE_FILE, TOOL_CONFIG_FILE, MAX_TOOL_ROUNDS,
   NUMERIC_GROUP_ID_RE, AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ,
   OVERUSED_REPLY_PATTERNS,
   ABUSIVE_INPUT_RE, HOSTILE_INPUT_RE, RARE_PROVOCATION_RE, WIDE_RARE_PROVOKE_RE, HOSTILE_SINGLE_TOKENS,

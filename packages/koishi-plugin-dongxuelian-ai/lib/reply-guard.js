@@ -24,7 +24,7 @@ function shouldRetryRepeatedReply(session, reply = '') {
   if (!reply) return false
   if (isOverusedReply(reply)) return true
   const recentFingerprints = getReplyFingerprintHistory(session)
-  return recentFingerprints.some(prev => isReplyTooSimilar(reply, prev))
+  return recentFingerprints.some(prev => isReplyTooSimilar(reply, prev.content))
 }
 
 function buildRepeatRetryPrompt(userText, recentReplies = []) {
@@ -81,6 +81,10 @@ function stripStickerMarkersForGuard(reply = '') {
   return String(reply || '').replace(/\[图:[^\[\]]+\]/g, '').trim()
 }
 
+function hasInternalContextLeak(text = '') {
+  return /(?:这是你在本群的发言|这是.{0,20}在本群的发言|昵称：|发言：|<user>|<\/user>|\[群聊刷到\]|\[内部参考-用户近期发言风格\])/.test(String(text || ''))
+}
+
 module.exports = {
   shouldRetryRepeatedReply,
   buildRepeatRetryPrompt,
@@ -89,4 +93,5 @@ module.exports = {
   isConsecutiveUserRepeat,
   isUnsafeThinkingReply,
   stripStickerMarkersForGuard,
+  hasInternalContextLeak,
 }

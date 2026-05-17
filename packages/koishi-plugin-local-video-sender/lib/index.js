@@ -20,6 +20,8 @@ const MAX_720_HEIGHT = 720
 const PREFERRED_MAX_HEIGHT = 720
 const DUPLICATE_WINDOW_MS = 60 * 1000
 const DUPLICATE_HISTORY_LIMIT = 3
+const MAX_YTDLP_STDIO_BYTES = 1024 * 1024
+const MAX_VIDEO_BLACKLIST_BYTES = 128 * 1024
 const LEGACY_GROUP_BLACKLIST = new Set(['942033342'])
 
 const recentParseHistory = new Map()
@@ -64,7 +66,7 @@ const SINGLE_FILE_CANDIDATES = [
 
 function run(file, args, options = {}) {
   return new Promise((resolve, reject) => {
-    execFile(file, args, options, (error, stdout, stderr) => {
+    execFile(file, args, { maxBuffer: MAX_YTDLP_STDIO_BYTES, ...options }, (error, stdout, stderr) => {
       if (error) {
         error.stdout = stdout
         error.stderr = stderr
@@ -193,6 +195,8 @@ function loadVideoBlacklist(force = false) {
   let users = []
   if (fingerprint !== 'missing') {
     try {
+      const stat = fsSync.statSync(VIDEO_BLACKLIST_FILE)
+      if (!stat.isFile() || stat.size > MAX_VIDEO_BLACKLIST_BYTES) throw new Error('video blacklist too large')
       const raw = JSON.parse(fsSync.readFileSync(VIDEO_BLACKLIST_FILE, 'utf8'))
       groups = Array.isArray(raw) ? raw : Array.isArray(raw.groups) ? raw.groups : []
       users = raw && typeof raw === 'object' && Array.isArray(raw.users) ? raw.users : []

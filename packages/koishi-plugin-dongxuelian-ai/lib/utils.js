@@ -16,6 +16,14 @@ const {
   PROVIDERS, MAX_OUTPUT_CHARS_FRIENDLY,
 } = require('./constants')
 const { isAdminUserId } = require('./runtime-config')
+const MAX_TEXT_FILE_BYTES = parseUtilsPositiveInt(process.env.DONGXUELIAN_UTIL_TEXT_MAX_BYTES, 256 * 1024, 4 * 1024, 4 * 1024 * 1024)
+const MAX_JSON_FILE_BYTES = parseUtilsPositiveInt(process.env.DONGXUELIAN_UTIL_JSON_MAX_BYTES, 512 * 1024, 4 * 1024, 8 * 1024 * 1024)
+
+function parseUtilsPositiveInt(value, fallback, min, max) {
+  const parsed = parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
 
 function isRareProvocation(text = '') {
   const value = String(text).trim()
@@ -123,7 +131,15 @@ function hasOtherMentions(session) {
 
 function formatPercent(rate = 0) { return `${Number(rate * 100).toFixed(rate * 100 % 1 === 0 ? 0 : 1)}%` }
 
-async function readTextFile(file) { try { return (await require('fs/promises').readFile(file, 'utf8')).trim() } catch { return '' } }
+async function readTextFile(file, options = {}) {
+  try {
+    const fs = require('fs/promises')
+    const maxBytes = Math.max(1, parseInt(options.maxBytes, 10) || MAX_TEXT_FILE_BYTES)
+    const stat = await fs.stat(file)
+    if (!stat.isFile() || stat.size > maxBytes) return ''
+    return (await fs.readFile(file, 'utf8')).trim()
+  } catch { return '' }
+}
 
 async function writeFileAtomic(file, value) {
   const fs = require('fs/promises')
@@ -151,7 +167,15 @@ async function writeFileAtomic(file, value) {
 
 async function writeTextFile(file, value) { await writeFileAtomic(file, String(value)) }
 
-async function readJsonFile(file, fallback) { try { return JSON.parse(await require('fs/promises').readFile(file, 'utf8')) } catch { return fallback } }
+async function readJsonFile(file, fallback, options = {}) {
+  try {
+    const fs = require('fs/promises')
+    const maxBytes = Math.max(1, parseInt(options.maxBytes, 10) || MAX_JSON_FILE_BYTES)
+    const stat = await fs.stat(file)
+    if (!stat.isFile() || stat.size > maxBytes) return fallback
+    return JSON.parse(await fs.readFile(file, 'utf8'))
+  } catch { return fallback }
+}
 
 async function writeJsonFile(file, value) { await writeFileAtomic(file, JSON.stringify(value, null, 2)) }
 
@@ -182,6 +206,15 @@ function extractImageUrls(content = '') {
   while ((match = htmlSrcRegex.exec(content)) !== null) { const u = normalizeUrl(match[1]); if (u && !urls.includes(u)) urls.push(u) }
   const attrUrlRegex = /<(?:image|img|file)[^>]*?url\s*=\s*["']([^"']+)["'][^>]*\/?>/gi; attrUrlRegex.lastIndex = 0
   while ((match = attrUrlRegex.exec(content)) !== null) { const u = normalizeUrl(match[1]); if (u && !urls.includes(u)) urls.push(u) }
+  return [...new Set(urls)]
+}
+
+function extractVoiceUrls(content = '') {
+  const urls = []; let match
+  const cqRegex = /\[CQ:record[^\]]*?url=([^,\]\s]+)[^\]]*\]/gi
+  while ((match = cqRegex.exec(content)) !== null) { const u = normalizeUrl(match[1]); if (u) urls.push(u) }
+  const attrRegex = /<record[^>]*?url\s*=\s*["']([^"']+)["'][^>]*\/?>/gi
+  while ((match = attrRegex.exec(content)) !== null) { const u = normalizeUrl(match[1]); if (u && !urls.includes(u)) urls.push(u) }
   return [...new Set(urls)]
 }
 
@@ -236,7 +269,7 @@ function isOverusedReply(reply = '') {
 
 function hasBannedOutput(text) { return BANNED_ACTION_OUTPUT_RE.test(text) || OVERUSED_REPLY_PATTERNS.some(p => p.test(text)) }
 
-const THINKING_LEAK_RE = /(?:^|[\n。！？!?]\s*)(?:好的[，,]?)?用户.{0,30}发了个消息说[“"].{0,120}[”"].{0,60}(?:这应该是|应该是在|是在回应)|我(?:得|要|来)?(?:先)?看看(?:现在)?是什么情况|我记得.{0,30}(?:性格设定|人设|设定)|这个(?:场景|情况|上下文).{0,30}(?:看起来|应该是)|我应该.{0,40}(?:回应|回复|接话|吐槽)|我得.{0,30}(?:接上|顺着).{0,30}(?:话茬|意思)|可以顺着.{0,30}(?:意思|话茬).{0,30}(?:说|回复)|我现在(?:处于|是).{0,30}(?:模式|人设|角色)|对方没有敌意|正常聊天/
+const THINKING_LEAK_RE = /(?:^|[\n。！？!?]\s*)(?:好的[，,]?)?用户.{0,30}发了个消息说[“"].{0,120}[”"].{0,60}(?:这应该是|应该是在|是在回应)|我(?:得|要|来)?(?:先)?看看(?:现在)?是什么情况|我记得.{0,30}(?:性格设定|人设|设定)|这个(?:场景|情况|上下文).{0,30}(?:看起来|应该是)|我应该.{0,40}(?:回应|回复|接话|吐槽)|我得.{0,30}(?:接上|顺着).{0,30}(?:话茬|意思)|可以顺着.{0,30}(?:意思|话茬).{0,30}(?:说|回复)|我现在(?:处于|是).{0,30}(?:模式|人设|角色)|对方没有敌意|正常聊天|（[^）]*?(?:收到.*新消息|这是什么意思|只有昵称|用户[发说]了|从上下文看|这应该是在|是在回应|是不是在).{0,60}）/
 
 function isThinkingLeak(text = '') {
   const value = normalizeText(text)
@@ -280,6 +313,11 @@ function trimReply(text = '', maxChars = MAX_OUTPUT_CHARS_FRIENDLY) {
 
 function sanitizeReply(text = '', userName = '') {
   let t = String(text).replace(/^(根据|作为|我是|我的角色)\S{0,20}[:：，。\s]?/g, '').trim()
+  t = t.replace(/https?:\/\/multimedia\.nt\.qq\.com\.cn\/[^\s）)》\]]*\s*/g, '').trim()
+  t = t.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '').trim()
+  t = t.replace(/<tool_call>\s*<function=[^>]*>[\s\S]*?<\/function>\s*<\/tool_call>/gi, '').trim()
+  t = t.replace(/<tool_call>[^<]*<function=[^<]*<\/function>[^<]*<\/tool_call>/gi, '').trim()
+  if (!t) t = String(text).replace(/<tool_call>[\s\S]*$/gi, '').trim()
   if (userName) {
     const esc = userName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     t = t.replace(new RegExp('(?<!的)' + esc + '(?=[，,。！!？?]?\\s*$)'), '')
@@ -412,7 +450,7 @@ module.exports = {
   sleep, getRandomDelayMs, shouldTriggerRandom,
   parseEnabledText,
   getBaseHostname, isDashScopeConfig, isOpenAIOfficialConfig,
-  normalizeUrl, extractImageUrls,
+  normalizeUrl, extractImageUrls, extractVoiceUrls,
   sanitizeFileToken, safeJsonStringify,
   normalizeReplyFingerprint,
   longestCommonSubstringLength, charSetJaccardOverlap,

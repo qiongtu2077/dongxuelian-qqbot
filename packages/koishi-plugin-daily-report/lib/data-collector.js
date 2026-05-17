@@ -8,6 +8,15 @@ const path = require('path')
 const { DATA_DIR } = require('./config')
 const { todayCst, getShanghaiHourFromTs } = require('../../koishi-plugin-dongxuelian-ai/lib/utils')
 
+const MAX_CACHE_FILE_BYTES = parsePositiveInt(process.env.DAILY_REPORT_MAX_CACHE_FILE_BYTES, 8 * 1024 * 1024, 512 * 1024, 64 * 1024 * 1024)
+const MAX_ANALYSIS_MESSAGES = parsePositiveInt(process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES, 2000, 200, 10000)
+
+function parsePositiveInt(value, fallback, min, max) {
+  const parsed = parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
 function safeKey(channelKey) {
   return String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
 }
@@ -44,6 +53,8 @@ function collectReportData(channelKey) {
 
   let cache = null
   try {
+    const stat = fs.statSync(cacheFile)
+    if (!stat.isFile() || stat.size > MAX_CACHE_FILE_BYTES) return null
     const raw = fs.readFileSync(cacheFile, 'utf8')
     cache = JSON.parse(raw)
   } catch {
@@ -61,6 +72,7 @@ function processMessages(messages, today) {
   if (!messages.length) return null
 
   const totalMessages = messages.length
+  const analysisMessages = messages.length > MAX_ANALYSIS_MESSAGES ? messages.slice(-MAX_ANALYSIS_MESSAGES) : messages
 
   const memberMap = new Map()
   for (const msg of messages) {
@@ -125,7 +137,10 @@ function processMessages(messages, today) {
     hourlyActivity,
     peakHour,
     topMembers,
-    messages,
+    messages: analysisMessages,
+    analysisMessages,
+    sampledMessages: analysisMessages.length,
+    truncatedMessages: Math.max(0, messages.length - analysisMessages.length),
   }
 }
 

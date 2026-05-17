@@ -93,6 +93,7 @@ function createFeatureState() {
   return {
     hasText: false,
     hasVisual: false,
+    hasAudio: false,
     hasFile: false,
     hasForward: false,
     hasLink: false,
@@ -104,6 +105,7 @@ function createFeatureState() {
 function mergeFeatureState(target, source) {
   target.hasText = target.hasText || source.hasText
   target.hasVisual = target.hasVisual || source.hasVisual
+  target.hasAudio = target.hasAudio || source.hasAudio
   target.hasFile = target.hasFile || source.hasFile
   target.hasForward = target.hasForward || source.hasForward
   target.hasLink = target.hasLink || source.hasLink
@@ -131,7 +133,11 @@ function collectSegmentFeatures(segments, depth = 0) {
     }
 
     if (type === 'face' || type === 'at') continue
-    if (type === 'mface' || type === 'image' || type === 'img' || type === 'video' || type === 'record') {
+    if (type === 'record') {
+      features.hasAudio = true
+      continue
+    }
+    if (type === 'mface' || type === 'image' || type === 'img' || type === 'video') {
       features.hasVisual = true
       continue
     }
@@ -172,7 +178,8 @@ function collectFallbackFeatures(content = '') {
   if (URL_TEST_RE.test(value) || /\bBV[0-9A-Za-z]{10}\b/i.test(value)) features.hasLink = true
   if (/\[CQ:(?:json|xml|share),/i.test(value) || /<(?:json|xml)[^>]*>/i.test(value) || /appid=|appId=|miniapp|小程序/i.test(value)) features.hasEmbed = true
   if (/\[CQ:(?:forward|longmsg),/i.test(value) || /<forward\b[^>]*\/?>/i.test(value) || MESSAGE_RECORD_CUE_RE.test(value)) features.hasForward = true
-  if (/\[CQ:(?:image|img|mface|face|record|video),/i.test(value) || /<(?:img|image|audio|video|mface)[^>]*\/?>/i.test(value)) features.hasVisual = true
+  if (/\[CQ:(?:image|img|mface|face|video),/i.test(value) || /<(?:img|image|video|mface)[^>]*\/?>/i.test(value)) features.hasVisual = true
+  if (/\[CQ:record,/i.test(value) || /<(?:audio|record)[^>]*\/?>/i.test(value)) features.hasAudio = true
   if (/\[CQ:file,/i.test(value) || /<file\b[^>]*\/?>/i.test(value)) features.hasFile = true
 
   return features
@@ -327,6 +334,7 @@ function analyzeIncomingMessage(session, options = {}) {
     hasUsableText,
     hasMessageRecordCue,
     hasVisual: features.hasVisual,
+    hasAudio: features.hasAudio,
     hasFile: features.hasFile,
     hasLink: features.hasLink,
     hasEmbed: features.hasEmbed,

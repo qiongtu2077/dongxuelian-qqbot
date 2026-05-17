@@ -10,11 +10,14 @@ const { normalizeText } = require('./message-reader')
 const { getSegmentData, getSessionMessageSegments } = require('./utils')
 
 const REPEAT_MATCH_WINDOW_MS = 120000
+const MAX_REPEAT_CONFIG_BYTES = 128 * 1024
 const channelRepeatState = new Map()
 let repeatEnabledCache = {}
 
 function loadRepeatConfig() {
   try {
+    const stat = fs.statSync(REPEAT_ENABLED_FILE)
+    if (!stat.isFile() || stat.size > MAX_REPEAT_CONFIG_BYTES) throw new Error('repeat config too large')
     repeatEnabledCache = JSON.parse(fs.readFileSync(REPEAT_ENABLED_FILE, 'utf8'))
   } catch {
     repeatEnabledCache = {}

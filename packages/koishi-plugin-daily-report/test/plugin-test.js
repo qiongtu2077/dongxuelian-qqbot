@@ -187,6 +187,24 @@ const dc = require(DATA_COLLECTOR_PATH)
 // 测试空目录
 const emptyResult = dc.collectReportData('nonexistent-group-' + Date.now())
 check('collectReportData returns null for missing cache', emptyResult === null)
+const oldMaxAnalysisMessages = process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES
+process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES = '200'
+delete require.cache[DATA_COLLECTOR_PATH]
+const cappedCollector = require(DATA_COLLECTOR_PATH)
+const manyMessages = Array.from({ length: 260 }, (_, index) => ({
+  time: '12:00:00',
+  ts: Date.now() + index,
+  user: index % 2 ? '用户B' : '用户A',
+  userId: index % 2 ? 'u-b' : 'u-a',
+  content: `第 ${index + 1} 条消息 [CQ:face,id=14]`,
+}))
+const cappedData = cappedCollector.processMessages(manyMessages, '2099-01-01')
+check('processMessages keeps full total stats', cappedData && cappedData.totalMessages === 260 && cappedData.emojiCount === 260)
+check('processMessages caps analysis payload', cappedData && cappedData.messages.length === 200 && cappedData.sampledMessages === 200 && cappedData.truncatedMessages === 60)
+check('processMessages returns tail sample', cappedData && cappedData.messages[0].content.includes('第 61 条消息'))
+if (oldMaxAnalysisMessages === undefined) delete process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES
+else process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES = oldMaxAnalysisMessages
+delete require.cache[DATA_COLLECTOR_PATH]
 // ===== 5. index 中间件注册 =====
 section('index 中间件注册')
 const plugin = reloadPlugin()

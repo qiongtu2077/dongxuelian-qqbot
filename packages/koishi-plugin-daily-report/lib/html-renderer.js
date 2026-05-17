@@ -12,8 +12,61 @@ const TEMPLATES_DIR = path.join(__dirname, '..', 'templates')
 
 // 信号量：限制并发Puppeteer实例
 let activeRenderers = 0
-const MAX_RENDERERS = 2
-const RENDER_TIMEOUT = 30000
+const MAX_RENDERERS = parsePositiveInt(process.env.DAILY_REPORT_MAX_RENDERERS, 1, 1, 4)
+const RENDER_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_RENDER_TIMEOUT_MS, 25000, 5000, 60000)
+const RENDER_QUEUE_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_QUEUE_TIMEOUT_MS, 30000, 5000, 120000)
+const RENDER_MIN_AVAILABLE_MB = parsePositiveInt(process.env.DAILY_REPORT_MIN_MEM_MB, 900, 256, 8192)
+const MAX_CAPTURE_HEIGHT = parsePositiveInt(process.env.DAILY_REPORT_MAX_CAPTURE_HEIGHT, 6000, 800, 12000)
+const MAX_HTML_BYTES = parsePositiveInt(process.env.DAILY_REPORT_MAX_HTML_BYTES, 512 * 1024, 64 * 1024, 2 * 1024 * 1024)
+const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font'])
+const BLOCKED_HOST_RE = /(?:doubleclick|googlesyndication|google-analytics|googletagmanager|adservice|adsystem|bat\.bing|clarity\.ms|facebook\.net|scorecardresearch|cnzz|hm\.baidu|pos\.baidu)/i
+
+function parsePositiveInt(value, fallback, min, max) {
+  const parsed = parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
+function readLinuxMemAvailableMb() {
+  if (process.platform !== 'linux') return null
+  try {
+    const raw = fs.readFileSync('/proc/meminfo', 'utf8')
+    const match = /^MemAvailable:\s+(\d+)\s+kB/m.exec(raw)
+    return match ? Math.floor(Number(match[1]) / 1024) : null
+  } catch {
+    return null
+  }
+}
+
+function assertEnoughMemoryForRender() {
+  if (/^(1|true|yes|on)$/i.test(String(process.env.DAILY_REPORT_RENDER_FORCE || '').trim())) return
+  const availableMb = readLinuxMemAvailableMb()
+  if (availableMb === null || availableMb >= RENDER_MIN_AVAILABLE_MB) return
+  throw new Error(`available memory is too low for Chromium render (${availableMb}MB < ${RENDER_MIN_AVAILABLE_MB}MB)`)
+}
+
+async function waitForRendererSlot() {
+  const startedAt = Date.now()
+  while (activeRenderers >= MAX_RENDERERS) {
+    if (Date.now() - startedAt > RENDER_QUEUE_TIMEOUT) throw new Error('daily report render queue timeout')
+    await new Promise(r => setTimeout(r, 500))
+  }
+}
+
+async function enableRenderRequestGuards(page) {
+  if (!page || typeof page.setRequestInterception !== 'function' || typeof page.on !== 'function') return
+  await page.setRequestInterception(true).catch(() => {})
+  page.on('request', req => {
+    try {
+      const url = req.url()
+      const type = req.resourceType()
+      if (BLOCKED_RESOURCE_TYPES.has(type) || BLOCKED_HOST_RE.test(url)) return req.abort()
+      return req.continue()
+    } catch {
+      try { req.continue() } catch {}
+    }
+  })
+}
 
 function esc(str) {
   return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -203,9 +256,9 @@ function findBrowser() {
 
 // Puppeteer截图（带信号量和超时）
 async function renderHtmlToImage(htmlContent) {
-  while (activeRenderers >= MAX_RENDERERS) {
-    await new Promise(r => setTimeout(r, 500))
-  }
+  if (Buffer.byteLength(String(htmlContent || ''), 'utf8') > MAX_HTML_BYTES) throw new Error('render HTML is too large')
+  assertEnoughMemoryForRender()
+  await waitForRendererSlot()
   activeRenderers++
 
   const puppeteer = require('puppeteer-core')
@@ -220,19 +273,36 @@ async function renderHtmlToImage(htmlContent) {
   try {
     browser = await puppeteer.launch({
       executablePath: browserPath, headless: 'new',
-      args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-sync',
+        '--disable-default-apps',
+        '--disable-component-update',
+        '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-renderer-backgrounding',
+        '--js-flags=--max-old-space-size=96',
+      ],
     })
     timeoutId = setTimeout(async () => {
       if (browser) { try { await browser.close() } catch {} browser = null }
     }, RENDER_TIMEOUT)
 
     const page = await browser.newPage()
+    await enableRenderRequestGuards(page)
     await page.setViewport({ width: 880, height: 800 })
-    await page.setContent(htmlContent, { waitUntil: 'networkidle0', timeout: 15000 })
-    await page.evaluateHandle('document.fonts.ready')
-    const bodyH = await page.evaluate(() => document.body.scrollHeight)
-    await page.setViewport({ width: 880, height: bodyH + 40 })
-    const screenshot = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 880, height: bodyH + 40 } })
+    await page.setContent(htmlContent, { waitUntil: 'domcontentloaded', timeout: 15000 })
+    await page.evaluate(() => document.fonts && document.fonts.ready ? document.fonts.ready.then(() => true) : true).catch(() => {})
+    const bodyH = await page.evaluate(() => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0))
+    const captureH = Math.min(Math.max(800, bodyH + 40), MAX_CAPTURE_HEIGHT)
+    await page.setViewport({ width: 880, height: captureH })
+    const screenshot = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 880, height: captureH } })
     return screenshot
   } catch (err) {
     if (browser) { try { await browser.close() } catch {} }
@@ -240,7 +310,7 @@ async function renderHtmlToImage(htmlContent) {
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
     if (browser) { try { await browser.close() } catch {} }
-    activeRenderers--
+    activeRenderers = Math.max(0, activeRenderers - 1)
   }
 }
 
