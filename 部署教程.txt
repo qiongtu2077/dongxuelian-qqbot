@@ -1,11 +1,13 @@
-东雪莲 Bot 服务器部署教程
-============================
+LianLianBot 传统 Linux 部署教程
+===============================
+
+说明：这份文档是高级/传统 Linux 服务器部署备份，适合需要手工排查或维护旧服务器的人。普通 Windows 用户优先看 README 的 Windows EXE 部署器；已有 Dashboard 的维护者优先使用 Dashboard 部署页。
 
 准备工作
 --------
 1. 一台 Linux 服务器（Ubuntu 22.04 推荐），能 ssh 连接
 2. 一个 QQ 号（用于 Bot 登录）
-3. API key：DeepSeek（必填），mimorium / opencode / dashscope / GLM（可选）
+3. API key：任意已支持供应商均可选填；不填也能完成基础部署，但 AI 回复不可用
 
 
 方式一：setup.sh 一键部署
@@ -14,7 +16,7 @@
 1. 获取 setup.sh（二选一）
 
    a) 直接下载到服务器（推荐）
-      wget https://raw.githubusercontent.com/qiongtu2077/dongxuelian-qqbot/bot_ZZY/setup.sh
+      wget https://raw.githubusercontent.com/qiongtu2077/dongxuelian-qqbot/main/setup.sh
 
    b) 或者先在本地 git clone 再上传
       git clone https://github.com/qiongtu2077/dongxuelian-qqbot.git
@@ -45,13 +47,13 @@
 5. 看到二维码后，掏出手机 QQ 扫码登录
 
 6. 登录成功后，按提示输入 API key
-   - DeepSeek API key（sk-xxx，必填，最流行的模型，用的人最多）
-   - 其余 key 可选，直接回车跳过
+   - 支持的供应商 key 均可选；没有 key 时可以直接回车跳过
+   - 跳过不会阻塞基础部署，后续可在 Dashboard 的 API Keys 页补充
 
 7. 自动启动 Koishi，部署完成
 
 验证：tail -f /root/koishi-app/koishi.log
-看到 "dongxuelian-ai dongxuelian-ai 0.9.x loaded" 即成功。
+看到 Dashboard、Koishi 和主要插件 loaded 日志，并且 `AI状态` 能返回，即基础部署成功。
 
 
 方式二：手动部署（每步可控）
@@ -180,14 +182,15 @@
 
    看到二维码后扫码登录，然后 Ctrl+A → D 分离 screen
 
-9. 写入 API key
+9. 写入 API key（可选）
 
-   echo "sk-你的deepseekkey" > /root/koishi-app/data/ai-deepseek-key.txt
+   echo "sk-你的key" > /root/koishi-app/data/ai-deepseek-key.txt
    echo "deepseek" > /root/koishi-app/data/ai-provider.txt
    echo "deepseek-chat" > /root/koishi-app/data/ai-model.txt
    echo "https://api.deepseek.com" > /root/koishi-app/data/ai-base-url.txt
 
-   可选 key（按需）：
+   也可以换成其他供应商；如果暂时没有 key，可先跳过这一步，基础部署仍可继续。
+   其他 key（按需）：
    echo "tp-xxx" > /root/koishi-app/data/ai-mimorium-key.txt
    echo "sk-xxx" > /root/koishi-app/data/ai-openai-key.txt
    echo "sk-xxx" > /root/koishi-app/data/ai-dashscope-key.txt
@@ -200,7 +203,7 @@
 11. 验证
 
     tail -f /root/koishi-app/koishi.log
-    看到 "dongxuelian-ai dongxuelian-ai 0.9.x loaded" 即成功
+    看到 Dashboard、Koishi 和主要插件 loaded 日志，并且 `AI状态` 能返回，即基础部署成功
 
 
 更新部署（已有服务器，只更新代码）

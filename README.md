@@ -1,8 +1,10 @@
-# 东雪莲QQBot-极致嘴臭
+# LianLianBot
 
-本项目是一套基于 `Koishi + NapCat + OneBot` 的 QQ 机器人部署仓库。当前采用 `md + sh + js` 共存结构：文档负责说明和交接，脚本负责部署，插件代码负责实际运行。
+LianLianBot 是一套基于 `Koishi + NapCat + OneBot` 的 QQ Bot 工作区，覆盖可视化部署、运行运维、AI 人格、Agent Console、Koishi 插件和群聊工具。当前采用 `md + sh + js` 共存结构：文档负责说明和交接，脚本负责部署，插件代码负责实际运行。
 
-项目目标很直接：让普通用户能用网页控制台在 Windows 本机部署机器人，或把机器人部署到 Linux 服务器上，同时让维护者能继续按插件边界迭代功能。
+项目早期来自东雪莲 QQ Bot 实验线；当前文档、功能规划和发布叙述统一定位为 LianLianBot。已有包名、插件名、发布附件名和工作目录名会按兼容需要保留，例如 `LianLianBOT-Deployer-v版本号.zip`、`LianLianBOT/` 和 `莲莲Bot部署器.exe`。
+
+项目目标很直接：让普通用户能用 Windows 部署器或 Dashboard 在本机部署机器人，也能把机器人部署到 Linux 服务器上，同时让维护者围绕插件边界、Agent 工具和素材资产继续迭代。
 
 准备材料：
 
@@ -13,9 +15,9 @@
 
 部署方式：
 
-- 可选本地部署或服务器部署
-- 使用 Web 前端部署：看「二、Web 前端快速部署」。
-- 使用 exe 软件部署：看「三、exe部署」。
+- Windows 新用户优先看「三、Windows EXE 部署器」。
+- 已有服务器或维护者看「二、Dashboard 快速部署」。
+- 传统 Linux 手工路线看 `部署教程.txt`，它现在作为高级/备份方案保留。
 
 ---
 
@@ -23,8 +25,12 @@
 
 | 模块 | 对应代码 | 主要能力 |
 |------|----------|----------|
-| Dashboard 控制台 | `packages/koishi-plugin-dashboard/` | 独立 Web 管理面板、Bot 启停、维护模式、QQ 号切换、Windows 本地部署、远程一键部署、密码管理、莲莲图集 |
-| AI 对话 | `packages/koishi-plugin-dongxuelian-ai/` | @ 触发、私聊触发、群聊概率主动回复、模型切换、联网搜索、上下文记忆、人格系统 |
+| Windows 部署器 | `local-deployer/` | Electron 本地部署器、便携 Node/npm、NapCat 安装、环境诊断、zip 发布包 |
+| Dashboard 控制台 | `packages/koishi-plugin-dashboard/` | 独立 Web 管理面板、Bot 启停、维护模式、QQ 号切换、Windows 本地部署、远程 Linux 部署、日志、密码管理、莲莲图集 |
+| Agent Console | `packages/agent-console/` / `packages/koishi-plugin-dashboard/frontend/src/components/AgentPanel.vue` | Agent 会话入口、工具执行视图、技能与工作区操作面板 |
+| Agent 能力层 | `packages/koishi-plugin-dongxuelian-ai/lib/agent/` | Agent 工具、Skill 市场、工作区技能扫描、浏览器/搜索/文件类工具接入 |
+| AI 对话 | `packages/koishi-plugin-dongxuelian-ai/` | @ 触发、私聊触发、群聊概率主动回复、模型切换、联网搜索、上下文记忆、人格/世界观/模式与 fallback 链 |
+| 语音能力 | `packages/koishi-plugin-dongxuelian-ai/lib/voice.js` / `packages/koishi-plugin-dongxuelian-ai/lib/tts.js` | 语音识别、TTS 回复、失败兜底与文本链路回退 |
 | 帮助菜单 | `packages/koishi-plugin-dongxuelian-help/` | `help东雪莲`、`helpAI`、`help集合`、`指令速查` 等菜单 |
 | 昵称与集合 | `packages/koishi-plugin-group-name-at/` | 昵称绑定、集合管理、集合运算、`at昵称` / `at集合` 批量艾特 |
 | B 站视频发送 | `packages/koishi-plugin-local-video-sender/` | 自动识别 B 站链接、调用 `yt-dlp` 下载 720P 优先视频并发送 |
@@ -38,13 +44,16 @@
 - 支持 OpenCode Go、DeepSeek 官方、阿里云 DashScope、智谱 GLM、小米 MiMo 等供应商。
 - 支持 API Key、模型、Base URL 在 Dashboard 中热更新。
 - 支持用户级人格、群级人格、世界观 lore、系统模式 modes。
+- 支持 Agent 工具、Skill 市场、自动记忆/梦境整理、浏览器/搜索工具和工作区技能扫描。
 - 支持用户黑名单、群聊 AI 白名单、静默白名单、视频黑名单、解除上限群白名单。
 - 支持敏感话题检测、处理者通知、原始事件抓取、今日情绪分析、谁艾特我、定位消息。
+- 支持语音 ASR/TTS、莲莲图集、A-G 闪卡效果和部署健康诊断。
 - 支持 Dashboard 独立守护，Koishi 重启不影响控制台。
+- 后续路线集中写在 `未完待续.md`。
 
 ---
 
-## 二、Web 前端快速部署
+## 二、Dashboard 快速部署
 
 ### 2.1 先配置服务器安全组
 
@@ -170,7 +179,7 @@ Windows 本地部署会在当前项目目录内准备运行环境：
 
 ---
 
-## 三、exe部署
+## 三、Windows EXE 部署器
 
 Windows EXE 部署器入口在 `local-deployer/`。
 
@@ -234,12 +243,15 @@ Koishi adapter-onebot 接收消息
 | 路径 | 作用 |
 |------|------|
 | `README.md` | 项目总入口、部署说明、维护说明 |
+| `未完待续.md` | 后续路线图，只记录未来规划 |
 | `指令速查.md` | 面向群内使用者的命令速查 |
 | `教程.md` | AI + Skill 接入说明 |
-| `部署教程.txt` | 更偏传统手工部署的教程备份 |
+| `部署教程.txt` | 高级/传统 Linux 手工部署备份 |
 | `开发总结.md` / `教训总结.md` | 维护记录、踩坑总结、架构决策 |
 | `setup.sh` | Linux 一次性安装脚本，偏维护/初始化使用 |
 | `scripts/*.sh` | 单插件部署脚本、重启脚本、守护脚本 |
+| `local-deployer/` | Windows Electron 部署器源码与发布打包入口 |
+| `packages/agent-console/` | Agent Console 独立入口 |
 | `packages/koishi-plugin-dashboard/` | Dashboard 独立服务器和 Vue 前端 |
 | `packages/koishi-plugin-dongxuelian-ai/` | AI 主插件、人格、记忆、敏感检测、模型调用 |
 | `packages/koishi-plugin-daily-report/` | 群聊日报采集、AI 分析、HTML 图片渲染 |
@@ -650,13 +662,13 @@ ss -ltnp | grep 8080
 - 部署脚本只做部署，不内嵌插件业务源码。
 - 插件逻辑放在 `packages/*/lib/`，不要继续把大段 JS 塞回 Markdown。
 - 修改 AI 主插件前先看 `AI协作规则.md`、`教训总结.md`、`TESTING.md`。
-- 通用变更写进 `progress.md`，专题经验写进对应文档。
+- 已完成的维护经验写进 `开发总结.md` 或对应专题文档；未来路线只写进 `未完待续.md`。
 - 改 Dashboard 前端后记得在 `packages/koishi-plugin-dashboard/frontend/` 里重新 `npm run build`。
 - 改插件后至少跑 `npm run check`，风险高的改动继续跑 `npm test`。
 - 修改端口、数据目录、部署路径时，同时检查 README、`setup.sh`、`scripts/restart-bot.sh`、`packages/koishi-plugin-dashboard/standalone.js`。
 
 当前推荐继续沿着三层结构维护：
 
-- `README.md` / `指令速查.md` / `教程.md` / `progress.md` / `教训总结.md`：中文文档层。
+- `README.md` / `未完待续.md` / `指令速查.md` / `教程.md` / `教训总结.md`：中文文档层。
 - `scripts/*.sh`：部署执行层。
 - `packages/*`：插件代码层。

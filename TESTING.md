@@ -1,4 +1,6 @@
-# 东雪莲 Bot 测试手册
+# LianLianBot 测试手册
+
+> 2026-05-17 更新：项目文档定位统一为 LianLianBot；测试范围同步覆盖 Agent Console、Agent 工具、Skill 市场、自动记忆/梦境、语音 ASR/TTS、浏览器/搜索工具、图集/闪卡效果和部署诊断。运行任何 Python 脚本前必须先确认并激活项目 Conda 环境；当前手册默认只列 Node/npm 命令。
 
 ## 快速命令
 
@@ -160,7 +162,7 @@ console.log('常量检查完成');
 启动 bot，观察控制台：
 
 ```
-[I] dongxuelian-ai dongxuelian-ai 0.9.1 loaded    ← 必须出现
+[I] dongxuelian-ai loaded    ← 必须出现
 ```
 
 如果出现 `ReferenceError: xxx is not defined` 说明拆分遗漏了某个顶层定义。
@@ -299,7 +301,7 @@ ssh root@YOUR_SERVER_IP "sleep 15 && tail -5 /root/koishi-app/koishi.log"
 
 **预期输出**：
 ```
-[I] dongxuelian-ai dongxuelian-ai 0.9.x loaded
+[I] dongxuelian-ai loaded
 ```
 
 **如有异常**：
@@ -347,6 +349,22 @@ echo "tp-xxxxx" > data/keys/mimorium.ini  # 替换为真实 key
 ---
 
 ## 六、人格 + SKILL 一致性
+
+### 6.0 Agent / Skill / Voice 回归
+
+当前新增能力优先跑轻量回归，再按风险补充场景测试：
+
+```bash
+npm run check
+npm run test:quick
+```
+
+- Agent Console：确认 Dashboard 的 Agent 面板能打开，工具执行日志不会阻塞 Bot 主流程。
+- Agent 工具：确认 `packages/koishi-plugin-dongxuelian-ai/lib/agent/` 下工具可加载，浏览器/搜索/文件类工具失败时有可读错误。
+- Skill 市场：涉及技能市场或技能池时，补跑 `packages/koishi-plugin-dongxuelian-ai/test/scenarios/skill-market.test.js` 对应场景。
+- 自动记忆/梦境：确认整理任务不会破坏现有上下文文件，失败时不影响普通聊天。
+- 语音 ASR/TTS：确认语音识别或合成失败时能回退到文本回复，不吞掉原始错误日志。
+- 图集/闪卡：确认上传、预览、A-G 样式和缓存刷新正常。
 
 ### 6.1 本地 vs 服务器 SKILL 一致
 

@@ -1,0 +1,17 @@
+/api/personas' && req.method === 'GET') {
+    try {
+      const { getAvailablePersonals, loadPersonalSkill } = require(path.join(AI_LIB, 'persona'))
+      const name = url.searchParams.get('name')
+      if (name) {
+        const content = loadPersonalSkill(name)
+        if (!content) return json(res, { ok: false, message: '未找到人格' }, 404)
+        const m = content.match(/^---\n([\s\S]*?)\n---\n\n?/)
+        let meta = {}
+        if (m) {
+          for (const line of m[1].split('\n')) {
+            const kv = line.match(/^(\w[\w_-]*):\s*(.+)/)
+            if (kv) meta[kv[1]] = kv[2].trim()
+          }
+        }
+        const bodyContent = m ? content.slice(m[0].length) : content
+        return json(res, { ok: true, data: { name, description: meta.description || '', lore: meta.lore || '', wil
