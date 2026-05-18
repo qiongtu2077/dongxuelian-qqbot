@@ -3788,10 +3788,20 @@ const server = http.createServer(async (req, res) => {
     collectBody(req, res, async (body) => {
       try {
         const data = JSON.parse(body || '{}')
-        const { text, voice, style } = data
+        const { text, voice, style, personaName } = data
         if (!text) return json(res, { ok: false, message: '缺少 text' }, 400)
         const tts = require(path.join(AI_LIB, 'tts'))
-        const buf = await tts.synthesizeSpeech(String(text).slice(0, 200), { voice: voice || '冰糖', style: style || '活泼可爱' })
+        let resolvedVoice = voice || '冰糖'
+        let resolvedStyle = style || '活泼可爱'
+        if (personaName || resolvedVoice === '__cloned__') {
+          const pName = personaName || data.persona || ''
+          if (pName) {
+            const resolved = tts.resolvePersonaVoice(pName)
+            resolvedVoice = resolved.voice
+            resolvedStyle = style || resolved.style
+          }
+        }
+        const buf = await tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice, style: resolvedStyle })
         if (!buf) return json(res, { ok: false, message: '语音合成失败，请检查 API key 或网络' }, 500)
         return json(res, { ok: true, audio: buf.toString('base64'), format: 'wav' })
       } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
