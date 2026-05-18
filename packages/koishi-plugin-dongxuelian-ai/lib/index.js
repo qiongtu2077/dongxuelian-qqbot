@@ -81,7 +81,7 @@ const {
   THINKING_MODE_FILE,
   POLITICAL_HANDLER_DIR, POLITICAL_DETECT_FILE, SENSITIVE_CACHE_PREFIX,
   CONVERSATIONS_DIR,
-  NUMERIC_GROUP_ID_RE,
+  NUMERIC_GROUP_ID_RE, SENSITIVE_KEYWORDS_RE,
 } = require('./constants')
 const {
   loadPersonaGroups,
@@ -113,13 +113,14 @@ const {
   shouldTriggerRandom, calculateWillFactor,
   normalizeUrl, extractImageUrls,
   sanitizeFileToken, safeJsonStringify,
-  todayCst, stripMarkdownForQQ,
+  todayCst,
 } = require('./utils')
 const { logDebug } = require('./logging-config')
 const { heuristicRoute, buildExplicitSearchRunOptions } = require('./agent/router')
 const agentEngine = require('./agent/engine')
 const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue')
 const { recordAgentChatResult } = require('./agent-chat-bridge')
+const { guardAgentRetellReply } = require('./agent-retell-guard')
 
 // @satorijs/core@3.7.0 缺少 stripped / parsed / resolve / send，这里随插件加载安装兼容补丁。
 function patchElementText(element) {
@@ -287,37 +288,54 @@ function restoreTodayCacheEntry(key, data) {
 
 // 计算最终 persona：用户级 > 群级 > 默认
 
-function handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered }) {
+const AGENT_RETELL_FALLBACK = '我查到了点东西，但刚刚没组织好，换个问法。'
+
+function normalizeChatResultText(chatResult, fallback = '') {
+  if (typeof chatResult === 'string') return chatResult
+  if (chatResult && typeof chatResult === 'object') return chatResult.text || fallback
+  return chatResult || fallback
+}
+
+async function retellAgentResult(agentResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, emptyText = '(未获取有效回复)' }) {
+  const agentReplyText = String(agentResult?.reply || '').trim() || emptyText
+  try {
+    const chatReply = await chat(session, userText, ctx, {
+      randomTriggered,
+      isAgentResult: true,
+      agentResultText: agentReplyText,
+    })
+    const rawFinalReply = normalizeChatResultText(chatReply, AGENT_RETELL_FALLBACK).trim() || AGENT_RETELL_FALLBACK
+    const finalReply = guardAgentRetellReply(rawFinalReply, agentResult)
+    recordAgentChatResult({ session: null, userMessage: userText, userName, userId: currentUserId, channelKey, agentResult: { ...agentResult, reply: finalReply } })
+    return finalReply
+  } catch (error) {
+    ctx.logger('dongxuelian-ai').warn(`agent result retell failed: ${error.message}`)
+    return AGENT_RETELL_FALLBACK
+  }
+}
+
+async function handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered }) {
   if (chatResult && typeof chatResult === 'object' && chatResult.heavyToolsRequested) {
-    safeSendReply(ctx, session, chatResult.text, randomTriggered)
     const agentConfig = require('./agent/config').getAgentConfig()
     configureAgentQueue(agentConfig.queue || {})
     const searchQuery = chatResult.heavyToolsRequested.find(t => t.name === 'web_search')?.args?.query || userText
     const searchRunOptions = buildExplicitSearchRunOptions(searchQuery)
-    enqueueAgentTask({
-      channelKey,
-      userId: currentUserId,
-      timeoutMs: agentConfig.queue?.timeoutMs,
-      fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, agentMode: true, ...searchRunOptions }),
-    }).then(agentResult => {
-      recordAgentChatResult({ session, userMessage: userText, userName, userId: currentUserId, channelKey, agentResult })
-      const raw = agentResult.reply || '(搜索未获取有效结果)'
-      const { sanitizeReply, trimReply, stripMarkdownForQQ, MAX_OUTPUT_CHARS_FRIENDLY, hasBannedOutput } = require('./utils')
-      const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply-guard')
-      const { JAILBREAK_OUTPUT_RE } = require('./constants')
-      let filtered = raw
-      if (JAILBREAK_OUTPUT_RE.test(filtered)) filtered = pickJailbreakFallbackReply()
-      if (hasBannedOutput(filtered)) filtered = '这活别找我，换个工具。'
-      if (isUnsafeThinkingReply(filtered)) filtered = '我还有事，下次再说。'
-      if (hasInternalContextLeak(filtered)) filtered = '我刚刚串台了，重说一句。'
-      filtered = trimReply(stripMarkdownForQQ(sanitizeReply(filtered, userName)), MAX_OUTPUT_CHARS_FRIENDLY)
-      return safeSendReply(ctx, session, filtered, false)
-    }).catch(error => {
+    try {
+      const agentResult = await enqueueAgentTask({
+        channelKey,
+        userId: currentUserId,
+        timeoutMs: agentConfig.queue?.timeoutMs,
+        fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, agentMode: true, ...searchRunOptions }),
+      })
+      return retellAgentResult(agentResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, emptyText: '(搜索未获取有效结果)' })
+    } catch (error) {
+      const code = error && error.code ? String(error.code) : ''
+      if (code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED') return error.message
       ctx.logger('dongxuelian-ai').warn(`chat heavy-tool agent failed: ${error.message}`)
-    })
-    return null
+      return 'Agent 暂时不可用。'
+    }
   }
-  return typeof chatResult === 'string' ? chatResult : (chatResult?.text || chatResult || '')
+  return normalizeChatResultText(chatResult)
 }
 
 function enqueueForChannel(channelKey, fn, maxDepth) {
@@ -702,7 +720,7 @@ exports.apply = (ctx) => {
   })
 
   // 定时扫描敏感话题（每 30 分钟）
-  setInterval(async () => {
+  const sensitiveTimer = setInterval(async () => {
     try {
       const enabled = await readJsonFile(POLITICAL_DETECT_FILE, [])
       if (Array.isArray(enabled)) {
@@ -712,6 +730,7 @@ exports.apply = (ctx) => {
       }
     } catch {}
   }, 1800000)
+  ctx.on('dispose', () => clearInterval(sensitiveTimer))
 
   ctx.middleware(async (session, next) => {
     const content = session.content || ''
@@ -1067,7 +1086,7 @@ exports.apply = (ctx) => {
     if (inGuild && !directAt && !otherMentions) {
       const repeatCandidate = buildRepeatCandidate(session, plain, analyzed)
       const repeatResult = checkGroupRepeat(session, repeatCandidate, channelKey, currentUserId)
-      if (repeatResult) {
+      if (repeatResult && !SENSITIVE_KEYWORDS_RE.test(String(repeatResult.reply || ''))) {
         ctx.logger('dongxuelian-ai').info(`repeat triggered in ${channelKey}: kind=${repeatResult.kind} keyLen=${String(repeatResult.key || '').length}`)
         await session.send(repeatResult.reply)
         return next()
@@ -1092,7 +1111,13 @@ exports.apply = (ctx) => {
           channelPendingRandom.delete(channelKey)
           if (p && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))) {
             channelMissCount.set(channelKey, 0)
-            enqueueForChannel(channelKey, () => chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId }).then(chatResult => { let reply = handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true }); if (reply) { reply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply; safeSendReply(ctx, session, reply, true) } }), 4)
+            enqueueForChannel(channelKey, async () => {
+              let reply = await handleChatResult(await chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId }), { ctx, session, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true })
+              if (reply) {
+                reply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply
+                await safeSendReply(ctx, session, reply, true)
+              }
+            }, 4)
           } else {
             channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
           }
@@ -1184,32 +1209,24 @@ exports.apply = (ctx) => {
           const searchRunOptions = buildExplicitSearchRunOptions(userText)
           const agentConfig = require('./agent/config').getAgentConfig()
           configureAgentQueue(agentConfig.queue || {})
-          enqueueAgentTask({
-            channelKey,
-            userId: currentUserId,
-            timeoutMs: agentConfig.queue?.timeoutMs,
-            fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, agentMode: true, ...searchRunOptions }),
-          }).then(async agentResult => {
-            recordAgentChatResult({ session, userMessage: userText, userName, userId: currentUserId, channelKey, agentResult })
-            const agentReplyText = agentResult.reply || '(未获取有效回复)'
-            const chatReply = await chat(session, userText, ctx, {
-              randomTriggered,
-              isAgentResult: true,
-              agentResultText: agentReplyText,
+          try {
+            const agentResult = await enqueueAgentTask({
+              channelKey,
+              userId: currentUserId,
+              timeoutMs: agentConfig.queue?.timeoutMs,
+              fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, agentMode: true, ...searchRunOptions }),
             })
-            const finalReply = handleChatResult(chatReply, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered })
-            if (finalReply !== null) return safeSendReply(ctx, session, finalReply, randomTriggered)
-            return safeSendReply(ctx, session, stripMarkdownForQQ(agentReplyText).slice(0, 500), randomTriggered)
-          }).catch(error => {
+            const finalReply = await retellAgentResult(agentResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered })
+            return safeSendReply(ctx, session, finalReply, randomTriggered)
+          } catch (error) {
             const code = error && error.code ? String(error.code) : ''
             if (code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED') return safeSendReply(ctx, session, error.message, randomTriggered)
             ctx.logger('dongxuelian-ai').warn(`agent auto-route failed: ${error.message}`)
             return safeSendReply(ctx, session, 'Agent 暂时不可用。', randomTriggered)
-          })
-          return
+          }
         }
         const chatResult = await chat(session, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId })
-        const reply = handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered })
+        const reply = await handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered })
         if (!reply) return
         if (randomTriggered && inGuild) {
           try {
