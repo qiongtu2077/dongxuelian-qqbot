@@ -31,7 +31,7 @@ function normalizeResultUrl(url = '') {
     if (parsed.hostname.endsWith('baidu.com') && parsed.pathname.startsWith('/link')) return raw
     parsed.hash = ''
     for (const key of [...parsed.searchParams.keys()]) {
-      if (/^(utm_|spm|from|fr|tn|ie|wd|oq|rsv_|sa|ved|usg|form)$/i.test(key)) parsed.searchParams.delete(key)
+      if (/^(utm_.*|spm|from|fr|tn|ie|wd|oq|rsv_.*|sa|ved|usg|form)$/i.test(key)) parsed.searchParams.delete(key)
     }
     return parsed.toString()
   } catch {

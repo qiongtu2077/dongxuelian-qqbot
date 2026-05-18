@@ -74,7 +74,7 @@
       </div>
       <div v-if="fc.hasMainToggle" style="margin-top:8px">
         <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:4px">
-          <input type="checkbox" v-model="fc.useMainFallback" /> 主模型兜底（最后试一次主模型）
+          <input type="checkbox" v-model="lightweightMainToggle" /> 主模型兜底（最后试一次主模型）
         </label>
       </div>
 

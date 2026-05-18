@@ -105,7 +105,7 @@
           <div style="font-size:13px;color:var(--text3)">开启后 bot 回复"优化中"，不触发 AI</div>
         </div>
         <label style="position:relative;display:inline-block;width:48px;height:26px;cursor:pointer">
-          <input type="checkbox" v-model="maintenanceOn" @change="toggleMaintenance" :disabled="maintLoading" style="opacity:0;width:0;height:0" />
+          <input type="checkbox" v-model="maintenanceOn" @change="toggleMaintenance()" :disabled="maintLoading" style="opacity:0;width:0;height:0" />
           <span :style="{
             position:'absolute',inset:0,background:maintenanceOn ? 'var(--success)' : 'var(--border)',borderRadius:'13px',transition:'.2s'
           }">

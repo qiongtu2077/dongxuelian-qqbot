@@ -67,8 +67,8 @@ function decodeHttpSearchEntities(value = '') {
 
 function stripHttpSearchTags(html = '') {
   return decodeHttpSearchEntities(String(html || '')
-    .replace(/<script\b[^>]{0,500}>[\s\S]{0,20000}<\/script>/gi, ' ')
-    .replace(/<style\b[^>]{0,500}>[\s\S]{0,20000}<\/style>/gi, ' ')
+    .replace(/<script\b[^>]{0,500}>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]{0,500}>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]{0,500}>/g, ' '))
     .replace(/\s+/g, ' ')
     .trim()
@@ -288,8 +288,6 @@ function isGarbagePageText(text = '') {
   if (/^<img\s|^<svg\s|track_ua\.gif/i.test(sample)) return true
   const pathCount = (sample.match(/<path\s/gi) || []).length
   if (pathCount >= 3) return true
-  const cjkCount = (sample.match(/[一-鿿]/g) || []).length
-  if (cjkCount < 10 && text.length > 200) return true
   return false
 }
 
