@@ -149,7 +149,7 @@ function AdminDialog({ onVerified }: { onVerified: () => void }) {
     }
   }
   return (
-    <div className="admin-dialog-backdrop" onClick={() => {}} onKeyDown={e => e.key === 'Escape' && onVerified()}>
+    <div className="admin-dialog-backdrop" onClick={() => {}}>
       <div className="admin-dialog-card" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}>
         <div className="brand-mark">莲</div>
         <h2>管理员密码已过期</h2>
@@ -484,6 +484,7 @@ function ToolsPage({ data, setConfig, refresh }: any) {
   const config = data.config?.config
   const tools = data.config?.tools || []
   async function toggle(toolName: string, channel: 'qq' | 'dashboard', enabled: boolean) {
+    if (!config) return
     const next = structuredClone(config)
     if (!next.channels[channel]) next.channels[channel] = {}
     if (!next.channels[channel].tools) next.channels[channel].tools = {}
