@@ -6,6 +6,7 @@
 const { PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, SKILLS_PERSONAS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR } = require('./constants')
 const { isDebugLogEnabled } = require('./logging-config')
 const path = require('path')
+const { ensureRuntimeSkillSeeds } = require('./skill-seeds')
 
 let personaGroupsCache = {}
 let personaUsersCache = {}
@@ -89,6 +90,7 @@ function parsePersonaFrontmatter(content) {
 }
 
 function getAvailablePersonals({ userFacing = false } = {}) {
+  ensureRuntimeSkillSeeds()
   const personas = []
   function scanDir(dir, type) {
     try {
@@ -111,6 +113,7 @@ function getAvailablePersonals({ userFacing = false } = {}) {
 }
 
 function loadPersonalSkill(personaName) {
+  ensureRuntimeSkillSeeds()
   const dirs = [SKILLS_PERSONAS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR]
   for (const dir of dirs) {
     try {

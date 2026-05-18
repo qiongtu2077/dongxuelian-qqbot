@@ -27,5 +27,5 @@ plugins:
   daily-report: {}
 `
 fs.writeFileSync(path.join(root, 'koishi.yml'), yml, 'utf8')
-fs.writeFileSync(path.join(root, 'start-local.bat'), '@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif not exist node_modules ( npm install )\r\nnpx koishi start\r\n', 'utf8')
+fs.writeFileSync(path.join(root, 'start-local.bat'), '@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nset "KOISHI_DIR=%~dp0"\r\nset "DONGXUELIAN_AI_DATA_DIR=%~dp0data"\r\nif not exist node_modules ( npm install )\r\nnode start.js\r\n', 'utf8')
 console.log('local deployment files written to ' + root)

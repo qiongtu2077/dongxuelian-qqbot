@@ -5,7 +5,15 @@ const path = require('path')
 exports.name = 'group-name-at'
 
 const PLUGIN_VERSION = '0.4.7'
-const DEFAULT_DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(__dirname, '../data')
+function resolveRuntimeDataDir() {
+  const configured = String(process.env.DONGXUELIAN_AI_DATA_DIR || '').trim()
+  if (configured) return path.resolve(configured)
+  const koishiDir = String(process.env.KOISHI_DIR || process.env.KOISHI_APP_DIR || '').trim()
+  if (koishiDir) return path.resolve(koishiDir, 'data')
+  return path.resolve(process.cwd(), 'data')
+}
+
+const DEFAULT_DATA_DIR = resolveRuntimeDataDir()
 const DATA_FILE = process.env.GROUP_NAME_AT_DATA_FILE || path.join(DEFAULT_DATA_DIR, 'nickname-collections.json')
 const CONFIRM_TIMEOUT = 60 * 1000
 //黑名单

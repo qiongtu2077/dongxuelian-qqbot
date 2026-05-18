@@ -315,7 +315,11 @@ log "API keys written"
 # ==========================================
 log "Starting Koishi..."
 cd "$KOISHI_DIR"
+export KOISHI_DIR
 export DONGXUELIAN_AI_DATA_DIR="$DATA_DIR"
+if [ -f "$KOISHI_DIR/scripts/seal-data-dir.sh" ]; then
+  sh "$KOISHI_DIR/scripts/seal-data-dir.sh"
+fi
 nohup node "$KOISHI_DIR/node_modules/koishi/bin.js" start >> koishi.log 2>&1 &
 sleep 10
 
@@ -323,7 +327,7 @@ if tail -20 koishi.log | grep -q 'adapter connect to server'; then
   log "Deploy finished. Koishi has started."
   echo ""
   echo "  Logs: tail -f /root/koishi-app/koishi.log"
-  echo "  Restart bot: pkill -f 'koishi/lib/worker'; sleep 3; node /root/koishi-app/node_modules/koishi/bin.js start"
+  echo "  Restart bot: cd /root/koishi-app && KOISHI_DIR=/root/koishi-app DONGXUELIAN_AI_DATA_DIR=/root/koishi-app/data node /root/koishi-app/node_modules/koishi/bin.js start"
   echo "  Web console: http://SERVER_IP:5140"
 else
   warn "Koishi is starting. Check logs manually: tail -f /root/koishi-app/koishi.log"

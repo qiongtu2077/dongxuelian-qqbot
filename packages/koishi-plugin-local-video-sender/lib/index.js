@@ -11,7 +11,15 @@ const DEFAULT_MAX_SIZE = 200 * 1024 * 1024
 const YTDLP = process.env.BILI_YTDLP || '/usr/local/bin/yt-dlp'
 const COOKIES = process.env.BILI_COOKIES_FILE || '/root/bilibili-cookies.txt'
 const WORKDIR = process.env.BILI_WORKDIR || '/root/koishi-bili-downloads'
-const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'data')
+function resolveRuntimeDataDir() {
+  const configured = String(process.env.DONGXUELIAN_AI_DATA_DIR || '').trim()
+  if (configured) return path.resolve(configured)
+  const koishiDir = String(process.env.KOISHI_DIR || process.env.KOISHI_APP_DIR || '').trim()
+  if (koishiDir) return path.resolve(koishiDir, 'data')
+  return path.resolve(process.cwd(), 'data')
+}
+
+const DATA_DIR = resolveRuntimeDataDir()
 const VIDEO_BLACKLIST_FILE = process.env.BILI_VIDEO_BLACKLIST_FILE || path.join(DATA_DIR, 'video-blacklist.json')
 const MAX_SIZE = parsePositiveInteger(process.env.BILI_MAX_SIZE_BYTES, DEFAULT_MAX_SIZE)
 const TEST_VIDEO_FILE = process.env.BILI_TEST_VIDEO_FILE || '/root/test_bili.mp4'

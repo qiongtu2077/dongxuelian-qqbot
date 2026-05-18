@@ -7,6 +7,7 @@
 const fs = require('fs')
 const path = require('path')
 const { SKILLS_DIR, SKILLS_LORE_DIR } = require('../constants')
+const { ensureRuntimeSkillSeeds } = require('../skill-seeds')
 const { SKILL_POOL_DIR } = require('./skills/store')
 
 const SKILL_DIRS = [
@@ -167,6 +168,7 @@ function skillCollectEntry(skills, group, entry, baseDir) {
 }
 
 function listAgentSkills() {
+  ensureRuntimeSkillSeeds()
   const skills = []
   for (const group of SKILL_DIRS) {
     let entries = []
