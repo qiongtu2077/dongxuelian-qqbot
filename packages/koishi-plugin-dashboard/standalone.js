@@ -3715,14 +3715,21 @@ const server = http.createServer(async (req, res) => {
         return { name: p.name, voice: meta.voice_id || meta.voice || '', style: meta.voice_style || '', hasSample: false }
       })
       const voicesDir = path.join(DATA_DIR, 'ai-voices')
+      const clonedVoices = []
       try {
         const files = fs.readdirSync(voicesDir)
         for (const vc of voiceConfigs) {
           const match = files.find(f => f.startsWith(vc.name + '.'))
           if (match) vc.hasSample = true
         }
+        for (const f of files) {
+          const stat = fs.statSync(path.join(voicesDir, f))
+          const ext = path.extname(f)
+          const baseName = f.slice(0, -ext.length)
+          clonedVoices.push({ filename: f, name: baseName, size: stat.size, mtime: stat.mtimeMs })
+        }
       } catch {}
-      return json(res, { ok: true, builtin: tts.BUILTIN_VOICES, personas: voiceConfigs })
+      return json(res, { ok: true, builtin: tts.BUILTIN_VOICES, personas: voiceConfigs, clonedVoices })
     } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
   }
 
@@ -3804,6 +3811,49 @@ const server = http.createServer(async (req, res) => {
         const buf = await tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice, style: resolvedStyle })
         if (!buf) return json(res, { ok: false, message: '语音合成失败，请检查 API key 或网络' }, 500)
         return json(res, { ok: true, audio: buf.toString('base64'), format: 'wav' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/agent/tts/clone/rename' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const { oldName, newName } = data
+        if (!oldName || !newName) return json(res, { ok: false, message: '缺少 oldName 或 newName' }, 400)
+        const voicesDir = path.join(DATA_DIR, 'ai-voices')
+        const safeOld = String(oldName).replace(/[^a-zA-Z0-9一-鿿._-]/g, '_').slice(0, 40)
+        const safeNew = String(newName).replace(/[^a-zA-Z0-9一-鿿._-]/g, '_').slice(0, 40)
+        if (!safeNew) return json(res, { ok: false, message: '新名称无效' }, 400)
+        const entries = fs.readdirSync(voicesDir)
+        const match = entries.find(f => f.startsWith(safeOld + '.'))
+        if (!match) return json(res, { ok: false, message: '未找到音色文件：' + safeOld }, 404)
+        const ext = path.extname(match)
+        const newFile = safeNew + ext
+        if (entries.includes(newFile)) return json(res, { ok: false, message: '目标名称已存在' }, 409)
+        fs.renameSync(path.join(voicesDir, match), path.join(voicesDir, newFile))
+        return json(res, { ok: true, message: '重命名成功', filename: newFile })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/agent/tts/clone/delete' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const { name } = data
+        if (!name) return json(res, { ok: false, message: '缺少 name' }, 400)
+        const voicesDir = path.join(DATA_DIR, 'ai-voices')
+        const safeName = String(name).replace(/[^a-zA-Z0-9一-鿿._-]/g, '_').slice(0, 40)
+        const entries = fs.readdirSync(voicesDir)
+        const matches = entries.filter(f => f.startsWith(safeName + '.'))
+        if (!matches.length) return json(res, { ok: false, message: '未找到音色文件：' + safeName }, 404)
+        for (const m of matches) fs.unlinkSync(path.join(voicesDir, m))
+        return json(res, { ok: true, message: '删除成功', deleted: matches })
       } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
     })
     return
