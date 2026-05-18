@@ -13,6 +13,7 @@ const path = require('path')
 const TTS_TIMEOUT_MS = 15000
 const TTS_BASE_URL = 'https://token-plan-cn.xiaomimimo.com/v1'
 const TTS_MODEL = 'mimo-v2.5-tts'
+const TTS_CLONE_MODEL = 'mimo-v2.5-tts-voiceclone'
 const DEFAULT_VOICE = '冰糖'
 const DEFAULT_STYLE = '活泼可爱'
 const MAX_TTS_TEXT_LENGTH = 300
@@ -39,8 +40,10 @@ async function synthesizeSpeech(text, options = {}) {
   const ttsText = String(text).slice(0, MAX_TTS_TEXT_LENGTH)
   if (!ttsText.trim()) return null
 
+  const isCloneVoice = String(voice).startsWith('data:')
+  const model = isCloneVoice ? TTS_CLONE_MODEL : TTS_MODEL
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), TTS_TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(), isCloneVoice ? 30000 : TTS_TIMEOUT_MS)
 
   try {
     const response = await fetch(`${TTS_BASE_URL}/chat/completions`, {
@@ -48,7 +51,7 @@ async function synthesizeSpeech(text, options = {}) {
       signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: TTS_MODEL,
+        model,
         messages: [
           { role: 'user', content: style },
           { role: 'assistant', content: ttsText },

@@ -98,7 +98,7 @@ function isGlobalLocalMode() {
 const AGENT_CONSOLE_DIR = path.join(PLUGIN_ROOT, '..', 'agent-console')
 const AGENT_CONSOLE_DIST_DIR = path.join(AGENT_CONSOLE_DIR, 'dist')
 const PORT = process.env.DASHBOARD_PORT || 5150
-const HOST = process.env.DASHBOARD_HOST || '127.0.0.1'
+const HOST = process.env.DASHBOARD_HOST || '0.0.0.0'
 const PASSWORD = process.env.DASHBOARD_PASSWORD || (isGlobalLocalMode() ? '' : '123')
 const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || (isGlobalLocalMode() ? '' : '123')
 
