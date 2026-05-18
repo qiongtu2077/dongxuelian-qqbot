@@ -97,11 +97,11 @@ function startTask(task) {
     })
     .finally(() => {
       activeCount = Math.max(0, activeCount - 1)
-      activeKeys.delete(task.key)
       decChannelDepth(task.channelKey)
       const queue = taskQueues.get(task.key)
       if (queue && queue[0] === task) queue.shift()
       if (queue && queue.length === 0) taskQueues.delete(task.key)
+      activeKeys.delete(task.key)
       drainAgentQueues()
     })
 }

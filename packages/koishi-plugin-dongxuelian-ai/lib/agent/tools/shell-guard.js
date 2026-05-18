@@ -42,6 +42,8 @@ const CODE_EXECUTION = [
     desc: '检测将 base64 编码字符串直接传递给 Shell 解释器执行' },
   { id: 'TOOL_CMD_IFS_INJECTION', re: /\$IFS(?!\w)|\$\{[^}]*IFS/i, sev: 'high',
     desc: '命令使用 $IFS 变量，可以绕过安全验证' },
+  { id: 'TOOL_CMD_PARAM_EXPANSION', re: /\$\{[^}]*[:!#%\/^,@*]/, sev: 'high',
+    desc: '命令使用 Shell 参数展开（${...}），可构造任意字符串绕过检测' },
   { id: 'TOOL_CMD_CONTROL_CHARS', re: /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/, sev: 'critical',
     desc: '命令包含不可打印的控制字符，可能绕过安全检查' },
   { id: 'TOOL_CMD_UNICODE_WHITESPACE', re: /[\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/, sev: 'high',

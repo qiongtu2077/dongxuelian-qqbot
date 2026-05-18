@@ -28,6 +28,7 @@ const conversationLastActiveAt = new Map()
 const channelSharedCache = new Map()
 const lastForwardSummaryCache = new Map()
 const pendingSensitiveAlert = new Map()
+const summaryLocks = new Map()
 const channelTodayCache = new Map()
 
 const CHANNEL_RUNTIME_CACHE_TTL_MS = 6 * 60 * 60 * 1000
@@ -189,6 +190,14 @@ function saveConversationTurn(session, userText, replyText) {
 }
 
 async function generateConversationSummary(key) {
+  const prev = summaryLocks.get(key) || Promise.resolve()
+  const task = prev.then(() => _doGenerateConversationSummary(key)).catch(() => {})
+  summaryLocks.set(key, task)
+  task.finally(() => { if (summaryLocks.get(key) === task) summaryLocks.delete(key) })
+  return task
+}
+
+async function _doGenerateConversationSummary(key) {
   const diskData = readConversationDisk(key)
   if (!diskData || !Array.isArray(diskData.messages) || diskData.messages.length < 5 + MEMORY_HISTORY_LIMIT) return
   const targets = diskData.messages.slice(0, Math.max(0, diskData.messages.length - MEMORY_HISTORY_LIMIT))
@@ -197,7 +206,10 @@ async function generateConversationSummary(key) {
     const cfg = await loadConfig()
     const resultObj = await requestChatCompletions([{ role: 'system', content: '将以下对话压缩成一段200字以内的摘要，保留关键话题变化和重要信息。用中文，用第三人称。' }, { role: 'user', content: text }], cfg, { max_tokens: 300, _fallbackSet: 'lightweight' })
     const result = typeof resultObj === 'string' ? resultObj : resultObj.content
-    if (result) { diskData.summary = result; diskData.summaryTotal = diskData.totalCount; writeConversationDisk(key, diskData) }
+    if (result) {
+      const freshData = readConversationDisk(key)
+      if (freshData) { freshData.summary = result; freshData.summaryTotal = freshData.totalCount; writeConversationDisk(key, freshData) }
+    }
   } catch {}
 }
 

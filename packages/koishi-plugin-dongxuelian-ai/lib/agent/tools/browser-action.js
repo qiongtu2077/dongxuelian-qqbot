@@ -26,6 +26,7 @@ const MAX_BROWSER_UPLOAD_FILE_BYTES = parseBrowserPositiveInt(process.env.DONGXU
 const MAX_BROWSER_OUTPUT_FILE_BYTES = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_OUTPUT_MAX_MB, 24, 1, 256) * 1024 * 1024
 const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font'])
 const BLOCKED_HOST_RE = /(?:doubleclick|googlesyndication|google-analytics|googletagmanager|adservice|adsystem|bat\.bing|clarity\.ms|facebook\.net|scorecardresearch|cnzz|hm\.baidu|pos\.baidu)/i
+const PRIVATE_IP_RE = /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|169\.254\.|::1$|fc|fd|fe80)/
 
 function parseBrowserPositiveInt(value, fallback, min, max) {
   const parsed = parseInt(value, 10)
@@ -64,6 +65,14 @@ async function enableBrowserRequestGuards(targetPage) {
       try { req.continue() } catch {}
     }
   })
+  await targetPage.evaluate(() => {
+    delete window.fetch
+    delete window.XMLHttpRequest
+    delete window.WebSocket
+    delete window.EventSource
+    delete window.sendBeacon
+    Object.defineProperty(navigator, 'sendBeacon', { value: () => false, configurable: false })
+  }).catch(() => {})
 }
 
 function registerCleanup() {
@@ -170,6 +179,13 @@ async function launchPage() {
   })
   page.on('requestfinished', req => {
     const res = req.response()
+    if (res) {
+      const remote = res.remoteAddress()
+      if (remote && remote.ip && PRIVATE_IP_RE.test(remote.ip)) {
+        page.goto('about:blank').catch(() => {})
+        return
+      }
+    }
     networkLog.unshift({ method: req.method(), url: req.url().slice(0, 300), status: res ? res.status() : 0, at: Date.now() })
     if (networkLog.length > 120) networkLog.length = 120
   })

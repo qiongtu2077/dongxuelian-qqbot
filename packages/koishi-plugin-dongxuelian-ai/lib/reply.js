@@ -20,6 +20,9 @@ const lastStickerSentAt = new Map()
 const throttleWindow = new Map()
 const lastStickerFileSentAt = new Map()
 
+let throttleCfgCache = null
+let throttleCfgLastRead = 0
+
 let stickerFileIndex = new Map()
 let stickerBase64Cache = new Map()
 
@@ -176,17 +179,22 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
   const nowMs = resolveNow(options)
   // 全局发送节流：检查该频道是否超过每分钟上限
   try {
-    const cfg = JSON.parse(String(fs.readFileSync(THROTTLE_CONFIG_FILE, 'utf8') || '').replace(/^\uFEFF/, ''))
-    const maxPerMin = parseInt(cfg.maxPerMinute, 10) || 0
+    const now = Date.now()
+    if (!throttleCfgCache || now - throttleCfgLastRead > 30000) {
+      try { throttleCfgCache = JSON.parse(String(fs.readFileSync(THROTTLE_CONFIG_FILE, 'utf8') || '').replace(/^\uFEFF/, '')) } catch { throttleCfgCache = null }
+      throttleCfgLastRead = now
+    }
+    const cfg = throttleCfgCache
+    const maxPerMin = parseInt(cfg?.maxPerMinute, 10) || 0
     if (maxPerMin > 0) {
       const windowKey = String(session.guildId || session.channelId || 'default')
       let entries = throttleWindow.get(windowKey) || []
-      entries = entries.filter(function(e) { return nowMs - e < 60000 })
+      entries = entries.filter(function(e) { return nowMs() - e < 60000 })
       if (entries.length >= maxPerMin) {
         ctx.logger('dongxuelian-ai').warn(`sendReply throttled: ${windowKey} (${entries.length}/${maxPerMin})`)
         return 0
       }
-      entries.push(nowMs)
+      entries.push(nowMs())
       throttleWindow.set(windowKey, entries)
     }
   } catch {} // 配置文件不存在或不合法时直接放行

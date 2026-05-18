@@ -11,6 +11,16 @@ const { DATA_DIR } = require('../constants')
 const MEMORY_DIR = path.join(DATA_DIR, 'agent-memory')
 const DASHBOARD_MEMORY_DIR = path.join(DATA_DIR, 'agent-memory-dashboard')
 const MAX_MEMORY_FILE_BYTES = 512 * 1024
+const writeLocks = new Map()
+
+function withUserLock(userId, fn) {
+  const key = safeUserId(userId)
+  const prev = writeLocks.get(key) || Promise.resolve()
+  const next = prev.then(fn, fn)
+  writeLocks.set(key, next)
+  next.finally(() => { if (writeLocks.get(key) === next) writeLocks.delete(key) })
+  return next
+}
 
 function safeUserId(userId = '') {
   return String(userId || 'unknown').replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 100) || 'unknown'
@@ -62,20 +72,22 @@ function normalizeTags(tags) {
 async function remember({ userId, channelKey = '', text, tags = [] } = {}) {
   const content = String(text || '').trim()
   if (!content) throw new Error('记忆内容不能为空')
-  const data = await readMemoryFile(userId)
-  const now = Date.now()
-  const item = {
-    id: buildMemoryId(now),
-    text: content.slice(0, 2000),
-    tags: normalizeTags(tags),
-    channelKey: String(channelKey || '').slice(0, 120),
-    keywords: tokenize(content + ' ' + normalizeTags(tags).join(' ')),
-    createdAt: now,
-    updatedAt: now,
-  }
-  data.items.unshift(item)
-  await writeMemoryFile(userId, data)
-  return item
+  return withUserLock(userId, async () => {
+    const data = await readMemoryFile(userId)
+    const now = Date.now()
+    const item = {
+      id: buildMemoryId(now),
+      text: content.slice(0, 2000),
+      tags: normalizeTags(tags),
+      channelKey: String(channelKey || '').slice(0, 120),
+      keywords: tokenize(content + ' ' + normalizeTags(tags).join(' ')),
+      createdAt: now,
+      updatedAt: now,
+    }
+    data.items.unshift(item)
+    await writeMemoryFile(userId, data)
+    return item
+  })
 }
 
 function scoreMemory(item, queryTokens, channelKey = '') {
@@ -102,11 +114,13 @@ async function searchMemory({ userId, channelKey = '', query = '', limit = 5 } =
 }
 
 async function forgetMemory({ userId, memoryId } = {}) {
-  const data = await readMemoryFile(userId)
-  const before = data.items.length
-  data.items = data.items.filter(item => item.id !== memoryId)
-  await writeMemoryFile(userId, data)
-  return before - data.items.length
+  return withUserLock(userId, async () => {
+    const data = await readMemoryFile(userId)
+    const before = data.items.length
+    data.items = data.items.filter(item => item.id !== memoryId)
+    await writeMemoryFile(userId, data)
+    return before - data.items.length
+  })
 }
 
 async function listMemory({ userId, limit = 20 } = {}) {

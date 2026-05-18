@@ -71,7 +71,8 @@ async function downloadGitHubSkill({ owner, repo, skillPath, branch, tempDir, ur
   await ensureDir(tempDir)
   for (const file of files) {
     const { body } = await httpsGet(file.download_url, {})
-    const dest = path.join(tempDir, file.name)
+    const safeName = path.basename(file.name).replace(/[^a-zA-Z0-9._-]/g, '_')
+    const dest = path.join(tempDir, safeName)
     await fsp.writeFile(dest, body)
   }
 
