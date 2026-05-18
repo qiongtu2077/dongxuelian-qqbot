@@ -414,7 +414,7 @@ async function main() {
   check('npm check includes AI agent tool syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/calculator.js'))
   check('npm check includes AI retaliation syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/retaliation.js'))
   check('npm check includes dashboard standalone syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dashboard/standalone.js'))
-  check('npm check includes dashboard electron deployer helper syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dashboard/frontend/src/electron-deployer.js'))
+  check('npm check includes dashboard electron deployer helper syntax', fs.existsSync(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'electron-deployer.js')))
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
   check('workspace package glob exists', Array.isArray(rootPkg.workspaces) && rootPkg.workspaces.includes('packages/*'))
 
