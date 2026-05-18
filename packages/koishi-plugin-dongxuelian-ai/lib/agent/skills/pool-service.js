@@ -10,6 +10,7 @@ const path = require('path')
 const { SKILL_POOL_DIR, validateSkillName, ensureDir, atomicWriteJson, readJsonSafe, copyDir, removeDir, isPathSafe } = require('./store')
 const { scanSkillDirectory } = require('./scanner')
 const { DATA_DIR } = require('../../constants')
+const { ensureRuntimeSkillSeeds } = require('../../skill-seeds')
 
 const POOL_MANIFEST_FILE = path.join(SKILL_POOL_DIR, 'manifest.json')
 const BUILTIN_SKILLS_DIR = path.join(DATA_DIR, 'ai-skills', 'docs')
@@ -96,6 +97,7 @@ async function getPoolSkillInfo(name) {
 }
 
 async function syncBuiltinSkills() {
+  ensureRuntimeSkillSeeds()
   if (!fs.existsSync(BUILTIN_SKILLS_DIR)) return { synced: 0 }
   let entries
   try { entries = fs.readdirSync(BUILTIN_SKILLS_DIR, { withFileTypes: true }) } catch { return { synced: 0 } }

@@ -11,6 +11,7 @@ const {
   LORE_TRIGGER_SET, TERRA_LORE_TRIGGER_SET,
 } = require('./constants')
 const { isDebugLogEnabled } = require('./logging-config')
+const { ensureRuntimeSkillSeeds } = require('./skill-seeds')
 
 let skillsCache = []
 let skillsContentCache = {}
@@ -43,6 +44,7 @@ function shouldInjectTerraLore(userText = '') {
 }
 
 async function loadSkills() {
+  ensureRuntimeSkillSeeds()
   const skills = []
 
   async function walk(dir) {
@@ -75,6 +77,7 @@ async function loadSkills() {
 }
 
 async function loadSkillsContentCache() {
+  ensureRuntimeSkillSeeds()
   const cache = {}
   try {
     const entries = await fs.readdir(SKILLS_CORE_DIR)
