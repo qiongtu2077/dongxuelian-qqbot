@@ -84,6 +84,49 @@
   </div>
 
   <div class="card">
+    <h2>语音合成配置</h2>
+    <div style="display:grid;gap:12px">
+      <div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:4px">选择人格</div>
+        <select v-model="voicePersona" style="width:100%">
+          <option value="">-- 选择人格 --</option>
+          <option v-for="p in personas" :key="p.name" :value="p.name">{{ p.name }}</option>
+        </select>
+      </div>
+      <div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:4px">音色</div>
+        <select v-model="voiceId" style="width:100%">
+          <option value="">默认（冰糖）</option>
+          <option value="__cloned__" v-if="personaVoiceMap[voicePersona]?.hasSample">克隆音色</option>
+          <option v-for="v in voiceList" :key="v" :value="v">{{ v }}</option>
+        </select>
+      </div>
+      <div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:4px">说话风格</div>
+        <input v-model="voiceStyle" placeholder="活泼可爱、温柔知性..." style="width:100%" />
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn" @click="doSaveVoice" :disabled="voiceSaving || !voicePersona">{{ voiceSaving ? '保存中...' : '保存配置' }}</button>
+        <button class="btn" @click="doPreview" :disabled="voicePreviewing" style="background:transparent;border:1px solid var(--accent);color:var(--accent)">{{ voicePreviewing ? '合成中...' : '试听' }}</button>
+      </div>
+      <div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:4px">试听文本</div>
+        <input v-model="previewText" placeholder="你好，这是一段语音测试。" style="width:100%" />
+      </div>
+      <audio v-if="previewAudioSrc" controls :src="previewAudioSrc" style="width:100%;height:36px;border-radius:8px"></audio>
+      <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:12px">
+        <div style="font-size:13px;color:var(--text2);margin-bottom:8px">音色克隆（上传音频样本，MP3/WAV/OGG/M4A，30s 以内，10MB 以内）</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="file" accept=".mp3,.wav,.ogg,.m4a" @change="onCloneFileChange" style="font-size:13px" />
+          <button class="btn btn-sm" @click="doClone" :disabled="voiceCloning || !cloneFile || !voicePersona" style="background:transparent;border:1px solid var(--accent);color:var(--accent)">{{ voiceCloning ? '克隆中...' : '测试克隆' }}</button>
+          <span v-if="cloneStatus" style="font-size:12px" :style="{color: cloneStatus.includes('成功') ? 'var(--success)' : 'var(--error)'}">{{ cloneStatus }}</span>
+        </div>
+      </div>
+      <div v-if="voiceMsg" style="font-size:13px" :style="{color: voiceMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ voiceMsg.text }}</div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>世界观管理</h2>
     <div v-if="!lores.length" style="color:var(--text3);font-size:14px">无世界观定义</div>
     <div v-for="l in lores" :key="l.name" class="grp" style="display:flex;align-items:center;gap:8px">
@@ -116,8 +159,8 @@
 </template>
 
 <script>
-import { ref, computed, inject, onMounted, nextTick } from 'vue'
-import { fetchPersonas, fetchPersonaDetail, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore } from '../api'
+import { ref, computed, inject, onMounted, nextTick, watch } from 'vue'
+import { fetchPersonas, fetchPersonaDetail, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore, fetchTtsVoices, ttsPreview, ttsClone, savePersonaVoice } from '../api'
 
 export default {
   name: 'PersonaPanel',
@@ -292,10 +335,98 @@ export default {
       loreDeleting.value = null
     }
 
+    const voicePersona = ref('')
+    const voiceId = ref('')
+    const voiceStyle = ref('')
+    const voiceList = ref([])
+    const voiceSaving = ref(false)
+    const voicePreviewing = ref(false)
+    const voiceCloning = ref(false)
+    const voiceMsg = ref(null)
+    const previewText = ref('')
+    const previewAudioSrc = ref('')
+    const cloneFile = ref(null)
+    const cloneStatus = ref('')
+    const personaVoiceMap = ref({})
+
+    async function loadVoices() {
+      const res = await fetchTtsVoices()
+      if (res.ok) {
+        voiceList.value = res.data?.builtin || []
+        const pvMap = {}
+        for (const p of (res.data?.personas || [])) {
+          if (p.name) pvMap[p.name] = { voiceId: p.voice || '', voiceStyle: p.style || '', hasSample: !!p.hasSample }
+        }
+        personaVoiceMap.value = pvMap
+      }
+    }
+    onMounted(loadVoices)
+
+    watch(voicePersona, (name) => {
+      const pv = personaVoiceMap.value[name]
+      voiceId.value = pv?.voiceId || ''
+      voiceStyle.value = pv?.voiceStyle || ''
+    })
+
+    async function doSaveVoice() {
+      if (!voicePersona.value) return
+      voiceSaving.value = true; voiceMsg.value = null
+      const res = await savePersonaVoice(voicePersona.value, voiceId.value, voiceStyle.value)
+      if (res.code === 'ADMIN_REQUIRED') { voiceSaving.value = false; if (showAdminDialog) showAdminDialog('保存语音配置需要管理员密码', doSaveVoice); return }
+      if (res.ok) {
+        voiceMsg.value = { type: 'ok', text: '语音配置已保存' }
+        personaVoiceMap.value = { ...personaVoiceMap.value, [voicePersona.value]: { voiceId: voiceId.value, voiceStyle: voiceStyle.value } }
+      } else {
+        voiceMsg.value = { type: 'err', text: res.data?.message || '保存失败' }
+      }
+      voiceSaving.value = false
+    }
+
+    async function doPreview() {
+      voicePreviewing.value = true; previewAudioSrc.value = ''; voiceMsg.value = null
+      const text = previewText.value.trim() || '你好，这是一段语音测试。'
+      const res = await ttsPreview(text, voiceId.value || '冰糖', voiceStyle.value || '活泼可爱')
+      if (res.ok && res.data?.audio) {
+        previewAudioSrc.value = 'data:audio/wav;base64,' + res.data.audio
+      } else {
+        voiceMsg.value = { type: 'err', text: res.data?.message || '试听失败' }
+      }
+      voicePreviewing.value = false
+    }
+
+    function onCloneFileChange(e) {
+      cloneFile.value = e.target.files?.[0] || null
+      cloneStatus.value = ''
+    }
+
+    async function doClone() {
+      if (!cloneFile.value || !voicePersona.value) return
+      voiceCloning.value = true; cloneStatus.value = '上传中...'; voiceMsg.value = null
+      const reader = new FileReader()
+      reader.onload = async () => {
+        const base64 = reader.result.split(',')[1]
+        const mimeType = cloneFile.value.type || 'audio/mpeg'
+        const res = await ttsClone(voicePersona.value, base64, mimeType)
+        if (res.ok) {
+          cloneStatus.value = '克隆成功'
+          voiceId.value = '__cloned__'
+          personaVoiceMap.value = { ...personaVoiceMap.value, [voicePersona.value]: { voiceId: '__cloned__', voiceStyle: voiceStyle.value, hasSample: true } }
+        } else {
+          cloneStatus.value = '克隆失败'
+          voiceMsg.value = { type: 'err', text: res.data?.message || '克隆失败' }
+        }
+        voiceCloning.value = false
+      }
+      reader.onerror = () => { voiceCloning.value = false; cloneStatus.value = '读取失败'; voiceMsg.value = { type: 'err', text: '文件读取失败' } }
+      reader.readAsDataURL(cloneFile.value)
+    }
+
     return { personas, corePersona, defaultModes, regularPersonas, loreList, newName, newDesc, newLore, newWill, newNsfw, newContent, editingName, editingType, creating, createMsg, personaDeleting, personaEditing, personaEditSection, loreEditSection, doCreate, cancelEdit,
       startPersonaEdit, doPersonaDelete,
       lores, loreFormName, loreFormDesc, loreFormContent, loreSaving, loreMsg, loreDeleting, loreEditing,
-      startLoreEdit, cancelLoreEdit, doLoreSave, doLoreDelete }
+      startLoreEdit, cancelLoreEdit, doLoreSave, doLoreDelete,
+      voicePersona, voiceId, voiceStyle, voiceList, voiceSaving, voicePreviewing, voiceCloning, voiceMsg, previewText, previewAudioSrc, cloneFile, cloneStatus,
+      doSaveVoice, doPreview, onCloneFileChange, doClone }
   }
 }
 </script>

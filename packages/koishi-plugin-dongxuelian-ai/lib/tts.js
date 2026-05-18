@@ -4,9 +4,11 @@
  * 边界: 不写对话历史、不改 conversation。只负责合成和发送。
  * 状态: 频道冷却 Map（内存，5 分钟过期）。
  */
-const { MIMORIUM_KEY_FILE } = require('./constants')
+const { MIMORIUM_KEY_FILE, VOICES_DIR } = require('./constants')
 const { readTextFile } = require('./utils')
 const { parsePersonaFrontmatter, loadPersonalSkill } = require('./persona')
+const fs = require('fs')
+const path = require('path')
 
 const TTS_TIMEOUT_MS = 15000
 const TTS_BASE_URL = 'https://token-plan-cn.xiaomimimo.com/v1'
@@ -68,6 +70,7 @@ async function synthesizeSpeech(text, options = {}) {
 }
 async function sendVoiceMessage(session, audioBuf) {
   if (!audioBuf || !audioBuf.length) return false
+  if (audioBuf.length > 2 * 1024 * 1024) return false
   try {
     const { h } = require('koishi')
     const base64 = audioBuf.toString('base64')
@@ -83,9 +86,37 @@ function resolvePersonaVoice(personaName) {
   const content = loadPersonalSkill(personaName)
   if (!content) return { voice: DEFAULT_VOICE, style: DEFAULT_STYLE }
   const meta = parsePersonaFrontmatter(content)
-  return {
-    voice: meta.voice_id || meta.voice || DEFAULT_VOICE,
-    style: meta.voice_style || DEFAULT_STYLE,
+  const voiceId = meta.voice_id || meta.voice || ''
+  const style = meta.voice_style || DEFAULT_STYLE
+
+  if (voiceId === '__cloned__' || voiceId === '') {
+    const clonedUri = loadClonedVoiceUri(personaName)
+    if (clonedUri) return { voice: clonedUri, style }
+  }
+  return { voice: voiceId || DEFAULT_VOICE, style }
+}
+
+const clonedVoiceCache = new Map()
+
+function loadClonedVoiceUri(personaName) {
+  try {
+    const safeName = String(personaName).replace(/[^a-zA-Z0-9一-鿿._-]/g, '_').slice(0, 40)
+    const entries = fs.readdirSync(VOICES_DIR)
+    const match = entries.find(f => f.startsWith(safeName + '.'))
+    if (!match) return null
+    const filePath = path.join(VOICES_DIR, match)
+    const stat = fs.statSync(filePath)
+    if (stat.size < 1024 || stat.size > 10 * 1024 * 1024) return null
+    const cached = clonedVoiceCache.get(personaName)
+    if (cached && cached.mtime === stat.mtimeMs) return cached.uri
+    const buf = fs.readFileSync(filePath)
+    const ext = path.extname(match).slice(1)
+    const mime = ext === 'wav' ? 'audio/wav' : ext === 'ogg' ? 'audio/ogg' : ext === 'flac' ? 'audio/flac' : 'audio/mpeg'
+    const uri = `data:${mime};base64,${buf.toString('base64')}`
+    clonedVoiceCache.set(personaName, { mtime: stat.mtimeMs, uri })
+    return uri
+  } catch {
+    return null
   }
 }
 

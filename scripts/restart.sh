@@ -2,8 +2,13 @@
 APP_DIR="${KOISHI_APP_DIR:-/root/koishi-app}"
 KOISHI_PORT="${KOISHI_PORT:-5140}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-5150}"
+DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
 LOG_FILE="$APP_DIR/koishi.log"
 DATA_DIR="$APP_DIR/data"
+
+if [ -f "$APP_DIR/scripts/seal-data-dir.sh" ]; then
+  KOISHI_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" sh "$APP_DIR/scripts/seal-data-dir.sh"
+fi
 
 echo "[$(date)] 开始重启 bot..."
 
@@ -22,12 +27,12 @@ MARKER="=== RESTART $(date +%Y%m%d%H%M%S) ==="
 echo "$MARKER" >> "$LOG_FILE"
 
 cd "$APP_DIR" || exit 1
-DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" nohup node packages/koishi-plugin-dashboard/standalone.js >> "$LOG_FILE" 2>&1 &
+KOISHI_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" DASHBOARD_HOST="$DASHBOARD_HOST" DASHBOARD_PORT="$DASHBOARD_PORT" nohup node packages/koishi-plugin-dashboard/standalone.js >> "$LOG_FILE" 2>&1 &
 DASH_PID=$!
 echo "Dashboard PID: $DASH_PID"
 sleep 2
 
-nohup node "$APP_DIR/node_modules/koishi/bin.js" start >> "$LOG_FILE" 2>&1 &
+KOISHI_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" nohup node "$APP_DIR/node_modules/koishi/bin.js" start >> "$LOG_FILE" 2>&1 &
 KOISHI_PID=$!
 echo "Koishi PID: $KOISHI_PID"
 
@@ -44,7 +49,7 @@ for i in $(seq 1 20); do
   fi
   if ! kill -0 "$KOISHI_PID" 2>/dev/null; then
     tail -10 "$LOG_FILE" | grep -iE "error|Error|cannot" | tail -3 || true
-    DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" nohup node "$APP_DIR/node_modules/koishi/bin.js" start >> "$LOG_FILE" 2>&1 &
+    KOISHI_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" nohup node "$APP_DIR/node_modules/koishi/bin.js" start >> "$LOG_FILE" 2>&1 &
     KOISHI_PID=$!
   fi
 done

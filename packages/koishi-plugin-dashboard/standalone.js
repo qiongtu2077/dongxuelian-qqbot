@@ -75,9 +75,14 @@ function collectBody(req, res, callback) {
 // ====== 路径配置 ======
 const PLUGIN_ROOT = __dirname
 const AI_LIB = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'lib')
-const KOISHI_DIR = process.env.KOISHI_DIR || path.join(PLUGIN_ROOT, '..', '..')
+const KOISHI_DIR = path.resolve(process.env.KOISHI_DIR || process.env.KOISHI_APP_DIR || path.join(PLUGIN_ROOT, '..', '..'))
 const KOISHI_PID_FILE = path.join(path.resolve(KOISHI_DIR), 'koishi.pid')
-const DATA_DIR = process.env.DONGXUELIAN_AI_DATA_DIR || path.join(KOISHI_DIR, 'data') || path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'data')
+function resolveRuntimeDataDir() {
+  const configured = String(process.env.DONGXUELIAN_AI_DATA_DIR || '').trim()
+  if (configured) return path.resolve(configured)
+  return path.resolve(KOISHI_DIR, 'data')
+}
+const DATA_DIR = resolveRuntimeDataDir()
 const PERSONAS_DIR = path.join(DATA_DIR, 'ai-skills', 'personas')
 const CORE_DIR = path.join(DATA_DIR, 'ai-skills', 'core')
 const LORES_DIR = path.join(DATA_DIR, 'ai-skills', 'lore')
@@ -93,6 +98,7 @@ function isGlobalLocalMode() {
 const AGENT_CONSOLE_DIR = path.join(PLUGIN_ROOT, '..', 'agent-console')
 const AGENT_CONSOLE_DIST_DIR = path.join(AGENT_CONSOLE_DIR, 'dist')
 const PORT = process.env.DASHBOARD_PORT || 5150
+const HOST = process.env.DASHBOARD_HOST || '127.0.0.1'
 const PASSWORD = process.env.DASHBOARD_PASSWORD || (isGlobalLocalMode() ? '' : '123')
 const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || (isGlobalLocalMode() ? '' : '123')
 
@@ -451,7 +457,7 @@ function remoteJoin(base, ...parts) {
 }
 
 function sshCommand(server, remoteCmd) {
-  return `ssh -o StrictHostKeyChecking=no ${server} ${commandQuote(remoteCmd)}`
+  return `ssh -o StrictHostKeyChecking=no -- ${server} ${commandQuote(remoteCmd)}`
 }
 
 function scpRemoteTarget(server, remotePath) {
@@ -2831,12 +2837,13 @@ function computeFingerprint() {
 }
 
 // ====== Auth ======
-function createToken() {
-  return crypto.createHash('sha256').update('dashboard:' + getAccessPassword()).digest('hex')
-}
+const TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000
 
-function validateToken(token) {
-  return token === createToken()
+function safeCompare(a, b) {
+  const bufA = Buffer.from(String(a || ''))
+  const bufB = Buffer.from(String(b || ''))
+  if (bufA.length !== bufB.length) return crypto.timingSafeEqual(Buffer.alloc(32), Buffer.alloc(32)) && false
+  return crypto.timingSafeEqual(bufA, bufB)
 }
 
 // ====== 管理员密码系统（敏感操作二次验证） ======
@@ -2846,11 +2853,37 @@ function getAdminPassword() {
 function getAccessPassword() {
   return readFileSync(ACCESS_PWD_FILE) || readFileSync(LEGACY_ACCESS_PWD_FILE) || PASSWORD
 }
-function createAdminToken() {
-  return crypto.createHash('sha256').update('admin:' + getAdminPassword()).digest('hex')
+
+function createToken() {
+  const ts = Date.now().toString(36)
+  const hmac = crypto.createHmac('sha256', 'dashboard:' + getAccessPassword()).update(ts).digest('hex')
+  return ts + '.' + hmac
 }
+
+function validateToken(token) {
+  const parts = String(token || '').split('.')
+  if (parts.length !== 2) return safeCompare(token, crypto.createHash('sha256').update('dashboard:' + getAccessPassword()).digest('hex'))
+  const [ts, hmac] = parts
+  const timestamp = parseInt(ts, 36)
+  if (!Number.isFinite(timestamp) || Date.now() - timestamp > TOKEN_EXPIRY_MS) return false
+  const expected = crypto.createHmac('sha256', 'dashboard:' + getAccessPassword()).update(ts).digest('hex')
+  return safeCompare(hmac, expected)
+}
+
+function createAdminToken() {
+  const ts = Date.now().toString(36)
+  const hmac = crypto.createHmac('sha256', 'admin:' + getAdminPassword()).update(ts).digest('hex')
+  return ts + '.' + hmac
+}
+
 function validateAdminToken(token) {
-  return token === createAdminToken()
+  const parts = String(token || '').split('.')
+  if (parts.length !== 2) return safeCompare(token, crypto.createHash('sha256').update('admin:' + getAdminPassword()).digest('hex'))
+  const [ts, hmac] = parts
+  const timestamp = parseInt(ts, 36)
+  if (!Number.isFinite(timestamp) || Date.now() - timestamp > TOKEN_EXPIRY_MS) return false
+  const expected = crypto.createHmac('sha256', 'admin:' + getAdminPassword()).update(ts).digest('hex')
+  return safeCompare(hmac, expected)
 }
 
 function generateResetToken() {
@@ -2951,10 +2984,8 @@ function napcatRespond(res, proxyRes, token) {
     let body = ''
     proxyRes.on('data', c => body += c)
     proxyRes.on('end', () => {
-      const safeToken = String(token || '').replace(/[<>&'"\\]/g, c =>
-        ({'<':'&lt;','>':'&gt;','&':'&amp;',"'":"\\'",'"':'&quot;','\\':'\\\\'})[c] || c
-      )
-      const injected = body.replace('</head>', `<script>localStorage.setItem('token','${safeToken}');</script></head>`)
+      const jsonToken = JSON.stringify(String(token || ''))
+      const injected = body.replace('</head>', `<script>localStorage.setItem('token',${jsonToken});</script></head>`)
       res.writeHead(proxyRes.statusCode, { ...proxyRes.headers, 'content-length': Buffer.byteLength(injected) })
       res.end(injected)
     })
@@ -3546,11 +3577,13 @@ const server = http.createServer(async (req, res) => {
 
   // NapCat 代理
   if (pathname.startsWith('/webui/') || pathname === '/webui') {
+    if (!requireAdmin(req, res)) return
     const nToken = process.env.NAPCAT_TOKEN || getNapcatToken()
     const sep = url.search ? '&' : '?'
     return napcatProxy(req, res, pathname + url.search + (nToken ? sep + 'webui_token=' + encodeURIComponent(nToken) : ''))
   }
   if (pathname.startsWith('/api/') && !pathname.startsWith('/dashboard/api/')) {
+    if (!requireAdmin(req, res)) return
     return napcatProxy(req, res, pathname + url.search)
   }
 
@@ -3665,6 +3698,144 @@ const server = http.createServer(async (req, res) => {
         const saved = await agentConfig.saveAgentConfig(current)
         return json(res, { ok: true, persona: saved.persona, message: 'Agent 人格已更新' })
       } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    })
+    return
+  }
+
+  // === TTS 音色管理 API ===
+  if (pathname === '/dashboard/api/agent/tts/voices' && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
+    try {
+      const tts = require(path.join(AI_LIB, 'tts'))
+      const { getAvailablePersonals, parsePersonaFrontmatter, loadPersonalSkill } = require(path.join(AI_LIB, 'persona'))
+      const personas = getAvailablePersonals({ userFacing: true })
+      const voiceConfigs = personas.map(p => {
+        const content = loadPersonalSkill(p.name)
+        const meta = content ? parsePersonaFrontmatter(content) : {}
+        return { name: p.name, voice: meta.voice_id || meta.voice || '', style: meta.voice_style || '', hasSample: false }
+      })
+      const voicesDir = path.join(DATA_DIR, 'ai-voices')
+      try {
+        const files = fs.readdirSync(voicesDir)
+        for (const vc of voiceConfigs) {
+          const match = files.find(f => f.startsWith(vc.name + '.'))
+          if (match) vc.hasSample = true
+        }
+      } catch {}
+      return json(res, { ok: true, builtin: tts.BUILTIN_VOICES, personas: voiceConfigs })
+    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  }
+
+  if (pathname === '/dashboard/api/agent/tts/clone' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const { personaName, audioBase64, mimeType } = data
+        if (!personaName || !audioBase64) return json(res, { ok: false, message: '缺少 personaName 或 audioBase64' }, 400)
+        const buf = Buffer.from(audioBase64, 'base64')
+        if (buf.length > 10 * 1024 * 1024) return json(res, { ok: false, message: '音频文件超过 10MB 限制' }, 400)
+        if (buf.length < 1024) return json(res, { ok: false, message: '音频文件过小，可能无效' }, 400)
+        const ext = (mimeType || '').includes('wav') ? 'wav' : (mimeType || '').includes('ogg') ? 'ogg' : (mimeType || '').includes('flac') ? 'flac' : 'mp3'
+        const voicesDir = path.join(DATA_DIR, 'ai-voices')
+        fs.mkdirSync(voicesDir, { recursive: true })
+        const safeName = String(personaName).replace(/[^a-zA-Z0-9一-鿿._-]/g, '_').slice(0, 40)
+        const filePath = path.join(voicesDir, `${safeName}.${ext}`)
+        fs.writeFileSync(filePath, buf)
+        const tts = require(path.join(AI_LIB, 'tts'))
+        const dataUri = `data:${mimeType || 'audio/mpeg'};base64,${audioBase64}`
+        const testBuf = await tts.synthesizeSpeech('测试语音克隆', { voice: dataUri, style: '正常语气' })
+        if (!testBuf) {
+          try { fs.unlinkSync(filePath) } catch {}
+          return json(res, { ok: false, message: 'MiMo voiceclone 验证失败，请检查音频格式或 API key' }, 400)
+        }
+        try {
+          const personaModule = require(path.join(AI_LIB, 'persona'))
+          const content = personaModule.loadPersonalSkill(personaName)
+          if (content) {
+            let updated = content
+            if (/^---\n[\s\S]*?\n---/.test(updated)) {
+              updated = updated.replace(/^(---\n[\s\S]*?)voice_id:[^\n]*\n/gm, '$1')
+              updated = updated.replace(/^(---\n[\s\S]*?)voice:[^\n]*\n/gm, '$1')
+              updated = updated.replace(/^---\n/, '---\nvoice_id: __cloned__\n')
+            } else {
+              updated = `---\nvoice_id: __cloned__\n---\n${content}`
+            }
+            const searchDirs = ['personas', 'core', 'modes'].map(d => path.join(DATA_DIR, 'ai-skills', d))
+            let found = false
+            for (const skillsDir of searchDirs) {
+              if (found) break
+              if (!fs.existsSync(skillsDir)) continue
+              const entries2 = fs.readdirSync(skillsDir)
+              for (const entry of entries2) {
+                if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
+                const fp = path.join(skillsDir, entry)
+                const fc = fs.readFileSync(fp, 'utf8')
+                const meta = personaModule.parsePersonaFrontmatter(fc)
+                if (meta.name === personaName) { fs.writeFileSync(fp, updated, 'utf8'); found = true; break }
+              }
+            }
+          }
+        } catch {}
+        return json(res, { ok: true, message: '音色克隆成功', file: `${safeName}.${ext}` })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/agent/tts/preview' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const { text, voice, style } = data
+        if (!text) return json(res, { ok: false, message: '缺少 text' }, 400)
+        const tts = require(path.join(AI_LIB, 'tts'))
+        const buf = await tts.synthesizeSpeech(String(text).slice(0, 200), { voice: voice || '冰糖', style: style || '活泼可爱' })
+        if (!buf) return json(res, { ok: false, message: '语音合成失败，请检查 API key 或网络' }, 500)
+        return json(res, { ok: true, audio: buf.toString('base64'), format: 'wav' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    })
+    return
+  }
+
+  if (pathname === '/dashboard/api/agent/persona/voice' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
+    collectBody(req, res, async (body) => {
+      try {
+        const data = JSON.parse(body || '{}')
+        const { personaName, voiceId, voiceStyle } = data
+        if (!personaName) return json(res, { ok: false, message: '缺少 personaName' }, 400)
+        const personaModule = require(path.join(AI_LIB, 'persona'))
+        const content = personaModule.loadPersonalSkill(personaName)
+        if (!content) return json(res, { ok: false, message: '未找到人格：' + personaName }, 404)
+        let updated = content
+        if (/^---\n[\s\S]*?\n---/.test(updated)) {
+          updated = updated.replace(/^(---\n[\s\S]*?)(voice_id:[^\n]*\n)/m, '$1')
+          updated = updated.replace(/^(---\n[\s\S]*?)(voice_style:[^\n]*\n)/m, '$1')
+          updated = updated.replace(/^(---\n[\s\S]*?)(voice:[^\n]*\n)/m, '$1')
+          updated = updated.replace(/^---\n/, `---\nvoice_id: ${voiceId || '冰糖'}\nvoice_style: ${voiceStyle || '活泼可爱'}\n`)
+        } else {
+          updated = `---\nvoice_id: ${voiceId || '冰糖'}\nvoice_style: ${voiceStyle || '活泼可爱'}\n---\n${content}`
+        }
+        const searchDirs = ['personas', 'core', 'modes'].map(d => path.join(DATA_DIR, 'ai-skills', d))
+        let targetFile = null
+        for (const skillsDir of searchDirs) {
+          if (!fs.existsSync(skillsDir)) continue
+          const entries = fs.readdirSync(skillsDir)
+          for (const entry of entries) {
+            if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
+            const filePath = path.join(skillsDir, entry)
+            const fileContent = fs.readFileSync(filePath, 'utf8')
+            const meta = personaModule.parsePersonaFrontmatter(fileContent)
+            if (meta.name === personaName) { targetFile = filePath; break }
+          }
+          if (targetFile) break
+        }
+        if (!targetFile) return json(res, { ok: false, message: '未找到人格文件' }, 404)
+        fs.writeFileSync(targetFile, updated, 'utf8')
+        return json(res, { ok: true, message: '音色配置已更新' })
+      } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
     })
     return
   }
@@ -4279,6 +4450,8 @@ const server = http.createServer(async (req, res) => {
           const dashboardDistNextDir = remoteJoin(dashboardFrontendDir, 'dist.next')
           const scriptsDir = remoteJoin(d, 'scripts')
           const dataDir = remoteJoin(d, 'data')
+          const aiSkillsSeedDir = path.join(repoRoot, 'packages', 'koishi-plugin-dongxuelian-ai', 'data', 'ai-skills')
+          const remoteAiSkillsSeedNextDir = remoteJoin(dataDir, '.ai-skills-seed.next')
           const existingInstallCheck = `test -f ${shellQuote(remoteJoin(d, 'node_modules', 'koishi', 'bin.js'))} && (test -f ${shellQuote(remoteJoin(d, 'koishi.config.js'))} || test -f ${shellQuote(remoteJoin(d, 'koishi.yml'))})`
           cmds.push(`echo "preflight"`)
           cmds.push(sshCommand(s, existingInstallCheck))
@@ -4306,6 +4479,12 @@ const server = http.createServer(async (req, res) => {
             cmds.push(sshCommand(s, `rm -rf ${shellQuote(dashboardPublicDir)} ${shellQuote(dashboardPublicNextDir)}`))
           }
           cmds.push(`echo "Dashboard 前端 dist..."`)
+          if (fs.existsSync(aiSkillsSeedDir)) {
+            cmds.push(`echo "AI skills seed..."`)
+            cmds.push(sshCommand(s, `rm -rf ${shellQuote(remoteAiSkillsSeedNextDir)}`))
+            cmds.push(scpCommand(aiSkillsSeedDir, scpRemoteTarget(s, remoteAiSkillsSeedNextDir), { recursive: true }))
+            cmds.push(sshCommand(s, `mkdir -p ${shellQuote(remoteJoin(dataDir, 'ai-skills'))} && cp -rn ${shellQuote(remoteAiSkillsSeedNextDir + '/.')} ${shellQuote(remoteJoin(dataDir, 'ai-skills') + '/')} 2>/dev/null || true; rm -rf ${shellQuote(remoteAiSkillsSeedNextDir)}`))
+          }
           cmds.push(sshCommand(s, `rm -rf ${shellQuote(dashboardDistNextDir)}`))
           cmds.push(scpCommand(DIST_DIR, scpRemoteTarget(s, dashboardDistNextDir), { recursive: true }))
           cmds.push(sshCommand(s, `test -f ${shellQuote(remoteJoin(dashboardDistNextDir, 'index.html'))} && ls ${shellQuote(remoteJoin(dashboardDistNextDir, 'assets'))}/*.js >/dev/null 2>&1 && rm -rf ${shellQuote(dashboardDistDir)} && mv ${shellQuote(dashboardDistNextDir)} ${shellQuote(dashboardDistDir)}`))
@@ -4314,7 +4493,10 @@ const server = http.createServer(async (req, res) => {
             ? path.join(repoRoot, 'scripts', 'restart-bot.sh')
             : path.join(repoRoot, 'restart-bot.sh')
           cmds.push(scpCommand(restartScript, scpRemoteTarget(s, remoteJoin(d, 'restart.sh'))))
+          if (fs.existsSync(path.join(repoRoot, 'scripts', 'seal-data-dir.sh'))) cmds.push(scpCommand(path.join(repoRoot, 'scripts', 'seal-data-dir.sh'), scpRemoteTarget(s, remoteJoin(scriptsDir, 'seal-data-dir.sh'))))
           if (fs.existsSync(path.join(repoRoot, 'scripts', 'watchdog.sh'))) cmds.push(scpCommand(path.join(repoRoot, 'scripts', 'watchdog.sh'), scpRemoteTarget(s, remoteJoin(scriptsDir, 'watchdog.sh'))))
+          cmds.push(sshCommand(s, `chmod +x ${[remoteJoin(d, 'restart.sh'), remoteJoin(scriptsDir, 'seal-data-dir.sh'), remoteJoin(scriptsDir, 'watchdog.sh')].map(shellQuote).join(' ')} 2>/dev/null || true`))
+          cmds.push(sshCommand(s, `if [ -f ${shellQuote(remoteJoin(scriptsDir, 'seal-data-dir.sh'))} ]; then KOISHI_DIR=${shellQuote(d)} DONGXUELIAN_AI_DATA_DIR=${shellQuote(dataDir)} sh ${shellQuote(remoteJoin(scriptsDir, 'seal-data-dir.sh'))}; fi`))
           if (fs.existsSync(path.join(DATA_DIR, 'bilibili-cookies.txt'))) cmds.push(scpCommand(path.join(DATA_DIR, 'bilibili-cookies.txt'), scpRemoteTarget(s, '/root/bilibili-cookies.txt')))
           cmds.push(`echo "重启 Bot..."`)
           cmds.push(sshCommand(s, `bash ${shellQuote(remoteJoin(d, 'restart.sh'))}`))
@@ -4566,7 +4748,7 @@ const server = http.createServer(async (req, res) => {
         if (cfg.adminIds) files.push(writeTrackedLocalFile('data/ai-admin-ids.json', JSON.stringify(cfg.adminIds, null, 2) + '\n', { deleteByDefault: false, sensitive: true, kind: 'adminIds' }, timestamp))
         const yml = `port: 5140\nselfUrl: http://localhost:5140\nplugins:\n  adapter-onebot:\n    protocol: ws\n    selfId: '${qq}'\n    endpoint: ws://127.0.0.1:8080/onebot/v11/ws\n  dongxuelian-ai: {}\n  dongxuelian-help: {}\n  group-name-at: {}\n  defense: {}\n  local-video-sender: {}\n  group-leave-notice: {}\n  dongxuelian-poke: {}\n  daily-report: {}\n`
         files.push(writeTrackedLocalFile('koishi.yml', yml, { deleteByDefault: true, kind: 'koishiConfig' }, timestamp))
-        const helper = `@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif exist "%~dp0runtime\\node\\node.exe" set "PATH=%~dp0runtime\\node;%PATH%"\r\nif not exist node_modules ( call npm install )\r\ncall npm exec -- koishi start\r\n`
+        const helper = `@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif exist "%~dp0runtime\\node\\node.exe" set "PATH=%~dp0runtime\\node;%PATH%"\r\nset "KOISHI_DIR=%~dp0"\r\nset "DONGXUELIAN_AI_DATA_DIR=%~dp0data"\r\nif not exist node_modules ( call npm install )\r\nnode start.js\r\n`
         files.push(writeTrackedLocalFile('start-local.bat', helper, { deleteByDefault: true, kind: 'startScript' }, timestamp))
         const aiKey = getAiKeyStatus(provider)
         const manifest = { version: 1, generatedAt: timestamp, qq, onebotEndpoint: 'ws://127.0.0.1:8080/onebot/v11/ws', aiKeyConfigured: aiKey.configured, files }
@@ -4737,7 +4919,7 @@ const server = http.createServer(async (req, res) => {
       if (process.platform === 'win32' && fs.existsSync(path.join(KOISHI_DIR, 'start-local.bat'))) {
         spawnLocalTask('koishi', 'cmd.exe', ['/d', '/c', path.join(KOISHI_DIR, 'start-local.bat')], getLocalTaskOptions({ cwd: KOISHI_DIR }))
       } else {
-        spawnLocalTask('koishi', getLocalToolCommand('npm'), ['exec', '--', 'koishi', 'start'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32' }))
+        spawnLocalTask('koishi', getLocalToolCommand('node'), ['start.js'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', env: { KOISHI_DIR: path.resolve(KOISHI_DIR), DONGXUELIAN_AI_DATA_DIR: path.join(path.resolve(KOISHI_DIR), 'data') } }))
       }
       return json(res, { ok: true, message: 'Koishi 已启动，正在等待 ' + resolveKoishiListenPort() + ' 端口和 OneBot 连接', status: getLocalKoishiDeployStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
@@ -4857,8 +5039,11 @@ if (require.main === module) {
     else console.error('[dashboard] HTTP 服务器错误:', err.stack || err.message || err)
     process.exit(1)
   })
-  server.listen(PORT, '127.0.0.1', () => {
-    log(`LianBoard running on http://localhost:${PORT}/dashboard/`)
+  server.listen(PORT, HOST, () => {
+    const shownHost = HOST === '0.0.0.0' ? 'localhost' : HOST
+    log(`LianBoard running on http://${shownHost}:${PORT}/dashboard/`)
+    log(`listen host: ${HOST}`)
+    log(`runtime data dir: ${DATA_DIR}`)
     log(`bot control: start/stop/maintenance`)
     log(`napcat proxy: /webui/ -> NapCat WebUI`)
     if (!isGlobalLocalMode()) {

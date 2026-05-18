@@ -6,13 +6,19 @@
 APP_DIR="${KOISHI_APP_DIR:-/root/koishi-app}"
 KOISHI_PORT="${KOISHI_PORT:-5140}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-5150}"
+DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
 LOG_FILE="$APP_DIR/koishi.log"
 DATA_DIR="$APP_DIR/data"
 DASHBOARD_DIR="$APP_DIR/packages/koishi-plugin-dashboard"
 NODE_MODULES="$APP_DIR/node_modules"
 
+if [ -f "$APP_DIR/scripts/seal-data-dir.sh" ]; then
+  KOISHI_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" sh "$APP_DIR/scripts/seal-data-dir.sh"
+fi
+
 start_koishi() {
   cd "$APP_DIR" || exit 1
+  export KOISHI_DIR="$APP_DIR"
   export NODE_PATH="$NODE_MODULES"
   export DONGXUELIAN_AI_DATA_DIR="$DATA_DIR"
   nohup node "$APP_DIR/node_modules/koishi/bin.js" start >> "$LOG_FILE" 2>&1 &
@@ -38,7 +44,7 @@ echo "端口 $KOISHI_PORT 已释放"
 if ! ss -tlnp | grep -q ":$DASHBOARD_PORT"; then
   echo "启动 Dashboard..."
   cd "$DASHBOARD_DIR" || exit 1
-  DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" NODE_PATH="$NODE_MODULES" nohup node standalone.js >> "$LOG_FILE" 2>&1 &
+  KOISHI_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" DASHBOARD_HOST="$DASHBOARD_HOST" DASHBOARD_PORT="$DASHBOARD_PORT" NODE_PATH="$NODE_MODULES" nohup node standalone.js >> "$LOG_FILE" 2>&1 &
   echo "Dashboard PID: $!"
   sleep 2
 else
