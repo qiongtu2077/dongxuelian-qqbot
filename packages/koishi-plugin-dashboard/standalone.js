@@ -4175,6 +4175,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, getLegacyNapcatStatus())
   }
   if (pathname === '/dashboard/api/napcat/restart' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
     const raw = process.env.DASHBOARD_QQ_NUMBER || '123456789'
     const qq = raw.replace(/[^0-9]/g, '')
     if (!qq) return json(res, { ok: false, message: '无效 QQ 号' }, 400)
@@ -4344,8 +4345,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname.startsWith('/dashboard/api/deploy/progress/') && req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
     const taskId = pathname.split('/').pop()
-    if (!taskId) return json(res, { ok: false, message: '缺少 taskId' }, 400)
+    if (!taskId || !/^[a-z0-9]+$/.test(taskId)) return json(res, { ok: false, message: '无效 taskId' }, 400)
     try {
       const logFile = path.join(DEPLOY_TASKS_DIR, taskId + '.log')
       if (!fs.existsSync(logFile)) return json(res, { ok: false, lines: [], done: false })
@@ -4424,6 +4426,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === '/dashboard/api/gallery' && req.method === 'POST') {
+    if (!requireAdmin(req, res)) return
     collectBody(req, res, (body) => {
       try {
         const item = writeGalleryImage(JSON.parse(body || '{}'))
@@ -4447,6 +4450,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === '/dashboard/api/gallery/style' && req.method === 'PUT') {
+    if (!requireAdmin(req, res)) return
     collectBody(req, res, (body) => {
       try {
         const { id, foilStyle } = JSON.parse(body || '{}')

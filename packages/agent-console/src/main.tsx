@@ -485,6 +485,8 @@ function ToolsPage({ data, setConfig, refresh }: any) {
   const tools = data.config?.tools || []
   async function toggle(toolName: string, channel: 'qq' | 'dashboard', enabled: boolean) {
     const next = structuredClone(config)
+    if (!next.channels[channel]) next.channels[channel] = {}
+    if (!next.channels[channel].tools) next.channels[channel].tools = {}
     next.channels[channel].tools[toolName] = enabled
     setConfig({ ...data.config, config: next })
     await api.saveConfig({ config: next, mode: data.config?.mode })
