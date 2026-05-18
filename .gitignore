@@ -23,3 +23,8 @@ tmp_*.js
 *.log
 local-deployer/release/
 .claude/settings.local.json
+
+# Deploy archives
+*.tgz
+.claude/
+AUDIT-REPORT-*.md
