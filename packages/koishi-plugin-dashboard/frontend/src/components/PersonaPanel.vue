@@ -425,7 +425,7 @@ export default {
       startPersonaEdit, doPersonaDelete,
       lores, loreFormName, loreFormDesc, loreFormContent, loreSaving, loreMsg, loreDeleting, loreEditing,
       startLoreEdit, cancelLoreEdit, doLoreSave, doLoreDelete,
-      voicePersona, voiceId, voiceStyle, voiceList, voiceSaving, voicePreviewing, voiceCloning, voiceMsg, previewText, previewAudioSrc, cloneFile, cloneStatus,
+      voicePersona, voiceId, voiceStyle, voiceList, voiceSaving, voicePreviewing, voiceCloning, voiceMsg, previewText, previewAudioSrc, cloneFile, cloneStatus, personaVoiceMap,
       doSaveVoice, doPreview, onCloneFileChange, doClone }
   }
 }
