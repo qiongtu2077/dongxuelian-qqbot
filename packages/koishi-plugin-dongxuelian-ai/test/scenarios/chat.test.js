@@ -102,10 +102,13 @@ async function run(t) {
   })
 
   await runChatCase(t, 'explicit web_search request routes to Agent even when auto route disabled', [
-    { json: { choices: [{ message: { content: 'agent-search-raw' } }] } },
+    { json: { choices: [{ message: { content: '### Agent raw report\n**secret raw**\n- item' } }] } },
     { json: { choices: [{ message: { content: 'agent-search-retold' } }] } },
   ], async (result, mocked, session, calls) => {
     checkSentIncludes(t, 'scenario explicit web_search request sends chat reply', result, 'agent-search-retold')
+    t.check('scenario explicit web_search sends one final QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
+    checkSentExcludes(t, 'scenario explicit web_search does not send raw markdown heading', result, '### Agent raw report')
+    checkSentExcludes(t, 'scenario explicit web_search does not send raw markdown body', result, '**secret raw**')
     t.check('scenario explicit web_search uses agent then chat (2 calls)', calls.length === 2, `calls=${calls.length}`)
     const agentPrompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
     t.check('scenario explicit web_search agent prompt has search instruction', agentPrompt.includes('必须先调用 web_search'), agentPrompt.slice(0, 300))
@@ -128,6 +131,37 @@ async function run(t) {
     }
   } catch {}
 
+  await runChatCase(t, 'chat heavy web_search routes through Agent then persona chat once', [
+    { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-heavy', type: 'function', function: { name: 'web_search', arguments: '{"query":"鸣潮最新角色"}' } }] } }] } },
+    { json: { choices: [{ message: { content: '让我看看…' } }] } },
+    { json: { choices: [{ message: { content: '### Agent raw report\n**secret heavy raw**\n- item' } }] } },
+    { json: { choices: [{ message: { content: 'heavy-persona-retold' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario heavy web_search sends persona retell', result, 'heavy-persona-retold')
+    t.check('scenario heavy web_search sends one final QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
+    checkSentExcludes(t, 'scenario heavy web_search does not send progress text', result, '让我看看')
+    checkSentExcludes(t, 'scenario heavy web_search does not send raw agent report', result, '### Agent raw report')
+    checkSentExcludes(t, 'scenario heavy web_search does not send raw markdown body', result, '**secret heavy raw**')
+    t.check('scenario heavy web_search uses chat, follow-up, agent, retell calls', calls.length === 4, `calls=${calls.length}`)
+    const retellPrompt = JSON.stringify(calls[3]?.requestBody?.messages || [])
+    t.check('scenario heavy web_search retell prompt treats report as internal', retellPrompt.includes('当前 chat 人格') && retellPrompt.includes('不要照抄原文'), retellPrompt)
+  }, {
+    input: '鸣潮这次角色情况咋样',
+    setup(session) {
+      const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
+      webSearch.__scenarioOriginalExecute = webSearch.execute
+      webSearch.execute = async () => '已搜索：鸣潮 最新角色\n搜索结果：绯雪与达妮娅'
+    },
+    waitFor: message => String(message).includes('heavy-persona-retold'),
+  })
+  try {
+    const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
+    if (webSearch.__scenarioOriginalExecute) {
+      webSearch.execute = webSearch.__scenarioOriginalExecute
+      delete webSearch.__scenarioOriginalExecute
+    }
+  } catch {}
+
   await runChatCase(t, 'QQ Agent runs in direct mode and chat retells with minimal prompt', [
     { json: { choices: [{ message: { content: 'agent-direct-raw' } }] } },
     { json: { choices: [{ message: { content: 'agent-persona-retold' } }] } },
@@ -138,6 +172,7 @@ async function run(t) {
     const chatPrompt = JSON.stringify(calls[1]?.requestBody?.messages || [])
     t.check('scenario QQ Agent chat call includes agent context', chatPrompt.includes('工具查到的信息'), chatPrompt)
     t.check('scenario QQ Agent chat call includes core persona', chatPrompt.includes('简短转述'), chatPrompt)
+    t.check('scenario QQ Agent chat call includes chat persona prompt', chatPrompt.includes('AGENT_CORE_MARKER') && chatPrompt.includes('AGENT_PERSONA_MARKER'), chatPrompt)
   }, {
     input: '搜一下现在最新的天气是什么',
     async setup(session, { data }) {

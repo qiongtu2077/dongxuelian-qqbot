@@ -409,8 +409,19 @@ plugins:
 本地开发时默认是：
 
 ```text
-packages/koishi-plugin-dongxuelian-ai/data
+<项目根目录>/data
 ```
+
+`packages/koishi-plugin-dongxuelian-ai/data/ai-skills` 只允许作为随包携带的技能种子资源来源，不再作为运行时数据目录使用。生产环境和本地部署都必须把 AI、Dashboard、昵称、视频等插件的数据统一写入同一个根目录 `data`。
+
+服务器上的包内 `data` 目录必须被封闭成软链接，统一指向 `/root/koishi-app/data`。如果部署或拉代码后目录形态异常，先执行：
+
+```bash
+cd /root/koishi-app
+KOISHI_DIR=/root/koishi-app DONGXUELIAN_AI_DATA_DIR=/root/koishi-app/data sh scripts/seal-data-dir.sh
+```
+
+`scripts/seal-data-dir.sh` 会先把包内旧数据非覆盖合并到根 `data`，把原目录备份到 `deploy-backups/`，再恢复软链接。`restart.sh`、`restart-bot.sh`、`watchdog.sh` 和 `setup.sh` 都会在启动前调用它，防止数据再次分裂。
 
 常见文件：
 
@@ -445,7 +456,7 @@ packages/koishi-plugin-dongxuelian-ai/data
 | `DASHBOARD_PORT` | `5150` | Dashboard 监听端口 |
 | `DASHBOARD_PASSWORD` | 空 | 首次访问密码默认值；为空且没有 `dashboard-access-pwd.txt` 时禁止登录 |
 | `DASHBOARD_ADMIN_PASSWORD` | `123` | 首次管理员密码默认值（变量名保留兼容旧版本） |
-| `DONGXUELIAN_AI_DATA_DIR` | 插件内 `data` | AI 和 Dashboard 共享数据目录 |
+| `DONGXUELIAN_AI_DATA_DIR` | `KOISHI_DIR/data`，未设置 `KOISHI_DIR` 时为当前工作目录 `data` | AI、Dashboard 和关联插件共享数据目录 |
 | `KOISHI_APP_DIR` | `/root/koishi-app` | 重启脚本和守护脚本使用的 Koishi 目录 |
 | `KOISHI_PORT` | `5140` | Koishi server 端口 |
 | `NAPCAT_HOST` | `127.0.0.1` | Dashboard 代理 NapCat 的地址 |
