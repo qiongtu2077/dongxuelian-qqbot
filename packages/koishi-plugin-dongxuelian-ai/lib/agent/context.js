@@ -9,6 +9,9 @@ const fs = require('fs')
 const path = require('path')
 const { DATA_DIR } = require('../constants')
 
+const TOOL_RESULTS_DIR = path.join(DATA_DIR, 'agent-tool-results')
+let toolResultsDirReady = false
+
 let externalResultCounter = 0
 
 /** 粗略 token 估算：中文 ~0.5 token/char，英文 ~0.25 */
@@ -47,9 +50,8 @@ function externalizeToolResult(text = '', toolName = 'tool', maxInlineChars = 80
   const s = String(text)
   if (s.length <= maxInlineChars) return s
   const safeName = String(toolName || 'tool').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || 'tool'
-  const dir = path.join(DATA_DIR, 'agent-tool-results')
-  fs.mkdirSync(dir, { recursive: true })
-  const file = path.join(dir, `${Date.now()}-${++externalResultCounter}-${safeName}.txt`)
+  if (!toolResultsDirReady) { fs.mkdirSync(TOOL_RESULTS_DIR, { recursive: true }); toolResultsDirReady = true }
+  const file = path.join(TOOL_RESULTS_DIR, `${Date.now()}-${++externalResultCounter}-${safeName}.txt`)
   fs.writeFileSync(file, s, 'utf8')
   return `${s.slice(0, maxInlineChars)}\n...(结果截断，共 ${s.length} 字符；完整结果已保存：${file})`
 }

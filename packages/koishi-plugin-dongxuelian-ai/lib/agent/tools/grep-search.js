@@ -54,7 +54,11 @@ module.exports = {
     if (!query) throw new Error('query 不能为空')
     const limit = Math.max(1, Math.min(MAX_MATCHES, parseInt(params.limit, 10) || 50))
     let regex
-    try { regex = new RegExp(query, params.ignoreCase === false ? 'u' : 'iu') } catch { regex = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), params.ignoreCase === false ? 'u' : 'iu') }
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    try {
+      if (/([+*{])\1|\(\?[^)]*[+*]/.test(query)) throw new Error('unsafe')
+      regex = new RegExp(query, params.ignoreCase === false ? 'u' : 'iu')
+    } catch { regex = new RegExp(escaped, params.ignoreCase === false ? 'u' : 'iu') }
 
     const target = String(params.path || '').trim() || await resolveAgentDefaultRoot()
     const checked = await assertExistingAgentPathInsideRoots(target, '搜索路径')

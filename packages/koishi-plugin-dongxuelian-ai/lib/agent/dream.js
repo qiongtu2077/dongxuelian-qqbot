@@ -14,6 +14,7 @@ const DASHBOARD_MEMORY_DIR = path.join(DATA_DIR, 'agent-memory-dashboard')
 const DAILY_DIR = path.join(DASHBOARD_MEMORY_DIR, 'daily')
 const DREAM_SIZE_THRESHOLD = 20 * 1024
 const MAX_LONG_TERM_FILE_BYTES = 100 * 1024
+const dreamLocks = new Map()
 
 const DREAM_PROMPT = `你是记忆整理助手。以下是用户的每日记忆文件和长期记忆文件内容。
 
@@ -85,6 +86,15 @@ async function getDailyTotalSize(userId) {
 }
 
 async function runDream(userId) {
+  const lockKey = safeUserId(userId)
+  if (dreamLocks.has(lockKey)) return dreamLocks.get(lockKey)
+  const task = _doRunDream(userId)
+  dreamLocks.set(lockKey, task)
+  task.finally(() => dreamLocks.delete(lockKey))
+  return task
+}
+
+async function _doRunDream(userId) {
   const dailyContent = await readAllDailyContent(userId)
   if (!dailyContent.trim()) return { success: false, reason: 'no-daily-content' }
 

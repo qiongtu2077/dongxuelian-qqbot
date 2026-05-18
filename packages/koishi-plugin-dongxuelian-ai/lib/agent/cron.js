@@ -26,10 +26,11 @@ async function readCronFile() {
 }
 
 async function saveCrons(next) {
-  const data = {
-    crons: Array.isArray(next.crons) ? next.crons.map(normalizeCron).filter(Boolean) : [],
-    history: Array.isArray(next.history) ? next.history.slice(-50) : [],
+  const crons = []
+  for (const c of (Array.isArray(next.crons) ? next.crons : [])) {
+    try { const n = normalizeCron(c); if (n) crons.push(n) } catch {}
   }
+  const data = { crons, history: Array.isArray(next.history) ? next.history.slice(-50) : [] }
   await fsp.mkdir(path.dirname(CRON_FILE), { recursive: true })
   const tmp = CRON_FILE + '.tmp-' + process.pid + '-' + Date.now()
   await fsp.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
@@ -143,6 +144,8 @@ function clearCronTimer(id) {
   timers.delete(String(id || ''))
 }
 
+const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000
+
 function scheduleCron(cron) {
   clearCronTimer(cron.id)
   if (!cron.enabled) return
@@ -150,6 +153,12 @@ function scheduleCron(cron) {
   if (!config.cron?.enabled) return
   const nextRunAt = cron.nextRunAt || getNextRunAt(cron.schedule)
   const delay = Math.max(1000, nextRunAt - Date.now())
+  if (delay > MAX_TIMEOUT_MS) {
+    const timer = setTimeout(() => scheduleCron(cron), MAX_TIMEOUT_MS)
+    if (timer.unref) timer.unref()
+    timers.set(cron.id, timer)
+    return
+  }
   const timer = setTimeout(() => runCronNow(cron.id).catch(() => {}), delay)
   if (timer.unref) timer.unref()
   timers.set(cron.id, timer)

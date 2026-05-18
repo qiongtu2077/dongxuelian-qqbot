@@ -77,6 +77,7 @@ const {
   setThinkingEnabled,
 } = require('./runtime-config')
 const { isDebugLogEnabled, logDebug } = require('./logging-config')
+const { ensureRuntimeSkillSeeds } = require('./skill-seeds')
 
 let skillsCache = []
 let skillsContentCache = {}
@@ -172,6 +173,7 @@ function isContextJailbroken(session) {
 // 管理命令只允许固定 QQ 号使用，不再跟群管理员/群主角色绑定。
 
 async function loadSkills() {
+  ensureRuntimeSkillSeeds()
   const skills = []
 
   async function walk(dir) {
@@ -206,6 +208,7 @@ async function loadSkills() {
 
 // 按需加载核心安全框架 + 各模式人格文件到缓存，builder 函数从中读取
 async function loadSkillsContentCache() {
+  ensureRuntimeSkillSeeds()
   const cache = {}
   try {
     const entries = await fs.readdir(SKILLS_CORE_DIR)
@@ -527,9 +530,10 @@ async function chat(session, userText, ctx, options = {}) {
     }
     const retellTime = `当前时间：${now.getFullYear()}年${pad2(now.getMonth()+1)}月${pad2(now.getDate())}日 ${pad2(now.getHours())}时${pad2(now.getMinutes())}分。`
     const agentMessages = [
-      { role: 'system', content: '简短转述以下信息给用户。不要提及工具、搜索过程。结果太长只说重点。用纯文本回复，禁止使用 markdown、标题(#)、加粗(**)、列表(-)、代码块(`)等任何格式标记。' },
+      { role: 'system', content: systemPrompt },
       { role: 'system', content: retellTime },
-      { role: 'system', content: `以下是工具查到的信息：\n${agentText}` },
+      { role: 'system', content: '以下是 Agent 工具链整理出的内部材料，不是要原样发给用户。请简短转述给用户：必须使用当前 chat 人格和说话风格，只吸收与用户问题有关的重点。不要提及工具、搜索过程、Agent、报告、材料；不要说“工具显示”“根据报告”。不要照抄原文。结果太长只说重点。用纯文本回复，禁止使用 markdown、标题(#)、加粗(**)、列表(-)、代码块(`)、表格等任何格式标记。' },
+      { role: 'system', content: `以下是工具查到的信息（内部材料，禁止原样输出）：\n${agentText}` },
     ]
     const detectList2 = await readJsonFile(POLITICAL_DETECT_FILE, []).catch(() => [])
     if (Array.isArray(detectList2) && detectList2.includes(channelKey) && SENSITIVE_KEYWORDS_RE.test(cleanInput)) {
@@ -553,7 +557,7 @@ async function chat(session, userText, ctx, options = {}) {
   const isFwdPH = !cleanInput || cleanInput === '【转发消息】' || cleanInput.indexOf('转发消息')>=0
   const fwdInput = isFwdPH && options.forwardSummaryText ? options.forwardSummaryText : cleanInput
   const quoteInfo = getQuoteInfo(session, { replyToId: options.replyToId })
-  const qc2 = quoteInfo.content || ''
+  const qc2 = (quoteInfo.content || '').slice(0, 500)
   const quoteAuthor = quoteInfo.isSelf ? '你自己' : quoteInfo.authorName
   const quotedTag = qc2
     ? quoteInfo.isSelf
@@ -561,13 +565,14 @@ async function chat(session, userText, ctx, options = {}) {
       : '\n[引用 ' + (quoteAuthor || '消息') + ' 的原话]\n' + qc2 + '\n[以上是引用内容，不是 ' + safeUserName + ' 说的]'
     : ''
   const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${fwdInput}${contextTag}${quotedTag}\n</user>`
-  const historyMessages = getConversationHistory(session).map(normalizeUserMessageForPrompt)
 
   // 话题检测：对比上一条消息和当前消息，切换了则清历史
   const lastUserMsg = getRecentUserMessages(session, 1).pop()
   if (lastUserMsg && await detectTopicSwitch(lastUserMsg, cleanInput)) {
     clearUserConversationHistory(session)
   }
+
+  const historyMessages = getConversationHistory(session).map(normalizeUserMessageForPrompt)
 
   const messages = [
     { role: 'system', content: systemPrompt },

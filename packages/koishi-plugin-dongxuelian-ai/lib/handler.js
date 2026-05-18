@@ -611,8 +611,9 @@ async function handleCommand(session, ctx, state) {
     return handled('语音合成失败了，可能是服务暂时不可用。')
   }
 
-  if (/^东雪莲朗读\s*(.+)/.test(plain)) {
-    const text = RegExp.$1.trim()
+  const readAloudMatch = plain.match(/^东雪莲朗读\s*(.+)/)
+  if (readAloudMatch) {
+    const text = readAloudMatch[1].trim()
     if (!text) return handled('请告诉我要朗读什么内容。')
     const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice, MAX_TTS_TEXT_LENGTH } = require('./tts')
     if (text.length > MAX_TTS_TEXT_LENGTH) return handled(`文本太长了，最多支持 ${MAX_TTS_TEXT_LENGTH} 字。`)
@@ -652,6 +653,7 @@ async function handleCommand(session, ctx, state) {
 
   const switchMatch = plain.match(/^切换(.+)$/)
   if (switchMatch && !adminCommandMatched && !isReservedCommand(plain)) {
+    if (!hasAdminPermission(session)) return handled('切换模型需要管理员权限。')
     const requestedName = switchMatch[1].trim()
     let foundProvider = null
     let foundModelId = null
@@ -789,17 +791,19 @@ async function handleCommand(session, ctx, state) {
   }
 
   // === Agent 工具模式管理 ===
-  if (/^(?:东雪莲)?工具模式\s+(auto|confirm|block|config)$/.test(plain)) {
+  const toolModeMatch = plain.match(/^(?:东雪莲)?工具模式\s+(auto|confirm|block|config)$/)
+  if (toolModeMatch) {
     if (!hasAdminPermission(session)) return handled('只有管理员能操作此命令。')
-    const m = RegExp.$1
+    const m = toolModeMatch[1]
     require('./agent/safety').setMode(m)
     const labels = { auto: '自动执行', confirm: '需确认', block: '已禁止', config: '跟随配置' }
     return handled(`工具安全模式：${labels[m]} (${m})`)
   }
 
-  if (/^(?:东雪莲)?工具自动路由\s*(开|关|on|off)$/.test(plain)) {
+  const toolRouteMatch = plain.match(/^(?:东雪莲)?工具自动路由\s*(开|关|on|off)$/)
+  if (toolRouteMatch) {
     if (!hasAdminPermission(session)) return handled('只有管理员能操作此命令。')
-    const enabled = /^(?:开|on)$/i.test(RegExp.$1)
+    const enabled = /^(?:开|on)$/i.test(toolRouteMatch[1])
     const agentConfig = require('./agent/config')
     const config = agentConfig.getAgentConfig()
     config.autoRoute.qq.enabled = enabled
@@ -858,8 +862,9 @@ async function handleCommand(session, ctx, state) {
     ].filter(Boolean).join('\n'))
   }
 
-  if (/^(?:\/plan|莲莲计划)\s+(.+)/i.test(plain)) {
-    const query = RegExp.$1.trim()
+  const planMatch = plain.match(/^(?:\/plan|莲莲计划)\s+(.+)/i)
+  if (planMatch) {
+    const query = planMatch[1].trim()
     const planEngine = require('./agent/plan/plan-engine')
     const planPrompts = require('./agent/plan/plan-prompts')
     const engine = require('./agent/engine')
