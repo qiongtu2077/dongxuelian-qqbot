@@ -4865,7 +4865,7 @@ const server = http.createServer(async (req, res) => {
         if (cfg.adminIds) files.push(writeTrackedLocalFile('data/ai-admin-ids.json', JSON.stringify(cfg.adminIds, null, 2) + '\n', { deleteByDefault: false, sensitive: true, kind: 'adminIds' }, timestamp))
         const yml = `port: 5140\nselfUrl: http://localhost:5140\nplugins:\n  adapter-onebot:\n    protocol: ws\n    selfId: '${qq}'\n    endpoint: ws://127.0.0.1:8080/onebot/v11/ws\n  dongxuelian-ai: {}\n  dongxuelian-help: {}\n  group-name-at: {}\n  defense: {}\n  local-video-sender: {}\n  group-leave-notice: {}\n  dongxuelian-poke: {}\n  daily-report: {}\n`
         files.push(writeTrackedLocalFile('koishi.yml', yml, { deleteByDefault: true, kind: 'koishiConfig' }, timestamp))
-        const helper = `@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif exist "%~dp0runtime\\node\\node.exe" set "PATH=%~dp0runtime\\node;%PATH%"\r\nset "KOISHI_DIR=%~dp0"\r\nset "DONGXUELIAN_AI_DATA_DIR=%~dp0data"\r\nif not exist node_modules ( call npm install )\r\nnode start.js\r\n`
+        const helper = `@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nif exist "%~dp0runtime\\node\\node.exe" set "PATH=%~dp0runtime\\node;%PATH%"\r\nset "KOISHI_DIR=%~dp0"\r\nset "DONGXUELIAN_AI_DATA_DIR=%~dp0data"\r\nif not exist node_modules (\r\n  echo [ERROR] node_modules not found. Please run "npm install" first.\r\n  echo Project directory: %~dp0\r\n  pause\r\n  exit /b 1\r\n)\r\nnode start.js\r\n`
         files.push(writeTrackedLocalFile('start-local.bat', helper, { deleteByDefault: true, kind: 'startScript' }, timestamp))
         const aiKey = getAiKeyStatus(provider)
         const manifest = { version: 1, generatedAt: timestamp, qq, onebotEndpoint: 'ws://127.0.0.1:8080/onebot/v11/ws', aiKeyConfigured: aiKey.configured, files }
@@ -4970,10 +4970,14 @@ const server = http.createServer(async (req, res) => {
       const dependencies = getProjectDependencyStatus()
       if (dependencies.ready) return json(res, { ok: true, skipped: true, message: '项目依赖已安装', status: getLocalNpmInstallStatus() })
       const npmInfo = getCommandInfo('npm')
-      if (!npmInfo.found) return json(res, { ok: false, message: '当前 Windows 本机未找到 npm，请先安装便携 Node/npm 后重新检测环境', npm: npmInfo }, 400)
-      const prepared = prepareNpmInstallRun()
-      const started = startNpmInstallTask({ prepared })
-      return json(res, { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : 'npm install 已启动', status: getLocalNpmInstallStatus() })
+      const cwd = path.resolve(KOISHI_DIR)
+      const npmCmd = npmInfo.found ? npmInfo.path : 'npm'
+      const steps = [
+        { label: '打开终端（PowerShell 或 CMD）并进入项目目录', command: `cd /d "${cwd}"` },
+        { label: '执行依赖安装', command: npmInfo.found ? `"${npmCmd}" install` : 'npm install' },
+      ]
+      if (!npmInfo.found) steps.unshift({ label: '先安装 Node.js（包含 npm）', command: '前往 https://nodejs.org 下载安装，或在部署器中安装便携 Node' })
+      return json(res, { ok: true, guide: true, message: '请在终端中手动执行以下命令安装依赖', steps, cwd, npmPath: npmCmd, status: getLocalNpmInstallStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
 
@@ -4981,8 +4985,15 @@ const server = http.createServer(async (req, res) => {
     if (!requireAdmin(req, res)) return
     if (!requireWindowsLocalDeployTarget(req, res)) return
     try {
-      const result = repairNpmProxyAndStartInstall()
-      return json(res, result, result.ok ? 200 : 400)
+      const diagnostics = collectNpmInstallDiagnostics(true)
+      const prepared = prepareNpmInstallRun({ forceRepair: true })
+      const cwd = path.resolve(KOISHI_DIR)
+      const npmInfo = getCommandInfo('npm')
+      const npmCmd = npmInfo.found ? npmInfo.path : 'npm'
+      const steps = []
+      if (prepared.repair.actions.length) steps.push({ label: '部署器建议先执行以下修复命令', command: prepared.repair.actions.map(a => a.command || a).join('\n') })
+      steps.push({ label: '修复后执行依赖安装', command: npmInfo.found ? `"${npmCmd}" install` : 'npm install' })
+      return json(res, { ok: true, guide: true, message: '请在终端中手动执行以下修复和安装命令', steps, cwd, npmPath: npmCmd, repair: prepared.repair, diagnostics, status: getLocalNpmInstallStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
 

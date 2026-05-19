@@ -1,4 +1,5 @@
 const { app, BrowserWindow, shell, dialog, ipcMain, clipboard } = require('electron')
+const { autoUpdater } = require('electron-updater')
 const fs = require('fs')
 const http = require('http')
 const net = require('net')
@@ -392,10 +393,40 @@ if (!gotTheLock) {
     }
     startDashboard(appPaths)
     void createWindow()
+    setTimeout(setupAutoUpdater, 5000)
     if (appPaths.fallbackReason) {
       setTimeout(() => dialog.showMessageBox(mainWindow, { type: 'warning', title: '部署器工作目录已切换', message: appPaths.fallbackReason, detail: '建议把部署器 ZIP 完整解压到可写目录后，再运行 EXE。' }).catch(() => {}), 1500)
     }
   })
+}
+
+function setupAutoUpdater() {
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.on('update-available', (info) => {
+    dialog.showMessageBox(mainWindow || undefined, {
+      type: 'info',
+      title: '发现新版本',
+      message: `新版本 v${info.version} 可用，是否下载更新？`,
+      buttons: ['下载更新', '稍后再说'],
+      defaultId: 0,
+    }).then(({ response }) => {
+      if (response === 0) autoUpdater.downloadUpdate()
+    }).catch(() => {})
+  })
+  autoUpdater.on('update-downloaded', () => {
+    dialog.showMessageBox(mainWindow || undefined, {
+      type: 'info',
+      title: '更新已就绪',
+      message: '新版本已下载完成，重启应用即可完成更新。',
+      buttons: ['立即重启', '稍后'],
+      defaultId: 0,
+    }).then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall()
+    }).catch(() => {})
+  })
+  autoUpdater.on('error', () => {})
+  autoUpdater.checkForUpdates().catch(() => {})
 }
 
 app.on('window-all-closed', () => app.quit())
