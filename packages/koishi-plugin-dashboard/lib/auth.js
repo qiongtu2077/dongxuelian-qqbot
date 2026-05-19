@@ -153,4 +153,9 @@ module.exports = {
   requireStrictAdmin,
   isLoginRateLimited,
   recordLoginFailure,
+  clearLoginFails,
+}
+
+function clearLoginFails(ip) {
+  loginFailMap.delete(ip)
 }
