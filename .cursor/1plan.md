@@ -1,45 +1,24 @@
-# P2 详细解释（Cursor 消息渲染有 bug，写到文件里给你看）
+# 当前状态：P0 + P1 + P2 全部完成
 
-## 问题 1：start-local.bat 检测不完整
+## 本轮全部 commit
 
-当前 bat 只检查 node_modules 文件夹是否存在。
-如果文件夹在但缺 koishi 包，bat 不报错直接启动，Koishi 报错找不到模块。
+| Commit | 内容 |
+|--------|------|
+| ab9ed1e | feat: NSIS 安装包 + 自动更新 + npm install 后端改引导 |
+| fe52282 | refactor: 前端 DeployPanel npm 步骤改引导模式 |
+| fb0335b | fix: 删死代码 + 补 TTS API 导出修复构建 |
+| ab276f7 | fix: P1 去除隐式代理修改、修 typo、修文案 |
+| 99481d0 | fix: P2 加强 bat 依赖检测 + 删前端死分支 |
 
-修法：bat 里加一行检查 node_modules\koishi 是否存在。
-检测到缺失时行为和现在一样——输出错误 + pause + exit：
+## 待决定
 
-```
-if not exist node_modules\koishi (
-  echo [ERROR] Dependencies incomplete. Please run "npm install" first.
-  echo Project directory: %~dp0
-  pause
-  exit /b 1
-)
-```
+问题 3：frontend/dist 是否加入 git？
+- 方案 A：加入 git → pull 后自动有新界面
+- 方案 B：不加 → 保持现状，部署时手动重建
+- 当前状态：不在 git 中，需远程重建
 
-## 问题 2：前端死分支
+## 备注
 
-DeployPanel.vue 有段代码 `if (npmStatus?.running) setStepStatus('npm', 'running')`。
-npm 不再由后端执行，running 永远不会变 true。
-修法：删掉这 3 行死代码。
-
-## 问题 3：frontend/dist 不在 git 里
-
-前端 Vue 代码编译后产物在 frontend/dist/ 目录（浏览器实际加载的文件）。
-根 .gitignore 有 dist/ 规则把它排除了。
-
-影响：
-- 远程服务器 git pull 后不会自动更新页面，需要手动重建或点"重建并部署到远端"
-- 本地 Electron 打包时 electron-builder 从 extraResources 取文件，不取 frontend/dist
-
-你们现有部署流程已经包含重建步骤，实际使用不受影响。
-
-选项：
-- A. 不改（推荐，现状够用）
-- B. 把 dist 加入 git（.gitignore 加排除规则）
-
----
-
-## 需要你决定
-
-问题 1 和 2 要不要修？问题 3 改不改？
+- 分支 YUN，最新 99481d0
+- 测试全绿
+- frontend/dist 本地已重建（但 gitignore 排除）
