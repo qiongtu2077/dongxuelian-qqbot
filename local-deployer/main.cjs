@@ -377,6 +377,7 @@ if (!gotTheLock) {
     appPaths = resolveAppPaths()
     registerIpc()
     cleanStaleDashboardProcess()
+    await new Promise(r => setTimeout(r, 2000))
     const portBusy = await checkPortOccupied(DASHBOARD_PORT)
     if (portBusy) {
       const { response } = await dialog.showMessageBox({
@@ -395,7 +396,7 @@ if (!gotTheLock) {
     void createWindow()
     setTimeout(setupAutoUpdater, 5000)
     if (appPaths.fallbackReason) {
-      setTimeout(() => dialog.showMessageBox(mainWindow, { type: 'warning', title: '部署器工作目录已切换', message: appPaths.fallbackReason, detail: '建议把部署器 ZIP 完整解压到可写目录后，再运行 EXE。' }).catch(() => {}), 1500)
+      setTimeout(() => dialog.showMessageBox(mainWindow || undefined, { type: 'warning', title: '部署器工作目录已切换', message: appPaths.fallbackReason, detail: '建议把部署器完整解压到可写目录后，再运行。' }).catch(() => {}), 1500)
     }
   })
 }
