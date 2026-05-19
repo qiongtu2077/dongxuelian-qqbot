@@ -126,6 +126,10 @@ function clearAgentChatBridge() {
   recentAgentContextCache.clear()
 }
 
+function clearAgentContextForUser(channelKey, userId) {
+  recentAgentContextCache.delete(buildAgentContextKey(channelKey, userId))
+}
+
 module.exports = {
   buildAgentContextKey,
   summarizeAgentToolResults,
@@ -133,4 +137,5 @@ module.exports = {
   recordAgentChatResult,
   getRecentAgentContextNote,
   clearAgentChatBridge,
+  clearAgentContextForUser,
 }
