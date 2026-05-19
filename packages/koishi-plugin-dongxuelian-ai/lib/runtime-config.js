@@ -16,7 +16,9 @@ let configCache = null
 let adminUserIdsCache = null
 let thinkingEnabled = false
 
-const DEFAULT_ADMIN_USER_IDS = ['100000000', '200000000']
+const DEFAULT_ADMIN_USER_IDS = process.env.DONGXUELIAN_DEFAULT_ADMIN_IDS
+  ? process.env.DONGXUELIAN_DEFAULT_ADMIN_IDS.split(',').map(s => s.trim()).filter(Boolean)
+  : []
 const MAX_RUNTIME_TEXT_BYTES = 64 * 1024
 const MAX_ADMIN_IDS_BYTES = 128 * 1024
 
@@ -59,6 +61,10 @@ function readAdminUserIdsFile() {
 function getAdminUserIds(force = false) {
   if (adminUserIdsCache && !force) return adminUserIdsCache
   adminUserIdsCache = readAdminUserIdsFile() || new Set(DEFAULT_ADMIN_USER_IDS)
+  if (adminUserIdsCache.size === 0 && !getAdminUserIds._warned) {
+    getAdminUserIds._warned = true
+    console.warn('[runtime-config] 警告：未配置管理员 ID。请创建 data/ai-admin-ids.json 或设置环境变量 DONGXUELIAN_DEFAULT_ADMIN_IDS')
+  }
   return adminUserIdsCache
 }
 
