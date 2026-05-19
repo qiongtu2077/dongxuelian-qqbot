@@ -1,0 +1,73 @@
+---
+description: 用户说「提交/commit」时，按 Conventional Commits 标准执行 git 提交流程
+alwaysApply: true
+---
+
+# Git 提交标准流程
+
+每次用户说「提交」时，无条件执行以下流程。
+
+## 1. 收集信息（并行）
+
+同时运行以下命令：
+
+- `git branch --show-current` — 确认当前分支
+- `git status` — 查看所有变更和未跟踪文件
+- `git diff --staged` — 查看已暂存的更改
+- `git diff` — 查看未暂存的更改
+- `git log --oneline -10` — 读取最近 10 条 commit，对齐本仓库风格
+
+## 2. 分析变更
+
+- 逐文件理解每项改动的目的
+- 分类变更类型：feat / fix / docs / chore / refactor / test / style / perf / ci
+- 如遇 .env、credentials、key 文件，**警告用户**，不自动提交
+
+## 3. 撰写 commit message
+
+### 标题行（第一行）
+
+```
+<type>(<scope>): <简要描述>
+```
+
+- type：feat / fix / docs / chore / refactor / test / style / perf / ci
+- scope：可选，指明影响的模块或文件范围
+- 简要描述：中文，动词开头，不超过 50 字
+- 标题行总长度不超过 72 字符
+
+### 正文（空一行后）
+
+按改动逐条列出「位置 + 内容 + 原因」，使用 `-` 列表格式：
+
+```
+- 位置：具体做了什么，为什么这么做
+- 位置：具体做了什么，为什么这么做
+```
+
+### 示例
+
+```
+docs: 合并 10 份计划文档为总计划.md，精简 README，添加闪卡参考代码
+
+- 将借鉴开发计划、第二/三/五期计划等 9 份 Markdown 合并到总计划.md，
+  按 P0-P3 分层组织；源文件已删除，可通过 Git 历史追溯原文
+- README.md：精简模块描述与部署入口措辞，更新默认密码为 123456，
+  移除详细 Windows 部署器说明（标注为开发中）
+- 添加闪卡参考代码目录（HTML/CSS/JS 示例）
+```
+
+## 4. 向用户展示并确认
+
+- 先向用户展示变更概览表格（类型 / 文件 / 说明）
+- 展示拟定的 commit message 全文
+- 确认无误后执行 `git add -A` + `git commit`
+- commit 后运行 `git status` 验证成功
+
+## 5. 注意事项
+
+- 不主动 push，除非用户明确要求
+- 不修改 git config
+- 不使用 --force、--amend（除非用户明确要求）
+- 不跳过 hooks（不加 --no-verify）
+- PowerShell 环境下不使用 `&&`，用 `;` 或分开执行
