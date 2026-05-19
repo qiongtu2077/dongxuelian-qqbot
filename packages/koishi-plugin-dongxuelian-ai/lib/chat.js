@@ -44,8 +44,9 @@ const {
   writeMemory, deleteMemory, getMemorySummary, clearGroupMemory,
   checkMemoryTimerExpired, readMemoryTimer,
   channelSharedCache,
+  conversationLastActiveAt,
 } = require('./conversation')
-const { getRecentAgentContextNote } = require('./agent-chat-bridge')
+const { getRecentAgentContextNote, clearAgentContextForUser } = require('./agent-chat-bridge')
 const { getChatToolDefinitions, handleChatToolCalls, getChatToolSystemHint } = require('./chat-tools')
 const { estimateTokens } = require('./agent/context')
 const { normalizeText } = require('./message-reader')
@@ -128,35 +129,22 @@ function shouldInjectTerraLore(userText = '') {
   return false
 }
 
-// 话题检测：glm免费主模型 → qwen-turbo兜底 → 都失败则跳过
+// 话题检测：轻量模型优先 → 主模型兜底 → 都失败则返回 null（由调用方决定降级策略）
 async function detectTopicSwitch(lastMsg, currentMsg) {
   if (!lastMsg || !currentMsg) return false
   const prompt = [
     { role: 'system', content: '判断用户是否切换了话题。只回复 YES 或 NO。' },
     { role: 'user', content: `上一条消息：${lastMsg.slice(0, 200)}\n当前消息：${currentMsg.slice(0, 200)}` },
   ]
-  const models = [
-    { provider: 'glm', model: 'glm-4.6v-flash', keyFile: GLM_KEY_FILE },
-    { provider: 'dashscope', model: 'qwen-turbo', keyFile: DASHSCOPE_KEY_FILE },
-  ]
-  for (const am of models) {
-    const provDef = PROVIDERS[am.provider]
-    if (!provDef) continue
-    try {
-      const cfg = {
-        model: am.model,
-        baseURL: provDef.baseURL.replace(/\/+$/, ''),
-        apiKey: am.keyFile ? (await readTextFile(am.keyFile).catch(() => '') || '').replace(/[\r\n]+/g, '') : '',
-        provider: am.provider,
-      }
-      if (!cfg.apiKey) continue
-      const result = await requestChatCompletions(prompt, cfg, { max_tokens: 5, _fallbackSet: 'lightweight' })
-      const reply = typeof result === 'string' ? result : result.content
-      if (/^YES/i.test(reply)) return true
-      if (/^NO/i.test(reply)) return false
-    } catch {}
-  }
-  return false
+  const config = await loadConfig()
+  if (!config.apiKey) return null
+  try {
+    const result = await requestChatCompletions(prompt, config, { max_tokens: 5, _fallbackSet: 'lightweight', _timeoutMs: 8000 })
+    const reply = typeof result === 'string' ? result : (result && result.content) || ''
+    if (/^YES/i.test(reply)) return true
+    if (/^NO/i.test(reply)) return false
+  } catch {}
+  return null
 }
 
 // 上下文越狱检测：强特征1条即触发；弱特征需最近4条里≥2条
@@ -569,20 +557,41 @@ async function chat(session, userText, ctx, options = {}) {
     : ''
   const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${fwdInput}${contextTag}${quotedTag}\n</user>`
 
-  // 话题检测：对比上一条消息和当前消息，切换了则清历史（per-key lock）
+  // 话题检测：对比上一条消息和当前消息（per-key lock）
+  // 结果：true=切换 false=未切换 null=检测失败（降级处理）
+  let topicSwitchResult = false
   const topicKey = getConversationKey(session)
   const prevLock = topicSwitchLocks.get(topicKey) || Promise.resolve()
   const lockPromise = prevLock.then(async () => {
     const lastUserMsg = getRecentUserMessages(session, 1).pop()
-    if (lastUserMsg && await detectTopicSwitch(lastUserMsg, cleanInput)) {
-      clearUserConversationHistory(session)
+    if (lastUserMsg) {
+      topicSwitchResult = await detectTopicSwitch(lastUserMsg, cleanInput)
+      if (topicSwitchResult === true) {
+        clearUserConversationHistory(session)
+        clearAgentContextForUser(channelKey, currentUserId)
+      }
     }
   })
   topicSwitchLocks.set(topicKey, lockPromise)
   lockPromise.finally(() => { if (topicSwitchLocks.get(topicKey) === lockPromise) topicSwitchLocks.delete(topicKey) })
   await lockPromise
 
-  const historyMessages = getConversationHistory(session).map(normalizeUserMessageForPrompt)
+  const rawHistory = getConversationHistory(session).map(normalizeUserMessageForPrompt)
+
+  // 历史分层：检测失败或长时间不活跃时，旧历史降级为背景参考而非活跃对话
+  let historyMessages = rawHistory
+  let historyAsBackground = ''
+  const lastActiveAt = conversationLastActiveAt.get(topicKey)
+  const inactiveDuration = lastActiveAt ? (Date.now() - lastActiveAt) : Infinity
+  const HISTORY_DEGRADE_MS = 30 * 60 * 1000
+
+  if (topicSwitchResult === null && rawHistory.length > 0) {
+    historyAsBackground = rawHistory.map(m => `${m.role === 'user' ? '用户' : 'AI'}：${(m.content || '').slice(0, 150)}`).join('\n').slice(0, 2000)
+    historyMessages = []
+  } else if (inactiveDuration > HISTORY_DEGRADE_MS && rawHistory.length > 0) {
+    historyAsBackground = rawHistory.map(m => `${m.role === 'user' ? '用户' : 'AI'}：${(m.content || '').slice(0, 150)}`).join('\n').slice(0, 2000)
+    historyMessages = []
+  }
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -730,6 +739,9 @@ async function chat(session, userText, ctx, options = {}) {
     messages.push({ role: 'system', content: `[记住的信息-仅作背景]\n${memorySummary}\n\n除非用户主动问起，否则不要主动提及以上记住的内容。你只需要根据当前问题回答即可。` })
   }
 
+  if (historyAsBackground) {
+    messages.push({ role: 'system', content: `[历史对话背景-仅供理解用户身份和偏好]\n${historyAsBackground}\n\n以上是较早的对话记录，仅作为背景参考。不要主动提及、延续或引用其中的话题。专注回应用户当前的发言。` })
+  }
   messages.push(...historyMessages)
 
   // 用户发言风格注入 + 评价功能
