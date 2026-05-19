@@ -38,13 +38,13 @@ function ensureWritableDir(dir) {
 function resolveAppPaths() {
   const resourceRoot = resolveResourceRoot()
   if (!app.isPackaged) return { resourceRoot, workspaceRoot: resourceRoot, fallbackReason: '' }
-  const preferredRoot = path.join(resolveExecutableDir(), 'LianLianBOT')
+  const preferredRoot = path.join(app.getPath('documents'), 'LianLianBOT')
   try {
-    ensureWritableDir(resolveExecutableDir())
+    ensureWritableDir(preferredRoot)
     return { resourceRoot, workspaceRoot: preferredRoot, fallbackReason: '' }
   } catch (e) {
     const fallbackRoot = path.join(app.getPath('userData'), 'LianLianBOT')
-    return { resourceRoot, workspaceRoot: fallbackRoot, fallbackReason: `EXE 所在目录不可写，已改用用户数据目录：${e.message}` }
+    return { resourceRoot, workspaceRoot: fallbackRoot, fallbackReason: `文档目录不可写，已改用用户数据目录：${e.message}` }
   }
 }
 
@@ -65,7 +65,7 @@ function getPidFilePath() {
 function writeDashboardPid(pid) {
   const pidFile = getPidFilePath()
   if (!pidFile) return
-  try { fs.writeFileSync(pidFile, String(pid), 'utf8') } catch {}
+  try { fs.writeFileSync(pidFile, JSON.stringify({ pid, ts: Date.now() }), 'utf8') } catch {}
 }
 
 function removeDashboardPidFile() {
@@ -77,9 +77,20 @@ function removeDashboardPidFile() {
 function cleanStaleDashboardProcess() {
   const pidFile = getPidFilePath()
   if (!pidFile) return
-  let pid
-  try { pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10) } catch { return }
+  let pid, ts
+  try {
+    const raw = fs.readFileSync(pidFile, 'utf8').trim()
+    const parsed = JSON.parse(raw)
+    pid = parsed.pid
+    ts = parsed.ts
+  } catch {
+    try { pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10) } catch { return }
+  }
   if (!pid || isNaN(pid)) return
+  if (ts && Date.now() - ts > 7 * 24 * 3600 * 1000) {
+    try { fs.unlinkSync(pidFile) } catch {}
+    return
+  }
   try {
     process.kill(pid, 0)
     if (process.platform === 'win32') {
