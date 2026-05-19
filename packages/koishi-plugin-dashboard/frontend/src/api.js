@@ -220,3 +220,8 @@ export async function deleteGalleryImage(idOrIds) { return del('/gallery', Array
 export async function updateGalleryImageStyle(id, foilStyle) { return put('/gallery/style', { id, foilStyle }, false) }
 
 export async function fetchKeysUsage() { return get('/keys/usage') }
+
+export async function fetchTtsVoices() { return get('/agent/tts/voices', true) }
+export async function ttsPreview(text, voice, style) { return post('/agent/tts/preview', { text, voice, style }, true, 30000) }
+export async function ttsClone(personaName, audioBase64, mimeType) { return post('/agent/tts/clone', { personaName, audioBase64, mimeType }, true, 60000) }
+export async function savePersonaVoice(personaName, voiceId, voiceStyle) { return put('/agent/persona/voice', { personaName, voiceId, voiceStyle }, true) }

@@ -2486,22 +2486,6 @@ function buildNpmInstallFailureGuide(logLines = [], diagnostics = null) {
   return null
 }
 
-function startNpmInstallTask(options = {}) {
-  ensurePackagedWorkspace({ includeNapcat: false })
-  const prepared = options.prepared || prepareNpmInstallRun({ forceRepair: !!options.forceRepair })
-  return spawnLocalTask('npmInstall', getLocalToolCommand('npm'), ['install'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', env: { ...prepared.env, ...(options.env || {}) }, diagnostics: prepared.diagnostics }))
-}
-
-function repairNpmProxyAndStartInstall() {
-  ensurePackagedWorkspace({ includeNapcat: false })
-  const dependencies = getProjectDependencyStatus()
-  if (dependencies.ready) return { ok: true, skipped: true, message: '项目依赖已安装', actions: [], status: getLocalNpmInstallStatus() }
-  const npmInfo = getCommandInfo('npm')
-  if (!npmInfo.found) return { ok: false, message: '当前 Windows 本机未找到 npm，请先安装便携 Node/npm 后重新检测环境', npm: npmInfo }
-  const prepared = prepareNpmInstallRun({ forceRepair: true })
-  const started = startNpmInstallTask({ prepared })
-  return { ok: true, message: started.alreadyRunning ? 'npm install 正在运行' : '已清理本次部署器 npm 代理并重新启动 npm install', actions: prepared.repair.actions, status: getLocalNpmInstallStatus() }
-}
 
 function getBlockedLocalTaskStatus(key, extra = {}) {
   const target = getLocalDeployTarget()
