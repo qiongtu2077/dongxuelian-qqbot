@@ -8,8 +8,11 @@
     "start": "electron .",
     "check": "node scripts/check-env.cjs",
     "setup-local": "node scripts/setup-local.cjs",
-    "build:win": "electron-builder --win portable",
+    "build:win": "electron-builder --win",
     "release:win": "node scripts/build-release.cjs"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "electron": "^33.4.11",
@@ -47,7 +50,19 @@
       { "from": "../koishi.example.yml", "to": "app/koishi.example.yml" }
     ],
     "win": {
-      "target": "portable"
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopIcon": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "莲莲Bot部署器"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "qiongtu2077",
+      "repo": "dongxuelian-qqbot"
     }
   }
 }
