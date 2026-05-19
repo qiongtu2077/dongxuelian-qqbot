@@ -1,6 +1,7 @@
 const { app, BrowserWindow, shell, dialog, ipcMain, clipboard } = require('electron')
 const fs = require('fs')
 const http = require('http')
+const net = require('net')
 const path = require('path')
 const { spawn } = require('child_process')
 
@@ -11,6 +12,10 @@ let dashboardProcess = null
 let mainWindow = null
 let appPaths = null
 let isAppQuitting = false
+let dashboardCrashCount = 0
+let dashboardStartedAt = 0
+let dashboardAbortFn = null
+let dashboardAbortPromise = null
 
 function resolveResourceRoot() {
   return app.isPackaged ? path.join(process.resourcesPath, 'app') : path.resolve(__dirname, '..')
@@ -42,20 +47,102 @@ function resolveAppPaths() {
   }
 }
 
+function getDashboardLogPath() {
+  if (!appPaths) return ''
+  const logsDir = path.join(appPaths.workspaceRoot, 'runtime', 'logs')
+  try { fs.mkdirSync(logsDir, { recursive: true }) } catch {}
+  return path.join(logsDir, 'dashboard-electron.log')
+}
+
+function getPidFilePath() {
+  if (!appPaths) return ''
+  const runtimeDir = path.join(appPaths.workspaceRoot, 'runtime')
+  try { fs.mkdirSync(runtimeDir, { recursive: true }) } catch {}
+  return path.join(runtimeDir, 'dashboard.pid')
+}
+
+function writeDashboardPid(pid) {
+  const pidFile = getPidFilePath()
+  if (!pidFile) return
+  try { fs.writeFileSync(pidFile, String(pid), 'utf8') } catch {}
+}
+
+function removeDashboardPidFile() {
+  const pidFile = getPidFilePath()
+  if (!pidFile) return
+  try { fs.unlinkSync(pidFile) } catch {}
+}
+
+function cleanStaleDashboardProcess() {
+  const pidFile = getPidFilePath()
+  if (!pidFile) return
+  let pid
+  try { pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10) } catch { return }
+  if (!pid || isNaN(pid)) return
+  try {
+    process.kill(pid, 0)
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+    } else {
+      process.kill(pid, 'SIGTERM')
+    }
+  } catch {}
+  try { fs.unlinkSync(pidFile) } catch {}
+}
+
+function rotateDashboardLog() {
+  const logPath = getDashboardLogPath()
+  if (!logPath) return
+  let stat
+  try { stat = fs.statSync(logPath) } catch { return }
+  if (stat.size > 5 * 1024 * 1024) {
+    try { fs.unlinkSync(logPath) } catch {}
+  }
+}
+
 function cleanupDashboardProcess() {
   const child = dashboardProcess
   dashboardProcess = null
   if (!child || child.killed) return
-  try {
-    child.removeAllListeners()
-  } catch {}
-  try {
-    child.kill()
-  } catch {}
+  const pid = child.pid
+  try { child.removeAllListeners() } catch {}
+  if (process.platform === 'win32' && pid) {
+    try {
+      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+    } catch {}
+  } else {
+    try { child.kill() } catch {}
+  }
+  removeDashboardPidFile()
+}
+
+function checkPortOccupied(port) {
+  return new Promise(resolve => {
+    const sock = net.createConnection({ port: Number(port), host: '127.0.0.1' })
+    sock.once('connect', () => { sock.destroy(); resolve(true) })
+    sock.once('error', () => { sock.destroy(); resolve(false) })
+    sock.setTimeout(1500, () => { sock.destroy(); resolve(false) })
+  })
+}
+
+function showDiagnosticDialog(title, message, detail) {
+  const logPath = getDashboardLogPath()
+  const buttons = logPath ? ['复制日志路径', '确定'] : ['确定']
+  const opts = { type: 'error', title, message, detail: detail + (logPath ? `\n\n诊断日志：${logPath}` : ''), buttons, defaultId: buttons.length - 1 }
+  dialog.showMessageBox(mainWindow || undefined, opts).then(({ response }) => {
+    if (logPath && response === 0) clipboard.writeText(logPath)
+  }).catch(() => {})
 }
 
 function startDashboard(paths) {
+  rotateDashboardLog()
   const standalone = path.join(paths.resourceRoot, 'packages', 'koishi-plugin-dashboard', 'standalone.js')
+  const logPath = getDashboardLogPath()
+  let logStream = null
+  if (logPath) {
+    try { logStream = fs.createWriteStream(logPath, { flags: 'a' }) } catch {}
+  }
+  const stdioOpt = logStream ? ['ignore', logStream, logStream] : 'ignore'
   dashboardProcess = spawn(process.execPath, [standalone], {
     cwd: paths.resourceRoot,
     env: {
@@ -70,63 +157,87 @@ function startDashboard(paths) {
       DONGXUELIAN_AI_DATA_DIR: path.join(paths.workspaceRoot, 'data'),
       DASHBOARD_PORT,
     },
-    stdio: 'ignore',
+    stdio: stdioOpt,
     windowsHide: true,
   })
+  dashboardStartedAt = Date.now()
   const child = dashboardProcess
+  writeDashboardPid(child.pid)
+
+  let abortFn = null
+  dashboardAbortPromise = new Promise(resolve => { abortFn = resolve })
+  dashboardAbortFn = abortFn
+
   child.on('error', (err) => {
     console.error('[dashboard-process] spawn error', err)
     if (dashboardProcess === child) dashboardProcess = null
-    dialog.showMessageBox({
-      type: 'error',
-      title: '无法启动控制台',
-      message: '仪表盘子进程未能启动。',
-      detail: String(err && err.message ? err.message : err),
-    })
+    removeDashboardPidFile()
+    if (abortFn) { abortFn(); abortFn = null }
+    showDiagnosticDialog(
+      '无法启动控制台',
+      '仪表盘子进程未能启动。',
+      String(err && err.message ? err.message : err),
+    )
   })
   child.on('exit', (code, signal) => {
     if (dashboardProcess === child) dashboardProcess = null
-    try {
-      child.removeAllListeners()
-    } catch {}
+    removeDashboardPidFile()
+    try { child.removeAllListeners() } catch {}
+    if (logStream) { try { logStream.end() } catch {} }
     const failed = typeof code === 'number' && code !== 0
-    if (failed && !isAppQuitting) {
-      const detailParts = []
-      if (signal) detailParts.push(`signal=${signal}`)
-      detailParts.push(`exit=${code}`)
-      dialog.showMessageBox({
-        type: 'error',
-        title: '控制台进程已崩溃',
-        message: `仪表盘后端进程非正常退出（退出码 ${code}）。`,
-        detail: detailParts.join('\n'),
-      })
+    if (!failed || isAppQuitting) return
+    if (abortFn) { abortFn(); abortFn = null }
+    const uptime = Date.now() - dashboardStartedAt
+    if (dashboardCrashCount === 0 && uptime > 3000) {
+      dashboardCrashCount++
+      console.log('[dashboard-process] crashed, auto-restarting once...')
+      setTimeout(() => startDashboard(paths), 2000)
+      return
     }
+    dashboardCrashCount++
+    const detailParts = []
+    if (signal) detailParts.push(`信号: ${signal}`)
+    detailParts.push(`退出码: ${code}`)
+    detailParts.push(`运行时长: ${Math.round(uptime / 1000)}s`)
+    if (dashboardCrashCount > 1) detailParts.push('已尝试自动重启 1 次仍失败')
+    showDiagnosticDialog(
+      '控制台进程已崩溃',
+      `仪表盘后端进程非正常退出（退出码 ${code}）。`,
+      detailParts.join('\n'),
+    )
   })
 }
 
 /**
- * Poll until GET /dashboard/ responds or attempts exhausted.
+ * Poll until GET /dashboard/ responds, attempts exhausted, or aborted.
+ * @param {string} portStr
+ * @param {Promise} [abortPromise] resolves when spawn fails/crashes early
  * @returns {Promise<boolean>} true when server responds
  */
-function waitForDashboardHttpReady(portStr) {
-  const totalTimeoutMs = 15000
+function waitForDashboardHttpReady(portStr, abortPromise) {
+  const totalTimeoutMs = 30000
   const intervalMs = 500
   const perRequestTimeoutMs = 2000
   const pathPart = '/dashboard/'
   return new Promise(resolve => {
+    let settled = false
+    function settle(val) { if (!settled) { settled = true; resolve(val) } }
+    if (abortPromise) abortPromise.then(() => settle(false))
     const startTime = Date.now()
     function elapsed() { return Date.now() - startTime }
     function scheduleRetry() {
-      if (elapsed() >= totalTimeoutMs) { resolve(false); return }
+      if (settled) return
+      if (elapsed() >= totalTimeoutMs) { settle(false); return }
       setTimeout(doAttempt, intervalMs)
     }
     function doAttempt() {
-      if (elapsed() >= totalTimeoutMs) { resolve(false); return }
+      if (settled) return
+      if (elapsed() >= totalTimeoutMs) { settle(false); return }
       const req = http.get(
         { hostname: '127.0.0.1', port: portStr, path: pathPart, timeout: perRequestTimeoutMs },
         res => {
           try { res.resume() } catch {}
-          if (res.statusCode >= 200 && res.statusCode < 500) resolve(true)
+          if (res.statusCode >= 200 && res.statusCode < 400) settle(true)
           else scheduleRetry()
         },
       )
@@ -155,21 +266,38 @@ async function createWindow() {
     shell.openExternal(url)
     return { action: 'deny' }
   })
-  const ready = await waitForDashboardHttpReady(DASHBOARD_PORT)
+  const ready = await waitForDashboardHttpReady(DASHBOARD_PORT, dashboardAbortPromise)
   if (!ready) {
-    dialog.showErrorBox(
-      '控制台未就绪',
-      '在 15 秒内未能连上仪表盘服务（本地端口 ' + DASHBOARD_PORT + '）。请稍后重试或检查是否被防火墙拦截。',
-    )
+    const occupied = await checkPortOccupied(DASHBOARD_PORT)
+    const logPath = getDashboardLogPath()
+    let detail = ''
+    if (occupied) {
+      detail = `端口 ${DASHBOARD_PORT} 已被其他程序占用，仪表盘无法启动。\n请关闭占用该端口的程序后重试，或设置环境变量 DASHBOARD_PORT=其他端口 后重新打开部署器。`
+    } else {
+      detail = [
+        `仪表盘在 30 秒内未响应（本地端口 ${DASHBOARD_PORT}）。`,
+        '',
+        '可能原因：',
+        '· 首次启动初始化较慢，可重新打开部署器重试',
+        '· 防火墙或安全软件拦截了本地端口',
+        '· 仪表盘进程启动时发生错误',
+      ].join('\n')
+    }
+    if (logPath) detail += `\n\n诊断日志：${logPath}`
+    const buttons = logPath ? ['复制日志路径', '退出'] : ['退出']
+    dialog.showMessageBox({ type: 'error', title: occupied ? '端口被占用' : '控制台启动超时', message: occupied ? `端口 ${DASHBOARD_PORT} 被占用` : '仪表盘未能在规定时间内启动', detail, buttons, defaultId: buttons.length - 1 }).then(({ response }) => {
+      if (logPath && response === 0) clipboard.writeText(logPath)
+    }).catch(() => {})
     win.destroy()
     return
   }
   try {
     await win.loadURL(`http://127.0.0.1:${DASHBOARD_PORT}/dashboard/`)
   } catch {
-    dialog.showErrorBox(
+    showDiagnosticDialog(
       '加载失败',
-      '仪表盘页面未能加载（http://127.0.0.1:' + DASHBOARD_PORT + '/dashboard/）。请检查本地服务是否正常。',
+      '仪表盘页面未能加载。',
+      `请求地址：http://127.0.0.1:${DASHBOARD_PORT}/dashboard/\n请检查本地服务是否正常。`,
     )
     win.destroy()
     return
@@ -244,9 +372,24 @@ if (!gotTheLock) {
       mainWindow.focus()
     }
   })
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     appPaths = resolveAppPaths()
     registerIpc()
+    cleanStaleDashboardProcess()
+    const portBusy = await checkPortOccupied(DASHBOARD_PORT)
+    if (portBusy) {
+      const { response } = await dialog.showMessageBox({
+        type: 'error',
+        title: '端口被占用',
+        message: `端口 ${DASHBOARD_PORT} 已被其他程序占用`,
+        detail: `仪表盘需要使用本地端口 ${DASHBOARD_PORT}，但该端口已被占用。\n\n解决方法：\n· 关闭占用该端口的程序后重试\n· 或设置环境变量 DASHBOARD_PORT=其他端口 后重新打开部署器`,
+        buttons: ['复制提示', '退出'],
+        defaultId: 1,
+      })
+      if (response === 0) clipboard.writeText(`端口 ${DASHBOARD_PORT} 被占用。关闭占用进程或设置 DASHBOARD_PORT=其他端口`)
+      app.quit()
+      return
+    }
     startDashboard(appPaths)
     void createWindow()
     if (appPaths.fallbackReason) {
