@@ -12,6 +12,7 @@ const crypto = require('crypto')
 const os = require('os')
 const { execSync, exec, execFileSync, spawn } = require('child_process')
 const utils = require('./lib/utils')
+const paths = require('./lib/paths')
 
 // ====== 全局异常兜底（防止单请求崩溃整个进程） ======
 process.on('uncaughtException', (err) => {
