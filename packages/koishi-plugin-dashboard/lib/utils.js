@@ -143,6 +143,24 @@ function listFilesRecursive(root, predicate) {
   return result
 }
 
+function uniquePaths(paths) {
+  const seen = new Set()
+  return paths.filter(item => {
+    const key = path.resolve(item).toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function readFileContent(p, maxBytes = 64 * 1024) {
+  try {
+    const stat = fs.statSync(p)
+    if (stat.isFile() && stat.size <= maxBytes) return fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '').trim()
+  } catch {}
+  return ''
+}
+
 module.exports = {
   parsePositiveInt,
   json,
@@ -162,4 +180,6 @@ module.exports = {
   ensureWritableDir,
   copyRecursiveSync,
   listFilesRecursive,
+  uniquePaths,
+  readFileContent,
 }
