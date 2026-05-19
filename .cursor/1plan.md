@@ -10,13 +10,12 @@
 | ab276f7 | fix: P1 去除隐式代理修改、修 typo、修文案 |
 | 99481d0 | fix: P2 加强 bat 依赖检测 + 删前端死分支 |
 | 8281aca | chore: frontend/dist 加入版本控制 |
+| 8199aa7 | fix: 修正 NSIS 配置属性名 createDesktopShortcut |
 
-## 改动总结
+## 最新验证
 
-1. 部署器从 portable EXE 切换为 NSIS 安装包（桌面快捷方式+开始菜单+可卸载）
-2. 新增 electron-updater 自动更新（GitHub Releases）
-3. npm install 改为用户手动引导模式（前后端都已适配）
-4. 一键部署链路审查并修复全部 P0/P1/P2 问题
-5. frontend/dist 加入 git，pull 后自动更新界面
+- `npm run build:win` 成功生成 NSIS 安装包（莲莲Bot部署器 Setup 1.1.6.exe）
+- 无代码签名（需付费证书），安装时会有 SmartScreen 警告
+- 构建产物已清理（dist/ 已删除）
 
 ## 无待办
