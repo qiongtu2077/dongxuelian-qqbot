@@ -164,6 +164,7 @@ function startDashboard(paths) {
   dashboardStartedAt = Date.now()
   const child = dashboardProcess
   writeDashboardPid(child.pid)
+  setTimeout(() => { if (dashboardProcess === child) dashboardCrashCount = 0 }, 60000)
 
   let abortFn = null
   dashboardAbortPromise = new Promise(resolve => { abortFn = resolve })
@@ -416,7 +417,13 @@ function setupAutoUpdater() {
       if (response === 0) autoUpdater.downloadUpdate()
     }).catch(() => {})
   })
+  autoUpdater.on('download-progress', (progress) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setProgressBar(progress.percent / 100)
+    }
+  })
   autoUpdater.on('update-downloaded', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setProgressBar(-1)
     dialog.showMessageBox(mainWindow || undefined, {
       type: 'info',
       title: '更新已就绪',
