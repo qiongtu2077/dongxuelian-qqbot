@@ -2,6 +2,8 @@ node_modules/
 dist/
 !packages/agent-console/dist/
 !packages/agent-console/dist/**
+!packages/koishi-plugin-dashboard/frontend/dist/
+!packages/koishi-plugin-dashboard/frontend/dist/**
 .DS_Store
 Thumbs.db
 
