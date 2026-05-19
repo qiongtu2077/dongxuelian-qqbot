@@ -182,4 +182,62 @@ module.exports = {
   listFilesRecursive,
   uniquePaths,
   readFileContent,
+  collectBody,
+  writeFileSyncSafe,
+  readFileSyncSafe,
+}
+
+const MAX_SMALL_TEXT_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_SMALL_TEXT_FILE_BYTES, 1024 * 1024, 4 * 1024, 4 * 1024 * 1024)
+
+function writeFileSyncSafe(p, content) {
+  const dir = path.dirname(p)
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(p, String(content).trim(), 'utf8')
+}
+
+function readFileSyncSafe(p, maxBytes) {
+  const limit = maxBytes || MAX_SMALL_TEXT_FILE_BYTES
+  try {
+    const stat = fs.statSync(p)
+    if (stat.isFile() && stat.size <= limit) return fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '').trim()
+  } catch {}
+  return ''
+}
+
+const MAX_BODY_SIZE = 16 * 1024 * 1024
+const EFFECTIVE_MAX_BODY_SIZE = parsePositiveInt(process.env.DASHBOARD_MAX_BODY_SIZE, 10 * 1024 * 1024, 1024 * 1024, MAX_BODY_SIZE)
+
+function collectBody(req, res, callback) {
+  const chunks = []
+  let total = 0
+  let rejected = false
+  const declared = parseInt(req.headers['content-length'], 10)
+  if (Number.isFinite(declared) && declared > EFFECTIVE_MAX_BODY_SIZE) {
+    res.writeHead(413, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: false, message: '请求体过大' }))
+    req.destroy()
+    return
+  }
+  req.on('data', c => {
+    if (rejected) return
+    total += c.length
+    if (total > EFFECTIVE_MAX_BODY_SIZE) {
+      rejected = true
+      res.writeHead(413, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, message: '请求体过大' }))
+      req.destroy()
+      return
+    }
+    chunks.push(c)
+  })
+  req.on('end', () => {
+    if (rejected) return
+    rejected = true
+    callback(Buffer.concat(chunks).toString('utf8'))
+  })
+  req.on('error', () => {
+    if (rejected) return
+    rejected = true
+    try { json(res, { ok: false, message: '请求读取失败' }, 400) } catch {}
+  })
 }

@@ -1,21 +1,47 @@
-# 全部完成
+# standalone.js 模块拆分 — 完整进度
 
-## 本轮 commit 汇总
+## Phase 1 + 2 全部完成 ✅（6 个模块，112 个导出）
+
+```
+packages/koishi-plugin-dashboard/lib/
+├── utils.js      (20 导出) — 纯工具函数、文件操作
+├── paths.js      (40 导出) — 路径常量和配置
+├── auth.js       (16 导出) — 认证、Token、频率限制
+├── tools.js      (16 导出) — Node/npm 检测、端口检查
+├── napcat.js     (14 导出) — NapCat 检测/配置/Token
+└── frontend.js   (6 导出)  — 前端构建管理
+```
+
+## Commits
 
 | Commit | 内容 |
 |--------|------|
-| ab9ed1e | feat: NSIS 安装包 + 自动更新 + npm install 后端改引导 |
-| fe52282 | refactor: 前端 DeployPanel npm 步骤改引导模式 |
-| fb0335b | fix: 删死代码 + 补 TTS API 导出修复构建 |
-| ab276f7 | fix: P1 去除隐式代理修改、修 typo、修文案 |
-| 99481d0 | fix: P2 加强 bat 依赖检测 + 删前端死分支 |
-| 8281aca | chore: frontend/dist 加入版本控制 |
-| 8199aa7 | fix: 修正 NSIS 配置属性名 createDesktopShortcut |
+| `846dd3b` | Phase 1-A: lib/utils.js |
+| `5770d30` | Phase 1-B: lib/paths.js |
+| `3a54fec` | Phase 1-C: lib/auth.js |
+| `73413c0` | Phase 2-A: lib/tools.js |
+| `eec976d` | Phase 2-C: lib/frontend.js |
+| `7c493b0` | Phase 2-B: lib/napcat.js |
 
-## 最新验证
+## Phase 3: 路由拆分 — 待做
 
-- `npm run build:win` 成功生成 NSIS 安装包（莲莲Bot部署器 Setup 1.1.6.exe）
-- 无代码签名（需付费证书），安装时会有 SmartScreen 警告
-- 构建产物已清理（dist/ 已删除）
+需要：
+1. 把 standalone.js 的 require 改为解构：`const { json, log, ... } = require('./lib/utils')`
+2. 删除 standalone.js 中已在模块里定义的重复函数
+3. 创建 `lib/routes/` 目录，按 API 前缀拆分路由处理器
+4. standalone.js 只保留路由分发和服务器启动
 
-## 无待办
+**预估工作量**：2-3 个对话
+
+## Phase 4: 删冗余 — 待做
+
+standalone.js 当前 4800+ 行，Phase 3 完成后预计缩减到 200-500 行。
+
+## 新对话提示
+
+```
+继续 standalone.js 模块拆分 Phase 3。
+当前状态：lib/ 下 6 个模块已建立，standalone.js 已 require 它们但仍保留原始定义。
+第一步：改 require 为解构，删除 standalone.js 中的重复函数定义。
+从最简单的开始：utils.js 的 18 个函数。
+```
