@@ -45,6 +45,10 @@ function getCounterKey(userId) {
 function incrementCounter(userId) {
   const key = getCounterKey(userId)
   const count = (userMessageCounters.get(key) || 0) + 1
+  if (userMessageCounters.size > 5000) {
+    const first = userMessageCounters.keys().next().value
+    userMessageCounters.delete(first)
+  }
   userMessageCounters.set(key, count)
   return count
 }

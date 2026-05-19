@@ -10,7 +10,7 @@
 const DATA_DESTRUCTION = [
   { id: 'TOOL_CMD_DANGEROUS_RM', re: /\brm\b|\bdel\b|\bRemove-Item\b/i, sev: 'high',
     desc: '检测可能导致数据丢失的 rm 命令' },
-  { id: 'TOOL_CMD_DANGEROUS_MV', re: /\bmv\b/i, sev: 'high',
+  { id: 'TOOL_CMD_DANGEROUS_MV', re: /(?:^|[\s;|&])mv\s/i, sev: 'high',
     desc: '检测可能意外移动或覆盖文件的 mv 命令' },
   { id: 'TOOL_CMD_FS_DESTRUCTION', re: /\bmkfs(\.\w+)?\b|\bmke2fs\b|\bdd\s+.*of=\/dev\/|>\s*\/dev\/(sd[a-z]|vd[a-z]|nvme\d+n\d+)/i, sev: 'critical',
     desc: '检测低级别磁盘格式化或擦除命令' },

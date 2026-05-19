@@ -180,13 +180,7 @@ function handleGetAdminIds(req, res) {
     const ids = JSON.parse(raw)
     return json(res, { ids: Array.isArray(ids) ? ids : [] })
   } catch {
-    const defaults = ['532701045', '3514272382']
-    try {
-      const tmp = ADMIN_IDS_FILE + '.tmp'
-      fs.writeFileSync(tmp, JSON.stringify(defaults, null, 2), 'utf8')
-      fs.renameSync(tmp, ADMIN_IDS_FILE)
-    } catch {}
-    return json(res, { ids: defaults })
+    return json(res, { ids: [] })
   }
 }
 

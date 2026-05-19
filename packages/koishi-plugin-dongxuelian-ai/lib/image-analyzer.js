@@ -18,6 +18,7 @@ function enqueueAnalysis(channelKey, messageId) {
   if (!channelKey || !messageId) return
   const entry = getImageEntry(channelKey, messageId)
   if (!entry || entry.analyzed) return
+  if (queue.length >= 200) return
   queue.push({ channelKey, messageId, url: entry.url, file: entry.file })
   drainQueue()
 }
@@ -76,7 +77,7 @@ async function runAnalysis({ channelKey, messageId, url, file }) {
 
     markAnalyzed(channelKey, messageId, analysis)
     replaceImagePlaceholder(channelKey, messageId, analysis)
-  } catch {}
+  } catch (e) { console.warn('[image-analyzer] analysis failed:', e.message || e) }
 }
 
 module.exports = {

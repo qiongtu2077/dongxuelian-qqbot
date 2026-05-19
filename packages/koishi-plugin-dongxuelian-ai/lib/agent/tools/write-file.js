@@ -51,7 +51,9 @@ module.exports = {
     }
 
     await fs.writeFile(abs, params.content, 'utf8')
-    return `已写入：${abs}（${contentBytes} bytes）`
+    const realAfterWrite = await fs.realpath(abs).catch(() => abs)
+    const { abs: checkedAbs } = await assertExistingAgentPathInsideRoots(realAfterWrite, '写入后路径校验')
+    return `已写入：${checkedAbs}（${contentBytes} bytes）`
   },
   dangerous: true,
   defaultChannels: ['dashboard'],

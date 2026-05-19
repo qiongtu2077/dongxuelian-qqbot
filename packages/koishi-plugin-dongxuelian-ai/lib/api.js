@@ -50,6 +50,8 @@ function flushTokenUsage() {
   }
 }
 
+process.on('exit', flushTokenUsage)
+
 function mimeFromImagePath(filePath = '') {
   const ext = String(filePath || '').split('.').pop().toLowerCase()
   return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' }[ext] || 'image/jpeg'

@@ -18,6 +18,17 @@ const MAX_STICKER_INDEX_FILES = 200
 const MAX_STICKER_CACHE_FILES = 12
 const lastStickerSentAt = new Map()
 const throttleWindow = new Map()
+let throttleWindowLastCleanup = 0
+function cleanupThrottleWindow() {
+  const now = Date.now()
+  if (now - throttleWindowLastCleanup < 60000) return
+  throttleWindowLastCleanup = now
+  for (const [k, entries] of throttleWindow) {
+    const valid = entries.filter(e => now - e < 60000)
+    if (valid.length === 0) throttleWindow.delete(k)
+    else throttleWindow.set(k, valid)
+  }
+}
 const lastStickerFileSentAt = new Map()
 
 let throttleCfgCache = null
@@ -187,6 +198,7 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
     const cfg = throttleCfgCache
     const maxPerMin = parseInt(cfg?.maxPerMinute, 10) || 0
     if (maxPerMin > 0) {
+      cleanupThrottleWindow()
       const windowKey = String(session.guildId || session.channelId || 'default')
       let entries = throttleWindow.get(windowKey) || []
       entries = entries.filter(function(e) { return nowMs() - e < 60000 })

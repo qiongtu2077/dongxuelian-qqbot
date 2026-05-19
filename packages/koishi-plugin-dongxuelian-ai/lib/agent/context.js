@@ -19,15 +19,15 @@ function estimateTokens(messages = []) {
   let total = 0
   for (const m of messages) {
     if (typeof m.content === 'string') {
-      // 中文字符约 0.5 token，英文字符约 0.25
-      const hasChinese = /[\u4e00-\u9fff]/.test(m.content)
-      total += Math.ceil(m.content.length * (hasChinese ? 0.5 : 0.25))
+      for (let i = 0; i < m.content.length; i++) {
+        total += m.content.charCodeAt(i) > 0x7f ? 0.5 : 0.25
+      }
     }
     if (m.tool_calls) {
       total += Math.ceil(JSON.stringify(m.tool_calls).length * 0.25)
     }
   }
-  return total
+  return Math.ceil(total)
 }
 
 /** 工具结果截断，默认 8000 字符 */

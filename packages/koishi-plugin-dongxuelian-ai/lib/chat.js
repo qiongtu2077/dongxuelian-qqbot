@@ -47,6 +47,7 @@ const {
 } = require('./conversation')
 const { getRecentAgentContextNote } = require('./agent-chat-bridge')
 const { getChatToolDefinitions, handleChatToolCalls, getChatToolSystemHint } = require('./chat-tools')
+const { estimateTokens } = require('./agent/context')
 const { normalizeText } = require('./message-reader')
 const {
   isRareProvocation, isWideRareProvocation, isHostileInput,
@@ -357,6 +358,8 @@ async function chatJailbreak(session, userText, ctx) {
   }
 }
 
+const topicSwitchLocks = new Map()
+
 // FUNCTION SIZE GATE: 该函数当前约 350 行。上限 400 行。
 // 触发线：新增逻辑超过 10 行 / 新增状态超过 2 个 key → 先提出拆分方案。
 async function chat(session, userText, ctx, options = {}) {
@@ -370,7 +373,7 @@ async function chat(session, userText, ctx, options = {}) {
   // #7 群记忆定时清空检查
   const channelKey = getChannelKey(session)
   if (session.guildId && checkMemoryTimerExpired(channelKey)) {
-    clearGroupMemory(channelKey)
+    await clearGroupMemory(channelKey)
     const timer = readMemoryTimer(channelKey)
     if (timer) {
       timer.lastClearTs = Date.now()
@@ -395,7 +398,7 @@ async function chat(session, userText, ctx, options = {}) {
   if (currentUserId && session.guildId && /^(?:记住|记下)\s+/.test(cleanInput)) {
     const text = cleanInput.replace(/^(?:记住|记下)\s+/, '').trim()
     if (text) {
-      writeMemory(currentUserId, '', channelKey, text)
+      await writeMemory(currentUserId, '', channelKey, text)
       return '嗯，我记住了'
     }
   }
@@ -566,11 +569,18 @@ async function chat(session, userText, ctx, options = {}) {
     : ''
   const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${fwdInput}${contextTag}${quotedTag}\n</user>`
 
-  // 话题检测：对比上一条消息和当前消息，切换了则清历史
-  const lastUserMsg = getRecentUserMessages(session, 1).pop()
-  if (lastUserMsg && await detectTopicSwitch(lastUserMsg, cleanInput)) {
-    clearUserConversationHistory(session)
-  }
+  // 话题检测：对比上一条消息和当前消息，切换了则清历史（per-key lock）
+  const topicKey = getConversationKey(session)
+  const prevLock = topicSwitchLocks.get(topicKey) || Promise.resolve()
+  const lockPromise = prevLock.then(async () => {
+    const lastUserMsg = getRecentUserMessages(session, 1).pop()
+    if (lastUserMsg && await detectTopicSwitch(lastUserMsg, cleanInput)) {
+      clearUserConversationHistory(session)
+    }
+  })
+  topicSwitchLocks.set(topicKey, lockPromise)
+  lockPromise.finally(() => { if (topicSwitchLocks.get(topicKey) === lockPromise) topicSwitchLocks.delete(topicKey) })
+  await lockPromise
 
   const historyMessages = getConversationHistory(session).map(normalizeUserMessageForPrompt)
 
@@ -939,6 +949,8 @@ async function chat(session, userText, ctx, options = {}) {
   }
 
   for (let attempt = 0; attempt < MAX_REPLY_RETRIES; attempt += 1) {
+    const tokenEstimate = estimateTokens(messages)
+    if (tokenEstimate > 12000) break
     if (hasBannedOutput(reply)) {
       ctx.logger('dongxuelian-ai').warn(`banned word in reply, retrying. original: ${reply}`)
       messages.push({ role: 'assistant', content: reply })

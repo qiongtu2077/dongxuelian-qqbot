@@ -88,10 +88,10 @@ const COMPRESS_TOOL_RESULT_THRESHOLD = 1500
 
 function compressOldToolResults(messages, currentRound) {
   let toolMsgCount = 0
+  const totalToolMsgs = messages.filter(m => m.role === 'tool').length
   for (let i = 0; i < messages.length; i++) {
     if (messages[i].role !== 'tool') continue
     toolMsgCount++
-    const totalToolMsgs = messages.filter(m => m.role === 'tool').length
     if (toolMsgCount >= totalToolMsgs - 1) break
     const content = messages[i].content || ''
     if (content.length > COMPRESS_TOOL_RESULT_THRESHOLD) {
@@ -257,7 +257,7 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
     messages.push({ role: 'tool', tool_call_id: call.id, content: externalizeToolResult(outcome.result, call.function.name) })
   }
   const agentResult = await continueAgent({ messages, config, tools, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolResults, onProgress, bot, enableThinking })
-  onAgentReplyComplete({ userId, channel, messages }).catch(() => {})
+  onAgentReplyComplete({ userId, channel, messages }).catch(e => console.warn('[agent-engine] onAgentReplyComplete error:', e.message || e))
   return agentResult
 }
 
