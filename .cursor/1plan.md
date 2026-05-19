@@ -1,3 +1,142 @@
+# 当前任务：日报图片生成失败排查
+
+## 问题诊断
+
+**症状**：群聊详细日报的图片总是生成失败
+**错误日志**：
+```
+[E] daily-report 详细日报生成失败: available memory is too low for Chromium render (683MB < 900MB)
+```
+
+**根因**：服务器可用内存（MemAvailable 664MB）低于 Puppeteer/Chromium 渲染最低阈值（900MB）
+
+**服务器情况**：
+- 总内存：1608MB（1.6GB）
+- 已用：764MB
+- 可用（含 buffer/cache）：664MB
+- Swap：0（完全没有 swap）
+
+**阈值配置**：`html-renderer.js` 第 18 行
+```javascript
+const RENDER_MIN_AVAILABLE_MB = parsePositiveInt(process.env.DAILY_REPORT_MIN_MEM_MB, 900, 256, 8192)
+```
+
+---
+
+## Swap 技术说明
+
+### 是什么
+
+Swap（交换空间）是用硬盘空间模拟内存的技术。当物理内存不够时，Linux 把不活跃的内存页写到硬盘上的 swap 分区/文件，腾出物理 RAM 给需要它的进程。
+
+### 能做到什么
+
+- 让 `MemAvailable` 值增大（因为可以随时把不活跃页交换出去）
+- 让系统在内存紧张时不会直接 OOM-kill 进程
+- 允许短时间的内存峰值超过物理内存
+
+### 优劣
+
+| 优势 | 劣势 |
+|------|------|
+| 不花钱、立即可做 | 硬盘比内存慢 100-1000 倍 |
+| 系统稳定性增加，不容易 OOM | 如果频繁 swap-in/swap-out（thrashing）会卡顿 |
+| 只需一条命令，不改代码 | SSD 频繁写入可能减少寿命（云服务器不在乎） |
+| 可随时调整大小/删除 | 不能替代真正的物理内存 |
+
+**云服务器场景下几乎全是优势**：阿里云磁盘 IO 性能不错，且对日报渲染这种"短时间峰值用一下"的场景非常合适。
+
+---
+
+## 所有可行方案
+
+### 方案 A：加 Swap（推荐 ★★★★★）
+
+创建 2GB swap 文件：
+```bash
+dd if=/dev/zero of=/swapfile bs=1M count=2048
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab  # 重启自动挂载
+```
+
+**效果**：MemAvailable 会从 664MB 增到 ~2600MB，远超 900MB 阈值
+**代价**：硬盘多占 2GB 空间
+**风险**：几乎无
+**是否改代码**：不改
+
+### 方案 B：降低内存阈值（★★★☆☆）
+
+设置环境变量：
+```bash
+export DAILY_REPORT_MIN_MEM_MB=500
+```
+或者直接修改代码把默认值从 900 改为 500。
+
+**效果**：允许在 500MB 可用时渲染。目前 664MB > 500MB，可以通过
+**代价**：无
+**风险**：如果某次渲染时可用内存恰好低于 500MB（比如其他进程突增），Chromium 可能被 OOM-kill，导致渲染异常
+**是否改代码**：改 env 或代码
+
+### 方案 C：强制跳过内存检查（★★☆☆☆）
+
+```bash
+export DAILY_REPORT_RENDER_FORCE=1
+```
+
+**效果**：无论剩多少内存都尝试渲染
+**代价**：无
+**风险**：高——如果真的 OOM，Linux 会杀掉占内存最多的进程（可能是 koishi worker 或 NapCat），整个 Bot 会挂
+**是否改代码**：不改
+
+### 方案 D：清理多余进程释放内存（★★★☆☆）
+
+服务器有 3 个 Xvfb 实例（3 × 27MB ≈ 80MB），可能只需要 1 个：
+```bash
+kill <多余的 Xvfb PID>
+```
+
+**效果**：释放 ~60MB，不能从根本解决（664 + 60 = 724MB，仍 < 900）
+**代价**：如果某个 Xvfb 正在被用会出问题
+**风险**：中
+**是否改代码**：不改
+
+### 方案 E：升级服务器配置（★★★★☆ 但花钱）
+
+阿里云 1.6GB → 2GB 或 4GB
+
+**效果**：彻底解决
+**代价**：每月多花 20-50 元
+**风险**：无
+**是否改代码**：不改
+
+### 方案 F：优化渲染器，减少 Chromium 内存使用（★★☆☆☆）
+
+在 Puppeteer 启动参数里加更多限制：
+```javascript
+args: ['--single-process', '--disable-extensions', '--js-flags=--max-old-space-size=128']
+```
+
+**效果**：可能降低 Chromium 峰值内存 50-100MB
+**代价**：可能影响渲染稳定性
+**风险**：中（single-process 模式有已知问题）
+**是否改代码**：改
+
+---
+
+## 推荐执行顺序
+
+| 顺序 | 方案 | 操作 | 紧迫度 |
+|------|------|------|--------|
+| 1 | A（加 Swap） | SSH 执行 4 条命令 | **立即做，根本解决** |
+| 2 | D（清 Xvfb） | kill 多余的 2 个 | 顺手做 |
+| 3 | B（降阈值） | 改 env 为 600 | 做了 A 后不需要 |
+
+方案 A 做完后，问题就彻底解决了。
+
+---
+
 # standalone.js 模块化 — 完成状态 + 后续改进
 
 ## Phase 5 已完成 ✓
