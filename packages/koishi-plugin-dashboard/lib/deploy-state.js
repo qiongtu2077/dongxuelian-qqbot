@@ -105,6 +105,19 @@ function spawnLocalTask(key, command, args = [], options = {}) {
   return { alreadyRunning: false, status: getTaskPublicStatus(key) }
 }
 
+function waitKoishiPortFree() {
+  const { checkPortState } = require('./tools')
+  const { resolveKoishiListenPort } = require('./deploy-helpers')
+  const port = resolveKoishiListenPort()
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    const state = checkPortState(port)
+    if (state.available || state.status === 'free') return
+    const { sleepSync } = require('./utils')
+    sleepSync(300)
+  }
+}
+
 module.exports = {
   localTasks,
   getRebuildStatus,
@@ -114,4 +127,5 @@ module.exports = {
   appendLocalTaskLog,
   getTaskPublicStatus,
   spawnLocalTask,
+  waitKoishiPortFree,
 }

@@ -820,6 +820,19 @@ function getNapcatStartEntry() {
   return result
 }
 
+function prepareNpmInstallRun(options = {}) {
+  const forceRepair = !!options.forceRepair
+  const diagnostics = collectNpmInstallDiagnostics(true)
+  const proxy = diagnostics.proxy || diagnoseNpmProxy(diagnostics)
+  const shouldClean = forceRepair || proxy.shouldBypass
+  const env = shouldClean ? getNoProxyEnvOverrides() : {}
+  const repair = { forced: forceRepair, automatic: !forceRepair && proxy.shouldBypass, envClearedForRetry: shouldClean, reason: shouldClean ? (proxy.reason || '已清理本次 npm install 的代理环境') : '', actions: [] }
+  if (shouldClean) repair.actions = repairNpmProxyConfig(env)
+  diagnostics.proxy = proxy
+  diagnostics.repair = repair
+  return { env, diagnostics, repair }
+}
+
 module.exports = {
   MAX_DOWNLOAD_BYTES, MAX_DEPLOY_TASK_LOG_BYTES, MAX_DEPLOY_UPLOAD_BYTES, HASH_CHUNK_BYTES,
   validateDeployServer, validateDeployAppDir, validateDeployTarget,
@@ -843,5 +856,5 @@ module.exports = {
   findFilesRecursive, cleanupRuntimeInstallStaging, extractZipArchive,
   runNapcatInstallerIfPresent, findNapcatCopyRoot, buildNapcatManualSteps,
   downloadNapcatWindowsRelease, pickNodeWindowsRelease, findExtractedNodeRoot, installPortableNodeWindows,
-  getNapcatStartEntry,
+  getNapcatStartEntry, prepareNpmInstallRun,
 }

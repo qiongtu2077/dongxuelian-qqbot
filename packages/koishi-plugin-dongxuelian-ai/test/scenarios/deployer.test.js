@@ -7,11 +7,13 @@ async function run(t) {
 
   const standalonePath = path.resolve(__dirname, '../../../koishi-plugin-dashboard/standalone.js')
   const dashboardDir = path.dirname(standalonePath)
+  const pathsModulePath = path.resolve(dashboardDir, 'lib', 'paths.js')
   const originalKoishiDir = process.env.KOISHI_DIR
   const originalGlobalLocal = process.env.GLOBAL_LOCAL_MODE
 
   function freshRequireStandalone() {
     delete require.cache[require.resolve(standalonePath)]
+    delete require.cache[require.resolve(pathsModulePath)]
     return require(standalonePath)
   }
 
@@ -54,6 +56,7 @@ async function run(t) {
 
     const tmpKoishiDir = fs.mkdtempSync(path.join(os.tmpdir(), 'deployer-koishi-dir-'))
     delete require.cache[require.resolve(standalonePath)]
+    delete require.cache[require.resolve(pathsModulePath)]
     process.env.KOISHI_DIR = tmpKoishiDir
     try {
       const dashCustom = require(standalonePath)
@@ -69,6 +72,7 @@ async function run(t) {
     else process.env.GLOBAL_LOCAL_MODE = originalGlobalLocal
 
     delete require.cache[require.resolve(standalonePath)]
+    delete require.cache[require.resolve(pathsModulePath)]
   }
 }
 
