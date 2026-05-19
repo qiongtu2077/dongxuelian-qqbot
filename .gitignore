@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-tmp/
+dist2/
+dist-icon-test/
 !packages/agent-console/dist/
 !packages/agent-console/dist/**
 !packages/koishi-plugin-dashboard/frontend/dist/
