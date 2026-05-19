@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div>
     <div v-if="locked" class="card deploy-hero">
       <div>
@@ -551,9 +551,7 @@ export default {
         if (env.value.dependencies?.ready && stationState.npm !== 'running') setStepStatus('npm', 'success')
       }
       const npmStatus = npmTaskStatus.value
-      if (npmStatus?.running) setStepStatus('npm', 'running')
-      else if (npmStatus?.dependencies?.ready) setStepStatus('npm', npmStatus.state === 'idle' ? 'success' : 'success')
-      else if (npmStatus?.state === 'failed') setStepStatus('npm', 'failed')
+      if (npmStatus?.dependencies?.ready) setStepStatus('npm', 'success')
       const napcatStatus = napcatTaskStatus.value
       if (napcatStatus?.webuiPort?.status === 'occupied' || napcatStatus?.onebotPort?.status === 'occupied') {
         setStepStatus('napcat-start', 'success')
