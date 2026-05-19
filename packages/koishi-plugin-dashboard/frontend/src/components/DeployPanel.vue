@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div>
     <div v-if="locked" class="card deploy-hero">
       <div>
@@ -73,7 +73,9 @@
               <button v-if="activeLocalStep === 'install'" class="btn btn-sm" type="button" @click="doDownloadWindowsNapcat" :disabled="installingNapcat || !isWindows">{{ installingNapcat ? '安装中...' : '一键安装 NapCat（Windows，官方包）' }}</button>
               <a v-if="activeLocalStep === 'install'" class="btn btn-sm btn-ghost" href="https://github.com/NapNeko/NapCatQQ/releases/latest" target="_blank">打开 NapCat 发布页</a>
               <button v-if="activeLocalStep === 'config'" class="btn btn-sm" type="button" @click="writeLocalConfig" :disabled="localDeploying">{{ localDeploying ? '写入中...' : '生成 Koishi 本地配置' }}</button>
-              <button v-if="activeLocalStep === 'npm'" class="btn btn-sm" type="button" @click="runNpmInstallStep" :disabled="installingDeps">{{ installingDeps ? '安装中...' : '执行 npm install' }}</button>
+              <button v-if="activeLocalStep === 'npm' && !npmGuideSteps" class="btn btn-sm" type="button" @click="runNpmInstallStep" :disabled="installingDeps">{{ installingDeps ? '获取中...' : '查看安装命令' }}</button>
+              <button v-if="activeLocalStep === 'npm' && npmGuideSteps" class="btn btn-sm" type="button" @click="confirmNpmDone" :disabled="installingDeps">{{ installingDeps ? '检测中...' : '我已在终端执行完成' }}</button>
+              <button v-if="activeLocalStep === 'npm' && npmGuideSteps" class="btn btn-sm btn-ghost" type="button" @click="copyNpmGuideCommands">复制安装命令</button>
               <button v-if="activeLocalStep === 'napcat-start'" class="btn btn-sm" type="button" @click="startNapcatStep" :disabled="startingNapcat">{{ startingNapcat ? '启动中...' : '启动 NapCat' }}</button>
               <template v-if="activeLocalStep === 'scan'">
                 <button class="btn btn-sm" type="button" @click="openNapcatWebui">打开 NapCat WebUI</button>
@@ -100,7 +102,7 @@
         <div v-if="workspaceStatusText" class="status-item"><span>工作目录</span><b :class="workspaceSafe ? 'ok-text' : 'warn-text'">{{ workspaceStatusText }}</b><small>{{ workspaceStatusHint }}</small></div>
         <div class="status-item"><span>Node.js</span><b :class="env.node?.ok ? 'ok-text' : 'err-text'">{{ env.node?.version || '未检测到' }}</b><small>{{ env.node?.sourcePath || env.node?.reason }}</small><small>便携 Node 官方包内自带 npm.cmd 与 npx.cmd。</small><button v-if="!env.node?.ok" class="btn btn-sm status-action" type="button" @click="installPortableNodeStep" :disabled="installingNode">{{ installingNode ? '安装中...' : '安装便携 Node/npm' }}</button></div>
         <div class="status-item"><span>npm</span><b :class="env.npm?.found ? 'ok-text' : 'err-text'">{{ env.npm?.version || '未检测到' }}</b><small>{{ env.npm?.sourcePath || env.npm?.reason }}</small><small>这里检查 npm 命令程序是否存在，不代表项目依赖已安装。</small><button v-if="!env.npm?.found" class="btn btn-sm status-action" type="button" @click="installPortableNodeStep" :disabled="installingNode">{{ installingNode ? '安装中...' : '安装便携 Node/npm' }}</button></div>
-        <div class="status-item"><span>项目依赖</span><b :class="env.dependencies?.ready ? 'ok-text' : 'warn-text'">{{ env.dependencies?.ready ? '已安装' : '未完整安装' }}</b><small>{{ env.dependencies?.reason }}</small><small>这里检查 node_modules 中 Koishi 与本项目依赖是否已由 npm install 安装完成。</small><button v-if="!env.dependencies?.ready" class="btn btn-sm status-action" type="button" @click="runNpmInstallStep" :disabled="installingDeps || !env.npm?.found">{{ installingDeps ? '安装中...' : '执行 npm install' }}</button></div>
+        <div class="status-item"><span>项目依赖</span><b :class="env.dependencies?.ready ? 'ok-text' : 'warn-text'">{{ env.dependencies?.ready ? '已安装' : '未完整安装' }}</b><small>{{ env.dependencies?.reason }}</small><small>这里检查 node_modules 中 Koishi 与本项目依赖是否已由 npm install 安装完成。</small><button v-if="!env.dependencies?.ready" class="btn btn-sm status-action" type="button" @click="runNpmInstallStep" :disabled="installingDeps || !env.npm?.found">{{ installingDeps ? '检测中...' : '查看安装命令' }}</button></div>
         <div class="status-item"><span>Koishi 配置</span><b :class="localConfigReady ? 'ok-text' : 'warn-text'">{{ localConfigReady ? '已生成' : '未生成' }}</b><small>{{ localConfigSummary }}</small><button v-if="!localConfigReady" class="btn btn-sm status-action" type="button" @click="writeLocalConfig" :disabled="localDeploying">{{ localDeploying ? '写入中...' : '生成配置' }}</button></div>
         <div class="status-item"><span>端口</span><code>{{ portSummary }}</code></div>
         <div class="status-item"><span>NapCat</span><b :class="napcatStatusClass">{{ napcatStatusText }}</b><small>{{ env.napcat?.reason }}</small><code v-if="env.napcat?.entry || env.napcat?.path">{{ env.napcat?.entry || env.napcat?.path }}</code><button v-if="!env.napcat?.found" class="btn btn-sm status-action" type="button" @click="doDownloadWindowsNapcat" :disabled="installingNapcat || !isWindows">{{ installingNapcat ? '安装中...' : '安装 NapCat' }}</button></div>
@@ -116,7 +118,15 @@
         </div>
       </div>
 
-      <div v-if="activeLocalStep === 'npm' && npmFailureGuide" class="repair-guide">
+      <div v-if="activeLocalStep === 'npm' && npmGuideSteps" class="npm-guide-card card">
+        <strong>请在终端中手动执行以下命令：</strong>
+        <ol class="npm-guide-steps">
+          <li v-for="step in npmGuideSteps" :key="step.command"><span>{{ step.label }}</span><code>{{ step.command }}</code></li>
+        </ol>
+        <small>完成后点击"我已在终端执行完成"按钮，部署器会自动检测依赖状态。</small>
+      </div>
+
+    <div v-if="activeLocalStep === 'npm' && npmFailureGuide" class="repair-guide">
         <div class="repair-guide-head">
           <div>
             <strong>{{ npmFailureGuide.title }}</strong>
@@ -328,6 +338,7 @@ export default {
     const activeLocalStep = ref('env')
     const localLogRef = ref(null)
     const npmTaskStatus = ref(null)
+    const npmGuideSteps = ref(null)
     const napcatTaskStatus = ref(null)
     const koishiTaskStatus = ref(null)
     const readyCheck = ref(null)
@@ -346,7 +357,7 @@ export default {
       { id: 'env', title: '环境检测', description: '确认当前 Windows 目标机、Node.js、npm、端口和项目目录。' },
       { id: 'install', title: '安装 NapCat', description: '下载并解压 NapCat 官方 Windows 包到 runtime/napcat 或你选择的目录。' },
       { id: 'config', title: '生成配置', description: '写入 koishi.yml、start-local.bat 和本地 AI 配置；AI Key 可留空。' },
-      { id: 'npm', title: 'npm install', description: '安装 Koishi 和项目依赖，并把日志写入 runtime/logs/npm-install.log。' },
+      { id: 'npm', title: 'npm install', description: '手动在终端执行 npm install 安装项目依赖。' },
       { id: 'napcat-start', title: '启动 NapCat', description: '在当前 Windows 机器启动 NapCat，等待 WebUI 或二维码出现。' },
       { id: 'scan', title: '等待扫码', description: '使用机器人 QQ 扫码登录 NapCat，完成后继续启动 Koishi。' },
       { id: 'koishi', title: '启动 Koishi', description: '启动 Koishi 5140 服务，并连接 NapCat 的 OneBot WebSocket。' },
@@ -414,7 +425,7 @@ export default {
       if (step.id === 'scan') return '扫码是唯一需要你手动完成的步骤。部署器会自动检测登录成功并继续启动 Koishi；超时后也可以手动继续。'
       if (step.id === 'health' && readyCheck.value) return readyCheck.value.message || step.description
       if (step.id === 'config') return '只要求填写机器人 QQ。AI Key 可以留空，之后在 API Keys 页补充。'
-      if (step.id === 'npm') return 'npm 命令随便携 Node 一起安装；这里安装的是本 Bot 项目的 node_modules 依赖。若检测到失效的 127.0.0.1 代理，部署器会先清理本次安装环境再启动 npm install。'
+      if (step.id === 'npm') return '部署器会为你生成终端命令，请复制到 PowerShell 或 CMD 中执行。安装完成后点击确认按钮。'
       return step.description
     })
     const currentLocalLogLines = computed(() => {
@@ -757,36 +768,57 @@ export default {
       installingDeps.value = true
       activeLocalStep.value = 'npm'
       setStepStatus('npm', 'running')
-      localMsg.value = { type: 'ok', text: '正在执行 npm install，日志会自动滚动到底部...' }
+      localMsg.value = { type: 'ok', text: '正在获取安装指引...' }
       const res = await startNpmInstall()
-      if (withAdminRetry(res, '执行 npm install 需要管理员密码', runNpmInstallStep)) { installingDeps.value = false; return }
+      if (withAdminRetry(res, '获取 npm install 指引需要管理员密码', runNpmInstallStep)) { installingDeps.value = false; return }
       if (!res.ok) {
         setStepStatus('npm', 'failed')
-        localMsg.value = { type: 'err', text: taskFailureText('npm', res.data?.status, res.data?.message || 'npm install 启动失败') }
+        localMsg.value = { type: 'err', text: res.data?.message || '获取安装指引失败' }
         installingDeps.value = false
         return
       }
       if (res.data?.status) npmTaskStatus.value = res.data.status
       if (res.data?.skipped) {
         setStepStatus('npm', 'skipped')
-      } else {
-        try {
-          await waitForLocalTask(npmInstallStatus, status => { npmTaskStatus.value = status }, 'npm', status => !status.running && (status.state === 'success' || status.state === 'failed'))
-          const ready = npmTaskStatus.value?.state === 'success' && await waitForNpmDependenciesReady()
-          setStepStatus('npm', ready ? 'success' : 'failed')
-          if (!npmTaskStatus.value?.dependencies?.ready) {
-            const guide = npmTaskStatus.value?.failureGuide
-            const fallback = guide?.code === 'NPM_PROXY_REFUSED' ? '项目依赖安装仍被本机代理阻断，请点击“一键修复代理并重试”或检查代理软件端口。' : (guide?.title || npmTaskStatus.value?.dependencies?.reason || 'npm install 未完成，请查看日志后重试')
-            localMsg.value = { type: 'err', text: taskFailureText('npm', npmTaskStatus.value, fallback) }
-          }
-        } catch (e) {
-          setStepStatus('npm', 'failed')
-          localMsg.value = { type: 'err', text: e.message || 'npm install 等待失败' }
-        }
+        npmGuideSteps.value = null
+        localMsg.value = { type: 'ok', text: '项目依赖已安装，无需再次执行。' }
+      } else if (res.data?.guide) {
+        npmGuideSteps.value = res.data.steps || []
+        setStepStatus('npm', 'waiting')
+        localMsg.value = { type: 'ok', text: res.data.message || '请在终端中手动执行命令安装依赖' }
       }
       installingDeps.value = false
-      if (npmTaskStatus.value?.dependencies?.ready) await checkEnv()
-      else await refreshLocalTaskStatuses(false)
+    }
+
+    async function confirmNpmDone() {
+      if (!ensureWindowsLocalDeploy()) return
+      installingDeps.value = true
+      localMsg.value = { type: 'ok', text: '正在检测依赖安装状态...' }
+      const ready = await waitForNpmDependenciesReady()
+      if (ready) {
+        setStepStatus('npm', 'success')
+        npmGuideSteps.value = null
+        localMsg.value = { type: 'ok', text: '项目依赖已安装完成。' }
+        await checkEnv()
+      } else {
+        setStepStatus('npm', 'failed')
+        localMsg.value = { type: 'err', text: '依赖未完整安装，请确认 npm install 是否执行成功后重试。' }
+      }
+      installingDeps.value = false
+    }
+
+    async function copyNpmGuideCommands() {
+      const steps = npmGuideSteps.value || []
+      const text = steps.map(s => s.command).filter(Boolean).join('\n')
+      if (!text) return
+      const bridge = getDongxuelianDeployerBridge?.()
+      if (bridge?.copyText) {
+        try { await bridge.copyText(text); localMsg.value = { type: 'ok', text: '安装命令已复制到剪贴板。' } }
+        catch { localMsg.value = { type: 'err', text: '复制失败，请手动选择命令文本复制。' } }
+        return
+      }
+      try { await navigator.clipboard?.writeText(text); localMsg.value = { type: 'ok', text: '安装命令已复制到剪贴板。' } }
+      catch { localMsg.value = { type: 'err', text: '复制失败，请手动选择命令文本复制。' } }
     }
 
     async function repairNpmProxyFlow() {
@@ -795,31 +827,24 @@ export default {
       installingDeps.value = true
       activeLocalStep.value = 'npm'
       setStepStatus('npm', 'running')
-      localMsg.value = { type: 'ok', text: '正在用部署器内部 npm 清理代理配置，并以无代理环境重试 npm install...' }
+      localMsg.value = { type: 'ok', text: '正在获取代理修复指引...' }
       const res = await repairNpmProxyAndInstall()
-      if (withAdminRetry(res, '修复 npm 代理并重试需要管理员密码', repairNpmProxyFlow)) { repairingNpm.value = false; installingDeps.value = false; return }
+      if (withAdminRetry(res, '获取修复指引需要管理员密码', repairNpmProxyFlow)) { repairingNpm.value = false; installingDeps.value = false; return }
       if (!res.ok) {
         setStepStatus('npm', 'failed')
-        localMsg.value = { type: 'err', text: res.data?.message || 'npm 代理修复失败' }
+        localMsg.value = { type: 'err', text: res.data?.message || 'npm 代理修复指引获取失败' }
         repairingNpm.value = false
         installingDeps.value = false
         return
       }
       if (res.data?.status) npmTaskStatus.value = res.data.status
-      localMsg.value = { type: 'ok', text: res.data?.message || 'npm 代理已处理，正在重新安装依赖...' }
-      try {
-        await waitForLocalTask(npmInstallStatus, status => { npmTaskStatus.value = status }, 'npm', status => !status.running && (status.state === 'success' || status.state === 'failed'))
-        const ready = npmTaskStatus.value?.state === 'success' && await waitForNpmDependenciesReady()
-        setStepStatus('npm', ready ? 'success' : 'failed')
-        if (!npmTaskStatus.value?.dependencies?.ready) localMsg.value = { type: 'err', text: taskFailureText('npm', npmTaskStatus.value, npmTaskStatus.value?.dependencies?.reason || 'npm install 未完成，请查看日志后重试') }
-      } catch (e) {
-        setStepStatus('npm', 'failed')
-        localMsg.value = { type: 'err', text: e.message || 'npm install 等待失败' }
+      if (res.data?.guide) {
+        npmGuideSteps.value = res.data.steps || []
+        setStepStatus('npm', 'waiting')
+        localMsg.value = { type: 'ok', text: res.data.message || '请在终端中执行修复和安装命令' }
       }
       repairingNpm.value = false
       installingDeps.value = false
-      if (npmTaskStatus.value?.dependencies?.ready) await checkEnv()
-      else await refreshLocalTaskStatuses(false)
     }
 
     async function startNapcatStep() {
@@ -926,7 +951,10 @@ export default {
         await writeLocalConfig()
         if (!localConfigReady.value) throw new Error('Koishi 本地配置未生成，请检查机器人 QQ 和管理员验证')
         await runNpmInstallStep()
-        if (!env.value?.dependencies?.ready) throw new Error(npmFailureGuide.value?.code === 'NPM_PROXY_REFUSED' ? '项目依赖安装被失效本机代理阻断，请停在 npm install 步骤处理后继续。' : 'npm install 未完成，请查看日志后重试')
+        if (!env.value?.dependencies?.ready) {
+          localMsg.value = { type: 'ok', text: '请在终端中完成 npm install 后，点击"我已在终端执行完成"按钮继续。一键部署已暂停在此步骤。' }
+          return
+        }
         await startNapcatStep()
         const loginOk = await waitForNapcatLogin()
         if (loginOk) await continueAfterScan()
@@ -1177,7 +1205,7 @@ export default {
       clearRebuildPolling()
     })
 
-    return { mode, local, remote, env, localMsg, localAlert, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, closeLocalAlert, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction, copyNpmFixCommands }
+    return { mode, local, remote, env, localMsg, localAlert, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmGuideSteps, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, closeLocalAlert, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, confirmNpmDone, copyNpmGuideCommands, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction, copyNpmFixCommands }
   },
 }
 </script>
