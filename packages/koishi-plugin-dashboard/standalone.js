@@ -3806,6 +3806,8 @@ const server = http.createServer(async (req, res) => {
             const resolved = tts.resolvePersonaVoice(pName)
             resolvedVoice = resolved.voice
             resolvedStyle = style || resolved.style
+          } else if (resolvedVoice === '__cloned__') {
+            return json(res, { ok: false, message: '克隆音色需要指定人格名称' }, 400)
           }
         }
         const buf = await tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice, style: resolvedStyle })
