@@ -86,11 +86,12 @@ export default {
     const usageTotal = ref(0)
     const loadingUsage = ref(false)
 
-    onMounted(async () => {
+    async function loadKeys() {
       const res = await fetchKeys()
+      if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('查看 Key 需要管理员密码', loadKeys); return }
       if (res.ok) keys.value = res.data
-      loadUsage()
-    })
+    }
+    onMounted(() => { loadKeys(); loadUsage() })
 
     function editKey(k) {
       editing.value = k

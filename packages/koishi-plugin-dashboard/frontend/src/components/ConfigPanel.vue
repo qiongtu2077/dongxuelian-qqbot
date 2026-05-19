@@ -164,7 +164,8 @@ export default {
           fallbackChains.value = fRes.data.chains || {}
           defaultFallback.value = fRes.data.default || {}
         }
-        if (cpRes.ok) {
+        if (cpRes.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('查看自定义供应商需要管理员密码', () => loadCustomProviders()) }
+        else if (cpRes.ok) {
           const raw = cpRes.data || []
           customProviders.value = raw.map(function(cp) {
             return Object.assign({}, cp, {
@@ -182,6 +183,15 @@ export default {
         console.error('[ConfigPanel] load failed:', e)
       }
     })
+
+    async function loadCustomProviders() {
+      const cpRes = await fetchCustomProviders()
+      if (cpRes.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('查看自定义供应商需要管理员密码', loadCustomProviders); return }
+      if (cpRes.ok) {
+        customProviders.value = (cpRes.data || []).map(cp => Object.assign({}, cp, { models: Array.isArray(cp.models) ? cp.models.map(m => typeof m === 'object' && m !== null ? Object.assign({}, m) : { id: String(m), name: String(m) }) : [] }))
+        buildAllProviders()
+      }
+    }
 
     function onProviderChange() {
       const models = currentModels.value
