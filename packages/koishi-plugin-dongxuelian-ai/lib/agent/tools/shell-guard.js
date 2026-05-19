@@ -54,6 +54,18 @@ const CODE_EXECUTION = [
     desc: 'JQ 命令使用可以读取任意文件或执行外部代码的标志' },
   { id: 'TOOL_CMD_ZSH_DANGEROUS', re: /\b(zmodload|emulate\s+.*-c|sysopen|sysread|syswrite|sysseek|zpty|ztcp|zsocket|zf_rm|zf_mv|zf_ln|zf_chmod|zf_chown|zf_mkdir|zf_rmdir|zf_chgrp|fc\s+.*-.*e)\b/i, sev: 'high',
     desc: '使用了 Zsh 专用的内置功能，可以绕过安全检查' },
+  { id: 'TOOL_CMD_LOLBIN_DOWNLOAD', re: /\b(?:certutil|bitsadmin)\b/i, sev: 'critical',
+    desc: '检测 Windows certutil/bitsadmin 下载执行' },
+  { id: 'TOOL_CMD_LOLBIN_HTA', re: /\bmshta\b/i, sev: 'critical',
+    desc: '检测 mshta 执行远程 HTA 载荷' },
+  { id: 'TOOL_CMD_LOLBIN_REGSVR', re: /\bregsvr32\b\s+.*?(?:\bhttps?:|scrobj\.dll|\.sct\b)/i, sev: 'critical',
+    desc: '检测 regsvr32 远程 SCT/COM 注册执行' },
+  { id: 'TOOL_CMD_LOLBIN_WMIC', re: /\bwmic\b\s+(?:\/[a-z:]+\s+)*process\b\s+(?:\w+\s+)*call\s+create\b/i, sev: 'high',
+    desc: '检测 wmic process call create 进程创建' },
+  { id: 'TOOL_CMD_PS_REMOTE_EXEC', re: /\bpowershell(?:\.exe)?\b.{0,200}?(?:-(?:e|en|enc|encodedcommand|encodedarguments)\b|-(?:ep|executionpolicy)\s+bypass|\b(?:iex|invoke-expression|invoke-webrequest|iwr|invoke-restmethod|irm|start-bitstransfer|start-process)\b)/i, sev: 'high',
+    desc: '检测 PowerShell 编码命令/远程下载/绕过执行策略' },
+  { id: 'TOOL_CMD_LOLBIN_MSIEXEC', re: /\bmsiexec\b\s+.*?(?:\bhttps?:|\b\/i\b\s+\\\\|\b\/q\b)/i, sev: 'high',
+    desc: '检测 msiexec 远程 MSI 安装' },
 ]
 
 // ============================================================
