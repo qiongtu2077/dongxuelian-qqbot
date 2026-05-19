@@ -175,6 +175,7 @@ function handleGetQqToken(req, res) {
 }
 
 function handleGetQqSshInfo(req, res) {
+  if (!requireAdmin(req, res)) return
   return json(res, { host: process.env.DASHBOARD_SSH_HOST || '', user: process.env.DASHBOARD_SSH_USER || 'root', port: 22 })
 }
 
@@ -203,6 +204,7 @@ function handlePutQqSelfId(req, res) {
 }
 
 function handleGetNapcatStatus(req, res) {
+  if (!requireAdmin(req, res)) return
   return json(res, getLegacyNapcatStatus())
 }
 
