@@ -1,0 +1,6 @@
+﻿refactor(dashboard): Phase 3-D 创建 lib/routes/agent.js (27 endpoint)
+
+- 提取全部 Agent API 路由到独立模块 (TTS/人格/计划/任务/文件/Cron)
+- 包含 workspace 辅助函数 (resolveAgentWorkspacePath 等)
+- 支持精确匹配路由 + regex 动态路由 (plans/:id, crons/:id)
+- standalone.js 原始代码暂保留
