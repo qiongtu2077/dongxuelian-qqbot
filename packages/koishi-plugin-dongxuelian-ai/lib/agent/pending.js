@@ -4,6 +4,7 @@
  * 边界: 不执行工具，不做安全检查。
  * 状态: pending (Map)。
  */
+const crypto = require('crypto')
 const pending = new Map()
 
 /** @returns {{ id, toolName, args, userId, channelKey, channel, expireAt, resume } | null } */
@@ -17,7 +18,7 @@ function getPendingTool(channelKey, userId) {
 
 function setPendingTool(channelKey, userId, { toolName, args, channel, resume }) {
   const key = channelKey + ':' + userId
-  const id = 'pnd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+  const id = 'pnd' + crypto.randomBytes(8).toString('hex')
   pending.set(key, { id, toolName, args, userId, channelKey, channel: channel || 'unknown', resume: resume || null, expireAt: Date.now() + 60000 })
   return id
 }

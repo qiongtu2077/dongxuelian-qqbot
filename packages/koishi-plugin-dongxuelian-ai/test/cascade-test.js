@@ -61,6 +61,8 @@ const fs = require('fs')
 const path = require('path')
 const { spawnSync } = require('child_process')
 
+process.env.DONGXUELIAN_DEFAULT_ADMIN_IDS = '532701045,3514272382'
+
 const ROOT = path.resolve(__dirname, '..', '..', '..')
 const PKG_ROOT = path.join(ROOT, 'packages')
 const AI_ROOT = path.join(PKG_ROOT, 'koishi-plugin-dongxuelian-ai')

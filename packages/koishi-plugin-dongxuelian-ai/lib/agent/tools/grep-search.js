@@ -56,7 +56,7 @@ module.exports = {
     let regex
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     try {
-      if (/([+*{])\1|\(\?[^)]*[+*]/.test(query)) throw new Error('unsafe')
+      if (/([+*{])\1|\(\?[^)]*[+*]|\([^)]*[+*?{][^)]*\)[+*?{]|\[[^\]]*\][+*?{]\s*[+*?{]/.test(query)) throw new Error('unsafe')
       regex = new RegExp(query, params.ignoreCase === false ? 'u' : 'iu')
     } catch { regex = new RegExp(escaped, params.ignoreCase === false ? 'u' : 'iu') }
 
