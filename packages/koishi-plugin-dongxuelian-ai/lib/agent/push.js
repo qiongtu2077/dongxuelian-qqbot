@@ -26,6 +26,8 @@ function quotaKey(channelKey, now = Date.now()) {
 function countLoggedQuota(channelKey, now = Date.now()) {
   const day = todayKey(now)
   const target = String(channelKey || 'unknown')
+  // Clean stale quotaCache entries from previous days
+  for (const [k] of quotaCache) { if (!k.endsWith(day)) quotaCache.delete(k) }
   try {
     const stat = fs.statSync(PUSH_LOG_FILE)
     if (!stat.isFile()) return 0

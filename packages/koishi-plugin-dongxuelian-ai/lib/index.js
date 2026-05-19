@@ -345,8 +345,9 @@ function enqueueForChannel(channelKey, fn, maxDepth) {
       const depth = channelQueueDepth.get(channelKey) || 0
       if (depth >= maxDepth) return
       channelQueueDepth.set(channelKey, depth + 1)
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('queue timeout (60s)')), 60000))
-      return Promise.race([fn(), timeoutPromise])
+      let timeoutHandle
+      const timeoutPromise = new Promise((_, reject) => { timeoutHandle = setTimeout(() => reject(new Error('queue timeout (60s)')), 60000) })
+      return Promise.race([fn(), timeoutPromise]).finally(() => clearTimeout(timeoutHandle))
     })
     .catch(() => {})
     .then(() => {
@@ -385,6 +386,8 @@ function getNextShanghaiMidnightDelayMs(now = Date.now()) {
   return Math.max(1000, nextMidnightUtc - now)
 }
 
+let dailyCleanupTimer = null
+
 function scheduleDailyStatsCleanup(ctx) {
   const run = async () => {
     try {
@@ -394,12 +397,12 @@ function scheduleDailyStatsCleanup(ctx) {
     } catch (error) {
       ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${error.message}`)
     } finally {
-      const timer = setTimeout(run, getNextShanghaiMidnightDelayMs())
-      if (timer && typeof timer.unref === 'function') timer.unref()
+      dailyCleanupTimer = setTimeout(run, getNextShanghaiMidnightDelayMs())
+      if (dailyCleanupTimer && typeof dailyCleanupTimer.unref === 'function') dailyCleanupTimer.unref()
     }
   }
-  const timer = setTimeout(run, getNextShanghaiMidnightDelayMs())
-  if (timer && typeof timer.unref === 'function') timer.unref()
+  dailyCleanupTimer = setTimeout(run, getNextShanghaiMidnightDelayMs())
+  if (dailyCleanupTimer && typeof dailyCleanupTimer.unref === 'function') dailyCleanupTimer.unref()
 }
 
 // --- 原始事件抓取 --- //
@@ -730,7 +733,12 @@ exports.apply = (ctx) => {
       }
     } catch {}
   }, 1800000)
-  ctx.on('dispose', () => clearInterval(sensitiveTimer))
+  ctx.on('dispose', () => {
+    clearInterval(sensitiveTimer)
+    for (const [, entry] of channelPendingRandom) { if (entry && entry.timer) clearTimeout(entry.timer) }
+    channelPendingRandom.clear()
+    if (dailyCleanupTimer) { clearTimeout(dailyCleanupTimer); dailyCleanupTimer = null }
+  })
 
   ctx.middleware(async (session, next) => {
     const content = session.content || ''

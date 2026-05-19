@@ -83,7 +83,8 @@ async function handleSensitiveMessage(session, ctx, params = {}) {
 
   const detectList = await getPoliticalDetectList()
   const isDetectOn = detectList.has(channelKey)
-  if (inGuild && isDetectOn && !analyzed.hasVisual && SENSITIVE_KEYWORDS_RE.test(plain)) {
+  const normalizedPlain = String(plain || '').normalize('NFKC').replace(/[\u200B-\u200F\u2028-\u202F\u2060\uFEFF]/g, '')
+  if (inGuild && isDetectOn && !analyzed.hasVisual && SENSITIVE_KEYWORDS_RE.test(normalizedPlain)) {
     await notifySensitiveHandlers(session, channelKey, { throttle: true })
     logDebug(ctx, 'sensitive', `sensitive topic channel=${channelKey} textLen=${String(plain || '').length}`)
     channelSharedCache.delete(channelKey)

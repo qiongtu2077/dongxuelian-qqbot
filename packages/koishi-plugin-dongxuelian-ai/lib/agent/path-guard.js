@@ -10,6 +10,12 @@ const { DATA_DIR, SKILLS_DIR } = require('../constants')
 const { getReadFileRoots } = require('./config')
 const { resolveAgentPathInput } = require('./workspace-context')
 
+const WRITE_BLOCKED_BASENAMES = new Set([
+  'ai-tool-mode.txt',
+  'ai-admin-ids.json',
+  'ai-tool-config.json',
+])
+
 function normalizeAgentPathCase(value) {
   const resolved = path.resolve(String(value || ''))
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved
@@ -78,6 +84,7 @@ async function assertNewAgentPathInsideRoots(target, label = '路径', createDir
   const roots = await getAgentPathAllowedRoots()
   const resolved = resolveAgentPathInput(target, roots, { requireExisting: false })
   const abs = path.resolve(resolved.path)
+  if (WRITE_BLOCKED_BASENAMES.has(path.basename(abs))) throw new Error(`${label}禁止写入安全配置文件：${path.basename(abs)}`)
   let parent = path.dirname(abs)
   let realParent = await fs.realpath(parent).catch(() => null)
   if (!realParent && createDirectories) {

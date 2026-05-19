@@ -31,6 +31,15 @@ const pendingSensitiveAlert = new Map()
 const summaryLocks = new Map()
 const channelTodayCache = new Map()
 
+const writeQueues = new Map()
+function enqueueWrite(key, fn) {
+  const prev = writeQueues.get(key) || Promise.resolve()
+  const next = prev.then(fn, fn)
+  writeQueues.set(key, next)
+  next.finally(() => { if (writeQueues.get(key) === next) writeQueues.delete(key) })
+  return next
+}
+
 const CHANNEL_RUNTIME_CACHE_TTL_MS = 6 * 60 * 60 * 1000
 const MAX_CHANNEL_RUNTIME_CACHE_ENTRIES = 200
 const MAX_CONVERSATION_CACHE_ENTRIES = 400
@@ -142,9 +151,9 @@ function getConversationHistory(session) {
   touchConversation(session)
   trimConversationRuntimeCaches()
   const mem = conversationCache.get(key)
-  if (mem) return mem
+  if (mem) return mem.slice()
   const diskData = readConversationDisk(key)
-  if (diskData && Array.isArray(diskData.messages)) { const recent = diskData.messages.slice(-MEMORY_HISTORY_LIMIT); conversationCache.set(key, recent); return recent }
+  if (diskData && Array.isArray(diskData.messages)) { const recent = diskData.messages.slice(-MEMORY_HISTORY_LIMIT); conversationCache.set(key, recent); return recent.slice() }
   return []
 }
 
@@ -176,17 +185,20 @@ function mergeConversationMessages(diskMessages = [], cachedMessages = []) {
 }
 
 function saveConversationTurn(session, userText, replyText) {
-  const key = getConversationKey(session); const diskData = readConversationDisk(key) || { summary: '', summaryTotal: 0, totalCount: 0, messages: [] }
-  diskData.messages = mergeConversationMessages(diskData.messages, conversationCache.get(key))
-  diskData.totalCount = Math.max(Number(diskData.totalCount || 0), diskData.messages.filter(item => item && item.role === 'user').length)
-  const assistantParts = splitSentences(replyText).filter(p => p.trim()).map(part => ({ role: 'assistant', content: normalizeText(part) }))
-  diskData.messages.push({ role: 'user', content: userText }, ...assistantParts); diskData.totalCount++
-  if (diskData.messages.length > MAX_HISTORY_MESSAGES) diskData.messages.splice(0, diskData.messages.length - MAX_HISTORY_MESSAGES)
-  conversationCache.set(key, diskData.messages.slice(-MEMORY_HISTORY_LIMIT))
-  if (diskData.totalCount % 3 === 0) writeConversationDisk(key, diskData)
-  touchConversation(session); saveReplyFingerprint(session, replyText)
-  trimConversationRuntimeCaches()
-  if (diskData.totalCount > 0 && diskData.totalCount % CONVERSATION_SUMMARY_INTERVAL === 0) generateConversationSummary(key).catch(() => {})
+  const key = getConversationKey(session)
+  enqueueWrite(key, () => {
+    const diskData = readConversationDisk(key) || { summary: '', summaryTotal: 0, totalCount: 0, messages: [] }
+    diskData.messages = mergeConversationMessages(diskData.messages, conversationCache.get(key))
+    diskData.totalCount = Math.max(Number(diskData.totalCount || 0), diskData.messages.filter(item => item && item.role === 'user').length)
+    const assistantParts = splitSentences(replyText).filter(p => p.trim()).map(part => ({ role: 'assistant', content: normalizeText(part) }))
+    diskData.messages.push({ role: 'user', content: userText }, ...assistantParts); diskData.totalCount++
+    if (diskData.messages.length > MAX_HISTORY_MESSAGES) diskData.messages.splice(0, diskData.messages.length - MAX_HISTORY_MESSAGES)
+    conversationCache.set(key, diskData.messages.slice(-MEMORY_HISTORY_LIMIT))
+    if (diskData.totalCount % 3 === 0) writeConversationDisk(key, diskData)
+    touchConversation(session); saveReplyFingerprint(session, replyText)
+    trimConversationRuntimeCaches()
+    if (diskData.totalCount > 0 && diskData.totalCount % CONVERSATION_SUMMARY_INTERVAL === 0) generateConversationSummary(key).catch(() => {})
+  })
 }
 
 async function generateConversationSummary(key) {

@@ -42,7 +42,14 @@ function readJsonIfSmall(file, fallback) {
 function atomicWriteJson(filePath, data) {
   const tmp = filePath + '.tmp'
   require('fs').writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
-  require('fs').renameSync(tmp, filePath)
+  try {
+    require('fs').renameSync(tmp, filePath)
+  } catch (e) {
+    if (e.code === 'EEXIST' || e.code === 'EPERM') {
+      require('fs').unlinkSync(filePath)
+      require('fs').renameSync(tmp, filePath)
+    } else throw e
+  }
 }
 
 function loadPersonaGroups() {
