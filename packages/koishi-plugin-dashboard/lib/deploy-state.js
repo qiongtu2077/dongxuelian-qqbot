@@ -106,16 +106,16 @@ function spawnLocalTask(key, command, args = [], options = {}) {
 }
 
 function waitKoishiPortFree() {
-  const { checkPortState } = require('./tools')
-  const { resolveKoishiListenPort } = require('./deploy-helpers')
+  const { checkPortState, resolveKoishiListenPort } = require('./tools')
+  const { sleepSync, log } = require('./utils')
   const port = resolveKoishiListenPort()
   const deadline = Date.now() + 5000
   while (Date.now() < deadline) {
     const state = checkPortState(port)
     if (state.available || state.status === 'free') return
-    const { sleepSync } = require('./utils')
     sleepSync(300)
   }
+  log(`WARNING: 端口 ${port} 在停止进程后 5s 内未释放`)
 }
 
 module.exports = {

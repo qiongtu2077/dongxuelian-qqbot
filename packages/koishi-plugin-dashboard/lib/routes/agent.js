@@ -680,25 +680,4 @@ const regexRoutes = [
   }},
 ]
 
-function getAgentEnvStatus() {
-  const constants = require(path.join(AI_LIB, 'constants'))
-  const files = [
-    ['ai-openai-key.txt', constants.KEY_FILE],
-    ['ai-deepseek-key.txt', constants.DEEPSEEK_KEY_FILE],
-    ['ai-dashscope-key.txt', constants.DASHSCOPE_KEY_FILE],
-    ['ai-glm-key.txt', constants.GLM_KEY_FILE],
-    ['ai-mimorium-key.txt', constants.MIMORIUM_KEY_FILE],
-    ['ai-provider.txt', constants.PROVIDER_FILE],
-    ['ai-model.txt', constants.MODEL_FILE],
-    ['ai-base-url.txt', constants.BASE_URL_FILE],
-    ['ai-enable-search.txt', constants.SEARCH_ENABLED_FILE],
-  ]
-  return files.map(([name, file]) => {
-    const exists = fs.existsSync(file)
-    let size = 0, configured = false
-    try { const stat = fs.statSync(file); size = stat.size; configured = stat.size > 0 && String(fs.readFileSync(file, 'utf8')).trim().length > 0 } catch {}
-    return { name, exists, configured, size }
-  })
-}
-
 module.exports = { routes, regexRoutes, getAgentEnvStatus }

@@ -9,34 +9,8 @@ const { KOISHI_DIR, KOISHI_PID_FILE, DATA_DIR } = require('../paths')
 const { checkPortState } = require('../tools')
 const { resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getLinuxNapcatQQExecutable, getNapcatToken } = require('../napcat')
 const { readLoggingConfig, writeLoggingConfig, getFilteredLogEntries } = require('../logging')
-
-function resolveKoishiListenPort() {
-  const raw = String(process.env.KOISHI_PORT || '').trim()
-  if (raw) {
-    const n = Number(raw)
-    if (Number.isFinite(n) && n > 0 && n <= 65535) return n
-  }
-  try {
-    const yml = fs.readFileSync(path.join(KOISHI_DIR, 'koishi.yml'), 'utf8').replace(/^\uFEFF/, '')
-    const m = String(yml).match(/^\s*port:\s*(\d+)/m)
-    if (m) {
-      const n = Number(m[1])
-      if (Number.isFinite(n) && n > 0 && n <= 65535) return n
-    }
-  } catch {}
-  return 5140
-}
-
-function waitKoishiPortFree() {
-  const port = resolveKoishiListenPort()
-  const deadline = Date.now() + 5000
-  while (Date.now() < deadline) {
-    const state = checkPortState(port)
-    if (state.available || state.status === 'free') return
-    sleepSync(300)
-  }
-  log(`WARNING: 端口 ${port} 在停止进程后 5s 内未释放`)
-}
+const { resolveKoishiListenPort } = require('../tools')
+const { waitKoishiPortFree } = require('../deploy-state')
 
 function stopKoishiProcesses() {
   let pid = 0

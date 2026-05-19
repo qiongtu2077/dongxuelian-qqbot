@@ -259,7 +259,11 @@ function handlePostLocalConfigDelete(req, res) {
 function handleGetLocalUninstallPreview(req, res) {
   if (!requireStrictAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
-  try { return json(res, { ok: true, message: '卸载预览暂不可用（请使用旧版 API）' }) } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  try {
+    const { buildLocalUninstallPreview } = require('../deploy-uninstall')
+    const preview = buildLocalUninstallPreview()
+    return json(res, { ok: true, ...preview })
+  } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
 }
 
 function handlePostLocalUninstall(req, res) {
@@ -269,7 +273,9 @@ function handlePostLocalUninstall(req, res) {
     try {
       const cfg = JSON.parse(body || '{}')
       if (!cfg.confirm) return json(res, { ok: false, message: '缺少一键卸载确认标记' }, 400)
-      return json(res, { ok: false, message: '卸载功能暂不可用（请使用旧版 API）' }, 400)
+      const { runLocalUninstall } = require('../deploy-uninstall')
+      const result = runLocalUninstall(cfg)
+      return json(res, { ok: true, ...result })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   })
 }
