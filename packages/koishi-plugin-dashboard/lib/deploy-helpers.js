@@ -9,7 +9,7 @@ const https = require('https')
 const { execFileSync } = require('child_process')
 const { parsePositiveInt, json, log, shellQuote, commandQuote, isInsidePath, describeFsError, removePathWithRetry, ensureCleanDirectory, copyRecursiveSync, listFilesRecursive, uniquePaths } = require('./utils')
 const { KOISHI_DIR, DATA_DIR, PORT, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, NPM_PROXY_ENV_KEYS, isGlobalLocalMode, isPackagedLocalWorkspace, getResourceRoot, toProjectRel, resolveProjectRel, runtimePath } = require('./paths')
-const { getCommandInfo, getLocalToolCommand, getLocalToolEnv, getPortableNodeDir, checkPortState, redactProxyValue, parseProxyEndpoint, isLoopbackProxyHost } = require('./tools')
+const { getCommandInfo, getLocalToolCommand, getLocalToolEnv, getPortableNodeDir, checkPortState, redactProxyValue, parseProxyEndpoint, isLoopbackProxyHost, resolveKoishiListenPort } = require('./tools')
 const { detectNapcatInstallation, getNapcatStartEntry: napcatGetStartEntry, findNapcatMarkers, sortNapcatEntries, inspectNapcatCandidate, resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getNapcatToken } = require('./napcat')
 const { readLastLogLines } = require('./logging')
 const { localTasks, getTaskPublicStatus, spawnLocalTask, getNpmDiagnosticsCache, setNpmDiagnosticsCache, getRebuildStatus, setRebuildStatus } = require('./deploy-state')
@@ -517,17 +517,6 @@ function getNapcatLoginHint() {
   if (/登录成功|已登录|login\s+success|account.*online/i.test(lines)) return { status: 'ok', reason: '日志显示 NapCat 已登录' }
   if (/二维码|扫码|qrcode|scan|login/i.test(lines)) return { status: 'waiting', reason: 'NapCat 已启动，等待扫码或登录确认' }
   return { status: 'unknown', reason: '暂未能从日志确认登录状态，请在 NapCat WebUI 或控制台完成扫码' }
-}
-
-function resolveKoishiListenPort() {
-  const raw = String(process.env.KOISHI_PORT || '').trim()
-  if (raw) { const n = Number(raw); if (Number.isFinite(n) && n > 0 && n <= 65535) return n }
-  try {
-    const yml = fs.readFileSync(path.join(KOISHI_DIR, 'koishi.yml'), 'utf8')
-    const m = String(yml).match(/^\s*port:\s*(\d+)/m)
-    if (m) { const n = Number(m[1]); if (Number.isFinite(n) && n > 0 && n <= 65535) return n }
-  } catch {}
-  return 5140
 }
 
 function getLocalNapcatDeployStatus() {
