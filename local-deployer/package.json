@@ -55,7 +55,7 @@
     "nsis": {
       "oneClick": true,
       "allowToChangeInstallationDirectory": false,
-      "createDesktopIcon": true,
+      "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "莲莲Bot部署器"
     },

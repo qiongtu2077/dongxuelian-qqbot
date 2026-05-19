@@ -1,6 +1,6 @@
-# 当前状态：P0 + P1 + P2 全部完成
+# 全部完成
 
-## 本轮全部 commit
+## 本轮 commit 汇总
 
 | Commit | 内容 |
 |--------|------|
@@ -9,16 +9,14 @@
 | fb0335b | fix: 删死代码 + 补 TTS API 导出修复构建 |
 | ab276f7 | fix: P1 去除隐式代理修改、修 typo、修文案 |
 | 99481d0 | fix: P2 加强 bat 依赖检测 + 删前端死分支 |
+| 8281aca | chore: frontend/dist 加入版本控制 |
 
-## 待决定
+## 改动总结
 
-问题 3：frontend/dist 是否加入 git？
-- 方案 A：加入 git → pull 后自动有新界面
-- 方案 B：不加 → 保持现状，部署时手动重建
-- 当前状态：不在 git 中，需远程重建
+1. 部署器从 portable EXE 切换为 NSIS 安装包（桌面快捷方式+开始菜单+可卸载）
+2. 新增 electron-updater 自动更新（GitHub Releases）
+3. npm install 改为用户手动引导模式（前后端都已适配）
+4. 一键部署链路审查并修复全部 P0/P1/P2 问题
+5. frontend/dist 加入 git，pull 后自动更新界面
 
-## 备注
-
-- 分支 YUN，最新 99481d0
-- 测试全绿
-- frontend/dist 本地已重建（但 gitignore 排除）
+## 无待办
