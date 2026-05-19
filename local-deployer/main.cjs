@@ -401,6 +401,7 @@ if (!gotTheLock) {
 }
 
 function setupAutoUpdater() {
+  if (!app.isPackaged) return
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.on('update-available', (info) => {
@@ -425,7 +426,11 @@ function setupAutoUpdater() {
       if (response === 0) autoUpdater.quitAndInstall()
     }).catch(() => {})
   })
-  autoUpdater.on('error', () => {})
+  autoUpdater.on('error', (err) => {
+    const msg = err?.message || String(err)
+    if (/net::ERR_|ENOTFOUND|ECONNREFUSED|404/.test(msg)) return
+    console.error('[autoUpdater]', msg)
+  })
   autoUpdater.checkForUpdates().catch(() => {})
 }
 

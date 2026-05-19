@@ -9,6 +9,7 @@
     "check": "node scripts/check-env.cjs",
     "setup-local": "node scripts/setup-local.cjs",
     "build:win": "electron-builder --win",
+    "publish:win": "electron-builder --win --publish always",
     "release:win": "node scripts/build-release.cjs"
   },
   "dependencies": {
