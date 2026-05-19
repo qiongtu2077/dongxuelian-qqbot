@@ -24,48 +24,48 @@ const path = require('path')
 const satoriCore = require('@satorijs/core')
 const KoishiSession = satoriCore.Session
 const KoishiBot = satoriCore.Bot
-const { handleCommand } = require('./handler')
-const { analyzeIncomingMessage, normalizeText } = require('./message-reader')
-const { loadStickerCache, sendReply } = require('./reply')
-const { resolveForwardSummary } = require('./forward')
-const { prepareVisionRequest, isVisionSession } = require('./vision')
-const { storeImageUrl, cacheImageFile } = require('./image-store')
-const { enqueueAnalysis } = require('./image-analyzer')
-const { transcribeVoice } = require('./voice')
+const { handleCommand } = require('./handler') // 指令路由（/help /reset 等）
+const { analyzeIncomingMessage, normalizeText } = require('./message-reader') // 消息解析（图片/语音/转发提取）+ 文本清洗
+const { loadStickerCache, sendReply } = require('./reply') // 贴纸缓存加载 + 统一回复发送（含分段/重试）
+const { resolveForwardSummary } = require('./forward') // 合并转发消息摘要提取
+const { prepareVisionRequest, isVisionSession } = require('./vision') // 图片消息构建 + 视觉会话判断
+const { storeImageUrl, cacheImageFile } = require('./image-store') // 图片 URL/文件持久化存储
+const { enqueueAnalysis } = require('./image-analyzer') // 图片异步分析队列
+const { transcribeVoice } = require('./voice') // 语音转文字
 const {
-  classifySendError,
-  sanitizeForRateLimit,
-  sleepForRateLimitRetry,
-  getCachedPlatformMuteStatus,
-  markPlatformMute,
-  clearPlatformMute,
-  checkPlatformMuteStatus,
+  classifySendError,          // 发送错误分类（限流/禁言/网络）
+  sanitizeForRateLimit,       // 限流场景消息精简
+  sleepForRateLimitRetry,     // 限流等待
+  getCachedPlatformMuteStatus, // 平台禁言状态缓存读取
+  markPlatformMute,           // 标记被禁言
+  clearPlatformMute,          // 清除禁言标记
+  checkPlatformMuteStatus,    // 主动检测禁言状态
 } = require('./send-guard')
 
 
 const {
-  resetPoliticalDetectCache,
-  clearSensitiveRuntimeState,
-  notifySensitiveHandlers,
-  handleSensitiveMessage,
+  resetPoliticalDetectCache,     // 政治敏感检测缓存重置
+  clearSensitiveRuntimeState,    // 敏感词运行时状态清理
+  notifySensitiveHandlers,       // 触发敏感词时通知处理器
+  handleSensitiveMessage,        // 敏感消息拦截主逻辑
 } = require('./sensitive')
 const {
-  loadRepeatConfig,
-  setRepeatEnabled,
-  getRepeatEnabledCache,
-  buildRepeatCandidate,
-  checkGroupRepeat,
+  loadRepeatConfig,       // 加载复读配置
+  setRepeatEnabled,       // 设置复读开关
+  getRepeatEnabledCache,  // 查询复读开关缓存
+  buildRepeatCandidate,   // 构建复读候选（判断是否跟读）
+  checkGroupRepeat,       // 群复读触发检测
 } = require('./repeat')
 const {
-  chat,
-  loadSkills, loadSkillsContentCache,
-  callOpenAI,
-  getSkillsCount,
+  chat,                   // 主聊天入口（session → AI 回复）
+  loadSkills, loadSkillsContentCache, // 技能文件列表/内容加载
+  callOpenAI,             // 底层 LLM 调用
+  getSkillsCount,         // 已加载技能数量
 } = require('./chat')
 const {
-  loadConfig, resetConfigCache,
-  getThinkingEnabled, setThinkingEnabled,
-  isAdminUserId, getAdminUserIds,
+  loadConfig, resetConfigCache,   // 运行时配置加载/刷新
+  getThinkingEnabled, setThinkingEnabled, // thinking 模式开关
+  isAdminUserId, getAdminUserIds, // 管理员权限判断
 } = require('./runtime-config')
 const {
   DATA_DIR, PLUGIN_VERSION,
@@ -84,43 +84,46 @@ const {
   NUMERIC_GROUP_ID_RE, SENSITIVE_KEYWORDS_RE,
 } = require('./constants')
 const {
-  loadPersonaGroups,
-  loadPersonaUsers,
-  resolvePersona,
-  loadPersonalSkill,
+  loadPersonaGroups,   // 加载人格-群组绑定配置
+  loadPersonaUsers,    // 加载人格-用户绑定配置
+  resolvePersona,      // 解析当前会话应使用的人格
+  loadPersonalSkill,   // 加载人格技能文件内容
 } = require('./persona')
 const {
-  channelSharedCache,
-  channelTodayCache,
-  getChannelKey,
-  saveSharedChannelTurn,
-  findChannelMessageById, collectReplyChain,
-  getQuotedMessageNote, getSharedContextNote,
-  analyzeChannelSensitive,
-  trimChannelRuntimeCaches, cleanupDailyStatsFiles,
+  channelSharedCache,       // 频道共享消息缓存（群聊上下文窗口）
+  channelTodayCache,        // 频道今日统计缓存
+  getChannelKey,            // 频道唯一标识生成
+  saveSharedChannelTurn,    // 保存群聊共享消息轮次
+  findChannelMessageById, collectReplyChain, // 消息查找 + 引用链收集
+  getQuotedMessageNote, getSharedContextNote, // 引用/共享上下文注入文本
+  analyzeChannelSensitive,  // 频道敏感消息分析
+  trimChannelRuntimeCaches, cleanupDailyStatsFiles, // 运行时缓存裁剪 + 日统计文件清理
 } = require('./conversation')
 const {
-  isReservedCommand, getSenderUserId, hasAdminPermission,
-  stripMentions, collapseRepeatedBotCalls,
-  sanitizeUserName,
-  extractAtIds,
-  isDirectAtBot, getBotMentionCount, hasOtherMentions,
-  formatPercent,
-  isJailbreakAttempt,
-  sanitizeUserInput,
-  pickJailbreakFallbackReply,
-  readTextFile, writeTextFile, readJsonFile, writeJsonFile,
-  shouldTriggerRandom, calculateWillFactor,
-  normalizeUrl, extractImageUrls,
-  sanitizeFileToken, safeJsonStringify,
-  todayCst,
+  isReservedCommand,        // 判断是否为保留指令前缀
+  getSenderUserId,          // 提取发送者 ID（兼容多平台）
+  hasAdminPermission,       // 管理员权限判断
+  stripMentions,            // 去除 @mention 标记
+  collapseRepeatedBotCalls, // 折叠连续重复 @bot 调用
+  sanitizeUserName,         // 昵称安全清洗
+  extractAtIds,             // 提取消息中所有 @id
+  isDirectAtBot, getBotMentionCount, hasOtherMentions, // @bot 检测
+  formatPercent,            // 百分比格式化
+  isJailbreakAttempt,       // 越狱尝试检测
+  sanitizeUserInput,        // 用户输入安全清洗
+  pickJailbreakFallbackReply, // 越狱兜底回复
+  readTextFile, writeTextFile, readJsonFile, writeJsonFile, // 文件 IO 工具
+  shouldTriggerRandom, calculateWillFactor, // 随机触发判断 + 意愿因子计算
+  normalizeUrl, extractImageUrls, // URL 标准化 + 图片 URL 提取
+  sanitizeFileToken, safeJsonStringify, // 文件 token 清洗 + 安全 JSON 序列化
+  todayCst,                 // 获取当前 CST 日期字符串
 } = require('./utils')
-const { logDebug } = require('./logging-config')
-const { heuristicRoute, buildExplicitSearchRunOptions } = require('./agent/router')
-const agentEngine = require('./agent/engine')
-const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue')
-const { recordAgentChatResult } = require('./agent-chat-bridge')
-const { guardAgentRetellReply } = require('./agent-retell-guard')
+const { logDebug } = require('./logging-config') // 调试日志输出
+const { heuristicRoute, buildExplicitSearchRunOptions } = require('./agent/router') // Agent 路由决策（启发式 + 显式搜索）
+const agentEngine = require('./agent/engine') // Agent 执行引擎
+const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue') // Agent 任务队列
+const { recordAgentChatResult } = require('./agent-chat-bridge') // Agent 结果写入普通对话历史
+const { guardAgentRetellReply } = require('./agent-retell-guard') // Agent 复述守卫（防止照搬工具原文）
 
 // @satorijs/core@3.7.0 缺少 stripped / parsed / resolve / send，这里随插件加载安装兼容补丁。
 function patchElementText(element) {

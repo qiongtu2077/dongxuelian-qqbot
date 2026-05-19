@@ -25,61 +25,63 @@ const {
   SHORT_FOLLOW_UP_RE, SENSITIVE_KEYWORDS_RE, THINKING_OUTPUT_RE,
   BANNED_ACTION_OUTPUT_RE,
 } = require('./constants')
-const { resolvePersona, loadPersonalSkill } = require('./persona')
-const { calculateRetaliationScore } = require('./retaliation')
+const { resolvePersona, loadPersonalSkill } = require('./persona') // 人格解析 + 技能文件加载
+const { calculateRetaliationScore } = require('./retaliation') // 攻击性评分（决定回怼力度）
 const {
-  requestChatCompletions,
-  requestOpenAIResponsesWithSearch,
-  isVisionModel,
+  requestChatCompletions,       // 通用 LLM 请求（含 fallback 链）
+  requestOpenAIResponsesWithSearch, // OpenAI Responses API（联网搜索）
+  isVisionModel,                // 判断模型是否支持视觉
 } = require('./api')
-const { isVisionSession, clearVisionSession, appendVisionMessage } = require('./vision')
+const { isVisionSession, clearVisionSession, appendVisionMessage } = require('./vision') // 多模态图片会话管理
 const {
-  getConversationKey, getChannelKey,
-  readConversationDisk,
-  getConversationHistory, saveConversationTurn,
-  clearUserConversationHistory,
-  getRecentAssistantReplies, getRecentUserMessages,
-  normalizeUserMessageForPrompt,
-  getQuoteInfo,
-  writeMemory, deleteMemory, getMemorySummary, clearGroupMemory,
-  checkMemoryTimerExpired, readMemoryTimer,
-  channelSharedCache,
-  conversationLastActiveAt,
+  getConversationKey, getChannelKey, // 会话/频道唯一标识生成
+  readConversationDisk,             // 从磁盘加载历史（冷启动）
+  getConversationHistory,           // 获取当前会话历史（内存缓存 + 磁盘回退）
+  saveConversationTurn,             // 保存一轮对话到缓存 + 磁盘
+  clearUserConversationHistory,     // 话题切换时清空用户会话
+  getRecentAssistantReplies,        // 取最近 N 条 AI 回复
+  getRecentUserMessages,            // 取最近 N 条用户消息
+  normalizeUserMessageForPrompt,    // 历史消息格式标准化
+  getQuoteInfo,                     // 解析引用消息内容和作者
+  writeMemory, deleteMemory, getMemorySummary, clearGroupMemory, // 用户记忆 CRUD
+  checkMemoryTimerExpired, readMemoryTimer, // 群记忆定时清理
+  channelSharedCache,               // 频道共享消息缓存（群聊上下文）
+  conversationLastActiveAt,         // 会话最后活跃时间戳（用于历史降级判断）
 } = require('./conversation')
-const { getRecentAgentContextNote, clearAgentContextForUser } = require('./agent-chat-bridge')
-const { getChatToolDefinitions, handleChatToolCalls, getChatToolSystemHint } = require('./chat-tools')
-const { estimateTokens } = require('./agent/context')
-const { normalizeText } = require('./message-reader')
+const { getRecentAgentContextNote, clearAgentContextForUser } = require('./agent-chat-bridge') // Agent 工具摘要注入 + 话题切换清理
+const { getChatToolDefinitions, handleChatToolCalls, getChatToolSystemHint } = require('./chat-tools') // 聊天内嵌工具（表情包/贴纸等）
+const { estimateTokens } = require('./agent/context') // token 粗估（中文 0.5/英文 0.25）
+const { normalizeText } = require('./message-reader') // 文本清洗（去零宽/合并空白）
 const {
-  isRareProvocation, isWideRareProvocation, isHostileInput,
-  isJailbreakAttempt, pickJailbreakFallbackReply,
-  hasAdminPermission,
-  sanitizeUserInput, sanitizeUserName,
-  readTextFile, readJsonFile,
-  hasBannedOutput,
-  isEvaluationRequest, isSemanticProfile,
-  getSearchCapability,
-  trimReply, sanitizeReply, stripMarkdownForQQ,
+  isRareProvocation, isWideRareProvocation, isHostileInput, // 挑衅/敌意检测
+  isJailbreakAttempt, pickJailbreakFallbackReply,           // 越狱检测 + 兜底回复
+  hasAdminPermission,              // 管理员权限判断
+  sanitizeUserInput, sanitizeUserName, // 输入/昵称安全清洗
+  readTextFile, readJsonFile,      // 文件读取工具
+  hasBannedOutput,                 // 输出违禁内容检测
+  isEvaluationRequest, isSemanticProfile, // 评价请求/语义画像识别
+  getSearchCapability,             // 当前模型联网搜索能力查询
+  trimReply, sanitizeReply, stripMarkdownForQQ, // 回复后处理（截断/清洗/去 MD）
 } = require('./utils')
 const {
-  shouldRetryRepeatedReply,
-  buildRepeatRetryPrompt,
-  pickAbusiveFallbackReply,
-  pickRepeatedFallbackReply,
-  isConsecutiveUserRepeat,
-  isUnsafeThinkingReply,
-  stripStickerMarkersForGuard,
-  hasInternalContextLeak,
+  shouldRetryRepeatedReply,   // 判断是否需要重试（重复回复检测）
+  buildRepeatRetryPrompt,     // 构建重试提示词
+  pickAbusiveFallbackReply,   // 辱骂场景兜底回复
+  pickRepeatedFallbackReply,  // 重复回复兜底
+  isConsecutiveUserRepeat,    // 用户连续重复发言检测
+  isUnsafeThinkingReply,      // thinking 泄漏检测
+  stripStickerMarkersForGuard, // 去贴纸标记后再做守卫检测
+  hasInternalContextLeak,     // 内部上下文泄漏检测（system prompt 外泄）
 } = require('./reply-guard')
 const {
-  loadConfig,
-  resetConfigCache,
-  getThinkingArgs,
-  getThinkingEnabled,
-  setThinkingEnabled,
+  loadConfig,          // 加载运行时配置（API key/model/provider）
+  resetConfigCache,    // 强制刷新配置缓存
+  getThinkingArgs,     // 获取 thinking/推理模式参数
+  getThinkingEnabled,  // 查询 thinking 开关状态
+  setThinkingEnabled,  // 设置 thinking 开关
 } = require('./runtime-config')
-const { isDebugLogEnabled, logDebug } = require('./logging-config')
-const { ensureRuntimeSkillSeeds } = require('./skill-seeds')
+const { isDebugLogEnabled, logDebug } = require('./logging-config') // 调试日志开关 + 输出
+const { ensureRuntimeSkillSeeds } = require('./skill-seeds') // 首次启动时写入默认技能文件
 
 let skillsCache = []
 let skillsContentCache = {}
@@ -1069,14 +1071,14 @@ function getSkillsCount() {
 }
 
 module.exports = {
-  chat,
-  loadConfig,
-  resetConfigCache,
-  loadSkills,
-  loadSkillsContentCache,
-  callOpenAI,
-  getThinkingArgs,
-  getSkillsCount,
-  getThinkingEnabled,
-  setThinkingEnabled,
+  chat,                  // 主聊天入口（session → AI 回复）
+  loadConfig,            // re-export: 运行时配置加载
+  resetConfigCache,      // re-export: 强制刷新配置
+  loadSkills,            // 加载技能文件列表到缓存
+  loadSkillsContentCache, // 加载技能文件内容到缓存
+  callOpenAI,            // 底层 LLM 调用（带重试/截断/工具循环）
+  getThinkingArgs,       // re-export: thinking 模式参数
+  getSkillsCount,        // 已加载技能数量
+  getThinkingEnabled,    // re-export: thinking 开关查询
+  setThinkingEnabled,    // re-export: thinking 开关设置
 }
