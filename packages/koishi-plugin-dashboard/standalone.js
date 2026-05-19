@@ -17,6 +17,7 @@ const auth = require('./lib/auth')
 const tools = require('./lib/tools')
 const frontend = require('./lib/frontend')
 const napcat = require('./lib/napcat')
+const router = require('./lib/router')
 
 // ====== 全局异常兜底（防止单请求崩溃整个进程） ======
 process.on('uncaughtException', (err) => {
@@ -3046,6 +3047,8 @@ const server = http.createServer(async (req, res) => {
     res.end()
     return
   }
+
+  if (router.dispatch(req, res, pathname, url)) return
 
   // 登录
   if (pathname === '/dashboard/api/login' && req.method === 'POST') {
