@@ -464,8 +464,8 @@ const routes = {
   'POST /dashboard/api/bot/local-stop': handlePostBotLocalStop,
 }
 
-const prefixRoutes = {
-  'GET /dashboard/api/deploy/progress/': handleGetDeployProgress,
-}
+const prefixRoutes = [
+  { prefix: '/dashboard/api/deploy/progress/', method: 'GET', handler: handleGetDeployProgress },
+]
 
 module.exports = { routes, prefixRoutes }
