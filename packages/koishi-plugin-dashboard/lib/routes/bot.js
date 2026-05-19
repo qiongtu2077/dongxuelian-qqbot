@@ -5,9 +5,10 @@ const path = require('path')
 const { exec, execSync } = require('child_process')
 const { json, collectBody, log, readFileSyncSafe, writeFileSyncSafe, sleepSync, shellQuote } = require('../utils')
 const { requireAdmin } = require('../auth')
-const { KOISHI_DIR, KOISHI_PID_FILE, DATA_DIR, DEBUG_LOG_CONFIG_FILE, MAX_LOG_LIMIT } = require('../paths')
+const { KOISHI_DIR, KOISHI_PID_FILE, DATA_DIR } = require('../paths')
 const { checkPortState } = require('../tools')
 const { resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getLinuxNapcatQQExecutable, getNapcatToken } = require('../napcat')
+const { readLoggingConfig, writeLoggingConfig, getFilteredLogEntries } = require('../logging')
 
 function resolveKoishiListenPort() {
   const raw = String(process.env.KOISHI_PORT || '').trim()
@@ -101,31 +102,6 @@ function getLegacyNapcatStatus() {
   }
 }
 
-function normalizeLoggingConfig(input = {}) {
-  const source = input && typeof input === 'object' ? input : {}
-  const enabled = !!(Object.prototype.hasOwnProperty.call(source, 'enabled') ? source.enabled : source.debug)
-  const modules = {}
-  if (source.modules && typeof source.modules === 'object' && !Array.isArray(source.modules)) {
-    for (const [key, value] of Object.entries(source.modules)) {
-      if (key) modules[String(key)] = !!value
-    }
-  }
-  return { enabled, updatedAt: source.updatedAt || 0, modules }
-}
-
-function readLoggingConfig() {
-  try { return normalizeLoggingConfig(JSON.parse(fs.readFileSync(DEBUG_LOG_CONFIG_FILE, 'utf8') || '{}')) } catch {}
-  const envEnabled = /^(?:1|true|on|yes)$/i.test(String(process.env.DONGXUELIAN_DEBUG || '').trim())
-  return normalizeLoggingConfig({ enabled: envEnabled, updatedAt: 0 })
-}
-
-function writeLoggingConfig(data) {
-  const next = normalizeLoggingConfig({ ...data, updatedAt: Date.now() })
-  fs.mkdirSync(path.dirname(DEBUG_LOG_CONFIG_FILE), { recursive: true })
-  fs.writeFileSync(DEBUG_LOG_CONFIG_FILE + '.tmp', JSON.stringify(next, null, 2), 'utf8')
-  fs.renameSync(DEBUG_LOG_CONFIG_FILE + '.tmp', DEBUG_LOG_CONFIG_FILE)
-  return next
-}
 
 // --- Route Handlers ---
 
@@ -275,8 +251,23 @@ function handlePostNapcatRestart(req, res) {
   return json(res, { ok: true, message: 'NapCat 重启命令已发送', qqExecutable, args })
 }
 
+function handleGetBotActivity(req, res, pathname, url) {
+  try {
+    return json(res, getFilteredLogEntries({
+      limit: url.searchParams.get('limit'),
+      levels: url.searchParams.get('levels'),
+      module: url.searchParams.get('module'),
+      q: url.searchParams.get('q'),
+      errorsOnly: url.searchParams.get('errorsOnly'),
+      since: url.searchParams.get('since'),
+      filterKey: url.searchParams.get('filterKey'),
+    }))
+  } catch { return json(res, { entries: [], lines: [], total: 0 }) }
+}
+
 const routes = {
   'GET /dashboard/api/bot/status': handleGetBotStatus,
+  'GET /dashboard/api/bot/activity': handleGetBotActivity,
   'GET /dashboard/api/logging': handleGetLogging,
   'PUT /dashboard/api/logging': handlePutLogging,
   'POST /dashboard/api/bot/start': handlePostBotStart,

@@ -1,47 +1,50 @@
-# standalone.js 模块拆分 — 完整进度
+# standalone.js 拆分进度
 
-## Phase 1 + 2 全部完成 ✅（6 个模块，112 个导出）
-
-```
-packages/koishi-plugin-dashboard/lib/
-├── utils.js      (20 导出) — 纯工具函数、文件操作
-├── paths.js      (40 导出) — 路径常量和配置
-├── auth.js       (16 导出) — 认证、Token、频率限制
-├── tools.js      (16 导出) — Node/npm 检测、端口检查
-├── napcat.js     (14 导出) — NapCat 检测/配置/Token
-└── frontend.js   (6 导出)  — 前端构建管理
-```
-
-## Commits
-
-| Commit | 内容 |
-|--------|------|
-| `846dd3b` | Phase 1-A: lib/utils.js |
-| `5770d30` | Phase 1-B: lib/paths.js |
-| `3a54fec` | Phase 1-C: lib/auth.js |
-| `73413c0` | Phase 2-A: lib/tools.js |
-| `eec976d` | Phase 2-C: lib/frontend.js |
-| `7c493b0` | Phase 2-B: lib/napcat.js |
-
-## Phase 3: 路由拆分 — 待做
-
-需要：
-1. 把 standalone.js 的 require 改为解构：`const { json, log, ... } = require('./lib/utils')`
-2. 删除 standalone.js 中已在模块里定义的重复函数
-3. 创建 `lib/routes/` 目录，按 API 前缀拆分路由处理器
-4. standalone.js 只保留路由分发和服务器启动
-
-**预估工作量**：2-3 个对话
-
-## Phase 4: 删冗余 — 待做
-
-standalone.js 当前 4800+ 行，Phase 3 完成后预计缩减到 200-500 行。
-
-## 新对话提示
+## 已完成
 
 ```
-继续 standalone.js 模块拆分 Phase 3。
-当前状态：lib/ 下 6 个模块已建立，standalone.js 已 require 它们但仍保留原始定义。
-第一步：改 require 为解构，删除 standalone.js 中的重复函数定义。
-从最简单的开始：utils.js 的 18 个函数。
+lib/ 共 15 文件
+├── 基础模块: utils, paths, auth, tools, frontend, napcat = 115 导出
+├── 路由模块: gallery, auth, config, agent, settings, bot = 82+ endpoint
+├── 日志基础设施: logging.js ← NEW (normalizeLoggingConfig, readLoggingConfig, writeLoggingConfig, clampLogLimit, readLastLogItems, readLastLogLines, getFilteredLogEntries 等)
+├── 反向代理: napcat-proxy.js ← NEW (napcatProxy)
+└── 部署状态: deploy-state.js ← NEW (localTasks, rebuildStatus, npmDiagnosticsCache, spawnLocalTask, getTaskPublicStatus)
 ```
+
+### 本轮完成事项
+
+1. **lib/logging.js** — 提取日志基础设施（logEntryCache 缓存 + 11 个函数）
+   - bot.js 中重复的 `normalizeLoggingConfig` / `readLoggingConfig` / `writeLoggingConfig` 已删除
+   - bot.js 改为 `require('../logging')` 引入
+   - `bot/activity` 路由已加入 bot.js
+
+2. **lib/napcat-proxy.js** — 提取 NapCat WebUI 反向代理
+   - `napcatProxy(req, res, targetPath, getStatusFn)` 第 4 参数可选传入状态诊断函数
+   - 解耦了 `getLocalNapcatDeployStatus` 硬依赖
+
+3. **lib/deploy-state.js** — 提取部署共享状态
+   - `localTasks` 对象（npmInstall / napcat / koishi）
+   - `rebuildStatus` getter/setter
+   - `npmDiagnosticsCache` getter/setter
+   - `appendLocalTaskLog` / `getTaskPublicStatus` / `spawnLocalTask` 核心函数
+
+### 测试结果
+
+全部测试通过（0 failures）。
+
+---
+
+## 待办（Phase 4 — 删除 standalone.js 冗余）
+
+standalone.js 中仍保留着所有 deploy 路由处理器（~25 endpoint）。
+这些路由依赖数十个 helper 函数互相调用，一次性拆出风险较高。
+
+**推荐策略**：
+1. 逐步让 standalone.js 中的 deploy 路由使用 `lib/deploy-state.js` 的导出（替换内部 localTasks / rebuildStatus）
+2. 提取 deploy helper 函数（computeFingerprint, validateDeployTarget, buildLocalConfigPreview 等）到 deploy-state.js 或新建 deploy-helpers.js
+3. 最终把 25 个路由处理器移入 `lib/routes/deploy.js`
+4. 删除 standalone.js 中所有已迁移到 lib/ 的函数定义
+
+**当前 standalone.js 行数**: ~5180 行（原始 4790 + 新 require 头部）
+**已提取逻辑量**: ~500 行（logging + proxy + deploy-state）
+**Phase 4 完成后预计**: standalone.js 可缩减至 ~3000 行以下
