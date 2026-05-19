@@ -164,9 +164,70 @@ Node.js 能正确处理（lazy require 在两个模块都加载完后才执行�
 
 ---
 
+## Phase 6（待定）: GET 端点鉴权加固
+
+### 背景
+
+Dashboard 双层认证：
+- **Access token**（访问密码登录后颁发）— 所有 `/dashboard/api/*` GET 默认只需此 token
+- **Admin token**（管理员密码验证后颁发）— POST/PUT/DELETE 等写操作要求
+
+设计意图是"登录就能看，改东西才要管理员"。但以下 8 个 GET 端点返回敏感数据，
+仅 Access token 保护不足。
+
+### 风险等级说明
+
+- **单人使用场景**（只有你自己知道访问密码）：基本无风险
+- **多人共享场景**（多人知道访问密码，部分人不应看到运维信息）：存在信息泄露风险
+
+### 待加固端点
+
+| # | 端点 | 返回内容 | 风险 |
+|---|------|----------|------|
+| 1 | `GET /api/qq/ssh-info` | SSH host / user / port | 服务器连接信息泄露 |
+| 2 | `GET /api/keys` | key 前 8 字符指纹 | API 密钥类型推断 |
+| 3 | `GET /api/whitelist` | 群白/黑名单完整列表 | 安全策略泄露 |
+| 4 | `GET /api/admin-ids` | 管理员 QQ 号列表 | 管理员身份暴露 |
+| 5 | `GET /api/providers/custom` | 自定义供应商 URL | 代理/中转地址泄露 |
+| 6 | `GET /api/deploy/config` | 远程服务器 IP + 应用目录 | 基础设施信息泄露 |
+| 7 | `GET /api/env/check` | 本机 hostname / 项目路径 / 端口 | 环境全貌泄露 |
+| 8 | `GET /api/napcat/status` | 进程命令行 / QQ 路径 | 可执行文件路径暴露 |
+
+### 修改方案
+
+每个 handler 函数开头加一行：
+```javascript
+if (!requireAdmin(req, res)) return
+```
+
+涉及文件：
+- `lib/routes/bot.js`：#1 `handleGetSshInfo`, #8 `handleGetNapcatStatus`
+- `lib/routes/settings.js`：#2 `handleGetKeys`, #3 `handleGetWhitelist`, #4 `handleGetAdminIds`, #5 `handleGetCustomProviders`
+- `lib/routes/deploy.js`：#6 `handleGetDeployConfig`, #7 `handleGetEnvCheck`
+
+### 前端适配
+
+修改后，前端调用这些接口需要在 header 带 `X-Admin-Token`：
+- 如果前端**已有** admin token（用户之前输过管理员密码）→ 无感
+- 如果前端**没有** admin token → 这些面板会显示"需要管理员密码"提示
+
+需检查的前端页面：
+- Dashboard 设置页（keys / whitelist / admin-ids / providers）
+- 部署页（deploy/config / env/check）
+- Bot 状态页（ssh-info / napcat/status）
+
+### 决策点
+
+此改动属于安全加固而非功能修复。是否执行取决于使用场景：
+- 如果只有你一个人用 → **可不改**，不影响功能
+- 如果有多人共享访问密码 → **建议改**，最小权限原则
+
+---
+
 ## 已完成里程碑
 
 - [x] Phase 1-2: 基础 lib 模块创建 (utils/paths/auth/tools/frontend/napcat)
 - [x] Phase 3: deploy-helpers + routes/deploy + logging + napcat-proxy + deploy-state
 - [x] Phase 4: router.js 统一路由分发
 - [x] Phase 5: standalone.js 瘦身 (5182→159 行) + deploy-uninstall.js + 补漏 + 测试通过
+- [x] P1-P5 模块化改进（消除重复、接通卸载、打破循环依赖）

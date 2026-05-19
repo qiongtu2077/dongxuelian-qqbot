@@ -37,6 +37,7 @@ const whitelistFiles = {
 }
 
 function handleGetWhitelist(req, res) {
+  if (!requireAdmin(req, res)) return
   const result = {}
   for (const [key, cfg] of Object.entries(whitelistFiles)) {
     try {
@@ -63,6 +64,7 @@ function handlePutWhitelist(req, res) {
 }
 
 function handleGetKeys(req, res) {
+  if (!requireAdmin(req, res)) return
   const keyFiles = [
     { name: 'OpenAI/OpenCode', file: 'ai-openai-key.txt' },
     { name: 'DeepSeek 官方', file: 'ai-deepseek-key.txt' },
@@ -111,6 +113,7 @@ function handlePutKeys(req, res) {
 }
 
 function handleGetCustomProviders(req, res) {
+  if (!requireAdmin(req, res)) return
   try { return json(res, JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'))) }
   catch { return json(res, []) }
 }
@@ -171,6 +174,7 @@ function handleGetCommands(req, res) {
 }
 
 function handleGetAdminIds(req, res) {
+  if (!requireAdmin(req, res)) return
   try {
     const raw = fs.readFileSync(ADMIN_IDS_FILE, 'utf8')
     const ids = JSON.parse(raw)
