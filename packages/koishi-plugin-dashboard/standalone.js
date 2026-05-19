@@ -337,6 +337,7 @@ function stopKoishiProcesses() {
     try {
       fs.unlinkSync(KOISHI_PID_FILE)
     } catch {}
+    waitKoishiPortFree()
     return
   }
 
@@ -347,10 +348,23 @@ function stopKoishiProcesses() {
       `powershell -NoProfile -Command "$d=${dirLit}; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains([string]$d) -and ($_.CommandLine -match 'koishi') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"`,
       { timeout: 8000, stdio: 'ignore' },
     )
+    waitKoishiPortFree()
     return
   }
   execSync("pkill -9 -f 'koishi/lib/worker' 2>/dev/null || true", { timeout: 5000 })
   execSync("pkill -9 -f 'node.*koishi start' 2>/dev/null || true", { timeout: 5000 })
+  waitKoishiPortFree()
+}
+
+function waitKoishiPortFree() {
+  const port = resolveKoishiListenPort()
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    const state = checkPortState(port)
+    if (state.available || state.status === 'free') return
+    sleepSync(300)
+  }
+  log(`WARNING: 端口 ${port} 在停止进程后 5s 内未释放`)
 }
 
 function shellQuote(value) {
@@ -2995,6 +3009,39 @@ function napcatRespond(res, proxyRes, token) {
   proxyRes.pipe(res)
 }
 
+// ====== 登录频率限制 ======
+const LOGIN_FAIL_WINDOW_MS = 5 * 60 * 1000
+const LOGIN_FAIL_THRESHOLD = 10
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000
+const loginFailMap = new Map()
+
+function isLoginRateLimited(ip) {
+  const entry = loginFailMap.get(ip)
+  if (!entry) return false
+  if (entry.lockedUntil && Date.now() < entry.lockedUntil) return true
+  if (Date.now() - entry.firstFail > LOGIN_FAIL_WINDOW_MS) {
+    loginFailMap.delete(ip)
+    return false
+  }
+  return entry.count >= LOGIN_FAIL_THRESHOLD
+}
+
+function recordLoginFailure(ip) {
+  const now = Date.now()
+  const entry = loginFailMap.get(ip) || { count: 0, firstFail: now, lockedUntil: 0 }
+  if (now - entry.firstFail > LOGIN_FAIL_WINDOW_MS) {
+    entry.count = 1
+    entry.firstFail = now
+  } else {
+    entry.count++
+  }
+  if (entry.count >= LOGIN_FAIL_THRESHOLD) {
+    entry.lockedUntil = now + LOGIN_LOCKOUT_MS
+    log(`login rate limit: IP ${ip} locked for ${LOGIN_LOCKOUT_MS / 1000}s after ${entry.count} failures`)
+  }
+  loginFailMap.set(ip, entry)
+}
+
 // ====== HTTP 服务器 ======
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
@@ -3012,6 +3059,10 @@ const server = http.createServer(async (req, res) => {
 
   // 登录
   if (pathname === '/dashboard/api/login' && req.method === 'POST') {
+    const loginIp = getRemoteAddress(req)
+    if (!isLocalAuthBypass(req) && isLoginRateLimited(loginIp)) {
+      return json(res, { ok: false, message: '登录尝试次数过多，请稍后再试' }, 429)
+    }
     collectBody(req, res, (body) => {
       try {
         const { password } = JSON.parse(body)
@@ -3021,7 +3072,11 @@ const server = http.createServer(async (req, res) => {
           return json(res, { ok: false, message: '访问密码未配置' }, 503)
         }
         const match = isLocalAuthBypass(req) || (!!stored && password === stored)
-        if (match) return json(res, { ok: true, token: createToken() })
+        if (match) {
+          loginFailMap.delete(loginIp)
+          return json(res, { ok: true, token: createToken() })
+        }
+        recordLoginFailure(loginIp)
         log('login failed')
         return json(res, { ok: false, message: '密码错误' }, 401)
       } catch { return json(res, { ok: false, message: '无效请求' }, 400) }

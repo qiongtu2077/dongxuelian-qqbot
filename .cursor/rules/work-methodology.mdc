@@ -17,6 +17,7 @@ alwaysApply: true
 2. 最小 diff：不顺手格式化整个文件，不改编码，不碰无关文件
 3. 先止血再缝合：先让链路恢复，再补测试，最后整理代码
 4. 不越界：不做破坏性 git 操作，不加新框架/新依赖，不把小需求扩成大重构
+5. 只做用户明确要求的事，不擅自扩大范围（不合并 commit、不拆分 commit、不重命名分支、不改动用户没提到的文件）
 
 ## 改完之后
 
@@ -34,6 +35,17 @@ alwaysApply: true
 - 不 mock 掉被测对象本身
 - 断言要对准事故（不能只断言 length > 0）
 - monkey patch 必须 try/finally 恢复
+
+## Git 提交
+
+- Cursor Agent 会自动注入 `Co-authored-by: Cursor` trailer，必须用 commit-tree 绕过：
+  1. 先正常 `git commit`（让 git 计算 tree）
+  2. 取出 tree SHA 和 parent SHA
+  3. 将正确的 commit message 写入临时文件（UTF-8 无 BOM）
+  4. 用外部 PowerShell 脚本调用 `git commit-tree` + `git update-ref` 替换
+  5. 临时文件用完即删
+- 不擅自合并/拆分 commit，用户说提交几个就是几个
+- PowerShell 中 git commit message 含中文时必须走文件（-F），不走 -m 管道，避免编码损坏
 
 ## 卡住时
 
