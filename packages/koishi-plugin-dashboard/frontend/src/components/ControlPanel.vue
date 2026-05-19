@@ -218,6 +218,10 @@ export default {
     }
     async function loadSSHInfo() {
       const res = await fetchSSHInfo()
+      if (res.code === 'ADMIN_REQUIRED') {
+        if (showAdminDialog) showAdminDialog('查看 SSH 信息需要管理员密码', loadSSHInfo)
+        return
+      }
       if (res.ok && res.data) {
         if (res.data.host && !sshHost.value) sshHost.value = normalizeSSHHost(res.data.host)
         if (res.data.user) sshUser.value = res.data.user

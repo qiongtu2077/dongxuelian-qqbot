@@ -66,6 +66,7 @@ export default {
     async function load() {
       try {
         const res = await fetchWhitelist()
+        if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('查看白名单需要管理员密码', load); return }
         if (res.ok && res.data) {
           lists.value = res.data
           loadError.value = ''

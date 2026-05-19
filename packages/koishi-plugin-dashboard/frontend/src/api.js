@@ -132,9 +132,9 @@ export async function updateConfig(data) { return put('/config', data, true) }
 export async function fetchPersonas() { return get('/personas') }
 export async function fetchPersonaDetail(name) { return get('/personas?name=' + encodeURIComponent(name)) }
 export async function fetchModes() { return get('/modes') }
-export async function fetchWhitelist() { return get('/whitelist') }
+export async function fetchWhitelist() { return get('/whitelist', true) }
 export async function updateWhitelist(type, data) { return put('/whitelist', { type, data }, true) }
-export async function fetchKeys() { return get('/keys') }
+export async function fetchKeys() { return get('/keys', true) }
 export async function updateKey(file, value) { return put('/keys', { file, value }, true) }
 export async function fetchFeatures() { return get('/features') }
 export async function fetchCommands() { return get('/commands') }
@@ -152,7 +152,7 @@ export async function stopBot() { return post('/bot/stop', {}, true) }
 export async function fetchMaintenance() { return get('/maintenance') }
 export async function setMaintenance(enabled) { return put('/maintenance', { enabled }, true) }
 export async function fetchQQToken() { return get('/qq/token', true) }
-export async function fetchSSHInfo() { return get('/qq/ssh-info') }
+export async function fetchSSHInfo() { return get('/qq/ssh-info', true) }
 export async function fetchSelfId() { return get('/qq/selfid') }
 export async function updateSelfId(selfId) { return put('/qq/selfid', { selfId }, true) }
 export async function fetchDeployConfig() { return get('/deploy/config') }
@@ -186,7 +186,7 @@ export async function rebuildFrontend() { return post('/frontend/rebuild', {}, t
 export async function rebuildFrontendStatus() { return get('/frontend/rebuild-status') }
 export async function fetchFallbackChains() { return get('/fallback') }
 export async function saveFallbackChains(chains) { return put('/fallback', { chains }, true) }
-export async function fetchCustomProviders() { return get('/providers/custom') }
+export async function fetchCustomProviders() { return get('/providers/custom', true) }
 export async function saveCustomProviders(data) { return put('/providers/custom', data, true) }
 export async function fetchAdminIds() { return get('/admin-ids') }
 export async function updateAdminIds(ids) { return put('/admin-ids', { ids }, true) }
