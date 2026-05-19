@@ -18,7 +18,7 @@ const RENDER_QUEUE_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_QUEUE_TIM
 const RENDER_MIN_AVAILABLE_MB = parsePositiveInt(process.env.DAILY_REPORT_MIN_MEM_MB, 600, 256, 8192)
 const MAX_CAPTURE_HEIGHT = parsePositiveInt(process.env.DAILY_REPORT_MAX_CAPTURE_HEIGHT, 6000, 800, 12000)
 const MAX_HTML_BYTES = parsePositiveInt(process.env.DAILY_REPORT_MAX_HTML_BYTES, 512 * 1024, 64 * 1024, 2 * 1024 * 1024)
-const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font'])
+const BLOCKED_RESOURCE_TYPES = new Set(['media'])
 const BLOCKED_HOST_RE = /(?:doubleclick|googlesyndication|google-analytics|googletagmanager|adservice|adsystem|bat\.bing|clarity\.ms|facebook\.net|scorecardresearch|cnzz|hm\.baidu|pos\.baidu)/i
 
 function parsePositiveInt(value, fallback, min, max) {
@@ -100,7 +100,7 @@ function selectTemplate() {
 // 构建24小时柱状图SVG（用于light/dark模板）
 function buildBarChart(hourlyActivity) {
   const max = Math.max(...hourlyActivity, 1)
-  const barW = 28, chartH = 120, gap = 4
+  const barW = 22, chartH = 120, gap = 4
   const totalW = 24 * (barW + gap), svgH = chartH + 40
   let bars = ''
   const colors = ['#39C5BB','#39C5BB','#39C5BB','#39C5BB','#39C5BB','#39C5BB',
