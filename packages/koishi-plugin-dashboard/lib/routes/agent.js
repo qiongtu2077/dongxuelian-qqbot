@@ -266,13 +266,26 @@ function handlePostTtsPreview(req, res) {
       let resolvedVoice = voice || '冰糖'
       let resolvedStyle = style || '活泼可爱'
       if (personaName || resolvedVoice === '__cloned__') {
-        const pName = personaName || data.persona || ''
+        let pName = personaName || data.persona || ''
+        if (!pName && resolvedVoice === '__cloned__') {
+          try {
+            const personaModule = require(path.join(AI_LIB, 'persona'))
+            const personas = personaModule.getAvailablePersonals({ userFacing: true })
+            for (const p of personas) {
+              const c = personaModule.loadPersonalSkill(p.name)
+              if (c) {
+                const m = personaModule.parsePersonaFrontmatter(c)
+                if (m.voice_id === '__cloned__') { pName = p.name; break }
+              }
+            }
+          } catch {}
+        }
         if (pName) {
           const resolved = tts.resolvePersonaVoice(pName)
           resolvedVoice = resolved.voice
           resolvedStyle = style || resolved.style
         } else if (resolvedVoice === '__cloned__') {
-          return json(res, { ok: false, message: '克隆音色需要指定人格名称' }, 400)
+          return json(res, { ok: false, message: '没有配置克隆音色的人格' }, 400)
         }
       }
       const buf = await tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice, style: resolvedStyle })
