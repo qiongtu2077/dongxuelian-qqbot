@@ -70,11 +70,15 @@ module.exports = {
     vm.runInContext(`
       (function() {
         const F = Object.getPrototypeOf(function(){}).constructor;
-        Object.defineProperty(F.prototype, 'constructor', { get() { throw new Error('sandbox: blocked') }, configurable: false });
+        Object.defineProperty(F.prototype, 'constructor', {
+          get() { throw new Error('sandbox: blocked constructor access') },
+          configurable: false
+        });
         delete Function;
         delete GeneratorFunction;
       })();
     `, context)
+    for (const value of Object.values(sandbox)) freezeProtoChain(value)
     const script = new vm.Script(`'use strict';\n${code}`)
     const result = script.runInContext(context, { timeout: 10000 })
     const text = safeStringifyResult(result)
