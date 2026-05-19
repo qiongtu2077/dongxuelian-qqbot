@@ -133,7 +133,7 @@
             <span>{{ npmFailureGuide.summary }}</span>
           </div>
           <div class="repair-guide-actions">
-            <button v-if="npmFailureGuide.code === 'NPM_PROXY_REFUSED'" class="btn btn-sm" type="button" @click="repairNpmProxyFlow" :disabled="repairingNpm || installingDeps">{{ repairingNpm ? '修复中...' : '一键修复代理并重试' }}</button>
+            <button v-if="npmFailureGuide.code === 'NPM_PROXY_REFUSED'" class="btn btn-sm" type="button" @click="repairNpmProxyFlow" :disabled="repairingNpm || installingDeps">{{ repairingNpm ? '修复中...' : '查看代理修复命令' }}</button>
             <button v-if="npmGuideCommands.length" class="btn btn-sm btn-ghost" type="button" @click="copyNpmFixCommands">复制部署器 npm 命令</button>
           </div>
         </div>
@@ -782,6 +782,7 @@ export default {
         setStepStatus('npm', 'skipped')
         npmGuideSteps.value = null
         localMsg.value = { type: 'ok', text: '项目依赖已安装，无需再次执行。' }
+        await checkEnv()
       } else if (res.data?.guide) {
         npmGuideSteps.value = res.data.steps || []
         setStepStatus('npm', 'waiting')
@@ -1169,7 +1170,7 @@ export default {
       if (bridge?.copyText) {
         try {
           await bridge.copyText(text)
-          localMsg.value = { type: 'ok', text: '部署器 npm 命令已复制。命令包含实际 npm 路径；执行后可点击“执行 npm install”，也可以直接点“一键修复代理并重试”。' }
+          localMsg.value = { type: 'ok', text: '部署器 npm 命令已复制。命令包含实际 npm 路径；执行后可点击“执行 npm install”，也可以直接点“查看代理修复命令”。' }
         } catch {
           localMsg.value = { type: 'err', text: '复制失败，请手动选择命令文本复制。' }
         }
@@ -1177,7 +1178,7 @@ export default {
       }
       try {
         await navigator.clipboard?.writeText(text)
-        localMsg.value = { type: 'ok', text: '部署器 npm 命令已复制。命令包含实际 npm 路径；执行后可点击“执行 npm install”，也可以直接点“一键修复代理并重试”。' }
+        localMsg.value = { type: 'ok', text: '部署器 npm 命令已复制。命令包含实际 npm 路径；执行后可点击“执行 npm install”，也可以直接点“查看代理修复命令”。' }
       } catch {
         localMsg.value = { type: 'err', text: '复制失败，请手动选择命令文本复制。' }
       }

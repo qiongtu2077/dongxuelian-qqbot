@@ -4970,14 +4970,17 @@ const server = http.createServer(async (req, res) => {
     if (!requireWindowsLocalDeployTarget(req, res)) return
     try {
       const diagnostics = collectNpmInstallDiagnostics(true)
-      const prepared = prepareNpmInstallRun({ forceRepair: true })
+      const proxy = diagnostics.proxy || diagnoseNpmProxy(diagnostics)
       const cwd = path.resolve(KOISHI_DIR)
       const npmInfo = getCommandInfo('npm')
       const npmCmd = npmInfo.found ? npmInfo.path : 'npm'
+      const hasNpmProxy = !!(diagnostics.config?.proxy || diagnostics.config?.httpsProxy)
+      const hasEnvProxy = Object.entries(diagnostics.env || {}).some(([key, value]) => !/^no_proxy$/i.test(key) && !!value)
+      const repairCommands = commandListForNpmProxyFix(hasNpmProxy, hasEnvProxy)
       const steps = []
-      if (prepared.repair.actions.length) steps.push({ label: '部署器建议先执行以下修复命令', command: prepared.repair.actions.map(a => a.command || a).join('\n') })
+      if (repairCommands.length) steps.push({ label: '在终端中执行以下命令清理代理配置', command: repairCommands.join('\n') })
       steps.push({ label: '修复后执行依赖安装', command: npmInfo.found ? `"${npmCmd}" install` : 'npm install' })
-      return json(res, { ok: true, guide: true, message: '请在终端中手动执行以下修复和安装命令', steps, cwd, npmPath: npmCmd, repair: prepared.repair, diagnostics, status: getLocalNpmInstallStatus() })
+      return json(res, { ok: true, guide: true, message: '请在终端中手动执行以下修复和安装命令', steps, cwd, npmPath: npmCmd, proxy, diagnostics, status: getLocalNpmInstallStatus() })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
   }
 
@@ -5027,7 +5030,7 @@ const server = http.createServer(async (req, res) => {
       const current = getLocalKoishiDeployStatus()
       if (current.running) return json(res, { ok: true, message: 'Koishi 看起来已经在运行', status: current })
       const dependencies = getProjectDependencyStatus()
-      if (!dependencies.ready) return json(res, { ok: false, message: '项目依赖尚未完整安装，请先执行 npm install 站点', dependencies }, 400)
+      if (!dependencies.ready) return json(res, { ok: false, message: '项目依赖尚未完整安装，请先在终端执行 npm install', dependencies }, 400)
       if (process.platform === 'win32' && fs.existsSync(path.join(KOISHI_DIR, 'start-local.bat'))) {
         spawnLocalTask('koishi', 'cmd.exe', ['/d', '/c', path.join(KOISHI_DIR, 'start-local.bat')], getLocalTaskOptions({ cwd: KOISHI_DIR }))
       } else {
