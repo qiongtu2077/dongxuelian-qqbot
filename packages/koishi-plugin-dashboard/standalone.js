@@ -15,6 +15,7 @@ const utils = require('./lib/utils')
 const paths = require('./lib/paths')
 const auth = require('./lib/auth')
 const tools = require('./lib/tools')
+const frontend = require('./lib/frontend')
 
 // ====== 全局异常兜底（防止单请求崩溃整个进程） ======
 process.on('uncaughtException', (err) => {
