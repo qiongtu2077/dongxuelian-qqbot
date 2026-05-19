@@ -1830,7 +1830,12 @@ async function main() {
   const aiDeploy = read(path.join(scriptsDir, 'ai.sh'))
   const readerDeploy = read(path.join(scriptsDir, 'message-reader.sh'))
   const restartBot = read(path.join(scriptsDir, 'restart-bot.sh'))
-  const dashboardStandalone = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'standalone.js'))
+  const dashboardDir = path.join(PKG_ROOT, 'koishi-plugin-dashboard')
+  const dashboardStandalone = [
+    read(path.join(dashboardDir, 'standalone.js')),
+    ...fs.readdirSync(path.join(dashboardDir, 'lib')).filter(f => f.endsWith('.js')).map(f => read(path.join(dashboardDir, 'lib', f))),
+    ...fs.readdirSync(path.join(dashboardDir, 'lib', 'routes')).filter(f => f.endsWith('.js')).map(f => read(path.join(dashboardDir, 'lib', 'routes', f))),
+  ].join('\n')
   const allDeploy = fs.readdirSync(scriptsDir).filter(name => name.endsWith('.sh')).map(name => read(path.join(scriptsDir, name))).join('\n')
   check('ai deploy copies ai-skills', aiDeploy.includes('--copy-ai-skills'))
   check('message-reader deploys full AI package', readerDeploy.includes('exec sh "$SCRIPT_DIR/ai.sh"'))
@@ -1839,7 +1844,7 @@ async function main() {
   check('dashboard deploy does not copy removed patch.js', !dashboardStandalone.includes('/patch.js') && !dashboardStandalone.includes('patch.js ${s}'))
   check('dashboard stop avoids broad koishi pkill', !dashboardStandalone.includes("pkill -9 -f 'koishi'"))
   check('dashboard explicit local auth bypass only', dashboardStandalone.includes('function isLocalAuthBypass') && dashboardStandalone.includes('GLOBAL_LOCAL_MODE'))
-  check('dashboard exposes agent config API', dashboardStandalone.includes("/dashboard/api/agent/config") && dashboardStandalone.includes("agent', 'config") && dashboardStandalone.includes("if (pathname === '/dashboard/api/agent/config' && req.method === 'GET')") && dashboardStandalone.includes('if (!requireAdmin(req, res)) return'))
+  check('dashboard exposes agent config API', dashboardStandalone.includes("/dashboard/api/agent/config") && dashboardStandalone.includes("agent', 'config") && dashboardStandalone.includes("'GET /dashboard/api/agent/config'") && dashboardStandalone.includes('if (!requireAdmin(req, res)) return'))
   check('dashboard exposes compatible tools API', dashboardStandalone.includes("/dashboard/api/tools") && dashboardStandalone.includes("/enabled") && dashboardStandalone.includes("/pending"))
   check('dashboard exposes agent chat API', dashboardStandalone.includes("/dashboard/api/agent/chat") && dashboardStandalone.includes("agent', 'engine") && dashboardStandalone.includes('data.history'))
   check('dashboard queues agent chat API', dashboardStandalone.includes("agent', 'queue") && dashboardStandalone.includes('queue.enqueueAgentTask'))
@@ -1934,7 +1939,11 @@ async function main() {
   const chatSrc = read(path.join(LIB, 'chat.js'))
   const utilsSrc = read(path.join(LIB, 'utils.js'))
   const msgSrc = read(path.join(LIB, 'message-reader.js'))
-  const dashboardStandaloneSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'standalone.js'))
+  const dashboardStandaloneSrc = [
+    read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'standalone.js')),
+    ...fs.readdirSync(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib')).filter(f => f.endsWith('.js')).map(f => read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', f))),
+    ...fs.readdirSync(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'routes')).filter(f => f.endsWith('.js')).map(f => read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'routes', f))),
+  ].join('\n')
   const dailyRendererSrc = read(path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'html-renderer.js'))
   const dailyCollectorSrc = read(path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'data-collector.js'))
   const dailyAnalyzerSrc = read(path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'ai-analyzer.js'))

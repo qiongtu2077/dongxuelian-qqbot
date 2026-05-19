@@ -1,5 +1,6 @@
 'use strict'
 
+const { authMiddleware } = require('./routes/auth')
 const galleryRoutes = require('./routes/gallery')
 const authRoutes = require('./routes/auth')
 const configRoutes = require('./routes/config')
@@ -24,21 +25,38 @@ for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, setting
   if (mod.regexRoutes) for (const item of mod.regexRoutes) regexRoutes.push(item)
 }
 
+const preAuthKeys = new Set([
+  'POST /dashboard/api/login',
+  'POST /dashboard/api/admin/verify',
+  'PUT /dashboard/api/auth/password',
+  'POST /dashboard/api/auth/reset-password',
+])
+
 function dispatch(req, res, pathname, url) {
   const method = req.method
   const key = method + ' ' + pathname
+
+  if (preAuthKeys.has(key)) {
+    const handler = exactRoutes.get(key)
+    if (handler) { handler(req, res, pathname, url); return true }
+  }
+
+  if (!authMiddleware(req, res, pathname)) return true
+
   const handler = exactRoutes.get(key)
   if (handler) { handler(req, res, pathname, url); return true }
+
   for (const pfx of prefixRoutes) {
     if (pfx.method && pfx.method !== method) continue
-    const pfxPath = pfx.prefix
-    if (pathname.startsWith(pfxPath)) { pfx.handler(req, res, pathname, url); return true }
+    if (pathname.startsWith(pfx.prefix)) { pfx.handler(req, res, pathname, url); return true }
   }
-  for (const [pattern, routeMethod, handler] of regexRoutes) {
+
+  for (const [pattern, routeMethod, rxHandler] of regexRoutes) {
     if (method !== routeMethod) continue
     const match = pathname.match(pattern)
-    if (match) { handler(req, res, pathname, url, match); return true }
+    if (match) { rxHandler(req, res, pathname, url, match); return true }
   }
+
   return false
 }
 
