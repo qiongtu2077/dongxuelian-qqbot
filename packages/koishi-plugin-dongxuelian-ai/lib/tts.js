@@ -4,11 +4,13 @@
  * 边界: 不写对话历史、不改 conversation。只负责合成和发送。
  * 状态: 频道冷却 Map（内存，5 分钟过期）。
  */
-const { MIMORIUM_KEY_FILE } = require('./constants')
+const { MIMORIUM_KEY_FILE, TTS_TEMP_DIR } = require('./constants')
 const { readTextFile } = require('./utils')
 const { parsePersonaFrontmatter, loadPersonalSkill } = require('./persona')
 const { resolveVoiceSampleFile } = require('./voice-assets')
 const fs = require('fs')
+const path = require('path')
+const { pathToFileURL } = require('url')
 
 const TTS_TIMEOUT_MS = 15000
 const TTS_BASE_URL = 'https://token-plan-cn.xiaomimimo.com/v1'
@@ -20,6 +22,11 @@ const DEFAULT_STYLE = '活泼可爱'
 const MAX_TTS_TEXT_LENGTH = 300
 const CHANNEL_COOLDOWN_MS = 5 * 60 * 1000
 const RANDOM_VOICE_RATE = 0.05
+const DEFAULT_TTS_SEND_FILE_TTL_MS = 10 * 60 * 1000
+const TTS_SEND_FILE_TTL_MS = (() => {
+  const value = Number(process.env.TTS_SEND_FILE_TTL_MS || DEFAULT_TTS_SEND_FILE_TTL_MS)
+  return Number.isFinite(value) && value >= 1000 ? value : DEFAULT_TTS_SEND_FILE_TTL_MS
+})()
 
 const BUILTIN_VOICES = ['冰糖', '茉莉', '苏打', '白桦', 'Mia', 'Chloe', 'Milo', 'Dean', 'mimo_default']
 
@@ -27,6 +34,7 @@ const channelCooldowns = new Map()
 
 const VOICE_STYLE_RE = /【语音风格[：:]([^】]+)】/
 const DATA_URI_RE = /^data:([^;,]+)(;base64)?,([\s\S]*)$/i
+const TTS_SEND_TEMP_PREFIX = 'tts-send-'
 
 async function getMimoriumKey() {
   const keyFile = MIMORIUM_KEY_FILE
@@ -123,6 +131,45 @@ function detectAudioMime(buffer) {
   return ''
 }
 
+function getAudioExtension(mimeType) {
+  switch (mimeType) {
+    case 'audio/wav': return '.wav'
+    case 'audio/mpeg': return '.mp3'
+    case 'audio/ogg': return '.ogg'
+    case 'audio/flac': return '.flac'
+    case 'audio/mp4': return '.m4a'
+    default: return '.audio'
+  }
+}
+
+function cleanupOldTtsSendFiles(now = Date.now()) {
+  try {
+    if (!fs.existsSync(TTS_TEMP_DIR)) return
+    for (const name of fs.readdirSync(TTS_TEMP_DIR)) {
+      if (!name.startsWith(TTS_SEND_TEMP_PREFIX)) continue
+      const filePath = path.join(TTS_TEMP_DIR, name)
+      const stat = fs.statSync(filePath)
+      if (now - stat.mtimeMs > TTS_SEND_FILE_TTL_MS) fs.unlinkSync(filePath)
+    }
+  } catch {}
+}
+
+function writeTtsSendTempFile(audioBuf, mimeType) {
+  cleanupOldTtsSendFiles()
+  fs.mkdirSync(TTS_TEMP_DIR, { recursive: true })
+  const suffix = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 10)}`
+  const filePath = path.join(TTS_TEMP_DIR, `${TTS_SEND_TEMP_PREFIX}${suffix}${getAudioExtension(mimeType)}`)
+  fs.writeFileSync(filePath, audioBuf)
+  return filePath
+}
+
+function scheduleTtsSendFileCleanup(filePath, ttlMs = TTS_SEND_FILE_TTL_MS) {
+  const timer = setTimeout(() => {
+    try { fs.unlinkSync(filePath) } catch {}
+  }, Math.max(1000, Number(ttlMs) || TTS_SEND_FILE_TTL_MS))
+  if (typeof timer.unref === 'function') timer.unref()
+}
+
 async function synthesizeSpeech(text, options = {}) {
   const { voice = DEFAULT_VOICE, style = DEFAULT_STYLE } = options
   const apiKey = await getMimoriumKey()
@@ -197,13 +244,22 @@ async function sendVoiceMessage(session, audioBuf, options = {}) {
     recordTtsFailure(options, 'send_invalid_audio', 'audio buffer is not playable', { bytes: audioBuf.length })
     return false
   }
+  let tempFile = ''
   try {
     const { h } = require('koishi')
-    const base64 = audioBuf.toString('base64')
-    await session.send(h.audio(`data:${mimeType};base64,${base64}`))
+    tempFile = writeTtsSendTempFile(audioBuf, mimeType)
+    const src = pathToFileURL(tempFile).href
+    if (options.diagnostics && typeof options.diagnostics === 'object') {
+      options.diagnostics.lastSend = { method: 'file', mimeType, bytes: audioBuf.length, file: path.basename(tempFile) }
+    }
+    await session.send(h.audio(src))
+    scheduleTtsSendFileCleanup(tempFile, options.tempFileTtlMs)
     return true
   } catch (error) {
     recordTtsFailure(options, 'send_failed', error?.message || String(error))
+    if (tempFile) {
+      try { fs.unlinkSync(tempFile) } catch {}
+    }
     return false
   }
 }

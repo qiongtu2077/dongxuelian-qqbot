@@ -343,6 +343,74 @@ function buildWav() {
   t.check('synthesizeSpeech uses clone model for data URI voice', ttsFailureSummary.cloneMime === 'audio/wav' && ttsFailureSummary.cloneModel === 'mimo-v2.5-tts-voiceclone', JSON.stringify(ttsFailureSummary))
   try { fs.rmSync(ttsFailureDataRoot, { recursive: true, force: true }) } catch {}
 
+  const ttsSendScript = `
+const fs = require('fs')
+const { fileURLToPath } = require('url')
+const constants = require(${JSON.stringify(constantsModule)})
+const tts = require(${JSON.stringify(ttsModule)})
+function buildWav() {
+  const data = Buffer.alloc(3200, 1)
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + data.length, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(16000, 24)
+  header.writeUInt32LE(32000, 28)
+  header.writeUInt16LE(2, 32)
+  header.writeUInt16LE(16, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(data.length, 40)
+  return Buffer.concat([header, data])
+}
+(async () => {
+  const result = {}
+  const sent = []
+  const diagnostics = {}
+  const ok = await tts.sendVoiceMessage({ send: async msg => sent.push(msg) }, buildWav(), { diagnostics, tempFileTtlMs: 60000 })
+  const src = sent[0]?.attrs?.src || sent[0]?.attrs?.url || sent[0]?.attrs?.file || ''
+  const filePath = src.startsWith('file:') ? fileURLToPath(src) : src
+  result.ok = ok
+  result.type = sent[0]?.type
+  result.src = src
+  result.usesFileUrl = src.startsWith('file:')
+  result.usesDataUri = src.startsWith('data:') || src.startsWith('base64://')
+  result.fileExists = !!filePath && fs.existsSync(filePath)
+  result.fileInTempDir = filePath.startsWith(constants.TTS_TEMP_DIR)
+  result.filePrefix = /tts-send-/.test(filePath)
+  result.lastSend = diagnostics.lastSend
+
+  const beforeFail = fs.readdirSync(constants.TTS_TEMP_DIR).filter(name => name.startsWith('tts-send-')).length
+  const failOk = await tts.sendVoiceMessage({ send: async () => { throw new Error('adapter refused') } }, buildWav(), { tempFileTtlMs: 60000 })
+  const afterFail = fs.readdirSync(constants.TTS_TEMP_DIR).filter(name => name.startsWith('tts-send-')).length
+  result.failOk = failOk
+  result.failedSendCleaned = afterFail === beforeFail
+  try { fs.rmSync(constants.TTS_TEMP_DIR, { recursive: true, force: true }) } catch {}
+  console.log(JSON.stringify(result))
+})().catch(error => {
+  console.error(error.stack || error.message || error)
+  process.exit(1)
+})
+`
+  const ttsSendDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tts-send-'))
+  const ttsSendResult = spawnSync(process.execPath, ['-e', ttsSendScript], {
+    cwd: path.join(__dirname, '..', '..', '..', '..'),
+    env: { ...process.env, DONGXUELIAN_AI_DATA_DIR: ttsSendDataRoot },
+    encoding: 'utf8',
+  })
+  let ttsSendSummary = {}
+  try { ttsSendSummary = JSON.parse(String(ttsSendResult.stdout || '').trim()) } catch {}
+  t.check('tts send child process passes', ttsSendResult.status === 0, ttsSendResult.stderr || ttsSendResult.stdout)
+  t.check('sendVoiceMessage sends file audio element', ttsSendSummary.ok === true && ttsSendSummary.type === 'audio' && ttsSendSummary.usesFileUrl === true, JSON.stringify(ttsSendSummary))
+  t.check('sendVoiceMessage does not send data/base64 record', ttsSendSummary.usesDataUri === false, JSON.stringify(ttsSendSummary))
+  t.check('sendVoiceMessage writes temp file inside TTS_TEMP_DIR', ttsSendSummary.fileExists === true && ttsSendSummary.fileInTempDir === true && ttsSendSummary.filePrefix === true, JSON.stringify(ttsSendSummary))
+  t.check('sendVoiceMessage records sanitized send diagnostics', ttsSendSummary.lastSend?.method === 'file' && ttsSendSummary.lastSend?.mimeType === 'audio/wav' && ttsSendSummary.lastSend?.bytes > 44, JSON.stringify(ttsSendSummary))
+  t.check('sendVoiceMessage removes temp file after adapter failure', ttsSendSummary.failOk === false && ttsSendSummary.failedSendCleaned === true, JSON.stringify(ttsSendSummary))
+  try { fs.rmSync(ttsSendDataRoot, { recursive: true, force: true }) } catch {}
+
   t.section('scenario: voice ASR transcribe (mock)')
 
   const { TTS_TEMP_DIR } = require('../../lib/constants')

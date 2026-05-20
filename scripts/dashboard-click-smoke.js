@@ -471,10 +471,14 @@ async function runClicks(page) {
   await page.waitForFunction(() => !!document.querySelector('select option[value="__cloned__"]'), { timeout: 8000 })
   await page.waitForFunction(() => [...document.querySelectorAll('input')].some(input => input.value === '温柔'), { timeout: 8000 })
   await clickText(page, '试听')
-  await page.waitForSelector('audio[src^="data:audio/wav;base64,"]', { timeout: 8000 })
+  await page.waitForSelector('audio[src^="blob:"]', { timeout: 8000 })
   await page.waitForFunction(() => {
     const audio = document.querySelector('audio')
-    return audio && audio.src.startsWith('data:audio/wav;base64,') && audio.src.length > 500
+    return audio &&
+      audio.src.startsWith('blob:') &&
+      audio.readyState >= HTMLMediaElement.HAVE_METADATA &&
+      Number.isFinite(audio.duration) &&
+      audio.duration > 0
   }, { timeout: 8000 })
   await waitForText(page, '已克隆音色')
   await page.waitForFunction(() => [...document.querySelectorAll('input')].some(input => input.value === '测试音色'), { timeout: 8000 })

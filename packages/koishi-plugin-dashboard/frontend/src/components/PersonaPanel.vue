@@ -122,7 +122,7 @@
         <div style="font-size:13px;color:var(--text2);margin-bottom:4px">试听文本</div>
         <input v-model="previewText" placeholder="你好，这是一段语音测试。" style="width:100%" />
       </div>
-      <audio v-if="previewAudioSrc" controls :src="previewAudioSrc" style="width:100%;height:36px;border-radius:8px"></audio>
+      <audio v-if="previewAudioSrc" controls preload="metadata" :src="previewAudioSrc" @loadedmetadata="onPreviewAudioLoaded" @error="onPreviewAudioError" style="width:100%;height:36px;border-radius:8px"></audio>
       <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:12px">
         <div style="font-size:13px;color:var(--text2);margin-bottom:8px">音色克隆样本（上传音频样本，MP3/WAV/OGG/M4A，30s 以内，7MB 以内）</div>
         <div style="display:grid;gap:8px">
@@ -198,7 +198,7 @@
 </template>
 
 <script setup>
-import { ref, computed, inject, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, inject, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { fetchPersonas, fetchPersonaDetail, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore, fetchTtsVoices, ttsPreview, ttsClone, updateTtsClone, deleteTtsClone, savePersonaVoice } from '../api'
 
 defineOptions({ name: 'PersonaPanel' })
@@ -393,6 +393,7 @@ defineOptions({ name: 'PersonaPanel' })
     const clonedVoices = ref([])
     const assetSaving = ref('')
     const assetDeleting = ref('')
+    const previewAudioObjectUrl = ref('')
 
     const usableClonedVoices = computed(() => clonedVoices.value.filter(asset => !asset.missing))
 
@@ -465,11 +466,57 @@ defineOptions({ name: 'PersonaPanel' })
       return new Date(value).toLocaleString()
     }
 
-    function getPreviewAudioSrc(data) {
+    function revokePreviewAudioUrl() {
+      if (!previewAudioObjectUrl.value) return
+      try { URL.revokeObjectURL(previewAudioObjectUrl.value) } catch {}
+      previewAudioObjectUrl.value = ''
+    }
+
+    function clearPreviewAudio() {
+      previewAudioSrc.value = ''
+      revokePreviewAudioUrl()
+    }
+
+    function base64ToUint8Array(base64) {
+      const raw = atob(String(base64 || '').replace(/\s+/g, ''))
+      const bytes = new Uint8Array(raw.length)
+      for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i)
+      return bytes
+    }
+
+    function buildPreviewAudioUrl(data) {
       if (!data?.audio) return ''
       const mimeType = data.mimeType || (data.format ? `audio/${data.format}` : 'audio/wav')
-      return `data:${mimeType};base64,${data.audio}`
+      try {
+        const blob = new Blob([base64ToUint8Array(data.audio)], { type: mimeType })
+        if (!blob.size) return ''
+        return URL.createObjectURL(blob)
+      } catch {
+        return ''
+      }
     }
+
+    function setPreviewAudio(data) {
+      revokePreviewAudioUrl()
+      const src = buildPreviewAudioUrl(data)
+      if (!src) return false
+      previewAudioObjectUrl.value = src
+      previewAudioSrc.value = src
+      return true
+    }
+
+    function onPreviewAudioLoaded(event) {
+      const audio = event?.target
+      if (!audio || !Number.isFinite(audio.duration) || audio.duration <= 0) {
+        voiceMsg.value = { type: 'err', text: '试听音频无有效时长' }
+      }
+    }
+
+    function onPreviewAudioError() {
+      voiceMsg.value = { type: 'err', text: '试听音频无法播放，请重试' }
+    }
+
+    onBeforeUnmount(clearPreviewAudio)
 
     async function doSaveVoice() {
       if (!voicePersona.value) return
@@ -493,7 +540,7 @@ defineOptions({ name: 'PersonaPanel' })
     }
 
     async function doPreview() {
-      voicePreviewing.value = true; previewAudioSrc.value = ''; voiceMsg.value = null
+      voicePreviewing.value = true; clearPreviewAudio(); voiceMsg.value = null
       const text = previewText.value.trim() || '你好，这是一段语音测试。'
       const selectedAssetId = voiceId.value === '__cloned__' ? selectedVoiceAssetId.value : ''
       if (voiceId.value === '__cloned__' && !findVoiceAssetById(selectedAssetId)) {
@@ -502,10 +549,7 @@ defineOptions({ name: 'PersonaPanel' })
         return
       }
       const res = await ttsPreview(text, voiceId.value || '冰糖', voiceStyle.value || '活泼可爱', voicePersona.value, selectedAssetId)
-      const audioSrc = getPreviewAudioSrc(res.data)
-      if (res.ok && audioSrc) {
-        previewAudioSrc.value = audioSrc
-      } else {
+      if (!res.ok || !setPreviewAudio(res.data)) {
         voiceMsg.value = { type: 'err', text: res.data?.message || '试听失败' }
       }
       voicePreviewing.value = false
@@ -555,15 +599,12 @@ defineOptions({ name: 'PersonaPanel' })
 
     async function doPreviewAsset(asset) {
       if (!asset) return
-      voicePreviewing.value = true; previewAudioSrc.value = ''; voiceMsg.value = null
+      voicePreviewing.value = true; clearPreviewAudio(); voiceMsg.value = null
       const style = voiceStyle.value || personaVoiceMap.value[voicePersona.value]?.voiceStyle || personaVoiceMap.value[asset.personaName]?.voiceStyle || '活泼可爱'
       const text = (asset.sampleText || previewText.value || '你好，这是一段语音测试。').trim()
       const res = await ttsPreview(text, '__cloned__', style, voicePersona.value || asset.personaName, asset.id)
       if (res.code === 'ADMIN_REQUIRED') { voicePreviewing.value = false; if (showAdminDialog) showAdminDialog('试听克隆音色需要管理员密码', () => doPreviewAsset(asset)); return }
-      const audioSrc = getPreviewAudioSrc(res.data)
-      if (res.ok && audioSrc) {
-        previewAudioSrc.value = audioSrc
-      } else {
+      if (!res.ok || !setPreviewAudio(res.data)) {
         voiceMsg.value = { type: 'err', text: res.data?.message || '试听失败' }
       }
       voicePreviewing.value = false
