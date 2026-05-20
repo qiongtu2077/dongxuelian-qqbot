@@ -116,7 +116,6 @@ function apiMock(method, pathname, body) {
   if (method === 'GET' && pathname === '/commands') return ok([
     { category: '基础', commands: [{ cmd: '/help', desc: '查看帮助' }] },
   ])
-
   if (method === 'GET' && pathname === '/personas') {
     if (body.searchParams.get('name')) {
       return ok({ name: body.searchParams.get('name'), description: '测试详情', content: '测试人格内容', lore: 'lore-a', will: 1.2, nsfw: 'none' })
@@ -125,6 +124,7 @@ function apiMock(method, pathname, body) {
       { name: '核心规则', type: 'core', description: '核心规则描述' },
       { name: '默认模式', type: 'mode', description: '默认模式描述' },
       { name: '测试人格', type: 'persona', description: '测试人格描述' },
+      { name: '普通人格', type: 'persona', description: '普通人格描述' },
     ])
   }
   if (method === 'POST' && pathname === '/personas') return writeOk('persona created')
@@ -139,6 +139,7 @@ function apiMock(method, pathname, body) {
     builtin: ['冰糖', '茉莉'],
     personas: [
       { name: '测试人格', voice: mockState.voiceEnabled ? '__cloned__' : '冰糖', voiceAssetId: mockState.voiceEnabled ? mockState.voiceAssetId : '', style: '温柔', hasSample: true },
+      { name: '普通人格', voice: '冰糖', voiceAssetId: '', style: '温和', hasSample: false },
     ],
     clonedVoices: [{
       ...mockState.clonedVoice,
@@ -437,6 +438,11 @@ async function runClicks(page) {
   await clickButtonInCard(page, '世界观管理', '创建')
   await waitForText(page, '请输入标识')
   await selectOptionValue(page, '测试人格')
+  await page.waitForFunction(() => !!document.querySelector('select option[value="__cloned__"]'), { timeout: 8000 })
+  await selectOptionValue(page, '普通人格')
+  await page.waitForFunction(() => !document.querySelector('select option[value="__cloned__"]'), { timeout: 8000 })
+  await selectOptionValue(page, '测试人格')
+  await page.waitForFunction(() => !!document.querySelector('select option[value="__cloned__"]'), { timeout: 8000 })
   await page.waitForFunction(() => [...document.querySelectorAll('input')].some(input => input.value === '温柔'), { timeout: 8000 })
   await clickText(page, '试听')
   await page.waitForSelector('audio[src^="data:audio/wav;base64,"]', { timeout: 8000 })

@@ -66,6 +66,8 @@ async function run(t) {
   const voiceAssetsModule = path.join(__dirname, '..', '..', 'lib', 'voice-assets')
   const constantsModule = path.join(__dirname, '..', '..', 'lib', 'constants')
   const ttsModule = path.join(__dirname, '..', '..', 'lib', 'tts')
+  const dashboardRouteModule = path.join(__dirname, '..', '..', '..', 'koishi-plugin-dashboard', 'lib', 'routes', 'agent')
+  const dashboardAuthModule = path.join(__dirname, '..', '..', '..', 'koishi-plugin-dashboard', 'lib', 'auth')
   const assetScript = `
 const fs = require('fs')
 const path = require('path')
@@ -136,6 +138,62 @@ console.log(JSON.stringify({
   t.check('resolvePersonaVoice reads voice_asset_id clone', assetSummary.resolvedClone === true)
   t.check('voice asset references list all users', Array.isArray(assetSummary.refsFirst) && assetSummary.refsFirst.includes('ReusePersona') && Array.isArray(assetSummary.refsSecond) && assetSummary.refsSecond.includes('TestPersona'), JSON.stringify(assetSummary))
   t.check('voice asset delete removes one sample only', assetSummary.deletedFile === `${assetSummary.id}.wav` && assetSummary.afterDeleteFirst === true && assetSummary.afterDeleteSecond === true, JSON.stringify(assetSummary))
+
+  const voicesRouteScript = `
+const fs = require('fs')
+const path = require('path')
+const constants = require(${JSON.stringify(constantsModule)})
+const voiceAssets = require(${JSON.stringify(voiceAssetsModule)})
+const auth = require(${JSON.stringify(dashboardAuthModule)})
+const dashboard = require(${JSON.stringify(dashboardRouteModule)})
+fs.mkdirSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas'), { recursive: true })
+fs.mkdirSync(constants.VOICES_DIR, { recursive: true })
+const sample = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4096)])
+const routeTestFile = voiceAssets.buildVoiceAssetFilename('route_test_voice', 'audio/wav')
+const routeReuseFile = voiceAssets.buildVoiceAssetFilename('route_reuse_voice', 'audio/wav')
+fs.writeFileSync(path.join(constants.VOICES_DIR, routeTestFile), sample)
+fs.writeFileSync(path.join(constants.VOICES_DIR, routeReuseFile), Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4096, 1)]))
+const routeTestAsset = voiceAssets.upsertVoiceAsset({ id: 'route_test_voice', personaName: 'TestPersona', filename: routeTestFile, displayName: 'Route Test Voice' })
+const routeReuseAsset = voiceAssets.upsertVoiceAsset({ id: 'route_reuse_voice', personaName: 'ReusePersona', filename: routeReuseFile, displayName: 'Route Reuse Voice' })
+fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas', 'SKILL.TestPersona.md'), '---\\nname: TestPersona\\nvoice_id: __cloned__\\nvoice_asset_id: ' + routeTestAsset.id + '\\nvoice_style: 温柔\\n---\\ntest persona')
+fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas', 'SKILL.ReusePersona.md'), '---\\nname: ReusePersona\\nvoice_id: __cloned__\\nvoice_asset_id: ' + routeReuseAsset.id + '\\nvoice_style: 轻快\\n---\\nreuse persona')
+fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas', 'SKILL.OrdinaryPersona.md'), '---\\nname: OrdinaryPersona\\nvoice_id: 冰糖\\nvoice_style: 娲绘臣鍙埍\\n---\\nordinary persona')
+const req = { method: 'GET', headers: { 'x-admin-token': auth.createAdminToken() }, socket: { remoteAddress: '127.0.0.1' } }
+const response = { status: 0, headers: null, body: '' }
+const res = {
+  writeHead(status, headers) { response.status = status; response.headers = headers },
+  end(body) { response.body = body || '' },
+}
+const handler = dashboard.routes['GET /dashboard/api/agent/tts/voices']
+;(async () => {
+  const maybe = handler(req, res)
+  if (maybe && typeof maybe.then === 'function') await maybe
+  const payload = JSON.parse(response.body || '{}')
+  const personas = new Map((payload.personas || []).map(item => [item.name, item]))
+  const clonedVoices = new Map((payload.clonedVoices || []).map(item => [item.id, item]))
+  console.log(JSON.stringify({
+    status: response.status,
+    testHasSample: !!personas.get('TestPersona')?.hasSample,
+    reuseHasSample: !!personas.get('ReusePersona')?.hasSample,
+    ordinaryHasSample: !!personas.get('OrdinaryPersona')?.hasSample,
+    testRefs: clonedVoices.get(routeTestAsset.id)?.referencedBy || [],
+    reuseRefs: clonedVoices.get(routeReuseAsset.id)?.referencedBy || [],
+  }))
+})().catch(error => {
+  console.error(error.stack || error.message || error)
+  process.exit(1)
+})
+`
+  const voicesRouteResult = spawnSync(process.execPath, ['-e', voicesRouteScript], {
+    cwd: path.join(__dirname, '..', '..', '..', '..'),
+    env: { ...process.env, DONGXUELIAN_AI_DATA_DIR: tempDataRoot },
+    encoding: 'utf8',
+  })
+  let voicesRouteSummary = {}
+  try { voicesRouteSummary = JSON.parse(String(voicesRouteResult.stdout || '').trim()) } catch {}
+  t.check('voice route metadata child process passes', voicesRouteResult.status === 0, voicesRouteResult.stderr || voicesRouteResult.stdout)
+  t.check('voice route metadata returns per-persona clone flags', voicesRouteSummary.status === 200 && voicesRouteSummary.testHasSample === true && voicesRouteSummary.reuseHasSample === true && voicesRouteSummary.ordinaryHasSample === false, JSON.stringify(voicesRouteSummary))
+  t.check('voice route metadata keeps references scoped to each asset', Array.isArray(voicesRouteSummary.testRefs) && voicesRouteSummary.testRefs.includes('TestPersona') && Array.isArray(voicesRouteSummary.reuseRefs) && voicesRouteSummary.reuseRefs.includes('ReusePersona'), JSON.stringify(voicesRouteSummary))
   try { fs.rmSync(tempDataRoot, { recursive: true, force: true }) } catch {}
 
   t.section('scenario: rare fixed voice module')

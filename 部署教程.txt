@@ -198,7 +198,9 @@ LianLianBot 传统 Linux 部署教程
 10. 启动 Koishi
 
     cd /root/koishi-app
-    nohup npx koishi start >> koishi.log 2>&1 &
+    KOISHI_DIR=/root/koishi-app \
+    DONGXUELIAN_AI_DATA_DIR=/root/koishi-app/data \
+    nohup node /root/koishi-app/node_modules/koishi/bin.js start >> koishi.log 2>&1 &
 
 11. 验证
 
@@ -227,8 +229,8 @@ LianLianBot 传统 Linux 部署教程
     root@服务器IP:/root/koishi-app/data/ai-skills/personas/
   scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.特蕾西娅.md" \
     root@服务器IP:/root/koishi-app/data/ai-skills/personas/
-  # 重启 Koishi
-  ssh root@服务器IP "pkill -f 'koishi/lib/worker'; sleep 3; cd /root/koishi-app && npx koishi start"
+  # 重启服务
+  ssh root@服务器IP "bash /root/koishi-app/restart.sh"
 
 方式 B：scripts/ 按插件更新（推荐）
   scripts/ 目录下每个插件都有独立的部署脚本，共享 deploy-package.sh 工具：
@@ -263,7 +265,7 @@ LianLianBot 传统 Linux 部署教程
 方式 C：远程一键重启（已经部署完成后快速重启）
   如果你只是修改了 koishi.yml 或 data 目录下的配置文件，不需要更新代码：
 
-  ssh root@服务器IP "cd /root/koishi-app && pkill -f 'koishi/lib/worker' && sleep 3 && npx koishi start"
+  ssh root@服务器IP "bash /root/koishi-app/restart.sh"
 
 
 环境变量覆盖
@@ -287,7 +289,7 @@ LianLianBot 传统 Linux 部署教程
 --------
 
 查看 bot 日志：              tail -f /root/koishi-app/koishi.log
-重启 Koishi：               pkill -f 'koishi/lib/worker'; sleep 3; cd /root/koishi-app && npx koishi start
+重启服务：                  bash /root/koishi-app/restart.sh
 查看 NapCat（看二维码）：    screen -r napcat（Ctrl+A D 分离）
 重启 NapCat：               screen -S napcat -X quit
                              screen -dmS napcat bash -c \
