@@ -273,9 +273,9 @@ plugins:
     endpoint: ws://127.0.0.1:8080/onebot/v11/ws
   group-name-at:nyxxfd: {}
   dongxuelian-help:rlmpxx: {}
+  koishi-plugin-defense:xlyp9f: {}
   dongxuelian-ai:hdi04m: {}
   dongxuelian-poke:nxf8l0: {}
-  koishi-plugin-defense:xlyp9f: {}
   local-video-sender:k2w0u7: {}
   group-leave-notice:h6lfrz: {}
   daily-report: {}
