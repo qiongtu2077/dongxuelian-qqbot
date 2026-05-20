@@ -154,7 +154,7 @@ async function continueAgent({ messages, config, tools, allowedToolNames, channe
         if (webSearchTotal > MAX_WEB_SEARCH_CALLS) {
           const blockMsg = `web_search 已调用 ${webSearchTotal - 1} 次。请基于现有搜索结果给出最佳回答，不要再调用搜索。`
           roundToolResults.push({ name: 'web_search', result: blockMsg, status: 'done' })
-          messages.push({ role: 'tool', tool_call_id: tc.id, content: externalizeToolResult(blockMsg, 'web_search') })
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: await externalizeToolResult(blockMsg, 'web_search') })
           continue
         }
       }
@@ -169,7 +169,7 @@ async function continueAgent({ messages, config, tools, allowedToolNames, channe
         const resultText = String(outcome.result || '').slice(0, 8000)
         toolResults.push({ name: currentCall.function.name, result: resultText })
         roundToolResults.push({ name: currentCall.function.name, result: resultText, status: outcome.status })
-        messages.push({ role: 'tool', tool_call_id: currentCall.id, content: externalizeToolResult(outcome.result, currentCall.function.name) })
+        messages.push({ role: 'tool', tool_call_id: currentCall.id, content: await externalizeToolResult(outcome.result, currentCall.function.name) })
         if (outcome.status !== 'fallback' || !outcome.fallbackCall) break
         currentCall = outcome.fallbackCall
         messages.push({
@@ -254,7 +254,7 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
       return { reply: outcome.reply, toolCalls: 0, pendingId: outcome.pendingId, toolResults }
     }
     toolResults.push({ name: call.function.name, result: String(outcome.result || '').slice(0, 8000) })
-    messages.push({ role: 'tool', tool_call_id: call.id, content: externalizeToolResult(outcome.result, call.function.name) })
+    messages.push({ role: 'tool', tool_call_id: call.id, content: await externalizeToolResult(outcome.result, call.function.name) })
   }
   const agentResult = await continueAgent({ messages, config, tools, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolResults, onProgress, bot, enableThinking })
   onAgentReplyComplete({ userId, channel, messages }).catch(e => console.warn('[agent-engine] onAgentReplyComplete error:', e.message || e))
@@ -270,7 +270,7 @@ async function resumePending({ channelKey, userId, channel = 'qq', expectedId = 
   const allowedToolNames = new Set(tools.map(item => item.function && item.function.name).filter(Boolean))
   const resume = p.resume || {}
   const messages = Array.isArray(resume.messages) ? resume.messages.slice() : []
-  messages.push({ role: 'tool', tool_call_id: resume.toolCallId || p.id, content: externalizeToolResult(executed.result || executed.message || '', p.toolName) })
+  messages.push({ role: 'tool', tool_call_id: resume.toolCallId || p.id, content: await externalizeToolResult(executed.result || executed.message || '', p.toolName) })
   if (executed.ok) {
     recordCall(p.toolName, channel, { ok: true, tokens: estimateTokens([{ role: 'tool', content: executed.result || '' }]) })
   }

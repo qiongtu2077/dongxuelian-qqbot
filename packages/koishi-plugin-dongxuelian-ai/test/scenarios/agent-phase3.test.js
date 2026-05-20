@@ -162,9 +162,18 @@ async function run(t) {
     const bot = { async sendMessage(channelKey, text) { sent.push({ channelKey, text }) } }
     const push = require('../../lib/agent/push')
     t.check('push first send succeeds', (await push.send({ channelKey: 'g1', text: 'hello', bot, reason: 'scenario' })).ok)
-    t.checkEqual('push quota restores from audit log', push.getQuota('g1').used, 1)
+    t.checkEqual('push quota restores from audit log', (await push.getQuota('g1')).used, 1)
     t.check('push second send is rate limited', !(await push.send({ channelKey: 'g1', text: 'again', bot, reason: 'scenario' })).ok)
     t.checkEqual('push bot send called once', sent.length, 1)
+    config.push.dailyLimit = 1
+    await agentConfig.saveAgentConfig(config)
+    const concurrentSent = []
+    const concurrentBot = { async sendMessage(channelKey, text) { await new Promise(resolve => setTimeout(resolve, 5)); concurrentSent.push({ channelKey, text }) } }
+    const concurrent = await Promise.all([
+      push.send({ channelKey: 'g2', text: 'first', bot: concurrentBot, reason: 'scenario_concurrent' }),
+      push.send({ channelKey: 'g2', text: 'second', bot: concurrentBot, reason: 'scenario_concurrent' }),
+    ])
+    t.check('push concurrent sends respect quota', concurrent.filter(item => item.ok).length === 1 && concurrentSent.length === 1, JSON.stringify({ concurrent, concurrentSent }))
 
     config.cron.enabled = true
     await agentConfig.saveAgentConfig(config)

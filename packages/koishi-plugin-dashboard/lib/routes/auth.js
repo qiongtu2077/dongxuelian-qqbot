@@ -6,6 +6,7 @@ const {
   isLocalAuthBypass, isLoginRateLimited, recordLoginFailure, clearLoginFails,
   getAccessPassword, getAdminPassword, createToken, createAdminToken,
   validateToken, requireAdmin, getResetToken, generateResetToken,
+  safeCompare,
 } = require('../auth')
 const { ADMIN_PWD_FILE, ACCESS_PWD_FILE, LEGACY_ACCESS_PWD_FILE } = require('../paths')
 
@@ -22,7 +23,7 @@ function handleLogin(req, res) {
         log('login rejected: access password is not configured')
         return json(res, { ok: false, message: '访问密码未配置' }, 503)
       }
-      const match = isLocalAuthBypass(req) || (!!stored && password === stored)
+      const match = isLocalAuthBypass(req) || (!!stored && safeCompare(password, stored))
       if (match) {
         clearLoginFails(loginIp)
         return json(res, { ok: true, token: createToken() })
@@ -39,7 +40,7 @@ function handleAdminVerify(req, res) {
   collectBody(req, res, (body) => {
     try {
       const { password } = JSON.parse(body)
-      if (password === getAdminPassword()) return json(res, { ok: true, token: createAdminToken(), accessToken: createToken() })
+      if (safeCompare(password, getAdminPassword())) return json(res, { ok: true, token: createAdminToken(), accessToken: createToken() })
       return json(res, { ok: false, message: '管理员密码错误' }, 401)
     } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
   })
@@ -58,7 +59,7 @@ function handleChangePassword(req, res) {
         return json(res, { ok: false, message: '密码仅支持大小写字母、数字、下划线和常见特殊字符' }, 400)
       }
       if (type === 'admin') {
-        if (oldPassword !== getAdminPassword()) return json(res, { ok: false, message: '当前管理员密码错误' }, 401)
+        if (!safeCompare(oldPassword, getAdminPassword())) return json(res, { ok: false, message: '当前管理员密码错误' }, 401)
         writeFileSyncSafe(ADMIN_PWD_FILE, newPassword)
         return json(res, { ok: true, message: '管理员密码已更新' })
       } else if (type === 'access') {
@@ -78,7 +79,9 @@ function handleResetPassword(req, res) {
     try {
       const { resetToken } = JSON.parse(body)
       const stored = getResetToken()
-      if (!stored || !resetToken || resetToken.trim() !== stored.trim()) {
+      const inputToken = String(resetToken || '').trim()
+      const storedToken = String(stored || '').trim()
+      if (!storedToken || !inputToken || !safeCompare(inputToken, storedToken)) {
         return json(res, { ok: false, message: '重置令牌无效' }, 403)
       }
       try { fs.unlinkSync(ACCESS_PWD_FILE) } catch {}

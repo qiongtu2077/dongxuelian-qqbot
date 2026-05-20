@@ -16,6 +16,23 @@ function redact(text = '') {
   return String(text).replace(SECRET_RE, m => m.replace(/([=:：\s]+).+$/, '$1[REDACTED]'))
 }
 
+function escapeRegExp(text = '') {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function isUnsafeRegexQuery(query = '') {
+  return /([+*{])\1|\(\?[^)]*[+*]|\([^)]*[+*?{][^)]*\)[+*?{]|\[[^\]]*\][+*?{]\s*[+*?{]/.test(String(query || ''))
+}
+
+function buildQueryRegExp(query = '') {
+  try {
+    if (isUnsafeRegexQuery(query)) throw new Error('unsafe regex')
+    return new RegExp(query, 'i')
+  } catch {
+    return new RegExp(escapeRegExp(query), 'i')
+  }
+}
+
 async function collectLogFiles() {
   const files = []
   for (const dir of LOG_DIRS) {
@@ -96,8 +113,7 @@ module.exports = {
       return matches.length ? `最近 ${matches.length} 条日志：\n${matches.join('\n')}` : '未找到日志。'
     }
 
-    let regex
-    try { regex = new RegExp(query, 'i') } catch { regex = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }
+    const regex = buildQueryRegExp(query)
     for (const file of files) {
       const stat = await fs.stat(file).catch(() => null)
       if (!stat || stat.size > MAX_FILE_BYTES || (since && stat.mtimeMs < since)) continue

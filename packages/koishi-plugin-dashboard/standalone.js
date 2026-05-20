@@ -23,6 +23,18 @@ process.on('unhandledRejection', (reason) => {
 })
 
 const MAX_STATIC_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_STATIC_FILE_BYTES, 32 * 1024 * 1024, 1024 * 1024, 256 * 1024 * 1024)
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self' ws: wss:",
+  "frame-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "frame-ancestors 'self'",
+].join('; ')
 
 // ====== HTTP 服务器 ======
 
@@ -33,6 +45,8 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-Token')
+  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY)
+  res.setHeader('X-Content-Type-Options', 'nosniff')
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204)
@@ -44,8 +58,7 @@ const server = http.createServer(async (req, res) => {
   if (pathname.startsWith('/webui/') || pathname === '/webui') {
     if (!requireAdmin(req, res)) return
     const nToken = process.env.NAPCAT_TOKEN || getNapcatToken()
-    const sep = url.search ? '&' : '?'
-    return napcatProxy(req, res, pathname + url.search + (nToken ? sep + 'webui_token=' + encodeURIComponent(nToken) : ''))
+    return napcatProxy(req, res, pathname + url.search, null, { token: nToken })
   }
   if (pathname.startsWith('/api/') && !pathname.startsWith('/dashboard/api/')) {
     if (!requireAdmin(req, res)) return

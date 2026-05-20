@@ -5,7 +5,7 @@
  * 状态: externalResultCounter (number)。
  */
 
-const fs = require('fs')
+const fsp = require('fs/promises')
 const path = require('path')
 const { DATA_DIR } = require('../constants')
 
@@ -46,13 +46,13 @@ function buildContextReport(messages = []) {
   }
 }
 
-function externalizeToolResult(text = '', toolName = 'tool', maxInlineChars = 8000) {
+async function externalizeToolResult(text = '', toolName = 'tool', maxInlineChars = 8000) {
   const s = String(text)
   if (s.length <= maxInlineChars) return s
   const safeName = String(toolName || 'tool').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || 'tool'
-  if (!toolResultsDirReady) { fs.mkdirSync(TOOL_RESULTS_DIR, { recursive: true }); toolResultsDirReady = true }
+  if (!toolResultsDirReady) { await fsp.mkdir(TOOL_RESULTS_DIR, { recursive: true }); toolResultsDirReady = true }
   const file = path.join(TOOL_RESULTS_DIR, `${Date.now()}-${++externalResultCounter}-${safeName}.txt`)
-  fs.writeFileSync(file, s, 'utf8')
+  await fsp.writeFile(file, s, 'utf8')
   return `${s.slice(0, maxInlineChars)}\n...(结果截断，共 ${s.length} 字符；完整结果已保存：${file})`
 }
 
