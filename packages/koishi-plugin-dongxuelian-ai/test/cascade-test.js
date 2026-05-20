@@ -566,6 +566,7 @@ async function main() {
     agentToolGetTokenUsage: path.join(LIB, 'agent', 'tools', 'get-token-usage'),
     agentToolSetUserTimezone: path.join(LIB, 'agent', 'tools', 'set-user-timezone'),
     agentToolQueryLogs: path.join(LIB, 'agent', 'tools', 'query-logs'),
+    rareVoice: path.join(LIB, 'rare-voice'),
     index: path.join(LIB, 'index'),
     voice: path.join(LIB, 'voice'),
     tts: path.join(LIB, 'tts'),
@@ -682,6 +683,9 @@ async function main() {
       'classifySendError', 'sanitizeForRateLimit', 'computeBackoffMs',
       'sleepForRateLimitRetry', 'getSendChannelKey', 'getCachedPlatformMuteStatus',
       'markPlatformMute', 'clearPlatformMute', 'checkPlatformMuteStatus',
+    ],
+    rareVoice: [
+      'shouldTriggerRareVoice', 'readRareVoiceAudioBuffer', 'resolveRareVoiceSource', 'prepareRareVoiceWav',
     ],
     agentEngine: [
       'run', 'resumePending',
@@ -926,6 +930,7 @@ async function main() {
     path.join(LIB, 'agent', 'tools', 'get-token-usage.js'),
     path.join(LIB, 'agent', 'tools', 'set-user-timezone.js'),
     path.join(LIB, 'agent', 'tools', 'query-logs.js'),
+    path.join(LIB, 'rare-voice.js'),
     path.join(LIB, 'voice.js'),
     path.join(LIB, 'tts.js'),
     path.join(LIB, 'image-store.js'),
@@ -937,7 +942,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'agent-chat-bridge.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'agent-chat-bridge.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -1813,6 +1818,7 @@ async function main() {
   check('deploy helper exists', deployHelper.includes('deploy-package.sh <package-dir>'))
   check('deploy helper uses package source', deployHelper.includes('REPO_ROOT') && deployHelper.includes('/packages/'))
   check('deploy helper syntax checks js', deployHelper.includes('node -c "$js_file"'))
+  check('deploy helper copies package assets', deployHelper.includes('cp -R "$SRC/assets" "$DEST/assets"'))
   check('deploy helper refuses unsafe destination', deployHelper.includes('Refusing to remove unsafe destination'))
   check('deploy helper normalizes old koishi keys', deployHelper.includes('renamed koishi entry'))
   const deployMap = {

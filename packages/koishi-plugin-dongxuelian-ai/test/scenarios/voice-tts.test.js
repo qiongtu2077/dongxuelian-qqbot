@@ -58,6 +58,18 @@ async function run(t) {
     return result.voice === '冰糖' && result.style === '活泼可爱'
   })())
 
+  t.section('scenario: rare fixed voice module')
+
+  const rareVoice = require('../../lib/rare-voice')
+
+  t.check('shouldTriggerRareVoice ignores non-rare meta', !rareVoice.shouldTriggerRareVoice({}, () => 0))
+  t.check('shouldTriggerRareVoice triggers below half', rareVoice.shouldTriggerRareVoice({ rareConfirmed: true }, () => 0.49))
+  t.check('shouldTriggerRareVoice skips at half', !rareVoice.shouldTriggerRareVoice({ rareConfirmed: true }, () => 0.5))
+  t.check('resolveRareVoiceSource returns null or mp4', (() => {
+    const source = rareVoice.resolveRareVoiceSource()
+    return source === null || /\.mp4$/i.test(source)
+  })())
+
   t.section('scenario: voice TTS synthesize (mock)')
 
   const originalFetch = global.fetch
