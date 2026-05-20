@@ -216,7 +216,7 @@ export async function fetchAgentSessions() { return get('/agent/sessions', true)
 export async function fetchAgentSession(id) { return get('/agent/sessions/' + encodeURIComponent(id), true) }
 export async function fetchGalleryImages() { return get('/gallery') }
 export async function uploadGalleryImage(data) { return post('/gallery', data, false, 60000) }
-export async function deleteGalleryImage(idOrIds) { return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, true) }
+export async function deleteGalleryImage(idOrIds) { return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, false) }
 export async function updateGalleryImageStyle(id, foilStyle) { return put('/gallery/style', { id, foilStyle }, false) }
 
 export async function fetchKeysUsage() { return get('/keys/usage') }

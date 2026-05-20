@@ -5,7 +5,6 @@ const path = require('path')
 const crypto = require('crypto')
 const { json, log, collectBody, isInsidePath, parsePositiveInt } = require('../utils')
 const { GALLERY_DIR, GALLERY_METADATA_FILE, GALLERY_MAX_BYTES, GALLERY_MIME_EXT, GALLERY_FOIL_STYLES } = require('../paths')
-const { requireAdmin } = require('../auth')
 
 const MAX_GALLERY_METADATA_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_METADATA_MAX_BYTES, 256 * 1024, 16 * 1024, 1024 * 1024)
 
@@ -172,7 +171,6 @@ function handleGetGallery(req, res) {
 }
 
 function handlePostGallery(req, res) {
-  if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
       const item = writeGalleryImage(JSON.parse(body || '{}'))
@@ -182,7 +180,6 @@ function handlePostGallery(req, res) {
 }
 
 function handleDeleteGallery(req, res) {
-  if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
       const { id, ids } = JSON.parse(body || '{}')
@@ -194,7 +191,6 @@ function handleDeleteGallery(req, res) {
 }
 
 function handlePutGalleryStyle(req, res) {
-  if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
       const { id, foilStyle } = JSON.parse(body || '{}')
