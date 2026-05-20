@@ -7,6 +7,7 @@
 const getTimeTool = require('./get-time')
 const calculatorTool = require('./calculator')
 const webSearchTool = require('./web-search')
+const webFetchTool = require('./web-fetch')
 const readAgentSkillTool = require('./read-agent-skill')
 const readFileTool = require('./read-file')
 const listFilesTool = require('./list-files')
@@ -28,7 +29,7 @@ const planTools = require('../plan/plan-tools')
 const memoryTools = require('./memory-tools')
 const { getAgentConfig } = require('../config')
 
-const tools = [getTimeTool, calculatorTool, webSearchTool, readAgentSkillTool, readFileTool, listFilesTool, findFilesTool, writeFileTool, editFileTool, shellTool, browserActionTool, appendFileTool, grepSearchTool, executeJavascriptTool, sendFileToUserTool, getTokenUsageTool, setUserTimezoneTool, queryLogsTool, readImageUrlsTool, analyzeImageTool, ...planTools.tools, ...memoryTools.tools]
+const tools = [getTimeTool, calculatorTool, webSearchTool, webFetchTool, readAgentSkillTool, readFileTool, listFilesTool, findFilesTool, writeFileTool, editFileTool, shellTool, browserActionTool, appendFileTool, grepSearchTool, executeJavascriptTool, sendFileToUserTool, getTokenUsageTool, setUserTimezoneTool, queryLogsTool, readImageUrlsTool, analyzeImageTool, ...planTools.tools, ...memoryTools.tools]
 
 const TOOL_TIMEOUT_MS = 90000
 
@@ -92,7 +93,7 @@ function getToolSummaries(channel = '') {
       dangerous: !!tool.dangerous,
       readOnly: !tool.dangerous && !/write|edit|append|shell|javascript|browser|cookie|memory|plan/i.test(name),
       write: /write|edit|append|shell|javascript|remember|forget|create_plan|update_task_status|finish_plan|abandon_plan/i.test(name),
-      external: name === 'web_search' || name === 'browser_action',
+      external: name === 'web_search' || name === 'web_fetch' || name === 'browser_action',
       defaultChannels,
       channels,
       enabled: channel ? !!config.channels?.[channel]?.tools?.[name] : undefined,

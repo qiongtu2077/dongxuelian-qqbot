@@ -56,6 +56,31 @@ function extractSearchSummary(text = '') {
   return kept.join('\n').slice(0, MAX_TOOL_SUMMARY_CHARS)
 }
 
+function extractFetchSummary(text = '') {
+  const value = normalizeText(text)
+  if (!value) return ''
+  const lines = value
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+  const kept = []
+  let bodyStarted = false
+  for (const line of lines) {
+    if (/^(已读取网页|web_fetch 未读到可靠正文|web_fetch 失败|URL：|最终 URL：|状态：|类型：|标题：|提示：)/.test(line)) {
+      kept.push(line)
+      continue
+    }
+    if (/^正文/.test(line)) {
+      bodyStarted = true
+      kept.push(line)
+      continue
+    }
+    if (bodyStarted) kept.push(line)
+    if (kept.join('\n').length >= 1200) break
+  }
+  return kept.join('\n').slice(0, 1200)
+}
+
 function summarizeAgentToolResults(toolResults = []) {
   const items = Array.isArray(toolResults) ? toolResults : []
   const parts = []
@@ -63,7 +88,11 @@ function summarizeAgentToolResults(toolResults = []) {
     const name = String(item && item.name || 'tool')
     const text = String(item && item.result || '')
     if (!text) continue
-    const summary = name === 'web_search' ? extractSearchSummary(text) : normalizeText(text).slice(0, 500)
+    const summary = name === 'web_search'
+      ? extractSearchSummary(text)
+      : name === 'web_fetch'
+        ? extractFetchSummary(text)
+        : normalizeText(text).slice(0, 500)
     if (summary) parts.push(`[${name}]\n${summary}`)
   }
   return parts.join('\n\n').slice(0, MAX_TOOL_SUMMARY_CHARS)
@@ -134,6 +163,7 @@ module.exports = {
   buildAgentContextKey,
   summarizeAgentToolResults,
   extractSearchSummary,
+  extractFetchSummary,
   recordAgentChatResult,
   getRecentAgentContextNote,
   clearAgentChatBridge,
