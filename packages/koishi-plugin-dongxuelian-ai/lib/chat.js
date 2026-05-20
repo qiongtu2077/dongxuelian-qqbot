@@ -1060,7 +1060,7 @@ async function chat(session, userText, ctx, options = {}) {
 
   if (wasVisionRequest && channelKey && session.messageId && finalReply) {
     const { markAnalyzed } = require('./image-store')
-    markAnalyzed(channelKey, session.messageId, finalReply.slice(0, 200))
+    await markAnalyzed(channelKey, session.messageId, finalReply.slice(0, 200))
   }
 
   saveConversationTurn(session, currentUserMessage, finalReply)

@@ -191,7 +191,7 @@ function saveConversationTurn(session, userText, replyText) {
     diskData.messages = mergeConversationMessages(diskData.messages, conversationCache.get(key))
     diskData.totalCount = Math.max(Number(diskData.totalCount || 0), diskData.messages.filter(item => item && item.role === 'user').length)
     const assistantParts = splitSentences(replyText).filter(p => p.trim()).map(part => ({ role: 'assistant', content: normalizeText(part) }))
-    diskData.messages.push({ role: 'user', content: userText }, ...assistantParts); diskData.totalCount++
+    diskData.messages.push({ role: 'user', content: userText, messageId: String(session.messageId || '') }, ...assistantParts); diskData.totalCount++
     if (diskData.messages.length > MAX_HISTORY_MESSAGES) diskData.messages.splice(0, diskData.messages.length - MAX_HISTORY_MESSAGES)
     conversationCache.set(key, diskData.messages.slice(-MEMORY_HISTORY_LIMIT))
     if (diskData.totalCount % 3 === 0) writeConversationDisk(key, diskData)

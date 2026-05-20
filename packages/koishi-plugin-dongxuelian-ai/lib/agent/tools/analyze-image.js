@@ -29,7 +29,7 @@ module.exports = {
     let cachedFile = null
 
     if (!url && messageId && channelKey) {
-      const entry = getImageEntry(channelKey, messageId)
+      const entry = await getImageEntry(channelKey, messageId)
       if (entry) {
         url = entry.url
         cachedFile = entry.file || null
@@ -44,7 +44,7 @@ module.exports = {
 
     let base64 = null
     if (messageId && channelKey) {
-      base64 = readCachedImage(channelKey, messageId)
+      base64 = await readCachedImage(channelKey, messageId)
     }
     if (!base64 && cachedFile) {
       const { callGetImage, readImageAsBase64 } = require('../../api')
@@ -69,8 +69,8 @@ module.exports = {
       if (!analysis) return '视觉模型未返回分析结果。'
 
       if (channelKey && messageId) {
-        markAnalyzed(channelKey, messageId, analysis)
-        replaceImagePlaceholder(channelKey, messageId, analysis)
+        await markAnalyzed(channelKey, messageId, analysis)
+        await replaceImagePlaceholder(channelKey, messageId, analysis)
       }
 
       return `图片分析结果：${analysis}`

@@ -19,7 +19,7 @@ module.exports = {
     const channelKey = context.channelKey || ''
     if (!channelKey) return '无法获取频道信息'
     const limit = Math.min(Math.max(parseInt(params.limit) || 5, 1), 10)
-    const images = getRecentImages(channelKey, limit)
+    const images = await getRecentImages(channelKey, limit)
     if (!images.length) return '最近没有图片记录。'
     return images.map((img, i) => {
       const time = new Date(img.ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
