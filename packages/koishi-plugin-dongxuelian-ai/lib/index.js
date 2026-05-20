@@ -687,8 +687,15 @@ async function safeSendRareVoice(ctx, session) {
   try {
     const { sendVoiceMessage } = require('./tts')
     const audioBuf = await readRareVoiceAudioBuffer()
-    if (!audioBuf) return false
-    return await sendVoiceMessage(session, audioBuf)
+    if (!audioBuf) {
+      try { ctx.logger('dongxuelian-ai').warn('safeSendRareVoice skipped: rare voice audio unavailable') } catch {}
+      return false
+    }
+    const sent = await sendVoiceMessage(session, audioBuf)
+    if (!sent) {
+      try { ctx.logger('dongxuelian-ai').warn('safeSendRareVoice skipped: sendVoiceMessage returned false') } catch {}
+    }
+    return sent
   } catch (error) {
     try {
       ctx.logger('dongxuelian-ai').warn(`safeSendRareVoice failed: ${error.message || error}`)
