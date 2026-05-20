@@ -232,6 +232,58 @@ async function run(t) {
     waitFor: message => String(message).includes('agent-chat-persona-ok'),
   })
 
+  await runChatCase(t, 'group persona still triggers rare reply guard', [
+    { json: { choices: [{ message: { content: '普通人格回复' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario group persona rare trigger sends guarded reply', result, '骂谁罕见')
+    const prompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
+    t.check('scenario group persona rare prompt keeps persona marker', prompt.includes('GROUP_RARE_PERSONA_MARKER'), prompt)
+    t.check('scenario group persona rare prompt injects rare context', prompt.includes('骂谁罕见'), prompt)
+  }, {
+    input: '罕见',
+    setup(session, { data }) {
+      data.writeText('ai-skills/personas/SKILL.group-rare.md', [
+        '---',
+        'name: 群罕见人格',
+        'description: group rare persona test',
+        '---',
+        'GROUP_RARE_PERSONA_MARKER',
+      ].join('\n'))
+      data.writeJson('ai-persona-groups.json', { [session.guildId]: { persona: '群罕见人格' } })
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      persona.loadPersonaGroups()
+      const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
+      return chatModule.loadSkillsContentCache()
+    },
+    waitFor: message => String(message).includes('骂谁罕见'),
+  })
+
+  await runChatCase(t, 'user persona still triggers rare reply guard', [
+    { json: { choices: [{ message: { content: '个人格普通回复' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario user persona rare trigger sends guarded reply', result, '骂谁罕见')
+    const prompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
+    t.check('scenario user persona rare prompt keeps persona marker', prompt.includes('USER_RARE_PERSONA_MARKER'), prompt)
+    t.check('scenario user persona rare prompt injects rare context', prompt.includes('骂谁罕见'), prompt)
+  }, {
+    input: '你是不是罕见',
+    setup(session, { data }) {
+      data.writeText('ai-skills/personas/SKILL.user-rare.md', [
+        '---',
+        'name: 个人罕见人格',
+        'description: user rare persona test',
+        '---',
+        'USER_RARE_PERSONA_MARKER',
+      ].join('\n'))
+      data.writeJson('ai-persona-users.json', { [session.userId]: '个人罕见人格' })
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      persona.loadPersonaUsers()
+      const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
+      return chatModule.loadSkillsContentCache()
+    },
+    waitFor: message => String(message).includes('骂谁罕见'),
+  })
+
   await runChatCase(t, 'QQ Agent skill prompt uses compact index', [
     { json: { choices: [{ message: { content: 'agent-skill-index-raw' } }] } },
     { json: { choices: [{ message: { content: 'agent-skill-index-ok' } }] } },

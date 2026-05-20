@@ -691,7 +691,7 @@ async function chat(session, userText, ctx, options = {}) {
     })
   }
 
-  let rareConfirmed = !personaName && wideRareHit
+  let rareConfirmed = wideRareHit
   if (rareConfirmed && !isRareProvocation(cleanInput) && !japanLinked) {
     try {
       const cfg = await loadConfig()
