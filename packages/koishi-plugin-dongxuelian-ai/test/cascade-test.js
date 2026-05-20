@@ -450,7 +450,7 @@ async function main() {
   check('npm check includes AI agent tool syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/calculator.js'))
   check('npm check includes AI retaliation syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/retaliation.js'))
   check('npm check includes dashboard standalone syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dashboard/standalone.js'))
-  check('npm check includes dashboard electron deployer helper syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dashboard/frontend/src/electron-deployer.js'))
+  check('npm check includes dashboard electron deployer helper syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node --check --input-type=module < packages/koishi-plugin-dashboard/frontend/src/electron-deployer.js'))
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
   check('workspace package glob exists', Array.isArray(rootPkg.workspaces) && rootPkg.workspaces.includes('packages/*'))
 
@@ -1227,6 +1227,17 @@ async function main() {
   const textRepeat = candidate({ content: STR.grass }, STR.grass)
   check('repeat text supported', textRepeat.supported && textRepeat.kind === 'text')
   checkEqual('repeat text key', textRepeat.key, `text:${STR.grass}`)
+  const repeatModule = modules.repeat
+  const repeatEnabled = repeatModule.getRepeatEnabledCache()
+  repeatEnabled['cascade-repeat-prune'] = true
+  repeatModule.clearRepeatState('cascade-repeat-prune')
+  const repeatStateSizeBefore = repeatModule.getRepeatStateSize()
+  const repeatPruneCandidate = { key: 'text:cascade-repeat-prune', reply: 'cascade-repeat-prune', kind: 'text', supported: true }
+  repeatModule.checkGroupRepeat({ isDirect: false }, repeatPruneCandidate, 'cascade-repeat-prune', 'u1', 100000)
+  check('repeat state records active channel', repeatModule.getRepeatStateSize() === repeatStateSizeBefore + 1)
+  repeatModule.pruneRepeatState(100000 + 120001)
+  check('repeat state prunes expired channels', repeatModule.getRepeatStateSize() <= repeatStateSizeBefore)
+  delete repeatEnabled['cascade-repeat-prune']
 
   section('9. handler command routing')
   const statusRun = await runHandler(CMD.aiStatus)
@@ -1375,10 +1386,11 @@ async function main() {
   const bridgeNoteMissing = modules.agentChatBridge.getRecentAgentContextNote({ channelKey: 'cascade-channel', userId: 'cascade-user', userMessage: '你刚刚搜到什么' })
   checkEqual('agent chat bridge is empty before record', bridgeNoteMissing, '')
   modules.agentChatBridge.clearAgentChatBridge()
-  const externalized = modules.agentContext.externalizeToolResult('x'.repeat(8100), 'cascade-test-tool', 100)
+  const externalized = await modules.agentContext.externalizeToolResult('x'.repeat(8100), 'cascade-test-tool', 100)
   const externalizedPath = externalized.match(/完整结果已保存：(.+)\)$/)?.[1] || ''
   check('agent context externalizes long tool results', externalized.includes('完整结果已保存') && fs.existsSync(externalizedPath))
   if (externalizedPath) { try { fs.unlinkSync(externalizedPath) } catch {} }
+  check('agent context externalizeToolResult is async', modules.agentContext.externalizeToolResult('short') instanceof Promise)
   check('agent skills parses frontmatter name', modules.agentSkills.parseFrontmatter('---\nname: Demo\ndescription: Test\n---\nbody').name === 'Demo')
   check('agent skill summary ignores empty selection', modules.agentSkills.buildAgentSkillSummary([]) === '')
   check('agent skill index excludes personas', modules.agentSkills.listAgentSkills().every(skill => skill.kind !== 'persona'))
@@ -1454,6 +1466,7 @@ async function main() {
     const isolatedShell = require(path.join(LIB, 'agent', 'tools', 'shell'))
     const isolatedAppendFile = require(path.join(LIB, 'agent', 'tools', 'append-file'))
     const isolatedGrepSearch = require(path.join(LIB, 'agent', 'tools', 'grep-search'))
+    const isolatedQueryLogs = require(path.join(LIB, 'agent', 'tools', 'query-logs'))
     const isolatedExecuteJavascript = require(path.join(LIB, 'agent', 'tools', 'execute-javascript'))
     const isolatedGetTokenUsage = require(path.join(LIB, 'agent', 'tools', 'get-token-usage'))
     const isolatedSetUserTimezone = require(path.join(LIB, 'agent', 'tools', 'set-user-timezone'))
@@ -1517,6 +1530,10 @@ async function main() {
     check('agent append_file appends allowed text file', appendResult.includes(writeTarget) && read(writeTarget).includes('append'))
     const grepResult = await isolatedGrepSearch.execute({ path: writeRoot, query: 'append', glob: '*.txt' })
     check('agent grep_search finds allowed file content', grepResult.includes('append'))
+    fs.mkdirSync(path.join(agentTmp, 'logs'), { recursive: true })
+    fs.writeFileSync(path.join(agentTmp, 'logs', 'cascade.log'), 'literal dangerous pattern (a+)+ should be searchable\n', 'utf8')
+    const queryLogsResult = await isolatedQueryLogs.execute({ query: '(a+)+', since: '1970-01-01' })
+    check('agent query_logs treats unsafe regex as literal search', queryLogsResult.includes('literal dangerous pattern (a+)+'))
     check('agent execute_javascript computes data', await isolatedExecuteJavascript.execute({ code: '1 + 2' }) === '3')
     try {
       await isolatedExecuteJavascript.execute({ code: 'process.exit()' })
@@ -1967,6 +1984,7 @@ async function main() {
   check('conversation.js does not import index.js', !conversationSrc.includes("require('./index')") && !conversationSrc.includes('require("./index")'))
   check('utils.js does not import ABUSIVE_FALLBACK_REPLIES', !utilsSrc.includes('ABUSIVE_FALLBACK_REPLIES'))
   check('utils.js does not import REPEATED_FALLBACK_REPLIES', !utilsSrc.includes('REPEATED_FALLBACK_REPLIES'))
+  check('utils thinking leak guard uses bounded pattern list', utilsSrc.includes('THINKING_LEAK_PATTERNS') && utilsSrc.includes('THINKING_LEAK_INPUT_MAX_CHARS') && !utilsSrc.includes('收到.*新消息'))
   check('api.js does not import isOpenAIOfficialConfig', !apiSrc.includes('isOpenAIOfficialConfig'))
   check('message-reader does not export stripUrls', !/^\s{2}stripUrls,/m.test(msgSrc))
   check('message-reader does not export sanitizeDisplayName', !/^\s{2}sanitizeDisplayName,/m.test(msgSrc))
@@ -1977,6 +1995,12 @@ async function main() {
   check('chat.js keeps block-scoped declarations', !/\bvar\b/.test(chatSrc))
   check('dashboard hashes large files with bounded chunks', dashboardStandaloneSrc.includes('HASH_CHUNK_BYTES') && dashboardStandaloneSrc.includes('fs.readSync') && !dashboardStandaloneSrc.includes("crypto.createHash('sha256').update(fs.readFileSync(filePath))"))
   check('dashboard limits request/download/static/log/preview sizes', dashboardStandaloneSrc.includes('EFFECTIVE_MAX_BODY_SIZE') && dashboardStandaloneSrc.includes('MAX_DOWNLOAD_BYTES') && dashboardStandaloneSrc.includes('MAX_STATIC_FILE_BYTES') && dashboardStandaloneSrc.includes('MAX_DEPLOY_TASK_LOG_BYTES') && dashboardStandaloneSrc.includes('MAX_AGENT_PREVIEW_FILE_BYTES'))
+  check('dashboard sets content security policy', dashboardStandaloneSrc.includes('Content-Security-Policy') && dashboardStandaloneSrc.includes("object-src 'none'"))
+  check('dashboard auth uses timing safe password checks', dashboardStandaloneSrc.includes('safeCompare(password, stored)') && dashboardStandaloneSrc.includes('safeCompare(inputToken, storedToken)') && !dashboardStandaloneSrc.includes('password === stored') && !dashboardStandaloneSrc.includes('resetToken.trim() !== stored.trim()'))
+  check('dashboard deploy task ids use crypto randomness', dashboardStandaloneSrc.includes("crypto.randomBytes(4).toString('hex')") && !dashboardStandaloneSrc.includes('Math.random().toString(36).slice(2, 6)'))
+  check('dashboard napcat proxy avoids token query strings', dashboardStandaloneSrc.includes("opts.headers['webui-token'] = token") && !dashboardStandaloneSrc.includes('webui_token='))
+  check('dashboard deploy downloads limit redirects and json size', dashboardStandaloneSrc.includes('MAX_REDIRECTS') && dashboardStandaloneSrc.includes('MAX_JSON_RESPONSE_BYTES') && dashboardStandaloneSrc.includes('_redirects: redirects + 1') && dashboardStandaloneSrc.includes('GitHub API 响应过大'))
+  check('dashboard deploy download errors unlink partial files', dashboardStandaloneSrc.includes('cleanupPartial') && dashboardStandaloneSrc.includes('fs.unlinkSync(filePath)'))
   check('dashboard limits upload and gallery metadata memory', dashboardStandaloneSrc.includes('MAX_DEPLOY_UPLOAD_BYTES') && dashboardStandaloneSrc.includes('MAX_GALLERY_METADATA_BYTES') && dashboardStandaloneSrc.includes('estimatedBytes'))
   check('dashboard streams file responses', dashboardStandaloneSrc.includes('fs.createReadStream(abs).pipe(res)') && dashboardStandaloneSrc.includes('fs.createReadStream(filePath).pipe(res)'))
   check('daily report renderer guards Chromium memory', dailyRendererSrc.includes('DAILY_REPORT_MIN_MEM_MB') && dailyRendererSrc.includes('MemAvailable') && dailyRendererSrc.includes('MAX_RENDERERS') && dailyRendererSrc.includes('BLOCKED_RESOURCE_TYPES'))
@@ -1985,6 +2009,9 @@ async function main() {
   check('conversation runtime data files have size guards', conversationSrc.includes('MAX_CONVERSATION_FILE_BYTES') && conversationSrc.includes('MAX_USER_PROFILE_FILE_BYTES') && conversationSrc.includes('MAX_DAILY_STATS_FILE_BYTES') && conversationSrc.includes('readJsonFileIfSmallSync'))
   check('utils shared file readers have default size guards', utilsSrc.includes('MAX_TEXT_FILE_BYTES') && utilsSrc.includes('MAX_JSON_FILE_BYTES') && utilsSrc.includes('fs.stat(file)'))
   check('agent push log is tail-read and compacted', agentPushSrc.includes('MAX_PUSH_LOG_READ_BYTES') && agentPushSrc.includes('MAX_PUSH_LOG_FILE_BYTES') && agentPushSrc.includes('Math.max(0, stat.size - readBytes)'))
+  check('agent push log write is serialized', agentPushSrc.includes('pushLogWriteChain') && agentPushSrc.includes('pushLogWriteChain.catch'))
+  check('agent push quota operations are serialized', agentPushSrc.includes('quotaOperationChains') && agentPushSrc.includes('enqueueQuotaOperation'))
+  check('agent push quota restore is async', /async function countLoggedQuota/.test(agentPushSrc) && /async function getQuota/.test(agentPushSrc))
   check('skill/persona loaders skip oversized markdown', skillsLoaderSrc.includes('MAX_SKILL_FILE_BYTES') && personaSrc.includes('MAX_PERSONA_SKILL_BYTES') && agentPersonaSrc.includes('MAX_AGENT_PERSONA_FILE_BYTES'))
   check('agent config cron memory files have size guards', agentConfigSrc.includes('MAX_TOOL_CONFIG_BYTES') && agentCronSrc.includes('MAX_CRON_FILE_BYTES') && agentMemorySrc.includes('MAX_MEMORY_FILE_BYTES'))
   const libJsFiles = []

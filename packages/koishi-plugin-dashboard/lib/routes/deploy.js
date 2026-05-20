@@ -3,6 +3,7 @@
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
+const crypto = require('crypto')
 const { exec, execSync } = require('child_process')
 const { json, collectBody, log, shellQuote, isInsidePath, copyRecursiveSync } = require('../utils')
 const { KOISHI_DIR, DATA_DIR, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, PORT, toProjectRel } = require('../paths')
@@ -68,7 +69,7 @@ function handlePostDeployRun(req, res) {
       if (cfg.mode === 'install') return json(res, { ok: false, message: 'First-time install is not automated yet. Please run setup.sh or a local installer first.' }, 400)
       if (getRebuildStatus().state === 'building') return json(res, { ok: false, message: '前端正在构建中，请等待完成' }, 400)
       if (!cfg.server || !cfg.appDir) return json(res, { ok: false, message: '配置不完整' }, 400)
-      const taskId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+      const taskId = Date.now().toString(36) + crypto.randomBytes(4).toString('hex')
       if (!fs.existsSync(DEPLOY_TASKS_DIR)) fs.mkdirSync(DEPLOY_TASKS_DIR, { recursive: true })
       const logFile = path.join(DEPLOY_TASKS_DIR, taskId + '.log')
       const taskLog = (msg) => { try { fs.appendFileSync(logFile, msg + '\n', 'utf8') } catch {} }

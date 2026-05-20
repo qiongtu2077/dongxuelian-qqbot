@@ -11,6 +11,7 @@ const { getSegmentData, getSessionMessageSegments } = require('./utils')
 
 const REPEAT_MATCH_WINDOW_MS = 120000
 const MAX_REPEAT_CONFIG_BYTES = 128 * 1024
+const MAX_REPEAT_STATE_SIZE = 5000
 const channelRepeatState = new Map()
 let repeatEnabledCache = {}
 
@@ -31,6 +32,21 @@ function getRepeatEnabledCache() {
 function clearRepeatState(channelKey) {
   const key = String(channelKey)
   channelRepeatState.delete(key)
+}
+
+function pruneRepeatState(now = Date.now()) {
+  for (const [key, state] of channelRepeatState) {
+    if (!state || now - (state.ts || 0) > REPEAT_MATCH_WINDOW_MS) channelRepeatState.delete(key)
+  }
+  if (channelRepeatState.size <= MAX_REPEAT_STATE_SIZE) return
+  const ordered = Array.from(channelRepeatState.entries())
+    .sort((a, b) => (a[1].ts || 0) - (b[1].ts || 0))
+  const overflow = channelRepeatState.size - MAX_REPEAT_STATE_SIZE
+  for (let i = 0; i < overflow; i++) channelRepeatState.delete(ordered[i][0])
+}
+
+function getRepeatStateSize() {
+  return channelRepeatState.size
 }
 
 function setRepeatEnabled(channelKey, enabled) {
@@ -130,6 +146,7 @@ function buildRepeatCandidate(session, plain, analyzed = {}) {
 function checkGroupRepeat(session, candidate, channelKey, currentUserId, now = Date.now()) {
   if (session.isDirect) return null
   if (!repeatEnabledCache[channelKey]) return null
+  pruneRepeatState(now)
   if (!candidate || !candidate.supported || !candidate.key || !candidate.reply) {
     channelRepeatState.delete(channelKey)
     return null
@@ -177,6 +194,9 @@ module.exports = {
   loadRepeatConfig,
   setRepeatEnabled,
   getRepeatEnabledCache,
+  clearRepeatState,
+  pruneRepeatState,
+  getRepeatStateSize,
   buildRepeatCandidate,
   checkGroupRepeat,
 }

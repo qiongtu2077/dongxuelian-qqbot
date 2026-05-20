@@ -17,6 +17,8 @@ const { localTasks, getTaskPublicStatus, spawnLocalTask, getNpmDiagnosticsCache,
 const MAX_DOWNLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLOAD_BYTES, 256 * 1024 * 1024, 8 * 1024 * 1024, 2 * 1024 * 1024 * 1024)
 const MAX_DEPLOY_TASK_LOG_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DEPLOY_TASK_LOG_BYTES, 512 * 1024, 64 * 1024, 4 * 1024 * 1024)
 const MAX_DEPLOY_UPLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_DEPLOY_UPLOAD_MAX_BYTES, 1024 * 1024, 4 * 1024, 4 * 1024 * 1024)
+const MAX_REDIRECTS = parsePositiveInt(process.env.DASHBOARD_MAX_REDIRECTS, 5, 0, 20)
+const MAX_JSON_RESPONSE_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_JSON_RESPONSE_BYTES, 10 * 1024 * 1024, 1024, 64 * 1024 * 1024)
 const HASH_CHUNK_BYTES = 64 * 1024
 
 function validateDeployServer(server) {
@@ -274,8 +276,19 @@ function getDownloadFileName(parsed, response, options = {}) {
 function downloadToRuntime(url, options, callback) {
   if (typeof options === 'function') { callback = options; options = {} }
   options = options || {}
+  const redirects = Number(options._redirects || 0)
   let settled = false
-  const finish = (...args) => { if (settled) return; settled = true; callback(...args) }
+  let activeFilePath = ''
+  const cleanupPartial = filePath => {
+    if (!filePath) return
+    try { fs.unlinkSync(filePath) } catch {}
+  }
+  const finish = (err, filePath, detail) => {
+    if (settled) return
+    settled = true
+    if (err && filePath) cleanupPartial(filePath)
+    callback(err, filePath, detail)
+  }
   let parsed
   try { parsed = new URL(url) } catch { finish(new Error('下载地址无效')); return }
   if (!['http:', 'https:'].includes(parsed.protocol)) { finish(new Error('只支持 http/https 下载地址')); return }
@@ -286,7 +299,8 @@ function downloadToRuntime(url, options, callback) {
   const req = client.get(parsed, (response) => {
     if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
       response.resume()
-      downloadToRuntime(new URL(response.headers.location, parsed).toString(), options, finish)
+      if (redirects >= MAX_REDIRECTS) { finish(new Error('下载重定向次数过多')); return }
+      downloadToRuntime(new URL(response.headers.location, parsed).toString(), { ...options, _redirects: redirects + 1 }, finish)
       return
     }
     if (response.statusCode !== 200) { response.resume(); finish(new Error('下载失败：HTTP ' + response.statusCode)); return }
@@ -294,6 +308,7 @@ function downloadToRuntime(url, options, callback) {
     if (Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES) { response.resume(); finish(new Error('下载文件过大：' + declared + ' bytes')); return }
     const name = getDownloadFileName(parsed, response, options)
     const filePath = runtimePath('downloads', name)
+    activeFilePath = filePath
     const stream = fs.createWriteStream(filePath)
     let received = 0
     response.on('data', chunk => {
@@ -306,10 +321,10 @@ function downloadToRuntime(url, options, callback) {
     })
     response.pipe(stream)
     stream.on('finish', () => stream.close(() => { try { finish(null, filePath, validateDownloadedFile(filePath, { ...options, expectedContentType: response.headers['content-type'] })) } catch (e) { finish(e, filePath) } }))
-    stream.on('error', finish)
+    stream.on('error', err => finish(err, filePath))
   })
   req.setTimeout(120000, () => req.destroy(new Error('下载超时')))
-  req.on('error', finish)
+  req.on('error', err => finish(err, activeFilePath))
 }
 
 function psCommandArg(value) { return "'" + String(value).replace(/'/g, "''") + "'" }
@@ -623,17 +638,34 @@ function validateNapcatInstallDir(input) {
   return dir
 }
 
-function httpsGetJson(url, callback) {
+function httpsGetJson(url, callback, redirects = 0) {
+  let settled = false
+  const finish = (err, data) => {
+    if (settled) return
+    settled = true
+    callback(err, data)
+  }
   const req = https.get(url, { headers: { 'User-Agent': 'LianBoard-Dashboard' } }, response => {
-    if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) { response.resume(); httpsGetJson(response.headers.location, callback); return }
-    if (response.statusCode !== 200) { response.resume(); callback(new Error('GitHub API 请求失败：HTTP ' + response.statusCode)); return }
+    if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+      response.resume()
+      if (redirects >= MAX_REDIRECTS) { finish(new Error('GitHub API 重定向次数过多')); return }
+      httpsGetJson(new URL(response.headers.location, url).toString(), finish, redirects + 1)
+      return
+    }
+    if (response.statusCode !== 200) { response.resume(); finish(new Error('GitHub API 请求失败：HTTP ' + response.statusCode)); return }
     let body = ''
     response.setEncoding('utf8')
-    response.on('data', chunk => { body += chunk })
-    response.on('end', () => { try { callback(null, JSON.parse(body)) } catch (e) { callback(e) } })
+    response.on('data', chunk => {
+      body += chunk
+      if (Buffer.byteLength(body, 'utf8') > MAX_JSON_RESPONSE_BYTES) {
+        finish(new Error('GitHub API 响应过大'))
+        try { req.destroy(new Error('response too large')) } catch {}
+      }
+    })
+    response.on('end', () => { try { finish(null, JSON.parse(body)) } catch (e) { finish(e) } })
   })
   req.setTimeout(30000, () => req.destroy(new Error('GitHub API 请求超时')))
-  req.on('error', callback)
+  req.on('error', finish)
 }
 
 function pickNapcatWindowsAsset(release) {
@@ -823,7 +855,7 @@ function prepareNpmInstallRun(options = {}) {
 }
 
 module.exports = {
-  MAX_DOWNLOAD_BYTES, MAX_DEPLOY_TASK_LOG_BYTES, MAX_DEPLOY_UPLOAD_BYTES, HASH_CHUNK_BYTES,
+  MAX_DOWNLOAD_BYTES, MAX_DEPLOY_TASK_LOG_BYTES, MAX_DEPLOY_UPLOAD_BYTES, MAX_REDIRECTS, MAX_JSON_RESPONSE_BYTES, HASH_CHUNK_BYTES,
   validateDeployServer, validateDeployAppDir, validateDeployTarget,
   remoteJoin, sshCommand, scpRemoteTarget, scpCommand,
   hashFile, computeFingerprint, writeDeployFingerprint,

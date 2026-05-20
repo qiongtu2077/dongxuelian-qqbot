@@ -21,12 +21,18 @@ function napcatRespond(res, proxyRes, token) {
   proxyRes.pipe(res)
 }
 
-function napcatProxy(req, res, targetPath, getStatusFn) {
+function napcatProxy(req, res, targetPath, getStatusFn, options = {}) {
   const host = process.env.NAPCAT_HOST || '127.0.0.1'
   const port = resolveNapcatWebuiListenPort()
-  const token = process.env.NAPCAT_TOKEN || getNapcatToken()
+  const token = options.token || process.env.NAPCAT_TOKEN || getNapcatToken()
   const opts = { hostname: host, port, path: targetPath, method: req.method, headers: { ...req.headers, host: host + ':' + port } }
-  if (token) opts.headers['Authorization'] = 'Bearer ' + token
+  delete opts.headers.authorization
+  delete opts.headers['x-napcat-token']
+  delete opts.headers['x-admin-token']
+  if (token) {
+    opts.headers['Authorization'] = 'Bearer ' + token
+    opts.headers['webui-token'] = token
+  }
   const proxyReq = http.request(opts, (proxyRes) => {
     if (proxyRes.statusCode === 401 && token) {
       opts.headers['Authorization'] = ''
