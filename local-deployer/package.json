@@ -51,11 +51,18 @@
       { "from": "../koishi.example.yml", "to": "app/koishi.example.yml" }
     ],
     "win": {
-      "target": "nsis"
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "LianLianBOT-Deployer-Portable-v${version}.${ext}"
     },
     "nsis": {
-      "oneClick": true,
-      "allowToChangeInstallationDirectory": false,
+      "artifactName": "LianLianBOT-Deployer-Setup-v${version}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "莲莲Bot部署器"

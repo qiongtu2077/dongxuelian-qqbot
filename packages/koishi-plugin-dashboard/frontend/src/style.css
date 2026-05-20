@@ -885,6 +885,39 @@ select option { background: var(--surface); color: var(--text) }
 
 .path-control input { min-width: 0 }
 
+.electron-path-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+}
+
+.path-row-list {
+  display: grid;
+  gap: 8px;
+}
+
+.path-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.path-row span {
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.path-row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .deploy-status {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -1903,6 +1936,9 @@ label.uninstall-row { cursor: pointer }
   .station-node::before { display: none }
   .station-title { min-height: 0; text-align: left; justify-content: flex-start }
   .path-control { flex-direction: column }
+  .path-row { grid-template-columns: 1fr auto auto }
+  .path-row span,
+  .path-row code { grid-column: 1 / -1 }
   .danger-zone { flex-direction: column; align-items: stretch }
   .uninstall-summary { grid-template-columns: 1fr }
   .section-head { flex-direction: column; align-items: stretch }
