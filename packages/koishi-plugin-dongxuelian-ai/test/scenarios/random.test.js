@@ -89,6 +89,67 @@ async function run(t) {
       t.check('scenario delayed random calls model after timer', mocked.calls.length === 1, JSON.stringify(mocked.calls))
     })
   })
+
+  await withScenario({
+    fakeTimers: true,
+    data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 1 },
+    },
+  }, async ({ ready, makeSession, run, clock, harness }) => {
+    await ready()
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    conversation.channelSharedCache.set('10001', [
+      { userId: '2004', role: 'user', speakerName: 'member', content: '今天又卡了', messageId: 'm1', replyToId: '', mentionUserIds: [], ts: Date.now() - 5000 },
+      { userId: '2004', role: 'user', speakerName: 'member', content: '真服了', messageId: 'm2', replyToId: 'm1', mentionUserIds: [], ts: Date.now() },
+    ])
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: 'delayed-current-bot-visible' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const liveCalls = []
+      const staleCalls = []
+      const makeInternal = () => ({
+        async getGroupMemberInfo() { return { shut_up_timestamp: 0 } },
+        async getGroupInfo() { return { group_all_shut: false } },
+      })
+      const liveBot = {
+        selfId: '90000',
+        internal: makeInternal(),
+        async sendMessage(channelId, message, guildId) {
+          liveCalls.push({ channelId: String(channelId), message: String(message), guildId: String(guildId || '') })
+          return message
+        },
+      }
+      const staleBot = {
+        selfId: '90000',
+        internal: makeInternal(),
+        async sendMessage(channelId, message, guildId) {
+          staleCalls.push({ channelId: String(channelId), message: String(message), guildId: String(guildId || '') })
+          throw new Error('stale bot used')
+        },
+      }
+      harness.ctx.bots = [liveBot]
+      const session = makeSession({
+        userId: '2004',
+        author: { id: '2004', name: 'member' },
+        content: '真服了',
+        bot: staleBot,
+      })
+      const originalSend = session.send.bind(session)
+      session.send = async function(message) {
+        await this.bot.sendMessage(this.channelId, message, this.guildId)
+        return originalSend(message)
+      }
+      const result = await run(session, { flushTicks: 20 })
+      t.check('scenario delayed random current bot scheduling returns through next', result.nextCalled, JSON.stringify(result))
+      await clock.tick(15000)
+      await flushAsync(120)
+      await session.waitForSend(message => String(message).includes('delayed-current-bot-visible'))
+      t.check('scenario delayed random uses current ctx bot', liveCalls.some(call => call.message.includes('delayed-current-bot-visible')), JSON.stringify({ liveCalls, staleCalls, sent: session.sent }))
+      t.check('scenario delayed random avoids stale session bot', staleCalls.length === 0, JSON.stringify(staleCalls))
+    })
+  })
 }
 
 module.exports = { run }
