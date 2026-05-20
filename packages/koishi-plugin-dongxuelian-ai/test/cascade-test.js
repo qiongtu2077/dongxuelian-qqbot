@@ -832,8 +832,9 @@ async function main() {
       'isChannelOnCooldown', 'markChannelCooldown', 'shouldTriggerRandomVoice', 'getMimoriumKey',
     ],
     voiceAssets: [
-      'sanitizeVoiceAssetId', 'getAudioExtFromMime', 'getAudioMimeFromFilename',
-      'listVoiceAssets', 'findVoiceAsset', 'upsertVoiceAsset',
+      'sanitizeVoiceAssetId', 'createVoiceAssetId', 'buildVoiceAssetFilename',
+      'getAudioExtFromMime', 'getAudioMimeFromFilename',
+      'listVoiceAssets', 'findVoiceAsset', 'listVoiceAssetReferences', 'upsertVoiceAsset',
       'updateVoiceAssetMetadata', 'deleteVoiceAsset', 'resolveVoiceSampleFile',
     ],
     imageStore: [
