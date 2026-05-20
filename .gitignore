@@ -33,3 +33,4 @@ local-deployer/release/
 *.tgz
 .claude/
 AUDIT-REPORT-*.md
+!待完成与待审核任务/AUDIT-REPORT-SUPPLEMENT-2026-05-19.md
