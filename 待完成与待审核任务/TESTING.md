@@ -292,8 +292,8 @@ ssh root@120.55.246.12 "head -3 /root/koishi-app/data/ai-skills/core/SKILL.perso
 ### 4.3 重启
 
 ```bash
-# 杀旧进程（注意：pkill -f "start|koishi" 会误杀 SSH 守护进程！改用精确匹配）
-ssh root@120.55.246.12 "pkill -f 'koishi/lib/worker' 2>/dev/null; sleep 3; cd /root/koishi-app && nohup npm exec koishi start >> koishi.log 2>&1 &"
+# 使用服务器重启脚本：会设置 KOISHI_DIR / DONGXUELIAN_AI_DATA_DIR，并使用本地 koishi binary
+ssh root@120.55.246.12 "bash /root/koishi-app/restart.sh"
 
 # 等待 15 秒后检查
 ssh root@120.55.246.12 "sleep 15 && tail -5 /root/koishi-app/koishi.log"
