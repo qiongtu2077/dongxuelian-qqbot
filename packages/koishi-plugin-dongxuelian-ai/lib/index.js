@@ -29,7 +29,7 @@ const { analyzeIncomingMessage, normalizeText } = require('./message-reader') //
 const { loadStickerCache, sendReply } = require('./reply') // 贴纸缓存加载 + 统一回复发送（含分段/重试）
 const { resolveForwardSummary } = require('./forward') // 合并转发消息摘要提取
 const { prepareVisionRequest, isVisionSession } = require('./vision') // 图片消息构建 + 视觉会话判断
-const { storeImageUrl, cacheImageFile } = require('./image-store') // 图片 URL/文件持久化存储
+const { storeImageUrl } = require('./image-store') // 图片 URL/文件持久化存储
 const { enqueueAnalysis } = require('./image-analyzer') // 图片异步分析队列
 const { transcribeVoice } = require('./voice') // 语音转文字
 const {
@@ -92,6 +92,7 @@ const {
 const {
   channelSharedCache,       // 频道共享消息缓存（群聊上下文窗口）
   channelTodayCache,        // 频道今日统计缓存
+  getConversationKey,       // 用户会话唯一标识生成
   getChannelKey,            // 频道唯一标识生成
   saveSharedChannelTurn,    // 保存群聊共享消息轮次
   findChannelMessageById, collectReplyChain, // 消息查找 + 引用链收集
@@ -247,6 +248,29 @@ if (KoishiSession && KoishiSession.prototype && !KoishiSession.prototype.send) {
   }
 }
 
+function resolveCurrentBot(ctx, fallbackBot = null, selfId = '') {
+  const bots = Array.isArray(ctx?.bots) ? ctx.bots : []
+  const targetSelfId = String(selfId || '')
+  if (targetSelfId) {
+    const matched = bots.find(bot => String(bot?.selfId || '') === targetSelfId)
+    if (matched) return matched
+  }
+  return bots[0] || ctx?.bot || fallbackBot || null
+}
+
+function createBotResolver(ctx, session) {
+  const selfId = String(session?.selfId || session?.bot?.selfId || session?.event?.selfId || '')
+  const fallbackBot = session?.bot || null
+  return () => resolveCurrentBot(ctx, fallbackBot, selfId)
+}
+
+function withCurrentBot(session, bot) {
+  if (!session || !bot || session.bot === bot) return session
+  const runtimeSession = Object.assign(Object.create(Object.getPrototypeOf(session) || Object.prototype), session)
+  runtimeSession.bot = bot
+  return patchEnsureSession(runtimeSession)
+}
+
 exports.name = 'dongxuelian-ai'
 
 let runtimeSettingsLoaded = false
@@ -318,7 +342,8 @@ async function retellAgentResult(agentResult, { ctx, session, channelKey, curren
   }
 }
 
-async function handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered }) {
+async function handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, resolveBot = null }) {
+  const getBot = typeof resolveBot === 'function' ? resolveBot : createBotResolver(ctx, session)
   if (chatResult && typeof chatResult === 'object' && chatResult.heavyToolsRequested) {
     const agentConfig = require('./agent/config').getAgentConfig()
     configureAgentQueue(agentConfig.queue || {})
@@ -329,7 +354,7 @@ async function handleChatResult(chatResult, { ctx, session, channelKey, currentU
         channelKey,
         userId: currentUserId,
         timeoutMs: agentConfig.queue?.timeoutMs,
-        fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, agentMode: true, ...searchRunOptions }),
+        fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: getBot(), agentMode: true, ...searchRunOptions }),
       })
       return retellAgentResult(agentResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, emptyText: '(搜索未获取有效结果)' })
     } catch (error) {
@@ -581,16 +606,17 @@ function logPlatformMute(ctx, status, prefix = 'safeSendReply') {
   ctx.logger('dongxuelian-ai').warn(`${prefix}: platform muted, skipping reply (${status?.reason || '平台禁言'}, until=${until})`)
 }
 
-async function handleRateLimitedSendFailure(ctx, session, error, now) {
+async function handleRateLimitedSendFailure(ctx, session, error, now, resolveBot = null) {
+  const getBot = typeof resolveBot === 'function' ? resolveBot : createBotResolver(ctx, session)
   sendFailState.streak++
   sendFailState.lastFailAt = now
   ctx.logger('dongxuelian-ai').error(`safeSendReply: rate limited (streak=${sendFailState.streak}): ${error.message}`)
   if (sendFailState.streak <= 2) {
     sendFailState.lastNotifyAt = now
-    notifyAdminsSendFailure(ctx, session.bot).catch(() => {})
+    notifyAdminsSendFailure(ctx, getBot()).catch(() => {})
   } else if (now - sendFailState.lastNotifyAt > sendFailState.notifyIntervalMs) {
     sendFailState.lastNotifyAt = now
-    notifyAdminsSendFailure(ctx, session.bot).catch(() => {})
+    notifyAdminsSendFailure(ctx, getBot()).catch(() => {})
   }
   if (sendFailState.streak >= sendFailState.maxStreak) {
     if (now >= sendFailState.restrictedUntil) {
@@ -600,12 +626,13 @@ async function handleRateLimitedSendFailure(ctx, session, error, now) {
     if (!sendFailState.notifyScheduled) {
       sendFailState.notifyScheduled = true
       setTimeout(function() {
+        const bot = getBot()
         const admins = getAdminUserIds(true)
         const unlockMsg = '🔓 30 分钟已过，风控可能已解除。BOT 冻结期还剩约 30 分钟，届时自动恢复。急需使用可重启 BOT。'
         Promise.allSettled([...admins].map(function(id) {
           try {
-            if (typeof session?.bot?.sendPrivateMessage === 'function') {
-              return session.bot.sendPrivateMessage(id, unlockMsg)
+            if (typeof bot?.sendPrivateMessage === 'function') {
+              return bot.sendPrivateMessage(id, unlockMsg)
             }
           } catch {}
         }))
@@ -614,7 +641,7 @@ async function handleRateLimitedSendFailure(ctx, session, error, now) {
   }
 }
 
-async function safeSendReply(ctx, session, reply, isRandom = false) {
+async function safeSendReply(ctx, session, reply, isRandom = false, resolveBot = null) {
   const now = Date.now()
   // 冻结到期后重置通知标记
   if (now >= sendFailState.restrictedUntil && sendFailState.notifyScheduled) {
@@ -676,7 +703,7 @@ async function safeSendReply(ctx, session, reply, isRandom = false) {
         await sleepForRateLimitRetry(ctx, attempt)
         continue
       }
-      await handleRateLimitedSendFailure(ctx, session, error, Date.now())
+      await handleRateLimitedSendFailure(ctx, session, error, Date.now(), resolveBot)
       throw error
     }
   }
@@ -769,6 +796,7 @@ exports.apply = (ctx) => {
   ctx.middleware(async (session, next) => {
     const content = session.content || ''
     const selfId = String(session.selfId || session.bot?.selfId || '')
+    const resolveBot = createBotResolver(ctx, session)
     if (selfId && String(session.userId || session.author?.id || '') === selfId) return next()
 
     await loadRuntimeSettings()
@@ -817,14 +845,15 @@ exports.apply = (ctx) => {
       const imgSeg = segments.find(s => s.type === 'image')
       const imgFile = imgSeg?.data?.file || null
       const imgUrl = imgSeg?.data?.url || ''
+      const imageMeta = { conversationKey: getConversationKey(session), userId: session.userId || session.author?.id || session.username || '' }
       if (imgUrl && /^https?:\/\//.test(imgUrl)) {
-        storeImageUrl(channelKey, session.messageId, imgUrl, imgFile)
+        await storeImageUrl(channelKey, session.messageId, imgUrl, imgFile, imageMeta)
       } else if (imgSeg) {
         const fallbackUrl = extractImageUrls(content)[0]
-        if (fallbackUrl) storeImageUrl(channelKey, session.messageId, fallbackUrl, imgFile)
+        if (fallbackUrl) await storeImageUrl(channelKey, session.messageId, fallbackUrl, imgFile, imageMeta)
       }
       if (!plain.includes('[图片]')) plain = (plain ? plain + ' ' : '') + '[图片]'
-      enqueueAnalysis(channelKey, session.messageId)
+      await enqueueAnalysis(channelKey, session.messageId)
     }
 
     if (analyzed.hasAudio && (session.isDirect || directAt)) {
@@ -1146,15 +1175,16 @@ exports.apply = (ctx) => {
           if (p && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))) {
             channelMissCount.set(channelKey, 0)
             enqueueForChannel(channelKey, async () => {
+              const liveSession = withCurrentBot(session, resolveBot())
               const chatMeta = {}
-              let reply = await handleChatResult(await chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, meta: chatMeta }), { ctx, session, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true })
+              let reply = await handleChatResult(await chat(liveSession, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, meta: chatMeta }), { ctx, session: liveSession, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true, resolveBot })
               if (reply) {
                 reply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply
                 if (shouldTriggerRareVoice(chatMeta)) {
-                  const rareVoiceSent = await safeSendRareVoice(ctx, session)
+                  const rareVoiceSent = await safeSendRareVoice(ctx, liveSession)
                   if (rareVoiceSent) return
                 }
-                await safeSendReply(ctx, session, reply, true)
+                await safeSendReply(ctx, liveSession, reply, true, resolveBot)
               }
             }, 4)
           } else {
@@ -1237,11 +1267,12 @@ exports.apply = (ctx) => {
 
     const maxDepth = inGuild ? 4 : 2
     enqueueForChannel(channelKey, async () => {
+      const liveSession = withCurrentBot(session, resolveBot())
       try {
         let route = heuristicRoute(userText, 'qq')
         if (isJailbreakAttempt(sanitizeUserInput(userText))) {
           const reply = pickJailbreakFallbackReply()
-          return safeSendReply(ctx, session, reply, randomTriggered)
+          return safeSendReply(ctx, liveSession, reply, randomTriggered, resolveBot)
         }
         if (route.useAgent) {
           logDebug(ctx, 'agent', `auto-route reason=${route.reason} channel=${channelKey}`)
@@ -1253,20 +1284,20 @@ exports.apply = (ctx) => {
               channelKey,
               userId: currentUserId,
               timeoutMs: agentConfig.queue?.timeoutMs,
-              fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, agentMode: true, ...searchRunOptions }),
+              fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: resolveBot(), agentMode: true, ...searchRunOptions }),
             })
-            const finalReply = await retellAgentResult(agentResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered })
-            return safeSendReply(ctx, session, finalReply, randomTriggered)
+            const finalReply = await retellAgentResult(agentResult, { ctx, session: liveSession, channelKey, currentUserId, userName, userText, randomTriggered })
+            return safeSendReply(ctx, liveSession, finalReply, randomTriggered, resolveBot)
           } catch (error) {
             const code = error && error.code ? String(error.code) : ''
-            if (code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED') return safeSendReply(ctx, session, error.message, randomTriggered)
+            if (code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED') return safeSendReply(ctx, liveSession, error.message, randomTriggered, resolveBot)
             ctx.logger('dongxuelian-ai').warn(`agent auto-route failed: ${error.message}`)
-            return safeSendReply(ctx, session, 'Agent 暂时不可用。', randomTriggered)
+            return safeSendReply(ctx, liveSession, 'Agent 暂时不可用。', randomTriggered, resolveBot)
           }
         }
         const chatMeta = {}
-        const chatResult = await chat(session, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, meta: chatMeta })
-        const reply = await handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered })
+        const chatResult = await chat(liveSession, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, meta: chatMeta })
+        const reply = await handleChatResult(chatResult, { ctx, session: liveSession, channelKey, currentUserId, userName, userText, randomTriggered, resolveBot })
         if (!reply) return
         if (randomTriggered && inGuild && !chatMeta.rareConfirmed) {
           try {
@@ -1279,21 +1310,21 @@ exports.apply = (ctx) => {
               const ttsText = stripVoiceStyleTag(reply)
               const buf = await synthesizeSpeech(ttsText, voiceOpts)
               if (buf) {
-                const sent = await sendVoiceMessage(session, buf)
+                const sent = await sendVoiceMessage(liveSession, buf)
                 if (sent) { markChannelCooldown(channelKey); return }
               }
             }
           } catch {}
         }
         if (inGuild && /别问了，这个我不聊/.test(reply)) {
-          notifySensitiveHandlers(session, channelKey, { throttle: true }).catch(() => {})
+          notifySensitiveHandlers(liveSession, channelKey, { throttle: true }).catch(() => {})
         }
         const finalReply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply
         if (shouldTriggerRareVoice(chatMeta)) {
-          const rareVoiceSent = await safeSendRareVoice(ctx, session)
+          const rareVoiceSent = await safeSendRareVoice(ctx, liveSession)
           if (rareVoiceSent) return
         }
-        return safeSendReply(ctx, session, finalReply, randomTriggered)
+        return safeSendReply(ctx, liveSession, finalReply, randomTriggered, resolveBot)
       } catch (err) {
         const m = err && err.message ? String(err.message) : ''
         const code = err && err.code ? String(err.code) : ''
@@ -1310,7 +1341,7 @@ exports.apply = (ctx) => {
         } else if (/429|rate limit|too many requests|quota/i.test(m)) {
           msg = '请求太勤了，稍后再试。'
         }
-        return safeSendReply(ctx, session, msg, randomTriggered)
+        return safeSendReply(ctx, liveSession, msg, randomTriggered, resolveBot)
       }
     }, maxDepth)
   })

@@ -141,7 +141,7 @@ async function executeChatTool(toolCall, context = {}) {
       const ck = context.channelKey || ''
       if (!ck) return '无法获取频道信息'
       const limit = Math.min(Math.max(parseInt(args.limit) || 5, 1), 10)
-      const images = getRecentImages(ck, limit)
+      const images = await getRecentImages(ck, limit)
       if (!images.length) return '最近没有图片记录。'
       return images.map((img, i) => {
         const time = new Date(img.ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
@@ -155,9 +155,9 @@ async function executeChatTool(toolCall, context = {}) {
       const ck = context.channelKey || ''
       const msgId = String(args.messageId || '').trim()
       if (!ck || !msgId) return '需要提供 messageId（从 read_image_history 获取）。'
-      const cached = getCachedAnalysis(ck, msgId)
+      const cached = await getCachedAnalysis(ck, msgId)
       if (cached) return `图片内容：${cached}`
-      const entry = getImageEntry(ck, msgId)
+      const entry = await getImageEntry(ck, msgId)
       if (!entry) return '找不到该图片记录。'
       enqueueAnalysis(ck, msgId)
       return '该图片正在后台分析中，稍后可通过 read_image_history 查看结果。'
@@ -201,8 +201,8 @@ function getChatToolSystemHint(channelKey) {
   let hint = '你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数聊天不需要工具，直接回复即可。read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。'
   if (channelKey) {
     try {
-      const { getRecentImages } = require('./image-store')
-      const recent = getRecentImages(channelKey, 10)
+      const { getRecentImagesCached } = require('./image-store')
+      const recent = getRecentImagesCached(channelKey, 10)
       if (recent.length > 0) {
         const analyzed = recent.filter(img => img.analyzed).length
         hint += `\n[图片上下文] 本群最近有${recent.length}张图片记录（${analyzed}张已分析）。如果用户提到"刚才的图"、"那张图"等，可用 read_image_history 查看。`

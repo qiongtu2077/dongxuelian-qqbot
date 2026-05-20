@@ -14,13 +14,15 @@ const ANALYSIS_TIMEOUT_MS = 20000
 let activeCount = 0
 const queue = []
 
-function enqueueAnalysis(channelKey, messageId) {
+async function enqueueAnalysis(channelKey, messageId) {
   if (!channelKey || !messageId) return
-  const entry = getImageEntry(channelKey, messageId)
-  if (!entry || entry.analyzed) return
-  if (queue.length >= 200) return
-  queue.push({ channelKey, messageId, url: entry.url, file: entry.file })
-  drainQueue()
+  try {
+    const entry = await getImageEntry(channelKey, messageId)
+    if (!entry || entry.analyzed) return
+    if (queue.length >= 200) return
+    queue.push({ channelKey, messageId, url: entry.url, file: entry.file })
+    drainQueue()
+  } catch {}
 }
 
 function drainQueue() {
@@ -36,7 +38,7 @@ function drainQueue() {
 
 async function runAnalysis({ channelKey, messageId, url, file }) {
   try {
-    let base64 = readCachedImage(channelKey, messageId)
+    let base64 = await readCachedImage(channelKey, messageId)
 
     if (!base64 && file) {
       try {
@@ -45,7 +47,7 @@ async function runAnalysis({ channelKey, messageId, url, file }) {
           base64 = await readImageAsBase64(imgInfo.file)
           if (base64) {
             const buf = Buffer.from(base64.replace(/^data:[^;]+;base64,/, ''), 'base64')
-            cacheImageFile(channelKey, messageId, buf)
+            await cacheImageFile(channelKey, messageId, buf)
           }
         }
       } catch {}
@@ -55,7 +57,7 @@ async function runAnalysis({ channelKey, messageId, url, file }) {
       base64 = await downloadImageAsBase64(url, 10000)
       if (base64) {
         const buf = Buffer.from(base64.replace(/^data:[^;]+;base64,/, ''), 'base64')
-        cacheImageFile(channelKey, messageId, buf)
+        await cacheImageFile(channelKey, messageId, buf)
       }
     }
 
@@ -75,8 +77,8 @@ async function runAnalysis({ channelKey, messageId, url, file }) {
     const analysis = typeof result === 'string' ? result : (result && result.content || '')
     if (!analysis) return
 
-    markAnalyzed(channelKey, messageId, analysis)
-    replaceImagePlaceholder(channelKey, messageId, analysis)
+    await markAnalyzed(channelKey, messageId, analysis)
+    await replaceImagePlaceholder(channelKey, messageId, analysis)
   } catch (e) { console.warn('[image-analyzer] analysis failed:', e.message || e) }
 }
 
