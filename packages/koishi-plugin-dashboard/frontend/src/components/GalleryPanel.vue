@@ -70,7 +70,7 @@
 </template>
 
 <script>
-import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { deleteGalleryImage, fetchGalleryImages, updateGalleryImageStyle, uploadGalleryImage } from '../api'
 
 const STOP_THRESHOLD = 0.001
@@ -198,7 +198,6 @@ function preloadGalleryImage(url) {
 export default {
   name: 'GalleryPanel',
   setup() {
-    const showAdminDialog = inject('showAdminDialog')
     const images = ref([])
     const loading = ref(false)
     const uploading = ref(false)
@@ -226,11 +225,6 @@ export default {
     const previewImage = computed(() => images.value[previewIndex.value] || null)
     const currentFoilStyle = computed(() => previewImage.value?.foilStyle || null)
 
-    function withAdminRetry(res, retry) {
-      if (res?.code !== 'ADMIN_REQUIRED') return false
-      if (showAdminDialog) showAdminDialog('管理莲莲图集需要管理员密码', retry)
-      return true
-    }
     async function loadImages() {
       loading.value = true
       const res = await fetchGalleryImages()
@@ -287,7 +281,6 @@ export default {
       if (!window.confirm(`确定删除选中的 ${ids.length} 张图片吗？`)) return
       deletingId.value = 'bulk'
       const res = await deleteGalleryImage(ids)
-      if (withAdminRetry(res, deleteSelectedImages)) { deletingId.value = ''; return }
       const deletedIds = new Set((res.data?.deleted || []).map(item => item.id))
       if (deletedIds.size) images.value = images.value.filter(item => !deletedIds.has(item.id))
       if (res.ok) {
@@ -315,7 +308,6 @@ export default {
       replaceImage({ ...image, foilStyle })
       updatingStyle.value = true
       const res = await updateGalleryImageStyle(image.id, foilStyle)
-      if (withAdminRetry(res, () => setPreviewFoilStyle(foilStyle))) { replaceImage({ ...image, foilStyle: previous }); updatingStyle.value = false; return }
       if (res.ok) replaceImage(res.data.image || { ...image, foilStyle })
       else {
         replaceImage({ ...image, foilStyle: previous })
