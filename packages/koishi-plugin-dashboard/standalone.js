@@ -46,6 +46,7 @@ const CONTENT_SECURITY_POLICY = [
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
+  "media-src 'self' blob: data:",
   "font-src 'self' data:",
   "connect-src 'self' ws: wss:",
   "frame-src 'self'",
@@ -153,6 +154,7 @@ module.exports = {
   isLocalAuthBypass,
   getRemoteAddress,
   KOISHI_PID_FILE,
+  CONTENT_SECURITY_POLICY,
 }
 
 if (require.main === module) {

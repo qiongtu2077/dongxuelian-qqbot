@@ -14,6 +14,7 @@ fs.mkdirSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true })
 
 const auth = require('../lib/auth')
 const router = require('../lib/router')
+const standalone = require('../standalone')
 
 // Builds a minimal HTTP request object for router/auth unit tests.
 function makeReq(method, pathname, headers = {}) {
@@ -178,6 +179,14 @@ function testLocalBypassRejectsCrossSite() {
   assert.strictEqual(res.headers['access-control-allow-origin'], undefined)
 }
 
+// Verifies Dashboard preview audio Blob URLs are allowed without relaxing script sources.
+function testContentSecurityPolicyAllowsPreviewAudio() {
+  const csp = standalone.CONTENT_SECURITY_POLICY
+  assert.match(csp, /media-src[^;]*'self'[^;]*blob:[^;]*data:/)
+  assert.doesNotMatch(csp, /script-src[^;]*blob:/)
+  assert.doesNotMatch(csp, /script-src[^;]*data:/)
+}
+
 // Runs all tests sequentially so rate-limit state remains deterministic.
 async function run() {
   testRegexRouteObjectDispatch()
@@ -188,6 +197,7 @@ async function run() {
   testInitialCredentialsGenerated()
   testSessionSecretIgnoresEnvPinning()
   testLocalBypassRejectsCrossSite()
+  testContentSecurityPolicyAllowsPreviewAudio()
 
   fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })
   console.log('dashboard security/router tests passed')
