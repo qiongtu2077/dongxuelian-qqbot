@@ -13,8 +13,10 @@ const TEMPLATES_DIR = path.join(__dirname, '..', 'templates')
 // 信号量：限制并发Puppeteer实例
 let activeRenderers = 0
 const MAX_RENDERERS = parsePositiveInt(process.env.DAILY_REPORT_MAX_RENDERERS, 1, 1, 4)
-const RENDER_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_RENDER_TIMEOUT_MS, 25000, 5000, 60000)
-const RENDER_QUEUE_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_QUEUE_TIMEOUT_MS, 30000, 5000, 120000)
+const RENDER_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_RENDER_TIMEOUT_MS, 45000, 5000, 120000)
+const RENDER_QUEUE_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_QUEUE_TIMEOUT_MS, 60000, 5000, 180000)
+const RENDER_SET_CONTENT_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_SET_CONTENT_TIMEOUT_MS, 20000, 5000, 60000)
+const RENDER_ASSET_IDLE_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_RENDER_ASSET_WAIT_MS, 8000, 1000, 30000)
 const RENDER_MIN_AVAILABLE_MB = parsePositiveInt(process.env.DAILY_REPORT_MIN_MEM_MB, 600, 256, 8192)
 const MAX_CAPTURE_HEIGHT = parsePositiveInt(process.env.DAILY_REPORT_MAX_CAPTURE_HEIGHT, 6000, 800, 12000)
 const MAX_HTML_BYTES = parsePositiveInt(process.env.DAILY_REPORT_MAX_HTML_BYTES, 512 * 1024, 64 * 1024, 2 * 1024 * 1024)
@@ -45,11 +47,19 @@ function assertEnoughMemoryForRender() {
   throw new Error(`available memory is too low for Chromium render (${availableMb}MB < ${RENDER_MIN_AVAILABLE_MB}MB)`)
 }
 
-async function waitForRendererSlot() {
+// 等待并占用一个渲染槽位，返回幂等释放函数。
+async function acquireRendererSlot() {
   const startedAt = Date.now()
   while (activeRenderers >= MAX_RENDERERS) {
     if (Date.now() - startedAt > RENDER_QUEUE_TIMEOUT) throw new Error('daily report render queue timeout')
     await new Promise(r => setTimeout(r, 500))
+  }
+  activeRenderers++
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    activeRenderers = Math.max(0, activeRenderers - 1)
   }
 }
 
@@ -70,6 +80,29 @@ async function enableRenderRequestGuards(page) {
 
 function esc(str) {
   return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+// 将 AI 产出的样式和头像字段收敛到渲染层可接受的安全范围。
+function safePercent(value, fallback = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(0, Math.min(100, Math.round(parsed)))
+}
+
+function safeCssColor(value, fallback = '#39C5BB') {
+  const color = String(value || '').trim()
+  return /^#[0-9a-fA-F]{3,8}$/.test(color) ? color : fallback
+}
+
+function safeAvatarUserId(value) {
+  const userId = String(value || '').trim()
+  return /^\d+$/.test(userId) ? userId : ''
+}
+
+// 等待页面远程资源尽量稳定后再截图，减少头像和外链图片的加载抖动。
+async function waitForRenderAssets(page) {
+  if (!page || typeof page.waitForNetworkIdle !== 'function') return
+  await page.waitForNetworkIdle({ idleTime: 1000, timeout: RENDER_ASSET_IDLE_TIMEOUT }).catch(() => {})
 }
 
 // 加载所有模板
@@ -154,7 +187,8 @@ function buildProfilesHtml(userTitles) {
   let html = `<div class="sec"><div class="bar"></div><div class="sec-t">👤 群友画像</div></div><div class="profiles">`
   for (const t of userTitles) {
     const mbti = t.mbti ? `<span class="mbti-tag">${esc(t.mbti)}</span>` : ''
-    const avatarUrl = t.userId ? `https://q1.qlogo.cn/g?b=qq&nk=${esc(t.userId)}&s=100` : ''
+    const safeUserId = safeAvatarUserId(t.userId)
+    const avatarUrl = safeUserId ? `https://q1.qlogo.cn/g?b=qq&nk=${safeUserId}&s=100` : ''
     const avatarStyle = avatarUrl
       ? `background-image:url('${avatarUrl}');background-size:cover;background-position:center`
       : `background:#39C5BB`
@@ -170,8 +204,9 @@ function buildQuotesHtml(goldenQuotes) {
 
   let html = `<div class="sec"><div class="bar pk"></div><div class="sec-t">✝ 今日圣经</div></div>`
   for (const q of goldenQuotes) {
-    const avatarUrl = q.userId
-      ? `https://q1.qlogo.cn/g?b=qq&nk=${q.userId}&s=100`
+    const safeUserId = safeAvatarUserId(q.userId)
+    const avatarUrl = safeUserId
+      ? `https://q1.qlogo.cn/g?b=qq&nk=${safeUserId}&s=100`
       : ''
     const avatarStyle = avatarUrl
       ? `background-image:url('${avatarUrl}');background-size:cover;background-position:center`
@@ -189,14 +224,18 @@ function buildQualityHtml(qr, tokenUsage) {
   if (qr.dimensions && qr.dimensions.length) {
     dimsHtml = '<div class="qr-dims">'
     for (const d of qr.dimensions) {
-      dimsHtml += `<div class="qr-dim"><div class="qr-dim-head"><span class="qr-dot" style="background:${d.color||'#39C5BB'}"></span><span class="qr-dim-name">${esc(d.name)} (${d.percentage}%)</span></div><div class="qr-dim-comment">${esc(d.comment)}</div></div>`
+      const percentage = safePercent(d.percentage)
+      const color = safeCssColor(d.color)
+      dimsHtml += `<div class="qr-dim"><div class="qr-dim-head"><span class="qr-dot" style="background:${color}"></span><span class="qr-dim-name">${esc(d.name)} (${percentage}%)</span></div><div class="qr-dim-comment">${esc(d.comment)}</div></div>`
     }
     dimsHtml += '</div>'
   }
   let gradientBar = '<div class="qr-gradient-bar">'
   if (qr.dimensions && qr.dimensions.length) {
     for (const d of qr.dimensions) {
-      gradientBar += `<div style="flex:${d.percentage};background:${d.color||'#39C5BB'};height:100%;border-radius:4px"></div>`
+      const percentage = safePercent(d.percentage)
+      const color = safeCssColor(d.color)
+      gradientBar += `<div style="flex:${Math.max(1, percentage)};background:${color};height:100%;border-radius:4px"></div>`
     }
   }
   gradientBar += '</div>'
@@ -258,13 +297,12 @@ function findBrowser() {
 async function renderHtmlToImage(htmlContent) {
   if (Buffer.byteLength(String(htmlContent || ''), 'utf8') > MAX_HTML_BYTES) throw new Error('render HTML is too large')
   assertEnoughMemoryForRender()
-  await waitForRendererSlot()
-  activeRenderers++
+  const releaseRendererSlot = await acquireRendererSlot()
 
   const puppeteer = require('puppeteer-core')
   const browserPath = findBrowser()
   if (!browserPath) {
-    activeRenderers--
+    releaseRendererSlot()
     throw new Error('未找到Chrome/Chromium浏览器')
   }
 
@@ -297,8 +335,9 @@ async function renderHtmlToImage(htmlContent) {
     const page = await browser.newPage()
     await enableRenderRequestGuards(page)
     await page.setViewport({ width: 880, height: 800 })
-    await page.setContent(htmlContent, { waitUntil: 'domcontentloaded', timeout: 15000 })
+    await page.setContent(htmlContent, { waitUntil: 'domcontentloaded', timeout: RENDER_SET_CONTENT_TIMEOUT })
     await page.evaluate(() => document.fonts && document.fonts.ready ? document.fonts.ready.then(() => true) : true).catch(() => {})
+    await waitForRenderAssets(page)
     const bodyH = await page.evaluate(() => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0))
     const captureH = Math.min(Math.max(800, bodyH + 40), MAX_CAPTURE_HEIGHT)
     await page.setViewport({ width: 880, height: captureH })
@@ -310,7 +349,7 @@ async function renderHtmlToImage(htmlContent) {
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
     if (browser) { try { await browser.close() } catch {} }
-    activeRenderers = Math.max(0, activeRenderers - 1)
+    releaseRendererSlot()
   }
 }
 

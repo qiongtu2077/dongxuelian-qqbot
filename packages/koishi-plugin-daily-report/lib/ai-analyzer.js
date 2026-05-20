@@ -5,30 +5,458 @@
  */
 const { loadConfig } = require('../../koishi-plugin-dongxuelian-ai/lib/runtime-config')
 const { requestChatCompletions } = require('../../koishi-plugin-dongxuelian-ai/lib/api')
-const { createDefaultAnalysisResult, createUserTitle } = require('./models')
+const { createDefaultAnalysisResult, createTopic, createGoldenQuote, createUserTitle } = require('./models')
 
 const COMPRESS_BATCH_SIZE = parsePositiveInt(process.env.DAILY_REPORT_COMPRESS_BATCH_SIZE, 100, 20, 200)
 const MAX_COMPRESS_BATCHES = parsePositiveInt(process.env.DAILY_REPORT_MAX_COMPRESS_BATCHES, 20, 1, 60)
 const MAX_COMPRESSED_CHARS = parsePositiveInt(process.env.DAILY_REPORT_MAX_COMPRESSED_CHARS, 12000, 2000, 40000)
+const REPORT_AI_TEMPERATURE = parsePositiveFloat(process.env.DAILY_REPORT_AI_TEMPERATURE, 0.2, 0, 1)
+const REPORT_COMPRESS_TIMEOUT_MS = parsePositiveInt(process.env.DAILY_REPORT_COMPRESS_TIMEOUT_MS, 45000, 5000, 180000)
+const REPORT_ANALYSIS_TIMEOUT_MS = parsePositiveInt(process.env.DAILY_REPORT_AI_TIMEOUT_MS, 60000, 10000, 180000)
 
+// --- Config helpers --- #
+
+// Parses bounded integer config values from environment variables.
 function parsePositiveInt(value, fallback, min, max) {
   const parsed = parseInt(value, 10)
   if (!Number.isFinite(parsed)) return fallback
   return Math.max(min, Math.min(max, parsed))
 }
 
-async function callAI(systemPrompt, userMessage, maxTokens = 1500) {
+// Parses bounded float config values from environment variables.
+function parsePositiveFloat(value, fallback, min, max) {
+  const parsed = parseFloat(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
+// --- AI call helpers --- #
+
+// Calls the shared AI API with report-specific temperature and timeout options.
+async function callAI(systemPrompt, userMessage, maxTokens = 1500, extraBody = {}) {
   const config = await loadConfig()
   const result = await requestChatCompletions([
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userMessage },
-  ], config, { max_tokens: maxTokens })
+  ], config, {
+    ...extraBody,
+    max_tokens: maxTokens,
+    temperature: extraBody.temperature !== undefined ? extraBody.temperature : REPORT_AI_TEMPERATURE,
+  })
+  return extractTextResult(result)
+}
+
+// Extracts plain text from the API wrapper's supported response shapes.
+function extractTextResult(result) {
+  if (typeof result === 'string') return result.trim()
+  if (!result || typeof result !== 'object') return ''
+  if (typeof result.content === 'string') return result.content.trim()
+  if (typeof result.output_text === 'string') return result.output_text.trim()
+  if (typeof result.text === 'string') return result.text.trim()
+  return ''
+}
+
+// --- Normalization helpers --- #
+
+// Converts nullable values to trimmed strings with a fallback.
+function normalizeString(value, fallback = '') {
+  if (value === null || value === undefined) return fallback
+  const text = String(value).trim()
+  return text || fallback
+}
+
+// Truncates long text for compact quote/topic display.
+function truncateText(text, maxLen = 80) {
+  const value = normalizeString(text)
+  if (value.length <= maxLen) return value
+  return value.slice(0, Math.max(1, maxLen - 1)).trimEnd() + '…'
+}
+
+// Removes CQ codes, URLs, and extra whitespace from source messages.
+function cleanMessageContent(content) {
+  return normalizeString(content)
+    .replace(/\[CQ:[^\]]+\]/g, '')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/【[^】]*】/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Builds nickname and userId lookup maps from raw messages.
+function buildMessageMaps(messages) {
+  const nameToUserId = new Map()
+  const userIdToName = new Map()
+  for (const msg of Array.isArray(messages) ? messages : []) {
+    const name = normalizeString(msg && msg.user)
+    const userId = normalizeString(msg && msg.userId)
+    if (!name || !userId) continue
+    if (!nameToUserId.has(name)) nameToUserId.set(name, userId)
+    if (!userIdToName.has(userId)) userIdToName.set(userId, name)
+  }
+  return { nameToUserId, userIdToName }
+}
+
+// Detects placeholders that should not be rendered as real quote speakers.
+function isGenericSpeaker(name) {
+  return !name || /^(?:群友|某人|用户|匿名|unknown|unknown user)$/i.test(name)
+}
+
+// Appends a warning to the analysis metadata.
+function addMetaWarning(meta, message) {
+  if (!meta || !message) return
+  meta.warnings.push(message)
+}
+
+// Creates a metadata object that records degraded analysis stages.
+function createAnalysisMeta() {
+  return {
+    warnings: [],
+    stages: {
+      compression: 'ai',
+      basic: 'ai',
+      full: 'ai',
+    },
+  }
+}
+
+// Extracts a balanced JSON object or array from AI text, including fenced blocks.
+function extractJsonCandidate(text) {
+  const source = normalizeString(text)
+  if (!source) return ''
+  const fencedMatch = source.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidateSource = fencedMatch ? fencedMatch[1].trim() : source
+  const start = candidateSource.search(/[{[]/)
+  if (start < 0) return ''
+  const open = candidateSource[start]
+  const close = open === '{' ? '}' : ']'
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < candidateSource.length; i++) {
+    const ch = candidateSource[i]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (ch === '\\') {
+      escaped = true
+      continue
+    }
+    if (ch === '"') {
+      inString = !inString
+      continue
+    }
+    if (inString) continue
+    if (ch === open) {
+      depth++
+      continue
+    }
+    if (ch === close) {
+      depth--
+      if (depth === 0) return candidateSource.slice(start, i + 1)
+    }
+  }
+  return ''
+}
+
+// Parses JSON from direct text or an extracted JSON candidate.
+function safeParseJSON(text) {
+  if (text && typeof text === 'object') return text
+  const source = normalizeString(text)
+  if (!source) return null
+  try {
+    return JSON.parse(source)
+  } catch {}
+  const candidate = extractJsonCandidate(source)
+  if (!candidate) return null
+  try {
+    return JSON.parse(candidate)
+  } catch {}
+  return null
+}
+
+// Normalizes an AI-provided array of labels or participant names.
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return []
+  const result = []
+  for (const item of value) {
+    const text = normalizeString(item)
+    if (text) result.push(text)
+  }
   return result
 }
 
-async function compressMessages(messages) {
+// Normalizes topic objects into the renderer's expected model shape.
+function normalizeTopics(topics) {
+  if (!Array.isArray(topics)) return []
+  const result = []
+  for (let i = 0; i < topics.length; i++) {
+    const item = topics[i]
+    if (!item || typeof item !== 'object') continue
+    result.push(createTopic(
+      Number.isFinite(Number(item.id)) ? Number(item.id) : i + 1,
+      normalizeString(item.title, `话题${i + 1}`),
+      normalizeString(item.summary, '本段群聊内容还可以继续细化。'),
+      normalizeStringArray(item.participants),
+    ))
+  }
+  return result
+}
+
+// Normalizes quote objects and keeps only quotes with resolvable speakers.
+function normalizeGoldenQuotes(quotes, messages) {
+  if (!Array.isArray(quotes) || !quotes.length) return []
+  const { nameToUserId, userIdToName } = buildMessageMaps(messages)
+  const result = []
+  for (const item of quotes) {
+    if (!item || typeof item !== 'object') continue
+    const content = cleanMessageContent(item.content || item.quote || '')
+    if (!content) continue
+    let sender = normalizeString(item.sender || item.name || item.user)
+    let userId = normalizeString(item.userId || item.uid)
+    if (!userId && sender && nameToUserId.has(sender)) userId = nameToUserId.get(sender)
+    if (userId && userIdToName.has(userId)) sender = userIdToName.get(userId)
+    if (!sender || isGenericSpeaker(sender)) continue
+    result.push(createGoldenQuote(
+      truncateText(content, 90),
+      sender,
+      normalizeString(item.reason, '这句很有代表性，适合当作今日金句。'),
+      userId,
+    ))
+  }
+  return result
+}
+
+// Normalizes member portrait objects into the renderer's expected model shape.
+function normalizeUserTitles(userTitles, messages) {
+  if (!Array.isArray(userTitles) || !userTitles.length) return []
+  const { nameToUserId, userIdToName } = buildMessageMaps(messages)
+  const result = []
+  for (const item of userTitles) {
+    if (!item || typeof item !== 'object') continue
+    const rawName = normalizeString(item.name || item.sender || item.user)
+    const userId = normalizeString(item.userId || item.uid)
+    const resolvedName = (userId && userIdToName.get(userId)) || rawName
+    const resolvedUserId = userId || (rawName && nameToUserId.get(rawName)) || ''
+    if (!resolvedName && !resolvedUserId) continue
+    result.push(createUserTitle(
+      resolvedName || '群友',
+      resolvedUserId,
+      normalizeString(item.title, '活跃群友'),
+      normalizeString(item.reason, '今天的发言记录还能继续细化。'),
+      normalizeString(item.mbti),
+    ))
+  }
+  return result
+}
+
+// Normalizes the quality review block and rejects unusable dimension payloads.
+function normalizeQualityReview(review) {
+  if (!review || typeof review !== 'object') return null
+  const dimensions = Array.isArray(review.dimensions)
+    ? review.dimensions.map((item, index) => {
+      if (!item || typeof item !== 'object') return null
+      const percentage = Number(item.percentage)
+      return {
+        name: normalizeString(item.name, `维度${index + 1}`),
+        percentage: Number.isFinite(percentage) ? Math.max(0, Math.min(100, percentage)) : 0,
+        comment: normalizeString(item.comment, '暂无点评'),
+        color: normalizeString(item.color, ['#39C5BB', '#A7E7E3', '#FCD34D', '#F472B6'][index % 4]),
+      }
+    }).filter(Boolean)
+    : []
+  if (!dimensions.length) return null
+  return {
+    title: normalizeString(review.title, '今日群聊热度在线'),
+    subtitle: normalizeString(review.subtitle, '群聊内容可继续细化。'),
+    dimensions,
+    summary: normalizeString(review.summary, '整体来看，今天的群聊有稳定的活跃节奏。'),
+  }
+}
+
+// --- Fallback builders --- #
+
+// Builds quote cards from raw messages when AI quote extraction fails.
+function buildFallbackGoldenQuotes(data) {
+  const messages = Array.isArray(data && data.messages) ? data.messages : []
+  const topIds = new Set((Array.isArray(data && data.topMembers) ? data.topMembers : [])
+    .map(member => normalizeString(member && member.userId))
+    .filter(Boolean))
+  const { nameToUserId, userIdToName } = buildMessageMaps(messages)
+  const scored = []
+  for (let index = 0; index < messages.length; index++) {
+    const msg = messages[index] || {}
+    const content = cleanMessageContent(msg.content)
+    if (!content) continue
+    const sender = normalizeString(msg.user || msg.sender || msg.nickname)
+    const userId = normalizeString(msg.userId)
+    let score = content.length
+    if (content.length >= 24) score += 8
+    if (content.length >= 48) score += 8
+    if (/[！？!?]/.test(content)) score += 15
+    if (/哈哈|笑|233|乐|绷|绝了|有点东西/.test(content)) score += 12
+    if (topIds.has(userId)) score += 6
+    scored.push({ content, sender, userId, score, index })
+  }
+  scored.sort((a, b) => b.score - a.score || a.index - b.index)
+
+  const result = []
+  const seen = new Set()
+  for (const item of scored) {
+    let sender = item.sender
+    let userId = item.userId
+    if (!userId && sender && nameToUserId.has(sender)) userId = nameToUserId.get(sender)
+    if (userId && userIdToName.has(userId)) sender = userIdToName.get(userId)
+    if (!sender || isGenericSpeaker(sender)) continue
+    const key = `${sender}::${item.content}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(createGoldenQuote(
+      truncateText(item.content, 90),
+      sender,
+      '这句很有代表性，适合当作今日金句。',
+      userId,
+    ))
+    if (result.length >= 3) break
+  }
+
+  if (!result.length) {
+    const fallbackMember = Array.isArray(data && data.topMembers) && data.topMembers.length ? data.topMembers[0] : null
+    result.push(createGoldenQuote(
+      '今天群里暂时没有抓到特别典型的金句。',
+      normalizeString(fallbackMember && fallbackMember.name, '群友'),
+      '兜底生成的说明句。',
+      normalizeString(fallbackMember && fallbackMember.userId),
+    ))
+  }
+
+  return result
+}
+
+// Builds the minimal topic and quote analysis needed by detailed reports.
+function buildFallbackBasicAnalysis(data) {
+  const topMembers = Array.isArray(data && data.topMembers) ? data.topMembers.slice(0, 4) : []
+  const participantNames = topMembers.map(member => normalizeString(member && member.name)).filter(Boolean)
+  const participants = participantNames.length ? participantNames : ['群友']
+  const totalMessages = Number(data && data.totalMessages || 0)
+  const activeMembers = Number(data && data.activeMembers || 0)
+  const emojiCount = Number(data && data.emojiCount || 0)
+  const totalChars = Number(data && data.totalChars || 0)
+  const peakHour = normalizeString(data && data.peakHour, '未知时段')
+
+  return {
+    topics: [
+      createTopic(1, '发言主力盘点', `今天共有 ${totalMessages} 条消息、${activeMembers} 位成员参与，${participants.join('、')} 等人构成了主要发言层。`, participants),
+      createTopic(2, `${peakHour} 活跃波峰`, `群聊的最高活跃段落出现在 ${peakHour}，这段时间更容易连续接话和推进话题。`, participants.slice(0, 3)),
+      createTopic(3, '表情互动节奏', `今天共有 ${emojiCount} 次表情互动，说明群里的情绪表达和轻松互动都比较明显。`, participants.slice(0, 3)),
+      createTopic(4, '文本信息密度', `累计文本约 ${totalChars} 字，群聊内容并不只是刷屏，也保留了一定的信息密度。`, participants.slice(0, 3)),
+    ],
+    goldenQuotes: buildFallbackGoldenQuotes(data),
+  }
+}
+
+// Builds member portrait cards from active-member statistics.
+function buildFallbackUserTitles(data) {
+  const members = Array.isArray(data && data.topMembers) ? data.topMembers.slice(0, 6) : []
+  const titles = ['高频发言担当', '话题推进器', '稳定插话人', '气氛补给站', '边角料捕手', '潜在节奏点']
+  const result = members.map((member, index) => {
+    const msgCount = Number(member && member.msgCount || 0)
+    const percent = data && data.totalMessages ? Math.round(msgCount * 100 / data.totalMessages) : 0
+    const name = normalizeString(member && member.name, '群友')
+    const reason = `今天发言 ${msgCount} 条，约占全群 ${percent}%，是本群可见度较高的活跃成员。`
+    return createUserTitle(name, normalizeString(member && member.userId), titles[index] || '活跃群友', reason, '')
+  })
+  if (result.length) return result
+  return [createUserTitle('群友', '', '活跃群友', '今天的发言记录还不够多，但已经能看到基本活跃度。', '')]
+}
+
+// Builds a deterministic quality review from report statistics.
+function buildFallbackQualityReview(data) {
+  const totalMessages = Number(data && data.totalMessages || 0)
+  const activeMembers = Number(data && data.activeMembers || 0)
+  const emojiCount = Number(data && data.emojiCount || 0)
+  const emojiRate = totalMessages ? Math.round(emojiCount * 100 / totalMessages) : 0
+  return {
+    title: '今日群聊热度在线',
+    subtitle: `${totalMessages} 条消息，${activeMembers} 位成员参与，峰值出现在 ${normalizeString(data && data.peakHour, '未知时段')}`,
+    dimensions: [
+      {
+        name: '聊天活跃度',
+        percentage: 40,
+        comment: `全天累计 ${totalMessages} 条消息，峰值时段清晰，群聊热度不低。`,
+        color: '#39C5BB',
+      },
+      {
+        name: '成员参与度',
+        percentage: 25,
+        comment: `${activeMembers} 位成员参与发言，核心发言者撑起了主要讨论。`,
+        color: '#A7E7E3',
+      },
+      {
+        name: '信息密度',
+        percentage: 20,
+        comment: `累计文字约 ${Number(data && data.totalChars || 0)} 字，适合提炼成话题和金句。`,
+        color: '#FCD34D',
+      },
+      {
+        name: '表情浓度',
+        percentage: 15,
+        comment: `表情互动 ${emojiCount} 次，约占消息量 ${emojiRate}%，气氛有明显波动。`,
+        color: '#F472B6',
+      },
+    ],
+    summary: '整体来看，今天的群聊有明确活跃高峰和核心发言成员，内容足够支撑日报复盘；如果话题再集中一点，阅读价值还能继续上升。',
+  }
+}
+
+// Builds the full fallback analysis payload for detailed reports.
+function buildFallbackFullAnalysis(data) {
+  return {
+    ...buildFallbackBasicAnalysis(data),
+    userTitles: buildFallbackUserTitles(data),
+    qualityReview: buildFallbackQualityReview(data),
+  }
+}
+
+// Fills missing basic sections from deterministic fallback data.
+function completeBasicAnalysis(result, data) {
+  const fallback = buildFallbackBasicAnalysis(data)
+  if (!Array.isArray(result.topics) || result.topics.length === 0) {
+    result.topics = fallback.topics
+  }
+  if (!Array.isArray(result.goldenQuotes) || result.goldenQuotes.length === 0) {
+    result.goldenQuotes = fallback.goldenQuotes
+  }
+  return result
+}
+
+// Fills missing detailed sections from deterministic fallback data.
+function completeFullAnalysis(result, data) {
+  const fallback = buildFallbackFullAnalysis(data)
+  if (!Array.isArray(result.topics) || result.topics.length === 0) {
+    result.topics = fallback.topics
+  }
+  if (!Array.isArray(result.goldenQuotes) || result.goldenQuotes.length === 0) {
+    result.goldenQuotes = fallback.goldenQuotes
+  }
+  if (!Array.isArray(result.userTitles) || result.userTitles.length === 0) {
+    result.userTitles = fallback.userTitles
+  }
+  if (!result.qualityReview || typeof result.qualityReview !== 'object') {
+    result.qualityReview = fallback.qualityReview
+  }
+  return result
+}
+
+// --- AI analysis stages --- #
+
+// Compresses long message history into bounded summaries before analysis.
+async function compressMessages(messages, meta) {
   const limited = (Array.isArray(messages) ? messages : []).slice(-COMPRESS_BATCH_SIZE * MAX_COMPRESS_BATCHES)
   const results = []
+  let failedBatches = 0
+  const totalBatches = Math.max(1, Math.ceil(limited.length / COMPRESS_BATCH_SIZE))
+
   for (let i = 0; i < limited.length; i += COMPRESS_BATCH_SIZE) {
     const batch = limited.slice(i, i + COMPRESS_BATCH_SIZE)
     const batchText = batch.map(m => `[${m.time}] ${m.user}：${m.content}`).join('\n')
@@ -36,57 +464,34 @@ async function compressMessages(messages) {
       const summary = await callAI(
         '你是群聊摘要助手。将以下群聊记录压缩成100字以内的摘要，保留主要话题和有趣对话。不要评价，只摘要。',
         batchText.slice(0, 4000),
-        200
+        200,
+        { _timeoutMs: REPORT_COMPRESS_TIMEOUT_MS },
       )
       if (summary) results.push(summary)
-    } catch {}
+      else failedBatches++
+    } catch {
+      failedBatches++
+    }
     if (results.join('\n---\n').length >= MAX_COMPRESSED_CHARS) break
   }
-  return results
-    .join('\n---\n')
-    .slice(0, MAX_COMPRESSED_CHARS)
-}
 
-// 安全JSON解析（处理AI返回的格式错误）
-function safeParseJSON(text) {
-  // 尝试直接解析
-  const jsonMatch = text.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) return null
-  try {
-    return JSON.parse(jsonMatch[0])
-  } catch {}
-
-  // 尝试修复常见问题：截断的JSON
-  let str = jsonMatch[0]
-  // 移除末尾不完整的对象/数组
-  str = str.replace(/,\s*\{[^}]*$/, '')
-  str = str.replace(/,\s*\[[^\]]*$/, '')
-  // 补全缺失的括号
-  const openBraces = (str.match(/\{/g) || []).length
-  const closeBraces = (str.match(/\}/g) || []).length
-  const openBrackets = (str.match(/\[/g) || []).length
-  const closeBrackets = (str.match(/\]/g) || []).length
-  str += ']'.repeat(Math.max(0, openBrackets - closeBrackets))
-  str += '}'.repeat(Math.max(0, openBraces - closeBraces))
-
-  try {
-    return JSON.parse(str)
-  } catch {
-    console.error('[ai-analyzer] JSON修复失败:', str.slice(0, 200))
-    return null
-  }
-}
-
-async function analyzeBasic(compressed, messages) {
-  // 构建昵称→QQ号映射表，确保金句能抓到头像
-  const nameToUserId = new Map()
-  if (messages && messages.length) {
-    for (const msg of messages) {
-      if (msg.user && msg.userId && !nameToUserId.has(msg.user)) {
-        nameToUserId.set(msg.user, msg.userId)
-      }
+  if (meta) {
+    meta.stages.compression = failedBatches === 0 ? 'ai' : (results.length ? 'partial' : 'fallback')
+    if (failedBatches > 0) {
+      addMetaWarning(meta, failedBatches >= totalBatches
+        ? '压缩阶段全部失败，已直接使用统计兜底。'
+        : `压缩阶段有 ${failedBatches} 批未能稳定生成摘要，已继续使用剩余结果。`)
     }
   }
+
+  const compressed = results.join('\n---\n').slice(0, MAX_COMPRESSED_CHARS)
+  if (!compressed && meta) addMetaWarning(meta, '压缩摘要为空，后续分析将主要依赖统计兜底。')
+  return compressed
+}
+
+// Runs topic and golden-quote analysis, falling back per section on bad output.
+async function analyzeBasic(compressed, messages, data, meta) {
+  const { nameToUserId } = buildMessageMaps(messages)
   const memberMapStr = JSON.stringify(Object.fromEntries(nameToUserId))
 
   const prompt = `你是群聊分析师。根据以下压缩后的群聊摘要，完成两项任务：
@@ -112,18 +517,36 @@ ${compressed.slice(0, 6000)}
 }`
 
   try {
-    const text = await callAI(prompt, '请分析', 2000)
-    const parsed = safeParseJSON(text)
-    return parsed || { topics: [], goldenQuotes: [] }
+    const text = await callAI(prompt, '请分析', 2000, {
+      _timeoutMs: REPORT_ANALYSIS_TIMEOUT_MS,
+    })
+    const parsed = safeParseJSON(text) || {}
+    const topics = normalizeTopics(parsed.topics)
+    const goldenQuotes = normalizeGoldenQuotes(parsed.goldenQuotes, messages)
+    const fallback = buildFallbackBasicAnalysis(data)
+    const result = {
+      topics: topics.length ? topics : fallback.topics,
+      goldenQuotes: goldenQuotes.length ? goldenQuotes : fallback.goldenQuotes,
+    }
+    if (meta) {
+      const usedFallback = topics.length === 0 || goldenQuotes.length === 0
+      meta.stages.basic = usedFallback ? (Object.keys(parsed).length ? 'partial' : 'fallback') : 'ai'
+      if (usedFallback) addMetaWarning(meta, '基础分析返回的 JSON 不完整，已启用话题/金句兜底。')
+    }
+    return result
   } catch (err) {
-    console.error('[ai-analyzer] basic分析失败:', err.message)
+    if (meta) {
+      meta.stages.basic = 'fallback'
+      addMetaWarning(meta, `基础分析请求失败：${err.message}`)
+    }
+    return buildFallbackBasicAnalysis(data)
   }
-  return { topics: [], goldenQuotes: [] }
 }
 
-async function analyzeFull(compressed, messages, topMembers) {
-  const memberData = topMembers.slice(0, 8).map(m => {
-    const sample = messages
+// Runs detailed portrait and quality-review analysis, falling back per section.
+async function analyzeFull(compressed, messages, topMembers, data, meta) {
+  const memberData = (Array.isArray(topMembers) ? topMembers : []).slice(0, 8).map(m => {
+    const sample = (Array.isArray(messages) ? messages : [])
       .filter(msg => msg.userId === m.userId || msg.user === m.name)
       .slice(0, 15)
       .map(msg => msg.content).join(' | ')
@@ -152,111 +575,63 @@ ${JSON.stringify(memberData, null, 2)}
 }`
 
   try {
-    const text = await callAI(prompt, '请分析', 3000)
-    const parsed = safeParseJSON(text)
-    return parsed || { userTitles: [], qualityReview: null }
+    const text = await callAI(prompt, '请分析', 3000, {
+      _timeoutMs: REPORT_ANALYSIS_TIMEOUT_MS,
+    })
+    const parsed = safeParseJSON(text) || {}
+    const userTitles = normalizeUserTitles(parsed.userTitles, messages)
+    const qualityReview = normalizeQualityReview(parsed.qualityReview)
+    const fallback = buildFallbackFullAnalysis(data)
+    const result = {
+      userTitles: userTitles.length ? userTitles : fallback.userTitles,
+      qualityReview: qualityReview || fallback.qualityReview,
+    }
+    if (meta) {
+      const usedFallback = userTitles.length === 0 || !qualityReview
+      meta.stages.full = usedFallback ? (Object.keys(parsed).length ? 'partial' : 'fallback') : 'ai'
+      if (usedFallback) addMetaWarning(meta, '详细分析返回的 JSON 不完整，已启用画像/锐评兜底。')
+    }
+    return result
   } catch (err) {
-    console.error('[ai-analyzer] full分析失败:', err.message)
-  }
-  return { userTitles: [], qualityReview: null }
-}
-
-function buildFallbackUserTitles(data) {
-  const members = Array.isArray(data.topMembers) ? data.topMembers.slice(0, 6) : []
-  const titles = ['高频发言担当', '话题推进器', '稳定插话人', '气氛补给站', '边角料捕手', '潜在节奏点']
-  return members.map((member, index) => {
-    const msgCount = Number(member.msgCount || 0)
-    const percent = data.totalMessages ? Math.round(msgCount * 100 / data.totalMessages) : 0
-    const name = member.name || '群友'
-    const reason = `今天发言 ${msgCount} 条，约占全群 ${percent}%，是本群可见度较高的活跃成员。`
-    return createUserTitle(name, member.userId || '', titles[index] || '活跃群友', reason, '')
-  })
-}
-
-function buildFallbackQualityReview(data) {
-  const totalMessages = Number(data.totalMessages || 0)
-  const activeMembers = Number(data.activeMembers || 0)
-  const emojiCount = Number(data.emojiCount || 0)
-  const emojiRate = totalMessages ? Math.round(emojiCount * 100 / totalMessages) : 0
-  return {
-    title: '今日群聊热度在线',
-    subtitle: `${totalMessages} 条消息，${activeMembers} 位成员参与，峰值出现在 ${data.peakHour || '未知时段'}`,
-    dimensions: [
-      {
-        name: '聊天活跃度',
-        percentage: 40,
-        comment: `全天累计 ${totalMessages} 条消息，峰值时段清晰，群聊热度不低。`,
-        color: '#39C5BB',
-      },
-      {
-        name: '成员参与度',
-        percentage: 25,
-        comment: `${activeMembers} 位成员参与发言，核心发言者撑起了主要讨论。`,
-        color: '#A7E7E3',
-      },
-      {
-        name: '信息密度',
-        percentage: 20,
-        comment: `累计文字约 ${data.totalChars || 0} 字，适合提炼成话题和金句。`,
-        color: '#FCD34D',
-      },
-      {
-        name: '表情浓度',
-        percentage: 15,
-        comment: `表情互动 ${emojiCount} 次，约占消息量 ${emojiRate}%，气氛有明显波动。`,
-        color: '#F472B6',
-      },
-    ],
-    summary: '整体来看，今天的群聊有明确活跃高峰和核心发言成员，内容足够支撑日报复盘；如果话题再集中一点，阅读价值还能继续上升。',
+    if (meta) {
+      meta.stages.full = 'fallback'
+      addMetaWarning(meta, `详细分析请求失败：${err.message}`)
+    }
+    return buildFallbackFullAnalysis(data)
   }
 }
 
-function buildFallbackFullAnalysis(data) {
-  return {
-    userTitles: buildFallbackUserTitles(data),
-    qualityReview: buildFallbackQualityReview(data),
-  }
-}
-
-function completeFullAnalysis(result, data) {
-  const fallback = buildFallbackFullAnalysis(data)
-  if (!Array.isArray(result.userTitles) || result.userTitles.length === 0) {
-    result.userTitles = fallback.userTitles
-  }
-  if (!result.qualityReview || typeof result.qualityReview !== 'object') {
-    result.qualityReview = fallback.qualityReview
-  }
-  return result
-}
-
+// Main entry: generates AI-enhanced analysis with deterministic fallbacks.
 async function analyzeWithAI(data, full = false) {
   const result = createDefaultAnalysisResult()
+  const meta = createAnalysisMeta()
 
   try {
-    const compressed = await compressMessages(data.messages)
+    const compressed = await compressMessages(data.messages, meta)
 
     if (full) {
       const [basicResult, fullResult] = await Promise.allSettled([
-        analyzeBasic(compressed, data.messages),
-        analyzeFull(compressed, data.messages, data.topMembers),
+        analyzeBasic(compressed, data.messages, data, meta),
+        analyzeFull(compressed, data.messages, data.topMembers, data, meta),
       ])
-      const basic = basicResult.status === 'fulfilled' ? basicResult.value : {}
-      const fullR = fullResult.status === 'fulfilled' ? fullResult.value : {}
+      const basic = basicResult.status === 'fulfilled' ? basicResult.value : buildFallbackBasicAnalysis(data)
+      const fullR = fullResult.status === 'fulfilled' ? fullResult.value : buildFallbackFullAnalysis(data)
       result.topics = basic.topics || []
-      result.goldenQuotes = filterGoldenQuotes(basic.goldenQuotes, data.messages)
+      result.goldenQuotes = basic.goldenQuotes || []
       result.userTitles = fullR.userTitles || []
       result.qualityReview = fullR.qualityReview || null
       completeFullAnalysis(result, data)
     } else {
-      const basicResult = await analyzeBasic(compressed, data.messages)
+      const basicResult = await analyzeBasic(compressed, data.messages, data, meta)
       result.topics = basicResult.topics || []
-      result.goldenQuotes = filterGoldenQuotes(basicResult.goldenQuotes, data.messages)
+      result.goldenQuotes = basicResult.goldenQuotes || []
+      completeBasicAnalysis(result, data)
     }
 
     // token估算：中文约2字符=1 token，加上prompt开销
     // 压缩阶段：N批 × 200 tokens
     // 分析阶段：1-2次调用 × 1500 tokens
-    const batches = Math.min(MAX_COMPRESS_BATCHES, Math.ceil(data.messages.length / COMPRESS_BATCH_SIZE))
+    const batches = Math.min(MAX_COMPRESS_BATCHES, Math.ceil((Array.isArray(data.messages) ? data.messages.length : 0) / COMPRESS_BATCH_SIZE))
     const compressTokens = batches * 200
     const analysisTokens = full ? 3500 : 2000
     result.tokenUsage = {
@@ -265,29 +640,13 @@ async function analyzeWithAI(data, full = false) {
       totalTokens: compressTokens + analysisTokens,
     }
   } catch (err) {
-    console.error('[ai-analyzer] 分析失败:', err.message)
+    addMetaWarning(meta, `分析流程异常：${err.message}`)
     if (full) completeFullAnalysis(result, data)
+    else completeBasicAnalysis(result, data)
   }
 
+  result.meta = meta
   return result
 }
 
-module.exports = { analyzeWithAI, buildFallbackFullAnalysis }
-
-// 过滤金句：用消息映射表验证userId，无匹配的丢弃
-function filterGoldenQuotes(quotes, messages) {
-  if (!quotes || !quotes.length || !messages || !messages.length) return quotes || []
-  const nameToUserId = new Map()
-  for (const msg of messages) {
-    if (msg.user && msg.userId && !nameToUserId.has(msg.user)) {
-      nameToUserId.set(msg.user, msg.userId)
-    }
-  }
-  return quotes.filter(q => {
-    if (!q.sender) return false
-    const mappedId = nameToUserId.get(q.sender)
-    if (!mappedId) return false
-    q.userId = mappedId
-    return true
-  })
-}
+module.exports = { analyzeWithAI, buildFallbackFullAnalysis, buildFallbackBasicAnalysis }

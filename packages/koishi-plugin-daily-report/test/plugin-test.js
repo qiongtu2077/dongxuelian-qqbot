@@ -3,10 +3,15 @@ const os = require('os')
 const path = require('path')
 
 const PLUGIN_PATH = path.resolve(__dirname, '..', 'lib', 'index.js')
+const CONFIG_PATH = path.resolve(__dirname, '..', 'lib', 'config.js')
 const DATA_COLLECTOR_PATH = path.resolve(__dirname, '..', 'lib', 'data-collector.js')
 const AI_ANALYZER_PATH = path.resolve(__dirname, '..', 'lib', 'ai-analyzer.js')
 const HTML_RENDERER_PATH = path.resolve(__dirname, '..', 'lib', 'html-renderer.js')
 const MODELS_PATH = path.resolve(__dirname, '..', 'lib', 'models.js')
+const API_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'api.js')
+const RUNTIME_CONFIG_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'runtime-config.js')
+
+const { requestChatCompletions } = require(path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'api.js'))
 
 let passed = 0
 let failed = 0
@@ -28,6 +33,11 @@ function check(label, ok, detail = '') {
 function reloadPlugin() {
   delete require.cache[PLUGIN_PATH]
   return require(PLUGIN_PATH)
+}
+
+function restoreModuleCache(modulePath, originalCache) {
+  if (originalCache) require.cache[modulePath] = originalCache
+  else delete require.cache[modulePath]
 }
 
 function makeCtx() {
@@ -67,6 +77,85 @@ function makeSession(overrides = {}) {
     async send(msg) { sent.push(msg); return true },
     _sent: sent,
     ...overrides,
+  }
+}
+
+function createSampleReportData() {
+  return {
+    date: '2099-01-01',
+    totalMessages: 12,
+    activeMembers: 3,
+    emojiCount: 4,
+    totalChars: 260,
+    peakHour: '21:00-21:59',
+    topMembers: [
+      { name: 'Alice', userId: '10001', msgCount: 6 },
+      { name: 'Bob', userId: '10002', msgCount: 3 },
+    ],
+    messages: [
+      { time: '21:00', user: 'Alice', userId: '10001', content: '今天的活动很顺利！' },
+      { time: '21:01', user: 'Bob', userId: '10002', content: '哈哈这个点子很妙' },
+      { time: '21:02', user: 'Alice', userId: '10001', content: '再补一条。' },
+    ],
+  }
+}
+
+function createAiRequestMock(routes) {
+  const calls = []
+  const request = async (messages, config, extraBody = {}) => {
+    const systemPrompt = String(messages?.[0]?.content || '')
+    const kind = systemPrompt.includes('摘要助手')
+      ? 'compress'
+      : systemPrompt.includes('userTitles') || systemPrompt.includes('qualityReview')
+        ? 'full'
+        : 'basic'
+    calls.push({ kind, messages, config, extraBody })
+    const response = typeof routes === 'function' ? routes({ kind, messages, config, extraBody, calls }) : routes[kind]
+    if (response instanceof Error) throw response
+    return response
+  }
+  return { calls, request }
+}
+
+async function withMockedAiAnalyzer(requestImpl, runner) {
+  const originalRuntimeConfigCache = require.cache[RUNTIME_CONFIG_PATH]
+  const originalApiCache = require.cache[API_PATH]
+  const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
+
+  require.cache[RUNTIME_CONFIG_PATH] = {
+    id: RUNTIME_CONFIG_PATH,
+    filename: RUNTIME_CONFIG_PATH,
+    loaded: true,
+    exports: {
+      loadConfig: async () => ({
+        apiKey: 'test-key',
+        model: 'test-model',
+        baseURL: 'https://example.com',
+        provider: 'opencode',
+      }),
+    },
+  }
+  require.cache[API_PATH] = {
+    id: API_PATH,
+    filename: API_PATH,
+    loaded: true,
+    exports: {
+      requestChatCompletions: requestImpl,
+    },
+  }
+
+  delete require.cache[AI_ANALYZER_PATH]
+  const analyzer = require(AI_ANALYZER_PATH)
+
+  try {
+    return await runner(analyzer)
+  } finally {
+    if (originalRuntimeConfigCache) require.cache[RUNTIME_CONFIG_PATH] = originalRuntimeConfigCache
+    else delete require.cache[RUNTIME_CONFIG_PATH]
+    if (originalApiCache) require.cache[API_PATH] = originalApiCache
+    else delete require.cache[API_PATH]
+    delete require.cache[AI_ANALYZER_PATH]
+    if (originalAnalyzerCache) require.cache[AI_ANALYZER_PATH] = originalAnalyzerCache
   }
 }
 
@@ -162,6 +251,267 @@ const fallbackFull = aiAnalyzer.buildFallbackFullAnalysis({
 })
 check('full fallback creates user title cards', Array.isArray(fallbackFull.userTitles) && fallbackFull.userTitles.length === 2)
 check('full fallback creates quality review', fallbackFull.qualityReview && Array.isArray(fallbackFull.qualityReview.dimensions) && fallbackFull.qualityReview.dimensions.length > 0)
+const fallbackBasic = aiAnalyzer.buildFallbackBasicAnalysis({
+  totalMessages: 120,
+  activeMembers: 8,
+  emojiCount: 12,
+  totalChars: 3000,
+  peakHour: '21:00-21:59',
+  topMembers: [
+    { name: 'user-a', userId: '10001', msgCount: 40 },
+    { name: 'user-b', userId: '10002', msgCount: 25 },
+  ],
+})
+check('basic fallback creates topics', Array.isArray(fallbackBasic.topics) && fallbackBasic.topics.length > 0)
+check('basic fallback creates golden quotes', Array.isArray(fallbackBasic.goldenQuotes) && fallbackBasic.goldenQuotes.length > 0)
+
+async function testAiFallbackRegression() {
+  section('AI fallback regression')
+  const sampleData = createSampleReportData()
+
+  const badJsonMock = createAiRequestMock({
+    compress: '压缩摘要',
+    basic: '{"topics":[{"id":1,"title":"缺半截"',
+    full: 'full ok',
+  })
+  await withMockedAiAnalyzer(badJsonMock.request, async analyzer => {
+    const result = await analyzer.analyzeWithAI(sampleData, false)
+    check('basic bad JSON still has topics', Array.isArray(result.topics) && result.topics.length > 0)
+    check('basic bad JSON still has golden quotes', Array.isArray(result.goldenQuotes) && result.goldenQuotes.length > 0)
+    check('basic bad JSON records fallback warning', Array.isArray(result.meta?.warnings) && result.meta.warnings.some(w => w.includes('基础分析')))
+    check('basic bad JSON records fallback stage', result.meta?.stages?.basic === 'fallback')
+    const compressCall = badJsonMock.calls.find(call => call.kind === 'compress')
+    const basicCall = badJsonMock.calls.find(call => call.kind === 'basic')
+    check('basic bad JSON passes daily-report temperature', compressCall?.extraBody?.temperature === 0.2 && basicCall?.extraBody?.temperature === 0.2)
+    check('basic bad JSON passes extended timeouts', compressCall?.extraBody?._timeoutMs === 45000 && basicCall?.extraBody?._timeoutMs === 60000)
+  })
+
+  const emptyMock = createAiRequestMock({
+    compress: '压缩摘要',
+    basic: '',
+    full: '',
+  })
+  await withMockedAiAnalyzer(emptyMock.request, async analyzer => {
+    const result = await analyzer.analyzeWithAI(sampleData, true)
+    check('full empty response still has topics', Array.isArray(result.topics) && result.topics.length > 0)
+    check('full empty response still has golden quotes', Array.isArray(result.goldenQuotes) && result.goldenQuotes.length > 0)
+    check('full empty response still has user titles', Array.isArray(result.userTitles) && result.userTitles.length > 0)
+    check('full empty response still has quality review', !!result.qualityReview && Array.isArray(result.qualityReview.dimensions) && result.qualityReview.dimensions.length > 0)
+    check('full empty response records fallback stages', result.meta?.stages?.basic === 'fallback' && result.meta?.stages?.full === 'fallback')
+  })
+
+  const timeoutMock = createAiRequestMock({
+    compress: '压缩摘要',
+    basic: new Error('AbortError: request timed out'),
+    full: new Error('AbortError: request timed out'),
+  })
+  await withMockedAiAnalyzer(timeoutMock.request, async analyzer => {
+    const result = await analyzer.analyzeWithAI(sampleData, true)
+    check('timeout response still has user titles', Array.isArray(result.userTitles) && result.userTitles.length > 0)
+    check('timeout response still has quality review', !!result.qualityReview && Array.isArray(result.qualityReview.dimensions) && result.qualityReview.dimensions.length > 0)
+    check('timeout response records warnings', Array.isArray(result.meta?.warnings) && result.meta.warnings.some(w => w.includes('请求失败')))
+  })
+}
+
+async function testRequestChatCompletionsPayload() {
+  section('api request payload')
+  const originalFetch = global.fetch
+  const originalSetTimeout = global.setTimeout
+  const originalClearTimeout = global.clearTimeout
+  const timeoutToken = { id: 'api-timeout' }
+  let timeoutMs = null
+  let clearedToken = null
+  let fetchUrl = ''
+  let fetchOptions = null
+  let signalAttached = 0
+  let signalRemoved = 0
+  const signalListeners = new Set()
+  const signal = {
+    aborted: false,
+    addEventListener(type, fn) {
+      if (type === 'abort') {
+        signalAttached += 1
+        signalListeners.add(fn)
+      }
+    },
+    removeEventListener(type, fn) {
+      if (type === 'abort' && signalListeners.has(fn)) {
+        signalRemoved += 1
+        signalListeners.delete(fn)
+      }
+    },
+  }
+
+  global.setTimeout = (fn, ms) => {
+    timeoutMs = ms
+    return timeoutToken
+  }
+  global.clearTimeout = token => {
+    clearedToken = token
+  }
+  global.fetch = async (url, options) => {
+    fetchUrl = url
+    fetchOptions = options
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: 'ok' } }],
+        usage: { total_tokens: 0 },
+      }),
+    }
+  }
+
+  try {
+    const response = await requestChatCompletions(
+      [{ role: 'user', content: 'ping' }],
+      { provider: 'opencode', baseURL: 'https://example.com', apiKey: 'test-key', model: 'test-model' },
+      { max_tokens: 12, temperature: 5, _timeoutMs: 999999, signal },
+    )
+    const body = JSON.parse(fetchOptions.body)
+    check('requestChatCompletions posts to chat endpoint', fetchUrl === 'https://example.com/chat/completions')
+    check('requestChatCompletions serializes temperature', body.temperature === 2)
+    check('requestChatCompletions serializes max tokens', body.max_tokens === 12)
+    check('requestChatCompletions clamps timeout', timeoutMs === 300000)
+    check('requestChatCompletions clears timeout', clearedToken === timeoutToken)
+    check('requestChatCompletions attaches and removes abort listener', signalAttached === 1 && signalRemoved === 1)
+    check('requestChatCompletions returns text payload', response.type === 'text' && response.content === 'ok')
+  } finally {
+    global.fetch = originalFetch
+    global.setTimeout = originalSetTimeout
+    global.clearTimeout = originalClearTimeout
+  }
+}
+
+async function testAIAnalyzerObjectResponse() {
+  section('AI object response regression')
+  const payload = JSON.stringify({
+    topics: [{ id: 1, title: '测试话题', summary: '测试摘要', participants: ['Alice'] }],
+    goldenQuotes: [{ sender: 'Alice', userId: '10001', content: '测试金句', reason: '测试点评' }],
+    userTitles: [{ name: 'Alice', userId: '10001', title: '测试称号', mbti: 'ENFP', reason: '测试画像' }],
+    qualityReview: {
+      title: '测试锐评',
+      subtitle: '测试副标题',
+      dimensions: [{ name: '测试维度', percentage: 100, comment: '测试点评', color: '#39C5BB' }],
+      summary: '测试总结',
+    },
+  })
+  const mock = createAiRequestMock({
+    compress: { type: 'text', content: '压缩摘要' },
+    basic: { type: 'text', content: payload },
+    full: { type: 'text', content: payload },
+  })
+
+  await withMockedAiAnalyzer(mock.request, async analyzer => {
+    const result = await analyzer.analyzeWithAI(createSampleReportData(), true)
+    check('analyzeWithAI parses object response topics', result.topics.length === 1)
+    check('analyzeWithAI parses object response quotes', result.goldenQuotes.length === 1)
+    check('analyzeWithAI parses object response titles', result.userTitles.length === 1)
+    check('analyzeWithAI parses object response quality review', !!result.qualityReview && result.qualityReview.dimensions.length === 1)
+  })
+}
+
+async function testConcurrentReportGuard() {
+  section('middleware concurrency guard')
+  const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-'))
+  fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123']), 'utf8')
+
+  const originalConfigCache = require.cache[CONFIG_PATH]
+  const originalDataCollectorCache = require.cache[DATA_COLLECTOR_PATH]
+  const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
+  const originalRendererCache = require.cache[HTML_RENDERER_PATH]
+  const originalPluginCache = require.cache[PLUGIN_PATH]
+
+  let collectCalls = 0
+  let analyzeCalls = 0
+  let renderCalls = 0
+  let resolvePrompt = null
+  let resolveAnalysis = null
+  const promptPending = new Promise(resolve => { resolvePrompt = resolve })
+  const analysisPending = new Promise(resolve => { resolveAnalysis = resolve })
+
+  try {
+    require.cache[CONFIG_PATH] = {
+      id: CONFIG_PATH,
+      filename: CONFIG_PATH,
+      loaded: true,
+      exports: { TIMEOUTS: { aiRequest: 30000, cooldown: 60000 }, DATA_DIR: reportDataDir },
+    }
+    require.cache[DATA_COLLECTOR_PATH] = {
+      id: DATA_COLLECTOR_PATH,
+      filename: DATA_COLLECTOR_PATH,
+      loaded: true,
+      exports: {
+        collectReportData: () => {
+          collectCalls += 1
+          return createSampleReportData()
+        },
+      },
+    }
+    require.cache[AI_ANALYZER_PATH] = {
+      id: AI_ANALYZER_PATH,
+      filename: AI_ANALYZER_PATH,
+      loaded: true,
+      exports: {
+        analyzeWithAI: async () => {
+          analyzeCalls += 1
+          return analysisPending
+        },
+      },
+    }
+    require.cache[HTML_RENDERER_PATH] = {
+      id: HTML_RENDERER_PATH,
+      filename: HTML_RENDERER_PATH,
+      loaded: true,
+      exports: {
+        renderReport: async () => {
+          renderCalls += 1
+          return Buffer.from('fake-png')
+        },
+      },
+    }
+
+    delete require.cache[PLUGIN_PATH]
+    const plugin = require(PLUGIN_PATH)
+    const ctx = makeCtx()
+    plugin.apply(ctx)
+    const middleware = ctx._middlewareList[0]
+
+    const firstSent = []
+    const firstSession = makeSession({
+      content: '群聊详细日报',
+      guildId: '123',
+      _sent: firstSent,
+      send: async msg => {
+        firstSent.push(msg)
+        if (typeof msg === 'string' && msg.includes('正在生成')) return promptPending
+        return true
+      },
+    })
+    const secondSession = makeSession({ content: '群聊详细日报', guildId: '123' })
+
+    const firstRun = middleware(firstSession, () => 'next-1')
+    const secondRun = middleware(secondSession, () => 'next-2')
+
+    check('first report enters generation state', firstSent.some(item => String(item).includes('正在生成群聊详细日报')), JSON.stringify(firstSent))
+    check('second report is rejected while first is running', secondSession._sent.some(item => String(item).includes('正在生成中')), JSON.stringify(secondSession._sent))
+    check('second report did not call collector', collectCalls === 1, String(collectCalls))
+    check('second report did not call analyzer', analyzeCalls === 0, String(analyzeCalls))
+    check('second report did not call renderer', renderCalls === 0, String(renderCalls))
+
+    resolvePrompt()
+    resolveAnalysis({ topics: [], goldenQuotes: [], userTitles: [], qualityReview: null, tokenUsage: { totalTokens: 0 } })
+    await Promise.all([firstRun, secondRun])
+    check('first report completed analyzer', analyzeCalls === 1, String(analyzeCalls))
+    check('first report completed render', renderCalls === 1, String(renderCalls))
+  } finally {
+    restoreModuleCache(CONFIG_PATH, originalConfigCache)
+    restoreModuleCache(DATA_COLLECTOR_PATH, originalDataCollectorCache)
+    restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
+    restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
+    restoreModuleCache(PLUGIN_PATH, originalPluginCache)
+    try { fs.rmSync(reportDataDir, { recursive: true, force: true }) } catch {}
+  }
+}
 
 // ===== 3. models 单元测试 =====
 section('models 单元测试')
@@ -252,6 +602,97 @@ testMiddleware('你好', '123').then(nonReport => {
   delete process.env.DONGXUELIAN_AI_DATA_DIR
 
   return testRendererTimeoutCleanup()
+}).then(() => testAiFallbackRegression()
+).then(() => testRequestChatCompletionsPayload()
+).then(() => testAIAnalyzerObjectResponse()
+).then(() => testConcurrentReportGuard()
+).then(() => {
+
+  // ===== 长内容渲染回归 =====
+  section('html-renderer long content regression')
+  const originalExistsSync = fs.existsSync
+  const originalSetTimeout = global.setTimeout
+  const originalClearTimeout = global.clearTimeout
+  const puppeteerPath = require.resolve('puppeteer-core')
+  const originalPuppeteerCache = require.cache[puppeteerPath]
+  const timeoutToken = { id: 'render-timeout' }
+  let timeoutMs = null
+  let clearedToken = null
+  let browserClosed = 0
+  let networkIdleArgs = null
+  let setContentArgs = null
+  let screenshotArgs = null
+  const viewportCalls = []
+  let evaluateCalls = 0
+
+  fs.existsSync = () => true
+  global.setTimeout = (fn, ms) => {
+    timeoutMs = ms
+    return timeoutToken
+  }
+  global.clearTimeout = token => {
+    clearedToken = token
+  }
+  require.cache[puppeteerPath] = {
+    id: puppeteerPath,
+    filename: puppeteerPath,
+    loaded: true,
+    exports: {
+      async launch() {
+        return {
+          async newPage() {
+            return {
+              async setRequestInterception() {},
+              on() {},
+              async setViewport(args) {
+                viewportCalls.push(args)
+              },
+              async setContent(html, args) {
+                setContentArgs = { html, args }
+              },
+              async evaluate() {
+                evaluateCalls += 1
+                return evaluateCalls === 1 ? true : 9200
+              },
+              async waitForNetworkIdle(args) {
+                networkIdleArgs = args
+              },
+              async screenshot(args) {
+                screenshotArgs = args
+                return Buffer.from('render-ok')
+              },
+            }
+          },
+          async close() {
+            browserClosed += 1
+          },
+        }
+      },
+    },
+  }
+
+  return (async () => {
+    try {
+      delete require.cache[HTML_RENDERER_PATH]
+      const renderer = require(HTML_RENDERER_PATH)
+      const buffer = await renderer.renderHtmlToImage('<html><body><div style="height:9200px">long</div></body></html>')
+      check('renderHtmlToImage returns screenshot buffer', Buffer.isBuffer(buffer) && buffer.toString() === 'render-ok')
+      check('renderHtmlToImage keeps setContent timeout', setContentArgs && setContentArgs.args && setContentArgs.args.waitUntil === 'domcontentloaded' && setContentArgs.args.timeout === 20000)
+      check('renderHtmlToImage waits for assets', networkIdleArgs && networkIdleArgs.timeout === 8000 && networkIdleArgs.idleTime === 1000)
+      check('renderHtmlToImage adjusts viewport height for long content', viewportCalls.length >= 2 && viewportCalls[0].height === 800 && viewportCalls[1].height === 6000)
+      check('renderHtmlToImage clips screenshot to viewport', screenshotArgs && screenshotArgs.clip && screenshotArgs.clip.height === 6000)
+      check('renderHtmlToImage clears timeout on success', timeoutMs === 45000 && clearedToken === timeoutToken)
+      check('renderHtmlToImage closes browser on success', browserClosed === 1)
+    } finally {
+      fs.existsSync = originalExistsSync
+      global.setTimeout = originalSetTimeout
+      global.clearTimeout = originalClearTimeout
+      if (originalPuppeteerCache) require.cache[puppeteerPath] = originalPuppeteerCache
+      else delete require.cache[puppeteerPath]
+      delete require.cache[HTML_RENDERER_PATH]
+      require(HTML_RENDERER_PATH)
+    }
+  })()
 }).then(() => {
 
   // ===== 总结 =====
