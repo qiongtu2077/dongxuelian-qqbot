@@ -75,24 +75,48 @@ const tts = require(${JSON.stringify(ttsModule)})
 fs.mkdirSync(constants.VOICES_DIR, { recursive: true })
 fs.mkdirSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas'), { recursive: true })
 const sample = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4096)])
-fs.writeFileSync(path.join(constants.VOICES_DIR, 'TestPersona.wav'), sample)
-fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas', 'SKILL.TestPersona.md'), '---\\nname: TestPersona\\nvoice_id: __cloned__\\nvoice_asset_id: TestPersona\\nvoice_style: 温柔\\n---\\n测试人格')
-const asset = voiceAssets.upsertVoiceAsset({ personaName: 'TestPersona', filename: 'TestPersona.wav', displayName: '测试音色', description: '备注', sampleText: '试听文本' })
-const list = voiceAssets.listVoiceAssets([{ name: 'TestPersona' }])
-const updated = voiceAssets.updateVoiceAssetMetadata('TestPersona', { displayName: '新版音色', sampleText: '新版试听' }, [{ name: 'TestPersona' }])
-const sampleFile = voiceAssets.resolveVoiceSampleFile('TestPersona', 'TestPersona')
+const firstId = voiceAssets.createVoiceAssetId('TestPersona')
+const firstFile = voiceAssets.buildVoiceAssetFilename(firstId, 'audio/wav')
+fs.writeFileSync(path.join(constants.VOICES_DIR, firstFile), sample)
+const asset = voiceAssets.upsertVoiceAsset({ id: firstId, personaName: 'TestPersona', filename: firstFile, displayName: '测试音色', description: '备注', sampleText: '试听文本' })
+const secondId = voiceAssets.createVoiceAssetId('TestPersona')
+const secondFile = voiceAssets.buildVoiceAssetFilename(secondId, 'audio/wav')
+fs.writeFileSync(path.join(constants.VOICES_DIR, secondFile), Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(5120, 1)]))
+const secondAsset = voiceAssets.upsertVoiceAsset({ id: secondId, personaName: 'TestPersona', filename: secondFile, displayName: '温柔版本', sampleText: '第二版试听' })
+fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas', 'SKILL.TestPersona.md'), '---\\nname: TestPersona\\nvoice_id: __cloned__\\nvoice_asset_id: ' + secondAsset.id + '\\nvoice_style: 温柔\\n---\\n测试人格')
+fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas', 'SKILL.ReusePersona.md'), '---\\nname: ReusePersona\\nvoice_id: __cloned__\\nvoice_asset_id: ' + asset.id + '\\nvoice_style: 轻快\\n---\\n复用人格')
+const personaConfigs = [
+  { name: 'TestPersona', voice: '__cloned__', voiceAssetId: secondAsset.id },
+  { name: 'ReusePersona', voice: '__cloned__', voiceAssetId: asset.id },
+]
+const list = voiceAssets.listVoiceAssets(personaConfigs)
+const updated = voiceAssets.updateVoiceAssetMetadata(asset.id, { displayName: '新版音色', sampleText: '新版试听' }, personaConfigs)
+const sampleFile = voiceAssets.resolveVoiceSampleFile('TestPersona', secondAsset.id)
+const reusedSampleFile = voiceAssets.resolveVoiceSampleFile('ReusePersona', asset.id)
 const resolved = tts.resolvePersonaVoice('TestPersona')
-const deleted = voiceAssets.deleteVoiceAsset('TestPersona', [{ name: 'TestPersona' }])
-const afterDelete = voiceAssets.resolveVoiceSampleFile('TestPersona', 'TestPersona')
+const reused = tts.resolvePersonaVoice('ReusePersona')
+const refsFirst = voiceAssets.listVoiceAssetReferences(asset, personaConfigs)
+const refsSecond = voiceAssets.listVoiceAssetReferences(secondAsset, personaConfigs)
+const deleted = voiceAssets.deleteVoiceAsset(asset.id, personaConfigs)
+const afterDeleteFirst = voiceAssets.resolveVoiceSampleFile('ReusePersona', asset.id)
+const afterDeleteSecond = voiceAssets.resolveVoiceSampleFile('TestPersona', secondAsset.id)
 console.log(JSON.stringify({
   id: asset.id,
+  secondId: secondAsset.id,
+  filename: asset.filename,
+  secondFilename: secondAsset.filename,
   listCount: list.length,
   displayName: updated && updated.displayName,
   sampleText: updated && updated.sampleText,
   sampleFound: !!sampleFile,
+  reusedSampleFound: !!reusedSampleFile,
   resolvedClone: resolved.voice.startsWith('data:audio/wav;base64,') && resolved.style === '温柔',
+  reusedClone: reused.voice.startsWith('data:audio/wav;base64,') && reused.style === '轻快',
+  refsFirst,
+  refsSecond,
   deletedFile: deleted && deleted.deleted && deleted.deleted[0],
-  afterDelete: afterDelete === null,
+  afterDeleteFirst: afterDeleteFirst === null,
+  afterDeleteSecond: !!afterDeleteSecond,
 }))
 `
   const assetResult = spawnSync(process.execPath, ['-e', assetScript], {
@@ -103,12 +127,15 @@ console.log(JSON.stringify({
   let assetSummary = {}
   try { assetSummary = JSON.parse(String(assetResult.stdout || '').trim()) } catch {}
   t.check('voice asset metadata child process passes', assetResult.status === 0, assetResult.stderr || assetResult.stdout)
-  t.check('voice asset id uses persona safe name', assetSummary.id === 'TestPersona')
-  t.check('voice asset list includes sample', assetSummary.listCount === 1)
+  t.check('voice asset ids are unique per upload', assetSummary.id && assetSummary.secondId && assetSummary.id !== assetSummary.secondId, JSON.stringify(assetSummary))
+  t.check('voice asset files use asset ids', assetSummary.filename === `${assetSummary.id}.wav` && assetSummary.secondFilename === `${assetSummary.secondId}.wav`, JSON.stringify(assetSummary))
+  t.check('voice asset list keeps multiple versions', assetSummary.listCount === 2, JSON.stringify(assetSummary))
   t.check('voice asset metadata update keeps file name stable', assetSummary.displayName === '新版音色' && assetSummary.sampleText === '新版试听')
   t.check('voice asset resolves sample file', assetSummary.sampleFound === true)
+  t.check('voice asset can be reused by another persona', assetSummary.reusedSampleFound === true && assetSummary.reusedClone === true)
   t.check('resolvePersonaVoice reads voice_asset_id clone', assetSummary.resolvedClone === true)
-  t.check('voice asset delete removes sample file', assetSummary.deletedFile === 'TestPersona.wav' && assetSummary.afterDelete === true)
+  t.check('voice asset references list all users', Array.isArray(assetSummary.refsFirst) && assetSummary.refsFirst.includes('ReusePersona') && Array.isArray(assetSummary.refsSecond) && assetSummary.refsSecond.includes('TestPersona'), JSON.stringify(assetSummary))
+  t.check('voice asset delete removes one sample only', assetSummary.deletedFile === `${assetSummary.id}.wav` && assetSummary.afterDeleteFirst === true && assetSummary.afterDeleteSecond === true, JSON.stringify(assetSummary))
   try { fs.rmSync(tempDataRoot, { recursive: true, force: true }) } catch {}
 
   t.section('scenario: rare fixed voice module')

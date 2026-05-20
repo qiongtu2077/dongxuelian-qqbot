@@ -68,12 +68,13 @@ function jsonResponse(data, status = 200) {
 
 const mockState = {
   voiceEnabled: false,
+  voiceAssetId: '',
   clonedVoice: {
-    id: '测试人格',
+    id: 'voice_asset_a',
     personaName: '测试人格',
     displayName: '测试音色',
     description: '本地烟测样本',
-    filename: '测试人格.wav',
+    filename: 'voice_asset_a.wav',
     size: 4096,
     mtime: Date.now(),
     sampleText: '你好，这是克隆音色测试。',
@@ -136,14 +137,21 @@ function apiMock(method, pathname, body) {
   if (method === 'DELETE' && pathname === '/lores') return writeOk('lore deleted')
   if (method === 'GET' && pathname === '/agent/tts/voices') return ok({
     builtin: ['冰糖', '茉莉'],
-    personas: [{ name: '测试人格', voice: mockState.voiceEnabled ? '__cloned__' : '冰糖', voiceAssetId: mockState.voiceEnabled ? '测试人格' : '', style: '温柔', hasSample: true }],
-    clonedVoices: [{ ...mockState.clonedVoice, isCurrent: mockState.voiceEnabled }],
+    personas: [
+      { name: '测试人格', voice: mockState.voiceEnabled ? '__cloned__' : '冰糖', voiceAssetId: mockState.voiceEnabled ? mockState.voiceAssetId : '', style: '温柔', hasSample: true },
+    ],
+    clonedVoices: [{
+      ...mockState.clonedVoice,
+      referencedBy: mockState.voiceEnabled ? ['测试人格'] : [],
+      isCurrent: mockState.voiceEnabled,
+    }],
   })
   if (method === 'POST' && pathname === '/agent/tts/preview') return ok({ audio: Buffer.from('mock audio').toString('base64') })
   if (method === 'POST' && pathname === '/agent/tts/clone/rename') return writeOk('voice asset saved')
   if (method === 'POST' && pathname === '/agent/tts/clone/delete') return writeOk('voice asset deleted')
   if (method === 'PUT' && pathname === '/agent/persona/voice') {
     mockState.voiceEnabled = body.body?.voiceId === '__cloned__'
+    mockState.voiceAssetId = body.body?.voiceAssetId || ''
     return writeOk('voice saved')
   }
 
@@ -439,6 +447,8 @@ async function runClicks(page) {
     clickButtonInCard(page, '已克隆音色', '启用'),
   ])
   await page.waitForFunction(() => [...document.querySelectorAll('select')].some(select => select.value === '__cloned__'), { timeout: 8000 })
+  await page.waitForFunction(() => [...document.querySelectorAll('select')].some(select => select.value === 'voice_asset_a'), { timeout: 8000 })
+  await waitForText(page, '使用：测试人格')
 
   await clickSidebarTab(page, 'API Keys')
   await waitForText(page, 'API Key 管理')
