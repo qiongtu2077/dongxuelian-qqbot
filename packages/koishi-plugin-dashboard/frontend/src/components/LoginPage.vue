@@ -99,7 +99,7 @@ export default {
       try {
         const res = await resetPassword(resetToken.value.trim())
         if (res.ok) {
-          resetMsg.value = { type: 'ok', text: res.data?.message || '密码已重置为 123' }
+          resetMsg.value = { type: 'ok', text: res.data?.message || 'Passwords were reset to new random values. Check the server password files.' }
           resetToken.value = ''
         } else {
           resetMsg.value = { type: 'err', text: res.data?.message || '重置失败' }

@@ -28,14 +28,15 @@ function isGlobalLocalMode() {
 const AGENT_CONSOLE_DIR = path.join(PLUGIN_ROOT, '..', 'agent-console')
 const AGENT_CONSOLE_DIST_DIR = path.join(AGENT_CONSOLE_DIR, 'dist')
 const PORT = process.env.DASHBOARD_PORT || 5150
-const HOST = process.env.DASHBOARD_HOST || '0.0.0.0'
-const PASSWORD = process.env.DASHBOARD_PASSWORD || (isGlobalLocalMode() ? '' : '123')
-const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || (isGlobalLocalMode() ? '' : '123')
+const HOST = process.env.DASHBOARD_HOST || '127.0.0.1'
+const PASSWORD = process.env.DASHBOARD_PASSWORD || ''
+const ADMIN_PASSWORD = process.env.DASHBOARD_ADMIN_PASSWORD || ''
 
 const ADMIN_PWD_FILE = path.join(DATA_DIR, 'dashboard-admin-pwd.txt')
 const ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-access-pwd.txt')
 const LEGACY_ACCESS_PWD_FILE = path.join(DATA_DIR, 'dashboard-pwd.txt')
 const RESET_TOKEN_FILE = path.join(DATA_DIR, 'password-reset-token.txt')
+const SESSION_SECRET_FILE = path.join(DATA_DIR, 'dashboard-session-secret.txt')
 const CUSTOM_PROVIDERS_FILE = path.join(DATA_DIR, 'ai-providers-custom.json')
 const FALLBACK_CHAINS_FILE = path.join(DATA_DIR, 'ai-fallback-chains.json')
 const DEBUG_LOG_CONFIG_FILE = path.join(DATA_DIR, 'debug-log-config.json')
@@ -103,6 +104,7 @@ module.exports = {
   ACCESS_PWD_FILE,
   LEGACY_ACCESS_PWD_FILE,
   RESET_TOKEN_FILE,
+  SESSION_SECRET_FILE,
   CUSTOM_PROVIDERS_FILE,
   FALLBACK_CHAINS_FILE,
   DEBUG_LOG_CONFIG_FILE,

@@ -27,11 +27,10 @@ for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, setting
 
 const preAuthKeys = new Set([
   'POST /dashboard/api/login',
-  'POST /dashboard/api/admin/verify',
-  'PUT /dashboard/api/auth/password',
   'POST /dashboard/api/auth/reset-password',
 ])
 
+// Dispatches an HTTP request to exact, prefix, or regex route handlers.
 function dispatch(req, res, pathname, url) {
   const method = req.method
   const key = method + ' ' + pathname
@@ -52,17 +51,12 @@ function dispatch(req, res, pathname, url) {
   }
 
   for (const route of regexRoutes) {
-    const arrayRoute = Array.isArray(route)
-    const pattern = arrayRoute ? route[0] : route.pattern
-    const routeMethod = arrayRoute ? route[1] : route.method
-    const rxHandler = arrayRoute ? route[2] : route.handler
-    if (method !== routeMethod) continue
+    const pattern = route.pattern || route[0]
+    const routeMethod = route.method || route[1]
+    const rxHandler = route.handler || route[2]
+    if (!pattern || !rxHandler || method !== routeMethod) continue
     const match = pathname.match(pattern)
-    if (match) {
-      if (arrayRoute) rxHandler(req, res, pathname, url, match)
-      else rxHandler(req, res, match, pathname, url)
-      return true
-    }
+    if (match) { rxHandler(req, res, match, pathname, url); return true }
   }
 
   return false

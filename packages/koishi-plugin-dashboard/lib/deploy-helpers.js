@@ -17,7 +17,7 @@ const { localTasks, getTaskPublicStatus, spawnLocalTask, getNpmDiagnosticsCache,
 const MAX_DOWNLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLOAD_BYTES, 256 * 1024 * 1024, 8 * 1024 * 1024, 2 * 1024 * 1024 * 1024)
 const MAX_DEPLOY_TASK_LOG_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DEPLOY_TASK_LOG_BYTES, 512 * 1024, 64 * 1024, 4 * 1024 * 1024)
 const MAX_DEPLOY_UPLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_DEPLOY_UPLOAD_MAX_BYTES, 1024 * 1024, 4 * 1024, 4 * 1024 * 1024)
-const MAX_REDIRECTS = parsePositiveInt(process.env.DASHBOARD_MAX_REDIRECTS, 5, 0, 20)
+const MAX_DOWNLOAD_REDIRECTS = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLOAD_REDIRECTS, 5, 0, 10)
 const MAX_JSON_RESPONSE_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_JSON_RESPONSE_BYTES, 10 * 1024 * 1024, 1024, 64 * 1024 * 1024)
 const HASH_CHUNK_BYTES = 64 * 1024
 
@@ -276,17 +276,15 @@ function getDownloadFileName(parsed, response, options = {}) {
 function downloadToRuntime(url, options, callback) {
   if (typeof options === 'function') { callback = options; options = {} }
   options = options || {}
-  const redirects = Number(options._redirects || 0)
+  const redirects = Number.isFinite(options.redirects) ? options.redirects : 0
   let settled = false
-  let activeFilePath = ''
-  const cleanupPartial = filePath => {
-    if (!filePath) return
-    try { fs.unlinkSync(filePath) } catch {}
-  }
+  let currentFilePath = ''
   const finish = (err, filePath, detail) => {
     if (settled) return
     settled = true
-    if (err && filePath) cleanupPartial(filePath)
+    if (err && filePath) {
+      try { fs.unlinkSync(filePath) } catch {}
+    }
     callback(err, filePath, detail)
   }
   let parsed
@@ -299,8 +297,11 @@ function downloadToRuntime(url, options, callback) {
   const req = client.get(parsed, (response) => {
     if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
       response.resume()
-      if (redirects >= MAX_REDIRECTS) { finish(new Error('下载重定向次数过多')); return }
-      downloadToRuntime(new URL(response.headers.location, parsed).toString(), { ...options, _redirects: redirects + 1 }, finish)
+      if (redirects >= MAX_DOWNLOAD_REDIRECTS) {
+        finish(new Error('too many download redirects'))
+        return
+      }
+      downloadToRuntime(new URL(response.headers.location, parsed).toString(), { ...options, redirects: redirects + 1 }, finish)
       return
     }
     if (response.statusCode !== 200) { response.resume(); finish(new Error('下载失败：HTTP ' + response.statusCode)); return }
@@ -308,7 +309,7 @@ function downloadToRuntime(url, options, callback) {
     if (Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES) { response.resume(); finish(new Error('下载文件过大：' + declared + ' bytes')); return }
     const name = getDownloadFileName(parsed, response, options)
     const filePath = runtimePath('downloads', name)
-    activeFilePath = filePath
+    currentFilePath = filePath
     const stream = fs.createWriteStream(filePath)
     let received = 0
     response.on('data', chunk => {
@@ -322,9 +323,10 @@ function downloadToRuntime(url, options, callback) {
     response.pipe(stream)
     stream.on('finish', () => stream.close(() => { try { finish(null, filePath, validateDownloadedFile(filePath, { ...options, expectedContentType: response.headers['content-type'] })) } catch (e) { finish(e, filePath) } }))
     stream.on('error', err => finish(err, filePath))
+    response.on('error', err => finish(err, filePath))
   })
   req.setTimeout(120000, () => req.destroy(new Error('下载超时')))
-  req.on('error', err => finish(err, activeFilePath))
+  req.on('error', err => finish(err, currentFilePath))
 }
 
 function psCommandArg(value) { return "'" + String(value).replace(/'/g, "''") + "'" }
@@ -648,7 +650,7 @@ function httpsGetJson(url, callback, redirects = 0) {
   const req = https.get(url, { headers: { 'User-Agent': 'LianBoard-Dashboard' } }, response => {
     if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
       response.resume()
-      if (redirects >= MAX_REDIRECTS) { finish(new Error('GitHub API 重定向次数过多')); return }
+      if (redirects >= MAX_DOWNLOAD_REDIRECTS) { finish(new Error('GitHub API 重定向次数过多')); return }
       httpsGetJson(new URL(response.headers.location, url).toString(), finish, redirects + 1)
       return
     }
@@ -855,7 +857,7 @@ function prepareNpmInstallRun(options = {}) {
 }
 
 module.exports = {
-  MAX_DOWNLOAD_BYTES, MAX_DEPLOY_TASK_LOG_BYTES, MAX_DEPLOY_UPLOAD_BYTES, MAX_REDIRECTS, MAX_JSON_RESPONSE_BYTES, HASH_CHUNK_BYTES,
+  MAX_DOWNLOAD_BYTES, MAX_DEPLOY_TASK_LOG_BYTES, MAX_DEPLOY_UPLOAD_BYTES, MAX_DOWNLOAD_REDIRECTS, MAX_JSON_RESPONSE_BYTES, HASH_CHUNK_BYTES,
   validateDeployServer, validateDeployAppDir, validateDeployTarget,
   remoteJoin, sshCommand, scpRemoteTarget, scpCommand,
   hashFile, computeFingerprint, writeDeployFingerprint,
