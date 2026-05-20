@@ -31,7 +31,7 @@
   </template>
 </template>
 
-<script>
+<script setup>
 import { computed, ref, provide, onMounted, onUnmounted } from 'vue'
 import { clearAdminToken } from './api'
 import { isElectronDeployerEnv } from './electron-deployer'
@@ -61,9 +61,8 @@ const componentMap = {
   gallery: GalleryPanel, agent: AgentPanel
 }
 
-export default {
-  components: { LoginPage, LoginBackdrop, Sidebar, ThemeSwitcher, AdminModal },
-  setup() {
+defineOptions({ name: 'DashboardApp' })
+
     const isElectronDeployer = isElectronDeployerEnv()
     const loggedIn = ref(isElectronDeployer || !!localStorage.getItem('dashboard_token'))
     const isMobileViewport = ref(window.matchMedia('(max-width: 760px)').matches)
@@ -192,7 +191,4 @@ export default {
       if (tabSwitchUnlockTimer) clearTimeout(tabSwitchUnlockTimer)
     })
 
-    return { isElectronDeployer, loggedIn, sidebarExpanded, isMobileSidebarOpen, themePickerOpen, themes, theme, currentThemeLabel, deployUnlocked, tabs, activeTab, activeTabLabel, activeComponent, adminModalOpen, adminModalMsg, onLoggedIn, onAdminModalVerified, onAdminModalCancel, unlockDeploy, logout, setTheme, doSwitchTab, setSidebarExpanded, toggleSidebar }
-  }
-}
 </script>

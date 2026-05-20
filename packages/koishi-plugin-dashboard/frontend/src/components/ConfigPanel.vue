@@ -87,7 +87,7 @@
   </div>
 </template>
 
-<script>
+<script setup>
 import { ref, computed, inject, onMounted } from 'vue'
 import { fetchConfig, fetchProviders, updateConfig, fetchFallbackChains, saveFallbackChains, fetchCustomProviders, saveCustomProviders } from '../api'
 
@@ -99,9 +99,8 @@ const FALLBACK_CARDS = [
   { key: 'lightweight', label: '轻量功能 Fallback', desc: '反击打分、摘要、敏感检测、话题切换、越狱回复、今日情绪、评价总结', showMainFirst: false, showMainLast: false, hasMainToggle: true },
 ]
 
-export default {
-  name: 'ConfigPanel',
-  setup() {
+defineOptions({ name: 'ConfigPanel' })
+
     const showAdminDialog = inject('showAdminDialog')
     const providers = ref({})
     const selectedProvider = ref('deepseek')
@@ -230,8 +229,8 @@ export default {
         keyFile: String(cp.keyFile || '').trim(),
         models: Array.isArray(cp.models)
           ? cp.models.map(function(m) {
-              var id = typeof m === 'object' && m !== null ? String(m.id || '').trim() : String(m).trim()
-              var vision = typeof m === 'object' && m !== null ? !!m.vision : false
+              const id = typeof m === 'object' && m !== null ? String(m.id || '').trim() : String(m).trim()
+              const vision = typeof m === 'object' && m !== null ? !!m.vision : false
               return { id: id, vision: vision }
             }).filter(function(m) { return m.id })
           : []
@@ -256,7 +255,7 @@ export default {
     }
 
     function onFbProviderChange(purpose, idx) {
-      var step = (fallbackChains.value[purpose] || [])[idx]
+      const step = (fallbackChains.value[purpose] || [])[idx]
       if (!step) return
       step.model = ''
     }
@@ -279,9 +278,9 @@ export default {
       if (lightweightMainToggle.value !== (localStorage.getItem(LIGHTWEIGHT_MAIN_TOGGLE_KEY) !== '0')) {
         localStorage.setItem(LIGHTWEIGHT_MAIN_TOGGLE_KEY, lightweightMainToggle.value ? '1' : '0')
       }
-      var chains = {}
-      for (var _i = 0; _i < FALLBACK_CARDS.length; _i++) {
-        var fc = FALLBACK_CARDS[_i]
+      const chains = {}
+      for (let _i = 0; _i < FALLBACK_CARDS.length; _i++) {
+        const fc = FALLBACK_CARDS[_i]
         chains[fc.key] = fallbackChains.value[fc.key] || []
       }
       const res = await saveFallbackChains(chains)
@@ -300,16 +299,4 @@ export default {
       savingThrottle.value = false
     }
 
-    return {
-      providers, selectedProvider, selectedModel, baseUrl, currentModels,
-      saving, msg, onProviderChange, saveConfig,
-      customProviders, savingCustom, customMsg,
-      addCustomProvider, removeCustomProvider, saveCustomProvidersAction,
-      fallbackChains, savingFallback, fallbackMsg, defaultFallback,
-      allProviders, onFbProviderChange,
-      fallbackCards, lightweightMainToggle,
-      addFallbackStep, removeFallbackStep, resetFallbackCard, saveFallback,
-    }
-  }
-}
 </script>
