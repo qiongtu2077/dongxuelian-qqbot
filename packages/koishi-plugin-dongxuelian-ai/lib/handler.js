@@ -5,7 +5,6 @@
  * 接近 300 行，新增逻辑须谨慎。
  */
 const path = require('path')
-const { h } = require('koishi')
 const {
   DATA_DIR, PLUGIN_VERSION,
   PROVIDERS, PROVIDER_FILE, MODEL_FILE, BASE_URL_FILE,
@@ -24,25 +23,28 @@ const {
 } = require('./persona')
 const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory, getMemorySummary, getConversationHistory } = require('./conversation')
 const { runHealthCheck, formatHealthReport } = require('./health-check')
-const { renderEmotionImage } = require('./emotion-renderer')
 const {
   hasAdminPermission, isReservedCommand,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
   formatPercent, getModelDisplayName, getSearchCapability, formatSearchStatus,
-  extractAtIds, todayCst, todayCstMinusDays,
+  extractAtIds, todayCst,
   sanitizeUserName,
   sanitizeUserInput,
   isJailbreakAttempt,
   pickJailbreakFallbackReply,
 } = require('./utils')
 const { logDebug } = require('./logging-config')
+const {
+  handled,
+  notHandled,
+} = require('./commands/command-result')
+const { handleVoiceCommand } = require('./commands/voice-command')
+const { handleMemoryCommand } = require('./commands/memory-command')
+const { handlePlanCommand } = require('./commands/plan-command')
+const { handleAgentCommand } = require('./commands/agent-command')
+const { handleEmotionCommand } = require('./commands/emotion-command')
 
 const forgetPendingConfirm = new Map()
-const EMOTION_IMAGE_TEXT_LIMIT = 1500
-const EMOTION_FALLBACK_TEXT_LIMIT = 500
-const EMOTION_ANALYSIS_MAX_MESSAGES = 1200
-const EMOTION_COMPRESS_BATCH_SIZE = 100
-const EMOTION_MAX_SUMMARY_CHARS = 10000
 let lastForgetCleanupTs = 0
 
 function trimForgetPendingConfirm(now = Date.now()) {
@@ -60,223 +62,6 @@ function isGroupAdmin(session) {
 
 function isGroupAdminOrBotAdmin(session) {
   return isGroupAdmin(session) || hasAdminPermission(session)
-}
-
-function handled(response) {
-  return { matched: true, response }
-}
-
-function notHandled() {
-  return { matched: false }
-}
-
-function clampInteger(value, min, max, fallback) {
-  const number = parseInt(value, 10)
-  if (!Number.isFinite(number)) return fallback
-  return Math.max(min, Math.min(max, number))
-}
-
-function cleanEmotionText(value = '', max = 120) {
-  return String(value || '')
-    .replace(/[\r\n\t]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max)
-}
-
-function limitPlainText(value = '', max = 500) {
-  const text = String(value || '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(/[\t ]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-  if (text.length <= max) return text
-  return text.slice(0, Math.max(0, max - 3)).trim() + '...'
-}
-
-function truncateEmotionText(value = '', max = 120) {
-  const text = cleanEmotionText(value, max + 20)
-  if (text.length <= max) return text
-  return text.slice(0, Math.max(0, max - 3)).trim() + '...'
-}
-
-function normalizeEmotionMood(score, mood = '') {
-  const value = String(mood || '')
-  if (/悲|低|消沉|焦虑|负/.test(value)) return '偏悲观'
-  if (/乐|活跃|积极|高涨|正/.test(value)) return '偏乐观'
-  if (/中|平/.test(value)) return '中性'
-  if (score >= 65) return '偏乐观'
-  if (score <= 40) return '偏悲观'
-  return '中性'
-}
-
-function parseJsonObject(text = '') {
-  const raw = String(text || '').trim()
-  if (!raw) return null
-  try { return JSON.parse(raw) } catch {}
-  const match = raw.match(/\{[\s\S]*\}/)
-  if (!match) return null
-  try { return JSON.parse(match[0]) } catch { return null }
-}
-
-function normalizeEmotionReasons(value, fallbackSummary) {
-  const source = Array.isArray(value) ? value : String(value || '').split(/(?:\d+[.、]\s*|[；;])/)
-  const reasons = source.map(item => cleanEmotionText(item, 300)).filter(Boolean)
-  if (reasons.length >= 2) return reasons.slice(0, 4)
-  if (reasons.length === 1) return [reasons[0], '群聊样本仍在积累，结论以当前收录文本为准。']
-  return [fallbackSummary || '聊天内容整体较平稳，没有明显单一情绪压倒其他话题。', '群聊样本仍在积累，结论以当前收录文本为准。']
-}
-
-function parseEmotionAnalysis(rawText, stats, summaryText = '') {
-  const parsed = parseJsonObject(rawText)
-  const text = String(rawText || '')
-  const fallbackSummary = cleanEmotionText(summaryText || text, 80) || '今天整体情绪比较平稳。'
-  const scoreMatch = text.match(/(?:score|指数)[^\d]*(\d{1,3})/i)
-  const confidenceMatch = text.match(/(?:confidence|置信度)[^\d]*(\d{1,3})/i)
-  const score = clampInteger(parsed?.score ?? parsed?.emotionScore ?? scoreMatch?.[1], 0, 100, 50)
-  const confidence = clampInteger(parsed?.confidence ?? confidenceMatch?.[1], 0, 100, stats.messageCount >= 50 ? 78 : 65)
-  const summary = cleanEmotionText(parsed?.summary || parsed?.comment || parsed?.overall || fallbackSummary, 80) || fallbackSummary
-  const mood = normalizeEmotionMood(score, parsed?.mood || parsed?.label)
-  const reasons = normalizeEmotionReasons(parsed?.reasons || parsed?.reason, summary)
-  const keywords = Array.isArray(parsed?.keywords)
-    ? parsed.keywords.map(item => cleanEmotionText(item, 16)).filter(Boolean).slice(0, 6)
-    : []
-  return { score, confidence, mood, summary, reasons, keywords }
-}
-
-function normalizeEmotionHistoryItem(item) {
-  if (!item || typeof item !== 'object' || !item.date) return null
-  const score = clampInteger(item.score, 0, 100, 50)
-  return {
-    date: String(item.date),
-    score,
-    mood: normalizeEmotionMood(score, item.mood),
-    summary: cleanEmotionText(item.summary || item.text || '', 70),
-  }
-}
-
-function renderEmotionReport(analysis, stats, history = []) {
-  const lines = [
-    `群聊情绪指数：${analysis.score}/100（${analysis.mood}）`,
-    `置信度：${analysis.confidence}%`,
-    `今日样本：${stats.messageCount} 条文本消息，${stats.userCount} 位活跃成员`,
-    '',
-  ]
-  if (history.length) {
-    lines.push('近5日对比：')
-    for (const item of history) {
-      const suffix = item.summary ? ` ${item.summary}` : ''
-      lines.push(`- ${item.date}：${item.score}/100（${item.mood}）${suffix}`)
-    }
-  } else {
-    lines.push('近5日对比：暂无对比数据')
-  }
-  lines.push('', `总评：${analysis.summary}`, '原因：')
-  analysis.reasons.forEach((reason, index) => lines.push(`${index + 1}. ${reason}`))
-  if (analysis.keywords.length) lines.push('', `关键词：${analysis.keywords.join('、')}`)
-  return lines.join('\n').trim()
-}
-
-function limitEmotionAnalysisForImage(analysis, stats, history = [], max = EMOTION_IMAGE_TEXT_LIMIT) {
-  const base = {
-    ...analysis,
-    summary: truncateEmotionText(analysis.summary, 80),
-    reasons: (Array.isArray(analysis.reasons) ? analysis.reasons : [])
-      .map(reason => truncateEmotionText(reason, 300))
-      .filter(Boolean)
-      .slice(0, 4),
-    keywords: (Array.isArray(analysis.keywords) ? analysis.keywords : [])
-      .map(keyword => truncateEmotionText(keyword, 16))
-      .filter(Boolean)
-      .slice(0, 6),
-  }
-  if (renderEmotionReport(base, stats, history).length <= max) return base
-
-  for (const reasonLimit of [240, 200, 160, 120, 90, 70, 50]) {
-    const candidate = {
-      ...base,
-      reasons: base.reasons.map(reason => truncateEmotionText(reason, reasonLimit)),
-    }
-    if (renderEmotionReport(candidate, stats, history).length <= max) return candidate
-  }
-
-  return {
-    ...base,
-    summary: truncateEmotionText(base.summary, 60),
-    reasons: base.reasons.slice(0, 2).map(reason => truncateEmotionText(reason, 50)),
-    keywords: [],
-  }
-}
-
-async function renderEmotionImageWithRetry(ctx, renderImage, analysis, stats, history, channelKey) {
-  let lastError = null
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      return await renderImage(analysis, stats, history)
-    } catch (err) {
-      lastError = err
-      ctx.logger('dongxuelian-ai').warn(`emotion image render failed channel=${channelKey} attempt=${attempt}: ${err.message}`)
-    }
-  }
-  throw lastError || new Error('emotion image render failed')
-}
-
-async function generateShortEmotionFallback(callOpenAI, analysis, stats, history, renderedText) {
-  const prompt = [
-    '今日情绪图片生成失败。请根据以下结构化结果，重新生成一段500字以内的纯文本群聊情绪报告。',
-    '必须包含：情绪指数、置信度、今日样本、近5日对比简述、总评、最多3条原因。',
-    '不要输出 JSON，不要 Markdown 表格，不要超过500字。',
-    '',
-    `情绪指数：${analysis.score}/100（${analysis.mood}）`,
-    `置信度：${analysis.confidence}%`,
-    `今日样本：${stats.messageCount} 条文本消息，${stats.userCount} 位活跃成员`,
-    history.length ? '近5日对比：\n' + history.map(item => `${item.date} ${item.score}/100 ${item.summary || ''}`).join('\n') : '近5日对比：暂无对比数据',
-    `总评：${analysis.summary}`,
-    `原因：${analysis.reasons.slice(0, 3).join('；')}`,
-    analysis.keywords.length ? `关键词：${analysis.keywords.join('、')}` : '',
-  ].filter(Boolean).join('\n')
-
-  try {
-    const fallback = await callOpenAI([
-      { role: 'system', content: prompt },
-      { role: 'user', content: '重新生成今日情绪文本回退' },
-    ], false, { max_tokens: 500, noLazy: true, _fallbackSet: 'lightweight' })
-    return limitPlainText(fallback, EMOTION_FALLBACK_TEXT_LIMIT) || limitPlainText(renderedText, EMOTION_FALLBACK_TEXT_LIMIT)
-  } catch {
-    return limitPlainText(renderedText, EMOTION_FALLBACK_TEXT_LIMIT)
-  }
-}
-
-function trimEmotionCache(map) {
-  const ttl = 5 * 60 * 1000
-  const now = Date.now()
-  for (const [key, value] of map.entries()) {
-    if (!value || now - (value.ts || 0) > ttl) map.delete(key)
-  }
-  while (map.size > 200) map.delete(map.keys().next().value)
-}
-
-async function summarizeEmotionMessages(msgs, callOpenAI) {
-  const source = (Array.isArray(msgs) ? msgs : []).slice(-EMOTION_ANALYSIS_MAX_MESSAGES)
-  const summaries = []
-  for (let i = 0; i < source.length; i += EMOTION_COMPRESS_BATCH_SIZE) {
-    const batch = source.slice(i, i + EMOTION_COMPRESS_BATCH_SIZE)
-    const batchText = batch.map(m => `[${m.time}] ${m.user}：${m.content}`).join('\n')
-    try {
-      const summary = await callOpenAI([
-        { role: 'system', content: '你是群聊消息摘要助手。将以下群聊记录压缩成一段100字以内的摘要，保留主要话题和情绪倾向。不要评价，只摘要。不得扩写，不得输出分析报告。' },
-        { role: 'user', content: batchText.slice(0, 4000) },
-      ], false, { _fallbackSet: 'lightweight' })
-      if (summary) summaries.push(summary)
-    } catch {}
-    if (summaries.join('\n---\n').length >= EMOTION_MAX_SUMMARY_CHARS) break
-  }
-  const fallback = source.slice(-80).map(m => `[${m.time}] ${m.user}：${m.content}`).join('\n').slice(0, 8000)
-  return {
-    sample: source,
-    text: (summaries.filter(Boolean).join('\n---\n') || fallback).slice(0, EMOTION_MAX_SUMMARY_CHARS),
-  }
 }
 
 async function handleCommand(session, ctx, state) {
@@ -597,59 +382,8 @@ async function handleCommand(session, ctx, state) {
   }
 
   // === TTS 语音合成命令 ===
-  if (plain === '东雪莲说句话') {
-    const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice } = require('./tts')
-    const resolved = resolvePersona(channelKey, currentUserId)
-    const voiceOpts = resolvePersonaVoice(resolved.name)
-    const phrases = ['哼，你好烦啊', '今天天气不错呢', '你在干嘛呀', '无聊死了', '哎呀别烦我啦']
-    const text = phrases[Math.floor(Math.random() * phrases.length)]
-    const buf = await synthesizeSpeech(text, voiceOpts)
-    if (buf) {
-      const sent = await sendVoiceMessage(session, buf)
-      if (sent) return handled()
-    }
-    return handled('语音合成失败了，可能是服务暂时不可用。')
-  }
-
-  const readAloudMatch = plain.match(/^东雪莲朗读\s*(.+)/)
-  if (readAloudMatch) {
-    const text = readAloudMatch[1].trim()
-    if (!text) return handled('请告诉我要朗读什么内容。')
-    const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice, MAX_TTS_TEXT_LENGTH } = require('./tts')
-    if (text.length > MAX_TTS_TEXT_LENGTH) return handled(`文本太长了，最多支持 ${MAX_TTS_TEXT_LENGTH} 字。`)
-    const resolved = resolvePersona(channelKey, currentUserId)
-    const voiceOpts = resolvePersonaVoice(resolved.name)
-    const buf = await synthesizeSpeech(text, voiceOpts)
-    if (buf) {
-      const sent = await sendVoiceMessage(session, buf)
-      if (sent) return handled()
-    }
-    return handled('语音合成失败了，可能是服务暂时不可用。')
-  }
-
-  if (/^朗读$/.test(plain) && session.quote?.content) {
-    const rawQuote = String(session.quote.content || '')
-      .replace(/\[CQ:[^\]]+\]/gi, '')
-      .replace(/<[^>]+\/?>/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-    const quoteText = sanitizeUserInput(rawQuote).slice(0, 300)
-    if (!quoteText) return handled('引用的消息没有可朗读的文本。')
-    const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice } = require('./tts')
-    const resolved = resolvePersona(channelKey, currentUserId)
-    const voiceOpts = resolvePersonaVoice(resolved.name)
-    const buf = await synthesizeSpeech(quoteText, voiceOpts)
-    if (buf) {
-      const sent = await sendVoiceMessage(session, buf)
-      if (sent) return handled()
-    }
-    return handled('语音合成失败了，可能是服务暂时不可用。')
-  }
-
-  if (plain === '东雪莲语音列表') {
-    const { getBuiltinVoices } = require('./tts')
-    return handled(`可用语音：${getBuiltinVoices().join('、')}\n人格 SKILL 文件可通过 voice_id 字段指定默认语音。`)
-  }
+  const voiceResult = await handleVoiceCommand(session, state)
+  if (voiceResult.matched) return voiceResult
 
   const switchMatch = plain.match(/^切换(.+)$/)
   if (switchMatch && !adminCommandMatched && !isReservedCommand(plain)) {
@@ -714,358 +448,20 @@ async function handleCommand(session, ctx, state) {
     return handled(`AI配置已重载，当前 Skills：${getSkillsCount()} 个。`)
   }
 
-  if (plain === '今日情绪') {
-    if (!inGuild) return handled('这个命令只能在群里用。')
-    const today = todayCst()
-    const cache = channelTodayCache.get(channelKey)
-    if (!cache || cache.date !== today || !cache.messages.length) return handled('今天还没有收录消息。')
-    const users = new Set(cache.messages.map(m => m.userId)).size
-    const msgs = cache.messages
+  const emotionResult = await handleEmotionCommand(session, ctx, state)
+  if (emotionResult.matched) return emotionResult
 
-    const cached = lastEmotionCache.get(channelKey)
-    if (cached && Date.now() - cached.ts < 300000) return handled(cached.response || cached.text)
-    if (cached) lastEmotionCache.delete(channelKey)
+  const agentManagementResult = await handleAgentCommand(session, ctx, state, { mode: 'management' })
+  if (agentManagementResult.matched) return agentManagementResult
 
-    const emotionSummary = await summarizeEmotionMessages(msgs, callOpenAI)
-    const allSummary = emotionSummary.text
+  const planResult = await handlePlanCommand(session, ctx, state)
+  if (planResult.matched) return planResult
 
-    await loadConfig(true)
-    const safeChannelKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
-    const historyFile = path.join(DATA_DIR, 'emotion-history-' + safeChannelKey + '.json')
-    const historyData = await readJsonFile(historyFile, [])
-    const todayDate = today
-    const recentHistory = (Array.isArray(historyData) ? historyData : [])
-      .map(normalizeEmotionHistoryItem)
-      .filter(item => item && item.date !== todayDate)
-      .slice(-5)
+  const memoryResult = await handleMemoryCommand(session, state)
+  if (memoryResult.matched) return memoryResult
 
-    const emotionPrompt = [
-      '你是一个群聊情绪分析师。以下是一天中每段群聊记录的摘要，请分析整体情绪状态。',
-      `今日样本：${msgs.length} 条消息，${users} 位活跃成员。`,
-      '输出内容将用于图片展示。summary、reasons、keywords 中用于展示的中文正文总量不得超过1500字。summary 控制在80字以内；reasons 最多4条，每条300字以内；keywords 最多6个短词。',
-      '只输出 JSON，不要 Markdown，不要解释。格式：',
-      '{"score":0到100整数,"confidence":0到100整数,"mood":"偏悲观/中性/偏乐观","summary":"80字以内总结","reasons":["每条300字以内，最多4条"],"keywords":["短关键词，最多6个"]}',
-      recentHistory.length ? '近5日对比：\n' + recentHistory.map(h => `${h.date} ${h.score}/100 ${h.summary}`).join('\n') : '近5日对比：暂无对比数据',
-      '',
-      '摘要如下：',
-      allSummary.slice(0, 10000),
-    ].join('\n')
-    try {
-      const result = await callOpenAI([
-        { role: 'system', content: emotionPrompt },
-        { role: 'user', content: `群 ${channelKey} 今日情绪分析` },
-      ], false, { max_tokens: 600, noLazy: true, _fallbackSet: 'lightweight' })
-      const stats = { messageCount: msgs.length, userCount: users }
-      const analysis = parseEmotionAnalysis(result, stats, allSummary)
-      const displayAnalysis = limitEmotionAnalysisForImage(analysis, stats, recentHistory)
-      const rendered = renderEmotionReport(displayAnalysis, stats, recentHistory)
-
-      try {
-        const safeHistory = (Array.isArray(historyData) ? historyData : []).filter(item => item && item.date !== todayDate)
-        safeHistory.push({ date: todayDate, score: displayAnalysis.score, confidence: displayAnalysis.confidence, mood: displayAnalysis.mood, summary: displayAnalysis.summary, reasons: displayAnalysis.reasons })
-        const cutoffStr = todayCstMinusDays(5)
-        await writeJsonFile(historyFile, safeHistory.filter(h => h.date >= cutoffStr))
-      } catch (historyErr) {
-        ctx.logger('dongxuelian-ai').warn(`emotion history save failed: ${historyErr.message}`)
-      }
-
-      logDebug(ctx, 'emotion', `analysis done channel=${channelKey} score=${analysis.score} messages=${msgs.length}`)
-      const renderImage = state.renderEmotionImage || renderEmotionImage
-      try {
-        const imageBuffer = await renderEmotionImageWithRetry(ctx, renderImage, displayAnalysis, stats, recentHistory, channelKey)
-        const imageBase64 = Buffer.isBuffer(imageBuffer) ? imageBuffer.toString('base64') : Buffer.from(imageBuffer).toString('base64')
-        const imageMessage = h.image(`data:image/png;base64,${imageBase64}`)
-        lastEmotionCache.set(channelKey, { response: imageMessage, text: rendered, ts: Date.now() })
-        trimEmotionCache(lastEmotionCache)
-        return handled(imageMessage)
-      } catch (imageErr) {
-        const fallbackText = await generateShortEmotionFallback(callOpenAI, displayAnalysis, stats, recentHistory, rendered)
-        lastEmotionCache.set(channelKey, { text: fallbackText, ts: Date.now() })
-        trimEmotionCache(lastEmotionCache)
-        return handled(fallbackText)
-      }
-    } catch (err) {
-      ctx.logger('dongxuelian-ai').warn(`emotion analysis failed: ${err.message}`)
-      return handled('情绪分析失败了，稍后再试。')
-    }
-  }
-
-  // === Agent 工具模式管理 ===
-  const toolModeMatch = plain.match(/^(?:东雪莲)?工具模式\s+(auto|confirm|block|config)$/)
-  if (toolModeMatch) {
-    if (!hasAdminPermission(session)) return handled('只有管理员能操作此命令。')
-    const m = toolModeMatch[1]
-    require('./agent/safety').setMode(m)
-    const labels = { auto: '自动执行', confirm: '需确认', block: '已禁止', config: '跟随配置' }
-    return handled(`工具安全模式：${labels[m]} (${m})`)
-  }
-
-  const toolRouteMatch = plain.match(/^(?:东雪莲)?工具自动路由\s*(开|关|on|off)$/)
-  if (toolRouteMatch) {
-    if (!hasAdminPermission(session)) return handled('只有管理员能操作此命令。')
-    const enabled = /^(?:开|on)$/i.test(toolRouteMatch[1])
-    const agentConfig = require('./agent/config')
-    const config = agentConfig.getAgentConfig()
-    config.autoRoute.qq.enabled = enabled
-    await agentConfig.saveAgentConfig(config)
-    return handled(`QQ Agent 自动路由：${enabled ? '开启' : '关闭'}`)
-  }
-
-  const toolSwitchMatch = plain.match(/^(?:东雪莲)?工具开关\s+(qq|dashboard)\s+([a-zA-Z0-9_-]+)\s+(开|关|on|off)$/)
-  if (toolSwitchMatch) {
-    if (!hasAdminPermission(session)) return handled('只有管理员能操作此命令。')
-    const [, channel, toolName, rawEnabled] = toolSwitchMatch
-    if (channel === 'qq' && /^(?:execute_shell|read_file|list_files|find_files|write_file|edit_file|append_file|grep_search|execute_javascript|browser_action|query_logs)$/i.test(toolName)) {
-      return handled('QQ Agent 不允许开启服务器/文件/浏览器高权限工具；请在 Agent Console 使用 Dashboard Agent，并通过审批执行危险操作。')
-    }
-    const enabled = /^(?:开|on)$/i.test(rawEnabled)
-    const registry = require('./agent/tools/registry')
-    if (!registry.toolRegistry[toolName]) return handled(`未知工具：${toolName}`)
-    await require('./agent/config').setToolEnabled(channel, toolName, enabled)
-    return handled(`${channel} 工具 ${toolName}：${enabled ? '开启' : '关闭'}`)
-  }
-
-  const skillSwitchMatch = plain.match(/^(?:东雪莲)?工具Skill\s+(开|关|on|off)\s+(.+)$/i)
-  if (skillSwitchMatch) {
-    if (!hasAdminPermission(session)) return handled('只有管理员能操作此命令。')
-    const enabled = /^(?:开|on)$/i.test(skillSwitchMatch[1])
-    const skillName = skillSwitchMatch[2].trim()
-    const skillHub = require('./agent/skill-hub')
-    try {
-      const skill = await skillHub.setSkillHubEnabled(skillName, enabled)
-      return handled(`Agent Skill ${skill.name}：${enabled ? '启用' : '禁用'}`)
-    } catch (error) {
-      return handled(error.message || `未知 Agent Skill：${skillName}`)
-    }
-  }
-
-  if (/^(?:东雪莲)?工具Skill\s*(?:列表|list)?$/i.test(plain)) {
-    const skills = require('./agent/skill-hub').listSkillHubItems().slice(0, 20)
-    if (skills.length === 0) return handled('暂无 Agent Skill。')
-    return handled(require('./agent/skill-hub').formatSkillHubItems(skills))
-  }
-
-  if (/^(?:东雪莲)?工具状态$/.test(plain)) {
-    const safety = require('./agent/safety')
-    const agentConfig = require('./agent/config').getAgentConfig()
-    const stats = require('./agent/stats').getStats()
-    const registry = require('./agent/tools/registry')
-    const qqTools = registry.getToolDefinitions('qq').map(item => item.function.name).join(', ') || '无'
-    const dashboardTools = registry.getToolDefinitions('dashboard').map(item => item.function.name).join(', ') || '无'
-    return handled([
-      `工具安全模式：${safety.getMode()}（危险工具策略：${agentConfig.dangerousPolicy}）`,
-      `QQ Agent：${agentConfig.channels.qq.enabled ? '开启' : '关闭'} / 自动路由：${agentConfig.autoRoute?.qq?.enabled ? '开启' : '关闭'} / ${qqTools}`,
-      `Dashboard Agent：${agentConfig.channels.dashboard.enabled ? '开启' : '关闭'} / ${dashboardTools}`,
-      `可注册工具：${registry.getToolCount()} 个`,
-      `累计调用：${stats.total} 次`,
-      stats.total > 0 ? `最近：${stats.recent.slice(0, 3).map(c => c.tool).join(', ')}` : '',
-    ].filter(Boolean).join('\n'))
-  }
-
-  const planMatch = plain.match(/^(?:\/plan|莲莲计划)\s+(.+)/i)
-  if (planMatch) {
-    const query = planMatch[1].trim()
-    const planEngine = require('./agent/plan/plan-engine')
-    const planPrompts = require('./agent/plan/plan-prompts')
-    const engine = require('./agent/engine')
-    const agentConfig = require('./agent/config').getAgentConfig()
-    if (!agentConfig.planMode?.enabled) return handled('计划模式当前未开启。')
-    const userName = sanitizeUserName(session.author?.nick || session.author?.name || session.username || '群友')
-    const tasks = query
-      .split(/(?:；|;|\n|，然后|然后|再)/)
-      .map(item => item.trim())
-      .filter(Boolean)
-      .slice(0, 8)
-    const fallbackTasks = tasks.length >= 2 ? tasks : [
-      `理解目标：${query}`,
-      '收集必要信息并执行可用工具',
-      '整理结果并汇报完成状态',
-    ]
-    try {
-      const plan = await planEngine.createPlan({ title: query.slice(0, 80), tasks: fallbackTasks.map(desc => ({ desc })), channel: 'qq', channelKey, userId: currentUserId, userName })
-      const agentQueue = require('./agent/queue')
-      agentQueue.configureAgentQueue(agentConfig.queue || {})
-      const result = await agentQueue.enqueueAgentTask({
-        channelKey,
-        userId: currentUserId,
-        timeoutMs: agentConfig.queue?.timeoutMs,
-        fn: () => engine.run({
-          userMessage: query,
-          userName,
-          userId: currentUserId,
-          channelKey,
-          channel: 'qq',
-          bot: session.bot,
-          systemExtra: [
-            { role: 'system', content: planPrompts.buildPlanSystemPrompt(plan) },
-            { role: 'system', content: planPrompts.buildPlanCreatePrompt(query) },
-          ],
-          forceTools: ['check_plan_status', 'update_task_status', 'finish_plan'],
-          preExecuteTools: [{ name: 'check_plan_status', args: { planId: plan.id } }],
-        }),
-      })
-      return handled([planEngine.formatPlan(plan), '', result.reply || '计划已创建，正在执行。'].join('\n'))
-    } catch (err) {
-      if (err && (err.code === 'AGENT_QUEUE_FULL' || err.code === 'AGENT_QUEUE_REJECTED')) return handled(err.message)
-      ctx.logger('dongxuelian-ai').warn(`plan mode failed: ${err.message}`)
-      return handled('计划模式暂时不可用。')
-    }
-  }
-
-  const planStatusMatch = plain.match(/^(?:计划查看|\/plans?)(?:\s+(plan_[a-zA-Z0-9_-]+))?$/i)
-  if (planStatusMatch) {
-    try {
-      const planEngine = require('./agent/plan/plan-engine')
-      return handled(planEngine.formatPlan(await planEngine.checkPlanStatus(planStatusMatch[1] || '')))
-    } catch (err) {
-      return handled(err.message || '计划查询失败。')
-    }
-  }
-
-  const planResumeMatch = plain.match(/^(?:计划继续|\/plan-resume)(?:\s+(plan_[a-zA-Z0-9_-]+))?$/i)
-  if (planResumeMatch) {
-    try {
-      const planEngine = require('./agent/plan/plan-engine')
-      const planRunner = require('./agent/plan/plan-runner')
-      const plan = await planRunner.resolvePlan(planResumeMatch[1] || '', { userId: currentUserId, channelKey })
-      if (!plan) return handled('当前没有可继续的执行中计划。')
-      if (plan.userId !== currentUserId && !hasAdminPermission(session)) return handled('只能继续自己的计划，或由 bot 管理员操作。')
-      const userName = sanitizeUserName(session.author?.nick || session.author?.name || session.username || plan.userName || '群友')
-      const result = await planRunner.resumePlan({ planId: plan.id, channelKey, userId: currentUserId, userName, bot: session.bot })
-      return handled([planEngine.formatPlan(plan), '', result.reply || '计划已继续执行。'].join('\n'))
-    } catch (err) {
-      if (err && (err.code === 'AGENT_QUEUE_FULL' || err.code === 'AGENT_QUEUE_REJECTED')) return handled(err.message)
-      ctx.logger('dongxuelian-ai').warn(`plan resume failed: ${err.message}`)
-      return handled(err.message || '计划继续失败。')
-    }
-  }
-
-  const planAbandonMatch = plain.match(/^(?:计划放弃|\/plan-abandon)\s+(plan_[a-zA-Z0-9_-]+)(?:\s+(.+))?$/i)
-  if (planAbandonMatch) {
-    try {
-      const planEngine = require('./agent/plan/plan-engine')
-      const plan = await planEngine.checkPlanStatus(planAbandonMatch[1])
-      if (plan.userId !== currentUserId && !hasAdminPermission(session)) return handled('只能放弃自己的计划，或由 bot 管理员操作。')
-      const abandoned = await planEngine.abandonPlan({ planId: planAbandonMatch[1], reason: planAbandonMatch[2] || '用户放弃计划' })
-      return handled(planEngine.formatPlan(abandoned))
-    } catch (err) {
-      return handled(err.message || '计划放弃失败。')
-    }
-  }
-
-  const memoryRememberMatch = plain.match(/^(?:莲莲记住|\/memory\s+remember)\s+(.+)/i)
-  if (memoryRememberMatch) {
-    const agentConfig = require('./agent/config').getAgentConfig()
-    if (!agentConfig.memory?.enabled) return handled('Agent 记忆当前未开启。')
-    if (agentConfig.memory?.adminOnly && !hasAdminPermission(session)) return handled('只有管理员能写入 Agent 长期记忆。')
-    try {
-      const item = await require('./agent/memory').remember({
-        userId: currentUserId,
-        channelKey,
-        text: memoryRememberMatch[1].trim(),
-      })
-      return handled(`已记住：${item.id}`)
-    } catch (err) {
-      return handled(err.message || '记忆写入失败。')
-    }
-  }
-
-  const memorySearchMatch = plain.match(/^(?:莲莲回忆|\/memory\s+search)\s*(.*)$/i)
-  if (memorySearchMatch) {
-    const agentConfig = require('./agent/config').getAgentConfig()
-    if (!agentConfig.memory?.enabled) return handled('Agent 记忆当前未开启。')
-    if (agentConfig.memory?.adminOnly && !hasAdminPermission(session)) return handled('只有管理员能检索 Agent 长期记忆。')
-    try {
-      const memory = require('./agent/memory')
-      const items = await memory.searchMemory({
-        userId: currentUserId,
-        channelKey,
-        query: memorySearchMatch[1].trim(),
-        limit: 8,
-      })
-      return handled(memory.formatMemoryItems(items))
-    } catch (err) {
-      return handled(err.message || '记忆检索失败。')
-    }
-  }
-
-  const memoryListMatch = plain.match(/^(?:莲莲记忆列表|\/memory\s+list)(?:\s+(\d+))?$/i)
-  if (memoryListMatch) {
-    const agentConfig = require('./agent/config').getAgentConfig()
-    if (!agentConfig.memory?.enabled) return handled('Agent 记忆当前未开启。')
-    if (agentConfig.memory?.adminOnly && !hasAdminPermission(session)) return handled('只有管理员能查看 Agent 长期记忆。')
-    try {
-      const memory = require('./agent/memory')
-      return handled(memory.formatMemoryItems(await memory.listMemory({ userId: currentUserId, limit: memoryListMatch[1] || 20 })))
-    } catch (err) {
-      return handled(err.message || '记忆列表读取失败。')
-    }
-  }
-
-  const memoryForgetMatch = plain.match(/^(?:莲莲忘记|\/memory\s+forget)\s+(mem_[a-zA-Z0-9_-]+)/i)
-  if (memoryForgetMatch) {
-    const agentConfig = require('./agent/config').getAgentConfig()
-    if (!agentConfig.memory?.enabled) return handled('Agent 记忆当前未开启。')
-    if (agentConfig.memory?.adminOnly && !hasAdminPermission(session)) return handled('只有管理员能删除 Agent 长期记忆。')
-    try {
-      const removed = await require('./agent/memory').forgetMemory({ userId: currentUserId, memoryId: memoryForgetMatch[1] })
-      return handled(removed ? '已删除这条记忆。' : '没有找到这条记忆。')
-    } catch (err) {
-      return handled(err.message || '记忆删除失败。')
-    }
-  }
-
-  // === Agent 对话命令 ===
-  const agentMatch = plain.match(/^莲莲\s*(?:工具|agent)\s+(.+)/i)
-  if (agentMatch && !adminCommandMatched) {
-    const query = agentMatch[1].trim()
-    if (isJailbreakAttempt(sanitizeUserInput(query))) return handled(pickJailbreakFallbackReply())
-    const engine = require('./agent/engine')
-    const agentConfig = require('./agent/config').getAgentConfig()
-    const agentQueue = require('./agent/queue')
-    agentQueue.configureAgentQueue(agentConfig.queue || {})
-    const userName = sanitizeUserName(
-      session.author?.nick || session.author?.name || session.username || '群友'
-    )
-    try {
-      const searchRunOptions = require('./agent/router').buildExplicitSearchRunOptions(query)
-      const result = await agentQueue.enqueueAgentTask({
-        channelKey,
-        userId: currentUserId,
-        timeoutMs: agentConfig.queue?.timeoutMs,
-        fn: () => engine.run({
-          userMessage: query, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, ...searchRunOptions,
-          onProgress: (msg) => {
-            if (msg.type === 'round' && msg.round === 0) {
-              // 首轮执行中，不额外输出
-            }
-          },
-        }),
-      })
-      return handled(result.reply || '(Agent 未获取有效回复)')
-    } catch (err) {
-      if (err && (err.code === 'AGENT_QUEUE_FULL' || err.code === 'AGENT_QUEUE_REJECTED')) return handled(err.message)
-      ctx.logger('dongxuelian-ai').warn(`agent engine failed: ${err.message}`)
-      return handled('Agent 暂时不可用。')
-    }
-  }
-
-  // === Agent 待确认处理 ===
-  const confirmToolMatch = plain.match(/^(?:确认工具|y|Y)(?:\s+(pnd[0-9a-z]+))?$/i)
-  if (confirmToolMatch) {
-    const pendingId = confirmToolMatch[1] || ''
-    const pending = require('./agent/pending')
-    const findPendingById = pending.findPendingToolById || pending.getPendingToolById || (id => (pending.listPendingTools && pending.listPendingTools().find(item => item.id === id)) || null)
-    const p = pendingId ? findPendingById(pendingId) : pending.getPendingTool(channelKey, currentUserId)
-    if (p) {
-      if (p.channelKey !== channelKey || p.userId !== currentUserId) return handled('这个确认 ID 不属于当前会话。')
-      const engine = require('./agent/engine')
-      const result = await engine.resumePending({ channelKey, userId: currentUserId, channel: 'qq', expectedId: pendingId, bot: session.bot })
-      if (!result.ok && result.message) return handled(`执行失败：${result.message || result.error || '未知错误'}`)
-      return handled(result.reply || '(Agent 未获取到有效回复)')
-    }
-    if (pendingId) return handled('没有匹配的待确认工具。')
-  }
+  const agentRuntimeResult = await handleAgentCommand(session, ctx, state, { mode: 'runtime' })
+  if (agentRuntimeResult.matched) return agentRuntimeResult
 
   return notHandled()
 }

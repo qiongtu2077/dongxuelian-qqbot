@@ -1,5 +1,7 @@
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
+const { spawnSync } = require('child_process')
 
 async function run(t) {
   t.section('scenario: voice ASR module')
@@ -57,6 +59,57 @@ async function run(t) {
     const result = tts.resolvePersonaVoice(null)
     return result.voice === '冰糖' && result.style === '活泼可爱'
   })())
+
+  t.section('scenario: voice asset metadata')
+
+  const tempDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-assets-'))
+  const voiceAssetsModule = path.join(__dirname, '..', '..', 'lib', 'voice-assets')
+  const constantsModule = path.join(__dirname, '..', '..', 'lib', 'constants')
+  const ttsModule = path.join(__dirname, '..', '..', 'lib', 'tts')
+  const assetScript = `
+const fs = require('fs')
+const path = require('path')
+const constants = require(${JSON.stringify(constantsModule)})
+const voiceAssets = require(${JSON.stringify(voiceAssetsModule)})
+const tts = require(${JSON.stringify(ttsModule)})
+fs.mkdirSync(constants.VOICES_DIR, { recursive: true })
+fs.mkdirSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas'), { recursive: true })
+const sample = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4096)])
+fs.writeFileSync(path.join(constants.VOICES_DIR, 'TestPersona.wav'), sample)
+fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas', 'SKILL.TestPersona.md'), '---\\nname: TestPersona\\nvoice_id: __cloned__\\nvoice_asset_id: TestPersona\\nvoice_style: 温柔\\n---\\n测试人格')
+const asset = voiceAssets.upsertVoiceAsset({ personaName: 'TestPersona', filename: 'TestPersona.wav', displayName: '测试音色', description: '备注', sampleText: '试听文本' })
+const list = voiceAssets.listVoiceAssets([{ name: 'TestPersona' }])
+const updated = voiceAssets.updateVoiceAssetMetadata('TestPersona', { displayName: '新版音色', sampleText: '新版试听' }, [{ name: 'TestPersona' }])
+const sampleFile = voiceAssets.resolveVoiceSampleFile('TestPersona', 'TestPersona')
+const resolved = tts.resolvePersonaVoice('TestPersona')
+const deleted = voiceAssets.deleteVoiceAsset('TestPersona', [{ name: 'TestPersona' }])
+const afterDelete = voiceAssets.resolveVoiceSampleFile('TestPersona', 'TestPersona')
+console.log(JSON.stringify({
+  id: asset.id,
+  listCount: list.length,
+  displayName: updated && updated.displayName,
+  sampleText: updated && updated.sampleText,
+  sampleFound: !!sampleFile,
+  resolvedClone: resolved.voice.startsWith('data:audio/wav;base64,') && resolved.style === '温柔',
+  deletedFile: deleted && deleted.deleted && deleted.deleted[0],
+  afterDelete: afterDelete === null,
+}))
+`
+  const assetResult = spawnSync(process.execPath, ['-e', assetScript], {
+    cwd: path.join(__dirname, '..', '..', '..', '..'),
+    env: { ...process.env, DONGXUELIAN_AI_DATA_DIR: tempDataRoot },
+    encoding: 'utf8',
+  })
+  let assetSummary = {}
+  try { assetSummary = JSON.parse(String(assetResult.stdout || '').trim()) } catch {}
+  t.check('voice asset metadata child process passes', assetResult.status === 0, assetResult.stderr || assetResult.stdout)
+  t.check('voice asset id uses persona safe name', assetSummary.id === 'TestPersona')
+  t.check('voice asset list includes sample', assetSummary.listCount === 1)
+  t.check('voice asset metadata update keeps file name stable', assetSummary.displayName === '新版音色' && assetSummary.sampleText === '新版试听')
+  t.check('voice asset resolves sample file', assetSummary.sampleFound === true)
+  t.check('resolvePersonaVoice reads voice_asset_id clone', assetSummary.resolvedClone === true)
+  t.check('voice asset delete removes sample file', assetSummary.deletedFile === 'TestPersona.wav' && assetSummary.afterDelete === true)
+  try { fs.rmSync(tempDataRoot, { recursive: true, force: true }) } catch {}
 
   t.section('scenario: rare fixed voice module')
 

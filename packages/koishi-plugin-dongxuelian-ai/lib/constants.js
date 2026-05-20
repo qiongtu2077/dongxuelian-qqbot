@@ -29,6 +29,7 @@ const BASE_URL_FILE = path.join(DATA_DIR, 'ai-base-url.txt')
 const VOICES_DIR = path.join(DATA_DIR, 'ai-voices')
 const TTS_TEMP_DIR = path.join(DATA_DIR, 'tts-temp')
 const VOICE_CONFIG_FILE = path.join(DATA_DIR, 'ai-voice-config.json')
+const VOICE_ASSETS_FILE = path.join(DATA_DIR, 'ai-voice-assets.json')
 const SKILLS_DIR = path.join(DATA_DIR, 'ai-skills')
 const SKILLS_CORE_DIR = path.join(SKILLS_DIR, 'core')
 const SKILLS_MODES_DIR = path.join(SKILLS_DIR, 'modes')
@@ -133,7 +134,7 @@ const RESERVED_PREFIXES = ['昵称', '删除昵称', '查看昵称', '查看集�
 module.exports = {
   DATA_DIR, PLUGIN_VERSION,
   KEY_FILE, MODEL_FILE, BASE_URL_FILE,
-  VOICES_DIR, TTS_TEMP_DIR, VOICE_CONFIG_FILE,
+  VOICES_DIR, TTS_TEMP_DIR, VOICE_CONFIG_FILE, VOICE_ASSETS_FILE,
   SKILLS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR, SKILLS_PERSONAS_DIR, SKILLS_LORE_DIR,
   LORE_TRIGGER_SET, TERRA_LORE_TRIGGER_SET,
   PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, EVENT_DUMP_DIR,
