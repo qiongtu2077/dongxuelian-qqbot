@@ -12,6 +12,7 @@ const MAX_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_IMAGE_BY
 const MAX_REMOTE_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_REMOTE_IMAGE_BYTES, MAX_IMAGE_BYTES, 128 * 1024, 16 * 1024 * 1024)
 const MAX_API_CONFIG_FILE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_API_CONFIG_MAX_BYTES, 256 * 1024, 4 * 1024, 1024 * 1024)
 const MAX_API_KEY_FILE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_API_KEY_MAX_BYTES, 64 * 1024, 1 * 1024, 256 * 1024)
+const REQUEST_TIMEOUT_CAP = parseApiPositiveInt(process.env.AI_REQUEST_TIMEOUT_CAP_MS, 300000, 5000, 600000)
 
 function parseApiPositiveInt(value, fallback, min, max) {
   const parsed = parseInt(value, 10)
@@ -148,17 +149,36 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
     config._originalConfig = { model: config.model, provider: config.provider, baseURL: config.baseURL, apiKey: config.apiKey }
   }
   const controller = new AbortController()
+  const externalSignal = extraBody.signal && typeof extraBody.signal === 'object' ? extraBody.signal : null
   const requestedTimeout = Number(extraBody._timeoutMs)
   const timeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
-    ? Math.max(1000, Math.min(REQUEST_TIMEOUT, requestedTimeout))
+    ? Math.max(1000, Math.min(REQUEST_TIMEOUT_CAP, requestedTimeout))
     : config._fallbackTried ? 10000 : REQUEST_TIMEOUT
   const timer = setTimeout(() => controller.abort(), timeout)
   const filteredExtraBody = {}
-  for (const key of ['max_tokens', 'enable_search', 'web_search_options', 'search_options', 'enable_thinking', 'thinking']) {
-    if (extraBody[key] !== undefined) filteredExtraBody[key] = extraBody[key]
+  for (const key of ['max_tokens', 'temperature', 'enable_search', 'web_search_options', 'search_options', 'enable_thinking', 'thinking']) {
+    if (extraBody[key] === undefined) continue
+    if (key === 'temperature') {
+      const temperature = Number(extraBody[key])
+      if (Number.isFinite(temperature)) filteredExtraBody.temperature = Math.max(0, Math.min(2, temperature))
+      continue
+    }
+    filteredExtraBody[key] = extraBody[key]
   }
   const maxTokens = filteredExtraBody.max_tokens || 1500
   const providerMessages = normalizeMessagesForProvider(messages, config)
+  let cleanupExternalSignal = null
+  if (externalSignal && typeof externalSignal.addEventListener === 'function') {
+    if (externalSignal.aborted) {
+      controller.abort()
+    } else {
+      const onAbort = () => controller.abort()
+      externalSignal.addEventListener('abort', onAbort, { once: true })
+      cleanupExternalSignal = () => {
+        try { externalSignal.removeEventListener('abort', onAbort) } catch {}
+      }
+    }
+  }
   try {
     let response
     try {
@@ -215,6 +235,7 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
     }
     return { type: 'text', content: String(content).replace(/\s+/g, ' ').trim(), reasoning }
   } catch (networkErr) {
+    if (externalSignal?.aborted) throw networkErr
     const isHttpError = String(networkErr?.message || '').includes('HTTP')
     const fbStep = (config._fallbackTried || 0) + 1
     if (!isHttpError && fbStep <= 5) {
@@ -222,6 +243,8 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
       if (fbConfig) return requestChatCompletions(messages, fbConfig, rebuildFallbackExtraBody(extraBody, fbConfig), tools)
     }
     throw networkErr
+  } finally {
+    if (cleanupExternalSignal) cleanupExternalSignal()
   }
 }
 

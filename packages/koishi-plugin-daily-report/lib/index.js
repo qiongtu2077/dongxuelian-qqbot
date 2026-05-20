@@ -20,6 +20,35 @@ try {
 
 // 冷却机制
 const cooldown = new Map()
+const inFlightReports = new Map()
+
+// 将渲染错误按层级归类，方便日志和用户提示分开处理。
+function classifyRenderError(err) {
+  const message = String(err?.message || err || '')
+  if (/available memory is too low for Chromium render/i.test(message)) {
+    return { kind: 'memory', userMessage: '日报渲染失败：服务器可用内存不足，请稍后再试。' }
+  }
+  if (/未找到Chrome\/Chromium浏览器/i.test(message)) {
+    return { kind: 'browser', userMessage: '日报渲染失败：未找到 Chrome/Chromium。' }
+  }
+  if (/daily report render queue timeout/i.test(message)) {
+    return { kind: 'queue-timeout', userMessage: '日报渲染排队超时，请稍后再试。' }
+  }
+  if (/render HTML is too large/i.test(message)) {
+    return { kind: 'html-too-large', userMessage: '日报内容太长，暂时无法渲染。' }
+  }
+  if (/AbortError|timed out|timeout/i.test(message)) {
+    return { kind: 'timeout', userMessage: '日报生成超时了，请稍后再试。' }
+  }
+  return { kind: 'unknown', userMessage: '详细日报生成失败了，请稍后再试。' }
+}
+
+// 将 AI 分析阶段的降级信息打到日志里，方便回查是哪一层出了偏差。
+function logAnalysisWarnings(ctx, modeLabel, analysis) {
+  const warnings = analysis?.meta?.warnings
+  if (!Array.isArray(warnings) || !warnings.length) return
+  ctx.logger('daily-report').warn(`${modeLabel}分析降级: ${warnings.join(' | ')}`)
+}
 
 // 白名单缓存（避免每次同步读文件）
 let whitelistCache = null
@@ -51,7 +80,7 @@ exports.apply = (ctx) => {
   })
 
   ctx.middleware(async (session, next) => {
-    const content = session.content || ''
+    const content = String(session.content || '').trim()
     const isFull = content === '群聊详细日报' || content === '/群聊详细日报'
     const isBasic = content === '群聊日报' || content === '/群聊日报'
 
@@ -67,6 +96,11 @@ exports.apply = (ctx) => {
       const whitelist = getWhitelist()
       if (!whitelist.includes(String(channelKey))) {
         await session.send('本群未启用日报功能，请联系管理员添加白名单。')
+        return
+      }
+
+      if (inFlightReports.has(channelKey)) {
+        await session.send('这个群的日报正在生成中，请稍后再试。')
         return
       }
 
@@ -93,19 +127,34 @@ exports.apply = (ctx) => {
 
       // 发送提示
       const modeLabel = isFull ? '详细日报' : '日报'
-      await session.send(`正在生成群聊${modeLabel}，请稍候...`)
+      inFlightReports.set(channelKey, Date.now())
 
       try {
-        const analysis = isFull ? await analyzeWithAI(data, true) : {}
+        await session.send(`正在生成群聊${modeLabel}，请稍候...`)
+        cooldown.set(channelKey, Date.now())
+        let analysis = {}
+        if (isFull) {
+          try {
+            analysis = await analyzeWithAI(data, true)
+            logAnalysisWarnings(ctx, modeLabel, analysis)
+          } catch (err) {
+            ctx.logger('daily-report').error(`${modeLabel}AI分析失败: ${err.message}`)
+            await session.send(`${modeLabel}分析失败了，请稍后再试。`)
+            return
+          }
+        }
+
         const imageBuffer = await renderReport(data, analysis)
         const base64 = imageBuffer.toString('base64')
         await session.send(h.image(`data:image/png;base64,${base64}`))
 
-        cooldown.set(channelKey, Date.now())
         ctx.logger('daily-report').info(`${modeLabel}生成成功: ${data.date}, ${data.totalMessages}条消息`)
       } catch (err) {
-        ctx.logger('daily-report').error(`${modeLabel}生成失败: ${err.message}`)
-        await session.send(`${modeLabel}生成失败了，请稍后再试。`)
+        const failure = classifyRenderError(err)
+        ctx.logger('daily-report').error(`${modeLabel}生成失败[${failure.kind}]: ${err.message}`)
+        await session.send(failure.userMessage)
+      } finally {
+        inFlightReports.delete(channelKey)
       }
       return
     }
