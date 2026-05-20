@@ -66,6 +66,20 @@ function jsonResponse(data, status = 200) {
   }
 }
 
+const mockState = {
+  voiceEnabled: false,
+  clonedVoice: {
+    id: '测试人格',
+    personaName: '测试人格',
+    displayName: '测试音色',
+    description: '本地烟测样本',
+    filename: '测试人格.wav',
+    size: 4096,
+    mtime: Date.now(),
+    sampleText: '你好，这是克隆音色测试。',
+  },
+}
+
 function apiMock(method, pathname, body) {
   const ok = data => jsonResponse(data)
   const writeOk = message => ok({ ok: true, message })
@@ -122,10 +136,16 @@ function apiMock(method, pathname, body) {
   if (method === 'DELETE' && pathname === '/lores') return writeOk('lore deleted')
   if (method === 'GET' && pathname === '/agent/tts/voices') return ok({
     builtin: ['冰糖', '茉莉'],
-    personas: [{ name: '测试人格', voice: '冰糖', style: '温柔', hasSample: true }],
+    personas: [{ name: '测试人格', voice: mockState.voiceEnabled ? '__cloned__' : '冰糖', voiceAssetId: mockState.voiceEnabled ? '测试人格' : '', style: '温柔', hasSample: true }],
+    clonedVoices: [{ ...mockState.clonedVoice, isCurrent: mockState.voiceEnabled }],
   })
   if (method === 'POST' && pathname === '/agent/tts/preview') return ok({ audio: Buffer.from('mock audio').toString('base64') })
-  if (method === 'PUT' && pathname === '/agent/persona/voice') return writeOk('voice saved')
+  if (method === 'POST' && pathname === '/agent/tts/clone/rename') return writeOk('voice asset saved')
+  if (method === 'POST' && pathname === '/agent/tts/clone/delete') return writeOk('voice asset deleted')
+  if (method === 'PUT' && pathname === '/agent/persona/voice') {
+    mockState.voiceEnabled = body.body?.voiceId === '__cloned__'
+    return writeOk('voice saved')
+  }
 
   if (method === 'GET' && pathname === '/keys') return ok([{ file: 'ai-deepseek-key.txt', label: 'DeepSeek', exists: true, prefix: 'sk-***' }])
   if (method === 'PUT' && pathname === '/keys') return writeOk('key saved')
@@ -272,6 +292,36 @@ async function clickButtonInCard(page, cardHeading, buttonText) {
   if (!clicked) throw new Error(`button not found: ${cardHeading} / ${buttonText}`)
 }
 
+async function clickButtonNearText(page, blockText, buttonText) {
+  await page.waitForFunction((needle, text) => {
+    return [...document.querySelectorAll('button')].some(button => {
+      if (!button.textContent.includes(text)) return false
+      let node = button.parentElement
+      while (node && node !== document.body) {
+        if (node.innerText && node.innerText.includes(needle)) return true
+        node = node.parentElement
+      }
+      return false
+    })
+  }, { timeout: 8000 }, blockText, buttonText)
+  const clicked = await page.evaluate((needle, text) => {
+    const button = [...document.querySelectorAll('button')].find(item => {
+      if (!item.textContent.includes(text)) return false
+      let node = item.parentElement
+      while (node && node !== document.body) {
+        if (node.innerText && node.innerText.includes(needle)) return true
+        node = node.parentElement
+      }
+      return false
+    })
+    if (!button) return false
+    button.scrollIntoView({ block: 'center', inline: 'center' })
+    button.click()
+    return true
+  }, blockText, buttonText)
+  if (!clicked) throw new Error(`button near text not found: ${blockText} / ${buttonText}`)
+}
+
 async function clickButtonByLabel(page, label) {
   await page.waitForFunction(value => {
     return [...document.querySelectorAll('button')].some(button =>
@@ -382,6 +432,13 @@ async function runClicks(page) {
   await page.waitForFunction(() => [...document.querySelectorAll('input')].some(input => input.value === '温柔'), { timeout: 8000 })
   await clickText(page, '试听')
   await page.waitForSelector('audio[src^="data:audio/wav;base64,"]', { timeout: 8000 })
+  await waitForText(page, '已克隆音色')
+  await page.waitForFunction(() => [...document.querySelectorAll('input')].some(input => input.value === '测试音色'), { timeout: 8000 })
+  await Promise.all([
+    page.waitForRequest(req => req.method() === 'PUT' && req.url().includes('/agent/persona/voice'), { timeout: 8000 }),
+    clickButtonInCard(page, '已克隆音色', '启用'),
+  ])
+  await page.waitForFunction(() => [...document.querySelectorAll('select')].some(select => select.value === '__cloned__'), { timeout: 8000 })
 
   await clickSidebarTab(page, 'API Keys')
   await waitForText(page, 'API Key 管理')

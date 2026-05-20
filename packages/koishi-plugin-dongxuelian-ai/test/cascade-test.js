@@ -431,10 +431,19 @@ async function main() {
   check('npm test includes plugin tests', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:plugins'))
   check('npm check includes AI index syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js'))
   check('npm check includes AI chat syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/chat.js'))
+  check('npm check includes command result syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/commands/command-result.js'))
+  check('npm check includes voice command syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/commands/voice-command.js'))
+  check('npm check includes memory command syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/commands/memory-command.js'))
+  check('npm check includes plan command syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/commands/plan-command.js'))
+  check('npm check includes agent command syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/commands/agent-command.js'))
+  check('npm check includes emotion command syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/commands/emotion-command.js'))
   check('npm check includes AI jailbreak ruleset syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/rulesets/jailbreak.js'))
   check('npm check includes AI runtime config syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/runtime-config.js'))
   check('npm check includes AI reply syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/reply.js'))
   check('npm check includes AI reply guard syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/reply-guard.js'))
+  check('npm check includes AI voice syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/voice.js'))
+  check('npm check includes AI tts syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/tts.js'))
+  check('npm check includes AI voice assets syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/voice-assets.js'))
   check('npm check includes AI repeat syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/repeat.js'))
   check('npm check includes AI forward syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/forward.js'))
   check('npm check includes AI vision syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/vision.js'))
@@ -497,6 +506,12 @@ async function main() {
     api: path.join(LIB, 'api'),
     conversation: path.join(LIB, 'conversation'),
     handler: path.join(LIB, 'handler'),
+    commandResult: path.join(LIB, 'commands', 'command-result'),
+    voiceCommand: path.join(LIB, 'commands', 'voice-command'),
+    memoryCommand: path.join(LIB, 'commands', 'memory-command'),
+    planCommand: path.join(LIB, 'commands', 'plan-command'),
+    agentCommand: path.join(LIB, 'commands', 'agent-command'),
+    emotionCommand: path.join(LIB, 'commands', 'emotion-command'),
     messageReader: path.join(LIB, 'message-reader'),
     chat: path.join(LIB, 'chat'),
     agentChatBridge: path.join(LIB, 'agent-chat-bridge'),
@@ -570,6 +585,7 @@ async function main() {
     index: path.join(LIB, 'index'),
     voice: path.join(LIB, 'voice'),
     tts: path.join(LIB, 'tts'),
+    voiceAssets: path.join(LIB, 'voice-assets'),
     imageStore: path.join(LIB, 'image-store'),
     imageAnalyzer: path.join(LIB, 'image-analyzer'),
     help: path.join(HELP, 'index'),
@@ -630,6 +646,24 @@ async function main() {
       'getQuotedMessageNote', 'getSharedContextNote',
       'writeMemory', 'deleteMemory', 'clearUserMemory', 'clearGroupMemory', 'getMemorySummary',
       'readMemoryTimer', 'checkMemoryTimerExpired',
+    ],
+    commandResult: [
+      'handled', 'notHandled',
+    ],
+    voiceCommand: [
+      'handleVoiceCommand',
+    ],
+    memoryCommand: [
+      'handleMemoryCommand',
+    ],
+    planCommand: [
+      'handlePlanCommand',
+    ],
+    agentCommand: [
+      'handleAgentCommand',
+    ],
+    emotionCommand: [
+      'handleEmotionCommand',
     ],
     chat: [
       'chat', 'loadConfig', 'resetConfigCache', 'loadSkills',
@@ -797,6 +831,11 @@ async function main() {
       'extractVoiceStyle', 'stripVoiceStyleTag', 'getBuiltinVoices',
       'isChannelOnCooldown', 'markChannelCooldown', 'shouldTriggerRandomVoice', 'getMimoriumKey',
     ],
+    voiceAssets: [
+      'sanitizeVoiceAssetId', 'getAudioExtFromMime', 'getAudioMimeFromFilename',
+      'listVoiceAssets', 'findVoiceAsset', 'upsertVoiceAsset',
+      'updateVoiceAssetMetadata', 'deleteVoiceAsset', 'resolveVoiceSampleFile',
+    ],
     imageStore: [
       'storeImageUrl', 'getImageEntry', 'getRecentImages', 'markAnalyzed',
       'isAlreadyAnalyzed', 'getCachedAnalysis', 'replaceImagePlaceholder',
@@ -863,6 +902,12 @@ async function main() {
   const syntaxFiles = [
     path.join(LIB, 'index.js'),
     path.join(LIB, 'handler.js'),
+    path.join(LIB, 'commands', 'command-result.js'),
+    path.join(LIB, 'commands', 'voice-command.js'),
+    path.join(LIB, 'commands', 'memory-command.js'),
+    path.join(LIB, 'commands', 'plan-command.js'),
+    path.join(LIB, 'commands', 'agent-command.js'),
+    path.join(LIB, 'commands', 'emotion-command.js'),
     path.join(LIB, 'api.js'),
     path.join(LIB, 'conversation.js'),
     path.join(LIB, 'utils.js'),
@@ -933,6 +978,7 @@ async function main() {
     path.join(LIB, 'rare-voice.js'),
     path.join(LIB, 'voice.js'),
     path.join(LIB, 'tts.js'),
+    path.join(LIB, 'voice-assets.js'),
     path.join(LIB, 'image-store.js'),
     path.join(LIB, 'image-analyzer.js'),
     path.join(HELP, 'index.js'),
@@ -942,7 +988,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'message-reader.js', 'chat.js', 'agent-chat-bridge.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'agent-chat-bridge.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -1906,8 +1952,8 @@ async function main() {
   check('agent console downloads files with authenticated fetch', agentConsoleSrc.includes('api.fileDownload') && !agentConsoleSrc.includes('fileDownloadUrl'))
   const skillHubCli = read(path.join(ROOT, 'scripts', 'skill-hub.js'))
   check('skill hub CLI exposes list/search/enable/disable', skillHubCli.includes('list|search') && skillHubCli.includes('enable') && skillHubCli.includes('disable'))
-  const handlerSrc = read(path.join(LIB, 'handler.js'))
-  check('handler exposes agent skill command management', handlerSrc.includes('工具Skill') && handlerSrc.includes('skill-hub'))
+  const agentCommandSrc = read(path.join(LIB, 'commands', 'agent-command.js'))
+  check('agent command exposes agent skill command management', agentCommandSrc.includes('工具Skill') && agentCommandSrc.includes('skill-hub'))
   const browserActionSrc = read(path.join(LIB, 'agent', 'tools', 'browser-action.js'))
   check('browser action exposes plan action aliases', browserActionSrc.includes("'start'") && browserActionSrc.includes("'stop'") && browserActionSrc.includes("'navigate'") && browserActionSrc.includes("'wait_for'"))
   check('browser action exposes snapshot action', browserActionSrc.includes("'snapshot'") && browserActionSrc.includes('getSnapshot'))

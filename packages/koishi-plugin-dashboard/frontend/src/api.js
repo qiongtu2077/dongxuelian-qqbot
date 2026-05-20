@@ -222,6 +222,8 @@ export async function updateGalleryImageStyle(id, foilStyle) { return put('/gall
 export async function fetchKeysUsage() { return get('/keys/usage') }
 
 export async function fetchTtsVoices() { return get('/agent/tts/voices', true) }
-export async function ttsPreview(text, voice, style) { return post('/agent/tts/preview', { text, voice, style }, true, 30000) }
-export async function ttsClone(personaName, audioBase64, mimeType) { return post('/agent/tts/clone', { personaName, audioBase64, mimeType }, true, 60000) }
-export async function savePersonaVoice(personaName, voiceId, voiceStyle) { return put('/agent/persona/voice', { personaName, voiceId, voiceStyle }, true) }
+export async function ttsPreview(text, voice, style, personaName = '', voiceAssetId = '') { return post('/agent/tts/preview', { text, voice, style, personaName, voiceAssetId }, true, 30000) }
+export async function ttsClone(personaName, audioBase64, mimeType, meta = {}) { return post('/agent/tts/clone', { personaName, audioBase64, mimeType, ...meta }, true, 60000) }
+export async function updateTtsClone(id, data) { return post('/agent/tts/clone/rename', { id, ...data }, true) }
+export async function deleteTtsClone(id, force = false) { return post('/agent/tts/clone/delete', { id, force }, true) }
+export async function savePersonaVoice(personaName, voiceId, voiceStyle, voiceAssetId = '') { return put('/agent/persona/voice', { personaName, voiceId, voiceStyle, voiceAssetId }, true) }

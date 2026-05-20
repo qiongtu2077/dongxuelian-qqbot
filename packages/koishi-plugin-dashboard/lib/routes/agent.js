@@ -9,6 +9,7 @@ const { isAgentPathInside } = require('../paths')
 
 const MAX_DOWNLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLOAD_BYTES, 256 * 1024 * 1024, 8 * 1024 * 1024, 2 * 1024 * 1024 * 1024)
 const MAX_AGENT_PREVIEW_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_AGENT_PREVIEW_MAX_BYTES, 512 * 1024, 64 * 1024, 2 * 1024 * 1024)
+const MAX_TTS_CLONE_AUDIO_BYTES = parsePositiveInt(process.env.DASHBOARD_TTS_CLONE_AUDIO_MAX_BYTES, 7 * 1024 * 1024, 1024, 10 * 1024 * 1024)
 
 async function resolveAgentWorkspacePath(target) {
   const guard = require(path.join(AI_LIB, 'agent', 'path-guard'))
@@ -169,33 +170,102 @@ function handlePutAgentPersona(req, res) {
   })
 }
 
+function getTtsModule() {
+  return require(path.join(AI_LIB, 'tts'))
+}
+
+function getVoiceAssetsModule() {
+  return require(path.join(AI_LIB, 'voice-assets'))
+}
+
+function getPersonaModule() {
+  return require(path.join(AI_LIB, 'persona'))
+}
+
+function getPersonaVoiceConfigs() {
+  const personaModule = getPersonaModule()
+  const personas = personaModule.getAvailablePersonals({ userFacing: true })
+  return personas.map(p => {
+    const content = personaModule.loadPersonalSkill(p.name)
+    const meta = content ? personaModule.parsePersonaFrontmatter(content) : {}
+    return {
+      name: p.name,
+      voice: meta.voice_id || meta.voice || '',
+      voiceAssetId: meta.voice_asset_id || '',
+      style: meta.voice_style || '',
+      hasSample: false,
+    }
+  })
+}
+
+function findPersonaSkillFile(personaName, personaModule = getPersonaModule()) {
+  const searchDirs = ['personas', 'core', 'modes'].map(d => path.join(DATA_DIR, 'ai-skills', d))
+  for (const skillsDir of searchDirs) {
+    if (!fs.existsSync(skillsDir)) continue
+    const entries = fs.readdirSync(skillsDir)
+    for (const entry of entries) {
+      if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
+      const fp = path.join(skillsDir, entry)
+      const fc = fs.readFileSync(fp, 'utf8')
+      const meta = personaModule.parsePersonaFrontmatter(fc)
+      if (meta.name === personaName) return { file: fp, content: fc }
+    }
+  }
+  return null
+}
+
+function cleanFrontmatterValue(value, fallback = '') {
+  return String(value || fallback).replace(/[\r\n]+/g, ' ').trim()
+}
+
+function writePersonaVoiceConfig(personaName, voiceId, voiceStyle, voiceAssetId = '') {
+  const personaModule = getPersonaModule()
+  const target = findPersonaSkillFile(personaName, personaModule)
+  if (!target) return null
+  const nextVoice = cleanFrontmatterValue(voiceId, '冰糖')
+  const nextStyle = cleanFrontmatterValue(voiceStyle, '活泼可爱')
+  const nextAssetId = cleanFrontmatterValue(voiceAssetId)
+  const lines = [`voice_id: ${nextVoice}`, `voice_style: ${nextStyle}`]
+  if (nextVoice === '__cloned__' && nextAssetId) lines.splice(1, 0, `voice_asset_id: ${nextAssetId}`)
+  const insert = lines.join('\n') + '\n'
+  let updated = target.content
+  if (/^---\n[\s\S]*?\n---/.test(updated)) {
+    updated = updated.replace(/^(---\n[\s\S]*?)(voice_id:[^\n]*\n)/m, '$1')
+    updated = updated.replace(/^(---\n[\s\S]*?)(voice_asset_id:[^\n]*\n)/m, '$1')
+    updated = updated.replace(/^(---\n[\s\S]*?)(voice_style:[^\n]*\n)/m, '$1')
+    updated = updated.replace(/^(---\n[\s\S]*?)(voice:[^\n]*\n)/m, '$1')
+    updated = updated.replace(/^---\n/, `---\n${insert}`)
+  } else {
+    updated = `---\n${insert}---\n${target.content}`
+  }
+  fs.writeFileSync(target.file, updated, 'utf8')
+  return target.file
+}
+
 function handleGetTtsVoices(req, res) {
   if (!requireAdmin(req, res)) return
   try {
-    const tts = require(path.join(AI_LIB, 'tts'))
-    const { getAvailablePersonals, parsePersonaFrontmatter, loadPersonalSkill } = require(path.join(AI_LIB, 'persona'))
-    const personas = getAvailablePersonals({ userFacing: true })
-    const voiceConfigs = personas.map(p => {
-      const content = loadPersonalSkill(p.name)
-      const meta = content ? parsePersonaFrontmatter(content) : {}
-      return { name: p.name, voice: meta.voice_id || meta.voice || '', style: meta.voice_style || '', hasSample: false }
+    const tts = getTtsModule()
+    const voiceAssets = getVoiceAssetsModule()
+    const voiceConfigs = getPersonaVoiceConfigs()
+    const clonedVoices = voiceAssets.listVoiceAssets(voiceConfigs)
+    const liveAssets = clonedVoices.filter(asset => !asset.missing)
+    for (const vc of voiceConfigs) {
+      vc.hasSample = liveAssets.some(asset =>
+        (vc.voiceAssetId && asset.id === vc.voiceAssetId) ||
+        asset.personaName === vc.name ||
+        asset.id === voiceAssets.sanitizeVoiceAssetId(vc.name)
+      ) || liveAssets.length > 0
+    }
+    return json(res, {
+      ok: true,
+      builtin: tts.BUILTIN_VOICES,
+      personas: voiceConfigs,
+      clonedVoices: clonedVoices.map(asset => {
+        const referencedBy = voiceAssets.listVoiceAssetReferences(asset, voiceConfigs)
+        return { ...asset, referencedBy, isCurrent: referencedBy.length > 0, boundPersona: asset.personaName }
+      }),
     })
-    const voicesDir = path.join(DATA_DIR, 'ai-voices')
-    const clonedVoices = []
-    try {
-      const files = fs.readdirSync(voicesDir)
-      for (const vc of voiceConfigs) {
-        const match = files.find(f => f.startsWith(vc.name + '.'))
-        if (match) vc.hasSample = true
-      }
-      for (const f of files) {
-        const stat = fs.statSync(path.join(voicesDir, f))
-        const ext = path.extname(f)
-        const baseName = f.slice(0, -ext.length)
-        clonedVoices.push({ filename: f, name: baseName, size: stat.size, mtime: stat.mtimeMs })
-      }
-    } catch {}
-    return json(res, { ok: true, builtin: tts.BUILTIN_VOICES, personas: voiceConfigs, clonedVoices })
   } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
 }
 
@@ -204,53 +274,40 @@ function handlePostTtsClone(req, res) {
   collectBody(req, res, async (body) => {
     try {
       const data = JSON.parse(body || '{}')
-      const { personaName, audioBase64, mimeType } = data
+      const { personaName, audioBase64, mimeType, displayName, description, sampleText } = data
       if (!personaName || !audioBase64) return json(res, { ok: false, message: '缺少 personaName 或 audioBase64' }, 400)
       const buf = Buffer.from(audioBase64, 'base64')
-      if (buf.length > 10 * 1024 * 1024) return json(res, { ok: false, message: '音频文件超过 10MB 限制' }, 400)
+      if (buf.length > MAX_TTS_CLONE_AUDIO_BYTES) return json(res, { ok: false, message: `音频文件超过 ${Math.floor(MAX_TTS_CLONE_AUDIO_BYTES / 1024 / 1024)}MB 限制` }, 400)
       if (buf.length < 1024) return json(res, { ok: false, message: '音频文件过小，可能无效' }, 400)
-      const ext = (mimeType || '').includes('wav') ? 'wav' : (mimeType || '').includes('ogg') ? 'ogg' : (mimeType || '').includes('flac') ? 'flac' : 'mp3'
+      const voiceAssets = getVoiceAssetsModule()
+      const ext = voiceAssets.getAudioExtFromMime(mimeType)
       const voicesDir = path.join(DATA_DIR, 'ai-voices')
       fs.mkdirSync(voicesDir, { recursive: true })
-      const safeName = String(personaName).replace(/[^a-zA-Z0-9一-鿿._-]/g, '_').slice(0, 40)
-      const filePath = path.join(voicesDir, `${safeName}.${ext}`)
+      const assetId = voiceAssets.createVoiceAssetId(personaName)
+      const filename = voiceAssets.buildVoiceAssetFilename(assetId, mimeType || ext)
+      const filePath = path.join(voicesDir, filename)
       fs.writeFileSync(filePath, buf)
-      const tts = require(path.join(AI_LIB, 'tts'))
+      const tts = getTtsModule()
       const dataUri = `data:${mimeType || 'audio/mpeg'};base64,${audioBase64}`
-      const testBuf = await tts.synthesizeSpeech('测试语音克隆', { voice: dataUri, style: '正常语气' })
+      const cleanSampleText = String(sampleText || '').trim().slice(0, 120) || voiceAssets.DEFAULT_SAMPLE_TEXT
+      const testBuf = await tts.synthesizeSpeech(cleanSampleText, { voice: dataUri, style: '正常语气' })
       if (!testBuf) {
         try { fs.unlinkSync(filePath) } catch {}
         return json(res, { ok: false, message: 'MiMo voiceclone 验证失败，请检查音频格式或 API key' }, 400)
       }
+      const asset = voiceAssets.upsertVoiceAsset({
+        id: assetId,
+        personaName,
+        filename,
+        displayName: displayName || `${personaName} 克隆音色`,
+        description,
+        sampleText: cleanSampleText,
+        mimeType: mimeType || voiceAssets.getAudioMimeFromFilename(filename),
+      })
       try {
-        const personaModule = require(path.join(AI_LIB, 'persona'))
-        const content = personaModule.loadPersonalSkill(personaName)
-        if (content) {
-          let updated = content
-          if (/^---\n[\s\S]*?\n---/.test(updated)) {
-            updated = updated.replace(/^(---\n[\s\S]*?)voice_id:[^\n]*\n/gm, '$1')
-            updated = updated.replace(/^(---\n[\s\S]*?)voice:[^\n]*\n/gm, '$1')
-            updated = updated.replace(/^---\n/, '---\nvoice_id: __cloned__\n')
-          } else {
-            updated = `---\nvoice_id: __cloned__\n---\n${content}`
-          }
-          const searchDirs = ['personas', 'core', 'modes'].map(d => path.join(DATA_DIR, 'ai-skills', d))
-          let found = false
-          for (const skillsDir of searchDirs) {
-            if (found) break
-            if (!fs.existsSync(skillsDir)) continue
-            const entries2 = fs.readdirSync(skillsDir)
-            for (const entry of entries2) {
-              if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
-              const fp = path.join(skillsDir, entry)
-              const fc = fs.readFileSync(fp, 'utf8')
-              const meta = personaModule.parsePersonaFrontmatter(fc)
-              if (meta.name === personaName) { fs.writeFileSync(fp, updated, 'utf8'); found = true; break }
-            }
-          }
-        }
+        writePersonaVoiceConfig(personaName, '__cloned__', data.voiceStyle || '活泼可爱', asset.id)
       } catch {}
-      return json(res, { ok: true, message: '音色克隆成功', file: `${safeName}.${ext}` })
+      return json(res, { ok: true, message: '音色克隆成功', file: filename, asset })
     } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
   })
 }
@@ -260,16 +317,22 @@ function handlePostTtsPreview(req, res) {
   collectBody(req, res, async (body) => {
     try {
       const data = JSON.parse(body || '{}')
-      const { text, voice, style, personaName } = data
+      const { text, voice, style, personaName, voiceAssetId } = data
       if (!text) return json(res, { ok: false, message: '缺少 text' }, 400)
-      const tts = require(path.join(AI_LIB, 'tts'))
+      const tts = getTtsModule()
+      const hasExplicitVoice = !!voice
       let resolvedVoice = voice || '冰糖'
       let resolvedStyle = style || '活泼可爱'
-      if (personaName || resolvedVoice === '__cloned__') {
+      if (resolvedVoice === '__cloned__') {
         let pName = personaName || data.persona || ''
-        if (!pName && resolvedVoice === '__cloned__') {
+        if (voiceAssetId) {
+          const voiceAssets = getVoiceAssetsModule()
+          const sample = voiceAssets.resolveVoiceSampleFile(pName, voiceAssetId)
+          if (!sample) return json(res, { ok: false, message: '未找到克隆音色样本' }, 404)
+          resolvedVoice = `data:${sample.mimeType || 'audio/mpeg'};base64,${fs.readFileSync(sample.filePath).toString('base64')}`
+        } else if (!pName && resolvedVoice === '__cloned__') {
           try {
-            const personaModule = require(path.join(AI_LIB, 'persona'))
+            const personaModule = getPersonaModule()
             const personas = personaModule.getAvailablePersonals({ userFacing: true })
             for (const p of personas) {
               const c = personaModule.loadPersonalSkill(p.name)
@@ -280,13 +343,19 @@ function handlePostTtsPreview(req, res) {
             }
           } catch {}
         }
-        if (pName) {
+        if (resolvedVoice !== '__cloned__') {
+          // Already resolved by explicit voiceAssetId.
+        } else if (pName) {
           const resolved = tts.resolvePersonaVoice(pName)
           resolvedVoice = resolved.voice
           resolvedStyle = style || resolved.style
         } else if (resolvedVoice === '__cloned__') {
           return json(res, { ok: false, message: '没有配置克隆音色的人格' }, 400)
         }
+      } else if (!hasExplicitVoice && personaName) {
+        const resolved = tts.resolvePersonaVoice(personaName)
+        resolvedVoice = resolved.voice
+        resolvedStyle = style || resolved.style
       }
       const buf = await tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice, style: resolvedStyle })
       if (!buf) return json(res, { ok: false, message: '语音合成失败，请检查 API key 或网络' }, 500)
@@ -299,20 +368,18 @@ function handlePostTtsCloneRename(req, res) {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { oldName, newName } = JSON.parse(body || '{}')
-      if (!oldName || !newName) return json(res, { ok: false, message: '缺少 oldName 或 newName' }, 400)
-      const voicesDir = path.join(DATA_DIR, 'ai-voices')
-      const safeOld = String(oldName).replace(/[^a-zA-Z0-9一-鿿._-]/g, '_').slice(0, 40)
-      const safeNew = String(newName).replace(/[^a-zA-Z0-9一-鿿._-]/g, '_').slice(0, 40)
-      if (!safeNew) return json(res, { ok: false, message: '新名称无效' }, 400)
-      const entries = fs.readdirSync(voicesDir)
-      const match = entries.find(f => f.startsWith(safeOld + '.'))
-      if (!match) return json(res, { ok: false, message: '未找到音色文件：' + safeOld }, 404)
-      const ext = path.extname(match)
-      const newFile = safeNew + ext
-      if (entries.includes(newFile)) return json(res, { ok: false, message: '目标名称已存在' }, 409)
-      fs.renameSync(path.join(voicesDir, match), path.join(voicesDir, newFile))
-      return json(res, { ok: true, message: '重命名成功', filename: newFile })
+      const data = JSON.parse(body || '{}')
+      const assetId = data.id || data.oldName || data.name
+      const displayName = data.displayName || data.newName
+      if (!assetId || !displayName) return json(res, { ok: false, message: '缺少音色 ID 或显示名' }, 400)
+      const voiceAssets = getVoiceAssetsModule()
+      const asset = voiceAssets.updateVoiceAssetMetadata(assetId, {
+        displayName,
+        description: data.description,
+        sampleText: data.sampleText,
+      }, getPersonaVoiceConfigs())
+      if (!asset) return json(res, { ok: false, message: '未找到音色资产：' + assetId }, 404)
+      return json(res, { ok: true, message: '音色信息已更新', asset })
     } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
   })
 }
@@ -321,15 +388,29 @@ function handlePostTtsCloneDelete(req, res) {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { name } = JSON.parse(body || '{}')
-      if (!name) return json(res, { ok: false, message: '缺少 name' }, 400)
-      const voicesDir = path.join(DATA_DIR, 'ai-voices')
-      const safeName = String(name).replace(/[^a-zA-Z0-9一-鿿._-]/g, '_').slice(0, 40)
-      const entries = fs.readdirSync(voicesDir)
-      const matches = entries.filter(f => f.startsWith(safeName + '.'))
-      if (!matches.length) return json(res, { ok: false, message: '未找到音色文件：' + safeName }, 404)
-      for (const m of matches) fs.unlinkSync(path.join(voicesDir, m))
-      return json(res, { ok: true, message: '删除成功', deleted: matches })
+      const data = JSON.parse(body || '{}')
+      const assetId = data.id || data.name
+      if (!assetId) return json(res, { ok: false, message: '缺少音色 ID' }, 400)
+      const voiceAssets = getVoiceAssetsModule()
+      const voiceConfigs = getPersonaVoiceConfigs()
+      const asset = voiceAssets.findVoiceAsset(assetId, voiceConfigs)
+      if (!asset) return json(res, { ok: false, message: '未找到音色资产：' + assetId }, 404)
+      const referencedNames = voiceAssets.listVoiceAssetReferences(asset, voiceConfigs)
+      const usingPersonas = voiceConfigs.filter(vc => referencedNames.includes(vc.name))
+      if (usingPersonas.length && !data.force) {
+        return json(res, {
+          ok: false,
+          code: 'VOICE_ASSET_IN_USE',
+          message: '该音色正在被人格使用',
+          personas: referencedNames,
+        }, 409)
+      }
+      const result = voiceAssets.deleteVoiceAsset(asset.id, voiceConfigs)
+      if (!result) return json(res, { ok: false, message: '删除失败' }, 500)
+      for (const vc of usingPersonas) {
+        writePersonaVoiceConfig(vc.name, '冰糖', vc.style || '活泼可爱')
+      }
+      return json(res, { ok: true, message: '删除成功', deleted: result.deleted, asset: result.asset })
     } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
   })
 }
@@ -338,36 +419,16 @@ function handlePutPersonaVoice(req, res) {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const { personaName, voiceId, voiceStyle } = JSON.parse(body || '{}')
+      const { personaName, voiceId, voiceStyle, voiceAssetId } = JSON.parse(body || '{}')
       if (!personaName) return json(res, { ok: false, message: '缺少 personaName' }, 400)
-      const personaModule = require(path.join(AI_LIB, 'persona'))
-      const content = personaModule.loadPersonalSkill(personaName)
-      if (!content) return json(res, { ok: false, message: '未找到人格：' + personaName }, 404)
-      let updated = content
-      if (/^---\n[\s\S]*?\n---/.test(updated)) {
-        updated = updated.replace(/^(---\n[\s\S]*?)(voice_id:[^\n]*\n)/m, '$1')
-        updated = updated.replace(/^(---\n[\s\S]*?)(voice_style:[^\n]*\n)/m, '$1')
-        updated = updated.replace(/^(---\n[\s\S]*?)(voice:[^\n]*\n)/m, '$1')
-        updated = updated.replace(/^---\n/, `---\nvoice_id: ${voiceId || '冰糖'}\nvoice_style: ${voiceStyle || '活泼可爱'}\n`)
-      } else {
-        updated = `---\nvoice_id: ${voiceId || '冰糖'}\nvoice_style: ${voiceStyle || '活泼可爱'}\n---\n${content}`
+      const nextVoice = voiceId || '冰糖'
+      if (nextVoice === '__cloned__') {
+        const voiceAssets = getVoiceAssetsModule()
+        const sample = voiceAssets.resolveVoiceSampleFile(personaName, voiceAssetId || '')
+        if (!sample) return json(res, { ok: false, message: '该人格还没有可用的克隆音色样本' }, 400)
       }
-      const searchDirs = ['personas', 'core', 'modes'].map(d => path.join(DATA_DIR, 'ai-skills', d))
-      let targetFile = null
-      for (const skillsDir of searchDirs) {
-        if (!fs.existsSync(skillsDir)) continue
-        const entries = fs.readdirSync(skillsDir)
-        for (const entry of entries) {
-          if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
-          const fp = path.join(skillsDir, entry)
-          const fc = fs.readFileSync(fp, 'utf8')
-          const meta = personaModule.parsePersonaFrontmatter(fc)
-          if (meta.name === personaName) { targetFile = fp; break }
-        }
-        if (targetFile) break
-      }
+      const targetFile = writePersonaVoiceConfig(personaName, nextVoice, voiceStyle || '活泼可爱', voiceAssetId || '')
       if (!targetFile) return json(res, { ok: false, message: '未找到人格文件' }, 404)
-      fs.writeFileSync(targetFile, updated, 'utf8')
       return json(res, { ok: true, message: '音色配置已更新' })
     } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
   })
