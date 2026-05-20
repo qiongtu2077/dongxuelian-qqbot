@@ -1,18 +1,36 @@
 #!/usr/bin/env node
 /**
- * Dashboard 独立服务器
- * 不依赖 koishi，独立进程运行在 5150 端口
- * 用法: node standalone.js &
+ * Standalone Dashboard server.
+ * Runs independently from the Koishi lifecycle on DASHBOARD_PORT.
  */
 const fs = require('fs')
 const path = require('path')
 const http = require('http')
 const { parsePositiveInt, isLoopbackAddress, getRemoteAddress, isInsidePath, log } = require('./lib/utils')
-const { PORT, HOST, DIST_DIR, AGENT_CONSOLE_DIST_DIR, KOISHI_PID_FILE, DATA_DIR, RESET_TOKEN_FILE, ADMIN_PWD_FILE, isGlobalLocalMode } = require('./lib/paths')
-const { isLocalAuthBypass, requireAdmin, shouldGenerateResetTokenOnStartup, getResetToken, generateResetToken, getAccessPassword } = require('./lib/auth')
+const {
+  PORT,
+  HOST,
+  DIST_DIR,
+  AGENT_CONSOLE_DIST_DIR,
+  KOISHI_PID_FILE,
+  DATA_DIR,
+  RESET_TOKEN_FILE,
+  ADMIN_PWD_FILE,
+  ACCESS_PWD_FILE,
+  isGlobalLocalMode,
+} = require('./lib/paths')
+const {
+  isLocalAuthBypass,
+  requireAdmin,
+  shouldGenerateResetTokenOnStartup,
+  getResetToken,
+  generateResetToken,
+  ensureInitialCredentials,
+  applyCorsHeaders,
+  rejectCrossSiteRequest,
+} = require('./lib/auth')
 const { getNapcatToken } = require('./lib/napcat')
 const { napcatProxy } = require('./lib/napcat-proxy')
-const { readFileSyncSafe } = require('./lib/utils')
 const router = require('./lib/router')
 
 process.on('uncaughtException', (err) => {
@@ -36,17 +54,15 @@ const CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'self'",
 ].join('; ')
 
-// ====== HTTP 服务器 ======
-
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
   const pathname = url.pathname
 
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-Token')
+  applyCorsHeaders(req, res)
   res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY)
   res.setHeader('X-Content-Type-Options', 'nosniff')
+  const isSensitiveRequest = pathname.startsWith('/dashboard/api/') || pathname.startsWith('/api/') || pathname.startsWith('/webui')
+  if (isSensitiveRequest && rejectCrossSiteRequest(req, res)) return
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204)
@@ -54,7 +70,6 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
-  // NapCat WebUI 代理
   if (pathname.startsWith('/webui/') || pathname === '/webui') {
     if (!requireAdmin(req, res)) return
     const nToken = process.env.NAPCAT_TOKEN || getNapcatToken()
@@ -65,10 +80,8 @@ const server = http.createServer(async (req, res) => {
     return napcatProxy(req, res, pathname + url.search)
   }
 
-  // API 路由（含鉴权中间件）
   if (router.dispatch(req, res, pathname, url)) return
 
-  // 重定向
   if (pathname === '/dashboard') {
     res.writeHead(302, { Location: '/dashboard/' })
     res.end()
@@ -80,7 +93,7 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
-  // 静态文件服务
+  // Serves one static file from a constrained root directory.
   const serveStaticFile = (rootDir, filePath) => {
     try {
       if (!isInsidePath(rootDir, filePath)) {
@@ -107,7 +120,6 @@ const server = http.createServer(async (req, res) => {
     return false
   }
 
-  // Agent Console
   if (pathname.startsWith('/agent/')) {
     let agentReqPath = pathname.replace(/^\/agent\/?/, '')
     try { agentReqPath = decodeURIComponent(agentReqPath) } catch {}
@@ -123,7 +135,6 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
-  // Dashboard 前端
   let reqPath = pathname.replace(/^\/dashboard\/?/, '')
   try { reqPath = decodeURIComponent(reqPath) } catch {}
   if (serveStaticFile(DIST_DIR, path.join(DIST_DIR, reqPath || 'index.html'))) return
@@ -145,11 +156,12 @@ module.exports = {
 }
 
 if (require.main === module) {
+  ensureInitialCredentials()
   if (shouldGenerateResetTokenOnStartup() && !getResetToken()) generateResetToken()
 
   server.on('error', err => {
-    if (err && err.code === 'EADDRINUSE') log(`端口 ${PORT} 已被占用`)
-    else console.error('[dashboard] HTTP 服务器错误:', err.stack || err.message || err)
+    if (err && err.code === 'EADDRINUSE') log(`port ${PORT} is already in use`)
+    else console.error('[dashboard] HTTP server error:', err.stack || err.message || err)
     process.exit(1)
   })
   server.listen(PORT, HOST, () => {
@@ -157,12 +169,12 @@ if (require.main === module) {
     log(`LianBoard running on http://${shownHost}:${PORT}/dashboard/`)
     log(`listen host: ${HOST}`)
     log(`runtime data dir: ${DATA_DIR}`)
-    log(`bot control: start/stop/maintenance`)
-    log(`napcat proxy: /webui/ -> NapCat WebUI`)
+    log('bot control: start/stop/maintenance')
+    log('napcat proxy: /webui/ -> NapCat WebUI')
     if (!isGlobalLocalMode()) {
-      log(`密码重置令牌文件: ${RESET_TOKEN_FILE}`)
-      if (!getAccessPassword()) log('WARNING: dashboard access password is not configured; login is disabled')
-      if (!readFileSyncSafe(ADMIN_PWD_FILE) && !process.env.DASHBOARD_ADMIN_PASSWORD) log('WARNING: 管理员密码使用默认值 123，请登录后在安全设置中修改')
+      log(`password reset token file: ${RESET_TOKEN_FILE}`)
+      log(`access password file: ${ACCESS_PWD_FILE}`)
+      log(`admin password file: ${ADMIN_PWD_FILE}`)
     }
   })
 
