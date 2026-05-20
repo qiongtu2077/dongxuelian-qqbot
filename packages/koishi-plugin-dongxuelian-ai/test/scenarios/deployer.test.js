@@ -8,6 +8,8 @@ async function run(t) {
   const standalonePath = path.resolve(__dirname, '../../../koishi-plugin-dashboard/standalone.js')
   const dashboardDir = path.dirname(standalonePath)
   const pathsModulePath = path.resolve(dashboardDir, 'lib', 'paths.js')
+  const runtimePath = path.resolve(__dirname, '../../../../local-deployer/lib/runtime.cjs')
+  const runtime = require(runtimePath)
   const originalKoishiDir = process.env.KOISHI_DIR
   const originalGlobalLocal = process.env.GLOBAL_LOCAL_MODE
 
@@ -18,6 +20,74 @@ async function run(t) {
   }
 
   try {
+    const exeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'deployer-portable-exe-'))
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'deployer-user-data-'))
+    const documentsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'deployer-documents-'))
+    const appResourceRoot = path.join(exeDir, 'resources', 'app')
+    const portablePaths = runtime.resolveAppPaths({
+      isPackaged: true,
+      distribution: 'portable',
+      resourceRoot: appResourceRoot,
+      executableDir: exeDir,
+      userDataPath: userDataDir,
+    })
+    const installedPaths = runtime.resolveAppPaths({
+      isPackaged: true,
+      distribution: 'installed',
+      resourceRoot: appResourceRoot,
+      executableDir: exeDir,
+      documentsPath: documentsDir,
+      userDataPath: userDataDir,
+    })
+    try {
+      t.checkEqual('deployer packaged portable workspace defaults beside exe', portablePaths.workspaceRoot, path.join(exeDir, 'LianLianBOT'))
+      t.checkEqual('deployer packaged installer workspace defaults under documents', installedPaths.workspaceRoot, path.join(documentsDir, 'LianLianBOT'))
+      t.checkEqual('deployer packaged runtime state uses electron userData', portablePaths.runtimeStateRoot, path.resolve(userDataDir))
+      t.check('deployer startup path helper does not create workspace', !fs.existsSync(portablePaths.workspaceRoot))
+      t.checkEqual('deployer invalid DASHBOARD_PORT falls back to 5150', runtime.parseDashboardPort('not-a-port'), '5150')
+      t.check('deployer path guard accepts nested workspace', runtime.isInsidePathCaseAware(portablePaths.workspaceRoot, path.join(portablePaths.workspaceRoot, 'runtime')))
+
+      const nonDashboardPidFile = path.join(userDataDir, 'runtime', 'non-dashboard.pid')
+      runtime.writeDashboardPidFile(nonDashboardPidFile, runtime.createDashboardPidRecord({
+        pid: 4321,
+        resourceRoot: portablePaths.resourceRoot,
+        workspaceRoot: portablePaths.workspaceRoot,
+        standalonePath: portablePaths.standalonePath,
+      }))
+      const nonDashboardKills = []
+      const nonDashboardCleanup = runtime.cleanupStaleDashboardPid({
+        pidFilePath: nonDashboardPidFile,
+        appPaths: portablePaths,
+        processExists: () => true,
+        getProcessCommandLine: () => `"${process.execPath}" "${path.join(exeDir, 'not-dashboard.js')}"`,
+        killProcessTree: pid => nonDashboardKills.push(pid),
+      })
+      t.check('deployer stale pid pointing non Dashboard does not kill', !nonDashboardCleanup.killed && nonDashboardKills.length === 0)
+      t.check('deployer stale pid pointing non Dashboard removes pid file', !fs.existsSync(nonDashboardPidFile))
+
+      const dashboardPidFile = path.join(userDataDir, 'runtime', 'dashboard.pid')
+      runtime.writeDashboardPidFile(dashboardPidFile, runtime.createDashboardPidRecord({
+        pid: 8765,
+        resourceRoot: portablePaths.resourceRoot,
+        workspaceRoot: portablePaths.workspaceRoot,
+        standalonePath: portablePaths.standalonePath,
+      }))
+      const dashboardKills = []
+      const dashboardCleanup = runtime.cleanupStaleDashboardPid({
+        pidFilePath: dashboardPidFile,
+        appPaths: portablePaths,
+        processExists: () => true,
+        getProcessCommandLine: () => `"${process.execPath}" "${portablePaths.standalonePath}"`,
+        killProcessTree: pid => dashboardKills.push(pid),
+      })
+      t.check('deployer stale pid pointing Dashboard command kills', dashboardCleanup.killed && dashboardKills[0] === 8765)
+      t.check('deployer stale pid pointing Dashboard removes pid file', !fs.existsSync(dashboardPidFile))
+    } finally {
+      try { fs.rmSync(exeDir, { recursive: true, force: true }) } catch {}
+      try { fs.rmSync(userDataDir, { recursive: true, force: true }) } catch {}
+      try { fs.rmSync(documentsDir, { recursive: true, force: true }) } catch {}
+    }
+
     delete process.env.KOISHI_DIR
     delete process.env.GLOBAL_LOCAL_MODE
     const dash = freshRequireStandalone()

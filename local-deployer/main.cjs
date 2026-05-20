@@ -5,9 +5,10 @@ const http = require('http')
 const net = require('net')
 const path = require('path')
 const { spawn } = require('child_process')
+const runtime = require('./lib/runtime.cjs')
 
 /** Same default as standalone dashboard; overridden by DASHBOARD_PORT env when set */
-const DASHBOARD_PORT = String(process.env.DASHBOARD_PORT || '5150')
+const DASHBOARD_PORT = runtime.parseDashboardPort(process.env.DASHBOARD_PORT)
 
 let dashboardProcess = null
 let mainWindow = null
@@ -19,7 +20,11 @@ let dashboardAbortFn = null
 let dashboardAbortPromise = null
 
 function resolveResourceRoot() {
-  return app.isPackaged ? path.join(process.resourcesPath, 'app') : path.resolve(__dirname, '..')
+  return runtime.resolveResourceRoot({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appDir: __dirname,
+  })
 }
 
 /** Detects whether electron-builder launched the app as a portable artifact. */
@@ -28,9 +33,7 @@ function isPortableBuild() {
 }
 
 function resolveExecutableDir() {
-  if (process.env.PORTABLE_EXECUTABLE_DIR) return process.env.PORTABLE_EXECUTABLE_DIR
-  if (process.env.PORTABLE_EXECUTABLE_FILE) return path.dirname(process.env.PORTABLE_EXECUTABLE_FILE)
-  return path.dirname(process.execPath)
+  return runtime.resolveExecutableDir(process.env, process.execPath)
 }
 
 function ensureWritableDir(dir) {
@@ -43,80 +46,93 @@ function ensureWritableDir(dir) {
 function resolveAppPaths() {
   const resourceRoot = resolveResourceRoot()
   const executableDir = resolveExecutableDir()
-  const logDir = ''
-  if (!app.isPackaged) return { resourceRoot, workspaceRoot: resourceRoot, executableDir, distribution: 'source', fallbackReason: '', logDir }
-  const distribution = isPortableBuild() ? 'portable' : 'installed'
-  const preferredRoot = distribution === 'portable'
-    ? path.join(executableDir, 'LianLianBOT')
-    : path.join(app.getPath('documents'), 'LianLianBOT')
-  try {
-    ensureWritableDir(preferredRoot)
-    return { resourceRoot, workspaceRoot: preferredRoot, executableDir, distribution, fallbackReason: '', logDir }
-  } catch (e) {
-    const fallbackRoot = path.join(app.getPath('userData'), 'LianLianBOT')
-    const label = distribution === 'portable' ? 'EXE 同级目录' : '文档目录'
-    return { resourceRoot, workspaceRoot: fallbackRoot, executableDir, distribution, fallbackReason: `${label}不可写，已改用用户数据目录：${e.message}`, logDir }
+  if (!app.isPackaged) {
+    return runtime.resolveAppPaths({
+      isPackaged: false,
+      resourceRoot,
+      executableDir,
+      distribution: 'source',
+    })
   }
+  const distribution = isPortableBuild() ? 'portable' : 'installed'
+  const preferredBase = distribution === 'portable' ? executableDir : app.getPath('documents')
+  const preferredRoot = path.join(preferredBase, 'LianLianBOT')
+  let workspaceRoot = preferredRoot
+  let fallbackReason = ''
+  try {
+    ensureWritableDir(preferredBase)
+  } catch (e) {
+    const label = distribution === 'portable' ? 'EXE 同级目录' : '文档目录'
+    workspaceRoot = path.join(app.getPath('userData'), 'LianLianBOT')
+    fallbackReason = `${label}不可写，已改用用户数据目录：${e.message}`
+  }
+  return runtime.resolveAppPaths({
+    isPackaged: true,
+    resourceRoot,
+    executableDir,
+    distribution,
+    documentsPath: app.getPath('documents'),
+    userDataPath: app.getPath('userData'),
+    workspaceRoot,
+    fallbackReason,
+  })
 }
 
-/** Returns the dashboard log directory inside the selected writable workspace. */
+/** Returns the Electron-owned dashboard log directory. */
 function getLogDir() {
-  if (!appPaths) return ''
-  return path.join(appPaths.workspaceRoot, 'runtime', 'logs')
+  const logPath = getDashboardLogPath()
+  return logPath ? path.dirname(logPath) : ''
 }
 
 function getDashboardLogPath() {
-  if (!appPaths) return ''
-  const logsDir = getLogDir()
-  try { fs.mkdirSync(logsDir, { recursive: true }) } catch {}
-  return path.join(logsDir, 'dashboard-electron.log')
+  const logPath = runtime.getDashboardLogPath(appPaths)
+  try { runtime.ensureParentDir(logPath) } catch {}
+  return logPath
 }
 
 function getPidFilePath() {
-  if (!appPaths) return ''
-  const runtimeDir = path.join(appPaths.workspaceRoot, 'runtime')
-  try { fs.mkdirSync(runtimeDir, { recursive: true }) } catch {}
-  return path.join(runtimeDir, 'dashboard.pid')
+  return runtime.getDashboardPidFilePath(appPaths)
 }
 
 function writeDashboardPid(pid) {
   const pidFile = getPidFilePath()
   if (!pidFile) return
-  try { fs.writeFileSync(pidFile, JSON.stringify({ pid, ts: Date.now() }), 'utf8') } catch {}
+  const record = runtime.createDashboardPidRecord({
+    pid,
+    resourceRoot: appPaths.resourceRoot,
+    workspaceRoot: appPaths.workspaceRoot,
+    standalonePath: appPaths.standalonePath,
+  })
+  try { runtime.writeDashboardPidFile(pidFile, record) } catch {}
 }
 
 function removeDashboardPidFile() {
   const pidFile = getPidFilePath()
-  if (!pidFile) return
-  try { fs.unlinkSync(pidFile) } catch {}
+  runtime.removePidFile(pidFile)
+}
+
+/** Kill a child process tree using the platform-specific process terminator. */
+function killProcessTree(pid) {
+  if (process.platform === 'win32') {
+    const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+    killer.on('error', () => {})
+    return
+  }
+  process.kill(pid, 'SIGTERM')
 }
 
 function cleanStaleDashboardProcess() {
   const pidFile = getPidFilePath()
   if (!pidFile) return
-  let pid, ts
   try {
-    const raw = fs.readFileSync(pidFile, 'utf8').trim()
-    const parsed = JSON.parse(raw)
-    pid = parsed.pid
-    ts = parsed.ts
-  } catch {
-    try { pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10) } catch { return }
-  }
-  if (!pid || isNaN(pid)) return
-  if (ts && Date.now() - ts > 7 * 24 * 3600 * 1000) {
-    try { fs.unlinkSync(pidFile) } catch {}
-    return
-  }
-  try {
-    process.kill(pid, 0)
-    if (process.platform === 'win32') {
-      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
-    } else {
-      process.kill(pid, 'SIGTERM')
-    }
+    runtime.cleanupStaleDashboardPid({
+      pidFilePath: pidFile,
+      appPaths,
+      processExists: runtime.processExists,
+      getProcessCommandLine: runtime.getProcessCommandLine,
+      killProcessTree,
+    })
   } catch {}
-  try { fs.unlinkSync(pidFile) } catch {}
 }
 
 function rotateDashboardLog() {
@@ -135,13 +151,8 @@ function cleanupDashboardProcess() {
   if (!child || child.killed) return
   const pid = child.pid
   try { child.removeAllListeners() } catch {}
-  if (process.platform === 'win32' && pid) {
-    try {
-      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
-    } catch {}
-  } else {
-    try { child.kill() } catch {}
-  }
+  if (pid) try { killProcessTree(pid) } catch {}
+  else try { child.kill() } catch {}
   removeDashboardPidFile()
 }
 
@@ -158,15 +169,15 @@ function showDiagnosticDialog(title, message, detail) {
   const logPath = getDashboardLogPath()
   const buttons = logPath ? ['复制日志路径', '打开日志目录', '确定'] : ['确定']
   const opts = { type: 'error', title, message, detail: detail + (logPath ? `\n\n诊断日志：${logPath}` : ''), buttons, defaultId: buttons.length - 1 }
-  return dialog.showMessageBox(mainWindow || undefined, opts).then(({ response }) => {
+  return runtime.showMessageBoxSafe(dialog, mainWindow, opts).then(({ response }) => {
     if (logPath && response === 0) clipboard.writeText(logPath)
     if (logPath && response === 1) shell.openPath(path.dirname(logPath))
-  }).catch(() => {})
+  })
 }
 
 /** Verifies packaged resources before starting the dashboard child process. */
 async function validateResourceLayout(paths) {
-  const standalone = path.join(paths.resourceRoot, 'packages', 'koishi-plugin-dashboard', 'standalone.js')
+  const standalone = paths.standalonePath
   if (fs.existsSync(standalone)) return true
   const detail = [
     `缺失文件：${standalone}`,
@@ -186,7 +197,7 @@ async function validateResourceLayout(paths) {
 
 function startDashboard(paths) {
   rotateDashboardLog()
-  const standalone = path.join(paths.resourceRoot, 'packages', 'koishi-plugin-dashboard', 'standalone.js')
+  const standalone = paths.standalonePath
   const logPath = getDashboardLogPath()
   let logStream = null
   if (logPath) {
@@ -387,7 +398,7 @@ function registerIpc() {
   })
   ipcMain.handle('open-path', (_, p) => {
     const resolved = path.resolve(p)
-    const roots = [appPaths.workspaceRoot, appPaths.resourceRoot, appPaths.executableDir].filter(Boolean)
+    const roots = [appPaths.workspaceRoot, appPaths.resourceRoot, appPaths.executableDir, appPaths.runtimeStateRoot, getLogDir()].filter(Boolean)
     const allowed = roots.some(root => {
       const r = path.resolve(root)
       return resolved === r || resolved.startsWith(r + path.sep)
@@ -399,7 +410,7 @@ function registerIpc() {
     const value = String(targetPath || '').trim()
     if (!value) return 'empty path'
     const resolved = path.resolve(value)
-    const roots = [appPaths.workspaceRoot, appPaths.resourceRoot, appPaths.executableDir].filter(Boolean)
+    const roots = [appPaths.workspaceRoot, appPaths.resourceRoot, appPaths.executableDir, appPaths.runtimeStateRoot, getLogDir()].filter(Boolean)
     const allowed = roots.some(root => {
       const r = path.resolve(root)
       return resolved === r || resolved.startsWith(r + path.sep)

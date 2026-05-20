@@ -412,6 +412,11 @@ function handleGetLocalReadyCheck(req, res) {
   try { return json(res, dh.buildLocalReadyCheck()) } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
 }
 
+/** Resolve a temporary path-encoding probe dir without touching KOISHI_DIR. */
+function getEnvCheckPathEncodingDir() {
+  return path.join(os.tmpdir(), 'lianlian-path-encoding-check', '中文路径')
+}
+
 function handleGetEnvCheck(req, res) {
   const localDeployTarget = dh.getLocalDeployTarget()
   const nodeInfo = getCommandInfo('node', 18)
@@ -420,7 +425,7 @@ function handleGetEnvCheck(req, res) {
   const portList = [dh.resolveKoishiListenPort(), Number(PORT), resolveNapcatOnebotListenPort(), resolveNapcatWebuiListenPort()]
   const ports = {}
   for (const port of portList) ports[port] = checkPortState(port)
-  return json(res, { platform: process.platform, host: { platform: process.platform, arch: process.arch, hostname: os.hostname() }, localDeployTarget, blocked: localDeployTarget.blocked, blockedReason: localDeployTarget.blockedReason, projectDir: path.resolve(KOISHI_DIR), runtimeDir: dh.getLocalDeployTarget().runtimeDir, node: nodeInfo, npm: npmInfo, dependencies: dependencyStatus, localConfig: dh.buildLocalConfigPreview(), managedArtifacts: { deleteItems: 0, userDataItems: 0, deleteSize: 0, userDataSize: 0 }, workDir: { exists: fs.existsSync(KOISHI_DIR), path: path.resolve(KOISHI_DIR), writable: null, reason: '环境检测不写入项目目录' }, pathEncoding: dh.inspectChinesePathWrite(path.join(KOISHI_DIR, 'runtime', 'logs')), ports, napcat: detectNapcatInstallation() })
+  return json(res, { platform: process.platform, host: { platform: process.platform, arch: process.arch, hostname: os.hostname() }, localDeployTarget, blocked: localDeployTarget.blocked, blockedReason: localDeployTarget.blockedReason, projectDir: path.resolve(KOISHI_DIR), runtimeDir: dh.getLocalDeployTarget().runtimeDir, node: nodeInfo, npm: npmInfo, dependencies: dependencyStatus, localConfig: dh.buildLocalConfigPreview(), managedArtifacts: { deleteItems: 0, userDataItems: 0, deleteSize: 0, userDataSize: 0 }, workDir: { exists: fs.existsSync(KOISHI_DIR), path: path.resolve(KOISHI_DIR), writable: null, reason: '环境检测不写入项目目录' }, pathEncoding: dh.inspectChinesePathWrite(getEnvCheckPathEncodingDir()), ports, napcat: detectNapcatInstallation() })
 }
 
 function handleGetBotLocalStatus(req, res) {
