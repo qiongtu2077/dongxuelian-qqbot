@@ -17,7 +17,7 @@
       </div>
     </div>
 
-    <nav v-if="expanded" class="sidebar-nav" aria-label="功能导航">
+    <nav v-if="expanded" class="sidebar-nav themed-scrollbar" aria-label="功能导航">
       <button
         v-for="tab in tabs"
         :key="tab.id"

@@ -28,7 +28,7 @@
 
       <div v-if="canRunWindowsLocalDeploy" class="flow-sentence">{{ localFlowText }}</div>
 
-      <div v-if="canRunWindowsLocalDeploy" class="station-map" role="list" aria-label="本地部署步骤">
+      <div v-if="canRunWindowsLocalDeploy" class="station-map themed-scrollbar" role="list" aria-label="本地部署步骤">
         <button v-for="(step, index) in wizardSteps" :key="step.id" type="button" :class="['station-node', 'station-' + step.status, { active: activeLocalStep === step.id }]" @click="activeLocalStep = step.id">
           <span class="station-dot">{{ index + 1 }}</span>
           <span class="station-title">{{ step.title }}</span>
