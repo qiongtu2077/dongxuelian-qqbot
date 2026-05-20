@@ -158,13 +158,12 @@
   </div>
 </template>
 
-<script>
+<script setup>
 import { ref, computed, inject, onMounted, nextTick, watch } from 'vue'
 import { fetchPersonas, fetchPersonaDetail, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore, fetchTtsVoices, ttsPreview, ttsClone, savePersonaVoice } from '../api'
 
-export default {
-  name: 'PersonaPanel',
-  setup() {
+defineOptions({ name: 'PersonaPanel' })
+
     const showAdminDialog = inject('showAdminDialog')
     const personas = ref([])
     const loreList = ref([])
@@ -421,12 +420,4 @@ export default {
       reader.readAsDataURL(cloneFile.value)
     }
 
-    return { personas, corePersona, defaultModes, regularPersonas, loreList, newName, newDesc, newLore, newWill, newNsfw, newContent, editingName, editingType, creating, createMsg, personaDeleting, personaEditing, personaEditSection, loreEditSection, doCreate, cancelEdit,
-      startPersonaEdit, doPersonaDelete,
-      lores, loreFormName, loreFormDesc, loreFormContent, loreSaving, loreMsg, loreDeleting, loreEditing,
-      startLoreEdit, cancelLoreEdit, doLoreSave, doLoreDelete,
-      voicePersona, voiceId, voiceStyle, voiceList, voiceSaving, voicePreviewing, voiceCloning, voiceMsg, previewText, previewAudioSrc, cloneFile, cloneStatus, personaVoiceMap,
-      doSaveVoice, doPreview, onCloneFileChange, doClone }
-  }
-}
 </script>

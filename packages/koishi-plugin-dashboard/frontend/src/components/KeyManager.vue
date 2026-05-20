@@ -23,6 +23,7 @@
       </div>
       <div v-if="keyMsg" style="margin-top:8px;font-size:13px" :style="{color: keyMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ keyMsg.text }}</div>
     </div>
+    <div v-else-if="keyMsg" class="msg" :class="keyMsg.type" style="margin-top:16px">{{ keyMsg.text }}</div>
   </div>
 
   <div class="card token-usage-card">
