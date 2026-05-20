@@ -13,9 +13,11 @@ function buildAgentSessionId(channelKey, userId, channel = 'unknown') {
 }
 
 function trimAgentSessions() {
-  const ordered = Array.from(sessions.entries()).sort((a, b) => b[1].updatedAt - a[1].updatedAt)
-  sessions.clear()
-  for (const [id, session] of ordered.slice(0, MAX_SESSIONS)) sessions.set(id, session)
+  while (sessions.size > MAX_SESSIONS) {
+    const oldestId = sessions.keys().next().value
+    if (!oldestId) break
+    sessions.delete(oldestId)
+  }
 }
 
 function recordAgentSession({ channel = 'unknown', channelKey = 'unknown', userId = 'unknown', userName = '用户', userMessage = '', reply = '', toolCalls = 0, pendingId = null } = {}) {
@@ -44,6 +46,7 @@ function recordAgentSession({ channel = 'unknown', channelKey = 'unknown', userI
   current.lastReply = String(reply || '').slice(0, 160)
   current.turns.unshift({ at: now, userMessage: current.lastMessage, reply: current.lastReply, toolCalls: Number(toolCalls) || 0, pendingId: current.pendingId })
   if (current.turns.length > MAX_TURNS_PER_SESSION) current.turns.length = MAX_TURNS_PER_SESSION
+  if (sessions.has(id)) sessions.delete(id)
   sessions.set(id, current)
   trimAgentSessions()
   return id
