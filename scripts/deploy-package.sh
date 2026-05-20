@@ -47,6 +47,9 @@ esac
 mkdir -p "$DEST"
 cp "$SRC/package.json" "$DEST/package.json"
 cp -R "$SRC/lib" "$DEST/lib"
+if [ -d "$SRC/assets" ]; then
+  cp -R "$SRC/assets" "$DEST/assets"
+fi
 
 if [ "$COPY_AI_SKILLS" = "--copy-ai-skills" ]; then
   mkdir -p "$APP_DIR/data/ai-skills"

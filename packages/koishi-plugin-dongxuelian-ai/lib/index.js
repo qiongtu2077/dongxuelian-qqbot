@@ -119,6 +119,7 @@ const {
   todayCst,                 // 获取当前 CST 日期字符串
 } = require('./utils')
 const { logDebug } = require('./logging-config') // 调试日志输出
+const { shouldTriggerRareVoice, readRareVoiceAudioBuffer } = require('./rare-voice') // 罕见触发固定语音
 const { heuristicRoute, buildExplicitSearchRunOptions } = require('./agent/router') // Agent 路由决策（启发式 + 显式搜索）
 const agentEngine = require('./agent/engine') // Agent 执行引擎
 const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue') // Agent 任务队列
@@ -681,6 +682,21 @@ async function safeSendReply(ctx, session, reply, isRandom = false) {
   }
 }
 
+/** 尝试发送罕见固定语音；失败时返回 false 交给文字回复回退。 */
+async function safeSendRareVoice(ctx, session) {
+  try {
+    const { sendVoiceMessage } = require('./tts')
+    const audioBuf = await readRareVoiceAudioBuffer()
+    if (!audioBuf) return false
+    return await sendVoiceMessage(session, audioBuf)
+  } catch (error) {
+    try {
+      ctx.logger('dongxuelian-ai').warn(`safeSendRareVoice failed: ${error.message || error}`)
+    } catch {}
+    return false
+  }
+}
+
 exports.buildRepeatCandidate = buildRepeatCandidate
 exports.checkGroupRepeat = checkGroupRepeat
 
@@ -1123,9 +1139,14 @@ exports.apply = (ctx) => {
           if (p && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))) {
             channelMissCount.set(channelKey, 0)
             enqueueForChannel(channelKey, async () => {
-              let reply = await handleChatResult(await chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId }), { ctx, session, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true })
+              const chatMeta = {}
+              let reply = await handleChatResult(await chat(session, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, meta: chatMeta }), { ctx, session, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true })
               if (reply) {
                 reply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply
+                if (shouldTriggerRareVoice(chatMeta)) {
+                  const rareVoiceSent = await safeSendRareVoice(ctx, session)
+                  if (rareVoiceSent) return
+                }
                 await safeSendReply(ctx, session, reply, true)
               }
             }, 4)
@@ -1236,10 +1257,11 @@ exports.apply = (ctx) => {
             return safeSendReply(ctx, session, 'Agent 暂时不可用。', randomTriggered)
           }
         }
-        const chatResult = await chat(session, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId })
+        const chatMeta = {}
+        const chatResult = await chat(session, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, meta: chatMeta })
         const reply = await handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered })
         if (!reply) return
-        if (randomTriggered && inGuild) {
+        if (randomTriggered && inGuild && !chatMeta.rareConfirmed) {
           try {
             const { shouldTriggerRandomVoice, markChannelCooldown, synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice, extractVoiceStyle, stripVoiceStyleTag } = require('./tts')
             if (shouldTriggerRandomVoice(channelKey)) {
@@ -1260,6 +1282,10 @@ exports.apply = (ctx) => {
           notifySensitiveHandlers(session, channelKey, { throttle: true }).catch(() => {})
         }
         const finalReply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply
+        if (shouldTriggerRareVoice(chatMeta)) {
+          const rareVoiceSent = await safeSendRareVoice(ctx, session)
+          if (rareVoiceSent) return
+        }
         return safeSendReply(ctx, session, finalReply, randomTriggered)
       } catch (err) {
         const m = err && err.message ? String(err.message) : ''

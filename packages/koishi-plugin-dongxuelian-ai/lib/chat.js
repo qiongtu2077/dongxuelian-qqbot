@@ -707,6 +707,7 @@ async function chat(session, userText, ctx, options = {}) {
       rareConfirmed = false
     }
   }
+  if (options.meta && typeof options.meta === 'object') options.meta.rareConfirmed = Boolean(rareConfirmed)
   if (rareConfirmed) {
     let rareContext = ''
     if (retaliationLevel === 0) {
