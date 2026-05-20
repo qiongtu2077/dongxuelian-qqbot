@@ -22,6 +22,11 @@ function resolveResourceRoot() {
   return app.isPackaged ? path.join(process.resourcesPath, 'app') : path.resolve(__dirname, '..')
 }
 
+/** Detects whether electron-builder launched the app as a portable artifact. */
+function isPortableBuild() {
+  return !!process.env.PORTABLE_EXECUTABLE_DIR || !!process.env.PORTABLE_EXECUTABLE_FILE
+}
+
 function resolveExecutableDir() {
   if (process.env.PORTABLE_EXECUTABLE_DIR) return process.env.PORTABLE_EXECUTABLE_DIR
   if (process.env.PORTABLE_EXECUTABLE_FILE) return path.dirname(process.env.PORTABLE_EXECUTABLE_FILE)
@@ -37,20 +42,32 @@ function ensureWritableDir(dir) {
 
 function resolveAppPaths() {
   const resourceRoot = resolveResourceRoot()
-  if (!app.isPackaged) return { resourceRoot, workspaceRoot: resourceRoot, fallbackReason: '' }
-  const preferredRoot = path.join(app.getPath('documents'), 'LianLianBOT')
+  const executableDir = resolveExecutableDir()
+  const logDir = ''
+  if (!app.isPackaged) return { resourceRoot, workspaceRoot: resourceRoot, executableDir, distribution: 'source', fallbackReason: '', logDir }
+  const distribution = isPortableBuild() ? 'portable' : 'installed'
+  const preferredRoot = distribution === 'portable'
+    ? path.join(executableDir, 'LianLianBOT')
+    : path.join(app.getPath('documents'), 'LianLianBOT')
   try {
     ensureWritableDir(preferredRoot)
-    return { resourceRoot, workspaceRoot: preferredRoot, fallbackReason: '' }
+    return { resourceRoot, workspaceRoot: preferredRoot, executableDir, distribution, fallbackReason: '', logDir }
   } catch (e) {
     const fallbackRoot = path.join(app.getPath('userData'), 'LianLianBOT')
-    return { resourceRoot, workspaceRoot: fallbackRoot, fallbackReason: `文档目录不可写，已改用用户数据目录：${e.message}` }
+    const label = distribution === 'portable' ? 'EXE 同级目录' : '文档目录'
+    return { resourceRoot, workspaceRoot: fallbackRoot, executableDir, distribution, fallbackReason: `${label}不可写，已改用用户数据目录：${e.message}`, logDir }
   }
+}
+
+/** Returns the dashboard log directory inside the selected writable workspace. */
+function getLogDir() {
+  if (!appPaths) return ''
+  return path.join(appPaths.workspaceRoot, 'runtime', 'logs')
 }
 
 function getDashboardLogPath() {
   if (!appPaths) return ''
-  const logsDir = path.join(appPaths.workspaceRoot, 'runtime', 'logs')
+  const logsDir = getLogDir()
   try { fs.mkdirSync(logsDir, { recursive: true }) } catch {}
   return path.join(logsDir, 'dashboard-electron.log')
 }
@@ -139,11 +156,32 @@ function checkPortOccupied(port) {
 
 function showDiagnosticDialog(title, message, detail) {
   const logPath = getDashboardLogPath()
-  const buttons = logPath ? ['复制日志路径', '确定'] : ['确定']
+  const buttons = logPath ? ['复制日志路径', '打开日志目录', '确定'] : ['确定']
   const opts = { type: 'error', title, message, detail: detail + (logPath ? `\n\n诊断日志：${logPath}` : ''), buttons, defaultId: buttons.length - 1 }
-  dialog.showMessageBox(mainWindow || undefined, opts).then(({ response }) => {
+  return dialog.showMessageBox(mainWindow || undefined, opts).then(({ response }) => {
     if (logPath && response === 0) clipboard.writeText(logPath)
+    if (logPath && response === 1) shell.openPath(path.dirname(logPath))
   }).catch(() => {})
+}
+
+/** Verifies packaged resources before starting the dashboard child process. */
+async function validateResourceLayout(paths) {
+  const standalone = path.join(paths.resourceRoot, 'packages', 'koishi-plugin-dashboard', 'standalone.js')
+  if (fs.existsSync(standalone)) return true
+  const detail = [
+    `缺失文件：${standalone}`,
+    '',
+    '可能原因：',
+    '· 安装包或便携包不完整',
+    '· 把安装器当成便携 EXE 复制或重命名后运行',
+    '· 未使用 local-deployer/release 中生成的发布产物',
+    '',
+    `程序目录：${paths.executableDir}`,
+    `资源目录：${paths.resourceRoot}`,
+    `工作目录：${paths.workspaceRoot}`,
+  ].join('\n')
+  await showDiagnosticDialog('部署器资源缺失', '无法找到 Dashboard 后端入口。', detail)
+  return false
 }
 
 function startDashboard(paths) {
@@ -285,7 +323,14 @@ async function createWindow() {
     const logPath = getDashboardLogPath()
     let detail = ''
     if (occupied) {
-      detail = `端口 ${DASHBOARD_PORT} 已被其他程序占用，仪表盘无法启动。\n请关闭占用该端口的程序后重试，或设置环境变量 DASHBOARD_PORT=其他端口 后重新打开部署器。`
+      detail = [
+        `端口 ${DASHBOARD_PORT} 已被其他程序占用，仪表盘无法启动。`,
+        '请关闭占用该端口的程序后重试，或设置环境变量 DASHBOARD_PORT=其他端口 后重新打开部署器。',
+        '',
+        `程序目录：${appPaths?.executableDir || ''}`,
+        `资源目录：${appPaths?.resourceRoot || ''}`,
+        `工作目录：${appPaths?.workspaceRoot || ''}`,
+      ].join('\n')
     } else {
       detail = [
         `仪表盘在 30 秒内未响应（本地端口 ${DASHBOARD_PORT}）。`,
@@ -294,12 +339,17 @@ async function createWindow() {
         '· 首次启动初始化较慢，可重新打开部署器重试',
         '· 防火墙或安全软件拦截了本地端口',
         '· 仪表盘进程启动时发生错误',
+        '',
+        `程序目录：${appPaths?.executableDir || ''}`,
+        `资源目录：${appPaths?.resourceRoot || ''}`,
+        `工作目录：${appPaths?.workspaceRoot || ''}`,
       ].join('\n')
     }
     if (logPath) detail += `\n\n诊断日志：${logPath}`
-    const buttons = logPath ? ['复制日志路径', '退出'] : ['退出']
+    const buttons = logPath ? ['复制日志路径', '打开日志目录', '退出'] : ['退出']
     dialog.showMessageBox({ type: 'error', title: occupied ? '端口被占用' : '控制台启动超时', message: occupied ? `端口 ${DASHBOARD_PORT} 被占用` : '仪表盘未能在规定时间内启动', detail, buttons, defaultId: buttons.length - 1 }).then(({ response }) => {
       if (logPath && response === 0) clipboard.writeText(logPath)
+      if (logPath && response === 1) shell.openPath(path.dirname(logPath))
     }).catch(() => {})
     win.destroy()
     return
@@ -337,7 +387,7 @@ function registerIpc() {
   })
   ipcMain.handle('open-path', (_, p) => {
     const resolved = path.resolve(p)
-    const roots = [appPaths.workspaceRoot, appPaths.resourceRoot].filter(Boolean)
+    const roots = [appPaths.workspaceRoot, appPaths.resourceRoot, appPaths.executableDir].filter(Boolean)
     const allowed = roots.some(root => {
       const r = path.resolve(root)
       return resolved === r || resolved.startsWith(r + path.sep)
@@ -349,7 +399,7 @@ function registerIpc() {
     const value = String(targetPath || '').trim()
     if (!value) return 'empty path'
     const resolved = path.resolve(value)
-    const roots = [appPaths.workspaceRoot, appPaths.resourceRoot].filter(Boolean)
+    const roots = [appPaths.workspaceRoot, appPaths.resourceRoot, appPaths.executableDir].filter(Boolean)
     const allowed = roots.some(root => {
       const r = path.resolve(root)
       return resolved === r || resolved.startsWith(r + path.sep)
@@ -368,8 +418,12 @@ function registerIpc() {
     platform: process.platform,
     arch: process.arch,
     packaged: app.isPackaged,
+    distribution: appPaths?.distribution || (app.isPackaged ? 'installed' : 'source'),
+    executableDir: appPaths?.executableDir || resolveExecutableDir(),
     resourceRoot: appPaths?.resourceRoot || '',
     workspaceRoot: appPaths?.workspaceRoot || '',
+    logDir: getLogDir(),
+    dashboardLogPath: getDashboardLogPath(),
     fallbackReason: appPaths?.fallbackReason || '',
     userData: app.getPath('userData'),
   }))
@@ -389,6 +443,10 @@ if (!gotTheLock) {
     appPaths = resolveAppPaths()
     registerIpc()
     cleanStaleDashboardProcess()
+    if (!await validateResourceLayout(appPaths)) {
+      app.quit()
+      return
+    }
     await new Promise(r => setTimeout(r, 2000))
     const portBusy = await checkPortOccupied(DASHBOARD_PORT)
     if (portBusy) {
@@ -396,11 +454,23 @@ if (!gotTheLock) {
         type: 'error',
         title: '端口被占用',
         message: `端口 ${DASHBOARD_PORT} 已被其他程序占用`,
-        detail: `仪表盘需要使用本地端口 ${DASHBOARD_PORT}，但该端口已被占用。\n\n解决方法：\n· 关闭占用该端口的程序后重试\n· 或设置环境变量 DASHBOARD_PORT=其他端口 后重新打开部署器`,
-        buttons: ['复制提示', '退出'],
-        defaultId: 1,
+        detail: [
+          `仪表盘需要使用本地端口 ${DASHBOARD_PORT}，但该端口已被占用。`,
+          '',
+          '解决方法：',
+          '· 关闭占用该端口的程序后重试',
+          '· 或设置环境变量 DASHBOARD_PORT=其他端口 后重新打开部署器',
+          '',
+          `程序目录：${appPaths.executableDir}`,
+          `资源目录：${appPaths.resourceRoot}`,
+          `工作目录：${appPaths.workspaceRoot}`,
+          `诊断日志：${getDashboardLogPath()}`,
+        ].join('\n'),
+        buttons: ['复制提示', '打开日志目录', '退出'],
+        defaultId: 2,
       })
       if (response === 0) clipboard.writeText(`端口 ${DASHBOARD_PORT} 被占用。关闭占用进程或设置 DASHBOARD_PORT=其他端口`)
+      if (response === 1) shell.openPath(getLogDir())
       app.quit()
       return
     }

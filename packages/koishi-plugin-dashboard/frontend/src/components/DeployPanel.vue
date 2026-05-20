@@ -43,6 +43,22 @@
         <button class="btn btn-sm btn-ghost" type="button" @click="mode = 'remote'">切换到远程 Linux 部署</button>
       </div>
 
+      <div v-if="electronPathRows.length" class="electron-path-panel">
+        <div class="section-head">
+          <strong>部署器路径</strong>
+          <span>{{ electronPathHint }}</span>
+        </div>
+        <div class="path-row-list">
+          <div v-for="row in electronPathRows" :key="row.key" class="path-row">
+            <span>{{ row.label }}</span>
+            <code>{{ row.path }}</code>
+            <button class="btn btn-sm btn-ghost" type="button" @click="openElectronPath(row.path)">打开</button>
+            <button class="btn btn-sm btn-ghost" type="button" @click="copyElectronPath(row.path)">复制</button>
+          </div>
+        </div>
+        <p v-if="electronAppInfo?.fallbackReason" class="inline-note warn-text">{{ electronAppInfo.fallbackReason }}</p>
+      </div>
+
       <div v-if="canRunWindowsLocalDeploy" class="local-wizard-layout">
         <section class="local-panel local-config-panel">
           <div class="section-head"><strong>最少配置</strong><span>机器人 QQ 必填，AI Key 可以先留空</span></div>
@@ -313,6 +329,7 @@ export default {
     const localAlert = ref('')
     const remoteMsg = ref(null)
     const logs = ref([])
+    const electronAppInfo = ref(null)
     const napcatUrl = ref('')
     const napcatInstallDir = ref('')
     const deletePreview = ref(null)
@@ -378,8 +395,24 @@ export default {
       return `当前检测目标：${host.platform || backendPlatform.value || 'unknown'} / ${host.arch || localDeployTarget.value?.arch || 'unknown'}，项目目录：${dir || '未检测'}`
     })
     const localDeployDescription = computed(() => canRunWindowsLocalDeploy.value
-      ? '当前 Dashboard 后端机器就是 Windows 本地部署目标。打包版会把环境、依赖、配置和日志集中放在 EXE 旁边的 LianLianBOT 文件夹；NapCat 扫码登录后，Koishi 使用 127.0.0.1:8080 连接。'
+      ? '当前 Dashboard 后端机器就是 Windows 本地部署目标。便携版把环境、依赖、配置和日志放在 EXE 同级 LianLianBOT；安装版放在文档目录 LianLianBOT。NapCat 扫码登录后，Koishi 使用 127.0.0.1:8080 连接。'
       : '当前页面只能显示 Dashboard 后端机器状态。远端 Linux Dashboard 不能检测浏览器所在的 Windows 电脑；请打开 Windows 部署器软件后再执行本地部署。')
+    const electronPathHint = computed(() => {
+      const type = electronAppInfo.value?.distribution
+      if (type === 'portable') return '便携版运行文件在 EXE 同级 LianLianBOT；程序资源目录只读。'
+      if (type === 'installed') return '安装版程序目录和运行数据分开；运行数据在文档目录 LianLianBOT。'
+      return '源码模式使用当前仓库目录。'
+    })
+    const electronPathRows = computed(() => {
+      const info = electronAppInfo.value
+      if (!info) return []
+      return [
+        { key: 'executableDir', label: '程序目录', path: info.executableDir },
+        { key: 'resourceRoot', label: '资源目录', path: info.resourceRoot },
+        { key: 'workspaceRoot', label: '工作目录', path: info.workspaceRoot },
+        { key: 'logDir', label: '日志目录', path: info.logDir },
+      ].filter(item => item.path)
+    })
     const workspaceSafe = computed(() => !(localDeployTarget.value?.workspace?.isTempRuntime))
     const workspaceStatusText = computed(() => {
       const workspace = localDeployTarget.value?.workspace
@@ -504,6 +537,17 @@ export default {
 
     function syncNapcatInstallDir(data) {
       if (!napcatInstallDir.value) napcatInstallDir.value = data?.napcat?.expectedPath || (data?.runtimeDir ? `${data.runtimeDir}\\napcat` : '')
+    }
+
+    /** 读取 Electron 部署器路径信息，用于排查安装版和便携版目录。 */
+    async function loadElectronAppInfo() {
+      const getter = deployerBridge.value?.getAppInfo
+      if (typeof getter !== 'function') return
+      try {
+        electronAppInfo.value = await getter()
+      } catch {
+        electronAppInfo.value = null
+      }
     }
 
     function scrollDeployLogToBottom() {
@@ -663,6 +707,7 @@ export default {
     async function checkEnv() {
       checking.value = true
       localMsg.value = null
+      await loadElectronAppInfo()
       setStepStatus('env', 'running')
       const res = await checkLocalEnv()
       if (res.ok) {
@@ -1182,6 +1227,33 @@ export default {
       }
     }
 
+    /** 打开部署器暴露的安全目录。 */
+    async function openElectronPath(targetPath) {
+      const value = String(targetPath || '').trim()
+      if (!value) return
+      const bridge = deployerBridge.value
+      try {
+        const opener = bridge?.openPath || bridge?.showItemInFolder
+        const result = typeof opener === 'function' ? await opener(value) : ''
+        if (result && result !== 'ok') localMsg.value = { type: 'err', text: `打开失败：${result}` }
+      } catch {
+        localMsg.value = { type: 'err', text: '打开路径失败，请手动复制路径后查看。' }
+      }
+    }
+
+    /** 复制部署器路径，方便用户手动定位日志或工作目录。 */
+    async function copyElectronPath(targetPath) {
+      const value = String(targetPath || '').trim()
+      if (!value) return
+      try {
+        if (deployerBridge.value?.copyText) await deployerBridge.value.copyText(value)
+        else await navigator.clipboard?.writeText(value)
+        localMsg.value = { type: 'ok', text: '路径已复制。' }
+      } catch {
+        localMsg.value = { type: 'err', text: '复制失败，请手动选择路径文本复制。' }
+      }
+    }
+
     watch(logs, scrollDeployLogToBottom)
     watch(currentLocalLogLines, scrollLocalLogToBottom)
     watch(mode, value => {
@@ -1190,6 +1262,7 @@ export default {
     })
 
     onMounted(() => {
+      loadElectronAppInfo().catch(() => {})
       checkEnv().catch(() => {})
       loadRemoteConfig().catch(() => {})
       localStatusTimer = setInterval(() => {
@@ -1204,7 +1277,7 @@ export default {
       clearRebuildPolling()
     })
 
-    return { mode, local, remote, env, localMsg, localAlert, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmGuideSteps, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, closeLocalAlert, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, confirmNpmDone, copyNpmGuideCommands, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction, copyNpmFixCommands }
+    return { mode, local, remote, env, electronAppInfo, electronPathRows, electronPathHint, localMsg, localAlert, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmGuideSteps, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, closeLocalAlert, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, confirmNpmDone, copyNpmGuideCommands, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction, copyNpmFixCommands, openElectronPath, copyElectronPath }
   },
 }
 </script>
