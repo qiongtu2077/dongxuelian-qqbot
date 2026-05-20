@@ -115,8 +115,7 @@ async function run(t) {
       t.check(`scenario setup runtime file exists: ${file}`, fs.existsSync(path.join(dataDir, file)))
     }
     const adminIds = readJson(path.join(dataDir, 'ai-admin-ids.json'))
-    t.check('scenario setup admin ids includes primary admin', adminIds.includes('100000000'), JSON.stringify(adminIds))
-    t.check('scenario setup admin ids includes secondary admin', adminIds.includes('200000000'), JSON.stringify(adminIds))
+    t.check('scenario setup admin ids uses configured admin only', adminIds.length === 1 && adminIds.includes('100000000'), JSON.stringify(adminIds))
     for (const skillPart of ['core', 'personas', 'modes', 'lore']) {
       const dir = path.join(dataDir, 'ai-skills', skillPart)
       t.check(`scenario setup skill dir populated: ${skillPart}`, hasFiles(dir), dir)
@@ -153,6 +152,23 @@ async function run(t) {
     const napcatEscapeOutput = outputOf(napcatEscape)
     t.check('scenario setup rejects escaped napcat output path', napcatEscape.status !== 0 && napcatEscapeOutput.includes('escapes SETUP_TEST_ROOT'), napcatEscapeOutput)
     t.check('scenario setup escape does not write napcat config outside temp root', !fs.existsSync(path.join(outsideNapcatDir, 'opt')), outsideNapcatDir)
+
+    const multiAdminRoot = fs.mkdtempSync(path.join(tempRoot, 'multi-admin-'))
+    const multiAdminDataDir = path.join(multiAdminRoot, 'data')
+    const multiAdminResult = runSetup(shell, {
+      SETUP_MODE: 'simulate-files',
+      QQ_NUMBER: '123456',
+      ADMIN_QQ: '100000000',
+      DONGXUELIAN_DEFAULT_ADMIN_IDS: '200000000,100000000,300000000',
+      SETUP_TEST_ROOT: tempRoot,
+      KOISHI_DIR: multiAdminRoot,
+      DATA_DIR: multiAdminDataDir,
+      NAPCAT_DIR: path.join(multiAdminRoot, 'Napcat'),
+      REPO_ROOT: ROOT,
+    })
+    const multiAdminOutput = outputOf(multiAdminResult)
+    const multiAdminIds = multiAdminResult.status === 0 ? readJson(path.join(multiAdminDataDir, 'ai-admin-ids.json')) : []
+    t.check('scenario setup supports env default admin ids without duplicates', multiAdminResult.status === 0 && JSON.stringify(multiAdminIds) === JSON.stringify(['200000000', '100000000', '300000000']), multiAdminOutput + JSON.stringify(multiAdminIds))
   } finally {
     cleanup(tempRoot)
     cleanup(outsideKoishiDir)

@@ -382,7 +382,7 @@ async function handleCommand(session, ctx, state) {
   }
 
   // === TTS 语音合成命令 ===
-  const voiceResult = await handleVoiceCommand(session, state)
+  const voiceResult = await handleVoiceCommand(session, state, { ctx })
   if (voiceResult.matched) return voiceResult
 
   const switchMatch = plain.match(/^切换(.+)$/)

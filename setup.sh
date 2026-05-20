@@ -153,11 +153,30 @@ create_data_files() {
   echo "https://opencode.ai/zen/go/v1" > "$DATA_DIR/ai-base-url.txt"
   echo "[]" > "$DATA_DIR/ai-random-whitelist.json"
   echo "[]" > "$DATA_DIR/ai-user-blacklist.json"
-  if [ "$ADMIN_QQ" = "100000000" ] || [ "$ADMIN_QQ" = "200000000" ]; then
-    printf '["100000000","200000000"]\n' > "$DATA_DIR/ai-admin-ids.json"
-  else
-    printf '["100000000","200000000","%s"]\n' "$ADMIN_QQ" > "$DATA_DIR/ai-admin-ids.json"
-  fi
+  admin_ids_csv="${DONGXUELIAN_DEFAULT_ADMIN_IDS:-}"
+  admin_ids_csv="${admin_ids_csv:+$admin_ids_csv,}$ADMIN_QQ"
+  admin_ids_json=""
+  seen_admin_ids=","
+  old_ifs="$IFS"
+  IFS=","
+  for raw_admin_id in $admin_ids_csv; do
+    admin_id="$(printf '%s' "$raw_admin_id" | tr -d '[:space:]')"
+    [ -n "$admin_id" ] || continue
+    case "$admin_id" in
+      *[!0-9]*) err "Admin QQ id must be numeric: $admin_id" ;;
+    esac
+    case "$seen_admin_ids" in
+      *,"$admin_id",*) continue ;;
+    esac
+    seen_admin_ids="$seen_admin_ids$admin_id,"
+    if [ -z "$admin_ids_json" ]; then
+      admin_ids_json="\"$admin_id\""
+    else
+      admin_ids_json="$admin_ids_json,\"$admin_id\""
+    fi
+  done
+  IFS="$old_ifs"
+  printf '[%s]\n' "$admin_ids_json" > "$DATA_DIR/ai-admin-ids.json"
   echo "{}" > "$DATA_DIR/ai-repeat-enabled.json"
   echo "[]" > "$DATA_DIR/ai-random-rate.json"
   echo "off" > "$DATA_DIR/ai-enable-search.txt"

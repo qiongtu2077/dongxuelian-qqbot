@@ -174,6 +174,14 @@ function getTtsModule() {
   return require(path.join(AI_LIB, 'tts'))
 }
 
+function getTtsLogger() {
+  return {
+    warn(message) {
+      console.warn(`[dashboard] ${message}`)
+    },
+  }
+}
+
 function getVoiceAssetsModule() {
   return require(path.join(AI_LIB, 'voice-assets'))
 }
@@ -292,10 +300,11 @@ function handlePostTtsClone(req, res) {
       const tts = getTtsModule()
       const dataUri = `data:${mimeType || 'audio/mpeg'};base64,${audioBase64}`
       const cleanSampleText = String(sampleText || '').trim().slice(0, 120) || voiceAssets.DEFAULT_SAMPLE_TEXT
-      const testBuf = await tts.synthesizeSpeech(cleanSampleText, { voice: dataUri, style: '正常语气' })
+      const diagnostics = {}
+      const testBuf = await tts.synthesizeSpeech(cleanSampleText, { voice: dataUri, style: '正常语气', diagnostics, logger: getTtsLogger(), context: 'dashboard:tts-clone' })
       if (!testBuf) {
         try { fs.unlinkSync(filePath) } catch {}
-        return json(res, { ok: false, message: 'MiMo voiceclone 验证失败，请检查音频格式或 API key' }, 400)
+        return json(res, { ok: false, message: 'MiMo voiceclone 验证失败，请检查音频格式或 API key', reason: diagnostics.lastError?.code || 'unknown' }, 400)
       }
       const asset = voiceAssets.upsertVoiceAsset({
         id: assetId,
@@ -359,9 +368,11 @@ function handlePostTtsPreview(req, res) {
         resolvedVoice = resolved.voice
         resolvedStyle = style || resolved.style
       }
-      const buf = await tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice, style: resolvedStyle })
-      if (!buf) return json(res, { ok: false, message: '语音合成失败，请检查 API key 或网络' }, 500)
-      return json(res, { ok: true, audio: buf.toString('base64'), format: 'wav' })
+      const diagnostics = {}
+      const buf = await tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice, style: resolvedStyle, diagnostics, logger: getTtsLogger(), context: 'dashboard:tts-preview' })
+      if (!buf) return json(res, { ok: false, message: '语音合成失败，请检查 API key 或网络', reason: diagnostics.lastError?.code || 'unknown' }, 500)
+      const mimeType = tts.detectAudioMime(buf) || buf.mimeType || 'audio/wav'
+      return json(res, { ok: true, audio: buf.toString('base64'), format: mimeType.split('/')[1] || 'wav', mimeType })
     } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
   })
 }

@@ -76,6 +76,28 @@ function getLegacyNapcatStatus() {
   }
 }
 
+function normalizeQqNumber(value) {
+  return String(value || '').replace(/[^0-9]/g, '')
+}
+
+function readKoishiSelfId() {
+  try {
+    const yml = fs.readFileSync(path.join(KOISHI_DIR, 'koishi.yml'), 'utf8')
+    const m = yml.match(/selfId:\s*['"]?(\d+)['"]?/)
+    return m ? m[1] : ''
+  } catch {
+    return ''
+  }
+}
+
+function resolveNapcatRestartQq() {
+  for (const raw of [process.env.DASHBOARD_QQ_NUMBER, process.env.QQ_NUMBER, readKoishiSelfId()]) {
+    const qq = normalizeQqNumber(raw)
+    if (qq) return qq
+  }
+  return ''
+}
+
 
 // --- Route Handlers ---
 
@@ -88,12 +110,7 @@ function handleGetBotStatus(req, res) {
       const out = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()
       running = out.split('\n').filter(Boolean).length
     }
-    let qq = ''
-    try {
-      const yml = fs.readFileSync(path.join(KOISHI_DIR, 'koishi.yml'), 'utf8')
-      const m = yml.match(/selfId:\s*['\"]?(\d+)['\"]?/)
-      if (m) qq = m[1]
-    } catch {}
+    const qq = readKoishiSelfId()
     return json(res, { running: running > 0, workers: running, qq })
   } catch { return json(res, { running: false, workers: 0 }) }
 }
@@ -180,11 +197,7 @@ function handleGetQqSshInfo(req, res) {
 }
 
 function handleGetQqSelfId(req, res) {
-  try {
-    const yml = fs.readFileSync(path.join(KOISHI_DIR, 'koishi.yml'), 'utf8')
-    const m = yml.match(/selfId:\s*['\"]?(\d+)['\"]?/)
-    return json(res, { selfId: m ? m[1] : '' })
-  } catch { return json(res, { selfId: '' }) }
+  return json(res, { selfId: readKoishiSelfId() })
 }
 
 function handlePutQqSelfId(req, res) {
@@ -210,9 +223,8 @@ function handleGetNapcatStatus(req, res) {
 
 function handlePostNapcatRestart(req, res) {
   if (!requireAdmin(req, res)) return
-  const raw = process.env.DASHBOARD_QQ_NUMBER || '123456789'
-  const qq = raw.replace(/[^0-9]/g, '')
-  if (!qq) return json(res, { ok: false, message: '无效 QQ 号' }, 400)
+  const qq = resolveNapcatRestartQq()
+  if (!qq) return json(res, { ok: false, message: '未配置 QQ 号，请设置 DASHBOARD_QQ_NUMBER/QQ_NUMBER 或在 koishi.yml 写入 selfId' }, 400)
   const qqExecutable = getLinuxNapcatQQExecutable()
   const logFile = process.env.NAPCAT_LOG_FILE || '/root/napcat.log'
   const args = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '-q', qq]
@@ -265,6 +277,8 @@ module.exports = {
   resolveKoishiListenPort,
   stopKoishiProcesses,
   getLegacyNapcatStatus,
+  readKoishiSelfId,
+  resolveNapcatRestartQq,
   readLoggingConfig,
   writeLoggingConfig,
 }

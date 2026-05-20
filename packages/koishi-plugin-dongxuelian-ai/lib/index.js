@@ -1308,9 +1308,14 @@ exports.apply = (ctx) => {
               const styleOverride = extractVoiceStyle(reply)
               if (styleOverride) voiceOpts.style = styleOverride
               const ttsText = stripVoiceStyleTag(reply)
-              const buf = await synthesizeSpeech(ttsText, voiceOpts)
+              const ttsDiagnostics = {
+                diagnostics: {},
+                logger: ctx.logger('dongxuelian-ai'),
+                context: 'random-voice',
+              }
+              const buf = await synthesizeSpeech(ttsText, { ...voiceOpts, ...ttsDiagnostics })
               if (buf) {
-                const sent = await sendVoiceMessage(liveSession, buf)
+                const sent = await sendVoiceMessage(liveSession, buf, ttsDiagnostics)
                 if (sent) { markChannelCooldown(channelKey); return }
               }
             }

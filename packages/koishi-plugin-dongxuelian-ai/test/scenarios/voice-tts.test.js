@@ -3,6 +3,25 @@ const fs = require('fs')
 const os = require('os')
 const { spawnSync } = require('child_process')
 
+function buildTestWav(payload = Buffer.from([1, 2, 3, 4])) {
+  const data = Buffer.from(payload)
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + data.length, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(16000, 24)
+  header.writeUInt32LE(32000, 28)
+  header.writeUInt16LE(2, 32)
+  header.writeUInt16LE(16, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(data.length, 40)
+  return Buffer.concat([header, data])
+}
+
 async function run(t) {
   t.section('scenario: voice ASR module')
 
@@ -211,8 +230,9 @@ const handler = dashboard.routes['GET /dashboard/api/agent/tts/voices']
   t.section('scenario: voice TTS synthesize (mock)')
 
   const originalFetch = global.fetch
-  const mockAudioBase64 = Buffer.from('RIFF fake wav data').toString('base64')
+  const mockAudioBase64 = buildTestWav(Buffer.from('fake wav data')).toString('base64')
   let fetchCalls = []
+  let diagnostics = {}
   global.fetch = async (url, opts) => {
     fetchCalls.push({ url, opts })
     return {
@@ -222,10 +242,10 @@ const handler = dashboard.routes['GET /dashboard/api/agent/tts/voices']
   }
 
   try {
-    const buf = await tts.synthesizeSpeech('测试文本', { voice: '冰糖', style: '活泼' })
+    const buf = await tts.synthesizeSpeech('测试文本', { voice: '冰糖', style: '活泼', diagnostics })
     if (buf) {
       t.check('synthesizeSpeech returns Buffer', Buffer.isBuffer(buf))
-      t.check('synthesizeSpeech Buffer has content', buf.length > 0)
+      t.check('synthesizeSpeech Buffer is playable wav', tts.detectAudioMime(buf) === 'audio/wav')
       t.check('synthesizeSpeech called fetch', fetchCalls.length === 1)
       t.check('synthesizeSpeech used correct URL', fetchCalls[0].url.includes('token-plan-cn.xiaomimimo.com'))
       const body = JSON.parse(fetchCalls[0].opts.body)
@@ -235,12 +255,93 @@ const handler = dashboard.routes['GET /dashboard/api/agent/tts/voices']
       t.check('synthesizeSpeech messages has style', body.messages[0].role === 'user' && body.messages[0].content === '活泼')
       t.check('synthesizeSpeech messages has text', body.messages[1].role === 'assistant' && body.messages[1].content === '测试文本')
     } else {
-      t.check('synthesizeSpeech returns null (no key file)', true)
+      t.check('synthesizeSpeech reports missing key when no key file', diagnostics.lastError?.code === 'missing_key', JSON.stringify(diagnostics.lastError || {}))
     }
   } finally {
     global.fetch = originalFetch
     fetchCalls = []
   }
+
+  const ttsFailureScript = `
+const fs = require('fs')
+const path = require('path')
+const constants = require(${JSON.stringify(constantsModule)})
+const tts = require(${JSON.stringify(ttsModule)})
+fs.mkdirSync(constants.DATA_DIR, { recursive: true })
+fs.writeFileSync(constants.MIMORIUM_KEY_FILE, 'tp-test-key')
+function buildWav() {
+  const data = Buffer.from([1, 2, 3, 4])
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + data.length, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(16000, 24)
+  header.writeUInt32LE(32000, 28)
+  header.writeUInt16LE(2, 32)
+  header.writeUInt16LE(16, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(data.length, 40)
+  return Buffer.concat([header, data])
+}
+(async () => {
+  const result = {}
+  const wavBase64 = buildWav().toString('base64')
+  let calls = []
+  global.fetch = async (url, opts) => {
+    calls.push(JSON.parse(opts.body))
+    return { ok: true, json: async () => ({ choices: [{ message: { audio: { data: 'data:audio/wav;base64,' + wavBase64 } } }] }) }
+  }
+  let diagnostics = {}
+  const dataUriBuf = await tts.synthesizeSpeech('测试', { voice: '冰糖', style: '活泼', diagnostics })
+  result.dataUriMime = tts.detectAudioMime(dataUriBuf)
+  result.dataUriModel = calls[0].model
+
+  global.fetch = async () => ({ ok: true, json: async () => ({ choices: [{ message: { audio: { data: Buffer.from('not audio').toString('base64') } } }] }) })
+  diagnostics = {}
+  const badAudio = await tts.synthesizeSpeech('测试', { voice: '冰糖', style: '活泼', diagnostics })
+  result.badAudioNull = badAudio === null
+  result.badAudioCode = diagnostics.lastError && diagnostics.lastError.code
+
+  global.fetch = async () => ({ ok: false, status: 401, text: async () => 'bad token tp-secret-value' })
+  diagnostics = {}
+  const httpAudio = await tts.synthesizeSpeech('测试', { voice: '冰糖', style: '活泼', diagnostics })
+  result.httpNull = httpAudio === null
+  result.httpCode = diagnostics.lastError && diagnostics.lastError.code
+  result.httpMessage = diagnostics.lastError && diagnostics.lastError.message
+
+  calls = []
+  global.fetch = async (url, opts) => {
+    calls.push(JSON.parse(opts.body))
+    return { ok: true, json: async () => ({ choices: [{ message: { audio: { data: wavBase64 } } }] }) }
+  }
+  diagnostics = {}
+  const cloneBuf = await tts.synthesizeSpeech('测试', { voice: 'data:audio/wav;base64,' + wavBase64, style: '活泼', diagnostics })
+  result.cloneMime = tts.detectAudioMime(cloneBuf)
+  result.cloneModel = calls[0].model
+  console.log(JSON.stringify(result))
+})().catch(error => {
+  console.error(error.stack || error.message || error)
+  process.exit(1)
+})
+`
+  const ttsFailureDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tts-failure-'))
+  const ttsFailureResult = spawnSync(process.execPath, ['-e', ttsFailureScript], {
+    cwd: path.join(__dirname, '..', '..', '..', '..'),
+    env: { ...process.env, DONGXUELIAN_AI_DATA_DIR: ttsFailureDataRoot },
+    encoding: 'utf8',
+  })
+  let ttsFailureSummary = {}
+  try { ttsFailureSummary = JSON.parse(String(ttsFailureResult.stdout || '').trim()) } catch {}
+  t.check('tts diagnostics child process passes', ttsFailureResult.status === 0, ttsFailureResult.stderr || ttsFailureResult.stdout)
+  t.check('synthesizeSpeech accepts data URI audio response', ttsFailureSummary.dataUriMime === 'audio/wav' && ttsFailureSummary.dataUriModel === 'mimo-v2.5-tts', JSON.stringify(ttsFailureSummary))
+  t.check('synthesizeSpeech rejects unplayable decoded audio', ttsFailureSummary.badAudioNull === true && ttsFailureSummary.badAudioCode === 'invalid_audio', JSON.stringify(ttsFailureSummary))
+  t.check('synthesizeSpeech reports sanitized HTTP failure', ttsFailureSummary.httpNull === true && ttsFailureSummary.httpCode === 'http_error' && !String(ttsFailureSummary.httpMessage || '').includes('tp-secret-value'), JSON.stringify(ttsFailureSummary))
+  t.check('synthesizeSpeech uses clone model for data URI voice', ttsFailureSummary.cloneMime === 'audio/wav' && ttsFailureSummary.cloneModel === 'mimo-v2.5-tts-voiceclone', JSON.stringify(ttsFailureSummary))
+  try { fs.rmSync(ttsFailureDataRoot, { recursive: true, force: true }) } catch {}
 
   t.section('scenario: voice ASR transcribe (mock)')
 

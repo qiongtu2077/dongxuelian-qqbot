@@ -465,6 +465,12 @@ defineOptions({ name: 'PersonaPanel' })
       return new Date(value).toLocaleString()
     }
 
+    function getPreviewAudioSrc(data) {
+      if (!data?.audio) return ''
+      const mimeType = data.mimeType || (data.format ? `audio/${data.format}` : 'audio/wav')
+      return `data:${mimeType};base64,${data.audio}`
+    }
+
     async function doSaveVoice() {
       if (!voicePersona.value) return
       voiceSaving.value = true; voiceMsg.value = null
@@ -496,8 +502,9 @@ defineOptions({ name: 'PersonaPanel' })
         return
       }
       const res = await ttsPreview(text, voiceId.value || '冰糖', voiceStyle.value || '活泼可爱', voicePersona.value, selectedAssetId)
-      if (res.ok && res.data?.audio) {
-        previewAudioSrc.value = 'data:audio/wav;base64,' + res.data.audio
+      const audioSrc = getPreviewAudioSrc(res.data)
+      if (res.ok && audioSrc) {
+        previewAudioSrc.value = audioSrc
       } else {
         voiceMsg.value = { type: 'err', text: res.data?.message || '试听失败' }
       }
@@ -553,8 +560,9 @@ defineOptions({ name: 'PersonaPanel' })
       const text = (asset.sampleText || previewText.value || '你好，这是一段语音测试。').trim()
       const res = await ttsPreview(text, '__cloned__', style, voicePersona.value || asset.personaName, asset.id)
       if (res.code === 'ADMIN_REQUIRED') { voicePreviewing.value = false; if (showAdminDialog) showAdminDialog('试听克隆音色需要管理员密码', () => doPreviewAsset(asset)); return }
-      if (res.ok && res.data?.audio) {
-        previewAudioSrc.value = 'data:audio/wav;base64,' + res.data.audio
+      const audioSrc = getPreviewAudioSrc(res.data)
+      if (res.ok && audioSrc) {
+        previewAudioSrc.value = audioSrc
       } else {
         voiceMsg.value = { type: 'err', text: res.data?.message || '试听失败' }
       }

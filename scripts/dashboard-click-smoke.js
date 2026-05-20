@@ -58,6 +58,32 @@ function svgDataUri() {
   return 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64')
 }
 
+function wavDataBase64() {
+  const sampleRate = 16000
+  const durationSec = 0.18
+  const samples = Math.floor(sampleRate * durationSec)
+  const data = Buffer.alloc(samples * 2)
+  for (let i = 0; i < samples; i += 1) {
+    const value = Math.round(Math.sin(2 * Math.PI * 440 * (i / sampleRate)) * 9000)
+    data.writeInt16LE(value, i * 2)
+  }
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + data.length, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(sampleRate, 24)
+  header.writeUInt32LE(sampleRate * 2, 28)
+  header.writeUInt16LE(2, 32)
+  header.writeUInt16LE(16, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(data.length, 40)
+  return Buffer.concat([header, data]).toString('base64')
+}
+
 function jsonResponse(data, status = 200) {
   return {
     status,
@@ -147,7 +173,7 @@ function apiMock(method, pathname, body) {
       isCurrent: mockState.voiceEnabled,
     }],
   })
-  if (method === 'POST' && pathname === '/agent/tts/preview') return ok({ audio: Buffer.from('mock audio').toString('base64') })
+  if (method === 'POST' && pathname === '/agent/tts/preview') return ok({ audio: wavDataBase64(), format: 'wav', mimeType: 'audio/wav' })
   if (method === 'POST' && pathname === '/agent/tts/clone/rename') return writeOk('voice asset saved')
   if (method === 'POST' && pathname === '/agent/tts/clone/delete') return writeOk('voice asset deleted')
   if (method === 'PUT' && pathname === '/agent/persona/voice') {
@@ -446,6 +472,10 @@ async function runClicks(page) {
   await page.waitForFunction(() => [...document.querySelectorAll('input')].some(input => input.value === '温柔'), { timeout: 8000 })
   await clickText(page, '试听')
   await page.waitForSelector('audio[src^="data:audio/wav;base64,"]', { timeout: 8000 })
+  await page.waitForFunction(() => {
+    const audio = document.querySelector('audio')
+    return audio && audio.src.startsWith('data:audio/wav;base64,') && audio.src.length > 500
+  }, { timeout: 8000 })
   await waitForText(page, '已克隆音色')
   await page.waitForFunction(() => [...document.querySelectorAll('input')].some(input => input.value === '测试音色'), { timeout: 8000 })
   await Promise.all([

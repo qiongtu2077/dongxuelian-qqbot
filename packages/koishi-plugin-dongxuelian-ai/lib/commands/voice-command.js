@@ -8,7 +8,23 @@ const { resolvePersona } = require('../persona')
 const { sanitizeUserInput } = require('../utils')
 const { handled, notHandled } = require('./command-result')
 
-async function handleVoiceCommand(session, state) {
+function getVoiceLogger(runtime = {}) {
+  try {
+    return runtime.ctx?.logger ? runtime.ctx.logger('dongxuelian-ai') : null
+  } catch {
+    return null
+  }
+}
+
+function buildTtsDiagnostics(runtime, context) {
+  return {
+    diagnostics: {},
+    logger: getVoiceLogger(runtime),
+    context,
+  }
+}
+
+async function handleVoiceCommand(session, state, runtime = {}) {
   const { plain, channelKey, currentUserId } = state
 
   if (plain === '东雪莲说句话') {
@@ -17,9 +33,10 @@ async function handleVoiceCommand(session, state) {
     const voiceOpts = resolvePersonaVoice(resolved.name)
     const phrases = ['哼，你好烦啊', '今天天气不错呢', '你在干嘛呀', '无聊死了', '哎呀别烦我啦']
     const text = phrases[Math.floor(Math.random() * phrases.length)]
-    const buf = await synthesizeSpeech(text, voiceOpts)
+    const ttsDiagnostics = buildTtsDiagnostics(runtime, 'command:东雪莲说句话')
+    const buf = await synthesizeSpeech(text, { ...voiceOpts, ...ttsDiagnostics })
     if (buf) {
-      const sent = await sendVoiceMessage(session, buf)
+      const sent = await sendVoiceMessage(session, buf, ttsDiagnostics)
       if (sent) return handled()
     }
     return handled('语音合成失败了，可能是服务暂时不可用。')
@@ -33,9 +50,10 @@ async function handleVoiceCommand(session, state) {
     if (text.length > MAX_TTS_TEXT_LENGTH) return handled(`文本太长了，最多支持 ${MAX_TTS_TEXT_LENGTH} 字。`)
     const resolved = resolvePersona(channelKey, currentUserId)
     const voiceOpts = resolvePersonaVoice(resolved.name)
-    const buf = await synthesizeSpeech(text, voiceOpts)
+    const ttsDiagnostics = buildTtsDiagnostics(runtime, 'command:东雪莲朗读')
+    const buf = await synthesizeSpeech(text, { ...voiceOpts, ...ttsDiagnostics })
     if (buf) {
-      const sent = await sendVoiceMessage(session, buf)
+      const sent = await sendVoiceMessage(session, buf, ttsDiagnostics)
       if (sent) return handled()
     }
     return handled('语音合成失败了，可能是服务暂时不可用。')
@@ -52,9 +70,10 @@ async function handleVoiceCommand(session, state) {
     const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice } = require('../tts')
     const resolved = resolvePersona(channelKey, currentUserId)
     const voiceOpts = resolvePersonaVoice(resolved.name)
-    const buf = await synthesizeSpeech(quoteText, voiceOpts)
+    const ttsDiagnostics = buildTtsDiagnostics(runtime, 'command:朗读引用')
+    const buf = await synthesizeSpeech(quoteText, { ...voiceOpts, ...ttsDiagnostics })
     if (buf) {
-      const sent = await sendVoiceMessage(session, buf)
+      const sent = await sendVoiceMessage(session, buf, ttsDiagnostics)
       if (sent) return handled()
     }
     return handled('语音合成失败了，可能是服务暂时不可用。')

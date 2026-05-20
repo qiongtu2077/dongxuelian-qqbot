@@ -29,8 +29,12 @@ tmp_*.js
 local-deployer/release/
 .claude/settings.local.json
 
+# Local collaboration notes and private audit/deploy scratch docs
+AGENTS.md
+待完成与待审核任务/TESTING.md
+待完成与待审核任务/AUDIT-REPORT-SUPPLEMENT-2026-05-19.md
+
 # Deploy archives
 *.tgz
 .claude/
 AUDIT-REPORT-*.md
-!待完成与待审核任务/AUDIT-REPORT-SUPPLEMENT-2026-05-19.md

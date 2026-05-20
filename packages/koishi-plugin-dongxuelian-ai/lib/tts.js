@@ -12,6 +12,7 @@ const fs = require('fs')
 
 const TTS_TIMEOUT_MS = 15000
 const TTS_BASE_URL = 'https://token-plan-cn.xiaomimimo.com/v1'
+// 普通 TTS 只接受内置音色名；voice clone 的 data URI 必须走专用模型。
 const TTS_MODEL = 'mimo-v2.5-tts'
 const TTS_CLONE_MODEL = 'mimo-v2.5-tts-voiceclone'
 const DEFAULT_VOICE = '冰糖'
@@ -25,6 +26,7 @@ const BUILTIN_VOICES = ['冰糖', '茉莉', '苏打', '白桦', 'Mia', 'Chloe', 
 const channelCooldowns = new Map()
 
 const VOICE_STYLE_RE = /【语音风格[：:]([^】]+)】/
+const DATA_URI_RE = /^data:([^;,]+)(;base64)?,([\s\S]*)$/i
 
 async function getMimoriumKey() {
   const keyFile = MIMORIUM_KEY_FILE
@@ -32,16 +34,105 @@ async function getMimoriumKey() {
   return key.replace(/[\r\n]+/g, '').trim()
 }
 
+function sanitizeDiagnosticText(value, maxLength = 240) {
+  return String(value || '')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:sk|tp)-[A-Za-z0-9._~+/=-]{8,}\b/g, '[redacted-key]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
+}
+
+function recordTtsFailure(options, code, message, details = {}) {
+  const failure = {
+    code,
+    message: sanitizeDiagnosticText(message, 180),
+    ...details,
+  }
+  const diagnostics = options && options.diagnostics
+  if (diagnostics && typeof diagnostics === 'object') diagnostics.lastError = failure
+  if (typeof options?.onDiagnostic === 'function') {
+    try { options.onDiagnostic(failure) } catch {}
+  }
+  const logger = options && options.logger
+  if (logger && typeof logger.warn === 'function') {
+    const voiceKind = String(options.voice || '').startsWith('data:') ? 'clone' : 'builtin'
+    const fields = [
+      `code=${failure.code}`,
+      failure.status ? `status=${failure.status}` : '',
+      failure.model ? `model=${failure.model}` : '',
+      `voice=${voiceKind}`,
+      options.context ? `context=${sanitizeDiagnosticText(options.context, 80)}` : '',
+      failure.message ? `message=${failure.message}` : '',
+    ].filter(Boolean).join(' ')
+    try { logger.warn(`tts failed: ${fields}`) } catch {}
+  }
+  return null
+}
+
+function decodeTtsAudioData(audioData) {
+  const raw = String(audioData || '').trim()
+  if (!raw) return { error: 'empty audio data' }
+
+  let declaredMime = ''
+  let base64 = raw
+  const uriMatch = raw.match(DATA_URI_RE)
+  if (uriMatch) {
+    declaredMime = String(uriMatch[1] || '').toLowerCase()
+    if (!uriMatch[2]) return { error: 'audio data URI is not base64 encoded', declaredMime }
+    base64 = uriMatch[3] || ''
+  }
+
+  const normalized = String(base64)
+    .replace(/\s+/g, '')
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+  if (!normalized) return { error: 'empty base64 audio payload', declaredMime }
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized) || normalized.length % 4 === 1) {
+    return { error: 'invalid base64 audio payload', declaredMime }
+  }
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
+  const buffer = Buffer.from(padded, 'base64')
+  if (!buffer.length) return { error: 'decoded audio payload is empty', declaredMime }
+  return { buffer, declaredMime }
+}
+
+function hasUsableWavData(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 44) return false
+  if (buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WAVE') return false
+  let offset = 12
+  while (offset + 8 <= buffer.length) {
+    const chunkId = buffer.toString('ascii', offset, offset + 4)
+    const chunkSize = buffer.readUInt32LE(offset + 4)
+    const dataStart = offset + 8
+    const dataEnd = dataStart + chunkSize
+    if (chunkId === 'data') return chunkSize > 0 && dataEnd <= buffer.length
+    offset = dataEnd + (chunkSize % 2)
+  }
+  return false
+}
+
+function detectAudioMime(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return ''
+  if (hasUsableWavData(buffer)) return 'audio/wav'
+  if (buffer.length > 16 && buffer.toString('ascii', 0, 4) === 'OggS') return 'audio/ogg'
+  if (buffer.length > 16 && buffer.toString('ascii', 0, 4) === 'fLaC') return 'audio/flac'
+  if (buffer.length > 16 && buffer.toString('ascii', 4, 8) === 'ftyp') return 'audio/mp4'
+  if (buffer.length > 32 && buffer.toString('ascii', 0, 3) === 'ID3') return 'audio/mpeg'
+  if (buffer.length > 32 && buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0) return 'audio/mpeg'
+  return ''
+}
+
 async function synthesizeSpeech(text, options = {}) {
   const { voice = DEFAULT_VOICE, style = DEFAULT_STYLE } = options
   const apiKey = await getMimoriumKey()
-  if (!apiKey) return null
-
-  const ttsText = String(text).slice(0, MAX_TTS_TEXT_LENGTH)
-  if (!ttsText.trim()) return null
-
   const isCloneVoice = String(voice).startsWith('data:')
   const model = isCloneVoice ? TTS_CLONE_MODEL : TTS_MODEL
+  if (!apiKey) return recordTtsFailure({ ...options, voice }, 'missing_key', `MiMo API key is empty: ${MIMORIUM_KEY_FILE}`, { model })
+
+  const ttsText = String(text).slice(0, MAX_TTS_TEXT_LENGTH)
+  if (!ttsText.trim()) return recordTtsFailure({ ...options, voice }, 'empty_text', 'TTS text is empty', { model })
+
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), isCloneVoice ? 30000 : TTS_TIMEOUT_MS)
 
@@ -60,26 +151,59 @@ async function synthesizeSpeech(text, options = {}) {
       }),
     })
 
-    if (!response.ok) return null
-    const data = await response.json()
+    if (!response.ok) {
+      const responseText = typeof response.text === 'function' ? await response.text().catch(() => '') : ''
+      const body = sanitizeDiagnosticText(responseText, 300)
+      return recordTtsFailure({ ...options, voice }, 'http_error', body || `HTTP ${response.status}`, { status: response.status, model })
+    }
+    let data = null
+    try {
+      data = await response.json()
+    } catch (error) {
+      return recordTtsFailure({ ...options, voice }, 'invalid_json', error.message || 'invalid json response', { model })
+    }
     const audioData = data?.choices?.[0]?.message?.audio?.data
-    if (!audioData) return null
-    return Buffer.from(audioData, 'base64')
-  } catch {
-    return null
+    if (!audioData) return recordTtsFailure({ ...options, voice }, 'missing_audio_data', 'response has no choices[0].message.audio.data', { model })
+    const decoded = decodeTtsAudioData(audioData)
+    if (!decoded.buffer) return recordTtsFailure({ ...options, voice }, 'invalid_audio_data', decoded.error || 'invalid audio data', { model, declaredMime: decoded.declaredMime || '' })
+    const detectedMime = detectAudioMime(decoded.buffer)
+    if (!detectedMime) {
+      return recordTtsFailure({ ...options, voice }, 'invalid_audio', 'decoded audio is not a playable WAV/MP3/OGG/FLAC/MP4 payload', {
+        model,
+        declaredMime: decoded.declaredMime || '',
+        bytes: decoded.buffer.length,
+      })
+    }
+    Object.defineProperty(decoded.buffer, 'mimeType', { value: detectedMime, enumerable: false })
+    return decoded.buffer
+  } catch (error) {
+    const isAbort = error && error.name === 'AbortError'
+    return recordTtsFailure({ ...options, voice }, isAbort ? 'timeout' : 'request_failed', error?.message || String(error), { model })
   } finally {
     clearTimeout(timer)
   }
 }
-async function sendVoiceMessage(session, audioBuf) {
-  if (!audioBuf || !audioBuf.length) return false
-  if (audioBuf.length > 2 * 1024 * 1024) return false
+async function sendVoiceMessage(session, audioBuf, options = {}) {
+  if (!audioBuf || !audioBuf.length) {
+    recordTtsFailure(options, 'send_empty_audio', 'audio buffer is empty')
+    return false
+  }
+  if (audioBuf.length > 2 * 1024 * 1024) {
+    recordTtsFailure(options, 'send_audio_too_large', 'audio buffer exceeds QQ record limit', { bytes: audioBuf.length })
+    return false
+  }
+  const mimeType = detectAudioMime(audioBuf) || audioBuf.mimeType || ''
+  if (!mimeType) {
+    recordTtsFailure(options, 'send_invalid_audio', 'audio buffer is not playable', { bytes: audioBuf.length })
+    return false
+  }
   try {
     const { h } = require('koishi')
     const base64 = audioBuf.toString('base64')
-    await session.send(h.audio(`data:audio/wav;base64,${base64}`))
+    await session.send(h.audio(`data:${mimeType};base64,${base64}`))
     return true
-  } catch {
+  } catch (error) {
+    recordTtsFailure(options, 'send_failed', error?.message || String(error))
     return false
   }
 }
@@ -165,6 +289,7 @@ module.exports = {
   markChannelCooldown,
   shouldTriggerRandomVoice,
   getMimoriumKey,
+  detectAudioMime,
   BUILTIN_VOICES,
   MAX_TTS_TEXT_LENGTH,
   RANDOM_VOICE_RATE,

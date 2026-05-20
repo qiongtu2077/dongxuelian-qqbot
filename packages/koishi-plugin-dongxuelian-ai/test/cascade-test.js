@@ -290,6 +290,12 @@ function gitCheckIgnored(relativePath) {
   return result.status === 0
 }
 
+function gitTrackedFiles() {
+  const result = spawnSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' })
+  if (result.error || result.status !== 0) return []
+  return String(result.stdout || '').split(/\r?\n/).filter(Boolean)
+}
+
 function makeLoggerStore() {
   const logs = []
   return {
@@ -833,6 +839,7 @@ async function main() {
       'synthesizeSpeech', 'sendVoiceMessage', 'resolvePersonaVoice',
       'extractVoiceStyle', 'stripVoiceStyleTag', 'getBuiltinVoices',
       'isChannelOnCooldown', 'markChannelCooldown', 'shouldTriggerRandomVoice', 'getMimoriumKey',
+      'detectAudioMime',
     ],
     voiceAssets: [
       'sanitizeVoiceAssetId', 'createVoiceAssetId', 'buildVoiceAssetFilename',
@@ -2040,6 +2047,7 @@ async function main() {
   check('deploy scripts do not contain stale AI version', !allDeploy.includes('0.3.11'))
   check('dashboard deploy does not copy removed patch.js', !dashboardStandalone.includes('/patch.js') && !dashboardStandalone.includes('patch.js ${s}'))
   check('dashboard stop avoids broad koishi pkill', !dashboardStandalone.includes("pkill -9 -f 'koishi'"))
+  check('dashboard NapCat restart avoids fixed QQ fallback', !/DASHBOARD_QQ_NUMBER\s*\|\|/.test(dashboardStandalone) && dashboardStandalone.includes('resolveNapcatRestartQq'))
   check('dashboard explicit local auth bypass only', dashboardStandalone.includes('function isLocalAuthBypass') && dashboardStandalone.includes('GLOBAL_LOCAL_MODE'))
   check('dashboard exposes agent config API', dashboardStandalone.includes("/dashboard/api/agent/config") && dashboardStandalone.includes("agent', 'config") && dashboardStandalone.includes("'GET /dashboard/api/agent/config'") && dashboardStandalone.includes('if (!requireAdmin(req, res)) return'))
   check('dashboard exposes compatible tools API', dashboardStandalone.includes("/dashboard/api/tools") && dashboardStandalone.includes("/enabled") && dashboardStandalone.includes("/pending"))
@@ -2134,8 +2142,15 @@ async function main() {
   check('setup.sh does not write package files directly into node_modules', !setupSrc.includes('cat > /root/koishi-app/node_modules'))
   check('setup.sh does not use patch preload', !setupSrc.includes('NODE_OPTIONS') && !setupSrc.includes('patch.js'))
   check('setup.sh starts koishi with local binary', setupSrc.includes('node "$KOISHI_DIR/node_modules/koishi/bin.js" start'))
-  const testingDocPath = fs.existsSync(path.join(ROOT, 'TESTING.md')) ? path.join(ROOT, 'TESTING.md') : path.join(ROOT, '待完成与待审核任务', 'TESTING.md')
-  const deploymentDocs = read(testingDocPath) + '\n' + read(path.join(ROOT, '部署教程.txt'))
+  const publicTestingDocPath = path.join(ROOT, 'TESTING.md')
+  const privateTestingDocPath = path.join(ROOT, '待完成与待审核任务', 'TESTING.md')
+  const deploymentDocs = [
+    fs.existsSync(publicTestingDocPath) ? read(publicTestingDocPath) : '',
+    read(path.join(ROOT, '部署教程.txt')),
+  ].join('\n')
+  const trackedFiles = gitTrackedFiles()
+  check('private TESTING deploy notes are not tracked', !trackedFiles.includes(path.relative(ROOT, privateTestingDocPath).replace(/\\/g, '/')))
+  check('deploy archives are not tracked', !trackedFiles.some(file => /\.tgz$/i.test(file)))
   check('deployment docs avoid global koishi start commands', !/(?:npx koishi start|npm exec koishi start)/.test(deploymentDocs))
   check('deployment docs mention current restart entrypoint', deploymentDocs.includes('bash /root/koishi-app/restart.sh'))
 
