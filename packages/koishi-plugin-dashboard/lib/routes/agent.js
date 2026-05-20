@@ -251,11 +251,13 @@ function handleGetTtsVoices(req, res) {
     const clonedVoices = voiceAssets.listVoiceAssets(voiceConfigs)
     const liveAssets = clonedVoices.filter(asset => !asset.missing)
     for (const vc of voiceConfigs) {
-      vc.hasSample = liveAssets.some(asset =>
+      const hasBoundSample = liveAssets.some(asset =>
         (vc.voiceAssetId && asset.id === vc.voiceAssetId) ||
         asset.personaName === vc.name ||
         asset.id === voiceAssets.sanitizeVoiceAssetId(vc.name)
-      ) || liveAssets.length > 0
+      )
+      // Keep the clone mode visible for personas that are already configured to use it.
+      vc.hasSample = hasBoundSample || vc.voice === '__cloned__'
     }
     return json(res, {
       ok: true,
