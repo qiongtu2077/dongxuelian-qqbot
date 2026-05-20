@@ -51,10 +51,18 @@ function dispatch(req, res, pathname, url) {
     if (pathname.startsWith(pfx.prefix)) { pfx.handler(req, res, pathname, url); return true }
   }
 
-  for (const [pattern, routeMethod, rxHandler] of regexRoutes) {
+  for (const route of regexRoutes) {
+    const arrayRoute = Array.isArray(route)
+    const pattern = arrayRoute ? route[0] : route.pattern
+    const routeMethod = arrayRoute ? route[1] : route.method
+    const rxHandler = arrayRoute ? route[2] : route.handler
     if (method !== routeMethod) continue
     const match = pathname.match(pattern)
-    if (match) { rxHandler(req, res, pathname, url, match); return true }
+    if (match) {
+      if (arrayRoute) rxHandler(req, res, pathname, url, match)
+      else rxHandler(req, res, match, pathname, url)
+      return true
+    }
   }
 
   return false
