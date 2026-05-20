@@ -196,6 +196,15 @@ async function run() {
     result = await send(ctx, '查看集合 不存在的集合')
     check('boundary: view nonexistent collection returns friendly message', result.sent.some(item => item.includes('未找到') || item.includes('不存在')), JSON.stringify(result.sent))
 
+    result = await send(ctx, '查看昵称')
+    check('boundary: missing alias argument returns friendly message', result.sent.some(item => item.includes('名称不能为空。')), JSON.stringify(result.sent))
+
+    result = await send(ctx, '创建集合')
+    check('boundary: missing collection argument returns friendly message', result.sent.some(item => item.includes('名称不能为空。')), JSON.stringify(result.sent))
+
+    result = await send(ctx, '查看成员')
+    check('boundary: missing member argument returns friendly message', result.sent.some(item => item.includes('请指定成员名')), JSON.stringify(result.sent))
+
     result = await send(ctx, '删除用户名 不存在的昵称')
     check('boundary: delete nonexistent alias does not crash', result.sent.length === 0 || result.sent.some(item => typeof item === 'string'), JSON.stringify(result.sent))
 

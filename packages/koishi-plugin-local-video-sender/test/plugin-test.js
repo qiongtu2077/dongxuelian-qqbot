@@ -123,6 +123,7 @@ async function run() {
     check('max size uses env override', config.maxSize === 1024, JSON.stringify(config))
     check('test video path uses env override', config.testVideoFile === path.join(tmpRoot, 'test-video.mp4'), JSON.stringify(config))
     check('video blacklist path uses shared data dir', config.videoBlacklistFile === path.join(tmpRoot, 'data', 'video-blacklist.json'), JSON.stringify(config))
+    check('file URL helper emits standard file URL', plugin.toFileUrl(path.join(tmpRoot, 'downloads', 'demo.mp4')).startsWith('file:///'), plugin.toFileUrl(path.join(tmpRoot, 'downloads', 'demo.mp4')))
 
     const bvUrl = plugin.extractBiliUrl('看看这个 BV1xx411c7mD')
     check('extracts BV id as canonical URL', bvUrl === 'https://www.bilibili.com/video/BV1xx411c7mD', bvUrl)
@@ -226,6 +227,35 @@ async function run() {
       }
     )
     check('duplicate parse skips second probe', probeCount === 1, `probeCount=${probeCount}`)
+
+    plugin.clearRecentParseHistory()
+    let failedProbeCount = 0
+    const failedFirst = await plugin.downloadAndSend(
+      ctx,
+      makeSession(),
+      'https://www.bilibili.com/video/BV1xx411c7mD',
+      'BV1xx411c7mD',
+      {
+        probeVideo: async () => {
+          failedProbeCount += 1
+          throw new Error('probe failed')
+        },
+      }
+    )
+    const failedSecond = await plugin.downloadAndSend(
+      ctx,
+      makeSession(),
+      'https://www.bilibili.com/video/BV1xx411c7mD',
+      'BV1xx411c7mD',
+      {
+        probeVideo: async () => {
+          failedProbeCount += 1
+          throw new Error('probe failed')
+        },
+      }
+    )
+    check('probe failure can be retried immediately', failedProbeCount === 2, `failedProbeCount=${failedProbeCount}`)
+    check('probe failure keeps user-visible error', String(failedFirst).includes('Failed to probe') && String(failedSecond).includes('Failed to probe'), JSON.stringify({ failedFirst, failedSecond }))
   })
 
   section('boundary and edge cases')
