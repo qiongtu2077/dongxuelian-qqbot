@@ -264,6 +264,20 @@ function rememberRecentParse(session, keys, now = Date.now()) {
   return entry
 }
 
+// Removes a failed parse attempt so the same link can be retried immediately.
+function forgetRecentParse(session, entry) {
+  if (!entry) return
+
+  const channelKey = getParseChannelKey(session)
+  const history = recentParseHistory.get(channelKey) || []
+  const nextHistory = history.filter(item => item !== entry)
+  if (nextHistory.length) {
+    recentParseHistory.set(channelKey, nextHistory)
+  } else {
+    recentParseHistory.delete(channelKey)
+  }
+}
+
 function mergeRecentParseKeys(entry, keys) {
   if (!entry || !keys.length) return
   entry.keys = uniqueStrings(entry.keys.concat(keys))
@@ -496,6 +510,7 @@ async function downloadAndSend(ctx, session, url, source = url, deps = {}) {
   try {
     await fsApi.mkdir(WORKDIR, { recursive: true })
   } catch (error) {
+    forgetRecentParse(session, recentEntry)
     ctx.logger('bvidl').warn(error.message)
     return 'Failed to prepare download directory. Please check logs later.'
   }
@@ -504,10 +519,14 @@ async function downloadAndSend(ctx, session, url, source = url, deps = {}) {
   let picked
   try {
     const result = await probe(url)
-    if (result.error) return result.error
+    if (result.error) {
+      forgetRecentParse(session, recentEntry)
+      return result.error
+    }
     info = result.info
     picked = result.picked
   } catch (error) {
+    forgetRecentParse(session, recentEntry)
     ctx.logger('bvidl').warn(error.stderr || error.message)
     return 'Failed to probe video. Please try again later.'
   }
@@ -539,9 +558,10 @@ async function downloadAndSend(ctx, session, url, source = url, deps = {}) {
       return `Video is too large. Please watch it on Bilibili. Actual size: ${formatBytes(stat.size)}`
     }
 
-    await session.send(segment.video(`file://${outputFile}`))
+    await session.send(segment.video(toFileUrl(outputFile)))
     await fsApi.rm(outputFile, { force: true }).catch(() => {})
   } catch (error) {
+    forgetRecentParse(session, recentEntry)
     await fsApi.rm(outputFile, { force: true }).catch(() => {})
     ctx.logger('bvidl').warn(error.stderr || error.message)
     return 'Failed to download or send video. Please check logs later.'
@@ -580,6 +600,7 @@ exports.pickFormat = pickFormat
 exports.getShortestBiliUrl = getShortestBiliUrl
 exports.downloadAndSend = downloadAndSend
 exports.getRuntimeConfig = getRuntimeConfig
+exports.toFileUrl = toFileUrl
 exports.isBlacklistedGroup = isBlacklistedGroup
 exports.loadVideoBlacklist = loadVideoBlacklist
 exports.isRecentDuplicateParse = isRecentDuplicateParse

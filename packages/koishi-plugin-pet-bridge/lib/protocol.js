@@ -108,7 +108,7 @@ function handleToggleSearch(payload) {
 function handleToggleThinking(payload) {
   const enabled = !!payload.enabled
   setThinkingEnabled(enabled)
-  writeTextFileSync(THINKING_MODE_FILE, enabled ? '1' : '0')
+  writeTextFileSync(THINKING_MODE_FILE, enabled ? 'on' : 'off')
   return { success: true, payload: { thinkingEnabled: enabled } }
 }
 

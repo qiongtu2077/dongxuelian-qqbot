@@ -685,39 +685,39 @@ async function handlePlainCommand(session, content) {
   }
 
   let value = afterCommand(plain, CMD.viewAlias)
-  if (value) return viewAlias(session, value)
+  if (value !== null) return viewAlias(session, value)
 
   value = afterCommand(plain, CMD.viewCollection)
-  if (value) return viewAlias(session, value)
+  if (value !== null) return viewAlias(session, value)
 
   value = afterCommand(plain, CMD.whoIs)
-  if (value) return viewAlias(session, value)
+  if (value !== null) return viewAlias(session, value)
 
   value = afterCommand(plain, CMD.viewMember)
-  if (value || (mentionIds.length && plain === CMD.viewMember)) {
+  if (value !== null) {
     return viewMember(session, value, mentionIds[0])
   }
 
   value = afterCommand(plain, CMD.createCollection)
-  if (value) return createCollection(session, value, mentionIds)
+  if (value !== null) return createCollection(session, value, mentionIds)
 
   value = afterCommand(plain, CMD.addCollection)
-  if (value) return collectionAdd(session, value, mentionIds)
+  if (value !== null) return collectionAdd(session, value, mentionIds)
 
   value = afterCommand(plain, CMD.removeCollection)
-  if (value) return collectionRemove(session, value, mentionIds)
+  if (value !== null) return collectionRemove(session, value, mentionIds)
 
   value = afterCommand(plain, CMD.confirmDeleteCollection)
-  if (value) return deleteCollection(session, value, true)
+  if (value !== null) return deleteCollection(session, value, true)
 
   value = afterCommand(plain, CMD.deleteCollection)
-  if (value) return deleteCollection(session, value, false)
+  if (value !== null) return deleteCollection(session, value, false)
 
   value = afterCommand(plain, CMD.confirmClearCollection)
-  if (value) return clearCollection(session, value, true)
+  if (value !== null) return clearCollection(session, value, true)
 
   value = afterCommand(plain, CMD.clearCollection)
-  if (value) return clearCollection(session, value, false)
+  if (value !== null) return clearCollection(session, value, false)
 
   for (const command of [CMD.renameCollection, CMD.renameAlias]) {
     const args = parseCommandPair(plain, command)

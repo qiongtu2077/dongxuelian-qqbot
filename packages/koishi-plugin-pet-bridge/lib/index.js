@@ -11,13 +11,18 @@ const { handleMessage } = require('./protocol')
 exports.name = 'pet-bridge'
 
 exports.apply = (ctx, config) => {
-  const port = (config && config.port) || 9600
+  const port = config?.port ?? 9600
   const logger = ctx.logger('pet-bridge')
 
   ctx.on('ready', () => {
     const wss = new WebSocketServer({ port, host: '127.0.0.1' })
+    let closed = false
 
     logger.info('pet-bridge: WS server listening on 127.0.0.1:' + port)
+
+    wss.on('error', (err) => {
+      logger.warn(`WS server error: ${err.message}`)
+    })
 
     wss.on('connection', (ws) => {
       ws.on('message', async (raw) => {
@@ -41,8 +46,12 @@ exports.apply = (ctx, config) => {
     })
 
     ctx.on('dispose', () => {
-      wss.close()
-      logger.info('pet-bridge: server closed')
+      if (closed) return
+      closed = true
+      wss.close((err) => {
+        if (err) logger.warn(`WS close error: ${err.message}`)
+        else logger.info('pet-bridge: server closed')
+      })
     })
   })
 }

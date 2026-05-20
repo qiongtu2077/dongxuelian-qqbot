@@ -8,7 +8,7 @@
     "build:agent-console": "npm run build --prefix packages/agent-console",
     "test:quick": "node packages/koishi-plugin-dongxuelian-ai/test/cascade-test.js",
     "test:scenario": "node packages/koishi-plugin-dongxuelian-ai/test/scenario-test.js",
-    "test:plugins": "node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-defense/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js && node packages/koishi-plugin-daily-report/test/plugin-test.js && node packages/koishi-plugin-dongxuelian-poke/test/plugin-test.js && node packages/koishi-plugin-group-leave-notice/test/plugin-test.js",
+    "test:plugins": "node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-defense/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js && node packages/koishi-plugin-daily-report/test/plugin-test.js && node packages/koishi-plugin-dongxuelian-poke/test/plugin-test.js && node packages/koishi-plugin-group-leave-notice/test/plugin-test.js && node packages/koishi-plugin-pet-bridge/test/plugin-test.js",
     "test": "npm run test:quick && npm run test:scenario && npm run test:plugins"
   },
   "workspaces": [
