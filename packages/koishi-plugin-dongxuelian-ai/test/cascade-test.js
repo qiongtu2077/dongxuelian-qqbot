@@ -261,7 +261,7 @@ function shellSyntaxCheck(file) {
   const shellPath = path.relative(ROOT, file).replace(/\\/g, '/') || file
   for (const shell of ['bash', 'sh']) {
     const result = spawnSync(shell, ['-n', shellPath], { cwd: ROOT, stdio: 'pipe' })
-    if (result.error && result.error.code === 'ENOENT') continue
+    if (result.error && (result.error.code === 'ENOENT' || result.error.code === 'UNKNOWN')) continue
     if (result.error && result.error.code === 'EPERM') { blocked.push(shell); continue }
     if (result.error) throw result.error
     if (result.status !== 0) {
@@ -433,7 +433,7 @@ async function main() {
   checkEqual('root package name', rootPkg.name, 'dongxuelian-qqbot')
   checkEqual('npm test:quick keeps cascade entry', rootPkg.scripts && rootPkg.scripts['test:quick'], 'node packages/koishi-plugin-dongxuelian-ai/test/cascade-test.js')
   checkEqual('npm test:scenario runs scenario entry', rootPkg.scripts && rootPkg.scripts['test:scenario'], 'node packages/koishi-plugin-dongxuelian-ai/test/scenario-test.js')
-  checkEqual('npm test:plugins runs auxiliary plugin tests', rootPkg.scripts && rootPkg.scripts['test:plugins'], 'node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js && node packages/koishi-plugin-daily-report/test/plugin-test.js && node packages/koishi-plugin-dongxuelian-poke/test/plugin-test.js && node packages/koishi-plugin-group-leave-notice/test/plugin-test.js')
+  checkEqual('npm test:plugins runs auxiliary plugin tests', rootPkg.scripts && rootPkg.scripts['test:plugins'], 'node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-defense/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js && node packages/koishi-plugin-daily-report/test/plugin-test.js && node packages/koishi-plugin-dongxuelian-poke/test/plugin-test.js && node packages/koishi-plugin-group-leave-notice/test/plugin-test.js')
   check('npm test runs quick and scenario entries', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:quick') && rootPkg.scripts.test.includes('npm run test:scenario'))
   check('npm test includes plugin tests', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:plugins'))
   check('npm check includes AI index syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js'))

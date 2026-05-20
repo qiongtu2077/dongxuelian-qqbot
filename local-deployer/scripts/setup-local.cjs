@@ -17,10 +17,10 @@ plugins:
     protocol: ws
     selfId: '${qq}'
     endpoint: ws://127.0.0.1:8080/onebot/v11/ws
+  defense: {}
   dongxuelian-ai: {}
   dongxuelian-help: {}
   group-name-at: {}
-  defense: {}
   local-video-sender: {}
   group-leave-notice: {}
   dongxuelian-poke: {}

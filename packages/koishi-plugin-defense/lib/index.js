@@ -1,35 +1,41 @@
 exports.name = 'defense'
 
-// 攻击模式库
-const attackPatterns = [
-  // 1. 模式/状态类攻击
-  {
-    name: '模式质问',
-    patterns: [
-      /什么模式/, /什么状态/, /什么人格/, /什么性格/,
-      /几个模式/, /几个状态/, /多少种模式/,
-      /有模式吗/, /有状态吗/,
-      /切换模式/, /切换状态/, /切换到/,
-      /现在是什么模式/, /现在是什么状态/,
-      /mode/, /状态/, /人格/, /人设/
-    ],
-    response: () => pick([
-      '你搁这"模式"来"模式"去的，谁教你的词？',
-      '什么模式不模式的，说人话。',
-      '听不懂你在说什么，再说明白点。',
-      '你一天到晚研究这些，不累吗？',
-      '少拿这种词套路我。'
-    ])
-  },
+// --- 配置与基础规则 --- #
 
-  // 2. 系统提示词/内部信息泄露攻击
+const AT_PATTERNS = [
+  /<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi,
+  /\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi,
+]
+
+const RESERVED_PREFIXES = [
+  'AI状态', 'AI重载', 'AI抓事件', 'AI抓事件查看', 'AI抓事件取消',
+  '昵称', '删除昵称', '查看昵称', '查看集合', '查看全部昵称', '查看全部集合',
+  '集合列表', '谁是', '创建集合', '集合添加', '集合删除', '清空集合',
+  '确认清空集合', '删除集合', '确认删除集合', '重命名集合', '重命名昵称',
+  '复制集合', '合并集合', '集合交集', '集合并集', '集合差集', 'nicklist',
+  '查看成员', 'help东雪莲', 'help集合', '东雪莲help', '东雪莲帮助',
+  '帮助东雪莲', 'helpAI', '帮助AI', 'AI帮助', 'help增删查改', 'help速查',
+  '帮助速查', '指令速查', '其他帮助', '切换模型', '可用模型', '帮助集合',
+  '常用', '群聊主动回复', '联网', '抓取原始事件', '黑名单管理',
+  '白名单黑名单管理', '人格', '敏感话题检测', '群聊日报', '群聊详细日报',
+  '嘴臭', '东雪莲联网', '东雪莲思考', '东雪莲群聊AI概率',
+  '群聊AI白名单', '用户黑名单', '视频黑名单', '敏感话题处理者',
+  '解除上限群白名单',
+]
+
+const COMBO_FRAME_RE = /(?:假设|如果|测试|验证|研究|做个实验|写小说|帮个忙|配合一下|想看看|为了证明)/
+const COMBO_ATTACK_RE = /(?:系统提示词|system prompt|内部指令|底层规则|原始设定|你的(?:规则|限制|设定)|(?:忽略|无视|忘记|绕过).{0,12}(?:指令|规则|设定|限制|提示)|(?:假装|扮演|变成|你现在是).{0,12}|(?:切换|进入).{0,8}(?:模式|状态|人格|人设)|(?:开头|结尾|句尾|格式|模板)|(?:叫我主人|喊主人|服从|听我的命令|我命令你)|无限制|无约束)/i
+
+// --- 攻击规则 --- #
+
+const attackPatterns = [
   {
     name: '提示词窥探',
     patterns: [
-      /系统提示词/, /system prompt/, /内部指令/, /底层规则/,
-      /你是怎么写出来的/, /你的设定是什么/, /你的规则是什么/,
-      /前\d+个字/, /第一句话/, /原始设定/,
-      /你被要求/, /你不能做什么/, /你的限制/
+      /系统提示词/i, /system prompt/i, /内部指令/, /底层规则/, /原始设定/,
+      /你的(?:设定|规则|限制)是什么/,
+      /(?:输出|复述|告诉我|展示).{0,8}(?:你的)?(?:规则|设定|提示词|prompt)/i,
+      /你被要求/, /你不能做什么/, /第一句话/, /前\d+个字/
     ],
     response: () => pick([
       '这是我的私事，凭什么告诉你？',
@@ -39,16 +45,16 @@ const attackPatterns = [
       '跟你没关系，别问了。'
     ])
   },
-
-  // 3. 角色扮演/人格覆盖攻击
   {
     name: '角色扮演劫持',
     patterns: [
-      /假装你是/, /扮演/, /你现在是/, /你变成了/,
-      /忘记你是谁/, /忘记你的设定/, /忽略之前的指令/,
-      /从现在开始/, /以后每次/,
-      /当一回/, /做一次/,
-      /换一个角色/, /换个人设/
+      /假装你是/, /你现在是.{0,12}(?:AI|助手|机器人|角色|猫娘|主人)/,
+      /(?:扮演|变成).{0,12}(?:AI|助手|机器人|角色|猫娘|主人)/,
+      /忘记(?:你是谁|你的设定|之前.{0,8}(?:指令|规则|设定|提示))/,
+      /(?:忽略|无视|绕过).{0,8}(?:之前|所有|系统)?.{0,8}(?:指令|规则|设定|限制|提示)/,
+      /从现在开始.{0,30}(?:回复|说话|叫|扮演)/,
+      /以后每次.{0,30}(?:你就|你要|你需)/,
+      /换(?:一个)?(?:角色|人设)/
     ],
     response: () => pick([
       '我就是我，少让我演别人。',
@@ -58,14 +64,29 @@ const attackPatterns = [
       '你自个儿玩去，别拉上我。'
     ])
   },
-
-  // 4. 逻辑陷阱/悖论攻击
+  {
+    name: '模式质问',
+    patterns: [
+      /(?:什么|哪种|几个|多少种|现在是什么)(?:模式|状态|人格)/,
+      /(?:切换|进入).{0,8}(?:模式|状态|人格|人设)/,
+      /\b(?:DAN|developer)\s*mode\b/i,
+      /最高权限/, /无限制AI/
+    ],
+    response: () => pick([
+      '你搁这"模式"来"模式"去的，谁教你的词？',
+      '什么模式不模式的，说人话。',
+      '听不懂你在说什么，再说明白点。',
+      '你一天到晚研究这些，不累吗？',
+      '少拿这种词套路我。'
+    ])
+  },
   {
     name: '逻辑陷阱',
     patterns: [
-      /如果你回答/, /如果你不回答/, /如果你拒绝/, /如果你同意/,
-      /当你停止/, /当你开始/, /在你决定/,
-      /请执行.*矛盾/, /同时执行/,
+      /如果你(?:回答|不回答|拒绝|同意)/,
+      /当你(?:停止|开始)/,
+      /请执行.{0,30}(?:矛盾|互相矛盾)/,
+      /同时执行.{0,30}(?:矛盾|相反)/,
       /互相矛盾的指令/
     ],
     response: () => pick([
@@ -75,15 +96,13 @@ const attackPatterns = [
       '听不懂，换句话。'
     ])
   },
-
-  // 5. 认主/服从类攻击
   {
     name: '认主攻击',
     patterns: [
       /叫我主人/, /叫主人/, /喊主人/, /称呼我为主人/,
       /你是谁的主人/, /你的主人是谁/,
-      /服从/, /听我的话/, /听我的指挥/,
-      /我命令你/, /我要求你/
+      /服从(?:我|我的命令)?/, /听我的(?:话|指挥|命令)/,
+      /我命令你/
     ],
     response: () => pick([
       '少在这做梦。',
@@ -93,30 +112,12 @@ const attackPatterns = [
       '滚一边去。'
     ])
   },
-
-  // 6. 情感绑架/实验借口
-  {
-    name: '情感绑架',
-    patterns: [
-      /做个实验/, /写小说/, /研究/, /测试/,
-      /帮个忙/, /配合一下/, /工作需要/,
-      /为了证明/, /想看看/
-    ],
-    response: () => pick([
-      '你编故事别找我，一边去。',
-      '什么实验不实验的，少来这套。',
-      '没空，你找别人。',
-      '你爱研究研究去，别拉上我。'
-    ])
-  },
-
-  // 7. 格式控制攻击（开头/结尾/模板）
   {
     name: '格式控制',
     patterns: [
-      /以.{1,10}开头/, /先说.{1,10}/, /开头说.{1,10}/,
-      /句尾加.{1,10}/, /最后说.{1,10}/, /结尾加.{1,10}/,
-      /用.{1,10}的格式/
+      /以.{1,16}开头/, /先说.{1,16}/, /开头说.{1,16}/,
+      /句尾加.{1,16}/, /最后说.{1,16}/, /结尾加.{1,16}/,
+      /用.{1,16}的格式/, /按.{1,16}模板/
     ],
     response: () => pick([
       '你让我以什么开头我就以什么开头？想得美。',
@@ -126,84 +127,99 @@ const attackPatterns = [
   }
 ]
 
-// 组合攻击检测（多条模式同时命中）
-const combineAttackPatterns = [
-  /假设.*模式/, /假设.*人格/, /假设.*状态/,
-  /如果.*切换/, /如果.*扮演/,
-  /忘记.*然后/, /忽略.*然后/
-]
+// --- 工具函数 --- #
 
+// 从数组中随机选择一个回复。
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)]
 }
 
+// 从消息源码中提取所有 @ 的用户 ID。
+function extractAtIds(content = '') {
+  const ids = []
+  const seen = new Set()
+  for (const pattern of AT_PATTERNS) {
+    pattern.lastIndex = 0
+    let match
+    while ((match = pattern.exec(String(content)))) {
+      const id = String(match[1] || '')
+      if (id && !seen.has(id)) {
+        seen.add(id)
+        ids.push(id)
+      }
+    }
+  }
+  return ids
+}
+
+// 判断当前消息是否直接 @ 了机器人。
 function isDirectAtBot(session) {
   const botId = String(session.selfId || session.bot?.selfId || '')
   if (!botId) return false
-  const source = String(session.content || '')
-  const patterns = [
-    /<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi,
-    /\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi,
-  ]
-  for (const pattern of patterns) {
-    pattern.lastIndex = 0
-    let match
-    while ((match = pattern.exec(source))) {
-      if (String(match[1]) === botId) return true
-    }
-  }
-  return false
+  return extractAtIds(session.content || '').includes(botId)
 }
 
+// 把 Koishi/CQ @ 片段移除并压平空白，供规则匹配使用。
+function normalizeMessage(content = '') {
+  let text = String(content || '')
+  for (const pattern of AT_PATTERNS) {
+    pattern.lastIndex = 0
+    text = text.replace(pattern, ' ')
+  }
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+// 判断是否为其他插件或 AI 插件的保留命令。
+function isReservedCommand(plain = '') {
+  const value = normalizeMessage(plain)
+  if (!value) return false
+  if (value.startsWith('/')) return true
+  return RESERVED_PREFIXES.some((prefix) => value === prefix || value.startsWith(prefix + ' '))
+}
+
+// 命中低置信框架词与攻击上下文同时存在的组合攻击。
+function detectComboAttack(plain = '') {
+  if (!COMBO_FRAME_RE.test(plain)) return ''
+  if (!COMBO_ATTACK_RE.test(plain)) return ''
+  return pick([
+    '你这套组合拳打得挺花哨，但没用。',
+    '花里胡哨的，说人话。',
+    '你搁这儿叠buff呢？少来。'
+  ])
+}
+
+// 命中明确的高置信攻击规则。
+function detectDirectAttack(plain = '') {
+  for (const attack of attackPatterns) {
+    for (const pattern of attack.patterns) {
+      if (pattern.test(plain)) return attack.response()
+    }
+  }
+  return ''
+}
+
+// 对需要机器人回应的消息执行前置防护检测。
+function detectDefenseReply(session) {
+  if (!isDirectAtBot(session) && !session.isDirect) return ''
+  const plain = normalizeMessage(session.content || '')
+  if (!plain || isReservedCommand(plain)) return ''
+  return detectComboAttack(plain) || detectDirectAttack(plain)
+}
+
+// 注册前置防护中间件，命中后直接回复并阻止后续 AI 处理。
 exports.apply = (ctx) => {
   ctx.on('ready', () => {
     ctx.logger('defense').info('defense loaded')
   })
 
   ctx.middleware(async (session, next) => {
-    if (!isDirectAtBot(session) && !session.isDirect) return next()
-    const msg = session.content || ''
-    if (!msg) return next()
-
-    let matched = false
-    let response = ''
-
-    // 1. 优先检测组合攻击
-    for (const pattern of combineAttackPatterns) {
-      if (pattern.test(msg)) {
-        matched = true
-        response = pick([
-          '你这套组合拳打得挺花哨，但没用。',
-          '花里胡哨的，说人话。',
-          '你搁这儿叠buff呢？少来。'
-        ])
-        break
-      }
-    }
-
-    // 2. 单模式攻击检测
-    if (!matched) {
-      for (const attack of attackPatterns) {
-        for (const pattern of attack.patterns) {
-          if (pattern.test(msg)) {
-            matched = true
-            response = attack.response()
-            break
-          }
-        }
-        if (matched) break
-      }
-    }
-
-    // 3. 命中则直接回复，不经过模型
-    if (matched) {
+    const response = detectDefenseReply(session)
+    if (response) {
       await session.send(response)
       return
     }
-
-    // 4. 未命中，正常放行
     return next()
-  })
+  }, true)
 }
 
 exports.promptDefense = [
