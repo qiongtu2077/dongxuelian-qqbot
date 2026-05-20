@@ -144,7 +144,7 @@ const COVERAGE_MAP = [
   {
     behavior: 'dashboard standalone deployer security helpers',
     file: path.join(AI_ROOT, 'test', 'scenarios', 'deployer.test.js'),
-    needles: ['scenario: dashboard deployer security', 'deployer isLocalAuthBypass rejects loopback without GLOBAL_LOCAL_MODE', 'deployer isLocalAuthBypass rejects non-loopback with GLOBAL_LOCAL_MODE', 'deployer KOISHI_PID_FILE follows KOISHI_DIR env'],
+    needles: ['scenario: dashboard deployer security', 'deployer isLocalAuthBypass rejects loopback without GLOBAL_LOCAL_MODE', 'deployer isLocalAuthBypass rejects non-loopback with GLOBAL_LOCAL_MODE', 'deployer KOISHI_PID_FILE follows KOISHI_DIR env', 'deployer stale pid pointing non Dashboard does not kill', 'deployer stale pid pointing Dashboard command kills'],
   },
   {
     behavior: 'retaliation score calculation',
@@ -468,8 +468,20 @@ async function main() {
   check('npm check includes AI retaliation syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dongxuelian-ai/lib/retaliation.js'))
   check('npm check includes dashboard standalone syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c packages/koishi-plugin-dashboard/standalone.js'))
   check('npm check includes dashboard electron deployer helper syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node --check --input-type=module < packages/koishi-plugin-dashboard/frontend/src/electron-deployer.js'))
+  check('npm check includes local deployer runtime syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c local-deployer/lib/runtime.cjs'))
+  check('npm check includes local deployer release syntax', rootPkg.scripts && rootPkg.scripts.check && rootPkg.scripts.check.includes('node -c local-deployer/scripts/build-release.cjs'))
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
   check('workspace package glob exists', Array.isArray(rootPkg.workspaces) && rootPkg.workspaces.includes('packages/*'))
+  const localDeployerPkg = readJson(path.join(ROOT, 'local-deployer', 'package.json'))
+  const localDeployerBuild = localDeployerPkg.build || {}
+  const localDeployerWin = localDeployerBuild.win || {}
+  const localDeployerWinTarget = typeof localDeployerWin.target === 'string' ? [localDeployerWin.target] : (localDeployerWin.target || [])
+  check('local deployer win target includes portable', Array.isArray(localDeployerWinTarget) && localDeployerWinTarget.includes('portable'))
+  check('local deployer win target includes setup installer', Array.isArray(localDeployerWinTarget) && localDeployerWinTarget.includes('nsis'))
+  check('local deployer package includes runtime helpers', Array.isArray(localDeployerBuild.files) && localDeployerBuild.files.includes('lib/**/*'))
+  const localDeployerReleaseSrc = read(path.join(ROOT, 'local-deployer', 'scripts', 'build-release.cjs'))
+  check('local deployer release keeps portable and setup artifacts separate', localDeployerReleaseSrc.includes('LianLianBOT-Deployer-Portable') && localDeployerReleaseSrc.includes('LianLianBOT-Deployer-Setup'))
+  check('local deployer release packages portable zip and setup exe', localDeployerReleaseSrc.includes('portable zip created') && localDeployerReleaseSrc.includes('setup exe copied'))
 
   const packageDirs = fs.readdirSync(PKG_ROOT, { withFileTypes: true })
     .filter(entry => entry.isDirectory())
@@ -2049,6 +2061,7 @@ async function main() {
   check('dashboard stop avoids broad koishi pkill', !dashboardStandalone.includes("pkill -9 -f 'koishi'"))
   check('dashboard NapCat restart avoids fixed QQ fallback', !/DASHBOARD_QQ_NUMBER\s*\|\|/.test(dashboardStandalone) && dashboardStandalone.includes('resolveNapcatRestartQq'))
   check('dashboard explicit local auth bypass only', dashboardStandalone.includes('function isLocalAuthBypass') && dashboardStandalone.includes('GLOBAL_LOCAL_MODE'))
+  check('dashboard env check does not create workspace logs', dashboardStandalone.includes('getEnvCheckPathEncodingDir') && !dashboardStandalone.includes("inspectChinesePathWrite(path.join(KOISHI_DIR, 'runtime', 'logs'))"))
   check('dashboard exposes agent config API', dashboardStandalone.includes("/dashboard/api/agent/config") && dashboardStandalone.includes("agent', 'config") && dashboardStandalone.includes("'GET /dashboard/api/agent/config'") && dashboardStandalone.includes('if (!requireAdmin(req, res)) return'))
   check('dashboard exposes compatible tools API', dashboardStandalone.includes("/dashboard/api/tools") && dashboardStandalone.includes("/enabled") && dashboardStandalone.includes("/pending"))
   check('dashboard exposes agent chat API', dashboardStandalone.includes("/dashboard/api/agent/chat") && dashboardStandalone.includes("agent', 'engine") && dashboardStandalone.includes('data.history'))

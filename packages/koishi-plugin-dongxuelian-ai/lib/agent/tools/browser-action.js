@@ -18,6 +18,9 @@ let actionQueue = Promise.resolve()
 let screenshotCounter = 0
 let networkLog = []
 let consoleLog = []
+const BROWSER_CLEANUP_HOOK = Symbol.for('dongxuelian.browser-action.cleanupHook')
+const BROWSER_CLEANUP_RESET = Symbol.for('dongxuelian.browser-action.cleanupReset')
+const BROWSER_CLEANUP_INSTALLED = Symbol.for('dongxuelian.browser-action.cleanupInstalled')
 const IDLE_CLOSE_MS = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_IDLE_MS, 60 * 1000, 10 * 1000, 5 * 60 * 1000)
 const BROWSER_MIN_AVAILABLE_MB = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_MIN_MEM_MB, 900, 256, 8192)
 const SEARCH_NAVIGATION_TIMEOUT_MS = 12000
@@ -78,12 +81,23 @@ async function enableBrowserRequestGuards(targetPage) {
 function registerCleanup() {
   if (cleanupRegistered) return
   cleanupRegistered = true
-  process.once('beforeExit', () => { closeBrowser().catch(() => {}) })
-  process.once('exit', () => {
+  globalThis[BROWSER_CLEANUP_HOOK] = () => { closeBrowser().catch(() => {}) }
+  globalThis[BROWSER_CLEANUP_RESET] = () => {
     page = null
     browser = null
     currentUrl = ''
-  })
+  }
+  if (!globalThis[BROWSER_CLEANUP_INSTALLED]) {
+    globalThis[BROWSER_CLEANUP_INSTALLED] = true
+    process.once('beforeExit', () => {
+      const handler = globalThis[BROWSER_CLEANUP_HOOK]
+      if (typeof handler === 'function') handler()
+    })
+    process.once('exit', () => {
+      const handler = globalThis[BROWSER_CLEANUP_RESET]
+      if (typeof handler === 'function') handler()
+    })
+  }
 }
 
 function refreshIdleTimer() {

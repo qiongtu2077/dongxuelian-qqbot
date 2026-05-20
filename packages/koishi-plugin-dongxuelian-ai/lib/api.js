@@ -21,6 +21,8 @@ function parseApiPositiveInt(value, fallback, min, max) {
 }
 
 const TOKEN_USAGE_FILE = path.join(DATA_DIR, 'token-usage.json')
+const TOKEN_USAGE_EXIT_HOOK = Symbol.for('dongxuelian.ai.tokenUsageExitHook')
+const TOKEN_USAGE_EXIT_FLUSH = Symbol.for('dongxuelian.ai.tokenUsageExitFlush')
 let _tokenUsageCache = null
 let _tokenUsageFlushTimer = null
 
@@ -51,7 +53,14 @@ function flushTokenUsage() {
   }
 }
 
-process.on('exit', flushTokenUsage)
+globalThis[TOKEN_USAGE_EXIT_FLUSH] = flushTokenUsage
+if (!globalThis[TOKEN_USAGE_EXIT_HOOK]) {
+  globalThis[TOKEN_USAGE_EXIT_HOOK] = true
+  process.on('exit', () => {
+    const handler = globalThis[TOKEN_USAGE_EXIT_FLUSH]
+    if (typeof handler === 'function') handler()
+  })
+}
 
 function mimeFromImagePath(filePath = '') {
   const ext = String(filePath || '').split('.').pop().toLowerCase()
