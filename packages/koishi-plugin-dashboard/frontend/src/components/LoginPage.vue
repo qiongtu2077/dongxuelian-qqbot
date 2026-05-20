@@ -2,7 +2,7 @@
   <div class="login-page">
     <LoginBackdrop />
     <div class="login-spacer"></div>
-    <div class="login-sidebar">
+    <div class="login-sidebar themed-scrollbar">
       <div class="login-sidebar-inner">
         <div class="gate-kicker">LianBoard</div>
         <h1 class="gate-title">莲莲 Bot 控制台</h1>

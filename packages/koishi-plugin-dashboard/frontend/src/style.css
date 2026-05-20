@@ -365,15 +365,31 @@ select:focus, input:focus { outline: none; border-color: var(--accent); box-shad
 select option { background: var(--surface); color: var(--text) }
 .themed-select { width: 100% }
 
+html,
+body,
 .themed-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: var(--accent) var(--input);
 }
 
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
 .themed-scrollbar::-webkit-scrollbar { width: 10px; height: 10px }
+
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track,
 .themed-scrollbar::-webkit-scrollbar-track { background: var(--input); border: 1px solid var(--border); border-radius: 999px }
+
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb,
 .themed-scrollbar::-webkit-scrollbar-thumb { background: linear-gradient(180deg, var(--accent), var(--accent2)); border: 2px solid var(--input); border-radius: 999px; background-clip: padding-box }
+
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover,
 .themed-scrollbar::-webkit-scrollbar-thumb:hover { box-shadow: 0 0 12px var(--shadow); border-color: var(--border) }
+
+html::-webkit-scrollbar-corner,
+body::-webkit-scrollbar-corner,
 .themed-scrollbar::-webkit-scrollbar-corner { background: var(--input) }
 
 .btn {

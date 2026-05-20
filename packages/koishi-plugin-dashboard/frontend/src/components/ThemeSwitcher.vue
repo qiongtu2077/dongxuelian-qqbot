@@ -1,6 +1,6 @@
 <template>
   <div v-if="visible" class="modal-backdrop" @click.self="$emit('close')">
-    <div class="theme-modal">
+    <div class="theme-modal themed-scrollbar">
       <div class="modal-head">
         <div>
           <div class="gate-kicker">Appearance</div>

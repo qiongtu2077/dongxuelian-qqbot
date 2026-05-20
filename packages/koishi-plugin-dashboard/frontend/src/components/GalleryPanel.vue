@@ -60,7 +60,7 @@
               </div>
             </div>
           </article>
-          <aside class="gallery-foil-picker" aria-label="闪卡样式">
+          <aside class="gallery-foil-picker themed-scrollbar" aria-label="闪卡样式">
             <button v-for="option in foilOptions" :key="option.id" type="button" :class="{ active: currentFoilStyle === option.value }" :disabled="updatingStyle" :title="option.title" @click="setPreviewFoilStyle(option.value)">{{ option.label }}</button>
           </aside>
         </div>
