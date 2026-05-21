@@ -27,7 +27,7 @@ BACKUP_ROOT="${DATA_SEAL_BACKUP_ROOT:-$APP_DIR/deploy-backups}"
 STAMP="${DATA_SEAL_STAMP:-$(date +%Y%m%d-%H%M%S)}"
 BACKUP_DIR="$BACKUP_ROOT/data-seal-$STAMP"
 
-seal_one() {
+merge_seed_one() {
   rel="$1"
   pkg_data="$APP_DIR/$rel"
   parent="$(dirname "$pkg_data")"
@@ -36,34 +36,34 @@ seal_one() {
   if [ -L "$pkg_data" ]; then
     target="$(readlink -f "$pkg_data" 2>/dev/null || true)"
     if [ "$target" = "$DATA_DIR" ]; then
-      echo "sealed: $rel -> $DATA_DIR"
+      echo "legacy package data symlink already points to runtime data: $rel -> $DATA_DIR"
       return 0
     fi
     mkdir -p "$BACKUP_DIR/$(dirname "$rel")"
     mv "$pkg_data" "$BACKUP_DIR/$rel.wrong-symlink"
+    mkdir -p "$pkg_data"
+    echo "archived wrong package data symlink: $rel"
   elif [ -d "$pkg_data" ]; then
     real_pkg="$(cd "$pkg_data" && pwd -P)"
     if [ "$real_pkg" = "$DATA_DIR" ]; then
-      echo "sealed: $rel -> $DATA_DIR"
+      echo "package data already resolves to runtime data: $rel -> $DATA_DIR"
       return 0
     fi
-    mkdir -p "$BACKUP_DIR/$(dirname "$rel")"
-    mv "$pkg_data" "$BACKUP_DIR/$rel"
-    cp -an "$BACKUP_DIR/$rel/." "$DATA_DIR/" 2>/dev/null || true
-    echo "merged and sealed: $rel -> $DATA_DIR (backup: $BACKUP_DIR/$rel)"
+    cp -an "$pkg_data/." "$DATA_DIR/" 2>/dev/null || true
+    echo "merged package data seed without mutating source: $rel -> $DATA_DIR"
   elif [ -e "$pkg_data" ]; then
     mkdir -p "$BACKUP_DIR/$(dirname "$rel")"
     mv "$pkg_data" "$BACKUP_DIR/$rel.non-directory"
+    mkdir -p "$pkg_data"
     echo "archived non-directory package data path: $rel"
+  else
+    echo "package data seed absent: $rel"
   fi
-
-  ln -s "$DATA_DIR" "$pkg_data"
-  echo "sealed: $rel -> $DATA_DIR"
 }
 
-seal_one "packages/koishi-plugin-dongxuelian-ai/data"
-seal_one "packages/koishi-plugin-group-name-at/data"
-seal_one "packages/koishi-plugin-local-video-sender/data"
+merge_seed_one "packages/koishi-plugin-dongxuelian-ai/data"
+merge_seed_one "packages/koishi-plugin-group-name-at/data"
+merge_seed_one "packages/koishi-plugin-local-video-sender/data"
 
 if [ -e "$DATA_DIR/data" ] || [ -L "$DATA_DIR/data" ]; then
   nested="$DATA_DIR/data"
