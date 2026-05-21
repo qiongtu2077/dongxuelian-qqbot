@@ -25,6 +25,8 @@ koishi.yml
 package-lock.json
 *.b64
 tmp_*.js
+tmp/
+deploy-backups/
 *.log
 local-deployer/release/
 .claude/settings.local.json
