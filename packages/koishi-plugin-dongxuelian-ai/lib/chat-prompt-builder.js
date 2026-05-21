@@ -32,7 +32,7 @@ function createChatPromptNsfwMessage(personaName, personaSkillContent) {
 function resolveChatPromptPersonaLore(personaName, personaSkillContent) {
   let personaLore = ''
   if (personaName && personaSkillContent) {
-    const lm = String(personaSkillContent || '').match(/^---\n([\s\S]*?)\n---/)
+    const lm = String(personaSkillContent || '').replace(/^\uFEFF/, '').match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
     if (lm) {
       const loreLine = lm[1].match(/^lore:\s*(\S+)/m)
       if (loreLine) personaLore = loreLine[1]

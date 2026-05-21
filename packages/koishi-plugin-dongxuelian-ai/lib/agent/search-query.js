@@ -16,6 +16,10 @@ const TRUSTED_DOMAIN_RULES = [
   { re: /(^|\.)wutheringwaves\.kurogames\.com$/i, score: 55, label: '官方' },
   { re: /(^|\.)minecraft\.net$/i, score: 90, label: '官方' },
   { re: /(^|\.)mojang\.com$/i, score: 85, label: '官方' },
+  { re: /(^|\.)iana\.org$/i, score: 90, label: '官方' },
+  { re: /(^|\.)nodejs\.org$/i, score: 90, label: '官方' },
+  { re: /(^|\.)openai\.com$/i, score: 85, label: '官方' },
+  { re: /(^|\.)platform\.openai\.com$/i, score: 85, label: '官方文档' },
   { re: /(^|\.)gamekee\.com$/i, score: 50, label: '社区资料' },
   { re: /(^|\.)fandom\.com$/i, score: 30, label: '社区资料' },
 ]
@@ -23,6 +27,9 @@ const TRUSTED_DOMAIN_RULES = [
 const LOW_QUALITY_DOMAIN_RE = /(?:699pic|588ku|ibaotu|nipic|vcg|shutterstock|freepik|pngtree|58pic|lovepik|ooopic|素材|模板|壁纸|下载|图片|图库|站酷|千图|觅知|摄图|包图|昵图|推广|广告)/i
 const WUWA_RE = /(?:鸣潮|wuthering\s*waves|wutheringwaves|库洛|kuro)/i
 const MINECRAFT_RE = /(?:我的世界|minecraft|mojang)/i
+const IANA_EXAMPLE_RE = /(?:example\s*domain|iana|示例域名|example\.com)/i
+const NODEJS_RE = /(?:node\.?js|nodejs|npm)/i
+const OPENAI_RE = /(?:openai|chatgpt|gpt|responses\s*api|assistants?\s*api)/i
 const LATEST_ROLE_RE = /(?:最新|新|当前|现在).{0,8}(?:角色|共鸣者|卡池)|(?:角色|共鸣者).{0,8}(?:最新|新|是谁)/i
 const LATEST_VERSION_RE = /(?:最新|当前|现在|更新|版本|update|release|snapshot|pre-release|正式版).{0,12}(?:版本|更新|版|version|update|release)|(?:版本|version).{0,12}(?:最新|当前|现在)/i
 const GENERAL_LATEST_RE = /(?:最新|当前|现在|今天|新闻|资讯|公告|版本|更新|角色|卡池|release|released|update|latest|news|official|source)/i
@@ -113,6 +120,48 @@ function getDirectSearchCandidates(query = '') {
         title: 'Minecraft Release Changelogs',
         url: 'https://feedback.minecraft.net/hc/en-us/sections/360001186971-Release-Changelogs',
         snippet: 'Official Minecraft release changelogs and version notes.',
+      }
+    )
+  }
+  if (IANA_EXAMPLE_RE.test(value)) {
+    candidates.push(
+      {
+        title: 'IANA Example Domains',
+        url: 'https://www.iana.org/help/example-domains',
+        snippet: 'IANA official explanation for example.com, example.net and example.org.',
+      },
+      {
+        title: 'Example Domain',
+        url: 'https://example.com/',
+        snippet: 'Reserved example domain page.',
+      }
+    )
+  }
+  if (NODEJS_RE.test(value)) {
+    candidates.push(
+      {
+        title: 'Node.js Download',
+        url: 'https://nodejs.org/en/download',
+        snippet: 'Official Node.js download page.',
+      },
+      {
+        title: 'Node.js Releases',
+        url: 'https://nodejs.org/en/blog/release',
+        snippet: 'Official Node.js release posts and changelogs.',
+      }
+    )
+  }
+  if (OPENAI_RE.test(value)) {
+    candidates.push(
+      {
+        title: 'OpenAI News',
+        url: 'https://openai.com/news/',
+        snippet: 'Official OpenAI announcements and news.',
+      },
+      {
+        title: 'OpenAI API Documentation',
+        url: 'https://platform.openai.com/docs',
+        snippet: 'Official OpenAI API documentation.',
       }
     )
   }

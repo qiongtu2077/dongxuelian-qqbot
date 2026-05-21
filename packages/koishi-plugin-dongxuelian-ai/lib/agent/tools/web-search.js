@@ -6,12 +6,18 @@ const { requestChatCompletions } = require('../../api')
 const { loadConfig } = require('../../runtime-config')
 const { getSearchCapability } = require('../../utils')
 const { buildSearchQueries, isLowQualitySearchResult, getSearchHostname } = require('../search-query')
-const { runHttpSearch } = require('../http-search')
+const { runHttpSearch, mergeHttpSearchCandidates, formatCandidateList } = require('../http-search')
+const { rankSearchCandidates } = require('../search-results')
+const { readCandidatePage } = require('../fetch-reader')
+const { normalizeFetchedText } = require('./web-fetch')
 
 const API_SEARCH_TIMEOUT_MS = 12000
 const BROWSER_SEARCH_QUERY_LIMIT = 2
 const CHROMIUM_SEARCH_ENV = 'DONGXUELIAN_AGENT_BROWSER_SEARCH'
 const BROWSER_SEARCH_MIN_AVAILABLE_MB = 700
+const API_SEARCH_FETCH_PAGE_LIMIT = 2
+const API_SEARCH_URL_LIMIT = 8
+const URL_RE = /https?:\/\/[^\s"'<>）)\]]+/ig
 function searchWithTimeout(promise, timeoutMs, label) {
   let timer = null
   return Promise.race([
@@ -38,6 +44,143 @@ function apiSearchLooksUnreliable(text = '') {
   const urls = value.match(/https?:\/\/[^\s)）]+/gi) || []
   if (urls.length > 0 && urls.every(url => isLowQualitySearchResult({ url, title: getSearchHostname(url) }))) return true
   return false
+}
+
+function cleanExtractedSearchUrl(url = '') {
+  return String(url || '')
+    .replace(/[),.;:!?，。；：！？、]+$/g, '')
+    .trim()
+}
+
+function extractUrlsFromSearchText(text = '') {
+  const matches = String(text || '').match(URL_RE) || []
+  const seen = new Set()
+  const urls = []
+  for (const raw of matches) {
+    const url = cleanExtractedSearchUrl(raw)
+    if (!url || seen.has(url)) continue
+    seen.add(url)
+    urls.push(url)
+    if (urls.length >= API_SEARCH_URL_LIMIT) break
+  }
+  return urls
+}
+
+function buildApiSearchCandidates(text = '', query = '') {
+  const urls = extractUrlsFromSearchText(text)
+  const candidates = urls.map(url => {
+    const host = getSearchHostname(url)
+    const titleMatch = new RegExp(`([^\\n。；;]{0,80})${url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i').exec(text)
+    return {
+      title: titleMatch && titleMatch[1] ? titleMatch[1].replace(/(?:来源|参考|链接|URL)[:：\s]*$/i, '').trim() || host : host || url,
+      url,
+      snippet: String(text || '').slice(0, 360),
+      sourceType: 'api_search_candidate',
+    }
+  })
+  return rankSearchCandidates(candidates, query, API_SEARCH_URL_LIMIT)
+}
+
+async function readApiSearchCandidatePages(candidates = []) {
+  const pages = []
+  const failures = []
+  for (const item of candidates.slice(0, API_SEARCH_URL_LIMIT)) {
+    if (pages.length >= API_SEARCH_FETCH_PAGE_LIMIT) break
+    const page = await readCandidatePage(item.url, {
+      maxChars: 3600,
+      minTextChars: 80,
+      extractText: (body, maxChars, fetchedPage) => normalizeFetchedText(body, fetchedPage.contentType, maxChars),
+    })
+    if (!page.ok || page.textQuality !== 'usable') {
+      failures.push(`${item.title || item.url}: ${page.reason || '读取失败'}`)
+      continue
+    }
+    pages.push({
+      title: page.title || item.title || item.url,
+      url: item.url,
+      finalUrl: page.finalUrl,
+      status: page.status,
+      contentType: page.contentType,
+      text: page.text,
+      textQuality: page.textQuality,
+      reason: page.reason,
+      truncated: page.truncated,
+    })
+  }
+  return { pages, failures }
+}
+
+function formatFetchedApiSearchResult(query, apiText, candidates, pageReads) {
+  const pages = Array.isArray(pageReads.pages) ? pageReads.pages : []
+  const failures = Array.isArray(pageReads.failures) ? pageReads.failures : []
+  const candidateText = formatCandidateList(candidates)
+  const candidateSection = candidateText
+    ? `API 搜索候选 URL（标题/摘要只用于选链接）：\n${candidateText}`
+    : 'API 搜索未提取到可读候选 URL。'
+  const failureText = failures.length
+    ? `\n候选网页打开失败/跳过记录（低确信线索，不作为正文依据）：\n${failures.slice(0, 3).map(item => `- ${item}`).join('\n')}`
+    : ''
+  if (!pages.length) {
+    return [
+      '搜索状态：weak_hit（API 搜索返回了候选，但 web_fetch 未读到可用正文）',
+      `已搜索：${query}`,
+      candidateSection,
+      failureText,
+      'API 搜索原文摘要（低确信度，只能辅助选 URL，不能作为事实依据）：',
+      String(apiText || '').slice(0, 1200),
+      '下一步：继续换 query，或对可信候选 URL 调用 web_fetch。',
+    ].filter(Boolean).join('\n')
+  }
+  const pageText = pages.map((item, index) => [
+    `【来源 ${index + 1}】标题：${item.title}`,
+    `URL：${item.url}`,
+    item.finalUrl && item.finalUrl !== item.url ? `最终 URL：${item.finalUrl}` : '',
+    item.status ? `状态：HTTP ${item.status}` : '',
+    item.contentType ? `类型：${item.contentType}` : '',
+    `正文质量：${item.textQuality || 'usable'}（${item.reason || '已读取可用正文'}）`,
+    item.truncated ? '提示：响应体已截断，正文可能不完整。' : '',
+    `正文：${item.text}`,
+    '---',
+  ].filter(Boolean).join('\n')).join('\n')
+  return [
+    '搜索状态：usable_hit（API 找到候选 URL，已用 web_fetch 读取正文）',
+    `已搜索：${query}`,
+    candidateSection,
+    '打开候选网页继续读取（已打开候选网页正文；只有本段正文可作为主要依据，API 摘要仍只是候选线索）：',
+    pageText,
+    failureText,
+  ].filter(Boolean).join('\n')
+}
+
+async function verifyApiSearchWithFetch(apiText = '', queries = []) {
+  const query = queries[0] || ''
+  const candidates = rankSearchCandidates(
+    mergeHttpSearchCandidates(...queries.map(item => buildApiSearchCandidates(apiText, item))),
+    query,
+    API_SEARCH_URL_LIMIT,
+  )
+  if (!candidates.length) {
+    return {
+      ok: false,
+      status: 'weak_hit',
+      text: [
+        '搜索状态：weak_hit（API 搜索有文本但没有可读取候选 URL）',
+        `已搜索：${query}`,
+        'API 搜索原文摘要（低确信度，不能作为事实依据）：',
+        String(apiText || '').slice(0, 1200),
+        '下一步：继续换 query，或让用户给出可读取的公开 URL。',
+      ].join('\n'),
+    }
+  }
+  const pageReads = await readApiSearchCandidatePages(candidates)
+  return {
+    ok: pageReads.pages.length > 0,
+    status: pageReads.pages.length > 0 ? 'usable_hit' : 'weak_hit',
+    text: formatFetchedApiSearchResult(query, apiText, candidates, pageReads),
+    candidates,
+    pages: pageReads.pages,
+    failures: pageReads.failures,
+  }
 }
 
 function normalizeQueryList(params = {}) {
@@ -150,7 +293,11 @@ module.exports = {
       )
       const result = typeof resultObj === 'string' ? resultObj : resultObj.content
       if (typeof result === 'string' && /超时/.test(result)) return fallbackSearch(queries, `${result}。`)
-      if (result && typeof result === 'string' && !apiSearchLooksUnreliable(result)) return result
+      if (result && typeof result === 'string' && !apiSearchLooksUnreliable(result)) {
+        const verified = await verifyApiSearchWithFetch(result, queries)
+        if (verified.ok) return `API 搜索返回了候选来源，已用 web_fetch 验证正文。\n${verified.text}`
+        return fallbackSearch(queries, `API 搜索只返回候选/摘要，web_fetch 未读到可靠正文。\n${verified.text}`)
+      }
       return fallbackSearch(queries, 'API 搜索没有返回可靠来源。')
     } catch (e) {
       return fallbackSearch(queries, `API 搜索请求失败：${e.message || '未知错误'}。`)
@@ -162,4 +309,7 @@ module.exports = {
   defaultChannels: ['dashboard', 'qq'],
   getAvailableMemoryMb,
   getBrowserSearchBlockReason,
+  extractUrlsFromSearchText,
+  buildApiSearchCandidates,
+  verifyApiSearchWithFetch,
 }

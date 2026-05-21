@@ -542,6 +542,7 @@ async function main() {
     chatPromptBuilder: path.join(LIB, 'chat-prompt-builder'),
     chatMemory: path.join(LIB, 'chat-memory'),
     agentChatBridge: path.join(LIB, 'agent-chat-bridge'),
+    agentRetellGuard: path.join(LIB, 'agent-retell-guard'),
     jailbreakRuleset: path.join(LIB, 'rulesets', 'jailbreak'),
     runtimeConfig: path.join(LIB, 'runtime-config'),
     reply: path.join(LIB, 'reply'),
@@ -762,6 +763,10 @@ async function main() {
       'buildAgentContextKey', 'summarizeAgentToolResults', 'extractSearchSummary',
       'recordAgentChatResult', 'getRecentAgentContextNote', 'clearAgentChatBridge',
     ],
+    agentRetellGuard: [
+      'collectAgentMaterial', 'hasSearchFailureMaterial', 'replyAcknowledgesSearchFailure',
+      'buildSearchFailureRetellFallback', 'guardAgentRetellReply',
+    ],
     jailbreakRuleset: [
       'combinePatterns',
     ],
@@ -841,7 +846,7 @@ async function main() {
     ],
     agentHttpSearch: [
       'decodeHttpSearchEntities', 'stripHttpSearchTags', 'resolveHttpSearchUrl', 'extractHttpSearchCandidates',
-      'extractHttpPageText', 'readHttpResultPage', 'fetchHttpResultPage', 'readTopResultPages', 'mergeHttpSearchCandidates', 'formatSearchWithPages', 'runHttpSearch', 'runSearchPass', 'buildRetryQueries',
+      'extractHttpPageText', 'readHttpResultPage', 'fetchHttpResultPage', 'readTopResultPages', 'mergeHttpSearchCandidates', 'formatCandidateList', 'formatSearchWithPages', 'runHttpSearch', 'runSearchPass', 'buildRetryQueries',
     ],
     agentQueue: [
       'enqueueAgentTask', 'getAgentQueueStats', 'clearAgentQueue', 'configureAgentQueue', 'resetAgentQueueForTests',
@@ -907,6 +912,7 @@ async function main() {
       'checkShellCommand', 'isCommandSafe', 'listShellGuardRules', 'summarizeShellCommand',
     ],
     agentToolReadAgentSkill: ['execute'],
+    agentToolWebFetch: ['execute', 'normalizeFetchedText', 'checkWebFetchRateLimit', 'resetWebFetchRateLimitForTests'],
     agentToolMemoryTools: [],
     agentToolAppendFile: ['execute'],
     agentToolGrepSearch: ['execute'],
@@ -1441,7 +1447,7 @@ async function main() {
   check('agent qq exposes time tool', qqTools.includes('get_current_time'))
   check('agent qq exposes calculator tool', qqTools.includes('calculate'))
   check('agent qq web_search follows config', qqTools.includes('web_search') === modules.agentConfig.isToolEnabled('qq', 'web_search'))
-  check('agent qq web_fetch follows conservative default config', qqTools.includes('web_fetch') === modules.agentConfig.isToolEnabled('qq', 'web_fetch'))
+  check('agent qq exposes web_fetch for explicit URL reads', qqTools.includes('web_fetch') && qqTools.includes('web_fetch') === modules.agentConfig.isToolEnabled('qq', 'web_fetch'))
   check('agent dashboard web_fetch follows config', dashboardTools.includes('web_fetch') === modules.agentConfig.isToolEnabled('dashboard', 'web_fetch'))
   check('agent qq exposes read_agent_skill', qqTools.includes('read_agent_skill'))
   check('agent qq does not expose file read', !qqTools.includes('read_file'))
@@ -1487,6 +1493,11 @@ async function main() {
     { title: '《鸣潮》官方公告 新共鸣者', url: 'https://wutheringwaves.kurogames.com/news/mock?utm_source=x', snippet: '官方公告 新角色 共鸣者' },
   ], '鸣潮 最新角色')
   check('agent search results filters low quality material sites', rankedSearch.length === 1 && rankedSearch[0].url.includes('wutheringwaves.kurogames.com'), JSON.stringify(rankedSearch))
+  const rankedSogouNoise = modules.agentSearchResults.rankSearchCandidates([
+    { title: '翻译', url: 'https://fanyi.sogou.com/?keyword=Example+Domain+IANA', snippet: '搜狗内部入口' },
+    { title: 'IANA Example Domains', url: 'https://www.iana.org/help/example-domains', snippet: 'Official example domains documentation.' },
+  ], 'Example Domain IANA')
+  check('agent search results filters Sogou internal vertical noise', rankedSogouNoise.length === 1 && rankedSogouNoise[0].url.includes('iana.org/help/example-domains'), JSON.stringify(rankedSogouNoise))
   const semanticSearch = modules.agentSearchResults.rankSearchCandidates([
     { title: '鸣潮 3.3 版本前瞻直播回顾', url: 'https://www.bilibili.com/video/mock', snippet: '库洛官方直播公开新共鸣者情报' },
   ], '鸣潮 最新角色')
@@ -1511,8 +1522,10 @@ async function main() {
   check('agent http search extracts candidate page body without script/nav noise', httpPageText.includes('库洛官方公告正文') && !httpPageText.includes('window.__noise') && !httpPageText.includes('首页 导航'), httpPageText)
   const searchWithPages = modules.agentHttpSearch.formatSearchWithPages('鸣潮 最新角色', rankedSearch, { pages: [{ title: '《鸣潮》官方公告 新共鸣者', url: 'https://wutheringwaves.kurogames.com/news/mock', finalUrl: 'https://wutheringwaves.kurogames.com/news/mock', status: 200, contentType: 'text/html', textQuality: 'usable', reason: '已读取可用正文', text: '候选网页正文提到新共鸣者和版本前瞻。' }], failures: ['短正文候选: 正文过短'] })
   check('agent http search appends bounded opened page evidence', searchWithPages.includes('已打开候选网页正文') && searchWithPages.includes('正文质量：usable') && searchWithPages.includes('候选网页正文提到新共鸣者'), searchWithPages)
+  check('agent http search marks opened page results as usable_hit', searchWithPages.includes('搜索状态：usable_hit'), searchWithPages)
   const searchWithFailuresOnly = modules.agentHttpSearch.formatSearchWithPages('鸣潮 最新角色', rankedSearch, { pages: [], failures: ['短正文候选: 正文过短'] })
   check('agent http search keeps candidate failure reasons without opened pages', searchWithFailuresOnly.includes('候选网页打开失败/跳过记录') && searchWithFailuresOnly.includes('短正文候选'), searchWithFailuresOnly)
+  check('agent http search marks summary-only results as non-factual candidates', searchWithFailuresOnly.includes('候选 URL') && searchWithFailuresOnly.includes('不能作为事实依据') && !searchWithFailuresOnly.includes('可作为主要依据'), searchWithFailuresOnly)
   const mergedHttpCandidates = modules.agentHttpSearch.mergeHttpSearchCandidates(
     [{ title: 'A', url: 'https://example.com/a' }],
     [{ title: 'A2', url: 'https://example.com/a' }, { title: 'B', url: 'https://example.com/b' }]
@@ -1545,6 +1558,17 @@ async function main() {
   check('buildStrategyQueries adds news terms for homepage pattern', stratHome.some(q => /公告|新闻/.test(q)), JSON.stringify(stratHome))
   const bridgeSummary = modules.agentChatBridge.extractSearchSummary(searchWithPages)
   check('agent chat bridge extracts compact web search summary', bridgeSummary.includes('已搜索：鸣潮 最新角色') && bridgeSummary.includes('wutheringwaves.kurogames.com'), bridgeSummary)
+  const weakSearchAgentResult = {
+    reply: '我查到了，应该就是这个。',
+    toolResults: [{ name: 'web_search', result: searchWithFailuresOnly }],
+  }
+  check('agent retell guard treats weak search candidates as failure material', modules.agentRetellGuard.hasSearchFailureMaterial(weakSearchAgentResult), searchWithFailuresOnly)
+  checkEqual('agent retell guard blocks fabricated success after weak search', modules.agentRetellGuard.guardAgentRetellReply('查到了，是新共鸣者。', weakSearchAgentResult), '这次没有拿到可靠结果，我就不硬编了。')
+  const usableSearchAgentResult = {
+    reply: '正文读到了。',
+    toolResults: [{ name: 'web_search', result: searchWithPages }],
+  }
+  check('agent retell guard accepts opened usable search body as success material', !modules.agentRetellGuard.hasSearchFailureMaterial(usableSearchAgentResult), searchWithPages)
   const bridgeNoteMissing = modules.agentChatBridge.getRecentAgentContextNote({ channelKey: 'cascade-channel', userId: 'cascade-user', userMessage: '你刚刚搜到什么' })
   checkEqual('agent chat bridge is empty before record', bridgeNoteMissing, '')
   modules.agentChatBridge.clearAgentChatBridge()
@@ -1574,6 +1598,8 @@ async function main() {
   check('agent search query expands wuwa latest role query', modules.agentSearchQuery.buildSearchQueries('鸣潮最新角色是谁').some(item => item.includes('鸣潮') && (item.includes('新角色') || item.includes('角色') || item.includes('新共鸣者'))))
   check('agent search query expands generic latest source query', modules.agentSearchQuery.buildSearchQueries('某个游戏最新版本').some(item => item.includes('来源') || item.includes('official')))
   check('agent search query returns direct official candidates', modules.agentSearchQuery.getDirectSearchCandidates('Minecraft 我的世界 更新').some(item => item.url.includes('minecraft.net')))
+  check('agent search query returns direct IANA candidates', modules.agentSearchQuery.getDirectSearchCandidates('Example Domain IANA').some(item => item.url.includes('iana.org/help/example-domains')))
+  check('agent search query returns direct Node.js candidates', modules.agentSearchQuery.getDirectSearchCandidates('nodejs download').some(item => item.url.includes('nodejs.org/en/download')))
   check('agent search query ranks official result above material site', modules.agentSearchQuery.scoreSearchResult({ title: '鸣潮 官方公告 新共鸣者', url: 'https://wutheringwaves.kurogames.com/news/1', snippet: '新角色' }, '鸣潮最新角色') > modules.agentSearchQuery.scoreSearchResult({ title: '鸣潮角色图片素材', url: 'https://699pic.com/a', snippet: '素材下载' }, '鸣潮最新角色'))
   check('agent skill hub formats empty list', modules.agentSkillHub.formatSkillHubItems([]).includes('未找到'))
   modules.agentSessions.clearAgentSessions()
@@ -1638,13 +1664,14 @@ async function main() {
   check('agent explicit url fetch requires read intent', !modules.agentRouter.isExplicitUrlFetchRequest('随手贴个链接 https://example.com/news/1'))
   check('agent explicit url fetch detector matches user wording', modules.agentRouter.isExplicitUrlFetchRequest('帮我看看这个链接 https://example.com/news/1 写了什么'))
   checkEqual('agent explicit url fetch extracts single url', modules.agentRouter.extractSingleUrl('帮我读一下 https://example.com/news/1。'), 'https://example.com/news/1')
-  check('agent explicit url fetch route stays disabled when qq web_fetch disabled', modules.agentRouter.heuristicRoute('帮我看看这个链接 https://example.com/news/1', 'qq').reason === 'web-fetch-disabled')
+  check('agent explicit url fetch routes by default when read intent is present', modules.agentRouter.heuristicRoute('帮我看看这个链接 https://example.com/news/1', 'qq').reason === 'explicit-url-fetch')
+  await modules.agentConfig.setToolEnabled('qq', 'web_fetch', false)
+  check('agent explicit url fetch route reports disabled when qq web_fetch is turned off', modules.agentRouter.heuristicRoute('帮我看看这个链接 https://example.com/news/1', 'qq').reason === 'web-fetch-disabled')
   await modules.agentConfig.setToolEnabled('qq', 'web_fetch', true)
   const explicitFetchRoute = modules.agentRouter.heuristicRoute('帮我看看这个链接 https://example.com/news/1', 'qq')
   check('agent explicit url fetch routes when qq web_fetch enabled', explicitFetchRoute.useAgent && explicitFetchRoute.reason === 'explicit-url-fetch')
   const explicitFetchOptions = modules.agentRouter.buildExplicitSearchRunOptions('帮我总结这个网页 https://example.com/news/1')
   check('agent explicit url fetch pre-executes web_fetch', explicitFetchOptions.forceTools?.includes('web_fetch') && explicitFetchOptions.preExecuteTools?.[0]?.name === 'web_fetch' && explicitFetchOptions.preExecuteTools[0].args.url === 'https://example.com/news/1')
-  await modules.agentConfig.setToolEnabled('qq', 'web_fetch', false)
   await modules.agentConfig.patchAgentConfig({ autoRoute: { qq: { enabled: true }, dashboard: { enabled: false } } })
   check('agent auto route detects time question as chat-with-tools', !modules.agentRouter.heuristicRoute('现在几点了', 'qq').useAgent)
   check('agent auto route ignores casual greeting', !modules.agentRouter.heuristicRoute('你好', 'qq').useAgent)
@@ -1700,9 +1727,12 @@ async function main() {
     const isolatedEditFile = require(path.join(LIB, 'agent', 'tools', 'edit-file'))
     const isolatedSafety = require(path.join(LIB, 'agent', 'safety'))
     check('agent config default dangerous policy confirm', isolatedConfig.getDangerousPolicy() === 'confirm')
+    check('agent config default version migrates to v2', isolatedConfig.getAgentConfig().version === 2)
     check('agent config default qq web_search enabled', isolatedConfig.isToolEnabled('qq', 'web_search'))
-    check('agent config default qq web_fetch disabled', !isolatedConfig.isToolEnabled('qq', 'web_fetch'))
-    check('agent config default dashboard web_fetch disabled', !isolatedConfig.isToolEnabled('dashboard', 'web_fetch'))
+    check('agent config default qq web_fetch enabled for explicit URL reads', isolatedConfig.isToolEnabled('qq', 'web_fetch'))
+    check('agent config default dashboard web_fetch enabled', isolatedConfig.isToolEnabled('dashboard', 'web_fetch'))
+    await isolatedConfig.saveAgentConfig({ version: 1, channels: { qq: { enabled: true, tools: { web_fetch: false } }, dashboard: { enabled: true, tools: { web_fetch: false } } } })
+    check('agent config migrates old saved web_fetch switches on', isolatedConfig.isToolEnabled('qq', 'web_fetch') && isolatedConfig.isToolEnabled('dashboard', 'web_fetch') && isolatedConfig.getAgentConfig().version === 2)
     check('agent config default qq read_agent_skill enabled', isolatedConfig.isToolEnabled('qq', 'read_agent_skill'))
     check('agent config default qq read_file disabled', !isolatedConfig.isToolEnabled('qq', 'read_file'))
     check('agent config default qq list_files disabled', !isolatedConfig.isToolEnabled('qq', 'list_files'))
@@ -1813,6 +1843,14 @@ async function main() {
         const htmlFetch = await isolatedWebFetch.execute({ url: 'https://example.com/news', maxChars: 1000 })
         check('agent web_fetch reads html title and body', htmlFetch.ok && htmlFetch.text.includes('标题：示例公告') && htmlFetch.text.includes('这是公开网页正文'), htmlFetch.text)
         check('agent web_fetch uses manual redirect mode', fetchCalls.every(call => call.redirect === 'manual'), JSON.stringify(fetchCalls))
+        isolatedWebFetch.resetWebFetchRateLimitForTests()
+        const rateLimitContext = { channel: 'qq', channelKey: 'g1', userId: 'u1' }
+        const rateLimitedFetches = []
+        for (let i = 0; i < 5; i++) {
+          rateLimitedFetches.push(await isolatedWebFetch.execute({ url: 'https://example.com/plain' }, rateLimitContext))
+        }
+        check('agent web_fetch rate-limits repeated real user fetches', rateLimitedFetches.slice(0, 4).every(item => item.ok) && !rateLimitedFetches[4].ok && /请求太频繁/.test(rateLimitedFetches[4].text), JSON.stringify(rateLimitedFetches))
+        isolatedWebFetch.resetWebFetchRateLimitForTests()
         const redirectOk = await isolatedWebFetch.execute({ url: 'https://example.com/redirect-ok', maxChars: 1000 })
         check('agent web_fetch follows public redirect', redirectOk.ok && redirectOk.text.includes('最终 URL：https://example.org/final'), redirectOk.text)
         const redirectPrivate = await isolatedWebFetch.execute({ url: 'https://example.com/redirect-private' })
@@ -1885,6 +1923,8 @@ async function main() {
         check('agent web_search falls back to lightweight HTTP when API search unavailable', typeof webFallback === 'string' && webFallback.includes('轻量 HTTP 搜索') && webFallback.includes('未启动 Chromium') && webFallback.includes('已搜索'))
         check('agent web_search uses planned HTTP query candidates', httpSearchUrls.some(url => decodeURIComponent(url).includes('鸣潮')) )
         check('agent web_search skips browser fallback by default', browserSearchCalls.length === 0)
+        const apiUrlCandidates = isolatedWebSearch.buildApiSearchCandidates('来源：https://wutheringwaves.kurogames.com/news/mock 官方公告公开新共鸣者。', '鸣潮 最新角色')
+        check('agent web_search extracts API search URLs as fetch candidates', apiUrlCandidates.length === 1 && apiUrlCandidates[0].url.includes('wutheringwaves.kurogames.com/news/mock'), JSON.stringify(apiUrlCandidates))
         const retryReadUrls = []
         const retryReadModes = []
         let searchPageCount = 0
@@ -2006,7 +2046,31 @@ async function main() {
           }
         }
         const reliableApiResult = await isolatedWebSearch.execute({ query: '鸣潮最新角色是谁' })
-        check('agent web_search accepts API result with reliable source signal', reliableApiResult.includes('wutheringwaves.kurogames.com') && browserSearchCalls.length === 0)
+        check('agent web_search verifies reliable API URL through fetch instead of returning raw summary', reliableApiResult.includes('API 搜索只返回候选/摘要') && reliableApiResult.includes('web_fetch 未读到可靠正文') && reliableApiResult.includes('不能作为事实依据') && browserSearchCalls.length === 0, reliableApiResult)
+
+        global.fetch = async (url, options = {}) => {
+          if (String(options.method || 'GET').toUpperCase() === 'POST') {
+            return {
+              ok: true,
+              async json() {
+                return { choices: [{ message: { content: '来源：https://wutheringwaves.kurogames.com/news/mock 官方公告显示，鸣潮将公开新共鸣者信息。' } }] }
+              },
+            }
+          }
+          if (String(url).includes('bing.com/search') || String(url).includes('sogou.com') || String(url).includes('duckduckgo')) {
+            return { ok: true, status: 200, headers: { get: () => 'text/html' }, async text() { return '' } }
+          }
+          return {
+            ok: true,
+            status: 200,
+            url: String(url),
+            headers: { get: () => 'text/html; charset=utf-8' },
+            body: null,
+            async text() { return '<main>官方公告正文：鸣潮新共鸣者信息已公开，版本活动、卡池安排和上线时间都在正文里，内容长度足够让 web_fetch 作为主要依据。'.repeat(8) + '</main>' },
+          }
+        }
+        const verifiedApiResult = await isolatedWebSearch.execute({ query: '鸣潮最新角色是谁' })
+        check('agent web_search uses fetch-read body as primary evidence for API search URLs', verifiedApiResult.includes('API 搜索返回了候选来源，已用 web_fetch 验证正文') && verifiedApiResult.includes('搜索状态：usable_hit') && verifiedApiResult.includes('官方公告正文') && verifiedApiResult.includes('只有本段正文可作为主要依据'), verifiedApiResult)
 
         fs.writeFileSync(isolatedConstants.SEARCH_ENABLED_FILE, 'false')
         isolatedRuntimeConfig.resetConfigCache()
@@ -2334,6 +2398,8 @@ async function main() {
   check('dashboard lore frontmatter clears editable fields and preserves unknown fields', parsedDashboardLore.meta.name === 'new-lore' && parsedDashboardLore.meta.description === '新描述' && !('keywords' in parsedDashboardLore.meta) && !('summary' in parsedDashboardLore.meta) && parsedDashboardLore.meta.scope === undefined && parsedDashboardLore.meta.max_chars === '12000' && parsedDashboardLore.meta.priority === '-100' && parsedDashboardLore.meta.retained_field === '保留字段' && !('content' in parsedDashboardLore.meta), JSON.stringify(parsedDashboardLore.meta))
   const parsedDashboardLoreCrlf = dashboardConfigRoute._test.parseFrontmatter('---\r\nname: crlf-lore\r\ndescription: CRLF\r\nkeywords: 星炬学院\r\n---\r\n正文')
   check('dashboard lore parser accepts CRLF frontmatter', parsedDashboardLoreCrlf.meta.name === 'crlf-lore' && parsedDashboardLoreCrlf.meta.keywords === '星炬学院' && parsedDashboardLoreCrlf.body === '正文', JSON.stringify(parsedDashboardLoreCrlf))
+  const parsedDashboardModeCrlf = dashboardConfigRoute._test.parseModeFrontmatter('---\r\nname: crlf-mode\r\ndescription: Windows newline mode\r\n---\r\n正文')
+  check('dashboard mode parser accepts CRLF frontmatter', parsedDashboardModeCrlf.meta.name === 'crlf-mode' && parsedDashboardModeCrlf.meta.description === 'Windows newline mode', JSON.stringify(parsedDashboardModeCrlf))
   const dashboardLorePayload = dashboardConfigRoute._test.normalizeLorePayload({
     name: 'bad path/星炬 学院',
     keywords: '触发词',
@@ -2348,6 +2414,7 @@ async function main() {
   check('chat prompt builder creates base system messages', baseMessages.length === 2 && baseMessages[0].role === 'system' && baseMessages[0].content === 'system-core' && baseMessages[1].content === 'time-note', JSON.stringify(baseMessages))
   check('chat prompt builder reads nsfw reply policy only when enabled', !!promptBuilder.createChatPromptNsfwMessage('Demo', '---\nnsfw: reply\n---\nbody') && promptBuilder.createChatPromptNsfwMessage('Demo', '---\nnsfw: block\n---\nbody') === null)
   checkEqual('chat prompt builder resolves explicit lore', promptBuilder.resolveChatPromptPersonaLore('Demo', '---\nlore: custom-lore\n---\nbody'), 'custom-lore')
+  checkEqual('chat prompt builder resolves explicit lore with CRLF frontmatter', promptBuilder.resolveChatPromptPersonaLore('Demo', '---\r\nlore: crlf-lore\r\n---\r\nbody'), 'crlf-lore')
   checkEqual('chat prompt builder keeps terra legacy lore fallback', promptBuilder.resolveChatPromptPersonaLore('特蕾西娅', '---\nname: 特蕾西娅\n---\nbody'), 'terra-lore')
   checkEqual('chat prompt builder keeps default lore fallback', promptBuilder.resolveChatPromptPersonaLore('', ''), 'wuwa-lore')
   const loreMessage = promptBuilder.createChatPromptLoreMessage({

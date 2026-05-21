@@ -22,6 +22,48 @@ const {
 } = require('../fetch-reader')
 
 const MIN_RELIABLE_TEXT_CHARS = DEFAULT_MIN_RELIABLE_TEXT_CHARS
+const RATE_LIMIT_WINDOW_MS = 60 * 1000
+const RATE_LIMIT_MAX_CALLS = 4
+const RATE_LIMIT_MAX_ENTRIES = 500
+const rateLimitBuckets = new Map()
+
+function normalizeRateLimitKey(context = {}) {
+  const channel = String(context.channel || 'unknown').replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 40) || 'unknown'
+  const channelKey = String(context.channelKey || 'unknown').replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 80) || 'unknown'
+  const userId = String(context.userId || 'unknown').replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 80) || 'unknown'
+  return `${channel}:${channelKey}:${userId}`
+}
+
+function cleanupRateLimitBuckets(now = Date.now()) {
+  for (const [key, entries] of rateLimitBuckets.entries()) {
+    const kept = entries.filter(ts => now - ts < RATE_LIMIT_WINDOW_MS)
+    if (kept.length) rateLimitBuckets.set(key, kept)
+    else rateLimitBuckets.delete(key)
+  }
+  if (rateLimitBuckets.size <= RATE_LIMIT_MAX_ENTRIES) return
+  const keys = Array.from(rateLimitBuckets.keys()).slice(0, rateLimitBuckets.size - RATE_LIMIT_MAX_ENTRIES)
+  for (const key of keys) rateLimitBuckets.delete(key)
+}
+
+function checkWebFetchRateLimit(context = {}, now = Date.now()) {
+  if (!context || (!context.channel && !context.channelKey && !context.userId)) {
+    return { allowed: true, key: 'internal', remaining: RATE_LIMIT_MAX_CALLS }
+  }
+  cleanupRateLimitBuckets(now)
+  const key = normalizeRateLimitKey(context)
+  const entries = (rateLimitBuckets.get(key) || []).filter(ts => now - ts < RATE_LIMIT_WINDOW_MS)
+  if (entries.length >= RATE_LIMIT_MAX_CALLS) {
+    const retryAfterMs = Math.max(1000, RATE_LIMIT_WINDOW_MS - (now - entries[0]))
+    return { allowed: false, key, retryAfterMs, retryAfterSeconds: Math.ceil(retryAfterMs / 1000) }
+  }
+  entries.push(now)
+  rateLimitBuckets.set(key, entries)
+  return { allowed: true, key, remaining: RATE_LIMIT_MAX_CALLS - entries.length }
+}
+
+function resetWebFetchRateLimitForTests() {
+  rateLimitBuckets.clear()
+}
 
 function normalizeFetchedText(text = '', contentType = '', maxChars = DEFAULT_MAX_CHARS) {
   const value = String(text || '')
@@ -64,9 +106,20 @@ function formatFetchResult(page, limits) {
   ].filter(Boolean).join('\n')
 }
 
-async function execute(params = {}) {
+async function execute(params = {}, context = {}) {
   const url = String(params.url || '').trim()
   if (!url) return { ok: false, text: 'web_fetch 失败：url 不能为空', error: 'url 不能为空' }
+  try {
+    validatePublicHttpUrl(url)
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error)
+    return { ok: false, text: `web_fetch 失败：${message}`, error: message }
+  }
+  const rateLimit = checkWebFetchRateLimit(context)
+  if (!rateLimit.allowed) {
+    const message = `web_fetch 失败：请求太频繁，请 ${rateLimit.retryAfterSeconds} 秒后再试。`
+    return { ok: false, text: message, error: message }
+  }
   const limits = getFetchLimits(params)
   const page = await readCandidatePage(url, {
     limits,
@@ -103,6 +156,8 @@ module.exports = {
   readResponseBytesLimited,
   extractTitle,
   normalizeFetchedText,
+  checkWebFetchRateLimit,
+  resetWebFetchRateLimitForTests,
   fetchWithManualRedirect,
   readCandidatePage,
 }

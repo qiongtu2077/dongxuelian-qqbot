@@ -8,7 +8,7 @@ const { sortSearchResults, isLowQualitySearchResult, getSearchHostname } = requi
 
 const SEARCH_NAV_TITLE_RE = /^(全部|搜索|图片|视频|地图|资讯|新闻|网页|更多|工具|时间不限|Any time|Tools|WEB|IMAGES|VIDEOS|MAPS|贴吧|知道|文库)$/i
 const SEARCH_NOISE_RE = /(?:某些结果已被删除|Skip to content|Accessibility Feedback|辅助功能反馈|跳至内容|百度热搜|相关搜索|大家还在搜|广告|推广|免责声明)/
-const SEARCH_INTERNAL_URL_RE = /(?:javascript:|\/search\?|\/images\/search|\/videos\/search|go\.microsoft\.com\/fwlink|baidu\.com\/s\?|bing\.com\/search\?|duckduckgo\.com\/html\/?)/i
+const SEARCH_INTERNAL_URL_RE = /(?:javascript:|\/search\?|\/images\/search|\/videos\/search|go\.microsoft\.com\/fwlink|baidu\.com\/s\?|bing\.com\/search\?|duckduckgo\.com\/html\/?|sogou\.com\/(?:web|sogou|s)\?|fanyi\.sogou\.com|wenwen\.sogou\.com|as\.sogou\.com)/i
 const DICTIONARY_RESULT_RE = /(?:字典|百科|汉典|汉语|词典|说文|康熙|释义|笔画|部首|拼音|字义|字源|字汇)/i
 const HOMEPAGE_RESULT_RE = /(?:首页|官网首页|主页|home\s*page|index|portal|welcome)/i
 const MIN_SEARCH_RESULT_SCORE = 5
@@ -134,7 +134,7 @@ function formatSearchResults(query = '', results = []) {
     const snippet = item.snippet || item.text || '(无摘要)'
     return `${index + 1}. ${item.title}\n   ${item.url}\n   可信度分：${item.score}\n   ${snippet}`
   })
-  return `已搜索：${query}\n搜索结果：\n${lines.join('\n')}`
+  return `已搜索：${query}\n搜索结果（候选链接；标题/摘要只用于选择 URL，不作为事实依据）：\n${lines.join('\n')}`
 }
 
 function buildSearchFailureText(query = '', failures = []) {

@@ -22,6 +22,7 @@ const HTTP_SEARCH_DEFAULT_PAGE_MAX_BYTES = 512 * 1024
 const HTTP_SEARCH_DEFAULT_PAGE_TEXT_CHARS = 3200
 const HTTP_SEARCH_MIN_PAGE_TEXT_CHARS = 20
 const HTTP_SEARCH_MAX_CANDIDATES = 100
+const HTTP_SEARCH_CANDIDATE_OUTPUT_LIMIT = 6
 const HTTP_SEARCH_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 
 function parseHttpSearchPositiveInt(value, fallback, min, max) {
@@ -322,6 +323,22 @@ function mergeHttpSearchCandidates(...groups) {
   return merged
 }
 
+function formatCandidateList(candidates = []) {
+  const items = (Array.isArray(candidates) ? candidates : []).slice(0, HTTP_SEARCH_CANDIDATE_OUTPUT_LIMIT)
+  if (!items.length) return ''
+  return items.map((item, index) => {
+    const title = item.title || item.url || `candidate-${index + 1}`
+    const score = Number.isFinite(item.score) ? `可信度分：${item.score}` : ''
+    const snippet = item.snippet || item.text || ''
+    return [
+      `${index + 1}. ${title}`,
+      `   ${item.url || ''}`,
+      score ? `   ${score}` : '',
+      snippet ? `   候选摘要：${String(snippet).slice(0, 220)}` : '',
+    ].filter(Boolean).join('\n')
+  }).join('\n')
+}
+
 function formatSearchWithPages(query = '', ranked = [], pageReads = {}) {
   const base = formatSearchResults(query, ranked)
   const pages = Array.isArray(pageReads.pages) ? pageReads.pages : []
@@ -329,7 +346,14 @@ function formatSearchWithPages(query = '', ranked = [], pageReads = {}) {
     ? `\n候选网页打开失败/跳过记录（低确信线索，不作为正文依据）：\n${pageReads.failures.slice(0, 3).map(item => `- ${item}`).join('\n')}`
     : ''
   if (!base) return ''
-  if (!pages.length) return failureText ? `${base}${failureText}` : base
+  if (!pages.length) {
+    const candidateText = formatCandidateList(ranked)
+    const candidateSection = candidateText
+      ? `\n\n候选 URL（可交给 web_fetch 继续读取；未读取正文前不要当事实）：\n${candidateText}`
+      : ''
+    const weakNotice = '\n\n读取状态：未打开到可用正文。以上只有候选链接和搜索页摘要，不能作为事实依据。请继续换 query 或对可信候选 URL 使用 web_fetch。'
+    return `${base}${candidateSection}${failureText}${weakNotice}`
+  }
   const pageText = pages.slice(0, 2).map((item, index) => [
     `【来源 ${index + 1}】标题：${item.title}`,
     `URL：${item.url}`,
@@ -341,7 +365,7 @@ function formatSearchWithPages(query = '', ranked = [], pageReads = {}) {
     `正文：${item.text}`,
     '---',
   ].filter(Boolean).join('\n')).join('\n')
-  return `${base}\n\n打开候选网页继续读取（已打开候选网页正文，可作为主要依据；轻量 HTTP，未启动 Chromium）：\n${pageText}${failureText}`
+  return `搜索状态：usable_hit（已读到可用候选正文）\n${base}\n\n打开候选网页继续读取（已打开候选网页正文；只有本段正文可作为主要依据，搜索页摘要仍只是候选线索；轻量 HTTP，未启动 Chromium）：\n${pageText}${failureText}`
 }
 
 async function runHttpSearch(queries = [], options = {}) {
@@ -363,7 +387,7 @@ async function runHttpSearch(queries = [], options = {}) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const passResult = await runSearchPass(currentQueries, limits, startedAt, failures)
     if (passResult.usable) {
-      return { ok: true, text: passResult.text, query: passResult.query, engine: passResult.engine, failures, pages: passResult.pages, status: 'usable_hit' }
+      return { ok: true, text: passResult.text, query: passResult.query, engine: passResult.engine, failures, pages: passResult.pages, candidates: passResult.ranked || [], status: 'usable_hit' }
     }
     if (passResult.weak && (!bestWeakResult || passResult.score > bestWeakResult.score)) {
       bestWeakResult = passResult
@@ -390,11 +414,12 @@ async function runHttpSearch(queries = [], options = {}) {
   }
   return {
     ok: true,
-    text: `${bestWeakResult.text}\n\n（注：以下为搜索页摘要，未打开候选网页正文，置信度低于已打开正文的结果。）`,
+    text: `搜索状态：weak_hit（弱命中，未读到可用正文）\n${bestWeakResult.text}\n\n（注：以上为候选 URL 与搜索页摘要，未打开候选网页正文，不能作为事实依据。应继续换词搜索，或对可信候选 URL 调用 web_fetch。）`,
     query: bestWeakResult.query,
     engine: bestWeakResult.engine,
     failures,
     pages: [],
+    candidates: bestWeakResult.ranked || [],
     status: 'weak_hit',
   }
 }
@@ -451,7 +476,7 @@ async function runSearchPass(queryList, limits, startedAt, failures) {
         if (text) {
           const score = ranked[0] && Number.isFinite(ranked[0].score) ? ranked[0].score : 0
           if (!bestSearchOnlyResult || score > bestSearchOnlyResult.score) {
-            bestSearchOnlyResult = { text, query, engine: endpoint.name, pages: pageReads.pages, score }
+            bestSearchOnlyResult = { text, query, engine: endpoint.name, pages: pageReads.pages, ranked, score }
           }
           failures.push(`${endpoint.name}: 弱命中（${hitStatus}），继续尝试`)
           break
@@ -481,16 +506,17 @@ async function runDirectCandidatesFallback(queryList, limits, startedAt, failure
       failures.push(...pageReads.failures.map(item => `直达官网候选: ${item}`))
       const text = formatSearchWithPages(query, ranked, pageReads)
       if (text && pageReads.pages.length) {
-        return { ok: true, text, query, engine: 'Direct official candidates', failures, pages: pageReads.pages, status: 'usable_hit' }
+        return { ok: true, text, query, engine: 'Direct official candidates', failures, pages: pageReads.pages, candidates: ranked, status: 'usable_hit' }
       }
       if (text) {
         return {
           ok: true,
-          text: `${text}\n\n（注：以下为搜索页摘要，未打开候选网页正文，置信度低于已打开正文的结果。）`,
+          text: `搜索状态：weak_hit（弱命中，未读到可用正文）\n${text}\n\n（注：以上为候选 URL 与搜索页摘要，未打开候选网页正文，不能作为事实依据。应继续换词搜索，或对可信候选 URL 调用 web_fetch。）`,
           query,
           engine: 'Direct official candidates',
           failures,
           pages: [],
+          candidates: ranked,
           status: 'weak_hit',
         }
       }
@@ -512,6 +538,7 @@ module.exports = {
   fetchHttpResultPage,
   readTopResultPages,
   mergeHttpSearchCandidates,
+  formatCandidateList,
   formatSearchWithPages,
   runHttpSearch,
   runSearchPass,

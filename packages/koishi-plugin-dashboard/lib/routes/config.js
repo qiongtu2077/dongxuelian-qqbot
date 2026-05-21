@@ -189,8 +189,7 @@ function handleDeletePersonas(req, res) {
       let deleted = false
       for (const f of files) {
         const raw = String(fs.readFileSync(path.join(PERSONAS_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '')
-        const m = raw.match(/^---\n([\s\S]*?)\n---/)
-        const metaName = m?.[1]?.match(/name:\s*(.+)/)?.[1]?.trim()
+        const metaName = parseFrontmatter(raw).meta.name || ''
         if (metaName === name) {
           fs.unlinkSync(path.join(PERSONAS_DIR, f))
           deleted = true
@@ -347,9 +346,9 @@ function handleGetModes(req, res) {
     const files = fs.readdirSync(MODES_DIR).filter(f => f.endsWith('.md'))
     return json(res, files.map(f => {
       const raw = String(fs.readFileSync(path.join(MODES_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '')
-      const m = raw.match(/^---\n([\s\S]*?)\n---/)
-      const name = m?.[1]?.match(/name:\s*(\S+)/)?.[1] || f.replace('.md', '')
-      const desc = m?.[1]?.match(/description:\s*(.+)/)?.[1] || ''
+      const parsed = parseFrontmatter(raw)
+      const name = parsed.meta.name || f.replace('.md', '')
+      const desc = parsed.meta.description || ''
       return { name, file: f, description: desc }
     }))
   } catch { return json(res, []) }
@@ -409,6 +408,7 @@ module.exports = {
   _test: {
     parseFrontmatter,
     buildPersonaFrontmatter,
+    parseModeFrontmatter: parseFrontmatter,
     cleanLoreName,
     normalizeLoreScope,
     normalizeLorePayload,

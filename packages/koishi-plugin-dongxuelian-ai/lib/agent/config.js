@@ -12,7 +12,7 @@ const { TOOL_CONFIG_FILE } = require('../constants')
 const KNOWN_CHANNELS = new Set(['qq', 'dashboard'])
 const MAX_TOOL_CONFIG_BYTES = 512 * 1024
 const DEFAULT_CONFIG = Object.freeze({
-  version: 1,
+  version: 2,
   channels: {
     qq: {
       enabled: true,
@@ -20,7 +20,7 @@ const DEFAULT_CONFIG = Object.freeze({
         get_current_time: true,
         calculate: true,
         web_search: true,
-        web_fetch: false,
+        web_fetch: true,
         read_agent_skill: true,
         read_file: false,
         list_files: false,
@@ -53,7 +53,7 @@ const DEFAULT_CONFIG = Object.freeze({
         get_current_time: true,
         calculate: true,
         web_search: true,
-        web_fetch: false,
+        web_fetch: true,
         read_agent_skill: true,
         read_file: true,
         list_files: true,
@@ -147,10 +147,15 @@ function normalizeRoot(root) {
 
 function normalizeConfig(raw = {}) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  const sourceVersion = Number(source.version || 0)
   const defaults = clone(DEFAULT_CONFIG)
   const channels = {}
   for (const channel of KNOWN_CHANNELS) {
     channels[channel] = normalizeChannelConfig(source.channels && source.channels[channel], defaults.channels[channel])
+  }
+  if (!Number.isFinite(sourceVersion) || sourceVersion < 2) {
+    channels.qq.tools.web_fetch = true
+    channels.dashboard.tools.web_fetch = true
   }
   const dangerousPolicy = ['auto', 'confirm', 'block'].includes(source.dangerousPolicy) ? source.dangerousPolicy : defaults.dangerousPolicy
   const readFileRoots = Array.isArray(source.readFileRoots)
@@ -172,7 +177,7 @@ function normalizeConfig(raw = {}) {
     enabled: source.memory?.enabled === undefined ? defaults.memory.enabled : !!source.memory.enabled,
     adminOnly: source.memory?.adminOnly === undefined ? defaults.memory.adminOnly : !!source.memory.adminOnly,
   }
-  return { version: 1, channels, dangerousPolicy, autoRoute, enabledSkills, persona, readFileRoots, queue, planMode, push, cron, memory }
+  return { version: 2, channels, dangerousPolicy, autoRoute, enabledSkills, persona, readFileRoots, queue, planMode, push, cron, memory }
 }
 
 function normalizeInteger(value, min, max, fallback) {
