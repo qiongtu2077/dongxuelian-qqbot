@@ -283,8 +283,8 @@
     <div v-if="mode === 'remote'" class="card">
       <h2>远程 Linux 部署</h2>
       <div class="grp-desc" style="margin-bottom:14px">需要本机可以直接 SSH 到服务器。部署会先重建当前 Dashboard 后端机器上的最新前端，再上传插件代码、前端源码、全新 dist 和必要脚本到远程目录。</div>
-      <div class="row"><label>服务器</label><input v-model="remote.server" placeholder="root@服务器IP" /></div>
-      <div class="row"><label>应用目录</label><input v-model="remote.appDir" placeholder="/root/koishi-app" /></div>
+      <div class="row"><label>服务器</label><input v-model="remote.server" placeholder="<YOUR_SERVER_USER>@<YOUR_SERVER_HOST>" /></div>
+      <div class="row"><label>应用目录</label><input v-model="remote.appDir" placeholder="<YOUR_DATA_DIR>" /></div>
       <div class="row"><label>模式</label><select v-model="remote.mode" class="themed-select"><option value="install">实验性首次安装</option><option value="update">更新已有部署</option></select></div>
 
       <div class="deploy-actions">
@@ -323,7 +323,7 @@ export default {
     const showAdminDialog = inject('showAdminDialog')
     const mode = ref('local')
     const local = reactive({ qq: '', provider: 'opencode', model: 'deepseek-v4-flash', baseUrl: 'https://opencode.ai/zen/go/v1', apiKey: '' })
-    const remote = reactive({ server: '', appDir: '/root/koishi-app', mode: 'update' })
+    const remote = reactive({ server: '', appDir: '', mode: 'update' })
     const env = ref(null)
     const localMsg = ref(null)
     const localAlert = ref('')

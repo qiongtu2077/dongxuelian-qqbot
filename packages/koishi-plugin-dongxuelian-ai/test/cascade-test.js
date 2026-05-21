@@ -534,6 +534,7 @@ async function main() {
     emotionCommand: path.join(LIB, 'commands', 'emotion-command'),
     messageReader: path.join(LIB, 'message-reader'),
     chat: path.join(LIB, 'chat'),
+    chatMemory: path.join(LIB, 'chat-memory'),
     agentChatBridge: path.join(LIB, 'agent-chat-bridge'),
     jailbreakRuleset: path.join(LIB, 'rulesets', 'jailbreak'),
     runtimeConfig: path.join(LIB, 'runtime-config'),
@@ -606,6 +607,7 @@ async function main() {
     index: path.join(LIB, 'index'),
     voice: path.join(LIB, 'voice'),
     tts: path.join(LIB, 'tts'),
+    randomVoiceRate: path.join(LIB, 'random-voice-rate'),
     voiceAssets: path.join(LIB, 'voice-assets'),
     imageStore: path.join(LIB, 'image-store'),
     imageAnalyzer: path.join(LIB, 'image-analyzer'),
@@ -849,9 +851,14 @@ async function main() {
     ],
     tts: [
       'synthesizeSpeech', 'sendVoiceMessage', 'resolvePersonaVoice',
+      'sanitizeTtsStyle', 'composeTtsStyle',
       'extractVoiceStyle', 'stripVoiceStyleTag', 'getBuiltinVoices',
       'isChannelOnCooldown', 'markChannelCooldown', 'shouldTriggerRandomVoice', 'getMimoriumKey',
-      'detectAudioMime',
+      'detectAudioMime', 'getRandomVoiceRate',
+    ],
+    randomVoiceRate: [
+      'normalizeVoiceRate', 'loadRandomVoiceRateCache', 'getRandomVoiceRate',
+      'setRandomVoiceRate', 'resetRandomVoiceRate', 'shouldTriggerRandomVoiceByRate',
     ],
     voiceAssets: [
       'sanitizeVoiceAssetId', 'createVoiceAssetId', 'buildVoiceAssetFilename',
@@ -937,6 +944,7 @@ async function main() {
     path.join(LIB, 'persona.js'),
     path.join(LIB, 'message-reader.js'),
     path.join(LIB, 'chat.js'),
+    path.join(LIB, 'chat-memory.js'),
     path.join(LIB, 'agent-chat-bridge.js'),
     path.join(LIB, 'rulesets', 'jailbreak.js'),
     path.join(LIB, 'runtime-config.js'),
@@ -1002,6 +1010,7 @@ async function main() {
     path.join(LIB, 'rare-voice.js'),
     path.join(LIB, 'voice.js'),
     path.join(LIB, 'tts.js'),
+    path.join(LIB, 'random-voice-rate.js'),
     path.join(LIB, 'voice-assets.js'),
     path.join(LIB, 'image-store.js'),
     path.join(LIB, 'image-analyzer.js'),
@@ -1012,7 +1021,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'agent-chat-bridge.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-memory.js', 'agent-chat-bridge.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -1576,7 +1585,9 @@ async function main() {
     check('agent calculator rejects unsafe Math access', /不支持的 Math 函数|不安全字符/.test(String(error && error.message || error)))
   }
   const originalAgentDataDir = process.env.DONGXUELIAN_AI_DATA_DIR
-  const agentTmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cascade-agent-'))
+  const agentTmpRoot = path.join(ROOT, 'tmp')
+  fs.mkdirSync(agentTmpRoot, { recursive: true })
+  const agentTmp = fs.mkdtempSync(path.join(agentTmpRoot, 'cascade-agent-'))
   try {
     process.env.DONGXUELIAN_AI_DATA_DIR = agentTmp
     for (const rel of ['constants', 'runtime-config', 'agent/config', 'agent/workspace-context', 'agent/path-guard', 'agent/skills', 'agent/http-search', 'agent/tools/registry', 'agent/tools/read-agent-skill', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/pending', 'agent/safety', 'agent/stats']) {
@@ -1870,7 +1881,8 @@ async function main() {
       check('agent edit_file rejects missing oldString', /未找到 oldString/.test(String(error && error.message || error)))
     }
     try {
-      await isolatedWriteFile.execute({ path: path.join(path.dirname(agentTmp), 'outside-' + path.basename(agentTmp) + '.txt'), content: 'nope' })
+      const outsideRoot = process.platform === 'win32' ? (process.env.SystemRoot || 'C:\\Windows') : '/tmp'
+      await isolatedWriteFile.execute({ path: path.join(outsideRoot, 'outside-' + path.basename(agentTmp) + '.txt'), content: 'nope' })
       fail('agent write_file rejects outside root', 'outside write succeeded')
     } catch (error) {
       check('agent write_file rejects outside root', /路径超出允许范围/.test(String(error && error.message || error)))
@@ -1888,7 +1900,8 @@ async function main() {
       }
     }
     try {
-      await isolatedShell.execute({ command: 'pwd', cwd: agentTmp })
+      const outsideRoot = process.platform === 'win32' ? (process.env.SystemRoot || 'C:\\Windows') : '/tmp'
+      await isolatedShell.execute({ command: 'pwd', cwd: outsideRoot })
       fail('agent shell rejects outside cwd', 'outside shell succeeded')
     } catch (error) {
       check('agent shell rejects outside cwd', /工作目录超出允许范围/.test(String(error && error.message || error)))
@@ -2142,7 +2155,7 @@ async function main() {
   for (const pluginKey of ['group-name-at', 'dongxuelian-help', 'dongxuelian-ai', 'dongxuelian-poke', 'koishi-plugin-defense', 'local-video-sender', 'group-leave-notice']) {
     check(`setup.sh koishi.yml includes ${pluginKey}`, setupSrc.includes(`${pluginKey}:`))
   }
-  for (const runtimeFile of ['ai-provider.txt', 'ai-model.txt', 'ai-base-url.txt', 'ai-repeat-enabled.json', 'ai-enable-search.txt', 'ai-enable-thinking.txt', 'ai-admin-ids.json']) {
+  for (const runtimeFile of ['ai-provider.txt', 'ai-model.txt', 'ai-base-url.txt', 'ai-repeat-enabled.json', 'ai-random-voice-rate.json', 'ai-enable-search.txt', 'ai-enable-thinking.txt', 'ai-admin-ids.json']) {
     check(`setup.sh initializes ${runtimeFile}`, setupSrc.includes(runtimeFile))
   }
   for (const dataDirName of ['conversations', 'user-profiles', 'ai-event-dumps', 'political-handlers']) {

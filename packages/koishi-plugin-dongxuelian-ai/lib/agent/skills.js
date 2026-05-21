@@ -217,7 +217,14 @@ function skillResolveRequestedFile(skill, requestedFile = '') {
   if (path.basename(normalized) === DIRECTORY_SKILL_FILE || normalized === skill.path) return skill.file
   if (!TEXT_FILE_RE.test(normalized)) throw new Error('只能读取 Skill 目录内的文本参考文件')
   const root = fs.realpathSync(skill.dir)
-  const target = fs.realpathSync(path.resolve(skill.dir, normalized))
+  const resolvedTarget = path.resolve(skill.dir, normalized)
+  if (!skillPathInside(resolvedTarget, root)) throw new Error('Skill 参考文件超出技能目录')
+  let target = ''
+  try {
+    target = fs.realpathSync(resolvedTarget)
+  } catch {
+    throw new Error('Skill 参考文件不存在或不可读取')
+  }
   if (!skillPathInside(target, root)) throw new Error('Skill 参考文件超出技能目录')
   return target
 }

@@ -78,6 +78,7 @@ function createTestDataDir(options = {}) {
   writeJson(path.join(dataDir, 'ai-repeat-enabled.json'), options.repeatEnabled || {})
   writeJson(path.join(dataDir, 'ai-random-whitelist.json'), options.randomWhitelist || [])
   writeJson(path.join(dataDir, 'ai-random-rate.json'), options.randomRate || {})
+  writeJson(path.join(dataDir, 'ai-random-voice-rate.json'), options.randomVoiceRate || {})
   writeJson(path.join(dataDir, 'political-detect-enabled.json'), options.politicalDetect || [])
   writeJson(path.join(dataDir, 'summary-whitelist.json'), options.summaryWhitelist || [])
   writeJson(path.join(dataDir, 'ai-user-blacklist.json'), [])

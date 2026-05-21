@@ -6,6 +6,43 @@ const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../u
 const { requireAdmin } = require('../auth')
 const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths')
 
+function parseFrontmatter(content) {
+  const raw = String(content || '').replace(/^\uFEFF/, '')
+  const match = raw.match(/^---\n([\s\S]*?)\n---\n\n?/)
+  if (!match) return { meta: {}, body: raw, raw }
+  const meta = {}
+  for (const line of match[1].split('\n')) {
+    const kv = line.match(/^(\w[\w_-]*):\s*(.+)/)
+    if (kv) meta[kv[1]] = kv[2].trim()
+  }
+  return { meta, body: raw.slice(match[0].length), raw }
+}
+
+function cleanFrontmatterValue(value, maxLength = 240) {
+  return String(value || '').replace(/[\r\n]+/g, ' ').trim().slice(0, maxLength)
+}
+
+function buildPersonaFrontmatter(meta, overrides = {}) {
+  const next = { ...meta, ...overrides }
+  const knownKeys = new Set(['name', 'description', 'lore', 'will', 'nsfw', 'voice', 'voice_id', 'voice_asset_id', 'voice_style'])
+  const lines = [
+    `name: ${next.name}`,
+    `description: ${next.description || ''}`,
+  ]
+  if (next.lore && next.lore !== 'none') lines.push(`lore: ${next.lore}`)
+  lines.push(`will: ${next.will !== undefined && next.will !== '' ? parseFloat(next.will) : 1.0}`)
+  if (next.nsfw && next.nsfw !== 'none') lines.push(`nsfw: ${next.nsfw}`)
+  if (next.voice_id || next.voice) lines.push(`voice_id: ${cleanFrontmatterValue(next.voice_id || next.voice, 80)}`)
+  if (next.voice_asset_id) lines.push(`voice_asset_id: ${cleanFrontmatterValue(next.voice_asset_id, 120)}`)
+  if (next.voice_style) lines.push(`voice_style: ${cleanFrontmatterValue(next.voice_style)}`)
+  for (const [key, value] of Object.entries(next)) {
+    if (knownKeys.has(key)) continue
+    const clean = cleanFrontmatterValue(value)
+    if (clean) lines.push(`${key}: ${clean}`)
+  }
+  return `---\n${lines.join('\n')}\n---\n\n`
+}
+
 function handleGetStatus(req, res) {
   return json(res, {
     provider: readFileSyncSafe(path.join(DATA_DIR, 'ai-provider.txt')) || 'deepseek',
@@ -60,15 +97,7 @@ function handleGetPersonas(req, res, pathname, url) {
     if (name) {
       const content = loadPersonalSkill(name)
       if (!content) return json(res, { ok: false, message: '未找到人格' }, 404)
-      const m = String(content || '').replace(/^\uFEFF/, '').match(/^---\n([\s\S]*?)\n---\n\n?/)
-      let meta = {}
-      if (m) {
-        for (const line of m[1].split('\n')) {
-          const kv = line.match(/^(\w[\w_-]*):\s*(.+)/)
-          if (kv) meta[kv[1]] = kv[2].trim()
-        }
-      }
-      const bodyContent = m ? content.slice(m[0].length) : content
+      const { meta, body: bodyContent } = parseFrontmatter(content)
       return json(res, { ok: true, data: { name, description: meta.description || '', lore: meta.lore || '', will: meta.will || 1.0, nsfw: meta.nsfw || 'none', content: bodyContent } })
     }
     return json(res, getAvailablePersonals().map(p => ({ name: p.name, description: p.description, type: p.type || 'persona' })))
@@ -84,10 +113,7 @@ function handlePostPersonas(req, res) {
       const sanitized = name.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '')
       const filePath = path.join(PERSONAS_DIR, 'SKILL.' + sanitized + '.md')
       if (fs.existsSync(filePath)) return json(res, { ok: false, message: '同名人格已存在' }, 400)
-      const loreLine = lore && lore !== 'none' ? '\nlore: ' + lore : ''
-      const willLine = will !== undefined && will !== '' ? '\nwill: ' + parseFloat(will) : '\nwill: 1.0'
-      const nsfwLine = nsfw && nsfw !== 'none' ? '\nnsfw: ' + nsfw : ''
-      const md = '---\nname: ' + sanitized + '\ndescription: ' + (description || '') + loreLine + willLine + nsfwLine + '\n---\n\n' + content
+      const md = buildPersonaFrontmatter({}, { name: sanitized, description, lore, will, nsfw }) + content
       fs.writeFileSync(filePath, md, 'utf8')
       json(res, { ok: true, message: '人格 ' + sanitized + ' 已创建' })
     } catch (e) { json(res, { ok: false, message: e.message }, 400) }
@@ -132,14 +158,10 @@ function handlePutPersonas(req, res) {
       for (const dir of searchDirs) {
         const files = fs.readdirSync(dir).filter(f => /^SKILL(\.[^.]+)?\.md$/i.test(f))
         for (const f of files) {
-          const raw = String(fs.readFileSync(path.join(dir, f), 'utf8') || '').replace(/^\uFEFF/, '')
-          const m = raw.match(/^---\n([\s\S]*?)\n---/)
-          const metaName = m?.[1]?.match(/name:\s*(.+)/)?.[1]?.trim()
+          const parsed = parseFrontmatter(fs.readFileSync(path.join(dir, f), 'utf8'))
+          const metaName = parsed.meta.name || ''
           if (metaName === name) {
-            const loreLine = lore && lore !== 'none' ? '\nlore: ' + lore : ''
-            const willLine = will !== undefined && will !== '' ? '\nwill: ' + parseFloat(will) : '\nwill: 1.0'
-            const nsfwLine = nsfw && nsfw !== 'none' ? '\nnsfw: ' + nsfw : ''
-            const md = '---\nname: ' + name + '\ndescription: ' + (description || '') + loreLine + willLine + nsfwLine + '\n---\n\n' + content
+            const md = buildPersonaFrontmatter(parsed.meta, { name, description, lore, will, nsfw }) + content
             fs.writeFileSync(path.join(dir, f), md, 'utf8')
             found = true
             break

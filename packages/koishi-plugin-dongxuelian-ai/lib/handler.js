@@ -43,6 +43,7 @@ const { handleMemoryCommand } = require('./commands/memory-command')
 const { handlePlanCommand } = require('./commands/plan-command')
 const { handleAgentCommand } = require('./commands/agent-command')
 const { handleEmotionCommand } = require('./commands/emotion-command')
+const { DEFAULT_RANDOM_VOICE_RATE, getRandomVoiceRate } = require('./random-voice-rate')
 
 const forgetPendingConfirm = new Map()
 let lastForgetCleanupTs = 0
@@ -166,6 +167,14 @@ async function handleCommand(session, ctx, state) {
   if (/^东雪莲群聊AI概率查看$/.test(plain)) {
     if (!inGuild) return handled('这个命令只能在群里用。')
     return handled(`本群主动回复基础概率：${formatPercent(getRandomTriggerBaseRate(channelKey))}`)
+  }
+
+  const voiceRateViewMatch = plain.match(/^东雪莲群聊语音概率查看(?:\s*(\d+))?$/)
+  if (voiceRateViewMatch) {
+    const targetGroup = voiceRateViewMatch[1] || channelKey
+    if (voiceRateViewMatch[1] && !hasAdminPermission(session)) return handled('只有bot管理员才能查看指定群语音概率。')
+    if (!targetGroup || (!inGuild && !voiceRateViewMatch[1])) return handled('请在群里使用，或指定群号：东雪莲群聊语音概率查看 <群号>')
+    return handled(`群 ${targetGroup} 的语音升级概率：${formatPercent(getRandomVoiceRate(targetGroup))}（默认 ${formatPercent(DEFAULT_RANDOM_VOICE_RATE)}）`)
   }
 
   if (plain === '东雪莲思考开') {

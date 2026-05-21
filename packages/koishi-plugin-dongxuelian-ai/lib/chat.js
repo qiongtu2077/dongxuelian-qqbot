@@ -9,7 +9,6 @@
 const fs = require('fs/promises')
 const path = require('path')
 const {
-  DATA_DIR,
   SKILLS_CORE_DIR, SKILLS_MODES_DIR, SKILLS_LORE_DIR,
   LORE_TRIGGER_SET, TERRA_LORE_TRIGGER_SET,
   TEST_MODE_FILE, HOSTILE_MODE_FILE,
@@ -43,8 +42,7 @@ const {
   getRecentUserMessages,            // 取最近 N 条用户消息
   normalizeUserMessageForPrompt,    // 历史消息格式标准化
   getQuoteInfo,                     // 解析引用消息内容和作者
-  writeMemory, deleteMemory, getMemorySummary, clearGroupMemory, // 用户记忆 CRUD
-  checkMemoryTimerExpired, readMemoryTimer, // 群记忆定时清理
+  getMemorySummary, // 用户记忆摘要
   channelSharedCache,               // 频道共享消息缓存（群聊上下文）
   conversationLastActiveAt,         // 会话最后活跃时间戳（用于历史降级判断）
 } = require('./conversation')
@@ -74,6 +72,13 @@ const {
   hasInternalContextLeak,     // 内部上下文泄漏检测（system prompt 外泄）
 } = require('./reply-guard')
 const {
+  trimChatMemoryRuntime,
+  clearGroupMemoryIfExpired,
+  handleDirectMemoryWrite,
+  handleMemoryConfirmation,
+  rememberMemoryPrompt,
+} = require('./chat-memory')
+const {
   loadConfig,          // 加载运行时配置（API key/model/provider）
   resetConfigCache,    // 强制刷新配置缓存
   getThinkingArgs,     // 获取 thinking/推理模式参数
@@ -85,7 +90,6 @@ const { ensureRuntimeSkillSeeds } = require('./skill-seeds') // 首次启动时�
 
 let skillsCache = []
 let skillsContentCache = {}
-const lastMemoryPromptTs = new Map()
 const hostileLevelCache = new Map()
 let lastCacheCleanupTs = 0
 const MAX_CHAT_SKILL_FILE_BYTES = parseChatPositiveInt(process.env.DONGXUELIAN_CHAT_SKILL_FILE_MAX_BYTES, 256 * 1024, 8 * 1024, 2 * 1024 * 1024)
@@ -107,11 +111,9 @@ function stripChatSkillFrontmatter(text = '') {
 }
 
 function trimRuntimeCaches(now = Date.now()) {
+  trimChatMemoryRuntime(now)
   if (now - lastCacheCleanupTs < 300000) return
   lastCacheCleanupTs = now
-  for (const [key, ts] of lastMemoryPromptTs.entries()) {
-    if (now - ts > 300000) lastMemoryPromptTs.delete(key)
-  }
   for (const [key, entry] of hostileLevelCache.entries()) {
     if (!entry || entry.expireAt <= now) hostileLevelCache.delete(key)
   }
@@ -362,16 +364,7 @@ async function chat(session, userText, ctx, options = {}) {
 
   // #7 群记忆定时清空检查
   const channelKey = getChannelKey(session)
-  if (session.guildId && checkMemoryTimerExpired(channelKey)) {
-    await clearGroupMemory(channelKey)
-    const timer = readMemoryTimer(channelKey)
-    if (timer) {
-      timer.lastClearTs = Date.now()
-      const timerFile = path.join(DATA_DIR, 'memory-timers', String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_') + '.json')
-      try { require('fs').mkdirSync(path.join(DATA_DIR, 'memory-timers'), { recursive: true }) } catch {}
-      try { require('fs').writeFileSync(timerFile, JSON.stringify(timer), 'utf8') } catch {}
-    }
-  }
+  await clearGroupMemoryIfExpired(session, channelKey)
 
   // 人格系统：用户级 > 群级 > 默认（必须在 hostile 之前，因为 hostile 需要 personaName）
   const currentUserId = session.userId || session.author?.id || session.username || ''
@@ -385,36 +378,11 @@ async function chat(session, userText, ctx, options = {}) {
   }
 
   // 主动记忆写入：用户说"记住XXX"直接存，跳过AI反问
-  if (currentUserId && session.guildId && /^(?:记住|记下)\s+/.test(cleanInput)) {
-    const text = cleanInput.replace(/^(?:记住|记下)\s+/, '').trim()
-    if (text) {
-      await writeMemory(currentUserId, '', channelKey, text)
-      return '嗯，我记住了'
-    }
-  }
+  const directMemoryReply = await handleDirectMemoryWrite({ cleanInput, currentUserId, channelKey, inGuild: !!session.guildId })
+  if (directMemoryReply) return directMemoryReply
 
   // 记忆系统：用户确认写入 / 口头纠正
-  if (currentUserId && session.guildId) {
-    const chatHistory = getConversationHistory(session)
-    const lastReply = chatHistory.length > 0 ? chatHistory[chatHistory.length - 1].content : ''
-    // 确认写入：用户回复"嗯/好/可以/是/记住"等确认词，上一条 AI 消息含"记住"，60 秒内有效
-    if (/^(?:嗯|好|可以|是|记住|记下|行|对)/.test(cleanInput) && /需要.{0,10}记住/.test(lastReply)) {
-      const promptKey = currentUserId + ':' + channelKey
-      const promptTs = lastMemoryPromptTs.get(promptKey) || 0
-      if (Date.now() - promptTs < 60000) {
-        const matchResult = lastReply.match(/需要.{0,10}记住\s*(.+?)[？?。！!，,]?\s*$/)
-        if (matchResult) writeMemory(currentUserId, '', channelKey, matchResult[1].trim())
-      }
-    }
-    // 口头纠正：用户说"不是/记错了/没说过"
-    if (/^(?:不是|记错了|没说过|记错|不对)/.test(cleanInput)) {
-      const recentMemory = chatHistory.filter(function(m) { return m.role === 'system' && m.content.startsWith('记住的：') })
-      if (recentMemory.length > 0) {
-        const memoryItems = recentMemory[recentMemory.length - 1].content.replace('记住的：', '').split('、')
-        memoryItems.forEach(function(item) { deleteMemory(currentUserId, channelKey, item.trim()) })
-      }
-    }
-  }
+  await handleMemoryConfirmation({ session, cleanInput, currentUserId, channelKey, inGuild: !!session.guildId })
 
   // 反击值系统：三态（0=友善, 1=阴阳, 2=嘴臭），自定义人格时绕过 + 仇恨缓存 30s
   let retaliationLevel = 0
@@ -940,9 +908,7 @@ async function chat(session, userText, ctx, options = {}) {
   }
 
   // 记录 AI 提问"需要记住"的时间戳，供 memory 确认超时使用
-  if (/需要.{0,10}记住/.test(reply)) {
-    lastMemoryPromptTs.set(currentUserId + ':' + channelKey, Date.now())
-  }
+  rememberMemoryPrompt(currentUserId, channelKey, reply)
 
   // 模型输出文本格式 tool_call 时，strip 后重试（不带 tools）
   if (typeof reply === 'string' && /<tool_call>/i.test(reply)) {

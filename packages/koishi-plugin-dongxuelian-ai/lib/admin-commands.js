@@ -14,6 +14,11 @@ const {
 const { readJsonFile, writeJsonFile, formatPercent, hasAdminPermission } = require('./utils')
 const { isAdminUserId } = require('./runtime-config')
 const { resetPoliticalDetectCache, clearSensitiveRuntimeState } = require('./sensitive')
+const {
+  DEFAULT_RANDOM_VOICE_RATE,
+  setRandomVoiceRate,
+  resetRandomVoiceRate,
+} = require('./random-voice-rate')
 
 async function handleAdminInlineCommands(session, ctx, {
   plain,
@@ -210,6 +215,29 @@ async function handleAdminInlineCommands(session, ctx, {
     randomRateCache.delete(channelKey)
     await writeJsonFile(RANDOM_RATE_FILE, Object.fromEntries(randomRateCache))
     return matched(`本群主动回复基础概率已重置为默认值 ${formatPercent(RANDOM_TRIGGER_RATE_BASE)}。`)
+  }
+
+  const voiceRateSetTargetMatch = plain.match(/^东雪莲群聊语音概率设置\s+(\d+)\s+((?:100(?:\.0+)?)|(?:\d{1,2}(?:\.\d+)?))%$/)
+  const voiceRateSetCurrentMatch = plain.match(/^东雪莲群聊语音概率设置\s*((?:100(?:\.0+)?)|(?:\d{1,2}(?:\.\d+)?))%$/)
+  if (voiceRateSetTargetMatch || voiceRateSetCurrentMatch) {
+    const targetGroup = voiceRateSetTargetMatch ? voiceRateSetTargetMatch[1] : channelKey
+    if (!targetGroup || (!inGuild && !voiceRateSetTargetMatch)) return matched('请在群里使用，或指定群号：东雪莲群聊语音概率设置 <群号> 10%')
+    if (voiceRateSetTargetMatch && !hasAdminPermission(session)) return matched('只有bot管理员才能设置指定群语音概率。')
+    if (!voiceRateSetTargetMatch && !isGroupAdmin && !hasAdminPermission(session)) return matched('只有群主、群管理员或bot管理员才能设置语音概率。')
+    const rate = Number(voiceRateSetTargetMatch ? voiceRateSetTargetMatch[2] : voiceRateSetCurrentMatch[1]) / 100
+    if (!Number.isFinite(rate) || rate < 0 || rate > 1) return matched('语音概率范围只能是 0% 到 100% 之间。')
+    await setRandomVoiceRate(targetGroup, rate)
+    return matched(`群 ${targetGroup} 的语音升级概率已设置为 ${formatPercent(rate)}。`)
+  }
+
+  const voiceRateResetMatch = plain.match(/^东雪莲群聊语音概率重置(?:\s*(\d+))?$/)
+  if (voiceRateResetMatch) {
+    const targetGroup = voiceRateResetMatch[1] || channelKey
+    if (!targetGroup || (!inGuild && !voiceRateResetMatch[1])) return matched('请在群里使用，或指定群号：东雪莲群聊语音概率重置 <群号>')
+    if (voiceRateResetMatch[1] && !hasAdminPermission(session)) return matched('只有bot管理员才能重置指定群语音概率。')
+    if (!voiceRateResetMatch[1] && !isGroupAdmin && !hasAdminPermission(session)) return matched('只有群主、群管理员或bot管理员才能重置语音概率。')
+    await resetRandomVoiceRate(targetGroup)
+    return matched(`群 ${targetGroup} 的语音升级概率已重置为默认值 ${formatPercent(DEFAULT_RANDOM_VOICE_RATE)}。`)
   }
 
   return { matched: false }

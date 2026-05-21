@@ -44,11 +44,10 @@ const {
 
 
 const {
-  resetPoliticalDetectCache,     // 政治敏感检测缓存重置
-  clearSensitiveRuntimeState,    // 敏感词运行时状态清理
   notifySensitiveHandlers,       // 触发敏感词时通知处理器
   handleSensitiveMessage,        // 敏感消息拦截主逻辑
 } = require('./sensitive')
+const { handleAdminInlineCommands } = require('./admin-commands') // 白名单/黑名单/概率/敏感等内联管理命令
 const {
   loadRepeatConfig,       // 加载复读配置
   setRepeatEnabled,       // 设置复读开关
@@ -65,7 +64,7 @@ const {
 const {
   loadConfig, resetConfigCache,   // 运行时配置加载/刷新
   getThinkingEnabled, setThinkingEnabled, // thinking 模式开关
-  isAdminUserId, getAdminUserIds, // 管理员权限判断
+  getAdminUserIds, // 管理员权限判断
 } = require('./runtime-config')
 const {
   DATA_DIR, PLUGIN_VERSION,
@@ -76,10 +75,9 @@ const {
   DEFAULT_GROUP_RANDOM_WHITELIST,
   MAX_CHANNEL_SHARED_MESSAGES,
   EVENT_DUMP_ARM_EXPIRE_MS,
-  USER_BLACKLIST_FILE, VIDEO_BLACKLIST_FILE,
-  SUMMARY_WHITELIST_FILE, TODAY_CACHE_PREFIX,
+  USER_BLACKLIST_FILE, TODAY_CACHE_PREFIX,
   THINKING_MODE_FILE,
-  POLITICAL_HANDLER_DIR, POLITICAL_DETECT_FILE, SENSITIVE_CACHE_PREFIX,
+  POLITICAL_DETECT_FILE, SENSITIVE_CACHE_PREFIX,
   CONVERSATIONS_DIR,
   NUMERIC_GROUP_ID_RE, SENSITIVE_KEYWORDS_RE,
 } = require('./constants')
@@ -109,11 +107,10 @@ const {
   sanitizeUserName,         // 昵称安全清洗
   extractAtIds,             // 提取消息中所有 @id
   isDirectAtBot, getBotMentionCount, hasOtherMentions, // @bot 检测
-  formatPercent,            // 百分比格式化
   isJailbreakAttempt,       // 越狱尝试检测
   sanitizeUserInput,        // 用户输入安全清洗
   pickJailbreakFallbackReply, // 越狱兜底回复
-  readTextFile, writeTextFile, readJsonFile, writeJsonFile, // 文件 IO 工具
+  readTextFile, readJsonFile, // 文件 IO 工具
   shouldTriggerRandom, calculateWillFactor, // 随机触发判断 + 意愿因子计算
   normalizeUrl, extractImageUrls, // URL 标准化 + 图片 URL 提取
   sanitizeFileToken, safeJsonStringify, // 文件 token 清洗 + 安全 JSON 序列化
@@ -121,6 +118,9 @@ const {
 } = require('./utils')
 const { logDebug } = require('./logging-config') // 调试日志输出
 const { shouldTriggerRareVoice, readRareVoiceAudioBuffer } = require('./rare-voice') // 罕见触发固定语音
+const {
+  loadRandomVoiceRateCache,
+} = require('./random-voice-rate') // 群聊随机语音升级概率配置
 const { heuristicRoute, buildExplicitSearchRunOptions } = require('./agent/router') // Agent 路由决策（启发式 + 显式搜索）
 const agentEngine = require('./agent/engine') // Agent 执行引擎
 const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue') // Agent 任务队列
@@ -745,6 +745,7 @@ exports.apply = (ctx) => {
     loadPersonaGroups()
     loadRepeatConfig()
     loadPersonaUsers()
+    await loadRandomVoiceRateCache()
     // 恢复今日情绪磁盘缓存
     try {
       const files = require('fs').readdirSync(DATA_DIR).filter(f => f.startsWith('today-cache-') && f.endsWith('.json'))
@@ -905,194 +906,23 @@ exports.apply = (ctx) => {
       return '只有指定管理员能操作这个命令。'
     }
 
-    const whitelistAddMatch = plain.match(/^群聊AI白名单添加\s*(\d+)$/)
-    if (whitelistAddMatch) {
-      randomWhitelistCache.add(whitelistAddMatch[1])
-      await writeJsonFile(RANDOM_WHITELIST_FILE, [...randomWhitelistCache])
-      return `已加入群聊AI白名单：${whitelistAddMatch[1]}`
-    }
-
-    const whitelistDeleteMatch = plain.match(/^群聊AI白名单删除\s*(\d+)$/)
-    if (whitelistDeleteMatch) {
-      randomWhitelistCache.delete(whitelistDeleteMatch[1])
-      await writeJsonFile(RANDOM_WHITELIST_FILE, [...randomWhitelistCache])
-      return `已移出群聊AI白名单：${whitelistDeleteMatch[1]}`
-    }
-
-    if (/^群聊AI白名单(?:查看|列表)$/.test(plain)) {
-      const whitelist = [...randomWhitelistCache]
-      return whitelist.length ? `群聊AI白名单：\n${whitelist.join('\n')}` : '当前白名单为空，等同于所有群都禁止主动回复。'
-    }
-
-    // 用户黑名单管理
-    const ensureUserBlacklistCache = async () => {
-      await loadUserBlacklist()
-    }
-    const userBlAdd = plain.match(/^用户黑名单添加\s*(\d+)$/)
-    if (userBlAdd) {
-      const uid = userBlAdd[1]
-      if (isAdminUserId(uid)) return '不能对管理员添加黑名单。'
-      await ensureUserBlacklistCache()
-      userBlacklistCache.add(uid)
-      await writeJsonFile(USER_BLACKLIST_FILE, [...userBlacklistCache])
-      userBlacklistFingerprint = await getFileFingerprint(USER_BLACKLIST_FILE)
-      return `已添加用户黑名单：${uid}`
-    }
-    const userBlDel = plain.match(/^用户黑名单删除\s*(\d+)$/)
-    if (userBlDel) {
-      await ensureUserBlacklistCache()
-      userBlacklistCache.delete(userBlDel[1])
-      await writeJsonFile(USER_BLACKLIST_FILE, [...userBlacklistCache])
-      userBlacklistFingerprint = await getFileFingerprint(USER_BLACKLIST_FILE)
-      return `已移出用户黑名单：${userBlDel[1]}`
-    }
-    if (plain === '用户黑名单查看') {
-      await ensureUserBlacklistCache()
-      const list = [...userBlacklistCache]
-      return list.length ? `用户黑名单：\n${list.join('\n')}` : '用户黑名单为空。'
-    }
-
-    // 视频黑名单管理
-    const vidBlAddG = plain.match(/^视频黑名单添加群\s*(\d+)$/)
-    if (vidBlAddG) {
-      if (!inGuild) return '这个命令只能在群里使用。'
-      const isGA = session.event?.sender?.role === 'owner' || session.event?.sender?.role === 'admin'
-      if (!isGA && !hasAdminPermission(session)) return '只有群主、管理员或bot管理员才能操作。'
-      const bl = await readJsonFile(VIDEO_BLACKLIST_FILE, { groups: [], users: [] })
-      if (!Array.isArray(bl.groups)) bl.groups = []
-      if (!bl.groups.includes(vidBlAddG[1])) bl.groups.push(vidBlAddG[1])
-      await writeJsonFile(VIDEO_BLACKLIST_FILE, bl)
-      return `视频解析已加入群黑名单：${vidBlAddG[1]}`
-    }
-    const vidBlDelG = plain.match(/^视频黑名单删除群\s*(\d+)$/)
-    if (vidBlDelG) {
-      if (!inGuild) return '这个命令只能在群里使用。'
-      const isGA = session.event?.sender?.role === 'owner' || session.event?.sender?.role === 'admin'
-      if (!isGA && !hasAdminPermission(session)) return '只有群主、管理员或bot管理员才能操作。'
-      const bl = await readJsonFile(VIDEO_BLACKLIST_FILE, { groups: [], users: [] })
-      if (Array.isArray(bl.groups)) bl.groups = bl.groups.filter(g => g !== vidBlDelG[1])
-      await writeJsonFile(VIDEO_BLACKLIST_FILE, bl)
-      return `视频解析已移出群黑名单：${vidBlDelG[1]}`
-    }
-    if (plain === '视频黑名单查看') {
-      const bl = await readJsonFile(VIDEO_BLACKLIST_FILE, { groups: [], users: [] })
-      if (Array.isArray(bl.groups) && bl.groups.length) return `视频黑名单群：\n${bl.groups.join('\n')}`
-      return '视频群黑名单为空。'
-    }
-
-    // 敏感话题处理者管理
-    const safeChannelKeyStr = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
-    const handlerFile = path.join(POLITICAL_HANDLER_DIR, safeChannelKeyStr + '.json')
     const isGroupAdmin = session.event?.sender?.role === 'owner' || session.event?.sender?.role === 'admin'
-
-    const handlerAdd = plain.match(/^敏感话题处理者添加\s*(\d+)$/)
-    if (handlerAdd) {
-      if (!inGuild) return '这个命令只能在群里使用。'
-      if (!isGroupAdmin && !hasAdminPermission(session)) return '只有群主、管理员或bot管理员才能设置处理者。'
-      let list = await readJsonFile(handlerFile, [])
-      if (!Array.isArray(list)) { await writeJsonFile(handlerFile, [handlerAdd[1]]); return `已添加敏感话题处理者：${handlerAdd[1]}` }
-      if (!list.includes(handlerAdd[1])) { list.push(handlerAdd[1]); await writeJsonFile(handlerFile, list) }
-      return `已添加敏感话题处理者：${handlerAdd[1]}`
-    }
-    const handlerDel = plain.match(/^敏感话题处理者删除\s*(\d+)$/)
-    if (handlerDel) {
-      if (!inGuild) return '这个命令只能在群里使用。'
-      if (!isGroupAdmin && !hasAdminPermission(session)) return '只有群主、管理员或bot管理员才能设置处理者。'
-      let list = await readJsonFile(handlerFile, [])
-      if (Array.isArray(list)) { list = list.filter(id => id !== handlerDel[1]); await writeJsonFile(handlerFile, list) }
-      return `已移除敏感话题处理者：${handlerDel[1]}`
-    }
-    if (plain === '敏感话题处理者查看') {
-      if (!inGuild) return '这个命令只能在群里使用。'
-      const list = await readJsonFile(handlerFile, [])
-      if (Array.isArray(list) && list.length) return `本群敏感话题处理者：\n${list.join('\n')}`
-      return '本群未配置敏感话题处理者。'
-    }
-
-    // 敏感话题检测开关
-    if (plain === '敏感话题检测开') {
-      if (!inGuild) return '这个命令只能在群里使用。'
-      const isGA = session.event?.sender?.role === 'owner' || session.event?.sender?.role === 'admin'
-      if (!isGA && !hasAdminPermission(session)) return '只有群主、管理员或bot管理员才能操作。'
-      let list = await readJsonFile(POLITICAL_DETECT_FILE, [])
-      if (!Array.isArray(list)) list = []
-      if (!list.includes(channelKey)) { list.push(channelKey); await writeJsonFile(POLITICAL_DETECT_FILE, list) }
-      resetPoliticalDetectCache()
-      clearSensitiveRuntimeState(channelKey)
-      // 自动加入白名单，确保敏感缓存有数据
-      let sw = await readJsonFile(SUMMARY_WHITELIST_FILE, [])
-      if (!Array.isArray(sw)) sw = []
-      if (!sw.includes(channelKey)) { sw.push(channelKey); await writeJsonFile(SUMMARY_WHITELIST_FILE, sw) }
-      return '敏感话题检测已开启。'
-    }
-    if (plain === '敏感话题检测关') {
-      if (!inGuild) return '这个命令只能在群里使用。'
-      const isGA = session.event?.sender?.role === 'owner' || session.event?.sender?.role === 'admin'
-      if (!isGA && !hasAdminPermission(session)) return '只有群主、管理员或bot管理员才能操作。'
-      let list = await readJsonFile(POLITICAL_DETECT_FILE, [])
-      if (Array.isArray(list)) { list = list.filter(k => k !== channelKey); await writeJsonFile(POLITICAL_DETECT_FILE, list) }
-      resetPoliticalDetectCache()
-      clearSensitiveRuntimeState(channelKey)
-      return '敏感话题检测已关闭。'
-    }
-    if (plain === '敏感话题检测查看') {
-      const list = await readJsonFile(POLITICAL_DETECT_FILE, [])
-      return `敏感话题检测：${Array.isArray(list) && list.includes(channelKey) ? '开' : '关'}`
-    }
-
-    // 解除上限群白名单管理
-    const swAdd = plain.match(/^解除上限群白名单添加\s*(\d+)$/)
-    if (swAdd) {
-      const sw = await readJsonFile(SUMMARY_WHITELIST_FILE, [])
-      if (!Array.isArray(sw)) { await writeJsonFile(SUMMARY_WHITELIST_FILE, [swAdd[1]]); return `已添加解除上限群白名单：${swAdd[1]}` }
-      if (!sw.includes(swAdd[1])) { sw.push(swAdd[1]); await writeJsonFile(SUMMARY_WHITELIST_FILE, sw) }
-      return `已添加解除上限群白名单：${swAdd[1]}`
-    }
-    const swDel = plain.match(/^解除上限群白名单删除\s*(\d+)$/)
-    if (swDel) {
-      let sw = await readJsonFile(SUMMARY_WHITELIST_FILE, [])
-      if (Array.isArray(sw)) { sw = sw.filter(g => g !== swDel[1]); await writeJsonFile(SUMMARY_WHITELIST_FILE, sw) }
-      return `已移出解除上限群白名单：${swDel[1]}`
-    }
-    if (plain === '解除上限群白名单查看') {
-      const sw = await readJsonFile(SUMMARY_WHITELIST_FILE, [])
-      if (Array.isArray(sw) && sw.length) return `解除上限群白名单：\n${sw.join('\n')}`
-      return '解除上限群白名单为空。'
-    }
-
-    if (plain === 'AI抓事件') {
-      armEventDump(session)
-      return `已开始抓取当前会话的下一条原始事件。\n请把目标消息再发一遍，触发后会写入：${EVENT_DUMP_DIR}`
-    }
-
-    if (plain === 'AI抓事件查看') {
-      const armed = getArmedEventDump(channelKey)
-      if (!armed) return '当前没有待抓取的原始事件。'
-      return `原始事件抓取：已开启\n抓取人：${armed.armedBy || '(未知)'}\n剩余有效期：约${Math.max(1, Math.ceil((EVENT_DUMP_ARM_EXPIRE_MS - (Date.now() - armed.armedAt)) / 60000))}分钟`
-    }
-
-    if (plain === 'AI抓事件取消') {
-      clearArmedEventDump(channelKey)
-      return '已取消当前会话的原始事件抓取。'
-    }
-
-    const rateSetMatch = plain.match(/^东雪莲群聊AI概率设置\s*((?:100(?:\.0+)?)|(?:\d{1,2}(?:\.\d+)?))%$/)
-    if (rateSetMatch) {
-      if (!inGuild) return '这个命令只能在群里用。'
-      if (!isGroupAdmin && !hasAdminPermission(session)) return '只有群主、群管理员或bot管理员才能设置概率。'
-      const rate = Number(rateSetMatch[1]) / 100
-      if (!Number.isFinite(rate) || rate <= 0 || rate > 1) return '概率范围只能是 0% 到 100% 之间。'
-      randomRateCache.set(channelKey, rate)
-      await writeJsonFile(RANDOM_RATE_FILE, Object.fromEntries(randomRateCache))
-      return `本群主动回复基础概率已设置为 ${formatPercent(rate)}。50条未触发后仍按每条 +${formatPercent(RANDOM_TRIGGER_RAMP)} 递增。本群东雪莲AI聊天状态：${getRandomWhitelistStatus(channelKey) ? '开' : '关'}`
-    }
-
-    if (/^东雪莲群聊AI概率重置$/.test(plain)) {
-      if (!inGuild) return '这个命令只能在群里用。'
-      randomRateCache.delete(channelKey)
-      await writeJsonFile(RANDOM_RATE_FILE, Object.fromEntries(randomRateCache))
-      return `本群主动回复基础概率已重置为默认值 ${formatPercent(RANDOM_TRIGGER_RATE_BASE)}。`
-    }
+    const inlineAdminResult = await handleAdminInlineCommands(session, ctx, {
+      plain,
+      inGuild,
+      channelKey,
+      isGroupAdmin,
+      randomWhitelistCache,
+      randomRateCache,
+      loadUserBlacklist,
+      getFileFingerprint,
+      setBlacklistFingerprint: (value) => { userBlacklistFingerprint = value },
+      armEventDump,
+      getArmedEventDump,
+      clearArmedEventDump,
+      getRandomWhitelistStatus,
+    })
+    if (inlineAdminResult.matched) return inlineAdminResult.response
 
     const commandResult = await handleCommand(session, ctx, {
       plain, inGuild, channelKey, currentUserId, adminCommandMatched,
@@ -1301,12 +1131,12 @@ exports.apply = (ctx) => {
         if (!reply) return
         if (randomTriggered && inGuild && !chatMeta.rareConfirmed) {
           try {
-            const { shouldTriggerRandomVoice, markChannelCooldown, synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice, extractVoiceStyle, stripVoiceStyleTag } = require('./tts')
+            const { shouldTriggerRandomVoice, markChannelCooldown, synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice, extractVoiceStyle, stripVoiceStyleTag, composeTtsStyle } = require('./tts')
             if (shouldTriggerRandomVoice(channelKey)) {
               const resolved = resolvePersona(channelKey, currentUserId)
               const voiceOpts = resolvePersonaVoice(resolved.name)
               const styleOverride = extractVoiceStyle(reply)
-              if (styleOverride) voiceOpts.style = styleOverride
+              voiceOpts.style = composeTtsStyle(voiceOpts.style, styleOverride)
               const ttsText = stripVoiceStyleTag(reply)
               const ttsDiagnostics = {
                 diagnostics: {},

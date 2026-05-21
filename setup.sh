@@ -179,6 +179,7 @@ create_data_files() {
   printf '[%s]\n' "$admin_ids_json" > "$DATA_DIR/ai-admin-ids.json"
   echo "{}" > "$DATA_DIR/ai-repeat-enabled.json"
   echo "[]" > "$DATA_DIR/ai-random-rate.json"
+  echo "{}" > "$DATA_DIR/ai-random-voice-rate.json"
   echo "off" > "$DATA_DIR/ai-enable-search.txt"
   echo "off" > "$DATA_DIR/ai-enable-thinking.txt"
 }

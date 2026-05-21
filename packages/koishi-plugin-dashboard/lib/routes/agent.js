@@ -222,8 +222,8 @@ function findPersonaSkillFile(personaName, personaModule = getPersonaModule()) {
   return null
 }
 
-function cleanFrontmatterValue(value, fallback = '') {
-  return String(value || fallback).replace(/[\r\n]+/g, ' ').trim()
+function cleanFrontmatterValue(value, fallback = '', maxLength = 240) {
+  return String(value || fallback).replace(/[\r\n]+/g, ' ').trim().slice(0, maxLength)
 }
 
 function writePersonaVoiceConfig(personaName, voiceId, voiceStyle, voiceAssetId = '') {
@@ -231,10 +231,11 @@ function writePersonaVoiceConfig(personaName, voiceId, voiceStyle, voiceAssetId 
   const target = findPersonaSkillFile(personaName, personaModule)
   if (!target) return null
   const nextVoice = cleanFrontmatterValue(voiceId, '冰糖')
-  const nextStyle = cleanFrontmatterValue(voiceStyle, '活泼可爱')
+  const nextStyle = cleanFrontmatterValue(voiceStyle)
   const nextAssetId = cleanFrontmatterValue(voiceAssetId)
-  const lines = [`voice_id: ${nextVoice}`, `voice_style: ${nextStyle}`]
-  if (nextVoice === '__cloned__' && nextAssetId) lines.splice(1, 0, `voice_asset_id: ${nextAssetId}`)
+  const lines = [`voice_id: ${nextVoice}`]
+  if (nextVoice === '__cloned__' && nextAssetId) lines.push(`voice_asset_id: ${nextAssetId}`)
+  if (nextStyle) lines.push(`voice_style: ${nextStyle}`)
   const insert = lines.join('\n') + '\n'
   let updated = target.content
   if (/^---\n[\s\S]*?\n---/.test(updated)) {
@@ -316,7 +317,7 @@ function handlePostTtsClone(req, res) {
         mimeType: mimeType || voiceAssets.getAudioMimeFromFilename(filename),
       })
       try {
-        writePersonaVoiceConfig(personaName, '__cloned__', data.voiceStyle || '活泼可爱', asset.id)
+        writePersonaVoiceConfig(personaName, '__cloned__', data.voiceStyle || '', asset.id)
       } catch {}
       return json(res, { ok: true, message: '音色克隆成功', file: filename, asset })
     } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
@@ -333,7 +334,7 @@ function handlePostTtsPreview(req, res) {
       const tts = getTtsModule()
       const hasExplicitVoice = !!voice
       let resolvedVoice = voice || '冰糖'
-      let resolvedStyle = style || '活泼可爱'
+      let resolvedStyle = style || ''
       if (resolvedVoice === '__cloned__') {
         let pName = personaName || data.persona || ''
         if (voiceAssetId) {
@@ -355,7 +356,7 @@ function handlePostTtsPreview(req, res) {
           } catch {}
         }
         if (resolvedVoice !== '__cloned__') {
-          // Already resolved by explicit voiceAssetId.
+          if (!resolvedStyle && pName) resolvedStyle = tts.resolvePersonaVoice(pName).style
         } else if (pName) {
           const resolved = tts.resolvePersonaVoice(pName)
           resolvedVoice = resolved.voice
@@ -368,6 +369,7 @@ function handlePostTtsPreview(req, res) {
         resolvedVoice = resolved.voice
         resolvedStyle = style || resolved.style
       }
+      if (!resolvedStyle && personaName) resolvedStyle = tts.resolvePersonaVoice(personaName).style
       const diagnostics = {}
       const buf = await tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice, style: resolvedStyle, diagnostics, logger: getTtsLogger(), context: 'dashboard:tts-preview' })
       if (!buf) return json(res, { ok: false, message: '语音合成失败，请检查 API key 或网络', reason: diagnostics.lastError?.code || 'unknown' }, 500)
@@ -421,7 +423,7 @@ function handlePostTtsCloneDelete(req, res) {
       const result = voiceAssets.deleteVoiceAsset(asset.id, voiceConfigs)
       if (!result) return json(res, { ok: false, message: '删除失败' }, 500)
       for (const vc of usingPersonas) {
-        writePersonaVoiceConfig(vc.name, '冰糖', vc.style || '活泼可爱')
+        writePersonaVoiceConfig(vc.name, '冰糖', vc.style || '')
       }
       return json(res, { ok: true, message: '删除成功', deleted: result.deleted, asset: result.asset })
     } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
@@ -440,7 +442,7 @@ function handlePutPersonaVoice(req, res) {
         const sample = voiceAssets.resolveVoiceSampleFile(personaName, voiceAssetId || '')
         if (!sample) return json(res, { ok: false, message: '该人格还没有可用的克隆音色样本' }, 400)
       }
-      const targetFile = writePersonaVoiceConfig(personaName, nextVoice, voiceStyle || '活泼可爱', voiceAssetId || '')
+      const targetFile = writePersonaVoiceConfig(personaName, nextVoice, voiceStyle || '', voiceAssetId || '')
       if (!targetFile) return json(res, { ok: false, message: '未找到人格文件' }, 404)
       return json(res, { ok: true, message: '音色配置已更新' })
     } catch (e) { return json(res, { ok: false, message: e.message }, 500) }

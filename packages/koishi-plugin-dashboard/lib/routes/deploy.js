@@ -17,6 +17,7 @@ const dh = require('../deploy-helpers')
 
 const DEPLOY_CONFIG_FILE = path.join(DATA_DIR, 'deploy-config.json')
 const DEPLOY_TASKS_DIR = path.join(DATA_DIR, 'deploy-tasks')
+const DEFAULT_REMOTE_APP_DIR = process.env.DASHBOARD_REMOTE_APP_DIR || process.env.KOISHI_REMOTE_APP_DIR || ''
 
 function requireStrictAdmin(req, res) {
   const { isLocalAuthBypass, validateAdminToken } = require('../auth')
@@ -38,7 +39,7 @@ function handleGetDeployConfig(req, res) {
     try { execSync('ss -tlnp | grep -q :5140', { stdio: 'ignore' }); botRunning = true } catch {}
     cfg._localFingerprint = dh.computeFingerprint()
     return json(res, { ...cfg, botRunning })
-  } catch { return json(res, { server: '', appDir: '/root/koishi-app', botRunning: false, _localFingerprint: dh.computeFingerprint() }) }
+  } catch { return json(res, { server: '', appDir: DEFAULT_REMOTE_APP_DIR, botRunning: false, _localFingerprint: dh.computeFingerprint() }) }
 }
 
 function handleGetCheckUpdate(req, res) {

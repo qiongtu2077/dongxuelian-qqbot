@@ -19,6 +19,7 @@ async function run(t) {
     data: {
       randomWhitelist: ['10001'],
       randomRate: { 10001: 1 },
+      randomVoiceRate: { 10001: 0 },
     },
   }, async ({ ready, makeSession, run }) => {
     await ready()

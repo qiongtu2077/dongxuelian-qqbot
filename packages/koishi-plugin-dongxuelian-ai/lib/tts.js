@@ -8,6 +8,7 @@ const { MIMORIUM_KEY_FILE, TTS_TEMP_DIR } = require('./constants')
 const { readTextFile } = require('./utils')
 const { parsePersonaFrontmatter, loadPersonalSkill } = require('./persona')
 const { resolveVoiceSampleFile } = require('./voice-assets')
+const { DEFAULT_RANDOM_VOICE_RATE, getRandomVoiceRate } = require('./random-voice-rate')
 const fs = require('fs')
 const path = require('path')
 const { pathToFileURL } = require('url')
@@ -18,10 +19,12 @@ const TTS_BASE_URL = 'https://token-plan-cn.xiaomimimo.com/v1'
 const TTS_MODEL = 'mimo-v2.5-tts'
 const TTS_CLONE_MODEL = 'mimo-v2.5-tts-voiceclone'
 const DEFAULT_VOICE = '冰糖'
-const DEFAULT_STYLE = '活泼可爱'
+const NEUTRAL_TTS_STYLE = '自然清晰，语气稳定，情绪适度，贴合文本内容；不要夸张表演，不要强行卖萌，不要改变角色人设。'
 const MAX_TTS_TEXT_LENGTH = 300
+const MAX_TTS_STYLE_LENGTH = 240
+const COMPOSED_STYLE_GUARD = '保持当前人格，不要脱离人设，不要因为临时语气变成另一种人格。'
 const CHANNEL_COOLDOWN_MS = 5 * 60 * 1000
-const RANDOM_VOICE_RATE = 0.05
+const RANDOM_VOICE_RATE = DEFAULT_RANDOM_VOICE_RATE
 const DEFAULT_TTS_SEND_FILE_TTL_MS = 10 * 60 * 1000
 const TTS_SEND_FILE_TTL_MS = (() => {
   const value = Number(process.env.TTS_SEND_FILE_TTL_MS || DEFAULT_TTS_SEND_FILE_TTL_MS)
@@ -49,6 +52,54 @@ function sanitizeDiagnosticText(value, maxLength = 240) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, maxLength)
+}
+
+function sanitizeTtsStyle(value, fallback = '') {
+  const text = String(value || '')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:sk|tp)-[A-Za-z0-9._~+/=-]{8,}\b/g, '[redacted-key]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const style = text || String(fallback || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return style.slice(0, MAX_TTS_STYLE_LENGTH)
+}
+
+function composeTtsStyle(baseStyle, temporaryStyle) {
+  const base = sanitizeTtsStyle(baseStyle)
+  const temporary = sanitizeTtsStyle(temporaryStyle)
+  if (base && temporary) {
+    const basePrefix = '人格基础语音风格：'
+    const temporaryPrefix = '本句临时语气：'
+    const fixedLength = basePrefix.length + temporaryPrefix.length + COMPOSED_STYLE_GUARD.length + 2
+    const budget = Math.max(0, MAX_TTS_STYLE_LENGTH - fixedLength)
+    let baseBudget = Math.min(base.length, Math.ceil(budget * 0.65))
+    let temporaryBudget = Math.min(temporary.length, budget - baseBudget)
+    let spare = budget - baseBudget - temporaryBudget
+    if (spare > 0 && baseBudget < base.length) {
+      const extra = Math.min(spare, base.length - baseBudget)
+      baseBudget += extra
+      spare -= extra
+    }
+    if (spare > 0 && temporaryBudget < temporary.length) {
+      temporaryBudget += Math.min(spare, temporary.length - temporaryBudget)
+    }
+    return [
+      `${basePrefix}${base.slice(0, baseBudget)}`,
+      `${temporaryPrefix}${temporary.slice(0, temporaryBudget)}`,
+      COMPOSED_STYLE_GUARD,
+    ].join('\n')
+  }
+  if (base) return base
+  if (temporary) {
+    const temporaryPrefix = '本句临时语气：'
+    const budget = Math.max(0, MAX_TTS_STYLE_LENGTH - temporaryPrefix.length - COMPOSED_STYLE_GUARD.length - 1)
+    return [
+      `${temporaryPrefix}${temporary.slice(0, budget)}`,
+      COMPOSED_STYLE_GUARD,
+    ].join('\n')
+  }
+  return NEUTRAL_TTS_STYLE
 }
 
 function recordTtsFailure(options, code, message, details = {}) {
@@ -171,7 +222,8 @@ function scheduleTtsSendFileCleanup(filePath, ttlMs = TTS_SEND_FILE_TTL_MS) {
 }
 
 async function synthesizeSpeech(text, options = {}) {
-  const { voice = DEFAULT_VOICE, style = DEFAULT_STYLE } = options
+  const { voice = DEFAULT_VOICE } = options
+  const style = sanitizeTtsStyle(options.style, NEUTRAL_TTS_STYLE)
   const apiKey = await getMimoriumKey()
   const isCloneVoice = String(voice).startsWith('data:')
   const model = isCloneVoice ? TTS_CLONE_MODEL : TTS_MODEL
@@ -265,13 +317,13 @@ async function sendVoiceMessage(session, audioBuf, options = {}) {
 }
 
 function resolvePersonaVoice(personaName) {
-  if (!personaName) return { voice: DEFAULT_VOICE, style: DEFAULT_STYLE }
+  if (!personaName) return { voice: DEFAULT_VOICE, style: NEUTRAL_TTS_STYLE }
   const content = loadPersonalSkill(personaName)
-  if (!content) return { voice: DEFAULT_VOICE, style: DEFAULT_STYLE }
+  if (!content) return { voice: DEFAULT_VOICE, style: NEUTRAL_TTS_STYLE }
   const meta = parsePersonaFrontmatter(content)
   const voiceId = meta.voice_id || meta.voice || ''
   const voiceAssetId = meta.voice_asset_id || ''
-  const style = meta.voice_style || DEFAULT_STYLE
+  const style = sanitizeTtsStyle(meta.voice_style, NEUTRAL_TTS_STYLE)
 
   if (voiceId === '__cloned__' || voiceId === '') {
     const clonedUri = loadClonedVoiceUri(personaName, voiceAssetId)
@@ -302,7 +354,7 @@ function loadClonedVoiceUri(personaName, voiceAssetId = '') {
 function extractVoiceStyle(replyText) {
   const match = String(replyText || '').match(VOICE_STYLE_RE)
   if (!match) return null
-  return match[1].trim()
+  return sanitizeTtsStyle(match[1]) || null
 }
 
 function stripVoiceStyleTag(text) {
@@ -329,15 +381,17 @@ function markChannelCooldown(channelKey) {
   }
 }
 
-function shouldTriggerRandomVoice(channelKey) {
+function shouldTriggerRandomVoice(channelKey, randomFn = Math.random) {
   if (isChannelOnCooldown(channelKey)) return false
-  return Math.random() < RANDOM_VOICE_RATE
+  return randomFn() < getRandomVoiceRate(channelKey)
 }
 
 module.exports = {
   synthesizeSpeech,
   sendVoiceMessage,
   resolvePersonaVoice,
+  sanitizeTtsStyle,
+  composeTtsStyle,
   extractVoiceStyle,
   stripVoiceStyleTag,
   getBuiltinVoices,
@@ -346,8 +400,12 @@ module.exports = {
   shouldTriggerRandomVoice,
   getMimoriumKey,
   detectAudioMime,
+  getRandomVoiceRate,
   BUILTIN_VOICES,
+  DEFAULT_VOICE,
+  NEUTRAL_TTS_STYLE,
   MAX_TTS_TEXT_LENGTH,
+  MAX_TTS_STYLE_LENGTH,
   RANDOM_VOICE_RATE,
   CHANNEL_COOLDOWN_MS,
 }

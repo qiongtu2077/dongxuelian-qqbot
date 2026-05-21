@@ -112,7 +112,8 @@
       </div>
       <div>
         <div style="font-size:13px;color:var(--text2);margin-bottom:4px">说话风格</div>
-        <input v-model="voiceStyle" placeholder="活泼可爱、温柔知性..." style="width:100%" />
+        <input v-model="voiceStyle" placeholder="例如：沉稳冷静，语速适中偏慢，情绪克制；不要卖萌，不要夸张表演" style="width:100%" />
+        <div style="font-size:12px;color:var(--text3);margin-top:6px;line-height:1.5">当前生效：{{ effectiveVoiceStyleLabel }}</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn" @click="doSaveVoice" :disabled="voiceSaving || !voicePersona">{{ voiceSaving ? '保存中...' : '保存配置' }}</button>
@@ -124,7 +125,7 @@
       </div>
       <audio v-if="previewAudioSrc" controls preload="metadata" :src="previewAudioSrc" @loadedmetadata="onPreviewAudioLoaded" @error="onPreviewAudioError" style="width:100%;height:36px;border-radius:8px"></audio>
       <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:12px">
-        <div style="font-size:13px;color:var(--text2);margin-bottom:8px">音色克隆样本（上传音频样本，MP3/WAV/OGG/M4A，30s 以内，7MB 以内）</div>
+        <div style="font-size:13px;color:var(--text2);margin-bottom:8px">音色克隆样本（上传音频样本，MP3/WAV/OGG/M4A，60s 以内，7MB 以内）</div>
         <div style="display:grid;gap:8px">
           <input v-model="cloneDisplayName" placeholder="显示名，默认使用人格名或文件名" style="width:100%" />
           <input v-model="cloneDescription" placeholder="备注，例如样本来源、版本或音质说明" style="width:100%" />
@@ -202,6 +203,10 @@ import { ref, computed, inject, onMounted, onBeforeUnmount, nextTick, watch } fr
 import { fetchPersonas, fetchPersonaDetail, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore, fetchTtsVoices, ttsPreview, ttsClone, updateTtsClone, deleteTtsClone, savePersonaVoice } from '../api'
 
 defineOptions({ name: 'PersonaPanel' })
+
+const NEUTRAL_TTS_STYLE = '自然清晰，语气稳定，情绪适度，贴合文本内容；不要夸张表演，不要强行卖萌，不要改变角色人设。'
+const MAX_CLONE_AUDIO_BYTES = 7 * 1024 * 1024
+const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
 
     const showAdminDialog = inject('showAdminDialog')
     const personas = ref([])
@@ -396,6 +401,12 @@ defineOptions({ name: 'PersonaPanel' })
     const previewAudioObjectUrl = ref('')
 
     const usableClonedVoices = computed(() => clonedVoices.value.filter(asset => !asset.missing))
+    const effectiveVoiceStyleLabel = computed(() => {
+      const typed = voiceStyle.value.trim()
+      if (typed) return typed
+      const personaStyle = personaVoiceMap.value[voicePersona.value]?.voiceStyle || ''
+      return personaStyle || NEUTRAL_TTS_STYLE
+    })
 
     function findVoiceAssetById(id) {
       return clonedVoices.value.find(asset => asset.id === id && !asset.missing) || null
@@ -548,7 +559,7 @@ defineOptions({ name: 'PersonaPanel' })
         voiceMsg.value = { type: 'err', text: '请选择要试听的克隆音色' }
         return
       }
-      const res = await ttsPreview(text, voiceId.value || '冰糖', voiceStyle.value || '活泼可爱', voicePersona.value, selectedAssetId)
+      const res = await ttsPreview(text, voiceId.value || '', voiceStyle.value.trim(), voicePersona.value, selectedAssetId)
       if (!res.ok || !setPreviewAudio(res.data)) {
         voiceMsg.value = { type: 'err', text: res.data?.message || '试听失败' }
       }
@@ -563,23 +574,64 @@ defineOptions({ name: 'PersonaPanel' })
       }
     }
 
+    function readAudioDurationSeconds(file) {
+      return new Promise((resolve, reject) => {
+        const audio = document.createElement('audio')
+        const objectUrl = URL.createObjectURL(file)
+        let settled = false
+        const finish = (fn, value) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          audio.removeAttribute('src')
+          try { audio.load() } catch {}
+          try { URL.revokeObjectURL(objectUrl) } catch {}
+          fn(value)
+        }
+        const timer = setTimeout(() => finish(reject, new Error('读取音频时长超时')), 10000)
+        audio.preload = 'metadata'
+        audio.onloadedmetadata = () => {
+          const duration = Number(audio.duration)
+          if (!Number.isFinite(duration) || duration <= 0) finish(reject, new Error('无法读取音频时长'))
+          else finish(resolve, duration)
+        }
+        audio.onerror = () => finish(reject, new Error('无法读取音频时长'))
+        audio.src = objectUrl
+        try { audio.load() } catch {}
+      })
+    }
+
     async function doClone() {
-      if (!cloneFile.value || !voicePersona.value) return
-      if (cloneFile.value.size > 7 * 1024 * 1024) {
+      const file = cloneFile.value
+      if (!file || !voicePersona.value) return
+      if (file.size > MAX_CLONE_AUDIO_BYTES) {
         cloneStatus.value = '文件过大'
         voiceMsg.value = { type: 'err', text: '音频样本请控制在 7MB 以内，避免编码上传后超过请求限制' }
+        return
+      }
+      cloneStatus.value = '读取音频信息...'
+      try {
+        const duration = await readAudioDurationSeconds(file)
+        if (duration > MAX_CLONE_AUDIO_DURATION_SECONDS) {
+          cloneStatus.value = '文件过长'
+          voiceMsg.value = { type: 'err', text: `音频样本请控制在 ${MAX_CLONE_AUDIO_DURATION_SECONDS}s 以内` }
+          return
+        }
+      } catch (error) {
+        cloneStatus.value = '读取失败'
+        voiceMsg.value = { type: 'err', text: error?.message || '无法读取音频时长' }
         return
       }
       voiceCloning.value = true; cloneStatus.value = '上传中...'; voiceMsg.value = null
       const reader = new FileReader()
       reader.onload = async () => {
-        const base64 = reader.result.split(',')[1]
-        const mimeType = cloneFile.value.type || 'audio/mpeg'
+        const base64 = String(reader.result || '').split(',')[1] || ''
+        const mimeType = file.type || 'audio/mpeg'
         const res = await ttsClone(voicePersona.value, base64, mimeType, {
           displayName: cloneDisplayName.value.trim() || `${voicePersona.value} 克隆音色`,
           description: cloneDescription.value.trim(),
           sampleText: cloneSampleText.value.trim() || previewText.value.trim() || '你好，这是一段语音测试。',
-          voiceStyle: voiceStyle.value || '活泼可爱',
+          voiceStyle: voiceStyle.value.trim(),
         })
         if (res.ok) {
           cloneStatus.value = '克隆成功'
@@ -594,13 +646,13 @@ defineOptions({ name: 'PersonaPanel' })
         voiceCloning.value = false
       }
       reader.onerror = () => { voiceCloning.value = false; cloneStatus.value = '读取失败'; voiceMsg.value = { type: 'err', text: '文件读取失败' } }
-      reader.readAsDataURL(cloneFile.value)
+      reader.readAsDataURL(file)
     }
 
     async function doPreviewAsset(asset) {
       if (!asset) return
       voicePreviewing.value = true; clearPreviewAudio(); voiceMsg.value = null
-      const style = voiceStyle.value || personaVoiceMap.value[voicePersona.value]?.voiceStyle || personaVoiceMap.value[asset.personaName]?.voiceStyle || '活泼可爱'
+      const style = voiceStyle.value.trim() || personaVoiceMap.value[voicePersona.value]?.voiceStyle || personaVoiceMap.value[asset.personaName]?.voiceStyle || ''
       const text = (asset.sampleText || previewText.value || '你好，这是一段语音测试。').trim()
       const res = await ttsPreview(text, '__cloned__', style, voicePersona.value || asset.personaName, asset.id)
       if (res.code === 'ADMIN_REQUIRED') { voicePreviewing.value = false; if (showAdminDialog) showAdminDialog('试听克隆音色需要管理员密码', () => doPreviewAsset(asset)); return }
@@ -620,7 +672,7 @@ defineOptions({ name: 'PersonaPanel' })
       voicePersona.value = targetPersona
       voiceId.value = '__cloned__'
       selectedVoiceAssetId.value = asset.id
-      const style = personaVoiceMap.value[targetPersona]?.voiceStyle || voiceStyle.value || '活泼可爱'
+      const style = personaVoiceMap.value[targetPersona]?.voiceStyle || voiceStyle.value.trim() || ''
       voiceStyle.value = style
       voiceSaving.value = true; voiceMsg.value = null
       const res = await savePersonaVoice(targetPersona, '__cloned__', style, asset.id)

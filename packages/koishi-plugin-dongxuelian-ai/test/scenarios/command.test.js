@@ -203,6 +203,55 @@ async function run(t) {
     const groupPersonaAfter = fs.existsSync(groupPersonaFile) ? fs.readFileSync(groupPersonaFile, 'utf8') : null
     t.check('scenario non-admin group persona does not write file', groupPersonaAfter === groupPersonaBefore, JSON.stringify({ before: groupPersonaBefore, after: groupPersonaAfter }))
 
+    const voiceRateNonAdmin = await run(makeSession({
+      userId: '12345',
+      author: { id: '12345', name: 'member' },
+      content: '东雪莲群聊语音概率设置 40%',
+      event: { sender: { role: 'member' }, message: [] },
+    }))
+    checkSentNonEmpty(t, 'scenario non-admin voice rate switch rejected with reply', voiceRateNonAdmin)
+    t.check('scenario non-admin voice rate switch does not write file', Object.keys(data.readJson('ai-random-voice-rate.json')).length === 0, JSON.stringify(data.readJson('ai-random-voice-rate.json')))
+
+    const groupAdminVoiceRate = await run(makeSession({
+      userId: '12345',
+      author: { id: '12345', name: 'member' },
+      content: '东雪莲群聊语音概率设置 40%',
+      event: { sender: { role: 'admin' }, message: [] },
+    }))
+    checkSentNonEmpty(t, 'scenario group admin voice rate switch accepted', groupAdminVoiceRate)
+    t.check('scenario group admin voice rate writes current group', data.readJson('ai-random-voice-rate.json')['10001'] === 0.4, JSON.stringify(data.readJson('ai-random-voice-rate.json')))
+    const tts = require('../../lib/tts')
+    t.check('scenario group admin voice rate is used by random voice trigger', tts.shouldTriggerRandomVoice('10001', () => 0.399) && !tts.shouldTriggerRandomVoice('10001', () => 0.4))
+
+    const currentVoiceRateView = await run(makeSession({ content: '东雪莲群聊语音概率查看' }))
+    t.check('scenario voice rate view shows current group value', currentVoiceRateView.sent.some(item => String(item).includes('40%')), JSON.stringify(currentVoiceRateView.sent))
+
+    const directTargetVoiceRate = await run(makeSession({
+      isDirect: true,
+      guildId: '',
+      channelId: 'private-1',
+      content: '东雪莲群聊语音概率设置 20002 25%',
+    }))
+    checkSentNonEmpty(t, 'scenario bot admin target voice rate switch accepted', directTargetVoiceRate)
+    t.check('scenario bot admin target voice rate writes requested group', data.readJson('ai-random-voice-rate.json')['20002'] === 0.25, JSON.stringify(data.readJson('ai-random-voice-rate.json')))
+
+    const directTargetVoiceRateView = await run(makeSession({
+      isDirect: true,
+      guildId: '',
+      channelId: 'private-1',
+      content: '东雪莲群聊语音概率查看 20002',
+    }))
+    t.check('scenario target voice rate view shows requested group value', directTargetVoiceRateView.sent.some(item => String(item).includes('25%')), JSON.stringify(directTargetVoiceRateView.sent))
+
+    const targetVoiceRateReset = await run(makeSession({
+      isDirect: true,
+      guildId: '',
+      channelId: 'private-1',
+      content: '东雪莲群聊语音概率重置 20002',
+    }))
+    checkSentNonEmpty(t, 'scenario target voice rate reset accepted', targetVoiceRateReset)
+    t.check('scenario target voice rate reset removes requested group', data.readJson('ai-random-voice-rate.json')['20002'] === undefined, JSON.stringify(data.readJson('ai-random-voice-rate.json')))
+
     t.check('scenario command temp files stay inside data dir', fs.existsSync(path.join(data.dataDir, 'ai-openai-key.txt')))
   })
 
