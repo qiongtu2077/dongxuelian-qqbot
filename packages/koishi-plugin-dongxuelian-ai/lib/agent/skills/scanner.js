@@ -77,7 +77,7 @@ const SCAN_RULES = [
     id: 'OB-001',
     category: 'obfuscation',
     severity: 'HIGH',
-    pattern: /(?:atob\s*\(|btoa\s*\(|Buffer\.from\s*\([^)]*,\s*['"]base64['"]|\\u0000|\\x00|​|‌|‍|﻿)/,
+    pattern: /(?:atob\s*\(|btoa\s*\(|Buffer\.from\s*\([^)]*,\s*['"]base64['"]|\\u0000|\\x00|​|‌|‍|\uFEFF)/,
     description: 'Obfuscation or zero-width characters',
   },
   {

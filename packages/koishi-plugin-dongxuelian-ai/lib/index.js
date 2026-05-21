@@ -136,6 +136,10 @@ const {
   buildAffectRouterDiagnostic,
   formatAffectRouterDiagnostic,
 } = require('./affect-router') // 情绪输出旁路诊断（只记录，不接管文本/语音/表情）
+const {
+  runExpressionHarvestForAllChannels,
+  formatExpressionHarvestDiagnostic,
+} = require('./expression-abstractor') // 表达学习每日 harvest（旁路；只写池，不改主链路）
 
 // @satorijs/core@3.7.0 缺少 stripped / parsed / resolve / send，这里随插件加载安装兼容补丁。
 function patchElementText(element) {
@@ -526,9 +530,10 @@ function getNextShanghaiMidnightDelayMs(now = Date.now()) {
 }
 
 let dailyCleanupTimer = null
+let expressionHarvestTimer = null
 
 function scheduleDailyStatsCleanup(ctx) {
-  const run = async () => {
+  const runDailyStatsCleanup = async () => {
     try {
       const result = await cleanupDailyStatsFiles()
       trimChannelRuntimeCaches()
@@ -536,12 +541,35 @@ function scheduleDailyStatsCleanup(ctx) {
     } catch (error) {
       ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${error.message}`)
     } finally {
-      dailyCleanupTimer = setTimeout(run, getNextShanghaiMidnightDelayMs())
+      dailyCleanupTimer = setTimeout(runDailyStatsCleanup, getNextShanghaiMidnightDelayMs())
       if (dailyCleanupTimer && typeof dailyCleanupTimer.unref === 'function') dailyCleanupTimer.unref()
     }
   }
-  dailyCleanupTimer = setTimeout(run, getNextShanghaiMidnightDelayMs())
+  dailyCleanupTimer = setTimeout(runDailyStatsCleanup, getNextShanghaiMidnightDelayMs())
   if (dailyCleanupTimer && typeof dailyCleanupTimer.unref === 'function') dailyCleanupTimer.unref()
+}
+
+function getExpressionHarvestDelayMs(now = Date.now()) {
+  const fiveMinutesMs = 5 * 60 * 1000
+  const delayUntilNextMidnight = getNextShanghaiMidnightDelayMs(now)
+  if (delayUntilNextMidnight > fiveMinutesMs) return delayUntilNextMidnight - fiveMinutesMs
+  return delayUntilNextMidnight + (24 * 60 * 60 * 1000) - fiveMinutesMs
+}
+
+function scheduleExpressionHarvest(ctx) {
+  const runExpressionHarvestTick = async () => {
+    try {
+      const result = await runExpressionHarvestForAllChannels(ctx)
+      logDebug(ctx, 'expression-pool', formatExpressionHarvestDiagnostic(result))
+    } catch (error) {
+      ctx.logger('dongxuelian-ai').warn(`expression harvest failed: ${error.message}`)
+    } finally {
+      expressionHarvestTimer = setTimeout(runExpressionHarvestTick, getExpressionHarvestDelayMs())
+      if (expressionHarvestTimer && typeof expressionHarvestTimer.unref === 'function') expressionHarvestTimer.unref()
+    }
+  }
+  expressionHarvestTimer = setTimeout(runExpressionHarvestTick, getExpressionHarvestDelayMs())
+  if (expressionHarvestTimer && typeof expressionHarvestTimer.unref === 'function') expressionHarvestTimer.unref()
 }
 
 // --- 原始事件抓取 --- //
@@ -874,6 +902,7 @@ exports.apply = (ctx) => {
     trimChannelRuntimeCaches()
     cleanupDailyStatsFiles().catch(error => ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${error.message}`))
     scheduleDailyStatsCleanup(ctx)
+    scheduleExpressionHarvest(ctx)
     try {
       const agentConfig = require('./agent/config').getAgentConfig()
       configureAgentQueue(agentConfig.queue || {})
@@ -904,6 +933,7 @@ exports.apply = (ctx) => {
     channelMessageVersions.clear()
     channelExplicitVersions.clear()
     if (dailyCleanupTimer) { clearTimeout(dailyCleanupTimer); dailyCleanupTimer = null }
+    if (expressionHarvestTimer) { clearTimeout(expressionHarvestTimer); expressionHarvestTimer = null }
   })
 
   ctx.middleware(async (session, next) => {

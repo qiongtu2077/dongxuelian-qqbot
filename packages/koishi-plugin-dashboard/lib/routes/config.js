@@ -7,15 +7,31 @@ const { requireAdmin } = require('../auth')
 const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths')
 
 function parseFrontmatter(content) {
-  const raw = String(content || '').replace(/^\uFEFF/, '')
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(raw)
-  if (!match) return { meta: {}, body: raw, raw }
+  const raw = String(content || '').replace(/\uFEFF/g, '')
   const meta = {}
-  for (const line of match[1].split(/\r?\n/)) {
-    const kv = line.match(/^(\w[\w_-]*):\s*(.*)$/)
-    if (kv) meta[kv[1]] = kv[2].trim()
+  let cursor = 0
+  let firstBody = ''
+  let firstMatchEnd = -1
+  while (cursor < raw.length) {
+    const slice = raw.slice(cursor)
+    const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(slice)
+    if (!match) break
+    for (const line of match[1].split(/\r?\n/)) {
+      const kv = line.match(/^(\w[\w_-]*):\s*(.*)$/)
+      if (!kv) continue
+      if (meta[kv[1]] !== undefined) continue
+      meta[kv[1]] = kv[2].trim()
+    }
+    if (firstMatchEnd === -1) firstMatchEnd = cursor + match[0].length
+    cursor += match[0].length
+    const remainder = raw.slice(cursor)
+    const nextStart = /^\s*---\r?\n/.exec(remainder)
+    if (!nextStart) break
+    cursor += nextStart[0].length - '---\n'.length
   }
-  return { meta, body: raw.slice(match[0].length), raw }
+  if (firstMatchEnd === -1) return { meta: {}, body: raw, raw }
+  firstBody = raw.slice(firstMatchEnd)
+  return { meta, body: firstBody, raw }
 }
 
 function cleanFrontmatterValue(value, maxLength = 240) {

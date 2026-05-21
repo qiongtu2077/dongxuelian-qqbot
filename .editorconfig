@@ -1,0 +1,12 @@
+root = true
+
+# 人格 / lore / mode / core 的 markdown 文件禁止 BOM
+# 任意 BOM（含中段拼接处）会让 frontmatter 解析在第一段 --- 之后退出，
+# 导致 meta.name 抽不到，bot 静默退化为默认 friendly。
+[**/SKILL*.md]
+charset = utf-8
+end_of_line = lf
+
+[**/ai-skills/**/*.md]
+charset = utf-8
+end_of_line = lf

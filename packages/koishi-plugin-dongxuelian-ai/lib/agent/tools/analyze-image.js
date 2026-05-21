@@ -6,6 +6,7 @@ const { downloadImageAsBase64, isVisionModel } = require('../../api')
 const { requestChatCompletions } = require('../../api')
 const { loadConfig } = require('../../runtime-config')
 const { markAnalyzed, getImageEntry, replaceImagePlaceholder, readCachedImage } = require('../../image-store')
+const { isVisionBlindnessReply } = require('../../vision')
 
 module.exports = {
   definition: {
@@ -67,6 +68,9 @@ module.exports = {
       const result = await requestChatCompletions(messages, config, { max_tokens: 500, _timeoutMs: 15000 })
       const analysis = typeof result === 'string' ? result : (result.content || '')
       if (!analysis) return '视觉模型未返回分析结果。'
+      if (isVisionBlindnessReply(analysis)) {
+        return `视觉模型未能解析图片（provider=${config.provider} model=${config.model}），请稍后再试或换一张图。`
+      }
 
       if (channelKey && messageId) {
         await markAnalyzed(channelKey, messageId, analysis)

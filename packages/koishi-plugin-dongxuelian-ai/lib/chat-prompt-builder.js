@@ -90,8 +90,10 @@ function createChatPromptForwardSummaryMessage(forwardSummaryText) {
   return { role: 'system', content: '用户发了一段合并转发消息，以上是转发内容。先看完内容再回应，有值得评论的地方直接说。' }
 }
 
-function createChatPromptShortFollowUpMessage(cleanInput, recentAssistant, shortFollowUpRe) {
-  if (!testChatPromptRegex(shortFollowUpRe, cleanInput) || !recentAssistant) return null
+function createChatPromptShortFollowUpMessage(cleanInput, recentAssistant, options = {}) {
+  if (!recentAssistant) return null
+  const isFollowUp = !!options.isFollowUp
+  if (!isFollowUp) return null
   return {
     role: 'system',
     content: `当前用户这句很短，优先理解为对你上一句“${recentAssistant}”的承接，不要擅自开新话题。`,

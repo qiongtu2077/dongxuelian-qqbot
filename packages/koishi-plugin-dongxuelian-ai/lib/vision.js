@@ -89,6 +89,7 @@ async function appendVisionMessage(messages, session, config, ctx, options = {})
   const readFailReply = options.readFailReply || '图片读取失败。'
   const inaccessibleReply = options.inaccessibleReply || '图片无法访问。'
   const identifyFailReply = options.identifyFailReply || '图片识别失败。'
+  const visionContext = { provider: config && config.provider, model: config && config.model, promptText, injectedIndex: -1 }
 
   try {
     const vc2 = config
@@ -100,14 +101,14 @@ async function appendVisionMessage(messages, session, config, ctx, options = {})
     if (isVisionModel(vc2.provider, vc2.model) && localPath) {
       const imgBase64 = await readImageAsBase64(localPath)
       if (imgBase64) {
-        messages.push({
+        visionContext.injectedIndex = messages.push({
           role: 'user',
           content: [
             { type: 'text', text: promptText },
             { type: 'image_url', image_url: { url: imgBase64 } },
           ],
-        })
-        return { ok: true }
+        }) - 1
+        return { ok: true, visionContext }
       }
       return { ok: false, reply: readFailReply }
     }
@@ -115,14 +116,14 @@ async function appendVisionMessage(messages, session, config, ctx, options = {})
     if (visionUrl) {
       const imgBase64 = await downloadImageAsBase64(visionUrl, 10000)
       if (imgBase64 && isVisionModel(vc2.provider, vc2.model)) {
-        messages.push({
+        visionContext.injectedIndex = messages.push({
           role: 'user',
           content: [
             { type: 'text', text: promptText },
             { type: 'image_url', image_url: { url: imgBase64 } },
           ],
-        })
-        return { ok: true }
+        }) - 1
+        return { ok: true, visionContext }
       }
       return { ok: false, reply: inaccessibleReply }
     }
@@ -135,6 +136,30 @@ async function appendVisionMessage(messages, session, config, ctx, options = {})
   }
 }
 
+// 模型实际没解析到 image_url 时的"我看不到"反驳。命中条件：短回复 + 否定词 + (求重发 / 不接茬意图)。
+// 单独"图太糊看不清"这种正常吐槽不算（会带描述/形容词，长度也常 > 阈值）。
+const VISION_BLINDNESS_NEGATIVE_RE = /(?:看不(?:到|见)|没法看(?:到|见)?|没看(?:到|见)|无法(?:看|查看|识别)|看不出来是什么图|没收到图|没有图)/
+const VISION_BLINDNESS_RESEND_RE = /(?:再发一(?:次|遍|张)|重新发|换个图|发(?:一)?张图|发清楚点|描述一下)/
+
+function isVisionBlindnessReply(reply) {
+  const text = String(reply || '').trim()
+  if (!text) return false
+  if (text.length > 60) return false
+  if (!VISION_BLINDNESS_NEGATIVE_RE.test(text)) return false
+  return VISION_BLINDNESS_RESEND_RE.test(text) || text.length <= 20
+}
+
+// 把已 push 的多模态 user 消息降级为纯文本占位，让模型按文本上下文再答一次。
+function downgradeVisionMessageToText(messages, visionContext, fallbackText) {
+  if (!visionContext || !Array.isArray(messages)) return false
+  const idx = Number(visionContext.injectedIndex)
+  if (!Number.isInteger(idx) || idx < 0 || idx >= messages.length) return false
+  const target = messages[idx]
+  if (!target || target.role !== 'user' || !Array.isArray(target.content)) return false
+  messages[idx] = { role: 'user', content: String(fallbackText || '[图片暂时取不到，请按当前文字上下文回复，不要假设你看到了什么图]') }
+  return true
+}
+
 module.exports = {
   VISION_SESSION_KEYS,
   markSessionForVision,
@@ -143,4 +168,6 @@ module.exports = {
   clearVisionSession,
   prepareVisionRequest,
   appendVisionMessage,
+  isVisionBlindnessReply,
+  downgradeVisionMessageToText,
 }

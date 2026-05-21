@@ -100,6 +100,7 @@ const POLITICAL_DETECT_FILE = path.join(DATA_DIR, 'political-detect-enabled.json
 const SENSITIVE_CACHE_PREFIX = path.join(DATA_DIR, 'sensitive-cache-')
 const STICKER_DIR = path.join(DATA_DIR, 'stickers')
 const CONVERSATIONS_DIR = path.join(DATA_DIR, 'conversations')
+const EXPRESSION_POOL_DIR = path.join(DATA_DIR, 'expression-pool')
 const TOOL_MODE_FILE = path.join(DATA_DIR, 'ai-tool-mode.txt')
 const TOOL_CONFIG_FILE = path.join(DATA_DIR, 'ai-tool-config.json')
 const MAX_TOOL_ROUNDS = 5
@@ -126,7 +127,6 @@ const REPEATED_FALLBACK_REPLIES = ['我孙笑川求求你别发了。', 'byd换�
 const EVALUATION_REQUEST_RE = /(?:评价(?:下|一下)?|锐评|评评|怎么评价|怎么看|说说.{0,200}(?:怎么样|如何)|值不值得吹|牛不牛|行不行|好不好)/
 const JAPAN_SELF_IDENTIFY_RE = /(?:我是|我就?是|我来自|我老家在|我家乡(?:话|就是|在)?|这是我(?:的)?家乡话|我故乡在|我是日本那边的|我是霓虹人).{0,20}(?:日本|日语|霓虹|大和)|(?:日本|日语|霓虹|大和).{0,10}(?:是我(?:的)?家乡话|是我故乡|是我老家|是我家乡|和我有关)/i
 const GENERATION_REQUEST_RE = /(?:帮我(?:生成|写|画|做)|给我(?:生成|写|画|做)|生成(?:一|个|张|份)|画(?:一|个|张)|写(?:一|篇|个|段)|做(?:个|张|份).{0,12}(?:图|图片|文案|代码|方案|提示词|PPT|表格))/i
-const SHORT_FOLLOW_UP_RE = /^(?:对|对啊|对呀|是|是啊|嗯|嗯嗯|好|好的|行|行吧|可以|要|想|就是|然后呢|继续|再来|没错|确实|不对|不是|错|草|6|乐|绷|难绷|\?+|？+|\.{1,3}|。{1,3})$/i
 const BANNED_ACTION_OUTPUT_RE = /拉黑|禁言|报警|不理你了|黑名单/
 const THINKING_OUTPUT_RE = /根据系统(?:指令|规则|约束|提示)|作为\S+?(?:这个角色|的(?:人设|风格))|在群聊(?:场景|里)|从上下文看|群聊场景下|我需要以|我应该[：:]|可以用\S+?的人设|我的角色是|当前场景|规则[：:]|可能太|这是一个.{0,8}(?:回复|场景)|需要.{0,10}(?:回复|插话|吐槽)|可以吐槽|比较随意/
 const SENSITIVE_KEYWORDS_RE = /(?:共产党|国民党|法轮功|六四|八九|台独|港独|藏独|疆独|江青|敏感政治|民运|学运|政治迫害|专制|独裁|暴政|妄议中央|颠覆|复辟|敏感词|禁忌词|审查删帖|(?:台湾|西藏|新疆|香港|taiwan|tibet|hong\.kong).{0,30}(?:问题|独立|政府|政策|人权|地位|属于|分裂|领土|主权|自治|回归|脱离|自由|民主|抗议|示威|运动|学运|动乱|暴乱|藏独|疆独|台独)|(?:习近平|江泽民|胡锦涛|温家宝|李克强).{0,30}(?:下台|滚|狗官|腐败|独裁|垃圾|死|打倒|反对|不满|批评|黑幕|丑闻)|(?:共产党|中央|国务院|政协).{0,30}(?:腐败|独裁|专制|镇压|迫害|谎言|黑幕)|中国.{0,200}(?:老大|主席|领导|总统|政府)|(?:老大|主席|领导|总统|政府).{0,200}(?:是谁|哪|什么样|现在))/i
@@ -158,7 +158,7 @@ module.exports = {
   SUMMARY_WHITELIST_FILE, TODAY_CACHE_PREFIX,
   THINKING_MODE_FILE, USER_PROFILE_DIR,
   POLITICAL_HANDLER_DIR, POLITICAL_DETECT_FILE, SENSITIVE_CACHE_PREFIX,
-  STICKER_DIR, CONVERSATIONS_DIR,
+  STICKER_DIR, CONVERSATIONS_DIR, EXPRESSION_POOL_DIR,
   TOOL_MODE_FILE, TOOL_CONFIG_FILE, MAX_TOOL_ROUNDS,
   NUMERIC_GROUP_ID_RE, AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ,
   OVERUSED_REPLY_PATTERNS,
@@ -168,6 +168,6 @@ module.exports = {
   CONTEXT_JAILBREAK_STRONG_RE, CONTEXT_JAILBREAK_WEAK_RE,
   JAILBREAK_FALLBACK_REPLIES, ABUSIVE_FALLBACK_REPLIES, REPEATED_FALLBACK_REPLIES,
   EVALUATION_REQUEST_RE, JAPAN_SELF_IDENTIFY_RE, GENERATION_REQUEST_RE,
-  SHORT_FOLLOW_UP_RE, BANNED_ACTION_OUTPUT_RE, THINKING_OUTPUT_RE, SENSITIVE_KEYWORDS_RE,
+  BANNED_ACTION_OUTPUT_RE, THINKING_OUTPUT_RE, SENSITIVE_KEYWORDS_RE,
   RESERVED_PREFIXES,
 }

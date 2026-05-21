@@ -15,6 +15,12 @@ const PROFILE_BLOCK_TYPES = Object.freeze(['core', 'human', 'channel', 'working'
 const PROFILE_STATUSES = Object.freeze(['candidate', 'active', 'disputed', 'archived'])
 const PROFILE_SENSITIVITY = Object.freeze(['public', 'private', 'sensitive'])
 const PROFILE_CATEGORIES = Object.freeze(['preference', 'habit', 'identity', 'boundary', 'relationship', 'workflow', 'memory', 'style'])
+const PROFILE_REINFORCE_DEFAULT_INCREMENT = 0.05
+const PROFILE_REINFORCE_MAX_EVIDENCE = 5
+const PROFILE_EFFECTIVE_DECAY_PER_DAY = 0.95
+const PROFILE_EFFECTIVE_MIN_CONFIDENCE = 0.1
+const PROFILE_EFFECTIVE_ADMIN_MIN_CONFIDENCE = 0.5
+const PROFILE_EFFECTIVE_DEFAULT_LIMIT = 5
 
 function hashPersonaProfileValue(value = '', length = 12) {
   const text = String(value || '').trim()
@@ -51,17 +57,28 @@ function normalizePersonaProfileTs(value, fallback = Date.now()) {
   return fallback
 }
 
+function normalizePersonaProfileHash(value = '', maxLength = 64) {
+  const text = String(value || '').trim().toLowerCase()
+  if (!/^[a-f0-9]{6,64}$/.test(text)) return ''
+  return text.slice(0, Math.max(6, Math.min(64, Number(maxLength) || 64)))
+}
+
+function personaProfileComparableText(value = '') {
+  return normalizePersonaProfileText(value, 700).toLowerCase()
+}
+
 function buildPersonaProfileEvidence(input = {}) {
   const now = normalizePersonaProfileTs(input.now, Date.now())
   const shortQuote = normalizePersonaProfileText(input.text || input.shortQuote || '', 120)
   const ts = normalizePersonaProfileTs(input.ts || input.createdAt || input.updatedAt, now)
+  const quoteHash = normalizePersonaProfileHash(input.quoteHash) || hashPersonaProfileValue(shortQuote || input.text || '')
   return {
     source: normalizePersonaProfileText(input.source || 'unknown', 40) || 'unknown',
     ts,
-    quoteHash: hashPersonaProfileValue(shortQuote || input.text || ''),
+    quoteHash,
     shortQuote,
-    messageIdHash: hashPersonaProfileValue(input.messageId || '', 10),
-    channelHash: hashPersonaProfileValue(input.channelKey || '', 10),
+    messageIdHash: normalizePersonaProfileHash(input.messageIdHash, 10) || hashPersonaProfileValue(input.messageId || '', 10),
+    channelHash: normalizePersonaProfileHash(input.channelHash, 10) || hashPersonaProfileValue(input.channelKey || '', 10),
   }
 }
 
@@ -99,10 +116,269 @@ function buildPersonaProfileBlock(input = {}) {
     status,
     createdAt,
     updatedAt,
+    lastAccessedAt: normalizePersonaProfileTs(input.lastAccessedAt, updatedAt),
+    reinforceCount: Math.max(0, Math.floor(normalizePersonaProfileNumber(input.reinforceCount, evidence.length, 0, 1000000))),
   }
   const expiresAt = Number(input.expiresAt || 0)
   if (Number.isFinite(expiresAt) && expiresAt > 0) result.expiresAt = expiresAt
   return result
+}
+
+function personaProfileEvidenceList(input = [], now = Date.now()) {
+  return Array.isArray(input)
+    ? input.map(item => buildPersonaProfileEvidence({ ...item, now })).filter(item => item.quoteHash || item.shortQuote)
+    : []
+}
+
+function personaProfileQuoteHashSet(block = {}) {
+  const out = new Set()
+  for (const evidence of Array.isArray(block.evidence) ? block.evidence : []) {
+    const hash = String(evidence && evidence.quoteHash || '').trim()
+    if (hash) out.add(hash)
+  }
+  return out
+}
+
+function findPersonaProfileReinforceReason(existing = {}, incoming = {}) {
+  const existingHashes = personaProfileQuoteHashSet(existing)
+  const incomingHashes = personaProfileQuoteHashSet(incoming)
+  for (const hash of incomingHashes) {
+    if (existingHashes.has(hash)) return 'quote_hash'
+  }
+  const sameType = String(existing.block || '') === String(incoming.block || '')
+    && String(existing.category || '') === String(incoming.category || '')
+  if (sameType && personaProfileComparableText(existing.text) && personaProfileComparableText(existing.text) === personaProfileComparableText(incoming.text)) {
+    return 'normalized_text'
+  }
+  return ''
+}
+
+function mergePersonaProfileEvidence(existingEvidence = [], incomingEvidence = [], maxEvidence = PROFILE_REINFORCE_MAX_EVIDENCE) {
+  const limit = Math.max(1, Math.min(20, Math.floor(Number(maxEvidence) || PROFILE_REINFORCE_MAX_EVIDENCE)))
+  const merged = []
+  const seen = new Set()
+  for (const item of [...existingEvidence, ...incomingEvidence]) {
+    if (!item || typeof item !== 'object') continue
+    const key = String(item.quoteHash || item.messageIdHash || item.shortQuote || '')
+    if (key && seen.has(key)) continue
+    if (key) seen.add(key)
+    merged.push(item)
+  }
+  return merged.slice(-limit)
+}
+
+function reinforcePersonaProfileBlock(existing = {}, incoming = {}, options = {}) {
+  const now = normalizePersonaProfileTs(options.now, Date.now())
+  const existingBlock = buildPersonaProfileBlock({ ...existing, now }) || null
+  const incomingBlock = buildPersonaProfileBlock({ ...incoming, now }) || null
+  if (!existingBlock || !incomingBlock) {
+    return { matched: false, reason: 'invalid_block', block: existingBlock || null }
+  }
+  if (existingBlock.status === 'disputed' || existingBlock.status === 'archived' || incomingBlock.status === 'disputed' || incomingBlock.status === 'archived') {
+    return { matched: false, reason: 'status_blocked', block: existingBlock }
+  }
+  const reason = findPersonaProfileReinforceReason(existingBlock, incomingBlock)
+  if (!reason) return { matched: false, reason: 'no_match', block: existingBlock }
+  const increment = normalizePersonaProfileNumber(options.increment, PROFILE_REINFORCE_DEFAULT_INCREMENT, 0, 1)
+  const nextConfidence = normalizePersonaProfileNumber(existingBlock.confidence, 0, 0, 1) + increment
+  const next = {
+    ...existingBlock,
+    confidence: Number(Math.max(0, Math.min(1, nextConfidence)).toFixed(3)),
+    reinforceCount: Math.max(0, Math.floor(Number(existingBlock.reinforceCount) || 0)) + 1,
+    lastAccessedAt: now,
+    updatedAt: Math.max(Number(existingBlock.updatedAt) || 0, now),
+    evidence: mergePersonaProfileEvidence(existingBlock.evidence, incomingBlock.evidence, options.maxEvidence),
+  }
+  return { matched: true, reason, block: next }
+}
+
+function buildPersonaProfileReinforcementShadow(blocks = [], options = {}) {
+  const now = normalizePersonaProfileTs(options.now, Date.now())
+  const merged = []
+  const reasonCounts = { quote_hash: 0, normalized_text: 0 }
+  let invalidCount = 0
+  let reinforcedCount = 0
+  for (const raw of Array.isArray(blocks) ? blocks : []) {
+    const block = buildPersonaProfileBlock({ ...raw, now })
+    if (!block) {
+      invalidCount += 1
+      continue
+    }
+    let mergedIntoExisting = false
+    for (let i = 0; i < merged.length; i += 1) {
+      const result = reinforcePersonaProfileBlock(merged[i], block, { ...options, now })
+      if (!result.matched) continue
+      merged[i] = result.block
+      reinforcedCount += 1
+      reasonCounts[result.reason] = (reasonCounts[result.reason] || 0) + 1
+      mergedIntoExisting = true
+      break
+    }
+    if (!mergedIntoExisting) merged.push(block)
+  }
+  return {
+    version: PERSONA_PROFILE_VERSION,
+    now,
+    originalCount: Array.isArray(blocks) ? blocks.length : 0,
+    dedupedCount: merged.length,
+    reinforcedCount,
+    invalidCount,
+    reasonCounts,
+    blocks: merged,
+  }
+}
+
+function formatPersonaProfileReinforcementShadowDiagnostic(shadow = {}) {
+  const reasonCounts = shadow.reasonCounts || {}
+  const reasons = ['quote_hash', 'normalized_text']
+    .map(key => `${key}:${Math.max(0, Math.floor(Number(reasonCounts[key]) || 0))}`)
+    .join(',')
+  return [
+    'profile_reinforce_shadow',
+    `total=${Math.max(0, Math.floor(Number(shadow.originalCount) || 0))}`,
+    `deduped=${Math.max(0, Math.floor(Number(shadow.dedupedCount) || 0))}`,
+    `reinforced=${Math.max(0, Math.floor(Number(shadow.reinforcedCount) || 0))}`,
+    `invalid=${Math.max(0, Math.floor(Number(shadow.invalidCount) || 0))}`,
+    `reasons=${reasons}`,
+    'mode=shadow_only',
+    'prompt=unchanged',
+  ].join(' ')
+}
+
+function computePersonaProfileEffectiveConfidence(block = {}, options = {}) {
+  if (!block || typeof block !== 'object') return 0
+  const status = String(block.status || 'candidate')
+  if (status === 'disputed' || status === 'archived') return 0
+  const now = normalizePersonaProfileTs(options.now, Date.now())
+  const expiresAt = Number(block.expiresAt || 0)
+  if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now) return 0
+  const confidence = normalizePersonaProfileNumber(block.confidence, status === 'active' ? 0.7 : 0.2, 0, 1)
+  const lastAccessedAt = normalizePersonaProfileTs(block.lastAccessedAt || block.updatedAt || block.createdAt, now)
+  const ageDays = Math.max(0, (now - lastAccessedAt) / (24 * 60 * 60 * 1000))
+  const decayPerDay = normalizePersonaProfileNumber(options.decayPerDay, PROFILE_EFFECTIVE_DECAY_PER_DAY, 0, 1)
+  let effective = confidence * Math.pow(decayPerDay, ageDays)
+  const adminSources = Array.isArray(options.adminSources) ? options.adminSources.map(String) : ['admin_edit']
+  if (status === 'active' && adminSources.includes(String(block.source || ''))) {
+    const adminMin = normalizePersonaProfileNumber(options.adminMinConfidence, PROFILE_EFFECTIVE_ADMIN_MIN_CONFIDENCE, 0, 1)
+    effective = Math.max(effective, adminMin)
+  }
+  return Number(Math.max(0, Math.min(1, effective)).toFixed(3))
+}
+
+function selectPersonaProfileBlocksByEffectiveConfidence(blocks = [], options = {}) {
+  const now = normalizePersonaProfileTs(options.now, Date.now())
+  const rawLimit = Number(options.limit)
+  const limit = Math.max(0, Math.min(50, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : PROFILE_EFFECTIVE_DEFAULT_LIMIT))
+  const minEffectiveConfidence = normalizePersonaProfileNumber(options.minEffectiveConfidence, PROFILE_EFFECTIVE_MIN_CONFIDENCE, 0, 1)
+  const allowedStatuses = Array.isArray(options.allowedStatuses) && options.allowedStatuses.length
+    ? new Set(options.allowedStatuses.map(String))
+    : new Set(['active'])
+  const includeSensitive = !!options.includeSensitive
+  const skipped = { status: 0, expired: 0, sensitive: 0, lowConfidence: 0 }
+  const candidates = []
+  for (const raw of Array.isArray(blocks) ? blocks : []) {
+    const block = buildPersonaProfileBlock({ ...raw, now })
+    if (!block) continue
+    if (!allowedStatuses.has(block.status)) { skipped.status += 1; continue }
+    const expiresAt = Number(block.expiresAt || 0)
+    if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now) { skipped.expired += 1; continue }
+    if (!includeSensitive && block.sensitivity === 'sensitive') { skipped.sensitive += 1; continue }
+    const effectiveConfidence = computePersonaProfileEffectiveConfidence(block, { ...options, now })
+    if (effectiveConfidence < minEffectiveConfidence) { skipped.lowConfidence += 1; continue }
+    candidates.push({ ...block, effectiveConfidence })
+  }
+  candidates.sort((a, b) => {
+    if (b.effectiveConfidence !== a.effectiveConfidence) return b.effectiveConfidence - a.effectiveConfidence
+    if ((b.reinforceCount || 0) !== (a.reinforceCount || 0)) return (b.reinforceCount || 0) - (a.reinforceCount || 0)
+    return (b.updatedAt || 0) - (a.updatedAt || 0)
+  })
+  return {
+    version: PERSONA_PROFILE_VERSION,
+    now,
+    considered: Array.isArray(blocks) ? blocks.length : 0,
+    selected: candidates.slice(0, limit),
+    candidates,
+    skipped,
+    minEffectiveConfidence,
+    limit,
+  }
+}
+
+function buildPersonaProfileSelectionDiagnostic(profile = {}, options = {}) {
+  const selection = options.selection || selectPersonaProfileBlocksByEffectiveConfidence(profile.blocks || [], options)
+  return {
+    version: PERSONA_PROFILE_VERSION,
+    userHash: profile.user?.idHash || hashPersonaProfileValue(options.userId || '', 12),
+    channelHash: profile.channel?.hash || hashPersonaProfileValue(options.channelKey || '', 12),
+    total: Array.isArray(profile.blocks) ? profile.blocks.length : 0,
+    considered: selection.considered || 0,
+    selected: Array.isArray(selection.selected) ? selection.selected.length : 0,
+    top: (selection.selected || []).slice(0, 5).map(item => ({
+      idHash: hashPersonaProfileValue(item.id || '', 10),
+      block: item.block || '',
+      category: item.category || '',
+      status: item.status || '',
+      sensitivity: item.sensitivity || '',
+      effectiveConfidence: Number(item.effectiveConfidence || 0),
+      reinforceCount: Math.max(0, Math.floor(Number(item.reinforceCount) || 0)),
+    })),
+    skipped: selection.skipped || {},
+    reasons: ['shadow_only', 'no_prompt_injection'],
+  }
+}
+
+function formatPersonaProfileSelectionDiagnostic(diagnostic = {}) {
+  const skipped = diagnostic.skipped || {}
+  const skippedText = ['status', 'expired', 'sensitive', 'lowConfidence']
+    .map(key => `${key}:${Math.max(0, Math.floor(Number(skipped[key]) || 0))}`)
+    .join(',')
+  const top = Array.isArray(diagnostic.top) && diagnostic.top.length
+    ? diagnostic.top.map(item => `${item.idHash}:${Number(item.effectiveConfidence || 0).toFixed(3)}:${item.status}:${item.block}/${item.category}`).join(',')
+    : 'none'
+  return [
+    'profile_selection',
+    `user=${diagnostic.userHash || 'none'}`,
+    `channel=${diagnostic.channelHash || 'none'}`,
+    `total=${Math.max(0, Math.floor(Number(diagnostic.total) || 0))}`,
+    `considered=${Math.max(0, Math.floor(Number(diagnostic.considered) || 0))}`,
+    `selected=${Math.max(0, Math.floor(Number(diagnostic.selected) || 0))}`,
+    `top=${top}`,
+    `skipped=${skippedText}`,
+    `reasons=${Array.isArray(diagnostic.reasons) && diagnostic.reasons.length ? diagnostic.reasons.join(',') : 'none'}`,
+  ].join(' ')
+}
+
+function buildPersonaProfileReinforceDiagnostic(input = {}) {
+  const before = input.before || {}
+  const after = input.after || input.block || {}
+  const effectiveConfidence = computePersonaProfileEffectiveConfidence(after, input)
+  return {
+    version: PERSONA_PROFILE_VERSION,
+    matched: !!input.matched,
+    reason: normalizePersonaProfileText(input.reason || 'unknown', 40) || 'unknown',
+    factHash: hashPersonaProfileValue(after.id || before.id || '', 10),
+    oldConfidence: Number(normalizePersonaProfileNumber(before.confidence, 0, 0, 1).toFixed(3)),
+    newConfidence: Number(normalizePersonaProfileNumber(after.confidence, 0, 0, 1).toFixed(3)),
+    effectiveConfidence,
+    reinforceCount: Math.max(0, Math.floor(Number(after.reinforceCount) || 0)),
+    quoteHash: hashPersonaProfileValue(input.quoteHash || '', 10),
+    selectedTopN: !!input.selectedTopN,
+  }
+}
+
+function formatPersonaProfileReinforceDiagnostic(diagnostic = {}) {
+  return [
+    'profile_reinforce',
+    `matched=${diagnostic.matched === true}`,
+    `reason=${normalizePersonaProfileText(diagnostic.reason || 'unknown', 40) || 'unknown'}`,
+    `fact=${diagnostic.factHash || 'none'}`,
+    `old=${Number(diagnostic.oldConfidence || 0).toFixed(3)}`,
+    `new=${Number(diagnostic.newConfidence || 0).toFixed(3)}`,
+    `effective=${Number(diagnostic.effectiveConfidence || 0).toFixed(3)}`,
+    `reinforce=${Math.max(0, Math.floor(Number(diagnostic.reinforceCount) || 0))}`,
+    `quote=${diagnostic.quoteHash || 'none'}`,
+    `topN=${diagnostic.selectedTopN === true}`,
+  ].join(' ')
 }
 
 function buildPersonaProfileBlocksFromLegacyData(data = {}, options = {}) {
@@ -275,6 +551,15 @@ module.exports = {
   normalizePersonaProfileText,
   buildPersonaProfileEvidence,
   buildPersonaProfileBlock,
+  reinforcePersonaProfileBlock,
+  buildPersonaProfileReinforcementShadow,
+  formatPersonaProfileReinforcementShadowDiagnostic,
+  computePersonaProfileEffectiveConfidence,
+  selectPersonaProfileBlocksByEffectiveConfidence,
+  buildPersonaProfileSelectionDiagnostic,
+  formatPersonaProfileSelectionDiagnostic,
+  buildPersonaProfileReinforceDiagnostic,
+  formatPersonaProfileReinforceDiagnostic,
   buildPersonaProfileBlocksFromLegacyData,
   safePersonaProfileFile,
   readLegacyPersonaProfileData,

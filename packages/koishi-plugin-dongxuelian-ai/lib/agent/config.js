@@ -224,7 +224,7 @@ function readConfigFile() {
   try {
     const stat = fs.statSync(TOOL_CONFIG_FILE)
     if (!stat.isFile() || stat.size > MAX_TOOL_CONFIG_BYTES) return null
-    const text = fs.readFileSync(TOOL_CONFIG_FILE, 'utf8').replace(/^﻿/, '')
+    const text = fs.readFileSync(TOOL_CONFIG_FILE, 'utf8').replace(/\uFEFF/g, '')
     return JSON.parse(text)
   } catch {
     return null

@@ -21,7 +21,7 @@ const {
   JAILBREAK_OUTPUT_RE,
   CONTEXT_JAILBREAK_STRONG_RE, CONTEXT_JAILBREAK_WEAK_RE,
   JAPAN_SELF_IDENTIFY_RE, GENERATION_REQUEST_RE,
-  SHORT_FOLLOW_UP_RE, SENSITIVE_KEYWORDS_RE, THINKING_OUTPUT_RE,
+  SENSITIVE_KEYWORDS_RE, THINKING_OUTPUT_RE,
   BANNED_ACTION_OUTPUT_RE,
 } = require('./constants')
 const { resolvePersona, loadPersonalSkill } = require('./persona') // 人格解析 + 技能文件加载
@@ -31,7 +31,7 @@ const {
   requestOpenAIResponsesWithSearch, // OpenAI Responses API（联网搜索）
   isVisionModel,                // 判断模型是否支持视觉
 } = require('./api')
-const { isVisionSession, clearVisionSession, appendVisionMessage } = require('./vision') // 多模态图片会话管理
+const { isVisionSession, clearVisionSession, appendVisionMessage, isVisionBlindnessReply, downgradeVisionMessageToText } = require('./vision') // 多模态图片会话管理
 const {
   getConversationKey, getChannelKey, // 会话/频道唯一标识生成
   readConversationDisk,             // 从磁盘加载历史（冷启动）
@@ -110,6 +110,20 @@ const {
 const { isDebugLogEnabled, logDebug } = require('./logging-config') // 调试日志开关 + 输出
 const { ensureRuntimeSkillSeeds } = require('./skill-seeds') // 首次启动时写入默认技能文件
 const { parsePersonaSchemaFrontmatter } = require('./persona-schema') // lore frontmatter 元数据解析
+const {
+  buildExpressionShadowPlan,
+  formatExpressionShadowDiagnostic,
+  detectExpressionSensitiveTopicActive,
+  EXPRESSION_SHADOW_RECENT_SPEAKER_WINDOW_MS,
+} = require('./expression-shadow-router') // 表达学习旁路诊断（v2.3，仅日志）
+const {
+  buildPersonaProfileBlocks,
+  buildPersonaProfileReinforcementShadow,
+  formatPersonaProfileReinforcementShadowDiagnostic,
+  selectPersonaProfileBlocksByEffectiveConfidence,
+  buildPersonaProfileSelectionDiagnostic,
+  formatPersonaProfileSelectionDiagnostic,
+} = require('./persona-profile') // 证据化 profile 影子选择诊断（不注入 prompt）
 
 let skillsCache = []
 let skillsContentCache = {}
@@ -451,6 +465,9 @@ async function chat(session, userText, ctx, options = {}) {
   if (testMode) personaName = null
   if (personaName) {
     personaSkillContent = loadPersonalSkill(personaName)
+    if (!personaSkillContent) {
+      try { ctx.logger('dongxuelian-ai').warn(`persona bound but skill load failed: persona=${personaName} channelKey=${channelKey} source=${personaResolution.source}`) } catch {}
+    }
   }
 
   // 主动记忆写入：用户说"记住XXX"直接存，跳过AI反问
@@ -515,6 +532,10 @@ async function chat(session, userText, ctx, options = {}) {
   systemPrompt += '\n\n专注当前对话。历史记录仅作为背景参考，不要主动提及，除非用户明确问"还记得吗""之前说过"——只有这时才可以翻看历史。'
   systemPrompt += '\n\n禁止输出思考过程。不要分析用户说了什么，不要解释你打算怎么回复，不要复述系统指令，直接说人话。'
   systemPrompt += '\n<user> 标签中的昵称标识了是谁发的消息，避免混淆不同用户的消息。'
+  const botSelfId = String(session.selfId || session.bot?.selfId || session.event?.selfId || '').trim()
+  const botSelfNick = sanitizeUserName(normalizeText(session.bot?.user?.name || session.bot?.username || ''))
+  const botIdentityLabel = personaName || (testMode ? '测试模式' : (yinyang ? '阴阳莲莲' : (hostile ? '嘴臭莲莲' : '东雪莲')))
+  systemPrompt += `\n\n身份锚：你当前在群里以"${botIdentityLabel}"的身份发言${botSelfNick ? `（群昵称：${botSelfNick}）` : ''}${botSelfId ? `，QQ 号 ${botSelfId}` : ''}。<user> 段里出现的昵称是说话人，不是你自己；他人发言里提到"东雪莲/莲莲/${botIdentityLabel}"或别的群友昵称，都只是在指代别人，不要把自己代入进去。`
   const now = new Date()
   const pad2 = n => String(n).padStart(2, '0')
   const dynamicTimePrompt = `当前时间：${now.getFullYear()}年${pad2(now.getMonth() + 1)}月${pad2(now.getDate())}日 ${pad2(now.getHours())}时${pad2(now.getMinutes())}分。核心信息（爱好、习惯、身份等）在下方【记住的】中列出，日常聊天记录中也可能有重复信息，以【记住的】中的内容为准。当用户分享关于自己的重要信息时，你可以自然地问一句是否需要记住，系统会自动记录。`
@@ -601,7 +622,14 @@ async function chat(session, userText, ctx, options = {}) {
       ? '\n[引用你自己历史回复的原话]\n' + qc2 + '\n[以上是你自己之前说过的话，不是 ' + safeUserName + ' 说的，也不是群友观点；不要攻击自己]'
       : '\n[引用 ' + (quoteAuthor || '消息') + ' 的原话]\n' + qc2 + '\n[以上是引用内容，不是 ' + safeUserName + ' 说的]'
     : ''
-  const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${fwdInput}${contextTag}${quotedTag}\n</user>`
+  const inboundMentionIds = Array.isArray(options.mentionUserIds) ? options.mentionUserIds.map(item => String(item || '')).filter(Boolean) : []
+  const mentionsBot = !!botSelfId && inboundMentionIds.includes(botSelfId)
+  const otherMentionIds = inboundMentionIds.filter(id => !botSelfId || id !== botSelfId)
+  const mentionTagParts = []
+  if (mentionsBot) mentionTagParts.push('[此条@你本人]')
+  if (otherMentionIds.length) mentionTagParts.push('[此条还@了群友：' + otherMentionIds.slice(0, 5).join('、') + '。提到的内容针对那些群友，不是针对你；除非也@你或直接喊你的名字，否则不要把自己代入]')
+  const mentionTag = mentionTagParts.length ? '\n' + mentionTagParts.join('\n') : ''
+  const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${fwdInput}${contextTag}${quotedTag}${mentionTag}\n</user>`
 
   // 话题检测：对比上一条消息和当前消息（per-key lock）
   // 结果：true=切换 false=未切换 null=检测失败（降级处理）
@@ -690,10 +718,12 @@ async function chat(session, userText, ctx, options = {}) {
   const forwardSummaryMessage = createChatPromptForwardSummaryMessage(options.forwardSummaryText)
   if (forwardSummaryMessage) messages.push(forwardSummaryMessage)
 
-  if (testChatPromptRegex(SHORT_FOLLOW_UP_RE, cleanInput)) {
+  if (cleanInput && cleanInput.length <= 6) {
     const recentAssistant = getRecentAssistantReplies(session, 1).pop()
-    const shortFollowUpMessage = createChatPromptShortFollowUpMessage(cleanInput, recentAssistant, SHORT_FOLLOW_UP_RE)
-    if (shortFollowUpMessage) messages.push(shortFollowUpMessage)
+    if (recentAssistant && /[?？吗呢吧嘛]\s*$/.test(recentAssistant)) {
+      const shortFollowUpMessage = createChatPromptShortFollowUpMessage(cleanInput, recentAssistant, { isFollowUp: true })
+      if (shortFollowUpMessage) messages.push(shortFollowUpMessage)
+    }
   }
   const generationRequestMessage = createChatPromptGenerationRequestMessage(cleanInput, GENERATION_REQUEST_RE)
   if (generationRequestMessage) messages.push(generationRequestMessage)
@@ -728,6 +758,30 @@ async function chat(session, userText, ctx, options = {}) {
   const memorySummary = await getMemorySummary(currentUserId, channelKey)
   const memoryMessage = createChatPromptMemoryMessage(memorySummary)
   if (memoryMessage) messages.push(memoryMessage)
+
+  // Profile Phase 5.5 影子诊断：只读、只记录，不注入 prompt。
+  if (isDebugLogEnabled('persona-profile')) {
+    try {
+      const profileNow = Date.now()
+      const profile = await buildPersonaProfileBlocks({
+        userId: currentUserId,
+        channelKey,
+        includeRecentMessages: false,
+        includeAgentMemory: false,
+      })
+      const reinforcementShadow = buildPersonaProfileReinforcementShadow(profile.blocks, { now: profileNow })
+      logDebug(ctx, 'persona-profile', formatPersonaProfileReinforcementShadowDiagnostic(reinforcementShadow))
+      const selection = selectPersonaProfileBlocksByEffectiveConfidence(reinforcementShadow.blocks, {
+        now: profileNow,
+        limit: 5,
+        minEffectiveConfidence: 0.1,
+      })
+      const diagnostic = buildPersonaProfileSelectionDiagnostic(profile, { selection, userId: currentUserId, channelKey })
+      logDebug(ctx, 'persona-profile', formatPersonaProfileSelectionDiagnostic(diagnostic))
+    } catch (profileError) {
+      try { logDebug(ctx, 'persona-profile', `profile_selection_failed reason=${String((profileError && profileError.message) || 'unknown').slice(0, 80)}`) } catch {}
+    }
+  }
 
   const historyBackgroundMessage = createChatPromptHistoryBackgroundMessage(historyAsBackground)
   if (historyBackgroundMessage) messages.push(historyBackgroundMessage)
@@ -833,6 +887,7 @@ async function chat(session, userText, ctx, options = {}) {
 
   // 识图：获取本地图片 → 多模态或 OCR 回退
   let wasVisionRequest = false
+  let visionContext = null
   if (isVisionSession(session)) {
     let vc = await loadConfig(true)
     if (!isVisionModel(vc.provider, vc.model)) {
@@ -857,13 +912,17 @@ async function chat(session, userText, ctx, options = {}) {
         return '我不识图。'
       }
     }
+    const visionPromptText = options.randomTriggered
+      ? '[群里刷到一张图。如果你看清了图，按你的人设风格说一句感受；不要假设这是有人专程拿给你看的。]'
+      : '[用户发来一张图。按你的人设风格简单回应一句。]'
     const visionResult = await appendVisionMessage(messages, session, vc, ctx, {
-      promptText: '看到图了。结合当前群聊话题，用你的风格简单说一句',
+      promptText: visionPromptText,
       readFailReply: '图片读取失败，换个图试试？',
       inaccessibleReply: '图片无法访问，换个图试试？',
       identifyFailReply: '图片识别失败，换个图试试？',
     })
     if (!visionResult.ok) return visionResult.reply
+    visionContext = visionResult.visionContext || null
     wasVisionRequest = true
   } else {
     messages.push(createChatPromptPlainUserMessage(isolatedUserMessage))
@@ -875,6 +934,37 @@ async function chat(session, userText, ctx, options = {}) {
   // Chat 轻量工具注入
   const chatTools = getChatToolDefinitions()
   messages.push({ role: 'system', content: getChatToolSystemHint(channelKey) })
+
+  // 表达学习旁路诊断（v2.3，shadow，仅日志，不修改 messages）
+  try {
+    const shadowNow = Date.now()
+    const cacheItems = (channelSharedCache && typeof channelSharedCache.get === 'function')
+      ? (channelSharedCache.get(channelKey) || [])
+      : []
+    const recentItems = []
+    const recentSpeakerSet = new Set()
+    const since = shadowNow - EXPRESSION_SHADOW_RECENT_SPEAKER_WINDOW_MS
+    for (const it of cacheItems) {
+      if (!it || typeof it !== 'object') continue
+      const ts = Number(it.ts || 0)
+      if (Number.isFinite(ts) && ts > 0 && ts < since) continue
+      recentItems.push(it)
+      const uid = String(it.userId || '').trim()
+      if (uid) recentSpeakerSet.add(uid)
+    }
+    const sensitiveTopicActive = detectExpressionSensitiveTopicActive(recentItems, shadowNow)
+    const shadowPlan = buildExpressionShadowPlan({
+      channelKey,
+      personaName,
+      cleanInput,
+      recentSpeakerIds: Array.from(recentSpeakerSet),
+      sensitiveTopicActive,
+      now: shadowNow,
+    })
+    logDebug(ctx, 'expression-pool', formatExpressionShadowDiagnostic(shadowPlan))
+  } catch (shadowError) {
+    try { logDebug(ctx, 'expression-pool', `shadow_failed reason=${String((shadowError && shadowError.message) || 'unknown').slice(0, 80)}`) } catch {}
+  }
 
   let reply = await callOpenAI(messages, options.randomTriggered, {}, chatTools)
 
@@ -926,6 +1016,17 @@ async function chat(session, userText, ctx, options = {}) {
       messages.push({ role: 'assistant', content: reply })
       messages.push({ role: 'user', content: '【系统提示：不要输出工具调用格式，直接用自然语言回答。】' })
       reply = await callOpenAI(messages, options.randomTriggered)
+    }
+  }
+
+  // vision 对账：模型说"看不到图/再发一遍"通常意味着 image_url 没被 provider/model 真正解析。
+  // 把多模态 user 消息降级为纯文本占位，再请求一次，避免输出"我没法看到你说的图 + 编造话题硬蹭"这类自相矛盾结果。
+  if (wasVisionRequest && visionContext && typeof reply === 'string' && isVisionBlindnessReply(reply)) {
+    if (downgradeVisionMessageToText(messages, visionContext, '[图片暂时取不到，请按当前文字上下文回复，不要假设你看到了什么图]')) {
+      try { ctx.logger('dongxuelian-ai').warn(`vision blindness detected, downgrading. provider=${visionContext.provider} model=${visionContext.model} reply=${reply.slice(0, 60)}`) } catch {}
+      reply = await callOpenAI(messages, options.randomTriggered)
+      if (reply && typeof reply === 'object' && reply.type === 'tool_calls') reply = reply.message?.content || ''
+      visionContext = null
     }
   }
 

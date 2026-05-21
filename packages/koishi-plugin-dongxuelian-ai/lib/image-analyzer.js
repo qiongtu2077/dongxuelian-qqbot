@@ -7,6 +7,7 @@
 const { downloadImageAsBase64, callGetImage, readImageAsBase64, isVisionModel, requestChatCompletions } = require('./api')
 const { loadConfig } = require('./runtime-config')
 const { markAnalyzed, replaceImagePlaceholder, cacheImageFile, readCachedImage, getImageEntry } = require('./image-store')
+const { isVisionBlindnessReply } = require('./vision')
 
 const MAX_CONCURRENT = 2
 const ANALYSIS_TIMEOUT_MS = 20000
@@ -76,6 +77,10 @@ async function runAnalysis({ channelKey, messageId, url, file }) {
     const result = await requestChatCompletions(messages, config, { max_tokens: 200, _timeoutMs: ANALYSIS_TIMEOUT_MS })
     const analysis = typeof result === 'string' ? result : (result && result.content || '')
     if (!analysis) return
+    if (isVisionBlindnessReply(analysis)) {
+      console.warn(`[image-analyzer] vision blindness, skipping write. provider=${config.provider} model=${config.model} reply=${analysis.slice(0, 60)}`)
+      return
+    }
 
     await markAnalyzed(channelKey, messageId, analysis)
     await replaceImagePlaceholder(channelKey, messageId, analysis)

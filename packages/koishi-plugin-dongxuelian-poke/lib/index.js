@@ -1,4 +1,4 @@
-﻿exports.name = 'dongxuelian-poke'
+exports.name = 'dongxuelian-poke'
 
 async function pokeBack(session, ctx) {
   const userId = String(session.userId || '')

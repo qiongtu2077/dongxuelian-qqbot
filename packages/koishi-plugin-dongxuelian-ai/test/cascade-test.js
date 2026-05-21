@@ -457,6 +457,10 @@ async function main() {
   check('syntax runner covers chat prompt builder syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/chat-prompt-builder.js'))
   check('syntax runner covers reply timing syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/reply-timing.js'))
   check('syntax runner covers affect router syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/affect-router.js'))
+  check('syntax runner covers expression learner syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/expression-learner.js'))
+  check('syntax runner covers expression pool store syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/expression-pool-store.js'))
+  check('syntax runner covers expression abstractor syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/expression-abstractor.js'))
+  check('syntax runner covers expression shadow router syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/expression-shadow-router.js'))
   check('syntax runner covers persona runtime plan syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/persona-runtime-plan.js'))
   check('syntax runner covers persona profile syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/persona-profile.js'))
   check('syntax runner covers web search tool syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/web-search.js'))
@@ -528,6 +532,10 @@ async function main() {
     personaLoreRouter: path.join(LIB, 'persona-lore-router'),
     replyTiming: path.join(LIB, 'reply-timing'),
     affectRouter: path.join(LIB, 'affect-router'),
+    expressionLearner: path.join(LIB, 'expression-learner'),
+    expressionPoolStore: path.join(LIB, 'expression-pool-store'),
+    expressionAbstractor: path.join(LIB, 'expression-abstractor'),
+    expressionShadowRouter: path.join(LIB, 'expression-shadow-router'),
     api: path.join(LIB, 'api'),
     conversation: path.join(LIB, 'conversation'),
     handler: path.join(LIB, 'handler'),
@@ -675,6 +683,12 @@ async function main() {
     personaProfile: [
       'hashPersonaProfileValue', 'sanitizePersonaProfileKey', 'normalizePersonaProfileText',
       'buildPersonaProfileEvidence', 'buildPersonaProfileBlock',
+      'reinforcePersonaProfileBlock',
+      'buildPersonaProfileReinforcementShadow', 'formatPersonaProfileReinforcementShadowDiagnostic',
+      'computePersonaProfileEffectiveConfidence',
+      'selectPersonaProfileBlocksByEffectiveConfidence',
+      'buildPersonaProfileSelectionDiagnostic', 'formatPersonaProfileSelectionDiagnostic',
+      'buildPersonaProfileReinforceDiagnostic', 'formatPersonaProfileReinforceDiagnostic',
       'buildPersonaProfileBlocksFromLegacyData', 'safePersonaProfileFile',
       'readLegacyPersonaProfileData', 'buildPersonaProfileBlocks',
       'summarizePersonaProfileBlocks', 'formatPersonaProfileSummary',
@@ -693,6 +707,22 @@ async function main() {
       'hashAffectValue', 'normalizeAffectText', 'normalizeAffectPolicy',
       'resolveAffectPolicy', 'classifyAffectMood',
       'buildAffectRouterDiagnostic', 'formatAffectRouterDiagnostic',
+    ],
+    expressionLearner: [
+      'filterExpressionLearningMessages',
+    ],
+    expressionPoolStore: [
+      'loadExpressionPool', 'appendExpressionCandidate', 'archiveByContributor',
+      'computeSituationStyleSimilarity', 'expressionPoolSafeChannelKey', 'expressionPoolFilePath',
+    ],
+    expressionAbstractor: [
+      'runExpressionHarvestForChannel', 'runExpressionHarvestForAllChannels',
+      'abstractorBuildSystemPrompt', 'abstractorBuildUserPayload', 'abstractorParseModelOutput',
+      'buildExpressionHarvestDiagnostic', 'formatExpressionHarvestDiagnostic',
+    ],
+    expressionShadowRouter: [
+      'resolveExpressionInjectionMode', 'detectExpressionSensitiveTopicActive',
+      'buildExpressionShadowPlan', 'formatExpressionShadowDiagnostic',
     ],
     api: [
       'requestChatCompletions', 'normalizeMessagesForProvider', 'buildFallbackConfig', 'getFallbackSteps',
@@ -794,6 +824,7 @@ async function main() {
     vision: [
       'markSessionForVision', 'isVisionSession', 'getVisionPayload',
       'clearVisionSession', 'prepareVisionRequest', 'appendVisionMessage',
+      'isVisionBlindnessReply', 'downgradeVisionMessageToText',
     ],
     sensitive: [
       'getPoliticalDetectList', 'resetPoliticalDetectCache',
@@ -957,6 +988,12 @@ async function main() {
     }
   }
   check('agentSkillScanner.SCAN_RULES exported', Array.isArray(modules.agentSkillScanner.SCAN_RULES) && modules.agentSkillScanner.SCAN_RULES.length > 0)
+  check('expressionLearner.EXPRESSION_LEARNER_VERSION exported', typeof modules.expressionLearner.EXPRESSION_LEARNER_VERSION === 'number')
+  check('expressionLearner.EXPRESSION_LEARNER_SKIP_REASONS exported', !!modules.expressionLearner.EXPRESSION_LEARNER_SKIP_REASONS && typeof modules.expressionLearner.EXPRESSION_LEARNER_SKIP_REASONS === 'object')
+  check('expressionLearner.EXPRESSION_LEARNER_REPEAT_WINDOW_MS exported', modules.expressionLearner.EXPRESSION_LEARNER_REPEAT_WINDOW_MS === 120000)
+  check('expressionLearner.EXPRESSION_LEARNER_REPEAT_MIN_USERS exported', modules.expressionLearner.EXPRESSION_LEARNER_REPEAT_MIN_USERS === 2)
+  check('expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_WINDOW_MS exported', modules.expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_WINDOW_MS === 300000)
+  check('expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS exported', Array.isArray(modules.expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS) && modules.expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS.includes('住院'))
   check('agentSkillScanner.SEVERITY_ORDER exported', !!(modules.agentSkillScanner.SEVERITY_ORDER && typeof modules.agentSkillScanner.SEVERITY_ORDER === 'object'))
   checkEqual('AI plugin name', index.name, 'dongxuelian-ai')
   check('AI plugin does not export _testOnly', index._testOnly === undefined)
@@ -988,6 +1025,8 @@ async function main() {
     'TOOL_MODE_FILE', 'TOOL_CONFIG_FILE', 'MAX_TOOL_ROUNDS',
   ]
   for (const name of requiredConstants) check(`constant exists: ${name}`, c[name] !== undefined)
+  // SHORT_FOLLOW_UP_RE 已删，改用 chat.js 内联结构特征（assistant 末尾问号 + 输入 ≤6 字符）
+  check('SHORT_FOLLOW_UP_RE no longer exported (replaced by structural feature)', c.SHORT_FOLLOW_UP_RE === undefined)
   const aiPkg = readJson(path.join(AI_ROOT, 'package.json'))
   checkEqual('AI package version matches PLUGIN_VERSION', aiPkg.version, c.PLUGIN_VERSION)
   checkEqual('root package version matches AI plugin version', rootPkg.version, c.PLUGIN_VERSION)
@@ -1024,6 +1063,10 @@ async function main() {
     path.join(LIB, 'persona-lore-router.js'),
     path.join(LIB, 'reply-timing.js'),
     path.join(LIB, 'affect-router.js'),
+    path.join(LIB, 'expression-learner.js'),
+    path.join(LIB, 'expression-pool-store.js'),
+    path.join(LIB, 'expression-abstractor.js'),
+    path.join(LIB, 'expression-shadow-router.js'),
     path.join(LIB, 'message-reader.js'),
     path.join(LIB, 'chat.js'),
     path.join(LIB, 'chat-prompt-builder.js'),
@@ -1105,7 +1148,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'reply-timing.js', 'affect-router.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'reply-timing.js', 'affect-router.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -2163,6 +2206,13 @@ async function main() {
   const frontmatter = p.parsePersonaFrontmatter('---\nname: Test\ndescription: Demo\nenabled: true\n---\nbody')
   checkEqual('frontmatter parses name', frontmatter.name, 'Test')
   checkEqual('frontmatter parses boolean', frontmatter.enabled, true)
+  // 中段 BOM 容错：双 frontmatter + 第二段前混入 \uFEFF 的实际线上 bug 形态
+  // 旧解析器只剥开头 BOM，导致 meta.name 抽不到 → loadPersonalSkill 返回 null → 静默回退默认 friendly
+  const midBomContent = '---\nvoice_style: clean\n---\n\uFEFF---\nname: 爱弥斯\ndescription: 真实人格\nlore: wuwa-lore\n---\nbody'
+  const midBomMeta = p.parsePersonaFrontmatter(midBomContent)
+  check('frontmatter tolerates mid-file BOM and merges multi-segment frontmatter', midBomMeta.name === '爱弥斯' && midBomMeta.voice_style === 'clean' && midBomMeta.lore === 'wuwa-lore', JSON.stringify(midBomMeta))
+  const allBomMeta = p.parsePersonaFrontmatter('\uFEFF---\nname: BomOpen\n---\n\uFEFFbody')
+  check('frontmatter strips opening BOM and trailing BOM globally', allBomMeta.name === 'BomOpen', JSON.stringify(allBomMeta))
   const parsedPersonaDoc = modules.personaSchema.parsePersonaDocument('---\nname: Test\nwill: 3.5\nunknown_key: value\nvoice_asset_id: ghost\n---\nbody', { type: 'persona', file: 'SKILL.test.md' })
   check('persona schema parses body and legacy diagnostics', parsedPersonaDoc.body.trim() === 'body' && parsedPersonaDoc.diagnostics.some(item => item.code === 'legacy_schema_missing'))
   check('persona schema warns unknown fields and invalid will range', parsedPersonaDoc.diagnostics.some(item => item.code === 'unknown_frontmatter_field' && item.field === 'unknown_key') && parsedPersonaDoc.diagnostics.some(item => item.code === 'will_out_of_range'), JSON.stringify(parsedPersonaDoc.diagnostics))
@@ -2212,6 +2262,111 @@ async function main() {
   check('persona profile converts recent messages to temporary candidate style blocks', recentLegacyMessage && recentLegacyMessage.block === 'working' && recentLegacyMessage.status === 'candidate' && recentLegacyMessage.expiresAt === profileNow + 7 * 24 * 60 * 60 * 1000 && recentLegacyMessage.evidence[0].messageIdHash, JSON.stringify(recentLegacyMessage))
   check('persona profile summary hashes user and channel identifiers', profileSummaryText.includes('user=') && profileSummaryText.includes('channel=') && !profileSummaryText.includes('raw-user-10001') && !profileSummaryText.includes('guild::with:colon'), profileSummaryText)
   check('persona profile safe file path matches legacy conversation channel key sanitizing', personaProfile.safePersonaProfileFile('user/with space', 'guild::with:colon', path.join('root', 'profiles')).replace(/\\/g, '/').endsWith('root/profiles/guild__with_colon/user_with_space.json'))
+  const reinforceExisting = personaProfile.buildPersonaProfileBlock({
+    block: 'human',
+    category: 'preference',
+    text: '喜欢夜间写代码',
+    status: 'active',
+    confidence: 0.6,
+    source: 'repeated_observation',
+    createdAt: profileNow - 20 * 24 * 60 * 60 * 1000,
+    updatedAt: profileNow - 20 * 24 * 60 * 60 * 1000,
+    evidence: [{ source: 'recent_user_message', text: '喜欢夜间写代码', ts: profileNow - 20 * 24 * 60 * 60 * 1000, messageId: 'old-msg', channelKey: 'guild::with:colon' }],
+    now: profileNow,
+  })
+  const reinforceIncoming = personaProfile.buildPersonaProfileBlock({
+    block: 'human',
+    category: 'preference',
+    text: '喜欢夜间写代码',
+    status: 'candidate',
+    confidence: 0.2,
+    source: 'recent_user_message',
+    evidence: [{ source: 'recent_user_message', text: '喜欢夜间写代码', ts: profileNow, messageId: 'new-msg', channelKey: 'guild::with:colon' }],
+    now: profileNow,
+  })
+  const reinforcedProfile = personaProfile.reinforcePersonaProfileBlock(reinforceExisting, reinforceIncoming, { now: profileNow, increment: 0.08, maxEvidence: 2 })
+  check('persona profile reinforcement merges duplicate facts instead of creating another block', reinforcedProfile.matched === true && reinforcedProfile.reason && reinforcedProfile.block.confidence === 0.68 && reinforcedProfile.block.reinforceCount === reinforceExisting.reinforceCount + 1 && reinforcedProfile.block.evidence.length <= 2, JSON.stringify(reinforcedProfile))
+  const disputedIncomingReinforce = personaProfile.reinforcePersonaProfileBlock(reinforceExisting, { ...reinforceIncoming, status: 'disputed' }, { now: profileNow })
+  check('persona profile reinforcement refuses disputed incoming corrections', disputedIncomingReinforce.matched === false && disputedIncomingReinforce.reason === 'status_blocked' && disputedIncomingReinforce.block.confidence === reinforceExisting.confidence, JSON.stringify(disputedIncomingReinforce))
+  const freshEffective = personaProfile.computePersonaProfileEffectiveConfidence(reinforcedProfile.block, { now: profileNow })
+  const staleEffective = personaProfile.computePersonaProfileEffectiveConfidence({ ...reinforcedProfile.block, lastAccessedAt: profileNow - 120 * 24 * 60 * 60 * 1000 }, { now: profileNow })
+  check('persona profile effective confidence decays without mutating stored confidence', freshEffective > staleEffective && reinforcedProfile.block.confidence === 0.68, `fresh=${freshEffective} stale=${staleEffective}`)
+  const disputedEffective = personaProfile.computePersonaProfileEffectiveConfidence({ ...reinforcedProfile.block, status: 'disputed', confidence: 1 }, { now: profileNow })
+  check('persona profile disputed blocks have zero effective confidence', disputedEffective === 0, String(disputedEffective))
+  const expiredWorking = personaProfile.buildPersonaProfileBlock({
+    block: 'working',
+    category: 'style',
+    text: '临时风格',
+    status: 'active',
+    confidence: 0.95,
+    expiresAt: profileNow - 1,
+    now: profileNow,
+  })
+  const sensitiveBlock = personaProfile.buildPersonaProfileBlock({
+    block: 'human',
+    category: 'identity',
+    text: '敏感身份资料',
+    sensitivity: 'sensitive',
+    status: 'active',
+    confidence: 1,
+    now: profileNow,
+  })
+  const stableBlock = personaProfile.buildPersonaProfileBlock({
+    block: 'human',
+    category: 'preference',
+    text: '稳定偏好',
+    status: 'active',
+    confidence: 0.5,
+    reinforceCount: 5,
+    lastAccessedAt: profileNow,
+    now: profileNow,
+  })
+  const profileSelection = personaProfile.selectPersonaProfileBlocksByEffectiveConfidence([
+    { ...reinforcedProfile.block, id: 'reinforced-secret-id' },
+    { ...stableBlock, id: 'stable-secret-id' },
+    { ...sensitiveBlock, id: 'sensitive-secret-id' },
+    { ...expiredWorking, id: 'expired-secret-id' },
+    { ...reinforcedProfile.block, id: 'disputed-secret-id', status: 'disputed', confidence: 1 },
+  ], { now: profileNow, limit: 2, minEffectiveConfidence: 0.1 })
+  check('persona profile selection sorts by effective confidence and filters sensitive expired disputed blocks', profileSelection.selected.length === 2 && profileSelection.selected[0].id === 'reinforced-secret-id' && profileSelection.skipped.sensitive === 1 && profileSelection.skipped.expired === 1 && profileSelection.skipped.status === 1, JSON.stringify(profileSelection))
+  const profileSelectionLimitZero = personaProfile.selectPersonaProfileBlocksByEffectiveConfidence([stableBlock], { now: profileNow, limit: 0, minEffectiveConfidence: 0.1 })
+  check('persona profile selection honours limit=0 for diagnostic dry runs', profileSelectionLimitZero.selected.length === 0 && profileSelectionLimitZero.candidates.length === 1, JSON.stringify(profileSelectionLimitZero))
+  const hashOnlyEvidence = personaProfile.buildPersonaProfileEvidence({
+    quoteHash: reinforceExisting.evidence[0].quoteHash,
+    messageIdHash: reinforceExisting.evidence[0].messageIdHash,
+    channelHash: reinforceExisting.evidence[0].channelHash,
+    ts: profileNow,
+  })
+  check('persona profile evidence preserves pre-hashed identifiers without raw quote text', hashOnlyEvidence.quoteHash === reinforceExisting.evidence[0].quoteHash && hashOnlyEvidence.messageIdHash === reinforceExisting.evidence[0].messageIdHash && hashOnlyEvidence.channelHash === reinforceExisting.evidence[0].channelHash && hashOnlyEvidence.shortQuote === '', JSON.stringify(hashOnlyEvidence))
+  const hashOnlyIncoming = personaProfile.buildPersonaProfileBlock({
+    block: 'human',
+    category: 'preference',
+    text: '另一种转写',
+    status: 'candidate',
+    evidence: [hashOnlyEvidence],
+    now: profileNow,
+  })
+  const hashOnlyReinforced = personaProfile.reinforcePersonaProfileBlock(reinforceExisting, hashOnlyIncoming, { now: profileNow })
+  check('persona profile reinforcement can match by preserved quoteHash only', hashOnlyReinforced.matched === true && hashOnlyReinforced.reason === 'quote_hash', JSON.stringify(hashOnlyReinforced))
+  const reinforcementShadow = personaProfile.buildPersonaProfileReinforcementShadow([
+    { ...reinforceExisting, id: 'shadow-a' },
+    { ...reinforceIncoming, id: 'shadow-b' },
+    { ...stableBlock, id: 'shadow-c' },
+  ], { now: profileNow })
+  const reinforcementShadowLine = personaProfile.formatPersonaProfileReinforcementShadowDiagnostic(reinforcementShadow)
+  check('persona profile reinforcement shadow dedupes duplicate blocks without raw text', reinforcementShadow.originalCount === 3 && reinforcementShadow.dedupedCount === 2 && reinforcementShadow.reinforcedCount === 1 && reinforcementShadowLine.includes('profile_reinforce_shadow') && !reinforcementShadowLine.includes('喜欢夜间写代码') && reinforcementShadowLine.includes('prompt=unchanged'), reinforcementShadowLine)
+  const profileSelectionLine = personaProfile.formatPersonaProfileSelectionDiagnostic(personaProfile.buildPersonaProfileSelectionDiagnostic(legacyProfile, { selection: profileSelection }))
+  check('persona profile selection diagnostic is hash-only and omits raw text', profileSelectionLine.includes('profile_selection') && profileSelectionLine.includes('top=') && !profileSelectionLine.includes('喜欢夜间写代码') && !profileSelectionLine.includes('raw-user-10001') && !profileSelectionLine.includes('reinforced-secret-id'), profileSelectionLine)
+  const reinforceLine = personaProfile.formatPersonaProfileReinforceDiagnostic(personaProfile.buildPersonaProfileReinforceDiagnostic({
+    matched: reinforcedProfile.matched,
+    reason: reinforcedProfile.reason,
+    before: reinforceExisting,
+    after: reinforcedProfile.block,
+    quoteHash: reinforcedProfile.block.evidence[0]?.quoteHash,
+    selectedTopN: true,
+    now: profileNow,
+  }))
+  check('persona profile reinforce diagnostic omits raw fact text', reinforceLine.includes('profile_reinforce') && reinforceLine.includes('matched=true') && !reinforceLine.includes('喜欢夜间写代码'), reinforceLine)
   const profileTmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cascade-persona-profile-'))
   try {
     const profileFile = personaProfile.safePersonaProfileFile('u1', 'g:1', profileTmp)
@@ -2324,6 +2479,169 @@ async function main() {
     replyText: 'raw-reply-secret',
   }))
   check('affect router diagnostic line hashes persona and omits raw text', affectLine.includes('persona=') && !affectLine.includes('爱弥斯') && !affectLine.includes('raw-user-secret') && !affectLine.includes('raw-reply-secret'), affectLine)
+  const expressionLearner = modules.expressionLearner
+  const exprBaseTs = 1700000000000
+  const exprFilterResult = expressionLearner.filterExpressionLearningMessages([
+    { userId: 'bot', role: 'assistant', content: '主角自己发的应被剔除', ts: exprBaseTs + 1000 },
+    { userId: 'u1', content: '看图就知道 [图片] 拼接的', ts: exprBaseTs + 2000 },
+    { userId: 'u2', content: '@东雪莲 在不在', ts: exprBaseTs + 3000, mentionUserIds: ['100001'] },
+    { userId: 'u3', content: '台独 这种事', ts: exprBaseTs + 4000 },
+    { userId: 'u4', content: '我朋友昨天住院了', ts: exprBaseTs + 6000 },
+    { userId: 'u5', content: '我们都很担心', ts: exprBaseTs + 60000 },
+    { userId: 'u4b', content: '今天典中典现场', ts: exprBaseTs + 600000 },
+    { userId: 'u7', content: '复读这句', ts: exprBaseTs + 800000 },
+    { userId: 'u8', content: '复读这句', ts: exprBaseTs + 800500 },
+    { userId: 'u9', content: '复读这句', ts: exprBaseTs + 801000 },
+    { userId: 'u10', content: '正经能学的句子', ts: exprBaseTs + 900000 },
+  ], { selfUserIds: ['100001'], botUserIds: ['100001'], botName: '东雪莲' })
+  const exprKeptContents = exprFilterResult.kept.map((entry) => entry.content)
+  check('expression learner skips bot self message', exprFilterResult.skipped.selfBot >= 1, JSON.stringify(exprFilterResult.skipped))
+  check('expression learner skips image/emoji bracket messages', exprFilterResult.skipped.hasImageOrEmoji >= 1, JSON.stringify(exprFilterResult.skipped))
+  check('expression learner skips messages mentioning bot', exprFilterResult.skipped.mentionsBot >= 1, JSON.stringify(exprFilterResult.skipped))
+  check('expression learner skips sensitive keyword messages', exprFilterResult.skipped.sensitiveKeyword >= 1, JSON.stringify(exprFilterResult.skipped))
+  check('expression learner skips repeat-window messages', exprFilterResult.skipped.repeatWindow >= 3, JSON.stringify(exprFilterResult.skipped))
+  check('expression learner blacks out sensitive topic windows', exprFilterResult.skipped.sensitiveTopicWindow >= 2, JSON.stringify(exprFilterResult.skipped))
+  check('expression learner keeps neutral chatter outside windows', exprKeptContents.includes('今天典中典现场') && exprKeptContents.includes('正经能学的句子'), JSON.stringify(exprKeptContents))
+  check('expression learner does not leak repeat or sensitive content into kept', !exprKeptContents.includes('复读这句') && !exprKeptContents.some((text) => text.includes('住院')), JSON.stringify(exprKeptContents))
+  const exprEmpty = expressionLearner.filterExpressionLearningMessages([])
+  check('expression learner returns zero counts for empty input', exprEmpty.kept.length === 0 && exprEmpty.total === 0 && exprEmpty.skipped.selfBot === 0, JSON.stringify(exprEmpty))
+  const expressionPoolStore = modules.expressionPoolStore
+  const exprPoolChannel = '__cascade_test_pool__:' + Date.now() + '_' + Math.random().toString(16).slice(2)
+  const exprPoolFile = expressionPoolStore.expressionPoolFilePath(exprPoolChannel)
+  check('expression pool safe channel key strips colon', !expressionPoolStore.expressionPoolSafeChannelKey('a:b/c').includes(':') && !expressionPoolStore.expressionPoolSafeChannelKey('a:b/c').includes('/'), expressionPoolStore.expressionPoolSafeChannelKey('a:b/c'))
+  try { require('fs').unlinkSync(exprPoolFile) } catch {}
+  const exprPoolEmpty = expressionPoolStore.loadExpressionPool(exprPoolChannel)
+  check('expression pool load empty file returns empty entries array', Array.isArray(exprPoolEmpty.entries) && exprPoolEmpty.entries.length === 0, JSON.stringify(exprPoolEmpty))
+  const exprPoolAppend1 = await expressionPoolStore.appendExpressionCandidate(exprPoolChannel, { situation: '群友水群打字', style: '按 X 发工资', contributors: ['u1', 'u2'] }, { now: 1700000000000 })
+  check('expression pool append creates new entry on first insert', exprPoolAppend1.mode === 'created' && exprPoolAppend1.entry && exprPoolAppend1.entry.count === 1, JSON.stringify(exprPoolAppend1))
+  const exprPoolAppend2 = await expressionPoolStore.appendExpressionCandidate(exprPoolChannel, { situation: '群友水群打字', style: '按 X 发工资', contributors: ['u3'] }, { now: 1700000060000 })
+  check('expression pool append merges similar candidate count up', exprPoolAppend2.mode === 'merged' && exprPoolAppend2.entry.count === 2 && exprPoolAppend2.entry.contributors.includes('u3'), JSON.stringify(exprPoolAppend2))
+  const exprPoolAppend3 = await expressionPoolStore.appendExpressionCandidate(exprPoolChannel, { situation: '群友讨论代码', style: '典中典 X 现场' }, { now: 1700000120000 })
+  check('expression pool append creates separate entry for distinct situation', exprPoolAppend3.mode === 'created' && exprPoolAppend3.entry.id !== exprPoolAppend1.entry.id, JSON.stringify(exprPoolAppend3))
+  const exprPoolLoaded = expressionPoolStore.loadExpressionPool(exprPoolChannel)
+  check('expression pool load reflects appended entries', exprPoolLoaded.entries.length === 2 && exprPoolLoaded.entries.some((e) => e.count === 2), JSON.stringify(exprPoolLoaded.entries.map((e) => ({ count: e.count, status: e.status }))))
+  const exprPoolArchive = await expressionPoolStore.archiveByContributor(exprPoolChannel, 'u1')
+  check('expression pool archive by contributor flags entries', exprPoolArchive.archived === 1, JSON.stringify(exprPoolArchive))
+  const exprPoolArchived = expressionPoolStore.loadExpressionPool(exprPoolChannel)
+  const exprArchivedEntry = exprPoolArchived.entries.find((e) => e.status === 'archived')
+  check('expression pool archive removes contributor and sets status', exprArchivedEntry && !exprArchivedEntry.contributors.includes('u1'), JSON.stringify(exprArchivedEntry))
+  const exprPoolReject = await expressionPoolStore.appendExpressionCandidate(exprPoolChannel, { situation: '', style: '' })
+  check('expression pool append rejects empty candidate', exprPoolReject.mode === 'rejected', JSON.stringify(exprPoolReject))
+  const exprSimSame = expressionPoolStore.computeSituationStyleSimilarity({ situation: 'abc', style: 'xyz' }, { situation: 'abc', style: 'xyz' })
+  const exprSimDiff = expressionPoolStore.computeSituationStyleSimilarity({ situation: 'abc', style: 'xyz' }, { situation: '完全不同', style: '另一个' })
+  check('expression pool similarity scoring reaches one for identical and below threshold for distinct', exprSimSame >= 0.99 && exprSimDiff < 0.5, `same=${exprSimSame} diff=${exprSimDiff}`)
+  try { require('fs').unlinkSync(exprPoolFile) } catch {}
+  const expressionAbstractor = modules.expressionAbstractor
+  const exprAbsParseEmpty = expressionAbstractor.abstractorParseModelOutput('')
+  check('expression abstractor parses empty raw to empty array', Array.isArray(exprAbsParseEmpty) && exprAbsParseEmpty.length === 0, JSON.stringify(exprAbsParseEmpty))
+  const exprAbsParseFenced = expressionAbstractor.abstractorParseModelOutput('```json\n[{"situation":"群友水群","style":"按 X 发工资"}]\n```')
+  check('expression abstractor parses fenced JSON arrays', exprAbsParseFenced.length === 1 && exprAbsParseFenced[0].situation === '群友水群', JSON.stringify(exprAbsParseFenced))
+  const exprAbsParseTrim = expressionAbstractor.abstractorParseModelOutput('结果：[{"situation":"  好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长更多","style":"X 啊 X"}]')
+  check('expression abstractor clamps situation to 20 chars', exprAbsParseTrim.length === 1 && exprAbsParseTrim[0].situation.length <= 20, JSON.stringify(exprAbsParseTrim))
+  const exprAbsParseInvalid = expressionAbstractor.abstractorParseModelOutput('not a json')
+  check('expression abstractor returns empty on broken json', Array.isArray(exprAbsParseInvalid) && exprAbsParseInvalid.length === 0, JSON.stringify(exprAbsParseInvalid))
+  const exprAbsPayload = expressionAbstractor.abstractorBuildUserPayload([
+    { content: '今天天气不错' },
+    { content: '   ' },
+    { content: '看吧又是这样' },
+  ])
+  check('expression abstractor user payload skips empty lines', exprAbsPayload.includes('今天天气不错') && exprAbsPayload.includes('看吧又是这样') && !/-\s\s/.test(exprAbsPayload), exprAbsPayload)
+  const exprAbsHarvestSummary = expressionAbstractor.formatExpressionHarvestDiagnostic({ channels: 2, totalKept: 30, abstractOk: 1, abstractFailed: 1, created: 4, merged: 2, rejected: 0 })
+  check('expression abstractor diagnostic line carries counts', exprAbsHarvestSummary.includes('channels=2') && exprAbsHarvestSummary.includes('created=4') && exprAbsHarvestSummary.includes('merged=2'), exprAbsHarvestSummary)
+  const exprFakeAppendCalls = []
+  const exprFakeAppend = async (channelKey, candidate) => { exprFakeAppendCalls.push({ channelKey, candidate }); return { mode: 'created', entry: candidate } }
+  const exprStubChannel = '__cascade_test_abstract__:' + Date.now()
+  const exprStubSafeKey = expressionPoolStore.expressionPoolSafeChannelKey(exprStubChannel)
+  const exprStubCacheFile = modules.constants.TODAY_CACHE_PREFIX + exprStubSafeKey + '.json'
+  try { require('fs').mkdirSync(path.dirname(exprStubCacheFile), { recursive: true }) } catch {}
+  const exprStubMessages = []
+  for (let i = 0; i < 12; i += 1) exprStubMessages.push({ userId: `u${i}`, content: `测试中性发言 ${i} 啊啊啊`, ts: 1700000000000 + i * 1000 })
+  require('fs').writeFileSync(exprStubCacheFile, JSON.stringify({ date: '2099-01-01', messages: exprStubMessages }), 'utf8')
+  const exprHarvestOk = await expressionAbstractor.runExpressionHarvestForChannel(null, exprStubChannel, {
+    callModel: async () => '[{"situation":"群里水群闲聊","style":"X 啊 X 啊"}]',
+    appendCandidate: exprFakeAppend,
+    selfUserId: 'bot',
+    botName: '东雪莲',
+    now: 1700000050000,
+  })
+  check('expression abstractor harvest channel uses appendCandidate when model returns valid json', exprHarvestOk.abstractOk === 1 && exprFakeAppendCalls.length >= 1 && exprHarvestOk.created >= 1, JSON.stringify(exprHarvestOk))
+  const exprFakeAppendCalls2 = []
+  const exprFakeAppend2 = async (channelKey, candidate) => { exprFakeAppendCalls2.push(candidate); return { mode: 'merged' } }
+  const exprHarvestBad = await expressionAbstractor.runExpressionHarvestForChannel(null, exprStubChannel, {
+    callModel: async () => 'not json',
+    appendCandidate: exprFakeAppend2,
+    selfUserId: 'bot',
+    botName: '东雪莲',
+    now: 1700000060000,
+  })
+  check('expression abstractor harvest counts abstractFailed when json broken', exprHarvestBad.abstractFailed === 1 && exprFakeAppendCalls2.length === 0, JSON.stringify(exprHarvestBad))
+  try { require('fs').unlinkSync(exprStubCacheFile) } catch {}
+
+  // v2.3 expression-shadow-router 旁路诊断单测
+  const expressionShadowRouter = modules.expressionShadowRouter
+  const exprShadowEmptyPool = expressionShadowRouter.buildExpressionShadowPlan({
+    channelKey: '__shadow_test_empty__',
+    personaName: '东雪莲',
+    cleanInput: '今天天气不错',
+    recentSpeakerIds: [],
+    sensitiveTopicActive: false,
+    now: 1700000000000,
+  }, { loadPool: () => ({ entries: [] }) })
+  check('expression shadow router skips when pool empty', exprShadowEmptyPool.decision === 'silent' && exprShadowEmptyPool.skipped.poolEmpty === 1, JSON.stringify(exprShadowEmptyPool))
+  const exprShadowOff = expressionShadowRouter.buildExpressionShadowPlan({
+    channelKey: '__shadow_test_off__',
+    personaName: '长离',
+    cleanInput: 'hello',
+    recentSpeakerIds: [],
+    sensitiveTopicActive: false,
+    now: 1700000000000,
+  }, { loadPool: () => ({ entries: [{ id: 'x', situation: 's', style: 't', count: 5, lastUsedAt: 0, createdAt: 0, status: 'active' }] }) })
+  check('expression shadow router honours persona injection off', exprShadowOff.decision === 'silent' && exprShadowOff.skipped.injectionOff === 1 && exprShadowOff.injectionMode === 'off', JSON.stringify(exprShadowOff))
+  const exprShadowSensitive = expressionShadowRouter.buildExpressionShadowPlan({
+    channelKey: '__shadow_test_sensitive__',
+    personaName: '东雪莲',
+    cleanInput: 'hello',
+    recentSpeakerIds: [],
+    sensitiveTopicActive: true,
+    now: 1700000000000,
+  }, { loadPool: () => ({ entries: [{ id: 'x', situation: 's', style: 't', count: 5, lastUsedAt: 0, createdAt: 0, status: 'active' }] }) })
+  check('expression shadow router skips on sensitive topic window', exprShadowSensitive.decision === 'silent' && exprShadowSensitive.skipped.sensitiveTopicWindow === 1, JSON.stringify(exprShadowSensitive))
+  const exprShadowColdEntries = []
+  for (let i = 0; i < 5; i += 1) exprShadowColdEntries.push({ id: 'c' + i, situation: 's' + i, style: 't' + i, count: 5, createdAt: 0, lastUsedAt: 0, status: 'active' })
+  const exprShadowCold = expressionShadowRouter.buildExpressionShadowPlan({
+    channelKey: '__shadow_test_cold__',
+    personaName: '东雪莲',
+    cleanInput: 'hi',
+    now: 1700000100000,
+  }, { loadPool: () => ({ entries: exprShadowColdEntries }) })
+  check('expression shadow router cold-starts when pool below min', exprShadowCold.decision === 'silent' && exprShadowCold.skipped.coldStart === 1, JSON.stringify(exprShadowCold))
+  const exprShadowReadyEntries = []
+  for (let i = 0; i < 12; i += 1) exprShadowReadyEntries.push({ id: 'r' + i, situation: 'situation_' + i, style: 'style_' + i, count: 3 + i, createdAt: 1700000000000 - 10 * 24 * 60 * 60 * 1000, lastUsedAt: 0, status: 'active', contributors: ['x' + i] })
+  const exprShadowReady = expressionShadowRouter.buildExpressionShadowPlan({
+    channelKey: '__shadow_test_ready__',
+    personaName: '东雪莲',
+    cleanInput: 'hi',
+    recentSpeakerIds: ['nobody'],
+    sensitiveTopicActive: false,
+    now: 1700000100000 + 30 * 24 * 60 * 60 * 1000,
+  }, { loadPool: () => ({ entries: exprShadowReadyEntries }) })
+  check('expression shadow router picks candidates when pool ready', exprShadowReady.decision === 'shadow_inject' && exprShadowReady.candidatesPicked > 0 && exprShadowReady.candidatesPicked <= 3, JSON.stringify(exprShadowReady))
+  const exprShadowFiltered = expressionShadowRouter.buildExpressionShadowPlan({
+    channelKey: '__shadow_test_filtered__',
+    personaName: '东雪莲',
+    cleanInput: 'hi',
+    recentSpeakerIds: exprShadowReadyEntries.map((e) => e.contributors[0]),
+    sensitiveTopicActive: false,
+    now: 1700000100000 + 30 * 24 * 60 * 60 * 1000,
+  }, { loadPool: () => ({ entries: exprShadowReadyEntries }) })
+  check('expression shadow router filters out entries with active contributor', exprShadowFiltered.decision === 'silent' && exprShadowFiltered.skipped.contributorActive === exprShadowReadyEntries.length, JSON.stringify(exprShadowFiltered))
+  const exprShadowLine = expressionShadowRouter.formatExpressionShadowDiagnostic(exprShadowReady)
+  check('expression shadow router diagnostic line carries hashes and reasons without raw text', exprShadowLine.includes('decision=') && exprShadowLine.includes('persona=') && exprShadowLine.includes('reasons=') && !exprShadowLine.includes('situation_') && !exprShadowLine.includes('style_'), exprShadowLine)
+  const exprShadowMode = expressionShadowRouter.resolveExpressionInjectionMode('爱弥斯')
+  check('expression shadow router resolves persona injection mode by policy', exprShadowMode === 'abstract' && expressionShadowRouter.resolveExpressionInjectionMode('特蕾西娅') === 'off' && expressionShadowRouter.resolveExpressionInjectionMode('陌生人格') === 'on', exprShadowMode)
+  const exprShadowSensitiveActive = expressionShadowRouter.detectExpressionSensitiveTopicActive([{ content: '我朋友昨天住院了', ts: 1700000000000 }], 1700000000000 + 60 * 1000)
+  const exprShadowSensitiveInactive = expressionShadowRouter.detectExpressionSensitiveTopicActive([{ content: '今天天气真好', ts: 1700000000000 }], 1700000000000 + 60 * 1000)
+  check('expression shadow router detects sensitive window from cache items', exprShadowSensitiveActive === true && exprShadowSensitiveInactive === false, `${exprShadowSensitiveActive}/${exprShadowSensitiveInactive}`)
   const loreRouter = modules.personaLoreRouter
   check('persona lore router normalizes keyword metadata', JSON.stringify(loreRouter.normalizeLoreKeywords('今州, 源石，今州')) === JSON.stringify(['今州', '源石']), JSON.stringify(loreRouter.normalizeLoreKeywords('今州, 源石，今州')))
   check('persona lore router keeps legacy wuwa and terra keyword fallbacks', loreRouter.getLegacyLoreKeywords('wuwa-lore').includes('今州') && loreRouter.getLegacyLoreKeywords('terra-lore').includes('矿石病'))
@@ -2429,10 +2747,10 @@ async function main() {
   check('chat prompt builder search rule requires enabled supported search', promptBuilder.createChatPromptSearchRuleMessage({ searchEnabled: true }, { supported: true })?.content.includes('联网搜索规则') && promptBuilder.createChatPromptSearchRuleMessage({ searchEnabled: false }, { supported: true }) === null)
   check('chat prompt builder random context is send-strategy only', promptBuilder.createChatPromptRandomContextMessage(true)?.content.includes('主动插话') && promptBuilder.createChatPromptRandomContextMessage(false) === null)
   check('chat prompt builder forward summary is conditional', promptBuilder.createChatPromptForwardSummaryMessage('summary')?.content.includes('合并转发') && promptBuilder.createChatPromptForwardSummaryMessage('') === null)
-  const shortFollowRe = /^(啊|嗯)$/g
-  const shortFollowFirst = promptBuilder.createChatPromptShortFollowUpMessage('啊', '上一句', shortFollowRe)
-  const shortFollowSecond = promptBuilder.createChatPromptShortFollowUpMessage('啊', '上一句', shortFollowRe)
-  check('chat prompt builder resets stateful follow-up regex', !!shortFollowFirst && !!shortFollowSecond && shortFollowRe.lastIndex === 0, String(shortFollowRe.lastIndex))
+  const shortFollowFirst = promptBuilder.createChatPromptShortFollowUpMessage('对', '你确定吗？', { isFollowUp: true })
+  const shortFollowSecond = promptBuilder.createChatPromptShortFollowUpMessage('好', '怎么了？', { isFollowUp: true })
+  const shortFollowSkipped = promptBuilder.createChatPromptShortFollowUpMessage('随便说点啥', '上一句', { isFollowUp: false })
+  check('chat prompt builder short follow-up requires explicit isFollowUp flag', !!shortFollowFirst && !!shortFollowSecond && shortFollowSkipped === null && shortFollowFirst.content.includes('你确定吗？'))
   const generationRe = /画图/g
   promptBuilder.createChatPromptGenerationRequestMessage('画图', generationRe)
   check('chat prompt builder resets stateful generation regex', !!promptBuilder.createChatPromptGenerationRequestMessage('画图', generationRe) && generationRe.lastIndex === 0, String(generationRe.lastIndex))
@@ -2766,6 +3084,8 @@ async function main() {
   const agentMemorySrc = read(path.join(LIB, 'agent', 'memory.js'))
   const agentSessionsSrc = read(path.join(LIB, 'agent', 'sessions.js'))
   const imageStoreSrc = read(path.join(LIB, 'image-store.js'))
+  const imageAnalyzerSrc = read(path.join(LIB, 'image-analyzer.js'))
+  const analyzeImageSrc = read(path.join(LIB, 'agent', 'tools', 'analyze-image.js'))
   // conversation.js 现需 DATA_DIR 用于 memory-timers (群记忆定时清空) 的路径构造
   check('conversation.js does not import POLITICAL_DETECT_FILE', !conversationSrc.includes('POLITICAL_DETECT_FILE'))
   check('conversation.js does not import index.js', !conversationSrc.includes("require('./index')") && !conversationSrc.includes('require("./index")'))
@@ -2780,6 +3100,39 @@ async function main() {
   check('index.js does not install content-based session.text fallback', !indexSrc.includes('prototype.text') || indexSrc.includes('.i18n('))
   check('index.js does not reference patch preload env', !indexSrc.includes('DONGXUELIAN_KOISHI_PATCH') && !indexSrc.includes('NODE_OPTIONS'))
   check('chat.js keeps block-scoped declarations', !/\bvar\b/.test(chatSrc))
+  // bug: 587 群叫 bot "呆喵兽"，群友说 "骂呆喵兽"，bot 把自己代入。systemPrompt 必须有身份锚说明"<user> 段昵称是说话人，不是你"。
+  check('chat.js systemPrompt anchors bot identity to disambiguate user nicknames', chatSrc.includes('身份锚') && chatSrc.includes('botIdentityLabel') && /身份锚.*?<user>/s.test(chatSrc))
+  // bug: 群友 @ 别人骂别人，bot 收到原文里 mentionUserIds 包含他人，仍把内容当作针对自己 → mention 字段必须把"被@的是谁"塞进 isolatedUserMessage。
+  check('chat.js isolatedUserMessage carries mention disambiguation tag', chatSrc.includes('mentionTag') && chatSrc.includes('mentionsBot') && chatSrc.includes('此条还@了群友'))
+  // bug: SHORT_FOLLOW_UP_RE 字典硬编码导致 "加" 等承接词漏判 → 改成结构特征：assistant 末尾问号 + 输入 ≤6 字符。
+  check('chat.js short-follow-up uses structural feature instead of regex whitelist', !chatSrc.includes('SHORT_FOLLOW_UP_RE') && /cleanInput\.length\s*<=?\s*6/.test(chatSrc) && /\[\?？吗呢吧嘛\]/.test(chatSrc) && chatSrc.includes('isFollowUp: true'))
+  // bug: vision promptText "结合当前群聊话题" 在模型实际未识图时被反弹 → 模型否定看图须降级重答；random 群图须分流文案。
+  check('vision exports blindness check and downgrade helpers', typeof modules.vision.isVisionBlindnessReply === 'function' && typeof modules.vision.downgradeVisionMessageToText === 'function')
+  check('vision blindness detector recognizes negative + resend reply', modules.vision.isVisionBlindnessReply('我没法看到你说的图，可以再发一次') === true && modules.vision.isVisionBlindnessReply('我看不到图，换个图试试？') === true)
+  check('vision blindness detector ignores normal vision reply', modules.vision.isVisionBlindnessReply('这图看着挺好看的，配色我喜欢') === false && modules.vision.isVisionBlindnessReply('图里那只猫是橘猫吧') === false)
+  ;(() => {
+    const sample = [{ role: 'user', content: 'hi' }, { role: 'user', content: [{ type: 'text', text: '[图片]' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }] }]
+    const ok = modules.vision.downgradeVisionMessageToText(sample, { injectedIndex: 1 }, '[图片暂时取不到]')
+    check('vision downgrade replaces multimodal slot with plain text', ok === true && sample[1].role === 'user' && sample[1].content === '[图片暂时取不到]' && sample[0].content === 'hi')
+  })()
+  check('chat.js wires vision blindness reconciliation', chatSrc.includes('isVisionBlindnessReply') && chatSrc.includes('downgradeVisionMessageToText') && chatSrc.includes('vision blindness detected'))
+  check('chat.js splits vision promptText for @-image vs random group image', !chatSrc.includes('结合当前群聊话题') && /options\.randomTriggered[\s\S]{0,160}群里刷到一张图/.test(chatSrc) && chatSrc.includes('用户发来一张图'))
+  // bug: agent/passive 多模态调用没有瞳仁防护，模型瞎说"看不到"会被当作 analysis 写入 image-store 污染下游。
+  check('image-analyzer skips write on vision blindness reply', imageAnalyzerSrc.includes("require('./vision')") && imageAnalyzerSrc.includes('isVisionBlindnessReply(analysis)') && /isVisionBlindnessReply\(analysis\)\)[\s\S]{0,400}?return\b[\s\S]{0,400}?markAnalyzed/.test(imageAnalyzerSrc) && imageAnalyzerSrc.includes('skipping write'))
+  check('agent analyze_historical_image refuses to persist blindness reply', analyzeImageSrc.includes("require('../../vision')") && analyzeImageSrc.includes('isVisionBlindnessReply(analysis)') && /isVisionBlindnessReply\(analysis\)[\s\S]{0,200}视觉模型未能解析/.test(analyzeImageSrc))
+  const expressionShadowIndex = chatSrc.indexOf('buildExpressionShadowPlan({')
+  const callOpenAIIndex = chatSrc.indexOf('let reply = await callOpenAI(messages')
+  const expressionShadowBlock = chatSrc.slice(Math.max(0, expressionShadowIndex - 500), callOpenAIIndex > expressionShadowIndex ? callOpenAIIndex : expressionShadowIndex + 1500)
+  check('chat.js expression shadow diagnostic runs before model call', expressionShadowIndex >= 0 && callOpenAIIndex > expressionShadowIndex, `shadow=${expressionShadowIndex} call=${callOpenAIIndex}`)
+  check('chat.js expression shadow logs only through expression-pool debug channel', expressionShadowBlock.includes("logDebug(ctx, 'expression-pool'") && expressionShadowBlock.includes('formatExpressionShadowDiagnostic(shadowPlan)'), expressionShadowBlock.slice(0, 300))
+  check('chat.js expression shadow does not inject prompt messages in v2.3', !/messages\.(?:push|splice|unshift)/.test(expressionShadowBlock), expressionShadowBlock)
+  const profileShadowIndex = chatSrc.indexOf("isDebugLogEnabled('persona-profile')")
+  const memoryMessageIndex = chatSrc.indexOf('const memoryMessage = createChatPromptMemoryMessage')
+  const profileShadowEnd = chatSrc.indexOf('const historyBackgroundMessage = createChatPromptHistoryBackgroundMessage', profileShadowIndex)
+  const profileShadowBlock = chatSrc.slice(profileShadowIndex, profileShadowEnd > profileShadowIndex ? profileShadowEnd : profileShadowIndex + 1600)
+  check('chat.js persona profile shadow diagnostic is debug-gated after memory summary', profileShadowIndex > memoryMessageIndex && profileShadowBlock.includes('buildPersonaProfileSelectionDiagnostic'), `profile=${profileShadowIndex} memory=${memoryMessageIndex}`)
+  check('chat.js persona profile shadow logs only through persona-profile debug channel', profileShadowBlock.includes("logDebug(ctx, 'persona-profile'") && profileShadowBlock.includes('formatPersonaProfileReinforcementShadowDiagnostic(reinforcementShadow)') && profileShadowBlock.includes('formatPersonaProfileSelectionDiagnostic(diagnostic)'), profileShadowBlock.slice(0, 300))
+  check('chat.js persona profile shadow does not inject prompt messages in phase 5.5', !/messages\.(?:push|splice|unshift)/.test(profileShadowBlock), profileShadowBlock)
   check('dashboard hashes large files with bounded chunks', dashboardStandaloneSrc.includes('HASH_CHUNK_BYTES') && dashboardStandaloneSrc.includes('fs.readSync') && !dashboardStandaloneSrc.includes("crypto.createHash('sha256').update(fs.readFileSync(filePath))"))
   check('dashboard limits request/download/static/log/preview sizes', dashboardStandaloneSrc.includes('EFFECTIVE_MAX_BODY_SIZE') && dashboardStandaloneSrc.includes('MAX_DOWNLOAD_BYTES') && dashboardStandaloneSrc.includes('MAX_STATIC_FILE_BYTES') && dashboardStandaloneSrc.includes('MAX_DEPLOY_TASK_LOG_BYTES') && dashboardStandaloneSrc.includes('MAX_AGENT_PREVIEW_FILE_BYTES'))
   check('dashboard sets content security policy', dashboardStandaloneSrc.includes('Content-Security-Policy') && dashboardStandaloneSrc.includes("object-src 'none'"))

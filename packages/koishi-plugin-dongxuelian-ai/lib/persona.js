@@ -86,12 +86,25 @@ function resolvePersona(channelKey, userId) {
 }
 
 function parsePersonaFrontmatter(content) {
-  const m = String(content || '').replace(/^\uFEFF/, '').match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
-  if (!m) return {}
+  const raw = String(content || '').replace(/\uFEFF/g, '')
   const meta = {}
-  for (const line of m[1].split(/\r?\n/)) {
-    const kv = line.match(/^(\w[\w_-]*):\s*(.*)$/)
-    if (kv) meta[kv[1]] = kv[2].trim() === 'true' ? true : kv[2].trim() === 'false' ? false : kv[2].trim()
+  let cursor = 0
+  while (cursor < raw.length) {
+    const slice = raw.slice(cursor)
+    const m = slice.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+    if (!m) break
+    for (const line of m[1].split(/\r?\n/)) {
+      const kv = line.match(/^(\w[\w_-]*):\s*(.*)$/)
+      if (!kv) continue
+      const value = kv[2].trim()
+      if (meta[kv[1]] !== undefined) continue
+      meta[kv[1]] = value === 'true' ? true : value === 'false' ? false : value
+    }
+    cursor += m[0].length
+    const remainder = raw.slice(cursor)
+    const nextStart = remainder.match(/^\s*---\r?\n/)
+    if (!nextStart) break
+    cursor += nextStart[0].length - '---\n'.length
   }
   return meta
 }
