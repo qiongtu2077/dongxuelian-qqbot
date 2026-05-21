@@ -83,6 +83,7 @@ const {
 } = require('./constants')
 const {
   loadPersonaGroups,   // 加载人格-群组绑定配置
+  getGroupPersona,     // 查询群级人格配置
   loadPersonaUsers,    // 加载人格-用户绑定配置
   resolvePersona,      // 解析当前会话应使用的人格
   loadPersonalSkill,   // 加载人格技能文件内容
@@ -284,6 +285,9 @@ const armedEventDumpCache = new Map()
 const channelMutedUntil = new Map()
 const lastRandomReplyTs = new Map()
 const channelPendingRandom = new Map()
+const channelMessageVersions = new Map()
+const channelExplicitVersions = new Map()
+const MAX_RANDOM_CHANNEL_STATE_ENTRIES = 200
 
 const sendFailState = {
   streak: 0,
@@ -401,12 +405,83 @@ function getRandomTriggerRate(channelKey) {
 // 昵称净化：剔除游戏前缀、书名号、各类括号等特殊字符，限制长度防止昵称内容污染回复
 
 function getRandomTriggerBaseRate(channelKey) {
-  return randomRateCache.get(String(channelKey || '')) || RANDOM_TRIGGER_RATE_BASE
+  const key = String(channelKey || '')
+  return randomRateCache.has(key) ? randomRateCache.get(key) : RANDOM_TRIGGER_RATE_BASE
 }
 
 // 白名单为空时视为全群禁用主动回复，只有显式加入的群才允许触发。
 function getRandomWhitelistStatus(channelKey) {
   return randomWhitelistCache.has(String(channelKey || ''))
+}
+
+function getChannelMessageVersion(channelKey) {
+  return channelMessageVersions.get(String(channelKey || '')) || 0
+}
+
+function bumpChannelMessageVersion(channelKey) {
+  const key = String(channelKey || '')
+  if (!key || key === 'private') return getChannelMessageVersion(key)
+  const next = getChannelMessageVersion(key) + 1
+  channelMessageVersions.set(key, next)
+  trimRandomChannelState()
+  return next
+}
+
+function getExplicitInteractionVersion(channelKey) {
+  return channelExplicitVersions.get(String(channelKey || '')) || 0
+}
+
+function bumpExplicitInteractionVersion(channelKey) {
+  const key = String(channelKey || '')
+  if (!key || key === 'private') return getExplicitInteractionVersion(key)
+  const next = getExplicitInteractionVersion(key) + 1
+  channelExplicitVersions.set(key, next)
+  trimRandomChannelState()
+  return next
+}
+
+function trimRandomChannelState() {
+  if (channelMessageVersions.size <= MAX_RANDOM_CHANNEL_STATE_ENTRIES) return
+  for (const key of channelMessageVersions.keys()) {
+    if (channelMessageVersions.size <= MAX_RANDOM_CHANNEL_STATE_ENTRIES) break
+    if (channelPendingRandom.has(key)) continue
+    channelMessageVersions.delete(key)
+    channelExplicitVersions.delete(key)
+  }
+}
+
+function cancelPendingRandom(channelKey, reason = '') {
+  const key = String(channelKey || '')
+  const pending = channelPendingRandom.get(key)
+  if (!pending) return false
+  if (pending.timer) clearTimeout(pending.timer)
+  channelPendingRandom.delete(key)
+  return true
+}
+
+function getGroupPersonaName(channelKey) {
+  const entry = getGroupPersona(channelKey)
+  return entry && entry.persona ? String(entry.persona) : ''
+}
+
+function isPersonaSwitchRisky(personaResolution, groupPersonaName) {
+  return !!(
+    personaResolution &&
+    personaResolution.source === 'user' &&
+    personaResolution.name &&
+    String(personaResolution.name) !== String(groupPersonaName || '')
+  )
+}
+
+function buildRandomSendOptions(context = {}) {
+  if (!context.randomTriggered) return {}
+  if (!context.highRisk || !context.triggerMessageId) return {}
+  const triggerVersion = Number(context.triggerMessageVersion || 0)
+  const currentVersion = Number(context.currentMessageVersion || 0)
+  if (context.delayed || currentVersion > triggerVersion) {
+    return { forceQuote: true, quoteMessageId: String(context.triggerMessageId) }
+  }
+  return {}
 }
 
 function getNextShanghaiMidnightDelayMs(now = Date.now()) {
@@ -559,7 +634,7 @@ async function loadRuntimeSettings(force = false) {
       const normalizedId = String(channelId || '').trim()
       const numericRate = Number(rawRate)
       if (!NUMERIC_GROUP_ID_RE.test(normalizedId)) continue
-      if (!Number.isFinite(numericRate) || numericRate <= 0 || numericRate > 1) continue
+      if (!Number.isFinite(numericRate) || numericRate < 0 || numericRate > 1) continue
       nextRateMap.set(normalizedId, numericRate)
     }
   }
@@ -641,7 +716,7 @@ async function handleRateLimitedSendFailure(ctx, session, error, now, resolveBot
   }
 }
 
-async function safeSendReply(ctx, session, reply, isRandom = false, resolveBot = null) {
+async function safeSendReply(ctx, session, reply, isRandom = false, resolveBot = null, sendOptions = {}) {
   const now = Date.now()
   // 冻结到期后重置通知标记
   if (now >= sendFailState.restrictedUntil && sendFailState.notifyScheduled) {
@@ -679,7 +754,7 @@ async function safeSendReply(ctx, session, reply, isRandom = false, resolveBot =
   let currentReply = reply
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const sentCount = await sendReply(ctx, session, currentReply, isRandom)
+      const sentCount = await sendReply(ctx, session, currentReply, isRandom, sendOptions)
       if (sentCount > 0) {
         resetSendFailState()
         clearPlatformMute(session)
@@ -791,6 +866,8 @@ exports.apply = (ctx) => {
     clearInterval(sensitiveTimer)
     for (const [, entry] of channelPendingRandom) { if (entry && entry.timer) clearTimeout(entry.timer) }
     channelPendingRandom.clear()
+    channelMessageVersions.clear()
+    channelExplicitVersions.clear()
     if (dailyCleanupTimer) { clearTimeout(dailyCleanupTimer); dailyCleanupTimer = null }
   })
 
@@ -804,6 +881,10 @@ exports.apply = (ctx) => {
     try {
       await fs.access(MAINTENANCE_FILE)
       if (!session.isDirect && !isDirectAtBot(session)) return next()
+      if (!session.isDirect) {
+        bumpExplicitInteractionVersion(getChannelKey(session))
+        cancelPendingRandom(getChannelKey(session), 'maintenance-explicit')
+      }
       const mt = (await fs.readFile(MAINTENANCE_FILE, 'utf8')).trim() || '优化中'
       await session.send(mt).catch(() => {})
       return
@@ -813,6 +894,19 @@ exports.apply = (ctx) => {
     let plain = collapseRepeatedBotCalls(stripMentions(analyzed.plain || ''))
     const memoryText = normalizeText(stripMentions(analyzed.memory || plain))
     const directAt = isDirectAtBot(session)
+    const isPrivate = !!session.isDirect
+    const inGuild = !isPrivate
+    const channelKey  = getChannelKey(session)
+    let currentMessageVersion = getChannelMessageVersion(channelKey)
+    let explicitInteractionMarked = false
+    const markExplicitInteraction = (reason) => {
+      if (!inGuild) return
+      if (!explicitInteractionMarked) {
+        bumpExplicitInteractionVersion(channelKey)
+        explicitInteractionMarked = true
+      }
+      cancelPendingRandom(channelKey, reason)
+    }
 
     const forwardSummaryText = await resolveForwardSummary(session, content, ctx)
 
@@ -831,15 +925,16 @@ exports.apply = (ctx) => {
     }
 
     if (!plain && !directAt && !session.isDirect && !analyzed.hasVisual && !analyzed.hasAudio) return next()
+    if (inGuild) currentMessageVersion = bumpChannelMessageVersion(channelKey)
+    if (directAt) markExplicitInteraction('direct-at')
 
     logDebug(ctx, 'middleware', `entry userId=${session.userId} isDirect=${!!session.isDirect} guildId=${session.guildId} type=${session.type} subtype=${session.subtype} contentLen=${(session.content || '').length}`)
     logDebug(ctx, 'middleware', `plain=${JSON.stringify(plain).slice(0, 100)} directAt=${directAt} isDirect=${!!session.isDirect}`)
 
-    if (isReservedCommand(plain)) return next()
-
-    const isPrivate = !!session.isDirect
-    const inGuild = !isPrivate
-    const channelKey  = getChannelKey(session)
+    if (isReservedCommand(plain)) {
+      markExplicitInteraction('reserved-command')
+      return next()
+    }
 
     if (analyzed.hasVisual && channelKey && session.messageId) {
       const segments = Array.isArray(session.event?.message) ? session.event.message : []
@@ -885,12 +980,13 @@ exports.apply = (ctx) => {
     const adminCommandMatched =
       /^(?:东雪莲)?测试(?:开|关)$/.test(plain) ||
       /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
-      /^东雪莲群聊AI概率(?:设置|重置)$/.test(plain) ||
+      /^东雪莲群聊AI概率(?:设置|重置)(?:\s|$)/.test(plain) ||
       /^东雪莲联网(?:开|关)$/.test(plain) ||
       /^东雪莲思考(?:开|关)$/.test(plain) ||
       /^解除上限群白名单/.test(plain) ||
       /^敏感话题处理者/.test(plain) ||
       plain === 'AI重载'
+    if (adminCommandMatched) markExplicitInteraction('admin-command')
 
     await handleSensitiveMessage(session, ctx, {
       inGuild,
@@ -922,7 +1018,10 @@ exports.apply = (ctx) => {
       clearArmedEventDump,
       getRandomWhitelistStatus,
     })
-    if (inlineAdminResult.matched) return inlineAdminResult.response
+    if (inlineAdminResult.matched) {
+      markExplicitInteraction('inline-admin-command')
+      return inlineAdminResult.response
+    }
 
     const commandResult = await handleCommand(session, ctx, {
       plain, inGuild, channelKey, currentUserId, adminCommandMatched,
@@ -935,18 +1034,25 @@ exports.apply = (ctx) => {
       channelMissCount, repeatEnabledCache: getRepeatEnabledCache(), channelTodayCache, lastEmotionCache,
     })
     if (commandResult.matched) {
+      markExplicitInteraction('command')
       if (Object.prototype.hasOwnProperty.call(commandResult, 'response')) return commandResult.response
       return
     }
     // 以 / 开头且非命令的消息交给后续插件处理（如 dongxuelian-help 的 /help 搜索）
-    if (plain.startsWith('/')) return next()
+    if (plain.startsWith('/')) {
+      markExplicitInteraction('slash-command')
+      return next()
+    }
 
     const botMentionCount = getBotMentionCount(session)
     const otherMentions = hasOtherMentions(session)
     const mentionUserIds = extractAtIds(session.content || '')
       .map(userId => String(userId))
       .filter(userId => userId && userId !== String(session.selfId || session.bot?.selfId || ''))
-    const currentPersonaName = resolvePersona(channelKey, currentUserId).name
+    const personaResolution = resolvePersona(channelKey, currentUserId)
+    const currentPersonaName = personaResolution.name
+    const groupPersonaName = getGroupPersonaName(channelKey)
+    const randomPersonaHighRisk = isPersonaSwitchRisky(personaResolution, groupPersonaName)
     const personaWillContent = currentPersonaName ? loadPersonalSkill(currentPersonaName) : null
     const nameMentioned = !currentPersonaName && /莲莲|东雪莲/.test(plain)
     const inRandomWhitelist = getRandomWhitelistStatus(channelKey)
@@ -956,7 +1062,6 @@ exports.apply = (ctx) => {
       isRandomCandidate = false
     }
     const willFactor = calculateWillFactor(channelKey, currentPersonaName, channelSharedCache, personaWillContent)
-    const finalTriggerRate = Math.min(getRandomTriggerBaseRate(channelKey) * willFactor, 1.0)
     const userText = normalizeText(plain)
     const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId })
     const sharedRecordText = memoryText || (analyzed.hasMessageRecordCue ? normalizeText(analyzed.plain || '') : '')
@@ -986,25 +1091,37 @@ exports.apply = (ctx) => {
       }
     }
 
+    let randomTriggered = isRandomCandidate && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))
+    const randomHit = randomTriggered
+    let delayedRandomScheduled = false
+
     // 连续发言延迟触发
-    if (isRandomCandidate && inGuild && !directAt && !nameMentioned) {
+    if (randomTriggered && isRandomCandidate && inGuild && !directAt && !nameMentioned) {
       const recentMsgs = channelSharedCache.get(channelKey)
         ?.filter(e => e.userId === currentUserId && e.role === 'user')
         ?.slice(-2)
       if (recentMsgs?.length >= 2 && (Date.now() - (recentMsgs[recentMsgs.length - 1]?.ts || 0)) < 10000) {
-        isRandomCandidate = false
-        clearTimeout(channelPendingRandom.get(channelKey)?.timer)
+        randomTriggered = false
+        delayedRandomScheduled = true
+        cancelPendingRandom(channelKey, 'replace-delayed-random')
         const pendingSharedContextNote = getSharedContextNote(session, currentUserId, {
           replyToId: analyzed.replyToId,
           mentionUserIds,
           randomTriggered: true,
         })
+        const pendingExplicitVersion = getExplicitInteractionVersion(channelKey)
+        const pendingMessageVersion = currentMessageVersion
+        const pendingTriggerMessageId = session.messageId || ''
         const timer = setTimeout(() => {
           const p = channelPendingRandom.get(channelKey)
           channelPendingRandom.delete(channelKey)
-          if (p && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))) {
+          if (!p) return
+          if (getExplicitInteractionVersion(channelKey) !== p.explicitVersion) return
+          if (shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))) {
             channelMissCount.set(channelKey, 0)
+            lastRandomReplyTs.set(channelKey, Date.now())
             enqueueForChannel(channelKey, async () => {
+              if (getExplicitInteractionVersion(channelKey) !== p.explicitVersion) return
               const liveSession = withCurrentBot(session, resolveBot())
               const chatMeta = {}
               let reply = await handleChatResult(await chat(liveSession, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, meta: chatMeta }), { ctx, session: liveSession, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true, resolveBot })
@@ -1014,27 +1131,47 @@ exports.apply = (ctx) => {
                   const rareVoiceSent = await safeSendRareVoice(ctx, liveSession)
                   if (rareVoiceSent) return
                 }
-                await safeSendReply(ctx, liveSession, reply, true, resolveBot)
+                const randomSendOptions = buildRandomSendOptions({
+                  randomTriggered: true,
+                  delayed: true,
+                  highRisk: p.highRisk,
+                  triggerMessageId: p.triggerMessageId,
+                  triggerMessageVersion: p.triggerMessageVersion,
+                  currentMessageVersion: getChannelMessageVersion(channelKey),
+                })
+                await safeSendReply(ctx, liveSession, reply, true, resolveBot, randomSendOptions)
               }
             }, 4)
           } else {
             channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
           }
         }, 15000)
-        channelPendingRandom.set(channelKey, { timer, combinedText: plain, sharedContextNote: pendingSharedContextNote, quotedMessageNote, forwardSummaryText, replyToId: analyzed.replyToId })
+        channelPendingRandom.set(channelKey, {
+          timer,
+          combinedText: plain,
+          sharedContextNote: pendingSharedContextNote,
+          quotedMessageNote,
+          forwardSummaryText,
+          replyToId: analyzed.replyToId,
+          explicitVersion: pendingExplicitVersion,
+          triggerMessageId: pendingTriggerMessageId,
+          triggerMessageVersion: pendingMessageVersion,
+          personaName: currentPersonaName || '',
+          groupPersonaName,
+          highRisk: randomPersonaHighRisk,
+        })
       }
     }
-    const randomTriggered = isRandomCandidate && shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))
 
     if (inGuild && !directAt && !nameMentioned) {
-      logDebug(ctx, 'random', `key=${channelKey} whitelist=${inRandomWhitelist} candidate=${isRandomCandidate} triggered=${randomTriggered} rate=${getRandomTriggerRate(channelKey)} skip=${analyzed.shouldSkipForRandomReply} hasUsableText=${analyzed.hasUsableText} hasLink=${analyzed.hasLink} hasVisual=${analyzed.hasVisual} hasFile=${analyzed.hasFile} hasEmbed=${analyzed.hasEmbed} directAt=${directAt} otherMentions=${otherMentions} nameMentioned=${nameMentioned} whitelistSize=${randomWhitelistCache.size}`)
+      logDebug(ctx, 'random', `key=${channelKey} whitelist=${inRandomWhitelist} candidate=${isRandomCandidate} hit=${randomHit} triggered=${randomTriggered} delayed=${delayedRandomScheduled} rate=${getRandomTriggerRate(channelKey)} skip=${analyzed.shouldSkipForRandomReply} hasUsableText=${analyzed.hasUsableText} hasLink=${analyzed.hasLink} hasVisual=${analyzed.hasVisual} hasFile=${analyzed.hasFile} hasEmbed=${analyzed.hasEmbed} directAt=${directAt} otherMentions=${otherMentions} nameMentioned=${nameMentioned} whitelistSize=${randomWhitelistCache.size}`)
     }
 
     if (inGuild && !directAt && !nameMentioned && inRandomWhitelist) {
-      if (isRandomCandidate && randomTriggered) {
+      if (isRandomCandidate && randomHit) {
         channelMissCount.set(channelKey, 0)
-        lastRandomReplyTs.set(channelKey, Date.now())
-      } else {
+        if (!delayedRandomScheduled) lastRandomReplyTs.set(channelKey, Date.now())
+      } else if (!delayedRandomScheduled) {
         channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
       }
     }
@@ -1095,6 +1232,14 @@ exports.apply = (ctx) => {
       logDebug(ctx, 'middleware', `collapsed repeated @bot mentions: ${botMentionCount}`)
     }
 
+    const randomSendOptions = buildRandomSendOptions({
+      randomTriggered,
+      delayed: false,
+      highRisk: randomPersonaHighRisk,
+      triggerMessageId: session.messageId || '',
+      triggerMessageVersion: currentMessageVersion,
+      currentMessageVersion: getChannelMessageVersion(channelKey),
+    })
     const maxDepth = inGuild ? 4 : 2
     enqueueForChannel(channelKey, async () => {
       const liveSession = withCurrentBot(session, resolveBot())
@@ -1102,7 +1247,7 @@ exports.apply = (ctx) => {
         let route = heuristicRoute(userText, 'qq')
         if (isJailbreakAttempt(sanitizeUserInput(userText))) {
           const reply = pickJailbreakFallbackReply()
-          return safeSendReply(ctx, liveSession, reply, randomTriggered, resolveBot)
+          return safeSendReply(ctx, liveSession, reply, randomTriggered, resolveBot, randomSendOptions)
         }
         if (route.useAgent) {
           logDebug(ctx, 'agent', `auto-route reason=${route.reason} channel=${channelKey}`)
@@ -1117,12 +1262,12 @@ exports.apply = (ctx) => {
               fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: resolveBot(), agentMode: true, ...searchRunOptions }),
             })
             const finalReply = await retellAgentResult(agentResult, { ctx, session: liveSession, channelKey, currentUserId, userName, userText, randomTriggered })
-            return safeSendReply(ctx, liveSession, finalReply, randomTriggered, resolveBot)
+            return safeSendReply(ctx, liveSession, finalReply, randomTriggered, resolveBot, randomSendOptions)
           } catch (error) {
             const code = error && error.code ? String(error.code) : ''
-            if (code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED') return safeSendReply(ctx, liveSession, error.message, randomTriggered, resolveBot)
+            if (code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED') return safeSendReply(ctx, liveSession, error.message, randomTriggered, resolveBot, randomSendOptions)
             ctx.logger('dongxuelian-ai').warn(`agent auto-route failed: ${error.message}`)
-            return safeSendReply(ctx, liveSession, 'Agent 暂时不可用。', randomTriggered, resolveBot)
+            return safeSendReply(ctx, liveSession, 'Agent 暂时不可用。', randomTriggered, resolveBot, randomSendOptions)
           }
         }
         const chatMeta = {}
@@ -1159,7 +1304,7 @@ exports.apply = (ctx) => {
           const rareVoiceSent = await safeSendRareVoice(ctx, liveSession)
           if (rareVoiceSent) return
         }
-        return safeSendReply(ctx, liveSession, finalReply, randomTriggered, resolveBot)
+        return safeSendReply(ctx, liveSession, finalReply, randomTriggered, resolveBot, randomSendOptions)
       } catch (err) {
         const m = err && err.message ? String(err.message) : ''
         const code = err && err.code ? String(err.code) : ''
@@ -1176,7 +1321,7 @@ exports.apply = (ctx) => {
         } else if (/429|rate limit|too many requests|quota/i.test(m)) {
           msg = '请求太勤了，稍后再试。'
         }
-        return safeSendReply(ctx, liveSession, msg, randomTriggered, resolveBot)
+        return safeSendReply(ctx, liveSession, msg, randomTriggered, resolveBot, randomSendOptions)
       }
     }, maxDepth)
   })

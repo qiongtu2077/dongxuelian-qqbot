@@ -242,7 +242,10 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
   }
   const parts = splitSentences(reply)
   const msgId = session.messageId
-  const quotePrefix = msgId && (!isRandom || Math.random() < 0.05) ? `<quote id="${msgId}"/>` : ''
+  const forcedQuoteId = options.forceQuote ? String(options.quoteMessageId || msgId || '') : ''
+  const quotePrefix = forcedQuoteId
+    ? `<quote id="${forcedQuoteId}"/>`
+    : (msgId && (!isRandom || Math.random() < 0.05) ? `<quote id="${msgId}"/>` : '')
   const userName = (session.author?.nick || session.author?.name || session.username || '').replace(/[\s\u200b-\u200f\ufeff]+/g, '').trim()
   let sentParts = 0
   for (let i = 0; i < parts.length; i++) {

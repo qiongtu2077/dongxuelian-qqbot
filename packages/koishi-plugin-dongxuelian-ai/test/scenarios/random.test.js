@@ -1,4 +1,5 @@
 const path = require('path')
+const fs = require('fs')
 const { withScenario } = require('./_setup')
 const { mockFetch } = require('../fake/fetch')
 const { AI_ROOT } = require('../fake/file')
@@ -150,6 +151,180 @@ async function run(t) {
       t.check('scenario delayed random uses current ctx bot', liveCalls.some(call => call.message.includes('delayed-current-bot-visible')), JSON.stringify({ liveCalls, staleCalls, sent: session.sent }))
       t.check('scenario delayed random avoids stale session bot', staleCalls.length === 0, JSON.stringify(staleCalls))
     })
+  })
+
+  await withScenario({
+    fakeTimers: true,
+    data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 0 },
+    },
+  }, async ({ ready, makeSession, run, clock, data }) => {
+    data.writeText('ai-skills/personas/SKILL.random-high-risk.md', [
+      '---',
+      'name: 随机高风险人格',
+      'description: random quote fixture',
+      'will: 1',
+      '---',
+      'random quote fixture',
+    ].join('\n'))
+    data.writeJson('ai-persona-groups.json', { 10001: { persona: '群人格' } })
+    data.writeJson('ai-persona-users.json', { 2005: '随机高风险人格' })
+    await ready()
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    conversation.channelSharedCache.set('10001', [
+      { userId: '2005', role: 'user', speakerName: 'member', content: '第一句', messageId: 'zero-m1', replyToId: '', mentionUserIds: [], ts: Date.now() - 5000 },
+      { userId: '2005', role: 'user', speakerName: 'member', content: '第二句', messageId: 'zero-m2', replyToId: 'zero-m1', mentionUserIds: [], ts: Date.now() },
+    ])
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: 'must-not-send' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const session = makeSession({
+        userId: '2005',
+        author: { id: '2005', name: 'member' },
+        content: '第二句',
+        messageId: 'zero-trigger',
+      })
+      const result = await run(session, { flushTicks: 20 })
+      await clock.tick(15000)
+      await flushAsync(120)
+      t.check('scenario random rate zero still calls next', result.nextCalled, JSON.stringify(result))
+      t.check('scenario random rate zero sends nothing even when quote risk exists', session.sent.length === 0, JSON.stringify(session.sent))
+      t.check('scenario random rate zero does not call model', mocked.calls.length === 0, JSON.stringify(mocked.calls))
+    })
+  })
+
+  await withScenario({
+    fakeTimers: true,
+    data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 1 },
+    },
+  }, async ({ ready, makeSession, run, clock, data }) => {
+    data.writeText('ai-skills/personas/SKILL.random-high-risk.md', [
+      '---',
+      'name: 随机高风险人格',
+      'description: random quote fixture',
+      'will: 1',
+      '---',
+      'random quote fixture',
+    ].join('\n'))
+    data.writeJson('ai-persona-groups.json', { 10001: { persona: '群人格' } })
+    data.writeJson('ai-persona-users.json', { 2006: '随机高风险人格' })
+    await ready()
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    conversation.channelSharedCache.set('10001', [
+      { userId: '2006', role: 'user', speakerName: 'member', content: '连续第一句', messageId: 'risk-m1', replyToId: '', mentionUserIds: [], ts: Date.now() - 5000 },
+      { userId: '2006', role: 'user', speakerName: 'member', content: '连续第二句', messageId: 'risk-m2', replyToId: 'risk-m1', mentionUserIds: [], ts: Date.now() },
+    ])
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: 'high-risk-delayed-visible' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const triggerSession = makeSession({
+        userId: '2006',
+        author: { id: '2006', name: 'member' },
+        content: '连续第二句',
+        messageId: 'risk-trigger',
+      })
+      const triggerResult = await run(triggerSession, { flushTicks: 20 })
+      t.check('scenario high risk delayed random scheduling calls next', triggerResult.nextCalled, JSON.stringify(triggerResult))
+      const interleavingSession = makeSession({
+        userId: '2010',
+        author: { id: '2010', name: 'other' },
+        content: 'https://example.com/interleave',
+        messageId: 'risk-interleave',
+      })
+      await run(interleavingSession, { flushTicks: 20 })
+      await clock.tick(15000)
+      await flushAsync(120)
+      await triggerSession.waitForSend(message => String(message).includes('high-risk-delayed-visible'))
+      t.check('scenario high risk delayed random quotes trigger message', triggerSession.sent.some(item => String(item).includes('<quote id="risk-trigger"/>high-risk-delayed-visible')), JSON.stringify(triggerSession.sent))
+      t.check('scenario high risk delayed random still calls model once after second probability hit', mocked.calls.length === 1, JSON.stringify(mocked.calls))
+    })
+  })
+
+  await withScenario({
+    fakeTimers: true,
+    data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 1 },
+    },
+  }, async ({ ready, makeSession, run, clock }) => {
+    await ready()
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    conversation.channelSharedCache.set('10001', [
+      { userId: '2007', role: 'user', speakerName: 'member', content: '排队第一句', messageId: 'cancel-m1', replyToId: '', mentionUserIds: [], ts: Date.now() - 5000 },
+      { userId: '2007', role: 'user', speakerName: 'member', content: '排队第二句', messageId: 'cancel-m2', replyToId: 'cancel-m1', mentionUserIds: [], ts: Date.now() },
+    ])
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: 'direct-at-visible' } }] } },
+      { json: { choices: [{ message: { content: 'pending-should-not-send' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const pendingSession = makeSession({
+        userId: '2007',
+        author: { id: '2007', name: 'member' },
+        content: '排队第二句',
+        messageId: 'cancel-trigger',
+      })
+      await run(pendingSession, { flushTicks: 20 })
+      const directSession = makeSession({
+        userId: '2011',
+        author: { id: '2011', name: 'other' },
+        content: '<at id="90000"/> 评价一下韩信',
+        messageId: 'cancel-direct',
+      })
+      await run(directSession, { flushTicks: 120 })
+      await directSession.waitForSend(message => String(message).includes('direct-at-visible'))
+      await clock.tick(15000)
+      await flushAsync(120)
+      t.check('scenario explicit at cancels pending random reply', !pendingSession.sent.some(item => String(item).includes('pending-should-not-send')), JSON.stringify({ pending: pendingSession.sent, direct: directSession.sent }))
+      t.check('scenario explicit at cancellation preserves direct reply only model call', mocked.calls.length === 1, JSON.stringify(mocked.calls.map(call => call.requestBody && call.requestBody.messages && call.requestBody.messages.slice(-1))))
+    })
+  })
+
+  await withScenario({
+    data: {
+      adminUserIds: ['9001'],
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 0 },
+    },
+  }, async ({ ready, makeSession, run, data }) => {
+    await ready()
+    const viewBefore = await run(makeSession({
+      userId: '9001',
+      author: { id: '9001', name: 'admin' },
+      content: '东雪莲群聊AI概率查看',
+    }), { flushTicks: 40 })
+    t.check('scenario random rate zero is read as configured zero', viewBefore.sent.some(item => String(item).includes('0%')), JSON.stringify(viewBefore.sent))
+    const setRate = await run(makeSession({
+      userId: '9001',
+      author: { id: '9001', name: 'admin' },
+      content: '东雪莲群聊AI概率设置 100%',
+      event: { sender: { role: 'admin' }, message: [] },
+    }), { flushTicks: 40 })
+    t.check('scenario random rate command sets one hundred percent', setRate.sent.some(item => String(item).includes('100%')), JSON.stringify(setRate.sent))
+    const savedRate = data.readJson('ai-random-rate.json')
+    t.check('scenario random rate command writes updated group probability', savedRate['10001'] === 1, JSON.stringify(savedRate))
+
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: 'rate-command-random-visible' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const randomSession = makeSession({
+        userId: '2012',
+        author: { id: '2012', name: 'member' },
+        content: '命令之后普通随机',
+        messageId: 'rate-command-message',
+      })
+      await run(randomSession, { flushTicks: 120 })
+      await randomSession.waitForSend(message => String(message).includes('rate-command-random-visible'))
+      t.check('scenario random reply reads probability set by command', randomSession.sent.some(item => String(item).includes('rate-command-random-visible')), JSON.stringify(randomSession.sent))
+    })
+
+    t.check('scenario random test does not create tracked filesystem dependency', fs.existsSync(data.pathFor('ai-random-rate.json')), data.pathFor('ai-random-rate.json'))
   })
 }
 
