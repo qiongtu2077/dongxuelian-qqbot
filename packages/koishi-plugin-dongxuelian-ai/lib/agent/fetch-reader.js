@@ -12,6 +12,7 @@ const DEFAULT_TIMEOUT_MS = 5000
 const DEFAULT_MAX_BYTES = 1024 * 1024
 const DEFAULT_MAX_CHARS = 4000
 const DEFAULT_REDIRECTS = 5
+const DEFAULT_MIN_RELIABLE_TEXT_CHARS = 80
 
 function parsePositiveInt(value, fallback, min, max) {
   const parsed = parseInt(value, 10)
@@ -202,6 +203,88 @@ function extractTitle(html = '') {
   return match ? decodeBasicHtmlEntities(match[1]).replace(/\s+/g, ' ').trim().slice(0, 180) : ''
 }
 
+function isLikelyGarbagePageText(text = '') {
+  const sample = String(text || '').trim().slice(0, 500)
+  if (!sample) return false
+  if (/^<img\s|^<svg\s|track_ua\.gif/i.test(sample)) return true
+  const pathCount = (sample.match(/<path\s/gi) || []).length
+  if (pathCount >= 3) return true
+  if (/^(?:window\.|function\s*\(|\{["'][\w-]+["']\s*:)/i.test(sample) && sample.length < DEFAULT_MIN_RELIABLE_TEXT_CHARS) return true
+  return false
+}
+
+function classifyCandidateText(text = '', page = {}, options = {}) {
+  const value = String(text || '').trim()
+  const contentType = String(page && page.contentType || '').toLowerCase()
+  const minTextChars = parsePositiveInt(options.minTextChars, DEFAULT_MIN_RELIABLE_TEXT_CHARS, 20, 500)
+  const isStructuredJson = /application\/(?:ld\+)?json/i.test(contentType)
+  if (!value) {
+    return { textQuality: 'empty', reason: '未提取到正文', reliable: false }
+  }
+  if (isLikelyGarbagePageText(value)) {
+    return { textQuality: 'garbage', reason: '正文疑似脚本、SVG、追踪像素或非文章内容', reliable: false }
+  }
+  if (!isStructuredJson && value.length < minTextChars) {
+    return { textQuality: 'short', reason: `正文过短（${value.length} 字，低于 ${minTextChars} 字），可能需要 JavaScript 渲染或换下一个候选页`, reliable: false }
+  }
+  return { textQuality: 'usable', reason: '已读取可用正文', reliable: true }
+}
+
+function defaultExtractCandidateText(body = '', maxChars = DEFAULT_MAX_CHARS) {
+  return String(body || '')
+    .replace(/<script\b[^>]{0,500}>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]{0,500}>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]{0,500}>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxChars)
+}
+
+async function readCandidatePage(rawUrl, options = {}) {
+  const limits = options.limits || getFetchLimits(options)
+  const textMaxChars = parsePositiveInt(options.maxChars || limits.maxChars, DEFAULT_MAX_CHARS, 300, 8000)
+  const extractText = typeof options.extractText === 'function' ? options.extractText : defaultExtractCandidateText
+  try {
+    const page = await fetchWithManualRedirect(rawUrl, limits)
+    const extracted = extractText(page.body || '', textMaxChars, page)
+    const text = String(extracted || '').trim().slice(0, textMaxChars)
+    const quality = classifyCandidateText(text, page, { minTextChars: options.minTextChars })
+    return {
+      ok: true,
+      url: page.originalUrl,
+      originalUrl: page.originalUrl,
+      finalUrl: page.finalUrl,
+      title: page.title,
+      status: page.status,
+      contentType: page.contentType,
+      body: page.body,
+      text,
+      textQuality: quality.textQuality,
+      reason: quality.reason,
+      reliable: quality.reliable,
+      truncated: !!page.truncated,
+    }
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error)
+    return {
+      ok: false,
+      url: String(rawUrl || ''),
+      originalUrl: String(rawUrl || ''),
+      finalUrl: '',
+      title: '',
+      status: 0,
+      contentType: '',
+      body: '',
+      text: '',
+      textQuality: 'error',
+      reason: message,
+      error: message,
+      reliable: false,
+      truncated: false,
+    }
+  }
+}
+
 async function fetchWithManualRedirect(rawUrl, limits = getFetchLimits()) {
   if (typeof fetch !== 'function') throw new Error('当前 Node.js 不支持 fetch，无法读取网页')
   let current = validatePublicHttpUrl(rawUrl)
@@ -266,6 +349,7 @@ module.exports = {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_CHARS,
   DEFAULT_REDIRECTS,
+  DEFAULT_MIN_RELIABLE_TEXT_CHARS,
   parsePositiveInt,
   getFetchLimits,
   normalizeHostname,
@@ -279,6 +363,10 @@ module.exports = {
   decodeBytes,
   readResponseBytesLimited,
   extractTitle,
+  isLikelyGarbagePageText,
+  classifyCandidateText,
+  defaultExtractCandidateText,
   fetchWithManualRedirect,
   fetchReadableUrl,
+  readCandidatePage,
 }

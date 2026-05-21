@@ -772,11 +772,12 @@ async function main() {
       'normalizeResultUrl', 'normalizeSearchCandidate', 'isUsefulSearchResult', 'hasQuerySignal', 'getResultDomainSignal', 'rankSearchCandidates', 'formatSearchResults', 'buildSearchFailureText', 'classifySearchResult', 'extractRetryKeywords', 'detectFailurePattern', 'buildStrategyQueries',
     ],
     agentFetchReader: [
-      'getFetchLimits', 'validatePublicHttpUrl', 'resolveAndValidateHostname', 'readResponseBytesLimited', 'extractTitle', 'fetchWithManualRedirect', 'fetchReadableUrl',
+      'getFetchLimits', 'validatePublicHttpUrl', 'resolveAndValidateHostname', 'readResponseBytesLimited', 'extractTitle',
+      'classifyCandidateText', 'readCandidatePage', 'fetchWithManualRedirect', 'fetchReadableUrl',
     ],
     agentHttpSearch: [
       'decodeHttpSearchEntities', 'stripHttpSearchTags', 'resolveHttpSearchUrl', 'extractHttpSearchCandidates',
-      'extractHttpPageText', 'fetchHttpResultPage', 'readTopResultPages', 'mergeHttpSearchCandidates', 'formatSearchWithPages', 'runHttpSearch', 'runSearchPass', 'buildRetryQueries',
+      'extractHttpPageText', 'readHttpResultPage', 'fetchHttpResultPage', 'readTopResultPages', 'mergeHttpSearchCandidates', 'formatSearchWithPages', 'runHttpSearch', 'runSearchPass', 'buildRetryQueries',
     ],
     agentQueue: [
       'enqueueAgentTask', 'getAgentQueueStats', 'clearAgentQueue', 'configureAgentQueue', 'resetAgentQueueForTests',
@@ -1436,8 +1437,8 @@ async function main() {
   check('agent http search extracts decoded redirected URLs', httpSearchCandidates.length === 1 && httpSearchCandidates[0].url.includes('wutheringwaves.kurogames.com/news/mock'), JSON.stringify(httpSearchCandidates))
   const httpPageText = modules.agentHttpSearch.extractHttpPageText('<html><body><script>window.__noise="bad"</script><nav>首页 导航</nav><main>库洛官方公告正文：新共鸣者情报、版本前瞻、卡池说明都会在这里集中发布，轻量 HTTP 读取候选网页正文可以继续补充搜索结果。</main><footer>ICP备案 隐私政策</footer></body></html>', 300)
   check('agent http search extracts candidate page body without script/nav noise', httpPageText.includes('库洛官方公告正文') && !httpPageText.includes('window.__noise') && !httpPageText.includes('首页 导航'), httpPageText)
-  const searchWithPages = modules.agentHttpSearch.formatSearchWithPages('鸣潮 最新角色', rankedSearch, { pages: [{ title: '《鸣潮》官方公告 新共鸣者', url: 'https://wutheringwaves.kurogames.com/news/mock', text: '候选网页正文提到新共鸣者和版本前瞻。' }] })
-  check('agent http search appends bounded page body summaries', searchWithPages.includes('打开候选网页继续读取') && searchWithPages.includes('候选网页正文提到新共鸣者'), searchWithPages)
+  const searchWithPages = modules.agentHttpSearch.formatSearchWithPages('鸣潮 最新角色', rankedSearch, { pages: [{ title: '《鸣潮》官方公告 新共鸣者', url: 'https://wutheringwaves.kurogames.com/news/mock', finalUrl: 'https://wutheringwaves.kurogames.com/news/mock', status: 200, contentType: 'text/html', textQuality: 'usable', reason: '已读取可用正文', text: '候选网页正文提到新共鸣者和版本前瞻。' }], failures: ['短正文候选: 正文过短'] })
+  check('agent http search appends bounded opened page evidence', searchWithPages.includes('已打开候选网页正文') && searchWithPages.includes('正文质量：usable') && searchWithPages.includes('候选网页正文提到新共鸣者'), searchWithPages)
   const mergedHttpCandidates = modules.agentHttpSearch.mergeHttpSearchCandidates(
     [{ title: 'A', url: 'https://example.com/a' }],
     [{ title: 'A2', url: 'https://example.com/a' }, { title: 'B', url: 'https://example.com/b' }]
@@ -1751,6 +1752,13 @@ async function main() {
         check('agent chat bridge keeps web_fetch context summary', fetchSummary.includes('URL：') && fetchSummary.includes('正文') && fetchSummary.length > 500, fetchSummary)
         const readerPage = await modules.agentFetchReader.fetchReadableUrl('https://example.com/news', { maxChars: 1000 })
         check('agent fetch reader exposes shared readable page metadata', readerPage.finalUrl === 'https://example.com/news' && readerPage.title === '示例公告' && readerPage.body.includes('公开网页正文'), JSON.stringify(readerPage))
+        const candidatePage = await modules.agentFetchReader.readCandidatePage('https://example.com/news', {
+          maxChars: 1000,
+          extractText: body => modules.agentHttpSearch.extractHttpPageText(body, 1000),
+        })
+        check('agent fetch reader exposes structured candidate page quality', candidatePage.ok && candidatePage.textQuality === 'usable' && candidatePage.finalUrl === 'https://example.com/news' && candidatePage.text.includes('公开网页正文'), JSON.stringify(candidatePage))
+        const shortCandidate = modules.agentFetchReader.classifyCandidateText('短', { contentType: 'text/html' })
+        check('agent fetch reader classifies short candidate text', shortCandidate.textQuality === 'short' && !shortCandidate.reliable, JSON.stringify(shortCandidate))
       } finally {
         global.fetch = originalFetchForWebFetch
         dns.lookup = originalDnsLookup
@@ -1816,8 +1824,10 @@ async function main() {
           }
         }
         const retryHttpResult = await isolatedWebSearch.execute({ query: '某游戏最新角色是谁' })
-        check('agent web_search keeps trying after candidate page read failure', retryHttpResult.includes('打开候选网页继续读取') && retryHttpResult.includes('库洛官方公告正文') && retryReadUrls.some(url => url.includes('too-short')), retryHttpResult)
+        check('agent web_search keeps trying after candidate page read failure', retryHttpResult.includes('已打开候选网页正文') && retryHttpResult.includes('正文质量：usable') && retryHttpResult.includes('库洛官方公告正文') && retryReadUrls.some(url => url.includes('too-short')), retryHttpResult)
         check('agent web_search candidate readers use manual redirect guard', retryReadUrls.some(url => url.includes('/too-short')) && retryReadModes[retryReadUrls.findIndex(url => url.includes('/too-short'))] === 'manual', JSON.stringify({ retryReadUrls, retryReadModes }))
+        const structuredSearchPage = await modules.agentHttpSearch.readHttpResultPage('https://example.com/deep', modules.agentHttpSearch.getHttpSearchLimits ? modules.agentHttpSearch.getHttpSearchLimits({}) : { timeoutMs: 5000, pageMaxBytes: 512 * 1024, pageTextChars: 3200 }, 5000)
+        check('agent http search structured page reader returns quality metadata', structuredSearchPage.ok && structuredSearchPage.textQuality === 'usable' && structuredSearchPage.status === 200, JSON.stringify(structuredSearchPage))
         let searchOnlyCount = 0
         global.fetch = async (url, options = {}) => {
           retryReadUrls.push(String(url))

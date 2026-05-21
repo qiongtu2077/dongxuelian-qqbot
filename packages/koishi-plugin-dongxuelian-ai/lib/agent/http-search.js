@@ -6,7 +6,7 @@
  */
 const { rankSearchCandidates, formatSearchResults, buildSearchFailureText, classifySearchResult, extractRetryKeywords, detectFailurePattern, buildStrategyQueries } = require('./search-results')
 const { getDirectSearchCandidates } = require('./search-query')
-const { fetchWithManualRedirect } = require('./fetch-reader')
+const { readCandidatePage } = require('./fetch-reader')
 
 const HTTP_SEARCH_ENDPOINTS = [
   { name: 'Bing HTTP', url: query => `https://www.bing.com/search?q=${encodeURIComponent(query)}` },
@@ -208,24 +208,34 @@ async function fetchHttpSearchEndpoint(endpoint, query, limits, remainingMs) {
   }
 }
 
-function getResponseHeader(response, name) {
-  try {
-    if (response.headers && typeof response.headers.get === 'function') return response.headers.get(name) || ''
-  } catch {}
-  return ''
+async function readHttpResultPage(url, limits, remainingMs) {
+  const timeoutMs = Math.max(500, Math.min(limits.timeoutMs, remainingMs))
+  return readCandidatePage(url, {
+    limits: {
+      timeoutMs,
+      maxBytes: limits.pageMaxBytes,
+      maxChars: limits.pageTextChars,
+      redirects: 5,
+    },
+    maxChars: limits.pageTextChars,
+    minTextChars: HTTP_SEARCH_MIN_PAGE_TEXT_CHARS,
+    extractText: body => extractHttpPageText(body, limits.pageTextChars),
+  })
 }
 
 async function fetchHttpResultPage(url, limits, remainingMs) {
-  const timeoutMs = Math.max(500, Math.min(limits.timeoutMs, remainingMs))
-  const page = await fetchWithManualRedirect(url, {
-    timeoutMs,
-    maxBytes: limits.pageMaxBytes,
-    maxChars: limits.pageTextChars,
-    redirects: 5,
-  })
-  const text = extractHttpPageText(page.body, limits.pageTextChars)
-  if (!text || text.length < HTTP_SEARCH_MIN_PAGE_TEXT_CHARS) throw new Error('正文过短')
-  return text
+  const page = await readHttpResultPage(url, limits, remainingMs)
+  if (!page.ok) throw new Error(page.reason || '候选网页读取失败')
+  if (page.textQuality !== 'usable') throw new Error(page.reason || '正文不可用')
+  return page.text
+}
+
+function formatCandidateReadFailure(item = {}, page = {}) {
+  const label = item.title || item.url || page.url || '候选网页'
+  const reason = page.reason || page.error || '读取失败'
+  const status = page.status ? `HTTP ${page.status}` : ''
+  const finalUrl = page.finalUrl && page.finalUrl !== item.url ? `最终 URL: ${page.finalUrl}` : ''
+  return [label, reason, status, finalUrl].filter(Boolean).join(' / ')
 }
 
 async function readTopResultPages(results = [], limits, startedAt) {
@@ -244,22 +254,24 @@ async function readTopResultPages(results = [], limits, startedAt) {
       failures.push('候选网页读取总超时')
       break
     }
-    try {
-      const text = await fetchHttpResultPage(item.url, limits, remainingMs)
-      pagesRead++
-      if (text.length < 50 || isGarbagePageText(text)) {
-        failures.push(`${item.title || item.url}: 正文无效（SPA/tracking/非文本）`)
-        continue
-      }
-      pages.push({
-        title: item.title || item.url,
-        url: item.url,
-        text,
-      })
-    } catch (error) {
-      pagesRead++
-      failures.push(`${item.title || item.url}: ${error.message || String(error)}`)
+    const page = await readHttpResultPage(item.url, limits, remainingMs)
+    pagesRead++
+    if (!page.ok || page.textQuality !== 'usable') {
+      failures.push(formatCandidateReadFailure(item, page))
+      continue
     }
+    pages.push({
+      title: page.title || item.title || item.url,
+      url: item.url,
+      finalUrl: page.finalUrl,
+      status: page.status,
+      contentType: page.contentType,
+      text: page.text,
+      textQuality: page.textQuality,
+      reason: page.reason,
+      truncated: page.truncated,
+      sourceType: 'opened_body',
+    })
   }
   return { pages, failures }
 }
@@ -307,10 +319,18 @@ function formatSearchWithPages(query = '', ranked = [], pageReads = {}) {
   const pageText = pages.slice(0, 2).map((item, index) => [
     `【来源 ${index + 1}】标题：${item.title}`,
     `URL：${item.url}`,
+    item.finalUrl && item.finalUrl !== item.url ? `最终 URL：${item.finalUrl}` : '',
+    item.status ? `状态：HTTP ${item.status}` : '',
+    item.contentType ? `类型：${item.contentType}` : '',
+    `正文质量：${item.textQuality || 'usable'}（${item.reason || '已读取可用正文'}）`,
+    item.truncated ? '提示：响应体已截断，正文可能不完整。' : '',
     `正文：${item.text}`,
     '---',
-  ].join('\n')).join('\n')
-  return `${base}\n\n打开候选网页继续读取（轻量 HTTP，未启动 Chromium）：\n${pageText}`
+  ].filter(Boolean).join('\n')).join('\n')
+  const failureText = Array.isArray(pageReads.failures) && pageReads.failures.length
+    ? `\n候选网页打开失败/跳过记录（低确信线索，不作为正文依据）：\n${pageReads.failures.slice(0, 3).map(item => `- ${item}`).join('\n')}`
+    : ''
+  return `${base}\n\n打开候选网页继续读取（已打开候选网页正文，可作为主要依据；轻量 HTTP，未启动 Chromium）：\n${pageText}${failureText}`
 }
 
 async function runHttpSearch(queries = [], options = {}) {
@@ -477,6 +497,7 @@ module.exports = {
   resolveHttpSearchUrl,
   extractHttpSearchCandidates,
   extractHttpPageText,
+  readHttpResultPage,
   fetchHttpResultPage,
   readTopResultPages,
   mergeHttpSearchCandidates,

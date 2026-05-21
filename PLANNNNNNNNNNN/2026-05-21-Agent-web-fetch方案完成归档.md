@@ -1,4 +1,16 @@
-# Agent web_fetch 方案
+# 2026-05-21 Agent web_fetch 方案完成归档
+
+> 来源：`待完成与待审核任务/fetch方案.md`
+> 归档时间：2026-05-21
+> 状态：Phase 1 与 Phase 2 主体完成，后续演进改走 `待完成与待审核任务/web_search与web_fetch协作优化计划.md`
+
+## 归档结论
+
+本方案已完成独立 `web_fetch`、共享 `fetch-reader`、显式 URL 读取路由，以及 `web_search` 候选正文读取接入共享 reader 的主体目标。`web_fetch` 不再作为“替代浏览器搜索”的方向推进，后续定位调整为 `web_search` 的正文读取协作层和明确 URL 的直接读页工具。
+
+---
+
+# 原方案记录
 
 ## 结论先放前面
 
