@@ -53,7 +53,7 @@ const DEFAULT_CONFIG = Object.freeze({
         get_current_time: true,
         calculate: true,
         web_search: true,
-        web_fetch: true,
+        web_fetch: false,
         read_agent_skill: true,
         read_file: true,
         list_files: true,

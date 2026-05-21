@@ -6,6 +6,7 @@
  */
 const { rankSearchCandidates, formatSearchResults, buildSearchFailureText, classifySearchResult, extractRetryKeywords, detectFailurePattern, buildStrategyQueries } = require('./search-results')
 const { getDirectSearchCandidates } = require('./search-query')
+const { fetchWithManualRedirect } = require('./fetch-reader')
 
 const HTTP_SEARCH_ENDPOINTS = [
   { name: 'Bing HTTP', url: query => `https://www.bing.com/search?q=${encodeURIComponent(query)}` },
@@ -215,36 +216,16 @@ function getResponseHeader(response, name) {
 }
 
 async function fetchHttpResultPage(url, limits, remainingMs) {
-  if (typeof fetch !== 'function') throw new Error('当前 Node.js 不支持 fetch，无法读取候选网页')
-  const controller = new AbortController()
   const timeoutMs = Math.max(500, Math.min(limits.timeoutMs, remainingMs))
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
-        'User-Agent': HTTP_SEARCH_USER_AGENT,
-        Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
-      },
-    })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const contentType = getResponseHeader(response, 'content-type')
-    if (contentType && !/(?:text\/html|application\/xhtml\+xml|text\/plain|application\/json)/i.test(contentType)) {
-      throw new Error(`非文本页面（${contentType.slice(0, 60)}）`)
-    }
-    const html = await readHttpSearchResponseText(response, limits.pageMaxBytes)
-    const text = extractHttpPageText(html, limits.pageTextChars)
-    if (!text || text.length < HTTP_SEARCH_MIN_PAGE_TEXT_CHARS) throw new Error('正文过短')
-    return text
-  } catch (error) {
-    if (error && error.name === 'AbortError') throw new Error(`超时（${timeoutMs}ms）`)
-    throw error
-  } finally {
-    clearTimeout(timer)
-  }
+  const page = await fetchWithManualRedirect(url, {
+    timeoutMs,
+    maxBytes: limits.pageMaxBytes,
+    maxChars: limits.pageTextChars,
+    redirects: 5,
+  })
+  const text = extractHttpPageText(page.body, limits.pageTextChars)
+  if (!text || text.length < HTTP_SEARCH_MIN_PAGE_TEXT_CHARS) throw new Error('正文过短')
+  return text
 }
 
 async function readTopResultPages(results = [], limits, startedAt) {

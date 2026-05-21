@@ -794,3 +794,19 @@ Phase 3 Chat heavy handoff：65%
 ```
 
 我的建议是先做 Phase 1。它能解决“读已知网页正文”这个最痛的轻量场景，又不会把现有搜索链路和浏览器链路一起搅动。
+
+## 2026-05-21 推进状态
+
+已完成：
+
+- Phase 1：独立 `web_fetch` 工具已注册，包含 URL 协议限制、DNS 私网校验、手动 redirect、正文大小限制、超时、HTML/plain/JSON 读取、网页内容不可信提示。
+- Phase 2 一部分：显式 URL 读取路由已具备，但默认开关仍关闭；只有显式启用 `web_fetch` 后才会进入工具链。
+- Phase 2 继续推进：新增共享 `agent/fetch-reader.js`，`web_fetch` 和 `web_search` 候选网页正文读取改为同一套 reader，搜索候选页也获得 SSRF/手动 redirect/编码/大小限制防护。
+- 默认暴露策略调整：`qq.web_fetch=false`，`dashboard.web_fetch=false`。功能先保留在内部和配置开关后面，暂时不对 QQ 和前端默认开放。
+- 测试补充：增加共享 reader 导出、Dashboard 默认关闭、候选页手动 redirect、防 response.url 私网回流、搜索候选页读取不被 `DONGXUELIAN_WEB_FETCH_MAX_BYTES` 放大等检查。
+
+暂不做：
+
+- 不把 `web_fetch` 加入 Chat 轻量工具定义，避免普通聊天模型自动抓取群聊里随手贴出的 URL。
+- 不把 `web_fetch` 默认开放给 QQ 或 Dashboard；后续要开放时先做真实交互验收。
+- 不完全替代 `browser_action`。JS 渲染、交互、截图仍由浏览器工具兜底。
