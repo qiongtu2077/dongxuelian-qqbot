@@ -11,6 +11,7 @@ const persistence = require('./persistence.test')
 const concurrency = require('./concurrency.test')
 const setup = require('./setup.test')
 const personaPrompt = require('./persona-prompt.test')
+const personaRegression = require('./persona-regression.test')
 const sendGuard = require('./send-guard.test')
 const agentPhase3 = require('./agent-phase3.test')
 const e2eSimulation = require('./e2e-simulation.test')
@@ -33,6 +34,7 @@ const SCENARIOS = [
   concurrency,
   setup,
   personaPrompt,
+  personaRegression,
   sendGuard,
   agentPhase3,
   e2eSimulation,

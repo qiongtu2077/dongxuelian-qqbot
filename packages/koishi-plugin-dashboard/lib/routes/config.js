@@ -8,11 +8,11 @@ const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_D
 
 function parseFrontmatter(content) {
   const raw = String(content || '').replace(/^\uFEFF/, '')
-  const match = raw.match(/^---\n([\s\S]*?)\n---\n\n?/)
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(raw)
   if (!match) return { meta: {}, body: raw, raw }
   const meta = {}
-  for (const line of match[1].split('\n')) {
-    const kv = line.match(/^(\w[\w_-]*):\s*(.+)/)
+  for (const line of match[1].split(/\r?\n/)) {
+    const kv = line.match(/^(\w[\w_-]*):\s*(.*)$/)
     if (kv) meta[kv[1]] = kv[2].trim()
   }
   return { meta, body: raw.slice(match[0].length), raw }
@@ -35,6 +35,62 @@ function buildPersonaFrontmatter(meta, overrides = {}) {
   if (next.voice_id || next.voice) lines.push(`voice_id: ${cleanFrontmatterValue(next.voice_id || next.voice, 80)}`)
   if (next.voice_asset_id) lines.push(`voice_asset_id: ${cleanFrontmatterValue(next.voice_asset_id, 120)}`)
   if (next.voice_style) lines.push(`voice_style: ${cleanFrontmatterValue(next.voice_style)}`)
+  for (const [key, value] of Object.entries(next)) {
+    if (knownKeys.has(key)) continue
+    const clean = cleanFrontmatterValue(value)
+    if (clean) lines.push(`${key}: ${clean}`)
+  }
+  return `---\n${lines.join('\n')}\n---\n\n`
+}
+
+function cleanLoreName(value) {
+  return String(value || '').replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '').trim()
+}
+
+function normalizeLoreScope(value) {
+  const text = String(value || '').trim().toLowerCase()
+  if (text === 'always' || text === 'keyword' || text === 'none') return text
+  return 'keyword'
+}
+
+function normalizeLoreNumber(value, fallback, min, max) {
+  if (value === undefined || value === null || value === '') return ''
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
+function normalizeLorePayload(data = {}, existingName = '') {
+  const name = cleanLoreName(data.name || existingName)
+  return {
+    name,
+    description: cleanFrontmatterValue(data.description, 240),
+    keywords: cleanFrontmatterValue(data.keywords, 500),
+    scope: normalizeLoreScope(data.scope),
+    summary: cleanFrontmatterValue(data.summary, 1200),
+    maxChars: normalizeLoreNumber(data.maxChars ?? data.max_chars, '', 200, 12000),
+    priority: normalizeLoreNumber(data.priority, '', -100, 100),
+    content: String(data.content || ''),
+  }
+}
+
+function buildLoreFrontmatter(meta, overrides = {}) {
+  const next = { ...meta, ...overrides }
+  const knownKeys = new Set(['name', 'description', 'keywords', 'scope', 'summary', 'max_chars', 'maxChars', 'priority', 'content'])
+  const lines = [
+    `name: ${cleanLoreName(next.name)}`,
+    `description: ${cleanFrontmatterValue(next.description, 240)}`,
+  ]
+  const keywords = cleanFrontmatterValue(next.keywords, 500)
+  if (keywords) lines.push(`keywords: ${keywords}`)
+  const scope = normalizeLoreScope(next.scope)
+  if (scope && scope !== 'keyword') lines.push(`scope: ${scope}`)
+  const summary = cleanFrontmatterValue(next.summary, 1200)
+  if (summary) lines.push(`summary: ${summary}`)
+  const maxChars = normalizeLoreNumber(next.maxChars ?? next.max_chars, '', 200, 12000)
+  if (maxChars !== '') lines.push(`max_chars: ${maxChars}`)
+  const priority = normalizeLoreNumber(next.priority, '', -100, 100)
+  if (priority !== '') lines.push(`priority: ${priority}`)
   for (const [key, value] of Object.entries(next)) {
     if (knownKeys.has(key)) continue
     const clean = cleanFrontmatterValue(value)
@@ -180,10 +236,19 @@ function handleGetLoreList(req, res) {
     const files = fs.readdirSync(LORES_DIR).filter(f => f.endsWith('.md'))
     const list = files.map(f => {
       const raw = String(fs.readFileSync(path.join(LORES_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '')
-      const m = raw.match(/^---\n([\s\S]*?)\n---/)
-      const name = m?.[1]?.match(/name:\s*(\S+)/)?.[1] || f.replace('SKILL.', '').replace('.md', '')
-      const desc = m?.[1]?.match(/description:\s*(.+)/)?.[1] || ''
-      return { id: name, description: desc, file: f }
+      const parsed = parseFrontmatter(raw)
+      const name = parsed.meta.name || f.replace('SKILL.', '').replace('.md', '')
+      const desc = parsed.meta.description || ''
+      return {
+        id: name,
+        description: desc,
+        keywords: parsed.meta.keywords || '',
+        scope: parsed.meta.scope || 'keyword',
+        summary: parsed.meta.summary || '',
+        maxChars: parsed.meta.max_chars || parsed.meta.maxChars || '',
+        priority: parsed.meta.priority || '',
+        file: f,
+      }
     })
     list.unshift({ id: 'none', description: '不绑定任何世界观', file: '' })
     return json(res, list)
@@ -195,18 +260,18 @@ function handleGetLores(req, res) {
     const files = fs.readdirSync(LORES_DIR).filter(f => f.endsWith('.md'))
     return json(res, files.map(f => {
       const raw = String(fs.readFileSync(path.join(LORES_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '')
-      const m = raw.match(/^---\n([\s\S]*?)\n---\n\n?/)
-      let name = '', description = '', content = raw
-      if (m) {
-        for (const line of m[1].split('\n')) {
-          const kv = line.match(/^(\w[\w_-]*):\s*(.+)/)
-          if (kv) { if (kv[1] === 'name') name = kv[2].trim(); else if (kv[1] === 'description') description = kv[2].trim() }
-        }
-        content = raw.slice(m[0].length)
-      } else {
-        name = f.replace(/^SKILL\./, '').replace(/\.md$/, '')
+      const parsed = parseFrontmatter(raw)
+      const name = parsed.meta.name || f.replace(/^SKILL\./, '').replace(/\.md$/, '')
+      return {
+        name,
+        description: parsed.meta.description || '',
+        keywords: parsed.meta.keywords || '',
+        scope: parsed.meta.scope || 'keyword',
+        summary: parsed.meta.summary || '',
+        maxChars: parsed.meta.max_chars || parsed.meta.maxChars || '',
+        priority: parsed.meta.priority || '',
+        content: parsed.body,
       }
-      return { name, description, content }
     }))
   } catch { return json(res, []) }
 }
@@ -215,11 +280,12 @@ function handlePostLores(req, res) {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { name, description, content } = JSON.parse(body)
+      const payload = normalizeLorePayload(JSON.parse(body))
+      const { name, content } = payload
       if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
-      const filePath = path.join(LORES_DIR, 'SKILL.' + name.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '') + '.md')
+      const filePath = path.join(LORES_DIR, 'SKILL.' + name + '.md')
       if (fs.existsSync(filePath)) return json(res, { ok: false, message: '同名世界观已存在' }, 400)
-      const md = '---\nname: ' + name + '\ndescription: ' + (description || '') + '\n---\n\n' + content
+      const md = buildLoreFrontmatter({}, payload) + content
       fs.writeFileSync(filePath, md, 'utf8')
       json(res, { ok: true, message: '世界观 ' + name + ' 已创建' })
     } catch (e) { json(res, { ok: false, message: e.message }, 400) }
@@ -230,16 +296,17 @@ function handlePutLores(req, res) {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { name, description, content } = JSON.parse(body)
+      const payload = normalizeLorePayload(JSON.parse(body))
+      const { name, content } = payload
       if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
       const files = fs.readdirSync(LORES_DIR).filter(f => f.endsWith('.md'))
       let found = false
       for (const f of files) {
         const raw = String(fs.readFileSync(path.join(LORES_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '')
-        const m = raw.match(/^---\n([\s\S]*?)\n---/)
-        const metaName = m?.[1]?.match(/name:\s*(.+)/)?.[1]?.trim()
+        const parsed = parseFrontmatter(raw)
+        const metaName = parsed.meta.name || f.replace(/^SKILL\./, '').replace(/\.md$/, '')
         if (metaName === name) {
-          const md = '---\nname: ' + name + '\ndescription: ' + (description || '') + '\n---\n\n' + content
+          const md = buildLoreFrontmatter(parsed.meta, payload) + content
           fs.writeFileSync(path.join(LORES_DIR, f), md, 'utf8')
           found = true
           break
@@ -261,8 +328,8 @@ function handleDeleteLores(req, res) {
       let deleted = false
       for (const f of files) {
         const raw = String(fs.readFileSync(path.join(LORES_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '')
-        const m = raw.match(/^---\n([\s\S]*?)\n---/)
-        const metaName = m?.[1]?.match(/name:\s*(.+)/)?.[1]?.trim()
+        const parsed = parseFrontmatter(raw)
+        const metaName = parsed.meta.name || f.replace(/^SKILL\./, '').replace(/\.md$/, '')
         if (metaName === name) {
           fs.unlinkSync(path.join(LORES_DIR, f))
           deleted = true
@@ -288,6 +355,37 @@ function handleGetModes(req, res) {
   } catch { return json(res, []) }
 }
 
+function toPublicPersonaDiagnostic(item = {}) {
+  return {
+    level: item.level || 'warning',
+    code: item.code || 'unknown',
+    message: item.message || '',
+    field: item.field || '',
+  }
+}
+
+function handleGetPersonaDiagnostics(req, res) {
+  try {
+    const diagnostics = require(path.join(AI_LIB, 'persona-diagnostics'))
+    const result = diagnostics.scanPersonaDocuments()
+    const documents = Array.isArray(result.documents) ? result.documents : []
+    return json(res, {
+      ok: !!result.ok,
+      summary: result.summary || { totalDocuments: 0, totals: { error: 0, warning: 0, info: 0 }, byType: {} },
+      documents: documents.map(doc => ({
+        type: doc.type || '',
+        name: diagnostics.getPersonaDocumentName(doc),
+        file: path.basename(doc.file || ''),
+        hasFrontmatter: !!doc.hasFrontmatter,
+        schemaVersion: Number(doc.schemaVersion) || 0,
+        diagnostics: (doc.diagnostics || []).map(toPublicPersonaDiagnostic),
+      })),
+    })
+  } catch (e) {
+    return json(res, { ok: false, message: e.message || '人格诊断失败' }, 500)
+  }
+}
+
 const routes = {
   'GET /dashboard/api/status': handleGetStatus,
   'GET /dashboard/api/providers': handleGetProviders,
@@ -303,6 +401,17 @@ const routes = {
   'PUT /dashboard/api/lores': handlePutLores,
   'DELETE /dashboard/api/lores': handleDeleteLores,
   'GET /dashboard/api/modes': handleGetModes,
+  'GET /dashboard/api/persona-diagnostics': handleGetPersonaDiagnostics,
 }
 
-module.exports = { routes }
+module.exports = {
+  routes,
+  _test: {
+    parseFrontmatter,
+    buildPersonaFrontmatter,
+    cleanLoreName,
+    normalizeLoreScope,
+    normalizeLorePayload,
+    buildLoreFrontmatter,
+  },
+}

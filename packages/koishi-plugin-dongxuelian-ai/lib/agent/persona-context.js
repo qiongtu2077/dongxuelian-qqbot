@@ -16,6 +16,7 @@ const {
   loadPersonalSkill,
   parsePersonaFrontmatter,
 } = require('../persona')
+const { compilePersonaRuntimePlan, resolvePersonaRuntimePlan } = require('../persona-runtime-plan')
 const { getAgentConfig } = require('./config')
 const MAX_AGENT_PERSONA_FILE_BYTES = parseAgentPersonaPositiveInt(process.env.DONGXUELIAN_AGENT_PERSONA_FILE_MAX_BYTES, 256 * 1024, 8 * 1024, 2 * 1024 * 1024)
 
@@ -42,7 +43,7 @@ const AGENT_GUARD_PROMPT = [
 ].join('\n')
 
 function removeAgentFrontmatter(text = '') {
-  return String(text || '').replace(/^---\n[\s\S]*?\n---\s*/, '').trim()
+  return String(text || '').replace(/^---\r?\n[\s\S]*?\r?\n---\s*/, '').trim()
 }
 
 function loadAgentPromptFile(file) {
@@ -86,20 +87,25 @@ function getAgentDefaultPersonaPrompt() {
   return [core, friendly].filter(Boolean).join('\n\n')
 }
 
-function extractAgentPersonaLore(personaContent = '', personaName = '') {
-  const meta = parsePersonaFrontmatter(String(personaContent || ''))
-  if (meta.lore) return meta.lore
+function extractAgentPersonaLore(personaContent = '', personaName = '', plan = null) {
+  if (plan && plan.lore) {
+    const primary = String(plan.lore.primary || '').trim()
+    if (primary) return primary
+  }
   if (personaName === '特蕾西娅') return 'terra-lore'
   return ''
 }
 
-function buildAgentPersonaSystemMessage({ personaName = '', personaContent = '', source = 'default', channel = 'qq' } = {}) {
+function buildAgentPersonaSystemMessage({ personaName = '', personaContent = '', source = 'default', channel = 'qq', plan = null } = {}) {
   const core = loadAgentNamedPrompt(SKILLS_CORE_DIR, 'persona-core', 'SKILL.persona-core.md')
-  const personaBody = personaContent ? removeAgentFrontmatter(personaContent) : ''
+  const runtimePlan = plan || (personaContent
+    ? compilePersonaRuntimePlan({ personaName, personaContent, source, type: personaName ? 'persona' : 'default' })
+    : resolvePersonaRuntimePlan({ personaName, source }))
+  const personaBody = runtimePlan.prompt?.body || ''
   const prompt = personaBody
     ? [core, personaBody].filter(Boolean).join('\n\n')
     : getAgentDefaultPersonaPrompt()
-  const current = personaName || '默认（东雪莲）'
+  const current = runtimePlan.name || personaName || '默认（东雪莲）'
   const sourceLabel = source === 'user' ? '用户人格' : source === 'group' ? '群人格' : source === 'dashboard' ? 'Console 人格' : '默认人格'
   return [
     `【Agent 人格同步】渠道：${channel}；当前人格：${current}；来源：${sourceLabel}。`,
@@ -123,6 +129,12 @@ function buildAgentPersonaContext(options = {}) {
     source = resolved.source || 'default'
   }
   const personaContent = personaName ? loadPersonalSkill(personaName) || '' : ''
+  const personaPlan = resolvePersonaRuntimePlan({
+    personaName,
+    personaContent,
+    source,
+    resolution: { name: personaName || null, source },
+  })
   const messages = []
   if (agentMode) {
     messages.push(
@@ -132,10 +144,10 @@ function buildAgentPersonaContext(options = {}) {
     return messages
   }
   messages.push(
-    { role: 'system', content: buildAgentPersonaSystemMessage({ personaName, personaContent, source, channel }) },
+    { role: 'system', content: buildAgentPersonaSystemMessage({ personaName, personaContent, source, channel, plan: personaPlan }) },
     { role: 'system', content: AGENT_GUARD_PROMPT },
   )
-  const lore = extractAgentPersonaLore(personaContent, personaName)
+  const lore = extractAgentPersonaLore(personaContent, personaName, personaPlan)
   if (lore && lore !== 'none') {
     messages.push({
       role: 'system',

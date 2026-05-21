@@ -42,6 +42,62 @@ async function run(t) {
 
   await withScenario({
     data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 1 },
+      randomVoiceRate: { 10001: 0 },
+    },
+  }, async ({ ready, makeSession, run, data }) => {
+    data.writeJson('debug-log-config.json', { enabled: true, modules: { 'reply-timing': true }, updatedAt: Date.now() })
+    await ready()
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: 'timing-diagnostic-visible' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const session = makeSession({
+        userId: '2013',
+        author: { id: '2013', name: 'member' },
+        content: 'reply timing diagnostic source',
+        messageId: 'timing-diagnostic-message',
+      })
+      const result = await run(session, { flushTicks: 120 })
+      await session.waitForSend(message => String(message).includes('timing-diagnostic-visible'))
+      const timingLogs = result.logs.filter(item => String(item.msg).includes('[D] [reply-timing]'))
+      t.check('scenario reply timing diagnostic log is generated', timingLogs.some(item => String(item.msg).includes('decision=may_reply') && String(item.msg).includes('triggered=true')), JSON.stringify(timingLogs))
+      t.check('scenario reply timing diagnostic log does not expose raw channel id', timingLogs.every(item => !String(item.msg).includes('10001')), JSON.stringify(timingLogs))
+      t.check('scenario reply timing diagnostic does not change random send', session.sent.some(item => String(item).includes('timing-diagnostic-visible')), JSON.stringify(session.sent))
+    })
+  })
+
+  await withScenario({
+    data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 1 },
+      randomVoiceRate: { 10001: 0 },
+    },
+  }, async ({ ready, makeSession, run, data }) => {
+    data.writeJson('debug-log-config.json', { enabled: true, modules: { 'affect-router': true }, updatedAt: Date.now() })
+    await ready()
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: 'affect-diagnostic-visible' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const session = makeSession({
+        userId: '2014',
+        author: { id: '2014', name: 'member' },
+        content: 'affect diagnostic raw source text',
+        messageId: 'affect-diagnostic-message',
+      })
+      const result = await run(session, { flushTicks: 120 })
+      await session.waitForSend(message => String(message).includes('affect-diagnostic-visible'))
+      const affectLogs = result.logs.filter(item => String(item.msg).includes('[D] [affect-router]'))
+      t.check('scenario affect router diagnostic log is generated', affectLogs.some(item => String(item.msg).includes('mood=') && String(item.msg).includes('outputs=')), JSON.stringify(affectLogs))
+      t.check('scenario affect router diagnostic log omits raw channel and text', affectLogs.every(item => !String(item.msg).includes('10001') && !String(item.msg).includes('affect diagnostic raw source text') && !String(item.msg).includes('affect-diagnostic-visible')), JSON.stringify(affectLogs))
+      t.check('scenario affect router diagnostic does not change random send', session.sent.some(item => String(item).includes('affect-diagnostic-visible')), JSON.stringify(session.sent))
+    })
+  })
+
+  await withScenario({
+    data: {
       randomWhitelist: [],
       randomRate: { 10001: 1 },
     },

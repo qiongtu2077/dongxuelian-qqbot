@@ -52,7 +52,7 @@ async function run(t) {
   const originalDataDirForPersona = process.env.DONGXUELIAN_AI_DATA_DIR
   const personaTmp = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'agent-dashboard-persona-'))
   process.env.DONGXUELIAN_AI_DATA_DIR = personaTmp
-  for (const rel of ['constants', 'persona', 'agent/config', 'agent/persona-context']) {
+  for (const rel of ['constants', 'persona', 'persona-schema', 'persona-runtime-plan', 'agent/config', 'agent/persona-context']) {
     delete require.cache[require.resolve('../../lib/' + rel)]
   }
   try {
@@ -60,14 +60,15 @@ async function run(t) {
     require('fs').mkdirSync(require('path').join(personaTmp, 'ai-skills', 'modes'), { recursive: true })
     require('fs').mkdirSync(require('path').join(personaTmp, 'ai-skills', 'personas'), { recursive: true })
     require('fs').writeFileSync(require('path').join(personaTmp, 'ai-skills', 'core', 'SKILL.persona-core.md'), '---\nname: persona-core\n---\nDASHBOARD_CORE_MARKER', 'utf8')
-    require('fs').writeFileSync(require('path').join(personaTmp, 'ai-skills', 'personas', 'SKILL.dashboard-persona.md'), '---\nname: Console测试人格\ndescription: dashboard persona\n---\nDASHBOARD_PERSONA_MARKER', 'utf8')
+    require('fs').writeFileSync(require('path').join(personaTmp, 'ai-skills', 'personas', 'SKILL.dashboard-persona.md'), '---\r\nname: Console测试人格\r\ndescription: dashboard persona\r\nlore: dashboard-lore\r\n---\r\nDASHBOARD_PERSONA_MARKER', 'utf8')
     const config = require('../../lib/agent/config')
     await config.patchAgentConfig({ persona: { dashboardPersona: 'Console测试人格', qqInheritChatPersona: true } })
     const personaContext = require('../../lib/agent/persona-context')
     const prompt = personaContext.buildAgentPersonaContext({ channel: 'dashboard' }).map(item => item.content).join('\n')
     t.check('dashboard agent uses saved console persona', prompt.includes('当前人格：Console测试人格') && prompt.includes('DASHBOARD_PERSONA_MARKER') && prompt.includes('来源：Console 人格'), prompt)
+    t.check('dashboard agent reads lore from PersonaRuntimePlan with CRLF frontmatter', prompt.includes('当前人格绑定 lore：dashboard-lore') && !prompt.includes('---'), prompt)
   } finally {
-    for (const rel of ['constants', 'persona', 'agent/config', 'agent/persona-context']) {
+    for (const rel of ['constants', 'persona', 'persona-schema', 'persona-runtime-plan', 'agent/config', 'agent/persona-context']) {
       delete require.cache[require.resolve('../../lib/' + rel)]
     }
     if (originalDataDirForPersona) process.env.DONGXUELIAN_AI_DATA_DIR = originalDataDirForPersona

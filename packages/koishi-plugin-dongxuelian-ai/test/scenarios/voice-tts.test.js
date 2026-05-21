@@ -424,6 +424,47 @@ function callPut(payload) {
   t.check('dashboard persona edit child process passes', dashboardPersonaEditResult.status === 0, dashboardPersonaEditResult.stderr || dashboardPersonaEditResult.stdout)
   t.check('dashboard persona edit preserves voice frontmatter', dashboardPersonaEditSummary.status === 200 && dashboardPersonaEditSummary.keepsVoiceId === true && dashboardPersonaEditSummary.keepsAssetId === true && dashboardPersonaEditSummary.keepsVoiceStyle === true && dashboardPersonaEditSummary.updatesContent === true, JSON.stringify(dashboardPersonaEditSummary))
   try { fs.rmSync(dashboardPersonaEditDataRoot, { recursive: true, force: true }) } catch {}
+
+  const dashboardPersonaDiagnosticsScript = `
+const fs = require('fs')
+const path = require('path')
+const constants = require(${JSON.stringify(constantsModule)})
+const configRoutes = require(${JSON.stringify(path.join(__dirname, '..', '..', '..', 'koishi-plugin-dashboard', 'lib', 'routes', 'config'))})
+fs.mkdirSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas'), { recursive: true })
+fs.mkdirSync(path.join(constants.DATA_DIR, 'ai-skills', 'lore'), { recursive: true })
+const personaFile = path.join(constants.DATA_DIR, 'ai-skills', 'personas', 'SKILL.DiagnosticsPersona.md')
+fs.writeFileSync(personaFile, '---\\nname: DiagnosticsPersona\\nlore: missing-lore\\n---\\nSECRET_PERSONA_BODY')
+const req = { method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' } }
+const response = { status: 0, body: '' }
+const res = {
+  writeHead(status) { response.status = status },
+  end(data) { response.body = data || '' },
+}
+configRoutes.routes['GET /dashboard/api/persona-diagnostics'](req, res)
+const data = JSON.parse(response.body)
+const bodyText = JSON.stringify(data)
+const doc = data.documents.find(item => item.name === 'DiagnosticsPersona')
+console.log(JSON.stringify({
+  status: response.status,
+  ok: data.ok,
+  hasDoc: !!doc,
+  hasMissingLoreWarning: !!doc && doc.diagnostics.some(item => item.code === 'missing_lore_ref'),
+  exposesBody: bodyText.includes('SECRET_PERSONA_BODY'),
+  exposesAbsolutePath: bodyText.includes(constants.DATA_DIR.replace(/\\\\/g, '/')) || bodyText.includes(constants.DATA_DIR.replace(/\\//g, '\\\\')),
+  fileIsBasename: !!doc && doc.file === 'SKILL.DiagnosticsPersona.md',
+}))
+`
+  const dashboardPersonaDiagnosticsDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'persona-diagnostics-'))
+  const dashboardPersonaDiagnosticsResult = spawnSync(process.execPath, ['-e', dashboardPersonaDiagnosticsScript], {
+    cwd: path.join(__dirname, '..', '..', '..', '..'),
+    env: { ...process.env, DONGXUELIAN_AI_DATA_DIR: dashboardPersonaDiagnosticsDataRoot },
+    encoding: 'utf8',
+  })
+  let dashboardPersonaDiagnosticsSummary = {}
+  try { dashboardPersonaDiagnosticsSummary = JSON.parse(String(dashboardPersonaDiagnosticsResult.stdout || '').trim()) } catch {}
+  t.check('dashboard persona diagnostics route child process passes', dashboardPersonaDiagnosticsResult.status === 0, dashboardPersonaDiagnosticsResult.stderr || dashboardPersonaDiagnosticsResult.stdout)
+  t.check('dashboard persona diagnostics route reports sanitized warning', dashboardPersonaDiagnosticsSummary.status === 200 && dashboardPersonaDiagnosticsSummary.hasDoc === true && dashboardPersonaDiagnosticsSummary.hasMissingLoreWarning === true && dashboardPersonaDiagnosticsSummary.exposesBody === false && dashboardPersonaDiagnosticsSummary.exposesAbsolutePath === false && dashboardPersonaDiagnosticsSummary.fileIsBasename === true, JSON.stringify(dashboardPersonaDiagnosticsSummary))
+  try { fs.rmSync(dashboardPersonaDiagnosticsDataRoot, { recursive: true, force: true }) } catch {}
   try { fs.rmSync(tempDataRoot, { recursive: true, force: true }) } catch {}
 
   const voiceCommandScript = `

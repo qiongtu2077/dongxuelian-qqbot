@@ -6,8 +6,8 @@
  */
 const { MIMORIUM_KEY_FILE, TTS_TEMP_DIR } = require('./constants')
 const { readTextFile } = require('./utils')
-const { parsePersonaFrontmatter, loadPersonalSkill } = require('./persona')
 const { resolveVoiceSampleFile } = require('./voice-assets')
+const { resolvePersonaRuntimePlan } = require('./persona-runtime-plan')
 const { DEFAULT_RANDOM_VOICE_RATE, getRandomVoiceRate } = require('./random-voice-rate')
 const fs = require('fs')
 const path = require('path')
@@ -316,17 +316,15 @@ async function sendVoiceMessage(session, audioBuf, options = {}) {
   }
 }
 
-function resolvePersonaVoice(personaName) {
-  if (!personaName) return { voice: DEFAULT_VOICE, style: NEUTRAL_TTS_STYLE }
-  const content = loadPersonalSkill(personaName)
-  if (!content) return { voice: DEFAULT_VOICE, style: NEUTRAL_TTS_STYLE }
-  const meta = parsePersonaFrontmatter(content)
-  const voiceId = meta.voice_id || meta.voice || ''
-  const voiceAssetId = meta.voice_asset_id || ''
-  const style = sanitizeTtsStyle(meta.voice_style, NEUTRAL_TTS_STYLE)
+function resolvePersonaVoice(personaName, options = {}) {
+  const plan = options.plan || resolvePersonaRuntimePlan({ personaName })
+  if (!plan || !plan.name) return { voice: DEFAULT_VOICE, style: NEUTRAL_TTS_STYLE }
+  const voiceId = plan.voice?.rawId || ''
+  const voiceAssetId = plan.voice?.assetId || ''
+  const style = sanitizeTtsStyle(plan.voice?.style, NEUTRAL_TTS_STYLE)
 
   if (voiceId === '__cloned__' || voiceId === '') {
-    const clonedUri = loadClonedVoiceUri(personaName, voiceAssetId)
+    const clonedUri = loadClonedVoiceUri(plan.name || personaName, voiceAssetId)
     if (clonedUri) return { voice: clonedUri, style }
   }
   return { voice: voiceId || DEFAULT_VOICE, style }

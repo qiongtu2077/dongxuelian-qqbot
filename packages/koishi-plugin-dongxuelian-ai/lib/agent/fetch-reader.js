@@ -152,15 +152,25 @@ async function readResponseBytesLimited(response, maxBytes) {
     const chunks = []
     let total = 0
     let truncated = false
-    while (total < maxBytes) {
+    while (true) {
       const { done, value } = await reader.read()
       if (done) break
       const chunk = value instanceof Uint8Array ? value : Buffer.from(value)
       const remaining = maxBytes - total
+      if (remaining <= 0) {
+        truncated = true
+        try { await reader.cancel() } catch {}
+        break
+      }
       const kept = chunk.length > remaining ? chunk.slice(0, remaining) : chunk
       chunks.push(kept)
       total += kept.length
       if (chunk.length > remaining) {
+        truncated = true
+        try { await reader.cancel() } catch {}
+        break
+      }
+      if (total >= maxBytes) {
         truncated = true
         try { await reader.cancel() } catch {}
         break

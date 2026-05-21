@@ -86,11 +86,11 @@ function resolvePersona(channelKey, userId) {
 }
 
 function parsePersonaFrontmatter(content) {
-  const m = content.match(/^---\n([\s\S]*?)\n---/)
+  const m = String(content || '').replace(/^\uFEFF/, '').match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
   if (!m) return {}
   const meta = {}
-  for (const line of m[1].split('\n')) {
-    const kv = line.match(/^(\w[\w_-]*):\s*(.+)$/)
+  for (const line of m[1].split(/\r?\n/)) {
+    const kv = line.match(/^(\w[\w_-]*):\s*(.*)$/)
     if (kv) meta[kv[1]] = kv[2].trim() === 'true' ? true : kv[2].trim() === 'false' ? false : kv[2].trim()
   }
   return meta

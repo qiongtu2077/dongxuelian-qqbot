@@ -117,16 +117,25 @@ const {
   sanitizeFileToken, safeJsonStringify, // 文件 token 清洗 + 安全 JSON 序列化
   todayCst,                 // 获取当前 CST 日期字符串
 } = require('./utils')
-const { logDebug } = require('./logging-config') // 调试日志输出
+const { logDebug, isDebugLogEnabled } = require('./logging-config') // 调试日志输出
 const { shouldTriggerRareVoice, readRareVoiceAudioBuffer } = require('./rare-voice') // 罕见触发固定语音
 const {
   loadRandomVoiceRateCache,
+  getRandomVoiceRate,
 } = require('./random-voice-rate') // 群聊随机语音升级概率配置
 const { heuristicRoute, buildExplicitSearchRunOptions } = require('./agent/router') // Agent 路由决策（启发式 + 显式搜索）
 const agentEngine = require('./agent/engine') // Agent 执行引擎
 const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue') // Agent 任务队列
 const { recordAgentChatResult } = require('./agent-chat-bridge') // Agent 结果写入普通对话历史
 const { guardAgentRetellReply } = require('./agent-retell-guard') // Agent 复述守卫（防止照搬工具原文）
+const {
+  buildReplyTimingDiagnostic,
+  formatReplyTimingDiagnostic,
+} = require('./reply-timing') // 回复时机旁路诊断（只记录，不接管概率）
+const {
+  buildAffectRouterDiagnostic,
+  formatAffectRouterDiagnostic,
+} = require('./affect-router') // 情绪输出旁路诊断（只记录，不接管文本/语音/表情）
 
 // @satorijs/core@3.7.0 缺少 stripped / parsed / resolve / send，这里随插件加载安装兼容补丁。
 function patchElementText(element) {
@@ -482,6 +491,32 @@ function buildRandomSendOptions(context = {}) {
     return { forceQuote: true, quoteMessageId: String(context.triggerMessageId) }
   }
   return {}
+}
+
+function logReplyTimingDiagnostic(ctx, input = {}) {
+  try {
+    const diagnostic = buildReplyTimingDiagnostic(input)
+    logDebug(ctx, 'reply-timing', formatReplyTimingDiagnostic(diagnostic))
+    return diagnostic
+  } catch (error) {
+    logDebug(ctx, 'reply-timing', `diagnostic_failed ${error && error.message ? error.message : String(error)}`)
+    return null
+  }
+}
+
+function logAffectRouterDiagnostic(ctx, input = {}) {
+  if (!isDebugLogEnabled('affect-router')) return null
+  try {
+    const diagnostic = buildAffectRouterDiagnostic({
+      ...input,
+      randomVoiceRate: input.randomVoiceRate === undefined && input.channelKey ? getRandomVoiceRate(input.channelKey) : input.randomVoiceRate,
+    })
+    logDebug(ctx, 'affect-router', formatAffectRouterDiagnostic(diagnostic))
+    return diagnostic
+  } catch (error) {
+    logDebug(ctx, 'affect-router', `diagnostic_failed ${error && error.message ? error.message : String(error)}`)
+    return null
+  }
 }
 
 function getNextShanghaiMidnightDelayMs(now = Date.now()) {
@@ -1058,7 +1093,9 @@ exports.apply = (ctx) => {
     const inRandomWhitelist = getRandomWhitelistStatus(channelKey)
     let isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply
     // 30秒冷却：触发后不再次主动发言
+    let randomCooldownActive = false
     if (lastRandomReplyTs.has(channelKey) && Date.now() - (lastRandomReplyTs.get(channelKey) || 0) < 15000) {
+      randomCooldownActive = true
       isRandomCandidate = false
     }
     const willFactor = calculateWillFactor(channelKey, currentPersonaName, channelSharedCache, personaWillContent)
@@ -1075,7 +1112,9 @@ exports.apply = (ctx) => {
       }
     }
     // 静默期中抑制随机触发
+    let randomMutedActive = false
     if (channelMutedUntil.get(channelKey) > Date.now()) {
+      randomMutedActive = true
       if (isRandomCandidate) channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
       isRandomCandidate = false
     }
@@ -1164,7 +1203,38 @@ exports.apply = (ctx) => {
     }
 
     if (inGuild && !directAt && !nameMentioned) {
+      const randomBaseRate = getRandomTriggerRate(channelKey)
       logDebug(ctx, 'random', `key=${channelKey} whitelist=${inRandomWhitelist} candidate=${isRandomCandidate} hit=${randomHit} triggered=${randomTriggered} delayed=${delayedRandomScheduled} rate=${getRandomTriggerRate(channelKey)} skip=${analyzed.shouldSkipForRandomReply} hasUsableText=${analyzed.hasUsableText} hasLink=${analyzed.hasLink} hasVisual=${analyzed.hasVisual} hasFile=${analyzed.hasFile} hasEmbed=${analyzed.hasEmbed} directAt=${directAt} otherMentions=${otherMentions} nameMentioned=${nameMentioned} whitelistSize=${randomWhitelistCache.size}`)
+      logReplyTimingDiagnostic(ctx, {
+        phase: 'legacy-random',
+        channelKey,
+        inGuild,
+        isPrivate,
+        directAt,
+        otherMentions,
+        nameMentioned,
+        inRandomWhitelist,
+        isRandomCandidate,
+        randomHit,
+        randomTriggered,
+        delayedRandomScheduled,
+        cooldownActive: randomCooldownActive,
+        mutedActive: randomMutedActive,
+        baseRate: randomBaseRate,
+        effectiveRate: Math.min(randomBaseRate * willFactor, 1.0),
+        willFactor,
+        missCount: channelMissCount.get(channelKey) || 0,
+        personaName: currentPersonaName || '',
+        personaSource: personaResolution.source || '',
+        groupPersonaName,
+        highRisk: randomPersonaHighRisk,
+        hasUsableText: analyzed.hasUsableText,
+        hasLink: analyzed.hasLink,
+        hasVisual: analyzed.hasVisual,
+        hasFile: analyzed.hasFile,
+        hasEmbed: analyzed.hasEmbed,
+        skipForRandomReply: analyzed.shouldSkipForRandomReply,
+      })
     }
 
     if (inGuild && !directAt && !nameMentioned && inRandomWhitelist) {
@@ -1274,6 +1344,14 @@ exports.apply = (ctx) => {
         const chatResult = await chat(liveSession, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, meta: chatMeta })
         const reply = await handleChatResult(chatResult, { ctx, session: liveSession, channelKey, currentUserId, userName, userText, randomTriggered, resolveBot })
         if (!reply) return
+        logAffectRouterDiagnostic(ctx, {
+          personaName: currentPersonaName || '',
+          userText,
+          replyText: reply,
+          randomTriggered,
+          voiceCandidate: randomTriggered && inGuild && !chatMeta.rareConfirmed,
+          channelKey,
+        })
         if (randomTriggered && inGuild && !chatMeta.rareConfirmed) {
           try {
             const { shouldTriggerRandomVoice, markChannelCooldown, synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice, extractVoiceStyle, stripVoiceStyleTag, composeTtsStyle } = require('./tts')

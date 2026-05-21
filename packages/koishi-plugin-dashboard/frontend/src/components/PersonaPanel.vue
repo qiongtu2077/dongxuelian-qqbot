@@ -1,5 +1,29 @@
 <template>
   <div class="tab-panel-root">
+  <div class="card">
+    <h2>人格诊断</h2>
+    <div v-if="personaDiagnosticsLoading" style="font-size:13px;color:var(--text2)">诊断中...</div>
+    <div v-else-if="personaDiagnosticsError" style="font-size:13px;color:var(--error)">{{ personaDiagnosticsError }}</div>
+    <div v-else>
+      <div style="font-size:13px;color:var(--text2);margin-bottom:8px">
+        文件 {{ personaDiagnosticsSummary.totalDocuments || 0 }} 个，
+        error {{ personaDiagnosticsSummary.totals?.error || 0 }}，
+        warning {{ personaDiagnosticsSummary.totals?.warning || 0 }}，
+        info {{ personaDiagnosticsSummary.totals?.info || 0 }}
+      </div>
+      <div v-if="!personaDiagnosticItems.length" style="font-size:13px;color:var(--success)">暂无诊断项</div>
+      <div v-for="item in personaDiagnosticItems" :key="item.key" class="grp" style="display:grid;gap:4px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:12px;border:1px solid var(--border);border-radius:4px;padding:1px 6px" :style="{ color: diagnosticLevelColor(item.level) }">{{ item.level }}</span>
+          <span class="grp-name">{{ item.name || item.file || item.type }}</span>
+          <span style="font-size:12px;color:var(--text3)">{{ item.type }}</span>
+          <span v-if="item.field" style="font-size:12px;color:var(--text3)">字段：{{ item.field }}</span>
+        </div>
+        <div class="grp-desc">{{ item.message }}</div>
+      </div>
+    </div>
+  </div>
+
   <div v-if="corePersona" class="card">
     <h2>核心规则 <span style="margin-left:6px;font-size:11px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 5px;vertical-align:middle">核心</span></h2>
     <div class="grp" style="display:flex;align-items:center;gap:8px">
@@ -186,6 +210,17 @@
       <div style="display:grid;gap:8px">
         <input v-model="loreFormName" placeholder="世界观标识（如：my-lore）" style="width:100%" :disabled="!!loreEditing" />
         <input v-model="loreFormDesc" placeholder="一句话描述" style="width:100%" />
+        <input v-model="loreFormKeywords" placeholder="触发关键词，逗号分隔" style="width:100%" />
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:8px">
+          <select v-model="loreFormScope" style="width:100%">
+            <option value="keyword">关键词触发</option>
+            <option value="always">绑定后总是注入</option>
+            <option value="none">禁用注入</option>
+          </select>
+          <input v-model.number="loreFormMaxChars" type="number" min="200" max="12000" step="100" placeholder="预算字符数" style="width:100%" />
+          <input v-model.number="loreFormPriority" type="number" min="-100" max="100" step="1" placeholder="优先级" style="width:100%" />
+        </div>
+        <input v-model="loreFormSummary" placeholder="摘要" style="width:100%" />
         <textarea v-model="loreFormContent" rows="12" placeholder="世界观设定内容..." style="width:100%;background:var(--input);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-size:13px;font-family:monospace;resize:vertical"></textarea>
         <div style="display:flex;gap:8px">
           <button class="btn" @click="doLoreSave" :disabled="loreSaving">{{ loreSaving ? '保存中...' : (loreEditing ? '保存' : '创建') }}</button>
@@ -200,7 +235,7 @@
 
 <script setup>
 import { ref, computed, inject, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
-import { fetchPersonas, fetchPersonaDetail, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore, fetchTtsVoices, ttsPreview, ttsClone, updateTtsClone, deleteTtsClone, savePersonaVoice } from '../api'
+import { fetchPersonas, fetchPersonaDetail, fetchPersonaDiagnostics, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore, fetchTtsVoices, ttsPreview, ttsClone, updateTtsClone, deleteTtsClone, savePersonaVoice } from '../api'
 
 defineOptions({ name: 'PersonaPanel' })
 
@@ -225,10 +260,19 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
     const personaEditing = ref(null)
     const personaEditSection = ref(null)
     const loreEditSection = ref(null)
+    const personaDiagnosticsLoading = ref(false)
+    const personaDiagnosticsError = ref('')
+    const personaDiagnosticsSummary = ref({ totalDocuments: 0, totals: { error: 0, warning: 0, info: 0 }, byType: {} })
+    const personaDiagnosticsDocuments = ref([])
 
     const lores = ref([])
     const loreFormName = ref('')
     const loreFormDesc = ref('')
+    const loreFormKeywords = ref('')
+    const loreFormScope = ref('keyword')
+    const loreFormSummary = ref('')
+    const loreFormMaxChars = ref('')
+    const loreFormPriority = ref('')
     const loreFormContent = ref('')
     const loreSaving = ref(false)
     const loreMsg = ref(null)
@@ -240,12 +284,50 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       if (pRes.ok) personas.value = pRes.data
       if (lRes.ok) loreList.value = lRes.data
       if (loRes.ok) lores.value = loRes.data
+      await loadPersonaDiagnostics()
     }
     onMounted(load)
 
     const corePersona = computed(() => personas.value.find(p => p.type === 'core'))
     const defaultModes = computed(() => personas.value.filter(p => p.type === 'mode'))
     const regularPersonas = computed(() => personas.value.filter(p => p.type !== 'core' && p.type !== 'mode'))
+    const personaDiagnosticItems = computed(() => {
+      const items = []
+      for (const doc of personaDiagnosticsDocuments.value || []) {
+        for (const diagnostic of doc.diagnostics || []) {
+          if (diagnostic.level === 'info') continue
+          items.push({
+            key: `${doc.type}:${doc.name}:${diagnostic.code}:${diagnostic.field}:${items.length}`,
+            type: doc.type,
+            name: doc.name,
+            file: doc.file,
+            level: diagnostic.level || 'warning',
+            field: diagnostic.field || '',
+            message: diagnostic.message || diagnostic.code || '未知诊断',
+          })
+        }
+      }
+      return items
+    })
+
+    function diagnosticLevelColor(level) {
+      if (level === 'error') return 'var(--error)'
+      if (level === 'warning') return 'var(--accent)'
+      return 'var(--text3)'
+    }
+
+    async function loadPersonaDiagnostics() {
+      personaDiagnosticsLoading.value = true
+      personaDiagnosticsError.value = ''
+      const res = await fetchPersonaDiagnostics()
+      if (res.ok && res.data) {
+        personaDiagnosticsSummary.value = res.data.summary || { totalDocuments: 0, totals: { error: 0, warning: 0, info: 0 }, byType: {} }
+        personaDiagnosticsDocuments.value = Array.isArray(res.data.documents) ? res.data.documents : []
+      } else {
+        personaDiagnosticsError.value = res.data?.message || '人格诊断读取失败'
+      }
+      personaDiagnosticsLoading.value = false
+    }
 
     async function doCreate() {
       if (!newName.value.trim()) { createMsg.value = { type: 'err', text: '请输入名称' }; return }
@@ -266,6 +348,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
         newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; newWill.value = 1.0; newNsfw.value = 'none'; editingName.value = null; editingType.value = null
         const pRes = await fetchPersonas()
         if (pRes.ok) personas.value = pRes.data
+        await loadPersonaDiagnostics()
       } else {
         createMsg.value = { type: 'err', text: res.data?.message || (editingName.value ? '更新失败' : '创建失败') }
       }
@@ -318,6 +401,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
         createMsg.value = { type: 'ok', text: '删除成功' }
         const pRes = await fetchPersonas()
         if (pRes.ok) personas.value = pRes.data
+        await loadPersonaDiagnostics()
       } else {
         createMsg.value = { type: 'err', text: res.data?.message || '删除失败' }
       }
@@ -325,13 +409,25 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
     }
 
     function resetLoreForm() {
-      loreFormName.value = ''; loreFormDesc.value = ''; loreFormContent.value = ''
+      loreFormName.value = ''
+      loreFormDesc.value = ''
+      loreFormKeywords.value = ''
+      loreFormScope.value = 'keyword'
+      loreFormSummary.value = ''
+      loreFormMaxChars.value = ''
+      loreFormPriority.value = ''
+      loreFormContent.value = ''
     }
 
     function startLoreEdit(l) {
       loreEditing.value = l.name
       loreFormName.value = l.name
       loreFormDesc.value = l.description || ''
+      loreFormKeywords.value = l.keywords || ''
+      loreFormScope.value = l.scope || 'keyword'
+      loreFormSummary.value = l.summary || ''
+      loreFormMaxChars.value = l.maxChars || ''
+      loreFormPriority.value = l.priority || ''
       loreFormContent.value = l.content || ''
       loreMsg.value = null
       nextTick(() => {
@@ -348,7 +444,16 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       if (!loreFormName.value.trim()) { loreMsg.value = { type: 'err', text: '请输入标识' }; return }
       if (!loreFormContent.value.trim()) { loreMsg.value = { type: 'err', text: '请输入内容' }; return }
       loreSaving.value = true; loreMsg.value = null
-      const payload = { name: loreFormName.value.trim(), description: loreFormDesc.value.trim(), content: loreFormContent.value }
+      const payload = {
+        name: loreFormName.value.trim(),
+        description: loreFormDesc.value.trim(),
+        keywords: loreFormKeywords.value.trim(),
+        scope: loreFormScope.value,
+        summary: loreFormSummary.value.trim(),
+        maxChars: loreFormMaxChars.value,
+        priority: loreFormPriority.value,
+        content: loreFormContent.value,
+      }
       const res = loreEditing.value ? await updateLore(payload) : await createLore(payload)
       if (res.code === 'ADMIN_REQUIRED') { loreSaving.value = false; if (showAdminDialog) showAdminDialog((loreEditing.value ? '编辑' : '创建') + '世界观需要管理员密码', doLoreSave); return }
       if (res.ok) {
@@ -357,6 +462,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
         const [loRes, lRes] = await Promise.all([fetchLores(), fetchLoreList()])
         if (loRes.ok) lores.value = loRes.data
         if (lRes.ok) loreList.value = lRes.data
+        await loadPersonaDiagnostics()
       } else {
         loreMsg.value = { type: 'err', text: res.data?.message || (loreEditing.value ? '更新失败' : '创建失败') }
       }
@@ -372,6 +478,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
         const [loRes, lRes] = await Promise.all([fetchLores(), fetchLoreList()])
         if (loRes.ok) lores.value = loRes.data
         if (lRes.ok) loreList.value = lRes.data
+        await loadPersonaDiagnostics()
       } else {
         loreMsg.value = { type: 'err', text: res.data?.message || '删除失败' }
       }

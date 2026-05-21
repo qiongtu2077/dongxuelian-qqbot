@@ -131,6 +131,7 @@ export async function fetchConfig() { return get('/config') }
 export async function updateConfig(data) { return put('/config', data, true) }
 export async function fetchPersonas() { return get('/personas') }
 export async function fetchPersonaDetail(name) { return get('/personas?name=' + encodeURIComponent(name)) }
+export async function fetchPersonaDiagnostics() { return get('/persona-diagnostics') }
 export async function fetchModes() { return get('/modes') }
 export async function fetchWhitelist() { return get('/whitelist', true) }
 export async function updateWhitelist(type, data) { return put('/whitelist', { type, data }, true) }

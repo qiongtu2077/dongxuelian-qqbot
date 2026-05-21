@@ -165,15 +165,23 @@ async function readHttpSearchResponseText(response, maxBytes) {
   const decoder = new TextDecoder()
   let output = ''
   let total = 0
-  while (total < maxBytes) {
+  while (true) {
     const { done, value } = await reader.read()
     if (done) break
     const chunk = value instanceof Uint8Array ? value : Buffer.from(value)
     const remaining = maxBytes - total
+    if (remaining <= 0) {
+      try { await reader.cancel() } catch {}
+      break
+    }
     const part = chunk.length > remaining ? chunk.slice(0, remaining) : chunk
     total += part.length
     output += decoder.decode(part, { stream: total < maxBytes })
     if (chunk.length > remaining) {
+      try { await reader.cancel() } catch {}
+      break
+    }
+    if (total >= maxBytes) {
       try { await reader.cancel() } catch {}
       break
     }
@@ -242,9 +250,11 @@ async function readTopResultPages(results = [], limits, startedAt) {
   const pages = []
   const failures = []
   const candidates = (Array.isArray(results) ? results : []).slice(0, limits.pageLimit + 2)
-  let pagesRead = 0
+  let attempts = 0
+  const maxAttempts = Math.min(candidates.length, limits.pageLimit + 2)
   for (const item of candidates) {
-    if (pagesRead >= limits.pageLimit) break
+    if (pages.length >= limits.pageLimit) break
+    if (attempts >= maxAttempts) break
     if (isHomepageUrl(item.url)) {
       failures.push(`${item.title || item.url}: 跳过（首页/SPA）`)
       continue
@@ -254,8 +264,8 @@ async function readTopResultPages(results = [], limits, startedAt) {
       failures.push('候选网页读取总超时')
       break
     }
+    attempts++
     const page = await readHttpResultPage(item.url, limits, remainingMs)
-    pagesRead++
     if (!page.ok || page.textQuality !== 'usable') {
       failures.push(formatCandidateReadFailure(item, page))
       continue
@@ -315,7 +325,11 @@ function mergeHttpSearchCandidates(...groups) {
 function formatSearchWithPages(query = '', ranked = [], pageReads = {}) {
   const base = formatSearchResults(query, ranked)
   const pages = Array.isArray(pageReads.pages) ? pageReads.pages : []
-  if (!base || !pages.length) return base
+  const failureText = Array.isArray(pageReads.failures) && pageReads.failures.length
+    ? `\n候选网页打开失败/跳过记录（低确信线索，不作为正文依据）：\n${pageReads.failures.slice(0, 3).map(item => `- ${item}`).join('\n')}`
+    : ''
+  if (!base) return ''
+  if (!pages.length) return failureText ? `${base}${failureText}` : base
   const pageText = pages.slice(0, 2).map((item, index) => [
     `【来源 ${index + 1}】标题：${item.title}`,
     `URL：${item.url}`,
@@ -327,9 +341,6 @@ function formatSearchWithPages(query = '', ranked = [], pageReads = {}) {
     `正文：${item.text}`,
     '---',
   ].filter(Boolean).join('\n')).join('\n')
-  const failureText = Array.isArray(pageReads.failures) && pageReads.failures.length
-    ? `\n候选网页打开失败/跳过记录（低确信线索，不作为正文依据）：\n${pageReads.failures.slice(0, 3).map(item => `- ${item}`).join('\n')}`
-    : ''
   return `${base}\n\n打开候选网页继续读取（已打开候选网页正文，可作为主要依据；轻量 HTTP，未启动 Chromium）：\n${pageText}${failureText}`
 }
 

@@ -8,6 +8,7 @@ const MARKERS = {
   changli: 'CHANGLI_PERSONA_MARKER',
   terra: 'TERRA_LORE_MARKER',
   wuwa: 'WUWA_LORE_MARKER',
+  customLore: 'CUSTOM_LORE_MARKER',
 }
 
 const TEXT = {
@@ -19,6 +20,7 @@ const TEXT = {
   resetPersona: '\u4e1c\u96ea\u83b2\u4eba\u683c\u91cd\u7f6e',
   terraQuestion: '\u77ff\u77f3\u75c5\u662f\u4ec0\u4e48',
   wuwaQuestion: '\u4eca\u5dde\u662f\u4ec0\u4e48',
+  customLoreQuestion: '\u661f\u70ac\u5b66\u9662\u662f\u4ec0\u4e48',
 }
 
 function writePromptMarkerSkills(data) {
@@ -57,6 +59,7 @@ function writePromptMarkerSkills(data) {
     '---',
     `name: ${TEXT.changli}`,
     'description: test Changli persona',
+    'lore: custom-lore',
     '---',
     MARKERS.changli,
   ].join('\n'))
@@ -71,6 +74,15 @@ function writePromptMarkerSkills(data) {
     'name: wuwa-lore',
     '---',
     MARKERS.wuwa,
+  ].join('\n'))
+  data.writeText('ai-skills/lore/SKILL.custom-lore.md', [
+    '---',
+    'name: custom-lore',
+    'description: test custom lore',
+    'keywords: 星炬学院, 拉海洛',
+    'max_chars: 600',
+    '---',
+    MARKERS.customLore,
   ].join('\n'))
 }
 
@@ -250,6 +262,18 @@ async function run(t) {
     checkIncludes(t, 'scenario Wuwa lore injects for Wuwa trigger', prompt, MARKERS.wuwa)
     checkIncludes(t, 'scenario Wuwa lore keeps default persona marker', prompt, MARKERS.default)
     checkExcludes(t, 'scenario Wuwa lore does not imply Theresa persona', prompt, MARKERS.theresa)
+  })
+
+  await withPromptScenario(async ({ capturePrompt, makeSession, run }) => {
+    await run(makeSession({
+      userId: '2006',
+      author: { id: '2006', name: 'u2006' },
+      content: TEXT.switchPersona + TEXT.changli,
+    }))
+    const prompt = await capturePrompt(t, '2006', TEXT.customLoreQuestion)
+    checkIncludes(t, 'scenario custom lore injects from frontmatter keywords', prompt, MARKERS.customLore)
+    checkIncludes(t, 'scenario custom lore keeps bound persona marker', prompt, MARKERS.changli)
+    checkExcludes(t, 'scenario custom lore does not inject default Wuwa lore', prompt, MARKERS.wuwa)
   })
 }
 
