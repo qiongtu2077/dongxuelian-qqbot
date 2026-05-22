@@ -34,6 +34,7 @@ const LATEST_ROLE_RE = /(?:最新|新|当前|现在).{0,8}(?:角色|共鸣者|�
 const LATEST_VERSION_RE = /(?:最新|当前|现在|更新|版本|update|release|snapshot|pre-release|正式版).{0,12}(?:版本|更新|版|version|update|release)|(?:版本|version).{0,12}(?:最新|当前|现在)/i
 const GENERAL_LATEST_RE = /(?:最新|最近|近期|当前|现在|今天|新闻|资讯|公告|版本|更新|角色|卡池|热门|比较火|火的视频|趋势|排行|榜单|推荐|视频|release|released|update|latest|recent|trending|popular|ranking|recommend|news|official|source|video)/i
 const HOT_VIDEO_RE = /(?:最近|近期|当前|现在|热门|比较火|火|趋势|排行|榜单|推荐).{0,20}(?:视频|整活|搞笑|剪辑|实况|挑战|解说|二创|攻略)|(?:视频|整活|搞笑|剪辑|实况|挑战|解说|二创|攻略).{0,20}(?:最近|近期|热门|比较火|火|推荐|排行|趋势)/i
+const RESOURCE_VIDEO_RE = /(?:想看|找几个|来几个|推荐几个|帮我找|给我找|有没有|有啥|看看).{0,24}(?:视频|教程|攻略|实况|剪辑|整活|搞笑|挑战|解说)|(?:视频|教程|攻略|实况|剪辑|整活|搞笑|挑战|解说).{0,24}(?:想看|找几个|来几个|推荐|帮我找|有没有|有啥)/i
 
 function cleanExplicitSearchQuery(text = '') {
   return String(text || '')
@@ -62,6 +63,10 @@ function isHotVideoQuery(query = '') {
   return HOT_VIDEO_RE.test(String(query || ''))
 }
 
+function isResourceVideoQuery(query = '') {
+  return RESOURCE_VIDEO_RE.test(String(query || ''))
+}
+
 function buildSearchQueries(rawQuery = '') {
   const query = cleanExplicitSearchQuery(rawQuery) || String(rawQuery || '').trim().slice(0, 180)
   const queries = []
@@ -77,13 +82,13 @@ function buildSearchQueries(rawQuery = '') {
     pushSearchQuery(queries, `Minecraft latest version ${year} official`)
     pushSearchQuery(queries, 'Minecraft Java Edition latest release official')
   }
-  if (isHotVideoQuery(query)) {
+  if (isHotVideoQuery(query) || isResourceVideoQuery(query)) {
     pushSearchQuery(queries, `${query} 热门 视频 推荐 ${year}`)
     pushSearchQuery(queries, `${query} 最近 热门 排行`)
     pushSearchQuery(queries, `${query} 搞笑 整活 挑战 推荐 ${year}`)
     pushSearchQuery(queries, `${query} trending popular funny video ${year}`)
   }
-  if (!isWuwaLatestRoleQuery(query) && !isMinecraftUpdateQuery(query) && !isHotVideoQuery(query) && GENERAL_LATEST_RE.test(query)) {
+  if (!isWuwaLatestRoleQuery(query) && !isMinecraftUpdateQuery(query) && !isHotVideoQuery(query) && !isResourceVideoQuery(query) && GENERAL_LATEST_RE.test(query)) {
     pushSearchQuery(queries, `${query} 官方 公告 来源`)
     pushSearchQuery(queries, `${query} 最新 官方`)
     if (/[a-z]/i.test(query)) pushSearchQuery(queries, `${query} official source latest`)
@@ -228,6 +233,7 @@ module.exports = {
   isWuwaLatestRoleQuery,
   isMinecraftUpdateQuery,
   isHotVideoQuery,
+  isResourceVideoQuery,
   getSearchHostname,
   scoreSearchResult,
   isLowQualitySearchResult,

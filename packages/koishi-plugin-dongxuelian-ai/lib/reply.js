@@ -37,6 +37,14 @@ let throttleCfgLastRead = 0
 let stickerFileIndex = new Map()
 let stickerBase64Cache = new Map()
 
+function stripInternalParenthetical(text = '') {
+  return String(text || '').replace(/[（(]([^（）()]{0,80})[）)]/g, (match, inner) => {
+    return /(?:内心|心理活动|小声|心想|思考|系统提示|工具|函数|人设|人格|语气|回复策略|上下文|用户(?:现在)?(?:在|是)|我(?:需要|应该|会|可以先))/.test(inner)
+      ? ''
+      : match
+  })
+}
+
 function loadStickerCache() {
   try {
     stickerFileIndex = new Map()
@@ -251,7 +259,7 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
   for (let i = 0; i < parts.length; i++) {
     let part = parts[i].replace(/。$/, '').trim()
     if (!part) continue
-    part = part.replace(/[（(][^）)]*[）)]/g, '').trim()
+    part = stripInternalParenthetical(part).trim()
     if (!part) continue
     // 引用回复时替换昵称为"你"
       // [暂禁用] 昵称替换：原意图是防止 AI 引用回复时重复昵称，

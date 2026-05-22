@@ -45,6 +45,7 @@ const DEFAULT_CONFIG = Object.freeze({
         search_memory: false,
         forget_memory: false,
         list_memory: false,
+        analyze_file: true,
       },
     },
     dashboard: {
@@ -78,6 +79,7 @@ const DEFAULT_CONFIG = Object.freeze({
         search_memory: true,
         forget_memory: true,
         list_memory: true,
+        analyze_file: true,
       },
     },
   },

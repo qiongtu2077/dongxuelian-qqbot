@@ -31,9 +31,12 @@
     "koishi-plugin-group-name-at": "file:packages/koishi-plugin-group-name-at",
     "koishi-plugin-local-video-sender": "file:packages/koishi-plugin-local-video-sender",
     "koishi-plugin-pet-bridge": "file:packages/koishi-plugin-pet-bridge",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^1.1.1",
     "puppeteer-core": "^24.42.0",
     "sharp": "^0.34.5",
-    "silk-wasm": "^3.7.1"
+    "silk-wasm": "^3.7.1",
+    "xlsx": "^0.18.5"
   },
   "overrides": {
     "@satorijs/core": "3.7.0"

@@ -35,8 +35,9 @@ function replyAcknowledgesSearchFailure(reply = '') {
   return FAILURE_REPLY_RE.test(String(reply || ''))
 }
 
-function buildSearchFailureRetellFallback() {
-  return '这次没有拿到可靠结果，我就不硬编了。'
+function buildSearchFailureRetellFallback(fallback = '') {
+  const value = String(fallback || '').trim()
+  return value || '这次搜索没有拿到可靠结果。'
 }
 
 function shouldFilterAgentMaterialLine(line = '') {
@@ -64,11 +65,11 @@ function redactAgentMaterial(text = '') {
   return filterExternalPromptLines(value)
 }
 
-function guardAgentRetellReply(reply = '', agentResult = {}) {
+function guardAgentRetellReply(reply = '', agentResult = {}, options = {}) {
   const value = redactAgentMaterial(String(reply || '').trim())
   if (!hasSearchFailureMaterial(agentResult)) return value
   if (replyAcknowledgesSearchFailure(value)) return value
-  return buildSearchFailureRetellFallback()
+  return buildSearchFailureRetellFallback(options.searchFailureFallback)
 }
 
 module.exports = {

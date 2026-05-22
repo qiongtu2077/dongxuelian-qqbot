@@ -160,10 +160,19 @@ async function transcribeVoice(session, config) {
   if (payload.url && payload.url.startsWith('http')) {
     downloaded = await downloadVoiceFile(payload.url, tempFile)
   }
+  if (!downloaded && payload.file) {
+    try {
+      const { callGetRecord } = require('./api')
+      const recordInfo = await callGetRecord(payload.file)
+      if (recordInfo && recordInfo.file && fs.existsSync(recordInfo.file)) downloaded = recordInfo.file
+    } catch {}
+  }
   if (!downloaded) return null
 
   const wavPath = await convertToWav(downloaded)
-  try { fs.unlinkSync(downloaded) } catch {}
+  if (downloaded === tempFile) {
+    try { fs.unlinkSync(downloaded) } catch {}
+  }
   if (!wavPath) return null
 
   try {

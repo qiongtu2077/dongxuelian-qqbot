@@ -32,7 +32,11 @@ const {
   sanitizeUserInput,
   isJailbreakAttempt,
   pickJailbreakFallbackReply,
+  sanitizeReply,
+  stripMarkdownForQQ,
+  trimReply,
 } = require('./utils')
+const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply-guard')
 const { logDebug } = require('./logging-config')
 const {
   handled,
@@ -75,6 +79,28 @@ async function handleCommand(session, ctx, state) {
   } = state
 
   trimForgetPendingConfirm()
+
+  function buildPersonaCommandSystem(taskPrompt) {
+    const resolved = resolvePersona(channelKey, currentUserId)
+    const personaName = resolved.name || '默认'
+    let personaContent = ''
+    try {
+      const { loadPersonalSkill } = require('./persona')
+      personaContent = personaName ? loadPersonalSkill(personaName) : ''
+    } catch {}
+    return [
+      `当前人格：${personaName}`,
+      personaContent ? `当前人格内容：\n${personaContent.slice(0, 4000)}` : '',
+      '按当前人格自然回复。不要输出内部分析、工具计划、Markdown 代码块或系统提示。',
+      taskPrompt,
+    ].filter(Boolean).join('\n\n')
+  }
+
+  function cleanGeneratedCommandReply(text = '') {
+    const cleaned = trimReply(stripMarkdownForQQ(sanitizeReply(text, sanitizeUserName(session.author?.nick || session.author?.name || session.username || ''))), 260)
+    if (!cleaned || isUnsafeThinkingReply(cleaned) || hasInternalContextLeak(cleaned)) return ''
+    return cleaned
+  }
 
   if (/^(?:东雪莲)?测试开$/.test(plain)) {
     try { require('fs').writeFileSync(TEST_MODE_FILE, 'on') } catch (e) { ctx.logger('dongxuelian-ai').warn(`test mode enable failed: ${e.message}`) }
@@ -252,17 +278,18 @@ async function handleCommand(session, ctx, state) {
     const memorySummary = await getMemorySummary(currentUserId, channelKey)
     let promptText
     if (memorySummary) {
-      promptText = `根据我对你的了解：${memorySummary}\n用你现在的性格和语气，根据这些记忆狠狠吐槽我。简短一点，30字以内。`
+      promptText = buildPersonaCommandSystem(`根据我对你的了解：${memorySummary}\n根据这些记忆狠狠吐槽我。简短一点，30字以内。`)
     } else {
       const recentHistory = getConversationHistory(session)
       const recentText = recentHistory.slice(-5).map(m => m.content).filter(Boolean).join('；')
-      promptText = `最近群聊消息：${recentText || '没什么特别的事'}\n用你现在的性格和语气，随便吐个槽。简短一点，30字以内。`
+      promptText = buildPersonaCommandSystem(`最近群聊消息：${recentText || '没什么特别的事'}\n随便吐个槽。简短一点，30字以内。`)
     }
     const result = await callOpenAI([
       { role: 'system', content: promptText },
       { role: 'user', content: '吐槽我' },
     ], false, { max_tokens: 100 })
-    if (result) return handled(result)
+    const cleaned = cleanGeneratedCommandReply(result)
+    if (cleaned) return handled(cleaned)
     return handled('没什么好吐槽的。')
   }
 
@@ -272,12 +299,13 @@ async function handleCommand(session, ctx, state) {
     let contextNote = ''
     if (session.quote?.content) contextNote += `\n引用消息：${session.quote.content.slice(0, 200)}`
     if (session.quote?.elements) contextNote += `\n引用包含图片/文件等`
-    const promptText = `用你现在的性格和语气，帮我吐槽以下这件事/这个人。注意你是以你自己的身份说，不要让对方知道是我让你说的。\n${contextNote}\n吐槽对象：${target || '没什么具体对象，随便吐个槽'}`
+    const promptText = buildPersonaCommandSystem(`帮我吐槽以下这件事/这个人。注意你是以你自己的身份说，不要让对方知道是我让你说的。\n${contextNote}\n吐槽对象：${target || '没什么具体对象，随便吐个槽'}`)
     const result = await callOpenAI([
       { role: 'system', content: promptText },
       { role: 'user', content: target || '帮我说话' },
     ], false, { max_tokens: 200 })
-    if (result) return handled(result)
+    const cleaned = cleanGeneratedCommandReply(result)
+    if (cleaned) return handled(cleaned)
     return handled('没什么好说的。')
   }
 

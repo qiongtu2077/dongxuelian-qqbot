@@ -20,10 +20,29 @@ const { getAgentPathAllowedRoots } = require('./path-guard')
 const { recordAgentSession } = require('./sessions')
 const { onAgentReplyComplete } = require('./auto-memory')
 const { MAX_TOOL_ROUNDS } = require('../constants')
+const { getRecentFilesCached } = require('../file-store')
 
 const MAX_ROUNDS = MAX_TOOL_ROUNDS
 const MAX_TOOLS_PER_ROUND = 3
 const MAX_WEB_SEARCH_CALLS = 6
+
+function buildFileHintContext(channelKey) {
+  if (!channelKey) return []
+  const files = getRecentFilesCached(channelKey, 10)
+  if (!files.length) return []
+  const now = Date.now()
+  const hints = files.filter(f => !f.skipped).map(f => {
+    const age = now - (f.ts || 0)
+    let timeLabel
+    if (age < 60000) timeLabel = '刚刚'
+    else if (age < 3600000) timeLabel = `${Math.floor(age / 60000)}分钟前`
+    else timeLabel = `${Math.floor(age / 3600000)}小时前`
+    const status = f.analyzed ? '已分析' : '可分析'
+    return `${f.fileName}(${timeLabel},${status})`
+  })
+  if (!hints.length) return []
+  return [{ role: 'system', content: `[近期文件: ${hints.join(', ')}]` }]
+}
 
 function normalizeToolCall(toolName, args = {}) {
   return {
@@ -236,7 +255,7 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
   const skillSummary = buildAgentSkillSummary(getEnabledSkills(), { query: userMessage })
   const personaExtra = buildAgentPersonaContext({ channel, channelKey, userId, agentMode })
   const workspaceExtra = await buildAgentWorkspaceContext({ userMessage, channel, roots })
-  const allSystemExtra = mergeAgentSystemExtra(personaExtra, workspaceExtra, systemExtra, skillSummary ? [{ role: 'system', content: skillSummary }] : [])
+  const allSystemExtra = mergeAgentSystemExtra(personaExtra, workspaceExtra, systemExtra, skillSummary ? [{ role: 'system', content: skillSummary }] : [], buildFileHintContext(channelKey))
   const messages = buildAgentMessages({ userMessage, userName, tools, systemExtra: allSystemExtra, history, agentMode })
   const toolResults = []
   let toolCount = 0

@@ -31,6 +31,8 @@ const { resolveForwardSummary } = require('./forward') // 合并转发消息摘�
 const { prepareVisionRequest, isVisionSession } = require('./vision') // 图片消息构建 + 视觉会话判断
 const { storeImageUrl } = require('./image-store') // 图片 URL/文件持久化存储
 const { enqueueAnalysis } = require('./image-analyzer') // 图片异步分析队列
+const { storeFile, cacheFileLocally, setLocalPath } = require('./file-store') // 文件元数据持久化存储
+const { checkFile, getExtension, sanitizeFileName, summarizeFileContentForChat } = require('./file-safety') // 文件安全检查
 const { transcribeVoice } = require('./voice') // 语音转文字
 const {
   classifySendError,          // 发送错误分类（限流/禁言/网络）
@@ -363,7 +365,9 @@ async function retellAgentResult(agentResult, { ctx, session, channelKey, curren
       agentResultText: agentMaterial,
     })
     const rawFinalReply = normalizeChatResultText(chatReply, AGENT_RETELL_FALLBACK).trim() || AGENT_RETELL_FALLBACK
-    const finalReply = redactAgentMaterial(guardAgentRetellReply(rawFinalReply, safeAgentResult))
+    const finalReply = redactAgentMaterial(guardAgentRetellReply(rawFinalReply, safeAgentResult, {
+      searchFailureFallback: rawFinalReply,
+    }))
     recordAgentChatResult({ session: null, userMessage: userText, userName, userId: currentUserId, channelKey, agentResult: { ...safeAgentResult, reply: finalReply } })
     return finalReply
   } catch (error) {
@@ -652,6 +656,71 @@ function armEventDump(session) {
 // 取消当前频道的下一条事件抓取。
 function clearArmedEventDump(channelKey = '') {
   armedEventDumpCache.delete(String(channelKey || ''))
+}
+
+function cacheSmallFileBackground(channelKey, messageId, url, ext) {
+  const { downloadFile } = require('./file-analyzer')
+  const { FILE_CACHE_DIR } = require('./file-store')
+  const fsp = require('fs/promises')
+  const safeChannel = String(channelKey).replace(/[^a-zA-Z0-9.:_-]/g, '_')
+  const safeId = String(messageId).replace(/[^a-zA-Z0-9_-]/g, '_')
+  const cacheDir = path.join(FILE_CACHE_DIR, safeChannel)
+  const destFile = path.join(cacheDir, `${safeId}.${ext || 'bin'}`)
+  fsp.mkdir(cacheDir, { recursive: true })
+    .then(() => downloadFile(url, destFile))
+    .then((savedPath) => setLocalPath(channelKey, messageId, savedPath))
+    .then(() => fsp.readdir(cacheDir))
+    .then(async (names) => {
+      if (names.length <= 10) return
+      const entries = []
+      for (const n of names) {
+        try { const s = await fsp.stat(path.join(cacheDir, n)); entries.push({ name: n, mtimeMs: s.mtimeMs }) } catch {}
+      }
+      entries.sort((a, b) => a.mtimeMs - b.mtimeMs)
+      for (const e of entries.slice(0, entries.length - 10)) {
+        try { await fsp.unlink(path.join(cacheDir, e.name)) } catch {}
+      }
+    })
+    .catch(() => {})
+}
+
+function decodeEntityAttribute(value = '') {
+  return String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+}
+
+function extractAttrValue(tag = '', name = '') {
+  const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i')
+  const match = String(tag || '').match(re)
+  return match ? decodeEntityAttribute(match[1] || match[2] || match[3] || '') : ''
+}
+
+function extractImageRefFromContent(content = '') {
+  const value = String(content || '')
+  const cq = value.match(/\[CQ:(?:image|img),([^\]]+)\]/i)
+  if (cq) {
+    const body = cq[1] || ''
+    const url = extractAttrValue(body, 'url')
+    const file = extractAttrValue(body, 'file')
+    if (url || file) return { url, file }
+  }
+  const tag = value.match(/<(?:img|image)\b[^>]*>/i)
+  if (tag) {
+    const raw = tag[0]
+    const src = extractAttrValue(raw, 'src') || extractAttrValue(raw, 'url')
+    const file = extractAttrValue(raw, 'file')
+    if (/^https?:\/\//i.test(src)) return { url: src, file }
+    if (/^file:\/\//i.test(src)) return { url: '', file: src }
+    if (src) return { url: '', file: src }
+    if (file) return { url: '', file }
+  }
+  const urls = extractImageUrls(value)
+  if (urls[0]) return { url: urls[0], file: '' }
+  return { url: '', file: '' }
 }
 
 // 生成安全文件名，避免把群号和消息号直接拼出非法路径。
@@ -1042,7 +1111,7 @@ exports.apply = (ctx) => {
       }
     }
 
-    if (!plain && !directAt && !session.isDirect && !analyzed.hasVisual && !analyzed.hasAudio) return next()
+    if (!plain && !directAt && !session.isDirect && !analyzed.hasVisual && !analyzed.hasAudio && !analyzed.hasFile) return next()
     if (inGuild) currentMessageVersion = bumpChannelMessageVersion(channelKey)
     if (directAt) markExplicitInteraction('direct-at')
 
@@ -1060,11 +1129,48 @@ exports.apply = (ctx) => {
       const imgFile = imgSeg?.data?.file || null
       const imgUrl = imgSeg?.data?.url || ''
       const imageMeta = { conversationKey: getConversationKey(session), userId: session.userId || session.author?.id || session.username || '' }
-      const fallbackUrl = imgSeg ? extractImageUrls(content)[0] : ''
-      const storableUrl = /^https?:\/\//.test(imgUrl) ? imgUrl : fallbackUrl
-      await storeImageUrl(channelKey, session.messageId, storableUrl || '', imgFile, imageMeta)
+      const contentImageRef = extractImageRefFromContent(content)
+      const storableUrl = /^https?:\/\//i.test(imgUrl) ? imgUrl : contentImageRef.url
+      const storableFile = imgFile || contentImageRef.file || ''
+      await storeImageUrl(channelKey, session.messageId, storableUrl || '', storableFile || null, imageMeta)
       if (!plain.includes('[图片]')) plain = (plain ? plain + ' ' : '') + '[图片]'
       await enqueueAnalysis(channelKey, session.messageId)
+    }
+
+    if (analyzed.hasFile && channelKey && session.messageId) {
+      const segments = Array.isArray(session.event?.message) ? session.event.message : []
+      const fileSeg = segments.find(s => s.type === 'file')
+      if (fileSeg) {
+        const fileName = fileSeg.data?.name || fileSeg.data?.file || 'unknown'
+        const fileSize = Number(fileSeg.data?.size) || 0
+        const fileUrl = fileSeg.data?.url || ''
+        const fileId = fileSeg.data?.file || fileSeg.data?.id || null
+        const ext = getExtension(fileName)
+        const safety = checkFile(fileName, fileSize)
+
+        const fileMeta = {
+          fileName: sanitizeFileName(fileName),
+          fileSize,
+          mimeType: fileSeg.data?.mime || '',
+          ext,
+          url: fileUrl,
+          fileId,
+          conversationKey: getConversationKey(session),
+          userId: session.userId || session.author?.id || session.username || '',
+          skipped: !safety.allowed,
+          skipReason: safety.reason || null,
+        }
+        await storeFile(channelKey, session.messageId, fileMeta)
+
+        if (safety.allowed) {
+          if (!plain.includes('[文件]')) plain = (plain ? plain + ' ' : '') + `[文件: ${sanitizeFileName(fileName)} (fileId:${session.messageId})]`
+          if (fileUrl && fileSize <= 1024 * 1024) {
+            cacheSmallFileBackground(channelKey, session.messageId, fileUrl, ext)
+          }
+        } else {
+          if (!plain.includes('[文件]')) plain = (plain ? plain + ' ' : '') + `[文件: ${sanitizeFileName(fileName)} - 已跳过${safety.reason ? '(' + safety.reason + ')' : ''}]`
+        }
+      }
     }
 
     if (analyzed.hasAudio && (session.isDirect || directAt)) {
@@ -1392,6 +1498,31 @@ exports.apply = (ctx) => {
       currentMessageVersion: getChannelMessageVersion(channelKey),
     })
     const maxDepth = inGuild ? 4 : 2
+
+    if (/^(读文件|看文件|分析文件|打开文件|文件内容)$/.test(userText.trim())) {
+      const { getRecentFiles } = require('./file-store')
+      const { analyzeFileNow } = require('./file-analyzer')
+      const recentFiles = await getRecentFiles(channelKey, 10)
+      const target = recentFiles.find(f => !f.skipped && !f.analyzed)
+        || recentFiles.find(f => !f.skipped && f.analyzed)
+      if (target) {
+        const liveSession = withCurrentBot(session, resolveBot())
+        if (target.analyzed && target.analysis) {
+          await safeSendReply(ctx, liveSession, summarizeFileContentForChat(target.analysis, target.fileName), randomTriggered, resolveBot, randomSendOptions)
+          return
+        }
+        const result = await analyzeFileNow(channelKey, target.messageId)
+        if (result) {
+          await safeSendReply(ctx, liveSession, summarizeFileContentForChat(result, target.fileName), randomTriggered, resolveBot, randomSendOptions)
+          return
+        }
+        await safeSendReply(ctx, liveSession, '文件下载失败了，可能已经过期。如果还需要，请重新发一次文件。', randomTriggered, resolveBot, randomSendOptions)
+        return
+      }
+      await safeSendReply(ctx, withCurrentBot(session, resolveBot()), '没有找到最近可分析的文件。', randomTriggered, resolveBot, randomSendOptions)
+      return
+    }
+
     enqueueForChannel(channelKey, async () => {
       const liveSession = withCurrentBot(session, resolveBot())
       try {

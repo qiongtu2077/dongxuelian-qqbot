@@ -149,6 +149,7 @@ function isAgentFollowUp(text = '') {
 
 function getRecentAgentContextNote({ channelKey = '', userId = '', userMessage = '' } = {}) {
   trimRecentAgentContextCache()
+  if (!isAgentFollowUp(userMessage)) return ''
   const entry = recentAgentContextCache.get(buildAgentContextKey(channelKey, userId))
   if (!entry) return ''
   if (Date.now() - Number(entry.ts || 0) > RECENT_AGENT_CONTEXT_TTL_MS) return ''
@@ -178,6 +179,7 @@ module.exports = {
   extractSearchSummary,
   extractFetchSummary,
   recordAgentChatResult,
+  isAgentFollowUp,
   getRecentAgentContextNote,
   clearAgentChatBridge,
   clearAgentContextForUser,

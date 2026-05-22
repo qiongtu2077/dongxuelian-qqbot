@@ -1,3 +1,14 @@
+---
+name: terra-lore
+description: 泰拉大陆世界观设定（明日方舟）
+type: lore
+keywords: 矿石病, 源石, 天灾, 萨卡兹, 卡兹戴尔, 巴别塔, 罗德岛, 凯尔希, 泰拉, 移动城市
+scope: keyword
+summary: 明日方舟泰拉大陆、源石、矿石病、移动城市与萨卡兹相关世界观。
+max_chars: 1800
+priority: 5
+---
+
 # 泰拉大陆世界观设定（《明日方舟》）
 
 当用户消息含以下关键词之一时，注入本世界观：

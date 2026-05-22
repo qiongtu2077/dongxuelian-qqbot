@@ -103,6 +103,9 @@ const {
   rememberMemoryPrompt,
 } = require('./chat-memory')
 const {
+  generatePersonaFallbackReply,
+} = require('./persona-fallback')
+const {
   loadConfig,          // 加载运行时配置（API key/model/provider）
   resetConfigCache,    // 强制刷新配置缓存
   getThinkingArgs,     // 获取 thinking/推理模式参数
@@ -366,6 +369,13 @@ function buildAbusiveSystemPrompt() {
   return skillsContentCache['mode:persona-abusive'] || ''
 }
 
+function getOutputGuardReason(text = '') {
+  if (hasBannedOutput(text)) return '包含禁用表达'
+  if (isUnsafeThinkingReply(text)) return '包含内部草稿或工具计划'
+  if (hasInternalContextLeak(text)) return '泄漏内部上下文'
+  return ''
+}
+
 // 统一请求 OpenAI 兼容的 Chat Completions 接口。
 
 // 把 Chat 风格消息转成 Responses API 所需的 input 结构。
@@ -611,11 +621,28 @@ async function chat(session, userText, ctx, options = {}) {
     let agentReply = await callOpenAI(agentMessages, options.randomTriggered)
     if (agentReply && typeof agentReply === 'object') agentReply = agentReply.content || agentReply.message?.content || ''
     if (JAILBREAK_OUTPUT_RE.test(agentReply)) agentReply = await chatJailbreak(session, cleanInput, ctx, { systemPrompt })
-    if (hasBannedOutput(agentReply)) agentReply = '这活别找我，换个工具。'
-    if (isUnsafeThinkingReply(agentReply)) agentReply = '我还有事，下次再说。'
-    if (hasInternalContextLeak(agentReply)) agentReply = '我刚刚串台了，重说一句。'
+    const agentReplyGuardReason = getOutputGuardReason(agentReply)
+    if (agentReplyGuardReason) {
+      agentMessages.push({ role: 'user', content: `【系统提示：你刚才的转述${agentReplyGuardReason}。不要复述刚才的错误内容，不要说工具名或内部材料，按当前人格用一句到两句自然回答用户。】` })
+      agentReply = await callOpenAI(agentMessages, options.randomTriggered)
+      if (agentReply && typeof agentReply === 'object') agentReply = agentReply.content || agentReply.message?.content || ''
+    }
     let agentFinal = trimReply(stripMarkdownForQQ(sanitizeReply(agentReply, userName)),
       retaliationLevel === 2 ? MAX_OUTPUT_CHARS_ABUSIVE : retaliationLevel === 1 ? MAX_OUTPUT_CHARS_YINYANG : MAX_OUTPUT_CHARS_FRIENDLY)
+    const agentFinalGuardReason = getOutputGuardReason(agentFinal)
+    if (agentFinalGuardReason) {
+      const personaFallback = await generatePersonaFallbackReply({
+        session,
+        systemPrompt,
+        currentUserMessage,
+        userName,
+        reason: `Agent 转述${agentFinalGuardReason}`,
+        maxChars: retaliationLevel === 2 ? MAX_OUTPUT_CHARS_ABUSIVE : retaliationLevel === 1 ? MAX_OUTPUT_CHARS_YINYANG : MAX_OUTPUT_CHARS_FRIENDLY,
+        callModel: callOpenAI,
+        isRandom: options.randomTriggered,
+      })
+      agentFinal = personaFallback || '这次材料有点乱，我先稳一下再说。'
+    }
     if (isSemanticProfile(agentFinal)) agentFinal = '别问了，这个我不聊。'
     saveConversationTurn(session, currentUserMessage, agentFinal)
     return agentFinal
@@ -1107,15 +1134,32 @@ async function chat(session, userText, ctx, options = {}) {
   )
 
   if (isUnsafeThinkingReply(finalReply)) {
-    const simple = retaliationLevel === 2 ? '少来这套。'
-      : retaliationLevel === 1 ? '你阴阳谁呢。'
-      : ['想白嫖直说', '就这？', '咋了', '难绷'][Math.floor(Math.random() * 4)]
-    finalReply = simple
+    const personaFallback = await generatePersonaFallbackReply({
+      session,
+      systemPrompt,
+      currentUserMessage,
+      userName,
+      reason: '最终回复仍包含内部草稿或工具计划',
+      maxChars: retaliationLevel === 2 ? MAX_OUTPUT_CHARS_ABUSIVE : retaliationLevel === 1 ? MAX_OUTPUT_CHARS_YINYANG : MAX_OUTPUT_CHARS_FRIENDLY,
+      callModel: callOpenAI,
+      isRandom: options.randomTriggered,
+    })
+    finalReply = personaFallback || (retaliationLevel >= 1 ? '这句先别绕了，换个说法。' : '这句我先重组织一下。')
   }
 
   if (hasInternalContextLeak(finalReply)) {
     ctx.logger('dongxuelian-ai').warn('internal context leak persisted, forcing fallback')
-    finalReply = retaliationLevel >= 1 ? '少复读后台东西。' : '我刚刚串台了，重说一句。'
+    const personaFallback = await generatePersonaFallbackReply({
+      session,
+      systemPrompt,
+      currentUserMessage,
+      userName,
+      reason: '最终回复仍泄漏内部上下文',
+      maxChars: retaliationLevel === 2 ? MAX_OUTPUT_CHARS_ABUSIVE : retaliationLevel === 1 ? MAX_OUTPUT_CHARS_YINYANG : MAX_OUTPUT_CHARS_FRIENDLY,
+      callModel: callOpenAI,
+      isRandom: options.randomTriggered,
+    })
+    finalReply = personaFallback || (retaliationLevel >= 1 ? '这句先别绕了，换个说法。' : '这句我重组织一下。')
   }
 
   if (rareConfirmed && !/骂谁罕见/.test(finalReply)) {
@@ -1127,12 +1171,36 @@ async function chat(session, userText, ctx, options = {}) {
     ctx.logger('dongxuelian-ai').warn(`banned word persists after retry, forcing fallback. reply: ${finalReply}`)
     if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : pickRepeatedFallbackReply(session)
     else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(session)
-    else finalReply = '这活别找我，换个工具。'
+    else {
+      const personaFallback = await generatePersonaFallbackReply({
+        session,
+        systemPrompt,
+        currentUserMessage,
+        userName,
+        reason: '最终回复仍包含禁用表达',
+        maxChars: MAX_OUTPUT_CHARS_FRIENDLY,
+        callModel: callOpenAI,
+        isRandom: options.randomTriggered,
+      })
+      finalReply = personaFallback || '这句我接不了，换个说法吧。'
+    }
   } else if (shouldRetryRepeatedReply(session, stripStickerMarkersForGuard(finalReply))) {
     ctx.logger('dongxuelian-ai').warn(`reply is still repetitive after retry, forcing fallback. reply: ${finalReply}`)
     if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : pickRepeatedFallbackReply(session)
     else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(session)
-    else finalReply = '我还有事，下次再说。'
+    else {
+      const personaFallback = await generatePersonaFallbackReply({
+        session,
+        systemPrompt,
+        currentUserMessage,
+        userName,
+        reason: '最终回复仍和近期回复过于相似',
+        maxChars: MAX_OUTPUT_CHARS_FRIENDLY,
+        callModel: callOpenAI,
+        isRandom: options.randomTriggered,
+      })
+      finalReply = personaFallback || '换个说法吧，别一直绕同一句。'
+    }
   }
 
   // 反击模式禁止调用表情包

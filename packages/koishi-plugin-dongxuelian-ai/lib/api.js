@@ -412,6 +412,26 @@ function callGetImage(fileName) {
   )
 }
 
+function callGetFile(fileId) {
+  return callOneBotWs(
+    'get_file',
+    { file_id: fileId },
+    'gf_file',
+    8000,
+    message => (message.data && (message.data.file || message.data.url) ? message.data : null)
+  )
+}
+
+function callGetRecord(fileName) {
+  return callOneBotWs(
+    'get_record',
+    { file: fileName, out_format: 'wav' },
+    'gr',
+    8000,
+    message => (message.data && message.data.file ? message.data : null)
+  )
+}
+
 function callGetForwardMsg(forwardId) {
   return callOneBotWs(
     'get_forward_msg',
@@ -562,7 +582,7 @@ module.exports = {
   requestChatCompletions, normalizeMessagesForProvider, buildResponsesInput, extractResponsesText,
   requestOpenAIResponsesWithSearch,
   buildFallbackConfig, getFallbackSteps,
-  callGetImage, callGetForwardMsg, sendForwardMsg, getGroupMemberInfo, getGroupInfo,
+  callGetImage, callGetFile, callGetRecord, callGetForwardMsg, sendForwardMsg, getGroupMemberInfo, getGroupInfo,
   readImageAsBase64, extractImageFileFromElements, downloadImageAsBase64,
   isVisionModel, recordTokenUsage, flushTokenUsage,
 }
