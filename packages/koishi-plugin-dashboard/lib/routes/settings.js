@@ -79,6 +79,7 @@ function handleGetKeys(req, res) {
 }
 
 function handleGetKeysUsage(req, res) {
+  if (!requireAdmin(req, res)) return
   try {
     const usageFile = path.join(DATA_DIR, 'token-usage.json')
     if (!fs.existsSync(usageFile)) return json(res, { days: [], providers: [] })
@@ -132,6 +133,7 @@ function handlePutCustomProviders(req, res) {
 }
 
 function handleGetFallback(req, res) {
+  if (!requireAdmin(req, res)) return
   function buildProviderMap() {
     const ps = {}
     const pDefs = require(path.join(AI_LIB, 'constants')).PROVIDERS

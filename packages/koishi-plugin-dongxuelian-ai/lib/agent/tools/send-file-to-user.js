@@ -5,6 +5,7 @@
 const fs = require('fs/promises')
 const WebSocket = require('ws')
 const { assertExistingAgentPathInsideRoots } = require('../path-guard')
+const { resolveOneBotWsUrl } = require('../../onebot-endpoint')
 
 const MAX_SEND_FILE_BYTES = 64 * 1024 * 1024
 
@@ -22,7 +23,7 @@ function callOneBot(action, params, timeoutMs = 5000) {
       resolve(value)
     }
     try {
-      ws = new WebSocket('ws://127.0.0.1:8080/onebot/v11/ws')
+      ws = new WebSocket(resolveOneBotWsUrl())
       timer = setTimeout(() => finish({ ok: false, message: 'OneBot 连接超时' }), timeoutMs)
       ws.on('open', () => ws.send(JSON.stringify({ action, params, echo })))
       ws.on('message', raw => {
@@ -63,6 +64,8 @@ module.exports = {
     const userId = String(params.userId || '').trim()
     const name = String(params.name || '').trim() || undefined
     if (!groupId && !userId) return `文件可发送：${abs}。但缺少 groupId/userId，无法确定发送目标。`
+    if (groupId && !/^\d+$/.test(groupId)) return 'groupId 必须为纯数字。'
+    if (!groupId && userId && !/^\d+$/.test(userId)) return 'userId 必须为纯数字。'
     const action = groupId ? 'upload_group_file' : 'upload_private_file'
     const result = await callOneBot(action, groupId ? { group_id: Number(groupId), file: abs, name } : { user_id: Number(userId), file: abs, name })
     if (!result.ok) return `文件未发送：${result.message || 'OneBot 不可用'}。文件路径：${abs}`

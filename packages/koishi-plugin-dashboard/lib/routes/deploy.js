@@ -33,6 +33,7 @@ function stopKoishiProcesses() {
 }
 
 function handleGetDeployConfig(req, res) {
+  if (!requireAdmin(req, res)) return
   try {
     const cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8'))
     let botRunning = false

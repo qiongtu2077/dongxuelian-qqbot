@@ -3,7 +3,7 @@
  * 安全：限定工作区目录，只做唯一精确字符串替换。
  */
 const fs = require('fs/promises')
-const { assertExistingAgentPathInsideRoots } = require('../path-guard')
+const { assertExistingAgentPathInsideRoots, assertNotWriteBlockedBasename } = require('../path-guard')
 
 const MAX_FILE_BYTES = 512 * 1024
 const MAX_REPLACEMENT_BYTES = 256 * 1024
@@ -46,6 +46,7 @@ module.exports = {
     if (replacementBytes > MAX_REPLACEMENT_BYTES) throw new Error(`替换内容过大：${replacementBytes} bytes，最大 ${MAX_REPLACEMENT_BYTES} bytes`)
 
     const { abs } = await assertExistingAgentPathInsideRoots(filePath, '文件')
+    assertNotWriteBlockedBasename(abs, '文件')
 
     let stat
     try { stat = await fs.stat(abs) } catch { throw new Error(`文件不存在：${filePath}`) }

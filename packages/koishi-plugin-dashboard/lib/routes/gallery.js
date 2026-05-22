@@ -4,9 +4,11 @@ const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
 const { json, log, collectBody, isInsidePath, parsePositiveInt } = require('../utils')
+const { requireAdmin } = require('../auth')
 const { GALLERY_DIR, GALLERY_METADATA_FILE, GALLERY_MAX_BYTES, GALLERY_MIME_EXT, GALLERY_FOIL_STYLES } = require('../paths')
 
 const MAX_GALLERY_METADATA_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_METADATA_MAX_BYTES, 256 * 1024, 16 * 1024, 1024 * 1024)
+const MAX_GALLERY_UPLOAD_BODY_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_UPLOAD_BODY_MAX_BYTES, Math.ceil(GALLERY_MAX_BYTES * 1.45) + 64 * 1024, 1024 * 1024, 16 * 1024 * 1024)
 
 function resolveGalleryId(id) {
   const value = String(id || '').trim()
@@ -171,15 +173,17 @@ function handleGetGallery(req, res) {
 }
 
 function handlePostGallery(req, res) {
+  if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
       const item = writeGalleryImage(JSON.parse(body || '{}'))
       return json(res, { ok: true, image: item, message: '图片已加入莲莲图集' })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
-  })
+  }, { maxBytes: MAX_GALLERY_UPLOAD_BODY_BYTES })
 }
 
 function handleDeleteGallery(req, res) {
+  if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
       const { id, ids } = JSON.parse(body || '{}')
@@ -191,6 +195,7 @@ function handleDeleteGallery(req, res) {
 }
 
 function handlePutGalleryStyle(req, res) {
+  if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
       const { id, foilStyle } = JSON.parse(body || '{}')

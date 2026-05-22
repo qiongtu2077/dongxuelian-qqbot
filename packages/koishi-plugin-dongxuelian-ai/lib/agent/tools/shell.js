@@ -6,6 +6,7 @@ const { execFile } = require('child_process')
 const os = require('os')
 const { assertExistingAgentPathInsideRoots } = require('../path-guard')
 const { checkShellCommand, summarizeShellCommand } = require('./shell-guard')
+const { redactSensitiveText } = require('../../redactor')
 
 function formatGuardError(command, guardResult) {
   const first = guardResult.violations[0] || {}
@@ -52,16 +53,17 @@ module.exports = {
 
     const { abs: cwd } = await assertExistingAgentPathInsideRoots(params.cwd || process.cwd(), '工作目录')
     const isWin = os.platform() === 'win32'
+    const env = buildSafeShellEnv(process.env)
 
     return new Promise(resolve => {
       const child = execFile(
         isWin ? 'cmd.exe' : '/bin/sh',
         isWin ? ['/d', '/s', '/c', command] : ['-c', command],
-        { cwd, timeout: 25000, maxBuffer: 500 * 1024, windowsHide: true, env: { ...process.env } },
+        { cwd, timeout: 25000, maxBuffer: 500 * 1024, windowsHide: true, env },
         (err, stdout, stderr) => {
           const parts = []
-          if (stdout) parts.push(`[stdout]\n${stdout}`)
-          if (stderr) parts.push(`[stderr]\n${stderr}`)
+          if (stdout) parts.push(`[stdout]\n${redactSensitiveText(stdout)}`)
+          if (stderr) parts.push(`[stderr]\n${redactSensitiveText(stderr)}`)
           if (err && err.killed) parts.push('(命令执行超时，已取消)')
           else if (err) parts.push(`[exit code: ${err.code || -1}]`)
           if (parts.length === 0) parts.push('(执行成功，无输出)')
@@ -73,3 +75,14 @@ module.exports = {
   dangerous: true,
   defaultChannels: ['dashboard'],
 }
+
+function buildSafeShellEnv(source = {}) {
+  const allowed = new Set(['PATH', 'Path', 'HOME', 'USERPROFILE', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'WINDIR'])
+  const env = {}
+  for (const key of allowed) {
+    if (source[key] !== undefined) env[key] = source[key]
+  }
+  return env
+}
+
+module.exports.buildSafeShellEnv = buildSafeShellEnv

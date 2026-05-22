@@ -132,7 +132,9 @@ function handlePutLogging(req, res) {
 
 function handlePostBotStart(req, res) {
   if (!requireAdmin(req, res)) return
-  exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`, { maxBuffer: 512 * 1024 }, (err) => {
+  const restartScript = path.join(KOISHI_DIR, 'restart.sh')
+  if (!fs.existsSync(restartScript)) return json(res, { ok: false, message: '启动脚本不存在，请检查部署目录' }, 400)
+  exec(`bash "${restartScript.replace(/\\/g, '/')}"`, { maxBuffer: 512 * 1024 }, (err) => {
     if (err) log('start bot failed: ' + err.message)
   })
   return json(res, { ok: true, message: '启动命令已发送' })
@@ -240,6 +242,7 @@ function handlePostNapcatRestart(req, res) {
 }
 
 function handleGetBotActivity(req, res, pathname, url) {
+  if (!requireAdmin(req, res)) return
   try {
     return json(res, getFilteredLogEntries({
       limit: url.searchParams.get('limit'),

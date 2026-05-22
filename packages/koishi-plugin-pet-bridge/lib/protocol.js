@@ -8,6 +8,7 @@ const { loadConfig, resetConfigCache, getThinkingEnabled, setThinkingEnabled } =
 const { requestChatCompletions } = require('koishi-plugin-dongxuelian-ai/lib/api')
 const { getAvailablePersonals, loadPersonalSkill, setUserPersona, getUserPersona } = require('koishi-plugin-dongxuelian-ai/lib/persona')
 const { getMemorySummary } = require('koishi-plugin-dongxuelian-ai/lib/conversation')
+const { resolveOneBotWsUrl } = require('koishi-plugin-dongxuelian-ai/lib/onebot-endpoint')
 const { PROVIDER_FILE, MODEL_FILE, SEARCH_ENABLED_FILE, MAINTENANCE_FILE, THINKING_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_WHITELIST_FILE } = require('koishi-plugin-dongxuelian-ai/lib/constants')
 const fs = require('fs')
 
@@ -40,7 +41,7 @@ function callOneBot(action, params) {
       resolve(value)
     }
     try {
-      ws = new (require('ws'))('ws://127.0.0.1:8080/onebot/v11/ws')
+      ws = new (require('ws'))(resolveOneBotWsUrl())
       timer = setTimeout(() => finish(null), 5000)
       ws.on('open', () => {
         try { ws.send(JSON.stringify({ action, params, echo: 'pet-bridge' })) } catch { finish(null) }
@@ -125,6 +126,7 @@ function handleToggleMaintenance(payload) {
 async function handleSendGroupMsg(payload) {
   const { groupId, text } = payload
   if (!groupId || !text) return { success: false, payload: { error: 'missing groupId or text' } }
+  if (!/^\d+$/.test(String(groupId))) return { success: false, payload: { error: 'groupId must be numeric' } }
   const result = await callOneBot('send_group_msg', { group_id: Number(groupId), message: text })
   return { success: !!result, payload: result || { error: 'send failed' } }
 }

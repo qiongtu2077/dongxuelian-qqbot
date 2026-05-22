@@ -4,7 +4,7 @@
  */
 const fs = require('fs/promises')
 const path = require('path')
-const { assertNewAgentPathInsideRoots, assertExistingAgentPathInsideRoots } = require('../path-guard')
+const { assertNewAgentPathInsideRoots, assertExistingAgentPathInsideRoots, assertNotWriteBlockedBasename } = require('../path-guard')
 
 const MAX_CONTENT_BYTES = 256 * 1024
 const MAX_OVERWRITE_TARGET_BYTES = 2 * 1024 * 1024
@@ -33,13 +33,17 @@ module.exports = {
     if (contentBytes > MAX_CONTENT_BYTES) throw new Error(`内容过大：${contentBytes} bytes，最大 ${MAX_CONTENT_BYTES} bytes`)
 
     const { abs } = await assertNewAgentPathInsideRoots(filePath, '路径', !!params.createDirectories)
+    assertNotWriteBlockedBasename(abs, '路径')
     const parent = path.dirname(abs)
 
     const linkStat = await fs.lstat(abs).catch(() => null)
     if (linkStat && linkStat.isSymbolicLink()) throw new Error(`目标是符号链接，拒绝写入：${filePath}`)
     let existing = null
     try { existing = await fs.stat(abs) } catch {}
-    if (existing) await assertExistingAgentPathInsideRoots(abs, '路径')
+    if (existing) {
+      await assertExistingAgentPathInsideRoots(abs, '路径')
+      assertNotWriteBlockedBasename(abs, '路径')
+    }
     if (existing && existing.isDirectory()) throw new Error(`目标是目录：${filePath}`)
     if (existing && existing.size > MAX_OVERWRITE_TARGET_BYTES) throw new Error(`目标文件过大，拒绝覆盖：${existing.size} bytes`)
     if (existing && !params.overwrite) throw new Error('文件已存在，如需覆盖请设置 overwrite=true')

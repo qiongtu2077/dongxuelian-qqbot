@@ -5,15 +5,14 @@
 const fs = require('fs/promises')
 const path = require('path')
 const { DATA_DIR } = require('../../constants')
+const { redactSensitiveText } = require('../../redactor')
 
 const LOG_DIRS = [path.resolve(process.cwd(), 'runtime', 'logs'), path.join(DATA_DIR, 'logs')]
 const FALLBACK_LOG_FILE = path.resolve(process.cwd(), 'koishi.log')
 const MAX_FILE_BYTES = 1024 * 1024
 const MAX_LOG_TAIL_BYTES = 256 * 1024
-const SECRET_RE = /(?:api[_-]?key|token|authorization|password|secret)[=:：\s]+[^\s,;]+/ig
-
 function redact(text = '') {
-  return String(text).replace(SECRET_RE, m => m.replace(/([=:：\s]+).+$/, '$1[REDACTED]'))
+  return redactSensitiveText(text)
 }
 
 function escapeRegExp(text = '') {

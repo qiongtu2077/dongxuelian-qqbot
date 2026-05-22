@@ -10,6 +10,7 @@ const { execFile } = require('child_process')
 const { requestChatCompletions } = require('./api')
 const { extractVoiceUrls } = require('./utils')
 const { DATA_DIR } = require('./constants')
+const { validatePublicHttpUrl, resolveAndValidateHostname } = require('./agent/fetch-reader')
 
 const ASR_TIMEOUT_MS = 10000
 const MAX_VOICE_BYTES = 2 * 1024 * 1024
@@ -31,21 +32,53 @@ function extractVoicePayload(session) {
 }
 
 async function downloadVoiceFile(url, destPath) {
-  if (!url || !url.startsWith('http')) return null
   return new Promise((resolve) => {
-    const mod = url.startsWith('https') ? require('https') : require('http')
-    const timer = setTimeout(() => { try { req.destroy() } catch {} resolve(null) }, 15000)
-    const req = mod.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-      if (res.statusCode !== 200) { res.resume(); clearTimeout(timer); return resolve(null) }
-      const declared = parseInt(res.headers['content-length'], 10)
-      if (Number.isFinite(declared) && declared > MAX_VOICE_BYTES) { res.resume(); clearTimeout(timer); return resolve(null) }
-      const chunks = []
-      let received = 0
-      res.on('data', (c) => { received += c.length; if (received > MAX_VOICE_BYTES) { req.destroy(); return } chunks.push(c) })
-      res.on('end', () => { clearTimeout(timer); const buf = Buffer.concat(chunks); if (!buf.length) return resolve(null); try { fs.mkdirSync(path.dirname(destPath), { recursive: true }); fs.writeFileSync(destPath, buf); resolve(destPath) } catch { resolve(null) } })
-      res.on('error', () => { clearTimeout(timer); resolve(null) })
-    })
-    req.on('error', () => { clearTimeout(timer); resolve(null) })
+    let req = null
+    let timer = null
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      try { if (req) req.destroy() } catch {}
+      resolve(value || null)
+    }
+
+    ;(async () => {
+      let parsed
+      try {
+        parsed = validatePublicHttpUrl(url)
+        await resolveAndValidateHostname(parsed)
+      } catch {
+        return finish(null)
+      }
+      try {
+        const mod = parsed.protocol === 'https:' ? require('https') : require('http')
+        timer = setTimeout(() => finish(null), 15000)
+        req = mod.get(parsed, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+          if (res.statusCode !== 200) { res.resume(); return finish(null) }
+          const declared = parseInt(res.headers['content-length'], 10)
+          if (Number.isFinite(declared) && declared > MAX_VOICE_BYTES) { res.resume(); return finish(null) }
+          const chunks = []
+          let received = 0
+          res.on('data', (c) => {
+            if (settled) return
+            received += c.length
+            if (received > MAX_VOICE_BYTES) { res.resume(); return finish(null) }
+            chunks.push(c)
+          })
+          res.on('end', () => {
+            const buf = Buffer.concat(chunks)
+            if (!buf.length || buf.length > MAX_VOICE_BYTES) return finish(null)
+            try { fs.mkdirSync(path.dirname(destPath), { recursive: true }); fs.writeFileSync(destPath, buf); finish(destPath) } catch { finish(null) }
+          })
+          res.on('error', () => finish(null))
+        })
+        req.on('error', () => finish(null))
+      } catch {
+        finish(null)
+      }
+    })()
   })
 }
 

@@ -5,6 +5,8 @@
  */
 const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE, MIMORIUM_KEY_FILE, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE, DATA_DIR } = require('./constants')
 const { readTextFile, isDashScopeConfig } = require('./utils')
+const { resolveOneBotWsUrl } = require('./onebot-endpoint')
+const { validatePublicHttpUrl, resolveAndValidateHostname } = require('./agent/fetch-reader')
 const path = require('path')
 const fs = require('fs')
 
@@ -381,7 +383,7 @@ function callOneBotWs(action, params, echo, timeoutMs, extractData) {
     }
 
     try {
-      ws = new (require('ws'))('ws://127.0.0.1:8080/onebot/v11/ws')
+      ws = new (require('ws'))(resolveOneBotWsUrl())
       timer = setTimeout(() => finish(null), timeoutMs)
       ws.on('open', () => {
         try { ws.send(JSON.stringify({ action, params, echo })) } catch { finish(null) }
@@ -475,6 +477,7 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
     let request = null
     let timer = null
     let settled = false
+    let currentUrl = null
     const finishDownload = (value) => {
       if (settled) return
       settled = true
@@ -482,54 +485,61 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
       resolve(value || null)
     }
 
-    if (!url || !url.startsWith('http')) return finishDownload(null)
-    try {
-      const mod = url.startsWith('https') ? require('https') : require('http')
-      timer = setTimeout(() => {
-        try { if (request) request.destroy() } catch {}
-        finishDownload(null)
-      }, timeoutMs)
-      request = mod.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-        const status = Number(res.statusCode || 0)
-        if (status >= 300 && status < 400 && res.headers.location) {
-          res.resume()
-          return finishDownload(null)
-        }
-        if (status !== 200) {
-          res.resume()
-          return finishDownload(null)
-        }
-        const type = String(res.headers['content-type'] || 'image/jpeg').split(';')[0].trim().toLowerCase()
-        if (type && !/^image\/(?:png|jpe?g|gif|webp|bmp)$/.test(type)) {
-          res.resume()
-          return finishDownload(null)
-        }
-        const declared = parseInt(res.headers['content-length'], 10)
-        if (Number.isFinite(declared) && declared > MAX_REMOTE_IMAGE_BYTES) {
-          res.resume()
-          return finishDownload(null)
-        }
-        const chunks = []
-        let received = 0
-        res.on('data', c => {
-          received += c.length
-          if (received > MAX_REMOTE_IMAGE_BYTES) {
-            try { if (request) request.destroy() } catch {}
+    ;(async () => {
+      try {
+        currentUrl = validatePublicHttpUrl(url)
+        await resolveAndValidateHostname(currentUrl)
+      } catch {
+        return finishDownload(null)
+      }
+      try {
+        const mod = currentUrl.protocol === 'https:' ? require('https') : require('http')
+        timer = setTimeout(() => {
+          try { if (request) request.destroy() } catch {}
+          finishDownload(null)
+        }, timeoutMs)
+        request = mod.get(currentUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+          const status = Number(res.statusCode || 0)
+          if (status >= 300 && status < 400 && res.headers.location) {
+            res.resume()
             return finishDownload(null)
           }
-          chunks.push(c)
+          if (status !== 200) {
+            res.resume()
+            return finishDownload(null)
+          }
+          const type = String(res.headers['content-type'] || 'image/jpeg').split(';')[0].trim().toLowerCase()
+          if (type && !/^image\/(?:png|jpe?g|gif|webp|bmp)$/.test(type)) {
+            res.resume()
+            return finishDownload(null)
+          }
+          const declared = parseInt(res.headers['content-length'], 10)
+          if (Number.isFinite(declared) && declared > MAX_REMOTE_IMAGE_BYTES) {
+            res.resume()
+            return finishDownload(null)
+          }
+          const chunks = []
+          let received = 0
+          res.on('data', c => {
+            received += c.length
+            if (received > MAX_REMOTE_IMAGE_BYTES) {
+              try { if (request) request.destroy() } catch {}
+              return finishDownload(null)
+            }
+            chunks.push(c)
+          })
+          res.on('end', () => {
+            const buf = Buffer.concat(chunks)
+            if (!buf.length || buf.length > MAX_REMOTE_IMAGE_BYTES) return finishDownload(null)
+            finishDownload(`data:${type || 'image/jpeg'};base64,${buf.toString('base64')}`)
+          })
+          res.on('error', () => finishDownload(null))
         })
-        res.on('end', () => {
-          const buf = Buffer.concat(chunks)
-          if (!buf.length || buf.length > MAX_REMOTE_IMAGE_BYTES) return finishDownload(null)
-          finishDownload(`data:${type || 'image/jpeg'};base64,${buf.toString('base64')}`)
-        })
-        res.on('error', () => finishDownload(null))
-      })
-      request.on('error', () => finishDownload(null))
-    } catch {
-      finishDownload(null)
-    }
+        request.on('error', () => finishDownload(null))
+      } catch {
+        finishDownload(null)
+      }
+    })()
   })
 }
 

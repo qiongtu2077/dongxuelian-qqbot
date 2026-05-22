@@ -3,6 +3,7 @@
 const fs = require('fs')
 const path = require('path')
 const { KOISHI_DIR, DEBUG_LOG_CONFIG_FILE, MAX_LOG_LIMIT } = require('./paths')
+const { redactSensitiveText } = require('koishi-plugin-dongxuelian-ai/lib/redactor')
 
 let logEntryCache = { file: '', size: -1, mtimeMs: -1, entries: [] }
 
@@ -83,7 +84,7 @@ function detectLogModule(line = '') {
 }
 
 function parseLogLine(item, index) {
-  const line = typeof item === 'object' && item ? String(item.text || '') : String(item || '')
+  const line = redactSensitiveText(typeof item === 'object' && item ? String(item.text || '') : String(item || ''))
   const structured = line.match(/^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+\[([IWED])\]\s+([^\s]+)\s*(.*)$/)
   const tsMatch = structured ? null : line.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?|\d{2}:\d{2}:\d{2}/)
   const level = classifyLogLevel(line)

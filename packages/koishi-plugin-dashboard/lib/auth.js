@@ -9,7 +9,13 @@ const TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000
 const LOGIN_FAIL_WINDOW_MS = 5 * 60 * 1000
 const LOGIN_FAIL_THRESHOLD = 10
 const LOGIN_LOCKOUT_MS = 15 * 60 * 1000
+const LOGIN_FAIL_MAX_ENTRIES = 1000
+const LOGIN_FAIL_CLEANUP_MS = 60 * 1000
 const loginFailMap = new Map()
+if (!globalThis.__dongxuelianDashboardLoginFailCleanupTimer) {
+  globalThis.__dongxuelianDashboardLoginFailCleanupTimer = setInterval(() => trimLoginFailMap(), LOGIN_FAIL_CLEANUP_MS)
+  if (globalThis.__dongxuelianDashboardLoginFailCleanupTimer.unref) globalThis.__dongxuelianDashboardLoginFailCleanupTimer.unref()
+}
 
 // Reads small secret/config files without throwing.
 function readFileContent(p) {
@@ -223,6 +229,7 @@ function requireStrictAdmin(req, res) {
 
 // Checks whether an IP is currently login/admin locked out.
 function isLoginRateLimited(ip) {
+  trimLoginFailMap()
   const entry = loginFailMap.get(ip)
   if (!entry) return false
   if (entry.lockedUntil && Date.now() < entry.lockedUntil) return true
@@ -236,6 +243,7 @@ function isLoginRateLimited(ip) {
 // Records a failed login/admin attempt for rate limiting.
 function recordLoginFailure(ip) {
   const now = Date.now()
+  trimLoginFailMap(now)
   const entry = loginFailMap.get(ip) || { count: 0, firstFail: now, lockedUntil: 0 }
   if (now - entry.firstFail > LOGIN_FAIL_WINDOW_MS) {
     entry.count = 1
@@ -248,11 +256,25 @@ function recordLoginFailure(ip) {
     log(`login rate limit: IP ${ip} locked for ${LOGIN_LOCKOUT_MS / 1000}s after ${entry.count} failures`)
   }
   loginFailMap.set(ip, entry)
+  trimLoginFailMap(now)
 }
 
 // Clears rate-limit state for an IP after successful authentication.
 function clearLoginFails(ip) {
   loginFailMap.delete(ip)
+}
+
+function trimLoginFailMap(now = Date.now()) {
+  for (const [ip, entry] of loginFailMap) {
+    const firstFail = Number(entry?.firstFail || 0)
+    const lockedUntil = Number(entry?.lockedUntil || 0)
+    if ((lockedUntil && now > lockedUntil + LOGIN_FAIL_WINDOW_MS) || (!lockedUntil && now - firstFail > LOGIN_FAIL_WINDOW_MS)) {
+      loginFailMap.delete(ip)
+    }
+  }
+  if (loginFailMap.size <= LOGIN_FAIL_MAX_ENTRIES) return
+  const ordered = Array.from(loginFailMap.entries()).sort((a, b) => Number(a[1]?.firstFail || 0) - Number(b[1]?.firstFail || 0))
+  for (const [ip] of ordered.slice(0, Math.max(0, loginFailMap.size - LOGIN_FAIL_MAX_ENTRIES))) loginFailMap.delete(ip)
 }
 
 module.exports = {
@@ -281,4 +303,6 @@ module.exports = {
   isLoginRateLimited,
   recordLoginFailure,
   clearLoginFails,
+  trimLoginFailMap,
+  loginFailMap,
 }

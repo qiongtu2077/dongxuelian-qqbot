@@ -4,7 +4,7 @@
  */
 const fs = require('fs/promises')
 const path = require('path')
-const { assertNewAgentPathInsideRoots, assertExistingAgentPathInsideRoots } = require('../path-guard')
+const { assertNewAgentPathInsideRoots, assertExistingAgentPathInsideRoots, assertNotWriteBlockedBasename } = require('../path-guard')
 
 const MAX_APPEND_BYTES = 128 * 1024
 const MAX_APPEND_TARGET_BYTES = 2 * 1024 * 1024
@@ -31,10 +31,14 @@ module.exports = {
     if (contentBytes > MAX_APPEND_BYTES) throw new Error(`内容过大：${contentBytes} bytes，最大 ${MAX_APPEND_BYTES} bytes`)
 
     const { abs } = await assertNewAgentPathInsideRoots(filePath, '路径', !!params.createDirectories)
+    assertNotWriteBlockedBasename(abs, '路径')
     const linkStat = await fs.lstat(abs).catch(() => null)
     if (linkStat && linkStat.isSymbolicLink()) throw new Error(`目标是符号链接，拒绝追加：${filePath}`)
     const existing = await fs.stat(abs).catch(() => null)
-    if (existing) await assertExistingAgentPathInsideRoots(abs, '路径')
+    if (existing) {
+      await assertExistingAgentPathInsideRoots(abs, '路径')
+      assertNotWriteBlockedBasename(abs, '路径')
+    }
     if (existing && existing.isDirectory()) throw new Error(`目标是目录：${filePath}`)
     if (existing && existing.size + contentBytes > MAX_APPEND_TARGET_BYTES) throw new Error(`追加后文件过大：${existing.size + contentBytes} bytes，最大 ${MAX_APPEND_TARGET_BYTES} bytes`)
     if (params.createDirectories) await fs.mkdir(path.dirname(abs), { recursive: true })

@@ -207,12 +207,13 @@ function readFileSyncSafe(p, maxBytes) {
 const MAX_BODY_SIZE = 16 * 1024 * 1024
 const EFFECTIVE_MAX_BODY_SIZE = parsePositiveInt(process.env.DASHBOARD_MAX_BODY_SIZE, 10 * 1024 * 1024, 1024 * 1024, MAX_BODY_SIZE)
 
-function collectBody(req, res, callback) {
+function collectBody(req, res, callback, options = {}) {
   const chunks = []
   let total = 0
   let rejected = false
+  const limit = Math.max(1024, Math.min(MAX_BODY_SIZE, parsePositiveInt(options.maxBytes, EFFECTIVE_MAX_BODY_SIZE, 1024, MAX_BODY_SIZE)))
   const declared = parseInt(req.headers['content-length'], 10)
-  if (Number.isFinite(declared) && declared > EFFECTIVE_MAX_BODY_SIZE) {
+  if (Number.isFinite(declared) && declared > limit) {
     res.writeHead(413, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: false, message: '请求体过大' }))
     req.destroy()
@@ -221,7 +222,7 @@ function collectBody(req, res, callback) {
   req.on('data', c => {
     if (rejected) return
     total += c.length
-    if (total > EFFECTIVE_MAX_BODY_SIZE) {
+    if (total > limit) {
       rejected = true
       res.writeHead(413, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: false, message: '请求体过大' }))

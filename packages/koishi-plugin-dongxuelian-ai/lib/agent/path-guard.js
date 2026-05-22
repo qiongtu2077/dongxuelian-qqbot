@@ -27,6 +27,11 @@ function isAgentPathInside(target, root) {
   return absTarget === absRoot || absTarget.startsWith(absRoot + path.sep)
 }
 
+function assertNotWriteBlockedBasename(target, label = '路径') {
+  const basename = path.basename(path.resolve(String(target || '')))
+  if (WRITE_BLOCKED_BASENAMES.has(basename)) throw new Error(`${label}禁止写入安全配置文件：${basename}`)
+}
+
 function getAgentPathConfiguredRoots() {
   const roots = getReadFileRoots()
   return roots.length > 0 ? mergeConfiguredAndDefaultRoots(roots) : getAgentPathDefaultRoots()
@@ -84,7 +89,7 @@ async function assertNewAgentPathInsideRoots(target, label = '路径', createDir
   const roots = await getAgentPathAllowedRoots()
   const resolved = resolveAgentPathInput(target, roots, { requireExisting: false })
   const abs = path.resolve(resolved.path)
-  if (WRITE_BLOCKED_BASENAMES.has(path.basename(abs))) throw new Error(`${label}禁止写入安全配置文件：${path.basename(abs)}`)
+  assertNotWriteBlockedBasename(abs, label)
   let parent = path.dirname(abs)
   let realParent = await fs.realpath(parent).catch(() => null)
   if (!realParent && createDirectories) {
@@ -107,6 +112,7 @@ module.exports = {
   isAgentPathInside,
   getAgentPathAllowedRoots,
   getAgentPathDefaultRoots,
+  assertNotWriteBlockedBasename,
   assertExistingAgentPathInsideRoots,
   assertNewAgentPathInsideRoots,
   resolveAgentDefaultRoot,
