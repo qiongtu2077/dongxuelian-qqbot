@@ -144,6 +144,7 @@ const {
   runExpressionHarvestForAllChannels,
   formatExpressionHarvestDiagnostic,
 } = require('./expression-abstractor') // 表达学习每日 harvest（旁路；只写池，不改主链路）
+const { buildAmbientWaterSendOptions } = require('./random-reply-mode') // 随机非锚定水群发送策略
 
 // @satorijs/core@3.7.0 缺少 stripped / parsed / resolve / send，这里随插件加载安装兼容补丁。
 function patchElementText(element) {
@@ -1287,7 +1288,8 @@ exports.apply = (ctx) => {
     const willFactor = calculateWillFactor(channelKey, currentPersonaName, channelSharedCache, personaWillContent)
     const userText = normalizeText(plain)
     const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId })
-    const sharedRecordText = memoryText || (analyzed.hasMessageRecordCue ? normalizeText(analyzed.plain || '') : '')
+    const sharedRecordText = normalizeText(stripMentions(plain || analyzed.memory || analyzed.plain || ''))
+      || (analyzed.hasMessageRecordCue ? normalizeText(analyzed.plain || '') : '')
 
     // "闭嘴" 静默十分钟主动回复
     if (inGuild && !directAt && !nameMentioned && /^(?:闭嘴|别吵|别说了|不要说话)/.test(plain)) {
@@ -1342,11 +1344,13 @@ exports.apply = (ctx) => {
           channelPendingRandom.delete(channelKey)
           if (!p) return
           if (getExplicitInteractionVersion(channelKey) !== p.explicitVersion) return
+          if (getChannelMessageVersion(channelKey) !== p.triggerMessageVersion) return
           if (shouldTriggerRandom(Math.min(getRandomTriggerRate(channelKey) * willFactor, 1.0))) {
             channelMissCount.set(channelKey, 0)
             lastRandomReplyTs.set(channelKey, Date.now())
             enqueueForChannel(channelKey, async () => {
               if (getExplicitInteractionVersion(channelKey) !== p.explicitVersion) return
+              if (getChannelMessageVersion(channelKey) !== p.triggerMessageVersion) return
               const liveSession = withCurrentBot(session, resolveBot())
               const chatMeta = {}
               let reply = await handleChatResult(await chat(liveSession, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, meta: chatMeta }), { ctx, session: liveSession, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true, resolveBot })
@@ -1356,7 +1360,7 @@ exports.apply = (ctx) => {
                   const rareVoiceSent = await safeSendRareVoice(ctx, liveSession)
                   if (rareVoiceSent) return
                 }
-                const randomSendOptions = buildRandomSendOptions({
+                let randomSendOptions = buildRandomSendOptions({
                   randomTriggered: true,
                   delayed: true,
                   highRisk: p.highRisk,
@@ -1364,6 +1368,9 @@ exports.apply = (ctx) => {
                   triggerMessageVersion: p.triggerMessageVersion,
                   currentMessageVersion: getChannelMessageVersion(channelKey),
                 })
+                if (chatMeta.randomReplyMode === 'ambient_water') {
+                  randomSendOptions = buildAmbientWaterSendOptions(randomSendOptions)
+                }
                 await safeSendReply(ctx, liveSession, reply, true, resolveBot, randomSendOptions)
               }
             }, 4)
@@ -1489,7 +1496,7 @@ exports.apply = (ctx) => {
       logDebug(ctx, 'middleware', `collapsed repeated @bot mentions: ${botMentionCount}`)
     }
 
-    const randomSendOptions = buildRandomSendOptions({
+    let randomSendOptions = buildRandomSendOptions({
       randomTriggered,
       delayed: false,
       highRisk: randomPersonaHighRisk,
@@ -1554,6 +1561,9 @@ exports.apply = (ctx) => {
         const chatResult = await chat(liveSession, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, meta: chatMeta })
         const reply = await handleChatResult(chatResult, { ctx, session: liveSession, channelKey, currentUserId, userName, userText, randomTriggered, resolveBot })
         if (!reply) return
+        if (randomTriggered && chatMeta.randomReplyMode === 'ambient_water') {
+          randomSendOptions = buildAmbientWaterSendOptions(randomSendOptions)
+        }
         logAffectRouterDiagnostic(ctx, {
           personaName: currentPersonaName || '',
           userText,

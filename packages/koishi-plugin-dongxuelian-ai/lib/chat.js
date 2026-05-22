@@ -49,6 +49,8 @@ const {
 const { getRecentAgentContextNote, clearAgentContextForUser } = require('./agent-chat-bridge') // Agent 工具摘要注入 + 话题切换清理
 const { redactAgentMaterial } = require('./agent-retell-guard') // Agent 材料脱敏（防工具结果泄漏密钥/外部指令）
 const { getChatToolDefinitions, handleChatToolCalls, getChatToolSystemHint } = require('./chat-tools') // 聊天内嵌工具（表情包/贴纸等）
+const { buildActiveGroupSceneNote } = require('./group-scene-index') // 群聊当前现场窗口
+const { buildRandomModePrompt, parseRandomReplyDecision } = require('./random-reply-mode') // 随机回复内部 mode 协议
 const { externalToolsDenied, buildExternalToolPolicyHint } = require('./external-tool-policy')
 const {
   testChatPromptRegex,
@@ -737,6 +739,14 @@ async function chat(session, userText, ctx, options = {}) {
     messages.push({ role: 'system', content: options.sharedContextNote })
   }
 
+  const activeSceneNote = options.activeSceneNote || buildActiveGroupSceneNote(channelKey, channelSharedCache.get(channelKey) || [], currentUserId, {
+    currentText: cleanInput,
+    randomTriggered: options.randomTriggered,
+  })
+  if (activeSceneNote) {
+    messages.push({ role: 'system', content: activeSceneNote })
+  }
+
   const agentContextNote = getRecentAgentContextNote({
     channelKey,
     userId: currentUserId,
@@ -752,6 +762,9 @@ async function chat(session, userText, ctx, options = {}) {
 
   const randomContextMessage = createChatPromptRandomContextMessage(options.randomTriggered)
   if (randomContextMessage) messages.push(randomContextMessage)
+  if (options.randomTriggered) {
+    messages.push({ role: 'system', content: buildRandomModePrompt() })
+  }
   const forwardSummaryMessage = createChatPromptForwardSummaryMessage(options.forwardSummaryText)
   if (forwardSummaryMessage) messages.push(forwardSummaryMessage)
 
@@ -1007,7 +1020,7 @@ async function chat(session, userText, ctx, options = {}) {
 
   // 处理 tool_calls 响应
   if (reply && typeof reply === 'object' && reply.type === 'tool_calls') {
-    const toolContext = { userId: currentUserId, channelKey }
+    const toolContext = { userId: currentUserId, channelKey, randomTriggered: !!options.randomTriggered }
     const { results, heavyTools } = await handleChatToolCalls(reply.tool_calls, toolContext)
 
     if (heavyTools.length > 0) {
@@ -1132,6 +1145,18 @@ async function chat(session, userText, ctx, options = {}) {
       : retaliationLevel === 1 ? MAX_OUTPUT_CHARS_YINYANG
       : MAX_OUTPUT_CHARS_FRIENDLY
   )
+
+  if (options.randomTriggered) {
+    const randomReplyDecision = parseRandomReplyDecision(finalReply)
+    if (options.meta && typeof options.meta === 'object') options.meta.randomReplyMode = randomReplyDecision.mode
+    if (!randomReplyDecision.shouldSend) return ''
+    finalReply = trimReply(
+      stripMarkdownForQQ(sanitizeReply(randomReplyDecision.reply, userName)),
+      retaliationLevel === 2 ? MAX_OUTPUT_CHARS_ABUSIVE
+        : retaliationLevel === 1 ? MAX_OUTPUT_CHARS_YINYANG
+        : MAX_OUTPUT_CHARS_FRIENDLY
+    )
+  }
 
   if (isUnsafeThinkingReply(finalReply)) {
     const personaFallback = await generatePersonaFallbackReply({

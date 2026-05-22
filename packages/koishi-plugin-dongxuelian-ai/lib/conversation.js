@@ -21,6 +21,7 @@ const { readTextFile, readJsonFile, writeJsonFile, sanitizeUserName, todayCst, t
 const { normalizeText } = require('./message-reader')
 const { requestChatCompletions } = require('./api')
 const { loadConfig } = require('./runtime-config')
+const { appendGroupSceneEntry } = require('./group-scene-index')
 
 let conversationCache = new Map()
 let replyFingerprintCache = new Map()
@@ -422,6 +423,7 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
   const entry = { userId, role, speakerName: sanitizeUserName(speakerName || (role === 'assistant' ? '东雪莲' : '群友')), content: value, messageId: String(metadata.messageId || ''), replyToId: String(metadata.replyToId || ''), mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [], hasMessageRecordCue: !!metadata.hasMessageRecordCue, ts: Date.now() }
   const current = channelSharedCache.get(channelKey) || []
   channelSharedCache.set(channelKey, current.concat(entry).slice(-MAX_CHANNEL_SHARED_MESSAGES))
+  appendGroupSceneEntry(channelKey, entry).catch(() => {})
   trimChannelRuntimeCaches()
   if (role === 'user' && metadata.fromSummary !== true) {
     try {

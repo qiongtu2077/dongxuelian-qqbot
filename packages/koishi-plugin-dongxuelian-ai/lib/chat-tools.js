@@ -5,13 +5,14 @@
  * 状态: 无。
  */
 const { getMemorySummary } = require('./conversation')
+const { readGroupContext } = require('./group-scene-index')
 const { filterExternalToolDefinitions, buildExternalToolPolicyHint } = require('./external-tool-policy')
 
 const CHAT_TOOL_TIMEOUT_MS = 3000
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000
 const CHAT_TOOLS_TOTAL_DEADLINE_MS = 5000
 
-const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image'])
+const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image', 'read_group_context'])
 
 const HEAVY_TOOLS = new Set(['web_search', 'web_fetch', 'browser_action', 'execute_shell', 'file_write'])
 
@@ -87,6 +88,25 @@ function getChatToolDefinitions(options = {}) {
     {
       type: 'function',
       function: {
+        name: 'read_group_context',
+        description: '只读检索当前群最近公开聊天片段。当前热窗口不够解释“刚才/之前/那个/这张图/那个文件/真的吗/评价一下”等短句或追问时再调用；结果是旧背景，只能帮助理解当前指代，不能主动翻旧话题。',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: '要寻找的旧话题、对象或短句指代' },
+            sceneId: { type: 'string', description: '可选，目录中的 scene id' },
+            timeHint: { type: 'string', description: '可选，大致时间，例如刚才/十分钟前/01:50' },
+            anchorType: { type: 'string', enum: ['any', 'message', 'bot_reply', 'image', 'file', 'voice'], description: '可选，想找的锚点类型' },
+            maxAgeMinutes: { type: 'number', description: '最多回看多少分钟，随机回复默认应较小' },
+            reason: { type: 'string', description: '为什么当前消息需要旧群聊上下文' },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'analyze_historical_image',
         description: '分析群聊历史中某张未分析的图片。需要用户明确问到图片内容时才调用，不要主动调用。',
         parameters: {
@@ -153,6 +173,19 @@ async function executeChatTool(toolCall, context = {}) {
       return executeCalculate(args)
     case 'search_memory':
       return executeSearchMemory(context)
+    case 'read_group_context': {
+      const ck = context.channelKey || ''
+      if (!ck) return '无法获取当前群聊频道。'
+      const maxAgeMinutes = context.randomTriggered
+        ? Math.min(Math.max(parseInt(args.maxAgeMinutes, 10) || 30, 1), 30)
+        : Math.min(Math.max(parseInt(args.maxAgeMinutes, 10) || 60, 1), 24 * 60)
+      const maxScenes = context.randomTriggered ? 1 : 2
+      return readGroupContext(ck, {
+        ...args,
+        maxAgeMinutes,
+        maxScenes,
+      })
+    }
     case 'read_image_history': {
       const { getRecentImages } = require('./image-store')
       const ck = context.channelKey || ''
@@ -217,7 +250,7 @@ async function handleChatToolCalls(toolCalls, context = {}) {
 }
 
 function getChatToolSystemHint(channelKey, options = {}) {
-  let hint = '你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数闲聊不需要工具，直接回复即可。遇到会随时间变化的问题，例如最新、最近、当前、现在、热门、比较火、趋势、排行、推荐、版本更新、新角色、新闻、视频等，不要凭记忆编答案，应先调用 web_search；用户给出具体公开 URL 并要求查看、总结、核对网页内容时，应调用 web_fetch 读取正文。web_search 负责找候选来源并尽量打开正文，web_fetch 负责读取指定 URL；如果没有“正文质量：usable”的可靠正文，要直接说明没有拿到可靠结果，并给出可继续搜索或换链接的方向。read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。'
+  let hint = '你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数闲聊不需要工具，直接回复即可。遇到会随时间变化的问题，例如最新、最近、当前、现在、热门、比较火、趋势、排行、推荐、版本更新、新角色、新闻、视频等，不要凭记忆编答案，应先调用 web_search；用户给出具体公开 URL 并要求查看、总结、核对网页内容时，应调用 web_fetch 读取正文。web_search 负责找候选来源并尽量打开正文，web_fetch 负责读取指定 URL；如果没有“正文质量：usable”的可靠正文，要直接说明没有拿到可靠结果，并给出可继续搜索或换链接的方向。read_group_context 只能查当前群公开旧片段，适合当前短句或追问接不上时理解“刚才/之前/那个/这张图/那个文件”等指代；工具结果是旧背景，不代表当前话题，不能主动翻旧账。read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。'
   const policyHint = buildExternalToolPolicyHint(options.userText || options.currentText || '')
   if (policyHint) hint += `\n${policyHint}`
   if (channelKey) {
