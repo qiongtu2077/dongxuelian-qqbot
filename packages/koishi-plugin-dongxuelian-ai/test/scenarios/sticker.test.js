@@ -137,8 +137,18 @@ async function run(t) {
       '考完咱们去吃好吃的补一补，我请客！',
     ].join('')
     await sendReply(harness.ctx, session, reply, false, { disableSticker: true })
-    t.check('scenario QQ reply grouping avoids per-sentence spam', session.sent.length <= 2, JSON.stringify(session.sent))
+    t.check('scenario QQ reply grouping uses two-sentence fallback', session.sent.length === 3, JSON.stringify(session.sent))
+    t.check('scenario QQ reply grouping avoids per-sentence spam', session.sent.length < 6, JSON.stringify(session.sent))
     t.check('scenario QQ reply grouping preserves full semantic content', session.sent.join('\n').includes('抓大放小') && session.sent.join('\n').includes('我请客'), JSON.stringify(session.sent))
+  })
+
+  await withScenario({}, async ({ harness, makeSession, ready }) => {
+    await ready()
+    const { sendReply } = require('../../lib/reply')
+    const session = makeSession({ content: 'natural paragraph grouping' })
+    const reply = '第一段按模型自己分。\n第二段也应该独立。\n第三段不要被揉成一坨。'
+    await sendReply(harness.ctx, session, reply, false, { disableSticker: true })
+    t.check('scenario QQ reply grouping preserves model line breaks', session.sent.length === 3 && session.sent[0].includes('第一段') && session.sent[1].includes('第二段') && session.sent[2].includes('第三段'), JSON.stringify(session.sent))
   })
 
   await withScenario({}, async ({ harness, makeSession, run, ready }) => {

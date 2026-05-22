@@ -109,10 +109,12 @@ async function compactWithLLM(messages = [], config = {}, requestFn) {
   if (typeof requestFn !== 'function') return compactMessages(messages, 24)
   try {
     const prompt = buildStructuredSummaryPrompt(messages)
-    const summary = await requestFn([
+    const rawSummary = await requestFn([
       { role: 'system', content: prompt },
       { role: 'user', content: '压缩以上 Agent 上下文。' },
     ], config, { max_tokens: 1200, _fallbackSet: 'lightweight' })
+    if (rawSummary && rawSummary.type === 'tool_calls') throw new Error('summary returned tool calls')
+    const summary = typeof rawSummary === 'string' ? rawSummary : rawSummary && typeof rawSummary.content === 'string' ? rawSummary.content : ''
     if (!summary || typeof summary !== 'string') throw new Error('empty summary')
     if (!/##\s*目标/.test(summary) || !/##\s*下一步/.test(summary)) throw new Error('bad summary shape')
     return mergeSummaryIntoMessages(summary, recentMessages)

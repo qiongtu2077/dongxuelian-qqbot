@@ -523,6 +523,7 @@ async function main() {
   section('2. module loading and exports')
   const modPaths = {
     constants: path.join(LIB, 'constants'),
+    frontmatter: path.join(LIB, 'frontmatter'),
     utils: path.join(LIB, 'utils'),
     persona: path.join(LIB, 'persona'),
     personaSchema: path.join(LIB, 'persona-schema'),
@@ -896,7 +897,7 @@ async function main() {
       'send', 'sendToAdmin', 'taskComplete', 'cronResult', 'getQuota', 'listPushLog',
     ],
     agentCron: [
-      'loadCrons', 'saveCrons', 'registerCron', 'unregisterCron', 'runCronNow', 'listCronHistory', 'startCronScheduler', 'stopCronScheduler', 'getNextRunAt', 'validateCronSchedule',
+      'loadCrons', 'saveCrons', 'registerCron', 'unregisterCron', 'runCronNow', 'listCronHistory', 'startCronScheduler', 'stopCronScheduler', 'getNextRunAt', 'validateCronSchedule', 'parseCronField', 'cronMatches', 'appendHistory',
     ],
     agentPlanStore: [
       'buildPlanId', 'safePlanId', 'normalizePlan', 'savePlan', 'loadPlan', 'listPlans', 'listActivePlans', 'getPlanStorageInfo',
@@ -913,7 +914,7 @@ async function main() {
       'resumePlan', 'resolvePlan', 'getActiveTask',
     ],
     agentPathGuard: [
-      'isAgentPathInside', 'getAgentPathAllowedRoots', 'assertExistingAgentPathInsideRoots', 'assertNewAgentPathInsideRoots', 'resolveAgentDefaultRoot',
+      'isAgentPathInside', 'getAgentPathAllowedRoots', 'assertExistingAgentPathInsideRoots', 'assertNewAgentPathInsideRoots', 'assertNotWriteBlockedBasename', 'resolveAgentDefaultRoot',
     ],
     agentSkills: [
       'listAgentSkills', 'findAgentSkill', 'findRelevantAgentSkills', 'readAgentSkill', 'parseFrontmatter', 'buildAgentSkillSummary', 'stripFrontmatter',
@@ -1526,6 +1527,7 @@ async function main() {
   check('agent tool result truncates long output', modules.agentContext.truncateToolResult('x'.repeat(8100)).includes('结果截断'))
   check('agent messages sanitizes history', modules.agentMessages.sanitizeAgentHistory([{ role: 'system', content: 'bad' }, { role: 'user', content: 'ok' }]).length === 1)
   check('agent path guard detects child path', modules.agentPathGuard.isAgentPathInside(path.join(ROOT, 'packages'), ROOT))
+  checkThrows('agent path guard blocks protected security config basename', () => modules.agentPathGuard.assertNotWriteBlockedBasename(path.join(c.DATA_DIR, 'ai-admin-ids.json'), '文件'), /禁止写入安全配置文件/)
   const compactedAgentMessages = modules.agentContext.compactMessages([
     { role: 'system', content: 'sys' },
     { role: 'user', content: 'older-user-goal' },
@@ -1631,7 +1633,24 @@ async function main() {
   check('agent context externalizes long tool results', externalized.includes('完整结果已保存') && fs.existsSync(externalizedPath))
   if (externalizedPath) { try { fs.unlinkSync(externalizedPath) } catch {} }
   check('agent context externalizeToolResult is async', modules.agentContext.externalizeToolResult('short') instanceof Promise)
+  const compactObjectMessages = Array.from({ length: 30 }, (_, index) => ({ role: index === 0 ? 'system' : 'user', content: `message ${index}` }))
+  const compactObjectResult = await modules.agentContext.compactWithLLM(compactObjectMessages, {}, async () => ({ type: 'text', content: '## 目标\n保留目标\n\n## 进度\n已压缩\n\n## 关键事实\n事实\n\n## 决策\n决策\n\n## 下一步\n继续' }))
+  check('agent context compactWithLLM accepts object text response', compactObjectResult.some(item => String(item.content || '').includes('以下是较早 Agent 上下文的结构化摘要')), JSON.stringify(compactObjectResult))
+  const compactToolCallResult = await modules.agentContext.compactWithLLM(compactObjectMessages, {}, async () => ({ type: 'tool_calls', tool_calls: [] }))
+  check('agent context compactWithLLM rejects tool-call response', compactToolCallResult.some(item => String(item.content || '').includes('前文已压缩')), JSON.stringify(compactToolCallResult))
+  check('agent cron parses comma lists', JSON.stringify(modules.agentCron.parseCronField('0,15,30,45', 0, 59).values) === JSON.stringify([0, 15, 30, 45]))
+  checkThrows('agent cron rejects unsupported range syntax', () => modules.agentCron.validateCronSchedule('1-5 * * * *'), /范围|支持/)
+  check('agent cron matches comma minute list', modules.agentCron.cronMatches(new Date('2099-01-01T00:15:00Z'), '0,15,30,45 * * * *'))
+  check('agent cron does not silently parse only first comma value', !modules.agentCron.cronMatches(new Date('2099-01-01T00:16:00Z'), '0,15,30,45 * * * *'))
   check('agent skills parses frontmatter name', modules.agentSkills.parseFrontmatter('---\nname: Demo\ndescription: Test\n---\nbody').name === 'Demo')
+  const skillTmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cascade-skill-meta-'))
+  try {
+    fs.writeFileSync(path.join(skillTmp, 'SKILL.demo.md'), '---\r\nname: crlf-skill\r\ndescription: CRLF skill\r\nversion: 2.0.0\r\n---\r\nbody', 'utf8')
+    const skillMeta = modules.agentSkillPoolService.parseSkillMeta(skillTmp)
+    check('agent skill pool parses CRLF frontmatter', skillMeta && skillMeta.name === 'crlf-skill' && skillMeta.description === 'CRLF skill' && skillMeta.version === '2.0.0', JSON.stringify(skillMeta))
+  } finally {
+    fs.rmSync(skillTmp, { recursive: true, force: true })
+  }
   check('agent skill summary ignores empty selection', modules.agentSkills.buildAgentSkillSummary([]) === '')
   check('agent skill index excludes personas', modules.agentSkills.listAgentSkills().every(skill => skill.kind !== 'persona'))
   check('agent skill index includes directory skills', modules.agentSkills.listAgentSkills().some(skill => skill.name === 'pptx' && skill.directorySkill))
@@ -2272,8 +2291,12 @@ async function main() {
   const midBomContent = '---\nvoice_style: clean\n---\n\uFEFF---\nname: 爱弥斯\ndescription: 真实人格\nlore: wuwa-lore\n---\nbody'
   const midBomMeta = p.parsePersonaFrontmatter(midBomContent)
   check('frontmatter tolerates mid-file BOM and merges multi-segment frontmatter', midBomMeta.name === '爱弥斯' && midBomMeta.voice_style === 'clean' && midBomMeta.lore === 'wuwa-lore', JSON.stringify(midBomMeta))
+  const crlfMultiMeta = p.parsePersonaFrontmatter('---\r\nvoice_style: clean\r\n---\r\n---\r\nname: CRLF人格\r\nlore: crlf-lore\r\n---\r\nbody')
+  check('frontmatter merges multi-segment CRLF frontmatter', crlfMultiMeta.name === 'CRLF人格' && crlfMultiMeta.voice_style === 'clean' && crlfMultiMeta.lore === 'crlf-lore', JSON.stringify(crlfMultiMeta))
   const allBomMeta = p.parsePersonaFrontmatter('\uFEFF---\nname: BomOpen\n---\n\uFEFFbody')
   check('frontmatter strips opening BOM and trailing BOM globally', allBomMeta.name === 'BomOpen', JSON.stringify(allBomMeta))
+  const schemaCrlfMulti = modules.personaSchema.parsePersonaSchemaFrontmatter('---\r\nvoice_style: clean\r\n---\r\n---\r\nname: CRLF schema\r\nlore: crlf-lore\r\n---\r\nbody')
+  check('persona schema uses body after last CRLF frontmatter block', schemaCrlfMulti.meta.name === 'CRLF schema' && schemaCrlfMulti.body.trim() === 'body' && !schemaCrlfMulti.body.includes('---'), JSON.stringify(schemaCrlfMulti))
   const parsedPersonaDoc = modules.personaSchema.parsePersonaDocument('---\nname: Test\nwill: 3.5\nunknown_key: value\nvoice_asset_id: ghost\n---\nbody', { type: 'persona', file: 'SKILL.test.md' })
   check('persona schema parses body and legacy diagnostics', parsedPersonaDoc.body.trim() === 'body' && parsedPersonaDoc.diagnostics.some(item => item.code === 'legacy_schema_missing'))
   check('persona schema warns unknown fields and invalid will range', parsedPersonaDoc.diagnostics.some(item => item.code === 'unknown_frontmatter_field' && item.field === 'unknown_key') && parsedPersonaDoc.diagnostics.some(item => item.code === 'will_out_of_range'), JSON.stringify(parsedPersonaDoc.diagnostics))
@@ -2777,6 +2800,8 @@ async function main() {
   check('dashboard lore frontmatter clears editable fields and preserves unknown fields', parsedDashboardLore.meta.name === 'new-lore' && parsedDashboardLore.meta.description === '新描述' && !('keywords' in parsedDashboardLore.meta) && !('summary' in parsedDashboardLore.meta) && parsedDashboardLore.meta.scope === undefined && parsedDashboardLore.meta.max_chars === '12000' && parsedDashboardLore.meta.priority === '-100' && parsedDashboardLore.meta.retained_field === '保留字段' && !('content' in parsedDashboardLore.meta), JSON.stringify(parsedDashboardLore.meta))
   const parsedDashboardLoreCrlf = dashboardConfigRoute._test.parseFrontmatter('---\r\nname: crlf-lore\r\ndescription: CRLF\r\nkeywords: 星炬学院\r\n---\r\n正文')
   check('dashboard lore parser accepts CRLF frontmatter', parsedDashboardLoreCrlf.meta.name === 'crlf-lore' && parsedDashboardLoreCrlf.meta.keywords === '星炬学院' && parsedDashboardLoreCrlf.body === '正文', JSON.stringify(parsedDashboardLoreCrlf))
+  const parsedDashboardLoreCrlfMulti = dashboardConfigRoute._test.parseFrontmatter('---\r\nvoice_style: clean\r\n---\r\n---\r\nname: crlf-multi\r\nkeywords: 星炬学院\r\n---\r\n正文')
+  check('dashboard parser consumes multi-segment CRLF frontmatter', parsedDashboardLoreCrlfMulti.meta.name === 'crlf-multi' && parsedDashboardLoreCrlfMulti.meta.voice_style === 'clean' && parsedDashboardLoreCrlfMulti.body === '正文', JSON.stringify(parsedDashboardLoreCrlfMulti))
   const parsedDashboardModeCrlf = dashboardConfigRoute._test.parseModeFrontmatter('---\r\nname: crlf-mode\r\ndescription: Windows newline mode\r\n---\r\n正文')
   check('dashboard mode parser accepts CRLF frontmatter', parsedDashboardModeCrlf.meta.name === 'crlf-mode' && parsedDashboardModeCrlf.meta.description === 'Windows newline mode', JSON.stringify(parsedDashboardModeCrlf))
   const dashboardLorePayload = dashboardConfigRoute._test.normalizeLorePayload({
@@ -3032,16 +3057,26 @@ async function main() {
   check('dashboard agent panel exposes skill selection', dashboardAgentPanelSrc.includes('config.enabledSkills') && dashboardAgentPanelSrc.includes(':value="skill.name"'))
   check('dashboard agent panel exposes read roots', dashboardAgentPanelSrc.includes('文件读取根目录') && dashboardAgentPanelSrc.includes('config.readFileRoots'))
   check('dashboard agent panel exposes persona switch', dashboardAgentPanelSrc.includes('Console 人格') && dashboardAgentPanelSrc.includes('fetchAgentPersonas') && dashboardAgentPanelSrc.includes('saveAgentPersona'))
-  check('dashboard agent panel stores local chat history', dashboardAgentPanelSrc.includes('dashboard_agent_history') && dashboardAgentPanelSrc.includes('history.value'))
+  check('dashboard agent panel keeps chat history in memory by default', dashboardAgentPanelSrc.includes('rememberHistory') && dashboardAgentPanelSrc.includes('dashboard_agent_remember_history') && dashboardAgentPanelSrc.includes('else localStorage.removeItem(\'dashboard_agent_history\')'))
   check('dashboard agent panel exposes pending confirmation', dashboardAgentPanelSrc.includes('confirmAgentTool') && dashboardAgentPanelSrc.includes('pendingTools') && dashboardAgentPanelSrc.includes('argsSummary'))
   check('dashboard agent panel prompts admin for chat and confirm', dashboardAgentPanelSrc.includes('isAdminRequired') && dashboardAgentPanelSrc.includes('使用 Dashboard Agent 需要管理员密码') && dashboardAgentPanelSrc.includes('确认 Agent 工具需要管理员密码'))
   check('dashboard agent panel normalizes click event pending id', dashboardAgentPanelSrc.includes('normalizePendingId') && dashboardAgentPanelSrc.includes("typeof value === 'string'"))
   check('dashboard agent panel displays final agent reply shape', dashboardAgentPanelSrc.includes('getAgentReply') && dashboardAgentPanelSrc.includes('data?.reply || data?.result || data?.message'))
   check('dashboard agent panel exposes session and stats lists', dashboardAgentPanelSrc.includes('fetchAgentSessions') && dashboardAgentPanelSrc.includes('最近工具调用'))
+  const dashboardSensitiveAdminApiSnippets = [
+    "fetchDeployConfig() { return get('/deploy/config', true) }",
+    "fetchFallbackChains() { return get('/fallback', true) }",
+    "return get('/bot/activity' + suffix, true)",
+    "fetchKeysUsage() { return get('/keys/usage', true) }",
+    "uploadGalleryImage(data) { return post('/gallery', data, true, 60000) }",
+    "deleteGalleryImage(idOrIds) { return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, true) }",
+    "updateGalleryImageStyle(id, foilStyle) { return put('/gallery/style', { id, foilStyle }, true) }",
+  ]
+  check('dashboard sensitive APIs use admin token', dashboardSensitiveAdminApiSnippets.every(snippet => dashboardApiSrc.includes(snippet)), dashboardApiSrc.slice(1400, 3600))
   const agentConsoleSrc = fs.existsSync(path.join(PKG_ROOT, 'agent-console', 'src', 'main.tsx')) ? read(path.join(PKG_ROOT, 'agent-console', 'src', 'main.tsx')) : ''
   check('agent console exposes runtime config page', agentConsoleSrc.includes("id: 'runtime'") && agentConsoleSrc.includes('function RuntimePage') && agentConsoleSrc.includes('queue.maxGlobal'))
   check('agent console exposes persona page separate from skills', agentConsoleSrc.includes("id: 'personas'") && agentConsoleSrc.includes('function PersonasPage') && agentConsoleSrc.includes('api.savePersona'))
-  check('agent console isolates history by persona', agentConsoleSrc.includes('getPersonaHistoryKey') && agentConsoleSrc.includes('Console 人格：'))
+  check('agent console isolates history by persona only after opt-in', agentConsoleSrc.includes('getPersonaHistoryKey') && agentConsoleSrc.includes('AGENT_CONSOLE_REMEMBER_HISTORY_KEY') && agentConsoleSrc.includes('rememberHistory'))
   check('agent console can enable skills from skill page', agentConsoleSrc.includes('function SkillsPage') && agentConsoleSrc.includes('next.enabledSkills') && agentConsoleSrc.includes('注入轻量索引'))
   check('dashboard exposes deterministic plan action APIs', dashboardStandalone.includes("/dashboard/api/agent/plans") && dashboardStandalone.includes("/resume") && dashboardStandalone.includes("/abandon") && dashboardStandalone.includes("plan', 'plan-runner"))
   check('dashboard plan create obeys plan mode switch', dashboardStandalone.includes("agent', 'config") && dashboardStandalone.includes('agentConfig.planMode?.enabled') && dashboardStandalone.includes('计划模式当前未开启'))
@@ -3198,6 +3233,8 @@ async function main() {
   check('dashboard limits request/download/static/log/preview sizes', dashboardStandaloneSrc.includes('EFFECTIVE_MAX_BODY_SIZE') && dashboardStandaloneSrc.includes('MAX_DOWNLOAD_BYTES') && dashboardStandaloneSrc.includes('MAX_STATIC_FILE_BYTES') && dashboardStandaloneSrc.includes('MAX_DEPLOY_TASK_LOG_BYTES') && dashboardStandaloneSrc.includes('MAX_AGENT_PREVIEW_FILE_BYTES'))
   check('dashboard sets content security policy', dashboardStandaloneSrc.includes('Content-Security-Policy') && dashboardStandaloneSrc.includes("object-src 'none'"))
   check('dashboard auth uses timing safe password checks', dashboardStandaloneSrc.includes('safeCompare(password, stored)') && dashboardStandaloneSrc.includes('safeCompare(inputToken, storedToken)') && !dashboardStandaloneSrc.includes('password === stored') && !dashboardStandaloneSrc.includes('resetToken.trim() !== stored.trim()'))
+  check('dashboard login failure map has timer cleanup and hard cap', dashboardStandaloneSrc.includes('LOGIN_FAIL_MAX_ENTRIES') && dashboardStandaloneSrc.includes('LOGIN_FAIL_CLEANUP_MS') && dashboardStandaloneSrc.includes('trimLoginFailMap'))
+  check('dashboard sensitive routes require admin', dashboardStandaloneSrc.includes('function handleGetKeysUsage') && dashboardStandaloneSrc.includes('function handleGetFallback') && dashboardStandaloneSrc.includes('function handleGetBotActivity') && dashboardStandaloneSrc.includes('function handleGetDeployConfig') && dashboardStandaloneSrc.includes('if (!requireAdmin(req, res)) return'))
   check('dashboard deploy task ids use crypto randomness', dashboardStandaloneSrc.includes("crypto.randomBytes(4).toString('hex')") && !dashboardStandaloneSrc.includes('Math.random().toString(36).slice(2, 6)'))
   check('dashboard napcat proxy avoids token query strings', dashboardStandaloneSrc.includes("opts.headers['webui-token'] = token") && !dashboardStandaloneSrc.includes('webui_token='))
   check('dashboard deploy downloads limit redirects and json size', dashboardStandaloneSrc.includes('MAX_DOWNLOAD_REDIRECTS') && dashboardStandaloneSrc.includes('MAX_JSON_RESPONSE_BYTES') && dashboardStandaloneSrc.includes('redirects: redirects + 1') && dashboardStandaloneSrc.includes('GitHub API 响应过大'))

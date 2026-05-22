@@ -430,8 +430,8 @@ function splitSentences(text) {
 
 const QQ_BUBBLE_SOFT_CHARS = 190
 const QQ_BUBBLE_HARD_CHARS = 420
-const QQ_BUBBLE_SOFT_MAX_PARTS = 3
 const QQ_BUBBLE_HARD_MAX_PARTS = 5
+const QQ_BUBBLE_FALLBACK_SENTENCES = 2
 
 function pushWrappedBubble(parts, text, softChars = QQ_BUBBLE_SOFT_CHARS) {
   const value = String(text || '').trim()
@@ -460,7 +460,48 @@ function pushWrappedBubble(parts, text, softChars = QQ_BUBBLE_SOFT_CHARS) {
   if (current) parts.push(current.trim())
 }
 
-function mergeQQBubbles(parts, targetMax = QQ_BUBBLE_SOFT_MAX_PARTS) {
+function pushSentenceGroupedBubbles(parts, text, groupSize = QQ_BUBBLE_FALLBACK_SENTENCES) {
+  const value = String(text || '').trim()
+  if (!value) return
+  const sentences = splitSentences(value).map(part => part.trim()).filter(Boolean)
+  if (sentences.length <= Math.max(1, groupSize) && value.length <= QQ_BUBBLE_HARD_CHARS) {
+    parts.push(value)
+    return
+  }
+
+  let current = ''
+  let sentenceCount = 0
+  const flush = () => {
+    if (!current.trim()) return
+    parts.push(current.trim())
+    current = ''
+    sentenceCount = 0
+  }
+
+  for (const sentence of sentences.length ? sentences : [value]) {
+    const piece = sentence.trim()
+    if (!piece) continue
+    if (!current) {
+      current = piece
+      sentenceCount = 1
+    } else if (sentenceCount < groupSize && current.length + piece.length <= QQ_BUBBLE_HARD_CHARS) {
+      current += piece
+      sentenceCount += 1
+    } else {
+      flush()
+      current = piece
+      sentenceCount = 1
+    }
+    while (current.length > QQ_BUBBLE_HARD_CHARS) {
+      parts.push(current.slice(0, QQ_BUBBLE_HARD_CHARS).trim())
+      current = current.slice(QQ_BUBBLE_HARD_CHARS).trim()
+      sentenceCount = current ? 1 : 0
+    }
+  }
+  flush()
+}
+
+function mergeQQBubbles(parts, targetMax = QQ_BUBBLE_HARD_MAX_PARTS) {
   const clean = parts.map(part => String(part || '').trim()).filter(Boolean)
   if (clean.length <= targetMax) return clean
   const merged = []
@@ -503,14 +544,21 @@ function splitReplyForQQBubbles(text, options = {}) {
   const raw = String(text || '').replace(/\r\n/g, '\n').trim()
   if (!raw) return []
   const softChars = Number(options.softChars) > 0 ? Number(options.softChars) : QQ_BUBBLE_SOFT_CHARS
-  const targetMax = Number(options.maxParts) > 0 ? Number(options.maxParts) : QQ_BUBBLE_SOFT_MAX_PARTS
+  const targetMax = Number(options.maxParts) > 0 ? Number(options.maxParts) : QQ_BUBBLE_HARD_MAX_PARTS
   const paragraphs = raw
-    .split(/\n{2,}/)
+    .split(/\n+/)
     .map(part => part.replace(/[ \t]*\n[ \t]*/g, '\n').trim())
     .filter(Boolean)
   const natural = paragraphs.length ? paragraphs : [raw]
   const parts = []
-  for (const paragraph of natural) pushWrappedBubble(parts, paragraph, softChars)
+  if (natural.length > 1) {
+    for (const paragraph of natural) {
+      if (paragraph.length > QQ_BUBBLE_HARD_CHARS) pushWrappedBubble(parts, paragraph, softChars)
+      else parts.push(paragraph)
+    }
+  } else {
+    pushSentenceGroupedBubbles(parts, natural[0], QQ_BUBBLE_FALLBACK_SENTENCES)
+  }
   return mergeQQBubbles(parts, targetMax)
 }
 

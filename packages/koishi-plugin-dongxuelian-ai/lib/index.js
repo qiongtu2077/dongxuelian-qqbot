@@ -980,6 +980,7 @@ exports.apply = (ctx) => {
   }, 1800000)
   ctx.on('dispose', () => {
     clearInterval(sensitiveTimer)
+    try { require('./agent/cron').stopCronScheduler() } catch {}
     for (const [, entry] of channelPendingRandom) { if (entry && entry.timer) clearTimeout(entry.timer) }
     channelPendingRandom.clear()
     channelMessageVersions.clear()

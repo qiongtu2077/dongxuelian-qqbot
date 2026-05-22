@@ -43,22 +43,28 @@ async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
   await withScenario({}, async ({ harness, makeSession, run, data }) => {
     const mocked = mockFetch(fetchQueue)
     await withFetch(mocked, async () => {
+      const originalRandom = Math.random
+      if (typeof options.random === 'function') Math.random = options.random
       const session = makeSession(options.session || {})
-      if (options.autoRoute) data.writeJson('ai-tool-config.json', { channels: { qq: { enabled: true, tools: { get_current_time: true, calculate: true } }, dashboard: { enabled: true, tools: {} } }, autoRoute: { qq: { enabled: true }, dashboard: { enabled: false } }, dangerousPolicy: 'confirm', enabledSkills: [], readFileRoots: [] })
-      if (typeof options.setup === 'function') await options.setup(session, { harness, mocked, data })
-      session.content = atBot(session, options.input || '\u4f60\u597d')
-      const beforeCalls = mocked.calls.length
-      let result = await run(session, { flushTicks: 120 })
-      await session.waitForSend(options.waitFor || (() => true))
-      await new Promise(resolve => setImmediate(resolve))
-      result = {
-        ...result,
-        sent: session.sent,
-        internalCalls: session.internalCalls,
-        timeline: session.timeline,
-        logs: harness.logs,
+      try {
+        if (options.autoRoute) data.writeJson('ai-tool-config.json', { channels: { qq: { enabled: true, tools: { get_current_time: true, calculate: true } }, dashboard: { enabled: true, tools: {} } }, autoRoute: { qq: { enabled: true }, dashboard: { enabled: false } }, dangerousPolicy: 'confirm', enabledSkills: [], readFileRoots: [] })
+        if (typeof options.setup === 'function') await options.setup(session, { harness, mocked, data })
+        session.content = atBot(session, options.input || '\u4f60\u597d')
+        const beforeCalls = mocked.calls.length
+        let result = await run(session, { flushTicks: 120 })
+        await session.waitForSend(options.waitFor || (() => true))
+        await new Promise(resolve => setImmediate(resolve))
+        result = {
+          ...result,
+          sent: session.sent,
+          internalCalls: session.internalCalls,
+          timeline: session.timeline,
+          logs: harness.logs,
+        }
+        await assertions(result, mocked, session, mocked.calls.slice(beforeCalls))
+      } finally {
+        Math.random = originalRandom
       }
-      await assertions(result, mocked, session, mocked.calls.slice(beforeCalls))
     })
   }).catch(error => {
     throw new Error(`${label}: ${error && error.stack || error}`)
@@ -474,6 +480,7 @@ async function run(t) {
       const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
       return chatModule.loadSkillsContentCache()
     },
+    random: () => 0.99,
     waitFor: message => String(message).includes('骂谁罕见'),
   })
 
@@ -500,6 +507,7 @@ async function run(t) {
       const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
       return chatModule.loadSkillsContentCache()
     },
+    random: () => 0.99,
     waitFor: message => String(message).includes('骂谁罕见'),
   })
 
