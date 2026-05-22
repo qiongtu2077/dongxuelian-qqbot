@@ -30,12 +30,11 @@ const DUPLICATE_WINDOW_MS = 60 * 1000
 const DUPLICATE_HISTORY_LIMIT = 3
 const MAX_YTDLP_STDIO_BYTES = 1024 * 1024
 const MAX_VIDEO_BLACKLIST_BYTES = 128 * 1024
-const LEGACY_GROUP_BLACKLIST = new Set(['942033342'])
 
 const recentParseHistory = new Map()
 let videoBlacklistCache = {
   fingerprint: '',
-  groups: new Set(LEGACY_GROUP_BLACKLIST),
+  groups: new Set(),
   users: new Set(),
 }
 
@@ -199,7 +198,7 @@ function loadVideoBlacklist(force = false) {
   const fingerprint = getFileFingerprint(VIDEO_BLACKLIST_FILE)
   if (!force && videoBlacklistCache.fingerprint === fingerprint) return videoBlacklistCache
 
-  let groups = [...LEGACY_GROUP_BLACKLIST]
+  let groups = []
   let users = []
   if (fingerprint !== 'missing') {
     try {
@@ -209,7 +208,7 @@ function loadVideoBlacklist(force = false) {
       groups = Array.isArray(raw) ? raw : Array.isArray(raw.groups) ? raw.groups : []
       users = raw && typeof raw === 'object' && Array.isArray(raw.users) ? raw.users : []
     } catch {
-      groups = [...LEGACY_GROUP_BLACKLIST]
+      groups = []
       users = []
     }
   }

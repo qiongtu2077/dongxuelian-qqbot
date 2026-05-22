@@ -27,6 +27,7 @@ let replyFingerprintCache = new Map()
 const conversationLastActiveAt = new Map()
 const channelSharedCache = new Map()
 const lastForwardSummaryCache = new Map()
+const lastForwardSummaryCacheTs = new Map()
 const pendingSensitiveAlert = new Map()
 const summaryLocks = new Map()
 const channelTodayCache = new Map()
@@ -113,9 +114,50 @@ function pruneMapByActivity(map, getLastTs, now = Date.now()) {
   }
 }
 
+function pruneMapWithTtl(map, getLastTs, ttlMs, now = Date.now()) {
+  for (const [key, value] of map.entries()) {
+    const ts = Number(getLastTs(value)) || 0
+    if (!ts || now - ts > ttlMs) map.delete(key)
+  }
+  if (map.size <= MAX_CHANNEL_RUNTIME_CACHE_ENTRIES) return
+  const ordered = [...map.entries()]
+    .map(([key, value]) => [key, Number(getLastTs(value)) || 0])
+    .sort((left, right) => left[1] - right[1])
+  while (map.size > MAX_CHANNEL_RUNTIME_CACHE_ENTRIES && ordered.length) {
+    map.delete(ordered.shift()[0])
+  }
+}
+
+function pruneForwardSummaryCache(ttlMs, now = Date.now()) {
+  for (const key of lastForwardSummaryCache.keys()) {
+    const ts = Number(lastForwardSummaryCacheTs.get(key) || 0)
+    if (!ts || now - ts > ttlMs) {
+      lastForwardSummaryCache.delete(key)
+      lastForwardSummaryCacheTs.delete(key)
+    }
+  }
+  if (lastForwardSummaryCache.size <= MAX_CHANNEL_RUNTIME_CACHE_ENTRIES) return
+  const ordered = [...lastForwardSummaryCache.keys()]
+    .map(key => [key, Number(lastForwardSummaryCacheTs.get(key) || 0)])
+    .sort((left, right) => left[1] - right[1])
+  while (lastForwardSummaryCache.size > MAX_CHANNEL_RUNTIME_CACHE_ENTRIES && ordered.length) {
+    const key = ordered.shift()[0]
+    lastForwardSummaryCache.delete(key)
+    lastForwardSummaryCacheTs.delete(key)
+  }
+}
+
+function setLastForwardSummaryCache(channelKey, text, ts = Date.now()) {
+  const key = String(channelKey || '')
+  lastForwardSummaryCache.set(key, String(text || ''))
+  lastForwardSummaryCacheTs.set(key, Number(ts) || Date.now())
+}
+
 function trimChannelRuntimeCaches(now = Date.now()) {
   pruneMapByActivity(channelSharedCache, items => getLastMessageTs(items), now)
   pruneMapByActivity(channelTodayCache, cache => Number(cache?.updatedAt || cache?.lastDiskWrite || getLastMessageTs(cache?.messages)), now)
+  pruneForwardSummaryCache(60 * 60 * 1000, now)
+  pruneMapWithTtl(pendingSensitiveAlert, entry => Number(entry?.ts || 0), 2 * 60 * 60 * 1000, now)
 }
 
 function trimConversationRuntimeCaches(now = Date.now()) {
@@ -698,7 +740,7 @@ async function analyzeChannelSensitive(channelKey) {
         if (result) break
       } catch {}
     }
-    if (/SENSITIVE/i.test(result)) { pendingSensitiveAlert.set(channelKey, true) }
+    if (/SENSITIVE/i.test(result)) { pendingSensitiveAlert.set(channelKey, { flagged: true, ts: Date.now() }) }
     try { require('fs').unlinkSync(file) } catch {}
   } catch {}
 }
@@ -728,6 +770,7 @@ function checkMemoryTimerExpired(channelKey) {
 module.exports = {
   conversationCache, replyFingerprintCache,
   conversationLastActiveAt, channelSharedCache, lastForwardSummaryCache,
+  setLastForwardSummaryCache,
   pendingSensitiveAlert, channelTodayCache,
   getConversationKey, getChannelKey, touchConversation,
   readConversationDisk, writeConversationDisk, replaceImagePlaceholderInConversation,

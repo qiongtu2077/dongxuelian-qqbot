@@ -124,6 +124,7 @@ async function run() {
     check('test video path uses env override', config.testVideoFile === path.join(tmpRoot, 'test-video.mp4'), JSON.stringify(config))
     check('video blacklist path uses shared data dir', config.videoBlacklistFile === path.join(tmpRoot, 'data', 'video-blacklist.json'), JSON.stringify(config))
     check('file URL helper emits standard file URL', plugin.toFileUrl(path.join(tmpRoot, 'downloads', 'demo.mp4')).startsWith('file:///'), plugin.toFileUrl(path.join(tmpRoot, 'downloads', 'demo.mp4')))
+    check('no source hardcoded video blacklist by default', !plugin.isBlacklistedGroup(makeSession({ guildId: '942033342', channelId: '942033342' })))
 
     const bvUrl = plugin.extractBiliUrl('看看这个 BV1xx411c7mD')
     check('extracts BV id as canonical URL', bvUrl === 'https://www.bilibili.com/video/BV1xx411c7mD', bvUrl)

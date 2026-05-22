@@ -13,6 +13,7 @@ const CRON_FILE = path.join(DATA_DIR, 'agent-crons.json')
 const MAX_CRON_FILE_BYTES = 512 * 1024
 const timers = new Map()
 let runtime = { bot: null, engine: null }
+let cronWriteChain = Promise.resolve()
 
 async function readCronFile() {
   try {
@@ -25,12 +26,22 @@ async function readCronFile() {
   }
 }
 
-async function saveCrons(next) {
+function normalizeCronFileData(next) {
   const crons = []
   for (const c of (Array.isArray(next.crons) ? next.crons : [])) {
     try { const n = normalizeCron(c); if (n) crons.push(n) } catch {}
   }
-  const data = { crons, history: Array.isArray(next.history) ? next.history.slice(-50) : [] }
+  return { crons, history: Array.isArray(next.history) ? next.history.slice(-50) : [] }
+}
+
+function enqueueCronFileUpdate(fn) {
+  const task = cronWriteChain.catch(() => {}).then(fn)
+  cronWriteChain = task.catch(() => {})
+  return task
+}
+
+async function writeCronFile(next) {
+  const data = normalizeCronFileData(next)
   await fsp.mkdir(path.dirname(CRON_FILE), { recursive: true })
   const tmp = CRON_FILE + '.tmp-' + process.pid + '-' + Date.now()
   await fsp.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
@@ -38,9 +49,15 @@ async function saveCrons(next) {
   return data
 }
 
+async function saveCrons(next) {
+  return enqueueCronFileUpdate(() => writeCronFile(next))
+}
+
 async function loadCrons() {
-  const data = await readCronFile()
-  return saveCrons(data)
+  return enqueueCronFileUpdate(async () => {
+    const data = await readCronFile()
+    return writeCronFile(data)
+  })
 }
 
 function normalizeCron(cron = {}) {
@@ -67,14 +84,23 @@ function normalizeCron(cron = {}) {
 function parseCronField(field, min, max) {
   const value = String(field || '').trim()
   if (value === '*') return null
+  if (value.includes('-')) throw new Error('cron 暂不支持范围语法')
   if (/^\*\/\d+$/.test(value)) {
     const step = parseInt(value.slice(2), 10)
     if (!Number.isFinite(step) || step < 10 && max === 59) throw new Error('cron 最小间隔为 10 分钟')
     return { step }
   }
-  const number = parseInt(value, 10)
-  if (!Number.isFinite(number) || number < min || number > max) throw new Error('cron 字段超出范围')
-  return { values: [number] }
+  const values = value.split(',').map(item => item.trim()).filter(Boolean)
+  if (!values.length) throw new Error('cron 字段不能为空')
+  const parsed = []
+  for (const item of values) {
+    if (!/^\d+$/.test(item)) throw new Error('cron 字段仅支持数字、逗号列表、* 和 */步长')
+    const number = parseInt(item, 10)
+    if (!Number.isFinite(number) || number < min || number > max) throw new Error('cron 字段超出范围')
+    const normalized = max === 7 && number === 7 ? 0 : number
+    if (!parsed.includes(normalized)) parsed.push(normalized)
+  }
+  return { values: parsed }
 }
 
 function validateCronSchedule(schedule) {
@@ -93,10 +119,10 @@ function cronMatches(date, schedule) {
   const parts = schedule.split(/\s+/)
   const values = [date.getMinutes(), date.getHours(), date.getDate(), date.getMonth() + 1, date.getDay()]
   return parts.every((field, index) => {
-    if (field === '*') return true
-    if (/^\*\/\d+$/.test(field)) return values[index] % parseInt(field.slice(2), 10) === 0
-    const target = parseInt(field, 10)
-    return index === 4 && target === 7 ? values[index] === 0 : values[index] === target
+    const rule = parseCronField(field, index === 0 ? 0 : index === 1 ? 0 : index === 4 ? 0 : 1, index === 0 ? 59 : index === 1 ? 23 : index === 2 ? 31 : index === 3 ? 12 : 7)
+    if (!rule) return true
+    if (rule.step) return values[index] % rule.step === 0
+    return rule.values.includes(values[index])
   })
 }
 
@@ -112,30 +138,37 @@ function getNextRunAt(schedule, from = Date.now()) {
 }
 
 async function appendHistory(entry) {
-  const data = await readCronFile()
-  data.history.push({ at: Date.now(), ...entry })
-  data.history = data.history.slice(-50)
-  await saveCrons(data)
+  return enqueueCronFileUpdate(async () => {
+    const data = await readCronFile()
+    data.history.push({ at: Date.now(), ...entry })
+    data.history = data.history.slice(-50)
+    return writeCronFile(data)
+  })
 }
 
 async function registerCron(cron) {
   const normalized = normalizeCron(cron)
-  const data = await readCronFile()
-  data.crons = data.crons.filter(item => item.id !== normalized.id)
-  normalized.nextRunAt = getNextRunAt(normalized.schedule)
-  data.crons.push(normalized)
-  const saved = await saveCrons(data)
+  const saved = await enqueueCronFileUpdate(async () => {
+    const data = await readCronFile()
+    data.crons = data.crons.filter(item => item.id !== normalized.id)
+    normalized.nextRunAt = getNextRunAt(normalized.schedule)
+    data.crons.push(normalized)
+    return writeCronFile(data)
+  })
   scheduleCron(normalized)
   return saved.crons.find(item => item.id === normalized.id)
 }
 
 async function unregisterCron(id) {
-  clearCronTimer(id)
-  const data = await readCronFile()
-  const before = data.crons.length
-  data.crons = data.crons.filter(item => item.id !== id)
-  await saveCrons(data)
-  return before - data.crons.length
+  const removed = await enqueueCronFileUpdate(async () => {
+    const data = await readCronFile()
+    const before = data.crons.length
+    data.crons = data.crons.filter(item => item.id !== id)
+    await writeCronFile(data)
+    return before - data.crons.length
+  })
+  if (removed) clearCronTimer(id)
+  return removed
 }
 
 function clearCronTimer(id) {
@@ -198,12 +231,33 @@ async function runCronNow(id) {
   } catch (error) {
     result = error.message || String(error)
   }
-  cron.lastRunAt = Date.now()
-  cron.nextRunAt = getNextRunAt(cron.schedule, cron.lastRunAt)
-  await saveCrons({ crons: data.crons.map(item => item.id === cron.id ? cron : item), history: data.history })
-  await appendHistory({ id: cron.id, ok, result: String(result || '').slice(0, 1000) })
-  scheduleCron(cron)
-  return { ok, cron, result }
+  const finishedAt = Date.now()
+  let nextCron = { ...cron, lastRunAt: finishedAt, nextRunAt: getNextRunAt(cron.schedule, finishedAt) }
+  let shouldSchedule = true
+  try {
+    const savedCron = await enqueueCronFileUpdate(async () => {
+      const fresh = await readCronFile()
+      const current = fresh.crons.find(item => item.id === cron.id)
+      if (current) {
+        current.lastRunAt = finishedAt
+        current.nextRunAt = getNextRunAt(current.schedule, finishedAt)
+        nextCron = current
+      } else {
+        shouldSchedule = false
+      }
+      fresh.history.push({ at: finishedAt, id: cron.id, ok, result: String(result || '').slice(0, 1000) })
+      fresh.history = fresh.history.slice(-50)
+      await writeCronFile(fresh)
+      return current || null
+    })
+    if (!savedCron) shouldSchedule = false
+  } catch {
+    shouldSchedule = true
+  } finally {
+    if (shouldSchedule) scheduleCron(nextCron)
+    else clearCronTimer(cron.id)
+  }
+  return { ok, cron: nextCron, result }
 }
 
 async function listCronHistory(limit = 50) {
@@ -213,6 +267,7 @@ async function listCronHistory(limit = 50) {
 
 async function startCronScheduler(options = {}) {
   runtime = { ...runtime, ...options }
+  stopCronScheduler()
   const data = await loadCrons()
   for (const cron of data.crons) scheduleCron(cron)
   return data.crons.length
@@ -234,4 +289,7 @@ module.exports = {
   stopCronScheduler,
   getNextRunAt,
   validateCronSchedule,
+  parseCronField,
+  cronMatches,
+  appendHistory,
 }

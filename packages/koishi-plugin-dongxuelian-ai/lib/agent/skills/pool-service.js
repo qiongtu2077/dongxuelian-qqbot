@@ -11,6 +11,7 @@ const { SKILL_POOL_DIR, validateSkillName, ensureDir, atomicWriteJson, readJsonS
 const { scanSkillDirectory } = require('./scanner')
 const { DATA_DIR } = require('../../constants')
 const { ensureRuntimeSkillSeeds } = require('../../skill-seeds')
+const { parseFrontmatterDocument } = require('../../frontmatter')
 
 const POOL_MANIFEST_FILE = path.join(SKILL_POOL_DIR, 'manifest.json')
 const BUILTIN_SKILLS_DIR = path.join(DATA_DIR, 'ai-skills', 'docs')
@@ -31,13 +32,12 @@ function parseSkillMeta(skillDir) {
   const files = fs.readdirSync(skillDir).filter(f => /^SKILL\./i.test(f) && f.endsWith('.md'))
   if (!files.length) return null
   const content = fs.readFileSync(path.join(skillDir, files[0]), 'utf8')
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
-  if (!fmMatch) return { name: path.basename(skillDir), description: '', raw: content }
-  const fm = fmMatch[1]
-  const name = (fm.match(/^name:\s*(.+)$/m) || [])[1]?.trim() || path.basename(skillDir)
-  const description = (fm.match(/^description:\s*(.+)$/m) || [])[1]?.trim() || ''
-  const version = (fm.match(/^version:\s*(.+)$/m) || [])[1]?.trim() || '1.0.0'
-  const author = (fm.match(/^author:\s*(.+)$/m) || [])[1]?.trim() || ''
+  const parsed = parseFrontmatterDocument(content)
+  if (!parsed.hasFrontmatter) return { name: path.basename(skillDir), description: '', raw: content }
+  const name = parsed.meta.name || path.basename(skillDir)
+  const description = parsed.meta.description || ''
+  const version = parsed.meta.version || '1.0.0'
+  const author = parsed.meta.author || ''
   return { name, description, version, author, raw: content }
 }
 

@@ -35,6 +35,7 @@ const PERSONA_SCHEMA_KNOWN_FIELDS = Object.freeze([
 const PERSONA_SCHEMA_ALLOWED_TYPES = Object.freeze(['core', 'mode', 'persona', 'lore'])
 const PERSONA_SCHEMA_FIELD_SET = new Set(PERSONA_SCHEMA_KNOWN_FIELDS)
 const PERSONA_SCHEMA_NSFW_VALUES = new Set(['none', 'off', 'soft', 'adult', 'strict', 'reply'])
+const { parseFrontmatterDocument } = require('./frontmatter')
 
 function normalizePersonaSchemaScalar(value = '') {
   const text = String(value ?? '').trim()
@@ -48,26 +49,7 @@ function normalizePersonaSchemaScalar(value = '') {
 }
 
 function parsePersonaSchemaFrontmatter(content = '') {
-  const source = String(content || '').replace(/^\uFEFF/, '')
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(source)
-  if (!match) return { meta: {}, rawMeta: {}, body: source, hasFrontmatter: false, frontmatterText: '' }
-  const meta = {}
-  const rawMeta = {}
-  const frontmatterText = match[1] || ''
-  for (const line of frontmatterText.split(/\r?\n/)) {
-    if (!line.trim() || /^\s*#/.test(line)) continue
-    const kv = /^([A-Za-z_][\w-]*):\s*(.*)$/.exec(line)
-    if (!kv) continue
-    rawMeta[kv[1]] = kv[2].trim()
-    meta[kv[1]] = normalizePersonaSchemaScalar(kv[2])
-  }
-  return {
-    meta,
-    rawMeta,
-    body: source.slice(match[0].length),
-    hasFrontmatter: true,
-    frontmatterText,
-  }
+  return parseFrontmatterDocument(content, { normalizeValue: normalizePersonaSchemaScalar, firstWins: false })
 }
 
 function stripPersonaFrontmatter(content = '') {

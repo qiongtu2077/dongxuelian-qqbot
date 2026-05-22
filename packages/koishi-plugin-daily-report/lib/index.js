@@ -20,7 +20,26 @@ try {
 
 // 冷却机制
 const cooldown = new Map()
+const failureBackoff = new Map()
 const inFlightReports = new Map()
+const FAILURE_BACKOFF_MS = 10 * 1000
+const MAX_RUNTIME_MAP_ENTRIES = 500
+
+function trimTimedMap(map, now, maxAgeMs) {
+  for (const [key, value] of map) {
+    const ts = Number(value || 0)
+    if (!ts || now - ts > maxAgeMs) map.delete(key)
+  }
+  if (map.size <= MAX_RUNTIME_MAP_ENTRIES) return
+  const ordered = Array.from(map.entries()).sort((a, b) => Number(a[1] || 0) - Number(b[1] || 0))
+  for (const [key] of ordered.slice(0, map.size - MAX_RUNTIME_MAP_ENTRIES)) map.delete(key)
+}
+
+function trimRuntimeMaps(now = Date.now()) {
+  trimTimedMap(cooldown, now, TIMEOUTS.cooldown * 2)
+  trimTimedMap(failureBackoff, now, FAILURE_BACKOFF_MS * 6)
+  trimTimedMap(inFlightReports, now, 10 * 60 * 1000)
+}
 
 // 将渲染错误按层级归类，方便日志和用户提示分开处理。
 function classifyRenderError(err) {
@@ -105,9 +124,15 @@ exports.apply = (ctx) => {
       }
 
       // 冷却检查
+      trimRuntimeMaps()
       const lastReport = cooldown.get(channelKey) || 0
       if (Date.now() - lastReport < TIMEOUTS.cooldown) {
         await session.send('日报生成太频繁了，1分钟后再试。')
+        return
+      }
+      const lastFailure = failureBackoff.get(channelKey) || 0
+      if (Date.now() - lastFailure < FAILURE_BACKOFF_MS) {
+        await session.send('刚刚生成失败了，稍等几秒再重试。')
         return
       }
 
@@ -131,7 +156,6 @@ exports.apply = (ctx) => {
 
       try {
         await session.send(`正在生成群聊${modeLabel}，请稍候...`)
-        cooldown.set(channelKey, Date.now())
         let analysis = {}
         if (isFull) {
           try {
@@ -139,6 +163,7 @@ exports.apply = (ctx) => {
             logAnalysisWarnings(ctx, modeLabel, analysis)
           } catch (err) {
             ctx.logger('daily-report').error(`${modeLabel}AI分析失败: ${err.message}`)
+            failureBackoff.set(channelKey, Date.now())
             await session.send(`${modeLabel}分析失败了，请稍后再试。`)
             return
           }
@@ -147,18 +172,29 @@ exports.apply = (ctx) => {
         const imageBuffer = await renderReport(data, analysis)
         const base64 = imageBuffer.toString('base64')
         await session.send(h.image(`data:image/png;base64,${base64}`))
+        cooldown.set(channelKey, Date.now())
+        failureBackoff.delete(channelKey)
 
         ctx.logger('daily-report').info(`${modeLabel}生成成功: ${data.date}, ${data.totalMessages}条消息`)
       } catch (err) {
         const failure = classifyRenderError(err)
         ctx.logger('daily-report').error(`${modeLabel}生成失败[${failure.kind}]: ${err.message}`)
+        failureBackoff.set(channelKey, Date.now())
         await session.send(failure.userMessage)
       } finally {
         inFlightReports.delete(channelKey)
+        trimRuntimeMaps()
       }
       return
     }
 
     return next()
   })
+}
+
+exports._test = {
+  cooldown,
+  failureBackoff,
+  inFlightReports,
+  trimRuntimeMaps,
 }

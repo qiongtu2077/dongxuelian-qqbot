@@ -175,6 +175,9 @@ async function run() {
 
     result = await send(ctx, '查看全部集合')
     check('collection list command is separate from alias list', result.sent.some(item => item.includes('本群还没有集合。')), JSON.stringify(result.sent))
+
+    const stored = JSON.parse(fs.readFileSync(dataFile, 'utf8'))
+    check('store writes atomically and remains parseable', stored && stored.scopes && stored.scopes['10001'], JSON.stringify(stored))
   })
 
   section('corrupt json handling')
@@ -215,6 +218,25 @@ async function run() {
 
     result = await send(ctx, 'at集合名称 测试组')
     check('boundary: mention collection returns mention or notice', result.sent.length > 0, JSON.stringify(result.sent))
+  })
+
+  section('runtime disabled groups and cleanup')
+  await withIsolatedPlugin(async ({ ctx, dataDir, dataFile }) => {
+    await ctx.emit('ready')
+    let result = await send(ctx, '查看全部昵称', { guildId: '942033342', channelId: '942033342' })
+    check('no source hardcoded group blacklist by default', result.sent.some(item => item.includes('本群还没有昵称。')), JSON.stringify(result.sent))
+
+    fs.mkdirSync(dataDir, { recursive: true })
+    fs.writeFileSync(path.join(dataDir, 'group-name-at-disabled-groups.json'), JSON.stringify({ groups: ['942033342'] }), 'utf8')
+    result = await send(ctx, '查看全部昵称', { guildId: '942033342', channelId: '942033342' })
+    check('runtime disabled group file blocks nickname plugin', result.nextCalled && result.sent.length === 0, JSON.stringify(result))
+
+    const plugin = reloadPlugin()
+    plugin._test.pendingConfirms.clear()
+    plugin._test.pendingConfirms.set('old', Date.now() - 1)
+    plugin._test.pendingConfirms.set('fresh', Date.now() + 60000)
+    plugin._test.trimPendingConfirms()
+    check('pending confirmations trim expired entries', !plugin._test.pendingConfirms.has('old') && plugin._test.pendingConfirms.has('fresh'))
   })
 
   console.log(`\n=== group-name-at summary ===`)

@@ -5,33 +5,12 @@ const path = require('path')
 const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils')
 const { requireAdmin } = require('../auth')
 const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths')
+const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'frontmatter'))
 
 function parseFrontmatter(content) {
   const raw = String(content || '').replace(/\uFEFF/g, '')
-  const meta = {}
-  let cursor = 0
-  let firstBody = ''
-  let firstMatchEnd = -1
-  while (cursor < raw.length) {
-    const slice = raw.slice(cursor)
-    const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(slice)
-    if (!match) break
-    for (const line of match[1].split(/\r?\n/)) {
-      const kv = line.match(/^(\w[\w_-]*):\s*(.*)$/)
-      if (!kv) continue
-      if (meta[kv[1]] !== undefined) continue
-      meta[kv[1]] = kv[2].trim()
-    }
-    if (firstMatchEnd === -1) firstMatchEnd = cursor + match[0].length
-    cursor += match[0].length
-    const remainder = raw.slice(cursor)
-    const nextStart = /^\s*---\r?\n/.exec(remainder)
-    if (!nextStart) break
-    cursor += nextStart[0].length - '---\n'.length
-  }
-  if (firstMatchEnd === -1) return { meta: {}, body: raw, raw }
-  firstBody = raw.slice(firstMatchEnd)
-  return { meta, body: firstBody, raw }
+  const parsed = parseFrontmatterDocument(raw)
+  return { meta: parsed.meta, body: parsed.body, raw }
 }
 
 function cleanFrontmatterValue(value, maxLength = 240) {

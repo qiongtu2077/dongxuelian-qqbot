@@ -26,6 +26,8 @@ const channelMsgCount = new Map()
 const lastSensitiveAlert = new Map()
 let politicalDetectCache = null
 let politicalDetectCacheExpiresAt = 0
+const SENSITIVE_RUNTIME_TTL_MS = 6 * 60 * 60 * 1000
+const MAX_SENSITIVE_RUNTIME_ENTRIES = 500
 
 async function getPoliticalDetectList() {
   if (politicalDetectCache !== null && Date.now() < politicalDetectCacheExpiresAt) return politicalDetectCache
@@ -53,8 +55,25 @@ function clearSensitiveRuntimeState(channelKey) {
   pendingSensitiveAlert.delete(key)
 }
 
+function pruneRuntimeMap(map, getTs, now = Date.now()) {
+  for (const [key, value] of map) {
+    const ts = Number(getTs(value)) || 0
+    if (ts && now - ts > SENSITIVE_RUNTIME_TTL_MS) map.delete(key)
+  }
+  if (map.size <= MAX_SENSITIVE_RUNTIME_ENTRIES) return
+  const ordered = Array.from(map.entries()).sort((a, b) => (Number(getTs(a[1])) || 0) - (Number(getTs(b[1])) || 0))
+  for (const [key] of ordered.slice(0, map.size - MAX_SENSITIVE_RUNTIME_ENTRIES)) map.delete(key)
+}
+
+function trimSensitiveRuntimeMaps(now = Date.now()) {
+  pruneRuntimeMap(channelMsgCount, entry => entry && typeof entry === 'object' ? entry.ts : 0, now)
+  pruneRuntimeMap(lastSensitiveAlert, ts => ts, now)
+  pruneRuntimeMap(pendingSensitiveAlert, entry => entry && typeof entry === 'object' ? entry.ts : 0, now)
+}
+
 async function notifySensitiveHandlers(session, channelKey, options = {}) {
   const key = String(channelKey)
+  trimSensitiveRuntimeMaps()
   const throttle = options.throttle !== false
   if (throttle && Date.now() - (lastSensitiveAlert.get(key) || 0) <= 30000) return false
 
@@ -98,8 +117,9 @@ async function handleSensitiveMessage(session, ctx, params = {}) {
   }
 
   if (isDetectOn && inGuild && !analyzed.hasVisual) {
-    const count = (channelMsgCount.get(channelKey) || 0) + 1
-    channelMsgCount.set(channelKey, count)
+    const current = channelMsgCount.get(channelKey)
+    const count = ((current && typeof current === 'object' ? current.count : current) || 0) + 1
+    channelMsgCount.set(channelKey, { count, ts: Date.now() })
     if (count % 50 === 0) analyzeChannelSensitive(channelKey).catch(() => {})
   }
 
@@ -118,6 +138,9 @@ module.exports = {
   getPoliticalDetectList,
   resetPoliticalDetectCache,
   clearSensitiveRuntimeState,
+  trimSensitiveRuntimeMaps,
   notifySensitiveHandlers,
   handleSensitiveMessage,
+  channelMsgCount,
+  lastSensitiveAlert,
 }

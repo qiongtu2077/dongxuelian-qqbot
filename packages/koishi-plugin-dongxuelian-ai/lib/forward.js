@@ -5,7 +5,7 @@
  */
 const { callGetForwardMsg } = require('./api')
 const { summarizeForwardNodes } = require('./message-reader')
-const { getChannelKey, lastForwardSummaryCache } = require('./conversation')
+const { getChannelKey, setLastForwardSummaryCache } = require('./conversation')
 const { logDebug } = require('./logging-config')
 
 const FORWARD_ID_RE = /(?:\[CQ:forward,id=([^,\]]+)\])|<forward\s+id="([^"]+)"\/>/
@@ -138,7 +138,7 @@ async function resolveForwardSummary(session, content, ctx, options = {}) {
   if (nodes.length === 0) return ''
   const forwardSummaryText = summarizeNodes(nodes)
   logDebug(ctx, 'forward', 'summary len=' + (forwardSummaryText ? forwardSummaryText.length : 0))
-  if (forwardSummaryText) lastForwardSummaryCache.set(getChannelKey(session), forwardSummaryText)
+  if (forwardSummaryText) setLastForwardSummaryCache(getChannelKey(session), forwardSummaryText)
   return forwardSummaryText
 }
 

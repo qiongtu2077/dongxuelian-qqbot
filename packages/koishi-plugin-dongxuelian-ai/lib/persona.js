@@ -5,6 +5,7 @@
  */
 const { PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, SKILLS_PERSONAS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR } = require('./constants')
 const { isDebugLogEnabled } = require('./logging-config')
+const { parseFrontmatterDocument } = require('./frontmatter')
 const path = require('path')
 const { ensureRuntimeSkillSeeds } = require('./skill-seeds')
 
@@ -86,27 +87,12 @@ function resolvePersona(channelKey, userId) {
 }
 
 function parsePersonaFrontmatter(content) {
-  const raw = String(content || '').replace(/\uFEFF/g, '')
-  const meta = {}
-  let cursor = 0
-  while (cursor < raw.length) {
-    const slice = raw.slice(cursor)
-    const m = slice.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
-    if (!m) break
-    for (const line of m[1].split(/\r?\n/)) {
-      const kv = line.match(/^(\w[\w_-]*):\s*(.*)$/)
-      if (!kv) continue
-      const value = kv[2].trim()
-      if (meta[kv[1]] !== undefined) continue
-      meta[kv[1]] = value === 'true' ? true : value === 'false' ? false : value
-    }
-    cursor += m[0].length
-    const remainder = raw.slice(cursor)
-    const nextStart = remainder.match(/^\s*---\r?\n/)
-    if (!nextStart) break
-    cursor += nextStart[0].length - '---\n'.length
-  }
-  return meta
+  return parseFrontmatterDocument(content, {
+    normalizeValue(value) {
+      const text = String(value ?? '').trim()
+      return text === 'true' ? true : text === 'false' ? false : text
+    },
+  }).meta
 }
 
 function getAvailablePersonals({ userFacing = false } = {}) {

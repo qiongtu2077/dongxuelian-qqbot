@@ -15,12 +15,10 @@ function resolveRuntimeDataDir() {
 
 const DEFAULT_DATA_DIR = resolveRuntimeDataDir()
 const DATA_FILE = process.env.GROUP_NAME_AT_DATA_FILE || path.join(DEFAULT_DATA_DIR, 'nickname-collections.json')
+const DISABLED_GROUPS_FILE = process.env.GROUP_NAME_AT_DISABLED_GROUPS_FILE || path.join(DEFAULT_DATA_DIR, 'group-name-at-disabled-groups.json')
 const CONFIRM_TIMEOUT = 60 * 1000
-//黑名单
-const GROUP_BLACKLIST = new Set([
-  '942033342',
-  // '123456789',
-])
+const MAX_DISABLED_GROUPS_BYTES = 128 * 1024
+const MAX_PENDING_CONFIRMS = 500
 
 const CMD = {
   alias: '昵称',
@@ -87,6 +85,8 @@ let nicknameStore = { scopes: {} }
 let storeLoaded = false
 let storeLoadError = null
 const pendingConfirms = new Map()
+let saveChain = Promise.resolve()
+let disabledGroupsCache = { fingerprint: '', groups: new Set() }
 
 class StoreAccessError extends Error {
   constructor(userMessage, cause) {
@@ -122,7 +122,40 @@ function getGroupBlacklistCandidates(session) {
 }
 
 function isBlacklistedGroup(session) {
-  return getGroupBlacklistCandidates(session).some(groupId => GROUP_BLACKLIST.has(groupId))
+  const disabled = loadDisabledGroups()
+  return getGroupBlacklistCandidates(session).some(groupId => disabled.groups.has(groupId))
+}
+
+function getFileFingerprint(filePath) {
+  try {
+    const stat = require('fs').statSync(filePath)
+    return `${stat.mtimeMs}:${stat.size}`
+  } catch {
+    return 'missing'
+  }
+}
+
+function uniqueStrings(values = []) {
+  return [...new Set((Array.isArray(values) ? values : []).map(String).filter(Boolean))]
+}
+
+function loadDisabledGroups(force = false) {
+  const fingerprint = getFileFingerprint(DISABLED_GROUPS_FILE)
+  if (!force && disabledGroupsCache.fingerprint === fingerprint) return disabledGroupsCache
+  let groups = []
+  if (fingerprint !== 'missing') {
+    try {
+      const fsSync = require('fs')
+      const stat = fsSync.statSync(DISABLED_GROUPS_FILE)
+      if (!stat.isFile() || stat.size > MAX_DISABLED_GROUPS_BYTES) throw new Error('disabled group file too large')
+      const raw = JSON.parse(fsSync.readFileSync(DISABLED_GROUPS_FILE, 'utf8'))
+      groups = Array.isArray(raw) ? raw : Array.isArray(raw.groups) ? raw.groups : []
+    } catch {
+      groups = []
+    }
+  }
+  disabledGroupsCache = { fingerprint, groups: new Set(uniqueStrings(groups)) }
+  return disabledGroupsCache
 }
 
 function normalizeName(name = '') {
@@ -171,9 +204,15 @@ async function ensureStore() {
 }
 
 async function saveStore() {
-  try {
+  const task = saveChain.catch(() => {}).then(async () => {
     await fs.mkdir(path.dirname(DATA_FILE), { recursive: true })
-    await fs.writeFile(DATA_FILE, JSON.stringify(nicknameStore, null, 2), 'utf8')
+    const tmp = `${DATA_FILE}.tmp-${process.pid}-${Date.now()}`
+    await fs.writeFile(tmp, JSON.stringify(nicknameStore, null, 2), 'utf8')
+    await fs.rename(tmp, DATA_FILE)
+  })
+  saveChain = task.catch(() => {})
+  try {
+    await task
   } catch (error) {
     throw createStoreAccessError(TEXT.storeSaveFailed, error)
   }
@@ -453,12 +492,14 @@ function confirmKey(session, action, alias) {
 }
 
 function askConfirm(session, action, alias) {
+  trimPendingConfirms()
   const key = confirmKey(session, action, alias)
   pendingConfirms.set(key, Date.now() + CONFIRM_TIMEOUT)
   return false
 }
 
 function takeConfirm(session, action, alias) {
+  trimPendingConfirms()
   const key = confirmKey(session, action, alias)
   const expiresAt = pendingConfirms.get(key)
   if (!expiresAt || expiresAt <= Date.now()) {
@@ -467,6 +508,15 @@ function takeConfirm(session, action, alias) {
   }
   pendingConfirms.delete(key)
   return true
+}
+
+function trimPendingConfirms(now = Date.now()) {
+  for (const [key, expiresAt] of pendingConfirms) {
+    if (Number(expiresAt || 0) <= now) pendingConfirms.delete(key)
+  }
+  if (pendingConfirms.size <= MAX_PENDING_CONFIRMS) return
+  const ordered = Array.from(pendingConfirms.entries()).sort((a, b) => Number(a[1] || 0) - Number(b[1] || 0))
+  for (const [key] of ordered.slice(0, pendingConfirms.size - MAX_PENDING_CONFIRMS)) pendingConfirms.delete(key)
 }
 
 async function deleteCollection(session, alias, confirmed) {
@@ -748,6 +798,7 @@ exports.apply = (ctx) => {
   ctx.on('ready', async () => {
     try {
       await ensureStore()
+      loadDisabledGroups(true)
       ctx.logger('group-name-at').info(`group-name-at ${PLUGIN_VERSION} loaded: ${DATA_FILE}`)
     } catch (error) {
       ctx.logger('group-name-at').warn(error.message)
@@ -794,4 +845,12 @@ exports.apply = (ctx) => {
       return handleStoreAccessError(ctx, error)
     }
   })
+}
+
+exports._test = {
+  DATA_FILE,
+  DISABLED_GROUPS_FILE,
+  pendingConfirms,
+  trimPendingConfirms,
+  loadDisabledGroups,
 }

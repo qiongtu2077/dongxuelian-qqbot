@@ -513,6 +513,90 @@ async function testConcurrentReportGuard() {
   }
 }
 
+async function testCooldownAfterSuccessOnly() {
+  section('cooldown success/failure regression')
+  const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-cooldown-'))
+  fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123']), 'utf8')
+
+  const originalConfigCache = require.cache[CONFIG_PATH]
+  const originalDataCollectorCache = require.cache[DATA_COLLECTOR_PATH]
+  const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
+  const originalRendererCache = require.cache[HTML_RENDERER_PATH]
+  const originalPluginCache = require.cache[PLUGIN_PATH]
+
+  let renderShouldFail = true
+  let renderCalls = 0
+  let now = 100000
+  const originalDateNow = Date.now
+
+  try {
+    Date.now = () => now
+    require.cache[CONFIG_PATH] = {
+      id: CONFIG_PATH,
+      filename: CONFIG_PATH,
+      loaded: true,
+      exports: { TIMEOUTS: { aiRequest: 30000, cooldown: 60000 }, DATA_DIR: reportDataDir },
+    }
+    require.cache[DATA_COLLECTOR_PATH] = {
+      id: DATA_COLLECTOR_PATH,
+      filename: DATA_COLLECTOR_PATH,
+      loaded: true,
+      exports: { collectReportData: () => createSampleReportData() },
+    }
+    require.cache[AI_ANALYZER_PATH] = {
+      id: AI_ANALYZER_PATH,
+      filename: AI_ANALYZER_PATH,
+      loaded: true,
+      exports: { analyzeWithAI: async () => ({ topics: [], goldenQuotes: [] }) },
+    }
+    require.cache[HTML_RENDERER_PATH] = {
+      id: HTML_RENDERER_PATH,
+      filename: HTML_RENDERER_PATH,
+      loaded: true,
+      exports: {
+        renderReport: async () => {
+          renderCalls += 1
+          if (renderShouldFail) throw new Error('render failed')
+          return Buffer.from('fake-png')
+        },
+      },
+    }
+
+    delete require.cache[PLUGIN_PATH]
+    const plugin = require(PLUGIN_PATH)
+    const ctx = makeCtx()
+    plugin.apply(ctx)
+    const middleware = ctx._middlewareList[0]
+
+    const failed = makeSession({ content: '群聊日报', guildId: '123' })
+    await middleware(failed, () => 'next')
+    check('failed report returns render failure message', failed._sent.some(item => String(item).includes('生成失败')), JSON.stringify(failed._sent))
+
+    const backoff = makeSession({ content: '群聊日报', guildId: '123' })
+    await middleware(backoff, () => 'next')
+    check('failed report uses short failure backoff', backoff._sent.some(item => String(item).includes('稍等几秒')), JSON.stringify(backoff._sent))
+
+    now += 11000
+    renderShouldFail = false
+    const retry = makeSession({ content: '群聊日报', guildId: '123' })
+    await middleware(retry, () => 'next')
+    check('failed report can retry after short backoff before success cooldown', retry._sent.some(item => String(item).includes('base64')), JSON.stringify(retry._sent))
+
+    const cooldownHit = makeSession({ content: '群聊日报', guildId: '123' })
+    await middleware(cooldownHit, () => 'next')
+    check('successful report writes normal cooldown', cooldownHit._sent.some(item => String(item).includes('生成太频繁')), JSON.stringify(cooldownHit._sent))
+    check('render was called only for failed attempt and retry', renderCalls === 2, String(renderCalls))
+  } finally {
+    Date.now = originalDateNow
+    restoreModuleCache(CONFIG_PATH, originalConfigCache)
+    restoreModuleCache(DATA_COLLECTOR_PATH, originalDataCollectorCache)
+    restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
+    restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
+    restoreModuleCache(PLUGIN_PATH, originalPluginCache)
+    try { fs.rmSync(reportDataDir, { recursive: true, force: true }) } catch {}
+  }
+}
+
 // ===== 3. models 单元测试 =====
 section('models 单元测试')
 const result = models.createDefaultAnalysisResult()
@@ -606,6 +690,7 @@ testMiddleware('你好', '123').then(nonReport => {
 ).then(() => testRequestChatCompletionsPayload()
 ).then(() => testAIAnalyzerObjectResponse()
 ).then(() => testConcurrentReportGuard()
+).then(() => testCooldownAfterSuccessOnly()
 ).then(() => {
 
   // ===== 长内容渲染回归 =====
