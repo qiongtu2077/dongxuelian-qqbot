@@ -221,6 +221,8 @@ function getPersonaHistoryKey(personaName = '') {
   return `agent_console_history:${key}`
 }
 
+const AGENT_CONSOLE_REMEMBER_HISTORY_KEY = 'agent_console_remember_history'
+
 function renderRounds(rounds: RoundRecord[]) {
   if (!rounds || rounds.length === 0) return null
   const toolRoundCount = rounds.filter(r => r.toolCalls && r.toolCalls.length > 0).length
@@ -262,9 +264,8 @@ const COMMANDS = [
 function ChatPage({ refresh, persona }: { refresh: () => void; persona: any }) {
   const personaName = persona?.dashboardPersona || ''
   const historyKey = getPersonaHistoryKey(personaName)
-  const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    try { return JSON.parse(localStorage.getItem(historyKey) || '[]') } catch { return [] }
-  })
+  const [rememberHistory, setRememberHistory] = useState(() => localStorage.getItem(AGENT_CONSOLE_REMEMBER_HISTORY_KEY) === '1')
+  const [messages, setMessages] = useState<ChatMessage[]>(() => [])
   const [loadedHistoryKey, setLoadedHistoryKey] = useState(historyKey)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -282,14 +283,30 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: any }) {
   } | null>(null)
 
   useEffect(() => {
+    if (!rememberHistory) {
+      setMessages([])
+      localStorage.removeItem(historyKey)
+      localStorage.removeItem('agent_console_history')
+      setLoadedHistoryKey(historyKey)
+      return
+    }
     try { setMessages(JSON.parse(localStorage.getItem(historyKey) || '[]')) } catch { setMessages([]) }
     setLoadedHistoryKey(historyKey)
-  }, [historyKey])
+  }, [historyKey, rememberHistory])
   useEffect(() => {
     if (loadedHistoryKey !== historyKey) return
-    localStorage.setItem(historyKey, JSON.stringify(messages.slice(-30)))
-    localStorage.setItem('agent_console_history', JSON.stringify(messages.slice(-30)))
-  }, [historyKey, loadedHistoryKey, messages])
+    if (rememberHistory) {
+      localStorage.setItem(historyKey, JSON.stringify(messages.slice(-30)))
+      localStorage.setItem('agent_console_history', JSON.stringify(messages.slice(-30)))
+    } else {
+      localStorage.removeItem(historyKey)
+      localStorage.removeItem('agent_console_history')
+    }
+  }, [historyKey, loadedHistoryKey, messages, rememberHistory])
+  useEffect(() => {
+    if (rememberHistory) localStorage.setItem(AGENT_CONSOLE_REMEMBER_HISTORY_KEY, '1')
+    else localStorage.removeItem(AGENT_CONSOLE_REMEMBER_HISTORY_KEY)
+  }, [rememberHistory])
   useEffect(() => {
     if (messagesRef.current) {
       messagesRef.current.scrollTop = messagesRef.current.scrollHeight
@@ -428,6 +445,10 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: any }) {
           <label className="thinking-toggle">
             <input type="checkbox" checked={enableThinking} onChange={e => setEnableThinking(e.target.checked)} />
             <span>思考</span>
+          </label>
+          <label className="thinking-toggle">
+            <input type="checkbox" checked={rememberHistory} onChange={e => setRememberHistory(e.target.checked)} />
+            <span>记住本机历史</span>
           </label>
         </div>
         <div className="composer-input-wrapper">

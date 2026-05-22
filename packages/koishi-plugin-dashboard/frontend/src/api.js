@@ -156,7 +156,7 @@ export async function fetchQQToken() { return get('/qq/token', true) }
 export async function fetchSSHInfo() { return get('/qq/ssh-info', true) }
 export async function fetchSelfId() { return get('/qq/selfid') }
 export async function updateSelfId(selfId) { return put('/qq/selfid', { selfId }, true) }
-export async function fetchDeployConfig() { return get('/deploy/config') }
+export async function fetchDeployConfig() { return get('/deploy/config', true) }
 export async function updateDeployConfig(data) { return put('/deploy/config', data, true) }
 export async function checkDeployUpdate() { return get('/deploy/check-update') }
 export async function runDeploy(data) { return post('/deploy/run', data, true) }
@@ -185,7 +185,7 @@ export async function localBotStatus() { return get('/bot/local-status') }
 export async function localBotStop() { return post('/bot/local-stop', {}, true) }
 export async function rebuildFrontend() { return post('/frontend/rebuild', {}, true) }
 export async function rebuildFrontendStatus() { return get('/frontend/rebuild-status') }
-export async function fetchFallbackChains() { return get('/fallback') }
+export async function fetchFallbackChains() { return get('/fallback', true) }
 export async function saveFallbackChains(chains) { return put('/fallback', { chains }, true) }
 export async function fetchCustomProviders() { return get('/providers/custom', true) }
 export async function saveCustomProviders(data) { return put('/providers/custom', data, true) }
@@ -201,7 +201,7 @@ export async function fetchLogs(params = {}) {
     else query.set(key, String(value))
   }
   const suffix = query.toString() ? '?' + query.toString() : ''
-  return get('/bot/activity' + suffix)
+  return get('/bot/activity' + suffix, true)
 }
 export async function fetchLoggingConfig() { return get('/logging') }
 export async function saveLoggingConfig(data) { return put('/logging', data, true) }
@@ -216,11 +216,11 @@ export async function fetchPendingAgentTools() { return get('/tools/pending', tr
 export async function fetchAgentSessions() { return get('/agent/sessions', true) }
 export async function fetchAgentSession(id) { return get('/agent/sessions/' + encodeURIComponent(id), true) }
 export async function fetchGalleryImages() { return get('/gallery') }
-export async function uploadGalleryImage(data) { return post('/gallery', data, false, 60000) }
-export async function deleteGalleryImage(idOrIds) { return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, false) }
-export async function updateGalleryImageStyle(id, foilStyle) { return put('/gallery/style', { id, foilStyle }, false) }
+export async function uploadGalleryImage(data) { return post('/gallery', data, true, 60000) }
+export async function deleteGalleryImage(idOrIds) { return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, true) }
+export async function updateGalleryImageStyle(id, foilStyle) { return put('/gallery/style', { id, foilStyle }, true) }
 
-export async function fetchKeysUsage() { return get('/keys/usage') }
+export async function fetchKeysUsage() { return get('/keys/usage', true) }
 
 export async function fetchTtsVoices() { return get('/agent/tts/voices', true) }
 export async function ttsPreview(text, voice, style, personaName = '', voiceAssetId = '') { return post('/agent/tts/preview', { text, voice, style, personaName, voiceAssetId }, true, 30000) }

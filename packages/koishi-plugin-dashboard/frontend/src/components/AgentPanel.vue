@@ -164,6 +164,10 @@
         <button class="ghost" type="button" :disabled="sending || !pendingId" @click="confirmPendingTool">确认工具</button>
         <button class="ghost" type="button" :disabled="sending || history.length === 0" @click="clearHistory">清空</button>
       </div>
+      <label class="remember-history">
+        <input v-model="rememberHistory" type="checkbox" @change="onRememberHistoryChange" />
+        <span>记住本机历史</span>
+      </label>
     </div>
     <div v-if="history.length" class="history-list">
       <div v-for="(item, index) in history" :key="index" class="history-item" :class="item.role">
@@ -214,6 +218,7 @@ export default {
     const selectedSession = ref(null)
     const effectiveReadRoots = ref([])
     const history = ref([])
+    const rememberHistory = ref(localStorage.getItem('dashboard_agent_remember_history') === '1')
     const config = reactive(JSON.parse(JSON.stringify(defaultConfig)))
     const persona = reactive({ dashboardPersona: '', qqInheritChatPersona: true })
     const isBrowserToolEnabled = computed(() => !!config.channels.dashboard.tools.browser_action)
@@ -263,7 +268,8 @@ export default {
 
     function persistHistory() {
       history.value = history.value.slice(-30)
-      localStorage.setItem('dashboard_agent_history', JSON.stringify(history.value))
+      if (rememberHistory.value) localStorage.setItem('dashboard_agent_history', JSON.stringify(history.value))
+      else localStorage.removeItem('dashboard_agent_history')
     }
 
     function pushAssistant(content) {
@@ -387,6 +393,11 @@ export default {
     }
 
     function loadHistory() {
+      if (!rememberHistory.value) {
+        history.value = []
+        localStorage.removeItem('dashboard_agent_history')
+        return
+      }
       try {
         const saved = JSON.parse(localStorage.getItem('dashboard_agent_history') || '[]')
         history.value = Array.isArray(saved) ? saved.filter(item => item && ['user', 'assistant'].includes(item.role)).slice(-30) : []
@@ -398,6 +409,16 @@ export default {
     function clearHistory() {
       history.value = []
       localStorage.removeItem('dashboard_agent_history')
+    }
+
+    function onRememberHistoryChange() {
+      if (rememberHistory.value) {
+        localStorage.setItem('dashboard_agent_remember_history', '1')
+        persistHistory()
+      } else {
+        localStorage.removeItem('dashboard_agent_remember_history')
+        localStorage.removeItem('dashboard_agent_history')
+      }
     }
 
     async function confirmPendingTool(targetId = pendingId.value) {
@@ -475,7 +496,7 @@ export default {
     }
 
     onMounted(() => { loadHistory(); loadConfig() })
-    return { loading, saving, savingPersona, sending, error, message, mode, tools, skills, personas, persona, currentDashboardPersona, stats, prompt, pendingId, pendingTools, sessions, selectedSession, effectiveReadRoots, isBrowserToolEnabled, history, config, formatTime, loadConfig, saveConfig, savePersona, addReadRoot, removeReadRoot, clearHistory, confirmPendingTool, rejectPendingTool, loadSessionDetail, sendMessage }
+    return { loading, saving, savingPersona, sending, error, message, mode, tools, skills, personas, persona, currentDashboardPersona, stats, prompt, pendingId, pendingTools, sessions, selectedSession, effectiveReadRoots, isBrowserToolEnabled, history, rememberHistory, config, formatTime, loadConfig, saveConfig, savePersona, addReadRoot, removeReadRoot, clearHistory, onRememberHistoryChange, confirmPendingTool, rejectPendingTool, loadSessionDetail, sendMessage }
   },
 }
 </script>
@@ -512,6 +533,7 @@ textarea { min-height: 110px; resize: vertical; }
 .stats-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .stat-pill { border: 1px solid var(--border); border-radius: 999px; padding: 6px 10px; color: var(--text3); background: color-mix(in srgb, var(--input) 70%, transparent); }
 .chat-actions { display: flex; flex-direction: column; gap: 8px; }
+.remember-history { display: flex; align-items: center; gap: 8px; color: var(--text3); font-size: 13px; }
 .notice { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); border-radius: 12px; color: var(--text); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .notice.error { border-color: color-mix(in srgb, #ef4444 55%, var(--border)); background: color-mix(in srgb, #ef4444 12%, transparent); }
 .primary, .ghost { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; color: var(--text); background: var(--input); cursor: pointer; }
