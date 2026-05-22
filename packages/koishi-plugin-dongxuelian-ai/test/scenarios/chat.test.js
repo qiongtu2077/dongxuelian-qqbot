@@ -714,6 +714,46 @@ async function run(t) {
     waitFor: message => String(message).includes('AGENT_RETELL_MARKER'),
   })
 
+  await runChatCase(t, 'Agent retell file wrapper leak retries', [
+    { json: { choices: [{ message: { content: '[用户上传文件: plan.txt]\n---文件内容开始---\n先做 A\n再补 B\n---文件内容结束---' } }] } },
+    { json: { choices: [{ message: { content: '文件里主要是先做 A，再补 B。' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario Agent file wrapper retries to summary', result, '文件里主要')
+    checkSentExcludes(t, 'scenario Agent file wrapper hides wrapper label', result, '[用户上传文件:')
+    checkSentExcludes(t, 'scenario Agent file wrapper hides wrapper start', result, '---文件内容开始---')
+    t.check('scenario Agent file wrapper retry calls model twice', calls.length >= 2, `calls=${calls.length}`)
+  }, {
+    input: '刚才那个文件总结一下',
+    setup(session, { data }) {
+      data.writeJson('ai-tool-config.json', {
+        channels: { qq: { enabled: true, tools: { get_current_time: true, calculate: true, web_search: true } }, dashboard: { enabled: true, tools: {} } },
+        autoRoute: { qq: { enabled: false }, dashboard: { enabled: false } },
+        dangerousPolicy: 'confirm',
+        enabledSkills: [],
+        readFileRoots: [],
+      })
+      const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
+      const originalChat = chatModule.chat
+      chatModule.chat = async (chatSession, text, ctx, options) => {
+        if (options && options.isAgentResult) return originalChat(chatSession, text, ctx, options)
+        return originalChat(chatSession, text, ctx, {
+          ...options,
+          isAgentResult: true,
+          agentResultText: '[用户上传文件: plan.txt]\n---文件内容开始---\n先做 A\n再补 B\n---文件内容结束---',
+        })
+      }
+      chatModule.__scenarioRestoreChat = () => { chatModule.chat = originalChat }
+    },
+    waitFor: message => String(message).includes('文件里主要'),
+  })
+  try {
+    const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
+    if (typeof chatModule.__scenarioRestoreChat === 'function') {
+      chatModule.__scenarioRestoreChat()
+      delete chatModule.__scenarioRestoreChat
+    }
+  } catch {}
+
   await runChatCase(t, 'API 500 middleware fallback', [
     { status: 500, text: 'server exploded' },
   ], async (result) => {
