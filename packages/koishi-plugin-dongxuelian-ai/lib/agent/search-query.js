@@ -32,7 +32,8 @@ const NODEJS_RE = /(?:node\.?js|nodejs|npm)/i
 const OPENAI_RE = /(?:openai|chatgpt|gpt|responses\s*api|assistants?\s*api)/i
 const LATEST_ROLE_RE = /(?:最新|新|当前|现在).{0,8}(?:角色|共鸣者|卡池)|(?:角色|共鸣者).{0,8}(?:最新|新|是谁)/i
 const LATEST_VERSION_RE = /(?:最新|当前|现在|更新|版本|update|release|snapshot|pre-release|正式版).{0,12}(?:版本|更新|版|version|update|release)|(?:版本|version).{0,12}(?:最新|当前|现在)/i
-const GENERAL_LATEST_RE = /(?:最新|当前|现在|今天|新闻|资讯|公告|版本|更新|角色|卡池|release|released|update|latest|news|official|source)/i
+const GENERAL_LATEST_RE = /(?:最新|最近|近期|当前|现在|今天|新闻|资讯|公告|版本|更新|角色|卡池|热门|比较火|火的视频|趋势|排行|榜单|推荐|视频|release|released|update|latest|recent|trending|popular|ranking|recommend|news|official|source|video)/i
+const HOT_VIDEO_RE = /(?:最近|近期|当前|现在|热门|比较火|火|趋势|排行|榜单|推荐).{0,20}(?:视频|整活|搞笑|剪辑|实况|挑战|解说|二创|攻略)|(?:视频|整活|搞笑|剪辑|实况|挑战|解说|二创|攻略).{0,20}(?:最近|近期|热门|比较火|火|推荐|排行|趋势)/i
 
 function cleanExplicitSearchQuery(text = '') {
   return String(text || '')
@@ -57,6 +58,10 @@ function isMinecraftUpdateQuery(query = '') {
   return MINECRAFT_RE.test(value) && /(?:最新|当前|现在|更新|版本|update|release|snapshot|pre-release|正式版|latest|version)/i.test(value)
 }
 
+function isHotVideoQuery(query = '') {
+  return HOT_VIDEO_RE.test(String(query || ''))
+}
+
 function buildSearchQueries(rawQuery = '') {
   const query = cleanExplicitSearchQuery(rawQuery) || String(rawQuery || '').trim().slice(0, 180)
   const queries = []
@@ -72,7 +77,13 @@ function buildSearchQueries(rawQuery = '') {
     pushSearchQuery(queries, `Minecraft latest version ${year} official`)
     pushSearchQuery(queries, 'Minecraft Java Edition latest release official')
   }
-  if (!isWuwaLatestRoleQuery(query) && !isMinecraftUpdateQuery(query) && GENERAL_LATEST_RE.test(query)) {
+  if (isHotVideoQuery(query)) {
+    pushSearchQuery(queries, `${query} 热门 视频 推荐 ${year}`)
+    pushSearchQuery(queries, `${query} 最近 热门 排行`)
+    pushSearchQuery(queries, `${query} 搞笑 整活 挑战 推荐 ${year}`)
+    pushSearchQuery(queries, `${query} trending popular funny video ${year}`)
+  }
+  if (!isWuwaLatestRoleQuery(query) && !isMinecraftUpdateQuery(query) && !isHotVideoQuery(query) && GENERAL_LATEST_RE.test(query)) {
     pushSearchQuery(queries, `${query} 官方 公告 来源`)
     pushSearchQuery(queries, `${query} 最新 官方`)
     if (/[a-z]/i.test(query)) pushSearchQuery(queries, `${query} official source latest`)
@@ -84,7 +95,7 @@ function buildSearchQueries(rawQuery = '') {
     if (seen.has(key)) return false
     seen.add(key)
     return true
-  }).slice(0, 4)
+  }).slice(0, 6)
 }
 
 function getDirectSearchCandidates(query = '') {
@@ -216,6 +227,7 @@ module.exports = {
   getDirectSearchCandidates,
   isWuwaLatestRoleQuery,
   isMinecraftUpdateQuery,
+  isHotVideoQuery,
   getSearchHostname,
   scoreSearchResult,
   isLowQualitySearchResult,

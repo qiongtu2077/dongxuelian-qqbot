@@ -124,6 +124,23 @@ async function run(t) {
     t.check('scenario sticker sends again after cooldowns', third.internalCalls.length === 1, JSON.stringify(third.internalCalls))
   })
 
+  await withScenario({}, async ({ harness, makeSession, ready }) => {
+    await ready()
+    const { sendReply } = require('../../lib/reply')
+    const session = makeSession({ content: 'reply bubble grouping' })
+    const reply = [
+      '哎呀，还有两小时就期末了啊？',
+      '别慌别慌，这时候翻书可能来不及了。',
+      '不如先稳住心态，保证会做的题一分不丢？',
+      '要是实在没把握，就抓大放小，把那些重点章节、老师反复强调的知识点快速过一遍。',
+      '对了，记得带齐证件和文具，考场别迟到！',
+      '考完咱们去吃好吃的补一补，我请客！',
+    ].join('')
+    await sendReply(harness.ctx, session, reply, false, { disableSticker: true })
+    t.check('scenario QQ reply grouping avoids per-sentence spam', session.sent.length <= 2, JSON.stringify(session.sent))
+    t.check('scenario QQ reply grouping preserves full semantic content', session.sent.join('\n').includes('抓大放小') && session.sent.join('\n').includes('我请客'), JSON.stringify(session.sent))
+  })
+
   await withScenario({}, async ({ harness, makeSession, run, ready }) => {
     await ready()
     const mocked = mockFetch([{ json: { choices: [{ message: { content: TEXT.funny } }] } }])

@@ -134,7 +134,7 @@ async function execute(params = {}, context = {}) {
 module.exports = {
   definition: {
     name: 'web_fetch',
-    description: '读取指定 http/https URL 的网页正文。适合打开搜索结果、公告、文档、新闻原文；不执行 JavaScript，不处理登录页面。',
+    description: '读取指定 http/https URL 的网页正文。适合打开搜索结果、公告、文档、新闻原文；不执行 JavaScript，不处理登录页面。只有返回“正文质量：usable”时才可把正文作为主要依据；失败、正文过短、非文本页面或拒绝访问时不能猜内容。',
     parameters: {
       type: 'object',
       properties: {

@@ -5,6 +5,7 @@
  * 状态: 无。
  */
 const { getMemorySummary } = require('./conversation')
+const { filterExternalToolDefinitions, buildExternalToolPolicyHint } = require('./external-tool-policy')
 
 const CHAT_TOOL_TIMEOUT_MS = 3000
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000
@@ -12,10 +13,10 @@ const CHAT_TOOLS_TOTAL_DEADLINE_MS = 5000
 
 const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image'])
 
-const HEAVY_TOOLS = new Set(['web_search', 'browser_action', 'execute_shell', 'file_write'])
+const HEAVY_TOOLS = new Set(['web_search', 'web_fetch', 'browser_action', 'execute_shell', 'file_write'])
 
-function getChatToolDefinitions() {
-  return [
+function getChatToolDefinitions(options = {}) {
+  const tools = [
     {
       type: 'function',
       function: {
@@ -48,11 +49,26 @@ function getChatToolDefinitions() {
       type: 'function',
       function: {
         name: 'web_search',
-        description: '联网搜索最新信息（耗时较长，适合需要实时数据的问题）',
+        description: '联网搜索实时或近期信息。用户问“最新/最近/当前/现在/热门/比较火/趋势/排行/推荐/版本更新/新角色/新闻/视频”等时间敏感内容，或你不确定答案是否会过期时，应先调用。',
         parameters: {
           type: 'object',
           properties: { query: { type: 'string', description: '搜索关键词' } },
           required: ['query'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'web_fetch',
+        description: '读取用户提供的公开 http/https 链接正文。适合用户让你看链接、总结网页、核对网页内容或判断链接里写了什么；没有具体 URL 时不要调用，改用 web_search。',
+        parameters: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: '要读取的公开 http/https URL' },
+            maxChars: { type: 'number', description: '最多返回多少正文字符，可省略' },
+          },
+          required: ['url'],
         },
       },
     },
@@ -84,6 +100,7 @@ function getChatToolDefinitions() {
       },
     },
   ]
+  return filterExternalToolDefinitions(tools, options.userText || options.currentText || '')
 }
 function isLightweightTool(name) {
   return LIGHTWEIGHT_TOOLS.has(name)
@@ -151,7 +168,7 @@ async function executeChatTool(toolCall, context = {}) {
     }
     case 'analyze_historical_image': {
       const { getImageEntry, getCachedAnalysis } = require('./image-store')
-      const { enqueueAnalysis } = require('./image-analyzer')
+      const { analyzeImageNow, enqueueAnalysis } = require('./image-analyzer')
       const ck = context.channelKey || ''
       const msgId = String(args.messageId || '').trim()
       if (!ck || !msgId) return '需要提供 messageId（从 read_image_history 获取）。'
@@ -159,6 +176,8 @@ async function executeChatTool(toolCall, context = {}) {
       if (cached) return `图片内容：${cached}`
       const entry = await getImageEntry(ck, msgId)
       if (!entry) return '找不到该图片记录。'
+      const analysis = await analyzeImageNow(ck, msgId)
+      if (analysis) return `图片内容：${analysis}`
       enqueueAnalysis(ck, msgId)
       return '该图片正在后台分析中，稍后可通过 read_image_history 查看结果。'
     }
@@ -197,8 +216,10 @@ async function handleChatToolCalls(toolCalls, context = {}) {
   return { results, heavyTools }
 }
 
-function getChatToolSystemHint(channelKey) {
-  let hint = '你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数聊天不需要工具，直接回复即可。read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。'
+function getChatToolSystemHint(channelKey, options = {}) {
+  let hint = '你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数闲聊不需要工具，直接回复即可。遇到会随时间变化的问题，例如最新、最近、当前、现在、热门、比较火、趋势、排行、推荐、版本更新、新角色、新闻、视频等，不要凭记忆编答案，应先调用 web_search；用户给出具体公开 URL 并要求查看、总结、核对网页内容时，应调用 web_fetch 读取正文。web_search 负责找候选来源并尽量打开正文，web_fetch 负责读取指定 URL；如果没有“正文质量：usable”的可靠正文，要直接说明没有拿到可靠结果，并给出可继续搜索或换链接的方向。read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。'
+  const policyHint = buildExternalToolPolicyHint(options.userText || options.currentText || '')
+  if (policyHint) hint += `\n${policyHint}`
   if (channelKey) {
     try {
       const { getRecentImagesCached } = require('./image-store')

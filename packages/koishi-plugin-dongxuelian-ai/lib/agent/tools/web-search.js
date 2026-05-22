@@ -194,7 +194,7 @@ function normalizeQueryList(params = {}) {
     if (seen.has(key)) return false
     seen.add(key)
     return true
-  }).slice(0, 4)
+  }).slice(0, 6)
 }
 
 function isEnvEnabled(name) {
@@ -259,7 +259,7 @@ async function fallbackSearch(queries, reason) {
 module.exports = {
   definition: {
     name: 'web_search',
-    description: '联网搜索最新信息。用户问实时新闻、天气、游戏更新、最新资讯时使用；API 搜索不可用时内部降级到轻量 HTTP 搜索，并优先打开可信候选页正文；默认不会启动 Chromium。',
+    description: '联网搜索最新、最近、热门、趋势、排行、推荐、视频、新闻、天气、游戏更新等会过期的信息。内部最多尝试 6 组关键词，优先打开可信候选页正文；API 搜索不可用时降级到轻量 HTTP 搜索；默认不会启动 Chromium。',
     parameters: {
       type: 'object',
       properties: {

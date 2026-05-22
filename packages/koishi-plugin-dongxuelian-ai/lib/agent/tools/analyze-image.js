@@ -2,10 +2,10 @@
  * Agent 工具: analyze_historical_image — 分析图片历史中的某张图片。
  * 优先读本地缓存 → NapCat 缓存 → URL 下载 → 调视觉模型 → 写回分析结果。
  */
-const { downloadImageAsBase64, isVisionModel } = require('../../api')
-const { requestChatCompletions } = require('../../api')
+const { downloadImageAsBase64, isVisionModel, requestChatCompletions } = require('../../api')
 const { loadConfig } = require('../../runtime-config')
 const { markAnalyzed, getImageEntry, replaceImagePlaceholder, readCachedImage } = require('../../image-store')
+const { analyzeImageNow } = require('../../image-analyzer')
 const { isVisionBlindnessReply } = require('../../vision')
 
 module.exports = {
@@ -35,6 +35,10 @@ module.exports = {
         url = entry.url
         cachedFile = entry.file || null
       }
+    }
+    if (messageId && channelKey) {
+      const analysis = await analyzeImageNow(channelKey, messageId)
+      if (analysis) return `图片分析结果：${analysis}`
     }
     if (!url) return '无法获取图片 URL。请先用 read_image_history 查看可用图片。'
 

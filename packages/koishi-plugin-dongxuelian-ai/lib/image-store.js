@@ -129,14 +129,35 @@ function getRecentImagesFromData(data, limit = 5) {
 }
 
 async function storeImageUrl(channelKey, messageId, url, file, meta = {}) {
-  if (!channelKey || !messageId || !url) return false
+  const normalizedUrl = String(url || '').trim()
+  const normalizedFile = file ? String(file) : null
+  if (!channelKey || !messageId || (!normalizedUrl && !normalizedFile)) return false
   return enqueueImageStoreTask(channelKey, async () => {
     const data = cleanExpired(await readImageHistory(channelKey))
     const id = String(messageId)
-    if (data.images[id]) return false
+    if (data.images[id]) {
+      let changed = false
+      if (normalizedUrl && !data.images[id].url) {
+        data.images[id].url = normalizedUrl
+        changed = true
+      }
+      if (normalizedFile && !data.images[id].file) {
+        data.images[id].file = normalizedFile
+        changed = true
+      }
+      if (meta.conversationKey && !data.images[id].conversationKey) {
+        data.images[id].conversationKey = String(meta.conversationKey)
+        changed = true
+      }
+      if (meta.userId && !data.images[id].userId) {
+        data.images[id].userId = String(meta.userId)
+        changed = true
+      }
+      return changed ? writeImageHistory(channelKey, data) : false
+    }
     data.images[id] = {
-      url: String(url),
-      file: file || null,
+      url: normalizedUrl,
+      file: normalizedFile,
       conversationKey: meta.conversationKey ? String(meta.conversationKey) : '',
       userId: meta.userId ? String(meta.userId) : '',
       ts: Date.now(),
@@ -280,31 +301,11 @@ function mimeFromExt(ext) {
 async function replaceImagePlaceholder(channelKey, messageId, analysis) {
   if (!channelKey || !messageId) return false
   return enqueueImageStoreTask(channelKey, async () => {
-    const { readConversationDisk, writeConversationDisk } = require('./conversation')
+    const { replaceImagePlaceholderInConversation } = require('./conversation')
     const imageEntry = (await readImageHistory(channelKey)).images[String(messageId)] || null
     const convKey = imageEntry && imageEntry.conversationKey ? imageEntry.conversationKey : channelKey
-    const diskData = readConversationDisk(convKey)
-    if (!diskData || !Array.isArray(diskData.messages)) return false
-    let replaced = false
-    for (let i = diskData.messages.length - 1; i >= 0; i--) {
-      const msg = diskData.messages[i]
-      if (msg.role === 'user' && msg.content && !msg.content.includes('[图片]:') && isImagePlaceholderMessage(msg, messageId)) {
-        msg.content = msg.content.replace('[图片]', `[图片]: ${String(analysis).slice(0, 200)}`)
-        replaced = true
-        break
-      }
-    }
-    if (replaced) writeConversationDisk(convKey, diskData)
-    return replaced
+    return replaceImagePlaceholderInConversation(convKey, messageId, analysis)
   })
-}
-
-function isImagePlaceholderMessage(msg, messageId) {
-  if (!msg || !msg.content || !String(msg.content).includes('[图片]')) return false
-  if (String(msg.messageId || '') === String(messageId)) return true
-  const meta = msg.meta && typeof msg.meta === 'object' ? msg.meta : null
-  if (meta && String(meta.messageId || '') === String(messageId)) return true
-  return false
 }
 
 module.exports = {

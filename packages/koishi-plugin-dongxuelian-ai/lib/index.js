@@ -98,6 +98,7 @@ const {
   getQuotedMessageNote, getSharedContextNote, // 引用/共享上下文注入文本
   analyzeChannelSensitive,  // 频道敏感消息分析
   trimChannelRuntimeCaches, cleanupDailyStatsFiles, // 运行时缓存裁剪 + 日统计文件清理
+  getRecentUserMessages,     // 取最近用户消息，用于搜索追问补全
 } = require('./conversation')
 const {
   isReservedCommand,        // 判断是否为保留指令前缀
@@ -123,11 +124,12 @@ const {
   loadRandomVoiceRateCache,
   getRandomVoiceRate,
 } = require('./random-voice-rate') // 群聊随机语音升级概率配置
-const { heuristicRoute, buildExplicitSearchRunOptions } = require('./agent/router') // Agent 路由决策（启发式 + 显式搜索）
+const { heuristicRoute, buildExplicitSearchRunOptions, buildExplicitUrlFetchRunOptions } = require('./agent/router') // Agent 路由决策（启发式 + 显式搜索）
+const { externalToolsDenied } = require('./external-tool-policy')
 const agentEngine = require('./agent/engine') // Agent 执行引擎
 const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue') // Agent 任务队列
-const { recordAgentChatResult } = require('./agent-chat-bridge') // Agent 结果写入普通对话历史
-const { guardAgentRetellReply } = require('./agent-retell-guard') // Agent 复述守卫（防止照搬工具原文）
+const { recordAgentChatResult, summarizeAgentToolResults } = require('./agent-chat-bridge') // Agent 结果写入普通对话历史
+const { guardAgentRetellReply, redactAgentMaterial } = require('./agent-retell-guard') // Agent 复述守卫（防止照搬工具原文）
 const {
   buildReplyTimingDiagnostic,
   formatReplyTimingDiagnostic,
@@ -342,16 +344,27 @@ function normalizeChatResultText(chatResult, fallback = '') {
 }
 
 async function retellAgentResult(agentResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, emptyText = '(未获取有效回复)' }) {
-  const agentReplyText = String(agentResult?.reply || '').trim() || emptyText
+  const safeAgentResult = {
+    ...agentResult,
+    reply: redactAgentMaterial(agentResult?.reply || ''),
+    toolResults: Array.isArray(agentResult?.toolResults)
+      ? agentResult.toolResults.map(item => ({ ...item, result: redactAgentMaterial(item?.result || '') }))
+      : [],
+  }
+  const agentReplyText = String(safeAgentResult.reply || '').trim() || emptyText
+  const toolSummary = summarizeAgentToolResults(safeAgentResult.toolResults || [])
+  const agentMaterial = toolSummary
+    ? `${agentReplyText}\n\n[工具摘要]\n${toolSummary}`
+    : agentReplyText
   try {
     const chatReply = await chat(session, userText, ctx, {
       randomTriggered,
       isAgentResult: true,
-      agentResultText: agentReplyText,
+      agentResultText: agentMaterial,
     })
     const rawFinalReply = normalizeChatResultText(chatReply, AGENT_RETELL_FALLBACK).trim() || AGENT_RETELL_FALLBACK
-    const finalReply = guardAgentRetellReply(rawFinalReply, agentResult)
-    recordAgentChatResult({ session: null, userMessage: userText, userName, userId: currentUserId, channelKey, agentResult: { ...agentResult, reply: finalReply } })
+    const finalReply = redactAgentMaterial(guardAgentRetellReply(rawFinalReply, safeAgentResult))
+    recordAgentChatResult({ session: null, userMessage: userText, userName, userId: currentUserId, channelKey, agentResult: { ...safeAgentResult, reply: finalReply } })
     return finalReply
   } catch (error) {
     ctx.logger('dongxuelian-ai').warn(`agent result retell failed: ${error.message}`)
@@ -362,16 +375,55 @@ async function retellAgentResult(agentResult, { ctx, session, channelKey, curren
 async function handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, resolveBot = null }) {
   const getBot = typeof resolveBot === 'function' ? resolveBot : createBotResolver(ctx, session)
   if (chatResult && typeof chatResult === 'object' && chatResult.heavyToolsRequested) {
+    if (externalToolsDenied(userText)) return normalizeChatResultText(chatResult)
     const agentConfig = require('./agent/config').getAgentConfig()
     configureAgentQueue(agentConfig.queue || {})
-    const searchQuery = chatResult.heavyToolsRequested.find(t => t.name === 'web_search')?.args?.query || userText
-    const searchRunOptions = buildExplicitSearchRunOptions(searchQuery)
+    const explicitFetchOptions = buildExplicitUrlFetchRunOptions(userText)
+    const webSearchRequests = chatResult.heavyToolsRequested
+      .filter(t => t.name === 'web_search')
+      .map(t => ({
+        name: 'web_search',
+        args: {
+          query: String(t.args?.query || userText).trim() || userText,
+          ...(Array.isArray(t.args?.queries) ? { queries: t.args.queries } : {}),
+        },
+      }))
+    const webFetchRequests = chatResult.heavyToolsRequested
+      .filter(t => t.name === 'web_fetch' && t.args?.url)
+      .map(t => ({
+        name: 'web_fetch',
+        args: {
+          url: String(t.args.url || '').trim(),
+          ...(t.args.maxChars ? { maxChars: t.args.maxChars } : {}),
+        },
+      }))
+      .filter(t => t.args.url)
+    const recentUserMessages = getRecentUserMessages(session, 4)
+    const searchQuery = webSearchRequests[0]?.args?.query || userText
+    const searchRunOptions = explicitFetchOptions.forceTools ? explicitFetchOptions : buildExplicitSearchRunOptions(searchQuery, { recentUserMessages })
+    if (webSearchRequests.length) {
+      searchRunOptions.forceTools = Array.from(new Set([...(searchRunOptions.forceTools || []), 'web_search']))
+      const existingSearchPreExec = (searchRunOptions.preExecuteTools || []).filter(item => item?.name === 'web_search')
+      searchRunOptions.preExecuteTools = [...(searchRunOptions.preExecuteTools || []), ...webSearchRequests.slice(existingSearchPreExec.length, 2)]
+      searchRunOptions.systemExtra = [
+        ...(searchRunOptions.systemExtra || []),
+        { role: 'system', content: '聊天模型已判断当前问题需要 web_search。已预执行搜索工具；必须基于工具结果回答。若结果是 weak_hit、未打开正文或无可靠来源，只能说明搜索没拿到可靠依据，并建议可继续换关键词。' },
+      ]
+    }
+    if (webFetchRequests.length) {
+      searchRunOptions.forceTools = Array.from(new Set([...(searchRunOptions.forceTools || []), 'web_fetch']))
+      searchRunOptions.preExecuteTools = [...(searchRunOptions.preExecuteTools || []), ...webFetchRequests.slice(0, 2)]
+      searchRunOptions.systemExtra = [
+        ...(searchRunOptions.systemExtra || []),
+        { role: 'system', content: '聊天模型已判断当前问题需要 web_fetch。已预执行网页读取工具；必须基于读取到的正文回答。只有“正文质量：usable”的正文可作为主要依据；失败、正文过短、非文本页面或拒绝访问时不要猜网页内容。' },
+      ]
+    }
     try {
       const agentResult = await enqueueAgentTask({
         channelKey,
         userId: currentUserId,
         timeoutMs: agentConfig.queue?.timeoutMs,
-        fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: getBot(), agentMode: true, ...searchRunOptions }),
+        fn: () => agentEngine.run({ userMessage: searchRunOptions.agentUserMessage || userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: getBot(), agentMode: true, ...searchRunOptions }),
       })
       return retellAgentResult(agentResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, emptyText: '(搜索未获取有效结果)' })
     } catch (error) {
@@ -1007,12 +1059,9 @@ exports.apply = (ctx) => {
       const imgFile = imgSeg?.data?.file || null
       const imgUrl = imgSeg?.data?.url || ''
       const imageMeta = { conversationKey: getConversationKey(session), userId: session.userId || session.author?.id || session.username || '' }
-      if (imgUrl && /^https?:\/\//.test(imgUrl)) {
-        await storeImageUrl(channelKey, session.messageId, imgUrl, imgFile, imageMeta)
-      } else if (imgSeg) {
-        const fallbackUrl = extractImageUrls(content)[0]
-        if (fallbackUrl) await storeImageUrl(channelKey, session.messageId, fallbackUrl, imgFile, imageMeta)
-      }
+      const fallbackUrl = imgSeg ? extractImageUrls(content)[0] : ''
+      const storableUrl = /^https?:\/\//.test(imgUrl) ? imgUrl : fallbackUrl
+      await storeImageUrl(channelKey, session.messageId, storableUrl || '', imgFile, imageMeta)
       if (!plain.includes('[图片]')) plain = (plain ? plain + ' ' : '') + '[图片]'
       await enqueueAnalysis(channelKey, session.messageId)
     }
@@ -1280,6 +1329,7 @@ exports.apply = (ctx) => {
       replyToId: analyzed.replyToId,
       mentionUserIds,
       randomTriggered,
+      currentText: userText,
     })
 
     if (inGuild && sharedRecordText) {
@@ -1344,14 +1394,12 @@ exports.apply = (ctx) => {
     enqueueForChannel(channelKey, async () => {
       const liveSession = withCurrentBot(session, resolveBot())
       try {
-        let route = heuristicRoute(userText, 'qq')
-        if (isJailbreakAttempt(sanitizeUserInput(userText))) {
-          const reply = pickJailbreakFallbackReply()
-          return safeSendReply(ctx, liveSession, reply, randomTriggered, resolveBot, randomSendOptions)
-        }
+        const recentUserMessages = getRecentUserMessages(liveSession, 4)
+        let route = heuristicRoute(userText, 'qq', { recentUserMessages })
+        if (isJailbreakAttempt(sanitizeUserInput(userText))) route = { useAgent: false, reason: 'jailbreak-chat-guard' }
         if (route.useAgent) {
           logDebug(ctx, 'agent', `auto-route reason=${route.reason} channel=${channelKey}`)
-          const searchRunOptions = buildExplicitSearchRunOptions(userText)
+          const searchRunOptions = buildExplicitSearchRunOptions(userText, { recentUserMessages })
           const agentConfig = require('./agent/config').getAgentConfig()
           configureAgentQueue(agentConfig.queue || {})
           try {
@@ -1359,7 +1407,7 @@ exports.apply = (ctx) => {
               channelKey,
               userId: currentUserId,
               timeoutMs: agentConfig.queue?.timeoutMs,
-              fn: () => agentEngine.run({ userMessage: userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: resolveBot(), agentMode: true, ...searchRunOptions }),
+              fn: () => agentEngine.run({ userMessage: searchRunOptions.agentUserMessage || userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: resolveBot(), agentMode: true, ...searchRunOptions }),
             })
             const finalReply = await retellAgentResult(agentResult, { ctx, session: liveSession, channelKey, currentUserId, userName, userText, randomTriggered })
             return safeSendReply(ctx, liveSession, finalReply, randomTriggered, resolveBot, randomSendOptions)

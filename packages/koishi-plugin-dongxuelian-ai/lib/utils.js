@@ -276,6 +276,14 @@ const THINKING_LEAK_PATTERNS = [
   /我记得.{0,30}(?:性格设定|人设|设定)/,
   /这个(?:场景|情况|上下文).{0,30}(?:看起来|应该是)/,
   /我应该.{0,40}(?:回应|回复|接话|吐槽)/,
+  /我(?:需要|得|要|应该).{0,60}(?:解释|确认|安抚|承认|提供|给出|保持|避免|调用|读取)/,
+  /我会调用\s*[a-zA-Z_][\w.:-]*\s*(?:函数|工具)?/,
+  /(?:read_image_history|analyze_historical_image|web_search|web_fetch)\s*(?:函数|工具|来|获取|查看|分析)/i,
+  /用户(?:现在)?(?:是在|在|刚刚|可能|应该|想|需要|质疑).{0,80}(?:引用|重复|测试|问|说|让我|评价|质疑|遇到|觉得)/,
+  /(?:保持|使用|用).{0,20}(?:人设|人格|口吻|语气|风格)/,
+  /(?:避免使用|不要使用).{0,20}(?:专业术语|markdown|代码块|工具|搜索过程)/,
+  /(?:首先|然后|接着|最后)[，,].{0,80}(?:我|应该|需要|可以)/,
+  /(?:这可能是|他们可能|用户可能).{0,80}(?:测试|遇到|觉得|没有|想要)/,
   /我得.{0,30}(?:接上|顺着).{0,30}(?:话茬|意思)/,
   /可以顺着.{0,30}(?:意思|话茬).{0,30}(?:说|回复)/,
   /我现在(?:处于|是).{0,30}(?:模式|人设|角色)/,
@@ -374,6 +382,9 @@ function getSessionMessageSegments(session) {
 
 function stripMarkdownForQQ(text) {
   let t = String(text)
+  t = t.replace(/```[a-zA-Z0-9_-]*\s*([\s\S]*?)```/g, '$1')
+  t = t.replace(/^```[a-zA-Z0-9_-]*\s*/g, '')
+  t = t.replace(/```/g, '')
   t = t.replace(/^#{1,6}\s+/gm, '')
   t = t.replace(/\*\*([^*]+)\*\*/g, '$1')
   t = t.replace(/\*([^*]+)\*/g, '$1')
@@ -415,6 +426,92 @@ function splitSentences(text) {
   }
   if (carry) parts.push(carry)
   return parts.filter(Boolean)
+}
+
+const QQ_BUBBLE_SOFT_CHARS = 190
+const QQ_BUBBLE_HARD_CHARS = 420
+const QQ_BUBBLE_SOFT_MAX_PARTS = 3
+const QQ_BUBBLE_HARD_MAX_PARTS = 5
+
+function pushWrappedBubble(parts, text, softChars = QQ_BUBBLE_SOFT_CHARS) {
+  const value = String(text || '').trim()
+  if (!value) return
+  if (value.length <= QQ_BUBBLE_HARD_CHARS) {
+    parts.push(value)
+    return
+  }
+  let current = ''
+  for (const sentence of splitSentences(value)) {
+    const piece = sentence.trim()
+    if (!piece) continue
+    if (!current) {
+      current = piece
+    } else if (current.length + piece.length <= softChars) {
+      current += piece
+    } else {
+      parts.push(current.trim())
+      current = piece
+    }
+    while (current.length > QQ_BUBBLE_HARD_CHARS) {
+      parts.push(current.slice(0, QQ_BUBBLE_HARD_CHARS).trim())
+      current = current.slice(QQ_BUBBLE_HARD_CHARS).trim()
+    }
+  }
+  if (current) parts.push(current.trim())
+}
+
+function mergeQQBubbles(parts, targetMax = QQ_BUBBLE_SOFT_MAX_PARTS) {
+  const clean = parts.map(part => String(part || '').trim()).filter(Boolean)
+  if (clean.length <= targetMax) return clean
+  const merged = []
+  let current = ''
+  for (const part of clean) {
+    const next = current ? `${current}\n${part}` : part
+    if (current && next.length > QQ_BUBBLE_HARD_CHARS) {
+      merged.push(current)
+      current = part
+    } else {
+      current = next
+    }
+  }
+  if (current) merged.push(current)
+  if (merged.length <= QQ_BUBBLE_HARD_MAX_PARTS) return merged
+  return rebalanceQQBubbles(clean, QQ_BUBBLE_HARD_MAX_PARTS)
+}
+
+function rebalanceQQBubbles(parts, maxParts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0) + Math.max(0, parts.length - 1)
+  const targetChars = Math.max(QQ_BUBBLE_HARD_CHARS, Math.ceil(total / Math.max(1, maxParts)))
+  const result = []
+  let current = ''
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i]
+    const next = current ? `${current}\n${part}` : part
+    const groupsLeft = maxParts - result.length
+    if (current && next.length > targetChars && groupsLeft > 1) {
+      result.push(current)
+      current = part
+    } else {
+      current = next
+    }
+  }
+  if (current) result.push(current)
+  return result
+}
+
+function splitReplyForQQBubbles(text, options = {}) {
+  const raw = String(text || '').replace(/\r\n/g, '\n').trim()
+  if (!raw) return []
+  const softChars = Number(options.softChars) > 0 ? Number(options.softChars) : QQ_BUBBLE_SOFT_CHARS
+  const targetMax = Number(options.maxParts) > 0 ? Number(options.maxParts) : QQ_BUBBLE_SOFT_MAX_PARTS
+  const paragraphs = raw
+    .split(/\n{2,}/)
+    .map(part => part.replace(/[ \t]*\n[ \t]*/g, '\n').trim())
+    .filter(Boolean)
+  const natural = paragraphs.length ? paragraphs : [raw]
+  const parts = []
+  for (const paragraph of natural) pushWrappedBubble(parts, paragraph, softChars)
+  return mergeQQBubbles(parts, targetMax)
 }
 
 /** 中国（上海）日历日 YYYY-MM-DD，与 TODAY_CACHE / 群日报对齐 */
@@ -485,6 +582,6 @@ module.exports = {
   calculateWillFactor, isSemanticProfile,
   getSegmentData, getSessionMessageSegments,
   getModelDisplayName, getSearchCapability, formatSearchStatus,
-  trimReply, sanitizeReply, stripMarkdownForQQ, splitSentences,
+  trimReply, sanitizeReply, stripMarkdownForQQ, splitSentences, splitReplyForQQBubbles,
   todayCst, formatShanghaiTime24h, getShanghaiHourFromTs, todayCstMinusDays,
 }

@@ -1,6 +1,23 @@
 const path = require('path')
+const fs = require('fs')
 const { withScenario } = require('./_setup')
 const { AI_ROOT } = require('../fake/file')
+const { mockFetch } = require('../fake/fetch')
+
+const ONE_PIXEL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
+  'base64'
+)
+
+async function withFetch(mocked, fn) {
+  const originalFetch = global.fetch
+  global.fetch = mocked.fetch
+  try {
+    return await fn()
+  } finally {
+    global.fetch = originalFetch
+  }
+}
 
 async function run(t) {
   t.section('scenario: vision session helpers')
@@ -65,6 +82,65 @@ async function run(t) {
       includeQuote: true,
     })
     t.check('scenario vision plain text does not mark session', !marked && !vision.isVisionSession(session), JSON.stringify(vision.getVisionPayload(session)))
+  })
+
+  await withScenario({}, async ({ makeSession, run, data }) => {
+    const session = makeSession({
+      content: '<img src="file://D:\\qq\\nt_data\\Pic\\Thumb\\local-only.jpg" />',
+      messageId: 'img-file-only',
+      event: { sender: { role: 'member' }, message: [
+        { type: 'image', data: { file: 'local-only.jpg' } },
+      ] },
+    })
+    await run(session, { flushTicks: 20 })
+    const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
+    const entry = await store.getImageEntry(session.guildId, 'img-file-only')
+    t.check('scenario image history stores file-only QQ image', entry && entry.file === 'local-only.jpg' && entry.url === '', JSON.stringify(entry))
+    t.check('scenario image history file created', fs.existsSync(data.pathFor('image-history', `${session.guildId}.json`)), data.dataDir)
+  })
+
+  await withScenario({}, async ({ data }) => {
+    data.writeText('ai-model.txt', 'qwen3.5-omni-flash')
+    try { require(path.join(AI_ROOT, 'lib', 'runtime-config.js')).resetConfigCache() } catch {}
+    const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
+    const chatTools = require(path.join(AI_ROOT, 'lib', 'chat-tools.js'))
+    await store.storeImageUrl('group-image-tool', 'msg-file-tool', '', 'tool-local.jpg', { conversationKey: 'group-image-tool::user-a', userId: 'user-a' })
+    await store.cacheImageFile('group-image-tool', 'msg-file-tool', ONE_PIXEL_PNG)
+    const mocked = mockFetch([{ json: { choices: [{ message: { content: '图片里有一只橙色小猫。' } }] } }])
+    await withFetch(mocked, async () => {
+      const result = await chatTools.handleChatToolCalls([{
+        id: 'tool-img',
+        type: 'function',
+        function: { name: 'analyze_historical_image', arguments: '{"messageId":"msg-file-tool","question":"评价一下这张图"}' },
+      }], { channelKey: 'group-image-tool' })
+      const content = result.results[0]?.content || ''
+      t.check('scenario chat image tool returns analysis in current turn', content.includes('橙色小猫'), JSON.stringify(result))
+      const entry = await store.getImageEntry('group-image-tool', 'msg-file-tool')
+      t.check('scenario chat image tool writes analysis back', entry && entry.analyzed && /橙色小猫/.test(entry.analysis || ''), JSON.stringify(entry))
+    })
+  })
+
+  await withScenario({}, async ({ makeSession }) => {
+    const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    const session = makeSession({
+      guildId: 'group-image-memory',
+      userId: 'user-image-memory',
+      messageId: 'img-memory-first',
+      content: '[图片]',
+    })
+    conversation.saveConversationTurn(session, '用户(tester)：[图片]', '')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    await store.storeImageUrl('group-image-memory', 'img-memory-first', '', 'memory-first.jpg', {
+      conversationKey: conversation.getConversationKey(session),
+      userId: session.userId,
+    })
+    const replaced = await store.replaceImagePlaceholder('group-image-memory', 'img-memory-first', '图里是一张期末复习资料截图。')
+    const history = conversation.getConversationHistory(session)
+    t.check('scenario image placeholder replacement succeeds before third disk flush', replaced, JSON.stringify(history))
+    t.check('scenario image placeholder updates hot conversation cache', history.some(item => /\[图片\]: 图里是一张期末复习资料截图/.test(item.content || '')), JSON.stringify(history))
+    const disk = conversation.readConversationDisk(conversation.getConversationKey(session))
+    t.check('scenario image placeholder writes disk snapshot too', disk && disk.messages.some(item => /\[图片\]: 图里是一张期末复习资料截图/.test(item.content || '')), JSON.stringify(disk))
   })
 }
 

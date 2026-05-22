@@ -23,7 +23,7 @@ const { MAX_TOOL_ROUNDS } = require('../constants')
 
 const MAX_ROUNDS = MAX_TOOL_ROUNDS
 const MAX_TOOLS_PER_ROUND = 3
-const MAX_WEB_SEARCH_CALLS = 3
+const MAX_WEB_SEARCH_CALLS = 6
 
 function normalizeToolCall(toolName, args = {}) {
   return {
@@ -239,6 +239,7 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
   const allSystemExtra = mergeAgentSystemExtra(personaExtra, workspaceExtra, systemExtra, skillSummary ? [{ role: 'system', content: skillSummary }] : [])
   const messages = buildAgentMessages({ userMessage, userName, tools, systemExtra: allSystemExtra, history, agentMode })
   const toolResults = []
+  let toolCount = 0
   for (const item of Array.isArray(preExecuteTools) ? preExecuteTools : []) {
     if (!item || !item.name) continue
     if (forceToolSet.has(item.name)) allowedToolNames.add(item.name)
@@ -248,15 +249,16 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
       content: null,
       tool_calls: [{ id: call.id, type: call.type, function: call.function }],
     })
-    const outcome = await executeAgentToolCall({ tc: call, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount: 0, bot })
+    const outcome = await executeAgentToolCall({ tc: call, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, bot })
+    toolCount = outcome.toolCount
     if (outcome.status === 'pending') {
-      recordAgentSession({ channel, channelKey, userId, userName, userMessage, reply: outcome.reply, toolCalls: 0, pendingId: outcome.pendingId })
-      return { reply: outcome.reply, toolCalls: 0, pendingId: outcome.pendingId, toolResults }
+      recordAgentSession({ channel, channelKey, userId, userName, userMessage, reply: outcome.reply, toolCalls: toolCount, pendingId: outcome.pendingId })
+      return { reply: outcome.reply, toolCalls: toolCount, pendingId: outcome.pendingId, toolResults }
     }
     toolResults.push({ name: call.function.name, result: String(outcome.result || '').slice(0, 8000) })
     messages.push({ role: 'tool', tool_call_id: call.id, content: await externalizeToolResult(outcome.result, call.function.name) })
   }
-  const agentResult = await continueAgent({ messages, config, tools, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolResults, onProgress, bot, enableThinking })
+  const agentResult = await continueAgent({ messages, config, tools, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, toolResults, onProgress, bot, enableThinking })
   onAgentReplyComplete({ userId, channel, messages }).catch(e => console.warn('[agent-engine] onAgentReplyComplete error:', e.message || e))
   return agentResult
 }

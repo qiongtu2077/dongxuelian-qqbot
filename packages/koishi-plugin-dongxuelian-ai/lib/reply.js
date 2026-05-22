@@ -8,7 +8,7 @@ const path = require('path')
 const { h } = require('koishi')
 const { STICKER_DIR, THROTTLE_CONFIG_FILE } = require('./constants')
 const { getChannelKey, saveSharedChannelTurn } = require('./conversation')
-const { splitSentences, sleep, getRandomDelayMs, readJsonFile } = require('./utils')
+const { splitReplyForQQBubbles, sleep, getRandomDelayMs, readJsonFile } = require('./utils')
 const { logDebug } = require('./logging-config')
 
 const STICKER_GLOBAL_COOLDOWN_MS = 30000
@@ -240,7 +240,7 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
       addPendingSticker(matched.file)
     }
   }
-  const parts = splitSentences(reply)
+  const parts = splitReplyForQQBubbles(reply)
   const msgId = session.messageId
   const forcedQuoteId = options.forceQuote ? String(options.quoteMessageId || msgId || '') : ''
   const quotePrefix = forcedQuoteId

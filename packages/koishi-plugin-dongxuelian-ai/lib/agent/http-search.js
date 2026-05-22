@@ -14,9 +14,9 @@ const HTTP_SEARCH_ENDPOINTS = [
   { name: 'DuckDuckGo HTML', url: query => `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}` },
 ]
 const HTTP_SEARCH_DEFAULT_TIMEOUT_MS = 5000
-const HTTP_SEARCH_DEFAULT_TOTAL_TIMEOUT_MS = 25000
+const HTTP_SEARCH_DEFAULT_TOTAL_TIMEOUT_MS = 45000
 const HTTP_SEARCH_DEFAULT_MAX_BYTES = 512 * 1024
-const HTTP_SEARCH_DEFAULT_QUERY_LIMIT = 4
+const HTTP_SEARCH_DEFAULT_QUERY_LIMIT = 6
 const HTTP_SEARCH_DEFAULT_PAGE_LIMIT = 2
 const HTTP_SEARCH_DEFAULT_PAGE_MAX_BYTES = 512 * 1024
 const HTTP_SEARCH_DEFAULT_PAGE_TEXT_CHARS = 3200
@@ -34,9 +34,9 @@ function parseHttpSearchPositiveInt(value, fallback, min, max) {
 function getHttpSearchLimits(options = {}) {
   return {
     timeoutMs: parseHttpSearchPositiveInt(options.timeoutMs || process.env.DONGXUELIAN_HTTP_SEARCH_TIMEOUT_MS, HTTP_SEARCH_DEFAULT_TIMEOUT_MS, 1000, 15000),
-    totalTimeoutMs: parseHttpSearchPositiveInt(options.totalTimeoutMs || process.env.DONGXUELIAN_HTTP_SEARCH_TOTAL_TIMEOUT_MS, HTTP_SEARCH_DEFAULT_TOTAL_TIMEOUT_MS, 2000, 45000),
+    totalTimeoutMs: parseHttpSearchPositiveInt(options.totalTimeoutMs || process.env.DONGXUELIAN_HTTP_SEARCH_TOTAL_TIMEOUT_MS, HTTP_SEARCH_DEFAULT_TOTAL_TIMEOUT_MS, 2000, 90000),
     maxBytes: parseHttpSearchPositiveInt(options.maxBytes || process.env.DONGXUELIAN_HTTP_SEARCH_MAX_BYTES, HTTP_SEARCH_DEFAULT_MAX_BYTES, 64 * 1024, 2 * 1024 * 1024),
-    queryLimit: parseHttpSearchPositiveInt(options.queryLimit || process.env.DONGXUELIAN_HTTP_SEARCH_QUERY_LIMIT, HTTP_SEARCH_DEFAULT_QUERY_LIMIT, 1, 4),
+    queryLimit: parseHttpSearchPositiveInt(options.queryLimit || process.env.DONGXUELIAN_HTTP_SEARCH_QUERY_LIMIT, HTTP_SEARCH_DEFAULT_QUERY_LIMIT, 1, 6),
     pageLimit: parseHttpSearchPositiveInt(options.pageLimit || process.env.DONGXUELIAN_HTTP_SEARCH_PAGE_LIMIT, HTTP_SEARCH_DEFAULT_PAGE_LIMIT, 0, 4),
     pageMaxBytes: parseHttpSearchPositiveInt(options.pageMaxBytes || process.env.DONGXUELIAN_HTTP_SEARCH_PAGE_MAX_BYTES, HTTP_SEARCH_DEFAULT_PAGE_MAX_BYTES, 32 * 1024, 1024 * 1024),
     pageTextChars: parseHttpSearchPositiveInt(options.pageTextChars || process.env.DONGXUELIAN_HTTP_SEARCH_PAGE_TEXT_CHARS, HTTP_SEARCH_DEFAULT_PAGE_TEXT_CHARS, 300, 4000),
@@ -379,7 +379,7 @@ async function runHttpSearch(queries = [], options = {}) {
   if (!firstQuery) return { ok: false, text: buildSearchFailureText('', ['query 为空']), failures, status: 'hard_fail' }
 
   const startedAt = Date.now()
-  const maxRetries = 2
+  const maxRetries = 5
   const usedQueries = new Set(queryList.map(q => q.toLowerCase()))
   let currentQueries = queryList
   let bestWeakResult = null

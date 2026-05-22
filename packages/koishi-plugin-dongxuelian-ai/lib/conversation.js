@@ -17,7 +17,7 @@ const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
   USER_PROFILE_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE,
   DATA_DIR,
 } = require('./constants')
-const { readTextFile, readJsonFile, writeJsonFile, splitSentences, sanitizeUserName, todayCst, todayCstMinusDays, formatShanghaiTime24h } = require('./utils')
+const { readTextFile, readJsonFile, writeJsonFile, sanitizeUserName, todayCst, todayCstMinusDays, formatShanghaiTime24h } = require('./utils')
 const { normalizeText } = require('./message-reader')
 const { requestChatCompletions } = require('./api')
 const { loadConfig } = require('./runtime-config')
@@ -75,6 +75,12 @@ function readJsonFileIfSmallSync(file, maxBytes, fallback = null, options = {}) 
 
 function safeChannelKey(value = '') {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_') || 'unknown'
+}
+
+function getConversationFileSafeKeys(key = '') {
+  const portable = String(key || '').replace(/[^a-zA-Z0-9._-]/g, '_') || 'unknown'
+  const legacy = String(key || '').replace(/[^a-zA-Z0-9.:_-]/g, '_') || 'unknown'
+  return portable === legacy ? [portable] : [portable, legacy]
 }
 
 function getLastMessageTs(items = []) {
@@ -137,12 +143,58 @@ function getChannelKey(session) { return String(session.guildId || session.chann
 function touchConversation(session) { conversationLastActiveAt.set(getConversationKey(session), Date.now()) }
 
 function readConversationDisk(key) {
-  const safeKey = String(key).replace(/[^a-zA-Z0-9.:_-]/g, '_')
-  return readJsonFileIfSmallSync(path.join(CONVERSATIONS_DIR, safeKey + '.json'), MAX_CONVERSATION_FILE_BYTES, null, { unlinkOversize: true })
+  for (const safeKey of getConversationFileSafeKeys(key)) {
+    const data = readJsonFileIfSmallSync(path.join(CONVERSATIONS_DIR, safeKey + '.json'), MAX_CONVERSATION_FILE_BYTES, null, { unlinkOversize: true })
+    if (data) return data
+  }
+  return null
 }
 
 function writeConversationDisk(key, data) {
-  try { const safeKey = String(key).replace(/[^a-zA-Z0-9.:_-]/g, '_'); require('fs').mkdirSync(CONVERSATIONS_DIR, { recursive: true }); require('fs').writeFileSync(path.join(CONVERSATIONS_DIR, safeKey + '.json'), JSON.stringify(data), 'utf8') } catch {}
+  try { const safeKey = getConversationFileSafeKeys(key)[0]; require('fs').mkdirSync(CONVERSATIONS_DIR, { recursive: true }); require('fs').writeFileSync(path.join(CONVERSATIONS_DIR, safeKey + '.json'), JSON.stringify(data), 'utf8') } catch {}
+}
+
+function isImagePlaceholderMessage(msg, messageId) {
+  if (!msg || msg.role !== 'user' || !msg.content || !String(msg.content).includes('[图片]')) return false
+  if (String(msg.content || '').includes('[图片]:')) return false
+  if (String(msg.messageId || '') === String(messageId)) return true
+  const meta = msg.meta && typeof msg.meta === 'object' ? msg.meta : null
+  return !!(meta && String(meta.messageId || '') === String(messageId))
+}
+
+function replaceImagePlaceholderInMessages(messages = [], messageId = '', analysis = '') {
+  if (!Array.isArray(messages) || !messageId || !analysis) return false
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i]
+    if (isImagePlaceholderMessage(msg, messageId)) {
+      msg.content = String(msg.content).replace('[图片]', `[图片]: ${String(analysis).slice(0, 200)}`)
+      return true
+    }
+  }
+  return false
+}
+
+function replaceImagePlaceholderInConversation(key, messageId, analysis) {
+  if (!key || !messageId || !analysis) return Promise.resolve(false)
+  return enqueueWrite(key, () => {
+    let replaced = false
+    const diskData = readConversationDisk(key) || { summary: '', summaryTotal: 0, totalCount: 0, messages: [] }
+    const mergedMessages = mergeConversationMessages(diskData.messages, conversationCache.get(key))
+    if (replaceImagePlaceholderInMessages(mergedMessages, messageId, analysis)) {
+      diskData.messages = mergedMessages
+      diskData.totalCount = Math.max(Number(diskData.totalCount || 0), mergedMessages.filter(item => item && item.role === 'user').length)
+      writeConversationDisk(key, diskData)
+      replaced = true
+    }
+    if (!replaced && replaceImagePlaceholderInMessages(diskData.messages, messageId, analysis)) {
+      writeConversationDisk(key, diskData)
+      replaced = true
+    }
+    if (replaced) {
+      conversationCache.set(key, (diskData.messages || mergedMessages).slice(-MEMORY_HISTORY_LIMIT))
+    }
+    return replaced
+  })
 }
 
 function getConversationHistory(session) {
@@ -190,8 +242,11 @@ function saveConversationTurn(session, userText, replyText) {
     const diskData = readConversationDisk(key) || { summary: '', summaryTotal: 0, totalCount: 0, messages: [] }
     diskData.messages = mergeConversationMessages(diskData.messages, conversationCache.get(key))
     diskData.totalCount = Math.max(Number(diskData.totalCount || 0), diskData.messages.filter(item => item && item.role === 'user').length)
-    const assistantParts = splitSentences(replyText).filter(p => p.trim()).map(part => ({ role: 'assistant', content: normalizeText(part) }))
-    diskData.messages.push({ role: 'user', content: userText, messageId: String(session.messageId || '') }, ...assistantParts); diskData.totalCount++
+    const assistantText = normalizeText(replyText)
+    diskData.messages.push(
+      { role: 'user', content: userText, messageId: String(session.messageId || '') },
+      ...(assistantText ? [{ role: 'assistant', content: assistantText }] : [])
+    ); diskData.totalCount++
     if (diskData.messages.length > MAX_HISTORY_MESSAGES) diskData.messages.splice(0, diskData.messages.length - MAX_HISTORY_MESSAGES)
     conversationCache.set(key, diskData.messages.slice(-MEMORY_HISTORY_LIMIT))
     if (diskData.totalCount % 3 === 0) writeConversationDisk(key, diskData)
@@ -229,7 +284,9 @@ function clearConversationHistory() { conversationCache = new Map(); replyFinger
 
 function clearUserConversationHistory(session) {
   const key = getConversationKey(session); conversationCache.delete(key); replyFingerprintCache.delete(key); conversationLastActiveAt.delete(key)
-  try { require('fs').unlinkSync(path.join(CONVERSATIONS_DIR, String(key).replace(/[^a-zA-Z0-9.:_-]/g, '_') + '.json')) } catch {}
+  for (const safeKey of getConversationFileSafeKeys(key)) {
+    try { require('fs').unlinkSync(path.join(CONVERSATIONS_DIR, safeKey + '.json')) } catch {}
+  }
 }
 
 function getReplyFingerprintHistory(session) { return replyFingerprintCache.get(getConversationKey(session)) || [] }
@@ -266,6 +323,39 @@ function normalizeUserMessageForPrompt(message) {
 }
 
 function getRecentUserMessages(session, limit = 3) { return getConversationHistory(session).filter(m => m.role === 'user').slice(-limit).map(m => getUserMessageContent(m.content)) }
+
+function looksLikeShortContextFollowUp(text = '') {
+  const value = normalizeText(text)
+  if (!value) return false
+  if (value.length <= 8) return true
+  if (value.length <= 18 && /(?:评价一下|怎么看|咋看|真的吗|真的|然后呢|为啥|怎么说|看看|看看你的|讲讲|细说|展开|这个呢|那这个|这图|这张图)/.test(value)) return true
+  return false
+}
+
+function buildRecentPublicTopicNote(items = [], currentUserId = '', options = {}) {
+  if (!Array.isArray(items) || !items.length) return ''
+  const currentText = normalizeText(options.currentText || '')
+  if (!looksLikeShortContextFollowUp(currentText)) return ''
+  const recent = items
+    .filter(item => item && item.content)
+    .slice(-8)
+  if (!recent.length) return ''
+  const candidates = []
+  for (let i = recent.length - 1; i >= 0; i -= 1) {
+    const item = recent[i]
+    const content = normalizeText(item.content)
+    if (!content) continue
+    if (item.role === 'assistant') {
+      candidates.push(`你刚才说过：${content.slice(0, 160)}`)
+    } else {
+      const who = String(item.userId || '') === String(currentUserId || '') ? '当前用户刚才说' : `${item.speakerName || '群友'}刚才说`
+      candidates.push(`${who}：${content.slice(0, 160)}`)
+    }
+    if (candidates.length >= 4) break
+  }
+  if (!candidates.length) return ''
+  return `[短句/指代跟进候选]\n当前用户说"${currentText}"这类短句时，优先承接下面最近公共话题或你刚才说过的话；昵称只用于区分发言者，不是默认评价对象。\n${candidates.reverse().join('\n')}`
+}
 
 function flushTodayCacheToDisk(channelKey) {
   const cache = channelTodayCache.get(channelKey)
@@ -535,11 +625,20 @@ function getSharedContextNote(session, currentUserId = '', options = {}) {
   const replyChain = collectReplyChain(channelKey, options.replyToId)
   const focusUserIds = new Set([String(currentUserId || '')].filter(Boolean)); const focusMessageIds = new Set()
   const mentionUserIds = Array.isArray(options.mentionUserIds) ? options.mentionUserIds.map(String).filter(Boolean) : []
+  const shortTopicNote = buildRecentPublicTopicNote(items, currentUserId, options)
   mentionUserIds.forEach(u => focusUserIds.add(u)); replyChain.forEach(item => { if (item.userId) focusUserIds.add(String(item.userId)); if (item.messageId) focusMessageIds.add(String(item.messageId)) })
   if (!replyChain.length && currentUserId) { items.slice(-MAX_THREAD_CONTEXT_MESSAGES).filter(item => item.userId !== currentUserId && item.mentionUserIds.includes(currentUserId)).forEach(item => { if (item.userId) focusUserIds.add(String(item.userId)); item.mentionUserIds.forEach(u => focusUserIds.add(String(u))) }) }
   let scoped = items.filter(item => { if (item.role === 'assistant' && !focusMessageIds.has(String(item.messageId || ''))) return false; if (focusMessageIds.has(String(item.messageId || ''))) return true; if (focusUserIds.has(String(item.userId || ''))) return true; return item.mentionUserIds.some(u => focusUserIds.has(String(u))) })
   if (!scoped.length && options.randomTriggered && currentUserId) scoped = items.filter(item => item.role !== 'assistant' && item.userId === currentUserId)
   if (!scoped.length) scoped = items.filter(item => item.role !== 'assistant').slice(-Math.min(MAX_THREAD_CONTEXT_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES))
+  if (shortTopicNote) {
+    const recentForShort = items.slice(-Math.min(MAX_THREAD_CONTEXT_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES))
+    const seen = new Set(scoped.map(item => String(item.messageId || '') + ':' + item.role + ':' + item.content))
+    for (const item of recentForShort) {
+      const key = String(item.messageId || '') + ':' + item.role + ':' + item.content
+      if (!seen.has(key)) scoped.push(item)
+    }
+  }
   const IDLE_GAP_MS = 10 * 60 * 1000
   const itemsToMap = scoped.slice(-Math.min(MAX_THREAD_CONTEXT_MESSAGES, MAX_CHANNEL_PROMPT_MESSAGES))
   const lines = []
@@ -550,7 +649,7 @@ function getSharedContextNote(session, currentUserId = '', options = {}) {
     lines.push(`${itemsToMap[i].speakerName}(${itemsToMap[i].role === 'assistant' ? '东雪莲' : '群友'})：${itemsToMap[i].content}`)
   }
   if (!lines.length) return ''
-  return `[群聊当前话题背景]\n下面只保留当前回复链或当前参与者相关的纯文本消息。优先理解这一个子话题，不要把别人的并行聊天混进来。\n${lines.join('\n')}`
+  return `[群聊当前话题背景]\n下面只保留当前回复链、当前参与者或短句跟进可能需要的纯文本消息。优先理解最近公共话题和明确回复链，不要把昵称当成默认评价对象。\n${shortTopicNote ? `${shortTopicNote}\n` : ''}${lines.join('\n')}`
 }
 
 function saveSensitiveCache(channelKey, value, speakerName, userId) {
@@ -631,7 +730,7 @@ module.exports = {
   conversationLastActiveAt, channelSharedCache, lastForwardSummaryCache,
   pendingSensitiveAlert, channelTodayCache,
   getConversationKey, getChannelKey, touchConversation,
-  readConversationDisk, writeConversationDisk,
+  readConversationDisk, writeConversationDisk, replaceImagePlaceholderInConversation,
   getConversationHistory, saveConversationTurn, mergeConversationMessages, generateConversationSummary,
   clearConversationHistory, clearUserConversationHistory,
   getReplyFingerprintHistory, saveReplyFingerprint,

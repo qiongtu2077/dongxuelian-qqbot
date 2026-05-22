@@ -7,6 +7,7 @@
 const { saveConversationTurn, getChannelKey } = require('./conversation')
 const { sanitizeUserName } = require('./utils')
 const { normalizeText } = require('./message-reader')
+const { redactAgentMaterial } = require('./agent-retell-guard')
 
 const RECENT_AGENT_CONTEXT_TTL_MS = 10 * 60 * 1000
 const MAX_RECENT_AGENT_CONTEXT_ENTRIES = 200
@@ -34,16 +35,28 @@ function trimRecentAgentContextCache(now = Date.now()) {
 }
 
 function extractSearchSummary(text = '') {
-  const value = String(text || '')
+  const value = redactAgentMaterial(String(text || ''))
   if (!value) return ''
   const lines = value
     .split(/\r?\n/)
     .map(line => line.trim())
     .filter(Boolean)
   const kept = []
+  let bodyStarted = false
   for (const line of lines) {
-    if (/^(已搜索|搜索结果|打开候选网页|候选网页正文|来源|参考|API 搜索|轻量 HTTP 搜索|Chromium|为避免低内存服务器 OOM)/.test(line)) {
+    if (/^(已搜索|搜索结果|搜索状态|打开候选网页|候选网页正文|来源|参考|API 搜索|轻量 HTTP 搜索|Chromium|为避免低内存服务器 OOM|URL：|最终 URL：|状态：|类型：|标题：|正文质量：|提示：)/.test(line)) {
       kept.push(line)
+      bodyStarted = /^正文[:：]?/.test(line)
+      continue
+    }
+    if (/^正文[:：]?/.test(line)) {
+      bodyStarted = true
+      kept.push(line)
+      continue
+    }
+    if (bodyStarted) {
+      kept.push(line)
+      if (kept.join('\n').length >= MAX_TOOL_SUMMARY_CHARS) break
       continue
     }
     if (/^\d+\.\s/.test(line) || /^https?:\/\//i.test(line) || /https?:\/\//i.test(line)) {
@@ -57,7 +70,7 @@ function extractSearchSummary(text = '') {
 }
 
 function extractFetchSummary(text = '') {
-  const value = normalizeText(text)
+  const value = normalizeText(redactAgentMaterial(text))
   if (!value) return ''
   const lines = value
     .split(/\r?\n/)
@@ -86,7 +99,7 @@ function summarizeAgentToolResults(toolResults = []) {
   const parts = []
   for (const item of items.slice(-6)) {
     const name = String(item && item.name || 'tool')
-    const text = String(item && item.result || '')
+    const text = redactAgentMaterial(String(item && item.result || ''))
     if (!text) continue
     const summary = name === 'web_search'
       ? extractSearchSummary(text)
@@ -99,7 +112,7 @@ function summarizeAgentToolResults(toolResults = []) {
 }
 
 function recordAgentChatResult({ session, userMessage = '', userName = '用户', userId = '', channelKey = '', agentResult = {} } = {}) {
-  const reply = normalizeText(agentResult && agentResult.reply || '')
+  const reply = normalizeText(redactAgentMaterial(agentResult && agentResult.reply || ''))
   if (!reply || /^\(Agent 未获取到有效回复\)/.test(reply)) return null
   if (agentResult && agentResult.pendingId) return null
 
