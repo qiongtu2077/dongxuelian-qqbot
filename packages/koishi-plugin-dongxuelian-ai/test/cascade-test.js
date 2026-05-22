@@ -113,6 +113,11 @@ const COVERAGE_MAP = [
     needles: ['scenario: vision session helpers', 'scenario vision quoted image marks session', 'scenario vision clear removes current image marker'],
   },
   {
+    behavior: 'file history and natural reading',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'file.test.js'),
+    needles: ['scenario: file history and natural reading', 'scenario empty group file stores metadata before early return', 'scenario read file command sends natural summary'],
+  },
+  {
     behavior: 'random proactive reply behavior',
     file: path.join(AI_ROOT, 'test', 'scenarios', 'random.test.js'),
     needles: ['scenario: random reply trigger', 'scenario random whitelisted rate 100 sends reply', 'scenario empty random whitelist does not call model'],
@@ -540,6 +545,9 @@ async function main() {
     expressionShadowRouter: path.join(LIB, 'expression-shadow-router'),
     api: path.join(LIB, 'api'),
     conversation: path.join(LIB, 'conversation'),
+    fileSafety: path.join(LIB, 'file-safety'),
+    fileStore: path.join(LIB, 'file-store'),
+    fileAnalyzer: path.join(LIB, 'file-analyzer'),
     handler: path.join(LIB, 'handler'),
     commandResult: path.join(LIB, 'commands', 'command-result'),
     voiceCommand: path.join(LIB, 'commands', 'voice-command'),
@@ -553,6 +561,7 @@ async function main() {
     chatMemory: path.join(LIB, 'chat-memory'),
     agentChatBridge: path.join(LIB, 'agent-chat-bridge'),
     agentRetellGuard: path.join(LIB, 'agent-retell-guard'),
+    personaFallback: path.join(LIB, 'persona-fallback'),
     jailbreakRuleset: path.join(LIB, 'rulesets', 'jailbreak'),
     runtimeConfig: path.join(LIB, 'runtime-config'),
     reply: path.join(LIB, 'reply'),
@@ -621,6 +630,7 @@ async function main() {
     agentToolGetTokenUsage: path.join(LIB, 'agent', 'tools', 'get-token-usage'),
     agentToolSetUserTimezone: path.join(LIB, 'agent', 'tools', 'set-user-timezone'),
     agentToolQueryLogs: path.join(LIB, 'agent', 'tools', 'query-logs'),
+    agentToolAnalyzeFile: path.join(LIB, 'agent', 'tools', 'analyze-file'),
     rareVoice: path.join(LIB, 'rare-voice'),
     index: path.join(LIB, 'index'),
     voice: path.join(LIB, 'voice'),
@@ -704,6 +714,19 @@ async function main() {
     ],
     externalToolPolicy: [
       'externalToolsDenied', 'filterExternalToolDefinitions', 'buildExternalToolPolicyHint',
+    ],
+    fileSafety: [
+      'checkFile', 'wrapFileContent', 'unwrapFileContent', 'summarizeFileContentForChat',
+    ],
+    fileStore: [
+      'storeFile', 'getFileEntry', 'markFileAnalyzed', 'setLocalPath', 'getRecentFiles', 'getRecentFilesCached',
+    ],
+    fileAnalyzer: [
+      'enqueueFileAnalysis', 'analyzeFileNow', 'downloadFile',
+    ],
+    personaFallback: [
+      'normalizeModelText', 'isUnsafeFallbackText', 'cleanPersonaFallbackReply',
+      'buildPersonaFallbackMessages', 'generatePersonaFallbackReply',
     ],
     replyTiming: [
       'replyTimingHash', 'buildReplyTimingDiagnostic', 'formatReplyTimingDiagnostic',
@@ -871,7 +894,7 @@ async function main() {
       'normalizeIntentText', 'normalizeRequestedPath', 'resolveAgentPathInput', 'getWorkspaceSemanticCandidates', 'formatWorkspaceContext', 'buildAgentWorkspaceContext',
     ],
     agentSearchQuery: [
-      'cleanExplicitSearchQuery', 'buildSearchQueries', 'getDirectSearchCandidates', 'isWuwaLatestRoleQuery', 'isMinecraftUpdateQuery', 'isHotVideoQuery', 'getSearchHostname', 'scoreSearchResult', 'isLowQualitySearchResult', 'sortSearchResults',
+      'cleanExplicitSearchQuery', 'buildSearchQueries', 'getDirectSearchCandidates', 'isWuwaLatestRoleQuery', 'isMinecraftUpdateQuery', 'isHotVideoQuery', 'isResourceVideoQuery', 'getSearchHostname', 'scoreSearchResult', 'isLowQualitySearchResult', 'sortSearchResults',
     ],
     agentSearchResults: [
       'normalizeResultUrl', 'normalizeSearchCandidate', 'isUsefulSearchResult', 'hasQuerySignal', 'getResultDomainSignal', 'rankSearchCandidates', 'formatSearchResults', 'buildSearchFailureText', 'classifySearchResult', 'extractRetryKeywords', 'detectFailurePattern', 'buildStrategyQueries',
@@ -957,6 +980,7 @@ async function main() {
     agentToolGetTokenUsage: ['execute'],
     agentToolSetUserTimezone: ['execute'],
     agentToolQueryLogs: ['execute'],
+    agentToolAnalyzeFile: ['execute'],
     voice: [
       'extractVoicePayload', 'downloadVoiceFile', 'convertToWav', 'callModelAsr', 'transcribeVoice',
     ],
@@ -1011,7 +1035,7 @@ async function main() {
   check('jailbreak combined regexp exported', modules.jailbreakRuleset.JAILBREAK_INPUT_RE instanceof RegExp)
   check('agent plan tools array exported', Array.isArray(modules.agentPlanTools.tools) && modules.agentPlanTools.tools.length >= 5)
   check('agent memory tools array exported', Array.isArray(modules.agentToolMemoryTools.tools) && modules.agentToolMemoryTools.tools.length >= 4)
-  for (const toolModuleName of ['agentToolTime', 'agentToolCalculator', 'agentToolWebSearch', 'agentToolWebFetch', 'agentToolReadFile', 'agentToolListFiles', 'agentToolFindFiles', 'agentToolWriteFile', 'agentToolEditFile', 'agentToolShell', 'agentToolBrowserAction', 'agentToolAppendFile', 'agentToolGrepSearch', 'agentToolExecuteJavascript', 'agentToolSendFileToUser', 'agentToolGetTokenUsage', 'agentToolSetUserTimezone', 'agentToolQueryLogs']) {
+  for (const toolModuleName of ['agentToolTime', 'agentToolCalculator', 'agentToolWebSearch', 'agentToolWebFetch', 'agentToolReadFile', 'agentToolListFiles', 'agentToolFindFiles', 'agentToolWriteFile', 'agentToolEditFile', 'agentToolShell', 'agentToolBrowserAction', 'agentToolAppendFile', 'agentToolGrepSearch', 'agentToolExecuteJavascript', 'agentToolSendFileToUser', 'agentToolGetTokenUsage', 'agentToolSetUserTimezone', 'agentToolQueryLogs', 'agentToolAnalyzeFile']) {
     const tool = modules[toolModuleName]
     check(`${toolModuleName}.definition exported`, !!(tool && tool.definition && typeof tool.definition.name === 'string'))
     check(`${toolModuleName}.execute exported`, typeof tool.execute === 'function')
@@ -1140,7 +1164,12 @@ async function main() {
     path.join(LIB, 'agent', 'tools', 'get-token-usage.js'),
     path.join(LIB, 'agent', 'tools', 'set-user-timezone.js'),
     path.join(LIB, 'agent', 'tools', 'query-logs.js'),
+    path.join(LIB, 'agent', 'tools', 'analyze-file.js'),
     path.join(LIB, 'rare-voice.js'),
+    path.join(LIB, 'file-safety.js'),
+    path.join(LIB, 'file-store.js'),
+    path.join(LIB, 'file-analyzer.js'),
+    path.join(LIB, 'persona-fallback.js'),
     path.join(LIB, 'voice.js'),
     path.join(LIB, 'tts.js'),
     path.join(LIB, 'random-voice-rate.js'),
@@ -1154,7 +1183,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/analyze-file.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -1192,6 +1221,11 @@ async function main() {
   check('isReplyTooSimilar allows different replies', !u.isReplyTooSimilar('abc', 'xyz'))
   check('extractImageUrls supports CQ url', u.extractImageUrls('[CQ:image,url=https://example.com/a.png]').includes('https://example.com/a.png'))
   check('extractImageUrls supports html src', u.extractImageUrls('<img src="https://example.com/b.jpg"/>').includes('https://example.com/b.jpg'))
+  check('file safety unwraps wrapped file content', modules.fileSafety.unwrapFileContent('[用户上传文件: demo.txt]\n---文件内容开始---\nhello\nworld\n---文件内容结束---').fileName === 'demo.txt')
+  check('file safety summarizes wrapped file content naturally', modules.fileSafety.summarizeFileContentForChat('[用户上传文件: demo.txt]\n---文件内容开始---\nhello\nworld\n---文件内容结束---', 'demo.txt').includes('demo.txt 的内容大致是'))
+  check('file safety preserves plain text fallback', modules.fileSafety.unwrapFileContent('plain content').content === 'plain content')
+  check('persona fallback rejects internal draft text', modules.personaFallback.isUnsafeFallbackText(makeSession(), '用户在质疑我，我需要解释为什么'))
+  check('persona fallback cleans safe persona reply', modules.personaFallback.cleanPersonaFallbackReply(makeSession(), 'TEST_MARKER 我先换个说法。', 'tester').includes('TEST_MARKER'))
   check('getSearchCapability dashscope', u.getSearchCapability({ baseURL: c.PROVIDERS.dashscope.baseURL, model: 'qwen3.5-plus' }).supported)
   checkEqual('getSearchCapability openai unsupported nano', u.getSearchCapability({ baseURL: 'https://api.openai.com/v1', model: 'gpt-4.1-nano' }).supported, false)
   checkEqual('getSearchCapability openai responses mode', u.getSearchCapability({ baseURL: 'https://api.openai.com/v1', model: 'gpt-5.1' }).mode, 'openai-responses')
@@ -1435,6 +1469,7 @@ async function main() {
   checkEqual('repeat mface unsupported reason', candidate({ content: '[CQ:mface,file=x]' }, STR.qqStickerLike, { hasVisual: true }).reason, 'visual')
   checkEqual('repeat image unsupported reason', candidate({ content: '[CQ:image,file=x]' }, '', { hasVisual: true }).reason, 'visual')
   checkEqual('repeat file unsupported reason', candidate({ content: '[CQ:file,file=x]' }, '', { hasFile: true }).reason, 'file')
+  check('reply send guard only strips internal parenthetical hints', read(path.join(LIB, 'reply.js')).includes('stripInternalParenthetical') && read(path.join(LIB, 'reply.js')).includes('我(?:需要|应该|会|可以先)'))
   checkEqual('repeat forward unsupported reason', candidate({ content: '[CQ:forward,id=x]' }, STR.forwardLike, { hasMessageRecordCue: true }).reason, 'embed')
   const textRepeat = candidate({ content: STR.grass }, STR.grass)
   check('repeat text supported', textRepeat.supported && textRepeat.kind === 'text')
@@ -1609,12 +1644,15 @@ async function main() {
   const bridgeSummary = modules.agentChatBridge.extractSearchSummary(searchWithPages)
   check('agent chat bridge extracts compact web search summary', bridgeSummary.includes('已搜索：鸣潮 最新角色') && bridgeSummary.includes('wutheringwaves.kurogames.com'), bridgeSummary)
   check('agent chat bridge keeps opened web search body evidence', bridgeSummary.includes('正文质量：usable') && bridgeSummary.includes('候选网页正文提到新共鸣者'), bridgeSummary)
+  const followUpNote = modules.agentChatBridge.getRecentAgentContextNote({ channelKey: 'cascade-channel', userId: 'cascade-user', userMessage: '你刚刚搜到什么' })
+  check('agent chat bridge gates follow-up context by user intent', followUpNote === '', followUpNote)
   const weakSearchAgentResult = {
     reply: '我查到了，应该就是这个。',
     toolResults: [{ name: 'web_search', result: searchWithFailuresOnly }],
   }
   check('agent retell guard treats weak search candidates as failure material', modules.agentRetellGuard.hasSearchFailureMaterial(weakSearchAgentResult), searchWithFailuresOnly)
-  checkEqual('agent retell guard blocks fabricated success after weak search', modules.agentRetellGuard.guardAgentRetellReply('查到了，是新共鸣者。', weakSearchAgentResult), '这次没有拿到可靠结果，我就不硬编了。')
+  checkEqual('agent retell guard blocks fabricated success after weak search', modules.agentRetellGuard.guardAgentRetellReply('查到了，是新共鸣者。', weakSearchAgentResult), '这次搜索没有拿到可靠结果。')
+  checkEqual('agent retell guard keeps caller persona fallback for weak search', modules.agentRetellGuard.guardAgentRetellReply('查到了，是新共鸣者。', weakSearchAgentResult, { searchFailureFallback: 'TEST_PERSONA_MARKER 这次没查稳，我不乱说。' }), 'TEST_PERSONA_MARKER 这次没查稳，我不乱说。')
   const usableSearchAgentResult = {
     reply: '正文读到了。',
     toolResults: [{ name: 'web_search', result: searchWithPages }],
@@ -1673,6 +1711,9 @@ async function main() {
   const hotVideoQueries = modules.agentSearchQuery.buildSearchQueries('我的世界最近比较火的搞笑视频')
   check('agent search query detects hot video query', modules.agentSearchQuery.isHotVideoQuery('我的世界最近比较火的搞笑视频'))
   check('agent search query expands hot video query with recommendation terms', hotVideoQueries.some(item => /热门|排行|推荐/.test(item)) && hotVideoQueries.some(item => /funny|trending|popular/i.test(item)), JSON.stringify(hotVideoQueries))
+  const resourceVideoQueries = modules.agentSearchQuery.buildSearchQueries('我想看我的世界的搞笑视频')
+  check('agent search query detects resource video query', modules.agentSearchQuery.isResourceVideoQuery('我想看我的世界的搞笑视频'))
+  check('agent search query keeps resource video intent away from official-source wording', resourceVideoQueries.every(item => !/官方 公告 来源|最新 官方/.test(item)) && resourceVideoQueries.some(item => /热门|推荐|视频|搞笑|trending|popular/i.test(item)), JSON.stringify(resourceVideoQueries))
   check('agent search query returns direct official candidates', modules.agentSearchQuery.getDirectSearchCandidates('Minecraft 我的世界 更新').some(item => item.url.includes('minecraft.net')))
   check('agent search query returns direct IANA candidates', modules.agentSearchQuery.getDirectSearchCandidates('Example Domain IANA').some(item => item.url.includes('iana.org/help/example-domains')))
   check('agent search query returns direct Node.js candidates', modules.agentSearchQuery.getDirectSearchCandidates('nodejs download').some(item => item.url.includes('nodejs.org/en/download')))
@@ -1824,6 +1865,7 @@ async function main() {
     const isolatedSetUserTimezone = require(path.join(LIB, 'agent', 'tools', 'set-user-timezone'))
     const isolatedWebSearch = require(path.join(LIB, 'agent', 'tools', 'web-search'))
     const isolatedWebFetch = require(path.join(LIB, 'agent', 'tools', 'web-fetch'))
+    const isolatedFileAnalyzer = require(path.join(LIB, 'file-analyzer'))
     const isolatedReadAgentSkill = require(path.join(LIB, 'agent', 'tools', 'read-agent-skill'))
     const isolatedWriteFile = require(path.join(LIB, 'agent', 'tools', 'write-file'))
     const isolatedListFiles = require(path.join(LIB, 'agent', 'tools', 'list-files'))
@@ -1966,6 +2008,12 @@ async function main() {
         check('agent web_fetch definition tells model to trust only usable body', isolatedWebFetch.definition.description.includes('正文质量：usable') && isolatedWebFetch.definition.description.includes('不能猜内容'), isolatedWebFetch.definition.description)
         const fetchSummary = modules.agentChatBridge.summarizeAgentToolResults([{ name: 'web_fetch', result: htmlFetch.text }])
         check('agent chat bridge keeps web_fetch context summary', fetchSummary.includes('URL：') && fetchSummary.includes('正文') && fetchSummary.length > 500, fetchSummary)
+        try {
+          await isolatedFileAnalyzer.downloadFile('http://127.0.0.1:5150/private', path.join(agentTmp, 'blocked.txt'))
+          fail('file analyzer blocks loopback URL before download', 'download succeeded')
+        } catch (error) {
+          check('file analyzer blocks loopback URL before download', /拒绝访问/.test(String(error && error.message || error)))
+        }
         const readerPage = await modules.agentFetchReader.fetchReadableUrl('https://example.com/news', { maxChars: 1000 })
         check('agent fetch reader exposes shared readable page metadata', readerPage.finalUrl === 'https://example.com/news' && readerPage.title === '示例公告' && readerPage.body.includes('公开网页正文'), JSON.stringify(readerPage))
         const candidatePage = await modules.agentFetchReader.readCandidatePage('https://example.com/news', {

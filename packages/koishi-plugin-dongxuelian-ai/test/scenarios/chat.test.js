@@ -654,6 +654,66 @@ async function run(t) {
     checkSentExcludes(t, 'scenario persistent thinking leak not sent', result, '\u6211\u5f97\u770b\u770b\u73b0\u5728\u662f\u4ec0\u4e48\u60c5\u51b5')
   })
 
+  await runChatCase(t, 'persistent thinking leak keeps custom persona fallback', [
+    ...Array.from({ length: 6 }, () => ({ json: { choices: [{ message: { content: TOOL_PLAN_LEAK_SAMPLE } }] } })),
+    { json: { choices: [{ message: { content: 'TEST_PERSONA_MARKER 我先把话收回来，按眼前这局重新给你看。' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario persistent thinking leak fallback uses custom persona', result, 'TEST_PERSONA_MARKER')
+    checkSentExcludes(t, 'scenario persistent thinking leak fallback avoids default short reply', result, '就这？')
+    checkSentExcludes(t, 'scenario persistent thinking leak fallback avoids tool name', result, 'read_image_history')
+    const fallbackPrompt = JSON.stringify(calls[calls.length - 1]?.requestBody?.messages || [])
+    t.check('scenario persistent thinking fallback keeps persona prompt', fallbackPrompt.includes('TEST_PERSONA_MARKER'), fallbackPrompt)
+    t.check('scenario persistent thinking fallback does not feed full draft', !fallbackPrompt.includes('像个小太阳') && !fallbackPrompt.includes('被打得落花流水'), fallbackPrompt)
+  }, {
+    input: '我用你这个配队，怎么被打的落花流水了',
+    setup(session, { data }) {
+      data.writeText('ai-skills/personas/SKILL.test-persona-marker.md', [
+        '---',
+        'name: TestPersonaMarker',
+        'description: fallback persona marker',
+        '---',
+        'TEST_PERSONA_MARKER',
+      ].join('\n'))
+      data.writeJson('ai-persona-users.json', { [session.userId]: 'TestPersonaMarker' })
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      persona.loadPersonaUsers()
+      const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
+      return chatModule.loadSkillsContentCache()
+    },
+    waitFor: message => String(message).includes('TEST_PERSONA_MARKER'),
+  })
+
+  await runChatCase(t, 'Agent retell persistent leak keeps custom persona fallback', [
+    { json: { choices: [{ message: { content: TOOL_PLAN_LEAK_SAMPLE } }] } },
+    { json: { choices: [{ message: { content: TOOL_PLAN_LEAK_SAMPLE } }] } },
+    { json: { choices: [{ message: { content: 'AGENT_RETELL_MARKER 这份材料我先按能确认的部分说，别急着照搬。' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario Agent retell leak fallback uses custom persona', result, 'AGENT_RETELL_MARKER')
+    checkSentExcludes(t, 'scenario Agent retell leak fallback avoids old fixed reply', result, '这次材料有点乱')
+    checkSentExcludes(t, 'scenario Agent retell leak fallback avoids tool name', result, 'read_image_history')
+    const fallbackPrompt = JSON.stringify(calls[calls.length - 1]?.requestBody?.messages || [])
+    t.check('scenario Agent retell fallback keeps persona prompt', fallbackPrompt.includes('AGENT_RETELL_MARKER'), fallbackPrompt)
+  }, {
+    input: '搜一下这个配队怎么打',
+    setup(session, { data }) {
+      const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
+      webSearch.execute = async () => '已搜索：配队打法\n搜索状态：usable_hit\n正文质量：usable\n正文：配队打法测试证据'
+      data.writeText('ai-skills/personas/SKILL.agent-retell-marker.md', [
+        '---',
+        'name: AgentRetellMarker',
+        'description: agent retell fallback persona marker',
+        '---',
+        'AGENT_RETELL_MARKER',
+      ].join('\n'))
+      data.writeJson('ai-persona-users.json', { [session.userId]: 'AgentRetellMarker' })
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      persona.loadPersonaUsers()
+      const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
+      return chatModule.loadSkillsContentCache()
+    },
+    waitFor: message => String(message).includes('AGENT_RETELL_MARKER'),
+  })
+
   await runChatCase(t, 'API 500 middleware fallback', [
     { status: 500, text: 'server exploded' },
   ], async (result) => {

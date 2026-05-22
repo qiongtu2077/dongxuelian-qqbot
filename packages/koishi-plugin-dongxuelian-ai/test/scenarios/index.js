@@ -18,6 +18,7 @@ const e2eSimulation = require('./e2e-simulation.test')
 const autoMemory = require('./auto-memory.test')
 const skillMarket = require('./skill-market.test')
 const voiceTts = require('./voice-tts.test')
+const file = require('./file.test')
 const deployer = require('./deployer.test')
 
 const SCENARIOS = [
@@ -41,6 +42,7 @@ const SCENARIOS = [
   autoMemory,
   skillMarket,
   voiceTts,
+  file,
   deployer,
 ]
 
