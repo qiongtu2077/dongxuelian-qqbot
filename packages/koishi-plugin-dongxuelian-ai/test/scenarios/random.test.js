@@ -1,5 +1,6 @@
 const path = require('path')
 const fs = require('fs')
+const { setTimeout: realSetTimeout } = require('timers')
 const { withScenario } = require('./_setup')
 const { mockFetch } = require('../fake/fetch')
 const { AI_ROOT } = require('../fake/file')
@@ -11,6 +12,18 @@ function withFetch(mocked, fn) {
   return Promise.resolve()
     .then(fn)
     .finally(() => { global.fetch = originalFetch })
+}
+
+function realSleep(ms) {
+  return new Promise(resolve => realSetTimeout(resolve, ms))
+}
+
+async function waitForMockCalls(mocked, count, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (mocked.calls.length < count && Date.now() < deadline) {
+    await flushAsync(4)
+    await realSleep(10)
+  }
 }
 
 async function run(t) {
@@ -37,6 +50,59 @@ async function run(t) {
       await session.waitForSend(message => String(message).includes('random-visible-reply'))
       t.check('scenario random whitelisted rate 100 sends reply', session.sent.some(item => String(item).includes('random-visible-reply')), JSON.stringify(session.sent))
       t.check('scenario random trigger calls model once', mocked.calls.length === 1, JSON.stringify(mocked.calls.map(call => call.requestBody && call.requestBody.model)))
+      const prompt = JSON.stringify(mocked.calls[0]?.requestBody?.messages || [])
+      t.check('scenario random prompt includes active group scene window', prompt.includes('当前群聊现场-最高优先级') && prompt.includes('随机主动插话内部模式'), prompt)
+    })
+  })
+
+  await withScenario({
+    data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 1 },
+      randomVoiceRate: { 10001: 0 },
+    },
+  }, async ({ ready, makeSession, run }) => {
+    await ready()
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '{"mode":"ambient_water","reply":"先看一眼怎么收场"}' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const session = makeSession({
+        userId: '2020',
+        author: { id: '2020', name: 'member' },
+        content: '6',
+        messageId: 'ambient-trigger',
+      })
+      await run(session, { flushTicks: 120 })
+      await session.waitForSend(message => String(message).includes('先看一眼'))
+      t.check('scenario random ambient JSON sends only visible reply', session.sent.some(item => String(item) === '先看一眼怎么收场'), JSON.stringify(session.sent))
+      t.check('scenario random ambient JSON does not send raw mode', session.sent.every(item => !String(item).includes('"mode"') && !String(item).includes('ambient_water')), JSON.stringify(session.sent))
+      t.check('scenario random ambient water does not quote trigger', session.sent.every(item => !String(item).includes('<quote')), JSON.stringify(session.sent))
+    })
+  })
+
+  await withScenario({
+    data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 1 },
+      randomVoiceRate: { 10001: 0 },
+    },
+  }, async ({ ready, makeSession, run }) => {
+    await ready()
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '{"mode":"no_send","reply":""}' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const session = makeSession({
+        userId: '2021',
+        author: { id: '2021', name: 'member' },
+        content: '先这样吧',
+        messageId: 'nosend-trigger',
+      })
+      const result = await run(session, { flushTicks: 120 })
+      await waitForMockCalls(mocked, 1)
+      t.check('scenario random no_send sends nothing', result.sent.length === 0, JSON.stringify(result.sent))
+      t.check('scenario random no_send still called model once', mocked.calls.length === 1, JSON.stringify(mocked.calls))
     })
   })
 
@@ -295,9 +361,8 @@ async function run(t) {
       await run(interleavingSession, { flushTicks: 20 })
       await clock.tick(15000)
       await flushAsync(120)
-      await triggerSession.waitForSend(message => String(message).includes('high-risk-delayed-visible'))
-      t.check('scenario high risk delayed random quotes trigger message', triggerSession.sent.some(item => String(item).includes('<quote id="risk-trigger"/>high-risk-delayed-visible')), JSON.stringify(triggerSession.sent))
-      t.check('scenario high risk delayed random still calls model once after second probability hit', mocked.calls.length === 1, JSON.stringify(mocked.calls))
+      t.check('scenario high risk delayed random expires after newer group message', !triggerSession.sent.some(item => String(item).includes('high-risk-delayed-visible')), JSON.stringify(triggerSession.sent))
+      t.check('scenario expired delayed random does not call model', mocked.calls.length === 0, JSON.stringify(mocked.calls))
     })
   })
 

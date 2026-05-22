@@ -543,6 +543,8 @@ async function main() {
     expressionPoolStore: path.join(LIB, 'expression-pool-store'),
     expressionAbstractor: path.join(LIB, 'expression-abstractor'),
     expressionShadowRouter: path.join(LIB, 'expression-shadow-router'),
+    groupSceneIndex: path.join(LIB, 'group-scene-index'),
+    randomReplyMode: path.join(LIB, 'random-reply-mode'),
     api: path.join(LIB, 'api'),
     conversation: path.join(LIB, 'conversation'),
     fileSafety: path.join(LIB, 'file-safety'),
@@ -751,6 +753,14 @@ async function main() {
     expressionShadowRouter: [
       'resolveExpressionInjectionMode', 'detectExpressionSensitiveTopicActive',
       'buildExpressionShadowPlan', 'formatExpressionShadowDiagnostic',
+    ],
+    groupSceneIndex: [
+      'appendGroupSceneEntry', 'loadGroupScenes', 'readGroupContext',
+      'buildActiveGroupSceneNote', 'sanitizeSceneText', 'safeSceneChannelKey',
+    ],
+    randomReplyMode: [
+      'parseRandomReplyDecision', 'buildRandomModePrompt', 'buildAmbientWaterSendOptions',
+      'looksLikeRawInternalProtocol',
     ],
     api: [
       'requestChatCompletions', 'normalizeMessagesForProvider', 'buildFallbackConfig', 'getFallbackSteps',
@@ -1033,6 +1043,19 @@ async function main() {
   check('jailbreak pattern groups exported', modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERN_GROUPS && typeof modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERN_GROUPS === 'object')
   check('jailbreak pattern list exported', Array.isArray(modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERNS) && modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERNS.length > 0)
   check('jailbreak combined regexp exported', modules.jailbreakRuleset.JAILBREAK_INPUT_RE instanceof RegExp)
+  const sanitizedSceneText = modules.groupSceneIndex.sanitizeSceneText('看看 file://D:/qq/private/a.png https://secret.example/path token=abc123')
+  check('group scene sanitizes file URL', !sanitizedSceneText.includes('file://') && sanitizedSceneText.includes('[本地文件]'), sanitizedSceneText)
+  check('group scene sanitizes http URL', !sanitizedSceneText.includes('https://secret.example'), sanitizedSceneText)
+  check('group scene sanitizes token value', !sanitizedSceneText.includes('abc123'), sanitizedSceneText)
+  const spacedLocalPath = modules.groupSceneIndex.sanitizeSceneText('图在 file://D:/qq/我的 文档/nt_data/Pic/a b.jpeg 和 D:\\qq\\我的 文档\\secret.png')
+  check('group scene sanitizes local paths with spaces', !spacedLocalPath.includes('D:/qq') && !spacedLocalPath.includes('D:\\qq') && !spacedLocalPath.includes('secret.png') && spacedLocalPath.includes('[本地文件]') && spacedLocalPath.includes('[本地路径]'), spacedLocalPath)
+  const ambientDecision = modules.randomReplyMode.parseRandomReplyDecision('{"mode":"ambient_water","reply":"先看一眼怎么收场"}')
+  check('random reply mode parses ambient JSON internally', ambientDecision.shouldSend && ambientDecision.mode === 'ambient_water' && ambientDecision.reply.includes('先看一眼'), JSON.stringify(ambientDecision))
+  const rawJsonDecision = modules.randomReplyMode.parseRandomReplyDecision('{"mode":"ambient_water"}')
+  check('random reply mode blocks structured empty reply', !rawJsonDecision.shouldSend && rawJsonDecision.reason === 'structured-empty-reply', JSON.stringify(rawJsonDecision))
+  check('random reply mode detects raw protocol', modules.randomReplyMode.looksLikeRawInternalProtocol('{"mode":"no_send","reply":""}'))
+  const ambientOptions = modules.randomReplyMode.buildAmbientWaterSendOptions({ forceQuote: true, quoteMessageId: 'm1' })
+  check('ambient water send options disable quote', ambientOptions.noQuote === true && ambientOptions.forceQuote === false && ambientOptions.quoteMessageId === '', JSON.stringify(ambientOptions))
   check('agent plan tools array exported', Array.isArray(modules.agentPlanTools.tools) && modules.agentPlanTools.tools.length >= 5)
   check('agent memory tools array exported', Array.isArray(modules.agentToolMemoryTools.tools) && modules.agentToolMemoryTools.tools.length >= 4)
   for (const toolModuleName of ['agentToolTime', 'agentToolCalculator', 'agentToolWebSearch', 'agentToolWebFetch', 'agentToolReadFile', 'agentToolListFiles', 'agentToolFindFiles', 'agentToolWriteFile', 'agentToolEditFile', 'agentToolShell', 'agentToolBrowserAction', 'agentToolAppendFile', 'agentToolGrepSearch', 'agentToolExecuteJavascript', 'agentToolSendFileToUser', 'agentToolGetTokenUsage', 'agentToolSetUserTimezone', 'agentToolQueryLogs', 'agentToolAnalyzeFile']) {
@@ -1097,6 +1120,8 @@ async function main() {
     path.join(LIB, 'expression-pool-store.js'),
     path.join(LIB, 'expression-abstractor.js'),
     path.join(LIB, 'expression-shadow-router.js'),
+    path.join(LIB, 'group-scene-index.js'),
+    path.join(LIB, 'random-reply-mode.js'),
     path.join(LIB, 'message-reader.js'),
     path.join(LIB, 'chat.js'),
     path.join(LIB, 'chat-prompt-builder.js'),
@@ -1183,7 +1208,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/analyze-file.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'group-scene-index.js', 'random-reply-mode.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/analyze-file.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))

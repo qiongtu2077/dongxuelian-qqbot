@@ -38,6 +38,12 @@ async function run(t) {
     const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
     const entry = await store.getFileEntry(session.guildId, 'file-empty-1')
     t.check('scenario empty group file stores metadata before early return', entry && entry.fileName === 'notes.txt' && entry.fileId === 'file-token-1', JSON.stringify(entry))
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    const shared = conversation.channelSharedCache.get(session.guildId) || []
+    t.check('scenario empty group file enters shared context anchor', shared.some(item => String(item.content || '').includes('[文件: notes.txt')), JSON.stringify(shared))
+    const sceneIndex = require(path.join(AI_ROOT, 'lib', 'group-scene-index.js'))
+    const note = sceneIndex.buildActiveGroupSceneNote(session.guildId, shared, session.userId, { currentText: '太大了' })
+    t.check('scenario file anchor appears in active group scene', note.includes('notes.txt') && note.includes('当前群聊现场'), note)
     t.check('scenario empty group file does not send proactive reply', result.sent.length === 0, JSON.stringify(result.sent))
     t.check('scenario file history file created', fs.existsSync(data.pathFor('file-history', `${session.guildId}.json`)), data.dataDir)
   })
@@ -92,6 +98,32 @@ async function run(t) {
       await session.waitForSend(message => String(message).includes('文件里主要'))
       checkSentIncludes(t, 'scenario file follow-up can be answered by chat', result, '文件里主要')
       checkSentExcludes(t, 'scenario file follow-up hides wrapper', result, '---文件内容开始---')
+    })
+  })
+
+  await withScenario({}, async ({ makeSession, run }) => {
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-context', type: 'function', function: { name: 'read_group_context', arguments: '{"query":"8.52MB 太大 生成 卡死","maxAgeMinutes":30}' } }] } }] } },
+      { json: { choices: [{ message: { content: '8.52MB 那个文件确实偏大，刚才你们是在担心生成会卡。' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+      const base = { guildId: '10001', channelId: '10001', selfId: '90000' }
+      conversation.saveSharedChannelTurn({ ...base, userId: 'u-a', author: { id: 'u-a' } }, 'ㅤ', '[文件: voice.zip 8.52MB]', 'user', { messageId: 'ctx-file-1' })
+      conversation.saveSharedChannelTurn({ ...base, userId: 'u-b', author: { id: 'u-b' } }, '水落烟雨', '希望能生成吧', 'user', { messageId: 'ctx-file-2' })
+      conversation.saveSharedChannelTurn({ ...base, userId: 'u-b', author: { id: 'u-b' } }, '水落烟雨', '感觉很大概率卡死', 'user', { messageId: 'ctx-file-3' })
+      await new Promise(resolve => setImmediate(resolve))
+      const session = makeSession({
+        content: atBot(makeSession(), '那个会卡吗'),
+        messageId: 'file-context-ask',
+      })
+      const result = await run(session, { flushTicks: 160 })
+      await session.waitForSend(message => String(message).includes('8.52MB'))
+      checkSentIncludes(t, 'scenario read_group_context tool answers old file follow-up', result, '8.52MB')
+      const calls = mocked.calls
+      t.check('scenario read_group_context is exposed to chat model', calls[0]?.requestBody?.tools?.some(item => item.function?.name === 'read_group_context'), JSON.stringify(calls[0]?.requestBody?.tools || []))
+      const toolMessages = calls[1]?.requestBody?.messages?.filter(item => item.role === 'tool') || []
+      t.check('scenario read_group_context returns old file scene as tool result', toolMessages.some(item => String(item.content || '').includes('voice.zip') && String(item.content || '').includes('卡死')), JSON.stringify(toolMessages))
     })
   })
 }
