@@ -4,7 +4,8 @@
  * 边界: 不读写目标文件内容、不执行工具。
  * 状态: 无。
  */
-const fs = require('fs/promises')
+const fsp = require('fs/promises')
+const fs = require('fs')
 const path = require('path')
 const { DATA_DIR, SKILLS_DIR } = require('../constants')
 const { getReadFileRoots } = require('./config')
@@ -64,7 +65,9 @@ function mergeConfiguredAndDefaultRoots(roots = []) {
 }
 
 async function realpathOrResolvedAgentPath(target) {
-  try { return await fs.realpath(path.resolve(target)) } catch { return path.resolve(target) }
+  const resolved = path.resolve(target)
+  if (fs.existsSync(resolved)) return resolved
+  try { return await fsp.realpath(resolved) } catch { return resolved }
 }
 
 async function getAgentPathAllowedRoots() {
@@ -79,7 +82,7 @@ async function assertExistingAgentPathInsideRoots(target, label = '路径') {
   const roots = await getAgentPathAllowedRoots()
   const resolved = resolveAgentPathInput(target, roots, { requireExisting: true })
   const abs = path.resolve(resolved.path)
-  const real = await fs.realpath(abs).catch(() => null)
+  const real = await fsp.realpath(abs).catch(() => null)
   if (!real) throw new Error(`${label}不存在：${abs}`)
   if (!roots.some(root => isAgentPathInside(real, root))) throw new Error(`${label}超出允许范围：${abs}`)
   return { abs, real, roots }
@@ -91,11 +94,11 @@ async function assertNewAgentPathInsideRoots(target, label = '路径', createDir
   const abs = path.resolve(resolved.path)
   assertNotWriteBlockedBasename(abs, label)
   let parent = path.dirname(abs)
-  let realParent = await fs.realpath(parent).catch(() => null)
+  let realParent = await fsp.realpath(parent).catch(() => null)
   if (!realParent && createDirectories) {
     while (!realParent && parent !== path.dirname(parent)) {
       parent = path.dirname(parent)
-      realParent = await fs.realpath(parent).catch(() => null)
+      realParent = await fsp.realpath(parent).catch(() => null)
     }
   }
   if (!realParent) throw new Error(`父目录不存在：${path.dirname(abs)}`)

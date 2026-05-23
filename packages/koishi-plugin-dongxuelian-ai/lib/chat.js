@@ -49,6 +49,12 @@ const {
 const { getRecentAgentContextNote, clearAgentContextForUser } = require('./agent-chat-bridge') // Agent 工具摘要注入 + 话题切换清理
 const { redactAgentMaterial } = require('./agent-retell-guard') // Agent 材料脱敏（防工具结果泄漏密钥/外部指令）
 const { getChatToolDefinitions, handleChatToolCalls, getChatToolSystemHint } = require('./chat-tools') // 聊天内嵌工具（表情包/贴纸等）
+const {
+  buildFileFollowupState,
+  toolCallsIncludeAnalyzeFile,
+  toolResultsIncludeFileEvidence,
+  resolveUnguardedFileFollowup,
+} = require('./file-followup-guard')
 const { buildActiveGroupSceneNote } = require('./group-scene-index') // 群聊当前现场窗口
 const { buildRandomModePrompt, parseRandomReplyDecision } = require('./random-reply-mode') // 随机回复内部 mode 协议
 const { externalToolsDenied, buildExternalToolPolicyHint } = require('./external-tool-policy')
@@ -964,7 +970,7 @@ async function chat(session, userText, ctx, options = {}) {
       }
       if (!used) {
         clearVisionSession(session)
-        return '我不识图。'
+        return ''
       }
     }
     const visionPromptText = options.randomTriggered
@@ -988,6 +994,7 @@ async function chat(session, userText, ctx, options = {}) {
 
   // Chat 轻量工具注入
   const chatTools = getChatToolDefinitions({ userText: cleanInput })
+  const fileFollowupState = await buildFileFollowupState(channelKey, cleanInput)
   messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { userText: cleanInput }) })
 
   // 表达学习旁路诊断（v2.3，shadow，仅日志，不修改 messages）
@@ -1024,9 +1031,13 @@ async function chat(session, userText, ctx, options = {}) {
   let reply = await callOpenAI(messages, options.randomTriggered, {}, chatTools)
 
   // 处理 tool_calls 响应
+  let usedAnalyzeFileTool = false
+  let hasFileToolEvidence = false
   if (reply && typeof reply === 'object' && reply.type === 'tool_calls') {
+    usedAnalyzeFileTool = toolCallsIncludeAnalyzeFile(reply.tool_calls)
     const toolContext = { userId: currentUserId, channelKey, randomTriggered: !!options.randomTriggered }
     const { results, heavyTools } = await handleChatToolCalls(reply.tool_calls, toolContext)
+    hasFileToolEvidence = toolResultsIncludeFileEvidence(results)
 
     if (heavyTools.length > 0) {
       if (externalToolsDenied(cleanInput)) {
@@ -1062,6 +1073,19 @@ async function chat(session, userText, ctx, options = {}) {
     } else {
       reply = reply.message?.content || ''
     }
+  }
+
+  const fileEvidence = await resolveUnguardedFileFollowup({
+    ...fileFollowupState,
+    usedAnalyzeFile: usedAnalyzeFileTool,
+    hasFileEvidence: hasFileToolEvidence,
+  }, { userId: currentUserId, channelKey, randomTriggered: !!options.randomTriggered })
+  if (fileEvidence) {
+    messages.push({ role: 'assistant', content: typeof reply === 'string' ? reply : '' })
+    messages.push({ role: 'system', content: `【文件读取结果】\n${String(fileEvidence || '')}` })
+    messages.push({ role: 'user', content: '【系统提示：上面是刚才文件的实际读取结果。只能依据这个结果回答；如果结果显示下载失败/无法提取，就直接说明不能确认，绝对不要按文件名或印象猜内容。】' })
+    reply = await callOpenAI(messages, options.randomTriggered)
+    if (reply && typeof reply === 'object' && reply.type === 'tool_calls') reply = reply.message?.content || ''
   }
 
   // 记录 AI 提问"需要记住"的时间戳，供 memory 确认超时使用

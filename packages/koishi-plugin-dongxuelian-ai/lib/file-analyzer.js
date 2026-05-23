@@ -153,17 +153,22 @@ async function parseFile(filePath, ext) {
   }
 }
 
-async function downloadWithFallback(url, fileId, destPath) {
+async function downloadWithFallback(url, fileId, destPath, messageId = '') {
   if (url) {
     try {
       await downloadFile(url, destPath)
       return destPath
     } catch {}
   }
-  if (fileId) {
+  const candidates = []
+  for (const value of [fileId, messageId]) {
+    const id = String(value || '').trim()
+    if (id && !candidates.includes(id)) candidates.push(id)
+  }
+  for (const candidate of candidates) {
     try {
       const { callGetFile } = require('./api')
-      const data = await callGetFile(fileId)
+      const data = await callGetFile(candidate)
       if (data && data.file) {
         try { await fs.access(data.file); return data.file } catch {}
       }
@@ -191,7 +196,7 @@ async function runAnalysis({ channelKey, messageId }) {
       try { await fs.access(filePath) } catch { filePath = null }
     }
     if (!filePath) {
-      filePath = await downloadWithFallback(entry.url, entry.fileId, localPath)
+      filePath = await downloadWithFallback(entry.url, entry.fileId, localPath, messageId)
       if (filePath) await setLocalPath(channelKey, messageId, filePath)
     }
     if (!filePath) {

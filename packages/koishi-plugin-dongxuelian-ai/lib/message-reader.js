@@ -118,6 +118,24 @@ function sanitizeDisplayName(name = '', sanitizeUserName) {
   return normalizeText(name || '群友') || '群友'
 }
 
+function getReaderSegmentData(segment = {}) {
+  return Object.assign({}, segment.attributes || {}, segment.attrs || {}, segment.data || {})
+}
+
+function getSegmentTextValue(segment = {}) {
+  const data = getReaderSegmentData(segment)
+  return data.text || (typeof data.content === 'string' ? data.content : '') || data.value || segment.text || (typeof segment.content === 'string' ? segment.content : '') || ''
+}
+
+function firstSegmentArray(...values) {
+  return values.find(Array.isArray) || []
+}
+
+function getSegmentChildren(segment = {}) {
+  const data = getReaderSegmentData(segment)
+  return firstSegmentArray(data.content, data.children, data.elements, segment.children, segment.elements, segment.content)
+}
+
 // 递归统计消息段特征，判断当前消息是否主要是图片/转发/文件这类内容。
 function collectSegmentFeatures(segments, depth = 0) {
   const features = createFeatureState()
@@ -125,9 +143,9 @@ function collectSegmentFeatures(segments, depth = 0) {
 
   for (const segment of segments) {
     const type = String(segment?.type || '')
-    const data = segment?.data || {}
+    const data = getReaderSegmentData(segment)
 
-    if (type === 'text' && normalizeText(data.text || '')) {
+    if (type === 'text' && normalizeText(getSegmentTextValue(segment))) {
       features.hasText = true
       continue
     }
@@ -154,13 +172,13 @@ function collectSegmentFeatures(segments, depth = 0) {
 
     if (type === 'forward') {
       features.hasForward = true
-      mergeFeatureState(features, collectSegmentFeatures(data.content, depth + 1))
+      mergeFeatureState(features, collectSegmentFeatures(getSegmentChildren(segment), depth + 1))
       continue
     }
 
     if (type === 'node') {
       features.hasForward = true
-      mergeFeatureState(features, collectSegmentFeatures(data.content, depth + 1))
+      mergeFeatureState(features, collectSegmentFeatures(getSegmentChildren(segment), depth + 1))
       continue
     }
   }
@@ -196,13 +214,13 @@ function summarizeForwardNodes(nodes, depth = 0, sanitizeUserName) {
     .slice(0, MAX_FORWARD_NODES)
     .map((node) => {
       const type = String(node?.type || '')
-      const data = node?.data || {}
+      const data = getReaderSegmentData(node)
 
-      if (type === 'forward') return summarizeForwardNodes(data.content, depth + 1, sanitizeUserName)
+      if (type === 'forward') return summarizeForwardNodes(getSegmentChildren(node), depth + 1, sanitizeUserName)
       if (type !== 'node') return ''
 
       const nickname = sanitizeDisplayName(data.nickname || data.name || data.user_id || data.uin || '群友', sanitizeUserName)
-      const content = extractSegmentText(data.content, { includeFace: true, includeForward: true, depth: depth + 1, sanitizeUserName })
+      const content = extractSegmentText(getSegmentChildren(node), { includeFace: true, includeForward: true, depth: depth + 1, sanitizeUserName })
       if (!content) return ''
       return `${nickname}：${content}`
     })
@@ -232,10 +250,11 @@ function extractSegmentText(segments, options = {}) {
   const parts = []
   for (const segment of segments) {
     const type = String(segment?.type || '')
-    const data = segment?.data || {}
+    const data = getReaderSegmentData(segment)
 
     if (type === 'text') {
-      if (data.text) parts.push(String(data.text))
+      const text = getSegmentTextValue(segment)
+      if (text) parts.push(String(text))
       continue
     }
 
@@ -256,7 +275,7 @@ function extractSegmentText(segments, options = {}) {
 
     if (type === 'forward') {
       if (!includeForward) continue
-      const summary = summarizeForwardNodes(data.content, depth + 1, sanitizeUserName)
+      const summary = summarizeForwardNodes(getSegmentChildren(segment), depth + 1, sanitizeUserName)
       parts.push(summary ? `【转发消息：${summary}】` : '【转发消息】')
       continue
     }
@@ -264,7 +283,7 @@ function extractSegmentText(segments, options = {}) {
     if (type === 'node') {
       if (!includeForward) continue
       const nickname = sanitizeDisplayName(data.nickname || data.name || data.user_id || data.uin || '群友', sanitizeUserName)
-      const nested = extractSegmentText(data.content, { includeFace, includeForward, includeMediaLabel, depth: depth + 1, sanitizeUserName })
+      const nested = extractSegmentText(getSegmentChildren(segment), { includeFace, includeForward, includeMediaLabel, depth: depth + 1, sanitizeUserName })
       if (nested) parts.push(`${nickname}：${nested}`)
       continue
     }
@@ -299,12 +318,28 @@ function extractContentFallback(content = '', options = {}) {
   return normalizeText(visible)
 }
 
+function appendReaderSegments(target, segments) {
+  if (!Array.isArray(segments)) return
+  for (const segment of segments) {
+    if (segment && !target.includes(segment)) target.push(segment)
+  }
+}
+
+// 兼容 Koishi/Satori 不同适配器的消息段位置。
+function getRawSegments(session = {}) {
+  const segments = []
+  appendReaderSegments(segments, Array.isArray(session.event?.message) ? session.event.message : null)
+  appendReaderSegments(segments, Array.isArray(session.event?.message?.elements) ? session.event.message.elements : null)
+  appendReaderSegments(segments, Array.isArray(session.elements) ? session.elements : null)
+  return segments
+}
+
 // 统一分析本次消息，给主逻辑返回文本、回复链和富媒体特征。
 function analyzeIncomingMessage(session, options = {}) {
   const { sanitizeUserName } = options
   const rawContent = String(session.content || '')
   const replyToId = extractReplyMessageId(rawContent)
-  const rawSegments = Array.isArray(session.event?.message) ? session.event.message : []
+  const rawSegments = getRawSegments(session)
 
   const segmentFeatures = rawSegments.length ? collectSegmentFeatures(rawSegments) : createFeatureState()
   const fallbackFeatures = collectFallbackFeatures(rawContent)
@@ -318,6 +353,10 @@ function analyzeIncomingMessage(session, options = {}) {
   if (rawSegments.length) {
     plain = extractSegmentText(rawSegments, { includeFace: true, includeForward: true, sanitizeUserName })
     memory = normalizeText(stripUrls(extractSegmentText(rawSegments, { includeFace: false, includeForward: true, sanitizeUserName })))
+    if (!plain && !memory && rawContent) {
+      plain = extractContentFallback(rawContent, { forMemory: false })
+      memory = extractContentFallback(rawContent, { forMemory: true })
+    }
   } else {
     plain = extractContentFallback(rawContent, { forMemory: false })
     memory = extractContentFallback(rawContent, { forMemory: true })

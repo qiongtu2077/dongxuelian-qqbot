@@ -514,7 +514,7 @@ function getChannelMessageVersion(channelKey) {
 
 function bumpChannelMessageVersion(channelKey) {
   const key = String(channelKey || '')
-  if (!key || key === 'private') return getChannelMessageVersion(key)
+  if (!key) return getChannelMessageVersion(key)
   const next = getChannelMessageVersion(key) + 1
   channelMessageVersions.set(key, next)
   trimRandomChannelState()
@@ -527,7 +527,7 @@ function getExplicitInteractionVersion(channelKey) {
 
 function bumpExplicitInteractionVersion(channelKey) {
   const key = String(channelKey || '')
-  if (!key || key === 'private') return getExplicitInteractionVersion(key)
+  if (!key) return getExplicitInteractionVersion(key)
   const next = getExplicitInteractionVersion(key) + 1
   channelExplicitVersions.set(key, next)
   trimRandomChannelState()
@@ -568,7 +568,7 @@ function isPersonaSwitchRisky(personaResolution, groupPersonaName) {
 }
 
 function buildRandomSendOptions(context = {}) {
-  if (!context.randomTriggered) return {}
+  if (!context.randomTriggered && !context.requireFresh) return {}
   const channelKey = String(context.channelKey || '')
   const triggerVersion = Number(context.triggerMessageVersion || 0)
   const explicitVersion = Number(context.explicitVersion || 0)
@@ -580,7 +580,7 @@ function buildRandomSendOptions(context = {}) {
       explicitVersion,
       triggerAt,
     },
-    ...(context.highRisk && context.triggerMessageId && (context.delayed || Number(context.currentMessageVersion || 0) > triggerVersion)
+    ...(context.randomTriggered && context.highRisk && context.triggerMessageId && (context.delayed || Number(context.currentMessageVersion || 0) > triggerVersion)
       ? { forceQuote: true, quoteMessageId: String(context.triggerMessageId) }
       : {}),
   }
@@ -595,7 +595,7 @@ function isRandomReplyFresh(options = {}) {
   const triggerAt = Number(info.triggerAt || 0)
   if (triggerAt > 0 && Date.now() - triggerAt > 60000) return false
   if (getExplicitInteractionVersion(channelKey) !== explicitVersion) return false
-  if (getChannelMessageVersion(channelKey) !== triggerVersion) return false
+  if (getChannelMessageVersion(channelKey) > triggerVersion) return false
   return true
 }
 
@@ -630,6 +630,7 @@ function resolveSharedRecordText(plain, analyzed = {}) {
   const text = normalizeText(stripMentions(plain || analyzed.memory || analyzed.plain || ''))
   if (text) return text
   if (analyzed.hasAudio) return '[语音]'
+  if (analyzed.hasFile) return '[文件]'
   if (analyzed.hasMessageRecordCue) return normalizeText(analyzed.plain || '')
   return ''
 }
@@ -780,13 +781,19 @@ function extractAttrValue(tag = '', name = '') {
   return match ? decodeEntityAttribute(match[1] || match[2] || match[3] || '') : ''
 }
 
+function extractCqAttrValue(body = '', name = '') {
+  const re = new RegExp(`(?:^|,)${name}\\s*=\\s*([^,\\]]*)`, 'i')
+  const match = String(body || '').match(re)
+  return match ? decodeEntityAttribute(match[1] || '') : ''
+}
+
 function extractImageRefFromContent(content = '') {
   const value = String(content || '')
   const cq = value.match(/\[CQ:(?:image|img),([^\]]+)\]/i)
   if (cq) {
     const body = cq[1] || ''
-    const url = extractAttrValue(body, 'url')
-    const file = extractAttrValue(body, 'file')
+    const url = extractCqAttrValue(body, 'url')
+    const file = extractCqAttrValue(body, 'file')
     if (url || file) return { url, file }
   }
   const tag = value.match(/<(?:img|image)\b[^>]*>/i)
@@ -802,6 +809,59 @@ function extractImageRefFromContent(content = '') {
   const urls = extractImageUrls(value)
   if (urls[0]) return { url: urls[0], file: '' }
   return { url: '', file: '' }
+}
+
+function appendUniqueSegments(target, segments) {
+  if (!Array.isArray(segments)) return
+  for (const segment of segments) {
+    if (segment && !target.includes(segment)) target.push(segment)
+  }
+}
+
+function getMessageSegments(session = {}) {
+  const segments = []
+  appendUniqueSegments(segments, Array.isArray(session.event?.message) ? session.event.message : null)
+  appendUniqueSegments(segments, Array.isArray(session.event?.message?.elements) ? session.event.message.elements : null)
+  appendUniqueSegments(segments, Array.isArray(session.elements) ? session.elements : null)
+  return segments
+}
+
+function normalizeSegmentData(segment = {}) {
+  return Object.assign({}, segment.attributes || {}, segment.attrs || {}, segment.data || {})
+}
+
+function extractFileRefFromContent(content = '') {
+  const value = String(content || '')
+  const cq = value.match(/\[CQ:file,([^\]]+)\]/i)
+  if (cq) {
+    const body = cq[1] || ''
+    return {
+      name: extractCqAttrValue(body, 'name') || extractCqAttrValue(body, 'file') || 'unknown',
+      file: extractCqAttrValue(body, 'file') || extractCqAttrValue(body, 'id') || extractCqAttrValue(body, 'file_id'),
+      url: normalizeUrl(extractCqAttrValue(body, 'url')),
+      size: Number(extractCqAttrValue(body, 'size')) || 0,
+      mime: extractCqAttrValue(body, 'mime') || extractCqAttrValue(body, 'mimeType'),
+    }
+  }
+  const tag = value.match(/<file\b[^>]*>/i)
+  if (!tag) return null
+  const raw = tag[0]
+  const src = extractAttrValue(raw, 'src') || extractAttrValue(raw, 'url')
+  const file = extractAttrValue(raw, 'file') || extractAttrValue(raw, 'id') || extractAttrValue(raw, 'fileId') || src
+  return {
+    name: extractAttrValue(raw, 'name') || extractAttrValue(raw, 'filename') || extractAttrValue(raw, 'fileName') || file || 'unknown',
+    file,
+    url: normalizeUrl(src),
+    size: Number(extractAttrValue(raw, 'size')) || 0,
+    mime: extractAttrValue(raw, 'mime') || extractAttrValue(raw, 'mimeType'),
+  }
+}
+
+function getFileSegmentData(session = {}) {
+  const segments = getMessageSegments(session)
+  const fileSeg = segments.find(s => String(s?.type || '') === 'file')
+  if (fileSeg) return normalizeSegmentData(fileSeg)
+  return extractFileRefFromContent(session.content || '') || null
 }
 
 // 生成安全文件名，避免把群号和消息号直接拼出非法路径。
@@ -982,8 +1042,8 @@ async function handleRateLimitedSendFailure(ctx, session, error, now, resolveBot
 }
 
 async function safeSendReply(ctx, session, reply, isRandom = false, resolveBot = null, sendOptions = {}) {
-  if (isRandom && !isRandomReplyFresh(sendOptions)) {
-    logStaleRandomSkip(ctx, 'text', sendOptions)
+  if ((isRandom || sendOptions.requireFresh) && !isRandomReplyFresh(sendOptions)) {
+    logStaleRandomSkip(ctx, isRandom ? 'text' : 'stale-text', sendOptions)
     return
   }
   const now = Date.now()
@@ -1197,7 +1257,7 @@ exports.apply = (ctx) => {
     }
 
     if (!plain && !directAt && !session.isDirect && !analyzed.hasVisual && !analyzed.hasAudio && !analyzed.hasFile) return next()
-    if (inGuild) currentMessageVersion = bumpChannelMessageVersion(channelKey)
+    currentMessageVersion = bumpChannelMessageVersion(channelKey)
     if (directAt) markExplicitInteraction('direct-at')
 
     logDebug(ctx, 'middleware', `entry userId=${session.userId} isDirect=${!!session.isDirect} guildId=${session.guildId} type=${session.type} subtype=${session.subtype} contentLen=${(session.content || '').length}`)
@@ -1209,10 +1269,11 @@ exports.apply = (ctx) => {
     }
 
     if (analyzed.hasVisual && channelKey && session.messageId) {
-      const segments = Array.isArray(session.event?.message) ? session.event.message : []
-      const imgSeg = segments.find(s => s.type === 'image')
-      const imgFile = imgSeg?.data?.file || null
-      const imgUrl = imgSeg?.data?.url || ''
+      const segments = getMessageSegments(session)
+      const imgSeg = segments.find(s => ['image', 'img'].includes(String(s?.type || '')))
+      const imgData = normalizeSegmentData(imgSeg)
+      const imgFile = imgData.file || null
+      const imgUrl = imgData.url || ''
       const imageMeta = { conversationKey: getConversationKey(session), userId: session.userId || session.author?.id || session.username || '' }
       const contentImageRef = extractImageRefFromContent(content)
       const storableUrl = /^https?:\/\//i.test(imgUrl) ? imgUrl : contentImageRef.url
@@ -1223,20 +1284,19 @@ exports.apply = (ctx) => {
     }
 
     if (analyzed.hasFile && channelKey && session.messageId) {
-      const segments = Array.isArray(session.event?.message) ? session.event.message : []
-      const fileSeg = segments.find(s => s.type === 'file')
-      if (fileSeg) {
-        const fileName = fileSeg.data?.name || fileSeg.data?.file || 'unknown'
-        const fileSize = Number(fileSeg.data?.size) || 0
-        const fileUrl = fileSeg.data?.url || ''
-        const fileId = fileSeg.data?.file || fileSeg.data?.id || null
+      const fileData = getFileSegmentData(session)
+      if (fileData) {
+        const fileName = fileData.name || fileData.fileName || fileData.filename || fileData.file || 'unknown'
+        const fileSize = Number(fileData.size) || 0
+        const fileUrl = fileData.url || ''
+        const fileId = fileData.file || fileData.id || fileData.fileId || fileData.file_id || null
         const ext = getExtension(fileName)
         const safety = checkFile(fileName, fileSize)
 
         const fileMeta = {
           fileName: sanitizeFileName(fileName),
           fileSize,
-          mimeType: fileSeg.data?.mime || '',
+          mimeType: fileData.mime || fileData.mimeType || '',
           ext,
           url: fileUrl,
           fileId,
@@ -1572,9 +1632,9 @@ exports.apply = (ctx) => {
     prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: false, includeQuote: true })
 
     if ((directAt || nameMentioned || isPrivate) && (analyzed.hasVisual || analyzed.hasFile || analyzed.hasEmbed)) {
+      if (analyzed.hasFile && !analyzed.hasVisual && !analyzed.hasEmbed && !analyzed.hasUsableText) return
       // 有图片 → 尝试识图
       if (!prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: true, includeQuote: false }) && !analyzed.hasUsableText) {
-        await session.send('我不识图，也不读文件链接。发文字。')
         return
       }
     } else if ((directAt || nameMentioned) && !analyzed.hasUsableText) {
@@ -1590,6 +1650,7 @@ exports.apply = (ctx) => {
 
     let randomSendOptions = buildRandomSendOptions({
       randomTriggered,
+      requireFresh: true,
       channelKey,
       delayed: false,
       highRisk: randomPersonaHighRisk,

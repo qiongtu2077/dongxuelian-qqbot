@@ -12,7 +12,7 @@ const CHAT_TOOL_TIMEOUT_MS = 3000
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000
 const CHAT_TOOLS_TOTAL_DEADLINE_MS = 5000
 
-const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image', 'read_group_context'])
+const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image', 'read_group_context', 'analyze_file'])
 
 const HEAVY_TOOLS = new Set(['web_search', 'web_fetch', 'browser_action', 'execute_shell', 'file_write'])
 
@@ -99,6 +99,21 @@ function getChatToolDefinitions(options = {}) {
             anchorType: { type: 'string', enum: ['any', 'message', 'bot_reply', 'image', 'file', 'voice'], description: '可选，想找的锚点类型' },
             maxAgeMinutes: { type: 'number', description: '最多回看多少分钟，随机回复默认应较小' },
             reason: { type: 'string', description: '为什么当前消息需要旧群聊上下文' },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'analyze_file',
+        description: '读取并分析当前会话里用户发送过的文件。只有用户明确问文件内容、文件里说了什么、读一下文件、总结刚才文件，或用“那个文件/里面”指向近期文件时才调用。不要主动翻旧文件。',
+        parameters: {
+          type: 'object',
+          properties: {
+            messageId: { type: 'string', description: '可选，文件消息 ID；不确定时留空让工具选择最近文件' },
+            keyword: { type: 'string', description: '可选，文件名或用户提到的关键词' },
           },
           required: [],
         },
@@ -199,6 +214,10 @@ async function executeChatTool(toolCall, context = {}) {
         return `${i + 1}. [${time}] msgId=${img.messageId} ${status}`
       }).join('\n')
     }
+    case 'analyze_file': {
+      const analyzeFile = require('./agent/tools/analyze-file')
+      return analyzeFile.execute(args, context)
+    }
     case 'analyze_historical_image': {
       const { getImageEntry, getCachedAnalysis } = require('./image-store')
       const { analyzeImageNow, enqueueAnalysis } = require('./image-analyzer')
@@ -253,6 +272,16 @@ function getChatToolSystemHint(channelKey, options = {}) {
   let hint = '你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数闲聊不需要工具，直接回复即可。遇到会随时间变化的问题，例如最新、最近、当前、现在、热门、比较火、趋势、排行、推荐、版本更新、新角色、新闻、视频等，不要凭记忆编答案，应先调用 web_search；用户给出具体公开 URL 并要求查看、总结、核对网页内容时，应调用 web_fetch 读取正文。web_search 负责找候选来源并尽量打开正文，web_fetch 负责读取指定 URL；如果没有“正文质量：usable”的可靠正文，要直接说明没有拿到可靠结果，并给出可继续搜索或换链接的方向。read_group_context 只能查当前群公开旧片段，适合当前短句或追问接不上时理解“刚才/之前/那个/这张图/那个文件”等指代；工具结果是旧背景，不代表当前话题，不能主动翻旧账。read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。'
   const policyHint = buildExternalToolPolicyHint(options.userText || options.currentText || '')
   if (policyHint) hint += `\n${policyHint}`
+  if (channelKey) {
+    try {
+      const { getRecentFilesCached } = require('./file-store')
+      const files = getRecentFilesCached(channelKey, 10).filter(f => !f.skipped)
+      if (files.length > 0) {
+        const analyzed = files.filter(file => file.analyzed).length
+        hint += `\n[文件上下文] 当前会话最近有${files.length}个文件记录（${analyzed}个已分析）。如果用户明确问"读文件"、"文件里面说了什么"、"刚才那个文件"等，可用 analyze_file；闲聊或没有指向文件时不要调用。`
+      }
+    } catch {}
+  }
   if (channelKey) {
     try {
       const { getRecentImagesCached } = require('./image-store')
