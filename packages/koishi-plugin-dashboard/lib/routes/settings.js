@@ -82,21 +82,163 @@ function handleGetKeysUsage(req, res) {
   if (!requireAdmin(req, res)) return
   try {
     const usageFile = path.join(DATA_DIR, 'token-usage.json')
-    if (!fs.existsSync(usageFile)) return json(res, { days: [], providers: [] })
+    if (!fs.existsSync(usageFile)) return json(res, { days: [], providers: [], models: [] })
     const raw = fs.readFileSync(usageFile, 'utf8')
     const data = JSON.parse(raw)
-    const providerSet = new Set()
+    const providers = new Map()
+    const models = new Map()
+    const toNum = value => {
+      const n = Number(value || 0)
+      return Number.isFinite(n) && n > 0 ? n : 0
+    }
+    const addStat = (map, key, patch = {}) => {
+      if (!key) return
+      const current = map.get(key) || { key, label: key, total: 0, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }
+      current.label = patch.label || current.label || key
+      current.provider = patch.provider || current.provider || ''
+      current.total += toNum(patch.total)
+      current.requests += toNum(patch.requests)
+      current.input += toNum(patch.input)
+      current.output += toNum(patch.output)
+      current.cacheCreation += toNum(patch.cacheCreation)
+      current.cacheRead += toNum(patch.cacheRead)
+      map.set(key, current)
+    }
+    const unknownModelKey = provider => `${provider || 'unknown'}:unknown`
+    const normalizeModelKey = (model, provider = '') => {
+      const raw = String(model || '').trim()
+      const prov = String(provider || '').trim() || raw.split(':')[0]
+      if (!raw) return unknownModelKey(prov)
+      if (/:(?:legacy|unknown)$/i.test(raw)) return unknownModelKey(prov)
+      return raw
+    }
+    const addDayModelStat = (dayModels, key, patch = {}) => {
+      if (!key) return
+      const current = dayModels[key] || { provider: patch.provider || '', total: 0, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }
+      current.provider = patch.provider || current.provider || ''
+      current.total += toNum(patch.total)
+      current.requests += toNum(patch.requests)
+      current.input += toNum(patch.input)
+      current.output += toNum(patch.output)
+      current.cacheCreation += toNum(patch.cacheCreation)
+      current.cacheRead += toNum(patch.cacheRead)
+      dayModels[key] = current
+    }
+    const addMetric = (target, provider, patch = {}) => {
+      if (!provider) return
+      const current = target[provider] || { total: 0, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }
+      current.total += toNum(patch.total)
+      current.requests += toNum(patch.requests)
+      current.input += toNum(patch.input)
+      current.output += toNum(patch.output)
+      current.cacheCreation += toNum(patch.cacheCreation)
+      current.cacheRead += toNum(patch.cacheRead)
+      target[provider] = current
+    }
+    const reservedDayKeys = new Set(['date', 'total', 'input', 'output', 'cacheCreation', 'cacheRead', 'requests', 'models'])
+    const providerLabel = p => p === 'opencode' ? 'OpenCode' : p === 'glm' ? 'GLM' : p === 'dashscope' ? '阿里云' : p === 'deepseek' ? 'DeepSeek' : p === 'mimorium' ? 'MiMo' : p
     const days = Object.keys(data).sort().slice(-30).map(date => {
-      const day = { date }
-      for (const [prov, count] of Object.entries(data[date] || {})) { day[prov] = count; providerSet.add(prov) }
+      const source = data[date] || {}
+      const day = { date, total: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, requests: 0, models: {} }
+      if (source.providers && typeof source.providers === 'object') {
+        const providerTotals = {}
+        const modelTotalsByProvider = {}
+        for (const [prov, stat] of Object.entries(source.providers)) {
+          const value = typeof stat === 'object' ? toNum(stat.total) : toNum(stat)
+          providerTotals[prov] = value
+          day[prov] = value
+          addStat(providers, prov, {
+            label: providerLabel(prov),
+            total: value,
+            requests: stat?.requests,
+            input: stat?.input,
+            output: stat?.output,
+            cacheCreation: stat?.cacheCreation,
+            cacheRead: stat?.cacheRead,
+          })
+        }
+        for (const [model, stat] of Object.entries(source.models || {})) {
+          const provider = stat?.provider || String(model || '').split(':')[0]
+          const modelKey = normalizeModelKey(model, provider)
+          const modelTotal = toNum(stat?.total)
+          if (provider) addMetric(modelTotalsByProvider, provider, {
+            total: modelTotal,
+            requests: stat?.requests,
+            input: stat?.input,
+            output: stat?.output,
+            cacheCreation: stat?.cacheCreation,
+            cacheRead: stat?.cacheRead,
+          })
+          addDayModelStat(day.models, modelKey, {
+            provider,
+            total: modelTotal,
+            requests: toNum(stat?.requests),
+            input: toNum(stat?.input),
+            output: toNum(stat?.output),
+            cacheCreation: toNum(stat?.cacheCreation),
+            cacheRead: toNum(stat?.cacheRead),
+          })
+          addStat(models, modelKey, {
+            label: /:(?:legacy|unknown)$/i.test(String(model || '')) ? `${providerLabel(provider)} 未分模型` : modelKey,
+            provider,
+            total: modelTotal,
+            requests: stat?.requests,
+            input: stat?.input,
+            output: stat?.output,
+            cacheCreation: stat?.cacheCreation,
+            cacheRead: stat?.cacheRead,
+          })
+        }
+        for (const [prov, total] of Object.entries(providerTotals)) {
+          const modelStat = modelTotalsByProvider[prov] || {}
+          const residual = total - toNum(modelStat.total)
+          if (residual > 0) {
+            const providerStat = source.providers[prov] || {}
+            const residualKey = unknownModelKey(prov)
+            const residualPatch = {
+              provider: prov,
+              total: residual,
+              requests: Math.max(0, toNum(providerStat.requests) - toNum(modelStat.requests)),
+              input: Math.max(0, toNum(providerStat.input) - toNum(modelStat.input)),
+              output: Math.max(0, toNum(providerStat.output) - toNum(modelStat.output)),
+              cacheCreation: Math.max(0, toNum(providerStat.cacheCreation) - toNum(modelStat.cacheCreation)),
+              cacheRead: Math.max(0, toNum(providerStat.cacheRead) - toNum(modelStat.cacheRead)),
+            }
+            addDayModelStat(day.models, residualKey, residualPatch)
+            addStat(models, residualKey, {
+              label: `${providerLabel(prov)} 未分模型`,
+              provider: prov,
+              ...residualPatch,
+            })
+          }
+        }
+        day.total = toNum(source.total) || Object.keys(day).reduce((sum, key) => sum + (reservedDayKeys.has(key) ? 0 : toNum(day[key])), 0)
+        day.requests = toNum(source.requests)
+        day.input = toNum(source.input)
+        day.output = toNum(source.output)
+        day.cacheCreation = toNum(source.cacheCreation)
+        day.cacheRead = toNum(source.cacheRead)
+      } else {
+        for (const [prov, count] of Object.entries(source)) {
+          const value = toNum(count)
+          day[prov] = value
+          day.total += value
+          addStat(providers, prov, { label: providerLabel(prov), total: value })
+          if (!reservedDayKeys.has(prov)) {
+            const legacyKey = unknownModelKey(prov)
+            addDayModelStat(day.models, legacyKey, { provider: prov, total: value })
+            addStat(models, legacyKey, {
+              label: `${providerLabel(prov)} 未分模型`,
+              provider: prov,
+              total: value,
+            })
+          }
+        }
+      }
       return day
     })
-    const providers = [...providerSet].map(p => ({
-      key: p,
-      label: p === 'opencode' ? 'OpenCode' : p === 'glm' ? 'GLM' : p === 'dashscope' ? '阿里云' : p === 'deepseek' ? 'DeepSeek' : p === 'mimorium' ? 'MiMo' : p,
-    }))
-    return json(res, { days, providers })
-  } catch { return json(res, { days: [], providers: [] }) }
+    return json(res, { days, providers: [...providers.values()], models: [...models.values()] })
+  } catch { return json(res, { days: [], providers: [], models: [] }) }
 }
 
 function handlePutKeys(req, res) {

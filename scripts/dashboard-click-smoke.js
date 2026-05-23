@@ -13,6 +13,33 @@ const LIVE_ADMIN_PASSWORD = process.env.DASHBOARD_SMOKE_ADMIN_PASSWORD || ''
 const LIVE_TOKEN = process.env.DASHBOARD_SMOKE_TOKEN || ''
 const LIVE_ADMIN_TOKEN = process.env.DASHBOARD_SMOKE_ADMIN_TOKEN || ''
 
+function pad2(value) {
+  return String(value).padStart(2, '0')
+}
+
+function todayShanghaiDate() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+  const pick = type => parts.find(item => item.type === type)?.value || ''
+  return `${pick('year')}-${pick('month')}-${pick('day')}`
+}
+
+function addDays(date, offset) {
+  const match = String(date || '').match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return date
+  const d = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + offset))
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`
+}
+
+function chartDate(date) {
+  const match = String(date || '').match(/^\d{4}-(\d{2})-(\d{2})$/)
+  return match ? `${match[1]}-${match[2]}` : date
+}
+
 function findBrowserExecutable() {
   const candidates = [
     process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -186,20 +213,40 @@ function apiMock(method, pathname, body) {
 
   if (method === 'GET' && pathname === '/keys') return ok([{ file: 'ai-deepseek-key.txt', label: 'DeepSeek', exists: true, prefix: 'sk-***' }])
   if (method === 'PUT' && pathname === '/keys') return writeOk('key saved')
-  if (method === 'GET' && pathname === '/keys/usage') return ok({
-    providers: [
-      { key: 'mimorium', label: 'MiMo' },
-      { key: 'glm', label: 'GLM' },
-      { key: 'dashscope', label: '阿里云' },
-      { key: 'deepseek', label: 'DeepSeek' },
-    ],
-    days: [
-      { date: '2026-05-20', mimorium: 133000000, glm: 0, dashscope: 0, deepseek: 9000000 },
-      { date: '2026-05-21', mimorium: 201000000, glm: 200000, dashscope: 0, deepseek: 11000000 },
-      { date: '2026-05-22', mimorium: 198000000, deepseek: 12000000 },
-      { date: '2026-05-23', mimorium: 72000000, deepseek: 3000000 },
-    ],
-  })
+  if (method === 'GET' && pathname === '/keys/usage') {
+    const today = todayShanghaiDate()
+    const d1 = addDays(today, -3)
+    const d2 = addDays(today, -2)
+    const d3 = addDays(today, -1)
+    return ok({
+      providers: [
+        { key: 'mimorium', label: 'MiMo', total: 604000000, requests: 4841, input: 43000000, output: 1100000, cacheCreation: 0, cacheRead: 560000000 },
+        { key: 'glm', label: 'GLM', total: 1400000, requests: 21, input: 1100000, output: 300000, cacheCreation: 0, cacheRead: 0 },
+        { key: 'dashscope', label: '阿里云', total: 197000, requests: 13, input: 115000, output: 82000, cacheCreation: 0, cacheRead: 0 },
+        { key: 'deepseek', label: 'DeepSeek', total: 35000000, requests: 92, input: 29000000, output: 6000000, cacheCreation: 0, cacheRead: 0 },
+      ],
+      models: [
+        { key: 'mimo-v2-omni', label: 'mimo-v2-omni', provider: 'mimorium', total: 604000000, requests: 4841, input: 43000000, output: 1100000, cacheCreation: 0, cacheRead: 560000000 },
+        { key: 'deepseek-v4-flash', label: 'deepseek-v4-flash', provider: 'deepseek', total: 35000000, requests: 92, input: 29000000, output: 6000000, cacheCreation: 0, cacheRead: 0 },
+        { key: 'glm-4.6v-flash', label: 'glm-4.6v-flash', provider: 'glm', total: 200000, requests: 15, input: 153000, output: 47000, cacheCreation: 0, cacheRead: 0 },
+        { key: 'glm:legacy', label: 'GLM 未分模型', provider: 'glm', total: 500000, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        { key: 'glm:unknown', label: 'GLM 未分模型', provider: 'glm', total: 700000, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        { key: 'qwen3.5-omni-flash', label: 'qwen3.5-omni-flash', provider: 'dashscope', total: 50000, requests: 3, input: 30000, output: 20000, cacheCreation: 0, cacheRead: 0 },
+        { key: 'mock-extra-model-05', label: 'mock-extra-model-05', provider: 'dashscope', total: 40000, requests: 2, input: 25000, output: 15000, cacheCreation: 0, cacheRead: 0 },
+        { key: 'mock-extra-model-06', label: 'mock-extra-model-06', provider: 'dashscope', total: 30000, requests: 2, input: 20000, output: 10000, cacheCreation: 0, cacheRead: 0 },
+        { key: 'mock-extra-model-07', label: 'mock-extra-model-07', provider: 'dashscope', total: 20000, requests: 1, input: 12000, output: 8000, cacheCreation: 0, cacheRead: 0 },
+        { key: 'mock-extra-model-08', label: 'mock-extra-model-08', provider: 'dashscope', total: 10000, requests: 1, input: 7000, output: 3000, cacheCreation: 0, cacheRead: 0 },
+        { key: 'mock-extra-model-09', label: 'mock-extra-model-09', provider: 'dashscope', total: 9000, requests: 1, input: 6000, output: 3000, cacheCreation: 0, cacheRead: 0 },
+        { key: 'mock-extra-model-10', label: 'mock-extra-model-10', provider: 'dashscope', total: 8000, requests: 1, input: 5000, output: 3000, cacheCreation: 0, cacheRead: 0 },
+      ],
+      days: [
+        { date: d1, total: 142000000, input: 13000000, output: 900000, cacheCreation: 0, cacheRead: 128100000, mimorium: 133000000, glm: 0, dashscope: 0, deepseek: 9000000, models: { 'mimo-v2-omni': { provider: 'mimorium', total: 133000000, requests: 1000 }, 'deepseek-v4-flash': { provider: 'deepseek', total: 9000000, requests: 20 } } },
+        { date: d2, total: 212200000, input: 15000000, output: 1200000, cacheCreation: 0, cacheRead: 196000000, mimorium: 201000000, glm: 1400000, dashscope: 0, deepseek: 9800000, models: { 'mimo-v2-omni': { provider: 'mimorium', total: 201000000, requests: 1500 }, 'glm-4.6v-flash': { provider: 'glm', total: 200000, requests: 15 }, 'glm:legacy': { provider: 'glm', total: 500000 }, 'glm:unknown': { provider: 'glm', total: 700000 }, 'deepseek-v4-flash': { provider: 'deepseek', total: 9800000, requests: 22 } } },
+        { date: d3, total: 210000000, input: 17000000, output: 1000000, cacheCreation: 0, cacheRead: 192000000, mimorium: 198000000, deepseek: 12000000, models: { 'mimo-v2-omni': { provider: 'mimorium', total: 198000000, requests: 1600 }, 'deepseek-v4-flash': { provider: 'deepseek', total: 12000000, requests: 25 } } },
+        { date: today, total: 75167000, input: 7105000, output: 562000, cacheCreation: 0, cacheRead: 67500000, mimorium: 72000000, deepseek: 3000000, dashscope: 167000, models: { 'mimo-v2-omni': { provider: 'mimorium', total: 72000000, requests: 741 }, 'deepseek-v4-flash': { provider: 'deepseek', total: 3000000, requests: 25 }, 'qwen3.5-omni-flash': { provider: 'dashscope', total: 50000, requests: 3 }, 'mock-extra-model-05': { provider: 'dashscope', total: 40000, requests: 2 }, 'mock-extra-model-06': { provider: 'dashscope', total: 30000, requests: 2 }, 'mock-extra-model-07': { provider: 'dashscope', total: 20000, requests: 1 }, 'mock-extra-model-08': { provider: 'dashscope', total: 10000, requests: 1 }, 'mock-extra-model-09': { provider: 'dashscope', total: 9000, requests: 1 }, 'mock-extra-model-10': { provider: 'dashscope', total: 8000, requests: 1 } } },
+      ],
+    })
+  }
 
   if (method === 'GET' && pathname === '/whitelist') return ok({
     aiWhitelist: { label: '群聊 AI 白名单', data: ['10001'] },
@@ -487,7 +534,7 @@ async function runClicks(page) {
   await page.waitForFunction(() => [...document.querySelectorAll('input')].some(input => input.value === '温柔'), { timeout: 8000 })
   await clickText(page, '试听')
   await page.waitForSelector('audio[src^="blob:"]', { timeout: 8000 })
-  await page.waitForFunction(() => {
+  await page.waitForFunction((expectedFirstChartLabel) => {
     const audio = document.querySelector('audio')
     return audio &&
       audio.src.startsWith('blob:') &&
@@ -507,17 +554,80 @@ async function runClicks(page) {
 
   await clickSidebarTab(page, 'API Keys')
   await waitForText(page, 'API Key 管理')
-  await waitForText(page, 'Token 用量')
-  await waitForText(page, 'MiMo')
-  await waitForText(page, 'DeepSeek')
-  await waitForText(page, '639.2M')
-  await waitForText(page, '212.2M')
-  await page.waitForFunction(() => {
+  await waitForText(page, '模型分布')
+  await waitForText(page, 'Token 使用趋势')
+  await waitForText(page, '今天')
+  await waitForText(page, '7天')
+  await waitForText(page, '30天')
+  await waitForText(page, 'mimo-v2-omni')
+  await waitForText(page, 'deepseek-v4-flash')
+  if (process.env.DASHBOARD_SMOKE_DEBUG_TOKEN_STATS) {
+    const tokenStatsDebug = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.distribution-table tbody tr')]
+      const trendPoints = [...document.querySelectorAll('.trend-point')]
+      const chartLabels = [...document.querySelectorAll('.chart-axis text')].map(el => el.textContent.trim())
+      const rowText = rows.map(row => row.innerText).join('\n')
+      const pointTitles = [...document.querySelectorAll('.trend-point title')].map(el => el.textContent.trim())
+      const colors = rows.map(row => getComputedStyle(row.querySelector('.model-dot')).backgroundColor)
+      return {
+        rows: rows.length,
+        trendPoints: trendPoints.length,
+        chartLabels,
+        rowText,
+        pointTitles,
+        glmUnknownRows: rows.filter(row => row.innerText.includes('GLM 未分模型')).length,
+        uniqueColors: Array.from(new Set(colors)),
+        donutBackground: getComputedStyle(document.querySelector('.donut-wrap')).backgroundImage,
+      }
+    })
+    console.log('[dashboard-smoke token-stats]', JSON.stringify(tokenStatsDebug, null, 2))
+  }
+  await page.waitForFunction((expectedFirstChartLabel) => {
     const text = document.body.innerText
     if (text.includes('[object Object]')) return false
     if (text.includes('"key"') || text.includes('"label"')) return false
-    const counts = [...document.querySelectorAll('.token-count')].map(el => el.textContent.trim())
-    return counts.length >= 4 && counts.some(item => /M$/.test(item)) && counts.every(item => item !== '0')
+    const rows = [...document.querySelectorAll('.distribution-table tbody tr')]
+    const trendPoints = [...document.querySelectorAll('.trend-point')]
+    const chartLabels = [...document.querySelectorAll('.chart-axis text')].map(el => el.textContent.trim())
+    const rowText = rows.map(row => row.innerText).join('\n')
+    const pointTitles = [...document.querySelectorAll('.trend-point title')].map(el => el.textContent.trim()).join('\n')
+    const glmUnknownRows = rows.filter(row => row.innerText.includes('GLM 未分模型'))
+    const colors = rows.map(row => getComputedStyle(row.querySelector('.model-dot')).backgroundColor)
+    const uniqueColors = new Set(colors)
+    const cacheHitPoints = [...document.querySelectorAll('.trend-point title')].filter(el => el.textContent.includes('Cache Hit Rate'))
+    return rows.length >= 10
+      && trendPoints.length >= 10
+      && rowText.includes('604.0M')
+      && rowText.includes('GLM 未分模型')
+      && glmUnknownRows.length === 1
+      && rowText.includes('mock-extra-model-10')
+      && pointTitles.includes('196.0M')
+      && cacheHitPoints.length === 0
+      && uniqueColors.size >= Math.min(8, colors.length)
+      && chartLabels.includes(expectedFirstChartLabel)
+      && getComputedStyle(document.querySelector('.donut-wrap')).backgroundImage.includes('conic-gradient')
+  }, { timeout: 8000 }, chartDate(addDays(todayShanghaiDate(), -3)))
+  await clickText(page, '今天')
+  await page.waitForFunction(() => {
+    const text = document.body.innerText || ''
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' })
+      .formatToParts(new Date())
+      .reduce((acc, item) => { acc[item.type] = item.value; return acc }, {})
+    const todayText = `${today.year}-${today.month}-${today.day}`
+    return text.includes(`今天 ${todayText}`)
+      && text.includes('75.2M')
+      && text.includes('mock-extra-model-10')
+      && document.querySelectorAll('.distribution-table tbody tr').length >= 9
+      && document.querySelectorAll('.trend-point').length >= 3
+      && ![...document.querySelectorAll('.trend-point title')].some(el => el.textContent.includes('Cache Hit Rate'))
+  }, { timeout: 8000 })
+  await clickText(page, '30天')
+  await page.waitForFunction(() => {
+    const text = document.body.innerText || ''
+    const labels = [...document.querySelectorAll('.chart-axis text')].map(el => el.textContent.trim())
+    return document.querySelectorAll('.distribution-table tbody tr').length >= 3
+      && labels.length >= 4
+      && [...document.querySelectorAll('.distribution-table tbody tr')].filter(row => row.innerText.includes('GLM 未分模型')).length === 1
   }, { timeout: 8000 })
   await clickText(page, '编辑')
   await typePlaceholder(page, '输入新的 ai-deepseek-key.txt', 'sk-local-smoke')
@@ -597,16 +707,24 @@ async function runLiveClicks(page) {
   await clickSidebarTab(page, 'API Keys')
   await waitForText(page, 'API Key 管理')
   await verifyAdminIfVisible(page)
-  await waitForText(page, 'Token 用量')
+  await waitForText(page, '模型分布')
+  await waitForText(page, 'Token 使用趋势')
+  await waitForText(page, '今天')
+  await waitForText(page, '7天')
+  await waitForText(page, '30天')
   await page.waitForFunction(() => {
     const text = document.body.innerText || ''
     if (text.includes('[object Object]')) return false
     if (text.includes('"key"') || text.includes('"label"')) return false
     const labels = ['MiMo', 'GLM', 'DeepSeek', '阿里云']
     if (!labels.some(label => text.includes(label))) return false
-    const counts = [...document.querySelectorAll('.token-count')].map(el => el.textContent.trim())
-    return counts.length > 0 && counts.some(item => /[KMB]$/.test(item)) && counts.every(item => item !== '0')
+    return document.querySelectorAll('.distribution-table tbody tr').length > 0
+      && document.querySelectorAll('.trend-point').length > 0
+      && !!document.querySelector('.donut-wrap')
   }, { timeout: 15000 })
+  await clickText(page, '今天').catch(() => {})
+  await waitForText(page, '今天').catch(() => {})
+  await clickText(page, '30天').catch(() => {})
   await clickText(page, '编辑').catch(() => {})
   await waitForText(page, '编辑').catch(() => {})
   await clickText(page, '取消').catch(() => {})

@@ -65,35 +65,6 @@ function classifyPrivateAge(ts, now) {
   return 'expired'
 }
 
-function extractTemporalFocus(text = '') {
-  const value = normalizeText(text)
-  const match = value.match(/(?:今天|明天|后天|周末|下周|未来(?:\d+|[一二三四五六七两])天)/)
-  return match ? match[0] : ''
-}
-
-function scoreRefinementCandidate(currentText = '', candidateText = '') {
-  const current = normalizeText(currentText)
-  const candidate = normalizeText(candidateText)
-  const currentHasTime = !!extractTemporalFocus(current)
-  if (!currentHasTime) return 0
-  let score = 0
-  if (/(?:天气|气温|温度|冷|热|下雨|降雨|风|湿度|预报)/.test(candidate)) score += 3
-  if (/(?:票价|价格|多少钱|汇率|股价|赛程|比分|开售|上映|营业|开放)/.test(candidate)) score += 2
-  if (/(?:天气|气温|温度|价格|多少钱|汇率|股价|票价|赛程|比分|开售|上映|营业|开放)/.test(current)) score += 2
-  if (extractTemporalFocus(candidate)) score += 1
-  return score
-}
-
-function mergeTemporalRefinement(candidateText = '', currentText = '') {
-  const base = normalizeCandidateText(candidateText)
-  const temporal = extractTemporalFocus(currentText)
-  if (!base || !temporal) return base
-  if (/(?:今天|明天|后天|周末|下周|未来(?:\d+|[一二三四五六七两])天)/.test(base)) {
-    return base.replace(/(?:今天|明天|后天|周末|下周|未来(?:\d+|[一二三四五六七两])天)/, temporal).slice(0, 160)
-  }
-  return `${base} ${temporal}`.slice(0, 160)
-}
-
 function buildPrivateSearchContext(session, history = [], options = {}) {
   const now = Number(options.now || Date.now())
   const currentText = normalizeText(options.currentText || '')
@@ -109,6 +80,7 @@ function buildPrivateSearchContext(session, history = [], options = {}) {
 
   const recentUserMessages = userMessages.slice(-4).map(item => item.text)
   const currentIsFollowUp = isPotentialSearchFollowUp(currentText)
+  const currentIsActionOnlyFollowUp = looksLikeActionOnlyFollowUp(currentText)
   const hints = []
   for (let index = userMessages.length - 1; index >= 0 && hints.length < 4; index -= 1) {
     const item = userMessages[index]
@@ -149,24 +121,19 @@ function buildPrivateSearchContext(session, history = [], options = {}) {
     }
   }
 
-  const executable = hints.filter(item => item.source === 'private_hot' || item.source === 'private_warm')
-  const refinementMatches = executable
-    .map(item => ({ item, score: scoreRefinementCandidate(currentText, item.text) }))
-    .filter(entry => entry.score > 0)
-    .sort((a, b) => b.score - a.score || b.item.ts - a.item.ts)
-  if (refinementMatches.length && (refinementMatches.length === 1 || refinementMatches[0].score > refinementMatches[1].score)) {
-    const selected = refinementMatches[0].item
+  if (!currentIsActionOnlyFollowUp) {
     return {
       recentUserMessages,
       searchContextHints: hints,
-      searchReadiness: selected.source === 'private_hot' ? 'can_complete_from_hot' : 'can_complete_from_warm',
-      queryCandidate: mergeTemporalRefinement(selected.text, currentText),
-      gateReason: 'same_topic_private_refinement',
-      blockedReason: '',
+      searchReadiness: 'needs_chat_handling',
+      queryCandidate: '',
+      gateReason: '',
+      blockedReason: 'refinement_requires_chat_judgement',
     }
   }
-  const unambiguous = executable.filter(item => !item.interrupted)
-  const hot = unambiguous.filter(item => item.source === 'private_hot')
+
+  const executable = hints.filter(item => !item.interrupted && (item.source === 'private_hot' || item.source === 'private_warm'))
+  const hot = executable.filter(item => item.source === 'private_hot')
   if (hot.length === 1) {
     return {
       recentUserMessages,
@@ -178,8 +145,8 @@ function buildPrivateSearchContext(session, history = [], options = {}) {
     }
   }
 
-  const warm = unambiguous.filter(item => item.source === 'private_warm')
-  if (warm.length === 1 && unambiguous.length === 1) {
+  const warm = executable.filter(item => item.source === 'private_warm')
+  if (warm.length === 1 && executable.length === 1) {
     return {
       recentUserMessages,
       searchContextHints: hints,

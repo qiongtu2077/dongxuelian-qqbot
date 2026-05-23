@@ -27,8 +27,44 @@ BACKUP_ROOT="${DATA_SEAL_BACKUP_ROOT:-$APP_DIR/deploy-backups}"
 STAMP="${DATA_SEAL_STAMP:-$(date +%Y%m%d-%H%M%S)}"
 BACKUP_DIR="$BACKUP_ROOT/data-seal-$STAMP"
 
+copy_seed_path() {
+  rel="$1"
+  seed="$2"
+  case "$seed" in
+    ""|/*|*"/../"*|"../"*|*".."*)
+      echo "Refusing unsafe seed path: $rel/$seed" >&2
+      exit 1
+      ;;
+  esac
+
+  case "$seed" in
+    ai-paused.txt|ai-provider.txt|ai-model.txt|ai-base-url.txt|ai-enable-search.txt|ai-enable-thinking.txt|ai-*key*.txt|dashboard-*.txt|password-reset-token.txt)
+      echo "skip runtime data seed: $rel/$seed"
+      return 0
+      ;;
+  esac
+
+  src="$APP_DIR/$rel/$seed"
+  dst="$DATA_DIR/$seed"
+  if [ ! -e "$src" ]; then
+    echo "package data seed path absent: $rel/$seed"
+    return 0
+  fi
+  if [ -d "$src" ]; then
+    mkdir -p "$dst"
+    cp -an "$src/." "$dst/" 2>/dev/null || true
+  else
+    mkdir -p "$(dirname "$dst")"
+    if [ ! -e "$dst" ]; then
+      cp "$src" "$dst"
+    fi
+  fi
+  echo "merged package data seed path: $rel/$seed -> $dst"
+}
+
 merge_seed_one() {
   rel="$1"
+  shift || true
   pkg_data="$APP_DIR/$rel"
   parent="$(dirname "$pkg_data")"
   mkdir -p "$parent"
@@ -49,8 +85,14 @@ merge_seed_one() {
       echo "package data already resolves to runtime data: $rel -> $DATA_DIR"
       return 0
     fi
-    cp -an "$pkg_data/." "$DATA_DIR/" 2>/dev/null || true
-    echo "merged package data seed without mutating source: $rel -> $DATA_DIR"
+    if [ "$#" -eq 0 ]; then
+      echo "no package data seed allowlist: $rel"
+      return 0
+    fi
+    for seed in "$@"; do
+      copy_seed_path "$rel" "$seed"
+    done
+    echo "checked package data seed allowlist without mutating source: $rel -> $DATA_DIR"
   elif [ -e "$pkg_data" ]; then
     mkdir -p "$BACKUP_DIR/$(dirname "$rel")"
     mv "$pkg_data" "$BACKUP_DIR/$rel.non-directory"
@@ -61,7 +103,7 @@ merge_seed_one() {
   fi
 }
 
-merge_seed_one "packages/koishi-plugin-dongxuelian-ai/data"
+merge_seed_one "packages/koishi-plugin-dongxuelian-ai/data" "ai-skills" "ai-tool-config.json" "summary-whitelist.json"
 merge_seed_one "packages/koishi-plugin-group-name-at/data"
 merge_seed_one "packages/koishi-plugin-local-video-sender/data"
 

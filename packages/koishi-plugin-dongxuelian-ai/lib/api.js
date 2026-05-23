@@ -4,7 +4,7 @@
  * 边界: 不存 conversation，不做业务判断。结果返回给调用方（chat.js）处理。
  */
 const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE, MIMORIUM_KEY_FILE, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE, DATA_DIR } = require('./constants')
-const { readTextFile, isDashScopeConfig } = require('./utils')
+const { readTextFile, isDashScopeConfig, todayCst } = require('./utils')
 const { resolveOneBotWsUrl } = require('./onebot-endpoint')
 const { validatePublicHttpUrl, resolveAndValidateHostname } = require('./agent/fetch-reader')
 const path = require('path')
@@ -28,17 +28,93 @@ const TOKEN_USAGE_EXIT_FLUSH = Symbol.for('dongxuelian.ai.tokenUsageExitFlush')
 let _tokenUsageCache = null
 let _tokenUsageFlushTimer = null
 
-function recordTokenUsage(provider, tokens) {
+function usageNumber(value) {
+  const n = Number(value || 0)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+function normalizeTokenUsageDay(day) {
+  if (!day || typeof day !== 'object' || Array.isArray(day)) return { providers: {}, models: {}, total: 0, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }
+  if (day.providers && typeof day.providers === 'object') {
+    day.models = day.models && typeof day.models === 'object' ? day.models : {}
+    day.total = usageNumber(day.total)
+    day.requests = usageNumber(day.requests)
+    day.input = usageNumber(day.input)
+    day.output = usageNumber(day.output)
+    day.cacheCreation = usageNumber(day.cacheCreation)
+    day.cacheRead = usageNumber(day.cacheRead)
+    return day
+  }
+  const providers = {}
+  let total = 0
+  for (const [key, value] of Object.entries(day)) {
+    const amount = usageNumber(value)
+    if (!key || amount <= 0) continue
+    providers[key] = { total: amount, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }
+    total += amount
+  }
+  return { providers, models: {}, total, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }
+}
+
+function readUsageDetails(usage = {}) {
+  const input = usageNumber(usage.prompt_tokens || usage.input_tokens || usage.inputTokens)
+  const output = usageNumber(usage.completion_tokens || usage.output_tokens || usage.completionTokens || usage.outputTokens)
+  const cacheRead = usageNumber(
+    usage.cache_read_tokens
+    || usage.cache_read_input_tokens
+    || usage.cached_tokens
+    || usage.prompt_tokens_details?.cached_tokens
+    || usage.input_tokens_details?.cached_tokens
+  )
+  const cacheCreation = usageNumber(
+    usage.cache_creation_tokens
+    || usage.cache_creation_input_tokens
+    || usage.prompt_tokens_details?.cache_creation_tokens
+    || usage.input_tokens_details?.cache_creation_tokens
+  )
+  return { input, output, cacheCreation, cacheRead }
+}
+
+function bumpUsageStat(target, delta) {
+  target.total = usageNumber(target.total) + usageNumber(delta.total)
+  target.requests = usageNumber(target.requests) + 1
+  target.input = usageNumber(target.input) + usageNumber(delta.input)
+  target.output = usageNumber(target.output) + usageNumber(delta.output)
+  target.cacheCreation = usageNumber(target.cacheCreation) + usageNumber(delta.cacheCreation)
+  target.cacheRead = usageNumber(target.cacheRead) + usageNumber(delta.cacheRead)
+}
+
+function recordTokenUsage(provider, tokens, details = {}) {
   if (!provider || !tokens || tokens <= 0) return
-  const date = new Date().toISOString().slice(0, 10)
+  const date = todayCst()
   if (!_tokenUsageCache) {
     try {
       const raw = fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')
       _tokenUsageCache = JSON.parse(raw)
     } catch { _tokenUsageCache = {} }
   }
-  if (!_tokenUsageCache[date]) _tokenUsageCache[date] = {}
-  _tokenUsageCache[date][provider] = (_tokenUsageCache[date][provider] || 0) + tokens
+  const day = normalizeTokenUsageDay(_tokenUsageCache[date])
+  _tokenUsageCache[date] = day
+  const usage = readUsageDetails(details.usage || {})
+  const delta = {
+    total: usageNumber(tokens),
+    input: usage.input,
+    output: usage.output,
+    cacheCreation: usage.cacheCreation,
+    cacheRead: usage.cacheRead,
+  }
+  const providerKey = String(provider || 'unknown')
+  if (!day.providers[providerKey] || typeof day.providers[providerKey] !== 'object') {
+    day.providers[providerKey] = { total: usageNumber(day.providers[providerKey]), requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }
+  }
+  bumpUsageStat(day.providers[providerKey], delta)
+  const modelKey = String(details.model || '').trim()
+  if (modelKey) {
+    if (!day.models[modelKey] || typeof day.models[modelKey] !== 'object') day.models[modelKey] = { provider: providerKey, total: 0, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }
+    day.models[modelKey].provider = providerKey
+    bumpUsageStat(day.models[modelKey], delta)
+  }
+  bumpUsageStat(day, delta)
   if (!_tokenUsageFlushTimer) {
     _tokenUsageFlushTimer = setTimeout(() => {
       _tokenUsageFlushTimer = null
@@ -215,8 +291,8 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
       throw new Error((isFallback ? '[FALLBACK] ' : '') + `HTTP ${response.status} ${text}`.trim())
     }
     const data = await response.json()
-    const usageTokens = data?.usage?.total_tokens || 0
-    if (usageTokens > 0) recordTokenUsage(config.provider || 'unknown', usageTokens)
+    const usageTokens = data?.usage?.total_tokens || data?.usage?.totalTokens || 0
+    if (usageTokens > 0) recordTokenUsage(config.provider || 'unknown', usageTokens, { model: config.model, usage: data?.usage || {} })
     const m = data?.choices?.[0]?.message || {}
 
     // tool_calls 必须在 content 判空之前检查
@@ -274,8 +350,8 @@ async function requestOpenAIResponsesWithSearch(messages, config) {
     })
     if (!response.ok) { const text = await response.text().catch(() => ''); throw new Error(`HTTP ${response.status} ${text}`.trim()) }
     const data = await response.json()
-    const usageTokens = data?.usage?.total_tokens || 0
-    if (usageTokens > 0) recordTokenUsage(config.provider || 'unknown', usageTokens)
+    const usageTokens = data?.usage?.total_tokens || data?.usage?.totalTokens || 0
+    if (usageTokens > 0) recordTokenUsage(config.provider || 'unknown', usageTokens, { model: config.model, usage: data?.usage || {} })
     return extractResponsesText(data)
   } finally { clearTimeout(timer) }
 }

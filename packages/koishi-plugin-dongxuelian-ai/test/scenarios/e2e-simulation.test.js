@@ -218,8 +218,6 @@ async function run(t) {
       { json: { choices: [{ message: { content: '今天气温转述。' } }] } },
       { json: { choices: [{ message: { content: '我的世界搞笑视频测试结果。' } }] } },
       { json: { choices: [{ message: { content: '视频转述。' } }] } },
-      { json: { choices: [{ message: { content: '杭州明天气温测试结果。' } }] } },
-      { json: { choices: [{ message: { content: '明天气温转述。' } }] } },
     ])
     await withFetch(mocked, async () => {
       const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -251,14 +249,14 @@ async function run(t) {
         session.content = '我想看我的世界的搞笑视频'
         await run(session, { flushTicks: 160 })
         await session.waitForSend(message => String(message).includes('视频转述'), 10000)
-        session.sent.length = 0
-        session.content = '那明天呢'
-        await run(session, { flushTicks: 160 })
-        await session.waitForSend(message => String(message).includes('明天气温'), 10000)
-        const lastSearch = searchCalls[searchCalls.length - 1] || {}
-        const lastQuery = String(lastSearch.query || '')
-        t.check('mocked private refinement keeps same-topic weather context', lastQuery.includes('杭州') && lastQuery.includes('明天') && !lastQuery.includes('我的世界'), JSON.stringify(searchCalls))
-        assertNoEmptyAgentReply(t, 'mocked private refinement context search', session.sent.join(' '))
+        const searchContext = require(path.join(AI_ROOT, 'lib', 'search-context.js'))
+        const now = Date.now()
+        const interruptedContext = searchContext.buildPrivateSearchContext(session, [
+          { role: 'user', content: '杭州今天气温多少', ts: now - 20 * 60 * 1000 },
+          { role: 'user', content: '我想看我的世界的搞笑视频', ts: now - 5 * 60 * 1000 },
+        ], { currentText: '那明天呢', now })
+        t.check('mocked private refinement interrupted by another topic stays in chat gate', interruptedContext.searchReadiness === 'needs_chat_handling' && !interruptedContext.queryCandidate, JSON.stringify(interruptedContext))
+        assertNoEmptyAgentReply(t, 'mocked private refinement context chat', session.sent.join(' '))
       } finally {
         webSearch.execute = originalExecute
       }

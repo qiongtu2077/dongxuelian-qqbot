@@ -18,6 +18,17 @@ echo "syntax check"
 node -c packages/koishi-plugin-dashboard/standalone.js
 find packages -path '*/lib/*.js' -type f -print0 | xargs -0 -n1 node -c
 
+echo "clean stale dashboard dist assets"
+if [ -f packages/koishi-plugin-dashboard/frontend/dist/index.html ] && [ -d packages/koishi-plugin-dashboard/frontend/dist/assets ]; then
+  keep_files="$(grep -oE 'assets/[^"'"'"' ]+' packages/koishi-plugin-dashboard/frontend/dist/index.html | sed 's#^assets/##' | sort -u || true)"
+  find packages/koishi-plugin-dashboard/frontend/dist/assets -maxdepth 1 -type f \( -name 'index-*.js' -o -name 'index-*.css' \) | while IFS= read -r asset; do
+    name="$(basename "$asset")"
+    if ! printf '%s\n' "$keep_files" | grep -Fxq "$name"; then
+      rm -f "$asset"
+    fi
+  done
+fi
+
 echo "sync plugin code to node_modules"
 for pkgdir in packages/koishi-plugin-*; do
   [ -f "$pkgdir/package.json" ] || continue
@@ -33,6 +44,10 @@ for pkgdir in packages/koishi-plugin-*; do
   rm -rf "$dest/lib" "$dest/templates" "$dest/frontend/dist"
   [ -d "$pkgdir/lib" ] && cp -R "$pkgdir/lib" "$dest/lib"
   [ -d "$pkgdir/templates" ] && cp -R "$pkgdir/templates" "$dest/templates"
+  if [ -d "$pkgdir/frontend/dist" ]; then
+    mkdir -p "$dest/frontend"
+    cp -R "$pkgdir/frontend/dist" "$dest/frontend/dist"
+  fi
   [ -f "$pkgdir/index.js" ] && cp "$pkgdir/index.js" "$dest/index.js"
   [ -f "$pkgdir/standalone.js" ] && cp "$pkgdir/standalone.js" "$dest/standalone.js"
   cp "$pkgdir/package.json" "$dest/package.json"
