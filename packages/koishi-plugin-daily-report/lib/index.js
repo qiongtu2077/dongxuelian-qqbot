@@ -69,6 +69,16 @@ function logAnalysisWarnings(ctx, modeLabel, analysis) {
   ctx.logger('daily-report').warn(`${modeLabel}分析降级: ${warnings.join(' | ')}`)
 }
 
+async function safeSendDailyReport(ctx, session, message, label = 'message') {
+  try {
+    await session.send(message)
+    return true
+  } catch (error) {
+    ctx.logger('daily-report').warn(`${label}发送失败: ${error?.message || error}`)
+    return false
+  }
+}
+
 // 白名单缓存（避免每次同步读文件）
 let whitelistCache = null
 let whitelistCacheTime = 0
@@ -107,19 +117,19 @@ exports.apply = (ctx) => {
       const channelKey = session.guildId || session.channelId || 'private'
 
       if (!session.guildId) {
-        await session.send('这个命令只能在群里使用。')
+        await safeSendDailyReport(ctx, session, '这个命令只能在群里使用。', '群聊限制提示')
         return
       }
 
       // 白名单检查
       const whitelist = getWhitelist()
       if (!whitelist.includes(String(channelKey))) {
-        await session.send('本群未启用日报功能，请联系管理员添加白名单。')
+        await safeSendDailyReport(ctx, session, '本群未启用日报功能，请联系管理员添加白名单。', '白名单提示')
         return
       }
 
       if (inFlightReports.has(channelKey)) {
-        await session.send('这个群的日报正在生成中，请稍后再试。')
+        await safeSendDailyReport(ctx, session, '这个群的日报正在生成中，请稍后再试。', '并发提示')
         return
       }
 
@@ -127,12 +137,12 @@ exports.apply = (ctx) => {
       trimRuntimeMaps()
       const lastReport = cooldown.get(channelKey) || 0
       if (Date.now() - lastReport < TIMEOUTS.cooldown) {
-        await session.send('日报生成太频繁了，1分钟后再试。')
+        await safeSendDailyReport(ctx, session, '日报生成太频繁了，1分钟后再试。', '冷却提示')
         return
       }
       const lastFailure = failureBackoff.get(channelKey) || 0
       if (Date.now() - lastFailure < FAILURE_BACKOFF_MS) {
-        await session.send('刚刚生成失败了，稍等几秒再重试。')
+        await safeSendDailyReport(ctx, session, '刚刚生成失败了，稍等几秒再重试。', '失败退避提示')
         return
       }
 
@@ -146,7 +156,7 @@ exports.apply = (ctx) => {
       // 收集数据
       const data = collectReportData(channelKey)
       if (!data || data.messages.length === 0) {
-        await session.send('今天还没有收录足够消息，稍后再试。')
+        await safeSendDailyReport(ctx, session, '今天还没有收录足够消息，稍后再试。', '空数据提示')
         return
       }
 
@@ -155,7 +165,8 @@ exports.apply = (ctx) => {
       inFlightReports.set(channelKey, Date.now())
 
       try {
-        await session.send(`正在生成群聊${modeLabel}，请稍候...`)
+        const started = await safeSendDailyReport(ctx, session, `正在生成群聊${modeLabel}，请稍候...`, '生成中提示')
+        if (!started) return
         let analysis = {}
         if (isFull) {
           try {
@@ -164,14 +175,18 @@ exports.apply = (ctx) => {
           } catch (err) {
             ctx.logger('daily-report').error(`${modeLabel}AI分析失败: ${err.message}`)
             failureBackoff.set(channelKey, Date.now())
-            await session.send(`${modeLabel}分析失败了，请稍后再试。`)
+            await safeSendDailyReport(ctx, session, `${modeLabel}分析失败了，请稍后再试。`, 'AI失败提示')
             return
           }
         }
 
         const imageBuffer = await renderReport(data, analysis)
         const base64 = imageBuffer.toString('base64')
-        await session.send(h.image(`data:image/png;base64,${base64}`))
+        const imageSent = await safeSendDailyReport(ctx, session, h.image(`data:image/png;base64,${base64}`), '日报图片')
+        if (!imageSent) {
+          failureBackoff.set(channelKey, Date.now())
+          return
+        }
         cooldown.set(channelKey, Date.now())
         failureBackoff.delete(channelKey)
 
@@ -180,7 +195,7 @@ exports.apply = (ctx) => {
         const failure = classifyRenderError(err)
         ctx.logger('daily-report').error(`${modeLabel}生成失败[${failure.kind}]: ${err.message}`)
         failureBackoff.set(channelKey, Date.now())
-        await session.send(failure.userMessage)
+        await safeSendDailyReport(ctx, session, failure.userMessage, '失败提示')
       } finally {
         inFlightReports.delete(channelKey)
         trimRuntimeMaps()
@@ -197,4 +212,5 @@ exports._test = {
   failureBackoff,
   inFlightReports,
   trimRuntimeMaps,
+  safeSendDailyReport,
 }

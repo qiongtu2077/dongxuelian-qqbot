@@ -170,6 +170,15 @@ async function run() {
     result = await send(ctx, '昵称 小明 <at id="2001"/>')
     check('binds alias through middleware', result.sent.some(item => item.includes('昵称“小明”成功绑定到用户')), JSON.stringify(result.sent))
 
+    result = await send(ctx, '昵称 风控 <at id="2002"/>', {
+      async send() {
+        const error = new Error('retcode: 1200 risk control')
+        error.retcode = 1200
+        throw error
+      },
+    })
+    check('send failure is caught inside nickname plugin', result.sent.length === 0 && result.logs.some(log => log.level === 'warn' && log.msg.includes('send failed')), JSON.stringify(result))
+
     result = await send(ctx, '查看全部昵称')
     check('alias list command is not stolen by collection list', result.sent.some(item => item.includes('本群昵称：') && item.includes('小明')), JSON.stringify(result.sent))
 
@@ -218,6 +227,15 @@ async function run() {
 
     result = await send(ctx, 'at集合名称 测试组')
     check('boundary: mention collection returns mention or notice', result.sent.length > 0, JSON.stringify(result.sent))
+
+    result = await send(ctx, 'at集合名称 测试组', {
+      async send() {
+        const error = new Error('retcode: 1200 risk control')
+        error.retcode = 1200
+        throw error
+      },
+    })
+    check('boundary: mention collection send failure is caught', result.sent.length === 0 && result.logs.some(log => log.level === 'warn' && log.msg.includes('send failed')), JSON.stringify(result))
   })
 
   section('runtime disabled groups and cleanup')

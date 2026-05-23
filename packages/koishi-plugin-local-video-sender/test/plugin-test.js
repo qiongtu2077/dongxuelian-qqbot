@@ -257,6 +257,49 @@ async function run() {
     )
     check('probe failure can be retried immediately', failedProbeCount === 2, `failedProbeCount=${failedProbeCount}`)
     check('probe failure keeps user-visible error', String(failedFirst).includes('Failed to probe') && String(failedSecond).includes('Failed to probe'), JSON.stringify({ failedFirst, failedSecond }))
+
+    plugin.clearRecentParseHistory()
+    let previewProbeCount = 0
+    const previewFailSession = makeSession({
+      async send() {
+        const error = new Error('retcode: 1200 risk control')
+        error.retcode = 1200
+        throw error
+      },
+    })
+    const previewFailure = await plugin.downloadAndSend(
+      ctx,
+      previewFailSession,
+      'https://www.bilibili.com/video/BV1xx411c7mD',
+      'BV1xx411c7mD',
+      {
+        probeVideo: async () => {
+          previewProbeCount += 1
+          return {
+            info: sampleInfo(),
+            picked: { format: '30064+30280', label: '720P AVC', totalSize: 2048, height: 720 },
+          }
+        },
+        run: async () => { throw new Error('downloader should not run after preview send failure') },
+      }
+    )
+    const previewRetry = await plugin.downloadAndSend(
+      ctx,
+      makeSession(),
+      'https://www.bilibili.com/video/BV1xx411c7mD',
+      'BV1xx411c7mD',
+      {
+        probeVideo: async () => {
+          previewProbeCount += 1
+          return {
+            info: sampleInfo(),
+            picked: { format: '30064+30280', label: '720P AVC', totalSize: 2048, height: 720 },
+          }
+        },
+      }
+    )
+    check('preview send failure returns controlled message', String(previewFailure).includes('Failed to send video preview'), String(previewFailure))
+    check('preview send failure is logged and retry is not blocked', previewProbeCount === 2 && ctx.logs.some(log => log.msg.includes('preview send failed')) && String(previewRetry).includes('Video is too large'), JSON.stringify({ previewProbeCount, logs: ctx.logs, previewRetry }))
   })
 
   section('boundary and edge cases')

@@ -597,6 +597,97 @@ async function testCooldownAfterSuccessOnly() {
   }
 }
 
+async function testSendFailureBoundary() {
+  section('send failure boundary')
+  const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-send-fail-'))
+  fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123']), 'utf8')
+
+  const originalConfigCache = require.cache[CONFIG_PATH]
+  const originalDataCollectorCache = require.cache[DATA_COLLECTOR_PATH]
+  const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
+  const originalRendererCache = require.cache[HTML_RENDERER_PATH]
+  const originalPluginCache = require.cache[PLUGIN_PATH]
+
+  let collectCalls = 0
+  let analyzeCalls = 0
+  let renderCalls = 0
+
+  try {
+    require.cache[CONFIG_PATH] = {
+      id: CONFIG_PATH,
+      filename: CONFIG_PATH,
+      loaded: true,
+      exports: { TIMEOUTS: { aiRequest: 30000, cooldown: 60000 }, DATA_DIR: reportDataDir },
+    }
+    require.cache[DATA_COLLECTOR_PATH] = {
+      id: DATA_COLLECTOR_PATH,
+      filename: DATA_COLLECTOR_PATH,
+      loaded: true,
+      exports: {
+        collectReportData: () => {
+          collectCalls += 1
+          return createSampleReportData()
+        },
+      },
+    }
+    require.cache[AI_ANALYZER_PATH] = {
+      id: AI_ANALYZER_PATH,
+      filename: AI_ANALYZER_PATH,
+      loaded: true,
+      exports: {
+        analyzeWithAI: async () => {
+          analyzeCalls += 1
+          return { topics: [], goldenQuotes: [] }
+        },
+      },
+    }
+    require.cache[HTML_RENDERER_PATH] = {
+      id: HTML_RENDERER_PATH,
+      filename: HTML_RENDERER_PATH,
+      loaded: true,
+      exports: {
+        renderReport: async () => {
+          renderCalls += 1
+          return Buffer.from('fake-png')
+        },
+      },
+    }
+
+    delete require.cache[PLUGIN_PATH]
+    const plugin = require(PLUGIN_PATH)
+    const ctx = makeCtx()
+    plugin.apply(ctx)
+    const middleware = ctx._middlewareList[0]
+    const session = makeSession({
+      content: '群聊日报',
+      guildId: '123',
+      async send() {
+        const error = new Error('retcode: 1200 risk control')
+        error.retcode = 1200
+        throw error
+      },
+    })
+
+    let rejected = false
+    try {
+      await middleware(session, () => 'next')
+    } catch {
+      rejected = true
+    }
+    check('daily report prompt send failure does not reject middleware', !rejected)
+    check('daily report stops after prompt send failure', collectCalls === 1 && analyzeCalls === 0 && renderCalls === 0, JSON.stringify({ collectCalls, analyzeCalls, renderCalls }))
+    check('daily report logs controlled send failure', ctx._logs.some(log => log.level === 'warn' && log.msg.includes('生成中提示发送失败')), JSON.stringify(ctx._logs))
+    check('daily report clears in-flight after prompt send failure', !plugin._test.inFlightReports.has('123'))
+  } finally {
+    restoreModuleCache(CONFIG_PATH, originalConfigCache)
+    restoreModuleCache(DATA_COLLECTOR_PATH, originalDataCollectorCache)
+    restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
+    restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
+    restoreModuleCache(PLUGIN_PATH, originalPluginCache)
+    try { fs.rmSync(reportDataDir, { recursive: true, force: true }) } catch {}
+  }
+}
+
 // ===== 3. models 单元测试 =====
 section('models 单元测试')
 const result = models.createDefaultAnalysisResult()
@@ -691,6 +782,7 @@ testMiddleware('你好', '123').then(nonReport => {
 ).then(() => testAIAnalyzerObjectResponse()
 ).then(() => testConcurrentReportGuard()
 ).then(() => testCooldownAfterSuccessOnly()
+).then(() => testSendFailureBoundary()
 ).then(() => {
 
   // ===== 长内容渲染回归 =====

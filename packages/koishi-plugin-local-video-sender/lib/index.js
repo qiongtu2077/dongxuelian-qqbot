@@ -470,6 +470,16 @@ function buildInfoMessage(info, picked) {
   return formatVideoInfo(info, picked)
 }
 
+async function safeSend(ctx, session, message, label = 'message') {
+  try {
+    await session.send(message)
+    return true
+  } catch (error) {
+    ctx.logger('bvidl').warn(`${label} send failed: ${error?.message || error}`)
+    return false
+  }
+}
+
 async function probeVideo(url) {
   const { stdout } = await run(YTDLP, [
     '--cookies', COOKIES,
@@ -532,7 +542,11 @@ async function downloadAndSend(ctx, session, url, source = url, deps = {}) {
 
   mergeRecentParseKeys(recentEntry, buildBiliKeys(getCanonicalBiliUrl(info)))
 
-  await session.send(buildInfoMessage(info, picked))
+  const previewSent = await safeSend(ctx, session, buildInfoMessage(info, picked), 'preview')
+  if (!previewSent) {
+    forgetRecentParse(session, recentEntry)
+    return 'Failed to send video preview. Please try again later.'
+  }
 
   if (picked.totalSize && picked.totalSize > MAX_SIZE) {
     return `Video is too large. Please watch it on Bilibili. Size: ${formatBytes(picked.totalSize)}`
@@ -557,7 +571,12 @@ async function downloadAndSend(ctx, session, url, source = url, deps = {}) {
       return `Video is too large. Please watch it on Bilibili. Actual size: ${formatBytes(stat.size)}`
     }
 
-    await session.send(segment.video(toFileUrl(outputFile)))
+    const videoSent = await safeSend(ctx, session, segment.video(toFileUrl(outputFile)), 'video')
+    if (!videoSent) {
+      forgetRecentParse(session, recentEntry)
+      await fsApi.rm(outputFile, { force: true }).catch(() => {})
+      return 'Failed to send video. Please try again later.'
+    }
     await fsApi.rm(outputFile, { force: true }).catch(() => {})
   } catch (error) {
     forgetRecentParse(session, recentEntry)
@@ -600,6 +619,7 @@ exports.getShortestBiliUrl = getShortestBiliUrl
 exports.downloadAndSend = downloadAndSend
 exports.getRuntimeConfig = getRuntimeConfig
 exports.toFileUrl = toFileUrl
+exports.safeSend = safeSend
 exports.isBlacklistedGroup = isBlacklistedGroup
 exports.loadVideoBlacklist = loadVideoBlacklist
 exports.isRecentDuplicateParse = isRecentDuplicateParse

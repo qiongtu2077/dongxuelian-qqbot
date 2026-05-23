@@ -110,6 +110,18 @@ function handleStoreAccessError(ctx, error) {
   throw error
 }
 
+async function safeSendText(ctx, session, text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  try {
+    await session.send(value)
+    return true
+  } catch (error) {
+    ctx.logger('group-name-at').warn(`send failed: ${error?.message || error}`)
+    return false
+  }
+}
+
 function getScopeId(session) {
   return String(session.guildId || session.channelId || 'global')
 }
@@ -809,9 +821,11 @@ exports.apply = (ctx) => {
     if (isBlacklistedGroup(session)) return
 
     try {
-      return await listEntries(session, 'alias')
+      await safeSendText(ctx, session, await listEntries(session, 'alias'))
+      return
     } catch (error) {
-      return handleStoreAccessError(ctx, error)
+      await safeSendText(ctx, session, handleStoreAccessError(ctx, error))
+      return
     }
   })
 
@@ -822,27 +836,41 @@ exports.apply = (ctx) => {
       const content = session.content || ''
 
       const bindAction = parseAliasBind(content)
-      if (bindAction) return await bindAlias(session, bindAction.alias, bindAction.targetUserId)
+      if (bindAction) {
+        await safeSendText(ctx, session, await bindAlias(session, bindAction.alias, bindAction.targetUserId))
+        return
+      }
 
       const deleteAction = parseAliasDelete(content, session)
-      if (deleteAction) return await removeAliasBinding(session, deleteAction.alias, deleteAction.targetUserId)
+      if (deleteAction) {
+        await safeSendText(ctx, session, await removeAliasBinding(session, deleteAction.alias, deleteAction.targetUserId))
+        return
+      }
 
       const commandResult = await handlePlainCommand(session, content)
-      if (commandResult) return commandResult
+      if (commandResult) {
+        await safeSendText(ctx, session, commandResult)
+        return
+      }
 
       const atRaw = parseAtAlias(content)
       if (atRaw) {
         const resolved = await resolveAtAlias(session, atRaw)
         if (resolved) {
           const atMessage = await sendAliasMention(session, resolved.alias, resolved.tail)
-          if (atMessage) return atMessage
+          if (atMessage) {
+            await safeSendText(ctx, session, atMessage)
+            return
+          }
         }
-        return TEXT.aliasNotFound(atRaw)
+        await safeSendText(ctx, session, TEXT.aliasNotFound(atRaw))
+        return
       }
 
       return next()
     } catch (error) {
-      return handleStoreAccessError(ctx, error)
+      await safeSendText(ctx, session, handleStoreAccessError(ctx, error))
+      return
     }
   })
 }
@@ -853,4 +881,5 @@ exports._test = {
   pendingConfirms,
   trimPendingConfirms,
   loadDisabledGroups,
+  safeSendText,
 }
