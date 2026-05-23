@@ -10,6 +10,8 @@ const BASE_URL = `http://127.0.0.1:${PORT}/`
 const LIVE_URL = process.env.DASHBOARD_SMOKE_LIVE_URL || ''
 const LIVE_PASSWORD = process.env.DASHBOARD_SMOKE_PASSWORD || ''
 const LIVE_ADMIN_PASSWORD = process.env.DASHBOARD_SMOKE_ADMIN_PASSWORD || ''
+const LIVE_TOKEN = process.env.DASHBOARD_SMOKE_TOKEN || ''
+const LIVE_ADMIN_TOKEN = process.env.DASHBOARD_SMOKE_ADMIN_TOKEN || ''
 
 function findBrowserExecutable() {
   const candidates = [
@@ -184,7 +186,20 @@ function apiMock(method, pathname, body) {
 
   if (method === 'GET' && pathname === '/keys') return ok([{ file: 'ai-deepseek-key.txt', label: 'DeepSeek', exists: true, prefix: 'sk-***' }])
   if (method === 'PUT' && pathname === '/keys') return writeOk('key saved')
-  if (method === 'GET' && pathname === '/keys/usage') return ok({ providers: ['deepseek'], days: [{ date: '2026-05-20', deepseek: 1234 }] })
+  if (method === 'GET' && pathname === '/keys/usage') return ok({
+    providers: [
+      { key: 'mimorium', label: 'MiMo' },
+      { key: 'glm', label: 'GLM' },
+      { key: 'dashscope', label: '阿里云' },
+      { key: 'deepseek', label: 'DeepSeek' },
+    ],
+    days: [
+      { date: '2026-05-20', mimorium: 133000000, glm: 0, dashscope: 0, deepseek: 9000000 },
+      { date: '2026-05-21', mimorium: 201000000, glm: 200000, dashscope: 0, deepseek: 11000000 },
+      { date: '2026-05-22', mimorium: 198000000, deepseek: 12000000 },
+      { date: '2026-05-23', mimorium: 72000000, deepseek: 3000000 },
+    ],
+  })
 
   if (method === 'GET' && pathname === '/whitelist') return ok({
     aiWhitelist: { label: '群聊 AI 白名单', data: ['10001'] },
@@ -492,6 +507,18 @@ async function runClicks(page) {
 
   await clickSidebarTab(page, 'API Keys')
   await waitForText(page, 'API Key 管理')
+  await waitForText(page, 'Token 用量')
+  await waitForText(page, 'MiMo')
+  await waitForText(page, 'DeepSeek')
+  await waitForText(page, '639.2M')
+  await waitForText(page, '212.2M')
+  await page.waitForFunction(() => {
+    const text = document.body.innerText
+    if (text.includes('[object Object]')) return false
+    if (text.includes('"key"') || text.includes('"label"')) return false
+    const counts = [...document.querySelectorAll('.token-count')].map(el => el.textContent.trim())
+    return counts.length >= 4 && counts.some(item => /M$/.test(item)) && counts.every(item => item !== '0')
+  }, { timeout: 8000 })
   await clickText(page, '编辑')
   await typePlaceholder(page, '输入新的 ai-deepseek-key.txt', 'sk-local-smoke')
   await clickText(page, '保存')
@@ -522,8 +549,21 @@ async function runClicks(page) {
 }
 
 async function runLiveClicks(page) {
-  if (!LIVE_PASSWORD) throw new Error('DASHBOARD_SMOKE_PASSWORD is required for live smoke')
+  if (!LIVE_PASSWORD && !LIVE_TOKEN) throw new Error('DASHBOARD_SMOKE_PASSWORD or DASHBOARD_SMOKE_TOKEN is required for live smoke')
   await page.goto(LIVE_URL, { waitUntil: 'networkidle0' })
+  if (LIVE_TOKEN) {
+    await page.evaluate(token => {
+      localStorage.setItem('dashboard_token', token)
+      localStorage.removeItem('dashboard_deploy_unlocked')
+      localStorage.setItem('dashboard_sidebar_expanded', 'true')
+    }, LIVE_TOKEN)
+    if (LIVE_ADMIN_TOKEN) {
+      await page.evaluate(token => {
+        localStorage.setItem('dashboard_server_token', JSON.stringify({ token, expires: Date.now() + 3600000 }))
+      }, LIVE_ADMIN_TOKEN)
+    }
+    await page.reload({ waitUntil: 'networkidle0' })
+  }
   if (await hasText(page, '请输入访问密码以继续')) {
     await typePlaceholder(page, '密码', LIVE_PASSWORD)
     await clickText(page, '登录')
@@ -557,6 +597,16 @@ async function runLiveClicks(page) {
   await clickSidebarTab(page, 'API Keys')
   await waitForText(page, 'API Key 管理')
   await verifyAdminIfVisible(page)
+  await waitForText(page, 'Token 用量')
+  await page.waitForFunction(() => {
+    const text = document.body.innerText || ''
+    if (text.includes('[object Object]')) return false
+    if (text.includes('"key"') || text.includes('"label"')) return false
+    const labels = ['MiMo', 'GLM', 'DeepSeek', '阿里云']
+    if (!labels.some(label => text.includes(label))) return false
+    const counts = [...document.querySelectorAll('.token-count')].map(el => el.textContent.trim())
+    return counts.length > 0 && counts.some(item => /[KMB]$/.test(item)) && counts.every(item => item !== '0')
+  }, { timeout: 15000 })
   await clickText(page, '编辑').catch(() => {})
   await waitForText(page, '编辑').catch(() => {})
   await clickText(page, '取消').catch(() => {})
