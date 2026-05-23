@@ -41,6 +41,7 @@ function mockFetch(initialQueue = []) {
       error.name = 'AbortError'
       throw error
     }
+    if (item.delayMs) await new Promise(resolve => setTimeout(resolve, Number(item.delayMs) || 0))
     if (item.error) throw item.error instanceof Error ? item.error : new Error(String(item.error))
     return makeResponse(item)
   }

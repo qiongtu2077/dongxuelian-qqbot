@@ -536,6 +536,7 @@ async function main() {
     personaRuntimePlan: path.join(LIB, 'persona-runtime-plan'),
     personaProfile: path.join(LIB, 'persona-profile'),
     personaLoreRouter: path.join(LIB, 'persona-lore-router'),
+    skillSeeds: path.join(LIB, 'skill-seeds'),
     externalToolPolicy: path.join(LIB, 'external-tool-policy'),
     replyTiming: path.join(LIB, 'reply-timing'),
     affectRouter: path.join(LIB, 'affect-router'),
@@ -714,6 +715,10 @@ async function main() {
       'getLegacyLoreKeywords', 'normalizeLoreEntry', 'resolvePersonaLoreIds',
       'findMatchedLoreKeywords', 'splitLoreChunks', 'truncateLoreText',
       'selectLoreText', 'routePersonaLore',
+    ],
+    skillSeeds: [
+      'extractFrontmatterText', 'hasFrontmatter', 'migrateMissingLoreFrontmatter',
+      'ensureRuntimeSkillSeeds', 'resetRuntimeSkillSeedSyncForTest',
     ],
     externalToolPolicy: [
       'externalToolsDenied', 'filterExternalToolDefinitions', 'buildExternalToolPolicyHint',
@@ -1250,6 +1255,8 @@ async function main() {
   check('file safety unwraps wrapped file content', modules.fileSafety.unwrapFileContent('[用户上传文件: demo.txt]\n---文件内容开始---\nhello\nworld\n---文件内容结束---').fileName === 'demo.txt')
   check('file safety summarizes wrapped file content naturally', modules.fileSafety.summarizeFileContentForChat('[用户上传文件: demo.txt]\n---文件内容开始---\nhello\nworld\n---文件内容结束---', 'demo.txt').includes('demo.txt 的内容大致是'))
   check('file safety preserves plain text fallback', modules.fileSafety.unwrapFileContent('plain content').content === 'plain content')
+  check('file safety rejects unsupported legacy doc and epub', modules.fileSafety.checkFile('old.doc', 1).reason === 'unsupported_type' && modules.fileSafety.checkFile('book.epub', 1).reason === 'unsupported_type')
+  check('file safety keeps supported office formats', modules.fileSafety.checkFile('new.docx', 1).allowed && modules.fileSafety.checkFile('table.xlsx', 1).allowed)
   check('persona fallback rejects internal draft text', modules.personaFallback.isUnsafeFallbackText(makeSession(), '用户在质疑我，我需要解释为什么'))
   check('persona fallback cleans safe persona reply', modules.personaFallback.cleanPersonaFallbackReply(makeSession(), 'TEST_MARKER 我先换个说法。', 'tester').includes('TEST_MARKER'))
   check('getSearchCapability dashscope', u.getSearchCapability({ baseURL: c.PROVIDERS.dashscope.baseURL, model: 'qwen3.5-plus' }).supported)
@@ -2374,8 +2381,8 @@ async function main() {
   const parsedPersonaDoc = modules.personaSchema.parsePersonaDocument('---\nname: Test\nwill: 3.5\nunknown_key: value\nvoice_asset_id: ghost\n---\nbody', { type: 'persona', file: 'SKILL.test.md' })
   check('persona schema parses body and legacy diagnostics', parsedPersonaDoc.body.trim() === 'body' && parsedPersonaDoc.diagnostics.some(item => item.code === 'legacy_schema_missing'))
   check('persona schema warns unknown fields and invalid will range', parsedPersonaDoc.diagnostics.some(item => item.code === 'unknown_frontmatter_field' && item.field === 'unknown_key') && parsedPersonaDoc.diagnostics.some(item => item.code === 'will_out_of_range'), JSON.stringify(parsedPersonaDoc.diagnostics))
-  const parsedLoreDoc = modules.personaSchema.parsePersonaDocument('---\r\nname: custom-lore\r\nkeywords: 星炬学院, 拉海洛\r\nscope: always\r\nsummary: 摘要\r\nmax_chars: 800\r\npriority: 5\r\n---\r\nbody', { type: 'lore', file: 'SKILL.custom-lore.md' })
-  check('persona schema accepts lore router metadata fields', parsedLoreDoc.body.trim() === 'body' && ['keywords', 'scope', 'summary', 'max_chars', 'priority'].every(field => !parsedLoreDoc.diagnostics.some(item => item.code === 'unknown_frontmatter_field' && item.field === field)), JSON.stringify(parsedLoreDoc.diagnostics))
+  const parsedLoreDoc = modules.personaSchema.parsePersonaDocument('---\r\nname: custom-lore\r\ntype: lore\r\nkeywords: 星炬学院, 拉海洛\r\nscope: always\r\nsummary: 摘要\r\nmax_chars: 800\r\npriority: 5\r\n---\r\nbody', { type: 'lore', file: 'SKILL.custom-lore.md' })
+  check('persona schema accepts lore router metadata fields', parsedLoreDoc.body.trim() === 'body' && ['type', 'keywords', 'scope', 'summary', 'max_chars', 'priority'].every(field => !parsedLoreDoc.diagnostics.some(item => item.code === 'unknown_frontmatter_field' && item.field === field)), JSON.stringify(parsedLoreDoc.diagnostics))
   const replyNsfwDoc = modules.personaSchema.parsePersonaDocument('---\nname: NsfwReply\nnsfw: reply\n---\nbody', { type: 'persona', file: 'SKILL.nsfw.md' })
   check('persona schema accepts legacy nsfw reply policy', !replyNsfwDoc.diagnostics.some(item => item.code === 'unknown_nsfw_policy'), JSON.stringify(replyNsfwDoc.diagnostics))
   const runtimePlan = modules.personaRuntimePlan.compilePersonaRuntimePlan({
@@ -2973,6 +2980,23 @@ async function main() {
   } finally {
     try { fs.rmSync(personaScanTmp, { recursive: true, force: true }) } catch {}
   }
+  const skillSeedTmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cascade-skill-seed-'))
+  try {
+    const srcLore = path.join(skillSeedTmp, 'src', 'lore')
+    const dstLore = path.join(skillSeedTmp, 'dst', 'lore')
+    fs.mkdirSync(srcLore, { recursive: true })
+    fs.mkdirSync(dstLore, { recursive: true })
+    fs.writeFileSync(path.join(srcLore, 'SKILL.demo-lore.md'), '---\nname: demo-lore\ntype: lore\n---\nPACKAGE_BODY', 'utf8')
+    fs.writeFileSync(path.join(dstLore, 'SKILL.demo-lore.md'), '# USER_EDITED_BODY', 'utf8')
+    const migrated = modules.skillSeeds.migrateMissingLoreFrontmatter(srcLore, dstLore)
+    const migratedText = fs.readFileSync(path.join(dstLore, 'SKILL.demo-lore.md'), 'utf8')
+    check('skill seeds migrate missing lore frontmatter once', migrated === 1 && migratedText.includes('name: demo-lore') && migratedText.includes('# USER_EDITED_BODY'), migratedText)
+    const migratedAgain = modules.skillSeeds.migrateMissingLoreFrontmatter(srcLore, dstLore)
+    check('skill seeds do not overwrite lore body after migration', migratedAgain === 0 && fs.readFileSync(path.join(dstLore, 'SKILL.demo-lore.md'), 'utf8') === migratedText)
+    check('skill seeds write frontmatter backup before migration', fs.readdirSync(dstLore).some(name => name.startsWith('SKILL.demo-lore.md.bak-frontmatter-')))
+  } finally {
+    try { fs.rmSync(skillSeedTmp, { recursive: true, force: true }) } catch {}
+  }
   const personas = p.getAvailablePersonals()
   check('at least one persona skill exists', personas.length > 0)
   const personaNames = new Set()
@@ -3071,6 +3095,8 @@ async function main() {
   check('deploy helper uses package source', deployHelper.includes('REPO_ROOT') && deployHelper.includes('/packages/'))
   check('deploy helper syntax checks js', deployHelper.includes('node -c "$js_file"'))
   check('deploy helper copies package assets', deployHelper.includes('cp -R "$SRC/assets" "$DEST/assets"'))
+  check('deploy helper installs package data seeds into runtime package', deployHelper.includes('cp -R "$SRC/data" "$DEST/data"'))
+  check('deploy helper copies ai-skills without overwriting runtime edits', deployHelper.includes('if [ ! -e "$target" ]') && !deployHelper.includes('cp -R "$SRC/data/ai-skills/." "$APP_DIR/data/ai-skills/"'))
   check('deploy helper refuses unsafe destination', deployHelper.includes('Refusing to remove unsafe destination'))
   check('deploy helper normalizes old koishi keys', deployHelper.includes('renamed koishi entry'))
   const deployMap = {

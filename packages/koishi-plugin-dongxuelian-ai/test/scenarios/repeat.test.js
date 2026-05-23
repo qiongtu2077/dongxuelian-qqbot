@@ -22,6 +22,16 @@ async function run(t) {
     const textRepeat = await run(userSession(makeSession, '1002', '\u8349'))
     checkSentIncludes(t, 'scenario text repeat triggers for two users', textRepeat, '\u8349')
 
+    await run(userSession(makeSession, '1018', '\u98ce\u63a7\u590d\u8bfb'))
+    const rateLimitedRepeat = await run(userSession(makeSession, '1019', '\u98ce\u63a7\u590d\u8bfb', {
+      async send() {
+        const error = new Error('retcode: 1200 risk control')
+        error.retcode = 1200
+        throw error
+      },
+    }))
+    t.check('scenario repeat send risk control is swallowed', rateLimitedRepeat.sent.length === 0 && rateLimitedRepeat.logs.some(item => String(item.msg).includes('repeat send rate-limited')), JSON.stringify({ sent: rateLimitedRepeat.sent, logs: rateLimitedRepeat.logs }))
+
     await run(userSession(makeSession, '1001', '\u540c\u4e00\u4e2a\u4eba'))
     const sameUser = await run(userSession(makeSession, '1001', '\u540c\u4e00\u4e2a\u4eba'))
     t.check('scenario same user repeat does not trigger', sameUser.sent.length === 0, JSON.stringify(sameUser.sent))

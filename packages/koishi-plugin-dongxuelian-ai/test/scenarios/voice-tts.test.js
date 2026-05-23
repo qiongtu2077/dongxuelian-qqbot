@@ -2,6 +2,7 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { spawnSync } = require('child_process')
+const { withScenario } = require('./_setup')
 
 function buildTestWav(payload = Buffer.from([1, 2, 3, 4])) {
   const data = Buffer.from(payload)
@@ -47,6 +48,23 @@ async function run(t) {
     const result = voice.extractVoicePayload(session)
     return result && result.file === 'abc.silk'
   })())
+
+  await withScenario({
+    data: { randomWhitelist: [] },
+  }, async ({ ready, makeSession, run }) => {
+    await ready()
+    const session = makeSession({
+      userId: '3001',
+      author: { id: '3001', name: 'voice-user' },
+      content: '',
+      messageId: 'ordinary-group-voice',
+      event: { sender: { role: 'member' }, message: [{ type: 'record', data: { file: 'voice.silk' } }] },
+    })
+    const result = await run(session, { flushTicks: 40 })
+    const conversation = require('../../lib/conversation')
+    const shared = conversation.channelSharedCache.get('10001') || []
+    t.check('ordinary group voice writes shared audio anchor without ASR', result.sent.length === 0 && shared.some(item => item.messageId === 'ordinary-group-voice' && item.content === '[语音]' && item.hasAudio === true), JSON.stringify({ sent: result.sent, shared }))
+  })
 
   t.section('scenario: voice TTS module')
 

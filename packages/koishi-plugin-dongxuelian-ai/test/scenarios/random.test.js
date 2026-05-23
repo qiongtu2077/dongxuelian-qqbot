@@ -64,6 +64,39 @@ async function run(t) {
   }, async ({ ready, makeSession, run }) => {
     await ready()
     const mocked = mockFetch([
+      { delayMs: 80, json: { choices: [{ message: { content: 'stale-random-should-not-send' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const triggerSession = makeSession({
+        userId: '2090',
+        author: { id: '2090', name: 'member' },
+        content: '慢一点的随机触发',
+        messageId: 'stale-random-trigger',
+      })
+      const triggerRun = run(triggerSession, { flush: false })
+      await waitForMockCalls(mocked, 1)
+      const interleavingSession = makeSession({
+        userId: '2091',
+        author: { id: '2091', name: 'other' },
+        content: '中间已经有人继续聊了',
+        messageId: 'stale-random-interleave',
+      })
+      await run(interleavingSession, { flushTicks: 20 })
+      await triggerRun
+      await flushAsync(160)
+      t.check('scenario ordinary random skips stale model reply after newer group message', !triggerSession.sent.some(item => String(item).includes('stale-random-should-not-send')), JSON.stringify(triggerSession.sent))
+    })
+  })
+
+  await withScenario({
+    data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 1 },
+      randomVoiceRate: { 10001: 0 },
+    },
+  }, async ({ ready, makeSession, run }) => {
+    await ready()
+    const mocked = mockFetch([
       { json: { choices: [{ message: { content: '{"mode":"ambient_water","reply":"先看一眼怎么收场"}' } }] } },
     ])
     await withFetch(mocked, async () => {

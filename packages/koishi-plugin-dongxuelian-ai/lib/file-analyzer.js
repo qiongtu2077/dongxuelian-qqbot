@@ -146,10 +146,9 @@ async function parseFile(filePath, ext) {
   if (TEXT_EXTENSIONS.has(ext)) return parseText(filePath)
   switch (ext) {
     case 'pdf': return parsePdf(filePath)
-    case 'doc': case 'docx': return parseDocx(filePath)
+    case 'docx': return parseDocx(filePath)
     case 'xls': case 'xlsx': return parseXlsx(filePath)
     case 'ppt': case 'pptx': return parsePpt(filePath)
-    case 'epub': return parseText(filePath)
     default: return null
   }
 }

@@ -13,7 +13,7 @@ const TEXT_EXTENSIONS = new Set([
 ])
 
 const BINARY_DOC_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'epub',
+  'pdf', 'docx', 'ppt', 'pptx', 'xls', 'xlsx',
 ])
 
 const BLOCKED_EXTENSIONS = new Set([
@@ -48,6 +48,10 @@ function checkFile(fileName, fileSize) {
 
   if (BLOCKED_EXTENSIONS.has(ext)) {
     return { allowed: false, reason: 'blocked_type', ext }
+  }
+
+  if (ext === 'doc' || ext === 'epub') {
+    return { allowed: false, reason: 'unsupported_type', ext }
   }
 
   if (TEXT_EXTENSIONS.has(ext)) {

@@ -545,13 +545,69 @@ function isPersonaSwitchRisky(personaResolution, groupPersonaName) {
 
 function buildRandomSendOptions(context = {}) {
   if (!context.randomTriggered) return {}
-  if (!context.highRisk || !context.triggerMessageId) return {}
+  const channelKey = String(context.channelKey || '')
   const triggerVersion = Number(context.triggerMessageVersion || 0)
-  const currentVersion = Number(context.currentMessageVersion || 0)
-  if (context.delayed || currentVersion > triggerVersion) {
-    return { forceQuote: true, quoteMessageId: String(context.triggerMessageId) }
+  const explicitVersion = Number(context.explicitVersion || 0)
+  const triggerAt = Number(context.triggerAt || 0)
+  return {
+    randomFreshness: {
+      channelKey,
+      triggerMessageVersion: triggerVersion,
+      explicitVersion,
+      triggerAt,
+    },
+    ...(context.highRisk && context.triggerMessageId && (context.delayed || Number(context.currentMessageVersion || 0) > triggerVersion)
+      ? { forceQuote: true, quoteMessageId: String(context.triggerMessageId) }
+      : {}),
   }
-  return {}
+}
+
+function isRandomReplyFresh(options = {}) {
+  const info = options.randomFreshness || null
+  if (!info || !info.channelKey) return true
+  const channelKey = String(info.channelKey)
+  const triggerVersion = Number(info.triggerMessageVersion || 0)
+  const explicitVersion = Number(info.explicitVersion || 0)
+  const triggerAt = Number(info.triggerAt || 0)
+  if (triggerAt > 0 && Date.now() - triggerAt > 60000) return false
+  if (getExplicitInteractionVersion(channelKey) !== explicitVersion) return false
+  if (getChannelMessageVersion(channelKey) !== triggerVersion) return false
+  return true
+}
+
+function logStaleRandomSkip(ctx, stage, options = {}) {
+  try {
+    const info = options.randomFreshness || {}
+    ctx.logger('dongxuelian-ai').info(`random reply stale skipped at ${stage}: channel=${info.channelKey || ''}`)
+  } catch {}
+}
+
+async function safeSendRepeat(ctx, session, reply) {
+  try {
+    await session.send(reply)
+    return true
+  } catch (error) {
+    const classified = classifySendError(error)
+    if (classified.type === 'muted') {
+      markPlatformMute(session, { reason: classified.reason })
+      ctx.logger('dongxuelian-ai').warn(`repeat send muted: ${classified.message.slice(0, 120)}`)
+      return false
+    }
+    if (classified.type === 'rate-limit') {
+      ctx.logger('dongxuelian-ai').warn(`repeat send rate-limited: ${classified.message.slice(0, 120)}`)
+      return false
+    }
+    ctx.logger('dongxuelian-ai').warn(`repeat send failed: ${classified.message.slice(0, 120)}`)
+    return false
+  }
+}
+
+function resolveSharedRecordText(plain, analyzed = {}) {
+  const text = normalizeText(stripMentions(plain || analyzed.memory || analyzed.plain || ''))
+  if (text) return text
+  if (analyzed.hasAudio) return '[语音]'
+  if (analyzed.hasMessageRecordCue) return normalizeText(analyzed.plain || '')
+  return ''
 }
 
 function logReplyTimingDiagnostic(ctx, input = {}) {
@@ -902,6 +958,10 @@ async function handleRateLimitedSendFailure(ctx, session, error, now, resolveBot
 }
 
 async function safeSendReply(ctx, session, reply, isRandom = false, resolveBot = null, sendOptions = {}) {
+  if (isRandom && !isRandomReplyFresh(sendOptions)) {
+    logStaleRandomSkip(ctx, 'text', sendOptions)
+    return
+  }
   const now = Date.now()
   // 冻结到期后重置通知标记
   if (now >= sendFailState.restrictedUntil && sendFailState.notifyScheduled) {
@@ -1288,8 +1348,7 @@ exports.apply = (ctx) => {
     const willFactor = calculateWillFactor(channelKey, currentPersonaName, channelSharedCache, personaWillContent)
     const userText = normalizeText(plain)
     const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId })
-    const sharedRecordText = normalizeText(stripMentions(plain || analyzed.memory || analyzed.plain || ''))
-      || (analyzed.hasMessageRecordCue ? normalizeText(analyzed.plain || '') : '')
+    const sharedRecordText = resolveSharedRecordText(plain, analyzed)
 
     // "闭嘴" 静默十分钟主动回复
     if (inGuild && !directAt && !nameMentioned && /^(?:闭嘴|别吵|别说了|不要说话)/.test(plain)) {
@@ -1313,7 +1372,7 @@ exports.apply = (ctx) => {
       const repeatResult = checkGroupRepeat(session, repeatCandidate, channelKey, currentUserId)
       if (repeatResult && !SENSITIVE_KEYWORDS_RE.test(String(repeatResult.reply || ''))) {
         ctx.logger('dongxuelian-ai').info(`repeat triggered in ${channelKey}: kind=${repeatResult.kind} keyLen=${String(repeatResult.key || '').length}`)
-        await session.send(repeatResult.reply)
+        await safeSendRepeat(ctx, session, repeatResult.reply)
         return next()
       }
     }
@@ -1356,20 +1415,27 @@ exports.apply = (ctx) => {
               let reply = await handleChatResult(await chat(liveSession, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, meta: chatMeta }), { ctx, session: liveSession, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true, resolveBot })
               if (reply) {
                 reply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply
-                if (shouldTriggerRareVoice(chatMeta)) {
-                  const rareVoiceSent = await safeSendRareVoice(ctx, liveSession)
-                  if (rareVoiceSent) return
-                }
                 let randomSendOptions = buildRandomSendOptions({
                   randomTriggered: true,
+                  channelKey,
                   delayed: true,
                   highRisk: p.highRisk,
                   triggerMessageId: p.triggerMessageId,
                   triggerMessageVersion: p.triggerMessageVersion,
                   currentMessageVersion: getChannelMessageVersion(channelKey),
+                  explicitVersion: p.explicitVersion,
+                  triggerAt: p.triggerAt,
                 })
                 if (chatMeta.randomReplyMode === 'ambient_water') {
                   randomSendOptions = buildAmbientWaterSendOptions(randomSendOptions)
+                }
+                if (shouldTriggerRareVoice(chatMeta)) {
+                  if (!isRandomReplyFresh(randomSendOptions)) {
+                    logStaleRandomSkip(ctx, 'delayed-rare-voice', randomSendOptions)
+                    return
+                  }
+                  const rareVoiceSent = await safeSendRareVoice(ctx, liveSession)
+                  if (rareVoiceSent) return
                 }
                 await safeSendReply(ctx, liveSession, reply, true, resolveBot, randomSendOptions)
               }
@@ -1388,6 +1454,7 @@ exports.apply = (ctx) => {
           explicitVersion: pendingExplicitVersion,
           triggerMessageId: pendingTriggerMessageId,
           triggerMessageVersion: pendingMessageVersion,
+          triggerAt: Date.now(),
           personaName: currentPersonaName || '',
           groupPersonaName,
           highRisk: randomPersonaHighRisk,
@@ -1452,6 +1519,7 @@ exports.apply = (ctx) => {
         replyToId: analyzed.replyToId,
         mentionUserIds,
         hasMessageRecordCue: analyzed.hasMessageRecordCue,
+        hasAudio: analyzed.hasAudio,
       })
     }
 
@@ -1498,11 +1566,14 @@ exports.apply = (ctx) => {
 
     let randomSendOptions = buildRandomSendOptions({
       randomTriggered,
+      channelKey,
       delayed: false,
       highRisk: randomPersonaHighRisk,
       triggerMessageId: session.messageId || '',
       triggerMessageVersion: currentMessageVersion,
       currentMessageVersion: getChannelMessageVersion(channelKey),
+      explicitVersion: getExplicitInteractionVersion(channelKey),
+      triggerAt: Date.now(),
     })
     const maxDepth = inGuild ? 4 : 2
 
@@ -1588,6 +1659,10 @@ exports.apply = (ctx) => {
               }
               const buf = await synthesizeSpeech(ttsText, { ...voiceOpts, ...ttsDiagnostics })
               if (buf) {
+                if (!isRandomReplyFresh(randomSendOptions)) {
+                  logStaleRandomSkip(ctx, 'random-voice', randomSendOptions)
+                  return
+                }
                 const sent = await sendVoiceMessage(liveSession, buf, ttsDiagnostics)
                 if (sent) { markChannelCooldown(channelKey); return }
               }
@@ -1599,6 +1674,10 @@ exports.apply = (ctx) => {
         }
         const finalReply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply
         if (shouldTriggerRareVoice(chatMeta)) {
+          if (randomTriggered && !isRandomReplyFresh(randomSendOptions)) {
+            logStaleRandomSkip(ctx, 'rare-voice', randomSendOptions)
+            return
+          }
           const rareVoiceSent = await safeSendRareVoice(ctx, liveSession)
           if (rareVoiceSent) return
         }

@@ -50,12 +50,22 @@ cp -R "$SRC/lib" "$DEST/lib"
 if [ -d "$SRC/assets" ]; then
   cp -R "$SRC/assets" "$DEST/assets"
 fi
+if [ -d "$SRC/data" ]; then
+  cp -R "$SRC/data" "$DEST/data"
+fi
 
 if [ "$COPY_AI_SKILLS" = "--copy-ai-skills" ]; then
   mkdir -p "$APP_DIR/data/ai-skills"
   chmod 700 "$APP_DIR/data" 2>/dev/null || true
   if [ -d "$SRC/data/ai-skills" ]; then
-    cp -R "$SRC/data/ai-skills/." "$APP_DIR/data/ai-skills/"
+    (cd "$SRC/data/ai-skills" && find . -type d -exec mkdir -p "$APP_DIR/data/ai-skills/{}" \;)
+    (cd "$SRC/data/ai-skills" && find . -type f | while IFS= read -r rel; do
+      target="$APP_DIR/data/ai-skills/$rel"
+      if [ ! -e "$target" ]; then
+        mkdir -p "$(dirname "$target")"
+        cp "$SRC/data/ai-skills/$rel" "$target"
+      fi
+    done)
   fi
 fi
 

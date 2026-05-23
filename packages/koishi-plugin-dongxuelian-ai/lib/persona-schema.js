@@ -11,6 +11,7 @@ const PERSONA_SCHEMA_WILL_MAX = 2.0
 const PERSONA_SCHEMA_KNOWN_FIELDS = Object.freeze([
   'schema',
   'name',
+  'type',
   'description',
   'lore',
   'lore_refs',
