@@ -62,7 +62,7 @@ function getChatToolDefinitions(options = {}) {
       type: 'function',
       function: {
         name: 'web_fetch',
-        description: '读取用户提供的公开 http/https 链接正文。适合用户让你看链接、总结网页、核对网页内容或判断链接里写了什么；没有具体 URL 时不要调用，改用 web_search。',
+        description: '读取用户提供的公开 http/https 链接正文。适合用户让你看链接、总结网页、核对网页内容或判断链接里写了什么；用户问视频/帖子/网页的评论区或外部反应时，也应先尝试工具判断能否拿到依据。没有具体 URL 时不要调用，改用 web_search。',
         parameters: {
           type: 'object',
           properties: {

@@ -68,7 +68,7 @@ function createChatPromptSearchRuleMessage(configForSearch = {}, searchCap = {})
   if (!configForSearch.searchEnabled || !searchCap.supported) return null
   return {
     role: 'system',
-    content: '【联网搜索规则】你已开启联网搜索。当用户询问以下类型问题时，必须先搜索网络再回答，禁止凭记忆编造：游戏最新角色/版本/活动、今日新闻/热点、天气、股票行情、实时事件。如果不确定是否需要搜索，宁可多搜一次也不要编造答案。',
+    content: '【联网搜索规则】你已开启联网搜索。当用户询问实时或外部页面内容时，必须先通过可用工具取得依据再回答，禁止凭记忆编造，也不能声称自己已经搜索、读取网页或看过评论区却没有工具结果。工具没有拿到可靠依据时，用当前人格自然表达依据不足，不要套固定兜底句。',
   }
 }
 

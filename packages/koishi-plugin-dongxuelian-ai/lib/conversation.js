@@ -26,6 +26,7 @@ const { appendGroupSceneEntry } = require('./group-scene-index')
 let conversationCache = new Map()
 let replyFingerprintCache = new Map()
 const conversationLastActiveAt = new Map()
+const conversationCacheAccessAt = new Map()
 const channelSharedCache = new Map()
 const lastForwardSummaryCache = new Map()
 const lastForwardSummaryCacheTs = new Map()
@@ -162,17 +163,19 @@ function trimChannelRuntimeCaches(now = Date.now()) {
 }
 
 function trimConversationRuntimeCaches(now = Date.now()) {
-  for (const [key, ts] of conversationLastActiveAt.entries()) {
+  for (const [key, ts] of conversationCacheAccessAt.entries()) {
     if (now - ts >= CONVERSATION_EXPIRE_MS) {
+      conversationCacheAccessAt.delete(key)
       conversationLastActiveAt.delete(key)
       conversationCache.delete(key)
       replyFingerprintCache.delete(key)
     }
   }
   if (conversationCache.size <= MAX_CONVERSATION_CACHE_ENTRIES && replyFingerprintCache.size <= MAX_CONVERSATION_CACHE_ENTRIES) return
-  const ordered = [...conversationLastActiveAt.entries()].sort((left, right) => left[1] - right[1])
+  const ordered = [...conversationCacheAccessAt.entries()].sort((left, right) => left[1] - right[1])
   while ((conversationCache.size > MAX_CONVERSATION_CACHE_ENTRIES || replyFingerprintCache.size > MAX_CONVERSATION_CACHE_ENTRIES) && ordered.length) {
     const key = ordered.shift()[0]
+    conversationCacheAccessAt.delete(key)
     conversationLastActiveAt.delete(key)
     conversationCache.delete(key)
     replyFingerprintCache.delete(key)
@@ -183,7 +186,14 @@ function getConversationKey(session) { return `${String(session.guildId || sessi
 
 function getChannelKey(session) { return String(session.guildId || session.channelId || 'private') }
 
-function touchConversation(session) { conversationLastActiveAt.set(getConversationKey(session), Date.now()) }
+function touchConversation(session) {
+  const key = getConversationKey(session)
+  const now = Date.now()
+  conversationLastActiveAt.set(key, now)
+  conversationCacheAccessAt.set(key, now)
+}
+
+function touchConversationAccess(session) { conversationCacheAccessAt.set(getConversationKey(session), Date.now()) }
 
 function readConversationDisk(key) {
   for (const safeKey of getConversationFileSafeKeys(key)) {
@@ -241,9 +251,9 @@ function replaceImagePlaceholderInConversation(key, messageId, analysis) {
 }
 
 function getConversationHistory(session) {
-  const key = getConversationKey(session); const lastActiveAt = conversationLastActiveAt.get(key)
-  if (typeof lastActiveAt === 'number' && Date.now() - lastActiveAt >= CONVERSATION_EXPIRE_MS) conversationCache.delete(key)
-  touchConversation(session)
+  const key = getConversationKey(session); const lastAccessAt = conversationCacheAccessAt.get(key) || conversationLastActiveAt.get(key)
+  if (typeof lastAccessAt === 'number' && Date.now() - lastAccessAt >= CONVERSATION_EXPIRE_MS) conversationCache.delete(key)
+  touchConversationAccess(session)
   trimConversationRuntimeCaches()
   const mem = conversationCache.get(key)
   if (mem) return mem.slice()
@@ -286,9 +296,10 @@ function saveConversationTurn(session, userText, replyText) {
     diskData.messages = mergeConversationMessages(diskData.messages, conversationCache.get(key))
     diskData.totalCount = Math.max(Number(diskData.totalCount || 0), diskData.messages.filter(item => item && item.role === 'user').length)
     const assistantText = normalizeText(replyText)
+    const now = Date.now()
     diskData.messages.push(
-      { role: 'user', content: userText, messageId: String(session.messageId || '') },
-      ...(assistantText ? [{ role: 'assistant', content: assistantText }] : [])
+      { role: 'user', content: userText, messageId: String(session.messageId || ''), ts: now },
+      ...(assistantText ? [{ role: 'assistant', content: assistantText, ts: now }] : [])
     ); diskData.totalCount++
     if (diskData.messages.length > MAX_HISTORY_MESSAGES) diskData.messages.splice(0, diskData.messages.length - MAX_HISTORY_MESSAGES)
     conversationCache.set(key, diskData.messages.slice(-MEMORY_HISTORY_LIMIT))
@@ -323,10 +334,10 @@ async function _doGenerateConversationSummary(key) {
   } catch {}
 }
 
-function clearConversationHistory() { conversationCache = new Map(); replyFingerprintCache = new Map(); conversationLastActiveAt.clear(); channelSharedCache.clear() }
+function clearConversationHistory() { conversationCache = new Map(); replyFingerprintCache = new Map(); conversationLastActiveAt.clear(); conversationCacheAccessAt.clear(); channelSharedCache.clear() }
 
 function clearUserConversationHistory(session) {
-  const key = getConversationKey(session); conversationCache.delete(key); replyFingerprintCache.delete(key); conversationLastActiveAt.delete(key)
+  const key = getConversationKey(session); conversationCache.delete(key); replyFingerprintCache.delete(key); conversationLastActiveAt.delete(key); conversationCacheAccessAt.delete(key)
   for (const safeKey of getConversationFileSafeKeys(key)) {
     try { require('fs').unlinkSync(path.join(CONVERSATIONS_DIR, safeKey + '.json')) } catch {}
   }
@@ -366,6 +377,19 @@ function normalizeUserMessageForPrompt(message) {
 }
 
 function getRecentUserMessages(session, limit = 3) { return getConversationHistory(session).filter(m => m.role === 'user').slice(-limit).map(m => getUserMessageContent(m.content)) }
+
+function getRecentUserMessageRecords(session, limit = 8) {
+  return getConversationHistory(session)
+    .filter(m => m && m.role === 'user')
+    .slice(-limit)
+    .map(m => ({
+      role: 'user',
+      content: getUserMessageContent(m.content),
+      messageId: String(m.messageId || ''),
+      ts: Number(m.ts || m.createdAt || 0) || 0,
+      meta: m.meta && typeof m.meta === 'object' ? m.meta : undefined,
+    }))
+}
 
 function looksLikeShortContextFollowUp(text = '') {
   const value = normalizeText(text)
@@ -771,15 +795,15 @@ function checkMemoryTimerExpired(channelKey) {
 
 module.exports = {
   conversationCache, replyFingerprintCache,
-  conversationLastActiveAt, channelSharedCache, lastForwardSummaryCache,
+  conversationLastActiveAt, conversationCacheAccessAt, channelSharedCache, lastForwardSummaryCache,
   setLastForwardSummaryCache,
   pendingSensitiveAlert, channelTodayCache,
-  getConversationKey, getChannelKey, touchConversation,
+  getConversationKey, getChannelKey, touchConversation, touchConversationAccess,
   readConversationDisk, writeConversationDisk, replaceImagePlaceholderInConversation,
   getConversationHistory, saveConversationTurn, mergeConversationMessages, generateConversationSummary,
   clearConversationHistory, clearUserConversationHistory,
   getReplyFingerprintHistory, saveReplyFingerprint,
-  getRecentAssistantReplies, getRecentUserMessages,
+  getRecentAssistantReplies, getRecentUserMessages, getRecentUserMessageRecords,
   parseUserMessageEnvelope, getUserMessageContent, normalizeUserMessageForPrompt,
   saveSharedChannelTurn,
   findChannelMessageById, collectReplyChain,

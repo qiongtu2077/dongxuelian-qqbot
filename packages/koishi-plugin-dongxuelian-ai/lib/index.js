@@ -101,6 +101,7 @@ const {
   analyzeChannelSensitive,  // 频道敏感消息分析
   trimChannelRuntimeCaches, cleanupDailyStatsFiles, // 运行时缓存裁剪 + 日统计文件清理
   getRecentUserMessages,     // 取最近用户消息，用于搜索追问补全
+  getRecentUserMessageRecords, // 带时间戳的用户消息记录
 } = require('./conversation')
 const {
   isReservedCommand,        // 判断是否为保留指令前缀
@@ -127,6 +128,7 @@ const {
   getRandomVoiceRate,
 } = require('./random-voice-rate') // 群聊随机语音升级概率配置
 const { heuristicRoute, buildExplicitSearchRunOptions, buildExplicitUrlFetchRunOptions } = require('./agent/router') // Agent 路由决策（启发式 + 显式搜索）
+const { buildPrivateSearchContext } = require('./search-context')
 const { externalToolsDenied } = require('./external-tool-policy')
 const agentEngine = require('./agent/engine') // Agent 执行引擎
 const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue') // Agent 任务队列
@@ -346,6 +348,25 @@ function normalizeChatResultText(chatResult, fallback = '') {
   return chatResult || fallback
 }
 
+async function retellToolBlockedReply(chatResult, { ctx, session, userText, randomTriggered, reason = '' }) {
+  const seedText = normalizeChatResultText(chatResult).trim()
+  try {
+    const chatReply = await chat(session, userText, ctx, {
+      randomTriggered,
+      isAgentResult: true,
+      agentResultText: [
+        seedText || '工具没有执行。',
+        reason ? `工具边界：${reason}` : '',
+        '请用当前人格自然回应：不要声称已经搜索、读取网页或拿到评论区；如果需要澄清或说明依据不足，语气保持自然，不要套固定兜底句。',
+      ].filter(Boolean).join('\n'),
+    })
+    return normalizeChatResultText(chatReply, seedText).trim() || seedText
+  } catch (error) {
+    ctx.logger('dongxuelian-ai').warn(`tool blocked retell failed: ${error.message}`)
+    return seedText
+  }
+}
+
 async function retellAgentResult(agentResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, emptyText = '(未获取有效回复)' }) {
   const safeAgentResult = {
     ...agentResult,
@@ -377,13 +398,10 @@ async function retellAgentResult(agentResult, { ctx, session, channelKey, curren
   }
 }
 
-async function handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, resolveBot = null }) {
+async function handleChatResult(chatResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, resolveBot = null, searchContext = null }) {
   const getBot = typeof resolveBot === 'function' ? resolveBot : createBotResolver(ctx, session)
   if (chatResult && typeof chatResult === 'object' && chatResult.heavyToolsRequested) {
     if (externalToolsDenied(userText)) return normalizeChatResultText(chatResult)
-    const agentConfig = require('./agent/config').getAgentConfig()
-    configureAgentQueue(agentConfig.queue || {})
-    const explicitFetchOptions = buildExplicitUrlFetchRunOptions(userText)
     const webSearchRequests = chatResult.heavyToolsRequested
       .filter(t => t.name === 'web_search')
       .map(t => ({
@@ -403,9 +421,15 @@ async function handleChatResult(chatResult, { ctx, session, channelKey, currentU
         },
       }))
       .filter(t => t.args.url)
-    const recentUserMessages = getRecentUserMessages(session, 4)
+    if (searchContext && ['needs_chat_handling', 'blocked_by_cold'].includes(searchContext.searchReadiness) && !webFetchRequests.length && !webSearchRequests.length) {
+      return retellToolBlockedReply(chatResult, { ctx, session, userText, randomTriggered, reason: searchContext.blockedReason || searchContext.searchReadiness })
+    }
+    const agentConfig = require('./agent/config').getAgentConfig()
+    configureAgentQueue(agentConfig.queue || {})
+    const explicitFetchOptions = buildExplicitUrlFetchRunOptions(userText)
+    const recentUserMessages = searchContext?.recentUserMessages || getRecentUserMessages(session, 4)
     const searchQuery = webSearchRequests[0]?.args?.query || userText
-    const searchRunOptions = explicitFetchOptions.forceTools ? explicitFetchOptions : buildExplicitSearchRunOptions(searchQuery, { recentUserMessages })
+    const searchRunOptions = explicitFetchOptions.forceTools ? explicitFetchOptions : buildExplicitSearchRunOptions(searchQuery, { recentUserMessages, searchContext })
     if (webSearchRequests.length) {
       searchRunOptions.forceTools = Array.from(new Set([...(searchRunOptions.forceTools || []), 'web_search']))
       const existingSearchPreExec = (searchRunOptions.preExecuteTools || []).filter(item => item?.name === 'web_search')
@@ -1605,11 +1629,12 @@ exports.apply = (ctx) => {
       const liveSession = withCurrentBot(session, resolveBot())
       try {
         const recentUserMessages = getRecentUserMessages(liveSession, 4)
-        let route = heuristicRoute(userText, 'qq', { recentUserMessages })
+        const searchContext = buildPrivateSearchContext(liveSession, getRecentUserMessageRecords(liveSession, 8), { currentText: userText })
+        let route = heuristicRoute(userText, 'qq', { recentUserMessages, searchContext })
         if (isJailbreakAttempt(sanitizeUserInput(userText))) route = { useAgent: false, reason: 'jailbreak-chat-guard' }
         if (route.useAgent) {
           logDebug(ctx, 'agent', `auto-route reason=${route.reason} channel=${channelKey}`)
-          const searchRunOptions = buildExplicitSearchRunOptions(userText, { recentUserMessages })
+          const searchRunOptions = buildExplicitSearchRunOptions(userText, { recentUserMessages, searchContext })
           const agentConfig = require('./agent/config').getAgentConfig()
           configureAgentQueue(agentConfig.queue || {})
           try {
@@ -1630,7 +1655,7 @@ exports.apply = (ctx) => {
         }
         const chatMeta = {}
         const chatResult = await chat(liveSession, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, meta: chatMeta })
-        const reply = await handleChatResult(chatResult, { ctx, session: liveSession, channelKey, currentUserId, userName, userText, randomTriggered, resolveBot })
+        const reply = await handleChatResult(chatResult, { ctx, session: liveSession, channelKey, currentUserId, userName, userText, randomTriggered, resolveBot, searchContext })
         if (!reply) return
         if (randomTriggered && chatMeta.randomReplyMode === 'ambient_water') {
           randomSendOptions = buildAmbientWaterSendOptions(randomSendOptions)

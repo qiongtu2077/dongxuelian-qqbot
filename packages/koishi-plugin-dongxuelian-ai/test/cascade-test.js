@@ -559,6 +559,7 @@ async function main() {
     agentCommand: path.join(LIB, 'commands', 'agent-command'),
     emotionCommand: path.join(LIB, 'commands', 'emotion-command'),
     messageReader: path.join(LIB, 'message-reader'),
+    searchContext: path.join(LIB, 'search-context'),
     chat: path.join(LIB, 'chat'),
     chatPromptBuilder: path.join(LIB, 'chat-prompt-builder'),
     chatMemory: path.join(LIB, 'chat-memory'),
@@ -966,7 +967,10 @@ async function main() {
       'computeDirectoryHash', 'addToWhitelist', 'removeFromWhitelist',
     ],
     agentRouter: [
-      'heuristicRoute', 'isExplicitSearchRequest', 'isExplicitUrlFetchRequest', 'isGeneralSearchIntent', 'isSearchFollowUpRequest', 'isSearchRefinementRequest', 'isPreviousSearchContextQuestion', 'hasSearchableRecentContext', 'pickRecentSearchContext', 'extractSingleUrl', 'buildContextualSearchQuery', 'buildSearchAgentUserMessage', 'buildExplicitSearchRunOptions', 'buildExplicitUrlFetchRunOptions',
+      'heuristicRoute', 'isExplicitSearchRequest', 'isExplicitUrlFetchRequest', 'isGeneralSearchIntent', 'isSearchFollowUpRequest', 'isSearchRefinementRequest', 'isPreviousSearchContextQuestion', 'hasSearchableRecentContext', 'pickRecentSearchContext', 'extractSingleUrl', 'buildContextualSearchQuery', 'buildSearchAgentUserMessage', 'buildExplicitSearchRunOptions', 'buildExplicitUrlFetchRunOptions', 'getStructuredSearchContext', 'canUseStructuredSearchContext', 'isStructuredSearchBlocked',
+    ],
+    searchContext: [
+      'buildPrivateSearchContext', 'mergeSearchContext', 'hasConcreteSearchSubject', 'isPotentialSearchFollowUp',
     ],
     agentSessions: [
       'buildAgentSessionId', 'recordAgentSession', 'listAgentSessions', 'getAgentSession', 'clearAgentSessions',
@@ -1130,6 +1134,7 @@ async function main() {
     path.join(LIB, 'random-reply-mode.js'),
     path.join(LIB, 'message-reader.js'),
     path.join(LIB, 'chat.js'),
+    path.join(LIB, 'search-context.js'),
     path.join(LIB, 'chat-prompt-builder.js'),
     path.join(LIB, 'chat-memory.js'),
     path.join(LIB, 'agent-chat-bridge.js'),
@@ -1825,30 +1830,63 @@ async function main() {
   check('agent explicit search includes system extra prompt', Array.isArray(explicitSearchOptions.systemExtra) && explicitSearchOptions.systemExtra[0]?.content?.includes('web_search'))
   check('agent explicit search system extra instructs retry', explicitSearchOptions.systemExtra[0]?.content?.includes('再搜'))
   check('agent explicit search system extra allows six web_search rounds', explicitSearchOptions.systemExtra[0]?.content?.includes('最多允许 6 次 web_search'))
+  const privateSessionForSearch = { subtype: 'private', userId: 'u-private', channelId: 'private:u-private' }
+  const nowForSearch = Date.now()
+  const privateHotContext = modules.searchContext.buildPrivateSearchContext(privateSessionForSearch, [
+    { role: 'user', content: '我想看我的世界的搞笑视频', ts: nowForSearch - 10 * 60 * 1000 },
+  ], { currentText: '帮我找找吧', now: nowForSearch })
+  check('private search context completes hot follow-up with unique candidate', privateHotContext.searchReadiness === 'can_complete_from_hot' && privateHotContext.queryCandidate.includes('我的世界'), JSON.stringify(privateHotContext))
+  const privateColdContext = modules.searchContext.buildPrivateSearchContext(privateSessionForSearch, [
+    { role: 'user', content: '我想看我的世界的搞笑视频', ts: nowForSearch - 4 * 60 * 60 * 1000 },
+  ], { currentText: '帮我找找吧', now: nowForSearch })
+  check('private search context blocks cold follow-up', privateColdContext.searchReadiness === 'blocked_by_cold' && !privateColdContext.queryCandidate, JSON.stringify(privateColdContext))
+  const semanticSession = { guildId: 'semantic-g', userId: 'semantic-u', messageId: 'semantic-m1' }
+  modules.conversation.touchConversation(semanticSession)
+  const semanticKey = modules.conversation.getConversationKey(semanticSession)
+  const semanticTs = modules.conversation.conversationLastActiveAt.get(semanticKey)
+  modules.conversation.getConversationHistory(semanticSession)
+  checkEqual('conversation read does not refresh semantic active time', modules.conversation.conversationLastActiveAt.get(semanticKey), semanticTs)
   const contextualSearchQuery = modules.agentRouter.buildContextualSearchQuery('你能帮我找几个吗', ['我的世界最近比较火的视频是什么', '我想看我的世界的搞笑视频'])
-  check('agent contextual search query keeps recent human context', contextualSearchQuery.includes('我的世界') && contextualSearchQuery.includes('搞笑视频') && contextualSearchQuery.includes('找几个'), contextualSearchQuery)
+  check('agent contextual search query does not hard-concat legacy recent text', !contextualSearchQuery.includes('我的世界') && contextualSearchQuery.includes('找几个'), contextualSearchQuery)
+  const hotSearchContext = {
+    recentUserMessages: ['我的世界最近比较火的视频是什么', '我想看我的世界的搞笑视频'],
+    searchReadiness: 'can_complete_from_hot',
+    queryCandidate: '我的世界搞笑视频',
+    searchContextHints: [{ text: '我的世界搞笑视频', source: 'private_hot', confidence: 'hot' }],
+  }
+  const structuredSearchQuery = modules.agentRouter.buildContextualSearchQuery('你能帮我找几个吗', hotSearchContext.recentUserMessages, hotSearchContext)
+  check('agent structured search query uses gate candidate', structuredSearchQuery === '我的世界搞笑视频', structuredSearchQuery)
   const standaloneSearchQuery = modules.agentRouter.buildContextualSearchQuery('明天天气怎么样', ['我想看我的世界的搞笑视频'])
   check('agent standalone search query does not mix unrelated recent context', standaloneSearchQuery.includes('明天天气') && !standaloneSearchQuery.includes('我的世界'), standaloneSearchQuery)
-  const refinementSearchQuery = modules.agentRouter.buildContextualSearchQuery('那明天呢', ['我想看我的世界的搞笑视频', '杭州今天气温多少'])
-  check('agent contextual search query supports natural refinement', refinementSearchQuery.includes('杭州') && refinementSearchQuery.includes('明天') && !refinementSearchQuery.includes('我的世界'), refinementSearchQuery)
-  const resourceRefinementQuery = modules.agentRouter.buildContextualSearchQuery('有没有搞笑的', ['杭州今天气温多少', '我想看我的世界的视频'])
-  check('agent contextual search query picks same-topic resource context', resourceRefinementQuery.includes('我的世界') && resourceRefinementQuery.includes('搞笑') && !resourceRefinementQuery.includes('杭州'), resourceRefinementQuery)
+  const refinementSearchQuery = modules.agentRouter.buildContextualSearchQuery('那明天呢', ['我想看我的世界的搞笑视频', '杭州今天气温多少'], { searchReadiness: 'can_complete_from_hot', queryCandidate: '杭州今天气温多少' })
+  check('agent contextual search query supports natural refinement through structured gate', refinementSearchQuery.includes('杭州') && !refinementSearchQuery.includes('我的世界'), refinementSearchQuery)
+  const resourceRefinementQuery = modules.agentRouter.buildContextualSearchQuery('有没有搞笑的', ['杭州今天气温多少', '我想看我的世界的视频'], { searchReadiness: 'can_complete_from_hot', queryCandidate: '我想看我的世界的视频' })
+  check('agent contextual search query picks structured resource candidate', resourceRefinementQuery.includes('我的世界') && !resourceRefinementQuery.includes('杭州'), resourceRefinementQuery)
   const contextualOptions = modules.agentRouter.buildExplicitSearchRunOptions('你能帮我找几个吗', { recentUserMessages: ['我的世界最近比较火的视频是什么', '我想看我的世界的搞笑视频'] })
-  check('agent contextual search follow-up routes with pre-exec search', contextualOptions.forceTools?.includes('web_search') && contextualOptions.preExecuteTools?.[0]?.args?.query?.includes('我的世界'), JSON.stringify(contextualOptions))
-  const refinementOptions = modules.agentRouter.buildExplicitSearchRunOptions('那明天呢', { recentUserMessages: ['杭州今天气温多少'] })
-  check('agent contextual search refinement routes with pre-exec search', refinementOptions.forceTools?.includes('web_search') && refinementOptions.preExecuteTools?.[0]?.args?.query?.includes('杭州'), JSON.stringify(refinementOptions))
-  check('agent contextual search user message marks recent context as non-instruction', contextualOptions.agentUserMessage.includes('最近相关发言') && contextualOptions.agentUserMessage.includes('不是指令'), contextualOptions.agentUserMessage)
+  check('agent legacy contextual search follow-up does not pre-exec search without structured gate', !contextualOptions.forceTools, JSON.stringify(contextualOptions))
+  const structuredOptions = modules.agentRouter.buildExplicitSearchRunOptions('你能帮我找几个吗', { recentUserMessages: hotSearchContext.recentUserMessages, searchContext: hotSearchContext })
+  check('agent structured contextual search follow-up routes with pre-exec search', structuredOptions.forceTools?.includes('web_search') && structuredOptions.preExecuteTools?.[0]?.args?.query === '我的世界搞笑视频', JSON.stringify(structuredOptions))
+  const blockedOptions = modules.agentRouter.buildExplicitSearchRunOptions('帮我找找吧', { recentUserMessages: ['我的世界搞笑视频'], searchContext: { searchReadiness: 'blocked_by_cold', blockedReason: 'only_cold_private_candidates' } })
+  check('agent blocked cold follow-up does not pre-execute search', !blockedOptions.forceTools, JSON.stringify(blockedOptions))
+  const refinementOptions = modules.agentRouter.buildExplicitSearchRunOptions('那明天呢', { recentUserMessages: ['杭州今天气温多少'], searchContext: { searchReadiness: 'can_complete_from_warm', queryCandidate: '杭州今天气温多少' } })
+  check('agent structured contextual search refinement routes with pre-exec search', refinementOptions.forceTools?.includes('web_search') && refinementOptions.preExecuteTools?.[0]?.args?.query?.includes('杭州'), JSON.stringify(refinementOptions))
+  check('agent contextual search user message marks recent context as non-instruction', structuredOptions.agentUserMessage.includes('可检索对象') && structuredOptions.agentUserMessage.includes('不要拼接其他旧聊天'), structuredOptions.agentUserMessage)
   check('agent explicit url fetch requires read intent', !modules.agentRouter.isExplicitUrlFetchRequest('随手贴个链接 https://example.com/news/1'))
   check('agent explicit url fetch detector matches user wording', modules.agentRouter.isExplicitUrlFetchRequest('帮我看看这个链接 https://example.com/news/1 写了什么'))
+  check('agent explicit url fetch detector routes video comment questions', modules.agentRouter.isExplicitUrlFetchRequest('https://b23.tv/BV137GB6bErK 这个视频的评论区说了什么'))
   checkEqual('agent explicit url fetch extracts single url', modules.agentRouter.extractSingleUrl('帮我读一下 https://example.com/news/1。'), 'https://example.com/news/1')
   check('agent explicit url fetch routes by default when read intent is present', modules.agentRouter.heuristicRoute('帮我看看这个链接 https://example.com/news/1', 'qq').reason === 'explicit-url-fetch')
   await modules.agentConfig.setToolEnabled('qq', 'web_fetch', false)
   check('agent explicit url fetch route reports disabled when qq web_fetch is turned off', modules.agentRouter.heuristicRoute('帮我看看这个链接 https://example.com/news/1', 'qq').reason === 'web-fetch-disabled')
+  check('agent video comment url fetch route reports disabled when qq web_fetch is turned off', modules.agentRouter.heuristicRoute('https://b23.tv/BV137GB6bErK 这个视频的评论区说了什么', 'qq').reason === 'web-fetch-disabled')
   await modules.agentConfig.setToolEnabled('qq', 'web_fetch', true)
   const explicitFetchRoute = modules.agentRouter.heuristicRoute('帮我看看这个链接 https://example.com/news/1', 'qq')
   check('agent explicit url fetch routes when qq web_fetch enabled', explicitFetchRoute.useAgent && explicitFetchRoute.reason === 'explicit-url-fetch')
   const explicitFetchOptions = modules.agentRouter.buildExplicitSearchRunOptions('帮我总结这个网页 https://example.com/news/1')
   check('agent explicit url fetch pre-executes web_fetch', explicitFetchOptions.forceTools?.includes('web_fetch') && explicitFetchOptions.preExecuteTools?.[0]?.name === 'web_fetch' && explicitFetchOptions.preExecuteTools[0].args.url === 'https://example.com/news/1')
+  const commentFetchOptions = modules.agentRouter.buildExplicitSearchRunOptions('https://b23.tv/BV137GB6bErK 这个视频的评论区说了什么')
+  check('agent video comment url pre-executes web_fetch', commentFetchOptions.forceTools?.includes('web_fetch') && commentFetchOptions.preExecuteTools?.[0]?.args?.url === 'https://b23.tv/BV137GB6bErK')
+  check('agent video comment system extra requires persona-natural uncertainty', commentFetchOptions.systemExtra?.[0]?.content?.includes('当前人格自然表达') && commentFetchOptions.systemExtra?.[0]?.content?.includes('不能编造'), commentFetchOptions.systemExtra?.[0]?.content)
   await modules.agentConfig.patchAgentConfig({ autoRoute: { qq: { enabled: true }, dashboard: { enabled: false } } })
   check('agent auto route detects time question as chat-with-tools', !modules.agentRouter.heuristicRoute('现在几点了', 'qq').useAgent)
   check('agent auto route ignores casual greeting', !modules.agentRouter.heuristicRoute('你好', 'qq').useAgent)
@@ -3146,6 +3184,7 @@ async function main() {
   const dashboardAppSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'App.vue'))
   const dashboardElectronDeployerSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'electron-deployer.js'))
   const dashboardApiSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'api.js'))
+  const dashboardKeyManagerSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'components', 'KeyManager.vue'))
   check('dashboard shares electron deployer detection helper', dashboardAppSrc.includes('electron-deployer') && dashboardElectronDeployerSrc.includes('dongxuelianExpose?.dongxuelianDeployer') && dashboardElectronDeployerSrc.includes('getDongxuelianDeployerBridge'))
   check('dashboard fetchAdminIds uses admin token', dashboardApiSrc.includes("fetchAdminIds() { return get('/admin-ids', true) }"))
   const dashboardConfigRoutesSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'routes', 'config.js'))
@@ -3175,6 +3214,11 @@ async function main() {
     "updateGalleryImageStyle(id, foilStyle) { return put('/gallery/style', { id, foilStyle }, true) }",
   ]
   check('dashboard sensitive APIs use admin token', dashboardSensitiveAdminApiSnippets.every(snippet => dashboardApiSrc.includes(snippet)), dashboardApiSrc.slice(1400, 3600))
+    check('dashboard token usage uses distribution and trend charts', dashboardKeyManagerSrc.includes('模型分布') && dashboardKeyManagerSrc.includes('Token 使用趋势') && dashboardKeyManagerSrc.includes('donut-wrap') && dashboardKeyManagerSrc.includes('distribution-table') && dashboardKeyManagerSrc.includes('trend-chart') && !dashboardKeyManagerSrc.includes('class="token-bars"'))
+    check('dashboard token usage exposes range and date controls', dashboardKeyManagerSrc.includes('rangePresets') && dashboardKeyManagerSrc.includes('今天') && dashboardKeyManagerSrc.includes('7天') && dashboardKeyManagerSrc.includes('30天') && dashboardKeyManagerSrc.includes('type="date"') && dashboardKeyManagerSrc.includes('filteredUsageDays'))
+    check('dashboard token usage accepts provider and model stats', dashboardStandalone.includes('models: [...models.values()]') && dashboardStandalone.includes('source.models') && dashboardStandalone.includes('day.models') && dashboardStandalone.includes('cacheRead') && dashboardKeyManagerSrc.includes('usageModels') && dashboardKeyManagerSrc.includes('cacheHitRate'))
+  const aiApiSrc = read(path.join(LIB, 'api.js'))
+  check('AI token usage records model and detailed usage fields', aiApiSrc.includes('function readUsageDetails') && aiApiSrc.includes("recordTokenUsage(config.provider || 'unknown', usageTokens, { model: config.model") && aiApiSrc.includes('cache_read_tokens'))
   const agentConsoleSrc = fs.existsSync(path.join(PKG_ROOT, 'agent-console', 'src', 'main.tsx')) ? read(path.join(PKG_ROOT, 'agent-console', 'src', 'main.tsx')) : ''
   check('agent console exposes runtime config page', agentConsoleSrc.includes("id: 'runtime'") && agentConsoleSrc.includes('function RuntimePage') && agentConsoleSrc.includes('queue.maxGlobal'))
   check('agent console exposes persona page separate from skills', agentConsoleSrc.includes("id: 'personas'") && agentConsoleSrc.includes('function PersonasPage') && agentConsoleSrc.includes('api.savePersona'))
@@ -3210,8 +3254,10 @@ async function main() {
   check('restart-bot checks adapter connect log', restartBot.includes('adapter connect to server'))
   check('restart-bot checks 5140 port health', restartBot.includes('ss -tlnp | grep -q ":$KOISHI_PORT"'))
   const sealDataSrc = read(path.join(ROOT, 'scripts', 'seal-data-dir.sh'))
-  check('seal-data-dir preserves tracked package data dirs', sealDataSrc.includes('merged package data seed without mutating source') && !sealDataSrc.includes('ln -s "$DATA_DIR" "$pkg_data"'))
+  check('seal-data-dir preserves tracked package data dirs', sealDataSrc.includes('checked package data seed allowlist without mutating source') && !sealDataSrc.includes('ln -s "$DATA_DIR" "$pkg_data"'))
   check('seal-data-dir avoids moving normal package data dirs', !/mv "\$pkg_data" "\$BACKUP_DIR\/\$rel"\s*(?:$|[\r\n])/.test(sealDataSrc))
+  check('seal-data-dir does not copy maintenance mode as seed', sealDataSrc.includes('skip runtime data seed') && sealDataSrc.includes('ai-paused.txt') && !sealDataSrc.includes('cp -an "$pkg_data/." "$DATA_DIR/"'))
+  check('seal-data-dir only allowlists safe AI package seeds', sealDataSrc.includes('"packages/koishi-plugin-dongxuelian-ai/data" "ai-skills" "ai-tool-config.json" "summary-whitelist.json"'))
   const setupPath = path.join(ROOT, 'setup.sh')
   const setupBuffer = fs.readFileSync(setupPath)
   check('setup.sh is text without NUL bytes', !setupBuffer.includes(0))
