@@ -389,14 +389,27 @@ function buildPersonaProfileBlocksFromLegacyData(data = {}, options = {}) {
   const blocks = []
   const memory = Array.isArray(data.memory) ? data.memory : []
   const messages = Array.isArray(data.messages) ? data.messages : []
+  const sourceStats = {
+    memory: memory.length,
+    confirmedMemory: 0,
+    unconfirmedMemory: 0,
+    messages: messages.length,
+    recentMessageWindow: 0,
+    recentMessageBlocks: 0,
+    agentMemory: 0,
+    includeRecentMessages: options.includeRecentMessages !== false,
+    includeAgentMemory: !!options.includeAgentMemory,
+  }
   for (const item of memory) {
     const text = normalizePersonaProfileText(item && item.text || '', 500)
     if (!text) continue
     const confirmCount = Math.max(0, Number(item.confirmCount || 0))
     if (confirmCount <= 0) {
+      sourceStats.unconfirmedMemory += 1
       diagnostics.push({ level: 'info', code: 'legacy_memory_unconfirmed', source: 'legacy_explicit_memory' })
       continue
     }
+    sourceStats.confirmedMemory += 1
     const block = buildPersonaProfileBlock({
       block: 'human',
       category: 'memory',
@@ -414,7 +427,9 @@ function buildPersonaProfileBlocksFromLegacyData(data = {}, options = {}) {
   }
   if (options.includeRecentMessages !== false) {
     const maxRecent = Math.max(0, Math.min(10, Number(options.maxRecentMessages) || 3))
-    for (const item of messages.slice(-maxRecent)) {
+    const recentMessages = messages.slice(-maxRecent)
+    sourceStats.recentMessageWindow = recentMessages.length
+    for (const item of recentMessages) {
       const text = normalizePersonaProfileText(item && item.content || '', 240)
       if (!text) continue
       const block = buildPersonaProfileBlock({
@@ -432,7 +447,10 @@ function buildPersonaProfileBlocksFromLegacyData(data = {}, options = {}) {
         evidence: [{ source: 'recent_user_message', text, ts: item.ts, messageId: item.messageId, channelKey }],
         maxTextLength: 240,
       })
-      if (block) blocks.push(block)
+      if (block) {
+        blocks.push(block)
+        sourceStats.recentMessageBlocks += 1
+      }
     }
   }
   return {
@@ -447,6 +465,7 @@ function buildPersonaProfileBlocksFromLegacyData(data = {}, options = {}) {
     },
     blocks,
     diagnostics,
+    sourceStats,
   }
 }
 
@@ -494,7 +513,10 @@ async function buildPersonaProfileBlocks(options = {}) {
           evidence: [{ source: 'agent_memory', text, ts: item.createdAt, channelKey: item.channelKey || channelKey }],
           maxTextLength: 700,
         })
-        if (block) profile.blocks.push(block)
+        if (block) {
+          profile.blocks.push(block)
+          if (profile.sourceStats) profile.sourceStats.agentMemory += 1
+        }
       }
     } catch {
       profile.diagnostics.push({ level: 'warning', code: 'agent_memory_read_failed', source: 'agent_memory' })
@@ -524,6 +546,45 @@ function summarizePersonaProfileBlocks(profile = {}) {
       source: item.source || '',
     })) : [],
   }
+}
+
+function buildPersonaProfileSourceDiagnostic(profile = {}, options = {}) {
+  const stats = profile.sourceStats || {}
+  return {
+    version: PERSONA_PROFILE_VERSION,
+    userHash: profile.user?.idHash || hashPersonaProfileValue(options.userId || '', 12),
+    channelHash: profile.channel?.hash || hashPersonaProfileValue(options.channelKey || '', 12),
+    memory: Math.max(0, Math.floor(Number(stats.memory) || 0)),
+    confirmedMemory: Math.max(0, Math.floor(Number(stats.confirmedMemory) || 0)),
+    unconfirmedMemory: Math.max(0, Math.floor(Number(stats.unconfirmedMemory) || 0)),
+    messages: Math.max(0, Math.floor(Number(stats.messages) || 0)),
+    recentMessageWindow: Math.max(0, Math.floor(Number(stats.recentMessageWindow) || 0)),
+    recentMessageBlocks: Math.max(0, Math.floor(Number(stats.recentMessageBlocks) || 0)),
+    agentMemory: Math.max(0, Math.floor(Number(stats.agentMemory) || 0)),
+    includeRecentMessages: stats.includeRecentMessages !== false,
+    includeAgentMemory: stats.includeAgentMemory === true,
+    totalBlocks: Array.isArray(profile.blocks) ? profile.blocks.length : 0,
+    reasons: ['shadow_only', 'no_prompt_injection'],
+  }
+}
+
+function formatPersonaProfileSourceDiagnostic(diagnostic = {}) {
+  return [
+    'profile_source',
+    `user=${diagnostic.userHash || 'none'}`,
+    `channel=${diagnostic.channelHash || 'none'}`,
+    `memory=${Math.max(0, Math.floor(Number(diagnostic.memory) || 0))}`,
+    `confirmed=${Math.max(0, Math.floor(Number(diagnostic.confirmedMemory) || 0))}`,
+    `unconfirmed=${Math.max(0, Math.floor(Number(diagnostic.unconfirmedMemory) || 0))}`,
+    `messages=${Math.max(0, Math.floor(Number(diagnostic.messages) || 0))}`,
+    `recentWindow=${Math.max(0, Math.floor(Number(diagnostic.recentMessageWindow) || 0))}`,
+    `recentBlocks=${Math.max(0, Math.floor(Number(diagnostic.recentMessageBlocks) || 0))}`,
+    `agentMemory=${Math.max(0, Math.floor(Number(diagnostic.agentMemory) || 0))}`,
+    `includeRecent=${diagnostic.includeRecentMessages === true}`,
+    `includeAgent=${diagnostic.includeAgentMemory === true}`,
+    `totalBlocks=${Math.max(0, Math.floor(Number(diagnostic.totalBlocks) || 0))}`,
+    `reasons=${Array.isArray(diagnostic.reasons) && diagnostic.reasons.length ? diagnostic.reasons.join(',') : 'none'}`,
+  ].join(' ')
 }
 
 function formatPersonaProfileSummary(profile = {}) {
@@ -561,6 +622,8 @@ module.exports = {
   buildPersonaProfileReinforceDiagnostic,
   formatPersonaProfileReinforceDiagnostic,
   buildPersonaProfileBlocksFromLegacyData,
+  buildPersonaProfileSourceDiagnostic,
+  formatPersonaProfileSourceDiagnostic,
   safePersonaProfileFile,
   readLegacyPersonaProfileData,
   buildPersonaProfileBlocks,

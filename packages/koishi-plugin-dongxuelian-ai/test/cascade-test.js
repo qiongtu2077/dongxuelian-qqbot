@@ -703,7 +703,8 @@ async function main() {
       'selectPersonaProfileBlocksByEffectiveConfidence',
       'buildPersonaProfileSelectionDiagnostic', 'formatPersonaProfileSelectionDiagnostic',
       'buildPersonaProfileReinforceDiagnostic', 'formatPersonaProfileReinforceDiagnostic',
-      'buildPersonaProfileBlocksFromLegacyData', 'safePersonaProfileFile',
+      'buildPersonaProfileBlocksFromLegacyData', 'buildPersonaProfileSourceDiagnostic',
+      'formatPersonaProfileSourceDiagnostic', 'safePersonaProfileFile',
       'readLegacyPersonaProfileData', 'buildPersonaProfileBlocks',
       'summarizePersonaProfileBlocks', 'formatPersonaProfileSummary',
     ],
@@ -2414,10 +2415,12 @@ async function main() {
   const activeLegacyMemory = legacyProfile.blocks.find(item => item.source === 'legacy_explicit_memory')
   const recentLegacyMessage = legacyProfile.blocks.find(item => item.source === 'recent_user_message')
   const profileSummaryText = personaProfile.formatPersonaProfileSummary(legacyProfile)
+  const profileSourceLine = personaProfile.formatPersonaProfileSourceDiagnostic(personaProfile.buildPersonaProfileSourceDiagnostic(legacyProfile))
   check('persona profile bridges confirmed legacy memory as active evidence block', activeLegacyMemory && activeLegacyMemory.block === 'human' && activeLegacyMemory.status === 'active' && activeLegacyMemory.confidence > 0.7 && activeLegacyMemory.evidence[0].quoteHash && activeLegacyMemory.evidence[0].channelHash, JSON.stringify(legacyProfile))
   check('persona profile keeps unconfirmed legacy memory out of active facts', !legacyProfile.blocks.some(item => item.text.includes('皇帝')) && legacyProfile.diagnostics.some(item => item.code === 'legacy_memory_unconfirmed'), JSON.stringify(legacyProfile))
   check('persona profile converts recent messages to temporary candidate style blocks', recentLegacyMessage && recentLegacyMessage.block === 'working' && recentLegacyMessage.status === 'candidate' && recentLegacyMessage.expiresAt === profileNow + 7 * 24 * 60 * 60 * 1000 && recentLegacyMessage.evidence[0].messageIdHash, JSON.stringify(recentLegacyMessage))
   check('persona profile summary hashes user and channel identifiers', profileSummaryText.includes('user=') && profileSummaryText.includes('channel=') && !profileSummaryText.includes('raw-user-10001') && !profileSummaryText.includes('guild::with:colon'), profileSummaryText)
+  check('persona profile source diagnostic counts recent messages without raw text', profileSourceLine.includes('profile_source') && profileSourceLine.includes('memory=2') && profileSourceLine.includes('confirmed=1') && profileSourceLine.includes('unconfirmed=1') && profileSourceLine.includes('messages=2') && profileSourceLine.includes('recentBlocks=1') && !profileSourceLine.includes('最近说话风格很短') && !profileSourceLine.includes('raw-user-10001'), profileSourceLine)
   check('persona profile safe file path matches legacy conversation channel key sanitizing', personaProfile.safePersonaProfileFile('user/with space', 'guild::with:colon', path.join('root', 'profiles')).replace(/\\/g, '/').endsWith('root/profiles/guild__with_colon/user_with_space.json'))
   const reinforceExisting = personaProfile.buildPersonaProfileBlock({
     block: 'human',
@@ -3300,7 +3303,8 @@ async function main() {
   const profileShadowEnd = chatSrc.indexOf('const historyBackgroundMessage = createChatPromptHistoryBackgroundMessage', profileShadowIndex)
   const profileShadowBlock = chatSrc.slice(profileShadowIndex, profileShadowEnd > profileShadowIndex ? profileShadowEnd : profileShadowIndex + 1600)
   check('chat.js persona profile shadow diagnostic is debug-gated after memory summary', profileShadowIndex > memoryMessageIndex && profileShadowBlock.includes('buildPersonaProfileSelectionDiagnostic'), `profile=${profileShadowIndex} memory=${memoryMessageIndex}`)
-  check('chat.js persona profile shadow logs only through persona-profile debug channel', profileShadowBlock.includes("logDebug(ctx, 'persona-profile'") && profileShadowBlock.includes('formatPersonaProfileReinforcementShadowDiagnostic(reinforcementShadow)') && profileShadowBlock.includes('formatPersonaProfileSelectionDiagnostic(diagnostic)'), profileShadowBlock.slice(0, 300))
+  check('chat.js persona profile shadow logs only through persona-profile debug channel', profileShadowBlock.includes("logDebug(ctx, 'persona-profile'") && profileShadowBlock.includes('formatPersonaProfileSourceDiagnostic') && profileShadowBlock.includes('formatPersonaProfileReinforcementShadowDiagnostic(reinforcementShadow)') && profileShadowBlock.includes('formatPersonaProfileSelectionDiagnostic(diagnostic)'), profileShadowBlock.slice(0, 300))
+  check('chat.js persona profile shadow observes recent-message candidates without prompt injection', profileShadowBlock.includes('includeRecentMessages: true') && profileShadowBlock.includes("allowedStatuses: ['active', 'candidate']"), profileShadowBlock)
   check('chat.js persona profile shadow does not inject prompt messages in phase 5.5', !/messages\.(?:push|splice|unshift)/.test(profileShadowBlock), profileShadowBlock)
   check('dashboard hashes large files with bounded chunks', dashboardStandaloneSrc.includes('HASH_CHUNK_BYTES') && dashboardStandaloneSrc.includes('fs.readSync') && !dashboardStandaloneSrc.includes("crypto.createHash('sha256').update(fs.readFileSync(filePath))"))
   check('dashboard limits request/download/static/log/preview sizes', dashboardStandaloneSrc.includes('EFFECTIVE_MAX_BODY_SIZE') && dashboardStandaloneSrc.includes('MAX_DOWNLOAD_BYTES') && dashboardStandaloneSrc.includes('MAX_STATIC_FILE_BYTES') && dashboardStandaloneSrc.includes('MAX_DEPLOY_TASK_LOG_BYTES') && dashboardStandaloneSrc.includes('MAX_AGENT_PREVIEW_FILE_BYTES'))

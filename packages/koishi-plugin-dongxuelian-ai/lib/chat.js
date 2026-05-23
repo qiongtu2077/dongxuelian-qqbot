@@ -130,6 +130,8 @@ const {
   selectPersonaProfileBlocksByEffectiveConfidence,
   buildPersonaProfileSelectionDiagnostic,
   formatPersonaProfileSelectionDiagnostic,
+  buildPersonaProfileSourceDiagnostic,
+  formatPersonaProfileSourceDiagnostic,
 } = require('./persona-profile') // 证据化 profile 影子选择诊断（不注入 prompt）
 
 let skillsCache = []
@@ -816,15 +818,18 @@ async function chat(session, userText, ctx, options = {}) {
       const profile = await buildPersonaProfileBlocks({
         userId: currentUserId,
         channelKey,
-        includeRecentMessages: false,
+        includeRecentMessages: true,
+        maxRecentMessages: 5,
         includeAgentMemory: false,
       })
+      logDebug(ctx, 'persona-profile', formatPersonaProfileSourceDiagnostic(buildPersonaProfileSourceDiagnostic(profile, { userId: currentUserId, channelKey })))
       const reinforcementShadow = buildPersonaProfileReinforcementShadow(profile.blocks, { now: profileNow })
       logDebug(ctx, 'persona-profile', formatPersonaProfileReinforcementShadowDiagnostic(reinforcementShadow))
       const selection = selectPersonaProfileBlocksByEffectiveConfidence(reinforcementShadow.blocks, {
         now: profileNow,
         limit: 5,
         minEffectiveConfidence: 0.1,
+        allowedStatuses: ['active', 'candidate'],
       })
       const diagnostic = buildPersonaProfileSelectionDiagnostic(profile, { selection, userId: currentUserId, channelKey })
       logDebug(ctx, 'persona-profile', formatPersonaProfileSelectionDiagnostic(diagnostic))
