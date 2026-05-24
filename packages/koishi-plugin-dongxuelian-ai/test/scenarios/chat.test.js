@@ -22,6 +22,12 @@ const TOOL_PLAN_LEAK_SAMPLE = [
   '我会调用 read_image_history 函数，获取最近的图片信息',
 ].join('\n')
 
+const FILE_TOOL_PLAN_LEAK_SAMPLE = [
+  '用户问的是文件内容，但历史记录中没有相关文件信息。我会尝试调用analyze_file工具来检查文件内容',
+  '如果找不到，就说明没有文件。之后我会根据结果给出回复',
+  '用户询问文件内容，但历史中没有相关文件记录。我将调用analyze_file工具来检查文件内容',
+].join('\n')
+
 function atBot(session, content = '\u4f60\u597d') {
   return `<at id="${session.selfId}"/> ${content}`
 }
@@ -702,6 +708,20 @@ async function run(t) {
     t.check('scenario short tool plan leak retry does not feed raw url command', !retryPrompt.includes('https://example.com/2026-05-24-Agent'), retryPrompt)
   }, {
     input: '这里面说了啥',
+    waitFor: message => String(message).includes('文件内容'),
+  })
+
+  await runChatCase(t, 'file tool plan leak retry', [
+    { json: { choices: [{ message: { content: FILE_TOOL_PLAN_LEAK_SAMPLE } }] } },
+    { json: { choices: [{ message: { content: '我先按你发的文件内容说重点，不把工具过程发出来。' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario file tool plan leak retries to natural reply', result, '文件内容')
+    checkSentExcludes(t, 'scenario file tool plan leak does not send analyze_file', result, 'analyze_file')
+    checkSentExcludes(t, 'scenario file tool plan leak does not send history meta', result, '历史记录中没有')
+    const retryPrompt = JSON.stringify(calls[1]?.requestBody?.messages || [])
+    t.check('scenario file tool plan leak retry does not feed full leaked plan', !retryPrompt.includes('历史中没有相关文件记录') && !retryPrompt.includes('调用analyze_file工具'), retryPrompt)
+  }, {
+    input: '文件说了什么',
     waitFor: message => String(message).includes('文件内容'),
   })
 

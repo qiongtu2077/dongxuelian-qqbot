@@ -1767,6 +1767,7 @@ async function main() {
   const mcpToolNames = modules.mcpLocalServer.getToolDefinitions().map(tool => tool.name)
   check('mcp local server exports identity', modules.mcpLocalServer.SERVER_NAME === 'dongxuelian-local-mcp' && typeof modules.mcpLocalServer.SERVER_VERSION === 'string')
   check('mcp local server exposes diagnostic tools', ['get_bot_health', 'get_agent_config', 'get_agent_stats', 'list_agent_sessions', 'query_logs'].every(name => mcpToolNames.includes(name)), mcpToolNames.join(','))
+  check('mcp local server exposes QQ file diagnostics', ['diagnose_recent_files', 'diagnose_analyze_file', 'simulate_file_followup'].every(name => mcpToolNames.includes(name)), mcpToolNames.join(','))
   check('mcp local server exposes workspace tools', ['list_files', 'find_files', 'grep_search', 'read_file', 'write_file', 'edit_file'].every(name => mcpToolNames.includes(name)), mcpToolNames.join(','))
   check('mcp local server exposes bounded local check tool', mcpToolNames.includes('run_local_check'))
   check('mcp local check maps quick to npm test:quick', JSON.stringify(modules.mcpLocalServer.parseLocalCheckCommand('quick')[1]) === JSON.stringify(['run', 'test:quick']))
@@ -3600,6 +3601,9 @@ async function main() {
     '我得接上这个话茬',
     '可以顺着这个意思说',
     '用户A发了个消息说“建议神卡”，这应该是在回应上一句',
+    '用户问的是文件内容，但历史记录中没有相关文件信息。我会尝试调用analyze_file工具来检查文件内容',
+    '如果找不到，就说明没有文件。之后我会根据结果给出回复',
+    '用户询问文件内容，但历史中没有相关文件记录。我将调用analyze_file工具来检查文件内容',
   ]) {
     check(`isThinkingLeak catches: ${sample}`, u.isThinkingLeak(sample))
   }

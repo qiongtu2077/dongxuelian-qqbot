@@ -53,7 +53,9 @@ const {
   buildFileFollowupState,
   toolCallsIncludeAnalyzeFile,
   toolResultsIncludeFileEvidence,
+  selectFileEvidenceResult,
   resolveUnguardedFileFollowup,
+  buildFileEvidenceReply,
 } = require('./file-followup-guard')
 const { parseReminderActionRequest, parseScheduledTaskRequest, isReminderToolName } = require('./reminder-route')
 const {
@@ -1076,6 +1078,9 @@ async function chat(session, userText, ctx, options = {}) {
     }
     const { results, heavyTools } = await handleChatToolCalls(reply.tool_calls, toolContext)
     hasFileToolEvidence = toolResultsIncludeFileEvidence(results)
+    const fileToolEvidenceReply = hasFileToolEvidence
+      ? buildFileEvidenceReply(selectFileEvidenceResult(results), fileFollowupState.targetFile)
+      : ''
 
     if (heavyTools.length > 0) {
       if (externalToolsDenied(cleanInput)) {
@@ -1101,6 +1106,8 @@ async function chat(session, userText, ctx, options = {}) {
         }
         return { text: followUpText, heavyToolsRequested }
       }
+    } else if (fileToolEvidenceReply) {
+      reply = fileToolEvidenceReply
     } else if (results.length > 0) {
       messages.push({ role: 'assistant', content: null, tool_calls: reply.tool_calls })
       for (const r of results) messages.push(r)
@@ -1204,11 +1211,17 @@ async function chat(session, userText, ctx, options = {}) {
     randomTriggered: !!options.randomTriggered,
   })
   if (fileEvidence) {
-    messages.push({ role: 'assistant', content: typeof reply === 'string' ? reply : '' })
-    messages.push({ role: 'system', content: `【文件读取结果】\n${String(fileEvidence || '')}` })
-    messages.push({ role: 'user', content: '【系统提示：上面是刚才文件的实际读取结果。只能依据这个结果回答；如果结果显示下载失败/无法提取，就直接说明不能确认，绝对不要按文件名或印象猜内容。】' })
-    reply = await callOpenAI(messages, options.randomTriggered)
-    if (reply && typeof reply === 'object' && reply.type === 'tool_calls') reply = reply.message?.content || ''
+    const evidenceReply = buildFileEvidenceReply(fileEvidence, fileFollowupState.targetFile)
+    if (evidenceReply) {
+      reply = evidenceReply
+      hasFileToolEvidence = true
+    } else {
+      messages.push({ role: 'assistant', content: typeof reply === 'string' ? reply : '' })
+      messages.push({ role: 'system', content: `【文件读取结果】\n${String(fileEvidence || '')}` })
+      messages.push({ role: 'user', content: '【系统提示：上面是刚才文件的实际读取结果。只能依据这个结果回答；如果结果显示下载失败/无法提取，就直接说明不能确认，绝对不要按文件名或印象猜内容。】' })
+      reply = await callOpenAI(messages, options.randomTriggered)
+      if (reply && typeof reply === 'object' && reply.type === 'tool_calls') reply = reply.message?.content || ''
+    }
   }
 
   // 记录 AI 提问"需要记住"的时间戳，供 memory 确认超时使用

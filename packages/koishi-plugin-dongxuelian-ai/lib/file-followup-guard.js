@@ -5,6 +5,7 @@
  */
 const { getRecentFiles } = require('./file-store')
 const analyzeFileTool = require('./agent/tools/analyze-file')
+const { summarizeFileContentForChat } = require('./file-safety')
 
 const FILE_FOLLOWUP_ACTIVE_WINDOW_MS = 30 * 60 * 1000
 
@@ -30,6 +31,15 @@ function toolResultsIncludeFileEvidence(results = []) {
     const content = String(item?.content || '')
     return /---文件内容开始---|\[用户上传文件:|\[文件解析失败:|下载失败|无法提取内容|找到\d+个文件/.test(content)
   })
+}
+
+function selectFileEvidenceResult(results = []) {
+  if (!Array.isArray(results)) return ''
+  const item = results.find(result => {
+    const content = String(result?.content || '')
+    return /---文件内容开始---|\[用户上传文件:|\[文件解析失败:|下载失败|无法提取内容|找到\d+个文件/.test(content)
+  })
+  return String(item?.content || '')
 }
 
 function selectActiveFileAnchor(recentFiles = [], context = {}) {
@@ -69,11 +79,23 @@ async function resolveUnguardedFileFollowup(state = {}, context = {}) {
   return analyzeFileTool.execute(messageId ? { messageId } : {}, toolContext)
 }
 
+function buildFileEvidenceReply(fileEvidence = '', targetFile = null) {
+  const evidence = String(fileEvidence || '').trim()
+  if (!evidence) return ''
+  if (/下载失败|已过期|无法提取内容|文件解析失败|找不到|没有收到|没有可用/.test(evidence)) {
+    return evidence.slice(0, 1000)
+  }
+  const fileName = targetFile && targetFile.fileName ? targetFile.fileName : ''
+  return summarizeFileContentForChat(evidence, fileName)
+}
+
 module.exports = {
   looksLikeFileFollowup,
   toolCallsIncludeAnalyzeFile,
   toolResultsIncludeFileEvidence,
+  selectFileEvidenceResult,
   selectActiveFileAnchor,
   buildFileFollowupState,
   resolveUnguardedFileFollowup,
+  buildFileEvidenceReply,
 }

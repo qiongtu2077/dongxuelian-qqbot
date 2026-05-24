@@ -77,13 +77,12 @@ async function run(t) {
   await withScenario({}, async ({ makeSession, run, data }) => {
     const incidentPath = data.pathFor('incident-files', 'amis-public.txt')
     await fs.promises.mkdir(path.dirname(incidentPath), { recursive: true })
-    await fs.promises.writeFile(incidentPath, '真实内容：爱弥斯是联络员，不是星穹铁道角色。\n重点：临时模拟必须读文件，不准按文件名猜。', 'utf8')
+    await fs.promises.writeFile(incidentPath, '真实内容：爱弥斯是联络员，不是星穹铁道角色；不准按文件名猜。\n重点：临时模拟必须读文件。', 'utf8')
 
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '呀吼～文件里说了什么呀？我还没看到呢！' } }] } },
       { json: { choices: [{ message: { content: 'NO' } }] } },
       { json: { choices: [{ message: { content: '呀吼～文件里说的是爱弥斯新角色技能介绍。' } }] } },
-      { json: { choices: [{ message: { content: '文件实际写的是：爱弥斯是联络员；重点是临时模拟必须读文件，不能按文件名猜。' } }] } },
     ])
     const originalFetch = global.fetch
     const originalWarn = console.warn
@@ -129,10 +128,9 @@ async function run(t) {
         await followSession.waitForSend(message => String(message).includes('爱弥斯是联络员'), 10000)
         t.check('scenario incident follow-up eventually replies', followResult.sent.some(message => String(message).includes('爱弥斯是联络员')), JSON.stringify({ sent: followResult.sent, calls: mocked.calls.map(call => call.requestBody?.messages?.slice(-4)) }))
         checkSentIncludes(t, 'scenario incident file follow-up reads actual file content', followResult, '爱弥斯是联络员')
-        checkSentIncludes(t, 'scenario incident file follow-up includes anti-guessing content', followResult, '不能按文件名猜')
+        checkSentIncludes(t, 'scenario incident file follow-up includes anti-guessing content', followResult, '不准按文件名猜')
         checkSentExcludes(t, 'scenario incident file follow-up does not hallucinate skill intro', followResult, '技能介绍')
-        t.check('scenario incident free route first answer tried without tool then guard corrected', mocked.calls.length >= 2, JSON.stringify(mocked.calls.map(call => call.requestBody?.messages?.slice(-3))))
-        t.check('scenario incident guard injects actual file evidence', mocked.calls.some(call => call.requestBody?.messages?.some(item => String(item.content || '').includes('临时模拟必须读文件'))), JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
+        t.check('scenario incident free route avoids extra model retell after file evidence', mocked.calls.length === 3, JSON.stringify(mocked.calls.map(call => call.requestBody?.messages?.slice(-3))))
       } finally {
         api.callGetFile = originalCallGetFile
       }
@@ -151,7 +149,6 @@ async function run(t) {
 
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: 'web_fetch url https://example.com/2026-05-24-Agent行动路由文件发送与Cron提醒待审核方案.md' } }] } },
-      { json: { choices: [{ message: { content: '这个文件说的是：行动路由要先读取用户上传文件，不能把工具计划当回复发出去。' } }] } },
     ])
     const originalFetch = global.fetch
     const originalWarn = console.warn
@@ -199,7 +196,7 @@ async function run(t) {
         checkSentExcludes(t, 'scenario short file follow-up never sends web_fetch plan', followResult, 'web_fetch url')
         t.check('scenario short file follow-up downloads latest file id', requestedIds.includes('latest-file-id'), JSON.stringify(requestedIds))
         t.check('scenario short file follow-up avoids older file when latest is active', !requestedIds.includes('old-file-id') || requestedIds.indexOf('latest-file-id') < requestedIds.indexOf('old-file-id'), JSON.stringify(requestedIds))
-        t.check('scenario short file follow-up injects actual latest evidence', mocked.calls.some(call => JSON.stringify(call.requestBody?.messages || []).includes('不准把工具计划当回复发出去')), JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
+        t.check('scenario short file follow-up does not ask model to retell evidence', mocked.calls.length === 1, JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
       } finally {
         api.callGetFile = originalCallGetFile
       }
@@ -264,8 +261,7 @@ async function run(t) {
       checkSentExcludes(t, 'scenario natural file follow-up hides wrapper', result, '---文件内容开始---')
       const firstTools = mocked.calls[0]?.requestBody?.tools || []
       t.check('scenario natural file follow-up exposes analyze_file tool', firstTools.some(item => item.function?.name === 'analyze_file'), JSON.stringify(firstTools))
-      const toolMessages = mocked.calls[1]?.requestBody?.messages?.filter(item => item.role === 'tool') || []
-      t.check('scenario natural file follow-up tool returns file content', toolMessages.some(item => String(item.content || '').includes('说课流程')), JSON.stringify(toolMessages))
+      t.check('scenario natural file follow-up skips model retell after file evidence', mocked.calls.length === 1, JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
     })
   })
 
@@ -360,7 +356,6 @@ async function run(t) {
   await withScenario({}, async ({ makeSession, run }) => {
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: 'NO' } }] } },
-      { json: { choices: [{ message: { content: '文件里主要是两行计划：先做 A，再补 B。' } }] } },
     ])
     await withFetch(mocked, async () => {
       const session = makeSession({
@@ -381,9 +376,11 @@ async function run(t) {
       })
       await store.markFileAnalyzed(session.guildId, 'file-agent-1', '[用户上传文件: plan.txt]\n---文件内容开始---\n先做 A\n再补 B\n---文件内容结束---')
       const result = await run(session, { flushTicks: 120 })
-      await session.waitForSend(message => String(message).includes('文件里主要'))
-      checkSentIncludes(t, 'scenario file follow-up can be answered by chat', result, '文件里主要')
+      await session.waitForSend(message => String(message).includes('先做 A'))
+      checkSentIncludes(t, 'scenario file follow-up can be answered by evidence summary', result, 'plan.txt 的内容大致是')
+      checkSentIncludes(t, 'scenario file follow-up includes actual file content', result, '先做 A')
       checkSentExcludes(t, 'scenario file follow-up hides wrapper', result, '---文件内容开始---')
+      t.check('scenario file follow-up does not need model retell after evidence', mocked.calls.length === 1, JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
     })
   })
 
@@ -442,6 +439,8 @@ async function run(t) {
       const chatTools = require(path.join(AI_ROOT, 'lib', 'chat-tools.js'))
       t.check('scenario uploaded file variant exposes chat tool for rename intent', chatTools.getChatToolDefinitions({ userText: '把刚刚这个文件标题重命名为1然后发给我' }).some(item => item.function?.name === 'create_uploaded_file_variant'))
       t.check('scenario uploaded file variant exposes chat tool without file-word heuristic', chatTools.getChatToolDefinitions({ userText: '把刚才那个 PDF 另存成 1 发回来' }).some(item => item.function?.name === 'create_uploaded_file_variant'))
+      t.check('scenario uploaded file variant exposes chat tool for docx intent', chatTools.getChatToolDefinitions({ userText: '把刚才那个 docx 重命名成 1 发回来' }).some(item => item.function?.name === 'create_uploaded_file_variant'))
+      t.check('scenario uploaded file variant exposes chat tool for pptx intent', chatTools.getChatToolDefinitions({ userText: '把刚才那个 pptx 改名成 1 发给我' }).some(item => item.function?.name === 'create_uploaded_file_variant'))
       t.check('scenario uploaded file variant stays hidden for random replies', !chatTools.getChatToolDefinitions({ userText: '把刚才那个 PDF 另存成 1 发回来', randomTriggered: true }).some(item => item.function?.name === 'create_uploaded_file_variant'))
       const sendFileTool = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'send-file-to-user.js'))
       const originalExecute = sendFileTool.execute
