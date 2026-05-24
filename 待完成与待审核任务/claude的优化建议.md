@@ -439,3 +439,228 @@
 - C10-3：`计划查看` 默认读取全局 active/recent 计划，跨用户/跨群泄露计划内容。
 
 最终收敛扫描没有再确认新的 bug。后续若进入修复，建议优先级为：先处理会外发/未来发消息/跨会话泄露的 C8-1、C10-1、C10-2、C10-3；再处理直接影响主体验的 C9-1、C9-6、C9-7；最后统一收口命令反馈类 C9-2 到 C9-5 和复读体验 C9-8。
+
+## 本地第 12 轮（本地 MCP 工作台专项）
+
+范围：按用户补充要求使用本地 MCP 接口做只读/受控复核，覆盖 MCP JSON-RPC 初始化、工具列表、配置开关、工作区写入开关、本地检查命令白名单和路径边界。本轮只记录 MCP 接口确认的问题；不修代码、不部署、不重启、不推送。
+
+结论：本轮新确认 2 个本地 MCP 工作台问题。C12-1 是 `run_local_check` 的 `node -c <file>` 允许越过工作区/允许根读取任意本地文件的语法错误片段；C12-2 是 Dashboard 启用 MCP 时默认同时放开工作区写入和本地检查，权限默认值过宽。
+
+### C12-1 MCP `run_local_check` 的 `node -c <file>` 未限制允许根，可通过语法错误输出泄露任意本地文件片段
+
+真实性：真实存在，可本地 MCP JSON-RPC 最小复现。
+
+证据：
+- `packages/koishi-plugin-dongxuelian-ai/lib/mcp/local-server.js` 的 `parseLocalCheckCommand(command)` 只允许 `check`、`quick`、`scenario`、`test` 或 `node -c <file>`，其中 `node -c` 分支只过滤 `[;&|<>\`]` 等 shell 元字符。
+- 同一分支把目标直接返回为 `['node', ['-c', target]]`，没有调用 `agent/path-guard.js`、没有限制 `target` 必须位于 `WORKSPACE_ROOT` 或 MCP 允许根内，也没有禁止绝对路径和 `..`。
+- `run_local_check` 执行后会把 `stdout` / `stderr` 原样拼入 MCP 返回文本；`node -c` 对语法错误文件会输出错误行源码和 caret 定位。
+- 本地用临时 `DONGXUELIAN_AI_DATA_DIR` 启用 MCP 后，构造允许根外的临时 JS 文件并写入标记字符串 `MCP_LEAK_MARKER_ABC123_NOT_A_REAL_SECRET`，通过 MCP 调用 `run_local_check({ command: 'node -c "<允许根外文件>"' })`，返回的 stderr 中包含该标记行，证明允许根外内容可经语法错误外泄。
+- 同轮复核中，`node -c packages/...; echo pwn` 会被拒绝为 `node -c 目标文件不合法`，说明问题不是 shell 注入，而是路径/文件读取边界缺失。
+
+影响：
+- 只要 MCP 已启用且 `allowRunLocal` 为真，调用方可以对任意本地可读 JS 文件运行语法检查；文件若存在语法错误，错误输出会携带源码片段。
+- 这绕过了 MCP `read_file` / Agent 文件工具的允许根设计：即使读文件工具受路径 guard 保护，`run_local_check` 仍能通过 Node 诊断输出侧信道读取允许根外内容。
+- 服务端环境中风险更高：如果能指向配置、脚本、临时文件或日志副本，可能泄露路径、源码片段、环境布局或敏感字符串。
+
+建议修复：
+- `node -c <file>` 解析后必须 `path.resolve(WORKSPACE_ROOT, target)` 并校验在工作区或明确允许根内；拒绝允许根外绝对路径、跨盘路径和 `..` 逃逸。
+- 对 `stderr` 做更严格裁剪/脱敏，或只返回 “语法检查通过/失败 + 文件相对路径 + 首条错误摘要”，不要回传源码行。
+- 若需要检查允许根外文件，应通过单独管理员确认路径白名单，不复用普通 MCP 本地检查入口。
+- 补 MCP 单测：允许根内 `node -c` 可执行；允许根外绝对路径和 `../` 路径拒绝；语法错误输出不包含源码标记字符串。
+
+验证方式：
+- 修复前：MCP `run_local_check` 指向允许根外语法错误 JS 文件，返回 stderr 中包含该文件源码行。
+- 修复后：同样调用返回路径不允许，不执行 `node`；允许根内文件仍可检查但错误输出不泄露源码行。
+
+### C12-2 Dashboard 启用 MCP 时默认同时允许工作区写入和本地检查，权限默认值过宽
+
+真实性：真实存在，可由配置默认值和 Dashboard 行为确认。
+
+证据：
+- `packages/koishi-plugin-dongxuelian-ai/lib/agent/config.js` 的默认 MCP 配置为 `enabled: false`、`allowWriteWorkspace: true`、`allowRunLocal: true`、`exposeDangerousActions: false`。
+- `normalizeMcpConfig()` 在字段缺失时沿用默认值，因此旧配置或首次启用 MCP 时，`allowWriteWorkspace` 和 `allowRunLocal` 会默认变成 true。
+- `packages/koishi-plugin-dashboard/frontend/src/components/AgentPanel.vue` 的默认前端配置同样是 `allowWriteWorkspace: true`、`allowRunLocal: true`。
+- Dashboard 的 `toggleMcp()` 只切换 `config.mcp.enabled = !config.mcp.enabled` 并保存，没有在启用时把写入/运行能力保持关闭或二次确认。
+- `applyConfig()` 使用 `allowWriteWorkspace: merged.mcp?.allowWriteWorkspace !== false` 和 `allowRunLocal: merged.mcp?.allowRunLocal !== false`，服务端未返回 false 时前端也显示为已允许。
+- 本地 MCP 复现中，用最小配置启用 MCP 后 `get_bot_health` 显示 `mcp.enabled: true`、`allowWriteWorkspace: true`、`allowRunLocal: true`，随后 `write_file` 和 `run_local_check` 可用。
+
+影响：
+- 用户以为只是“启用 MCP 工作台”，实际同时打开了写工作区和运行本地检查两类高权限能力；这是权限升级式的默认值惊讶。
+- `write_file` / `edit_file` 能修改工作区文件，`run_local_check` 能启动受控本地命令；结合 C12-1，默认放开 run 会放大路径侧信道风险。
+- 对本地开发机和服务器都不应把写入/运行作为启用 MCP 的默认附带权限，尤其 Dashboard 按钮没有把风险表达成二次确认。
+
+建议修复：
+- 默认值改为 `allowWriteWorkspace: false`、`allowRunLocal: false`；启用 MCP 只开放只读诊断工具。
+- Dashboard 启用 MCP 时保持写入/运行关闭，并在用户单独勾选时显示明确风险说明或确认。
+- `write_file`、`edit_file`、`run_local_check` 的工具列表可继续展示，但执行层必须在对应开关关闭时拒绝。
+- 补配置迁移/前端测试：新配置启用 MCP 后写入/运行仍为 false；显式勾选后才允许；旧配置中已明确 true 的安装保持可用或按迁移策略提示用户复核。
+
+验证方式：
+- 修复前：只设置 `mcp.enabled=true` 或在 Dashboard 点“启用 MCP”，`get_bot_health` 显示写入/运行均 true，`write_file` / `run_local_check` 可执行。
+- 修复后：只启用 MCP 时写入/运行为 false，对应工具执行返回关闭提示；用户单独授权后才可用。
+
+## 本地第 12 轮排除/暂不新增
+
+- MCP JSON-RPC `initialize`、`tools/list`、`tools/call` 基本协议路径可用；未确认协议层异常导致的新增问题。
+- `run_local_check` 的 shell 元字符注入本轮已用 `; echo pwn` 验证被拒绝，暂不记录为命令注入 bug。
+- `write_file` / `edit_file` 仍复用 Agent 写文件工具自身路径限制；除 C12-2 的默认授权过宽外，本轮未确认新的写路径穿越。
+- MCP `read_file` / `list_files` / `find_files` / `grep_search` 仍走对应 Agent 文件工具；本轮未确认新的允许根绕过。
+
+## 当前收敛状态（含 MCP 专项）
+
+截至第 12 轮，本文件新增并写入待审核的真实问题为：
+
+- C8-1：`send_file_to_user` 在 QQ 默认启用且非危险，可把允许根内文件发到群/私聊。
+- C8-2：`browser_action` 只校验首跳 URL，未拦截重定向和页面子请求访问内网。
+- C8-3：`AI抓事件` 抓取回执直接发送，平台拒发时会让 middleware reject。
+- C9-1：“帮我搜一下/搜一下”动作短句被当自包含搜索 query，绕过热/冷上下文裁决。
+- C9-2：群管理员无法设置群聊 AI 主动回复概率，和命令自身权限说明冲突。
+- C9-3：概率设置输入超过范围时没有清晰错误反馈。
+- C9-4：`东雪莲群人格切换` 缺少名称时静默消耗消息。
+- C9-5：未知模型名的 `切换xxx` 命令没有“未找到模型”反馈。
+- C9-6：当前图片直读不复用已缓存图片，可能明明有缓存却回复“图片无法访问”。
+- C9-7：历史图片两步工具链 `read_image_history -> analyze_historical_image` 中第二轮工具调用会被丢弃。
+- C9-8：结构化 `mface` / 大表情无法复读，和 QQ 原生 face 复读体验不一致。
+- C10-1：`create_scheduled_task` 默认 QQ 暴露且非危险，缺少执行级显式意图门禁。
+- C10-2：计划工具默认 QQ 暴露且非危险，可写持久计划状态并触发完成推送。
+- C10-3：`计划查看` 默认读取全局 active/recent 计划，跨用户/跨群泄露计划内容。
+- C12-1：MCP `run_local_check` 的 `node -c <file>` 未限制允许根，可通过语法错误输出泄露任意本地文件片段。
+- C12-2：Dashboard 启用 MCP 时默认同时允许工作区写入和本地检查，权限默认值过宽。
+
+MCP 专项后，后续若进入修复，建议优先级调整为：先处理会外发/未来发消息/跨会话泄露/本地权限边界的 C8-1、C10-1、C10-2、C10-3、C12-1、C12-2；再处理直接影响主体验的 C9-1、C9-6、C9-7；最后统一收口命令反馈类 C9-2 到 C9-5 和复读体验 C9-8。
+
+## 服务器第 1 轮（MCP 只读接入排查）
+
+范围：按用户要求对服务器 `/root/koishi-app` 做 MCP 只读排查；只检查配置摘要、MCP stdio 协议握手、工具列表和执行层启用状态。不改服务器文件、不部署、不重启、不推送。
+
+结论：服务器当前 MCP 工作台未启用，本轮未确认服务器运行态新增 bug；本地 C12-1/C12-2 仍是代码层风险，若服务器后续通过 Dashboard 启用 MCP，同样需要按 C12 建议先收口权限默认值和 `run_local_check` 路径边界。
+
+证据：
+- 服务器 `/root/koishi-app/data/ai-tool-config.json` 存在，但 MCP 摘要为 `enabled: false`，`exposeDangerousActions: false`，未显式配置 `allowWriteWorkspace` / `allowRunLocal`。
+- 服务器上直接启动 `packages/koishi-plugin-dongxuelian-ai/lib/mcp/local-server.js` 并发送 JSON-RPC：
+  - `initialize` 返回 serverInfo `dongxuelian-local-mcp` / `0.1.0`。
+  - `tools/list` 能列出 `get_bot_health`、`get_agent_config`、`query_logs`、`read_file`、`write_file`、`edit_file`、`run_local_check` 等工具定义。
+  - `tools/call get_bot_health` 返回错误：`本地 MCP 工作台已关闭，请先在 Dashboard Agent 窗口启用 MCP。`
+- 因执行层 `ensureEnabled()` 拦截，未继续尝试服务器 `read_file`、`write_file`、`run_local_check` 等工具调用，避免为验证而开启或修改服务器 MCP 状态。
+
+影响：
+- 当前服务器运行态下，MCP 工具执行被关闭状态挡住；本轮没有发现已开启 MCP 导致的实际远端读写/运行暴露。
+- 但服务器配置未显式写入 `allowWriteWorkspace: false` / `allowRunLocal: false`，代码默认值仍会在启用 MCP 时落到 C12-2 描述的写入/运行默认放开语义。
+- 由于服务器代码同样暴露 `run_local_check node -c <file>`，一旦启用且允许本地检查，C12-1 的允许根外语法错误侧信道也适用于服务器环境。
+
+建议修复：
+- 在启用服务器 MCP 前先修 C12-1/C12-2，或临时确保服务器配置显式写入 `allowWriteWorkspace: false`、`allowRunLocal: false` 后再启用。
+- Dashboard 启用 MCP 时应显示服务器风险提示：只读诊断、写工作区、本地命令运行需要拆成独立授权。
+- 服务器排查如需继续验证 MCP 工具执行，应先由用户明确授权启用范围；默认继续保持只读、不改配置。
+
+验证方式：
+- 当前状态：服务器 `tools/call get_bot_health` 返回 MCP 未启用，写入/运行工具不应执行。
+- 修复后：服务器仅启用 MCP 时，`get_bot_health` 应显示写入/运行为 false；`write_file` / `run_local_check` 返回关闭提示；显式授权后才可执行，且 C12-1 的允许根外路径应被拒绝。
+
+## 服务器第 1 轮排除/暂不新增
+
+- MCP stdio 工具定义可列出不等于工具已授权执行；当前执行层已被 `ensureEnabled()` 拦截，本轮不把工具列表存在本身记为服务器暴露 bug。
+- 未为复现问题而修改服务器 `ai-tool-config.json`，也未启动 Dashboard 开关，因此不新增”服务器当前已开启写入/运行”的运行态问题。
+- 本轮没有检查或修改 Koishi 进程、端口、部署状态和线上聊天链路；只覆盖 MCP 接入面。
+
+---
+
+## 综合复核（2026-05-24）
+
+范围：将本文件（C8-C12）与《优化建议》（L1-L39、S1-S39）全部条目做交叉溯源，逐条回到当前代码确认是否仍然存在、已修复、或与另一份文档条目重叠。
+
+### 一、本文件条目现状
+
+| 编号 | 状态 | 备注 |
+|------|------|------|
+| C8-1 | 仍存在 | `send_file_to_user` QQ 默认启用、`dangerous:false`，路径 guard 存在但工具暴露面未收口 |
+| C8-2 | 部分修复 | 首跳 DNS 校验 + `requestfinished` 后检 IP 已实现；但 post-redirect 仍是事后处理，请求已发出 |
+| C8-3 | 仍存在 | `index.js:1337,1341` event dump 回执仍为裸 `session.send()`，与 L1 系列重叠 |
+| C9-1 | 仍存在 | `router.js:11-15` EXPLICIT_SEARCH_RE 仍含裸动作短句 |
+| C9-2 | 仍存在 | `index.js:1466` admin pre-gate 仍拦截群管理员概率设置 |
+| C9-3 | 仍存在 | `admin-commands.js:203-228` 正则只匹配 0-100%，超范围无反馈 |
+| C9-4 | 仍存在 | `handler.js:382` 无 exact-match 帮助分支 |
+| C9-5 | 仍存在 | `handler.js:425-447` 未找到模型时无反馈 |
+| C9-6 | 仍存在 | `vision.js` 当前图片不复用 image-store 缓存 |
+| C9-7 | 仍存在 | `chat.js` 轻量工具只执行一轮，第二轮 tool_calls 被丢弃 |
+| C9-8 | 仍存在 | `repeat.js:77-133` mface 归入 unsupported visual |
+| C10-1 | 仍存在 | `scheduled-task-tools.js` create 无 intent gate，`dangerous:false` |
+| C10-2 | 仍存在 | plan tools `dangerous:false`、QQ 默认暴露，finish_plan 可推送 |
+| C10-3 | 仍存在 | `plan-engine.checkPlanStatus()` 无 owner/channel 过滤 |
+| C12-1 | 仍存在 | `local-server.js:118-135` parseLocalCheckCommand 无路径 guard |
+| C12-2 | 仍存在 | `config.js` MCP 默认 `allowWriteWorkspace:true`、`allowRunLocal:true` |
+
+### 二、《优化建议》条目与本文件交叉对照
+
+以下列出《优化建议》中与本文件有重叠或已被本文件覆盖的条目：
+
+| 优化建议编号 | 本文件对应 | 现状 |
+|-------------|-----------|------|
+| L1 系列（bare send） | C8-3 重叠 | 仍存在：defense/index.js:216-218、handler.js:332-398、emotion-command.js:258、index.js:1337/1341 |
+| L2-1（heavy search gate） | C9-1 相关但不同角度 | 仍存在：router.js 硬编码关键词 |
+| L3（Windows colon） | 无重叠 | 仍存在：image-store.js:21-26 safeKey 允许冒号 |
+| L9-1（send_file） | C8-1 重叠 | 仍存在 |
+| L9-2（browser_action） | C8-2 重叠 | 部分修复 |
+| L10（cancel_reminder） | — | 已修复：ownership 校验已实现 |
+| L12（B站 English） | — | 仍存在：local-video-sender/index.js:551,571 英文 fallback |
+| L13（random budget） | — | 仍存在 |
+| L16（group URL） | — | 仍存在 |
+| L22（private push） | — | 仍存在：无 per-user opt-in |
+| L28（skill scanner） | — | 仍存在（by design，只扫固定目录） |
+| L30-L31（timeout cancel） | — | 仍存在：queue.js/registry.js Promise.race 无 AbortController |
+| L32（browser singleton） | C8-2 相关 | 仍存在：browser-action.js 模块级单例共享状态 |
+| L33（memory enabled） | — | 仍存在：Agent memory tools 不检查 config.memory.enabled/adminOnly |
+| L36（misfire policy） | — | 仍存在：misfirePolicy 字段存在但调度逻辑从未读取 |
+| L38（active scene） | — | 已修复：优先级逻辑正确，highest-priority 标签是整体场景块 |
+| L39（MCP diagnose） | C12-1 重叠 | 仍存在 |
+
+### 三、已确认修复的条目
+
+| 编号 | 修复内容 |
+|------|---------|
+| L7（reminder safety） | cancel_reminder 已有 `isReminderVisibleToContext()` ownership 校验 |
+| L8（safety.check bypass） | safety gate 正确阻断 DANGEROUS_TOOLS，无 bypass |
+| L10（cancel_reminder ownership） | 同 L7 |
+| L21（contextPolicy） | Agent 会话无状态，contextPolicy 用于定时任务已实现 |
+| L25（symlink） | path-guard 使用 `fsp.realpath()` 解析后校验 |
+| L27（MCP node path） | `shell:false` + 正确参数数组 + Windows `npm.cmd` |
+| L34（file upload） | file-safety.js 有 MAX_FILE_SIZE + BLOCKED_EXTENSIONS |
+| L37（custom provider） | runtime-config.js loadConfig 正确读取自定义 provider |
+| L38（active scene priority） | 优先级逻辑正确 |
+| C10-2 中 create 部分 | scheduled task create 已限定 context 来源，不能为他人创建 |
+
+### 四、综合优先级建议
+
+按风险和影响排序：
+
+**P0 — 安全/权限边界（会外发、泄露、越权）：**
+1. C12-1 / L39：MCP `run_local_check` 路径穿越
+2. C12-2：MCP 默认权限过宽
+3. C10-3：计划查看跨用户/跨群泄露
+4. C8-1 / L9-1：send_file_to_user QQ 默认暴露
+5. C10-1：scheduled task 无 intent gate
+6. C10-2：plan tools 无 intent gate + finish 推送
+7. L32：browser singleton 跨会话状态共享
+8. L22：private push 无 per-user consent
+9. L33：Agent memory tools 不检查 enabled/adminOnly
+
+**P1 — 主体验影响：**
+10. C9-1 / L2：动作短句搜索绕过上下文裁决
+11. C9-6：当前图片不复用缓存
+12. C9-7：历史图片两步工具链第二轮被丢弃
+13. L1 / C8-3：bare send 系列（defense、handler、emotion、event dump）
+14. L30-L31：Promise.race timeout 无 cancel
+
+**P2 — 命令反馈/UX：**
+15. C9-2：群管理员概率设置被前置门槛拦截
+16. C9-3：概率超范围无反馈
+17. C9-4：群人格切换缺名称无提示
+18. C9-5：未知模型名无反馈
+19. C9-8：mface 无法复读
+20. L3：Windows colon 在 image-store key
+21. L12：B站 English fallback
+22. L36：misfire policy 未生效
+
+**P3 — 设计层/低频：**
+23. L28：skill scanner 只扫固定目录
+24. C8-2：browser redirect 事后处理（已有缓解）
