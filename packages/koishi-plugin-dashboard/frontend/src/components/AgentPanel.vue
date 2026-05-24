@@ -14,20 +14,11 @@
     <div class="grid">
       <label class="field">
         <span>工具安全模式</span>
-        <select v-model="mode">
-          <option value="config">跟随配置</option>
-          <option value="confirm">危险工具需确认</option>
-          <option value="block">禁用危险工具</option>
-          <option value="auto">自动执行</option>
-        </select>
+        <SelectBox v-model="mode" :options="modeOptions" />
       </label>
       <label class="field">
         <span>危险工具策略</span>
-        <select v-model="config.dangerousPolicy">
-          <option value="confirm">需确认</option>
-          <option value="block">禁用</option>
-          <option value="auto">自动执行</option>
-        </select>
+        <SelectBox v-model="config.dangerousPolicy" :options="dangerousPolicyOptions" />
       </label>
       <label class="switch-row">
         <input v-model="config.channels.qq.enabled" type="checkbox" />
@@ -40,6 +31,25 @@
       <label class="switch-row">
         <input v-model="config.autoRoute.qq.enabled" type="checkbox" />
         <span>QQ 自动路由</span>
+      </label>
+    </div>
+
+    <div class="section-head">
+      <h3>MCP 工作台</h3>
+      <button class="primary" type="button" :disabled="saving" @click="toggleMcp">{{ config.mcp.enabled ? '关闭 MCP' : '启用 MCP' }}</button>
+    </div>
+    <div class="grid">
+      <label class="switch-row">
+        <input v-model="config.mcp.enabled" type="checkbox" />
+        <span>本地 MCP</span>
+      </label>
+      <label class="switch-row">
+        <input v-model="config.mcp.allowWriteWorkspace" type="checkbox" :disabled="!config.mcp.enabled" />
+        <span>允许改工作区</span>
+      </label>
+      <label class="switch-row">
+        <input v-model="config.mcp.allowRunLocal" type="checkbox" :disabled="!config.mcp.enabled" />
+        <span>允许本地检查</span>
       </label>
     </div>
 
@@ -92,10 +102,7 @@
     <div class="grid">
       <label class="field">
         <span>Dashboard Agent 人格</span>
-        <select v-model="persona.dashboardPersona" :disabled="savingPersona" @change="savePersona">
-          <option value="">默认（东雪莲）</option>
-          <option v-for="item in personas" :key="item.name" :value="item.name">{{ item.name }}</option>
-        </select>
+        <SelectBox v-model="persona.dashboardPersona" :options="dashboardPersonaOptions" :disabled="savingPersona" @change="savePersona" />
       </label>
       <label class="switch-row">
         <input v-model="persona.qqInheritChatPersona" type="checkbox" :disabled="savingPersona" @change="savePersona" />
@@ -181,6 +188,7 @@
 <script>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { fetchAgentConfig, saveAgentConfig, fetchAgentPersonas, saveAgentPersona, sendAgentMessage, confirmAgentTool, rejectAgentTool, fetchPendingAgentTools, fetchAgentSessions, fetchAgentSession } from '../api'
+import SelectBox from './SelectBox.vue'
 
 const defaultConfig = {
   dangerousPolicy: 'confirm',
@@ -194,10 +202,17 @@ const defaultConfig = {
   },
   enabledSkills: [],
   readFileRoots: [],
+  mcp: {
+    enabled: false,
+    allowWriteWorkspace: true,
+    allowRunLocal: true,
+    exposeDangerousActions: false,
+  },
 }
 
 export default {
   name: 'AgentPanel',
+  components: { SelectBox },
   setup() {
     const showAdminDialog = inject('showAdminDialog')
     const loading = ref(false)
@@ -223,11 +238,32 @@ export default {
     const persona = reactive({ dashboardPersona: '', qqInheritChatPersona: true })
     const isBrowserToolEnabled = computed(() => !!config.channels.dashboard.tools.browser_action)
     const currentDashboardPersona = computed(() => persona.dashboardPersona || '')
+    const modeOptions = [
+      { value: 'config', label: '跟随配置' },
+      { value: 'confirm', label: '危险工具需确认' },
+      { value: 'block', label: '禁用危险工具' },
+      { value: 'auto', label: '自动执行' },
+    ]
+    const dangerousPolicyOptions = [
+      { value: 'confirm', label: '需确认' },
+      { value: 'block', label: '禁用' },
+      { value: 'auto', label: '自动执行' },
+    ]
+    const dashboardPersonaOptions = computed(() => [
+      { value: '', label: '默认（东雪莲）' },
+      ...personas.value.map(item => ({ value: item.name, label: item.name })),
+    ])
 
     function applyConfig(next) {
       const merged = JSON.parse(JSON.stringify({ ...defaultConfig, ...(next || {}) }))
       config.dangerousPolicy = merged.dangerousPolicy || 'confirm'
       config.readFileRoots = Array.isArray(merged.readFileRoots) ? merged.readFileRoots : []
+      config.mcp = {
+        enabled: !!merged.mcp?.enabled,
+        allowWriteWorkspace: merged.mcp?.allowWriteWorkspace !== false,
+        allowRunLocal: merged.mcp?.allowRunLocal !== false,
+        exposeDangerousActions: !!merged.mcp?.exposeDangerousActions,
+      }
       for (const channel of ['qq', 'dashboard']) {
         config.channels[channel].enabled = !!merged.channels?.[channel]?.enabled
         config.channels[channel].tools = { ...(merged.channels?.[channel]?.tools || {}) }
@@ -392,6 +428,11 @@ export default {
       config.readFileRoots.splice(index, 1)
     }
 
+    async function toggleMcp() {
+      config.mcp.enabled = !config.mcp.enabled
+      await saveConfig()
+    }
+
     function loadHistory() {
       if (!rememberHistory.value) {
         history.value = []
@@ -496,7 +537,7 @@ export default {
     }
 
     onMounted(() => { loadHistory(); loadConfig() })
-    return { loading, saving, savingPersona, sending, error, message, mode, tools, skills, personas, persona, currentDashboardPersona, stats, prompt, pendingId, pendingTools, sessions, selectedSession, effectiveReadRoots, isBrowserToolEnabled, history, rememberHistory, config, formatTime, loadConfig, saveConfig, savePersona, addReadRoot, removeReadRoot, clearHistory, onRememberHistoryChange, confirmPendingTool, rejectPendingTool, loadSessionDetail, sendMessage }
+    return { loading, saving, savingPersona, sending, error, message, mode, modeOptions, dangerousPolicyOptions, dashboardPersonaOptions, tools, skills, personas, persona, currentDashboardPersona, stats, prompt, pendingId, pendingTools, sessions, selectedSession, effectiveReadRoots, isBrowserToolEnabled, history, rememberHistory, config, formatTime, loadConfig, saveConfig, savePersona, addReadRoot, removeReadRoot, toggleMcp, clearHistory, onRememberHistoryChange, confirmPendingTool, rejectPendingTool, loadSessionDetail, sendMessage }
   },
 }
 </script>
@@ -509,7 +550,8 @@ h2, h3, p { margin: 0; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
 .field, .switch-row { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--card) 70%, transparent); }
 .switch-row { flex-direction: row; align-items: center; }
-select, textarea { width: 100%; border: 1px solid var(--border); border-radius: 10px; background: var(--input); color: var(--text); padding: 10px; }
+:deep(.sb-wrap), textarea { width: 100%; }
+textarea { border: 1px solid var(--border); border-radius: 10px; background: var(--input); color: var(--text); padding: 10px; }
 textarea { min-height: 110px; resize: vertical; }
 .tool-list, .skill-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
 .tool-row { display: grid; grid-template-columns: minmax(0, 1fr) 110px 130px; gap: 12px; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); }

@@ -23,20 +23,11 @@
       <div class="controls-grid">
         <label class="field">
           <span>最近行数</span>
-          <select v-model.number="limit" @change="resetAndLoadLogs">
-            <option v-for="n in limits" :key="n" :value="n">{{ n }}</option>
-          </select>
+          <SelectBox v-model="limit" :options="limitOptions" @change="resetAndLoadLogs" />
         </label>
         <label class="field">
           <span>模块</span>
-          <select v-model="moduleFilter" @change="resetAndLoadLogs">
-            <option value="all">全部</option>
-            <option value="dongxuelian-ai">dongxuelian-ai</option>
-            <option value="koishi">koishi</option>
-            <option value="onebot">onebot</option>
-            <option value="napcat">napcat</option>
-            <option value="dashboard">dashboard</option>
-          </select>
+          <SelectBox v-model="moduleFilter" :options="moduleOptions" @change="resetAndLoadLogs" />
         </label>
         <label class="field field-wide">
           <span>搜索</span>
@@ -72,9 +63,11 @@
 <script>
 import { inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { fetchLogs, fetchLoggingConfig, saveLoggingConfig } from '../api'
+import SelectBox from './SelectBox.vue'
 
 export default {
   name: 'LogPanel',
+  components: { SelectBox },
   setup() {
     const showAdminDialog = inject('showAdminDialog')
     const entries = ref([])
@@ -84,7 +77,16 @@ export default {
     const message = ref(null)
     const limit = ref(200)
     const limits = [100, 200, 500, 1000, 3000, 6000]
+    const limitOptions = limits.map(n => ({ value: n, label: String(n) }))
     const moduleFilter = ref('all')
+    const moduleOptions = [
+      { value: 'all', label: '全部' },
+      { value: 'dongxuelian-ai', label: 'dongxuelian-ai' },
+      { value: 'koishi', label: 'koishi' },
+      { value: 'onebot', label: 'onebot' },
+      { value: 'napcat', label: 'napcat' },
+      { value: 'dashboard', label: 'dashboard' },
+    ]
     const query = ref('')
     const errorsOnly = ref(false)
     const autoRefresh = ref(true)
@@ -234,7 +236,7 @@ export default {
     onDeactivated(stopTimer)
     onUnmounted(stopTimer)
 
-    return { entries, total, loading, refreshing, message, limit, limits, moduleFilter, query, errorsOnly, autoRefresh, debugEnabled, levels, levelOptions, logListRef, loadLogs, resetAndLoadLogs, toggleLevel, saveDebugToggle, copyResults }
+    return { entries, total, loading, refreshing, message, limit, limits, limitOptions, moduleFilter, moduleOptions, query, errorsOnly, autoRefresh, debugEnabled, levels, levelOptions, logListRef, loadLogs, resetAndLoadLogs, toggleLevel, saveDebugToggle, copyResults }
   }
 }
 </script>
@@ -247,7 +249,7 @@ export default {
 .meta-dot { color: var(--accent); font-weight: 800; }
 .controls-grid { display: grid; grid-template-columns: 160px 180px minmax(220px, 1fr); gap: 12px; align-items: end; }
 .field { display: flex; flex-direction: column; gap: 6px; color: var(--text2); font-size: 13px; }
-.field select, .field input { width: 100%; }
+.field :deep(.sb-wrap), .field input { width: 100%; }
 .filter-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .level-toggle, .check-pill {
   border: 1px solid var(--border);

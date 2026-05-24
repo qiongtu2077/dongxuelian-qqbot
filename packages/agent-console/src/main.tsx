@@ -24,6 +24,49 @@ type AgentMode = 'plan' | 'build'
 
 type CompletionType = 'command' | 'file' | 'skill' | null
 
+type SelectOption = {
+  value: string
+  label: string
+  disabled?: boolean
+}
+
+function SelectBox({ value, options, onChange, className = '' }: { value: string; options: SelectOption[]; onChange: (value: string) => void; className?: string }) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const selected = options.find(option => option.value === value)
+  function pick(option: SelectOption) {
+    if (option.disabled) return
+    onChange(option.value)
+    setOpen(false)
+  }
+  return (
+    <div className={`select-box ${className}`} ref={wrapRef} tabIndex={0} onBlur={event => {
+      if (!wrapRef.current?.contains(event.relatedTarget as Node | null)) setOpen(false)
+    }}>
+      <button className="select-trigger" type="button" onClick={() => setOpen(!open)}>
+        <span>{selected?.label || '请选择'}</span>
+        <span className={`select-arrow ${open ? 'open' : ''}`}>⌄</span>
+      </button>
+      {open && (
+        <div className="select-menu" role="listbox">
+          {options.map(option => (
+            <button
+              key={option.value}
+              className={`select-option ${option.value === value ? 'active' : ''}`}
+              type="button"
+              disabled={option.disabled}
+              onMouseDown={event => event.preventDefault()}
+              onClick={() => pick(option)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const tabs: Array<{ id: TabId; label: string; group: string }> = [
   { id: 'chat', label: '聊天', group: '主功能' },
   { id: 'inbox', label: '收件箱', group: '主功能' },
@@ -680,15 +723,17 @@ function FilesPage({ roots }: { roots: string[] }) {
     }
   }
   useEffect(() => { loadFiles(roots[0] || '', '') }, [roots.join('|')])
+  const rootOptions = useMemo(() => {
+    const values = [...(roots || [])]
+    if (root && !values.includes(root)) values.push(root)
+    return values.map(item => ({ value: item, label: item || '默认根目录' }))
+  }, [roots.join('|'), root])
   return (
     <div className="page-grid two">
       <section className="panel">
         <div className="section-head"><h2>文件工作区</h2><span>{files.length} 项</span></div>
         <div className="search-line">
-          <select value={root} onChange={e => { setRoot(e.target.value); loadFiles(e.target.value, query) }}>
-            {(roots || []).map(item => <option key={item} value={item}>{item}</option>)}
-            {root && !roots.includes(root) && <option value={root}>{root}</option>}
-          </select>
+          <SelectBox value={root} options={rootOptions} onChange={value => { setRoot(value); loadFiles(value, query) }} />
           <input placeholder="搜索文件名" value={query} onChange={e => setQuery(e.target.value)} />
           <button onClick={() => loadFiles(root, query)}>刷新</button>
         </div>
@@ -779,6 +824,10 @@ function PlansPage({ plans, refresh }: { plans: any[]; refresh: () => void }) {
 
 function CronPage({ crons, history, refresh }: { crons: any[]; history: any[]; refresh: () => void }) {
   const [draft, setDraft] = useState({ id: '', schedule: '0 20 * * *', type: 'text', prompt: '', targetChannel: '', enabled: true })
+  const cronTypeOptions = [
+    { value: 'text', label: 'text' },
+    { value: 'agent', label: 'agent' },
+  ]
   async function create() { await api.createCron(draft); setDraft({ ...draft, id: '', prompt: '' }); refresh() }
   return (
     <div className="page-grid two">
@@ -788,7 +837,7 @@ function CronPage({ crons, history, refresh }: { crons: any[]; history: any[]; r
           <input placeholder="id" value={draft.id} onChange={e => setDraft({ ...draft, id: e.target.value })} />
           <input placeholder="cron" value={draft.schedule} onChange={e => setDraft({ ...draft, schedule: e.target.value })} />
           <input placeholder="目标频道" value={draft.targetChannel} onChange={e => setDraft({ ...draft, targetChannel: e.target.value })} />
-          <select value={draft.type} onChange={e => setDraft({ ...draft, type: e.target.value })}><option value="text">text</option><option value="agent">agent</option></select>
+          <SelectBox value={draft.type} options={cronTypeOptions} onChange={value => setDraft({ ...draft, type: value })} />
           <textarea placeholder="prompt/text" value={draft.prompt} onChange={e => setDraft({ ...draft, prompt: e.target.value })} />
           <button onClick={create}>创建</button>
         </div>

@@ -32,10 +32,7 @@
 
     <!-- 添加 -->
     <div style="display:flex;gap:8px;margin-top:12px">
-      <select v-if="isObjectList(wl)" v-model="newTypes[key]" style="flex:0 0 96px">
-        <option value="groups">群</option>
-        <option value="users">用户</option>
-      </select>
+      <SelectBox v-if="isObjectList(wl)" v-model="newTypes[key]" :options="typeOptions" style="flex:0 0 96px" />
       <input v-model="newValues[key]" :placeholder="inputPlaceholder(wl)" style="flex:1;font-family:monospace" @keyup.enter="addItem(key)" />
       <button class="btn btn-sm" @click="addItem(key)">添加</button>
     </div>
@@ -48,9 +45,11 @@
 <script>
 import { ref, reactive, inject, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { fetchWhitelist, updateWhitelist } from '../api'
+import SelectBox from './SelectBox.vue'
 
 export default {
   name: 'WhitelistPanel',
+  components: { SelectBox },
   setup() {
     const showAdminDialog = inject('showAdminDialog')
     const lists = ref({})
@@ -62,6 +61,10 @@ export default {
     let pollTimer = null
 
     const loadError = ref('')
+    const typeOptions = [
+      { value: 'groups', label: '群' },
+      { value: 'users', label: '用户' },
+    ]
 
     async function load() {
       try {
@@ -194,7 +197,7 @@ export default {
       setTimeout(() => msgs[key] = null, 2000)
     }
 
-    return { lists, newValues, newTypes, msgs, loadError, refreshing, refreshMsg, manualRefresh, isEmpty, isObjectList, getCount, getItems, inputPlaceholder, getRawItems, addItem, removeItem }
+    return { lists, newValues, newTypes, typeOptions, msgs, loadError, refreshing, refreshMsg, manualRefresh, isEmpty, isObjectList, getCount, getItems, inputPlaceholder, getRawItems, addItem, removeItem }
   }
 }
 </script>

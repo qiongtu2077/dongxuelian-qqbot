@@ -156,6 +156,8 @@ const trendColors = {
   cacheHitRate: '#8b6cff',
 }
 
+const UNKNOWN_MODEL_DISTRIBUTION_KEY = '__unknown-models__'
+
 const rangePresets = [
   { key: 'today', label: '今天' },
   { key: '7d', label: '7天' },
@@ -288,6 +290,10 @@ function normalizeModelKey(key = '', provider = '') {
   return value
 }
 
+function isUnknownModelKey(key = '') {
+  return /:(legacy|unknown)$/i.test(String(key || ''))
+}
+
 function addModelStat(map, raw = {}) {
   const provider = String(raw.provider || String(raw.key || '').split(':')[0] || '')
   const key = normalizeModelKey(raw.key || raw.name || raw.label, provider)
@@ -319,6 +325,39 @@ function withDistributionColors(rows = []) {
     ...row,
     color: distributionPalette[index % distributionPalette.length],
   }))
+}
+
+function collapseUnknownModelRows(rows = []) {
+  const result = []
+  let unknown = null
+  for (const row of rows) {
+    if (!isUnknownModelKey(row.key)) {
+      result.push(row)
+      continue
+    }
+    if (!unknown) {
+      unknown = {
+        key: UNKNOWN_MODEL_DISTRIBUTION_KEY,
+        label: '未分模型（历史数据）',
+        provider: 'unknown',
+        total: 0,
+        requests: 0,
+        input: 0,
+        output: 0,
+        cacheCreation: 0,
+        cacheRead: 0,
+        color: providerColors.unknown,
+      }
+    }
+    unknown.total += toNumber(row.total)
+    unknown.requests += toNumber(row.requests)
+    unknown.input += toNumber(row.input)
+    unknown.output += toNumber(row.output)
+    unknown.cacheCreation += toNumber(row.cacheCreation)
+    unknown.cacheRead += toNumber(row.cacheRead)
+  }
+  if (unknown && unknown.total > 0) result.push(unknown)
+  return result
 }
 
 function aggregateDayProviderModels(day = {}) {
@@ -381,11 +420,7 @@ function normalizeProviderDayModels(day = {}, providers = []) {
 
 function getModelLabel(key = '') {
   const value = String(key || 'unknown')
-  if (value.endsWith(':legacy') || value.endsWith(':unknown')) {
-    const provider = value.split(':')[0]
-    const labels = { opencode: 'OpenCode', glm: 'GLM', dashscope: '阿里云', deepseek: 'DeepSeek', mimorium: 'MiMo' }
-    return `${labels[provider] || provider} 未分模型`
-  }
+  if (isUnknownModelKey(value)) return '未分模型（历史数据）'
   return value
 }
 
@@ -570,7 +605,7 @@ export default {
     })
 
     const distributionRows = computed(() => {
-      const source = filteredModelDistribution.value.length ? filteredModelDistribution.value : fallbackDistribution.value
+      const source = filteredModelDistribution.value.length ? collapseUnknownModelRows(filteredModelDistribution.value) : fallbackDistribution.value
       const total = source.reduce((sum, row) => sum + toNumber(row.total), 0) || 1
       const sorted = source.slice().sort((a, b) => b.total - a.total).map(row => ({
         ...row,

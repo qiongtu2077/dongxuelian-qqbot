@@ -4,15 +4,11 @@
       <h2>供应商和模型</h2>
       <div class="row">
         <label>供应商</label>
-        <select v-model="selectedProvider" @change="onProviderChange">
-          <option v-for="(v, k) in providers" :key="k" :value="k">{{ v.name }}</option>
-        </select>
+        <SelectBox v-model="selectedProvider" :options="providerOptions" @change="onProviderChange" />
       </div>
       <div class="row">
         <label>模型</label>
-        <select v-model="selectedModel">
-          <option v-for="m in currentModels" :key="m.id" :value="m.id">{{ m.name }}</option>
-        </select>
+        <SelectBox v-model="selectedModel" :options="currentModelOptions" />
       </div>
       <div class="row">
         <label>API 地址</label>
@@ -57,14 +53,8 @@
       </div>
 
       <div v-for="(step, si) in (fallbackChains[fc.key] || [])" :key="si" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
-        <select v-model="step.provider" @change="onFbProviderChange(fc.key, si)" style="width:120px">
-          <option value="" disabled>供应商</option>
-          <option v-for="(p, pk) in allProviders" :key="pk" :value="pk">{{ p.name }}</option>
-        </select>
-        <select v-model="step.model" style="width:140px">
-          <option value="" disabled>模型</option>
-          <option v-for="m in (allProviders[step.provider]?.models || [])" :key="m.id" :value="m.id">{{ m.name || m.id }}{{ m.vision ? ' 👁' : '' }}</option>
-        </select>
+        <SelectBox v-model="step.provider" :options="allProviderOptions" style="width:120px" @change="onFbProviderChange(fc.key, si)" />
+        <SelectBox v-model="step.model" :options="fallbackModelOptions(step.provider)" style="width:140px" />
         <button class="btn-sm" @click="removeFallbackStep(fc.key, si)" style="background:transparent;border:1px solid var(--danger);color:var(--danger);font-size:11px;padding:0 4px">✕</button>
       </div>
       <button class="btn-sm" @click="addFallbackStep(fc.key)" style="background:transparent;border:1px solid var(--accent);color:var(--accent);font-size:11px">+ 添加步骤</button>
@@ -90,6 +80,7 @@
 <script setup>
 import { ref, computed, inject, onMounted } from 'vue'
 import { fetchConfig, fetchProviders, updateConfig, fetchFallbackChains, saveFallbackChains, fetchCustomProviders, saveCustomProviders } from '../api'
+import SelectBox from './SelectBox.vue'
 
 const LIGHTWEIGHT_MAIN_TOGGLE_KEY = 'cfg_lightweight_main'
 
@@ -125,6 +116,18 @@ defineOptions({ name: 'ConfigPanel' })
       const p = providers.value[selectedProvider.value]
       return p ? p.models : []
     })
+    const providerOptions = computed(() => Object.entries(providers.value).map(([value, provider]) => ({ value, label: provider.name })))
+    const currentModelOptions = computed(() => currentModels.value.map(model => ({ value: model.id, label: model.name || model.id })))
+    const allProviderOptions = computed(() => [
+      { value: '', label: '供应商', disabled: true },
+      ...Object.entries(allProviders.value).map(([value, provider]) => ({ value, label: provider.name })),
+    ])
+    function fallbackModelOptions(provider) {
+      return [
+        { value: '', label: '模型', disabled: true },
+        ...((allProviders.value[provider]?.models || []).map(model => ({ value: model.id, label: `${model.name || model.id}${model.vision ? ' 👁' : ''}` }))),
+      ]
+    }
 
     const fallbackCards = computed(() =>
       FALLBACK_CARDS.map(function(fc) {

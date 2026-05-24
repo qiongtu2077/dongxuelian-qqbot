@@ -77,9 +77,7 @@
         </div>
         <div>
           <div style="font-size:13px;color:var(--text2);margin-bottom:4px">世界观绑定</div>
-          <select v-model="newLore" style="width:100%">
-            <option v-for="l in loreList" :key="l.id" :value="l.id">{{ l.description ? l.id + ' - ' + l.description : l.id }}</option>
-          </select>
+          <SelectBox v-model="newLore" :options="loreOptions" />
         </div>
         <div>
           <div style="font-size:13px;color:var(--text2);margin-bottom:4px">Will 值（影响随机回复触发率）</div>
@@ -90,10 +88,7 @@
         </div>
         <div v-if="editingType === 'persona'">
           <div style="font-size:13px;color:var(--text2);margin-bottom:4px">NSFW 策略</div>
-          <select v-model="newNsfw" style="width:100%">
-            <option value="none">不参与（默认）</option>
-            <option value="reply">可以接话</option>
-          </select>
+          <SelectBox v-model="newNsfw" :options="nsfwOptions" />
         </div>
         <div>
           <div style="font-size:13px;color:var(--text2);margin-bottom:4px">人格内容（提示词）</div>
@@ -112,27 +107,15 @@
     <div style="display:grid;gap:12px">
       <div>
         <div style="font-size:13px;color:var(--text2);margin-bottom:4px">选择人格</div>
-        <select v-model="voicePersona" style="width:100%">
-          <option value="">-- 选择人格 --</option>
-          <option v-for="p in personas" :key="p.name" :value="p.name">{{ p.name }}</option>
-        </select>
+        <SelectBox v-model="voicePersona" :options="voicePersonaOptions" />
       </div>
       <div>
         <div style="font-size:13px;color:var(--text2);margin-bottom:4px">音色</div>
-        <select v-model="voiceId" style="width:100%">
-          <option value="">默认（冰糖）</option>
-          <option value="__cloned__" v-if="personaVoiceMap[voicePersona]?.hasSample">克隆音色</option>
-          <option v-for="v in voiceList" :key="v" :value="v">{{ v }}</option>
-        </select>
+        <SelectBox v-model="voiceId" :options="voiceOptions" />
       </div>
       <div v-if="voiceId === '__cloned__'">
         <div style="font-size:13px;color:var(--text2);margin-bottom:4px">具体克隆音色</div>
-        <select v-model="selectedVoiceAssetId" style="width:100%">
-          <option value="">-- 选择克隆音色 --</option>
-          <option v-for="asset in clonedVoices" :key="asset.id" :value="asset.id" :disabled="asset.missing">
-            {{ assetOptionLabel(asset) }}
-          </option>
-        </select>
+        <SelectBox v-model="selectedVoiceAssetId" :options="clonedVoiceOptions" />
       </div>
       <div>
         <div style="font-size:13px;color:var(--text2);margin-bottom:4px">说话风格</div>
@@ -212,11 +195,7 @@
         <input v-model="loreFormDesc" placeholder="一句话描述" style="width:100%" />
         <input v-model="loreFormKeywords" placeholder="触发关键词，逗号分隔" style="width:100%" />
         <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:8px">
-          <select v-model="loreFormScope" style="width:100%">
-            <option value="keyword">关键词触发</option>
-            <option value="always">绑定后总是注入</option>
-            <option value="none">禁用注入</option>
-          </select>
+          <SelectBox v-model="loreFormScope" :options="loreScopeOptions" />
           <input v-model.number="loreFormMaxChars" type="number" min="200" max="12000" step="100" placeholder="预算字符数" style="width:100%" />
           <input v-model.number="loreFormPriority" type="number" min="-100" max="100" step="1" placeholder="优先级" style="width:100%" />
         </div>
@@ -236,6 +215,7 @@
 <script setup>
 import { ref, computed, inject, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { fetchPersonas, fetchPersonaDetail, fetchPersonaDiagnostics, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore, fetchTtsVoices, ttsPreview, ttsClone, updateTtsClone, deleteTtsClone, savePersonaVoice } from '../api'
+import SelectBox from './SelectBox.vue'
 
 defineOptions({ name: 'PersonaPanel' })
 
@@ -291,6 +271,29 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
     const corePersona = computed(() => personas.value.find(p => p.type === 'core'))
     const defaultModes = computed(() => personas.value.filter(p => p.type === 'mode'))
     const regularPersonas = computed(() => personas.value.filter(p => p.type !== 'core' && p.type !== 'mode'))
+    const loreOptions = computed(() => loreList.value.map(lore => ({ value: lore.id, label: lore.description ? `${lore.id} - ${lore.description}` : lore.id })))
+    const nsfwOptions = [
+      { value: 'none', label: '不参与（默认）' },
+      { value: 'reply', label: '可以接话' },
+    ]
+    const voicePersonaOptions = computed(() => [
+      { value: '', label: '-- 选择人格 --' },
+      ...personas.value.map(persona => ({ value: persona.name, label: persona.name })),
+    ])
+    const voiceOptions = computed(() => [
+      { value: '', label: '默认（冰糖）' },
+      ...(personaVoiceMap.value[voicePersona.value]?.hasSample ? [{ value: '__cloned__', label: '克隆音色' }] : []),
+      ...voiceList.value.map(voice => ({ value: voice, label: voice })),
+    ])
+    const clonedVoiceOptions = computed(() => [
+      { value: '', label: '-- 选择克隆音色 --' },
+      ...clonedVoices.value.map(asset => ({ value: asset.id, label: assetOptionLabel(asset), disabled: asset.missing })),
+    ])
+    const loreScopeOptions = [
+      { value: 'keyword', label: '关键词触发' },
+      { value: 'always', label: '绑定后总是注入' },
+      { value: 'none', label: '禁用注入' },
+    ]
     const personaDiagnosticItems = computed(() => {
       const items = []
       for (const doc of personaDiagnosticsDocuments.value || []) {
