@@ -36,9 +36,42 @@ async function run(t) {
     })
     const result = await run(session, { flushTicks: 20 })
     const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
-    const entry = await store.getFileEntry('private', 'file-private-silent-1')
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    const channelKey = conversation.getChannelKey(session)
+    const entry = await store.getFileEntry(channelKey, 'file-private-silent-1')
+    t.check('scenario private pure file uses user-isolated channel key', channelKey === `private:${session.userId}`, channelKey)
     t.check('scenario private pure file stores metadata', entry && entry.fileName === '私聊文件.txt' && entry.fileId === 'private-file-token', JSON.stringify(entry))
     t.check('scenario private pure file stays silent', result.sent.length === 0, JSON.stringify(result.sent))
+  })
+
+  await withScenario({}, async ({ makeSession }) => {
+    const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    await store.storeFile('private', 'legacy-private-a', {
+      fileName: 'A-user.txt',
+      fileSize: 1,
+      mimeType: 'text/plain',
+      ext: 'txt',
+      fileId: 'legacy-a',
+      conversationKey: 'private::user-a',
+      userId: 'user-a',
+      skipped: false,
+    })
+    await store.storeFile('private', 'legacy-private-b', {
+      fileName: 'B-user.txt',
+      fileSize: 1,
+      mimeType: 'text/plain',
+      ext: 'txt',
+      fileId: 'legacy-b',
+      conversationKey: 'private::user-b',
+      userId: 'user-b',
+      skipped: false,
+    })
+    const sessionA = makeSession({ isDirect: true, guildId: undefined, channelId: undefined, userId: 'user-a', author: { id: 'user-a', name: 'A' } })
+    const keyA = conversation.getChannelKey(sessionA)
+    const recentA = await store.getRecentFiles(keyA, 10)
+    t.check('scenario legacy private file history is readable for same direct user', recentA.some(file => file.messageId === 'legacy-private-a'), JSON.stringify(recentA))
+    t.check('scenario legacy private file history does not cross direct users', recentA.every(file => file.userId === 'user-a'), JSON.stringify(recentA))
   })
 
   await withScenario({}, async ({ makeSession, run, data }) => {
@@ -211,18 +244,20 @@ async function run(t) {
         event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '文件里面说了什么' } }] },
       })
       const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
-      await store.storeFile('private', 'natural-file-1', {
+      const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+      const channelKey = conversation.getChannelKey(session)
+      await store.storeFile(channelKey, 'natural-file-1', {
         fileName: '说课.md',
         fileSize: 20,
         mimeType: 'text/markdown',
         ext: 'md',
         url: '',
         fileId: 'file-token-natural',
-        conversationKey: 'private',
+        conversationKey: conversation.getConversationKey(session),
         userId: session.userId,
         skipped: false,
       })
-      await store.markFileAnalyzed('private', 'natural-file-1', '[用户上传文件: 说课.md]\n---文件内容开始---\n说课流程\n课堂安排\n---文件内容结束---')
+      await store.markFileAnalyzed(channelKey, 'natural-file-1', '[用户上传文件: 说课.md]\n---文件内容开始---\n说课流程\n课堂安排\n---文件内容结束---')
       const result = await run(session, { flushTicks: 160 })
       await session.waitForSend(message => String(message).includes('说课流程'), 10000)
       checkSentIncludes(t, 'scenario natural file follow-up uses chat analyze_file', result, '说课流程')

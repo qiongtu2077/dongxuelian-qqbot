@@ -641,6 +641,7 @@ async function main() {
     agentToolReminderTools: path.join(LIB, 'agent', 'tools', 'reminder-tools'),
     agentToolScheduledTaskTools: path.join(LIB, 'agent', 'tools', 'scheduled-task-tools'),
     agentToolAnalyzeFile: path.join(LIB, 'agent', 'tools', 'analyze-file'),
+    mcpLocalServer: path.join(LIB, 'mcp', 'local-server'),
     rareVoice: path.join(LIB, 'rare-voice'),
     index: path.join(LIB, 'index'),
     voice: path.join(LIB, 'voice'),
@@ -1237,6 +1238,7 @@ async function main() {
     path.join(LIB, 'agent', 'tools', 'query-logs.js'),
     path.join(LIB, 'agent', 'tools', 'create-reminder.js'),
     path.join(LIB, 'agent', 'tools', 'analyze-file.js'),
+    path.join(LIB, 'mcp', 'local-server.js'),
     path.join(LIB, 'rare-voice.js'),
     path.join(LIB, 'file-safety.js'),
     path.join(LIB, 'file-store.js'),
@@ -1255,7 +1257,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'sticker-shadow.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'group-scene-index.js', 'random-reply-mode.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'sticker-shadow.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'group-scene-index.js', 'random-reply-mode.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js', 'mcp/local-server.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -1762,6 +1764,17 @@ async function main() {
   for (const name of ['create_scheduled_task', 'list_scheduled_tasks', 'get_scheduled_task', 'pause_scheduled_task', 'resume_scheduled_task', 'delete_scheduled_task', 'run_scheduled_task_now']) {
     check(`scheduled task tool registered: ${name}`, scheduledTaskToolNames.includes(name), scheduledTaskToolNames.join(','))
   }
+  const mcpToolNames = modules.mcpLocalServer.getToolDefinitions().map(tool => tool.name)
+  check('mcp local server exports identity', modules.mcpLocalServer.SERVER_NAME === 'dongxuelian-local-mcp' && typeof modules.mcpLocalServer.SERVER_VERSION === 'string')
+  check('mcp local server exposes diagnostic tools', ['get_bot_health', 'get_agent_config', 'get_agent_stats', 'list_agent_sessions', 'query_logs'].every(name => mcpToolNames.includes(name)), mcpToolNames.join(','))
+  check('mcp local server exposes workspace tools', ['list_files', 'find_files', 'grep_search', 'read_file', 'write_file', 'edit_file'].every(name => mcpToolNames.includes(name)), mcpToolNames.join(','))
+  check('mcp local server exposes bounded local check tool', mcpToolNames.includes('run_local_check'))
+  check('mcp local check maps quick to npm test:quick', JSON.stringify(modules.mcpLocalServer.parseLocalCheckCommand('quick')[1]) === JSON.stringify(['run', 'test:quick']))
+  check('mcp local check maps node syntax check', modules.mcpLocalServer.parseLocalCheckCommand('node -c packages/koishi-plugin-dongxuelian-ai/lib/index.js')[0] === 'node')
+  checkThrows('mcp local check rejects shell chaining', () => modules.mcpLocalServer.parseLocalCheckCommand('quick && echo bad'), /只允许/)
+  checkThrows('mcp local check rejects node target metacharacters', () => modules.mcpLocalServer.parseLocalCheckCommand('node -c lib/index.js; rm -rf x'), /不合法/)
+  const mcpHealth = modules.mcpLocalServer.buildHealth(modules.agentConfig.getAgentConfig(), [ROOT])
+  check('mcp health redacts dangerous actions from defaults', mcpHealth.mcp.enabled === false && mcpHealth.mcp.allowWriteWorkspace === true && mcpHealth.mcp.allowRunLocal === true && mcpHealth.mcp.exposeDangerousActions === false)
   check('agent skills parses frontmatter name', modules.agentSkills.parseFrontmatter('---\nname: Demo\ndescription: Test\n---\nbody').name === 'Demo')
   const skillTmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cascade-skill-meta-'))
   try {
@@ -3166,11 +3179,14 @@ async function main() {
   const convSession = makeSession({ guildId: 'guildA', channelId: 'chanA', userId: 'userA', author: { id: 'userA' } })
   checkEqual('conversation key stable', conv.getConversationKey(convSession), 'guildA::userA')
   checkEqual('channel key prefers guild', conv.getChannelKey(convSession), 'guildA')
+  const directSession = makeSession({ isDirect: true, guildId: undefined, channelId: undefined, userId: 'userDirectA', author: { id: 'userDirectA' } })
+  checkEqual('direct channel key isolates missing channel id by user', conv.getChannelKey(directSession), 'private:userDirectA')
+  checkEqual('direct conversation key uses isolated private channel', conv.getConversationKey(directSession), 'private:userDirectA::userDirectA')
   conv.channelSharedCache.set('guildA', [
     { userId: 'userA', role: 'user', speakerName: 'Alice', content: 'first', messageId: 'm1', replyToId: '', mentionUserIds: [], ts: 1 },
     { userId: 'userB', role: 'user', speakerName: 'Bob', content: 'second', messageId: 'm2', replyToId: 'm1', mentionUserIds: ['userA'], ts: 2 },
     { userId: 'userC', role: 'user', speakerName: 'Carol', content: 'third', messageId: 'm3', replyToId: 'm2', mentionUserIds: [], ts: 3 },
-    { userId: 'bot', role: 'assistant', speakerName: '东雪莲', content: 'bot-self-reply', messageId: 'bot-m1', replyToId: 'm3', mentionUserIds: [], ts: 4 },
+    { userId: 'bot', role: 'assistant', speakerName: '东雪莲', personaName: '爱弥斯', content: 'bot-self-reply', messageId: 'bot-m1', replyToId: 'm3', mentionUserIds: [], ts: 4 },
   ])
   check('findChannelMessageById returns message', conv.findChannelMessageById('guildA', 'm1').content === 'first')
   checkEqual('collectReplyChain follows message id', conv.collectReplyChain('guildA', 'm2')[0].content, 'second')
@@ -3180,6 +3196,9 @@ async function main() {
   check('quote info marks assistant message id as self quote', selfQuoteInfo.isSelf && selfQuoteInfo.matchedMessage?.role === 'assistant', JSON.stringify(selfQuoteInfo))
   const selfSharedNote = conv.getSharedContextNote(convSession, 'userA', { replyToId: 'bot-m1' })
   check('shared context keeps focused assistant reply when quoted', selfSharedNote.includes('bot-self-reply'), selfSharedNote)
+  check('shared context labels assistant persona', selfSharedNote.includes('东雪莲/爱弥斯'), selfSharedNote)
+  const otherPersonaNote = conv.getSharedContextNote(convSession, 'userA', { currentText: '真的吗', personaName: '布吕歇尔' })
+  check('short follow-up marks other persona as public background', otherPersonaNote.includes('其他人格爱弥斯') && otherPersonaNote.includes('不要继承其口吻'), otherPersonaNote)
   const mergedConversation = conv.mergeConversationMessages(
     [{ role: 'user', content: 'old' }, { role: 'assistant', content: 'old-reply' }],
     [{ role: 'user', content: 'old' }, { role: 'assistant', content: 'old-reply' }, { role: 'user', content: 'cached' }]

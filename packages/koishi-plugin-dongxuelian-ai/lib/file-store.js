@@ -22,6 +22,20 @@ function getSafeKey(channelKey) {
   return String(channelKey || '').replace(/[^a-zA-Z0-9.:_-]/g, '_')
 }
 
+function getLegacyPrivateKey(channelKey) {
+  return /^private:/.test(String(channelKey || '')) ? 'private' : ''
+}
+
+function getPrivateUserId(channelKey) {
+  return /^private:/.test(String(channelKey || '')) ? String(channelKey).slice('private:'.length) : ''
+}
+
+function matchesPrivateUser(entry, channelKey) {
+  const userId = getPrivateUserId(channelKey)
+  if (!userId) return true
+  return String(entry?.userId || '') === userId
+}
+
 function getFilePath(channelKey) {
   return path.join(FILE_HISTORY_DIR, getSafeKey(channelKey) + '.json')
 }
@@ -153,6 +167,12 @@ async function getFileEntry(channelKey, messageId) {
     const data = await readFileHistory(channelKey)
     const entry = data.files[String(messageId)] || null
     return entry ? { ...entry } : null
+  }).then(async (entry) => {
+    if (entry) return entry
+    const legacyKey = getLegacyPrivateKey(channelKey)
+    if (!legacyKey) return null
+    const legacyEntry = await getFileEntry(legacyKey, messageId)
+    return matchesPrivateUser(legacyEntry, channelKey) ? legacyEntry : null
   })
 }
 
@@ -193,7 +213,7 @@ async function setLocalPath(channelKey, messageId, localPath) {
 
 async function getRecentFiles(channelKey, limit = 5) {
   if (!channelKey) return []
-  return enqueueTask(channelKey, async () => {
+  const current = await enqueueTask(channelKey, async () => {
     const data = cleanExpired(await readFileHistory(channelKey))
     await writeFileHistory(channelKey, data)
     return Object.entries(data.files || {})
@@ -201,14 +221,34 @@ async function getRecentFiles(channelKey, limit = 5) {
       .sort((a, b) => (b.ts || 0) - (a.ts || 0))
       .slice(0, limit)
   })
+  const legacyKey = getLegacyPrivateKey(channelKey)
+  if (!legacyKey || current.length >= limit) return current
+  const seen = new Set(current.map(file => String(file.messageId || '')))
+  const legacy = await getRecentFiles(legacyKey, limit)
+  return current
+    .concat(legacy.filter(file => matchesPrivateUser(file, channelKey) && !seen.has(String(file.messageId || ''))))
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    .slice(0, limit)
 }
 
 function getRecentFilesCached(channelKey, limit = 5) {
   const cached = fileHistoryCache.get(getQueueKey(channelKey))
-  if (!cached) return []
-  const data = normalizeData(cached)
-  return Object.entries(data.files || {})
-    .map(([id, entry]) => ({ messageId: id, ...entry }))
+  const files = []
+  if (cached) {
+    const data = normalizeData(cached)
+    files.push(...Object.entries(data.files || {}).map(([id, entry]) => ({ messageId: id, ...entry })))
+  }
+  const legacyKey = getLegacyPrivateKey(channelKey)
+  const legacyCached = legacyKey ? fileHistoryCache.get(getQueueKey(legacyKey)) : null
+  if (legacyCached) {
+    const seen = new Set(files.map(file => String(file.messageId || '')))
+    const data = normalizeData(legacyCached)
+    for (const [id, entry] of Object.entries(data.files || {})) {
+      const file = { messageId: id, ...entry }
+      if (matchesPrivateUser(file, channelKey) && !seen.has(String(id))) files.push(file)
+    }
+  }
+  return files
     .sort((a, b) => (b.ts || 0) - (a.ts || 0))
     .slice(0, limit)
 }

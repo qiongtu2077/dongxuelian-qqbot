@@ -74,6 +74,7 @@ function buildRandomModePrompt() {
     '你可以直接输出自然聊天文本；也可以在不适合发言时输出 JSON：{"mode":"no_send","reply":""}。',
     '可选模式：anchored_reply=现场清楚时接当前话题；context_lookup=需要旧公共上下文时先调用 read_group_context；ambient_water=不锚定任何人/消息，只轻轻水一句；no_send=说了会打扰或容易误解时不发。',
     '如果选择 ambient_water，只写一句很短的群聊反应，不引用旧话题、不接管任务、不回答点名请求。',
+    '如果群友只是在互相吐槽或评价现场里的对象，主语、意图或与你的关系不清时优先 no_send；现场清楚也只能接一句自然反应，禁止把普通评价理解成用户让你接管任务。',
     '不要把 JSON、模式名、工具名、函数名、思考过程发给用户；工具调用是内部动作。',
   ].join('\n')
 }

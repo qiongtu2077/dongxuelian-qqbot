@@ -182,9 +182,17 @@ function trimConversationRuntimeCaches(now = Date.now()) {
   }
 }
 
-function getConversationKey(session) { return `${String(session.guildId || session.channelId || 'private')}::${String(session.userId || session.author?.id || session.username || 'unknown')}` }
+function getSessionUserId(session) {
+  return String(session?.userId || session?.author?.id || session?.username || 'unknown')
+}
 
-function getChannelKey(session) { return String(session.guildId || session.channelId || 'private') }
+function getChannelKey(session) {
+  if (session?.guildId || session?.channelId) return String(session.guildId || session.channelId)
+  if (session?.isDirect) return `private:${getSessionUserId(session)}`
+  return 'private'
+}
+
+function getConversationKey(session) { return `${getChannelKey(session)}::${getSessionUserId(session)}` }
 
 function touchConversation(session) {
   const key = getConversationKey(session)

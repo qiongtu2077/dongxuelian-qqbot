@@ -64,6 +64,40 @@ async function run(t) {
   }, async ({ ready, makeSession, run }) => {
     await ready()
     const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '{"mode":"no_send","reply":""}' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+      conversation.saveSharedChannelTurn({
+        guildId: '10001',
+        channelId: '10001',
+        userId: '2030',
+        author: { id: '2030', name: 'member' },
+      }, 'ㅤ', '[图片]', 'user', { messageId: 'ratio-image-anchor' })
+
+      const ratioSession = makeSession({
+        userId: '2030',
+        author: { id: '2030', name: 'member' },
+        content: '比例还是高了，其实是300＞100w',
+        messageId: 'ratio-sarcasm-trigger',
+      })
+      const result = await run(ratioSession, { flushTicks: 140 })
+      await waitForMockCalls(mocked, 1)
+      t.check('scenario random ambiguous media follow-up can stay silent', result.sent.length === 0, JSON.stringify(result.sent))
+      const prompt = JSON.stringify(mocked.calls[0]?.requestBody?.messages || [])
+      t.check('scenario random ambiguous media prompt stays intent-generic', prompt.includes('主语、意图或与你的关系不清时优先 no_send') && prompt.includes('禁止把普通评价理解成用户让你接管任务'), prompt)
+    })
+  })
+
+  await withScenario({
+    data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 1 },
+      randomVoiceRate: { 10001: 0 },
+    },
+  }, async ({ ready, makeSession, run }) => {
+    await ready()
+    const mocked = mockFetch([
       { delayMs: 80, json: { choices: [{ message: { content: 'stale-random-should-not-send' } }] } },
     ])
     await withFetch(mocked, async () => {

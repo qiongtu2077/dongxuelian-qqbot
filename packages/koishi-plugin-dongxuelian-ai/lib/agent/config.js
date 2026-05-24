@@ -138,6 +138,12 @@ const DEFAULT_CONFIG = Object.freeze({
     enabled: true,
     adminOnly: true,
   },
+  mcp: {
+    enabled: false,
+    allowWriteWorkspace: true,
+    allowRunLocal: true,
+    exposeDangerousActions: false,
+  },
 })
 
 let configCache = null
@@ -205,7 +211,8 @@ function normalizeConfig(raw = {}) {
     enabled: source.memory?.enabled === undefined ? defaults.memory.enabled : !!source.memory.enabled,
     adminOnly: source.memory?.adminOnly === undefined ? defaults.memory.adminOnly : !!source.memory.adminOnly,
   }
-  return { version: 2, channels, dangerousPolicy, autoRoute, enabledSkills, persona, readFileRoots, queue, planMode, push, cron, memory }
+  const mcp = normalizeMcpConfig(source.mcp, defaults.mcp)
+  return { version: 2, channels, dangerousPolicy, autoRoute, enabledSkills, persona, readFileRoots, queue, planMode, push, cron, memory, mcp }
 }
 
 function normalizeInteger(value, min, max, fallback) {
@@ -248,6 +255,16 @@ function normalizePushConfig(value, defaults) {
   }
 }
 
+function normalizeMcpConfig(value, defaults) {
+  const src = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  return {
+    enabled: src.enabled === undefined ? defaults.enabled : !!src.enabled,
+    allowWriteWorkspace: src.allowWriteWorkspace === undefined ? defaults.allowWriteWorkspace : !!src.allowWriteWorkspace,
+    allowRunLocal: src.allowRunLocal === undefined ? defaults.allowRunLocal : !!src.allowRunLocal,
+    exposeDangerousActions: src.exposeDangerousActions === undefined ? defaults.exposeDangerousActions : !!src.exposeDangerousActions,
+  }
+}
+
 function readConfigFile() {
   try {
     const stat = fs.statSync(TOOL_CONFIG_FILE)
@@ -285,6 +302,10 @@ async function patchAgentConfig(patch = {}) {
     persona: {
       ...current.persona,
       ...(patch.persona || {}),
+    },
+    mcp: {
+      ...current.mcp,
+      ...(patch.mcp || {}),
     },
   }
   return saveAgentConfig(merged)

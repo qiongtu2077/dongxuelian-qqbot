@@ -1,5 +1,8 @@
 const { withScenario } = require('./_setup')
+const { mockFetch } = require('../fake/fetch')
+const { flushAsync } = require('../fake/koishi')
 const { checkSentIncludes, checkSentNonEmpty } = require('../helpers/assert')
+const { setTimeout: realSetTimeout } = require('timers')
 
 function userSession(makeSession, userId, content, extra = {}) {
   return makeSession({
@@ -14,6 +17,28 @@ function countSentContaining(sessions, needle) {
   return sessions.reduce((count, session) =>
     count + session.sent.filter(item => String(item).includes(needle)).length,
   0)
+}
+
+function realSleep(ms) {
+  return new Promise(resolve => realSetTimeout(resolve, ms))
+}
+
+async function withFetch(mocked, fn) {
+  const originalFetch = global.fetch
+  global.fetch = mocked.fetch
+  try {
+    return await fn()
+  } finally {
+    global.fetch = originalFetch
+  }
+}
+
+async function waitForMockCalls(mocked, count, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs
+  while (mocked.calls.length < count && Date.now() < deadline) {
+    await flushAsync(4)
+    await realSleep(10)
+  }
 }
 
 async function run(t) {
@@ -106,6 +131,44 @@ async function run(t) {
     })
     const afterCloseResult = await run(afterClose, { flushTicks: 20 })
     t.check('scenario sensitive close race prevents later notification', !afterCloseResult.sent.some(item => String(item).includes('<at id="99999"/>')), JSON.stringify(afterCloseResult.sent))
+  })
+
+  await withScenario({}, async ({ makeSession, run }) => {
+    const mocked = mockFetch([
+      { delayMs: 120, json: { choices: [{ message: { content: 'private-a-slow-reply' } }] } },
+      { json: { choices: [{ message: { content: 'private-b-fast-reply' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const slow = makeSession({
+        userId: 'private-a',
+        author: { id: 'private-a', name: 'A' },
+        content: '第一条私聊慢请求',
+        messageId: 'private-a-slow',
+        isDirect: true,
+        guildId: undefined,
+        channelId: undefined,
+        event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '第一条私聊慢请求' } }] },
+      })
+      const fast = makeSession({
+        userId: 'private-b',
+        author: { id: 'private-b', name: 'B' },
+        content: '第二条私聊快请求',
+        messageId: 'private-b-fast',
+        isDirect: true,
+        guildId: undefined,
+        channelId: undefined,
+        event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '第二条私聊快请求' } }] },
+      })
+      const slowRun = run(slow, { flush: false })
+      await waitForMockCalls(mocked, 1)
+      const fastRun = run(fast, { flush: false })
+      await waitForMockCalls(mocked, 2)
+      await fast.waitForSend(message => String(message).includes('private-b-fast-reply'), 3000)
+      t.check('scenario direct chats without channelId do not share one queue', fast.sent.some(item => String(item).includes('private-b-fast-reply')) && slow.sent.length === 0, JSON.stringify({ slow: slow.sent, fast: fast.sent, calls: mocked.calls.length }))
+      await Promise.all([slowRun, fastRun])
+      await slow.waitForSend(message => String(message).includes('private-a-slow-reply'), 3000)
+      t.check('scenario slow direct chat still finishes later', slow.sent.some(item => String(item).includes('private-a-slow-reply')), JSON.stringify(slow.sent))
+    })
   })
 }
 

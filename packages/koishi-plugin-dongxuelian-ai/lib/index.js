@@ -476,7 +476,11 @@ async function handleChatResult(chatResult, { ctx, session, channelKey, currentU
 function enqueueForChannel(channelKey, fn, maxDepth, options = {}) {
   const key = String(channelKey || '')
   const queuedDepth = channelQueuedDepth.get(key) || 0
-  if (queuedDepth >= maxDepth) return false
+  const runningDepth = channelQueueDepth.get(key) || 0
+  if (queuedDepth + runningDepth >= maxDepth) {
+    logDebug(options.ctx, 'queue', `reject queued task channel=${key} queued=${queuedDepth} running=${runningDepth} max=${maxDepth}`)
+    return false
+  }
   const enqueuedAt = Date.now()
   const maxQueueAgeMs = Math.max(1000, Number(options.maxQueueAgeMs || 45000))
   channelQueuedDepth.set(key, queuedDepth + 1)
