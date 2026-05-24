@@ -113,24 +113,31 @@ async function send(ctx, content, overrides) {
 async function withIsolatedPlugin(fn) {
   const oldEnv = {
     GROUP_NAME_AT_DATA_FILE: process.env.GROUP_NAME_AT_DATA_FILE,
+    GROUP_NAME_AT_ADMIN_IDS_FILE: process.env.GROUP_NAME_AT_ADMIN_IDS_FILE,
     DONGXUELIAN_AI_DATA_DIR: process.env.DONGXUELIAN_AI_DATA_DIR,
   }
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'group-name-at-'))
   const dataDir = path.join(tmpRoot, 'data')
   const dataFile = path.join(dataDir, 'nickname-collections.json')
+  const adminIdsFile = path.join(dataDir, 'ai-admin-ids.json')
   process.env.DONGXUELIAN_AI_DATA_DIR = dataDir
   process.env.GROUP_NAME_AT_DATA_FILE = dataFile
+  process.env.GROUP_NAME_AT_ADMIN_IDS_FILE = adminIdsFile
+  fs.mkdirSync(dataDir, { recursive: true })
+  fs.writeFileSync(adminIdsFile, JSON.stringify(['100000000']), 'utf8')
   delete require.cache[PLUGIN_PATH]
 
   try {
     const plugin = reloadPlugin()
     const ctx = makeCtx()
     plugin.apply(ctx)
-    await fn({ plugin, ctx, tmpRoot, dataDir, dataFile })
+    await fn({ plugin, ctx, tmpRoot, dataDir, dataFile, adminIdsFile })
   } finally {
     delete require.cache[PLUGIN_PATH]
     if (oldEnv.GROUP_NAME_AT_DATA_FILE === undefined) delete process.env.GROUP_NAME_AT_DATA_FILE
     else process.env.GROUP_NAME_AT_DATA_FILE = oldEnv.GROUP_NAME_AT_DATA_FILE
+    if (oldEnv.GROUP_NAME_AT_ADMIN_IDS_FILE === undefined) delete process.env.GROUP_NAME_AT_ADMIN_IDS_FILE
+    else process.env.GROUP_NAME_AT_ADMIN_IDS_FILE = oldEnv.GROUP_NAME_AT_ADMIN_IDS_FILE
     if (oldEnv.DONGXUELIAN_AI_DATA_DIR === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
     else process.env.DONGXUELIAN_AI_DATA_DIR = oldEnv.DONGXUELIAN_AI_DATA_DIR
     fs.rmSync(tmpRoot, { recursive: true, force: true })
@@ -248,6 +255,64 @@ async function run() {
     fs.writeFileSync(path.join(dataDir, 'group-name-at-disabled-groups.json'), JSON.stringify({ groups: ['942033342'] }), 'utf8')
     result = await send(ctx, '查看全部昵称', { guildId: '942033342', channelId: '942033342' })
     check('runtime disabled group file blocks nickname plugin', result.nextCalled && result.sent.length === 0, JSON.stringify(result))
+
+    result = await send(ctx, '群聊昵称黑名单查看', { guildId: '942033342', channelId: '942033342', event: { sender: { role: 'admin' }, message: [] } })
+    check('disabled group still allows blacklist view command', result.sent.some(item => item.includes('群聊昵称黑名单') && item.includes('942033342')), JSON.stringify(result.sent))
+
+    result = await send(ctx, '<at id="90000"/> 昵称 小黑 <at id="3001"/>', {
+      guildId: '942033342',
+      channelId: '942033342',
+      selfId: '90000',
+    })
+    check('disabled group blocks bot-mentioned nickname binding', result.nextCalled && result.sent.length === 0, JSON.stringify(result))
+    check('disabled group nickname binding does not write alias', !fs.existsSync(dataFile), dataFile)
+
+    result = await send(ctx, 'at小明', { guildId: '942033342', channelId: '942033342' })
+    check('disabled group blocks at alias command', result.nextCalled && result.sent.length === 0, JSON.stringify(result))
+
+    result = await send(ctx, '群聊昵称黑名单删除 942033342', {
+      guildId: '942033342',
+      channelId: '942033342',
+      event: { sender: { role: 'admin' }, message: [] },
+    })
+    check('group admin can remove current group from nickname blacklist', result.sent.some(item => item.includes('已移出群聊昵称黑名单：942033342')), JSON.stringify(result.sent))
+    check('nickname blacklist delete updates file', !JSON.stringify(JSON.parse(fs.readFileSync(path.join(dataDir, 'group-name-at-disabled-groups.json'), 'utf8'))).includes('942033342'))
+
+    result = await send(ctx, '查看全部昵称', { guildId: '942033342', channelId: '942033342' })
+    check('nickname plugin resumes after current group removed from blacklist', result.sent.some(item => item.includes('本群还没有昵称。')), JSON.stringify(result.sent))
+
+    result = await send(ctx, '群聊昵称黑名单添加 942033342', {
+      userId: '12345',
+      author: { id: '12345', name: 'member', nick: 'member' },
+      guildId: '942033342',
+      channelId: '942033342',
+      event: { sender: { role: 'member' }, message: [] },
+    })
+    check('regular member cannot add nickname blacklist', result.sent.some(item => item.includes('只有群主、群管理员或bot管理员才能操作')), JSON.stringify(result.sent))
+
+    result = await send(ctx, '群聊昵称黑名单添加 123456', {
+      userId: '12345',
+      author: { id: '12345', name: 'member', nick: 'member' },
+      guildId: '942033342',
+      channelId: '942033342',
+      event: { sender: { role: 'admin' }, message: [] },
+    })
+    check('group admin cannot add another group to nickname blacklist', result.sent.some(item => item.includes('只能操作当前群')), JSON.stringify(result.sent))
+
+    result = await send(ctx, '群聊昵称黑名单添加 123456', {
+      isDirect: true,
+      guildId: '',
+      channelId: 'private-1',
+    })
+    check('bot admin can add any group to nickname blacklist', result.sent.some(item => item.includes('已添加群聊昵称黑名单：123456')), JSON.stringify(result.sent))
+    check('bot admin add writes requested group', JSON.stringify(JSON.parse(fs.readFileSync(path.join(dataDir, 'group-name-at-disabled-groups.json'), 'utf8'))).includes('123456'))
+
+    result = await send(ctx, '群聊昵称黑名单删除 123456', {
+      isDirect: true,
+      guildId: '',
+      channelId: 'private-1',
+    })
+    check('bot admin can delete any group from nickname blacklist', result.sent.some(item => item.includes('已移出群聊昵称黑名单：123456')), JSON.stringify(result.sent))
 
     const plugin = reloadPlugin()
     plugin._test.pendingConfirms.clear()

@@ -16,8 +16,10 @@ function resolveRuntimeDataDir() {
 const DEFAULT_DATA_DIR = resolveRuntimeDataDir()
 const DATA_FILE = process.env.GROUP_NAME_AT_DATA_FILE || path.join(DEFAULT_DATA_DIR, 'nickname-collections.json')
 const DISABLED_GROUPS_FILE = process.env.GROUP_NAME_AT_DISABLED_GROUPS_FILE || path.join(DEFAULT_DATA_DIR, 'group-name-at-disabled-groups.json')
+const ADMIN_IDS_FILE = process.env.GROUP_NAME_AT_ADMIN_IDS_FILE || path.join(DEFAULT_DATA_DIR, 'ai-admin-ids.json')
 const CONFIRM_TIMEOUT = 60 * 1000
 const MAX_DISABLED_GROUPS_BYTES = 128 * 1024
+const MAX_ADMIN_IDS_BYTES = 128 * 1024
 const MAX_PENDING_CONFIRMS = 500
 
 const CMD = {
@@ -44,6 +46,9 @@ const CMD = {
   unionCollection: '集合并集',
   diffCollection: '集合差集',
   viewMember: '查看成员',
+  nicknameBlacklistView: '群聊昵称黑名单查看',
+  nicknameBlacklistAdd: '群聊昵称黑名单添加',
+  nicknameBlacklistDelete: '群聊昵称黑名单删除',
 }
 
 const TEXT = {
@@ -79,6 +84,15 @@ const TEXT = {
   setTitle: (type, left, right) => `${type}：${left} / ${right}`,
   storeReadFailed: '昵称数据读取失败，请检查文件格式或权限。',
   storeSaveFailed: '昵称数据保存失败，请检查文件权限。',
+  blacklistEmpty: '群聊昵称黑名单为空。',
+  blacklistTitle: '群聊昵称黑名单：',
+  blacklistAdded: (groupId) => `已添加群聊昵称黑名单：${groupId}`,
+  blacklistDeleted: (groupId) => `已移出群聊昵称黑名单：${groupId}`,
+  blacklistGroupRequired: '请指定群号。',
+  blacklistInvalidGroup: '群号必须是数字。',
+  blacklistPermissionDenied: '只有群主、群管理员或bot管理员才能操作。',
+  blacklistCrossGroupDenied: '群管理员只能操作当前群。',
+  blacklistSaveFailed: '群聊昵称黑名单保存失败，请检查文件权限。',
 }
 
 let nicknameStore = { scopes: {} }
@@ -138,6 +152,19 @@ function isBlacklistedGroup(session) {
   return getGroupBlacklistCandidates(session).some(groupId => disabled.groups.has(groupId))
 }
 
+function getSenderUserId(session) {
+  return String(session.userId || session.author?.id || session.event?.user?.id || '')
+}
+
+function getGroupRole(session) {
+  return String(session.event?.sender?.role || session.event?.member?.role || '')
+}
+
+function isGroupAdmin(session) {
+  const role = getGroupRole(session)
+  return role === 'owner' || role === 'admin'
+}
+
 function getFileFingerprint(filePath) {
   try {
     const stat = require('fs').statSync(filePath)
@@ -149,6 +176,27 @@ function getFileFingerprint(filePath) {
 
 function uniqueStrings(values = []) {
   return [...new Set((Array.isArray(values) ? values : []).map(String).filter(Boolean))]
+}
+
+function readAdminUserIds() {
+  try {
+    const fsSync = require('fs')
+    const stat = fsSync.statSync(ADMIN_IDS_FILE)
+    if (!stat.isFile() || stat.size > MAX_ADMIN_IDS_BYTES) return new Set()
+    const parsed = JSON.parse(fsSync.readFileSync(ADMIN_IDS_FILE, 'utf8'))
+    const ids = Array.isArray(parsed) ? parsed : []
+    return new Set(uniqueStrings(ids.map(value => String(value || '').trim())))
+  } catch {
+    const fallback = String(process.env.DONGXUELIAN_DEFAULT_ADMIN_IDS || '')
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean)
+    return new Set(uniqueStrings(fallback))
+  }
+}
+
+function hasBotAdminPermission(session) {
+  return readAdminUserIds().has(getSenderUserId(session))
 }
 
 function loadDisabledGroups(force = false) {
@@ -170,6 +218,22 @@ function loadDisabledGroups(force = false) {
   return disabledGroupsCache
 }
 
+async function saveDisabledGroups(groups) {
+  const list = uniqueStrings([...groups]).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  try {
+    await fs.mkdir(path.dirname(DISABLED_GROUPS_FILE), { recursive: true })
+    const tmp = `${DISABLED_GROUPS_FILE}.tmp-${process.pid}-${Date.now()}`
+    await fs.writeFile(tmp, JSON.stringify({ groups: list }, null, 2), 'utf8')
+    await fs.rename(tmp, DISABLED_GROUPS_FILE)
+    disabledGroupsCache = {
+      fingerprint: getFileFingerprint(DISABLED_GROUPS_FILE),
+      groups: new Set(list),
+    }
+  } catch (error) {
+    throw createStoreAccessError(TEXT.blacklistSaveFailed, error)
+  }
+}
+
 function normalizeName(name = '') {
   return String(name).replace(/\s+/g, ' ').trim()
 }
@@ -189,6 +253,56 @@ function parseCommandPair(plain, command) {
   if (!value) return null
   const args = splitWords(value)
   return args.length >= 2 ? [args[0], args[1]] : null
+}
+
+function parseNicknameBlacklistCommand(content = '') {
+  const plain = stripMentions(content)
+  if (plain === CMD.nicknameBlacklistView) return { action: 'view' }
+
+  for (const [command, action] of [
+    [CMD.nicknameBlacklistAdd, 'add'],
+    [CMD.nicknameBlacklistDelete, 'delete'],
+  ]) {
+    const value = afterCommand(plain, command)
+    if (value === null) continue
+    const groupId = splitWords(value)[0] || ''
+    return { action, groupId }
+  }
+
+  return null
+}
+
+function canManageNicknameBlacklist(session, targetGroupId) {
+  if (hasBotAdminPermission(session)) return { ok: true }
+  if (!isGroupAdmin(session)) return { ok: false, message: TEXT.blacklistPermissionDenied }
+  const currentGroups = getGroupBlacklistCandidates(session)
+  if (!currentGroups.includes(String(targetGroupId))) {
+    return { ok: false, message: TEXT.blacklistCrossGroupDenied }
+  }
+  return { ok: true }
+}
+
+async function handleNicknameBlacklistCommand(session, command) {
+  const disabled = loadDisabledGroups()
+  if (command.action === 'view') {
+    const permission = hasBotAdminPermission(session) || isGroupAdmin(session)
+    if (!permission) return TEXT.blacklistPermissionDenied
+    const list = [...disabled.groups].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+    return list.length ? [TEXT.blacklistTitle, ...list].join('\n') : TEXT.blacklistEmpty
+  }
+
+  const groupId = String(command.groupId || '').trim()
+  if (!groupId) return TEXT.blacklistGroupRequired
+  if (!/^\d+$/.test(groupId)) return TEXT.blacklistInvalidGroup
+
+  const permission = canManageNicknameBlacklist(session, groupId)
+  if (!permission.ok) return permission.message
+
+  const groups = new Set(disabled.groups)
+  if (command.action === 'add') groups.add(groupId)
+  else groups.delete(groupId)
+  await saveDisabledGroups(groups)
+  return command.action === 'add' ? TEXT.blacklistAdded(groupId) : TEXT.blacklistDeleted(groupId)
 }
 
 async function ensureStore() {
@@ -830,10 +944,16 @@ exports.apply = (ctx) => {
   })
 
   ctx.middleware(async (session, next) => {
-    if (isBlacklistedGroup(session)) return next()
-
     try {
       const content = session.content || ''
+
+      const nicknameBlacklistCommand = parseNicknameBlacklistCommand(content)
+      if (nicknameBlacklistCommand) {
+        await safeSendText(ctx, session, await handleNicknameBlacklistCommand(session, nicknameBlacklistCommand))
+        return
+      }
+
+      if (isBlacklistedGroup(session)) return next()
 
       const bindAction = parseAliasBind(content)
       if (bindAction) {
@@ -878,8 +998,11 @@ exports.apply = (ctx) => {
 exports._test = {
   DATA_FILE,
   DISABLED_GROUPS_FILE,
+  ADMIN_IDS_FILE,
   pendingConfirms,
   trimPendingConfirms,
   loadDisabledGroups,
+  parseNicknameBlacklistCommand,
+  handleNicknameBlacklistCommand,
   safeSendText,
 }
