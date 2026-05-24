@@ -483,7 +483,7 @@ async function testConcurrentReportGuard() {
       _sent: firstSent,
       send: async msg => {
         firstSent.push(msg)
-        if (typeof msg === 'string' && msg.includes('正在生成')) return promptPending
+        if (msg === 'Thinking......') return promptPending
         return true
       },
     })
@@ -492,7 +492,7 @@ async function testConcurrentReportGuard() {
     const firstRun = middleware(firstSession, () => 'next-1')
     const secondRun = middleware(secondSession, () => 'next-2')
 
-    check('first report enters generation state', firstSent.some(item => String(item).includes('正在生成群聊详细日报')), JSON.stringify(firstSent))
+    check('first report enters generation state', firstSent.includes('Thinking......'), JSON.stringify(firstSent))
     check('second report is rejected while first is running', secondSession._sent.some(item => String(item).includes('正在生成中')), JSON.stringify(secondSession._sent))
     check('second report did not call collector', collectCalls === 1, String(collectCalls))
     check('second report did not call analyzer', analyzeCalls === 0, String(analyzeCalls))

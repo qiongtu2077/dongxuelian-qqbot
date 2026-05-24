@@ -149,8 +149,10 @@ async function run(t) {
         return Buffer.from('emotion-image-ok')
       },
     }
-    const structuredEmotion = await handler.handleCommand(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }), harness.ctx, state)
+    const structuredEmotionSession = makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' })
+    const structuredEmotion = await handler.handleCommand(structuredEmotionSession, harness.ctx, state)
     const emotionImage = String(structuredEmotion.response || '')
+    t.check('scenario today emotion sends thinking immediately', structuredEmotionSession.sent.includes('Thinking......'), JSON.stringify(structuredEmotionSession.sent))
     t.check('scenario today emotion returns image', emotionImage.includes('data:image/png;base64,ZW1vdGlvbi1pbWFnZS1vaw=='), emotionImage)
     t.check('scenario today emotion prompt caps display text', promptLimitSeen)
     t.check('scenario today emotion renders image once', imageRenderCalls === 1, String(imageRenderCalls))
@@ -183,8 +185,10 @@ async function run(t) {
         throw new Error('forced image failure')
       },
     }
-    const fallbackEmotion = await handler.handleCommand(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }), harness.ctx, fallbackState)
+    const fallbackEmotionSession = makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' })
+    const fallbackEmotion = await handler.handleCommand(fallbackEmotionSession, harness.ctx, fallbackState)
     const fallbackText = String(fallbackEmotion.response || '')
+    t.check('scenario today emotion fallback sends thinking immediately', fallbackEmotionSession.sent.includes('Thinking......'), JSON.stringify(fallbackEmotionSession.sent))
     t.check('scenario today emotion retries image twice', fallbackRenderCalls === 2, String(fallbackRenderCalls))
     t.check('scenario today emotion regenerates fallback text', fallbackPromptSeen && fallbackModelCalls === 3, JSON.stringify({ fallbackPromptSeen, fallbackModelCalls }))
     t.check('scenario today emotion fallback text capped at 500', fallbackText.length <= 500 && !fallbackText.includes('data:image/png'), JSON.stringify({ length: fallbackText.length, fallbackText }))

@@ -255,6 +255,8 @@ async function handleEmotionCommand(session, ctx, state) {
   if (cached && Date.now() - cached.ts < 300000) return handled(cached.response || cached.text)
   if (cached) lastEmotionCache.delete(channelKey)
 
+  await session.send('Thinking......')
+
   const emotionSummary = await summarizeEmotionMessages(msgs, callOpenAI)
   const allSummary = emotionSummary.text
 

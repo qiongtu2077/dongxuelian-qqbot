@@ -165,7 +165,7 @@ exports.apply = (ctx) => {
       inFlightReports.set(channelKey, Date.now())
 
       try {
-        const started = await safeSendDailyReport(ctx, session, `正在生成群聊${modeLabel}，请稍候...`, '生成中提示')
+        const started = await safeSendDailyReport(ctx, session, 'Thinking......', '生成中提示')
         if (!started) return
         let analysis = {}
         if (isFull) {
