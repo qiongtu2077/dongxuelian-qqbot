@@ -1111,7 +1111,25 @@ async function chat(session, userText, ctx, options = {}) {
     } else if (results.length > 0) {
       messages.push({ role: 'assistant', content: null, tool_calls: reply.tool_calls })
       for (const r of results) messages.push(r)
-      reply = await callOpenAI(messages, options.randomTriggered)
+      let loopCount = 0
+      const MAX_CHAT_TOOL_ROUNDS = 3
+      while (loopCount < MAX_CHAT_TOOL_ROUNDS) {
+        loopCount++
+        reply = await callOpenAI(messages, options.randomTriggered)
+        if (!reply || typeof reply !== 'object' || reply.type !== 'tool_calls') break
+        const nextToolContext = { ...toolContext }
+        const { results: nextResults, heavyTools: nextHeavy } = await handleChatToolCalls(reply.tool_calls, nextToolContext)
+        if (nextHeavy.length > 0) {
+          reply = reply.message?.content || ''
+          break
+        }
+        if (nextResults.length === 0) {
+          reply = reply.message?.content || ''
+          break
+        }
+        messages.push({ role: 'assistant', content: null, tool_calls: reply.tool_calls })
+        for (const r of nextResults) messages.push(r)
+      }
       if (reply && typeof reply === 'object' && reply.type === 'tool_calls') {
         reply = reply.message?.content || ''
       }

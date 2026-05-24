@@ -1334,11 +1334,11 @@ exports.apply = (ctx) => {
         const dumpPath = await dumpSessionEvent(session, analyzed, plain, memoryText)
         clearArmedEventDump(getChannelKey(session))
         ctx.logger('dongxuelian-ai').info(`captured raw session event: ${dumpPath}`)
-        await session.send(`已抓到原始事件：${dumpPath}`)
+        await session.send(`已抓到原始事件：${dumpPath}`).catch(() => {})
       } catch (error) {
         clearArmedEventDump(getChannelKey(session))
-        ctx.logger('dongxuelian-ai').warn(error)
-        await session.send('原始事件抓取失败。')
+        ctx.logger('dongxuelian-ai').warn(`event dump failed: ${error.message}`)
+        await session.send('原始事件抓取失败。').catch(() => {})
       }
     }
 
@@ -1445,7 +1445,6 @@ exports.apply = (ctx) => {
     const adminCommandMatched =
       /^(?:东雪莲)?测试(?:开|关)$/.test(plain) ||
       /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
-      /^东雪莲群聊AI概率(?:设置|重置)(?:\s|$)/.test(plain) ||
       /^东雪莲联网(?:开|关)$/.test(plain) ||
       /^东雪莲思考(?:开|关)$/.test(plain) ||
       /^解除上限群白名单/.test(plain) ||

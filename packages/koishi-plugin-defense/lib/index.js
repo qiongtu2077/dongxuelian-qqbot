@@ -215,7 +215,7 @@ exports.apply = (ctx) => {
   ctx.middleware(async (session, next) => {
     const response = detectDefenseReply(session)
     if (response) {
-      await session.send(response)
+      await session.send(response).catch(() => {})
       return
     }
     return next()

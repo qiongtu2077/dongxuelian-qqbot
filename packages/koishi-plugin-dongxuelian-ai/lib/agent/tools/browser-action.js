@@ -18,6 +18,7 @@ let actionQueue = Promise.resolve()
 let screenshotCounter = 0
 let networkLog = []
 let consoleLog = []
+let currentSessionOwner = ''
 const BROWSER_CLEANUP_HOOK = Symbol.for('dongxuelian.browser-action.cleanupHook')
 const BROWSER_CLEANUP_RESET = Symbol.for('dongxuelian.browser-action.cleanupReset')
 const BROWSER_CLEANUP_INSTALLED = Symbol.for('dongxuelian.browser-action.cleanupInstalled')
@@ -750,8 +751,20 @@ module.exports = {
       required: ['action'],
     },
   },
-  async execute(params = {}) {
+  async execute(params = {}, context = {}) {
     return runQueued(async () => {
+      const sessionKey = `${context.userId || ''}:${context.channelKey || ''}`
+      if (sessionKey && currentSessionOwner && currentSessionOwner !== sessionKey) {
+        if (page) {
+          await page.goto('about:blank').catch(() => {})
+          const ctx = page.context()
+          await ctx.clearCookies().catch(() => {})
+        }
+        currentUrl = ''
+        networkLog = []
+        consoleLog = []
+      }
+      if (sessionKey) currentSessionOwner = sessionKey
       const action = String(params.action || '').trim().toLowerCase()
       if (action === 'batch') return runBatch(params.steps)
       return executeSingleAction(params)

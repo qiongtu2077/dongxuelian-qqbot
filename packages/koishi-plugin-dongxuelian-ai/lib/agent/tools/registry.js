@@ -62,11 +62,16 @@ async function executeTool(toolName, params = {}, context = {}) {
   if (!tool) return { ok: false, text: `未知工具：${toolName}`, error: `未知工具：${toolName}` }
 
   let timeoutId = null
+  const abortController = new AbortController()
   try {
     const timeoutPromise = new Promise((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error('执行超时')), TOOL_TIMEOUT_MS)
+      timeoutId = setTimeout(() => {
+        abortController.abort()
+        reject(new Error('执行超时'))
+      }, TOOL_TIMEOUT_MS)
     })
-    const result = await Promise.race([tool.execute(params, context), timeoutPromise])
+    const enrichedContext = { ...context, signal: abortController.signal }
+    const result = await Promise.race([tool.execute(params, enrichedContext), timeoutPromise])
 
     if (result && typeof result === 'object' && !Array.isArray(result)) {
       const text = typeof result.text === 'string' ? result.text : JSON.stringify(result, null, 2)
@@ -79,6 +84,7 @@ async function executeTool(toolName, params = {}, context = {}) {
     return { ok: false, text: message, error: err.message }
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
+    abortController.abort()
   }
 }
 
