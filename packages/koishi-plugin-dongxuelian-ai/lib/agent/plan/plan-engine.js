@@ -62,14 +62,20 @@ async function updateTaskStatus({ planId, taskId, state, outcome = null, toolCal
   return store.savePlan(plan)
 }
 
-async function checkPlanStatus(planId) {
+async function checkPlanStatus(planId, { userId, channelKey, isAdmin } = {}) {
   if (planId) {
     const plan = await store.loadPlan(planId)
     if (!plan) throw new Error('计划不存在')
+    if (!isAdmin && userId && plan.userId !== userId && plan.channelKey !== channelKey) {
+      throw new Error('无权查看该计划')
+    }
     return plan
   }
   const active = await store.listActivePlans()
-  return { active, recent: await store.listPlans(20) }
+  const recent = await store.listPlans(20)
+  if (!userId && !channelKey) return { active, recent }
+  const visible = (plan) => isAdmin || plan.userId === userId || plan.channelKey === channelKey
+  return { active: active.filter(visible), recent: recent.filter(visible) }
 }
 
 async function finishPlan({ planId, summary = '' } = {}) {

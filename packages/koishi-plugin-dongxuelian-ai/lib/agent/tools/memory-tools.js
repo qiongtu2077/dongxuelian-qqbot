@@ -5,9 +5,17 @@
  * 状态: 无。
  */
 const memory = require('../memory')
+const { getAgentConfig } = require('../config')
 
 function getUserId(context = {}) {
   return String(context.userId || 'dashboard')
+}
+
+function checkMemoryAccess(context = {}) {
+  const cfg = getAgentConfig().memory || {}
+  if (cfg.enabled === false) return '记忆功能当前未开启。'
+  if (cfg.adminOnly && context.channel !== 'dashboard' && !context.isAdmin) return '记忆功能仅管理员可用。'
+  return null
 }
 
 const rememberMemoryTool = {
@@ -24,6 +32,8 @@ const rememberMemoryTool = {
     },
   },
   async execute(params = {}, context = {}) {
+    const denied = checkMemoryAccess(context)
+    if (denied) return denied
     const item = await memory.remember({ userId: getUserId(context), channelKey: context.channelKey, text: params.text, tags: params.tags })
     return `已记住：${item.id}`
   },
@@ -44,6 +54,8 @@ const searchMemoryTool = {
     },
   },
   async execute(params = {}, context = {}) {
+    const denied = checkMemoryAccess(context)
+    if (denied) return denied
     const channel = context.channel || 'qq'
     if (channel === 'dashboard') {
       const dashResult = await memory.searchDashboardMemory({ userId: getUserId(context), query: params.query })
@@ -68,6 +80,8 @@ const forgetMemoryTool = {
     },
   },
   async execute(params = {}, context = {}) {
+    const denied = checkMemoryAccess(context)
+    if (denied) return denied
     const removed = await memory.forgetMemory({ userId: getUserId(context), memoryId: params.memoryId })
     return removed ? `已删除记忆：${params.memoryId}` : '没有找到这条记忆。'
   },
@@ -85,6 +99,8 @@ const listMemoryTool = {
     },
   },
   async execute(params = {}, context = {}) {
+    const denied = checkMemoryAccess(context)
+    if (denied) return denied
     const items = await memory.listMemory({ userId: getUserId(context), limit: params.limit })
     return memory.formatMemoryItems(items)
   },

@@ -204,8 +204,8 @@ const defaultConfig = {
   readFileRoots: [],
   mcp: {
     enabled: false,
-    allowWriteWorkspace: true,
-    allowRunLocal: true,
+    allowWriteWorkspace: false,
+    allowRunLocal: false,
     exposeDangerousActions: false,
   },
 }
@@ -260,8 +260,8 @@ export default {
       config.readFileRoots = Array.isArray(merged.readFileRoots) ? merged.readFileRoots : []
       config.mcp = {
         enabled: !!merged.mcp?.enabled,
-        allowWriteWorkspace: merged.mcp?.allowWriteWorkspace !== false,
-        allowRunLocal: merged.mcp?.allowRunLocal !== false,
+        allowWriteWorkspace: !!merged.mcp?.allowWriteWorkspace,
+        allowRunLocal: !!merged.mcp?.allowRunLocal,
         exposeDangerousActions: !!merged.mcp?.exposeDangerousActions,
       }
       for (const channel of ['qq', 'dashboard']) {

@@ -32,7 +32,7 @@ const DEFAULT_CONFIG = Object.freeze({
         append_file: false,
         grep_search: false,
         execute_javascript: false,
-        send_file_to_user: true,
+        send_file_to_user: false,
         create_uploaded_file_variant: true,
         get_token_usage: true,
         set_user_timezone: false,
@@ -140,8 +140,8 @@ const DEFAULT_CONFIG = Object.freeze({
   },
   mcp: {
     enabled: false,
-    allowWriteWorkspace: true,
-    allowRunLocal: true,
+    allowWriteWorkspace: false,
+    allowRunLocal: false,
     exposeDangerousActions: false,
   },
 })

@@ -234,7 +234,7 @@ const createScheduledTaskTool = {
     },
   },
   execute: executeCreateScheduledTask,
-  dangerous: false,
+  dangerous: true,
   defaultChannels: ['qq', 'dashboard'],
 }
 

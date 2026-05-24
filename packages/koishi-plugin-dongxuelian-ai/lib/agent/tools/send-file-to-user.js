@@ -78,6 +78,6 @@ module.exports = {
     if (!result.ok) return `文件未发送：${result.message || 'OneBot 不可用'}。文件路径：${abs}`
     return `已发送文件：${abs}`
   },
-  dangerous: false,
-  defaultChannels: ['qq'],
+  dangerous: true,
+  defaultChannels: ['dashboard'],
 }

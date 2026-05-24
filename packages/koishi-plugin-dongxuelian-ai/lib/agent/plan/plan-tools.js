@@ -34,7 +34,7 @@ const createPlanTool = {
     })
     return toToolResult(plan)
   },
-  dangerous: false,
+  dangerous: true,
   defaultChannels: ['dashboard', 'qq'],
 }
 
@@ -70,8 +70,12 @@ const checkPlanStatusTool = {
       properties: { planId: { type: 'string' } },
     },
   },
-  async execute(params = {}) {
-    return toToolResult(await engine.checkPlanStatus(params.planId))
+  async execute(params = {}, context = {}) {
+    return toToolResult(await engine.checkPlanStatus(params.planId, {
+      userId: context.userId,
+      channelKey: context.channelKey,
+      isAdmin: context.channel === 'dashboard',
+    }))
   },
   dangerous: false,
   defaultChannels: ['dashboard', 'qq'],
@@ -102,7 +106,7 @@ const finishPlanTool = {
     }
     return toToolResult(plan)
   },
-  dangerous: false,
+  dangerous: true,
   defaultChannels: ['dashboard', 'qq'],
 }
 
@@ -122,7 +126,7 @@ const abandonPlanTool = {
   async execute(params = {}) {
     return toToolResult(await engine.abandonPlan(params))
   },
-  dangerous: false,
+  dangerous: true,
   defaultChannels: ['dashboard', 'qq'],
 }
 

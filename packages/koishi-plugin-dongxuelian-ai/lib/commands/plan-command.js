@@ -64,7 +64,9 @@ async function handlePlanCommand(session, ctx, state) {
   if (planStatusMatch) {
     try {
       const planEngine = require('../agent/plan/plan-engine')
-      return handled(planEngine.formatPlan(await planEngine.checkPlanStatus(planStatusMatch[1] || '')))
+      const isAdmin = hasAdminPermission(session)
+      const result = await planEngine.checkPlanStatus(planStatusMatch[1] || '', { userId: currentUserId, channelKey, isAdmin })
+      return handled(planEngine.formatPlan(result))
     } catch (err) {
       return handled(err.message || '计划查询失败。')
     }

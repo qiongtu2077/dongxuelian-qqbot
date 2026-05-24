@@ -24,7 +24,7 @@ const editFileTool = require('../agent/tools/edit-file')
 const analyzeFileTool = require('../agent/tools/analyze-file')
 const { getRecentFiles, getFileEntry } = require('../file-store')
 const { buildFileFollowupState, resolveUnguardedFileFollowup, buildFileEvidenceReply } = require('../file-followup-guard')
-const { getAgentPathAllowedRoots } = require('../agent/path-guard')
+const { getAgentPathAllowedRoots, getAgentPathDefaultRoots } = require('../agent/path-guard')
 
 const SERVER_NAME = 'dongxuelian-local-mcp'
 const SERVER_VERSION = '0.1.0'
@@ -129,7 +129,11 @@ function parseLocalCheckCommand(command = '') {
   if (nodeSyntax) {
     const target = nodeSyntax[1].trim().replace(/^["']|["']$/g, '')
     if (!target || /[;&|<>`]/.test(target)) throw new Error('node -c 目标文件不合法')
-    return ['node', ['-c', target]]
+    const resolved = path.resolve(WORKSPACE_ROOT, target)
+    const roots = getAgentPathDefaultRoots()
+    const inside = roots.some(root => resolved.startsWith(root + path.sep) || resolved === root)
+    if (!inside) throw new Error('node -c 目标文件必须位于允许根内，拒绝访问: ' + target)
+    return ['node', ['-c', resolved]]
   }
   throw new Error('只允许 check、quick、scenario、test 或 node -c <file>')
 }
