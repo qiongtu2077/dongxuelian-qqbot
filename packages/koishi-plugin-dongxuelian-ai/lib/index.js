@@ -1618,8 +1618,8 @@ exports.apply = (ctx) => {
         if (!inRandomWhitelist) return next()
         // 跳过 emoji/sticker/gif 表情包
         if (/Qzone|Emoji|Sticker|gif/i.test(content)) return next()
-        // 图片也按概率回复，不无条件回复
-        if (!randomTriggered && !shouldTriggerRandom(getRandomTriggerRate(channelKey))) return next()
+        // 图片/文件/嵌入消息只使用上方统一随机门控，不能在这里二次抽概率。
+        if (!randomTriggered) return next()
         if (!prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: true, includeQuote: false }) && !analyzed.hasUsableText) {
           return next()
         }

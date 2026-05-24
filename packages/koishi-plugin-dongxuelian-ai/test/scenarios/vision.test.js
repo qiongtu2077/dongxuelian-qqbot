@@ -142,6 +142,30 @@ async function run(t) {
     const disk = conversation.readConversationDisk(conversation.getConversationKey(session))
     t.check('scenario image placeholder writes disk snapshot too', disk && disk.messages.some(item => /\[图片\]: 图里是一张期末复习资料截图/.test(item.content || '')), JSON.stringify(disk))
   })
+
+  await withScenario({}, async ({ makeSession }) => {
+    const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
+    const sanitizer = require(path.join(AI_ROOT, 'lib', 'image-analysis-sanitizer.js'))
+    const session = makeSession({
+      guildId: 'group-image-sanitize',
+      userId: 'user-image-sanitize',
+      messageId: 'img-sanitize-first',
+      content: '[图片]',
+    })
+    await store.storeImageUrl('group-image-sanitize', 'img-sanitize-first', '', 'sanitize.jpg', {
+      conversationKey: 'group-image-sanitize::user-image-sanitize',
+      userId: session.userId,
+    })
+    const chatty = '呀吼～这广告牌好有意思！指挥官觉得这个广告怎么样？'
+    t.check('scenario image sanitizer rejects persona reply', sanitizer.sanitizeImageAnalysis(chatty) === '', sanitizer.sanitizeImageAnalysis(chatty))
+    const marked = await store.markAnalyzed('group-image-sanitize', 'img-sanitize-first', chatty)
+    const entry = await store.getImageEntry('group-image-sanitize', 'img-sanitize-first')
+    t.check('scenario image analysis keeps anchor when persona reply rejected', marked && entry && entry.analysis === null && entry.analyzed === false && entry.analysisStatus === 'unavailable', JSON.stringify(entry))
+    const objective = '图中是一辆三轮车，车尾挂着考试前紧张情绪释放的广告。'
+    await store.markAnalyzed('group-image-sanitize', 'img-sanitize-first', objective)
+    const objectiveEntry = await store.getImageEntry('group-image-sanitize', 'img-sanitize-first')
+    t.check('scenario image analysis stores objective summary', objectiveEntry && objectiveEntry.analyzed && objectiveEntry.analysis.includes('三轮车') && objectiveEntry.analysisKind === 'objective', JSON.stringify(objectiveEntry))
+  })
 }
 
 module.exports = { run }

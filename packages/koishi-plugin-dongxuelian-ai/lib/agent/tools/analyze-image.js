@@ -70,7 +70,9 @@ module.exports = {
 
     try {
       const result = await requestChatCompletions(messages, config, { max_tokens: 500, _timeoutMs: 15000 })
-      const analysis = typeof result === 'string' ? result : (result.content || '')
+      const rawAnalysis = typeof result === 'string' ? result : (result.content || '')
+      const { sanitizeImageAnalysis } = require('../../image-analysis-sanitizer')
+      const analysis = sanitizeImageAnalysis(rawAnalysis)
       if (!analysis) return '视觉模型未返回分析结果。'
       if (isVisionBlindnessReply(analysis)) {
         return `视觉模型未能解析图片（provider=${config.provider} model=${config.model}），请稍后再试或换一张图。`

@@ -7,7 +7,7 @@ const fs = require('fs')
 const path = require('path')
 const { h } = require('koishi')
 const { STICKER_DIR, THROTTLE_CONFIG_FILE } = require('./constants')
-const { getChannelKey, saveSharedChannelTurn } = require('./conversation')
+const { getChannelKey, getConversationKey, saveSharedChannelTurn } = require('./conversation')
 const { splitReplyForQQBubbles, sleep, getRandomDelayMs, readJsonFile } = require('./utils')
 const { logDebug } = require('./logging-config')
 
@@ -151,7 +151,7 @@ async function sendStickerImage(ctx, session, sticker) {
   const logger = ctx.logger('dongxuelian-ai')
   const image = typeof sticker === 'string' ? sticker : sticker?.image
   const file = typeof sticker === 'string' ? '' : sticker?.file
-  if (!image) return false
+  if (!image) return { ok: false }
 
   let internalError = null
   const bot = session.bot
@@ -161,14 +161,16 @@ async function sendStickerImage(ctx, session, sticker) {
   if (bot?.internal && userId) {
     try {
       const segArr = [{ type: 'image', data: { file: image } }]
+      let result = null
       if (isDirect) {
-        await bot.internal.sendPrivateMsg(userId, segArr)
+        result = await bot.internal.sendPrivateMsg(userId, segArr)
       } else {
         if (!session.guildId) throw new Error('missing guildId for group sticker send')
-        await bot.internal.sendGroupMsg(session.guildId, segArr)
+        result = await bot.internal.sendGroupMsg(session.guildId, segArr)
       }
+      const messageId = result && (result.message_id || result.messageId || result.id || result.data?.message_id)
       logger.info(`sticker sent via internal API${file ? `: ${file}` : ''}`)
-      return true
+      return { ok: true, messageId: messageId || '' }
     } catch (error) {
       internalError = error
       logger.warn(`sticker internal send failed${file ? ` (${file})` : ''}: ${error.message}`)
@@ -178,14 +180,39 @@ async function sendStickerImage(ctx, session, sticker) {
   }
 
   try {
-    await session.send(h.image(image))
+    const result = await session.send(h.image(image))
+    const messageId = result && (result.messageId || result.message_id || result.id)
     logger.info(`sticker sent via Koishi image fallback${file ? `: ${file}` : ''}`)
-    return true
+    return { ok: true, messageId: messageId || '' }
   } catch (error) {
     const internalMsg = internalError ? `; internal=${internalError.message}` : ''
     logger.error(`sticker fallback send failed${file ? ` (${file})` : ''}: ${error.message}${internalMsg}`)
-    return false
+    return { ok: false }
   }
+}
+
+function buildAssistantImageMessageId(session, sticker) {
+  const source = [session.messageId || '', sticker?.file || '', Date.now(), Math.random().toString(36).slice(2, 8)].join(':')
+  let hash = 0
+  for (let i = 0; i < source.length; i += 1) hash = ((hash << 5) - hash + source.charCodeAt(i)) | 0
+  return `assistant-image-${Date.now()}-${Math.abs(hash).toString(36)}`
+}
+
+async function recordAssistantImageAnchor(session, sticker = {}, sent = {}) {
+  if (!sticker.file) return
+  const channelKey = getChannelKey(session)
+  if (!channelKey) return
+  const messageId = String(sent.messageId || '') || buildAssistantImageMessageId(session, sticker)
+  saveSharedChannelTurn(session, '东雪莲', `[图片: bot发送的表情/图片 messageId:${messageId}]`, 'assistant', { messageId })
+  try {
+    const { storeAssistantImageAnchor } = require('./image-store')
+    await storeAssistantImageAnchor(channelKey, messageId, {
+      file: sticker.file,
+      conversationKey: getConversationKey(session),
+      userId: session.selfId || session.bot?.selfId || 'bot',
+      ts: Date.now(),
+    })
+  } catch {}
 }
 
 function resolveNow(options) {
@@ -306,10 +333,11 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
     }
 
     const sent = await sendStickerImage(ctx, session, sticker)
-    if (sent) {
+    if (sent && sent.ok) {
       const sentAt = nowMs()
       lastStickerSentAt.set(stickerChannelKey, sentAt)
       lastStickerFileSentAt.set(stickerFileKey, sentAt)
+      await recordAssistantImageAnchor(session, sticker, sent)
     }
   }
   logDebug(ctx, 'reply', `sent random=${isRandom} parts=${sentParts}`)

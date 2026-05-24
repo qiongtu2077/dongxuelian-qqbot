@@ -48,13 +48,19 @@ const {
 } = require('./conversation')
 const { getRecentAgentContextNote, clearAgentContextForUser } = require('./agent-chat-bridge') // Agent 工具摘要注入 + 话题切换清理
 const { redactAgentMaterial } = require('./agent-retell-guard') // Agent 材料脱敏（防工具结果泄漏密钥/外部指令）
-const { getChatToolDefinitions, handleChatToolCalls, getChatToolSystemHint } = require('./chat-tools') // 聊天内嵌工具（表情包/贴纸等）
+const { getChatToolDefinitions, handleChatToolCalls, getChatToolSystemHint, executeChatTool } = require('./chat-tools') // 聊天内嵌工具（表情包/贴纸等）
 const {
   buildFileFollowupState,
   toolCallsIncludeAnalyzeFile,
   toolResultsIncludeFileEvidence,
   resolveUnguardedFileFollowup,
 } = require('./file-followup-guard')
+const { parseReminderRequest, isReminderCapabilityRefusal } = require('./reminder-route')
+const {
+  parseUploadedFileVariantRequest,
+  isUploadedFileVariantCapabilityRefusal,
+  formatUploadedFileVariantFallback,
+} = require('./uploaded-file-action-route')
 const { buildActiveGroupSceneNote } = require('./group-scene-index') // 群聊当前现场窗口
 const { buildRandomModePrompt, parseRandomReplyDecision } = require('./random-reply-mode') // 随机回复内部 mode 协议
 const { externalToolsDenied, buildExternalToolPolicyHint } = require('./external-tool-policy')
@@ -138,6 +144,10 @@ const {
   formatPersonaProfileSelectionDiagnostic,
   buildPersonaProfileSourceDiagnostic,
   formatPersonaProfileSourceDiagnostic,
+  buildPersonaProfileShadowPreview,
+  appendPersonaProfileShadowLog,
+  formatPersonaProfileShadowLearningDiagnostic,
+  formatPersonaProfileShadowPromptPreviewDiagnostic,
 } = require('./persona-profile') // 证据化 profile 影子选择诊断（不注入 prompt）
 
 let skillsCache = []
@@ -839,6 +849,16 @@ async function chat(session, userText, ctx, options = {}) {
       })
       const diagnostic = buildPersonaProfileSelectionDiagnostic(profile, { selection, userId: currentUserId, channelKey })
       logDebug(ctx, 'persona-profile', formatPersonaProfileSelectionDiagnostic(diagnostic))
+      const shadowPreview = buildPersonaProfileShadowPreview({ ...profile, blocks: reinforcementShadow.blocks }, { selection, userId: currentUserId, channelKey, now: profileNow })
+      logDebug(ctx, 'persona-profile', formatPersonaProfileShadowLearningDiagnostic(shadowPreview))
+      logDebug(ctx, 'persona-profile', formatPersonaProfileShadowPromptPreviewDiagnostic(shadowPreview))
+      appendPersonaProfileShadowLog(shadowPreview)
+        .then(result => {
+          try { logDebug(ctx, 'persona-profile', `profile_shadow_jsonl written=true file=${path.basename(result.file)} candidates=${shadowPreview.candidates?.length || 0} mode=shadow_only prompt=unchanged`) } catch {}
+        })
+        .catch(error => {
+          try { logDebug(ctx, 'persona-profile', `profile_shadow_jsonl_failed reason=${String((error && error.message) || 'unknown').slice(0, 80)} mode=shadow_only prompt=unchanged`) } catch {}
+        })
     } catch (profileError) {
       try { logDebug(ctx, 'persona-profile', `profile_selection_failed reason=${String((profileError && profileError.message) || 'unknown').slice(0, 80)}`) } catch {}
     }
@@ -993,7 +1013,7 @@ async function chat(session, userText, ctx, options = {}) {
   if (hostileEvaluationMessage) messages.push(hostileEvaluationMessage)
 
   // Chat 轻量工具注入
-  const chatTools = getChatToolDefinitions({ userText: cleanInput })
+  const chatTools = getChatToolDefinitions({ userText: cleanInput, randomTriggered: options.randomTriggered })
   const fileFollowupState = await buildFileFollowupState(channelKey, cleanInput)
   messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { userText: cleanInput }) })
 
@@ -1033,9 +1053,19 @@ async function chat(session, userText, ctx, options = {}) {
   // 处理 tool_calls 响应
   let usedAnalyzeFileTool = false
   let hasFileToolEvidence = false
+  let usedReminderTool = false
+  let usedUploadedFileVariantTool = false
   if (reply && typeof reply === 'object' && reply.type === 'tool_calls') {
     usedAnalyzeFileTool = toolCallsIncludeAnalyzeFile(reply.tool_calls)
-    const toolContext = { userId: currentUserId, channelKey, randomTriggered: !!options.randomTriggered }
+    usedReminderTool = (reply.tool_calls || []).some(tc => tc?.function?.name === 'create_reminder')
+    usedUploadedFileVariantTool = (reply.tool_calls || []).some(tc => tc?.function?.name === 'create_uploaded_file_variant')
+    const toolContext = {
+      userId: currentUserId,
+      channelKey,
+      groupId: session.guildId || session.channelId || '',
+      isDirect: !!session.isDirect,
+      randomTriggered: !!options.randomTriggered,
+    }
     const { results, heavyTools } = await handleChatToolCalls(reply.tool_calls, toolContext)
     hasFileToolEvidence = toolResultsIncludeFileEvidence(results)
 
@@ -1075,11 +1105,97 @@ async function chat(session, userText, ctx, options = {}) {
     }
   }
 
+  if (!usedReminderTool && !options.randomTriggered && isReminderCapabilityRefusal(reply)) {
+    const reminderArgs = parseReminderRequest(cleanInput)
+    if (reminderArgs) {
+      const reminderResult = await executeChatTool({
+        function: {
+          name: 'create_reminder',
+          arguments: JSON.stringify(reminderArgs),
+        },
+      }, {
+        userId: currentUserId,
+        channelKey,
+        groupId: session.guildId || session.channelId || '',
+        isDirect: !!session.isDirect,
+        randomTriggered: false,
+      })
+      reply = String(reminderResult || '提醒已创建。')
+      usedReminderTool = true
+    }
+  }
+
+  if (!usedUploadedFileVariantTool && !options.randomTriggered && isUploadedFileVariantCapabilityRefusal(reply, cleanInput)) {
+    const variantArgs = parseUploadedFileVariantRequest(cleanInput)
+    if (variantArgs) {
+      messages.push({ role: 'assistant', content: typeof reply === 'string' ? reply : '' })
+      messages.push({
+        role: 'system',
+        content: [
+          '刚才你拒绝了一个本来可以由工具完成的近期上传文件操作。',
+          '如果用户是在要求基于当前会话最近上传的文件创建安全副本、改名或发回，请调用 create_uploaded_file_variant。',
+          '不要声称自己不能改文件或不能发文件；如果没有可处理的近期文件，工具会返回失败原因。',
+        ].join('\n'),
+      })
+      const retry = await callOpenAI(messages, options.randomTriggered, {}, chatTools)
+      if (retry && typeof retry === 'object' && retry.type === 'tool_calls') {
+        usedUploadedFileVariantTool = (retry.tool_calls || []).some(tc => tc?.function?.name === 'create_uploaded_file_variant')
+        const retryToolContext = {
+          userId: currentUserId,
+          channelKey,
+          groupId: session.guildId || session.channelId || '',
+          isDirect: !!session.isDirect,
+          randomTriggered: false,
+        }
+        const { results, heavyTools } = await handleChatToolCalls(retry.tool_calls, retryToolContext)
+        if (heavyTools.length > 0) {
+          reply = retry.message?.content || ''
+        } else if (results.length > 0) {
+          messages.push({ role: 'assistant', content: null, tool_calls: retry.tool_calls })
+          for (const r of results) messages.push(r)
+          reply = await callOpenAI(messages, options.randomTriggered)
+          if (reply && typeof reply === 'object' && reply.type === 'tool_calls') reply = reply.message?.content || ''
+        } else {
+          reply = retry.message?.content || ''
+        }
+      } else {
+        reply = retry
+      }
+
+      if (!usedUploadedFileVariantTool && isUploadedFileVariantCapabilityRefusal(reply, cleanInput)) {
+        try {
+          const variantResult = await executeChatTool({
+            function: {
+              name: 'create_uploaded_file_variant',
+              arguments: JSON.stringify(variantArgs),
+            },
+          }, {
+            userId: currentUserId,
+            channelKey,
+            groupId: session.guildId || session.channelId || '',
+            isDirect: !!session.isDirect,
+            randomTriggered: false,
+          })
+          reply = formatUploadedFileVariantFallback(variantResult)
+          usedUploadedFileVariantTool = true
+        } catch (error) {
+          reply = formatUploadedFileVariantFallback(error && error.message)
+        }
+      }
+    }
+  }
+
   const fileEvidence = await resolveUnguardedFileFollowup({
     ...fileFollowupState,
     usedAnalyzeFile: usedAnalyzeFileTool,
     hasFileEvidence: hasFileToolEvidence,
-  }, { userId: currentUserId, channelKey, randomTriggered: !!options.randomTriggered })
+  }, {
+    userId: currentUserId,
+    channelKey,
+    groupId: session.guildId || session.channelId || '',
+    isDirect: !!session.isDirect,
+    randomTriggered: !!options.randomTriggered,
+  })
   if (fileEvidence) {
     messages.push({ role: 'assistant', content: typeof reply === 'string' ? reply : '' })
     messages.push({ role: 'system', content: `【文件读取结果】\n${String(fileEvidence || '')}` })
@@ -1223,8 +1339,9 @@ async function chat(session, userText, ctx, options = {}) {
 
   if (hasBannedOutput(finalReply)) {
     ctx.logger('dongxuelian-ai').warn(`banned word persists after retry, forcing fallback. reply: ${finalReply}`)
-    if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : pickRepeatedFallbackReply(session)
-    else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(session)
+    if (options.randomTriggered) return ''
+    if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : (pickRepeatedFallbackReply(session) || '不接这句了。')
+    else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(session) || '不接这句了。'
     else {
       const personaFallback = await generatePersonaFallbackReply({
         session,
@@ -1240,8 +1357,9 @@ async function chat(session, userText, ctx, options = {}) {
     }
   } else if (shouldRetryRepeatedReply(session, stripStickerMarkersForGuard(finalReply))) {
     ctx.logger('dongxuelian-ai').warn(`reply is still repetitive after retry, forcing fallback. reply: ${finalReply}`)
-    if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : pickRepeatedFallbackReply(session)
-    else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(session)
+    if (options.randomTriggered) return ''
+    if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : (pickRepeatedFallbackReply(session) || '不接这句了。')
+    else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(session) || '不接这句了。'
     else {
       const personaFallback = await generatePersonaFallbackReply({
         session,
@@ -1266,11 +1384,6 @@ async function chat(session, userText, ctx, options = {}) {
   if (isSemanticProfile(finalReply)) {
     ctx.logger('dongxuelian-ai').warn(`semantic profile detected, blocked. reply: ${finalReply.slice(0, 60)}`)
     finalReply = '别问了，这个我不聊。'
-  }
-
-  if (wasVisionRequest && visionContext && channelKey && session.messageId && finalReply && !isVisionBlindnessReply(finalReply)) {
-    const { markAnalyzed } = require('./image-store')
-    await markAnalyzed(channelKey, session.messageId, finalReply.slice(0, 200))
   }
 
   saveConversationTurn(session, currentUserMessage, finalReply)

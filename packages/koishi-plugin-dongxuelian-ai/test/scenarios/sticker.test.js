@@ -1,5 +1,6 @@
 const { withScenario } = require('./_setup')
 const { mockFetch } = require('../fake/fetch')
+const { flushAsync } = require('../fake/koishi')
 const { checkInternalCall, checkNoInternalCall, checkSentIncludes } = require('../helpers/assert')
 
 const TEXT = {
@@ -45,6 +46,16 @@ async function triggerBotReply(makeSession, run, replyText, overrides = {}) {
   await run(session, { flushTicks: 120 })
   await session.waitForSend()
   return session
+}
+
+async function waitForSharedAnchor(conversation, channelKey) {
+  for (let i = 0; i < 40; i += 1) {
+    const shared = conversation.channelSharedCache.get(channelKey) || []
+    const anchor = shared.find(item => String(item.content || '').includes('bot发送的表情/图片'))
+    if (anchor) return { shared, anchor }
+    await flushAsync(2)
+  }
+  return { shared: conversation.channelSharedCache.get(channelKey) || [], anchor: null }
 }
 
 async function run(t) {
@@ -155,7 +166,7 @@ async function run(t) {
     await ready()
     const mocked = mockFetch([{ json: { choices: [{ message: { content: TEXT.funny } }] } }])
     await withFetch(mocked, async () => {
-      const session = await triggerBotReply(makeSession, run, TEXT.funny)
+      const session = await triggerBotReply(makeSession, run, TEXT.funny, { guildId: '10002', channelId: '10002' })
       await session.waitForInternalCall(call => call.method === 'sendGroupMsg')
       const result = resultFor(session, harness)
       checkSentIncludes(t, 'scenario second sticker file text sends', result, 'funny-one')
@@ -171,6 +182,24 @@ async function run(t) {
       const result = resultFor(session, harness)
       checkSentIncludes(t, 'scenario unknown sticker keeps current text behavior', result, '\u672a\u77e5')
       checkNoInternalCall(t, 'scenario unknown sticker does not send image', result, 'sendGroupMsg')
+    })
+  })
+
+  await withScenario({}, async ({ harness, makeSession, run, ready }) => {
+    await ready()
+    const mocked = mockFetch([{ json: { choices: [{ message: { content: TEXT.funny } }] } }])
+    await withFetch(mocked, async () => {
+      const session = await triggerBotReply(makeSession, run, TEXT.funny, { guildId: '10003', channelId: '10003', messageId: 'msg-sticker-anchor' })
+      await session.waitForInternalCall(call => call.method === 'sendGroupMsg')
+      const store = require('../../lib/image-store')
+      const conversation = require('../../lib/conversation')
+      const channelKey = conversation.getChannelKey(session)
+      const { shared, anchor } = await waitForSharedAnchor(conversation, channelKey)
+      t.check('scenario sticker sent by bot enters shared context anchor', !!anchor, JSON.stringify(shared))
+      const entry = anchor ? await store.getImageEntry(session.guildId, anchor.messageId) : null
+      t.check('scenario sticker sent by bot records image anchor', entry && entry.sentByBot && entry.sourceRole === 'assistant' && entry.file, JSON.stringify(entry))
+      const result = resultFor(session, harness)
+      checkInternalCall(t, 'scenario sticker anchor still sends image', result, 'sendGroupMsg')
     })
   })
 }

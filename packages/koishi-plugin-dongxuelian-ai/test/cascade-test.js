@@ -631,9 +631,11 @@ async function main() {
     agentToolGrepSearch: path.join(LIB, 'agent', 'tools', 'grep-search'),
     agentToolExecuteJavascript: path.join(LIB, 'agent', 'tools', 'execute-javascript'),
     agentToolSendFileToUser: path.join(LIB, 'agent', 'tools', 'send-file-to-user'),
+    agentToolCreateUploadedFileVariant: path.join(LIB, 'agent', 'tools', 'create-uploaded-file-variant'),
     agentToolGetTokenUsage: path.join(LIB, 'agent', 'tools', 'get-token-usage'),
     agentToolSetUserTimezone: path.join(LIB, 'agent', 'tools', 'set-user-timezone'),
     agentToolQueryLogs: path.join(LIB, 'agent', 'tools', 'query-logs'),
+    agentToolCreateReminder: path.join(LIB, 'agent', 'tools', 'create-reminder'),
     agentToolAnalyzeFile: path.join(LIB, 'agent', 'tools', 'analyze-file'),
     rareVoice: path.join(LIB, 'rare-voice'),
     index: path.join(LIB, 'index'),
@@ -643,6 +645,7 @@ async function main() {
     voiceAssets: path.join(LIB, 'voice-assets'),
     imageStore: path.join(LIB, 'image-store'),
     imageAnalyzer: path.join(LIB, 'image-analyzer'),
+    imageAnalysisSanitizer: path.join(LIB, 'image-analysis-sanitizer'),
     help: path.join(HELP, 'index'),
   }
   for (const [name, modulePath] of Object.entries(modPaths)) {
@@ -706,7 +709,11 @@ async function main() {
       'buildPersonaProfileSelectionDiagnostic', 'formatPersonaProfileSelectionDiagnostic',
       'buildPersonaProfileReinforceDiagnostic', 'formatPersonaProfileReinforceDiagnostic',
       'buildPersonaProfileBlocksFromLegacyData', 'buildPersonaProfileSourceDiagnostic',
-      'formatPersonaProfileSourceDiagnostic', 'safePersonaProfileFile',
+      'formatPersonaProfileSourceDiagnostic', 'getPersonaProfileShadowLogFile',
+      'buildPersonaProfileShadowPreview', 'buildPersonaProfileShadowLogEvent',
+      'appendPersonaProfileShadowLog',
+      'formatPersonaProfileShadowLearningDiagnostic', 'formatPersonaProfileShadowPromptPreviewDiagnostic',
+      'safePersonaProfileFile',
       'readLegacyPersonaProfileData', 'buildPersonaProfileBlocks',
       'summarizePersonaProfileBlocks', 'formatPersonaProfileSummary',
     ],
@@ -937,7 +944,7 @@ async function main() {
       'send', 'sendToAdmin', 'taskComplete', 'cronResult', 'getQuota', 'listPushLog',
     ],
     agentCron: [
-      'loadCrons', 'saveCrons', 'registerCron', 'unregisterCron', 'runCronNow', 'listCronHistory', 'startCronScheduler', 'stopCronScheduler', 'getNextRunAt', 'validateCronSchedule', 'parseCronField', 'cronMatches', 'appendHistory',
+      'loadCrons', 'saveCrons', 'registerCron', 'registerOnceTask', 'unregisterCron', 'runCronNow', 'listCronHistory', 'startCronScheduler', 'stopCronScheduler', 'getNextRunAt', 'validateCronSchedule', 'parseCronField', 'cronMatches', 'appendHistory',
     ],
     agentPlanStore: [
       'buildPlanId', 'safePlanId', 'normalizePlan', 'savePlan', 'loadPlan', 'listPlans', 'listActivePlans', 'getPlanStorageInfo',
@@ -997,9 +1004,11 @@ async function main() {
     agentToolGrepSearch: ['execute'],
     agentToolExecuteJavascript: ['execute'],
     agentToolSendFileToUser: ['execute'],
+    agentToolCreateUploadedFileVariant: ['execute', 'createVariant', 'resolveTargetFileName'],
     agentToolGetTokenUsage: ['execute'],
     agentToolSetUserTimezone: ['execute'],
     agentToolQueryLogs: ['execute'],
+    agentToolCreateReminder: ['execute', 'resolveRunAt'],
     agentToolAnalyzeFile: ['execute'],
     voice: [
       'extractVoicePayload', 'downloadVoiceFile', 'convertToWav', 'callModelAsr', 'transcribeVoice',
@@ -1023,11 +1032,15 @@ async function main() {
     ],
     imageStore: [
       'storeImageUrl', 'getImageEntry', 'getRecentImages', 'getRecentImagesCached', 'markAnalyzed',
+      'markAnalysisUnavailable', 'storeAssistantImageAnchor',
       'isAlreadyAnalyzed', 'getCachedAnalysis', 'replaceImagePlaceholder',
       'cacheImageFile', 'readCachedImage', 'enforceChannelCacheLimit',
     ],
     imageAnalyzer: [
       'enqueueAnalysis',
+    ],
+    imageAnalysisSanitizer: [
+      'sanitizeImageAnalysis', 'looksLikePersonaImageReply',
     ],
   }
   for (const [moduleName, names] of Object.entries(expectedExports)) {
@@ -1197,9 +1210,11 @@ async function main() {
     path.join(LIB, 'agent', 'tools', 'grep-search.js'),
     path.join(LIB, 'agent', 'tools', 'execute-javascript.js'),
     path.join(LIB, 'agent', 'tools', 'send-file-to-user.js'),
+    path.join(LIB, 'agent', 'tools', 'create-uploaded-file-variant.js'),
     path.join(LIB, 'agent', 'tools', 'get-token-usage.js'),
     path.join(LIB, 'agent', 'tools', 'set-user-timezone.js'),
     path.join(LIB, 'agent', 'tools', 'query-logs.js'),
+    path.join(LIB, 'agent', 'tools', 'create-reminder.js'),
     path.join(LIB, 'agent', 'tools', 'analyze-file.js'),
     path.join(LIB, 'rare-voice.js'),
     path.join(LIB, 'file-safety.js'),
@@ -1219,7 +1234,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'group-scene-index.js', 'random-reply-mode.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/analyze-file.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'group-scene-index.js', 'random-reply-mode.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -1572,6 +1587,8 @@ async function main() {
   check('agent qq exposes web_fetch for explicit URL reads', qqTools.includes('web_fetch') && qqTools.includes('web_fetch') === modules.agentConfig.isToolEnabled('qq', 'web_fetch'))
   check('agent dashboard web_fetch follows config', dashboardTools.includes('web_fetch') === modules.agentConfig.isToolEnabled('dashboard', 'web_fetch'))
   check('agent qq exposes read_agent_skill', qqTools.includes('read_agent_skill'))
+  check('agent qq exposes safe uploaded file variant tool', qqTools.includes('create_uploaded_file_variant'))
+  check('agent qq exposes one-shot reminder tool', qqTools.includes('create_reminder'))
   check('agent qq does not expose file read', !qqTools.includes('read_file'))
   check('agent qq does not expose file list', !qqTools.includes('list_files'))
   check('agent qq does not expose file search', !qqTools.includes('find_files'))
@@ -1590,6 +1607,7 @@ async function main() {
   check('agent dashboard exposes grep search', dashboardTools.includes('grep_search'))
   check('agent dashboard exposes token usage', dashboardTools.includes('get_token_usage'))
   check('agent dashboard exposes log query', dashboardTools.includes('query_logs'))
+  check('agent dashboard does not expose QQ uploaded file variant by default', !dashboardTools.includes('create_uploaded_file_variant'))
   check('agent safety blocks unknown tool', modules.agentSafety.check('missing_tool').allowed === false)
   check('agent safety treats shell as dangerous', modules.agentSafety.DANGEROUS_TOOLS && modules.agentSafety.DANGEROUS_TOOLS.has('execute_shell'))
   check('agent safety treats write_file as dangerous', modules.agentSafety.DANGEROUS_TOOLS && modules.agentSafety.DANGEROUS_TOOLS.has('write_file'))
@@ -2461,11 +2479,24 @@ async function main() {
   const recentLegacyMessage = legacyProfile.blocks.find(item => item.source === 'recent_user_message')
   const profileSummaryText = personaProfile.formatPersonaProfileSummary(legacyProfile)
   const profileSourceLine = personaProfile.formatPersonaProfileSourceDiagnostic(personaProfile.buildPersonaProfileSourceDiagnostic(legacyProfile))
+  const profileShadowSelection = personaProfile.selectPersonaProfileBlocksByEffectiveConfidence(legacyProfile.blocks, { now: profileNow, limit: 5, minEffectiveConfidence: 0.1, allowedStatuses: ['active', 'candidate'] })
+  const profileShadowPreview = personaProfile.buildPersonaProfileShadowPreview(legacyProfile, { selection: profileShadowSelection, userId: 'raw-user-10001', channelKey: 'guild::with:colon', now: profileNow })
+  const profileShadowLearningLine = personaProfile.formatPersonaProfileShadowLearningDiagnostic(profileShadowPreview)
+  const profileShadowPromptLine = personaProfile.formatPersonaProfileShadowPromptPreviewDiagnostic(profileShadowPreview)
+  const profileShadowEvent = personaProfile.buildPersonaProfileShadowLogEvent(profileShadowPreview)
+  const profileShadowEventText = JSON.stringify(profileShadowEvent)
+  const profileShadowTmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cascade-profile-shadow-'))
+  const profileShadowLogResult = await personaProfile.appendPersonaProfileShadowLog(profileShadowPreview, { rootDir: profileShadowTmp })
+  const profileShadowLogText = fs.readFileSync(profileShadowLogResult.file, 'utf8')
+  const profileShadowLoggedEvent = JSON.parse(profileShadowLogText.trim())
   check('persona profile bridges confirmed legacy memory as active evidence block', activeLegacyMemory && activeLegacyMemory.block === 'human' && activeLegacyMemory.status === 'active' && activeLegacyMemory.confidence > 0.7 && activeLegacyMemory.evidence[0].quoteHash && activeLegacyMemory.evidence[0].channelHash, JSON.stringify(legacyProfile))
   check('persona profile keeps unconfirmed legacy memory out of active facts', !legacyProfile.blocks.some(item => item.text.includes('皇帝')) && legacyProfile.diagnostics.some(item => item.code === 'legacy_memory_unconfirmed'), JSON.stringify(legacyProfile))
   check('persona profile converts recent messages to temporary candidate style blocks', recentLegacyMessage && recentLegacyMessage.block === 'working' && recentLegacyMessage.status === 'candidate' && recentLegacyMessage.expiresAt === profileNow + 7 * 24 * 60 * 60 * 1000 && recentLegacyMessage.evidence[0].messageIdHash, JSON.stringify(recentLegacyMessage))
   check('persona profile summary hashes user and channel identifiers', profileSummaryText.includes('user=') && profileSummaryText.includes('channel=') && !profileSummaryText.includes('raw-user-10001') && !profileSummaryText.includes('guild::with:colon'), profileSummaryText)
   check('persona profile source diagnostic counts recent messages without raw text', profileSourceLine.includes('profile_source') && profileSourceLine.includes('memory=2') && profileSourceLine.includes('confirmed=1') && profileSourceLine.includes('unconfirmed=1') && profileSourceLine.includes('messages=2') && profileSourceLine.includes('recentBlocks=1') && !profileSourceLine.includes('最近说话风格很短') && !profileSourceLine.includes('raw-user-10001'), profileSourceLine)
+  check('persona profile shadow preview records traits and prompt preview without raw evidence text', profileShadowLearningLine.includes('profile_shadow_learning') && profileShadowPromptLine.includes('profile_shadow_prompt_preview') && profileShadowPreview.promptPreview && profileShadowPreview.tokenEstimate > 0 && !profileShadowLearningLine.includes('最近说话风格很短') && !profileShadowPromptLine.includes('最近说话风格很短') && !profileShadowLearningLine.includes('raw-user-10001'), `${profileShadowLearningLine}\n${profileShadowPromptLine}`)
+  check('persona profile shadow event records candidate decisions without raw text', profileShadowEvent.type === 'profile_shadow_v2' && profileShadowEvent.candidates.length >= 1 && profileShadowEvent.selectedCandidates.length >= 1 && profileShadowEvent.promptPreview.text && profileShadowEvent.safety.rawText === false && !profileShadowEventText.includes('最近说话风格很短') && !profileShadowEventText.includes('raw-user-10001') && !profileShadowEventText.includes('guild::with:colon'), profileShadowEventText)
+  check('persona profile shadow JSONL writes to explicit diagnostics dir', path.basename(profileShadowLogResult.file).startsWith('profile-shadow-') && profileShadowLoggedEvent.type === 'profile_shadow_v2' && profileShadowLoggedEvent.mode === 'shadow_only' && profileShadowLoggedEvent.prompt === 'unchanged' && !profileShadowLogText.includes('最近说话风格很短'), profileShadowLogText)
   check('persona profile safe file path matches legacy conversation channel key sanitizing', personaProfile.safePersonaProfileFile('user/with space', 'guild::with:colon', path.join('root', 'profiles')).replace(/\\/g, '/').endsWith('root/profiles/guild__with_colon/user_with_space.json'))
   const reinforceExisting = personaProfile.buildPersonaProfileBlock({
     block: 'human',
@@ -3111,6 +3142,7 @@ async function main() {
     'packages/*/data/*key*',
     'packages/*/data/user-profiles/',
     'packages/*/data/conversations/',
+    'packages/*/data/persona-diagnostics/',
     'packages/*/data/*cache*',
     'packages/*/data/*dump*',
     'packages/*/data/ai-persona-users.json',
@@ -3123,6 +3155,8 @@ async function main() {
   else check('git ignores package key text file', ignoredKey)
   const ignoredProfile = gitCheckIgnored('packages/koishi-plugin-dongxuelian-ai/data/user-profiles/group/user.json')
   if (ignoredProfile !== null) check('git ignores package user profiles', ignoredProfile)
+  const ignoredPersonaDiagnostics = gitCheckIgnored('packages/koishi-plugin-dongxuelian-ai/data/persona-diagnostics/profile-shadow-2026-05-24.jsonl')
+  if (ignoredPersonaDiagnostics !== null) check('git ignores persona profile shadow diagnostics', ignoredPersonaDiagnostics)
   const ignoredSkill = gitCheckIgnored('packages/koishi-plugin-dongxuelian-ai/data/ai-skills/core/SKILL.persona-core.md')
   if (ignoredSkill !== null) check('git does not ignore ai-skills resources', !ignoredSkill)
 
@@ -3375,7 +3409,7 @@ async function main() {
   const profileShadowEnd = chatSrc.indexOf('const historyBackgroundMessage = createChatPromptHistoryBackgroundMessage', profileShadowIndex)
   const profileShadowBlock = chatSrc.slice(profileShadowIndex, profileShadowEnd > profileShadowIndex ? profileShadowEnd : profileShadowIndex + 1600)
   check('chat.js persona profile shadow diagnostic is debug-gated after memory summary', profileShadowIndex > memoryMessageIndex && profileShadowBlock.includes('buildPersonaProfileSelectionDiagnostic'), `profile=${profileShadowIndex} memory=${memoryMessageIndex}`)
-  check('chat.js persona profile shadow logs only through persona-profile debug channel', profileShadowBlock.includes("logDebug(ctx, 'persona-profile'") && profileShadowBlock.includes('formatPersonaProfileSourceDiagnostic') && profileShadowBlock.includes('formatPersonaProfileReinforcementShadowDiagnostic(reinforcementShadow)') && profileShadowBlock.includes('formatPersonaProfileSelectionDiagnostic(diagnostic)'), profileShadowBlock.slice(0, 300))
+  check('chat.js persona profile shadow logs and JSONL writer stay inside persona-profile debug gate', profileShadowBlock.includes("logDebug(ctx, 'persona-profile'") && profileShadowBlock.includes('formatPersonaProfileSourceDiagnostic') && profileShadowBlock.includes('formatPersonaProfileReinforcementShadowDiagnostic(reinforcementShadow)') && profileShadowBlock.includes('formatPersonaProfileSelectionDiagnostic(diagnostic)') && profileShadowBlock.includes('formatPersonaProfileShadowLearningDiagnostic(shadowPreview)') && profileShadowBlock.includes('formatPersonaProfileShadowPromptPreviewDiagnostic(shadowPreview)') && profileShadowBlock.includes('appendPersonaProfileShadowLog(shadowPreview)') && profileShadowBlock.includes('profile_shadow_jsonl'), profileShadowBlock.slice(0, 300))
   check('chat.js persona profile shadow observes recent-message candidates without prompt injection', profileShadowBlock.includes('includeRecentMessages: true') && profileShadowBlock.includes("allowedStatuses: ['active', 'candidate']"), profileShadowBlock)
   check('chat.js persona profile shadow does not inject prompt messages in phase 5.5', !/messages\.(?:push|splice|unshift)/.test(profileShadowBlock), profileShadowBlock)
   check('dashboard hashes large files with bounded chunks', dashboardStandaloneSrc.includes('HASH_CHUNK_BYTES') && dashboardStandaloneSrc.includes('fs.readSync') && !dashboardStandaloneSrc.includes("crypto.createHash('sha256').update(fs.readFileSync(filePath))"))

@@ -61,7 +61,7 @@ async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
           timeline: session.timeline,
           logs: harness.logs,
         }
-        await assertions(result, mocked, session, mocked.calls.slice(beforeCalls))
+        await assertions(result, mocked, session, mocked.calls.slice(beforeCalls), data)
       } finally {
         Math.random = originalRandom
       }
@@ -553,6 +553,19 @@ async function run(t) {
       delete webSearch.__scenarioOriginalExecute
     }
   } catch {}
+
+  await runChatCase(t, 'reminder refusal fallback creates once cron', [
+    { json: { choices: [{ message: { content: '十分钟后提醒起床这件事，我真的做不到哦，我不是能设闹钟的助手。' } }] } },
+  ], async (result, mocked, session, calls, data) => {
+    checkSentIncludes(t, 'scenario reminder refusal fallback sends created reply', result, '已创建提醒')
+    const cronData = data.readJson('agent-crons.json')
+    const once = (cronData.crons || []).find(item => item.mode === 'once')
+    t.check('scenario reminder refusal fallback creates once cron', once && once.prompt.includes('起床') && once.targetChannel === '10001', JSON.stringify(cronData))
+    t.check('scenario reminder refusal fallback did not need model tool call', calls.length === 1 && !(calls[0]?.requestBody?.messages || []).some(item => item.role === 'tool'), JSON.stringify(calls[0]?.requestBody?.messages || []))
+  }, {
+    input: '说错了，十分钟后提醒我起床',
+    waitFor: message => String(message).includes('已创建提醒'),
+  })
 
   await runChatCase(t, 'reasoning-only fallback', [
     { json: { choices: [{ message: { content: '', reasoning_content: 'reasoning-secret' } }] } },

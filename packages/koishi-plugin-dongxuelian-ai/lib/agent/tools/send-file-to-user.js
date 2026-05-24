@@ -53,21 +53,28 @@ module.exports = {
       required: ['path'],
     },
   },
-  async execute(params = {}) {
+  async execute(params = {}, context = {}) {
     const filePath = String(params.path || '').trim()
     if (!filePath) throw new Error('路径不能为空')
     const { abs } = await assertExistingAgentPathInsideRoots(filePath, '文件')
     const stat = await fs.stat(abs)
     if (!stat.isFile()) throw new Error(`不是文件：${filePath}`)
     if (stat.size > MAX_SEND_FILE_BYTES) throw new Error(`文件过大，拒绝通过 QQ 发送：${stat.size} bytes`)
-    const groupId = String(params.groupId || '').trim()
-    const userId = String(params.userId || '').trim()
+    const contextGroupId = context.channelKey && !/^private(?::|$)/.test(String(context.channelKey))
+      ? String(context.channelKey).split(':')[0]
+      : ''
+    const contextUserId = /^private:/.test(String(context.channelKey || ''))
+      ? String(context.channelKey).slice('private:'.length)
+      : String(context.userId || '')
+    const groupId = String(params.groupId || context.groupId || contextGroupId || '').trim()
+    const userId = String(params.userId || context.userId || contextUserId || '').trim()
     const name = String(params.name || '').trim() || undefined
     if (!groupId && !userId) return `文件可发送：${abs}。但缺少 groupId/userId，无法确定发送目标。`
     if (groupId && !/^\d+$/.test(groupId)) return 'groupId 必须为纯数字。'
     if (!groupId && userId && !/^\d+$/.test(userId)) return 'userId 必须为纯数字。'
     const action = groupId ? 'upload_group_file' : 'upload_private_file'
-    const result = await callOneBot(action, groupId ? { group_id: Number(groupId), file: abs, name } : { user_id: Number(userId), file: abs, name })
+    const caller = typeof context.callOneBot === 'function' ? context.callOneBot : callOneBot
+    const result = await caller(action, groupId ? { group_id: Number(groupId), file: abs, name } : { user_id: Number(userId), file: abs, name })
     if (!result.ok) return `文件未发送：${result.message || 'OneBot 不可用'}。文件路径：${abs}`
     return `已发送文件：${abs}`
   },

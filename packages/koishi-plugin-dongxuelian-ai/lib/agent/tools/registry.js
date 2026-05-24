@@ -20,9 +20,11 @@ const appendFileTool = require('./append-file')
 const grepSearchTool = require('./grep-search')
 const executeJavascriptTool = require('./execute-javascript')
 const sendFileToUserTool = require('./send-file-to-user')
+const createUploadedFileVariantTool = require('./create-uploaded-file-variant')
 const getTokenUsageTool = require('./get-token-usage')
 const setUserTimezoneTool = require('./set-user-timezone')
 const queryLogsTool = require('./query-logs')
+const createReminderTool = require('./create-reminder')
 const readImageUrlsTool = require('./read-image-urls')
 const analyzeImageTool = require('./analyze-image')
 const analyzeFileTool = require('./analyze-file')
@@ -30,7 +32,7 @@ const planTools = require('../plan/plan-tools')
 const memoryTools = require('./memory-tools')
 const { getAgentConfig } = require('../config')
 
-const tools = [getTimeTool, calculatorTool, webSearchTool, webFetchTool, readAgentSkillTool, readFileTool, listFilesTool, findFilesTool, writeFileTool, editFileTool, shellTool, browserActionTool, appendFileTool, grepSearchTool, executeJavascriptTool, sendFileToUserTool, getTokenUsageTool, setUserTimezoneTool, queryLogsTool, readImageUrlsTool, analyzeImageTool, analyzeFileTool, ...planTools.tools, ...memoryTools.tools]
+const tools = [getTimeTool, calculatorTool, webSearchTool, webFetchTool, readAgentSkillTool, readFileTool, listFilesTool, findFilesTool, writeFileTool, editFileTool, shellTool, browserActionTool, appendFileTool, grepSearchTool, executeJavascriptTool, sendFileToUserTool, createUploadedFileVariantTool, getTokenUsageTool, setUserTimezoneTool, queryLogsTool, createReminderTool, readImageUrlsTool, analyzeImageTool, analyzeFileTool, ...planTools.tools, ...memoryTools.tools]
 
 const TOOL_TIMEOUT_MS = 90000
 
@@ -92,8 +94,8 @@ function getToolSummaries(channel = '') {
       name,
       description: tool.definition.description || '',
       dangerous: !!tool.dangerous,
-      readOnly: !tool.dangerous && !/write|edit|append|shell|javascript|browser|cookie|memory|plan/i.test(name),
-      write: /write|edit|append|shell|javascript|remember|forget|create_plan|update_task_status|finish_plan|abandon_plan/i.test(name),
+      readOnly: !tool.dangerous && !/write|edit|append|shell|javascript|browser|cookie|memory|plan|create_uploaded_file_variant/i.test(name),
+      write: /write|edit|append|shell|javascript|remember|forget|create_plan|create_reminder|create_uploaded_file_variant|update_task_status|finish_plan|abandon_plan/i.test(name),
       external: name === 'web_search' || name === 'web_fetch' || name === 'browser_action',
       defaultChannels,
       channels,

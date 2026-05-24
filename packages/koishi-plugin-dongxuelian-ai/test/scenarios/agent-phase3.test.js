@@ -175,6 +175,10 @@ async function run(t) {
       push.send({ channelKey: 'g2', text: 'second', bot: concurrentBot, reason: 'scenario_concurrent' }),
     ])
     t.check('push concurrent sends respect quota', concurrent.filter(item => item.ok).length === 1 && concurrentSent.length === 1, JSON.stringify({ concurrent, concurrentSent }))
+    const internalCalls = []
+    const internalBot = { internal: { async sendGroupMsg(groupId, message) { internalCalls.push({ groupId, message }) } } }
+    t.check('push can send via onebot group internal', (await push.send({ channelKey: '10001', text: 'internal hello', bot: internalBot, reason: 'scenario_internal', bypassEnabled: true })).ok)
+    t.check('push onebot group internal uses text segment', internalCalls.some(call => String(call.groupId) === '10001' && JSON.stringify(call.message).includes('internal hello')), JSON.stringify(internalCalls))
 
     config.cron.enabled = true
     await agentConfig.saveAgentConfig(config)
@@ -185,6 +189,23 @@ async function run(t) {
     t.check('cron computes next run', registered.nextRunAt > Date.now())
     const restored = await cron.startCronScheduler({ bot })
     t.check('cron scheduler restores persisted task', restored >= 1)
+    cron.stopCronScheduler()
+
+    config.cron.enabled = false
+    config.cron.onceEnabled = true
+    config.push.enabled = false
+    config.push.dailyLimit = 0
+    await agentConfig.saveAgentConfig(config)
+    const onceSent = []
+    const onceBot = { async sendMessage(channelKey, text) { onceSent.push({ channelKey, text }) } }
+    await cron.startCronScheduler({ bot: onceBot })
+    const once = await cron.registerOnceTask({ id: 'scenario_once', type: 'text', prompt: '提醒：起床', targetChannel: 'g-remind', runAt: Date.now() + 2000, createdBy: 'u1' })
+    t.checkEqual('cron once registers through existing cron file', once.mode, 'once')
+    const onceRun = await cron.runCronNow('scenario_once')
+    t.check('cron once bypasses disabled push and zero quota', onceRun.ok && onceSent.some(item => item.channelKey === 'g-remind' && item.text.includes('起床')), JSON.stringify({ onceRun, onceSent }))
+    const onceData = await cron.loadCrons()
+    const onceSaved = onceData.crons.find(item => item.id === 'scenario_once')
+    t.check('cron once marks task done without reschedule', onceSaved && onceSaved.enabled === false && onceSaved.status === 'done', JSON.stringify(onceSaved))
     cron.stopCronScheduler()
 
     const memory = require('../../lib/agent/memory')

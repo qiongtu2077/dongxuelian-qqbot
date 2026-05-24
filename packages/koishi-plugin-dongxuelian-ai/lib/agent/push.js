@@ -61,7 +61,7 @@ async function countLoggedQuota(channelKey, now = Date.now()) {
     for (const line of lines) {
       let entry = null
       try { entry = JSON.parse(line) } catch {}
-      if (!entry || !entry.ok || String(entry.channelKey || '') !== target) continue
+      if (!entry || !entry.ok || entry.bypassEnabled || String(entry.channelKey || '') !== target) continue
       if (todayKey(Number(entry.at || 0)) === day) count++
     }
     return count
@@ -113,7 +113,22 @@ async function getQuota(channelKey, now = Date.now()) {
   return { key, used, limit, remaining: Math.max(0, limit - used) }
 }
 
-async function send({ channelKey, text, bot, personalize = true, reason = 'manual' } = {}) {
+async function sendBotMessage(bot, target, content) {
+  if (!bot) throw new Error('bot sendMessage 不可用')
+  if (typeof bot.sendMessage === 'function') return bot.sendMessage(target, content)
+  if (/^private:/.test(target)) {
+    const userId = target.slice('private:'.length)
+    if (typeof bot.sendPrivateMessage === 'function') return bot.sendPrivateMessage(userId, content)
+    if (bot.internal && typeof bot.internal.sendPrivateMsg === 'function') {
+      return bot.internal.sendPrivateMsg(userId, [{ type: 'text', data: { text: content } }])
+    }
+  } else if (bot.internal && typeof bot.internal.sendGroupMsg === 'function') {
+    return bot.internal.sendGroupMsg(target, [{ type: 'text', data: { text: content } }])
+  }
+  throw new Error('bot sendMessage 不可用')
+}
+
+async function send({ channelKey, text, bot, personalize = true, reason = 'manual', bypassEnabled = false } = {}) {
   const config = getAgentConfig()
   const target = String(channelKey || '').trim()
   const content = String(text || '').trim()
@@ -123,10 +138,11 @@ async function send({ channelKey, text, bot, personalize = true, reason = 'manua
     reason: String(reason || 'manual').slice(0, 80),
     length: content.length,
     preview: truncateText(content, 300),
+    bypassEnabled: !!bypassEnabled,
     ok: false,
     error: '',
   }
-  if (!config.push?.enabled) {
+  if (!bypassEnabled && !config.push?.enabled) {
     logEntry.error = 'push disabled'
     await appendLog(logEntry)
     return { ok: false, message: 'Agent 主动推送未开启。' }
@@ -138,20 +154,14 @@ async function send({ channelKey, text, bot, personalize = true, reason = 'manua
   }
   return enqueueQuotaOperation(quotaKey(target), async () => {
     const quota = await getQuota(target)
-    if (quota.limit <= 0 || quota.used >= quota.limit) {
+    if (!bypassEnabled && (quota.limit <= 0 || quota.used >= quota.limit)) {
       logEntry.error = 'quota exceeded'
       await appendLog(logEntry)
       return { ok: false, message: '今日 Agent 主动推送额度已用完。', quota }
     }
     try {
-      if (bot && typeof bot.sendMessage === 'function') {
-        await bot.sendMessage(target, content)
-      } else if (bot && typeof bot.sendPrivateMessage === 'function' && /^private:/.test(target)) {
-        await bot.sendPrivateMessage(target.slice('private:'.length), content)
-      } else {
-        throw new Error('bot sendMessage 不可用')
-      }
-      quotaCache.set(quota.key, quota.used + 1)
+      await sendBotMessage(bot, target, content)
+      if (!bypassEnabled) quotaCache.set(quota.key, quota.used + 1)
       logEntry.ok = true
       await appendLog(logEntry)
       return { ok: true, quota: await getQuota(target), personalized: !!personalize }
@@ -190,8 +200,8 @@ async function taskComplete({ planId, channelKey, summary, bot } = {}) {
   return send({ channelKey, text: buildTaskCompleteText(planId, summary), bot, reason: 'plan_complete' })
 }
 
-async function cronResult({ cronId, channelKey, text, bot } = {}) {
-  return send({ channelKey, text: String(text || `定时任务 ${cronId} 已执行。`), bot, reason: 'cron_result' })
+async function cronResult({ cronId, channelKey, text, bot, bypassEnabled = false } = {}) {
+  return send({ channelKey, text: String(text || `定时任务 ${cronId} 已执行。`), bot, reason: 'cron_result', bypassEnabled })
 }
 
 function listPushLog(limit = 50) {
@@ -214,6 +224,7 @@ function listPushLog(limit = 50) {
 
 module.exports = {
   PUSH_LOG_FILE,
+  sendBotMessage,
   send,
   sendToAdmin,
   taskComplete,

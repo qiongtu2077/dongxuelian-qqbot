@@ -33,9 +33,11 @@ const DEFAULT_CONFIG = Object.freeze({
         grep_search: false,
         execute_javascript: false,
         send_file_to_user: true,
+        create_uploaded_file_variant: true,
         get_token_usage: true,
         set_user_timezone: false,
         query_logs: false,
+        create_reminder: true,
         create_plan: true,
         update_task_status: true,
         check_plan_status: true,
@@ -67,9 +69,11 @@ const DEFAULT_CONFIG = Object.freeze({
         grep_search: true,
         execute_javascript: true,
         send_file_to_user: false,
+        create_uploaded_file_variant: false,
         get_token_usage: true,
         set_user_timezone: true,
         query_logs: true,
+        create_reminder: true,
         create_plan: true,
         update_task_status: true,
         check_plan_status: true,
@@ -110,6 +114,7 @@ const DEFAULT_CONFIG = Object.freeze({
   },
   cron: {
     enabled: false,
+    onceEnabled: true,
   },
   memory: {
     enabled: true,
@@ -174,7 +179,10 @@ function normalizeConfig(raw = {}) {
   const queue = normalizeQueueConfig(source.queue, defaults.queue)
   const planMode = normalizePlanModeConfig(source.planMode, defaults.planMode)
   const push = normalizePushConfig(source.push, defaults.push)
-  const cron = { enabled: source.cron?.enabled === undefined ? defaults.cron.enabled : !!source.cron.enabled }
+  const cron = {
+    enabled: source.cron?.enabled === undefined ? defaults.cron.enabled : !!source.cron.enabled,
+    onceEnabled: source.cron?.onceEnabled === undefined ? defaults.cron.onceEnabled : !!source.cron.onceEnabled,
+  }
   const memory = {
     enabled: source.memory?.enabled === undefined ? defaults.memory.enabled : !!source.memory.enabled,
     adminOnly: source.memory?.adminOnly === undefined ? defaults.memory.adminOnly : !!source.memory.adminOnly,

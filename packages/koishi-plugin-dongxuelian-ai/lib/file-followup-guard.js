@@ -15,7 +15,7 @@ function looksLikeFileFollowup(userText = '', recentFiles = []) {
   if (!text || !Array.isArray(recentFiles) || !recentFiles.some(file => file && !file.skipped)) return false
   const hasFileWord = /文件|文档|附件/.test(text)
   const hasReference = hasFileWord || /这个|那个|刚才|刚刚|上面|前面|里面|内容/.test(text)
-  const asksContent = /说了什么|写了什么|是什么|有啥|有什么|内容|里面|解析|总结|读|看/.test(text)
+  const asksContent = /说了什么|写了什么|是什么|有啥|有什么|内容|里面|解析|总结|读|看|看一下|瞅瞅/.test(text)
   return hasReference && asksContent
 }
 

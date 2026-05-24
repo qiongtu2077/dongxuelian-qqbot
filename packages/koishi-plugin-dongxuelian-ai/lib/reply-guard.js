@@ -60,7 +60,7 @@ function pickRepeatedFallbackReply(session) {
       return candidate
     }
   }
-  return REPEATED_FALLBACK_REPLIES[0]
+  return ''
 }
 
 function isConsecutiveUserRepeat(session, userText = '') {

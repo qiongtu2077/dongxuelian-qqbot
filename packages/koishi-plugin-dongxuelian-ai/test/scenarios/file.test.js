@@ -310,6 +310,156 @@ async function run(t) {
       t.check('scenario read_group_context returns old file scene as tool result', toolMessages.some(item => String(item.content || '').includes('voice.zip') && String(item.content || '').includes('卡死')), JSON.stringify(toolMessages))
     })
   })
+
+  await withScenario({}, async ({ makeSession, run, data }) => {
+    const sourcePath = data.pathFor('uploaded-files', 'amis-public.txt')
+    await fs.promises.mkdir(path.dirname(sourcePath), { recursive: true })
+    await fs.promises.writeFile(sourcePath, '爱弥斯文件正文', 'utf8')
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-file-variant', type: 'function', function: { name: 'create_uploaded_file_variant', arguments: '{"name":"1","sendBack":true}' } }] } }] } },
+      { json: { choices: [{ message: { content: '已经改名发回去了。' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+      const groupSession = makeSession({
+        content: atBot(makeSession(), '把刚刚这个文件标题重命名为1然后发给我'),
+        messageId: 'file-variant-ask',
+      })
+      await store.storeFile(groupSession.guildId, 'file-variant-source', {
+        fileName: '3.3版本-爱弥斯-公用.txt',
+        fileSize: 24,
+        mimeType: 'text/plain',
+        ext: 'txt',
+        url: '',
+        fileId: 'file-variant-token',
+        conversationKey: groupSession.guildId,
+        userId: groupSession.userId,
+        skipped: false,
+      })
+      await store.setLocalPath(groupSession.guildId, 'file-variant-source', sourcePath)
+      const chatTools = require(path.join(AI_ROOT, 'lib', 'chat-tools.js'))
+      t.check('scenario uploaded file variant exposes chat tool for rename intent', chatTools.getChatToolDefinitions({ userText: '把刚刚这个文件标题重命名为1然后发给我' }).some(item => item.function?.name === 'create_uploaded_file_variant'))
+      t.check('scenario uploaded file variant exposes chat tool without file-word heuristic', chatTools.getChatToolDefinitions({ userText: '把刚才那个 PDF 另存成 1 发回来' }).some(item => item.function?.name === 'create_uploaded_file_variant'))
+      t.check('scenario uploaded file variant stays hidden for random replies', !chatTools.getChatToolDefinitions({ userText: '把刚才那个 PDF 另存成 1 发回来', randomTriggered: true }).some(item => item.function?.name === 'create_uploaded_file_variant'))
+      const sendFileTool = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'send-file-to-user.js'))
+      const originalExecute = sendFileTool.execute
+      const uploadCalls = []
+      sendFileTool.execute = async (params, context = {}) => originalExecute(params, {
+        ...context,
+        callOneBot: async (action, callParams) => {
+          uploadCalls.push({ action, params: callParams })
+          return { ok: true }
+        },
+      })
+      try {
+        const result = await run(groupSession, { flushTicks: 160 })
+        await groupSession.waitForSend(message => String(message).includes('已经改名发回去了'), 10000)
+        checkSentIncludes(t, 'scenario uploaded file variant natural reply', result, '已经改名发回去了')
+        const toolMessages = mocked.calls[1]?.requestBody?.messages?.filter(item => item.role === 'tool') || []
+        t.check('scenario uploaded file variant creates 1.txt copy', toolMessages.some(item => /1\.txt/.test(String(item.content || ''))), JSON.stringify(toolMessages))
+        t.check('scenario uploaded file variant infers group upload target', uploadCalls.some(call => call.action === 'upload_group_file' && String(call.params.group_id) === groupSession.guildId && /1\.txt$/.test(String(call.params.name || ''))), JSON.stringify(uploadCalls))
+      } finally {
+        sendFileTool.execute = originalExecute
+      }
+    })
+  })
+
+  await withScenario({}, async ({ makeSession, run, data }) => {
+    const sourcePath = data.pathFor('uploaded-files', 'rename-after-refusal.txt')
+    await fs.promises.mkdir(path.dirname(sourcePath), { recursive: true })
+    await fs.promises.writeFile(sourcePath, '爱弥斯文件正文', 'utf8')
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '重命名文件这种事，我帮不了你。' } }] } },
+      { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-file-variant-retry', type: 'function', function: { name: 'create_uploaded_file_variant', arguments: '{"name":"1","sendBack":true}' } }] } }] } },
+      { json: { choices: [{ message: { content: '已经重命名并发回去了。' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+      const groupSession = makeSession({
+        content: atBot(makeSession(), '帮我重命名成1然后发给我'),
+        messageId: 'file-variant-refusal-ask',
+      })
+      await store.storeFile(groupSession.guildId, 'file-variant-refusal-source', {
+        fileName: '3.3版本-爱弥斯-公用.txt',
+        fileSize: 24,
+        mimeType: 'text/plain',
+        ext: 'txt',
+        url: '',
+        fileId: 'file-variant-refusal-token',
+        conversationKey: groupSession.guildId,
+        userId: groupSession.userId,
+        skipped: false,
+      })
+      await store.setLocalPath(groupSession.guildId, 'file-variant-refusal-source', sourcePath)
+      const sendFileTool = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'send-file-to-user.js'))
+      const originalExecute = sendFileTool.execute
+      const uploadCalls = []
+      sendFileTool.execute = async (params, context = {}) => originalExecute(params, {
+        ...context,
+        callOneBot: async (action, callParams) => {
+          uploadCalls.push({ action, params: callParams })
+          return { ok: true }
+        },
+      })
+      try {
+        const result = await run(groupSession, { flushTicks: 180 })
+        await groupSession.waitForSend(message => String(message).includes('已经重命名并发回去了'), 10000)
+        checkSentIncludes(t, 'scenario uploaded file variant refusal retry sends natural reply', result, '已经重命名并发回去了')
+        t.check('scenario uploaded file variant refusal retry calls model again with correction hint', mocked.calls.length >= 3 && (mocked.calls[1]?.requestBody?.messages || []).some(item => String(item.content || '').includes('刚才你拒绝了')), JSON.stringify(mocked.calls.map(call => call.requestBody?.messages?.slice(-3))))
+        t.check('scenario uploaded file variant refusal retry uploads group file', uploadCalls.some(call => call.action === 'upload_group_file' && String(call.params.group_id) === groupSession.guildId && /1\.txt$/.test(String(call.params.name || ''))), JSON.stringify(uploadCalls))
+      } finally {
+        sendFileTool.execute = originalExecute
+      }
+    })
+  })
+
+  await withScenario({}, async ({ makeSession, run, data }) => {
+    const sourcePath = data.pathFor('uploaded-files', 'rename-direct-fallback.docx')
+    await fs.promises.mkdir(path.dirname(sourcePath), { recursive: true })
+    await fs.promises.writeFile(sourcePath, 'fake docx bytes for fallback test')
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '重命名文件这种事，我帮不了你。' } }] } },
+      { json: { choices: [{ message: { content: '我还是不能改名或发文件。' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+      const groupSession = makeSession({
+        content: atBot(makeSession(), '帮我重命名成1然后发给我'),
+        messageId: 'file-variant-direct-fallback-ask',
+      })
+      await store.storeFile(groupSession.guildId, 'file-variant-direct-fallback-source', {
+        fileName: '简历.docx',
+        fileSize: 28,
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ext: 'docx',
+        url: '',
+        fileId: 'file-variant-direct-fallback-token',
+        conversationKey: groupSession.guildId,
+        userId: groupSession.userId,
+        skipped: false,
+      })
+      await store.setLocalPath(groupSession.guildId, 'file-variant-direct-fallback-source', sourcePath)
+      const sendFileTool = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'send-file-to-user.js'))
+      const originalExecute = sendFileTool.execute
+      const uploadCalls = []
+      sendFileTool.execute = async (params, context = {}) => originalExecute(params, {
+        ...context,
+        callOneBot: async (action, callParams) => {
+          uploadCalls.push({ action, params: callParams })
+          return { ok: true }
+        },
+      })
+      try {
+        const result = await run(groupSession, { flushTicks: 180 })
+        await groupSession.waitForSend(message => String(message).includes('已经重命名并发回去了'), 10000)
+        checkSentIncludes(t, 'scenario uploaded file variant direct fallback sends natural reply', result, '已经重命名并发回去了')
+        t.check('scenario uploaded file variant direct fallback preserves docx extension', uploadCalls.some(call => call.action === 'upload_group_file' && String(call.params.group_id) === groupSession.guildId && /1\.docx$/.test(String(call.params.name || ''))), JSON.stringify(uploadCalls))
+        t.check('scenario uploaded file variant direct fallback does not need model tool call', !mocked.calls.some(call => (call.requestBody?.messages || []).some(item => item.role === 'tool')), JSON.stringify(mocked.calls.map(call => call.requestBody?.messages?.slice(-3))))
+      } finally {
+        sendFileTool.execute = originalExecute
+      }
+    })
+  })
 }
 
 module.exports = { run }

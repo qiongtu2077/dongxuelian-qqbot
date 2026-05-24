@@ -63,21 +63,29 @@ async function loadCrons() {
 function normalizeCron(cron = {}) {
   const id = String(cron.id || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
   if (!id) return null
+  const mode = cron.mode === 'once' ? 'once' : 'cron'
   const schedule = String(cron.schedule || '').trim()
-  validateCronSchedule(schedule)
+  const runAt = Number(cron.runAt || cron.dueAt || cron.nextRunAt || 0)
+  if (mode === 'cron') validateCronSchedule(schedule)
+  else if (!Number.isFinite(runAt) || runAt <= 0) throw new Error('once 任务需要 runAt')
+  const status = ['pending', 'running', 'done', 'failed', 'cancelled'].includes(cron.status) ? cron.status : (mode === 'once' ? 'pending' : '')
   return {
     id,
     schedule,
-    mode: 'cron',
+    mode,
     type: cron.type === 'text' ? 'text' : 'agent',
     prompt: String(cron.prompt || '').slice(0, 4000),
     targetChannel: String(cron.targetChannel || '').slice(0, 120),
-    enabled: cron.enabled !== false,
+    targetUserId: String(cron.targetUserId || '').slice(0, 120),
+    createdFrom: String(cron.createdFrom || '').slice(0, 40),
+    enabled: cron.enabled !== false && status !== 'done' && status !== 'cancelled',
+    status,
     createdBy: String(cron.createdBy || '').slice(0, 120),
     createdAt: Number(cron.createdAt || Date.now()),
     updatedAt: Date.now(),
     lastRunAt: Number(cron.lastRunAt || 0),
-    nextRunAt: Number(cron.nextRunAt || 0),
+    runAt: mode === 'once' ? runAt : 0,
+    nextRunAt: mode === 'once' ? runAt : Number(cron.nextRunAt || 0),
   }
 }
 
@@ -151,12 +159,28 @@ async function registerCron(cron) {
   const saved = await enqueueCronFileUpdate(async () => {
     const data = await readCronFile()
     data.crons = data.crons.filter(item => item.id !== normalized.id)
-    normalized.nextRunAt = getNextRunAt(normalized.schedule)
+    normalized.nextRunAt = normalized.mode === 'once' ? normalized.runAt : getNextRunAt(normalized.schedule)
     data.crons.push(normalized)
     return writeCronFile(data)
   })
   scheduleCron(normalized)
   return saved.crons.find(item => item.id === normalized.id)
+}
+
+async function registerOnceTask(task = {}) {
+  const runAt = Number(task.runAt || task.dueAt || 0)
+  if (!Number.isFinite(runAt) || runAt <= Date.now() - 1000) throw new Error('提醒时间无效')
+  const rawId = task.id || `once_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  return registerCron({
+    ...task,
+    id: rawId,
+    mode: 'once',
+    type: task.type || 'text',
+    runAt,
+    nextRunAt: runAt,
+    status: 'pending',
+    enabled: true,
+  })
 }
 
 async function unregisterCron(id) {
@@ -183,8 +207,10 @@ function scheduleCron(cron) {
   clearCronTimer(cron.id)
   if (!cron.enabled) return
   const config = getAgentConfig()
-  if (!config.cron?.enabled) return
-  const nextRunAt = cron.nextRunAt || getNextRunAt(cron.schedule)
+  if (cron.mode === 'once') {
+    if (config.cron?.onceEnabled === false) return
+  } else if (!config.cron?.enabled) return
+  const nextRunAt = cron.mode === 'once' ? (cron.runAt || cron.nextRunAt) : (cron.nextRunAt || getNextRunAt(cron.schedule))
   const delay = Math.max(1000, nextRunAt - Date.now())
   if (delay > MAX_TIMEOUT_MS) {
     const timer = setTimeout(() => scheduleCron(cron), MAX_TIMEOUT_MS)
@@ -204,9 +230,18 @@ async function runCronNow(id) {
   let ok = false
   let result = ''
   try {
+    await enqueueCronFileUpdate(async () => {
+      const fresh = await readCronFile()
+      const current = fresh.crons.find(item => item.id === cron.id)
+      if (current && current.mode === 'once') {
+        current.status = 'running'
+        current.updatedAt = Date.now()
+      }
+      return writeCronFile(fresh)
+    })
     if (cron.type === 'text') {
       const push = require('./push')
-      const sent = await push.cronResult({ cronId: cron.id, channelKey: cron.targetChannel, text: cron.prompt, bot: runtime.bot })
+      const sent = await push.cronResult({ cronId: cron.id, channelKey: cron.targetChannel, text: cron.prompt, bot: runtime.bot, bypassEnabled: cron.mode === 'once' })
       ok = !!sent.ok
       result = sent.message || 'text sent'
     } else {
@@ -224,7 +259,7 @@ async function runCronNow(id) {
         }),
       })
       const push = require('./push')
-      const sent = await push.cronResult({ cronId: cron.id, channelKey: cron.targetChannel, text: agentResult.reply, bot: runtime.bot })
+      const sent = await push.cronResult({ cronId: cron.id, channelKey: cron.targetChannel, text: agentResult.reply, bot: runtime.bot, bypassEnabled: cron.mode === 'once' })
       ok = !!sent.ok
       result = agentResult.reply || sent.message || ''
     }
@@ -232,7 +267,9 @@ async function runCronNow(id) {
     result = error.message || String(error)
   }
   const finishedAt = Date.now()
-  let nextCron = { ...cron, lastRunAt: finishedAt, nextRunAt: getNextRunAt(cron.schedule, finishedAt) }
+  let nextCron = cron.mode === 'once'
+    ? { ...cron, lastRunAt: finishedAt, enabled: false, status: ok ? 'done' : 'failed' }
+    : { ...cron, lastRunAt: finishedAt, nextRunAt: getNextRunAt(cron.schedule, finishedAt) }
   let shouldSchedule = true
   try {
     const savedCron = await enqueueCronFileUpdate(async () => {
@@ -240,12 +277,18 @@ async function runCronNow(id) {
       const current = fresh.crons.find(item => item.id === cron.id)
       if (current) {
         current.lastRunAt = finishedAt
-        current.nextRunAt = getNextRunAt(current.schedule, finishedAt)
+        if (current.mode === 'once') {
+          current.enabled = false
+          current.status = ok ? 'done' : 'failed'
+          current.updatedAt = finishedAt
+        } else {
+          current.nextRunAt = getNextRunAt(current.schedule, finishedAt)
+        }
         nextCron = current
       } else {
         shouldSchedule = false
       }
-      fresh.history.push({ at: finishedAt, id: cron.id, ok, result: String(result || '').slice(0, 1000) })
+      fresh.history.push({ at: finishedAt, id: cron.id, mode: cron.mode || 'cron', ok, result: String(result || '').slice(0, 1000) })
       fresh.history = fresh.history.slice(-50)
       await writeCronFile(fresh)
       return current || null
@@ -254,7 +297,7 @@ async function runCronNow(id) {
   } catch {
     shouldSchedule = true
   } finally {
-    if (shouldSchedule) scheduleCron(nextCron)
+    if (shouldSchedule && nextCron.mode !== 'once') scheduleCron(nextCron)
     else clearCronTimer(cron.id)
   }
   return { ok, cron: nextCron, result }
@@ -282,6 +325,7 @@ module.exports = {
   loadCrons,
   saveCrons,
   registerCron,
+  registerOnceTask,
   unregisterCron,
   runCronNow,
   listCronHistory,

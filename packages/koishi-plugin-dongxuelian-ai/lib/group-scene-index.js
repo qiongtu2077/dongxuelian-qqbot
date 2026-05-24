@@ -303,6 +303,8 @@ function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', o
   if (!lines.length) return ''
   const hasMedia = finalItems.some(item => /\[(?:文件|图片|语音|转发)/.test(item.content || ''))
   const hasAssistant = finalItems.some(item => item.role === 'assistant')
+  const hasCurrentMediaCue = /(?:这张|这图|图里|图片|上面|刚才|刚刚|那个|这个|表情|文件|语音|转发)/.test(currentText)
+  const visionCorrectionFocus = /(?:认错|看错|识别|游戏截图|截图|看不出来|别想了|技术发展|复读|同一句|同一件事)/.test(currentText)
   const modeLine = options.randomTriggered
     ? '本轮是随机主动插话：只有当前现场清楚时才锚定回复；接不上可内部查 read_group_context，仍不清楚就轻水一句或不发。'
     : '本轮是明确交互或普通聊天：优先解决当前用户问题；如果短句指代不清，可内部查 read_group_context 或自然追问。'
@@ -310,6 +312,8 @@ function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', o
     '[当前群聊现场-最高优先级]',
     '下面是最近公开群聊现场，优先按它理解当前短句；昵称只用于区分发言者，不是默认评价对象。旧摘要和长期记忆只能作背景，不能覆盖这里。',
     hasMedia ? '现场里有图片/文件/语音等锚点，用户说“这个/那张图/那个文件/评价一下/太大了”时优先按这些锚点理解。' : '',
+    hasMedia && !hasCurrentMediaCue ? '当前消息没有明确图片/文件指示词时，旧图片/旧文件只作背景，不要主动把旧图旧文件当成当前主语。' : '',
+    visionCorrectionFocus ? '当前现场像是在纠正识图错误或讨论识图能力边界；优先回应“刚才是否认错/识图是否可靠”，不要跳回更早图片内容。' : '',
     hasAssistant ? '现场里包含你刚才的公开回复，跨用户问“真的吗/什么意思/怎么说”时优先承接这条公开回复。' : '',
     modeLine,
     ...lines,

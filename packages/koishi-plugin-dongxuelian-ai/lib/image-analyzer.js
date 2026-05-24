@@ -86,13 +86,15 @@ async function runAnalysis({ channelKey, messageId, url, file }) {
 
     const messages = [
       { role: 'user', content: [
-        { type: 'text', text: '简要描述这张图片的内容（50字以内）。' },
+        { type: 'text', text: '只描述图片中客观看到的内容，50字以内。不要称呼用户，不要续聊，不要评价好不好玩，不要角色扮演语气。' },
         { type: 'image_url', image_url: { url: base64 } },
       ] },
     ]
 
     const result = await requestChatCompletions(messages, config, { max_tokens: 200, _timeoutMs: ANALYSIS_TIMEOUT_MS })
-    const analysis = typeof result === 'string' ? result : (result && result.content || '')
+    const rawAnalysis = typeof result === 'string' ? result : (result && result.content || '')
+    const { sanitizeImageAnalysis } = require('./image-analysis-sanitizer')
+    const analysis = sanitizeImageAnalysis(rawAnalysis)
     if (!analysis) return null
     if (isVisionBlindnessReply(analysis)) {
       console.warn(`[image-analyzer] vision blindness, skipping write. provider=${config.provider} model=${config.model} reply=${analysis.slice(0, 60)}`)

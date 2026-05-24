@@ -480,6 +480,31 @@ async function run(t) {
 
     t.check('scenario random test does not create tracked filesystem dependency', fs.existsSync(data.pathFor('ai-random-rate.json')), data.pathFor('ai-random-rate.json'))
   })
+
+  await withScenario({
+    data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 0 },
+      randomVoiceRate: { 10001: 0 },
+    },
+  }, async ({ ready, makeSession, run }) => {
+    await ready()
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: 'image-random-should-not-send' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const session = makeSession({
+        userId: '2099',
+        author: { id: '2099', name: 'member' },
+        content: '[CQ:image,file=random-zero.jpg]',
+        messageId: 'random-image-rate-zero',
+        event: { sender: { role: 'member' }, message: [{ type: 'image', data: { file: 'random-zero.jpg' } }] },
+      })
+      const result = await run(session, { flushTicks: 100 })
+      t.check('scenario pure image respects random rate zero', result.sent.length === 0, JSON.stringify(result.sent))
+      t.check('scenario pure image rate zero does not call model through media branch', mocked.calls.length === 0, JSON.stringify(mocked.calls))
+    })
+  })
 }
 
 module.exports = { run }

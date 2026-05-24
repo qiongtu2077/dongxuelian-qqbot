@@ -7,7 +7,7 @@
 const crypto = require('crypto')
 const fsp = require('fs/promises')
 const path = require('path')
-const { USER_PROFILE_DIR } = require('./constants')
+const { DATA_DIR, USER_PROFILE_DIR } = require('./constants')
 
 const PERSONA_PROFILE_VERSION = 1
 const MAX_PROFILE_SOURCE_FILE_BYTES = 512 * 1024
@@ -21,6 +21,22 @@ const PROFILE_EFFECTIVE_DECAY_PER_DAY = 0.95
 const PROFILE_EFFECTIVE_MIN_CONFIDENCE = 0.1
 const PROFILE_EFFECTIVE_ADMIN_MIN_CONFIDENCE = 0.5
 const PROFILE_EFFECTIVE_DEFAULT_LIMIT = 5
+const PROFILE_SHADOW_PREVIEW_VERSION = 2
+const PROFILE_SHADOW_LOG_DIR = path.join(DATA_DIR, 'persona-diagnostics')
+const PROFILE_SHADOW_LOG_MAX_BYTES = 2 * 1024 * 1024
+const PROFILE_SHADOW_TRAITS = Object.freeze([
+  'short_bursty',
+  'long_explainer',
+  'direct_correction',
+  'questioning',
+  'technical_debug',
+  'media_followup',
+  'meme_casual',
+  'coordination',
+  'command_like',
+])
+
+let personaProfileShadowLogChain = Promise.resolve()
 
 function hashPersonaProfileValue(value = '', length = 12) {
   const text = String(value || '').trim()
@@ -65,6 +81,276 @@ function normalizePersonaProfileHash(value = '', maxLength = 64) {
 
 function personaProfileComparableText(value = '') {
   return normalizePersonaProfileText(value, 700).toLowerCase()
+}
+
+function formatPersonaProfileLogAtom(value = '', fallback = 'none') {
+  const text = String(value || '').trim()
+  if (!text) return fallback
+  return text
+    .replace(/[\r\n\t ]+/g, '_')
+    .replace(/[|=,]+/g, '_')
+    .replace(/[^\w.\-:+/;\u4e00-\u9fff]+/g, '_')
+    .replace(/_+/g, '_')
+    .slice(0, 240) || fallback
+}
+
+function formatPersonaProfileLogList(values = [], fallback = 'none') {
+  const list = Array.isArray(values)
+    ? values.map(item => formatPersonaProfileLogAtom(item, '')).filter(Boolean)
+    : []
+  return list.length ? list.join(',') : fallback
+}
+
+function estimatePersonaProfilePromptTokens(text = '') {
+  const value = String(text || '')
+  let ascii = 0
+  let nonAscii = 0
+  for (const char of value) {
+    if (char.charCodeAt(0) <= 0x7f) ascii += 1
+    else nonAscii += 1
+  }
+  return Math.max(1, Math.ceil(ascii / 4 + nonAscii / 1.7))
+}
+
+function formatPersonaProfileShadowDate(ts = Date.now()) {
+  const date = new Date(normalizePersonaProfileTs(ts, Date.now()))
+  if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 10)
+  return date.toISOString().slice(0, 10)
+}
+
+function getPersonaProfileShadowLogFile(ts = Date.now(), rootDir = PROFILE_SHADOW_LOG_DIR) {
+  const dir = rootDir || PROFILE_SHADOW_LOG_DIR
+  return path.join(dir, `profile-shadow-${formatPersonaProfileShadowDate(ts)}.jsonl`)
+}
+
+function getPersonaProfileShadowLengthBucket(length = 0) {
+  const value = Math.max(0, Math.floor(Number(length) || 0))
+  if (value <= 12) return 'short'
+  if (value <= 80) return 'medium'
+  return 'long'
+}
+
+function getPersonaProfileShadowTraitsForAnalysis(analysis = {}) {
+  const traits = []
+  const length = Math.max(0, Number(analysis.length) || 0)
+  if (length > 0 && length <= 12) traits.push('short_bursty')
+  if (length >= 80) traits.push('long_explainer')
+  if (analysis.hasCorrection) traits.push('direct_correction')
+  if (analysis.hasQuestion) traits.push('questioning')
+  if (analysis.hasTechnical) traits.push('technical_debug')
+  if (analysis.isMedia) traits.push('media_followup')
+  if (analysis.hasMeme) traits.push('meme_casual')
+  if (analysis.hasCoordination) traits.push('coordination')
+  if (analysis.isCommandLike) traits.push('command_like')
+  return traits
+}
+
+function analyzePersonaProfileShadowText(text = '') {
+  const value = normalizePersonaProfileText(text, 700)
+  const length = Array.from(value).length
+  const lowered = value.toLowerCase()
+  const isMedia = /(?:<img\b|<video\b|<audio\b|\[图片\]|\[语音\]|\[文件\]|file=|summary=|download\?appid=)/i.test(value)
+  const isMention = /(?:<at\b|@全体|@everyone|@)/i.test(value)
+  const isCommandLike = /^(?:\/|!|！|#)|(?:东雪莲|莲莲|bot|Bot|BOT).{0,12}(?:说句话|人格|语音|搜索|fetch|查|读|总结)|(?:^|\s)(?:test|debug)\s*$/i.test(value)
+  const isSensitive = /(?:api[_-]?key|token|cookie|password|passwd|secret|authorization|bearer\s+|sk-[a-z0-9])/i.test(value)
+  const hasTechnical = /(?:ai|bot|token|prompt|fetch|bug|api|http|ssh|json|node|npm|model|mldsa|shor|量子|算法|证明|计算|模型|部署|服务器|截图|转文字|识别|搜索|工具|代码|安全|加密|测试|修复)/i.test(value)
+  const hasCorrection = /(?:认错|不对|不是|错|别|不能|没用|看不懂|求求|改|坏了|bug|失败|不行|不准|别想)/.test(value)
+  const hasQuestion = /(?:[?？]|什么|怎么|如何|为啥|为什么|能不能|是不是|吗|呢)/.test(value)
+  const hasMeme = /(?:笑|绷|乐|草|哈|蚌|典|哈基米|迪莫|神卡|抽卡|主播|高管|hhh|233)/i.test(value)
+  const hasCoordination = /(?:上号|欢迎|集合|几点|九点|安排|来了|收到)/.test(value)
+  return {
+    length,
+    textHash: hashPersonaProfileValue(value, 10),
+    isMedia,
+    isMention,
+    isCommandLike,
+    isSensitive,
+    hasTechnical,
+    hasCorrection,
+    hasQuestion,
+    hasMeme,
+    hasCoordination,
+  }
+}
+
+function summarizePersonaProfileShadowTraits(analyses = []) {
+  const total = Array.isArray(analyses) ? analyses.length : 0
+  const counts = {
+    short: 0,
+    long: 0,
+    media: 0,
+    mention: 0,
+    command: 0,
+    sensitive: 0,
+    technical: 0,
+    correction: 0,
+    question: 0,
+    meme: 0,
+    coordination: 0,
+  }
+  let lengthTotal = 0
+  for (const item of analyses) {
+    if (!item || typeof item !== 'object') continue
+    lengthTotal += Math.max(0, Number(item.length) || 0)
+    if ((Number(item.length) || 0) <= 12) counts.short += 1
+    if ((Number(item.length) || 0) >= 80) counts.long += 1
+    if (item.isMedia) counts.media += 1
+    if (item.isMention) counts.mention += 1
+    if (item.isCommandLike) counts.command += 1
+    if (item.isSensitive) counts.sensitive += 1
+    if (item.hasTechnical) counts.technical += 1
+    if (item.hasCorrection) counts.correction += 1
+    if (item.hasQuestion) counts.question += 1
+    if (item.hasMeme) counts.meme += 1
+    if (item.hasCoordination) counts.coordination += 1
+  }
+  const ratio = key => total ? counts[key] / total : 0
+  const traits = []
+  if (total && ratio('short') >= 0.6) traits.push('short_bursty')
+  if (total && ratio('long') >= 0.3) traits.push('long_explainer')
+  if (total && ratio('correction') >= 0.25) traits.push('direct_correction')
+  if (total && ratio('question') >= 0.25) traits.push('questioning')
+  if (total && ratio('technical') >= 0.25) traits.push('technical_debug')
+  if (total && ratio('media') >= 0.25) traits.push('media_followup')
+  if (total && ratio('meme') >= 0.25) traits.push('meme_casual')
+  if (total && ratio('coordination') >= 0.25) traits.push('coordination')
+  if (total && ratio('command') >= 0.25) traits.push('command_like')
+  const blockers = []
+  if (total < 2) blockers.push('too_few_candidates')
+  if (counts.sensitive > 0) blockers.push('sensitive_like_text')
+  if (ratio('command') >= 0.4) blockers.push('command_like_noise')
+  if (ratio('media') >= 0.6) blockers.push('media_markup_dominant')
+  if (ratio('mention') >= 0.5) blockers.push('mention_or_broadcast_dominant')
+  if (!traits.length) blockers.push('no_stable_trait')
+  const warnings = []
+  if (ratio('meme') >= 0.25) warnings.push('meme_may_ooc')
+  if (ratio('correction') >= 0.25) warnings.push('do_not_copy_harshness')
+  if (ratio('media') > 0) warnings.push('ignore_media_placeholders')
+  if (ratio('command') > 0) warnings.push('ignore_commands_as_style')
+  return {
+    total,
+    avgLength: total ? Math.round(lengthTotal / total) : 0,
+    counts,
+    traits,
+    blockers,
+    warnings,
+  }
+}
+
+function buildPersonaProfileShadowPromptPreview(traits = [], warnings = []) {
+  const parts = []
+  const has = key => traits.includes(key)
+  if (has('short_bursty')) parts.push('短句直给')
+  if (has('long_explainer')) parts.push('可承接较长解释')
+  if (has('direct_correction')) parts.push('对纠错先认问题再回答')
+  if (has('questioning')) parts.push('优先回答追问')
+  if (has('technical_debug')) parts.push('技术/测试语境少寒暄')
+  if (has('media_followup')) parts.push('图片文件追问先说明能否读到')
+  if (has('meme_casual')) parts.push('可轻接梗但不复读口癖')
+  if (has('coordination')) parts.push('群活动消息简短确认')
+  if (has('command_like')) parts.push('命令内容只作意图不学语气')
+  if (!parts.length) parts.push('暂无稳定风格')
+  if (warnings.includes('do_not_copy_harshness')) parts.push('不模仿攻击性')
+  parts.push('短期风格参考非长期记忆')
+  parts.push('禁止引用原话')
+  return parts.join(';')
+}
+
+function isPersonaProfileShadowStyleBlock(block = {}) {
+  return String(block.source || '') === 'recent_user_message'
+    || String(block.block || '') === 'working'
+    || String(block.category || '') === 'style'
+}
+
+function getPersonaProfileShadowSelectionBlockers(block = {}, options = {}) {
+  const now = normalizePersonaProfileTs(options.now, Date.now())
+  const allowedStatuses = Array.isArray(options.allowedStatuses) && options.allowedStatuses.length
+    ? new Set(options.allowedStatuses.map(String))
+    : new Set(['active', 'candidate'])
+  const minEffectiveConfidence = normalizePersonaProfileNumber(options.minEffectiveConfidence, PROFILE_EFFECTIVE_MIN_CONFIDENCE, 0, 1)
+  const includeSensitive = !!options.includeSensitive
+  const blockers = []
+  if (!allowedStatuses.has(String(block.status || 'candidate'))) blockers.push('status')
+  const expiresAt = Number(block.expiresAt || 0)
+  if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now) blockers.push('expired')
+  if (!includeSensitive && String(block.sensitivity || '') === 'sensitive') blockers.push('sensitive')
+  const effectiveConfidence = computePersonaProfileEffectiveConfidence(block, { ...options, now })
+  if (effectiveConfidence < minEffectiveConfidence) blockers.push('lowConfidence')
+  return { blockers, effectiveConfidence }
+}
+
+function buildPersonaProfileShadowEvidenceMeta(evidence = [], now = Date.now()) {
+  return (Array.isArray(evidence) ? evidence : []).slice(0, 3).map(item => ({
+    source: formatPersonaProfileLogAtom(item && item.source || 'unknown'),
+    quoteHash: normalizePersonaProfileHash(item && item.quoteHash || '', 12),
+    messageIdHash: normalizePersonaProfileHash(item && item.messageIdHash || '', 10),
+    channelHash: normalizePersonaProfileHash(item && item.channelHash || '', 10),
+    ageHours: Math.max(0, Math.round((now - normalizePersonaProfileTs(item && item.ts, now)) / (60 * 60 * 1000))),
+  }))
+}
+
+function buildPersonaProfileShadowCandidate(block = {}, options = {}) {
+  const now = normalizePersonaProfileTs(options.now, Date.now())
+  const normalized = buildPersonaProfileBlock({ ...block, now })
+  if (!normalized) return null
+  const analysis = analyzePersonaProfileShadowText(normalized.text || '')
+  const selectedRanks = options.selectedRanks instanceof Map ? options.selectedRanks : new Map()
+  const selectedRank = selectedRanks.get(String(normalized.id || '')) || 0
+  const selectionState = getPersonaProfileShadowSelectionBlockers(normalized, options)
+  const textTraits = getPersonaProfileShadowTraitsForAnalysis(analysis)
+  const learningBlockers = []
+  if (!selectedRank) learningBlockers.push('not_selected_topn')
+  if (!isPersonaProfileShadowStyleBlock(normalized)) learningBlockers.push('not_style_source')
+  for (const blocker of selectionState.blockers) learningBlockers.push(`selection_${blocker}`)
+  if (analysis.isSensitive) learningBlockers.push('sensitive_like_text')
+  if (analysis.isCommandLike) learningBlockers.push('command_like_noise')
+  if (analysis.isMedia) learningBlockers.push('media_markup')
+  if (analysis.isMention) learningBlockers.push('mention_or_broadcast')
+  const createdAt = normalizePersonaProfileTs(normalized.createdAt, now)
+  const updatedAt = normalizePersonaProfileTs(normalized.updatedAt, createdAt)
+  const expiresAt = Number(normalized.expiresAt || 0)
+  return {
+    blockHash: hashPersonaProfileValue(normalized.id || '', 10),
+    textHash: analysis.textHash,
+    source: formatPersonaProfileLogAtom(normalized.source || 'unknown'),
+    status: normalized.status,
+    block: normalized.block,
+    category: normalized.category,
+    sensitivity: normalized.sensitivity,
+    ageHours: Math.max(0, Math.round((now - createdAt) / (60 * 60 * 1000))),
+    updatedAgeHours: Math.max(0, Math.round((now - updatedAt) / (60 * 60 * 1000))),
+    expiresInHours: Number.isFinite(expiresAt) && expiresAt > 0 ? Math.round((expiresAt - now) / (60 * 60 * 1000)) : null,
+    confidence: Number(normalized.confidence || 0),
+    effectiveConfidence: selectionState.effectiveConfidence,
+    reinforceCount: Math.max(0, Math.floor(Number(normalized.reinforceCount) || 0)),
+    evidence: buildPersonaProfileShadowEvidenceMeta(normalized.evidence, now),
+    text: {
+      hash: analysis.textHash,
+      length: Math.max(0, Math.floor(Number(analysis.length) || 0)),
+      bucket: getPersonaProfileShadowLengthBucket(analysis.length),
+      traits: textTraits,
+      flags: {
+        media: !!analysis.isMedia,
+        mention: !!analysis.isMention,
+        commandLike: !!analysis.isCommandLike,
+        sensitiveLike: !!analysis.isSensitive,
+        technical: !!analysis.hasTechnical,
+        correction: !!analysis.hasCorrection,
+        question: !!analysis.hasQuestion,
+        meme: !!analysis.hasMeme,
+        coordination: !!analysis.hasCoordination,
+      },
+    },
+    selection: {
+      selectedTopN: selectedRank > 0,
+      rank: selectedRank || null,
+      blockers: selectionState.blockers,
+    },
+    learning: {
+      decision: learningBlockers.length ? 'skip_learning' : 'would_learn_style',
+      blockers: Array.from(new Set(learningBlockers)),
+    },
+  }
 }
 
 function buildPersonaProfileEvidence(input = {}) {
@@ -587,6 +873,196 @@ function formatPersonaProfileSourceDiagnostic(diagnostic = {}) {
   ].join(' ')
 }
 
+function buildPersonaProfileShadowPreview(profile = {}, options = {}) {
+  const selection = options.selection || selectPersonaProfileBlocksByEffectiveConfidence(profile.blocks || [], {
+    now: options.now,
+    limit: 5,
+    minEffectiveConfidence: 0.1,
+    allowedStatuses: ['active', 'candidate'],
+  })
+  const now = normalizePersonaProfileTs(options.now, Date.now())
+  const selectedRanks = new Map()
+  ;(Array.isArray(selection.selected) ? selection.selected : []).forEach((block, index) => {
+    if (block && block.id) selectedRanks.set(String(block.id), index + 1)
+  })
+  const selected = (Array.isArray(selection.selected) ? selection.selected : [])
+    .filter(block => isPersonaProfileShadowStyleBlock(block))
+    .slice(0, 5)
+  const analyses = selected.map(block => ({
+    ...analyzePersonaProfileShadowText(block.text || ''),
+    idHash: hashPersonaProfileValue(block.id || '', 10),
+    source: String(block.source || 'unknown'),
+    status: String(block.status || 'candidate'),
+    block: String(block.block || 'working'),
+    category: String(block.category || 'style'),
+    confidence: Number(block.effectiveConfidence || block.confidence || 0),
+    reinforceCount: Math.max(0, Math.floor(Number(block.reinforceCount) || 0)),
+  }))
+  const summary = summarizePersonaProfileShadowTraits(analyses)
+  const traits = summary.traits.filter(item => PROFILE_SHADOW_TRAITS.includes(item))
+  const blockers = Array.from(new Set(summary.blockers))
+  const warnings = Array.from(new Set(summary.warnings))
+  const wouldInject = selected.length > 0 && blockers.length === 0
+  const promptPreview = buildPersonaProfileShadowPromptPreview(traits, warnings)
+  const evidenceHashes = analyses.map(item => item.textHash).filter(Boolean)
+  const candidates = (Array.isArray(profile.blocks) ? profile.blocks : [])
+    .map(block => buildPersonaProfileShadowCandidate(block, {
+      ...options,
+      now,
+      selectedRanks,
+      minEffectiveConfidence: Number(selection.minEffectiveConfidence || options.minEffectiveConfidence || PROFILE_EFFECTIVE_MIN_CONFIDENCE),
+      allowedStatuses: ['active', 'candidate'],
+    }))
+    .filter(Boolean)
+  const selectedCandidateHashes = new Set(selected.map(block => hashPersonaProfileValue(block.id || '', 10)))
+  const selectedCandidates = candidates.filter(item => selectedCandidateHashes.has(item.blockHash))
+  const skippedLearning = {}
+  for (const candidate of candidates) {
+    const blockersForCandidate = candidate.learning?.blockers || []
+    if (!blockersForCandidate.length) continue
+    for (const reason of blockersForCandidate) skippedLearning[reason] = (skippedLearning[reason] || 0) + 1
+  }
+  return {
+    version: PROFILE_SHADOW_PREVIEW_VERSION,
+    mode: 'shadow_only',
+    prompt: 'unchanged',
+    ts: now,
+    userHash: profile.user?.idHash || hashPersonaProfileValue(options.userId || '', 12),
+    channelHash: profile.channel?.hash || hashPersonaProfileValue(options.channelKey || '', 12),
+    selectedCount: selected.length,
+    consideredCount: Math.max(0, Math.floor(Number(selection.considered) || 0)),
+    totalBlocks: Array.isArray(profile.blocks) ? profile.blocks.length : 0,
+    sourceCounts: profile.sourceStats || {},
+    avgLength: summary.avgLength,
+    counts: summary.counts,
+    traits,
+    blockers,
+    warnings,
+    wouldInject,
+    confidence: Number(Math.max(0, Math.min(1, traits.length * 0.12 + selected.length * 0.04 + (summary.counts?.short ? 0.05 : 0) - blockers.length * 0.2)).toFixed(3)),
+    evidenceHashes: evidenceHashes.slice(0, 5),
+    candidates,
+    selectedCandidates,
+    skippedLearning,
+    top: analyses.slice(0, 5).map(item => ({
+      idHash: item.idHash,
+      textHash: item.textHash,
+      confidence: Number(item.confidence || 0),
+      reinforceCount: item.reinforceCount,
+      status: item.status,
+      type: `${item.block}/${item.category}`,
+    })),
+    promptPreview,
+    promptPreviewHash: hashPersonaProfileValue(promptPreview, 10),
+    tokenEstimate: estimatePersonaProfilePromptTokens(promptPreview),
+    reasons: ['shadow_only', 'no_prompt_injection', wouldInject ? 'would_inject_if_enabled' : 'blocked_if_enabled'],
+  }
+}
+
+function buildPersonaProfileShadowLogEvent(preview = {}, options = {}) {
+  const now = normalizePersonaProfileTs(preview.ts || options.now, Date.now())
+  const selectedCandidates = (Array.isArray(preview.selectedCandidates) ? preview.selectedCandidates : []).slice(0, 5)
+  const candidates = (Array.isArray(preview.candidates) ? preview.candidates : []).slice(0, 12)
+  return {
+    type: 'profile_shadow_v2',
+    version: Math.max(0, Math.floor(Number(preview.version) || PROFILE_SHADOW_PREVIEW_VERSION)),
+    ts: now,
+    isoTime: new Date(now).toISOString(),
+    mode: 'shadow_only',
+    prompt: 'unchanged',
+    userHash: preview.userHash || '',
+    channelHash: preview.channelHash || '',
+    totals: {
+      blocks: Math.max(0, Math.floor(Number(preview.totalBlocks) || 0)),
+      considered: Math.max(0, Math.floor(Number(preview.consideredCount) || 0)),
+      selectedStyle: Math.max(0, Math.floor(Number(preview.selectedCount) || 0)),
+      candidates: Array.isArray(preview.candidates) ? preview.candidates.length : 0,
+    },
+    sourceCounts: preview.sourceCounts || {},
+    aggregate: {
+      traits: Array.isArray(preview.traits) ? preview.traits : [],
+      blockers: Array.isArray(preview.blockers) ? preview.blockers : [],
+      warnings: Array.isArray(preview.warnings) ? preview.warnings : [],
+      counts: preview.counts || {},
+      avgLength: Math.max(0, Math.floor(Number(preview.avgLength) || 0)),
+      confidence: Number(preview.confidence || 0),
+      skippedLearning: preview.skippedLearning || {},
+    },
+    candidates,
+    selectedCandidates,
+    promptPreview: {
+      wouldInject: preview.wouldInject === true,
+      hash: preview.promptPreviewHash || hashPersonaProfileValue(preview.promptPreview || '', 10),
+      tokensEstimated: Math.max(0, Math.floor(Number(preview.tokenEstimate) || 0)),
+      text: String(preview.promptPreview || ''),
+      reasons: Array.isArray(preview.reasons) ? preview.reasons : ['shadow_only', 'no_prompt_injection'],
+    },
+    safety: {
+      redacted: true,
+      rawText: false,
+      rawUserId: false,
+      rawChannelId: false,
+      promptInjection: false,
+      profileWrite: false,
+    },
+  }
+}
+
+function formatPersonaProfileShadowLearningDiagnostic(preview = {}) {
+  const counts = preview.counts || {}
+  return [
+    'profile_shadow_learning',
+    `v=${Math.max(0, Math.floor(Number(preview.version) || 0))}`,
+    `user=${preview.userHash || 'none'}`,
+    `channel=${preview.channelHash || 'none'}`,
+    `selected=${Math.max(0, Math.floor(Number(preview.selectedCount) || 0))}`,
+    `traits=${formatPersonaProfileLogList(preview.traits)}`,
+    `blockers=${formatPersonaProfileLogList(preview.blockers)}`,
+    `warnings=${formatPersonaProfileLogList(preview.warnings)}`,
+    `counts=short:${Math.max(0, Math.floor(Number(counts.short) || 0))},long:${Math.max(0, Math.floor(Number(counts.long) || 0))},media:${Math.max(0, Math.floor(Number(counts.media) || 0))},command:${Math.max(0, Math.floor(Number(counts.command) || 0))},correction:${Math.max(0, Math.floor(Number(counts.correction) || 0))},question:${Math.max(0, Math.floor(Number(counts.question) || 0))},technical:${Math.max(0, Math.floor(Number(counts.technical) || 0))},meme:${Math.max(0, Math.floor(Number(counts.meme) || 0))}`,
+    `avgLen=${Math.max(0, Math.floor(Number(preview.avgLength) || 0))}`,
+    `evidence=${formatPersonaProfileLogList(preview.evidenceHashes)}`,
+    `confidence=${Number(preview.confidence || 0).toFixed(3)}`,
+    `wouldInject=${preview.wouldInject === true}`,
+    'mode=shadow_only',
+    'prompt=unchanged',
+  ].join(' ')
+}
+
+function formatPersonaProfileShadowPromptPreviewDiagnostic(preview = {}) {
+  return [
+    'profile_shadow_prompt_preview',
+    `user=${preview.userHash || 'none'}`,
+    `channel=${preview.channelHash || 'none'}`,
+    `wouldInject=${preview.wouldInject === true}`,
+    `tokensEstimated=${Math.max(0, Math.floor(Number(preview.tokenEstimate) || 0))}`,
+    `previewHash=${preview.promptPreviewHash || 'none'}`,
+    `preview=${formatPersonaProfileLogAtom(preview.promptPreview || '')}`,
+    `blockers=${formatPersonaProfileLogList(preview.blockers)}`,
+    `reasons=${Array.isArray(preview.reasons) && preview.reasons.length ? preview.reasons.join(',') : 'none'}`,
+  ].join(' ')
+}
+
+async function appendPersonaProfileShadowLog(preview = {}, options = {}) {
+  const event = buildPersonaProfileShadowLogEvent(preview, options)
+  const file = options.file || getPersonaProfileShadowLogFile(event.ts, options.rootDir)
+  const entry = JSON.stringify(event) + '\n'
+  const writeTask = async () => {
+    await fsp.mkdir(path.dirname(file), { recursive: true })
+    try {
+      const stat = await fsp.stat(file)
+      if (stat.isFile() && stat.size > PROFILE_SHADOW_LOG_MAX_BYTES) {
+        const rotated = `${file}.${Date.now()}.old`
+        await fsp.rename(file, rotated).catch(() => {})
+      }
+    } catch {}
+    await fsp.appendFile(file, entry, 'utf8')
+    return { file, event }
+  }
+  personaProfileShadowLogChain = personaProfileShadowLogChain.then(writeTask, writeTask)
+  return personaProfileShadowLogChain
+}
+
 function formatPersonaProfileSummary(profile = {}) {
   const summary = profile.summary || summarizePersonaProfileBlocks(profile)
   const blockText = Object.entries(summary.byBlock || {}).map(([key, value]) => `${key}:${value}`).join(',')
@@ -624,6 +1100,12 @@ module.exports = {
   buildPersonaProfileBlocksFromLegacyData,
   buildPersonaProfileSourceDiagnostic,
   formatPersonaProfileSourceDiagnostic,
+  getPersonaProfileShadowLogFile,
+  buildPersonaProfileShadowPreview,
+  buildPersonaProfileShadowLogEvent,
+  appendPersonaProfileShadowLog,
+  formatPersonaProfileShadowLearningDiagnostic,
+  formatPersonaProfileShadowPromptPreviewDiagnostic,
   safePersonaProfileFile,
   readLegacyPersonaProfileData,
   buildPersonaProfileBlocks,

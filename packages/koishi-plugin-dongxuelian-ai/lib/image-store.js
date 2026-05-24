@@ -57,6 +57,10 @@ function normalizeImageHistoryData(data) {
       ts: Number(entry.ts) || 0,
       analyzed: !!entry.analyzed,
       analysis: entry.analysis == null ? null : String(entry.analysis),
+      sourceRole: entry.sourceRole === 'assistant' ? 'assistant' : 'user',
+      sentByBot: !!entry.sentByBot,
+      analysisStatus: String(entry.analysisStatus || (entry.analyzed ? 'analyzed' : 'pending')).slice(0, 40),
+      analysisKind: String(entry.analysisKind || (entry.analyzed ? 'objective' : '')).slice(0, 40),
     }
   }
   return { images }
@@ -163,6 +167,10 @@ async function storeImageUrl(channelKey, messageId, url, file, meta = {}) {
       ts: Date.now(),
       analyzed: false,
       analysis: null,
+      sourceRole: meta.sourceRole === 'assistant' ? 'assistant' : 'user',
+      sentByBot: !!meta.sentByBot,
+      analysisStatus: 'pending',
+      analysisKind: '',
     }
     return writeImageHistory(channelKey, data)
   })
@@ -195,12 +203,54 @@ function getRecentImagesCached(channelKey, limit = 5) {
 
 async function markAnalyzed(channelKey, messageId, analysis) {
   if (!channelKey || !messageId) return false
+  const { sanitizeImageAnalysis } = require('./image-analysis-sanitizer')
+  const sanitized = sanitizeImageAnalysis(analysis)
+  if (!sanitized) return markAnalysisUnavailable(channelKey, messageId, 'unavailable')
   return enqueueImageStoreTask(channelKey, async () => {
     const data = await readImageHistory(channelKey)
     const id = String(messageId)
     if (!data.images[id]) return false
     data.images[id].analyzed = true
-    data.images[id].analysis = String(analysis || '').slice(0, 500)
+    data.images[id].analysis = sanitized
+    data.images[id].analysisStatus = 'analyzed'
+    data.images[id].analysisKind = 'objective'
+    return writeImageHistory(channelKey, data)
+  })
+}
+
+async function markAnalysisUnavailable(channelKey, messageId, status = 'unavailable') {
+  if (!channelKey || !messageId) return false
+  return enqueueImageStoreTask(channelKey, async () => {
+    const data = await readImageHistory(channelKey)
+    const id = String(messageId)
+    if (!data.images[id]) return false
+    data.images[id].analyzed = false
+    data.images[id].analysis = null
+    data.images[id].analysisStatus = String(status || 'unavailable').slice(0, 40)
+    data.images[id].analysisKind = ''
+    return writeImageHistory(channelKey, data)
+  })
+}
+
+async function storeAssistantImageAnchor(channelKey, messageId, meta = {}) {
+  if (!channelKey || !messageId) return false
+  return enqueueImageStoreTask(channelKey, async () => {
+    const data = cleanExpired(await readImageHistory(channelKey))
+    const id = String(messageId)
+    const previous = data.images[id] || {}
+    data.images[id] = {
+      url: String(meta.url || previous.url || ''),
+      file: meta.file ? String(meta.file) : (previous.file || null),
+      conversationKey: meta.conversationKey ? String(meta.conversationKey) : (previous.conversationKey || ''),
+      userId: meta.userId ? String(meta.userId) : (previous.userId || 'bot'),
+      ts: Number(meta.ts || previous.ts || Date.now()),
+      analyzed: !!previous.analyzed,
+      analysis: previous.analysis == null ? null : String(previous.analysis),
+      sourceRole: 'assistant',
+      sentByBot: true,
+      analysisStatus: previous.analysisStatus || 'pending',
+      analysisKind: previous.analysisKind || '',
+    }
     return writeImageHistory(channelKey, data)
   })
 }
@@ -314,6 +364,8 @@ module.exports = {
   getRecentImages,
   getRecentImagesCached,
   markAnalyzed,
+  markAnalysisUnavailable,
+  storeAssistantImageAnchor,
   isAlreadyAnalyzed,
   getCachedAnalysis,
   replaceImagePlaceholder,

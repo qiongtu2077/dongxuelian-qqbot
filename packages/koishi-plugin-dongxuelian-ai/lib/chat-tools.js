@@ -12,7 +12,7 @@ const CHAT_TOOL_TIMEOUT_MS = 3000
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000
 const CHAT_TOOLS_TOTAL_DEADLINE_MS = 5000
 
-const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image', 'read_group_context', 'analyze_file'])
+const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image', 'read_group_context', 'analyze_file', 'create_uploaded_file_variant', 'create_reminder'])
 
 const HEAVY_TOOLS = new Set(['web_search', 'web_fetch', 'browser_action', 'execute_shell', 'file_write'])
 
@@ -134,8 +134,44 @@ function getChatToolDefinitions(options = {}) {
         },
       },
     },
+    {
+      type: 'function',
+      function: {
+        name: 'create_reminder',
+        description: '创建一次性提醒。用户明确要求“几分钟后提醒我/明天提醒/到点叫我”时调用；不要在闲聊或随机主动回复中调用。',
+        parameters: {
+          type: 'object',
+          properties: {
+            delayMinutes: { type: 'number', description: '多少分钟后提醒，例如 10' },
+            dueAt: { type: 'string', description: '绝对时间，ISO 或可解析日期字符串' },
+            text: { type: 'string', description: '提醒内容，例如 起床' },
+          },
+          required: ['text'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'create_uploaded_file_variant',
+        description: '基于当前会话最近上传的文件创建安全副本、改文件名，并可发回当前 QQ 群/私聊。用户明确要求“把刚才文件重命名/改名/另存为/发给我”时调用；不要用于任意本地文件。',
+        parameters: {
+          type: 'object',
+          properties: {
+            messageId: { type: 'string', description: '可选，文件消息 ID；不确定时留空使用最近文件' },
+            keyword: { type: 'string', description: '可选，按文件名关键词选择近期文件' },
+            name: { type: 'string', description: '新文件名，例如 1.txt；不带后缀会沿用原后缀' },
+            sendBack: { type: 'boolean', description: '是否发回当前会话，默认 true' },
+          },
+          required: ['name'],
+        },
+      },
+    },
   ]
-  return filterExternalToolDefinitions(tools, options.userText || options.currentText || '')
+  const filtered = options.randomTriggered
+    ? tools.filter(tool => !['create_reminder', 'create_uploaded_file_variant'].includes(tool.function?.name))
+    : tools
+  return filterExternalToolDefinitions(filtered, options.userText || options.currentText || '')
 }
 function isLightweightTool(name) {
   return LIGHTWEIGHT_TOOLS.has(name)
@@ -233,6 +269,14 @@ async function executeChatTool(toolCall, context = {}) {
       enqueueAnalysis(ck, msgId)
       return '该图片正在后台分析中，稍后可通过 read_image_history 查看结果。'
     }
+    case 'create_reminder': {
+      const reminder = require('./agent/tools/create-reminder')
+      return reminder.execute(args, context)
+    }
+    case 'create_uploaded_file_variant': {
+      const variant = require('./agent/tools/create-uploaded-file-variant')
+      return variant.execute(args, context)
+    }
     default:
       return null
   }
@@ -269,7 +313,7 @@ async function handleChatToolCalls(toolCalls, context = {}) {
 }
 
 function getChatToolSystemHint(channelKey, options = {}) {
-  let hint = '你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数闲聊不需要工具，直接回复即可。遇到会随时间变化的问题，例如最新、最近、当前、现在、热门、比较火、趋势、排行、推荐、版本更新、新角色、新闻、视频等，不要凭记忆编答案，应先调用 web_search；用户给出具体公开 URL 并要求查看、总结、核对网页内容时，应调用 web_fetch 读取正文。web_search 负责找候选来源并尽量打开正文，web_fetch 负责读取指定 URL；如果没有“正文质量：usable”的可靠正文，要直接说明没有拿到可靠结果，并给出可继续搜索或换链接的方向。read_group_context 只能查当前群公开旧片段，适合当前短句或追问接不上时理解“刚才/之前/那个/这张图/那个文件”等指代；工具结果是旧背景，不代表当前话题，不能主动翻旧账。read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。'
+  let hint = '你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数闲聊不需要工具，直接回复即可。遇到会随时间变化的问题，例如最新、最近、当前、现在、热门、比较火、趋势、排行、推荐、版本更新、新角色、新闻、视频等，不要凭记忆编答案，应先调用 web_search；用户给出具体公开 URL 并要求查看、总结、核对网页内容时，应调用 web_fetch 读取正文。web_search 负责找候选来源并尽量打开正文，web_fetch 负责读取指定 URL；如果没有“正文质量：usable”的可靠正文，要直接说明没有拿到可靠结果，并给出可继续搜索或换链接的方向。read_group_context 只能查当前群公开旧片段，适合当前短句或追问接不上时理解“刚才/之前/那个/这张图/那个文件”等指代；工具结果是旧背景，不代表当前话题，不能主动翻旧账。read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。用户明确要求“几分钟后提醒我/明天提醒/到点叫我”时可以调用 create_reminder；用户明确要求把近期上传文件改名、另存副本、发回时可以调用 create_uploaded_file_variant。随机主动回复绝对不要创建提醒或文件副本。'
   const policyHint = buildExternalToolPolicyHint(options.userText || options.currentText || '')
   if (policyHint) hint += `\n${policyHint}`
   if (channelKey) {
@@ -278,7 +322,7 @@ function getChatToolSystemHint(channelKey, options = {}) {
       const files = getRecentFilesCached(channelKey, 10).filter(f => !f.skipped)
       if (files.length > 0) {
         const analyzed = files.filter(file => file.analyzed).length
-        hint += `\n[文件上下文] 当前会话最近有${files.length}个文件记录（${analyzed}个已分析）。如果用户明确问"读文件"、"文件里面说了什么"、"刚才那个文件"等，可用 analyze_file；闲聊或没有指向文件时不要调用。`
+        hint += `\n[文件上下文] 当前会话最近有${files.length}个文件记录（${analyzed}个已分析）。如果用户明确问"读文件"、"文件里面说了什么"、"刚才那个文件"等，可用 analyze_file；如果用户明确要求"把刚才文件改名/重命名/另存为/发给我"，可用 create_uploaded_file_variant；闲聊或没有指向文件时不要调用。`
       }
     } catch {}
   }
