@@ -379,6 +379,13 @@ async function handleCommand(session, ctx, state) {
     return handled()
   }
 
+  if (plain === '东雪莲群人格切换') {
+    if (!isGroupAdminOrBotAdmin(session)) { await session.send('只有群管理员/群主才能设置群级人格。'); return handled() }
+    const personas = getAvailablePersonals({ userFacing: true })
+    await session.send(`请写要切换的群人格名：东雪莲群人格切换 <名称>\n可用人格：${personas.map(p => p.name).join('、')}`)
+    return handled()
+  }
+
   if (plain.startsWith('东雪莲群人格切换') && plain !== '东雪莲群人格切换') {
     if (!isGroupAdminOrBotAdmin(session)) { await session.send('只有群管理员/群主才能设置群级人格。'); return handled() }
     if (!inGuild) { await session.send('群级人格设置只能在群里用。'); return handled() }
@@ -444,6 +451,8 @@ async function handleCommand(session, ctx, state) {
       resetConfigCache()
       return handled(`已切换至 ${prov.name}：${foundModelId}`)
     }
+    const allModels = Object.values(PROVIDERS).flatMap(p => p.models.map(m => m.name))
+    return handled(`未找到模型"${requestedName}"。可用模型：${allModels.join('、')}`)
   }
 
   if (plain === 'AI状态') {

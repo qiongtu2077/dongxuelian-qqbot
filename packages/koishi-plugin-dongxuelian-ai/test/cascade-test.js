@@ -1775,7 +1775,7 @@ async function main() {
   checkThrows('mcp local check rejects shell chaining', () => modules.mcpLocalServer.parseLocalCheckCommand('quick && echo bad'), /只允许/)
   checkThrows('mcp local check rejects node target metacharacters', () => modules.mcpLocalServer.parseLocalCheckCommand('node -c lib/index.js; rm -rf x'), /不合法/)
   const mcpHealth = modules.mcpLocalServer.buildHealth(modules.agentConfig.getAgentConfig(), [ROOT])
-  check('mcp health redacts dangerous actions from defaults', mcpHealth.mcp.enabled === false && mcpHealth.mcp.allowWriteWorkspace === true && mcpHealth.mcp.allowRunLocal === true && mcpHealth.mcp.exposeDangerousActions === false)
+  check('mcp health redacts dangerous actions from defaults', mcpHealth.mcp.enabled === false && mcpHealth.mcp.allowWriteWorkspace === false && mcpHealth.mcp.allowRunLocal === false && mcpHealth.mcp.exposeDangerousActions === false)
   check('agent skills parses frontmatter name', modules.agentSkills.parseFrontmatter('---\nname: Demo\ndescription: Test\n---\nbody').name === 'Demo')
   const skillTmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cascade-skill-meta-'))
   try {

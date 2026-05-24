@@ -308,14 +308,33 @@ function scheduleCron(cron) {
     if (config.cron?.onceEnabled === false) return
   } else if (!config.cron?.enabled) return
   const nextRunAt = cron.mode === 'once' ? (cron.runAt || cron.nextRunAt) : (cron.nextRunAt || getNextRunAt(cron.schedule))
-  const delay = Math.max(1000, nextRunAt - Date.now())
-  if (delay > MAX_TIMEOUT_MS) {
+  const now = Date.now()
+  const delay = nextRunAt - now
+
+  if (delay < -5000) {
+    const policy = cron.runPolicy?.misfirePolicy || 'reschedule'
+    if (policy === 'skip') {
+      if (cron.mode !== 'once' && cron.schedule) {
+        cron.nextRunAt = getNextRunAt(cron.schedule)
+        scheduleCron(cron)
+      }
+      return
+    }
+    if (policy === 'reschedule' && cron.mode !== 'once' && cron.schedule) {
+      cron.nextRunAt = getNextRunAt(cron.schedule)
+      scheduleCron(cron)
+      return
+    }
+  }
+
+  const effectiveDelay = Math.max(1000, delay)
+  if (effectiveDelay > MAX_TIMEOUT_MS) {
     const timer = setTimeout(() => scheduleCron(cron), MAX_TIMEOUT_MS)
     if (timer.unref) timer.unref()
     timers.set(cron.id, timer)
     return
   }
-  const timer = setTimeout(() => runCronNow(cron.id).catch(() => {}), delay)
+  const timer = setTimeout(() => runCronNow(cron.id).catch(() => {}), effectiveDelay)
   if (timer.unref) timer.unref()
   timers.set(cron.id, timer)
 }

@@ -210,6 +210,9 @@ async function handleAdminInlineCommands(session, ctx, {
     await writeJsonFile(RANDOM_RATE_FILE, Object.fromEntries(randomRateCache))
     return matched(`本群主动回复基础概率已设置为 ${formatPercent(rate)}。50条未触发后仍按每条 +${formatPercent(RANDOM_TRIGGER_RAMP)} 递增。本群东雪莲AI聊天状态：${getRandomWhitelistStatus(channelKey) ? '开' : '关'}`)
   }
+  if (/^东雪莲群聊AI概率设置\s*.+/.test(plain)) {
+    return matched('概率范围只能是 0% 到 100% 之间，格式示例：东雪莲群聊AI概率设置 42%')
+  }
   if (/^东雪莲群聊AI概率重置$/.test(plain)) {
     if (!inGuild) return matched('这个命令只能在群里用。')
     randomRateCache.delete(channelKey)
@@ -228,6 +231,9 @@ async function handleAdminInlineCommands(session, ctx, {
     if (!Number.isFinite(rate) || rate < 0 || rate > 1) return matched('语音概率范围只能是 0% 到 100% 之间。')
     await setRandomVoiceRate(targetGroup, rate)
     return matched(`群 ${targetGroup} 的语音升级概率已设置为 ${formatPercent(rate)}。`)
+  }
+  if (/^东雪莲群聊语音概率设置\s*.+/.test(plain)) {
+    return matched('语音概率范围只能是 0% 到 100% 之间，格式示例：东雪莲群聊语音概率设置 30%')
   }
 
   const voiceRateResetMatch = plain.match(/^东雪莲群聊语音概率重置(?:\s*(\d+))?$/)
