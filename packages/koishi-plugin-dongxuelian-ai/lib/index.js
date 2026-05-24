@@ -143,6 +143,13 @@ const {
   formatAffectRouterDiagnostic,
 } = require('./affect-router') // 情绪输出旁路诊断（只记录，不接管文本/语音/表情）
 const {
+  buildStickerShadowIngestPlan,
+  formatStickerShadowIngestDiagnostic,
+  buildStickerShadowSendPlan,
+  formatStickerShadowSendDiagnostic,
+  appendStickerShadowLog,
+} = require('./sticker-shadow') // 表情包学习/发送旁路诊断（只记录，不入库/不发送）
+const {
   runExpressionHarvestForAllChannels,
   formatExpressionHarvestDiagnostic,
 } = require('./expression-abstractor') // 表达学习每日 harvest（旁路；只写池，不改主链路）
@@ -300,6 +307,7 @@ let randomWhitelistCache = new Set(DEFAULT_GROUP_RANDOM_WHITELIST)
 let randomRateCache = new Map()
 const channelQueues = new Map()
 const channelQueueDepth = new Map()
+const channelQueuedDepth = new Map()
 const channelMissCount = new Map()
 const armedEventDumpCache = new Map()
 const channelMutedUntil = new Map()
@@ -465,25 +473,41 @@ async function handleChatResult(chatResult, { ctx, session, channelKey, currentU
   return normalizeChatResultText(chatResult)
 }
 
-function enqueueForChannel(channelKey, fn, maxDepth) {
-  const existing = channelQueues.get(channelKey) || Promise.resolve()
+function enqueueForChannel(channelKey, fn, maxDepth, options = {}) {
+  const key = String(channelKey || '')
+  const queuedDepth = channelQueuedDepth.get(key) || 0
+  if (queuedDepth >= maxDepth) return false
+  const enqueuedAt = Date.now()
+  const maxQueueAgeMs = Math.max(1000, Number(options.maxQueueAgeMs || 45000))
+  channelQueuedDepth.set(key, queuedDepth + 1)
+  const existing = channelQueues.get(key) || Promise.resolve()
   const next = existing
     .then(() => {
-      const depth = channelQueueDepth.get(channelKey) || 0
+      const qd = channelQueuedDepth.get(key) || 1
+      if (qd <= 1) channelQueuedDepth.delete(key)
+      else channelQueuedDepth.set(key, qd - 1)
+      if (Date.now() - enqueuedAt > maxQueueAgeMs) {
+        logDebug(options.ctx, 'queue', `drop stale queued task channel=${key} ageMs=${Date.now() - enqueuedAt}`)
+        return
+      }
+      const depth = channelQueueDepth.get(key) || 0
       if (depth >= maxDepth) return
-      channelQueueDepth.set(channelKey, depth + 1)
+      channelQueueDepth.set(key, depth + 1)
       let timeoutHandle
       const timeoutPromise = new Promise((_, reject) => { timeoutHandle = setTimeout(() => reject(new Error('queue timeout (60s)')), 60000) })
-      return Promise.race([fn(), timeoutPromise]).finally(() => clearTimeout(timeoutHandle))
+      return Promise.race([fn(), timeoutPromise]).finally(() => {
+        clearTimeout(timeoutHandle)
+        const d = channelQueueDepth.get(key) || 1
+        if (d <= 1) channelQueueDepth.delete(key)
+        else channelQueueDepth.set(key, d - 1)
+      })
     })
     .catch(() => {})
     .then(() => {
-      const d = channelQueueDepth.get(channelKey) || 1
-      if (d <= 1) channelQueueDepth.delete(channelKey)
-      else channelQueueDepth.set(channelKey, d - 1)
-      if (channelQueues.get(channelKey) === next) channelQueues.delete(channelKey)
+      if (channelQueues.get(key) === next) channelQueues.delete(key)
     })
-  channelQueues.set(channelKey, next)
+  channelQueues.set(key, next)
+  return true
 }
 
 function getRandomTriggerRate(channelKey) {
@@ -574,6 +598,7 @@ function buildRandomSendOptions(context = {}) {
   const explicitVersion = Number(context.explicitVersion || 0)
   const triggerAt = Number(context.triggerAt || 0)
   return {
+    requireFresh: !!context.requireFresh,
     randomFreshness: {
       channelKey,
       triggerMessageVersion: triggerVersion,
@@ -659,6 +684,60 @@ function logAffectRouterDiagnostic(ctx, input = {}) {
     logDebug(ctx, 'affect-router', `diagnostic_failed ${error && error.message ? error.message : String(error)}`)
     return null
   }
+}
+
+function buildAffectRouterDiagnosticForShadow(input = {}) {
+  try {
+    return buildAffectRouterDiagnostic({
+      ...input,
+      randomVoiceRate: input.randomVoiceRate === undefined && input.channelKey ? getRandomVoiceRate(input.channelKey) : input.randomVoiceRate,
+    })
+  } catch {
+    return null
+  }
+}
+
+function logAffectRouterDiagnosticForOutputShadow(ctx, input = {}) {
+  const logged = logAffectRouterDiagnostic(ctx, input)
+  if (logged || !isDebugLogEnabled('sticker-shadow')) return logged
+  return buildAffectRouterDiagnosticForShadow(input)
+}
+
+function logStickerShadowPlan(ctx, plan) {
+  if (!plan) return
+  const formatter = plan.type === 'sticker_shadow_send_v1'
+    ? formatStickerShadowSendDiagnostic
+    : formatStickerShadowIngestDiagnostic
+  logDebug(ctx, 'sticker-shadow', formatter(plan))
+  appendStickerShadowLog(plan)
+    .then((result) => {
+      try { logDebug(ctx, 'sticker-shadow', `sticker_shadow_jsonl written=true file=${path.basename(result.file)} type=${plan.type || 'unknown'} mode=shadow_only prompt=unchanged send=unchanged`) } catch {}
+    })
+    .catch((error) => {
+      try { logDebug(ctx, 'sticker-shadow', `sticker_shadow_jsonl_failed reason=${String((error && error.message) || 'unknown').slice(0, 80)} type=${plan.type || 'unknown'} mode=shadow_only prompt=unchanged send=unchanged`) } catch {}
+    })
+}
+
+function logStickerShadowIngestDiagnostic(ctx, input = {}) {
+  if (!isDebugLogEnabled('sticker-shadow')) return null
+  try {
+    const plan = buildStickerShadowIngestPlan(input)
+    logStickerShadowPlan(ctx, plan)
+    return plan
+  } catch (error) {
+    logDebug(ctx, 'sticker-shadow', `sticker_shadow_ingest_failed reason=${String((error && error.message) || 'unknown').slice(0, 80)} mode=shadow_only prompt=unchanged send=unchanged`)
+    return null
+  }
+}
+
+function logStickerShadowSendDiagnostic(ctx, input = {}) {
+  if (!isDebugLogEnabled('sticker-shadow')) return null
+  buildStickerShadowSendPlan(input)
+    .then((plan) => logStickerShadowPlan(ctx, plan))
+    .catch((error) => {
+      try { logDebug(ctx, 'sticker-shadow', `sticker_shadow_send_failed reason=${String((error && error.message) || 'unknown').slice(0, 80)} mode=shadow_only prompt=unchanged send=unchanged`) } catch {}
+    })
+  return true
 }
 
 function getNextShanghaiMidnightDelayMs(now = Date.now()) {
@@ -1196,6 +1275,9 @@ exports.apply = (ctx) => {
     clearInterval(sensitiveTimer)
     try { require('./agent/cron').stopCronScheduler() } catch {}
     for (const [, entry] of channelPendingRandom) { if (entry && entry.timer) clearTimeout(entry.timer) }
+    channelQueues.clear()
+    channelQueueDepth.clear()
+    channelQueuedDepth.clear()
     channelPendingRandom.clear()
     channelMessageVersions.clear()
     channelExplicitVersions.clear()
@@ -1279,6 +1361,19 @@ exports.apply = (ctx) => {
       const storableUrl = /^https?:\/\//i.test(imgUrl) ? imgUrl : contentImageRef.url
       const storableFile = imgFile || contentImageRef.file || ''
       await storeImageUrl(channelKey, session.messageId, storableUrl || '', storableFile || null, imageMeta)
+      logStickerShadowIngestDiagnostic(ctx, {
+        session,
+        channelKey,
+        userId: session.userId || session.author?.id || session.username || '',
+        messageId: session.messageId,
+        content,
+        analyzed,
+        segments,
+        imageMeta: {
+          conversationKey: imageMeta.conversationKey,
+          hasUserId: !!imageMeta.userId,
+        },
+      })
       if (!plain.includes('[图片]')) plain = (plain ? plain + ' ' : '') + '[图片]'
       await enqueueAnalysis(channelKey, session.messageId)
     }
@@ -1478,6 +1573,7 @@ exports.apply = (ctx) => {
           replyToId: analyzed.replyToId,
           mentionUserIds,
           randomTriggered: true,
+          personaName: currentPersonaName || '',
         })
         const pendingExplicitVersion = getExplicitInteractionVersion(channelKey)
         const pendingMessageVersion = currentMessageVersion
@@ -1499,6 +1595,24 @@ exports.apply = (ctx) => {
               let reply = await handleChatResult(await chat(liveSession, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, meta: chatMeta }), { ctx, session: liveSession, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true, resolveBot })
               if (reply) {
                 reply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply
+                const affectDiagnostic = logAffectRouterDiagnosticForOutputShadow(ctx, {
+                  personaName: p.personaName || '',
+                  userText: p.combinedText,
+                  replyText: reply,
+                  randomTriggered: true,
+                  voiceCandidate: inGuild && !chatMeta.rareConfirmed,
+                  channelKey,
+                })
+                logStickerShadowSendDiagnostic(ctx, {
+                  session: liveSession,
+                  channelKey,
+                  userId: currentUserId,
+                  messageId: liveSession.messageId || session.messageId || '',
+                  personaName: p.personaName || '',
+                  replyText: reply,
+                  isRandom: true,
+                  affectDiagnostic,
+                })
                 let randomSendOptions = buildRandomSendOptions({
                   randomTriggered: true,
                   channelKey,
@@ -1521,9 +1635,9 @@ exports.apply = (ctx) => {
                   const rareVoiceSent = await safeSendRareVoice(ctx, liveSession)
                   if (rareVoiceSent) return
                 }
-                await safeSendReply(ctx, liveSession, reply, true, resolveBot, randomSendOptions)
+                await safeSendReply(ctx, liveSession, reply, true, resolveBot, { ...randomSendOptions, personaName: p.personaName || '' })
               }
-            }, 4)
+            }, 4, { ctx, maxQueueAgeMs: 20000 })
           } else {
             channelMissCount.set(channelKey, (channelMissCount.get(channelKey) || 0) + 1)
           }
@@ -1595,6 +1709,7 @@ exports.apply = (ctx) => {
       mentionUserIds,
       randomTriggered,
       currentText: userText,
+      personaName: currentPersonaName || '',
     })
 
     if (inGuild && sharedRecordText) {
@@ -1721,13 +1836,23 @@ exports.apply = (ctx) => {
         if (randomTriggered && chatMeta.randomReplyMode === 'ambient_water') {
           randomSendOptions = buildAmbientWaterSendOptions(randomSendOptions)
         }
-        logAffectRouterDiagnostic(ctx, {
+        const affectDiagnostic = logAffectRouterDiagnosticForOutputShadow(ctx, {
           personaName: currentPersonaName || '',
           userText,
           replyText: reply,
           randomTriggered,
           voiceCandidate: randomTriggered && inGuild && !chatMeta.rareConfirmed,
           channelKey,
+        })
+        logStickerShadowSendDiagnostic(ctx, {
+          session: liveSession,
+          channelKey,
+          userId: currentUserId,
+          messageId: liveSession.messageId || session.messageId || '',
+          personaName: currentPersonaName || '',
+          replyText: reply,
+          isRandom: randomTriggered,
+          affectDiagnostic,
         })
         if (randomTriggered && inGuild && !chatMeta.rareConfirmed) {
           try {
@@ -1767,7 +1892,7 @@ exports.apply = (ctx) => {
           const rareVoiceSent = await safeSendRareVoice(ctx, liveSession)
           if (rareVoiceSent) return
         }
-        return safeSendReply(ctx, liveSession, finalReply, randomTriggered, resolveBot, randomSendOptions)
+        return safeSendReply(ctx, liveSession, finalReply, randomTriggered, resolveBot, { ...randomSendOptions, personaName: currentPersonaName || '' })
       } catch (err) {
         const m = err && err.message ? String(err.message) : ''
         const code = err && err.code ? String(err.code) : ''
@@ -1786,6 +1911,6 @@ exports.apply = (ctx) => {
         }
         return safeSendReply(ctx, liveSession, msg, randomTriggered, resolveBot, randomSendOptions)
       }
-    }, maxDepth)
+    }, maxDepth, { ctx, maxQueueAgeMs: randomTriggered ? 20000 : 45000 })
   })
 }

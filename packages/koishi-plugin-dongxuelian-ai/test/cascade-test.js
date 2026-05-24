@@ -462,6 +462,7 @@ async function main() {
   check('syntax runner covers chat prompt builder syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/chat-prompt-builder.js'))
   check('syntax runner covers reply timing syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/reply-timing.js'))
   check('syntax runner covers affect router syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/affect-router.js'))
+  check('syntax runner covers sticker shadow syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/sticker-shadow.js'))
   check('syntax runner covers expression learner syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/expression-learner.js'))
   check('syntax runner covers expression pool store syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/expression-pool-store.js'))
   check('syntax runner covers expression abstractor syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/expression-abstractor.js'))
@@ -540,6 +541,7 @@ async function main() {
     externalToolPolicy: path.join(LIB, 'external-tool-policy'),
     replyTiming: path.join(LIB, 'reply-timing'),
     affectRouter: path.join(LIB, 'affect-router'),
+    stickerShadow: path.join(LIB, 'sticker-shadow'),
     expressionLearner: path.join(LIB, 'expression-learner'),
     expressionPoolStore: path.join(LIB, 'expression-pool-store'),
     expressionAbstractor: path.join(LIB, 'expression-abstractor'),
@@ -636,6 +638,8 @@ async function main() {
     agentToolSetUserTimezone: path.join(LIB, 'agent', 'tools', 'set-user-timezone'),
     agentToolQueryLogs: path.join(LIB, 'agent', 'tools', 'query-logs'),
     agentToolCreateReminder: path.join(LIB, 'agent', 'tools', 'create-reminder'),
+    agentToolReminderTools: path.join(LIB, 'agent', 'tools', 'reminder-tools'),
+    agentToolScheduledTaskTools: path.join(LIB, 'agent', 'tools', 'scheduled-task-tools'),
     agentToolAnalyzeFile: path.join(LIB, 'agent', 'tools', 'analyze-file'),
     rareVoice: path.join(LIB, 'rare-voice'),
     index: path.join(LIB, 'index'),
@@ -751,6 +755,14 @@ async function main() {
       'hashAffectValue', 'normalizeAffectText', 'normalizeAffectPolicy',
       'resolveAffectPolicy', 'classifyAffectMood',
       'buildAffectRouterDiagnostic', 'formatAffectRouterDiagnostic',
+    ],
+    stickerShadow: [
+      'stickerShadowHashValue', 'stickerShadowSanitizeSample',
+      'stickerShadowInferVisual', 'buildStickerShadowIngestPlan',
+      'formatStickerShadowIngestDiagnostic', 'loadStickerShadowSeedIndex',
+      'buildStickerShadowSendPlan', 'formatStickerShadowSendDiagnostic',
+      'getStickerShadowLogFile', 'buildStickerShadowLogEvent',
+      'appendStickerShadowLog',
     ],
     expressionLearner: [
       'filterExpressionLearningMessages',
@@ -944,7 +956,7 @@ async function main() {
       'send', 'sendToAdmin', 'taskComplete', 'cronResult', 'getQuota', 'listPushLog',
     ],
     agentCron: [
-      'loadCrons', 'saveCrons', 'registerCron', 'registerOnceTask', 'unregisterCron', 'runCronNow', 'listCronHistory', 'startCronScheduler', 'stopCronScheduler', 'getNextRunAt', 'validateCronSchedule', 'parseCronField', 'cronMatches', 'appendHistory',
+      'loadCrons', 'saveCrons', 'registerCron', 'getCron', 'registerOnceTask', 'unregisterCron', 'updateCron', 'pauseCron', 'resumeCron', 'runCronNow', 'listCronHistory', 'startCronScheduler', 'stopCronScheduler', 'getNextRunAt', 'validateCronSchedule', 'parseCronField', 'cronMatches', 'appendHistory', 'createCronId',
     ],
     agentPlanStore: [
       'buildPlanId', 'safePlanId', 'normalizePlan', 'savePlan', 'loadPlan', 'listPlans', 'listActivePlans', 'getPlanStorageInfo',
@@ -1009,6 +1021,14 @@ async function main() {
     agentToolSetUserTimezone: ['execute'],
     agentToolQueryLogs: ['execute'],
     agentToolCreateReminder: ['execute', 'resolveRunAt'],
+    agentToolReminderTools: [
+      'executeCreateReminder', 'executeListReminders', 'executeCancelReminder', 'resolveRunAt',
+    ],
+    agentToolScheduledTaskTools: [
+      'executeCreateScheduledTask', 'executeListScheduledTasks', 'executeGetScheduledTask',
+      'executePauseScheduledTask', 'executeResumeScheduledTask', 'executeDeleteScheduledTask',
+      'executeRunScheduledTaskNow', 'resolveRunAt', 'resolveTarget',
+    ],
     agentToolAnalyzeFile: ['execute'],
     voice: [
       'extractVoicePayload', 'downloadVoiceFile', 'convertToWav', 'callModelAsr', 'transcribeVoice',
@@ -1139,6 +1159,7 @@ async function main() {
     path.join(LIB, 'external-tool-policy.js'),
     path.join(LIB, 'reply-timing.js'),
     path.join(LIB, 'affect-router.js'),
+    path.join(LIB, 'sticker-shadow.js'),
     path.join(LIB, 'expression-learner.js'),
     path.join(LIB, 'expression-pool-store.js'),
     path.join(LIB, 'expression-abstractor.js'),
@@ -1234,7 +1255,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'group-scene-index.js', 'random-reply-mode.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'sticker-shadow.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'group-scene-index.js', 'random-reply-mode.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -1589,6 +1610,7 @@ async function main() {
   check('agent qq exposes read_agent_skill', qqTools.includes('read_agent_skill'))
   check('agent qq exposes safe uploaded file variant tool', qqTools.includes('create_uploaded_file_variant'))
   check('agent qq exposes one-shot reminder tool', qqTools.includes('create_reminder'))
+  check('agent qq exposes reminder management tools', qqTools.includes('list_reminders') && qqTools.includes('cancel_reminder'))
   check('agent qq does not expose file read', !qqTools.includes('read_file'))
   check('agent qq does not expose file list', !qqTools.includes('list_files'))
   check('agent qq does not expose file search', !qqTools.includes('find_files'))
@@ -1736,6 +1758,10 @@ async function main() {
   checkThrows('agent cron rejects unsupported range syntax', () => modules.agentCron.validateCronSchedule('1-5 * * * *'), /范围|支持/)
   check('agent cron matches comma minute list', modules.agentCron.cronMatches(new Date('2099-01-01T00:15:00Z'), '0,15,30,45 * * * *'))
   check('agent cron does not silently parse only first comma value', !modules.agentCron.cronMatches(new Date('2099-01-01T00:16:00Z'), '0,15,30,45 * * * *'))
+  const scheduledTaskToolNames = modules.agentToolScheduledTaskTools.tools.map(tool => tool.definition.name)
+  for (const name of ['create_scheduled_task', 'list_scheduled_tasks', 'get_scheduled_task', 'pause_scheduled_task', 'resume_scheduled_task', 'delete_scheduled_task', 'run_scheduled_task_now']) {
+    check(`scheduled task tool registered: ${name}`, scheduledTaskToolNames.includes(name), scheduledTaskToolNames.join(','))
+  }
   check('agent skills parses frontmatter name', modules.agentSkills.parseFrontmatter('---\nname: Demo\ndescription: Test\n---\nbody').name === 'Demo')
   const skillTmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cascade-skill-meta-'))
   try {
@@ -2715,6 +2741,62 @@ async function main() {
     replyText: 'raw-reply-secret',
   }))
   check('affect router diagnostic line hashes persona and omits raw text', affectLine.includes('persona=') && !affectLine.includes('爱弥斯') && !affectLine.includes('raw-user-secret') && !affectLine.includes('raw-reply-secret'), affectLine)
+  const stickerShadow = modules.stickerShadow
+  const stickerIngestImage = stickerShadow.buildStickerShadowIngestPlan({
+    channelKey: 'group-sticker-shadow',
+    userId: 'user-sticker-shadow',
+    messageId: 'message-sticker-shadow',
+    content: '<img src="file://D:/qq/private/secret.png"/>',
+    analyzed: { hasVisual: true },
+    segments: [{ type: 'image', attrs: { file: 'secret.png' } }],
+    now: 1700000000000,
+  })
+  check('sticker shadow ingest observes image without writing or sending', stickerIngestImage.decision === 'observe_pending_if_enabled' && stickerIngestImage.simulated.wouldWritePending && !stickerIngestImage.simulated.wouldCallVlmNow && !stickerIngestImage.simulated.wouldSend, JSON.stringify(stickerIngestImage))
+  const stickerIngestMface = stickerShadow.buildStickerShadowIngestPlan({
+    channelKey: 'group-sticker-shadow',
+    userId: 'user-sticker-shadow',
+    messageId: 'mface-sticker-shadow',
+    content: '[CQ:mface,file=abc.png]',
+    analyzed: { hasVisual: true },
+    segments: [{ type: 'mface', attrs: { file: 'abc.png' } }],
+  })
+  check('sticker shadow ingest recognizes QQ mface as sticker-like visual', stickerIngestMface.visual.kind === 'qq_mface' && stickerIngestMface.visual.stickerLike === true && stickerIngestMface.decision === 'observe_pending_if_enabled', JSON.stringify(stickerIngestMface))
+  const stickerIngestGif = stickerShadow.buildStickerShadowIngestPlan({
+    channelKey: 'group-sticker-shadow',
+    userId: 'user-sticker-shadow',
+    messageId: 'gif-sticker-shadow',
+    content: '[CQ:image,file=move.gif]',
+    analyzed: { hasVisual: true },
+  })
+  check('sticker shadow ingest does not silently learn gif before vetter policy', stickerIngestGif.decision === 'skip_gif_until_vetter_policy' && !stickerIngestGif.simulated.wouldWritePending, JSON.stringify(stickerIngestGif))
+  const stickerIngestLine = stickerShadow.formatStickerShadowIngestDiagnostic(stickerIngestImage)
+  check('sticker shadow ingest diagnostic omits raw channel user and file path', stickerIngestLine.includes('sticker_shadow_ingest') && !stickerIngestLine.includes('group-sticker-shadow') && !stickerIngestLine.includes('user-sticker-shadow') && !stickerIngestLine.includes('secret.png') && !stickerIngestLine.includes('file://'), stickerIngestLine)
+  const stickerSendExplicit = await stickerShadow.buildStickerShadowSendPlan({
+    channelKey: 'group-sticker-shadow',
+    userId: 'user-sticker-shadow',
+    messageId: 'reply-sticker-shadow',
+    personaName: '东雪莲',
+    replyText: '看这个[图:开心]',
+    affectDiagnostic: affectRouter.buildAffectRouterDiagnostic({ replyText: '看这个[图:开心]', policy: { allowEmoji: true } }),
+  }, { seedDir: path.join(c.DATA_DIR, 'stickers') })
+  check('sticker shadow send picks explicit seed candidate without sending', stickerSendExplicit.decision === 'would_send_seed_if_enabled' && stickerSendExplicit.candidates.length > 0 && stickerSendExplicit.candidates[0].score >= 100 && stickerSendExplicit.simulated.sent === false && stickerSendExplicit.simulated.wouldCallVlm === false, JSON.stringify(stickerSendExplicit))
+  const stickerSendBlocked = await stickerShadow.buildStickerShadowSendPlan({
+    channelKey: 'group-sticker-shadow',
+    userId: 'user-sticker-shadow',
+    replyText: '哈哈这个太好笑了',
+    affectDiagnostic: affectRouter.buildAffectRouterDiagnostic({ personaName: '长离', userText: '哈哈', replyText: '哈哈这个太好笑了' }),
+  }, { seedDir: path.join(c.DATA_DIR, 'stickers') })
+  check('sticker shadow send records affect-router block without bypassing it', stickerSendBlocked.decision === 'would_pick_but_affect_blocks' && stickerSendBlocked.affect.emojiAllowed === false && stickerSendBlocked.candidates.length > 0, JSON.stringify(stickerSendBlocked))
+  const stickerSendLine = stickerShadow.formatStickerShadowSendDiagnostic(stickerSendExplicit)
+  check('sticker shadow send diagnostic uses hashes and shadow markers', stickerSendLine.includes('sticker_shadow_send') && stickerSendLine.includes('mode=shadow_only') && stickerSendLine.includes('send=unchanged') && !stickerSendLine.includes('group-sticker-shadow') && !stickerSendLine.includes('看这个'), stickerSendLine)
+  const stickerShadowTmp = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'sticker-shadow-'))
+  try {
+  const stickerLogResult = await stickerShadow.appendStickerShadowLog(stickerSendExplicit, { rootDir: stickerShadowTmp, loggedAt: 1700000000001 })
+    const stickerLogText = read(stickerLogResult.file)
+    check('sticker shadow jsonl writes structured shadow event without raw ids or paths', stickerLogText.includes('"type":"sticker_shadow_send_v1"') && stickerLogText.includes('"mode":"shadow_only"') && stickerLogText.includes('"replySample"') && !stickerLogText.includes('group-sticker-shadow') && !stickerLogText.includes('user-sticker-shadow') && !stickerLogText.includes('file://') && !stickerLogText.includes('D:/qq'), stickerLogText)
+  } finally {
+    try { require('fs').rmSync(stickerShadowTmp, { recursive: true, force: true }) } catch {}
+  }
   const expressionLearner = modules.expressionLearner
   const exprBaseTs = 1700000000000
   const exprFilterResult = expressionLearner.filterExpressionLearningMessages([
@@ -3143,6 +3225,7 @@ async function main() {
     'packages/*/data/user-profiles/',
     'packages/*/data/conversations/',
     'packages/*/data/persona-diagnostics/',
+    'packages/*/data/sticker-diagnostics/',
     'packages/*/data/*cache*',
     'packages/*/data/*dump*',
     'packages/*/data/ai-persona-users.json',
@@ -3157,6 +3240,8 @@ async function main() {
   if (ignoredProfile !== null) check('git ignores package user profiles', ignoredProfile)
   const ignoredPersonaDiagnostics = gitCheckIgnored('packages/koishi-plugin-dongxuelian-ai/data/persona-diagnostics/profile-shadow-2026-05-24.jsonl')
   if (ignoredPersonaDiagnostics !== null) check('git ignores persona profile shadow diagnostics', ignoredPersonaDiagnostics)
+  const ignoredStickerDiagnostics = gitCheckIgnored('packages/koishi-plugin-dongxuelian-ai/data/sticker-diagnostics/sticker-shadow-2026-05-24.jsonl')
+  if (ignoredStickerDiagnostics !== null) check('git ignores sticker shadow diagnostics', ignoredStickerDiagnostics)
   const ignoredSkill = gitCheckIgnored('packages/koishi-plugin-dongxuelian-ai/data/ai-skills/core/SKILL.persona-core.md')
   if (ignoredSkill !== null) check('git does not ignore ai-skills resources', !ignoredSkill)
 
@@ -3398,6 +3483,23 @@ async function main() {
   // bug: agent/passive 多模态调用没有瞳仁防护，模型瞎说"看不到"会被当作 analysis 写入 image-store 污染下游。
   check('image-analyzer skips write on vision blindness reply', imageAnalyzerSrc.includes("require('./vision')") && imageAnalyzerSrc.includes('isVisionBlindnessReply(analysis)') && /isVisionBlindnessReply\(analysis\)\)[\s\S]{0,400}?return\b[\s\S]{0,400}?markAnalyzed/.test(imageAnalyzerSrc) && imageAnalyzerSrc.includes('skipping write'))
   check('agent analyze_historical_image refuses to persist blindness reply', analyzeImageSrc.includes("require('../../vision')") && analyzeImageSrc.includes('isVisionBlindnessReply(analysis)') && /isVisionBlindnessReply\(analysis\)[\s\S]{0,200}视觉模型未能解析/.test(analyzeImageSrc))
+  const stickerShadowIngestIndex = indexSrc.indexOf('logStickerShadowIngestDiagnostic(ctx, {')
+  const storeImageUrlIndex = indexSrc.indexOf('await storeImageUrl(')
+  const enqueueAnalysisIndex = indexSrc.indexOf('await enqueueAnalysis(channelKey, session.messageId)')
+  check('index.js sticker shadow ingest runs after image-store and before analysis queue', stickerShadowIngestIndex > storeImageUrlIndex && stickerShadowIngestIndex < enqueueAnalysisIndex, `store=${storeImageUrlIndex} shadow=${stickerShadowIngestIndex} enqueue=${enqueueAnalysisIndex}`)
+  const stickerShadowHelperIndex = indexSrc.indexOf('function logStickerShadowSendDiagnostic')
+  const stickerShadowPlanHelperIndex = indexSrc.indexOf('function logStickerShadowPlan')
+  const stickerShadowSendIndex = indexSrc.indexOf('logStickerShadowSendDiagnostic(ctx, {')
+  const safeSendReplyIndex = indexSrc.indexOf('return safeSendReply(ctx, liveSession, finalReply')
+  const stickerShadowHelperEnd = indexSrc.indexOf('function getNextShanghaiMidnightDelayMs', stickerShadowHelperIndex)
+  const stickerShadowHelperBlock = indexSrc.slice(stickerShadowHelperIndex, stickerShadowHelperEnd > stickerShadowHelperIndex ? stickerShadowHelperEnd : stickerShadowHelperIndex + 1800)
+  const stickerShadowPlanHelperBlock = indexSrc.slice(stickerShadowPlanHelperIndex, stickerShadowHelperIndex > stickerShadowPlanHelperIndex ? stickerShadowHelperIndex : stickerShadowPlanHelperIndex + 900)
+  const stickerShadowCallerBlock = indexSrc.slice(stickerShadowSendIndex, stickerShadowSendIndex + 650)
+  check('index.js sticker shadow send is debug-gated before real send', stickerShadowHelperIndex >= 0 && stickerShadowSendIndex > stickerShadowHelperIndex && stickerShadowSendIndex < safeSendReplyIndex && stickerShadowHelperBlock.includes("isDebugLogEnabled('sticker-shadow')") && stickerShadowHelperBlock.includes("logDebug(ctx, 'sticker-shadow'") && stickerShadowPlanHelperBlock.includes('appendStickerShadowLog(plan)') && indexSrc.includes('logAffectRouterDiagnosticForOutputShadow'), stickerShadowHelperBlock.slice(0, 300))
+  check('index.js sticker shadow helper does not mutate reply or send messages', !/messages\.(?:push|splice|unshift)|session\.send|sendReply\(/.test(stickerShadowHelperBlock), stickerShadowHelperBlock)
+  check('index.js sticker shadow caller only observes reply before send', stickerShadowCallerBlock.includes('affectDiagnostic') && stickerShadowCallerBlock.includes('replyText: reply') && !/messages\.(?:push|splice|unshift)|session\.send|sendReply\(/.test(stickerShadowCallerBlock), stickerShadowCallerBlock)
+  const stickerShadowSrc = read(path.join(LIB, 'sticker-shadow.js'))
+  check('sticker shadow module never sends or mutates production sticker pool', !/sendSticker|sendReply|session\.send|sendGroupMsg|sendPrivateMsg|sticker-pool|pending\.json|index\.json|banlist\.json|callOpenAI|requestChatCompletions/.test(stickerShadowSrc), 'sticker-shadow.js')
   const expressionShadowIndex = chatSrc.indexOf('buildExpressionShadowPlan({')
   const callOpenAIIndex = chatSrc.indexOf('let reply = await callOpenAI(messages')
   const expressionShadowBlock = chatSrc.slice(Math.max(0, expressionShadowIndex - 500), callOpenAIIndex > expressionShadowIndex ? callOpenAIIndex : expressionShadowIndex + 1500)

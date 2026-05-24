@@ -20,7 +20,7 @@ module.exports = {
   },
   async execute(params = {}, context = {}) {
     const channelKey = context.channelKey || ''
-    const messageId = String(params.messageId || '').trim()
+    const messageId = String(params.messageId || context.activeFileMessageId || '').trim()
 
     if (messageId && channelKey) {
       const entry = await getFileEntry(channelKey, messageId)

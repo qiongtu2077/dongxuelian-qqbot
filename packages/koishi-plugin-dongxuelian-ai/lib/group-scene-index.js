@@ -99,6 +99,7 @@ function normalizeSceneEntry(channelKey, entry = {}) {
     userId: String(entry.userId || ''),
     role: entry.role === 'assistant' ? 'assistant' : 'user',
     speakerName,
+    personaName: entry.role === 'assistant' ? sanitizeUserName(String(entry.personaName || '')).slice(0, 40) : '',
     content,
     messageId,
     replyToId: String(entry.replyToId || ''),
@@ -136,6 +137,7 @@ function normalizeSceneData(data) {
           ts: Number(snippet?.ts || 0),
           speakerName: sanitizeUserName(String(snippet?.speakerName || '群友')).slice(0, 40) || '群友',
           role: snippet?.role === 'assistant' ? 'assistant' : 'user',
+          personaName: snippet?.role === 'assistant' ? sanitizeUserName(String(snippet?.personaName || '')).slice(0, 40) : '',
           content: sanitizeSceneText(snippet?.content || '', 220),
         })).filter(snippet => snippet.content).slice(-GROUP_SCENE_MAX_SNIPPETS) : [],
         state: String(scene.state || 'warm'),
@@ -219,6 +221,7 @@ function appendEntryToScene(scene, entry) {
     ts: entry.ts,
     speakerName: entry.speakerName,
     role: entry.role,
+    personaName: entry.personaName || '',
     content: entry.content,
   })
   scene.messageIds = scene.messageIds.slice(-GROUP_SCENE_MAX_SNIPPETS)
@@ -264,7 +267,8 @@ async function appendGroupSceneEntry(channelKey, rawEntry = {}) {
 
 function formatSceneLine(item = {}) {
   const name = sanitizeUserName(String(item.speakerName || (item.role === 'assistant' ? '东雪莲' : '群友'))).slice(0, 40) || '群友'
-  const role = item.role === 'assistant' ? '东雪莲' : '群友'
+  const personaName = item.role === 'assistant' ? sanitizeUserName(String(item.personaName || '')).slice(0, 40) : ''
+  const role = item.role === 'assistant' ? (personaName ? `东雪莲/${personaName}` : '东雪莲') : '群友'
   const content = sanitizeSceneText(item.content || '', 220)
   return content ? `${name}(${role})：${content}` : ''
 }
@@ -303,6 +307,8 @@ function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', o
   if (!lines.length) return ''
   const hasMedia = finalItems.some(item => /\[(?:文件|图片|语音|转发)/.test(item.content || ''))
   const hasAssistant = finalItems.some(item => item.role === 'assistant')
+  const currentPersonaName = String(options.personaName || '').trim()
+  const hasOtherPersonaAssistant = !!currentPersonaName && finalItems.some(item => item.role === 'assistant' && item.personaName && String(item.personaName) !== currentPersonaName)
   const hasCurrentMediaCue = /(?:这张|这图|图里|图片|上面|刚才|刚刚|那个|这个|表情|文件|语音|转发)/.test(currentText)
   const visionCorrectionFocus = /(?:认错|看错|识别|游戏截图|截图|看不出来|别想了|技术发展|复读|同一句|同一件事)/.test(currentText)
   const modeLine = options.randomTriggered
@@ -315,6 +321,7 @@ function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', o
     hasMedia && !hasCurrentMediaCue ? '当前消息没有明确图片/文件指示词时，旧图片/旧文件只作背景，不要主动把旧图旧文件当成当前主语。' : '',
     visionCorrectionFocus ? '当前现场像是在纠正识图错误或讨论识图能力边界；优先回应“刚才是否认错/识图是否可靠”，不要跳回更早图片内容。' : '',
     hasAssistant ? '现场里包含你刚才的公开回复，跨用户问“真的吗/什么意思/怎么说”时优先承接这条公开回复。' : '',
+    hasOtherPersonaAssistant ? '现场里也可能包含其他人格的公开回复；这些只作群聊事实背景，不要继承其他人格口吻或口癖。' : '',
     modeLine,
     ...lines,
   ].filter(Boolean).join('\n')

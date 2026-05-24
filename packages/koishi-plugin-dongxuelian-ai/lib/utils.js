@@ -270,6 +270,7 @@ function isOverusedReply(reply = '') {
 function hasBannedOutput(text) { return BANNED_ACTION_OUTPUT_RE.test(text) || OVERUSED_REPLY_PATTERNS.some(p => p.test(text)) }
 
 const THINKING_LEAK_INPUT_MAX_CHARS = 4000
+const TOOL_PLAN_NAME_RE = '(?:web_fetch|web_search|read_image_history|analyze_historical_image|analyze_file|read_group_context|create_reminder|list_reminders|cancel_reminder|create_uploaded_file_variant)'
 const THINKING_LEAK_PATTERNS = [
   /(?:^|[\n。！？!?]\s*)(?:好的[，,]?)?用户.{0,30}发了个消息说[“"].{0,120}[”"].{0,60}(?:这应该是|应该是在|是在回应)/,
   /我(?:得|要|来)?(?:先)?看看(?:现在)?是什么情况/,
@@ -279,6 +280,8 @@ const THINKING_LEAK_PATTERNS = [
   /我(?:需要|得|要|应该).{0,60}(?:解释|确认|安抚|承认|提供|给出|保持|避免|调用|读取)/,
   /我会调用\s*[a-zA-Z_][\w.:-]*\s*(?:函数|工具)?/,
   /(?:read_image_history|analyze_historical_image|web_search|web_fetch)\s*(?:函数|工具|来|获取|查看|分析)/i,
+  new RegExp('(?:^|[\\n\\r])\\s*' + TOOL_PLAN_NAME_RE + '\\b\\s*(?:url|query|messageId|keyword|limit|参数|args|arguments|\\{|:)', 'i'),
+  new RegExp('(?:^|[\\n\\r])\\s*(?:tool|function|函数|工具)\\s*[:：]\\s*' + TOOL_PLAN_NAME_RE + '\\b', 'i'),
   /用户(?:现在)?(?:是在|在|刚刚|可能|应该|想|需要|质疑).{0,80}(?:引用|重复|测试|问|说|让我|评价|质疑|遇到|觉得)/,
   /(?:保持|使用|用).{0,20}(?:人设|人格|口吻|语气|风格)/,
   /(?:避免使用|不要使用).{0,20}(?:专业术语|markdown|代码块|工具|搜索过程)/,

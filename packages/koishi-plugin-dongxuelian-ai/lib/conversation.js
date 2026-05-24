@@ -403,6 +403,7 @@ function buildRecentPublicTopicNote(items = [], currentUserId = '', options = {}
   if (!Array.isArray(items) || !items.length) return ''
   const currentText = normalizeText(options.currentText || '')
   if (!looksLikeShortContextFollowUp(currentText)) return ''
+  const currentPersonaName = String(options.personaName || '').trim()
   const recent = items
     .filter(item => item && item.content)
     .slice(-8)
@@ -413,7 +414,11 @@ function buildRecentPublicTopicNote(items = [], currentUserId = '', options = {}
     const content = normalizeText(item.content)
     if (!content) continue
     if (item.role === 'assistant') {
-      candidates.push(`你刚才说过：${content.slice(0, 160)}`)
+      const itemPersona = String(item.personaName || '').trim()
+      const samePersona = !currentPersonaName || !itemPersona || itemPersona === currentPersonaName
+      candidates.push(samePersona
+        ? `你刚才说过：${content.slice(0, 160)}`
+        : `其他人格${itemPersona}刚才公开回复：${content.slice(0, 160)}（只作群聊背景，不要继承其口吻）`)
     } else {
       const who = String(item.userId || '') === String(currentUserId || '') ? '当前用户刚才说' : `${item.speakerName || '群友'}刚才说`
       candidates.push(`${who}：${content.slice(0, 160)}`)
@@ -444,7 +449,8 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
   const hasMentions = Array.isArray(metadata.mentionUserIds) && metadata.mentionUserIds.length > 0
   if (!value && !hasMentions) return
   const userId = String(role === 'assistant' ? (session.selfId || session.bot?.selfId || 'bot') : (session.userId || session.author?.id || session.username || 'unknown'))
-  const entry = { userId, role, speakerName: sanitizeUserName(speakerName || (role === 'assistant' ? '东雪莲' : '群友')), content: value, messageId: String(metadata.messageId || ''), replyToId: String(metadata.replyToId || ''), mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [], hasMessageRecordCue: !!metadata.hasMessageRecordCue, hasAudio: !!metadata.hasAudio, ts: Date.now() }
+  const personaName = role === 'assistant' ? sanitizeUserName(String(metadata.personaName || '')).slice(0, 40) : ''
+  const entry = { userId, role, speakerName: sanitizeUserName(speakerName || (role === 'assistant' ? '东雪莲' : '群友')), personaName, content: value, messageId: String(metadata.messageId || ''), replyToId: String(metadata.replyToId || ''), mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [], hasMessageRecordCue: !!metadata.hasMessageRecordCue, hasAudio: !!metadata.hasAudio, ts: Date.now() }
   const current = channelSharedCache.get(channelKey) || []
   channelSharedCache.set(channelKey, current.concat(entry).slice(-MAX_CHANNEL_SHARED_MESSAGES))
   appendGroupSceneEntry(channelKey, entry).catch(() => {})
@@ -714,7 +720,10 @@ function getSharedContextNote(session, currentUserId = '', options = {}) {
     if (i > 0 && itemsToMap[i].ts && itemsToMap[i - 1].ts && itemsToMap[i].ts - itemsToMap[i - 1].ts > IDLE_GAP_MS) {
       lines.push('[--- 以下是与当前无关的旧消息 ---]')
     }
-    lines.push(`${itemsToMap[i].speakerName}(${itemsToMap[i].role === 'assistant' ? '东雪莲' : '群友'})：${itemsToMap[i].content}`)
+    const personaLabel = itemsToMap[i].role === 'assistant' && itemsToMap[i].personaName
+      ? `东雪莲/${itemsToMap[i].personaName}`
+      : (itemsToMap[i].role === 'assistant' ? '东雪莲' : '群友')
+    lines.push(`${itemsToMap[i].speakerName}(${personaLabel})：${itemsToMap[i].content}`)
   }
   if (!lines.length) return ''
   return `[群聊当前话题背景]\n下面只保留当前回复链、当前参与者或短句跟进可能需要的纯文本消息。优先理解最近公共话题和明确回复链，不要把昵称当成默认评价对象。\n${shortTopicNote ? `${shortTopicNote}\n` : ''}${lines.join('\n')}`

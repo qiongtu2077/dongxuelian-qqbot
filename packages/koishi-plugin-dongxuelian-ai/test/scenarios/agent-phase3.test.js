@@ -189,6 +189,30 @@ async function run(t) {
     t.check('cron computes next run', registered.nextRunAt > Date.now())
     const restored = await cron.startCronScheduler({ bot })
     t.check('cron scheduler restores persisted task', restored >= 1)
+    const periodicRun = await cron.runCronNow('scenario_cron')
+    const periodicData = await cron.loadCrons()
+    const periodicSaved = periodicData.crons.find(item => item.id === 'scenario_cron')
+    t.check('cron periodic text task failure still keeps recurring schedule', !periodicRun.ok && periodicSaved && periodicSaved.enabled !== false && periodicSaved.status === 'active' && periodicSaved.nextRunAt > Date.now() && periodicSaved.stats.failCount >= 1, JSON.stringify({ periodicRun, periodicSaved }))
+    config.push.dailyLimit = 5
+    await agentConfig.saveAgentConfig(config)
+    const successCron = await cron.registerCron({ id: 'scenario_cron_success', schedule: '*/10 * * * *', type: 'text', prompt: 'cron text ok', targetChannel: 'g-success' })
+    const successRun = await cron.runCronNow(successCron.id)
+    const successData = await cron.loadCrons()
+    const successSaved = successData.crons.find(item => item.id === successCron.id)
+    t.check('cron periodic text task can send and keep schedule', successRun.ok && successSaved && successSaved.enabled !== false && successSaved.status === 'active' && successSaved.nextRunAt > Date.now(), JSON.stringify({ successRun, successSaved }))
+    const agentSent = []
+    const agentBot = { async sendMessage(channelKey, text) { agentSent.push({ channelKey, text }) } }
+    const agentEngine = { async run(input) { return { reply: `agent-result:${input.userMessage}:${input.scheduledTask && input.scheduledTask.id}` } } }
+    await cron.startCronScheduler({ bot: agentBot, engine: agentEngine })
+    const agentCron = await cron.registerCron({ id: 'scenario_agent_cron', schedule: '*/10 * * * *', type: 'agent', prompt: '总结今天群聊', targetChannel: 'g-agent', createdBy: 'u1' })
+    const agentRun = await cron.runCronNow(agentCron.id)
+    const agentData = await cron.loadCrons()
+    const agentSaved = agentData.crons.find(item => item.id === agentCron.id)
+    t.check('cron periodic agent task runs engine and keeps schedule', agentRun.ok && agentSent.some(item => item.channelKey === 'g-agent' && item.text.includes('agent-result:总结今天群聊')) && agentSaved && agentSaved.enabled !== false && agentSaved.nextRunAt > Date.now(), JSON.stringify({ agentRun, agentSent, agentSaved }))
+    const pausedCron = await cron.pauseCron(agentCron.id)
+    t.check('cron pause marks scheduled task paused', pausedCron && pausedCron.enabled === false && pausedCron.status === 'paused', JSON.stringify(pausedCron))
+    const resumedCron = await cron.resumeCron(agentCron.id)
+    t.check('cron resume reactivates scheduled task', resumedCron && resumedCron.enabled !== false && resumedCron.status === 'active' && resumedCron.nextRunAt > Date.now(), JSON.stringify(resumedCron))
     cron.stopCronScheduler()
 
     config.cron.enabled = false
@@ -207,6 +231,25 @@ async function run(t) {
     const onceSaved = onceData.crons.find(item => item.id === 'scenario_once')
     t.check('cron once marks task done without reschedule', onceSaved && onceSaved.enabled === false && onceSaved.status === 'done', JSON.stringify(onceSaved))
     cron.stopCronScheduler()
+
+    const reminderTools = require('../../lib/agent/tools/reminder-tools')
+    const firstReminder = await reminderTools.createReminderTool.execute({ delayMinutes: 10, text: '起床' }, { channelKey: 'g-remind', userId: 'u1', channel: 'qq' })
+    const secondReminder = await reminderTools.createReminderTool.execute({ delayMinutes: 1, text: '起床' }, { channelKey: 'g-remind', userId: 'u1', channel: 'qq' })
+    t.check('reminder tool creates repeated one-shot reminders', firstReminder.includes('已创建提醒') && secondReminder.includes('已创建提醒'), JSON.stringify({ firstReminder, secondReminder }))
+    const reminderList = await reminderTools.listRemindersTool.execute({}, { channelKey: 'g-remind', userId: 'u1', channel: 'qq' })
+    t.check('reminder list shows pending reminders', reminderList.includes('提醒：起床'), reminderList)
+    const latestCancelResult = await reminderTools.cancelReminderTool.execute({ latest: true }, { channelKey: 'g-remind', userId: 'u1', channel: 'qq' })
+    t.check('reminder latest cancel removes newest visible reminder', latestCancelResult.includes('已取消提醒'), latestCancelResult)
+    const cancelResult = await reminderTools.cancelReminderTool.execute({ keyword: '起床' }, { channelKey: 'g-remind', userId: 'u1', channel: 'qq' })
+    t.check('reminder cancel removes a visible reminder by keyword', cancelResult.includes('已取消提醒'), cancelResult)
+
+    config.cron.enabled = true
+    await agentConfig.saveAgentConfig(config)
+    const scheduledTools = require('../../lib/agent/tools/scheduled-task-tools')
+    const scheduledCreate = await scheduledTools.createScheduledTaskTool.execute({ mode: 'cron', type: 'text', schedule: '0 8 * * *', title: '早安', prompt: '早安', scheduleText: '每天 08:00' }, { channelKey: 'g-schedule', userId: 'u1', channel: 'qq' })
+    t.check('scheduled task tool creates recurring text task', scheduledCreate.includes('已创建周期任务'), scheduledCreate)
+    const scheduledList = await scheduledTools.listScheduledTasksTool.execute({ status: 'active' }, { channelKey: 'g-schedule', userId: 'u1', channel: 'qq' })
+    t.check('scheduled task list shows recurring task', scheduledList.includes('早安') && scheduledList.includes('cron/text'), scheduledList)
 
     const memory = require('../../lib/agent/memory')
     const item = await memory.remember({ userId: 'u1', channelKey: 'g1', text: '莲莲喜欢把计划写清楚', tags: ['phase3'] })

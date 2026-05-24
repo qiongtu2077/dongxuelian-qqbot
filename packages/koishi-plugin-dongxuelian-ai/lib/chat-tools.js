@@ -12,7 +12,7 @@ const CHAT_TOOL_TIMEOUT_MS = 3000
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000
 const CHAT_TOOLS_TOTAL_DEADLINE_MS = 5000
 
-const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image', 'read_group_context', 'analyze_file', 'create_uploaded_file_variant', 'create_reminder'])
+const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image', 'read_group_context', 'analyze_file', 'create_uploaded_file_variant', 'create_reminder', 'list_reminders', 'cancel_reminder', 'create_scheduled_task', 'list_scheduled_tasks', 'get_scheduled_task', 'pause_scheduled_task', 'resume_scheduled_task', 'delete_scheduled_task', 'run_scheduled_task_now'])
 
 const HEAVY_TOOLS = new Set(['web_search', 'web_fetch', 'browser_action', 'execute_shell', 'file_write'])
 
@@ -153,6 +153,34 @@ function getChatToolDefinitions(options = {}) {
     {
       type: 'function',
       function: {
+        name: 'list_reminders',
+        description: '查看当前会话/当前用户待触发的一次性提醒。用户问“我设了哪些提醒/还有什么提醒”时调用。',
+        parameters: {
+          type: 'object',
+          properties: { limit: { type: 'number', description: '最多返回多少条，默认 10' } },
+          required: [],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'cancel_reminder',
+        description: '取消当前会话/当前用户的一次性提醒。用户说“取消提醒/删掉刚才提醒/别提醒了”时调用。',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: '提醒 id，可从 list_reminders 获取' },
+            keyword: { type: 'string', description: '按提醒内容关键词取消' },
+            latest: { type: 'boolean', description: '是否取消最近一条匹配提醒，默认 true' },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'create_uploaded_file_variant',
         description: '基于当前会话最近上传的文件创建安全副本、改文件名，并可发回当前 QQ 群/私聊。用户明确要求“把刚才文件重命名/改名/另存为/发给我”时调用；不要用于任意本地文件。',
         parameters: {
@@ -167,9 +195,85 @@ function getChatToolDefinitions(options = {}) {
         },
       },
     },
+    {
+      type: 'function',
+      function: {
+        name: 'create_scheduled_task',
+        description: '创建一次性或周期定时任务。用户要求每天/每周/每隔一段时间执行、定时说话、定时总结、定时分析、到点运行 agent 时调用。短的一次性提醒也可以用 create_reminder。',
+        parameters: {
+          type: 'object',
+          properties: {
+            mode: { type: 'string', enum: ['once', 'cron'], description: 'once 一次性，cron 周期任务' },
+            type: { type: 'string', enum: ['text', 'agent'], description: 'text 直接发文本；agent 到点运行 agent prompt' },
+            schedule: { type: 'string', description: '五字段 cron，例如每天 8 点为 0 8 * * *；最小间隔 10 分钟' },
+            runAt: { type: 'string', description: '一次性触发时间，ISO 或可解析日期字符串' },
+            delayMinutes: { type: 'number', description: '多少分钟后触发一次性任务' },
+            title: { type: 'string', description: '任务标题' },
+            prompt: { type: 'string', description: '到点发送或交给 agent 执行的内容' },
+            scheduleText: { type: 'string', description: '用户可读时间描述，例如 每天 08:00' },
+          },
+          required: ['prompt'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'list_scheduled_tasks',
+        description: '查看当前会话/当前用户可见的定时任务。用户问“有哪些定时任务/每天任务/周期任务”时调用。',
+        parameters: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', description: 'active/paused/done/failed/all，默认 active' },
+            limit: { type: 'number', description: '最多返回多少条' },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_scheduled_task',
+        description: '查看当前用户/当前会话里的某个定时任务详情和最近执行历史。需要任务 id；不确定时先 list_scheduled_tasks。',
+        parameters: { type: 'object', properties: { id: { type: 'string', description: '定时任务 id' } }, required: ['id'] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'pause_scheduled_task',
+        description: '暂停当前用户/当前会话里的定时任务。需要任务 id；不确定时先 list_scheduled_tasks。',
+        parameters: { type: 'object', properties: { id: { type: 'string', description: '定时任务 id' } }, required: ['id'] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'resume_scheduled_task',
+        description: '恢复当前用户/当前会话里的定时任务。需要任务 id；不确定时先 list_scheduled_tasks。',
+        parameters: { type: 'object', properties: { id: { type: 'string', description: '定时任务 id' } }, required: ['id'] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'delete_scheduled_task',
+        description: '删除当前用户/当前会话里的定时任务。需要任务 id；不确定时先 list_scheduled_tasks。',
+        parameters: { type: 'object', properties: { id: { type: 'string', description: '定时任务 id' } }, required: ['id'] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'run_scheduled_task_now',
+        description: '立即试跑当前用户/当前会话里的定时任务一次。需要任务 id；不确定时先 list_scheduled_tasks。',
+        parameters: { type: 'object', properties: { id: { type: 'string', description: '定时任务 id' } }, required: ['id'] },
+      },
+    },
   ]
   const filtered = options.randomTriggered
-    ? tools.filter(tool => !['create_reminder', 'create_uploaded_file_variant'].includes(tool.function?.name))
+    ? tools.filter(tool => !['create_reminder', 'list_reminders', 'cancel_reminder', 'create_scheduled_task', 'list_scheduled_tasks', 'get_scheduled_task', 'pause_scheduled_task', 'resume_scheduled_task', 'delete_scheduled_task', 'run_scheduled_task_now', 'create_uploaded_file_variant'].includes(tool.function?.name))
     : tools
   return filterExternalToolDefinitions(filtered, options.userText || options.currentText || '')
 }
@@ -273,6 +377,42 @@ async function executeChatTool(toolCall, context = {}) {
       const reminder = require('./agent/tools/create-reminder')
       return reminder.execute(args, context)
     }
+    case 'list_reminders': {
+      const { listRemindersTool } = require('./agent/tools/reminder-tools')
+      return listRemindersTool.execute(args, context)
+    }
+    case 'cancel_reminder': {
+      const { cancelReminderTool } = require('./agent/tools/reminder-tools')
+      return cancelReminderTool.execute(args, context)
+    }
+    case 'create_scheduled_task': {
+      const { createScheduledTaskTool } = require('./agent/tools/scheduled-task-tools')
+      return createScheduledTaskTool.execute(args, context)
+    }
+    case 'list_scheduled_tasks': {
+      const { listScheduledTasksTool } = require('./agent/tools/scheduled-task-tools')
+      return listScheduledTasksTool.execute(args, context)
+    }
+    case 'get_scheduled_task': {
+      const { getScheduledTaskTool } = require('./agent/tools/scheduled-task-tools')
+      return getScheduledTaskTool.execute(args, context)
+    }
+    case 'pause_scheduled_task': {
+      const { pauseScheduledTaskTool } = require('./agent/tools/scheduled-task-tools')
+      return pauseScheduledTaskTool.execute(args, context)
+    }
+    case 'resume_scheduled_task': {
+      const { resumeScheduledTaskTool } = require('./agent/tools/scheduled-task-tools')
+      return resumeScheduledTaskTool.execute(args, context)
+    }
+    case 'delete_scheduled_task': {
+      const { deleteScheduledTaskTool } = require('./agent/tools/scheduled-task-tools')
+      return deleteScheduledTaskTool.execute(args, context)
+    }
+    case 'run_scheduled_task_now': {
+      const { runScheduledTaskNowTool } = require('./agent/tools/scheduled-task-tools')
+      return runScheduledTaskNowTool.execute(args, context)
+    }
     case 'create_uploaded_file_variant': {
       const variant = require('./agent/tools/create-uploaded-file-variant')
       return variant.execute(args, context)
@@ -313,7 +453,7 @@ async function handleChatToolCalls(toolCalls, context = {}) {
 }
 
 function getChatToolSystemHint(channelKey, options = {}) {
-  let hint = '你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数闲聊不需要工具，直接回复即可。遇到会随时间变化的问题，例如最新、最近、当前、现在、热门、比较火、趋势、排行、推荐、版本更新、新角色、新闻、视频等，不要凭记忆编答案，应先调用 web_search；用户给出具体公开 URL 并要求查看、总结、核对网页内容时，应调用 web_fetch 读取正文。web_search 负责找候选来源并尽量打开正文，web_fetch 负责读取指定 URL；如果没有“正文质量：usable”的可靠正文，要直接说明没有拿到可靠结果，并给出可继续搜索或换链接的方向。read_group_context 只能查当前群公开旧片段，适合当前短句或追问接不上时理解“刚才/之前/那个/这张图/那个文件”等指代；工具结果是旧背景，不代表当前话题，不能主动翻旧账。read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。用户明确要求“几分钟后提醒我/明天提醒/到点叫我”时可以调用 create_reminder；用户明确要求把近期上传文件改名、另存副本、发回时可以调用 create_uploaded_file_variant。随机主动回复绝对不要创建提醒或文件副本。'
+  let hint = '你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数闲聊不需要工具，直接回复即可。遇到会随时间变化的问题，例如最新、最近、当前、现在、热门、比较火、趋势、排行、推荐、版本更新、新角色、新闻、视频等，不要凭记忆编答案，应先调用 web_search；用户给出具体公开 URL 并要求查看、总结、核对网页内容时，应调用 web_fetch 读取正文。web_search 负责找候选来源并尽量打开正文，web_fetch 负责读取指定 URL；如果没有“正文质量：usable”的可靠正文，要直接说明没有拿到可靠结果，并给出可继续搜索或换链接的方向。read_group_context 只能查当前群公开旧片段，适合当前短句或追问接不上时理解“刚才/之前/那个/这张图/那个文件”等指代；工具结果是旧背景，不代表当前话题，不能主动翻旧账。read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。用户明确要求“几分钟后提醒我/明天提醒/到点叫我”时必须调用 create_reminder；用户要求周期性执行、每天/每周/每隔一段时间说话、总结、分析、运行 agent 时，调用 create_scheduled_task；用户要求查看/暂停/恢复/取消/删除/试跑定时任务时调用对应 scheduled task 工具；只有工具结果表示创建成功后，才能说提醒或定时任务已设置。用户明确要求把近期上传文件改名、另存副本、发回时可以调用 create_uploaded_file_variant。随机主动回复绝对不要创建提醒、定时任务或文件副本。'
   const policyHint = buildExternalToolPolicyHint(options.userText || options.currentText || '')
   if (policyHint) hint += `\n${policyHint}`
   if (channelKey) {

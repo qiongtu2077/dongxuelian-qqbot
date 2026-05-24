@@ -567,6 +567,95 @@ async function run(t) {
     waitFor: message => String(message).includes('已创建提醒'),
   })
 
+  await withScenario({}, async ({ makeSession, run, data }) => {
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '好的，十分钟后我会提醒你起床。别睡过头啦！' } }] } },
+      { json: { choices: [{ message: { content: '呀吼～指挥官！我帮你记住了！一分钟后叫你起床哦！' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const firstSession = makeSession({
+        content: '十分钟后提醒我起床',
+        messageId: 'reminder-first',
+        isDirect: true,
+        guildId: undefined,
+        channelId: undefined,
+        event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '十分钟后提醒我起床' } }] },
+      })
+      const firstResult = await run(firstSession, { flushTicks: 180 })
+      await firstSession.waitForSend(message => String(message).includes('已创建提醒'), 10000)
+      checkSentIncludes(t, 'scenario unbacked reminder first promise creates cron', firstResult, '已创建提醒')
+
+      const secondSession = makeSession({
+        content: '一分钟后提醒我起床',
+        messageId: 'reminder-second',
+        isDirect: true,
+        guildId: undefined,
+        channelId: undefined,
+        event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '一分钟后提醒我起床' } }] },
+      })
+      const secondResult = await run(secondSession, { flushTicks: 180 })
+      await secondSession.waitForSend(message => String(message).includes('已创建提醒'), 10000)
+      checkSentIncludes(t, 'scenario unbacked reminder second promise creates cron', secondResult, '已创建提醒')
+      checkSentExcludes(t, 'scenario unbacked reminder second promise not sent as fake success', secondResult, '我帮你记住了')
+
+      const cronData = data.readJson('agent-crons.json')
+      const pending = (cronData.crons || []).filter(item => item.mode === 'once' && item.enabled !== false)
+      t.check('scenario repeated reminder requests create two pending once crons', pending.length === 2 && pending.every(item => item.prompt.includes('起床')), JSON.stringify(cronData))
+      const runAts = pending.map(item => item.runAt).sort((a, b) => a - b)
+      t.check('scenario repeated reminder requests keep distinct due times', runAts.length === 2 && runAts[1] - runAts[0] >= 8 * 60 * 1000, JSON.stringify(pending))
+
+      const listSession = makeSession({
+        content: '我还有哪些提醒',
+        messageId: 'reminder-list',
+        isDirect: true,
+        guildId: undefined,
+        channelId: undefined,
+        event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '我还有哪些提醒' } }] },
+      })
+      const listResult = await run(listSession, { flushTicks: 80 })
+      await listSession.waitForSend(message => String(message).includes('once_') && String(message).includes('起床'), 10000)
+      checkSentIncludes(t, 'scenario reminder list fallback uses cron tool', listResult, '提醒：起床')
+
+      const cancelSession = makeSession({
+        content: '取消最近一条提醒',
+        messageId: 'reminder-cancel',
+        isDirect: true,
+        guildId: undefined,
+        channelId: undefined,
+        event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '取消最近一条提醒' } }] },
+      })
+      const cancelResult = await run(cancelSession, { flushTicks: 80 })
+      await cancelSession.waitForSend(message => String(message).includes('已取消提醒'), 10000)
+      checkSentIncludes(t, 'scenario reminder cancel fallback uses cron tool', cancelResult, '已取消提醒')
+
+      const afterCancelCronData = data.readJson('agent-crons.json')
+      const afterCancelPending = (afterCancelCronData.crons || []).filter(item => item.mode === 'once' && item.enabled !== false)
+      t.check('scenario reminder cancel fallback removes exactly one pending cron', afterCancelPending.length === 1, JSON.stringify(afterCancelCronData))
+    })
+  })
+
+  await withScenario({}, async ({ makeSession, run, data }) => {
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '好呀，我每天早上八点跟你说早安。' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const session = makeSession({
+        content: '每天早上8点跟我说早安',
+        messageId: 'scheduled-good-morning',
+        isDirect: true,
+        guildId: undefined,
+        channelId: undefined,
+        event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '每天早上8点跟我说早安' } }] },
+      })
+      const result = await run(session, { flushTicks: 140 })
+      await session.waitForSend(message => String(message).includes('已创建周期任务'), 10000)
+      checkSentIncludes(t, 'scenario scheduled task fallback sends created reply', result, '已创建周期任务')
+      const cronData = data.readJson('agent-crons.json')
+      const task = (cronData.crons || []).find(item => item.mode === 'cron' && item.prompt.includes('早安'))
+      t.check('scenario scheduled task fallback creates recurring cron', task && task.schedule === '0 8 * * *' && task.type === 'text' && task.enabled !== false, JSON.stringify(cronData))
+    })
+  })
+
   await runChatCase(t, 'reasoning-only fallback', [
     { json: { choices: [{ message: { content: '', reasoning_content: 'reasoning-secret' } }] } },
     { json: { choices: [{ message: { content: 'fallback-visible' } }] } },
@@ -601,6 +690,19 @@ async function run(t) {
   }, {
     input: '我用你这个配队，怎么被打的落花流水了',
     waitFor: message => String(message).includes('配队思路'),
+  })
+
+  await runChatCase(t, 'short command tool plan leak retry', [
+    { json: { choices: [{ message: { content: 'web_fetch url https://example.com/2026-05-24-Agent行动路由文件发送与Cron提醒待审核方案.md' } }] } },
+    { json: { choices: [{ message: { content: '这个我得按文件内容说，不能把工具名当回复发出来。' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario short tool plan leak retries to natural reply', result, '文件内容')
+    checkSentExcludes(t, 'scenario short tool plan leak does not send web_fetch command', result, 'web_fetch url')
+    const retryPrompt = JSON.stringify(calls[1]?.requestBody?.messages || [])
+    t.check('scenario short tool plan leak retry does not feed raw url command', !retryPrompt.includes('https://example.com/2026-05-24-Agent'), retryPrompt)
+  }, {
+    input: '这里面说了啥',
+    waitFor: message => String(message).includes('文件内容'),
   })
 
   await runChatCase(t, 'normal chat strips fenced html before sending', [

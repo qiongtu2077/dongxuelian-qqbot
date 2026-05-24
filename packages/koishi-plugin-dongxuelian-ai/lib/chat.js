@@ -55,7 +55,7 @@ const {
   toolResultsIncludeFileEvidence,
   resolveUnguardedFileFollowup,
 } = require('./file-followup-guard')
-const { parseReminderRequest, isReminderCapabilityRefusal } = require('./reminder-route')
+const { parseReminderActionRequest, parseScheduledTaskRequest, isReminderToolName } = require('./reminder-route')
 const {
   parseUploadedFileVariantRequest,
   isUploadedFileVariantCapabilityRefusal,
@@ -760,6 +760,7 @@ async function chat(session, userText, ctx, options = {}) {
   const activeSceneNote = options.activeSceneNote || buildActiveGroupSceneNote(channelKey, channelSharedCache.get(channelKey) || [], currentUserId, {
     currentText: cleanInput,
     randomTriggered: options.randomTriggered,
+    personaName,
   })
   if (activeSceneNote) {
     messages.push({ role: 'system', content: activeSceneNote })
@@ -1014,7 +1015,13 @@ async function chat(session, userText, ctx, options = {}) {
 
   // Chat 轻量工具注入
   const chatTools = getChatToolDefinitions({ userText: cleanInput, randomTriggered: options.randomTriggered })
-  const fileFollowupState = await buildFileFollowupState(channelKey, cleanInput)
+  const fileFollowupState = await buildFileFollowupState(channelKey, cleanInput, { userId: currentUserId })
+  const activeFileContext = fileFollowupState.targetFile
+    ? {
+        activeFileMessageId: String(fileFollowupState.targetFile.messageId || ''),
+        activeFileName: fileFollowupState.targetFile.fileName || '',
+      }
+    : {}
   messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { userText: cleanInput }) })
 
   // 表达学习旁路诊断（v2.3，shadow，仅日志，不修改 messages）
@@ -1053,11 +1060,11 @@ async function chat(session, userText, ctx, options = {}) {
   // 处理 tool_calls 响应
   let usedAnalyzeFileTool = false
   let hasFileToolEvidence = false
-  let usedReminderTool = false
+  let usedReminderActionTool = false
   let usedUploadedFileVariantTool = false
   if (reply && typeof reply === 'object' && reply.type === 'tool_calls') {
     usedAnalyzeFileTool = toolCallsIncludeAnalyzeFile(reply.tool_calls)
-    usedReminderTool = (reply.tool_calls || []).some(tc => tc?.function?.name === 'create_reminder')
+    usedReminderActionTool = (reply.tool_calls || []).some(tc => isReminderToolName(tc?.function?.name))
     usedUploadedFileVariantTool = (reply.tool_calls || []).some(tc => tc?.function?.name === 'create_uploaded_file_variant')
     const toolContext = {
       userId: currentUserId,
@@ -1065,6 +1072,7 @@ async function chat(session, userText, ctx, options = {}) {
       groupId: session.guildId || session.channelId || '',
       isDirect: !!session.isDirect,
       randomTriggered: !!options.randomTriggered,
+      ...activeFileContext,
     }
     const { results, heavyTools } = await handleChatToolCalls(reply.tool_calls, toolContext)
     hasFileToolEvidence = toolResultsIncludeFileEvidence(results)
@@ -1105,24 +1113,22 @@ async function chat(session, userText, ctx, options = {}) {
     }
   }
 
-  if (!usedReminderTool && !options.randomTriggered && isReminderCapabilityRefusal(reply)) {
-    const reminderArgs = parseReminderRequest(cleanInput)
-    if (reminderArgs) {
-      const reminderResult = await executeChatTool({
-        function: {
-          name: 'create_reminder',
-          arguments: JSON.stringify(reminderArgs),
-        },
-      }, {
-        userId: currentUserId,
-        channelKey,
-        groupId: session.guildId || session.channelId || '',
-        isDirect: !!session.isDirect,
-        randomTriggered: false,
-      })
-      reply = String(reminderResult || '提醒已创建。')
-      usedReminderTool = true
-    }
+  const explicitReminderAction = !options.randomTriggered ? (parseScheduledTaskRequest(cleanInput) || parseReminderActionRequest(cleanInput)) : null
+  if (!usedReminderActionTool && explicitReminderAction) {
+    const reminderResult = await executeChatTool({
+      function: {
+        name: explicitReminderAction.name,
+        arguments: JSON.stringify(explicitReminderAction.args),
+      },
+    }, {
+      userId: currentUserId,
+      channelKey,
+      groupId: session.guildId || session.channelId || '',
+      isDirect: !!session.isDirect,
+      randomTriggered: false,
+    })
+    reply = String(reminderResult || '提醒已创建。')
+    usedReminderActionTool = true
   }
 
   if (!usedUploadedFileVariantTool && !options.randomTriggered && isUploadedFileVariantCapabilityRefusal(reply, cleanInput)) {
@@ -1146,6 +1152,7 @@ async function chat(session, userText, ctx, options = {}) {
           groupId: session.guildId || session.channelId || '',
           isDirect: !!session.isDirect,
           randomTriggered: false,
+          ...activeFileContext,
         }
         const { results, heavyTools } = await handleChatToolCalls(retry.tool_calls, retryToolContext)
         if (heavyTools.length > 0) {
@@ -1274,6 +1281,8 @@ async function chat(session, userText, ctx, options = {}) {
       continue
     }
 
+    if (usedReminderActionTool || usedUploadedFileVariantTool) break
+
     const sanitizedReply = sanitizeReply(reply, userName)
     if (!shouldRetryRepeatedReply(session, stripStickerMarkersForGuard(sanitizedReply))) break
 
@@ -1355,7 +1364,7 @@ async function chat(session, userText, ctx, options = {}) {
       })
       finalReply = personaFallback || '这句我接不了，换个说法吧。'
     }
-  } else if (shouldRetryRepeatedReply(session, stripStickerMarkersForGuard(finalReply))) {
+  } else if (!usedReminderActionTool && !usedUploadedFileVariantTool && shouldRetryRepeatedReply(session, stripStickerMarkersForGuard(finalReply))) {
     ctx.logger('dongxuelian-ai').warn(`reply is still repetitive after retry, forcing fallback. reply: ${finalReply}`)
     if (options.randomTriggered) return ''
     if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : (pickRepeatedFallbackReply(session) || '不接这句了。')

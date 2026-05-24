@@ -6,6 +6,8 @@
 const { getRecentFiles } = require('./file-store')
 const analyzeFileTool = require('./agent/tools/analyze-file')
 
+const FILE_FOLLOWUP_ACTIVE_WINDOW_MS = 30 * 60 * 1000
+
 function normalize(text = '') {
   return String(text || '').replace(/\s+/g, ' ').trim()
 }
@@ -30,24 +32,48 @@ function toolResultsIncludeFileEvidence(results = []) {
   })
 }
 
-async function buildFileFollowupState(channelKey, userText) {
+function selectActiveFileAnchor(recentFiles = [], context = {}) {
+  const files = Array.isArray(recentFiles)
+    ? recentFiles.filter(file => file && !file.skipped)
+    : []
+  if (!files.length) return null
+
+  const now = Number(context.now || Date.now())
+  const fresh = files.filter(file => {
+    const ts = Number(file.ts || 0)
+    return !Number.isFinite(ts) || ts <= 0 || now - ts <= FILE_FOLLOWUP_ACTIVE_WINDOW_MS
+  })
+  const candidates = fresh.length ? fresh : files
+  const userId = String(context.userId || '').trim()
+  const sameUser = userId ? candidates.filter(file => String(file.userId || '').trim() === userId) : []
+  return sameUser[0] || candidates[0] || null
+}
+
+async function buildFileFollowupState(channelKey, userText, context = {}) {
   const recentFiles = channelKey ? await getRecentFiles(channelKey, 15) : []
+  const shouldVerify = looksLikeFileFollowup(userText, recentFiles)
   return {
     recentFiles,
-    shouldVerify: looksLikeFileFollowup(userText, recentFiles),
+    shouldVerify,
+    targetFile: shouldVerify ? selectActiveFileAnchor(recentFiles, context) : null,
   }
 }
 
 async function resolveUnguardedFileFollowup(state = {}, context = {}) {
   if (!state.shouldVerify) return null
   if (state.usedAnalyzeFile || state.hasFileEvidence) return null
-  return analyzeFileTool.execute({}, context)
+  const messageId = state.targetFile && state.targetFile.messageId ? String(state.targetFile.messageId) : ''
+  const toolContext = messageId
+    ? { ...context, activeFileMessageId: messageId, activeFileName: state.targetFile.fileName || '' }
+    : context
+  return analyzeFileTool.execute(messageId ? { messageId } : {}, toolContext)
 }
 
 module.exports = {
   looksLikeFileFollowup,
   toolCallsIncludeAnalyzeFile,
   toolResultsIncludeFileEvidence,
+  selectActiveFileAnchor,
   buildFileFollowupState,
   resolveUnguardedFileFollowup,
 }

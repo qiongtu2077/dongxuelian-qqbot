@@ -2,6 +2,7 @@ const { withScenario } = require('./_setup')
 const { mockFetch } = require('../fake/fetch')
 const { flushAsync } = require('../fake/koishi')
 const { checkInternalCall, checkNoInternalCall, checkSentIncludes } = require('../helpers/assert')
+const fs = require('fs')
 
 const TEXT = {
   normal: '\u666e\u901a\u6587\u672c',
@@ -38,6 +39,34 @@ async function withFetch(mocked, fn) {
   } finally {
     global.fetch = originalFetch
   }
+}
+
+async function withStickerShadowDebugScenario(fn) {
+  const previousDebug = process.env.DONGXUELIAN_DEBUG
+  process.env.DONGXUELIAN_DEBUG = '1'
+  try {
+    return await withScenario({}, fn)
+  } finally {
+    if (previousDebug === undefined) delete process.env.DONGXUELIAN_DEBUG
+    else process.env.DONGXUELIAN_DEBUG = previousDebug
+  }
+}
+
+async function waitForStickerShadowEvidence(harness, data, type, maxTicks = 80) {
+  for (let i = 0; i < maxTicks; i += 1) {
+    const shadowLogs = harness.logs.filter(item => String(item.msg || '').includes('[D] [sticker-shadow]'))
+    const hasLog = shadowLogs.some(item => String(item.msg).includes(type))
+    const diagDir = data.pathFor('sticker-diagnostics')
+    const files = fs.existsSync(diagDir) ? fs.readdirSync(diagDir).filter(name => name.startsWith('sticker-shadow-')) : []
+    const jsonl = files.map(file => fs.readFileSync(data.pathFor('sticker-diagnostics', file), 'utf8')).join('\n')
+    const hasJsonl = jsonl.includes(`"type":"${type}_v1"`)
+    if (hasLog && hasJsonl) return { shadowLogs, files, jsonl }
+    await flushAsync(2)
+  }
+  const diagDir = data.pathFor('sticker-diagnostics')
+  const files = fs.existsSync(diagDir) ? fs.readdirSync(diagDir).filter(name => name.startsWith('sticker-shadow-')) : []
+  const jsonl = files.map(file => fs.readFileSync(data.pathFor('sticker-diagnostics', file), 'utf8')).join('\n')
+  return { shadowLogs: harness.logs.filter(item => String(item.msg || '').includes('[D] [sticker-shadow]')), files, jsonl }
 }
 
 async function triggerBotReply(makeSession, run, replyText, overrides = {}) {
@@ -201,6 +230,34 @@ async function run(t) {
       const result = resultFor(session, harness)
       checkInternalCall(t, 'scenario sticker anchor still sends image', result, 'sendGroupMsg')
     })
+  })
+
+  await withStickerShadowDebugScenario(async ({ harness, data, makeSession, run, ready }) => {
+    await ready()
+    const mocked = mockFetch([{ json: { choices: [{ message: { content: TEXT.seeHappy } }] } }])
+    await withFetch(mocked, async () => {
+      const session = await triggerBotReply(makeSession, run, TEXT.seeHappy, { messageId: 'msg-sticker-shadow-send' })
+      await session.waitForInternalCall(call => call.method === 'sendGroupMsg')
+      const evidence = await waitForStickerShadowEvidence(harness, data, 'sticker_shadow_send')
+      const result = resultFor(session, harness)
+      checkInternalCall(t, 'scenario sticker shadow debug does not block real sticker send', result, 'sendGroupMsg')
+      t.check('scenario sticker shadow logs send decision when debug enabled', evidence.shadowLogs.some(item => String(item.msg).includes('sticker_shadow_send')), JSON.stringify(evidence.shadowLogs))
+      t.check('scenario sticker shadow writes jsonl diagnostics in DATA_DIR', evidence.files.length >= 1, JSON.stringify(evidence.files))
+      t.check('scenario sticker shadow jsonl stays shadow-only and sanitized', evidence.jsonl.includes('"type":"sticker_shadow_send_v1"') && evidence.jsonl.includes('"mode":"shadow_only"') && !evidence.jsonl.includes('msg-sticker-shadow-send') && !evidence.jsonl.includes('file://'), evidence.jsonl)
+    })
+  })
+
+  await withStickerShadowDebugScenario(async ({ harness, data, makeSession, run, ready }) => {
+    await ready()
+    const session = makeSession({
+      content: '<img src="file://D:/qq/private/shadow.png"/>',
+      messageId: 'msg-sticker-shadow-ingest',
+      event: { sender: { role: 'member' }, message: [{ type: 'image', attrs: { file: 'shadow.png' } }] },
+    })
+    await run(session, { flushTicks: 80 })
+    const evidence = await waitForStickerShadowEvidence(harness, data, 'sticker_shadow_ingest')
+    t.check('scenario sticker shadow logs ingest decision for incoming image', evidence.shadowLogs.some(item => String(item.msg).includes('sticker_shadow_ingest')), JSON.stringify(evidence.shadowLogs))
+    t.check('scenario sticker shadow ingest jsonl hides local image path', evidence.jsonl.includes('"type":"sticker_shadow_ingest_v1"') && !evidence.jsonl.includes('D:/qq') && !evidence.jsonl.includes('shadow.png'), evidence.jsonl)
   })
 }
 

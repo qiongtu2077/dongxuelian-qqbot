@@ -57,7 +57,7 @@ async function resolveSourceFile(channelKey, messageId, entry) {
 }
 
 async function pickRecentFile(channelKey, params = {}) {
-  const messageId = String(params.messageId || '').trim()
+  const messageId = String(params.messageId || params.activeFileMessageId || '').trim()
   if (messageId) {
     const entry = await getFileEntry(channelKey, messageId)
     return entry ? { messageId, entry } : null
@@ -89,7 +89,7 @@ function applyTextReplacement(buffer, params = {}, ext = '') {
 async function createVariant(params = {}, context = {}) {
   const channelKey = String(context.channelKey || '').trim()
   if (!channelKey) throw new Error('无法确定当前会话。')
-  const picked = await pickRecentFile(channelKey, params)
+  const picked = await pickRecentFile(channelKey, { activeFileMessageId: context.activeFileMessageId, ...params })
   if (!picked) throw new Error('当前会话没有可处理的近期文件。')
   const { messageId, entry } = picked
   if (entry.skipped) throw new Error(`这个文件被跳过了：${entry.skipReason || '不支持的类型'}`)

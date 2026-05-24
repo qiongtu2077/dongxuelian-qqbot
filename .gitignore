@@ -16,6 +16,7 @@ packages/*/data/*key*
 packages/*/data/user-profiles/
 packages/*/data/conversations/
 packages/*/data/persona-diagnostics/
+packages/*/data/sticker-diagnostics/
 packages/*/data/*cache*
 packages/*/data/*dump*
 packages/*/data/ai-persona-users.json

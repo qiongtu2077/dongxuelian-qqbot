@@ -303,7 +303,7 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
     try {
       const sentResult = await session.send(i === 0 ? quotePrefix + part : part)
       const sentMessageId = sentResult && (sentResult.messageId || sentResult.message_id || sentResult.id)
-      saveSharedChannelTurn(session, '东雪莲', part, 'assistant', { messageId: sentMessageId || '' })
+      saveSharedChannelTurn(session, '东雪莲', part, 'assistant', { messageId: sentMessageId || '', personaName: options.personaName || '' })
     } catch (sendError) {
       sendError.sentParts = sentParts
       ctx.logger('dongxuelian-ai').warn(`sendReply failed: ${sendError?.message || sendError}`)

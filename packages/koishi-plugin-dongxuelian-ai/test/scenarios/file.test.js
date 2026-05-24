@@ -109,6 +109,73 @@ async function run(t) {
     }
   })
 
+  await withScenario({}, async ({ makeSession, run, data }) => {
+    const firstPath = data.pathFor('incident-files', 'old-plan.md')
+    const latestPath = data.pathFor('incident-files', 'agent-route-plan.md')
+    await fs.promises.mkdir(path.dirname(firstPath), { recursive: true })
+    await fs.promises.writeFile(firstPath, '旧文件内容：不要读取这一份。', 'utf8')
+    await fs.promises.writeFile(latestPath, '真实内容：行动路由要先读取用户上传文件，不准把工具计划当回复发出去。', 'utf8')
+
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: 'web_fetch url https://example.com/2026-05-24-Agent行动路由文件发送与Cron提醒待审核方案.md' } }] } },
+      { json: { choices: [{ message: { content: '这个文件说的是：行动路由要先读取用户上传文件，不能把工具计划当回复发出去。' } }] } },
+    ])
+    const originalFetch = global.fetch
+    const originalWarn = console.warn
+    global.fetch = mocked.fetch
+    console.warn = () => {}
+    try {
+      const api = require(path.join(AI_ROOT, 'lib', 'api.js'))
+      const originalCallGetFile = api.callGetFile
+      const requestedIds = []
+      api.callGetFile = async id => {
+        requestedIds.push(String(id))
+        if (String(id) === 'old-file-id') return { file: firstPath }
+        if (String(id) === 'latest-file-id') return { file: latestPath }
+        return null
+      }
+      try {
+        await run(makeSession({
+          content: '',
+          messageId: 'old-file-id',
+          isDirect: true,
+          guildId: undefined,
+          channelId: undefined,
+          event: { sender: { role: 'member' }, message: [{ type: 'file', data: { name: '旧计划.md', file: 'old-file-id', size: 0, mime: 'text/markdown' } }] },
+        }), { flushTicks: 20 })
+        await run(makeSession({
+          content: '',
+          messageId: 'latest-file-id',
+          isDirect: true,
+          guildId: undefined,
+          channelId: undefined,
+          event: { sender: { role: 'member' }, message: [{ type: 'file', data: { name: '2026-05-24-Agent行动路由文件发送与Cron提醒待审核方案.md', file: 'latest-file-id', size: 0, mime: 'text/markdown' } }] },
+        }), { flushTicks: 20 })
+
+        const followSession = makeSession({
+          content: '这里面说了啥',
+          messageId: 'latest-file-follow-up',
+          isDirect: true,
+          guildId: undefined,
+          channelId: undefined,
+          event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '这里面说了啥' } }] },
+        })
+        const followResult = await run(followSession, { flushTicks: 220 })
+        await followSession.waitForSend(message => String(message).includes('行动路由'), 10000)
+        checkSentIncludes(t, 'scenario short file follow-up reads latest uploaded file', followResult, '行动路由')
+        checkSentExcludes(t, 'scenario short file follow-up never sends web_fetch plan', followResult, 'web_fetch url')
+        t.check('scenario short file follow-up downloads latest file id', requestedIds.includes('latest-file-id'), JSON.stringify(requestedIds))
+        t.check('scenario short file follow-up avoids older file when latest is active', !requestedIds.includes('old-file-id') || requestedIds.indexOf('latest-file-id') < requestedIds.indexOf('old-file-id'), JSON.stringify(requestedIds))
+        t.check('scenario short file follow-up injects actual latest evidence', mocked.calls.some(call => JSON.stringify(call.requestBody?.messages || []).includes('不准把工具计划当回复发出去')), JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
+      } finally {
+        api.callGetFile = originalCallGetFile
+      }
+    } finally {
+      global.fetch = originalFetch
+      console.warn = originalWarn
+    }
+  })
+
   await withScenario({}, async ({ makeSession, run }) => {
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '这个文件大概是在讲说课流程。' } }] } },
