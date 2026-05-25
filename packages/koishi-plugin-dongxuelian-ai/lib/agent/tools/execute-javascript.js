@@ -9,16 +9,6 @@ const MAX_CODE_CHARS = 12000
 const MAX_RESULT_CHARS = 8000
 const MAX_JSONIFY_CHARS = 64000
 
-function freezeProtoChain(obj, visited = new WeakSet()) {
-  if (obj == null) return
-  if (typeof obj !== 'object' && typeof obj !== 'function') return
-  if (visited.has(obj)) return
-  visited.add(obj)
-  try { Object.freeze(obj) } catch {}
-  const proto = Object.getPrototypeOf(obj)
-  if (proto) freezeProtoChain(proto, visited)
-}
-
 function safeStringifyResult(result) {
   const seen = new WeakSet()
   return JSON.stringify(result === undefined ? null : result, (key, value) => {
@@ -50,22 +40,6 @@ module.exports = {
     if (code.length > MAX_CODE_CHARS) throw new Error(`代码过长：${code.length} 字符，最大 ${MAX_CODE_CHARS}`)
     if (BLOCKED.test(code)) throw new Error('代码包含被禁止的 Node/进程/模块能力')
     const sandbox = Object.create(null)
-    sandbox.Math = Math
-    sandbox.JSON = JSON
-    sandbox.Date = Date
-    sandbox.Number = Number
-    sandbox.String = String
-    sandbox.Boolean = Boolean
-    sandbox.Array = Array
-    sandbox.Object = Object
-    sandbox.RegExp = RegExp
-    sandbox.parseInt = parseInt
-    sandbox.parseFloat = parseFloat
-    sandbox.isNaN = isNaN
-    sandbox.isFinite = isFinite
-    sandbox.undefined = undefined
-    sandbox.NaN = NaN
-    sandbox.Infinity = Infinity
     const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } })
     vm.runInContext(`
       (function() {
@@ -78,7 +52,6 @@ module.exports = {
         delete GeneratorFunction;
       })();
     `, context)
-    for (const value of Object.values(sandbox)) freezeProtoChain(value)
     const script = new vm.Script(`'use strict';\n${code}`)
     const result = script.runInContext(context, { timeout: 10000 })
     const text = safeStringifyResult(result)

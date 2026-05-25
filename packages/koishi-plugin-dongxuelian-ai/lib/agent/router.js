@@ -23,6 +23,8 @@ const SEARCH_REFINEMENT_RE = /^(?:那|这个|那个|这些|那些|还有|再|继
 const SEARCH_CONTEXT_HINT_RE = /(?:最新|最近|近期|当前|今天|明天|后天|热门|比较火|趋势|排行|榜单|推荐|视频|直播|教程|攻略|资源|链接|资料|文章|帖子|新闻|资讯|公告|版本|更新|角色|活动|卡池|天气|气温|温度|价格|汇率|股价|票价|赛程|比分|搜索|搜|查|找)/i
 const CURRENT_DATA_HINT_RE = /(?:天气|气温|温度|价格|多少钱|汇率|股价|票价|赛程|比分|开售|上映|营业|开放|今天|明天|后天|周末|下周|未来(?:\d+|[一二三四五六七两])天)/i
 const RESOURCE_HINT_RE = /(?:视频|直播|教程|攻略|资源|链接|资料|文章|帖子|榜单|推荐|搞笑|整活|挑战|来源|出处|官网|官方)/i
+const SEARCH_QUERY_NOISE_RE = /(?:帮我|给我|麻烦|方便|顺手|可以|能不能|可不可以|请|一下|一个|几个|一些|点|吗|么|嘛|吧|呗|呢|呀|啊|这个|那个|这些|那些|这条|那条|这里|那里|刚才|刚刚|之前|上次|前面|找找|搜搜|查查|找|搜|搜索|查|看|看看|看下|打开|推荐|发|来|给|继续|再|还有|具体|详细|内容|东西|情况|资料|结果|链接|来源|出处|相关|一下吧)/g
+const NON_EXECUTABLE_QUERY_RE = /^(?:这(?:个|些|条|里|事|东西|玩意)?|那(?:个|些|条|里|事|东西|玩意)?|它|他|她|ta|TA|一下|吧|吗|呢|么|嘛|呗|啊|呀|不|什么|啥|哪个|哪里|哪儿|怎么|如何|怎么样|有没有|有无|可以吗|行不行|找找|搜搜|查查|看看|看下|找一下|搜一下|查一下|帮我找找|帮我查查|帮我搜搜)[？?。.!！~～\s]*$/i
 const SEARCH_SYSTEM_PROMPT = '用户需要联网搜索。必须先使用 web_search 获取外部信息，再基于工具结果回答。如果第一轮搜索没拿到可靠结果（只有标题/首页、正文太短、全是百科/字典），不要直接放弃，从已有结果中提取新关键词（如角色名、版本号、活动名、作品名、平台名），换 query 继续搜/再搜，整个任务最多允许 6 次 web_search。可信度分 ≥ 50 的结果必须打开正文。只能根据工具结果回答，不要凭记忆回答。候选页足够可信时，要以工具打开到的候选网页正文为主要依据；只有标题/摘要时必须降低确信度。若工具结果为空、明显不相关、或主要是素材/模板/图片/下载站，必须说“这次搜索没有拿到可靠结果”，并简要说明搜索链路问题，不要编造答案。用户追问“你怎么知道/是搜索到的吗”时，要诚实说明依据来自本轮工具结果。不要混淆不同来源的信息，每个关键事实必须关联到具体来源链接。注意：工具内部已实现自动重试和关键词提取，如果工具返回的结果标注为“弱命中”或“未打开正文”，你仍然可以再次调用 web_search 并传入从上次结果中提取的新关键词。'
 
 function cleanExtractedUrl(url = '') {
@@ -69,9 +71,24 @@ function normalizeQueryCandidate(value = '') {
   return cleanExplicitSearchQuery(String(value || '').replace(/\s+/g, ' ').trim()).slice(0, 160)
 }
 
+function isExecutableSearchQuery(query = '') {
+  const raw = String(query || '').replace(/\s+/g, ' ').trim()
+  if (!raw) return false
+  if (extractHttpUrls(raw).length > 0) return true
+  const compact = cleanExplicitSearchQuery(raw)
+    .replace(/[，。！？!?；;：:、,.()\[\]【】"'“”‘’<>《》\s]/g, '')
+    .trim()
+  if (!compact || compact.length < 2 || NON_EXECUTABLE_QUERY_RE.test(compact)) return false
+  const signal = compact
+    .replace(SEARCH_QUERY_NOISE_RE, '')
+    .replace(/[^A-Za-z0-9\u3400-\u9fff]/g, '')
+  return signal.length >= 2
+}
+
 function isSelfContainedSearchIntent(text = '') {
   const value = String(text || '')
-  return isGeneralSearchIntent(value) || EXPLICIT_AGENT_RE.test(value)
+  if (!(isGeneralSearchIntent(value) || EXPLICIT_AGENT_RE.test(value))) return false
+  return isExecutableSearchQuery(value)
 }
 
 function normalizeRecentUserMessages(recentUserMessages = []) {
@@ -94,10 +111,11 @@ function isGeneralSearchIntent(text = '') {
   if (!value || CASUAL_SHORT_RE.test(value)) return false
   if (PREVIOUS_SEARCH_CONTEXT_RE.test(value)) return false
   if (extractHttpUrls(value).length > 0) return false
-  return EXPLICIT_SEARCH_RE.test(value) ||
+  const matched = EXPLICIT_SEARCH_RE.test(value) ||
     GENERAL_TIMELY_SEARCH_RE.test(value) ||
     CURRENT_DATA_SEARCH_RE.test(value) ||
     RESOURCE_SEARCH_RE.test(value)
+  return matched && isExecutableSearchQuery(value)
 }
 
 function isSearchFollowUpRequest(text = '') {
@@ -218,6 +236,7 @@ function buildExplicitSearchRunOptions(userText = '', options = {}) {
   if (!isSelfContainedSearchIntent(userText) && isStructuredSearchBlocked(context)) return {}
   if (!isSearchRoutable(userText, options)) return {}
   const query = buildContextualSearchQuery(userText, options.recentUserMessages, context)
+  if (!isExecutableSearchQuery(query)) return {}
   const queries = buildSearchQueries(query)
   return {
     systemExtra: [{ role: 'system', content: SEARCH_SYSTEM_PROMPT }],
@@ -233,6 +252,7 @@ module.exports = {
   buildExplicitUrlFetchRunOptions,
   buildContextualSearchQuery,
   buildSearchAgentUserMessage,
+  isExecutableSearchQuery,
   getStructuredSearchContext,
   canUseStructuredSearchContext,
   isStructuredSearchBlocked,
@@ -245,5 +265,5 @@ module.exports = {
   isPreviousSearchContextQuestion: (text = '') => PREVIOUS_SEARCH_CONTEXT_RE.test(String(text || '')),
   hasSearchableRecentContext,
   pickRecentSearchContext,
-  isExplicitSearchRequest: (text = '') => EXPLICIT_SEARCH_RE.test(String(text || '')),
+  isExplicitSearchRequest: (text = '') => EXPLICIT_SEARCH_RE.test(String(text || '')) && isExecutableSearchQuery(text),
 }

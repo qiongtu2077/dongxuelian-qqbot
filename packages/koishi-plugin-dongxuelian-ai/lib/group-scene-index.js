@@ -94,6 +94,11 @@ function normalizeSceneEntry(channelKey, entry = {}) {
   const ts = Number(entry.ts || Date.now()) || Date.now()
   const messageId = String(entry.messageId || `${ts}`)
   const speakerName = sanitizeUserName(String(entry.speakerName || (entry.role === 'assistant' ? '东雪莲' : '群友'))).slice(0, 40) || '群友'
+  const hasMessageRecordCue = !!entry.hasMessageRecordCue
+  const anchors = extractSceneAnchors(content)
+  if (hasMessageRecordCue && !anchors.some(anchor => anchor.type === 'forward')) {
+    anchors.push({ type: 'forward', label: '合并转发' })
+  }
   return {
     channelKey: safeSceneChannelKey(channelKey),
     userId: String(entry.userId || ''),
@@ -104,8 +109,9 @@ function normalizeSceneEntry(channelKey, entry = {}) {
     messageId,
     replyToId: String(entry.replyToId || ''),
     mentionUserIds: Array.isArray(entry.mentionUserIds) ? entry.mentionUserIds.map(String).filter(Boolean).slice(0, 8) : [],
+    hasMessageRecordCue,
     ts,
-    anchors: extractSceneAnchors(content),
+    anchors,
     keywords: extractSceneKeywords(content),
   }
 }
@@ -139,6 +145,7 @@ function normalizeSceneData(data) {
           role: snippet?.role === 'assistant' ? 'assistant' : 'user',
           personaName: snippet?.role === 'assistant' ? sanitizeUserName(String(snippet?.personaName || '')).slice(0, 40) : '',
           content: sanitizeSceneText(snippet?.content || '', 220),
+          hasMessageRecordCue: !!snippet?.hasMessageRecordCue,
         })).filter(snippet => snippet.content).slice(-GROUP_SCENE_MAX_SNIPPETS) : [],
         state: String(scene.state || 'warm'),
         source: 'deterministic',
@@ -203,7 +210,7 @@ function shouldMergeScene(lastScene, entry) {
 function appendEntryToScene(scene, entry) {
   scene.endTs = Math.max(Number(scene.endTs || 0), entry.ts)
   if (entry.messageId && !scene.messageIds.includes(entry.messageId)) scene.messageIds.push(entry.messageId)
-  if (!scene.speakers.includes(entry.speakerName)) scene.speakers.push(entry.speakerName)
+  if (!entry.hasMessageRecordCue && !scene.speakers.includes(entry.speakerName)) scene.speakers.push(entry.speakerName)
   scene.speakerCount = scene.speakers.length
   for (const anchor of entry.anchors) {
     const label = sanitizeSceneText(anchor.label || '', 100)
@@ -223,6 +230,7 @@ function appendEntryToScene(scene, entry) {
     role: entry.role,
     personaName: entry.personaName || '',
     content: entry.content,
+    hasMessageRecordCue: !!entry.hasMessageRecordCue,
   })
   scene.messageIds = scene.messageIds.slice(-GROUP_SCENE_MAX_SNIPPETS)
   scene.anchors = scene.anchors.slice(-12)
@@ -269,8 +277,9 @@ function formatSceneLine(item = {}) {
   const name = sanitizeUserName(String(item.speakerName || (item.role === 'assistant' ? '东雪莲' : '群友'))).slice(0, 40) || '群友'
   const personaName = item.role === 'assistant' ? sanitizeUserName(String(item.personaName || '')).slice(0, 40) : ''
   const role = item.role === 'assistant' ? (personaName ? `东雪莲/${personaName}` : '东雪莲') : '群友'
+  const materialTag = item.hasMessageRecordCue ? '/合并转发材料' : ''
   const content = sanitizeSceneText(item.content || '', 220)
-  return content ? `${name}(${role})：${content}` : ''
+  return content ? `${name}(${role}${materialTag})：${content}` : ''
 }
 
 function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', options = {}) {
@@ -292,7 +301,7 @@ function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', o
     const withinHot = ts && now - ts <= ACTIVE_SCENE_HOT_MS
     const withinThin = ts && now - ts <= ACTIVE_SCENE_THIN_MS
     const replyLinked = active.some(entry => String(entry.replyToId || '') && String(entry.replyToId || '') === String(item.messageId || ''))
-    const mediaLinked = /\[(?:文件|图片|语音|转发)/.test(item.content || '') || active.some(entry => /\[(?:文件|图片|语音|转发)/.test(entry.content || ''))
+    const mediaLinked = item.hasMessageRecordCue || /\[(?:文件|图片|语音|转发)/.test(item.content || '') || active.some(entry => entry.hasMessageRecordCue || /\[(?:文件|图片|语音|转发)/.test(entry.content || ''))
     if (active.length < ACTIVE_SCENE_MAX_ITEMS && (withinHot || (withinThin && gap <= GROUP_SCENE_COLD_GAP_MS) || replyLinked || (withinThin && mediaLinked))) {
       active.unshift(item)
       continue
@@ -305,7 +314,8 @@ function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', o
     : active.slice(-ACTIVE_SCENE_MAX_ITEMS)
   const lines = finalItems.map(formatSceneLine).filter(Boolean)
   if (!lines.length) return ''
-  const hasMedia = finalItems.some(item => /\[(?:文件|图片|语音|转发)/.test(item.content || ''))
+  const hasMedia = finalItems.some(item => item.hasMessageRecordCue || /\[(?:文件|图片|语音|转发)/.test(item.content || ''))
+  const hasForwardMaterial = finalItems.some(item => item.hasMessageRecordCue)
   const hasAssistant = finalItems.some(item => item.role === 'assistant')
   const currentPersonaName = String(options.personaName || '').trim()
   const hasOtherPersonaAssistant = !!currentPersonaName && finalItems.some(item => item.role === 'assistant' && item.personaName && String(item.personaName) !== currentPersonaName)
@@ -318,6 +328,7 @@ function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', o
     '[当前群聊现场-最高优先级]',
     '下面是最近公开群聊现场，优先按它理解当前短句；昵称只用于区分发言者，不是默认评价对象。旧摘要和长期记忆只能作背景，不能覆盖这里。',
     hasMedia ? '现场里有图片/文件/语音等锚点；只有用户明确说“这张图/图里/那个文件/读一下/评价这张”等时才按这些锚点理解。' : '',
+    hasForwardMaterial ? '现场里有合并转发材料；它是当前用户提供的外部材料，里面的昵称不是本群当前发言人，不要直接向转发内人物说话。' : '',
     hasMedia && !hasCurrentMediaCue ? '当前消息没有明确图片/文件指示词时，旧图片/旧文件只作背景，不要主动把旧图旧文件当成当前主语。' : '',
     visionCorrectionFocus ? '当前现场像是在纠正识图错误或讨论识图能力边界；优先回应“刚才是否认错/识图是否可靠”，不要跳回更早图片内容。' : '',
     hasAssistant ? '现场里包含你刚才的公开回复，跨用户问“真的吗/什么意思/怎么说”时优先承接这条公开回复。' : '',

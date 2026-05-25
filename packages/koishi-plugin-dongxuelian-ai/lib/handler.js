@@ -334,76 +334,67 @@ async function handleCommand(session, ctx, state) {
     const resolved = resolvePersona(channelKey, currentUserId)
     const sourceLabel = { user: '个人设置', group: '群级默认', default: '默认（东雪莲）' }
     const reply = `你的当前人格：${resolved.name || '默认（东雪莲）'}\n来源：${sourceLabel[resolved.source]}${userPersona ? '' : '\n提示：发送"东雪莲人格切换 椿"可切换'}`
-    await session.send(reply)
-    return handled()
+    return handled(reply)
   }
 
   if (plain === '东雪莲人格切换' || plain === '东雪莲人格切换 ') {
-    await session.send('请指定人格名称，例如：东雪莲人格切换 椿\n发送"东雪莲人格列表"查看可用人格。')
-    return handled()
+    return handled('请指定人格名称，例如：东雪莲人格切换 椿\n发送"东雪莲人格列表"查看可用人格。')
   }
 
   if (plain.startsWith('东雪莲人格切换 ') && plain.length > 7) {
-    if (!inGuild) { await session.send('人格切换只能在群里用。'); return handled() }
+    if (!inGuild) return handled('人格切换只能在群里用。')
     const targetName = plain.slice(7).trim()
     const personas = getAvailablePersonals({ userFacing: true })
     const found = personas.find(p => p.name === targetName)
-    if (!found) { await session.send(`未找到人格"${targetName}"。可用：${personas.map(p => p.name).join('、')}`); return handled() }
+    if (!found) return handled(`未找到人格"${targetName}"。可用：${personas.map(p => p.name).join('、')}`)
     setUserPersona(currentUserId, targetName)
-    await session.send(`已为你切换到人格：${targetName}`)
-    return handled()
+    return handled(`已为你切换到人格：${targetName}`)
   }
 
   if (plain === '东雪莲人格重置') {
     resetUserPersona(currentUserId)
     const resolved = resolvePersona(channelKey, currentUserId)
-    await session.send(`已重置你的人格。当前使用：${resolved.name || '默认（东雪莲）'}`)
-    return handled()
+    return handled(`已重置你的人格。当前使用：${resolved.name || '默认（东雪莲）'}`)
   }
 
   if (plain === '东雪莲人格列表') {
     logDebug(ctx, 'persona', 'persona-list matched, loading')
     const personas = getAvailablePersonals({ userFacing: true })
     logDebug(ctx, 'persona', `persona-list found=${personas.length}`)
-    if (personas.length === 0) { await session.send('当前没有人格配置。'); return handled() }
+    if (personas.length === 0) return handled('当前没有人格配置。')
     const lines = personas.map(p => `- ${p.name}（${p.description || '无描述'}）`)
-    await session.send(`可用人格：\n${lines.join('\n')}\n\n切换：东雪莲人格切换 <名称>\n重置：东雪莲人格重置`)
-    return handled()
+    return handled(`可用人格：\n${lines.join('\n')}\n\n切换：东雪莲人格切换 <名称>\n重置：东雪莲人格重置`)
   }
 
   if (plain === '东雪莲群人格') {
-    if (!isGroupAdminOrBotAdmin(session)) { await session.send('只有群管理员/群主才能查看群级人格。'); return handled() }
+    if (!isGroupAdminOrBotAdmin(session)) return handled('只有群管理员/群主才能查看群级人格。')
     const entry = getGroupPersona(channelKey)
-    if (!entry) { await session.send('当前群：默认模式（无群级人格）'); return handled() }
-    await session.send(`群级人格：${entry.persona}`)
-    return handled()
+    if (!entry) return handled('当前群：默认模式（无群级人格）')
+    return handled(`群级人格：${entry.persona}`)
   }
 
   if (plain === '东雪莲群人格切换') {
-    if (!isGroupAdminOrBotAdmin(session)) { await session.send('只有群管理员/群主才能设置群级人格。'); return handled() }
+    if (!isGroupAdminOrBotAdmin(session)) return handled('只有群管理员/群主才能设置群级人格。')
     const personas = getAvailablePersonals({ userFacing: true })
-    await session.send(`请写要切换的群人格名：东雪莲群人格切换 <名称>\n可用人格：${personas.map(p => p.name).join('、')}`)
-    return handled()
+    return handled(`请写要切换的群人格名：东雪莲群人格切换 <名称>\n可用人格：${personas.map(p => p.name).join('、')}`)
   }
 
   if (plain.startsWith('东雪莲群人格切换') && plain !== '东雪莲群人格切换') {
-    if (!isGroupAdminOrBotAdmin(session)) { await session.send('只有群管理员/群主才能设置群级人格。'); return handled() }
-    if (!inGuild) { await session.send('群级人格设置只能在群里用。'); return handled() }
+    if (!isGroupAdminOrBotAdmin(session)) return handled('只有群管理员/群主才能设置群级人格。')
+    if (!inGuild) return handled('群级人格设置只能在群里用。')
     const targetName = plain.slice(8).trim()
     const personas = getAvailablePersonals({ userFacing: true })
     const found = personas.find(p => p.name === targetName)
-    if (!found) { await session.send(`未找到人格"${targetName}"。可用：${personas.map(p => p.name).join('、')}`); return handled() }
+    if (!found) return handled(`未找到人格"${targetName}"。可用：${personas.map(p => p.name).join('、')}`)
     setGroupPersona(channelKey, targetName)
-    await session.send(`已设置群级人格：${targetName}`)
-    return handled()
+    return handled(`已设置群级人格：${targetName}`)
   }
 
   if (plain === '东雪莲群人格重置') {
-    if (!isGroupAdminOrBotAdmin(session)) { await session.send('只有群管理员/群主才能重置群级人格。'); return handled() }
-    if (!inGuild) { await session.send('群级人格重置只能在群里用。'); return handled() }
+    if (!isGroupAdminOrBotAdmin(session)) return handled('只有群管理员/群主才能重置群级人格。')
+    if (!inGuild) return handled('群级人格重置只能在群里用。')
     resetGroupPersona(channelKey)
-    await session.send('已重置群级人格。所有未切换个人人格的用户将使用默认东雪莲。')
-    return handled()
+    return handled('已重置群级人格。所有未切换个人人格的用户将使用默认东雪莲。')
   }
 
   if (plain === '东雪莲复读开') {

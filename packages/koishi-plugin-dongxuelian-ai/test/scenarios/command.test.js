@@ -196,6 +196,15 @@ async function run(t) {
     const personaList = await run(makeSession({ content: '\u4e1c\u96ea\u83b2\u4eba\u683c\u5217\u8868' }))
     t.check('scenario persona list command is handled', personaList.sent.length > 0, JSON.stringify(personaList.sent))
 
+    const personaListSendFailsSession = makeSession({
+      content: '\u4e1c\u96ea\u83b2\u4eba\u683c\u5217\u8868',
+      async send() {
+        throw new Error('session send should not be called by persona commands')
+      },
+    })
+    const personaListSendFails = await run(personaListSendFailsSession)
+    t.check('scenario persona command returns through unified command result', personaListSendFails.sent.some(item => String(item).includes('\u53ef\u7528\u4eba\u683c')), JSON.stringify(personaListSendFails.sent))
+
     const groupPersonaFile = path.join(data.dataDir, 'ai-persona-groups.json')
     const groupPersonaBefore = fs.existsSync(groupPersonaFile) ? fs.readFileSync(groupPersonaFile, 'utf8') : null
     const groupPersona = await run(makeSession({
@@ -206,6 +215,35 @@ async function run(t) {
     checkSentNonEmpty(t, 'scenario non-admin group persona rejected with reply', groupPersona)
     const groupPersonaAfter = fs.existsSync(groupPersonaFile) ? fs.readFileSync(groupPersonaFile, 'utf8') : null
     t.check('scenario non-admin group persona does not write file', groupPersonaAfter === groupPersonaBefore, JSON.stringify({ before: groupPersonaBefore, after: groupPersonaAfter }))
+
+    data.writeJson('ai-random-rate.json', { 10001: 0.42 })
+    const nonAdminRandomRateReset = await run(makeSession({
+      userId: '12345',
+      author: { id: '12345', name: 'member' },
+      content: '东雪莲群聊AI概率重置',
+      event: { sender: { role: 'member' }, message: [] },
+    }))
+    checkSentNonEmpty(t, 'scenario non-admin random rate reset rejected with reply', nonAdminRandomRateReset)
+    t.check('scenario non-admin random rate reset is denied by permission', nonAdminRandomRateReset.sent.some(item => String(item).includes('只有群主、群管理员或bot管理员才能管理概率')), JSON.stringify(nonAdminRandomRateReset.sent))
+    t.check('scenario non-admin random rate reset does not write file', data.readJson('ai-random-rate.json')['10001'] === 0.42, JSON.stringify(data.readJson('ai-random-rate.json')))
+
+    const nonAdminRandomRateInvalid = await run(makeSession({
+      userId: '12345',
+      author: { id: '12345', name: 'member' },
+      content: '东雪莲群聊AI概率设置 abc',
+      event: { sender: { role: 'member' }, message: [] },
+    }))
+    t.check('scenario non-admin random rate invalid format is permission-gated first', nonAdminRandomRateInvalid.sent.some(item => String(item).includes('只有群主、群管理员或bot管理员才能管理概率')), JSON.stringify(nonAdminRandomRateInvalid.sent))
+    t.check('scenario non-admin random rate invalid does not write file', data.readJson('ai-random-rate.json')['10001'] === 0.42, JSON.stringify(data.readJson('ai-random-rate.json')))
+
+    const groupAdminRandomRateReset = await run(makeSession({
+      userId: '12345',
+      author: { id: '12345', name: 'member' },
+      content: '东雪莲群聊AI概率重置',
+      event: { sender: { role: 'admin' }, message: [] },
+    }))
+    checkSentNonEmpty(t, 'scenario group admin random rate reset accepted', groupAdminRandomRateReset)
+    t.check('scenario group admin random rate reset removes current group', data.readJson('ai-random-rate.json')['10001'] === undefined, JSON.stringify(data.readJson('ai-random-rate.json')))
 
     const voiceRateNonAdmin = await run(makeSession({
       userId: '12345',

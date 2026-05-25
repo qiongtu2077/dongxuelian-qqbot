@@ -113,7 +113,7 @@ const createReminderTool = {
   },
   execute: executeCreateReminder,
   resolveRunAt,
-  dangerous: false,
+  dangerous: true,
   defaultChannels: ['qq', 'dashboard'],
 }
 
@@ -147,7 +147,7 @@ const cancelReminderTool = {
     },
   },
   execute: executeCancelReminder,
-  dangerous: false,
+  dangerous: true,
   defaultChannels: ['qq', 'dashboard'],
 }
 

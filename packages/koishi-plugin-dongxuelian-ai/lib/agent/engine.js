@@ -11,7 +11,7 @@ const { estimateTokens, externalizeToolResult, compactWithLLM } = require('./con
 const { recordCall } = require('./stats')
 const safety = require('./safety')
 const pending = require('./pending')
-const { isChannelEnabled, getEnabledSkills } = require('./config')
+const { isChannelEnabled, isToolEnabled, getEnabledSkills } = require('./config')
 const { buildAgentSkillSummary } = require('./skills')
 const { buildAgentMessages } = require('./messages')
 const { buildAgentPersonaContext, mergeAgentSystemExtra } = require('./persona-context')
@@ -240,14 +240,14 @@ function ensureToolDefinition(tools, toolName) {
   return [...tools, { type: 'function', function: toolRegistry[toolName].definition }]
 }
 
-function getForceToolSet(forceTools) {
-  return new Set((Array.isArray(forceTools) ? forceTools : []).filter(name => toolRegistry[name]))
+function getForceToolSet(forceTools, channel = 'qq') {
+  return new Set((Array.isArray(forceTools) ? forceTools : []).filter(name => toolRegistry[name] && isToolEnabled(channel, name)))
 }
 
 async function runAgent({ userMessage, userName, userId, channelKey, channel = 'qq', systemExtra = [], history = [], forceTools = [], preExecuteTools = [], onProgress, bot, enableThinking = false, agentMode = false }) {
   if (!isChannelEnabled(channel)) return { reply: '(Agent 已关闭)', toolCalls: 0, pendingId: null }
   let tools = getToolDefinitions(channel)
-  const forceToolSet = getForceToolSet(forceTools)
+  const forceToolSet = getForceToolSet(forceTools, channel)
   for (const toolName of forceToolSet) tools = ensureToolDefinition(tools, toolName)
   const allowedToolNames = new Set(tools.map(item => item.function && item.function.name).filter(Boolean))
   const config = await loadConfig()
@@ -261,6 +261,13 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
   let toolCount = 0
   for (const item of Array.isArray(preExecuteTools) ? preExecuteTools : []) {
     if (!item || !item.name) continue
+    if (!isToolEnabled(channel, item.name)) {
+      toolResults.push({
+        name: item.name,
+        result: `工具 '${item.name}' 当前渠道未启用，拒绝预执行。请在 Dashboard 的 Agent 工具开关里启用 ${item.name}。`,
+      })
+      continue
+    }
     if (forceToolSet.has(item.name)) allowedToolNames.add(item.name)
     const call = normalizeToolCall(item.name, item.args || {})
     messages.push({

@@ -231,6 +231,43 @@ async function run(t) {
 
   await withScenario({
     data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 1 },
+      randomVoiceRate: { 10001: 0 },
+    },
+  }, async ({ ready, makeSession, run }) => {
+    await ready()
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '', tool_calls: [
+        { id: 'tc-random-time', type: 'function', function: { name: 'get_current_time', arguments: '{}' } },
+        { id: 'tc-random-calc', type: 'function', function: { name: 'calculate', arguments: '{"expression":"6*7"}' } },
+        { id: 'tc-random-memory', type: 'function', function: { name: 'search_memory', arguments: '{}' } },
+      ] } }] } },
+      { json: { choices: [{ message: { content: '{"mode":"ambient_water","reply":"random-budget-visible"}' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const session = makeSession({
+        userId: '2031',
+        author: { id: '2031', name: 'member' },
+        content: '随机预算测试',
+        messageId: 'random-tool-budget-trigger',
+      })
+      const result = await run(session, { flushTicks: 160 })
+      await session.waitForSend(message => String(message).includes('random-budget-visible'))
+      t.check('scenario random tool budget sends final ambient reply', result.sent.some(item => String(item).includes('random-budget-visible')), JSON.stringify(result.sent))
+      t.check('scenario random tool budget makes only two model calls', mocked.calls.length === 2, JSON.stringify(mocked.calls.map(call => Object.keys(call.requestBody || {}))))
+      const firstTools = mocked.calls[0]?.requestBody?.tools || []
+      t.check('scenario random tool budget exposes read-only lightweight tools', firstTools.some(item => item.function?.name === 'get_current_time') && firstTools.some(item => item.function?.name === 'calculate'), JSON.stringify(firstTools))
+      const toolMessages = mocked.calls[1]?.requestBody?.messages?.filter(item => item.role === 'tool') || []
+      t.check('scenario random tool budget returns one real tool result', toolMessages.some(item => item.tool_call_id === 'tc-random-time' && !String(item.content || '').includes('预算已用完')), JSON.stringify(toolMessages))
+      t.check('scenario random tool budget blocks extra tool calls', toolMessages.filter(item => String(item.content || '').includes('预算已用完')).length === 2, JSON.stringify(toolMessages))
+      t.check('scenario random tool budget does not execute calculate', !toolMessages.some(item => item.tool_call_id === 'tc-random-calc' && String(item.content || '') === '42'), JSON.stringify(toolMessages))
+      t.check('scenario random tool budget second request has no tools', !(mocked.calls[1]?.requestBody?.tools || []).length, JSON.stringify(mocked.calls[1]?.requestBody?.tools || []))
+    })
+  })
+
+  await withScenario({
+    data: {
       randomWhitelist: [],
       randomRate: { 10001: 1 },
     },

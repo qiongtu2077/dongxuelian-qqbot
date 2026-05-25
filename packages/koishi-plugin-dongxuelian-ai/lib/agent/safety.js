@@ -30,8 +30,9 @@ function getEffectivePolicy() {
 }
 
 function check(toolName) {
-  if (!toolRegistry[toolName]) return { allowed: false, error: `未知工具: ${toolName}` }
-  if (!DANGEROUS_TOOLS.has(toolName)) return { allowed: true }
+  const tool = toolRegistry[toolName]
+  if (!tool) return { allowed: false, error: `未知工具: ${toolName}` }
+  if (!DANGEROUS_TOOLS.has(toolName) && !tool.dangerous) return { allowed: true }
   const policy = getEffectivePolicy()
   if (policy === 'block') return { allowed: false, action: 'block', error: `工具 '${toolName}' 已被禁用（block 模式）` }
   if (policy === 'confirm') return { allowed: false, action: 'confirm', error: `工具 '${toolName}' 需要确认（confirm 模式）` }

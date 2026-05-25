@@ -3,6 +3,7 @@
  * 安全：限定路径白名单；OneBot 不可用时降级说明。
  */
 const fs = require('fs/promises')
+const path = require('path')
 const WebSocket = require('ws')
 const { assertExistingAgentPathInsideRoots } = require('../path-guard')
 const { resolveOneBotWsUrl } = require('../../onebot-endpoint')
@@ -69,14 +70,15 @@ module.exports = {
     const groupId = String(params.groupId || context.groupId || contextGroupId || '').trim()
     const userId = String(params.userId || context.userId || contextUserId || '').trim()
     const name = String(params.name || '').trim() || undefined
-    if (!groupId && !userId) return `文件可发送：${abs}。但缺少 groupId/userId，无法确定发送目标。`
+    const displayName = name || path.basename(abs)
+    if (!groupId && !userId) return `文件可发送：${displayName}。但缺少 groupId/userId，无法确定发送目标。`
     if (groupId && !/^\d+$/.test(groupId)) return 'groupId 必须为纯数字。'
     if (!groupId && userId && !/^\d+$/.test(userId)) return 'userId 必须为纯数字。'
     const action = groupId ? 'upload_group_file' : 'upload_private_file'
     const caller = typeof context.callOneBot === 'function' ? context.callOneBot : callOneBot
     const result = await caller(action, groupId ? { group_id: Number(groupId), file: abs, name } : { user_id: Number(userId), file: abs, name })
-    if (!result.ok) return `文件未发送：${result.message || 'OneBot 不可用'}。文件路径：${abs}`
-    return `已发送文件：${abs}`
+    if (!result.ok) return `文件未发送：${result.message || 'OneBot 不可用'}。文件名：${displayName}`
+    return `已发送文件：${displayName}`
   },
   dangerous: true,
   defaultChannels: ['dashboard'],

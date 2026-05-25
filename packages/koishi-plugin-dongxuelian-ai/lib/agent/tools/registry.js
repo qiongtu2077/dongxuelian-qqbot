@@ -97,13 +97,16 @@ function getToolSummaries(channel = '') {
     const defaultChannels = tool.defaultChannels || ['dashboard', 'qq']
     const channels = {}
     for (const key of Object.keys(config.channels || {})) channels[key] = !!config.channels[key]?.tools?.[name]
+    const dangerous = !!tool.dangerous
+    const external = name === 'web_search' || name === 'web_fetch' || name === 'browser_action'
+    const write = dangerous || /write|edit|append|shell|javascript|remember|forget|create_plan|create_reminder|cancel_reminder|create_scheduled_task|create_uploaded_file_variant|send_file_to_user|update_task_status|finish_plan|abandon_plan/i.test(name)
     return {
       name,
       description: tool.definition.description || '',
-      dangerous: !!tool.dangerous,
-      readOnly: !tool.dangerous && !/write|edit|append|shell|javascript|browser|cookie|memory|plan|create_uploaded_file_variant/i.test(name),
-      write: /write|edit|append|shell|javascript|remember|forget|create_plan|create_reminder|create_scheduled_task|create_uploaded_file_variant|update_task_status|finish_plan|abandon_plan/i.test(name),
-      external: name === 'web_search' || name === 'web_fetch' || name === 'browser_action',
+      dangerous,
+      readOnly: !dangerous && !write && !external,
+      write,
+      external,
       defaultChannels,
       channels,
       enabled: channel ? !!config.channels?.[channel]?.tools?.[name] : undefined,

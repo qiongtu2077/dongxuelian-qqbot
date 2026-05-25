@@ -25,7 +25,7 @@ async function withFetch(mocked, fn) {
 async function run(t) {
   t.section('scenario: file history and natural reading')
 
-  await withScenario({}, async ({ makeSession, run }) => {
+  await withScenario({}, async ({ makeSession, run, data }) => {
     const session = makeSession({
       content: '',
       messageId: 'file-private-silent-1',
@@ -42,9 +42,11 @@ async function run(t) {
     t.check('scenario private pure file uses user-isolated channel key', channelKey === `private:${session.userId}`, channelKey)
     t.check('scenario private pure file stores metadata', entry && entry.fileName === '私聊文件.txt' && entry.fileId === 'private-file-token', JSON.stringify(entry))
     t.check('scenario private pure file stays silent', result.sent.length === 0, JSON.stringify(result.sent))
+    const fileHistoryNames = fs.readdirSync(data.pathFor('file-history'))
+    t.check('scenario private pure file history uses safe filename', fileHistoryNames.includes(`private_${session.userId}.json`) && !fileHistoryNames.some(name => String(name).includes(':')), JSON.stringify(fileHistoryNames))
   })
 
-  await withScenario({}, async ({ makeSession }) => {
+  await withScenario({}, async ({ makeSession, data }) => {
     const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     await store.storeFile('private', 'legacy-private-a', {
@@ -72,6 +74,7 @@ async function run(t) {
     const recentA = await store.getRecentFiles(keyA, 10)
     t.check('scenario legacy private file history is readable for same direct user', recentA.some(file => file.messageId === 'legacy-private-a'), JSON.stringify(recentA))
     t.check('scenario legacy private file history does not cross direct users', recentA.every(file => file.userId === 'user-a'), JSON.stringify(recentA))
+    t.check('scenario file history legacy private store remains readable', fs.existsSync(data.pathFor('file-history', 'private.json')), JSON.stringify(fs.readdirSync(data.pathFor('file-history'))))
   })
 
   await withScenario({}, async ({ makeSession, run, data }) => {
@@ -266,6 +269,57 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession, run, data }) => {
+    data.writeJson('ai-tool-config.json', {
+      version: 2,
+      channels: {
+        qq: { enabled: true, tools: { get_current_time: true, calculate: true, analyze_file: false, create_reminder: false } },
+        dashboard: { enabled: true, tools: {} },
+      },
+      autoRoute: { qq: { enabled: false }, dashboard: { enabled: false } },
+      dangerousPolicy: 'confirm',
+      enabledSkills: [],
+      readFileRoots: [],
+    })
+    try { require(path.join(AI_ROOT, 'lib', 'agent', 'config.js')).resetAgentConfigCache() } catch {}
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-file-disabled', type: 'function', function: { name: 'analyze_file', arguments: '{}' } }] } }] } },
+      { json: { choices: [{ message: { content: '这个渠道现在没开读文件工具。' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const session = makeSession({
+        content: '文件里面说了什么',
+        messageId: 'file-tool-disabled',
+        isDirect: true,
+        guildId: undefined,
+        channelId: undefined,
+        event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '文件里面说了什么' } }] },
+      })
+      const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+      const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+      const channelKey = conversation.getChannelKey(session)
+      await store.storeFile(channelKey, 'disabled-file-1', {
+        fileName: '禁用后不应读取.md',
+        fileSize: 20,
+        mimeType: 'text/markdown',
+        ext: 'md',
+        url: '',
+        fileId: 'file-token-disabled',
+        conversationKey: conversation.getConversationKey(session),
+        userId: session.userId,
+        skipped: false,
+      })
+      await store.markFileAnalyzed(channelKey, 'disabled-file-1', '[用户上传文件: 禁用后不应读取.md]\n---文件内容开始---\nSECRET_DISABLED_FILE_CONTENT\n---文件内容结束---')
+      const result = await run(session, { flushTicks: 160 })
+      await session.waitForSend(message => String(message).includes('没开读文件工具'), 10000)
+      const firstTools = mocked.calls[0]?.requestBody?.tools || []
+      t.check('scenario disabled analyze_file is hidden from chat tools', !firstTools.some(item => item.function?.name === 'analyze_file'), JSON.stringify(firstTools))
+      const toolMessages = mocked.calls[1]?.requestBody?.messages?.filter(item => item.role === 'tool') || []
+      t.check('scenario disabled analyze_file tool_call is rejected before execution', toolMessages.some(item => String(item.content || '').includes('当前渠道未启用')), JSON.stringify(toolMessages))
+      checkSentExcludes(t, 'scenario disabled analyze_file does not leak file content', result, 'SECRET_DISABLED_FILE_CONTENT')
+    })
+  })
+
+  await withScenario({}, async ({ makeSession, run, data }) => {
     const session = makeSession({
       content: '',
       messageId: 'file-empty-1',
@@ -286,6 +340,27 @@ async function run(t) {
     t.check('scenario file anchor appears in active group scene', note.includes('notes.txt') && note.includes('当前群聊现场'), note)
     t.check('scenario empty group file does not send proactive reply', result.sent.length === 0, JSON.stringify(result.sent))
     t.check('scenario file history file created', fs.existsSync(data.pathFor('file-history', `${session.guildId}.json`)), data.dataDir)
+  })
+
+  await withScenario({}, async ({ makeSession, data }) => {
+    const session = makeSession({ guildId: 'scene-forward-1', channelId: 'scene-forward-1', userId: 'sender-1' })
+    const sceneIndex = require(path.join(AI_ROOT, 'lib', 'group-scene-index.js'))
+    const forwardEntry = {
+      userId: session.userId,
+      speakerName: '转发者',
+      content: '【转发消息：霉雨：网易云能听周杰伦了；璃夏：真的吗】',
+      role: 'user',
+      messageId: 'forward-scene-msg-1',
+      hasMessageRecordCue: true,
+      ts: Date.now(),
+    }
+    await sceneIndex.appendGroupSceneEntry(session.guildId, forwardEntry)
+    const sceneData = await sceneIndex.loadGroupScenes(session.guildId)
+    const latest = (sceneData.scenes || []).slice(-1)[0]
+    const note = sceneIndex.buildActiveGroupSceneNote(session.guildId, [forwardEntry], session.userId, { currentText: '这段什么意思' })
+    t.check('scenario forward record is marked as external material in active scene', note.includes('合并转发材料') && note.includes('里面的昵称不是本群当前发言人'), note)
+    t.check('scenario forward record does not count as current scene speaker', latest && Array.isArray(latest.speakers) && !latest.speakers.includes('转发者') && latest.speakerCount === 0, JSON.stringify(latest))
+    t.check('scenario forward record keeps forward anchor for retrieval without raw speaker promotion', latest && (latest.anchors || []).some(anchor => anchor.type === 'forward' && anchor.label === '合并转发'), JSON.stringify(latest))
   })
 
   await withScenario({}, async ({ makeSession, run }) => {
@@ -560,6 +635,79 @@ async function run(t) {
         sendFileTool.execute = originalExecute
       }
     })
+  })
+
+  await withScenario({}, async ({ data }) => {
+    const sourcePath = data.pathFor('uploaded-files', 'a-private-note.txt')
+    await fs.promises.mkdir(path.dirname(sourcePath), { recursive: true })
+    await fs.promises.writeFile(sourcePath, 'A 的文件正文', 'utf8')
+    const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+    const variantTool = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'create-uploaded-file-variant.js'))
+    const sendFileTool = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'send-file-to-user.js'))
+    const channelKey = '10001'
+    await store.storeFile(channelKey, 'file-variant-owner-msg-a', {
+      fileName: 'a-private-note.txt',
+      fileSize: 16,
+      mimeType: 'text/plain',
+      ext: 'txt',
+      url: '',
+      fileId: 'file-variant-owner-token',
+      conversationKey: channelKey,
+      userId: 'userA',
+      skipped: false,
+    })
+    await store.setLocalPath(channelKey, 'file-variant-owner-msg-a', sourcePath)
+
+    const originalExecute = sendFileTool.execute
+    const uploadCalls = []
+    sendFileTool.execute = async (params, context = {}) => {
+      uploadCalls.push({ params, context })
+      return `已发送文件：${params.name || params.path || ''}`
+    }
+    try {
+      let blockedMessage = ''
+      try {
+        await variantTool.execute({ name: 'renamed.txt', sendBack: true }, {
+          channelKey,
+          groupId: channelKey,
+          isDirect: false,
+          userId: 'userB',
+          channel: 'qq',
+        })
+      } catch (error) {
+        blockedMessage = String(error && error.message || error || '')
+      }
+      t.check('scenario uploaded file variant blocks cross-user recent file without evidence', /不确定要处理哪一个文件/.test(blockedMessage), blockedMessage)
+      t.check('scenario uploaded file variant blocked cross-user recent file does not send', uploadCalls.length === 0, JSON.stringify(uploadCalls))
+      t.check('scenario uploaded file variant blocked cross-user recent file does not create output', !fs.existsSync(data.pathFor('agent-user-files')), data.pathFor('agent-user-files'))
+
+      await variantTool.execute({ name: 'same-owner.txt', sendBack: true }, {
+        channelKey,
+        groupId: channelKey,
+        isDirect: false,
+        userId: 'userA',
+        channel: 'qq',
+      })
+      await variantTool.execute({ messageId: 'file-variant-owner-msg-a', name: 'by-message-id.txt', sendBack: true }, {
+        channelKey,
+        groupId: channelKey,
+        isDirect: false,
+        userId: 'userB',
+        channel: 'qq',
+      })
+      await variantTool.execute({ keyword: 'private-note', name: 'by-keyword.txt', sendBack: true }, {
+        channelKey,
+        groupId: channelKey,
+        isDirect: false,
+        userId: 'userB',
+        channel: 'qq',
+      })
+      t.check('scenario uploaded file variant allows same-owner recent file', uploadCalls.some(call => /same-owner\.txt$/.test(String(call.params.name || ''))), JSON.stringify(uploadCalls))
+      t.check('scenario uploaded file variant allows explicit messageId across users', uploadCalls.some(call => /by-message-id\.txt$/.test(String(call.params.name || ''))), JSON.stringify(uploadCalls))
+      t.check('scenario uploaded file variant allows explicit keyword across users', uploadCalls.some(call => /by-keyword\.txt$/.test(String(call.params.name || ''))), JSON.stringify(uploadCalls))
+    } finally {
+      sendFileTool.execute = originalExecute
+    }
   })
 }
 

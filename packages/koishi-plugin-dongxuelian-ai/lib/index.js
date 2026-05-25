@@ -127,9 +127,10 @@ const {
   loadRandomVoiceRateCache,
   getRandomVoiceRate,
 } = require('./random-voice-rate') // 群聊随机语音升级概率配置
-const { heuristicRoute, buildExplicitSearchRunOptions, buildExplicitUrlFetchRunOptions } = require('./agent/router') // Agent 路由决策（启发式 + 显式搜索）
+const { heuristicRoute, buildExplicitSearchRunOptions, buildExplicitUrlFetchRunOptions, isExecutableSearchQuery } = require('./agent/router') // Agent 路由决策（启发式 + 显式搜索）
 const { buildPrivateSearchContext } = require('./search-context')
 const { externalToolsDenied } = require('./external-tool-policy')
+const { isToolEnabled: isAgentToolEnabled } = require('./agent/config')
 const agentEngine = require('./agent/engine') // Agent 执行引擎
 const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue') // Agent 任务队列
 const { recordAgentChatResult, summarizeAgentToolResults } = require('./agent-chat-bridge') // Agent 结果写入普通对话历史
@@ -410,7 +411,7 @@ async function handleChatResult(chatResult, { ctx, session, channelKey, currentU
   const getBot = typeof resolveBot === 'function' ? resolveBot : createBotResolver(ctx, session)
   if (chatResult && typeof chatResult === 'object' && chatResult.heavyToolsRequested) {
     if (externalToolsDenied(userText)) return normalizeChatResultText(chatResult)
-    const webSearchRequests = chatResult.heavyToolsRequested
+    const webSearchRequests = isAgentToolEnabled('qq', 'web_search') ? chatResult.heavyToolsRequested
       .filter(t => t.name === 'web_search')
       .map(t => ({
         name: 'web_search',
@@ -418,8 +419,8 @@ async function handleChatResult(chatResult, { ctx, session, channelKey, currentU
           query: String(t.args?.query || userText).trim() || userText,
           ...(Array.isArray(t.args?.queries) ? { queries: t.args.queries } : {}),
         },
-      }))
-    const webFetchRequests = chatResult.heavyToolsRequested
+      })) : []
+    const webFetchRequests = isAgentToolEnabled('qq', 'web_fetch') ? chatResult.heavyToolsRequested
       .filter(t => t.name === 'web_fetch' && t.args?.url)
       .map(t => ({
         name: 'web_fetch',
@@ -428,8 +429,10 @@ async function handleChatResult(chatResult, { ctx, session, channelKey, currentU
           ...(t.args.maxChars ? { maxChars: t.args.maxChars } : {}),
         },
       }))
-      .filter(t => t.args.url)
-    if (searchContext && ['needs_chat_handling', 'blocked_by_cold'].includes(searchContext.searchReadiness) && !webFetchRequests.length && !webSearchRequests.length) {
+      .filter(t => t.args.url) : []
+    if (!webSearchRequests.length && !webFetchRequests.length) return normalizeChatResultText(chatResult)
+    const hasExecutableWebSearchRequest = webSearchRequests.some(item => isExecutableSearchQuery(item?.args?.query || ''))
+    if (searchContext && ['needs_chat_handling', 'blocked_by_cold'].includes(searchContext.searchReadiness) && !webFetchRequests.length && webSearchRequests.length && !hasExecutableWebSearchRequest) {
       return retellToolBlockedReply(chatResult, { ctx, session, userText, randomTriggered, reason: searchContext.blockedReason || searchContext.searchReadiness })
     }
     const agentConfig = require('./agent/config').getAgentConfig()

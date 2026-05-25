@@ -19,7 +19,7 @@ const fileHistoryCache = new Map()
 const fileStoreQueues = new Map()
 
 function getSafeKey(channelKey) {
-  return String(channelKey || '').replace(/[^a-zA-Z0-9.:_-]/g, '_')
+  return String(channelKey || '').replace(/[^a-zA-Z0-9._-]/g, '_')
 }
 
 function getLegacyPrivateKey(channelKey) {
@@ -42,6 +42,16 @@ function getFilePath(channelKey) {
 
 function getQueueKey(channelKey) {
   return getSafeKey(channelKey) || 'unknown'
+}
+
+function getLegacyUnsafeKey(channelKey) {
+  return String(channelKey || '').replace(/[^a-zA-Z0-9.:_-]/g, '_')
+}
+
+function getLegacyUnsafeFilePath(channelKey) {
+  const legacyKey = getLegacyUnsafeKey(channelKey)
+  const safeKey = getSafeKey(channelKey)
+  return legacyKey && legacyKey !== safeKey ? path.join(FILE_HISTORY_DIR, legacyKey + '.json') : ''
 }
 
 function enqueueTask(channelKey, task) {
@@ -106,8 +116,16 @@ async function readFileHistory(channelKey) {
   const cacheKey = getQueueKey(channelKey)
   try {
     await fs.mkdir(FILE_HISTORY_DIR, { recursive: true })
-    const fp = getFilePath(channelKey)
-    const stat = await fs.stat(fp)
+    let fp = getFilePath(channelKey)
+    let stat
+    try {
+      stat = await fs.stat(fp)
+    } catch (error) {
+      const legacyPath = getLegacyUnsafeFilePath(channelKey)
+      if (!legacyPath || error?.code !== 'ENOENT') throw error
+      fp = legacyPath
+      stat = await fs.stat(fp)
+    }
     if (!stat.isFile() || stat.size > MAX_HISTORY_FILE_BYTES) return { files: {} }
     const parsed = JSON.parse(await fs.readFile(fp, 'utf8'))
     const data = normalizeData(parsed)

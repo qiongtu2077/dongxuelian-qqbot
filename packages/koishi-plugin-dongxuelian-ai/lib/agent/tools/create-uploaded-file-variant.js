@@ -57,23 +57,57 @@ async function resolveSourceFile(channelKey, messageId, entry) {
 }
 
 async function pickRecentFile(channelKey, params = {}) {
-  const messageId = String(params.messageId || params.activeFileMessageId || '').trim()
+  const messageId = String(params.messageId || '').trim()
   if (messageId) {
     const entry = await getFileEntry(channelKey, messageId)
-    return entry ? { messageId, entry } : null
+    return entry ? { messageId, entry, reason: 'messageId' } : null
+  }
+  const activeFileMessageId = String(params.activeFileMessageId || '').trim()
+  if (activeFileMessageId) {
+    const entry = await getFileEntry(channelKey, activeFileMessageId)
+    return entry ? { messageId: activeFileMessageId, entry, reason: 'activeFileAnchor' } : null
   }
   const recent = await getRecentFiles(channelKey, 15)
   const keyword = String(params.keyword || '').trim().toLowerCase()
   const candidates = recent.filter(item => item && !item.skipped)
   if (!keyword) {
     const entry = candidates[0]
-    return entry ? { messageId: entry.messageId, entry } : null
+    return entry ? { messageId: entry.messageId, entry, reason: 'recent' } : null
   }
   const matched = candidates.find(item =>
     String(item.fileName || '').toLowerCase().includes(keyword) ||
     String(item.ext || '').toLowerCase().includes(keyword)
-  ) || candidates[0]
-  return matched ? { messageId: matched.messageId, entry: matched } : null
+  )
+  return matched ? { messageId: matched.messageId, entry: matched, reason: 'keyword' } : null
+}
+
+function normalizeId(value = '') {
+  return String(value || '').trim()
+}
+
+function hasTrustedCrossUserFileEvidence(context = {}, picked = {}) {
+  if (context.explicitFileTarget || context.publicFileTaskEvidence || context.activeScenePublicFileTask || context.allowCrossUserFileVariant) {
+    return true
+  }
+  const evidence = context.fileTargetEvidence && typeof context.fileTargetEvidence === 'object'
+    ? context.fileTargetEvidence
+    : null
+  if (!evidence) return false
+  const evidenceMessageId = normalizeId(evidence.messageId)
+  if (evidenceMessageId && evidenceMessageId === normalizeId(picked.messageId)) return true
+  return ['public_task', 'joined_public_task', 'quoted_file', 'referenced_file'].includes(String(evidence.type || ''))
+}
+
+function assertFileVariantTargetAllowed(picked, context = {}) {
+  if (!picked || context.isDirect) return
+  if (picked.reason === 'messageId' || picked.reason === 'keyword') return
+  if (hasTrustedCrossUserFileEvidence(context, picked)) return
+
+  const ownerId = normalizeId(picked.entry?.userId)
+  const currentUserId = normalizeId(context.userId)
+  if (ownerId && currentUserId && ownerId === currentUserId) return
+
+  throw new Error('我不确定要处理哪一个文件，请说明文件名或引用那条文件消息。')
 }
 
 function applyTextReplacement(buffer, params = {}, ext = '') {
@@ -91,6 +125,7 @@ async function createVariant(params = {}, context = {}) {
   if (!channelKey) throw new Error('无法确定当前会话。')
   const picked = await pickRecentFile(channelKey, { activeFileMessageId: context.activeFileMessageId, ...params })
   if (!picked) throw new Error('当前会话没有可处理的近期文件。')
+  assertFileVariantTargetAllowed(picked, context)
   const { messageId, entry } = picked
   if (entry.skipped) throw new Error(`这个文件被跳过了：${entry.skipReason || '不支持的类型'}`)
   const sourcePath = await resolveSourceFile(channelKey, messageId, entry)
@@ -120,9 +155,9 @@ async function createVariant(params = {}, context = {}) {
 async function executeCreateUploadedFileVariant(params = {}, context = {}) {
   const variant = await createVariant(params, context)
   const shouldSend = params.send !== false && params.sendBack !== false
-  if (!shouldSend) return `已创建文件副本：${variant.path}`
+  if (!shouldSend) return `已创建文件副本：${variant.name}`
   const sendResult = await sendFileToUser.execute({ path: variant.path, name: variant.name }, context)
-  return `${sendResult}\n文件副本：${variant.path}`
+  return `${sendResult}\n文件副本：${variant.name}`
 }
 
 module.exports = {
@@ -151,6 +186,6 @@ module.exports = {
   execute: executeCreateUploadedFileVariant,
   createVariant,
   resolveTargetFileName,
-  dangerous: false,
+  dangerous: true,
   defaultChannels: ['qq'],
 }

@@ -7,6 +7,7 @@
 const { getMemorySummary } = require('./conversation')
 const { readGroupContext } = require('./group-scene-index')
 const { filterExternalToolDefinitions, buildExternalToolPolicyHint } = require('./external-tool-policy')
+const { isToolEnabled } = require('./agent/config')
 
 const CHAT_TOOL_TIMEOUT_MS = 3000
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000
@@ -15,6 +16,17 @@ const CHAT_TOOLS_TOTAL_DEADLINE_MS = 5000
 const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image', 'read_group_context', 'analyze_file', 'create_uploaded_file_variant', 'create_reminder', 'list_reminders', 'cancel_reminder', 'create_scheduled_task', 'list_scheduled_tasks', 'get_scheduled_task', 'pause_scheduled_task', 'resume_scheduled_task', 'delete_scheduled_task', 'run_scheduled_task_now'])
 
 const HEAVY_TOOLS = new Set(['web_search', 'web_fetch', 'browser_action', 'execute_shell', 'file_write'])
+
+const DEFAULT_CHAT_TOOL_CHANNEL = 'qq'
+
+function resolveChatToolChannel(options = {}) {
+  return String(options.channel || options.toolChannel || DEFAULT_CHAT_TOOL_CHANNEL).trim() || DEFAULT_CHAT_TOOL_CHANNEL
+}
+
+function isChatToolAllowed(channel, name) {
+  if (!name) return false
+  return isToolEnabled(channel || DEFAULT_CHAT_TOOL_CHANNEL, name)
+}
 
 function getChatToolDefinitions(options = {}) {
   const tools = [
@@ -272,9 +284,11 @@ function getChatToolDefinitions(options = {}) {
       },
     },
   ]
+  const channel = resolveChatToolChannel(options)
+  const enabledTools = tools.filter(tool => isChatToolAllowed(channel, tool.function?.name || ''))
   const filtered = options.randomTriggered
-    ? tools.filter(tool => !['create_reminder', 'list_reminders', 'cancel_reminder', 'create_scheduled_task', 'list_scheduled_tasks', 'get_scheduled_task', 'pause_scheduled_task', 'resume_scheduled_task', 'delete_scheduled_task', 'run_scheduled_task_now', 'create_uploaded_file_variant'].includes(tool.function?.name))
-    : tools
+    ? enabledTools.filter(tool => !['create_reminder', 'list_reminders', 'cancel_reminder', 'create_scheduled_task', 'list_scheduled_tasks', 'get_scheduled_task', 'pause_scheduled_task', 'resume_scheduled_task', 'delete_scheduled_task', 'run_scheduled_task_now', 'create_uploaded_file_variant'].includes(tool.function?.name))
+    : enabledTools
   return filterExternalToolDefinitions(filtered, options.userText || options.currentText || '')
 }
 function isLightweightTool(name) {
@@ -316,6 +330,8 @@ async function executeSearchMemory(context = {}) {
 
 async function executeChatTool(toolCall, context = {}) {
   const name = toolCall?.function?.name || ''
+  const channel = resolveChatToolChannel(context)
+  if (!isChatToolAllowed(channel, name)) return `工具 ${name || 'unknown'} 当前渠道未启用。`
   let args = {}
   try {
     args = JSON.parse(toolCall?.function?.arguments || '{}')
@@ -428,9 +444,22 @@ async function handleChatToolCalls(toolCalls, context = {}) {
   const results = []
   const heavyTools = []
   const deadline = Date.now() + CHAT_TOOLS_TOTAL_DEADLINE_MS
+  const maxToolCalls = Number.isFinite(Number(context.maxToolCalls))
+    ? Math.max(0, Number(context.maxToolCalls))
+    : context.randomTriggered ? 1 : Infinity
+  let handledToolCalls = 0
 
   for (const tc of toolCalls) {
     const name = tc?.function?.name || ''
+    if (handledToolCalls >= maxToolCalls) {
+      results.push({ tool_call_id: tc.id, role: 'tool', content: `工具 ${name || 'unknown'} 未执行：当前场景工具预算已用完。` })
+      continue
+    }
+    handledToolCalls++
+    if (!isChatToolAllowed(resolveChatToolChannel(context), name)) {
+      results.push({ tool_call_id: tc.id, role: 'tool', content: `工具 ${name} 当前渠道未启用。` })
+      continue
+    }
     if (isHeavyTool(name)) {
       heavyTools.push(tc)
       continue
@@ -453,7 +482,23 @@ async function handleChatToolCalls(toolCalls, context = {}) {
 }
 
 function getChatToolSystemHint(channelKey, options = {}) {
-  let hint = '你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数闲聊不需要工具，直接回复即可。遇到会随时间变化的问题，例如最新、最近、当前、现在、热门、比较火、趋势、排行、推荐、版本更新、新角色、新闻、视频等，不要凭记忆编答案，应先调用 web_search；用户给出具体公开 URL 并要求查看、总结、核对网页内容时，应调用 web_fetch 读取正文。web_search 负责找候选来源并尽量打开正文，web_fetch 负责读取指定 URL；如果没有“正文质量：usable”的可靠正文，要直接说明没有拿到可靠结果，并给出可继续搜索或换链接的方向。read_group_context 只能查当前群公开旧片段，适合当前短句或追问接不上时理解“刚才/之前/那个/这张图/那个文件”等指代；工具结果是旧背景，不代表当前话题，不能主动翻旧账。read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。用户明确要求“几分钟后提醒我/明天提醒/到点叫我”时必须调用 create_reminder；用户要求周期性执行、每天/每周/每隔一段时间说话、总结、分析、运行 agent 时，调用 create_scheduled_task；用户要求查看/暂停/恢复/取消/删除/试跑定时任务时调用对应 scheduled task 工具；只有工具结果表示创建成功后，才能说提醒或定时任务已设置。用户明确要求把近期上传文件改名、另存副本、发回时可以调用 create_uploaded_file_variant。随机主动回复绝对不要创建提醒、定时任务或文件副本。'
+  const channel = resolveChatToolChannel(options)
+  const can = name => isChatToolAllowed(channel, name)
+  const hintParts = ['你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数闲聊不需要工具，直接回复即可。']
+  if (can('web_search') || can('web_fetch')) {
+    if (can('web_search')) hintParts.push('遇到会随时间变化的问题，例如最新、最近、当前、现在、热门、比较火、趋势、排行、推荐、版本更新、新角色、新闻、视频等，不要凭记忆编答案，应先调用 web_search。')
+    if (can('web_fetch')) hintParts.push('用户给出具体公开 URL 并要求查看、总结、核对网页内容时，应调用 web_fetch 读取正文。')
+    if (can('web_search') && can('web_fetch')) hintParts.push('web_search 负责找候选来源并尽量打开正文，web_fetch 负责读取指定 URL；如果没有“正文质量：usable”的可靠正文，要直接说明没有拿到可靠结果，并给出可继续搜索或换链接的方向。')
+  }
+  if (can('read_group_context')) hintParts.push('read_group_context 只能查当前群公开旧片段，适合当前短句或追问接不上时理解“刚才/之前/那个/这张图/那个文件”等指代；工具结果是旧背景，不代表当前话题，不能主动翻旧账。')
+  if (can('read_image_history')) hintParts.push('read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。')
+  if (can('create_reminder')) hintParts.push('用户明确要求“几分钟后提醒我/明天提醒/到点叫我”时必须调用 create_reminder。')
+  if (can('create_scheduled_task')) hintParts.push('用户要求周期性执行、每天/每周/每隔一段时间说话、总结、分析、运行 agent 时，调用 create_scheduled_task。')
+  if (can('list_scheduled_tasks') || can('pause_scheduled_task') || can('resume_scheduled_task') || can('delete_scheduled_task') || can('run_scheduled_task_now')) hintParts.push('用户要求查看/暂停/恢复/取消/删除/试跑定时任务时调用对应 scheduled task 工具。')
+  if (can('create_reminder') || can('create_scheduled_task')) hintParts.push('只有工具结果表示创建成功后，才能说提醒或定时任务已设置。')
+  if (can('create_uploaded_file_variant')) hintParts.push('用户明确要求把近期上传文件改名、另存副本、发回时可以调用 create_uploaded_file_variant。')
+  hintParts.push('随机主动回复绝对不要创建提醒、定时任务或文件副本。')
+  let hint = hintParts.join('')
   const policyHint = buildExternalToolPolicyHint(options.userText || options.currentText || '')
   if (policyHint) hint += `\n${policyHint}`
   if (channelKey) {
@@ -462,7 +507,10 @@ function getChatToolSystemHint(channelKey, options = {}) {
       const files = getRecentFilesCached(channelKey, 10).filter(f => !f.skipped)
       if (files.length > 0) {
         const analyzed = files.filter(file => file.analyzed).length
-        hint += `\n[文件上下文] 当前会话最近有${files.length}个文件记录（${analyzed}个已分析）。如果用户明确问"读文件"、"文件里面说了什么"、"刚才那个文件"等，可用 analyze_file；如果用户明确要求"把刚才文件改名/重命名/另存为/发给我"，可用 create_uploaded_file_variant；闲聊或没有指向文件时不要调用。`
+        const fileHints = []
+        if (can('analyze_file')) fileHints.push('如果用户明确问"读文件"、"文件里面说了什么"、"刚才那个文件"等，可用 analyze_file')
+        if (can('create_uploaded_file_variant')) fileHints.push('如果用户明确要求"把刚才文件改名/重命名/另存为/发给我"，可用 create_uploaded_file_variant')
+        if (fileHints.length) hint += `\n[文件上下文] 当前会话最近有${files.length}个文件记录（${analyzed}个已分析）。${fileHints.join('；')}；闲聊或没有指向文件时不要调用。`
       }
     } catch {}
   }
@@ -472,7 +520,7 @@ function getChatToolSystemHint(channelKey, options = {}) {
       const recent = getRecentImagesCached(channelKey, 10)
       if (recent.length > 0) {
         const analyzed = recent.filter(img => img.analyzed).length
-        hint += `\n[图片上下文] 本群最近有${recent.length}张图片记录（${analyzed}张已分析）。如果用户提到"刚才的图"、"那张图"等，可用 read_image_history 查看。`
+        if (can('read_image_history')) hint += `\n[图片上下文] 本群最近有${recent.length}张图片记录（${analyzed}张已分析）。如果用户提到"刚才的图"、"那张图"等，可用 read_image_history 查看。`
       }
     } catch {}
   }
@@ -481,6 +529,8 @@ function getChatToolSystemHint(channelKey, options = {}) {
 
 module.exports = {
   getChatToolDefinitions,
+  resolveChatToolChannel,
+  isChatToolAllowed,
   isLightweightTool,
   isHeavyTool,
   executeChatTool,

@@ -37,7 +37,7 @@ const rememberMemoryTool = {
     const item = await memory.remember({ userId: getUserId(context), channelKey: context.channelKey, text: params.text, tags: params.tags })
     return `已记住：${item.id}`
   },
-  dangerous: false,
+  dangerous: true,
   defaultChannels: ['dashboard'],
 }
 
@@ -65,7 +65,7 @@ const searchMemoryTool = {
     const items = await memory.searchMemory({ userId: getUserId(context), channelKey: context.channelKey, query: params.query, limit: params.limit })
     return memory.formatMemoryItems(items)
   },
-  dangerous: false,
+  dangerous: true,
   defaultChannels: ['dashboard'],
 }
 
@@ -85,7 +85,7 @@ const forgetMemoryTool = {
     const removed = await memory.forgetMemory({ userId: getUserId(context), memoryId: params.memoryId })
     return removed ? `已删除记忆：${params.memoryId}` : '没有找到这条记忆。'
   },
-  dangerous: false,
+  dangerous: true,
   defaultChannels: ['dashboard'],
 }
 

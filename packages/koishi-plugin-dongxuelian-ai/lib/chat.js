@@ -398,6 +398,15 @@ function getOutputGuardReason(text = '') {
   return ''
 }
 
+function updateChatToolUsageState(toolCalls = [], results = []) {
+  return {
+    usedAnalyzeFile: toolCallsIncludeAnalyzeFile(toolCalls),
+    hasFileEvidence: toolResultsIncludeFileEvidence(results),
+    usedReminderAction: (toolCalls || []).some(tc => isReminderToolName(tc?.function?.name)),
+    usedUploadedFileVariant: (toolCalls || []).some(tc => tc?.function?.name === 'create_uploaded_file_variant'),
+  }
+}
+
 // 统一请求 OpenAI 兼容的 Chat Completions 接口。
 
 // 把 Chat 风格消息转成 Responses API 所需的 input 结构。
@@ -671,8 +680,6 @@ async function chat(session, userText, ctx, options = {}) {
   }
 
   const contextTag = options.randomTriggered ? '\n[群聊刷到]' : ''
-  const isFwdPH = !cleanInput || cleanInput === '【转发消息】' || cleanInput.indexOf('转发消息')>=0
-  const fwdInput = isFwdPH && options.forwardSummaryText ? options.forwardSummaryText : cleanInput
   const quoteInfo = getQuoteInfo(session, { replyToId: options.replyToId })
   const qc2 = (quoteInfo.content || '').slice(0, 500)
   const quoteAuthor = quoteInfo.isSelf ? '你自己' : quoteInfo.authorName
@@ -688,7 +695,7 @@ async function chat(session, userText, ctx, options = {}) {
   if (mentionsBot) mentionTagParts.push('[此条@你本人]')
   if (otherMentionIds.length) mentionTagParts.push('[此条还@了群友：' + otherMentionIds.slice(0, 5).join('、') + '。提到的内容针对那些群友，不是针对你；除非也@你或直接喊你的名字，否则不要把自己代入]')
   const mentionTag = mentionTagParts.length ? '\n' + mentionTagParts.join('\n') : ''
-  const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${fwdInput}${contextTag}${quotedTag}${mentionTag}\n</user>`
+  const isolatedUserMessage = `<user>\n昵称：${safeUserName}\n发言：${cleanInput}${contextTag}${quotedTag}${mentionTag}\n</user>`
 
   // 话题检测：对比上一条消息和当前消息（per-key lock）
   // 结果：true=切换 false=未切换 null=检测失败（降级处理）
@@ -1016,7 +1023,7 @@ async function chat(session, userText, ctx, options = {}) {
   if (hostileEvaluationMessage) messages.push(hostileEvaluationMessage)
 
   // Chat 轻量工具注入
-  const chatTools = getChatToolDefinitions({ userText: cleanInput, randomTriggered: options.randomTriggered })
+  const chatTools = getChatToolDefinitions({ channel: 'qq', userText: cleanInput, randomTriggered: options.randomTriggered })
   const fileFollowupState = await buildFileFollowupState(channelKey, cleanInput, { userId: currentUserId })
   const activeFileContext = fileFollowupState.targetFile
     ? {
@@ -1024,7 +1031,7 @@ async function chat(session, userText, ctx, options = {}) {
         activeFileName: fileFollowupState.targetFile.fileName || '',
       }
     : {}
-  messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { userText: cleanInput }) })
+  messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { channel: 'qq', userText: cleanInput }) })
 
   // 表达学习旁路诊断（v2.3，shadow，仅日志，不修改 messages）
   try {
@@ -1073,7 +1080,9 @@ async function chat(session, userText, ctx, options = {}) {
       channelKey,
       groupId: session.guildId || session.channelId || '',
       isDirect: !!session.isDirect,
+      channel: 'qq',
       randomTriggered: !!options.randomTriggered,
+      maxToolCalls: options.randomTriggered ? 1 : undefined,
       ...activeFileContext,
     }
     const { results, heavyTools } = await handleChatToolCalls(reply.tool_calls, toolContext)
@@ -1111,17 +1120,31 @@ async function chat(session, userText, ctx, options = {}) {
     } else if (results.length > 0) {
       messages.push({ role: 'assistant', content: null, tool_calls: reply.tool_calls })
       for (const r of results) messages.push(r)
+      if (options.randomTriggered) {
+        reply = await callOpenAI(messages, options.randomTriggered)
+      } else {
       let loopCount = 0
       const MAX_CHAT_TOOL_ROUNDS = 3
       while (loopCount < MAX_CHAT_TOOL_ROUNDS) {
         loopCount++
-        reply = await callOpenAI(messages, options.randomTriggered)
+        reply = await callOpenAI(messages, options.randomTriggered, {}, chatTools)
         if (!reply || typeof reply !== 'object' || reply.type !== 'tool_calls') break
+        const nextUsage = updateChatToolUsageState(reply.tool_calls, [])
+        usedAnalyzeFileTool = usedAnalyzeFileTool || nextUsage.usedAnalyzeFile
+        usedReminderActionTool = usedReminderActionTool || nextUsage.usedReminderAction
+        usedUploadedFileVariantTool = usedUploadedFileVariantTool || nextUsage.usedUploadedFileVariant
         const nextToolContext = { ...toolContext }
         const { results: nextResults, heavyTools: nextHeavy } = await handleChatToolCalls(reply.tool_calls, nextToolContext)
+        hasFileToolEvidence = hasFileToolEvidence || toolResultsIncludeFileEvidence(nextResults)
         if (nextHeavy.length > 0) {
-          reply = reply.message?.content || ''
-          break
+          const heavyToolsRequested = nextHeavy.map(tc => {
+            let args = {}
+            try { args = JSON.parse(tc.function?.arguments || '{}') } catch {}
+            return { name: tc.function?.name, args }
+          })
+          messages.push({ role: 'assistant', content: null, tool_calls: reply.tool_calls })
+          for (const r of nextResults) messages.push(r)
+          return { text: reply.message?.content || '让我看看…', heavyToolsRequested }
         }
         if (nextResults.length === 0) {
           reply = reply.message?.content || ''
@@ -1132,6 +1155,7 @@ async function chat(session, userText, ctx, options = {}) {
       }
       if (reply && typeof reply === 'object' && reply.type === 'tool_calls') {
         reply = reply.message?.content || ''
+      }
       }
     } else {
       reply = reply.message?.content || ''
@@ -1150,6 +1174,7 @@ async function chat(session, userText, ctx, options = {}) {
       channelKey,
       groupId: session.guildId || session.channelId || '',
       isDirect: !!session.isDirect,
+      channel: 'qq',
       randomTriggered: false,
     })
     reply = String(reminderResult || '提醒已创建。')
@@ -1176,6 +1201,7 @@ async function chat(session, userText, ctx, options = {}) {
           channelKey,
           groupId: session.guildId || session.channelId || '',
           isDirect: !!session.isDirect,
+          channel: 'qq',
           randomTriggered: false,
           ...activeFileContext,
         }
@@ -1206,6 +1232,7 @@ async function chat(session, userText, ctx, options = {}) {
             channelKey,
             groupId: session.guildId || session.channelId || '',
             isDirect: !!session.isDirect,
+            channel: 'qq',
             randomTriggered: false,
           })
           reply = formatUploadedFileVariantFallback(variantResult)
@@ -1226,6 +1253,7 @@ async function chat(session, userText, ctx, options = {}) {
     channelKey,
     groupId: session.guildId || session.channelId || '',
     isDirect: !!session.isDirect,
+    channel: 'qq',
     randomTriggered: !!options.randomTriggered,
   })
   if (fileEvidence) {

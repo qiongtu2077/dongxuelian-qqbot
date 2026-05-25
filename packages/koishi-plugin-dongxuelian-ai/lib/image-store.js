@@ -19,7 +19,17 @@ const imageHistoryCache = new Map()
 const imageStoreQueues = new Map()
 
 function getSafeKey(channelKey) {
+  return String(channelKey || '').replace(/[^a-zA-Z0-9._-]/g, '_')
+}
+
+function getLegacyUnsafeKey(channelKey) {
   return String(channelKey || '').replace(/[^a-zA-Z0-9.:_-]/g, '_')
+}
+
+function getLegacyUnsafeFilePath(channelKey) {
+  const legacyKey = getLegacyUnsafeKey(channelKey)
+  const safeKey = getSafeKey(channelKey)
+  return legacyKey && legacyKey !== safeKey ? path.join(IMAGE_HISTORY_DIR, legacyKey + '.json') : ''
 }
 
 function getFilePath(channelKey) {
@@ -81,11 +91,22 @@ async function readImageHistory(channelKey) {
   const cacheKey = getImageStoreQueueKey(channelKey)
   try {
     await fs.mkdir(IMAGE_HISTORY_DIR, { recursive: true })
-    const file = getFilePath(channelKey)
-    const stat = await fs.stat(file)
+    let file = getFilePath(channelKey)
+    let stat
+    try {
+      stat = await fs.stat(file)
+    } catch (error) {
+      const legacyPath = getLegacyUnsafeFilePath(channelKey)
+      if (!legacyPath || error?.code !== 'ENOENT') throw error
+      file = legacyPath
+      stat = await fs.stat(file)
+    }
     if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return { images: {} }
     const parsed = JSON.parse(await fs.readFile(file, 'utf8'))
     const data = normalizeImageHistoryData(parsed)
+    if (file !== getFilePath(channelKey)) {
+      await writeImageHistory(channelKey, data)
+    }
     imageHistoryCache.set(cacheKey, cloneImageHistoryData(data))
     return data
   } catch (error) {

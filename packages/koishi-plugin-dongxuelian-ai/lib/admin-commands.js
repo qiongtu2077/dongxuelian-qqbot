@@ -36,6 +36,11 @@ async function handleAdminInlineCommands(session, ctx, {
   getRandomWhitelistStatus,
 }) {
   const matched = (response) => ({ matched: true, response })
+  const canManageCurrentGroupRandomRate = () => !!inGuild && (isGroupAdmin || hasAdminPermission(session))
+  const rejectCurrentGroupRandomRateManage = () => {
+    if (!inGuild) return matched('这个命令只能在群里用。')
+    return matched('只有群主、群管理员或bot管理员才能管理概率。')
+  }
 
   // 群聊AI白名单
   const whitelistAddMatch = plain.match(/^群聊AI白名单添加\s*(\d+)$/)
@@ -202,8 +207,7 @@ async function handleAdminInlineCommands(session, ctx, {
   // 概率设置/重置
   const rateSetMatch = plain.match(/^东雪莲群聊AI概率设置\s*((?:100(?:\.0+)?)|(?:\d{1,2}(?:\.\d+)?))%$/)
   if (rateSetMatch) {
-    if (!inGuild) return matched('这个命令只能在群里用。')
-    if (!isGroupAdmin && !hasAdminPermission(session)) return matched('只有群主、群管理员或bot管理员才能设置概率。')
+    if (!canManageCurrentGroupRandomRate()) return rejectCurrentGroupRandomRateManage()
     const rate = Number(rateSetMatch[1]) / 100
     if (!Number.isFinite(rate) || rate < 0 || rate > 1) return matched('概率范围只能是 0% 到 100% 之间。')
     randomRateCache.set(channelKey, rate)
@@ -211,10 +215,11 @@ async function handleAdminInlineCommands(session, ctx, {
     return matched(`本群主动回复基础概率已设置为 ${formatPercent(rate)}。50条未触发后仍按每条 +${formatPercent(RANDOM_TRIGGER_RAMP)} 递增。本群东雪莲AI聊天状态：${getRandomWhitelistStatus(channelKey) ? '开' : '关'}`)
   }
   if (/^东雪莲群聊AI概率设置\s*.+/.test(plain)) {
+    if (!canManageCurrentGroupRandomRate()) return rejectCurrentGroupRandomRateManage()
     return matched('概率范围只能是 0% 到 100% 之间，格式示例：东雪莲群聊AI概率设置 42%')
   }
   if (/^东雪莲群聊AI概率重置$/.test(plain)) {
-    if (!inGuild) return matched('这个命令只能在群里用。')
+    if (!canManageCurrentGroupRandomRate()) return rejectCurrentGroupRandomRateManage()
     randomRateCache.delete(channelKey)
     await writeJsonFile(RANDOM_RATE_FILE, Object.fromEntries(randomRateCache))
     return matched(`本群主动回复基础概率已重置为默认值 ${formatPercent(RANDOM_TRIGGER_RATE_BASE)}。`)

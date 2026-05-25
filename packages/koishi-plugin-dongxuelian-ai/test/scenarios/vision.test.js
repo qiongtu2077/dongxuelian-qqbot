@@ -166,6 +166,49 @@ async function run(t) {
     const objectiveEntry = await store.getImageEntry('group-image-sanitize', 'img-sanitize-first')
     t.check('scenario image analysis stores objective summary', objectiveEntry && objectiveEntry.analyzed && objectiveEntry.analysis.includes('三轮车') && objectiveEntry.analysisKind === 'objective', JSON.stringify(objectiveEntry))
   })
+
+  await withScenario({}, async ({ data }) => {
+    const originalDataDir = process.env.DONGXUELIAN_AI_DATA_DIR
+    const legacyDir = data.pathFor('image-history')
+    const legacyKey = 'private:vision-user'
+    const legacyFile = path.join(legacyDir, `${legacyKey}.json`)
+    const safeFile = path.join(legacyDir, 'private_vision-user.json')
+    await fs.promises.mkdir(legacyDir, { recursive: true })
+    await fs.promises.writeFile(legacyFile, JSON.stringify({
+      images: {
+        'legacy-image-msg': {
+          url: 'https://example.test/legacy.jpg',
+          file: 'legacy-local.jpg',
+          conversationKey: legacyKey,
+          userId: 'vision-user',
+          ts: Date.now(),
+          analyzed: false,
+          analysis: null,
+          sourceRole: 'user',
+          sentByBot: false,
+          analysisStatus: 'pending',
+          analysisKind: '',
+        },
+      },
+    }), 'utf8')
+    try {
+      const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
+      const entry = await store.getImageEntry(legacyKey, 'legacy-image-msg')
+      const recent = await store.getRecentImages(legacyKey, 5)
+      const cachedRecent = store.getRecentImagesCached(legacyKey, 5)
+      await store.storeImageUrl(legacyKey, 'new-image-msg', 'https://example.test/new.jpg', 'new-local.jpg', { conversationKey: legacyKey, userId: 'vision-user' })
+      const readBack = await store.getImageEntry(legacyKey, 'new-image-msg')
+      const files = fs.readdirSync(legacyDir)
+      t.check('scenario image-store legacy private image file remains readable', entry && entry.file === 'legacy-local.jpg' && entry.url === 'https://example.test/legacy.jpg', JSON.stringify(entry))
+      t.check('scenario image-store legacy private image history shows in recent list', recent.some(item => item.messageId === 'legacy-image-msg'), JSON.stringify(recent))
+      t.check('scenario image-store legacy private image history populates cache', cachedRecent.some(item => item.messageId === 'legacy-image-msg'), JSON.stringify(cachedRecent))
+      t.check('scenario image-store new private image writes safe filename', files.includes('private_vision-user.json') && !files.some(name => String(name).includes(':')), JSON.stringify(files))
+      t.check('scenario image-store new private image remains readable after safe write', readBack && readBack.file === 'new-local.jpg' && readBack.url === 'https://example.test/new.jpg', JSON.stringify(readBack))
+    } finally {
+      if (originalDataDir === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
+      else process.env.DONGXUELIAN_AI_DATA_DIR = originalDataDir
+    }
+  })
 }
 
 module.exports = { run }
