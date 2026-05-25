@@ -8,7 +8,7 @@ const path = require('path')
 const { h } = require('koishi')
 const { STICKER_DIR, THROTTLE_CONFIG_FILE } = require('./constants')
 const { getChannelKey, getConversationKey, saveSharedChannelTurn } = require('./conversation')
-const { splitReplyForQQBubbles, sleep, getRandomDelayMs, readJsonFile } = require('./utils')
+const { splitReplyForQQBubbles, sleep, getRandomDelayMs, readJsonFile, sanitizeUserName } = require('./utils')
 const { logDebug } = require('./logging-config')
 
 const STICKER_GLOBAL_COOLDOWN_MS = 30000
@@ -198,12 +198,17 @@ function buildAssistantImageMessageId(session, sticker) {
   return `assistant-image-${Date.now()}-${Math.abs(hash).toString(36)}`
 }
 
-async function recordAssistantImageAnchor(session, sticker = {}, sent = {}) {
+function getAssistantSpeakerName(options = {}) {
+  const personaName = sanitizeUserName(String(options.personaName || '')).slice(0, 40)
+  return personaName || '东雪莲'
+}
+
+async function recordAssistantImageAnchor(session, sticker = {}, sent = {}, options = {}) {
   if (!sticker.file) return
   const channelKey = getChannelKey(session)
   if (!channelKey) return
   const messageId = String(sent.messageId || '') || buildAssistantImageMessageId(session, sticker)
-  saveSharedChannelTurn(session, '东雪莲', `[图片: bot发送的表情/图片 messageId:${messageId}]`, 'assistant', { messageId })
+  saveSharedChannelTurn(session, getAssistantSpeakerName(options), `[图片: bot发送的表情/图片 messageId:${messageId}]`, 'assistant', { messageId, personaName: options.personaName || '' })
   try {
     const { storeAssistantImageAnchor } = require('./image-store')
     await storeAssistantImageAnchor(channelKey, messageId, {
@@ -303,7 +308,7 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
     try {
       const sentResult = await session.send(i === 0 ? quotePrefix + part : part)
       const sentMessageId = sentResult && (sentResult.messageId || sentResult.message_id || sentResult.id)
-      saveSharedChannelTurn(session, '东雪莲', part, 'assistant', { messageId: sentMessageId || '', personaName: options.personaName || '' })
+      saveSharedChannelTurn(session, getAssistantSpeakerName(options), part, 'assistant', { messageId: sentMessageId || '', personaName: options.personaName || '' })
     } catch (sendError) {
       sendError.sentParts = sentParts
       ctx.logger('dongxuelian-ai').warn(`sendReply failed: ${sendError?.message || sendError}`)
@@ -337,7 +342,7 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
       const sentAt = nowMs()
       lastStickerSentAt.set(stickerChannelKey, sentAt)
       lastStickerFileSentAt.set(stickerFileKey, sentAt)
-      await recordAssistantImageAnchor(session, sticker, sent)
+      await recordAssistantImageAnchor(session, sticker, sent, options)
     }
   }
   logDebug(ctx, 'reply', `sent random=${isRandom} parts=${sentParts}`)

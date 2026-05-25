@@ -208,7 +208,6 @@ function summarizeForwardNodes(nodes, depth = 0, sanitizeUserName) {
   if (!Array.isArray(nodes) || depth > MAX_FORWARD_DEPTH) return ''
 
   const indent = depth > 0 ? '  '.repeat(depth) + '└─ ' : ''
-  const prefix = depth > 0 ? indent + '[内层转发] ' : '[对话] '
 
   const items = nodes
     .slice(0, MAX_FORWARD_NODES)
@@ -226,7 +225,9 @@ function summarizeForwardNodes(nodes, depth = 0, sanitizeUserName) {
     })
     .filter(Boolean)
 
-  let result = prefix + items.join('；')
+  if (!items.length) return ''
+
+  let result = (depth > 0 ? indent : '[对话] ') + items.join('；')
 
   if (nodes.length > MAX_FORWARD_NODES) {
     result += '；……还有' + (nodes.length - MAX_FORWARD_NODES) + '条消息未显示'
@@ -318,6 +319,11 @@ function extractContentFallback(content = '', options = {}) {
   return normalizeText(visible)
 }
 
+function isOnlyForwardShellText(text = '') {
+  const value = normalizeText(text)
+  return /^(?:【转发消息】|\[转发消息\])$/.test(value)
+}
+
 function appendReaderSegments(target, segments) {
   if (!Array.isArray(segments)) return
   for (const segment of segments) {
@@ -364,7 +370,8 @@ function analyzeIncomingMessage(session, options = {}) {
 
   const hasMessageRecordCue = features.hasForward || MESSAGE_RECORD_CUE_RE.test(plain) || MESSAGE_RECORD_CUE_RE.test(rawContent)
   const hasUsableText = !!memory
-  const shouldSkipForRandomReply = (!hasUsableText && !features.hasVisual) || features.hasFile || (features.hasLink && !features.hasVisual) || features.hasEmbed
+  const hasOnlyForwardShell = hasMessageRecordCue && (!memory || isOnlyForwardShellText(memory)) && !features.hasVisual && !features.hasAudio && !features.hasFile && !features.hasLink && !features.hasEmbed
+  const shouldSkipForRandomReply = hasOnlyForwardShell || (!hasUsableText && !features.hasVisual) || features.hasFile || (features.hasLink && !features.hasVisual) || features.hasEmbed
 
   return {
     plain,
@@ -377,6 +384,7 @@ function analyzeIncomingMessage(session, options = {}) {
     hasFile: features.hasFile,
     hasLink: features.hasLink,
     hasEmbed: features.hasEmbed,
+    hasOnlyForwardShell,
     shouldSkipForRandomReply,
   }
 }

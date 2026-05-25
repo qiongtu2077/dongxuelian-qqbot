@@ -770,6 +770,9 @@ async function chat(session, userText, ctx, options = {}) {
     currentText: cleanInput,
     randomTriggered: options.randomTriggered,
     personaName,
+    directAt: !!options.directAt,
+    nameMentioned: !!options.nameMentioned,
+    isDirect: !!session.isDirect,
   })
   if (activeSceneNote) {
     messages.push({ role: 'system', content: activeSceneNote })
@@ -1334,7 +1337,6 @@ async function chat(session, userText, ctx, options = {}) {
 
     if (hasInternalContextLeak(reply)) {
       ctx.logger('dongxuelian-ai').warn('internal context leak in reply, retrying')
-      messages.push({ role: 'assistant', content: reply })
       messages.push({ role: 'user', content: '【系统提示：你刚才把内部参考资料或消息包装格式原样输出了。请重新回复当前用户，只说自然人话，绝对不要出现“这是你在本群的发言”“昵称：”“发言：”“<user>”“[群聊刷到]”。】' })
       reply = await callOpenAI(messages, options.randomTriggered)
       continue

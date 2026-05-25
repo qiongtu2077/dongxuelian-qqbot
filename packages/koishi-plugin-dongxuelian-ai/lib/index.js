@@ -599,13 +599,12 @@ function isPersonaSwitchRisky(personaResolution, groupPersonaName) {
 }
 
 function buildRandomSendOptions(context = {}) {
-  if (!context.randomTriggered && !context.requireFresh) return {}
+  if (!context.randomTriggered) return {}
   const channelKey = String(context.channelKey || '')
   const triggerVersion = Number(context.triggerMessageVersion || 0)
   const explicitVersion = Number(context.explicitVersion || 0)
   const triggerAt = Number(context.triggerAt || 0)
   return {
-    requireFresh: !!context.requireFresh,
     randomFreshness: {
       channelKey,
       triggerMessageVersion: triggerVersion,
@@ -629,6 +628,11 @@ function isRandomReplyFresh(options = {}) {
   if (getExplicitInteractionVersion(channelKey) !== explicitVersion) return false
   if (getChannelMessageVersion(channelKey) > triggerVersion) return false
   return true
+}
+
+function isSafeSendReplyFresh(isRandom = false, sendOptions = {}) {
+  if (!isRandom) return true
+  return isRandomReplyFresh(sendOptions)
 }
 
 function logStaleRandomSkip(ctx, stage, options = {}) {
@@ -1128,7 +1132,7 @@ async function handleRateLimitedSendFailure(ctx, session, error, now, resolveBot
 }
 
 async function safeSendReply(ctx, session, reply, isRandom = false, resolveBot = null, sendOptions = {}) {
-  if ((isRandom || sendOptions.requireFresh) && !isRandomReplyFresh(sendOptions)) {
+  if (!isSafeSendReplyFresh(isRandom, sendOptions)) {
     logStaleRandomSkip(ctx, isRandom ? 'text' : 'stale-text', sendOptions)
     return
   }
@@ -1598,7 +1602,7 @@ exports.apply = (ctx) => {
               if (getChannelMessageVersion(channelKey) !== p.triggerMessageVersion) return
               const liveSession = withCurrentBot(session, resolveBot())
               const chatMeta = {}
-              let reply = await handleChatResult(await chat(liveSession, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, meta: chatMeta }), { ctx, session: liveSession, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true, resolveBot })
+              let reply = await handleChatResult(await chat(liveSession, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, directAt: false, nameMentioned: false, meta: chatMeta }), { ctx, session: liveSession, channelKey, currentUserId, userName, userText: p.combinedText, randomTriggered: true, resolveBot })
               if (reply) {
                 reply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply
                 const affectDiagnostic = logAffectRouterDiagnosticForOutputShadow(ctx, {
@@ -1716,6 +1720,9 @@ exports.apply = (ctx) => {
       randomTriggered,
       currentText: userText,
       personaName: currentPersonaName || '',
+      directAt,
+      nameMentioned,
+      isDirect: isPrivate,
     })
 
     if (inGuild && sharedRecordText) {
@@ -1771,7 +1778,6 @@ exports.apply = (ctx) => {
 
     let randomSendOptions = buildRandomSendOptions({
       randomTriggered,
-      requireFresh: true,
       channelKey,
       delayed: false,
       highRisk: randomPersonaHighRisk,
@@ -1836,7 +1842,7 @@ exports.apply = (ctx) => {
           }
         }
         const chatMeta = {}
-        const chatResult = await chat(liveSession, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, meta: chatMeta })
+        const chatResult = await chat(liveSession, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, directAt, nameMentioned, meta: chatMeta })
         const reply = await handleChatResult(chatResult, { ctx, session: liveSession, channelKey, currentUserId, userName, userText, randomTriggered, resolveBot, searchContext })
         if (!reply) return
         if (randomTriggered && chatMeta.randomReplyMode === 'ambient_water') {

@@ -407,6 +407,20 @@ function looksLikeShortContextFollowUp(text = '') {
   return false
 }
 
+function buildExplicitInteractionFocusNote(currentText = '', options = {}) {
+  const explicit = !!(options.directAt || options.nameMentioned || options.isDirect)
+  if (!explicit) return ''
+  const value = normalizeText(currentText)
+  if (!value) return ''
+  return [
+    '[当前显式交互锚点]',
+    `当前用户这条消息是在直接找你说话：${value.slice(0, 160)}`,
+    '必须优先回答这条当前消息。旧的群聊背景、你刚才对别人说的话、其他人格回复、转发材料和长期记忆都只能辅助理解，不能覆盖当前用户的主语、问题和情绪。',
+    '只有当前消息本身明显在追问上一条公共话题或引用链时，才承接旧话题；否则不要把上一轮对别人的回复续到当前用户身上。',
+    '如果当前消息是在质疑或纠正你刚才的回复跑题，先处理这个纠错关系；不要继续展开那条被质疑的旧话题。',
+  ].join('\n')
+}
+
 function buildRecentPublicTopicNote(items = [], currentUserId = '', options = {}) {
   if (!Array.isArray(items) || !items.length) return ''
   const currentText = normalizeText(options.currentText || '')
@@ -703,7 +717,8 @@ function getQuotedMessageNote(session, options = {}) {
 
 function getSharedContextNote(session, currentUserId = '', options = {}) {
   const channelKey = getChannelKey(session); const items = (channelSharedCache.get(channelKey) || []).filter(item => item.content)
-  if (!items.length) return ''
+  const explicitFocusNote = buildExplicitInteractionFocusNote(options.currentText || '', options)
+  if (!items.length) return explicitFocusNote
   const replyChain = collectReplyChain(channelKey, options.replyToId)
   const focusUserIds = new Set([String(currentUserId || '')].filter(Boolean)); const focusMessageIds = new Set()
   const mentionUserIds = Array.isArray(options.mentionUserIds) ? options.mentionUserIds.map(String).filter(Boolean) : []
@@ -729,12 +744,12 @@ function getSharedContextNote(session, currentUserId = '', options = {}) {
       lines.push('[--- 以下是与当前无关的旧消息 ---]')
     }
     const personaLabel = itemsToMap[i].role === 'assistant' && itemsToMap[i].personaName
-      ? `东雪莲/${itemsToMap[i].personaName}`
-      : (itemsToMap[i].role === 'assistant' ? '东雪莲' : '群友')
+      ? `bot人格:${itemsToMap[i].personaName}`
+      : (itemsToMap[i].role === 'assistant' ? 'bot' : '群友')
     lines.push(`${itemsToMap[i].speakerName}(${personaLabel})：${itemsToMap[i].content}`)
   }
-  if (!lines.length) return ''
-  return `[群聊当前话题背景]\n下面只保留当前回复链、当前参与者或短句跟进可能需要的纯文本消息。优先理解最近公共话题和明确回复链，不要把昵称当成默认评价对象。\n${shortTopicNote ? `${shortTopicNote}\n` : ''}${lines.join('\n')}`
+  if (!lines.length) return explicitFocusNote
+  return `${explicitFocusNote ? `${explicitFocusNote}\n` : ''}[群聊当前话题背景]\n下面只保留当前回复链、当前参与者或短句跟进可能需要的纯文本消息。优先理解最近公共话题和明确回复链，不要把昵称当成默认评价对象。\n${shortTopicNote ? `${shortTopicNote}\n` : ''}${lines.join('\n')}`
 }
 
 function saveSensitiveCache(channelKey, value, speakerName, userId) {

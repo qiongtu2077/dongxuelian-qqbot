@@ -20,6 +20,7 @@ const GROUP_SCENE_MAX_FILE_BYTES = 768 * 1024
 const ACTIVE_SCENE_MAX_ITEMS = 12
 const ACTIVE_SCENE_HOT_MS = 3 * 60 * 1000
 const ACTIVE_SCENE_THIN_MS = 10 * 60 * 1000
+const SHORT_SCENE_FOLLOWUP_MAX_CHARS = 12
 
 const sceneQueues = new Map()
 const sceneCache = new Map()
@@ -86,6 +87,15 @@ function extractSceneKeywords(content = '') {
   const chinese = text.match(/[\u4e00-\u9fa5]{2,8}/g) || []
   for (const word of chinese.slice(0, 8)) found.add(word)
   return Array.from(found).slice(0, 12)
+}
+
+function hasSceneMedia(item = {}) {
+  return !!(item.hasMessageRecordCue || /\[(?:文件|图片|语音|转发)/.test(item.content || ''))
+}
+
+function looksLikeShortSceneFollowUp(text = '') {
+  const value = normalizeText(text)
+  return !!(value && value.length <= SHORT_SCENE_FOLLOWUP_MAX_CHARS)
 }
 
 function normalizeSceneEntry(channelKey, entry = {}) {
@@ -276,7 +286,7 @@ async function appendGroupSceneEntry(channelKey, rawEntry = {}) {
 function formatSceneLine(item = {}) {
   const name = sanitizeUserName(String(item.speakerName || (item.role === 'assistant' ? '东雪莲' : '群友'))).slice(0, 40) || '群友'
   const personaName = item.role === 'assistant' ? sanitizeUserName(String(item.personaName || '')).slice(0, 40) : ''
-  const role = item.role === 'assistant' ? (personaName ? `东雪莲/${personaName}` : '东雪莲') : '群友'
+  const role = item.role === 'assistant' ? (personaName ? `bot人格:${personaName}` : 'bot') : '群友'
   const materialTag = item.hasMessageRecordCue ? '/合并转发材料' : ''
   const content = sanitizeSceneText(item.content || '', 220)
   return content ? `${name}(${role}${materialTag})：${content}` : ''
@@ -301,38 +311,52 @@ function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', o
     const withinHot = ts && now - ts <= ACTIVE_SCENE_HOT_MS
     const withinThin = ts && now - ts <= ACTIVE_SCENE_THIN_MS
     const replyLinked = active.some(entry => String(entry.replyToId || '') && String(entry.replyToId || '') === String(item.messageId || ''))
-    const mediaLinked = item.hasMessageRecordCue || /\[(?:文件|图片|语音|转发)/.test(item.content || '') || active.some(entry => entry.hasMessageRecordCue || /\[(?:文件|图片|语音|转发)/.test(entry.content || ''))
+    const mediaLinked = hasSceneMedia(item) || active.some(entry => hasSceneMedia(entry))
     if (active.length < ACTIVE_SCENE_MAX_ITEMS && (withinHot || (withinThin && gap <= GROUP_SCENE_COLD_GAP_MS) || replyLinked || (withinThin && mediaLinked))) {
       active.unshift(item)
       continue
     }
     break
   }
-  const fallbackNeeded = active.length < 3 && (currentText.length <= 12 || options.randomTriggered)
+  const hasRecentMedia = active.some(item => hasSceneMedia(item))
+  const explicitInteraction = !!(options.directAt || options.nameMentioned || options.isDirect)
+  const shortMediaFollowUp = hasRecentMedia && looksLikeShortSceneFollowUp(currentText)
+  const visionCorrectionFocus = /(?:认错|看错|识别|游戏截图|截图|看不出来|别想了|技术发展|复读|同一句|同一件事)/.test(currentText)
+  const fallbackNeeded = (!explicitInteraction && active.length < 3 && (currentText.length <= 12 || options.randomTriggered)) || shortMediaFollowUp
   const finalItems = fallbackNeeded
     ? recent.slice(-Math.min(ACTIVE_SCENE_MAX_ITEMS, 8))
     : active.slice(-ACTIVE_SCENE_MAX_ITEMS)
   const lines = finalItems.map(formatSceneLine).filter(Boolean)
   if (!lines.length) return ''
-  const hasMedia = finalItems.some(item => item.hasMessageRecordCue || /\[(?:文件|图片|语音|转发)/.test(item.content || ''))
+  const hasMedia = finalItems.some(item => hasSceneMedia(item))
   const hasForwardMaterial = finalItems.some(item => item.hasMessageRecordCue)
   const hasAssistant = finalItems.some(item => item.role === 'assistant')
   const currentPersonaName = String(options.personaName || '').trim()
   const hasOtherPersonaAssistant = !!currentPersonaName && finalItems.some(item => item.role === 'assistant' && item.personaName && String(item.personaName) !== currentPersonaName)
   const hasCurrentMediaCue = /(?:这张|这图|图里|图片|上面|刚才|刚刚|那个|这个|表情|文件|语音|转发)/.test(currentText)
-  const visionCorrectionFocus = /(?:认错|看错|识别|游戏截图|截图|看不出来|别想了|技术发展|复读|同一句|同一件事)/.test(currentText)
   const modeLine = options.randomTriggered
     ? '本轮是随机主动插话：只有当前现场清楚时才锚定回复；接不上可内部查 read_group_context，仍不清楚就轻水一句或不发。'
     : '本轮是明确交互或普通聊天：优先解决当前用户问题；如果短句指代不清，可内部查 read_group_context 或自然追问。'
   return [
     '[当前群聊现场-最高优先级]',
     '下面是最近公开群聊现场，优先按它理解当前短句；昵称只用于区分发言者，不是默认评价对象。旧摘要和长期记忆只能作背景，不能覆盖这里。',
-    hasMedia ? '现场里有图片/文件/语音等锚点；只有用户明确说“这张图/图里/那个文件/读一下/评价这张”等时才按这些锚点理解。' : '',
+    explicitInteraction ? '当前是用户直接找你说话；先回答当前用户这条消息，旧 assistant 回复和其他群友话题不能抢当前主语。' : '',
+    explicitInteraction ? '如果当前用户是在质疑你上一条回复跑题，先承认/修正当前错接，不要继续沿被质疑的旧话题输出。' : '',
+    hasMedia ? '现场里有图片/文件/语音等锚点；用户用很短的承接句、追问、评价或反应接在媒体后面时，可以先把近媒体当候选锚点，并按工具结果或澄清来回答。' : '',
     hasForwardMaterial ? '现场里有合并转发材料；它是当前用户提供的外部材料，里面的昵称不是本群当前发言人，不要直接向转发内人物说话。' : '',
-    hasMedia && !hasCurrentMediaCue ? '当前消息没有明确图片/文件指示词时，旧图片/旧文件只作背景，不要主动把旧图旧文件当成当前主语。' : '',
+    hasMedia && !hasCurrentMediaCue && !shortMediaFollowUp ? '当前消息没有明确媒体指向，也不是紧跟媒体的短承接时，旧图片/旧文件只作背景，不要主动把旧图旧文件当成当前主语。' : '',
+    shortMediaFollowUp ? '当前消息很短且紧跟媒体锚点；如果单靠文字接不上，优先内部查最近图片/文件/转发锚点或自然澄清，不能编造媒体内容。' : '',
     visionCorrectionFocus ? '当前现场像是在纠正识图错误或讨论识图能力边界；优先回应“刚才是否认错/识图是否可靠”，不要跳回更早图片内容。' : '',
-    hasAssistant ? '现场里包含你刚才的公开回复，跨用户问“真的吗/什么意思/怎么说”时优先承接这条公开回复。' : '',
-    hasOtherPersonaAssistant ? '现场里也可能包含其他人格的公开回复；这些只作群聊事实背景，不要继承其他人格口吻或口癖。' : '',
+    hasAssistant
+      ? (explicitInteraction
+        ? '现场里包含你刚才的公开回复；当前是直接找你说话时，这些只作背景，不要盖过当前用户这条消息。'
+        : '现场里包含你刚才的公开回复，跨用户问“真的吗/什么意思/怎么说”时可优先承接这条公开回复。')
+      : '',
+    hasOtherPersonaAssistant
+      ? (explicitInteraction
+        ? '现场里也可能包含其他人格的公开回复；这些只作背景，不要继承其他人格口吻或口癖。'
+        : '现场里也可能包含其他人格的公开回复；这些只作群聊事实背景，不要继承其他人格口吻或口癖。')
+      : '',
     modeLine,
     ...lines,
   ].filter(Boolean).join('\n')

@@ -82,7 +82,7 @@ function stripStickerMarkersForGuard(reply = '') {
 }
 
 function hasInternalContextLeak(text = '') {
-  return /(?:这是你在本群的发言|这是.{0,20}在本群的发言|昵称：|发言：|<user>|<\/user>|\[群聊刷到\]|\[内部参考-用户近期发言风格\]|\[用户上传文件:|---文件内容开始---|---文件内容结束---)/.test(String(text || ''))
+  return /(?:这是你在本群的发言|这是.{0,20}在本群的发言|昵称：|发言：|<user>|<\/user>|\[群聊刷到\]|\[内部参考-用户近期发言风格\]|\[用户上传文件:|---文件内容开始---|---文件内容结束---|【转发消息：\s*(?:\[对话\]|└─|\[内层转发\])|\[对话\]\s*[\s\S]{0,120}：|\s└─\s*[\s\S]{0,120}：)/.test(String(text || ''))
 }
 
 module.exports = {

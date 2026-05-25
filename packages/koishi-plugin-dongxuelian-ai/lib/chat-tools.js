@@ -12,6 +12,7 @@ const { isToolEnabled } = require('./agent/config')
 const CHAT_TOOL_TIMEOUT_MS = 3000
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000
 const CHAT_TOOLS_TOTAL_DEADLINE_MS = 5000
+const SHORT_MEDIA_FOLLOWUP_MAX_CHARS = 12
 
 const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image', 'read_group_context', 'analyze_file', 'create_uploaded_file_variant', 'create_reminder', 'list_reminders', 'cancel_reminder', 'create_scheduled_task', 'list_scheduled_tasks', 'get_scheduled_task', 'pause_scheduled_task', 'resume_scheduled_task', 'delete_scheduled_task', 'run_scheduled_task_now'])
 
@@ -299,6 +300,11 @@ function isHeavyTool(name) {
   return HEAVY_TOOLS.has(name) || !LIGHTWEIGHT_TOOLS.has(name)
 }
 
+function looksLikeShortMediaFollowUp(text = '') {
+  const value = String(text || '').replace(/\s+/g, '').trim()
+  return !!(value && value.length <= SHORT_MEDIA_FOLLOWUP_MAX_CHARS)
+}
+
 function executeGetCurrentTime() {
   const now = new Date()
   const pad = n => String(n).padStart(2, '0')
@@ -520,7 +526,12 @@ function getChatToolSystemHint(channelKey, options = {}) {
       const recent = getRecentImagesCached(channelKey, 10)
       if (recent.length > 0) {
         const analyzed = recent.filter(img => img.analyzed).length
-        if (can('read_image_history')) hint += `\n[图片上下文] 本群最近有${recent.length}张图片记录（${analyzed}张已分析）。如果用户提到"刚才的图"、"那张图"等，可用 read_image_history 查看。`
+        if (can('read_image_history')) {
+          const currentText = options.userText || options.currentText || ''
+          const shortFollowUp = looksLikeShortMediaFollowUp(currentText)
+          hint += `\n[图片上下文] 本群最近有${recent.length}张图片记录（${analyzed}张已分析）。如果当前消息是在图片后面的短承接、追问、评价或反应，且仅靠文字无法判断在说什么，应先用 read_image_history 查看最近图片；需要未分析图片内容时再用 analyze_historical_image。没有工具结果时不能编造图片内容。`
+          if (shortFollowUp) hint += ' 当前消息很短，可能是在接最近图片；先判断 active scene 锚点，再决定读图、澄清或不接。'
+        }
       }
     } catch {}
   }
