@@ -63,7 +63,7 @@ const {
   isUploadedFileVariantCapabilityRefusal,
   formatUploadedFileVariantFallback,
 } = require('./uploaded-file-action-route')
-const { buildActiveGroupSceneNote } = require('./group-scene-index') // 群聊当前现场窗口
+const { buildActiveGroupSceneNote, classifySceneItemsForActive } = require('./group-scene-index') // 群聊当前现场窗口与分层
 const { buildRandomModePrompt, parseRandomReplyDecision } = require('./random-reply-mode') // 随机回复内部 mode 协议
 const { externalToolsDenied, buildExternalToolPolicyHint } = require('./external-tool-policy')
 const {
@@ -110,6 +110,8 @@ const {
   isUnsafeThinkingReply,      // thinking 泄漏检测
   stripStickerMarkersForGuard, // 去贴纸标记后再做守卫检测
   hasInternalContextLeak,     // 内部上下文泄漏检测（system prompt 外泄）
+  detectOldMediaTopicSticking, // 旧背景媒体粘连检测（结构性，不靠关键词）
+  buildOldMediaStickingRetryPrompt, // 旧背景媒体粘连重试提示
 } = require('./reply-guard')
 const {
   trimChatMemoryRuntime,
@@ -773,6 +775,8 @@ async function chat(session, userText, ctx, options = {}) {
     directAt: !!options.directAt,
     nameMentioned: !!options.nameMentioned,
     isDirect: !!session.isDirect,
+    currentMessageId: String(session.messageId || ''),
+    currentReplyToId: String(options.replyToId || session.quote?.messageId || ''),
   })
   if (activeSceneNote) {
     messages.push({ role: 'system', content: activeSceneNote })
@@ -1306,7 +1310,7 @@ async function chat(session, userText, ctx, options = {}) {
     return jailbreakReply
   }
 
-  for (let attempt = 0; attempt < MAX_REPLY_RETRIES; attempt += 1) {
+  for (let attempt = 0, oldMediaStickingRetryUsed = false; attempt < MAX_REPLY_RETRIES; attempt += 1) {
     const tokenEstimate = estimateTokens(messages)
     if (tokenEstimate > 12000) break
     if (hasBannedOutput(reply)) {
@@ -1345,7 +1349,31 @@ async function chat(session, userText, ctx, options = {}) {
     if (usedReminderActionTool || usedUploadedFileVariantTool) break
 
     const sanitizedReply = sanitizeReply(reply, userName)
-    if (!shouldRetryRepeatedReply(session, stripStickerMarkersForGuard(sanitizedReply))) break
+    if (!shouldRetryRepeatedReply(session, stripStickerMarkersForGuard(sanitizedReply))) {
+      if (!oldMediaStickingRetryUsed) {
+        const layered = classifySceneItemsForActive(channelSharedCache.get(channelKey) || [], {
+          currentMessageId: String(session.messageId || ''),
+          currentReplyToId: String(options.replyToId || session.quote?.messageId || ''),
+          currentUserId,
+        })
+        const hasCurrentMediaCue = /(?:这张|这图|图里|图片|上面|刚才|刚刚|那个|这个|表情|文件|语音|转发)/.test(cleanInput)
+        if (detectOldMediaTopicSticking({
+          reply: stripStickerMarkersForGuard(sanitizedReply),
+          currentTurn: layered.currentTurn,
+          hotContext: layered.hotContext,
+          oldBackground: layered.oldBackground,
+          hasCurrentMediaCue,
+        })) {
+          oldMediaStickingRetryUsed = true
+          ctx.logger('dongxuelian-ai').warn(`reply sticks to old background media, retrying once. original: ${sanitizedReply}`)
+          messages.push({ role: 'assistant', content: reply })
+          messages.push({ role: 'user', content: buildOldMediaStickingRetryPrompt() })
+          reply = await callOpenAI(messages, options.randomTriggered)
+          continue
+        }
+      }
+      break
+    }
 
     const recentReplies = getRecentAssistantReplies(session)
     ctx.logger('dongxuelian-ai').warn(`reply is repetitive, retrying. original: ${sanitizedReply}`)

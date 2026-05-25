@@ -21,6 +21,8 @@ const ACTIVE_SCENE_MAX_ITEMS = 12
 const ACTIVE_SCENE_HOT_MS = 3 * 60 * 1000
 const ACTIVE_SCENE_THIN_MS = 10 * 60 * 1000
 const SHORT_SCENE_FOLLOWUP_MAX_CHARS = 12
+const CURRENT_TURN_WINDOW_MS = 90 * 1000
+const CURRENT_TURN_MAX_ITEMS = 4
 
 const sceneQueues = new Map()
 const sceneCache = new Map()
@@ -292,6 +294,67 @@ function formatSceneLine(item = {}) {
   return content ? `${name}(${role}${materialTag})：${content}` : ''
 }
 
+function classifySceneItemsForActive(items = [], options = {}) {
+  const list = Array.isArray(items) ? items : []
+  if (!list.length) return { currentTurn: [], hotContext: [], oldBackground: [] }
+  const now = Number(options.now || Date.now())
+  const currentMessageId = String(options.currentMessageId || '')
+  const currentReplyToId = String(options.currentReplyToId || '')
+  const currentUserId = String(options.currentUserId || '')
+
+  const idIndex = new Map()
+  for (const item of list) {
+    const id = String(item?.messageId || '')
+    if (id) idIndex.set(id, item)
+  }
+
+  const currentTurnIds = new Set()
+  if (currentMessageId) currentTurnIds.add(currentMessageId)
+  let cursor = currentReplyToId
+  let hops = 0
+  while (cursor && idIndex.has(cursor) && hops < 3) {
+    currentTurnIds.add(cursor)
+    cursor = String(idIndex.get(cursor)?.replyToId || '')
+    hops += 1
+  }
+
+  const currentTurn = []
+  const hotContext = []
+  const oldBackground = []
+
+  for (const item of list) {
+    if (!item || !item.content) continue
+    const ts = Number(item.ts || 0)
+    const ageMs = ts ? now - ts : Infinity
+    const id = String(item.messageId || '')
+    const sameUser = currentUserId && String(item.userId || '') === currentUserId
+    const isAssistant = item.role === 'assistant'
+
+    const inCurrentTurn = (
+      (id && currentTurnIds.has(id)) ||
+      (ageMs <= CURRENT_TURN_WINDOW_MS && (sameUser || isAssistant))
+    )
+    if (inCurrentTurn) {
+      currentTurn.push(item)
+      continue
+    }
+    if (ageMs <= ACTIVE_SCENE_HOT_MS) {
+      hotContext.push(item)
+      continue
+    }
+    if (ageMs <= ACTIVE_SCENE_THIN_MS) {
+      oldBackground.push(item)
+      continue
+    }
+  }
+
+  return {
+    currentTurn: currentTurn.slice(-CURRENT_TURN_MAX_ITEMS),
+    hotContext: hotContext.slice(-ACTIVE_SCENE_MAX_ITEMS),
+    oldBackground: oldBackground.slice(-ACTIVE_SCENE_MAX_ITEMS),
+  }
+}
+
 function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', options = {}) {
   if (!channelKey || !Array.isArray(items) || !items.length) return ''
   const now = Date.now()
@@ -321,36 +384,56 @@ function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', o
   const hasRecentMedia = active.some(item => hasSceneMedia(item))
   const explicitInteraction = !!(options.directAt || options.nameMentioned || options.isDirect)
   const shortMediaFollowUp = hasRecentMedia && looksLikeShortSceneFollowUp(currentText)
-  const visionCorrectionFocus = /(?:认错|看错|识别|游戏截图|截图|看不出来|别想了|技术发展|复读|同一句|同一件事)/.test(currentText)
   const fallbackNeeded = (!explicitInteraction && active.length < 3 && (currentText.length <= 12 || options.randomTriggered)) || shortMediaFollowUp
   const finalItems = fallbackNeeded
     ? recent.slice(-Math.min(ACTIVE_SCENE_MAX_ITEMS, 8))
     : active.slice(-ACTIVE_SCENE_MAX_ITEMS)
-  const lines = finalItems.map(formatSceneLine).filter(Boolean)
-  if (!lines.length) return ''
+  if (!finalItems.length) return ''
+
+  const layered = classifySceneItemsForActive(finalItems, {
+    now,
+    currentMessageId: options.currentMessageId,
+    currentReplyToId: options.currentReplyToId,
+    currentUserId,
+  })
+  const inSet = (set, item) => set.includes(item)
+  const hotOnly = layered.hotContext.filter(item => !inSet(layered.currentTurn, item))
+  const oldOnly = layered.oldBackground.filter(item => !inSet(layered.currentTurn, item) && !inSet(layered.hotContext, item))
+
   const hasMedia = finalItems.some(item => hasSceneMedia(item))
   const hasForwardMaterial = finalItems.some(item => item.hasMessageRecordCue)
   const hasAssistant = finalItems.some(item => item.role === 'assistant')
   const currentPersonaName = String(options.personaName || '').trim()
   const hasOtherPersonaAssistant = !!currentPersonaName && finalItems.some(item => item.role === 'assistant' && item.personaName && String(item.personaName) !== currentPersonaName)
   const hasCurrentMediaCue = /(?:这张|这图|图里|图片|上面|刚才|刚刚|那个|这个|表情|文件|语音|转发)/.test(currentText)
+  const currentTurnHasMedia = layered.currentTurn.some(item => hasSceneMedia(item))
+  const oldHasMedia = oldOnly.some(item => hasSceneMedia(item)) || hotOnly.some(item => hasSceneMedia(item))
+  const oldHasAssistantMedia = oldOnly.some(item => item.role === 'assistant' && hasSceneMedia(item)) || hotOnly.some(item => item.role === 'assistant' && hasSceneMedia(item))
   const modeLine = options.randomTriggered
     ? '本轮是随机主动插话：只有当前现场清楚时才锚定回复；接不上可内部查 read_group_context，仍不清楚就轻水一句或不发。'
     : '本轮是明确交互或普通聊天：优先解决当前用户问题；如果短句指代不清，可内部查 read_group_context 或自然追问。'
-  return [
+
+  const formatLayer = list => list.map(formatSceneLine).filter(Boolean)
+  const currentTurnLines = formatLayer(layered.currentTurn)
+  const hotLines = formatLayer(hotOnly)
+  const oldLines = formatLayer(oldOnly)
+
+  const lines = [
     '[当前群聊现场-最高优先级]',
-    '下面是最近公开群聊现场，优先按它理解当前短句；昵称只用于区分发言者，不是默认评价对象。旧摘要和长期记忆只能作背景，不能覆盖这里。',
+    '下面是最近公开群聊现场，分三层标注。优先按当前焦点理解短句；旧背景只用于理解关系与指代，不要主动当成回复主语。昵称只用于区分发言者。',
     explicitInteraction ? '当前是用户直接找你说话；先回答当前用户这条消息，旧 assistant 回复和其他群友话题不能抢当前主语。' : '',
-    explicitInteraction ? '如果当前用户是在质疑你上一条回复跑题，先承认/修正当前错接，不要继续沿被质疑的旧话题输出。' : '',
-    hasMedia ? '现场里有图片/文件/语音等锚点；用户用很短的承接句、追问、评价或反应接在媒体后面时，可以先把近媒体当候选锚点，并按工具结果或澄清来回答。' : '',
+    explicitInteraction ? '如果当前用户是在质疑你上一条回复跑题或认错，先承认/修正当前错接，不要继续沿被质疑的旧话题输出。' : '',
+    hasMedia ? '现场里有图片/文件/语音锚点；用户用很短的承接、追问、评价或反应接在媒体后面时，可以把它当候选锚点，并按工具结果或自然澄清来回答，不要凭旧 cached 描述编造。' : '',
     hasForwardMaterial ? '现场里有合并转发材料；它是当前用户提供的外部材料，里面的昵称不是本群当前发言人，不要直接向转发内人物说话。' : '',
+    currentTurnHasMedia ? '[当前焦点媒体] 是这一轮直接相关的图片/文件，可作为回答主语。其它层的旧媒体不是。' : '',
+    oldHasMedia && !currentTurnHasMedia ? '[旧背景媒体] 仅作环境理解。当前消息没有指向它时，不要把它的内容（角色、广告、物体等）当成当前主语续聊。' : '',
+    oldHasAssistantMedia ? '[旧背景媒体] 中包含你之前发过的图或之前的识图结论；如果群友正在讨论这些识图是否准确、能不能识别某类图，请如实承认能力边界或重新识图，不要回到旧识图结论里继续夸/继续描述。' : '',
     hasMedia && !hasCurrentMediaCue && !shortMediaFollowUp ? '当前消息没有明确媒体指向，也不是紧跟媒体的短承接时，旧图片/旧文件只作背景，不要主动把旧图旧文件当成当前主语。' : '',
-    shortMediaFollowUp ? '当前消息很短且紧跟媒体锚点；如果单靠文字接不上，优先内部查最近图片/文件/转发锚点或自然澄清，不能编造媒体内容。' : '',
-    visionCorrectionFocus ? '当前现场像是在纠正识图错误或讨论识图能力边界；优先回应“刚才是否认错/识图是否可靠”，不要跳回更早图片内容。' : '',
+    shortMediaFollowUp ? '当前消息很短且紧跟媒体锚点；优先看[当前焦点]里的最新媒体；如果只能接到[旧背景]里的图，宁可不接或自然澄清，不要凭旧描述续聊。' : '',
     hasAssistant
       ? (explicitInteraction
         ? '现场里包含你刚才的公开回复；当前是直接找你说话时，这些只作背景，不要盖过当前用户这条消息。'
-        : '现场里包含你刚才的公开回复，跨用户问“真的吗/什么意思/怎么说”时可优先承接这条公开回复。')
+        : '现场里包含你刚才的公开回复，跨用户问”真的吗/什么意思/怎么说”时可优先承接这条公开回复。')
       : '',
     hasOtherPersonaAssistant
       ? (explicitInteraction
@@ -358,8 +441,25 @@ function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', o
         : '现场里也可能包含其他人格的公开回复；这些只作群聊事实背景，不要继承其他人格口吻或口癖。')
       : '',
     modeLine,
-    ...lines,
-  ].filter(Boolean).join('\n')
+  ].filter(Boolean)
+
+  if (currentTurnLines.length) {
+    lines.push('--- 当前焦点 current_turn ---')
+    lines.push(...currentTurnLines)
+  }
+  if (hotLines.length) {
+    lines.push('--- 近期热议 hot_context ---')
+    lines.push(...hotLines)
+  }
+  if (oldLines.length) {
+    lines.push('--- 旧背景 old_background（仅供理解关系，不要主动续聊） ---')
+    lines.push(...oldLines)
+  }
+  if (!currentTurnLines.length && !hotLines.length && !oldLines.length) {
+    lines.push(...formatLayer(finalItems))
+  }
+
+  return lines.join('\n')
 }
 
 function MAX_SCENE_MAX_INPUT_ITEMS() {
@@ -447,4 +547,5 @@ module.exports = {
   loadGroupScenes,
   readGroupContext,
   buildActiveGroupSceneNote,
+  classifySceneItemsForActive,
 }

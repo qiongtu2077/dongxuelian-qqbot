@@ -784,7 +784,7 @@ async function main() {
     ],
     groupSceneIndex: [
       'appendGroupSceneEntry', 'loadGroupScenes', 'readGroupContext',
-      'buildActiveGroupSceneNote', 'sanitizeSceneText', 'safeSceneChannelKey',
+      'buildActiveGroupSceneNote', 'classifySceneItemsForActive', 'sanitizeSceneText', 'safeSceneChannelKey',
     ],
     randomReplyMode: [
       'parseRandomReplyDecision', 'buildRandomModePrompt', 'buildAmbientWaterSendOptions',
@@ -879,6 +879,7 @@ async function main() {
       'pickAbusiveFallbackReply', 'pickRepeatedFallbackReply',
       'isConsecutiveUserRepeat', 'isUnsafeThinkingReply',
       'stripStickerMarkersForGuard',
+      'detectOldMediaTopicSticking', 'buildOldMediaStickingRetryPrompt',
     ],
     repeat: [
       'loadRepeatConfig', 'setRepeatEnabled', 'getRepeatEnabledCache',
