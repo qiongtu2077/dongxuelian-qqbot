@@ -5,5 +5,8 @@
   "koishi": {
     "description": "Bot 管理面板",
     "service": {}
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3"
   }
 }

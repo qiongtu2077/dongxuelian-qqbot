@@ -13,7 +13,7 @@ const {
   isLoginRateLimited,
   recordLoginFailure,
   clearLoginFails,
-  getAccessPassword,
+  getAccessPasswordRecord,
   getAdminPassword,
   createToken,
   createAdminToken,
@@ -24,6 +24,9 @@ const {
   resetDashboardCredentials,
   rotateSessionSecret,
   safeCompare,
+  verifyPassword,
+  hashPassword,
+  removeLegacyAccessPasswordAfterUpgrade,
 } = require('../auth')
 const { ADMIN_PWD_FILE, ACCESS_PWD_FILE, LEGACY_ACCESS_PWD_FILE } = require('../paths')
 
@@ -36,19 +39,29 @@ function handleLogin(req, res) {
   collectBody(req, res, (body) => {
     try {
       const { password } = JSON.parse(body)
-      const stored = getAccessPassword()
+      const accessRecord = getAccessPasswordRecord()
+      const stored = accessRecord.value
       if (!stored && !isLocalAuthBypass(req)) {
         log('login rejected: access password is not configured')
         return json(res, { ok: false, message: 'access password is not configured' }, 503)
       }
-      const match = isLocalAuthBypass(req) || (!!stored && safeCompare(password, stored))
-      if (match) {
+      if (isLocalAuthBypass(req)) {
         clearLoginFails(loginIp)
         return json(res, { ok: true, token: createToken() })
       }
-      recordLoginFailure(loginIp)
-      log('login failed')
-      return json(res, { ok: false, message: 'password is incorrect' }, 401)
+      verifyPassword(password, stored, ACCESS_PWD_FILE).then(match => {
+        if (match) {
+          return removeLegacyAccessPasswordAfterUpgrade(accessRecord, password).then(() => {
+            clearLoginFails(loginIp)
+            return json(res, { ok: true, token: createToken() })
+          })
+        }
+        recordLoginFailure(loginIp)
+        log('login failed')
+        return json(res, { ok: false, message: 'password is incorrect' }, 401)
+      }).catch(() => {
+        return json(res, { ok: false, message: 'internal authentication error' }, 500)
+      })
     } catch {
       return json(res, { ok: false, message: 'invalid request' }, 400)
     }
@@ -65,12 +78,17 @@ function handleAdminVerify(req, res) {
   collectBody(req, res, (body) => {
     try {
       const { password } = JSON.parse(body)
-      if (safeCompare(password, getAdminPassword())) {
-        clearLoginFails(loginIp)
-        return json(res, { ok: true, token: createAdminToken() })
-      }
-      recordLoginFailure(loginIp)
-      return json(res, { ok: false, message: 'admin password is incorrect' }, 401)
+      const stored = getAdminPassword()
+      verifyPassword(password, stored, ADMIN_PWD_FILE).then(match => {
+        if (match) {
+          clearLoginFails(loginIp)
+          return json(res, { ok: true, token: createAdminToken() })
+        }
+        recordLoginFailure(loginIp)
+        return json(res, { ok: false, message: 'admin password is incorrect' }, 401)
+      }).catch(() => {
+        return json(res, { ok: false, message: 'internal authentication error' }, 500)
+      })
     } catch {
       return json(res, { ok: false, message: 'invalid request' }, 400)
     }
@@ -93,18 +111,29 @@ function handleChangePassword(req, res) {
         return json(res, { ok: false, message: 'password contains unsupported characters' }, 400)
       }
       if (type === 'admin') {
-        if (!safeCompare(oldPassword, getAdminPassword())) {
-          return json(res, { ok: false, message: 'current admin password is incorrect' }, 401)
-        }
-        writeFileSyncSafe(ADMIN_PWD_FILE, newPassword)
-        rotateSessionSecret()
-        return json(res, { ok: true, message: 'admin password updated' })
+        const stored = getAdminPassword()
+        verifyPassword(oldPassword, stored, ADMIN_PWD_FILE).then(async (match) => {
+          if (!match) {
+            return json(res, { ok: false, message: 'current admin password is incorrect' }, 401)
+          }
+          const hash = await hashPassword(newPassword)
+          writeFileSyncSafe(ADMIN_PWD_FILE, hash)
+          rotateSessionSecret()
+          return json(res, { ok: true, message: 'admin password updated' })
+        }).catch(() => {
+          return json(res, { ok: false, message: 'internal authentication error' }, 500)
+        })
       } else if (type === 'access') {
-        writeFileSyncSafe(ACCESS_PWD_FILE, newPassword)
-        rotateSessionSecret()
-        return json(res, { ok: true, message: 'access password updated; please log in again' })
+        hashPassword(newPassword).then(hash => {
+          writeFileSyncSafe(ACCESS_PWD_FILE, hash)
+          rotateSessionSecret()
+          return json(res, { ok: true, message: 'access password updated; please log in again' })
+        }).catch(() => {
+          return json(res, { ok: false, message: 'internal authentication error' }, 500)
+        })
+      } else {
+        return json(res, { ok: false, message: 'invalid password type' }, 400)
       }
-      return json(res, { ok: false, message: 'invalid password type' }, 400)
     } catch {
       return json(res, { ok: false, message: 'invalid request' }, 400)
     }

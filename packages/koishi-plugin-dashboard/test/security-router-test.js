@@ -16,6 +16,11 @@ const auth = require('../lib/auth')
 const router = require('../lib/router')
 const standalone = require('../standalone')
 
+function resetDataDir() {
+  fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })
+  fs.mkdirSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true })
+}
+
 // Builds a minimal HTTP request object for router/auth unit tests.
 function makeReq(method, pathname, headers = {}) {
   return {
@@ -67,6 +72,10 @@ function dispatchJson(method, pathname, body, headers = {}, remoteAddress = '127
   })
 }
 
+function parseJsonResponse(res) {
+  return JSON.parse(res.body || '{}')
+}
+
 // Verifies object-shaped regex route entries dispatch without throwing.
 function testRegexRouteObjectDispatch() {
   let captured = ''
@@ -97,6 +106,7 @@ function testAdminVerifyRequiresAccessToken() {
 
 // Verifies token signing no longer accepts the old password-derived hash token.
 function testLegacyPasswordHashTokenRejected() {
+  resetDataDir()
   fs.writeFileSync(path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'dashboard-access-pwd.txt'), 'access-pass', 'utf8')
   const forged = crypto.createHash('sha256').update('dashboard:access-pass').digest('hex')
   assert.strictEqual(auth.validateToken(forged), false)
@@ -104,16 +114,53 @@ function testLegacyPasswordHashTokenRejected() {
 
 // Verifies rotating the session secret invalidates existing tokens.
 function testTokenRotationInvalidatesToken() {
+  resetDataDir()
   const token = auth.createToken()
   assert.strictEqual(auth.validateToken(token), true)
   auth.rotateSessionSecret()
   assert.strictEqual(auth.validateToken(token), false)
 }
 
+// Verifies the reset-token recovery path still works after bcrypt migration.
+async function testResetPasswordAcceptsValidResetToken() {
+  resetDataDir()
+  const dataDir = process.env.DONGXUELIAN_AI_DATA_DIR
+  fs.writeFileSync(path.join(dataDir, 'password-reset-token.txt'), 'reset-token-123', 'utf8')
+  fs.writeFileSync(path.join(dataDir, 'dashboard-access-pwd.txt'), 'old-access', 'utf8')
+  fs.writeFileSync(path.join(dataDir, 'dashboard-admin-pwd.txt'), 'old-admin', 'utf8')
+  fs.writeFileSync(path.join(dataDir, 'dashboard-pwd.txt'), 'legacy-access', 'utf8')
+
+  const res = await dispatchJson('POST', '/dashboard/api/auth/reset-password', { resetToken: 'reset-token-123' }, { origin: 'http://127.0.0.1:5150' })
+  assert.strictEqual(res.statusCode, 200)
+  assert.strictEqual(parseJsonResponse(res).ok, true)
+  assert.strictEqual(fs.existsSync(path.join(dataDir, 'dashboard-pwd.txt')), false)
+  assert.strictEqual(auth.isBcryptHash(fs.readFileSync(path.join(dataDir, 'dashboard-access-pwd.txt'), 'utf8').trim()), true)
+  assert.strictEqual(auth.isBcryptHash(fs.readFileSync(path.join(dataDir, 'dashboard-admin-pwd.txt'), 'utf8').trim()), true)
+}
+
+// Verifies a legacy plaintext access password is removed only after a successful hash upgrade.
+async function testLegacyAccessLoginUpgradesAndRemovesPlaintext() {
+  resetDataDir()
+  const dataDir = process.env.DONGXUELIAN_AI_DATA_DIR
+  fs.writeFileSync(path.join(dataDir, 'dashboard-pwd.txt'), 'legacy-access-pass', 'utf8')
+
+  const failed = await dispatchJson('POST', '/dashboard/api/login', { password: 'wrong-pass' }, { origin: 'http://127.0.0.1:5150' }, '203.0.113.21')
+  assert.strictEqual(failed.statusCode, 401)
+  assert.strictEqual(fs.readFileSync(path.join(dataDir, 'dashboard-pwd.txt'), 'utf8').trim(), 'legacy-access-pass')
+  assert.strictEqual(fs.existsSync(path.join(dataDir, 'dashboard-access-pwd.txt')), false)
+
+  const ok = await dispatchJson('POST', '/dashboard/api/login', { password: 'legacy-access-pass' }, { origin: 'http://127.0.0.1:5150' }, '203.0.113.22')
+  assert.strictEqual(ok.statusCode, 200)
+  assert.strictEqual(auth.validateToken(parseJsonResponse(ok).token), true)
+  assert.strictEqual(fs.existsSync(path.join(dataDir, 'dashboard-pwd.txt')), false)
+  assert.strictEqual(auth.isBcryptHash(fs.readFileSync(path.join(dataDir, 'dashboard-access-pwd.txt'), 'utf8').trim()), true)
+}
+
 // Verifies failed admin password checks are rate limited behind access auth.
 async function testAdminVerifyRateLimit() {
   process.env.GLOBAL_LOCAL_MODE = ''
   const dataDir = process.env.DONGXUELIAN_AI_DATA_DIR
+  resetDataDir()
   fs.mkdirSync(dataDir, { recursive: true })
   fs.writeFileSync(path.join(dataDir, 'dashboard-admin-pwd.txt'), 'admin-pass', 'utf8')
 
@@ -132,7 +179,7 @@ async function testAdminVerifyRateLimit() {
 function testInitialCredentialsGenerated() {
   process.env.GLOBAL_LOCAL_MODE = ''
   const dataDir = process.env.DONGXUELIAN_AI_DATA_DIR
-  fs.rmSync(dataDir, { recursive: true, force: true })
+  resetDataDir()
   auth.ensureInitialCredentials()
 
   const accessPassword = fs.readFileSync(path.join(dataDir, 'dashboard-access-pwd.txt'), 'utf8').trim()
@@ -193,6 +240,8 @@ async function run() {
   testAdminVerifyRequiresAccessToken()
   testLegacyPasswordHashTokenRejected()
   testTokenRotationInvalidatesToken()
+  await testResetPasswordAcceptsValidResetToken()
+  await testLegacyAccessLoginUpgradesAndRemovesPlaintext()
   await testAdminVerifyRateLimit()
   testInitialCredentialsGenerated()
   testSessionSecretIgnoresEnvPinning()

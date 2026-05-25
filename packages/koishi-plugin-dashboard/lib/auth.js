@@ -2,8 +2,11 @@
 const fs = require('fs')
 const path = require('path')
 const crypto = require('crypto')
+const bcrypt = require('bcryptjs')
 const { json, log, getRemoteAddress, isLoopbackAddress } = require('./utils')
 const { ADMIN_PWD_FILE, ACCESS_PWD_FILE, LEGACY_ACCESS_PWD_FILE, RESET_TOKEN_FILE, SESSION_SECRET_FILE, PASSWORD, ADMIN_PASSWORD, isGlobalLocalMode } = require('./paths')
+
+const BCRYPT_ROUNDS = 12
 
 const TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000
 const LOGIN_FAIL_WINDOW_MS = 5 * 60 * 1000
@@ -45,16 +48,86 @@ function safeCompare(a, b) {
   return crypto.timingSafeEqual(bufA, bufB)
 }
 
+function isBcryptHash(s) {
+  return /^\$2[aby]\$\d{2}\$.{53}$/.test(s)
+}
+
+async function hashPassword(plain) {
+  return bcrypt.hash(plain, BCRYPT_ROUNDS)
+}
+
+// Verifies input against stored (bcrypt hash or legacy plaintext).
+// On legacy match, auto-upgrades the file to bcrypt hash.
+async function verifyPassword(input, stored, upgradeFile) {
+  if (!input || !stored) return false
+  if (isBcryptHash(stored)) {
+    return bcrypt.compare(input, stored)
+  }
+  if (!safeCompare(input, stored)) return false
+  if (upgradeFile) {
+    try {
+      const hash = await hashPassword(input)
+      writeSecretFile(upgradeFile, hash)
+      log(`auto-upgraded password to bcrypt: ${path.basename(upgradeFile)}`)
+    } catch (e) {
+      log(`WARNING: failed to auto-upgrade password: ${e.message}`)
+    }
+  }
+  return true
+}
+
+function getAccessPasswordRecord() {
+  const current = readFileContent(ACCESS_PWD_FILE)
+  if (current) return { value: current, sourceFile: ACCESS_PWD_FILE, legacy: false }
+  const legacy = readFileContent(LEGACY_ACCESS_PWD_FILE)
+  if (legacy) return { value: legacy, sourceFile: LEGACY_ACCESS_PWD_FILE, legacy: true }
+  return { value: ensurePassword(ACCESS_PWD_FILE, PASSWORD, 'access'), sourceFile: ACCESS_PWD_FILE, legacy: false }
+}
+
+async function removeLegacyAccessPasswordAfterUpgrade(record, input) {
+  if (!record || !record.legacy || record.sourceFile !== LEGACY_ACCESS_PWD_FILE) return false
+  const upgraded = readFileContent(ACCESS_PWD_FILE)
+  if (!isBcryptHash(upgraded)) return false
+  let upgradedMatches = false
+  try {
+    upgradedMatches = await bcrypt.compare(input, upgraded)
+  } catch (e) {
+    log(`WARNING: failed to verify upgraded access password before legacy cleanup: ${e.message}`)
+    return false
+  }
+  if (!upgradedMatches) return false
+  const legacy = readFileContent(LEGACY_ACCESS_PWD_FILE)
+  if (!legacy || !safeCompare(legacy, record.value)) return false
+  try {
+    fs.unlinkSync(LEGACY_ACCESS_PWD_FILE)
+    log(`removed legacy plaintext access password file: ${path.basename(LEGACY_ACCESS_PWD_FILE)}`)
+    return true
+  } catch (e) {
+    log(`WARNING: failed to remove legacy access password file: ${e.message}`)
+    return false
+  }
+}
+
 // Ensures first-run remote deployments do not fall back to a public default.
 function ensurePassword(file, envValue, label, options = {}) {
   const stored = readFileContent(file)
   if (stored && !options.force) return stored
-  if (envValue && !options.force) return envValue
+  if (envValue && !options.force) {
+    if (!isBcryptHash(envValue)) {
+      const hash = bcrypt.hashSync(envValue, BCRYPT_ROUNDS)
+      writeSecretFile(file, hash)
+      log(`stored ${label} password as bcrypt hash: ${file}`)
+      return hash
+    }
+    return envValue
+  }
   if (isGlobalLocalMode() && !options.force) return ''
   const generated = randomSecret(18)
-  writeSecretFile(file, generated)
-  log(`generated ${label} password file: ${file}`)
-  return generated
+  const hash = bcrypt.hashSync(generated, BCRYPT_ROUNDS)
+  writeSecretFile(file, hash)
+  log(`generated ${label} password (plaintext shown once): ${generated}`)
+  log(`${label} password hash stored in: ${file}`)
+  return hash
 }
 
 // Returns the admin password, generating a first-run file when needed.
@@ -64,9 +137,7 @@ function getAdminPassword() {
 
 // Returns the access password while preserving the legacy password file.
 function getAccessPassword() {
-  const stored = readFileContent(ACCESS_PWD_FILE) || readFileContent(LEGACY_ACCESS_PWD_FILE)
-  if (stored) return stored
-  return ensurePassword(ACCESS_PWD_FILE, PASSWORD, 'access')
+  return getAccessPasswordRecord().value
 }
 
 // Ensures both dashboard password files exist for non-local first startup.
@@ -280,7 +351,12 @@ function trimLoginFailMap(now = Date.now()) {
 module.exports = {
   TOKEN_EXPIRY_MS,
   safeCompare,
+  hashPassword,
+  verifyPassword,
+  isBcryptHash,
   getAdminPassword,
+  getAccessPasswordRecord,
+  removeLegacyAccessPasswordAfterUpgrade,
   getAccessPassword,
   ensureInitialCredentials,
   resetDashboardCredentials,
