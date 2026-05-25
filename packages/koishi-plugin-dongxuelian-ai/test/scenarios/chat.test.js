@@ -3,6 +3,7 @@ const { withScenario } = require('./_setup')
 const { AI_ROOT } = require('../fake/file')
 const { mockFetch } = require('../fake/fetch')
 const { checkSentIncludes, checkSentNonEmpty, checkSentExcludes, checkNoLeak } = require('../helpers/assert')
+const { flushAsync } = require('../fake/koishi')
 
 const INCIDENT_SAMPLE = [
   '\u597d\u7684\uff0c\u7528\u6237A\u53d1\u4e86\u4e2a\u6d88\u606f\u8bf4\u201c\u5efa\u8bae\u795e\u5361\u201d\uff0c\u8fd9\u5e94\u8be5\u662f\u5728\u56de\u5e94\u4e0a\u4e00\u53e5',
@@ -43,6 +44,10 @@ async function withFetch(mocked, fn) {
     global.fetch = originalFetch
     console.warn = originalWarn
   }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
@@ -861,6 +866,19 @@ async function run(t) {
     waitFor: message => String(message).includes('机器人动作确实挺流畅'),
   })
 
+  await runChatCase(t, 'forward wrapper leak retries', [
+    { json: { choices: [{ message: { content: '【转发消息： └─ 群友：这里没有可读正文】' } }] } },
+    { json: { choices: [{ message: { content: '这份转发现在没读到可用正文，你可以补一条想让我看的内容。' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario forward wrapper leak retries to natural clarification', result, '没读到可用正文')
+    checkSentExcludes(t, 'scenario forward wrapper leak does not send wrapper', result, '【转发消息：')
+    const retryPrompt = JSON.stringify(calls[1]?.requestBody?.messages || [])
+    t.check('scenario forward wrapper leak retry does not feed wrapper shell', !retryPrompt.includes('这里没有可读正文') && !retryPrompt.includes('【转发消息：'), retryPrompt)
+  }, {
+    input: '这里面说的是什么',
+    waitFor: message => String(message).includes('没读到可用正文'),
+  })
+
   await runChatCase(t, 'user profile prompt is internal system context', [
     { json: { choices: [{ message: { content: 'profile-context-ok' } }] } },
   ], async (result, mocked, session, calls) => {
@@ -1069,6 +1087,146 @@ async function run(t) {
       conversation.saveSharedChannelTurn({ ...base, userId: session.selfId, author: { id: session.selfId } }, '东雪莲', '考完咱们去吃好吃的补一补，我请客！', 'assistant', { messageId: 'bot-exam-reply' })
     },
     waitFor: message => String(message).includes('请客'),
+  })
+
+  await withScenario({}, async ({ makeSession, run }) => {
+    const mocked = mockFetch([
+      { delayMs: 80, json: { choices: [{ message: { content: 'explicit-at-still-sends' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const directSession = makeSession({
+        userId: 'user-at-a',
+        author: { id: 'user-at-a', name: '坟花', nick: '坟花' },
+        content: atBot(makeSession(), '咕皇是海南省哪个思源小学的'),
+        messageId: 'explicit-at-slow',
+      })
+      const runPromise = run(directSession, { flushTicks: 20 })
+      while (!mocked.calls.length) {
+        await flushAsync(4)
+        await sleep(5)
+      }
+      const interleaveSession = makeSession({
+        userId: 'user-at-b',
+        author: { id: 'user-at-b', name: '水落烟雨', nick: '水落烟雨' },
+        content: '[CQ:image,file=interleave.jpg]',
+        messageId: 'explicit-at-interleave',
+        event: { sender: { role: 'member' }, message: [{ type: 'image', data: { file: 'interleave.jpg' } }] },
+      })
+      await run(interleaveSession, { flushTicks: 20 })
+      await runPromise
+      await directSession.waitForSend(message => String(message).includes('explicit-at-still-sends'), 3000)
+      t.check('scenario explicit at survives newer group message while model is pending', directSession.sent.some(item => String(item).includes('explicit-at-still-sends')), JSON.stringify({ direct: directSession.sent, interleave: interleaveSession.sent }))
+    })
+  }).catch(error => {
+    throw new Error(`explicit at should not inherit random freshness gate: ${error && error.stack || error}`)
+  })
+
+  await runChatCase(t, 'assistant persona scene label does not collapse into default speaker', [
+    { json: { choices: [{ message: { content: '长离人格回复' } }] } },
+  ], async (result, mocked, session) => {
+    checkSentIncludes(t, 'scenario assistant persona reply sends', result, '长离人格回复')
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    const shared = conversation.channelSharedCache.get(session.guildId) || []
+    const assistantTurn = shared.find(item => item.role === 'assistant' && item.content.includes('长离人格回复'))
+    t.check('scenario assistant shared turn stores persona speaker name', assistantTurn && assistantTurn.speakerName === '长离' && assistantTurn.personaName === '长离', JSON.stringify(shared))
+    const note = conversation.getSharedContextNote(session, session.userId, { currentText: '真的吗', personaName: '布吕歇尔' })
+    t.check('scenario assistant shared note labels bot persona without default-speaker collapse', note.includes('长离(bot人格:长离)') && !note.includes('长离(东雪莲/长离)'), note)
+  }, {
+    input: '说句话',
+    setup(session, { data }) {
+      data.writeText('ai-skills/personas/SKILL.scene-persona.md', [
+        '---',
+        'name: 长离',
+        'description: scene persona marker',
+        '---',
+        'SCENE_PERSONA_MARKER',
+      ].join('\n'))
+      data.writeJson('ai-persona-groups.json', { [session.guildId]: { persona: '长离' } })
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      persona.loadPersonaGroups()
+    },
+    waitFor: message => String(message).includes('长离人格回复'),
+  })
+
+  await runChatCase(t, 'explicit at current user does not inherit previous assistant topic', [
+    { json: { choices: [{ message: { content: '20' } }] } },
+    { json: { choices: [{ message: { content: '当前被你点名这句我先接住。' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario explicit at answers current user instead of previous topic', result, '当前被你点名')
+    checkSentExcludes(t, 'scenario explicit at reply does not continue withdrawal topic', result, '撤回不了')
+    const chatCall = calls.find(call => JSON.stringify(call.requestBody?.messages || []).includes('当前显式交互锚点'))
+    const prompt = JSON.stringify(chatCall?.requestBody?.messages || [])
+    t.check('scenario explicit at prompt pins current interaction before old assistant topic', prompt.includes('当前显式交互锚点') && prompt.includes('who jb you') && prompt.includes('不能覆盖当前用户的主语'), prompt)
+  }, {
+    input: 'who jb you',
+    session: {
+      userId: 'user-b',
+      author: { id: 'user-b', name: '坟花', nick: '坟花' },
+    },
+    setup(session) {
+      const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+      const base = { guildId: session.guildId, channelId: session.channelId, selfId: session.selfId }
+      conversation.saveSharedChannelTurn({ ...base, userId: 'user-a', author: { id: 'user-a' } }, 'ᯤ²ᴳrikey123', '撤回不了了', 'user', { messageId: 'withdraw-user-a' })
+      conversation.saveSharedChannelTurn({ ...base, userId: session.selfId, author: { id: session.selfId } }, '东雪莲', '@ᯤ²ᴳrikey123 你没机会撤回了', 'assistant', { messageId: 'withdraw-bot-reply' })
+    },
+    waitFor: message => String(message).includes('当前被你点名'),
+  })
+
+  await runChatCase(t, 'explicit at correction handles wrong previous reply instead of old topic', [
+    { json: { choices: [{ message: { content: '这句确实接歪了，按你当前这条重新来。' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario explicit at correction acknowledges wrong thread', result, '接歪')
+    checkSentExcludes(t, 'scenario explicit at correction does not continue old topic', result, '撤回不了')
+    const prompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
+    t.check('scenario explicit at correction prompt warns against continuing disputed old topic', prompt.includes('质疑或纠正') && prompt.includes('不要继续') && prompt.includes('说梦话'), prompt)
+  }, {
+    input: '？说梦话呢',
+    session: {
+      userId: 'user-b',
+      author: { id: 'user-b', name: '坟花', nick: '坟花' },
+    },
+    setup(session) {
+      const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+      const base = { guildId: session.guildId, channelId: session.channelId, selfId: session.selfId }
+      conversation.saveSharedChannelTurn({ ...base, userId: 'user-a', author: { id: 'user-a' } }, 'ᯤ²ᴳrikey123', '撤回不了了', 'user', { messageId: 'withdraw-user-a-2' })
+      conversation.saveSharedChannelTurn({ ...base, userId: session.selfId, author: { id: session.selfId } }, '东雪莲', '哈？谁让你撤回不了的', 'assistant', { messageId: 'wrong-bot-reply' })
+    },
+    waitFor: message => String(message).includes('接歪'),
+  })
+
+  await runChatCase(t, 'short text after recent image can route to image tools', [
+    { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-read-image-after-short', type: 'function', function: { name: 'read_image_history', arguments: '{"limit":3}' } }] } }] } },
+    { json: { choices: [{ message: { content: '看到了，刚才那张图是期末复习资料截图。' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario image follow-up sends evidence based reply', result, '期末复习资料')
+    const firstPrompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
+    t.check('scenario short image follow-up prompt exposes recent media anchor', firstPrompt.includes('当前消息很短') && firstPrompt.includes('read_image_history') && firstPrompt.includes('不能编造图片内容'), firstPrompt)
+    t.check('scenario short image follow-up exposes image tools', calls[0]?.requestBody?.tools?.some(item => item.function?.name === 'read_image_history') && calls[0]?.requestBody?.tools?.some(item => item.function?.name === 'analyze_historical_image'), JSON.stringify(calls[0]?.requestBody?.tools || []))
+    const toolMessages = calls[1]?.requestBody?.messages?.filter(item => item.role === 'tool') || []
+    t.check('scenario short image follow-up reads image history before answering', toolMessages.some(item => String(item.content || '').includes('期末复习资料截图')), JSON.stringify(toolMessages))
+  }, {
+    input: '666',
+    setup(session, { data }) {
+      data.writeJson('ai-tool-config.json', {
+        version: 2,
+        channels: {
+          qq: { enabled: true, tools: { read_image_history: true, analyze_historical_image: true, read_group_context: true } },
+          dashboard: { enabled: true, tools: {} },
+        },
+        autoRoute: { qq: { enabled: false }, dashboard: { enabled: false } },
+        dangerousPolicy: 'confirm',
+        enabledSkills: [],
+        readFileRoots: [],
+      })
+      try { require(path.join(AI_ROOT, 'lib', 'agent', 'config.js')).resetAgentConfigCache() } catch {}
+      const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
+      const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+      const base = { guildId: session.guildId, channelId: session.channelId, selfId: session.selfId }
+      conversation.saveSharedChannelTurn({ ...base, userId: 'image-user', author: { id: 'image-user' } }, 'ㅤ', '[图片]', 'user', { messageId: 'recent-image-short-followup' })
+      return store.storeImageUrl(session.guildId, 'recent-image-short-followup', '', 'recent-image.jpg', { conversationKey: session.guildId, userId: 'image-user' })
+        .then(() => store.markAnalyzed(session.guildId, 'recent-image-short-followup', '图里是一张期末复习资料截图。'))
+    },
+    waitFor: message => String(message).includes('期末复习资料'),
   })
 
   await runChatCase(t, 'QQ Agent search context bridges into normal chat follow-up', [

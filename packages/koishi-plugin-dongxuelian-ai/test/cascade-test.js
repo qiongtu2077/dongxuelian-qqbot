@@ -1515,6 +1515,8 @@ async function main() {
   checkEqual('CQ json hasEmbed', embedMsg.hasEmbed, true)
   const forwardMsg = reader.analyzeIncomingMessage({ content: '[CQ:forward,id=abc]', event: {} })
   checkEqual('CQ forward has record cue', forwardMsg.hasMessageRecordCue, true)
+  checkEqual('CQ forward shell skips random reply', forwardMsg.shouldSkipForRandomReply, true)
+  checkEqual('CQ forward shell is marked shell only', forwardMsg.hasOnlyForwardShell, true)
   const quoteMsg = reader.analyzeIncomingMessage({ content: '<quote id="abc"/> hello', event: {} })
   checkEqual('quote id extracted', quoteMsg.replyToId, 'abc')
   const cqQuoteMsg = reader.analyzeIncomingMessage({ content: '[CQ:reply,id=456] hello', event: {} })
@@ -1529,6 +1531,16 @@ async function main() {
   ])
   checkIncludes('forward summary includes first speaker', forwardSummary, 'A')
   checkIncludes('forward summary includes face label', forwardSummary, STR.qqFaceLike)
+  const explicitSceneNote = modules.groupSceneIndex.buildActiveGroupSceneNote('scene-explicit', [
+    { userId: 'user-a', role: 'user', speakerName: 'A', content: '撤回不了了', messageId: 'scene-m1', replyToId: '', mentionUserIds: [], ts: Date.now() - 1000 },
+    { userId: 'bot', role: 'assistant', speakerName: '东雪莲', personaName: '爱弥斯', content: '你没机会撤回了', messageId: 'scene-m2', replyToId: 'scene-m1', mentionUserIds: [], hasMessageRecordCue: false, ts: Date.now() },
+  ], 'user-b', { currentText: 'who jb you', directAt: true })
+  check('explicit scene note keeps current user on top', explicitSceneNote.includes('当前是用户直接找你说话') && !explicitSceneNote.includes('优先承接这条公开回复'), explicitSceneNote)
+  const emptyNestedForwardSummary = reader.summarizeForwardNodes([
+    { type: 'forward', data: { content: [] } },
+  ])
+  checkEqual('empty nested forward summary does not emit internal shell', emptyNestedForwardSummary, '')
+  check('reply guard catches forwarded wrapper leak', modules.replyGuard.hasInternalContextLeak('【转发消息： └─ 群友：测试】') === true && modules.replyGuard.hasInternalContextLeak('这是自然回复，不含内部包装。') === false, 'forward wrapper leak guard')
 
   section('8. repeat candidate and cooldown behavior')
   const cleanAnalyzed = { hasVisual: false, hasFile: false, hasEmbed: false, hasMessageRecordCue: false }
@@ -3293,7 +3305,7 @@ async function main() {
   check('quote info marks assistant message id as self quote', selfQuoteInfo.isSelf && selfQuoteInfo.matchedMessage?.role === 'assistant', JSON.stringify(selfQuoteInfo))
   const selfSharedNote = conv.getSharedContextNote(convSession, 'userA', { replyToId: 'bot-m1' })
   check('shared context keeps focused assistant reply when quoted', selfSharedNote.includes('bot-self-reply'), selfSharedNote)
-  check('shared context labels assistant persona', selfSharedNote.includes('东雪莲/爱弥斯'), selfSharedNote)
+  check('shared context labels assistant persona', selfSharedNote.includes('bot人格:爱弥斯'), selfSharedNote)
   const otherPersonaNote = conv.getSharedContextNote(convSession, 'userA', { currentText: '真的吗', personaName: '布吕歇尔' })
   check('short follow-up marks other persona as public background', otherPersonaNote.includes('其他人格爱弥斯') && otherPersonaNote.includes('不要继承其口吻'), otherPersonaNote)
   const mergedConversation = conv.mergeConversationMessages(

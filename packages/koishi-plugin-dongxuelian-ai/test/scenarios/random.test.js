@@ -64,6 +64,30 @@ async function run(t) {
   }, async ({ ready, makeSession, run }) => {
     await ready()
     const mocked = mockFetch([
+      { json: { choices: [{ message: { content: 'forward-shell-should-not-send' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const session = makeSession({
+        userId: '2032',
+        author: { id: '2032', name: 'member' },
+        content: '[CQ:forward,id=forward-shell-only]',
+        messageId: 'forward-shell-random',
+      })
+      const result = await run(session, { flushTicks: 120 })
+      t.check('scenario forward shell is not used as random chat fodder', result.sent.length === 0, JSON.stringify(result.sent))
+      t.check('scenario forward shell does not call model for random reply', mocked.calls.length === 0, JSON.stringify(mocked.calls))
+    })
+  })
+
+  await withScenario({
+    data: {
+      randomWhitelist: ['10001'],
+      randomRate: { 10001: 1 },
+      randomVoiceRate: { 10001: 0 },
+    },
+  }, async ({ ready, makeSession, run }) => {
+    await ready()
+    const mocked = mockFetch([
       { json: { choices: [{ message: { content: '{"mode":"no_send","reply":""}' } }] } },
     ])
     await withFetch(mocked, async () => {
