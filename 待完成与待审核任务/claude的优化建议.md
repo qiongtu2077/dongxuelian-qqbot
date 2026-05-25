@@ -531,12 +531,12 @@ MCP 专项后，后续若进入修复，建议优先级调整为：先处理会�
 
 ## 服务器第 1 轮（MCP 只读接入排查）
 
-范围：按用户要求对服务器 `/root/koishi-app` 做 MCP 只读排查；只检查配置摘要、MCP stdio 协议握手、工具列表和执行层启用状态。不改服务器文件、不部署、不重启、不推送。
+范围：按用户要求对服务器当前运行目录做 MCP 只读排查；只检查配置摘要、MCP stdio 协议握手、工具列表和执行层启用状态。不改服务器文件、不部署、不重启、不推送。
 
 结论：服务器当前 MCP 工作台未启用，本轮未确认服务器运行态新增 bug；本地 C12-1/C12-2 仍是代码层风险，若服务器后续通过 Dashboard 启用 MCP，同样需要按 C12 建议先收口权限默认值和 `run_local_check` 路径边界。
 
 证据：
-- 服务器 `/root/koishi-app/data/ai-tool-config.json` 存在，但 MCP 摘要为 `enabled: false`，`exposeDangerousActions: false`，未显式配置 `allowWriteWorkspace` / `allowRunLocal`。
+- 服务器生产数据目录内的 `ai-tool-config.json` 存在，但 MCP 摘要为 `enabled: false`，`exposeDangerousActions: false`，未显式配置 `allowWriteWorkspace` / `allowRunLocal`。
 - 服务器上直接启动 `packages/koishi-plugin-dongxuelian-ai/lib/mcp/local-server.js` 并发送 JSON-RPC：
   - `initialize` 返回 serverInfo `dongxuelian-local-mcp` / `0.1.0`。
   - `tools/list` 能列出 `get_bot_health`、`get_agent_config`、`query_logs`、`read_file`、`write_file`、`edit_file`、`run_local_check` 等工具定义。
