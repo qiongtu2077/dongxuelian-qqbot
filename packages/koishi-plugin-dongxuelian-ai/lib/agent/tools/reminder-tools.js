@@ -86,10 +86,11 @@ async function executeCancelReminder(params = {}, context = {}) {
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0) || (b.runAt || b.nextRunAt || 0) - (a.runAt || a.nextRunAt || 0) || String(b.id || '').localeCompare(String(a.id || '')))
   const requestedId = String(params.id || params.reminderId || '').trim()
   const keyword = String(params.keyword || params.text || '').replace(/\s+/g, ' ').trim()
+  const hasExplicitTarget = !!(requestedId || keyword || params.latest === true)
+  if (!hasExplicitTarget) return '请说明要取消哪一条提醒，例如提供提醒 id、关键词，或说“取消最近一条提醒”。'
   let target = requestedId ? visible.find(cron => cron.id === requestedId) : null
   if (!target && keyword) target = visible.find(cron => String(cron.prompt || '').includes(keyword))
   if (!target && params.latest === true && visible.length) target = visible[0]
-  if (!target && visible.length === 1) target = visible[0]
   if (!target && visible.length > 1) return '有多条待触发提醒，请说明要取消哪一条，或说“取消最近一条提醒”。'
   if (!target) return '没找到可取消的提醒。'
   const removed = await unregisterCron(target.id)

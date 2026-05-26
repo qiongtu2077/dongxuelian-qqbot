@@ -13,6 +13,16 @@ const {
 } = require('./constants')
 const { readJsonFile, writeJsonFile, formatPercent, hasAdminPermission } = require('./utils')
 const { isAdminUserId } = require('./runtime-config')
+const {
+  randomWhitelistCache,
+  randomRateCache,
+  getFileFingerprint,
+  getRandomWhitelistStatus,
+} = require('./runtime-settings')
+const {
+  loadUserBlacklist,
+  setBlacklistFingerprint,
+} = require('./user-blacklist')
 const { resetPoliticalDetectCache, clearSensitiveRuntimeState } = require('./sensitive')
 const {
   DEFAULT_RANDOM_VOICE_RATE,
@@ -25,15 +35,9 @@ async function handleAdminInlineCommands(session, ctx, {
   inGuild,
   channelKey,
   isGroupAdmin,
-  randomWhitelistCache,
-  randomRateCache,
-  loadUserBlacklist,
-  getFileFingerprint,
-  setBlacklistFingerprint,
   armEventDump,
   getArmedEventDump,
   clearArmedEventDump,
-  getRandomWhitelistStatus,
 }) {
   const matched = (response) => ({ matched: true, response })
   const canManageCurrentGroupRandomRate = () => !!inGuild && (isGroupAdmin || hasAdminPermission(session))

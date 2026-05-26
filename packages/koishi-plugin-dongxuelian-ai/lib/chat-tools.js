@@ -8,6 +8,7 @@ const { getMemorySummary } = require('./conversation')
 const { readGroupContext } = require('./group-scene-index')
 const { filterExternalToolDefinitions, buildExternalToolPolicyHint } = require('./external-tool-policy')
 const { isToolEnabled } = require('./agent/config')
+const { parseReminderActionRequest, parseScheduledTaskRequest } = require('./reminder-route')
 
 const CHAT_TOOL_TIMEOUT_MS = 3000
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000
@@ -17,6 +18,15 @@ const SHORT_MEDIA_FOLLOWUP_MAX_CHARS = 12
 const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image', 'read_group_context', 'analyze_file', 'create_uploaded_file_variant', 'create_reminder', 'list_reminders', 'cancel_reminder', 'create_scheduled_task', 'list_scheduled_tasks', 'get_scheduled_task', 'pause_scheduled_task', 'resume_scheduled_task', 'delete_scheduled_task', 'run_scheduled_task_now'])
 
 const HEAVY_TOOLS = new Set(['web_search', 'web_fetch', 'browser_action', 'execute_shell', 'file_write'])
+const CHAT_WRITE_ACTION_TOOLS = new Set([
+  'create_reminder',
+  'cancel_reminder',
+  'create_scheduled_task',
+  'pause_scheduled_task',
+  'resume_scheduled_task',
+  'delete_scheduled_task',
+  'run_scheduled_task_now',
+])
 
 const DEFAULT_CHAT_TOOL_CHANNEL = 'qq'
 
@@ -334,6 +344,24 @@ async function executeSearchMemory(context = {}) {
   return summary || '没有找到相关记忆'
 }
 
+function isExplicitChatWriteActionAllowed(name = '', args = {}, context = {}) {
+  if (!CHAT_WRITE_ACTION_TOOLS.has(name)) return true
+  if (context.allowParsedReminderAction) return true
+  const userText = String(context.userText || context.currentText || '').trim()
+  if (!userText) return false
+  const parsed = parseScheduledTaskRequest(userText) || parseReminderActionRequest(userText)
+  if (!parsed || parsed.name !== name) return false
+  if (name === 'create_reminder') {
+    const parsedRunAt = Number(parsed.args?.runAt || 0)
+    const toolRunAt = Number(args.runAt || args.dueAt || 0)
+    const sameRunAt = parsedRunAt && toolRunAt ? Math.abs(parsedRunAt - toolRunAt) <= 60 * 1000 : true
+    return sameRunAt && String(args.text || args.message || '').trim().length > 0
+  }
+  if (name === 'create_scheduled_task') return !!String(args.prompt || args.text || args.message || '').trim()
+  if (name === 'cancel_reminder') return !!(args.id || args.reminderId || args.keyword || args.text || args.latest === true || parsed.args?.latest === true || parsed.args?.keyword)
+  return !!(args.id || args.taskId || parsed.args?.id || parsed.args?.taskId)
+}
+
 async function executeChatTool(toolCall, context = {}) {
   const name = toolCall?.function?.name || ''
   const channel = resolveChatToolChannel(context)
@@ -342,6 +370,9 @@ async function executeChatTool(toolCall, context = {}) {
   try {
     args = JSON.parse(toolCall?.function?.arguments || '{}')
   } catch {}
+  if (!isExplicitChatWriteActionAllowed(name, args, context)) {
+    return `工具 ${name} 未执行：当前用户消息没有明确的写状态意图。`
+  }
 
   switch (name) {
     case 'get_current_time':

@@ -22,6 +22,7 @@ const { normalizeText } = require('./message-reader')
 const { requestChatCompletions } = require('./api')
 const { loadConfig } = require('./runtime-config')
 const { appendGroupSceneEntry } = require('./group-scene-index')
+const { redactSensitiveText } = require('./redactor')
 
 let conversationCache = new Map()
 let replyFingerprintCache = new Map()
@@ -467,7 +468,7 @@ function flushTodayCacheToDisk(channelKey) {
 
 function saveSharedChannelTurn(session, speakerName, content, role = 'user', metadata = {}) {
   const channelKey = getChannelKey(session)
-  const value = normalizeText(content)
+  const value = redactSensitiveText(normalizeText(content))
   const hasMentions = Array.isArray(metadata.mentionUserIds) && metadata.mentionUserIds.length > 0
   if (!value && !hasMentions) return
   const userId = String(role === 'assistant' ? (session.selfId || session.bot?.selfId || 'bot') : (session.userId || session.author?.id || session.username || 'unknown'))
@@ -702,10 +703,15 @@ function getQuoteInfo(session, options = {}) {
   }
 }
 
+function escapePromptBoundaryText(text = '') {
+  return redactSensitiveText(String(text || ''))
+    .replace(/[<>]/g, ch => (ch === '<' ? '＜' : '＞'))
+}
+
 function getQuotedMessageNote(session, options = {}) {
   const quoteInfo = getQuoteInfo(session, options)
   if (!quoteInfo.content) return ''
-  const qtext = quoteInfo.content
+  const qtext = escapePromptBoundaryText(quoteInfo.content)
   const recent = getConversationHistory(session).slice(-MAX_CHANNEL_PROMPT_MESSAGES)
   const match = recent.find(m => m.content && (qtext.includes(m.content.slice(0, 30)) || m.content.includes(qtext.slice(0, 30))))
   if (match) return '' // already in history

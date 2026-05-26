@@ -105,6 +105,7 @@ async function handleAgentCommand(session, ctx, state, options = {}) {
     const userName = sanitizeUserName(
       session.author?.nick || session.author?.name || session.username || '群友'
     )
+    const isAdmin = hasAdminPermission(session)
     try {
       const searchRunOptions = require('../agent/router').buildExplicitSearchRunOptions(query)
       const result = await agentQueue.enqueueAgentTask({
@@ -112,7 +113,7 @@ async function handleAgentCommand(session, ctx, state, options = {}) {
         userId: currentUserId,
         timeoutMs: agentConfig.queue?.timeoutMs,
         fn: () => engine.run({
-          userMessage: query, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, ...searchRunOptions,
+          userMessage: query, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, isAdmin, ...searchRunOptions,
           onProgress: (msg) => {
             if (msg.type === 'round' && msg.round === 0) {
               // 首轮执行中，不额外输出
@@ -137,7 +138,7 @@ async function handleAgentCommand(session, ctx, state, options = {}) {
     if (p) {
       if (p.channelKey !== channelKey || p.userId !== currentUserId) return handled('这个确认 ID 不属于当前会话。')
       const engine = require('../agent/engine')
-      const result = await engine.resumePending({ channelKey, userId: currentUserId, channel: 'qq', expectedId: pendingId, bot: session.bot })
+      const result = await engine.resumePending({ channelKey, userId: currentUserId, channel: 'qq', expectedId: pendingId, bot: session.bot, isAdmin: hasAdminPermission(session) })
       if (!result.ok && result.message) return handled(`执行失败：${result.message || result.error || '未知错误'}`)
       return handled(result.reply || '(Agent 未获取到有效回复)')
     }

@@ -59,24 +59,29 @@ function assertEnoughMemoryForBrowser() {
 async function enableBrowserRequestGuards(targetPage) {
   if (!targetPage || typeof targetPage.setRequestInterception !== 'function' || typeof targetPage.on !== 'function') return
   await targetPage.setRequestInterception(true).catch(() => {})
-  targetPage.on('request', req => {
+  targetPage.on('request', async req => {
     try {
       const url = req.url()
       const type = req.resourceType()
       if (BLOCKED_RESOURCE_TYPES.has(type) || BLOCKED_HOST_RE.test(url)) return req.abort()
+      await validateUrl(url)
       return req.continue()
     } catch {
-      try { req.continue() } catch {}
+      try { req.abort() } catch {}
     }
   })
-  await targetPage.evaluate(() => {
+  const disableNetworkApis = () => {
     delete window.fetch
     delete window.XMLHttpRequest
     delete window.WebSocket
     delete window.EventSource
     delete window.sendBeacon
     Object.defineProperty(navigator, 'sendBeacon', { value: () => false, configurable: false })
-  }).catch(() => {})
+  }
+  if (typeof targetPage.evaluateOnNewDocument === 'function') {
+    await targetPage.evaluateOnNewDocument(disableNetworkApis).catch(() => {})
+  }
+  await targetPage.evaluate(disableNetworkApis).catch(() => {})
 }
 
 function registerCleanup() {
@@ -252,7 +257,11 @@ async function openUrl(url) {
   const targetUrl = await validateUrl(url)
   const p = await ensurePage()
   await p.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 })
-  currentUrl = p.url()
+  currentUrl = await validateUrl(p.url()).catch(() => '')
+  if (!currentUrl) {
+    await p.goto('about:blank').catch(() => {})
+    throw new Error('导航目标跳转到不允许访问的地址，已阻止。')
+  }
   const title = await p.title().catch(() => '')
   return `已打开：${currentUrl}\n标题：${title || '(无标题)'}`
 }
@@ -770,6 +779,9 @@ module.exports = {
       return executeSingleAction(params)
     })
   },
+  validateUrl,
+  isPrivateIp,
+  isPrivateHostname,
   dangerous: true,
   defaultChannels: ['dashboard'],
 }

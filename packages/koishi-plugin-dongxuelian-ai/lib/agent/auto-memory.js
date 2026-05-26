@@ -30,6 +30,10 @@ const EXTRACT_PROMPT = `从以下对话中提取值得长期记住的信息。�
 每条记忆用一行描述，简洁明了。`
 
 function safeAutoMemoryUserId(userId = '') {
+  return String(userId || 'unknown').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 100) || 'unknown'
+}
+
+function legacySafeAutoMemoryUserId(userId = '') {
   return String(userId || 'unknown').replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 100) || 'unknown'
 }
 
@@ -94,10 +98,10 @@ async function appendDailyFile(userId, content) {
 async function getDailyTotalSize(userId) {
   try {
     const files = await fsp.readdir(DAILY_DIR)
-    const prefix = safeAutoMemoryUserId(userId) + '.'
+    const prefixes = Array.from(new Set([safeAutoMemoryUserId(userId) + '.', legacySafeAutoMemoryUserId(userId) + '.']))
     let total = 0
     for (const f of files) {
-      if (!f.startsWith(prefix)) continue
+      if (!prefixes.some(prefix => f.startsWith(prefix))) continue
       try {
         const stat = await fsp.stat(path.join(DAILY_DIR, f))
         total += stat.size

@@ -29,6 +29,10 @@ const DREAM_PROMPT = `你是记忆整理助手。以下是用户的每日记忆�
 不要使用 JSON 格式，直接写给人看的记忆描述。`
 
 function safeUserId(userId = '') {
+  return String(userId || 'unknown').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 100) || 'unknown'
+}
+
+function legacySafeUserId(userId = '') {
   return String(userId || 'unknown').replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 100) || 'unknown'
 }
 
@@ -41,21 +45,29 @@ function getBackupFile(userId) {
 }
 
 async function readLongTermFile(userId) {
-  try {
-    const file = getLongTermFile(userId)
-    const stat = await fsp.stat(file)
-    if (!stat.isFile() || stat.size > MAX_LONG_TERM_FILE_BYTES) return ''
-    return await fsp.readFile(file, 'utf8')
-  } catch {
-    return ''
+  for (const file of getLongTermFileCandidates(userId)) {
+    try {
+      const stat = await fsp.stat(file)
+      if (!stat.isFile() || stat.size > MAX_LONG_TERM_FILE_BYTES) continue
+      return await fsp.readFile(file, 'utf8')
+    } catch {}
   }
+  return ''
+}
+
+function getLongTermFileCandidates(userId) {
+  const current = safeUserId(userId)
+  const legacy = legacySafeUserId(userId)
+  const files = [path.join(DASHBOARD_MEMORY_DIR, `${current}.md`)]
+  if (legacy !== current) files.push(path.join(DASHBOARD_MEMORY_DIR, `${legacy}.md`))
+  return files
 }
 
 async function listDailyFiles(userId) {
   try {
     const files = await fsp.readdir(DAILY_DIR)
-    const prefix = safeUserId(userId) + '.'
-    return files.filter(f => f.startsWith(prefix) && f.endsWith('.md')).sort()
+    const prefixes = Array.from(new Set([safeUserId(userId) + '.', legacySafeUserId(userId) + '.']))
+    return files.filter(f => prefixes.some(prefix => f.startsWith(prefix)) && f.endsWith('.md')).sort()
   } catch {
     return []
   }

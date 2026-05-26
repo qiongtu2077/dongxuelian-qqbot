@@ -9,6 +9,7 @@ const path = require('path')
 const { DATA_DIR } = require('./constants')
 const { normalizeText } = require('./message-reader')
 const { sanitizeUserName, formatShanghaiTime24h } = require('./utils')
+const { redactSensitiveText } = require('./redactor')
 
 const GROUP_SCENE_DIR = path.join(DATA_DIR, 'group-scenes')
 const GROUP_SCENE_VERSION = 1
@@ -46,8 +47,13 @@ function enqueueSceneTask(channelKey, task) {
   return current
 }
 
+async function waitForSceneTasks(channelKey) {
+  const pending = sceneQueues.get(safeSceneChannelKey(channelKey))
+  if (pending) await pending.catch(() => {})
+}
+
 function sanitizeSceneText(text = '', maxChars = 180) {
-  let value = normalizeText(text)
+  let value = redactSensitiveText(normalizeText(text))
   if (!value) return ''
   value = value
     .replace(/https?:\/\/[^\s<>"'）)】\]]{1,300}/gi, '[链接]')
@@ -55,7 +61,7 @@ function sanitizeSceneText(text = '', maxChars = 180) {
     .replace(/file:\/\/[^\s<>"'）)】\]]{1,300}/gi, '[本地文件]')
     .replace(/[A-Za-z]:\\[^\r\n<>"'）)】\]]{0,300}?\.[A-Za-z0-9]{1,8}/g, '[本地路径]')
     .replace(/[A-Za-z]:\\[^\s<>"'）)】\]]{1,260}/g, '[本地路径]')
-    .replace(/(?:token|key|secret|cookie|authorization)\s*[:=]\s*[^\s,;，；]{4,}/gi, '$1=[已隐藏]')
+    .replace(/((?:token|key|secret|cookie|authorization)\s*[:=]\s*)[^\s,;，；]{4,}/gi, '$1[已隐藏]')
     .replace(/<img\b[^>]*>/gi, '[图片]')
     .replace(/\[CQ:[^\]]+\]/gi, '[消息]')
     .trim()
@@ -517,6 +523,7 @@ async function readGroupContext(channelKey, args = {}) {
   const maxAgeMinutes = Math.min(Math.max(parseInt(args.maxAgeMinutes, 10) || 60, 1), 24 * 60)
   const maxScenes = Math.min(Math.max(parseInt(args.maxScenes, 10) || 2, 1), 3)
   const anchorType = String(args.anchorType || 'any')
+  await waitForSceneTasks(channelKey)
   const data = await loadGroupScenes(channelKey)
   const cutoff = Date.now() - maxAgeMinutes * 60 * 1000
   const tokens = tokenizeQuery([query, args.timeHint || '', args.reason || ''].filter(Boolean).join(' '))

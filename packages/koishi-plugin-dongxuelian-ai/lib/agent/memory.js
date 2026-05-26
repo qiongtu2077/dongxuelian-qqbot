@@ -23,23 +23,35 @@ function withUserLock(userId, fn) {
 }
 
 function safeUserId(userId = '') {
+  return String(userId || 'unknown').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 100) || 'unknown'
+}
+
+function legacySafeUserId(userId = '') {
   return String(userId || 'unknown').replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 100) || 'unknown'
 }
 
+function getMemoryFileCandidates(userId) {
+  const current = safeUserId(userId)
+  const legacy = legacySafeUserId(userId)
+  const files = [path.join(MEMORY_DIR, current + '.json')]
+  if (legacy !== current) files.push(path.join(MEMORY_DIR, legacy + '.json'))
+  return files
+}
+
 function getMemoryFile(userId) {
-  return path.join(MEMORY_DIR, safeUserId(userId) + '.json')
+  return getMemoryFileCandidates(userId)[0]
 }
 
 async function readMemoryFile(userId) {
-  try {
-    const file = getMemoryFile(userId)
-    const stat = await fsp.stat(file)
-    if (!stat.isFile() || stat.size > MAX_MEMORY_FILE_BYTES) return { items: [] }
-    const data = JSON.parse((await fsp.readFile(file, 'utf8')).replace(/^\uFEFF/, ''))
-    return { items: Array.isArray(data.items) ? data.items : [] }
-  } catch {
-    return { items: [] }
+  for (const file of getMemoryFileCandidates(userId)) {
+    try {
+      const stat = await fsp.stat(file)
+      if (!stat.isFile() || stat.size > MAX_MEMORY_FILE_BYTES) continue
+      const data = JSON.parse((await fsp.readFile(file, 'utf8')).replace(/^\uFEFF/, ''))
+      return { items: Array.isArray(data.items) ? data.items : [] }
+    } catch {}
   }
+  return { items: [] }
 }
 
 async function writeMemoryFile(userId, data) {
@@ -137,12 +149,12 @@ function formatMemoryItems(items = []) {
 }
 
 async function searchDashboardMemory({ userId, query = '' } = {}) {
-  const longTermFile = path.join(DASHBOARD_MEMORY_DIR, safeUserId(userId) + '.md')
-  try {
+  for (const longTermFile of getDashboardMemoryFileCandidates(userId)) {
+    try {
     const stat = await fsp.stat(longTermFile)
-    if (!stat.isFile() || stat.size > MAX_MEMORY_FILE_BYTES) return ''
+    if (!stat.isFile() || stat.size > MAX_MEMORY_FILE_BYTES) continue
     const content = await fsp.readFile(longTermFile, 'utf8')
-    if (!content.trim()) return ''
+    if (!content.trim()) continue
     if (!query.trim()) return content.trim().slice(0, 2000)
     const tokens = tokenize(query)
     if (!tokens.length) return content.trim().slice(0, 2000)
@@ -153,9 +165,17 @@ async function searchDashboardMemory({ userId, query = '' } = {}) {
     })
     if (matched.length) return matched.join('\n').slice(0, 2000)
     return content.trim().slice(0, 2000)
-  } catch {
-    return ''
+    } catch {}
   }
+  return ''
+}
+
+function getDashboardMemoryFileCandidates(userId) {
+  const current = safeUserId(userId)
+  const legacy = legacySafeUserId(userId)
+  const files = [path.join(DASHBOARD_MEMORY_DIR, current + '.md')]
+  if (legacy !== current) files.push(path.join(DASHBOARD_MEMORY_DIR, legacy + '.md'))
+  return files
 }
 
 module.exports = {
@@ -168,4 +188,5 @@ module.exports = {
   listMemory,
   formatMemoryItems,
   tokenize,
+  safeUserId,
 }

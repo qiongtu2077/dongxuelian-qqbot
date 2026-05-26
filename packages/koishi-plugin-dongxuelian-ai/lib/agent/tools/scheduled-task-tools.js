@@ -238,7 +238,7 @@ const createScheduledTaskTool = {
   defaultChannels: ['qq', 'dashboard'],
 }
 
-function makeSimpleTool(name, description, execute) {
+function makeSimpleTool(name, description, execute, options = {}) {
   return {
     definition: {
       name,
@@ -254,17 +254,17 @@ function makeSimpleTool(name, description, execute) {
       },
     },
     execute,
-    dangerous: false,
+    dangerous: !!options.dangerous,
     defaultChannels: ['qq', 'dashboard'],
   }
 }
 
 const listScheduledTasksTool = makeSimpleTool('list_scheduled_tasks', '查看当前会话/当前用户可见的定时任务。', executeListScheduledTasks)
 const getScheduledTaskTool = makeSimpleTool('get_scheduled_task', '查看某个定时任务详情和最近历史。', executeGetScheduledTask)
-const pauseScheduledTaskTool = makeSimpleTool('pause_scheduled_task', '暂停某个定时任务，不删除。', executePauseScheduledTask)
-const resumeScheduledTaskTool = makeSimpleTool('resume_scheduled_task', '恢复某个已暂停的定时任务。', executeResumeScheduledTask)
-const deleteScheduledTaskTool = makeSimpleTool('delete_scheduled_task', '删除某个定时任务。', executeDeleteScheduledTask)
-const runScheduledTaskNowTool = makeSimpleTool('run_scheduled_task_now', '立即试跑某个定时任务一次。', executeRunScheduledTaskNow)
+const pauseScheduledTaskTool = makeSimpleTool('pause_scheduled_task', '暂停某个定时任务，不删除。', executePauseScheduledTask, { dangerous: true })
+const resumeScheduledTaskTool = makeSimpleTool('resume_scheduled_task', '恢复某个已暂停的定时任务。', executeResumeScheduledTask, { dangerous: true })
+const deleteScheduledTaskTool = makeSimpleTool('delete_scheduled_task', '删除某个定时任务。', executeDeleteScheduledTask, { dangerous: true })
+const runScheduledTaskNowTool = makeSimpleTool('run_scheduled_task_now', '立即试跑某个定时任务一次。', executeRunScheduledTaskNow, { dangerous: true })
 
 module.exports = {
   createScheduledTaskTool,

@@ -115,14 +115,16 @@ async function getQuota(channelKey, now = Date.now()) {
 
 async function sendBotMessage(bot, target, content) {
   if (!bot) throw new Error('bot sendMessage 不可用')
-  if (typeof bot.sendMessage === 'function') return bot.sendMessage(target, content)
   if (/^private:/.test(target)) {
     const userId = target.slice('private:'.length)
     if (typeof bot.sendPrivateMessage === 'function') return bot.sendPrivateMessage(userId, content)
     if (bot.internal && typeof bot.internal.sendPrivateMsg === 'function') {
       return bot.internal.sendPrivateMsg(userId, [{ type: 'text', data: { text: content } }])
     }
-  } else if (bot.internal && typeof bot.internal.sendGroupMsg === 'function') {
+    throw new Error('bot private send 不可用')
+  }
+  if (typeof bot.sendMessage === 'function') return bot.sendMessage(target, content)
+  if (bot.internal && typeof bot.internal.sendGroupMsg === 'function') {
     return bot.internal.sendGroupMsg(target, [{ type: 'text', data: { text: content } }])
   }
   throw new Error('bot sendMessage 不可用')

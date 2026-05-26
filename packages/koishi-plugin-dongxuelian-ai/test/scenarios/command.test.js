@@ -60,6 +60,28 @@ async function run(t) {
     const reload = await run(makeSession({ content: 'AI\u91cd\u8f7d' }))
     checkSentNonEmpty(t, 'scenario AI reload replies', reload)
 
+    const eventDumpArm = await run(makeSession({ content: 'AI\u6293\u4e8b\u4ef6' }))
+    t.check('scenario event dump arm replies', eventDumpArm.sent.some(item => String(item).includes('\u5df2\u5f00\u59cb\u6293\u53d6')), JSON.stringify(eventDumpArm.sent))
+    const eventDumpTarget = await run(makeSession({
+      content: '\u8fd9\u662f\u4e00\u6761\u6293\u53d6\u76ee\u6807',
+      messageId: 'dump-msg-1',
+      event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '\u8fd9\u662f\u4e00\u6761\u6293\u53d6\u76ee\u6807' } }] },
+    }))
+    t.check('scenario event dump capture replies with path', eventDumpTarget.sent.some(item => String(item).includes('\u5df2\u6293\u5230\u539f\u59cb\u4e8b\u4ef6')), JSON.stringify(eventDumpTarget.sent))
+    const dumpDir = path.join(data.dataDir, 'ai-event-dumps')
+    const dumpFiles = fs.readdirSync(dumpDir).filter(name => name.endsWith('.json'))
+    t.check('scenario event dump writes one json file', dumpFiles.length === 1, JSON.stringify(dumpFiles))
+    const dumpPayload = JSON.parse(fs.readFileSync(path.join(dumpDir, dumpFiles[0]), 'utf8'))
+    t.check('scenario event dump stores target message id', dumpPayload.session.messageId === 'dump-msg-1', JSON.stringify(dumpPayload.session))
+    t.check('scenario event dump stores target content', dumpPayload.session.content === '\u8fd9\u662f\u4e00\u6761\u6293\u53d6\u76ee\u6807' && dumpPayload.session.plain.includes('\u6293\u53d6\u76ee\u6807'), JSON.stringify(dumpPayload.session))
+    const eventDumpViewAfterCapture = await run(makeSession({ content: 'AI\u6293\u4e8b\u4ef6\u67e5\u770b' }))
+    t.check('scenario event dump clears after capture', eventDumpViewAfterCapture.sent.some(item => String(item).includes('\u5f53\u524d\u6ca1\u6709\u5f85\u6293\u53d6')), JSON.stringify(eventDumpViewAfterCapture.sent))
+    const eventDumpCancel = await run(makeSession({ content: 'AI\u6293\u4e8b\u4ef6\u53d6\u6d88' }))
+    t.check('scenario event dump cancel replies', eventDumpCancel.sent.some(item => String(item).includes('\u5df2\u53d6\u6d88')), JSON.stringify(eventDumpCancel.sent))
+    await run(makeSession({ content: '\u53d6\u6d88\u540e\u4e0d\u5e94\u518d\u5199\u5165', messageId: 'dump-msg-2' }))
+    const dumpFilesAfterCancel = fs.readdirSync(dumpDir).filter(name => name.endsWith('.json'))
+    t.check('scenario event dump cancel prevents later write', dumpFilesAfterCancel.length === 1, JSON.stringify(dumpFilesAfterCancel))
+
     const agentRouteOff = await run(makeSession({ content: '\u5de5\u5177\u81ea\u52a8\u8def\u7531 \u5173' }))
     checkSentNonEmpty(t, 'scenario agent auto route switch replies', agentRouteOff)
     t.check('scenario agent auto route writes config', data.readJson('ai-tool-config.json').autoRoute.qq.enabled === false)

@@ -44,6 +44,7 @@ async function handlePlanCommand(session, ctx, state) {
           channelKey,
           channel: 'qq',
           bot: session.bot,
+          isAdmin: hasAdminPermission(session),
           systemExtra: [
             { role: 'system', content: planPrompts.buildPlanSystemPrompt(plan) },
             { role: 'system', content: planPrompts.buildPlanCreatePrompt(query) },
@@ -81,7 +82,7 @@ async function handlePlanCommand(session, ctx, state) {
       if (!plan) return handled('当前没有可继续的执行中计划。')
       if (plan.userId !== currentUserId && !hasAdminPermission(session)) return handled('只能继续自己的计划，或由 bot 管理员操作。')
       const userName = sanitizeUserName(session.author?.nick || session.author?.name || session.username || plan.userName || '群友')
-      const result = await planRunner.resumePlan({ planId: plan.id, channelKey, userId: currentUserId, userName, bot: session.bot })
+      const result = await planRunner.resumePlan({ planId: plan.id, channelKey, userId: currentUserId, userName, bot: session.bot, isAdmin: hasAdminPermission(session) })
       return handled([planEngine.formatPlan(plan), '', result.reply || '计划已继续执行。'].join('\n'))
     } catch (err) {
       if (err && (err.code === 'AGENT_QUEUE_FULL' || err.code === 'AGENT_QUEUE_REJECTED')) return handled(err.message)

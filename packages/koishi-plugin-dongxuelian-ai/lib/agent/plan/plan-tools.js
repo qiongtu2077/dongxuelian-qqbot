@@ -57,7 +57,7 @@ const updateTaskStatusTool = {
   async execute(params = {}) {
     return toToolResult(await engine.updateTaskStatus(params))
   },
-  dangerous: false,
+  dangerous: true,
   defaultChannels: ['dashboard', 'qq'],
 }
 

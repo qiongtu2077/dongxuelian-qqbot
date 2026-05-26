@@ -179,6 +179,13 @@ async function run(t) {
     const internalBot = { internal: { async sendGroupMsg(groupId, message) { internalCalls.push({ groupId, message }) } } }
     t.check('push can send via onebot group internal', (await push.send({ channelKey: '10001', text: 'internal hello', bot: internalBot, reason: 'scenario_internal', bypassEnabled: true })).ok)
     t.check('push onebot group internal uses text segment', internalCalls.some(call => String(call.groupId) === '10001' && JSON.stringify(call.message).includes('internal hello')), JSON.stringify(internalCalls))
+    const privateCalls = []
+    const privateBot = {
+      async sendMessage(channelKey, text) { privateCalls.push({ type: 'sendMessage', channelKey, text }) },
+      async sendPrivateMessage(userId, text) { privateCalls.push({ type: 'sendPrivateMessage', userId, text }) },
+    }
+    t.check('push private target prefers private send', (await push.send({ channelKey: 'private:4242', text: 'private hello', bot: privateBot, reason: 'scenario_private', bypassEnabled: true })).ok)
+    t.check('push private target does not call generic sendMessage', privateCalls.length === 1 && privateCalls[0].type === 'sendPrivateMessage' && privateCalls[0].userId === '4242', JSON.stringify(privateCalls))
 
     config.cron.enabled = true
     await agentConfig.saveAgentConfig(config)
@@ -202,13 +209,15 @@ async function run(t) {
     t.check('cron periodic text task can send and keep schedule', successRun.ok && successSaved && successSaved.enabled !== false && successSaved.status === 'active' && successSaved.nextRunAt > Date.now(), JSON.stringify({ successRun, successSaved }))
     const agentSent = []
     const agentBot = { async sendMessage(channelKey, text) { agentSent.push({ channelKey, text }) } }
-    const agentEngine = { async run(input) { return { reply: `agent-result:${input.userMessage}:${input.scheduledTask && input.scheduledTask.id}` } } }
-    await cron.startCronScheduler({ bot: agentBot, engine: agentEngine })
-    const agentCron = await cron.registerCron({ id: 'scenario_agent_cron', schedule: '*/10 * * * *', type: 'agent', prompt: '总结今天群聊', targetChannel: 'g-agent', createdBy: 'u1' })
+    const seenScheduledPolicies = []
+    const policyAgentEngine = { async run(input) { seenScheduledPolicies.push(input.scheduledTask && input.scheduledTask.contextPolicy); return { reply: `agent-result:${input.userMessage}:${input.scheduledTask && input.scheduledTask.id}` } } }
+    await cron.startCronScheduler({ bot: agentBot, engine: policyAgentEngine })
+    const agentCron = await cron.registerCron({ id: 'scenario_agent_cron', schedule: '*/10 * * * *', type: 'agent', prompt: '总结今天群聊', targetChannel: 'g-agent', createdBy: 'u1', contextPolicy: { allowExternalTools: false, allowedTools: ['read_group_context'] } })
     const agentRun = await cron.runCronNow(agentCron.id)
     const agentData = await cron.loadCrons()
     const agentSaved = agentData.crons.find(item => item.id === agentCron.id)
     t.check('cron periodic agent task runs engine and keeps schedule', agentRun.ok && agentSent.some(item => item.channelKey === 'g-agent' && item.text.includes('agent-result:总结今天群聊')) && agentSaved && agentSaved.enabled !== false && agentSaved.nextRunAt > Date.now(), JSON.stringify({ agentRun, agentSent, agentSaved }))
+    t.check('cron passes scheduled context policy to agent engine', seenScheduledPolicies.some(policy => policy && policy.allowExternalTools === false && Array.isArray(policy.allowedTools) && policy.allowedTools.includes('read_group_context')), JSON.stringify(seenScheduledPolicies))
     const pausedCron = await cron.pauseCron(agentCron.id)
     t.check('cron pause marks scheduled task paused', pausedCron && pausedCron.enabled === false && pausedCron.status === 'paused', JSON.stringify(pausedCron))
     const resumedCron = await cron.resumeCron(agentCron.id)
@@ -242,6 +251,9 @@ async function run(t) {
     t.check('reminder latest cancel removes newest visible reminder', latestCancelResult.includes('已取消提醒'), latestCancelResult)
     const cancelResult = await reminderTools.cancelReminderTool.execute({ keyword: '起床' }, { channelKey: 'g-remind', userId: 'u1', channel: 'qq' })
     t.check('reminder cancel removes a visible reminder by keyword', cancelResult.includes('已取消提醒'), cancelResult)
+    await reminderTools.createReminderTool.execute({ delayMinutes: 5, text: '喝水' }, { channelKey: 'g-remind', userId: 'u1', channel: 'qq' })
+    const emptyCancelResult = await reminderTools.cancelReminderTool.execute({}, { channelKey: 'g-remind', userId: 'u1', channel: 'qq' })
+    t.check('reminder empty cancel requires explicit target', emptyCancelResult.includes('请说明要取消哪一条提醒'), emptyCancelResult)
 
     config.cron.enabled = true
     await agentConfig.saveAgentConfig(config)
@@ -257,6 +269,11 @@ async function run(t) {
     const found = await memory.searchMemory({ userId: 'u1', query: '计划', limit: 3 })
     t.check('memory search finds written item', found.some(entry => entry.id === item.id))
     t.checkEqual('memory forget removes item', await memory.forgetMemory({ userId: 'u1', memoryId: item.id }), 1)
+    const privateMemory = await memory.remember({ userId: 'private:u1', channelKey: 'private:u1', text: '私聊记忆写入', tags: ['portable'] })
+    t.check('memory portable private id writes item', privateMemory.id.startsWith('mem_'))
+    const privateFound = await memory.searchMemory({ userId: 'private:u1', query: '私聊', limit: 3 })
+    t.check('memory portable private id can read written item', privateFound.some(entry => entry.id === privateMemory.id), JSON.stringify(privateFound))
+    t.check('memory portable private id does not create colon filename', !require('fs').existsSync(require('path').join(tmpRuntime, 'agent-memory', 'private:u1.json')) && require('fs').existsSync(require('path').join(tmpRuntime, 'agent-memory', 'private_u1.json')))
   } finally {
     for (const rel of ['constants', 'agent/config', 'agent/push', 'agent/cron', 'agent/memory']) {
       delete require.cache[require.resolve('../../lib/' + rel)]

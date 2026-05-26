@@ -25,6 +25,7 @@ const { getRecentFilesCached } = require('../file-store')
 const MAX_ROUNDS = MAX_TOOL_ROUNDS
 const MAX_TOOLS_PER_ROUND = 3
 const MAX_WEB_SEARCH_CALLS = 6
+const EXTERNAL_TOOL_NAMES = new Set(['web_search', 'web_fetch', 'browser_action'])
 
 function buildFileHintContext(channelKey) {
   if (!channelKey) return []
@@ -52,7 +53,7 @@ function normalizeToolCall(toolName, args = {}) {
   }
 }
 
-async function executeAgentToolCall({ tc, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, bot }) {
+async function executeAgentToolCall({ tc, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, bot, isAdmin = false }) {
   let args = {}
   try { args = JSON.parse(tc.function.arguments || '{}') } catch {}
   const toolName = tc.function.name
@@ -85,7 +86,7 @@ async function executeAgentToolCall({ tc, messages, allowedToolNames, channel, c
 
   try {
     const startedAt = Date.now()
-    const execResult = await executeTool(toolName, args, { channel, channelKey, userId, userName, userMessage, bot })
+    const execResult = await executeTool(toolName, args, { channel, channelKey, userId, userName, userMessage, bot, isAdmin })
     let nextToolCount = toolCount
     recordCall(toolName, channel, { ok: execResult.ok, durationMs: Date.now() - startedAt, tokens: estimateTokens([{ role: 'tool', content: execResult.text }]) })
     if (execResult.ok) nextToolCount++
@@ -119,7 +120,7 @@ function compressOldToolResults(messages, currentRound) {
   }
 }
 
-async function continueAgent({ messages, config, tools, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount = 0, toolResults = [], onProgress, bot, enableThinking = false }) {
+async function continueAgent({ messages, config, tools, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount = 0, toolResults = [], onProgress, bot, enableThinking = false, isAdmin = false }) {
   let reply = ''
   const rounds = []
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -178,7 +179,7 @@ async function continueAgent({ messages, config, tools, allowedToolNames, channe
         }
       }
       while (currentCall && fallbackDepth < 2) {
-        const outcome = await executeAgentToolCall({ tc: currentCall, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, bot })
+        const outcome = await executeAgentToolCall({ tc: currentCall, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, bot, isAdmin })
         toolCount = outcome.toolCount
         if (outcome.status === 'pending') {
           rounds.push({ round, reasoning: response.reasoning || '', toolCalls: roundToolCalls, toolResults: roundToolResults })
@@ -244,11 +245,40 @@ function getForceToolSet(forceTools, channel = 'qq') {
   return new Set((Array.isArray(forceTools) ? forceTools : []).filter(name => toolRegistry[name] && isToolEnabled(channel, name)))
 }
 
-async function runAgent({ userMessage, userName, userId, channelKey, channel = 'qq', systemExtra = [], history = [], forceTools = [], preExecuteTools = [], onProgress, bot, enableThinking = false, agentMode = false }) {
+function normalizeContextPolicy(policy = {}) {
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) return {}
+  const allowedTools = Array.isArray(policy.allowedTools)
+    ? policy.allowedTools.map(item => String(item || '').trim()).filter(Boolean)
+    : []
+  return {
+    allowExternalTools: policy.allowExternalTools !== false,
+    allowedTools,
+  }
+}
+
+function applyContextPolicyToTools(tools = [], contextPolicy = {}) {
+  const policy = normalizeContextPolicy(contextPolicy)
+  let result = Array.isArray(tools) ? tools.slice() : []
+  if (policy.allowExternalTools === false) {
+    result = result.filter(item => !EXTERNAL_TOOL_NAMES.has(item.function?.name))
+  }
+  if (policy.allowedTools.length) {
+    const allow = new Set(policy.allowedTools)
+    result = result.filter(item => allow.has(item.function?.name))
+  }
+  return result
+}
+
+async function runAgent({ userMessage, userName, userId, channelKey, channel = 'qq', systemExtra = [], history = [], forceTools = [], preExecuteTools = [], onProgress, bot, enableThinking = false, agentMode = false, scheduledTask = null, contextPolicy = null, isAdmin = false }) {
   if (!isChannelEnabled(channel)) return { reply: '(Agent 已关闭)', toolCalls: 0, pendingId: null }
-  let tools = getToolDefinitions(channel)
+  const effectiveContextPolicy = normalizeContextPolicy(contextPolicy || scheduledTask?.contextPolicy || {})
+  let tools = applyContextPolicyToTools(getToolDefinitions(channel), effectiveContextPolicy)
   const forceToolSet = getForceToolSet(forceTools, channel)
-  for (const toolName of forceToolSet) tools = ensureToolDefinition(tools, toolName)
+  for (const toolName of forceToolSet) {
+    if (effectiveContextPolicy.allowExternalTools === false && EXTERNAL_TOOL_NAMES.has(toolName)) continue
+    if (effectiveContextPolicy.allowedTools.length && !effectiveContextPolicy.allowedTools.includes(toolName)) continue
+    tools = ensureToolDefinition(tools, toolName)
+  }
   const allowedToolNames = new Set(tools.map(item => item.function && item.function.name).filter(Boolean))
   const config = await loadConfig()
   const roots = channel === 'dashboard' ? await getAgentPathAllowedRoots() : []
@@ -261,10 +291,12 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
   let toolCount = 0
   for (const item of Array.isArray(preExecuteTools) ? preExecuteTools : []) {
     if (!item || !item.name) continue
-    if (!isToolEnabled(channel, item.name)) {
+    if (!isToolEnabled(channel, item.name) || !allowedToolNames.has(item.name)) {
       toolResults.push({
         name: item.name,
-        result: `工具 '${item.name}' 当前渠道未启用，拒绝预执行。请在 Dashboard 的 Agent 工具开关里启用 ${item.name}。`,
+        result: !isToolEnabled(channel, item.name)
+          ? `工具 '${item.name}' 当前渠道未启用，拒绝预执行。请在 Dashboard 的 Agent 工具开关里启用 ${item.name}。`
+          : `工具 '${item.name}' 被当前任务策略禁止，拒绝预执行。`,
       })
       continue
     }
@@ -275,7 +307,7 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
       content: null,
       tool_calls: [{ id: call.id, type: call.type, function: call.function }],
     })
-    const outcome = await executeAgentToolCall({ tc: call, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, bot })
+    const outcome = await executeAgentToolCall({ tc: call, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, bot, isAdmin })
     toolCount = outcome.toolCount
     if (outcome.status === 'pending') {
       recordAgentSession({ channel, channelKey, userId, userName, userMessage, reply: outcome.reply, toolCalls: toolCount, pendingId: outcome.pendingId })
@@ -284,13 +316,13 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
     toolResults.push({ name: call.function.name, result: String(outcome.result || '').slice(0, 8000) })
     messages.push({ role: 'tool', tool_call_id: call.id, content: await externalizeToolResult(outcome.result, call.function.name) })
   }
-  const agentResult = await continueAgent({ messages, config, tools, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, toolResults, onProgress, bot, enableThinking })
+  const agentResult = await continueAgent({ messages, config, tools, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, toolResults, onProgress, bot, enableThinking, isAdmin })
   onAgentReplyComplete({ userId, channel, messages }).catch(e => console.warn('[agent-engine] onAgentReplyComplete error:', e.message || e))
   return agentResult
 }
 
-async function resumePending({ channelKey, userId, channel = 'qq', expectedId = '', onProgress, bot }) {
-  const executed = await pending.executePendingTool(channelKey, userId, channel, expectedId)
+async function resumePending({ channelKey, userId, channel = 'qq', expectedId = '', onProgress, bot, isAdmin = false }) {
+  const executed = await pending.executePendingTool(channelKey, userId, channel, expectedId, { bot, isAdmin })
   if (!executed.pending) return executed
   const p = executed.pending
   const config = await loadConfig()
@@ -316,7 +348,8 @@ async function resumePending({ channelKey, userId, channel = 'qq', expectedId = 
     toolResults: [{ name: p.toolName, result: String(executed.result || executed.message || '').slice(0, 8000) }],
     onProgress,
     bot,
+    isAdmin: channel === 'dashboard' || !!isAdmin,
   })
 }
 
-module.exports = { run: runAgent, resumePending }
+module.exports = { run: runAgent, resumePending, normalizeContextPolicy, applyContextPolicyToTools }

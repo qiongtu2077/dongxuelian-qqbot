@@ -87,7 +87,7 @@ function listPendingTools() {
   }))
 }
 
-async function executePendingTool(channelKey, userId, channel = 'unknown', expectedId = '') {
+async function executePendingTool(channelKey, userId, channel = 'unknown', expectedId = '', context = {}) {
   const p = getPendingTool(channelKey, userId)
   if (!p) return { ok: false, status: 404, message: '没有待确认工具' }
   if (expectedId && p.id !== expectedId) return { ok: false, status: 404, message: '没有匹配的待确认工具' }
@@ -101,12 +101,21 @@ async function executePendingTool(channelKey, userId, channel = 'unknown', expec
 
   clearPendingTool(channelKey, userId)
   const registry = require('./tools/registry')
-  const result = await registry.executeTool(p.toolName, p.args || {}, { channel, channelKey, userId })
+  const resume = p.resume || {}
+  const result = await registry.executeTool(p.toolName, p.args || {}, {
+    channel,
+    channelKey,
+    userId,
+    userName: resume.userName || context.userName || '',
+    userMessage: resume.userMessage || context.userMessage || '',
+    bot: context.bot,
+    isAdmin: !!context.isAdmin,
+  })
   return { ok: result.ok, pending: p, toolName: p.toolName, result: result.text, error: result.error || '', message: result.ok ? '' : result.text }
 }
 
-async function confirmPendingTool(channelKey, userId, channel = 'unknown', expectedId = '') {
-  const executed = await executePendingTool(channelKey, userId, channel, expectedId)
+async function confirmPendingTool(channelKey, userId, channel = 'unknown', expectedId = '', context = {}) {
+  const executed = await executePendingTool(channelKey, userId, channel, expectedId, context)
   if (!executed.ok && !executed.pending) return executed
   const { recordCall } = require('./stats')
   if (executed.ok) recordCall(executed.toolName, channel)

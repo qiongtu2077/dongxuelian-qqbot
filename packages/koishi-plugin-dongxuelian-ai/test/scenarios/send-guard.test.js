@@ -69,6 +69,29 @@ async function withRetryDelay(value, fn) {
 async function run(t) {
   t.section('scenario: send guard platform mute and rate limit')
 
+  const safeSend = require('../../lib/safe-send')
+  t.check('scenario safe-send module exports moved send helpers', typeof safeSend.safeSendReply === 'function' && typeof safeSend.safeSendRepeat === 'function' && typeof safeSend.safeSendRareVoice === 'function')
+
+  const freshnessSent = []
+  const freshnessLogs = []
+  await safeSend.safeSendReply({
+    logger() {
+      return {
+        info: msg => freshnessLogs.push(String(msg)),
+        warn: msg => freshnessLogs.push(String(msg)),
+        error: msg => freshnessLogs.push(String(msg)),
+      }
+    },
+  }, {
+    isDirect: true,
+    content: '',
+    async send(message) {
+      freshnessSent.push(String(message))
+      return message
+    },
+  }, 'stale-random-direct-send', true, null, { randomFreshness: { channelKey: 'freshness-fixture' } }, () => false)
+  t.check('scenario safe-send freshness checker can skip stale random reply', freshnessSent.length === 0 && freshnessLogs.some(msg => msg.includes('random reply stale skipped')), JSON.stringify({ freshnessSent, freshnessLogs }))
+
   const botMuted = await runGuardCase(replyQueue('should-not-send'), (session) => {
     session.bot.internal.getGroupMemberInfo = async () => ({ shut_up_timestamp: Math.floor(Date.now() / 1000) + 60 })
     session.bot.internal.getGroupInfo = async () => ({ group_all_shut: false })
@@ -111,6 +134,16 @@ async function run(t) {
   }, (session, harness) => harness.logs.some(log => /platform muted/.test(log.msg)))
   t.checkEqual('scenario send guard mute error does not send fallback notice', mutedError.sent.length, 0)
   t.check('scenario send guard mute error does not notify admins as rate limit', !(mutedError.internalCalls || []).some(call => call.method === 'sendPrivateMsg'), JSON.stringify(mutedError.internalCalls))
+
+  const notifiedRateLimit = await withRetryDelay(0, () => runGuardCase(replyQueue('rate limit admin notify'), (session) => {
+    session.send = async () => {
+      const error = new Error('retcode: 1200 risk control')
+      error.retcode = 1200
+      error.sentParts = 1
+      throw error
+    }
+  }, (session, harness) => harness.logs.some(log => /restricted for 1 hour/.test(log.msg))))
+  t.check('scenario safe-send rate limit notifies admins after split', (notifiedRateLimit.internalCalls || []).some(call => call.method === 'sendPrivateMsg' && String(call.userId) === '100000000'), JSON.stringify(notifiedRateLimit.internalCalls))
 }
 
 module.exports = { run }
