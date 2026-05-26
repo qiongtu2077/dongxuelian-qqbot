@@ -25,11 +25,11 @@ const KoishiSession = satoriCore.Session
 const KoishiBot = satoriCore.Bot
 const {
   installSessionCompatibility,
-} = require('./session-compat') // Koishi/Satori Session 兼容补丁
+} = require('./lifecycle/session-compat') // Koishi/Satori Session 兼容补丁
 const {
   createBotResolver,
   withCurrentBot,
-} = require('./bot-resolver') // 当前 bot 解析与异步 session 注入
+} = require('./lifecycle/bot-resolver') // 当前 bot 解析与异步 session 注入
 const {
   enqueueForChannel,
 } = require('./channel-task-queue') // 同频道任务串行队列
@@ -86,7 +86,7 @@ const {
 const {
   loadConfig, resetConfigCache,   // 运行时配置加载/刷新
   getThinkingEnabled, setThinkingEnabled, // thinking 模式开关
-} = require('./runtime-config')
+} = require('./core/runtime-config')
 const {
   randomWhitelistCache,
   loadRuntimeSettings,
@@ -131,7 +131,7 @@ const {
   readJsonFile,             // 文件 IO 工具
   shouldTriggerRandom, calculateWillFactor, // 随机触发判断 + 意愿因子计算
 } = require('./utils')
-const { logDebug } = require('./logging-config') // 调试日志输出
+const { logDebug } = require('./core/logging-config') // 调试日志输出
 const { shouldTriggerRareVoice } = require('./rare-voice') // 罕见触发固定语音
 const { buildPrivateSearchContext } = require('./search-context')
 const agentEngine = require('./agent/engine') // Agent 执行引擎

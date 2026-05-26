@@ -37,7 +37,7 @@ const {
   trimReply,
 } = require('./utils')
 const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply-guard')
-const { logDebug } = require('./logging-config')
+const { logDebug } = require('./core/logging-config')
 const {
   handled,
   notHandled,

@@ -14,7 +14,7 @@ const {
   todayCst,
   todayCstMinusDays,
 } = require('../utils')
-const { logDebug } = require('../logging-config')
+const { logDebug } = require('../core/logging-config')
 const { handled, notHandled } = require('./command-result')
 
 const EMOTION_IMAGE_TEXT_LIMIT = 1500

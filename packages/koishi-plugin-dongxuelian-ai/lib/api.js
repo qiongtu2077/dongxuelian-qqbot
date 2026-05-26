@@ -5,7 +5,7 @@
  */
 const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE, MIMORIUM_KEY_FILE, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE, DATA_DIR } = require('./constants')
 const { readTextFile, isDashScopeConfig, todayCst } = require('./utils')
-const { resolveOneBotWsUrl } = require('./onebot-endpoint')
+const { resolveOneBotWsUrl } = require('./core/onebot-endpoint')
 const { validatePublicHttpUrl, resolveAndValidateHostname } = require('./agent/fetch-reader')
 const path = require('path')
 const fs = require('fs')

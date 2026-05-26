@@ -685,3 +685,66 @@ git diff --check
 4. 至少 `core/` 与 `lifecycle/` 稳定后，再开始 Phase 2 TypeScript 类型护栏。
 
 这条路线最符合当前仓库状态：先把真实目录边界立起来，再让类型系统服务这些边界。
+
+## 执行记录：2026-05-26 Phase 1 第一批 core 低耦合模块
+
+- 范围：完成 `onebot-endpoint.js`、`frontmatter.js`、`redactor.js` 的第一批目录分化，只做结构等价迁移，不改运行时技术栈，不做 TS，不改 `main`。
+- 新路径：
+  - `packages/koishi-plugin-dongxuelian-ai/lib/core/onebot-endpoint.js`
+  - `packages/koishi-plugin-dongxuelian-ai/lib/core/frontmatter.js`
+  - `packages/koishi-plugin-dongxuelian-ai/lib/core/redactor.js`
+- shim：旧路径 `lib/onebot-endpoint.js`、`lib/frontmatter.js`、`lib/redactor.js` 均保留为最小 `module.exports = require('./core/...')`，用于兼容未迁走的旧引用。
+- 更新消费者：
+  - `lib/api.js`
+  - `lib/persona.js`
+  - `lib/persona-schema.js`
+  - `lib/chat.js`
+  - `lib/conversation.js`
+  - `lib/group-scene-index.js`
+  - `lib/mcp/local-server.js`
+  - `lib/agent/skills/pool-service.js`
+  - `lib/agent/tools/send-file-to-user.js`
+  - `lib/agent/tools/query-logs.js`
+  - `lib/agent/tools/shell.js`
+- cascade 更新：`test/cascade-test.js` 的 `modPaths` 改为加载 `lib/core/frontmatter`、`lib/core/onebot-endpoint`、`lib/core/redactor`；新增三者导出守卫，其中 `DEFAULT_ONEBOT_WS_URL` 按字符串常量单独断言。
+- 验证：
+  - `node -c` 已覆盖新增 core 文件、旧 shim、更新过的消费者和 `test/cascade-test.js`。
+  - `npm run test:quick` 通过，结果 `passed: 2554`、`failed: 0`、`skipped: 1`；skip 为 Windows 环境下 `setup.sh` shell 语法检查既有跳过。
+  - `npm run test:scenario` 通过，结果 `passed: 964`、`failed: 0`、`skipped: 2`。
+  - `npm run check` 通过，结果 `[syntax] checked 214 files`。
+  - `git diff --check` 通过。
+- 测试四问：
+  1. 复现了哪条真实失败输入：本批是结构等价迁移，不针对单一失败输入；覆盖了 frontmatter 解析、OneBot endpoint 读取、日志/Agent/聊天链路脱敏、chat/conversation/scene/Agent 工具加载等链路。
+  2. 断言了哪个失败现象：断言新路径模块可直接 require，旧消费者迁移后仍可加载，frontmatter/persona 解析、OneBot 文件发送工具、MCP 日志脱敏、chat/conversation 场景链路不会因路径迁移断裂。
+  3. 哪些依赖被 mock：`test:scenario` 继续使用既有 fake Koishi session、mocked HTTP、mocked OneBot/工具调用等测试替身；本批未新增 mock。
+  4. 仍未覆盖哪些真实链路：未覆盖真实 QQ/NapCat/OneBot WebSocket、真实服务器日志、真实部署环境和外部模型 API 调用。
+- 风险：旧 shim 仍存在，后续迁移中要继续减少顶层扁平文件，同时避免过早删除 shim 影响外部或遗漏引用。
+- 下一批：进入 `core/logging-config.js`、`core/runtime-config.js`，先重新扫描消费者数量，再按同样流程迁移。
+
+## 执行记录：2026-05-26 Phase 1 第三批 lifecycle 兼容层
+
+- 范围：完成 `session-compat.js`、`bot-resolver.js` 的第三批目录分化，迁入 `lib/lifecycle/`，保留旧路径 shim，不改运行时技术栈，不引入 TS。
+- 新路径：
+  - `packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/session-compat.js`
+  - `packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/bot-resolver.js`
+- shim：旧路径 `lib/session-compat.js`、`lib/bot-resolver.js` 仅保留最小 `module.exports = require('./lifecycle/...')`，用于兼容未迁走的旧引用。
+- 更新消费者：
+  - `lib/index.js`
+  - `lib/chat-result-flow.js`
+  - `lib/safe-send.js`
+- cascade 更新：
+  - `test/cascade-test.js` 的 `modPaths`、导出守卫、重复扫描清单、语法检查清单都切到 `lib/lifecycle/session-compat` 和 `lib/lifecycle/bot-resolver`。
+  - 同时保留旧 shim 的导出守卫，确认兼容路径仍然可加载。
+- 验证：
+  - `node -c` 已覆盖新增 lifecycle 文件、旧 shim、更新过的消费者和 `test/cascade-test.js`。
+  - `npm run test:quick` 通过，结果 `passed: 2581`、`failed: 0`、`skipped: 1`。
+  - `npm run test:scenario` 通过，结果 `passed: 964`、`failed: 0`、`skipped: 2`。
+  - `npm run check` 通过，结果 `[syntax] checked 218 files`。
+  - `git diff --check` 通过。
+- 测试四问：
+  1. 复现了哪条真实失败输入：本批是结构等价迁移，不针对单一失败输入；覆盖了 session 兼容补丁、当前 bot 解析、chat 结果转述、safe-send 送达链路的路径迁移。
+  2. 断言了哪个失败现象：断言新路径模块可直接 require，旧 shim 仍能 forward，index/chat-result-flow/safe-send 不会因路径迁移断裂。
+  3. 哪些依赖被 mock：`test:scenario` 继续使用既有 fake Koishi session、mocked HTTP、mocked OneBot/工具调用等测试替身；本批未新增 mock。
+  4. 仍未覆盖哪些真实链路：未覆盖真实 QQ/NapCat/OneBot WebSocket、真实服务器日志、真实部署环境和外部模型 API 调用。
+- 风险：旧 shim 仍存在，后续目录迁移要继续统一新路径入口，避免双路径长期并存。
+- 下一批：进入 `core/logging-config.js`、`core/runtime-config.js`，先重新扫描消费者数量，再按同样流程迁移。

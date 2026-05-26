@@ -530,7 +530,9 @@ async function main() {
   section('2. module loading and exports')
   const modPaths = {
     constants: path.join(LIB, 'constants'),
-    frontmatter: path.join(LIB, 'frontmatter'),
+    frontmatter: path.join(LIB, 'core', 'frontmatter'),
+    onebotEndpoint: path.join(LIB, 'core', 'onebot-endpoint'),
+    redactor: path.join(LIB, 'core', 'redactor'),
     utils: path.join(LIB, 'utils'),
     persona: path.join(LIB, 'persona'),
     personaSchema: path.join(LIB, 'persona-schema'),
@@ -552,8 +554,10 @@ async function main() {
     groupSceneIndex: path.join(LIB, 'group-scene-index'),
     randomReplyMode: path.join(LIB, 'random-reply-mode'),
     randomPersonaRisk: path.join(LIB, 'random-persona-risk'),
-    sessionCompat: path.join(LIB, 'session-compat'),
-    botResolver: path.join(LIB, 'bot-resolver'),
+    sessionCompat: path.join(LIB, 'lifecycle', 'session-compat'),
+    sessionCompatShim: path.join(LIB, 'session-compat'),
+    botResolver: path.join(LIB, 'lifecycle', 'bot-resolver'),
+    botResolverShim: path.join(LIB, 'bot-resolver'),
     channelTaskQueue: path.join(LIB, 'channel-task-queue'),
     eventDump: path.join(LIB, 'event-dump'),
     startupSchedulers: path.join(LIB, 'startup-schedulers'),
@@ -596,7 +600,8 @@ async function main() {
     agentRetellGuard: path.join(LIB, 'agent-retell-guard'),
     personaFallback: path.join(LIB, 'persona-fallback'),
     jailbreakRuleset: path.join(LIB, 'rulesets', 'jailbreak'),
-    runtimeConfig: path.join(LIB, 'runtime-config'),
+    loggingConfig: path.join(LIB, 'core', 'logging-config'),
+    runtimeConfig: path.join(LIB, 'core', 'runtime-config'),
     reply: path.join(LIB, 'reply'),
     replyGuard: path.join(LIB, 'reply-guard'),
     repeat: path.join(LIB, 'repeat'),
@@ -700,6 +705,15 @@ async function main() {
   const index = modules.index
 
   const expectedExports = {
+    frontmatter: [
+      'normalizeFrontmatterSource', 'parseFrontmatterLines', 'parseFrontmatterDocument',
+    ],
+    onebotEndpoint: [
+      'resolveOneBotWsUrl',
+    ],
+    redactor: [
+      'redactSensitiveText',
+    ],
     utils: [
       'splitSentences', 'sanitizeUserName', 'sanitizeUserInput', 'isJailbreakAttempt',
       'isHostileInput', 'isRareProvocation', 'isWideRareProvocation', 'getSenderUserId', 'hasAdminPermission',
@@ -839,7 +853,15 @@ async function main() {
       'patchStripNickname', 'patchBuildStripped', 'patchInstallAccessors',
       'patchEnsureSession', 'installSessionCompatibility',
     ],
+    sessionCompatShim: [
+      'patchElementText', 'patchElementsToText', 'patchElementId',
+      'patchStripNickname', 'patchBuildStripped', 'patchInstallAccessors',
+      'patchEnsureSession', 'installSessionCompatibility',
+    ],
     botResolver: [
+      'resolveCurrentBot', 'createBotResolver', 'withCurrentBot',
+    ],
+    botResolverShim: [
       'resolveCurrentBot', 'createBotResolver', 'withCurrentBot',
     ],
     channelTaskQueue: [
@@ -993,6 +1015,10 @@ async function main() {
     ],
     jailbreakRuleset: [
       'combinePatterns',
+    ],
+    loggingConfig: [
+      'normalizeDebugLogConfig', 'readDebugLogConfig', 'writeDebugLogConfig',
+      'isDebugLogEnabled', 'logDebug',
     ],
     runtimeConfig: [
       'loadConfig', 'resetConfigCache', 'getThinkingArgs',
@@ -1204,6 +1230,7 @@ async function main() {
       check(`${moduleName}.${name} exported`, typeof target[name] === 'function')
     }
   }
+  check('onebotEndpoint.DEFAULT_ONEBOT_WS_URL exported', typeof modules.onebotEndpoint.DEFAULT_ONEBOT_WS_URL === 'string' && modules.onebotEndpoint.DEFAULT_ONEBOT_WS_URL.startsWith('ws://127.0.0.1:'))
   check('randomState.channelMissCount exported as Map', modules.randomState.channelMissCount instanceof Map)
   check('agentSkillScanner.SCAN_RULES exported', Array.isArray(modules.agentSkillScanner.SCAN_RULES) && modules.agentSkillScanner.SCAN_RULES.length > 0)
   check('expressionLearner.EXPRESSION_LEARNER_VERSION exported', typeof modules.expressionLearner.EXPRESSION_LEARNER_VERSION === 'number')
@@ -1318,7 +1345,9 @@ async function main() {
     path.join(LIB, 'random-reply-mode.js'),
     path.join(LIB, 'random-persona-risk.js'),
     path.join(LIB, 'session-compat.js'),
+    path.join(LIB, 'lifecycle', 'session-compat.js'),
     path.join(LIB, 'bot-resolver.js'),
+    path.join(LIB, 'lifecycle', 'bot-resolver.js'),
     path.join(LIB, 'channel-task-queue.js'),
     path.join(LIB, 'event-dump.js'),
     path.join(LIB, 'startup-schedulers.js'),
@@ -1347,7 +1376,8 @@ async function main() {
     path.join(LIB, 'agent-auto-route-flow.js'),
     path.join(LIB, 'agent-chat-bridge.js'),
     path.join(LIB, 'rulesets', 'jailbreak.js'),
-    path.join(LIB, 'runtime-config.js'),
+    path.join(LIB, 'core', 'logging-config.js'),
+    path.join(LIB, 'core', 'runtime-config.js'),
     path.join(LIB, 'reply.js'),
     path.join(LIB, 'reply-guard.js'),
     path.join(LIB, 'repeat.js'),
@@ -1430,7 +1460,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'skills-loader.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'sticker-shadow.js', 'diagnostics.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'group-scene-index.js', 'random-reply-mode.js', 'random-persona-risk.js', 'session-compat.js', 'bot-resolver.js', 'channel-task-queue.js', 'event-dump.js', 'startup-schedulers.js', 'plugin-lifecycle.js', 'message-segment.js', 'incoming-file.js', 'incoming-message-flow.js', 'shared-record-text.js', 'file-quick-read.js', 'runtime-settings.js', 'user-blacklist.js', 'safe-send.js', 'random-state.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'chat-tool-flow.js', 'chat-final-output-flow.js', 'chat-jailbreak-flow.js', 'chat-topic-switch.js', 'chat-agent-retell-flow.js', 'chat-result-flow.js', 'chat-send-flow.js', 'agent-auto-route-flow.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js', 'mcp/local-server.js']
+  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'skills-loader.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'sticker-shadow.js', 'diagnostics.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'group-scene-index.js', 'random-reply-mode.js', 'random-persona-risk.js', 'session-compat.js', 'lifecycle/session-compat.js', 'bot-resolver.js', 'lifecycle/bot-resolver.js', 'channel-task-queue.js', 'event-dump.js', 'startup-schedulers.js', 'plugin-lifecycle.js', 'message-segment.js', 'incoming-file.js', 'incoming-message-flow.js', 'shared-record-text.js', 'file-quick-read.js', 'runtime-settings.js', 'user-blacklist.js', 'safe-send.js', 'random-state.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'chat-tool-flow.js', 'chat-final-output-flow.js', 'chat-jailbreak-flow.js', 'chat-topic-switch.js', 'chat-agent-retell-flow.js', 'chat-result-flow.js', 'chat-send-flow.js', 'agent-auto-route-flow.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'core/logging-config.js', 'core/runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js', 'mcp/local-server.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -2172,11 +2202,11 @@ async function main() {
   const agentTmp = fs.mkdtempSync(path.join(agentTmpRoot, 'cascade-agent-'))
   try {
     process.env.DONGXUELIAN_AI_DATA_DIR = agentTmp
-    for (const rel of ['constants', 'runtime-config', 'api', 'agent/config', 'agent/engine', 'agent/workspace-context', 'agent/path-guard', 'agent/skills', 'agent/http-search', 'chat-tools', 'agent/tools/registry', 'agent/tools/read-agent-skill', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/pending', 'agent/safety', 'agent/stats']) {
+    for (const rel of ['constants', 'core/runtime-config', 'api', 'agent/config', 'agent/engine', 'agent/workspace-context', 'agent/path-guard', 'agent/skills', 'agent/http-search', 'chat-tools', 'agent/tools/registry', 'agent/tools/read-agent-skill', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/pending', 'agent/safety', 'agent/stats']) {
       delete require.cache[require.resolve(path.join(LIB, rel))]
     }
     const isolatedConstants = require(path.join(LIB, 'constants'))
-    const isolatedRuntimeConfig = require(path.join(LIB, 'runtime-config'))
+    const isolatedRuntimeConfig = require(path.join(LIB, 'core', 'runtime-config'))
     const isolatedBrowserAction = require(path.join(LIB, 'agent', 'tools', 'browser-action'))
     const originalBrowserActionExecute = isolatedBrowserAction.execute
     const browserSearchCalls = []
@@ -2730,7 +2760,7 @@ async function main() {
   } finally {
     if (originalAgentDataDir) process.env.DONGXUELIAN_AI_DATA_DIR = originalAgentDataDir
     else delete process.env.DONGXUELIAN_AI_DATA_DIR
-    for (const rel of ['constants', 'runtime-config', 'agent/config', 'agent/path-guard', 'agent/tools/registry', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/pending', 'agent/safety', 'agent/stats']) {
+    for (const rel of ['constants', 'core/runtime-config', 'agent/config', 'agent/path-guard', 'agent/tools/registry', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/pending', 'agent/safety', 'agent/stats']) {
       delete require.cache[require.resolve(path.join(LIB, rel))]
     }
     try { fs.rmSync(agentTmp, { recursive: true, force: true }) } catch {}
@@ -3743,7 +3773,10 @@ async function main() {
 
   section('15. cross-file regression guards')
   const indexSrc = read(path.join(LIB, 'index.js'))
-  const botResolverSrc = read(path.join(LIB, 'bot-resolver.js'))
+  const sessionCompatSrc = read(path.join(LIB, 'lifecycle', 'session-compat.js'))
+  const sessionCompatShimSrc = read(path.join(LIB, 'session-compat.js'))
+  const botResolverSrc = read(path.join(LIB, 'lifecycle', 'bot-resolver.js'))
+  const botResolverShimSrc = read(path.join(LIB, 'bot-resolver.js'))
   const startupSchedulersSrc = read(path.join(LIB, 'startup-schedulers.js'))
   const pluginLifecycleSrc = read(path.join(LIB, 'plugin-lifecycle.js'))
   const messageSegmentSrc = read(path.join(LIB, 'message-segment.js'))
@@ -3908,7 +3941,8 @@ async function main() {
   check('chat tool hint uses image-store memory snapshot', chatToolsSrc.includes('getRecentImagesCached') && !/getChatToolSystemHint[\s\S]*getRecentImages\(channelKey/.test(chatToolsSrc))
   const unlockTimerBody = (safeSendSrc.match(/setTimeout\(function\(\) \{[\s\S]*?30 \* 60 \* 1000\)/) || [''])[0]
   check('safe-send delayed unlock notification resolves current bot', unlockTimerBody.includes('const bot = getBot()') && !unlockTimerBody.includes('session?.bot') && !unlockTimerBody.includes('session.bot'))
-  check('queued agent paths resolve current bot', indexSrc.includes("require('./bot-resolver')") && botResolverSrc.includes('function createBotResolver') && botResolverSrc.includes('function withCurrentBot') && indexSrc.includes('const resolveBot = createBotResolver(ctx, session)') && indexSrc.includes('resolveBot,') && chatResultFlowSrc.includes('createBotResolver(ctx, session)') && chatResultFlowSrc.includes('bot: getBot()') && agentAutoRouteFlowSrc.includes('bot: resolveBot()'))
+  check('session compatibility shim forwards to lifecycle', sessionCompatSrc.includes('function patchEnsureSession') && sessionCompatShimSrc.includes("module.exports = require('./lifecycle/session-compat')") && indexSrc.includes("require('./lifecycle/session-compat')"))
+  check('queued agent paths resolve current bot', indexSrc.includes("require('./lifecycle/bot-resolver')") && botResolverSrc.includes('function createBotResolver') && botResolverSrc.includes('function withCurrentBot') && botResolverShimSrc.includes("module.exports = require('./lifecycle/bot-resolver')") && indexSrc.includes('const resolveBot = createBotResolver(ctx, session)') && indexSrc.includes('resolveBot,') && chatResultFlowSrc.includes("require('./lifecycle/bot-resolver')") && chatResultFlowSrc.includes('createBotResolver(ctx, session)') && chatResultFlowSrc.includes('bot: getBot()') && agentAutoRouteFlowSrc.includes('bot: resolveBot()'))
   check('skill/persona loaders skip oversized markdown', skillsLoaderSrc.includes('MAX_SKILL_FILE_BYTES') && personaSrc.includes('MAX_PERSONA_SKILL_BYTES') && agentPersonaSrc.includes('MAX_AGENT_PERSONA_FILE_BYTES'))
   check('agent config cron memory files have size guards', agentConfigSrc.includes('MAX_TOOL_CONFIG_BYTES') && agentCronSrc.includes('MAX_CRON_FILE_BYTES') && agentMemorySrc.includes('MAX_MEMORY_FILE_BYTES'))
   const libJsFiles = []

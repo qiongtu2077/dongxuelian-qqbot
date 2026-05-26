@@ -12,7 +12,7 @@ const {
   RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_RAMP,
 } = require('./constants')
 const { readJsonFile, writeJsonFile, formatPercent, hasAdminPermission } = require('./utils')
-const { isAdminUserId } = require('./runtime-config')
+const { isAdminUserId } = require('./core/runtime-config')
 const {
   randomWhitelistCache,
   randomRateCache,

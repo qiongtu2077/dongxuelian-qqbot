@@ -36,7 +36,7 @@ const PERSONA_SCHEMA_KNOWN_FIELDS = Object.freeze([
 const PERSONA_SCHEMA_ALLOWED_TYPES = Object.freeze(['core', 'mode', 'persona', 'lore'])
 const PERSONA_SCHEMA_FIELD_SET = new Set(PERSONA_SCHEMA_KNOWN_FIELDS)
 const PERSONA_SCHEMA_NSFW_VALUES = new Set(['none', 'off', 'soft', 'adult', 'strict', 'reply'])
-const { parseFrontmatterDocument } = require('./frontmatter')
+const { parseFrontmatterDocument } = require('./core/frontmatter')
 
 function normalizePersonaSchemaScalar(value = '') {
   const text = String(value ?? '').trim()

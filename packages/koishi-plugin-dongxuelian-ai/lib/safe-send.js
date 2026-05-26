@@ -15,8 +15,8 @@ const {
   clearPlatformMute,
   checkPlatformMuteStatus,
 } = require('./send-guard')
-const { getAdminUserIds } = require('./runtime-config')
-const { createBotResolver } = require('./bot-resolver')
+const { getAdminUserIds } = require('./core/runtime-config')
+const { createBotResolver } = require('./lifecycle/bot-resolver')
 const { hasAdminPermission, isDirectAtBot } = require('./utils')
 
 const sendFailState = {

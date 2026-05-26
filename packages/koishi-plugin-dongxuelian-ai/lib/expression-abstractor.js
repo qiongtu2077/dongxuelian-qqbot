@@ -13,7 +13,7 @@ const path = require('path')
 const { DATA_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE,
   PROVIDERS, GLM_KEY_FILE, DASHSCOPE_KEY_FILE } = require('./constants')
 const { readTextFile, readJsonFile } = require('./utils')
-const { loadConfig } = require('./runtime-config')
+const { loadConfig } = require('./core/runtime-config')
 const { filterExpressionLearningMessages } = require('./expression-learner')
 const { appendExpressionCandidate, expressionPoolSafeChannelKey,
   EXPRESSION_POOL_MAX_TEXT_LEN } = require('./expression-pool-store')

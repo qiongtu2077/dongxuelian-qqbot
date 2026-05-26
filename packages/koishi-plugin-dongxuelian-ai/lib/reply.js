@@ -9,7 +9,7 @@ const { h } = require('koishi')
 const { STICKER_DIR, THROTTLE_CONFIG_FILE } = require('./constants')
 const { getChannelKey, getConversationKey, saveSharedChannelTurn } = require('./conversation')
 const { splitReplyForQQBubbles, sleep, getRandomDelayMs, readJsonFile, sanitizeUserName } = require('./utils')
-const { logDebug } = require('./logging-config')
+const { logDebug } = require('./core/logging-config')
 
 const STICKER_GLOBAL_COOLDOWN_MS = 30000
 const STICKER_FILE_COOLDOWN_MS = 120000

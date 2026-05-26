@@ -11,7 +11,7 @@ const {
 } = require('./constants')
 const { requestChatCompletions } = require('./api')
 const { getRecentAssistantReplies } = require('./conversation')
-const { loadConfig } = require('./runtime-config')
+const { loadConfig } = require('./core/runtime-config')
 const { normalizeText } = require('./message-reader')
 const {
   pickJailbreakFallbackReply,

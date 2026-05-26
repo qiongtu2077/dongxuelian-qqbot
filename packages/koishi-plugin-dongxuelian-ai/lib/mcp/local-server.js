@@ -9,7 +9,7 @@
  */
 const { spawn } = require('child_process')
 const path = require('path')
-const { redactSensitiveText } = require('../redactor')
+const { redactSensitiveText } = require('../core/redactor')
 const agentConfig = require('../agent/config')
 const registry = require('../agent/tools/registry')
 const sessions = require('../agent/sessions')

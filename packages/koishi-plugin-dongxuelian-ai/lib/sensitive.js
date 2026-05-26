@@ -13,7 +13,7 @@ const {
   readTextFile,
   readJsonFile,
 } = require('./utils')
-const { logDebug } = require('./logging-config')
+const { logDebug } = require('./core/logging-config')
 const {
   channelSharedCache,
   pendingSensitiveAlert,

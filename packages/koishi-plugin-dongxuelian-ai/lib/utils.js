@@ -15,7 +15,7 @@ const {
   RARE_PROVOCATION_RE, WIDE_RARE_PROVOKE_RE, HOSTILE_INPUT_RE, HOSTILE_SINGLE_TOKENS,
   PROVIDERS, MAX_OUTPUT_CHARS_FRIENDLY,
 } = require('./constants')
-const { isAdminUserId } = require('./runtime-config')
+const { isAdminUserId } = require('./core/runtime-config')
 const MAX_TEXT_FILE_BYTES = parseUtilsPositiveInt(process.env.DONGXUELIAN_UTIL_TEXT_MAX_BYTES, 256 * 1024, 4 * 1024, 4 * 1024 * 1024)
 const MAX_JSON_FILE_BYTES = parseUtilsPositiveInt(process.env.DONGXUELIAN_UTIL_JSON_MAX_BYTES, 512 * 1024, 4 * 1024, 8 * 1024 * 1024)
 

@@ -11,7 +11,7 @@ const { SKILL_POOL_DIR, validateSkillName, ensureDir, atomicWriteJson, readJsonS
 const { scanSkillDirectory } = require('./scanner')
 const { DATA_DIR } = require('../../constants')
 const { ensureRuntimeSkillSeeds } = require('../../skill-seeds')
-const { parseFrontmatterDocument } = require('../../frontmatter')
+const { parseFrontmatterDocument } = require('../../core/frontmatter')
 
 const POOL_MANIFEST_FILE = path.join(SKILL_POOL_DIR, 'manifest.json')
 const BUILTIN_SKILLS_DIR = path.join(DATA_DIR, 'ai-skills', 'docs')

@@ -105,15 +105,15 @@ const {
 const {
   retellAgentResultForChat,
 } = require('./chat-agent-retell-flow')
-const { redactSensitiveText } = require('./redactor')
+const { redactSensitiveText } = require('./core/redactor')
 const {
   loadConfig,          // 加载运行时配置（API key/model/provider）
   resetConfigCache,    // 强制刷新配置缓存
   getThinkingArgs,     // 获取 thinking/推理模式参数
   getThinkingEnabled,  // 查询 thinking 开关状态
   setThinkingEnabled,  // 设置 thinking 开关
-} = require('./runtime-config')
-const { isDebugLogEnabled, logDebug } = require('./logging-config') // 调试日志开关 + 输出
+} = require('./core/runtime-config')
+const { isDebugLogEnabled, logDebug } = require('./core/logging-config') // 调试日志开关 + 输出
 const {
   loadSkills,
   loadSkillsContentCache,

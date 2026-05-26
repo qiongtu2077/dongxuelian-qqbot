@@ -5,7 +5,7 @@
  * 状态: 无模块级状态（每次 run() 新建循环局部变量）。
  */
 const { requestChatCompletions } = require('../api')
-const { loadConfig } = require('../runtime-config')
+const { loadConfig } = require('../core/runtime-config')
 const { getToolDefinitions, executeTool, toolRegistry } = require('./tools/registry')
 const { estimateTokens, externalizeToolResult, compactWithLLM } = require('./context')
 const { recordCall } = require('./stats')

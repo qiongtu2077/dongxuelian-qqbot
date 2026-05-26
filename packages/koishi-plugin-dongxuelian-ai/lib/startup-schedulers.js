@@ -9,7 +9,7 @@ const {
   cleanupDailyStatsFiles,
 } = require('./conversation')
 const { todayCst } = require('./utils')
-const { logDebug } = require('./logging-config')
+const { logDebug } = require('./core/logging-config')
 const {
   runExpressionHarvestForAllChannels,
   formatExpressionHarvestDiagnostic,

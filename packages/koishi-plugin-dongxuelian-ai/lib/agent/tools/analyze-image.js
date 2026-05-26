@@ -3,7 +3,7 @@
  * 优先读本地缓存 → NapCat 缓存 → URL 下载 → 调视觉模型 → 写回分析结果。
  */
 const { downloadImageAsBase64, isVisionModel, requestChatCompletions } = require('../../api')
-const { loadConfig } = require('../../runtime-config')
+const { loadConfig } = require('../../core/runtime-config')
 const { markAnalyzed, getImageEntry, replaceImagePlaceholder, readCachedImage } = require('../../image-store')
 const { analyzeImageNow } = require('../../image-analyzer')
 const { isVisionBlindnessReply } = require('../../vision')

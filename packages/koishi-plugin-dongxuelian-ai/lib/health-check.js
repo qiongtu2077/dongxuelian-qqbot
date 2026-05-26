@@ -4,7 +4,7 @@
  * 边界: 不修改 conversation，不修改运行时配置。只读探测。
  */
 const { PROVIDERS, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE, KEY_FILE } = require('./constants')
-const { loadConfig } = require('./runtime-config')
+const { loadConfig } = require('./core/runtime-config')
 const { requestChatCompletions } = require('./api')
 const fsp = require('fs/promises')
 

@@ -20,7 +20,7 @@ const {
 const {
   loadConfig,
   setThinkingEnabled,
-} = require('./runtime-config')
+} = require('./core/runtime-config')
 const {
   loadRuntimeSettings,
 } = require('./runtime-settings')

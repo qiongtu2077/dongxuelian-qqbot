@@ -5,7 +5,7 @@
  * 状态：不持有业务状态；随机语音概率按需从 random-voice-rate 读取。
  * ========================================================================== */
 const path = require('path')
-const { logDebug, isDebugLogEnabled } = require('./logging-config')
+const { logDebug, isDebugLogEnabled } = require('./core/logging-config')
 const {
   buildReplyTimingDiagnostic,
   formatReplyTimingDiagnostic,

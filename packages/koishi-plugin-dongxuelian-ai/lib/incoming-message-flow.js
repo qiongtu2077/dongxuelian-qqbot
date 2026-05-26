@@ -17,7 +17,7 @@ const { storeFile } = require('./file-store')
 const { checkFile, getExtension, sanitizeFileName } = require('./file-safety')
 const { cacheSmallFileBackground } = require('./incoming-file')
 const { transcribeVoice } = require('./voice')
-const { loadConfig } = require('./runtime-config')
+const { loadConfig } = require('./core/runtime-config')
 const { logStickerShadowIngestDiagnostic } = require('./diagnostics')
 
 function getIncomingUserId(session) {

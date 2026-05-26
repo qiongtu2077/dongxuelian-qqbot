@@ -6,7 +6,7 @@
  */
 const { requestChatCompletions } = require('./api')
 const { getRecentUserMessages } = require('./conversation')
-const { loadConfig } = require('./runtime-config')
+const { loadConfig } = require('./core/runtime-config')
 
 const topicSwitchLocks = new Map()
 

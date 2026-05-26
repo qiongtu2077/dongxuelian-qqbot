@@ -20,9 +20,9 @@ const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
 const { readTextFile, readJsonFile, writeJsonFile, sanitizeUserName, todayCst, todayCstMinusDays, formatShanghaiTime24h } = require('./utils')
 const { normalizeText } = require('./message-reader')
 const { requestChatCompletions } = require('./api')
-const { loadConfig } = require('./runtime-config')
+const { loadConfig } = require('./core/runtime-config')
 const { appendGroupSceneEntry } = require('./group-scene-index')
-const { redactSensitiveText } = require('./redactor')
+const { redactSensitiveText } = require('./core/redactor')
 
 let conversationCache = new Map()
 let replyFingerprintCache = new Map()

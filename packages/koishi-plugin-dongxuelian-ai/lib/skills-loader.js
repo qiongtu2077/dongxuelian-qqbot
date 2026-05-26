@@ -10,7 +10,7 @@ const {
   SKILLS_CORE_DIR, SKILLS_MODES_DIR, SKILLS_LORE_DIR,
   LORE_TRIGGER_SET, TERRA_LORE_TRIGGER_SET,
 } = require('./constants')
-const { isDebugLogEnabled } = require('./logging-config')
+const { isDebugLogEnabled } = require('./core/logging-config')
 const { ensureRuntimeSkillSeeds } = require('./skill-seeds')
 const { parsePersonaSchemaFrontmatter } = require('./persona-schema')
 

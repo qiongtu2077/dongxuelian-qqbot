@@ -6,7 +6,7 @@ const { execFile } = require('child_process')
 const os = require('os')
 const { assertExistingAgentPathInsideRoots } = require('../path-guard')
 const { checkShellCommand, summarizeShellCommand } = require('./shell-guard')
-const { redactSensitiveText } = require('../../redactor')
+const { redactSensitiveText } = require('../../core/redactor')
 
 function formatGuardError(command, guardResult) {
   const first = guardResult.violations[0] || {}

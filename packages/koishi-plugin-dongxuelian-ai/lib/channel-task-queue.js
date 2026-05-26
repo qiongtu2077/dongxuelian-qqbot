@@ -4,7 +4,7 @@
  * 边界：不注册 middleware、不发送消息、不读写 conversation；只接收调用方传入的任务函数。
  * 状态：持有频道队列 Promise 链、运行深度和等待深度 Map；dispose 时由调用方显式清理。
  * ========================================================================== */
-const { logDebug } = require('./logging-config')
+const { logDebug } = require('./core/logging-config')
 
 const channelQueues = new Map()
 const channelQueueDepth = new Map()

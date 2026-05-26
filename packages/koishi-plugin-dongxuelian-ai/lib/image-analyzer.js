@@ -5,7 +5,7 @@
  * 状态: 内存并发队列。
  */
 const { downloadImageAsBase64, callGetImage, readImageAsBase64, isVisionModel, requestChatCompletions } = require('./api')
-const { loadConfig } = require('./runtime-config')
+const { loadConfig } = require('./core/runtime-config')
 const { markAnalyzed, replaceImagePlaceholder, cacheImageFile, readCachedImage, getImageEntry } = require('./image-store')
 const { isVisionBlindnessReply } = require('./vision')
 

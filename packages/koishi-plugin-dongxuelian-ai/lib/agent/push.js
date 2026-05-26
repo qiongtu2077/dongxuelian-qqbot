@@ -176,7 +176,7 @@ async function send({ channelKey, text, bot, personalize = true, reason = 'manua
 }
 
 async function sendToAdmin({ text, bot, reason = 'admin' } = {}) {
-  const { getAdminUserIds } = require('../runtime-config')
+  const { getAdminUserIds } = require('../core/runtime-config')
   const admins = Array.from(getAdminUserIds(true))
   const results = []
   for (const id of admins) {

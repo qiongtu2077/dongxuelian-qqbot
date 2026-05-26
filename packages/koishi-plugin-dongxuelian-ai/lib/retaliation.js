@@ -3,7 +3,7 @@
  * 职责: 根据用户消息和对话历史计算反击值（0-100）。
  * 边界: 只做评分，不修改任何状态。
  */
-const { loadConfig } = require('./runtime-config')
+const { loadConfig } = require('./core/runtime-config')
 const { requestChatCompletions } = require('./api')
 
 async function calculateRetaliationScore(cleanInput, userId, channelSharedCache, channelKey) {

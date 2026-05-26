@@ -6,7 +6,7 @@
 const { callGetForwardMsg } = require('./api')
 const { summarizeForwardNodes } = require('./message-reader')
 const { getChannelKey, setLastForwardSummaryCache } = require('./conversation')
-const { logDebug } = require('./logging-config')
+const { logDebug } = require('./core/logging-config')
 
 const FORWARD_ID_RE = /(?:\[CQ:forward,id=([^,\]]+)\])|<forward\s+id="([^"]+)"\/>/
 const BLANK_NICK_CHARS_RE = /[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g

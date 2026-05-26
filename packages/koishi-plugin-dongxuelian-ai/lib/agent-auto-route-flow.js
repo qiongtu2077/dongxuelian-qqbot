@@ -7,7 +7,7 @@
 const { heuristicRoute, buildExplicitSearchRunOptions } = require('./agent/router')
 const { getAgentConfig } = require('./agent/config')
 const { hasAdminPermission, isJailbreakAttempt, sanitizeUserInput } = require('./utils')
-const { logDebug } = require('./logging-config')
+const { logDebug } = require('./core/logging-config')
 
 async function handleAgentAutoRoute({
   ctx,

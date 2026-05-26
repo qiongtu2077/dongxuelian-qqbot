@@ -6,7 +6,7 @@ const fs = require('fs/promises')
 const path = require('path')
 const WebSocket = require('ws')
 const { assertExistingAgentPathInsideRoots } = require('../path-guard')
-const { resolveOneBotWsUrl } = require('../../onebot-endpoint')
+const { resolveOneBotWsUrl } = require('../../core/onebot-endpoint')
 
 const MAX_SEND_FILE_BYTES = 64 * 1024 * 1024
 

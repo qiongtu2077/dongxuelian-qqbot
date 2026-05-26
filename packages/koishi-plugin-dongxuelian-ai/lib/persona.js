@@ -4,8 +4,8 @@
  * 边界: 只操作人格配置文件和缓存，不调 AI API，不改 conversation。
  */
 const { PERSONA_GROUPS_FILE, PERSONA_USERS_FILE, SKILLS_PERSONAS_DIR, SKILLS_CORE_DIR, SKILLS_MODES_DIR } = require('./constants')
-const { isDebugLogEnabled } = require('./logging-config')
-const { parseFrontmatterDocument } = require('./frontmatter')
+const { isDebugLogEnabled } = require('./core/logging-config')
+const { parseFrontmatterDocument } = require('./core/frontmatter')
 const path = require('path')
 const { ensureRuntimeSkillSeeds } = require('./skill-seeds')
 

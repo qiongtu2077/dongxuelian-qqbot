@@ -9,7 +9,7 @@ const path = require('path')
 const { DATA_DIR } = require('./constants')
 const { normalizeText } = require('./message-reader')
 const { sanitizeUserName, formatShanghaiTime24h } = require('./utils')
-const { redactSensitiveText } = require('./redactor')
+const { redactSensitiveText } = require('./core/redactor')
 
 const GROUP_SCENE_DIR = path.join(DATA_DIR, 'group-scenes')
 const GROUP_SCENE_VERSION = 1

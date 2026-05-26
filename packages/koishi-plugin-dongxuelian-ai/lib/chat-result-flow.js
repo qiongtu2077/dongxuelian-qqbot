@@ -4,7 +4,7 @@
  * 边界: 不发送消息、不注册队列、不拥有中间件；chat/Agent/队列由调用方注入。
  * 状态: 无。
  */
-const { createBotResolver } = require('./bot-resolver')
+const { createBotResolver } = require('./lifecycle/bot-resolver')
 const { getRecentUserMessages } = require('./conversation')
 const { externalToolsDenied } = require('./external-tool-policy')
 const { isToolEnabled: isAgentToolEnabled, getAgentConfig } = require('./agent/config')
