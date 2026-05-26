@@ -2,8 +2,8 @@
  * Agent 工具: analyze_file — 读取并分析用户发送的文件。
  * 只在用户明确追问文件内容时由 Agent 调用，不会自动下载。
  */
-const { getFileEntry, getRecentFiles } = require('../../file-store')
-const { analyzeFileNow } = require('../../file-analyzer')
+const { getFileEntry, getRecentFiles } = require('../../media/file/file-store')
+const { analyzeFileNow } = require('../../media/file/file-analyzer')
 
 module.exports = {
   definition: {

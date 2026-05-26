@@ -35,7 +35,7 @@ async function run(t) {
       event: { sender: { role: 'member' }, message: [{ type: 'file', data: { name: '私聊文件.txt', file: 'private-file-token', size: 12, mime: 'text/plain' } }] },
     })
     const result = await run(session, { flushTicks: 20 })
-    const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const channelKey = conversation.getChannelKey(session)
     const entry = await store.getFileEntry(channelKey, 'file-private-silent-1')
@@ -47,7 +47,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession, data }) => {
-    const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     await store.storeFile('private', 'legacy-private-a', {
       fileName: 'A-user.txt',
@@ -92,7 +92,7 @@ async function run(t) {
     global.fetch = mocked.fetch
     console.warn = () => {}
     try {
-      const api = require(path.join(AI_ROOT, 'lib', 'api.js'))
+      const api = require(path.join(AI_ROOT, 'lib', 'core', 'api.js'))
       const originalCallGetFile = api.callGetFile
       api.callGetFile = async id => String(id) === '945276682' ? { file: incidentPath } : null
       try {
@@ -158,7 +158,7 @@ async function run(t) {
     global.fetch = mocked.fetch
     console.warn = () => {}
     try {
-      const api = require(path.join(AI_ROOT, 'lib', 'api.js'))
+      const api = require(path.join(AI_ROOT, 'lib', 'core', 'api.js'))
       const originalCallGetFile = api.callGetFile
       const requestedIds = []
       api.callGetFile = async id => {
@@ -243,7 +243,7 @@ async function run(t) {
         channelId: undefined,
         event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '文件里面说了什么' } }] },
       })
-      const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+      const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
       const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
       const channelKey = conversation.getChannelKey(session)
       await store.storeFile(channelKey, 'natural-file-1', {
@@ -294,7 +294,7 @@ async function run(t) {
         channelId: undefined,
         event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '文件里面说了什么' } }] },
       })
-      const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+      const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
       const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
       const channelKey = conversation.getChannelKey(session)
       await store.storeFile(channelKey, 'disabled-file-1', {
@@ -329,13 +329,13 @@ async function run(t) {
       },
     })
     const result = await run(session, { flushTicks: 20 })
-    const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
     const entry = await store.getFileEntry(session.guildId, 'file-empty-1')
     t.check('scenario empty group file stores metadata before early return', entry && entry.fileName === 'notes.txt' && entry.fileId === 'file-token-1', JSON.stringify(entry))
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const shared = conversation.channelSharedCache.get(session.guildId) || []
     t.check('scenario empty group file enters shared context anchor', shared.some(item => String(item.content || '').includes('[文件: notes.txt')), JSON.stringify(shared))
-    const sceneIndex = require(path.join(AI_ROOT, 'lib', 'group-scene-index.js'))
+    const sceneIndex = require(path.join(AI_ROOT, 'lib', 'routing', 'group-scene-index.js'))
     const note = sceneIndex.buildActiveGroupSceneNote(session.guildId, shared, session.userId, { currentText: '太大了' })
     t.check('scenario file anchor appears in active group scene', note.includes('notes.txt') && note.includes('当前群聊现场'), note)
     t.check('scenario empty group file does not send proactive reply', result.sent.length === 0, JSON.stringify(result.sent))
@@ -344,7 +344,7 @@ async function run(t) {
 
   await withScenario({}, async ({ makeSession, data }) => {
     const session = makeSession({ guildId: 'scene-forward-1', channelId: 'scene-forward-1', userId: 'sender-1' })
-    const sceneIndex = require(path.join(AI_ROOT, 'lib', 'group-scene-index.js'))
+    const sceneIndex = require(path.join(AI_ROOT, 'lib', 'routing', 'group-scene-index.js'))
     const forwardEntry = {
       userId: session.userId,
       speakerName: '转发者',
@@ -370,7 +370,7 @@ async function run(t) {
       event: { sender: { role: 'member' }, message: [] },
     })
     const result = await run(session, { flushTicks: 20 })
-    const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
     const entry = await store.getFileEntry(session.guildId, 'file-cq-only-1')
     t.check('scenario CQ content-only file stores metadata', entry && entry.fileName === '说课.md' && entry.fileId === 'lesson.md', JSON.stringify(entry))
     t.check('scenario CQ content-only file stays silent in group', result.sent.length === 0, JSON.stringify(result.sent))
@@ -384,7 +384,7 @@ async function run(t) {
       event: { sender: { role: 'member' }, message: { elements: [{ type: 'file', attrs: { name: '课件.txt', file: 'file-token-elements', size: 20, mime: 'text/plain' } }] } },
     })
     const result = await run(session, { flushTicks: 20 })
-    const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
     const entry = await store.getFileEntry(session.guildId, 'file-elements-1')
     t.check('scenario Koishi elements file stores metadata', entry && entry.fileName === '课件.txt' && entry.fileId === 'file-token-elements', JSON.stringify(entry))
     t.check('scenario Koishi elements file stays silent in group', result.sent.length === 0, JSON.stringify(result.sent))
@@ -398,7 +398,7 @@ async function run(t) {
       event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '' } }] },
     })
     const result = await run(session, { flushTicks: 20 })
-    const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
     const entry = await store.getFileEntry(session.guildId, 'file-mixed-sources-1')
     t.check('scenario mixed segment sources file stores metadata', entry && entry.fileName === '混合来源.txt' && entry.fileId === 'file-token-mixed', JSON.stringify(entry))
     t.check('scenario mixed segment sources file stays silent in group', result.sent.length === 0, JSON.stringify(result.sent))
@@ -414,7 +414,7 @@ async function run(t) {
       },
     })
     await run(fileSession, { flushTicks: 20 })
-    const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
     await store.markFileAnalyzed(fileSession.guildId, 'file-read-1', '[用户上传文件: plan.txt]\n---文件内容开始---\n第一行计划\n第二行细节\n---文件内容结束---')
 
     const readerSession = makeSession({
@@ -437,7 +437,7 @@ async function run(t) {
         content: atBot(makeSession(), '刚才那个文件总结一下'),
         messageId: 'file-agent-ask',
       })
-      const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+      const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
       await store.storeFile(session.guildId, 'file-agent-1', {
         fileName: 'plan.txt',
         fileSize: 20,
@@ -494,7 +494,7 @@ async function run(t) {
       { json: { choices: [{ message: { content: '已经改名发回去了。' } }] } },
     ])
     await withFetch(mocked, async () => {
-      const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+      const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
       const groupSession = makeSession({
         content: atBot(makeSession(), '把刚刚这个文件标题重命名为1然后发给我'),
         messageId: 'file-variant-ask',
@@ -511,7 +511,7 @@ async function run(t) {
         skipped: false,
       })
       await store.setLocalPath(groupSession.guildId, 'file-variant-source', sourcePath)
-      const chatTools = require(path.join(AI_ROOT, 'lib', 'chat-tools.js'))
+      const chatTools = require(path.join(AI_ROOT, 'lib', 'chat', 'chat-tools.js'))
       t.check('scenario uploaded file variant exposes chat tool for rename intent', chatTools.getChatToolDefinitions({ userText: '把刚刚这个文件标题重命名为1然后发给我' }).some(item => item.function?.name === 'create_uploaded_file_variant'))
       t.check('scenario uploaded file variant exposes chat tool without file-word heuristic', chatTools.getChatToolDefinitions({ userText: '把刚才那个 PDF 另存成 1 发回来' }).some(item => item.function?.name === 'create_uploaded_file_variant'))
       t.check('scenario uploaded file variant exposes chat tool for docx intent', chatTools.getChatToolDefinitions({ userText: '把刚才那个 docx 重命名成 1 发回来' }).some(item => item.function?.name === 'create_uploaded_file_variant'))
@@ -550,7 +550,7 @@ async function run(t) {
       { json: { choices: [{ message: { content: '已经重命名并发回去了。' } }] } },
     ])
     await withFetch(mocked, async () => {
-      const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+      const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
       const groupSession = makeSession({
         content: atBot(makeSession(), '帮我重命名成1然后发给我'),
         messageId: 'file-variant-refusal-ask',
@@ -598,7 +598,7 @@ async function run(t) {
       { json: { choices: [{ message: { content: '我还是不能改名或发文件。' } }] } },
     ])
     await withFetch(mocked, async () => {
-      const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+      const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
       const groupSession = makeSession({
         content: atBot(makeSession(), '帮我重命名成1然后发给我'),
         messageId: 'file-variant-direct-fallback-ask',
@@ -641,7 +641,7 @@ async function run(t) {
     const sourcePath = data.pathFor('uploaded-files', 'a-private-note.txt')
     await fs.promises.mkdir(path.dirname(sourcePath), { recursive: true })
     await fs.promises.writeFile(sourcePath, 'A 的文件正文', 'utf8')
-    const store = require(path.join(AI_ROOT, 'lib', 'file-store.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
     const variantTool = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'create-uploaded-file-variant.js'))
     const sendFileTool = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'send-file-to-user.js'))
     const channelKey = '10001'

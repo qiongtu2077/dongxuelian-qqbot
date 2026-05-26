@@ -6,14 +6,14 @@
 
 const path = require('path')
 const { h } = require('koishi')
-const { DATA_DIR } = require('../constants')
-const { renderEmotionImage } = require('../emotion-renderer')
+const { DATA_DIR } = require('../core/constants')
+const { renderEmotionImage } = require('../behavior/emotion-renderer')
 const {
   readJsonFile,
   writeJsonFile,
   todayCst,
   todayCstMinusDays,
-} = require('../utils')
+} = require('../core/utils')
 const { logDebug } = require('../core/logging-config')
 const { handled, notHandled } = require('./command-result')
 

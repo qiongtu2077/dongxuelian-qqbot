@@ -3,7 +3,7 @@ const path = require('path')
 const {
   compilePersonaRuntimePlan,
   getPersonaRuntimePlanLegacySnapshot,
-} = require('../../lib/persona-runtime-plan')
+} = require('../../lib/persona/persona-runtime-plan')
 
 const AI_ROOT = path.resolve(__dirname, '..', '..')
 const FIXTURE_FILE = path.join(__dirname, '..', 'fixtures', 'persona-regression.json')

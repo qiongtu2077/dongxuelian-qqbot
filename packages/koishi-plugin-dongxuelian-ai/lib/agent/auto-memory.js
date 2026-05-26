@@ -6,8 +6,8 @@
  */
 const fsp = require('fs/promises')
 const path = require('path')
-const { DATA_DIR } = require('../constants')
-const { requestChatCompletions } = require('../api')
+const { DATA_DIR } = require('../core/constants')
+const { requestChatCompletions } = require('../core/api')
 const { loadConfig } = require('../core/runtime-config')
 
 const DASHBOARD_MEMORY_DIR = path.join(DATA_DIR, 'agent-memory-dashboard')

@@ -4,7 +4,7 @@
  * 状态: 无自有 Map/Cache；计划持久化、队列和执行状态由 agent/plan 与 agent/queue 管理。
  */
 
-const { hasAdminPermission, sanitizeUserName } = require('../utils')
+const { hasAdminPermission, sanitizeUserName } = require('../core/utils')
 const { handled, notHandled } = require('./command-result')
 
 async function handlePlanCommand(session, ctx, state) {

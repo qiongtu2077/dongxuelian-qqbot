@@ -3,7 +3,7 @@
  */
 const fs = require('fs')
 const path = require('path')
-const { DATA_DIR } = require('../../constants')
+const { DATA_DIR } = require('../../core/constants')
 const TZ_FILE = path.join(DATA_DIR, 'agent-user-timezones.json')
 const MAX_TZ_FILE_BYTES = 128 * 1024
 

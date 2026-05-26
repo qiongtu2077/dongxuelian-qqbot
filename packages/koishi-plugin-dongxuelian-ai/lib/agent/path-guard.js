@@ -7,7 +7,7 @@
 const fsp = require('fs/promises')
 const fs = require('fs')
 const path = require('path')
-const { DATA_DIR, SKILLS_DIR } = require('../constants')
+const { DATA_DIR, SKILLS_DIR } = require('../core/constants')
 const { getReadFileRoots } = require('./config')
 const { resolveAgentPathInput } = require('./workspace-context')
 

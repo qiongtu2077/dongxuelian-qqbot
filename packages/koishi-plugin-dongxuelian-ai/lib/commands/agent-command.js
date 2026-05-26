@@ -10,7 +10,7 @@ const {
   sanitizeUserName,
   isJailbreakAttempt,
   pickJailbreakFallbackReply,
-} = require('../utils')
+} = require('../core/utils')
 const { handled, notHandled } = require('./command-result')
 
 async function handleAgentCommand(session, ctx, state, options = {}) {

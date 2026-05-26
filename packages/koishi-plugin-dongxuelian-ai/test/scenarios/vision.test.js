@@ -23,7 +23,7 @@ async function run(t) {
   t.section('scenario: vision session helpers')
 
   await withScenario({}, async ({ makeSession }) => {
-    const vision = require(path.join(AI_ROOT, 'lib', 'vision.js'))
+    const vision = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'vision.js'))
     const session = makeSession({
       content: '[CQ:image,file=current.jpg,url=http://example.test/current.jpg]',
       event: { sender: { role: 'member' }, message: [{ type: 'image', data: { file: 'current.jpg', url: 'http://example.test/current.jpg' } }] },
@@ -40,7 +40,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession }) => {
-    const vision = require(path.join(AI_ROOT, 'lib', 'vision.js'))
+    const vision = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'vision.js'))
     const session = makeSession({
       content: '这张图是什么',
       event: { sender: { role: 'member' }, message: [{ type: 'image', data: { url: 'http://example.test/structured-current.jpg' } }] },
@@ -56,7 +56,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession }) => {
-    const vision = require(path.join(AI_ROOT, 'lib', 'vision.js'))
+    const vision = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'vision.js'))
     const session = makeSession({
       content: '这张图是什么',
       quote: {
@@ -74,7 +74,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession }) => {
-    const vision = require(path.join(AI_ROOT, 'lib', 'vision.js'))
+    const vision = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'vision.js'))
     const session = makeSession({ content: 'plain text only' })
     const marked = vision.prepareVisionRequest(session, { hasVisual: false, hasFile: false, hasEmbed: false }, {
       content: session.content,
@@ -93,7 +93,7 @@ async function run(t) {
       ] },
     })
     await run(session, { flushTicks: 20 })
-    const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
     const entry = await store.getImageEntry(session.guildId, 'img-file-only')
     t.check('scenario image history stores file-only QQ image', entry && entry.file === 'local-only.jpg' && entry.url === '', JSON.stringify(entry))
     t.check('scenario image history file created', fs.existsSync(data.pathFor('image-history', `${session.guildId}.json`)), data.dataDir)
@@ -101,9 +101,9 @@ async function run(t) {
 
   await withScenario({}, async ({ data }) => {
     data.writeText('ai-model.txt', 'qwen3.5-omni-flash')
-    try { require(path.join(AI_ROOT, 'lib', 'runtime-config.js')).resetConfigCache() } catch {}
-    const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
-    const chatTools = require(path.join(AI_ROOT, 'lib', 'chat-tools.js'))
+    try { require(path.join(AI_ROOT, 'lib', 'core', 'runtime-config.js')).resetConfigCache() } catch {}
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
+    const chatTools = require(path.join(AI_ROOT, 'lib', 'chat', 'chat-tools.js'))
     await store.storeImageUrl('group-image-tool', 'msg-file-tool', '', 'tool-local.jpg', { conversationKey: 'group-image-tool::user-a', userId: 'user-a' })
     await store.cacheImageFile('group-image-tool', 'msg-file-tool', ONE_PIXEL_PNG)
     const mocked = mockFetch([{ json: { choices: [{ message: { content: '图片里有一只橙色小猫。' } }] } }])
@@ -121,7 +121,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession }) => {
-    const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const session = makeSession({
       guildId: 'group-image-memory',
@@ -144,8 +144,8 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession }) => {
-    const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
-    const sanitizer = require(path.join(AI_ROOT, 'lib', 'image-analysis-sanitizer.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
+    const sanitizer = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-analysis-sanitizer.js'))
     const session = makeSession({
       guildId: 'group-image-sanitize',
       userId: 'user-image-sanitize',
@@ -192,7 +192,7 @@ async function run(t) {
       },
     }), 'utf8')
     try {
-      const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
+      const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
       const entry = await store.getImageEntry(legacyKey, 'legacy-image-msg')
       const recent = await store.getRecentImages(legacyKey, 5)
       const cachedRecent = store.getRecentImagesCached(legacyKey, 5)

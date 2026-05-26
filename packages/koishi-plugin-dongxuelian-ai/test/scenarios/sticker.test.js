@@ -143,7 +143,7 @@ async function run(t) {
 
   await withScenario({}, async ({ harness, makeSession, ready }) => {
     await ready()
-    const { sendReply } = require('../../lib/reply')
+    const { sendReply } = require('../../lib/reply/reply')
     let now = 1700000000000
     const time = { now: () => now }
 
@@ -166,7 +166,7 @@ async function run(t) {
 
   await withScenario({}, async ({ harness, makeSession, ready }) => {
     await ready()
-    const { sendReply } = require('../../lib/reply')
+    const { sendReply } = require('../../lib/reply/reply')
     const session = makeSession({ content: 'reply bubble grouping' })
     const reply = [
       '哎呀，还有两小时就期末了啊？',
@@ -184,7 +184,7 @@ async function run(t) {
 
   await withScenario({}, async ({ harness, makeSession, ready }) => {
     await ready()
-    const { sendReply } = require('../../lib/reply')
+    const { sendReply } = require('../../lib/reply/reply')
     const session = makeSession({ content: 'natural paragraph grouping' })
     const reply = '第一段按模型自己分。\n第二段也应该独立。\n第三段不要被揉成一坨。'
     await sendReply(harness.ctx, session, reply, false, { disableSticker: true })
@@ -220,7 +220,7 @@ async function run(t) {
     await withFetch(mocked, async () => {
       const session = await triggerBotReply(makeSession, run, TEXT.funny, { guildId: '10003', channelId: '10003', messageId: 'msg-sticker-anchor' })
       await session.waitForInternalCall(call => call.method === 'sendGroupMsg')
-      const store = require('../../lib/image-store')
+      const store = require('../../lib/media/image/image-store')
       const conversation = require('../../lib/conversation')
       const channelKey = conversation.getChannelKey(session)
       const { shared, anchor } = await waitForSharedAnchor(conversation, channelKey)

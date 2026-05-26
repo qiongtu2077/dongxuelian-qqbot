@@ -7,7 +7,7 @@
 const fs = require('fs')
 const fsp = require('fs/promises')
 const path = require('path')
-const { DATA_DIR } = require('../../constants')
+const { DATA_DIR } = require('../../core/constants')
 
 const PLAN_DIR = path.join(DATA_DIR, 'agent-plans')
 const ACTIVE_FILE = path.join(PLAN_DIR, 'active.json')

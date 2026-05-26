@@ -57,7 +57,7 @@ function handlePutWhitelist(req, res) {
       const cfg = whitelistFiles[type]
       if (!cfg) return json(res, { ok: false, message: '无效类型' }, 400)
       writeFileSyncSafe(path.join(DATA_DIR, cfg.file), JSON.stringify(data, null, 2))
-      try { require(path.join(AI_LIB, 'runtime-config')).resetConfigCache() } catch {}
+      try { require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache() } catch {}
       json(res, { ok: true, message: cfg.label + ' 已更新' })
     } catch (e) { json(res, { ok: false, message: e.message }, 400) }
   })
@@ -249,7 +249,7 @@ function handlePutKeys(req, res) {
       const file = data.file
       if (!file || file.includes('..') || !file.endsWith('-key.txt')) return json(res, { ok: false, message: '无效文件名' }, 400)
       writeFileSyncSafe(path.join(DATA_DIR, file), data.value)
-      try { require(path.join(AI_LIB, 'runtime-config')).resetConfigCache() } catch {}
+      try { require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache() } catch {}
       json(res, { ok: true, message: 'Key 已更新' })
     } catch (e) { json(res, { ok: false, message: e.message }, 400) }
   })
@@ -278,7 +278,7 @@ function handleGetFallback(req, res) {
   if (!requireAdmin(req, res)) return
   function buildProviderMap() {
     const ps = {}
-    const pDefs = require(path.join(AI_LIB, 'constants')).PROVIDERS
+    const pDefs = require(path.join(AI_LIB, 'core', 'constants')).PROVIDERS
     for (const key of Object.keys(pDefs)) ps[key] = pDefs[key]
     try {
       const custom = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'))
@@ -338,7 +338,7 @@ function handlePutAdminIds(req, res) {
       const tmp = ADMIN_IDS_FILE + '.tmp'
       fs.writeFileSync(tmp, JSON.stringify(cleaned, null, 2), 'utf8')
       fs.renameSync(tmp, ADMIN_IDS_FILE)
-      try { require(path.join(AI_LIB, 'runtime-config')).resetConfigCache() } catch {}
+      try { require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache() } catch {}
       return json(res, { ok: true, message: '管理员列表已更新' })
     } catch { return json(res, { ok: false, message: '无效请求' }, 400) }
   })

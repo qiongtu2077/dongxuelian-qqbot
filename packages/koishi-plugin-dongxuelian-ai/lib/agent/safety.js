@@ -6,7 +6,7 @@
  */
 const { toolRegistry } = require('./tools/registry')
 const { getDangerousPolicy } = require('./config')
-const { TOOL_MODE_FILE } = require('../constants')
+const { TOOL_MODE_FILE } = require('../core/constants')
 const fs = require('fs')
 const fsp = require('fs/promises')
 

@@ -1,7 +1,7 @@
 const fs = require('fs/promises')
 const path = require('path')
 const { createTestDataDir } = require('../fake/file')
-const { writeJsonFile, readJsonFile } = require('../../lib/utils')
+const { writeJsonFile, readJsonFile } = require('../../lib/core/utils')
 
 async function run(t) {
   t.section('scenario: persistence write stress')

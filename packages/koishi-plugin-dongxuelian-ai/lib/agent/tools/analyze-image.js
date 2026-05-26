@@ -2,11 +2,11 @@
  * Agent 工具: analyze_historical_image — 分析图片历史中的某张图片。
  * 优先读本地缓存 → NapCat 缓存 → URL 下载 → 调视觉模型 → 写回分析结果。
  */
-const { downloadImageAsBase64, isVisionModel, requestChatCompletions } = require('../../api')
+const { downloadImageAsBase64, isVisionModel, requestChatCompletions } = require('../../core/api')
 const { loadConfig } = require('../../core/runtime-config')
-const { markAnalyzed, getImageEntry, replaceImagePlaceholder, readCachedImage } = require('../../image-store')
-const { analyzeImageNow } = require('../../image-analyzer')
-const { isVisionBlindnessReply } = require('../../vision')
+const { markAnalyzed, getImageEntry, replaceImagePlaceholder, readCachedImage } = require('../../media/image/image-store')
+const { analyzeImageNow } = require('../../media/image/image-analyzer')
+const { isVisionBlindnessReply } = require('../../media/image/vision')
 
 module.exports = {
   definition: {
@@ -52,7 +52,7 @@ module.exports = {
       base64 = await readCachedImage(channelKey, messageId)
     }
     if (!base64 && cachedFile) {
-      const { callGetImage, readImageAsBase64 } = require('../../api')
+      const { callGetImage, readImageAsBase64 } = require('../../core/api')
       try {
         const imgInfo = await callGetImage(cachedFile)
         if (imgInfo && imgInfo.file) base64 = await readImageAsBase64(imgInfo.file)
@@ -71,7 +71,7 @@ module.exports = {
     try {
       const result = await requestChatCompletions(messages, config, { max_tokens: 500, _timeoutMs: 15000 })
       const rawAnalysis = typeof result === 'string' ? result : (result.content || '')
-      const { sanitizeImageAnalysis } = require('../../image-analysis-sanitizer')
+      const { sanitizeImageAnalysis } = require('../../media/image/image-analysis-sanitizer')
       const analysis = sanitizeImageAnalysis(rawAnalysis)
       if (!analysis) return '视觉模型未返回分析结果。'
       if (isVisionBlindnessReply(analysis)) {

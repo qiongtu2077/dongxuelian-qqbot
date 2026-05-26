@@ -4,8 +4,8 @@
  * 状态: 无自有 Map/Cache；TTS 冷却和临时文件状态由 tts.js 自己管理。
  */
 
-const { resolvePersona } = require('../persona')
-const { sanitizeUserInput } = require('../utils')
+const { resolvePersona } = require('../persona/persona')
+const { sanitizeUserInput } = require('../core/utils')
 const { handled, notHandled } = require('./command-result')
 
 function getVoiceLogger(runtime = {}) {
@@ -28,7 +28,7 @@ async function handleVoiceCommand(session, state, runtime = {}) {
   const { plain, channelKey, currentUserId } = state
 
   if (plain === '东雪莲说句话') {
-    const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice } = require('../tts')
+    const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice } = require('../media/voice/tts')
     const resolved = resolvePersona(channelKey, currentUserId)
     const voiceOpts = resolvePersonaVoice(resolved.name)
     const phrases = ['我在，先说重点吧。', '嗯，我听着。', '有什么事，慢慢说。', '今天也还算安静。', '别急，我会听完。']
@@ -46,7 +46,7 @@ async function handleVoiceCommand(session, state, runtime = {}) {
   if (readAloudMatch) {
     const text = readAloudMatch[1].trim()
     if (!text) return handled('请告诉我要朗读什么内容。')
-    const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice, MAX_TTS_TEXT_LENGTH } = require('../tts')
+    const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice, MAX_TTS_TEXT_LENGTH } = require('../media/voice/tts')
     if (text.length > MAX_TTS_TEXT_LENGTH) return handled(`文本太长了，最多支持 ${MAX_TTS_TEXT_LENGTH} 字。`)
     const resolved = resolvePersona(channelKey, currentUserId)
     const voiceOpts = resolvePersonaVoice(resolved.name)
@@ -67,7 +67,7 @@ async function handleVoiceCommand(session, state, runtime = {}) {
       .trim()
     const quoteText = sanitizeUserInput(rawQuote).slice(0, 300)
     if (!quoteText) return handled('引用的消息没有可朗读的文本。')
-    const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice } = require('../tts')
+    const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice } = require('../media/voice/tts')
     const resolved = resolvePersona(channelKey, currentUserId)
     const voiceOpts = resolvePersonaVoice(resolved.name)
     const ttsDiagnostics = buildTtsDiagnostics(runtime, 'command:朗读引用')
@@ -80,7 +80,7 @@ async function handleVoiceCommand(session, state, runtime = {}) {
   }
 
   if (plain === '东雪莲语音列表') {
-    const { getBuiltinVoices } = require('../tts')
+    const { getBuiltinVoices } = require('../media/voice/tts')
     return handled(`可用语音：${getBuiltinVoices().join('、')}\n人格 SKILL 文件可通过 voice_id 字段指定默认语音。`)
   }
 

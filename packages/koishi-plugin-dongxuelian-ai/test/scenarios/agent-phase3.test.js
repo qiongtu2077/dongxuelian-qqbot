@@ -52,7 +52,7 @@ async function run(t) {
   const originalDataDirForPersona = process.env.DONGXUELIAN_AI_DATA_DIR
   const personaTmp = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'agent-dashboard-persona-'))
   process.env.DONGXUELIAN_AI_DATA_DIR = personaTmp
-  for (const rel of ['constants', 'persona', 'persona-schema', 'persona-runtime-plan', 'agent/config', 'agent/persona-context']) {
+  for (const rel of ['core/constants', 'persona/skills/skill-seeds', 'persona/persona', 'persona/persona-schema', 'persona/persona-runtime-plan', 'agent/config', 'agent/persona-context']) {
     delete require.cache[require.resolve('../../lib/' + rel)]
   }
   try {
@@ -68,7 +68,7 @@ async function run(t) {
     t.check('dashboard agent uses saved console persona', prompt.includes('当前人格：Console测试人格') && prompt.includes('DASHBOARD_PERSONA_MARKER') && prompt.includes('来源：Console 人格'), prompt)
     t.check('dashboard agent reads lore from PersonaRuntimePlan with CRLF frontmatter', prompt.includes('当前人格绑定 lore：dashboard-lore') && !prompt.includes('---'), prompt)
   } finally {
-    for (const rel of ['constants', 'persona', 'persona-schema', 'persona-runtime-plan', 'agent/config', 'agent/persona-context']) {
+    for (const rel of ['core/constants', 'persona/skills/skill-seeds', 'persona/persona', 'persona/persona-schema', 'persona/persona-runtime-plan', 'agent/config', 'agent/persona-context']) {
       delete require.cache[require.resolve('../../lib/' + rel)]
     }
     if (originalDataDirForPersona) process.env.DONGXUELIAN_AI_DATA_DIR = originalDataDirForPersona
@@ -91,7 +91,7 @@ async function run(t) {
   const tmp = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'agent-plan-'))
   const oldDir = process.env.DONGXUELIAN_AI_DATA_DIR
   process.env.DONGXUELIAN_AI_DATA_DIR = tmp
-  for (const rel of ['constants', 'agent/config', 'agent/queue', 'agent/engine', 'agent/plan/plan-store', 'agent/plan/plan-engine', 'agent/plan/plan-runner']) {
+  for (const rel of ['core/constants', 'agent/config', 'agent/queue', 'agent/engine', 'agent/plan/plan-store', 'agent/plan/plan-engine', 'agent/plan/plan-runner']) {
     delete require.cache[require.resolve('../../lib/' + rel)]
   }
   try {
@@ -140,7 +140,7 @@ async function run(t) {
       engine.run = oldRun
     }
   } finally {
-    for (const rel of ['constants', 'agent/config', 'agent/queue', 'agent/engine', 'agent/plan/plan-store', 'agent/plan/plan-engine', 'agent/plan/plan-runner']) {
+    for (const rel of ['core/constants', 'agent/config', 'agent/queue', 'agent/engine', 'agent/plan/plan-store', 'agent/plan/plan-engine', 'agent/plan/plan-runner']) {
       delete require.cache[require.resolve('../../lib/' + rel)]
     }
     if (oldDir) process.env.DONGXUELIAN_AI_DATA_DIR = oldDir
@@ -150,7 +150,7 @@ async function run(t) {
 
   const tmpRuntime = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'agent-phase3-runtime-'))
   process.env.DONGXUELIAN_AI_DATA_DIR = tmpRuntime
-  for (const rel of ['constants', 'agent/config', 'agent/push', 'agent/cron', 'agent/memory']) {
+  for (const rel of ['core/constants', 'agent/config', 'agent/push', 'agent/cron', 'agent/memory']) {
     delete require.cache[require.resolve('../../lib/' + rel)]
   }
   try {
@@ -275,7 +275,7 @@ async function run(t) {
     t.check('memory portable private id can read written item', privateFound.some(entry => entry.id === privateMemory.id), JSON.stringify(privateFound))
     t.check('memory portable private id does not create colon filename', !require('fs').existsSync(require('path').join(tmpRuntime, 'agent-memory', 'private:u1.json')) && require('fs').existsSync(require('path').join(tmpRuntime, 'agent-memory', 'private_u1.json')))
   } finally {
-    for (const rel of ['constants', 'agent/config', 'agent/push', 'agent/cron', 'agent/memory']) {
+    for (const rel of ['core/constants', 'agent/config', 'agent/push', 'agent/cron', 'agent/memory']) {
       delete require.cache[require.resolve('../../lib/' + rel)]
     }
     if (oldDir) process.env.DONGXUELIAN_AI_DATA_DIR = oldDir

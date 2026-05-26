@@ -16,15 +16,15 @@ const {
   JAILBREAK_OUTPUT_RE,
   JAPAN_SELF_IDENTIFY_RE, GENERATION_REQUEST_RE,
   SENSITIVE_KEYWORDS_RE,
-} = require('./constants')
-const { resolvePersona, loadPersonalSkill } = require('./persona') // 人格解析 + 技能文件加载
-const { calculateRetaliationScore } = require('./retaliation') // 攻击性评分（决定回怼力度）
+} = require('./core/constants')
+const { resolvePersona, loadPersonalSkill } = require('./persona/persona') // 人格解析 + 技能文件加载
+const { calculateRetaliationScore } = require('./behavior/retaliation') // 攻击性评分（决定回怼力度）
 const {
   requestChatCompletions,       // 通用 LLM 请求（含 fallback 链）
   requestOpenAIResponsesWithSearch, // OpenAI Responses API（联网搜索）
   isVisionModel,                // 判断模型是否支持视觉
-} = require('./api')
-const { isVisionSession, clearVisionSession, appendVisionMessage, isVisionBlindnessReply, downgradeVisionMessageToText } = require('./vision') // 多模态图片会话管理
+} = require('./core/api')
+const { isVisionSession, clearVisionSession, appendVisionMessage, isVisionBlindnessReply, downgradeVisionMessageToText } = require('./media/image/vision') // 多模态图片会话管理
 const {
   getConversationKey, getChannelKey, // 会话/频道唯一标识生成
   readConversationDisk,             // 从磁盘加载历史（冷启动）
@@ -38,16 +38,16 @@ const {
   channelSharedCache,               // 频道共享消息缓存（群聊上下文）
   conversationLastActiveAt,         // 会话最后活跃时间戳（用于历史降级判断）
 } = require('./conversation')
-const { getRecentAgentContextNote, clearAgentContextForUser } = require('./agent-chat-bridge') // Agent 工具摘要注入 + 话题切换清理
-const { getChatToolDefinitions, getChatToolSystemHint } = require('./chat-tools') // 聊天内嵌工具（表情包/贴纸等）
+const { getRecentAgentContextNote, clearAgentContextForUser } = require('./chat/agent-chat-bridge') // Agent 工具摘要注入 + 话题切换清理
+const { getChatToolDefinitions, getChatToolSystemHint } = require('./chat/chat-tools') // 聊天内嵌工具（表情包/贴纸等）
 const {
   buildFileFollowupState,
-} = require('./file-followup-guard')
+} = require('./media/file/file-followup-guard')
 const {
   handleChatToolFlow,
-} = require('./chat-tool-flow')
-const { buildActiveGroupSceneNote } = require('./group-scene-index') // 群聊当前现场窗口与分层
-const { buildRandomModePrompt } = require('./random-reply-mode') // 随机回复内部 mode 协议
+} = require('./chat/chat-tool-flow')
+const { buildActiveGroupSceneNote } = require('./routing/group-scene-index')
+const { buildRandomModePrompt } = require('./behavior/random-reply-mode') // 随机回复内部 mode 协议
 const {
   testChatPromptRegex,
   createChatPromptBaseMessages,
@@ -68,9 +68,9 @@ const {
   createChatPromptPoliticalSensitiveMessage,
   createChatPromptHostileEvaluationMessage,
   createChatPromptPlainUserMessage,
-} = require('./chat-prompt-builder') // prompt 片段构造器（纯函数）
-const { routePersonaLore } = require('./persona-lore-router') // 世界观按需注入与预算路由（纯函数）
-const { normalizeText } = require('./message-reader') // 文本清洗（去零宽/合并空白）
+} = require('./chat/chat-prompt-builder') // prompt 片段构造器（纯函数）
+const { routePersonaLore } = require('./persona/persona-lore-router') // 世界观按需注入与预算路由（纯函数）
+const { normalizeText } = require('./message/message-reader')
 const {
   isRareProvocation, isWideRareProvocation, isHostileInput, // 挑衅/敌意检测
   isJailbreakAttempt,             // 越狱检测
@@ -80,31 +80,31 @@ const {
   isEvaluationRequest,             // 评价请求识别
   getSearchCapability,             // 当前模型联网搜索能力查询
   trimReply,                       // 回复后处理（截断）
-} = require('./utils')
+} = require('./core/utils')
 const {
   pickRepeatedFallbackReply,  // 重复回复兜底
   isConsecutiveUserRepeat,    // 用户连续重复发言检测
-} = require('./reply-guard')
+} = require('./reply/reply-guard')
 const {
   trimChatMemoryRuntime,
   clearGroupMemoryIfExpired,
   handleDirectMemoryWrite,
   handleMemoryConfirmation,
   rememberMemoryPrompt,
-} = require('./chat-memory')
+} = require('./chat/chat-memory')
 const {
   finalizeChatReply,
-} = require('./chat-final-output-flow')
+} = require('./chat/chat-final-output-flow')
 const {
   isContextJailbroken,
   chatJailbreak,
-} = require('./chat-jailbreak-flow')
+} = require('./chat/chat-jailbreak-flow')
 const {
   resolveTopicSwitch,
-} = require('./chat-topic-switch')
+} = require('./chat/chat-topic-switch')
 const {
   retellAgentResultForChat,
-} = require('./chat-agent-retell-flow')
+} = require('./chat/chat-agent-retell-flow')
 const { redactSensitiveText } = require('./core/redactor')
 const {
   loadConfig,          // 加载运行时配置（API key/model/provider）
@@ -126,13 +126,13 @@ const {
   shouldInjectLore,
   shouldInjectTerraLore,
   getSkillsCount,
-} = require('./skills-loader') // 技能文件加载、缓存刷新和基础 system prompt
+} = require('./persona/skills/skills-loader') // 技能文件加载、缓存刷新和基础 system prompt
 const {
   buildExpressionShadowPlan,
   formatExpressionShadowDiagnostic,
   detectExpressionSensitiveTopicActive,
   EXPRESSION_SHADOW_RECENT_SPEAKER_WINDOW_MS,
-} = require('./expression-shadow-router') // 表达学习旁路诊断（v2.3，仅日志）
+} = require('./behavior/expression/expression-shadow-router') // 表达学习旁路诊断（v2.3，仅日志）
 const {
   buildPersonaProfileBlocks,
   buildPersonaProfileReinforcementShadow,
@@ -146,7 +146,7 @@ const {
   appendPersonaProfileShadowLog,
   formatPersonaProfileShadowLearningDiagnostic,
   formatPersonaProfileShadowPromptPreviewDiagnostic,
-} = require('./persona-profile') // 证据化 profile 影子选择诊断（不注入 prompt）
+} = require('./persona/persona-profile') // 证据化 profile 影子选择诊断（不注入 prompt）
 
 const hostileLevelCache = new Map()
 let lastCacheCleanupTs = 0

@@ -132,7 +132,7 @@ async function run(t) {
     checkSentNonEmpty(t, 'scenario today emotion empty cache replies', emotion)
 
     const handler = require('../../lib/handler')
-    const { todayCst, todayCstMinusDays } = require('../../lib/utils')
+    const { todayCst, todayCstMinusDays } = require('../../lib/core/utils')
     const today = todayCst()
     data.writeJson('emotion-history-10001.json', [{ date: todayCstMinusDays(1), score: 42, summary: '旧格式摘要' }])
     const emotionCache = new Map([['10001', {
@@ -284,7 +284,7 @@ async function run(t) {
     }))
     checkSentNonEmpty(t, 'scenario group admin voice rate switch accepted', groupAdminVoiceRate)
     t.check('scenario group admin voice rate writes current group', data.readJson('ai-random-voice-rate.json')['10001'] === 0.4, JSON.stringify(data.readJson('ai-random-voice-rate.json')))
-    const tts = require('../../lib/tts')
+    const tts = require('../../lib/media/voice/tts')
     t.check('scenario group admin voice rate is used by random voice trigger', tts.shouldTriggerRandomVoice('10001', () => 0.399) && !tts.shouldTriggerRandomVoice('10001', () => 0.4))
 
     const currentVoiceRateView = await run(makeSession({ content: '东雪莲群聊语音概率查看' }))

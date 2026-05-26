@@ -21,7 +21,7 @@ async function run(t) {
   t.section('scenario: forward summary resolution')
 
   await withScenario({}, async ({ harness, makeSession }) => {
-    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
+    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'message', 'forward.js'))
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const mocked = makeForwardMock({})
     const session = makeSession({ guildId: '10000', channelId: '10000', content: 'plain message without forward id' })
@@ -32,7 +32,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ harness, makeSession }) => {
-    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
+    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'message', 'forward.js'))
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const mocked = makeForwardMock({
       cqroot: [textNode('Alice', 'hello from cq forward')],
@@ -46,7 +46,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ harness, makeSession }) => {
-    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
+    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'message', 'forward.js'))
     const mocked = makeForwardMock({
       htmlroot: [textNode('Bob', 'hello from html forward')],
     })
@@ -58,7 +58,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ harness, makeSession }) => {
-    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
+    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'message', 'forward.js'))
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const mocked = makeForwardMock({
       objectRoot: { messages: [textNode('ObjectShape', 'hello from object messages')] },
@@ -71,7 +71,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ harness, makeSession }) => {
-    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
+    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'message', 'forward.js'))
     const mocked = makeForwardMock({
       root: [textNode('Outer', '[CQ:forward,id=12345]')],
       12345: [textNode('Inner', 'nested cq forward text')],
@@ -83,7 +83,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ harness, makeSession }) => {
-    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
+    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'message', 'forward.js'))
     const mocked = makeForwardMock({
       root: [{
         sender: { nickname: 'Outer2' },
@@ -101,7 +101,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ harness, makeSession }) => {
-    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
+    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'message', 'forward.js'))
     const mocked = makeForwardMock({
       root: [{
         sender: { nickname: 'Segments' },
@@ -122,7 +122,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ harness, makeSession }) => {
-    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'forward.js'))
+    const { resolveForwardSummary } = require(path.join(AI_ROOT, 'lib', 'message', 'forward.js'))
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const mocked = makeForwardMock({
       empty: [],

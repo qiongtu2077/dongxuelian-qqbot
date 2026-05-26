@@ -7,7 +7,7 @@
 const fs = require('fs')
 const fsp = require('fs/promises')
 const path = require('path')
-const { DATA_DIR } = require('../../constants')
+const { DATA_DIR } = require('../../core/constants')
 
 const SKILL_POOL_DIR = path.join(DATA_DIR, 'skill-pool')
 const WORKSPACE_DIR = path.join(DATA_DIR, 'ai-skills', 'workspace')

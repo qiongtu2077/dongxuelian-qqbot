@@ -11,8 +11,8 @@ async function withApi(t, queue, fn) {
     global.fetch = mocked.fetch
     console.warn = () => {}
     try {
-      const api = require(path.join(AI_ROOT, 'lib', 'api.js'))
-      const constants = require(path.join(AI_ROOT, 'lib', 'constants.js'))
+      const api = require(path.join(AI_ROOT, 'lib', 'core', 'api.js'))
+      const constants = require(path.join(AI_ROOT, 'lib', 'core', 'constants.js'))
       await fn(api, constants, mocked)
     } finally {
       global.fetch = originalFetch

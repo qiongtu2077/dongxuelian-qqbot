@@ -7,7 +7,7 @@
 const path = require('path')
 const fs = require('fs')
 const fsp = require('fs/promises')
-const { DATA_DIR } = require('../../constants')
+const { DATA_DIR } = require('../../core/constants')
 const { ensureDir, removeDir } = require('./store')
 
 const HUB_TEMP_DIR = path.join(DATA_DIR, 'skill-hub-tmp')

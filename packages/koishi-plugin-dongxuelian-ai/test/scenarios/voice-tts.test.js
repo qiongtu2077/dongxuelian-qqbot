@@ -26,7 +26,7 @@ function buildTestWav(payload = Buffer.from([1, 2, 3, 4])) {
 async function run(t) {
   t.section('scenario: voice ASR module')
 
-  const voice = require('../../lib/voice')
+  const voice = require('../../lib/media/voice/voice')
 
   t.check('extractVoicePayload returns null for empty session', voice.extractVoicePayload({}) === null)
   t.check('extractVoicePayload returns null for text-only', voice.extractVoicePayload({ content: 'hello' }) === null)
@@ -68,7 +68,7 @@ async function run(t) {
 
   t.section('scenario: voice TTS module')
 
-  const tts = require('../../lib/tts')
+  const tts = require('../../lib/media/voice/tts')
 
   t.check('getBuiltinVoices returns array', Array.isArray(tts.getBuiltinVoices()) && tts.getBuiltinVoices().length > 0)
   t.check('getBuiltinVoices includes 冰糖', tts.getBuiltinVoices().includes('冰糖'))
@@ -122,9 +122,9 @@ async function run(t) {
   t.section('scenario: voice asset metadata')
 
   const tempDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-assets-'))
-  const voiceAssetsModule = path.join(__dirname, '..', '..', 'lib', 'voice-assets')
-  const constantsModule = path.join(__dirname, '..', '..', 'lib', 'constants')
-  const ttsModule = path.join(__dirname, '..', '..', 'lib', 'tts')
+  const voiceAssetsModule = path.join(__dirname, '..', '..', 'lib', 'media', 'voice', 'voice-assets')
+  const constantsModule = path.join(__dirname, '..', '..', 'lib', 'core', 'constants')
+  const ttsModule = path.join(__dirname, '..', '..', 'lib', 'media', 'voice', 'tts')
   const dashboardRouteModule = path.join(__dirname, '..', '..', '..', 'koishi-plugin-dashboard', 'lib', 'routes', 'agent')
   const dashboardAuthModule = path.join(__dirname, '..', '..', '..', 'koishi-plugin-dashboard', 'lib', 'auth')
   const assetScript = `
@@ -489,7 +489,7 @@ console.log(JSON.stringify({
 const fs = require('fs')
 const path = require('path')
 const constants = require(${JSON.stringify(constantsModule)})
-const persona = require(${JSON.stringify(path.join(__dirname, '..', '..', 'lib', 'persona'))})
+const persona = require(${JSON.stringify(path.join(__dirname, '..', '..', 'lib', 'persona', 'persona'))})
 const command = require(${JSON.stringify(path.join(__dirname, '..', '..', 'lib', 'commands', 'voice-command'))})
 fs.mkdirSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas'), { recursive: true })
 fs.writeFileSync(constants.MIMORIUM_KEY_FILE, 'tp-test-key')
@@ -555,7 +555,7 @@ function buildWav() {
 
   t.section('scenario: rare fixed voice module')
 
-  const rareVoice = require('../../lib/rare-voice')
+  const rareVoice = require('../../lib/behavior/rare-voice')
 
   t.check('shouldTriggerRareVoice ignores non-rare meta', !rareVoice.shouldTriggerRareVoice({}, () => 0))
   t.check('shouldTriggerRareVoice triggers below half', rareVoice.shouldTriggerRareVoice({ rareConfirmed: true }, () => 0.49))
@@ -759,7 +759,7 @@ function buildWav() {
 
   t.section('scenario: voice ASR transcribe (mock)')
 
-  const { TTS_TEMP_DIR } = require('../../lib/constants')
+  const { TTS_TEMP_DIR } = require('../../lib/core/constants')
   fs.mkdirSync(TTS_TEMP_DIR, { recursive: true })
   const testWav = path.join(TTS_TEMP_DIR, 'test-asr-scenario.wav')
   const wavHeader = Buffer.alloc(44)

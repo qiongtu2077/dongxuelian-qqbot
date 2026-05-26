@@ -3,7 +3,7 @@ const fs = require('fs')
 const path = require('path')
 const dns = require('dns/promises')
 const net = require('net')
-const { DATA_DIR } = require('../../constants')
+const { DATA_DIR } = require('../../core/constants')
 const { assertExistingAgentPathInsideRoots } = require('../path-guard')
 const { rankSearchCandidates, formatSearchResults, buildSearchFailureText } = require('../search-results')
 

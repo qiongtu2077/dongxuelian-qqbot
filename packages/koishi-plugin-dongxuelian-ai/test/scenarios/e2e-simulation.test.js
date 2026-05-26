@@ -174,7 +174,7 @@ async function run(t) {
           'CHANGLI_E2E_MARKER',
         ].join('\n'))
         data.writeJson('ai-persona-users.json', { e2e_private: '长离' })
-        require(path.join(AI_ROOT, 'lib', 'persona.js')).loadPersonaUsers()
+        require(path.join(AI_ROOT, 'lib', 'persona', 'persona.js')).loadPersonaUsers()
         data.writeJson('ai-tool-config.json', DEFAULT_TOOL_CONFIG)
         const session = makeSession({
           userId: 'e2e_private',
@@ -249,7 +249,7 @@ async function run(t) {
         session.content = '我想看我的世界的搞笑视频'
         await run(session, { flushTicks: 160 })
         await session.waitForSend(message => String(message).includes('视频转述'), 10000)
-        const searchContext = require(path.join(AI_ROOT, 'lib', 'search-context.js'))
+        const searchContext = require(path.join(AI_ROOT, 'lib', 'routing', 'search-context.js'))
         const now = Date.now()
         const interruptedContext = searchContext.buildPrivateSearchContext(session, [
           { role: 'user', content: '杭州今天气温多少', ts: now - 20 * 60 * 1000 },

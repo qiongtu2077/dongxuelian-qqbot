@@ -32,51 +32,51 @@ const {
 } = require('./lifecycle/bot-resolver') // 当前 bot 解析与异步 session 注入
 const {
   enqueueForChannel,
-} = require('./channel-task-queue') // 同频道任务串行队列
+} = require('./lifecycle/channel-task-queue') // 同频道任务串行队列
 const {
   getArmedEventDump,
   armEventDump,
   clearArmedEventDump,
   dumpSessionEvent,
-} = require('./event-dump') // 原始事件一次性抓取与安全落盘
+} = require('./lifecycle/event-dump') // 原始事件一次性抓取与安全落盘
 const {
   registerPluginLifecycle,
-} = require('./plugin-lifecycle') // ready/dispose 生命周期注册
+} = require('./lifecycle/plugin-lifecycle') // ready/dispose 生命周期注册
 const {
   logReplyTimingDiagnostic,
   logAffectRouterDiagnosticForOutputShadow,
   logStickerShadowSendDiagnostic,
-} = require('./diagnostics') // 入口旁路诊断日志
+} = require('./diagnostics/diagnostics') // 入口旁路诊断日志
 const {
   resolveSharedRecordText,
-} = require('./shared-record-text') // 群共享上下文保存文本归一
+} = require('./diagnostics/shared-record-text') // 群共享上下文保存文本归一
 const {
   isFileQuickReadIntent,
   resolveFileQuickReadReply,
-} = require('./file-quick-read') // 显式读文件快捷分支
+} = require('./routing/file-quick-read') // 显式读文件快捷分支
 const { handleCommand } = require('./handler') // 指令路由（/help /reset 等）
-const { analyzeIncomingMessage, normalizeText } = require('./message-reader') // 消息解析（图片/语音/转发提取）+ 文本清洗
-const { resolveForwardSummary } = require('./forward') // 合并转发消息摘要提取
-const { prepareVisionRequest, isVisionSession } = require('./vision') // 图片消息构建 + 视觉会话判断
+const { analyzeIncomingMessage, normalizeText } = require('./message/message-reader')
+const { resolveForwardSummary } = require('./message/forward')
+const { prepareVisionRequest, isVisionSession } = require('./media/image/vision') // 图片消息构建 + 视觉会话判断
 const {
   handleIncomingMessageArtifacts,
-} = require('./incoming-message-flow') // 入站图片/文件/语音材料处理
+} = require('./message/incoming-message-flow') // 入站图片/文件/语音材料处理
 const {
   handleSensitiveMessage,        // 敏感消息拦截主逻辑
-} = require('./sensitive')
-const { handleAdminInlineCommands } = require('./admin-commands') // 白名单/黑名单/概率/敏感等内联管理命令
+} = require('./behavior/sensitive')
+const { handleAdminInlineCommands } = require('./commands/admin-commands') // 白名单/黑名单/概率/敏感等内联管理命令
 const {
   setRepeatEnabled,       // 设置复读开关
   getRepeatEnabledCache,  // 查询复读开关缓存
   buildRepeatCandidate,   // 构建复读候选（判断是否跟读）
   checkGroupRepeat,       // 群复读触发检测
-} = require('./repeat')
+} = require('./behavior/repeat')
 const {
   logStaleRandomSkip,
   safeSendRepeat,
   safeSendReply: safeSendReplyImpl,
   safeSendRareVoice,
-} = require('./safe-send')
+} = require('./reply/safe-send')
 const {
   chat,                   // 主聊天入口（session → AI 回复）
   loadSkills, loadSkillsContentCache, // 技能文件列表/内容加载
@@ -92,22 +92,22 @@ const {
   loadRuntimeSettings,
   getRandomTriggerBaseRate,
   getRandomWhitelistStatus,
-} = require('./runtime-settings')
+} = require('./behavior/runtime-settings')
 const {
   loadUserBlacklist,
-} = require('./user-blacklist')
+} = require('./core/user-blacklist')
 const {
   MAINTENANCE_FILE,
   SENSITIVE_KEYWORDS_RE,
-} = require('./constants')
+} = require('./core/constants')
 const {
   resolvePersona,      // 解析当前会话应使用的人格
   loadPersonalSkill,   // 加载人格技能文件内容
-} = require('./persona')
+} = require('./persona/persona')
 const {
   getGroupPersonaName,
   isPersonaSwitchRisky,
-} = require('./random-persona-risk') // 随机回复人格切换风险判断
+} = require('./behavior/random-persona-risk') // 随机回复人格切换风险判断
 const {
   channelSharedCache,       // 频道共享消息缓存（群聊上下文窗口）
   channelTodayCache,        // 频道今日统计缓存
@@ -130,22 +130,22 @@ const {
   pickJailbreakFallbackReply, // 越狱兜底回复
   readJsonFile,             // 文件 IO 工具
   shouldTriggerRandom, calculateWillFactor, // 随机触发判断 + 意愿因子计算
-} = require('./utils')
+} = require('./core/utils')
 const { logDebug } = require('./core/logging-config') // 调试日志输出
-const { shouldTriggerRareVoice } = require('./rare-voice') // 罕见触发固定语音
-const { buildPrivateSearchContext } = require('./search-context')
+const { shouldTriggerRareVoice } = require('./behavior/rare-voice') // 罕见触发固定语音
+const { buildPrivateSearchContext } = require('./routing/search-context')
 const agentEngine = require('./agent/engine') // Agent 执行引擎
 const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue') // Agent 任务队列
 const {
   handleChatResult,
   retellAgentResult,
-} = require('./chat-result-flow') // chat heavy tool 与 Agent 结果转述桥接
+} = require('./chat/chat-result-flow') // chat heavy tool 与 Agent 结果转述桥接
 const {
   handleAgentAutoRoute,
-} = require('./agent-auto-route-flow') // QQ Agent 自动路由桥接
+} = require('./routing/agent-auto-route-flow')
 const {
   sendChatReplyFlow,
-} = require('./chat-send-flow') // chat 回复发送流水
+} = require('./chat/chat-send-flow') // chat 回复发送流水
 const {
   channelMissCount,
   incrementRandomMiss,
@@ -166,8 +166,8 @@ const {
   buildRandomSendOptions,
   isRandomReplyFresh,
   isSafeSendReplyFresh,
-} = require('./random-state') // 随机回复状态、pending timer 与 freshness
-const { buildAmbientWaterSendOptions } = require('./random-reply-mode') // 随机非锚定水群发送策略
+} = require('./behavior/random-state') // 随机回复状态、pending timer 与 freshness
+const { buildAmbientWaterSendOptions } = require('./behavior/random-reply-mode') // 随机非锚定水群发送策略
 installSessionCompatibility({ KoishiSession, KoishiBot })
 
 exports.name = 'dongxuelian-ai'

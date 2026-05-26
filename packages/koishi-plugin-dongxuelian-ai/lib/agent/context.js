@@ -7,7 +7,7 @@
 
 const fsp = require('fs/promises')
 const path = require('path')
-const { DATA_DIR } = require('../constants')
+const { DATA_DIR } = require('../core/constants')
 
 const TOOL_RESULTS_DIR = path.join(DATA_DIR, 'agent-tool-results')
 let toolResultsDirReady = false

@@ -4,7 +4,7 @@
  */
 const fs = require('fs/promises')
 const path = require('path')
-const { DATA_DIR } = require('../../constants')
+const { DATA_DIR } = require('../../core/constants')
 const { redactSensitiveText } = require('../../core/redactor')
 
 const LOG_DIRS = [path.resolve(process.cwd(), 'runtime', 'logs'), path.join(DATA_DIR, 'logs')]

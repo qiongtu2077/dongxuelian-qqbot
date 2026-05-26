@@ -4,7 +4,7 @@
  * 边界: 不使用 chat.js 的 system prompt 构建逻辑；不写 conversation.js。
  * 状态: 无模块级状态（每次 run() 新建循环局部变量）。
  */
-const { requestChatCompletions } = require('../api')
+const { requestChatCompletions } = require('../core/api')
 const { loadConfig } = require('../core/runtime-config')
 const { getToolDefinitions, executeTool, toolRegistry } = require('./tools/registry')
 const { estimateTokens, externalizeToolResult, compactWithLLM } = require('./context')
@@ -19,8 +19,8 @@ const { buildAgentWorkspaceContext } = require('./workspace-context')
 const { getAgentPathAllowedRoots } = require('./path-guard')
 const { recordAgentSession } = require('./sessions')
 const { onAgentReplyComplete } = require('./auto-memory')
-const { MAX_TOOL_ROUNDS } = require('../constants')
-const { getRecentFilesCached } = require('../file-store')
+const { MAX_TOOL_ROUNDS } = require('../core/constants')
+const { getRecentFilesCached } = require('../media/file/file-store')
 
 const MAX_ROUNDS = MAX_TOOL_ROUNDS
 const MAX_TOOLS_PER_ROUND = 3

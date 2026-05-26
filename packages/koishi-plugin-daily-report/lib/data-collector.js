@@ -6,7 +6,7 @@ const fs = require('fs')
 const path = require('path')
 
 const { DATA_DIR } = require('./config')
-const { todayCst, getShanghaiHourFromTs } = require('../../koishi-plugin-dongxuelian-ai/lib/utils')
+const { todayCst, getShanghaiHourFromTs } = require('../../koishi-plugin-dongxuelian-ai/lib/core/utils')
 
 const MAX_CACHE_FILE_BYTES = parsePositiveInt(process.env.DAILY_REPORT_MAX_CACHE_FILE_BYTES, 8 * 1024 * 1024, 512 * 1024, 64 * 1024 * 1024)
 const MAX_ANALYSIS_MESSAGES = parsePositiveInt(process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES, 2000, 200, 10000)

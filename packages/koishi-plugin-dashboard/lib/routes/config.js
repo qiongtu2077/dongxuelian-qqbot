@@ -5,7 +5,7 @@ const path = require('path')
 const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils')
 const { requireAdmin } = require('../auth')
 const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths')
-const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'frontmatter'))
+const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'core', 'frontmatter'))
 
 function parseFrontmatter(content) {
   const raw = String(content || '').replace(/\uFEFF/g, '')
@@ -102,7 +102,7 @@ function handleGetStatus(req, res) {
 }
 
 function handleGetProviders(req, res) {
-  const { PROVIDERS } = require(path.join(AI_LIB, 'constants'))
+  const { PROVIDERS } = require(path.join(AI_LIB, 'core', 'constants'))
   const merged = { ...PROVIDERS }
   try {
     const raw = fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8')
@@ -134,7 +134,7 @@ function handlePutConfig(req, res) {
       if (data.provider !== undefined) writeFileSyncSafe(path.join(DATA_DIR, 'ai-provider.txt'), data.provider)
       if (data.model !== undefined) writeFileSyncSafe(path.join(DATA_DIR, 'ai-model.txt'), data.model)
       if (data.baseUrl !== undefined) writeFileSyncSafe(path.join(DATA_DIR, 'ai-base-url.txt'), data.baseUrl)
-      const { resetConfigCache } = require(path.join(AI_LIB, 'runtime-config'))
+      const { resetConfigCache } = require(path.join(AI_LIB, 'core', 'runtime-config'))
       resetConfigCache()
       json(res, { ok: true, message: '配置已更新' })
     } catch (e) { json(res, { ok: false, message: e.message }, 400) }
@@ -143,7 +143,7 @@ function handlePutConfig(req, res) {
 
 function handleGetPersonas(req, res, pathname, url) {
   try {
-    const { getAvailablePersonals, loadPersonalSkill } = require(path.join(AI_LIB, 'persona'))
+    const { getAvailablePersonals, loadPersonalSkill } = require(path.join(AI_LIB, 'persona', 'persona'))
     const name = url.searchParams.get('name')
     if (name) {
       const content = loadPersonalSkill(name)
@@ -177,7 +177,7 @@ function handleDeletePersonas(req, res) {
     try {
       const { name } = JSON.parse(body)
       if (!name) return json(res, { ok: false, message: '名称不能为空' }, 400)
-      const all = require(path.join(AI_LIB, 'persona')).getAvailablePersonals()
+      const all = require(path.join(AI_LIB, 'persona', 'persona')).getAvailablePersonals()
       if (all.find(p => p.name === name)?.type === 'core') return json(res, { ok: false, message: '核心规则不可删除' }, 400)
       if (all.find(p => p.name === name)?.type === 'mode') return json(res, { ok: false, message: '默认人格不可删除' }, 400)
       const files = fs.readdirSync(PERSONAS_DIR).filter(f => /^SKILL(\.[^.]+)?\.md$/i.test(f))
@@ -360,7 +360,7 @@ function toPublicPersonaDiagnostic(item = {}) {
 
 function handleGetPersonaDiagnostics(req, res) {
   try {
-    const diagnostics = require(path.join(AI_LIB, 'persona-diagnostics'))
+    const diagnostics = require(path.join(AI_LIB, 'persona', 'persona-diagnostics'))
     const result = diagnostics.scanPersonaDocuments()
     const documents = Array.isArray(result.documents) ? result.documents : []
     return json(res, {

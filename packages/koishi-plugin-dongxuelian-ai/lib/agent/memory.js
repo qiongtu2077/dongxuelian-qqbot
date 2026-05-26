@@ -6,7 +6,7 @@
  */
 const fsp = require('fs/promises')
 const path = require('path')
-const { DATA_DIR } = require('../constants')
+const { DATA_DIR } = require('../core/constants')
 
 const MEMORY_DIR = path.join(DATA_DIR, 'agent-memory')
 const DASHBOARD_MEMORY_DIR = path.join(DATA_DIR, 'agent-memory-dashboard')

@@ -539,7 +539,7 @@ async function run(t) {
         'CHANGLI_JAILBREAK_MARKER',
       ].join('\n'))
       data.writeJson('ai-persona-users.json', { [session.userId]: '长离' })
-      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona', 'persona.js'))
       persona.loadPersonaUsers()
       const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
       await chatModule.loadSkillsContentCache()
@@ -578,7 +578,7 @@ async function run(t) {
         'AGENT_PERSONA_MARKER',
       ].join('\n'))
       data.writeJson('ai-persona-users.json', { [session.userId]: 'Agent测试人格' })
-      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona', 'persona.js'))
       persona.loadPersonaUsers()
       const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
       await chatModule.loadSkillsContentCache()
@@ -623,7 +623,7 @@ async function run(t) {
       ].join('\n'))
       data.writeJson('ai-persona-users.json', { [session.userId]: '爱弥斯' })
       data.writeJson('ai-persona-groups.json', { [session.guildId]: { persona: '长离' } })
-      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona', 'persona.js'))
       persona.loadPersonaUsers()
       persona.loadPersonaGroups()
     },
@@ -655,7 +655,7 @@ async function run(t) {
         'GROUP_RARE_PERSONA_MARKER',
       ].join('\n'))
       data.writeJson('ai-persona-groups.json', { [session.guildId]: { persona: '群罕见人格' } })
-      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona', 'persona.js'))
       persona.loadPersonaGroups()
       const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
       return chatModule.loadSkillsContentCache()
@@ -682,7 +682,7 @@ async function run(t) {
         'USER_RARE_PERSONA_MARKER',
       ].join('\n'))
       data.writeJson('ai-persona-users.json', { [session.userId]: '个人罕见人格' })
-      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona', 'persona.js'))
       persona.loadPersonaUsers()
       const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
       return chatModule.loadSkillsContentCache()
@@ -1011,7 +1011,7 @@ async function run(t) {
         'TEST_PERSONA_MARKER',
       ].join('\n'))
       data.writeJson('ai-persona-users.json', { [session.userId]: 'TestPersonaMarker' })
-      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona', 'persona.js'))
       persona.loadPersonaUsers()
       const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
       return chatModule.loadSkillsContentCache()
@@ -1042,7 +1042,7 @@ async function run(t) {
         'AGENT_RETELL_MARKER',
       ].join('\n'))
       data.writeJson('ai-persona-users.json', { [session.userId]: 'AgentRetellMarker' })
-      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona', 'persona.js'))
       persona.loadPersonaUsers()
       const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
       return chatModule.loadSkillsContentCache()
@@ -1212,7 +1212,7 @@ async function run(t) {
         'SCENE_PERSONA_MARKER',
       ].join('\n'))
       data.writeJson('ai-persona-groups.json', { [session.guildId]: { persona: '长离' } })
-      const persona = require(path.join(AI_ROOT, 'lib', 'persona.js'))
+      const persona = require(path.join(AI_ROOT, 'lib', 'persona', 'persona.js'))
       persona.loadPersonaGroups()
     },
     waitFor: message => String(message).includes('长离人格回复'),
@@ -1289,7 +1289,7 @@ async function run(t) {
         readFileRoots: [],
       })
       try { require(path.join(AI_ROOT, 'lib', 'agent', 'config.js')).resetAgentConfigCache() } catch {}
-      const store = require(path.join(AI_ROOT, 'lib', 'image-store.js'))
+      const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
       const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
       const base = { guildId: session.guildId, channelId: session.channelId, selfId: session.selfId }
       conversation.saveSharedChannelTurn({ ...base, userId: 'image-user', author: { id: 'image-user' } }, 'ㅤ', '[图片]', 'user', { messageId: 'recent-image-short-followup' })
@@ -1313,7 +1313,7 @@ async function run(t) {
   }, {
     input: '你刚刚搜到哪些东西',
     setup(session) {
-      const bridge = require(path.join(AI_ROOT, 'lib', 'agent-chat-bridge.js'))
+      const bridge = require(path.join(AI_ROOT, 'lib', 'chat', 'agent-chat-bridge.js'))
       bridge.clearAgentChatBridge()
       bridge.recordAgentChatResult({
         session,

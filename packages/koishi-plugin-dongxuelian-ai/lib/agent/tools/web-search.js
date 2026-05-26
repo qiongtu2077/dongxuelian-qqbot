@@ -2,9 +2,9 @@
  * MODULE: 联网搜索工具。
  * 优先使用 LLM API 内置搜索，不可用时降级到轻量 HTTP 搜索；Chromium 兜底需要显式启用。
  */
-const { requestChatCompletions } = require('../../api')
+const { requestChatCompletions } = require('../../core/api')
 const { loadConfig } = require('../../core/runtime-config')
-const { getSearchCapability } = require('../../utils')
+const { getSearchCapability } = require('../../core/utils')
 const { buildSearchQueries, isLowQualitySearchResult, getSearchHostname } = require('../search-query')
 const { runHttpSearch, mergeHttpSearchCandidates, formatCandidateList } = require('../http-search')
 const { rankSearchCandidates } = require('../search-results')

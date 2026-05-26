@@ -4,7 +4,7 @@
  * 状态: 无自有 Map/Cache；记忆存储和配置状态由 agent/memory 与 agent/config 管理。
  */
 
-const { hasAdminPermission } = require('../utils')
+const { hasAdminPermission } = require('../core/utils')
 const { handled, notHandled } = require('./command-result')
 
 async function handleMemoryCommand(session, state) {

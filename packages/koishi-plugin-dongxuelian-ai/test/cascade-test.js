@@ -164,7 +164,7 @@ const COVERAGE_MAP = [
   },
   {
     behavior: 'retaliation score calculation',
-    file: path.join(AI_ROOT, 'lib', 'retaliation.js'),
+    file: path.join(AI_ROOT, 'lib', 'behavior', 'retaliation.js'),
     needles: [],
   },
 ]
@@ -459,17 +459,17 @@ async function main() {
   const syntaxModuleSet = new Set(syntaxTargets.moduleInputChecks)
   check('syntax runner check dirs exist', Array.isArray(syntaxTargets.missingDirs) && syntaxTargets.missingDirs.length === 0, JSON.stringify(syntaxTargets.missingDirs || []))
   check('syntax runner covers AI index syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/index.js'))
-  check('syntax runner covers chat prompt builder syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/chat-prompt-builder.js'))
-  check('syntax runner covers reply timing syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/reply-timing.js'))
-  check('syntax runner covers affect router syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/affect-router.js'))
-  check('syntax runner covers sticker shadow syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/sticker-shadow.js'))
-  check('syntax runner covers expression learner syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/expression-learner.js'))
-  check('syntax runner covers expression pool store syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/expression-pool-store.js'))
-  check('syntax runner covers expression abstractor syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/expression-abstractor.js'))
-  check('syntax runner covers expression shadow router syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/expression-shadow-router.js'))
-  check('syntax runner covers startup schedulers syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/startup-schedulers.js'))
-  check('syntax runner covers persona runtime plan syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/persona-runtime-plan.js'))
-  check('syntax runner covers persona profile syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/persona-profile.js'))
+  check('syntax runner covers chat prompt builder syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/chat/chat-prompt-builder.js'))
+  check('syntax runner covers reply timing syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/reply/reply-timing.js'))
+  check('syntax runner covers affect router syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/affect-router.js'))
+  check('syntax runner covers sticker shadow syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/sticker-shadow.js'))
+  check('syntax runner covers expression learner syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/expression/expression-learner.js'))
+  check('syntax runner covers expression pool store syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/expression/expression-pool-store.js'))
+  check('syntax runner covers expression abstractor syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/expression/expression-abstractor.js'))
+  check('syntax runner covers expression shadow router syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/expression/expression-shadow-router.js'))
+  check('syntax runner covers startup schedulers syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/startup-schedulers.js'))
+  check('syntax runner covers persona runtime plan syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/persona/persona-runtime-plan.js'))
+  check('syntax runner covers persona profile syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/persona/persona-profile.js'))
   check('syntax runner covers web search tool syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/web-search.js'))
   check('syntax runner covers web fetch tool syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/web-fetch.js'))
   check('syntax runner covers dashboard standalone syntax', syntaxFileSet.has('packages/koishi-plugin-dashboard/standalone.js'))
@@ -529,53 +529,51 @@ async function main() {
 
   section('2. module loading and exports')
   const modPaths = {
-    constants: path.join(LIB, 'constants'),
+    constants: path.join(LIB, 'core', 'constants'),
     frontmatter: path.join(LIB, 'core', 'frontmatter'),
     onebotEndpoint: path.join(LIB, 'core', 'onebot-endpoint'),
     redactor: path.join(LIB, 'core', 'redactor'),
-    utils: path.join(LIB, 'utils'),
-    persona: path.join(LIB, 'persona'),
-    personaSchema: path.join(LIB, 'persona-schema'),
-    personaDiagnostics: path.join(LIB, 'persona-diagnostics'),
-    personaRuntimePlan: path.join(LIB, 'persona-runtime-plan'),
-    personaProfile: path.join(LIB, 'persona-profile'),
-    personaLoreRouter: path.join(LIB, 'persona-lore-router'),
-    skillsLoader: path.join(LIB, 'skills-loader'),
-    skillSeeds: path.join(LIB, 'skill-seeds'),
-    externalToolPolicy: path.join(LIB, 'external-tool-policy'),
-    replyTiming: path.join(LIB, 'reply-timing'),
-    affectRouter: path.join(LIB, 'affect-router'),
-    stickerShadow: path.join(LIB, 'sticker-shadow'),
-    diagnostics: path.join(LIB, 'diagnostics'),
-    expressionLearner: path.join(LIB, 'expression-learner'),
-    expressionPoolStore: path.join(LIB, 'expression-pool-store'),
-    expressionAbstractor: path.join(LIB, 'expression-abstractor'),
-    expressionShadowRouter: path.join(LIB, 'expression-shadow-router'),
-    groupSceneIndex: path.join(LIB, 'group-scene-index'),
-    randomReplyMode: path.join(LIB, 'random-reply-mode'),
-    randomPersonaRisk: path.join(LIB, 'random-persona-risk'),
+    utils: path.join(LIB, 'core', 'utils'),
+    persona: path.join(LIB, 'persona', 'persona'),
+    personaSchema: path.join(LIB, 'persona', 'persona-schema'),
+    personaDiagnostics: path.join(LIB, 'persona', 'persona-diagnostics'),
+    personaRuntimePlan: path.join(LIB, 'persona', 'persona-runtime-plan'),
+    personaProfile: path.join(LIB, 'persona', 'persona-profile'),
+    personaLoreRouter: path.join(LIB, 'persona', 'persona-lore-router'),
+    skillsLoader: path.join(LIB, 'persona', 'skills', 'skills-loader'),
+    skillSeeds: path.join(LIB, 'persona', 'skills', 'skill-seeds'),
+    externalToolPolicy: path.join(LIB, 'routing', 'external-tool-policy'),
+    replyTiming: path.join(LIB, 'reply', 'reply-timing'),
+    affectRouter: path.join(LIB, 'behavior', 'affect-router'),
+    stickerShadow: path.join(LIB, 'behavior', 'sticker-shadow'),
+    diagnostics: path.join(LIB, 'diagnostics', 'diagnostics'),
+    expressionLearner: path.join(LIB, 'behavior', 'expression', 'expression-learner'),
+    expressionPoolStore: path.join(LIB, 'behavior', 'expression', 'expression-pool-store'),
+    expressionAbstractor: path.join(LIB, 'behavior', 'expression', 'expression-abstractor'),
+    expressionShadowRouter: path.join(LIB, 'behavior', 'expression', 'expression-shadow-router'),
+    groupSceneIndex: path.join(LIB, 'routing', 'group-scene-index'),
+    randomReplyMode: path.join(LIB, 'behavior', 'random-reply-mode'),
+    randomPersonaRisk: path.join(LIB, 'behavior', 'random-persona-risk'),
     sessionCompat: path.join(LIB, 'lifecycle', 'session-compat'),
-    sessionCompatShim: path.join(LIB, 'session-compat'),
     botResolver: path.join(LIB, 'lifecycle', 'bot-resolver'),
-    botResolverShim: path.join(LIB, 'bot-resolver'),
-    channelTaskQueue: path.join(LIB, 'channel-task-queue'),
-    eventDump: path.join(LIB, 'event-dump'),
-    startupSchedulers: path.join(LIB, 'startup-schedulers'),
-    pluginLifecycle: path.join(LIB, 'plugin-lifecycle'),
-    messageSegment: path.join(LIB, 'message-segment'),
-    incomingFile: path.join(LIB, 'incoming-file'),
-    incomingMessageFlow: path.join(LIB, 'incoming-message-flow'),
-    sharedRecordText: path.join(LIB, 'shared-record-text'),
-    fileQuickRead: path.join(LIB, 'file-quick-read'),
-    runtimeSettings: path.join(LIB, 'runtime-settings'),
-    userBlacklist: path.join(LIB, 'user-blacklist'),
-    safeSend: path.join(LIB, 'safe-send'),
-    randomState: path.join(LIB, 'random-state'),
-    api: path.join(LIB, 'api'),
+    channelTaskQueue: path.join(LIB, 'lifecycle', 'channel-task-queue'),
+    eventDump: path.join(LIB, 'lifecycle', 'event-dump'),
+    startupSchedulers: path.join(LIB, 'lifecycle', 'startup-schedulers'),
+    pluginLifecycle: path.join(LIB, 'lifecycle', 'plugin-lifecycle'),
+    messageSegment: path.join(LIB, 'message', 'message-segment'),
+    incomingFile: path.join(LIB, 'media', 'file', 'incoming-file'),
+    incomingMessageFlow: path.join(LIB, 'message', 'incoming-message-flow'),
+    sharedRecordText: path.join(LIB, 'diagnostics', 'shared-record-text'),
+    fileQuickRead: path.join(LIB, 'routing', 'file-quick-read'),
+    runtimeSettings: path.join(LIB, 'behavior', 'runtime-settings'),
+    userBlacklist: path.join(LIB, 'core', 'user-blacklist'),
+    safeSend: path.join(LIB, 'reply', 'safe-send'),
+    randomState: path.join(LIB, 'behavior', 'random-state'),
+    api: path.join(LIB, 'core', 'api'),
     conversation: path.join(LIB, 'conversation'),
-    fileSafety: path.join(LIB, 'file-safety'),
-    fileStore: path.join(LIB, 'file-store'),
-    fileAnalyzer: path.join(LIB, 'file-analyzer'),
+    fileSafety: path.join(LIB, 'media', 'file', 'file-safety'),
+    fileStore: path.join(LIB, 'media', 'file', 'file-store'),
+    fileAnalyzer: path.join(LIB, 'media', 'file', 'file-analyzer'),
     handler: path.join(LIB, 'handler'),
     commandResult: path.join(LIB, 'commands', 'command-result'),
     voiceCommand: path.join(LIB, 'commands', 'voice-command'),
@@ -583,34 +581,34 @@ async function main() {
     planCommand: path.join(LIB, 'commands', 'plan-command'),
     agentCommand: path.join(LIB, 'commands', 'agent-command'),
     emotionCommand: path.join(LIB, 'commands', 'emotion-command'),
-    messageReader: path.join(LIB, 'message-reader'),
-    searchContext: path.join(LIB, 'search-context'),
+    messageReader: path.join(LIB, 'message', 'message-reader'),
+    searchContext: path.join(LIB, 'routing', 'search-context'),
     chat: path.join(LIB, 'chat'),
-    chatPromptBuilder: path.join(LIB, 'chat-prompt-builder'),
-    chatMemory: path.join(LIB, 'chat-memory'),
-    chatToolFlow: path.join(LIB, 'chat-tool-flow'),
-    chatFinalOutputFlow: path.join(LIB, 'chat-final-output-flow'),
-    chatJailbreakFlow: path.join(LIB, 'chat-jailbreak-flow'),
-    chatTopicSwitch: path.join(LIB, 'chat-topic-switch'),
-    chatAgentRetellFlow: path.join(LIB, 'chat-agent-retell-flow'),
-    chatResultFlow: path.join(LIB, 'chat-result-flow'),
-    chatSendFlow: path.join(LIB, 'chat-send-flow'),
-    agentAutoRouteFlow: path.join(LIB, 'agent-auto-route-flow'),
-    agentChatBridge: path.join(LIB, 'agent-chat-bridge'),
-    agentRetellGuard: path.join(LIB, 'agent-retell-guard'),
-    personaFallback: path.join(LIB, 'persona-fallback'),
+    chatPromptBuilder: path.join(LIB, 'chat', 'chat-prompt-builder'),
+    chatMemory: path.join(LIB, 'chat', 'chat-memory'),
+    chatToolFlow: path.join(LIB, 'chat', 'chat-tool-flow'),
+    chatFinalOutputFlow: path.join(LIB, 'chat', 'chat-final-output-flow'),
+    chatJailbreakFlow: path.join(LIB, 'chat', 'chat-jailbreak-flow'),
+    chatTopicSwitch: path.join(LIB, 'chat', 'chat-topic-switch'),
+    chatAgentRetellFlow: path.join(LIB, 'chat', 'chat-agent-retell-flow'),
+    chatResultFlow: path.join(LIB, 'chat', 'chat-result-flow'),
+    chatSendFlow: path.join(LIB, 'chat', 'chat-send-flow'),
+    agentAutoRouteFlow: path.join(LIB, 'routing', 'agent-auto-route-flow'),
+    agentChatBridge: path.join(LIB, 'chat', 'agent-chat-bridge'),
+    agentRetellGuard: path.join(LIB, 'chat', 'agent-retell-guard'),
+    personaFallback: path.join(LIB, 'persona', 'persona-fallback'),
     jailbreakRuleset: path.join(LIB, 'rulesets', 'jailbreak'),
     loggingConfig: path.join(LIB, 'core', 'logging-config'),
     runtimeConfig: path.join(LIB, 'core', 'runtime-config'),
-    reply: path.join(LIB, 'reply'),
-    replyGuard: path.join(LIB, 'reply-guard'),
-    repeat: path.join(LIB, 'repeat'),
-    forward: path.join(LIB, 'forward'),
-    vision: path.join(LIB, 'vision'),
-    sensitive: path.join(LIB, 'sensitive'),
-    retaliation: path.join(LIB, 'retaliation'),
-    sendGuard: path.join(LIB, 'send-guard'),
-    healthCheck: path.join(LIB, 'health-check'),
+    reply: path.join(LIB, 'reply', 'reply'),
+    replyGuard: path.join(LIB, 'reply', 'reply-guard'),
+    repeat: path.join(LIB, 'behavior', 'repeat'),
+    forward: path.join(LIB, 'message', 'forward'),
+    vision: path.join(LIB, 'media', 'image', 'vision'),
+    sensitive: path.join(LIB, 'behavior', 'sensitive'),
+    retaliation: path.join(LIB, 'behavior', 'retaliation'),
+    sendGuard: path.join(LIB, 'reply', 'send-guard'),
+    healthCheck: path.join(LIB, 'diagnostics', 'health-check'),
     agentEngine: path.join(LIB, 'agent', 'engine'),
     agentMessages: path.join(LIB, 'agent', 'messages'),
     agentConfig: path.join(LIB, 'agent', 'config'),
@@ -623,7 +621,7 @@ async function main() {
     agentHttpSearch: path.join(LIB, 'agent', 'http-search'),
     agentQueue: path.join(LIB, 'agent', 'queue'),
     agentMemory: path.join(LIB, 'agent', 'memory'),
-    chatTools: path.join(LIB, 'chat-tools'),
+    chatTools: path.join(LIB, 'chat', 'chat-tools'),
     agentAutoMemory: path.join(LIB, 'agent', 'auto-memory'),
     agentDream: path.join(LIB, 'agent', 'dream'),
     agentPush: path.join(LIB, 'agent', 'push'),
@@ -675,15 +673,15 @@ async function main() {
     agentToolScheduledTaskTools: path.join(LIB, 'agent', 'tools', 'scheduled-task-tools'),
     agentToolAnalyzeFile: path.join(LIB, 'agent', 'tools', 'analyze-file'),
     mcpLocalServer: path.join(LIB, 'mcp', 'local-server'),
-    rareVoice: path.join(LIB, 'rare-voice'),
+    rareVoice: path.join(LIB, 'behavior', 'rare-voice'),
     index: path.join(LIB, 'index'),
-    voice: path.join(LIB, 'voice'),
-    tts: path.join(LIB, 'tts'),
-    randomVoiceRate: path.join(LIB, 'random-voice-rate'),
-    voiceAssets: path.join(LIB, 'voice-assets'),
-    imageStore: path.join(LIB, 'image-store'),
-    imageAnalyzer: path.join(LIB, 'image-analyzer'),
-    imageAnalysisSanitizer: path.join(LIB, 'image-analysis-sanitizer'),
+    voice: path.join(LIB, 'media', 'voice', 'voice'),
+    tts: path.join(LIB, 'media', 'voice', 'tts'),
+    randomVoiceRate: path.join(LIB, 'behavior', 'random-voice-rate'),
+    voiceAssets: path.join(LIB, 'media', 'voice', 'voice-assets'),
+    imageStore: path.join(LIB, 'media', 'image', 'image-store'),
+    imageAnalyzer: path.join(LIB, 'media', 'image', 'image-analyzer'),
+    imageAnalysisSanitizer: path.join(LIB, 'media', 'image', 'image-analysis-sanitizer'),
     help: path.join(HELP, 'index'),
   }
   for (const [name, modulePath] of Object.entries(modPaths)) {
@@ -853,15 +851,7 @@ async function main() {
       'patchStripNickname', 'patchBuildStripped', 'patchInstallAccessors',
       'patchEnsureSession', 'installSessionCompatibility',
     ],
-    sessionCompatShim: [
-      'patchElementText', 'patchElementsToText', 'patchElementId',
-      'patchStripNickname', 'patchBuildStripped', 'patchInstallAccessors',
-      'patchEnsureSession', 'installSessionCompatibility',
-    ],
     botResolver: [
-      'resolveCurrentBot', 'createBotResolver', 'withCurrentBot',
-    ],
-    botResolverShim: [
       'resolveCurrentBot', 'createBotResolver', 'withCurrentBot',
     ],
     channelTaskQueue: [
@@ -1322,71 +1312,70 @@ async function main() {
     path.join(LIB, 'commands', 'plan-command.js'),
     path.join(LIB, 'commands', 'agent-command.js'),
     path.join(LIB, 'commands', 'emotion-command.js'),
-    path.join(LIB, 'api.js'),
+    path.join(LIB, 'core', 'api.js'),
     path.join(LIB, 'conversation.js'),
-    path.join(LIB, 'utils.js'),
-    path.join(LIB, 'persona.js'),
-    path.join(LIB, 'persona-schema.js'),
-    path.join(LIB, 'persona-diagnostics.js'),
-    path.join(LIB, 'persona-runtime-plan.js'),
-    path.join(LIB, 'persona-profile.js'),
-    path.join(LIB, 'persona-lore-router.js'),
-    path.join(LIB, 'skills-loader.js'),
-    path.join(LIB, 'external-tool-policy.js'),
-    path.join(LIB, 'reply-timing.js'),
-    path.join(LIB, 'affect-router.js'),
-    path.join(LIB, 'sticker-shadow.js'),
-    path.join(LIB, 'diagnostics.js'),
-    path.join(LIB, 'expression-learner.js'),
-    path.join(LIB, 'expression-pool-store.js'),
-    path.join(LIB, 'expression-abstractor.js'),
-    path.join(LIB, 'expression-shadow-router.js'),
-    path.join(LIB, 'group-scene-index.js'),
-    path.join(LIB, 'random-reply-mode.js'),
-    path.join(LIB, 'random-persona-risk.js'),
-    path.join(LIB, 'session-compat.js'),
+    path.join(LIB, 'core', 'utils.js'),
+    path.join(LIB, 'core', 'constants.js'),
+    path.join(LIB, 'persona', 'persona.js'),
+    path.join(LIB, 'persona', 'persona-schema.js'),
+    path.join(LIB, 'persona', 'persona-diagnostics.js'),
+    path.join(LIB, 'persona', 'persona-runtime-plan.js'),
+    path.join(LIB, 'persona', 'persona-profile.js'),
+    path.join(LIB, 'persona', 'persona-lore-router.js'),
+    path.join(LIB, 'persona', 'skills', 'skills-loader.js'),
+    path.join(LIB, 'persona', 'skills', 'skill-seeds.js'),
+    path.join(LIB, 'reply', 'reply-timing.js'),
+    path.join(LIB, 'behavior', 'affect-router.js'),
+    path.join(LIB, 'behavior', 'sticker-shadow.js'),
+    path.join(LIB, 'diagnostics', 'diagnostics.js'),
+    path.join(LIB, 'behavior', 'expression', 'expression-learner.js'),
+    path.join(LIB, 'behavior', 'expression', 'expression-pool-store.js'),
+    path.join(LIB, 'behavior', 'expression', 'expression-abstractor.js'),
+    path.join(LIB, 'behavior', 'expression', 'expression-shadow-router.js'),
+    path.join(LIB, 'routing', 'group-scene-index.js'),
+    path.join(LIB, 'behavior', 'random-reply-mode.js'),
+    path.join(LIB, 'behavior', 'random-persona-risk.js'),
     path.join(LIB, 'lifecycle', 'session-compat.js'),
-    path.join(LIB, 'bot-resolver.js'),
     path.join(LIB, 'lifecycle', 'bot-resolver.js'),
-    path.join(LIB, 'channel-task-queue.js'),
-    path.join(LIB, 'event-dump.js'),
-    path.join(LIB, 'startup-schedulers.js'),
-    path.join(LIB, 'plugin-lifecycle.js'),
-    path.join(LIB, 'message-segment.js'),
-    path.join(LIB, 'incoming-file.js'),
-    path.join(LIB, 'incoming-message-flow.js'),
-    path.join(LIB, 'shared-record-text.js'),
-    path.join(LIB, 'file-quick-read.js'),
-    path.join(LIB, 'runtime-settings.js'),
-    path.join(LIB, 'user-blacklist.js'),
-    path.join(LIB, 'safe-send.js'),
-    path.join(LIB, 'random-state.js'),
-    path.join(LIB, 'message-reader.js'),
+    path.join(LIB, 'lifecycle', 'channel-task-queue.js'),
+    path.join(LIB, 'lifecycle', 'event-dump.js'),
+    path.join(LIB, 'lifecycle', 'startup-schedulers.js'),
+    path.join(LIB, 'lifecycle', 'plugin-lifecycle.js'),
+    path.join(LIB, 'message', 'message-segment.js'),
+    path.join(LIB, 'message', 'incoming-message-flow.js'),
+    path.join(LIB, 'diagnostics', 'shared-record-text.js'),
+    path.join(LIB, 'behavior', 'runtime-settings.js'),
+    path.join(LIB, 'core', 'user-blacklist.js'),
+    path.join(LIB, 'commands', 'admin-commands.js'),
+    path.join(LIB, 'reply', 'safe-send.js'),
+    path.join(LIB, 'behavior', 'random-state.js'),
+    path.join(LIB, 'message', 'message-reader.js'),
     path.join(LIB, 'chat.js'),
-    path.join(LIB, 'search-context.js'),
-    path.join(LIB, 'chat-prompt-builder.js'),
-    path.join(LIB, 'chat-memory.js'),
-    path.join(LIB, 'chat-tool-flow.js'),
-    path.join(LIB, 'chat-final-output-flow.js'),
-    path.join(LIB, 'chat-jailbreak-flow.js'),
-    path.join(LIB, 'chat-topic-switch.js'),
-    path.join(LIB, 'chat-agent-retell-flow.js'),
-    path.join(LIB, 'chat-result-flow.js'),
-    path.join(LIB, 'chat-send-flow.js'),
-    path.join(LIB, 'agent-auto-route-flow.js'),
-    path.join(LIB, 'agent-chat-bridge.js'),
+    path.join(LIB, 'routing', 'search-context.js'),
+    path.join(LIB, 'chat', 'chat-memory.js'),
+    path.join(LIB, 'chat', 'chat-tool-flow.js'),
+    path.join(LIB, 'chat', 'chat-final-output-flow.js'),
+    path.join(LIB, 'chat', 'chat-jailbreak-flow.js'),
+    path.join(LIB, 'chat', 'chat-topic-switch.js'),
+    path.join(LIB, 'chat', 'chat-agent-retell-flow.js'),
+    path.join(LIB, 'chat', 'chat-result-flow.js'),
+    path.join(LIB, 'chat', 'chat-send-flow.js'),
+    path.join(LIB, 'routing', 'agent-auto-route-flow.js'),
+    path.join(LIB, 'chat', 'agent-chat-bridge.js'),
+    path.join(LIB, 'chat', 'agent-retell-guard.js'),
+    path.join(LIB, 'chat', 'chat-prompt-builder.js'),
+    path.join(LIB, 'chat', 'chat-tools.js'),
     path.join(LIB, 'rulesets', 'jailbreak.js'),
     path.join(LIB, 'core', 'logging-config.js'),
     path.join(LIB, 'core', 'runtime-config.js'),
-    path.join(LIB, 'reply.js'),
-    path.join(LIB, 'reply-guard.js'),
-    path.join(LIB, 'repeat.js'),
-    path.join(LIB, 'forward.js'),
-    path.join(LIB, 'vision.js'),
-    path.join(LIB, 'sensitive.js'),
-    path.join(LIB, 'retaliation.js'),
-    path.join(LIB, 'send-guard.js'),
-    path.join(LIB, 'health-check.js'),
+    path.join(LIB, 'reply', 'reply.js'),
+    path.join(LIB, 'reply', 'reply-guard.js'),
+    path.join(LIB, 'behavior', 'repeat.js'),
+    path.join(LIB, 'message', 'forward.js'),
+    path.join(LIB, 'behavior', 'sensitive.js'),
+    path.join(LIB, 'behavior', 'retaliation.js'),
+    path.join(LIB, 'reply', 'send-guard.js'),
+    path.join(LIB, 'diagnostics', 'health-check.js'),
     path.join(LIB, 'agent', 'engine.js'),
     path.join(LIB, 'agent', 'messages.js'),
     path.join(LIB, 'agent', 'config.js'),
@@ -1442,17 +1431,21 @@ async function main() {
     path.join(LIB, 'agent', 'tools', 'create-reminder.js'),
     path.join(LIB, 'agent', 'tools', 'analyze-file.js'),
     path.join(LIB, 'mcp', 'local-server.js'),
-    path.join(LIB, 'rare-voice.js'),
-    path.join(LIB, 'file-safety.js'),
-    path.join(LIB, 'file-store.js'),
-    path.join(LIB, 'file-analyzer.js'),
-    path.join(LIB, 'persona-fallback.js'),
-    path.join(LIB, 'voice.js'),
-    path.join(LIB, 'tts.js'),
-    path.join(LIB, 'random-voice-rate.js'),
-    path.join(LIB, 'voice-assets.js'),
-    path.join(LIB, 'image-store.js'),
-    path.join(LIB, 'image-analyzer.js'),
+    path.join(LIB, 'behavior', 'rare-voice.js'),
+    path.join(LIB, 'media', 'file', 'file-safety.js'),
+    path.join(LIB, 'media', 'file', 'file-followup-guard.js'),
+    path.join(LIB, 'media', 'file', 'file-store.js'),
+    path.join(LIB, 'media', 'file', 'incoming-file.js'),
+    path.join(LIB, 'media', 'file', 'file-analyzer.js'),
+    path.join(LIB, 'persona', 'persona-fallback.js'),
+    path.join(LIB, 'media', 'voice', 'voice.js'),
+    path.join(LIB, 'media', 'voice', 'tts.js'),
+    path.join(LIB, 'behavior', 'random-voice-rate.js'),
+    path.join(LIB, 'media', 'voice', 'voice-assets.js'),
+    path.join(LIB, 'media', 'image', 'image-store.js'),
+    path.join(LIB, 'media', 'image', 'image-analyzer.js'),
+    path.join(LIB, 'media', 'image', 'image-analysis-sanitizer.js'),
+    path.join(LIB, 'media', 'image', 'vision.js'),
     path.join(HELP, 'index.js'),
     __filename,
   ]
@@ -1460,7 +1453,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'constants.js', 'utils.js', 'persona.js', 'persona-schema.js', 'persona-diagnostics.js', 'persona-runtime-plan.js', 'persona-profile.js', 'persona-lore-router.js', 'skills-loader.js', 'external-tool-policy.js', 'reply-timing.js', 'affect-router.js', 'sticker-shadow.js', 'diagnostics.js', 'expression-learner.js', 'expression-pool-store.js', 'expression-abstractor.js', 'expression-shadow-router.js', 'group-scene-index.js', 'random-reply-mode.js', 'random-persona-risk.js', 'session-compat.js', 'lifecycle/session-compat.js', 'bot-resolver.js', 'lifecycle/bot-resolver.js', 'channel-task-queue.js', 'event-dump.js', 'startup-schedulers.js', 'plugin-lifecycle.js', 'message-segment.js', 'incoming-file.js', 'incoming-message-flow.js', 'shared-record-text.js', 'file-quick-read.js', 'runtime-settings.js', 'user-blacklist.js', 'safe-send.js', 'random-state.js', 'api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message-reader.js', 'chat.js', 'chat-prompt-builder.js', 'chat-memory.js', 'chat-tool-flow.js', 'chat-final-output-flow.js', 'chat-jailbreak-flow.js', 'chat-topic-switch.js', 'chat-agent-retell-flow.js', 'chat-result-flow.js', 'chat-send-flow.js', 'agent-auto-route-flow.js', 'agent-chat-bridge.js', 'agent-retell-guard.js', 'persona-fallback.js', 'file-safety.js', 'file-store.js', 'file-analyzer.js', 'rulesets/jailbreak.js', 'core/logging-config.js', 'core/runtime-config.js', 'health-check.js', 'reply.js', 'reply-guard.js', 'repeat.js', 'forward.js', 'vision.js', 'sensitive.js', 'retaliation.js', 'send-guard.js', 'rare-voice.js', 'random-voice-rate.js', 'voice-assets.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js', 'mcp/local-server.js']
+  const duplicateScanFiles = ['index.js', 'core/constants.js', 'core/utils.js', 'persona/persona.js', 'persona/persona-schema.js', 'persona/persona-diagnostics.js', 'persona/persona-runtime-plan.js', 'persona/persona-profile.js', 'persona/persona-lore-router.js', 'persona/skills/skills-loader.js', 'persona/skills/skill-seeds.js', 'reply/reply-timing.js', 'behavior/affect-router.js', 'behavior/sticker-shadow.js', 'diagnostics/diagnostics.js', 'behavior/expression/expression-learner.js', 'behavior/expression/expression-pool-store.js', 'behavior/expression/expression-abstractor.js', 'behavior/expression/expression-shadow-router.js', 'routing/group-scene-index.js', 'behavior/random-reply-mode.js', 'behavior/random-persona-risk.js', 'lifecycle/session-compat.js', 'lifecycle/bot-resolver.js', 'lifecycle/channel-task-queue.js', 'lifecycle/event-dump.js', 'lifecycle/startup-schedulers.js', 'lifecycle/plugin-lifecycle.js', 'message/message-segment.js', 'message/incoming-message-flow.js', 'behavior/runtime-settings.js', 'core/user-blacklist.js', 'commands/admin-commands.js', 'diagnostics/shared-record-text.js', 'routing/search-context.js', 'reply/safe-send.js', 'behavior/random-state.js', 'core/api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message/message-reader.js', 'chat.js', 'chat/chat-prompt-builder.js', 'chat/chat-memory.js', 'chat/chat-tool-flow.js', 'chat/chat-final-output-flow.js', 'chat/chat-jailbreak-flow.js', 'chat/chat-topic-switch.js', 'chat/chat-agent-retell-flow.js', 'chat/chat-result-flow.js', 'chat/chat-send-flow.js', 'routing/agent-auto-route-flow.js', 'chat/agent-chat-bridge.js', 'chat/agent-retell-guard.js', 'chat/chat-tools.js', 'persona/persona-fallback.js', 'media/file/file-safety.js', 'media/file/file-followup-guard.js', 'media/file/file-store.js', 'media/file/incoming-file.js', 'media/file/file-analyzer.js', 'media/image/image-store.js', 'media/image/image-analyzer.js', 'media/image/image-analysis-sanitizer.js', 'media/image/vision.js', 'rulesets/jailbreak.js', 'core/logging-config.js', 'core/runtime-config.js', 'diagnostics/health-check.js', 'reply/reply.js', 'reply/reply-guard.js', 'behavior/repeat.js', 'message/forward.js', 'behavior/sensitive.js', 'behavior/retaliation.js', 'reply/send-guard.js', 'behavior/rare-voice.js', 'behavior/random-voice-rate.js', 'media/voice/voice-assets.js', 'media/voice/voice.js', 'media/voice/tts.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js', 'mcp/local-server.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -1474,12 +1467,27 @@ async function main() {
     }
   }
   const seenFunctions = new Map()
+  const duplicateAllowPairs = new Set([
+    'getSafeKey:media/file/file-store.js+media/image/image-store.js',
+    'getLegacyUnsafeKey:media/file/file-store.js+media/image/image-store.js',
+    'getLegacyUnsafeFilePath:media/file/file-store.js+media/image/image-store.js',
+    'getFilePath:media/file/file-store.js+media/image/image-store.js',
+    'cleanExpired:media/file/file-store.js+media/image/image-store.js',
+    'drainQueue:media/file/file-analyzer.js+media/image/image-analyzer.js',
+    'runAnalysis:media/file/file-analyzer.js+media/image/image-analyzer.js',
+    'finish:api.js+media/voice/voice.js',
+    'finish:core/api.js+media/voice/voice.js',
+  ])
+  let allowedDuplicateCount = 0
   for (const item of functions) {
     const previous = seenFunctions.get(item.name)
-    if (previous) fail(`duplicate function name: ${item.name}`, `${item.file}:${item.line} and ${previous.file}:${previous.line}`)
-    else seenFunctions.set(item.name, item)
+    if (previous) {
+      const pair = [previous.file, item.file].sort().join('+')
+      if (duplicateAllowPairs.has(`${item.name}:${pair}`)) allowedDuplicateCount++
+      else fail(`duplicate function name: ${item.name}`, `${item.file}:${item.line} and ${previous.file}:${previous.line}`)
+    } else seenFunctions.set(item.name, item)
   }
-  if (totalFailed === 0 || seenFunctions.size === functions.length) check(`function names unique across AI lib (${functions.length})`, seenFunctions.size === functions.length)
+  if (totalFailed === 0 || seenFunctions.size + allowedDuplicateCount === functions.length) check(`function names unique across AI lib (${functions.length})`, seenFunctions.size + allowedDuplicateCount === functions.length)
 
   section('5. utility pure functions')
   checkEqual('formatPercent integer', u.formatPercent(0.02), '2%')
@@ -1760,7 +1768,7 @@ async function main() {
   checkEqual('repeat mface unsupported reason', candidate({ content: '[CQ:mface,file=x]' }, STR.qqStickerLike, { hasVisual: true }).reason, 'visual')
   checkEqual('repeat image unsupported reason', candidate({ content: '[CQ:image,file=x]' }, '', { hasVisual: true }).reason, 'visual')
   checkEqual('repeat file unsupported reason', candidate({ content: '[CQ:file,file=x]' }, '', { hasFile: true }).reason, 'file')
-  check('reply send guard only strips internal parenthetical hints', read(path.join(LIB, 'reply.js')).includes('stripInternalParenthetical') && read(path.join(LIB, 'reply.js')).includes('我(?:需要|应该|会|可以先)'))
+  check('reply send guard only strips internal parenthetical hints', read(path.join(LIB, 'reply', 'reply.js')).includes('stripInternalParenthetical') && read(path.join(LIB, 'reply', 'reply.js')).includes('我(?:需要|应该|会|可以先)'))
   checkEqual('repeat forward unsupported reason', candidate({ content: '[CQ:forward,id=x]' }, STR.forwardLike, { hasMessageRecordCue: true }).reason, 'embed')
   const textRepeat = candidate({ content: STR.grass }, STR.grass)
   check('repeat text supported', textRepeat.supported && textRepeat.kind === 'text')
@@ -2046,10 +2054,10 @@ async function main() {
   const imageTmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cascade-image-'))
   try {
     process.env.DONGXUELIAN_AI_DATA_DIR = imageTmp
-    for (const rel of ['constants', 'conversation', 'image-store']) {
+    for (const rel of ['core/constants', 'conversation', 'media/image/image-store', 'media/image/image-analysis-sanitizer']) {
       delete require.cache[require.resolve(path.join(LIB, rel))]
     }
-    const isolatedImageStore = require(path.join(LIB, 'image-store'))
+    const isolatedImageStore = require(path.join(LIB, 'media', 'image', 'image-store'))
     await isolatedImageStore.storeImageUrl('g1', 'm1', 'https://example.com/a.jpg', 'file-a')
     await isolatedImageStore.storeImageUrl('g1', 'm2', 'https://example.com/b.png', null)
     const recentImages = await isolatedImageStore.getRecentImages('g1', 5)
@@ -2085,7 +2093,7 @@ async function main() {
   } finally {
     if (originalImageDataDir === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
     else process.env.DONGXUELIAN_AI_DATA_DIR = originalImageDataDir
-    for (const rel of ['constants', 'conversation', 'image-store']) {
+    for (const rel of ['core/constants', 'conversation', 'media/image/image-store', 'media/image/image-analysis-sanitizer']) {
       try { delete require.cache[require.resolve(path.join(LIB, rel))] } catch {}
     }
     fs.rmSync(imageTmp, { recursive: true, force: true })
@@ -2202,10 +2210,10 @@ async function main() {
   const agentTmp = fs.mkdtempSync(path.join(agentTmpRoot, 'cascade-agent-'))
   try {
     process.env.DONGXUELIAN_AI_DATA_DIR = agentTmp
-    for (const rel of ['constants', 'core/runtime-config', 'api', 'agent/config', 'agent/engine', 'agent/workspace-context', 'agent/path-guard', 'agent/skills', 'agent/http-search', 'chat-tools', 'agent/tools/registry', 'agent/tools/read-agent-skill', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/pending', 'agent/safety', 'agent/stats']) {
+    for (const rel of ['core/constants', 'core/runtime-config', 'core/api', 'agent/config', 'agent/engine', 'agent/workspace-context', 'agent/path-guard', 'agent/skills', 'agent/http-search', 'chat/chat-tools', 'agent/tools/registry', 'agent/tools/read-agent-skill', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/pending', 'agent/safety', 'agent/stats']) {
       delete require.cache[require.resolve(path.join(LIB, rel))]
     }
-    const isolatedConstants = require(path.join(LIB, 'constants'))
+    const isolatedConstants = require(path.join(LIB, 'core', 'constants'))
     const isolatedRuntimeConfig = require(path.join(LIB, 'core', 'runtime-config'))
     const isolatedBrowserAction = require(path.join(LIB, 'agent', 'tools', 'browser-action'))
     const originalBrowserActionExecute = isolatedBrowserAction.execute
@@ -2227,7 +2235,7 @@ async function main() {
     const isolatedSetUserTimezone = require(path.join(LIB, 'agent', 'tools', 'set-user-timezone'))
     const isolatedWebSearch = require(path.join(LIB, 'agent', 'tools', 'web-search'))
     const isolatedWebFetch = require(path.join(LIB, 'agent', 'tools', 'web-fetch'))
-    const isolatedFileAnalyzer = require(path.join(LIB, 'file-analyzer'))
+    const isolatedFileAnalyzer = require(path.join(LIB, 'media', 'file', 'file-analyzer'))
     const isolatedReadAgentSkill = require(path.join(LIB, 'agent', 'tools', 'read-agent-skill'))
     const isolatedWriteFile = require(path.join(LIB, 'agent', 'tools', 'write-file'))
     const isolatedListFiles = require(path.join(LIB, 'agent', 'tools', 'list-files'))
@@ -2278,7 +2286,7 @@ async function main() {
       check('read_agent_skill rejects disabled skill', /未启用/.test(String(error && error.message || error)))
     }
     check('read_agent_skill allows auto relevant search strategy skill', (await isolatedReadAgentSkill.execute({ name: 'web_search_strategy' }, { channel: 'qq', userMessage: '联网查最新消息来源' })).includes('只看标题和摘要不算完成搜索'))
-    const isolatedChatTools = require(path.join(LIB, 'chat-tools'))
+    const isolatedChatTools = require(path.join(LIB, 'chat', 'chat-tools'))
     await isolatedConfig.saveAgentConfig({
       version: 2,
       channels: {
@@ -2760,7 +2768,7 @@ async function main() {
   } finally {
     if (originalAgentDataDir) process.env.DONGXUELIAN_AI_DATA_DIR = originalAgentDataDir
     else delete process.env.DONGXUELIAN_AI_DATA_DIR
-    for (const rel of ['constants', 'core/runtime-config', 'agent/config', 'agent/path-guard', 'agent/tools/registry', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/pending', 'agent/safety', 'agent/stats']) {
+    for (const rel of ['core/runtime-config', 'agent/config', 'agent/path-guard', 'agent/tools/registry', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/pending', 'agent/safety', 'agent/stats']) {
       delete require.cache[require.resolve(path.join(LIB, rel))]
     }
     try { fs.rmSync(agentTmp, { recursive: true, force: true }) } catch {}
@@ -3428,9 +3436,9 @@ async function main() {
   const chatSkillsTmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cascade-chat-skills-'))
   try {
     process.env.DONGXUELIAN_AI_DATA_DIR = chatSkillsTmp
-    for (const rel of ['constants', 'skill-seeds', 'skills-loader', 'chat']) delete require.cache[require.resolve(path.join(LIB, rel))]
+    for (const rel of ['core/constants', 'persona/skills/skill-seeds', 'persona/skills/skills-loader', 'chat']) delete require.cache[require.resolve(path.join(LIB, rel))]
     const isolatedChat = require(path.join(LIB, 'chat'))
-    const isolatedConstants = require(path.join(LIB, 'constants'))
+    const isolatedConstants = require(path.join(LIB, 'core', 'constants'))
     fs.mkdirSync(isolatedConstants.SKILLS_CORE_DIR, { recursive: true })
     fs.mkdirSync(isolatedConstants.SKILLS_MODES_DIR, { recursive: true })
     fs.mkdirSync(isolatedConstants.SKILLS_LORE_DIR, { recursive: true })
@@ -3445,7 +3453,7 @@ async function main() {
   } finally {
     if (originalChatDataDir) process.env.DONGXUELIAN_AI_DATA_DIR = originalChatDataDir
     else delete process.env.DONGXUELIAN_AI_DATA_DIR
-    for (const rel of ['constants', 'skill-seeds', 'skills-loader', 'chat']) delete require.cache[require.resolve(path.join(LIB, rel))]
+    for (const rel of ['core/constants', 'persona/skills/skill-seeds', 'persona/skills/skills-loader', 'chat']) delete require.cache[require.resolve(path.join(LIB, rel))]
     try { fs.rmSync(chatSkillsTmp, { recursive: true, force: true }) } catch {}
   }
   const personaScanTmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cascade-persona-schema-'))
@@ -3545,7 +3553,7 @@ async function main() {
 
   section('12. help and reserved command static audits')
   const helpSrc = read(path.join(HELP, 'index.js'))
-  const constantsSrc = read(path.join(LIB, 'constants.js'))
+  const constantsSrc = read(path.join(LIB, 'core', 'constants.js'))
 
   const renderDefs = new Set([...helpSrc.matchAll(/function\s+(render\w+)\s*\(/g)].map(m => m[1]))
   const renderCalls = [...helpSrc.matchAll(/return\s+(render\w+)\s*\(/g)].map(m => m[1])
@@ -3684,7 +3692,7 @@ async function main() {
     check('dashboard token usage uses distribution and trend charts', dashboardKeyManagerSrc.includes('模型分布') && dashboardKeyManagerSrc.includes('Token 使用趋势') && dashboardKeyManagerSrc.includes('donut-wrap') && dashboardKeyManagerSrc.includes('distribution-table') && dashboardKeyManagerSrc.includes('trend-chart') && !dashboardKeyManagerSrc.includes('class="token-bars"'))
     check('dashboard token usage exposes range and date controls', dashboardKeyManagerSrc.includes('rangePresets') && dashboardKeyManagerSrc.includes('今天') && dashboardKeyManagerSrc.includes('7天') && dashboardKeyManagerSrc.includes('30天') && dashboardKeyManagerSrc.includes('type="date"') && dashboardKeyManagerSrc.includes('filteredUsageDays'))
     check('dashboard token usage accepts provider and model stats', dashboardStandalone.includes('models: [...models.values()]') && dashboardStandalone.includes('source.models') && dashboardStandalone.includes('day.models') && dashboardStandalone.includes('cacheRead') && dashboardKeyManagerSrc.includes('usageModels') && dashboardKeyManagerSrc.includes('cacheHitRate'))
-  const aiApiSrc = read(path.join(LIB, 'api.js'))
+  const aiApiSrc = read(path.join(LIB, 'core', 'api.js'))
   check('AI token usage records model and detailed usage fields', aiApiSrc.includes('function readUsageDetails') && aiApiSrc.includes("recordTokenUsage(config.provider || 'unknown', usageTokens, { model: config.model") && aiApiSrc.includes('cache_read_tokens'))
   const agentConsoleSrc = fs.existsSync(path.join(PKG_ROOT, 'agent-console', 'src', 'main.tsx')) ? read(path.join(PKG_ROOT, 'agent-console', 'src', 'main.tsx')) : ''
   check('agent console exposes runtime config page', agentConsoleSrc.includes("id: 'runtime'") && agentConsoleSrc.includes('function RuntimePage') && agentConsoleSrc.includes('queue.maxGlobal'))
@@ -3774,36 +3782,59 @@ async function main() {
   section('15. cross-file regression guards')
   const indexSrc = read(path.join(LIB, 'index.js'))
   const sessionCompatSrc = read(path.join(LIB, 'lifecycle', 'session-compat.js'))
-  const sessionCompatShimSrc = read(path.join(LIB, 'session-compat.js'))
   const botResolverSrc = read(path.join(LIB, 'lifecycle', 'bot-resolver.js'))
-  const botResolverShimSrc = read(path.join(LIB, 'bot-resolver.js'))
-  const startupSchedulersSrc = read(path.join(LIB, 'startup-schedulers.js'))
-  const pluginLifecycleSrc = read(path.join(LIB, 'plugin-lifecycle.js'))
-  const messageSegmentSrc = read(path.join(LIB, 'message-segment.js'))
-  const incomingFileSrc = read(path.join(LIB, 'incoming-file.js'))
-  const incomingMessageFlowSrc = read(path.join(LIB, 'incoming-message-flow.js'))
-  const sharedRecordTextSrc = read(path.join(LIB, 'shared-record-text.js'))
-  const fileQuickReadSrc = read(path.join(LIB, 'file-quick-read.js'))
-  const randomPersonaRiskSrc = read(path.join(LIB, 'random-persona-risk.js'))
-  const diagnosticsSrc = read(path.join(LIB, 'diagnostics.js'))
-  const runtimeSettingsSrc = read(path.join(LIB, 'runtime-settings.js'))
-  const userBlacklistSrc = read(path.join(LIB, 'user-blacklist.js'))
-  const safeSendSrc = read(path.join(LIB, 'safe-send.js'))
-  const randomStateSrc = read(path.join(LIB, 'random-state.js'))
-  const chatToolFlowSrc = read(path.join(LIB, 'chat-tool-flow.js'))
-  const chatFinalOutputFlowSrc = read(path.join(LIB, 'chat-final-output-flow.js'))
-  const chatJailbreakFlowSrc = read(path.join(LIB, 'chat-jailbreak-flow.js'))
-  const chatTopicSwitchSrc = read(path.join(LIB, 'chat-topic-switch.js'))
-  const chatAgentRetellFlowSrc = read(path.join(LIB, 'chat-agent-retell-flow.js'))
-  const chatResultFlowSrc = read(path.join(LIB, 'chat-result-flow.js'))
-  const chatSendFlowSrc = read(path.join(LIB, 'chat-send-flow.js'))
-  const agentAutoRouteFlowSrc = read(path.join(LIB, 'agent-auto-route-flow.js'))
-  const apiSrc = read(path.join(LIB, 'api.js'))
+  const channelTaskQueueSrc = read(path.join(LIB, 'lifecycle', 'channel-task-queue.js'))
+  const eventDumpSrc = read(path.join(LIB, 'lifecycle', 'event-dump.js'))
+  const startupSchedulersSrc = read(path.join(LIB, 'lifecycle', 'startup-schedulers.js'))
+  const pluginLifecycleSrc = read(path.join(LIB, 'lifecycle', 'plugin-lifecycle.js'))
+  const messageSegmentSrc = read(path.join(LIB, 'message', 'message-segment.js'))
+  const incomingFileSrc = read(path.join(LIB, 'media', 'file', 'incoming-file.js'))
+  const fileStoreSrc = read(path.join(LIB, 'media', 'file', 'file-store.js'))
+  const fileAnalyzerSrc = read(path.join(LIB, 'media', 'file', 'file-analyzer.js'))
+  const incomingMessageFlowSrc = read(path.join(LIB, 'message', 'incoming-message-flow.js'))
+  const sharedRecordTextSrc = read(path.join(LIB, 'diagnostics', 'shared-record-text.js'))
+  const fileQuickReadSrc = read(path.join(LIB, 'routing', 'file-quick-read.js'))
+  const externalToolPolicySrc = read(path.join(LIB, 'routing', 'external-tool-policy.js'))
+  const loggingConfigSrc = read(path.join(LIB, 'core', 'logging-config.js'))
+  const runtimeConfigSrc = read(path.join(LIB, 'core', 'runtime-config.js'))
+  const searchContextSrc = read(path.join(LIB, 'routing', 'search-context.js'))
+  const groupSceneIndexSrc = read(path.join(LIB, 'routing', 'group-scene-index.js'))
+  const healthCheckSrc = read(path.join(LIB, 'diagnostics', 'health-check.js'))
+  const replyTimingSrc = read(path.join(LIB, 'reply', 'reply-timing.js'))
+  const replySrc = read(path.join(LIB, 'reply', 'reply.js'))
+  const replyGuardSrc = read(path.join(LIB, 'reply', 'reply-guard.js'))
+  const randomPersonaRiskSrc = read(path.join(LIB, 'behavior', 'random-persona-risk.js'))
+  const rareVoiceSrc = read(path.join(LIB, 'behavior', 'rare-voice.js'))
+  const randomVoiceRateSrc = read(path.join(LIB, 'behavior', 'random-voice-rate.js'))
+  const diagnosticsSrc = read(path.join(LIB, 'diagnostics', 'diagnostics.js'))
+  const runtimeSettingsSrc = read(path.join(LIB, 'behavior', 'runtime-settings.js'))
+  const userBlacklistSrc = read(path.join(LIB, 'core', 'user-blacklist.js'))
+  const adminCommandsSrc = read(path.join(LIB, 'commands', 'admin-commands.js'))
+  const safeSendSrc = read(path.join(LIB, 'reply', 'safe-send.js'))
+  const sendGuardSrc = read(path.join(LIB, 'reply', 'send-guard.js'))
+  const randomStateSrc = read(path.join(LIB, 'behavior', 'random-state.js'))
+  const randomReplyModeSrc = read(path.join(LIB, 'behavior', 'random-reply-mode.js'))
+  const sensitiveSrc = read(path.join(LIB, 'behavior', 'sensitive.js'))
+  const repeatSrc = read(path.join(LIB, 'behavior', 'repeat.js'))
+  const retaliationSrc = read(path.join(LIB, 'behavior', 'retaliation.js'))
+  const chatToolFlowSrc = read(path.join(LIB, 'chat', 'chat-tool-flow.js'))
+  const chatFinalOutputFlowSrc = read(path.join(LIB, 'chat', 'chat-final-output-flow.js'))
+  const chatJailbreakFlowSrc = read(path.join(LIB, 'chat', 'chat-jailbreak-flow.js'))
+  const chatTopicSwitchSrc = read(path.join(LIB, 'chat', 'chat-topic-switch.js'))
+  const chatAgentRetellFlowSrc = read(path.join(LIB, 'chat', 'chat-agent-retell-flow.js'))
+  const chatResultFlowSrc = read(path.join(LIB, 'chat', 'chat-result-flow.js'))
+  const chatSendFlowSrc = read(path.join(LIB, 'chat', 'chat-send-flow.js'))
+  const agentAutoRouteFlowSrc = read(path.join(LIB, 'routing', 'agent-auto-route-flow.js'))
+  const apiSrc = read(path.join(LIB, 'core', 'api.js'))
   const conversationSrc = read(path.join(LIB, 'conversation.js'))
   const chatSrc = read(path.join(LIB, 'chat.js'))
-  const chatToolsSrc = read(path.join(LIB, 'chat-tools.js'))
-  const utilsSrc = read(path.join(LIB, 'utils.js'))
-  const msgSrc = read(path.join(LIB, 'message-reader.js'))
+  const chatToolsSrc = read(path.join(LIB, 'chat', 'chat-tools.js'))
+  const chatMemorySrc = read(path.join(LIB, 'chat', 'chat-memory.js'))
+  const chatPromptBuilderSrc = read(path.join(LIB, 'chat', 'chat-prompt-builder.js'))
+  const agentChatBridgeSrc = read(path.join(LIB, 'chat', 'agent-chat-bridge.js'))
+  const agentRetellGuardSrc = read(path.join(LIB, 'chat', 'agent-retell-guard.js'))
+  const utilsSrc = read(path.join(LIB, 'core', 'utils.js'))
+  const msgSrc = read(path.join(LIB, 'message', 'message-reader.js'))
   const dashboardStandaloneSrc = [
     read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'standalone.js')),
     ...fs.readdirSync(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib')).filter(f => f.endsWith('.js')).map(f => read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', f))),
@@ -3813,15 +3844,21 @@ async function main() {
   const dailyCollectorSrc = read(path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'data-collector.js'))
   const dailyAnalyzerSrc = read(path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'ai-analyzer.js'))
   const agentPushSrc = read(path.join(LIB, 'agent', 'push.js'))
-  const skillsLoaderSrc = read(path.join(LIB, 'skills-loader.js'))
-  const personaSrc = read(path.join(LIB, 'persona.js'))
+  const skillsLoaderSrc = read(path.join(LIB, 'persona', 'skills', 'skills-loader.js'))
+  const skillSeedsSrc = read(path.join(LIB, 'persona', 'skills', 'skill-seeds.js'))
+  const personaSrc = read(path.join(LIB, 'persona', 'persona.js'))
   const agentPersonaSrc = read(path.join(LIB, 'agent', 'persona-context.js'))
   const agentConfigSrc = read(path.join(LIB, 'agent', 'config.js'))
   const agentCronSrc = read(path.join(LIB, 'agent', 'cron.js'))
   const agentMemorySrc = read(path.join(LIB, 'agent', 'memory.js'))
   const agentSessionsSrc = read(path.join(LIB, 'agent', 'sessions.js'))
-  const imageStoreSrc = read(path.join(LIB, 'image-store.js'))
-  const imageAnalyzerSrc = read(path.join(LIB, 'image-analyzer.js'))
+  const imageStoreSrc = read(path.join(LIB, 'media', 'image', 'image-store.js'))
+  const imageAnalyzerSrc = read(path.join(LIB, 'media', 'image', 'image-analyzer.js'))
+  const imageAnalysisSanitizerSrc = read(path.join(LIB, 'media', 'image', 'image-analysis-sanitizer.js'))
+  const visionSrc = read(path.join(LIB, 'media', 'image', 'vision.js'))
+  const voiceAssetsSrc = read(path.join(LIB, 'media', 'voice', 'voice-assets.js'))
+  const voiceSrc = read(path.join(LIB, 'media', 'voice', 'voice.js'))
+  const ttsSrc = read(path.join(LIB, 'media', 'voice', 'tts.js'))
   const analyzeImageSrc = read(path.join(LIB, 'agent', 'tools', 'analyze-image.js'))
   // conversation.js 现需 DATA_DIR 用于 memory-timers (群记忆定时清空) 的路径构造
   check('conversation.js does not import POLITICAL_DETECT_FILE', !conversationSrc.includes('POLITICAL_DETECT_FILE'))
@@ -3854,15 +3891,15 @@ async function main() {
   })()
   check('chat.js wires vision blindness reconciliation', chatSrc.includes('isVisionBlindnessReply') && chatSrc.includes('downgradeVisionMessageToText') && chatSrc.includes('vision blindness detected'))
   check('chat.js splits vision promptText for @-image vs random group image', !chatSrc.includes('结合当前群聊话题') && /options\.randomTriggered[\s\S]{0,160}群里刷到一张图/.test(chatSrc) && chatSrc.includes('用户发来一张图'))
-  check('chat.js imports skill loader instead of owning skill cache', chatSrc.includes("require('./skills-loader')") && !chatSrc.includes('let skillsCache') && !chatSrc.includes('function readChatSkillTextIfSmall') && !chatSrc.includes('function getChatSkillsContentFingerprint') && skillsLoaderSrc.includes('function refreshSkillsContentCacheIfChanged') && skillsLoaderSrc.includes("cache['loreMeta:' + loreName]"), 'skills-loader ownership')
-  check('chat.js imports tool flow instead of owning tool execution loop', chatSrc.includes("require('./chat-tool-flow')") && chatSrc.includes('handleChatToolFlow({') && !chatSrc.includes('handleChatToolCalls(') && !chatSrc.includes('executeChatTool(') && !chatSrc.includes('function updateChatToolUsageState') && chatToolFlowSrc.includes('async function handleChatToolFlow') && chatToolFlowSrc.includes('resolveUnguardedFileFollowup'), 'chat-tool-flow ownership')
-  check('chat.js imports final output flow instead of owning retry guard', chatSrc.includes("require('./chat-final-output-flow')") && chatSrc.includes('finalizeChatReply({') && !chatSrc.includes('MAX_REPLY_RETRIES') && !chatSrc.includes('function retryUnsafeReply') && !chatSrc.includes('buildOldMediaStickingRetryPrompt') && !chatSrc.includes('parseRandomReplyDecision') && chatFinalOutputFlowSrc.includes('async function finalizeChatReply') && chatFinalOutputFlowSrc.includes('parseRandomReplyDecision') && !chatFinalOutputFlowSrc.includes("require('./chat')") && !/session\.send|saveConversationTurn/.test(chatFinalOutputFlowSrc), 'chat-final-output-flow ownership')
-  check('chat.js imports jailbreak flow instead of owning jailbreak helpers', chatSrc.includes("require('./chat-jailbreak-flow')") && chatSrc.includes('chatJailbreak(session') && chatSrc.includes('isContextJailbroken(session)') && !chatSrc.includes('CONTEXT_JAILBREAK_STRONG_RE') && !chatSrc.includes('function isContextJailbroken') && !chatSrc.includes('async function chatJailbreak') && chatJailbreakFlowSrc.includes('async function chatJailbreak') && chatJailbreakFlowSrc.includes('function isContextJailbroken') && !chatJailbreakFlowSrc.includes("require('./chat')") && !/session\.send|saveConversationTurn/.test(chatJailbreakFlowSrc), 'chat-jailbreak-flow ownership')
-  check('chat.js imports topic switch instead of owning topic lock', chatSrc.includes("require('./chat-topic-switch')") && chatSrc.includes('resolveTopicSwitch({') && !chatSrc.includes('const topicSwitchLocks') && !chatSrc.includes('async function detectTopicSwitch') && !chatSrc.includes('getRecentUserMessages') && chatTopicSwitchSrc.includes('const topicSwitchLocks = new Map()') && chatTopicSwitchSrc.includes('async function detectTopicSwitch') && chatTopicSwitchSrc.includes('function clearTopicSwitchLocks') && !chatTopicSwitchSrc.includes("require('./chat')") && !/clearUserConversationHistory|clearAgentContextForUser|session\.send|saveConversationTurn/.test(chatTopicSwitchSrc), 'chat-topic-switch ownership')
-  check('chat.js imports agent retell flow instead of owning Agent material retell', chatSrc.includes("require('./chat-agent-retell-flow')") && chatSrc.includes('retellAgentResultForChat({') && !chatSrc.includes('redactAgentMaterial(options.agentResultText)') && !chatSrc.includes('以下是 Agent 工具链整理出的内部材料') && !chatSrc.includes('Agent 转述') && chatAgentRetellFlowSrc.includes('async function retellAgentResultForChat') && chatAgentRetellFlowSrc.includes('redactAgentMaterial(agentResultText)') && chatAgentRetellFlowSrc.includes('Agent 转述') && !chatAgentRetellFlowSrc.includes("require('./chat')") && !/session\.send|saveConversationTurn/.test(chatAgentRetellFlowSrc), 'chat-agent-retell-flow ownership')
+  check('chat.js imports skill loader instead of owning skill cache', chatSrc.includes("require('./persona/skills/skills-loader')") && !chatSrc.includes('let skillsCache') && !chatSrc.includes('function readChatSkillTextIfSmall') && !chatSrc.includes('function getChatSkillsContentFingerprint') && skillsLoaderSrc.includes('function refreshSkillsContentCacheIfChanged') && skillsLoaderSrc.includes("cache['loreMeta:' + loreName]"), 'skills-loader ownership')
+  check('chat.js imports tool flow instead of owning tool execution loop', chatSrc.includes("require('./chat/chat-tool-flow')") && chatSrc.includes('handleChatToolFlow({') && !chatSrc.includes('handleChatToolCalls(') && !chatSrc.includes('executeChatTool(') && !chatSrc.includes('function updateChatToolUsageState') && chatToolFlowSrc.includes('async function handleChatToolFlow') && chatToolFlowSrc.includes('resolveUnguardedFileFollowup'), 'chat-tool-flow ownership')
+  check('chat.js imports final output flow instead of owning retry guard', chatSrc.includes("require('./chat/chat-final-output-flow')") && chatSrc.includes('finalizeChatReply({') && !chatSrc.includes('MAX_REPLY_RETRIES') && !chatSrc.includes('function retryUnsafeReply') && !chatSrc.includes('buildOldMediaStickingRetryPrompt') && !chatSrc.includes('parseRandomReplyDecision') && chatFinalOutputFlowSrc.includes('async function finalizeChatReply') && chatFinalOutputFlowSrc.includes('parseRandomReplyDecision') && !chatFinalOutputFlowSrc.includes("require('./chat')") && !/session\.send|saveConversationTurn/.test(chatFinalOutputFlowSrc), 'chat-final-output-flow ownership')
+  check('chat.js imports jailbreak flow instead of owning jailbreak helpers', chatSrc.includes("require('./chat/chat-jailbreak-flow')") && chatSrc.includes('chatJailbreak(session') && chatSrc.includes('isContextJailbroken(session)') && !chatSrc.includes('CONTEXT_JAILBREAK_STRONG_RE') && !chatSrc.includes('function isContextJailbroken') && !chatSrc.includes('async function chatJailbreak') && chatJailbreakFlowSrc.includes('async function chatJailbreak') && chatJailbreakFlowSrc.includes('function isContextJailbroken') && !chatJailbreakFlowSrc.includes("require('./chat')") && !/session\.send|saveConversationTurn/.test(chatJailbreakFlowSrc), 'chat-jailbreak-flow ownership')
+  check('chat.js imports topic switch instead of owning topic lock', chatSrc.includes("require('./chat/chat-topic-switch')") && chatSrc.includes('resolveTopicSwitch({') && !chatSrc.includes('const topicSwitchLocks') && !chatSrc.includes('async function detectTopicSwitch') && !chatSrc.includes('getRecentUserMessages') && chatTopicSwitchSrc.includes('const topicSwitchLocks = new Map()') && chatTopicSwitchSrc.includes('async function detectTopicSwitch') && chatTopicSwitchSrc.includes('function clearTopicSwitchLocks') && !chatTopicSwitchSrc.includes("require('./chat')") && !/clearUserConversationHistory|clearAgentContextForUser|session\.send|saveConversationTurn/.test(chatTopicSwitchSrc), 'chat-topic-switch ownership')
+  check('chat.js imports agent retell flow instead of owning Agent material retell', chatSrc.includes("require('./chat/chat-agent-retell-flow')") && chatSrc.includes('retellAgentResultForChat({') && !chatSrc.includes('redactAgentMaterial(options.agentResultText)') && !chatSrc.includes('以下是 Agent 工具链整理出的内部材料') && !chatSrc.includes('Agent 转述') && chatAgentRetellFlowSrc.includes('async function retellAgentResultForChat') && chatAgentRetellFlowSrc.includes('redactAgentMaterial(agentResultText)') && chatAgentRetellFlowSrc.includes('Agent 转述') && !chatAgentRetellFlowSrc.includes("require('./chat')") && !/session\.send|saveConversationTurn/.test(chatAgentRetellFlowSrc), 'chat-agent-retell-flow ownership')
   // bug: agent/passive 多模态调用没有瞳仁防护，模型瞎说"看不到"会被当作 analysis 写入 image-store 污染下游。
   check('image-analyzer skips write on vision blindness reply', imageAnalyzerSrc.includes("require('./vision')") && imageAnalyzerSrc.includes('isVisionBlindnessReply(analysis)') && /isVisionBlindnessReply\(analysis\)\)[\s\S]{0,400}?return\b[\s\S]{0,400}?markAnalyzed/.test(imageAnalyzerSrc) && imageAnalyzerSrc.includes('skipping write'))
-  check('agent analyze_historical_image refuses to persist blindness reply', analyzeImageSrc.includes("require('../../vision')") && analyzeImageSrc.includes('isVisionBlindnessReply(analysis)') && /isVisionBlindnessReply\(analysis\)[\s\S]{0,200}视觉模型未能解析/.test(analyzeImageSrc))
+  check('agent analyze_historical_image refuses to persist blindness reply', analyzeImageSrc.includes("require('../../media/image/vision')") && analyzeImageSrc.includes('isVisionBlindnessReply(analysis)') && /isVisionBlindnessReply\(analysis\)[\s\S]{0,200}视觉模型未能解析/.test(analyzeImageSrc))
   const stickerShadowIngestIndex = incomingMessageFlowSrc.indexOf('logStickerShadowIngestDiagnostic(ctx, {')
   const storeImageUrlIndex = incomingMessageFlowSrc.indexOf('await storeImageUrl(')
   const enqueueAnalysisIndex = incomingMessageFlowSrc.indexOf('await enqueueAnalysis(channelKey, session.messageId)')
@@ -3878,22 +3915,31 @@ async function main() {
   check('chat-send-flow sticker shadow send is debug-gated before real send', stickerShadowHelperIndex >= 0 && stickerShadowSendIndex >= 0 && stickerShadowSendIndex < safeSendReplyIndex && stickerShadowHelperBlock.includes("isDebugLogEnabled('sticker-shadow')") && stickerShadowHelperBlock.includes("logDebug(ctx, 'sticker-shadow'") && stickerShadowPlanHelperBlock.includes('appendStickerShadowLog(plan)') && chatSendFlowSrc.includes('logAffectRouterDiagnosticForOutputShadow'), stickerShadowHelperBlock.slice(0, 300))
   check('diagnostics sticker shadow helper does not mutate reply or send messages', !/messages\.(?:push|splice|unshift)|session\.send|sendReply\(/.test(stickerShadowHelperBlock), stickerShadowHelperBlock)
   check('chat-send-flow sticker shadow caller only observes reply before send', stickerShadowCallerBlock.includes('affectDiagnostic') && stickerShadowCallerBlock.includes('replyText: reply') && !/messages\.(?:push|splice|unshift)|session\.send|sendReply\(/.test(stickerShadowCallerBlock), stickerShadowCallerBlock)
-  check('index diagnostics helpers are imported, not defined inline', indexSrc.includes("require('./diagnostics')") && !indexSrc.includes('function logReplyTimingDiagnostic') && !indexSrc.includes('function logStickerShadowSendDiagnostic') && diagnosticsSrc.includes('function logReplyTimingDiagnostic') && diagnosticsSrc.includes('function logStickerShadowSendDiagnostic'), 'diagnostics helper ownership')
-  check('index plugin lifecycle is imported, not defined inline', indexSrc.includes("require('./plugin-lifecycle')") && indexSrc.includes('registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue })') && !indexSrc.includes("ctx.on('ready'") && !indexSrc.includes('function restoreTodayCacheEntry') && !indexSrc.includes('const sensitiveTimer') && pluginLifecycleSrc.includes("ctx.on('ready'") && pluginLifecycleSrc.includes('function restoreTodayCacheEntry') && pluginLifecycleSrc.includes('const sensitiveTimer') && !pluginLifecycleSrc.includes("require('./index')") && !/ctx\.middleware|session\.send|safeSendReply|chat\(/.test(pluginLifecycleSrc), 'plugin-lifecycle ownership')
+  check('index diagnostics helpers are imported, not defined inline', indexSrc.includes("require('./diagnostics/diagnostics')") && !indexSrc.includes('function logReplyTimingDiagnostic') && !indexSrc.includes('function logStickerShadowSendDiagnostic') && diagnosticsSrc.includes('function logReplyTimingDiagnostic') && diagnosticsSrc.includes('function logStickerShadowSendDiagnostic'), 'diagnostics helper ownership')
+  check('index plugin lifecycle is imported, not defined inline', indexSrc.includes("require('./lifecycle/plugin-lifecycle')") && indexSrc.includes('registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue })') && !indexSrc.includes("ctx.on('ready'") && !indexSrc.includes('function restoreTodayCacheEntry') && !indexSrc.includes('const sensitiveTimer') && pluginLifecycleSrc.includes("ctx.on('ready'") && pluginLifecycleSrc.includes('function restoreTodayCacheEntry') && pluginLifecycleSrc.includes('const sensitiveTimer') && !pluginLifecycleSrc.includes("require('../index')") && !/ctx\.middleware|session\.send|safeSendReply|chat\(/.test(pluginLifecycleSrc), 'plugin-lifecycle ownership')
   check('plugin lifecycle owns startup schedulers and dispose cleanup', pluginLifecycleSrc.includes("require('./startup-schedulers')") && pluginLifecycleSrc.includes('scheduleDailyStatsCleanup(ctx)') && pluginLifecycleSrc.includes('scheduleExpressionHarvest(ctx)') && pluginLifecycleSrc.includes('clearStartupSchedulers()') && pluginLifecycleSrc.includes('clearChannelQueues()') && pluginLifecycleSrc.includes('clearRandomPendingState()') && !indexSrc.includes('scheduleDailyStatsCleanup(ctx)') && !indexSrc.includes('clearStartupSchedulers()') && startupSchedulersSrc.includes('function getNextShanghaiMidnightDelayMs') && startupSchedulersSrc.includes('function clearStartupSchedulers'), 'plugin-lifecycle startup scheduler ownership')
-  check('index message segment helpers are owned by incoming-message-flow, not defined inline', indexSrc.includes("require('./incoming-message-flow')") && !indexSrc.includes("require('./message-segment')") && !indexSrc.includes('function extractImageRefFromContent') && !indexSrc.includes('function getFileSegmentData') && incomingMessageFlowSrc.includes("require('./message-segment')") && incomingMessageFlowSrc.includes('extractImageRefFromContent') && incomingMessageFlowSrc.includes('getFileSegmentData') && messageSegmentSrc.includes('function extractImageRefFromContent') && messageSegmentSrc.includes('function getFileSegmentData'), 'message-segment helper ownership')
-  check('incoming file cache helper is owned by incoming-message-flow, not index', !indexSrc.includes("require('./incoming-file')") && !indexSrc.includes('function cacheSmallFileBackground') && incomingMessageFlowSrc.includes("require('./incoming-file')") && incomingMessageFlowSrc.includes('cacheSmallFileBackground') && incomingFileSrc.includes('function cacheSmallFileBackground') && incomingFileSrc.includes("require('./file-analyzer')") && incomingFileSrc.includes("require('./file-store')") && !incomingFileSrc.includes("require('./index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(/.test(incomingFileSrc), 'incoming-file helper ownership')
-  check('index incoming message flow is imported, not defined inline', indexSrc.includes("require('./incoming-message-flow')") && indexSrc.includes('handleIncomingMessageArtifacts({') && !indexSrc.includes('await storeImageUrl(') && !indexSrc.includes('await storeFile(') && !indexSrc.includes('transcribeVoice(session') && incomingMessageFlowSrc.includes('async function handleIncomingMessageArtifacts') && incomingMessageFlowSrc.includes('await storeImageUrl(') && incomingMessageFlowSrc.includes('await storeFile(') && incomingMessageFlowSrc.includes('transcribeVoice(session') && incomingMessageFlowSrc.includes('cacheSmallFileBackground') && !incomingMessageFlowSrc.includes("require('./index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(|agentEngine|enqueueAgentTask/.test(incomingMessageFlowSrc), 'incoming-message-flow ownership')
-  check('index shared record text helper is imported, not defined inline', indexSrc.includes("require('./shared-record-text')") && !indexSrc.includes('function resolveSharedRecordText') && sharedRecordTextSrc.includes('function resolveSharedRecordText') && !sharedRecordTextSrc.includes("require('./index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(|saveSharedChannelTurn/.test(sharedRecordTextSrc), 'shared-record-text helper ownership')
-  check('index file quick read helper is imported, not defined inline', indexSrc.includes("require('./file-quick-read')") && indexSrc.includes('isFileQuickReadIntent(userText)') && indexSrc.includes('resolveFileQuickReadReply(channelKey)') && !indexSrc.includes("require('./file-analyzer')") && !indexSrc.includes('function resolveFileQuickReadReply') && fileQuickReadSrc.includes('function isFileQuickReadIntent') && fileQuickReadSrc.includes('async function resolveFileQuickReadReply') && fileQuickReadSrc.includes("require('./file-store')") && fileQuickReadSrc.includes("require('./file-analyzer')") && fileQuickReadSrc.includes("require('./file-safety')") && !fileQuickReadSrc.includes("require('./index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(|agentEngine|enqueueAgentTask/.test(fileQuickReadSrc), 'file-quick-read ownership')
-  check('index random persona risk helper is imported, not defined inline', indexSrc.includes("require('./random-persona-risk')") && !indexSrc.includes('function getGroupPersonaName') && !indexSrc.includes('function isPersonaSwitchRisky') && randomPersonaRiskSrc.includes('function getGroupPersonaName') && randomPersonaRiskSrc.includes('function isPersonaSwitchRisky') && randomPersonaRiskSrc.includes("require('./persona')") && !randomPersonaRiskSrc.includes("require('./index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(/.test(randomPersonaRiskSrc), 'random-persona-risk helper ownership')
-  check('index runtime settings and user blacklist are imported, not defined inline', indexSrc.includes("require('./runtime-settings')") && indexSrc.includes("require('./user-blacklist')") && !indexSrc.includes('function getFileFingerprint') && !indexSrc.includes('function loadRuntimeSettings') && !indexSrc.includes('function loadUserBlacklist') && runtimeSettingsSrc.includes('function loadRuntimeSettings') && runtimeSettingsSrc.includes('function getRandomTriggerBaseRate') && runtimeSettingsSrc.includes('function getRandomWhitelistStatus') && userBlacklistSrc.includes('function loadUserBlacklist') && userBlacklistSrc.includes('function setBlacklistFingerprint'), 'runtime-settings/user-blacklist helper ownership')
-  check('index safe-send helpers are imported, not defined inline', indexSrc.includes("require('./safe-send')") && !indexSrc.includes('const sendFailState') && !indexSrc.includes('async function notifyAdminsSendFailure') && !indexSrc.includes('async function handleRateLimitedSendFailure') && !indexSrc.includes('async function safeSendRareVoice') && !indexSrc.includes('async function safeSendRepeat') && safeSendSrc.includes('const sendFailState') && safeSendSrc.includes('async function safeSendReply') && safeSendSrc.includes('async function safeSendRareVoice'), 'safe-send helper ownership')
-  check('index chat result flow is imported, not defined inline', indexSrc.includes("require('./chat-result-flow')") && indexSrc.includes('handleChatResult(') && indexSrc.includes('retellAgentResult,') && !indexSrc.includes('function normalizeChatResultText') && !indexSrc.includes('async function retellToolBlockedReply') && !indexSrc.includes('async function handleChatResult') && !indexSrc.includes('AGENT_RETELL_FALLBACK') && chatResultFlowSrc.includes('async function handleChatResult') && chatResultFlowSrc.includes('async function retellAgentResult') && chatResultFlowSrc.includes('buildExplicitUrlFetchRunOptions') && !chatResultFlowSrc.includes("require('./index')") && !/safeSendReply|session\.send|ctx\.middleware|exports\.apply/.test(chatResultFlowSrc), 'chat-result-flow ownership')
-  check('index chat send flow is imported, not defined inline', indexSrc.includes("require('./chat-send-flow')") && indexSrc.includes('sendChatReplyFlow({') && !indexSrc.includes('shouldTriggerRandomVoice') && !indexSrc.includes('notifySensitiveHandlers(liveSession') && !indexSrc.includes('const finalReply =') && chatSendFlowSrc.includes('async function sendChatReplyFlow') && chatSendFlowSrc.includes('function stripVoiceStyleTagText') && chatSendFlowSrc.includes('async function trySendRandomVoice') && chatSendFlowSrc.includes("require('./diagnostics')") && chatSendFlowSrc.includes("require('./safe-send')") && chatSendFlowSrc.includes("require('./sensitive')") && !chatSendFlowSrc.includes("require('./index')") && !/ctx\.middleware|exports\.apply|chat\(|agentEngine|enqueueAgentTask/.test(chatSendFlowSrc), 'chat-send-flow ownership')
-  check('index agent auto route flow is imported, not defined inline', indexSrc.includes("require('./agent-auto-route-flow')") && indexSrc.includes('handleAgentAutoRoute({') && !indexSrc.includes('heuristicRoute(userText') && !indexSrc.includes("require('./agent/config').getAgentConfig()") && agentAutoRouteFlowSrc.includes('async function handleAgentAutoRoute') && agentAutoRouteFlowSrc.includes('heuristicRoute(userText') && agentAutoRouteFlowSrc.includes('buildExplicitSearchRunOptions') && agentAutoRouteFlowSrc.includes('getAgentConfig()') && !agentAutoRouteFlowSrc.includes("require('./index')") && !/safeSendReply|session\.send|ctx\.middleware|exports\.apply/.test(agentAutoRouteFlowSrc), 'agent-auto-route-flow ownership')
-  check('index random state is imported, not defined inline', indexSrc.includes("require('./random-state')") && !indexSrc.includes('const channelMutedUntil') && !indexSrc.includes('const lastRandomReplyTs') && !indexSrc.includes('const channelPendingRandom') && !indexSrc.includes('const channelMessageVersions') && !indexSrc.includes('const channelExplicitVersions') && !indexSrc.includes('function buildRandomSendOptions') && !indexSrc.includes('function clearRandomPendingState') && randomStateSrc.includes('const channelMutedUntil = new Map()') && randomStateSrc.includes('const lastRandomReplyTs = new Map()') && randomStateSrc.includes('const channelPendingRandom = new Map()') && randomStateSrc.includes('const channelMessageVersions = new Map()') && randomStateSrc.includes('const channelExplicitVersions = new Map()') && randomStateSrc.includes('function buildRandomSendOptions') && randomStateSrc.includes('function isSafeSendReplyFresh') && randomStateSrc.includes('function clearRandomPendingState') && !randomStateSrc.includes("require('./index')") && !/chat\(|agentEngine|session\.send|safeSendReply|ctx\.middleware|exports\.apply/.test(randomStateSrc), 'random-state ownership')
-  const stickerShadowSrc = read(path.join(LIB, 'sticker-shadow.js'))
+  check('index message segment helpers are owned by incoming-message-flow, not defined inline', indexSrc.includes("require('./message/incoming-message-flow')") && !indexSrc.includes("require('./message/message-segment')") && !indexSrc.includes('function extractImageRefFromContent') && !indexSrc.includes('function getFileSegmentData') && incomingMessageFlowSrc.includes("require('./message-segment')") && incomingMessageFlowSrc.includes('extractImageRefFromContent') && incomingMessageFlowSrc.includes('getFileSegmentData') && messageSegmentSrc.includes('function extractImageRefFromContent') && messageSegmentSrc.includes('function getFileSegmentData'), 'message-segment helper ownership')
+  check('incoming file cache helper is owned by incoming-message-flow, not index', !indexSrc.includes("require('./media/file/incoming-file')") && !indexSrc.includes('function cacheSmallFileBackground') && incomingMessageFlowSrc.includes("require('../media/file/incoming-file')") && incomingMessageFlowSrc.includes('cacheSmallFileBackground') && incomingFileSrc.includes('function cacheSmallFileBackground') && incomingFileSrc.includes("require('./file-analyzer')") && incomingFileSrc.includes("require('./file-store')") && !incomingFileSrc.includes("require('../../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(/.test(incomingFileSrc), 'incoming-file helper ownership')
+  check('index incoming message flow is imported, not defined inline', indexSrc.includes("require('./message/incoming-message-flow')") && indexSrc.includes('handleIncomingMessageArtifacts({') && !indexSrc.includes('await storeImageUrl(') && !indexSrc.includes('await storeFile(') && !indexSrc.includes('transcribeVoice(session') && incomingMessageFlowSrc.includes('async function handleIncomingMessageArtifacts') && incomingMessageFlowSrc.includes('await storeImageUrl(') && incomingMessageFlowSrc.includes('await storeFile(') && incomingMessageFlowSrc.includes('transcribeVoice(session') && incomingMessageFlowSrc.includes('cacheSmallFileBackground') && !incomingMessageFlowSrc.includes("require('../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(|agentEngine|enqueueAgentTask/.test(incomingMessageFlowSrc), 'incoming-message-flow ownership')
+  check('index shared record text helper is imported, not defined inline', indexSrc.includes("require('./diagnostics/shared-record-text')") && !indexSrc.includes('function resolveSharedRecordText') && sharedRecordTextSrc.includes('function resolveSharedRecordText') && !sharedRecordTextSrc.includes("require('../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(|saveSharedChannelTurn/.test(sharedRecordTextSrc), 'shared-record-text helper ownership')
+  check('index file quick read helper is imported, not defined inline', indexSrc.includes("require('./routing/file-quick-read')") && indexSrc.includes('isFileQuickReadIntent(userText)') && indexSrc.includes('resolveFileQuickReadReply(channelKey)') && !indexSrc.includes("require('./media/file/file-analyzer')") && !indexSrc.includes('function resolveFileQuickReadReply') && fileQuickReadSrc.includes('function isFileQuickReadIntent') && fileQuickReadSrc.includes('async function resolveFileQuickReadReply') && fileQuickReadSrc.includes("require('../media/file/file-store')") && fileQuickReadSrc.includes("require('../media/file/file-analyzer')") && fileQuickReadSrc.includes("require('../media/file/file-safety')") && !fileQuickReadSrc.includes("require('../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(|agentEngine|enqueueAgentTask/.test(fileQuickReadSrc), 'file-quick-read ownership')
+  check('index random persona risk helper is imported, not defined inline', indexSrc.includes("require('./behavior/random-persona-risk')") && !indexSrc.includes('function getGroupPersonaName') && !indexSrc.includes('function isPersonaSwitchRisky') && randomPersonaRiskSrc.includes('function getGroupPersonaName') && randomPersonaRiskSrc.includes('function isPersonaSwitchRisky') && randomPersonaRiskSrc.includes("require('../persona/persona')") && !randomPersonaRiskSrc.includes("require('../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(/.test(randomPersonaRiskSrc), 'random-persona-risk helper ownership')
+  check('index runtime settings and user blacklist are imported, not defined inline', indexSrc.includes("require('./behavior/runtime-settings')") && indexSrc.includes("require('./core/user-blacklist')") && !indexSrc.includes('function getFileFingerprint') && !indexSrc.includes('function loadRuntimeSettings') && !indexSrc.includes('function loadUserBlacklist') && runtimeSettingsSrc.includes('function loadRuntimeSettings') && runtimeSettingsSrc.includes('function getRandomTriggerBaseRate') && runtimeSettingsSrc.includes('function getRandomWhitelistStatus') && userBlacklistSrc.includes('function loadUserBlacklist') && userBlacklistSrc.includes('function setBlacklistFingerprint'), 'runtime-settings/user-blacklist helper ownership')
+  check('index safe-send helpers are imported, not defined inline', indexSrc.includes("require('./reply/safe-send')") && !indexSrc.includes('const sendFailState') && !indexSrc.includes('async function notifyAdminsSendFailure') && !indexSrc.includes('async function handleRateLimitedSendFailure') && !indexSrc.includes('async function safeSendRareVoice') && !indexSrc.includes('async function safeSendRepeat') && safeSendSrc.includes('const sendFailState') && safeSendSrc.includes('async function safeSendReply') && safeSendSrc.includes('async function safeSendRareVoice'), 'safe-send helper ownership')
+  check('index chat result flow is imported, not defined inline', indexSrc.includes("require('./chat/chat-result-flow')") && indexSrc.includes('handleChatResult(') && indexSrc.includes('retellAgentResult,') && !indexSrc.includes('function normalizeChatResultText') && !indexSrc.includes('async function retellToolBlockedReply') && !indexSrc.includes('async function handleChatResult') && !indexSrc.includes('AGENT_RETELL_FALLBACK') && chatResultFlowSrc.includes('async function handleChatResult') && chatResultFlowSrc.includes('async function retellAgentResult') && chatResultFlowSrc.includes('buildExplicitUrlFetchRunOptions') && !chatResultFlowSrc.includes("require('../index')") && !/safeSendReply|session\.send|ctx\.middleware|exports\.apply/.test(chatResultFlowSrc), 'chat-result-flow ownership')
+  check('index chat send flow is imported, not defined inline', indexSrc.includes("require('./chat/chat-send-flow')") && indexSrc.includes('sendChatReplyFlow({') && !indexSrc.includes('shouldTriggerRandomVoice') && !indexSrc.includes('notifySensitiveHandlers(liveSession') && !indexSrc.includes('const finalReply =') && chatSendFlowSrc.includes('async function sendChatReplyFlow') && chatSendFlowSrc.includes('function stripVoiceStyleTagText') && chatSendFlowSrc.includes('async function trySendRandomVoice') && chatSendFlowSrc.includes("require('../diagnostics/diagnostics')") && chatSendFlowSrc.includes("require('../reply/safe-send')") && chatSendFlowSrc.includes("require('../behavior/sensitive')") && !chatSendFlowSrc.includes("require('../index')") && !/ctx\.middleware|exports\.apply|chat\(|agentEngine|enqueueAgentTask/.test(chatSendFlowSrc), 'chat-send-flow ownership')
+  check('index agent auto route flow is imported, not defined inline', indexSrc.includes("require('./routing/agent-auto-route-flow')") && indexSrc.includes('handleAgentAutoRoute({') && !indexSrc.includes('heuristicRoute(userText') && !indexSrc.includes("require('./agent/config').getAgentConfig()") && agentAutoRouteFlowSrc.includes('async function handleAgentAutoRoute') && agentAutoRouteFlowSrc.includes('heuristicRoute(userText') && agentAutoRouteFlowSrc.includes('buildExplicitSearchRunOptions') && agentAutoRouteFlowSrc.includes('getAgentConfig()') && !agentAutoRouteFlowSrc.includes("require('./index')") && !/safeSendReply|session\.send|ctx\.middleware|exports\.apply/.test(agentAutoRouteFlowSrc), 'agent-auto-route-flow ownership')
+  check('index random state is imported, not defined inline', indexSrc.includes("require('./behavior/random-state')") && !indexSrc.includes('const channelMutedUntil') && !indexSrc.includes('const lastRandomReplyTs') && !indexSrc.includes('const channelPendingRandom') && !indexSrc.includes('const channelMessageVersions') && !indexSrc.includes('const channelExplicitVersions') && !indexSrc.includes('function buildRandomSendOptions') && !indexSrc.includes('function clearRandomPendingState') && randomStateSrc.includes('const channelMutedUntil = new Map()') && randomStateSrc.includes('const lastRandomReplyTs = new Map()') && randomStateSrc.includes('const channelPendingRandom = new Map()') && randomStateSrc.includes('const channelMessageVersions = new Map()') && randomStateSrc.includes('const channelExplicitVersions = new Map()') && randomStateSrc.includes('function buildRandomSendOptions') && randomStateSrc.includes('function isSafeSendReplyFresh') && randomStateSrc.includes('function clearRandomPendingState') && !randomStateSrc.includes("require('../index')") && !/chat\(|agentEngine|session\.send|safeSendReply|ctx\.middleware|exports\.apply/.test(randomStateSrc), 'random-state ownership')
+  const stickerShadowSrc = read(path.join(LIB, 'behavior', 'sticker-shadow.js'))
+  const affectRouterSrc = read(path.join(LIB, 'behavior', 'affect-router.js'))
+  const personaSchemaSrc = read(path.join(LIB, 'persona', 'persona-schema.js'))
+  const personaFallbackSrc = read(path.join(LIB, 'persona', 'persona-fallback.js'))
+  const personaDiagnosticsSrc = read(path.join(LIB, 'persona', 'persona-diagnostics.js'))
+  const personaRuntimePlanSrc = read(path.join(LIB, 'persona', 'persona-runtime-plan.js'))
+  const personaLoreRouterSrc = read(path.join(LIB, 'persona', 'persona-lore-router.js'))
+  const personaProfileSrc = read(path.join(LIB, 'persona', 'persona-profile.js'))
+  const fileSafetySrc = read(path.join(LIB, 'media', 'file', 'file-safety.js'))
+  const fileFollowupGuardSrc = read(path.join(LIB, 'media', 'file', 'file-followup-guard.js'))
   check('sticker shadow module never sends or mutates production sticker pool', !/sendSticker|sendReply|session\.send|sendGroupMsg|sendPrivateMsg|sticker-pool|pending\.json|index\.json|banlist\.json|callOpenAI|requestChatCompletions/.test(stickerShadowSrc), 'sticker-shadow.js')
   const expressionShadowIndex = chatSrc.indexOf('buildExpressionShadowPlan({')
   const callOpenAIIndex = chatSrc.indexOf('let reply = await callOpenAI(messages')
@@ -3941,8 +3987,8 @@ async function main() {
   check('chat tool hint uses image-store memory snapshot', chatToolsSrc.includes('getRecentImagesCached') && !/getChatToolSystemHint[\s\S]*getRecentImages\(channelKey/.test(chatToolsSrc))
   const unlockTimerBody = (safeSendSrc.match(/setTimeout\(function\(\) \{[\s\S]*?30 \* 60 \* 1000\)/) || [''])[0]
   check('safe-send delayed unlock notification resolves current bot', unlockTimerBody.includes('const bot = getBot()') && !unlockTimerBody.includes('session?.bot') && !unlockTimerBody.includes('session.bot'))
-  check('session compatibility shim forwards to lifecycle', sessionCompatSrc.includes('function patchEnsureSession') && sessionCompatShimSrc.includes("module.exports = require('./lifecycle/session-compat')") && indexSrc.includes("require('./lifecycle/session-compat')"))
-  check('queued agent paths resolve current bot', indexSrc.includes("require('./lifecycle/bot-resolver')") && botResolverSrc.includes('function createBotResolver') && botResolverSrc.includes('function withCurrentBot') && botResolverShimSrc.includes("module.exports = require('./lifecycle/bot-resolver')") && indexSrc.includes('const resolveBot = createBotResolver(ctx, session)') && indexSrc.includes('resolveBot,') && chatResultFlowSrc.includes("require('./lifecycle/bot-resolver')") && chatResultFlowSrc.includes('createBotResolver(ctx, session)') && chatResultFlowSrc.includes('bot: getBot()') && agentAutoRouteFlowSrc.includes('bot: resolveBot()'))
+  check('queued agent paths resolve current bot', indexSrc.includes("require('./lifecycle/bot-resolver')") && botResolverSrc.includes('function createBotResolver') && botResolverSrc.includes('function withCurrentBot') && indexSrc.includes('const resolveBot = createBotResolver(ctx, session)') && indexSrc.includes('resolveBot,') && chatResultFlowSrc.includes("require('../lifecycle/bot-resolver')") && chatResultFlowSrc.includes('createBotResolver(ctx, session)') && chatResultFlowSrc.includes('bot: getBot()') && agentAutoRouteFlowSrc.includes('bot: resolveBot()'))
+  check('file followup guard lives in media/file directory', fileFollowupGuardSrc.includes('function looksLikeFileFollowup') && fileFollowupGuardSrc.includes("require('./file-safety')"))
   check('skill/persona loaders skip oversized markdown', skillsLoaderSrc.includes('MAX_SKILL_FILE_BYTES') && personaSrc.includes('MAX_PERSONA_SKILL_BYTES') && agentPersonaSrc.includes('MAX_AGENT_PERSONA_FILE_BYTES'))
   check('agent config cron memory files have size guards', agentConfigSrc.includes('MAX_TOOL_CONFIG_BYTES') && agentCronSrc.includes('MAX_CRON_FILE_BYTES') && agentMemorySrc.includes('MAX_MEMORY_FILE_BYTES'))
   const libJsFiles = []
@@ -4007,8 +4053,10 @@ async function main() {
     var oldDir = process.env.DONGXUELIAN_AI_DATA_DIR
     process.env.DONGXUELIAN_AI_DATA_DIR = tmpMem
     delete require.cache[require('path').join(__dirname, '..', 'lib', 'constants')]
+    delete require.cache[require('path').join(__dirname, '..', 'lib', 'core', 'constants')]
     delete require.cache[require('path').join(__dirname, '..', 'lib', 'conversation')]
     delete require.cache[require('path').join(__dirname, '..', 'lib', 'utils')]
+    delete require.cache[require('path').join(__dirname, '..', 'lib', 'core', 'utils')]
     var memConv = require(require('path').join(__dirname, '..', 'lib', 'conversation'))
 
     await memConv.writeMemory('mem-u1', '', 'mem-g1', 'apple')
@@ -4036,8 +4084,10 @@ async function main() {
     check('memory: more than 5 items returns 3', sum5.split('、').length === 3, sum5)
   } finally {
     delete require.cache[require('path').join(__dirname, '..', 'lib', 'constants')]
+    delete require.cache[require('path').join(__dirname, '..', 'lib', 'core', 'constants')]
     delete require.cache[require('path').join(__dirname, '..', 'lib', 'conversation')]
     delete require.cache[require('path').join(__dirname, '..', 'lib', 'utils')]
+    delete require.cache[require('path').join(__dirname, '..', 'lib', 'core', 'utils')]
     if (oldDir) process.env.DONGXUELIAN_AI_DATA_DIR = oldDir
     else delete process.env.DONGXUELIAN_AI_DATA_DIR
     try { require('fs').rmSync(tmpMem, { recursive: true, force: true }) } catch {}

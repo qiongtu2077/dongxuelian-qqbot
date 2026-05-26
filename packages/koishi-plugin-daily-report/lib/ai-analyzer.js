@@ -3,8 +3,8 @@
  * 职责: 根据模式执行不同深度的分析。
  * 边界: 复用主插件的 runtime-config.js + api.js。
  */
-const { loadConfig } = require('../../koishi-plugin-dongxuelian-ai/lib/runtime-config')
-const { requestChatCompletions } = require('../../koishi-plugin-dongxuelian-ai/lib/api')
+const { loadConfig } = require('../../koishi-plugin-dongxuelian-ai/lib/core/runtime-config')
+const { requestChatCompletions } = require('../../koishi-plugin-dongxuelian-ai/lib/core/api')
 const { createDefaultAnalysisResult, createTopic, createGoldenQuote, createUserTitle } = require('./models')
 
 const COMPRESS_BATCH_SIZE = parsePositiveInt(process.env.DAILY_REPORT_COMPRESS_BATCH_SIZE, 100, 20, 200)

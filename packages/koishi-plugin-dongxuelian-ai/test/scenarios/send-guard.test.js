@@ -69,7 +69,7 @@ async function withRetryDelay(value, fn) {
 async function run(t) {
   t.section('scenario: send guard platform mute and rate limit')
 
-  const safeSend = require('../../lib/safe-send')
+  const safeSend = require('../../lib/reply/safe-send')
   t.check('scenario safe-send module exports moved send helpers', typeof safeSend.safeSendReply === 'function' && typeof safeSend.safeSendRepeat === 'function' && typeof safeSend.safeSendRareVoice === 'function')
 
   const freshnessSent = []

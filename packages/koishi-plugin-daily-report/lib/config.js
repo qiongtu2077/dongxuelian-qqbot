@@ -3,7 +3,7 @@
  * 边界: 只定义静态配置，不含业务逻辑。
  */
 
-const { DATA_DIR } = require('../../koishi-plugin-dongxuelian-ai/lib/constants')
+const { DATA_DIR } = require('../../koishi-plugin-dongxuelian-ai/lib/core/constants')
 
 // 限时配置
 const TIMEOUTS = {

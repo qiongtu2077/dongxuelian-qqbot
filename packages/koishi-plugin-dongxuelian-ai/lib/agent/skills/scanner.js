@@ -9,7 +9,7 @@ const fsp = require('fs/promises')
 const path = require('path')
 const crypto = require('crypto')
 
-const { DATA_DIR } = require('../../constants')
+const { DATA_DIR } = require('../../core/constants')
 const SKILL_SCANNER_WHITELIST_FILE = path.join(DATA_DIR, 'skill-scanner-whitelist.json')
 
 const MAX_SKILL_FILE_SIZE = 500 * 1024

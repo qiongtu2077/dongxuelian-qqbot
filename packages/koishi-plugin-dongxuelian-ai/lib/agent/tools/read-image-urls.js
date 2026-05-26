@@ -1,7 +1,7 @@
 /**
  * Agent 工具: read_image_history — 查看群聊最近出现的图片记录。
  */
-const { getRecentImages } = require('../../image-store')
+const { getRecentImages } = require('../../media/image/image-store')
 
 module.exports = {
   definition: {

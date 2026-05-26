@@ -22,8 +22,8 @@ const grepSearchTool = require('../agent/tools/grep-search')
 const writeFileTool = require('../agent/tools/write-file')
 const editFileTool = require('../agent/tools/edit-file')
 const analyzeFileTool = require('../agent/tools/analyze-file')
-const { getRecentFiles, getFileEntry } = require('../file-store')
-const { buildFileFollowupState, resolveUnguardedFileFollowup, buildFileEvidenceReply } = require('../file-followup-guard')
+const { getRecentFiles, getFileEntry } = require('../media/file/file-store')
+const { buildFileFollowupState, resolveUnguardedFileFollowup, buildFileEvidenceReply } = require('../media/file/file-followup-guard')
 const { getAgentPathAllowedRoots, getAgentPathDefaultRoots } = require('../agent/path-guard')
 
 const SERVER_NAME = 'dongxuelian-local-mcp'
@@ -88,7 +88,7 @@ function buildHealth(config, roots) {
     ok: true,
     server: { name: SERVER_NAME, version: SERVER_VERSION },
     workspaceRoot: WORKSPACE_ROOT,
-    dataDir: require('../constants').DATA_DIR,
+    dataDir: require('../core/constants').DATA_DIR,
     mcp: {
       enabled: !!mcp.enabled,
       allowWriteWorkspace: !!mcp.allowWriteWorkspace,

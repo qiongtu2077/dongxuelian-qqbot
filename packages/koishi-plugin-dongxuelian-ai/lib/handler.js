@@ -12,7 +12,7 @@ const {
   HOSTILE_MODE_FILE,
   SUMMARY_WHITELIST_FILE,
   RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP,
-} = require('./constants')
+} = require('./core/constants')
 const {
   personaUsersCache,
   loadPersonaGroups,
@@ -20,9 +20,9 @@ const {
   getUserPersona, setUserPersona, resetUserPersona,
   resolvePersona,
   getAvailablePersonals,
-} = require('./persona')
+} = require('./persona/persona')
 const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory, getMemorySummary, getConversationHistory } = require('./conversation')
-const { runHealthCheck, formatHealthReport } = require('./health-check')
+const { runHealthCheck, formatHealthReport } = require('./diagnostics/health-check')
 const {
   hasAdminPermission, isReservedCommand,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
@@ -35,8 +35,8 @@ const {
   sanitizeReply,
   stripMarkdownForQQ,
   trimReply,
-} = require('./utils')
-const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply-guard')
+} = require('./core/utils')
+const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply/reply-guard')
 const { logDebug } = require('./core/logging-config')
 const {
   handled,
@@ -47,7 +47,7 @@ const { handleMemoryCommand } = require('./commands/memory-command')
 const { handlePlanCommand } = require('./commands/plan-command')
 const { handleAgentCommand } = require('./commands/agent-command')
 const { handleEmotionCommand } = require('./commands/emotion-command')
-const { DEFAULT_RANDOM_VOICE_RATE, getRandomVoiceRate } = require('./random-voice-rate')
+const { DEFAULT_RANDOM_VOICE_RATE, getRandomVoiceRate } = require('./behavior/random-voice-rate')
 
 const forgetPendingConfirm = new Map()
 let lastForgetCleanupTs = 0
@@ -85,7 +85,7 @@ async function handleCommand(session, ctx, state) {
     const personaName = resolved.name || '默认'
     let personaContent = ''
     try {
-      const { loadPersonalSkill } = require('./persona')
+      const { loadPersonalSkill } = require('./persona/persona')
       personaContent = personaName ? loadPersonalSkill(personaName) : ''
     } catch {}
     return [

@@ -10,13 +10,13 @@ const {
   SKILLS_CORE_DIR,
   SKILLS_MODES_DIR,
   SKILLS_PERSONAS_DIR,
-} = require('../constants')
+} = require('../core/constants')
 const {
   resolvePersona,
   loadPersonalSkill,
   parsePersonaFrontmatter,
-} = require('../persona')
-const { compilePersonaRuntimePlan, resolvePersonaRuntimePlan } = require('../persona-runtime-plan')
+} = require('../persona/persona')
+const { compilePersonaRuntimePlan, resolvePersonaRuntimePlan } = require('../persona/persona-runtime-plan')
 const { getAgentConfig } = require('./config')
 const MAX_AGENT_PERSONA_FILE_BYTES = parseAgentPersonaPositiveInt(process.env.DONGXUELIAN_AGENT_PERSONA_FILE_MAX_BYTES, 256 * 1024, 8 * 1024, 2 * 1024 * 1024)
 

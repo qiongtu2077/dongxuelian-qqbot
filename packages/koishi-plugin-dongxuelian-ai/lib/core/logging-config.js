@@ -1,7 +1,7 @@
 const fs = require('fs')
 const fsp = require('fs/promises')
 const path = require('path')
-const { DATA_DIR } = require('../constants')
+const { DATA_DIR } = require('./constants')
 
 const DEBUG_LOG_CONFIG_FILE = path.join(DATA_DIR, 'debug-log-config.json')
 const CONFIG_CHECK_INTERVAL_MS = 2000

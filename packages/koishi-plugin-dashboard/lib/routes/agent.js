@@ -82,7 +82,7 @@ async function getAgentEffectiveReadRoots() {
 }
 
 function getAgentEnvStatus() {
-  const constants = require(path.join(AI_LIB, 'constants'))
+  const constants = require(path.join(AI_LIB, 'core', 'constants'))
   const files = [
     ['ai-openai-key.txt', constants.KEY_FILE],
     ['ai-deepseek-key.txt', constants.DEEPSEEK_KEY_FILE],
@@ -171,7 +171,7 @@ function handlePutAgentPersona(req, res) {
 }
 
 function getTtsModule() {
-  return require(path.join(AI_LIB, 'tts'))
+  return require(path.join(AI_LIB, 'media', 'voice', 'tts'))
 }
 
 function getTtsLogger() {
@@ -183,11 +183,11 @@ function getTtsLogger() {
 }
 
 function getVoiceAssetsModule() {
-  return require(path.join(AI_LIB, 'voice-assets'))
+  return require(path.join(AI_LIB, 'media', 'voice', 'voice-assets'))
 }
 
 function getPersonaModule() {
-  return require(path.join(AI_LIB, 'persona'))
+  return require(path.join(AI_LIB, 'persona', 'persona'))
 }
 
 function getPersonaVoiceConfigs() {
@@ -518,7 +518,7 @@ function handlePostAgentFileUpload(req, res) {
 async function handleGetAgentEnv(req, res) {
   if (!requireAdmin(req, res)) return
   try {
-    const runtime = await require(path.join(AI_LIB, 'runtime-config')).loadConfig(true)
+    const runtime = await require(path.join(AI_LIB, 'core', 'runtime-config')).loadConfig(true)
     return json(res, {
       ok: true,
       env: getAgentEnvStatus(),
@@ -630,7 +630,7 @@ function handlePostAgentChat(req, res) {
         }),
       })
       if (result && result.reply && !(result.pendingId)) {
-        require(path.join(AI_LIB, 'agent-chat-bridge')).recordAgentChatResult({
+        require(path.join(AI_LIB, 'chat', 'agent-chat-bridge')).recordAgentChatResult({
           session: null, userMessage: message, userName: String(data.userName || 'Dashboard'),
           userId: String(data.userId || 'dashboard'), channelKey: 'dashboard', agentResult: result,
         })

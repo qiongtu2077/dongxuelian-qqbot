@@ -16,12 +16,12 @@ const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
   SENSITIVE_CACHE_PREFIX,
   USER_PROFILE_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE,
   DATA_DIR,
-} = require('./constants')
-const { readTextFile, readJsonFile, writeJsonFile, sanitizeUserName, todayCst, todayCstMinusDays, formatShanghaiTime24h } = require('./utils')
-const { normalizeText } = require('./message-reader')
-const { requestChatCompletions } = require('./api')
+} = require('./core/constants')
+const { readTextFile, readJsonFile, writeJsonFile, sanitizeUserName, todayCst, todayCstMinusDays, formatShanghaiTime24h } = require('./core/utils')
+const { normalizeText } = require('./message/message-reader')
+const { requestChatCompletions } = require('./core/api')
 const { loadConfig } = require('./core/runtime-config')
-const { appendGroupSceneEntry } = require('./group-scene-index')
+const { appendGroupSceneEntry } = require('./routing/group-scene-index')
 const { redactSensitiveText } = require('./core/redactor')
 
 let conversationCache = new Map()

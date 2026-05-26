@@ -8,7 +8,7 @@ const {
   SEARCH_ENABLED_FILE,
   ADMIN_IDS_FILE,
   PROVIDERS, PROVIDER_FILE, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE,
-} = require('../constants')
+} = require('./constants')
 const fs = require('fs')
 const fsp = require('fs/promises')
 

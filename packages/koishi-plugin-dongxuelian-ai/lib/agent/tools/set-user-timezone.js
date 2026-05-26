@@ -4,7 +4,7 @@
  */
 const fs = require('fs/promises')
 const path = require('path')
-const { DATA_DIR } = require('../../constants')
+const { DATA_DIR } = require('../../core/constants')
 
 const TZ_FILE = path.join(DATA_DIR, 'agent-user-timezones.json')
 const TZ_RE = /^[A-Za-z]+(?:[ _-][A-Za-z]+)*(?:\/[A-Za-z0-9_+.-]+)+$/

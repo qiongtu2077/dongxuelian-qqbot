@@ -6,7 +6,7 @@
 const fs = require('fs')
 const path = require('path')
 const { FORCE_TEMPLATE } = require('./config')
-const { getShanghaiHourFromTs } = require('../../koishi-plugin-dongxuelian-ai/lib/utils')
+const { getShanghaiHourFromTs } = require('../../koishi-plugin-dongxuelian-ai/lib/core/utils')
 
 const TEMPLATES_DIR = path.join(__dirname, '..', 'templates')
 

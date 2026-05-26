@@ -6,7 +6,7 @@
  */
 const fsp = require('fs/promises')
 const path = require('path')
-const { DATA_DIR } = require('../constants')
+const { DATA_DIR } = require('../core/constants')
 const { getAgentConfig } = require('./config')
 
 const CRON_FILE = path.join(DATA_DIR, 'agent-crons.json')

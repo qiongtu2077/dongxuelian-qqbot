@@ -90,7 +90,7 @@ async function withIsolatedPlugin(fn) {
   try {
     const protocol = require(PROTOCOL_PATH)
     const plugin = reloadPlugin()
-    const constants = require('koishi-plugin-dongxuelian-ai/lib/constants')
+    const constants = require('koishi-plugin-dongxuelian-ai/lib/core/constants')
     await fn({ protocol, plugin, constants, tmpRoot, dataDir })
   } finally {
     clearPluginCaches()

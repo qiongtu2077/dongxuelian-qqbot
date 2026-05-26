@@ -6,8 +6,8 @@
  */
 const fs = require('fs')
 const path = require('path')
-const { SKILLS_DIR, SKILLS_LORE_DIR } = require('../constants')
-const { ensureRuntimeSkillSeeds } = require('../skill-seeds')
+const { SKILLS_DIR, SKILLS_LORE_DIR } = require('../core/constants')
+const { ensureRuntimeSkillSeeds } = require('../persona/skills/skill-seeds')
 const { SKILL_POOL_DIR } = require('./skills/store')
 
 const SKILL_DIRS = [

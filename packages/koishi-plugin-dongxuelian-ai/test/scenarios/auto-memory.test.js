@@ -11,9 +11,9 @@ async function run(t) {
   process.env.DONGXUELIAN_AI_DATA_DIR = tmpDir
 
   const modulesToReload = [
-    '../../lib/constants',
-    '../../lib/api',
-    '../../lib/runtime-config',
+    '../../lib/core/constants',
+    '../../lib/core/api',
+    '../../lib/core/runtime-config',
     '../../lib/agent/memory',
     '../../lib/agent/auto-memory',
     '../../lib/agent/dream',

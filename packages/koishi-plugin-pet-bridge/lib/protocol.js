@@ -4,12 +4,12 @@
  * 边界: Reads config through runtime-config; calls AI through api.js.
  *        Does NOT modify core plugin logic, handle Koishi sessions, or send messages on its own.
  */
-const { loadConfig, resetConfigCache, getThinkingEnabled, setThinkingEnabled } = require('koishi-plugin-dongxuelian-ai/lib/runtime-config')
-const { requestChatCompletions } = require('koishi-plugin-dongxuelian-ai/lib/api')
-const { getAvailablePersonals, loadPersonalSkill, setUserPersona, getUserPersona } = require('koishi-plugin-dongxuelian-ai/lib/persona')
+const { loadConfig, resetConfigCache, getThinkingEnabled, setThinkingEnabled } = require('koishi-plugin-dongxuelian-ai/lib/core/runtime-config')
+const { requestChatCompletions } = require('koishi-plugin-dongxuelian-ai/lib/core/api')
+const { getAvailablePersonals, loadPersonalSkill, setUserPersona, getUserPersona } = require('koishi-plugin-dongxuelian-ai/lib/persona/persona')
 const { getMemorySummary } = require('koishi-plugin-dongxuelian-ai/lib/conversation')
-const { resolveOneBotWsUrl } = require('koishi-plugin-dongxuelian-ai/lib/onebot-endpoint')
-const { PROVIDER_FILE, MODEL_FILE, SEARCH_ENABLED_FILE, MAINTENANCE_FILE, THINKING_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_WHITELIST_FILE } = require('koishi-plugin-dongxuelian-ai/lib/constants')
+const { resolveOneBotWsUrl } = require('koishi-plugin-dongxuelian-ai/lib/core/onebot-endpoint')
+const { PROVIDER_FILE, MODEL_FILE, SEARCH_ENABLED_FILE, MAINTENANCE_FILE, THINKING_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_WHITELIST_FILE } = require('koishi-plugin-dongxuelian-ai/lib/core/constants')
 const fs = require('fs')
 
 

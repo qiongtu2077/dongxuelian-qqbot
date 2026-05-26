@@ -3,7 +3,7 @@
 const fs = require('fs')
 const path = require('path')
 const { KOISHI_DIR, DEBUG_LOG_CONFIG_FILE, MAX_LOG_LIMIT } = require('./paths')
-const { redactSensitiveText } = require('koishi-plugin-dongxuelian-ai/lib/redactor')
+const { redactSensitiveText } = require('koishi-plugin-dongxuelian-ai/lib/core/redactor')
 
 let logEntryCache = { file: '', size: -1, mtimeMs: -1, entries: [] }
 

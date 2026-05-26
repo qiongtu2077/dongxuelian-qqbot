@@ -7,7 +7,7 @@
 const fs = require('fs')
 const fsp = require('fs/promises')
 const path = require('path')
-const { TOOL_CONFIG_FILE } = require('../constants')
+const { TOOL_CONFIG_FILE } = require('../core/constants')
 
 const KNOWN_CHANNELS = new Set(['qq', 'dashboard'])
 const MAX_TOOL_CONFIG_BYTES = 512 * 1024

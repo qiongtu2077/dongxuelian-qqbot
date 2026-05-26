@@ -8,10 +8,10 @@ const DATA_COLLECTOR_PATH = path.resolve(__dirname, '..', 'lib', 'data-collector
 const AI_ANALYZER_PATH = path.resolve(__dirname, '..', 'lib', 'ai-analyzer.js')
 const HTML_RENDERER_PATH = path.resolve(__dirname, '..', 'lib', 'html-renderer.js')
 const MODELS_PATH = path.resolve(__dirname, '..', 'lib', 'models.js')
-const API_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'api.js')
-const RUNTIME_CONFIG_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'runtime-config.js')
+const API_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'core', 'api.js')
+const RUNTIME_CONFIG_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'core', 'runtime-config.js')
 
-const { requestChatCompletions } = require(path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'api.js'))
+const { requestChatCompletions } = require(API_PATH)
 
 let passed = 0
 let failed = 0

@@ -74,7 +74,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession }) => {
-    const repeat = require('../../lib/repeat')
+    const repeat = require('../../lib/behavior/repeat')
     const enabled = repeat.getRepeatEnabledCache()
     const candidate = { key: 'text:pure-repeat', reply: 'pure-repeat', kind: 'text', supported: true }
 
