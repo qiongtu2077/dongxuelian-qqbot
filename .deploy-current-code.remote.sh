@@ -7,6 +7,7 @@ cd "$APP"
 
 echo "extract current code package"
 test -f current-code.tgz
+find packages -mindepth 2 -maxdepth 2 -type d -name lib -prune -exec rm -rf {} +
 tar -xzf current-code.tgz
 
 echo "sync restart script and normalize line endings"
