@@ -1,0 +1,204 @@
+/**
+ * MODULE: Agent 计划状态机。
+ * 职责: 创建、更新、完成、放弃和查询多步骤计划。
+ * 边界: 不调用模型、不执行工具、不直接发送消息。
+ * 状态: 无模块级可变状态，持久化委托 plan-store。
+ */
+const store = require('./plan-store') as typeof import('./plan-store')
+
+type TaskState = 'todo' | 'in_progress' | 'done' | 'abandoned' | 'failed'
+
+interface PlanTaskInput {
+  id?: string
+  desc?: string
+  description?: string
+  outcome?: string | null
+  toolCallCount?: number | string
+}
+
+interface CreatePlanOptions {
+  title?: string
+  tasks?: unknown
+  channel?: string
+  channelKey?: string
+  userId?: string
+  userName?: string
+}
+
+interface UpdateTaskStatusOptions {
+  planId?: string
+  taskId?: string
+  state?: string
+  outcome?: unknown
+  toolCallCount?: unknown
+}
+
+interface PlanVisibilityOptions {
+  userId?: string
+  channelKey?: string
+  isAdmin?: boolean
+}
+
+interface FinishPlanOptions {
+  planId?: string
+  summary?: unknown
+}
+
+interface AbandonPlanOptions {
+  planId?: string
+  reason?: unknown
+}
+
+interface FormatPlanTask {
+  id?: string
+  desc?: string
+  state?: string
+  outcome?: string | null
+}
+
+interface FormatPlan {
+  id?: string
+  title?: string
+  state?: string
+  userId?: string
+  channelKey?: string
+  tasks?: FormatPlanTask[]
+  summary?: string
+  active?: FormatPlan[]
+  recent?: FormatPlan[]
+}
+
+interface PlanStatusList {
+  active: FormatPlan[]
+  recent: FormatPlan[]
+}
+
+type PlanResult = FormatPlan
+type PlanStatusResult = PlanResult | PlanStatusList
+
+function asPlanResult(plan: unknown): PlanResult {
+  return plan as PlanResult
+}
+
+function isPlanStatusList(plan: PlanStatusResult): plan is PlanStatusList {
+  return Array.isArray((plan as PlanStatusList).active)
+}
+
+function normalizeTaskList(tasks: unknown): PlanTaskInput[] {
+  if (Array.isArray(tasks)) return tasks
+  const text = String(tasks || '')
+  return text.split(/\r?\n/)
+    .map(line => line.replace(/^\s*(?:[-*]|\d+[.、])\s*/, '').trim())
+    .filter(Boolean)
+    .map(desc => ({ desc }))
+}
+
+async function createPlan({ title, tasks, channel = 'unknown', channelKey = 'unknown', userId = 'unknown', userName = '' }: CreatePlanOptions = {}): Promise<PlanResult> {
+  const taskList = normalizeTaskList(tasks)
+  if (!taskList.length) throw new Error('计划至少需要一个任务')
+  const plan = await store.savePlan({
+    title: String(title || taskList[0]?.desc || 'Agent 计划').trim(),
+    state: 'executing',
+    channel,
+    channelKey,
+    userId,
+    userName,
+    tasks: taskList.map((task, index) => ({
+      id: task.id || `t${index + 1}`,
+      desc: task.desc || task.description || String(task),
+      state: index === 0 ? 'in_progress' : 'todo',
+      outcome: task.outcome || null,
+      toolCallCount: task.toolCallCount || 0,
+    })),
+  })
+  return asPlanResult(plan)
+}
+
+async function updateTaskStatus({ planId, taskId, state, outcome = null, toolCallCount }: UpdateTaskStatusOptions = {}): Promise<PlanResult> {
+  const plan = await store.loadPlan(planId)
+  if (!plan) throw new Error('计划不存在')
+  const nextState = ['todo', 'in_progress', 'done', 'abandoned', 'failed'].includes(String(state)) ? state as TaskState : ''
+  if (!nextState) throw new Error('任务状态无效')
+  const task = plan.tasks.find(item => item.id === taskId)
+  if (!task) throw new Error('任务不存在')
+  task.state = nextState
+  task.outcome = outcome === null || outcome === undefined ? task.outcome : String(outcome).slice(0, 2000)
+  if (toolCallCount !== undefined) task.toolCallCount = Math.max(0, parseInt(String(toolCallCount), 10) || 0)
+  task.updatedAt = Date.now()
+  if (nextState === 'done') {
+    const next = plan.tasks.find(item => item.state === 'todo')
+    if (next) {
+      next.state = 'in_progress'
+      next.updatedAt = Date.now()
+    }
+  }
+  if (plan.tasks.every(item => item.state === 'done' || item.state === 'abandoned')) {
+    plan.state = plan.tasks.every(item => item.state === 'done') ? 'done' : 'abandoned'
+  } else if (plan.state === 'todo') {
+    plan.state = 'executing'
+  }
+  return asPlanResult(await store.savePlan(plan))
+}
+
+async function checkPlanStatus(planId?: string, { userId, channelKey, isAdmin }: PlanVisibilityOptions = {}): Promise<PlanStatusResult> {
+  if (planId) {
+    const plan = await store.loadPlan(planId)
+    if (!plan) throw new Error('计划不存在')
+    if (!isAdmin && userId && plan.userId !== userId && plan.channelKey !== channelKey) {
+      throw new Error('无权查看该计划')
+    }
+    return asPlanResult(plan)
+  }
+  const active = await store.listActivePlans()
+  const recent = await store.listPlans(20)
+  if (!userId && !channelKey) return { active: active.map(asPlanResult), recent: recent.map(asPlanResult) }
+  const visible = (plan: FormatPlan) => isAdmin || plan.userId === userId || plan.channelKey === channelKey
+  return { active: active.map(asPlanResult).filter(visible), recent: recent.map(asPlanResult).filter(visible) }
+}
+
+async function finishPlan({ planId, summary = '' }: FinishPlanOptions = {}): Promise<PlanResult> {
+  const plan = await store.loadPlan(planId)
+  if (!plan) throw new Error('计划不存在')
+  plan.state = 'done'
+  plan.summary = String(summary || plan.summary || '').slice(0, 4000)
+  plan.tasks = plan.tasks.map(task => task.state === 'todo' || task.state === 'in_progress'
+    ? { ...task, state: 'done', updatedAt: Date.now() }
+    : task)
+  return asPlanResult(await store.savePlan(plan))
+}
+
+async function abandonPlan({ planId, reason = '' }: AbandonPlanOptions = {}): Promise<PlanResult> {
+  const plan = await store.loadPlan(planId)
+  if (!plan) throw new Error('计划不存在')
+  plan.state = 'abandoned'
+  plan.summary = String(reason || plan.summary || '用户放弃计划').slice(0, 4000)
+  plan.tasks = plan.tasks.map(task => task.state === 'todo' || task.state === 'in_progress'
+    ? { ...task, state: 'abandoned', outcome: task.outcome || plan.summary, updatedAt: Date.now() }
+    : task)
+  return asPlanResult(await store.savePlan(plan))
+}
+
+function formatPlan(plan: PlanStatusResult | null | undefined): string {
+  if (!plan) return '计划不存在。'
+  if (isPlanStatusList(plan)) {
+    if (!plan.active.length) return '当前没有执行中的计划。'
+    return plan.active.map(formatPlan).join('\n\n')
+  }
+  const stateLabel = { executing: '执行中', todo: '待执行', done: '已完成', abandoned: '已放弃', failed: '失败' }[String(plan.state || '')] || plan.state
+  const lines = [`${plan.title}（${stateLabel}，ID: ${plan.id}）`]
+  for (const task of plan.tasks || []) {
+    const label = { todo: '待办', in_progress: '进行中', done: '完成', abandoned: '放弃', failed: '失败' }[String(task.state || '')] || task.state
+    lines.push(`- [${label}] ${task.id}: ${task.desc}${task.outcome ? ` -> ${task.outcome}` : ''}`)
+  }
+  if (plan.summary) lines.push(`总结：${plan.summary}`)
+  return lines.join('\n')
+}
+
+export = {
+  createPlan,
+  updateTaskStatus,
+  checkPlanStatus,
+  finishPlan,
+  abandonPlan,
+  formatPlan,
+}

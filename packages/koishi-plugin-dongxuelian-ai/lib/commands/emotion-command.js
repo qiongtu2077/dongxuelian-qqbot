@@ -1,326 +1,354 @@
+"use strict";
 /**
  * MODULE: 今日情绪命令。
  * 边界: 只处理群聊情绪报告命令、情绪历史读写与图片渲染回退；不改聊天主流程，不写 conversation。
  * 状态: 复用 index.js 注入的 channelTodayCache / lastEmotionCache，不自建跨模块全局状态。
  */
-
-const path = require('path')
-const { h } = require('koishi')
-const { DATA_DIR } = require('../core/constants')
-const { renderEmotionImage } = require('../behavior/emotion-renderer')
-const {
-  readJsonFile,
-  writeJsonFile,
-  todayCst,
-  todayCstMinusDays,
-} = require('../core/utils')
-const { logDebug } = require('../core/logging-config')
-const { handled, notHandled } = require('./command-result')
-
-const EMOTION_IMAGE_TEXT_LIMIT = 1500
-const EMOTION_FALLBACK_TEXT_LIMIT = 500
-const EMOTION_ANALYSIS_MAX_MESSAGES = 1200
-const EMOTION_COMPRESS_BATCH_SIZE = 100
-const EMOTION_MAX_SUMMARY_CHARS = 10000
-
+const path = require('path');
+const { h } = require('koishi');
+const { DATA_DIR } = require('../core/constants');
+const { renderEmotionImage } = require('../behavior/emotion-renderer');
+const { readJsonFile, writeJsonFile, todayCst, todayCstMinusDays, safeChannelKey, truncateText, } = require('../core/utils');
+const { logDebug } = require('../core/logging-config');
+const { handled, notHandled } = require('./command-result');
+const EMOTION_IMAGE_TEXT_LIMIT = 1500;
+const EMOTION_FALLBACK_TEXT_LIMIT = 500;
+const EMOTION_ANALYSIS_MAX_MESSAGES = 1200;
+const EMOTION_COMPRESS_BATCH_SIZE = 100;
+const EMOTION_MAX_SUMMARY_CHARS = 10000;
+function isEmotionRecord(value) {
+    return !!value && typeof value === 'object';
+}
+function getEmotionCommandErrorMessage(error, fallback = '') {
+    return error instanceof Error ? error.message : String(error?.message || fallback);
+}
 function clampInteger(value, min, max, fallback) {
-  const number = parseInt(value, 10)
-  if (!Number.isFinite(number)) return fallback
-  return Math.max(min, Math.min(max, number))
+    const number = parseInt(String(value), 10);
+    if (!Number.isFinite(number))
+        return fallback;
+    return Math.max(min, Math.min(max, number));
 }
-
 function cleanEmotionText(value = '', max = 120) {
-  return String(value || '')
-    .replace(/[\r\n\t]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, max)
+    const text = String(value || '')
+        .replace(/[\r\n\t]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return truncateText(text, max);
 }
-
 function limitPlainText(value = '', max = 500) {
-  const text = String(value || '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(/[\t ]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-  if (text.length <= max) return text
-  return text.slice(0, Math.max(0, max - 3)).trim() + '...'
+    const text = String(value || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/[\t ]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    if (text.length <= max)
+        return text;
+    return truncateText(text, Math.max(0, max - 3)).trim() + '...';
 }
-
 function truncateEmotionText(value = '', max = 120) {
-  const text = cleanEmotionText(value, max + 20)
-  if (text.length <= max) return text
-  return text.slice(0, Math.max(0, max - 3)).trim() + '...'
+    const text = cleanEmotionText(value, max + 20);
+    if (text.length <= max)
+        return text;
+    return truncateText(text, Math.max(0, max - 3)).trim() + '...';
 }
-
 function normalizeEmotionMood(score, mood = '') {
-  const value = String(mood || '')
-  if (/悲|低|消沉|焦虑|负/.test(value)) return '偏悲观'
-  if (/乐|活跃|积极|高涨|正/.test(value)) return '偏乐观'
-  if (/中|平/.test(value)) return '中性'
-  if (score >= 65) return '偏乐观'
-  if (score <= 40) return '偏悲观'
-  return '中性'
+    const value = String(mood || '');
+    if (/悲|低|消沉|焦虑|负/.test(value))
+        return '偏悲观';
+    if (/乐|活跃|积极|高涨|正/.test(value))
+        return '偏乐观';
+    if (/中|平/.test(value))
+        return '中性';
+    if (score >= 65)
+        return '偏乐观';
+    if (score <= 40)
+        return '偏悲观';
+    return '中性';
 }
-
 function parseJsonObject(text = '') {
-  const raw = String(text || '').trim()
-  if (!raw) return null
-  try { return JSON.parse(raw) } catch {}
-  const match = raw.match(/\{[\s\S]*\}/)
-  if (!match) return null
-  try { return JSON.parse(match[0]) } catch { return null }
+    const raw = String(text || '').trim();
+    if (!raw)
+        return null;
+    try {
+        return JSON.parse(raw);
+    }
+    catch {
+        /* non-critical: model output may wrap JSON with prose, fallback regex handles it */
+    }
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match)
+        return null;
+    try {
+        return JSON.parse(match[0]);
+    }
+    catch {
+        /* non-critical: invalid model JSON falls back to text heuristics */
+        return null;
+    }
 }
-
 function normalizeEmotionReasons(value, fallbackSummary) {
-  const source = Array.isArray(value) ? value : String(value || '').split(/(?:\d+[.、]\s*|[；;])/)
-  const reasons = source.map(item => cleanEmotionText(item, 300)).filter(Boolean)
-  if (reasons.length >= 2) return reasons.slice(0, 4)
-  if (reasons.length === 1) return [reasons[0], '群聊样本仍在积累，结论以当前收录文本为准。']
-  return [fallbackSummary || '聊天内容整体较平稳，没有明显单一情绪压倒其他话题。', '群聊样本仍在积累，结论以当前收录文本为准。']
+    const source = Array.isArray(value) ? value : String(value || '').split(/(?:\d+[.、]\s*|[；;])/);
+    const reasons = source.map(item => cleanEmotionText(item, 300)).filter(Boolean);
+    if (reasons.length >= 2)
+        return reasons.slice(0, 4);
+    if (reasons.length === 1)
+        return [reasons[0], '群聊样本仍在积累，结论以当前收录文本为准。'];
+    return [fallbackSummary || '聊天内容整体较平稳，没有明显单一情绪压倒其他话题。', '群聊样本仍在积累，结论以当前收录文本为准。'];
 }
-
 function parseEmotionAnalysis(rawText, stats, summaryText = '') {
-  const parsed = parseJsonObject(rawText)
-  const text = String(rawText || '')
-  const fallbackSummary = cleanEmotionText(summaryText || text, 80) || '今天整体情绪比较平稳。'
-  const scoreMatch = text.match(/(?:score|指数)[^\d]*(\d{1,3})/i)
-  const confidenceMatch = text.match(/(?:confidence|置信度)[^\d]*(\d{1,3})/i)
-  const score = clampInteger(parsed?.score ?? parsed?.emotionScore ?? scoreMatch?.[1], 0, 100, 50)
-  const confidence = clampInteger(parsed?.confidence ?? confidenceMatch?.[1], 0, 100, stats.messageCount >= 50 ? 78 : 65)
-  const summary = cleanEmotionText(parsed?.summary || parsed?.comment || parsed?.overall || fallbackSummary, 80) || fallbackSummary
-  const mood = normalizeEmotionMood(score, parsed?.mood || parsed?.label)
-  const reasons = normalizeEmotionReasons(parsed?.reasons || parsed?.reason, summary)
-  const keywords = Array.isArray(parsed?.keywords)
-    ? parsed.keywords.map(item => cleanEmotionText(item, 16)).filter(Boolean).slice(0, 6)
-    : []
-  return { score, confidence, mood, summary, reasons, keywords }
+    const parsed = parseJsonObject(rawText);
+    const text = String(rawText || '');
+    const fallbackSummary = cleanEmotionText(summaryText || text, 80) || '今天整体情绪比较平稳。';
+    const scoreMatch = text.match(/(?:score|指数)[^\d]*(\d{1,3})/i);
+    const confidenceMatch = text.match(/(?:confidence|置信度)[^\d]*(\d{1,3})/i);
+    const score = clampInteger(parsed?.score ?? parsed?.emotionScore ?? scoreMatch?.[1], 0, 100, 50);
+    const confidence = clampInteger(parsed?.confidence ?? confidenceMatch?.[1], 0, 100, stats.messageCount >= 50 ? 78 : 65);
+    const summary = cleanEmotionText(parsed?.summary || parsed?.comment || parsed?.overall || fallbackSummary, 80) || fallbackSummary;
+    const mood = normalizeEmotionMood(score, parsed?.mood || parsed?.label);
+    const reasons = normalizeEmotionReasons(parsed?.reasons || parsed?.reason, summary);
+    const keywords = Array.isArray(parsed?.keywords)
+        ? parsed.keywords.map(item => cleanEmotionText(item, 16)).filter(Boolean).slice(0, 6)
+        : [];
+    return { score, confidence, mood, summary, reasons, keywords };
 }
-
 function normalizeEmotionHistoryItem(item) {
-  if (!item || typeof item !== 'object' || !item.date) return null
-  const score = clampInteger(item.score, 0, 100, 50)
-  return {
-    date: String(item.date),
-    score,
-    mood: normalizeEmotionMood(score, item.mood),
-    summary: cleanEmotionText(item.summary || item.text || '', 70),
-  }
+    if (!isEmotionRecord(item) || !item.date)
+        return null;
+    const score = clampInteger(item.score, 0, 100, 50);
+    return {
+        date: String(item.date),
+        score,
+        mood: normalizeEmotionMood(score, item.mood),
+        summary: cleanEmotionText(item.summary || item.text || '', 70),
+    };
 }
-
 function renderEmotionReport(analysis, stats, history = []) {
-  const lines = [
-    `群聊情绪指数：${analysis.score}/100（${analysis.mood}）`,
-    `置信度：${analysis.confidence}%`,
-    `今日样本：${stats.messageCount} 条文本消息，${stats.userCount} 位活跃成员`,
-    '',
-  ]
-  if (history.length) {
-    lines.push('近5日对比：')
-    for (const item of history) {
-      const suffix = item.summary ? ` ${item.summary}` : ''
-      lines.push(`- ${item.date}：${item.score}/100（${item.mood}）${suffix}`)
+    const lines = [
+        `群聊情绪指数：${analysis.score}/100（${analysis.mood}）`,
+        `置信度：${analysis.confidence}%`,
+        `今日样本：${stats.messageCount} 条文本消息，${stats.userCount} 位活跃成员`,
+        '',
+    ];
+    if (history.length) {
+        lines.push('近5日对比：');
+        for (const item of history) {
+            const suffix = item.summary ? ` ${item.summary}` : '';
+            lines.push(`- ${item.date}：${item.score}/100（${item.mood}）${suffix}`);
+        }
     }
-  } else {
-    lines.push('近5日对比：暂无对比数据')
-  }
-  lines.push('', `总评：${analysis.summary}`, '原因：')
-  analysis.reasons.forEach((reason, index) => lines.push(`${index + 1}. ${reason}`))
-  if (analysis.keywords.length) lines.push('', `关键词：${analysis.keywords.join('、')}`)
-  return lines.join('\n').trim()
+    else {
+        lines.push('近5日对比：暂无对比数据');
+    }
+    lines.push('', `总评：${analysis.summary}`, '原因：');
+    analysis.reasons.forEach((reason, index) => lines.push(`${index + 1}. ${reason}`));
+    if (analysis.keywords.length)
+        lines.push('', `关键词：${analysis.keywords.join('、')}`);
+    return lines.join('\n').trim();
 }
-
 function limitEmotionAnalysisForImage(analysis, stats, history = [], max = EMOTION_IMAGE_TEXT_LIMIT) {
-  const base = {
-    ...analysis,
-    summary: truncateEmotionText(analysis.summary, 80),
-    reasons: (Array.isArray(analysis.reasons) ? analysis.reasons : [])
-      .map(reason => truncateEmotionText(reason, 300))
-      .filter(Boolean)
-      .slice(0, 4),
-    keywords: (Array.isArray(analysis.keywords) ? analysis.keywords : [])
-      .map(keyword => truncateEmotionText(keyword, 16))
-      .filter(Boolean)
-      .slice(0, 6),
-  }
-  if (renderEmotionReport(base, stats, history).length <= max) return base
-
-  for (const reasonLimit of [240, 200, 160, 120, 90, 70, 50]) {
-    const candidate = {
-      ...base,
-      reasons: base.reasons.map(reason => truncateEmotionText(reason, reasonLimit)),
+    const base = {
+        ...analysis,
+        summary: truncateEmotionText(analysis.summary, 80),
+        reasons: (Array.isArray(analysis.reasons) ? analysis.reasons : [])
+            .map(reason => truncateEmotionText(reason, 300))
+            .filter(Boolean)
+            .slice(0, 4),
+        keywords: (Array.isArray(analysis.keywords) ? analysis.keywords : [])
+            .map(keyword => truncateEmotionText(keyword, 16))
+            .filter(Boolean)
+            .slice(0, 6),
+    };
+    if (renderEmotionReport(base, stats, history).length <= max)
+        return base;
+    for (const reasonLimit of [240, 200, 160, 120, 90, 70, 50]) {
+        const candidate = {
+            ...base,
+            reasons: base.reasons.map(reason => truncateEmotionText(reason, reasonLimit)),
+        };
+        if (renderEmotionReport(candidate, stats, history).length <= max)
+            return candidate;
     }
-    if (renderEmotionReport(candidate, stats, history).length <= max) return candidate
-  }
-
-  return {
-    ...base,
-    summary: truncateEmotionText(base.summary, 60),
-    reasons: base.reasons.slice(0, 2).map(reason => truncateEmotionText(reason, 50)),
-    keywords: [],
-  }
+    return {
+        ...base,
+        summary: truncateEmotionText(base.summary, 60),
+        reasons: base.reasons.slice(0, 2).map(reason => truncateEmotionText(reason, 50)),
+        keywords: [],
+    };
 }
-
 async function renderEmotionImageWithRetry(ctx, renderImage, analysis, stats, history, channelKey) {
-  let lastError = null
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      return await renderImage(analysis, stats, history)
-    } catch (err) {
-      lastError = err
-      ctx.logger('dongxuelian-ai').warn(`emotion image render failed channel=${channelKey} attempt=${attempt}: ${err.message}`)
+    let lastError = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+            return await renderImage(analysis, stats, history);
+        }
+        catch (err) {
+            lastError = err;
+            ctx.logger('dongxuelian-ai').warn(`emotion image render failed channel=${channelKey} attempt=${attempt}: ${getEmotionCommandErrorMessage(err)}`);
+        }
     }
-  }
-  throw lastError || new Error('emotion image render failed')
+    throw lastError || new Error('emotion image render failed');
 }
-
 async function generateShortEmotionFallback(callOpenAI, analysis, stats, history, renderedText) {
-  const prompt = [
-    '今日情绪图片生成失败。请根据以下结构化结果，重新生成一段500字以内的纯文本群聊情绪报告。',
-    '必须包含：情绪指数、置信度、今日样本、近5日对比简述、总评、最多3条原因。',
-    '不要输出 JSON，不要 Markdown 表格，不要超过500字。',
-    '',
-    `情绪指数：${analysis.score}/100（${analysis.mood}）`,
-    `置信度：${analysis.confidence}%`,
-    `今日样本：${stats.messageCount} 条文本消息，${stats.userCount} 位活跃成员`,
-    history.length ? '近5日对比：\n' + history.map(item => `${item.date} ${item.score}/100 ${item.summary || ''}`).join('\n') : '近5日对比：暂无对比数据',
-    `总评：${analysis.summary}`,
-    `原因：${analysis.reasons.slice(0, 3).join('；')}`,
-    analysis.keywords.length ? `关键词：${analysis.keywords.join('、')}` : '',
-  ].filter(Boolean).join('\n')
-
-  try {
-    const fallback = await callOpenAI([
-      { role: 'system', content: prompt },
-      { role: 'user', content: '重新生成今日情绪文本回退' },
-    ], false, { max_tokens: 500, noLazy: true, _fallbackSet: 'lightweight' })
-    return limitPlainText(fallback, EMOTION_FALLBACK_TEXT_LIMIT) || limitPlainText(renderedText, EMOTION_FALLBACK_TEXT_LIMIT)
-  } catch {
-    return limitPlainText(renderedText, EMOTION_FALLBACK_TEXT_LIMIT)
-  }
+    const prompt = [
+        '今日情绪图片生成失败。请根据以下结构化结果，重新生成一段500字以内的纯文本群聊情绪报告。',
+        '必须包含：情绪指数、置信度、今日样本、近5日对比简述、总评、最多3条原因。',
+        '不要输出 JSON，不要 Markdown 表格，不要超过500字。',
+        '',
+        `情绪指数：${analysis.score}/100（${analysis.mood}）`,
+        `置信度：${analysis.confidence}%`,
+        `今日样本：${stats.messageCount} 条文本消息，${stats.userCount} 位活跃成员`,
+        history.length ? '近5日对比：\n' + history.map(item => `${item.date} ${item.score}/100 ${item.summary || ''}`).join('\n') : '近5日对比：暂无对比数据',
+        `总评：${analysis.summary}`,
+        `原因：${analysis.reasons.slice(0, 3).join('；')}`,
+        analysis.keywords.length ? `关键词：${analysis.keywords.join('、')}` : '',
+    ].filter(Boolean).join('\n');
+    try {
+        const fallback = await callOpenAI([
+            { role: 'system', content: prompt },
+            { role: 'user', content: '重新生成今日情绪文本回退' },
+        ], false, { max_tokens: 500, noLazy: true, _fallbackSet: 'lightweight' });
+        return limitPlainText(fallback, EMOTION_FALLBACK_TEXT_LIMIT) || limitPlainText(renderedText, EMOTION_FALLBACK_TEXT_LIMIT);
+    }
+    catch {
+        /* non-critical: image fallback can reuse deterministic rendered text */
+        return limitPlainText(renderedText, EMOTION_FALLBACK_TEXT_LIMIT);
+    }
 }
-
 function trimEmotionCache(map) {
-  const ttl = 5 * 60 * 1000
-  const now = Date.now()
-  for (const [key, value] of map.entries()) {
-    if (!value || now - (value.ts || 0) > ttl) map.delete(key)
-  }
-  while (map.size > 200) map.delete(map.keys().next().value)
+    const ttl = 5 * 60 * 1000;
+    const now = Date.now();
+    for (const [key, value] of map.entries()) {
+        if (!value || now - (value.ts || 0) > ttl)
+            map.delete(key);
+    }
+    while (map.size > 200) {
+        const oldestKey = map.keys().next().value;
+        if (oldestKey === undefined)
+            break;
+        map.delete(oldestKey);
+    }
 }
-
 async function summarizeEmotionMessages(msgs, callOpenAI) {
-  const source = (Array.isArray(msgs) ? msgs : []).slice(-EMOTION_ANALYSIS_MAX_MESSAGES)
-  const summaries = []
-  for (let i = 0; i < source.length; i += EMOTION_COMPRESS_BATCH_SIZE) {
-    const batch = source.slice(i, i + EMOTION_COMPRESS_BATCH_SIZE)
-    const batchText = batch.map(m => `[${m.time}] ${m.user}：${m.content}`).join('\n')
-    try {
-      const summary = await callOpenAI([
-        { role: 'system', content: '你是群聊消息摘要助手。将以下群聊记录压缩成一段100字以内的摘要，保留主要话题和情绪倾向。不要评价，只摘要。不得扩写，不得输出分析报告。' },
-        { role: 'user', content: batchText.slice(0, 4000) },
-      ], false, { _fallbackSet: 'lightweight' })
-      if (summary) summaries.push(summary)
-    } catch {}
-    if (summaries.join('\n---\n').length >= EMOTION_MAX_SUMMARY_CHARS) break
-  }
-  const fallback = source.slice(-80).map(m => `[${m.time}] ${m.user}：${m.content}`).join('\n').slice(0, 8000)
-  return {
-    sample: source,
-    text: (summaries.filter(Boolean).join('\n---\n') || fallback).slice(0, EMOTION_MAX_SUMMARY_CHARS),
-  }
+    const source = (Array.isArray(msgs) ? msgs : []).slice(-EMOTION_ANALYSIS_MAX_MESSAGES);
+    const summaries = [];
+    for (let i = 0; i < source.length; i += EMOTION_COMPRESS_BATCH_SIZE) {
+        const batch = source.slice(i, i + EMOTION_COMPRESS_BATCH_SIZE);
+        const batchText = batch.map(m => `[${m.time}] ${m.user}：${m.content}`).join('\n');
+        try {
+            const summary = await callOpenAI([
+                { role: 'system', content: '你是群聊消息摘要助手。将以下群聊记录压缩成一段100字以内的摘要，保留主要话题和情绪倾向。不要评价，只摘要。不得扩写，不得输出分析报告。' },
+                { role: 'user', content: batchText.slice(0, 4000) },
+            ], false, { _fallbackSet: 'lightweight' });
+            if (summary)
+                summaries.push(String(summary));
+        }
+        catch {
+            /* non-critical: failed compression batch falls back to recent raw sample */
+        }
+        if (summaries.join('\n---\n').length >= EMOTION_MAX_SUMMARY_CHARS)
+            break;
+    }
+    const fallback = source.slice(-80).map(m => `[${m.time}] ${m.user}：${m.content}`).join('\n').slice(0, 8000);
+    return {
+        sample: source,
+        text: (summaries.filter(Boolean).join('\n---\n') || fallback).slice(0, EMOTION_MAX_SUMMARY_CHARS),
+    };
 }
-
+function imageBufferToBase64(imageBuffer) {
+    if (Buffer.isBuffer(imageBuffer))
+        return imageBuffer.toString('base64');
+    if (imageBuffer instanceof Uint8Array)
+        return Buffer.from(imageBuffer).toString('base64');
+    if (imageBuffer instanceof ArrayBuffer)
+        return Buffer.from(imageBuffer).toString('base64');
+    if (typeof SharedArrayBuffer !== 'undefined' && imageBuffer instanceof SharedArrayBuffer)
+        return Buffer.from(imageBuffer).toString('base64');
+    if (typeof imageBuffer === 'string')
+        return Buffer.from(imageBuffer).toString('base64');
+    throw new Error('invalid emotion image payload');
+}
 async function handleEmotionCommand(session, ctx, state) {
-  const {
-    plain,
-    inGuild,
-    channelKey,
-    loadConfig,
-    callOpenAI,
-    channelTodayCache,
-    lastEmotionCache,
-  } = state
-
-  if (plain !== '今日情绪') return notHandled()
-  if (!inGuild) return handled('这个命令只能在群里用。')
-  const today = todayCst()
-  const cache = channelTodayCache.get(channelKey)
-  if (!cache || cache.date !== today || !cache.messages.length) return handled('今天还没有收录消息。')
-  const users = new Set(cache.messages.map(m => m.userId)).size
-  const msgs = cache.messages
-
-  const cached = lastEmotionCache.get(channelKey)
-  if (cached && Date.now() - cached.ts < 300000) return handled(cached.response || cached.text)
-  if (cached) lastEmotionCache.delete(channelKey)
-
-  await session.send('Thinking......').catch(() => {})
-
-  const emotionSummary = await summarizeEmotionMessages(msgs, callOpenAI)
-  const allSummary = emotionSummary.text
-
-  await loadConfig(true)
-  const safeChannelKey = String(channelKey).replace(/[^a-zA-Z0-9._-]/g, '_')
-  const historyFile = path.join(DATA_DIR, 'emotion-history-' + safeChannelKey + '.json')
-  const historyData = await readJsonFile(historyFile, [])
-  const todayDate = today
-  const recentHistory = (Array.isArray(historyData) ? historyData : [])
-    .map(normalizeEmotionHistoryItem)
-    .filter(item => item && item.date !== todayDate)
-    .slice(-5)
-
-  const emotionPrompt = [
-    '你是一个群聊情绪分析师。以下是一天中每段群聊记录的摘要，请分析整体情绪状态。',
-    `今日样本：${msgs.length} 条消息，${users} 位活跃成员。`,
-    '输出内容将用于图片展示。summary、reasons、keywords 中用于展示的中文正文总量不得超过1500字。summary 控制在80字以内；reasons 最多4条，每条300字以内；keywords 最多6个短词。',
-    '只输出 JSON，不要 Markdown，不要解释。格式：',
-    '{"score":0到100整数,"confidence":0到100整数,"mood":"偏悲观/中性/偏乐观","summary":"80字以内总结","reasons":["每条300字以内，最多4条"],"keywords":["短关键词，最多6个"]}',
-    recentHistory.length ? '近5日对比：\n' + recentHistory.map(item => `${item.date} ${item.score}/100 ${item.summary}`).join('\n') : '近5日对比：暂无对比数据',
-    '',
-    '摘要如下：',
-    allSummary.slice(0, 10000),
-  ].join('\n')
-  try {
-    const result = await callOpenAI([
-      { role: 'system', content: emotionPrompt },
-      { role: 'user', content: `群 ${channelKey} 今日情绪分析` },
-    ], false, { max_tokens: 600, noLazy: true, _fallbackSet: 'lightweight' })
-    const stats = { messageCount: msgs.length, userCount: users }
-    const analysis = parseEmotionAnalysis(result, stats, allSummary)
-    const displayAnalysis = limitEmotionAnalysisForImage(analysis, stats, recentHistory)
-    const rendered = renderEmotionReport(displayAnalysis, stats, recentHistory)
-
+    const { plain, inGuild, channelKey, loadConfig, callOpenAI, channelTodayCache, lastEmotionCache, } = state;
+    if (plain !== '今日情绪')
+        return notHandled();
+    if (!inGuild)
+        return handled('这个命令只能在群里用。');
+    const today = todayCst();
+    const cache = channelTodayCache.get(channelKey);
+    if (!cache || cache.date !== today || !cache.messages.length)
+        return handled('今天还没有收录消息。');
+    const users = new Set(cache.messages.map(m => m.userId)).size;
+    const msgs = cache.messages;
+    const cached = lastEmotionCache.get(channelKey);
+    if (cached && Date.now() - cached.ts < 300000)
+        return handled(cached.response || cached.text);
+    if (cached)
+        lastEmotionCache.delete(channelKey);
+    await Promise.resolve(session.send('Thinking......')).catch(() => {
+        /* non-critical: thinking indicator failure should not block emotion analysis */
+    });
+    const emotionSummary = await summarizeEmotionMessages(msgs, callOpenAI);
+    const allSummary = emotionSummary.text;
+    await loadConfig(true);
+    const historyFile = path.join(DATA_DIR, 'emotion-history-' + safeChannelKey(channelKey) + '.json');
+    const historyData = await readJsonFile(historyFile, []);
+    const todayDate = today;
+    const recentHistory = (Array.isArray(historyData) ? historyData : [])
+        .map(normalizeEmotionHistoryItem)
+        .filter((item) => !!item && item.date !== todayDate)
+        .slice(-5);
+    const emotionPrompt = [
+        '你是一个群聊情绪分析师。以下是一天中每段群聊记录的摘要，请分析整体情绪状态。',
+        `今日样本：${msgs.length} 条消息，${users} 位活跃成员。`,
+        '输出内容将用于图片展示。summary、reasons、keywords 中用于展示的中文正文总量不得超过1500字。summary 控制在80字以内；reasons 最多4条，每条300字以内；keywords 最多6个短词。',
+        '只输出 JSON，不要 Markdown，不要解释。格式：',
+        '{"score":0到100整数,"confidence":0到100整数,"mood":"偏悲观/中性/偏乐观","summary":"80字以内总结","reasons":["每条300字以内，最多4条"],"keywords":["短关键词，最多6个"]}',
+        recentHistory.length ? '近5日对比：\n' + recentHistory.map(item => `${item.date} ${item.score}/100 ${item.summary}`).join('\n') : '近5日对比：暂无对比数据',
+        '',
+        '摘要如下：',
+        allSummary.slice(0, 10000),
+    ].join('\n');
     try {
-      const safeHistory = (Array.isArray(historyData) ? historyData : []).filter(item => item && item.date !== todayDate)
-      safeHistory.push({ date: todayDate, score: displayAnalysis.score, confidence: displayAnalysis.confidence, mood: displayAnalysis.mood, summary: displayAnalysis.summary, reasons: displayAnalysis.reasons })
-      const cutoffStr = todayCstMinusDays(5)
-      await writeJsonFile(historyFile, safeHistory.filter(item => item.date >= cutoffStr))
-    } catch (historyErr) {
-      ctx.logger('dongxuelian-ai').warn(`emotion history save failed: ${historyErr.message}`)
+        const result = await callOpenAI([
+            { role: 'system', content: emotionPrompt },
+            { role: 'user', content: `群 ${channelKey} 今日情绪分析` },
+        ], false, { max_tokens: 600, noLazy: true, _fallbackSet: 'lightweight' });
+        const stats = { messageCount: msgs.length, userCount: users };
+        const analysis = parseEmotionAnalysis(result, stats, allSummary);
+        const displayAnalysis = limitEmotionAnalysisForImage(analysis, stats, recentHistory);
+        const rendered = renderEmotionReport(displayAnalysis, stats, recentHistory);
+        try {
+            const safeHistory = (Array.isArray(historyData) ? historyData : []).filter((item) => isEmotionRecord(item) && item.date !== todayDate);
+            safeHistory.push({ date: todayDate, score: displayAnalysis.score, confidence: displayAnalysis.confidence, mood: displayAnalysis.mood, summary: displayAnalysis.summary, reasons: displayAnalysis.reasons });
+            const cutoffStr = todayCstMinusDays(5);
+            await writeJsonFile(historyFile, safeHistory.filter(item => String(item.date || '') >= cutoffStr));
+        }
+        catch (historyErr) {
+            ctx.logger('dongxuelian-ai').warn(`emotion history save failed: ${getEmotionCommandErrorMessage(historyErr)}`);
+        }
+        logDebug(ctx, 'emotion', `analysis done channel=${channelKey} score=${analysis.score} messages=${msgs.length}`);
+        const renderImage = state.renderEmotionImage || renderEmotionImage;
+        try {
+            const imageBuffer = await renderEmotionImageWithRetry(ctx, renderImage, displayAnalysis, stats, recentHistory, channelKey);
+            const imageBase64 = imageBufferToBase64(imageBuffer);
+            const imageMessage = h.image(`data:image/png;base64,${imageBase64}`);
+            lastEmotionCache.set(channelKey, { response: imageMessage, text: rendered, ts: Date.now() });
+            trimEmotionCache(lastEmotionCache);
+            return handled(imageMessage);
+        }
+        catch (imageErr) {
+            const fallbackText = await generateShortEmotionFallback(callOpenAI, displayAnalysis, stats, recentHistory, rendered);
+            lastEmotionCache.set(channelKey, { text: fallbackText, ts: Date.now() });
+            trimEmotionCache(lastEmotionCache);
+            return handled(fallbackText);
+        }
     }
-
-    logDebug(ctx, 'emotion', `analysis done channel=${channelKey} score=${analysis.score} messages=${msgs.length}`)
-    const renderImage = state.renderEmotionImage || renderEmotionImage
-    try {
-      const imageBuffer = await renderEmotionImageWithRetry(ctx, renderImage, displayAnalysis, stats, recentHistory, channelKey)
-      const imageBase64 = Buffer.isBuffer(imageBuffer) ? imageBuffer.toString('base64') : Buffer.from(imageBuffer).toString('base64')
-      const imageMessage = h.image(`data:image/png;base64,${imageBase64}`)
-      lastEmotionCache.set(channelKey, { response: imageMessage, text: rendered, ts: Date.now() })
-      trimEmotionCache(lastEmotionCache)
-      return handled(imageMessage)
-    } catch (imageErr) {
-      const fallbackText = await generateShortEmotionFallback(callOpenAI, displayAnalysis, stats, recentHistory, rendered)
-      lastEmotionCache.set(channelKey, { text: fallbackText, ts: Date.now() })
-      trimEmotionCache(lastEmotionCache)
-      return handled(fallbackText)
+    catch (err) {
+        ctx.logger('dongxuelian-ai').warn(`emotion analysis failed: ${getEmotionCommandErrorMessage(err)}`);
+        return handled('情绪分析失败了，稍后再试。');
     }
-  } catch (err) {
-    ctx.logger('dongxuelian-ai').warn(`emotion analysis failed: ${err.message}`)
-    return handled('情绪分析失败了，稍后再试。')
-  }
 }
-
 module.exports = {
-  handleEmotionCommand,
-}
+    handleEmotionCommand,
+};

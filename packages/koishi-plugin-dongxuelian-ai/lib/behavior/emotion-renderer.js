@@ -1,43 +1,41 @@
+"use strict";
 /**
  * MODULE: 今日情绪图片渲染。
  * 边界: 只把已解析的情绪分析渲染为 HTML 图片，不调用 AI，不读写历史。
  */
-const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer')
-
+const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer');
 function esc(value) {
-  return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-
 function scoreTone(score) {
-  if (score >= 65) return { name: 'warm', label: '偏乐观', color: '#f59e0b', soft: '#fff7ed' }
-  if (score <= 40) return { name: 'cool', label: '偏悲观', color: '#0ea5e9', soft: '#eff6ff' }
-  return { name: 'calm', label: '中性', color: '#14b8a6', soft: '#ecfdf5' }
+    if (score >= 65)
+        return { name: 'warm', label: '偏乐观', color: '#f59e0b', soft: '#fff7ed' };
+    if (score <= 40)
+        return { name: 'cool', label: '偏悲观', color: '#0ea5e9', soft: '#eff6ff' };
+    return { name: 'calm', label: '中性', color: '#14b8a6', soft: '#ecfdf5' };
 }
-
 function buildHistoryHtml(history) {
-  if (!history || !history.length) {
-    return '<div class="empty-history">暂无可对比的历史数据</div>'
-  }
-  return history.map(item => {
-    const tone = scoreTone(item.score)
-    const summary = item.summary ? `<div class="history-summary">${esc(item.summary)}</div>` : ''
-    return `<div class="history-row"><div class="history-date">${esc(item.date)}</div><div class="history-bar"><span style="width:${Math.max(4, Math.min(100, item.score))}%;background:${tone.color}"></span></div><div class="history-score">${item.score}/100</div>${summary}</div>`
-  }).join('')
+    if (!history || !history.length) {
+        return '<div class="empty-history">暂无可对比的历史数据</div>';
+    }
+    return history.map(item => {
+        const tone = scoreTone(item.score);
+        const summary = item.summary ? `<div class="history-summary">${esc(item.summary)}</div>` : '';
+        return `<div class="history-row"><div class="history-date">${esc(item.date)}</div><div class="history-bar"><span style="width:${Math.max(4, Math.min(100, item.score))}%;background:${tone.color}"></span></div><div class="history-score">${item.score}/100</div>${summary}</div>`;
+    }).join('');
 }
-
 function buildReasonsHtml(reasons) {
-  return (reasons || []).map((reason, index) => `<div class="reason-card"><div class="reason-index">${index + 1}</div><div class="reason-text">${esc(reason)}</div></div>`).join('')
+    return (reasons || []).map((reason, index) => `<div class="reason-card"><div class="reason-index">${index + 1}</div><div class="reason-text">${esc(reason)}</div></div>`).join('');
 }
-
 function buildKeywordsHtml(keywords) {
-  if (!keywords || !keywords.length) return ''
-  return `<div class="keywords">${keywords.map(keyword => `<span>${esc(keyword)}</span>`).join('')}</div>`
+    if (!keywords || !keywords.length)
+        return '';
+    return `<div class="keywords">${keywords.map(keyword => `<span>${esc(keyword)}</span>`).join('')}</div>`;
 }
-
 function renderEmotionHtml(analysis, stats, history = []) {
-  const tone = scoreTone(analysis.score)
-  const now = new Date().toLocaleString('zh-CN', { hour12: false })
-  return `<!doctype html>
+    const tone = scoreTone(analysis.score);
+    const now = new Date().toLocaleString('zh-CN', { hour12: false });
+    return `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -153,11 +151,9 @@ function renderEmotionHtml(analysis, stats, history = []) {
     <div class="footer">生成时间 ${esc(now)}</div>
   </main>
 </body>
-</html>`
+</html>`;
 }
-
 async function renderEmotionImage(analysis, stats, history = []) {
-  return renderHtmlToImage(renderEmotionHtml(analysis, stats, history))
+    return renderHtmlToImage(renderEmotionHtml(analysis, stats, history));
 }
-
-module.exports = { renderEmotionHtml, renderEmotionImage }
+module.exports = { renderEmotionHtml, renderEmotionImage };

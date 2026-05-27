@@ -1,5 +1,11 @@
 {
   "name": "koishi-plugin-dongxuelian-ai",
   "version": "1.1.6",
-  "main": "lib/index.js"
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:watch": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
 }

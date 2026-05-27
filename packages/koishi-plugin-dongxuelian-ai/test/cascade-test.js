@@ -713,16 +713,16 @@ async function main() {
       'redactSensitiveText',
     ],
     utils: [
-      'splitSentences', 'sanitizeUserName', 'sanitizeUserInput', 'isJailbreakAttempt',
+      'splitSentences', 'normalizeText', 'sanitizeUserName', 'sanitizeUserInput', 'isJailbreakAttempt',
       'isHostileInput', 'isRareProvocation', 'isWideRareProvocation', 'getSenderUserId', 'hasAdminPermission',
       'stripMentions', 'collapseRepeatedBotCalls', 'isDirectAtBot', 'getBotMentionCount',
       'hasOtherMentions', 'formatPercent', 'readTextFile', 'writeTextFile',
-      'readJsonFile', 'writeJsonFile', 'safeUnlink', 'sleep', 'extractImageUrls',
+      'readJsonFile', 'writeJsonFile', 'readJsonFileSync', 'writeJsonFileSync', 'safeUnlink', 'sleep', 'extractImageUrls',
       'normalizeReplyFingerprint', 'isReplyTooSimilar', 'isOverusedReply',
       'hasBannedOutput', 'isThinkingLeak', 'getModelDisplayName', 'getSearchCapability',
       'formatSearchStatus',       'sanitizeReply', 'trimReply',
       'todayCst', 'formatShanghaiTime24h', 'getShanghaiHourFromTs', 'todayCstMinusDays',
-      'shouldTriggerRandom',
+      'shouldTriggerRandom', 'safeChannelKey', 'safeUserId', 'legacySafeUserId', 'truncateText',
     ],
     persona: [
       'atomicWriteJson', 'loadPersonaGroups', 'getGroupPersona', 'setGroupPersona',
@@ -1091,7 +1091,7 @@ async function main() {
       'extractHttpPageText', 'readHttpResultPage', 'fetchHttpResultPage', 'readTopResultPages', 'mergeHttpSearchCandidates', 'formatCandidateList', 'formatSearchWithPages', 'runHttpSearch', 'runSearchPass', 'buildRetryQueries',
     ],
     agentQueue: [
-      'enqueueAgentTask', 'getAgentQueueStats', 'clearAgentQueue', 'configureAgentQueue', 'resetAgentQueueForTests',
+      'enqueueAgentTask', 'getAgentQueueStats', 'clearAgentQueue', 'configureAgentQueue', 'withTimeout', 'resetAgentQueueForTests',
     ],
     agentMemory: [
       'remember', 'searchMemory', 'forgetMemory', 'listMemory', 'formatMemoryItems', 'tokenize', 'safeUserId',
@@ -3979,13 +3979,13 @@ async function main() {
   check('agent push quota restore is async', /async function countLoggedQuota/.test(agentPushSrc) && /async function getQuota/.test(agentPushSrc))
   const trimAgentSessionsBody = (agentSessionsSrc.match(/function trimAgentSessions\(\) \{[\s\S]*?\n\}/) || [''])[0]
   check('agent sessions trim uses Map LRU without sort', trimAgentSessionsBody.includes('sessions.keys().next().value') && !trimAgentSessionsBody.includes('.sort('))
-  check('agent sessions refreshes Map recency on record', agentSessionsSrc.includes('if (sessions.has(id)) sessions.delete(id)') && agentSessionsSrc.includes('sessions.set(id, current)'))
+  check('agent sessions refreshes Map recency on record', (/if \(sessions\.has\(id\)\)\s*(?:\{\s*)?sessions\.delete\(id\)/.test(agentSessionsSrc)) && agentSessionsSrc.includes('sessions.set(id, current)'))
   check('image-store uses async fs and channel queue', imageStoreSrc.includes("require('fs/promises')") && imageStoreSrc.includes('imageStoreQueues') && imageStoreSrc.includes('enqueueImageStoreTask') && !/readFileSync|writeFileSync|statSync|mkdirSync|readdirSync|unlinkSync|existsSync/.test(imageStoreSrc))
   check('image-store cache lookup matches exact basename', imageStoreSrc.includes('path.parse(f).name === safeMessageId') && !imageStoreSrc.includes('f.startsWith(prefix)'))
   check('image-store delegates placeholder replacement to conversation layer', imageStoreSrc.includes('imageEntry.conversationKey') && imageStoreSrc.includes('replaceImagePlaceholderInConversation(convKey, messageId, analysis)'))
   check('conversation replaces image placeholders by message id and updates hot cache', conversationSrc.includes('function replaceImagePlaceholderInConversation') && conversationSrc.includes('isImagePlaceholderMessage(msg, messageId)') && conversationSrc.includes('conversationCache.set(key'))
   check('chat tool hint uses image-store memory snapshot', chatToolsSrc.includes('getRecentImagesCached') && !/getChatToolSystemHint[\s\S]*getRecentImages\(channelKey/.test(chatToolsSrc))
-  const unlockTimerBody = (safeSendSrc.match(/setTimeout\(function\(\) \{[\s\S]*?30 \* 60 \* 1000\)/) || [''])[0]
+  const unlockTimerBody = (safeSendSrc.match(/setTimeout\(function\s*\(\) \{[\s\S]*?30 \* 60 \* 1000\)/) || [''])[0]
   check('safe-send delayed unlock notification resolves current bot', unlockTimerBody.includes('const bot = getBot()') && !unlockTimerBody.includes('session?.bot') && !unlockTimerBody.includes('session.bot'))
   check('queued agent paths resolve current bot', indexSrc.includes("require('./lifecycle/bot-resolver')") && botResolverSrc.includes('function createBotResolver') && botResolverSrc.includes('function withCurrentBot') && indexSrc.includes('const resolveBot = createBotResolver(ctx, session)') && indexSrc.includes('resolveBot,') && chatResultFlowSrc.includes("require('../lifecycle/bot-resolver')") && chatResultFlowSrc.includes('createBotResolver(ctx, session)') && chatResultFlowSrc.includes('bot: getBot()') && agentAutoRouteFlowSrc.includes('bot: resolveBot()'))
   check('file followup guard lives in media/file directory', fileFollowupGuardSrc.includes('function looksLikeFileFollowup') && fileFollowupGuardSrc.includes("require('./file-safety')"))

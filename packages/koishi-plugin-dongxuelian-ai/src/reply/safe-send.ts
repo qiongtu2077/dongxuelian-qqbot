@@ -1,0 +1,326 @@
+/**
+ * MODULE: 发送安全层。
+ * 职责: 统一安全发送、发送失败限流/禁言处理、复读发送、罕见固定语音发送。
+ * 边界: 不决定随机触发，不写 conversation，由调用方负责随机/历史上下文。
+ * 状态: sendFailState 为进程内风控状态，重启后重建。
+ */
+const { sendReply } = require('./reply') as typeof import('./reply')
+const { readRareVoiceAudioBuffer } = require('../behavior/rare-voice') as typeof import('../behavior/rare-voice')
+const {
+  classifySendError,
+  sanitizeForRateLimit,
+  sleepForRateLimitRetry,
+  getCachedPlatformMuteStatus,
+  markPlatformMute,
+  clearPlatformMute,
+  checkPlatformMuteStatus,
+} = require('./send-guard') as typeof import('./send-guard')
+const { getAdminUserIds } = require('../core/runtime-config') as typeof import('../core/runtime-config')
+const { createBotResolver } = require('../lifecycle/bot-resolver') as typeof import('../lifecycle/bot-resolver')
+const { hasAdminPermission, isDirectAtBot } = require('../core/utils') as typeof import('../core/utils')
+
+interface LoggerLike {
+  info(message: string): void
+  warn(message: string): void
+  error(message: string): void
+}
+
+interface SafeSendContext {
+  logger(name: string): LoggerLike
+  bots?: BotLike[]
+  bot?: BotLike
+  setTimeout?: typeof setTimeout
+}
+
+interface BotLike {
+  selfId?: string
+  sendPrivateMessage?: (id: string, message: string) => Promise<unknown> | unknown
+  internal?: {
+    sendPrivateMsg?: (id: string, message: string) => Promise<unknown> | unknown
+  }
+}
+
+interface SafeSendSessionLike {
+  guildId?: string
+  channelId?: string
+  isDirect?: boolean
+  userId?: string
+  username?: string
+  messageId?: string
+  content?: string
+  selfId?: string
+  author?: { id?: string; nick?: string; name?: string }
+  event?: { user?: { id?: string }; selfId?: string }
+  bot?: BotLike
+  send(message: string): Promise<unknown> | unknown
+}
+
+interface SendOptions {
+  noQuote?: boolean
+  noReplyTo?: boolean
+  forceQuote?: boolean
+  quoteMessageId?: string | number
+  personaName?: string
+  randomFreshness?: { channelKey?: string }
+  now?: () => number
+  time?: { now?: () => number }
+  [key: string]: unknown
+}
+
+interface BasicSessionLike {
+  userId?: string
+  selfId?: string
+  content?: string
+  author?: { id?: string }
+  event?: {
+    user?: { id?: string }
+    message?: unknown[] | { elements?: unknown[]; content?: unknown[] }
+  }
+  bot?: { selfId?: string }
+}
+
+interface ReplySessionLike extends SafeSendSessionLike {
+  bot?: BotLike & { internal?: { sendGroupMsg?: (guildId: string, message: unknown) => Promise<unknown> | unknown } }
+}
+
+type ResolveBot = (() => BotLike | null | undefined) | null
+type FreshnessChecker = ((isRandom: boolean, sendOptions: SendOptions) => boolean) | null
+
+interface SendFailState {
+  streak: number
+  lastFailAt: number
+  lastNotifyAt: number
+  restrictedUntil: number
+  maxStreak: number
+  cooldownMs: number
+  restrictDurationMs: number
+  notifyIntervalMs: number
+  notifyScheduled: boolean
+}
+
+interface ErrorWithSentParts extends Error {
+  sentParts?: number
+}
+
+const sendFailState: SendFailState = {
+  streak: 0,
+  lastFailAt: 0,
+  lastNotifyAt: 0,
+  restrictedUntil: 0,
+  maxStreak: 2,
+  cooldownMs: 5 * 60 * 1000,
+  restrictDurationMs: 60 * 60 * 1000,
+  notifyIntervalMs: 30 * 1000,
+  notifyScheduled: false,
+}
+
+function getSafeSendErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function asSafeSendBasicSession(session: SafeSendSessionLike): BasicSessionLike {
+  return session as BasicSessionLike
+}
+
+function asReplySession(session: SafeSendSessionLike): ReplySessionLike {
+  return session as ReplySessionLike
+}
+
+function logStaleRandomSkip(ctx: SafeSendContext, stage: string, options: SendOptions = {}): void {
+  try {
+    const info = options.randomFreshness || {}
+    ctx.logger('dongxuelian-ai').info(`random reply stale skipped at ${stage}: channel=${info.channelKey || ''}`)
+  } catch { /* non-critical: diagnostic logging only */ }
+}
+
+async function notifyAdminsSendFailure(ctx: SafeSendContext, bot: BotLike | null | undefined): Promise<void> {
+  const admins = getAdminUserIds(true)
+  const msg = '⚠️ 连续发送失败，已进入消息受限状态'
+  await Promise.allSettled(
+    [...admins].map(async (id) => {
+      try {
+        if (typeof bot?.sendPrivateMessage === 'function') {
+          await bot.sendPrivateMessage(id, msg)
+        } else if (bot?.internal?.sendPrivateMsg) {
+          await bot.internal.sendPrivateMsg(id, msg)
+        }
+      } catch (error) {
+        ctx.logger('dongxuelian-ai').warn('notify admin send failure: ' + getSafeSendErrorMessage(error))
+      }
+    })
+  )
+}
+
+function resetSendFailState(): void {
+  sendFailState.streak = 0
+  sendFailState.lastFailAt = 0
+}
+
+function logPlatformMute(ctx: SafeSendContext, status: { until?: number; reason?: string }, prefix: string = 'safeSendReply'): void {
+  const until = status?.until ? new Date(status.until).toISOString() : 'unknown'
+  ctx.logger('dongxuelian-ai').warn(`${prefix}: platform muted, skipping reply (${status?.reason || '平台禁言'}, until=${until})`)
+}
+
+async function handleRateLimitedSendFailure(ctx: SafeSendContext, session: SafeSendSessionLike, error: unknown, now: number, resolveBot: ResolveBot = null): Promise<void> {
+  const getBot = typeof resolveBot === 'function' ? resolveBot : createBotResolver(ctx, session)
+  sendFailState.streak++
+  sendFailState.lastFailAt = now
+  ctx.logger('dongxuelian-ai').error(`safeSendReply: rate limited (streak=${sendFailState.streak}): ${getSafeSendErrorMessage(error)}`)
+  if (sendFailState.streak <= 2) {
+    sendFailState.lastNotifyAt = now
+    notifyAdminsSendFailure(ctx, getBot()).catch((notifyError) => {
+      ctx.logger('dongxuelian-ai').warn(`notify admin send failure task failed: ${getSafeSendErrorMessage(notifyError)}`)
+    })
+  } else if (now - sendFailState.lastNotifyAt > sendFailState.notifyIntervalMs) {
+    sendFailState.lastNotifyAt = now
+    notifyAdminsSendFailure(ctx, getBot()).catch((notifyError) => {
+      ctx.logger('dongxuelian-ai').warn(`notify admin send failure task failed: ${getSafeSendErrorMessage(notifyError)}`)
+    })
+  }
+  if (sendFailState.streak >= sendFailState.maxStreak) {
+    if (now >= sendFailState.restrictedUntil) {
+      sendFailState.restrictedUntil = now + sendFailState.restrictDurationMs
+      ctx.logger('dongxuelian-ai').warn(`safeSendReply: restricted for 1 hour due to ${sendFailState.streak} consecutive rate-limit failures`)
+    }
+    if (!sendFailState.notifyScheduled) {
+      sendFailState.notifyScheduled = true
+      setTimeout(function() {
+        const bot = getBot()
+        const admins = getAdminUserIds(true)
+        const unlockMsg = '🔓 30 分钟已过，风控可能已解除。BOT 冻结期还剩约 30 分钟，届时自动恢复。急需使用可重启 BOT。'
+        Promise.allSettled([...admins].map(function(id) {
+          try {
+            if (typeof bot?.sendPrivateMessage === 'function') {
+              return bot.sendPrivateMessage(id, unlockMsg)
+            }
+          } catch (error) {
+            ctx.logger('dongxuelian-ai').warn(`notify admin unlock failed: ${getSafeSendErrorMessage(error)}`)
+          }
+        }))
+      }, 30 * 60 * 1000)
+    }
+  }
+}
+
+async function safeSendRepeat(ctx: SafeSendContext, session: SafeSendSessionLike, reply: string): Promise<boolean> {
+  try {
+    await session.send(reply)
+    return true
+  } catch (error) {
+    const classified = classifySendError(error)
+    if (classified.type === 'muted') {
+      markPlatformMute(session, { reason: classified.reason })
+      ctx.logger('dongxuelian-ai').warn(`repeat send muted: ${classified.message.slice(0, 120)}`)
+      return false
+    }
+    if (classified.type === 'rate-limit') {
+      ctx.logger('dongxuelian-ai').warn(`repeat send rate-limited: ${classified.message.slice(0, 120)}`)
+      return false
+    }
+    ctx.logger('dongxuelian-ai').warn(`repeat send failed: ${classified.message.slice(0, 120)}`)
+    return false
+  }
+}
+
+async function safeSendReply(ctx: SafeSendContext, session: SafeSendSessionLike, reply: string, isRandom: boolean = false, resolveBot: ResolveBot = null, sendOptions: SendOptions = {}, freshnessChecker: FreshnessChecker = null): Promise<void> {
+  if (typeof freshnessChecker === 'function' && !freshnessChecker(isRandom, sendOptions)) {
+    logStaleRandomSkip(ctx, isRandom ? 'text' : 'stale-text', sendOptions)
+    return
+  }
+  const now = Date.now()
+  // 冻结到期后重置通知标记
+  if (now >= sendFailState.restrictedUntil && sendFailState.notifyScheduled) {
+    sendFailState.notifyScheduled = false
+  }
+  if (sendFailState.streak > 0 && now - sendFailState.lastFailAt > sendFailState.cooldownMs) {
+    sendFailState.streak = 0
+  }
+  if (now < sendFailState.restrictedUntil) {
+    if (!hasAdminPermission(asSafeSendBasicSession(session))) {
+      if (!isDirectAtBot(asSafeSendBasicSession(session))) {
+        ctx.logger('dongxuelian-ai').warn('safeSendReply: restricted, skipping reply')
+        return
+      }
+      try {
+        await session.send('我被盯上了，有内鬼终止交易')
+        return
+      } catch (error) {
+        ctx.logger('dongxuelian-ai').error(`safeSendReply: restricted notice failed: ${getSafeSendErrorMessage(error)}`)
+        return
+      }
+    }
+  }
+  const cachedMute = getCachedPlatformMuteStatus(session, now)
+  if (cachedMute.muted) {
+    logPlatformMute(ctx, cachedMute)
+    return
+  }
+  const activeMute = await checkPlatformMuteStatus(session)
+  if (activeMute.muted) {
+    const marked = markPlatformMute(session, activeMute)
+    logPlatformMute(ctx, marked)
+    return
+  }
+
+  let currentReply = reply
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const sentCount = await sendReply(ctx, asReplySession(session), currentReply, isRandom, sendOptions)
+      if (sentCount > 0) {
+        resetSendFailState()
+        clearPlatformMute(session)
+      }
+      return
+    } catch (error) {
+      const classified = classifySendError(error)
+      if (classified.type === 'muted') {
+        const marked = markPlatformMute(session, { reason: classified.reason })
+        logPlatformMute(ctx, marked, 'safeSendReply: send error')
+        return
+      }
+      if (classified.type !== 'rate-limit') {
+        ctx.logger('dongxuelian-ai').warn(`safeSendReply: non-rate-limit error skipped: ${classified.message.slice(0, 120)}`)
+        throw error
+      }
+      if (attempt === 0 && Number((error as ErrorWithSentParts)?.sentParts || 0) === 0) {
+        const cleaned = sanitizeForRateLimit(currentReply)
+        currentReply = cleaned || currentReply
+        ctx.logger('dongxuelian-ai').warn('safeSendReply: rate limited, retrying once with sanitized content')
+        await sleepForRateLimitRetry(ctx, attempt)
+        continue
+      }
+      await handleRateLimitedSendFailure(ctx, session, error, Date.now(), resolveBot)
+      throw error
+    }
+  }
+}
+
+/** 尝试发送罕见固定语音；失败时返回 false 交给文字回复回退。 */
+async function safeSendRareVoice(ctx: SafeSendContext, session: SafeSendSessionLike): Promise<boolean> {
+  try {
+    const { sendVoiceMessage } = require('../media/voice/tts') as typeof import('../media/voice/tts')
+    const audioBuf = await readRareVoiceAudioBuffer()
+    if (!audioBuf) {
+      try { ctx.logger('dongxuelian-ai').warn('safeSendRareVoice skipped: rare voice audio unavailable') } catch { /* non-critical: logging only */ }
+      return false
+    }
+    const sent = await sendVoiceMessage(session, audioBuf)
+    if (!sent) {
+      try { ctx.logger('dongxuelian-ai').warn('safeSendRareVoice skipped: sendVoiceMessage returned false') } catch { /* non-critical: logging only */ }
+    }
+    return sent
+  } catch (error) {
+    try {
+      ctx.logger('dongxuelian-ai').warn(`safeSendRareVoice failed: ${getSafeSendErrorMessage(error)}`)
+    } catch { /* non-critical: logging only */ }
+    return false
+  }
+}
+
+export = {
+  logStaleRandomSkip,
+  safeSendRepeat,
+  safeSendReply,
+  safeSendRareVoice,
+  resetSendFailState,
+}
