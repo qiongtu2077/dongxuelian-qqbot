@@ -32,14 +32,8 @@ function readTextIfSmall(file, maxBytes) {
         return '';
     }
 }
-function readJsonIfSmall(file, fallback) {
-    return readJsonFileSync(file, fallback, { maxBytes: MAX_PERSONA_CONFIG_BYTES });
-}
-function atomicWriteJson(filePath, data) {
-    writeJsonFileSync(filePath, data);
-}
 function loadPersonaGroups() {
-    personaGroupsCache = readJsonIfSmall(PERSONA_GROUPS_FILE, {});
+    personaGroupsCache = readJsonFileSync(PERSONA_GROUPS_FILE, {}, { maxBytes: MAX_PERSONA_CONFIG_BYTES });
 }
 function getGroupPersona(channelKey) { const e = personaGroupsCache[String(channelKey)]; return e && e.persona ? e : null; }
 function setGroupPersona(channelKey, personaName) {
@@ -48,15 +42,15 @@ function setGroupPersona(channelKey, personaName) {
         personaGroupsCache[key] = {};
     if (personaName !== undefined)
         personaGroupsCache[key].persona = personaName;
-    atomicWriteJson(PERSONA_GROUPS_FILE, personaGroupsCache);
+    writeJsonFileSync(PERSONA_GROUPS_FILE, personaGroupsCache);
 }
-function resetGroupPersona(channelKey) { delete personaGroupsCache[String(channelKey)]; atomicWriteJson(PERSONA_GROUPS_FILE, personaGroupsCache); }
+function resetGroupPersona(channelKey) { delete personaGroupsCache[String(channelKey)]; writeJsonFileSync(PERSONA_GROUPS_FILE, personaGroupsCache); }
 function loadPersonaUsers() {
-    personaUsersCache = readJsonIfSmall(PERSONA_USERS_FILE, {});
+    personaUsersCache = readJsonFileSync(PERSONA_USERS_FILE, {}, { maxBytes: MAX_PERSONA_CONFIG_BYTES });
 }
 function getUserPersona(userId) { return personaUsersCache[String(userId)] || null; }
-function setUserPersona(userId, personaName) { personaUsersCache[String(userId)] = personaName; atomicWriteJson(PERSONA_USERS_FILE, personaUsersCache); }
-function resetUserPersona(userId) { delete personaUsersCache[String(userId)]; atomicWriteJson(PERSONA_USERS_FILE, personaUsersCache); }
+function setUserPersona(userId, personaName) { personaUsersCache[String(userId)] = personaName; writeJsonFileSync(PERSONA_USERS_FILE, personaUsersCache); }
+function resetUserPersona(userId) { delete personaUsersCache[String(userId)]; writeJsonFileSync(PERSONA_USERS_FILE, personaUsersCache); }
 function resolvePersona(channelKey, userId) {
     const userPersona = getUserPersona(userId);
     if (userPersona)
@@ -128,7 +122,7 @@ function loadPersonalSkill(personaName) {
 }
 module.exports = {
     personaGroupsCache, personaUsersCache,
-    atomicWriteJson,
+    atomicWriteJson: writeJsonFileSync,
     loadPersonaGroups, getGroupPersona, setGroupPersona, resetGroupPersona,
     loadPersonaUsers, getUserPersona, setUserPersona, resetUserPersona,
     resolvePersona,

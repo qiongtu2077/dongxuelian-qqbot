@@ -137,4 +137,4 @@ async function confirmPendingTool(channelKey, userId, channel = 'unknown', expec
         recordCall(executed.toolName, channel);
     return { ok: executed.ok, toolName: executed.toolName, result: executed.result, error: executed.error || '', message: executed.ok ? '' : executed.result };
 }
-module.exports = { getPendingTool, findPendingToolById, getPendingToolById, setPendingTool, clearPendingTool, clearPendingToolById, trimPendingTools, listPendingTools, executePendingTool, confirmPendingTool };
+module.exports = { getPendingTool, findPendingToolById, getPendingToolById, setPendingTool, clearPendingTool, clearPendingToolById, trimPendingTools, summarizePendingArgs, listPendingTools, executePendingTool, confirmPendingTool };

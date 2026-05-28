@@ -4,9 +4,8 @@
  * 边界: 不存 conversation，不做业务判断。结果返回给调用方（chat.js）处理。
  */
 const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE, MIMORIUM_KEY_FILE, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE, DATA_DIR } = require('./constants') as typeof import('./constants')
-const { readTextFile, isDashScopeConfig, todayCst } = require('./utils') as typeof import('./utils')
+const { readTextFile, isDashScopeConfig, todayCst, validatePublicHttpUrl, resolveAndValidateHostname } = require('./utils') as typeof import('./utils')
 const { resolveOneBotWsUrl } = require('./onebot-endpoint') as typeof import('./onebot-endpoint')
-const { validatePublicHttpUrl, resolveAndValidateHostname } = require('../agent/fetch-reader') as typeof import('../agent/fetch-reader')
 const path = require('path')
 const fs = require('fs')
 

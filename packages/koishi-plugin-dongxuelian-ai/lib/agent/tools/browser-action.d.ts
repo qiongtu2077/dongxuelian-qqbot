@@ -30,8 +30,6 @@ interface BrowserActionContext {
     userId?: string;
     channelKey?: string;
 }
-declare function isPrivateHostname(hostname?: string): boolean;
-declare function isPrivateIp(ip?: string): boolean;
 declare function validateUrl(raw: unknown): Promise<string>;
 declare const _default: {
     definition: {
@@ -135,8 +133,8 @@ declare const _default: {
     };
     execute(params?: BrowserActionParams, context?: BrowserActionContext): Promise<string>;
     validateUrl: typeof validateUrl;
-    isPrivateIp: typeof isPrivateIp;
-    isPrivateHostname: typeof isPrivateHostname;
+    isPrivateIp: (ip?: unknown) => boolean;
+    isPrivateHostname: (hostname?: unknown) => boolean;
     dangerous: boolean;
     defaultChannels: string[];
 };

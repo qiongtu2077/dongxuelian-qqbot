@@ -8,8 +8,9 @@ const TAG = 'pre-ts-migration'
 const EXPORT_ASSIGNMENT = /exports\.(\w+)\s*=/
 const FORBIDDEN = [/__esModule/, /__awaiter/, /__spreadArray/, /\(0,\s*\w+\.\w+\)/]
 const ALLOWED_ADDED_EXPORTS = {
-  'core/utils.js': ['safeChannelKey', 'safeUserId', 'legacySafeUserId', 'truncateText', 'readJsonFileSync', 'writeJsonFileSync', 'normalizeText'],
+  'core/utils.js': ['safeChannelKey', 'safeUserId', 'legacySafeUserId', 'truncateText', 'readJsonFileSync', 'writeJsonFileSync', 'normalizeText', 'getFileFingerprint', 'normalizeHostname', 'isPrivateHostname', 'isPrivateIp', 'validatePublicHttpUrl', 'resolveAndValidateHostname'],
   'agent/queue.js': ['withTimeout'],
+  'agent/pending.js': ['summarizePendingArgs'],
 }
 const ALLOWED_REQUIRE_CHANGES = {
   'agent/auto-memory.js': { added: ['../core/utils'] },
@@ -19,10 +20,13 @@ const ALLOWED_REQUIRE_CHANGES = {
   'agent/plan/plan-store.js': { added: ['../../core/utils'] },
   'agent/push.js': { added: ['../core/utils'] },
   'agent/skills/store.js': { added: ['../../core/utils'] },
+  'agent/skills/pool-service.js': { added: ['../../core/utils'] },
+  'agent/skills/workspace-service.js': { added: ['../../core/utils'] },
   'agent/tools/scheduled-task-tools.js': { added: ['../../core/utils'] },
+  'agent/tools/browser-action.js': { added: ['../../core/utils'], removed: ['dns/promises', 'net'] },
   'agent/tools/web-search.js': { added: ['../queue'] },
   'behavior/expression/expression-abstractor.js': { added: ['../../agent/queue'] },
-  'behavior/repeat.js': { removed: ['../message/message-reader'] },
+  'behavior/repeat.js': { removed: ['../message/message-reader', '../persona/persona'] },
   'chat/agent-chat-bridge.js': { removed: ['../message/message-reader'] },
   'chat/chat-jailbreak-flow.js': { removed: ['../message/message-reader'] },
   'commands/agent-command.js': { removed: ['../agent/skill-hub'] },
@@ -33,15 +37,25 @@ const ALLOWED_REQUIRE_CHANGES = {
     ],
   },
   'conversation.js': { removed: ['./message/message-reader'] },
-  'core/utils.js': { added: ['fs', 'fs', 'path'], removed: ['../message/message-reader'] },
+  'agent/fetch-reader.js': { added: ['../core/utils'], removed: ['dns', 'net'] },
+  'behavior/runtime-settings.js': { removed: ['fs/promises'] },
+  'chat/chat-tools.js': { added: ['../agent/safety', '../agent/pending'] },
+  'core/api.js': { removed: ['../agent/fetch-reader'] },
+  'core/constants.js': { removed: ['../rulesets/jailbreak'] },
+  'core/user-blacklist.js': { removed: ['../behavior/runtime-settings'] },
+  'core/utils.js': { added: ['fs', 'fs', 'path', 'dns', 'net', 'fs/promises'], removed: ['../message/message-reader'] },
   'diagnostics/shared-record-text.js': { removed: ['../message/message-reader'] },
   'media/file/file-store.js': { added: ['../../core/utils'] },
+  'media/file/file-analyzer.js': { added: ['../../core/utils'], removed: ['../../agent/fetch-reader'] },
+  'media/file/incoming-file.js': { added: ['../../core/utils'] },
   'media/image/image-store.js': { added: ['../../core/utils'] },
+  'media/voice/voice.js': { removed: ['../../agent/fetch-reader'] },
   'message/message-reader.js': { added: ['../core/utils'] },
   'persona/persona-lore-router.js': { added: ['../core/utils'] },
   'persona/persona.js': { added: ['../core/utils'], removed: ['fs', 'fs', 'fs', 'fs'] },
   'routing/group-scene-index.js': { removed: ['../message/message-reader'] },
   'routing/search-context.js': { added: ['../core/utils'], removed: ['../message/message-reader'] },
+  'rulesets/jailbreak.js': { added: ['../core/constants'] },
 }
 
 const domain = process.argv[2]

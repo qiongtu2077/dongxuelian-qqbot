@@ -174,4 +174,4 @@ async function confirmPendingTool(channelKey: string, userId: string, channel: s
   return { ok: executed.ok, toolName: executed.toolName, result: executed.result, error: executed.error || '', message: executed.ok ? '' : executed.result }
 }
 
-export = { getPendingTool, findPendingToolById, getPendingToolById, setPendingTool, clearPendingTool, clearPendingToolById, trimPendingTools, listPendingTools, executePendingTool, confirmPendingTool }
+export = { getPendingTool, findPendingToolById, getPendingToolById, setPendingTool, clearPendingTool, clearPendingToolById, trimPendingTools, summarizePendingArgs, listPendingTools, executePendingTool, confirmPendingTool }

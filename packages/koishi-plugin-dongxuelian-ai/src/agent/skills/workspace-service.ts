@@ -7,8 +7,9 @@
 const fs = require('fs')
 const fsp = require('fs/promises')
 const path = require('path')
-const { WORKSPACE_DIR, SKILL_POOL_DIR, ensureDir, atomicWriteJson, readJsonSafe, validateSkillName } = require('./store') as typeof import('./store')
+const { WORKSPACE_DIR, SKILL_POOL_DIR, ensureDir, validateSkillName } = require('./store') as typeof import('./store')
 const { getPoolSkillInfo } = require('./pool-service') as typeof import('./pool-service')
+const { readJsonFile, writeJsonFile } = require('../../core/utils') as typeof import('../../core/utils')
 
 const WORKSPACE_MANIFEST_FILE: string = path.join(WORKSPACE_DIR, 'manifest.json')
 const EMPTY_WORKSPACE_MANIFEST = { schema: 'skill-workspace-manifest.v1', skills: {} }
@@ -39,14 +40,14 @@ interface EffectiveSkillDir {
 }
 
 async function readWorkspaceManifest(): Promise<WorkspaceManifest> {
-  const data = await readJsonSafe<WorkspaceManifest | null>(WORKSPACE_MANIFEST_FILE, null)
+  const data = await readJsonFile<WorkspaceManifest | null>(WORKSPACE_MANIFEST_FILE, null, { maxBytes: 512 * 1024 })
   if (data && data.schema === 'skill-workspace-manifest.v1' && data.skills) return data
   return { schema: EMPTY_WORKSPACE_MANIFEST.schema as 'skill-workspace-manifest.v1', skills: {} }
 }
 
 async function writeWorkspaceManifest(manifest: WorkspaceManifest): Promise<void> {
   await ensureDir(WORKSPACE_DIR)
-  await atomicWriteJson(WORKSPACE_MANIFEST_FILE, manifest)
+  await writeJsonFile(WORKSPACE_MANIFEST_FILE, manifest)
 }
 
 async function installFromPool(name: string): Promise<WorkspaceOperationResult> {

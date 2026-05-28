@@ -10,6 +10,8 @@ const { readGroupContext } = require('../routing/group-scene-index');
 const { filterExternalToolDefinitions, buildExternalToolPolicyHint } = require('../routing/external-tool-policy');
 const { isToolEnabled } = require('../agent/config');
 const { parseReminderActionRequest, parseScheduledTaskRequest } = require('../routing/reminder-route');
+const safety = require('../agent/safety');
+const pending = require('../agent/pending');
 const CHAT_TOOL_TIMEOUT_MS = 3000;
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000;
 const CHAT_TOOLS_TOTAL_DEADLINE_MS = 5000;
@@ -24,6 +26,10 @@ const CHAT_WRITE_ACTION_TOOLS = new Set([
     'resume_scheduled_task',
     'delete_scheduled_task',
     'run_scheduled_task_now',
+]);
+const CHAT_DANGEROUS_ACTION_TOOLS = new Set([
+    ...CHAT_WRITE_ACTION_TOOLS,
+    'create_uploaded_file_variant',
 ]);
 const DEFAULT_CHAT_TOOL_CHANNEL = 'qq';
 function getChatToolErrorMessage(error) {
@@ -381,6 +387,31 @@ function isExplicitChatWriteActionAllowed(name = '', args = {}, context = {}) {
         return !!(args.id || args.reminderId || args.keyword || args.text || getArgBoolean(args, 'latest') || parsedArgs.latest === true || parsedArgs.keyword);
     return !!(args.id || args.taskId || parsedArgs.id || parsedArgs.taskId);
 }
+function guardDangerousChatTool(name = '', args = {}, context = {}, channel = DEFAULT_CHAT_TOOL_CHANNEL) {
+    if (!CHAT_DANGEROUS_ACTION_TOOLS.has(name))
+        return '';
+    const safeResult = safety.check(name);
+    if (safeResult.allowed)
+        return '';
+    if (safeResult.action === 'confirm') {
+        const channelKey = String(context.channelKey || '');
+        const userId = String(context.userId || '');
+        if (!channelKey || !userId)
+            return `工具 ${name} 需要确认，但当前缺少用户或频道信息，未执行。`;
+        const pendingId = pending.setPendingTool(channelKey, userId, {
+            toolName: name,
+            args,
+            channel,
+            resume: {
+                userMessage: context.userText || context.currentText || '',
+                userName: context.userName || '',
+            },
+        });
+        const argsSummary = pending.summarizePendingArgs ? pending.summarizePendingArgs(name, args) : name;
+        return `工具 '${name}' 需要确认（ID: ${pendingId}）。参数：${argsSummary}\n请回复“确认工具 ${pendingId}”来执行。`;
+    }
+    return safeResult.error || `工具 ${name} 未通过安全检查，未执行。`;
+}
 async function executeChatTool(toolCall, context = {}) {
     const name = toolCall?.function?.name || '';
     const channel = resolveChatToolChannel(context);
@@ -396,6 +427,9 @@ async function executeChatTool(toolCall, context = {}) {
     if (!isExplicitChatWriteActionAllowed(name, args, context)) {
         return `工具 ${name} 未执行：当前用户消息没有明确的写状态意图。`;
     }
+    const dangerousBlocked = guardDangerousChatTool(name, args, context, channel);
+    if (dangerousBlocked)
+        return dangerousBlocked;
     switch (name) {
         case 'get_current_time':
             return executeGetCurrentTime();

@@ -7,9 +7,10 @@
 const fs = require('fs')
 const fsp = require('fs/promises')
 const path = require('path')
-const { SKILL_POOL_DIR, validateSkillName, ensureDir, atomicWriteJson, readJsonSafe, copyDir, removeDir, isPathSafe } = require('./store') as typeof import('./store')
+const { SKILL_POOL_DIR, validateSkillName, ensureDir, copyDir, removeDir, isPathSafe } = require('./store') as typeof import('./store')
 const { scanSkillDirectory } = require('./scanner') as typeof import('./scanner')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
+const { readJsonFile, writeJsonFile } = require('../../core/utils') as typeof import('../../core/utils')
 const { ensureRuntimeSkillSeeds } = require('../../persona/skills/skill-seeds') as typeof import('../../persona/skills/skill-seeds')
 const { parseFrontmatterDocument } = require('../../core/frontmatter') as typeof import('../../core/frontmatter')
 
@@ -69,13 +70,13 @@ function isPoolManifest(data: unknown): data is SkillPoolManifest {
 }
 
 async function readPoolManifest(): Promise<SkillPoolManifest> {
-  const data = await readJsonSafe<SkillPoolManifest | null>(POOL_MANIFEST_FILE, null)
+  const data = await readJsonFile<SkillPoolManifest | null>(POOL_MANIFEST_FILE, null, { maxBytes: 512 * 1024 })
   if (data && data.schema === 'skill-pool-manifest.v1' && data.skills) return data
   return { schema: EMPTY_MANIFEST.schema as 'skill-pool-manifest.v1', skills: {} }
 }
 
 async function writePoolManifest(manifest: SkillPoolManifest): Promise<void> {
-  await atomicWriteJson(POOL_MANIFEST_FILE, manifest)
+  await writeJsonFile(POOL_MANIFEST_FILE, manifest)
 }
 
 function parseSkillMeta(skillDir: string): SkillMeta | null {

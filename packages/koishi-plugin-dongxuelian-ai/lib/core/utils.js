@@ -8,6 +8,8 @@
  */
 const { AT_ID_PATTERN_XML, AT_ID_PATTERN_CQ, RESERVED_PREFIXES, JAILBREAK_INPUT_RE, JAILBREAK_FALLBACK_REPLIES, OVERUSED_REPLY_PATTERNS, BANNED_ACTION_OUTPUT_RE, EVALUATION_REQUEST_RE, RARE_PROVOCATION_RE, WIDE_RARE_PROVOKE_RE, HOSTILE_INPUT_RE, HOSTILE_SINGLE_TOKENS, PROVIDERS, MAX_OUTPUT_CHARS_FRIENDLY, } = require('./constants');
 const { isAdminUserId } = require('./runtime-config');
+const dns = require('dns');
+const net = require('net');
 const MAX_TEXT_FILE_BYTES = parseUtilsPositiveInt(process.env.DONGXUELIAN_UTIL_TEXT_MAX_BYTES, 256 * 1024, 4 * 1024, 4 * 1024 * 1024);
 const MAX_JSON_FILE_BYTES = parseUtilsPositiveInt(process.env.DONGXUELIAN_UTIL_JSON_MAX_BYTES, 512 * 1024, 4 * 1024, 8 * 1024 * 1024);
 function parseUtilsPositiveInt(value, fallback, min, max) {
@@ -247,6 +249,16 @@ async function safeUnlink(file) { try {
 catch { /* non-critical: safe unlink reports false when target is missing or locked */
     return false;
 } }
+async function getFileFingerprint(filePath) {
+    try {
+        const fs = require('fs/promises');
+        const stat = await fs.stat(filePath);
+        return `${stat.mtimeMs}:${stat.size}`;
+    }
+    catch { /* non-critical: missing optional settings file is represented by a stable fingerprint */
+        return 'missing';
+    }
+}
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function getRandomDelayMs() { return 1000 + Math.floor(Math.random() * 501); }
 function shouldTriggerRandom(rate, randomFn = Math.random) {
@@ -265,6 +277,86 @@ function normalizeUrl(raw) { if (!raw)
     return ''; let url = String(raw).replace(/&amp;/g, '&'); if (/^https?:\/\//i.test(url))
     return url; if (/^\/\//.test(url))
     return 'https:' + url; return ''; }
+function normalizeHostname(hostname = '') {
+    return String(hostname || '').trim().replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+}
+function isPrivateHostname(hostname = '') {
+    const host = normalizeHostname(hostname);
+    return !host || host === 'localhost' || host.endsWith('.localhost');
+}
+function isPrivateIp(ip = '') {
+    const value = String(ip || '').trim();
+    const family = net.isIP(value);
+    if (!family)
+        return false;
+    if (family === 4) {
+        const parts = value.split('.').map(part => parseInt(part, 10));
+        if (parts.length !== 4 || parts.some(part => !Number.isFinite(part)))
+            return true;
+        const [a, b] = parts;
+        return (a === 0 ||
+            a === 10 ||
+            a === 127 ||
+            (a === 169 && b === 254) ||
+            (a === 172 && b >= 16 && b <= 31) ||
+            (a === 192 && b === 168) ||
+            (a === 100 && b >= 64 && b <= 127) ||
+            a >= 224);
+    }
+    const lower = value.toLowerCase();
+    if (lower === '::' || lower === '::1')
+        return true;
+    if (lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80:'))
+        return true;
+    const mapped = lower.match(/::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+    if (mapped)
+        return isPrivateIp(mapped[1]);
+    return false;
+}
+function validatePublicHttpUrl(rawUrl) {
+    let parsed;
+    try {
+        parsed = new URL(String(rawUrl || '').trim());
+    }
+    catch {
+        throw new Error('URL 格式无效');
+    }
+    if (!/^https?:$/.test(parsed.protocol))
+        throw new Error('只允许读取 http/https URL');
+    if (parsed.username || parsed.password)
+        throw new Error('拒绝包含用户名或密码的 URL');
+    const hostname = normalizeHostname(parsed.hostname);
+    if (isPrivateHostname(hostname))
+        throw new Error('拒绝访问本机、内网或保留地址');
+    if (net.isIP(hostname) && isPrivateIp(hostname))
+        throw new Error('拒绝访问本机、内网或保留地址');
+    parsed.hash = '';
+    return parsed;
+}
+function lookupHostname(hostname) {
+    return new Promise((resolve, reject) => {
+        dns.lookup(hostname, { all: true }, (error, addresses) => {
+            if (error)
+                return reject(error);
+            resolve(Array.isArray(addresses) ? addresses : []);
+        });
+    });
+}
+async function resolveAndValidateHostname(url) {
+    const parsed = typeof url === 'string' ? validatePublicHttpUrl(url) : validatePublicHttpUrl(url.toString());
+    const hostname = normalizeHostname(parsed.hostname);
+    if (net.isIP(hostname))
+        return [{ address: hostname, family: net.isIP(hostname) }];
+    const addresses = await lookupHostname(hostname);
+    if (!addresses.length)
+        throw new Error('DNS 未返回可用地址');
+    for (const item of addresses) {
+        if (!item || !item.address || isPrivateIp(item.address)) {
+            throw new Error('拒绝访问 DNS 指向的本机、内网或保留地址');
+        }
+    }
+    return addresses;
+}
 function extractImageUrls(content = '') {
     const urls = [];
     const cqRegex = /\[CQ:image[^\]]*?url=([^,\]\s]+)[^\]]*\]/gi;
@@ -761,10 +853,12 @@ module.exports = {
     formatPercent,
     readTextFile, writeTextFile, readJsonFile, writeJsonFile, readJsonFileSync, writeJsonFileSync,
     safeUnlink,
+    getFileFingerprint,
     sleep, getRandomDelayMs, shouldTriggerRandom,
     parseEnabledText,
     getBaseHostname, isDashScopeConfig, isOpenAIOfficialConfig,
-    normalizeUrl, extractImageUrls, extractVoiceUrls,
+    normalizeUrl, normalizeHostname, isPrivateHostname, isPrivateIp, validatePublicHttpUrl, resolveAndValidateHostname,
+    extractImageUrls, extractVoiceUrls,
     sanitizeFileToken, safeChannelKey, safeUserId, legacySafeUserId, truncateText: truncateTextValue, safeJsonStringify,
     normalizeReplyFingerprint,
     longestCommonSubstringLength, charSetJaccardOverlap,

@@ -63,6 +63,7 @@ declare function clearPendingToolById(id: unknown): boolean;
 declare function trimPendingTools(now?: number): void;
 declare function findPendingToolById(id: unknown): PendingTool | null;
 declare function getPendingToolById(id: unknown): PendingTool | null;
+declare function summarizePendingArgs(toolName: string, args?: unknown): string;
 declare function listPendingTools(): PendingListItem[];
 declare function executePendingTool(channelKey: string, userId: string, channel?: string, expectedId?: string, context?: PendingExecutionContext): Promise<PendingExecuteResult>;
 declare function confirmPendingTool(channelKey: string, userId: string, channel?: string, expectedId?: string, context?: PendingExecutionContext): Promise<PendingConfirmResult>;
@@ -74,6 +75,7 @@ declare const _default: {
     clearPendingTool: typeof clearPendingTool;
     clearPendingToolById: typeof clearPendingToolById;
     trimPendingTools: typeof trimPendingTools;
+    summarizePendingArgs: typeof summarizePendingArgs;
     listPendingTools: typeof listPendingTools;
     executePendingTool: typeof executePendingTool;
     confirmPendingTool: typeof confirmPendingTool;

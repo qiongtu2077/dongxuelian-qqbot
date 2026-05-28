@@ -31,11 +31,7 @@ function validateSkillName(name) {
 async function ensureDir(dir) {
     await fsp.mkdir(dir, { recursive: true });
 }
-async function atomicWriteJson(filePath, data) {
-    const dir = path.dirname(filePath);
-    await ensureDir(dir);
-    await writeJsonFile(filePath, data);
-}
+const atomicWriteJson = writeJsonFile;
 async function readJsonSafe(filePath, fallback = null) {
     return readJsonFile(filePath, fallback, { maxBytes: 512 * 1024 });
 }

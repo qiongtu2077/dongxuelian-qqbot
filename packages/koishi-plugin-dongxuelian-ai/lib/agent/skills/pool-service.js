@@ -8,9 +8,10 @@
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
-const { SKILL_POOL_DIR, validateSkillName, ensureDir, atomicWriteJson, readJsonSafe, copyDir, removeDir, isPathSafe } = require('./store');
+const { SKILL_POOL_DIR, validateSkillName, ensureDir, copyDir, removeDir, isPathSafe } = require('./store');
 const { scanSkillDirectory } = require('./scanner');
 const { DATA_DIR } = require('../../core/constants');
+const { readJsonFile, writeJsonFile } = require('../../core/utils');
 const { ensureRuntimeSkillSeeds } = require('../../persona/skills/skill-seeds');
 const { parseFrontmatterDocument } = require('../../core/frontmatter');
 const POOL_MANIFEST_FILE = path.join(SKILL_POOL_DIR, 'manifest.json');
@@ -20,13 +21,13 @@ function isPoolManifest(data) {
     return !!data && typeof data === 'object' && data.schema === 'skill-pool-manifest.v1' && !!data.skills;
 }
 async function readPoolManifest() {
-    const data = await readJsonSafe(POOL_MANIFEST_FILE, null);
+    const data = await readJsonFile(POOL_MANIFEST_FILE, null, { maxBytes: 512 * 1024 });
     if (data && data.schema === 'skill-pool-manifest.v1' && data.skills)
         return data;
     return { schema: EMPTY_MANIFEST.schema, skills: {} };
 }
 async function writePoolManifest(manifest) {
-    await atomicWriteJson(POOL_MANIFEST_FILE, manifest);
+    await writeJsonFile(POOL_MANIFEST_FILE, manifest);
 }
 function parseSkillMeta(skillDir) {
     const files = fs.readdirSync(skillDir).filter((f) => /^SKILL\./i.test(f) && f.endsWith('.md'));

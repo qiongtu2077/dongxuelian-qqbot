@@ -16,7 +16,6 @@ interface AvailablePersona {
 }
 type PersonaGroupsCache = Record<string, PersonaGroupEntry>;
 type PersonaUsersCache = Record<string, string>;
-declare function atomicWriteJson(filePath: string, data: unknown): void;
 declare function loadPersonaGroups(): void;
 declare function getGroupPersona(channelKey: string): PersonaGroupEntry | null;
 declare function setGroupPersona(channelKey: string, personaName: string | undefined): void;
@@ -37,7 +36,7 @@ declare function loadPersonalSkill(personaName: string): string | null;
 declare const _default: {
     personaGroupsCache: PersonaGroupsCache;
     personaUsersCache: PersonaUsersCache;
-    atomicWriteJson: typeof atomicWriteJson;
+    atomicWriteJson: (file: string, value: unknown) => void;
     loadPersonaGroups: typeof loadPersonaGroups;
     getGroupPersona: typeof getGroupPersona;
     setGroupPersona: typeof setGroupPersona;

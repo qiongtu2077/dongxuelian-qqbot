@@ -8,19 +8,20 @@
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
-const { WORKSPACE_DIR, SKILL_POOL_DIR, ensureDir, atomicWriteJson, readJsonSafe, validateSkillName } = require('./store');
+const { WORKSPACE_DIR, SKILL_POOL_DIR, ensureDir, validateSkillName } = require('./store');
 const { getPoolSkillInfo } = require('./pool-service');
+const { readJsonFile, writeJsonFile } = require('../../core/utils');
 const WORKSPACE_MANIFEST_FILE = path.join(WORKSPACE_DIR, 'manifest.json');
 const EMPTY_WORKSPACE_MANIFEST = { schema: 'skill-workspace-manifest.v1', skills: {} };
 async function readWorkspaceManifest() {
-    const data = await readJsonSafe(WORKSPACE_MANIFEST_FILE, null);
+    const data = await readJsonFile(WORKSPACE_MANIFEST_FILE, null, { maxBytes: 512 * 1024 });
     if (data && data.schema === 'skill-workspace-manifest.v1' && data.skills)
         return data;
     return { schema: EMPTY_WORKSPACE_MANIFEST.schema, skills: {} };
 }
 async function writeWorkspaceManifest(manifest) {
     await ensureDir(WORKSPACE_DIR);
-    await atomicWriteJson(WORKSPACE_MANIFEST_FILE, manifest);
+    await writeJsonFile(WORKSPACE_MANIFEST_FILE, manifest);
 }
 async function installFromPool(name) {
     if (!validateSkillName(name))

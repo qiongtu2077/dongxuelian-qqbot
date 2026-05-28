@@ -5,22 +5,12 @@
  * 边界: 不发送消息，不调用 AI API，不处理黑名单或命令路由。
  * 状态: randomWhitelistCache / randomRateCache 为进程内缓存，重启后重建。
  */
-const fs = require('fs/promises');
 const { RANDOM_WHITELIST_FILE, RANDOM_RATE_FILE, DEFAULT_GROUP_RANDOM_WHITELIST, RANDOM_TRIGGER_RATE_BASE, NUMERIC_GROUP_ID_RE, } = require('../core/constants');
-const { readJsonFile } = require('../core/utils');
+const { readJsonFile, getFileFingerprint } = require('../core/utils');
 const randomWhitelistCache = new Set(DEFAULT_GROUP_RANDOM_WHITELIST);
 const randomRateCache = new Map();
 let runtimeSettingsLoaded = false;
 let runtimeSettingsFingerprint = '';
-async function getFileFingerprint(filePath) {
-    try {
-        const stat = await fs.stat(filePath);
-        return `${stat.mtimeMs}:${stat.size}`;
-    }
-    catch { /* non-critical: missing settings file is represented by a stable fingerprint */
-        return 'missing';
-    }
-}
 async function getRuntimeSettingsFingerprint() {
     const [whitelistStamp, rateStamp] = await Promise.all([
         getFileFingerprint(RANDOM_WHITELIST_FILE),

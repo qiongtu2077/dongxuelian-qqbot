@@ -2,9 +2,8 @@
 // 受控浏览器工具：提供最小浏览器动作，默认关闭且按危险工具策略确认。
 const fs = require('fs');
 const path = require('path');
-const dns = require('dns/promises');
-const net = require('net');
 const { DATA_DIR } = require('../../core/constants');
+const { isPrivateHostname, isPrivateIp, validatePublicHttpUrl, resolveAndValidateHostname } = require('../../core/utils');
 const { assertExistingAgentPathInsideRoots } = require('../path-guard');
 const { rankSearchCandidates, formatSearchResults, buildSearchFailureText } = require('../search-results');
 function getBrowserActionErrorMessage(error) {
@@ -54,7 +53,6 @@ const MAX_BROWSER_UPLOAD_FILE_BYTES = parseBrowserPositiveInt(process.env.DONGXU
 const MAX_BROWSER_OUTPUT_FILE_BYTES = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_OUTPUT_MAX_MB, 24, 1, 256) * 1024 * 1024;
 const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font']);
 const BLOCKED_HOST_RE = /(?:doubleclick|googlesyndication|google-analytics|googletagmanager|adservice|adsystem|bat\.bing|clarity\.ms|facebook\.net|scorecardresearch|cnzz|hm\.baidu|pos\.baidu)/i;
-const PRIVATE_IP_RE = /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|169\.254\.|::1$|fc|fd|fe80)/;
 function parseBrowserPositiveInt(value, fallback, min, max) {
     const parsed = parseInt(value, 10);
     if (!Number.isFinite(parsed))
@@ -173,42 +171,24 @@ function findBrowser() {
     }
     return null;
 }
-function isPrivateHostname(hostname = '') {
-    const host = String(hostname || '').toLowerCase();
-    return host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0';
-}
-function isPrivateIp(ip = '') {
-    if (!ip)
-        return true;
-    if (ip === '::1' || ip.toLowerCase().startsWith('fe80:') || ip.toLowerCase().startsWith('fc') || ip.toLowerCase().startsWith('fd'))
-        return true;
-    if (!net.isIP(ip))
-        return false;
-    const parts = ip.split('.').map(Number);
-    if (parts.length !== 4 || parts.some(n => !Number.isFinite(n)))
-        return false;
-    const [a, b] = parts;
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
-}
 async function validateUrl(raw) {
     const value = String(raw || '').trim();
     if (!value)
         throw new Error('url 不能为空');
-    const parsed = new URL(value);
-    if (!['http:', 'https:'].includes(parsed.protocol))
-        throw new Error('只允许 http/https URL');
-    if (parsed.username || parsed.password)
-        throw new Error('URL 不允许包含用户名或密码');
-    if (isPrivateHostname(parsed.hostname) || isPrivateIp(parsed.hostname))
-        throw new Error('拒绝访问本机、内网或保留地址');
+    let originalHash = '';
     try {
-        const records = await dns.lookup(parsed.hostname, { all: true, verbatim: false });
-        if (records.some(item => isPrivateIp(item.address)))
-            throw new Error('拒绝访问解析到内网的地址');
+        originalHash = new URL(value).hash;
     }
-    catch (e) {
-        if (/拒绝访问/.test(e.message))
-            throw e;
+    catch { /* non-critical: core URL validator reports malformed URL below */ }
+    const parsed = validatePublicHttpUrl(value);
+    if (originalHash)
+        parsed.hash = originalHash;
+    try {
+        await resolveAndValidateHostname(parsed);
+    }
+    catch (error) {
+        if (/拒绝访问/.test(getBrowserActionErrorMessage(error)))
+            throw error;
     }
     return parsed.toString();
 }
@@ -253,7 +233,7 @@ async function launchPage() {
         const res = req.response();
         if (res) {
             const remote = res.remoteAddress();
-            if (remote && remote.ip && PRIVATE_IP_RE.test(remote.ip)) {
+            if (remote && remote.ip && isPrivateIp(remote.ip)) {
                 resetBrowserPageForSafety(page, 'private response').catch((error) => warnBrowserActionBackgroundFailure('private response reset task', error));
                 return;
             }

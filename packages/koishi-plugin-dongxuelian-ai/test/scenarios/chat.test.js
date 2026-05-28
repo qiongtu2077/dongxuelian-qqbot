@@ -738,16 +738,54 @@ async function run(t) {
     { json: { choices: [{ message: { content: '十分钟后提醒起床这件事，我真的做不到哦，我不是能设闹钟的助手。' } }] } },
   ], async (result, mocked, session, calls, data) => {
     checkSentIncludes(t, 'scenario reminder refusal fallback sends created reply', result, '已创建提醒')
-    const cronData = data.readJson('agent-crons.json')
+    const cronData = require('fs').existsSync(data.pathFor('agent-crons.json')) ? data.readJson('agent-crons.json') : { crons: [] }
     const once = (cronData.crons || []).find(item => item.mode === 'once')
     t.check('scenario reminder refusal fallback creates once cron', once && once.prompt.includes('起床') && once.targetChannel === '10001', JSON.stringify(cronData))
     t.check('scenario reminder refusal fallback did not need model tool call', calls.length === 1 && !(calls[0]?.requestBody?.messages || []).some(item => item.role === 'tool'), JSON.stringify(calls[0]?.requestBody?.messages || []))
   }, {
     input: '说错了，十分钟后提醒我起床',
+    setup(session, { data }) {
+      data.writeJson('ai-tool-config.json', {
+        channels: {
+          qq: { enabled: true, tools: { create_reminder: true, list_reminders: true, cancel_reminder: true } },
+          dashboard: { enabled: true, tools: {} },
+        },
+        autoRoute: { qq: { enabled: false }, dashboard: { enabled: false } },
+        dangerousPolicy: 'auto',
+        enabledSkills: [],
+        readFileRoots: [],
+      })
+    },
     waitFor: message => String(message).includes('已创建提醒'),
   })
 
+  await runChatCase(t, 'reminder fallback confirm queues pending', [
+    { json: { choices: [{ message: { content: '十分钟后提醒起床这件事，我真的做不到哦，我不是能设闹钟的助手。' } }] } },
+  ], async (result, mocked, session, calls, data) => {
+    checkSentIncludes(t, 'scenario reminder fallback confirm sends pending prompt', result, '需要确认')
+    const cronData = require('fs').existsSync(data.pathFor('agent-crons.json')) ? data.readJson('agent-crons.json') : { crons: [] }
+    t.check('scenario reminder fallback confirm does not create cron', !(cronData.crons || []).some(item => item.mode === 'once' && String(item.prompt || '').includes('起床')), JSON.stringify(cronData))
+    const pending = require(path.join(AI_ROOT, 'lib', 'agent', 'pending.js'))
+    const items = pending.listPendingTools()
+    t.check('scenario reminder fallback confirm queues pending create_reminder', items.some(item => item.toolName === 'create_reminder' && item.argsSummary.includes('起床')), JSON.stringify(items))
+    const created = items.find(item => item.toolName === 'create_reminder' && item.argsSummary.includes('起床'))
+    if (created) pending.clearPendingToolById(created.id)
+  }, {
+    input: '说错了，十分钟后提醒我起床',
+    waitFor: message => String(message).includes('需要确认'),
+  })
+
   await withScenario({}, async ({ makeSession, run, data }) => {
+    data.writeJson('ai-tool-config.json', {
+      channels: {
+        qq: { enabled: true, tools: { create_reminder: true, list_reminders: true, cancel_reminder: true } },
+        dashboard: { enabled: true, tools: {} },
+      },
+      autoRoute: { qq: { enabled: false }, dashboard: { enabled: false } },
+      dangerousPolicy: 'auto',
+      enabledSkills: [],
+      readFileRoots: [],
+    })
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '好的，十分钟后我会提醒你起床。别睡过头啦！' } }] } },
       { json: { choices: [{ message: { content: '呀吼～指挥官！我帮你记住了！一分钟后叫你起床哦！' } }] } },
@@ -815,6 +853,16 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession, run, data }) => {
+    data.writeJson('ai-tool-config.json', {
+      channels: {
+        qq: { enabled: true, tools: { create_scheduled_task: true } },
+        dashboard: { enabled: true, tools: {} },
+      },
+      autoRoute: { qq: { enabled: false }, dashboard: { enabled: false } },
+      dangerousPolicy: 'auto',
+      enabledSkills: [],
+      readFileRoots: [],
+    })
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '好呀，我每天早上八点跟你说早安。' } }] } },
     ])

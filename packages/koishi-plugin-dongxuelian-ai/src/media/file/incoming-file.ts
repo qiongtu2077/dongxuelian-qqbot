@@ -6,6 +6,7 @@
  */
 const path = require('path')
 const fsp = require('fs/promises')
+const { safeChannelKey } = require('../../core/utils') as typeof import('../../core/utils')
 
 interface IncomingCacheEntry {
   name: string
@@ -19,7 +20,7 @@ function getIncomingFileErrorMessage(error: unknown): string {
 function cacheSmallFileBackground(channelKey: string, messageId: string, url: string, ext: string): void {
   const { downloadFile } = require('./file-analyzer') as typeof import('./file-analyzer')
   const { FILE_CACHE_DIR, setLocalPath } = require('./file-store') as typeof import('./file-store')
-  const safeChannel = String(channelKey).replace(/[^a-zA-Z0-9.:_-]/g, '_')
+  const safeChannel = safeChannelKey(String(channelKey || ''))
   const safeId = String(messageId).replace(/[^a-zA-Z0-9_-]/g, '_')
   const cacheDir = path.join(FILE_CACHE_DIR, safeChannel)
   const destFile = path.join(cacheDir, `${safeId}.${ext || 'bin'}`)

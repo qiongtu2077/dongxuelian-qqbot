@@ -486,6 +486,18 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession, run, data }) => {
+    data.writeJson('ai-tool-config.json', {
+      version: 2,
+      channels: {
+        qq: { enabled: true, tools: { create_uploaded_file_variant: true, read_group_context: true, analyze_file: true } },
+        dashboard: { enabled: true, tools: {} },
+      },
+      autoRoute: { qq: { enabled: false }, dashboard: { enabled: false } },
+      dangerousPolicy: 'auto',
+      enabledSkills: [],
+      readFileRoots: [],
+    })
+    try { require(path.join(AI_ROOT, 'lib', 'agent', 'config.js')).resetAgentConfigCache() } catch {}
     const sourcePath = data.pathFor('uploaded-files', 'amis-public.txt')
     await fs.promises.mkdir(path.dirname(sourcePath), { recursive: true })
     await fs.promises.writeFile(sourcePath, '爱弥斯文件正文', 'utf8')
@@ -541,6 +553,56 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession, run, data }) => {
+    const sourcePath = data.pathFor('uploaded-files', 'confirm-variant.txt')
+    await fs.promises.mkdir(path.dirname(sourcePath), { recursive: true })
+    await fs.promises.writeFile(sourcePath, '需要确认的文件正文', 'utf8')
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-file-variant-confirm', type: 'function', function: { name: 'create_uploaded_file_variant', arguments: '{"name":"1","sendBack":true}' } }] } }] } },
+      { json: { choices: [{ message: { content: '需要你确认一下工具调用。' } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
+      const groupSession = makeSession({
+        content: atBot(makeSession(), '把刚刚这个文件标题重命名为1然后发给我'),
+        messageId: 'file-variant-confirm-ask',
+      })
+      await store.storeFile(groupSession.guildId, 'file-variant-confirm-source', {
+        fileName: '确认文件.txt',
+        fileSize: 24,
+        mimeType: 'text/plain',
+        ext: 'txt',
+        url: '',
+        fileId: 'file-variant-confirm-token',
+        conversationKey: groupSession.guildId,
+        userId: groupSession.userId,
+        skipped: false,
+      })
+      await store.setLocalPath(groupSession.guildId, 'file-variant-confirm-source', sourcePath)
+      const result = await run(groupSession, { flushTicks: 160 })
+      await groupSession.waitForSend(message => String(message).includes('确认'), 10000)
+      checkSentIncludes(t, 'scenario uploaded file variant confirm sends pending prompt', result, '确认')
+      const pending = require(path.join(AI_ROOT, 'lib', 'agent', 'pending.js'))
+      const items = pending.listPendingTools()
+      t.check('scenario uploaded file variant confirm queues pending tool', items.some(item => item.toolName === 'create_uploaded_file_variant' && item.argsSummary.includes('sendBack')), JSON.stringify(items))
+      const created = items.find(item => item.toolName === 'create_uploaded_file_variant')
+      if (created) pending.clearPendingToolById(created.id)
+      t.check('scenario uploaded file variant confirm does not create output immediately', !fs.existsSync(data.pathFor('agent-user-files')), data.pathFor('agent-user-files'))
+    })
+  })
+
+  await withScenario({}, async ({ makeSession, run, data }) => {
+    data.writeJson('ai-tool-config.json', {
+      version: 2,
+      channels: {
+        qq: { enabled: true, tools: { create_uploaded_file_variant: true, read_group_context: true, analyze_file: true } },
+        dashboard: { enabled: true, tools: {} },
+      },
+      autoRoute: { qq: { enabled: false }, dashboard: { enabled: false } },
+      dangerousPolicy: 'auto',
+      enabledSkills: [],
+      readFileRoots: [],
+    })
+    try { require(path.join(AI_ROOT, 'lib', 'agent', 'config.js')).resetAgentConfigCache() } catch {}
     const sourcePath = data.pathFor('uploaded-files', 'rename-after-refusal.txt')
     await fs.promises.mkdir(path.dirname(sourcePath), { recursive: true })
     await fs.promises.writeFile(sourcePath, '爱弥斯文件正文', 'utf8')
@@ -590,6 +652,18 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession, run, data }) => {
+    data.writeJson('ai-tool-config.json', {
+      version: 2,
+      channels: {
+        qq: { enabled: true, tools: { create_uploaded_file_variant: true, read_group_context: true, analyze_file: true } },
+        dashboard: { enabled: true, tools: {} },
+      },
+      autoRoute: { qq: { enabled: false }, dashboard: { enabled: false } },
+      dangerousPolicy: 'auto',
+      enabledSkills: [],
+      readFileRoots: [],
+    })
+    try { require(path.join(AI_ROOT, 'lib', 'agent', 'config.js')).resetAgentConfigCache() } catch {}
     const sourcePath = data.pathFor('uploaded-files', 'rename-direct-fallback.docx')
     await fs.promises.mkdir(path.dirname(sourcePath), { recursive: true })
     await fs.promises.writeFile(sourcePath, 'fake docx bytes for fallback test')

@@ -11,7 +11,7 @@ const https = require('https');
 const http = require('http');
 const { getFileEntry, markFileAnalyzed, setLocalPath, FILE_CACHE_DIR } = require('./file-store');
 const { getExtension, sanitizeFileName, TEXT_EXTENSIONS, wrapFileContent } = require('./file-safety');
-const { validatePublicHttpUrl, resolveAndValidateHostname } = require('../../agent/fetch-reader');
+const { safeChannelKey, validatePublicHttpUrl, resolveAndValidateHostname } = require('../../core/utils');
 const MAX_CONCURRENT = 2;
 const DOWNLOAD_TIMEOUT_MS = 30000;
 const MAX_TEXT_CHARS = 3000;
@@ -206,7 +206,7 @@ async function runAnalysis({ channelKey, messageId }) {
             return null;
         const ext = entry.ext || getExtension(entry.fileName);
         const safeName = sanitizeFileName(entry.fileName);
-        const localDir = path.join(FILE_CACHE_DIR, String(channelKey).replace(/[^a-zA-Z0-9.:_-]/g, '_'));
+        const localDir = path.join(FILE_CACHE_DIR, safeChannelKey(String(channelKey || '')));
         const localPath = path.join(localDir, `${String(messageId).replace(/[^a-zA-Z0-9_-]/g, '_')}.${ext}`);
         let filePath = entry.localPath || null;
         if (filePath) {

@@ -6,8 +6,7 @@
  * 状态: userBlacklistCache / userBlacklistFingerprint 为进程内缓存，重启后重建。
  */
 const { USER_BLACKLIST_FILE } = require('./constants');
-const { readJsonFile } = require('./utils');
-const { getFileFingerprint } = require('../behavior/runtime-settings');
+const { readJsonFile, getFileFingerprint } = require('./utils');
 let userBlacklistCache = null;
 let userBlacklistFingerprint = '';
 async function loadUserBlacklist(force = false) {

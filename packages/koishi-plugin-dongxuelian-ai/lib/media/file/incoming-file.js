@@ -7,13 +7,14 @@
  */
 const path = require('path');
 const fsp = require('fs/promises');
+const { safeChannelKey } = require('../../core/utils');
 function getIncomingFileErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
 function cacheSmallFileBackground(channelKey, messageId, url, ext) {
     const { downloadFile } = require('./file-analyzer');
     const { FILE_CACHE_DIR, setLocalPath } = require('./file-store');
-    const safeChannel = String(channelKey).replace(/[^a-zA-Z0-9.:_-]/g, '_');
+    const safeChannel = safeChannelKey(String(channelKey || ''));
     const safeId = String(messageId).replace(/[^a-zA-Z0-9_-]/g, '_');
     const cacheDir = path.join(FILE_CACHE_DIR, safeChannel);
     const destFile = path.join(cacheDir, `${safeId}.${ext || 'bin'}`);

@@ -1,4 +1,8 @@
 type TextQuality = 'empty' | 'garbage' | 'short' | 'usable' | 'error';
+interface DnsAddress {
+    address: string;
+    family: number;
+}
 interface FetchLimitInput {
     timeoutMs?: unknown;
     maxBytes?: unknown;
@@ -10,10 +14,6 @@ interface FetchLimits {
     maxBytes: number;
     maxChars: number;
     redirects: number;
-}
-interface DnsAddress {
-    address: string;
-    family: number;
 }
 interface HeadersLike {
     get?: (name: string) => string | null;
@@ -74,11 +74,6 @@ interface ReadCandidatePageResult extends FetchPage {
 }
 declare function parsePositiveInt(value: unknown, fallback: number, min: number, max: number): number;
 declare function getFetchLimits(params?: FetchLimitInput): FetchLimits;
-declare function normalizeHostname(hostname?: unknown): string;
-declare function isPrivateHostname(hostname?: unknown): boolean;
-declare function isPrivateIp(ip?: unknown): boolean;
-declare function validatePublicHttpUrl(rawUrl: unknown): URL;
-declare function resolveAndValidateHostname(url: string | URL): Promise<DnsAddress[]>;
 declare function getResponseHeader(response: ResponseLike, name: string): string;
 declare function isAllowedContentType(contentType?: unknown): boolean;
 declare function normalizeCharset(charset?: unknown): string;
@@ -100,11 +95,11 @@ declare const _default: {
     DEFAULT_MIN_RELIABLE_TEXT_CHARS: number;
     parsePositiveInt: typeof parsePositiveInt;
     getFetchLimits: typeof getFetchLimits;
-    normalizeHostname: typeof normalizeHostname;
-    isPrivateHostname: typeof isPrivateHostname;
-    isPrivateIp: typeof isPrivateIp;
-    validatePublicHttpUrl: typeof validatePublicHttpUrl;
-    resolveAndValidateHostname: typeof resolveAndValidateHostname;
+    normalizeHostname: (hostname?: unknown) => string;
+    isPrivateHostname: (hostname?: unknown) => boolean;
+    isPrivateIp: (ip?: unknown) => boolean;
+    validatePublicHttpUrl: (rawUrl: unknown) => URL;
+    resolveAndValidateHostname: (url: string | URL) => Promise<DnsAddress[]>;
     getResponseHeader: typeof getResponseHeader;
     isAllowedContentType: typeof isAllowedContentType;
     normalizeCharset: typeof normalizeCharset;

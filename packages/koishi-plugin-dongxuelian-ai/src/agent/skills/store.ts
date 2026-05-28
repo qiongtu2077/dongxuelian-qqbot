@@ -31,11 +31,7 @@ async function ensureDir(dir: string): Promise<void> {
   await fsp.mkdir(dir, { recursive: true })
 }
 
-async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
-  const dir = path.dirname(filePath)
-  await ensureDir(dir)
-  await writeJsonFile(filePath, data)
-}
+const atomicWriteJson: (filePath: string, data: unknown) => Promise<void> = writeJsonFile
 
 async function readJsonSafe<T>(filePath: string, fallback: T): Promise<T>
 async function readJsonSafe<T = null>(filePath: string, fallback?: T): Promise<T | null>

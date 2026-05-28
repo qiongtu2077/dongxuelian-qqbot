@@ -5,8 +5,7 @@
  */
 const fs = require('fs')
 const { REPEAT_ENABLED_FILE } = require('../core/constants') as typeof import('../core/constants')
-const { atomicWriteJson } = require('../persona/persona') as typeof import('../persona/persona')
-const { normalizeText, getSegmentData, getSessionMessageSegments } = require('../core/utils') as typeof import('../core/utils')
+const { normalizeText, getSegmentData, getSessionMessageSegments, writeJsonFileSync } = require('../core/utils') as typeof import('../core/utils')
 
 const REPEAT_MATCH_WINDOW_MS = 120000
 const MAX_REPEAT_CONFIG_BYTES = 128 * 1024
@@ -91,7 +90,7 @@ function setRepeatEnabled(channelKey: string, enabled: boolean): void {
   const key = String(channelKey)
   repeatEnabledCache[key] = enabled
   clearRepeatState(key)
-  atomicWriteJson(REPEAT_ENABLED_FILE, repeatEnabledCache)
+  writeJsonFileSync(REPEAT_ENABLED_FILE, repeatEnabledCache)
 }
 
 function extractStructuredFaceIds(session: RepeatSession): string[] | null {

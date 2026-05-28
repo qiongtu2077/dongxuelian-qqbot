@@ -6,8 +6,7 @@
  */
 const fs = require('fs');
 const { REPEAT_ENABLED_FILE } = require('../core/constants');
-const { atomicWriteJson } = require('../persona/persona');
-const { normalizeText, getSegmentData, getSessionMessageSegments } = require('../core/utils');
+const { normalizeText, getSegmentData, getSessionMessageSegments, writeJsonFileSync } = require('../core/utils');
 const REPEAT_MATCH_WINDOW_MS = 120000;
 const MAX_REPEAT_CONFIG_BYTES = 128 * 1024;
 const MAX_REPEAT_STATE_SIZE = 5000;
@@ -51,7 +50,7 @@ function setRepeatEnabled(channelKey, enabled) {
     const key = String(channelKey);
     repeatEnabledCache[key] = enabled;
     clearRepeatState(key);
-    atomicWriteJson(REPEAT_ENABLED_FILE, repeatEnabledCache);
+    writeJsonFileSync(REPEAT_ENABLED_FILE, repeatEnabledCache);
 }
 function extractStructuredFaceIds(session) {
     const segments = getSessionMessageSegments(session);

@@ -10,7 +10,7 @@ const https = require('https')
 const http = require('http')
 const { getFileEntry, markFileAnalyzed, setLocalPath, FILE_CACHE_DIR } = require('./file-store') as typeof import('./file-store')
 const { getExtension, sanitizeFileName, TEXT_EXTENSIONS, wrapFileContent } = require('./file-safety') as typeof import('./file-safety')
-const { validatePublicHttpUrl, resolveAndValidateHostname } = require('../../agent/fetch-reader') as typeof import('../../agent/fetch-reader')
+const { safeChannelKey, validatePublicHttpUrl, resolveAndValidateHostname } = require('../../core/utils') as typeof import('../../core/utils')
 
 const MAX_CONCURRENT = 2
 const DOWNLOAD_TIMEOUT_MS = 30000
@@ -250,7 +250,7 @@ async function runAnalysis({ channelKey, messageId }: FileAnalysisTask): Promise
 
     const ext = entry.ext || getExtension(entry.fileName)
     const safeName = sanitizeFileName(entry.fileName)
-    const localDir = path.join(FILE_CACHE_DIR, String(channelKey).replace(/[^a-zA-Z0-9.:_-]/g, '_'))
+    const localDir = path.join(FILE_CACHE_DIR, safeChannelKey(String(channelKey || '')))
     const localPath = path.join(localDir, `${String(messageId).replace(/[^a-zA-Z0-9_-]/g, '_')}.${ext}`)
 
     let filePath = entry.localPath || null

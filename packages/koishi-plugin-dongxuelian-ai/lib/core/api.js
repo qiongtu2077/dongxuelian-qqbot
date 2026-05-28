@@ -5,9 +5,8 @@
  * 边界: 不存 conversation，不做业务判断。结果返回给调用方（chat.js）处理。
  */
 const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE, MIMORIUM_KEY_FILE, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE, DATA_DIR } = require('./constants');
-const { readTextFile, isDashScopeConfig, todayCst } = require('./utils');
+const { readTextFile, isDashScopeConfig, todayCst, validatePublicHttpUrl, resolveAndValidateHostname } = require('./utils');
 const { resolveOneBotWsUrl } = require('./onebot-endpoint');
-const { validatePublicHttpUrl, resolveAndValidateHostname } = require('../agent/fetch-reader');
 const path = require('path');
 const fs = require('fs');
 const MAX_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_IMAGE_BYTES, 4 * 1024 * 1024, 128 * 1024, 16 * 1024 * 1024);

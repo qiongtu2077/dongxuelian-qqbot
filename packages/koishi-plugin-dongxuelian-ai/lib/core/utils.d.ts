@@ -38,6 +38,10 @@ interface SplitReplyOptions {
     softChars?: number;
     maxParts?: number;
 }
+interface DnsAddress {
+    address: string;
+    family: number;
+}
 declare function normalizeText(text?: unknown): string;
 declare function isRareProvocation(text?: string): boolean;
 declare function isWideRareProvocation(text?: string): boolean;
@@ -64,6 +68,7 @@ declare function writeJsonFile(file: string, value: unknown): Promise<void>;
 declare function readJsonFileSync<T>(file: string, fallback: T, options?: ReadFileOptions): T;
 declare function writeJsonFileSync(file: string, value: unknown): void;
 declare function safeUnlink(file: string): Promise<boolean>;
+declare function getFileFingerprint(filePath: string): Promise<string>;
 declare function sleep(ms: number): Promise<void>;
 declare function getRandomDelayMs(): number;
 declare function shouldTriggerRandom(rate: number, randomFn?: () => number): boolean;
@@ -72,6 +77,11 @@ declare function getBaseHostname(baseURL?: string): string;
 declare function isDashScopeConfig(config?: SearchConfig): boolean;
 declare function isOpenAIOfficialConfig(config?: SearchConfig): boolean;
 declare function normalizeUrl(raw: string): string;
+declare function normalizeHostname(hostname?: unknown): string;
+declare function isPrivateHostname(hostname?: unknown): boolean;
+declare function isPrivateIp(ip?: unknown): boolean;
+declare function validatePublicHttpUrl(rawUrl: unknown): URL;
+declare function resolveAndValidateHostname(url: string | URL): Promise<DnsAddress[]>;
 declare function extractImageUrls(content?: string): string[];
 declare function extractVoiceUrls(content?: string): string[];
 declare function sanitizeFileToken(value?: string): string;
@@ -138,6 +148,7 @@ declare const _default: {
     readJsonFileSync: typeof readJsonFileSync;
     writeJsonFileSync: typeof writeJsonFileSync;
     safeUnlink: typeof safeUnlink;
+    getFileFingerprint: typeof getFileFingerprint;
     sleep: typeof sleep;
     getRandomDelayMs: typeof getRandomDelayMs;
     shouldTriggerRandom: typeof shouldTriggerRandom;
@@ -146,6 +157,11 @@ declare const _default: {
     isDashScopeConfig: typeof isDashScopeConfig;
     isOpenAIOfficialConfig: typeof isOpenAIOfficialConfig;
     normalizeUrl: typeof normalizeUrl;
+    normalizeHostname: typeof normalizeHostname;
+    isPrivateHostname: typeof isPrivateHostname;
+    isPrivateIp: typeof isPrivateIp;
+    validatePublicHttpUrl: typeof validatePublicHttpUrl;
+    resolveAndValidateHostname: typeof resolveAndValidateHostname;
     extractImageUrls: typeof extractImageUrls;
     extractVoiceUrls: typeof extractVoiceUrls;
     sanitizeFileToken: typeof sanitizeFileToken;

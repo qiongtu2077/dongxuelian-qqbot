@@ -8,9 +8,8 @@ const fs = require('fs')
 const path = require('path')
 const { execFile } = require('child_process')
 const { requestChatCompletions } = require('../../core/api') as typeof import('../../core/api')
-const { extractVoiceUrls } = require('../../core/utils') as typeof import('../../core/utils')
+const { extractVoiceUrls, validatePublicHttpUrl, resolveAndValidateHostname } = require('../../core/utils') as typeof import('../../core/utils')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
-const { validatePublicHttpUrl, resolveAndValidateHostname } = require('../../agent/fetch-reader') as typeof import('../../agent/fetch-reader')
 
 const ASR_TIMEOUT_MS = 10000
 const MAX_VOICE_BYTES = 2 * 1024 * 1024
