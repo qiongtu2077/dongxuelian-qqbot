@@ -353,6 +353,7 @@ plugins:
 | `解除上限群白名单添加 <群号>` / `删除 <群号>` / `查看` | 管理日报、谁艾特我、消息缓存等高级功能白名单 |
 | `用户黑名单添加 <QQ号>` / `删除 <QQ号>` / `查看` | 管理不被 AI 处理的用户 |
 | `视频黑名单添加群 <群号>` / `删除群 <群号>` / `查看` | 管理不自动解析视频的群 |
+| `群聊昵称黑名单添加 <群号>` / `删除 <群号>` / `查看` | 管理禁用昵称绑定和批量艾特的群 |
 
 ### 5.6 昵称、集合和批量艾特
 
@@ -371,6 +372,7 @@ plugins:
 | `重命名集合 A B` / `复制集合 A B` / `合并集合 A B` | 集合维护 |
 | `集合交集 A B` / `集合并集 A B` / `集合差集 A B` | 集合运算 |
 | `at名称A` / `at集合A` | 批量艾特昵称或集合成员 |
+| `群聊昵称黑名单添加 <群号>` / `删除 <群号>` / `查看` | 黑名单群内不响应昵称、集合和 `at名称` 指令 |
 
 ### 5.7 日报、视频和事件工具
 
@@ -443,6 +445,7 @@ KOISHI_DIR=/root/koishi-app DONGXUELIAN_AI_DATA_DIR=/root/koishi-app/data sh scr
 | `summary-whitelist.json` | 日报、谁艾特我、消息缓存等高级功能白名单 |
 | `ai-user-blacklist.json` | 用户黑名单 |
 | `video-blacklist.json` | 视频解析黑名单 |
+| `group-name-at-disabled-groups.json` | 群聊昵称黑名单 |
 | `dashboard-access-pwd.txt` | Dashboard 访问密码 |
 | `dashboard-admin-pwd.txt` | Dashboard 管理员密码（敏感操作二次验证，文件名保留兼容旧版本） |
 | `today-cache-*.json` | 群聊当日缓存 |

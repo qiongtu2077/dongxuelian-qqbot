@@ -318,6 +318,15 @@ async function run() {
     let result = await send(ctx, '查看全部昵称', { guildId: TEST_BLACKLIST_GROUP, channelId: TEST_BLACKLIST_GROUP })
     check('no source hardcoded group blacklist by default', result.sent.some(item => item.includes('本群还没有昵称。')), JSON.stringify(result.sent))
 
+    result = await send(ctx, '群聊昵称黑名单查看', { guildId: TEST_BLACKLIST_GROUP, channelId: TEST_BLACKLIST_GROUP, event: { sender: { role: 'admin' }, message: [] } })
+    check('nickname blacklist view handles empty list', result.sent.some(item => item.includes('群聊昵称黑名单为空。')), JSON.stringify(result.sent))
+
+    result = await send(ctx, '群聊昵称黑名单添加', { guildId: TEST_BLACKLIST_GROUP, channelId: TEST_BLACKLIST_GROUP, event: { sender: { role: 'admin' }, message: [] } })
+    check('nickname blacklist add requires group id', result.sent.some(item => item.includes('请指定群号。')), JSON.stringify(result.sent))
+
+    result = await send(ctx, '群聊昵称黑名单删除 abc', { guildId: TEST_BLACKLIST_GROUP, channelId: TEST_BLACKLIST_GROUP, event: { sender: { role: 'admin' }, message: [] } })
+    check('nickname blacklist delete rejects invalid group id', result.sent.some(item => item.includes('群号必须是数字。')), JSON.stringify(result.sent))
+
     fs.mkdirSync(dataDir, { recursive: true })
     fs.writeFileSync(path.join(dataDir, 'group-name-at-disabled-groups.json'), JSON.stringify({ groups: [TEST_BLACKLIST_GROUP] }), 'utf8')
     result = await send(ctx, '查看全部昵称', { guildId: TEST_BLACKLIST_GROUP, channelId: TEST_BLACKLIST_GROUP })

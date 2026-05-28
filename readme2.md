@@ -854,6 +854,7 @@ packages/koishi-plugin-local-video-sender/data
 | `ai-random-rate.json` | 主动回复概率配置 |
 | `ai-user-blacklist.json` | 用户黑名单 |
 | `video-blacklist.json` | 视频解析黑名单 |
+| `group-name-at-disabled-groups.json` | 群聊昵称黑名单 |
 | `summary-whitelist.json` | 日报、谁艾特我、缓存等高级功能白名单 |
 | `dashboard-access-pwd.txt` | Dashboard 访问密码 |
 | `dashboard-admin-pwd.txt` | Dashboard 管理员密码 |
@@ -934,6 +935,7 @@ packages/koishi-plugin-local-video-sender/data
 | `集合删除 集合A @A` | 删除成员 |
 | `集合交集 A B` | 集合运算 |
 | `at名称A` / `at集合A` | 批量 at |
+| `群聊昵称黑名单添加 <群号>` / `删除 <群号>` / `查看` | 管理禁用昵称、集合和批量 at 的群 |
 
 ### 日报、视频和事件
 
