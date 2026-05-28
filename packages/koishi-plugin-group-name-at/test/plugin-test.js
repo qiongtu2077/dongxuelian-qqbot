@@ -281,6 +281,20 @@ async function run() {
     result = await send(ctx, '查看全部昵称', { guildId: '942033342', channelId: '942033342' })
     check('nickname plugin resumes after current group removed from blacklist', result.sent.some(item => item.includes('本群还没有昵称。')), JSON.stringify(result.sent))
 
+    result = await send(ctx, '群聊昵称黑名单添加942033342', {
+      guildId: '942033342',
+      channelId: '942033342',
+      event: { sender: { role: 'admin' }, message: [] },
+    })
+    check('group admin can add current group without command space', result.sent.some(item => item.includes('已添加群聊昵称黑名单：942033342')), JSON.stringify(result.sent))
+
+    result = await send(ctx, '群聊昵称黑名单删除942033342', {
+      guildId: '942033342',
+      channelId: '942033342',
+      event: { sender: { role: 'admin' }, message: [] },
+    })
+    check('group admin can delete current group without command space', result.sent.some(item => item.includes('已移出群聊昵称黑名单：942033342')), JSON.stringify(result.sent))
+
     result = await send(ctx, '群聊昵称黑名单添加 942033342', {
       userId: '12345',
       author: { id: '12345', name: 'member', nick: 'member' },

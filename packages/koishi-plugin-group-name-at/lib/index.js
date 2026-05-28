@@ -248,6 +248,14 @@ function afterCommand(input, command) {
   return null
 }
 
+// 群管理命令跟随主插件习惯，允许“命令”和纯数字群号之间不加空格。
+function afterNumericAdminCommand(input, command) {
+  const value = afterCommand(input, command)
+  if (value !== null) return value
+  if (input.startsWith(command)) return normalizeName(input.slice(command.length))
+  return null
+}
+
 function parseCommandPair(plain, command) {
   const value = afterCommand(plain, command)
   if (!value) return null
@@ -263,7 +271,7 @@ function parseNicknameBlacklistCommand(content = '') {
     [CMD.nicknameBlacklistAdd, 'add'],
     [CMD.nicknameBlacklistDelete, 'delete'],
   ]) {
-    const value = afterCommand(plain, command)
+    const value = afterNumericAdminCommand(plain, command)
     if (value === null) continue
     const groupId = splitWords(value)[0] || ''
     return { action, groupId }
