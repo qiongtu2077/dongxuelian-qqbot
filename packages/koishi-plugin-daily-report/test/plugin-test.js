@@ -858,7 +858,7 @@ testMiddleware('你好', '123').then(nonReport => {
       check('renderHtmlToImage waits for assets', networkIdleArgs && networkIdleArgs.timeout === 8000 && networkIdleArgs.idleTime === 1000)
       check('renderHtmlToImage adjusts viewport height for long content', viewportCalls.length >= 2 && viewportCalls[0].height === 800 && viewportCalls[1].height === 6000)
       check('renderHtmlToImage clips screenshot to viewport', screenshotArgs && screenshotArgs.clip && screenshotArgs.clip.height === 6000)
-      check('renderHtmlToImage clears timeout on success', timeoutMs === 45000 && clearedToken === timeoutToken)
+      check('renderHtmlToImage clears timeout on success', timeoutMs === 8 * 60 * 1000 && clearedToken === timeoutToken)
       check('renderHtmlToImage closes browser on success', browserClosed === 1)
     } finally {
       fs.existsSync = originalExistsSync
