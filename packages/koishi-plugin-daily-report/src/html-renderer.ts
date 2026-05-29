@@ -105,11 +105,11 @@ const TEMPLATES_DIR = path.join(__dirname, '..', 'templates')
 // 信号量：限制并发Puppeteer实例
 let activeRenderers = 0
 const MAX_RENDERERS = parsePositiveInt(process.env.DAILY_REPORT_MAX_RENDERERS, 1, 1, 4)
-const RENDER_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_RENDER_TIMEOUT_MS, 45000, 5000, 120000)
+const RENDER_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_RENDER_TIMEOUT_MS, 8 * 60 * 1000, 5000, 10 * 60 * 1000)
 const RENDER_QUEUE_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_QUEUE_TIMEOUT_MS, 60000, 5000, 180000)
 const RENDER_SET_CONTENT_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_SET_CONTENT_TIMEOUT_MS, 20000, 5000, 60000)
 const RENDER_ASSET_IDLE_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_RENDER_ASSET_WAIT_MS, 8000, 1000, 30000)
-const RENDER_MIN_AVAILABLE_MB = parsePositiveInt(process.env.DAILY_REPORT_MIN_MEM_MB, 600, 256, 8192)
+const RENDER_MIN_AVAILABLE_MB = parsePositiveInt(process.env.DAILY_REPORT_MIN_MEM_MB, 300, 256, 8192)
 const MAX_CAPTURE_HEIGHT = parsePositiveInt(process.env.DAILY_REPORT_MAX_CAPTURE_HEIGHT, 6000, 800, 12000)
 const MAX_HTML_BYTES = parsePositiveInt(process.env.DAILY_REPORT_MAX_HTML_BYTES, 512 * 1024, 64 * 1024, 2 * 1024 * 1024)
 const BLOCKED_RESOURCE_TYPES = new Set(['media'])
