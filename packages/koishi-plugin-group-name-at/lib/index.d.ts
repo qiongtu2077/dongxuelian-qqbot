@@ -89,6 +89,9 @@ declare const _default: {
     apply: typeof apply;
     _test: {
         DATA_FILE: any;
+        LEGACY_DATA_FILE: any;
+        SCOPE_DATA_DIR: any;
+        USE_LEGACY_STORE: boolean;
         DISABLED_GROUPS_FILE: any;
         ADMIN_IDS_FILE: any;
         pendingConfirms: Map<string, number>;

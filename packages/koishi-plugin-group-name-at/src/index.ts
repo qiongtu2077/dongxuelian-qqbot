@@ -70,7 +70,10 @@ interface AliasEntry {
 }
 
 interface ScopeStore {
+  version?: number
+  scopeId?: string
   aliases: Record<string, AliasEntry>
+  updatedAt?: string
 }
 
 interface NicknameStore {
@@ -128,13 +131,18 @@ function resolveRuntimeDataDir(): string {
 }
 
 const DEFAULT_DATA_DIR = resolveRuntimeDataDir()
-const DATA_FILE = process.env.GROUP_NAME_AT_DATA_FILE || path.join(DEFAULT_DATA_DIR, 'nickname-collections.json')
+const LEGACY_DATA_FILE = process.env.GROUP_NAME_AT_DATA_FILE || path.join(DEFAULT_DATA_DIR, 'nickname-collections.json')
+const SCOPE_DATA_DIR = path.resolve(process.env.GROUP_NAME_AT_DATA_DIR || path.join(DEFAULT_DATA_DIR, 'nickname-collections'))
+const USE_LEGACY_STORE = !!String(process.env.GROUP_NAME_AT_DATA_FILE || '').trim()
+const DATA_FILE = LEGACY_DATA_FILE
 const DISABLED_GROUPS_FILE = process.env.GROUP_NAME_AT_DISABLED_GROUPS_FILE || path.join(DEFAULT_DATA_DIR, 'group-name-at-disabled-groups.json')
 const ADMIN_IDS_FILE = process.env.GROUP_NAME_AT_ADMIN_IDS_FILE || path.join(DEFAULT_DATA_DIR, 'ai-admin-ids.json')
 const CONFIRM_TIMEOUT = 60 * 1000
 const MAX_DISABLED_GROUPS_BYTES = 128 * 1024
 const MAX_ADMIN_IDS_BYTES = 128 * 1024
 const MAX_PENDING_CONFIRMS = 500
+const MAX_STORE_FILE_BYTES = 2 * 1024 * 1024
+const STORE_VERSION = 1
 
 const CMD = {
   alias: '昵称',
@@ -209,11 +217,13 @@ const TEXT = {
   blacklistSaveFailed: '群聊昵称黑名单保存失败，请检查文件权限。',
 }
 
-let nicknameStore: NicknameStore = { scopes: {} }
-let storeLoaded = false
-let storeLoadError: unknown = null
+let legacyNicknameStore: NicknameStore = { scopes: {} }
+let legacyStoreLoaded = false
+let legacyStoreLoadError: unknown = null
+const scopeStoreCache = new Map<string, ScopeStore>()
 const pendingConfirms = new Map<string, number>()
-let saveChain = Promise.resolve()
+let legacySaveChain = Promise.resolve()
+const scopeSaveChains = new Map<string, Promise<unknown>>()
 let disabledGroupsCache: DisabledGroupsCache = { fingerprint: '', groups: new Set() }
 
 class StoreAccessError extends Error implements StoreAccessErrorLike {
@@ -235,18 +245,10 @@ function createStoreAccessError(userMessage: string, cause: unknown): StoreAcces
   return new StoreAccessError(userMessage, cause)
 }
 
-function isStoreAccessError(error: unknown): error is StoreAccessErrorLike {
-  return !!(error && typeof error === 'object' && (error as { code?: unknown }).code === 'GROUP_NAME_AT_STORE_ACCESS')
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 function handleStoreAccessError(ctx: ContextLike, error: unknown): string {
-  if (isStoreAccessError(error)) {
-    ctx.logger('group-name-at').warn(error.message)
-    return error.userMessage
+  if (error && (error as { code?: unknown }).code === 'GROUP_NAME_AT_STORE_ACCESS') {
+    ctx.logger('group-name-at').warn((error as Error).message)
+    return (error as StoreAccessErrorLike).userMessage
   }
   throw error
 }
@@ -258,7 +260,7 @@ async function safeSendText(ctx: ContextLike, session: GroupNameSessionLike, tex
     await session.send(value)
     return true
   } catch (error) {
-    ctx.logger('group-name-at').warn(`send failed: ${getErrorMessage(error)}`)
+    ctx.logger('group-name-at').warn(`send failed: ${(error as { message?: string })?.message || error}`)
     return false
   }
 }
@@ -431,7 +433,7 @@ async function handleNicknameBlacklistCommand(session: GroupNameSessionLike, com
   if (!/^\d+$/.test(groupId)) return TEXT.blacklistInvalidGroup
 
   const permission = canManageNicknameBlacklist(session, groupId)
-  if (!permission.ok) return permission.message || TEXT.blacklistPermissionDenied
+  if (!permission.ok) return permission.message
 
   const groups = new Set(disabled.groups)
   if (command.action === 'add') groups.add(groupId)
@@ -440,46 +442,80 @@ async function handleNicknameBlacklistCommand(session: GroupNameSessionLike, com
   return command.action === 'add' ? TEXT.blacklistAdded(groupId) : TEXT.blacklistDeleted(groupId)
 }
 
-function normalizeStore(raw: unknown): NicknameStore {
-  if (!raw || typeof raw !== 'object') return { scopes: {} }
-  const store = raw as Partial<NicknameStore>
-  if (!store.scopes || typeof store.scopes !== 'object') return { scopes: {} }
-  return store as NicknameStore
+// 将群号或频道号转换成安全文件名，避免运行时 ID 影响目录边界。
+function safeScopeFileName(scopeId: string = ''): string {
+  return encodeURIComponent(String(scopeId || 'global'))
+    .replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
 }
 
-async function ensureStore(): Promise<void> {
-  if (storeLoaded) {
-    if (storeLoadError) throw createStoreAccessError(TEXT.storeReadFailed, storeLoadError)
+// 返回当前 scope 的新格式存储文件路径。
+function getScopeFilePath(scopeId: string = ''): string {
+  return path.join(SCOPE_DATA_DIR, `${safeScopeFileName(scopeId)}.json`)
+}
+
+// 将读取到的 scope 数据规整成插件内部稳定结构。
+function normalizeScopeStore(scopeId: string, data: unknown): ScopeStore {
+  const source = (data && typeof data === 'object' ? data : {}) as Partial<ScopeStore>
+  const aliases = source.aliases && typeof source.aliases === 'object' ? source.aliases : {}
+  return {
+    version: Number(source.version || STORE_VERSION),
+    scopeId: String(source.scopeId || scopeId || 'global'),
+    aliases,
+    updatedAt: source.updatedAt || '',
+  }
+}
+
+// 按大小上限读取 JSON，避免异常大文件拖垮插件进程。
+async function readJsonFileIfSmall(filePath: string, fallback: unknown): Promise<unknown> {
+  try {
+    const stat = await fs.stat(filePath)
+    if (!stat.isFile() || stat.size > MAX_STORE_FILE_BYTES) throw new Error('store file too large')
+    return JSON.parse(await fs.readFile(filePath, 'utf8'))
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ENOENT') return fallback
+    throw error
+  }
+}
+
+// 加载旧版单文件总表；显式配置旧变量时继续作为主存储使用。
+async function ensureLegacyStore(): Promise<void> {
+  if (legacyStoreLoaded) {
+    if (legacyStoreLoadError) throw createStoreAccessError(TEXT.storeReadFailed, legacyStoreLoadError)
     return
   }
   try {
-    const raw = await fs.readFile(DATA_FILE, 'utf8')
-    nicknameStore = normalizeStore(JSON.parse(raw))
+    const parsed = await readJsonFileIfSmall(LEGACY_DATA_FILE, null)
+    if (parsed && typeof parsed === 'object') legacyNicknameStore = parsed as NicknameStore
   } catch (error) {
-    if ((error as { code?: string }).code !== 'ENOENT') {
-      storeLoadError = error
-      storeLoaded = true
-      throw createStoreAccessError(TEXT.storeReadFailed, error)
-    }
+    legacyStoreLoadError = error
+    legacyStoreLoaded = true
+    throw createStoreAccessError(TEXT.storeReadFailed, error)
   }
 
-  if (!nicknameStore.scopes || typeof nicknameStore.scopes !== 'object') {
-    nicknameStore = { scopes: {} }
+  if (!legacyNicknameStore.scopes || typeof legacyNicknameStore.scopes !== 'object') {
+    legacyNicknameStore = { scopes: {} }
   }
 
-  storeLoaded = true
+  legacyStoreLoaded = true
 }
 
-async function saveStore(): Promise<void> {
-  const task = saveChain.catch(() => { /* non-critical: previous save failure is reported by its awaiting caller */
-  }).then(async () => {
-    await fs.mkdir(path.dirname(DATA_FILE), { recursive: true })
-    const tmp = `${DATA_FILE}.tmp-${process.pid}-${Date.now()}`
-    await fs.writeFile(tmp, JSON.stringify(nicknameStore, null, 2), 'utf8')
-    await fs.rename(tmp, DATA_FILE)
+// 从旧总表读取当前 scope，作为新目录模式的懒迁移来源。
+async function readLegacyScopeStore(scopeId: string): Promise<ScopeStore | null> {
+  await ensureLegacyStore()
+  const legacyScope = legacyNicknameStore.scopes[String(scopeId)]
+  if (!legacyScope || typeof legacyScope !== 'object') return null
+  return normalizeScopeStore(scopeId, legacyScope)
+}
+
+// 为旧版单文件模式排队写入，兼容显式 GROUP_NAME_AT_DATA_FILE 部署。
+async function saveLegacyStore(): Promise<void> {
+  const task = legacySaveChain.catch(() => {}).then(async () => {
+    await fs.mkdir(path.dirname(LEGACY_DATA_FILE), { recursive: true })
+    const tmp = `${LEGACY_DATA_FILE}.tmp-${process.pid}-${Date.now()}`
+    await fs.writeFile(tmp, JSON.stringify(legacyNicknameStore, null, 2), 'utf8')
+    await fs.rename(tmp, LEGACY_DATA_FILE)
   })
-  saveChain = task.catch(() => { /* non-critical: keep save chain alive after caller receives failure */
-  })
+  legacySaveChain = task.catch(() => {})
   try {
     await task
   } catch (error) {
@@ -487,12 +523,83 @@ async function saveStore(): Promise<void> {
   }
 }
 
-function getScopeStore(session: GroupNameSessionLike): ScopeStore {
-  const scopeId = getScopeId(session)
-  if (!nicknameStore.scopes[scopeId]) nicknameStore.scopes[scopeId] = { aliases: {} }
-  if (!nicknameStore.scopes[scopeId].aliases) nicknameStore.scopes[scopeId].aliases = {}
-  return nicknameStore.scopes[scopeId]
+// 为单个 scope 排队写入，确保同群并发更新不会互相覆盖。
+async function enqueueScopeSave(scopeId: string, taskFn: () => Promise<unknown>): Promise<unknown> {
+  const queueKey = safeScopeFileName(scopeId)
+  const previous = scopeSaveChains.get(queueKey) || Promise.resolve()
+  const task = previous.catch(() => {}).then(taskFn)
+  const cleanup = task.catch(() => {})
+  scopeSaveChains.set(queueKey, cleanup)
+  try {
+    return await task
+  } finally {
+    if (scopeSaveChains.get(queueKey) === cleanup) scopeSaveChains.delete(queueKey)
+  }
 }
+
+// 保存当前 scope 到新目录文件，使用临时文件加 rename 原子替换。
+async function saveScopeStore(scopeId: string, scopeStore: ScopeStore): Promise<void> {
+  await enqueueScopeSave(scopeId, async () => {
+    await fs.mkdir(SCOPE_DATA_DIR, { recursive: true })
+    const file = getScopeFilePath(scopeId)
+    const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+    const data = normalizeScopeStore(scopeId, scopeStore)
+    data.updatedAt = new Date().toISOString()
+    await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
+    await fs.rename(tmp, file)
+    scopeStoreCache.set(String(scopeId), data)
+  })
+}
+
+// 初始化当前存储模式；新目录模式只准备目录，不一次性加载所有群。
+async function ensureStore(): Promise<void> {
+  if (USE_LEGACY_STORE) {
+    await ensureLegacyStore()
+    return
+  }
+  try {
+    await fs.mkdir(SCOPE_DATA_DIR, { recursive: true })
+  } catch (error) {
+    throw createStoreAccessError(TEXT.storeReadFailed, error)
+  }
+}
+
+// 按当前会话 scope 加载昵称集合；新目录缺失时从旧总表懒迁移。
+async function getScopeStore(session: GroupNameSessionLike): Promise<ScopeStore> {
+  const scopeId = getScopeId(session)
+  if (USE_LEGACY_STORE) {
+    await ensureLegacyStore()
+    if (!legacyNicknameStore.scopes[scopeId]) legacyNicknameStore.scopes[scopeId] = { aliases: {} }
+    if (!legacyNicknameStore.scopes[scopeId].aliases) legacyNicknameStore.scopes[scopeId].aliases = {}
+    return legacyNicknameStore.scopes[scopeId]
+  }
+
+  if (scopeStoreCache.has(scopeId)) return scopeStoreCache.get(scopeId)!
+
+  try {
+    let scopeStore = await readJsonFileIfSmall(getScopeFilePath(scopeId), null) as ScopeStore | null
+    if (!scopeStore) {
+      scopeStore = await readLegacyScopeStore(scopeId)
+      if (scopeStore) await saveScopeStore(scopeId, scopeStore)
+    }
+    const normalized = normalizeScopeStore(scopeId, scopeStore || { aliases: {} })
+    scopeStoreCache.set(scopeId, normalized)
+    return normalized
+  } catch (error) {
+    throw createStoreAccessError(TEXT.storeReadFailed, error)
+  }
+}
+
+// 保存当前会话 scope；旧模式写总表，新模式只写当前群文件。
+async function saveStore(session: GroupNameSessionLike): Promise<void> {
+  if (USE_LEGACY_STORE) {
+    await saveLegacyStore()
+    return
+  }
+  const scopeId = getScopeId(session)
+  await saveScopeStore(scopeId, await getScopeStore(session))
+}
+
 
 function ensureAliasEntry(scopeStore: ScopeStore, alias: string): AliasEntry {
   if (!scopeStore.aliases[alias]) scopeStore.aliases[alias] = { members: [] }
@@ -612,7 +719,7 @@ async function createMember(session: GroupNameSessionLike, userId: string): Prom
 }
 
 async function addMembers(session: GroupNameSessionLike, alias: string, userIds: string[]): Promise<{ entry: AliasEntry, added: number }> {
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const entry = ensureAliasEntry(scopeStore, alias)
   let added = 0
 
@@ -630,13 +737,13 @@ async function bindAlias(session: GroupNameSessionLike, alias: string, targetUse
   alias = normalizeName(alias)
   if (!alias) return TEXT.aliasEmpty
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const entry = ensureAliasEntry(scopeStore, alias)
   const existing = entry.members.find((member) => member.userId === String(targetUserId))
   if (existing) return TEXT.aliasExists(alias)
 
   entry.members.push(await createMember(session, targetUserId))
-  await saveStore()
+  await saveStore(session)
 
   if (entry.members.length === 1) return TEXT.aliasAdded(alias)
   return TEXT.collectionAdded(alias, 1, entry.members.length)
@@ -647,7 +754,7 @@ async function removeAliasBinding(session: GroupNameSessionLike, alias: string, 
   alias = normalizeName(alias)
   if (!alias) return TEXT.aliasEmpty
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const entry = getEntry(scopeStore, alias)
   if (!entry || !entry.members.length) return TEXT.aliasNotFound(alias)
 
@@ -657,11 +764,11 @@ async function removeAliasBinding(session: GroupNameSessionLike, alias: string, 
 
   if (!entry.members.length) {
     delete scopeStore.aliases[alias]
-    await saveStore()
+    await saveStore(session)
     return TEXT.aliasRemovedLast(alias)
   }
 
-  await saveStore()
+  await saveStore(session)
   return TEXT.aliasRemoved(alias, entry.members.length)
 }
 
@@ -670,12 +777,12 @@ async function viewAlias(session: GroupNameSessionLike, alias: string): Promise<
   alias = normalizeName(alias)
   if (!alias) return TEXT.aliasEmpty
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const entry = getEntry(scopeStore, alias)
   if (!entry) return TEXT.aliasNotFound(alias)
 
   const changed = await refreshMemberDisplayNames(session, entry.members)
-  if (changed) await saveStore()
+  if (changed) await saveStore(session)
 
   const title = entry.members.length > 1 ? TEXT.collectionTitle(alias) : TEXT.aliasTitle(alias)
   const lines = entry.members.map((member, index) => `${index + 1}. ${formatMemberLabel(member)}`)
@@ -687,18 +794,18 @@ async function sendAliasMention(session: GroupNameSessionLike, alias: string, ta
   alias = normalizeName(alias)
   if (!alias) return null
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const entry = getEntry(scopeStore, alias)
   if (!entry || !entry.members.length) return null
 
   const changed = await refreshMemberDisplayNames(session, entry.members)
-  if (changed) await saveStore()
+  if (changed) await saveStore(session)
   return buildAtMessage(entry.members, tail)
 }
 
 async function listEntries(session: GroupNameSessionLike, mode: 'alias' | 'collection'): Promise<string> {
   await ensureStore()
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const entries = Object.entries(scopeStore.aliases)
     .map(([alias, entry]): [string, StoreMember[]] => [alias, Array.isArray(entry.members) ? entry.members : []])
     .filter(([, members]) => mode === 'alias' ? members.length === 1 : members.length > 1)
@@ -717,11 +824,11 @@ async function createCollection(session: GroupNameSessionLike, alias: string, us
   if (!alias) return TEXT.aliasEmpty
   if (!userIds.length) return TEXT.mentionRequired
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   if (scopeStore.aliases[alias]) return TEXT.targetExists(alias)
 
   const { entry } = await addMembers(session, alias, userIds)
-  await saveStore()
+  await saveStore(session)
   return TEXT.collectionCreated(alias, entry.members.length)
 }
 
@@ -731,12 +838,12 @@ async function collectionAdd(session: GroupNameSessionLike, alias: string, userI
   if (!alias) return TEXT.aliasEmpty
   if (!userIds.length) return TEXT.mentionRequired
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const entry = getEntry(scopeStore, alias)
   if (!entry) return TEXT.aliasNotFound(alias)
 
   const { added } = await addMembers(session, alias, userIds)
-  await saveStore()
+  await saveStore(session)
   return TEXT.collectionAdded(alias, added, entry.members.length)
 }
 
@@ -746,7 +853,7 @@ async function collectionRemove(session: GroupNameSessionLike, alias: string, us
   if (!alias) return TEXT.aliasEmpty
   if (!userIds.length) return TEXT.mentionRequired
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const entry = getEntry(scopeStore, alias)
   if (!entry) return TEXT.aliasNotFound(alias)
 
@@ -754,7 +861,7 @@ async function collectionRemove(session: GroupNameSessionLike, alias: string, us
   const before = entry.members.length
   entry.members = entry.members.filter((member) => !removeSet.has(member.userId))
   const removed = before - entry.members.length
-  await saveStore()
+  await saveStore(session)
   return TEXT.collectionRemoved(alias, removed, entry.members.length)
 }
 
@@ -795,13 +902,13 @@ async function deleteCollection(session: GroupNameSessionLike, alias: string, co
   alias = normalizeName(alias)
   if (!alias) return TEXT.aliasEmpty
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   if (!scopeStore.aliases[alias]) return TEXT.aliasNotFound(alias)
   if (confirmed && !takeConfirm(session, 'delete', alias)) return TEXT.confirmDelete(alias)
   if (!confirmed && !askConfirm(session, 'delete', alias)) return TEXT.confirmDelete(alias)
 
   delete scopeStore.aliases[alias]
-  await saveStore()
+  await saveStore(session)
   return TEXT.collectionDeleted(alias)
 }
 
@@ -810,14 +917,14 @@ async function clearCollection(session: GroupNameSessionLike, alias: string, con
   alias = normalizeName(alias)
   if (!alias) return TEXT.aliasEmpty
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const entry = getEntry(scopeStore, alias)
   if (!entry) return TEXT.aliasNotFound(alias)
   if (confirmed && !takeConfirm(session, 'clear', alias)) return TEXT.confirmClear(alias)
   if (!confirmed && !askConfirm(session, 'clear', alias)) return TEXT.confirmClear(alias)
 
   entry.members = []
-  await saveStore()
+  await saveStore(session)
   return TEXT.collectionCleared(alias)
 }
 
@@ -827,13 +934,13 @@ async function renameEntry(session: GroupNameSessionLike, from: string, to: stri
   to = normalizeName(to)
   if (!from || !to) return TEXT.aliasEmpty
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   if (!scopeStore.aliases[from]) return TEXT.aliasNotFound(from)
   if (scopeStore.aliases[to]) return TEXT.targetExists(to)
 
   scopeStore.aliases[to] = scopeStore.aliases[from]
   delete scopeStore.aliases[from]
-  await saveStore()
+  await saveStore(session)
   return TEXT.renameDone(from, to)
 }
 
@@ -843,13 +950,13 @@ async function copyCollection(session: GroupNameSessionLike, from: string, to: s
   to = normalizeName(to)
   if (!from || !to) return TEXT.aliasEmpty
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const entry = getEntry(scopeStore, from)
   if (!entry) return TEXT.aliasNotFound(from)
   if (scopeStore.aliases[to]) return TEXT.targetExists(to)
 
   scopeStore.aliases[to] = { members: entry.members.map((member) => ({ ...member })) }
-  await saveStore()
+  await saveStore(session)
   return TEXT.copied(from, to, entry.members.length)
 }
 
@@ -859,7 +966,7 @@ async function mergeCollection(session: GroupNameSessionLike, targetAlias: strin
   sourceAlias = normalizeName(sourceAlias)
   if (!targetAlias || !sourceAlias) return TEXT.aliasEmpty
 
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const target = getEntry(scopeStore, targetAlias)
   const source = getEntry(scopeStore, sourceAlias)
   if (!target) return TEXT.aliasNotFound(targetAlias)
@@ -872,7 +979,7 @@ async function mergeCollection(session: GroupNameSessionLike, targetAlias: strin
     added += 1
   }
 
-  await saveStore()
+  await saveStore(session)
   return TEXT.merged(targetAlias, sourceAlias, added, target.members.length)
 }
 
@@ -882,7 +989,7 @@ function memberMatches(member: StoreMember, keyword: string): boolean {
 
 async function viewMember(session: GroupNameSessionLike, keyword: string, mentionId?: string): Promise<string> {
   await ensureStore()
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const matched: string[] = []
   const target = mentionId ? String(mentionId) : normalizeName(keyword)
   if (!target) return TEXT.memberRequired
@@ -891,7 +998,7 @@ async function viewMember(session: GroupNameSessionLike, keyword: string, mentio
   for (const [alias, entry] of Object.entries(scopeStore.aliases)) {
     const members = Array.isArray(entry.members) ? entry.members : []
     const changed = await refreshMemberDisplayNames(session, members)
-    if (changed) await saveStore()
+    if (changed) await saveStore(session)
     const member = members.find((item) => mentionId ? item.userId === target : memberMatches(item, target))
     if (member) {
       label = formatMemberLabel(member)
@@ -907,7 +1014,7 @@ async function collectionSet(session: GroupNameSessionLike, left: string, right:
   await ensureStore()
   left = normalizeName(left)
   right = normalizeName(right)
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const leftEntry = getEntry(scopeStore, left)
   const rightEntry = getEntry(scopeStore, right)
   if (!leftEntry) return TEXT.aliasNotFound(left)
@@ -915,7 +1022,7 @@ async function collectionSet(session: GroupNameSessionLike, left: string, right:
 
   await refreshMemberDisplayNames(session, leftEntry.members)
   await refreshMemberDisplayNames(session, rightEntry.members)
-  await saveStore()
+  await saveStore(session)
 
   const rightIds = new Set(rightEntry.members.map((member) => member.userId))
   let members: StoreMember[] = []
@@ -974,7 +1081,7 @@ function parseAtAlias(content: string): string | null {
 // 从已有昵称中贪心匹配最长前缀，返回 { alias, tail } 或 null
 async function resolveAtAlias(session: GroupNameSessionLike, text: string): Promise<AtAliasResolution | null> {
   await ensureStore()
-  const scopeStore = getScopeStore(session)
+  const scopeStore = await getScopeStore(session)
   const aliases = Object.keys(scopeStore.aliases)
   // 按昵称长度从长到短排序，优先匹配最长的
   aliases.sort((a, b) => b.length - a.length)
@@ -1070,9 +1177,10 @@ function apply(ctx: ContextLike): void {
     try {
       await ensureStore()
       loadDisabledGroups(true)
-      ctx.logger('group-name-at').info(`group-name-at ${PLUGIN_VERSION} loaded: ${DATA_FILE}`)
+      const storePath = USE_LEGACY_STORE ? LEGACY_DATA_FILE : SCOPE_DATA_DIR
+      ctx.logger('group-name-at').info(`group-name-at ${PLUGIN_VERSION} loaded: ${storePath}`)
     } catch (error) {
-      ctx.logger('group-name-at').warn(getErrorMessage(error))
+      ctx.logger('group-name-at').warn((error as Error).message)
     }
   })
 
@@ -1142,6 +1250,9 @@ function apply(ctx: ContextLike): void {
 
 const _test = {
   DATA_FILE,
+  LEGACY_DATA_FILE,
+  SCOPE_DATA_DIR,
+  USE_LEGACY_STORE,
   DISABLED_GROUPS_FILE,
   ADMIN_IDS_FILE,
   pendingConfirms,
