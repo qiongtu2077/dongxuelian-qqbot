@@ -1,10 +1,26 @@
-const { execSync } = require('child_process')
+const { execFileSync } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 const ts = require('typescript')
 
-const PKG = 'packages/koishi-plugin-dongxuelian-ai'
-const TAG = 'pre-ts-migration'
+const ROOT = path.resolve(__dirname, '..')
+const AI_PLUGIN = 'koishi-plugin-dongxuelian-ai'
+const AI_PKG = `packages/${AI_PLUGIN}`
+const AI_TAG = 'pre-ts-migration'
+const PLUGINS_TAG = 'pre-plugins-ts-migration'
+
+const OTHER_PLUGIN_NAMES = [
+  'koishi-plugin-dongxuelian-poke',
+  'koishi-plugin-group-leave-notice',
+  'koishi-plugin-defense',
+  'koishi-plugin-dongxuelian-help',
+  'koishi-plugin-local-video-sender',
+  'koishi-plugin-group-name-at',
+  'koishi-plugin-pet-bridge',
+  'koishi-plugin-daily-report',
+  'koishi-plugin-dashboard',
+]
+
 const EXPORT_ASSIGNMENT = /exports\.(\w+)\s*=/
 const FORBIDDEN = [/__esModule/, /__awaiter/, /__spreadArray/, /\(0,\s*\w+\.\w+\)/]
 const ALLOWED_ADDED_EXPORTS = {
@@ -58,19 +74,55 @@ const ALLOWED_REQUIRE_CHANGES = {
   'rulesets/jailbreak.js': { added: ['../core/constants'] },
 }
 
-const domain = process.argv[2]
-if (!domain) {
-  console.error('Usage: node scripts/ts-diff-check.js <domain|--all>')
-  process.exit(1)
+function usage() {
+  console.error([
+    'Usage:',
+    '  node scripts/ts-diff-check.js <domain|--all>',
+    '  node scripts/ts-diff-check.js --plugin <plugin-name|packages/plugin> [domain|--all]',
+    '  node scripts/ts-diff-check.js --plugins',
+  ].join('\n'))
 }
 
-function listCurrentJsFiles(dir, prefix = '') {
+function normalizeRel(file) {
+  return file.replace(/\\/g, '/')
+}
+
+function packageRootForPlugin(pluginNameOrPath) {
+  const normalized = normalizeRel(pluginNameOrPath)
+  if (normalized.startsWith('packages/')) return normalized.replace(/\/$/, '')
+  return `packages/${normalized.replace(/\/$/, '')}`
+}
+
+function pluginNameFromPackageRoot(packageRoot) {
+  return normalizeRel(packageRoot).split('/').pop()
+}
+
+function packageExists(packageRoot) {
+  return fs.existsSync(path.join(ROOT, packageRoot, 'package.json'))
+}
+
+function isDashboardPackage(packageRoot) {
+  return pluginNameFromPackageRoot(packageRoot) === 'koishi-plugin-dashboard'
+}
+
+function isAiPackage(packageRoot) {
+  return pluginNameFromPackageRoot(packageRoot) === AI_PLUGIN
+}
+
+function isMigratedPackage(packageRoot) {
+  if (isAiPackage(packageRoot)) return true
+  return fs.existsSync(path.join(ROOT, packageRoot, 'tsconfig.json'))
+    || fs.existsSync(path.join(ROOT, packageRoot, 'src'))
+}
+
+function listJsFilesUnder(dir, prefix = '') {
   const result = []
+  if (!fs.existsSync(dir)) return result
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const rel = prefix ? path.posix.join(prefix, entry.name) : entry.name
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) {
-      result.push(...listCurrentJsFiles(full, rel))
+      result.push(...listJsFilesUnder(full, rel))
     } else if (entry.isFile() && entry.name.endsWith('.js')) {
       result.push(rel)
     }
@@ -78,192 +130,312 @@ function listCurrentJsFiles(dir, prefix = '') {
   return result.sort()
 }
 
-function listBaselineJsFiles() {
-  const output = execSync(`git ls-tree -r --name-only ${TAG} ${PKG}/lib`, { encoding: 'utf8' })
-  return output
+function listCurrentJsFiles(packageRoot) {
+  const pkgAbs = path.join(ROOT, packageRoot)
+  const files = []
+  if (isDashboardPackage(packageRoot)) {
+    for (const rootFile of ['index.js', 'standalone.js']) {
+      if (fs.existsSync(path.join(pkgAbs, rootFile))) files.push(rootFile)
+    }
+  }
+  const libAbs = path.join(pkgAbs, 'lib')
+  for (const file of listJsFilesUnder(libAbs)) files.push(path.posix.join('lib', file))
+  return files.sort()
+}
+
+function gitOutput(args) {
+  return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' })
+}
+
+function gitShow(tag, file) {
+  return gitOutput(['show', `${tag}:${file}`])
+}
+
+function gitListTree(tag, packageRoot) {
+  try {
+    return gitOutput(['ls-tree', '-r', '--name-only', tag, packageRoot])
+  } catch {
+    return ''
+  }
+}
+
+function listBaselineJsFiles(tag, packageRoot) {
+  return gitListTree(tag, packageRoot)
     .split(/\r?\n/)
     .filter(Boolean)
     .filter((file) => file.endsWith('.js'))
-    .map((file) => file.slice(`${PKG}/lib/`.length))
+    .filter((file) => {
+      const rel = normalizeRel(file).slice(`${packageRoot}/`.length)
+      return rel.startsWith('lib/') || (isDashboardPackage(packageRoot) && ['index.js', 'standalone.js'].includes(rel))
+    })
+    .map((file) => normalizeRel(file).slice(`${packageRoot}/`.length))
     .sort()
 }
 
-const libRoot = path.join(PKG, 'lib')
-const libTarget = path.join(libRoot, domain)
-const libFileTarget = path.join(libRoot, domain.endsWith('.js') ? domain : `${domain}.js`)
-const files = domain === '--all'
-  ? listCurrentJsFiles(libRoot)
-  : fs.existsSync(libTarget) && fs.statSync(libTarget).isDirectory()
-    ? fs.readdirSync(libTarget).filter((file) => file.endsWith('.js')).map((file) => path.posix.join(domain, file)).sort()
-    : [path.relative(libRoot, libFileTarget).replace(/\\/g, '/')]
+function listDomainFiles(packageRoot, domain, legacyAiDomain) {
+  if (!domain || domain === '--all') return listCurrentJsFiles(packageRoot)
 
-let failures = 0
-let checked = 0
-
-if (domain === '--all') {
-  const currentSet = new Set(files)
-  const baselineSet = new Set(listBaselineJsFiles())
-  const added = files.filter((file) => !baselineSet.has(file))
-  const removed = Array.from(baselineSet).filter((file) => !currentSet.has(file))
-  if (added.length) {
-    console.error(`FAIL [--all]: new compiled JS files without baseline: ${added.join(', ')}`)
-    failures++
+  const baseRel = legacyAiDomain ? 'lib' : ''
+  const pkgAbs = path.join(ROOT, packageRoot)
+  const asRel = normalizeRel(domain).replace(/^\.?\//, '')
+  const relFromPackage = baseRel ? path.posix.join(baseRel, asRel) : asRel
+  const dirTarget = path.join(pkgAbs, relFromPackage)
+  if (fs.existsSync(dirTarget) && fs.statSync(dirTarget).isDirectory()) {
+    return fs.readdirSync(dirTarget)
+      .filter((file) => file.endsWith('.js'))
+      .map((file) => path.posix.join(relFromPackage, file))
+      .sort()
   }
-  if (removed.length) {
-    console.error(`FAIL [--all]: baseline JS files missing from compiled output: ${removed.join(', ')}`)
-    failures++
+
+  if (asRel.endsWith('.js')) return [relFromPackage]
+  return [path.posix.join(baseRel, `${asRel}.js`)]
+}
+
+function parseArgs(argv) {
+  if (!argv.length) return null
+  if (argv[0] === '--plugins') {
+    if (argv.length !== 1) return null
+    return {
+      mode: 'plugins',
+      checks: OTHER_PLUGIN_NAMES.map((name) => ({
+        packageRoot: packageRootForPlugin(name),
+        tag: PLUGINS_TAG,
+        domain: '--all',
+        legacyAiDomain: false,
+      })),
+    }
+  }
+  if (argv[0] === '--plugin') {
+    const plugin = argv[1]
+    if (!plugin) return null
+    return {
+      mode: 'single',
+      checks: [{
+        packageRoot: packageRootForPlugin(plugin),
+        tag: isAiPackage(packageRootForPlugin(plugin)) ? AI_TAG : PLUGINS_TAG,
+        domain: argv[2] || '--all',
+        legacyAiDomain: false,
+      }],
+    }
+  }
+  if (argv[0].startsWith('--')) return null
+  return {
+    mode: 'legacy-ai',
+    checks: [{
+      packageRoot: AI_PKG,
+      tag: AI_TAG,
+      domain: argv[0],
+      legacyAiDomain: true,
+    }],
   }
 }
 
-for (const file of files) {
-  const relPath = `${PKG}/lib/${file}`
-  let original
-  try {
-    original = execSync(`git show ${TAG}:${relPath}`, { encoding: 'utf8' })
-  } catch {
-    console.error(`FAIL [${file}]: missing baseline artifact in ${TAG}`)
-    failures++
-    continue
+function getAiAllowanceKey(packageRoot, file) {
+  if (!isAiPackage(packageRoot)) return file
+  return file.startsWith('lib/') ? file.slice('lib/'.length) : file
+}
+
+function getRequirePaths(src, file) {
+  const paths = []
+  const source = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  const visit = (node) => {
+    if (
+      ts.isCallExpression(node)
+      && ts.isIdentifier(node.expression)
+      && node.expression.text === 'require'
+      && node.arguments.length === 1
+      && ts.isStringLiteralLike(node.arguments[0])
+    ) {
+      paths.push(node.arguments[0].text)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  return paths.sort()
+}
+
+function diffRequirePaths(originalPaths, compiledPaths) {
+  const compiledRemaining = compiledPaths.slice()
+  const removed = []
+  for (const originalPath of originalPaths) {
+    const index = compiledRemaining.indexOf(originalPath)
+    if (index >= 0) compiledRemaining.splice(index, 1)
+    else removed.push(originalPath)
+  }
+  return { added: compiledRemaining, removed }
+}
+
+function consumeAllowed(items, allowed = []) {
+  const remaining = items.slice()
+  for (const allowedItem of allowed) {
+    const index = remaining.indexOf(allowedItem)
+    if (index >= 0) remaining.splice(index, 1)
+  }
+  return remaining
+}
+
+function getExportKeys(src, file) {
+  const source = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  const keys = new Set()
+
+  const collectObjectKeys = (objectLiteral) => {
+    for (const prop of objectLiteral.properties) {
+      if (ts.isShorthandPropertyAssignment(prop) || ts.isPropertyAssignment(prop) || ts.isMethodDeclaration(prop)) {
+        const name = prop.name
+        if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) keys.add(name.text)
+      }
+    }
   }
 
-  const compiled = fs.readFileSync(relPath, 'utf8')
-  checked++
+  const visit = (node) => {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.FirstAssignment) {
+      const left = node.left
+      if (
+        ts.isPropertyAccessExpression(left)
+        && ts.isIdentifier(left.expression)
+        && left.expression.text === 'exports'
+      ) {
+        keys.add(left.name.text)
+      }
 
-  if (EXPORT_ASSIGNMENT.test(compiled)) {
-    console.error(`FAIL [${file}]: compiled output uses exports.* assignment`)
-    failures++
+      if (
+        ts.isPropertyAccessExpression(left)
+        && ts.isIdentifier(left.name)
+        && left.name.text === 'exports'
+        && ts.isIdentifier(left.expression)
+        && left.expression.text === 'module'
+        && ts.isObjectLiteralExpression(node.right)
+      ) {
+        collectObjectKeys(node.right)
+      }
+
+      if (
+        ts.isPropertyAccessExpression(left)
+        && ts.isPropertyAccessExpression(left.expression)
+        && ts.isIdentifier(left.expression.expression)
+        && left.expression.expression.text === 'module'
+        && ts.isIdentifier(left.expression.name)
+        && left.expression.name.text === 'exports'
+      ) {
+        keys.add(left.name.text)
+      }
+    }
+
+    ts.forEachChild(node, visit)
   }
 
-  for (const re of FORBIDDEN) {
-    if (re.test(compiled) && !re.test(original)) {
-      console.error(`FAIL [${file}]: forbidden pattern added ${re}`)
+  visit(source)
+  return Array.from(keys).sort()
+}
+
+function checkPackage(check) {
+  const { packageRoot, tag, domain, legacyAiDomain } = check
+  const pluginName = pluginNameFromPackageRoot(packageRoot)
+  if (!packageExists(packageRoot)) {
+    console.error(`FAIL [${pluginName}]: package not found at ${packageRoot}`)
+    return { failures: 1, checked: 0 }
+  }
+
+  const files = listDomainFiles(packageRoot, domain, legacyAiDomain)
+  let failures = 0
+  let checked = 0
+
+  if (domain === '--all') {
+    const currentSet = new Set(files)
+    const baselineSet = new Set(listBaselineJsFiles(tag, packageRoot))
+    const added = files.filter((file) => !baselineSet.has(file))
+    const removed = Array.from(baselineSet).filter((file) => !currentSet.has(file))
+    if (added.length) {
+      console.error(`FAIL [${pluginName} --all]: new compiled JS files without baseline: ${added.join(', ')}`)
+      failures++
+    }
+    if (removed.length) {
+      console.error(`FAIL [${pluginName} --all]: baseline JS files missing from compiled output: ${removed.join(', ')}`)
       failures++
     }
   }
 
-  const doubleQuoteRequires = compiled.match(/require\("[^"]+"\)/g) || []
-  const originalDoubleQuotes = original.match(/require\("[^"]+"\)/g) || []
-  if (doubleQuoteRequires.length > originalDoubleQuotes.length) {
-    console.error(`FAIL [${file}]: new double-quoted require`)
-    failures++
-  }
-
-  const getRequirePaths = (src) => {
-    const paths = []
-    const source = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
-    const visit = (node) => {
-      if (
-        ts.isCallExpression(node)
-        && ts.isIdentifier(node.expression)
-        && node.expression.text === 'require'
-        && node.arguments.length === 1
-        && ts.isStringLiteralLike(node.arguments[0])
-      ) {
-        paths.push(node.arguments[0].text)
-      }
-      ts.forEachChild(node, visit)
+  const strictCompiledExportShape = isMigratedPackage(packageRoot)
+  for (const file of files) {
+    const relPath = `${packageRoot}/${file}`
+    let original
+    try {
+      original = gitShow(tag, relPath)
+    } catch {
+      console.error(`FAIL [${pluginName} ${file}]: missing baseline artifact in ${tag}`)
+      failures++
+      continue
     }
-    visit(source)
-    return paths.sort()
-  }
 
-  const diffRequirePaths = (originalPaths, compiledPaths) => {
-    const compiledRemaining = compiledPaths.slice()
-    const removed = []
-    for (const originalPath of originalPaths) {
-      const index = compiledRemaining.indexOf(originalPath)
-      if (index >= 0) compiledRemaining.splice(index, 1)
-      else removed.push(originalPath)
+    const abs = path.join(ROOT, relPath)
+    if (!fs.existsSync(abs)) {
+      console.error(`FAIL [${pluginName} ${file}]: compiled output file missing`)
+      failures++
+      continue
     }
-    return { added: compiledRemaining, removed }
-  }
 
-  const consumeAllowed = (items, allowed = []) => {
-    const remaining = items.slice()
-    for (const allowedItem of allowed) {
-      const index = remaining.indexOf(allowedItem)
-      if (index >= 0) remaining.splice(index, 1)
+    const compiled = fs.readFileSync(abs, 'utf8')
+    checked++
+
+    if (strictCompiledExportShape && EXPORT_ASSIGNMENT.test(compiled)) {
+      console.error(`FAIL [${pluginName} ${file}]: compiled output uses exports.* assignment`)
+      failures++
     }
-    return remaining
-  }
 
-  const originalRequirePaths = getRequirePaths(original)
-  const compiledRequirePaths = getRequirePaths(compiled)
-  const requireDiff = diffRequirePaths(originalRequirePaths, compiledRequirePaths)
-  const allowedRequireChanges = ALLOWED_REQUIRE_CHANGES[file] || {}
-  const unexpectedAddedRequires = consumeAllowed(requireDiff.added, allowedRequireChanges.added)
-  const unexpectedRemovedRequires = consumeAllowed(requireDiff.removed, allowedRequireChanges.removed)
-  if (unexpectedAddedRequires.length || unexpectedRemovedRequires.length) {
-    console.error(`FAIL [${file}]: require paths changed added=[${unexpectedAddedRequires}] removed=[${unexpectedRemovedRequires}]`)
-    failures++
-  }
-
-  const getExportKeys = (src) => {
-    const source = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
-    const keys = new Set()
-
-    const collectObjectKeys = (objectLiteral) => {
-      for (const prop of objectLiteral.properties) {
-        if (ts.isShorthandPropertyAssignment(prop) || ts.isPropertyAssignment(prop) || ts.isMethodDeclaration(prop)) {
-          const name = prop.name
-          if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
-            keys.add(name.text)
-          }
-        }
+    for (const re of FORBIDDEN) {
+      if (re.test(compiled) && !re.test(original)) {
+        console.error(`FAIL [${pluginName} ${file}]: forbidden pattern added ${re}`)
+        failures++
       }
     }
 
-    const visit = (node) => {
-      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.FirstAssignment) {
-        const left = node.left
-        if (
-          ts.isPropertyAccessExpression(left)
-          && ts.isIdentifier(left.expression)
-          && left.expression.text === 'exports'
-        ) {
-          keys.add(left.name.text)
-        }
-
-        if (
-          ts.isPropertyAccessExpression(left)
-          && ts.isIdentifier(left.name)
-          && left.name.text === 'exports'
-          && ts.isIdentifier(left.expression)
-          && left.expression.text === 'module'
-          && ts.isObjectLiteralExpression(node.right)
-        ) {
-          collectObjectKeys(node.right)
-        }
-
-        if (
-          ts.isPropertyAccessExpression(left)
-          && ts.isPropertyAccessExpression(left.expression)
-          && ts.isIdentifier(left.expression.expression)
-          && left.expression.expression.text === 'module'
-          && ts.isIdentifier(left.expression.name)
-          && left.expression.name.text === 'exports'
-        ) {
-          keys.add(left.name.text)
-        }
-      }
-
-      ts.forEachChild(node, visit)
+    const doubleQuoteRequires = compiled.match(/require\("[^"]+"\)/g) || []
+    const originalDoubleQuotes = original.match(/require\("[^"]+"\)/g) || []
+    if (doubleQuoteRequires.length > originalDoubleQuotes.length) {
+      console.error(`FAIL [${pluginName} ${file}]: new double-quoted require`)
+      failures++
     }
 
-    visit(source)
-    return Array.from(keys).sort()
+    const originalRequirePaths = getRequirePaths(original, file)
+    const compiledRequirePaths = getRequirePaths(compiled, file)
+    const requireDiff = diffRequirePaths(originalRequirePaths, compiledRequirePaths)
+    const allowanceKey = getAiAllowanceKey(packageRoot, file)
+    const allowedRequireChanges = isAiPackage(packageRoot) ? (ALLOWED_REQUIRE_CHANGES[allowanceKey] || {}) : {}
+    const unexpectedAddedRequires = consumeAllowed(requireDiff.added, allowedRequireChanges.added)
+    const unexpectedRemovedRequires = consumeAllowed(requireDiff.removed, allowedRequireChanges.removed)
+    if (unexpectedAddedRequires.length || unexpectedRemovedRequires.length) {
+      console.error(`FAIL [${pluginName} ${file}]: require paths changed added=[${unexpectedAddedRequires}] removed=[${unexpectedRemovedRequires}]`)
+      failures++
+    }
+
+    const origKeys = getExportKeys(original, file)
+    const compKeys = getExportKeys(compiled, file)
+    const allowedAdded = new Set(isAiPackage(packageRoot) ? (ALLOWED_ADDED_EXPORTS[allowanceKey] || []) : [])
+    const filteredCompKeys = compKeys.filter((key) => origKeys.includes(key) || !allowedAdded.has(key))
+    const unexpectedAdded = compKeys.filter((key) => !origKeys.includes(key) && !allowedAdded.has(key))
+    const missingKeys = origKeys.filter((key) => !compKeys.includes(key))
+    if (missingKeys.length || unexpectedAdded.length || origKeys.join(',') !== filteredCompKeys.join(',')) {
+      console.error(`FAIL [${pluginName} ${file}]: exports keys changed [${origKeys}] -> [${compKeys}]`)
+      failures++
+    }
   }
 
-  const origKeys = getExportKeys(original)
-  const compKeys = getExportKeys(compiled)
-  const allowedAdded = new Set(ALLOWED_ADDED_EXPORTS[file] || [])
-  const filteredCompKeys = compKeys.filter((key) => origKeys.includes(key) || !allowedAdded.has(key))
-  const unexpectedAdded = compKeys.filter((key) => !origKeys.includes(key) && !allowedAdded.has(key))
-  const missingKeys = origKeys.filter((key) => !compKeys.includes(key))
-  if (missingKeys.length || unexpectedAdded.length || origKeys.join(',') !== filteredCompKeys.join(',')) {
-    console.error(`FAIL [${file}]: exports keys changed [${origKeys}] -> [${compKeys}]`)
-    failures++
-  }
+  if (!failures) console.log(`${pluginName} ${domain || '--all'}: ${checked} files passed artifact checks`)
+  return { failures, checked }
+}
+
+const parsed = parseArgs(process.argv.slice(2))
+if (!parsed) {
+  usage()
+  process.exit(1)
+}
+
+let failures = 0
+let checked = 0
+for (const check of parsed.checks) {
+  const result = checkPackage(check)
+  failures += result.failures
+  checked += result.checked
 }
 
 if (failures) {
@@ -271,4 +443,4 @@ if (failures) {
   process.exit(1)
 }
 
-console.log(`${domain}: ${checked} files passed artifact checks`)
+console.log(`artifact checks passed: ${checked} files`)

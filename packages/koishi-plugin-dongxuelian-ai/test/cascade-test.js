@@ -449,7 +449,7 @@ async function main() {
   checkEqual('root package name', rootPkg.name, 'dongxuelian-qqbot')
   checkEqual('npm test:quick keeps cascade entry', rootPkg.scripts && rootPkg.scripts['test:quick'], 'node packages/koishi-plugin-dongxuelian-ai/test/cascade-test.js')
   checkEqual('npm test:scenario runs scenario entry', rootPkg.scripts && rootPkg.scripts['test:scenario'], 'node packages/koishi-plugin-dongxuelian-ai/test/scenario-test.js')
-  checkEqual('npm test:plugins runs auxiliary plugin tests', rootPkg.scripts && rootPkg.scripts['test:plugins'], 'node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-defense/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js && node packages/koishi-plugin-daily-report/test/plugin-test.js && node packages/koishi-plugin-dongxuelian-poke/test/plugin-test.js && node packages/koishi-plugin-group-leave-notice/test/plugin-test.js && node packages/koishi-plugin-pet-bridge/test/plugin-test.js')
+  checkEqual('npm test:plugins runs auxiliary plugin tests', rootPkg.scripts && rootPkg.scripts['test:plugins'], 'node packages/koishi-plugin-group-name-at/test/plugin-test.js && node packages/koishi-plugin-defense/test/plugin-test.js && node packages/koishi-plugin-local-video-sender/test/plugin-test.js && node packages/koishi-plugin-daily-report/test/plugin-test.js && node packages/koishi-plugin-dongxuelian-poke/test/plugin-test.js && node packages/koishi-plugin-group-leave-notice/test/plugin-test.js && node packages/koishi-plugin-dongxuelian-help/test/plugin-test.js && node packages/koishi-plugin-pet-bridge/test/plugin-test.js')
   check('npm test runs quick and scenario entries', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:quick') && rootPkg.scripts.test.includes('npm run test:scenario'))
   check('npm test includes plugin tests', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:plugins'))
   checkEqual('npm check uses syntax runner', rootPkg.scripts && rootPkg.scripts.check, 'node scripts/check-syntax.js')
@@ -476,7 +476,7 @@ async function main() {
   check('syntax runner covers dashboard route modules', syntaxFileSet.has('packages/koishi-plugin-dashboard/lib/routes/config.js'))
   check('syntax runner covers daily report analyzer syntax', syntaxFileSet.has('packages/koishi-plugin-daily-report/lib/ai-analyzer.js'))
   check('syntax runner covers local deployer runtime syntax', syntaxFileSet.has('local-deployer/lib/runtime.cjs'))
-  check('syntax runner covers module-input dashboard helper syntax', syntaxModuleSet.has('packages/koishi-plugin-dashboard/frontend/src/electron-deployer.js'))
+  check('syntax runner no longer module-checks frontend TS source', syntaxModuleSet.size === 0)
   check('syntax runner avoids checked-in dist bundles', !syntaxTargets.fileChecks.some(file => file.includes('/dist/')))
   check('syntax runner keeps npm check command short for Windows', rootPkg.scripts.check.length < 120)
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
@@ -3722,7 +3722,8 @@ async function main() {
   check('dashboard NapCat restart avoids fixed QQ fallback', !/DASHBOARD_QQ_NUMBER\s*\|\|/.test(dashboardStandalone) && dashboardStandalone.includes('resolveNapcatRestartQq'))
   check('dashboard explicit local auth bypass only', dashboardStandalone.includes('function isLocalAuthBypass') && dashboardStandalone.includes('GLOBAL_LOCAL_MODE'))
   check('dashboard env check does not create workspace logs', dashboardStandalone.includes('getEnvCheckPathEncodingDir') && !dashboardStandalone.includes("inspectChinesePathWrite(path.join(KOISHI_DIR, 'runtime', 'logs'))"))
-  check('dashboard exposes agent config API', dashboardStandalone.includes("/dashboard/api/agent/config") && dashboardStandalone.includes("agent', 'config") && dashboardStandalone.includes("'GET /dashboard/api/agent/config'") && dashboardStandalone.includes('if (!requireAdmin(req, res)) return'))
+  const dashboardAgentRoutesSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'routes', 'agent.js'))
+  check('dashboard exposes agent config API', dashboardAgentRoutesSrc.includes("'GET /dashboard/api/agent/config'") && dashboardAgentRoutesSrc.includes('async function handleGetAgentConfig') && dashboardAgentRoutesSrc.includes("agent', 'config") && dashboardAgentRoutesSrc.includes('if (!requireAdmin(req, res))'))
   check('dashboard exposes compatible tools API', dashboardStandalone.includes("/dashboard/api/tools") && dashboardStandalone.includes("/enabled") && dashboardStandalone.includes("/pending"))
   check('dashboard exposes agent chat API', dashboardStandalone.includes("/dashboard/api/agent/chat") && dashboardStandalone.includes("agent', 'engine") && dashboardStandalone.includes('data.history'))
   check('dashboard queues agent chat API', dashboardStandalone.includes("agent', 'queue") && dashboardStandalone.includes('queue.enqueueAgentTask'))
@@ -3734,8 +3735,8 @@ async function main() {
   check('dashboard agent API returns skill index', dashboardStandalone.includes("agent', 'skills") && dashboardStandalone.includes('listAgentSkills'))
   check('dashboard exposes agent persona API', dashboardStandalone.includes("/dashboard/api/agent/personas") && dashboardStandalone.includes("/dashboard/api/agent/persona") && dashboardStandalone.includes('listAgentPersonasForConsole'))
   const dashboardAppSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'App.vue'))
-  const dashboardElectronDeployerSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'electron-deployer.js'))
-  const dashboardApiSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'api.js'))
+  const dashboardElectronDeployerSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'electron-deployer.ts'))
+  const dashboardApiSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'api.ts'))
   const dashboardKeyManagerSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'components', 'KeyManager.vue'))
   check('dashboard shares electron deployer detection helper', dashboardAppSrc.includes('electron-deployer') && dashboardElectronDeployerSrc.includes('dongxuelianExpose?.dongxuelianDeployer') && dashboardElectronDeployerSrc.includes('getDongxuelianDeployerBridge'))
   check('dashboard fetchAdminIds uses admin token', dashboardApiSrc.includes("fetchAdminIds() { return get('/admin-ids', true) }"))
@@ -3754,16 +3755,16 @@ async function main() {
   check('dashboard agent panel exposes pending confirmation', dashboardAgentPanelSrc.includes('confirmAgentTool') && dashboardAgentPanelSrc.includes('pendingTools') && dashboardAgentPanelSrc.includes('argsSummary'))
   check('dashboard agent panel prompts admin for chat and confirm', dashboardAgentPanelSrc.includes('isAdminRequired') && dashboardAgentPanelSrc.includes('使用 Dashboard Agent 需要管理员密码') && dashboardAgentPanelSrc.includes('确认 Agent 工具需要管理员密码'))
   check('dashboard agent panel normalizes click event pending id', dashboardAgentPanelSrc.includes('normalizePendingId') && dashboardAgentPanelSrc.includes("typeof value === 'string'"))
-  check('dashboard agent panel displays final agent reply shape', dashboardAgentPanelSrc.includes('getAgentReply') && dashboardAgentPanelSrc.includes('data?.reply || data?.result || data?.message'))
+  check('dashboard agent panel displays final agent reply shape', dashboardAgentPanelSrc.includes('function getAgentReply') && dashboardAgentPanelSrc.includes('value.reply || value.result || value.message'))
   check('dashboard agent panel exposes session and stats lists', dashboardAgentPanelSrc.includes('fetchAgentSessions') && dashboardAgentPanelSrc.includes('最近工具调用'))
   const dashboardSensitiveAdminApiSnippets = [
-    "fetchDeployConfig() { return get('/deploy/config', true) }",
-    "fetchFallbackChains() { return get('/fallback', true) }",
+    "return get('/deploy/config', true)",
+    "return get<FallbackData>('/fallback', true)",
     "return get('/bot/activity' + suffix, true)",
-    "fetchKeysUsage() { return get('/keys/usage', true) }",
-    "uploadGalleryImage(data) { return post('/gallery', data, true, 60000) }",
-    "deleteGalleryImage(idOrIds) { return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, true) }",
-    "updateGalleryImageStyle(id, foilStyle) { return put('/gallery/style', { id, foilStyle }, true) }",
+    "return get('/keys/usage', true)",
+    "return post('/gallery', data, true, 60000)",
+    "return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, true)",
+    "return put('/gallery/style', { id, foilStyle }, true)",
   ]
   check('dashboard sensitive APIs use admin token', dashboardSensitiveAdminApiSnippets.every(snippet => dashboardApiSrc.includes(snippet)), dashboardApiSrc.slice(1400, 3600))
     check('dashboard token usage uses distribution and trend charts', dashboardKeyManagerSrc.includes('模型分布') && dashboardKeyManagerSrc.includes('Token 使用趋势') && dashboardKeyManagerSrc.includes('donut-wrap') && dashboardKeyManagerSrc.includes('distribution-table') && dashboardKeyManagerSrc.includes('trend-chart') && !dashboardKeyManagerSrc.includes('class="token-bars"'))
@@ -4066,7 +4067,10 @@ async function main() {
   check('dashboard auth hashes passwords and keeps reset tokens timing safe', dashboardStandaloneSrc.includes('verifyPassword(password, stored, ACCESS_PWD_FILE)') && dashboardStandaloneSrc.includes('verifyPassword(password, stored, ADMIN_PWD_FILE)') && dashboardStandaloneSrc.includes('hashPassword(newPassword)') && dashboardStandaloneSrc.includes('safeCompare(inputToken, storedToken)') && !dashboardStandaloneSrc.includes('password === stored') && !dashboardStandaloneSrc.includes('resetToken.trim() !== stored.trim()'))
   check('dashboard legacy access password cleanup verifies bcrypt upgrade first', dashboardStandaloneSrc.includes('getAccessPasswordRecord') && dashboardStandaloneSrc.includes('removeLegacyAccessPasswordAfterUpgrade') && dashboardStandaloneSrc.includes('isBcryptHash(upgraded)') && dashboardStandaloneSrc.includes('bcrypt.compare(input, upgraded)') && dashboardStandaloneSrc.includes('fs.unlinkSync(LEGACY_ACCESS_PWD_FILE)'))
   check('dashboard login failure map has timer cleanup and hard cap', dashboardStandaloneSrc.includes('LOGIN_FAIL_MAX_ENTRIES') && dashboardStandaloneSrc.includes('LOGIN_FAIL_CLEANUP_MS') && dashboardStandaloneSrc.includes('trimLoginFailMap'))
-  check('dashboard sensitive routes require admin', dashboardStandaloneSrc.includes('function handleGetKeysUsage') && dashboardStandaloneSrc.includes('function handleGetFallback') && dashboardStandaloneSrc.includes('function handleGetBotActivity') && dashboardStandaloneSrc.includes('function handleGetDeployConfig') && dashboardStandaloneSrc.includes('if (!requireAdmin(req, res)) return'))
+  const dashboardSettingsRoutesSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'routes', 'settings.js'))
+  const dashboardBotRoutesSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'routes', 'bot.js'))
+  const dashboardDeployRoutesSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'routes', 'deploy.js'))
+  check('dashboard sensitive routes require admin', dashboardSettingsRoutesSrc.includes('function handleGetKeysUsage') && dashboardSettingsRoutesSrc.includes('function handleGetFallback') && dashboardSettingsRoutesSrc.includes('if (!requireAdmin(req, res))') && dashboardBotRoutesSrc.includes('function handleGetBotActivity') && dashboardBotRoutesSrc.includes('if (!requireAdmin(req, res))') && dashboardDeployRoutesSrc.includes('function handleGetDeployConfig') && dashboardDeployRoutesSrc.includes('if (!requireAdmin(req, res))'))
   check('dashboard deploy task ids use crypto randomness', dashboardStandaloneSrc.includes("crypto.randomBytes(4).toString('hex')") && !dashboardStandaloneSrc.includes('Math.random().toString(36).slice(2, 6)'))
   check('dashboard napcat proxy avoids token query strings', dashboardStandaloneSrc.includes("opts.headers['webui-token'] = token") && !dashboardStandaloneSrc.includes('webui_token='))
   check('dashboard deploy downloads limit redirects and json size', dashboardStandaloneSrc.includes('MAX_DOWNLOAD_REDIRECTS') && dashboardStandaloneSrc.includes('MAX_JSON_RESPONSE_BYTES') && dashboardStandaloneSrc.includes('redirects: redirects + 1') && dashboardStandaloneSrc.includes('GitHub API 响应过大'))

@@ -27,9 +27,7 @@ const CHECK_FILES = [
   'scripts/skill-hub.js',
 ]
 
-const MODULE_INPUT_CHECKS = [
-  'packages/koishi-plugin-dashboard/frontend/src/electron-deployer.js',
-]
+const MODULE_INPUT_CHECKS = []
 
 const SKIP_DIRS = new Set(['.git', 'dist', 'node_modules'])
 
