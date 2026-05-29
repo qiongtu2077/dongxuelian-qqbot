@@ -1,11 +1,14 @@
+"use strict";
 /**
  * MODULE: 聊天质量分析器。
  * 职责: 分析群聊氛围，生成质量锐评。
  * 边界: 只做分析，不调API，通过 aiClient.callAI 间接调用。
  */
-
+function getErrorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
 async function analyzeChatQuality(aiClient, data) {
-  const prompt = `你是群聊氛围评论员，请为今日群聊写一段犀利的质量锐评。
+    const prompt = `你是群聊氛围评论员，请为今日群聊写一段犀利的质量锐评。
 
 要求：
 1. 分析4-5个维度（如：游戏生态、技术讨论、水聊、情感交流等）
@@ -39,23 +42,21 @@ async function analyzeChatQuality(aiClient, data) {
     "completionTokens": 0,
     "totalTokens": 0
   }
-}`
-
-  try {
-    const text = await aiClient.callAI(prompt, '请写群聊锐评', 1500)
-    const jsonMatch = text.match(/\{[\s\S]*\}/)
-    if (jsonMatch) {
-      const data = JSON.parse(jsonMatch[0])
-      return {
-        qualityReview: data.qualityReview || null,
-        tokenUsage: data.tokenUsage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      }
+}`;
+    try {
+        const text = await aiClient.callAI(prompt, '请写群聊锐评', 1500);
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            return {
+                qualityReview: parsed.qualityReview || null,
+                tokenUsage: parsed.tokenUsage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            };
+        }
     }
-  } catch (err) {
-    console.error('[chat-quality-analyzer] 分析失败:', err.message)
-  }
-
-  return { qualityReview: null, tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }
+    catch (err) {
+        console.error('[chat-quality-analyzer] 分析失败:', getErrorMessage(err));
+    }
+    return { qualityReview: null, tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
 }
-
-module.exports = { analyzeChatQuality }
+module.exports = { analyzeChatQuality };

@@ -1,0 +1,297 @@
+/**
+ * MODULE: pet-bridge protocol handlers.
+ * 职责: Dispatch and handle all pet bridge WebSocket message types (query/command/chat).
+ * 边界: Reads config through runtime-config; calls AI through api.js.
+ *        Does NOT modify core plugin logic, handle Koishi sessions, or send messages on its own.
+ */
+const { loadConfig, resetConfigCache, getThinkingEnabled, setThinkingEnabled } = require('koishi-plugin-dongxuelian-ai/lib/core/runtime-config') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/runtime-config')
+const { requestChatCompletions } = require('koishi-plugin-dongxuelian-ai/lib/core/api') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/api')
+const { getAvailablePersonals, loadPersonalSkill, setUserPersona, getUserPersona } = require('koishi-plugin-dongxuelian-ai/lib/persona/persona') as typeof import('koishi-plugin-dongxuelian-ai/lib/persona/persona')
+const { getMemorySummary } = require('koishi-plugin-dongxuelian-ai/lib/conversation') as typeof import('koishi-plugin-dongxuelian-ai/lib/conversation')
+const { resolveOneBotWsUrl } = require('koishi-plugin-dongxuelian-ai/lib/core/onebot-endpoint') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/onebot-endpoint')
+const { PROVIDER_FILE, MODEL_FILE, SEARCH_ENABLED_FILE, MAINTENANCE_FILE, THINKING_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_WHITELIST_FILE } = require('koishi-plugin-dongxuelian-ai/lib/core/constants') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/constants')
+const fs = require('fs')
+
+interface BridgeRequest {
+  id?: unknown
+  type?: string
+  action?: string
+  payload?: unknown
+}
+
+interface BridgeResponse {
+  type?: 'response'
+  id?: unknown
+  success: boolean
+  payload?: Record<string, unknown>
+  error?: string
+}
+
+interface BridgePayload {
+  type?: string
+  action?: string
+  enabled?: boolean
+  userId?: string
+  channelKey?: string
+  provider?: string
+  model?: string
+  groupId?: string | number
+  text?: string
+  whitelistAction?: string
+  name?: string
+  persona?: string
+}
+
+interface OneBotResponse {
+  status?: string
+  [key: string]: unknown
+}
+
+interface WebSocketClientLike {
+  on(event: 'open' | 'close', handler: () => unknown): unknown
+  on(event: 'message', handler: (data: Buffer | string) => unknown): unknown
+  on(event: 'error', handler: (error: Error) => unknown): unknown
+  send(data: string): void
+  close(): void
+}
+
+function asPayload(value: unknown): BridgePayload {
+  return value && typeof value === 'object' ? value as BridgePayload : {}
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function readJsonFileSync(filePath: string, fallback: unknown): unknown {
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')) } catch { return fallback }
+}
+
+function readStringListSync(filePath: string): string[] {
+  const value = readJsonFileSync(filePath, [])
+  return Array.isArray(value) ? value.map(item => String(item)).filter(Boolean) : []
+}
+
+function writeJsonFileSync(filePath: string, data: unknown): void {
+  const tmp = filePath + '.tmp'
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
+  fs.renameSync(tmp, filePath)
+}
+
+function writeTextFileSync(filePath: string, content: string): void {
+  fs.writeFileSync(filePath, content, 'utf8')
+}
+
+function callOneBot(action: string, params: Record<string, unknown>): Promise<OneBotResponse | null> {
+  return new Promise((resolve) => {
+    let ws: WebSocketClientLike | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let settled = false
+    const finish = (value: OneBotResponse | null) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      try { if (ws) ws.close() } catch { /* non-critical: best-effort OneBot WS cleanup */
+      }
+      resolve(value)
+    }
+    try {
+      ws = new (require('ws'))(resolveOneBotWsUrl()) as WebSocketClientLike
+      timer = setTimeout(() => finish(null), 5000)
+      ws.on('open', () => {
+        try { ws?.send(JSON.stringify({ action, params, echo: 'pet-bridge' })) } catch { finish(null) }
+      })
+      ws.on('message', (d) => {
+        let msg: OneBotResponse | null = null
+        try { msg = JSON.parse(d.toString()) as OneBotResponse } catch { return finish(null) }
+        if (msg.status === 'ok') finish(msg)
+        else finish(null)
+      })
+      ws.on('error', (e) => { console.error('[pet-bridge] callOneBot WS error:', e.message); finish(null) })
+      ws.on('close', () => finish(null))
+    } catch (e) { console.error('[pet-bridge] callOneBot connect error:', getErrorMessage(e)); finish(null) }
+  })
+}
+
+async function handleStatus(): Promise<BridgeResponse> {
+  const config = await loadConfig()
+  return {
+    success: true,
+    payload: {
+      provider: config.provider,
+      model: config.model,
+      baseURL: config.baseURL,
+      online: true,
+      searchEnabled: config.searchEnabled,
+      thinkingEnabled: getThinkingEnabled(),
+    },
+  }
+}
+
+function handlePersonas(): BridgeResponse {
+  const personas = getAvailablePersonals()
+  return { success: true, payload: { personas } }
+}
+
+async function handleMemory(payload: BridgePayload): Promise<BridgeResponse> {
+  const { userId, channelKey } = payload
+  if (!userId) return { success: false, payload: { error: 'missing userId' } }
+  const summary = await getMemorySummary(userId, channelKey || 'default')
+  return { success: true, payload: { summary } }
+}
+
+function handleSummaries(): BridgeResponse {
+  return { success: true, payload: { groups: readStringListSync(SUMMARY_WHITELIST_FILE) } }
+}
+
+async function handleSwitchModel(payload: BridgePayload): Promise<BridgeResponse> {
+  const { provider, model } = payload
+  if (provider) writeTextFileSync(PROVIDER_FILE, provider)
+  if (model) writeTextFileSync(MODEL_FILE, model)
+  resetConfigCache()
+  const config = await loadConfig(true)
+  return { success: true, payload: { provider: config.provider, model: config.model } }
+}
+
+function handleToggleSearch(payload: BridgePayload): BridgeResponse {
+  const enabled = !!payload.enabled
+  writeTextFileSync(SEARCH_ENABLED_FILE, enabled ? '1' : '0')
+  resetConfigCache()
+  return { success: true, payload: { searchEnabled: enabled } }
+}
+
+function handleToggleThinking(payload: BridgePayload): BridgeResponse {
+  const enabled = !!payload.enabled
+  setThinkingEnabled(enabled)
+  writeTextFileSync(THINKING_MODE_FILE, enabled ? 'on' : 'off')
+  return { success: true, payload: { thinkingEnabled: enabled } }
+}
+
+function handleToggleMaintenance(payload: BridgePayload): BridgeResponse {
+  const enabled = !!payload.enabled
+  if (enabled) {
+    writeTextFileSync(MAINTENANCE_FILE, '优化中，别急~')
+  } else {
+    try { fs.unlinkSync(MAINTENANCE_FILE) } catch { /* non-critical: maintenance file may already be absent */
+    }
+  }
+  return { success: true, payload: { maintenanceEnabled: enabled } }
+}
+
+async function handleSendGroupMsg(payload: BridgePayload): Promise<BridgeResponse> {
+  const { groupId, text } = payload
+  if (!groupId || !text) return { success: false, payload: { error: 'missing groupId or text' } }
+  if (!/^\d+$/.test(String(groupId))) return { success: false, payload: { error: 'groupId must be numeric' } }
+  const result = await callOneBot('send_group_msg', { group_id: Number(groupId), message: text })
+  return { success: !!result, payload: result || { error: 'send failed' } }
+}
+
+function handleManageWhitelist(payload: BridgePayload): BridgeResponse {
+  const op = payload.whitelistAction || payload.action
+  const groupId = payload.groupId
+  let list = readStringListSync(RANDOM_WHITELIST_FILE)
+  if (op === 'add') {
+    const gid = String(groupId || '')
+    if (!gid) return { success: false, payload: { error: 'missing groupId' } }
+    if (!list.includes(gid)) list.push(gid)
+    writeJsonFileSync(RANDOM_WHITELIST_FILE, list)
+    return { success: true, payload: { whitelist: list } }
+  }
+  if (op === 'remove') {
+    const gid = String(groupId || '')
+    if (!gid) return { success: false, payload: { error: 'missing groupId' } }
+    list = list.filter(id => id !== gid)
+    writeJsonFileSync(RANDOM_WHITELIST_FILE, list)
+    return { success: true, payload: { whitelist: list } }
+  }
+  if (op === 'list') {
+    return { success: true, payload: { whitelist: list } }
+  }
+  return { success: false, payload: { error: 'invalid action; use add/remove/list' } }
+}
+
+function handleSwitchPersona(payload: BridgePayload): BridgeResponse {
+  const { name } = payload
+  if (!name) return { success: false, payload: { error: 'missing persona name' } }
+  const skill = loadPersonalSkill(name)
+  if (!skill) return { success: false, payload: { error: 'persona not found' } }
+  setUserPersona('desktop-user', name)
+  return { success: true, payload: { persona: name } }
+}
+
+function handleGetCurrentPersona(): BridgeResponse {
+  const current = getUserPersona('desktop-user') || 'default'
+  return { success: true, payload: { persona: current } }
+}
+
+async function handleChat(payload: BridgePayload): Promise<BridgeResponse> {
+  const { text, persona } = payload
+  if (!text) return { success: false, payload: { error: 'missing text' } }
+
+  // 维护模式检查：与 bot index.js 逻辑一致
+  if (require('fs').existsSync(MAINTENANCE_FILE)) {
+    const mt = require('fs').readFileSync(MAINTENANCE_FILE, 'utf8').trim() || '优化中，别急~'
+    return { success: true, payload: { reply: mt } }
+  }
+
+  const config = await loadConfig()
+  const messages: Array<{ role: string, content: string }> = []
+  const personaName = persona || getUserPersona('desktop-user') || null
+  if (personaName && personaName !== 'default') {
+    const skillContent = loadPersonalSkill(personaName)
+    if (skillContent) {
+      const body = skillContent.replace(/^---[\s\S]*?---\n?/, '').trim()
+      if (body) messages.push({ role: 'system', content: body })
+    }
+  }
+  if (!messages.length) {
+    messages.push({ role: 'system', content: '你是一个AI助手。请用简洁、自然的中文回答。' })
+  }
+  messages.push({ role: 'user', content: text })
+  const extraBody: Record<string, unknown> = {}
+  if (config.searchEnabled) extraBody.enable_search = true
+  if (getThinkingEnabled()) extraBody.enable_thinking = true
+  try {
+    const reply = await requestChatCompletions(messages, config, extraBody)
+    return { success: true, payload: { reply } }
+  } catch (err) {
+    return { success: false, payload: { error: getErrorMessage(err) } }
+  }
+}
+
+async function handleMessage(input: unknown): Promise<BridgeResponse> {
+  const msg = input && typeof input === 'object' ? input as BridgeRequest : {}
+  const { id, type } = msg
+  const payload = asPayload(msg.payload)
+  let result: BridgeResponse | null = null
+  try {
+    if (type === 'query') {
+      const qt = payload && payload.type
+      if (qt === 'status') result = await handleStatus()
+      else if (qt === 'personas') result = handlePersonas()
+      else if (qt === 'memory') result = await handleMemory(payload)
+      else if (qt === 'summaries') result = handleSummaries()
+      else if (qt === 'current_persona') result = handleGetCurrentPersona()
+      else result = { success: false, payload: { error: 'unknown query type: ' + qt } }
+    } else if (type === 'command') {
+      const action = payload && payload.action
+      if (action === 'switch_model') result = await handleSwitchModel(payload)
+      else if (action === 'toggle_search') result = handleToggleSearch(payload)
+      else if (action === 'toggle_thinking') result = handleToggleThinking(payload)
+      else if (action === 'toggle_maintenance') result = handleToggleMaintenance(payload)
+      else if (action === 'send_group_msg') result = await handleSendGroupMsg(payload)
+      else if (action === 'manage_whitelist') result = handleManageWhitelist(payload)
+      else if (action === 'switch_persona') result = handleSwitchPersona(payload)
+      else result = { success: false, payload: { error: 'unknown command: ' + action } }
+    } else if (type === 'chat') {
+      result = await handleChat(payload)
+    } else {
+      result = { success: false, payload: { error: 'unknown message type: ' + type } }
+    }
+  } catch (err) {
+    result = { success: false, payload: { error: getErrorMessage(err) } }
+  }
+  return { type: 'response', id: id != null ? id : null, ...result }
+}
+
+export = { handleMessage }

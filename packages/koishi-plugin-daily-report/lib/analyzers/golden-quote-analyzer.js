@@ -1,12 +1,15 @@
+"use strict";
 /**
  * MODULE: 金句分析器。
  * 职责: 从群聊中精选有趣/有梗的对话。
  * 边界: 只做分析，不调API，通过 aiClient.callAI 间接调用。
  */
-const { createGoldenQuote } = require('../models')
-
+const { createGoldenQuote } = require('../models');
+function getErrorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
 async function analyzeGoldenQuotes(aiClient, messages) {
-  const prompt = `你是段子手，请从今日群聊中精选3-5条最有趣/最有梗的对话。
+    const prompt = `你是段子手，请从今日群聊中精选3-5条最有趣/最有梗的对话。
 
 要求：
 1. 选择标准：搞笑、有梗、反转、金句、神回复
@@ -32,23 +35,21 @@ ${messages.slice(0, 200).map(m => `[${m.time}] ${m.user}：${m.content}`).join('
     "completionTokens": 0,
     "totalTokens": 0
   }
-}`
-
-  try {
-    const text = await aiClient.callAI(prompt, '请选出今日圣经', 1500)
-    const jsonMatch = text.match(/\{[\s\S]*\}/)
-    if (jsonMatch) {
-      const data = JSON.parse(jsonMatch[0])
-      return {
-        goldenQuotes: (data.goldenQuotes || []).map(q => createGoldenQuote(q.content, q.sender, q.reason, q.userId)),
-        tokenUsage: data.tokenUsage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      }
+}`;
+    try {
+        const text = await aiClient.callAI(prompt, '请选出今日圣经', 1500);
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const data = JSON.parse(jsonMatch[0]);
+            return {
+                goldenQuotes: (data.goldenQuotes || []).map(q => createGoldenQuote(q.content, q.sender, q.reason, q.userId)),
+                tokenUsage: data.tokenUsage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            };
+        }
     }
-  } catch (err) {
-    console.error('[golden-quote-analyzer] 分析失败:', err.message)
-  }
-
-  return { goldenQuotes: [], tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } }
+    catch (err) {
+        console.error('[golden-quote-analyzer] 分析失败:', getErrorMessage(err));
+    }
+    return { goldenQuotes: [], tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
 }
-
-module.exports = { analyzeGoldenQuotes }
+module.exports = { analyzeGoldenQuotes };
