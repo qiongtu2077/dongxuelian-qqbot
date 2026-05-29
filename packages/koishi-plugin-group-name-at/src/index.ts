@@ -142,6 +142,7 @@ const MAX_DISABLED_GROUPS_BYTES = 128 * 1024
 const MAX_ADMIN_IDS_BYTES = 128 * 1024
 const MAX_PENDING_CONFIRMS = 500
 const MAX_STORE_FILE_BYTES = 2 * 1024 * 1024
+const MAX_ALIAS_NAME_BYTES = 512
 const STORE_VERSION = 1
 
 const CMD = {
@@ -175,6 +176,7 @@ const CMD = {
 
 const TEXT = {
   aliasEmpty: '名称不能为空。',
+  aliasTooLong: '昵称超限，最大512字符',
   mentionRequired: '请至少 @ 一个成员。',
   memberRequired: '请指定成员名或 @ 一个成员。',
   aliasNotFound: (alias: string) => `没有找到「${alias}」。`,
@@ -365,6 +367,18 @@ async function saveDisabledGroups(groups: Set<string>): Promise<void> {
 
 function normalizeName(name: string = ''): string {
   return String(name).replace(/\s+/g, ' ').trim()
+}
+
+// 判断归一化后的昵称或集合名是否超过 UTF-8 字节上限。
+function isAliasNameTooLong(name: string): boolean {
+  return Buffer.byteLength(name, 'utf8') > MAX_ALIAS_NAME_BYTES
+}
+
+// 返回昵称或集合名的用户可见校验错误。
+function validateAliasName(name: string): string | null {
+  if (!name) return TEXT.aliasEmpty
+  if (isAliasNameTooLong(name)) return TEXT.aliasTooLong
+  return null
 }
 
 function splitWords(text: string = ''): string[] {
@@ -735,7 +749,8 @@ async function addMembers(session: GroupNameSessionLike, alias: string, userIds:
 async function bindAlias(session: GroupNameSessionLike, alias: string, targetUserId: string): Promise<string> {
   await ensureStore()
   alias = normalizeName(alias)
-  if (!alias) return TEXT.aliasEmpty
+  const invalidAlias = validateAliasName(alias)
+  if (invalidAlias) return invalidAlias
 
   const scopeStore = await getScopeStore(session)
   const entry = ensureAliasEntry(scopeStore, alias)
@@ -821,7 +836,8 @@ async function listEntries(session: GroupNameSessionLike, mode: 'alias' | 'colle
 async function createCollection(session: GroupNameSessionLike, alias: string, userIds: string[]): Promise<string> {
   await ensureStore()
   alias = normalizeName(alias)
-  if (!alias) return TEXT.aliasEmpty
+  const invalidAlias = validateAliasName(alias)
+  if (invalidAlias) return invalidAlias
   if (!userIds.length) return TEXT.mentionRequired
 
   const scopeStore = await getScopeStore(session)
@@ -835,7 +851,8 @@ async function createCollection(session: GroupNameSessionLike, alias: string, us
 async function collectionAdd(session: GroupNameSessionLike, alias: string, userIds: string[]): Promise<string> {
   await ensureStore()
   alias = normalizeName(alias)
-  if (!alias) return TEXT.aliasEmpty
+  const invalidAlias = validateAliasName(alias)
+  if (invalidAlias) return invalidAlias
   if (!userIds.length) return TEXT.mentionRequired
 
   const scopeStore = await getScopeStore(session)
@@ -933,6 +950,8 @@ async function renameEntry(session: GroupNameSessionLike, from: string, to: stri
   from = normalizeName(from)
   to = normalizeName(to)
   if (!from || !to) return TEXT.aliasEmpty
+  const invalidTarget = validateAliasName(to)
+  if (invalidTarget) return invalidTarget
 
   const scopeStore = await getScopeStore(session)
   if (!scopeStore.aliases[from]) return TEXT.aliasNotFound(from)
@@ -949,6 +968,8 @@ async function copyCollection(session: GroupNameSessionLike, from: string, to: s
   from = normalizeName(from)
   to = normalizeName(to)
   if (!from || !to) return TEXT.aliasEmpty
+  const invalidTarget = validateAliasName(to)
+  if (invalidTarget) return invalidTarget
 
   const scopeStore = await getScopeStore(session)
   const entry = getEntry(scopeStore, from)
@@ -965,6 +986,8 @@ async function mergeCollection(session: GroupNameSessionLike, targetAlias: strin
   targetAlias = normalizeName(targetAlias)
   sourceAlias = normalizeName(sourceAlias)
   if (!targetAlias || !sourceAlias) return TEXT.aliasEmpty
+  const invalidTarget = validateAliasName(targetAlias)
+  if (invalidTarget) return invalidTarget
 
   const scopeStore = await getScopeStore(session)
   const target = getEntry(scopeStore, targetAlias)

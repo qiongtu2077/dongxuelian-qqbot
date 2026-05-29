@@ -276,7 +276,7 @@ async function run() {
   }, { legacyStore: true })
 
   section('boundary and edge cases')
-  await withIsolatedPlugin(async ({ ctx }) => {
+  await withIsolatedPlugin(async ({ ctx, scopeDataDir }) => {
     let result
 
     result = await send(ctx, '查看集合 不存在的集合')
@@ -310,6 +310,38 @@ async function run() {
       },
     })
     check('boundary: mention collection send failure is caught', result.sent.length === 0 && result.logs.some(log => log.level === 'warn' && log.msg.includes('send failed')), JSON.stringify(result))
+
+    const maxAsciiAlias = 'a'.repeat(512)
+    result = await send(ctx, `昵称 ${maxAsciiAlias} <at id="${TEST_MEMBER_ID}"/>`)
+    check('boundary: 512 byte alias is accepted', result.sent.some(item => item.includes(`昵称“${maxAsciiAlias}”成功绑定到用户`)), JSON.stringify(result.sent))
+
+    const tooLongAsciiAlias = 'b'.repeat(513)
+    result = await send(ctx, `昵称 ${tooLongAsciiAlias} <at id="${TEST_MEMBER_ID}"/>`)
+    check('boundary: 513 byte alias is rejected', result.sent.some(item => item.includes('昵称超限，最大512字符')), JSON.stringify(result.sent))
+    const storedAfterTooLongAlias = JSON.parse(fs.readFileSync(getScopeFile(scopeDataDir, TEST_GROUP_MAIN), 'utf8'))
+    check('boundary: rejected overlong alias is not stored', !storedAfterTooLongAlias.aliases[tooLongAsciiAlias], JSON.stringify(storedAfterTooLongAlias.aliases))
+
+    const maxUtf8Alias = '测'.repeat(170) + 'ab'
+    result = await send(ctx, `昵称 ${maxUtf8Alias} <at id="${TEST_MEMBER_ID_2}"/>`)
+    check('boundary: 512 byte utf8 alias is accepted', result.sent.some(item => item.includes('成功绑定到用户')), JSON.stringify(result.sent))
+
+    const tooLongUtf8Alias = '测'.repeat(171)
+    result = await send(ctx, `昵称 ${tooLongUtf8Alias} <at id="${TEST_MEMBER_ID_2}"/>`)
+    check('boundary: 513 byte utf8 alias is rejected', result.sent.some(item => item.includes('昵称超限，最大512字符')), JSON.stringify(result.sent))
+
+    result = await send(ctx, `创建集合 ${tooLongAsciiAlias} <at id="${TEST_MEMBER_ID}"/>`)
+    check('boundary: overlong collection name is rejected', result.sent.some(item => item.includes('昵称超限，最大512字符')), JSON.stringify(result.sent))
+
+    const renameSource = 'rename-source'
+    result = await send(ctx, `创建集合 ${renameSource} <at id="${TEST_MEMBER_ID}"/>`)
+    check('boundary: create rename source collection succeeds', result.sent.some(item => item.includes(`已创建集合「${renameSource}」`)), JSON.stringify(result.sent))
+    result = await send(ctx, `重命名集合 ${renameSource} ${tooLongAsciiAlias}`)
+    check('boundary: overlong rename target is rejected', result.sent.some(item => item.includes('昵称超限，最大512字符')), JSON.stringify(result.sent))
+    result = await send(ctx, `查看集合 ${renameSource}`)
+    check('boundary: rejected overlong rename keeps source entry', result.sent.some(item => item.includes(renameSource) && item.includes('人数：1')), JSON.stringify(result.sent))
+
+    result = await send(ctx, `复制集合 ${renameSource} ${tooLongAsciiAlias}`)
+    check('boundary: overlong copy target is rejected', result.sent.some(item => item.includes('昵称超限，最大512字符')), JSON.stringify(result.sent))
   })
 
   section('runtime disabled groups and cleanup')
