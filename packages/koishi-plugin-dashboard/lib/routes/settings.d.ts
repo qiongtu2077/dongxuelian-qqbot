@@ -1,0 +1,40 @@
+declare function handleGetWhitelist(req: any, res: any): any;
+declare function handlePutWhitelist(req: any, res: any): void;
+declare function handleGetKeys(req: any, res: any): any;
+declare function handleGetKeysUsage(req: any, res: any): any;
+declare function handlePutKeys(req: any, res: any): void;
+declare function handleGetCustomProviders(req: any, res: any): any;
+declare function handlePutCustomProviders(req: any, res: any): void;
+declare function handleGetFallback(req: any, res: any): any;
+declare function handlePutFallback(req: any, res: any): void;
+declare function handleGetFeatures(req: any, res: any): any;
+declare function handleGetCommands(req: any, res: any): any;
+declare function handleGetAdminIds(req: any, res: any): any;
+declare function handlePutAdminIds(req: any, res: any): void;
+declare function handleGetTools(req: any, res: any): any;
+declare function handleGetToolsPending(req: any, res: any): any;
+declare const _default: {
+    routes: {
+        'GET /dashboard/api/whitelist': typeof handleGetWhitelist;
+        'PUT /dashboard/api/whitelist': typeof handlePutWhitelist;
+        'GET /dashboard/api/keys': typeof handleGetKeys;
+        'GET /dashboard/api/keys/usage': typeof handleGetKeysUsage;
+        'PUT /dashboard/api/keys': typeof handlePutKeys;
+        'GET /dashboard/api/providers/custom': typeof handleGetCustomProviders;
+        'PUT /dashboard/api/providers/custom': typeof handlePutCustomProviders;
+        'GET /dashboard/api/fallback': typeof handleGetFallback;
+        'PUT /dashboard/api/fallback': typeof handlePutFallback;
+        'GET /dashboard/api/features': typeof handleGetFeatures;
+        'GET /dashboard/api/commands': typeof handleGetCommands;
+        'GET /dashboard/api/admin-ids': typeof handleGetAdminIds;
+        'PUT /dashboard/api/admin-ids': typeof handlePutAdminIds;
+        'GET /dashboard/api/tools': typeof handleGetTools;
+        'GET /dashboard/api/tools/pending': typeof handleGetToolsPending;
+    };
+    regexRoutes: {
+        pattern: RegExp;
+        method: string;
+        handler: (req: any, res: any, match: any) => void;
+    }[];
+};
+export = _default;

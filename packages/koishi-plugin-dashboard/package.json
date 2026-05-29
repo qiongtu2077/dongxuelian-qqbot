@@ -2,6 +2,11 @@
   "name": "koishi-plugin-dashboard",
   "version": "0.1.0",
   "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
   "koishi": {
     "description": "Bot 管理面板",
     "service": {}
