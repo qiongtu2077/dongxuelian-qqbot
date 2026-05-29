@@ -168,7 +168,7 @@
       <textarea v-model="prompt" placeholder="例如：读取 package.json 总结项目脚本" @keydown.ctrl.enter.prevent="sendMessage"></textarea>
       <div class="chat-actions">
         <button class="primary" type="button" :disabled="sending || !prompt.trim()" @click="sendMessage">发送</button>
-        <button class="ghost" type="button" :disabled="sending || !pendingId" @click="confirmPendingTool">确认工具</button>
+        <button class="ghost" type="button" :disabled="sending || !pendingId" @click="() => confirmPendingTool()">确认工具</button>
         <button class="ghost" type="button" :disabled="sending || history.length === 0" @click="clearHistory">清空</button>
       </div>
       <label class="remember-history">
@@ -185,12 +185,100 @@
   </section>
 </template>
 
-<script>
+<script lang="ts">
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { fetchAgentConfig, saveAgentConfig, fetchAgentPersonas, saveAgentPersona, sendAgentMessage, confirmAgentTool, rejectAgentTool, fetchPendingAgentTools, fetchAgentSessions, fetchAgentSession } from '../api'
+import type { MessageState, ShowAdminDialog } from '../types'
+import { asRecord, errorMessage, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
 
-const defaultConfig = {
+interface AgentChannelConfig {
+  enabled: boolean
+  tools: Record<string, boolean>
+}
+
+interface AgentAutoRouteConfig {
+  enabled: boolean
+}
+
+interface AgentConfigState {
+  dangerousPolicy: string
+  channels: Record<'qq' | 'dashboard', AgentChannelConfig>
+  autoRoute: Record<'qq' | 'dashboard', AgentAutoRouteConfig>
+  enabledSkills: string[]
+  readFileRoots: string[]
+  mcp: {
+    enabled: boolean
+    allowWriteWorkspace: boolean
+    allowRunLocal: boolean
+    exposeDangerousActions: boolean
+  }
+  persona?: AgentPersonaConfig
+}
+
+interface AgentPersonaConfig {
+  dashboardPersona: string
+  qqInheritChatPersona: boolean
+}
+
+interface AgentToolInfo {
+  name: string
+  description?: string
+  dangerous?: boolean
+  external?: boolean
+  defaultChannels?: string[]
+  qqEnabled?: boolean
+  dashboardEnabled?: boolean
+}
+
+interface AgentSkillInfo {
+  file: string
+  name: string
+  kind?: string
+  description?: string
+}
+
+interface AgentPersonaSummary {
+  name: string
+}
+
+interface AgentStats {
+  total: number
+  byChannel?: Record<string, number>
+  recent?: Array<{ at: number | string, tool: string, channel?: string }>
+}
+
+interface PendingAgentTool {
+  id: string
+  toolName?: string
+  channelKey?: string
+  userId?: string
+  expireAt?: number | string
+  argsSummary?: string
+}
+
+interface AgentSessionSummary {
+  id: string
+  title?: string
+  channel?: string
+  userName?: string
+  turns?: number
+  toolCalls?: number
+  updatedAt?: number | string
+  lastMessage?: string
+}
+
+interface AgentSessionDetail {
+  id: string
+  turns: Array<{ at: number | string, userMessage?: string, reply?: string }>
+}
+
+interface AgentChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+const defaultConfig: AgentConfigState = {
   dangerousPolicy: 'confirm',
   channels: {
     qq: { enabled: true, tools: {} },
@@ -214,7 +302,7 @@ export default {
   name: 'AgentPanel',
   components: { SelectBox },
   setup() {
-    const showAdminDialog = inject('showAdminDialog')
+    const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const loading = ref(false)
     const saving = ref(false)
     const savingPersona = ref(false)
@@ -222,17 +310,17 @@ export default {
     const error = ref('')
     const message = ref('')
     const mode = ref('config')
-    const tools = ref([])
-    const skills = ref([])
-    const personas = ref([])
-    const stats = ref({ total: 0 })
+    const tools = ref<AgentToolInfo[]>([])
+    const skills = ref<AgentSkillInfo[]>([])
+    const personas = ref<AgentPersonaSummary[]>([])
+    const stats = ref<AgentStats>({ total: 0 })
     const prompt = ref('')
     const pendingId = ref('')
-    const pendingTools = ref([])
-    const sessions = ref([])
-    const selectedSession = ref(null)
-    const effectiveReadRoots = ref([])
-    const history = ref([])
+    const pendingTools = ref<PendingAgentTool[]>([])
+    const sessions = ref<AgentSessionSummary[]>([])
+    const selectedSession = ref<AgentSessionDetail | null>(null)
+    const effectiveReadRoots = ref<string[]>([])
+    const history = ref<AgentChatMessage[]>([])
     const rememberHistory = ref(localStorage.getItem('dashboard_agent_remember_history') === '1')
     const config = reactive(JSON.parse(JSON.stringify(defaultConfig)))
     const persona = reactive({ dashboardPersona: '', qqInheritChatPersona: true })
@@ -254,7 +342,7 @@ export default {
       ...personas.value.map(item => ({ value: item.name, label: item.name })),
     ])
 
-    function applyConfig(next) {
+    function applyConfig(next: unknown) {
       const merged = JSON.parse(JSON.stringify({ ...defaultConfig, ...(next || {}) }))
       config.dangerousPolicy = merged.dangerousPolicy || 'confirm'
       config.readFileRoots = Array.isArray(merged.readFileRoots) ? merged.readFileRoots : []
@@ -274,32 +362,33 @@ export default {
       persona.qqInheritChatPersona = merged.persona?.qqInheritChatPersona !== false
     }
 
-    function applyPersona(next) {
-      const value = next && typeof next === 'object' ? next : {}
+    function applyPersona(next: unknown) {
+      const value = asRecord(next)
       persona.dashboardPersona = String(value.dashboardPersona || '')
       persona.qqInheritChatPersona = value.qqInheritChatPersona !== false
     }
 
-    function formatTime(ts) {
+    function formatTime(ts: number | string | undefined) {
       if (!ts) return '-'
       try { return new Date(ts).toLocaleTimeString() } catch { return '-' }
     }
 
-    function isAdminRequired(res) {
-      return res && (res.code === 'ADMIN_REQUIRED' || res.data?.code === 'ADMIN_REQUIRED')
+    function isAdminRequired(res: { code?: string, data?: unknown } | null | undefined) {
+      return !!res && (res.code === 'ADMIN_REQUIRED' || asRecord(res.data).code === 'ADMIN_REQUIRED')
     }
 
-    function requestAdmin(messageText, retry) {
+    function requestAdmin(messageText: string, retry: () => void | Promise<void>) {
       if (showAdminDialog) showAdminDialog(messageText, retry)
       else error.value = '需要管理员密码验证'
     }
 
-    function normalizePendingId(value = pendingId.value) {
+    function normalizePendingId(value: unknown = pendingId.value) {
       return typeof value === 'string' ? value : (pendingId.value || '')
     }
 
-    function getAgentReply(data, fallback = '') {
-      return String(data?.reply || data?.result || data?.message || fallback || '').trim()
+    function getAgentReply(data: unknown, fallback = '') {
+      const value = asRecord(data)
+      return String(value.reply || value.result || value.message || fallback || '').trim()
     }
 
     function persistHistory() {
@@ -308,7 +397,7 @@ export default {
       else localStorage.removeItem('dashboard_agent_history')
     }
 
-    function pushAssistant(content) {
+    function pushAssistant(content: string) {
       const text = String(content || '').trim()
       if (!text) return
       history.value.push({ role: 'assistant', content: text })
@@ -318,18 +407,20 @@ export default {
     async function loadPendingTools() {
       try {
         const res = await fetchPendingAgentTools()
-        if (res.ok && res.data?.ok) {
-          pendingTools.value = Array.isArray(res.data.pending) ? res.data.pending : []
+        const data = asRecord(res.data)
+        if (res.ok && data.ok) {
+          pendingTools.value = Array.isArray(data.pending) ? data.pending as PendingAgentTool[] : []
           pendingId.value = pendingTools.value[0]?.id || ''
         }
-      } catch {}
+      } catch { /* non-critical: pending approvals can be refreshed manually */ }
     }
 
     async function loadSessions() {
       try {
         const res = await fetchAgentSessions()
-        if (res.ok && res.data?.ok) sessions.value = Array.isArray(res.data.sessions) ? res.data.sessions : []
-      } catch {}
+        const data = asRecord(res.data)
+        if (res.ok && data.ok) sessions.value = Array.isArray(data.sessions) ? data.sessions as AgentSessionSummary[] : []
+      } catch { /* non-critical: session history is optional for the console */ }
     }
 
     async function loadConfig() {
@@ -341,19 +432,21 @@ export default {
           requestAdmin('查看 Agent 控制台需要管理员密码', loadConfig)
           return
         }
-        if (!res.ok || !res.data?.ok) throw new Error(res.data?.message || '加载失败')
-        applyConfig(res.data.config)
-        if (res.data.config?.persona) applyPersona(res.data.config.persona)
-        mode.value = res.data.mode || 'config'
-        tools.value = res.data.tools || []
-        stats.value = res.data.stats || { total: 0 }
-        skills.value = res.data.skills || []
-        personas.value = Array.isArray(res.data.personas) ? res.data.personas : personas.value
-        effectiveReadRoots.value = Array.isArray(res.data.effectiveReadRoots) ? res.data.effectiveReadRoots : []
+        const data = asRecord(res.data)
+        if (!res.ok || !data.ok) throw new Error(messageFromData(data, '加载失败'))
+        applyConfig(data.config)
+        if (asRecord(data.config).persona) applyPersona(asRecord(data.config).persona)
+        mode.value = typeof data.mode === 'string' ? data.mode : 'config'
+        tools.value = Array.isArray(data.tools) ? data.tools as AgentToolInfo[] : []
+        stats.value = asRecord(data.stats) as unknown as AgentStats || { total: 0 }
+        skills.value = Array.isArray(data.skills) ? data.skills as AgentSkillInfo[] : []
+        personas.value = Array.isArray(data.personas) ? data.personas as AgentPersonaSummary[] : personas.value
+        effectiveReadRoots.value = Array.isArray(data.effectiveReadRoots) ? data.effectiveReadRoots.map(String) : []
         const personaRes = await fetchAgentPersonas()
-        if (personaRes.ok && personaRes.data?.ok) {
-          personas.value = Array.isArray(personaRes.data.personas) ? personaRes.data.personas : []
-          applyPersona(personaRes.data.persona)
+        const personaData = asRecord(personaRes.data)
+        if (personaRes.ok && personaData.ok) {
+          personas.value = Array.isArray(personaData.personas) ? personaData.personas as AgentPersonaSummary[] : []
+          applyPersona(personaData.persona)
         }
         for (const tool of tools.value) {
           if (config.channels.qq.tools[tool.name] === undefined) config.channels.qq.tools[tool.name] = !!tool.qqEnabled
@@ -362,7 +455,7 @@ export default {
         await loadPendingTools()
         await loadSessions()
       } catch (e) {
-        error.value = e.message || '加载失败'
+        error.value = errorMessage(e, '加载失败')
       } finally {
         loading.value = false
       }
@@ -379,24 +472,26 @@ export default {
           requestAdmin('切换 Agent 人格需要管理员密码', savePersona)
           return
         }
-        if (!res.ok || !res.data?.ok) throw new Error(res.data?.message || '人格更新失败')
-        applyPersona(res.data.persona || payload)
+        const data = asRecord(res.data)
+        if (!res.ok || !data.ok) throw new Error(messageFromData(data, '人格更新失败'))
+        applyPersona(data.persona || payload)
         config.persona = JSON.parse(JSON.stringify(persona))
         history.value = []
         localStorage.removeItem('dashboard_agent_history')
-        message.value = res.data.message || 'Agent 人格已更新'
+        message.value = messageFromData(data, 'Agent 人格已更新')
       } catch (e) {
-        error.value = e.message || '人格更新失败'
+        error.value = errorMessage(e, '人格更新失败')
       } finally {
         savingPersona.value = false
       }
     }
 
-    async function loadSessionDetail(id) {
+    async function loadSessionDetail(id: string) {
       try {
         const res = await fetchAgentSession(id)
-        if (res.ok && res.data?.ok) selectedSession.value = res.data.session || null
-      } catch {}
+        const data = asRecord(res.data)
+        if (res.ok && data.ok) selectedSession.value = (data.session as AgentSessionDetail | undefined) || null
+      } catch { /* non-critical: failed session detail should not break the panel */ }
     }
 
     async function saveConfig() {
@@ -409,12 +504,13 @@ export default {
           requestAdmin('保存 Agent 配置需要管理员密码', saveConfig)
           return
         }
-        if (!res.ok || !res.data?.ok) throw new Error(res.data?.message || '保存失败')
-        applyConfig(res.data.config)
-        mode.value = res.data.mode || mode.value
-        message.value = res.data.message || '已保存'
+        const data = asRecord(res.data)
+        if (!res.ok || !data.ok) throw new Error(messageFromData(data, '保存失败'))
+        applyConfig(data.config)
+        mode.value = typeof data.mode === 'string' ? data.mode : mode.value
+        message.value = messageFromData(data, '已保存')
       } catch (e) {
-        error.value = e.message || '保存失败'
+        error.value = errorMessage(e, '保存失败')
       } finally {
         saving.value = false
       }
@@ -424,7 +520,7 @@ export default {
       config.readFileRoots.push('')
     }
 
-    function removeReadRoot(index) {
+    function removeReadRoot(index: number) {
       config.readFileRoots.splice(index, 1)
     }
 
@@ -441,7 +537,7 @@ export default {
       }
       try {
         const saved = JSON.parse(localStorage.getItem('dashboard_agent_history') || '[]')
-        history.value = Array.isArray(saved) ? saved.filter(item => item && ['user', 'assistant'].includes(item.role)).slice(-30) : []
+        history.value = Array.isArray(saved) ? saved.filter(item => item && ['user', 'assistant'].includes(item.role)).slice(-30) as AgentChatMessage[] : []
       } catch {
         history.value = []
       }
@@ -462,7 +558,7 @@ export default {
       }
     }
 
-    async function confirmPendingTool(targetId = pendingId.value) {
+    async function confirmPendingTool(targetId: unknown = pendingId.value) {
       const id = normalizePendingId(targetId)
       if (!id) return
       sending.value = true
@@ -473,18 +569,19 @@ export default {
           requestAdmin('确认 Agent 工具需要管理员密码', () => confirmPendingTool(id))
           return
         }
-        if (!res.ok || !res.data?.ok) throw new Error(res.data?.message || '确认失败')
-        pushAssistant(getAgentReply(res.data))
+        const data = asRecord(res.data)
+        if (!res.ok || !data.ok) throw new Error(messageFromData(data, '确认失败'))
+        pushAssistant(getAgentReply(data))
         pendingId.value = ''
         await loadConfig()
       } catch (e) {
-        error.value = e.message || '确认失败'
+        error.value = errorMessage(e, '确认失败')
       } finally {
         sending.value = false
       }
     }
 
-    async function rejectPendingTool(targetId = pendingId.value) {
+    async function rejectPendingTool(targetId: unknown = pendingId.value) {
       const id = normalizePendingId(targetId)
       if (!id) return
       sending.value = true
@@ -495,12 +592,13 @@ export default {
           requestAdmin('拒绝 Agent 工具需要管理员密码', () => rejectPendingTool(id))
           return
         }
-        if (!res.ok || !res.data?.ok) throw new Error(res.data?.message || '拒绝失败')
-        message.value = res.data.message || '已拒绝工具请求'
+        const data = asRecord(res.data)
+        if (!res.ok || !data.ok) throw new Error(messageFromData(data, '拒绝失败'))
+        message.value = messageFromData(data, '已拒绝工具请求')
         pendingId.value = ''
         await loadConfig()
       } catch (e) {
-        error.value = e.message || '拒绝失败'
+        error.value = errorMessage(e, '拒绝失败')
       } finally {
         sending.value = false
       }
@@ -523,14 +621,16 @@ export default {
           requestAdmin('使用 Dashboard Agent 需要管理员密码', sendMessage)
           return
         }
-        if (!res.ok || !res.data?.ok) throw new Error(res.data?.message || '发送失败')
-        pushAssistant(getAgentReply(res.data, res.data?.pendingId ? '工具请求已进入审批队列，请确认后继续。' : '(无回复)'))
-        pendingId.value = res.data.pendingId || ''
+        const data = asRecord(res.data)
+        if (!res.ok || !data.ok) throw new Error(messageFromData(data, '发送失败'))
+        pushAssistant(getAgentReply(data, data.pendingId ? '工具请求已进入审批队列，请确认后继续。' : '(无回复)'))
+        pendingId.value = typeof data.pendingId === 'string' ? data.pendingId : ''
         persistHistory()
         await loadConfig()
       } catch (e) {
-        pushAssistant(e.message || '发送失败')
-        error.value = e.message || '发送失败'
+        const text = errorMessage(e, '发送失败')
+        pushAssistant(text)
+        error.value = text
       } finally {
         sending.value = false
       }

@@ -60,21 +60,36 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { fetchLogs, fetchLoggingConfig, saveLoggingConfig } from '../api'
+import type { MessageState, ShowAdminDialog } from '../types'
+import { asRecord, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
+
+interface LogEntry {
+  id: number
+  level: string
+  time?: string
+  module?: string
+  message?: string
+  text?: string
+}
+
+interface LoadLogsOptions {
+  reset?: boolean
+}
 
 export default {
   name: 'LogPanel',
   components: { SelectBox },
   setup() {
-    const showAdminDialog = inject('showAdminDialog')
-    const entries = ref([])
+    const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
+    const entries = ref<LogEntry[]>([])
     const total = ref(0)
     const loading = ref(false)
     const refreshing = ref(false)
-    const message = ref(null)
+    const message = ref<MessageState | null>(null)
     const limit = ref(200)
     const limits = [100, 200, 500, 1000, 3000, 6000]
     const limitOptions = limits.map(n => ({ value: n, label: String(n) }))
@@ -92,25 +107,27 @@ export default {
     const autoRefresh = ref(true)
     const debugEnabled = ref(false)
     const savingDebug = ref(false)
-    const levels = ref(['I', 'W', 'E', 'D'])
+    const levels = ref<string[]>(['I', 'W', 'E', 'D'])
     const lastId = ref(0)
     const lastFilterKey = ref('')
     const loaded = ref(false)
     const idleRefreshes = ref(0)
     const refreshDelay = ref(5000)
-    const logListRef = ref(null)
+    const logListRef = ref<HTMLElement | null>(null)
     const levelOptions = [
       { id: 'I', label: '信息' },
       { id: 'W', label: '警告' },
       { id: 'E', label: '错误' },
       { id: 'D', label: '调试' },
     ]
-    let timer = null
+    let timer: ReturnType<typeof setTimeout> | null = null
     let logsLoading = false
 
     async function loadConfig() {
       const res = await fetchLoggingConfig()
-      if (res.ok && res.data?.config) debugEnabled.value = !!res.data.config.enabled
+      const data = asRecord(res.data)
+      const config = asRecord(data.config)
+      if (res.ok && data.config) debugEnabled.value = !!config.enabled
     }
 
     function scrollLogsToBottom() {
@@ -120,7 +137,22 @@ export default {
       })
     }
 
-    async function loadLogs(options = {}) {
+    function normalizeEntries(value: unknown): LogEntry[] {
+      if (!Array.isArray(value)) return []
+      return value.map((item, index) => {
+        const row = asRecord(item)
+        return {
+          id: Number(row.id) || index + 1,
+          level: String(row.level || 'I'),
+          time: typeof row.time === 'string' ? row.time : '',
+          module: typeof row.module === 'string' ? row.module : '',
+          message: typeof row.message === 'string' ? row.message : '',
+          text: typeof row.text === 'string' ? row.text : '',
+        }
+      })
+    }
+
+    async function loadLogs(options: LoadLogsOptions = {}) {
       if (logsLoading) return
       logsLoading = true
       const reset = !!options.reset
@@ -138,28 +170,29 @@ export default {
           filterKey: incremental ? lastFilterKey.value : '',
         })
         if (res.ok) {
-          const data = res.data || {}
-          const nextEntries = data.entries || []
-          const canMerge = incremental && Array.isArray(data.newEntries) && !data.filterChanged
+          const data = asRecord(res.data)
+          const nextEntries = normalizeEntries(data.entries)
+          const newEntries = normalizeEntries(data.newEntries)
+          const canMerge = incremental && newEntries.length > 0 && !data.filterChanged
           if (canMerge) {
-            if (data.newEntries.length) {
+            if (newEntries.length) {
               const seen = new Set(entries.value.map(item => item.id))
-              const merged = entries.value.concat(data.newEntries.filter(item => !seen.has(item.id)))
+              const merged = entries.value.concat(newEntries.filter(item => !seen.has(item.id)))
               entries.value = merged.slice(-limit.value)
             }
           } else {
             entries.value = nextEntries.slice(-limit.value)
           }
-          total.value = data.total || entries.value.length
+          total.value = Number(data.total) || entries.value.length
           lastId.value = Number(data.lastId) || entries.value[entries.value.length - 1]?.id || 0
-          lastFilterKey.value = data.filterKey || ''
+          lastFilterKey.value = typeof data.filterKey === 'string' ? data.filterKey : ''
           loaded.value = true
-          if (data.newCount > 0) { idleRefreshes.value = 0; refreshDelay.value = 5000 }
+          if (Number(data.newCount) > 0) { idleRefreshes.value = 0; refreshDelay.value = 5000 }
           else { idleRefreshes.value += 1; refreshDelay.value = idleRefreshes.value >= 3 ? 10000 : 5000 }
-          if (data.config) debugEnabled.value = !!data.config.enabled
+          if (data.config) debugEnabled.value = !!asRecord(data.config).enabled
           scrollLogsToBottom()
         } else {
-          message.value = { type: 'err', text: res.data?.message || '日志读取失败' }
+          message.value = { type: 'err', text: messageFromData(res.data, '日志读取失败') }
         }
       } finally {
         logsLoading = false
@@ -181,7 +214,7 @@ export default {
       loadLogs({ reset: true })
     }
 
-    function toggleLevel(level) {
+    function toggleLevel(level: string) {
       if (levels.value.includes(level)) levels.value = levels.value.filter(item => item !== level)
       else levels.value = [...levels.value, level]
       resetAndLoadLogs()
@@ -198,19 +231,20 @@ export default {
           return
         }
         if (res.ok) {
-          debugEnabled.value = !!res.data.config?.enabled
-          message.value = { type: 'ok', text: res.data.message || '已保存' }
+          const data = asRecord(res.data)
+          debugEnabled.value = !!asRecord(data.config).enabled
+          message.value = { type: 'ok', text: messageFromData(data, '已保存') }
           resetAndLoadLogs()
         } else {
           debugEnabled.value = !desired
-          message.value = { type: 'err', text: res.data?.message || '保存失败' }
+          message.value = { type: 'err', text: messageFromData(res.data, '保存失败') }
         }
       }
       try { await doSave() } finally { savingDebug.value = false }
     }
 
     async function copyResults() {
-      const text = entries.value.map(item => item.text).join('\n')
+      const text = entries.value.map(item => item.text || item.message || '').join('\n')
       try {
         await navigator.clipboard.writeText(text)
         message.value = { type: 'ok', text: '已复制当前日志' }

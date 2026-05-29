@@ -69,32 +69,64 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { deleteGalleryImage, fetchGalleryImages, updateGalleryImageStyle, uploadGalleryImage } from '../api'
+import type { MessageState } from '../types'
+import { asRecord, errorMessage, messageFromData } from '../types'
 
 const STOP_THRESHOLD = 0.001
 const interactSettings = { stiffness: 0.066, damping: 0.25 }
 const returnSettings = { stiffness: 0.01, damping: 0.06 }
-const springs = new WeakMap()
+type FoilStyle = string | null
+type SpringAxis = 'x' | 'y' | 'effectIntensity'
 
-function clamp(value, min = 0, max = 100) { return Math.min(Math.max(value, min), max) }
-function round(value, precision = 3) { return Number(value.toFixed(precision)) }
-function mapRange(value, fromMin, fromMax, toMin, toMax) { return round(toMin + ((value - fromMin) / (fromMax - fromMin)) * (toMax - toMin)) }
-function createSpring(initialValue) {
-  const axes = Object.keys(initialValue)
+interface GalleryImage {
+  id: string
+  url: string
+  name: string
+  foilStyle?: FoilStyle
+}
+
+interface Spring {
+  axes: SpringAxis[]
+  current: Partial<Record<SpringAxis, number>>
+  target: Partial<Record<SpringAxis, number>>
+  velocity: Partial<Record<SpringAxis, number>>
+}
+
+interface CardState {
+  rotation: Spring
+  pointer: Spring
+  background: Spring
+  frameId: number | null
+  lastTimestamp: number
+  resetTimer: ReturnType<typeof setTimeout> | null
+  settings: typeof interactSettings
+}
+
+const springs = new WeakMap<Element, CardState>()
+
+function clamp(value: number, min = 0, max = 100) { return Math.min(Math.max(value, min), max) }
+function round(value: number, precision = 3) { return Number(value.toFixed(precision)) }
+function mapRange(value: number, fromMin: number, fromMax: number, toMin: number, toMax: number) { return round(toMin + ((value - fromMin) / (fromMax - fromMin)) * (toMax - toMin)) }
+function createSpring(initialValue: Partial<Record<SpringAxis, number>>): Spring {
+  const axes = Object.keys(initialValue) as SpringAxis[]
   return { axes, current: { ...initialValue }, target: { ...initialValue }, velocity: Object.fromEntries(axes.map(axis => [axis, 0])) }
 }
-function setSpringTarget(spring, value) { Object.assign(spring.target, value) }
-function isCloseToTarget(spring) {
-  return spring.axes.every(axis => Math.abs(spring.target[axis] - spring.current[axis]) < STOP_THRESHOLD && Math.abs(spring.velocity[axis]) < STOP_THRESHOLD)
+function springValue(spring: Spring, kind: 'current' | 'target' | 'velocity', axis: SpringAxis) {
+  return spring[kind][axis] || 0
 }
-function finishSpringAtTarget(spring) {
+function setSpringTarget(spring: Spring, value: Partial<Record<SpringAxis, number>>) { Object.assign(spring.target, value) }
+function isCloseToTarget(spring: Spring) {
+  return spring.axes.every(axis => Math.abs(springValue(spring, 'target', axis) - springValue(spring, 'current', axis)) < STOP_THRESHOLD && Math.abs(springValue(spring, 'velocity', axis)) < STOP_THRESHOLD)
+}
+function finishSpringAtTarget(spring: Spring) {
   spring.current = { ...spring.target }
   spring.axes.forEach(axis => { spring.velocity[axis] = 0 })
 }
-function getPointerDistanceFromCenter(x, y) { return round(clamp(Math.hypot(x - 50, y - 50) / 50, 0, 1)) }
-function getCardState(rotator) {
+function getPointerDistanceFromCenter(x: number, y: number) { return round(clamp(Math.hypot(x - 50, y - 50) / 50, 0, 1)) }
+function getCardState(rotator: Element): CardState {
   let state = springs.get(rotator)
   if (!state) {
     state = {
@@ -110,28 +142,30 @@ function getCardState(rotator) {
   }
   return state
 }
-function applyVisualState(rotator, state) {
+function applyVisualState(rotator: HTMLElement, state: CardState) {
   const pointer = state.pointer.current
   const background = state.background.current
-  rotator.style.setProperty('--tilt-left-right', `${round(state.rotation.current.x)}deg`)
-  rotator.style.setProperty('--tilt-up-down', `${round(state.rotation.current.y)}deg`)
-  rotator.style.setProperty('--pointer-x', `${round(pointer.x)}%`)
-  rotator.style.setProperty('--pointer-y', `${round(pointer.y)}%`)
-  rotator.style.setProperty('--pointer-from-center', getPointerDistanceFromCenter(pointer.x, pointer.y))
-  rotator.style.setProperty('--effect-intensity', round(pointer.effectIntensity))
-  rotator.style.setProperty('--background-x', `${round(background.x)}%`)
-  rotator.style.setProperty('--background-y', `${round(background.y)}%`)
+  const pointerX = pointer.x || 50
+  const pointerY = pointer.y || 50
+  rotator.style.setProperty('--tilt-left-right', `${round(state.rotation.current.x || 0)}deg`)
+  rotator.style.setProperty('--tilt-up-down', `${round(state.rotation.current.y || 0)}deg`)
+  rotator.style.setProperty('--pointer-x', `${round(pointerX)}%`)
+  rotator.style.setProperty('--pointer-y', `${round(pointerY)}%`)
+  rotator.style.setProperty('--pointer-from-center', String(getPointerDistanceFromCenter(pointerX, pointerY)))
+  rotator.style.setProperty('--effect-intensity', String(round(pointer.effectIntensity || 0)))
+  rotator.style.setProperty('--background-x', `${round(background.x || 50)}%`)
+  rotator.style.setProperty('--background-y', `${round(background.y || 50)}%`)
 }
-function animateCard(rotator, state, timestamp) {
+function animateCard(rotator: HTMLElement, state: CardState, timestamp: number) {
   if (!state.lastTimestamp) state.lastTimestamp = timestamp
   const deltaTime = Math.min((timestamp - state.lastTimestamp) / 16.666, 4)
   state.lastTimestamp = timestamp
   for (const spring of [state.rotation, state.pointer, state.background]) {
     spring.axes.forEach(axis => {
-      const distance = spring.target[axis] - spring.current[axis]
-      spring.velocity[axis] += distance * state.settings.stiffness * deltaTime
-      spring.velocity[axis] *= Math.pow(1 - state.settings.damping, deltaTime)
-      spring.current[axis] += spring.velocity[axis] * deltaTime
+      const distance = springValue(spring, 'target', axis) - springValue(spring, 'current', axis)
+      spring.velocity[axis] = springValue(spring, 'velocity', axis) + distance * state.settings.stiffness * deltaTime
+      spring.velocity[axis] = springValue(spring, 'velocity', axis) * Math.pow(1 - state.settings.damping, deltaTime)
+      spring.current[axis] = springValue(spring, 'current', axis) + springValue(spring, 'velocity', axis) * deltaTime
     })
   }
   if ([state.rotation, state.pointer, state.background].every(isCloseToTarget)) {
@@ -145,14 +179,18 @@ function animateCard(rotator, state, timestamp) {
   applyVisualState(rotator, state)
   state.frameId = requestAnimationFrame(next => animateCard(rotator, state, next))
 }
-function startAnimation(rotator, state) {
+function startAnimation(rotator: HTMLElement, state: CardState) {
   if (state.frameId === null) state.frameId = requestAnimationFrame(timestamp => animateCard(rotator, state, timestamp))
 }
-function applyPointerToCard(event, card, divisor = 4.2) {
+function findRotator(card: HTMLElement): HTMLElement | null {
   const rotator = card.querySelector('.gallery-card__rotator')
+  return rotator instanceof HTMLElement ? rotator : null
+}
+function applyPointerToCard(event: PointerEvent, card: HTMLElement, divisor = 4.2) {
+  const rotator = findRotator(card)
   if (!rotator) return
   const state = getCardState(rotator)
-  clearTimeout(state.resetTimer)
+  if (state.resetTimer) clearTimeout(state.resetTimer)
   state.resetTimer = null
   state.settings = interactSettings
   const rect = card.getBoundingClientRect()
@@ -163,11 +201,11 @@ function applyPointerToCard(event, card, divisor = 4.2) {
   setSpringTarget(state.background, { x: mapRange(pointer.x, 0, 100, 37, 63), y: mapRange(pointer.y, 0, 100, 33, 67) })
   startAnimation(rotator, state)
 }
-function resetCardTarget(card, delay = 360) {
-  const rotator = card.querySelector('.gallery-card__rotator')
+function resetCardTarget(card: HTMLElement, delay = 360) {
+  const rotator = findRotator(card)
   if (!rotator) return
   const state = getCardState(rotator)
-  clearTimeout(state.resetTimer)
+  if (state.resetTimer) clearTimeout(state.resetTimer)
   state.resetTimer = setTimeout(() => {
     state.settings = returnSettings
     setSpringTarget(state.rotation, { x: 0, y: 0 })
@@ -177,7 +215,7 @@ function resetCardTarget(card, delay = 360) {
     startAnimation(rotator, state)
   }, delay)
 }
-function fileToDataUrl(file) {
+function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(String(reader.result || ''))
@@ -186,7 +224,7 @@ function fileToDataUrl(file) {
   })
 }
 
-function preloadGalleryImage(url) {
+function preloadGalleryImage(url: string): Promise<boolean> {
   return new Promise((resolve, reject) => {
     const image = new Image()
     image.onload = () => resolve(true)
@@ -198,17 +236,17 @@ function preloadGalleryImage(url) {
 export default {
   name: 'GalleryPanel',
   setup() {
-    const images = ref([])
+    const images = ref<GalleryImage[]>([])
     const loading = ref(false)
     const uploading = ref(false)
     const deletingId = ref('')
-    const message = ref(null)
-    const fileInput = ref(null)
+    const message = ref<MessageState | null>(null)
+    const fileInput = ref<HTMLInputElement | null>(null)
     const aspectMode = ref('auto')
     const bulkDeleteMode = ref(false)
-    const selectedIds = ref(new Set())
+    const selectedIds = ref<Set<string>>(new Set())
     const previewIndex = ref(-1)
-    const previewCardRef = ref(null)
+    const previewCardRef = ref<HTMLElement | null>(null)
     const updatingStyle = ref(false)
     const aspectOptions = [
       { id: 'auto', label: '自适应' },
@@ -228,35 +266,38 @@ export default {
     async function loadImages() {
       loading.value = true
       const res = await fetchGalleryImages()
-      if (res.ok) images.value = res.data.images || []
-      else message.value = { type: 'err', text: res.data?.message || '读取图集失败' }
+      const data = asRecord(res.data)
+      if (res.ok) images.value = Array.isArray(data.images) ? data.images as GalleryImage[] : []
+      else message.value = { type: 'err', text: messageFromData(res.data, '读取图集失败') }
       loading.value = false
     }
     function openUpload() { fileInput.value?.click() }
-    async function uploadFile(file) {
+    async function uploadFile(file: File) {
       uploading.value = true
       message.value = null
       try {
         const dataUrl = await fileToDataUrl(file)
         const res = await uploadGalleryImage({ name: file.name, type: file.type, data: dataUrl })
-        if (!res.ok) throw new Error(res.data?.message || '上传失败')
-        const image = res.data.image
+        if (!res.ok) throw new Error(messageFromData(res.data, '上传失败'))
+        const image = asRecord(res.data).image as GalleryImage | undefined
+        if (!image) throw new Error('上传失败')
         await preloadGalleryImage(image.url)
         images.value = [image].concat(images.value)
         message.value = { type: 'ok', text: '图片已加入莲莲图集' }
       } catch (error) {
-        message.value = { type: 'err', text: error.message || '上传失败' }
+        message.value = { type: 'err', text: errorMessage(error, '上传失败') }
         await loadImages()
       }
       uploading.value = false
     }
-    function onImageError(image) {
+    function onImageError(image: GalleryImage) {
       if (!image?.name) return
       message.value = { type: 'err', text: `图片无法显示：${image.name}` }
     }
-    async function onFileChange(event) {
-      const files = Array.from(event.target.files || [])
-      event.target.value = ''
+    async function onFileChange(event: Event) {
+      const input = event.target instanceof HTMLInputElement ? event.target : null
+      const files = Array.from(input?.files || [])
+      if (input) input.value = ''
       for (const file of files) await uploadFile(file)
     }
     function toggleBulkDelete() {
@@ -264,8 +305,8 @@ export default {
       selectedIds.value = new Set()
       if (bulkDeleteMode.value) closePreview()
     }
-    function isSelected(id) { return selectedIds.value.has(id) }
-    function toggleSelected(id) {
+    function isSelected(id: string) { return selectedIds.value.has(id) }
+    function toggleSelected(id: string) {
       const next = new Set(selectedIds.value)
       if (next.has(id)) next.delete(id)
       else next.add(id)
@@ -281,56 +322,66 @@ export default {
       if (!window.confirm(`确定删除选中的 ${ids.length} 张图片吗？`)) return
       deletingId.value = 'bulk'
       const res = await deleteGalleryImage(ids)
-      const deletedIds = new Set((res.data?.deleted || []).map(item => item.id))
+      const data = asRecord(res.data)
+      const deletedIds = new Set((Array.isArray(data.deleted) ? data.deleted : []).map(item => String(asRecord(item).id || '')))
       if (deletedIds.size) images.value = images.value.filter(item => !deletedIds.has(item.id))
       if (res.ok) {
         selectedIds.value = new Set()
         bulkDeleteMode.value = false
-        message.value = { type: 'ok', text: res.data?.message || `已删除 ${deletedIds.size} 张图片` }
+        message.value = { type: 'ok', text: messageFromData(data, `已删除 ${deletedIds.size} 张图片`) }
       } else {
-        message.value = { type: 'err', text: res.data?.message || '批量删除失败' }
+        message.value = { type: 'err', text: messageFromData(data, '批量删除失败') }
       }
       deletingId.value = ''
     }
-    function openPreview(index) { previewIndex.value = index }
+    function openPreview(index: number) { previewIndex.value = index }
     function closePreview() {
       if (previewCardRef.value) resetCardTarget(previewCardRef.value, 0)
       previewIndex.value = -1
     }
-    function foilCardClass(image) { return image?.foilStyle ? `gallery-card--foil-${String(image.foilStyle).toLowerCase()}` : '' }
-    function replaceImage(updated) {
+    function foilCardClass(image: GalleryImage | null) { return image?.foilStyle ? `gallery-card--foil-${String(image.foilStyle).toLowerCase()}` : '' }
+    function replaceImage(updated: GalleryImage) {
       images.value = images.value.map(item => item.id === updated.id ? { ...item, ...updated } : item)
     }
-    async function setPreviewFoilStyle(foilStyle) {
+    async function setPreviewFoilStyle(foilStyle: FoilStyle) {
       const image = previewImage.value
       if (!image || updatingStyle.value || image.foilStyle === foilStyle) return
       const previous = image.foilStyle || null
       replaceImage({ ...image, foilStyle })
       updatingStyle.value = true
       const res = await updateGalleryImageStyle(image.id, foilStyle)
-      if (res.ok) replaceImage(res.data.image || { ...image, foilStyle })
+      if (res.ok) replaceImage((asRecord(res.data).image as GalleryImage | undefined) || { ...image, foilStyle })
       else {
         replaceImage({ ...image, foilStyle: previous })
-        message.value = { type: 'err', text: res.data?.message || '保存闪卡样式失败' }
+        message.value = { type: 'err', text: messageFromData(res.data, '保存闪卡样式失败') }
       }
       updatingStyle.value = false
     }
-    function onCardClick(image, index) {
+    function onCardClick(image: GalleryImage, index: number) {
       if (bulkDeleteMode.value) { toggleSelected(image.id); return }
       openPreview(index)
     }
-    function moveCard(event) {
+    function eventElement(event: PointerEvent): HTMLElement | null {
+      return event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+    }
+    function moveCard(event: PointerEvent) {
       if (bulkDeleteMode.value) return
-      applyPointerToCard(event, event.currentTarget, 3.5)
+      const card = eventElement(event)
+      if (card) applyPointerToCard(event, card, 3.5)
     }
-    function resetCard(event) { resetCardTarget(event.currentTarget) }
-    function previewPointerMove(event) {
-      applyPointerToCard(event, event.currentTarget, 3.1)
+    function resetCard(event: PointerEvent) {
+      const card = eventElement(event)
+      if (card) resetCardTarget(card)
     }
-    function previewPointerLeave(event) {
-      resetCardTarget(event.currentTarget, 500)
+    function previewPointerMove(event: PointerEvent) {
+      const card = eventElement(event)
+      if (card) applyPointerToCard(event, card, 3.1)
     }
-    function onKeydown(event) {
+    function previewPointerLeave(event: PointerEvent) {
+      const card = eventElement(event)
+      if (card) resetCardTarget(card, 500)
+    }
+    function onKeydown(event: KeyboardEvent) {
       if (event.key === 'Escape' && previewImage.value) closePreview()
     }
 

@@ -11,7 +11,7 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from 'vue'
 
 export default {
@@ -25,17 +25,17 @@ export default {
       { key: 'b', url: '', active: false, loaded: false },
     ])
     let activeLayer = 0
-    let timer = null
+    let timer: ReturnType<typeof setInterval> | null = null
     let stopped = false
     let failCount = 0
 
-    function loadImage(url) {
+    function loadImage(url: string): Promise<string> {
       return new Promise((resolve, reject) => {
         const image = new Image()
         image.onload = async () => {
           try {
             if (typeof image.decode === 'function') await image.decode()
-          } catch {}
+          } catch { /* non-critical: decoded/onload fallback still confirms usable image */ }
           resolve(url)
         }
         image.onerror = reject

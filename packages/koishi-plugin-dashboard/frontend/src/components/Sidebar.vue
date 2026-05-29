@@ -49,11 +49,14 @@
   </aside>
 </template>
 
-<script>
+<script lang="ts">
+import type { PropType } from 'vue'
+import type { DashboardTab } from '../types'
+
 export default {
   name: 'Sidebar',
   props: {
-    tabs: { type: Array, required: true },
+    tabs: { type: Array as PropType<DashboardTab[]>, required: true },
     activeTab: { type: String, required: true },
     expanded: { type: Boolean, required: true },
     suppressLogout: { type: Boolean, default: false },

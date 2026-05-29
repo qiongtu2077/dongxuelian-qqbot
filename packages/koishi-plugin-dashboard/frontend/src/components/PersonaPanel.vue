@@ -212,9 +212,11 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, inject, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { fetchPersonas, fetchPersonaDetail, fetchPersonaDiagnostics, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore, fetchTtsVoices, ttsPreview, ttsClone, updateTtsClone, deleteTtsClone, savePersonaVoice } from '../api'
+import type { MessageState, ShowAdminDialog } from '../types'
+import { asRecord, errorMessage, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
 
 defineOptions({ name: 'PersonaPanel' })
@@ -223,29 +225,162 @@ const NEUTRAL_TTS_STYLE = '自然清晰，语气稳定，情绪适度，贴合�
 const MAX_CLONE_AUDIO_BYTES = 7 * 1024 * 1024
 const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
 
-    const showAdminDialog = inject('showAdminDialog')
-    const personas = ref([])
-    const loreList = ref([])
+interface PersonaSummary {
+  name: string
+  description?: string
+  type?: string
+}
+
+interface LoreListItem {
+  id: string
+  description?: string
+}
+
+interface LoreDocument {
+  name: string
+  description?: string
+  keywords?: string
+  scope?: string
+  summary?: string
+  maxChars?: string | number
+  priority?: string | number
+  content?: string
+}
+
+interface PersonaDiagnostic {
+  level?: string
+  code?: string
+  field?: string
+  message?: string
+}
+
+interface PersonaDiagnosticDocument {
+  type: string
+  name: string
+  file?: string
+  diagnostics?: PersonaDiagnostic[]
+}
+
+interface PersonaDiagnosticsSummary {
+  totalDocuments: number
+  totals: {
+    error: number
+    warning: number
+    info: number
+  }
+  byType?: Record<string, unknown>
+}
+
+interface PersonaDiagnosticItem {
+  key: string
+  type: string
+  name: string
+  file?: string
+  level: string
+  field: string
+  message: string
+}
+
+interface PersonaVoiceConfig {
+  voiceId: string
+  voiceStyle: string
+  voiceAssetId?: string
+  hasSample?: boolean
+}
+
+interface VoiceAsset {
+  id: string
+  filename?: string
+  displayName: string
+  description?: string
+  sampleText?: string
+  personaName: string
+  size?: number
+  mtime?: number
+  referencedBy?: string[]
+  isCurrent?: boolean
+  missing?: boolean
+}
+
+interface PreviewAudioData {
+  audio?: string
+  mimeType?: string
+  format?: string
+}
+
+interface TtsPersonaVoiceSource {
+  name?: unknown
+  voice?: unknown
+  style?: unknown
+  voiceAssetId?: unknown
+  hasSample?: unknown
+}
+
+const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
+  totalDocuments: 0,
+  totals: { error: 0, warning: 0, info: 0 },
+  byType: {},
+}
+
+    function readString(value: unknown, fallback = ''): string {
+      if (typeof value === 'string') return value
+      if (value === undefined || value === null) return fallback
+      return String(value)
+    }
+
+    function readNumber(value: unknown, fallback = 0): number {
+      const number = Number(value)
+      return Number.isFinite(number) ? number : fallback
+    }
+
+    function listFromData<T>(value: unknown): T[] {
+      return Array.isArray(value) ? value as T[] : []
+    }
+
+    function normalizeVoiceAsset(value: unknown): VoiceAsset | null {
+      const raw = asRecord(value)
+      const id = readString(raw.id)
+      if (!id) return null
+      const size = raw.size === undefined ? undefined : readNumber(raw.size)
+      const mtime = raw.mtime === undefined ? undefined : readNumber(raw.mtime)
+      return {
+        id,
+        filename: readString(raw.filename) || undefined,
+        displayName: readString(raw.displayName, id),
+        description: readString(raw.description),
+        sampleText: readString(raw.sampleText),
+        personaName: readString(raw.personaName),
+        size,
+        mtime,
+        referencedBy: Array.isArray(raw.referencedBy) ? raw.referencedBy.map(item => readString(item)).filter(Boolean) : [],
+        isCurrent: !!raw.isCurrent,
+        missing: !!raw.missing,
+      }
+    }
+
+    const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
+    const personas = ref<PersonaSummary[]>([])
+    const loreList = ref<LoreListItem[]>([])
     const newName = ref('')
     const newDesc = ref('')
     const newLore = ref('none')
     const newWill = ref(1.0)
     const newNsfw = ref('none')
     const newContent = ref('')
-    const editingName = ref(null)
-    const editingType = ref(null)
+    const editingName = ref<string | null>(null)
+    const editingType = ref<string | null>(null)
     const creating = ref(false)
-    const createMsg = ref(null)
-    const personaDeleting = ref(null)
-    const personaEditing = ref(null)
-    const personaEditSection = ref(null)
-    const loreEditSection = ref(null)
+    const createMsg = ref<MessageState | null>(null)
+    const personaDeleting = ref<string | null>(null)
+    const personaEditing = ref<string | null>(null)
+    const personaEditSection = ref<HTMLElement | null>(null)
+    const loreEditSection = ref<HTMLElement | null>(null)
     const personaDiagnosticsLoading = ref(false)
     const personaDiagnosticsError = ref('')
-    const personaDiagnosticsSummary = ref({ totalDocuments: 0, totals: { error: 0, warning: 0, info: 0 }, byType: {} })
-    const personaDiagnosticsDocuments = ref([])
+    const personaDiagnosticsSummary = ref<PersonaDiagnosticsSummary>({ ...EMPTY_DIAGNOSTICS_SUMMARY })
+    const personaDiagnosticsDocuments = ref<PersonaDiagnosticDocument[]>([])
 
-    const lores = ref([])
+    const lores = ref<LoreDocument[]>([])
     const loreFormName = ref('')
     const loreFormDesc = ref('')
     const loreFormKeywords = ref('')
@@ -255,15 +390,15 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
     const loreFormPriority = ref('')
     const loreFormContent = ref('')
     const loreSaving = ref(false)
-    const loreMsg = ref(null)
-    const loreDeleting = ref(null)
-    const loreEditing = ref(null)
+    const loreMsg = ref<MessageState | null>(null)
+    const loreDeleting = ref<string | null>(null)
+    const loreEditing = ref<string | null>(null)
 
     async function load() {
       const [pRes, lRes, loRes] = await Promise.all([fetchPersonas(), fetchLoreList(), fetchLores()])
-      if (pRes.ok) personas.value = pRes.data
-      if (lRes.ok) loreList.value = lRes.data
-      if (loRes.ok) lores.value = loRes.data
+      if (pRes.ok) personas.value = listFromData<PersonaSummary>(pRes.data)
+      if (lRes.ok) loreList.value = listFromData<LoreListItem>(lRes.data)
+      if (loRes.ok) lores.value = listFromData<LoreDocument>(loRes.data)
       await loadPersonaDiagnostics()
     }
     onMounted(load)
@@ -294,8 +429,8 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       { value: 'always', label: '绑定后总是注入' },
       { value: 'none', label: '禁用注入' },
     ]
-    const personaDiagnosticItems = computed(() => {
-      const items = []
+    const personaDiagnosticItems = computed<PersonaDiagnosticItem[]>(() => {
+      const items: PersonaDiagnosticItem[] = []
       for (const doc of personaDiagnosticsDocuments.value || []) {
         for (const diagnostic of doc.diagnostics || []) {
           if (diagnostic.level === 'info') continue
@@ -313,7 +448,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       return items
     })
 
-    function diagnosticLevelColor(level) {
+    function diagnosticLevelColor(level: string) {
       if (level === 'error') return 'var(--error)'
       if (level === 'warning') return 'var(--accent)'
       return 'var(--text3)'
@@ -324,10 +459,11 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       personaDiagnosticsError.value = ''
       const res = await fetchPersonaDiagnostics()
       if (res.ok && res.data) {
-        personaDiagnosticsSummary.value = res.data.summary || { totalDocuments: 0, totals: { error: 0, warning: 0, info: 0 }, byType: {} }
-        personaDiagnosticsDocuments.value = Array.isArray(res.data.documents) ? res.data.documents : []
+        const data = asRecord(res.data)
+        personaDiagnosticsSummary.value = (data.summary as PersonaDiagnosticsSummary | undefined) || { ...EMPTY_DIAGNOSTICS_SUMMARY }
+        personaDiagnosticsDocuments.value = Array.isArray(data.documents) ? data.documents as PersonaDiagnosticDocument[] : []
       } else {
-        personaDiagnosticsError.value = res.data?.message || '人格诊断读取失败'
+        personaDiagnosticsError.value = messageFromData(res.data, '人格诊断读取失败')
       }
       personaDiagnosticsLoading.value = false
     }
@@ -347,13 +483,13 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       const res = editingName.value ? await updatePersona(payload) : await createPersona(payload)
       if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog((editingName.value ? '更新' : '创建') + '人格需要管理员密码', doCreate); creating.value = false; return }
       if (res.ok) {
-        createMsg.value = { type: 'ok', text: res.data?.message || (editingName.value ? '更新成功' : '创建成功') }
+        createMsg.value = { type: 'ok', text: messageFromData(res.data, editingName.value ? '更新成功' : '创建成功') }
         newName.value = ''; newDesc.value = ''; newContent.value = ''; newLore.value = 'none'; newWill.value = 1.0; newNsfw.value = 'none'; editingName.value = null; editingType.value = null
         const pRes = await fetchPersonas()
-        if (pRes.ok) personas.value = pRes.data
+        if (pRes.ok) personas.value = listFromData<PersonaSummary>(pRes.data)
         await loadPersonaDiagnostics()
       } else {
-        createMsg.value = { type: 'err', text: res.data?.message || (editingName.value ? '更新失败' : '创建失败') }
+        createMsg.value = { type: 'err', text: messageFromData(res.data, editingName.value ? '更新失败' : '创建失败') }
       }
       creating.value = false
     }
@@ -366,7 +502,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       createMsg.value = null
     }
 
-    async function startPersonaEdit(name) {
+    async function startPersonaEdit(name: string) {
       const p = personas.value.find(x => x.name === name)
       if (!p) return
       personaEditing.value = name
@@ -377,11 +513,12 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       // API 列表接口不返回 content/lore，单独请求详情
       const detail = await fetchPersonaDetail(name)
       if (detail.ok && detail.data) {
-        const d = detail.data.data || detail.data
-        newContent.value = d.content || ''
-        newLore.value = d.lore || 'none'
-        newWill.value = parseFloat(d.will) || 1.0
-        newNsfw.value = d.nsfw || 'none'
+        const detailData = asRecord(detail.data)
+        const d = asRecord(detailData.data || detail.data)
+        newContent.value = readString(d.content)
+        newLore.value = readString(d.lore, 'none')
+        newWill.value = readNumber(d.will, 1.0) || 1.0
+        newNsfw.value = readString(d.nsfw, 'none')
       } else {
         newContent.value = ''
         newLore.value = 'none'
@@ -396,17 +533,17 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       })
     }
 
-    async function doPersonaDelete(name) {
+    async function doPersonaDelete(name: string) {
       personaDeleting.value = name; createMsg.value = null
       const res = await deletePersona(name)
       if (res.code === 'ADMIN_REQUIRED') { personaDeleting.value = null; if (showAdminDialog) showAdminDialog('删除人格需要管理员密码', () => doPersonaDelete(name)); return }
       if (res.ok) {
         createMsg.value = { type: 'ok', text: '删除成功' }
         const pRes = await fetchPersonas()
-        if (pRes.ok) personas.value = pRes.data
+        if (pRes.ok) personas.value = listFromData<PersonaSummary>(pRes.data)
         await loadPersonaDiagnostics()
       } else {
-        createMsg.value = { type: 'err', text: res.data?.message || '删除失败' }
+        createMsg.value = { type: 'err', text: messageFromData(res.data, '删除失败') }
       }
       personaDeleting.value = null
     }
@@ -422,15 +559,15 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       loreFormContent.value = ''
     }
 
-    function startLoreEdit(l) {
+    function startLoreEdit(l: LoreDocument) {
       loreEditing.value = l.name
       loreFormName.value = l.name
       loreFormDesc.value = l.description || ''
       loreFormKeywords.value = l.keywords || ''
       loreFormScope.value = l.scope || 'keyword'
       loreFormSummary.value = l.summary || ''
-      loreFormMaxChars.value = l.maxChars || ''
-      loreFormPriority.value = l.priority || ''
+      loreFormMaxChars.value = readString(l.maxChars)
+      loreFormPriority.value = readString(l.priority)
       loreFormContent.value = l.content || ''
       loreMsg.value = null
       nextTick(() => {
@@ -460,30 +597,30 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       const res = loreEditing.value ? await updateLore(payload) : await createLore(payload)
       if (res.code === 'ADMIN_REQUIRED') { loreSaving.value = false; if (showAdminDialog) showAdminDialog((loreEditing.value ? '编辑' : '创建') + '世界观需要管理员密码', doLoreSave); return }
       if (res.ok) {
-        loreMsg.value = { type: 'ok', text: res.data?.message || (loreEditing.value ? '更新成功' : '创建成功') }
+        loreMsg.value = { type: 'ok', text: messageFromData(res.data, loreEditing.value ? '更新成功' : '创建成功') }
         if (!loreEditing.value) resetLoreForm(); else cancelLoreEdit()
         const [loRes, lRes] = await Promise.all([fetchLores(), fetchLoreList()])
-        if (loRes.ok) lores.value = loRes.data
-        if (lRes.ok) loreList.value = lRes.data
+        if (loRes.ok) lores.value = listFromData<LoreDocument>(loRes.data)
+        if (lRes.ok) loreList.value = listFromData<LoreListItem>(lRes.data)
         await loadPersonaDiagnostics()
       } else {
-        loreMsg.value = { type: 'err', text: res.data?.message || (loreEditing.value ? '更新失败' : '创建失败') }
+        loreMsg.value = { type: 'err', text: messageFromData(res.data, loreEditing.value ? '更新失败' : '创建失败') }
       }
       loreSaving.value = false
     }
 
-    async function doLoreDelete(name) {
+    async function doLoreDelete(name: string) {
       loreDeleting.value = name; loreMsg.value = null
       const res = await deleteLore(name)
       if (res.code === 'ADMIN_REQUIRED') { loreDeleting.value = null; if (showAdminDialog) showAdminDialog('删除世界观需要管理员密码', () => doLoreDelete(name)); return }
       if (res.ok) {
-        loreMsg.value = { type: 'ok', text: res.data?.message || '删除成功' }
+        loreMsg.value = { type: 'ok', text: messageFromData(res.data, '删除成功') }
         const [loRes, lRes] = await Promise.all([fetchLores(), fetchLoreList()])
-        if (loRes.ok) lores.value = loRes.data
-        if (lRes.ok) loreList.value = lRes.data
+        if (loRes.ok) lores.value = listFromData<LoreDocument>(loRes.data)
+        if (lRes.ok) loreList.value = listFromData<LoreListItem>(lRes.data)
         await loadPersonaDiagnostics()
       } else {
-        loreMsg.value = { type: 'err', text: res.data?.message || '删除失败' }
+        loreMsg.value = { type: 'err', text: messageFromData(res.data, '删除失败') }
       }
       loreDeleting.value = null
     }
@@ -492,25 +629,25 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
     const voiceId = ref('')
     const selectedVoiceAssetId = ref('')
     const voiceStyle = ref('')
-    const voiceList = ref([])
+    const voiceList = ref<string[]>([])
     const voiceSaving = ref(false)
     const voicePreviewing = ref(false)
     const voiceCloning = ref(false)
-    const voiceMsg = ref(null)
+    const voiceMsg = ref<MessageState | null>(null)
     const previewText = ref('')
     const previewAudioSrc = ref('')
-    const cloneFile = ref(null)
+    const cloneFile = ref<File | null>(null)
     const cloneDisplayName = ref('')
     const cloneDescription = ref('')
     const cloneSampleText = ref('')
     const cloneStatus = ref('')
-    const personaVoiceMap = ref({})
-    const clonedVoices = ref([])
+    const personaVoiceMap = ref<Record<string, PersonaVoiceConfig>>({})
+    const clonedVoices = ref<VoiceAsset[]>([])
     const assetSaving = ref('')
     const assetDeleting = ref('')
     const previewAudioObjectUrl = ref('')
 
-    const usableClonedVoices = computed(() => clonedVoices.value.filter(asset => !asset.missing))
+    const usableClonedVoices = computed<VoiceAsset[]>(() => clonedVoices.value.filter(asset => !asset.missing))
     const effectiveVoiceStyleLabel = computed(() => {
       const typed = voiceStyle.value.trim()
       if (typed) return typed
@@ -518,18 +655,18 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       return personaStyle || NEUTRAL_TTS_STYLE
     })
 
-    function findVoiceAssetById(id) {
+    function findVoiceAssetById(id: string): VoiceAsset | null {
       return clonedVoices.value.find(asset => asset.id === id && !asset.missing) || null
     }
 
-    function pickDefaultVoiceAsset(personaName, preferredId = '') {
+    function pickDefaultVoiceAsset(personaName: string, preferredId = ''): VoiceAsset | null {
       return findVoiceAssetById(preferredId) ||
         usableClonedVoices.value.find(asset => asset.personaName === personaName) ||
         usableClonedVoices.value[0] ||
         null
     }
 
-    function assetOptionLabel(asset) {
+    function assetOptionLabel(asset: VoiceAsset): string {
       const name = asset.displayName || asset.id
       const owner = asset.personaName ? `（${asset.personaName}）` : ''
       const refs = asset.referencedBy?.length ? ` · 使用：${asset.referencedBy.join('、')}` : ''
@@ -539,16 +676,22 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
     async function loadVoices() {
       const res = await fetchTtsVoices()
       if (res.ok) {
-        voiceList.value = res.data?.builtin || []
-        const pvMap = {}
-        for (const p of (res.data?.personas || [])) {
-          if (p.name) pvMap[p.name] = { voiceId: p.voice || '', voiceStyle: p.style || '', voiceAssetId: p.voiceAssetId || '', hasSample: !!p.hasSample }
+        const data = asRecord(res.data)
+        voiceList.value = listFromData<unknown>(data.builtin).map(voice => readString(voice)).filter(Boolean)
+        const pvMap: Record<string, PersonaVoiceConfig> = {}
+        for (const p of listFromData<TtsPersonaVoiceSource>(data.personas)) {
+          const name = readString(p.name)
+          if (name) {
+            pvMap[name] = {
+              voiceId: readString(p.voice),
+              voiceStyle: readString(p.style),
+              voiceAssetId: readString(p.voiceAssetId),
+              hasSample: !!p.hasSample,
+            }
+          }
         }
         personaVoiceMap.value = pvMap
-        clonedVoices.value = (res.data?.clonedVoices || []).map(asset => ({
-          ...asset,
-          referencedBy: Array.isArray(asset.referencedBy) ? asset.referencedBy : [],
-        }))
+        clonedVoices.value = listFromData<unknown>(data.clonedVoices).map(normalizeVoiceAsset).filter((asset): asset is VoiceAsset => !!asset)
         if (voiceId.value === '__cloned__' && !findVoiceAssetById(selectedVoiceAssetId.value)) {
           selectedVoiceAssetId.value = pickDefaultVoiceAsset(voicePersona.value, pvMap[voicePersona.value]?.voiceAssetId)?.id || ''
         }
@@ -574,14 +717,14 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       if (next !== '__cloned__') selectedVoiceAssetId.value = ''
     })
 
-    function formatBytes(size) {
+    function formatBytes(size: unknown): string {
       const bytes = Number(size) || 0
       if (bytes < 1024) return `${bytes} B`
       if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
       return `${(bytes / 1024 / 1024).toFixed(1)} MB`
     }
 
-    function formatTime(ms) {
+    function formatTime(ms: unknown): string {
       const value = Number(ms) || 0
       if (!value) return '未知时间'
       return new Date(value).toLocaleString()
@@ -589,7 +732,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
 
     function revokePreviewAudioUrl() {
       if (!previewAudioObjectUrl.value) return
-      try { URL.revokeObjectURL(previewAudioObjectUrl.value) } catch {}
+      try { URL.revokeObjectURL(previewAudioObjectUrl.value) } catch { /* non-critical: preview object URL may already be released */ }
       previewAudioObjectUrl.value = ''
     }
 
@@ -598,18 +741,22 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       revokePreviewAudioUrl()
     }
 
-    function base64ToUint8Array(base64) {
+    function base64ToUint8Array(base64: string): Uint8Array {
       const raw = atob(String(base64 || '').replace(/\s+/g, ''))
       const bytes = new Uint8Array(raw.length)
       for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i)
       return bytes
     }
 
-    function buildPreviewAudioUrl(data) {
-      if (!data?.audio) return ''
-      const mimeType = data.mimeType || (data.format ? `audio/${data.format}` : 'audio/wav')
+    function buildPreviewAudioUrl(data: unknown): string {
+      const audioData = asRecord(data) as PreviewAudioData
+      if (!audioData.audio) return ''
+      const mimeType = audioData.mimeType || (audioData.format ? `audio/${audioData.format}` : 'audio/wav')
       try {
-        const blob = new Blob([base64ToUint8Array(data.audio)], { type: mimeType })
+        const bytes = base64ToUint8Array(audioData.audio)
+        const buffer = new ArrayBuffer(bytes.byteLength)
+        new Uint8Array(buffer).set(bytes)
+        const blob = new Blob([buffer], { type: mimeType })
         if (!blob.size) return ''
         return URL.createObjectURL(blob)
       } catch {
@@ -617,7 +764,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       }
     }
 
-    function setPreviewAudio(data) {
+    function setPreviewAudio(data: unknown): boolean {
       revokePreviewAudioUrl()
       const src = buildPreviewAudioUrl(data)
       if (!src) return false
@@ -626,8 +773,8 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       return true
     }
 
-    function onPreviewAudioLoaded(event) {
-      const audio = event?.target
+    function onPreviewAudioLoaded(event: Event) {
+      const audio = event.target instanceof HTMLAudioElement ? event.target : null
       if (!audio || !Number.isFinite(audio.duration) || audio.duration <= 0) {
         voiceMsg.value = { type: 'err', text: '试听音频无有效时长' }
       }
@@ -655,7 +802,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
         personaVoiceMap.value = { ...personaVoiceMap.value, [voicePersona.value]: { ...(personaVoiceMap.value[voicePersona.value] || {}), voiceId: voiceId.value, voiceStyle: voiceStyle.value, voiceAssetId: selectedAssetId } }
         await loadVoices()
       } else {
-        voiceMsg.value = { type: 'err', text: res.data?.message || '保存失败' }
+        voiceMsg.value = { type: 'err', text: messageFromData(res.data, '保存失败') }
       }
       voiceSaving.value = false
     }
@@ -671,31 +818,32 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       }
       const res = await ttsPreview(text, voiceId.value || '', voiceStyle.value.trim(), voicePersona.value, selectedAssetId)
       if (!res.ok || !setPreviewAudio(res.data)) {
-        voiceMsg.value = { type: 'err', text: res.data?.message || '试听失败' }
+        voiceMsg.value = { type: 'err', text: messageFromData(res.data, '试听失败') }
       }
       voicePreviewing.value = false
     }
 
-    function onCloneFileChange(e) {
-      cloneFile.value = e.target.files?.[0] || null
+    function onCloneFileChange(e: Event) {
+      const input = e.target instanceof HTMLInputElement ? e.target : null
+      cloneFile.value = input?.files?.[0] || null
       cloneStatus.value = ''
       if (cloneFile.value && !cloneDisplayName.value.trim()) {
         cloneDisplayName.value = cloneFile.value.name.replace(/\.[^.]+$/, '')
       }
     }
 
-    function readAudioDurationSeconds(file) {
+    function readAudioDurationSeconds(file: File): Promise<number> {
       return new Promise((resolve, reject) => {
         const audio = document.createElement('audio')
         const objectUrl = URL.createObjectURL(file)
         let settled = false
-        const finish = (fn, value) => {
+        const finish = <T,>(fn: (value: T) => void, value: T) => {
           if (settled) return
           settled = true
           clearTimeout(timer)
           audio.removeAttribute('src')
-          try { audio.load() } catch {}
-          try { URL.revokeObjectURL(objectUrl) } catch {}
+          try { audio.load() } catch { /* non-critical: browser may reject load after src cleanup */ }
+          try { URL.revokeObjectURL(objectUrl) } catch { /* non-critical: duration probe URL may already be released */ }
           fn(value)
         }
         const timer = setTimeout(() => finish(reject, new Error('读取音频时长超时')), 10000)
@@ -707,7 +855,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
         }
         audio.onerror = () => finish(reject, new Error('无法读取音频时长'))
         audio.src = objectUrl
-        try { audio.load() } catch {}
+        try { audio.load() } catch { /* non-critical: metadata events still report load failure */ }
       })
     }
 
@@ -729,7 +877,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
         }
       } catch (error) {
         cloneStatus.value = '读取失败'
-        voiceMsg.value = { type: 'err', text: error?.message || '无法读取音频时长' }
+        voiceMsg.value = { type: 'err', text: errorMessage(error, '无法读取音频时长') }
         return
       }
       voiceCloning.value = true; cloneStatus.value = '上传中...'; voiceMsg.value = null
@@ -745,13 +893,16 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
         })
         if (res.ok) {
           cloneStatus.value = '克隆成功'
+          const data = asRecord(res.data)
+          const asset = asRecord(data.asset)
+          const assetId = readString(asset.id)
           voiceId.value = '__cloned__'
-          selectedVoiceAssetId.value = res.data?.asset?.id || ''
-          personaVoiceMap.value = { ...personaVoiceMap.value, [voicePersona.value]: { ...(personaVoiceMap.value[voicePersona.value] || {}), voiceId: '__cloned__', voiceStyle: voiceStyle.value, hasSample: true, voiceAssetId: res.data?.asset?.id || '' } }
+          selectedVoiceAssetId.value = assetId
+          personaVoiceMap.value = { ...personaVoiceMap.value, [voicePersona.value]: { ...(personaVoiceMap.value[voicePersona.value] || {}), voiceId: '__cloned__', voiceStyle: voiceStyle.value, hasSample: true, voiceAssetId: assetId } }
           await loadVoices()
         } else {
           cloneStatus.value = '克隆失败'
-          voiceMsg.value = { type: 'err', text: res.data?.message || '克隆失败' }
+          voiceMsg.value = { type: 'err', text: messageFromData(res.data, '克隆失败') }
         }
         voiceCloning.value = false
       }
@@ -759,7 +910,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       reader.readAsDataURL(file)
     }
 
-    async function doPreviewAsset(asset) {
+    async function doPreviewAsset(asset: VoiceAsset) {
       if (!asset) return
       voicePreviewing.value = true; clearPreviewAudio(); voiceMsg.value = null
       const style = voiceStyle.value.trim() || personaVoiceMap.value[voicePersona.value]?.voiceStyle || personaVoiceMap.value[asset.personaName]?.voiceStyle || ''
@@ -767,12 +918,12 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
       const res = await ttsPreview(text, '__cloned__', style, voicePersona.value || asset.personaName, asset.id)
       if (res.code === 'ADMIN_REQUIRED') { voicePreviewing.value = false; if (showAdminDialog) showAdminDialog('试听克隆音色需要管理员密码', () => doPreviewAsset(asset)); return }
       if (!res.ok || !setPreviewAudio(res.data)) {
-        voiceMsg.value = { type: 'err', text: res.data?.message || '试听失败' }
+        voiceMsg.value = { type: 'err', text: messageFromData(res.data, '试听失败') }
       }
       voicePreviewing.value = false
     }
 
-    async function doUseAsset(asset) {
+    async function doUseAsset(asset: VoiceAsset) {
       if (!asset) return
       const targetPersona = voicePersona.value || asset.personaName
       if (!targetPersona) {
@@ -792,12 +943,12 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
         personaVoiceMap.value = { ...personaVoiceMap.value, [targetPersona]: { ...(personaVoiceMap.value[targetPersona] || {}), voiceId: '__cloned__', voiceStyle: style, hasSample: true, voiceAssetId: asset.id } }
         await loadVoices()
       } else {
-        voiceMsg.value = { type: 'err', text: res.data?.message || '启用失败' }
+        voiceMsg.value = { type: 'err', text: messageFromData(res.data, '启用失败') }
       }
       voiceSaving.value = false
     }
 
-    async function doUpdateAsset(asset) {
+    async function doUpdateAsset(asset: VoiceAsset) {
       if (!asset) return
       assetSaving.value = asset.id; voiceMsg.value = null
       const res = await updateTtsClone(asset.id, {
@@ -810,21 +961,23 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
         voiceMsg.value = { type: 'ok', text: '音色信息已保存' }
         await loadVoices()
       } else {
-        voiceMsg.value = { type: 'err', text: res.data?.message || '保存失败' }
+        voiceMsg.value = { type: 'err', text: messageFromData(res.data, '保存失败') }
       }
       assetSaving.value = ''
     }
 
-    async function doDeleteAsset(asset, force = false) {
+    async function doDeleteAsset(asset: VoiceAsset, force = false) {
       if (!asset) return
       if (!force && !window.confirm(`删除音色「${asset.displayName}」？`)) return
       if (force && !window.confirm(`删除音色「${asset.displayName}」并回退关联人格？`)) return
       assetDeleting.value = asset.id; voiceMsg.value = null
       const res = await deleteTtsClone(asset.id, force)
       if (res.code === 'ADMIN_REQUIRED') { assetDeleting.value = ''; if (showAdminDialog) showAdminDialog('删除克隆音色需要管理员密码', () => doDeleteAsset(asset, force)); return }
-      if (!res.ok && res.data?.code === 'VOICE_ASSET_IN_USE') {
+      const data = asRecord(res.data)
+      if (!res.ok && data.code === 'VOICE_ASSET_IN_USE') {
         assetDeleting.value = ''
-        if (window.confirm(`音色正在被 ${res.data.personas?.join('、') || asset.personaName} 使用，是否删除并回退为默认音色？`)) {
+        const inUsePersonas = listFromData<unknown>(data.personas).map(item => readString(item)).filter(Boolean)
+        if (window.confirm(`音色正在被 ${inUsePersonas.join('、') || asset.personaName} 使用，是否删除并回退为默认音色？`)) {
           await doDeleteAsset(asset, true)
         }
         return
@@ -837,7 +990,7 @@ const MAX_CLONE_AUDIO_DURATION_SECONDS = 60
         }
         await loadVoices()
       } else {
-        voiceMsg.value = { type: 'err', text: res.data?.message || '删除失败' }
+        voiceMsg.value = { type: 'err', text: messageFromData(res.data, '删除失败') }
       }
       assetDeleting.value = ''
     }

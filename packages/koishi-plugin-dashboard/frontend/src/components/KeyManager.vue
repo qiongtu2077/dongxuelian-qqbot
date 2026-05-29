@@ -115,11 +115,13 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { computed, inject, ref, onMounted } from 'vue'
 import { fetchKeys, updateKey, fetchKeysUsage } from '../api'
+import type { MessageState, ShowAdminDialog } from '../types'
+import { asRecord, errorMessage, messageFromData } from '../types'
 
-const providerColors = {
+const providerColors: Record<string, string> = {
   opencode: '#f7c948',
   openai: '#f7c948',
   dashscope: '#38bdf8',
@@ -158,14 +160,76 @@ const trendColors = {
 
 const UNKNOWN_MODEL_DISTRIBUTION_KEY = '__unknown-models__'
 
-const rangePresets = [
+type UsageRange = 'today' | '7d' | '30d' | 'date'
+
+interface KeyItem {
+  file: string
+  label: string
+  exists?: boolean
+  prefix?: string
+}
+
+interface UsageStat {
+  key: string
+  label: string
+  provider: string
+  total: number
+  requests: number
+  input: number
+  output: number
+  cacheCreation: number
+  cacheRead: number
+  color?: string
+  ratio?: number
+}
+
+interface UsageDay extends Record<string, unknown> {
+  date: string
+  total: number
+  requests: number
+  input: number
+  output: number
+  cacheCreation: number
+  cacheRead: number
+  models: Record<string, UsageStat>
+}
+
+interface ChartPoint {
+  x: number
+  y: number
+  value: number
+  label?: string
+}
+
+interface TrendLine {
+  key: string
+  label: string
+  color: string
+  fill?: string
+  points: ChartPoint[]
+  path: string
+}
+
+const EMPTY_USAGE_STAT: UsageStat = {
+  key: '',
+  label: '',
+  provider: '',
+  total: 0,
+  requests: 0,
+  input: 0,
+  output: 0,
+  cacheCreation: 0,
+  cacheRead: 0,
+}
+
+const rangePresets: Array<{ key: UsageRange, label: string }> = [
   { key: 'today', label: '今天' },
   { key: '7d', label: '7天' },
   { key: '30d', label: '30天' },
   { key: 'date', label: '指定日' },
 ]
 
-function formatTokens(n) {
+function formatTokens(n: unknown) {
   const value = Number(n || 0)
   if (value >= 1000000000) return (value / 1000000000).toFixed(2) + 'B'
   if (value >= 1000000) return (value / 1000000).toFixed(value >= 10000000 ? 1 : 2) + 'M'
@@ -173,30 +237,42 @@ function formatTokens(n) {
   return String(Math.round(value))
 }
 
-function formatNumber(n) {
+function formatNumber(n: unknown) {
   return new Intl.NumberFormat('zh-CN').format(Number(n || 0))
 }
 
-function formatPercent(n) {
+function formatPercent(n: unknown) {
   return Math.round(Number(n || 0) * 100) + '%'
 }
 
-function normalizeProvider(raw) {
+function normalizeProvider(raw: unknown): UsageStat {
   if (raw && typeof raw === 'object') {
-    const key = String(raw.key || raw.provider || raw.name || '').trim()
-    const label = String(raw.label || raw.name || key || 'unknown').trim()
-    return { ...raw, key: key || label || 'unknown', label: label || key || 'unknown' }
+    const data = asRecord(raw)
+    const key = String(data.key || data.provider || data.name || '').trim()
+    const label = String(data.label || data.name || key || 'unknown').trim()
+    return {
+      ...EMPTY_USAGE_STAT,
+      key: key || label || 'unknown',
+      label: label || key || 'unknown',
+      provider: String(data.provider || key || '').trim(),
+      total: toNumber(data.total),
+      requests: toNumber(data.requests),
+      input: toNumber(data.input),
+      output: toNumber(data.output),
+      cacheCreation: toNumber(data.cacheCreation),
+      cacheRead: toNumber(data.cacheRead),
+    }
   }
   const key = String(raw || '').trim()
-  return { key: key || 'unknown', label: key || 'unknown' }
+  return { ...EMPTY_USAGE_STAT, key: key || 'unknown', label: key || 'unknown', provider: key || 'unknown' }
 }
 
-function toNumber(value) {
+function toNumber(value: unknown) {
   const n = Number(value || 0)
   return Number.isFinite(n) && n > 0 ? n : 0
 }
 
-function buildSmoothPath(points) {
+function buildSmoothPath(points: ChartPoint[]) {
   if (!points.length) return ''
   if (points.length === 1) return `M ${points[0].x} ${points[0].y}`
   const parts = [`M ${points[0].x} ${points[0].y}`]
@@ -209,7 +285,7 @@ function buildSmoothPath(points) {
   return parts.join(' ')
 }
 
-function areaFromPoints(points, bottom) {
+function areaFromPoints(points: ChartPoint[], bottom: number) {
   if (!points.length) return ''
   return `${buildSmoothPath(points)} L ${points[points.length - 1].x} ${bottom} L ${points[0].x} ${bottom} Z`
 }
@@ -227,11 +303,11 @@ function todayShanghai() {
     month: '2-digit',
     day: '2-digit',
   }).formatToParts(new Date())
-  const pick = type => parts.find(item => item.type === type)?.value || ''
+  const pick = (type: string) => parts.find(item => item.type === type)?.value || ''
   return `${pick('year')}-${pick('month')}-${pick('day')}`
 }
 
-function filterUsageDays(days = [], range = '7d', selectedDate = '') {
+function filterUsageDays(days: UsageDay[] = [], range: UsageRange = '7d', selectedDate = ''): UsageDay[] {
   const sorted = (Array.isArray(days) ? days : [])
     .filter(day => day && day.date)
     .slice()
@@ -253,15 +329,18 @@ function filterUsageDays(days = [], range = '7d', selectedDate = '') {
   return sorted.filter(day => parseDateValue(day.date) >= minTs)
 }
 
-function normalizeDayModels(models = {}) {
-  const result = {}
+function normalizeDayModels(models: unknown = {}): Record<string, UsageStat> {
+  const result: Record<string, UsageStat> = {}
   if (!models || typeof models !== 'object') return result
   for (const [key, stat] of Object.entries(models)) {
     if (!key || !stat || typeof stat !== 'object') continue
-    const provider = String(stat.provider || String(key).split(':')[0] || '')
+    const row = asRecord(stat)
+    const provider = String(row.provider || String(key).split(':')[0] || '')
     const normalizedKey = normalizeModelKey(key, provider)
     if (!result[normalizedKey]) {
       result[normalizedKey] = {
+        key: normalizedKey,
+        label: getModelLabel(normalizedKey),
         provider,
         total: 0,
         requests: 0,
@@ -273,12 +352,12 @@ function normalizeDayModels(models = {}) {
     }
     const target = result[normalizedKey]
     target.provider = provider || target.provider
-    target.total += toNumber(stat.total)
-    target.requests += toNumber(stat.requests)
-    target.input += toNumber(stat.input)
-    target.output += toNumber(stat.output)
-    target.cacheCreation += toNumber(stat.cacheCreation)
-    target.cacheRead += toNumber(stat.cacheRead)
+    target.total += toNumber(row.total)
+    target.requests += toNumber(row.requests)
+    target.input += toNumber(row.input)
+    target.output += toNumber(row.output)
+    target.cacheCreation += toNumber(row.cacheCreation)
+    target.cacheRead += toNumber(row.cacheRead)
   }
   return result
 }
@@ -294,9 +373,10 @@ function isUnknownModelKey(key = '') {
   return /:(legacy|unknown)$/i.test(String(key || ''))
 }
 
-function addModelStat(map, raw = {}) {
-  const provider = String(raw.provider || String(raw.key || '').split(':')[0] || '')
-  const key = normalizeModelKey(raw.key || raw.name || raw.label, provider)
+function addModelStat(map: Map<string, UsageStat>, raw: unknown = {}) {
+  const data = asRecord(raw)
+  const provider = String(data.provider || String(data.key || '').split(':')[0] || '')
+  const key = normalizeModelKey(String(data.key || data.name || data.label || ''), provider)
   const current = map.get(key) || {
     key,
     label: getModelLabel(key),
@@ -309,27 +389,27 @@ function addModelStat(map, raw = {}) {
     cacheRead: 0,
   }
   current.provider = provider || current.provider
-  const label = String(raw.label || raw.name || '').trim()
+  const label = String(data.label || data.name || '').trim()
   if (label && !/未分模型$/.test(current.label)) current.label = getModelLabel(key) === key ? label : getModelLabel(key)
-  current.total += toNumber(raw.total)
-  current.requests += toNumber(raw.requests)
-  current.input += toNumber(raw.input)
-  current.output += toNumber(raw.output)
-  current.cacheCreation += toNumber(raw.cacheCreation)
-  current.cacheRead += toNumber(raw.cacheRead)
+  current.total += toNumber(data.total)
+  current.requests += toNumber(data.requests)
+  current.input += toNumber(data.input)
+  current.output += toNumber(data.output)
+  current.cacheCreation += toNumber(data.cacheCreation)
+  current.cacheRead += toNumber(data.cacheRead)
   map.set(key, current)
 }
 
-function withDistributionColors(rows = []) {
+function withDistributionColors(rows: UsageStat[] = []): UsageStat[] {
   return rows.map((row, index) => ({
     ...row,
     color: distributionPalette[index % distributionPalette.length],
   }))
 }
 
-function collapseUnknownModelRows(rows = []) {
-  const result = []
-  let unknown = null
+function collapseUnknownModelRows(rows: UsageStat[] = []): UsageStat[] {
+  const result: UsageStat[] = []
+  let unknown: UsageStat | null = null
   for (const row of rows) {
     if (!isUnknownModelKey(row.key)) {
       result.push(row)
@@ -360,13 +440,15 @@ function collapseUnknownModelRows(rows = []) {
   return result
 }
 
-function aggregateDayProviderModels(day = {}) {
-  const byProvider = {}
+function aggregateDayProviderModels(day: Pick<UsageDay, 'models'>): Record<string, UsageStat> {
+  const byProvider: Record<string, UsageStat> = {}
   for (const stat of Object.values(day.models || {})) {
     const provider = String(stat.provider || '')
     if (!provider) continue
     if (!byProvider[provider]) {
       byProvider[provider] = {
+        key: provider,
+        label: provider,
         provider,
         total: 0,
         requests: 0,
@@ -386,11 +468,11 @@ function aggregateDayProviderModels(day = {}) {
   return byProvider
 }
 
-function subtractNonNegative(total, used) {
+function subtractNonNegative(total: unknown, used: unknown) {
   return Math.max(0, toNumber(total) - toNumber(used))
 }
 
-function normalizeProviderDayModels(day = {}, providers = []) {
+function normalizeProviderDayModels(day: UsageDay, providers: UsageStat[]): Record<string, UsageStat> {
   const models = { ...(day.models || {}) }
   const byProvider = aggregateDayProviderModels({ models })
   for (const provider of providers) {
@@ -433,17 +515,17 @@ function formatChartDate(date = '') {
 export default {
   name: 'KeyManager',
   setup() {
-    const showAdminDialog = inject('showAdminDialog')
-    const keys = ref([])
-    const editing = ref(null)
+    const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
+    const keys = ref<KeyItem[]>([])
+    const editing = ref<KeyItem | null>(null)
     const editValue = ref('')
     const saving = ref(false)
-    const keyMsg = ref(null)
-    const usageDays = ref([])
-    const usageProviders = ref([])
-    const usageModels = ref([])
+    const keyMsg = ref<MessageState | null>(null)
+    const usageDays = ref<UsageDay[]>([])
+    const usageProviders = ref<UsageStat[]>([])
+    const usageModels = ref<UsageStat[]>([])
     const loadingUsage = ref(false)
-    const usageRange = ref('7d')
+    const usageRange = ref<UsageRange>('7d')
     const selectedUsageDate = ref('')
 
     const usageMinDate = computed(() => usageDays.value[0]?.date || '')
@@ -464,11 +546,11 @@ export default {
     async function loadKeys() {
       const res = await fetchKeys()
       if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('查看 Key 需要管理员密码', loadKeys); return }
-      if (res.ok) keys.value = res.data
+      if (res.ok) keys.value = Array.isArray(res.data) ? res.data as KeyItem[] : []
     }
     onMounted(() => { loadKeys(); loadUsage() })
 
-    function editKey(k) {
+    function editKey(k: KeyItem) {
       editing.value = k
       editValue.value = ''
       keyMsg.value = null
@@ -479,26 +561,28 @@ export default {
       saving.value = true
       keyMsg.value = null
       try {
+        if (!editing.value) return
         const res = await updateKey(editing.value.file, editValue.value.trim())
         if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('修改 Key 需要管理员密码', saveKey); saving.value = false; return }
         if (res.ok) {
           keyMsg.value = { type: 'ok', text: 'Key 已更新并热加载' }
           const reload = await fetchKeys()
-          if (reload.ok) keys.value = reload.data
+          if (reload.ok) keys.value = Array.isArray(reload.data) ? reload.data as KeyItem[] : []
           editing.value = null
         } else {
-          keyMsg.value = { type: 'err', text: res.data?.message || '保存失败' }
+          keyMsg.value = { type: 'err', text: messageFromData(res.data, '保存失败') }
         }
-      } catch (e) { keyMsg.value = { type: 'err', text: e.message } }
+      } catch (e) { keyMsg.value = { type: 'err', text: errorMessage(e) } }
       saving.value = false
     }
 
     async function loadUsage() {
       loadingUsage.value = true
       const res = await fetchKeysUsage()
+      const data = asRecord(res.data)
       if (res.ok && res.data) {
-        const providerMap = new Map()
-        for (const rawProvider of (res.data.providers || [])) {
+        const providerMap = new Map<string, UsageStat>()
+        for (const rawProvider of (Array.isArray(data.providers) ? data.providers : [])) {
           const provider = normalizeProvider(rawProvider)
           if (!provider.key || providerMap.has(provider.key)) continue
           providerMap.set(provider.key, {
@@ -512,8 +596,9 @@ export default {
             color: providerColors[provider.key] || providerColors.unknown,
           })
         }
-        usageDays.value = (res.data.days || []).map(function(day) {
-          const normalized = {
+        usageDays.value = (Array.isArray(data.days) ? data.days : []).map(function(rawDay) {
+          const day = asRecord(rawDay)
+          const normalized: UsageDay = {
             date: String(day.date || ''),
             total: toNumber(day.total),
             requests: toNumber(day.requests),
@@ -526,27 +611,27 @@ export default {
           for (const [key, value] of Object.entries(day || {})) {
             if (['date', 'total', 'requests', 'input', 'output', 'cacheCreation', 'cacheRead', 'models'].includes(key)) continue
             normalized[key] = toNumber(value)
-            if (!providerMap.has(key)) providerMap.set(key, { key, label: key, total: 0, requests: 0, color: providerColors[key] || providerColors.unknown })
+            if (!providerMap.has(key)) providerMap.set(key, { ...EMPTY_USAGE_STAT, key, label: key, provider: key, total: 0, requests: 0, color: providerColors[key] || providerColors.unknown })
           }
           normalized.models = normalizeProviderDayModels(normalized, Array.from(providerMap.values()))
           return normalized
         })
         if (!selectedUsageDate.value && usageDays.value.length) selectedUsageDate.value = usageDays.value.find(day => day.date === todayShanghai())?.date || usageDays.value[usageDays.value.length - 1].date
         usageProviders.value = Array.from(providerMap.values())
-        const modelMap = new Map()
-        for (const model of (res.data.models || [])) addModelStat(modelMap, model)
+        const modelMap = new Map<string, UsageStat>()
+        for (const model of (Array.isArray(data.models) ? data.models : [])) addModelStat(modelMap, model)
         usageModels.value = Array.from(modelMap.values()).filter(item => item.total > 0)
       }
       loadingUsage.value = false
     }
 
-    function setUsageRange(key) {
+    function setUsageRange(key: UsageRange) {
       usageRange.value = key
       if (key === 'today') selectedUsageDate.value = todayShanghai()
       if (key === 'date' && !selectedUsageDate.value && usageMaxDate.value) selectedUsageDate.value = usageMaxDate.value
     }
 
-    function dayTotal(day) {
+    function dayTotal(day: UsageDay) {
       const explicit = toNumber(day.total)
       if (explicit > 0) return explicit
       let sum = 0
@@ -554,11 +639,11 @@ export default {
       return sum
     }
 
-    function yFor(value, max = usageMax.value) {
+    function yFor(value: unknown, max = usageMax.value) {
       return chart.bottom - (toNumber(value) / Math.max(max, 1)) * (chart.bottom - chart.top)
     }
 
-    function buildPoints(key, max = usageMax.value) {
+    function buildPoints(key: string, max = usageMax.value): ChartPoint[] {
       const days = filteredUsageDays.value
       const count = days.length
       return days.map((day, index) => {
@@ -574,7 +659,7 @@ export default {
     })).filter(item => item.total > 0))
 
     const filteredModelDistribution = computed(() => {
-      const byModel = new Map()
+      const byModel = new Map<string, UsageStat>()
       for (const day of filteredUsageDays.value) {
         for (const [modelKey, stat] of Object.entries(day.models || {})) {
           const provider = String(stat.provider || '')
@@ -618,7 +703,7 @@ export default {
       let cursor = 0
       const parts = distributionRows.value.map(row => {
         const start = cursor
-        const end = cursor + row.ratio * 100
+        const end = cursor + (row.ratio || 0) * 100
         cursor = end
         return `${row.color} ${start}% ${end}%`
       })
@@ -645,7 +730,7 @@ export default {
 
     const hasDetailedTrend = computed(() => filteredUsageDays.value.some(day => day.input || day.output || day.cacheCreation || day.cacheRead))
     const hasCacheHitRate = computed(() => filteredUsageDays.value.some(day => day.cacheRead || day.input))
-    const trendLines = computed(() => {
+    const trendLines = computed<TrendLine[]>(() => {
       const keys = hasDetailedTrend.value
         ? [
             { key: 'input', label: 'Input', color: trendColors.input, fill: 'rgba(79, 124, 243, 0.12)' },

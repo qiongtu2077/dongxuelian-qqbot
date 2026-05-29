@@ -130,43 +130,52 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { computed, ref, onMounted, inject } from 'vue'
 import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo, fetchSelfId, updateSelfId, fetchThrottle, saveThrottle, restartNapcat } from '../api'
+import type { MessageState, ShowAdminDialog } from '../types'
+import { asRecord, errorMessage, messageFromData } from '../types'
+
+interface BotStatusData {
+  loading: boolean
+  running: boolean
+  workers: number
+  qq?: string
+}
 
 export default {
   name: 'ControlPanel',
   setup() {
-    const showAdminDialog = inject('showAdminDialog')
+    const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
 
-    const status = ref({ loading: true, running: false, workers: 0 })
+    const status = ref<BotStatusData>({ loading: true, running: false, workers: 0 })
     const acting = ref(false)
     const pendingVerify = ref(false)
-    const resultMsg = ref(null)
+    const resultMsg = ref<MessageState | null>(null)
     const maintenanceOn = ref(false)
     const maintLoading = ref(false)
     const throttleMax = ref(20)
     const savingThrottle = ref(false)
-    const throttleMsg = ref(null)
+    const throttleMsg = ref<MessageState | null>(null)
     const napcatToken = ref('')
     const tokenIsReal = ref(false)
     const showNapcatToken = ref(false)
     const copiedMsg = ref('')
     const restartingNapcat = ref(false)
-    const napcatRestartMsg = ref(null)
+    const napcatRestartMsg = ref<MessageState | null>(null)
     const displayNapcatToken = computed(() => {
       if (!tokenIsReal.value) return napcatToken.value || '点击查看 NapCat token 后显示'
       return showNapcatToken.value ? napcatToken.value : maskSecret(napcatToken.value)
     })
 
-    function maskSecret(value) {
+    function maskSecret(value: string) {
       const raw = String(value || '')
       if (!raw) return '加载中...'
       if (raw.length <= 3) return raw
       return raw.slice(0, 3) + '*'.repeat(raw.length - 3)
     }
 
-    function normalizeSSHHost(raw) {
+    function normalizeSSHHost(raw: unknown) {
       let s = String(raw ?? '').trim()
       if (!s) return ''
       s = s.replace(/^https?:\/\//i, '')
@@ -188,17 +197,25 @@ export default {
     const sshUser = ref('root')
     const newSelfId = ref('')
     const savingSelfId = ref(false)
-    const selfIdMsg = ref(null)
+    const selfIdMsg = ref<MessageState | null>(null)
     const diagMsg = ref('')
 
     async function loadStatus() {
       const res = await botStatus()
-      if (res.ok) status.value = { loading: false, ...res.data }
+      if (res.ok) {
+        const data = asRecord(res.data)
+        status.value = {
+          loading: false,
+          running: !!data.running,
+          workers: Number(data.workers) || 0,
+          qq: typeof data.qq === 'string' ? data.qq : undefined,
+        }
+      }
       else status.value = { loading: false, running: false, workers: 0 }
     }
     async function loadMaintenance() {
       const res = await fetchMaintenance()
-      if (res.ok) maintenanceOn.value = res.data.enabled
+      if (res.ok) maintenanceOn.value = !!asRecord(res.data).enabled
     }
     async function loadQQToken() {
       const res = await fetchQQToken()
@@ -208,8 +225,9 @@ export default {
         tokenIsReal.value = false
         return
       }
-      if (res.ok && res.data?.token) {
-        napcatToken.value = res.data.token
+      const data = asRecord(res.data)
+      if (res.ok && typeof data.token === 'string') {
+        napcatToken.value = data.token
         tokenIsReal.value = true
       }
     }
@@ -222,14 +240,16 @@ export default {
         if (showAdminDialog) showAdminDialog('查看 SSH 信息需要管理员密码', loadSSHInfo)
         return
       }
+      const data = asRecord(res.data)
       if (res.ok && res.data) {
-        if (res.data.host && !sshHost.value) sshHost.value = normalizeSSHHost(res.data.host)
-        if (res.data.user) sshUser.value = res.data.user
+        if (data.host && !sshHost.value) sshHost.value = normalizeSSHHost(data.host)
+        if (typeof data.user === 'string') sshUser.value = data.user
       }
     }
     async function loadSelfId() {
       const res = await fetchSelfId()
-      if (res.ok && res.data?.selfId) newSelfId.value = res.data.selfId
+      const data = asRecord(res.data)
+      if (res.ok && data.selfId) newSelfId.value = String(data.selfId)
     }
     async function saveSelfId() {
       if (!newSelfId.value.trim() || !/^\d+$/.test(newSelfId.value.trim())) {
@@ -243,8 +263,8 @@ export default {
           savingSelfId.value = false
           return
         }
-        selfIdMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已保存，Koishi 正在重启' : '保存失败') }
-      } catch (e) { selfIdMsg.value = { type: 'err', text: e.message }
+        selfIdMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? '已保存，Koishi 正在重启' : '保存失败') }
+      } catch (e) { selfIdMsg.value = { type: 'err', text: errorMessage(e) }
       } finally { savingSelfId.value = false }
     }
 
@@ -261,17 +281,17 @@ export default {
 
     async function loadThrottle() {
       const res = await fetchThrottle()
-      if (res.ok) throttleMax.value = res.data.maxPerMinute || 20
+      if (res.ok) throttleMax.value = Number(asRecord(res.data).maxPerMinute) || 20
     }
 
     async function saveThrottleConfig() {
       savingThrottle.value = true; throttleMsg.value = null
-      const val = parseInt(throttleMax.value, 10)
+      const val = Number.parseInt(String(throttleMax.value), 10)
       if (isNaN(val) || val < 1) { throttleMsg.value = { type: 'err', text: '每分钟上限必须 >= 1' }; savingThrottle.value = false; return }
       const res = await saveThrottle({ maxPerMinute: val })
       if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('保存节流配置需要管理员密码', saveThrottleConfig); savingThrottle.value = false; return }
       if (res.ok) throttleMsg.value = { type: 'ok', text: '节流配置已保存' }
-      else throttleMsg.value = { type: 'err', text: res.data?.message || '保存失败' }
+      else throttleMsg.value = { type: 'err', text: messageFromData(res.data, '保存失败') }
       savingThrottle.value = false
     }
 
@@ -281,12 +301,12 @@ export default {
         const res = await startBot()
         diagMsg.value = '返回: ' + JSON.stringify({ ok: res.ok, code: res.code, data: res.data }, null, 2)
       } catch (e) {
-        diagMsg.value = '异常: ' + e.message
+        diagMsg.value = '异常: ' + errorMessage(e)
       }
       setTimeout(() => diagMsg.value = '', 8000)
     }
 
-    function copyText(id) {
+    function copyText(id: string) {
       const el = document.getElementById(id)
       if (!el) return
       const text = el.textContent || el.innerText
@@ -298,7 +318,7 @@ export default {
       } catch { fallbackCopy(text) }
     }
 
-    function copyValue(value) {
+    function copyValue(value: string) {
       if (!tokenIsReal.value) {
         window.alert('不验证密码就想获得token？')
         return
@@ -313,13 +333,13 @@ export default {
       } catch { fallbackCopy(text) }
     }
 
-    function fallbackCopy(text) {
+    function fallbackCopy(text: string) {
       const ta = document.createElement('textarea')
       ta.value = text.trim()
       ta.style.position = 'fixed'; ta.style.opacity = '0'
       document.body.appendChild(ta)
       ta.select()
-      try { document.execCommand('copy'); copiedMsg.value = '已复制' } catch {}
+      try { document.execCommand('copy'); copiedMsg.value = '已复制' } catch { /* non-critical: clipboard fallback is best-effort */ }
       document.body.removeChild(ta)
       setTimeout(() => copiedMsg.value = '', 2000)
     }
@@ -333,12 +353,12 @@ export default {
           acting.value = false
           return
         }
-        resultMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已发送启动命令，等待 15 秒验证...' : '启动失败') }
+        resultMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? '已发送启动命令，等待 15 秒验证...' : '启动失败') }
         if (res.ok) {
           pendingVerify.value = true
           setTimeout(() => { loadStatus(); pendingVerify.value = false }, 15000)
         } else loadStatus()
-      } catch (e) { resultMsg.value = { type: 'err', text: e.message }
+      } catch (e) { resultMsg.value = { type: 'err', text: errorMessage(e) }
       } finally { acting.value = false }
     }
 
@@ -351,9 +371,9 @@ export default {
           acting.value = false
           return
         }
-        resultMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '已停止' : '停止失败') }
+        resultMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? '已停止' : '停止失败') }
         loadStatus()
-      } catch (e) { resultMsg.value = { type: 'err', text: e.message }
+      } catch (e) { resultMsg.value = { type: 'err', text: errorMessage(e) }
       } finally { acting.value = false }
     }
 
@@ -366,9 +386,9 @@ export default {
           restartingNapcat.value = false
           return
         }
-        napcatRestartMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? 'NapCat 重启命令已发送，等待 10 秒后刷新状态...' : '重启失败') }
+        napcatRestartMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? 'NapCat 重启命令已发送，等待 10 秒后刷新状态...' : '重启失败') }
         if (res.ok) setTimeout(() => loadStatus(), 10000)
-      } catch (e) { napcatRestartMsg.value = { type: 'err', text: e.message }
+      } catch (e) { napcatRestartMsg.value = { type: 'err', text: errorMessage(e) }
       } finally { restartingNapcat.value = false }
     }
 

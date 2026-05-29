@@ -249,7 +249,7 @@
           </div>
           <div class="uninstall-list themed-scrollbar">
             <label v-for="item in uninstallUserDataItems" :key="item.key" :class="['uninstall-row', shouldKeepUserData(item) ? 'keep' : 'delete']">
-              <input type="checkbox" :checked="shouldKeepUserData(item)" @change="setUserDataKeep(item, $event.target.checked)" :disabled="uninstalling" />
+              <input type="checkbox" :checked="shouldKeepUserData(item)" @change="onUserDataKeepChange(item, $event)" :disabled="uninstalling" />
               <div><strong>{{ item.label }}</strong><small>{{ item.reason }}</small></div>
               <code>{{ formatUninstallPaths(item) }}</code>
               <b>{{ shouldKeepUserData(item) ? '保留' : formatSize(item.size) }}</b>
@@ -301,7 +301,7 @@
 
       <div style="margin-top:12px">
         <input ref="cookieInput" type="file" accept=".txt" style="display:none" @change="uploadCookie" />
-        <button class="btn btn-sm btn-ghost" type="button" @click="$refs.cookieInput.click()">上传 B 站 cookies.txt</button>
+        <button class="btn btn-sm btn-ghost" type="button" @click="cookieInput?.click()">上传 B 站 cookies.txt</button>
       </div>
 
       <div v-if="remoteMsg" class="msg" :class="remoteMsg.type">{{ remoteMsg.text }}</div>
@@ -310,11 +310,266 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { computed, inject, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { getDongxuelianDeployerBridge, isElectronDeployerEnv } from '../electron-deployer'
 import { checkDeployUpdate, checkLocalEnv, confirmDeploy, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, installPortableNode, koishiDeployStatus, localReadyCheck, napcatDeployStatus, npmInstallStatus, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, repairNpmProxyAndInstall, runDeploy, startKoishiLocal, startNapcat, startNpmInstall, updateDeployConfig, uploadDeploy } from '../api'
+import type { ApiResult, MessageState, SelectOption, ShowAdminDialog } from '../types'
+import { asRecord, errorMessage, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
+
+type DeployMode = 'local' | 'remote'
+type RemoteMode = 'install' | 'update'
+type LocalStepId = 'env' | 'install' | 'config' | 'npm' | 'napcat-start' | 'scan' | 'koishi' | 'health'
+type LocalStepStatus = 'pending' | 'running' | 'success' | 'waiting' | 'failed' | 'skipped'
+type AdminRetry = () => unknown
+
+interface LocalConfig {
+  qq: string
+  provider: string
+  model: string
+  baseUrl: string
+  apiKey: string
+}
+
+interface RemoteConfig {
+  server: string
+  appDir: string
+  mode: RemoteMode
+}
+
+interface LocalStepDef {
+  id: LocalStepId
+  title: string
+  description: string
+}
+
+interface WizardStep extends LocalStepDef {
+  status: LocalStepStatus
+}
+
+interface ElectronAppInfo {
+  distribution?: string
+  executableDir?: string
+  resourceRoot?: string
+  workspaceRoot?: string
+  logDir?: string
+  fallbackReason?: string
+}
+
+interface ElectronPathRow {
+  key: string
+  label: string
+  path: string
+}
+
+interface LocalWorkspaceInfo {
+  isTempRuntime?: boolean
+  packaged?: boolean
+  reasons?: string[]
+  workspaceRoot?: string
+}
+
+interface LocalDeployTarget {
+  platform?: string
+  arch?: string
+  canRunWindowsLocalDeploy?: boolean
+  blockedReason?: string
+  workspace?: LocalWorkspaceInfo
+}
+
+interface ToolInfo {
+  ok?: boolean
+  found?: boolean
+  version?: string
+  sourcePath?: string
+  reason?: string
+  ownedByProject?: boolean
+}
+
+interface DependencyInfo {
+  ready?: boolean
+  reason?: string
+}
+
+interface PreviewItem {
+  key: string
+  label: string
+  action: string
+  path: string
+  reason: string
+  size?: number
+  version?: string
+  message: string
+  paths?: Array<{ path?: string; size?: number }>
+}
+
+interface DeletePreview {
+  files?: PreviewItem[]
+  protected?: PreviewItem[]
+}
+
+interface NapcatInfo {
+  found?: boolean
+  status?: string
+  reason?: string
+  entry?: string
+  path?: string
+  expectedPath?: string
+}
+
+interface PortInfo {
+  status?: string
+  available?: boolean
+}
+
+interface EnvCheckData {
+  localDeployTarget?: LocalDeployTarget
+  host?: { platform?: string; arch?: string; hostname?: string }
+  platform?: string
+  projectDir?: string
+  runtimeDir?: string
+  node?: ToolInfo
+  npm?: ToolInfo
+  dependencies?: DependencyInfo
+  localConfig?: DeletePreview
+  napcat?: NapcatInfo
+  ports?: Record<string, PortInfo>
+}
+
+interface LoginStatus {
+  status?: string
+  reason?: string
+}
+
+interface DeployTaskStatus {
+  state?: string
+  running?: boolean
+  logLines?: string[]
+  logFile?: string
+  dependencies?: DependencyInfo
+  webuiPort?: PortInfo
+  onebotPort?: PortInfo
+  login?: LoginStatus
+  port?: PortInfo
+  failureGuide?: NpmFailureGuide
+}
+
+interface NpmGuideStep {
+  label: string
+  command: string
+}
+
+interface NpmFailureGuide {
+  title?: string
+  summary?: string
+  code?: string
+  fixSteps?: string[]
+  commands?: string[]
+  diagnostics?: Record<string, unknown>
+}
+
+interface ReadyCheck {
+  basicReady?: boolean
+  fullyReady?: boolean
+  message?: string
+  dashboardUrl?: string
+  koishiUrl?: string
+}
+
+interface UninstallPreview {
+  deleteItems?: PreviewItem[]
+  userDataItems?: PreviewItem[]
+  keepItems?: PreviewItem[]
+  warnings?: PreviewItem[]
+}
+
+interface DeployRunData {
+  taskId?: string
+  message?: string
+}
+
+interface DeployProgressData {
+  lines?: string[]
+  done?: boolean
+  success?: boolean
+}
+
+interface RebuildStatusData {
+  state?: string
+  message?: string
+  detail?: string
+}
+
+interface DeployActionData {
+  message?: string
+  manualSteps?: string[]
+  needsManualSetup?: boolean
+  files?: PreviewItem[]
+  deleted?: unknown[]
+  status?: DeployTaskStatus
+  skipped?: boolean
+  guide?: boolean
+  steps?: NpmGuideStep[]
+}
+
+interface DeployUpdateData {
+  upToDate?: boolean
+  local?: string
+  deployed?: string
+}
+
+function readString(value: unknown, fallback = ''): string {
+  if (typeof value === 'string') return value
+  if (value === undefined || value === null) return fallback
+  return String(value)
+}
+
+function readNumber(value: unknown, fallback = 0): number {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : fallback
+}
+
+function listFromData<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value as T[] : []
+}
+
+function dataRecord<T extends object>(value: unknown): T {
+  return asRecord(value) as T
+}
+
+function normalizePreviewItem(value: unknown): PreviewItem {
+  const raw = asRecord(value)
+  return {
+    key: readString(raw.key, readString(raw.path) || readString(raw.label)),
+    label: readString(raw.label),
+    action: readString(raw.action),
+    path: readString(raw.path),
+    reason: readString(raw.reason),
+    size: raw.size === undefined ? undefined : readNumber(raw.size),
+    version: readString(raw.version) || undefined,
+    message: readString(raw.message),
+    paths: listFromData<Record<string, unknown>>(raw.paths).map(item => ({ path: readString(item.path), size: item.size === undefined ? undefined : readNumber(item.size) })),
+  }
+}
+
+function normalizeDeletePreview(value: unknown): DeletePreview {
+  const raw = asRecord(value)
+  return {
+    files: listFromData<unknown>(raw.files).map(normalizePreviewItem),
+    protected: listFromData<unknown>(raw.protected).map(normalizePreviewItem),
+  }
+}
+
+function normalizeUninstallPreview(value: unknown): UninstallPreview {
+  const raw = asRecord(value)
+  return {
+    deleteItems: listFromData<unknown>(raw.deleteItems).map(normalizePreviewItem),
+    userDataItems: listFromData<unknown>(raw.userDataItems).map(normalizePreviewItem),
+    keepItems: listFromData<unknown>(raw.keepItems).map(normalizePreviewItem),
+    warnings: listFromData<unknown>(raw.warnings).map(normalizePreviewItem),
+  }
+}
 
 export default {
   name: 'DeployPanel',
@@ -322,27 +577,28 @@ export default {
   props: { locked: { type: Boolean, default: false } },
   emits: ['unlocked'],
   setup() {
-    const showAdminDialog = inject('showAdminDialog')
-    const mode = ref('local')
-    const local = reactive({ qq: '', provider: 'opencode', model: 'deepseek-v4-flash', baseUrl: 'https://opencode.ai/zen/go/v1', apiKey: '' })
-    const remote = reactive({ server: '', appDir: '', mode: 'update' })
-    const remoteModeOptions = [
+    const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
+    const mode = ref<DeployMode>('local')
+    const local = reactive<LocalConfig>({ qq: '', provider: 'opencode', model: 'deepseek-v4-flash', baseUrl: 'https://opencode.ai/zen/go/v1', apiKey: '' })
+    const remote = reactive<RemoteConfig>({ server: '', appDir: '', mode: 'update' })
+    const remoteModeOptions: SelectOption<RemoteMode>[] = [
       { value: 'install', label: '实验性首次安装' },
       { value: 'update', label: '更新已有部署' },
     ]
-    const env = ref(null)
-    const localMsg = ref(null)
+    const env = ref<EnvCheckData | null>(null)
+    const localMsg = ref<MessageState | null>(null)
     const localAlert = ref('')
-    const remoteMsg = ref(null)
-    const logs = ref([])
-    const electronAppInfo = ref(null)
+    const remoteMsg = ref<MessageState | null>(null)
+    const logs = ref<string[]>([])
+    const electronAppInfo = ref<ElectronAppInfo | null>(null)
     const napcatUrl = ref('')
     const napcatInstallDir = ref('')
-    const deletePreview = ref(null)
-    const uninstallPreview = ref(null)
-    const deleteUserDataKeys = ref([])
+    const deletePreview = ref<DeletePreview | null>(null)
+    const uninstallPreview = ref<UninstallPreview | null>(null)
+    const deleteUserDataKeys = ref<string[]>([])
     const uninstallConfirmed = ref(false)
-    const deployLogRef = ref(null)
+    const deployLogRef = ref<HTMLPreElement | null>(null)
+    const cookieInput = ref<HTMLInputElement | null>(null)
     const checking = ref(false)
     const installingNode = ref(false)
     const downloading = ref(false)
@@ -359,24 +615,24 @@ export default {
     const startingKoishi = ref(false)
     const checkingReady = ref(false)
     const activeLocalStep = ref('env')
-    const localLogRef = ref(null)
-    const npmTaskStatus = ref(null)
-    const npmGuideSteps = ref(null)
-    const napcatTaskStatus = ref(null)
-    const koishiTaskStatus = ref(null)
-    const readyCheck = ref(null)
+    const localLogRef = ref<HTMLPreElement | null>(null)
+    const npmTaskStatus = ref<DeployTaskStatus | null>(null)
+    const npmGuideSteps = ref<NpmGuideStep[] | null>(null)
+    const napcatTaskStatus = ref<DeployTaskStatus | null>(null)
+    const koishiTaskStatus = ref<DeployTaskStatus | null>(null)
+    const readyCheck = ref<ReadyCheck | null>(null)
     const savingRemote = ref(false)
     const deploying = ref(false)
     const rebuilding = ref(false)
-    let progressTimer = null
-    let localStatusTimer = null
+    let progressTimer: ReturnType<typeof setInterval> | null = null
+    let localStatusTimer: ReturnType<typeof setInterval> | null = null
     let localStatusLoading = false
     let localStatusPending = false
-    let rebuildTimer = null
-    let rebuildTimeout = null
+    let rebuildTimer: ReturnType<typeof setInterval> | null = null
+    let rebuildTimeout: ReturnType<typeof setTimeout> | null = null
 
     const localFlowText = '环境检测 -> 安装 NapCat -> 生成配置 -> npm install -> 启动 NapCat -> 等待扫码 -> 启动 Koishi -> 健康检查'
-    const localStepDefs = [
+    const localStepDefs: LocalStepDef[] = [
       { id: 'env', title: '环境检测', description: '确认当前 Windows 目标机、Node.js、npm、端口和项目目录。' },
       { id: 'install', title: '安装 NapCat', description: '下载并解压 NapCat 官方 Windows 包到 runtime/napcat 或你选择的目录。' },
       { id: 'config', title: '生成配置', description: '写入 koishi.yml、start-local.bat 和本地 AI 配置；AI Key 可留空。' },
@@ -386,10 +642,10 @@ export default {
       { id: 'koishi', title: '启动 Koishi', description: '启动 Koishi 5140 服务，并连接 NapCat 的 OneBot WebSocket。' },
       { id: 'health', title: '健康检查', description: '检查 Node/npm、依赖、NapCat、OneBot、Koishi 和 AI Key 状态。' },
     ]
-    const stationState = reactive(Object.fromEntries(localStepDefs.map(step => [step.id, 'pending'])))
+    const stationState = reactive<Record<LocalStepId, LocalStepStatus>>(Object.fromEntries(localStepDefs.map(step => [step.id, 'pending'])) as Record<LocalStepId, LocalStepStatus>)
 
-    const deployerBridge = computed(() => getDongxuelianDeployerBridge())
-    const localDeployTarget = computed(() => env.value?.localDeployTarget || null)
+    const deployerBridge = computed<DongxuelianDeployerBridge | null>(() => getDongxuelianDeployerBridge())
+    const localDeployTarget = computed<LocalDeployTarget | null>(() => env.value?.localDeployTarget || null)
     const backendPlatform = computed(() => localDeployTarget.value?.platform || env.value?.host?.platform || env.value?.platform || '')
     const isWindows = computed(() => (backendPlatform.value || deployerBridge.value?.platform) === 'win32')
     const canRunWindowsLocalDeploy = computed(() => localDeployTarget.value ? !!localDeployTarget.value.canRunWindowsLocalDeploy : isWindows.value)
@@ -409,7 +665,7 @@ export default {
       if (type === 'installed') return '安装版程序目录和运行数据分开；运行数据在文档目录 LianLianBOT。'
       return '源码模式使用当前仓库目录。'
     })
-    const electronPathRows = computed(() => {
+    const electronPathRows = computed<ElectronPathRow[]>(() => {
       const info = electronAppInfo.value
       if (!info) return []
       return [
@@ -417,7 +673,7 @@ export default {
         { key: 'resourceRoot', label: '资源目录', path: info.resourceRoot },
         { key: 'workspaceRoot', label: '工作目录', path: info.workspaceRoot },
         { key: 'logDir', label: '日志目录', path: info.logDir },
-      ].filter(item => item.path)
+      ].filter((item): item is ElectronPathRow => !!item.path)
     })
     const workspaceSafe = computed(() => !(localDeployTarget.value?.workspace?.isTempRuntime))
     const workspaceStatusText = computed(() => {
@@ -434,9 +690,9 @@ export default {
       return workspace.packaged ? `工作目录：${workspace.workspaceRoot || env.value?.projectDir || ''}` : '源码模式使用当前仓库目录。'
     })
     const canChooseDirectory = computed(() => typeof deployerBridge.value?.selectDirectory === 'function')
-    const deleteCandidates = computed(() => (deletePreview.value?.files || []).filter(item => item.action === 'delete'))
-    const keptCandidates = computed(() => (deletePreview.value?.files || []).filter(item => item.action !== 'delete').concat(deletePreview.value?.protected || []))
-    const previewRows = computed(() => (deletePreview.value ? [...(deletePreview.value.files || []), ...(deletePreview.value.protected || [])] : []))
+    const deleteCandidates = computed<PreviewItem[]>(() => (deletePreview.value?.files || []).filter(item => item.action === 'delete'))
+    const keptCandidates = computed<PreviewItem[]>(() => (deletePreview.value?.files || []).filter(item => item.action !== 'delete').concat(deletePreview.value?.protected || []))
+    const previewRows = computed<PreviewItem[]>(() => (deletePreview.value ? [...(deletePreview.value.files || []), ...(deletePreview.value.protected || [])] : []))
     const localConfigReady = computed(() => (env.value?.localConfig?.files || []).some(item => item.action === 'delete' && ['koishi.yml', 'start-local.bat'].includes(item.path)))
     const localConfigSummary = computed(() => {
       const files = env.value?.localConfig?.files || []
@@ -452,12 +708,15 @@ export default {
     })
     const napcatStatusClass = computed(() => env.value?.napcat?.found ? 'ok-text' : (env.value?.napcat?.status === 'missing' ? 'warn-text' : 'err-text'))
     const portSummary = computed(() => {
-      const ports = env.value?.ports || {}
-      const labels = { free: '空闲', occupied: '占用', denied: '无权限', unknown: '未知', invalid: '无效' }
-      return Object.keys(ports).map(port => `${port}:${labels[ports[port].status] || (ports[port].available ? '空闲' : '占用')}`).join('  ')
+      const ports: Record<string, PortInfo> = env.value?.ports || {}
+      const labels: Record<string, string> = { free: '空闲', occupied: '占用', denied: '无权限', unknown: '未知', invalid: '无效' }
+      return Object.keys(ports).map(port => {
+        const info = ports[port]
+        return `${port}:${labels[info.status || ''] || (info.available ? '空闲' : '占用')}`
+      }).join('  ')
     })
-    const wizardSteps = computed(() => localStepDefs.map(step => ({ ...step, status: stationState[step.id] || 'pending' })))
-    const activeStation = computed(() => wizardSteps.value.find(step => step.id === activeLocalStep.value) || wizardSteps.value[0])
+    const wizardSteps = computed<WizardStep[]>(() => localStepDefs.map(step => ({ ...step, status: stationState[step.id] || 'pending' })))
+    const activeStation = computed<WizardStep>(() => wizardSteps.value.find(step => step.id === activeLocalStep.value) || wizardSteps.value[0])
     const activeStationHint = computed(() => {
       const step = activeStation.value
       if (!step) return ''
@@ -467,57 +726,63 @@ export default {
       if (step.id === 'npm') return '部署器会为你生成终端命令，请复制到 PowerShell 或 CMD 中执行。安装完成后点击确认按钮。'
       return step.description
     })
-    const currentLocalLogLines = computed(() => {
+    const currentLocalLogLines = computed<string[]>(() => {
       if (activeLocalStep.value === 'npm') return npmTaskStatus.value?.logLines || []
       if (activeLocalStep.value === 'napcat-start' || activeLocalStep.value === 'scan') return napcatTaskStatus.value?.logLines || []
       if (activeLocalStep.value === 'koishi' || activeLocalStep.value === 'health') return koishiTaskStatus.value?.logLines || []
       return []
     })
-    const npmFailureGuide = computed(() => npmTaskStatus.value?.failureGuide || null)
-    const npmGuideCommands = computed(() => npmFailureGuide.value?.commands || [])
-    const npmDiagnosticRows = computed(() => {
+    const npmFailureGuide = computed<NpmFailureGuide | null>(() => npmTaskStatus.value?.failureGuide || null)
+    const npmGuideCommands = computed<string[]>(() => npmFailureGuide.value?.commands || [])
+    const npmDiagnosticRows = computed<{ label: string; value: string }[]>(() => {
       const diag = npmFailureGuide.value?.diagnostics
       if (!diag) return []
-      const staleProxy = diag.proxy?.staleLoopback?.map(item => `${item.key}:${item.hostname}:${item.port}`).join('、')
-      const repairActions = diag.repair?.actions?.map(item => `${item.ok ? 'OK' : 'FAIL'} ${item.command}`).join('；')
+      const envDiag = asRecord(diag.env)
+      const configDiag = asRecord(diag.config)
+      const proxyDiag = asRecord(diag.proxy)
+      const repairDiag = asRecord(diag.repair)
+      const toolsDiag = asRecord(diag.tools)
+      const pathsDiag = asRecord(diag.paths)
+      const staleProxy = listFromData<Record<string, unknown>>(proxyDiag.staleLoopback).map(item => `${readString(item.key)}:${readString(item.hostname)}:${readString(item.port)}`).join('、')
+      const repairActions = listFromData<Record<string, unknown>>(repairDiag.actions).map(item => `${item.ok ? 'OK' : 'FAIL'} ${readString(item.command)}`).join('；')
       const rows = [
-        ['HTTP_PROXY', diag.env?.HTTP_PROXY],
-        ['HTTPS_PROXY', diag.env?.HTTPS_PROXY],
-        ['ALL_PROXY', diag.env?.ALL_PROXY],
-        ['npm_config_proxy', diag.env?.npm_config_proxy],
-        ['npm_config_https_proxy', diag.env?.npm_config_https_proxy],
-        ['npm_config_all_proxy', diag.env?.npm_config_all_proxy],
-        ['NO_PROXY', diag.env?.NO_PROXY],
-        ['npm proxy', diag.config?.proxy],
-        ['npm https-proxy', diag.config?.httpsProxy],
-        ['npm registry', diag.config?.registry],
-        ['代理诊断', diag.proxy?.reason || staleProxy],
-        ['自动清理', diag.repair?.envClearedForRetry ? (diag.repair.automatic ? '已自动执行' : '已手动执行') : '未执行'],
+        ['HTTP_PROXY', envDiag.HTTP_PROXY],
+        ['HTTPS_PROXY', envDiag.HTTPS_PROXY],
+        ['ALL_PROXY', envDiag.ALL_PROXY],
+        ['npm_config_proxy', envDiag.npm_config_proxy],
+        ['npm_config_https_proxy', envDiag.npm_config_https_proxy],
+        ['npm_config_all_proxy', envDiag.npm_config_all_proxy],
+        ['NO_PROXY', envDiag.NO_PROXY],
+        ['npm proxy', configDiag.proxy],
+        ['npm https-proxy', configDiag.httpsProxy],
+        ['npm registry', configDiag.registry],
+        ['代理诊断', proxyDiag.reason || staleProxy],
+        ['自动清理', repairDiag.envClearedForRetry ? (repairDiag.automatic ? '已自动执行' : '已手动执行') : '未执行'],
         ['清理动作', repairActions],
-        ['npm path', diag.tools?.npmSourcePath],
-        ['workdir', diag.paths?.projectDir],
+        ['npm path', toolsDiag.npmSourcePath],
+        ['workdir', pathsDiag.projectDir],
       ]
-      return rows.filter(([, value]) => value).map(([label, value]) => ({ label, value }))
+      return rows.filter(([, value]) => value).map(([label, value]) => ({ label: readString(label), value: readString(value) }))
     })
-    const uninstallDeleteItems = computed(() => uninstallPreview.value?.deleteItems || [])
-    const uninstallUserDataItems = computed(() => uninstallPreview.value?.userDataItems || [])
-    const uninstallKeepItems = computed(() => uninstallPreview.value?.keepItems || [])
-    const uninstallWarnings = computed(() => uninstallPreview.value?.warnings || [])
+    const uninstallDeleteItems = computed<PreviewItem[]>(() => uninstallPreview.value?.deleteItems || [])
+    const uninstallUserDataItems = computed<PreviewItem[]>(() => uninstallPreview.value?.userDataItems || [])
+    const uninstallKeepItems = computed<PreviewItem[]>(() => uninstallPreview.value?.keepItems || [])
+    const uninstallWarnings = computed<PreviewItem[]>(() => uninstallPreview.value?.warnings || [])
     const uninstallBaseDeleteSize = computed(() => uninstallDeleteItems.value.reduce((sum, item) => sum + (item.size || 0), 0))
     const uninstallUserDataSize = computed(() => uninstallUserDataItems.value.reduce((sum, item) => sum + (item.size || 0), 0))
-    const uninstallSelectedUserDataItems = computed(() => uninstallUserDataItems.value.filter(item => deleteUserDataKeys.value.includes(item.key)))
+    const uninstallSelectedUserDataItems = computed<PreviewItem[]>(() => uninstallUserDataItems.value.filter(item => deleteUserDataKeys.value.includes(item.key || '')))
     const uninstallSelectedDeleteSize = computed(() => uninstallBaseDeleteSize.value + uninstallSelectedUserDataItems.value.reduce((sum, item) => sum + (item.size || 0), 0))
     const uninstallSelectedDeleteCount = computed(() => uninstallDeleteItems.value.length + uninstallSelectedUserDataItems.value.length)
 
-    function withAdminRetry(res, message, retry) {
+    function withAdminRetry(res: ApiResult<unknown>, message: string, retry: AdminRetry): boolean {
       if (res?.code === 'ADMIN_REQUIRED') {
-        if (showAdminDialog) showAdminDialog(message, retry)
+        if (showAdminDialog) showAdminDialog(message, async () => { await retry() })
         return true
       }
       return false
     }
 
-    function showLocalAlert(text) {
+    function showLocalAlert(text: string) {
       localAlert.value = text
     }
 
@@ -525,7 +790,7 @@ export default {
       localAlert.value = ''
     }
 
-    function validateLocalQQ(useAlert = false) {
+    function validateLocalQQ(useAlert = false): boolean {
       if (/^\d+$/.test(local.qq.trim())) return true
       const text = '请先填入bot挂载的qq号'
       localMsg.value = { type: 'err', text }
@@ -535,13 +800,13 @@ export default {
       return false
     }
 
-    function shouldUsePortableNodeForWizard() {
+    function shouldUsePortableNodeForWizard(): boolean {
       const packaged = isElectronDeployerEnv()
       if (!env.value?.node?.ok || !env.value?.npm?.found) return true
       return packaged && (!env.value?.node?.ownedByProject || !env.value?.npm?.ownedByProject)
     }
 
-    function syncNapcatInstallDir(data) {
+    function syncNapcatInstallDir(data: EnvCheckData | null) {
       if (!napcatInstallDir.value) napcatInstallDir.value = data?.napcat?.expectedPath || (data?.runtimeDir ? `${data.runtimeDir}\\napcat` : '')
     }
 
@@ -550,7 +815,7 @@ export default {
       const getter = deployerBridge.value?.getAppInfo
       if (typeof getter !== 'function') return
       try {
-        electronAppInfo.value = await getter()
+        electronAppInfo.value = dataRecord<ElectronAppInfo>(await getter())
       } catch {
         electronAppInfo.value = null
       }
@@ -570,11 +835,12 @@ export default {
       })
     }
 
-    function stationStatusText(status) {
-      return ({ pending: '未开始', running: '处理中', success: '已完成', waiting: '等待用户', failed: '失败', skipped: '已跳过' })[status] || '未开始'
+    function stationStatusText(status: LocalStepStatus): string {
+      const labels: Record<LocalStepStatus, string> = { pending: '未开始', running: '处理中', success: '已完成', waiting: '等待用户', failed: '失败', skipped: '已跳过' }
+      return labels[status] || '未开始'
     }
 
-    function setStepStatus(step, status) {
+    function setStepStatus(step: LocalStepId, status: LocalStepStatus) {
       if (stationState[step] !== undefined) stationState[step] = status
     }
 
@@ -634,12 +900,12 @@ export default {
           return
         }
         const [npmRes, napcatRes, koishiRes] = await Promise.all([npmInstallStatus(), napcatDeployStatus(), koishiDeployStatus()])
-        if (npmRes.ok) npmTaskStatus.value = npmRes.data.status
-        if (napcatRes.ok) napcatTaskStatus.value = napcatRes.data.status
-        if (koishiRes.ok) koishiTaskStatus.value = koishiRes.data.status
+        if (npmRes.ok) npmTaskStatus.value = dataRecord<{ status?: DeployTaskStatus }>(npmRes.data).status || null
+        if (napcatRes.ok) napcatTaskStatus.value = dataRecord<{ status?: DeployTaskStatus }>(napcatRes.data).status || null
+        if (koishiRes.ok) koishiTaskStatus.value = dataRecord<{ status?: DeployTaskStatus }>(koishiRes.data).status || null
         if (includeReady) {
           const readyRes = await localReadyCheck()
-          if (readyRes.ok) readyCheck.value = readyRes.data
+          if (readyRes.ok) readyCheck.value = dataRecord<ReadyCheck>(readyRes.data)
         }
         updateWizardFromSignals()
         scrollLocalLogToBottom()
@@ -652,23 +918,24 @@ export default {
       }
     }
 
-    function taskFailureText(step, status, fallback) {
+    function taskFailureText(step: LocalStepId, status: DeployTaskStatus | null, fallback?: string): string {
       const title = localStepDefs.find(item => item.id === step)?.title || step
       const logFile = status?.logFile ? `日志文件：${status.logFile}` : ''
       const tail = (status?.logLines || []).slice(-8).join('\n')
       return [fallback || `${title} 未完成`, logFile, tail ? `最后日志：\n${tail}` : ''].filter(Boolean).join('\n')
     }
 
-    async function waitForLocalTask(fetcher, assign, step, isDone) {
-      let lastStatus = null
+    async function waitForLocalTask(fetcher: () => Promise<ApiResult<unknown>>, assign: (status: DeployTaskStatus) => void, step: LocalStepId, isDone: (status: DeployTaskStatus) => boolean): Promise<DeployTaskStatus> {
+      let lastStatus: DeployTaskStatus | null = null
       for (let i = 0; i < 240; i += 1) {
         const res = await fetcher()
         if (res.ok) {
-          assign(res.data.status)
-          lastStatus = res.data.status
+          const status = dataRecord<{ status?: DeployTaskStatus }>(res.data).status || {}
+          assign(status)
+          lastStatus = status
           updateWizardFromSignals()
           scrollLocalLogToBottom()
-          if (isDone(res.data.status)) return res.data.status
+          if (isDone(status)) return status
         }
         await new Promise(resolve => setTimeout(resolve, 1500))
       }
@@ -676,34 +943,36 @@ export default {
       throw new Error(taskFailureText(step, lastStatus, '等待步骤完成超时'))
     }
 
-    async function waitForNapcatLogin() {
+    async function waitForNapcatLogin(): Promise<boolean> {
       activeLocalStep.value = 'scan'
       setStepStatus('scan', 'waiting')
       localMsg.value = { type: 'ok', text: 'NapCat 已启动。请使用机器人 QQ 扫码登录，部署器会自动检测登录成功并继续。' }
       for (let i = 0; i < 240; i += 1) {
         const res = await napcatDeployStatus()
         if (res.ok) {
-          napcatTaskStatus.value = res.data.status
+          const status = dataRecord<{ status?: DeployTaskStatus }>(res.data).status || {}
+          napcatTaskStatus.value = status
           updateWizardFromSignals()
           scrollLocalLogToBottom()
-          if (res.data.status?.login?.status === 'ok') return true
-          if (res.data.status?.login?.status === 'failed') throw new Error(taskFailureText('scan', res.data.status, res.data.status.login.reason || 'NapCat 启动失败，请查看日志后重试'))
-          if (res.data.status?.state === 'failed' && !res.data.status?.running) throw new Error(taskFailureText('scan', res.data.status, 'NapCat 进程已退出，请查看日志后重试'))
+          if (status.login?.status === 'ok') return true
+          if (status.login?.status === 'failed') throw new Error(taskFailureText('scan', status, status.login.reason || 'NapCat 启动失败，请查看日志后重试'))
+          if (status.state === 'failed' && !status.running) throw new Error(taskFailureText('scan', status, 'NapCat 进程已退出，请查看日志后重试'))
         }
         await new Promise(resolve => setTimeout(resolve, 1500))
       }
       return false
     }
 
-    async function waitForNpmDependenciesReady() {
+    async function waitForNpmDependenciesReady(): Promise<boolean> {
       for (let i = 0; i < 30; i += 1) {
         const res = await npmInstallStatus()
         if (res.ok) {
-          npmTaskStatus.value = res.data.status
+          const status = dataRecord<{ status?: DeployTaskStatus }>(res.data).status || {}
+          npmTaskStatus.value = status
           updateWizardFromSignals()
           scrollLocalLogToBottom()
-          if (res.data.status?.dependencies?.ready) return true
-          if (res.data.status?.state === 'failed') return false
+          if (status.dependencies?.ready) return true
+          if (status.state === 'failed') return false
         }
         await new Promise(resolve => setTimeout(resolve, 1000))
       }
@@ -717,8 +986,9 @@ export default {
       setStepStatus('env', 'running')
       const res = await checkLocalEnv()
       if (res.ok) {
-        env.value = res.data
-        syncNapcatInstallDir(res.data)
+        const data = dataRecord<EnvCheckData>(res.data)
+        env.value = data
+        syncNapcatInstallDir(data)
         if (!canRunWindowsLocalDeploy.value) {
           resetWizardSteps()
           readyCheck.value = null
@@ -734,7 +1004,7 @@ export default {
         await refreshLocalTaskStatuses(false)
       } else {
         setStepStatus('env', 'failed')
-        localMsg.value = { type: 'err', text: res.data?.message || '环境检测失败' }
+        localMsg.value = { type: 'err', text: messageFromData(res.data, '环境检测失败') }
       }
       checking.value = false
     }
@@ -754,9 +1024,10 @@ export default {
       localMsg.value = { type: 'ok', text: '正在下载 NapCat 官方 OneKey 包，并优先使用 tar.exe 解压，请稍等...' }
       const res = await downloadNapcatWindows(napcatInstallDir.value)
       if (withAdminRetry(res, '下载并安装 NapCat 需要管理员密码', doDownloadWindowsNapcat)) { installingNapcat.value = false; return false }
-      const manualSteps = res.data?.manualSteps || []
-      const messageText = [res.data?.message || (res.ok ? 'NapCat OneKey 包已处理' : '安装失败')].concat(manualSteps.length ? ['手动处理步骤：', ...manualSteps.map((step, index) => `${index + 1}. ${step}`)] : []).join('\n')
-      const success = res.ok && !res.data?.needsManualSetup
+      const data = dataRecord<DeployActionData>(res.data)
+      const manualSteps = data.manualSteps || []
+      const messageText = [data.message || (res.ok ? 'NapCat OneKey 包已处理' : '安装失败')].concat(manualSteps.length ? ['手动处理步骤：', ...manualSteps.map((step, index) => `${index + 1}. ${step}`)] : []).join('\n')
+      const success = res.ok && !data.needsManualSetup
       localMsg.value = { type: success ? 'ok' : 'err', text: messageText }
       setStepStatus('install', success ? 'success' : 'failed')
       installingNapcat.value = false
@@ -772,7 +1043,7 @@ export default {
       localMsg.value = { type: 'ok', text: '正在安装便携 Node/npm 到 runtime/node，请稍等...' }
       const res = await installPortableNode()
       if (withAdminRetry(res, '安装便携 Node/npm 需要管理员密码', installPortableNodeStep)) { installingNode.value = false; return false }
-      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '便携 Node/npm 已安装' : '安装失败') }
+      localMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? '便携 Node/npm 已安装' : '安装失败') }
       setStepStatus('env', res.ok ? 'success' : 'failed')
       installingNode.value = false
       if (res.ok) await checkEnv()
@@ -789,7 +1060,7 @@ export default {
       localMsg.value = null
       const res = await downloadNapcat(napcatUrl.value.trim())
       if (withAdminRetry(res, '下载 NapCat 需要管理员密码', doDownloadNapcat)) { downloading.value = false; return }
-      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? 'NapCat 包已下载到 runtime/downloads' : '下载失败') }
+      localMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? 'NapCat 包已下载到 runtime/downloads' : '下载失败') }
       downloading.value = false
       if (res.ok) await checkEnv()
     }
@@ -803,9 +1074,10 @@ export default {
       localMsg.value = null
       const res = await deployLocal({ ...local, qq: local.qq.trim() })
       if (withAdminRetry(res, '生成 Koishi 本地配置需要管理员密码', writeLocalConfig)) { localDeploying.value = false; return }
-      const files = res.data?.files || []
+      const data = dataRecord<DeployActionData>(res.data)
+      const files = data.files || []
       const changed = files.filter(item => item.action !== 'unchanged').length
-      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? `Koishi 本地配置已生成，写入 ${changed} 个文件` : '生成失败') }
+      localMsg.value = { type: res.ok ? 'ok' : 'err', text: data.message || (res.ok ? `Koishi 本地配置已生成，写入 ${changed} 个文件` : '生成失败') }
       setStepStatus('config', res.ok ? 'success' : 'failed')
       deletePreview.value = null
       localDeploying.value = false
@@ -822,20 +1094,21 @@ export default {
       if (withAdminRetry(res, '获取 npm install 指引需要管理员密码', runNpmInstallStep)) { installingDeps.value = false; return }
       if (!res.ok) {
         setStepStatus('npm', 'failed')
-        localMsg.value = { type: 'err', text: res.data?.message || '获取安装指引失败' }
+        localMsg.value = { type: 'err', text: messageFromData(res.data, '获取安装指引失败') }
         installingDeps.value = false
         return
       }
-      if (res.data?.status) npmTaskStatus.value = res.data.status
-      if (res.data?.skipped) {
+      const data = dataRecord<DeployActionData>(res.data)
+      if (data.status) npmTaskStatus.value = data.status
+      if (data.skipped) {
         setStepStatus('npm', 'skipped')
         npmGuideSteps.value = null
         localMsg.value = { type: 'ok', text: '项目依赖已安装，无需再次执行。' }
         await checkEnv()
-      } else if (res.data?.guide) {
-        npmGuideSteps.value = res.data.steps || []
+      } else if (data.guide) {
+        npmGuideSteps.value = data.steps || []
         setStepStatus('npm', 'waiting')
-        localMsg.value = { type: 'ok', text: res.data.message || '请在终端中手动执行命令安装依赖' }
+        localMsg.value = { type: 'ok', text: data.message || '请在终端中手动执行命令安装依赖' }
       }
       installingDeps.value = false
     }
@@ -882,16 +1155,17 @@ export default {
       if (withAdminRetry(res, '获取修复指引需要管理员密码', repairNpmProxyFlow)) { repairingNpm.value = false; installingDeps.value = false; return }
       if (!res.ok) {
         setStepStatus('npm', 'failed')
-        localMsg.value = { type: 'err', text: res.data?.message || 'npm 代理修复指引获取失败' }
+        localMsg.value = { type: 'err', text: messageFromData(res.data, 'npm 代理修复指引获取失败') }
         repairingNpm.value = false
         installingDeps.value = false
         return
       }
-      if (res.data?.status) npmTaskStatus.value = res.data.status
-      if (res.data?.guide) {
-        npmGuideSteps.value = res.data.steps || []
+      const data = dataRecord<DeployActionData>(res.data)
+      if (data.status) npmTaskStatus.value = data.status
+      if (data.guide) {
+        npmGuideSteps.value = data.steps || []
         setStepStatus('npm', 'waiting')
-        localMsg.value = { type: 'ok', text: res.data.message || '请在终端中执行修复和安装命令' }
+        localMsg.value = { type: 'ok', text: data.message || '请在终端中执行修复和安装命令' }
       }
       repairingNpm.value = false
       installingDeps.value = false
@@ -905,13 +1179,14 @@ export default {
       localMsg.value = { type: 'ok', text: '正在启动 NapCat。启动后请打开 WebUI 或查看控制台二维码扫码。' }
       const res = await startNapcat()
       if (withAdminRetry(res, '启动 NapCat 需要管理员密码', startNapcatStep)) { startingNapcat.value = false; return }
+      const data = dataRecord<DeployActionData>(res.data)
       if (!res.ok) {
         setStepStatus('napcat-start', 'failed')
-        localMsg.value = { type: 'err', text: taskFailureText('napcat-start', res.data?.status, res.data?.message || 'NapCat 启动失败') }
+        localMsg.value = { type: 'err', text: taskFailureText('napcat-start', data.status || null, data.message || 'NapCat 启动失败') }
         startingNapcat.value = false
         return
       }
-      if (res.data?.status) napcatTaskStatus.value = res.data.status
+      if (data.status) napcatTaskStatus.value = data.status
       try {
         await waitForLocalTask(napcatDeployStatus, status => { napcatTaskStatus.value = status }, 'napcat-start', status => status.webuiPort?.status === 'occupied' || status.onebotPort?.status === 'occupied' || status.state === 'failed' || status.login?.status === 'failed')
         setStepStatus('napcat-start', (napcatTaskStatus.value?.webuiPort?.status === 'occupied' || napcatTaskStatus.value?.onebotPort?.status === 'occupied') ? 'success' : 'failed')
@@ -922,7 +1197,7 @@ export default {
         localMsg.value = { type: 'ok', text: 'NapCat 已启动。请使用机器人 QQ 扫码登录，部署器会自动检测登录成功并继续。' }
       } catch (e) {
         setStepStatus('napcat-start', 'failed')
-        localMsg.value = { type: 'err', text: e.message || 'NapCat 启动等待失败' }
+        localMsg.value = { type: 'err', text: errorMessage(e, 'NapCat 启动等待失败') }
       }
       startingNapcat.value = false
     }
@@ -935,20 +1210,21 @@ export default {
       localMsg.value = { type: 'ok', text: '正在启动 Koishi，本地日志会显示在下方。' }
       const res = await startKoishiLocal()
       if (withAdminRetry(res, '启动 Koishi 需要管理员密码', startKoishiStep)) { startingKoishi.value = false; return }
+      const data = dataRecord<DeployActionData>(res.data)
       if (!res.ok) {
         setStepStatus('koishi', 'failed')
-        localMsg.value = { type: 'err', text: taskFailureText('koishi', res.data?.status, res.data?.message || 'Koishi 启动失败') }
+        localMsg.value = { type: 'err', text: taskFailureText('koishi', data.status || null, data.message || 'Koishi 启动失败') }
         startingKoishi.value = false
         return
       }
-      if (res.data?.status) koishiTaskStatus.value = res.data.status
+      if (data.status) koishiTaskStatus.value = data.status
       try {
         await waitForLocalTask(koishiDeployStatus, status => { koishiTaskStatus.value = status }, 'koishi', status => status.port?.status === 'occupied' || status.state === 'failed')
         setStepStatus('koishi', koishiTaskStatus.value?.port?.status === 'occupied' ? 'success' : 'failed')
         if (koishiTaskStatus.value?.state === 'failed' && koishiTaskStatus.value?.port?.status !== 'occupied') throw new Error(taskFailureText('koishi', koishiTaskStatus.value, 'Koishi 启动失败'))
       } catch (e) {
         setStepStatus('koishi', 'failed')
-        localMsg.value = { type: 'err', text: e.message || 'Koishi 启动等待失败' }
+        localMsg.value = { type: 'err', text: errorMessage(e, 'Koishi 启动等待失败') }
       }
       startingKoishi.value = false
       await runReadyCheckStep()
@@ -961,12 +1237,13 @@ export default {
       setStepStatus('health', 'running')
       const res = await localReadyCheck()
       if (res.ok) {
-        readyCheck.value = res.data
-        setStepStatus('health', res.data.basicReady ? 'success' : 'failed')
-        localMsg.value = { type: res.data.basicReady ? 'ok' : 'err', text: res.data.message || '健康检查完成' }
+        const data = dataRecord<ReadyCheck>(res.data)
+        readyCheck.value = data
+        setStepStatus('health', data.basicReady ? 'success' : 'failed')
+        localMsg.value = { type: data.basicReady ? 'ok' : 'err', text: data.message || '健康检查完成' }
       } else {
         setStepStatus('health', 'failed')
-        localMsg.value = { type: 'err', text: res.data?.message || '健康检查失败' }
+        localMsg.value = { type: 'err', text: messageFromData(res.data, '健康检查失败') }
       }
       checkingReady.value = false
       await refreshLocalTaskStatuses(false)
@@ -991,11 +1268,11 @@ export default {
         await checkEnv()
         if (!ensureWindowsLocalDeploy()) throw new Error(localDeployBlockedReason.value)
         if (shouldUsePortableNodeForWizard()) {
-          if (!await installPortableNodeStep()) throw new Error(localMsg.value?.text || '部署器便携 Node/npm 安装失败，请查看上方错误后重试')
+          if (!await installPortableNodeStep()) throw new Error('部署器便携 Node/npm 安装失败，请查看上方错误后重试')
           if (shouldUsePortableNodeForWizard()) throw new Error('部署器便携 Node/npm 未就绪，请先安装便携 Node/npm 后重新检测')
         }
         if (!env.value?.napcat?.found) {
-          if (!await doDownloadWindowsNapcat()) throw new Error(localMsg.value?.text || 'NapCat 未安装完成，请检查安装日志后重试')
+          if (!await doDownloadWindowsNapcat()) throw new Error('NapCat 未安装完成，请检查安装日志后重试')
           if (!env.value?.napcat?.found) throw new Error('NapCat 未安装完成，请检查安装日志后重试')
         }
         await writeLocalConfig()
@@ -1010,7 +1287,7 @@ export default {
         if (loginOk) await continueAfterScan()
         else localMsg.value = { type: 'ok', text: 'NapCat 已启动，但还没有检测到扫码成功。请完成扫码后点击“我已扫码，继续”。' }
       } catch (e) {
-        localMsg.value = { type: 'err', text: e.message || '本地部署流程中断' }
+        localMsg.value = { type: 'err', text: errorMessage(e, '本地部署流程中断') }
       } finally {
         autoDeploying.value = false
       }
@@ -1022,8 +1299,8 @@ export default {
       localMsg.value = null
       const res = await previewLocalConfigDelete()
       if (withAdminRetry(res, '删除 Koishi 配置前需要管理员密码', previewDeleteConfig)) { previewingDelete.value = false; return }
-      if (res.ok) deletePreview.value = res.data
-      else localMsg.value = { type: 'err', text: res.data?.message || '读取删除预览失败' }
+      if (res.ok) deletePreview.value = normalizeDeletePreview(res.data)
+      else localMsg.value = { type: 'err', text: messageFromData(res.data, '读取删除预览失败') }
       previewingDelete.value = false
     }
 
@@ -1034,8 +1311,9 @@ export default {
       localMsg.value = null
       const res = await deleteLocalConfig()
       if (withAdminRetry(res, '删除 Koishi 配置需要管理员密码', confirmDeleteConfig)) { deletingConfig.value = false; return }
-      const deleted = res.data?.deleted?.length || 0
-      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? `已删除 ${deleted} 个配置文件` : '删除失败') }
+      const data = dataRecord<DeployActionData>(res.data)
+      const deleted = data.deleted?.length || 0
+      localMsg.value = { type: res.ok ? 'ok' : 'err', text: data.message || (res.ok ? `已删除 ${deleted} 个配置文件` : '删除失败') }
       deletingConfig.value = false
       deletePreview.value = null
       await checkEnv()
@@ -1048,11 +1326,11 @@ export default {
       const res = await previewLocalUninstall()
       if (withAdminRetry(res, '一键卸载需要管理员密码', previewLocalUninstallFlow)) { previewingUninstall.value = false; return }
       if (res.ok) {
-        uninstallPreview.value = res.data
+        uninstallPreview.value = normalizeUninstallPreview(res.data)
         deleteUserDataKeys.value = []
         uninstallConfirmed.value = false
       } else {
-        localMsg.value = { type: 'err', text: res.data?.message || '读取卸载预览失败' }
+        localMsg.value = { type: 'err', text: messageFromData(res.data, '读取卸载预览失败') }
       }
       previewingUninstall.value = false
     }
@@ -1064,25 +1342,30 @@ export default {
       uninstallConfirmed.value = false
     }
 
-    function shouldKeepUserData(item) {
+    function shouldKeepUserData(item: PreviewItem): boolean {
       return !deleteUserDataKeys.value.includes(item.key)
     }
 
-    function setUserDataKeep(item, keep) {
+    function setUserDataKeep(item: PreviewItem, keep: boolean) {
       const keys = new Set(deleteUserDataKeys.value)
       if (keep) keys.delete(item.key)
       else keys.add(item.key)
       deleteUserDataKeys.value = [...keys]
     }
 
-    function setAllUserDataKeep(keep) {
+    function onUserDataKeepChange(item: PreviewItem, event: Event) {
+      const input = event.target instanceof HTMLInputElement ? event.target : null
+      setUserDataKeep(item, !!input?.checked)
+    }
+
+    function setAllUserDataKeep(keep: boolean) {
       deleteUserDataKeys.value = keep ? [] : uninstallUserDataItems.value.map(item => item.key)
     }
 
-    function formatUninstallPaths(item) {
+    function formatUninstallPaths(item: PreviewItem): string {
       const paths = item.paths || []
       if (!paths.length) return ''
-      if (paths.length === 1) return paths[0].path
+      if (paths.length === 1) return paths[0].path || ''
       return `${paths[0].path} 等 ${paths.length} 项`
     }
 
@@ -1093,8 +1376,9 @@ export default {
       localMsg.value = null
       const res = await confirmLocalUninstall({ deleteUserDataKeys: deleteUserDataKeys.value })
       if (withAdminRetry(res, '一键卸载需要管理员密码', confirmLocalUninstallFlow)) { uninstalling.value = false; return }
-      const deleted = res.data?.deleted?.length || 0
-      localMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? `一键卸载完成，删除 ${deleted} 项` : '一键卸载失败') }
+      const data = dataRecord<DeployActionData>(res.data)
+      const deleted = data.deleted?.length || 0
+      localMsg.value = { type: res.ok ? 'ok' : 'err', text: data.message || (res.ok ? `一键卸载完成，删除 ${deleted} 项` : '一键卸载失败') }
       uninstalling.value = false
       uninstallPreview.value = null
       deleteUserDataKeys.value = []
@@ -1105,8 +1389,9 @@ export default {
     async function loadRemoteConfig() {
       const res = await fetchDeployConfig()
       if (res.ok) {
-        remote.server = res.data.server || remote.server
-        remote.appDir = res.data.appDir || remote.appDir
+        const data = dataRecord<Partial<RemoteConfig>>(res.data)
+        remote.server = data.server || remote.server
+        remote.appDir = data.appDir || remote.appDir
         remoteMsg.value = { type: 'ok', text: '已读取部署配置' }
       } else {
         remoteMsg.value = { type: 'err', text: '读取配置失败' }
@@ -1117,13 +1402,14 @@ export default {
       savingRemote.value = true
       const res = await updateDeployConfig(remote)
       if (withAdminRetry(res, '保存部署配置需要管理员密码', saveRemoteConfig)) { savingRemote.value = false; return }
-      remoteMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '配置已保存' : '保存失败') }
+      remoteMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? '配置已保存' : '保存失败') }
       savingRemote.value = false
     }
 
     async function checkRemoteUpdate() {
       const res = await checkDeployUpdate()
-      if (res.ok) remoteMsg.value = { type: 'ok', text: res.data.upToDate ? '远程记录已是最新版本' : `本地 ${res.data.local}，远程 ${res.data.deployed || '未记录'}` }
+      const data = dataRecord<DeployUpdateData>(res.data)
+      if (res.ok) remoteMsg.value = { type: 'ok', text: data.upToDate ? '远程记录已是最新版本' : `本地 ${data.local}，远程 ${data.deployed || '未记录'}` }
       else remoteMsg.value = { type: 'err', text: '检查更新失败' }
     }
 
@@ -1139,17 +1425,18 @@ export default {
       rebuilding.value = true; remoteMsg.value = null
       const res = await rebuildFrontend()
       if (withAdminRetry(res, '重建前端需要管理员密码', doRebuildFrontend)) { rebuilding.value = false; return }
-      if (!res.ok) { remoteMsg.value = { type: 'err', text: res.data?.message || '启动失败' }; rebuilding.value = false; return }
+      if (!res.ok) { remoteMsg.value = { type: 'err', text: messageFromData(res.data, '启动失败') }; rebuilding.value = false; return }
       remoteMsg.value = { type: 'ok', text: '前端构建中...' }
       rebuildTimer = setInterval(async () => {
         const sr = await rebuildFrontendStatus()
         if (sr.ok) {
-          if (sr.data.state === 'success') {
+          const data = dataRecord<RebuildStatusData>(sr.data)
+          if (data.state === 'success') {
             clearRebuildPolling(); rebuilding.value = false
             remoteMsg.value = { type: 'ok', text: '前端构建成功，请刷新页面' }
-          } else if (sr.data.state === 'failed') {
+          } else if (data.state === 'failed') {
             clearRebuildPolling(); rebuilding.value = false
-            remoteMsg.value = { type: 'err', text: (sr.data.message || '构建失败') + (sr.data.detail ? '：' + sr.data.detail : '') }
+            remoteMsg.value = { type: 'err', text: (data.message || '构建失败') + (data.detail ? '：' + data.detail : '') }
           }
         }
       }, 2000)
@@ -1161,26 +1448,28 @@ export default {
       logs.value = []
       const res = await runDeploy(remote)
       if (withAdminRetry(res, '执行远程部署需要管理员密码', startRemoteDeploy)) { deploying.value = false; return }
-      if (!res.ok || !res.data?.taskId) {
-        remoteMsg.value = { type: 'err', text: res.data?.message || '启动部署失败' }
+      const data = dataRecord<DeployRunData>(res.data)
+      if (!res.ok || !data.taskId) {
+        remoteMsg.value = { type: 'err', text: data.message || '启动部署失败' }
         deploying.value = false
         return
       }
-      pollProgress(res.data.taskId)
+      pollProgress(data.taskId)
     }
 
-    function pollProgress(taskId) {
+    function pollProgress(taskId: string) {
       if (progressTimer) clearInterval(progressTimer)
       progressTimer = setInterval(async () => {
         const res = await getDeployProgress(taskId)
         if (!res.ok) return
-        logs.value = res.data.lines || []
-        if (res.data.done) {
-          clearInterval(progressTimer)
+        const data = dataRecord<DeployProgressData>(res.data)
+        logs.value = data.lines || []
+        if (data.done) {
+          if (progressTimer) clearInterval(progressTimer)
           progressTimer = null
           deploying.value = false
-          remoteMsg.value = { type: res.data.success ? 'ok' : 'err', text: res.data.success ? '部署完成' : '部署失败，请查看日志' }
-          if (res.data.success) {
+          remoteMsg.value = { type: data.success ? 'ok' : 'err', text: data.success ? '部署完成' : '部署失败，请查看日志' }
+          if (data.success) {
             const confirm = await confirmDeploy()
             if (!confirm.ok) remoteMsg.value = { type: 'err', text: '部署成功，但版本记录写入失败' }
           }
@@ -1188,28 +1477,31 @@ export default {
       }, 1500)
     }
 
-    function uploadCookie(event) {
-      const file = event.target.files?.[0]
+    function uploadCookie(event: Event) {
+      const input = event.target instanceof HTMLInputElement ? event.target : null
+      const file = input?.files?.[0]
       if (!file) return
       const reader = new FileReader()
       reader.onload = async () => {
         const base64 = String(reader.result || '').split(',')[1]
         const res = await uploadDeploy('bilibili-cookies.txt', base64)
         if (withAdminRetry(res, '上传 cookies 需要管理员密码', () => uploadCookie(event))) return
-        remoteMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? 'cookies 已上传' : '上传失败') }
+        remoteMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? 'cookies 已上传' : '上传失败') }
       }
       reader.readAsDataURL(file)
     }
 
-    function formatSize(size) {
-      if (!size) return '0 B'
-      if (size < 1024) return size + ' B'
-      if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB'
-      return (size / 1024 / 1024).toFixed(1) + ' MB'
+    function formatSize(size: unknown): string {
+      const value = readNumber(size)
+      if (!value) return '0 B'
+      if (value < 1024) return value + ' B'
+      if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KB'
+      return (value / 1024 / 1024).toFixed(1) + ' MB'
     }
 
-    function formatPreviewAction(action) {
-      return ({ delete: '删除', keep: '保留', missing: '缺失', error: '错误' })[action] || action
+    function formatPreviewAction(action: string): string {
+      const labels: Record<string, string> = { delete: '删除', keep: '保留', missing: '缺失', error: '错误' }
+      return labels[action] || action
     }
 
     async function copyNpmFixCommands() {
@@ -1234,7 +1526,7 @@ export default {
     }
 
     /** 打开部署器暴露的安全目录。 */
-    async function openElectronPath(targetPath) {
+    async function openElectronPath(targetPath: string) {
       const value = String(targetPath || '').trim()
       if (!value) return
       const bridge = deployerBridge.value
@@ -1248,7 +1540,7 @@ export default {
     }
 
     /** 复制部署器路径，方便用户手动定位日志或工作目录。 */
-    async function copyElectronPath(targetPath) {
+    async function copyElectronPath(targetPath: string) {
       const value = String(targetPath || '').trim()
       if (!value) return
       try {
@@ -1268,9 +1560,9 @@ export default {
     })
 
     onMounted(() => {
-      loadElectronAppInfo().catch(() => {})
-      checkEnv().catch(() => {})
-      loadRemoteConfig().catch(() => {})
+      loadElectronAppInfo().catch(() => { /* non-critical: deployer path info is optional */ })
+      checkEnv().catch(() => { /* non-critical: panel still renders manual actions when env probe fails */ })
+      loadRemoteConfig().catch(() => { /* non-critical: user can fill remote config manually */ })
       localStatusTimer = setInterval(() => {
         if (mode.value === 'local' && canRunWindowsLocalDeploy.value) refreshLocalTaskStatuses(false)
       }, 3500)
@@ -1283,7 +1575,7 @@ export default {
       clearRebuildPolling()
     })
 
-    return { mode, local, remote, remoteModeOptions, env, electronAppInfo, electronPathRows, electronPathHint, localMsg, localAlert, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmGuideSteps, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, closeLocalAlert, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, confirmNpmDone, copyNpmGuideCommands, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction, copyNpmFixCommands, openElectronPath, copyElectronPath }
+    return { mode, local, remote, remoteModeOptions, env, electronAppInfo, electronPathRows, electronPathHint, localMsg, localAlert, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, cookieInput, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmGuideSteps, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, closeLocalAlert, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, confirmNpmDone, copyNpmGuideCommands, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, onUserDataKeepChange, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction, copyNpmFixCommands, openElectronPath, copyElectronPath }
   },
 }
 </script>

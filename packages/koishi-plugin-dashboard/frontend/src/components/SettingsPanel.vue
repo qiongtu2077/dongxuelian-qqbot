@@ -20,24 +20,26 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { inject, ref } from 'vue'
 import { changePassword, clearAdminToken } from '../api'
+import type { MessageState, ShowAdminDialog } from '../types'
+import { messageFromData } from '../types'
 import PasswordField from './PasswordField.vue'
 
 export default {
   name: 'SettingsPanel',
   components: { PasswordField },
   setup() {
-    const showAdminDialog = inject('showAdminDialog')
+    const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const isElectronDeployer = inject('isElectronDeployer', false)
     const accessNew = ref('')
     const accessLoading = ref(false)
-    const accessMsg = ref(null)
+    const accessMsg = ref<MessageState | null>(null)
     const adminOld = ref('')
     const adminNew = ref('')
     const adminLoading = ref(false)
-    const adminMsg = ref(null)
+    const adminMsg = ref<MessageState | null>(null)
 
     async function changeAccess() {
       if (!accessNew.value.trim()) return
@@ -45,7 +47,7 @@ export default {
       accessLoading.value = true; accessMsg.value = null
       const res = await changePassword('access', adminOld.value, accessNew.value.trim())
       if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('修改访问密码需要管理员密码', changeAccess); accessLoading.value = false; return }
-      accessMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '访问密码已更新，请重新登录' : '修改失败') }
+      accessMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? '访问密码已更新，请重新登录' : '修改失败') }
       if (res.ok) accessNew.value = ''
       accessLoading.value = false
     }
@@ -55,7 +57,7 @@ export default {
       adminLoading.value = true; adminMsg.value = null
       const res = await changePassword('admin', adminOld.value, adminNew.value.trim())
       if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('修改管理员密码需要当前管理员密码', changeAdmin); adminLoading.value = false; return }
-      adminMsg.value = { type: res.ok ? 'ok' : 'err', text: res.data?.message || (res.ok ? '管理员密码已更新' : '修改失败') }
+      adminMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? '管理员密码已更新' : '修改失败') }
       if (res.ok) { clearAdminToken(); adminOld.value = ''; adminNew.value = '' }
       adminLoading.value = false
     }

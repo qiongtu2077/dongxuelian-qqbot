@@ -25,29 +25,33 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { computed, ref } from 'vue'
+import type { PropType } from 'vue'
+import type { SelectOption, SelectValue } from '../types'
+import { isRecord } from '../types'
 
 export default {
   name: 'SelectBox',
   props: {
-    modelValue: [String, Number, Boolean],
-    options: { type: Array, default: () => [] },
+    modelValue: { type: [String, Number, Boolean] as PropType<SelectValue>, default: null },
+    options: { type: Array as PropType<Array<SelectOption | SelectValue>>, default: () => [] },
     placeholder: { type: String, default: '请选择' },
     disabled: { type: Boolean, default: false },
   },
   emits: ['update:modelValue', 'change'],
   setup(props, { emit }) {
     const open = ref(false)
-    const normalizedOptions = computed(() => props.options.map(option => {
-      if (option && typeof option === 'object') {
+    const normalizedOptions = computed<SelectOption[]>(() => props.options.map(option => {
+      if (isRecord(option)) {
         return {
-          value: option.value,
+          value: option.value as SelectValue,
           label: String(option.label ?? option.value ?? ''),
           disabled: !!option.disabled,
         }
       }
-      return { value: option, label: String(option), disabled: false }
+      const value = option as SelectValue
+      return { value, label: String(value), disabled: false }
     }))
     const selectedLabel = computed(() => normalizedOptions.value.find(option => option.value === props.modelValue)?.label || '')
 
@@ -59,14 +63,14 @@ export default {
       open.value = false
     }
 
-    function pick(option) {
+    function pick(option: SelectOption) {
       if (option.disabled) return
       emit('update:modelValue', option.value)
       emit('change', option.value)
       close()
     }
 
-    function onKeydown(event) {
+    function onKeydown(event: KeyboardEvent) {
       if (props.disabled) return
       if (event.key === 'Escape') close()
       if (event.key === 'Enter' || event.key === ' ') {

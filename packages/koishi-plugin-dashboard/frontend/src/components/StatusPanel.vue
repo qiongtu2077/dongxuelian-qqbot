@@ -6,17 +6,18 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { ref, onMounted } from 'vue'
 import { fetchStatus } from '../api'
+import type { StatusData } from '../types'
 
 export default {
   name: 'StatusPanel',
   setup() {
-    const status = ref({})
+    const status = ref<StatusData>({})
     onMounted(async () => {
       const res = await fetchStatus()
-      if (res.ok) status.value = res.data
+      if (res.ok && res.data) status.value = res.data
     })
     return { status }
   }

@@ -19,14 +19,15 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { fetchCommands } from '../api'
+import type { CommandGroup } from '../types'
 
 export default {
   name: 'CommandList',
   setup() {
-    const groups = ref([])
+    const groups = ref<CommandGroup[]>([])
     const search = ref('')
 
     const filtered = computed(() => {
@@ -42,7 +43,7 @@ export default {
 
     onMounted(async () => {
       const res = await fetchCommands()
-      if (res.ok) groups.value = res.data
+      if (res.ok && res.data) groups.value = res.data
     })
 
     return { groups, search, filtered }

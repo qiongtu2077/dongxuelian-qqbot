@@ -31,10 +31,12 @@
   </template>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref, provide, onMounted, onUnmounted } from 'vue'
+import type { Component } from 'vue'
 import { clearAdminToken } from './api'
 import { isElectronDeployerEnv } from './electron-deployer'
+import type { DashboardTab, ShowAdminDialog, ThemeOption } from './types'
 import LoginPage from './components/LoginPage.vue'
 import LoginBackdrop from './components/LoginBackdrop.vue'
 import Sidebar from './components/Sidebar.vue'
@@ -54,7 +56,7 @@ import LogPanel from './components/LogPanel.vue'
 import GalleryPanel from './components/GalleryPanel.vue'
 import AgentPanel from './components/AgentPanel.vue'
 
-const componentMap = {
+const componentMap: Record<string, Component> = {
   deploy: DeployPanel, control: ControlPanel, config: ConfigPanel, keys: KeyManager,
   persona: PersonaPanel, features: CommandBrowser, commands: CommandList,
   whitelist: WhitelistPanel, settings: SettingsPanel, status: StatusPanel, logs: LogPanel,
@@ -69,7 +71,7 @@ defineOptions({ name: 'DashboardApp' })
     const sidebarStored = localStorage.getItem('dashboard_sidebar_expanded')
     const sidebarExpanded = ref(sidebarStored === null ? !isMobileViewport.value : sidebarStored === 'true')
     const themePickerOpen = ref(false)
-    const themes = [
+    const themes: ThemeOption[] = [
       { id: 'dark-gold', label: '暗金', desc: '黑底金线，适合长期盯控制台', colors: ['#0c0d0c', '#f4c430', '#fff1a8'] },
       { id: 'light', label: '昼白', desc: '参考白底黄强调的清爽面板', colors: ['#ffffff', '#ffe600', '#111827'] },
       { id: 'forest-green', label: '环保绿', desc: '低饱和绿和暖白，适合白天使用', colors: ['#f4fbf5', '#2f9e44', '#102a19'] },
@@ -81,21 +83,21 @@ defineOptions({ name: 'DashboardApp' })
       { id: 'sakura-pink', label: '樱花粉', desc: '柔美粉白配桃红点缀，清新甜美', colors: ['#fff6fa', '#ec4899', '#fbcfe8'] },
     ]
 
-    function normalizeTheme(value) { return themes.some(item => item.id === value) ? value : 'clear-water' }
+    function normalizeTheme(value: string | null) { return themes.some(item => item.id === value) ? String(value) : 'clear-water' }
     const defaultTheme = isElectronDeployer ? 'light' : 'clear-water'
     const theme = ref(normalizeTheme(localStorage.getItem('dashboard_theme') || defaultTheme))
     const currentThemeLabel = computed(() => themes.find(item => item.id === theme.value)?.label || '暗金')
 
-    function applyTheme(t) {
+    function applyTheme(t: string) {
       const nextTheme = normalizeTheme(t)
       document.documentElement.setAttribute('data-theme', nextTheme)
       localStorage.setItem('dashboard_theme', nextTheme)
     }
     applyTheme(theme.value)
-    function setTheme(nextTheme) { theme.value = normalizeTheme(nextTheme); applyTheme(theme.value) }
+    function setTheme(nextTheme: string) { theme.value = normalizeTheme(nextTheme); applyTheme(theme.value) }
 
     const deployUnlocked = ref(localStorage.getItem('dashboard_deploy_unlocked') === 'true')
-    const allTabs = [
+    const allTabs: DashboardTab[] = [
       { id: 'deploy', label: '部署' }, { id: 'control', label: '终端控制' }, { id: 'config', label: '模型配置' },
       { id: 'keys', label: 'API Keys' }, { id: 'persona', label: '人格实验室' }, { id: 'features', label: '功能地图' },
       { id: 'commands', label: '指令速查' }, { id: 'whitelist', label: '黑白名单' },
@@ -108,7 +110,7 @@ defineOptions({ name: 'DashboardApp' })
     const activeComponent = computed(() => componentMap[activeTab.value] || DeployPanel)
     const activeTabLabel = computed(() => tabs.value.find(item => item.id === activeTab.value)?.label || '部署')
     const isMobileSidebarOpen = computed(() => isMobileViewport.value && sidebarExpanded.value)
-    let tabSwitchUnlockTimer = null
+    let tabSwitchUnlockTimer: ReturnType<typeof setTimeout> | null = null
     let tabSwitchLocked = false
 
     function onLoggedIn() {
@@ -118,9 +120,9 @@ defineOptions({ name: 'DashboardApp' })
 
     const adminModalOpen = ref(false)
     const adminModalMsg = ref('请输入管理员密码')
-    let adminModalCallback = null
+    let adminModalCallback: (() => void | Promise<void>) | null = null
 
-    const showAdminDialog = (msg, onVerified) => {
+    const showAdminDialog: ShowAdminDialog = (msg = '请输入管理员密码', onVerified) => {
       if (isElectronDeployer) {
         if (onVerified) onVerified()
         return
@@ -140,7 +142,7 @@ defineOptions({ name: 'DashboardApp' })
     provide('showAdminDialog', showAdminDialog)
     provide('isElectronDeployer', isElectronDeployer)
 
-    function doSwitchTab(id) {
+    function doSwitchTab(id: string) {
       if (id === 'agent') {
         window.location.href = '/agent/'
         return
@@ -156,7 +158,7 @@ defineOptions({ name: 'DashboardApp' })
       if (isMobileViewport.value) setSidebarExpanded(false)
     }
 
-    function setSidebarExpanded(value) {
+    function setSidebarExpanded(value: boolean) {
       sidebarExpanded.value = !!value
       localStorage.setItem('dashboard_sidebar_expanded', sidebarExpanded.value ? 'true' : 'false')
     }
@@ -176,7 +178,7 @@ defineOptions({ name: 'DashboardApp' })
     }
 
     function handleResize() { isMobileViewport.value = window.matchMedia('(max-width: 760px)').matches }
-    function handleKeydown(event) { if (event.key === 'Escape' && isMobileSidebarOpen.value) setSidebarExpanded(false) }
+    function handleKeydown(event: KeyboardEvent) { if (event.key === 'Escape' && isMobileSidebarOpen.value) setSidebarExpanded(false) }
 
     // 监听 401 事件优雅退出
     onMounted(() => {

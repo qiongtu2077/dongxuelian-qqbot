@@ -3,11 +3,11 @@
  * 兼容历史上直接挂在 window.dongxuelianDeployer 的产物。
  */
 
-export function getDongxuelianDeployerBridge() {
+export function getDongxuelianDeployerBridge(): DongxuelianDeployerBridge | null {
   if (typeof window === 'undefined') return null
   return window.dongxuelianExpose?.dongxuelianDeployer || window.dongxuelianDeployer || null
 }
 
-export function isElectronDeployerEnv() {
+export function isElectronDeployerEnv(): boolean {
   return !!getDongxuelianDeployerBridge()
 }

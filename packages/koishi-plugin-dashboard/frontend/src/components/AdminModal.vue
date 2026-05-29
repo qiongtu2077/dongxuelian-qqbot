@@ -20,9 +20,10 @@
   </Transition>
 </template>
 
-<script>
+<script lang="ts">
 import { ref, watch } from 'vue'
 import { verifyAdmin, setAdminToken } from '../api'
+import { errorMessage } from '../types'
 import PasswordField from './PasswordField.vue'
 
 export default {
@@ -55,7 +56,7 @@ export default {
           error.value = res.data?.message || '验证失败'
         }
       } catch (e) {
-        error.value = '验证失败: ' + e.message
+        error.value = '验证失败: ' + errorMessage(e)
       }
       loading.value = false
     }

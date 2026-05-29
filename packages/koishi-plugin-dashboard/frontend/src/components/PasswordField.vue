@@ -6,7 +6,7 @@
       :placeholder="placeholder"
       :autocomplete="autocomplete"
       :autofocus="autofocus"
-      @input="$emit('update:modelValue', $event.target.value)"
+      @input="onInput"
       @keyup.enter="$emit('enter')"
     />
     <button class="icon-btn password-eye" type="button" :aria-label="visible ? '隐藏密码' : '显示密码'" @click="visible = !visible">
@@ -19,7 +19,7 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { ref } from 'vue'
 
 export default {
@@ -31,9 +31,12 @@ export default {
     autofocus: { type: Boolean, default: false },
   },
   emits: ['update:modelValue', 'enter'],
-  setup() {
+  setup(props, { emit }) {
     const visible = ref(false)
-    return { visible }
+    function onInput(event: Event) {
+      emit('update:modelValue', event.target instanceof HTMLInputElement ? event.target.value : '')
+    }
+    return { visible, onInput }
   },
 }
 </script>

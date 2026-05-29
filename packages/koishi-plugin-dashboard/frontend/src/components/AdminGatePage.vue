@@ -32,10 +32,11 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { ref, onMounted } from 'vue'
 import { verifyAdmin, setAdminToken } from '../api'
 import { isElectronDeployerEnv } from '../electron-deployer'
+import { errorMessage, messageFromData } from '../types'
 import PasswordField from './PasswordField.vue'
 
 export default {
@@ -66,7 +67,7 @@ export default {
           error.value = res.data?.message || '验证失败'
         }
       } catch (err) {
-        error.value = err.message
+        error.value = errorMessage(err, '验证失败')
       }
       loading.value = false
     }

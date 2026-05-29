@@ -30,17 +30,20 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
+import type { PropType } from 'vue'
+import type { ThemeOption } from '../types'
+
 export default {
   name: 'ThemeSwitcher',
   props: {
     visible: { type: Boolean, default: false },
-    themes: { type: Array, default: () => [] },
+    themes: { type: Array as PropType<ThemeOption[]>, default: () => [] },
     current: { type: String, default: 'dark-gold' },
   },
   emits: ['select', 'close'],
   setup(props, { emit }) {
-    function selectTheme(themeId) {
+    function selectTheme(themeId: string) {
       emit('select', themeId)
       emit('close')
     }

@@ -50,10 +50,12 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { ref, onMounted } from 'vue'
 import { login, resetPassword } from '../api'
 import { isElectronDeployerEnv } from '../electron-deployer'
+import type { MessageState } from '../types'
+import { errorMessage, messageFromData } from '../types'
 import LoginBackdrop from './LoginBackdrop.vue'
 import PasswordField from './PasswordField.vue'
 
@@ -68,7 +70,7 @@ export default {
     const showReset = ref(false)
     const resetToken = ref('')
     const resetting = ref(false)
-    const resetMsg = ref(null)
+    const resetMsg = ref<MessageState | null>(null)
 
     onMounted(() => {
       if (electronDeployer) doLogin()
@@ -87,7 +89,7 @@ export default {
           error.value = res.data?.message || '登录失败'
         }
       } catch (e) {
-        error.value = e.message
+        error.value = errorMessage(e, '登录失败')
       }
       loading.value = false
     }
@@ -102,10 +104,10 @@ export default {
           resetMsg.value = { type: 'ok', text: res.data?.message || 'Passwords were reset to new random values. Check the server password files.' }
           resetToken.value = ''
         } else {
-          resetMsg.value = { type: 'err', text: res.data?.message || '重置失败' }
+          resetMsg.value = { type: 'err', text: messageFromData(res.data, '重置失败') }
         }
       } catch (e) {
-        resetMsg.value = { type: 'err', text: e.message }
+        resetMsg.value = { type: 'err', text: errorMessage(e) }
       }
       resetting.value = false
     }

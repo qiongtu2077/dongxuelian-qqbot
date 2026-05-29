@@ -76,7 +76,7 @@ async function waitForServer(child) {
     try {
       const res = await fetch(BASE_URL)
       if (res.ok) return
-    } catch {}
+    } catch { /* non-critical: server may not be ready yet */ }
     await new Promise(resolve => setTimeout(resolve, 250))
   }
   throw new Error('vite server did not become ready')
@@ -257,9 +257,10 @@ function apiMock(method, pathname, body) {
 
   if (method === 'GET' && pathname === '/bot/status') return ok({ running: true, workers: 1, qq: '123456' })
   if (method === 'GET' && pathname === '/maintenance') return ok({ enabled: false })
-  if (method === 'GET' && pathname === '/qq/token') return ok({ token: 'mock-token' })
-  if (method === 'GET' && pathname === '/qq/ssh-info') return ok({ host: '127.0.0.1', user: 'root' })
+  if (method === 'GET' && pathname === '/qq/token') return jsonResponse({ code: 'ADMIN_REQUIRED', message: '需要管理员密码' }, 403)
+  if (method === 'GET' && pathname === '/qq/ssh-info') return ok({ host: 'mock-host.invalid', user: 'mock-user' })
   if (method === 'GET' && pathname === '/qq/selfid') return ok({ selfId: '123456' })
+  if (method === 'PUT' && pathname === '/qq/selfid') return jsonResponse({ code: 'ADMIN_REQUIRED', message: '需要管理员密码' }, 403)
   if (method === 'GET' && pathname === '/throttle') return ok({ maxPerMinute: 20 })
 
   if (method === 'GET' && pathname === '/logging') return ok({ config: { enabled: false } })
@@ -276,6 +277,68 @@ function apiMock(method, pathname, body) {
   if (method === 'PUT' && pathname === '/auth/password') return writeOk('password changed')
   if (method === 'GET' && pathname === '/admin-ids') return ok({ ids: ['10000'] })
 
+  if (method === 'GET' && pathname === '/deploy/config') return ok({ server: 'mock-user@mock-host.invalid', appDir: '/opt/mock-koishi', mode: 'update' })
+  if (method === 'PUT' && pathname === '/deploy/config') return writeOk('deploy config saved')
+  if (method === 'GET' && pathname === '/deploy/check-update') return ok({ upToDate: false, local: 'local-mock', deployed: 'remote-mock' })
+  if (method === 'POST' && pathname === '/deploy/rebuild-frontend') return ok({ ok: true, taskId: 'rebuild-mock' })
+  if (method === 'GET' && pathname === '/deploy/rebuild-frontend/status') return ok({ ok: true, done: true, success: true, message: 'mock rebuild complete' })
+  if (method === 'GET' && pathname === '/env/check') return ok({
+    platform: 'linux',
+    host: { platform: 'linux', arch: 'x64', hostname: 'mock-host' },
+    localDeployTarget: {
+      platform: 'linux',
+      arch: 'x64',
+      canRunWindowsLocalDeploy: false,
+      blocked: true,
+      blockedReason: 'mock backend is not Windows',
+      workspace: { packaged: false, isTempRuntime: false, reasons: [], workspaceRoot: '/opt/mock-koishi' },
+    },
+    blocked: true,
+    blockedReason: 'mock backend is not Windows',
+    projectDir: '/opt/mock-koishi',
+    runtimeDir: '/opt/mock-koishi/runtime',
+    node: { ok: true, version: 'v20.0.0', sourcePath: 'node' },
+    npm: { found: true, version: '10.0.0', sourcePath: 'npm' },
+    dependencies: { ready: true, reason: 'mock dependencies ready' },
+    localConfig: { files: [] },
+    ports: { 5140: { status: 'free', available: true }, 5150: { status: 'occupied', available: false } },
+    napcat: { found: false, status: 'missing', reason: 'mock NapCat not installed' },
+  })
+  if (method === 'PUT' && pathname === '/throttle') return writeOk('throttle saved')
+  if (method === 'PUT' && pathname === '/maintenance') return writeOk('maintenance saved')
+
+  if (method === 'GET' && pathname === '/agent/config') return ok({
+    ok: true,
+    mode: 'confirm',
+    config: {
+      dangerousPolicy: 'confirm',
+      channels: {
+        qq: { enabled: true, tools: { calculator: true, browser_action: false } },
+        dashboard: { enabled: true, tools: { calculator: true, browser_action: true } },
+      },
+      autoRoute: { qq: { enabled: false }, dashboard: { enabled: false } },
+      enabledSkills: ['mock-skill'],
+      readFileRoots: ['mock-workspace'],
+      mcp: { enabled: true, allowWriteWorkspace: false, allowRunLocal: true, exposeDangerousActions: false },
+      persona: { dashboardPersona: '测试人格', qqInheritChatPersona: true },
+    },
+    tools: [
+      { name: 'calculator', description: '计算器', dangerous: false, external: false, defaultChannels: ['dashboard'], qqEnabled: true, dashboardEnabled: true },
+      { name: 'browser_action', description: '浏览器动作', dangerous: true, external: true, defaultChannels: ['dashboard'], qqEnabled: false, dashboardEnabled: true },
+    ],
+    stats: { total: 3, byChannel: { qq: 1, dashboard: 2 }, recent: [{ at: Date.now(), tool: 'calculator', channel: 'dashboard' }] },
+    skills: [{ file: 'mock/SKILL.md', name: 'mock-skill', kind: 'workspace', description: '本地 mock 技能' }],
+    personas: [{ name: '测试人格' }, { name: '普通人格' }],
+    effectiveReadRoots: ['mock-workspace'],
+  })
+  if (method === 'PUT' && pathname === '/agent/config') return ok({ ok: true, message: 'Agent 配置已保存', config: body.body?.config || {}, mode: body.body?.mode || 'confirm' })
+  if (method === 'GET' && pathname === '/agent/personas') return ok({ ok: true, personas: [{ name: '测试人格' }, { name: '普通人格' }], persona: { dashboardPersona: '测试人格', qqInheritChatPersona: true } })
+  if (method === 'PUT' && pathname === '/agent/persona') return ok({ ok: true, message: 'Agent 人格已更新', persona: body.body || {} })
+  if (method === 'GET' && pathname === '/tools/pending') return ok({ ok: true, pending: [{ id: 'pending-1', toolName: 'read_file', channelKey: 'dashboard', userId: 'mock-user', expireAt: Date.now() + 60000, argsSummary: '读取 package.json' }] })
+  if (method === 'GET' && pathname === '/agent/sessions') return ok({ ok: true, sessions: [{ id: 'session-1', title: 'Mock Session', channel: 'dashboard', userName: '测试用户', turns: 2, toolCalls: 1, updatedAt: Date.now(), lastMessage: '最近消息' }] })
+  if (method === 'GET' && pathname.startsWith('/agent/sessions/')) return ok({ ok: true, session: { id: 'session-1', turns: [{ at: Date.now(), userMessage: '你好', reply: '你好，mock reply' }] } })
+  if (method === 'POST' && pathname === '/agent/chat') return ok({ ok: true, reply: 'Agent mock reply' })
+
   return ok({ ok: true, message: `mocked ${method} ${pathname}` })
 }
 
@@ -283,11 +346,18 @@ async function installApiMock(page) {
   await page.setRequestInterception(true)
   page.on('request', async request => {
     const url = new URL(request.url())
+    if (url.pathname === '/agent/' || url.pathname === '/agent') {
+      return request.respond({
+        status: 200,
+        contentType: 'text/html; charset=utf-8',
+        body: '<!doctype html><html><head><title>Mock Agent Console</title></head><body><main>Mock Agent Console</main></body></html>',
+      })
+    }
     if (!url.pathname.startsWith('/dashboard/api')) return request.continue()
     const pathname = url.pathname.replace('/dashboard/api', '') || '/'
     const method = request.method()
     let parsedBody = null
-    try { parsedBody = request.postData() ? JSON.parse(request.postData()) : null } catch {}
+    try { parsedBody = request.postData() ? JSON.parse(request.postData()) : null } catch { /* non-critical: mock handlers tolerate non-JSON bodies */ }
     try {
       const response = apiMock(method, pathname, { searchParams: url.searchParams, body: parsedBody })
       const isWrite = method !== 'GET'
@@ -313,6 +383,19 @@ async function waitForFieldValue(page, text, timeout = 8000) {
   }, { timeout }, text)
 }
 
+async function waitForInputValue(page, text, timeout = 8000) {
+  await waitForFieldValue(page, text, timeout)
+}
+
+async function waitForVisibleSelector(page, selector, timeout = 8000) {
+  await page.waitForFunction(sel => {
+    return [...document.querySelectorAll(sel)].some(el => {
+      const box = el.getBoundingClientRect()
+      return box.width > 0 && box.height > 0
+    })
+  }, { timeout }, selector)
+}
+
 async function clickText(page, text, selector = 'button,a') {
   await page.waitForFunction((value, sel) => {
     return [...document.querySelectorAll(sel)].some(el => {
@@ -333,12 +416,36 @@ async function clickText(page, text, selector = 'button,a') {
   await page.mouse.click(rect.x, rect.y)
 }
 
+async function clickVisibleSelector(page, selector) {
+  await waitForVisibleSelector(page, selector)
+  const rect = await page.evaluate(sel => {
+    const el = [...document.querySelectorAll(sel)].find(item => {
+      const box = item.getBoundingClientRect()
+      return box.width > 0 && box.height > 0
+    })
+    if (!el) return null
+    el.scrollIntoView({ block: 'center', inline: 'center' })
+    const box = el.getBoundingClientRect()
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 }
+  }, selector)
+  if (!rect) throw new Error(`selector not visible: ${selector}`)
+  await page.mouse.click(rect.x, rect.y)
+}
+
 async function ensureSidebarExpanded(page) {
   const hasExpandedNav = await page.$('.sidebar-nav .sidebar-item')
   if (hasExpandedNav) return
   await page.waitForSelector('.sidebar-toggle', { timeout: 8000 })
   await page.click('.sidebar-toggle')
   await page.waitForSelector('.sidebar-nav .sidebar-item', { timeout: 8000 })
+}
+
+async function ensureSidebarCollapsed(page) {
+  const hasExpandedNav = await page.$('.sidebar-nav .sidebar-item')
+  if (!hasExpandedNav) return
+  await page.waitForSelector('.sidebar-toggle', { timeout: 8000 })
+  await page.click('.sidebar-toggle')
+  await page.waitForFunction(() => !document.querySelector('.sidebar-nav .sidebar-item'), { timeout: 8000 })
 }
 
 async function clickSidebarTab(page, label) {
@@ -367,6 +474,25 @@ async function clickSidebarTab(page, label) {
     const labelEl = document.querySelector('.active-view-label')
     return labelEl && labelEl.textContent.includes(value)
   }, { timeout: 8000 }, label)
+}
+
+async function clickSidebarTabExpectNavigation(page, label, pathname) {
+  await ensureSidebarExpanded(page)
+  await page.waitForFunction(value => {
+    return [...document.querySelectorAll('.sidebar-nav .sidebar-item')].some(el => {
+      const rect = el.getBoundingClientRect()
+      return rect.width > 0 && rect.height > 0 && el.textContent.includes(value)
+    })
+  }, { timeout: 8000 }, label)
+  const navigationPromise = page.waitForFunction(expected => window.location.pathname === expected, { timeout: 8000 }, pathname)
+  const clicked = await page.evaluate(value => {
+    const el = [...document.querySelectorAll('.sidebar-nav .sidebar-item')].find(item => item.textContent.includes(value))
+    if (!el) return false
+    el.click()
+    return true
+  }, label)
+  if (!clicked) throw new Error(`sidebar tab not found: ${label}`)
+  await navigationPromise
 }
 
 async function clickButtonInCard(page, cardHeading, buttonText) {
@@ -463,6 +589,16 @@ async function typePlaceholder(page, placeholder, value) {
 }
 
 async function selectOptionValue(page, optionValue) {
+  const labelByValue = {
+    dashscope: 'DashScope',
+    deepseek: 'DeepSeek',
+    'qwen-vl-plus': 'Qwen VL',
+    'deepseek-chat': 'DeepSeek Chat',
+    '测试人格': '测试人格',
+    '普通人格': '普通人格',
+    __cloned__: '克隆音色',
+    voice_asset_a: '测试音色',
+  }
   const changed = await page.evaluate(value => {
     const select = [...document.querySelectorAll('select')].find(item =>
       [...item.options].some(option => option.value === value)
@@ -472,7 +608,150 @@ async function selectOptionValue(page, optionValue) {
     select.dispatchEvent(new Event('change', { bubbles: true }))
     return true
   }, optionValue)
-  if (!changed) throw new Error(`select option not found: ${optionValue}`)
+  if (changed) return
+  const label = labelByValue[optionValue] || optionValue
+  const picked = await page.evaluate(async ({ value, labelText }) => {
+    const waitFrame = () => new Promise(resolve => requestAnimationFrame(() => resolve()))
+    const wraps = [...document.querySelectorAll('.sb-wrap')].filter(wrap => {
+      const box = wrap.getBoundingClientRect()
+      return box.width > 0 && box.height > 0 && !wrap.classList.contains('disabled')
+    })
+    for (const wrap of wraps) {
+      const trigger = wrap.querySelector('.sb-trigger')
+      if (!trigger) continue
+      trigger.click()
+      await waitFrame()
+      const options = [...wrap.querySelectorAll('.sb-opt')]
+      const option = options.find(item => item.textContent.trim() === labelText || item.textContent.includes(labelText) || item.textContent.includes(value))
+      if (option) {
+        option.click()
+        return true
+      }
+      trigger.click()
+      await waitFrame()
+    }
+    return false
+  }, { value: optionValue, labelText: label })
+  if (!picked) throw new Error(`select option not found: ${optionValue}`)
+}
+
+async function waitForSelectBoxOption(page, label, shouldExist = true) {
+  await page.waitForFunction(async ({ labelText, expected }) => {
+    const waitFrame = () => new Promise(resolve => requestAnimationFrame(() => resolve()))
+    const nativeExists = [...document.querySelectorAll('select option')].some(option => option.value === labelText || option.textContent.includes(labelText))
+    let customExists = false
+    const wraps = [...document.querySelectorAll('.sb-wrap')].filter(wrap => {
+      const box = wrap.getBoundingClientRect()
+      return box.width > 0 && box.height > 0 && !wrap.classList.contains('disabled')
+    })
+    for (const wrap of wraps) {
+      const trigger = wrap.querySelector('.sb-trigger')
+      if (!trigger) continue
+      trigger.click()
+      await waitFrame()
+      if ([...wrap.querySelectorAll('.sb-opt')].some(option => option.textContent.includes(labelText))) customExists = true
+      trigger.click()
+      await waitFrame()
+      if (customExists) break
+    }
+    return expected ? (nativeExists || customExists) : !(nativeExists || customExists)
+  }, { timeout: 8000 }, { labelText: label, expected: shouldExist })
+}
+
+async function waitForSelectBoxLabel(page, label) {
+  await page.waitForFunction(labelText => {
+    if ([...document.querySelectorAll('select')].some(select => select.value === labelText || select.selectedOptions[0]?.textContent.includes(labelText))) return true
+    return [...document.querySelectorAll('.sb-trigger')].some(trigger => {
+      const box = trigger.getBoundingClientRect()
+      return box.width > 0 && box.height > 0 && trigger.textContent.includes(labelText)
+    })
+  }, { timeout: 8000 }, label)
+}
+
+async function verifyAdminModalCancel(page) {
+  await waitForVisibleSelector(page, '.admin-modal-card')
+  await page.waitForFunction(() => {
+    const modal = document.querySelector('.admin-modal-card')
+    if (!modal) return false
+    const box = modal.getBoundingClientRect()
+    const style = getComputedStyle(modal)
+    return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && modal.innerText.includes('管理员密码')
+  }, { timeout: 8000 })
+  await clickText(page, '取消', '.admin-modal-card button')
+  await page.waitForFunction(() => !document.querySelector('.admin-modal-card'), { timeout: 8000 })
+}
+
+async function verifyDeployPanel(page) {
+  await clickSidebarTab(page, '部署')
+  await waitForText(page, '部署方式')
+  await waitForText(page, 'Windows 本地部署向导')
+  await waitForText(page, '当前不是 Windows 本地部署器')
+  await waitForText(page, 'mock backend is not Windows')
+  await waitForText(page, '/opt/mock-koishi')
+  await clickText(page, '切换到远程 Linux 部署')
+  await waitForText(page, '远程 Linux 部署')
+  await waitForInputValue(page, 'mock-user@mock-host.invalid')
+  await waitForInputValue(page, '/opt/mock-koishi')
+  await waitForText(page, '重建并部署到远端')
+  await waitForText(page, '重建前端')
+  await clickText(page, '自动填入服务器地址')
+  await waitForText(page, '已读取部署配置')
+  await clickText(page, '检查更新')
+  await waitForText(page, '本地 local-mock，远程 remote-mock')
+  await clickSidebarTab(page, '功能地图')
+  await waitForText(page, '功能介绍')
+}
+
+async function verifyControlPanel(page) {
+  await clickSidebarTab(page, '终端控制')
+  await waitForText(page, 'Bot 运行节点')
+  await waitForText(page, 'Online - 运行中')
+  await waitForText(page, 'mock-user@mock-host.invalid')
+  await waitForText(page, '点击查看 NapCat token 后显示')
+  await clickText(page, '查看 NapCat token')
+  await verifyAdminModalCancel(page)
+  await typePlaceholder(page, '输入新的监听 QQ 号', '654321')
+  await clickText(page, '重载配置')
+  await verifyAdminModalCancel(page)
+  await clickText(page, '保存')
+  await waitForText(page, '节流配置已保存')
+}
+
+async function verifyAgentNavigation(page) {
+  await clickSidebarTabExpectNavigation(page, 'Agent 控制台', '/agent/')
+  await page.goBack({ waitUntil: 'networkidle0' })
+  await waitForText(page, '莲莲图集')
+}
+
+async function verifyMobileSidebar(page) {
+  await page.setViewport({ width: 390, height: 820, deviceScaleFactor: 1, isMobile: true })
+  await page.evaluate(() => {
+    localStorage.setItem('dashboard_sidebar_expanded', 'false')
+    localStorage.setItem('dashboard_active_tab', 'features')
+  })
+  await page.reload({ waitUntil: 'networkidle0' })
+  await waitForText(page, '功能介绍')
+  await ensureSidebarExpanded(page)
+  await waitForVisibleSelector(page, '.sidebar-scrim')
+  await clickSidebarTab(page, '指令速查')
+  await waitForText(page, '/help')
+  await page.waitForFunction(() => !document.querySelector('.sidebar-nav .sidebar-item'), { timeout: 8000 })
+  await ensureSidebarExpanded(page)
+  await waitForVisibleSelector(page, '.sidebar-scrim')
+  await clickVisibleSelector(page, '.sidebar-scrim')
+  await page.waitForFunction(() => !document.querySelector('.sidebar-nav .sidebar-item'), { timeout: 8000 })
+  await page.waitForFunction(() => {
+    const app = document.querySelector('.app')
+    const head = document.querySelector('.app-head')
+    if (!app || !head) return false
+    const appBox = app.getBoundingClientRect()
+    const headBox = head.getBoundingClientRect()
+    return appBox.width > 0 && appBox.height > 0 && headBox.width > 0 && headBox.height > 0
+  }, { timeout: 8000 })
+  await page.setViewport({ width: 1440, height: 1100, deviceScaleFactor: 1 })
+  await page.evaluate(() => localStorage.setItem('dashboard_sidebar_expanded', 'true'))
+  await page.reload({ waitUntil: 'networkidle0' })
+  await waitForText(page, '指令速查')
 }
 
 async function runClicks(page) {
@@ -489,10 +768,14 @@ async function runClicks(page) {
   await clickText(page, '我已部署，解锁')
   await waitForText(page, '功能介绍')
 
+  await verifyDeployPanel(page)
+
   await clickText(page, '主题：')
   await waitForText(page, '界面风格')
   await clickText(page, '昼白')
   await waitForText(page, '功能介绍')
+
+  await verifyControlPanel(page)
 
   await clickSidebarTab(page, '指令速查')
   await waitForText(page, '/help')
@@ -526,13 +809,16 @@ async function runClicks(page) {
   await clickButtonInCard(page, '世界观管理', '创建')
   await waitForText(page, '请输入标识')
   await selectOptionValue(page, '测试人格')
-  await page.waitForFunction(() => !!document.querySelector('select option[value="__cloned__"]'), { timeout: 8000 })
+  await waitForSelectBoxOption(page, '克隆音色', true)
   await selectOptionValue(page, '普通人格')
-  await page.waitForFunction(() => !document.querySelector('select option[value="__cloned__"]'), { timeout: 8000 })
+  await waitForSelectBoxOption(page, '克隆音色', false)
   await selectOptionValue(page, '测试人格')
-  await page.waitForFunction(() => !!document.querySelector('select option[value="__cloned__"]'), { timeout: 8000 })
+  await waitForSelectBoxOption(page, '克隆音色', true)
   await page.waitForFunction(() => [...document.querySelectorAll('input')].some(input => input.value === '温柔'), { timeout: 8000 })
-  await clickText(page, '试听')
+  await Promise.all([
+    page.waitForRequest(req => req.method() === 'POST' && req.url().includes('/agent/tts/preview'), { timeout: 8000 }),
+    clickButtonInCard(page, '语音合成配置', '试听'),
+  ])
   await page.waitForSelector('audio[src^="blob:"]', { timeout: 8000 })
   await page.waitForFunction((expectedFirstChartLabel) => {
     const audio = document.querySelector('audio')
@@ -548,8 +834,8 @@ async function runClicks(page) {
     page.waitForRequest(req => req.method() === 'PUT' && req.url().includes('/agent/persona/voice'), { timeout: 8000 }),
     clickButtonInCard(page, '已克隆音色', '启用'),
   ])
-  await page.waitForFunction(() => [...document.querySelectorAll('select')].some(select => select.value === '__cloned__'), { timeout: 8000 })
-  await page.waitForFunction(() => [...document.querySelectorAll('select')].some(select => select.value === 'voice_asset_a'), { timeout: 8000 })
+  await waitForSelectBoxLabel(page, '克隆音色')
+  await waitForSelectBoxLabel(page, '测试音色')
   await waitForText(page, '使用：测试人格')
 
   await clickSidebarTab(page, 'API Keys')
@@ -575,7 +861,7 @@ async function runClicks(page) {
         chartLabels,
         rowText,
         pointTitles,
-        glmUnknownRows: rows.filter(row => row.innerText.includes('GLM 未分模型')).length,
+      unknownModelRows: rows.filter(row => row.innerText.includes('未分模型（历史数据）')).length,
         uniqueColors: Array.from(new Set(colors)),
         donutBackground: getComputedStyle(document.querySelector('.donut-wrap')).backgroundImage,
       }
@@ -591,15 +877,15 @@ async function runClicks(page) {
     const chartLabels = [...document.querySelectorAll('.chart-axis text')].map(el => el.textContent.trim())
     const rowText = rows.map(row => row.innerText).join('\n')
     const pointTitles = [...document.querySelectorAll('.trend-point title')].map(el => el.textContent.trim()).join('\n')
-    const glmUnknownRows = rows.filter(row => row.innerText.includes('GLM 未分模型'))
+    const unknownModelRows = rows.filter(row => row.innerText.includes('未分模型（历史数据）'))
     const colors = rows.map(row => getComputedStyle(row.querySelector('.model-dot')).backgroundColor)
     const uniqueColors = new Set(colors)
     const cacheHitPoints = [...document.querySelectorAll('.trend-point title')].filter(el => el.textContent.includes('Cache Hit Rate'))
     return rows.length >= 10
       && trendPoints.length >= 10
       && rowText.includes('604.0M')
-      && rowText.includes('GLM 未分模型')
-      && glmUnknownRows.length === 1
+      && rowText.includes('未分模型（历史数据）')
+      && unknownModelRows.length === 1
       && rowText.includes('mock-extra-model-10')
       && pointTitles.includes('196.0M')
       && cacheHitPoints.length === 0
@@ -627,10 +913,10 @@ async function runClicks(page) {
     const labels = [...document.querySelectorAll('.chart-axis text')].map(el => el.textContent.trim())
     return document.querySelectorAll('.distribution-table tbody tr').length >= 3
       && labels.length >= 4
-      && [...document.querySelectorAll('.distribution-table tbody tr')].filter(row => row.innerText.includes('GLM 未分模型')).length === 1
+      && [...document.querySelectorAll('.distribution-table tbody tr')].filter(row => row.innerText.includes('未分模型（历史数据）')).length === 1
   }, { timeout: 8000 })
   await clickText(page, '编辑')
-  await typePlaceholder(page, '输入新的 ai-deepseek-key.txt', 'sk-local-smoke')
+  await typePlaceholder(page, '输入新的 ai-deepseek-key.txt', 'local-smoke-placeholder')
   await clickText(page, '保存')
   await waitForText(page, 'Key 已更新并热加载')
 
@@ -656,6 +942,9 @@ async function runClicks(page) {
   await waitForText(page, '莲莲图集')
   await clickButtonByLabel(page, '批量删除')
   await waitForText(page, '点击图片选择要删除的项目')
+
+  await verifyAgentNavigation(page)
+  await verifyMobileSidebar(page)
 }
 
 async function runLiveClicks(page) {
@@ -758,6 +1047,7 @@ async function main() {
   const vite = LIVE_URL ? null : startVite()
   let browser = null
   const consoleErrors = []
+  const responseErrors = []
   try {
     if (vite) await waitForServer(vite)
     browser = await puppeteer.launch({
@@ -766,9 +1056,18 @@ async function main() {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     })
     const page = await browser.newPage()
+    page.on('response', response => {
+      const status = response.status()
+      if (status < 400) return
+      const url = response.url()
+      const pathname = new URL(url).pathname
+      if (!LIVE_URL && status === 403 && pathname.startsWith('/dashboard/api/')) return
+      if (!LIVE_URL && status === 404 && pathname.endsWith('/favicon.ico')) return
+      responseErrors.push(`${status} ${url}`)
+    })
     page.on('console', msg => {
       const text = msg.text()
-      if (LIVE_URL && /Failed to load resource: the server responded with a status of 403/.test(text)) return
+      if (/Failed to load resource: the server responded with a status of (403|404)/.test(text)) return
       if (msg.type() === 'error') consoleErrors.push(text)
     })
     page.on('pageerror', error => consoleErrors.push(error.message))
@@ -779,6 +1078,7 @@ async function main() {
       await installApiMock(page)
       await runClicks(page)
     }
+    if (responseErrors.length) throw new Error('Browser response errors:\n' + responseErrors.join('\n'))
     if (consoleErrors.length) throw new Error('Browser console errors:\n' + consoleErrors.join('\n'))
     console.log(LIVE_URL ? 'dashboard live click smoke passed' : 'dashboard click smoke passed')
   } catch (error) {

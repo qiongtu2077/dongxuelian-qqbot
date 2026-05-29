@@ -42,23 +42,25 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { ref, reactive, inject, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { fetchWhitelist, updateWhitelist } from '../api'
+import type { MessageState, ShowAdminDialog, WhitelistBuckets, WhitelistData, WhitelistEntry, WhitelistMap } from '../types'
+import { errorMessage, isRecord, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
 
 export default {
   name: 'WhitelistPanel',
   components: { SelectBox },
   setup() {
-    const showAdminDialog = inject('showAdminDialog')
-    const lists = ref({})
-    const newValues = reactive({})
-    const newTypes = reactive({})
-    const msgs = reactive({})
+    const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
+    const lists = ref<WhitelistMap>({})
+    const newValues = reactive<Record<string, string>>({})
+    const newTypes = reactive<Record<string, 'groups' | 'users'>>({})
+    const msgs = reactive<Record<string, MessageState | null>>({})
     const refreshing = ref(false)
     const refreshMsg = ref('')
-    let pollTimer = null
+    let pollTimer: ReturnType<typeof setInterval> | null = null
 
     const loadError = ref('')
     const typeOptions = [
@@ -74,10 +76,10 @@ export default {
           lists.value = res.data
           loadError.value = ''
         } else {
-          loadError.value = res.data?.message || '加载失败'
+          loadError.value = messageFromData(res.data, '加载失败')
         }
       } catch (e) {
-        loadError.value = e.message
+        loadError.value = errorMessage(e)
       }
     }
 
@@ -102,51 +104,55 @@ export default {
     onActivated(startPoll)
     onDeactivated(stopPoll)
 
-    function isEmpty(wl) {
+    function isBuckets(data: WhitelistData): data is WhitelistBuckets {
+      return isRecord(data) && !Array.isArray(data)
+    }
+
+    function isEmpty(wl: WhitelistEntry) {
       if (Array.isArray(wl.data)) return wl.data.length === 0
-      if (typeof wl.data === 'object') return !wl.data.groups?.length && !wl.data.users?.length
+      if (isBuckets(wl.data)) return !wl.data.groups?.length && !wl.data.users?.length
       return true
     }
 
-    function isObjectList(wl) {
-      return wl && typeof wl.data === 'object' && !Array.isArray(wl.data)
+    function isObjectList(wl: WhitelistEntry) {
+      return isBuckets(wl.data)
     }
 
-    function getCount(wl) {
+    function getCount(wl: WhitelistEntry) {
       if (Array.isArray(wl.data)) return wl.data.length
-      if (typeof wl.data === 'object') return (wl.data.groups?.length || 0) + (wl.data.users?.length || 0)
+      if (isBuckets(wl.data)) return (wl.data.groups?.length || 0) + (wl.data.users?.length || 0)
       return 0
     }
 
-    function getItems(wl) {
+    function getItems(wl: WhitelistEntry): string[] {
       if (Array.isArray(wl.data)) return wl.data
-      const items = []
+      const items: string[] = []
       if (wl.data?.groups) wl.data.groups.forEach(g => items.push('[群] ' + g))
       if (wl.data?.users) wl.data.users.forEach(u => items.push('[用户] ' + u))
       return items
     }
 
-    function inputPlaceholder(wl) {
+    function inputPlaceholder(wl: WhitelistEntry) {
       if (isObjectList(wl)) return '群号或用户 QQ 号'
       if (wl.label.includes('用户')) return '用户 QQ 号'
       return '群号'
     }
 
-    function getRawItems(wl) {
+    function getRawItems(wl: WhitelistEntry): string[] {
       if (Array.isArray(wl.data)) return wl.data
-      const items = []
+      const items: string[] = []
       if (wl.data?.groups) wl.data.groups.forEach(g => items.push(g))
       if (wl.data?.users) wl.data.users.forEach(u => items.push(u))
       return items
     }
 
-    async function addItem(key) {
+    async function addItem(key: string) {
       const val = (newValues[key] || '').trim()
       if (!val) return
       const wl = lists.value[key]
       if (!wl) return
 
-      let newData
+      let newData: WhitelistData
       if (Array.isArray(wl.data)) {
         if (wl.data.includes(val)) { msgs[key] = { type: 'err', text: '已存在' }; return }
         newData = [...wl.data, val]
@@ -168,15 +174,15 @@ export default {
         newValues[key] = ''
         load()
       } else {
-        msgs[key] = { type: 'err', text: res.data?.message || '添加失败' }
+        msgs[key] = { type: 'err', text: messageFromData(res.data, '添加失败') }
       }
       setTimeout(() => msgs[key] = null, 2000)
     }
 
-    async function removeItem(key, idx) {
+    async function removeItem(key: string, idx: number) {
       const wl = lists.value[key]
       if (!wl) return
-      let newData
+      let newData: WhitelistData
       if (Array.isArray(wl.data)) {
         newData = wl.data.filter((_, i) => i !== idx)
       } else {
@@ -193,7 +199,7 @@ export default {
         return
       }
       if (res.ok) { msgs[key] = { type: 'ok', text: '已删除' }; load() }
-      else msgs[key] = { type: 'err', text: res.data?.message || '删除失败' }
+      else msgs[key] = { type: 'err', text: messageFromData(res.data, '删除失败') }
       setTimeout(() => msgs[key] = null, 2000)
     }
 

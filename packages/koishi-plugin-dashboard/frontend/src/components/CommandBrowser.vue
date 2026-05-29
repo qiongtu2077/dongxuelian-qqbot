@@ -39,16 +39,17 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { fetchFeatures } from '../api'
+import type { FeatureInfo } from '../types'
 
 export default {
   name: 'CommandBrowser',
   setup() {
-    const features = ref([])
+    const features = ref<FeatureInfo[]>([])
     const search = ref('')
-    const activeId = ref(null)
+    const activeId = ref<string | null>(null)
 
     const filtered = computed(() => {
       const q = search.value.trim().toLowerCase()
@@ -60,12 +61,12 @@ export default {
       )
     })
 
-    function getTitle(id) {
+    function getTitle(id: string) {
       const f = features.value.find(x => x.id === id)
       return f ? f.title : id
     }
 
-    function scrollTo(id) {
+    function scrollTo(id: string) {
       search.value = ''
       activeId.value = id
       setTimeout(() => {
@@ -76,7 +77,7 @@ export default {
 
     onMounted(async () => {
       const res = await fetchFeatures()
-      if (res.ok) features.value = res.data
+      if (res.ok && res.data) features.value = res.data
     })
 
     return { features, search, filtered, activeId, getTitle, scrollTo }

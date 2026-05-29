@@ -77,14 +77,28 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, inject, onMounted } from 'vue'
 import { fetchConfig, fetchProviders, updateConfig, fetchFallbackChains, saveFallbackChains, fetchCustomProviders, saveCustomProviders } from '../api'
+import type { CustomProvider, FallbackChains, MessageState, ProviderInfo, ProviderModel, ShowAdminDialog } from '../types'
+import { errorMessage, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
 
 const LIGHTWEIGHT_MAIN_TOGGLE_KEY = 'cfg_lightweight_main'
 
-const FALLBACK_CARDS = [
+type FallbackKey = 'chat' | 'vision' | 'lightweight'
+
+interface FallbackCard {
+  key: FallbackKey
+  label: string
+  desc: string
+  showMainFirst: boolean
+  showMainLast: boolean
+  hasMainToggle: boolean
+  useMainFallback?: boolean
+}
+
+const FALLBACK_CARDS: FallbackCard[] = [
   { key: 'chat', label: '聊天 Fallback', desc: '主聊天、吐槽我、帮我说话', showMainFirst: true, showMainLast: true, hasMainToggle: false },
   { key: 'vision', label: '视觉 Fallback', desc: '多模态 / 识图调用', showMainFirst: true, showMainLast: true, hasMainToggle: false },
   { key: 'lightweight', label: '轻量功能 Fallback', desc: '反击打分、摘要、敏感检测、话题切换、越狱回复、今日情绪、评价总结', showMainFirst: false, showMainLast: false, hasMainToggle: true },
@@ -92,23 +106,23 @@ const FALLBACK_CARDS = [
 
 defineOptions({ name: 'ConfigPanel' })
 
-    const showAdminDialog = inject('showAdminDialog')
-    const providers = ref({})
+    const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
+    const providers = ref<Record<string, ProviderInfo>>({})
     const selectedProvider = ref('deepseek')
     const selectedModel = ref('')
     const baseUrl = ref('')
     const saving = ref(false)
-    const msg = ref(null)
+    const msg = ref<MessageState | null>(null)
 
-    const customProviders = ref([])
+    const customProviders = ref<CustomProvider[]>([])
     const savingCustom = ref(false)
-    const customMsg = ref(null)
+    const customMsg = ref<MessageState | null>(null)
 
-    const fallbackChains = ref({})
-    const defaultFallback = ref({})
-    const allProviders = ref({})
+    const fallbackChains = ref<FallbackChains>({})
+    const defaultFallback = ref<FallbackChains>({})
+    const allProviders = ref<Record<string, ProviderInfo>>({})
     const savingFallback = ref(false)
-    const fallbackMsg = ref(null)
+    const fallbackMsg = ref<MessageState | null>(null)
 
     const lightweightMainToggle = ref(localStorage.getItem(LIGHTWEIGHT_MAIN_TOGGLE_KEY) !== '0')
 
@@ -122,25 +136,25 @@ defineOptions({ name: 'ConfigPanel' })
       { value: '', label: '供应商', disabled: true },
       ...Object.entries(allProviders.value).map(([value, provider]) => ({ value, label: provider.name })),
     ])
-    function fallbackModelOptions(provider) {
+    function fallbackModelOptions(provider: string) {
       return [
         { value: '', label: '模型', disabled: true },
         ...((allProviders.value[provider]?.models || []).map(model => ({ value: model.id, label: `${model.name || model.id}${model.vision ? ' 👁' : ''}` }))),
       ]
     }
 
-    const fallbackCards = computed(() =>
+    const fallbackCards = computed<FallbackCard[]>(() =>
       FALLBACK_CARDS.map(function(fc) {
         return Object.assign({}, fc, fc.key === 'lightweight' ? { useMainFallback: lightweightMainToggle.value } : {})
       })
     )
 
     function buildAllProviders() {
-      const allP = Object.assign({}, providers.value)
+      const allP: Record<string, ProviderInfo> = Object.assign({}, providers.value)
       for (const cp of customProviders.value) {
         if (cp.id && cp.name) {
           const models = Array.isArray(cp.models)
-            ? cp.models.map(function(m) {
+            ? cp.models.map(function(m: ProviderModel | string) {
                 if (typeof m === 'object' && m !== null) return m
                 return { id: String(m).trim(), vision: false }
               }).filter(function(m) { return m.id })
@@ -156,13 +170,13 @@ defineOptions({ name: 'ConfigPanel' })
         const [pRes, cRes, fRes, cpRes] = await Promise.all([
           fetchProviders(), fetchConfig(), fetchFallbackChains(), fetchCustomProviders()
         ])
-        if (pRes.ok) providers.value = pRes.data
-        if (cRes.ok) {
+        if (pRes.ok && pRes.data) providers.value = pRes.data
+        if (cRes.ok && cRes.data) {
           selectedProvider.value = cRes.data.provider || 'deepseek'
           selectedModel.value = cRes.data.model || ''
           baseUrl.value = cRes.data.baseUrl || ''
         }
-        if (fRes.ok) {
+        if (fRes.ok && fRes.data) {
           fallbackChains.value = fRes.data.chains || {}
           defaultFallback.value = fRes.data.default || {}
         }
@@ -172,7 +186,7 @@ defineOptions({ name: 'ConfigPanel' })
           customProviders.value = raw.map(function(cp) {
             return Object.assign({}, cp, {
               models: Array.isArray(cp.models)
-                ? cp.models.map(function(m) {
+                ? cp.models.map(function(m: ProviderModel | string) {
                     if (typeof m === 'object' && m !== null) return Object.assign({}, m)
                     return { id: String(m).trim(), vision: false }
                   })
@@ -190,7 +204,7 @@ defineOptions({ name: 'ConfigPanel' })
       const cpRes = await fetchCustomProviders()
       if (cpRes.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('查看自定义供应商需要管理员密码', loadCustomProviders); return }
       if (cpRes.ok) {
-        customProviders.value = (cpRes.data || []).map(cp => Object.assign({}, cp, { models: Array.isArray(cp.models) ? cp.models.map(m => typeof m === 'object' && m !== null ? Object.assign({}, m) : { id: String(m), name: String(m) }) : [] }))
+        customProviders.value = (cpRes.data || []).map(cp => Object.assign({}, cp, { models: Array.isArray(cp.models) ? cp.models.map((m: ProviderModel | string) => typeof m === 'object' && m !== null ? Object.assign({}, m) : { id: String(m), name: String(m), vision: false }) : [] }))
         buildAllProviders()
       }
     }
@@ -213,25 +227,25 @@ defineOptions({ name: 'ConfigPanel' })
         if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('修改配置需要管理员密码', saveConfig); saving.value = false; return }
         if (res.ok) msg.value = { type: 'ok', text: '配置已保存并热加载' }
         else msg.value = { type: 'err', text: res.data?.message || '保存失败' }
-      } catch (e) { msg.value = { type: 'err', text: e.message } }
+      } catch (e) { msg.value = { type: 'err', text: errorMessage(e) } }
       saving.value = false
     }
 
     function addCustomProvider() {
       customProviders.value.push({ id: '', name: '', baseURL: '', keyFile: '', models: [{ id: '', vision: false }] })
     }
-    function removeCustomProvider(idx) {
+    function removeCustomProvider(idx: number) {
       customProviders.value.splice(idx, 1)
     }
 
-    function normalizeCustomProvider(cp) {
+    function normalizeCustomProvider(cp: CustomProvider): CustomProvider {
       return {
         id: String(cp.id || '').trim(),
         name: String(cp.name || '').trim(),
         baseURL: String(cp.baseURL || '').trim(),
         keyFile: String(cp.keyFile || '').trim(),
         models: Array.isArray(cp.models)
-          ? cp.models.map(function(m) {
+          ? cp.models.map(function(m: ProviderModel | string) {
               const id = typeof m === 'object' && m !== null ? String(m.id || '').trim() : String(m).trim()
               const vision = typeof m === 'object' && m !== null ? !!m.vision : false
               return { id: id, vision: vision }
@@ -257,22 +271,22 @@ defineOptions({ name: 'ConfigPanel' })
       savingCustom.value = false
     }
 
-    function onFbProviderChange(purpose, idx) {
+    function onFbProviderChange(purpose: FallbackKey, idx: number) {
       const step = (fallbackChains.value[purpose] || [])[idx]
       if (!step) return
       step.model = ''
     }
 
-    function addFallbackStep(purpose) {
+    function addFallbackStep(purpose: FallbackKey) {
       if (!fallbackChains.value[purpose]) fallbackChains.value[purpose] = []
       fallbackChains.value[purpose].push({ provider: '', model: '', keyFile: '' })
     }
 
-    function removeFallbackStep(purpose, idx) {
+    function removeFallbackStep(purpose: FallbackKey, idx: number) {
       fallbackChains.value[purpose].splice(idx, 1)
     }
 
-    function resetFallbackCard(key) {
+    function resetFallbackCard(key: FallbackKey) {
       fallbackChains.value[key] = JSON.parse(JSON.stringify(defaultFallback.value[key] || []))
     }
 
@@ -281,7 +295,7 @@ defineOptions({ name: 'ConfigPanel' })
       if (lightweightMainToggle.value !== (localStorage.getItem(LIGHTWEIGHT_MAIN_TOGGLE_KEY) !== '0')) {
         localStorage.setItem(LIGHTWEIGHT_MAIN_TOGGLE_KEY, lightweightMainToggle.value ? '1' : '0')
       }
-      const chains = {}
+      const chains: FallbackChains = {}
       for (let _i = 0; _i < FALLBACK_CARDS.length; _i++) {
         const fc = FALLBACK_CARDS[_i]
         chains[fc.key] = fallbackChains.value[fc.key] || []
@@ -289,17 +303,8 @@ defineOptions({ name: 'ConfigPanel' })
       const res = await saveFallbackChains(chains)
       if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('保存 Fallback 链需要管理员密码', saveFallback); savingFallback.value = false; return }
       if (res.ok) fallbackMsg.value = { type: 'ok', text: 'Fallback 链已保存' }
-      else fallbackMsg.value = { type: 'err', text: res.data?.message || '保存失败' }
+      else fallbackMsg.value = { type: 'err', text: messageFromData(res.data, '保存失败') }
       savingFallback.value = false
-    }
-
-    async function saveThrottleConfig() {
-      savingThrottle.value = true; throttleMsg.value = null
-      const res = await saveThrottle({ maxPerMinute: throttleMax.value })
-      if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('保存节流配置需要管理员密码', saveThrottleConfig); savingThrottle.value = false; return }
-      if (res.ok) throttleMsg.value = { type: 'ok', text: '节流配置已保存' }
-      else throttleMsg.value = { type: 'err', text: res.data?.message || '保存失败' }
-      savingThrottle.value = false
     }
 
 </script>
