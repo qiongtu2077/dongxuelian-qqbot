@@ -1,1 +1,10 @@
-{"name":"koishi-plugin-group-leave-notice","version":"0.1.0","main":"lib/index.js"}
+{
+  "name": "koishi-plugin-group-leave-notice",
+  "version": "0.1.0",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}
