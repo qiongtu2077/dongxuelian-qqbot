@@ -10,6 +10,7 @@ const path = require('path');
 const { DATA_DIR } = require('../core/constants');
 const { requestChatCompletions } = require('../core/api');
 const { loadConfig } = require('../core/runtime-config');
+const { getAgentConfig } = require('./config');
 const { safeUserId, legacySafeUserId } = require('../core/utils');
 const DASHBOARD_MEMORY_DIR = path.join(DATA_DIR, 'agent-memory-dashboard');
 const DAILY_DIR = path.join(DASHBOARD_MEMORY_DIR, 'daily');
@@ -121,6 +122,8 @@ async function extractMemory(recentMessages, userId) {
 }
 async function onAgentReplyComplete({ userId, channel, messages } = {}) {
     if (channel !== 'dashboard')
+        return;
+    if (getAgentConfig().memory?.enabled === false)
         return;
     if (!shouldTrigger(userId))
         return;

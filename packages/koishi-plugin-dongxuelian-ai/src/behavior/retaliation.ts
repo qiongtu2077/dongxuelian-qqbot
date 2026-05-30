@@ -5,6 +5,7 @@
  */
 const { loadConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
 const { requestChatCompletions } = require('../core/api') as typeof import('../core/api')
+const { errorMessage } = require('../core/utils') as typeof import('../core/utils')
 
 interface SharedMessageEntry {
   role?: string
@@ -50,7 +51,7 @@ async function calculateRetaliationScore(cleanInput: string, userId: string, cha
     const score = parseInt(String(text).trim(), 10)
     if (!isNaN(score)) return Math.max(0, Math.min(100, score))
   } catch (error) {
-    console.warn(`[dongxuelian-ai] retaliation score failed: ${error && error.message ? error.message : String(error || '')}`)
+    console.warn(`[dongxuelian-ai] retaliation score failed: ${errorMessage(error)}`)
   }
   return 0
 }

@@ -416,16 +416,18 @@ function scheduleCron(cron: CronEntry): void {
 
   if (delay < -5000) {
     const policy = cron.runPolicy?.misfirePolicy || 'reschedule'
+    // L48: 错过触发的周期任务，重算未来 nextRunAt 后必须落盘（updateCron 内部 writeCronFile + 重新 scheduleCron），
+    // 否则磁盘/列表/重启恢复仍停在旧过期时间，反复进入本分支。控制流与原实现一致，只是把内存重排改为持久化重排。
     if (policy === 'skip') {
       if (cron.mode !== 'once' && cron.schedule) {
         cron.nextRunAt = getNextRunAt(cron.schedule)
-        scheduleCron(cron)
+        updateCron(cron.id, { nextRunAt: cron.nextRunAt }).catch(ignoreRecoverableCronError)
       }
       return
     }
     if (policy === 'reschedule' && cron.mode !== 'once' && cron.schedule) {
       cron.nextRunAt = getNextRunAt(cron.schedule)
-      scheduleCron(cron)
+      updateCron(cron.id, { nextRunAt: cron.nextRunAt }).catch(ignoreRecoverableCronError)
       return
     }
   }

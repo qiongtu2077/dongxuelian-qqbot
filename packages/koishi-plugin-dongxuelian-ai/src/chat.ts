@@ -81,6 +81,7 @@ const {
   isEvaluationRequest,             // 评价请求识别
   getSearchCapability,             // 当前模型联网搜索能力查询
   trimReply,                       // 回复后处理（截断）
+  errorMessage,                    // catch 错误消息安全提取
 } = require('./core/utils') as typeof import('./core/utils')
 const {
   pickRepeatedFallbackReply,  // 重复回复兜底
@@ -750,7 +751,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
           try { logDebug(ctx, 'persona-profile', `profile_shadow_jsonl_failed reason=${String((error && error.message) || 'unknown').slice(0, 80)} mode=shadow_only prompt=unchanged`) } catch { /* non-critical: debug log failure must not affect chat reply */ }
         })
     } catch (profileError) {
-      try { logDebug(ctx, 'persona-profile', `profile_selection_failed reason=${String((profileError && profileError.message) || 'unknown').slice(0, 80)}`) } catch { /* non-critical: debug log failure must not affect chat reply */ }
+      try { logDebug(ctx, 'persona-profile', `profile_selection_failed reason=${String(errorMessage(profileError) || 'unknown').slice(0, 80)}`) } catch { /* non-critical: debug log failure must not affect chat reply */ }
     }
   }
 
@@ -941,7 +942,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
     } as Parameters<typeof buildExpressionShadowPlan>[0] & { cleanInput?: string })
     logDebug(ctx, 'expression-pool', formatExpressionShadowDiagnostic(shadowPlan))
   } catch (shadowError) {
-    try { logDebug(ctx, 'expression-pool', `shadow_failed reason=${String((shadowError && shadowError.message) || 'unknown').slice(0, 80)}`) } catch { /* non-critical: expression shadow diagnostics never block chat */ }
+    try { logDebug(ctx, 'expression-pool', `shadow_failed reason=${String(errorMessage(shadowError) || 'unknown').slice(0, 80)}`) } catch { /* non-critical: expression shadow diagnostics never block chat */ }
   }
 
   let reply = await callOpenAI(messages, options.randomTriggered, {}, chatTools)

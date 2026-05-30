@@ -207,7 +207,7 @@ async function writeFileAtomic(file: string, value: unknown): Promise<void> {
         await fs.rename(tmp, file)
         return
       } catch (error) {
-        if (!['EEXIST', 'EPERM'].includes(error && error.code) || attempt === 7) throw error
+        if (!['EEXIST', 'EPERM'].includes(errorCode(error)) || attempt === 7) throw error
         try { await fs.unlink(file) } catch { /* non-critical: best-effort overwrite cleanup before async rename retry */ }
         await new Promise(resolve => setTimeout(resolve, attempt + 1))
       }
@@ -231,7 +231,7 @@ function writeFileAtomicSync(file: string, value: unknown): void {
     try {
       fs.renameSync(tmp, file)
     } catch (error) {
-      if (!['EEXIST', 'EPERM'].includes(error && error.code)) throw error
+      if (!['EEXIST', 'EPERM'].includes(errorCode(error))) throw error
       try { fs.unlinkSync(file) } catch { /* non-critical: best-effort overwrite cleanup before sync rename retry */ }
       fs.renameSync(tmp, file)
     }
@@ -805,6 +805,24 @@ function todayCstMinusDays(daysBack: number): string {
   return todayCst(d)
 }
 
+/** 从 catch 到的未知错误里安全取出文本消息（catch 变量在 strict 下是 unknown） */
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') {
+    return (error as { message: string }).message
+  }
+  return error === undefined || error === null ? '' : String(error)
+}
+
+/** 从 catch 到的未知错误里安全取出 Node errno code（如 EEXIST/EPERM） */
+function errorCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    return typeof code === 'string' ? code : ''
+  }
+  return ''
+}
+
 export = {
   isRareProvocation, isWideRareProvocation, isHostileInput,
   normalizeText,
@@ -833,4 +851,5 @@ export = {
   getModelDisplayName, getSearchCapability, formatSearchStatus,
   trimReply, sanitizeReply, stripMarkdownForQQ, splitSentences, splitReplyForQQBubbles,
   todayCst, formatShanghaiTime24h, getShanghaiHourFromTs, todayCstMinusDays,
+  errorMessage, errorCode,
 }

@@ -12,7 +12,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const { DATA_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE, PROVIDERS, GLM_KEY_FILE, DASHSCOPE_KEY_FILE } = require('../../core/constants');
-const { readTextFile, readJsonFile, truncateText } = require('../../core/utils');
+const { readTextFile, readJsonFile, truncateText, errorMessage } = require('../../core/utils');
 const { loadConfig } = require('../../core/runtime-config');
 const { filterExpressionLearningMessages } = require('./expression-learner');
 const { appendExpressionCandidate, expressionPoolSafeChannelKey, EXPRESSION_POOL_MAX_TEXT_LEN } = require('./expression-pool-store');
@@ -145,7 +145,7 @@ async function abstractorCallModel(messages, options = {}) {
                 return text;
         }
         catch (error) {
-            console.warn(`[dongxuelian-ai] expression abstractor model call failed provider=${am.provider}: ${error && error.message ? error.message : String(error || '')}`);
+            console.warn(`[dongxuelian-ai] expression abstractor model call failed provider=${am.provider}: ${errorMessage(error)}`);
         }
     }
     return '';
@@ -199,7 +199,7 @@ async function runExpressionHarvestForChannel(ctx, channelKey, options = {}) {
             raw = getAbstractorResultContent(modelResult);
         }
         catch (error) {
-            console.warn(`[dongxuelian-ai] expression abstractor timed out or failed channel=${safeChannelKey}: ${error && error.message ? error.message : String(error || '')}`);
+            console.warn(`[dongxuelian-ai] expression abstractor timed out or failed channel=${safeChannelKey}: ${errorMessage(error)}`);
             raw = '';
         }
         const candidates = abstractorParseModelOutput(raw);
@@ -231,14 +231,14 @@ async function runExpressionHarvestForChannel(ctx, channelKey, options = {}) {
                     summary.rejected += 1;
             }
             catch (error) {
-                console.warn(`[dongxuelian-ai] expression candidate append failed channel=${safeChannelKey}: ${error && error.message ? error.message : String(error || '')}`);
+                console.warn(`[dongxuelian-ai] expression candidate append failed channel=${safeChannelKey}: ${errorMessage(error)}`);
                 summary.rejected += 1;
             }
         }
         lastHarvestAt.set(safeChannelKey, Number(options.now) || Date.now());
     }
     catch (error) {
-        summary.error = error && error.message ? String(error.message).slice(0, 200) : 'unknown';
+        summary.error = errorMessage(error) ? errorMessage(error).slice(0, 200) : 'unknown';
     }
     return summary;
 }

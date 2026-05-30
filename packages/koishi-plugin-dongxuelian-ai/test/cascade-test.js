@@ -1878,6 +1878,12 @@ async function main() {
   check('agent messages sanitizes history', modules.agentMessages.sanitizeAgentHistory([{ role: 'system', content: 'bad' }, { role: 'user', content: 'ok' }]).length === 1)
   check('agent path guard detects child path', modules.agentPathGuard.isAgentPathInside(path.join(ROOT, 'packages'), ROOT))
   checkThrows('agent path guard blocks protected security config basename', () => modules.agentPathGuard.assertNotWriteBlockedBasename(path.join(c.DATA_DIR, 'ai-admin-ids.json'), '文件'), /禁止写入安全配置文件/)
+  // L34: 凭据与供应商运行配置文件禁止通用上传覆盖
+  checkThrows('L34 path guard blocks openai key file', () => modules.agentPathGuard.assertNotWriteBlockedBasename(path.join(c.DATA_DIR, 'ai-openai-key.txt'), '文件'), /禁止写入安全配置文件/)
+  checkThrows('L34 path guard blocks provider file', () => modules.agentPathGuard.assertNotWriteBlockedBasename(path.join(c.DATA_DIR, 'ai-provider.txt'), '文件'), /禁止写入安全配置文件/)
+  checkThrows('L34 path guard blocks base-url file', () => modules.agentPathGuard.assertNotWriteBlockedBasename(path.join(c.DATA_DIR, 'ai-base-url.txt'), '文件'), /禁止写入安全配置文件/)
+  checkThrows('L34 path guard blocks custom providers file', () => modules.agentPathGuard.assertNotWriteBlockedBasename(path.join(c.DATA_DIR, 'ai-providers-custom.json'), '文件'), /禁止写入安全配置文件/)
+  check('L34 path guard allows ordinary ai-prefixed workspace file', (() => { try { modules.agentPathGuard.assertNotWriteBlockedBasename(path.join(c.DATA_DIR, 'ai-notes.txt'), '文件'); return true } catch { return false } })())
   const compactedAgentMessages = modules.agentContext.compactMessages([
     { role: 'system', content: 'sys' },
     { role: 'user', content: 'older-user-goal' },
@@ -2003,6 +2009,10 @@ async function main() {
   check('mcp local server exports identity', modules.mcpLocalServer.SERVER_NAME === 'dongxuelian-local-mcp' && typeof modules.mcpLocalServer.SERVER_VERSION === 'string')
   check('mcp local server exposes diagnostic tools', ['get_bot_health', 'get_agent_config', 'get_agent_stats', 'list_agent_sessions', 'query_logs'].every(name => mcpToolNames.includes(name)), mcpToolNames.join(','))
   check('mcp local server exposes QQ file diagnostics', ['diagnose_recent_files', 'diagnose_analyze_file', 'simulate_file_followup'].every(name => mcpToolNames.includes(name)), mcpToolNames.join(','))
+  // L39: 文件诊断工具必须只读，不得调用真实分析/补证写入路径
+  const mcpLocalServerSrc = fs.readFileSync(path.join(LIB, 'mcp', 'local-server.js'), 'utf8')
+  check('L39 mcp diagnose does not call analyzeFileTool.execute', !/analyzeFileTool\.execute/.test(mcpLocalServerSrc))
+  check('L39 mcp diagnose does not call resolveUnguardedFileFollowup', !/resolveUnguardedFileFollowup\s*\(/.test(mcpLocalServerSrc))
   check('mcp local server exposes workspace tools', ['list_files', 'find_files', 'grep_search', 'read_file', 'write_file', 'edit_file'].every(name => mcpToolNames.includes(name)), mcpToolNames.join(','))
   check('mcp local server exposes bounded local check tool', mcpToolNames.includes('run_local_check'))
   check('mcp local check maps quick to npm test:quick', JSON.stringify(modules.mcpLocalServer.parseLocalCheckCommand('quick')[1]) === JSON.stringify(['run', 'test:quick']))
@@ -2842,6 +2852,35 @@ async function main() {
     await isolatedConfig.patchAgentConfig({ dangerousPolicy: 'confirm' })
     check('agent config confirm policy marks dangerous tools as confirm', isolatedSafety.check('write_file').action === 'confirm' && isolatedSafety.check('edit_file').action === 'confirm' && isolatedSafety.check('append_file').action === 'confirm')
     check('agent config exposes browser action by default', isolatedRegistry.getToolDefinitions('dashboard').some(item => item.function.name === 'browser_action'))
+    // L33: memory.enabled=false 时记忆工具应从工具定义中隐藏
+    await isolatedConfig.patchAgentConfig({ memory: { enabled: true, adminOnly: false } })
+    check('L33 memory tools exposed when memory enabled', isolatedRegistry.getToolDefinitions('dashboard').some(item => ['remember_memory', 'search_memory', 'forget_memory', 'list_memory'].includes(item.function.name)))
+    await isolatedConfig.patchAgentConfig({ memory: { enabled: false, adminOnly: false } })
+    check('L33 memory tools hidden when memory disabled', !isolatedRegistry.getToolDefinitions('dashboard').some(item => ['remember_memory', 'search_memory', 'forget_memory', 'list_memory'].includes(item.function.name)))
+    check('L33 non-memory tools unaffected when memory disabled', isolatedRegistry.getToolDefinitions('dashboard').some(item => item.function.name === 'browser_action'))
+    await isolatedConfig.patchAgentConfig({ memory: { enabled: true, adminOnly: false } })
+    // L43: AgentPanel 只提交可见字段时，patch/merge 必须保留未提交的 queue/cron/memory/planMode/push
+    await isolatedConfig.saveAgentConfig({
+      version: 2,
+      channels: { qq: { enabled: true, tools: {} }, dashboard: { enabled: true, tools: {} } },
+      dangerousPolicy: 'confirm',
+      queue: { maxGlobal: 9, maxPerChannel: 3, maxPendingPerUser: 1, timeoutMs: 90000 },
+      planMode: { enabled: false, autoCreate: false },
+      push: { enabled: true, dailyLimit: 5 },
+      cron: { enabled: true, onceEnabled: false },
+      memory: { enabled: false, adminOnly: false },
+    })
+    // 模拟 AgentPanel 保存：只带可见字段 dangerousPolicy + mcp + channels
+    await isolatedConfig.patchAgentConfig({ dangerousPolicy: 'auto', mcp: { enabled: true, allowWriteWorkspace: false, allowRunLocal: false, exposeDangerousActions: false } })
+    const l43After = isolatedConfig.getAgentConfig()
+    check('L43 patch save preserves hidden queue.maxGlobal', l43After.queue.maxGlobal === 9)
+    check('L43 patch save preserves hidden planMode.enabled', l43After.planMode.enabled === false)
+    check('L43 patch save preserves hidden push.enabled', l43After.push.enabled === true)
+    check('L43 patch save preserves hidden cron flags', l43After.cron.enabled === true && l43After.cron.onceEnabled === false)
+    check('L43 patch save preserves hidden memory.enabled', l43After.memory.enabled === false)
+    check('L43 patch save applies visible dangerousPolicy', l43After.dangerousPolicy === 'auto')
+    check('L43 patch save applies visible mcp.enabled', l43After.mcp.enabled === true)
+    await isolatedConfig.patchAgentConfig({ memory: { enabled: true, adminOnly: false } })
   } finally {
     if (originalAgentDataDir) process.env.DONGXUELIAN_AI_DATA_DIR = originalAgentDataDir
     else delete process.env.DONGXUELIAN_AI_DATA_DIR

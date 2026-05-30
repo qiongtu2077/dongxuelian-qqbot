@@ -81,14 +81,18 @@ function selectActiveFileAnchor(recentFiles: RecentFileLike[] = [], context: Fil
   if (!files.length) return null
 
   const now = Number(context.now || Date.now())
+  // L14: 模糊弱锚点自动补读只允许从 fresh（活跃窗口内）文件里选；过了窗口就返回 null 交给澄清，
+  // 不自行猜一个过期旧文件来读。强锚点（reply / 明确 messageId / 文件名唯一命中 / read_group_context）走别的路径，不受此限制。
   const fresh = files.filter(file => {
     const ts = Number(file.ts || 0)
     return !Number.isFinite(ts) || ts <= 0 || now - ts <= FILE_FOLLOWUP_ACTIVE_WINDOW_MS
   })
-  const candidates = fresh.length ? fresh : files
+  if (!fresh.length) return null
   const userId = String(context.userId || '').trim()
-  const sameUser = userId ? candidates.filter(file => String(file.userId || '').trim() === userId) : []
-  return sameUser[0] || candidates[0] || null
+  // 群聊（有 userId）只自动补读当前用户自己的 fresh 文件；他人 fresh 文件不在模糊追问下自动读。
+  // 私聊（无 userId）回退到 fresh[0]。
+  const sameUser = userId ? fresh.filter(file => String(file.userId || '').trim() === userId) : []
+  return sameUser[0] || (!userId ? fresh[0] : null)
 }
 
 async function buildFileFollowupState(channelKey: string, userText: string, context: FileFollowupContext = {}): Promise<FileFollowupState> {

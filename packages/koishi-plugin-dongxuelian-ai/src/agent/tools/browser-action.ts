@@ -2,7 +2,7 @@
 const fs = require('fs')
 const path = require('path')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
-const { isPrivateHostname, isPrivateIp, validatePublicHttpUrl, resolveAndValidateHostname } = require('../../core/utils') as typeof import('../../core/utils')
+const { isPrivateHostname, isPrivateIp, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('../../core/utils') as typeof import('../../core/utils')
 const { assertExistingAgentPathInsideRoots } = require('../path-guard') as typeof import('../path-guard')
 const { rankSearchCandidates, formatSearchResults, buildSearchFailureText } = require('../search-results') as typeof import('../search-results')
 
@@ -480,7 +480,7 @@ async function searchAndRead(query) {
       if (extracted) return extracted
       failures.push(`${new URL(searchUrl).hostname}: 未提取到有效结果`)
     } catch (e) {
-      failures.push(`${searchUrl}: ${e.message}`)
+      failures.push(`${searchUrl}: ${errorMessage(e)}`)
     }
   }
   return buildSearchFailureText(value, failures)
@@ -772,7 +772,7 @@ async function runBatch(steps: unknown = []): Promise<string> {
       const text = await executeSingleAction(step)
       results.push({ index, action: step.action, ok: true, text: String(text || '').slice(0, 2000) })
     } catch (error) {
-      results.push({ index, action: step.action, ok: false, error: error.message || String(error) })
+      results.push({ index, action: step.action, ok: false, error: errorMessage(error) || String(error) })
     }
   }
   return JSON.stringify(results, null, 2)

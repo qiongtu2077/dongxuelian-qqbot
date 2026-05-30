@@ -35,6 +35,8 @@ const memoryTools = require('./memory-tools');
 const { getAgentConfig } = require('../config');
 const tools = [getTimeTool, calculatorTool, webSearchTool, webFetchTool, readAgentSkillTool, readFileTool, listFilesTool, findFilesTool, writeFileTool, editFileTool, shellTool, browserActionTool, appendFileTool, grepSearchTool, executeJavascriptTool, sendFileToUserTool, createUploadedFileVariantTool, getTokenUsageTool, setUserTimezoneTool, queryLogsTool, ...reminderTools.tools, ...scheduledTaskTools.tools, readImageUrlsTool, analyzeImageTool, analyzeFileTool, ...planTools.tools, ...memoryTools.tools];
 const TOOL_TIMEOUT_MS = 90000;
+/** 记忆相关工具：当 memory.enabled=false 时整体从工具定义中隐藏 */
+const MEMORY_TOOL_NAMES = new Set(['remember_memory', 'search_memory', 'forget_memory', 'list_memory']);
 const toolRegistry = {};
 for (const tool of tools) {
     toolRegistry[tool.definition.name] = tool;
@@ -45,9 +47,12 @@ function getToolDefinitions(channel = 'qq') {
     const channelConfig = config.channels[channel];
     if (!channelConfig || !channelConfig.enabled)
         return [];
+    const memoryDisabled = config.memory?.enabled === false;
     return tools
         .filter(t => {
         const name = t.definition.name;
+        if (memoryDisabled && MEMORY_TOOL_NAMES.has(name))
+            return false;
         const channels = t.defaultChannels || ['dashboard', 'qq'];
         return channels.includes(channel) && !!channelConfig.tools[name];
     })

@@ -783,6 +783,28 @@ async function run(t) {
       sendFileTool.execute = originalExecute
     }
   })
+
+  // L14: 文件追问弱锚点只从 fresh 文件自动选；过期/他人文件不自动补读
+  {
+    const guard = require('../../lib/media/file/file-followup-guard')
+    const now = 1_000_000_000_000
+    const WIN = 30 * 60 * 1000
+    const freshSelf = { messageId: 'fresh-self', fileName: 'a.pdf', userId: 'u1', ts: now - 5 * 60 * 1000 }
+    const freshOther = { messageId: 'fresh-other', fileName: 'b.pdf', userId: 'u2', ts: now - 5 * 60 * 1000 }
+    const oldSelf = { messageId: 'old-self', fileName: 'c.pdf', userId: 'u1', ts: now - 2 * 60 * 60 * 1000 }
+    // 同用户 fresh 文件仍自动选
+    t.check('L14 picks same-user fresh file', guard.selectActiveFileAnchor([freshSelf], { now, userId: 'u1' })?.messageId === 'fresh-self')
+    // 全部过期：模糊追问不自动补读，返回 null（交澄清）
+    t.check('L14 returns null when all files stale (group)', guard.selectActiveFileAnchor([oldSelf], { now, userId: 'u1' }) === null)
+    // 只有他人 fresh 文件：当前用户模糊追问不自动读他人文件
+    t.check('L14 does not auto-read other-user fresh file', guard.selectActiveFileAnchor([freshOther], { now, userId: 'u1' }) === null)
+    // 他人 fresh + 自己过期：不选他人 fresh，也不选自己过期
+    t.check('L14 ignores other-fresh and own-stale on vague followup', guard.selectActiveFileAnchor([freshOther, oldSelf], { now, userId: 'u1' }) === null)
+    // 私聊（无 userId）：fresh[0] 仍可选
+    t.check('L14 private chat falls back to fresh file', guard.selectActiveFileAnchor([freshSelf], { now })?.messageId === 'fresh-self')
+    // 私聊全部过期：返回 null
+    t.check('L14 private chat returns null when stale', guard.selectActiveFileAnchor([oldSelf], { now }) === null)
+  }
 }
 
 module.exports = { run }

@@ -862,6 +862,7 @@ async function run(t) {
       dangerousPolicy: 'auto',
       enabledSkills: [],
       readFileRoots: [],
+      cron: { enabled: true, onceEnabled: true },
     })
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '好呀，我每天早上八点跟你说早安。' } }] } },

@@ -681,7 +681,7 @@ async function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url:
   }
 
   if (picked.totalSize && picked.totalSize > MAX_SIZE) {
-    return `Video is too large. Please watch it on Bilibili. Size: ${formatBytes(picked.totalSize)}`
+    return `视频太大（${formatBytes(picked.totalSize)}），无法通过 QQ 发送，建议去 B 站观看。`
   }
 
   const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -701,7 +701,7 @@ async function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url:
     if (stat.size > MAX_SIZE) {
       await fsApi.rm(outputFile, { force: true }).catch(() => { /* non-critical: oversized temp cleanup is best-effort */
       })
-      return `Video is too large. Please watch it on Bilibili. Actual size: ${formatBytes(stat.size)}`
+      return `视频太大（${formatBytes(stat.size)}），无法通过 QQ 发送，建议去 B 站观看。`
     }
 
     const videoSent = await safeSend(ctx, session, segment.video(toFileUrl(outputFile)), 'video')

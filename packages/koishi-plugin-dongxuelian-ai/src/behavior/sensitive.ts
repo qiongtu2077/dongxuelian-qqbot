@@ -13,6 +13,7 @@ const {
   readTextFile,
   readJsonFile,
   safeChannelKey,
+  errorMessage,
 } = require('../core/utils') as typeof import('../core/utils')
 const { logDebug } = require('../core/logging-config') as typeof import('../core/logging-config')
 const {
@@ -71,7 +72,7 @@ async function getPoliticalDetectList(): Promise<Set<string>> {
     const parsed = JSON.parse(raw || '[]')
     politicalDetectCache = new Set(Array.isArray(parsed) ? parsed.map(String) : [])
   } catch (error) {
-    console.warn(`[dongxuelian-ai] political detect list parse failed: ${error.message}`)
+    console.warn(`[dongxuelian-ai] political detect list parse failed: ${errorMessage(error)}`)
     politicalDetectCache = new Set()
   }
   politicalDetectCacheExpiresAt = Date.now() + 30000

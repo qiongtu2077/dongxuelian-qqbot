@@ -166,7 +166,7 @@ async function writeFileAtomic(file, value) {
                 return;
             }
             catch (error) {
-                if (!['EEXIST', 'EPERM'].includes(error && error.code) || attempt === 7)
+                if (!['EEXIST', 'EPERM'].includes(errorCode(error)) || attempt === 7)
                     throw error;
                 try {
                     await fs.unlink(file);
@@ -197,7 +197,7 @@ function writeFileAtomicSync(file, value) {
             fs.renameSync(tmp, file);
         }
         catch (error) {
-            if (!['EEXIST', 'EPERM'].includes(error && error.code))
+            if (!['EEXIST', 'EPERM'].includes(errorCode(error)))
                 throw error;
             try {
                 fs.unlinkSync(file);
@@ -841,6 +841,23 @@ function todayCstMinusDays(daysBack) {
     d.setDate(d.getDate() - daysBack);
     return todayCst(d);
 }
+/** 从 catch 到的未知错误里安全取出文本消息（catch 变量在 strict 下是 unknown） */
+function errorMessage(error) {
+    if (error instanceof Error)
+        return error.message;
+    if (error && typeof error === 'object' && typeof error.message === 'string') {
+        return error.message;
+    }
+    return error === undefined || error === null ? '' : String(error);
+}
+/** 从 catch 到的未知错误里安全取出 Node errno code（如 EEXIST/EPERM） */
+function errorCode(error) {
+    if (error && typeof error === 'object' && 'code' in error) {
+        const code = error.code;
+        return typeof code === 'string' ? code : '';
+    }
+    return '';
+}
 module.exports = {
     isRareProvocation, isWideRareProvocation, isHostileInput,
     normalizeText,
@@ -869,4 +886,5 @@ module.exports = {
     getModelDisplayName, getSearchCapability, formatSearchStatus,
     trimReply, sanitizeReply, stripMarkdownForQQ, splitSentences, splitReplyForQQBubbles,
     todayCst, formatShanghaiTime24h, getShanghaiHourFromTs, todayCstMinusDays,
+    errorMessage, errorCode,
 };

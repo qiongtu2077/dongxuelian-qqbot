@@ -46,6 +46,7 @@ safeChannelKey, // 统一频道文件名清洗
 isEvaluationRequest, // 评价请求识别
 getSearchCapability, // 当前模型联网搜索能力查询
 trimReply, // 回复后处理（截断）
+errorMessage, // catch 错误消息安全提取
  } = require('./core/utils');
 const { pickRepeatedFallbackReply, // 重复回复兜底
 isConsecutiveUserRepeat, // 用户连续重复发言检测
@@ -531,7 +532,7 @@ async function chat(session, userText, ctx, options = {}) {
         }
         catch (profileError) {
             try {
-                logDebug(ctx, 'persona-profile', `profile_selection_failed reason=${String((profileError && profileError.message) || 'unknown').slice(0, 80)}`);
+                logDebug(ctx, 'persona-profile', `profile_selection_failed reason=${String(errorMessage(profileError) || 'unknown').slice(0, 80)}`);
             }
             catch { /* non-critical: debug log failure must not affect chat reply */ }
         }
@@ -728,7 +729,7 @@ async function chat(session, userText, ctx, options = {}) {
     }
     catch (shadowError) {
         try {
-            logDebug(ctx, 'expression-pool', `shadow_failed reason=${String((shadowError && shadowError.message) || 'unknown').slice(0, 80)}`);
+            logDebug(ctx, 'expression-pool', `shadow_failed reason=${String(errorMessage(shadowError) || 'unknown').slice(0, 80)}`);
         }
         catch { /* non-critical: expression shadow diagnostics never block chat */ }
     }

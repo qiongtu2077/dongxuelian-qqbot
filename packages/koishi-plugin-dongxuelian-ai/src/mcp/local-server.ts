@@ -21,9 +21,8 @@ const findFilesTool = require('../agent/tools/find-files') as typeof import('../
 const grepSearchTool = require('../agent/tools/grep-search') as typeof import('../agent/tools/grep-search')
 const writeFileTool = require('../agent/tools/write-file') as typeof import('../agent/tools/write-file')
 const editFileTool = require('../agent/tools/edit-file') as typeof import('../agent/tools/edit-file')
-const analyzeFileTool = require('../agent/tools/analyze-file') as typeof import('../agent/tools/analyze-file')
 const { getRecentFiles, getFileEntry } = require('../media/file/file-store') as typeof import('../media/file/file-store')
-const { buildFileFollowupState, resolveUnguardedFileFollowup, buildFileEvidenceReply } = require('../media/file/file-followup-guard') as typeof import('../media/file/file-followup-guard')
+const { buildFileFollowupState } = require('../media/file/file-followup-guard') as typeof import('../media/file/file-followup-guard')
 const { getAgentPathAllowedRoots, getAgentPathDefaultRoots } = require('../agent/path-guard') as typeof import('../agent/path-guard')
 
 const SERVER_NAME = 'dongxuelian-local-mcp'
@@ -384,46 +383,50 @@ const TOOLS = [
       })),
     })
   }),
-  createTool('diagnose_analyze_file', '复现 QQ chat 的文件分析工具调用，并返回 analyze_file 工具输出预览。', {
+  createTool('diagnose_analyze_file', '只读诊断 QQ chat 的文件分析状态：返回目标文件已有的分析结果与是否需要真实分析。不触发下载/解析/回写 file-history。', {
     type: 'object',
     properties: {
       channelKey: { type: 'string', description: '频道 key；私聊形如 private:<userId>。也可传 userId 自动推断私聊。' },
       userId: { type: 'string', description: '私聊用户 ID，未传 channelKey 时用于 private:<userId>。' },
       groupId: { type: 'string', description: '群号，未传 channelKey 时作为群 channelKey。' },
       messageId: { type: 'string', description: '可选文件消息 ID；不传则使用最近文件。' },
-      keyword: { type: 'string', description: '可选文件名关键词。' },
+      keyword: { type: 'string', description: '可选文件名关键词，用于在最近文件中匹配目标。' },
     },
     required: [],
   }, async (args = {}) => {
     ensureEnabled()
     const channelKey = normalizeMcpChannelKey(args)
     if (!channelKey) throw new Error('需要 channelKey、groupId 或 userId')
-    const params = {
-      messageId: getStringArg(args, 'messageId'),
-      keyword: getStringArg(args, 'keyword'),
+    const messageId = getStringArg(args, 'messageId')
+    const keyword = getStringArg(args, 'keyword')
+    // 只读：先按 messageId 取，否则在最近文件里按关键词/最近一条挑，绝不触发真实文件分析（下载/解析/回写 file-history）
+    let entry = messageId ? await getFileEntry(channelKey, messageId) : null
+    if (!entry) {
+      const recent = await getRecentFiles(channelKey, 15)
+      const matched = keyword
+        ? recent.find(f => String(f.fileName || '').toLowerCase().includes(keyword.toLowerCase()))
+        : recent[recent.length - 1]
+      entry = matched ? await getFileEntry(channelKey, String(matched.messageId || '')) : null
     }
-    const result = await analyzeFileTool.execute(params, {
-      channelKey,
-      userId: getStringArg(args, 'userId'),
-      groupId: getStringArg(args, 'groupId') || getStringArg(args, 'guildId'),
-      isDirect: /^private:/.test(channelKey),
-    })
-    const entry = params.messageId ? await getFileEntry(channelKey, params.messageId) : null
+    const diag = toDiagnosticFile(entry)
+    const wouldCallAnalyze = !!diag && !diag.analyzed && !diag.skipped
     return okJson({
       channelKey,
-      messageId: params.messageId || '',
-      entry: entry ? {
-        fileName: entry.fileName || '',
-        ext: entry.ext || '',
-        skipped: !!entry.skipped,
-        analyzed: !!entry.analyzed,
-        hasAnalysis: !!entry.analysis,
-        hasLocalPath: !!entry.localPath,
+      messageId: messageId || (diag ? String(entry?.fileId || '') : ''),
+      readOnly: true,
+      wouldCallAnalyze,
+      entry: diag ? {
+        fileName: diag.fileName || '',
+        ext: entry?.ext || '',
+        skipped: !!diag.skipped,
+        analyzed: !!diag.analyzed,
+        hasAnalysis: !!diag.analysis,
+        hasLocalPath: !!diag.localPath,
+        analysisPreview: diag.analysis ? String(diag.analysis).slice(0, 4000) : '',
       } : null,
-      resultPreview: String(result || '').slice(0, 4000),
     })
   }),
-  createTool('simulate_file_followup', '复现 QQ chat 的文件追问守卫：给定用户追问文本，检查是否选中 active file，并返回最终证据化回复预览。', {
+  createTool('simulate_file_followup', '只读诊断 QQ chat 的文件追问守卫：给定追问文本，返回会选中的 active file 与是否已有证据。不触发分析或回写。', {
     type: 'object',
     properties: {
       channelKey: { type: 'string', description: '频道 key；私聊形如 private:<userId>。也可传 userId 自动推断私聊。' },
@@ -437,23 +440,16 @@ const TOOLS = [
     const channelKey = normalizeMcpChannelKey(args)
     if (!channelKey) throw new Error('需要 channelKey、groupId 或 userId')
     const userId = getStringArg(args, 'userId')
+    // 只读：buildFileFollowupState 仅读最近文件并选锚点；不走会触发文件分析写入的补证路径
     const state = await buildFileFollowupState(channelKey, String(args.text || ''), { userId })
-    const evidence = await resolveUnguardedFileFollowup({
-      ...state,
-      usedAnalyzeFile: false,
-      hasFileEvidence: false,
-    }, {
-      channelKey,
-      userId,
-      groupId: getStringArg(args, 'groupId') || getStringArg(args, 'guildId'),
-      isDirect: /^private:/.test(channelKey),
-      randomTriggered: false,
-    })
-    const evidenceText = String(evidence || '')
     const targetFile = toDiagnosticFile(state.targetFile)
+    const hasExistingEvidence = !!targetFile && (!!targetFile.analysis || !!targetFile.analyzed)
     return okJson({
       channelKey,
+      readOnly: true,
       shouldVerify: !!state.shouldVerify,
+      hasExistingEvidence,
+      wouldCallAnalyze: !!targetFile && !targetFile.analyzed && !targetFile.skipped,
       targetFile: targetFile ? {
         messageId: targetFile.messageId,
         fileName: targetFile.fileName,
@@ -462,8 +458,6 @@ const TOOLS = [
         hasAnalysis: !!targetFile.analysis,
         hasLocalPath: !!targetFile.localPath,
       } : null,
-      evidencePreview: evidenceText.slice(0, 4000),
-      replyPreview: buildFileEvidenceReply(evidenceText, state.targetFile).slice(0, 4000),
     })
   }),
   createTool('write_file', writeFileTool.definition.description, writeFileTool.definition.parameters, async (args = {}) => {

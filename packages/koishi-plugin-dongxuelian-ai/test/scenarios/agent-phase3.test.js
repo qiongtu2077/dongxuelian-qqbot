@@ -150,7 +150,7 @@ async function run(t) {
 
   const tmpRuntime = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'agent-phase3-runtime-'))
   process.env.DONGXUELIAN_AI_DATA_DIR = tmpRuntime
-  for (const rel of ['core/constants', 'agent/config', 'agent/push', 'agent/cron', 'agent/memory']) {
+  for (const rel of ['core/constants', 'agent/config', 'agent/push', 'agent/cron', 'agent/memory', 'agent/tools/reminder-tools', 'agent/tools/scheduled-task-tools']) {
     delete require.cache[require.resolve('../../lib/' + rel)]
   }
   try {
@@ -207,6 +207,25 @@ async function run(t) {
     const successData = await cron.loadCrons()
     const successSaved = successData.crons.find(item => item.id === successCron.id)
     t.check('cron periodic text task can send and keep schedule', successRun.ok && successSaved && successSaved.enabled !== false && successSaved.status === 'active' && successSaved.nextRunAt > Date.now(), JSON.stringify({ successRun, successSaved }))
+    // L48: 过期周期任务 misfire reschedule 必须把重算后的未来 nextRunAt 落盘，不能只改内存
+    cron.stopCronScheduler()
+    const staleNextRunAt = Date.now() - 3600 * 1000
+    const misfireData = await cron.loadCrons()
+    misfireData.crons.push({
+      id: 'scenario_misfire', mode: 'cron', schedule: '*/10 * * * *', type: 'text', prompt: 'misfire text',
+      targetChannel: 'g-misfire', enabled: true, status: 'active', nextRunAt: staleNextRunAt,
+      runPolicy: { misfirePolicy: 'reschedule' }, stats: { runCount: 0, failCount: 0 },
+    })
+    await cron.saveCrons(misfireData)
+    const misfireSent = []
+    const misfireBot = { async sendMessage(channelKey, text) { misfireSent.push({ channelKey, text }) } }
+    await cron.startCronScheduler({ bot: misfireBot })
+    await new Promise(r => setTimeout(r, 300))
+    const misfireAfter = await cron.loadCrons()
+    const misfireSaved = misfireAfter.crons.find(item => item.id === 'scenario_misfire')
+    t.check('L48 misfire reschedule persists future nextRunAt', misfireSaved && misfireSaved.nextRunAt > Date.now(), JSON.stringify(misfireSaved))
+    t.check('L48 misfire reschedule does not immediately fire', !misfireSent.some(item => item.channelKey === 'g-misfire'), JSON.stringify(misfireSent))
+    cron.stopCronScheduler()
     const agentSent = []
     const agentBot = { async sendMessage(channelKey, text) { agentSent.push({ channelKey, text }) } }
     const seenScheduledPolicies = []
@@ -263,6 +282,18 @@ async function run(t) {
     const scheduledList = await scheduledTools.listScheduledTasksTool.execute({ status: 'active' }, { channelKey: 'g-schedule', userId: 'u1', channel: 'qq' })
     t.check('scheduled task list shows recurring task', scheduledList.includes('早安') && scheduledList.includes('cron/text'), scheduledList)
 
+    // L45: 总开关关闭时创建工具必须如实说明不会触发，而不是假成功
+    await agentConfig.patchAgentConfig({ cron: { enabled: false, onceEnabled: true } })
+    const cronOffCreate = await scheduledTools.createScheduledTaskTool.execute({ mode: 'cron', type: 'text', schedule: '0 9 * * *', title: '午安', prompt: '午安', scheduleText: '每天 09:00' }, { channelKey: 'g-schedule', userId: 'u1', channel: 'qq' })
+    t.check('L45 cron-disabled create reports not scheduled', cronOffCreate.includes('总开关当前未开启') && !cronOffCreate.includes('下次触发'), cronOffCreate)
+    await agentConfig.patchAgentConfig({ cron: { enabled: true, onceEnabled: false } })
+    const onceOffReminder = await reminderTools.createReminderTool.execute({ delayMinutes: 10, text: '吃药' }, { channelKey: 'g-remind', userId: 'u1', channel: 'qq' })
+    t.check('L45 once-disabled reminder reports not scheduled', onceOffReminder.includes('总开关当前未开启') && !onceOffReminder.includes('触发时间'), onceOffReminder)
+    // 恢复双开关并确认仍给正常成功回执
+    await agentConfig.patchAgentConfig({ cron: { enabled: true, onceEnabled: true } })
+    const cronOnCreate = await scheduledTools.createScheduledTaskTool.execute({ mode: 'cron', type: 'text', schedule: '0 10 * * *', title: '晚安', prompt: '晚安', scheduleText: '每天 10:00' }, { channelKey: 'g-schedule', userId: 'u1', channel: 'qq' })
+    t.check('L45 cron-enabled create still reports next trigger', cronOnCreate.includes('已创建周期任务') && cronOnCreate.includes('下次触发'), cronOnCreate)
+
     const memory = require('../../lib/agent/memory')
     const item = await memory.remember({ userId: 'u1', channelKey: 'g1', text: '莲莲喜欢把计划写清楚', tags: ['phase3'] })
     t.check('memory writes item id', item.id.startsWith('mem_'))
@@ -275,7 +306,7 @@ async function run(t) {
     t.check('memory portable private id can read written item', privateFound.some(entry => entry.id === privateMemory.id), JSON.stringify(privateFound))
     t.check('memory portable private id does not create colon filename', !require('fs').existsSync(require('path').join(tmpRuntime, 'agent-memory', 'private:u1.json')) && require('fs').existsSync(require('path').join(tmpRuntime, 'agent-memory', 'private_u1.json')))
   } finally {
-    for (const rel of ['core/constants', 'agent/config', 'agent/push', 'agent/cron', 'agent/memory']) {
+    for (const rel of ['core/constants', 'agent/config', 'agent/push', 'agent/cron', 'agent/memory', 'agent/tools/reminder-tools', 'agent/tools/scheduled-task-tools']) {
       delete require.cache[require.resolve('../../lib/' + rel)]
     }
     if (oldDir) process.env.DONGXUELIAN_AI_DATA_DIR = oldDir

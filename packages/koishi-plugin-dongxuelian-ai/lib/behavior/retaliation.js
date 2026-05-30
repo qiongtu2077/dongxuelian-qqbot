@@ -6,6 +6,7 @@
  */
 const { loadConfig } = require('../core/runtime-config');
 const { requestChatCompletions } = require('../core/api');
+const { errorMessage } = require('../core/utils');
 function getRetaliationResultContent(result) {
     if (typeof result === 'string')
         return result;
@@ -45,7 +46,7 @@ async function calculateRetaliationScore(cleanInput, userId, channelSharedCache,
             return Math.max(0, Math.min(100, score));
     }
     catch (error) {
-        console.warn(`[dongxuelian-ai] retaliation score failed: ${error && error.message ? error.message : String(error || '')}`);
+        console.warn(`[dongxuelian-ai] retaliation score failed: ${errorMessage(error)}`);
     }
     return 0;
 }

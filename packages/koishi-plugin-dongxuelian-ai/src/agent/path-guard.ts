@@ -12,9 +12,23 @@ const { getReadFileRoots } = require('./config') as typeof import('./config')
 const { resolveAgentPathInput } = require('./workspace-context') as typeof import('./workspace-context')
 
 const WRITE_BLOCKED_BASENAMES: Set<string> = new Set([
+  // Agent 工具模式 / 工具配置 / 管理员列表
   'ai-tool-mode.txt',
   'ai-admin-ids.json',
   'ai-tool-config.json',
+  // L34: 凭据与供应商运行配置——只能走专门设置入口写入，禁止通用文件上传覆盖
+  // 文件名取自 core/constants（注意是 ai-enable-search.txt，非 ai-search-enabled.txt）
+  'ai-openai-key.txt',
+  'ai-deepseek-key.txt',
+  'ai-dashscope-key.txt',
+  'ai-glm-key.txt',
+  'ai-mimorium-key.txt',
+  'ai-provider.txt',
+  'ai-model.txt',
+  'ai-base-url.txt',
+  'ai-enable-search.txt',
+  'ai-providers-custom.json',
+  'ai-fallback-chains.json',
 ])
 
 interface ExistingPathGuardResult {

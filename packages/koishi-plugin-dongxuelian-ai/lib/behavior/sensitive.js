@@ -6,7 +6,7 @@
  */
 const path = require('path');
 const { POLITICAL_DETECT_FILE, POLITICAL_HANDLER_DIR, SENSITIVE_KEYWORDS_RE, } = require('../core/constants');
-const { readTextFile, readJsonFile, safeChannelKey, } = require('../core/utils');
+const { readTextFile, readJsonFile, safeChannelKey, errorMessage, } = require('../core/utils');
 const { logDebug } = require('../core/logging-config');
 const { channelSharedCache, pendingSensitiveAlert, clearUserConversationHistory, saveSensitiveCache, analyzeChannelSensitive, } = require('../conversation');
 const channelMsgCount = new Map();
@@ -30,7 +30,7 @@ async function getPoliticalDetectList() {
         politicalDetectCache = new Set(Array.isArray(parsed) ? parsed.map(String) : []);
     }
     catch (error) {
-        console.warn(`[dongxuelian-ai] political detect list parse failed: ${error.message}`);
+        console.warn(`[dongxuelian-ai] political detect list parse failed: ${errorMessage(error)}`);
         politicalDetectCache = new Set();
     }
     politicalDetectCacheExpiresAt = Date.now() + 30000;

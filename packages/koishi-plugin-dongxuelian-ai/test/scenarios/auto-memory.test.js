@@ -14,6 +14,7 @@ async function run(t) {
     '../../lib/core/constants',
     '../../lib/core/api',
     '../../lib/core/runtime-config',
+    '../../lib/agent/config',
     '../../lib/agent/memory',
     '../../lib/agent/auto-memory',
     '../../lib/agent/dream',
@@ -137,6 +138,21 @@ async function run(t) {
     const dailyFilesAfter = fs.existsSync(dailyDir) ? fs.readdirSync(dailyDir) : []
     const newFailFiles = dailyFilesAfter.filter(f => f.startsWith('failuser'))
     t.check('auto-memory: model failure writes no daily file', newFailFiles.length === 0)
+
+    // Test 12 (L33): memory.enabled=false 时自动记忆直接跳过，不写文件、不计数
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: '不该被写入的记忆' } }], usage: { total_tokens: 100 } }),
+    })
+    const agentConfig = require('../../lib/agent/config')
+    await agentConfig.patchAgentConfig({ memory: { enabled: false, adminOnly: false } })
+    autoMemory.resetAutoMemoryCounter('disableduser')
+    for (let i = 0; i < 7; i++) autoMemory.shouldTrigger('disableduser')
+    await autoMemory.onAgentReplyComplete({ userId: 'disableduser', channel: 'dashboard', messages: fakeMessages })
+    await new Promise(r => setTimeout(r, 100))
+    const disabledFiles = (fs.existsSync(dailyDir) ? fs.readdirSync(dailyDir) : []).filter(f => f.startsWith('disableduser'))
+    t.check('L33 auto-memory: disabled memory writes no daily file', disabledFiles.length === 0, 'files: ' + disabledFiles.join(', '))
+    await agentConfig.patchAgentConfig({ memory: { enabled: true, adminOnly: false } })
 
   } finally {
     global.fetch = originalFetch

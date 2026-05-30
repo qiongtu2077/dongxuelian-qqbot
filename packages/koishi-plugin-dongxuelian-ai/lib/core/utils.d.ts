@@ -121,6 +121,10 @@ declare function formatShanghaiTime24h(ts?: number): string;
 declare function getShanghaiHourFromTs(ts: number): number;
 /** 上海日历上 todayYmd 往前 n 天（字符串 YYYY-MM-DD），用于情绪历史截断 */
 declare function todayCstMinusDays(daysBack: number): string;
+/** 从 catch 到的未知错误里安全取出文本消息（catch 变量在 strict 下是 unknown） */
+declare function errorMessage(error: unknown): string;
+/** 从 catch 到的未知错误里安全取出 Node errno code（如 EEXIST/EPERM） */
+declare function errorCode(error: unknown): string;
 declare const _default: {
     isRareProvocation: typeof isRareProvocation;
     isWideRareProvocation: typeof isWideRareProvocation;
@@ -194,5 +198,7 @@ declare const _default: {
     formatShanghaiTime24h: typeof formatShanghaiTime24h;
     getShanghaiHourFromTs: typeof getShanghaiHourFromTs;
     todayCstMinusDays: typeof todayCstMinusDays;
+    errorMessage: typeof errorMessage;
+    errorCode: typeof errorCode;
 };
 export = _default;

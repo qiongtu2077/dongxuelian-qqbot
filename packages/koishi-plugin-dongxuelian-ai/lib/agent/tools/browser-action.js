@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('../../core/constants');
-const { isPrivateHostname, isPrivateIp, validatePublicHttpUrl, resolveAndValidateHostname } = require('../../core/utils');
+const { isPrivateHostname, isPrivateIp, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('../../core/utils');
 const { assertExistingAgentPathInsideRoots } = require('../path-guard');
 const { rankSearchCandidates, formatSearchResults, buildSearchFailureText } = require('../search-results');
 function getBrowserActionErrorMessage(error) {
@@ -475,7 +475,7 @@ async function searchAndRead(query) {
             failures.push(`${new URL(searchUrl).hostname}: 未提取到有效结果`);
         }
         catch (e) {
-            failures.push(`${searchUrl}: ${e.message}`);
+            failures.push(`${searchUrl}: ${errorMessage(e)}`);
         }
     }
     return buildSearchFailureText(value, failures);
@@ -819,7 +819,7 @@ async function runBatch(steps = []) {
             results.push({ index, action: step.action, ok: true, text: String(text || '').slice(0, 2000) });
         }
         catch (error) {
-            results.push({ index, action: step.action, ok: false, error: error.message || String(error) });
+            results.push({ index, action: step.action, ok: false, error: errorMessage(error) || String(error) });
         }
     }
     return JSON.stringify(results, null, 2);

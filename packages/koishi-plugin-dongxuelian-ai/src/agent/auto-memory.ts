@@ -9,6 +9,7 @@ const path = require('path')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 const { requestChatCompletions } = require('../core/api') as typeof import('../core/api')
 const { loadConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
+const { getAgentConfig } = require('./config') as typeof import('./config')
 const { safeUserId, legacySafeUserId } = require('../core/utils') as typeof import('../core/utils')
 
 const DASHBOARD_MEMORY_DIR: string = path.join(DATA_DIR, 'agent-memory-dashboard')
@@ -148,6 +149,7 @@ async function extractMemory(recentMessages: AutoMemoryMessage[], userId: unknow
 
 async function onAgentReplyComplete({ userId, channel, messages }: AgentReplyCompleteInput = {}): Promise<void> {
   if (channel !== 'dashboard') return
+  if (getAgentConfig().memory?.enabled === false) return
   if (!shouldTrigger(userId)) return
 
   const recentMessages = (Array.isArray(messages) ? messages : [])

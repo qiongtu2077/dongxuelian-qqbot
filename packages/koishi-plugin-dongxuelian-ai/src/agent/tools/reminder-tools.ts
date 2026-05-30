@@ -43,6 +43,7 @@ interface CronData {
 }
 
 const { registerOnceTask, loadCrons, unregisterCron } = require('../cron') as typeof import('../cron')
+const { getAgentConfig } = require('../config') as typeof import('../config')
 
 const MIN_DELAY_MS = 1000
 const MAX_DELAY_MS = 30 * 24 * 60 * 60 * 1000
@@ -96,6 +97,10 @@ async function executeCreateReminder(params: ReminderToolParams = {}, context: R
     createdFrom: context.channel || 'qq',
     runAt,
   })
+  // L45: 一次性任务总开关关闭时如实说明不会触发，不给假成功回执（提醒仍已保存）
+  if (getAgentConfig().cron?.onceEnabled === false) {
+    return `已保存提醒：${prompt}，但一次性任务总开关当前未开启，不会触发。`
+  }
   return `已创建提醒：${prompt}，触发时间 ${formatReminderTime(cron.runAt)}。`
 }
 

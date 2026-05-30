@@ -146,7 +146,9 @@ async function handlePutAgentConfig(req, res) {
       const data = JSON.parse(body || '{}')
       const agentConfig = require(path.join(AI_LIB, 'agent', 'config'))
       const safety = require(path.join(AI_LIB, 'agent', 'safety'))
-      const saved = await agentConfig.saveAgentConfig(data.config || data)
+      // L43: AgentPanel 只提交可见字段，必须用 patch/merge 保留未提交的 queue/cron/memory/planMode/push，
+      // 否则保存工具开关或 MCP 时会把这些隐藏高级配置静默重置为默认值。
+      const saved = await agentConfig.patchAgentConfig(data.config || data)
       if (data.mode) await safety.setMode(data.mode)
       return json(res, { ok: true, config: saved, mode: safety.getMode(), message: 'Agent 配置已更新' })
     } catch (e) { return json(res, { ok: false, message: e.message }, 400) }

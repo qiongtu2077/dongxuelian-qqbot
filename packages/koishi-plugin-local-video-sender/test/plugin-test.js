@@ -179,7 +179,7 @@ async function run() {
         run: async () => { runCalled = true },
       }
     )
-    check('oversize video returns user-visible refusal', String(tooLarge).includes('Video is too large'), String(tooLarge))
+    check('oversize video returns user-visible refusal', String(tooLarge).includes('太大') && String(tooLarge).includes('B 站'), String(tooLarge))
     check('oversize video sends info before refusal', session.sent.some(item => item.includes('Demo Video')), JSON.stringify(session.sent))
     check('oversize video sends short Bili link before refusal', session.sent.some(item => item.includes('https://b23.tv/BV1xx411c7mD')), JSON.stringify(session.sent))
     check('oversize video does not run downloader', !runCalled)
@@ -299,7 +299,7 @@ async function run() {
       }
     )
     check('preview send failure returns controlled message', String(previewFailure).includes('Failed to send video preview'), String(previewFailure))
-    check('preview send failure is logged and retry is not blocked', previewProbeCount === 2 && ctx.logs.some(log => log.msg.includes('preview send failed')) && String(previewRetry).includes('Video is too large'), JSON.stringify({ previewProbeCount, logs: ctx.logs, previewRetry }))
+    check('preview send failure is logged and retry is not blocked', previewProbeCount === 2 && ctx.logs.some(log => log.msg.includes('preview send failed')) && String(previewRetry).includes('太大'), JSON.stringify({ previewProbeCount, logs: ctx.logs, previewRetry }))
   })
 
   section('boundary and edge cases')
