@@ -39,7 +39,7 @@ LianLianBot 传统 Linux 部署教程
    - 安装系统依赖（Node.js 18+、git、tesseract-ocr、ffmpeg、xvfb 等）
    - 运行 NapCat 官方安装器（安装 LinuxQQ + NapCat + CLI 工具）
    - 写入 NapCat 配置（onebot WS 端口 8080）
-   - 从 GitHub 克隆本仓库到 /root/koishi-app
+   - 从 GitHub 克隆本仓库到 <YOUR_APP_DIR>
    - 执行 npm install
    - 创建数据目录和默认配置文件
    - 启动 NapCat → 显示二维码
@@ -52,7 +52,7 @@ LianLianBot 传统 Linux 部署教程
 
 7. 自动启动 Koishi，部署完成
 
-验证：tail -f /root/koishi-app/koishi.log
+验证：tail -f <YOUR_APP_DIR>/koishi.log
 看到 Dashboard、Koishi 和主要插件 loaded 日志，并且 `AI状态` 能返回，即基础部署成功。
 
 
@@ -73,8 +73,8 @@ LianLianBot 传统 Linux 部署教程
 
 3. 克隆仓库并安装依赖
 
-   git clone https://github.com/qiongtu2077/dongxuelian-qqbot.git /root/koishi-app
-   cd /root/koishi-app
+   git clone https://github.com/qiongtu2077/dongxuelian-qqbot.git <YOUR_APP_DIR>
+   cd <YOUR_APP_DIR>
    npm install
 
 4. 安装 NapCat（官方安装器）
@@ -130,9 +130,9 @@ LianLianBot 传统 Linux 部署教程
    }
    EOF
 
-6. 创建数据目录和初始配置（在 /root/koishi-app 目录下）
+6. 创建数据目录和初始配置（在 <YOUR_APP_DIR> 目录下）
 
-   DATA_DIR="/root/koishi-app/data"
+   DATA_DIR="<YOUR_DATA_DIR>"
    mkdir -p "$DATA_DIR/ai-skills/core" "$DATA_DIR/ai-skills/personas" \
      "$DATA_DIR/ai-skills/modes" "$DATA_DIR/ai-skills/lore" \
      "$DATA_DIR/user-profiles" "$DATA_DIR/conversations" \
@@ -154,9 +154,9 @@ LianLianBot 传统 Linux 部署教程
    echo "off" > "$DATA_DIR/ai-enable-search.txt"
    echo "off" > "$DATA_DIR/ai-enable-thinking.txt"
 
-7. 写入 koishi.yml（在 /root/koishi-app 目录下）
+7. 写入 koishi.yml（在 <YOUR_APP_DIR> 目录下）
 
-   cat > /root/koishi-app/koishi.yml <<EOF
+   cat > <YOUR_APP_DIR>/koishi.yml <<EOF
    plugins:
      server:emicam:
        port: 5140
@@ -184,27 +184,27 @@ LianLianBot 传统 Linux 部署教程
 
 9. 写入 API key（可选）
 
-   echo "sk-你的key" > /root/koishi-app/data/ai-deepseek-key.txt
-   echo "deepseek" > /root/koishi-app/data/ai-provider.txt
-   echo "deepseek-chat" > /root/koishi-app/data/ai-model.txt
-   echo "https://api.deepseek.com" > /root/koishi-app/data/ai-base-url.txt
+   echo "sk-你的key" > <YOUR_DATA_DIR>/ai-deepseek-key.txt
+   echo "deepseek" > <YOUR_DATA_DIR>/ai-provider.txt
+   echo "deepseek-chat" > <YOUR_DATA_DIR>/ai-model.txt
+   echo "https://api.deepseek.com" > <YOUR_DATA_DIR>/ai-base-url.txt
 
    也可以换成其他供应商；如果暂时没有 key，可先跳过这一步，基础部署仍可继续。
    其他 key（按需）：
-   echo "tp-xxx" > /root/koishi-app/data/ai-mimorium-key.txt
-   echo "sk-xxx" > /root/koishi-app/data/ai-openai-key.txt
-   echo "sk-xxx" > /root/koishi-app/data/ai-dashscope-key.txt
+   echo "tp-xxx" > <YOUR_DATA_DIR>/ai-mimorium-key.txt
+   echo "sk-xxx" > <YOUR_DATA_DIR>/ai-openai-key.txt
+   echo "sk-xxx" > <YOUR_DATA_DIR>/ai-dashscope-key.txt
 
 10. 启动 Koishi
 
-    cd /root/koishi-app
-    KOISHI_DIR=/root/koishi-app \
-    DONGXUELIAN_AI_DATA_DIR=/root/koishi-app/data \
-    nohup node /root/koishi-app/node_modules/koishi/bin.js start >> koishi.log 2>&1 &
+    cd <YOUR_APP_DIR>
+    KOISHI_DIR=<YOUR_APP_DIR> \
+    DONGXUELIAN_AI_DATA_DIR=<YOUR_DATA_DIR> \
+    nohup node <YOUR_APP_DIR>/node_modules/koishi/bin.js start >> koishi.log 2>&1 &
 
 11. 验证
 
-    tail -f /root/koishi-app/koishi.log
+    tail -f <YOUR_APP_DIR>/koishi.log
     看到 Dashboard、Koishi 和主要插件 loaded 日志，并且 `AI状态` 能返回，即基础部署成功
 
 
@@ -214,23 +214,23 @@ LianLianBot 传统 Linux 部署教程
 方式 A：全量更新（精简版）
   从本地仓库根目录：
   scp packages/koishi-plugin-dongxuelian-ai/lib/*.js \
-    root@服务器IP:/root/koishi-app/packages/koishi-plugin-dongxuelian-ai/lib/
+    root@服务器IP:<YOUR_APP_DIR>/packages/koishi-plugin-dongxuelian-ai/lib/
   scp packages/koishi-plugin-dongxuelian-help/lib/index.js \
-    root@服务器IP:/root/koishi-app/packages/koishi-plugin-dongxuelian-help/lib/
+    root@服务器IP:<YOUR_APP_DIR>/packages/koishi-plugin-dongxuelian-help/lib/
   scp packages/koishi-plugin-group-name-at/lib/index.js \
-    root@服务器IP:/root/koishi-app/packages/koishi-plugin-group-name-at/lib/
+    root@服务器IP:<YOUR_APP_DIR>/packages/koishi-plugin-group-name-at/lib/
   scp packages/koishi-plugin-local-video-sender/lib/index.js \
-    root@服务器IP:/root/koishi-app/packages/koishi-plugin-local-video-sender/lib/
+    root@服务器IP:<YOUR_APP_DIR>/packages/koishi-plugin-local-video-sender/lib/
   scp packages/koishi-plugin-dongxuelian-ai/data/ai-skills/core/* \
-    root@服务器IP:/root/koishi-app/data/ai-skills/core/
+    root@服务器IP:<YOUR_DATA_DIR>/ai-skills/core/
   scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.长离.md" \
-    root@服务器IP:/root/koishi-app/data/ai-skills/personas/
+    root@服务器IP:<YOUR_DATA_DIR>/ai-skills/personas/
   scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.椿.md" \
-    root@服务器IP:/root/koishi-app/data/ai-skills/personas/
+    root@服务器IP:<YOUR_DATA_DIR>/ai-skills/personas/
   scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.特蕾西娅.md" \
-    root@服务器IP:/root/koishi-app/data/ai-skills/personas/
+    root@服务器IP:<YOUR_DATA_DIR>/ai-skills/personas/
   # 重启服务
-  ssh root@服务器IP "bash /root/koishi-app/restart.sh"
+  ssh root@服务器IP "bash <YOUR_APP_DIR>/restart.sh"
 
 方式 B：scripts/ 按插件更新（推荐）
   scripts/ 目录下每个插件都有独立的部署脚本，共享 deploy-package.sh 工具：
@@ -265,7 +265,7 @@ LianLianBot 传统 Linux 部署教程
 方式 C：远程一键重启（已经部署完成后快速重启）
   如果你只是修改了 koishi.yml 或 data 目录下的配置文件，不需要更新代码：
 
-  ssh root@服务器IP "bash /root/koishi-app/restart.sh"
+  ssh root@服务器IP "bash <YOUR_APP_DIR>/restart.sh"
 
 
 环境变量覆盖
@@ -273,13 +273,13 @@ LianLianBot 传统 Linux 部署教程
 
 部署时可设置环境变量覆盖默认路径，避免依赖服务器特定路径：
 
-  DONGXUELIAN_DATA_DIR     → data 目录（默认 /root/koishi-app/data）
+  DONGXUELIAN_DATA_DIR     → data 目录（默认 <YOUR_DATA_DIR>）
   GROUP_NAME_AT_DATA_FILE  → 群昵称数据文件（默认 $DATA_DIR/nickname-collections.json）
   BILI_COOKIES_FILE        → B站 cookies（默认 /root/bilibili-cookies.txt）
   BILI_WORKDIR             → 视频下载目录（默认 /root/koishi-bili-downloads）
   BILI_MAX_SIZE_BYTES      → 视频大小限制（默认 200MB）
   BILI_TEST_VIDEO_FILE     → 测试视频路径（默认 /root/test_bili.mp4）
-  KOISHI_APP_DIR           → Koishi 部署目录（默认 /root/koishi-app，scripts/ 部署用）
+  KOISHI_APP_DIR           → Koishi 部署目录（默认 <YOUR_APP_DIR>，scripts/ 部署用）
 
   例：
   DONGXUELIAN_DATA_DIR=/custom/data bash scripts/ai.sh
@@ -288,14 +288,14 @@ LianLianBot 传统 Linux 部署教程
 常用命令
 --------
 
-查看 bot 日志：              tail -f /root/koishi-app/koishi.log
-重启服务：                  bash /root/koishi-app/restart.sh
+查看 bot 日志：              tail -f <YOUR_APP_DIR>/koishi.log
+重启服务：                  bash <YOUR_APP_DIR>/restart.sh
 查看 NapCat（看二维码）：    screen -r napcat（Ctrl+A D 分离）
 重启 NapCat：               screen -S napcat -X quit
                              screen -dmS napcat bash -c \
                                "xvfb-run -a /root/Napcat/opt/QQ/qq --no-sandbox -q 你的QQ号"
-运行测试：                  cd /root/koishi-app && npm test
-仅跑插件测试：               cd /root/koishi-app && npm run test:plugins
+运行测试：                  cd <YOUR_APP_DIR> && npm test
+仅跑插件测试：               cd <YOUR_APP_DIR> && npm run test:plugins
 
 
 注意事项

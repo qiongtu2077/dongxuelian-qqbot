@@ -1,7 +1,9 @@
 #!/bin/sh
 set -eu
 
-APP_DIR="${KOISHI_APP_DIR:-${KOISHI_DIR:-/root/koishi-app}}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+DEFAULT_APP_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)"
+APP_DIR="${KOISHI_APP_DIR:-${KOISHI_DIR:-$DEFAULT_APP_DIR}}"
 APP_DIR="$(cd "$APP_DIR" && pwd -P)"
 
 DATA_DIR="${DONGXUELIAN_AI_DATA_DIR:-${DATA_DIR:-$APP_DIR/data}}"

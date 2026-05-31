@@ -21,7 +21,7 @@ if "%SERVER%"=="" (
 )
 
 set "APP_DIR=%DEPLOY_APP_DIR%"
-if "%APP_DIR%"=="" set "APP_DIR=/root/koishi-app"
+if "%APP_DIR%"=="" set "APP_DIR=<YOUR_APP_DIR>"
 set "REMOTE_DIR=%APP_DIR%/packages/koishi-plugin-daily-report"
 
 if "%1"=="" (

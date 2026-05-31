@@ -61,7 +61,7 @@ npm run build:win
 
 Windows 本地部署页只认当前 Dashboard 后端所在机器。只有使用 Windows 部署器软件，后端才会运行在你的 Windows 本机并检测真实本机环境。看到 Windows 盘符、当前项目目录和本机 runtime 目录时，说明正在操作正确的机器。
 
-如果页面显示 `linux/x64`、`/root/koishi-app` 或其他 Linux 路径，说明你正在访问远端 Linux Dashboard。此时不能执行 Windows 本地部署，也不能把远端服务器状态当成本机状态；请改用 Windows 部署器软件，或切换到“远程 Linux 部署”。
+如果页面显示 `linux/x64`、`<YOUR_APP_DIR>` 或其他 Linux 路径，说明你正在访问远端 Linux Dashboard。此时不能执行 Windows 本地部署，也不能把远端服务器状态当成本机状态；请改用 Windows 部署器软件，或切换到“远程 Linux 部署”。
 
 页面会按地铁站点图追踪完整流程：`环境检测 -> 安装 NapCat -> 生成配置 -> npm install -> 启动 NapCat -> 等待扫码 -> 启动 Koishi -> 健康检查`。
 

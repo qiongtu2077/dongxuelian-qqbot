@@ -2,9 +2,15 @@
 # Dashboard 守护脚本：崩溃后自动重启
 # 用法: nohup bash watchdog.sh > watchdog.log 2>&1 &
 
-DASHBOARD_DIR="/root/koishi-app/packages/koishi-plugin-dashboard"
-KOISHI_DIR="/root/koishi-app"
-DATA_DIR="/root/koishi-app/data"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+APP_DIR="${KOISHI_APP_DIR:-${KOISHI_DIR:-$SCRIPT_DIR}}"
+if [ ! -f "$APP_DIR/package.json" ] && [ -f "$SCRIPT_DIR/../package.json" ]; then
+  APP_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)"
+fi
+
+DASHBOARD_DIR="${DASHBOARD_DIR:-$APP_DIR/packages/koishi-plugin-dashboard}"
+KOISHI_DIR="$APP_DIR"
+DATA_DIR="${DONGXUELIAN_AI_DATA_DIR:-${DATA_DIR:-$APP_DIR/data}}"
 DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-5150}"
 WATCHDOG_LOG="$DASHBOARD_DIR/watchdog.log"

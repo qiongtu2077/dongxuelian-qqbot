@@ -26,7 +26,7 @@ metadata:
 如果文件很大，使用 `execute_shell` 传 tail 窗口:
 
 ```bash
-tail -n 200 /root/koishi-app/koishi.log
+tail -n 200 <YOUR_APP_DIR>/koishi.log
 ```
 
 总结最近的错误/警告和值得注意的模式。

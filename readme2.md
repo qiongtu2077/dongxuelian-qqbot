@@ -73,7 +73,7 @@ npm run start
 
 1. 打开 `http://服务器IP:5150/dashboard/`。
 2. 进入“部署”页。
-3. 填 `root@服务器IP` 和目标目录，默认 `/root/koishi-app`。
+3. 填 `root@服务器IP` 和目标目录，默认 `<YOUR_APP_DIR>`。
 4. 上传 B 站 `cookies.txt`，如果需要视频功能。
 5. 点击远程操作，等待 Dashboard 自动构建前端、同步插件、重启 Bot。
 
@@ -86,9 +86,9 @@ QQ_NUMBER=机器人QQ ADMIN_QQ=管理员QQ bash setup.sh
 如果你只更新一个插件：
 
 ```bash
-KOISHI_APP_DIR=/root/koishi-app sh scripts/ai.sh
-KOISHI_APP_DIR=/root/koishi-app sh scripts/name.sh
-KOISHI_APP_DIR=/root/koishi-app sh scripts/vedio.sh
+KOISHI_APP_DIR=<YOUR_APP_DIR> sh scripts/ai.sh
+KOISHI_APP_DIR=<YOUR_APP_DIR> sh scripts/name.sh
+KOISHI_APP_DIR=<YOUR_APP_DIR> sh scripts/vedio.sh
 ```
 
 ---
@@ -516,7 +516,7 @@ Dashboard → 部署 → 远程 Linux 部署
 默认目标目录：
 
 ```text
-/root/koishi-app
+<YOUR_APP_DIR>
 ```
 
 部署前确认：
@@ -561,8 +561,8 @@ QQ_NUMBER=机器人QQ ADMIN_QQ=管理员QQ bash setup.sh
 ```bash
 QQ_NUMBER=机器人QQ \
 ADMIN_QQ=管理员QQ \
-KOISHI_DIR=/root/koishi-app \
-DATA_DIR=/root/koishi-app/data \
+KOISHI_DIR=<YOUR_APP_DIR> \
+DATA_DIR=<YOUR_DATA_DIR> \
 NAPCAT_DIR=/root/Napcat \
 bash setup.sh
 ```
@@ -574,7 +574,7 @@ bash setup.sh
 - 下载并运行 NapCat 官方安装器。
 - 写入 NapCat WebUI 配置，默认端口 `6099`，默认 token `123`。
 - 写入 OneBot WebSocket，默认 `127.0.0.1:8080`。
-- 准备 `/root/koishi-app`。
+- 准备 `<YOUR_APP_DIR>`。
 - 安装 npm 依赖。
 - 创建 `data/`、`ai-skills/`、会话、用户画像等目录。
 - 复制随包 AI Skills 种子。
@@ -585,7 +585,7 @@ bash setup.sh
 成功后看日志：
 
 ```bash
-tail -f /root/koishi-app/koishi.log
+tail -f <YOUR_APP_DIR>/koishi.log
 ```
 
 ---
@@ -608,8 +608,8 @@ pip3 install yt-dlp
 ### 2. 克隆仓库并安装 npm 依赖
 
 ```bash
-git clone https://github.com/qiongtu2077/dongxuelian-qqbot.git /root/koishi-app
-cd /root/koishi-app
+git clone https://github.com/qiongtu2077/dongxuelian-qqbot.git <YOUR_APP_DIR>
+cd <YOUR_APP_DIR>
 npm install
 ```
 
@@ -648,7 +648,7 @@ plugins:
 ### 5. 准备数据目录
 
 ```bash
-cd /root/koishi-app
+cd <YOUR_APP_DIR>
 mkdir -p data/ai-skills/core data/ai-skills/personas data/ai-skills/modes data/ai-skills/lore
 mkdir -p data/user-profiles data/conversations data/ai-event-dumps data/political-handlers
 cp -rn packages/koishi-plugin-dongxuelian-ai/data/ai-skills/. data/ai-skills/
@@ -680,8 +680,8 @@ screen -r napcat
 ### 7. 启动 Koishi
 
 ```bash
-cd /root/koishi-app
-KOISHI_DIR=/root/koishi-app DONGXUELIAN_AI_DATA_DIR=/root/koishi-app/data \
+cd <YOUR_APP_DIR>
+KOISHI_DIR=<YOUR_APP_DIR> DONGXUELIAN_AI_DATA_DIR=<YOUR_DATA_DIR> \
 nohup node node_modules/koishi/bin.js start >> koishi.log 2>&1 &
 ```
 
@@ -694,7 +694,7 @@ nohup node node_modules/koishi/bin.js start >> koishi.log 2>&1 &
 默认目标目录：
 
 ```text
-/root/koishi-app
+<YOUR_APP_DIR>
 ```
 
 可覆盖：
@@ -715,16 +715,16 @@ KOISHI_APP_DIR=/你的/koishi目录 sh scripts/ai.sh
 | `scripts/poke.sh` | 戳一戳 | `dongxuelian-poke` |
 | `scripts/leave.sh` | 退群提醒 | `group-leave-notice` |
 | `scripts/message-reader.sh` | AI 插件内消息读取能力 | 实际转调 `ai.sh` |
-| `scripts/restart-bot.sh` | 服务器重启脚本 | 通常部署为 `/root/koishi-app/restart.sh` |
+| `scripts/restart-bot.sh` | 服务器重启脚本 | 通常部署为 `<YOUR_APP_DIR>/restart.sh` |
 | `scripts/watchdog.sh` | Dashboard 守护 | 监听 `5150`，崩溃后拉起 |
 | `scripts/seal-data-dir.sh` | 数据目录封口 | 合并包内 data 并软链到根 `data` |
 
 示例：
 
 ```bash
-cd /root/koishi-app
-KOISHI_APP_DIR=/root/koishi-app sh scripts/ai.sh
-bash /root/koishi-app/restart.sh
+cd <YOUR_APP_DIR>
+KOISHI_APP_DIR=<YOUR_APP_DIR> sh scripts/ai.sh
+bash <YOUR_APP_DIR>/restart.sh
 ```
 
 ---
@@ -755,7 +755,7 @@ deploy.bat D:\Some\KoishiApp
 构建 Dashboard 前端并同步到远程服务器：
 
 ```powershell
-scripts\deploy-frontend.bat root@服务器IP /root/koishi-app
+scripts\deploy-frontend.bat root@服务器IP <YOUR_APP_DIR>
 ```
 
 ### `scripts/deploy-and-restart.bat`
@@ -775,7 +775,7 @@ scripts\deploy-and-restart.bat root@服务器IP
 ### 服务器重启 Bot
 
 ```bash
-bash /root/koishi-app/restart.sh
+bash <YOUR_APP_DIR>/restart.sh
 ```
 
 `restart.sh` / `scripts/restart-bot.sh` 会：
@@ -790,8 +790,8 @@ bash /root/koishi-app/restart.sh
 ### Dashboard 守护
 
 ```bash
-nohup bash /root/koishi-app/scripts/watchdog.sh \
-  > /root/koishi-app/packages/koishi-plugin-dashboard/watchdog.log 2>&1 &
+nohup bash <YOUR_APP_DIR>/scripts/watchdog.sh \
+  > <YOUR_APP_DIR>/packages/koishi-plugin-dashboard/watchdog.log 2>&1 &
 ```
 
 它每 10 秒检查 Dashboard 端口，发现 `5150` 没有监听时自动拉起 `standalone.js`。
@@ -799,7 +799,7 @@ nohup bash /root/koishi-app/scripts/watchdog.sh \
 ### 查看日志
 
 ```bash
-tail -f /root/koishi-app/koishi.log
+tail -f <YOUR_APP_DIR>/koishi.log
 ```
 
 常见成功信号：
@@ -818,7 +818,7 @@ dongxuelian-ai 1.1.6 loaded
 
 | 环境 | 默认数据目录 |
 |---|---|
-| 服务器部署 | `/root/koishi-app/data` |
+| 服务器部署 | `<YOUR_DATA_DIR>` |
 | 源码本地运行 | `<项目根目录>/data` |
 | Windows 便携版部署器 | EXE 同级 `LianLianBOT/data` |
 | Windows 安装版部署器 | `%USERPROFILE%\Documents\LianLianBOT\data`，不可写时回退到 Electron 用户数据目录 |
@@ -869,7 +869,7 @@ packages/koishi-plugin-local-video-sender/data
 | 变量 | 默认值 | 作用 |
 |---|---|---|
 | `KOISHI_DIR` | 当前目录或部署目录 | Koishi 工作目录 |
-| `KOISHI_APP_DIR` | `/root/koishi-app` | 部署脚本使用的 Koishi 目录 |
+| `KOISHI_APP_DIR` | `<YOUR_APP_DIR>` | 部署脚本使用的 Koishi 目录 |
 | `DONGXUELIAN_AI_DATA_DIR` | `KOISHI_DIR/data` | AI 与相关插件共享数据目录 |
 | `DASHBOARD_HOST` | `0.0.0.0` 或代码默认 | Dashboard 监听地址 |
 | `DASHBOARD_PORT` | `5150` | Dashboard 端口 |
@@ -1033,7 +1033,7 @@ npm run build:agent-console
 
 ```bash
 ss -tlnp | grep 5150
-tail -f /root/koishi-app/koishi.log
+tail -f <YOUR_APP_DIR>/koishi.log
 ```
 
 常见原因：

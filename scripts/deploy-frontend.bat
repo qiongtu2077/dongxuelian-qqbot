@@ -4,14 +4,14 @@ setlocal enabledelayedexpansion
 set "SERVER=%~1"
 if "%SERVER%"=="" set "SERVER=%DEPLOY_SERVER%"
 if "%SERVER%"=="" (
-  echo Usage: scripts\deploy-frontend.bat root@server-ip [/root/koishi-app]
+  echo Usage: scripts\deploy-frontend.bat root@server-ip [<YOUR_APP_DIR>]
   echo Or set DEPLOY_SERVER=root@server-ip before running this script.
   exit /b 1
 )
 
 set "APP_DIR=%~2"
 if "%APP_DIR%"=="" set "APP_DIR=%DEPLOY_APP_DIR%"
-if "%APP_DIR%"=="" set "APP_DIR=/root/koishi-app"
+if "%APP_DIR%"=="" set "APP_DIR=<YOUR_APP_DIR>"
 
 set "FRONTEND_DIR=packages\koishi-plugin-dashboard\frontend"
 set "REMOTE_DIR=%APP_DIR%/packages/koishi-plugin-dashboard/frontend"

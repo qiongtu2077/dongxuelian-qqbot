@@ -11,11 +11,11 @@ if [ -z "$PACKAGE_DIR" ] || [ -z "$KOISHI_KEY" ]; then
   exit 2
 fi
 
-APP_DIR="${KOISHI_APP_DIR:-/root/koishi-app}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+DEFAULT_APP_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)"
+APP_DIR="${KOISHI_APP_DIR:-${KOISHI_DIR:-$DEFAULT_APP_DIR}}"
 KOISHI_YML="${KOISHI_YML:-$APP_DIR/koishi.yml}"
 NODE_MODULES_DIR="$APP_DIR/node_modules"
-
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 if [ -d "$SCRIPT_DIR/../packages" ]; then
   REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 elif [ -d "./packages" ]; then

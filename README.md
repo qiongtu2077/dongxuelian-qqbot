@@ -156,7 +156,7 @@ Windows 本地部署会在当前项目目录内准备运行环境：
 - 莲莲图集支持普通登录用户上传图片、16:9/4:3/9:16 展示、A-G 闪卡样式选择和按图片持久化；图片读取接口公开给浏览器 `<img>` 使用，上传后会校验真实图片格式并刷新缓存版本。
 - OneBot WebSocket 固定使用 `ws://127.0.0.1:8080/onebot/v11/ws`。
 
-远程 Linux 部署会通过 SSH / SCP 把当前 Dashboard 后端所在机器上的本地项目推送到远程服务器，默认目标目录是 `/root/koishi-app`。如果你访问的是云服务器上的 Dashboard，这里的“本地”就是那台云服务器，不是浏览器所在的 Windows 电脑。
+远程 Linux 部署会通过 SSH / SCP 把当前 Dashboard 后端所在机器上的本地项目推送到远程服务器，默认目标目录是 `<YOUR_APP_DIR>`。如果你访问的是云服务器上的 Dashboard，这里的“本地”就是那台云服务器，不是浏览器所在的 Windows 电脑。
 
 部署内容包括：
 
@@ -405,7 +405,7 @@ plugins:
 核心数据目录由 `DONGXUELIAN_AI_DATA_DIR` 控制。服务器部署时默认是：
 
 ```text
-/root/koishi-app/data
+<YOUR_DATA_DIR>
 ```
 
 本地开发时默认是：
@@ -416,11 +416,11 @@ plugins:
 
 `packages/koishi-plugin-dongxuelian-ai/data/ai-skills` 只允许作为随包携带的技能种子资源来源，不再作为运行时数据目录使用。生产环境和本地部署都必须把 AI、Dashboard、昵称、视频等插件的数据统一写入同一个根目录 `data`。
 
-服务器上的包内 `data` 目录必须被封闭成软链接，统一指向 `/root/koishi-app/data`。如果部署或拉代码后目录形态异常，先执行：
+服务器上的包内 `data` 目录必须被封闭成软链接，统一指向 `<YOUR_DATA_DIR>`。如果部署或拉代码后目录形态异常，先执行：
 
 ```bash
-cd /root/koishi-app
-KOISHI_DIR=/root/koishi-app DONGXUELIAN_AI_DATA_DIR=/root/koishi-app/data sh scripts/seal-data-dir.sh
+cd <YOUR_APP_DIR>
+KOISHI_DIR=<YOUR_APP_DIR> DONGXUELIAN_AI_DATA_DIR=<YOUR_DATA_DIR> sh scripts/seal-data-dir.sh
 ```
 
 `scripts/seal-data-dir.sh` 会先把包内旧数据非覆盖合并到根 `data`，把原目录备份到 `deploy-backups/`，再恢复软链接。`restart.sh`、`restart-bot.sh`、`watchdog.sh` 和 `setup.sh` 都会在启动前调用它，防止数据再次分裂。
@@ -460,7 +460,7 @@ KOISHI_DIR=/root/koishi-app DONGXUELIAN_AI_DATA_DIR=/root/koishi-app/data sh scr
 | `DASHBOARD_PASSWORD` | 空 | 首次访问密码默认值；为空且没有 `dashboard-access-pwd.txt` 时禁止登录 |
 | `DASHBOARD_ADMIN_PASSWORD` | `123` | 首次管理员密码默认值（变量名保留兼容旧版本） |
 | `DONGXUELIAN_AI_DATA_DIR` | `KOISHI_DIR/data`，未设置 `KOISHI_DIR` 时为当前工作目录 `data` | AI、Dashboard 和关联插件共享数据目录 |
-| `KOISHI_APP_DIR` | `/root/koishi-app` | 重启脚本和守护脚本使用的 Koishi 目录 |
+| `KOISHI_APP_DIR` | `<YOUR_APP_DIR>` | 重启脚本和守护脚本使用的 Koishi 目录 |
 | `KOISHI_PORT` | `5140` | Koishi server 端口 |
 | `NAPCAT_HOST` | `127.0.0.1` | Dashboard 代理 NapCat 的地址 |
 | `NAPCAT_PORT` | `6099` | Dashboard 代理 NapCat 的端口 |
@@ -478,7 +478,7 @@ KOISHI_DIR=/root/koishi-app DONGXUELIAN_AI_DATA_DIR=/root/koishi-app/data sh scr
 一键部署会把重启脚本放到目标目录：
 
 ```bash
-bash /root/koishi-app/restart.sh
+bash <YOUR_APP_DIR>/restart.sh
 ```
 
 这个脚本会：
@@ -494,13 +494,13 @@ bash /root/koishi-app/restart.sh
 `scripts/watchdog.sh` 会每 10 秒检查 `5150`，Dashboard 崩溃后自动拉起：
 
 ```bash
-nohup bash /root/koishi-app/scripts/watchdog.sh > /root/koishi-app/packages/koishi-plugin-dashboard/watchdog.log 2>&1 &
+nohup bash <YOUR_APP_DIR>/scripts/watchdog.sh > <YOUR_APP_DIR>/packages/koishi-plugin-dashboard/watchdog.log 2>&1 &
 ```
 
 ### 7.3 查看日志
 
 ```bash
-tail -f /root/koishi-app/koishi.log
+tail -f <YOUR_APP_DIR>/koishi.log
 ```
 
 常见成功日志关键词：
@@ -574,9 +574,9 @@ npm run build
 
 ## 九、单插件脚本部署
 
-如果不用 Dashboard 一键部署，也可以在服务器上手动执行 `scripts/*.sh`。这些脚本会把 `packages/*` 里的代码复制到 `/root/koishi-app/node_modules/`，并把插件写入 `koishi.yml`。
+如果不用 Dashboard 一键部署，也可以在服务器上手动执行 `scripts/*.sh`。这些脚本会把 `packages/*` 里的代码复制到 `<YOUR_APP_DIR>/node_modules/`，并把插件写入 `koishi.yml`。
 
-默认 Koishi 目录是 `/root/koishi-app`。如果你的目录不同，可以设置：
+默认 Koishi 目录是 `<YOUR_APP_DIR>`。如果你的目录不同，可以设置：
 
 ```bash
 KOISHI_APP_DIR=/你的/koishi目录 sh scripts/help.sh
@@ -593,7 +593,7 @@ KOISHI_APP_DIR=/你的/koishi目录 sh scripts/help.sh
 | `scripts/defense.sh` | 对话防护插件 | @ 机器人并发送常见套话测试 |
 | `scripts/poke.sh` | 戳一戳回应 | 戳一戳机器人 |
 | `scripts/leave.sh` | 退群提醒 | 小号退群测试 |
-| `scripts/restart-bot.sh` | 服务器重启脚本 | `bash /root/koishi-app/restart.sh` |
+| `scripts/restart-bot.sh` | 服务器重启脚本 | `bash <YOUR_APP_DIR>/restart.sh` |
 | `scripts/watchdog.sh` | Dashboard 守护脚本 | 检查 `5150` 端口 |
 
 ---
@@ -606,7 +606,7 @@ KOISHI_APP_DIR=/你的/koishi目录 sh scripts/help.sh
 
 ```bash
 ss -tlnp | grep 5150
-tail -f /root/koishi-app/koishi.log
+tail -f <YOUR_APP_DIR>/koishi.log
 ```
 
 检查项：

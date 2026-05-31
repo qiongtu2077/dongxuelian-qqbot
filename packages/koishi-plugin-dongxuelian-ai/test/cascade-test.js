@@ -3754,7 +3754,7 @@ async function main() {
   const allDeploy = fs.readdirSync(scriptsDir).filter(name => name.endsWith('.sh')).map(name => read(path.join(scriptsDir, name))).join('\n')
   check('ai deploy copies ai-skills', aiDeploy.includes('--copy-ai-skills'))
   check('message-reader deploys full AI package', readerDeploy.includes('exec sh "$SCRIPT_DIR/ai.sh"'))
-  check('deploy scripts do not embed package overwrite', !allDeploy.includes('cat > /root/koishi-app/node_modules'))
+  check('deploy scripts do not embed package overwrite', !allDeploy.includes('cat > <YOUR_APP_DIR>/node_modules'))
   check('deploy scripts do not contain stale AI version', !allDeploy.includes('0.3.11'))
   check('dashboard deploy does not copy removed patch.js', !dashboardStandalone.includes('/patch.js') && !dashboardStandalone.includes('patch.js ${s}'))
   check('dashboard stop avoids broad koishi pkill', !dashboardStandalone.includes("pkill -9 -f 'koishi'"))
@@ -3909,7 +3909,7 @@ async function main() {
     check(`setup.sh copies ai-skills ${skillPart}`, setupSrc.includes(`for skill_part in core personas modes lore docs`) || setupSrc.includes(`ai-skills/${skillPart}`))
   }
   check('setup.sh does not contain stale AI version', !setupSrc.includes('0.3.11'))
-  check('setup.sh does not write package files directly into node_modules', !setupSrc.includes('cat > /root/koishi-app/node_modules'))
+  check('setup.sh does not write package files directly into node_modules', !setupSrc.includes('cat > <YOUR_APP_DIR>/node_modules'))
   check('setup.sh does not use patch preload', !setupSrc.includes('NODE_OPTIONS') && !setupSrc.includes('patch.js'))
   check('setup.sh starts koishi with local binary', setupSrc.includes('node "$KOISHI_DIR/node_modules/koishi/bin.js" start'))
   const publicTestingDocPath = path.join(ROOT, 'TESTING.md')
@@ -3922,7 +3922,7 @@ async function main() {
   check('private TESTING deploy notes are not tracked', !trackedFiles.includes(path.relative(ROOT, privateTestingDocPath).replace(/\\/g, '/')))
   check('deploy archives are not tracked', !trackedFiles.some(file => /\.tgz$/i.test(file)))
   check('deployment docs avoid global koishi start commands', !/(?:npx koishi start|npm exec koishi start)/.test(deploymentDocs))
-  check('deployment docs mention current restart entrypoint', deploymentDocs.includes('bash /root/koishi-app/restart.sh'))
+  check('deployment docs mention current restart entrypoint', deploymentDocs.includes('bash <YOUR_APP_DIR>/restart.sh'))
 
   section('15. cross-file regression guards')
   const indexSrc = read(path.join(LIB, 'index.js'))

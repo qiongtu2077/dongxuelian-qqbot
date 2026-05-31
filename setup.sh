@@ -31,7 +31,7 @@ normalize_path() {
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$SCRIPT_DIR}"
-KOISHI_DIR="${KOISHI_DIR:-/root/koishi-app}"
+KOISHI_DIR="${KOISHI_DIR:-$REPO_ROOT}"
 DATA_DIR="${DATA_DIR:-$KOISHI_DIR/data}"
 NAPCAT_DIR="${NAPCAT_DIR:-/root/Napcat}"
 
@@ -346,9 +346,9 @@ sleep 10
 if tail -20 koishi.log | grep -q 'adapter connect to server'; then
   log "Deploy finished. Koishi has started."
   echo ""
-  echo "  Logs: tail -f /root/koishi-app/koishi.log"
-  echo "  Restart bot: cd /root/koishi-app && KOISHI_DIR=/root/koishi-app DONGXUELIAN_AI_DATA_DIR=/root/koishi-app/data node /root/koishi-app/node_modules/koishi/bin.js start"
+  echo "  Logs: tail -f <YOUR_APP_DIR>/koishi.log"
+  echo "  Restart bot: cd <YOUR_APP_DIR> && KOISHI_DIR=<YOUR_APP_DIR> DONGXUELIAN_AI_DATA_DIR=<YOUR_DATA_DIR> node <YOUR_APP_DIR>/node_modules/koishi/bin.js start"
   echo "  Web console: http://SERVER_IP:5140"
 else
-  warn "Koishi is starting. Check logs manually: tail -f /root/koishi-app/koishi.log"
+  warn "Koishi is starting. Check logs manually: tail -f <YOUR_APP_DIR>/koishi.log"
 fi

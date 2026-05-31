@@ -1,9 +1,13 @@
 #!/bin/bash
 # 重启 Koishi Bot（服务器端）
-# 用法: ssh root@host "bash /root/koishi-app/restart.sh"
+# 用法: ssh root@host "bash <YOUR_APP_DIR>/restart.sh"
 # 可通过环境变量覆盖: KOISHI_APP_DIR, KOISHI_PORT, DASHBOARD_PORT
 
-APP_DIR="${KOISHI_APP_DIR:-/root/koishi-app}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+APP_DIR="${KOISHI_APP_DIR:-$SCRIPT_DIR}"
+if [ ! -f "$APP_DIR/package.json" ] && [ -f "$SCRIPT_DIR/../package.json" ]; then
+  APP_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)"
+fi
 KOISHI_PORT="${KOISHI_PORT:-5140}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-5150}"
 DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
