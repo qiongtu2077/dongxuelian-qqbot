@@ -292,7 +292,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     const cutoffTs = Date.now() - 5 * 24 * 60 * 60 * 1000
     const atMe = findMentionedMessages(cache, userId).filter(m => m.ts >= cutoffTs)
     if (!atMe.length) return handled('近5天没有人 @你。')
-    const slice = atMe.slice(-20)
+    const slice = atMe.slice(-20).reverse()
     const total = atMe.length
     const shown = Math.min(total, 20)
     const botId = String(session.selfId || session.bot?.selfId || '10000')
@@ -334,7 +334,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     const userId = String(currentUserId || '')
     const locateCutoffTs = Date.now() - 5 * 24 * 60 * 60 * 1000
     const atMe = findMentionedMessages(cache, userId).filter(m => m.ts >= locateCutoffTs)
-    const displayedAtMe = atMe.slice(-20)
+    const displayedAtMe = atMe.slice(-20).reverse()
     if (targetIdx < 0 || targetIdx >= displayedAtMe.length) return handled('编号超出范围。')
     const targetMessage = displayedAtMe[targetIdx]
     const cacheIdx = cache.messages.indexOf(targetMessage)
