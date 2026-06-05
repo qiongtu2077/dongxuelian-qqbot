@@ -57,6 +57,7 @@ interface HandlerRuntimeConfig {
 }
 interface HandlerTodayMessage {
     time?: string;
+    ts?: number;
     user?: string;
     content?: string;
     userId?: string;

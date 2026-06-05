@@ -200,7 +200,7 @@ function enqueueWrite<T>(key: string, fn: (value?: unknown) => T | Promise<T>): 
 const CHANNEL_RUNTIME_CACHE_TTL_MS = 6 * 60 * 60 * 1000
 const MAX_CHANNEL_RUNTIME_CACHE_ENTRIES = 200
 const MAX_CONVERSATION_CACHE_ENTRIES = 400
-const MAX_TODAY_CACHE_MESSAGES = parseConversationPositiveInt(process.env.DONGXUELIAN_TODAY_CACHE_MAX_MESSAGES, 3000, 500, 20000)
+const MAX_TODAY_CACHE_MESSAGES = parseConversationPositiveInt(process.env.DONGXUELIAN_TODAY_CACHE_MAX_MESSAGES, 5000, 500, 20000)
 const MAX_TODAY_CACHE_CONTENT_CHARS = parseConversationPositiveInt(process.env.DONGXUELIAN_TODAY_CACHE_MAX_CONTENT_CHARS, 500, 80, 2000)
 const MAX_SENSITIVE_CACHE_MESSAGES = parseConversationPositiveInt(process.env.DONGXUELIAN_SENSITIVE_CACHE_MAX_MESSAGES, 60, 10, 500)
 const MAX_SENSITIVE_CACHE_FILE_BYTES = parseConversationPositiveInt(process.env.DONGXUELIAN_SENSITIVE_CACHE_MAX_BYTES, 512 * 1024, 64 * 1024, 4 * 1024 * 1024)
@@ -257,8 +257,14 @@ function getLastMessageTs(items: Array<{ ts?: number }> = []): number {
   return 0
 }
 
+const TODAY_CACHE_RETENTION_MS = 5 * 24 * 60 * 60 * 1000
+
 function trimTodayCacheMessages(cache: TodayCache | null | undefined): void {
   if (!cache || !Array.isArray(cache.messages)) return
+  const cutoff = Date.now() - TODAY_CACHE_RETENTION_MS
+  const firstKeep = cache.messages.findIndex(m => m.ts >= cutoff)
+  if (firstKeep > 0) cache.messages.splice(0, firstKeep)
+  else if (firstKeep === -1 && cache.messages.length > 0) cache.messages.length = 0
   if (cache.messages.length > MAX_TODAY_CACHE_MESSAGES) {
     cache.messages.splice(0, cache.messages.length - MAX_TODAY_CACHE_MESSAGES)
   }
@@ -661,7 +667,7 @@ function saveSharedChannelTurn(session: SessionLike, speakerName: string, conten
       const sw = readJsonFileIfSmallSync(SUMMARY_WHITELIST_FILE, MAX_SMALL_CONFIG_FILE_BYTES, [])
       if (Array.isArray(sw) && sw.includes(String(channelKey))) {
         const today = todayCst(); let cache = channelTodayCache.get(channelKey)
-        if (!cache || cache.date !== today) { cache = { date: today, messages: [], updatedAt: Date.now() }; channelTodayCache.set(channelKey, cache) }
+        if (!cache) { cache = { date: today, messages: [], updatedAt: Date.now() }; channelTodayCache.set(channelKey, cache) } else { cache.date = today }
         if (value || hasMentions) {
           const displayName = speakerName || userId
           const ts = Date.now()

@@ -10,7 +10,7 @@ const { DATA_DIR, PLUGIN_VERSION, PROVIDERS, PROVIDER_FILE, MODEL_FILE, BASE_URL
 const { personaUsersCache, loadPersonaGroups, getGroupPersona, setGroupPersona, resetGroupPersona, getUserPersona, setUserPersona, resetUserPersona, resolvePersona, getAvailablePersonals, } = require('./persona/persona');
 const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory, getMemorySummary, getConversationHistory } = require('./conversation');
 const { runHealthCheck, formatHealthReport } = require('./diagnostics/health-check');
-const { hasAdminPermission, isReservedCommand, readJsonFile, writeJsonFile, writeTextFile, safeUnlink, safeChannelKey, formatPercent, getModelDisplayName, getSearchCapability, formatSearchStatus, extractAtIds, todayCst, sanitizeUserName, sanitizeUserInput, isJailbreakAttempt, pickJailbreakFallbackReply, sanitizeReply, stripMarkdownForQQ, trimReply, } = require('./core/utils');
+const { hasAdminPermission, isReservedCommand, readJsonFile, writeJsonFile, writeTextFile, safeUnlink, safeChannelKey, formatPercent, getModelDisplayName, getSearchCapability, formatSearchStatus, extractAtIds, sanitizeUserName, sanitizeUserInput, isJailbreakAttempt, pickJailbreakFallbackReply, sanitizeReply, stripMarkdownForQQ, trimReply, } = require('./core/utils');
 const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply/reply-guard');
 const { logDebug } = require('./core/logging-config');
 const { handled, notHandled, } = require('./commands/command-result');
@@ -128,7 +128,6 @@ async function handleCommand(session, ctx, state) {
         if (!Array.isArray(sw) || !sw.includes(String(channelKey))) {
             return handled('本群未启用该功能，请联系管理员添加白名单。');
         }
-        const today = todayCst();
         const safeKey = safeChannelKey(channelKey);
         const cacheFile = path.join(DATA_DIR, 'today-cache-' + safeKey + '.json');
         let cache = null;
@@ -136,20 +135,21 @@ async function handleCommand(session, ctx, state) {
             cache = JSON.parse(require('fs').readFileSync(cacheFile, 'utf8'));
         }
         catch { /* non-critical: missing or invalid today-cache means no @ summary yet */ }
-        if (!cache || cache.date !== today || !Array.isArray(cache.messages)) {
-            return handled('今天还没有收录足够消息，稍后再试。');
+        if (!cache || !Array.isArray(cache.messages) || !cache.messages.length) {
+            return handled('还没有收录消息，稍后再试。');
         }
         const userId = String(currentUserId || '');
         if (!userId)
             return handled('无法获取用户信息。');
-        const atMe = findMentionedMessages(cache, userId);
+        const cutoffTs = Date.now() - 5 * 24 * 60 * 60 * 1000;
+        const atMe = findMentionedMessages(cache, userId).filter(m => m.ts >= cutoffTs);
         if (!atMe.length)
-            return handled('今天还没有人 @你。');
-        const slice = atMe.slice(-10);
+            return handled('近5天没有人 @你。');
+        const slice = atMe.slice(-20);
         const lines = slice.map((m, i) => `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}:\n${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 60)}`);
         const total = atMe.length;
-        const shown = Math.min(total, 10);
-        let reply = `今天有 ${total} 条消息 @了你（显示最近${shown}条）：\n\n${lines.join('\n\n')}`;
+        const shown = Math.min(total, 20);
+        let reply = `近5天有 ${total} 条消息 @了你（显示最近${shown}条）：\n\n${lines.join('\n\n')}`;
         if (total > shown)
             reply += `\n\n${shown}/${total}`;
         reply += `\n\n如需引用跳转可定位消息，示例：\n定位消息 1`;
@@ -160,7 +160,6 @@ async function handleCommand(session, ctx, state) {
         const targetIdx = parseInt(locateMatch[1], 10) - 1;
         if (!inGuild)
             return handled('这个命令只能在群里用。');
-        const today = todayCst();
         const safeKey = safeChannelKey(channelKey);
         const cacheFile = path.join(DATA_DIR, 'today-cache-' + safeKey + '.json');
         let cache = null;
@@ -168,12 +167,13 @@ async function handleCommand(session, ctx, state) {
             cache = JSON.parse(require('fs').readFileSync(cacheFile, 'utf8'));
         }
         catch { /* non-critical: missing or invalid today-cache means locate cannot proceed */ }
-        if (!cache || cache.date !== today || !Array.isArray(cache.messages)) {
-            return handled('今天还没有收录足够消息。');
+        if (!cache || !Array.isArray(cache.messages) || !cache.messages.length) {
+            return handled('还没有收录消息。');
         }
         const userId = String(currentUserId || '');
-        const atMe = findMentionedMessages(cache, userId);
-        const displayedAtMe = atMe.slice(-10);
+        const locateCutoffTs = Date.now() - 5 * 24 * 60 * 60 * 1000;
+        const atMe = findMentionedMessages(cache, userId).filter(m => m.ts >= locateCutoffTs);
+        const displayedAtMe = atMe.slice(-20);
         if (targetIdx < 0 || targetIdx >= displayedAtMe.length)
             return handled('编号超出范围。');
         const targetMessage = displayedAtMe[targetIdx];
