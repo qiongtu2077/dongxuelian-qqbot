@@ -22,6 +22,7 @@ const {
   getAvailablePersonals,
 } = require('./persona/persona') as typeof import('./persona/persona')
 const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory, getMemorySummary, getConversationHistory } = require('./conversation') as typeof import('./conversation')
+const { sendForwardMsg } = require('./core/api') as typeof import('./core/api')
 const { runHealthCheck, formatHealthReport } = require('./diagnostics/health-check') as typeof import('./diagnostics/health-check')
 const {
   hasAdminPermission, isReservedCommand,
@@ -292,9 +293,27 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     const atMe = findMentionedMessages(cache, userId).filter(m => m.ts >= cutoffTs)
     if (!atMe.length) return handled('近5天没有人 @你。')
     const slice = atMe.slice(-20)
-    const lines = slice.map((m, i) => `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}:\n${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 60)}`)
     const total = atMe.length
     const shown = Math.min(total, 20)
+    const botId = String(session.selfId || session.bot?.selfId || '10000')
+    const groupId = String(channelKey)
+
+    const nodes: { type: string; data: { name: string; uin: string; content: string } }[] = []
+    nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: `近5天有 ${total} 条消息 @了你（显示最近${shown}条）` } })
+    for (let i = 0; i < slice.length; i++) {
+      const m = slice[i]
+      const text = (m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 120)
+      nodes.push({ type: 'node', data: { name: `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}`, uin: String(m.userId || '10000'), content: text || '(空)' } })
+    }
+    let footer = '如需引用跳转可定位消息，示例：\n定位消息 1'
+    if (total > shown) footer = `${shown}/${total}\n\n` + footer
+    nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: footer } })
+
+    let forwardOk = false
+    try { forwardOk = !!(await sendForwardMsg(groupId, nodes)) } catch { /* fall through */ }
+    if (forwardOk) return handled()
+
+    const lines = slice.map((m, i) => `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}:\n${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 60)}`)
     let reply = `近5天有 ${total} 条消息 @了你（显示最近${shown}条）：\n\n${lines.join('\n\n')}`
     if (total > shown) reply += `\n\n${shown}/${total}`
     reply += `\n\n如需引用跳转可定位消息，示例：\n定位消息 1`

@@ -9,6 +9,7 @@ const path = require('path');
 const { DATA_DIR, PLUGIN_VERSION, PROVIDERS, PROVIDER_FILE, MODEL_FILE, BASE_URL_FILE, SEARCH_ENABLED_FILE, TEST_MODE_FILE, THINKING_MODE_FILE, HOSTILE_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP, } = require('./core/constants');
 const { personaUsersCache, loadPersonaGroups, getGroupPersona, setGroupPersona, resetGroupPersona, getUserPersona, setUserPersona, resetUserPersona, resolvePersona, getAvailablePersonals, } = require('./persona/persona');
 const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory, getMemorySummary, getConversationHistory } = require('./conversation');
+const { sendForwardMsg } = require('./core/api');
 const { runHealthCheck, formatHealthReport } = require('./diagnostics/health-check');
 const { hasAdminPermission, isReservedCommand, readJsonFile, writeJsonFile, writeTextFile, safeUnlink, safeChannelKey, formatPercent, getModelDisplayName, getSearchCapability, formatSearchStatus, extractAtIds, sanitizeUserName, sanitizeUserInput, isJailbreakAttempt, pickJailbreakFallbackReply, sanitizeReply, stripMarkdownForQQ, trimReply, } = require('./core/utils');
 const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply/reply-guard');
@@ -146,9 +147,27 @@ async function handleCommand(session, ctx, state) {
         if (!atMe.length)
             return handled('近5天没有人 @你。');
         const slice = atMe.slice(-20);
-        const lines = slice.map((m, i) => `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}:\n${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 60)}`);
         const total = atMe.length;
         const shown = Math.min(total, 20);
+        const botId = String(session.selfId || session.bot?.selfId || '10000');
+        const groupId = String(channelKey);
+        const nodes = [];
+        nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: `近5天有 ${total} 条消息 @了你（显示最近${shown}条）` } });
+        for (let i = 0; i < slice.length; i++) {
+            const m = slice[i];
+            const text = (m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 120);
+            nodes.push({ type: 'node', data: { name: `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}`, uin: String(m.userId || '10000'), content: text || '(空)' } });
+        }
+        let footer = '如需引用跳转可定位消息，示例：\n定位消息 1';
+        if (total > shown)
+            footer = `${shown}/${total}\n\n` + footer;
+        nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: footer } });
+        let forwardOk = false;
+        try { forwardOk = !!(await sendForwardMsg(groupId, nodes)); }
+        catch { /* fall through */ }
+        if (forwardOk)
+            return handled();
+        const lines = slice.map((m, i) => `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}:\n${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 60)}`);
         let reply = `近5天有 ${total} 条消息 @了你（显示最近${shown}条）：\n\n${lines.join('\n\n')}`;
         if (total > shown)
             reply += `\n\n${shown}/${total}`;
