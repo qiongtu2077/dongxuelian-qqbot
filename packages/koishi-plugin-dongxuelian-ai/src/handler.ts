@@ -299,7 +299,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     const groupId = String(channelKey)
 
     const nodes: { type: string; data: { name: string; uin: string; content: string } }[] = []
-    nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: `近5天有 ${total} 条消息 @了你（显示最近${shown}条）` } })
+    nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: `近5天有 ${total} 条消息 @了你（显示最近${shown}条），时间正序1-${shown}` } })
     for (let i = 0; i < slice.length; i++) {
       const m = slice[i]
       const text = (m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 120)
@@ -314,7 +314,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     if (forwardOk) return handled()
 
     const lines = slice.map((m, i) => `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}:\n${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 60)}`)
-    let reply = `近5天有 ${total} 条消息 @了你（显示最近${shown}条）：\n\n${lines.join('\n\n')}`
+    let reply = `近5天有 ${total} 条消息 @了你（显示最近${shown}条），时间正序1-${shown}：\n\n${lines.join('\n\n')}`
     if (total > shown) reply += `\n\n${shown}/${total}`
     reply += `\n\n如需引用跳转可定位消息，示例：\n定位消息 1`
     return handled(reply)
