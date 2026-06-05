@@ -108,6 +108,7 @@ interface HandlerTodayMessage {
   user?: string
   content?: string
   userId?: string
+  messageId?: string
   mentionUserIds?: string[]
 }
 
@@ -192,6 +193,26 @@ function isGroupAdminOrBotAdmin(session: HandlerSession): boolean {
   return isGroupAdmin(session) || hasAdminPermission(session)
 }
 
+// 找出今天缓存里 @ 过指定用户的消息。
+function findMentionedMessages(cache: HandlerTodayCache, userId: string): HandlerTodayMessage[] {
+  return cache.messages.filter(m => {
+    if (Array.isArray(m.mentionUserIds) && m.mentionUserIds.includes(userId)) return true
+    if (m.content && extractAtIds(m.content).includes(userId)) return true
+    return false
+  })
+}
+
+// 生成定位失败时使用的上下文文本。
+function buildLocateMessageContext(cache: HandlerTodayCache, cacheIdx: number): string {
+  const start = Math.max(0, cacheIdx - 2)
+  const end = Math.min(cache.messages.length, cacheIdx + 3)
+  const contextLines = cache.messages.slice(start, end).map((m, i) => {
+    const prefix = start + i === cacheIdx ? '→ ' : '  '
+    return `${prefix}${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}：${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 80)}`
+  }).join('\n')
+  return `消息上下文（共${cache.messages.length}条）：\n\n${contextLines}`
+}
+
 async function handleCommand(session: HandlerSession, ctx: HandlerContext, state: HandlerState): Promise<HandlerCommandResult> {
   const {
     plain, inGuild, channelKey, currentUserId, adminCommandMatched,
@@ -267,11 +288,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     }
     const userId = String(currentUserId || '')
     if (!userId) return handled('无法获取用户信息。')
-    const atMe = cache.messages.filter(m => {
-      if (Array.isArray(m.mentionUserIds) && m.mentionUserIds.includes(userId)) return true
-      if (m.content && extractAtIds(m.content).includes(userId)) return true
-      return false
-    })
+    const atMe = findMentionedMessages(cache, userId)
     if (!atMe.length) return handled('今天还没有人 @你。')
     const slice = atMe.slice(-10)
     const lines = slice.map((m, i) => `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}:\n${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 60)}`)
@@ -279,7 +296,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     const shown = Math.min(total, 10)
     let reply = `今天有 ${total} 条消息 @了你（显示最近${shown}条）：\n\n${lines.join('\n\n')}`
     if (total > shown) reply += `\n\n${shown}/${total}`
-    reply += `\n\n如需查看上下文可定位消息，示例：\n定位消息 1`
+    reply += `\n\n如需引用跳转可定位消息，示例：\n定位消息 1`
     return handled(reply)
   }
 
@@ -296,21 +313,22 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
       return handled('今天还没有收录足够消息。')
     }
     const userId = String(currentUserId || '')
-    const atMe = cache.messages.filter(m => {
-      if (Array.isArray(m.mentionUserIds) && m.mentionUserIds.includes(userId)) return true
-      if (m.content && extractAtIds(m.content).includes(userId)) return true
-      return false
-    })
-    if (targetIdx < 0 || targetIdx >= atMe.length) return handled('编号超出范围。')
-    const cacheIdx = cache.messages.indexOf(atMe[targetIdx])
+    const atMe = findMentionedMessages(cache, userId)
+    const displayedAtMe = atMe.slice(-10)
+    if (targetIdx < 0 || targetIdx >= displayedAtMe.length) return handled('编号超出范围。')
+    const targetMessage = displayedAtMe[targetIdx]
+    const cacheIdx = cache.messages.indexOf(targetMessage)
     if (cacheIdx === -1) return handled('未找到该消息。')
-    const start = Math.max(0, cacheIdx - 2)
-    const end = Math.min(cache.messages.length, cacheIdx + 3)
-    const contextLines = cache.messages.slice(start, end).map((m, i) => {
-      const prefix = start + i === cacheIdx ? '→ ' : '  '
-      return `${prefix}${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}：${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 80)}`
-    }).join('\n')
-    return handled(`消息上下文（共${cache.messages.length}条）：\n\n${contextLines}`)
+    const quoteMessageId = String(targetMessage.messageId || '').trim()
+    if (quoteMessageId) {
+      try {
+        await session.send(`<quote id="${quoteMessageId}"/>\u200b`)
+        return handled()
+      } catch (error) {
+        ctx.logger('dongxuelian-ai').warn(`locate quote send failed: ${getHandlerErrorMessage(error)}`)
+      }
+    }
+    return handled(buildLocateMessageContext(cache, cacheIdx))
   }
 
   if (/^东雪莲群聊AI概率查看$/.test(plain)) {

@@ -128,12 +128,51 @@ async function run(t) {
     checkSentNonEmpty(t, 'scenario admin agent skill switch accepted', adminSkillSwitch)
     t.check('scenario admin agent skill switch writes enabled skill', data.readJson('ai-tool-config.json').enabledSkills.includes('wuwa-lore'))
 
+    const { todayCst, todayCstMinusDays } = require('../../lib/core/utils')
+    const today = todayCst()
+    data.writeJson('summary-whitelist.json', ['10001'])
+    data.writeJson('today-cache-10001.json', {
+      date: today,
+      messages: Array.from({ length: 12 }, (_, index) => ({
+        time: `10:${String(index + 1).padStart(2, '0')}:00`,
+        ts: Date.now() + index,
+        user: `User${index + 1}`,
+        userId: `u${index + 1}`,
+        content: `第${index + 1}条 @消息`,
+        messageId: `at-${index + 1}`,
+        mentionUserIds: ['100000000'],
+      })),
+    })
+    const whoAtMe = await run(makeSession({ content: '\u8c01\u827e\u7279\u6211' }))
+    t.check('scenario who-at-me shows latest ten mention items', whoAtMe.sent.join('\n').includes('今天有 12 条消息 @了你（显示最近10条）') && whoAtMe.sent.join('\n').includes('1. User3 10:03'), JSON.stringify(whoAtMe.sent))
+    const locateFirst = await run(makeSession({ content: '\u5b9a\u4f4d\u6d88\u606f 1' }))
+    t.check('scenario locate message quotes displayed first item', locateFirst.sent.length === 1 && locateFirst.sent[0] === '<quote id="at-3"/>\u200b', JSON.stringify(locateFirst.sent))
+    data.writeJson('today-cache-10001.json', {
+      date: today,
+      messages: [
+        { time: '11:00:00', ts: Date.now(), user: 'Alice', userId: 'u1', content: '没有 messageId 的 @消息', mentionUserIds: ['100000000'] },
+      ],
+    })
+    const locateMissingId = await run(makeSession({ content: '\u5b9a\u4f4d\u6d88\u606f 1' }))
+    t.check('scenario locate message falls back without message id', locateMissingId.sent.some(item => String(item).includes('消息上下文') && String(item).includes('没有 messageId')), JSON.stringify(locateMissingId.sent))
+    data.writeJson('today-cache-10001.json', {
+      date: today,
+      messages: [
+        { time: '11:10:00', ts: Date.now(), user: 'Bob', userId: 'u2', content: '引用发送失败也回退', messageId: 'broken-quote', mentionUserIds: ['100000000'] },
+      ],
+    })
+    const locateSendFails = await run(makeSession({
+      content: '\u5b9a\u4f4d\u6d88\u606f 1',
+      async send() {
+        throw new Error('forced quote failure')
+      },
+    }))
+    t.check('scenario locate message falls back when quote send fails', locateSendFails.sent.some(item => String(item).includes('消息上下文') && String(item).includes('引用发送失败也回退')), JSON.stringify(locateSendFails.sent))
+
     const emotion = await run(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }))
     checkSentNonEmpty(t, 'scenario today emotion empty cache replies', emotion)
 
     const handler = require('../../lib/handler')
-    const { todayCst, todayCstMinusDays } = require('../../lib/core/utils')
-    const today = todayCst()
     data.writeJson('emotion-history-10001.json', [{ date: todayCstMinusDays(1), score: 42, summary: '旧格式摘要' }])
     const emotionCache = new Map([['10001', {
       date: today,

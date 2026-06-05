@@ -60,6 +60,7 @@ interface HandlerTodayMessage {
     user?: string;
     content?: string;
     userId?: string;
+    messageId?: string;
     mentionUserIds?: string[];
 }
 interface HandlerTodayCache {
