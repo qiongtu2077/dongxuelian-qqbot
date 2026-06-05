@@ -95,19 +95,21 @@ function getLifecycleErrorMessage(error: unknown): string {
 }
 
 function restoreTodayCacheEntry(key: string, data: TodayCacheSnapshot | null | undefined): void {
-  if (!data || data.date !== todayCst() || !Array.isArray(data.messages) || data.messages.length <= 0) return
-  channelTodayCache.set(key, { date: data.date, messages: data.messages.slice(-3000), updatedAt: Date.now() })
+  if (!data || !Array.isArray(data.messages) || data.messages.length <= 0) return
+  const cutoff = Date.now() - 5 * 24 * 60 * 60 * 1000
+  const kept = data.messages.filter(m => m.ts >= cutoff).slice(-5000)
+  if (kept.length <= 0) return
+  channelTodayCache.set(key, { date: todayCst(), messages: kept, updatedAt: Date.now() })
 }
 
 function restoreTodayCache(): void {
   try {
     const files = fsSync.readdirSync(DATA_DIR).filter(f => f.startsWith('today-cache-') && f.endsWith('.json'))
-    const today = todayCst()
     for (const fileName of files) {
       try {
       const raw = fsSync.readFileSync(path.join(DATA_DIR, fileName), 'utf8')
       const data = JSON.parse(raw) as TodayCacheSnapshot
-      if (data && data.date === today && Array.isArray(data.messages) && data.messages.length > 0) {
+      if (data && Array.isArray(data.messages) && data.messages.length > 0) {
         const key = fileName.replace('today-cache-', '').replace('.json', '')
         restoreTodayCacheEntry(key, data)
       }

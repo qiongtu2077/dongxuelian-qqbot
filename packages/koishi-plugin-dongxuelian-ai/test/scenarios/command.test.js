@@ -144,9 +144,9 @@ async function run(t) {
       })),
     })
     const whoAtMe = await run(makeSession({ content: '\u8c01\u827e\u7279\u6211' }))
-    t.check('scenario who-at-me shows latest ten mention items', whoAtMe.sent.join('\n').includes('今天有 12 条消息 @了你（显示最近10条）') && whoAtMe.sent.join('\n').includes('1. User3 10:03'), JSON.stringify(whoAtMe.sent))
+    t.check('scenario who-at-me shows latest ten mention items', whoAtMe.sent.join('\n').includes('近5天有 12 条消息 @了你（显示最近12条）') && whoAtMe.sent.join('\n').includes('1. User1 10:01'), JSON.stringify(whoAtMe.sent))
     const locateFirst = await run(makeSession({ content: '\u5b9a\u4f4d\u6d88\u606f 1' }))
-    t.check('scenario locate message quotes displayed first item', locateFirst.sent.length === 1 && locateFirst.sent[0] === '<quote id="at-3"/>\u200b', JSON.stringify(locateFirst.sent))
+    t.check('scenario locate message quotes displayed first item', locateFirst.sent.length === 1 && locateFirst.sent[0] === '<quote id="at-1"/>\u200b', JSON.stringify(locateFirst.sent))
     data.writeJson('today-cache-10001.json', {
       date: today,
       messages: [
