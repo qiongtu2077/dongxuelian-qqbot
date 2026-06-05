@@ -228,6 +228,18 @@ async function run() {
 
     result = await send(ctx, '查看全部昵称', { guildId: TEST_GROUP_OTHER, channelId: TEST_GROUP_OTHER })
     check('scoped store keeps other group isolated', result.sent.some(item => item.includes('本群还没有昵称。')), JSON.stringify(result.sent))
+
+    result = await send(ctx, `<at id="${TEST_MEMBER_ID}"/> 查看昵称`)
+    check('member nickname lookup supports mention before command with space', result.sent.some(item => item.includes(TEST_ALIAS)), JSON.stringify(result.sent))
+
+    result = await send(ctx, `<at id="${TEST_MEMBER_ID}"/>查看昵称`)
+    check('member nickname lookup supports mention before command without space', result.sent.some(item => item.includes(TEST_ALIAS)), JSON.stringify(result.sent))
+
+    result = await send(ctx, `查看昵称 <at id="${TEST_MEMBER_ID}"/>`)
+    check('member nickname lookup supports command before mention with space', result.sent.some(item => item.includes(TEST_ALIAS)), JSON.stringify(result.sent))
+
+    result = await send(ctx, `查看昵称<at id="${TEST_MEMBER_ID}"/>`)
+    check('member nickname lookup supports command before mention without space', result.sent.some(item => item.includes(TEST_ALIAS)), JSON.stringify(result.sent))
   })
 
   section('corrupt json handling')

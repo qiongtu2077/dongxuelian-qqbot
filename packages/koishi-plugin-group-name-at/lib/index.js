@@ -894,6 +894,10 @@ async function viewMember(session, keyword, mentionId) {
         return TEXT.memberNoAlias(label);
     return [TEXT.memberTitle(label), ...matched.sort((a, b) => a.localeCompare(b, 'zh-CN'))].join('\n');
 }
+// 判断带 @ 的“查看昵称”是否应反查成员绑定的昵称和集合。
+function isMentionNicknameLookup(plain, mentionIds) {
+    return mentionIds.length > 0 && plain === CMD.viewAlias;
+}
 async function collectionSet(session, left, right, type) {
     await ensureStore();
     left = normalizeName(left);
@@ -983,6 +987,9 @@ async function handlePlainCommand(session, content) {
     if (!plain)
         return null;
     if (mentionIds.length && plain === CMD.alias) {
+        return viewMember(session, '', mentionIds[0]);
+    }
+    if (isMentionNicknameLookup(plain, mentionIds)) {
         return viewMember(session, '', mentionIds[0]);
     }
     if (plain === CMD.viewAllAliases || /^nicklist$/i.test(plain)) {

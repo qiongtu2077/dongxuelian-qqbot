@@ -1033,6 +1033,11 @@ async function viewMember(session: GroupNameSessionLike, keyword: string, mentio
   return [TEXT.memberTitle(label), ...matched.sort((a, b) => a.localeCompare(b, 'zh-CN'))].join('\n')
 }
 
+// 判断带 @ 的“查看昵称”是否应反查成员绑定的昵称和集合。
+function isMentionNicknameLookup(plain: string, mentionIds: string[]): boolean {
+  return mentionIds.length > 0 && plain === CMD.viewAlias
+}
+
 async function collectionSet(session: GroupNameSessionLike, left: string, right: string, type: CollectionSetType): Promise<string> {
   await ensureStore()
   left = normalizeName(left)
@@ -1124,6 +1129,10 @@ async function handlePlainCommand(session: GroupNameSessionLike, content: string
   if (!plain) return null
 
   if (mentionIds.length && plain === CMD.alias) {
+    return viewMember(session, '', mentionIds[0])
+  }
+
+  if (isMentionNicknameLookup(plain, mentionIds)) {
     return viewMember(session, '', mentionIds[0])
   }
 
