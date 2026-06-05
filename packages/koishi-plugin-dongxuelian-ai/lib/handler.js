@@ -155,7 +155,7 @@ async function handleCommand(session, ctx, state) {
         reply += `\n\n如需引用跳转可定位消息，示例：\n定位消息 1`;
         return handled(reply);
     }
-    const locateMatch = plain.match(/^定位消息\s+(\d+)$/);
+    const locateMatch = plain.match(/^定位消息\s*(\d+)$/);
     if (locateMatch) {
         const targetIdx = parseInt(locateMatch[1], 10) - 1;
         if (!inGuild)
@@ -183,7 +183,7 @@ async function handleCommand(session, ctx, state) {
         const quoteMessageId = String(targetMessage.messageId || '').trim();
         if (quoteMessageId) {
             try {
-                await session.send(`<quote id="${quoteMessageId}"/>\u200b`);
+                await session.send(`<quote id="${quoteMessageId}"/>找到啦！`);
                 return handled();
             }
             catch (error) {

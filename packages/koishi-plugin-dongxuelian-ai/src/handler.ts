@@ -301,7 +301,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     return handled(reply)
   }
 
-  const locateMatch = plain.match(/^定位消息\s+(\d+)$/)
+  const locateMatch = plain.match(/^定位消息\s*(\d+)$/)
   if (locateMatch) {
     const targetIdx = parseInt(locateMatch[1], 10) - 1
     if (!inGuild) return handled('这个命令只能在群里用。')
@@ -323,7 +323,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     const quoteMessageId = String(targetMessage.messageId || '').trim()
     if (quoteMessageId) {
       try {
-        await session.send(`<quote id="${quoteMessageId}"/>\u200b`)
+        await session.send(`<quote id="${quoteMessageId}"/>找到啦！`)
         return handled()
       } catch (error) {
         ctx.logger('dongxuelian-ai').warn(`locate quote send failed: ${getHandlerErrorMessage(error)}`)

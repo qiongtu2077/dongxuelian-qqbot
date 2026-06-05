@@ -33,6 +33,7 @@ deploy-backups/
 local-deployer/release/
 .claude/settings.local.json
 .opencode/plans/
+.cursor/rules/no-package-install.mdc
 
 # Local collaboration notes and private audit/deploy scratch docs
 AGENTS.md
