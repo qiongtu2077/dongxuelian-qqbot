@@ -10,7 +10,7 @@ const path = require('path');
 const { TIMEOUTS, DATA_DIR } = require('./config');
 const { collectReportData } = require('./data-collector');
 const { analyzeWithAI } = require('./ai-analyzer');
-const { renderReport } = require('./html-renderer');
+const { renderReport, assertRenderEnvironment, } = require('./html-renderer');
 let flushTodayCacheToDisk = () => { };
 try {
     ({ flushTodayCacheToDisk } = require('../../koishi-plugin-dongxuelian-ai/lib/conversation'));
@@ -24,8 +24,29 @@ const failureBackoff = new Map();
 const inFlightReports = new Map();
 const FAILURE_BACKOFF_MS = 10 * 1000;
 const MAX_RUNTIME_MAP_ENTRIES = 500;
+const SEND_RETRY_DELAY_MS = parsePositiveInt(process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS, 800, 0, 10000);
+const TEXT_FALLBACK_MAX_CHARS = parsePositiveInt(process.env.DAILY_REPORT_TEXT_FALLBACK_MAX_CHARS, 1800, 600, 4000);
+function parsePositiveInt(value, fallback, min, max) {
+    const parsed = parseInt(String(value), 10);
+    if (!Number.isFinite(parsed))
+        return fallback;
+    return Math.max(min, Math.min(max, parsed));
+}
+// 将未知错误压成稳定的日志字符串。
 function getErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
+}
+// 用于发送重试前的短延迟，避免 OneBot 瞬时无响应时直接放弃文本提示。
+function delay(ms) {
+    if (ms <= 0)
+        return Promise.resolve();
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+// 把长文本裁剪到 OneBot 更容易接受的范围内。
+function clampText(text, maxChars) {
+    if (text.length <= maxChars)
+        return text;
+    return `${text.slice(0, Math.max(0, maxChars - 18))}\n……内容已截断`;
 }
 function trimTimedMap(map, now, maxAgeMs) {
     for (const [key, value] of map) {
@@ -64,6 +85,55 @@ function classifyRenderError(err) {
     }
     return { kind: 'unknown', userMessage: '详细日报生成失败了，请稍后再试。' };
 }
+// 在 AI 分析前检查 Chromium 渲染环境，避免低内存时浪费 AI 调用。
+function preflightRenderEnvironment() {
+    if (typeof assertRenderEnvironment !== 'function')
+        return;
+    assertRenderEnvironment();
+}
+// 拼接有限长度的文字版日报，作为图片渲染失败时的降级输出。
+function buildTextFallbackReport(data, analysis, failure, modeLabel) {
+    const lines = [
+        `${modeLabel}文字版`,
+        `图片渲染失败：${failure.userMessage}`,
+        `日期：${data.date || '未知'}`,
+        `消息：${Number(data.totalMessages || 0)} 条`,
+        `活跃成员：${Number(data.activeMembers || 0)} 人`,
+        `表情：${Number(data.emojiCount || 0)} 个`,
+        `总字数：${Number(data.totalChars || 0)} 字`,
+        `高峰：${data.peakHour || '未知'}`,
+    ];
+    const topMembers = Array.isArray(data.topMembers) ? data.topMembers.slice(0, 5) : [];
+    if (topMembers.length) {
+        lines.push('', '活跃群友：');
+        for (let i = 0; i < topMembers.length; i++) {
+            const member = topMembers[i];
+            lines.push(`${i + 1}. ${member.name || '群友'}：${Number(member.msgCount || 0)} 条`);
+        }
+    }
+    const topics = Array.isArray(analysis.topics) ? analysis.topics.slice(0, 3) : [];
+    if (topics.length) {
+        lines.push('', '话题摘要：');
+        for (const topic of topics)
+            lines.push(`- ${topic.title || '话题'}：${topic.summary || '无摘要'}`);
+    }
+    const quotes = Array.isArray(analysis.goldenQuotes) ? analysis.goldenQuotes.slice(0, 2) : [];
+    if (quotes.length) {
+        lines.push('', '今日金句：');
+        for (const quote of quotes)
+            lines.push(`- ${quote.sender || '群友'}：${quote.content || ''}${quote.reason ? `（${quote.reason}）` : ''}`);
+    }
+    const titles = Array.isArray(analysis.userTitles) ? analysis.userTitles.slice(0, 3) : [];
+    if (titles.length) {
+        lines.push('', '群友画像：');
+        for (const item of titles)
+            lines.push(`- ${item.name || '群友'}：${item.title || '称号'}${item.reason ? `，${item.reason}` : ''}`);
+    }
+    if (analysis.qualityReview) {
+        lines.push('', '群聊锐评：', `${analysis.qualityReview.title || '今日锐评'}：${analysis.qualityReview.summary || '暂无总结'}`);
+    }
+    return clampText(lines.join('\n'), TEXT_FALLBACK_MAX_CHARS);
+}
 // 将 AI 分析阶段的降级信息打到日志里，方便回查是哪一层出了偏差。
 function logAnalysisWarnings(ctx, modeLabel, analysis) {
     const warnings = analysis?.meta?.warnings;
@@ -71,14 +141,39 @@ function logAnalysisWarnings(ctx, modeLabel, analysis) {
         return;
     ctx.logger('daily-report').warn(`${modeLabel}分析降级: ${warnings.join(' | ')}`);
 }
+// 安全发送文字版降级日报，失败时只记录日志，不再抛出到主流程。
+async function sendTextFallbackReport(ctx, session, data, analysis, failure, modeLabel) {
+    const message = buildTextFallbackReport(data, analysis, failure, modeLabel);
+    const sent = await safeSendDailyReport(ctx, session, message, '文字降级日报');
+    if (sent)
+        ctx.logger('daily-report').warn(`${modeLabel}图片渲染失败，已发送文字降级日报[${failure.kind}]`);
+    return sent;
+}
+// 包装 session.send，记录耗时并对文本消息做一次短重试。
 async function safeSendDailyReport(ctx, session, message, label = 'message') {
+    const channelKey = session.guildId || session.channelId || 'private';
+    const startedAt = Date.now();
     try {
         await session.send(message);
+        ctx.logger('daily-report').info(`${label}发送成功: channel=${channelKey}, elapsed=${Date.now() - startedAt}ms`);
         return true;
     }
     catch (error) {
-        ctx.logger('daily-report').warn(`${label}发送失败: ${getErrorMessage(error)}`);
-        return false;
+        const firstError = getErrorMessage(error);
+        ctx.logger('daily-report').warn(`${label}发送失败: channel=${channelKey}, elapsed=${Date.now() - startedAt}ms, error=${firstError}`);
+        if (typeof message !== 'string')
+            return false;
+        await delay(SEND_RETRY_DELAY_MS);
+        const retryStartedAt = Date.now();
+        try {
+            await session.send(message);
+            ctx.logger('daily-report').info(`${label}重试发送成功: channel=${channelKey}, elapsed=${Date.now() - retryStartedAt}ms`);
+            return true;
+        }
+        catch (retryError) {
+            ctx.logger('daily-report').warn(`${label}重试发送失败: channel=${channelKey}, elapsed=${Date.now() - retryStartedAt}ms, error=${getErrorMessage(retryError)}`);
+            return false;
+        }
     }
 }
 // 白名单缓存（避免每次同步读文件）
@@ -159,11 +254,21 @@ function apply(ctx) {
             // 发送提示
             const modeLabel = isFull ? '详细日报' : '日报';
             inFlightReports.set(channelKey, Date.now());
+            let analysis = {};
             try {
+                try {
+                    preflightRenderEnvironment();
+                }
+                catch (err) {
+                    const failure = classifyRenderError(err);
+                    ctx.logger('daily-report').error(`${modeLabel}渲染预检失败[${failure.kind}]: ${getErrorMessage(err)}`);
+                    failureBackoff.set(channelKey, Date.now());
+                    await sendTextFallbackReport(ctx, session, data, {}, failure, modeLabel);
+                    return;
+                }
                 const started = await safeSendDailyReport(ctx, session, 'Thinking......', '生成中提示');
                 if (!started)
                     return;
-                let analysis = {};
                 if (isFull) {
                     try {
                         analysis = await analyzeWithAI(data, true);
@@ -191,7 +296,9 @@ function apply(ctx) {
                 const failure = classifyRenderError(err);
                 ctx.logger('daily-report').error(`${modeLabel}生成失败[${failure.kind}]: ${getErrorMessage(err)}`);
                 failureBackoff.set(channelKey, Date.now());
-                await safeSendDailyReport(ctx, session, failure.userMessage, '失败提示');
+                const fallbackSent = await sendTextFallbackReport(ctx, session, data, analysis, failure, modeLabel);
+                if (!fallbackSent)
+                    await safeSendDailyReport(ctx, session, failure.userMessage, '失败提示');
             }
             finally {
                 inFlightReports.delete(channelKey);

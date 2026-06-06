@@ -570,7 +570,7 @@ async function testCooldownAfterSuccessOnly() {
 
     const failed = makeSession({ content: '群聊日报', guildId: '123' })
     await middleware(failed, () => 'next')
-    check('failed report returns render failure message', failed._sent.some(item => String(item).includes('生成失败')), JSON.stringify(failed._sent))
+    check('failed report returns text fallback message', failed._sent.some(item => String(item).includes('日报文字版')), JSON.stringify(failed._sent))
 
     const backoff = makeSession({ content: '群聊日报', guildId: '123' })
     await middleware(backoff, () => 'next')
@@ -607,12 +607,14 @@ async function testSendFailureBoundary() {
   const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
   const originalRendererCache = require.cache[HTML_RENDERER_PATH]
   const originalPluginCache = require.cache[PLUGIN_PATH]
+  const oldSendRetryDelay = process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS
 
   let collectCalls = 0
   let analyzeCalls = 0
   let renderCalls = 0
 
   try {
+    process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS = '0'
     require.cache[CONFIG_PATH] = {
       id: CONFIG_PATH,
       filename: CONFIG_PATH,
@@ -678,7 +680,198 @@ async function testSendFailureBoundary() {
     check('daily report stops after prompt send failure', collectCalls === 1 && analyzeCalls === 0 && renderCalls === 0, JSON.stringify({ collectCalls, analyzeCalls, renderCalls }))
     check('daily report logs controlled send failure', ctx._logs.some(log => log.level === 'warn' && log.msg.includes('生成中提示发送失败')), JSON.stringify(ctx._logs))
     check('daily report clears in-flight after prompt send failure', !plugin._test.inFlightReports.has('123'))
+
+    let retryAttempts = 0
+    const retrySession = makeSession({
+      content: '',
+      guildId: '123',
+      async send() {
+        retryAttempts += 1
+        if (retryAttempts === 1) throw new Error('Timeout with request send_group_msg')
+        return true
+      },
+    })
+    const retryOk = await plugin._test.safeSendDailyReport(ctx, retrySession, '日报生成超时了，请稍后再试。', '失败提示')
+    check('daily report retries text send after OneBot timeout', retryOk && retryAttempts === 2, JSON.stringify({ retryOk, retryAttempts }))
+    check('daily report logs text retry success', ctx._logs.some(log => log.level === 'info' && log.msg.includes('失败提示重试发送成功')), JSON.stringify(ctx._logs))
   } finally {
+    if (oldSendRetryDelay === undefined) delete process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS
+    else process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS = oldSendRetryDelay
+    restoreModuleCache(CONFIG_PATH, originalConfigCache)
+    restoreModuleCache(DATA_COLLECTOR_PATH, originalDataCollectorCache)
+    restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
+    restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
+    restoreModuleCache(PLUGIN_PATH, originalPluginCache)
+    try { fs.rmSync(reportDataDir, { recursive: true, force: true }) } catch {}
+  }
+}
+
+async function testRenderPreflightSkipsAiAndChromium() {
+  section('render preflight regression')
+  const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-preflight-'))
+  fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123']), 'utf8')
+
+  const originalConfigCache = require.cache[CONFIG_PATH]
+  const originalDataCollectorCache = require.cache[DATA_COLLECTOR_PATH]
+  const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
+  const originalRendererCache = require.cache[HTML_RENDERER_PATH]
+  const originalPluginCache = require.cache[PLUGIN_PATH]
+  const oldSendRetryDelay = process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS
+
+  let collectCalls = 0
+  let analyzeCalls = 0
+  let renderCalls = 0
+  let preflightCalls = 0
+
+  try {
+    process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS = '0'
+    require.cache[CONFIG_PATH] = {
+      id: CONFIG_PATH,
+      filename: CONFIG_PATH,
+      loaded: true,
+      exports: { TIMEOUTS: { aiRequest: 30000, cooldown: 60000 }, DATA_DIR: reportDataDir },
+    }
+    require.cache[DATA_COLLECTOR_PATH] = {
+      id: DATA_COLLECTOR_PATH,
+      filename: DATA_COLLECTOR_PATH,
+      loaded: true,
+      exports: {
+        collectReportData: () => {
+          collectCalls += 1
+          return createSampleReportData()
+        },
+      },
+    }
+    require.cache[AI_ANALYZER_PATH] = {
+      id: AI_ANALYZER_PATH,
+      filename: AI_ANALYZER_PATH,
+      loaded: true,
+      exports: {
+        analyzeWithAI: async () => {
+          analyzeCalls += 1
+          return { topics: [] }
+        },
+      },
+    }
+    require.cache[HTML_RENDERER_PATH] = {
+      id: HTML_RENDERER_PATH,
+      filename: HTML_RENDERER_PATH,
+      loaded: true,
+      exports: {
+        assertRenderEnvironment: () => {
+          preflightCalls += 1
+          throw new Error('available memory is too low for Chromium render (252MB < 300MB)')
+        },
+        renderReport: async () => {
+          renderCalls += 1
+          return Buffer.from('fake-png')
+        },
+      },
+    }
+
+    delete require.cache[PLUGIN_PATH]
+    const plugin = require(PLUGIN_PATH)
+    const ctx = makeCtx()
+    plugin.apply(ctx)
+    const middleware = ctx._middlewareList[0]
+    const session = makeSession({ content: '群聊详细日报', guildId: '123' })
+
+    await middleware(session, () => 'next')
+
+    check('render preflight runs after data collection', collectCalls === 1 && preflightCalls === 1, JSON.stringify({ collectCalls, preflightCalls }))
+    check('render preflight skips AI and Chromium when memory is low', analyzeCalls === 0 && renderCalls === 0, JSON.stringify({ analyzeCalls, renderCalls }))
+    check('render preflight sends text fallback with memory reason', session._sent.some(item => String(item).includes('详细日报文字版') && String(item).includes('服务器可用内存不足')), JSON.stringify(session._sent))
+    check('render preflight logs memory failure', ctx._logs.some(log => log.level === 'error' && log.msg.includes('渲染预检失败[memory]')), JSON.stringify(ctx._logs))
+    check('render preflight clears in-flight state', !plugin._test.inFlightReports.has('123'))
+  } finally {
+    if (oldSendRetryDelay === undefined) delete process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS
+    else process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS = oldSendRetryDelay
+    restoreModuleCache(CONFIG_PATH, originalConfigCache)
+    restoreModuleCache(DATA_COLLECTOR_PATH, originalDataCollectorCache)
+    restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
+    restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
+    restoreModuleCache(PLUGIN_PATH, originalPluginCache)
+    try { fs.rmSync(reportDataDir, { recursive: true, force: true }) } catch {}
+  }
+}
+
+async function testRenderFailureSendsTextFallback() {
+  section('render text fallback regression')
+  const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-text-fallback-'))
+  fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123']), 'utf8')
+
+  const originalConfigCache = require.cache[CONFIG_PATH]
+  const originalDataCollectorCache = require.cache[DATA_COLLECTOR_PATH]
+  const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
+  const originalRendererCache = require.cache[HTML_RENDERER_PATH]
+  const originalPluginCache = require.cache[PLUGIN_PATH]
+  const oldSendRetryDelay = process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS
+
+  let analyzeCalls = 0
+  let renderCalls = 0
+
+  try {
+    process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS = '0'
+    require.cache[CONFIG_PATH] = {
+      id: CONFIG_PATH,
+      filename: CONFIG_PATH,
+      loaded: true,
+      exports: { TIMEOUTS: { aiRequest: 30000, cooldown: 60000 }, DATA_DIR: reportDataDir },
+    }
+    require.cache[DATA_COLLECTOR_PATH] = {
+      id: DATA_COLLECTOR_PATH,
+      filename: DATA_COLLECTOR_PATH,
+      loaded: true,
+      exports: { collectReportData: () => createSampleReportData() },
+    }
+    require.cache[AI_ANALYZER_PATH] = {
+      id: AI_ANALYZER_PATH,
+      filename: AI_ANALYZER_PATH,
+      loaded: true,
+      exports: {
+        analyzeWithAI: async () => {
+          analyzeCalls += 1
+          return {
+            topics: [{ title: '测试话题', summary: '测试摘要' }],
+            goldenQuotes: [{ sender: 'Alice', content: '测试金句', reason: '测试点评' }],
+            userTitles: [{ name: 'Alice', title: '测试称号', reason: '测试画像' }],
+            qualityReview: { title: '测试锐评', summary: '测试总结' },
+          }
+        },
+      },
+    }
+    require.cache[HTML_RENDERER_PATH] = {
+      id: HTML_RENDERER_PATH,
+      filename: HTML_RENDERER_PATH,
+      loaded: true,
+      exports: {
+        assertRenderEnvironment: () => {},
+        renderReport: async () => {
+          renderCalls += 1
+          throw new Error("Target.setAutoAttach timed out. Increase the 'protocolTimeout' setting in launch/connect calls for a higher timeout if needed.")
+        },
+      },
+    }
+
+    delete require.cache[PLUGIN_PATH]
+    const plugin = require(PLUGIN_PATH)
+    const ctx = makeCtx()
+    plugin.apply(ctx)
+    const middleware = ctx._middlewareList[0]
+    const session = makeSession({ content: '群聊详细日报', guildId: '123' })
+
+    await middleware(session, () => 'next')
+
+    const fallbackText = session._sent.find(item => String(item).includes('详细日报文字版'))
+    check('render failure runs AI before rendering', analyzeCalls === 1 && renderCalls === 1, JSON.stringify({ analyzeCalls, renderCalls }))
+    check('render failure sends Thinking before fallback', session._sent[0] === 'Thinking......', JSON.stringify(session._sent))
+    check('render failure sends text fallback with analysis', !!fallbackText && String(fallbackText).includes('话题摘要') && String(fallbackText).includes('测试话题'), JSON.stringify(session._sent))
+    check('render failure classifies Target.setAutoAttach as timeout', ctx._logs.some(log => log.level === 'error' && log.msg.includes('生成失败[timeout]')), JSON.stringify(ctx._logs))
+    check('render failure logs fallback success', ctx._logs.some(log => log.level === 'warn' && log.msg.includes('已发送文字降级日报[timeout]')), JSON.stringify(ctx._logs))
+    check('render failure keeps normal image cooldown unset', !plugin._test.cooldown.has('123'))
+  } finally {
+    if (oldSendRetryDelay === undefined) delete process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS
+    else process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS = oldSendRetryDelay
     restoreModuleCache(CONFIG_PATH, originalConfigCache)
     restoreModuleCache(DATA_COLLECTOR_PATH, originalDataCollectorCache)
     restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
@@ -783,6 +976,8 @@ testMiddleware('你好', '123').then(nonReport => {
 ).then(() => testConcurrentReportGuard()
 ).then(() => testCooldownAfterSuccessOnly()
 ).then(() => testSendFailureBoundary()
+).then(() => testRenderPreflightSkipsAiAndChromium()
+).then(() => testRenderFailureSendsTextFallback()
 ).then(() => {
 
   // ===== 长内容渲染回归 =====

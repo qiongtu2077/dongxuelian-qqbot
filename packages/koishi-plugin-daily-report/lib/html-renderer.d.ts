@@ -47,10 +47,19 @@ interface AnalysisResult {
     qualityReview?: QualityReview | null;
     tokenUsage?: TokenUsage;
 }
+interface RenderMemoryStatus {
+    availableMb: number | null;
+    minMb: number;
+    forced: boolean;
+}
+declare function assertEnoughMemoryForRender(): RenderMemoryStatus;
+declare function assertRenderEnvironment(): void;
 declare function renderHtmlToImage(htmlContent: string): Promise<Buffer>;
 declare function renderReport(data: ReportData, analysis: AnalysisResult): Promise<Buffer>;
 declare const _default: {
     renderReport: typeof renderReport;
     renderHtmlToImage: typeof renderHtmlToImage;
+    assertRenderEnvironment: typeof assertRenderEnvironment;
+    assertEnoughMemoryForRender: typeof assertEnoughMemoryForRender;
 };
 export = _default;

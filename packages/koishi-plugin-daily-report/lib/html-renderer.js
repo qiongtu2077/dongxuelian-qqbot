@@ -14,6 +14,7 @@ let activeRenderers = 0;
 const MAX_RENDERERS = parsePositiveInt(process.env.DAILY_REPORT_MAX_RENDERERS, 1, 1, 4);
 const RENDER_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_RENDER_TIMEOUT_MS, 8 * 60 * 1000, 5000, 10 * 60 * 1000);
 const RENDER_QUEUE_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_QUEUE_TIMEOUT_MS, 60000, 5000, 180000);
+const RENDER_PROTOCOL_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_PROTOCOL_TIMEOUT_MS, 180000, 30000, 600000);
 const RENDER_SET_CONTENT_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_SET_CONTENT_TIMEOUT_MS, 20000, 5000, 60000);
 const RENDER_ASSET_IDLE_TIMEOUT = parsePositiveInt(process.env.DAILY_REPORT_RENDER_ASSET_WAIT_MS, 8000, 1000, 30000);
 const RENDER_MIN_AVAILABLE_MB = parsePositiveInt(process.env.DAILY_REPORT_MIN_MEM_MB, 300, 256, 8192);
@@ -42,13 +43,36 @@ function readLinuxMemAvailableMb() {
         return null;
     }
 }
+// 读取当前渲染内存状态，供预检、渲染和日志复用。
+function getRenderMemoryStatus() {
+    return {
+        availableMb: readLinuxMemAvailableMb(),
+        minMb: RENDER_MIN_AVAILABLE_MB,
+        forced: /^(1|true|yes|on)$/i.test(String(process.env.DAILY_REPORT_RENDER_FORCE || '').trim()),
+    };
+}
+// 校验 Chromium 渲染所需的最低可用内存。
 function assertEnoughMemoryForRender() {
-    if (/^(1|true|yes|on)$/i.test(String(process.env.DAILY_REPORT_RENDER_FORCE || '').trim()))
-        return;
-    const availableMb = readLinuxMemAvailableMb();
-    if (availableMb === null || availableMb >= RENDER_MIN_AVAILABLE_MB)
-        return;
-    throw new Error(`available memory is too low for Chromium render (${availableMb}MB < ${RENDER_MIN_AVAILABLE_MB}MB)`);
+    const status = getRenderMemoryStatus();
+    if (status.forced || status.availableMb === null || status.availableMb >= status.minMb)
+        return status;
+    throw new Error(`available memory is too low for Chromium render (${status.availableMb}MB < ${status.minMb}MB)`);
+}
+// 校验渲染前置环境，避免进入 AI 后才发现 Chromium 无法运行。
+function assertRenderEnvironment() {
+    assertEnoughMemoryForRender();
+    if (!findBrowser())
+        throw new Error('未找到Chrome/Chromium浏览器');
+}
+// 将渲染内存状态压成稳定日志文本。
+function formatMemoryStatus(status) {
+    const available = status.availableMb === null ? 'unknown' : `${status.availableMb}MB`;
+    return `available=${available}, min=${status.minMb}MB, force=${status.forced ? 'on' : 'off'}`;
+}
+// 记录 Chromium 渲染分段诊断，便于线上日志定位卡点。
+function logRenderStep(step, detail = '') {
+    const suffix = detail ? `: ${detail}` : '';
+    console.info(`[daily-report] render ${step}${suffix}`);
 }
 // 等待并占用一个渲染槽位，返回幂等释放函数。
 async function acquireRendererSlot() {
@@ -296,10 +320,14 @@ function findBrowser() {
 }
 // Puppeteer截图（带信号量和超时）
 async function renderHtmlToImage(htmlContent) {
-    if (Buffer.byteLength(String(htmlContent || ''), 'utf8') > MAX_HTML_BYTES)
+    const htmlBytes = Buffer.byteLength(String(htmlContent || ''), 'utf8');
+    if (htmlBytes > MAX_HTML_BYTES)
         throw new Error('render HTML is too large');
-    assertEnoughMemoryForRender();
+    const memoryStatus = assertEnoughMemoryForRender();
+    logRenderStep('memory ok', formatMemoryStatus(memoryStatus));
+    logRenderStep('html accepted', `${htmlBytes} bytes`);
     const releaseRendererSlot = await acquireRendererSlot();
+    logRenderStep('queue slot acquired', `active=${activeRenderers}`);
     const puppeteer = require('puppeteer-core');
     const browserPath = findBrowser();
     if (!browserPath) {
@@ -308,9 +336,24 @@ async function renderHtmlToImage(htmlContent) {
     }
     let browser = null;
     let timeoutId = null;
+    // 关闭浏览器实例并避免成功、失败、超时路径重复 close。
+    const closeBrowser = async (reason) => {
+        if (!browser)
+            return;
+        const current = browser;
+        browser = null;
+        try {
+            await current.close();
+            logRenderStep('browser close ok', reason);
+        }
+        catch (error) {
+            logRenderStep('browser close failed', `${reason}: ${getErrorMessage(error)}`);
+        }
+    };
     try {
+        logRenderStep('browser launch start', `path=${browserPath}, protocolTimeout=${RENDER_PROTOCOL_TIMEOUT}`);
         browser = await puppeteer.launch({
-            executablePath: browserPath, headless: 'new',
+            executablePath: browserPath, headless: 'new', protocolTimeout: RENDER_PROTOCOL_TIMEOUT,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -328,50 +371,40 @@ async function renderHtmlToImage(htmlContent) {
                 '--js-flags=--max-old-space-size=96',
             ],
         });
+        logRenderStep('browser launch ok');
         timeoutId = setTimeout(async () => {
-            if (browser) {
-                try {
-                    await browser.close();
-                }
-                catch { /* non-critical: timeout cleanup is best-effort */
-                }
-                browser = null;
-            }
+            await closeBrowser('render timeout');
         }, RENDER_TIMEOUT);
+        logRenderStep('newPage start');
         const page = await browser.newPage();
+        logRenderStep('newPage ok');
         await enableRenderRequestGuards(page);
         await page.setViewport({ width: 880, height: 800 });
+        logRenderStep('setContent start', `timeout=${RENDER_SET_CONTENT_TIMEOUT}`);
         await page.setContent(htmlContent, { waitUntil: 'domcontentloaded', timeout: RENDER_SET_CONTENT_TIMEOUT });
+        logRenderStep('setContent ok');
         await page.evaluate(() => document.fonts && document.fonts.ready ? document.fonts.ready.then(() => true) : true).catch(() => {
         });
         await waitForRenderAssets(page);
         const bodyH = await page.evaluate(() => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0));
         const captureH = Math.min(Math.max(800, Number(bodyH) + 40), MAX_CAPTURE_HEIGHT);
         await page.setViewport({ width: 880, height: captureH });
+        logRenderStep('screenshot start', `height=${captureH}`);
         const screenshot = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 880, height: captureH } });
+        logRenderStep('screenshot ok', `${screenshot.length} bytes`);
         return screenshot;
     }
     catch (err) {
-        if (browser) {
-            try {
-                await browser.close();
-            }
-            catch { /* non-critical: error cleanup is best-effort */
-            }
-        }
+        logRenderStep('failed', getErrorMessage(err));
+        await closeBrowser('error');
         throw err;
     }
     finally {
         if (timeoutId)
             clearTimeout(timeoutId);
-        if (browser) {
-            try {
-                await browser.close();
-            }
-            catch { /* non-critical: final cleanup is best-effort */
-            }
-        }
+        await closeBrowser('finally');
         releaseRendererSlot();
+        logRenderStep('cleanup ok', `active=${activeRenderers}`);
     }
 }
 // 主入口：随机选模板 + 渲染 + 截图
@@ -380,4 +413,4 @@ async function renderReport(data, analysis) {
     const html = renderTemplate(template.content, data, analysis, template.name);
     return renderHtmlToImage(html);
 }
-module.exports = { renderReport, renderHtmlToImage };
+module.exports = { renderReport, renderHtmlToImage, assertRenderEnvironment, assertEnoughMemoryForRender };
