@@ -37,6 +37,12 @@ function asRecord(value) {
 function asArray(value) {
     return Array.isArray(value) ? value : [];
 }
+function getReportMessages(data) {
+    return Array.isArray(data?.messages) ? data.messages : [];
+}
+function getTopMembers(data) {
+    return Array.isArray(data?.topMembers) ? data.topMembers : [];
+}
 // --- AI call helpers --- #
 // Calls the shared AI API with report-specific temperature and timeout options.
 async function callAI(systemPrompt, userMessage, maxTokens = 1500, extraBody = {}) {
@@ -296,9 +302,9 @@ function normalizeQualityReview(review) {
 // --- Fallback builders --- #
 // Builds quote cards from raw messages when AI quote extraction fails.
 function buildFallbackGoldenQuotes(data) {
-    const messages = Array.isArray(data && data.messages) ? data.messages : [];
-    const topIds = new Set((Array.isArray(data && data.topMembers) ? data.topMembers : [])
-        .map(member => normalizeString(member && member.userId))
+    const messages = getReportMessages(data);
+    const topIds = new Set(getTopMembers(data)
+        .map(member => normalizeString(member.userId))
         .filter(Boolean));
     const { nameToUserId, userIdToName } = buildMessageMaps(messages);
     const scored = [];
@@ -343,15 +349,15 @@ function buildFallbackGoldenQuotes(data) {
             break;
     }
     if (!result.length) {
-        const fallbackMember = Array.isArray(data && data.topMembers) && data.topMembers.length ? data.topMembers[0] : null;
+        const fallbackMember = getTopMembers(data)[0] || null;
         result.push(createGoldenQuote('今天群里暂时没有抓到特别典型的金句。', normalizeString(fallbackMember && fallbackMember.name, '群友'), '兜底生成的说明句。', normalizeString(fallbackMember && fallbackMember.userId)));
     }
     return result;
 }
 // Builds the minimal topic and quote analysis needed by detailed reports.
 function buildFallbackBasicAnalysis(data) {
-    const topMembers = Array.isArray(data && data.topMembers) ? data.topMembers.slice(0, 4) : [];
-    const participantNames = topMembers.map(member => normalizeString(member && member.name)).filter(Boolean);
+    const topMembers = getTopMembers(data).slice(0, 4);
+    const participantNames = topMembers.map(member => normalizeString(member.name)).filter(Boolean);
     const participants = participantNames.length ? participantNames : ['群友'];
     const totalMessages = Number(data && data.totalMessages || 0);
     const activeMembers = Number(data && data.activeMembers || 0);
@@ -370,7 +376,7 @@ function buildFallbackBasicAnalysis(data) {
 }
 // Builds member portrait cards from active-member statistics.
 function buildFallbackUserTitles(data) {
-    const members = Array.isArray(data && data.topMembers) ? data.topMembers.slice(0, 6) : [];
+    const members = getTopMembers(data).slice(0, 6);
     const titles = ['高频发言担当', '话题推进器', '稳定插话人', '气氛补给站', '边角料捕手', '潜在节奏点'];
     const result = members.map((member, index) => {
         const msgCount = Number(member && member.msgCount || 0);

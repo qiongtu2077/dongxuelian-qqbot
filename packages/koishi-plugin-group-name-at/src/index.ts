@@ -100,10 +100,7 @@ interface NicknameBlacklistCommand {
   groupId?: string
 }
 
-interface PermissionResult {
-  ok: boolean
-  message?: string
-}
+type PermissionResult = { ok: true } | { ok: false, message: string }
 
 interface AliasBindAction {
   targetUserId: string

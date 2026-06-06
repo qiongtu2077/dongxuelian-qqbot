@@ -5,7 +5,7 @@
     "moduleResolution": "node",
     "outDir": "lib",
     "rootDir": "src",
-    "strict": false,
+    "strict": true,
     "noEmit": false,
     "allowJs": false,
     "esModuleInterop": true,
