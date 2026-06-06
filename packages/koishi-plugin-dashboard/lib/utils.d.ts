@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from 'http';
 interface FsError extends Error {
     code?: string;
     path?: string;
@@ -9,26 +10,27 @@ interface RemovePathOptions {
 interface CollectBodyOptions {
     maxBytes?: number;
 }
-declare function parsePositiveInt(value: any, fallback: any, min: any, max: any): any;
-declare function json(res: any, data: any, status?: number): void;
-declare function log(msg: any): void;
-declare function getRemoteAddress(req: any): string;
-declare function isLoopbackAddress(address: any): boolean;
-declare function shellQuote(value: any): string;
-declare function commandQuote(value: any): string;
-declare function isInsidePath(parent: any, child: any): boolean;
-declare function sleepSync(ms: any): void;
+type BodyCallback = (body: string) => void | Promise<void>;
+declare function parsePositiveInt(value: unknown, fallback: number, min: number, max: number): number;
+declare function json(res: ServerResponse, data: unknown, status?: number): void;
+declare function log(msg: unknown): void;
+declare function getRemoteAddress(req: IncomingMessage | null | undefined): string;
+declare function isLoopbackAddress(address: unknown): boolean;
+declare function shellQuote(value: unknown): string;
+declare function commandQuote(value: unknown): string;
+declare function isInsidePath(parent: string, child: string): boolean;
+declare function sleepSync(ms: number): void;
 declare function describeFsError(e: unknown, fallback?: string): string;
-declare function pathConflictError(conflictPath: any, message?: string): FsError;
+declare function pathConflictError(conflictPath: string, message?: string): FsError;
 declare function isRetriableFsError(error: unknown): boolean;
-declare function assertParentDirectories(targetPath: any): void;
-declare function removePathWithRetry(targetPath: any, options?: RemovePathOptions): boolean;
-declare function ensureCleanDirectory(dir: any): void;
-declare function ensureWritableDir(dir: any): void;
-declare function copyRecursiveSync(src: any, dst: any): void;
-declare function listFilesRecursive(root: any, predicate: any): any[];
-declare function uniquePaths(paths: any): any;
-declare function readFileContent(p: any, maxBytes?: number): any;
+declare function assertParentDirectories(targetPath: string): void;
+declare function removePathWithRetry(targetPath: string, options?: RemovePathOptions): boolean;
+declare function ensureCleanDirectory(dir: string): void;
+declare function ensureWritableDir(dir: string): void;
+declare function copyRecursiveSync(src: string, dst: string): void;
+declare function listFilesRecursive(root: string, predicate?: (filePath: string) => boolean): string[];
+declare function uniquePaths(paths: string[]): string[];
+declare function readFileContent(p: string, maxBytes?: number): string;
 declare const _default: {
     parsePositiveInt: typeof parsePositiveInt;
     json: typeof json;
@@ -55,6 +57,6 @@ declare const _default: {
     readFileSyncSafe: typeof readFileSyncSafe;
 };
 export = _default;
-declare function writeFileSyncSafe(p: any, content: any): void;
-declare function readFileSyncSafe(p: any, maxBytes?: number): any;
-declare function collectBody(req: any, res: any, callback: any, options?: CollectBodyOptions): void;
+declare function writeFileSyncSafe(p: string, content: unknown): void;
+declare function readFileSyncSafe(p: string, maxBytes?: number): string;
+declare function collectBody(req: IncomingMessage, res: ServerResponse, callback: BodyCallback, options?: CollectBodyOptions): void;

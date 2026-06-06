@@ -4,18 +4,19 @@ const { resolveNapcatWebuiListenPort, getNapcatToken } = require('./napcat');
 function napcatRespond(res, proxyRes, token) {
     const contentType = proxyRes.headers['content-type'] || '';
     const contentLength = parseInt(proxyRes.headers['content-length'] || '0', 10);
+    const statusCode = typeof proxyRes.statusCode === 'number' ? proxyRes.statusCode : 502;
     if (contentType.includes('text/html') && token && contentLength > 0 && contentLength <= 1024 * 1024) {
         let body = '';
-        proxyRes.on('data', c => body += c);
+        proxyRes.on('data', (c) => body += c);
         proxyRes.on('end', () => {
             const jsonToken = JSON.stringify(String(token || ''));
             const injected = body.replace('</head>', `<script>localStorage.setItem('token',${jsonToken});</script></head>`);
-            res.writeHead(proxyRes.statusCode, { ...proxyRes.headers, 'content-length': Buffer.byteLength(injected) });
+            res.writeHead(statusCode, { ...proxyRes.headers, 'content-length': Buffer.byteLength(injected) });
             res.end(injected);
         });
         return;
     }
-    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    res.writeHead(statusCode, proxyRes.headers);
     proxyRes.pipe(res);
 }
 function napcatProxy(req, res, targetPath, getStatusFn, options = {}) {

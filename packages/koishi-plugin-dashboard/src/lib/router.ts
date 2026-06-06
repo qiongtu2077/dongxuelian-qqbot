@@ -1,17 +1,48 @@
 'use strict'
 
-const { authMiddleware } = require('./routes/auth')
-const galleryRoutes = require('./routes/gallery')
-const authRoutes = require('./routes/auth')
-const configRoutes = require('./routes/config')
-const agentRoutes = require('./routes/agent')
-const settingsRoutes = require('./routes/settings')
-const botRoutes = require('./routes/bot')
-const deployRoutes = require('./routes/deploy')
+import type { IncomingMessage, ServerResponse } from 'http'
 
-const exactRoutes = new Map()
-const prefixRoutes = []
-const regexRoutes = []
+type HttpRequest = IncomingMessage
+type HttpResponse = ServerResponse
+type RouteHandler = (req: HttpRequest, res: HttpResponse, pathname: string, url: URL) => unknown
+type RegexRouteHandler = (req: HttpRequest, res: HttpResponse, match: RegExpMatchArray, pathname: string, url: URL) => unknown
+type AuthMiddleware = (req: HttpRequest, res: HttpResponse, pathname: string) => boolean
+
+interface PrefixRoute {
+  prefix: string
+  method?: string
+  handler: RouteHandler
+}
+
+interface RegexRouteObject {
+  pattern?: RegExp
+  method?: string
+  handler?: RegexRouteHandler
+  0?: RegExp
+  1?: string
+  2?: RegexRouteHandler
+}
+
+type RegexRoute = RegexRouteObject
+
+interface RouteModule {
+  routes?: Record<string, RouteHandler>
+  prefixRoutes?: PrefixRoute[] | Record<string, RouteHandler>
+  regexRoutes?: RegexRoute[]
+}
+
+const { authMiddleware } = require('./routes/auth') as { authMiddleware: AuthMiddleware }
+const galleryRoutes = require('./routes/gallery') as RouteModule
+const authRoutes = require('./routes/auth') as RouteModule
+const configRoutes = require('./routes/config') as RouteModule
+const agentRoutes = require('./routes/agent') as RouteModule
+const settingsRoutes = require('./routes/settings') as RouteModule
+const botRoutes = require('./routes/bot') as RouteModule
+const deployRoutes = require('./routes/deploy') as RouteModule
+
+const exactRoutes = new Map<string, RouteHandler>()
+const prefixRoutes: PrefixRoute[] = []
+const regexRoutes: RegexRoute[] = []
 
 for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, settingsRoutes, botRoutes, deployRoutes]) {
   if (mod.routes) for (const [key, handler] of Object.entries(mod.routes)) exactRoutes.set(key, handler)
@@ -31,7 +62,7 @@ const preAuthKeys = new Set([
 ])
 
 // Dispatches an HTTP request to exact, prefix, or regex route handlers.
-function dispatch(req, res, pathname, url) {
+function dispatch(req: HttpRequest, res: HttpResponse, pathname: string, url: URL): boolean {
   const method = req.method
   const key = method + ' ' + pathname
 

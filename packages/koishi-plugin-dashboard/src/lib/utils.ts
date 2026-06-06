@@ -1,6 +1,9 @@
 'use strict'
-const fs = require('fs')
-const path = require('path')
+
+import type { IncomingMessage, ServerResponse } from 'http'
+
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
 
 interface FsError extends Error {
   code?: string
@@ -16,46 +19,48 @@ interface CollectBodyOptions {
   maxBytes?: number
 }
 
-function parsePositiveInt(value, fallback, min, max) {
-  const parsed = parseInt(value, 10)
+type BodyCallback = (body: string) => void | Promise<void>
+
+function parsePositiveInt(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = parseInt(String(value), 10)
   if (!Number.isFinite(parsed)) return fallback
   return Math.max(min, Math.min(max, parsed))
 }
 
-function json(res, data, status = 200) {
+function json(res: ServerResponse, data: unknown, status = 200): void {
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(data))
 }
 
-function log(msg) {
+function log(msg: unknown): void {
   console.log(`[dashboard] ${msg}`)
 }
 
-function getRemoteAddress(req) {
+function getRemoteAddress(req: IncomingMessage | null | undefined): string {
   return String(req?.socket?.remoteAddress || req?.connection?.remoteAddress || '').trim()
 }
 
-function isLoopbackAddress(address) {
+function isLoopbackAddress(address: unknown): boolean {
   const value = String(address || '').trim()
   return value === '127.0.0.1' || value === '::1' || value === '::ffff:127.0.0.1'
 }
 
-function shellQuote(value) {
+function shellQuote(value: unknown): string {
   return "'" + String(value).replace(/'/g, "'\\''") + "'"
 }
 
-function commandQuote(value) {
+function commandQuote(value: unknown): string {
   const text = String(value)
   if (process.platform !== 'win32') return shellQuote(text)
   return '"' + text.replace(/"/g, '""') + '"'
 }
 
-function isInsidePath(parent, child) {
+function isInsidePath(parent: string, child: string): boolean {
   const rel = path.relative(path.resolve(parent), path.resolve(child))
   return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel))
 }
 
-function sleepSync(ms) {
+function sleepSync(ms: number): void {
   if (!ms) return
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
@@ -69,7 +74,7 @@ function describeFsError(e: unknown, fallback = '') {
   return fallback || String((e as { message?: string })?.message || e || '未知错误')
 }
 
-function pathConflictError(conflictPath, message = '路径冲突：目标路径的某一级已经是文件，不是目录') {
+function pathConflictError(conflictPath: string, message = '路径冲突：目标路径的某一级已经是文件，不是目录'): FsError {
   const error = new Error(message + '：' + conflictPath) as FsError
   error.code = 'ENOTDIR'
   error.path = conflictPath
@@ -80,7 +85,7 @@ function isRetriableFsError(error: unknown) {
   return ['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY'].includes(String((error as Partial<FsError>)?.code || ''))
 }
 
-function assertParentDirectories(targetPath) {
+function assertParentDirectories(targetPath: string): void {
   const resolved = path.resolve(targetPath)
   const root = path.parse(resolved).root
   const parts = path.relative(root, path.dirname(resolved)).split(path.sep).filter(Boolean)
@@ -91,9 +96,11 @@ function assertParentDirectories(targetPath) {
   }
 }
 
-function removePathWithRetry(targetPath, options: RemovePathOptions = {}) {
-  const retries = Number.isFinite(options.retries) ? options.retries : 5
-  const delayMs = Number.isFinite(options.delayMs) ? options.delayMs : 180
+function removePathWithRetry(targetPath: string, options: RemovePathOptions = {}): boolean {
+  const requestedRetries = options.retries
+  const requestedDelayMs = options.delayMs
+  const retries = typeof requestedRetries === 'number' && Number.isFinite(requestedRetries) ? requestedRetries : 5
+  const delayMs = typeof requestedDelayMs === 'number' && Number.isFinite(requestedDelayMs) ? requestedDelayMs : 180
   let lastError: FsError | null = null
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
@@ -112,21 +119,21 @@ function removePathWithRetry(targetPath, options: RemovePathOptions = {}) {
   return !fs.existsSync(targetPath)
 }
 
-function ensureCleanDirectory(dir) {
+function ensureCleanDirectory(dir: string): void {
   assertParentDirectories(dir)
   removePathWithRetry(dir)
   if (fs.existsSync(dir)) throw pathConflictError(dir, '目标目录清理失败')
   fs.mkdirSync(dir, { recursive: true })
 }
 
-function ensureWritableDir(dir) {
+function ensureWritableDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true })
   const probe = path.join(dir, '.write-test-' + Date.now().toString(36))
   fs.writeFileSync(probe, 'ok', 'utf8')
   fs.unlinkSync(probe)
 }
 
-function copyRecursiveSync(src, dst) {
+function copyRecursiveSync(src: string, dst: string): void {
   if (!fs.existsSync(src)) return
   const stat = fs.statSync(src)
   if (stat.isDirectory()) {
@@ -142,10 +149,10 @@ function copyRecursiveSync(src, dst) {
   fs.copyFileSync(src, dst)
 }
 
-function listFilesRecursive(root, predicate) {
-  const result = []
-  function walk(dir) {
-    let entries = []
+function listFilesRecursive(root: string, predicate?: (filePath: string) => boolean): string[] {
+  const result: string[] = []
+  function walk(dir: string): void {
+    let entries: import('fs').Dirent[] = []
     try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
     entries.sort((a, b) => a.name.localeCompare(b.name))
     for (const entry of entries) {
@@ -158,8 +165,8 @@ function listFilesRecursive(root, predicate) {
   return result
 }
 
-function uniquePaths(paths) {
-  const seen = new Set()
+function uniquePaths(paths: string[]): string[] {
+  const seen = new Set<string>()
   return paths.filter(item => {
     const key = path.resolve(item).toLowerCase()
     if (seen.has(key)) return false
@@ -168,7 +175,7 @@ function uniquePaths(paths) {
   })
 }
 
-function readFileContent(p, maxBytes = 64 * 1024) {
+function readFileContent(p: string, maxBytes = 64 * 1024): string {
   try {
     const stat = fs.statSync(p)
     if (stat.isFile() && stat.size <= maxBytes) return fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '').trim()
@@ -204,13 +211,13 @@ export = {
 
 const MAX_SMALL_TEXT_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_SMALL_TEXT_FILE_BYTES, 1024 * 1024, 4 * 1024, 4 * 1024 * 1024)
 
-function writeFileSyncSafe(p, content) {
+function writeFileSyncSafe(p: string, content: unknown): void {
   const dir = path.dirname(p)
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(p, String(content).trim(), 'utf8')
 }
 
-function readFileSyncSafe(p, maxBytes?: number) {
+function readFileSyncSafe(p: string, maxBytes?: number): string {
   const limit = maxBytes || MAX_SMALL_TEXT_FILE_BYTES
   try {
     const stat = fs.statSync(p)
@@ -222,19 +229,19 @@ function readFileSyncSafe(p, maxBytes?: number) {
 const MAX_BODY_SIZE = 16 * 1024 * 1024
 const EFFECTIVE_MAX_BODY_SIZE = parsePositiveInt(process.env.DASHBOARD_MAX_BODY_SIZE, 10 * 1024 * 1024, 1024 * 1024, MAX_BODY_SIZE)
 
-function collectBody(req, res, callback, options: CollectBodyOptions = {}) {
-  const chunks = []
+function collectBody(req: IncomingMessage, res: ServerResponse, callback: BodyCallback, options: CollectBodyOptions = {}): void {
+  const chunks: Buffer[] = []
   let total = 0
   let rejected = false
   const limit = Math.max(1024, Math.min(MAX_BODY_SIZE, parsePositiveInt(options.maxBytes, EFFECTIVE_MAX_BODY_SIZE, 1024, MAX_BODY_SIZE)))
-  const declared = parseInt(req.headers['content-length'], 10)
+  const declared = parseInt(String(req.headers['content-length']), 10)
   if (Number.isFinite(declared) && declared > limit) {
     res.writeHead(413, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ ok: false, message: '请求体过大' }))
     req.destroy()
     return
   }
-  req.on('data', c => {
+  req.on('data', (c: Buffer) => {
     if (rejected) return
     total += c.length
     if (total > limit) {

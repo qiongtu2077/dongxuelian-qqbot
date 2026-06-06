@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 function parsePositiveInt(value, fallback, min, max) {
-    const parsed = parseInt(value, 10);
+    const parsed = parseInt(String(value), 10);
     if (!Number.isFinite(parsed))
         return fallback;
     return Math.max(min, Math.min(max, parsed));
@@ -71,8 +71,10 @@ function assertParentDirectories(targetPath) {
     }
 }
 function removePathWithRetry(targetPath, options = {}) {
-    const retries = Number.isFinite(options.retries) ? options.retries : 5;
-    const delayMs = Number.isFinite(options.delayMs) ? options.delayMs : 180;
+    const requestedRetries = options.retries;
+    const requestedDelayMs = options.delayMs;
+    const retries = typeof requestedRetries === 'number' && Number.isFinite(requestedRetries) ? requestedRetries : 5;
+    const delayMs = typeof requestedDelayMs === 'number' && Number.isFinite(requestedDelayMs) ? requestedDelayMs : 180;
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
         try {
@@ -192,14 +194,14 @@ function collectBody(req, res, callback, options = {}) {
     let total = 0;
     let rejected = false;
     const limit = Math.max(1024, Math.min(MAX_BODY_SIZE, parsePositiveInt(options.maxBytes, EFFECTIVE_MAX_BODY_SIZE, 1024, MAX_BODY_SIZE)));
-    const declared = parseInt(req.headers['content-length'], 10);
+    const declared = parseInt(String(req.headers['content-length']), 10);
     if (Number.isFinite(declared) && declared > limit) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, message: '请求体过大' }));
         req.destroy();
         return;
     }
-    req.on('data', c => {
+    req.on('data', (c) => {
         if (rejected)
             return;
         total += c.length;

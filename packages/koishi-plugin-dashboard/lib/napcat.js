@@ -3,6 +3,26 @@ const fs = require('fs');
 const path = require('path');
 const { uniquePaths, readFileContent } = require('./utils');
 const { KOISHI_DIR, LOCAL_NAPCAT_DIR_FILE, runtimePath } = require('./paths');
+function isNonEmptyString(value) {
+    return !!value;
+}
+function isRecord(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+function readJsonRecord(filePath) {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return isRecord(parsed) ? parsed : null;
+}
+function getErrorMessage(e) {
+    if (!isRecord(e))
+        return undefined;
+    const message = e.message;
+    if (typeof message === 'string')
+        return message;
+    if (message == null)
+        return undefined;
+    return String(message);
+}
 function getLinuxNapcatQQExecutable() {
     const napcatDir = String(process.env.NAPCAT_DIR || '').trim();
     const candidates = [
@@ -13,8 +33,8 @@ function getLinuxNapcatQQExecutable() {
         path.join(KOISHI_DIR, 'Napcat', 'opt', 'QQ', 'qq'),
         path.join(KOISHI_DIR, 'NapCat', 'opt', 'QQ', 'qq'),
         '/root/Napcat/opt/QQ/qq',
-    ].filter(Boolean);
-    return uniquePaths(candidates).find(item => fs.existsSync(item)) || candidates[0] || '/root/Napcat/opt/QQ/qq';
+    ].filter(isNonEmptyString);
+    return uniquePaths(candidates).find((item) => fs.existsSync(item)) || candidates[0] || '/root/Napcat/opt/QQ/qq';
 }
 function findNapcatMarkers(root) {
     const markers = [];
@@ -52,8 +72,8 @@ function findNapcatMarkers(root) {
                 markers.push({ path: full, rel, type: 'config' });
             else if (/^package\.json$/i.test(entry.name)) {
                 try {
-                    const pkg = JSON.parse(fs.readFileSync(full, 'utf8'));
-                    if (/napcat/i.test(String(pkg.name || '') + ' ' + String(pkg.description || '')))
+                    const pkg = readJsonRecord(full);
+                    if (pkg && /napcat/i.test(String(pkg.name || '') + ' ' + String(pkg.description || '')))
                         markers.push({ path: full, rel, type: 'package' });
                 }
                 catch { /* non-critical: marker probe fallback */ }
@@ -85,7 +105,7 @@ function rankNapcatEntry(filePath) {
 }
 function sortNapcatEntries(markers = []) {
     return markers
-        .filter(item => item?.type === 'entry')
+        .filter((item) => item.type === 'entry')
         .slice()
         .sort((a, b) => rankNapcatEntry(a.path) - rankNapcatEntry(b.path) || String(a.rel || a.path).localeCompare(String(b.rel || b.path)));
 }
@@ -100,7 +120,7 @@ function findNapcatQQExecutable(root) {
     return '';
 }
 function entryRequiresBundledQQ(entry) {
-    const name = path.basename(entry?.path || entry || '');
+    const name = path.basename(typeof entry === 'string' ? entry : (entry?.path || ''));
     return /^(?:napcat(?:\.quick)?\.(?:bat|cmd)|NapCatWinBootMain\.exe)$/i.test(name);
 }
 function inspectNapcatCandidate(candidate) {
@@ -124,14 +144,14 @@ function inspectNapcatCandidate(candidate) {
         const qqExecutable = findNapcatQQExecutable(candidate);
         if (entryMarkers.some(entryRequiresBundledQQ) && !qqExecutable)
             return { ...result, status: 'partial', entry: entryMarkers[0]?.path || '', reason: 'NapCat 启动文件存在，但 bootmain/QQ.exe 缺失，当前包不完整或未完成安装', markers: markers.slice(0, 8) };
-        if (entryMarkers.length || markers.some(item => item.type === 'config'))
+        if (entryMarkers.length || markers.some((item) => item.type === 'config'))
             return { ...result, found: true, status: 'installed', entry: entryMarkers[0]?.path || '', reason: '找到 NapCat 启动或配置标记', markers: markers.slice(0, 8), qqExecutable };
         if (archives.length)
             return { ...result, status: 'partial', reason: '目录里只有下载包或压缩包，尚未解压安装', archives: archives.slice(0, 8) };
         return { ...result, status: 'partial', reason: '目录存在但未找到 NapCat 启动文件' };
     }
     catch (e) {
-        return { ...result, status: 'unknown', reason: e.message };
+        return { ...result, status: 'unknown', reason: getErrorMessage(e) };
     }
 }
 function detectNapcatInstallation() {
@@ -146,11 +166,11 @@ function detectNapcatInstallation() {
         path.join(KOISHI_DIR, 'NapCat'),
         process.env.NAPCAT_DIR || '',
         path.join(KOISHI_DIR, 'runtime', 'NapCat'),
-    ].filter(Boolean));
+    ].filter(isNonEmptyString));
     const inspected = candidates.map(inspectNapcatCandidate);
-    const installed = inspected.find(item => item.found);
-    const partial = inspected.find(item => item.exists);
-    const selected = installed || partial || inspected[0] || { found: false, path: expectedPath, status: 'missing', reason: '未找到 NapCat' };
+    const installed = inspected.find((item) => item.found);
+    const partial = inspected.find((item) => item.exists);
+    const selected = installed || partial || inspected[0] || { found: false, exists: false, path: expectedPath, status: 'missing', reason: '未找到 NapCat' };
     return {
         found: !!installed,
         status: installed ? 'installed' : (partial ? 'partial' : 'missing'),
@@ -158,7 +178,7 @@ function detectNapcatInstallation() {
         expectedPath,
         entry: selected.entry || '',
         reason: selected.reason || (installed ? '已安装' : '未检测到 NapCat'),
-        candidates: inspected.map(item => ({ path: item.path, exists: item.exists, status: item.status, reason: item.reason, entry: item.entry || '', qqExecutable: item.qqExecutable || '' })),
+        candidates: inspected.map((item) => ({ path: item.path, exists: item.exists, status: item.status, reason: item.reason, entry: item.entry || '', qqExecutable: item.qqExecutable || '' })),
     };
 }
 function getNapcatStartEntry() {
@@ -167,9 +187,9 @@ function getNapcatStartEntry() {
     const direct = detected.entry && entryRe.test(detected.entry) ? detected.entry : '';
     if (direct)
         return { detected, entry: direct };
-    const roots = uniquePaths([detected.path, detected.expectedPath, readFileContent(LOCAL_NAPCAT_DIR_FILE)].filter(Boolean));
+    const roots = uniquePaths([detected.path, detected.expectedPath, readFileContent(LOCAL_NAPCAT_DIR_FILE)].filter(isNonEmptyString));
     for (const root of roots) {
-        const marker = sortNapcatEntries(findNapcatMarkers(root).markers).find(item => entryRe.test(item.path));
+        const marker = sortNapcatEntries(findNapcatMarkers(root).markers).find((item) => entryRe.test(item.path));
         if (marker)
             return { detected, entry: marker.path };
     }
@@ -182,7 +202,7 @@ function listNapcatConfigDirs() {
         path.join(KOISHI_DIR, 'runtime', 'napcat', 'config'),
         path.join(KOISHI_DIR, 'runtime', 'NapCat', 'config'),
         '/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config',
-    ].filter(Boolean);
+    ].filter(isNonEmptyString);
     const extra = String(process.env.NAPCAT_CONFIG || '').trim();
     if (extra) {
         try {
@@ -197,16 +217,17 @@ function readNapcatWebuiPortFromConfigFiles() {
     for (const dir of listNapcatConfigDirs()) {
         const webUiPath = path.join(dir, 'webui.json');
         try {
-            const cfg = JSON.parse(fs.readFileSync(webUiPath, 'utf8'));
-            const n = Number(cfg.port);
+            const cfg = readJsonRecord(webUiPath);
+            const n = Number(cfg ? cfg.port : undefined);
             if (Number.isFinite(n) && n > 0 && n <= 65535)
                 return n;
         }
         catch { /* non-critical: optional config probe */ }
         const napcatPath = path.join(dir, 'napcat.json');
         try {
-            const cfg = JSON.parse(fs.readFileSync(napcatPath, 'utf8'));
-            const nested = cfg.webui && cfg.webui.port != null ? Number(cfg.webui.port) : NaN;
+            const cfg = readJsonRecord(napcatPath);
+            const webui = cfg && isRecord(cfg.webui) ? cfg.webui : null;
+            const nested = webui && webui.port != null ? Number(webui.port) : NaN;
             if (Number.isFinite(nested) && nested > 0 && nested <= 65535)
                 return nested;
         }
@@ -241,7 +262,7 @@ const getNapcatToken = function () {
         path.join(KOISHI_DIR, 'runtime', 'NapCat', 'config', 'webui.json'),
         '/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/webui.json',
         process.env.NAPCAT_CONFIG || '',
-    ].filter(Boolean);
+    ].filter(isNonEmptyString);
     try {
         const cachePath = getNapcatToken._cachePath;
         if (cachePath) {
@@ -258,12 +279,14 @@ const getNapcatToken = function () {
     for (const p of candidates) {
         try {
             const st = fs.statSync(p);
-            const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
-            if (cfg.token) {
-                getNapcatToken._cached = cfg.token;
+            const cfg = readJsonRecord(p);
+            const token = cfg ? cfg.token : undefined;
+            if (token) {
+                const tokenText = String(token);
+                getNapcatToken._cached = tokenText;
                 getNapcatToken._mtimeMs = st.mtimeMs;
                 getNapcatToken._cachePath = p;
-                return cfg.token;
+                return tokenText;
             }
         }
         catch { /* non-critical: token candidate probe fallback */ }
