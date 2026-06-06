@@ -53,6 +53,9 @@ fi
 if [ -d "$SRC/data" ]; then
   cp -R "$SRC/data" "$DEST/data"
 fi
+if [ -d "$SRC/templates" ]; then
+  cp -R "$SRC/templates" "$DEST/templates"
+fi
 
 if [ "$COPY_AI_SKILLS" = "--copy-ai-skills" ]; then
   mkdir -p "$APP_DIR/data/ai-skills"

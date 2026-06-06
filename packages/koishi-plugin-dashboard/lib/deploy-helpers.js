@@ -124,6 +124,8 @@ function computeFingerprint() {
             add(`packages/${pkg}/package.json`);
             for (const file of listFilesRecursive(path.join(pkgDir, 'lib'), f => /\.js$/i.test(f)))
                 hashFile(hash, repoRoot, file);
+            for (const file of listFilesRecursive(path.join(pkgDir, 'templates')))
+                hashFile(hash, repoRoot, file);
         }
         return hash.digest('hex').slice(0, 8);
     }

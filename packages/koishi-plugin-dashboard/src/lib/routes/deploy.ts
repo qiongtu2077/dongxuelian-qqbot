@@ -111,7 +111,15 @@ function handlePostDeployRun(req, res) {
         cmds.push(dh.sshCommand(s, existingInstallCheck))
         cmds.push(`echo "prepare dirs"`)
         cmds.push(dh.sshCommand(s, `mkdir -p ${[dataDir, dashboardDir, dashboardFrontendDir, scriptsDir].concat(pkgs.map(pkg => dh.remoteJoin(d, 'node_modules', pkg, 'lib'))).map(shellQuote).join(' ')}`))
-        for (const pkg of pkgs) { cmds.push(`echo "→ ${pkg}"`); cmds.push(dh.scpCommand(path.join(repoRoot, 'packages', pkg, 'lib'), dh.scpRemoteTarget(s, dh.remoteJoin(d, 'node_modules', pkg)), { recursive: true })); cmds.push(dh.scpCommand(path.join(repoRoot, 'packages', pkg, 'package.json'), dh.scpRemoteTarget(s, dh.remoteJoin(d, 'node_modules', pkg, 'package.json')))) }
+        for (const pkg of pkgs) {
+          cmds.push(`echo "→ ${pkg}"`)
+          const pkgRoot = path.join(repoRoot, 'packages', pkg)
+          const remotePkgRoot = dh.remoteJoin(d, 'node_modules', pkg)
+          cmds.push(dh.scpCommand(path.join(pkgRoot, 'lib'), dh.scpRemoteTarget(s, remotePkgRoot), { recursive: true }))
+          cmds.push(dh.scpCommand(path.join(pkgRoot, 'package.json'), dh.scpRemoteTarget(s, dh.remoteJoin(remotePkgRoot, 'package.json'))))
+          const templatesDir = path.join(pkgRoot, 'templates')
+          if (fs.existsSync(templatesDir)) cmds.push(dh.scpCommand(templatesDir, dh.scpRemoteTarget(s, remotePkgRoot), { recursive: true }))
+        }
         cmds.push(`echo "Dashboard 后端和前端源码..."`)
         cmds.push(dh.scpCommand(path.join(PLUGIN_ROOT, 'standalone.js'), dh.scpRemoteTarget(s, dh.remoteJoin(dashboardDir, 'standalone.js'))))
         for (const name of ['index.html', 'package.json', 'vite.config.ts']) { const localFile = path.join(FE_DIR, name); if (fs.existsSync(localFile)) cmds.push(dh.scpCommand(localFile, dh.scpRemoteTarget(s, dh.remoteJoin(dashboardFrontendDir, name)))) }
@@ -232,7 +240,17 @@ function handlePostDeployLocal(req, res) {
       dh.writeRuntimeLayout()
       const pkgs = ['koishi-plugin-dongxuelian-ai','koishi-plugin-dongxuelian-help','koishi-plugin-group-name-at','koishi-plugin-defense','koishi-plugin-local-video-sender','koishi-plugin-group-leave-notice','koishi-plugin-dongxuelian-poke','koishi-plugin-daily-report']
       const copiedPlugins = []
-      for (const pkg of pkgs) { const src = path.join(PLUGIN_ROOT, '..', pkg); const dst = path.join(workDir, 'node_modules', pkg); if (fs.existsSync(src)) { copyRecursiveSync(path.join(src, 'lib'), path.join(dst, 'lib')); copyRecursiveSync(path.join(src, 'package.json'), path.join(dst, 'package.json')); copiedPlugins.push(pkg) } }
+      for (const pkg of pkgs) {
+        const src = path.join(PLUGIN_ROOT, '..', pkg)
+        const dst = path.join(workDir, 'node_modules', pkg)
+        if (fs.existsSync(src)) {
+          copyRecursiveSync(path.join(src, 'lib'), path.join(dst, 'lib'))
+          copyRecursiveSync(path.join(src, 'package.json'), path.join(dst, 'package.json'))
+          const templatesDir = path.join(src, 'templates')
+          if (fs.existsSync(templatesDir)) copyRecursiveSync(templatesDir, path.join(dst, 'templates'))
+          copiedPlugins.push(pkg)
+        }
+      }
       const timestamp = Date.now()
       const files = []
       files.push(dh.writeTrackedLocalFile('data/ai-provider.txt', provider + '\n', { deleteByDefault: true, kind: 'provider' }, timestamp))

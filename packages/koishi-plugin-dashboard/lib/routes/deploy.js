@@ -125,8 +125,13 @@ function handlePostDeployRun(req, res) {
                 cmds.push(dh.sshCommand(s, `mkdir -p ${[dataDir, dashboardDir, dashboardFrontendDir, scriptsDir].concat(pkgs.map(pkg => dh.remoteJoin(d, 'node_modules', pkg, 'lib'))).map(shellQuote).join(' ')}`));
                 for (const pkg of pkgs) {
                     cmds.push(`echo "→ ${pkg}"`);
-                    cmds.push(dh.scpCommand(path.join(repoRoot, 'packages', pkg, 'lib'), dh.scpRemoteTarget(s, dh.remoteJoin(d, 'node_modules', pkg)), { recursive: true }));
-                    cmds.push(dh.scpCommand(path.join(repoRoot, 'packages', pkg, 'package.json'), dh.scpRemoteTarget(s, dh.remoteJoin(d, 'node_modules', pkg, 'package.json'))));
+                    const pkgRoot = path.join(repoRoot, 'packages', pkg);
+                    const remotePkgRoot = dh.remoteJoin(d, 'node_modules', pkg);
+                    cmds.push(dh.scpCommand(path.join(pkgRoot, 'lib'), dh.scpRemoteTarget(s, remotePkgRoot), { recursive: true }));
+                    cmds.push(dh.scpCommand(path.join(pkgRoot, 'package.json'), dh.scpRemoteTarget(s, dh.remoteJoin(remotePkgRoot, 'package.json'))));
+                    const templatesDir = path.join(pkgRoot, 'templates');
+                    if (fs.existsSync(templatesDir))
+                        cmds.push(dh.scpCommand(templatesDir, dh.scpRemoteTarget(s, remotePkgRoot), { recursive: true }));
                 }
                 cmds.push(`echo "Dashboard 后端和前端源码..."`);
                 cmds.push(dh.scpCommand(path.join(PLUGIN_ROOT, 'standalone.js'), dh.scpRemoteTarget(s, dh.remoteJoin(dashboardDir, 'standalone.js'))));
@@ -330,6 +335,9 @@ function handlePostDeployLocal(req, res) {
                 if (fs.existsSync(src)) {
                     copyRecursiveSync(path.join(src, 'lib'), path.join(dst, 'lib'));
                     copyRecursiveSync(path.join(src, 'package.json'), path.join(dst, 'package.json'));
+                    const templatesDir = path.join(src, 'templates');
+                    if (fs.existsSync(templatesDir))
+                        copyRecursiveSync(templatesDir, path.join(dst, 'templates'));
                     copiedPlugins.push(pkg);
                 }
             }

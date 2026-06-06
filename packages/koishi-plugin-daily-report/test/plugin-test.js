@@ -909,17 +909,28 @@ const oldMaxAnalysisMessages = process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES
 process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES = '200'
 delete require.cache[DATA_COLLECTOR_PATH]
 const cappedCollector = require(DATA_COLLECTOR_PATH)
+const cappedBaseTs = Date.parse('2099-01-01T12:00:00+08:00')
 const manyMessages = Array.from({ length: 260 }, (_, index) => ({
   time: '12:00:00',
-  ts: Date.now() + index,
+  ts: cappedBaseTs + index,
   user: index % 2 ? '用户B' : '用户A',
   userId: index % 2 ? 'u-b' : 'u-a',
   content: `第 ${index + 1} 条消息 [CQ:face,id=14]`,
 }))
-const cappedData = cappedCollector.processMessages(manyMessages, '2099-01-01')
+const cappedData = cappedCollector.processMessages(manyMessages, '2099-01-01', Date.parse('2099-01-01T12:30:00+08:00'))
 check('processMessages keeps full total stats', cappedData && cappedData.totalMessages === 260 && cappedData.emojiCount === 260)
 check('processMessages caps analysis payload', cappedData && cappedData.messages.length === 200 && cappedData.sampledMessages === 200 && cappedData.truncatedMessages === 60)
 check('processMessages returns tail sample', cappedData && cappedData.messages[0].content.includes('第 61 条消息'))
+const reportNow = Date.parse('2099-01-01T12:30:00+08:00')
+const mixedDayData = cappedCollector.processMessages([
+  { time: '23:50:00', ts: Date.parse('2098-12-31T23:50:00+08:00'), user: '旧日', userId: 'old', content: '昨天消息 [CQ:face,id=14]' },
+  { time: '00:05:00', ts: Date.parse('2099-01-01T00:05:00+08:00'), user: '今日A', userId: 'a', content: '今天消息 [CQ:face,id=14] 【QQ表情：微笑】' },
+  { time: '12:00:00', ts: Date.parse('2099-01-01T12:00:00+08:00'), user: '今日B', userId: 'b', content: '中午 <face id="13"/> 😊' },
+  { time: '16:00:00', ts: Date.parse('2099-01-01T16:00:00+08:00'), user: '未来', userId: 'future', content: '未来消息 [CQ:mface,id=1]' },
+], '2099-01-01', reportNow)
+check('processMessages filters old and future cache messages', mixedDayData && mixedDayData.totalMessages === 2 && mixedDayData.hourlyActivity[0] === 1 && mixedDayData.hourlyActivity[12] === 1 && mixedDayData.hourlyActivity[16] === 0, JSON.stringify(mixedDayData && mixedDayData.hourlyActivity))
+check('processMessages counts CQ XML readable and unicode emoji', mixedDayData && mixedDayData.emojiCount === 4, JSON.stringify(mixedDayData && mixedDayData.emojiCount))
+check('countEmojiInContent supports mixed emoji formats', cappedCollector.countEmojiInContent('[CQ:face,id=14] <face id="13"/> 【QQ表情：微笑】 😊') === 4)
 if (oldMaxAnalysisMessages === undefined) delete process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES
 else process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES = oldMaxAnalysisMessages
 delete require.cache[DATA_COLLECTOR_PATH]

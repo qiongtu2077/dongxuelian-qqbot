@@ -9,11 +9,36 @@ const { DATA_DIR } = require('./config');
 const { todayCst, getShanghaiHourFromTs, safeChannelKey } = require('../../koishi-plugin-dongxuelian-ai/lib/core/utils');
 const MAX_CACHE_FILE_BYTES = parsePositiveInt(process.env.DAILY_REPORT_MAX_CACHE_FILE_BYTES, 8 * 1024 * 1024, 512 * 1024, 64 * 1024 * 1024);
 const MAX_ANALYSIS_MESSAGES = parsePositiveInt(process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES, 2000, 200, 10000);
+const CQ_EMOJI_RE = /\[CQ:(?:face|mface)\b[^\]]*\]/gi;
+const XML_EMOJI_RE = /<(?:face|mface)\b[^>]*\/?>/gi;
+const TEXT_EMOJI_RE = /【QQ表情[^】]*】/g;
+const UNICODE_EMOJI_RE = /\p{Extended_Pictographic}/gu;
 function parsePositiveInt(value, fallback, min, max) {
     const parsed = parseInt(String(value), 10);
     if (!Number.isFinite(parsed))
         return fallback;
     return Math.max(min, Math.min(max, parsed));
+}
+/** 计算上海日历日边界，用于把 today-cache 中跨日恢复的消息过滤掉。 */
+function getShanghaiDayBounds(today) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(today || '')))
+        return null;
+    const startMs = Date.parse(`${today}T00:00:00.000+08:00`);
+    const endMs = Date.parse(`${today}T23:59:59.999+08:00`);
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs))
+        return null;
+    return { startMs, endMs };
+}
+/** 判断消息时间戳是否属于本次日报日期，且不晚于当前生成时刻。 */
+function isMessageInReportDay(msg, today, now = Date.now()) {
+    const ts = Number(msg && msg.ts);
+    if (!Number.isFinite(ts) || ts <= 0)
+        return false;
+    const bounds = getShanghaiDayBounds(today);
+    if (!bounds)
+        return false;
+    const cappedEnd = Math.min(bounds.endMs, Number.isFinite(now) ? now : Date.now());
+    return ts >= bounds.startMs && ts <= cappedEnd;
 }
 /** 旧缓存 time 字符串解析为 0–23（尽力兼容 24h / 12h en-US） */
 function hourFromLegacyTimeString(timeStr) {
@@ -59,18 +84,31 @@ function collectReportData(channelKey) {
     catch {
         return null;
     }
-    if (!cache || cache.date !== today || !cache.messages || !Array.isArray(cache.messages) || cache.messages.length === 0) {
+    if (!cache || !cache.messages || !Array.isArray(cache.messages) || cache.messages.length === 0) {
         return null;
     }
     return processMessages(cache.messages, today);
 }
-function processMessages(messages, today) {
-    if (!messages.length)
+/** 统计 CQ、XML、可读 QQ 表情标记和 Unicode emoji 数量。 */
+function countEmojiInContent(content) {
+    const text = String(content || '');
+    if (!text)
+        return 0;
+    let total = 0;
+    for (const re of [CQ_EMOJI_RE, XML_EMOJI_RE, TEXT_EMOJI_RE, UNICODE_EMOJI_RE]) {
+        re.lastIndex = 0;
+        total += (text.match(re) || []).length;
+    }
+    return total;
+}
+function processMessages(messages, today, now = Date.now()) {
+    const reportMessages = (Array.isArray(messages) ? messages : []).filter(msg => isMessageInReportDay(msg, today, now));
+    if (!reportMessages.length)
         return null;
-    const totalMessages = messages.length;
-    const analysisMessages = messages.length > MAX_ANALYSIS_MESSAGES ? messages.slice(-MAX_ANALYSIS_MESSAGES) : messages;
+    const totalMessages = reportMessages.length;
+    const analysisMessages = reportMessages.length > MAX_ANALYSIS_MESSAGES ? reportMessages.slice(-MAX_ANALYSIS_MESSAGES) : reportMessages;
     const memberMap = new Map();
-    for (const msg of messages) {
+    for (const msg of reportMessages) {
         const uid = msg.userId || msg.user || 'unknown';
         if (!memberMap.has(uid)) {
             memberMap.set(uid, { userId: uid, name: msg.user || '群友', msgCount: 0, firstMsg: msg.time, lastMsg: msg.time });
@@ -88,28 +126,23 @@ function processMessages(messages, today) {
     const topMembers = [...memberMap.values()]
         .sort((a, b) => b.msgCount - a.msgCount)
         .slice(0, 20);
-    const faceRegex = /\[CQ:face,id=\d+\]/g;
     let emojiCount = 0;
-    for (const msg of messages) {
-        if (!msg.content)
-            continue;
-        const matches = msg.content.match(faceRegex);
-        if (matches)
-            emojiCount += matches.length;
-    }
+    for (const msg of reportMessages)
+        emojiCount += countEmojiInContent(msg.content);
     let totalChars = 0;
-    for (const msg of messages) {
+    for (const msg of reportMessages) {
         if (!msg.content)
             continue;
         const text = msg.content
             .replace(/\[CQ:[^\]]+\]/g, '')
+            .replace(/<(?:face|mface)\b[^>]*\/?>/gi, '')
             .replace(/https?:\/\/\S+/g, '')
             .replace(/【[^】]*】/g, '')
             .trim();
         totalChars += text.length;
     }
     const hourlyActivity = new Array(24).fill(0);
-    for (const msg of messages) {
+    for (const msg of reportMessages) {
         const hour = messageHourShanghai(msg);
         if (!isNaN(hour) && hour >= 0 && hour < 24) {
             hourlyActivity[hour]++;
@@ -136,7 +169,7 @@ function processMessages(messages, today) {
         messages: analysisMessages,
         analysisMessages,
         sampledMessages: analysisMessages.length,
-        truncatedMessages: Math.max(0, messages.length - analysisMessages.length),
+        truncatedMessages: Math.max(0, reportMessages.length - analysisMessages.length),
     };
 }
-module.exports = { collectReportData, processMessages, messageHourShanghai };
+module.exports = { collectReportData, processMessages, messageHourShanghai, isMessageInReportDay, countEmojiInContent };
