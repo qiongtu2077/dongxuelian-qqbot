@@ -266,7 +266,7 @@ function analyzePersonaProfileShadowText(text: unknown = ''): ShadowAnalysis {
 
 function summarizePersonaProfileShadowTraits(analyses: Array<Partial<ShadowAnalysis>> = []): ShadowTraitsSummary {
   const total = Array.isArray(analyses) ? analyses.length : 0
-  const counts = {
+  const counts: ProfileCounts = {
     short: 0,
     long: 0,
     media: 0,
@@ -444,6 +444,12 @@ function buildPersonaProfileShadowCandidate(block: PersonaProfileBlock = {}, opt
   }
 }
 
+function isBuiltPersonaProfileShadowCandidate(
+  candidate: ReturnType<typeof buildPersonaProfileShadowCandidate>
+): candidate is NonNullable<ReturnType<typeof buildPersonaProfileShadowCandidate>> {
+  return candidate !== null
+}
+
 function buildPersonaProfileEvidence(input: PersonaProfileEvidence & ProfileRecord = {}): PersonaProfileEvidence {
   const now = normalizePersonaProfileTs(input.now, Date.now())
   const shortQuote = normalizePersonaProfileText(input.text || input.shortQuote || '', 120)
@@ -584,7 +590,7 @@ function buildPersonaProfileReinforcementShadow(blocks: PersonaProfileBlock[] = 
     let mergedIntoExisting = false
     for (let i = 0; i < merged.length; i += 1) {
       const result = reinforcePersonaProfileBlock(merged[i], block, { ...options, now })
-      if (!result.matched) continue
+      if (!result.matched || !result.block) continue
       merged[i] = result.block
       reinforcedCount += 1
       reasonCounts[result.reason] = (reasonCounts[result.reason] || 0) + 1
@@ -656,7 +662,8 @@ function selectPersonaProfileBlocksByEffectiveConfidence(blocks: PersonaProfileB
   for (const raw of Array.isArray(blocks) ? blocks : []) {
     const block = buildPersonaProfileBlock({ ...raw, now })
     if (!block) continue
-    if (!allowedStatuses.has(block.status)) { skipped.status += 1; continue }
+    const status = block.status
+    if (!status || !allowedStatuses.has(status)) { skipped.status += 1; continue }
     const expiresAt = Number(block.expiresAt || 0)
     if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now) { skipped.expired += 1; continue }
     if (!includeSensitive && block.sensitivity === 'sensitive') { skipped.sensitive += 1; continue }
@@ -665,7 +672,9 @@ function selectPersonaProfileBlocksByEffectiveConfidence(blocks: PersonaProfileB
     candidates.push({ ...block, effectiveConfidence })
   }
   candidates.sort((a, b) => {
-    if (b.effectiveConfidence !== a.effectiveConfidence) return b.effectiveConfidence - a.effectiveConfidence
+    const aEffectiveConfidence = Number(a.effectiveConfidence || 0)
+    const bEffectiveConfidence = Number(b.effectiveConfidence || 0)
+    if (bEffectiveConfidence !== aEffectiveConfidence) return bEffectiveConfidence - aEffectiveConfidence
     if ((b.reinforceCount || 0) !== (a.reinforceCount || 0)) return (b.reinforceCount || 0) - (a.reinforceCount || 0)
     return (b.updatedAt || 0) - (a.updatedAt || 0)
   })
@@ -859,7 +868,9 @@ function safePersonaProfileFile(userId: string, channelKey: string, rootDir: str
 
 async function readLegacyPersonaProfileData({ userId, channelKey, rootDir = USER_PROFILE_DIR }: { userId?: string; channelKey?: string; rootDir?: string } = {}): Promise<ProfileRecord | null> {
   try {
-    const file = safePersonaProfileFile(userId, channelKey, rootDir)
+    const normalizedUserId = String(userId || '')
+    const normalizedChannelKey = String(channelKey || '')
+    const file = safePersonaProfileFile(normalizedUserId, normalizedChannelKey, rootDir)
     const stat = await fsp.stat(file)
     if (!stat.isFile() || stat.size > MAX_PROFILE_SOURCE_FILE_BYTES) return null
     const data = JSON.parse((await fsp.readFile(file, 'utf8')).replace(/^\uFEFF/, ''))
@@ -874,6 +885,8 @@ async function buildPersonaProfileBlocks(options: PersonaProfileOptions = {}): P
   const channelKey = String(options.channelKey || '')
   const data = await readLegacyPersonaProfileData(options) || { userId, names: [], messages: [], memory: [] }
   const profile = buildPersonaProfileBlocksFromLegacyData(data, options)
+  const blocks = Array.isArray(profile.blocks) ? profile.blocks : []
+  const diagnostics = Array.isArray(profile.diagnostics) ? profile.diagnostics : []
   if (options.includeAgentMemory) {
     try {
       const items = typeof options.agentMemoryReader === 'function'
@@ -896,12 +909,12 @@ async function buildPersonaProfileBlocks(options: PersonaProfileOptions = {}): P
           maxTextLength: 700,
         })
         if (block) {
-          profile.blocks.push(block)
+          blocks.push(block)
           if (profile.sourceStats) profile.sourceStats.agentMemory = Number(profile.sourceStats.agentMemory || 0) + 1
         }
       }
     } catch {
-      profile.diagnostics.push({ level: 'warning', code: 'agent_memory_read_failed', source: 'agent_memory' })
+      diagnostics.push({ level: 'warning', code: 'agent_memory_read_failed', source: 'agent_memory' })
     }
   }
   profile.summary = summarizePersonaProfileBlocks(profile)
@@ -912,8 +925,10 @@ function summarizePersonaProfileBlocks(profile: PersonaProfile = {}) {
   const counts: ProfileCounts = {}
   const statuses: ProfileCounts = {}
   for (const item of Array.isArray(profile.blocks) ? profile.blocks : []) {
-    counts[item.block] = (counts[item.block] || 0) + 1
-    statuses[item.status] = (statuses[item.status] || 0) + 1
+    const blockKey = String(item.block || 'unknown')
+    const statusKey = String(item.status || 'unknown')
+    counts[blockKey] = (counts[blockKey] || 0) + 1
+    statuses[statusKey] = (statuses[statusKey] || 0) + 1
   }
   return {
     version: PERSONA_PROFILE_VERSION,
@@ -1009,7 +1024,7 @@ function buildPersonaProfileShadowPreview(profile: PersonaProfile = {}, options:
       minEffectiveConfidence: Number(selection.minEffectiveConfidence || options.minEffectiveConfidence || PROFILE_EFFECTIVE_MIN_CONFIDENCE),
       allowedStatuses: ['active', 'candidate'],
     }))
-    .filter(Boolean)
+    .filter(isBuiltPersonaProfileShadowCandidate)
   const selectedCandidateHashes = new Set(selected.map(block => hashPersonaProfileValue(block.id || '', 10)))
   const selectedCandidates = candidates.filter(item => selectedCandidateHashes.has(item.blockHash))
   const skippedLearning: ProfileCounts = {}

@@ -177,8 +177,9 @@ async function handleChatToolFlow({
     toolContext.userText = cleanInput
     const { results, heavyTools } = await handleChatToolCalls(reply.tool_calls, toolContext)
     hasFileToolEvidence = toolResultsIncludeFileEvidence(results)
+    const targetFile = fileFollowupState.targetFile as Parameters<typeof buildFileEvidenceReply>[1]
     const fileToolEvidenceReply = hasFileToolEvidence
-      ? buildFileEvidenceReply(selectFileEvidenceResult(results), fileFollowupState.targetFile)
+      ? buildFileEvidenceReply(selectFileEvidenceResult(results), targetFile)
       : ''
 
     if (heavyTools.length > 0) {
@@ -356,7 +357,8 @@ async function handleChatToolFlow({
     options,
   }))
   if (fileEvidence) {
-    const evidenceReply = buildFileEvidenceReply(String(fileEvidence as unknown), fileFollowupState.targetFile)
+    const targetFile = fileFollowupState.targetFile as Parameters<typeof buildFileEvidenceReply>[1]
+    const evidenceReply = buildFileEvidenceReply(String(fileEvidence as unknown), targetFile)
     if (evidenceReply) {
       reply = evidenceReply
       hasFileToolEvidence = true

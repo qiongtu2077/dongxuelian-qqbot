@@ -47,7 +47,7 @@ declare function compilePersonaRuntimePlan(options?: CompilePersonaRuntimePlanOp
     version: number;
     source: string;
     type: string;
-    name: string;
+    name: string | null;
     displayName: string;
     schemaVersion: number;
     hasFrontmatter: boolean;
@@ -81,7 +81,7 @@ declare function resolvePersonaRuntimePlan(options?: ResolvePersonaRuntimePlanOp
     version: number;
     source: string;
     type: string;
-    name: string;
+    name: string | null;
     displayName: string;
     schemaVersion: number;
     hasFrontmatter: boolean;
@@ -112,7 +112,7 @@ declare function resolvePersonaRuntimePlan(options?: ResolvePersonaRuntimePlanOp
     diagnostics: PersonaRuntimeDiagnostic[];
 };
 declare function getPersonaRuntimePlanLegacySnapshot(plan?: PersonaRuntimePlan): {
-    personaName: string;
+    personaName: string | null;
     lore: string;
     loreRefs: string[];
     will: number;

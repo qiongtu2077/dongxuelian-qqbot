@@ -27,11 +27,12 @@ async function resolveFileQuickReadReply(channelKey: string): Promise<string> {
   const target = recentFiles.find(file => !file.skipped && !file.analyzed)
     || recentFiles.find(file => !file.skipped && file.analyzed)
   if (!target) return '没有找到最近可分析的文件。'
+  const fileName = target.fileName || ''
   if (target.analyzed && target.analysis) {
-    return summarizeFileContentForChat(target.analysis, target.fileName)
+    return summarizeFileContentForChat(target.analysis, fileName)
   }
-  const result = await analyzeFileNow(channelKey, target.messageId)
-  if (result) return summarizeFileContentForChat(result, target.fileName)
+  const result = await analyzeFileNow(channelKey, target.messageId || '')
+  if (result) return summarizeFileContentForChat(result, fileName)
   return '文件下载失败了，可能已经过期。如果还需要，请重新发一次文件。'
 }
 

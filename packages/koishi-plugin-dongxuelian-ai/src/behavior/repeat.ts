@@ -97,7 +97,7 @@ function extractStructuredFaceIds(session: RepeatSession): string[] | null {
   const segments = getSessionMessageSegments(session) as SegmentLike[]
   if (!segments.length) return null
 
-  const ids = []
+  const ids: string[] = []
   for (const segment of segments) {
     const type = String(segment?.type || '').toLowerCase()
     const data = getSegmentData(segment)
@@ -130,7 +130,7 @@ function extractContentFaceIds(content: string = ''): string[] | null {
   const value = String(content || '')
   if (!value.trim()) return null
 
-  const ids = []
+  const ids: string[] = []
   const tokenRe = /(\[CQ:face,[^\]]*?\bid=(\d+)[^\]]*\])|(<face\b[^>]*?\bid="(\d+)"[^>]*\/?>)/gi
   const remainder = value.replace(tokenRe, (_token, cqToken, cqId, htmlToken, htmlId) => {
     ids.push(cqId || htmlId)

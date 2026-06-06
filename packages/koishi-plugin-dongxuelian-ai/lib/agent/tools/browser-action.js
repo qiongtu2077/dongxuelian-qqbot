@@ -1,5 +1,4 @@
 "use strict";
-// 受控浏览器工具：提供最小浏览器动作，默认关闭且按危险工具策略确认。
 const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('../../core/constants');
@@ -45,6 +44,7 @@ let currentSessionOwner = '';
 const BROWSER_CLEANUP_HOOK = Symbol.for('dongxuelian.browser-action.cleanupHook');
 const BROWSER_CLEANUP_RESET = Symbol.for('dongxuelian.browser-action.cleanupReset');
 const BROWSER_CLEANUP_INSTALLED = Symbol.for('dongxuelian.browser-action.cleanupInstalled');
+const browserCleanupGlobal = globalThis;
 const IDLE_CLOSE_MS = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_IDLE_MS, 60 * 1000, 10 * 1000, 5 * 60 * 1000);
 const BROWSER_MIN_AVAILABLE_MB = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_MIN_MEM_MB, 900, 256, 8192);
 const SEARCH_NAVIGATION_TIMEOUT_MS = 12000;
@@ -54,7 +54,7 @@ const MAX_BROWSER_OUTPUT_FILE_BYTES = parseBrowserPositiveInt(process.env.DONGXU
 const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font']);
 const BLOCKED_HOST_RE = /(?:doubleclick|googlesyndication|google-analytics|googletagmanager|adservice|adsystem|bat\.bing|clarity\.ms|facebook\.net|scorecardresearch|cnzz|hm\.baidu|pos\.baidu)/i;
 function parseBrowserPositiveInt(value, fallback, min, max) {
-    const parsed = parseInt(value, 10);
+    const parsed = parseInt(String(value), 10);
     if (!Number.isFinite(parsed))
         return fallback;
     return Math.max(min, Math.min(max, parsed));
@@ -102,11 +102,12 @@ async function enableBrowserRequestGuards(targetPage) {
         }
     });
     const disableNetworkApis = () => {
-        delete window.fetch;
-        delete window.XMLHttpRequest;
-        delete window.WebSocket;
-        delete window.EventSource;
-        delete window.sendBeacon;
+        const targetWindow = window;
+        delete targetWindow.fetch;
+        delete targetWindow.XMLHttpRequest;
+        delete targetWindow.WebSocket;
+        delete targetWindow.EventSource;
+        delete targetWindow.sendBeacon;
         Object.defineProperty(navigator, 'sendBeacon', { value: () => false, configurable: false });
     };
     if (typeof targetPage.evaluateOnNewDocument === 'function') {
@@ -118,21 +119,21 @@ function registerCleanup() {
     if (cleanupRegistered)
         return;
     cleanupRegistered = true;
-    globalThis[BROWSER_CLEANUP_HOOK] = () => { closeBrowser().catch(ignoreBrowserPromiseFailure); };
-    globalThis[BROWSER_CLEANUP_RESET] = () => {
+    browserCleanupGlobal[BROWSER_CLEANUP_HOOK] = () => { closeBrowser().catch(ignoreBrowserPromiseFailure); };
+    browserCleanupGlobal[BROWSER_CLEANUP_RESET] = () => {
         page = null;
         browser = null;
         currentUrl = '';
     };
-    if (!globalThis[BROWSER_CLEANUP_INSTALLED]) {
-        globalThis[BROWSER_CLEANUP_INSTALLED] = true;
+    if (!browserCleanupGlobal[BROWSER_CLEANUP_INSTALLED]) {
+        browserCleanupGlobal[BROWSER_CLEANUP_INSTALLED] = true;
         process.once('beforeExit', () => {
-            const handler = globalThis[BROWSER_CLEANUP_HOOK];
+            const handler = browserCleanupGlobal[BROWSER_CLEANUP_HOOK];
             if (typeof handler === 'function')
                 handler();
         });
         process.once('exit', () => {
-            const handler = globalThis[BROWSER_CLEANUP_RESET];
+            const handler = browserCleanupGlobal[BROWSER_CLEANUP_RESET];
             if (typeof handler === 'function')
                 handler();
         });
@@ -159,7 +160,7 @@ function findBrowser() {
         '/usr/bin/chromium',
         '/usr/bin/google-chrome',
         '/usr/bin/google-chrome-stable',
-    ].filter(Boolean);
+    ].filter((item) => typeof item === 'string' && !!item);
     for (const item of candidates) {
         try {
             if (fs.existsSync(item))
@@ -222,14 +223,17 @@ async function launchPage() {
         args: launchArgs,
     });
     registerCleanup();
-    page = await browser.newPage();
+    const activeBrowser = browser;
+    if (!activeBrowser)
+        throw new Error('浏览器启动失败');
+    page = await activeBrowser.newPage();
     await enableBrowserRequestGuards(page);
-    page.on('console', msg => {
+    page.on('console', (msg) => {
         consoleLog.unshift({ type: msg.type(), text: msg.text().slice(0, 300), at: Date.now() });
         if (consoleLog.length > 80)
             consoleLog.length = 80;
     });
-    page.on('requestfinished', req => {
+    page.on('requestfinished', (req) => {
         const res = req.response();
         if (res) {
             const remote = res.remoteAddress();
@@ -371,7 +375,7 @@ function validateEvaluateCode(code = '') {
 async function evaluatePage(code) {
     const p = await ensurePage();
     const value = validateEvaluateCode(code);
-    const result = await p.evaluate(source => {
+    const result = await p.evaluate((source) => {
         const fn = new Function('"use strict"; return (async () => { ' + source + '\n})()');
         return fn();
     }, value);
@@ -483,7 +487,7 @@ async function searchAndRead(query) {
 async function waitForTarget(selector, timeoutMs) {
     const p = await ensurePage();
     const value = requireSelector(selector);
-    const timeout = Math.min(30000, Math.max(1000, parseInt(timeoutMs, 10) || 12000));
+    const timeout = Math.min(30000, Math.max(1000, parseInt(String(timeoutMs), 10) || 12000));
     await p.waitForSelector(value, { timeout });
     currentUrl = p.url();
     return `已等待到：${value}`;
@@ -628,11 +632,14 @@ async function savePdf(params = {}) {
 }
 async function manageTabs(action, params = {}) {
     const p = await ensurePage();
-    const pages = await browser.pages();
+    const activeBrowser = browser;
+    if (!activeBrowser)
+        throw new Error('浏览器未启动');
+    const pages = await activeBrowser.pages();
     if (action === 'tabs')
         return JSON.stringify(await Promise.all(pages.map(async (item, index) => ({ index, current: item === p, url: item.url(), title: await item.title().catch(() => '') }))), null, 2);
     if (action === 'new_tab') {
-        page = await browser.newPage();
+        page = await activeBrowser.newPage();
         await enableBrowserRequestGuards(page);
         await page.setViewport({ width: 1024, height: 700 });
         currentUrl = page.url();
@@ -652,7 +659,7 @@ async function manageTabs(action, params = {}) {
         if (pages.length <= 1)
             throw new Error('不能关闭最后一个标签，请使用 stop');
         await pages[index].close();
-        page = (await browser.pages())[0];
+        page = (await activeBrowser.pages())[0];
         currentUrl = page.url();
         return `已关闭标签 ${index}`;
     }

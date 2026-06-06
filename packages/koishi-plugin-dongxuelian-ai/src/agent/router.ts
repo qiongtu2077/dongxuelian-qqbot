@@ -5,7 +5,7 @@
  * 状态: 无。
  */
 const { cleanExplicitSearchQuery, buildSearchQueries } = require('./search-query') as typeof import('./search-query')
-const { getAgentConfig, isToolEnabled } = require('./config') as typeof import('./config')
+const { isToolEnabled, isAutoRouteEnabled } = require('./config') as typeof import('./config')
 const { externalToolsDenied } = require('../routing/external-tool-policy') as typeof import('../routing/external-tool-policy')
 
 interface SearchContext {
@@ -237,9 +237,8 @@ function heuristicRoute(userText: unknown = '', channel: string = 'qq', options:
       ? { useAgent: true, reason: generalSearch ? 'general-search-intent' : 'contextual-search-follow-up' }
       : { useAgent: false, reason: 'web-search-disabled' }
   }
-  const config = getAgentConfig()
-  const autoRoute = config.autoRoute && config.autoRoute[channel]
-  if (!autoRoute || !autoRoute.enabled) return { useAgent: false, reason: 'auto-route-disabled' }
+  const autoRouteChannel = channel === 'qq' || channel === 'dashboard' ? channel : null
+  if (!autoRouteChannel || !isAutoRouteEnabled(autoRouteChannel)) return { useAgent: false, reason: 'auto-route-disabled' }
   return { useAgent: false, reason: 'chat-with-tools' }
 }
 

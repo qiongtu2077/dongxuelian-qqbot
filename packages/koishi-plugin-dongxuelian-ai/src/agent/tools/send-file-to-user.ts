@@ -4,7 +4,7 @@
  */
 const fs = require('fs/promises')
 const path = require('path')
-const WebSocket = require('ws')
+const WebSocket = require('ws') as typeof import('ws')
 const { assertExistingAgentPathInsideRoots } = require('../path-guard') as typeof import('../path-guard')
 const { resolveOneBotWsUrl } = require('../../core/onebot-endpoint') as typeof import('../../core/onebot-endpoint')
 
@@ -50,8 +50,8 @@ function getSendFileErrorMessage(error: unknown): string {
 
 function callOneBot(action: string, params: Record<string, unknown>, timeoutMs: number = 5000): Promise<OneBotResult> {
   return new Promise(resolve => {
-    let ws = null
-    let timer = null
+    let ws: InstanceType<typeof WebSocket> | null = null
+    let timer: NodeJS.Timeout | null = null
     let settled = false
     const echo = 'agent-send-file-' + Date.now()
     const finishOneBotSendFile = (value: OneBotResult) => {
@@ -65,8 +65,9 @@ function callOneBot(action: string, params: Record<string, unknown>, timeoutMs: 
     }
     try {
       ws = new WebSocket(resolveOneBotWsUrl())
+      const currentWs = ws
       timer = setTimeout(() => finishOneBotSendFile({ ok: false, message: 'OneBot 连接超时' }), timeoutMs)
-      ws.on('open', () => ws.send(JSON.stringify({ action, params, echo })))
+      currentWs.on('open', () => currentWs.send(JSON.stringify({ action, params, echo })))
       ws.on('message', (raw: unknown) => {
         try {
           const data = JSON.parse(String(raw)) as OneBotResponse

@@ -41,10 +41,14 @@ const toolRegistry = {};
 for (const tool of tools) {
     toolRegistry[tool.definition.name] = tool;
 }
+function normalizeRegistryChannel(channel) {
+    return channel === 'qq' || channel === 'dashboard' ? channel : null;
+}
 /** 按渠道过滤，返回 OpenAI 标准格式的工具定义 */
 function getToolDefinitions(channel = 'qq') {
     const config = getAgentConfig();
-    const channelConfig = config.channels[channel];
+    const registryChannel = normalizeRegistryChannel(channel);
+    const channelConfig = registryChannel ? config.channels[registryChannel] : null;
     if (!channelConfig || !channelConfig.enabled)
         return [];
     const memoryDisabled = config.memory?.enabled === false;
@@ -99,6 +103,7 @@ async function executeTool(toolName, params = {}, context = {}) {
 function getToolCount() { return tools.length; }
 function getToolSummaries(channel = '') {
     const config = getAgentConfig();
+    const selectedChannel = normalizeRegistryChannel(channel);
     return tools.map(tool => {
         const name = tool.definition.name;
         const defaultChannels = tool.defaultChannels || ['dashboard', 'qq'];
@@ -117,7 +122,7 @@ function getToolSummaries(channel = '') {
             external,
             defaultChannels,
             channels,
-            enabled: channel ? !!config.channels?.[channel]?.tools?.[name] : undefined,
+            enabled: channel ? !!(selectedChannel && config.channels[selectedChannel]?.tools?.[name]) : undefined,
         };
     });
 }

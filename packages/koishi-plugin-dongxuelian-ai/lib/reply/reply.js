@@ -71,7 +71,7 @@ function getStickerImage(file) {
     if (!file)
         return '';
     if (stickerBase64Cache.has(file)) {
-        const image = stickerBase64Cache.get(file);
+        const image = stickerBase64Cache.get(file) || '';
         stickerBase64Cache.delete(file);
         stickerBase64Cache.set(file, image);
         return image;
@@ -168,12 +168,18 @@ async function sendStickerImage(ctx, session, sticker) {
             const segArr = [{ type: 'image', data: { file: image } }];
             let result = null;
             if (isDirect) {
-                result = await bot.internal.sendPrivateMsg(userId, segArr);
+                const sendPrivateMsg = bot.internal.sendPrivateMsg;
+                if (typeof sendPrivateMsg !== 'function')
+                    throw new Error('missing sendPrivateMsg for private sticker send');
+                result = await sendPrivateMsg(userId, segArr);
             }
             else {
                 if (!session.guildId)
                     throw new Error('missing guildId for group sticker send');
-                result = await bot.internal.sendGroupMsg(session.guildId, segArr);
+                const sendGroupMsg = bot.internal.sendGroupMsg;
+                if (typeof sendGroupMsg !== 'function')
+                    throw new Error('missing sendGroupMsg for group sticker send');
+                result = await sendGroupMsg(session.guildId, segArr);
             }
             const messageId = result && (result.message_id || result.messageId || result.id || result.data?.message_id);
             logger.info(`sticker sent via internal API${file ? `: ${file}` : ''}`);
@@ -289,7 +295,7 @@ async function sendReply(ctx, session, reply, isRandom = false, options = {}) {
     if (!reply.includes('[CQ:image')) {
         const autoSkip = new Set(['喜欢你']);
         const matched = STICKER_MAP.find(s => !autoSkip.has(s.kw) && reply.includes(s.kw) &&
-            !STICKER_NEG_RE_MAP.get(s.kw).test(reply));
+            !(STICKER_NEG_RE_MAP.get(s.kw)?.test(reply)));
         if (matched && Math.random() < 0.3) {
             addPendingSticker(matched.file);
         }

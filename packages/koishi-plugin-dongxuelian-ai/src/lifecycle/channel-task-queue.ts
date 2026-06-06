@@ -24,7 +24,7 @@ function enqueueForChannel(channelKey: string, fn: () => Promise<unknown> | unkn
   const queuedDepth = channelQueuedDepth.get(key) || 0
   const runningDepth = channelQueueDepth.get(key) || 0
   if (queuedDepth + runningDepth >= maxDepth) {
-    logDebug(options.ctx, 'queue', `reject queued task channel=${key} queued=${queuedDepth} running=${runningDepth} max=${maxDepth}`)
+    logDebug(options.ctx as Parameters<typeof logDebug>[0], 'queue', `reject queued task channel=${key} queued=${queuedDepth} running=${runningDepth} max=${maxDepth}`)
     return false
   }
   const enqueuedAt = Date.now()
@@ -37,7 +37,7 @@ function enqueueForChannel(channelKey: string, fn: () => Promise<unknown> | unkn
       if (qd <= 1) channelQueuedDepth.delete(key)
       else channelQueuedDepth.set(key, qd - 1)
       if (Date.now() - enqueuedAt > maxQueueAgeMs) {
-        logDebug(options.ctx, 'queue', `drop stale queued task channel=${key} ageMs=${Date.now() - enqueuedAt}`)
+        logDebug(options.ctx as Parameters<typeof logDebug>[0], 'queue', `drop stale queued task channel=${key} ageMs=${Date.now() - enqueuedAt}`)
         return
       }
       const depth = channelQueueDepth.get(key) || 0

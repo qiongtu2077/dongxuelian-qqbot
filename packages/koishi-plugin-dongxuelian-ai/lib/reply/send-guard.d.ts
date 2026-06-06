@@ -1,4 +1,5 @@
-type MuteQuery = (...args: Array<string | number | boolean | Record<string, unknown>>) => Promise<unknown> | unknown;
+type MemberMuteQuery = (groupId: string | number, userId: string | number) => Promise<unknown> | unknown;
+type GroupMuteQuery = (groupId: string | number) => Promise<unknown> | unknown;
 interface SendSessionLike {
     guildId?: string | number;
     channelId?: string | number;
@@ -36,8 +37,8 @@ interface MarkPlatformMuteInfo {
 }
 interface MuteQueryOptions {
     now?: number;
-    getGroupMemberInfo?: MuteQuery;
-    getGroupInfo?: MuteQuery;
+    getGroupMemberInfo?: MemberMuteQuery;
+    getGroupInfo?: GroupMuteQuery;
 }
 declare function getSendChannelKey(session: SendSessionLike): string;
 declare function classifySendError(error: unknown): SendErrorClassification;

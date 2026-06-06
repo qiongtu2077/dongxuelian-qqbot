@@ -6,7 +6,7 @@
  * 状态: 无。
  */
 const { cleanExplicitSearchQuery, buildSearchQueries } = require('./search-query');
-const { getAgentConfig, isToolEnabled } = require('./config');
+const { isToolEnabled, isAutoRouteEnabled } = require('./config');
 const { externalToolsDenied } = require('../routing/external-tool-policy');
 const EXPLICIT_AGENT_RE = /(?:调用\s*(?:搜索工具|web_search)|web_search|上网查|联网查|联网搜索|网上查).{0,80}(?:最新|现在|当前|版本|角色|新闻|资料|是谁|是什么)|(?:搜一下|搜索一下|帮我查|查一下).{2,80}(?:最新|现在|当前|版本|角色|新闻|资料|是谁|是什么)|(?:最新角色|当前版本|现在是什么版本)/i;
 const EXPLICIT_SEARCH_RE = /(?:调用\s*(?:搜索工具|web_search)|web_search|上网查|联网查|联网搜索|网上查|最新角色|当前版本|现在是什么版本)|(?:搜一下|搜索一下|帮我查|查一下)\s*.{2,}/i;
@@ -223,9 +223,8 @@ function heuristicRoute(userText = '', channel = 'qq', options = {}) {
             ? { useAgent: true, reason: generalSearch ? 'general-search-intent' : 'contextual-search-follow-up' }
             : { useAgent: false, reason: 'web-search-disabled' };
     }
-    const config = getAgentConfig();
-    const autoRoute = config.autoRoute && config.autoRoute[channel];
-    if (!autoRoute || !autoRoute.enabled)
+    const autoRouteChannel = channel === 'qq' || channel === 'dashboard' ? channel : null;
+    if (!autoRouteChannel || !isAutoRouteEnabled(autoRouteChannel))
         return { useAgent: false, reason: 'auto-route-disabled' };
     return { useAgent: false, reason: 'chat-with-tools' };
 }

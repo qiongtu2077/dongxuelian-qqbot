@@ -91,8 +91,9 @@ async function getDailyTotalSize(userId) {
 }
 async function runDream(userId) {
     const lockKey = safeUserId(String(userId || ''));
-    if (dreamLocks.has(lockKey))
-        return dreamLocks.get(lockKey);
+    const existingTask = dreamLocks.get(lockKey);
+    if (existingTask)
+        return existingTask;
     const task = _doRunDream(userId);
     dreamLocks.set(lockKey, task);
     task.finally(() => dreamLocks.delete(lockKey));

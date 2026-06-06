@@ -10,7 +10,7 @@ interface BotResolverBot {
   selfId?: string
   sendPrivateMessage?: (id: string, message: string) => Promise<unknown> | unknown
   internal?: {
-    sendPrivateMsg?: (id: string, message: string) => Promise<unknown> | unknown
+    sendPrivateMsg?: (id: string, message: unknown) => Promise<unknown> | unknown
   }
 }
 

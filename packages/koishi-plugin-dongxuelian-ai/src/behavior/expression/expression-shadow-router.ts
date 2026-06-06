@@ -72,7 +72,7 @@ const EXPRESSION_SHADOW_SKIP_REASONS = Object.freeze({
   sensitiveTopicWindow: 'sensitiveTopicWindow',
 })
 
-const EXPRESSION_SHADOW_PERSONA_DEFAULT_POLICY = Object.freeze({
+const EXPRESSION_SHADOW_PERSONA_DEFAULT_POLICY: Readonly<Record<string, string>> = Object.freeze({
   '东雪莲': 'on',
   '椿': 'on',
   '爱弥斯': 'abstract',
@@ -110,9 +110,10 @@ function detectExpressionSensitiveTopicActive(messages: SensitiveTopicMessage[] 
   const since = Number(now) - Math.max(60000, Number(windowMs) || 0)
   for (const entry of messages) {
     if (!entry || typeof entry.content !== 'string') continue
+    const content = entry.content
     const ts = Number(entry.ts || entry.timestamp || 0)
     if (Number.isFinite(ts) && ts > 0 && ts < since) continue
-    if (EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS.some((kw) => entry.content.includes(kw))) return true
+    if (EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS.some((kw) => content.includes(kw))) return true
   }
   return false
 }
@@ -120,7 +121,9 @@ function detectExpressionSensitiveTopicActive(messages: SensitiveTopicMessage[] 
 function shadowSelectPicks(candidates: ShadowEntry[], maxPicks: number): ShadowEntry[] {
   if (!candidates.length) return []
   const sorted = candidates.slice().sort((a, b) => {
-    if (b.count !== a.count) return b.count - a.count
+    const countA = a.count || 0
+    const countB = b.count || 0
+    if (countB !== countA) return countB - countA
     return (b.lastMergedAt || b.createdAt || 0) - (a.lastMergedAt || a.createdAt || 0)
   })
   return sorted.slice(0, Math.max(0, Math.min(maxPicks, sorted.length)))
@@ -134,8 +137,8 @@ function buildExpressionShadowPlan(input: ExpressionShadowInput = {}, options: E
   const recentSpeakerSet: Set<string> = new Set(Array.isArray(input.recentSpeakerIds) ? input.recentSpeakerIds.map((id) => String(id || '').trim()).filter(Boolean) : [])
   const sensitiveTopicActive = !!input.sensitiveTopicActive
   const skipped = shadowEmptySkipped()
-  const reasons = []
-  const baseDiagnostic = {
+  const reasons: string[] = []
+  const baseDiagnostic: ExpressionShadowDiagnostic = {
     version: EXPRESSION_SHADOW_VERSION,
     decision: 'silent',
     channelHash: shadowHash(channelKey),
@@ -184,7 +187,8 @@ function buildExpressionShadowPlan(input: ExpressionShadowInput = {}, options: E
   const candidates: ShadowEntry[] = []
   for (const entry of entries) {
     if (!entry || entry.status === EXPRESSION_POOL_STATUS.archived) continue
-    if (!Number.isFinite(entry.count) || entry.count < EXPRESSION_POOL_MIN_USE_COUNT) {
+    const count = entry.count
+    if (typeof count !== 'number' || !Number.isFinite(count) || count < EXPRESSION_POOL_MIN_USE_COUNT) {
       skipped[EXPRESSION_SHADOW_SKIP_REASONS.lowCount] += 1
       continue
     }

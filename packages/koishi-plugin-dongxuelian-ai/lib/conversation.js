@@ -620,7 +620,7 @@ async function cleanupDailyStatsFiles() {
                 const data = await readJsonFile(filePath, null);
                 if (!Array.isArray(data))
                     continue;
-                const filtered = data.filter(item => item && typeof item.date === 'string' && item.date >= cutoffStr);
+                const filtered = data.filter((item) => item && typeof item.date === 'string' && item.date >= cutoffStr);
                 if (filtered.length !== data.length) {
                     if (filtered.length)
                         await writeJsonFile(filePath, filtered);
@@ -993,8 +993,9 @@ function readMemoryTimer(channelKey) {
     const file = path.join(MEMORY_TIMER_DIR, getMemoryTimerKey(channelKey) + '.json');
     try {
         const data = readJsonFileIfSmallSync(file, MAX_SMALL_CONFIG_FILE_BYTES, null, { unlinkOversize: true });
-        if (data && data.intervalHours > 0 && data.intervalHours <= 168)
-            return data;
+        const intervalHours = Number(data?.intervalHours || 0);
+        if (data && intervalHours > 0 && intervalHours <= 168)
+            return { ...data, intervalHours };
     }
     catch { /* non-critical: missing or malformed memory timer disables timer */
     }
@@ -1005,7 +1006,8 @@ function checkMemoryTimerExpired(channelKey) {
     if (!timer)
         return false;
     const elapsed = Date.now() - (timer.lastClearTs || 0);
-    return elapsed >= timer.intervalHours * 3600 * 1000;
+    const intervalHours = Number(timer.intervalHours || 0);
+    return elapsed >= intervalHours * 3600 * 1000;
 }
 module.exports = {
     conversationCache, replyFingerprintCache,

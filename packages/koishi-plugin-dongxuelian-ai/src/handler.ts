@@ -119,6 +119,8 @@ interface HandlerTodayCache {
   messages: HandlerTodayMessage[]
 }
 
+type HandlerTimestampedTodayMessage = HandlerTodayMessage & { ts: number }
+
 interface HandlerEmotionCacheItem {
   response?: unknown
   text?: string
@@ -204,6 +206,10 @@ function findMentionedMessages(cache: HandlerTodayCache, userId: string): Handle
   })
 }
 
+function hasMessageTimestamp(message: HandlerTodayMessage): message is HandlerTimestampedTodayMessage {
+  return typeof message.ts === 'number'
+}
+
 // 生成定位失败时使用的上下文文本。
 function buildLocateMessageContext(cache: HandlerTodayCache, cacheIdx: number): string {
   const start = Math.max(0, cacheIdx - 2)
@@ -232,7 +238,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     let personaContent = ''
     try {
       const { loadPersonalSkill } = require('./persona/persona') as typeof import('./persona/persona')
-      personaContent = personaName ? loadPersonalSkill(personaName) : ''
+      personaContent = personaName ? loadPersonalSkill(personaName) || '' : ''
     } catch { /* non-critical: persona command can answer with persona name when body load fails */ }
     return [
       `当前人格：${personaName}`,
@@ -276,7 +282,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
 
   if (/^谁(?:艾特|@)我$/.test(plain)) {
     if (!inGuild) return handled('这个命令只能在群里用。')
-    const sw = await readJsonFile(SUMMARY_WHITELIST_FILE, [])
+    const sw = await readJsonFile<string[]>(SUMMARY_WHITELIST_FILE, [])
     if (!Array.isArray(sw) || !sw.includes(String(channelKey))) {
       return handled('本群未启用该功能，请联系管理员添加白名单。')
     }
@@ -290,7 +296,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     const userId = String(currentUserId || '')
     if (!userId) return handled('无法获取用户信息。')
     const cutoffTs = Date.now() - 5 * 24 * 60 * 60 * 1000
-    const atMe = findMentionedMessages(cache, userId).filter(m => m.ts >= cutoffTs)
+    const atMe = findMentionedMessages(cache, userId).filter(hasMessageTimestamp).filter(m => m.ts >= cutoffTs)
     if (!atMe.length) return handled('近5天没有人 @你。')
     const slice = atMe.slice(-20).reverse()
     const total = atMe.length
@@ -333,7 +339,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
     }
     const userId = String(currentUserId || '')
     const locateCutoffTs = Date.now() - 5 * 24 * 60 * 60 * 1000
-    const atMe = findMentionedMessages(cache, userId).filter(m => m.ts >= locateCutoffTs)
+    const atMe = findMentionedMessages(cache, userId).filter(hasMessageTimestamp).filter(m => m.ts >= locateCutoffTs)
     const displayedAtMe = atMe.slice(-20).reverse()
     if (targetIdx < 0 || targetIdx >= displayedAtMe.length) return handled('编号超出范围。')
     const targetMessage = displayedAtMe[targetIdx]
@@ -493,7 +499,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
   if (plain === '东雪莲我的人格' || plain === '东雪莲人格查看') {
     const userPersona = getUserPersona(currentUserId)
     const resolved = resolvePersona(channelKey, currentUserId)
-    const sourceLabel = { user: '个人设置', group: '群级默认', default: '默认（东雪莲）' }
+    const sourceLabel: Record<string, string> = { user: '个人设置', group: '群级默认', default: '默认（东雪莲）' }
     const reply = `你的当前人格：${resolved.name || '默认（东雪莲）'}\n来源：${sourceLabel[resolved.source]}${userPersona ? '' : '\n提示：发送"东雪莲人格切换 椿"可切换'}`
     return handled(reply)
   }

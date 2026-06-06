@@ -24,6 +24,13 @@ interface SearchCandidate {
   score?: number
 }
 
+interface NormalizedSearchCandidate extends SearchCandidate {
+  title: string
+  url: string
+  snippet: string
+  text: string
+}
+
 interface SearchPage {
   text?: string
 }
@@ -98,7 +105,7 @@ function getResultDomainSignal(item: SearchCandidate = {}): boolean {
   return /(?:官方|公告|新闻|资讯|版本|更新|前瞻|release|released|update|latest|changelog|patch notes|source|official)/i.test(text)
 }
 
-function normalizeSearchCandidate(item: SearchCandidate = {}): SearchCandidate {
+function normalizeSearchCandidate(item: SearchCandidate = {}): NormalizedSearchCandidate {
   const title = String(item.title || '').replace(/\s+/g, ' ').trim()
   const url = normalizeResultUrl(item.url)
   const snippet = String(item.snippet || item.text || '').replace(/\s+/g, ' ').trim()

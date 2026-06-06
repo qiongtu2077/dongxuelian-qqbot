@@ -4,8 +4,8 @@
  * 边界: 不写文件、不修改人格、不接管聊天/语音行为。
  * 状态: 无。
  */
-const fs = require('fs')
-const path = require('path')
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
 const {
   SKILLS_CORE_DIR,
   SKILLS_MODES_DIR,
@@ -106,7 +106,7 @@ function buildPersonaDiagnosticIndexes(documents: PersonaDocument[] = []): { lor
     const name = getPersonaDocumentName(doc)
     if (!name) continue
     if (!docsByName.has(name)) docsByName.set(name, [])
-    docsByName.get(name).push(doc)
+    docsByName.get(name)!.push(doc)
     if (doc.type === 'lore') loreByName.set(name, doc)
   }
   return { loreByName, docsByName }

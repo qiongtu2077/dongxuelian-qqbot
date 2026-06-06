@@ -41,7 +41,8 @@ async function resumePlan({ planId = '', channelKey, userId, userName = '', chan
     const plan = await resolvePlan(planId);
     if (!plan)
         throw new Error('当前没有可继续的执行中计划。');
-    if (!['executing', 'todo'].includes(plan.state))
+    const planState = String(plan.state || '');
+    if (!['executing', 'todo'].includes(planState))
         throw new Error('该计划已结束，不能继续执行。');
     const activeTask = getActiveTask(plan);
     if (!activeTask)

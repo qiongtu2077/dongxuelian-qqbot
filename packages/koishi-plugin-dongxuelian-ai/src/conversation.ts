@@ -664,7 +664,7 @@ function saveSharedChannelTurn(session: SessionLike, speakerName: string, conten
   trimChannelRuntimeCaches()
   if (role === 'user' && metadata.fromSummary !== true) {
     try {
-      const sw = readJsonFileIfSmallSync(SUMMARY_WHITELIST_FILE, MAX_SMALL_CONFIG_FILE_BYTES, [])
+      const sw = readJsonFileIfSmallSync<string[]>(SUMMARY_WHITELIST_FILE, MAX_SMALL_CONFIG_FILE_BYTES, [])
       if (Array.isArray(sw) && sw.includes(String(channelKey))) {
         const today = todayCst(); let cache = channelTodayCache.get(channelKey)
         if (!cache) { cache = { date: today, messages: [], updatedAt: Date.now() }; channelTodayCache.set(channelKey, cache) } else { cache.date = today }
@@ -704,14 +704,14 @@ async function cleanupDailyStatsFiles(): Promise<{ removed: number; compacted: n
     const filePath = path.join(DATA_DIR, file)
     if (/^today-cache-.+\.json$/.test(file)) {
       try {
-        const stat = await fsp.stat(filePath).catch(() => null)
+        const stat = await fsp.stat(filePath).catch((): null => null)
         if (!stat || !stat.isFile()) continue
         if (stat.size > MAX_DAILY_STATS_FILE_BYTES) {
-          await fsp.unlink(filePath).catch((error) => warnConversationFailure('remove oversized today cache', error))
+          await fsp.unlink(filePath).catch((error: unknown) => warnConversationFailure('remove oversized today cache', error))
           removed += 1
           continue
         }
-        const data = await readJsonFile(filePath, null)
+        const data = await readJsonFile<TodayCache | null>(filePath, null)
         if (data && typeof data.date === 'string' && data.date < cutoffStr) {
           await fsp.unlink(filePath)
           removed += 1
@@ -722,16 +722,16 @@ async function cleanupDailyStatsFiles(): Promise<{ removed: number; compacted: n
     }
     if (/^emotion-history-.+\.json$/.test(file)) {
       try {
-        const stat = await fsp.stat(filePath).catch(() => null)
+        const stat = await fsp.stat(filePath).catch((): null => null)
         if (!stat || !stat.isFile()) continue
         if (stat.size > MAX_DAILY_STATS_FILE_BYTES) {
-          await fsp.unlink(filePath).catch((error) => warnConversationFailure('remove oversized emotion history', error))
+          await fsp.unlink(filePath).catch((error: unknown) => warnConversationFailure('remove oversized emotion history', error))
           removed += 1
           continue
         }
-        const data = await readJsonFile(filePath, null)
+        const data = await readJsonFile<Array<{ date?: string }> | null>(filePath, null)
         if (!Array.isArray(data)) continue
-        const filtered = data.filter(item => item && typeof item.date === 'string' && item.date >= cutoffStr)
+        const filtered = data.filter((item) => item && typeof item.date === 'string' && item.date >= cutoffStr)
         if (filtered.length !== data.length) {
           if (filtered.length) await writeJsonFile(filePath, filtered)
           else await fsp.unlink(filePath)
@@ -1015,7 +1015,8 @@ function readMemoryTimer(channelKey: string): MemoryTimerData | null {
   const file = path.join(MEMORY_TIMER_DIR, getMemoryTimerKey(channelKey) + '.json')
   try {
     const data = readJsonFileIfSmallSync<MemoryTimerData | null>(file, MAX_SMALL_CONFIG_FILE_BYTES, null, { unlinkOversize: true })
-    if (data && data.intervalHours > 0 && data.intervalHours <= 168) return data
+    const intervalHours = Number(data?.intervalHours || 0)
+    if (data && intervalHours > 0 && intervalHours <= 168) return { ...data, intervalHours }
   } catch { /* non-critical: missing or malformed memory timer disables timer */
   }
   return null
@@ -1025,7 +1026,8 @@ function checkMemoryTimerExpired(channelKey: string): boolean {
   const timer = readMemoryTimer(channelKey)
   if (!timer) return false
   const elapsed = Date.now() - (timer.lastClearTs || 0)
-  return elapsed >= timer.intervalHours * 3600 * 1000
+  const intervalHours = Number(timer.intervalHours || 0)
+  return elapsed >= intervalHours * 3600 * 1000
 }
 
 export = {

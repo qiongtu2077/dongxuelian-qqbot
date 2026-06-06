@@ -2,8 +2,8 @@
  * MODULE: 运行日志查询工具。
  * 安全：只读 runtime/logs 与数据目录下常见日志，输出脱敏和限长。
  */
-const fs = require('fs/promises')
-const path = require('path')
+const fs = require('fs/promises') as typeof import('fs/promises')
+const path = require('path') as typeof import('path')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
 const { redactSensitiveText } = require('../../core/redactor') as typeof import('../../core/redactor')
 
@@ -125,7 +125,7 @@ export = {
     const tailMode = !hasQuery && !level
     if (tailMode) {
       for (const file of files) {
-        const stat = await fs.stat(file).catch(() => null) as FileStatLike | null
+        const stat = await fs.stat(file).catch((): null => null) as FileStatLike | null
         if (!stat || stat.size > MAX_FILE_BYTES || (since && stat.mtimeMs < since)) continue
         const text = await readLogTail(file, stat).catch(() => '')
         const lines = text.split(/\r?\n/)
@@ -139,7 +139,7 @@ export = {
 
     const regex = buildQueryRegExp(query)
     for (const file of files) {
-      const stat = await fs.stat(file).catch(() => null) as FileStatLike | null
+      const stat = await fs.stat(file).catch((): null => null) as FileStatLike | null
       if (!stat || stat.size > MAX_FILE_BYTES || (since && stat.mtimeMs < since)) continue
       const text = await readLogTail(file, stat).catch(() => '')
       const lines = text.split(/\r?\n/)

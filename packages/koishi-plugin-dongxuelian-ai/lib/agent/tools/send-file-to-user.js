@@ -35,8 +35,9 @@ function callOneBot(action, params, timeoutMs = 5000) {
         };
         try {
             ws = new WebSocket(resolveOneBotWsUrl());
+            const currentWs = ws;
             timer = setTimeout(() => finishOneBotSendFile({ ok: false, message: 'OneBot 连接超时' }), timeoutMs);
-            ws.on('open', () => ws.send(JSON.stringify({ action, params, echo })));
+            currentWs.on('open', () => currentWs.send(JSON.stringify({ action, params, echo })));
             ws.on('message', (raw) => {
                 try {
                     const data = JSON.parse(String(raw));

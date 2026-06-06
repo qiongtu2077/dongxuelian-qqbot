@@ -29,7 +29,7 @@ interface AgentQueueStats {
     byChannel: Record<string, number>;
     activeKeys: string[];
 }
-declare function configureAgentQueue(nextOptions?: Partial<QueueOptions>): QueueOptions;
+declare function configureAgentQueue(nextOptions?: unknown): QueueOptions;
 declare function withTimeout<T>(fn: () => Promise<T> | T, timeoutMs: number): Promise<T>;
 declare function enqueueAgentTask({ channelKey, userId, fn, timeoutMs, maxDepth }?: EnqueueAgentTaskOptions): Promise<unknown>;
 declare function clearAgentQueue(channelKey?: unknown, userId?: unknown): number;

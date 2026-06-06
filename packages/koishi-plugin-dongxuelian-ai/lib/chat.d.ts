@@ -17,6 +17,15 @@ interface ChatBotLike {
     };
     username?: string;
 }
+interface ChatSegmentLike {
+    type?: string;
+    data?: {
+        url?: unknown;
+        file?: unknown;
+    };
+    attrs?: unknown;
+    [key: string]: unknown;
+}
 interface ChatSessionLike {
     content?: string;
     guildId?: string;
@@ -32,7 +41,7 @@ interface ChatSessionLike {
     bot?: ChatBotLike;
     event?: {
         selfId?: string;
-        message?: unknown[];
+        message?: ChatSegmentLike[];
         sender?: {
             role?: string;
         };
@@ -43,6 +52,9 @@ interface ChatSessionLike {
         elements?: unknown;
     };
     _skipVision?: boolean;
+    _visionUrls?: unknown;
+    _visionFile?: unknown;
+    _isVisionRequest?: unknown;
     [key: string]: unknown;
 }
 interface ChatRunOptions {

@@ -18,15 +18,8 @@ interface FetchLimits {
 interface HeadersLike {
     get?: (name: string) => string | null;
 }
-interface BodyReaderLike {
-    read: () => Promise<{
-        done?: boolean;
-        value?: Uint8Array;
-    }>;
-    cancel: () => Promise<unknown> | unknown;
-}
 interface BodyLike {
-    getReader?: () => BodyReaderLike;
+    getReader?: unknown;
 }
 interface ResponseLike {
     headers?: HeadersLike;

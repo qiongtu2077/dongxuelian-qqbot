@@ -13,7 +13,7 @@ interface BotLike {
     selfId?: string;
     sendPrivateMessage?: (id: string, message: string) => Promise<unknown> | unknown;
     internal?: {
-        sendPrivateMsg?: (id: string, message: string) => Promise<unknown> | unknown;
+        sendPrivateMsg?: (id: string, message: unknown) => Promise<unknown> | unknown;
     };
 }
 interface SafeSendSessionLike {
@@ -46,7 +46,10 @@ interface SendOptions {
     quoteMessageId?: string | number;
     personaName?: string;
     randomFreshness?: {
-        channelKey?: string;
+        channelKey: string;
+        triggerMessageVersion: number;
+        explicitVersion: number;
+        triggerAt: number;
     };
     now?: () => number;
     time?: {

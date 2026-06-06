@@ -7,8 +7,11 @@
 const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE, MIMORIUM_KEY_FILE, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE, DATA_DIR } = require('./constants');
 const { readTextFile, isDashScopeConfig, todayCst, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('./utils');
 const { resolveOneBotWsUrl } = require('./onebot-endpoint');
+const WebSocket = require('ws');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const MAX_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_IMAGE_BYTES, 4 * 1024 * 1024, 128 * 1024, 16 * 1024 * 1024);
 const MAX_REMOTE_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_REMOTE_IMAGE_BYTES, MAX_IMAGE_BYTES, 128 * 1024, 16 * 1024 * 1024);
 const MAX_API_CONFIG_FILE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_API_CONFIG_MAX_BYTES, 256 * 1024, 4 * 1024, 1024 * 1024);
@@ -26,6 +29,7 @@ function parseApiPositiveInt(value, fallback, min, max) {
 const TOKEN_USAGE_FILE = path.join(DATA_DIR, 'token-usage.json');
 const TOKEN_USAGE_EXIT_HOOK = Symbol.for('dongxuelian.ai.tokenUsageExitHook');
 const TOKEN_USAGE_EXIT_FLUSH = Symbol.for('dongxuelian.ai.tokenUsageExitFlush');
+const tokenUsageGlobal = globalThis;
 let _tokenUsageCache = null;
 let _tokenUsageFlushTimer = null;
 function usageNumber(value) {
@@ -88,14 +92,16 @@ function recordTokenUsage(provider, tokens, details = {}) {
     if (!_tokenUsageCache) {
         try {
             const raw = fs.readFileSync(TOKEN_USAGE_FILE, 'utf8');
-            _tokenUsageCache = JSON.parse(raw);
+            const parsed = JSON.parse(raw);
+            _tokenUsageCache = isRecord(parsed) ? parsed : {};
         }
         catch {
             _tokenUsageCache = {};
         }
     }
-    const day = normalizeTokenUsageDay(_tokenUsageCache[date]);
-    _tokenUsageCache[date] = day;
+    const usageCache = _tokenUsageCache;
+    const day = normalizeTokenUsageDay(usageCache[date]);
+    usageCache[date] = day;
     const usage = readUsageDetails(details.usage || {});
     const delta = {
         total: usageNumber(tokens),
@@ -137,17 +143,17 @@ function flushTokenUsage() {
         catch { /* non-critical: token usage exit flush is best-effort */ }
     }
 }
-globalThis[TOKEN_USAGE_EXIT_FLUSH] = flushTokenUsage;
-if (!globalThis[TOKEN_USAGE_EXIT_HOOK]) {
-    globalThis[TOKEN_USAGE_EXIT_HOOK] = true;
+tokenUsageGlobal[TOKEN_USAGE_EXIT_FLUSH] = flushTokenUsage;
+if (!tokenUsageGlobal[TOKEN_USAGE_EXIT_HOOK]) {
+    tokenUsageGlobal[TOKEN_USAGE_EXIT_HOOK] = true;
     process.on('exit', () => {
-        const handler = globalThis[TOKEN_USAGE_EXIT_FLUSH];
+        const handler = tokenUsageGlobal[TOKEN_USAGE_EXIT_FLUSH];
         if (typeof handler === 'function')
             handler();
     });
 }
 function mimeFromImagePath(filePath = '') {
-    const ext = String(filePath || '').split('.').pop().toLowerCase();
+    const ext = String(filePath || '').split('.').pop() || '';
     return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' }[ext] || 'image/jpeg';
 }
 function readApiTextFileSync(file, maxBytes = MAX_API_KEY_FILE_BYTES) {
@@ -499,17 +505,18 @@ function callOneBotWs(action, params, echo, timeoutMs, extractData) {
             resolve(value || null);
         };
         try {
-            ws = new (require('ws'))(resolveOneBotWsUrl());
+            ws = new WebSocket(resolveOneBotWsUrl());
+            const socket = ws;
             timer = setTimeout(() => finish(null), timeoutMs);
-            ws.on('open', () => {
+            socket.on('open', () => {
                 try {
-                    ws.send(JSON.stringify({ action, params, echo }));
+                    socket.send(JSON.stringify({ action, params, echo }));
                 }
                 catch {
                     finish(null);
                 }
             });
-            ws.on('message', (d) => {
+            socket.on('message', (d) => {
                 let message = null;
                 try {
                     message = JSON.parse(d.toString());
@@ -517,6 +524,8 @@ function callOneBotWs(action, params, echo, timeoutMs, extractData) {
                 catch {
                     return finish(null);
                 }
+                if (!message)
+                    return finish(null);
                 if (message.echo !== echo)
                     return;
                 try {
@@ -526,8 +535,8 @@ function callOneBotWs(action, params, echo, timeoutMs, extractData) {
                     finish(null);
                 }
             });
-            ws.on('error', () => finish(null));
-            ws.on('close', () => finish(null));
+            socket.on('error', () => finish(null));
+            socket.on('close', () => finish(null));
         }
         catch {
             finish(null);
@@ -604,7 +613,9 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
                 return finishDownload(null);
             }
             try {
-                const mod = currentUrl.protocol === 'https:' ? require('https') : require('http');
+                if (!currentUrl)
+                    return finishDownload(null);
+                const mod = currentUrl.protocol === 'https:' ? https : http;
                 timer = setTimeout(() => {
                     try {
                         if (request)
@@ -623,19 +634,23 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
                         res.resume();
                         return finishDownload(null);
                     }
-                    const type = String(res.headers['content-type'] || 'image/jpeg').split(';')[0].trim().toLowerCase();
+                    const contentTypeHeader = res.headers['content-type'];
+                    const contentTypeValue = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader;
+                    const type = String(contentTypeValue || 'image/jpeg').split(';')[0].trim().toLowerCase();
                     if (type && !/^image\/(?:png|jpe?g|gif|webp|bmp)$/.test(type)) {
                         res.resume();
                         return finishDownload(null);
                     }
-                    const declared = parseInt(res.headers['content-length'], 10);
+                    const contentLengthHeader = res.headers['content-length'];
+                    const contentLengthValue = Array.isArray(contentLengthHeader) ? contentLengthHeader[0] : contentLengthHeader;
+                    const declared = parseInt(String(contentLengthValue || ''), 10);
                     if (Number.isFinite(declared) && declared > MAX_REMOTE_IMAGE_BYTES) {
                         res.resume();
                         return finishDownload(null);
                     }
                     const chunks = [];
                     let received = 0;
-                    res.on('data', c => {
+                    res.on('data', (c) => {
                         received += c.length;
                         if (received > MAX_REMOTE_IMAGE_BYTES) {
                             try {
@@ -675,7 +690,7 @@ function isVisionModel(provider, modelId) {
     const custom = readCustomProviders();
     const cp = custom.find(function (x) { return x.id === provider; });
     if (cp)
-        return cp.models && cp.models.some(function (x) { return x.id === modelId && x.vision; });
+        return Array.isArray(cp.models) && cp.models.some(function (x) { return x.id === modelId && !!x.vision; });
     // 3. fallback 正则（兼容旧数据）
     return /qwen|glm|kimi|omni/i.test(modelId);
 }

@@ -233,7 +233,7 @@ function expressionPoolEvictWeakest(entries: ExpressionEntry[]): void {
     return (a.entry.lastMergedAt || a.entry.createdAt || 0) - (b.entry.lastMergedAt || b.entry.createdAt || 0)
   })
   while (entries.length > EXPRESSION_POOL_MAX_ENTRIES_PER_CHANNEL && indexed.length) {
-    const victim = indexed.shift()
+    const victim = indexed.shift()!
     const idx = entries.indexOf(victim.entry)
     if (idx >= 0) entries.splice(idx, 1)
   }
@@ -246,10 +246,11 @@ function appendExpressionCandidate(channelKey: string, candidate: ExpressionCand
   if (!situation || !style) {
     return Promise.resolve({ mode: APPEND_MODES.rejected, reason: 'empty', entry: null })
   }
-  const contributorsInput = Array.isArray(candidate && candidate.contributors) ? candidate.contributors : []
+  const contributorsSource = candidate && candidate.contributors
+  const contributorsInput: string[] = Array.isArray(contributorsSource) ? contributorsSource : []
   const now = expressionPoolNumber(options.now, Date.now())
   const threshold = expressionPoolNumber(options.similarityThreshold, EXPRESSION_POOL_SIMILARITY_MERGE_THRESHOLD)
-  return expressionPoolEnqueueWrite(safeChannelKey, async () => {
+  return expressionPoolEnqueueWrite<AppendResult>(safeChannelKey, async (): Promise<AppendResult> => {
     const pool = loadExpressionPool(safeChannelKey)
     const entries = pool.entries
     const probe = { situation, style }
@@ -264,10 +265,10 @@ function appendExpressionCandidate(channelKey: string, candidate: ExpressionCand
         bestIndex = i
       }
     }
-    let mode
-    let resultEntry
+    let mode: AppendMode
+    let resultEntry: ExpressionEntry | null = null
     if (bestIndex >= 0) {
-      const target = entries[bestIndex]
+      const target = entries[bestIndex]!
       target.count = Math.max(0, target.count) + 1
       expressionPoolMergeContributors(target.contributors, contributorsInput)
       target.lastMergedAt = now

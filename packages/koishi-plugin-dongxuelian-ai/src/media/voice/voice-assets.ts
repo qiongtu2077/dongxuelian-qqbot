@@ -191,8 +191,8 @@ function inferPersonaName(baseName: string, personaConfigs: PersonaVoiceConfig[]
 
 function listVoiceAssetFiles(): VoiceFileInfo[] {
   try {
-    return fs.readdirSync(VOICES_DIR)
-      .map(filename => getVoiceFileInfo(filename))
+    return (fs.readdirSync(VOICES_DIR) as string[])
+      .map((filename: string) => getVoiceFileInfo(filename))
       .filter((info): info is VoiceFileInfo => !!info && !info.missing)
   } catch { /* non-critical: missing voice sample directory lists as empty */
     return []
@@ -271,7 +271,7 @@ function listVoiceAssetReferences(assetOrId: VoiceAsset | unknown, personaConfig
     if (!config || config.voice !== '__cloned__') return false
     if (config.voiceAssetId) return config.voiceAssetId === asset.id
     return config.name === asset.personaName || asset.id === legacyId
-  }).map(config => config.name).filter(Boolean)
+  }).map(config => config.name).filter((name): name is string => !!name)
 }
 
 function updateVoiceAssetMetadata(assetIdOrName: unknown, patch: Record<string, unknown> = {}, personaConfigs: PersonaVoiceConfig[] = []): VoiceAsset | null {
@@ -303,6 +303,7 @@ function resolveVoiceSampleFile(personaName: unknown, voiceAssetId: unknown = ''
   const asset = voiceAssetId
     ? findVoiceAsset(voiceAssetId, [{ name: String(personaName || '') }])
     : findVoiceAsset(personaName, [{ name: String(personaName || '') }])
+  if (!asset) return null
   const info = asset ? getVoiceFileInfo(asset.filename) : null
   if (!info || info.missing) return null
   if (info.size < MIN_VOICE_SAMPLE_BYTES || info.size > MAX_VOICE_SAMPLE_BYTES) return null

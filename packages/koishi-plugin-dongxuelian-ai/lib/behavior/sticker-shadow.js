@@ -133,8 +133,8 @@ function stickerShadowInferVisual(input = {}) {
         const data = stickerShadowSegmentData(segment);
         refs.push({
             type,
-            url: data.url || data.src || data.href || '',
-            file: data.file || data.id || data.file_id || data.fileId || data.name || '',
+            url: String(data.url || data.src || data.href || ''),
+            file: String(data.file || data.id || data.file_id || data.fileId || data.name || ''),
         });
     }
     if (/\[CQ:(?:image|img|mface|face|video),/i.test(content) || /<(?:img|image|mface|face|video)\b/i.test(content)) {

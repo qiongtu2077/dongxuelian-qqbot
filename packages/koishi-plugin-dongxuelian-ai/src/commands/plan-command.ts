@@ -70,6 +70,7 @@ function asPlanOwner(value: unknown): PlanOwnerLike {
 
 async function handlePlanCommand(session: PlanSessionLike, ctx: CommandContextLike, state: PlanCommandState) {
   const { plain, channelKey, currentUserId } = state
+  const adminSession = session as Parameters<typeof hasAdminPermission>[0]
 
   const planMatch = plain.match(/^(?:\/plan|莲莲计划)\s+(.+)/i)
   if (planMatch) {
@@ -105,7 +106,7 @@ async function handlePlanCommand(session: PlanSessionLike, ctx: CommandContextLi
           channelKey,
           channel: 'qq',
           bot: session.bot,
-          isAdmin: hasAdminPermission(session),
+          isAdmin: hasAdminPermission(adminSession),
           systemExtra: [
             { role: 'system', content: planPrompts.buildPlanSystemPrompt(plan) },
             { role: 'system', content: planPrompts.buildPlanCreatePrompt(query) },
@@ -126,7 +127,7 @@ async function handlePlanCommand(session: PlanSessionLike, ctx: CommandContextLi
   if (planStatusMatch) {
     try {
       const planEngine = require('../agent/plan/plan-engine') as typeof import('../agent/plan/plan-engine')
-      const isAdmin = hasAdminPermission(session)
+      const isAdmin = hasAdminPermission(adminSession)
       const result = await planEngine.checkPlanStatus(planStatusMatch[1] || '', { userId: currentUserId, channelKey, isAdmin })
       return handled(planEngine.formatPlan(result))
     } catch (err) {
@@ -141,9 +142,9 @@ async function handlePlanCommand(session: PlanSessionLike, ctx: CommandContextLi
       const planRunner = require('../agent/plan/plan-runner') as typeof import('../agent/plan/plan-runner')
       const plan = await planRunner.resolvePlan(planResumeMatch[1] || '', { userId: currentUserId, channelKey })
       if (!plan) return handled('当前没有可继续的执行中计划。')
-      if (plan.userId !== currentUserId && !hasAdminPermission(session)) return handled('只能继续自己的计划，或由 bot 管理员操作。')
+      if (plan.userId !== currentUserId && !hasAdminPermission(adminSession)) return handled('只能继续自己的计划，或由 bot 管理员操作。')
       const userName = sanitizeUserName(session.author?.nick || session.author?.name || session.username || plan.userName || '群友')
-      const result = await planRunner.resumePlan({ planId: plan.id, channelKey, userId: currentUserId, userName, bot: session.bot, isAdmin: hasAdminPermission(session) })
+      const result = await planRunner.resumePlan({ planId: plan.id, channelKey, userId: currentUserId, userName, bot: session.bot, isAdmin: hasAdminPermission(adminSession) })
       return handled([planEngine.formatPlan(plan), '', asPlanAgentResult(result).reply || '计划已继续执行。'].join('\n'))
     } catch (err) {
       if (hasPlanCommandQueueCode(err)) return handled(getPlanCommandErrorMessage(err))
@@ -157,7 +158,7 @@ async function handlePlanCommand(session: PlanSessionLike, ctx: CommandContextLi
     try {
       const planEngine = require('../agent/plan/plan-engine') as typeof import('../agent/plan/plan-engine')
       const plan = await planEngine.checkPlanStatus(planAbandonMatch[1])
-      if (asPlanOwner(plan).userId !== currentUserId && !hasAdminPermission(session)) return handled('只能放弃自己的计划，或由 bot 管理员操作。')
+      if (asPlanOwner(plan).userId !== currentUserId && !hasAdminPermission(adminSession)) return handled('只能放弃自己的计划，或由 bot 管理员操作。')
       const abandoned = await planEngine.abandonPlan({ planId: planAbandonMatch[1], reason: planAbandonMatch[2] || '用户放弃计划' })
       return handled(planEngine.formatPlan(abandoned))
     } catch (err) {

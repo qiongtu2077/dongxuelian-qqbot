@@ -37,6 +37,9 @@ interface ArmedEventDumpState {
   armedBy: string
 }
 
+type EventDumpChannelSession = Parameters<typeof getChannelKey>[0]
+type EventDumpSenderSession = Parameters<typeof getSenderUserId>[0]
+
 const armedEventDumpCache = new Map<string, ArmedEventDumpState>()
 
 function getArmedEventDump(channelKey: string = ''): ArmedEventDumpState | null {
@@ -51,10 +54,10 @@ function getArmedEventDump(channelKey: string = ''): ArmedEventDumpState | null 
 }
 
 function armEventDump(session: EventDumpSession): ArmedEventDumpState {
-  const channelKey = getChannelKey(session)
+  const channelKey = getChannelKey(session as EventDumpChannelSession)
   const state = {
     armedAt: Date.now(),
-    armedBy: getSenderUserId(session),
+    armedBy: getSenderUserId(session as EventDumpSenderSession),
   }
   armedEventDumpCache.set(channelKey, state)
   return state
@@ -68,7 +71,7 @@ async function dumpSessionEvent(session: EventDumpSession, analyzed: unknown, pl
   const now = new Date()
   const dateStamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
   const timeStamp = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`
-  const channelToken = sanitizeFileToken(getChannelKey(session))
+  const channelToken = sanitizeFileToken(getChannelKey(session as EventDumpChannelSession))
   const messageToken = sanitizeFileToken(session.messageId || 'no-message-id')
   const fileName = `ai-event-${dateStamp}-${timeStamp}-${channelToken}-${messageToken}.json`
   const filePath = path.join(EVENT_DUMP_DIR, fileName)

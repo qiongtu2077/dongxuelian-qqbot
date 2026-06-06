@@ -31,6 +31,8 @@ interface EnqueueAgentTaskOptions {
   maxDepth?: unknown
 }
 
+type QueueOptionsInput = Partial<QueueOptions>
+
 interface QueueError extends Error {
   code?: string
 }
@@ -78,11 +80,16 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
-function configureAgentQueue(nextOptions: Partial<QueueOptions> = {}): QueueOptions {
-  const maxGlobal = parseInt(nextOptions.maxGlobal as unknown as string, 10)
-  const maxPerChannel = parseInt(nextOptions.maxPerChannel as unknown as string, 10)
-  const maxPendingPerUser = parseInt(nextOptions.maxPendingPerUser as unknown as string, 10)
-  const timeoutMs = parseInt(nextOptions.timeoutMs as unknown as string, 10)
+function isQueueOptionsInput(value: unknown): value is QueueOptionsInput {
+  return value !== null && typeof value === 'object'
+}
+
+function configureAgentQueue(nextOptions: unknown = {}): QueueOptions {
+  const queueOptions = isQueueOptionsInput(nextOptions) ? nextOptions : {}
+  const maxGlobal = parseInt(String(queueOptions.maxGlobal ?? ''), 10)
+  const maxPerChannel = parseInt(String(queueOptions.maxPerChannel ?? ''), 10)
+  const maxPendingPerUser = parseInt(String(queueOptions.maxPendingPerUser ?? ''), 10)
+  const timeoutMs = parseInt(String(queueOptions.timeoutMs ?? ''), 10)
   options = {
     maxGlobal: Number.isFinite(maxGlobal) ? Math.max(1, Math.min(12, maxGlobal)) : options.maxGlobal,
     maxPerChannel: Number.isFinite(maxPerChannel) ? Math.max(1, Math.min(20, maxPerChannel)) : options.maxPerChannel,

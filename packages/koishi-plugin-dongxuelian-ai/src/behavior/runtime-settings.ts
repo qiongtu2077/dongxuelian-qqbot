@@ -68,7 +68,8 @@ async function loadRuntimeSettings(force: boolean = false): Promise<void> {
 
 function getRandomTriggerBaseRate(channelKey: string): number {
   const key = String(channelKey || '')
-  return randomRateCache.has(key) ? randomRateCache.get(key) : RANDOM_TRIGGER_RATE_BASE
+  const cachedRate = randomRateCache.get(key)
+  return cachedRate !== undefined ? cachedRate : RANDOM_TRIGGER_RATE_BASE
 }
 
 function getRandomWhitelistStatus(channelKey: string): boolean {

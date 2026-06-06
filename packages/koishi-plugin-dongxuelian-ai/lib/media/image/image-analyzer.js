@@ -127,9 +127,10 @@ async function analyzeImageNow(channelKey, messageId) {
     if (entry.analyzed && entry.analysis)
         return entry.analysis;
     const key = imageTaskKey(channelKey, messageId);
-    if (inFlight.has(key))
-        return inFlight.get(key);
-    const promise = runAnalysis({ channelKey, messageId, url: entry.url, file: entry.file });
+    const existingPromise = inFlight.get(key);
+    if (existingPromise)
+        return existingPromise;
+    const promise = runAnalysis({ channelKey, messageId, url: entry.url, file: entry.file || null });
     inFlight.set(key, promise);
     try {
         return await promise;

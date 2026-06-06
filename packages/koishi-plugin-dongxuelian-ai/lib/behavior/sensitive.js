@@ -21,6 +21,14 @@ function getSensitiveErrorMessage(error) {
 function warnSensitiveBackgroundFailure(action, error) {
     console.warn(`[dongxuelian-ai] sensitive ${action} failed: ${getSensitiveErrorMessage(error)}`);
 }
+function toSensitiveLogContext(ctx) {
+    if (!ctx || typeof ctx !== 'object')
+        return null;
+    const logger = ctx.logger;
+    if (logger !== undefined && typeof logger !== 'function')
+        return null;
+    return ctx;
+}
 async function getPoliticalDetectList() {
     if (politicalDetectCache !== null && Date.now() < politicalDetectCacheExpiresAt)
         return politicalDetectCache;
@@ -83,35 +91,37 @@ async function notifySensitiveHandlers(session, channelKey, options = {}) {
 }
 async function handleSensitiveMessage(session, ctx, params = {}) {
     const { inGuild, channelKey, analyzed = {}, plain = '', userName = '', currentUserId = '', lastEmotionCache, } = params;
+    const normalizedChannelKey = String(channelKey || '');
+    const logCtx = toSensitiveLogContext(ctx);
     const detectList = await getPoliticalDetectList();
-    const isDetectOn = detectList.has(channelKey);
+    const isDetectOn = detectList.has(normalizedChannelKey);
     const normalizedPlain = String(plain || '').normalize('NFKC').replace(/[\u200B-\u200F\u2028-\u202F\u2060\uFEFF]/g, '');
     if (inGuild && isDetectOn && !analyzed.hasVisual && SENSITIVE_KEYWORDS_RE.test(normalizedPlain)) {
-        await notifySensitiveHandlers(session, channelKey, { throttle: true });
-        logDebug(ctx, 'sensitive', `sensitive topic channel=${channelKey} textLen=${String(plain || '').length}`);
-        channelSharedCache.delete(channelKey);
+        await notifySensitiveHandlers(session, normalizedChannelKey, { throttle: true });
+        logDebug(logCtx, 'sensitive', `sensitive topic channel=${normalizedChannelKey} textLen=${String(plain || '').length}`);
+        channelSharedCache.delete(normalizedChannelKey);
         clearUserConversationHistory(session);
-        channelMsgCount.delete(channelKey);
+        channelMsgCount.delete(normalizedChannelKey);
         if (lastEmotionCache && typeof lastEmotionCache.delete === 'function')
-            lastEmotionCache.delete(channelKey);
+            lastEmotionCache.delete(normalizedChannelKey);
     }
     if (inGuild && isDetectOn && !analyzed.hasVisual && plain) {
-        saveSensitiveCache(channelKey, plain, userName, currentUserId);
+        saveSensitiveCache(normalizedChannelKey, plain, userName, currentUserId);
     }
     if (isDetectOn && inGuild && !analyzed.hasVisual) {
-        const current = channelMsgCount.get(channelKey);
+        const current = channelMsgCount.get(normalizedChannelKey);
         const count = (current?.count || 0) + 1;
-        channelMsgCount.set(channelKey, { count, ts: Date.now() });
+        channelMsgCount.set(normalizedChannelKey, { count, ts: Date.now() });
         if (count % 50 === 0)
-            analyzeChannelSensitive(channelKey).catch((error) => warnSensitiveBackgroundFailure('periodic summary', error));
+            analyzeChannelSensitive(normalizedChannelKey).catch((error) => warnSensitiveBackgroundFailure('periodic summary', error));
     }
-    if (isDetectOn && pendingSensitiveAlert.get(channelKey)) {
-        pendingSensitiveAlert.delete(channelKey);
-        channelSharedCache.delete(channelKey);
-        channelMsgCount.delete(channelKey);
+    if (isDetectOn && pendingSensitiveAlert.get(normalizedChannelKey)) {
+        pendingSensitiveAlert.delete(normalizedChannelKey);
+        channelSharedCache.delete(normalizedChannelKey);
+        channelMsgCount.delete(normalizedChannelKey);
         if (lastEmotionCache && typeof lastEmotionCache.delete === 'function')
-            lastEmotionCache.delete(channelKey);
-        await notifySensitiveHandlers(session, channelKey, { throttle: false });
+            lastEmotionCache.delete(normalizedChannelKey);
+        await notifySensitiveHandlers(session, normalizedChannelKey, { throttle: false });
     }
     return { isDetectOn };
 }

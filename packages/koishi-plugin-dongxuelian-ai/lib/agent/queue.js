@@ -29,11 +29,15 @@ function getTaskKey(channelKey, userId) {
 function isFiniteNumber(value) {
     return typeof value === 'number' && Number.isFinite(value);
 }
+function isQueueOptionsInput(value) {
+    return value !== null && typeof value === 'object';
+}
 function configureAgentQueue(nextOptions = {}) {
-    const maxGlobal = parseInt(nextOptions.maxGlobal, 10);
-    const maxPerChannel = parseInt(nextOptions.maxPerChannel, 10);
-    const maxPendingPerUser = parseInt(nextOptions.maxPendingPerUser, 10);
-    const timeoutMs = parseInt(nextOptions.timeoutMs, 10);
+    const queueOptions = isQueueOptionsInput(nextOptions) ? nextOptions : {};
+    const maxGlobal = parseInt(String(queueOptions.maxGlobal ?? ''), 10);
+    const maxPerChannel = parseInt(String(queueOptions.maxPerChannel ?? ''), 10);
+    const maxPendingPerUser = parseInt(String(queueOptions.maxPendingPerUser ?? ''), 10);
+    const timeoutMs = parseInt(String(queueOptions.timeoutMs ?? ''), 10);
     options = {
         maxGlobal: Number.isFinite(maxGlobal) ? Math.max(1, Math.min(12, maxGlobal)) : options.maxGlobal,
         maxPerChannel: Number.isFinite(maxPerChannel) ? Math.max(1, Math.min(20, maxPerChannel)) : options.maxPerChannel,

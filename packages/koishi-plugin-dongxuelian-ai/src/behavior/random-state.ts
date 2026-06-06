@@ -36,7 +36,7 @@ interface RandomFreshness {
 interface RandomSendOptions {
   randomFreshness?: RandomFreshness
   forceQuote?: boolean
-  quoteMessageId?: string
+  quoteMessageId?: string | number
   [key: string]: unknown
 }
 
@@ -183,7 +183,7 @@ function clearRandomPendingState(): void {
 
 function buildRandomSendOptions(context: RandomSendContext = {}): RandomSendOptions {
   if (!context.randomTriggered) return {}
-  const channelKey = normalizeChannelKey(context.channelKey)
+  const channelKey = normalizeChannelKey(context.channelKey || '')
   const triggerVersion = Number(context.triggerMessageVersion || 0)
   const explicitVersion = Number(context.explicitVersion || 0)
   const triggerAt = Number(context.triggerAt || 0)

@@ -402,6 +402,9 @@ function buildPersonaProfileShadowCandidate(block = {}, options = {}) {
         },
     };
 }
+function isBuiltPersonaProfileShadowCandidate(candidate) {
+    return candidate !== null;
+}
 function buildPersonaProfileEvidence(input = {}) {
     const now = normalizePersonaProfileTs(input.now, Date.now());
     const shortQuote = normalizePersonaProfileText(input.text || input.shortQuote || '', 120);
@@ -543,7 +546,7 @@ function buildPersonaProfileReinforcementShadow(blocks = [], options = {}) {
         let mergedIntoExisting = false;
         for (let i = 0; i < merged.length; i += 1) {
             const result = reinforcePersonaProfileBlock(merged[i], block, { ...options, now });
-            if (!result.matched)
+            if (!result.matched || !result.block)
                 continue;
             merged[i] = result.block;
             reinforcedCount += 1;
@@ -618,7 +621,8 @@ function selectPersonaProfileBlocksByEffectiveConfidence(blocks = [], options = 
         const block = buildPersonaProfileBlock({ ...raw, now });
         if (!block)
             continue;
-        if (!allowedStatuses.has(block.status)) {
+        const status = block.status;
+        if (!status || !allowedStatuses.has(status)) {
             skipped.status += 1;
             continue;
         }
@@ -639,8 +643,10 @@ function selectPersonaProfileBlocksByEffectiveConfidence(blocks = [], options = 
         candidates.push({ ...block, effectiveConfidence });
     }
     candidates.sort((a, b) => {
-        if (b.effectiveConfidence !== a.effectiveConfidence)
-            return b.effectiveConfidence - a.effectiveConfidence;
+        const aEffectiveConfidence = Number(a.effectiveConfidence || 0);
+        const bEffectiveConfidence = Number(b.effectiveConfidence || 0);
+        if (bEffectiveConfidence !== aEffectiveConfidence)
+            return bEffectiveConfidence - aEffectiveConfidence;
         if ((b.reinforceCount || 0) !== (a.reinforceCount || 0))
             return (b.reinforceCount || 0) - (a.reinforceCount || 0);
         return (b.updatedAt || 0) - (a.updatedAt || 0);
@@ -827,7 +833,9 @@ function safePersonaProfileFile(userId, channelKey, rootDir = USER_PROFILE_DIR) 
 }
 async function readLegacyPersonaProfileData({ userId, channelKey, rootDir = USER_PROFILE_DIR } = {}) {
     try {
-        const file = safePersonaProfileFile(userId, channelKey, rootDir);
+        const normalizedUserId = String(userId || '');
+        const normalizedChannelKey = String(channelKey || '');
+        const file = safePersonaProfileFile(normalizedUserId, normalizedChannelKey, rootDir);
         const stat = await fsp.stat(file);
         if (!stat.isFile() || stat.size > MAX_PROFILE_SOURCE_FILE_BYTES)
             return null;
@@ -843,6 +851,8 @@ async function buildPersonaProfileBlocks(options = {}) {
     const channelKey = String(options.channelKey || '');
     const data = await readLegacyPersonaProfileData(options) || { userId, names: [], messages: [], memory: [] };
     const profile = buildPersonaProfileBlocksFromLegacyData(data, options);
+    const blocks = Array.isArray(profile.blocks) ? profile.blocks : [];
+    const diagnostics = Array.isArray(profile.diagnostics) ? profile.diagnostics : [];
     if (options.includeAgentMemory) {
         try {
             const items = typeof options.agentMemoryReader === 'function'
@@ -865,14 +875,14 @@ async function buildPersonaProfileBlocks(options = {}) {
                     maxTextLength: 700,
                 });
                 if (block) {
-                    profile.blocks.push(block);
+                    blocks.push(block);
                     if (profile.sourceStats)
                         profile.sourceStats.agentMemory = Number(profile.sourceStats.agentMemory || 0) + 1;
                 }
             }
         }
         catch {
-            profile.diagnostics.push({ level: 'warning', code: 'agent_memory_read_failed', source: 'agent_memory' });
+            diagnostics.push({ level: 'warning', code: 'agent_memory_read_failed', source: 'agent_memory' });
         }
     }
     profile.summary = summarizePersonaProfileBlocks(profile);
@@ -882,8 +892,10 @@ function summarizePersonaProfileBlocks(profile = {}) {
     const counts = {};
     const statuses = {};
     for (const item of Array.isArray(profile.blocks) ? profile.blocks : []) {
-        counts[item.block] = (counts[item.block] || 0) + 1;
-        statuses[item.status] = (statuses[item.status] || 0) + 1;
+        const blockKey = String(item.block || 'unknown');
+        const statusKey = String(item.status || 'unknown');
+        counts[blockKey] = (counts[blockKey] || 0) + 1;
+        statuses[statusKey] = (statuses[statusKey] || 0) + 1;
     }
     return {
         version: PERSONA_PROFILE_VERSION,
@@ -977,7 +989,7 @@ function buildPersonaProfileShadowPreview(profile = {}, options = {}) {
         minEffectiveConfidence: Number(selection.minEffectiveConfidence || options.minEffectiveConfidence || PROFILE_EFFECTIVE_MIN_CONFIDENCE),
         allowedStatuses: ['active', 'candidate'],
     }))
-        .filter(Boolean);
+        .filter(isBuiltPersonaProfileShadowCandidate);
     const selectedCandidateHashes = new Set(selected.map(block => hashPersonaProfileValue(block.id || '', 10)));
     const selectedCandidates = candidates.filter(item => selectedCandidateHashes.has(item.blockHash));
     const skippedLearning = {};

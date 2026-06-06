@@ -28,6 +28,15 @@ interface AgentEngineLike {
   run: typeof import('./engine').run
 }
 
+interface PushBotLike {
+  sendPrivateMessage?: (userId: string, content: string) => Promise<unknown> | unknown
+  sendMessage?: (target: string, content: string) => Promise<unknown> | unknown
+  internal?: {
+    sendPrivateMsg?: (userId: string, segments: unknown[]) => Promise<unknown> | unknown
+    sendGroupMsg?: (target: string, segments: unknown[]) => Promise<unknown> | unknown
+  }
+}
+
 interface CronFileData {
   crons: CronEntry[]
   history: CronHistoryEntry[]
@@ -471,7 +480,7 @@ async function runCronNow(id: string): Promise<CronRunResult> {
     })
     if (cron.type === 'text') {
       const push = require('./push') as typeof import('./push')
-      const sent = await push.cronResult({ cronId: cron.id, channelKey: cron.targetChannel, text: cron.prompt, bot: runtime.bot, bypassEnabled: cron.mode === 'once' })
+      const sent = await push.cronResult({ cronId: cron.id, channelKey: cron.targetChannel, text: cron.prompt, bot: runtime.bot as PushBotLike | null, bypassEnabled: cron.mode === 'once' })
       ok = !!sent.ok
       result = sent.message || 'text sent'
     } else {
@@ -498,7 +507,7 @@ async function runCronNow(id: string): Promise<CronRunResult> {
       })
       const push = require('./push') as typeof import('./push')
       const reply = getAgentTaskReply(agentResult)
-      const sent = await push.cronResult({ cronId: cron.id, channelKey: cron.targetChannel, text: reply, bot: runtime.bot, bypassEnabled: cron.mode === 'once' })
+      const sent = await push.cronResult({ cronId: cron.id, channelKey: cron.targetChannel, text: reply, bot: runtime.bot as PushBotLike | null, bypassEnabled: cron.mode === 'once' })
       ok = !!sent.ok
       result = reply || sent.message || ''
     }

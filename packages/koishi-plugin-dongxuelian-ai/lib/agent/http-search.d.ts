@@ -75,12 +75,12 @@ declare function readHttpResultPage(url: unknown, limits: HttpSearchLimits, rema
     ok: boolean;
 }>;
 declare function fetchHttpResultPage(url: unknown, limits: HttpSearchLimits, remainingMs: number): Promise<string>;
-declare function readTopResultPages(results: SearchCandidate[], limits: HttpSearchLimits, startedAt: number): Promise<PageReadResult>;
+declare function readTopResultPages(results: SearchCandidate[] | undefined, limits: HttpSearchLimits, startedAt: number): Promise<PageReadResult>;
 declare function mergeHttpSearchCandidates(...groups: SearchCandidate[][]): SearchCandidate[];
 declare function formatCandidateList(candidates?: SearchCandidate[]): string;
 declare function formatSearchWithPages(query?: unknown, ranked?: SearchCandidate[], pageReads?: Partial<PageReadResult>): string;
 declare function runHttpSearch(queries?: unknown[] | unknown, options?: HttpSearchLimitOptions): Promise<HttpSearchRunResult>;
-declare function buildRetryQueries(keywords: unknown[], originalQuery: unknown, usedQueries: Set<string>): string[];
+declare function buildRetryQueries(keywords: unknown[] | undefined, originalQuery: unknown, usedQueries: Set<string>): string[];
 declare function runSearchPass(queryList: string[], limits: HttpSearchLimits, startedAt: number, failures: string[]): Promise<SearchPassResult>;
 declare const _default: {
     HTTP_SEARCH_ENDPOINTS: HttpSearchEndpoint[];

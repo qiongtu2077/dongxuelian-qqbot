@@ -12,7 +12,7 @@ function parseFrontmatterLines(frontmatterText = '', options = {}) {
     const rawMeta = {};
     const normalizeValue = typeof options.normalizeValue === 'function'
         ? options.normalizeValue
-        : value => String(value ?? '').trim();
+        : (value) => String(value ?? '').trim();
     const firstWins = options.firstWins !== false;
     for (const line of String(frontmatterText || '').split(/\r?\n/)) {
         if (!line.trim() || /^\s*#/.test(line))

@@ -204,8 +204,8 @@ async function writeGroupScenes(channelKey, data) {
 }
 function createSceneId(entry) {
     const d = new Date(entry.ts);
-    const pad = n => String(n).padStart(2, '0');
-    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const padSceneDatePart = (n) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}${padSceneDatePart(d.getMonth() + 1)}${padSceneDatePart(d.getDate())}_${padSceneDatePart(d.getHours())}${padSceneDatePart(d.getMinutes())}${padSceneDatePart(d.getSeconds())}`;
     const suffix = String(entry.messageId || entry.ts).replace(/[^a-zA-Z0-9]/g, '').slice(-6) || String(entry.ts).slice(-6);
     return `scene_${stamp}_${suffix}`;
 }

@@ -4,8 +4,8 @@
  * 边界: 不自动抓取聊天内容、不调用模型、不和 conversation summary 混用。
  * 状态: 无长期内存状态，按用户 JSON 文件持久化。
  */
-const fsp = require('fs/promises')
-const path = require('path')
+const fsp = require('fs/promises') as typeof import('fs/promises')
+const path = require('path') as typeof import('path')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 const { safeUserId, legacySafeUserId } = require('../core/utils') as typeof import('../core/utils')
 

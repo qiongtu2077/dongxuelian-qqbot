@@ -99,6 +99,7 @@ async function enqueueFileAnalysis(channelKey: string, messageId: string): Promi
 function drainQueue(): void {
   while (activeCount < MAX_CONCURRENT && queue.length > 0) {
     const task = queue.shift()
+    if (!task) continue
     activeCount++
     const key = taskKey(task.channelKey, task.messageId)
     const promise = runAnalysis(task)
@@ -119,7 +120,8 @@ async function downloadFile(url: string, destPath: string, redirectCount: number
     const mod = parsed.protocol === 'https:' ? https : http
     const timer = setTimeout(() => reject(new Error('download timeout')), DOWNLOAD_TIMEOUT_MS)
     const req: HttpRequestLike = mod.get(parsed, { timeout: DOWNLOAD_TIMEOUT_MS, headers: { 'User-Agent': 'Mozilla/5.0' } }, (res: HttpResponseLike) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+      const statusCode = res.statusCode || 0
+      if (statusCode >= 300 && statusCode < 400 && res.headers.location) {
         clearTimeout(timer)
         try {
           const location = Array.isArray(res.headers.location) ? res.headers.location[0] : res.headers.location
@@ -130,7 +132,7 @@ async function downloadFile(url: string, destPath: string, redirectCount: number
         }
         return
       }
-      if (res.statusCode !== 200) {
+      if (statusCode !== 200) {
         clearTimeout(timer)
         reject(new Error(`HTTP ${res.statusCode}`))
         return
@@ -258,7 +260,7 @@ async function runAnalysis({ channelKey, messageId }: FileAnalysisTask): Promise
       try { await fs.access(filePath) } catch { filePath = null }
     }
     if (!filePath) {
-      filePath = await downloadWithFallback(entry.url, entry.fileId, localPath, messageId)
+      filePath = await downloadWithFallback(entry.url || '', entry.fileId || '', localPath, messageId)
       if (filePath) await setLocalPath(channelKey, messageId, filePath)
     }
     if (!filePath) {
@@ -294,7 +296,8 @@ async function analyzeFileNow(channelKey: string, messageId: string): Promise<st
   if (!entry) return null
   if (entry.analyzed && entry.analysis) return entry.analysis
   const key = taskKey(channelKey, messageId)
-  if (inFlight.has(key)) return inFlight.get(key)
+  const existingPromise = inFlight.get(key)
+  if (existingPromise) return existingPromise
   const promise = runAnalysis({ channelKey, messageId })
   inFlight.set(key, promise)
   try {

@@ -59,7 +59,8 @@ async function loadRandomVoiceRateCache() {
 function getRandomVoiceRate(channelKey) {
     const cache = readRateFileSync();
     const key = String(channelKey || '');
-    return cache.has(key) ? cache.get(key) : DEFAULT_RANDOM_VOICE_RATE;
+    const cachedRate = cache.get(key);
+    return cachedRate !== undefined ? cachedRate : DEFAULT_RANDOM_VOICE_RATE;
 }
 async function saveRateCache(cache) {
     await writeJsonFile(RANDOM_VOICE_RATE_FILE, Object.fromEntries(cache));

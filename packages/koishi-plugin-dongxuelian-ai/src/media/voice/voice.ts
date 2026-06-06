@@ -107,7 +107,7 @@ async function downloadVoiceFile(url: string, destPath: string): Promise<string 
       try {
         const mod = parsed.protocol === 'https:' ? require('https') : require('http')
         timer = setTimeout(() => finish(null), 15000)
-        req = mod.get(parsed, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res: HttpResponseLike) => {
+        const currentReq: HttpRequestLike = mod.get(parsed, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res: HttpResponseLike) => {
           if (res.statusCode !== 200) { res.resume(); return finish(null) }
           const declared = parseInt(String(res.headers['content-length'] || ''), 10)
           if (Number.isFinite(declared) && declared > MAX_VOICE_BYTES) { res.resume(); return finish(null) }
@@ -128,7 +128,8 @@ async function downloadVoiceFile(url: string, destPath: string): Promise<string 
           })
           res.on('error', () => finish(null))
         })
-        req.on('error', () => finish(null))
+        req = currentReq
+        currentReq.on('error', () => finish(null))
       } catch { /* non-critical: network setup failure makes this voice unreadable */
         finish(null)
       }

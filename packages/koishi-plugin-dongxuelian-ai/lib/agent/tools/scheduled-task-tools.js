@@ -129,6 +129,8 @@ async function executeCreateScheduledTask(params = {}, context = {}) {
         if (delay > MAX_DELAY_MS)
             return '定时任务时间太远，最多支持 370 天内。';
         const cron = await registerOnceTask({ ...base, runAt });
+        if (!cron)
+            return '定时任务创建失败。';
         // L45: 一次性任务总开关关闭时如实说明不会触发，不给假成功回执（任务仍已保存）
         if (getAgentConfig().cron?.onceEnabled === false) {
             return `已保存定时任务：${cron.title || cron.id}，但一次性任务总开关当前未开启，不会自动触发。`;
@@ -139,6 +141,8 @@ async function executeCreateScheduledTask(params = {}, context = {}) {
     if (!schedule)
         return '周期定时任务需要提供 cron schedule。';
     const cron = await registerCron({ ...base, schedule, status: 'active', enabled: true });
+    if (!cron)
+        return '定时任务创建失败。';
     // L45: 周期任务总开关关闭时如实说明不会调度，不给假成功回执（任务仍已保存）
     if (getAgentConfig().cron?.enabled === false) {
         return `已保存周期任务：${cron.title || cron.id}，但周期任务总开关当前未开启，不会自动触发。`;

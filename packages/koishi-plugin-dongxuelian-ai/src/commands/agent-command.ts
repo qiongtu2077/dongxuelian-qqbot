@@ -78,12 +78,13 @@ function asAgentReplyLike(value: unknown): AgentReplyLike {
 
 async function handleAgentCommand(session: AgentSessionLike, ctx: CommandContextLike, state: AgentCommandState, options: AgentCommandOptions = {}) {
   const { plain, channelKey, currentUserId, adminCommandMatched } = state
+  const adminSession = session as Parameters<typeof hasAdminPermission>[0]
   const mode = options.mode || 'all'
 
   if (mode !== 'runtime') {
     const toolModeMatch = plain.match(/^(?:东雪莲)?工具模式\s+(auto|confirm|block|config)$/)
     if (toolModeMatch) {
-      if (!hasAdminPermission(session)) return handled('只有管理员能操作此命令。')
+      if (!hasAdminPermission(adminSession)) return handled('只有管理员能操作此命令。')
       const m = toolModeMatch[1] as ToolMode
       const safety = require('../agent/safety') as typeof import('../agent/safety')
       safety.setMode(m)
@@ -93,7 +94,7 @@ async function handleAgentCommand(session: AgentSessionLike, ctx: CommandContext
 
     const toolRouteMatch = plain.match(/^(?:东雪莲)?工具自动路由\s*(开|关|on|off)$/)
     if (toolRouteMatch) {
-      if (!hasAdminPermission(session)) return handled('只有管理员能操作此命令。')
+      if (!hasAdminPermission(adminSession)) return handled('只有管理员能操作此命令。')
       const enabled = /^(?:开|on)$/i.test(toolRouteMatch[1])
       const agentConfig = require('../agent/config') as typeof import('../agent/config')
       const config = agentConfig.getAgentConfig()
@@ -104,7 +105,7 @@ async function handleAgentCommand(session: AgentSessionLike, ctx: CommandContext
 
     const toolSwitchMatch = plain.match(/^(?:东雪莲)?工具开关\s+(qq|dashboard)\s+([a-zA-Z0-9_-]+)\s+(开|关|on|off)$/)
     if (toolSwitchMatch) {
-      if (!hasAdminPermission(session)) return handled('只有管理员能操作此命令。')
+      if (!hasAdminPermission(adminSession)) return handled('只有管理员能操作此命令。')
       const [, channel, toolName, rawEnabled] = toolSwitchMatch
       if (channel === 'qq' && /^(?:execute_shell|read_file|list_files|find_files|write_file|edit_file|append_file|grep_search|execute_javascript|browser_action|query_logs)$/i.test(toolName)) {
         return handled('QQ Agent 不允许开启服务器/文件/浏览器高权限工具；请在 Agent Console 使用 Dashboard Agent，并通过审批执行危险操作。')
@@ -118,7 +119,7 @@ async function handleAgentCommand(session: AgentSessionLike, ctx: CommandContext
 
     const skillSwitchMatch = plain.match(/^(?:东雪莲)?工具Skill\s+(开|关|on|off)\s+(.+)$/i)
     if (skillSwitchMatch) {
-      if (!hasAdminPermission(session)) return handled('只有管理员能操作此命令。')
+      if (!hasAdminPermission(adminSession)) return handled('只有管理员能操作此命令。')
       const enabled = /^(?:开|on)$/i.test(skillSwitchMatch[1])
       const skillName = skillSwitchMatch[2].trim()
       const skillHub = require('../agent/skill-hub') as typeof import('../agent/skill-hub')
@@ -168,7 +169,7 @@ async function handleAgentCommand(session: AgentSessionLike, ctx: CommandContext
     const userName = sanitizeUserName(
       session.author?.nick || session.author?.name || session.username || '群友'
     )
-    const isAdmin = hasAdminPermission(session)
+    const isAdmin = hasAdminPermission(adminSession)
     try {
       const router = require('../agent/router') as typeof import('../agent/router')
       const searchRunOptions = router.buildExplicitSearchRunOptions(query)
@@ -202,7 +203,7 @@ async function handleAgentCommand(session: AgentSessionLike, ctx: CommandContext
     if (p) {
       if (p.channelKey !== channelKey || p.userId !== currentUserId) return handled('这个确认 ID 不属于当前会话。')
       const engine = require('../agent/engine') as typeof import('../agent/engine')
-      const result = asAgentReplyLike(await engine.resumePending({ channelKey, userId: currentUserId, channel: 'qq', expectedId: pendingId, bot: session.bot, isAdmin: hasAdminPermission(session) }))
+      const result = asAgentReplyLike(await engine.resumePending({ channelKey, userId: currentUserId, channel: 'qq', expectedId: pendingId, bot: session.bot, isAdmin: hasAdminPermission(adminSession) }))
       if (!result.ok && result.message) return handled(`执行失败：${result.message || result.error || '未知错误'}`)
       return handled(result.reply || '(Agent 未获取到有效回复)')
     }

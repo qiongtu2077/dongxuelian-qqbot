@@ -57,6 +57,8 @@ async function executeCreateReminder(params = {}, context = {}) {
         createdFrom: context.channel || 'qq',
         runAt,
     });
+    if (!cron)
+        return '提醒创建失败。';
     // L45: 一次性任务总开关关闭时如实说明不会触发，不给假成功回执（提醒仍已保存）
     if (getAgentConfig().cron?.onceEnabled === false) {
         return `已保存提醒：${prompt}，但一次性任务总开关当前未开启，不会触发。`;
@@ -70,7 +72,7 @@ function isReminderVisibleToContext(cron = { id: '' }, context = {}) {
         return false;
     if (userId && String(cron.createdBy || cron.targetUserId || '') && ![cron.createdBy, cron.targetUserId].map(String).includes(userId))
         return false;
-    return cron.mode === 'once' && cron.enabled !== false && !['done', 'cancelled'].includes(cron.status);
+    return cron.mode === 'once' && cron.enabled !== false && !['done', 'cancelled'].includes(String(cron.status || ''));
 }
 async function executeListReminders(params = {}, context = {}) {
     const limit = Math.max(1, Math.min(parseInt(String(params.limit), 10) || 10, 20));

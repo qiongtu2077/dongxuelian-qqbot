@@ -33,8 +33,7 @@ function asReplySession(session) {
 }
 function logStaleRandomSkip(ctx, stage, options = {}) {
     try {
-        const info = options.randomFreshness || {};
-        ctx.logger('dongxuelian-ai').info(`random reply stale skipped at ${stage}: channel=${info.channelKey || ''}`);
+        ctx.logger('dongxuelian-ai').info(`random reply stale skipped at ${stage}: channel=${options.randomFreshness?.channelKey || ''}`);
     }
     catch { /* non-critical: diagnostic logging only */ }
 }

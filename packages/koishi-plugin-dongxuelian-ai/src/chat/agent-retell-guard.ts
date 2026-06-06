@@ -33,7 +33,8 @@ interface GuardOptions {
 function collectAgentMaterial(agentResult: AgentRetellResult = {}): string {
   const parts: string[] = []
   if (agentResult && agentResult.reply) parts.push(String(agentResult.reply))
-  for (const item of Array.isArray(agentResult && agentResult.toolResults) ? agentResult.toolResults : []) {
+  const toolResults = Array.isArray(agentResult.toolResults) ? agentResult.toolResults : []
+  for (const item of toolResults) {
     if (!item) continue
     if (item.name) parts.push(`[${item.name}]`)
     if (item.result) parts.push(String(item.result))

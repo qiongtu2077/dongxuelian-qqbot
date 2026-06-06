@@ -82,7 +82,7 @@ declare function buildPersonaProfileBlock(input?: PersonaProfileBlock & {
 declare function reinforcePersonaProfileBlock(existing?: PersonaProfileBlock, incoming?: PersonaProfileBlock, options?: PersonaProfileOptions): {
     matched: boolean;
     reason: string;
-    block: PersonaProfileBlock;
+    block: PersonaProfileBlock | null;
 } | {
     matched: boolean;
     reason: string;
@@ -175,9 +175,9 @@ declare function summarizePersonaProfileBlocks(profile?: PersonaProfile): {
     byBlock: ProfileCounts;
     byStatus: ProfileCounts;
     diagnostics: {
-        level: unknown;
-        code: unknown;
-        source: unknown;
+        level: {};
+        code: {};
+        source: {};
     }[];
 };
 declare function buildPersonaProfileSourceDiagnostic(profile?: PersonaProfile, options?: PersonaProfileOptions): {

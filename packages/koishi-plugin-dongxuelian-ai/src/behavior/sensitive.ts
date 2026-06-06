@@ -50,6 +50,10 @@ interface SensitiveCounterEntry {
   ts: number
 }
 
+interface SensitiveLogContext {
+  logger?: (name: string) => { info?: (message: string) => void }
+}
+
 const channelMsgCount: Map<string, SensitiveCounterEntry> = new Map()
 const lastSensitiveAlert: Map<string, number> = new Map()
 let politicalDetectCache: Set<string> | null = null
@@ -63,6 +67,13 @@ function getSensitiveErrorMessage(error: unknown): string {
 
 function warnSensitiveBackgroundFailure(action: string, error: unknown): void {
   console.warn(`[dongxuelian-ai] sensitive ${action} failed: ${getSensitiveErrorMessage(error)}`)
+}
+
+function toSensitiveLogContext(ctx: unknown): SensitiveLogContext | null {
+  if (!ctx || typeof ctx !== 'object') return null
+  const logger = (ctx as { logger?: unknown }).logger
+  if (logger !== undefined && typeof logger !== 'function') return null
+  return ctx as SensitiveLogContext
 }
 
 async function getPoliticalDetectList(): Promise<Set<string>> {
@@ -136,35 +147,37 @@ async function handleSensitiveMessage(session: SensitiveSession, ctx: unknown, p
     lastEmotionCache,
   } = params
 
+  const normalizedChannelKey = String(channelKey || '')
+  const logCtx = toSensitiveLogContext(ctx)
   const detectList = await getPoliticalDetectList()
-  const isDetectOn = detectList.has(channelKey)
+  const isDetectOn = detectList.has(normalizedChannelKey)
   const normalizedPlain = String(plain || '').normalize('NFKC').replace(/[\u200B-\u200F\u2028-\u202F\u2060\uFEFF]/g, '')
   if (inGuild && isDetectOn && !analyzed.hasVisual && SENSITIVE_KEYWORDS_RE.test(normalizedPlain)) {
-    await notifySensitiveHandlers(session, channelKey, { throttle: true })
-    logDebug(ctx, 'sensitive', `sensitive topic channel=${channelKey} textLen=${String(plain || '').length}`)
-    channelSharedCache.delete(channelKey)
+    await notifySensitiveHandlers(session, normalizedChannelKey, { throttle: true })
+    logDebug(logCtx, 'sensitive', `sensitive topic channel=${normalizedChannelKey} textLen=${String(plain || '').length}`)
+    channelSharedCache.delete(normalizedChannelKey)
     clearUserConversationHistory(session)
-    channelMsgCount.delete(channelKey)
-    if (lastEmotionCache && typeof lastEmotionCache.delete === 'function') lastEmotionCache.delete(channelKey)
+    channelMsgCount.delete(normalizedChannelKey)
+    if (lastEmotionCache && typeof lastEmotionCache.delete === 'function') lastEmotionCache.delete(normalizedChannelKey)
   }
 
   if (inGuild && isDetectOn && !analyzed.hasVisual && plain) {
-    saveSensitiveCache(channelKey, plain, userName, currentUserId)
+    saveSensitiveCache(normalizedChannelKey, plain, userName, currentUserId)
   }
 
   if (isDetectOn && inGuild && !analyzed.hasVisual) {
-    const current = channelMsgCount.get(channelKey)
+    const current = channelMsgCount.get(normalizedChannelKey)
     const count = (current?.count || 0) + 1
-    channelMsgCount.set(channelKey, { count, ts: Date.now() })
-    if (count % 50 === 0) analyzeChannelSensitive(channelKey).catch((error) => warnSensitiveBackgroundFailure('periodic summary', error))
+    channelMsgCount.set(normalizedChannelKey, { count, ts: Date.now() })
+    if (count % 50 === 0) analyzeChannelSensitive(normalizedChannelKey).catch((error) => warnSensitiveBackgroundFailure('periodic summary', error))
   }
 
-  if (isDetectOn && pendingSensitiveAlert.get(channelKey)) {
-    pendingSensitiveAlert.delete(channelKey)
-    channelSharedCache.delete(channelKey)
-    channelMsgCount.delete(channelKey)
-    if (lastEmotionCache && typeof lastEmotionCache.delete === 'function') lastEmotionCache.delete(channelKey)
-    await notifySensitiveHandlers(session, channelKey, { throttle: false })
+  if (isDetectOn && pendingSensitiveAlert.get(normalizedChannelKey)) {
+    pendingSensitiveAlert.delete(normalizedChannelKey)
+    channelSharedCache.delete(normalizedChannelKey)
+    channelMsgCount.delete(normalizedChannelKey)
+    if (lastEmotionCache && typeof lastEmotionCache.delete === 'function') lastEmotionCache.delete(normalizedChannelKey)
+    await notifySensitiveHandlers(session, normalizedChannelKey, { throttle: false })
   }
 
   return { isDetectOn }

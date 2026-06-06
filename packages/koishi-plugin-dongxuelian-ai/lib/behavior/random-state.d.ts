@@ -22,7 +22,7 @@ interface RandomFreshness {
 interface RandomSendOptions {
     randomFreshness?: RandomFreshness;
     forceQuote?: boolean;
-    quoteMessageId?: string;
+    quoteMessageId?: string | number;
     [key: string]: unknown;
 }
 declare function getRandomMissCount(channelKey: string): number;

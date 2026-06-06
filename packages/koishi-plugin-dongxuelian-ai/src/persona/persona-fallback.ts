@@ -53,7 +53,7 @@ function isUnsafeFallbackText(session: FallbackSession | undefined, text: string
     hasBannedOutput(value) ||
     isUnsafeThinkingReply(value) ||
     hasInternalContextLeak(value) ||
-    shouldRetryRepeatedReply(session, value)
+    shouldRetryRepeatedReply(session as Parameters<typeof shouldRetryRepeatedReply>[0], value)
 }
 
 function cleanPersonaFallbackReply(session: FallbackSession | undefined, text: string = '', userName: string = '用户', maxChars: number = 120): string {

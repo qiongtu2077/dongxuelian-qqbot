@@ -110,7 +110,7 @@ async function handleIncomingImage({ ctx, session, analyzed, plain, content, cha
   const storableUrl = /^https?:\/\//i.test(imgUrl) ? imgUrl : contentImageRef.url
   const storableFile = imgFile || contentImageRef.file || ''
   await storeImageUrl(channelKey, session.messageId, storableUrl || '', storableFile || null, imageMeta)
-  logStickerShadowIngestDiagnostic(ctx, {
+  logStickerShadowIngestDiagnostic(ctx as Parameters<typeof logStickerShadowIngestDiagnostic>[0], {
     session,
     channelKey,
     userId: imageMeta.userId,

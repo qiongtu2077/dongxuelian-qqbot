@@ -67,8 +67,9 @@ async function handleChatToolFlow({ reply, messages = [], options = {}, cleanInp
         toolContext.userText = cleanInput;
         const { results, heavyTools } = await handleChatToolCalls(reply.tool_calls, toolContext);
         hasFileToolEvidence = toolResultsIncludeFileEvidence(results);
+        const targetFile = fileFollowupState.targetFile;
         const fileToolEvidenceReply = hasFileToolEvidence
-            ? buildFileEvidenceReply(selectFileEvidenceResult(results), fileFollowupState.targetFile)
+            ? buildFileEvidenceReply(selectFileEvidenceResult(results), targetFile)
             : '';
         if (heavyTools.length > 0) {
             if (externalToolsDenied(cleanInput)) {
@@ -258,7 +259,8 @@ async function handleChatToolFlow({ reply, messages = [], options = {}, cleanInp
         options,
     }));
     if (fileEvidence) {
-        const evidenceReply = buildFileEvidenceReply(String(fileEvidence), fileFollowupState.targetFile);
+        const targetFile = fileFollowupState.targetFile;
+        const evidenceReply = buildFileEvidenceReply(String(fileEvidence), targetFile);
         if (evidenceReply) {
             reply = evidenceReply;
             hasFileToolEvidence = true;

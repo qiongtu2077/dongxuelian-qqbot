@@ -92,6 +92,18 @@ const { handleAgentAutoRoute, } = require('./routing/agent-auto-route-flow');
 const { sendChatReplyFlow, } = require('./chat/chat-send-flow'); // chat 回复发送流水
 const { channelMissCount, incrementRandomMiss, resetRandomMiss, getRandomTriggerRate: getRandomTriggerRateFromState, isRandomCooldownActive, markRandomReplySent, getRandomMuteRemaining, muteRandomChannel, isRandomMuted, getChannelMessageVersion, bumpChannelMessageVersion, getExplicitInteractionVersion, bumpExplicitInteractionVersion, takePendingRandom, setPendingRandom, cancelPendingRandom, buildRandomSendOptions, isRandomReplyFresh, isSafeSendReplyFresh, } = require('./behavior/random-state'); // 随机回复状态、pending timer 与 freshness
 const { buildAmbientWaterSendOptions } = require('./behavior/random-reply-mode'); // 随机非锚定水群发送策略
+const configureAgentQueueForFlows = (queueConfig) => {
+    configureAgentQueue(queueConfig);
+};
+const callOpenAIForHandler = (messages, stream, options) => {
+    return callOpenAI(messages, !!stream, options || {});
+};
+const enqueueAgentTaskForChatResult = async (input) => {
+    return await enqueueAgentTask(input);
+};
+const enqueueAgentTaskForAutoRoute = (input) => {
+    return enqueueAgentTask(input);
+};
 function getIndexErrorMessage(error) {
     return error instanceof Error ? error.message : String(error?.message || '');
 }
@@ -186,7 +198,7 @@ function apply(ctx) {
             return next();
         }
         plain = await handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt });
-        const currentUserId = session.userId || session.author?.id || session.username;
+        const currentUserId = String(session.userId || session.author?.id || session.username || '');
         const userName = sanitizeUserName(session.author?.nick ||
             session.author?.name ||
             session.username ||
@@ -229,7 +241,7 @@ function apply(ctx) {
         const commandResult = await handleCommand(session, ctx, {
             plain, inGuild, channelKey, currentUserId, adminCommandMatched,
             loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache,
-            callOpenAI, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus,
+            callOpenAI: callOpenAIForHandler, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus,
             getThinkingEnabled,
             setThinkingEnabled,
             resetConfigCache,
@@ -254,9 +266,10 @@ function apply(ctx) {
             .filter(userId => userId && userId !== String(session.selfId || session.bot?.selfId || ''));
         const personaResolution = resolvePersona(channelKey, currentUserId);
         const currentPersonaName = personaResolution.name;
+        const currentPersonaNameText = currentPersonaName || '';
         const groupPersonaName = getGroupPersonaName(channelKey);
-        const randomPersonaHighRisk = isPersonaSwitchRisky(personaResolution, groupPersonaName);
-        const personaWillContent = currentPersonaName ? loadPersonalSkill(currentPersonaName) : null;
+        const randomPersonaHighRisk = isPersonaSwitchRisky({ source: personaResolution.source, name: currentPersonaNameText }, groupPersonaName);
+        const personaWillContent = currentPersonaName ? loadPersonalSkill(currentPersonaName) || undefined : undefined;
         const nameMentioned = !currentPersonaName && /莲莲|东雪莲/.test(plain);
         const inRandomWhitelist = getRandomWhitelistStatus(channelKey);
         let isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply;
@@ -266,7 +279,7 @@ function apply(ctx) {
             randomCooldownActive = true;
             isRandomCandidate = false;
         }
-        const willFactor = calculateWillFactor(channelKey, currentPersonaName, channelSharedCache, personaWillContent);
+        const willFactor = calculateWillFactor(channelKey, currentPersonaNameText, channelSharedCache, personaWillContent);
         const userText = normalizeText(plain);
         const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId });
         const sharedRecordText = resolveSharedRecordText(plain, analyzed);
@@ -303,8 +316,8 @@ function apply(ctx) {
         if (randomTriggered && isRandomCandidate && inGuild && !directAt && !nameMentioned) {
             const recentMsgs = channelSharedCache.get(channelKey)
                 ?.filter(e => e.userId === currentUserId && e.role === 'user')
-                ?.slice(-2);
-            if (recentMsgs?.length >= 2 && (Date.now() - (recentMsgs[recentMsgs.length - 1]?.ts || 0)) < 10000) {
+                ?.slice(-2) || [];
+            if (recentMsgs.length >= 2 && (Date.now() - (recentMsgs[recentMsgs.length - 1]?.ts || 0)) < 10000) {
                 randomTriggered = false;
                 delayedRandomScheduled = true;
                 cancelPendingRandom(channelKey, 'replace-delayed-random');
@@ -347,8 +360,8 @@ function apply(ctx) {
                                 resolveBot,
                                 chat: chat,
                                 agentEngine,
-                                enqueueAgentTask,
-                                configureAgentQueue,
+                                enqueueAgentTask: enqueueAgentTaskForChatResult,
+                                configureAgentQueue: configureAgentQueueForFlows,
                             });
                             if (reply) {
                                 reply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply;
@@ -565,12 +578,12 @@ function apply(ctx) {
                     resolveBot,
                     chat,
                     agentEngine,
-                    enqueueAgentTask,
-                    configureAgentQueue,
+                    enqueueAgentTask: enqueueAgentTaskForAutoRoute,
+                    configureAgentQueue: configureAgentQueueForFlows,
                     retellAgentResult: retellAgentResult,
                 });
                 if (autoRouteResult.handled) {
-                    return safeSendReplyWithFreshness(ctx, liveSession, autoRouteResult.reply, randomTriggered, resolveBot, randomSendOptions);
+                    return safeSendReplyWithFreshness(ctx, liveSession, autoRouteResult.reply || '', randomTriggered, resolveBot, randomSendOptions);
                 }
                 const chatMeta = {};
                 const chatResult = await chat(liveSession, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, directAt, nameMentioned, meta: chatMeta });
@@ -587,8 +600,8 @@ function apply(ctx) {
                     searchContext,
                     chat: chat,
                     agentEngine,
-                    enqueueAgentTask,
-                    configureAgentQueue,
+                    enqueueAgentTask: enqueueAgentTaskForChatResult,
+                    configureAgentQueue: configureAgentQueueForFlows,
                 });
                 if (!reply)
                     return;
@@ -606,7 +619,7 @@ function apply(ctx) {
                     inGuild,
                     chatMeta,
                     randomSendOptions,
-                    currentPersonaName,
+                    currentPersonaName: currentPersonaName || undefined,
                     resolveBot,
                     safeSendReplyWithFreshness: safeSendReplyWithFreshness,
                 });

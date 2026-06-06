@@ -8,7 +8,7 @@
  * 状态: lastHarvestAt: Map<safeChannelKey, number> 仅供观测；不持有候选缓存。
  */
 const fs = require('fs')
-const fsp = require('fs/promises')
+const fsp = require('fs/promises') as typeof import('fs/promises')
 const path = require('path')
 const { DATA_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE,
   PROVIDERS, GLM_KEY_FILE, DASHSCOPE_KEY_FILE } = require('../../core/constants') as typeof import('../../core/constants')
@@ -230,12 +230,12 @@ async function runExpressionHarvestForChannel(ctx: HarvestContext | null, channe
   }
   try {
     const file = TODAY_CACHE_PREFIX + safeChannelKey + '.json'
-    const stat = await fsp.stat(file).catch(() => null)
+    const stat = await fsp.stat(file).catch((): null => null)
     if (!stat || !stat.isFile() || stat.size > EXPRESSION_ABSTRACTOR_TODAY_CACHE_FILE_BYTES) {
       summary.error = 'no_today_cache'
       return summary
     }
-    const data = await readJsonFile(file, null, { maxBytes: EXPRESSION_ABSTRACTOR_TODAY_CACHE_FILE_BYTES }).catch(() => null)
+    const data = await readJsonFile<{ messages?: HarvestMessage[] } | null>(file, null, { maxBytes: EXPRESSION_ABSTRACTOR_TODAY_CACHE_FILE_BYTES }).catch((): null => null)
     const messages: HarvestMessage[] = data && typeof data === 'object' && Array.isArray(data.messages) ? data.messages : []
     summary.totalInput = messages.length
     if (!messages.length) return summary
@@ -247,12 +247,13 @@ async function runExpressionHarvestForChannel(ctx: HarvestContext | null, channe
       botUserIds: selfUserIds,
       botName: options.botName || '',
     })
-    summary.kept = Array.isArray(filtered.kept) ? filtered.kept.length : 0
+    const keptMessages = Array.isArray(filtered.kept) ? filtered.kept : []
+    summary.kept = keptMessages.length
     if (summary.kept < 5) return summary
     const callModel = options.callModel || abstractorCallModel
     const promptMessages: AbstractorMessage[] = [
       { role: 'system', content: abstractorBuildSystemPrompt() },
-      { role: 'user', content: abstractorBuildUserPayload(filtered.kept) },
+      { role: 'user', content: abstractorBuildUserPayload(keptMessages) },
     ]
     summary.abstractCalls += 1
     let raw = ''
@@ -271,7 +272,7 @@ async function runExpressionHarvestForChannel(ctx: HarvestContext | null, channe
     summary.abstractOk += 1
     const contributorIds = []
     const seenIds = new Set()
-    for (const entry of filtered.kept) {
+    for (const entry of keptMessages) {
       const id = String(entry && entry.userId ? entry.userId : '').trim()
       if (!id || seenIds.has(id)) continue
       seenIds.add(id)
@@ -298,11 +299,11 @@ async function runExpressionHarvestForChannel(ctx: HarvestContext | null, channe
 }
 
 async function abstractorListEligibleChannels(): Promise<string[]> {
-  const whitelist = await readJsonFile(SUMMARY_WHITELIST_FILE, [], { maxBytes: EXPRESSION_ABSTRACTOR_WHITELIST_BYTES }).catch(() => [])
+  const whitelist = await readJsonFile<unknown[]>(SUMMARY_WHITELIST_FILE, [], { maxBytes: EXPRESSION_ABSTRACTOR_WHITELIST_BYTES }).catch((): unknown[] => [])
   const allowed: Set<string> = new Set()
   if (Array.isArray(whitelist)) {
     for (const key of whitelist) {
-      const safe = expressionPoolSafeChannelKey(key)
+      const safe = expressionPoolSafeChannelKey(String(key || ''))
       if (safe && safe !== 'unknown') allowed.add(safe)
     }
   }

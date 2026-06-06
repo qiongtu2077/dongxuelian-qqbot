@@ -64,7 +64,7 @@ async function downloadVoiceFile(url, destPath) {
             try {
                 const mod = parsed.protocol === 'https:' ? require('https') : require('http');
                 timer = setTimeout(() => finish(null), 15000);
-                req = mod.get(parsed, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+                const currentReq = mod.get(parsed, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
                     if (res.statusCode !== 200) {
                         res.resume();
                         return finish(null);
@@ -101,7 +101,8 @@ async function downloadVoiceFile(url, destPath) {
                     });
                     res.on('error', () => finish(null));
                 });
-                req.on('error', () => finish(null));
+                req = currentReq;
+                currentReq.on('error', () => finish(null));
             }
             catch { /* non-critical: network setup failure makes this voice unreadable */
                 finish(null);

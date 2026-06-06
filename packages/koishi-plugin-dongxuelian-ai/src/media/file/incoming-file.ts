@@ -5,7 +5,7 @@
  * 状态: 无模块级缓存；文件缓存状态归属 file-store。
  */
 const path = require('path')
-const fsp = require('fs/promises')
+const fsp = require('fs/promises') as typeof import('fs/promises')
 const { safeChannelKey } = require('../../core/utils') as typeof import('../../core/utils')
 
 interface IncomingCacheEntry {
@@ -26,9 +26,9 @@ function cacheSmallFileBackground(channelKey: string, messageId: string, url: st
   const destFile = path.join(cacheDir, `${safeId}.${ext || 'bin'}`)
   fsp.mkdir(cacheDir, { recursive: true })
     .then(() => downloadFile(url, destFile))
-    .then((savedPath) => setLocalPath(channelKey, messageId, savedPath))
+    .then((savedPath: string) => setLocalPath(channelKey, messageId, savedPath))
     .then(() => fsp.readdir(cacheDir))
-    .then(async (names) => {
+    .then(async (names: string[]) => {
       if (names.length <= 10) return
       const entries: IncomingCacheEntry[] = []
       for (const n of names) {
@@ -44,7 +44,7 @@ function cacheSmallFileBackground(channelKey: string, messageId: string, url: st
         }
       }
     })
-    .catch((error) => {
+    .catch((error: unknown) => {
       console.warn(`[incoming-file] cache small file failed: ${getIncomingFileErrorMessage(error)}`)
     })
 }

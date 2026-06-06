@@ -143,7 +143,7 @@ function clearRandomPendingState() {
 function buildRandomSendOptions(context = {}) {
     if (!context.randomTriggered)
         return {};
-    const channelKey = normalizeChannelKey(context.channelKey);
+    const channelKey = normalizeChannelKey(context.channelKey || '');
     const triggerVersion = Number(context.triggerMessageVersion || 0);
     const explicitVersion = Number(context.explicitVersion || 0);
     const triggerAt = Number(context.triggerAt || 0);

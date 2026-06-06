@@ -184,13 +184,14 @@ async function runExpressionHarvestForChannel(ctx, channelKey, options = {}) {
             botUserIds: selfUserIds,
             botName: options.botName || '',
         });
-        summary.kept = Array.isArray(filtered.kept) ? filtered.kept.length : 0;
+        const keptMessages = Array.isArray(filtered.kept) ? filtered.kept : [];
+        summary.kept = keptMessages.length;
         if (summary.kept < 5)
             return summary;
         const callModel = options.callModel || abstractorCallModel;
         const promptMessages = [
             { role: 'system', content: abstractorBuildSystemPrompt() },
-            { role: 'user', content: abstractorBuildUserPayload(filtered.kept) },
+            { role: 'user', content: abstractorBuildUserPayload(keptMessages) },
         ];
         summary.abstractCalls += 1;
         let raw = '';
@@ -210,7 +211,7 @@ async function runExpressionHarvestForChannel(ctx, channelKey, options = {}) {
         summary.abstractOk += 1;
         const contributorIds = [];
         const seenIds = new Set();
-        for (const entry of filtered.kept) {
+        for (const entry of keptMessages) {
             const id = String(entry && entry.userId ? entry.userId : '').trim();
             if (!id || seenIds.has(id))
                 continue;
@@ -247,7 +248,7 @@ async function abstractorListEligibleChannels() {
     const allowed = new Set();
     if (Array.isArray(whitelist)) {
         for (const key of whitelist) {
-            const safe = expressionPoolSafeChannelKey(key);
+            const safe = expressionPoolSafeChannelKey(String(key || ''));
             if (safe && safe !== 'unknown')
                 allowed.add(safe);
         }

@@ -2,8 +2,8 @@
  * MODULE: 文件内容搜索工具。
  * 安全：限定工作区目录，跳过二进制和大文件，限制返回行数。
  */
-const fs = require('fs/promises')
-const path = require('path')
+const fs = require('fs/promises') as typeof import('fs/promises')
+const path = require('path') as typeof import('path')
 const { assertExistingAgentPathInsideRoots, resolveAgentDefaultRoot, isAgentPathInside } = require('../path-guard') as typeof import('../path-guard')
 
 interface GrepSearchParams {
@@ -94,12 +94,12 @@ export = {
     else if (stat.isDirectory()) await collectFiles(checked.abs, grepWildcardToRegExp(params.glob || '*'), files)
     else throw new Error(`不支持的搜索路径：${target}`)
 
-    const matches = []
+    const matches: string[] = []
     for (const file of files) {
       if (!isAgentPathInside(file, checked.real) && stat.isDirectory()) continue
-      const st = await fs.stat(file).catch(() => null) as FileStatLike | null
+      const st = await fs.stat(file).catch((): null => null) as FileStatLike | null
       if (!st || !st.isFile() || st.size > MAX_FILE_BYTES) continue
-      const buffer = await fs.readFile(file).catch(() => null)
+      const buffer = await fs.readFile(file).catch((): null => null)
       if (!buffer || buffer.includes(0)) continue
       const lines = buffer.toString('utf8').split(/\r?\n/)
       for (let i = 0; i < lines.length; i++) {

@@ -517,7 +517,7 @@ function getSearchCapability(config: SearchConfig = {}): { supported: boolean; m
 
 function formatSearchStatus(config: SearchConfig = {}): string {
   const c = getSearchCapability(config)
-  return `东雪莲联网：${config.searchEnabled ? '开' : '关'}\n当前模型：${getModelDisplayName(config.provider, config.model)}\n接口模式：${c.label}\n搜索能力：${c.supported ? '支持' : '不支持'}`
+  return `东雪莲联网：${config.searchEnabled ? '开' : '关'}\n当前模型：${getModelDisplayName(config.provider as string, config.model as string)}\n接口模式：${c.label}\n搜索能力：${c.supported ? '支持' : '不支持'}`
 }
 
 function trimReply(text: string = '', maxChars: number = MAX_OUTPUT_CHARS_FRIENDLY): string {
@@ -598,7 +598,7 @@ function splitSentences(text: string): string[] {
   const raw = normalizeText(text)
   if (!raw) return [raw]
   const segments = raw.split(/(?<=[。！？!?]+|\.{6,})/)
-  const parts = []
+  const parts: string[] = []
   let carry = ''
   let lastSkippedSplit = false
   for (const segment of segments) {
@@ -748,7 +748,7 @@ function splitReplyForQQBubbles(text: string, options: SplitReplyOptions = {}): 
     .map(part => part.replace(/[ \t]*\n[ \t]*/g, '\n').trim())
     .filter(Boolean)
   const natural = paragraphs.length ? paragraphs : [raw]
-  const parts = []
+  const parts: string[] = []
   if (natural.length > 1) {
     for (const paragraph of natural) {
       if (paragraph.length > QQ_BUBBLE_HARD_CHARS) pushWrappedBubble(parts, paragraph, softChars)
@@ -770,7 +770,7 @@ function todayCst(date: Date = new Date()): string {
     month: '2-digit',
     day: '2-digit',
   }).formatToParts(date)
-  const pickYmd = (t) => parts.find((p) => p.type === t)?.value
+  const pickYmd = (t: string) => parts.find((p) => p.type === t)?.value
   return `${pickYmd('year')}-${pickYmd('month')}-${pickYmd('day')}`
 }
 
@@ -783,7 +783,7 @@ function formatShanghaiTime24h(ts: number = Date.now()): string {
     second: '2-digit',
     hour12: false,
   }).formatToParts(new Date(ts))
-  const pickHms = (t) => p.find((x) => x.type === t)?.value
+  const pickHms = (t: string) => p.find((x) => x.type === t)?.value
   return `${pickHms('hour')}:${pickHms('minute')}:${pickHms('second')}`
 }
 

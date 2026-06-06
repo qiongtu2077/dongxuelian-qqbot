@@ -19,7 +19,8 @@ function collectAgentMaterial(agentResult = {}) {
     const parts = [];
     if (agentResult && agentResult.reply)
         parts.push(String(agentResult.reply));
-    for (const item of Array.isArray(agentResult && agentResult.toolResults) ? agentResult.toolResults : []) {
+    const toolResults = Array.isArray(agentResult.toolResults) ? agentResult.toolResults : [];
+    for (const item of toolResults) {
         if (!item)
             continue;
         if (item.name)

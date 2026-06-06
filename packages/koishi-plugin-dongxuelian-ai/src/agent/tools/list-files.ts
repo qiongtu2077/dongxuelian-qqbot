@@ -2,8 +2,8 @@
  * MODULE: 文件列表工具。
  * 安全：限定工作区目录，只列出目录项元数据。
  */
-const fs = require('fs/promises')
-const path = require('path')
+const fs = require('fs/promises') as typeof import('fs/promises')
+const path = require('path') as typeof import('path')
 const { assertExistingAgentPathInsideRoots, resolveAgentDefaultRoot } = require('../path-guard') as typeof import('../path-guard')
 
 interface ListFilesParams {
@@ -47,7 +47,7 @@ export = {
     const requested = params.path ? String(params.path) : await resolveAgentDefaultRoot()
     const { abs: target } = await assertExistingAgentPathInsideRoots(requested, '目录')
 
-    const stat = await fs.stat(target).catch(() => null) as FileStatLike | null
+    const stat = await fs.stat(target).catch((): null => null) as FileStatLike | null
     if (!stat) throw new Error(`目录不存在：${target}`)
     if (!stat.isDirectory()) throw new Error(`不是目录：${target}`)
 

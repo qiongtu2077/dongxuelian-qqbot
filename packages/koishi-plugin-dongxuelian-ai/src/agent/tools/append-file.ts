@@ -15,7 +15,7 @@ interface AppendFileParams {
 interface FileStatLike {
   size: number
   isDirectory: () => boolean
-  isSymbolicLink?: () => boolean
+  isSymbolicLink: () => boolean
 }
 
 const MAX_APPEND_BYTES = 128 * 1024
@@ -44,9 +44,9 @@ export = {
 
     const { abs } = await assertNewAgentPathInsideRoots(filePath, '路径', !!params.createDirectories)
     assertNotWriteBlockedBasename(abs, '路径')
-    const linkStat = await fs.lstat(abs).catch(() => null) as FileStatLike | null
+    const linkStat = await fs.lstat(abs).catch((): null => null) as FileStatLike | null
     if (linkStat && linkStat.isSymbolicLink()) throw new Error(`目标是符号链接，拒绝追加：${filePath}`)
-    const existing = await fs.stat(abs).catch(() => null) as FileStatLike | null
+    const existing = await fs.stat(abs).catch((): null => null) as FileStatLike | null
     if (existing) {
       await assertExistingAgentPathInsideRoots(abs, '路径')
       assertNotWriteBlockedBasename(abs, '路径')

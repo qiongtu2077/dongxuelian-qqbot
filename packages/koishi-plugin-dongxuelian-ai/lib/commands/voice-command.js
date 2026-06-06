@@ -19,7 +19,7 @@ function getVoiceLogger(runtime = {}) {
 function buildTtsDiagnostics(runtime, context) {
     return {
         diagnostics: {},
-        logger: getVoiceLogger(runtime),
+        logger: getVoiceLogger(runtime) || undefined,
         context,
     };
 }

@@ -233,12 +233,13 @@ function routePersonaLore(options: RoutePersonaLoreOptions = {}) {
       omitted.push({ id: entry.id, reason: 'disabled' })
       continue
     }
-    const matchedKeywords = findMatchedLoreKeywords(cleanInput, entry.keywords)
+    const keywords = Array.isArray(entry.keywords) ? entry.keywords : []
+    const matchedKeywords = findMatchedLoreKeywords(cleanInput, keywords)
     if (entry.scope !== 'always' && matchedKeywords.length === 0) {
       omitted.push({
         id: entry.id,
-        reason: entry.keywords.length ? 'keyword_not_matched' : 'no_keywords',
-        keywords: entry.keywords.slice(0, 12),
+        reason: keywords.length ? 'keyword_not_matched' : 'no_keywords',
+        keywords: keywords.slice(0, 12),
       })
       continue
     }
@@ -247,7 +248,7 @@ function routePersonaLore(options: RoutePersonaLoreOptions = {}) {
       continue
     }
     const maxChars = Math.min(entry.maxChars || DEFAULT_LORE_MAX_CHARS, remaining)
-    const selected = selectLoreText({ ...entry, maxChars }, matchedKeywords)
+    const selected = selectLoreText({ ...entry, keywords, maxChars }, matchedKeywords)
     if (!selected.text) {
       omitted.push({ id: entry.id, reason: 'empty_selected_text' })
       continue

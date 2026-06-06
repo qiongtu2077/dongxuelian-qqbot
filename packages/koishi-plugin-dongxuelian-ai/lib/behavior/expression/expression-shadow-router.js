@@ -64,10 +64,11 @@ function detectExpressionSensitiveTopicActive(messages = [], now = Date.now(), w
     for (const entry of messages) {
         if (!entry || typeof entry.content !== 'string')
             continue;
+        const content = entry.content;
         const ts = Number(entry.ts || entry.timestamp || 0);
         if (Number.isFinite(ts) && ts > 0 && ts < since)
             continue;
-        if (EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS.some((kw) => entry.content.includes(kw)))
+        if (EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS.some((kw) => content.includes(kw)))
             return true;
     }
     return false;
@@ -76,8 +77,10 @@ function shadowSelectPicks(candidates, maxPicks) {
     if (!candidates.length)
         return [];
     const sorted = candidates.slice().sort((a, b) => {
-        if (b.count !== a.count)
-            return b.count - a.count;
+        const countA = a.count || 0;
+        const countB = b.count || 0;
+        if (countB !== countA)
+            return countB - countA;
         return (b.lastMergedAt || b.createdAt || 0) - (a.lastMergedAt || a.createdAt || 0);
     });
     return sorted.slice(0, Math.max(0, Math.min(maxPicks, sorted.length)));
@@ -138,7 +141,8 @@ function buildExpressionShadowPlan(input = {}, options = {}) {
     for (const entry of entries) {
         if (!entry || entry.status === EXPRESSION_POOL_STATUS.archived)
             continue;
-        if (!Number.isFinite(entry.count) || entry.count < EXPRESSION_POOL_MIN_USE_COUNT) {
+        const count = entry.count;
+        if (typeof count !== 'number' || !Number.isFinite(count) || count < EXPRESSION_POOL_MIN_USE_COUNT) {
             skipped[EXPRESSION_SHADOW_SKIP_REASONS.lowCount] += 1;
             continue;
         }

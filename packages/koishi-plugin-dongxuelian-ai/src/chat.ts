@@ -171,6 +171,16 @@ interface ChatBotLike {
   username?: string
 }
 
+interface ChatSegmentLike {
+  type?: string
+  data?: {
+    url?: unknown
+    file?: unknown
+  }
+  attrs?: unknown
+  [key: string]: unknown
+}
+
 interface ChatSessionLike {
   content?: string
   guildId?: string
@@ -186,7 +196,7 @@ interface ChatSessionLike {
   bot?: ChatBotLike
   event?: {
     selfId?: string
-    message?: unknown[]
+    message?: ChatSegmentLike[]
     sender?: { role?: string }
   }
   quote?: {
@@ -195,6 +205,9 @@ interface ChatSessionLike {
     elements?: unknown
   }
   _skipVision?: boolean
+  _visionUrls?: unknown
+  _visionFile?: unknown
+  _isVisionRequest?: unknown
   [key: string]: unknown
 }
 
@@ -275,9 +288,13 @@ function asVisionMessages(messages: ChatMessageLike[]): Parameters<typeof append
   return messages as unknown as Parameters<typeof appendVisionMessage>[0]
 }
 
-function asChatToolFlowMessages(messages: ChatMessageLike[]): NonNullable<Parameters<typeof handleChatToolFlow>[0]>['messages'] {
-  return messages as unknown as NonNullable<Parameters<typeof handleChatToolFlow>[0]>['messages']
+function asChatToolFlowMessages(messages: ChatMessageLike[]): NonNullable<NonNullable<Parameters<typeof handleChatToolFlow>[0]>['messages']> {
+  return messages as unknown as NonNullable<NonNullable<Parameters<typeof handleChatToolFlow>[0]>['messages']>
 }
+
+type ChatToolFlowInputLike = NonNullable<Parameters<typeof handleChatToolFlow>[0]>
+type ChatToolFlowCallModel = NonNullable<ChatToolFlowInputLike['callModel']>
+type ChatToolFlowReply = NonNullable<ChatToolFlowInputLike['reply']>
 
 function asFinalizeMessages(messages: ChatMessageLike[]): Parameters<typeof finalizeChatReply>[0]['messages'] {
   return messages as unknown as Parameters<typeof finalizeChatReply>[0]['messages']
@@ -313,6 +330,10 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 async function callOpenAIForText(messages: ChatMessageLike[], isRandom: boolean = false, extraBody: Record<string, unknown> = {}): Promise<string> {
   return toChatText(await callOpenAI(messages, isRandom, extraBody))
+}
+
+const callOpenAIForToolFlow: ChatToolFlowCallModel = async (messages, randomTriggered, extraBody = {}, tools = null): Promise<ChatToolFlowReply> => {
+  return await callOpenAI(messages, !!randomTriggered, extraBody, tools) as ChatToolFlowReply
 }
 
 const hostileLevelCache: Map<string, HostileLevelEntry> = new Map()
@@ -409,6 +430,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
   await refreshSkillsContentCacheIfChanged()
   const skillsContentCache = getSkillsContentCache() as Record<string, string>
   const cleanInput = sanitizeUserInput(userText)
+  const isRandomTriggered = !!options.randomTriggered
   const rareProvocation = isRareProvocation(cleanInput)
   const japanLinked = JAPAN_SELF_IDENTIFY_RE.test(cleanInput)
   const wideRareHit = isWideRareProvocation(cleanInput) || japanLinked
@@ -422,7 +444,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
   const currentUserId = session.userId || session.author?.id || session.username || ''
   const personaResolution = resolvePersona(channelKey, currentUserId)
   let personaName = personaResolution.name
-  let personaSkillContent = null
+  let personaSkillContent: string | null = null
   // 测试模式强制忽略人格
   if (testMode) personaName = null
   if (personaName) {
@@ -431,6 +453,8 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
       try { ctx.logger('dongxuelian-ai').warn(`persona bound but skill load failed: persona=${personaName} channelKey=${channelKey} source=${personaResolution.source}`) } catch { /* non-critical: logger may be unavailable in tests */ }
     }
   }
+  const personaNameForPrompt = personaName || undefined
+  const personaSkillContentForPrompt = personaSkillContent || undefined
 
   // 主动记忆写入：用户说"记住XXX"直接存，跳过AI反问
   const directMemoryReply = await handleDirectMemoryWrite({ cleanInput, currentUserId, channelKey, inGuild: !!session.guildId })
@@ -501,8 +525,8 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
   const botIdentityLabel = personaName || (testMode ? '测试模式' : (yinyang ? '阴阳莲莲' : (hostile ? '嘴臭莲莲' : '东雪莲')))
   systemPrompt += `\n\n身份锚：你当前在群里以"${botIdentityLabel}"的身份发言${botSelfNick ? `（群昵称：${botSelfNick}）` : ''}${botSelfId ? `，QQ 号 ${botSelfId}` : ''}。<user> 段里出现的昵称是说话人，不是你自己；他人发言里提到"东雪莲/莲莲/${botIdentityLabel}"或别的群友昵称，都只是在指代别人，不要把自己代入进去。`
   const now = new Date()
-  const pad2 = n => String(n).padStart(2, '0')
-  const dynamicTimePrompt = `当前时间：${now.getFullYear()}年${pad2(now.getMonth() + 1)}月${pad2(now.getDate())}日 ${pad2(now.getHours())}时${pad2(now.getMinutes())}分。核心信息（爱好、习惯、身份等）在下方【记住的】中列出，日常聊天记录中也可能有重复信息，以【记住的】中的内容为准。当用户分享关于自己的重要信息时，你可以自然地问一句是否需要记住，系统会自动记录。`
+  const padTimePart = (n: number): string => String(n).padStart(2, '0')
+  const dynamicTimePrompt = `当前时间：${now.getFullYear()}年${padTimePart(now.getMonth() + 1)}月${padTimePart(now.getDate())}日 ${padTimePart(now.getHours())}时${padTimePart(now.getMinutes())}分。核心信息（爱好、习惯、身份等）在下方【记住的】中列出，日常聊天记录中也可能有重复信息，以【记住的】中的内容为准。当用户分享关于自己的重要信息时，你可以自然地问一句是否需要记住，系统会自动记录。`
 
   const modeLabel = retaliationLevel === 2 ? 'abusive' : retaliationLevel === 1 ? 'yin-yang' : 'friendly'
   logDebug(ctx, 'chat', `mode=${modeLabel} channelKey=${channelKey} persona=${personaName || 'none'} skillLen=${(personaSkillContent || '').length} inputLen=${String(userText || '').length}`)
@@ -554,14 +578,14 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
       currentUserMessage,
       userName,
       retaliationLevel,
-      callModel: callOpenAI,
+      callModel: callOpenAIForText,
       now,
     })
     saveConversationTurn(session, currentUserMessage, agentFinal)
     return agentFinal
   }
 
-  const contextTag = options.randomTriggered ? '\n[群聊刷到]' : ''
+  const contextTag = isRandomTriggered ? '\n[群聊刷到]' : ''
   const quoteInfo = getQuoteInfo(session, { replyToId: options.replyToId })
   const qc2 = redactSensitiveText(String(quoteInfo.content || '')).replace(/[<>]/g, ch => (ch === '<' ? '＜' : '＞')).slice(0, 500)
   const quoteAuthor = quoteInfo.isSelf ? '你自己' : quoteInfo.authorName
@@ -608,11 +632,11 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
   const messages: ChatMessageLike[] = createChatPromptBaseMessages(systemPrompt, dynamicTimePrompt)
 
   // NSFW 策略：自定义人格中 nsfw: reply 时注入适度宽松指引
-  const nsfwMessage = createChatPromptNsfwMessage(personaName, personaSkillContent)
+  const nsfwMessage = createChatPromptNsfwMessage(personaNameForPrompt, personaSkillContentForPrompt)
   if (nsfwMessage) messages.push(nsfwMessage)
 
   // 世界观按需注入：从人格文件的 frontmatter 读取 lore 绑定
-  const personaLore = resolveChatPromptPersonaLore(personaName, personaSkillContent)
+  const personaLore = resolveChatPromptPersonaLore(personaNameForPrompt, personaSkillContentForPrompt)
   const loreRoute = routePersonaLore({
     personaLore,
     cleanInput,
@@ -640,8 +664,8 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
 
   const activeSceneNote = options.activeSceneNote || buildActiveGroupSceneNote(channelKey, channelSharedCache.get(channelKey) || [], currentUserId, {
     currentText: cleanInput,
-    randomTriggered: options.randomTriggered,
-    personaName,
+    randomTriggered: isRandomTriggered,
+    personaName: personaNameForPrompt,
     directAt: !!options.directAt,
     nameMentioned: !!options.nameMentioned,
     isDirect: !!session.isDirect,
@@ -665,9 +689,9 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
     messages.push({ role: 'system', content: options.quotedMessageNote })
   }
 
-  const randomContextMessage = createChatPromptRandomContextMessage(options.randomTriggered)
+  const randomContextMessage = createChatPromptRandomContextMessage(isRandomTriggered)
   if (randomContextMessage) messages.push(randomContextMessage)
-  if (options.randomTriggered) {
+  if (isRandomTriggered) {
     messages.push({ role: 'system', content: buildRandomModePrompt() })
   }
   const forwardSummaryMessage = createChatPromptForwardSummaryMessage(options.forwardSummaryText)
@@ -765,7 +789,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
   const chatProfileSafeKey = safeChannelKey(chatChannelKey)
   if (chatUserId && session.guildId) {
     const pp = path.join(USER_PROFILE_DIR, chatProfileSafeKey, chatUserId + '.json')
-    const pd = await readJsonFile(pp, null).catch(() => null)
+    const pd = await readJsonFile<UserProfileData | null>(pp, null).catch((): null => null)
     if (pd && Array.isArray(pd.messages) && pd.messages.length > 0) {
       const snippets = pd.messages.slice(-3).map(m => m.content).join('\n').slice(0, 2000)
       if (snippets) {
@@ -781,11 +805,11 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
   const evalMatch = cleanInput.match(/(?:评价|如何评价|评价一下)\s*(.*)/)
   if (evalMatch && retaliationLevel === 0) {
     const requestedName = normalizeText(evalMatch[1]).replace(/[.,!?]+$/, '')
-    let targetProfile = null
+    let targetProfile: UserProfileData | null = null
     const evalUserIds = Array.isArray(options.mentionUserIds) ? options.mentionUserIds.map(item => String(item || '')).filter(Boolean) : []
     if (evalUserIds.length > 0) {
       const ef = path.join(USER_PROFILE_DIR, chatProfileSafeKey, evalUserIds[0] + '.json')
-      targetProfile = await readJsonFile(ef, null).catch(() => null)
+      targetProfile = await readJsonFile<UserProfileData | null>(ef, null).catch((): null => null)
     }
     if (targetProfile) {
       const rawMessages = (targetProfile.messages || []).slice(-20).map(m => m.content).join('\n').slice(0, 3000)
@@ -848,7 +872,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
   if (uncertainQuestionMessage) messages.push(uncertainQuestionMessage)
 
   // 敏感检测开启时固定拒答用语（仅当前消息含政治关键词时）
-  const detectList = await readJsonFile(POLITICAL_DETECT_FILE, []).catch(() => [])
+  const detectList = await readJsonFile<string[]>(POLITICAL_DETECT_FILE, []).catch((): string[] => [])
   const politicalSensitiveMessage = createChatPromptPoliticalSensitiveMessage({
     detectList,
     channelKey: getChannelKey(session),
@@ -893,7 +917,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
       inaccessibleReply: '图片无法访问，换个图试试？',
       identifyFailReply: '图片识别失败，换个图试试？',
     })
-    if (!visionResult.ok) return visionResult.reply
+    if (!visionResult.ok) return visionResult.reply || ''
     visionContext = visionResult.visionContext || null
     wasVisionRequest = true
   } else {
@@ -904,7 +928,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
   if (hostileEvaluationMessage) messages.push(hostileEvaluationMessage)
 
   // Chat 轻量工具注入
-  const chatTools = getChatToolDefinitions({ channel: 'qq', userText: cleanInput, randomTriggered: options.randomTriggered })
+  const chatTools = getChatToolDefinitions({ channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered })
   const fileFollowupState = await buildFileFollowupState(channelKey, cleanInput, { userId: currentUserId })
   const activeFileContext = fileFollowupState.targetFile
     ? {
@@ -945,7 +969,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
     try { logDebug(ctx, 'expression-pool', `shadow_failed reason=${String(errorMessage(shadowError) || 'unknown').slice(0, 80)}`) } catch { /* non-critical: expression shadow diagnostics never block chat */ }
   }
 
-  let reply = await callOpenAI(messages, options.randomTriggered, {}, chatTools)
+  let reply = await callOpenAI(messages, isRandomTriggered, {}, chatTools) as ChatToolFlowReply
 
   const toolFlowResult = await handleChatToolFlow({
     reply,
@@ -958,7 +982,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
     activeFileContext,
     fileFollowupState: fileFollowupState as unknown as Record<string, unknown>,
     chatTools,
-    callModel: callOpenAI,
+    callModel: callOpenAIForToolFlow,
   })
   if (toolFlowResult.heavyToolsRequested) {
     return {

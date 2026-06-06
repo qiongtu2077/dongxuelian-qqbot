@@ -4,8 +4,8 @@
  * 边界: 不调 AI API，不访问对话历史，不修改 messages 数组。
  * 状态: skillsCache (Array), skillsContentCache (Object), fingerprint refresh promise。
  */
-const fs = require('fs/promises')
-const path = require('path')
+const fs = require('fs/promises') as typeof import('fs/promises')
+const path = require('path') as typeof import('path')
 const {
   SKILLS_CORE_DIR, SKILLS_MODES_DIR, SKILLS_LORE_DIR,
   LORE_TRIGGER_SET, TERRA_LORE_TRIGGER_SET,
@@ -52,7 +52,7 @@ function parseSkillPositiveInt(value: string | number | undefined, fallback: num
 }
 
 async function readSkillTextIfSmall(file: string): Promise<string> {
-  const stat = await fs.stat(file).catch(() => null) as SkillStat | null
+  const stat = await fs.stat(file).catch((): null => null) as SkillStat | null
   if (!stat || !stat.isFile() || stat.size > MAX_SKILL_FILE_BYTES) return ''
   return (await fs.readFile(file, 'utf8')).trim()
 }
@@ -72,7 +72,7 @@ async function getSkillDirectoryFingerprint(dir: string): Promise<string> {
   for (const entry of entries) {
     if (!entry.isFile() || !/^SKILL(\.[^.]+)?\.md$/i.test(entry.name)) continue
     const fullPath = path.join(dir, entry.name)
-    const stat = await fs.stat(fullPath).catch(() => null) as SkillStat | null
+    const stat = await fs.stat(fullPath).catch((): null => null) as SkillStat | null
     if (!stat || !stat.isFile()) continue
     stamps.push(`${entry.name}:${stat.mtimeMs}:${stat.size}`)
   }

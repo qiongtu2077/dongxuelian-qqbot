@@ -332,7 +332,7 @@ async function readCachedImage(channelKey, messageId) {
         try {
             const dir = getChannelCacheDir(channelKey);
             const safeMessageId = getSafeKey(messageId);
-            const files = (await fs.readdir(dir)).filter(f => path.parse(f).name === safeMessageId);
+            const files = (await fs.readdir(dir)).filter((f) => path.parse(f).name === safeMessageId);
             if (!files.length)
                 return null;
             const filePath = path.join(dir, files[0]);

@@ -115,6 +115,9 @@ function asRecord(value) {
 async function callOpenAIForText(messages, isRandom = false, extraBody = {}) {
     return toChatText(await callOpenAI(messages, isRandom, extraBody));
 }
+const callOpenAIForToolFlow = async (messages, randomTriggered, extraBody = {}, tools = null) => {
+    return await callOpenAI(messages, !!randomTriggered, extraBody, tools);
+};
 const hostileLevelCache = new Map();
 let lastCacheCleanupTs = 0;
 function trimRuntimeCaches(now = Date.now()) {
@@ -192,6 +195,7 @@ async function chat(session, userText, ctx, options = {}) {
     await refreshSkillsContentCacheIfChanged();
     const skillsContentCache = getSkillsContentCache();
     const cleanInput = sanitizeUserInput(userText);
+    const isRandomTriggered = !!options.randomTriggered;
     const rareProvocation = isRareProvocation(cleanInput);
     const japanLinked = JAPAN_SELF_IDENTIFY_RE.test(cleanInput);
     const wideRareHit = isWideRareProvocation(cleanInput) || japanLinked;
@@ -216,6 +220,8 @@ async function chat(session, userText, ctx, options = {}) {
             catch { /* non-critical: logger may be unavailable in tests */ }
         }
     }
+    const personaNameForPrompt = personaName || undefined;
+    const personaSkillContentForPrompt = personaSkillContent || undefined;
     // 主动记忆写入：用户说"记住XXX"直接存，跳过AI反问
     const directMemoryReply = await handleDirectMemoryWrite({ cleanInput, currentUserId, channelKey, inGuild: !!session.guildId });
     if (directMemoryReply)
@@ -290,8 +296,8 @@ async function chat(session, userText, ctx, options = {}) {
     const botIdentityLabel = personaName || (testMode ? '测试模式' : (yinyang ? '阴阳莲莲' : (hostile ? '嘴臭莲莲' : '东雪莲')));
     systemPrompt += `\n\n身份锚：你当前在群里以"${botIdentityLabel}"的身份发言${botSelfNick ? `（群昵称：${botSelfNick}）` : ''}${botSelfId ? `，QQ 号 ${botSelfId}` : ''}。<user> 段里出现的昵称是说话人，不是你自己；他人发言里提到"东雪莲/莲莲/${botIdentityLabel}"或别的群友昵称，都只是在指代别人，不要把自己代入进去。`;
     const now = new Date();
-    const pad2 = n => String(n).padStart(2, '0');
-    const dynamicTimePrompt = `当前时间：${now.getFullYear()}年${pad2(now.getMonth() + 1)}月${pad2(now.getDate())}日 ${pad2(now.getHours())}时${pad2(now.getMinutes())}分。核心信息（爱好、习惯、身份等）在下方【记住的】中列出，日常聊天记录中也可能有重复信息，以【记住的】中的内容为准。当用户分享关于自己的重要信息时，你可以自然地问一句是否需要记住，系统会自动记录。`;
+    const padTimePart = (n) => String(n).padStart(2, '0');
+    const dynamicTimePrompt = `当前时间：${now.getFullYear()}年${padTimePart(now.getMonth() + 1)}月${padTimePart(now.getDate())}日 ${padTimePart(now.getHours())}时${padTimePart(now.getMinutes())}分。核心信息（爱好、习惯、身份等）在下方【记住的】中列出，日常聊天记录中也可能有重复信息，以【记住的】中的内容为准。当用户分享关于自己的重要信息时，你可以自然地问一句是否需要记住，系统会自动记录。`;
     const modeLabel = retaliationLevel === 2 ? 'abusive' : retaliationLevel === 1 ? 'yin-yang' : 'friendly';
     logDebug(ctx, 'chat', `mode=${modeLabel} channelKey=${channelKey} persona=${personaName || 'none'} skillLen=${(personaSkillContent || '').length} inputLen=${String(userText || '').length}`);
     const userName = normalizeText(session.author?.nick ||
@@ -335,13 +341,13 @@ async function chat(session, userText, ctx, options = {}) {
             currentUserMessage,
             userName,
             retaliationLevel,
-            callModel: callOpenAI,
+            callModel: callOpenAIForText,
             now,
         });
         saveConversationTurn(session, currentUserMessage, agentFinal);
         return agentFinal;
     }
-    const contextTag = options.randomTriggered ? '\n[群聊刷到]' : '';
+    const contextTag = isRandomTriggered ? '\n[群聊刷到]' : '';
     const quoteInfo = getQuoteInfo(session, { replyToId: options.replyToId });
     const qc2 = redactSensitiveText(String(quoteInfo.content || '')).replace(/[<>]/g, ch => (ch === '<' ? '＜' : '＞')).slice(0, 500);
     const quoteAuthor = quoteInfo.isSelf ? '你自己' : quoteInfo.authorName;
@@ -385,11 +391,11 @@ async function chat(session, userText, ctx, options = {}) {
     }
     const messages = createChatPromptBaseMessages(systemPrompt, dynamicTimePrompt);
     // NSFW 策略：自定义人格中 nsfw: reply 时注入适度宽松指引
-    const nsfwMessage = createChatPromptNsfwMessage(personaName, personaSkillContent);
+    const nsfwMessage = createChatPromptNsfwMessage(personaNameForPrompt, personaSkillContentForPrompt);
     if (nsfwMessage)
         messages.push(nsfwMessage);
     // 世界观按需注入：从人格文件的 frontmatter 读取 lore 绑定
-    const personaLore = resolveChatPromptPersonaLore(personaName, personaSkillContent);
+    const personaLore = resolveChatPromptPersonaLore(personaNameForPrompt, personaSkillContentForPrompt);
     const loreRoute = routePersonaLore({
         personaLore,
         cleanInput,
@@ -416,8 +422,8 @@ async function chat(session, userText, ctx, options = {}) {
     }
     const activeSceneNote = options.activeSceneNote || buildActiveGroupSceneNote(channelKey, channelSharedCache.get(channelKey) || [], currentUserId, {
         currentText: cleanInput,
-        randomTriggered: options.randomTriggered,
-        personaName,
+        randomTriggered: isRandomTriggered,
+        personaName: personaNameForPrompt,
         directAt: !!options.directAt,
         nameMentioned: !!options.nameMentioned,
         isDirect: !!session.isDirect,
@@ -438,10 +444,10 @@ async function chat(session, userText, ctx, options = {}) {
     if (options.quotedMessageNote && !quotedTag) {
         messages.push({ role: 'system', content: options.quotedMessageNote });
     }
-    const randomContextMessage = createChatPromptRandomContextMessage(options.randomTriggered);
+    const randomContextMessage = createChatPromptRandomContextMessage(isRandomTriggered);
     if (randomContextMessage)
         messages.push(randomContextMessage);
-    if (options.randomTriggered) {
+    if (isRandomTriggered) {
         messages.push({ role: 'system', content: buildRandomModePrompt() });
     }
     const forwardSummaryMessage = createChatPromptForwardSummaryMessage(options.forwardSummaryText);
@@ -676,7 +682,7 @@ async function chat(session, userText, ctx, options = {}) {
             identifyFailReply: '图片识别失败，换个图试试？',
         });
         if (!visionResult.ok)
-            return visionResult.reply;
+            return visionResult.reply || '';
         visionContext = visionResult.visionContext || null;
         wasVisionRequest = true;
     }
@@ -687,7 +693,7 @@ async function chat(session, userText, ctx, options = {}) {
     if (hostileEvaluationMessage)
         messages.push(hostileEvaluationMessage);
     // Chat 轻量工具注入
-    const chatTools = getChatToolDefinitions({ channel: 'qq', userText: cleanInput, randomTriggered: options.randomTriggered });
+    const chatTools = getChatToolDefinitions({ channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered });
     const fileFollowupState = await buildFileFollowupState(channelKey, cleanInput, { userId: currentUserId });
     const activeFileContext = fileFollowupState.targetFile
         ? {
@@ -733,7 +739,7 @@ async function chat(session, userText, ctx, options = {}) {
         }
         catch { /* non-critical: expression shadow diagnostics never block chat */ }
     }
-    let reply = await callOpenAI(messages, options.randomTriggered, {}, chatTools);
+    let reply = await callOpenAI(messages, isRandomTriggered, {}, chatTools);
     const toolFlowResult = await handleChatToolFlow({
         reply,
         messages: asChatToolFlowMessages(messages),
@@ -745,7 +751,7 @@ async function chat(session, userText, ctx, options = {}) {
         activeFileContext,
         fileFollowupState: fileFollowupState,
         chatTools,
-        callModel: callOpenAI,
+        callModel: callOpenAIForToolFlow,
     });
     if (toolFlowResult.heavyToolsRequested) {
         return {

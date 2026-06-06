@@ -51,6 +51,12 @@ interface StickerVisualInfo {
   segmentTypes: string[]
 }
 
+interface StickerVisualRef {
+  type: string
+  url: string
+  file: string
+}
+
 interface StickerShadowInput extends StickerDict {
   session?: StickerSession
   analyzed?: { hasVisual?: boolean; hasEmbed?: boolean; hasFile?: boolean }
@@ -139,7 +145,7 @@ const STICKER_SHADOW_REPLY_HINTS = Object.freeze([
   { re: /摸鱼|摆烂|考试|不及格/, tags: ['摸鱼', '摆烂', '考试不及格'] },
 ])
 
-const STICKER_SHADOW_MOOD_HINTS = Object.freeze({
+const STICKER_SHADOW_MOOD_HINTS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   playful: ['搞笑', '憋笑', '开心'],
   comfort: ['哭哭', '难过', '喜欢'],
   serious: [],
@@ -235,7 +241,7 @@ function stickerShadowInferVisual(input: StickerShadowInput = {}): StickerVisual
   const segments = stickerShadowFlattenSegments(input.segments || [])
   const segmentTypes = [...new Set(segments.map(seg => String(seg?.type || '').trim()).filter(Boolean))].slice(0, 16)
   const typeSet = new Set(segmentTypes)
-  const refs = []
+  const refs: StickerVisualRef[] = []
 
   for (const segment of segments) {
     const type = String(segment?.type || '')
@@ -243,8 +249,8 @@ function stickerShadowInferVisual(input: StickerShadowInput = {}): StickerVisual
     const data = stickerShadowSegmentData(segment)
     refs.push({
       type,
-      url: data.url || data.src || data.href || '',
-      file: data.file || data.id || data.file_id || data.fileId || data.name || '',
+      url: String(data.url || data.src || data.href || ''),
+      file: String(data.file || data.id || data.file_id || data.fileId || data.name || ''),
     })
   }
 
@@ -402,7 +408,7 @@ function stickerShadowExtractMarkers(replyText: string = ''): string[] {
 
 function stickerShadowDeriveQueryAtoms(replyText: string = '', affectDiagnostic: AffectDiagnostic = {}): string[] {
   const text = String(replyText || '')
-  const atoms = []
+  const atoms: string[] = []
   for (const item of STICKER_SHADOW_REPLY_HINTS) {
     if (item.re.test(text)) atoms.push(...item.tags)
   }

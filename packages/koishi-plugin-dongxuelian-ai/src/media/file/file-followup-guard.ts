@@ -108,9 +108,10 @@ async function buildFileFollowupState(channelKey: string, userText: string, cont
 async function resolveUnguardedFileFollowup(state: FileFollowupState = {}, context: FileFollowupContext = {}): Promise<string | ToolResultLike | null> {
   if (!state.shouldVerify) return null
   if (state.usedAnalyzeFile || state.hasFileEvidence) return null
-  const messageId = state.targetFile && state.targetFile.messageId ? String(state.targetFile.messageId) : ''
+  const targetFile = state.targetFile
+  const messageId = targetFile && targetFile.messageId ? String(targetFile.messageId) : ''
   const toolContext = messageId
-    ? { ...context, activeFileMessageId: messageId, activeFileName: state.targetFile.fileName || '' }
+    ? { ...context, activeFileMessageId: messageId, activeFileName: targetFile?.fileName || '' }
     : context
   return analyzeFileTool.execute(messageId ? { messageId } : {}, toolContext)
 }

@@ -6,8 +6,11 @@
 const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE, MIMORIUM_KEY_FILE, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE, DATA_DIR } = require('./constants') as typeof import('./constants')
 const { readTextFile, isDashScopeConfig, todayCst, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('./utils') as typeof import('./utils')
 const { resolveOneBotWsUrl } = require('./onebot-endpoint') as typeof import('./onebot-endpoint')
+const WebSocket = require('ws') as typeof import('ws')
 const path = require('path')
 const fs = require('fs')
+const http = require('http') as typeof import('http')
+const https = require('https') as typeof import('https')
 
 const MAX_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_IMAGE_BYTES, 4 * 1024 * 1024, 128 * 1024, 16 * 1024 * 1024)
 const MAX_REMOTE_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_REMOTE_IMAGE_BYTES, MAX_IMAGE_BYTES, 128 * 1024, 16 * 1024 * 1024)
@@ -98,6 +101,10 @@ interface CustomProvider {
   models?: Array<{ id: string; vision?: boolean }>
 }
 
+interface FallbackChainsConfig {
+  chains?: Record<string, FallbackStep[]>
+}
+
 interface OneBotMessage {
   echo?: string
   status?: string
@@ -125,6 +132,11 @@ function parseApiPositiveInt(value: string | number | undefined, fallback: numbe
 const TOKEN_USAGE_FILE = path.join(DATA_DIR, 'token-usage.json')
 const TOKEN_USAGE_EXIT_HOOK = Symbol.for('dongxuelian.ai.tokenUsageExitHook')
 const TOKEN_USAGE_EXIT_FLUSH = Symbol.for('dongxuelian.ai.tokenUsageExitFlush')
+type TokenUsageGlobal = typeof globalThis & {
+  [TOKEN_USAGE_EXIT_HOOK]?: boolean
+  [TOKEN_USAGE_EXIT_FLUSH]?: () => void
+}
+const tokenUsageGlobal = globalThis as TokenUsageGlobal
 let _tokenUsageCache: Record<string, TokenUsageDay> | null = null
 let _tokenUsageFlushTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -193,11 +205,13 @@ function recordTokenUsage(provider: string, tokens: number, details: { model?: s
   if (!_tokenUsageCache) {
     try {
       const raw = fs.readFileSync(TOKEN_USAGE_FILE, 'utf8')
-      _tokenUsageCache = JSON.parse(raw)
+      const parsed = JSON.parse(raw) as unknown
+      _tokenUsageCache = isRecord(parsed) ? parsed as Record<string, TokenUsageDay> : {}
     } catch { _tokenUsageCache = {} }
   }
-  const day = normalizeTokenUsageDay(_tokenUsageCache[date])
-  _tokenUsageCache[date] = day
+  const usageCache = _tokenUsageCache
+  const day = normalizeTokenUsageDay(usageCache[date])
+  usageCache[date] = day
   const usage = readUsageDetails(details.usage || {})
   const delta = {
     total: usageNumber(tokens),
@@ -234,17 +248,17 @@ function flushTokenUsage(): void {
   }
 }
 
-globalThis[TOKEN_USAGE_EXIT_FLUSH] = flushTokenUsage
-if (!globalThis[TOKEN_USAGE_EXIT_HOOK]) {
-  globalThis[TOKEN_USAGE_EXIT_HOOK] = true
+tokenUsageGlobal[TOKEN_USAGE_EXIT_FLUSH] = flushTokenUsage
+if (!tokenUsageGlobal[TOKEN_USAGE_EXIT_HOOK]) {
+  tokenUsageGlobal[TOKEN_USAGE_EXIT_HOOK] = true
   process.on('exit', () => {
-    const handler = globalThis[TOKEN_USAGE_EXIT_FLUSH]
+    const handler = tokenUsageGlobal[TOKEN_USAGE_EXIT_FLUSH]
     if (typeof handler === 'function') handler()
   })
 }
 
 function mimeFromImagePath(filePath: string = ''): string {
-  const ext = String(filePath || '').split('.').pop().toLowerCase()
+  const ext = String(filePath || '').split('.').pop() || ''
   return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' }[ext] || 'image/jpeg'
 }
 
@@ -473,14 +487,14 @@ const DEFAULT_VISION_FALLBACK = [
   { model: 'qwen3.5-plus', provider: 'dashscope', keyFile: DASHSCOPE_KEY_FILE },
 ]
 
-const FALLBACK_DEFAULTS = {
+const FALLBACK_DEFAULTS: Record<string, FallbackStep[]> = {
   chat: DEFAULT_CHAT_FALLBACK,
   vision: DEFAULT_VISION_FALLBACK,
   lightweight: DEFAULT_CHAT_FALLBACK,
 }
 
 function readFallbackSteps(): Record<string, FallbackStep[]> | null {
-  const data = readApiJsonFileSync(FALLBACK_CHAINS_FILE, null)
+  const data = readApiJsonFileSync<FallbackChainsConfig | null>(FALLBACK_CHAINS_FILE, null)
   if (data && data.chains) return data.chains
   return null
 }
@@ -550,10 +564,10 @@ function getFallbackSteps(): Record<string, FallbackStep[]> {
 
 function callOneBotWs<T>(action: string, params: Record<string, unknown>, echo: string, timeoutMs: number, extractData: (message: OneBotMessage) => T | null): Promise<T | null> {
   return new Promise((resolve) => {
-    let ws = null
-    let timer = null
+    let ws: InstanceType<typeof WebSocket> | null = null
+    let timer: NodeJS.Timeout | null = null
     let settled = false
-    const finish = (value) => {
+    const finish = (value: T | null): void => {
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
@@ -562,19 +576,21 @@ function callOneBotWs<T>(action: string, params: Record<string, unknown>, echo: 
     }
 
     try {
-      ws = new (require('ws'))(resolveOneBotWsUrl())
+      ws = new WebSocket(resolveOneBotWsUrl())
+      const socket = ws
       timer = setTimeout(() => finish(null), timeoutMs)
-      ws.on('open', () => {
-        try { ws.send(JSON.stringify({ action, params, echo })) } catch { finish(null) }
+      socket.on('open', () => {
+        try { socket.send(JSON.stringify({ action, params, echo })) } catch { finish(null) }
       })
-      ws.on('message', (d) => {
-        let message = null
+      socket.on('message', (d: import('ws').RawData) => {
+        let message: OneBotMessage | null = null
         try { message = JSON.parse(d.toString()) } catch { return finish(null) }
+        if (!message) return finish(null)
         if (message.echo !== echo) return
         try { finish(extractData(message)) } catch { finish(null) }
       })
-      ws.on('error', () => finish(null))
-      ws.on('close', () => finish(null))
+      socket.on('error', () => finish(null))
+      socket.on('close', () => finish(null))
     } catch {
       finish(null)
     }
@@ -673,11 +689,11 @@ function extractImageFileFromElements(session: SessionLike): string | null {
 
 async function downloadImageAsBase64(url: string, timeoutMs: number = 5000): Promise<string | null> {
   return new Promise((resolve) => {
-    let request = null
-    let timer = null
+    let request: import('http').ClientRequest | null = null
+    let timer: NodeJS.Timeout | null = null
     let settled = false
-    let currentUrl = null
-    const finishDownload = (value) => {
+    let currentUrl: URL | null = null
+    const finishDownload = (value: string | null): void => {
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
@@ -692,12 +708,13 @@ async function downloadImageAsBase64(url: string, timeoutMs: number = 5000): Pro
         return finishDownload(null)
       }
       try {
-        const mod = currentUrl.protocol === 'https:' ? require('https') : require('http')
+        if (!currentUrl) return finishDownload(null)
+        const mod = currentUrl.protocol === 'https:' ? https : http
         timer = setTimeout(() => {
           try { if (request) request.destroy() } catch { /* non-critical: request may already be closed */ }
           finishDownload(null)
         }, timeoutMs)
-        request = mod.get(currentUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+        request = mod.get(currentUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res: import('http').IncomingMessage) => {
           const status = Number(res.statusCode || 0)
           if (status >= 300 && status < 400 && res.headers.location) {
             res.resume()
@@ -707,19 +724,23 @@ async function downloadImageAsBase64(url: string, timeoutMs: number = 5000): Pro
             res.resume()
             return finishDownload(null)
           }
-          const type = String(res.headers['content-type'] || 'image/jpeg').split(';')[0].trim().toLowerCase()
+          const contentTypeHeader = res.headers['content-type']
+          const contentTypeValue = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader
+          const type = String(contentTypeValue || 'image/jpeg').split(';')[0].trim().toLowerCase()
           if (type && !/^image\/(?:png|jpe?g|gif|webp|bmp)$/.test(type)) {
             res.resume()
             return finishDownload(null)
           }
-          const declared = parseInt(res.headers['content-length'], 10)
+          const contentLengthHeader = res.headers['content-length']
+          const contentLengthValue = Array.isArray(contentLengthHeader) ? contentLengthHeader[0] : contentLengthHeader
+          const declared = parseInt(String(contentLengthValue || ''), 10)
           if (Number.isFinite(declared) && declared > MAX_REMOTE_IMAGE_BYTES) {
             res.resume()
             return finishDownload(null)
           }
-          const chunks = []
+          const chunks: Buffer[] = []
           let received = 0
-          res.on('data', c => {
+          res.on('data', (c: Buffer) => {
             received += c.length
             if (received > MAX_REMOTE_IMAGE_BYTES) {
               try { if (request) request.destroy() } catch { /* non-critical: request may already be closed */ }
@@ -752,7 +773,7 @@ function isVisionModel(provider: string, modelId: string): boolean {
   // 2. 查自定义供应商
   const custom = readCustomProviders()
   const cp = custom.find(function(x) { return x.id === provider })
-  if (cp) return cp.models && cp.models.some(function(x) { return x.id === modelId && x.vision })
+  if (cp) return Array.isArray(cp.models) && cp.models.some(function(x) { return x.id === modelId && !!x.vision })
   // 3. fallback 正则（兼容旧数据）
   return /qwen|glm|kimi|omni/i.test(modelId)
 }

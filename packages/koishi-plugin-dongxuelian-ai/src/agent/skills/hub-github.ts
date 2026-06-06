@@ -56,15 +56,16 @@ function httpsGet(url: string, headers: Record<string, string> = {}): Promise<Ht
       timeout: REQUEST_TIMEOUT,
     }
     const req = https.get(url, opts, (res: import('http').IncomingMessage) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+      const statusCode = res.statusCode || 0
+      if (statusCode >= 300 && statusCode < 400 && res.headers.location) {
         return httpsGet(res.headers.location, headers).then(resolve, reject)
       }
       const chunks: Buffer[] = []
       res.on('data', (chunk: Buffer) => chunks.push(chunk))
       res.on('end', () => {
         const body = Buffer.concat(chunks)
-        if (res.statusCode >= 400) {
-          return reject(new Error(`GitHub API ${res.statusCode}: ${body.toString('utf8').slice(0, 200)}`))
+        if (statusCode >= 400) {
+          return reject(new Error(`GitHub API ${statusCode}: ${body.toString('utf8').slice(0, 200)}`))
         }
         resolve({ status: res.statusCode, body })
       })

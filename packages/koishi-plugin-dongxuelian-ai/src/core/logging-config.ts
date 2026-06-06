@@ -27,7 +27,7 @@ function envDebugEnabled(): boolean {
 function normalizeDebugLogConfig(input: Partial<DebugLogConfig> & { debug?: boolean } = {}): DebugLogConfig {
   const source = input && typeof input === 'object' ? input : {}
   const enabled = !!(Object.prototype.hasOwnProperty.call(source, 'enabled') ? source.enabled : source.debug)
-  const modules = {}
+  const modules: Record<string, boolean> = {}
   if (source.modules && typeof source.modules === 'object' && !Array.isArray(source.modules)) {
     for (const [key, value] of Object.entries(source.modules)) {
       if (key) modules[String(key)] = !!value

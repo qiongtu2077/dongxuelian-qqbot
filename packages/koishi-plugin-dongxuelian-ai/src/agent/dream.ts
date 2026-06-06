@@ -4,8 +4,8 @@
  * 边界: 不影响实时对话、不删除未备份的长期文件、失败时保留原文件。
  * 状态: 无（由 auto-memory 完成后触发）。
  */
-const fsp = require('fs/promises')
-const path = require('path')
+const fsp = require('fs/promises') as typeof import('fs/promises')
+const path = require('path') as typeof import('path')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 const { requestChatCompletions } = require('../core/api') as typeof import('../core/api')
 const { loadConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
@@ -109,7 +109,8 @@ async function getDailyTotalSize(userId: unknown): Promise<number> {
 
 async function runDream(userId: unknown): Promise<DreamResult> {
   const lockKey = safeUserId(String(userId || ''))
-  if (dreamLocks.has(lockKey)) return dreamLocks.get(lockKey)
+  const existingTask = dreamLocks.get(lockKey)
+  if (existingTask) return existingTask
   const task = _doRunDream(userId)
   dreamLocks.set(lockKey, task)
   task.finally(() => dreamLocks.delete(lockKey))

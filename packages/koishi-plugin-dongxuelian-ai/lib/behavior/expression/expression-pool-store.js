@@ -218,7 +218,8 @@ function appendExpressionCandidate(channelKey, candidate, options = {}) {
     if (!situation || !style) {
         return Promise.resolve({ mode: APPEND_MODES.rejected, reason: 'empty', entry: null });
     }
-    const contributorsInput = Array.isArray(candidate && candidate.contributors) ? candidate.contributors : [];
+    const contributorsSource = candidate && candidate.contributors;
+    const contributorsInput = Array.isArray(contributorsSource) ? contributorsSource : [];
     const now = expressionPoolNumber(options.now, Date.now());
     const threshold = expressionPoolNumber(options.similarityThreshold, EXPRESSION_POOL_SIMILARITY_MERGE_THRESHOLD);
     return expressionPoolEnqueueWrite(safeChannelKey, async () => {
@@ -238,7 +239,7 @@ function appendExpressionCandidate(channelKey, candidate, options = {}) {
             }
         }
         let mode;
-        let resultEntry;
+        let resultEntry = null;
         if (bestIndex >= 0) {
             const target = entries[bestIndex];
             target.count = Math.max(0, target.count) + 1;

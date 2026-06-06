@@ -30,7 +30,7 @@ function parseFrontmatterLines(frontmatterText: string = '', options: ParseFront
   const rawMeta: Record<string, string> = {}
   const normalizeValue = typeof options.normalizeValue === 'function'
     ? options.normalizeValue
-    : value => String(value ?? '').trim()
+    : (value: string): string => String(value ?? '').trim()
   const firstWins = options.firstWins !== false
   for (const line of String(frontmatterText || '').split(/\r?\n/)) {
     if (!line.trim() || /^\s*#/.test(line)) continue

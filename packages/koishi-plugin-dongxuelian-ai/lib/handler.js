@@ -53,6 +53,9 @@ function findMentionedMessages(cache, userId) {
         return false;
     });
 }
+function hasMessageTimestamp(message) {
+    return typeof message.ts === 'number';
+}
 // 生成定位失败时使用的上下文文本。
 function buildLocateMessageContext(cache, cacheIdx) {
     const start = Math.max(0, cacheIdx - 2);
@@ -72,7 +75,7 @@ async function handleCommand(session, ctx, state) {
         let personaContent = '';
         try {
             const { loadPersonalSkill } = require('./persona/persona');
-            personaContent = personaName ? loadPersonalSkill(personaName) : '';
+            personaContent = personaName ? loadPersonalSkill(personaName) || '' : '';
         }
         catch { /* non-critical: persona command can answer with persona name when body load fails */ }
         return [
@@ -143,7 +146,7 @@ async function handleCommand(session, ctx, state) {
         if (!userId)
             return handled('无法获取用户信息。');
         const cutoffTs = Date.now() - 5 * 24 * 60 * 60 * 1000;
-        const atMe = findMentionedMessages(cache, userId).filter(m => m.ts >= cutoffTs);
+        const atMe = findMentionedMessages(cache, userId).filter(hasMessageTimestamp).filter(m => m.ts >= cutoffTs);
         if (!atMe.length)
             return handled('近5天没有人 @你。');
         const slice = atMe.slice(-20).reverse();
@@ -163,7 +166,9 @@ async function handleCommand(session, ctx, state) {
             footer = `${shown}/${total}\n\n` + footer;
         nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: footer } });
         let forwardOk = false;
-        try { forwardOk = !!(await sendForwardMsg(groupId, nodes)); }
+        try {
+            forwardOk = !!(await sendForwardMsg(groupId, nodes));
+        }
         catch { /* fall through */ }
         if (forwardOk)
             return handled();
@@ -191,7 +196,7 @@ async function handleCommand(session, ctx, state) {
         }
         const userId = String(currentUserId || '');
         const locateCutoffTs = Date.now() - 5 * 24 * 60 * 60 * 1000;
-        const atMe = findMentionedMessages(cache, userId).filter(m => m.ts >= locateCutoffTs);
+        const atMe = findMentionedMessages(cache, userId).filter(hasMessageTimestamp).filter(m => m.ts >= locateCutoffTs);
         const displayedAtMe = atMe.slice(-20).reverse();
         if (targetIdx < 0 || targetIdx >= displayedAtMe.length)
             return handled('编号超出范围。');

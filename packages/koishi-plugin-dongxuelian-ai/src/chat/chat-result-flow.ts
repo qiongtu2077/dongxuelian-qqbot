@@ -228,7 +228,7 @@ async function handleChatResult(chatResult: unknown, {
     const agentConfig = getAgentConfig()
     configureAgentQueue(agentConfig.queue || {})
     const explicitFetchOptions = buildExplicitUrlFetchRunOptions(userText)
-    const recentUserMessages = searchContext?.recentUserMessages || getRecentUserMessages(session, 4)
+    const recentUserMessages = searchContext?.recentUserMessages || getRecentUserMessages(session as Parameters<typeof getRecentUserMessages>[0], 4)
     const searchQuery = webSearchRequests[0]?.args?.query || userText
     const searchRunOptions = explicitFetchOptions.forceTools ? explicitFetchOptions : buildExplicitSearchRunOptions(searchQuery, { recentUserMessages, searchContext })
     if (webSearchRequests.length) {

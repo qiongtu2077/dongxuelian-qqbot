@@ -104,21 +104,31 @@ function getInternalQuery(session, camelName, actionName, kind) {
         const fn = internal[camelName];
         if (kind === 'member')
             return (groupId, userId) => fn(groupId, userId, false);
-        return groupId => fn(groupId, false);
+        return (groupId) => fn(groupId, false);
     }
     if (typeof internal[actionName] === 'function') {
         const fn = internal[actionName];
         if (kind === 'member')
             return (groupId, userId) => fn({ group_id: Number(groupId), user_id: Number(userId), no_cache: false });
-        return groupId => fn({ group_id: Number(groupId), no_cache: false });
+        return (groupId) => fn({ group_id: Number(groupId), no_cache: false });
     }
     return null;
 }
-async function querySafely(fn, args) {
+async function queryMemberSafely(fn, groupId, userId) {
     if (typeof fn !== 'function')
         return null;
     try {
-        return await fn(...args);
+        return await fn(groupId, userId);
+    }
+    catch { /* non-critical: mute probe can fall back to uncertain status */
+        return null;
+    }
+}
+async function queryGroupSafely(fn, groupId) {
+    if (typeof fn !== 'function')
+        return null;
+    try {
+        return await fn(groupId);
     }
     catch { /* non-critical: mute probe can fall back to uncertain status */
         return null;
@@ -156,8 +166,8 @@ async function checkPlatformMuteStatus(session, options = {}) {
     if (!memberGetter && !groupGetter)
         return { muted: false, uncertain: true, reason: '没有可用的 OneBot 禁言查询接口' };
     const [memberInfo, groupInfo] = await Promise.all([
-        querySafely(memberGetter, [groupId, userId]),
-        querySafely(groupGetter, [groupId]),
+        queryMemberSafely(memberGetter, groupId, userId),
+        queryGroupSafely(groupGetter, groupId),
     ]);
     const memberMute = inspectMemberMute(memberInfo, now);
     if (memberMute)

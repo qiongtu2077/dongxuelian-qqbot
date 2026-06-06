@@ -108,7 +108,7 @@ async function assertExistingAgentPathInsideRoots(target: unknown, label: string
   const roots = await getAgentPathAllowedRoots()
   const resolved = resolveAgentPathInput(target, roots, { requireExisting: true })
   const abs = path.resolve(resolved.path)
-  const real = await fsp.realpath(abs).catch(() => null)
+  const real = await fsp.realpath(abs).catch((): null => null)
   if (!real) throw new Error(`${label}不存在：${abs}`)
   if (!roots.some(root => isAgentPathInside(real, root))) throw new Error(`${label}超出允许范围：${abs}`)
   return { abs, real, roots }
@@ -120,11 +120,11 @@ async function assertNewAgentPathInsideRoots(target: unknown, label: string = '�
   const abs = path.resolve(resolved.path)
   assertNotWriteBlockedBasename(abs, label)
   let parent = path.dirname(abs)
-  let realParent = await fsp.realpath(parent).catch(() => null)
+  let realParent = await fsp.realpath(parent).catch((): null => null)
   if (!realParent && createDirectories) {
     while (!realParent && parent !== path.dirname(parent)) {
       parent = path.dirname(parent)
-      realParent = await fsp.realpath(parent).catch(() => null)
+      realParent = await fsp.realpath(parent).catch((): null => null)
     }
   }
   if (!realParent) throw new Error(`父目录不存在：${path.dirname(abs)}`)

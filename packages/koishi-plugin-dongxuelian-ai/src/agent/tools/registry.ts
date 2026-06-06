@@ -85,6 +85,8 @@ interface ToolObjectResult {
   [key: string]: unknown
 }
 
+type RegistryChannelName = 'qq' | 'dashboard'
+
 const tools: AgentTool[] = [getTimeTool, calculatorTool, webSearchTool, webFetchTool, readAgentSkillTool, readFileTool, listFilesTool, findFilesTool, writeFileTool, editFileTool, shellTool, browserActionTool, appendFileTool, grepSearchTool, executeJavascriptTool, sendFileToUserTool, createUploadedFileVariantTool, getTokenUsageTool, setUserTimezoneTool, queryLogsTool, ...reminderTools.tools, ...scheduledTaskTools.tools, readImageUrlsTool, analyzeImageTool, analyzeFileTool, ...planTools.tools as AgentTool[], ...memoryTools.tools]
 
 const TOOL_TIMEOUT_MS = 90000
@@ -97,10 +99,15 @@ for (const tool of tools) {
   toolRegistry[tool.definition.name] = tool
 }
 
+function normalizeRegistryChannel(channel: string): RegistryChannelName | null {
+  return channel === 'qq' || channel === 'dashboard' ? channel : null
+}
+
 /** 按渠道过滤，返回 OpenAI 标准格式的工具定义 */
 function getToolDefinitions(channel: string = 'qq'): Array<{ type: 'function'; function: AgentToolDefinition }> {
   const config = getAgentConfig()
-  const channelConfig = config.channels[channel]
+  const registryChannel = normalizeRegistryChannel(channel)
+  const channelConfig = registryChannel ? config.channels[registryChannel] : null
   if (!channelConfig || !channelConfig.enabled) return []
   const memoryDisabled = config.memory?.enabled === false
   return tools
@@ -155,11 +162,12 @@ function getToolCount() { return tools.length }
 
 function getToolSummaries(channel: string = ''): ToolSummary[] {
   const config = getAgentConfig()
+  const selectedChannel = normalizeRegistryChannel(channel)
   return tools.map(tool => {
     const name = tool.definition.name
     const defaultChannels = tool.defaultChannels || ['dashboard', 'qq']
     const channels: Record<string, boolean> = {}
-    for (const key of Object.keys(config.channels || {})) channels[key] = !!config.channels[key]?.tools?.[name]
+    for (const key of Object.keys(config.channels || {}) as RegistryChannelName[]) channels[key] = !!config.channels[key]?.tools?.[name]
     const dangerous = !!tool.dangerous
     const external = name === 'web_search' || name === 'web_fetch' || name === 'browser_action'
     const write = dangerous || /write|edit|append|shell|javascript|remember|forget|create_plan|create_reminder|cancel_reminder|create_scheduled_task|create_uploaded_file_variant|send_file_to_user|update_task_status|finish_plan|abandon_plan/i.test(name)
@@ -172,7 +180,7 @@ function getToolSummaries(channel: string = ''): ToolSummary[] {
       external,
       defaultChannels,
       channels,
-      enabled: channel ? !!config.channels?.[channel]?.tools?.[name] : undefined,
+      enabled: channel ? !!(selectedChannel && config.channels[selectedChannel]?.tools?.[name]) : undefined,
     }
   })
 }

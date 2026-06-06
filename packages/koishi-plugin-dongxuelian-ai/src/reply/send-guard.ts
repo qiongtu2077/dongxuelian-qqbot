@@ -9,7 +9,8 @@ const { getGroupMemberInfo, getGroupInfo } = require('../core/api') as typeof im
 const PLATFORM_MUTE_ERROR_CACHE_MS = 10 * 60 * 1000
 const GROUP_ALL_MUTE_CACHE_MS = 60 * 1000
 type InternalQueryKind = 'member' | 'group'
-type MuteQuery = (...args: Array<string | number | boolean | Record<string, unknown>>) => Promise<unknown> | unknown
+type MemberMuteQuery = (groupId: string | number, userId: string | number) => Promise<unknown> | unknown
+type GroupMuteQuery = (groupId: string | number) => Promise<unknown> | unknown
 
 interface SendSessionLike {
   guildId?: string | number
@@ -58,8 +59,8 @@ interface MarkPlatformMuteInfo {
 
 interface MuteQueryOptions {
   now?: number
-  getGroupMemberInfo?: MuteQuery
-  getGroupInfo?: MuteQuery
+  getGroupMemberInfo?: MemberMuteQuery
+  getGroupInfo?: GroupMuteQuery
 }
 
 const platformMuteCache: Map<string, PlatformMuteCacheEntry> = new Map()
@@ -157,25 +158,32 @@ function clearPlatformMute(session: SendSessionLike): void {
   platformMuteCache.delete(getSendChannelKey(session))
 }
 
-function getInternalQuery(session: SendSessionLike, camelName: string, actionName: string, kind: InternalQueryKind): MuteQuery | null {
+function getInternalQuery(session: SendSessionLike, camelName: string, actionName: string, kind: 'member'): MemberMuteQuery | null
+function getInternalQuery(session: SendSessionLike, camelName: string, actionName: string, kind: 'group'): GroupMuteQuery | null
+function getInternalQuery(session: SendSessionLike, camelName: string, actionName: string, kind: InternalQueryKind): MemberMuteQuery | GroupMuteQuery | null {
   const internal = session?.bot?.internal
   if (!internal) return null
   if (typeof internal[camelName] === 'function') {
     const fn = internal[camelName] as (...args: unknown[]) => unknown
-    if (kind === 'member') return (groupId, userId) => fn(groupId, userId, false)
-    return groupId => fn(groupId, false)
+    if (kind === 'member') return (groupId: string | number, userId: string | number) => fn(groupId, userId, false)
+    return (groupId: string | number) => fn(groupId, false)
   }
   if (typeof internal[actionName] === 'function') {
     const fn = internal[actionName] as (args: Record<string, unknown>) => unknown
-    if (kind === 'member') return (groupId, userId) => fn({ group_id: Number(groupId), user_id: Number(userId), no_cache: false })
-    return groupId => fn({ group_id: Number(groupId), no_cache: false })
+    if (kind === 'member') return (groupId: string | number, userId: string | number) => fn({ group_id: Number(groupId), user_id: Number(userId), no_cache: false })
+    return (groupId: string | number) => fn({ group_id: Number(groupId), no_cache: false })
   }
   return null
 }
 
-async function querySafely(fn: MuteQuery | null, args: Array<string | number | boolean | Record<string, unknown>>): Promise<unknown | null> {
+async function queryMemberSafely(fn: MemberMuteQuery | null, groupId: string | number, userId: string | number): Promise<unknown | null> {
   if (typeof fn !== 'function') return null
-  try { return await fn(...args) } catch { /* non-critical: mute probe can fall back to uncertain status */ return null }
+  try { return await fn(groupId, userId) } catch { /* non-critical: mute probe can fall back to uncertain status */ return null }
+}
+
+async function queryGroupSafely(fn: GroupMuteQuery | null, groupId: string | number): Promise<unknown | null> {
+  if (typeof fn !== 'function') return null
+  try { return await fn(groupId) } catch { /* non-critical: mute probe can fall back to uncertain status */ return null }
 }
 
 function inspectMemberMute(memberInfo: unknown, now: number): PlatformMuteStatus | null {
@@ -207,8 +215,8 @@ async function checkPlatformMuteStatus(session: SendSessionLike, options: MuteQu
   if (!memberGetter && !groupGetter) return { muted: false, uncertain: true, reason: '没有可用的 OneBot 禁言查询接口' }
 
   const [memberInfo, groupInfo] = await Promise.all([
-    querySafely(memberGetter, [groupId, userId]),
-    querySafely(groupGetter, [groupId]),
+    queryMemberSafely(memberGetter, groupId, userId),
+    queryGroupSafely(groupGetter, groupId),
   ])
   const memberMute = inspectMemberMute(memberInfo, now)
   if (memberMute) return memberMute

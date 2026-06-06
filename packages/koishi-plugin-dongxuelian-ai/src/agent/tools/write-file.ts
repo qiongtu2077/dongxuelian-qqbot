@@ -16,7 +16,7 @@ interface WriteFileParams {
 interface FileStatLike {
   size: number
   isDirectory: () => boolean
-  isSymbolicLink?: () => boolean
+  isSymbolicLink: () => boolean
 }
 
 const MAX_CONTENT_BYTES = 256 * 1024
@@ -49,7 +49,7 @@ export = {
     assertNotWriteBlockedBasename(abs, '路径')
     const parent = path.dirname(abs)
 
-    const linkStat = await fs.lstat(abs).catch(() => null) as FileStatLike | null
+    const linkStat = await fs.lstat(abs).catch((): null => null) as FileStatLike | null
     if (linkStat && linkStat.isSymbolicLink()) throw new Error(`目标是符号链接，拒绝写入：${filePath}`)
     let existing: FileStatLike | null = null
     try { existing = await fs.stat(abs) as FileStatLike } catch {
@@ -65,12 +65,12 @@ export = {
 
     if (params.createDirectories) await fs.mkdir(parent, { recursive: true })
     else {
-      const parentStat = await fs.stat(parent).catch(() => null) as FileStatLike | null
+      const parentStat = await fs.stat(parent).catch((): null => null) as FileStatLike | null
       if (!parentStat || !parentStat.isDirectory()) throw new Error(`父目录不存在：${parent}`)
     }
 
     await fs.writeFile(abs, params.content, 'utf8')
-    const realAfterWrite = await fs.realpath(abs).catch(() => abs)
+    const realAfterWrite = await fs.realpath(abs).catch((): string => abs)
     await assertExistingAgentPathInsideRoots(realAfterWrite, '写入后路径校验')
     return `已写入：${abs}（${contentBytes} bytes）`
   },

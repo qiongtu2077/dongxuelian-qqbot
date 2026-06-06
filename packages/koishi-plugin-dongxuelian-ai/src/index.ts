@@ -179,7 +179,7 @@ interface IndexBot {
   selfId?: string
   sendPrivateMessage?: (id: string, message: string) => Promise<unknown> | unknown
   internal?: {
-    sendPrivateMsg?: (id: string, message: string) => Promise<unknown> | unknown
+    sendPrivateMsg?: (id: string, message: unknown) => Promise<unknown> | unknown
   }
 }
 
@@ -266,7 +266,7 @@ interface IndexRandomSendOptions {
     triggerAt: number
   }
   forceQuote?: boolean
-  quoteMessageId?: string
+  quoteMessageId?: string | number
   noQuote?: boolean
   noReplyTo?: boolean
   personaName?: string
@@ -323,6 +323,33 @@ interface IndexRepeatCandidate {
 
 type IndexBuildRepeatCandidate = (session: IndexRepeatSession, plain: string, analyzed?: IndexRepeatAnalysis) => IndexRepeatCandidate
 type IndexCheckGroupRepeat = (session: IndexRepeatSession, candidate: IndexRepeatCandidate | null | undefined, channelKey: string, currentUserId: string, now?: number) => IndexRepeatCandidate | null
+type IndexHandleCommandState = Parameters<typeof handleCommand>[2]
+type IndexHandleChatResultOptions = Parameters<typeof handleChatResult>[1]
+type IndexAgentTaskResult = Awaited<ReturnType<IndexHandleChatResultOptions['agentEngine']['run']>>
+type IndexHandleAgentAutoRouteInput = Parameters<typeof handleAgentAutoRoute>[0]
+
+interface IndexAgentTaskAdapterInput {
+  channelKey: string
+  userId: string
+  timeoutMs?: number
+  fn: () => Promise<IndexAgentTaskResult>
+}
+
+const configureAgentQueueForFlows: IndexHandleChatResultOptions['configureAgentQueue'] = (queueConfig): void => {
+  configureAgentQueue(queueConfig)
+}
+
+const callOpenAIForHandler: IndexHandleCommandState['callOpenAI'] = (messages, stream, options) => {
+  return callOpenAI(messages, !!stream, options || {})
+}
+
+const enqueueAgentTaskForChatResult: IndexHandleChatResultOptions['enqueueAgentTask'] = async (input: IndexAgentTaskAdapterInput): Promise<IndexAgentTaskResult> => {
+  return await enqueueAgentTask(input) as IndexAgentTaskResult
+}
+
+const enqueueAgentTaskForAutoRoute: IndexHandleAgentAutoRouteInput['enqueueAgentTask'] = (input): Promise<unknown> => {
+  return enqueueAgentTask(input)
+}
 
 function getIndexErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String((error as IndexErrorLike | null | undefined)?.message || '')
@@ -402,7 +429,7 @@ function apply(ctx: IndexContext): void {
     const channelKey  = getChannelKey(session)
     let currentMessageVersion = getChannelMessageVersion(channelKey)
     let explicitInteractionMarked = false
-    const markExplicitInteraction = (reason) => {
+    const markExplicitInteraction = (reason: string) => {
       if (!inGuild) return
       if (!explicitInteractionMarked) {
         bumpExplicitInteractionVersion(channelKey)
@@ -441,7 +468,7 @@ function apply(ctx: IndexContext): void {
 
     plain = await handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt })
 
-    const currentUserId = session.userId || session.author?.id || session.username
+    const currentUserId = String(session.userId || session.author?.id || session.username || '')
     const userName = sanitizeUserName(
       session.author?.nick ||
       session.author?.name ||
@@ -490,7 +517,7 @@ function apply(ctx: IndexContext): void {
     const commandResult = await handleCommand(session, ctx, {
       plain, inGuild, channelKey, currentUserId, adminCommandMatched,
       loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache,
-      callOpenAI, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus,
+      callOpenAI: callOpenAIForHandler, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus,
       getThinkingEnabled,
       setThinkingEnabled,
       resetConfigCache,
@@ -515,9 +542,10 @@ function apply(ctx: IndexContext): void {
       .filter(userId => userId && userId !== String(session.selfId || session.bot?.selfId || ''))
     const personaResolution = resolvePersona(channelKey, currentUserId)
     const currentPersonaName = personaResolution.name
+    const currentPersonaNameText = currentPersonaName || ''
     const groupPersonaName = getGroupPersonaName(channelKey)
-    const randomPersonaHighRisk = isPersonaSwitchRisky(personaResolution, groupPersonaName)
-    const personaWillContent = currentPersonaName ? loadPersonalSkill(currentPersonaName) : null
+    const randomPersonaHighRisk = isPersonaSwitchRisky({ source: personaResolution.source, name: currentPersonaNameText }, groupPersonaName)
+    const personaWillContent = currentPersonaName ? loadPersonalSkill(currentPersonaName) || undefined : undefined
     const nameMentioned = !currentPersonaName && /莲莲|东雪莲/.test(plain)
     const inRandomWhitelist = getRandomWhitelistStatus(channelKey)
     let isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply
@@ -527,7 +555,7 @@ function apply(ctx: IndexContext): void {
       randomCooldownActive = true
       isRandomCandidate = false
     }
-    const willFactor = calculateWillFactor(channelKey, currentPersonaName, channelSharedCache, personaWillContent)
+    const willFactor = calculateWillFactor(channelKey, currentPersonaNameText, channelSharedCache, personaWillContent)
     const userText = normalizeText(plain)
     const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId })
     const sharedRecordText = resolveSharedRecordText(plain, analyzed)
@@ -567,8 +595,8 @@ function apply(ctx: IndexContext): void {
     if (randomTriggered && isRandomCandidate && inGuild && !directAt && !nameMentioned) {
       const recentMsgs = channelSharedCache.get(channelKey)
         ?.filter(e => e.userId === currentUserId && e.role === 'user')
-        ?.slice(-2)
-      if (recentMsgs?.length >= 2 && (Date.now() - (recentMsgs[recentMsgs.length - 1]?.ts || 0)) < 10000) {
+        ?.slice(-2) || []
+      if (recentMsgs.length >= 2 && (Date.now() - (recentMsgs[recentMsgs.length - 1]?.ts || 0)) < 10000) {
         randomTriggered = false
         delayedRandomScheduled = true
         cancelPendingRandom(channelKey, 'replace-delayed-random')
@@ -606,8 +634,8 @@ function apply(ctx: IndexContext): void {
                   resolveBot,
                   chat: chat as unknown as Parameters<typeof handleChatResult>[1]['chat'],
                 agentEngine,
-                enqueueAgentTask,
-                configureAgentQueue,
+                enqueueAgentTask: enqueueAgentTaskForChatResult,
+                configureAgentQueue: configureAgentQueueForFlows,
               })
               if (reply) {
                 reply = reply.replace(/【语音风格[：:][^】]+】/g, '').trim() || reply
@@ -820,12 +848,12 @@ function apply(ctx: IndexContext): void {
             resolveBot,
             chat,
             agentEngine,
-            enqueueAgentTask,
-            configureAgentQueue,
+            enqueueAgentTask: enqueueAgentTaskForAutoRoute,
+            configureAgentQueue: configureAgentQueueForFlows,
             retellAgentResult: retellAgentResult as unknown as (result: unknown, input: Record<string, unknown>) => Promise<string>,
           })
           if (autoRouteResult.handled) {
-            return safeSendReplyWithFreshness(ctx, liveSession, autoRouteResult.reply, randomTriggered, resolveBot, randomSendOptions)
+            return safeSendReplyWithFreshness(ctx, liveSession, autoRouteResult.reply || '', randomTriggered, resolveBot, randomSendOptions)
           }
         const chatMeta: IndexChatMeta = {}
         const chatResult = await chat(liveSession, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, directAt, nameMentioned, meta: chatMeta })
@@ -842,8 +870,8 @@ function apply(ctx: IndexContext): void {
           searchContext,
           chat: chat as unknown as Parameters<typeof handleChatResult>[1]['chat'],
           agentEngine,
-          enqueueAgentTask,
-          configureAgentQueue,
+          enqueueAgentTask: enqueueAgentTaskForChatResult,
+          configureAgentQueue: configureAgentQueueForFlows,
         })
         if (!reply) return
         if (randomTriggered && chatMeta.randomReplyMode === 'ambient_water') {
@@ -860,7 +888,7 @@ function apply(ctx: IndexContext): void {
           inGuild,
           chatMeta,
           randomSendOptions,
-          currentPersonaName,
+          currentPersonaName: currentPersonaName || undefined,
           resolveBot,
           safeSendReplyWithFreshness: safeSendReplyWithFreshness as unknown as Parameters<typeof sendChatReplyFlow>[0]['safeSendReplyWithFreshness'],
         })

@@ -158,7 +158,7 @@ function inferPersonaName(baseName, personaConfigs = []) {
 function listVoiceAssetFiles() {
     try {
         return fs.readdirSync(VOICES_DIR)
-            .map(filename => getVoiceFileInfo(filename))
+            .map((filename) => getVoiceFileInfo(filename))
             .filter((info) => !!info && !info.missing);
     }
     catch { /* non-critical: missing voice sample directory lists as empty */
@@ -235,7 +235,7 @@ function listVoiceAssetReferences(assetOrId, personaConfigs = []) {
         if (config.voiceAssetId)
             return config.voiceAssetId === asset.id;
         return config.name === asset.personaName || asset.id === legacyId;
-    }).map(config => config.name).filter(Boolean);
+    }).map(config => config.name).filter((name) => !!name);
 }
 function updateVoiceAssetMetadata(assetIdOrName, patch = {}, personaConfigs = []) {
     const current = findVoiceAsset(assetIdOrName, personaConfigs);
@@ -270,6 +270,8 @@ function resolveVoiceSampleFile(personaName, voiceAssetId = '') {
     const asset = voiceAssetId
         ? findVoiceAsset(voiceAssetId, [{ name: String(personaName || '') }])
         : findVoiceAsset(personaName, [{ name: String(personaName || '') }]);
+    if (!asset)
+        return null;
     const info = asset ? getVoiceFileInfo(asset.filename) : null;
     if (!info || info.missing)
         return null;

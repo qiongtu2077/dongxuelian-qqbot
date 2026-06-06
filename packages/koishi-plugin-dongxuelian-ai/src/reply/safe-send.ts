@@ -36,7 +36,7 @@ interface BotLike {
   selfId?: string
   sendPrivateMessage?: (id: string, message: string) => Promise<unknown> | unknown
   internal?: {
-    sendPrivateMsg?: (id: string, message: string) => Promise<unknown> | unknown
+    sendPrivateMsg?: (id: string, message: unknown) => Promise<unknown> | unknown
   }
 }
 
@@ -61,7 +61,12 @@ interface SendOptions {
   forceQuote?: boolean
   quoteMessageId?: string | number
   personaName?: string
-  randomFreshness?: { channelKey?: string }
+  randomFreshness?: {
+    channelKey: string
+    triggerMessageVersion: number
+    explicitVersion: number
+    triggerAt: number
+  }
   now?: () => number
   time?: { now?: () => number }
   [key: string]: unknown
@@ -128,8 +133,7 @@ function asReplySession(session: SafeSendSessionLike): ReplySessionLike {
 
 function logStaleRandomSkip(ctx: SafeSendContext, stage: string, options: SendOptions = {}): void {
   try {
-    const info = options.randomFreshness || {}
-    ctx.logger('dongxuelian-ai').info(`random reply stale skipped at ${stage}: channel=${info.channelKey || ''}`)
+    ctx.logger('dongxuelian-ai').info(`random reply stale skipped at ${stage}: channel=${options.randomFreshness?.channelKey || ''}`)
   } catch { /* non-critical: diagnostic logging only */ }
 }
 
@@ -265,7 +269,7 @@ async function safeSendReply(ctx: SafeSendContext, session: SafeSendSessionLike,
   let currentReply = reply
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const sentCount = await sendReply(ctx, asReplySession(session), currentReply, isRandom, sendOptions)
+      const sentCount = await sendReply(ctx, asReplySession(session) as Parameters<typeof sendReply>[1], currentReply, isRandom, sendOptions)
       if (sentCount > 0) {
         resetSendFailState()
         clearPlatformMute(session)

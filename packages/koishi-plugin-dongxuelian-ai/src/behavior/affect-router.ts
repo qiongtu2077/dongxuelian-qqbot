@@ -131,9 +131,9 @@ function buildAffectRouterDiagnostic(input: AffectInput = {}): AffectDiagnostic 
   const personaName = normalizeAffectText(input.personaName || plan.name || '', 80)
   const policy = resolveAffectPolicy(plan, { personaName, policy: input.policy })
   const mood = classifyAffectMood(input)
-  const reasons = []
-  const blockers = []
-  const outputs = {
+  const reasons: string[] = []
+  const blockers: string[] = []
+  const outputs: AffectDiagnostic['outputs'] = {
     text: { allowed: true, reasons: ['text_baseline'] },
     voice: { allowed: true, reasons: [] },
     emoji: { allowed: false, reasons: [] },

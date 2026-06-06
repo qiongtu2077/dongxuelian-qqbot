@@ -66,6 +66,7 @@ interface FinalOutputOptions {
 }
 
 type CallModelFn = (messages: ChatMessage[], randomTriggered?: boolean, options?: Record<string, unknown>) => Promise<string>
+type ReplyGuardSession = Parameters<typeof shouldRetryRepeatedReply>[0]
 
 interface RetryUnsafeReplyOptions {
   reply?: string
@@ -115,6 +116,8 @@ async function retryUnsafeReply({
   usedReminderActionTool = false,
   usedUploadedFileVariantTool = false,
 }: RetryUnsafeReplyOptions): Promise<string> {
+  const guardSession: ReplyGuardSession = session || {}
+  const isRandomTriggered = options.randomTriggered === true
   for (let attempt = 0, oldMediaStickingRetryUsed = false; attempt < MAX_REPLY_RETRIES; attempt += 1) {
     const tokenEstimate = estimateTokens(messages)
     if (tokenEstimate > 12000) break
@@ -128,7 +131,7 @@ async function retryUnsafeReply({
         ? `【系统提示：你刚才的回复包含了被禁止的${specific}，请重新回复，绝对不能出现${specific}，按你的风格直接回答。】`
         : '【系统提示：你刚才的回复包含了被明令禁止的封禁类词汇（拉黑/禁言/报警/黑名单等），请重新回复，绝对不能出现这些词，按自己的风格直接回答。】'
       messages.push({ role: 'user', content: instruction })
-      reply = await callModel(messages, options.randomTriggered)
+      reply = await callModel(messages, isRandomTriggered)
       continue
     }
 
@@ -140,14 +143,14 @@ async function retryUnsafeReply({
         ? '【系统提示：你刚才的回复包含了类似' + specific + '的分析式内容，请直接回答用户消息本身，不要把用户消息当成阅读理解题去分析。不要输出括号里的心理活动。按你的人设风格直接回答。】'
         : '【系统提示：刚才输出了内部草稿或工具计划。不要复述草稿，不要说函数名，不要解释回复策略。直接按当前人格给用户一句到两句自然回复。】'
       messages.push({ role: 'user', content: instruction })
-      reply = await callModel(messages, options.randomTriggered)
+      reply = await callModel(messages, isRandomTriggered)
       continue
     }
 
     if (hasInternalContextLeak(reply)) {
       ctx.logger('dongxuelian-ai').warn('internal context leak in reply, retrying')
       messages.push({ role: 'user', content: '【系统提示：你刚才把内部参考资料或消息包装格式原样输出了。请重新回复当前用户，只说自然人话，绝对不要出现“这是你在本群的发言”“昵称：”“发言：”“<user>”“[群聊刷到]”。】' })
-      reply = await callModel(messages, options.randomTriggered)
+      reply = await callModel(messages, isRandomTriggered)
       continue
     }
 
@@ -155,7 +158,7 @@ async function retryUnsafeReply({
 
     const userName = session?.author?.nick || session?.author?.name || session?.username || '用户'
     const sanitizedReply = sanitizeReply(reply, userName)
-    if (!shouldRetryRepeatedReply(session, stripStickerMarkersForGuard(sanitizedReply))) {
+    if (!shouldRetryRepeatedReply(guardSession, stripStickerMarkersForGuard(sanitizedReply))) {
       if (!oldMediaStickingRetryUsed) {
         const layered = classifySceneItemsForActive(channelSharedCache.get(channelKey) || [], {
           currentMessageId: String(session?.messageId || ''),
@@ -174,18 +177,18 @@ async function retryUnsafeReply({
           ctx.logger('dongxuelian-ai').warn(`reply sticks to old background media, retrying once. original: ${sanitizedReply}`)
           messages.push({ role: 'assistant', content: reply })
           messages.push({ role: 'user', content: buildOldMediaStickingRetryPrompt() })
-          reply = await callModel(messages, options.randomTriggered)
+          reply = await callModel(messages, isRandomTriggered)
           continue
         }
       }
       break
     }
 
-    const recentReplies = getRecentAssistantReplies(session)
+    const recentReplies = getRecentAssistantReplies(guardSession)
     ctx.logger('dongxuelian-ai').warn(`reply is repetitive, retrying. original: ${sanitizedReply}`)
     messages.push({ role: 'assistant', content: reply })
     messages.push({ role: 'user', content: buildRepeatRetryPrompt(cleanInput, recentReplies) })
-    reply = await callModel(messages, options.randomTriggered)
+    reply = await callModel(messages, isRandomTriggered)
   }
   return reply
 }
@@ -208,6 +211,8 @@ async function finalizeChatReply({
   usedUploadedFileVariantTool = false,
   callModel,
 }: FinalizeChatReplyOptions): Promise<FinalizeChatReplyResult> {
+  const guardSession: ReplyGuardSession = session || {}
+  const isRandomTriggered = options.randomTriggered === true
   reply = await retryUnsafeReply({
     reply,
     messages,
@@ -227,7 +232,7 @@ async function finalizeChatReply({
     getReplyMaxChars(retaliationLevel)
   )
 
-  if (options.randomTriggered) {
+  if (isRandomTriggered) {
     const randomReplyDecision = parseRandomReplyDecision(finalReply)
     if (options.meta && typeof options.meta === 'object') options.meta.randomReplyMode = randomReplyDecision.mode
     if (!randomReplyDecision.shouldSend) return { finalReply: '', shouldSend: false }
@@ -246,7 +251,7 @@ async function finalizeChatReply({
       reason: '最终回复仍包含内部草稿或工具计划',
       maxChars: getReplyMaxChars(retaliationLevel),
       callModel,
-      isRandom: options.randomTriggered,
+      isRandom: isRandomTriggered,
     })
     finalReply = personaFallback || (retaliationLevel >= 1 ? '这句先别绕了，换个说法。' : '这句我先重组织一下。')
   }
@@ -261,7 +266,7 @@ async function finalizeChatReply({
       reason: '最终回复仍泄漏内部上下文',
       maxChars: getReplyMaxChars(retaliationLevel),
       callModel,
-      isRandom: options.randomTriggered,
+      isRandom: isRandomTriggered,
     })
     finalReply = personaFallback || (retaliationLevel >= 1 ? '这句先别绕了，换个说法。' : '这句我重组织一下。')
   }
@@ -272,9 +277,9 @@ async function finalizeChatReply({
 
   if (hasBannedOutput(finalReply)) {
     ctx.logger('dongxuelian-ai').warn(`banned word persists after retry, forcing fallback. reply: ${finalReply}`)
-    if (options.randomTriggered) return { finalReply: '', shouldSend: false }
-    if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : (pickRepeatedFallbackReply(session) || '不接这句了。')
-    else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(session) || '不接这句了。'
+    if (isRandomTriggered) return { finalReply: '', shouldSend: false }
+    if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(guardSession) : (pickRepeatedFallbackReply(guardSession) || '不接这句了。')
+    else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(guardSession) || '不接这句了。'
     else {
       const personaFallback = await generatePersonaFallbackReply({
         session,
@@ -284,15 +289,15 @@ async function finalizeChatReply({
         reason: '最终回复仍包含禁用表达',
         maxChars: MAX_OUTPUT_CHARS_FRIENDLY,
         callModel,
-        isRandom: options.randomTriggered,
+        isRandom: isRandomTriggered,
       })
       finalReply = personaFallback || '这句我接不了，换个说法吧。'
     }
-  } else if (!usedReminderActionTool && !usedUploadedFileVariantTool && shouldRetryRepeatedReply(session, stripStickerMarkersForGuard(finalReply))) {
+  } else if (!usedReminderActionTool && !usedUploadedFileVariantTool && shouldRetryRepeatedReply(guardSession, stripStickerMarkersForGuard(finalReply))) {
     ctx.logger('dongxuelian-ai').warn(`reply is still repetitive after retry, forcing fallback. reply: ${finalReply}`)
-    if (options.randomTriggered) return { finalReply: '', shouldSend: false }
-    if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(session) : (pickRepeatedFallbackReply(session) || '不接这句了。')
-    else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(session) || '不接这句了。'
+    if (isRandomTriggered) return { finalReply: '', shouldSend: false }
+    if (retaliationLevel >= 2) finalReply = ABUSIVE_INPUT_RE.test(cleanInput) ? pickAbusiveFallbackReply(guardSession) : (pickRepeatedFallbackReply(guardSession) || '不接这句了。')
+    else if (retaliationLevel === 1) finalReply = pickRepeatedFallbackReply(guardSession) || '不接这句了。'
     else {
       const personaFallback = await generatePersonaFallbackReply({
         session,
@@ -302,7 +307,7 @@ async function finalizeChatReply({
         reason: '最终回复仍和近期回复过于相似',
         maxChars: MAX_OUTPUT_CHARS_FRIENDLY,
         callModel,
-        isRandom: options.randomTriggered,
+        isRandom: isRandomTriggered,
       })
       finalReply = personaFallback || '换个说法吧，别一直绕同一句。'
     }

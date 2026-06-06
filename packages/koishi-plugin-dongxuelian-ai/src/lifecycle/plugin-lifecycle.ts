@@ -104,7 +104,7 @@ function restoreTodayCacheEntry(key: string, data: TodayCacheSnapshot | null | u
 
 function restoreTodayCache(): void {
   try {
-    const files = fsSync.readdirSync(DATA_DIR).filter(f => f.startsWith('today-cache-') && f.endsWith('.json'))
+    const files = fsSync.readdirSync(DATA_DIR).filter((f: string) => f.startsWith('today-cache-') && f.endsWith('.json'))
     for (const fileName of files) {
       try {
       const raw = fsSync.readFileSync(path.join(DATA_DIR, fileName), 'utf8')
@@ -137,8 +137,8 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     restoreTodayCache()
     trimChannelRuntimeCaches()
     cleanupDailyStatsFiles().catch(error => ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${getLifecycleErrorMessage(error)}`))
-    scheduleDailyStatsCleanup(ctx)
-    scheduleExpressionHarvest(ctx)
+    scheduleDailyStatsCleanup(ctx as Parameters<typeof scheduleDailyStatsCleanup>[0])
+    scheduleExpressionHarvest(ctx as Parameters<typeof scheduleExpressionHarvest>[0])
     try {
       const config = agentConfig.getAgentConfig()
       if (typeof configureAgentQueue === 'function') configureAgentQueue(config.queue || {})

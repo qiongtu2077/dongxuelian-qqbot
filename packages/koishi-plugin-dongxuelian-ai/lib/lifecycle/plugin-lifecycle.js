@@ -36,7 +36,7 @@ function restoreTodayCacheEntry(key, data) {
 }
 function restoreTodayCache() {
     try {
-        const files = fsSync.readdirSync(DATA_DIR).filter(f => f.startsWith('today-cache-') && f.endsWith('.json'));
+        const files = fsSync.readdirSync(DATA_DIR).filter((f) => f.startsWith('today-cache-') && f.endsWith('.json'));
         for (const fileName of files) {
             try {
                 const raw = fsSync.readFileSync(path.join(DATA_DIR, fileName), 'utf8');

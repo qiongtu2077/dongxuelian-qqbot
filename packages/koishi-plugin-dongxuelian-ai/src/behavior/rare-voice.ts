@@ -4,9 +4,9 @@
  * 边界: 不发送消息、不生成文字、不写对话历史。
  * 状态: WAV 文件缓存落在运行数据目录。
  */
-const fs = require('fs')
+const fs = require('fs') as typeof import('fs')
 const path: typeof import('path') = require('path')
-const { execFile } = require('child_process')
+const { execFile } = require('child_process') as typeof import('child_process')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 
 const RARE_VOICE_RATE = 0.5
@@ -28,7 +28,7 @@ function resolveRareVoiceSource(): string | null {
   const preferred = path.join(RARE_VOICE_ASSET_DIR, RARE_VOICE_PREFERRED_FILE)
   if (isUsableSource(preferred)) return preferred
 
-  let entries = []
+  let entries: string[] = []
   try {
     entries = fs.readdirSync(RARE_VOICE_ASSET_DIR)
   } catch { /* non-critical: rare voice asset directory is optional */

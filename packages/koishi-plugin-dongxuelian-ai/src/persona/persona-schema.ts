@@ -117,7 +117,8 @@ function getPersonaSchemaKnownFields(): string[] {
 
 function validatePersonaMeta(meta: PersonaMeta = {}, context: PersonaSchemaContext = {}): PersonaDiagnostic[] {
   const diagnostics: PersonaDiagnostic[] = []
-  const type = PERSONA_SCHEMA_ALLOWED_TYPES.includes(context.type) ? context.type : 'persona'
+  const contextType = String(context.type || '')
+  const type = PERSONA_SCHEMA_ALLOWED_TYPES.includes(contextType) ? contextType : 'persona'
   const keys = Object.keys(meta || {})
   if (!context.hasFrontmatter) {
     diagnostics.push(createPersonaDiagnostic('warning', 'missing_frontmatter', '文档缺少 frontmatter，后续只能按文件名和正文兼容扫描。'))
@@ -166,12 +167,13 @@ function parsePersonaDocument(content: string = '', context: PersonaSchemaContex
   const parsed = parsePersonaSchemaFrontmatter(content)
   const schemaText = parsed.meta.schema ? String(parsed.meta.schema).trim().replace(/^v/i, '') : ''
   const schemaVersion = schemaText ? parseInt(schemaText, 10) : 0
+  const contextType = String(context.type || '')
   const diagnostics = validatePersonaMeta(parsed.meta, {
-    type: context.type,
+    type: contextType,
     hasFrontmatter: parsed.hasFrontmatter,
   })
   return {
-    type: PERSONA_SCHEMA_ALLOWED_TYPES.includes(context.type) ? context.type : 'persona',
+    type: PERSONA_SCHEMA_ALLOWED_TYPES.includes(contextType) ? contextType : 'persona',
     file: context.file || '',
     schemaVersion: Number.isFinite(schemaVersion) ? schemaVersion : 0,
     hasFrontmatter: parsed.hasFrontmatter,

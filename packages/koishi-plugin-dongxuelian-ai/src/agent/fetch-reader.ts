@@ -50,7 +50,7 @@ interface BodyReaderLike {
 }
 
 interface BodyLike {
-  getReader?: () => BodyReaderLike
+  getReader?: unknown
 }
 
 interface ResponseLike {
@@ -182,14 +182,14 @@ function decodeBytes(bytes: Uint8Array = Buffer.alloc(0), contentType: unknown =
 
 async function readResponseBytesLimited(response: ResponseLike, maxBytes: number): Promise<ResponseBytesResult> {
   if (response.body && typeof response.body.getReader === 'function') {
-    const reader = response.body.getReader()
+    const reader = (response.body.getReader as () => BodyReaderLike)()
     const chunks: Uint8Array[] = []
     let total = 0
     let truncated = false
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      const chunk = value instanceof Uint8Array ? value : Buffer.from(value)
+      const chunk = value instanceof Uint8Array ? value : Buffer.from(value as unknown as ArrayLike<number>)
       const remaining = maxBytes - total
       if (remaining <= 0) {
         truncated = true

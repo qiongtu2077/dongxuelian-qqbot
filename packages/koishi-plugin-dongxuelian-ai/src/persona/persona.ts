@@ -83,7 +83,7 @@ function resolvePersona(channelKey: string, userId: string): { source: string; n
   const userPersona = getUserPersona(userId)
   if (userPersona) return { source: 'user', name: userPersona }
   const groupEntry = getGroupPersona(channelKey)
-  if (groupEntry) return { source: 'group', name: groupEntry.persona }
+  if (groupEntry) return { source: 'group', name: groupEntry.persona as string }
   return { source: 'default', name: null }
 }
 

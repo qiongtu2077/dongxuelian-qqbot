@@ -1,4 +1,6 @@
 // 受控浏览器工具：提供最小浏览器动作，默认关闭且按危险工具策略确认。
+import type { Browser, ConsoleMessage, ElementHandle, HTTPRequest, KeyInput, Page } from 'puppeteer-core'
+
 const fs = require('fs')
 const path = require('path')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
@@ -46,6 +48,42 @@ interface BrowserFormField {
   text?: unknown
 }
 
+interface BrowserActionConsoleLogEntry {
+  type: string
+  text: string
+  at: number
+}
+
+interface BrowserActionNetworkLogEntry {
+  method: string
+  url: string
+  status: number
+  at: number
+}
+
+interface BrowserSearchCandidate {
+  title: string
+  url: string
+  snippet: string
+  text: string
+}
+
+interface BrowserActionContextCompat {
+  clearCookies: () => Promise<void>
+}
+
+type BrowserActionPage = Page & {
+  context: () => BrowserActionContextCompat
+}
+
+interface NetworkApiWindow {
+  fetch?: typeof window.fetch
+  XMLHttpRequest?: typeof window.XMLHttpRequest
+  WebSocket?: typeof window.WebSocket
+  EventSource?: typeof window.EventSource
+  sendBeacon?: unknown
+}
+
 function getBrowserActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -73,21 +111,27 @@ function asBrowserActionParams(value: unknown): BrowserActionParams {
   return value && typeof value === 'object' ? value as BrowserActionParams : {}
 }
 
-let browser = null
-let page = null
+let browser: Browser | null = null
+let page: BrowserActionPage | null = null
 let currentUrl = ''
 let cleanupRegistered = false
-let idleTimer = null
-let launchPromise = null
-let closePromise = null
+let idleTimer: ReturnType<typeof setTimeout> | null = null
+let launchPromise: Promise<BrowserActionPage> | null = null
+let closePromise: Promise<void> | null = null
 let actionQueue: Promise<unknown> = Promise.resolve()
 let screenshotCounter = 0
-let networkLog = []
-let consoleLog = []
+let networkLog: BrowserActionNetworkLogEntry[] = []
+let consoleLog: BrowserActionConsoleLogEntry[] = []
 let currentSessionOwner = ''
 const BROWSER_CLEANUP_HOOK = Symbol.for('dongxuelian.browser-action.cleanupHook')
 const BROWSER_CLEANUP_RESET = Symbol.for('dongxuelian.browser-action.cleanupReset')
 const BROWSER_CLEANUP_INSTALLED = Symbol.for('dongxuelian.browser-action.cleanupInstalled')
+type BrowserCleanupGlobal = typeof globalThis & {
+  [BROWSER_CLEANUP_HOOK]?: () => void
+  [BROWSER_CLEANUP_RESET]?: () => void
+  [BROWSER_CLEANUP_INSTALLED]?: boolean
+}
+const browserCleanupGlobal = globalThis as BrowserCleanupGlobal
 const IDLE_CLOSE_MS = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_IDLE_MS, 60 * 1000, 10 * 1000, 5 * 60 * 1000)
 const BROWSER_MIN_AVAILABLE_MB = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_MIN_MEM_MB, 900, 256, 8192)
 const SEARCH_NAVIGATION_TIMEOUT_MS = 12000
@@ -97,13 +141,13 @@ const MAX_BROWSER_OUTPUT_FILE_BYTES = parseBrowserPositiveInt(process.env.DONGXU
 const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font'])
 const BLOCKED_HOST_RE = /(?:doubleclick|googlesyndication|google-analytics|googletagmanager|adservice|adsystem|bat\.bing|clarity\.ms|facebook\.net|scorecardresearch|cnzz|hm\.baidu|pos\.baidu)/i
 
-function parseBrowserPositiveInt(value, fallback, min, max) {
-  const parsed = parseInt(value, 10)
+function parseBrowserPositiveInt(value: string | number | undefined, fallback: number, min: number, max: number): number {
+  const parsed = parseInt(String(value), 10)
   if (!Number.isFinite(parsed)) return fallback
   return Math.max(min, Math.min(max, parsed))
 }
 
-function readLinuxMemAvailableMb() {
+function readLinuxMemAvailableMb(): number | null {
   if (process.platform !== 'linux') return null
   try {
     const raw = fs.readFileSync('/proc/meminfo', 'utf8')
@@ -114,17 +158,17 @@ function readLinuxMemAvailableMb() {
   }
 }
 
-function assertEnoughMemoryForBrowser() {
+function assertEnoughMemoryForBrowser(): void {
   if (/^(1|true|yes|on)$/i.test(String(process.env.DONGXUELIAN_BROWSER_FORCE || '').trim())) return
   const availableMb = readLinuxMemAvailableMb()
   if (availableMb === null || availableMb >= BROWSER_MIN_AVAILABLE_MB) return
   throw new Error(`可用内存不足（约 ${availableMb}MB），已拒绝启动 Chromium；需要至少 ${BROWSER_MIN_AVAILABLE_MB}MB。可先释放内存，或确认风险后设置 DONGXUELIAN_BROWSER_FORCE=1。`)
 }
 
-async function enableBrowserRequestGuards(targetPage) {
+async function enableBrowserRequestGuards(targetPage: BrowserActionPage | null | undefined): Promise<void> {
   if (!targetPage || typeof targetPage.setRequestInterception !== 'function' || typeof targetPage.on !== 'function') return
   await targetPage.setRequestInterception(true)
-  targetPage.on('request', async req => {
+  targetPage.on('request', async (req: HTTPRequest) => {
     try {
       const url = req.url()
       const type = req.resourceType()
@@ -138,11 +182,12 @@ async function enableBrowserRequestGuards(targetPage) {
     }
   })
   const disableNetworkApis = () => {
-    delete window.fetch
-    delete window.XMLHttpRequest
-    delete window.WebSocket
-    delete window.EventSource
-    delete (window as typeof window & { sendBeacon?: unknown }).sendBeacon
+    const targetWindow = window as unknown as NetworkApiWindow
+    delete targetWindow.fetch
+    delete targetWindow.XMLHttpRequest
+    delete targetWindow.WebSocket
+    delete targetWindow.EventSource
+    delete targetWindow.sendBeacon
     Object.defineProperty(navigator, 'sendBeacon', { value: () => false, configurable: false })
   }
   if (typeof targetPage.evaluateOnNewDocument === 'function') {
@@ -154,20 +199,20 @@ async function enableBrowserRequestGuards(targetPage) {
 function registerCleanup() {
   if (cleanupRegistered) return
   cleanupRegistered = true
-  globalThis[BROWSER_CLEANUP_HOOK] = () => { closeBrowser().catch(ignoreBrowserPromiseFailure) }
-  globalThis[BROWSER_CLEANUP_RESET] = () => {
+  browserCleanupGlobal[BROWSER_CLEANUP_HOOK] = () => { closeBrowser().catch(ignoreBrowserPromiseFailure) }
+  browserCleanupGlobal[BROWSER_CLEANUP_RESET] = () => {
     page = null
     browser = null
     currentUrl = ''
   }
-  if (!globalThis[BROWSER_CLEANUP_INSTALLED]) {
-    globalThis[BROWSER_CLEANUP_INSTALLED] = true
+  if (!browserCleanupGlobal[BROWSER_CLEANUP_INSTALLED]) {
+    browserCleanupGlobal[BROWSER_CLEANUP_INSTALLED] = true
     process.once('beforeExit', () => {
-      const handler = globalThis[BROWSER_CLEANUP_HOOK]
+      const handler = browserCleanupGlobal[BROWSER_CLEANUP_HOOK]
       if (typeof handler === 'function') handler()
     })
     process.once('exit', () => {
-      const handler = globalThis[BROWSER_CLEANUP_RESET]
+      const handler = browserCleanupGlobal[BROWSER_CLEANUP_RESET]
       if (typeof handler === 'function') handler()
     })
   }
@@ -180,7 +225,7 @@ function refreshIdleTimer() {
   if (idleTimer.unref) idleTimer.unref()
 }
 
-function findBrowser() {
+function findBrowser(): string | null {
   const envPath = process.env.DONGXUELIAN_BROWSER_PATH || process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH
   const candidates = [
     envPath,
@@ -192,7 +237,7 @@ function findBrowser() {
     '/usr/bin/chromium',
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
-  ].filter(Boolean)
+  ].filter((item): item is string => typeof item === 'string' && !!item)
   for (const item of candidates) {
     try { if (fs.existsSync(item)) return item } catch {
       /* non-critical: inaccessible browser candidate is skipped */
@@ -216,7 +261,7 @@ async function validateUrl(raw: unknown): Promise<string> {
   return parsed.toString()
 }
 
-async function launchPage() {
+async function launchPage(): Promise<BrowserActionPage> {
   assertEnoughMemoryForBrowser()
   const puppeteer = require('puppeteer-core')
   const executablePath = findBrowser()
@@ -244,13 +289,15 @@ async function launchPage() {
     args: launchArgs,
   })
   registerCleanup()
-  page = await browser.newPage()
+  const activeBrowser = browser
+  if (!activeBrowser) throw new Error('浏览器启动失败')
+  page = await activeBrowser.newPage() as BrowserActionPage
   await enableBrowserRequestGuards(page)
-  page.on('console', msg => {
+  page.on('console', (msg: ConsoleMessage) => {
     consoleLog.unshift({ type: msg.type(), text: msg.text().slice(0, 300), at: Date.now() })
     if (consoleLog.length > 80) consoleLog.length = 80
   })
-  page.on('requestfinished', req => {
+  page.on('requestfinished', (req: HTTPRequest) => {
     const res = req.response()
     if (res) {
       const remote = res.remoteAddress()
@@ -271,7 +318,7 @@ async function launchPage() {
   return page
 }
 
-async function ensurePage() {
+async function ensurePage(): Promise<BrowserActionPage> {
   if (closePromise) await closePromise
   if (page && !page.isClosed()) {
     refreshIdleTimer()
@@ -283,7 +330,7 @@ async function ensurePage() {
   return launchPromise
 }
 
-async function closeBrowser() {
+async function closeBrowser(): Promise<void> {
   if (closePromise) return closePromise
   closePromise = (async () => {
     if (launchPromise) {
@@ -312,7 +359,7 @@ async function closeBrowser() {
   return closePromise
 }
 
-async function openUrl(url) {
+async function openUrl(url: unknown): Promise<string> {
   const targetUrl = await validateUrl(url)
   const p = await ensurePage()
   await p.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 })
@@ -358,13 +405,13 @@ async function getSnapshot() {
   return JSON.stringify(snapshot, null, 2)
 }
 
-function requireSelector(selector) {
+function requireSelector(selector: unknown): string {
   const value = String(selector || '').trim()
   if (!value || value.length > 300) throw new Error('selector 不能为空或过长')
   return value
 }
 
-function validateEvaluateCode(code = '') {
+function validateEvaluateCode(code: unknown = ''): string {
   const value = String(code || '').trim()
   if (!value || value.length > 4000) throw new Error('evaluate code 不能为空或过长')
   if (/\b(localStorage|sessionStorage|indexedDB|caches|document\.cookie|navigator\.clipboard)\b/i.test(value)) throw new Error('evaluate 禁止访问浏览器本地隐私存储')
@@ -374,17 +421,17 @@ function validateEvaluateCode(code = '') {
   return value
 }
 
-async function evaluatePage(code) {
+async function evaluatePage(code: unknown): Promise<string> {
   const p = await ensurePage()
   const value = validateEvaluateCode(code)
-  const result = await p.evaluate(source => {
+  const result = await p.evaluate((source: string): unknown => {
     const fn = new Function('"use strict"; return (async () => { ' + source + '\n})()')
     return fn()
   }, value)
   return JSON.stringify(result === undefined ? null : result, null, 2).slice(0, 8000)
 }
 
-async function clickSelector(selector) {
+async function clickSelector(selector: unknown): Promise<string> {
   const p = await ensurePage()
   const value = requireSelector(selector)
   await p.click(value, { delay: 20 })
@@ -392,7 +439,7 @@ async function clickSelector(selector) {
   return `已点击：${value}\n当前页面：${currentUrl}`
 }
 
-async function typeSelector(selector, text) {
+async function typeSelector(selector: unknown, text: unknown): Promise<string> {
   const p = await ensurePage()
   const value = requireSelector(selector)
   const input = String(text || '')
@@ -402,13 +449,13 @@ async function typeSelector(selector, text) {
   return `已输入到：${value}`
 }
 
-async function extractSearchResults(query) {
+async function extractSearchResults(query: unknown): Promise<string> {
   const p = await ensurePage()
-  const candidates = await p.evaluate(() => {
-    function cleanText(value) {
+  const candidates = await p.evaluate((): BrowserSearchCandidate[] => {
+    function cleanText(value: unknown): string {
       return String(value || '').replace(/\s+/g, ' ').trim()
     }
-    function pickSnippet(item: Element, titleText: string) {
+    function pickSnippet(item: Element, titleText: string): string {
       const snippetEl = item.querySelector('.b_caption p, .b_snippet, .result__snippet, .c-abstract, .content-right_8Zs40, .compText, .snippet, p')
       const snippet = cleanText(snippetEl && (snippetEl as HTMLElement).innerText)
       if (snippet) return snippet
@@ -457,11 +504,11 @@ async function extractSearchResults(query) {
       }
     })
     return fromContainers.concat(fromLinks).filter(item => item.title && item.url).slice(0, 80)
-  }).catch(() => [])
+  }).catch((): BrowserSearchCandidate[] => [])
   return formatSearchResults(query, rankSearchCandidates(candidates, query))
 }
 
-async function searchAndRead(query) {
+async function searchAndRead(query: unknown): Promise<string> {
   const value = String(query || '').trim()
   if (!value || value.length > 200) throw new Error('query 不能为空或过长')
   const p = await ensurePage()
@@ -469,7 +516,7 @@ async function searchAndRead(query) {
     'https://www.bing.com/search?q=' + encodeURIComponent(value),
     'https://duckduckgo.com/html/?q=' + encodeURIComponent(value),
   ]
-  const failures = []
+  const failures: string[] = []
   for (const searchUrl of urls) {
     try {
       const targetUrl = await validateUrl(searchUrl)
@@ -486,10 +533,10 @@ async function searchAndRead(query) {
   return buildSearchFailureText(value, failures)
 }
 
-async function waitForTarget(selector, timeoutMs) {
+async function waitForTarget(selector: unknown, timeoutMs: unknown): Promise<string> {
   const p = await ensurePage()
   const value = requireSelector(selector)
-  const timeout = Math.min(30000, Math.max(1000, parseInt(timeoutMs, 10) || 12000))
+  const timeout = Math.min(30000, Math.max(1000, parseInt(String(timeoutMs), 10) || 12000))
   await p.waitForSelector(value, { timeout })
   currentUrl = p.url()
   return `已等待到：${value}`
@@ -501,7 +548,7 @@ async function takeScreenshot(fullPage = false) {
   fs.mkdirSync(dir, { recursive: true })
   const file = path.join(dir, `screenshot-${Date.now()}-${++screenshotCounter}.png`)
   await p.screenshot({ path: file, fullPage: !!fullPage, type: 'png' })
-  const stat = await fs.promises.stat(file).catch(() => null)
+  const stat = await fs.promises.stat(file).catch((): null => null)
   if (stat && stat.size > MAX_BROWSER_OUTPUT_FILE_BYTES) {
     await fs.promises.unlink(file).catch(ignoreBrowserPromiseFailure)
     throw new Error(`截图文件过大：${stat.size} bytes`)
@@ -509,7 +556,7 @@ async function takeScreenshot(fullPage = false) {
   return `截图已保存：${file}`
 }
 
-async function navigateHistory(action) {
+async function navigateHistory(action: string): Promise<string> {
   const p = await ensurePage()
   if (action === 'reload') await p.reload({ waitUntil: 'domcontentloaded', timeout: 20000 })
   else if (action === 'back' || action === 'navigate_back') await p.goBack({ waitUntil: 'domcontentloaded', timeout: 20000 })
@@ -518,7 +565,7 @@ async function navigateHistory(action) {
   return `当前页面：${currentUrl}`
 }
 
-async function interact(action, params: BrowserActionParams = {}) {
+async function interact(action: string, params: BrowserActionParams = {}): Promise<string> {
   const p = await ensurePage()
   const selector = requireSelector(params.selector)
   if (action === 'hover') await p.hover(selector)
@@ -556,11 +603,11 @@ async function dragElement(params: BrowserActionParams = {}) {
   return `已拖拽：${selector}${targetSelector ? ` -> ${targetSelector}` : ''}`
 }
 
-async function pressKey(key) {
+async function pressKey(key: unknown): Promise<string> {
   const p = await ensurePage()
   const value = String(key || '').trim()
   if (!value || value.length > 40) throw new Error('key 不能为空或过长')
-  await p.keyboard.press(value)
+  await p.keyboard.press(value as KeyInput)
   return `已按键：${value}`
 }
 
@@ -580,7 +627,7 @@ async function inspectDom(action: string, params: BrowserActionParams = {}) {
   if (action === 'get_attribute') {
     const attr = String(params.attribute || '').trim()
     if (!attr || attr.length > 80) throw new Error('attribute 不能为空或过长')
-    const value = await p.$eval(selector, (el, name) => el.getAttribute(name), attr).catch(() => null)
+    const value = await p.$eval(selector, (el, name): string | null => el.getAttribute(name), attr).catch((): null => null)
     return `${selector}[${attr}] = ${String(value || '').slice(0, 2000)}`
   }
   if (action === 'extract') {
@@ -614,7 +661,7 @@ async function savePdf(params: BrowserActionParams = {}) {
   fs.mkdirSync(dir, { recursive: true })
   const file = path.join(dir, `page-${Date.now()}-${++screenshotCounter}.pdf`)
   await p.pdf({ path: file, format: 'A4', printBackground: params.printBackground !== false, landscape: !!params.landscape })
-  const stat = await fs.promises.stat(file).catch(() => null)
+  const stat = await fs.promises.stat(file).catch((): null => null)
   if (stat && stat.size > MAX_BROWSER_OUTPUT_FILE_BYTES) {
     await fs.promises.unlink(file).catch(ignoreBrowserPromiseFailure)
     throw new Error(`PDF 文件过大：${stat.size} bytes`)
@@ -624,10 +671,12 @@ async function savePdf(params: BrowserActionParams = {}) {
 
 async function manageTabs(action: string, params: BrowserActionParams = {}) {
   const p = await ensurePage()
-  const pages = await browser.pages()
+  const activeBrowser = browser
+  if (!activeBrowser) throw new Error('浏览器未启动')
+  const pages = await activeBrowser.pages()
   if (action === 'tabs') return JSON.stringify(await Promise.all(pages.map(async (item, index) => ({ index, current: item === p, url: item.url(), title: await item.title().catch(() => '') }))), null, 2)
   if (action === 'new_tab') {
-    page = await browser.newPage()
+    page = await activeBrowser.newPage() as BrowserActionPage
     await enableBrowserRequestGuards(page)
     await page.setViewport({ width: 1024, height: 700 })
     currentUrl = page.url()
@@ -637,14 +686,14 @@ async function manageTabs(action: string, params: BrowserActionParams = {}) {
   const index = parseInt(String(params.index), 10)
   if (!Number.isInteger(index) || index < 0 || index >= pages.length) throw new Error('tab index 无效')
   if (action === 'switch_tab') {
-    page = pages[index]
+    page = pages[index] as BrowserActionPage
     currentUrl = page.url()
     return `已切换到标签 ${index}: ${currentUrl}`
   }
   if (action === 'close_tab') {
     if (pages.length <= 1) throw new Error('不能关闭最后一个标签，请使用 stop')
     await pages[index].close()
-    page = (await browser.pages())[0]
+    page = (await activeBrowser.pages())[0] as BrowserActionPage
     currentUrl = page.url()
     return `已关闭标签 ${index}`
   }
@@ -687,7 +736,7 @@ async function uploadFile(params: BrowserActionParams = {}) {
     targets.push(abs)
   }
   if (!targets.length) throw new Error('file_upload 需要 path 或 paths')
-  const input = await p.$(selector)
+  const input = await p.$(selector) as ElementHandle<HTMLInputElement> | null
   if (!input) throw new Error(`未找到文件输入框：${selector}`)
   await input.uploadFile(...targets)
   return `已选择上传文件：${targets.map(item => path.basename(item)).join(', ')}`

@@ -267,7 +267,7 @@ async function readHttpSearchResponseText(response: HttpSearchResponseLike, maxB
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
-    const chunk = value instanceof Uint8Array ? value : Buffer.from(value)
+    const chunk = value instanceof Uint8Array ? value : Buffer.from(value || '')
     const remaining = maxBytes - total
     if (remaining <= 0) {
       try { await reader.cancel() } catch { /* non-critical: stream may already be closed */ }
@@ -334,7 +334,7 @@ async function fetchHttpResultPage(url: unknown, limits: HttpSearchLimits, remai
   const page = await readHttpResultPage(url, limits, remainingMs)
   if (!page.ok) throw new Error(page.reason || '候选网页读取失败')
   if (page.textQuality !== 'usable') throw new Error(page.reason || '正文不可用')
-  return page.text
+  return page.text || ''
 }
 
 function formatCandidateReadFailure(item: SearchCandidate = {}, page: OpenedSearchPage = {}): string {
@@ -485,9 +485,9 @@ async function runHttpSearch(queries: unknown[] | unknown = [], options: HttpSea
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const passResult = await runSearchPass(currentQueries, limits, startedAt, failures)
     if (passResult.usable) {
-      return { ok: true, text: passResult.text, query: passResult.query, engine: passResult.engine, failures, pages: passResult.pages, candidates: passResult.ranked || [], status: 'usable_hit' }
+      return { ok: true, text: passResult.text || '', query: passResult.query || firstQuery, engine: passResult.engine, failures, pages: passResult.pages, candidates: passResult.ranked || [], status: 'usable_hit' }
     }
-    if (passResult.weak && (!bestWeakResult || passResult.score > bestWeakResult.score)) {
+    if (passResult.weak && (!bestWeakResult || (passResult.score || 0) > (bestWeakResult.score || 0))) {
       bestWeakResult = passResult
     }
     if (attempt >= maxRetries) break
@@ -572,8 +572,9 @@ async function runSearchPass(queryList: string[], limits: HttpSearchLimits, star
           return { usable: true, weak: false, text, query, engine: endpoint.name, pages: pageReads.pages, ranked, allCandidates, score: ranked[0]?.score || 0 }
         }
         if (text) {
-          const score = ranked[0] && Number.isFinite(ranked[0].score) ? ranked[0].score : 0
-          if (!bestSearchOnlyResult || score > bestSearchOnlyResult.score) {
+          const topScore = ranked[0]?.score
+          const score = typeof topScore === 'number' && Number.isFinite(topScore) ? topScore : 0
+          if (!bestSearchOnlyResult || score > (bestSearchOnlyResult.score || 0)) {
             bestSearchOnlyResult = { usable: false, weak: true, text, query, engine: endpoint.name, pages: pageReads.pages, ranked, allCandidates, score }
           }
           failures.push(`${endpoint.name}: 弱命中（${hitStatus}），继续尝试`)

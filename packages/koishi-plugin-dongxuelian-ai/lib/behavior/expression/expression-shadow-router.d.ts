@@ -60,13 +60,7 @@ declare const _default: {
     EXPRESSION_SHADOW_FRESH_CANDIDATE_MS: number;
     EXPRESSION_SHADOW_RECENT_SPEAKER_WINDOW_MS: number;
     EXPRESSION_SHADOW_MAX_PICKS: number;
-    EXPRESSION_SHADOW_PERSONA_DEFAULT_POLICY: Readonly<{
-        东雪莲: "on";
-        椿: "on";
-        爱弥斯: "abstract";
-        长离: "off";
-        特蕾西娅: "off";
-    }>;
+    EXPRESSION_SHADOW_PERSONA_DEFAULT_POLICY: Readonly<Record<string, string>>;
     resolveExpressionInjectionMode: typeof resolveExpressionInjectionMode;
     detectExpressionSensitiveTopicActive: typeof detectExpressionSensitiveTopicActive;
     buildExpressionShadowPlan: typeof buildExpressionShadowPlan;
