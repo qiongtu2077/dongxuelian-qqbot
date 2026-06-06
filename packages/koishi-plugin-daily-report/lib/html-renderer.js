@@ -131,6 +131,35 @@ function safeAvatarUserId(value) {
     const userId = String(value || '').trim();
     return /^\d+$/.test(userId) ? userId : '';
 }
+// 将群友画像昵称按实际渲染宽度裁剪，并使用三个 ASCII 点作为截断标记。
+async function applyProfileNameDots(page) {
+    await page.evaluate(() => {
+        const names = Array.from(document.querySelectorAll('.profile-name'));
+        for (const container of names) {
+            const nameEl = container.querySelector('.profile-name-text');
+            if (!nameEl)
+                continue;
+            const fullName = nameEl.getAttribute('data-full-name') || nameEl.textContent || '';
+            const chars = Array.from(fullName);
+            nameEl.textContent = fullName;
+            if (container.scrollWidth <= container.clientWidth || !chars.length)
+                continue;
+            let low = 0;
+            let high = chars.length;
+            while (low < high) {
+                const mid = Math.ceil((low + high) / 2);
+                nameEl.textContent = chars.slice(0, mid).join('') + '...';
+                if (container.scrollWidth <= container.clientWidth)
+                    low = mid;
+                else
+                    high = mid - 1;
+            }
+            nameEl.textContent = chars.slice(0, low).join('') + '...';
+        }
+        return true;
+    }).catch(() => {
+    });
+}
 // 等待页面远程资源尽量稳定后再截图，减少头像和外链图片的加载抖动。
 async function waitForRenderAssets(page) {
     if (!page || typeof page.waitForNetworkIdle !== 'function')
@@ -225,7 +254,7 @@ function buildProfilesHtml(userTitles) {
             ? `background-image:url('${avatarUrl}');background-size:cover;background-position:center`
             : `background:#39C5BB`;
         const avatarContent = avatarUrl ? '' : esc((t.name || '?')[0]);
-        html += `<div class="profile-card"><div class="profile-head"><div class="avatar" style="${avatarStyle}">${avatarContent}</div><div class="profile-info"><div class="profile-name">${esc(t.name)} ${mbti}</div><div class="profile-role">${esc(t.title)}</div></div></div><div class="profile-desc">${esc(t.reason)}</div></div>`;
+        html += `<div class="profile-card"><div class="profile-head"><div class="avatar" style="${avatarStyle}">${avatarContent}</div><div class="profile-info"><div class="profile-name"><span class="profile-name-text" data-full-name="${esc(t.name)}">${esc(t.name)}</span> ${mbti}</div><div class="profile-role">${esc(t.title)}</div></div></div><div class="profile-desc">${esc(t.reason)}</div></div>`;
     }
     return html + '</div>';
 }
@@ -386,6 +415,7 @@ async function renderHtmlToImage(htmlContent) {
         await page.evaluate(() => document.fonts && document.fonts.ready ? document.fonts.ready.then(() => true) : true).catch(() => {
         });
         await waitForRenderAssets(page);
+        await applyProfileNameDots(page);
         const bodyH = await page.evaluate(() => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0));
         const captureH = Math.min(Math.max(800, Number(bodyH) + 40), MAX_CAPTURE_HEIGHT);
         await page.setViewport({ width: 880, height: captureH });
