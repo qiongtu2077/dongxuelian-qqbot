@@ -24,12 +24,18 @@ const OTHER_PLUGIN_NAMES = [
 const EXPORT_ASSIGNMENT = /exports\.(\w+)\s*=/
 const FORBIDDEN = [/__esModule/, /__awaiter/, /__spreadArray/, /\(0,\s*\w+\.\w+\)/]
 const ALLOWED_ADDED_EXPORTS = {
-  'core/utils.js': ['safeChannelKey', 'safeUserId', 'legacySafeUserId', 'truncateText', 'readJsonFileSync', 'writeJsonFileSync', 'normalizeText', 'getFileFingerprint', 'normalizeHostname', 'isPrivateHostname', 'isPrivateIp', 'validatePublicHttpUrl', 'resolveAndValidateHostname'],
+  'core/utils.js': ['safeChannelKey', 'safeUserId', 'legacySafeUserId', 'truncateText', 'readJsonFileSync', 'writeJsonFileSync', 'normalizeText', 'getFileFingerprint', 'normalizeHostname', 'isPrivateHostname', 'isPrivateIp', 'validatePublicHttpUrl', 'resolveAndValidateHostname', 'errorMessage', 'errorCode'],
   'agent/queue.js': ['withTimeout'],
   'agent/pending.js': ['summarizePendingArgs'],
 }
+const ALLOWED_ADDED_EXPORTS_BY_PLUGIN = {
+  'koishi-plugin-daily-report': {
+    'lib/data-collector.js': ['countEmojiInContent', 'isMessageInReportDay'],
+    'lib/html-renderer.js': ['assertEnoughMemoryForRender', 'assertRenderEnvironment'],
+  },
+}
 const ALLOWED_REQUIRE_CHANGES = {
-  'agent/auto-memory.js': { added: ['../core/utils'] },
+  'agent/auto-memory.js': { added: ['./config', '../core/utils'] },
   'agent/context.js': { added: ['../core/utils'] },
   'agent/dream.js': { added: ['../core/utils'] },
   'agent/memory.js': { added: ['../core/utils'] },
@@ -38,10 +44,12 @@ const ALLOWED_REQUIRE_CHANGES = {
   'agent/skills/store.js': { added: ['../../core/utils'] },
   'agent/skills/pool-service.js': { added: ['../../core/utils'] },
   'agent/skills/workspace-service.js': { added: ['../../core/utils'] },
-  'agent/tools/scheduled-task-tools.js': { added: ['../../core/utils'] },
+  'agent/tools/reminder-tools.js': { added: ['../config'] },
+  'agent/tools/scheduled-task-tools.js': { added: ['../../core/utils', '../config'] },
   'agent/tools/browser-action.js': { added: ['../../core/utils'], removed: ['dns/promises', 'net'] },
   'agent/tools/web-search.js': { added: ['../queue'] },
   'behavior/expression/expression-abstractor.js': { added: ['../../agent/queue'] },
+  'behavior/retaliation.js': { added: ['../core/utils'] },
   'behavior/repeat.js': { removed: ['../message/message-reader', '../persona/persona'] },
   'chat/agent-chat-bridge.js': { removed: ['../message/message-reader'] },
   'chat/chat-jailbreak-flow.js': { removed: ['../message/message-reader'] },
@@ -53,6 +61,7 @@ const ALLOWED_REQUIRE_CHANGES = {
     ],
   },
   'conversation.js': { removed: ['./message/message-reader'] },
+  'handler.js': { added: ['./core/api'] },
   'agent/fetch-reader.js': { added: ['../core/utils'], removed: ['dns', 'net'] },
   'behavior/runtime-settings.js': { removed: ['fs/promises'] },
   'chat/chat-tools.js': { added: ['../agent/safety', '../agent/pending'] },
@@ -66,6 +75,7 @@ const ALLOWED_REQUIRE_CHANGES = {
   'media/file/incoming-file.js': { added: ['../../core/utils'] },
   'media/image/image-store.js': { added: ['../../core/utils'] },
   'media/voice/voice.js': { removed: ['../../agent/fetch-reader'] },
+  'mcp/local-server.js': { removed: ['../agent/tools/analyze-file'] },
   'message/message-reader.js': { added: ['../core/utils'] },
   'persona/persona-lore-router.js': { added: ['../core/utils'] },
   'persona/persona.js': { added: ['../core/utils'], removed: ['fs', 'fs', 'fs', 'fs'] },
@@ -233,6 +243,12 @@ function parseArgs(argv) {
 function getAiAllowanceKey(packageRoot, file) {
   if (!isAiPackage(packageRoot)) return file
   return file.startsWith('lib/') ? file.slice('lib/'.length) : file
+}
+
+function getAllowedAddedExports(packageRoot, file, allowanceKey) {
+  if (isAiPackage(packageRoot)) return ALLOWED_ADDED_EXPORTS[allowanceKey] || []
+  const pluginAllowances = ALLOWED_ADDED_EXPORTS_BY_PLUGIN[pluginNameFromPackageRoot(packageRoot)] || {}
+  return pluginAllowances[file] || []
 }
 
 function getRequirePaths(src, file) {
@@ -410,7 +426,7 @@ function checkPackage(check) {
 
     const origKeys = getExportKeys(original, file)
     const compKeys = getExportKeys(compiled, file)
-    const allowedAdded = new Set(isAiPackage(packageRoot) ? (ALLOWED_ADDED_EXPORTS[allowanceKey] || []) : [])
+    const allowedAdded = new Set(getAllowedAddedExports(packageRoot, file, allowanceKey))
     const filteredCompKeys = compKeys.filter((key) => origKeys.includes(key) || !allowedAdded.has(key))
     const unexpectedAdded = compKeys.filter((key) => !origKeys.includes(key) && !allowedAdded.has(key))
     const missingKeys = origKeys.filter((key) => !compKeys.includes(key))
