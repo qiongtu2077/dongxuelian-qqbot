@@ -24,9 +24,13 @@ const editFileTool = require('../agent/tools/edit-file') as typeof import('../ag
 const { getRecentFiles, getFileEntry } = require('../media/file/file-store') as typeof import('../media/file/file-store')
 const { buildFileFollowupState } = require('../media/file/file-followup-guard') as typeof import('../media/file/file-followup-guard')
 const { getAgentPathAllowedRoots, getAgentPathDefaultRoots } = require('../agent/path-guard') as typeof import('../agent/path-guard')
+const { admitTask } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
+const { acquireResourceGate } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
+const { sanitizeId } = require('../resource-common/files') as typeof import('../resource-common/files')
 
 const SERVER_NAME = 'dongxuelian-local-mcp'
 const SERVER_VERSION = '0.1.0'
+const MCP_LOCAL_CHECK_TASK_KIND = 'mcp_local_check'
 const MAX_OUTPUT_CHARS = 40000
 const RUN_TIMEOUT_MS = 120000
 const WORKSPACE_ROOT: string = path.resolve(__dirname, '..', '..', '..', '..')
@@ -127,6 +131,14 @@ interface DiagnosticFileLike {
   skipped?: boolean
   analysis?: unknown
   localPath?: unknown
+}
+
+interface AdmissionDecisionLike {
+  decision: string
+  reason: string
+  resourceState?: string
+  botMode?: string
+  memAvailableMb?: number | null
 }
 
 function getStringArg(args: ToolArgs | undefined, key: string): string {
@@ -251,29 +263,91 @@ function parseLocalCheckCommand(command: unknown = ''): LocalCheckCommand {
   throw new Error('只允许 check、quick、scenario、test 或 node -c <file>')
 }
 
+// 为本地 MCP 检查生成可追踪 taskId，避免受控命令绕过资源事件。
+function buildMcpLocalCheckTaskId(commandName: string, args: string[] = []): string {
+  const label = sanitizeId([commandName, ...args].join('-')).slice(0, 80) || 'command'
+  return `${MCP_LOCAL_CHECK_TASK_KIND}-${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+// 将资源忙结果转换成 run_local_check 的标准命令结果。
+function buildMcpLocalCheckBusyResult(reason: unknown): RunCommandResult {
+  return {
+    ok: false,
+    exitCode: null,
+    error: `RESOURCE_BUSY: ${String(reason || 'local MCP check rejected by resource scheduler')}`,
+    stdout: '',
+    stderr: '',
+  }
+}
+
 function runCommand(commandName: string, args: string[], timeoutMs: number = RUN_TIMEOUT_MS): Promise<RunCommandResult> {
   return new Promise((resolve) => {
-    const child = spawn(commandName, args, {
-      cwd: WORKSPACE_ROOT,
-      shell: false,
-      windowsHide: true,
-      env: { ...process.env },
+    const taskId = buildMcpLocalCheckTaskId(commandName, args)
+    const admission: AdmissionDecisionLike = admitTask({
+      taskId,
+      kind: MCP_LOCAL_CHECK_TASK_KIND,
+      source: 'local-mcp',
+      channelKey: 'local-mcp',
+      userId: 'local-mcp',
+      exclusive: true,
+      priority: 35,
+      deferable: false,
+      queueTimeoutMs: 5000,
+      runTimeoutMs: timeoutMs,
     })
+    if (admission.decision !== 'run_now') return resolve(buildMcpLocalCheckBusyResult(admission.reason || admission.decision))
+
     let stdout = ''
     let stderr = ''
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM')
-      resolve({ ok: false, exitCode: null, timedOut: true, stdout, stderr })
-    }, timeoutMs)
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8') })
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
-    child.on('error', (error: Error) => {
-      clearTimeout(timer)
-      resolve({ ok: false, exitCode: null, error: error.message, stdout, stderr })
-    })
-    child.on('close', (code: number | null) => {
-      clearTimeout(timer)
-      resolve({ ok: code === 0, exitCode: code, stdout, stderr })
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let gateHandle: { updateStep(step: string, memAvailableMb?: number | null): void; release(reason?: string): void } | null = null
+    let settled = false
+
+    const finish = (result: RunCommandResult, reason = 'mcp-local-check-finally'): void => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      timer = null
+      if (gateHandle) gateHandle.release(reason)
+      gateHandle = null
+      resolve(result)
+    }
+
+    acquireResourceGate({
+      taskId,
+      kind: MCP_LOCAL_CHECK_TASK_KIND,
+      owner: 'local-mcp',
+      channelKey: 'local-mcp',
+      userId: 'local-mcp',
+      priority: 35,
+      timeoutMs,
+      waitTimeoutMs: 5000,
+      pollMs: 500,
+      memAvailableMb: admission.memAvailableMb,
+      step: 'mcp_local_check_prepare',
+    }).then((handle) => {
+      gateHandle = handle
+      gateHandle.updateStep('mcp_local_check_running', admission.memAvailableMb)
+      const child = spawn(commandName, args, {
+        cwd: WORKSPACE_ROOT,
+        shell: false,
+        windowsHide: true,
+        env: { ...process.env },
+      })
+      timer = setTimeout(() => {
+        try { child.kill('SIGTERM') } catch { /* non-critical: process may have already exited */ }
+        finish({ ok: false, exitCode: null, timedOut: true, stdout, stderr }, 'mcp-local-check-timeout')
+      }, timeoutMs)
+      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8') })
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
+      child.on('error', (error: Error) => {
+        finish({ ok: false, exitCode: null, error: error.message, stdout, stderr }, 'mcp-local-check-error')
+      })
+      child.on('close', (code: number | null) => {
+        finish({ ok: code === 0, exitCode: code, stdout, stderr }, 'mcp-local-check-close')
+      })
+    }).catch((error: Error) => {
+      finish(buildMcpLocalCheckBusyResult(error.message || error), 'mcp-local-check-gate-failed')
     })
   })
 }

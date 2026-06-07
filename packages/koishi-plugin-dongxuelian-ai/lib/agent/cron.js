@@ -9,6 +9,8 @@ const fsp = require('fs/promises');
 const path = require('path');
 const { DATA_DIR } = require('../core/constants');
 const { getAgentConfig } = require('./config');
+const { submitAgentWorkerTask } = require('./worker-submission');
+const { createAgentRunWorkerPayload } = require('../resource-workers/agent-payload');
 const CRON_FILE = path.join(DATA_DIR, 'agent-crons.json');
 const MAX_CRON_FILE_BYTES = 512 * 1024;
 const MAX_HISTORY_ITEMS = 200;
@@ -372,9 +374,6 @@ function scheduleCron(cron) {
         timer.unref();
     timers.set(cron.id, timer);
 }
-function getAgentTaskReply(value) {
-    return String(objectRecord(value).reply || '');
-}
 async function runCronNow(id) {
     if (runningCrons.has(id))
         return { ok: false, result: '定时任务正在运行，已跳过重入。' };
@@ -404,32 +403,31 @@ async function runCronNow(id) {
             result = sent.message || 'text sent';
         }
         else {
-            const queue = require('./queue');
-            const engine = runtime.engine || require('./engine');
-            const agentResult = await queue.enqueueAgentTask({
+            const workerChannel = cron.targetChannel === 'dashboard' ? 'dashboard' : 'qq';
+            const agentRunInput = {
+                userMessage: cron.prompt,
+                userName: 'Cron',
+                userId: cron.createdBy || cron.id,
+                channelKey: cron.targetChannel || 'cron',
+                channel: workerChannel,
+                scheduledTask: {
+                    id: cron.id,
+                    title: cron.title || cron.taskKind || 'scheduled task',
+                    mode: cron.mode,
+                    taskKind: cron.taskKind,
+                    contextPolicy: cron.contextPolicy || {},
+                },
+            };
+            const submission = submitAgentWorkerTask({
+                channel: workerChannel,
                 channelKey: cron.targetChannel || 'cron',
                 userId: cron.createdBy || cron.id,
                 timeoutMs: cron.runPolicy?.maxRuntimeMs,
-                fn: () => engine.run({
-                    userMessage: cron.prompt,
-                    userName: 'Cron',
-                    userId: cron.createdBy || cron.id,
-                    channelKey: cron.targetChannel || 'cron',
-                    channel: cron.targetChannel === 'dashboard' ? 'dashboard' : 'qq',
-                    scheduledTask: {
-                        id: cron.id,
-                        title: cron.title || cron.taskKind || 'scheduled task',
-                        mode: cron.mode,
-                        taskKind: cron.taskKind,
-                        contextPolicy: cron.contextPolicy || {},
-                    },
-                }),
+                source: 'agent-cron',
+                payload: { entry: 'agent-cron', cronId: cron.id, taskKind: cron.taskKind, agentWorker: createAgentRunWorkerPayload('agent-cron', agentRunInput) },
             });
-            const push = require('./push');
-            const reply = getAgentTaskReply(agentResult);
-            const sent = await push.cronResult({ cronId: cron.id, channelKey: cron.targetChannel, text: reply, bot: runtime.bot, bypassEnabled: cron.mode === 'once' });
-            ok = !!sent.ok;
-            result = reply || sent.message || '';
+            ok = !!submission.accepted;
+            result = submission.message || (ok ? 'Agent 定时任务已提交后台执行。' : 'Agent 定时任务提交失败。');
         }
     }
     catch (error) {

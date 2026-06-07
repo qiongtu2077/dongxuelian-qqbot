@@ -6,10 +6,13 @@
 const { PROVIDERS, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE, KEY_FILE } = require('../core/constants') as typeof import('../core/constants')
 const { loadConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
 const { requestChatCompletions } = require('../core/api') as typeof import('../core/api')
+const { admitTask } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
+const { acquireResourceGate } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
 const fsp = require('fs/promises')
 
 const HEALTH_CACHE_TTL = 60000
 const PROBE_TIMEOUT = 5000
+const DIAGNOSTIC_PROBE_KIND = 'diagnostic_probe'
 type ProviderDefinition = typeof PROVIDERS[string]
 
 interface HealthKeySet {
@@ -42,8 +45,36 @@ interface HealthReport {
   results: HealthProviderResult[]
 }
 
+interface AdmissionDecisionLike {
+  decision: string
+  reason: string
+  resourceState?: string
+  botMode?: string
+  memAvailableMb?: number | null
+}
+
 let healthCache: HealthReport | null = null
 let healthCacheTs = 0
+
+// 生成一次管理员诊断探针的短生命周期 taskId，便于 S0/S1 事件追踪。
+function buildDiagnosticTaskId(): string {
+  return `${DIAGNOSTIC_PROBE_KIND}-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+// 资源门控不放行时返回低成本诊断报告，避免继续调用模型探针。
+function buildResourceGateHealthReport(now: number, config: Awaited<ReturnType<typeof loadConfig>>, reason: string): HealthReport {
+  return {
+    ts: now,
+    activeProvider: config.provider,
+    activeModel: config.model,
+    results: [{
+      provider: 'resource-gate',
+      status: 'fail',
+      reason,
+      latency: 0,
+    }],
+  }
+}
 
 function buildProbeConfig(providerId: string, baseURL: string, model: string | undefined, apiKey: string): ProbeConfig {
   return {
@@ -118,31 +149,73 @@ async function runHealthCheck(force: boolean = false): Promise<HealthReport> {
   }
 
   const config = await loadConfig()
+  const taskId = buildDiagnosticTaskId()
+  const admission: AdmissionDecisionLike = admitTask({
+    taskId,
+    kind: DIAGNOSTIC_PROBE_KIND,
+    source: 'koishi-health-check',
+    channelKey: 'diagnostics',
+    userId: 'admin',
+    exclusive: true,
+    priority: 30,
+    deferable: false,
+    queueTimeoutMs: 5000,
+    runTimeoutMs: 120000,
+  })
+  if (admission.decision !== 'run_now') {
+    return buildResourceGateHealthReport(now, config, admission.reason || 'diagnostic probe rejected by resource scheduler')
+  }
+
+  let gateHandle: { updateStep(step: string, memAvailableMb?: number | null): void; release(reason?: string): void } | null = null
+  try {
+    gateHandle = await acquireResourceGate({
+      taskId,
+      kind: DIAGNOSTIC_PROBE_KIND,
+      owner: 'koishi-health-check',
+      channelKey: 'diagnostics',
+      userId: 'admin',
+      priority: 30,
+      timeoutMs: 120000,
+      waitTimeoutMs: 5000,
+      pollMs: 500,
+      memAvailableMb: admission.memAvailableMb,
+      step: 'diagnostic_prepare',
+    })
+  } catch (error) {
+    return buildResourceGateHealthReport(now, config, error instanceof Error ? error.message : String(error || 'diagnostic probe lock rejected'))
+  }
+
   const defaultKey = config.apiKey
 
-  const [deepseekKey, dashscopeKey, glmKey, mimoriumKey] = await Promise.all([
-    readHealthKeyFile(DEEPSEEK_KEY_FILE),
-    readHealthKeyFile(DASHSCOPE_KEY_FILE),
-    readHealthKeyFile(GLM_KEY_FILE),
-    readHealthKeyFile(MIMORIUM_KEY_FILE),
-  ])
+  try {
+    gateHandle.updateStep('diagnostic_read_keys', admission.memAvailableMb)
+    const [deepseekKey, dashscopeKey, glmKey, mimoriumKey] = await Promise.all([
+      readHealthKeyFile(DEEPSEEK_KEY_FILE),
+      readHealthKeyFile(DASHSCOPE_KEY_FILE),
+      readHealthKeyFile(GLM_KEY_FILE),
+      readHealthKeyFile(MIMORIUM_KEY_FILE),
+    ])
 
-  const results: HealthProviderResult[] = []
-  for (const [providerId, providerDef] of Object.entries(PROVIDERS)) {
-    const r = await testProvider(providerId, providerDef, { defaultKey, deepseekKey, dashscopeKey, glmKey, mimoriumKey })
-    results.push(r)
+    const results: HealthProviderResult[] = []
+    for (const [providerId, providerDef] of Object.entries(PROVIDERS)) {
+      gateHandle.updateStep(`diagnostic_${providerId}`, admission.memAvailableMb)
+      const r = await testProvider(providerId, providerDef, { defaultKey, deepseekKey, dashscopeKey, glmKey, mimoriumKey })
+      results.push(r)
+    }
+
+    const report = {
+      ts: now,
+      activeProvider: config.provider,
+      activeModel: config.model,
+      results,
+    }
+
+    healthCache = report
+    healthCacheTs = now
+    return report
+  } finally {
+    gateHandle.release('diagnostic-finally')
   }
-
-  const report = {
-    ts: now,
-    activeProvider: config.provider,
-    activeModel: config.model,
-    results,
-  }
-
-  healthCache = report
-  healthCacheTs = now
-  return report
 }
 
 function formatHealthReport(report: HealthReport): string {

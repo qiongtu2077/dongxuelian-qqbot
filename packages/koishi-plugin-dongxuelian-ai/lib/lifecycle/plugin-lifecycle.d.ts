@@ -10,14 +10,25 @@ interface TodayCacheSnapshot {
         mentionUserIds: string[];
     }>;
 }
-interface LifecycleContext {
-    bots?: unknown[];
-    bot?: unknown;
-    on(event: 'ready' | 'dispose', handler: () => unknown): void;
-    logger(name: string): {
-        info(message: string): void;
-        warn(message: string): void;
+interface LifecycleBotLike {
+    selfId?: string;
+    userId?: string;
+    sendPrivateMessage?: (target: string, content: string) => Promise<unknown> | unknown;
+    sendMessage?: (target: string, content: unknown) => Promise<unknown> | unknown;
+    internal?: {
+        sendPrivateMsg?: (target: string, segments: unknown) => Promise<unknown> | unknown;
+        sendGroupMsg?: (target: string, segments: unknown[]) => Promise<unknown> | unknown;
     };
+}
+interface LifecycleLoggerLike {
+    info(message: string): void;
+    warn(message: string): void;
+}
+interface LifecycleContext {
+    bots?: LifecycleBotLike[];
+    bot?: LifecycleBotLike | null;
+    on(event: 'ready' | 'dispose', handler: () => unknown): void;
+    logger(name: string): LifecycleLoggerLike;
 }
 interface LifecycleAgentEngine {
     run: typeof import('../agent/engine').run;

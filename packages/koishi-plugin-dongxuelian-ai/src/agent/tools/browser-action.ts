@@ -7,6 +7,8 @@ const { DATA_DIR } = require('../../core/constants') as typeof import('../../cor
 const { isPrivateHostname, isPrivateIp, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('../../core/utils') as typeof import('../../core/utils')
 const { assertExistingAgentPathInsideRoots } = require('../path-guard') as typeof import('../path-guard')
 const { rankSearchCandidates, formatSearchResults, buildSearchFailureText } = require('../search-results') as typeof import('../search-results')
+const { admitTask } = require('../../resource-scheduler/admission') as typeof import('../../resource-scheduler/admission')
+const { writeProcessCleanupEvent, terminateProcessTree } = require('../../resource-system/system-protection') as typeof import('../../resource-system/system-protection')
 
 interface BrowserActionParams {
   action?: unknown
@@ -40,6 +42,8 @@ interface BrowserActionParams {
 interface BrowserActionContext {
   userId?: string
   channelKey?: string
+  taskId?: unknown
+  resourceTaskId?: unknown
 }
 
 interface BrowserFormField {
@@ -96,6 +100,55 @@ function warnBrowserActionBackgroundFailure(action: string, error: unknown): voi
   console.warn(`[dongxuelian-ai] browser_action ${action} failed: ${getBrowserActionErrorMessage(error)}`)
 }
 
+function sanitizeBrowserEventUrl(raw: unknown): string {
+  const value = String(raw || '').trim()
+  if (!value) return ''
+  try {
+    const parsed = new URL(value)
+    parsed.search = ''
+    parsed.hash = ''
+    return parsed.toString()
+  } catch {
+    return value.slice(0, 300)
+  }
+}
+
+// Write S8 browser lifecycle events without interrupting the active tool call.
+function writeBrowserCleanupEvent(event: string, data: Record<string, unknown> = {}): void {
+  try {
+    writeProcessCleanupEvent({
+      event,
+      toolName: 'browser_action',
+      ...data,
+      pid: process.pid,
+      browserPid: currentBrowserPid,
+      taskId: currentResourceTaskId,
+      currentUrl: sanitizeBrowserEventUrl(currentUrl),
+      owner: currentSessionOwner,
+    })
+  } catch {
+    /* S8 event writing must not break the browser tool itself. */
+  }
+}
+
+// Recheck S1 before launching or reusing Chromium inside the Agent worker.
+function assertBrowserActionAdmission(params: BrowserActionParams = {}, context: BrowserActionContext = {}): void {
+  const action = String(params.action || '').trim().toLowerCase()
+  if (action === 'stop' || action === 'close') return
+  const resourceTaskId = String(context.taskId || context.resourceTaskId || '')
+  const admission = admitTask({
+    taskId: resourceTaskId,
+    kind: 'browser_action',
+    source: 'agent-tool-browser-action',
+    channelKey: context.channelKey || '',
+    userId: context.userId || '',
+    exclusive: true,
+    deferable: true,
+  })
+  if (admission.decision === 'run_now') return
+  throw new Error(`browser_action 被资源调度器拦截：${admission.reason || admission.decision}`)
+}
+
 async function resetBrowserPageForSafety(targetPage: { goto?: (url: string) => Promise<unknown> | unknown } | null | undefined, reason: string): Promise<void> {
   if (!targetPage || typeof targetPage.goto !== 'function') return
   try {
@@ -123,6 +176,8 @@ let screenshotCounter = 0
 let networkLog: BrowserActionNetworkLogEntry[] = []
 let consoleLog: BrowserActionConsoleLogEntry[] = []
 let currentSessionOwner = ''
+let currentResourceTaskId = ''
+let currentBrowserPid: number | null = null
 const BROWSER_CLEANUP_HOOK = Symbol.for('dongxuelian.browser-action.cleanupHook')
 const BROWSER_CLEANUP_RESET = Symbol.for('dongxuelian.browser-action.cleanupReset')
 const BROWSER_CLEANUP_INSTALLED = Symbol.for('dongxuelian.browser-action.cleanupInstalled')
@@ -145,6 +200,18 @@ function parseBrowserPositiveInt(value: string | number | undefined, fallback: n
   const parsed = parseInt(String(value), 10)
   if (!Number.isFinite(parsed)) return fallback
   return Math.max(min, Math.min(max, parsed))
+}
+
+// 读取 Puppeteer Browser 的子进程 pid；失败时只影响 S8 定点清理增强。
+function getBrowserProcessPid(targetBrowser: unknown): number | null {
+  try {
+    const item = targetBrowser as { process?: () => { pid?: number | null } | null }
+    const child = item && typeof item.process === 'function' ? item.process() : null
+    const pid = Number(child && child.pid)
+    return Number.isInteger(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
+  }
 }
 
 function readLinuxMemAvailableMb(): number | null {
@@ -204,6 +271,8 @@ function registerCleanup() {
     page = null
     browser = null
     currentUrl = ''
+    currentBrowserPid = null
+    currentResourceTaskId = ''
   }
   if (!browserCleanupGlobal[BROWSER_CLEANUP_INSTALLED]) {
     browserCleanupGlobal[BROWSER_CLEANUP_INSTALLED] = true
@@ -288,6 +357,8 @@ async function launchPage(): Promise<BrowserActionPage> {
     headless: 'new',
     args: launchArgs,
   })
+  currentBrowserPid = getBrowserProcessPid(browser)
+  writeBrowserCleanupEvent('chromium_launched', { executablePath, browserPid: currentBrowserPid })
   registerCleanup()
   const activeBrowser = browser
   if (!activeBrowser) throw new Error('浏览器启动失败')
@@ -340,18 +411,44 @@ async function closeBrowser(): Promise<void> {
     }
     const closingPage = page
     const closingBrowser = browser
+    const closingBrowserPid = currentBrowserPid || getBrowserProcessPid(closingBrowser)
     if (idleTimer) clearTimeout(idleTimer)
     idleTimer = null
     page = null
     browser = null
+    currentBrowserPid = null
     currentUrl = ''
     try {
-      if (closingPage) { try { await closingPage.close() } catch {
-        /* non-critical: browser page may already be closed */
-      } }
-      if (closingBrowser) { try { await closingBrowser.close() } catch {
-        /* non-critical: browser process may already be closed */
-      } }
+      if (closingPage) {
+        try {
+          await Promise.race([
+            closingPage.close(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('browser page close timeout')), 5000)),
+          ])
+        } catch (error) {
+          writeBrowserCleanupEvent('chromium_page_close_failed', { error: getBrowserActionErrorMessage(error) })
+        }
+      }
+      if (closingBrowser) {
+        try {
+          await Promise.race([
+            closingBrowser.close(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('browser close timeout')), 8000)),
+          ])
+          writeBrowserCleanupEvent('chromium_closed', { browserPid: closingBrowserPid })
+        } catch (error) {
+          writeBrowserCleanupEvent('chromium_close_failed', { error: getBrowserActionErrorMessage(error), browserPid: closingBrowserPid })
+          if (closingBrowserPid) {
+            terminateProcessTree(closingBrowserPid, {
+              reason: 'chromium_close_failed',
+              source: 'browser_action',
+              taskId: currentResourceTaskId,
+              kind: 'browser_action',
+              owner: currentSessionOwner,
+            })
+          }
+        }
+      }
     } finally {
       closePromise = null
     }
@@ -887,7 +984,10 @@ export = {
   },
   async execute(params: BrowserActionParams = {}, context: BrowserActionContext = {}): Promise<string> {
     return runQueued(async () => {
+      assertBrowserActionAdmission(params, context)
       const sessionKey = `${context.userId || ''}:${context.channelKey || ''}`
+      const resourceTaskId = String(context.taskId || context.resourceTaskId || '')
+      if (resourceTaskId) currentResourceTaskId = resourceTaskId
       if (sessionKey && currentSessionOwner && currentSessionOwner !== sessionKey) {
         if (page) {
           await resetBrowserPageForSafety(page, 'session switch')

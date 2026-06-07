@@ -6,6 +6,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:watch": "tsc -p tsconfig.json --watch",
+    "test:resource-live": "node test/resource-live-check.js",
+    "test:resource": "npm run test:resource-scheduler && npm run test:resource-system && npm run test:resource-flow",
+    "test:resource-flow": "node test/resource-flow-test.js",
+    "test:resource-scheduler": "node test/resource-scheduler-test.js",
+    "test:resource-system": "node test/resource-system-test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   }
 }

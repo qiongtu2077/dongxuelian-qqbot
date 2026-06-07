@@ -73,24 +73,6 @@ interface HandlerEmotionCacheItem {
     text?: string;
     ts: number;
 }
-interface HandlerEmotionStats {
-    messageCount: number;
-    userCount: number;
-}
-interface HandlerEmotionAnalysis {
-    score: number;
-    confidence: number;
-    mood: string;
-    summary: string;
-    reasons: string[];
-    keywords: string[];
-}
-interface HandlerEmotionHistoryItem {
-    date: string;
-    score: number;
-    mood: string;
-    summary: string;
-}
 interface HandlerState {
     plain: string;
     inGuild: boolean;
@@ -113,7 +95,6 @@ interface HandlerState {
     repeatEnabledCache: Record<string, boolean | undefined>;
     channelTodayCache: Map<string, HandlerTodayCache>;
     lastEmotionCache: Map<string, HandlerEmotionCacheItem>;
-    renderEmotionImage?: (analysis: HandlerEmotionAnalysis, stats: HandlerEmotionStats, history: HandlerEmotionHistoryItem[]) => Promise<unknown>;
 }
 declare function handleCommand(session: HandlerSession, ctx: HandlerContext, state: HandlerState): Promise<HandlerCommandResult>;
 declare const _default: {

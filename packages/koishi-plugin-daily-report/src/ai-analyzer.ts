@@ -30,6 +30,8 @@ interface ReportData {
   peakHour?: string
   topMembers?: TopMember[]
   messages?: ReportMessage[]
+  precomputedContext?: string
+  precomputedCoverageRate?: number
 }
 
 interface TokenUsage {
@@ -629,6 +631,17 @@ async function compressMessages(messages: unknown, meta?: AnalysisMeta): Promise
   return compressed
 }
 
+// Uses S3 precomputed context when available, avoiding another full-day compression pass.
+function getPrecomputedCompressedContext(data: ReportData, meta?: AnalysisMeta): string {
+  const context = normalizeString(data.precomputedContext || '').slice(0, MAX_COMPRESSED_CHARS)
+  if (!context) return ''
+  if (meta) {
+    meta.stages.compression = 'precomputed'
+    addMetaWarning(meta, `已使用 S3 预计算输入，覆盖率 ${Number(data.precomputedCoverageRate || 0)}。`)
+  }
+  return context
+}
+
 // Runs topic and golden-quote analysis, falling back per section on bad output.
 async function analyzeBasic(compressed: string, messages: ReportMessage[], data: ReportData, meta?: AnalysisMeta): Promise<BasicAnalysis> {
   const { nameToUserId } = buildMessageMaps(messages)
@@ -749,7 +762,7 @@ async function analyzeWithAI(data: ReportData, full = false): Promise<AnalysisRe
 
   try {
     const messages = asArray(data.messages) as ReportMessage[]
-    const compressed = await compressMessages(messages, meta)
+    const compressed = getPrecomputedCompressedContext(data, meta) || await compressMessages(messages, meta)
 
     if (full) {
       const [basicResult, fullResult] = await Promise.allSettled([

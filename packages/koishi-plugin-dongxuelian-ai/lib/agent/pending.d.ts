@@ -19,6 +19,7 @@ interface PendingExecutionContext {
     userMessage?: unknown;
     bot?: unknown;
     isAdmin?: unknown;
+    resourceTaskId?: unknown;
 }
 interface PendingListItem {
     id: string;
@@ -65,6 +66,7 @@ declare function findPendingToolById(id: unknown): PendingTool | null;
 declare function getPendingToolById(id: unknown): PendingTool | null;
 declare function summarizePendingArgs(toolName: string, args?: unknown): string;
 declare function listPendingTools(): PendingListItem[];
+declare function upsertPendingToolSnapshot(snapshot: unknown): PendingTool | null;
 declare function executePendingTool(channelKey: string, userId: string, channel?: string, expectedId?: string, context?: PendingExecutionContext): Promise<PendingExecuteResult>;
 declare function confirmPendingTool(channelKey: string, userId: string, channel?: string, expectedId?: string, context?: PendingExecutionContext): Promise<PendingConfirmResult>;
 declare const _default: {
@@ -77,6 +79,7 @@ declare const _default: {
     trimPendingTools: typeof trimPendingTools;
     summarizePendingArgs: typeof summarizePendingArgs;
     listPendingTools: typeof listPendingTools;
+    upsertPendingToolSnapshot: typeof upsertPendingToolSnapshot;
     executePendingTool: typeof executePendingTool;
     confirmPendingTool: typeof confirmPendingTool;
 };

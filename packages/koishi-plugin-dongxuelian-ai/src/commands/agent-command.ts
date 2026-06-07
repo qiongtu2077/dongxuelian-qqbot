@@ -12,6 +12,11 @@ const {
   pickJailbreakFallbackReply,
 } = require('../core/utils') as typeof import('../core/utils')
 const { handled, notHandled } = require('./command-result') as typeof import('./command-result')
+const { submitAgentWorkerTask } = require('../agent/worker-submission') as typeof import('../agent/worker-submission')
+const {
+  createAgentRunWorkerPayload,
+  createAgentResumeWorkerPayload,
+} = require('../resource-workers/agent-payload') as typeof import('../resource-workers/agent-payload')
 
 type ToolMode = 'auto' | 'confirm' | 'block' | 'config'
 
@@ -56,13 +61,6 @@ interface UnknownErrorLike {
   message?: unknown
 }
 
-interface AgentReplyLike {
-  reply?: string
-  ok?: boolean
-  message?: string
-  error?: string
-}
-
 function getAgentCommandErrorMessage(error: unknown, fallback: string = ''): string {
   return error instanceof Error ? error.message : String((error as UnknownErrorLike | null)?.message || fallback)
 }
@@ -70,10 +68,6 @@ function getAgentCommandErrorMessage(error: unknown, fallback: string = ''): str
 function hasAgentCommandQueueCode(error: unknown): boolean {
   const code = (error as UnknownErrorLike | null)?.code
   return code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED'
-}
-
-function asAgentReplyLike(value: unknown): AgentReplyLike {
-  return value && typeof value === 'object' ? value as AgentReplyLike : {}
 }
 
 async function handleAgentCommand(session: AgentSessionLike, ctx: CommandContextLike, state: AgentCommandState, options: AgentCommandOptions = {}) {
@@ -162,10 +156,7 @@ async function handleAgentCommand(session: AgentSessionLike, ctx: CommandContext
   if (agentMatch && !adminCommandMatched) {
     const query = agentMatch[1].trim()
     if (isJailbreakAttempt(sanitizeUserInput(query))) return handled(pickJailbreakFallbackReply())
-    const engine = require('../agent/engine') as typeof import('../agent/engine')
     const agentConfig = (require('../agent/config') as typeof import('../agent/config')).getAgentConfig()
-    const agentQueue = require('../agent/queue') as typeof import('../agent/queue')
-    agentQueue.configureAgentQueue(agentConfig.queue || {})
     const userName = sanitizeUserName(
       session.author?.nick || session.author?.name || session.username || '群友'
     )
@@ -173,23 +164,27 @@ async function handleAgentCommand(session: AgentSessionLike, ctx: CommandContext
     try {
       const router = require('../agent/router') as typeof import('../agent/router')
       const searchRunOptions = router.buildExplicitSearchRunOptions(query)
-      const result = await agentQueue.enqueueAgentTask({
+      const agentRunInput = {
+        userMessage: query,
+        userName,
+        userId: currentUserId,
+        channelKey,
+        channel: 'qq',
+        isAdmin,
+        ...searchRunOptions,
+      }
+      const submission = submitAgentWorkerTask({
+        channel: 'qq',
         channelKey,
         userId: currentUserId,
         timeoutMs: agentConfig.queue?.timeoutMs,
-        fn: () => engine.run({
-          userMessage: query, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, isAdmin, ...searchRunOptions,
-          onProgress: (msg) => {
-            if (msg.type === 'round' && msg.round === 0) {
-              // 首轮执行中，不额外输出
-            }
-          },
-        }),
+        maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+        payload: { entry: 'qq-agent-command', agentWorker: createAgentRunWorkerPayload('qq-agent-command', agentRunInput) },
       })
-      return handled(asAgentReplyLike(result).reply || '(Agent 未获取有效回复)')
+      return handled(submission.message)
     } catch (err) {
       if (hasAgentCommandQueueCode(err)) return handled(getAgentCommandErrorMessage(err))
-      ctx.logger('dongxuelian-ai').warn(`agent engine failed: ${getAgentCommandErrorMessage(err)}`)
+      ctx.logger('dongxuelian-ai').warn(`agent worker submit failed: ${getAgentCommandErrorMessage(err)}`)
       return handled('Agent 暂时不可用。')
     }
   }
@@ -198,14 +193,21 @@ async function handleAgentCommand(session: AgentSessionLike, ctx: CommandContext
   if (confirmToolMatch) {
     const pendingId = confirmToolMatch[1] || ''
     const pending = require('../agent/pending') as typeof import('../agent/pending')
-    const findPendingById = pending.findPendingToolById || pending.getPendingToolById || (id => (pending.listPendingTools && pending.listPendingTools().find(item => item.id === id)) || null)
-    const p = pendingId ? findPendingById(pendingId) : pending.getPendingTool(channelKey, currentUserId)
+    const p = pendingId ? pending.findPendingToolById(pendingId) : pending.getPendingTool(channelKey, currentUserId)
     if (p) {
       if (p.channelKey !== channelKey || p.userId !== currentUserId) return handled('这个确认 ID 不属于当前会话。')
-      const engine = require('../agent/engine') as typeof import('../agent/engine')
-      const result = asAgentReplyLike(await engine.resumePending({ channelKey, userId: currentUserId, channel: 'qq', expectedId: pendingId, bot: session.bot, isAdmin: hasAdminPermission(adminSession) }))
-      if (!result.ok && result.message) return handled(`执行失败：${result.message || result.error || '未知错误'}`)
-      return handled(result.reply || '(Agent 未获取到有效回复)')
+      const agentConfig = (require('../agent/config') as typeof import('../agent/config')).getAgentConfig()
+      const resolvedPendingId = String(p.id || pendingId || '')
+      const resumeInput = { channelKey, userId: currentUserId, channel: 'qq', expectedId: resolvedPendingId, isAdmin: hasAdminPermission(adminSession) }
+      const submission = submitAgentWorkerTask({
+        channel: 'qq',
+        channelKey,
+        userId: currentUserId,
+        timeoutMs: agentConfig.queue?.timeoutMs,
+        maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+        payload: { entry: 'qq-agent-confirm', pendingId: resolvedPendingId, agentWorker: createAgentResumeWorkerPayload('qq-agent-confirm', resumeInput, p as unknown as Record<string, unknown>) },
+      })
+      return handled(submission.message)
     }
     if (pendingId) return handled('没有匹配的待确认工具。')
   }

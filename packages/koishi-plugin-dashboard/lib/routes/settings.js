@@ -470,9 +470,27 @@ const regexRoutes = [
                 const p = findPendingById(pendingId);
                 if (!p)
                     return json(res, { ok: false, message: '没有匹配的待确认工具' }, 404);
-                const engine = require(path.join(AI_LIB, 'agent', 'engine'));
-                const result = await engine.resumePending({ channelKey: p.channelKey, userId: p.userId, channel: p.channel || 'dashboard', expectedId: pendingId });
-                return json(res, { ok: !result.message || !!result.reply, toolName: p.toolName, reply: result.reply || '', result: result.reply || result.message || '', message: result.message || '' }, result.status || 200);
+                const workerSubmission = require(path.join(AI_LIB, 'agent', 'worker-submission'));
+                const agentPayload = require(path.join(AI_LIB, 'resource-workers', 'agent-payload'));
+                const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig();
+                const resumeInput = { channelKey: p.channelKey, userId: p.userId, channel: p.channel || 'dashboard', expectedId: pendingId };
+                const submission = workerSubmission.submitAgentWorkerTask({
+                    channel: p.channel || 'dashboard',
+                    channelKey: p.channelKey,
+                    userId: p.userId,
+                    timeoutMs: agentConfig.queue?.timeoutMs,
+                    maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+                    source: 'dashboard-standalone',
+                    payload: { entry: 'settings-pending-approve', pendingId, agentWorker: agentPayload.createAgentResumeWorkerPayload('settings-pending-approve', resumeInput, p) },
+                });
+                return json(res, {
+                    ok: submission.accepted,
+                    async: true,
+                    toolName: p.toolName,
+                    taskId: submission.taskId || '',
+                    status: submission.accepted ? 'accepted' : 'blocked',
+                    message: submission.message,
+                }, submission.status || 202);
             }
             catch (e) {
                 return json(res, { ok: false, message: e.message }, 500);

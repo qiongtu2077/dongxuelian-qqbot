@@ -339,6 +339,39 @@ function apiMock(method, pathname, body) {
   if (method === 'GET' && pathname.startsWith('/agent/sessions/')) return ok({ ok: true, session: { id: 'session-1', turns: [{ at: Date.now(), userMessage: '你好', reply: '你好，mock reply' }] } })
   if (method === 'POST' && pathname === '/agent/chat') return ok({ ok: true, reply: 'Agent mock reply' })
 
+  if (method === 'GET' && pathname === '/resource/status') return ok({
+    ok: true,
+    mode: 'interactive',
+    resourceState: 'green',
+    memAvailableMb: 1024,
+    memTotalMb: 2048,
+    memSource: 'mock',
+    running: { taskId: 'mock-running-1', kind: 'agent', step: 'working', owner: 'worker-a' },
+    queueLength: 2,
+    workers: [{ name: 'worker-a', alive: true, step: 'idle', heartbeatLagMs: 128 }],
+    media: { imagePending: 1, filePending: 2, voicePending: 0, running: [{ id: 'media-1' }], droppedCount: 0 },
+    precompute: { coverageCount: 1, slotCount: 3, coverage: [{ date: todayShanghaiDate(), channelKey: 'group_10001', coverageRate: 0.8, updatedAt: '12:00' }] },
+    maintenance: false,
+    events: [{ source: 'S1', event: 'mock_status_event', reason: 'resource mock ready', createdAt: '12:00:00' }],
+  })
+  if (method === 'GET' && pathname === '/resource/tasks') return ok({
+    ok: true,
+    tasks: [
+      { id: 'mock-task-1', kind: 'daily', status: 'pending', step: 'queued', updatedAt: '12:00:01' },
+      { id: 'mock-task-2', kind: 'agent', status: 'running', step: 'worker', updatedAt: '12:00:02' },
+    ],
+  })
+  if (method === 'GET' && pathname === '/resource/events') return ok({
+    ok: true,
+    events: [{ source: 'S2', event: 'mock_event', reason: 'worker event', createdAt: '12:00:03', taskId: 'mock-task-1' }],
+  })
+  if (method === 'GET' && pathname === '/resource/workers') return ok({ ok: true, workers: [{ name: 'worker-a', alive: true, step: 'idle' }] })
+  if (method === 'GET' && pathname === '/resource/media') return ok({ ok: true, media: { imagePending: 1, filePending: 2, voicePending: 0, running: [], droppedCount: 0 } })
+  if (method === 'GET' && pathname === '/resource/precompute') return ok({ ok: true, precompute: { coverageCount: 1, slotCount: 3, coverage: [] } })
+  if (method === 'POST' && pathname === '/resource/cancel') return ok({ ok: true, message: '任务已取消' })
+  if (method === 'POST' && pathname === '/resource/reclaim-stale') return ok({ ok: true, reclaimed: false })
+  if (method === 'POST' && pathname === '/resource/maintenance') return ok({ ok: true, enabled: !!body.body?.enabled, message: '维护模式已切换' })
+
   return ok({ ok: true, message: `mocked ${method} ${pathname}` })
 }
 
@@ -723,6 +756,27 @@ async function verifyAgentNavigation(page) {
   await waitForText(page, '莲莲图集')
 }
 
+async function verifyResourcePanel(page) {
+  await clickSidebarTab(page, '资源中心')
+  await waitForText(page, '资源总览')
+  await waitForText(page, 'mock-running-1')
+  await waitForText(page, 'worker-a')
+  await waitForText(page, 'mock-task-1')
+  await waitForText(page, 'mock_event')
+  await clickText(page, '刷新')
+  await waitForText(page, 'mock-running-1')
+  await clickText(page, '刷新队列')
+  await waitForText(page, 'mock-task-2')
+  await clickText(page, '刷新事件')
+  await waitForText(page, 'worker event')
+  await clickText(page, '回收 stale')
+  await waitForText(page, 'mock-running-1')
+  await clickText(page, '开启维护')
+  await waitForText(page, 'mock-running-1')
+  await clickButtonNearText(page, 'mock-task-1', '取消')
+  await waitForText(page, 'mock-task-1')
+}
+
 async function verifyMobileSidebar(page) {
   await page.setViewport({ width: 390, height: 820, deviceScaleFactor: 1, isMobile: true })
   await page.evaluate(() => {
@@ -937,6 +991,8 @@ async function runClicks(page) {
   await clickSidebarTab(page, '系统状态')
   await waitForText(page, '当前供应商')
   await waitForText(page, 'deepseek')
+
+  await verifyResourcePanel(page)
 
   await clickSidebarTab(page, '莲莲图集')
   await waitForText(page, '莲莲图集')

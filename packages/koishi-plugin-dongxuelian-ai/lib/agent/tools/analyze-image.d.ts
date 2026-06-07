@@ -5,6 +5,7 @@ interface AnalyzeImageParams {
 }
 interface AnalyzeImageContext {
     channelKey?: string;
+    userId?: string;
 }
 declare const _default: {
     definition: {

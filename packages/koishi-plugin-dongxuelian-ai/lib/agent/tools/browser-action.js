@@ -5,6 +5,8 @@ const { DATA_DIR } = require('../../core/constants');
 const { isPrivateHostname, isPrivateIp, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('../../core/utils');
 const { assertExistingAgentPathInsideRoots } = require('../path-guard');
 const { rankSearchCandidates, formatSearchResults, buildSearchFailureText } = require('../search-results');
+const { admitTask } = require('../../resource-scheduler/admission');
+const { writeProcessCleanupEvent, terminateProcessTree } = require('../../resource-system/system-protection');
 function getBrowserActionErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -13,6 +15,57 @@ function ignoreBrowserPromiseFailure(error) {
 }
 function warnBrowserActionBackgroundFailure(action, error) {
     console.warn(`[dongxuelian-ai] browser_action ${action} failed: ${getBrowserActionErrorMessage(error)}`);
+}
+function sanitizeBrowserEventUrl(raw) {
+    const value = String(raw || '').trim();
+    if (!value)
+        return '';
+    try {
+        const parsed = new URL(value);
+        parsed.search = '';
+        parsed.hash = '';
+        return parsed.toString();
+    }
+    catch {
+        return value.slice(0, 300);
+    }
+}
+// Write S8 browser lifecycle events without interrupting the active tool call.
+function writeBrowserCleanupEvent(event, data = {}) {
+    try {
+        writeProcessCleanupEvent({
+            event,
+            toolName: 'browser_action',
+            ...data,
+            pid: process.pid,
+            browserPid: currentBrowserPid,
+            taskId: currentResourceTaskId,
+            currentUrl: sanitizeBrowserEventUrl(currentUrl),
+            owner: currentSessionOwner,
+        });
+    }
+    catch {
+        /* S8 event writing must not break the browser tool itself. */
+    }
+}
+// Recheck S1 before launching or reusing Chromium inside the Agent worker.
+function assertBrowserActionAdmission(params = {}, context = {}) {
+    const action = String(params.action || '').trim().toLowerCase();
+    if (action === 'stop' || action === 'close')
+        return;
+    const resourceTaskId = String(context.taskId || context.resourceTaskId || '');
+    const admission = admitTask({
+        taskId: resourceTaskId,
+        kind: 'browser_action',
+        source: 'agent-tool-browser-action',
+        channelKey: context.channelKey || '',
+        userId: context.userId || '',
+        exclusive: true,
+        deferable: true,
+    });
+    if (admission.decision === 'run_now')
+        return;
+    throw new Error(`browser_action 被资源调度器拦截：${admission.reason || admission.decision}`);
 }
 async function resetBrowserPageForSafety(targetPage, reason) {
     if (!targetPage || typeof targetPage.goto !== 'function')
@@ -41,6 +94,8 @@ let screenshotCounter = 0;
 let networkLog = [];
 let consoleLog = [];
 let currentSessionOwner = '';
+let currentResourceTaskId = '';
+let currentBrowserPid = null;
 const BROWSER_CLEANUP_HOOK = Symbol.for('dongxuelian.browser-action.cleanupHook');
 const BROWSER_CLEANUP_RESET = Symbol.for('dongxuelian.browser-action.cleanupReset');
 const BROWSER_CLEANUP_INSTALLED = Symbol.for('dongxuelian.browser-action.cleanupInstalled');
@@ -58,6 +113,18 @@ function parseBrowserPositiveInt(value, fallback, min, max) {
     if (!Number.isFinite(parsed))
         return fallback;
     return Math.max(min, Math.min(max, parsed));
+}
+// 读取 Puppeteer Browser 的子进程 pid；失败时只影响 S8 定点清理增强。
+function getBrowserProcessPid(targetBrowser) {
+    try {
+        const item = targetBrowser;
+        const child = item && typeof item.process === 'function' ? item.process() : null;
+        const pid = Number(child && child.pid);
+        return Number.isInteger(pid) && pid > 0 ? pid : null;
+    }
+    catch {
+        return null;
+    }
 }
 function readLinuxMemAvailableMb() {
     if (process.platform !== 'linux')
@@ -124,6 +191,8 @@ function registerCleanup() {
         page = null;
         browser = null;
         currentUrl = '';
+        currentBrowserPid = null;
+        currentResourceTaskId = '';
     };
     if (!browserCleanupGlobal[BROWSER_CLEANUP_INSTALLED]) {
         browserCleanupGlobal[BROWSER_CLEANUP_INSTALLED] = true;
@@ -222,6 +291,8 @@ async function launchPage() {
         headless: 'new',
         args: launchArgs,
     });
+    currentBrowserPid = getBrowserProcessPid(browser);
+    writeBrowserCleanupEvent('chromium_launched', { executablePath, browserPid: currentBrowserPid });
     registerCleanup();
     const activeBrowser = browser;
     if (!activeBrowser)
@@ -280,27 +351,45 @@ async function closeBrowser() {
         }
         const closingPage = page;
         const closingBrowser = browser;
+        const closingBrowserPid = currentBrowserPid || getBrowserProcessPid(closingBrowser);
         if (idleTimer)
             clearTimeout(idleTimer);
         idleTimer = null;
         page = null;
         browser = null;
+        currentBrowserPid = null;
         currentUrl = '';
         try {
             if (closingPage) {
                 try {
-                    await closingPage.close();
+                    await Promise.race([
+                        closingPage.close(),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('browser page close timeout')), 5000)),
+                    ]);
                 }
-                catch {
-                    /* non-critical: browser page may already be closed */
+                catch (error) {
+                    writeBrowserCleanupEvent('chromium_page_close_failed', { error: getBrowserActionErrorMessage(error) });
                 }
             }
             if (closingBrowser) {
                 try {
-                    await closingBrowser.close();
+                    await Promise.race([
+                        closingBrowser.close(),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('browser close timeout')), 8000)),
+                    ]);
+                    writeBrowserCleanupEvent('chromium_closed', { browserPid: closingBrowserPid });
                 }
-                catch {
-                    /* non-critical: browser process may already be closed */
+                catch (error) {
+                    writeBrowserCleanupEvent('chromium_close_failed', { error: getBrowserActionErrorMessage(error), browserPid: closingBrowserPid });
+                    if (closingBrowserPid) {
+                        terminateProcessTree(closingBrowserPid, {
+                            reason: 'chromium_close_failed',
+                            source: 'browser_action',
+                            taskId: currentResourceTaskId,
+                            kind: 'browser_action',
+                            owner: currentSessionOwner,
+                        });
+                    }
                 }
             }
         }
@@ -895,7 +984,11 @@ module.exports = {
     },
     async execute(params = {}, context = {}) {
         return runQueued(async () => {
+            assertBrowserActionAdmission(params, context);
             const sessionKey = `${context.userId || ''}:${context.channelKey || ''}`;
+            const resourceTaskId = String(context.taskId || context.resourceTaskId || '');
+            if (resourceTaskId)
+                currentResourceTaskId = resourceTaskId;
             if (sessionKey && currentSessionOwner && currentSessionOwner !== sessionKey) {
                 if (page) {
                     await resetBrowserPageForSafety(page, 'session switch');

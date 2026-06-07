@@ -30,6 +30,9 @@ const DUPLICATE_WINDOW_MS = 60 * 1000;
 const DUPLICATE_HISTORY_LIMIT = 3;
 const MAX_YTDLP_STDIO_BYTES = 1024 * 1024;
 const MAX_VIDEO_BLACKLIST_BYTES = 128 * 1024;
+const EXTERNAL_VIDEO_TASK_KIND = 'external_video_download';
+const VIDEO_RESOURCE_BUSY_MESSAGE = '当前资源正忙，视频下载稍后再试。';
+const VIDEO_RESOURCE_UNAVAILABLE_MESSAGE = '资源系统不可用，视频下载暂时关闭。';
 const recentParseHistory = new Map();
 let videoBlacklistCache = {
     fingerprint: '',
@@ -78,6 +81,91 @@ function run(file, args, options = {}) {
             }
         });
     });
+}
+// 将资源任务标识压成文件锁可接受的短字符串。
+function sanitizeResourceId(value, fallback = 'unknown') {
+    const text = String(value || fallback).replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 120);
+    return text || fallback;
+}
+// 计算 sibling AI 插件 lib 产物路径，避免本插件引入编译期跨包依赖。
+function getAiResourceLibPath(...parts) {
+    return path.join(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', ...parts);
+}
+// 运行时加载 S1/S0 模块；缺失时 fail closed，防止无门控下载。
+function loadVideoResourceModules(ctx) {
+    try {
+        const admission = require(getAiResourceLibPath('resource-scheduler', 'admission'));
+        const gate = require(getAiResourceLibPath('resource-gate', 'gate'));
+        if (typeof admission.admitTask !== 'function' || typeof gate.acquireResourceGate !== 'function') {
+            throw new Error('resource modules missing admitTask/acquireResourceGate');
+        }
+        return { admitTask: admission.admitTask, acquireResourceGate: gate.acquireResourceGate };
+    }
+    catch (error) {
+        ctx.logger('bvidl').warn(`resource gate unavailable: ${getErrorMessage(error)}`);
+        return null;
+    }
+}
+// 为视频下载任务生成跨插件可识别的频道键。
+function getVideoChannelKey(session) {
+    return String(session.guildId || session.channelId || (session.isDirect ? `private:${session.userId || 'unknown'}` : 'unknown'));
+}
+// 从 Koishi session 的多种形态中提取触发用户 ID。
+function getVideoUserId(session) {
+    return String(session.userId || session.author?.id || session.event?.user?.id || session.event?.sender?.userId || session.event?.sender?.id || '');
+}
+// 生成一次外部视频下载任务的 S0/S1 追踪 ID。
+function buildVideoTaskId(session, source) {
+    const channelKey = sanitizeResourceId(getVideoChannelKey(session));
+    const sourceKey = sanitizeResourceId(source || 'bili');
+    return `${EXTERNAL_VIDEO_TASK_KIND}-${channelKey}-${sourceKey}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+// 在启动 yt-dlp 前申请 S1 准入和 S0 独占锁。
+async function acquireVideoResourceGate(ctx, session, source, deps = {}) {
+    if (deps.resourceGate === false)
+        return { ok: true, handle: null };
+    const modules = loadVideoResourceModules(ctx);
+    if (!modules)
+        return { ok: false, message: VIDEO_RESOURCE_UNAVAILABLE_MESSAGE };
+    const taskId = buildVideoTaskId(session, source);
+    const channelKey = getVideoChannelKey(session);
+    const userId = getVideoUserId(session);
+    const admission = modules.admitTask({
+        taskId,
+        kind: EXTERNAL_VIDEO_TASK_KIND,
+        source: 'local-video-sender',
+        channelKey,
+        userId,
+        exclusive: true,
+        priority: 75,
+        deferable: false,
+        queueTimeoutMs: 5000,
+        runTimeoutMs: 900000,
+    });
+    if (admission.decision !== 'run_now') {
+        ctx.logger('bvidl').warn(`video download rejected by resource scheduler: ${admission.reason || admission.decision}`);
+        return { ok: false, message: VIDEO_RESOURCE_BUSY_MESSAGE };
+    }
+    try {
+        const handle = await modules.acquireResourceGate({
+            taskId,
+            kind: EXTERNAL_VIDEO_TASK_KIND,
+            owner: 'local-video-sender',
+            channelKey,
+            userId,
+            priority: 75,
+            timeoutMs: 900000,
+            waitTimeoutMs: 5000,
+            pollMs: 500,
+            memAvailableMb: admission.memAvailableMb,
+            step: 'video_prepare',
+        });
+        return { ok: true, handle };
+    }
+    catch (error) {
+        ctx.logger('bvidl').warn(`video download gate wait failed: ${getErrorMessage(error)}`);
+        return { ok: false, message: VIDEO_RESOURCE_BUSY_MESSAGE };
+    }
 }
 function normalizeSharedText(input = '') {
     let text = String(input);
@@ -464,6 +552,7 @@ async function probeVideo(url) {
     }
     return { info, picked };
 }
+// 探测、下载并发送 B 站视频；真正启动 yt-dlp 前必须先通过 S1/S0。
 async function downloadAndSend(ctx, session, url, source = url, deps = {}) {
     if (isBlacklistedGroup(session)) {
         return;
@@ -474,79 +563,98 @@ async function downloadAndSend(ctx, session, url, source = url, deps = {}) {
         return;
     }
     const recentEntry = rememberRecentParse(session, initialKeys, now);
-    const fsApi = deps.fs || fs;
-    const runCommand = deps.run || run;
-    const probe = deps.probeVideo || probeVideo;
-    try {
-        await fsApi.mkdir(WORKDIR, { recursive: true });
-    }
-    catch (error) {
+    const gateResult = await acquireVideoResourceGate(ctx, session, source, deps);
+    if (!gateResult.ok) {
         forgetRecentParse(session, recentEntry);
-        ctx.logger('bvidl').warn(getErrorMessage(error));
-        return 'Failed to prepare download directory. Please check logs later.';
+        return gateResult.message || VIDEO_RESOURCE_BUSY_MESSAGE;
     }
-    let info;
-    let picked;
+    const gateHandle = gateResult.handle || null;
     try {
-        const result = await probe(url);
-        if (result.error) {
-            forgetRecentParse(session, recentEntry);
-            return result.error;
+        const fsApi = deps.fs || fs;
+        const runCommand = deps.run || run;
+        const probe = deps.probeVideo || probeVideo;
+        try {
+            await fsApi.mkdir(WORKDIR, { recursive: true });
         }
-        if (!result.info || !result.picked) {
+        catch (error) {
             forgetRecentParse(session, recentEntry);
-            return 'No available video format found.';
+            ctx.logger('bvidl').warn(getErrorMessage(error));
+            return 'Failed to prepare download directory. Please check logs later.';
         }
-        info = result.info;
-        picked = result.picked;
-    }
-    catch (error) {
-        forgetRecentParse(session, recentEntry);
-        ctx.logger('bvidl').warn(getCommandErrorMessage(error));
-        return 'Failed to probe video. Please try again later.';
-    }
-    mergeRecentParseKeys(recentEntry, buildBiliKeys(getCanonicalBiliUrl(info)));
-    const previewSent = await safeSend(ctx, session, buildInfoMessage(info, picked), 'preview');
-    if (!previewSent) {
-        forgetRecentParse(session, recentEntry);
-        return 'Failed to send video preview. Please try again later.';
-    }
-    if (picked.totalSize && picked.totalSize > MAX_SIZE) {
-        return `视频太大（${formatBytes(picked.totalSize)}），无法通过 QQ 发送，建议去 B 站观看。`;
-    }
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const outputTemplate = path.join(WORKDIR, `${id}.%(ext)s`);
-    const outputFile = path.join(WORKDIR, `${id}.mp4`);
-    try {
-        await runCommand(YTDLP, [
-            '--cookies', COOKIES,
-            '-f', picked.format,
-            '--merge-output-format', 'mp4',
-            '-o', outputTemplate,
-            url,
-        ], { timeout: 10 * 60 * 1000 });
-        const stat = await fsApi.stat(outputFile);
-        if (stat.size > MAX_SIZE) {
+        let info;
+        let picked;
+        gateHandle?.updateStep('video_probe');
+        try {
+            const result = await probe(url);
+            if (result.error) {
+                forgetRecentParse(session, recentEntry);
+                return result.error;
+            }
+            if (!result.info || !result.picked) {
+                forgetRecentParse(session, recentEntry);
+                return 'No available video format found.';
+            }
+            info = result.info;
+            picked = result.picked;
+        }
+        catch (error) {
+            forgetRecentParse(session, recentEntry);
+            ctx.logger('bvidl').warn(getCommandErrorMessage(error));
+            return 'Failed to probe video. Please try again later.';
+        }
+        mergeRecentParseKeys(recentEntry, buildBiliKeys(getCanonicalBiliUrl(info)));
+        gateHandle?.updateStep('video_preview');
+        const previewSent = await safeSend(ctx, session, buildInfoMessage(info, picked), 'preview');
+        if (!previewSent) {
+            forgetRecentParse(session, recentEntry);
+            return 'Failed to send video preview. Please try again later.';
+        }
+        if (picked.totalSize && picked.totalSize > MAX_SIZE) {
+            return `视频太大（${formatBytes(picked.totalSize)}），无法通过 QQ 发送，建议去 B 站观看。`;
+        }
+        const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const outputTemplate = path.join(WORKDIR, `${id}.%(ext)s`);
+        const outputFile = path.join(WORKDIR, `${id}.mp4`);
+        gateHandle?.updateStep('video_download');
+        try {
+            await runCommand(YTDLP, [
+                '--cookies', COOKIES,
+                '-f', picked.format,
+                '--merge-output-format', 'mp4',
+                '-o', outputTemplate,
+                url,
+            ], { timeout: 10 * 60 * 1000 });
+            const stat = await fsApi.stat(outputFile);
+            if (stat.size > MAX_SIZE) {
+                await fsApi.rm(outputFile, { force: true }).catch(() => {
+                });
+                return `视频太大（${formatBytes(stat.size)}），无法通过 QQ 发送，建议去 B 站观看。`;
+            }
+            gateHandle?.updateStep('video_send');
+            const videoSent = await safeSend(ctx, session, segment.video(toFileUrl(outputFile)), 'video');
+            if (!videoSent) {
+                forgetRecentParse(session, recentEntry);
+                await fsApi.rm(outputFile, { force: true }).catch(() => {
+                });
+                return 'Failed to send video. Please try again later.';
+            }
             await fsApi.rm(outputFile, { force: true }).catch(() => {
             });
-            return `视频太大（${formatBytes(stat.size)}），无法通过 QQ 发送，建议去 B 站观看。`;
         }
-        const videoSent = await safeSend(ctx, session, segment.video(toFileUrl(outputFile)), 'video');
-        if (!videoSent) {
+        catch (error) {
             forgetRecentParse(session, recentEntry);
             await fsApi.rm(outputFile, { force: true }).catch(() => {
             });
-            return 'Failed to send video. Please try again later.';
+            ctx.logger('bvidl').warn(getCommandErrorMessage(error));
+            return 'Failed to download or send video. Please check logs later.';
         }
-        await fsApi.rm(outputFile, { force: true }).catch(() => {
-        });
     }
-    catch (error) {
-        forgetRecentParse(session, recentEntry);
-        await fsApi.rm(outputFile, { force: true }).catch(() => {
-        });
-        ctx.logger('bvidl').warn(getCommandErrorMessage(error));
-        return 'Failed to download or send video. Please check logs later.';
+    finally {
+        try {
+            gateHandle?.release('external-video-finally');
+        }
+        catch { /* non-critical: release failure is already reflected by stale lock checks */
+        }
     }
 }
 function apply(ctx) {

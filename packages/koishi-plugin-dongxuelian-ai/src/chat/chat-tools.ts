@@ -11,6 +11,8 @@ const { isToolEnabled } = require('../agent/config') as typeof import('../agent/
 const { parseReminderActionRequest, parseScheduledTaskRequest } = require('../routing/reminder-route') as typeof import('../routing/reminder-route')
 const safety = require('../agent/safety') as typeof import('../agent/safety')
 const pending = require('../agent/pending') as typeof import('../agent/pending')
+const { admitTask } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
+const { enqueueMediaTask } = require('../media/backpressure/media-queue') as typeof import('../media/backpressure/media-queue')
 
 const CHAT_TOOL_TIMEOUT_MS: number = 3000
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS: number = 25000
@@ -517,7 +519,6 @@ async function executeChatTool(toolCall: ChatToolCall, context: ChatToolContext 
     }
     case 'analyze_historical_image': {
       const { getImageEntry, getCachedAnalysis } = require('../media/image/image-store') as typeof import('../media/image/image-store')
-      const { analyzeImageNow, enqueueAnalysis } = require('../media/image/image-analyzer') as typeof import('../media/image/image-analyzer')
       const ck = context.channelKey || ''
       const msgId = getArgString(args, 'messageId').trim()
       if (!ck || !msgId) return '需要提供 messageId（从 read_image_history 获取）。'
@@ -525,10 +526,22 @@ async function executeChatTool(toolCall: ChatToolCall, context: ChatToolContext 
       if (cached) return `图片内容：${cached}`
       const entry = await getImageEntry(ck, msgId)
       if (!entry) return '找不到该图片记录。'
-      const analysis = await analyzeImageNow(ck, msgId)
-      if (analysis) return `图片内容：${analysis}`
-      enqueueAnalysis(ck, msgId)
-      return '该图片正在后台分析中，稍后可通过 read_image_history 查看结果。'
+      enqueueMediaTask({
+        kind: 'media_image_analysis',
+        channelKey: ck,
+        messageId: msgId,
+        url: String(entry.url || entry.file || ''),
+        payload: { entry: 'chat-tool-analyze-historical-image', userId: context.userId || '' },
+      })
+      const admission = admitTask({
+        kind: 'media_image_analysis',
+        source: 'chat-tool',
+        channelKey: ck,
+        userId: context.userId || '',
+        exclusive: false,
+      })
+      const reason = admission.decision === 'run_now' ? 'media-worker 空闲时会处理' : admission.reason
+      return `该图片已进入媒体分析队列，当前资源状态为 ${admission.resourceState}，原因：${reason}。稍后可通过 read_image_history 查看结果。`
     }
     case 'create_reminder': {
       const reminder = require('../agent/tools/create-reminder') as typeof import('../agent/tools/create-reminder')

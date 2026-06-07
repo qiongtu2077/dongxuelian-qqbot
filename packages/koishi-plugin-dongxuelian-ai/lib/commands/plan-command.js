@@ -6,6 +6,8 @@
  */
 const { hasAdminPermission, sanitizeUserName } = require('../core/utils');
 const { handled, notHandled } = require('./command-result');
+const { submitAgentWorkerTask } = require('../agent/worker-submission');
+const { createAgentRunWorkerPayload } = require('../resource-workers/agent-payload');
 function getPlanCommandErrorMessage(error, fallback = '') {
     return error instanceof Error ? error.message : String(error?.message || fallback);
 }
@@ -27,7 +29,6 @@ async function handlePlanCommand(session, ctx, state) {
         const query = planMatch[1].trim();
         const planEngine = require('../agent/plan/plan-engine');
         const planPrompts = require('../agent/plan/plan-prompts');
-        const engine = require('../agent/engine');
         const agentConfig = require('../agent/config').getAgentConfig();
         if (!agentConfig.planMode?.enabled)
             return handled('计划模式当前未开启。');
@@ -44,29 +45,29 @@ async function handlePlanCommand(session, ctx, state) {
         ];
         try {
             const plan = await planEngine.createPlan({ title: query.slice(0, 80), tasks: fallbackTasks.map(desc => ({ desc })), channel: 'qq', channelKey, userId: currentUserId, userName });
-            const agentQueue = require('../agent/queue');
-            agentQueue.configureAgentQueue(agentConfig.queue || {});
-            const result = await agentQueue.enqueueAgentTask({
+            const agentRunInput = {
+                userMessage: query,
+                userName,
+                userId: currentUserId,
+                channelKey,
+                channel: 'qq',
+                isAdmin: hasAdminPermission(adminSession),
+                systemExtra: [
+                    { role: 'system', content: planPrompts.buildPlanSystemPrompt(plan) },
+                    { role: 'system', content: planPrompts.buildPlanCreatePrompt(query) },
+                ],
+                forceTools: ['check_plan_status', 'update_task_status', 'finish_plan'],
+                preExecuteTools: [{ name: 'check_plan_status', args: { planId: plan.id } }],
+            };
+            const submission = submitAgentWorkerTask({
+                channel: 'qq',
                 channelKey,
                 userId: currentUserId,
                 timeoutMs: agentConfig.queue?.timeoutMs,
-                fn: () => engine.run({
-                    userMessage: query,
-                    userName,
-                    userId: currentUserId,
-                    channelKey,
-                    channel: 'qq',
-                    bot: session.bot,
-                    isAdmin: hasAdminPermission(adminSession),
-                    systemExtra: [
-                        { role: 'system', content: planPrompts.buildPlanSystemPrompt(plan) },
-                        { role: 'system', content: planPrompts.buildPlanCreatePrompt(query) },
-                    ],
-                    forceTools: ['check_plan_status', 'update_task_status', 'finish_plan'],
-                    preExecuteTools: [{ name: 'check_plan_status', args: { planId: plan.id } }],
-                }),
+                maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+                payload: { entry: 'qq-plan-command', planId: plan.id, agentWorker: createAgentRunWorkerPayload('qq-plan-command', agentRunInput) },
             });
-            return handled([planEngine.formatPlan(plan), '', asPlanAgentResult(result).reply || '计划已创建，正在执行。'].join('\n'));
+            return handled([planEngine.formatPlan(plan), '', submission.message || '计划已创建，正在后台执行。'].join('\n'));
         }
         catch (err) {
             if (hasPlanCommandQueueCode(err))
@@ -98,8 +99,8 @@ async function handlePlanCommand(session, ctx, state) {
             if (plan.userId !== currentUserId && !hasAdminPermission(adminSession))
                 return handled('只能继续自己的计划，或由 bot 管理员操作。');
             const userName = sanitizeUserName(session.author?.nick || session.author?.name || session.username || plan.userName || '群友');
-            const result = await planRunner.resumePlan({ planId: plan.id, channelKey, userId: currentUserId, userName, bot: session.bot, isAdmin: hasAdminPermission(adminSession) });
-            return handled([planEngine.formatPlan(plan), '', asPlanAgentResult(result).reply || '计划已继续执行。'].join('\n'));
+            const result = await planRunner.resumePlan({ planId: plan.id, channelKey, userId: currentUserId, userName, channel: 'qq', isAdmin: hasAdminPermission(adminSession) });
+            return handled([planEngine.formatPlan(plan), '', asPlanAgentResult(result).reply || asPlanAgentResult(result).message || '计划已提交后台继续执行。'].join('\n'));
         }
         catch (err) {
             if (hasPlanCommandQueueCode(err))

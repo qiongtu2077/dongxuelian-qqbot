@@ -89,6 +89,7 @@ interface ExecuteAgentToolCallInput {
   toolCount: number
   bot?: unknown
   isAdmin?: boolean
+  resourceTaskId?: string
 }
 
 type ToolCallOutcome =
@@ -112,6 +113,7 @@ interface ContinueAgentInput {
   bot?: unknown
   enableThinking?: boolean
   isAdmin?: boolean
+  resourceTaskId?: string
 }
 
 interface AgentRunResult {
@@ -152,6 +154,7 @@ interface RunAgentOptions {
   scheduledTask?: unknown
   contextPolicy?: unknown
   isAdmin?: unknown
+  resourceTaskId?: unknown
 }
 
 interface ResumePendingOptions {
@@ -162,6 +165,7 @@ interface ResumePendingOptions {
   onProgress?: ProgressHandler
   bot?: unknown
   isAdmin?: unknown
+  resourceTaskId?: unknown
 }
 
 interface ProgressMessage {
@@ -234,7 +238,7 @@ function parseAgentEngineToolArguments(raw: string): unknown {
   }
 }
 
-async function executeAgentToolCall({ tc, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, bot, isAdmin = false }: ExecuteAgentToolCallInput): Promise<ToolCallOutcome> {
+async function executeAgentToolCall({ tc, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, bot, isAdmin = false, resourceTaskId = '' }: ExecuteAgentToolCallInput): Promise<ToolCallOutcome> {
   const args = parseAgentEngineToolArguments(tc.function.arguments)
   const toolName = tc.function.name
 
@@ -266,7 +270,7 @@ async function executeAgentToolCall({ tc, messages, allowedToolNames, channel, c
 
   try {
     const startedAt = Date.now()
-    const execResult = await executeTool(toolName, args as Record<string, unknown>, { channel, channelKey, userId, userName, userMessage, bot, isAdmin })
+    const execResult = await executeTool(toolName, args as Record<string, unknown>, { channel, channelKey, userId, userName, userMessage, bot, isAdmin, resourceTaskId, taskId: resourceTaskId })
     let nextToolCount = toolCount
     recordCall(toolName, channel, { ok: execResult.ok, durationMs: Date.now() - startedAt, tokens: estimateTokens([{ role: 'tool', content: execResult.text }]) })
     if (execResult.ok) nextToolCount++
@@ -304,7 +308,7 @@ function toAgentToolCalls(toolCalls: unknown): AgentToolCall[] {
   return Array.isArray(toolCalls) ? toolCalls as AgentToolCall[] : []
 }
 
-async function continueAgent({ messages, config, tools, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount = 0, toolResults = [], onProgress, bot, enableThinking = false, isAdmin = false }: ContinueAgentInput): Promise<AgentRunResult> {
+async function continueAgent({ messages, config, tools, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount = 0, toolResults = [], onProgress, bot, enableThinking = false, isAdmin = false, resourceTaskId = '' }: ContinueAgentInput): Promise<AgentRunResult> {
   let reply = ''
   const rounds: RoundSummary[] = []
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -364,7 +368,7 @@ async function continueAgent({ messages, config, tools, allowedToolNames, channe
         }
       }
       while (currentCall && fallbackDepth < 2) {
-        const outcome = await executeAgentToolCall({ tc: currentCall, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, bot, isAdmin })
+        const outcome = await executeAgentToolCall({ tc: currentCall, messages, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount, bot, isAdmin, resourceTaskId })
         toolCount = outcome.toolCount
         if (outcome.status === 'pending') {
           rounds.push({ round, reasoning: response.reasoning || '', toolCalls: roundToolCalls, toolResults: roundToolResults })
@@ -465,12 +469,13 @@ function normalizePreExecuteTools(value: unknown): Array<{ name?: string; args?:
   return Array.isArray(value) ? value as Array<{ name?: string; args?: unknown }> : []
 }
 
-async function runAgent({ userMessage, userName, userId, channelKey, channel = 'qq', systemExtra = [], history = [], forceTools = [], preExecuteTools = [], onProgress, bot, enableThinking = false, agentMode = false, scheduledTask = null, contextPolicy = null, isAdmin = false }: RunAgentOptions): Promise<AgentRunResult> {
+async function runAgent({ userMessage, userName, userId, channelKey, channel = 'qq', systemExtra = [], history = [], forceTools = [], preExecuteTools = [], onProgress, bot, enableThinking = false, agentMode = false, scheduledTask = null, contextPolicy = null, isAdmin = false, resourceTaskId = '' }: RunAgentOptions): Promise<AgentRunResult> {
   const safeChannel = String(channel || 'qq')
   const safeUserMessage = String(userMessage || '')
   const safeUserName = String(userName || '')
   const safeUserId = String(userId || '')
   const safeChannelKey = String(channelKey || '')
+  const safeResourceTaskId = String(resourceTaskId || '')
   if (!isChannelEnabled(safeChannel)) return { reply: '(Agent 已关闭)', toolCalls: 0, pendingId: null, toolResults: [] }
   const effectiveContextPolicy = normalizeContextPolicy(contextPolicy || getScheduledContextPolicy(scheduledTask) || {})
   let tools = applyContextPolicyToTools(normalizeToolDefinitions(getToolDefinitions(safeChannel)), effectiveContextPolicy)
@@ -508,7 +513,7 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
       content: null,
       tool_calls: [{ id: call.id, type: call.type, function: call.function }],
     })
-    const outcome = await executeAgentToolCall({ tc: call, messages, allowedToolNames, channel: safeChannel, channelKey: safeChannelKey, userId: safeUserId, userName: safeUserName, userMessage: safeUserMessage, toolCount, bot, isAdmin: !!isAdmin })
+    const outcome = await executeAgentToolCall({ tc: call, messages, allowedToolNames, channel: safeChannel, channelKey: safeChannelKey, userId: safeUserId, userName: safeUserName, userMessage: safeUserMessage, toolCount, bot, isAdmin: !!isAdmin, resourceTaskId: safeResourceTaskId })
     toolCount = outcome.toolCount
     if (outcome.status === 'pending') {
       recordAgentSession({ channel: safeChannel, channelKey: safeChannelKey, userId: safeUserId, userName: safeUserName, userMessage: safeUserMessage, reply: outcome.reply, toolCalls: toolCount, pendingId: outcome.pendingId })
@@ -517,7 +522,7 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
     toolResults.push({ name: call.function.name, result: String(outcome.result || '').slice(0, 8000) })
     messages.push({ role: 'tool', tool_call_id: call.id, content: await externalizeToolResult(outcome.result, call.function.name) })
   }
-  const agentResult = await continueAgent({ messages, config, tools, allowedToolNames, channel: safeChannel, channelKey: safeChannelKey, userId: safeUserId, userName: safeUserName, userMessage: safeUserMessage, toolCount, toolResults, onProgress, bot, enableThinking: !!enableThinking, isAdmin: !!isAdmin })
+  const agentResult = await continueAgent({ messages, config, tools, allowedToolNames, channel: safeChannel, channelKey: safeChannelKey, userId: safeUserId, userName: safeUserName, userMessage: safeUserMessage, toolCount, toolResults, onProgress, bot, enableThinking: !!enableThinking, isAdmin: !!isAdmin, resourceTaskId: safeResourceTaskId })
   onAgentReplyComplete({ userId: safeUserId, channel: safeChannel, messages }).catch(e => console.warn('[agent-engine] onAgentReplyComplete error:', getAgentEngineErrorMessage(e)))
   return agentResult
 }
@@ -526,11 +531,12 @@ function pendingResumeRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
-async function resumePending({ channelKey, userId, channel = 'qq', expectedId = '', onProgress, bot, isAdmin = false }: ResumePendingOptions): Promise<AgentRunResult | AgentPendingResult> {
+async function resumePending({ channelKey, userId, channel = 'qq', expectedId = '', onProgress, bot, isAdmin = false, resourceTaskId = '' }: ResumePendingOptions): Promise<AgentRunResult | AgentPendingResult> {
   const safeChannelKey = String(channelKey || '')
   const safeUserId = String(userId || '')
   const safeChannel = String(channel || 'qq')
-  const executed = await pending.executePendingTool(safeChannelKey, safeUserId, safeChannel, String(expectedId || ''), { bot, isAdmin: !!isAdmin })
+  const safeResourceTaskId = String(resourceTaskId || '')
+  const executed = await pending.executePendingTool(safeChannelKey, safeUserId, safeChannel, String(expectedId || ''), { bot, isAdmin: !!isAdmin, resourceTaskId: safeResourceTaskId })
   if (!executed.pending) return executed
   const p = executed.pending
   const config = await loadConfig()
@@ -557,6 +563,7 @@ async function resumePending({ channelKey, userId, channel = 'qq', expectedId = 
     onProgress,
     bot,
     isAdmin: safeChannel === 'dashboard' || !!isAdmin,
+    resourceTaskId: safeResourceTaskId,
   })
 }
 

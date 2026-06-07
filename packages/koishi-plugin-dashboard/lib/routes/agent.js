@@ -113,6 +113,42 @@ function getAgentEnvStatus() {
         return { name, exists, configured, size };
     });
 }
+function readAgentTaskResult(taskId) {
+    try {
+        return require(path.join(AI_LIB, 'resource-workers', 'result-notifier')).readTaskResult(String(taskId || ''));
+    }
+    catch {
+        return {};
+    }
+}
+function sanitizeAgentTaskForDashboard(task, result = {}) {
+    if (!task)
+        return null;
+    return {
+        id: task.id,
+        kind: task.kind,
+        status: task.status,
+        source: task.source,
+        channelKey: task.channelKey,
+        userId: task.userId,
+        step: task.step,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+        startedAt: task.startedAt,
+        finishedAt: task.finishedAt,
+        error: task.error,
+        notify: task.notify,
+        result: {
+            ok: result.ok,
+            reply: result.reply || '',
+            message: result.message || '',
+            error: result.error || '',
+            pendingId: result.pendingId || null,
+            toolCalls: result.toolCalls || 0,
+            warnings: Array.isArray(result.warnings) ? result.warnings : [],
+        },
+    };
+}
 // --- Route Handlers ---
 async function handleGetAgentConfig(req, res) {
     if (!requireAdmin(req, res))
@@ -195,11 +231,27 @@ function handlePutAgentPersona(req, res) {
 function getTtsModule() {
     return require(path.join(AI_LIB, 'media', 'voice', 'tts'));
 }
+// 读取 AI 插件中的 TTS 资源门控模块，Dashboard 侧跨进程复用同一 S0/S1 状态。
+function getTtsResourceModule() {
+    return require(path.join(AI_LIB, 'media', 'voice', 'tts-resource'));
+}
 function getTtsLogger() {
     return {
         warn(message) {
             console.warn(`[dashboard] ${message}`);
         },
+    };
+}
+// 将 TTS 资源门控拒绝结果转成 Dashboard API 的结构化低成本响应。
+function buildTtsResourceBusyPayload(result) {
+    return {
+        ok: false,
+        message: '当前资源正忙，语音合成稍后再试',
+        code: 'RESOURCE_BUSY',
+        decision: result?.decision || 'reject',
+        reason: result?.reason || '',
+        resourceState: result?.resourceState || '',
+        botMode: result?.botMode || '',
     };
 }
 function getVoiceAssetsModule() {
@@ -325,10 +377,28 @@ function handlePostTtsClone(req, res) {
             const filePath = path.join(voicesDir, filename);
             fs.writeFileSync(filePath, buf);
             const tts = getTtsModule();
+            const ttsResource = getTtsResourceModule();
             const dataUri = `data:${mimeType || 'audio/mpeg'};base64,${audioBase64}`;
             const cleanSampleText = String(sampleText || '').trim().slice(0, 120) || voiceAssets.DEFAULT_SAMPLE_TEXT;
             const diagnostics = {};
-            const testBuf = await tts.synthesizeSpeech(cleanSampleText, { voice: dataUri, style: '正常语气', diagnostics, logger: getTtsLogger(), context: 'dashboard:tts-clone' });
+            const testResult = await ttsResource.runVoiceTtsWithResourceGate({
+                source: 'dashboard-tts-clone',
+                owner: 'dashboard-tts',
+                channelKey: 'dashboard',
+                userId: 'dashboard-admin',
+                context: 'dashboard-tts-clone',
+                waitTimeoutMs: 3000,
+                logger: getTtsLogger(),
+                run: () => tts.synthesizeSpeech(cleanSampleText, { voice: dataUri, style: '正常语气', diagnostics, logger: getTtsLogger(), context: 'dashboard:tts-clone' }),
+            });
+            if (!testResult.ok) {
+                try {
+                    fs.unlinkSync(filePath);
+                }
+                catch { /* non-critical: failed clone cleanup */ }
+                return json(res, buildTtsResourceBusyPayload(testResult), 503);
+            }
+            const testBuf = testResult.value;
             if (!testBuf) {
                 try {
                     fs.unlinkSync(filePath);
@@ -416,7 +486,20 @@ function handlePostTtsPreview(req, res) {
             if (!resolvedStyle && personaName)
                 resolvedStyle = tts.resolvePersonaVoice(personaName).style;
             const diagnostics = {};
-            const buf = await tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice, style: resolvedStyle, diagnostics, logger: getTtsLogger(), context: 'dashboard:tts-preview' });
+            const ttsResource = getTtsResourceModule();
+            const ttsResult = await ttsResource.runVoiceTtsWithResourceGate({
+                source: 'dashboard-tts-preview',
+                owner: 'dashboard-tts',
+                channelKey: 'dashboard',
+                userId: 'dashboard-admin',
+                context: 'dashboard-tts-preview',
+                waitTimeoutMs: 3000,
+                logger: getTtsLogger(),
+                run: () => tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice, style: resolvedStyle, diagnostics, logger: getTtsLogger(), context: 'dashboard:tts-preview' }),
+            });
+            if (!ttsResult.ok)
+                return json(res, buildTtsResourceBusyPayload(ttsResult), 503);
+            const buf = ttsResult.value;
             if (!buf)
                 return json(res, { ok: false, message: '语音合成失败，请检查 API key 或网络', reason: diagnostics.lastError?.code || 'unknown' }, 500);
             const mimeType = tts.detectAudioMime(buf) || buf.mimeType || 'audio/wav';
@@ -731,26 +814,31 @@ function handlePostAgentChat(req, res) {
             const agentMode = !!data.agentMode;
             if (!message)
                 return json(res, { ok: false, message: '消息不能为空' }, 400);
-            const engine = require(path.join(AI_LIB, 'agent', 'engine'));
             const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig();
-            const queue = require(path.join(AI_LIB, 'agent', 'queue'));
-            queue.configureAgentQueue(agentConfig.queue || {});
+            const workerSubmission = require(path.join(AI_LIB, 'agent', 'worker-submission'));
+            const agentPayload = require(path.join(AI_LIB, 'resource-workers', 'agent-payload'));
             const history = require(path.join(AI_LIB, 'agent', 'messages')).sanitizeAgentHistory(data.history);
             const searchRunOptions = require(path.join(AI_LIB, 'agent', 'router')).buildExplicitSearchRunOptions(message);
-            const result = await queue.enqueueAgentTask({
-                channelKey: 'dashboard', userId: String(data.userId || 'dashboard'), timeoutMs: agentConfig.queue?.timeoutMs,
-                fn: () => engine.run({
-                    userMessage: message, userName: String(data.userName || 'Dashboard'), userId: String(data.userId || 'dashboard'),
-                    channelKey: 'dashboard', channel: 'dashboard', history, enableThinking, agentMode, ...searchRunOptions,
-                }),
+            const agentRunInput = {
+                userMessage: message, userName: String(data.userName || 'Dashboard'), userId: String(data.userId || 'dashboard'),
+                channelKey: 'dashboard', channel: 'dashboard', history, enableThinking, agentMode, ...searchRunOptions,
+            };
+            const submission = workerSubmission.submitAgentWorkerTask({
+                channel: 'dashboard',
+                channelKey: 'dashboard',
+                userId: String(data.userId || 'dashboard'),
+                timeoutMs: agentConfig.queue?.timeoutMs,
+                maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+                source: 'dashboard-standalone',
+                payload: { entry: 'dashboard-agent-chat', agentWorker: agentPayload.createAgentRunWorkerPayload('dashboard-agent-chat', agentRunInput) },
             });
-            if (result && result.reply && !(result.pendingId)) {
-                require(path.join(AI_LIB, 'chat', 'agent-chat-bridge')).recordAgentChatResult({
-                    session: null, userMessage: message, userName: String(data.userName || 'Dashboard'),
-                    userId: String(data.userId || 'dashboard'), channelKey: 'dashboard', agentResult: result,
-                });
-            }
-            return json(res, { ok: true, ...result });
+            return json(res, {
+                ok: submission.accepted,
+                async: true,
+                taskId: submission.taskId || '',
+                status: submission.accepted ? 'accepted' : 'blocked',
+                message: submission.message,
+            }, submission.status || 202);
         }
         catch (e) {
             return json(res, { ok: false, message: e.message }, 500);
@@ -769,15 +857,27 @@ function handlePostAgentConfirm(req, res) {
             const p = expectedId ? findPendingById(expectedId) : pending.getPendingTool('dashboard', 'dashboard');
             if (!p)
                 return json(res, { ok: false, message: '没有待确认工具' }, 404);
-            const engine = require(path.join(AI_LIB, 'agent', 'engine'));
-            const queue = require(path.join(AI_LIB, 'agent', 'queue'));
+            const workerSubmission = require(path.join(AI_LIB, 'agent', 'worker-submission'));
+            const agentPayload = require(path.join(AI_LIB, 'resource-workers', 'agent-payload'));
             const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig();
-            queue.configureAgentQueue(agentConfig.queue || {});
-            const result = await queue.enqueueAgentTask({
-                channelKey: p.channelKey, userId: p.userId, timeoutMs: agentConfig.queue?.timeoutMs,
-                fn: () => engine.resumePending({ channelKey: p.channelKey, userId: p.userId, channel: p.channel || 'dashboard', expectedId }),
+            const resumeInput = { channelKey: p.channelKey, userId: p.userId, channel: p.channel || 'dashboard', expectedId };
+            const submission = workerSubmission.submitAgentWorkerTask({
+                channel: p.channel || 'dashboard',
+                channelKey: p.channelKey,
+                userId: p.userId,
+                timeoutMs: agentConfig.queue?.timeoutMs,
+                maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+                source: 'dashboard-standalone',
+                payload: { entry: 'dashboard-agent-confirm', pendingId: expectedId, agentWorker: agentPayload.createAgentResumeWorkerPayload('dashboard-agent-confirm', resumeInput, p) },
             });
-            return json(res, { ok: !result.message || !!result.reply, toolName: p.toolName, reply: result.reply || '', result: result.reply || result.message || '', message: result.message || '' }, result.status || 200);
+            return json(res, {
+                ok: submission.accepted,
+                async: true,
+                toolName: p.toolName,
+                taskId: submission.taskId || '',
+                status: submission.accepted ? 'accepted' : 'blocked',
+                message: submission.message,
+            }, submission.status || 202);
         }
         catch (e) {
             return json(res, { ok: false, message: e.message }, 500);
@@ -843,6 +943,22 @@ const regexRoutes = [
                 if (!plan)
                     return json(res, { ok: false, message: '计划不存在' }, 404);
                 return json(res, { ok: true, plan });
+            }
+            catch (e) {
+                return json(res, { ok: false, message: e.message }, 500);
+            }
+        } },
+    { pattern: /^\/dashboard\/api\/agent\/tasks\/([^/]+)$/, method: 'GET', handler: (req, res, match) => {
+            if (!requireAdmin(req, res))
+                return;
+            try {
+                const taskId = decodeURIComponent(match[1]);
+                const taskStore = require(path.join(AI_LIB, 'resource-workers', 'task-store'));
+                const task = taskStore.getResourceTaskById(taskId);
+                if (!task)
+                    return json(res, { ok: false, message: '任务不存在' }, 404);
+                const result = ['done', 'failed'].includes(String(task.status || '')) ? readAgentTaskResult(taskId) : {};
+                return json(res, { ok: true, task: sanitizeAgentTaskForDashboard(task, result) });
             }
             catch (e) {
                 return json(res, { ok: false, message: e.message }, 500);

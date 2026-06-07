@@ -9,7 +9,6 @@ interface AutoMemoryStats {
     memoryDir: string;
 }
 declare function shouldTrigger(userId: unknown): boolean;
-declare function getDailyTotalSize(userId: unknown): Promise<number>;
 declare function onAgentReplyComplete({ userId, channel, messages }?: AgentReplyCompleteInput): Promise<void>;
 declare function resetAutoMemoryCounter(userId: unknown): void;
 declare function getAutoMemoryStats(): AutoMemoryStats;
@@ -20,7 +19,7 @@ declare const _default: {
     resetAutoMemoryCounter: typeof resetAutoMemoryCounter;
     getAutoMemoryStats: typeof getAutoMemoryStats;
     shouldTrigger: typeof shouldTrigger;
-    getDailyTotalSize: typeof getDailyTotalSize;
+    getDailyTotalSize: (userId: unknown) => Promise<number>;
     safeUserId: (value?: string) => string;
 };
 export = _default;

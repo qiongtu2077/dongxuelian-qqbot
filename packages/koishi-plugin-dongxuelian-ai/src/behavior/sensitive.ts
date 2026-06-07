@@ -22,6 +22,8 @@ const {
   clearUserConversationHistory,
   saveSensitiveCache,
   analyzeChannelSensitive,
+  consumePendingSensitiveAlert,
+  clearPendingSensitiveAlert,
 } = require('../conversation') as typeof import('../conversation')
 
 interface SensitiveSession {
@@ -99,7 +101,7 @@ function clearSensitiveRuntimeState(channelKey: string): void {
   const key = String(channelKey)
   channelMsgCount.delete(key)
   lastSensitiveAlert.delete(key)
-  pendingSensitiveAlert.delete(key)
+  clearPendingSensitiveAlert(key)
 }
 
 function pruneRuntimeMap<T>(map: Map<string, T>, getTs: (value: T) => number, now: number = Date.now()): void {
@@ -172,8 +174,7 @@ async function handleSensitiveMessage(session: SensitiveSession, ctx: unknown, p
     if (count % 50 === 0) analyzeChannelSensitive(normalizedChannelKey).catch((error) => warnSensitiveBackgroundFailure('periodic summary', error))
   }
 
-  if (isDetectOn && pendingSensitiveAlert.get(normalizedChannelKey)) {
-    pendingSensitiveAlert.delete(normalizedChannelKey)
+  if (isDetectOn && consumePendingSensitiveAlert(normalizedChannelKey)) {
     channelSharedCache.delete(normalizedChannelKey)
     channelMsgCount.delete(normalizedChannelKey)
     if (lastEmotionCache && typeof lastEmotionCache.delete === 'function') lastEmotionCache.delete(normalizedChannelKey)

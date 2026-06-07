@@ -168,6 +168,11 @@ const {
   isSafeSendReplyFresh,
 } = require('./behavior/random-state') as typeof import('./behavior/random-state') // 随机回复状态、pending timer 与 freshness
 const { buildAmbientWaterSendOptions } = require('./behavior/random-reply-mode') as typeof import('./behavior/random-reply-mode') // 随机非锚定水群发送策略
+const { classifyCommand } = require('./bot-mode/command-classifier') as typeof import('./bot-mode/command-classifier')
+const { readBotModeState } = require('./bot-mode/mode-state') as typeof import('./bot-mode/mode-state')
+const { decideModePolicy } = require('./bot-mode/mode-policy') as typeof import('./bot-mode/mode-policy')
+type BotCommandType = ReturnType<typeof classifyCommand>
+const { buildResourceStatusReply } = require('./bot-mode/status-reply') as typeof import('./bot-mode/status-reply')
 
 interface IndexLogger {
   info(...args: unknown[]): void
@@ -398,6 +403,15 @@ function safeSendReplyWithFreshness(
   return safeSendReplyImpl(ctx, session, reply, isRandom, resolveBot, sendOptions, isSafeSendReplyFresh)
 }
 
+// 在延迟/排队任务真正执行前复检 S5，避免旧聊天任务越过日报静默。
+function shouldDropQueuedBotWork(ctx: IndexContext, channelKey: string, commandType: BotCommandType, label: string): boolean {
+  const decision = decideModePolicy(commandType, readBotModeState())
+  if (decision.action === 'pass') return false
+  cancelPendingRandom(channelKey, `queued-${decision.action}`)
+  logDebug(ctx, 'bot-mode', `drop queued work label=${label} channel=${channelKey} command=${commandType} action=${decision.action} reason=${decision.reason}`)
+  return true
+}
+
 function apply(ctx: IndexContext): void {
   registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue })
 
@@ -464,6 +478,29 @@ function apply(ctx: IndexContext): void {
     if (isReservedCommand(plain)) {
       markExplicitInteraction('reserved-command')
       return next()
+    }
+
+    const botCommandType = classifyCommand({ plain, analyzed })
+    const botModeSnapshot = readBotModeState()
+    const botModeDecision = decideModePolicy(botCommandType, botModeSnapshot)
+    if (botModeDecision.action === 'queue_daily') {
+      markExplicitInteraction('daily-command')
+      return next()
+    }
+    if (botModeDecision.action === 'status_only') {
+      markExplicitInteraction('resource-status')
+      return buildResourceStatusReply()
+    }
+    if (botModeDecision.action === 'silent_drop' || botModeDecision.action === 'defer') {
+      if (botCommandType === 'media_event') {
+        await handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt, queueMedia: false })
+      }
+      if (inGuild) cancelPendingRandom(channelKey, `bot-mode-${botModeDecision.action}`)
+      return
+    }
+    if (botModeDecision.action === 'reject') {
+      if (inGuild) cancelPendingRandom(channelKey, 'bot-mode-reject')
+      return '当前资源正忙，Agent 和工具暂时暂停。'
     }
 
     plain = await handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt })
@@ -614,12 +651,14 @@ function apply(ctx: IndexContext): void {
           if (!p) return
           if (getExplicitInteractionVersion(channelKey) !== p.explicitVersion) return
           if (getChannelMessageVersion(channelKey) !== p.triggerMessageVersion) return
+          if (shouldDropQueuedBotWork(ctx, channelKey, 'normal_chat', 'delayed-random-timer')) return
           if (shouldTriggerRandom(Math.min(resolveRandomTriggerRate(channelKey) * willFactor, 1.0))) {
             resetRandomMiss(channelKey)
             markRandomReplySent(channelKey)
             enqueueForChannel(channelKey, async () => {
               if (getExplicitInteractionVersion(channelKey) !== p.explicitVersion) return
               if (getChannelMessageVersion(channelKey) !== p.triggerMessageVersion) return
+              if (shouldDropQueuedBotWork(ctx, channelKey, 'normal_chat', 'delayed-random-queue')) return
               const liveSession = withCurrentBot(session, resolveBot()) as IndexSession
               const chatMeta: IndexChatMeta = {}
                 let reply = await handleChatResult(await chat(liveSession, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, directAt: false, nameMentioned: false, meta: chatMeta }), {
@@ -831,6 +870,7 @@ function apply(ctx: IndexContext): void {
     }
 
     enqueueForChannel(channelKey, async () => {
+        if (shouldDropQueuedBotWork(ctx, channelKey, botCommandType, randomTriggered ? 'random-chat-queue' : 'chat-queue')) return
         const liveSession = withCurrentBot(session, resolveBot()) as IndexSession
         try {
           const recentUserMessages = getRecentUserMessages(liveSession, 4)

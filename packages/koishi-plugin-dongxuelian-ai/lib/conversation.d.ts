@@ -127,6 +127,13 @@ interface SharedContextOptions extends SharedTurnMetadata {
     isDirect?: boolean;
     randomTriggered?: boolean;
 }
+interface SensitiveAlertData {
+    flagged?: boolean;
+    ts?: number;
+    channelKey?: string;
+    sourceTaskId?: string;
+    result?: string;
+}
 interface MemoryTimerData {
     intervalHours?: number;
     lastClearTs?: number;
@@ -186,6 +193,9 @@ declare function getQuoteInfo(session: SessionLike, options?: SharedContextOptio
 declare function getQuotedMessageNote(session: SessionLike, options?: SharedContextOptions): string;
 declare function getSharedContextNote(session: SessionLike, currentUserId?: string, options?: SharedContextOptions): string;
 declare function saveSensitiveCache(channelKey: string, value: string, speakerName: string, userId: string): void;
+declare function writePendingSensitiveAlert(channelKey: string, patch?: Partial<SensitiveAlertData>): void;
+declare function consumePendingSensitiveAlert(channelKey: string): SensitiveAlertData | null;
+declare function clearPendingSensitiveAlert(channelKey: string): void;
 declare function analyzeChannelSensitive(channelKey: string): Promise<void>;
 declare function readMemoryTimer(channelKey: string): MemoryTimerData | null;
 declare function checkMemoryTimerExpired(channelKey: string): boolean;
@@ -202,6 +212,9 @@ declare const _default: {
         ts: number;
     }>;
     channelTodayCache: Map<string, TodayCache>;
+    writePendingSensitiveAlert: typeof writePendingSensitiveAlert;
+    consumePendingSensitiveAlert: typeof consumePendingSensitiveAlert;
+    clearPendingSensitiveAlert: typeof clearPendingSensitiveAlert;
     getConversationKey: typeof getConversationKey;
     getChannelKey: typeof getChannelKey;
     touchConversation: typeof touchConversation;

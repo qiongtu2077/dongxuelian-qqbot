@@ -23,6 +23,7 @@ async function trySendRandomVoice({ ctx, liveSession, channelKey, currentUserId,
         return false;
     try {
         const { shouldTriggerRandomVoice, markChannelCooldown, synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice, extractVoiceStyle, stripVoiceStyleTag, composeTtsStyle, } = require('../media/voice/tts');
+        const { runVoiceTtsWithResourceGate } = require('../media/voice/tts-resource');
         if (!shouldTriggerRandomVoice(channelKey))
             return false;
         const resolved = resolvePersona(channelKey, currentUserId);
@@ -35,7 +36,18 @@ async function trySendRandomVoice({ ctx, liveSession, channelKey, currentUserId,
             logger: ctx.logger('dongxuelian-ai'),
             context: 'random-voice',
         };
-        const buf = await synthesizeSpeech(ttsText, { ...voiceOpts, ...ttsDiagnostics });
+        const ttsResult = await runVoiceTtsWithResourceGate({
+            source: 'koishi-random-voice',
+            owner: 'koishi-random-voice',
+            channelKey,
+            userId: currentUserId,
+            context: 'random-voice',
+            logger: ctx.logger('dongxuelian-ai'),
+            run: () => synthesizeSpeech(ttsText, { ...voiceOpts, ...ttsDiagnostics }),
+        });
+        if (!ttsResult.ok)
+            return false;
+        const buf = ttsResult.value;
         if (!buf)
             return false;
         if (!isRandomReplyFresh(randomSendOptions)) {

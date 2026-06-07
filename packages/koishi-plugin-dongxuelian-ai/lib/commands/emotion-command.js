@@ -5,14 +5,12 @@
  * 状态: 复用 index.js 注入的 channelTodayCache / lastEmotionCache，不自建跨模块全局状态。
  */
 const path = require('path');
-const { h } = require('koishi');
 const { DATA_DIR } = require('../core/constants');
-const { renderEmotionImage } = require('../behavior/emotion-renderer');
+const { submitWorkerTaskWithAdmission } = require('../resource-workers/task-client');
 const { readJsonFile, writeJsonFile, todayCst, todayCstMinusDays, safeChannelKey, truncateText, } = require('../core/utils');
 const { logDebug } = require('../core/logging-config');
 const { handled, notHandled } = require('./command-result');
 const EMOTION_IMAGE_TEXT_LIMIT = 1500;
-const EMOTION_FALLBACK_TEXT_LIMIT = 500;
 const EMOTION_ANALYSIS_MAX_MESSAGES = 1200;
 const EMOTION_COMPRESS_BATCH_SIZE = 100;
 const EMOTION_MAX_SUMMARY_CHARS = 10000;
@@ -176,45 +174,6 @@ function limitEmotionAnalysisForImage(analysis, stats, history = [], max = EMOTI
         keywords: [],
     };
 }
-async function renderEmotionImageWithRetry(ctx, renderImage, analysis, stats, history, channelKey) {
-    let lastError = null;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-            return await renderImage(analysis, stats, history);
-        }
-        catch (err) {
-            lastError = err;
-            ctx.logger('dongxuelian-ai').warn(`emotion image render failed channel=${channelKey} attempt=${attempt}: ${getEmotionCommandErrorMessage(err)}`);
-        }
-    }
-    throw lastError || new Error('emotion image render failed');
-}
-async function generateShortEmotionFallback(callOpenAI, analysis, stats, history, renderedText) {
-    const prompt = [
-        '今日情绪图片生成失败。请根据以下结构化结果，重新生成一段500字以内的纯文本群聊情绪报告。',
-        '必须包含：情绪指数、置信度、今日样本、近5日对比简述、总评、最多3条原因。',
-        '不要输出 JSON，不要 Markdown 表格，不要超过500字。',
-        '',
-        `情绪指数：${analysis.score}/100（${analysis.mood}）`,
-        `置信度：${analysis.confidence}%`,
-        `今日样本：${stats.messageCount} 条文本消息，${stats.userCount} 位活跃成员`,
-        history.length ? '近5日对比：\n' + history.map(item => `${item.date} ${item.score}/100 ${item.summary || ''}`).join('\n') : '近5日对比：暂无对比数据',
-        `总评：${analysis.summary}`,
-        `原因：${analysis.reasons.slice(0, 3).join('；')}`,
-        analysis.keywords.length ? `关键词：${analysis.keywords.join('、')}` : '',
-    ].filter(Boolean).join('\n');
-    try {
-        const fallback = await callOpenAI([
-            { role: 'system', content: prompt },
-            { role: 'user', content: '重新生成今日情绪文本回退' },
-        ], false, { max_tokens: 500, noLazy: true, _fallbackSet: 'lightweight' });
-        return limitPlainText(fallback, EMOTION_FALLBACK_TEXT_LIMIT) || limitPlainText(renderedText, EMOTION_FALLBACK_TEXT_LIMIT);
-    }
-    catch {
-        /* non-critical: image fallback can reuse deterministic rendered text */
-        return limitPlainText(renderedText, EMOTION_FALLBACK_TEXT_LIMIT);
-    }
-}
 function trimEmotionCache(map) {
     const ttl = 5 * 60 * 1000;
     const now = Date.now();
@@ -255,18 +214,22 @@ async function summarizeEmotionMessages(msgs, callOpenAI) {
         text: (summaries.filter(Boolean).join('\n---\n') || fallback).slice(0, EMOTION_MAX_SUMMARY_CHARS),
     };
 }
-function imageBufferToBase64(imageBuffer) {
-    if (Buffer.isBuffer(imageBuffer))
-        return imageBuffer.toString('base64');
-    if (imageBuffer instanceof Uint8Array)
-        return Buffer.from(imageBuffer).toString('base64');
-    if (imageBuffer instanceof ArrayBuffer)
-        return Buffer.from(imageBuffer).toString('base64');
-    if (typeof SharedArrayBuffer !== 'undefined' && imageBuffer instanceof SharedArrayBuffer)
-        return Buffer.from(imageBuffer).toString('base64');
-    if (typeof imageBuffer === 'string')
-        return Buffer.from(imageBuffer).toString('base64');
-    throw new Error('invalid emotion image payload');
+// Submit the prepared emotion image render to S2; Chromium runs only in the daily worker.
+function submitEmotionRenderTask(channelKey, analysis, stats, history, text) {
+    const result = submitWorkerTaskWithAdmission({
+        kind: 'emotion_render',
+        source: 'emotion-command',
+        channelKey,
+        priority: 55,
+        timeoutMs: 180000,
+        payload: { analysis, stats, history, text },
+        notify: { target: 'qq-group', channelKey, status: 'pending' },
+    }, { exclusive: true });
+    return {
+        taskId: String(result.task?.id || ''),
+        accepted: !!result.accepted,
+        reason: String(result.admission?.reason || result.admission?.decision || ''),
+    };
 }
 async function handleEmotionCommand(session, ctx, state) {
     const { plain, inGuild, channelKey, loadConfig, callOpenAI, channelTodayCache, lastEmotionCache, } = state;
@@ -328,20 +291,21 @@ async function handleEmotionCommand(session, ctx, state) {
             ctx.logger('dongxuelian-ai').warn(`emotion history save failed: ${getEmotionCommandErrorMessage(historyErr)}`);
         }
         logDebug(ctx, 'emotion', `analysis done channel=${channelKey} score=${analysis.score} messages=${msgs.length}`);
-        const renderImage = state.renderEmotionImage || renderEmotionImage;
         try {
-            const imageBuffer = await renderEmotionImageWithRetry(ctx, renderImage, displayAnalysis, stats, recentHistory, channelKey);
-            const imageBase64 = imageBufferToBase64(imageBuffer);
-            const imageMessage = h.image(`data:image/png;base64,${imageBase64}`);
-            lastEmotionCache.set(channelKey, { response: imageMessage, text: rendered, ts: Date.now() });
+            const submit = submitEmotionRenderTask(channelKey, displayAnalysis, stats, recentHistory, rendered);
+            const suffix = submit.accepted
+                ? `\n\n图片版已加入后台队列，完成后会自动发回。\n任务ID：${submit.taskId}`
+                : `\n\n当前资源紧张，图片版已延期；资源恢复后会继续尝试。\n任务ID：${submit.taskId || '未生成'}`;
+            const responseText = `${rendered}${suffix}`;
+            lastEmotionCache.set(channelKey, { text: responseText, ts: Date.now() });
             trimEmotionCache(lastEmotionCache);
-            return handled(imageMessage);
+            return handled(responseText);
         }
-        catch (imageErr) {
-            const fallbackText = await generateShortEmotionFallback(callOpenAI, displayAnalysis, stats, recentHistory, rendered);
-            lastEmotionCache.set(channelKey, { text: fallbackText, ts: Date.now() });
+        catch (submitErr) {
+            ctx.logger('dongxuelian-ai').warn(`emotion render task submit failed: ${getEmotionCommandErrorMessage(submitErr)}`);
+            lastEmotionCache.set(channelKey, { text: rendered, ts: Date.now() });
             trimEmotionCache(lastEmotionCache);
-            return handled(fallbackText);
+            return handled(rendered);
         }
     }
     catch (err) {

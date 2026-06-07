@@ -108,6 +108,7 @@ async function trySendRandomVoice({
       stripVoiceStyleTag,
       composeTtsStyle,
     } = require('../media/voice/tts') as typeof import('../media/voice/tts')
+    const { runVoiceTtsWithResourceGate } = require('../media/voice/tts-resource') as typeof import('../media/voice/tts-resource')
     if (!shouldTriggerRandomVoice(channelKey)) return false
     const resolved = resolvePersona(channelKey, currentUserId)
     const voiceOpts = resolvePersonaVoice(resolved.name)
@@ -119,7 +120,17 @@ async function trySendRandomVoice({
       logger: ctx.logger('dongxuelian-ai'),
       context: 'random-voice',
     }
-    const buf = await synthesizeSpeech(ttsText, { ...voiceOpts, ...ttsDiagnostics })
+    const ttsResult = await runVoiceTtsWithResourceGate({
+      source: 'koishi-random-voice',
+      owner: 'koishi-random-voice',
+      channelKey,
+      userId: currentUserId,
+      context: 'random-voice',
+      logger: ctx.logger('dongxuelian-ai'),
+      run: () => synthesizeSpeech(ttsText, { ...voiceOpts, ...ttsDiagnostics }),
+    })
+    if (!ttsResult.ok) return false
+    const buf = ttsResult.value
     if (!buf) return false
     if (!isRandomReplyFresh(randomSendOptions)) {
       logStaleRandomSkip(ctx, 'random-voice', randomSendOptions)

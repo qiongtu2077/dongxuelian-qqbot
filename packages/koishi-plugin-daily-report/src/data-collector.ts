@@ -37,6 +37,8 @@ interface ReportData {
   analysisMessages: ReportMessage[]
   sampledMessages: number
   truncatedMessages: number
+  precomputedContext?: string
+  precomputedCoverageRate?: number
 }
 
 interface TodayCache {
@@ -121,7 +123,68 @@ function collectReportData(channelKey: unknown): ReportData | null {
     return null
   }
 
-  return processMessages(cache.messages, today)
+  const data = processMessages(cache.messages, today)
+  if (!data) return null
+  attachPrecomputedContext(data, rawKey)
+  return data
+}
+
+// 动态读取 S3 final-input；不可用时保持日报旧路径。
+function readPrecomputedFinalInput(date: string, channelKey: string): Record<string, unknown> | null {
+  try {
+    const base = '../../koishi-plugin-dongxuelian-ai/lib'
+    const merge = require(`${base}/daily-precompute/daily-summary-merge`)
+    const status = require(`${base}/daily-precompute/precompute-status`)
+    const generated = merge && typeof merge.mergeDailyFinalInput === 'function'
+      ? merge.mergeDailyFinalInput(date, channelKey)
+      : null
+    if (generated && typeof generated === 'object') return generated
+    if (status && typeof status.readDailyFinalInput === 'function') return status.readDailyFinalInput(date, channelKey)
+  } catch {
+    /* non-critical: S3 precompute is an optimization, today-cache remains authoritative fallback */
+  }
+  return null
+}
+
+// 将 S3 final-input 压成日报 AI 可直接使用的短上下文。
+function buildPrecomputedContext(finalInput: Record<string, unknown> | null): string {
+  if (!finalInput) return ''
+  const lines: string[] = []
+  const slotCount = Number(finalInput.slotCount || 0)
+  const totalMessages = Number(finalInput.totalMessages || 0)
+  const coveredMessages = Number(finalInput.coveredMessages || 0)
+  const coverageRate = Number(finalInput.coverageRate || 0)
+  lines.push(`[S3预计算] slot=${slotCount}, total=${totalMessages}, covered=${coveredMessages}, coverage=${coverageRate}`)
+  const keywords = Array.isArray(finalInput.keywords) ? finalInput.keywords.map(String).filter(Boolean).slice(0, 30) : []
+  if (keywords.length) lines.push(`关键词：${keywords.join('、')}`)
+  const slots = Array.isArray(finalInput.slots) ? finalInput.slots.slice(0, 20) : []
+  if (slots.length) {
+    lines.push('分片统计：')
+    for (const raw of slots) {
+      const slot = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+      const stats = slot.stats && typeof slot.stats === 'object' ? slot.stats as Record<string, unknown> : {}
+      const slotKeywords = Array.isArray(slot.keywords) ? slot.keywords.map(String).filter(Boolean).slice(0, 8).join('、') : ''
+      lines.push(`- ${slot.slotId || 'slot'}：消息${slot.messageCount || 0}，活跃${stats.activeUsers || 0}，媒体${stats.mediaCount || 0}${slotKeywords ? `，关键词${slotKeywords}` : ''}`)
+    }
+  }
+  const tail = Array.isArray(finalInput.uncoveredTail) ? finalInput.uncoveredTail.slice(-80) : []
+  if (tail.length) {
+    lines.push('未覆盖尾部消息：')
+    for (const raw of tail) {
+      const msg = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+      lines.push(`[${msg.userName || msg.userId || '群友'}] ${String(msg.text || '').slice(0, 120)}`)
+    }
+  }
+  return lines.join('\n').slice(0, 12000)
+}
+
+// 给 ReportData 附加 S3 预计算上下文。
+function attachPrecomputedContext(data: ReportData, channelKey: string): void {
+  const finalInput = readPrecomputedFinalInput(data.date, channelKey)
+  const context = buildPrecomputedContext(finalInput)
+  if (!context) return
+  data.precomputedContext = context
+  data.precomputedCoverageRate = Number(finalInput && finalInput.coverageRate || 0)
 }
 
 /** 统计 CQ、XML、可读 QQ 表情标记和 Unicode emoji 数量。 */
@@ -210,4 +273,4 @@ function processMessages(messages: ReportMessage[], today: string, now = Date.no
   }
 }
 
-export = { collectReportData, processMessages, messageHourShanghai, isMessageInReportDay, countEmojiInContent }
+export = { collectReportData, processMessages, messageHourShanghai, isMessageInReportDay, countEmojiInContent, buildPrecomputedContext }

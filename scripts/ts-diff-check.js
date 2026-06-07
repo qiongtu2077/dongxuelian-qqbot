@@ -26,59 +26,149 @@ const FORBIDDEN = [/__esModule/, /__awaiter/, /__spreadArray/, /\(0,\s*\w+\.\w+\
 const ALLOWED_ADDED_EXPORTS = {
   'core/utils.js': ['safeChannelKey', 'safeUserId', 'legacySafeUserId', 'truncateText', 'readJsonFileSync', 'writeJsonFileSync', 'normalizeText', 'getFileFingerprint', 'normalizeHostname', 'isPrivateHostname', 'isPrivateIp', 'validatePublicHttpUrl', 'resolveAndValidateHostname', 'errorMessage', 'errorCode'],
   'agent/queue.js': ['withTimeout'],
-  'agent/pending.js': ['summarizePendingArgs'],
+  'agent/pending.js': ['summarizePendingArgs', 'upsertPendingToolSnapshot'],
+  'behavior/emotion-renderer.js': ['renderEmotionImageDirect'],
+  'conversation.js': ['clearPendingSensitiveAlert', 'consumePendingSensitiveAlert', 'writePendingSensitiveAlert'],
+  'lifecycle/startup-schedulers.js': ['scheduleDailyPrecomputePlanning'],
+  'message/message-segment.js': ['extractVoiceRefFromContent', 'getVoiceSegmentData'],
 }
+const ALLOWED_NEW_AI_JS_FILES = new Set([
+  'agent/resource-execution.js',
+  'agent/worker-submission.js',
+  'bot-mode/command-classifier.js',
+  'bot-mode/mode-policy.js',
+  'bot-mode/mode-state.js',
+  'bot-mode/status-reply.js',
+  'daily-precompute/daily-coverage.js',
+  'daily-precompute/daily-slot-planner.js',
+  'daily-precompute/daily-slot-worker.js',
+  'daily-precompute/daily-summary-merge.js',
+  'daily-precompute/precompute-index.js',
+  'daily-precompute/precompute-status.js',
+  'media/backpressure/media-queue.js',
+  'media/backpressure/media-requests.js',
+  'media/voice/tts-resource.js',
+  'media/voice/voice-store.js',
+  'resource-common/files.js',
+  'resource-gate/gate.js',
+  'resource-scheduler/admission.js',
+  'resource-scheduler/resource-snapshot.js',
+  'resource-scheduler/task-budget.js',
+  'resource-system/system-protection.js',
+  'resource-workers/agent-payload.js',
+  'resource-workers/agent-worker.js',
+  'resource-workers/background-llm-submission.js',
+  'resource-workers/background-llm-worker.js',
+  'resource-workers/daily-worker.js',
+  'resource-workers/emotion-worker.js',
+  'resource-workers/media-worker.js',
+  'resource-workers/memory-worker.js',
+  'resource-workers/result-notifier.js',
+  'resource-workers/task-client.js',
+  'resource-workers/task-paths.js',
+  'resource-workers/task-store.js',
+  'resource-workers/task-types.js',
+  'resource-workers/worker-main.js',
+  'resource-workers/worker-supervisor.js',
+])
 const ALLOWED_ADDED_EXPORTS_BY_PLUGIN = {
   'koishi-plugin-daily-report': {
-    'lib/data-collector.js': ['countEmojiInContent', 'isMessageInReportDay'],
+    'lib/data-collector.js': ['buildPrecomputedContext', 'countEmojiInContent', 'isMessageInReportDay'],
     'lib/html-renderer.js': ['assertEnoughMemoryForRender', 'assertRenderEnvironment'],
   },
 }
+const ALLOWED_NEW_JS_FILES_BY_PLUGIN = {
+  'koishi-plugin-daily-report': new Set(['lib/report-pipeline.js']),
+  'koishi-plugin-dashboard': new Set(['lib/routes/resource.js']),
+}
+const ALLOWED_REQUIRE_CHANGES_BY_PLUGIN = {
+  'koishi-plugin-pet-bridge': {
+    'lib/protocol.js': {
+      added: [
+        'koishi-plugin-dongxuelian-ai/lib/resource-gate/gate',
+        'koishi-plugin-dongxuelian-ai/lib/resource-scheduler/admission',
+      ],
+    },
+  },
+  'koishi-plugin-daily-report': {
+    'lib/html-renderer.js': {
+      added: ['../../koishi-plugin-dongxuelian-ai/lib/resource-system/system-protection'],
+    },
+    'lib/index.js': {
+      removed: ['./ai-analyzer', './data-collector', './html-renderer', 'koishi'],
+    },
+  },
+  'koishi-plugin-dashboard': {
+    'lib/router.js': {
+      added: ['./routes/resource'],
+    },
+  },
+}
 const ALLOWED_REQUIRE_CHANGES = {
-  'agent/auto-memory.js': { added: ['./config', '../core/utils'] },
+  'agent/auto-memory.js': { added: ['./config', '../core/utils', '../resource-workers/memory-worker'], removed: ['../core/api', '../core/constants', '../core/runtime-config', './dream', 'fs/promises', 'path'] },
   'agent/context.js': { added: ['../core/utils'] },
-  'agent/dream.js': { added: ['../core/utils'] },
+  'agent/cron.js': { added: ['../resource-workers/agent-payload', './worker-submission'], removed: ['./engine', './push', './queue'] },
+  'agent/dream.js': { added: ['../core/utils', '../resource-workers/memory-worker'], removed: ['../core/api', '../core/constants', '../core/runtime-config', 'fs/promises', 'path'] },
   'agent/memory.js': { added: ['../core/utils'] },
+  'agent/pending.js': { added: ['../core/constants', '../resource-common/files', 'path'] },
   'agent/plan/plan-store.js': { added: ['../../core/utils'] },
+  'agent/plan/plan-runner.js': { added: ['../../resource-workers/agent-payload', '../worker-submission'], removed: ['../engine', '../queue'] },
   'agent/push.js': { added: ['../core/utils'] },
   'agent/skills/store.js': { added: ['../../core/utils'] },
   'agent/skills/pool-service.js': { added: ['../../core/utils'] },
   'agent/skills/workspace-service.js': { added: ['../../core/utils'] },
+  'agent/tools/analyze-file.js': { added: ['../../media/backpressure/media-requests'], removed: ['../../media/file/file-analyzer'] },
+  'agent/tools/analyze-image.js': { added: ['../../media/backpressure/media-queue', '../../resource-scheduler/admission'], removed: ['../../core/api', '../../core/api', '../../core/runtime-config', '../../media/image/image-analysis-sanitizer', '../../media/image/image-analyzer', '../../media/image/vision'] },
   'agent/tools/reminder-tools.js': { added: ['../config'] },
   'agent/tools/scheduled-task-tools.js': { added: ['../../core/utils', '../config'] },
-  'agent/tools/browser-action.js': { added: ['../../core/utils'], removed: ['dns/promises', 'net'] },
+  'agent/tools/browser-action.js': { added: ['../../core/utils', '../../resource-scheduler/admission', '../../resource-system/system-protection'], removed: ['dns/promises', 'net'] },
+  'agent/tools/create-uploaded-file-variant.js': { added: ['../../media/backpressure/media-requests'], removed: ['../../media/file/file-analyzer'] },
   'agent/tools/web-search.js': { added: ['../queue'] },
   'behavior/expression/expression-abstractor.js': { added: ['../../agent/queue'] },
+  'behavior/emotion-renderer.js': { added: ['../resource-common/files', '../resource-gate/gate', '../resource-scheduler/admission'] },
   'behavior/retaliation.js': { added: ['../core/utils'] },
   'behavior/repeat.js': { removed: ['../message/message-reader', '../persona/persona'] },
   'chat/agent-chat-bridge.js': { removed: ['../message/message-reader'] },
+  'chat/chat-result-flow.js': { added: ['../agent/worker-submission', '../resource-workers/agent-payload'], removed: ['../lifecycle/bot-resolver'] },
+  'chat/chat-send-flow.js': { added: ['../media/voice/tts-resource'] },
   'chat/chat-jailbreak-flow.js': { removed: ['../message/message-reader'] },
-  'commands/agent-command.js': { removed: ['../agent/skill-hub'] },
+  'chat/chat-tools.js': { added: ['../agent/safety', '../agent/pending', '../media/backpressure/media-queue', '../resource-scheduler/admission'], removed: ['../media/image/image-analyzer'] },
+  'commands/agent-command.js': { added: ['../agent/config', '../agent/worker-submission', '../resource-workers/agent-payload'], removed: ['../agent/skill-hub', '../agent/engine', '../agent/engine', '../agent/queue'] },
+  'commands/emotion-command.js': { added: ['../resource-workers/task-client'], removed: ['../behavior/emotion-renderer', 'koishi'] },
   'commands/memory-command.js': {
     removed: [
       '../agent/config', '../agent/config', '../agent/config',
       '../agent/memory', '../agent/memory', '../agent/memory',
     ],
   },
-  'conversation.js': { removed: ['./message/message-reader'] },
+  'commands/plan-command.js': { added: ['../agent/worker-submission', '../resource-workers/agent-payload'], removed: ['../agent/engine', '../agent/queue'] },
+  'commands/voice-command.js': { added: ['../media/voice/tts', '../media/voice/tts-resource'] },
+  'conversation.js': { added: ['./daily-precompute/precompute-index', './resource-workers/background-llm-submission', 'fs', 'fs', 'fs'], removed: ['./message/message-reader', './core/api', './core/runtime-config'] },
+  'diagnostics/health-check.js': { added: ['../resource-gate/gate', '../resource-scheduler/admission'] },
   'handler.js': { added: ['./core/api'] },
+  'index.js': { added: ['./bot-mode/command-classifier', './bot-mode/mode-policy', './bot-mode/mode-state', './bot-mode/status-reply'] },
   'agent/fetch-reader.js': { added: ['../core/utils'], removed: ['dns', 'net'] },
   'behavior/runtime-settings.js': { removed: ['fs/promises'] },
-  'chat/chat-tools.js': { added: ['../agent/safety', '../agent/pending'] },
   'core/api.js': { removed: ['../agent/fetch-reader'] },
   'core/constants.js': { removed: ['../rulesets/jailbreak'] },
   'core/user-blacklist.js': { removed: ['../behavior/runtime-settings'] },
   'core/utils.js': { added: ['fs', 'fs', 'path', 'dns', 'net', 'fs/promises'], removed: ['../message/message-reader'] },
   'diagnostics/shared-record-text.js': { removed: ['../message/message-reader'] },
+  'lifecycle/plugin-lifecycle.js': { added: ['../resource-workers/result-notifier', '../resource-workers/worker-supervisor'] },
+  'lifecycle/startup-schedulers.js': { added: ['../daily-precompute/daily-slot-planner', '../daily-precompute/precompute-status', '../resource-workers/background-llm-submission'], removed: ['../behavior/expression/expression-abstractor'] },
   'media/file/file-store.js': { added: ['../../core/utils'] },
   'media/file/file-analyzer.js': { added: ['../../core/utils'], removed: ['../../agent/fetch-reader'] },
   'media/file/incoming-file.js': { added: ['../../core/utils'] },
   'media/image/image-store.js': { added: ['../../core/utils'] },
   'media/voice/voice.js': { removed: ['../../agent/fetch-reader'] },
-  'mcp/local-server.js': { removed: ['../agent/tools/analyze-file'] },
+  'mcp/local-server.js': { added: ['../resource-common/files', '../resource-gate/gate', '../resource-scheduler/admission'], removed: ['../agent/tools/analyze-file'] },
+  'message/incoming-message-flow.js': { added: ['../media/backpressure/media-queue', '../media/voice/voice-store', '../resource-scheduler/admission'], removed: ['../core/runtime-config', '../media/file/incoming-file', '../media/image/image-analyzer', '../media/voice/voice'] },
   'message/message-reader.js': { added: ['../core/utils'] },
   'persona/persona-lore-router.js': { added: ['../core/utils'] },
   'persona/persona.js': { added: ['../core/utils'], removed: ['fs', 'fs', 'fs', 'fs'] },
+  'reply/safe-send.js': { added: ['../media/voice/tts-resource'] },
+  'routing/agent-auto-route-flow.js': { added: ['../agent/worker-submission', '../resource-workers/agent-payload'] },
+  'routing/file-quick-read.js': { added: ['../media/backpressure/media-requests'], removed: ['../media/file/file-analyzer'] },
   'routing/group-scene-index.js': { removed: ['../message/message-reader'] },
   'routing/search-context.js': { added: ['../core/utils'], removed: ['../message/message-reader'] },
   'rulesets/jailbreak.js': { added: ['../core/constants'] },
@@ -251,6 +341,21 @@ function getAllowedAddedExports(packageRoot, file, allowanceKey) {
   return pluginAllowances[file] || []
 }
 
+function isAllowedNewCompiledFile(packageRoot, file) {
+  if (isAiPackage(packageRoot)) {
+    const allowanceKey = getAiAllowanceKey(packageRoot, file)
+    return ALLOWED_NEW_AI_JS_FILES.has(allowanceKey)
+  }
+  const pluginAllowances = ALLOWED_NEW_JS_FILES_BY_PLUGIN[pluginNameFromPackageRoot(packageRoot)]
+  return !!pluginAllowances && pluginAllowances.has(file)
+}
+
+function getAllowedRequireChanges(packageRoot, file, allowanceKey) {
+  if (isAiPackage(packageRoot)) return ALLOWED_REQUIRE_CHANGES[allowanceKey] || {}
+  const pluginAllowances = ALLOWED_REQUIRE_CHANGES_BY_PLUGIN[pluginNameFromPackageRoot(packageRoot)] || {}
+  return pluginAllowances[file] || {}
+}
+
 function getRequirePaths(src, file) {
   const paths = []
   const source = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
@@ -361,8 +466,9 @@ function checkPackage(check) {
     const baselineSet = new Set(listBaselineJsFiles(tag, packageRoot))
     const added = files.filter((file) => !baselineSet.has(file))
     const removed = Array.from(baselineSet).filter((file) => !currentSet.has(file))
-    if (added.length) {
-      console.error(`FAIL [${pluginName} --all]: new compiled JS files without baseline: ${added.join(', ')}`)
+    const unexpectedAdded = added.filter((file) => !isAllowedNewCompiledFile(packageRoot, file))
+    if (unexpectedAdded.length) {
+      console.error(`FAIL [${pluginName} --all]: new compiled JS files without baseline: ${unexpectedAdded.join(', ')}`)
       failures++
     }
     if (removed.length) {
@@ -375,12 +481,17 @@ function checkPackage(check) {
   for (const file of files) {
     const relPath = `${packageRoot}/${file}`
     let original
-    try {
-      original = gitShow(tag, relPath)
-    } catch {
-      console.error(`FAIL [${pluginName} ${file}]: missing baseline artifact in ${tag}`)
-      failures++
-      continue
+    const allowedNewCompiledFile = isAllowedNewCompiledFile(packageRoot, file)
+    if (allowedNewCompiledFile) {
+      original = ''
+    } else {
+      try {
+        original = gitShow(tag, relPath)
+      } catch {
+        console.error(`FAIL [${pluginName} ${file}]: missing baseline artifact in ${tag}`)
+        failures++
+        continue
+      }
     }
 
     const abs = path.join(ROOT, relPath)
@@ -399,7 +510,7 @@ function checkPackage(check) {
     }
 
     for (const re of FORBIDDEN) {
-      if (re.test(compiled) && !re.test(original)) {
+      if (re.test(compiled) && (!original || !re.test(original))) {
         console.error(`FAIL [${pluginName} ${file}]: forbidden pattern added ${re}`)
         failures++
       }
@@ -412,27 +523,29 @@ function checkPackage(check) {
       failures++
     }
 
-    const originalRequirePaths = getRequirePaths(original, file)
-    const compiledRequirePaths = getRequirePaths(compiled, file)
-    const requireDiff = diffRequirePaths(originalRequirePaths, compiledRequirePaths)
-    const allowanceKey = getAiAllowanceKey(packageRoot, file)
-    const allowedRequireChanges = isAiPackage(packageRoot) ? (ALLOWED_REQUIRE_CHANGES[allowanceKey] || {}) : {}
-    const unexpectedAddedRequires = consumeAllowed(requireDiff.added, allowedRequireChanges.added)
-    const unexpectedRemovedRequires = consumeAllowed(requireDiff.removed, allowedRequireChanges.removed)
-    if (unexpectedAddedRequires.length || unexpectedRemovedRequires.length) {
-      console.error(`FAIL [${pluginName} ${file}]: require paths changed added=[${unexpectedAddedRequires}] removed=[${unexpectedRemovedRequires}]`)
-      failures++
-    }
+    if (original) {
+      const originalRequirePaths = getRequirePaths(original, file)
+      const compiledRequirePaths = getRequirePaths(compiled, file)
+      const requireDiff = diffRequirePaths(originalRequirePaths, compiledRequirePaths)
+      const allowanceKey = getAiAllowanceKey(packageRoot, file)
+      const allowedRequireChanges = getAllowedRequireChanges(packageRoot, file, allowanceKey)
+      const unexpectedAddedRequires = consumeAllowed(requireDiff.added, allowedRequireChanges.added)
+      const unexpectedRemovedRequires = consumeAllowed(requireDiff.removed, allowedRequireChanges.removed)
+      if (unexpectedAddedRequires.length || unexpectedRemovedRequires.length) {
+        console.error(`FAIL [${pluginName} ${file}]: require paths changed added=[${unexpectedAddedRequires}] removed=[${unexpectedRemovedRequires}]`)
+        failures++
+      }
 
-    const origKeys = getExportKeys(original, file)
-    const compKeys = getExportKeys(compiled, file)
-    const allowedAdded = new Set(getAllowedAddedExports(packageRoot, file, allowanceKey))
-    const filteredCompKeys = compKeys.filter((key) => origKeys.includes(key) || !allowedAdded.has(key))
-    const unexpectedAdded = compKeys.filter((key) => !origKeys.includes(key) && !allowedAdded.has(key))
-    const missingKeys = origKeys.filter((key) => !compKeys.includes(key))
-    if (missingKeys.length || unexpectedAdded.length || origKeys.join(',') !== filteredCompKeys.join(',')) {
-      console.error(`FAIL [${pluginName} ${file}]: exports keys changed [${origKeys}] -> [${compKeys}]`)
-      failures++
+      const origKeys = getExportKeys(original, file)
+      const compKeys = getExportKeys(compiled, file)
+      const allowedAdded = new Set(getAllowedAddedExports(packageRoot, file, allowanceKey))
+      const filteredCompKeys = compKeys.filter((key) => origKeys.includes(key) || !allowedAdded.has(key))
+      const unexpectedAdded = compKeys.filter((key) => !origKeys.includes(key) && !allowedAdded.has(key))
+      const missingKeys = origKeys.filter((key) => !compKeys.includes(key))
+      if (missingKeys.length || unexpectedAdded.length || origKeys.join(',') !== filteredCompKeys.join(',')) {
+        console.error(`FAIL [${pluginName} ${file}]: exports keys changed [${origKeys}] -> [${compKeys}]`)
+        failures++
+      }
     }
   }
 

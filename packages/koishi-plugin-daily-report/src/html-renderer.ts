@@ -90,6 +90,7 @@ interface PageLike {
 interface BrowserLike {
   newPage(): Promise<PageLike>
   close(): Promise<unknown>
+  process?(): { pid?: number | null } | null
 }
 
 interface PuppeteerLike {
@@ -99,6 +100,16 @@ interface PuppeteerLike {
     protocolTimeout?: number
     args: string[]
   }): Promise<BrowserLike>
+}
+
+interface RenderContext {
+  taskId?: string
+  source?: string
+}
+
+interface SystemProtectionLike {
+  writeProcessCleanupEvent?(data: Record<string, unknown>): void
+  terminateProcessTree?(pid: unknown, options?: Record<string, unknown>): Record<string, unknown>
 }
 
 const TEMPLATES_DIR = path.join(__dirname, '..', 'templates')
@@ -131,6 +142,56 @@ function parsePositiveInt(value: string | undefined, fallback: number, min: numb
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+// 动态加载 S8 系统保护模块；缺失时只跳过事件增强，不影响日报保底。
+function loadSystemProtection(): SystemProtectionLike | null {
+  try {
+    return require('../../koishi-plugin-dongxuelian-ai/lib/resource-system/system-protection') as SystemProtectionLike
+  } catch {
+    return null
+  }
+}
+
+// 读取 Puppeteer Browser 子进程 pid，用于 close 失败后的定点清理。
+function getBrowserProcessPid(browser: BrowserLike | null): number | null {
+  try {
+    const child = browser && typeof browser.process === 'function' ? browser.process() : null
+    const pid = Number(child && child.pid)
+    return Number.isInteger(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
+  }
+}
+
+// 写日报 Chromium 生命周期事件，事件失败不能打断日报文字保底。
+function writeDailyRenderCleanupEvent(event: string, data: Record<string, unknown> = {}): void {
+  try {
+    const protection = loadSystemProtection()
+    if (protection && typeof protection.writeProcessCleanupEvent === 'function') {
+      protection.writeProcessCleanupEvent({ event, source: 'daily_report_render', ...data })
+    }
+  } catch {
+    /* S8 event writing must not break report rendering. */
+  }
+}
+
+// close 失败后只清理当前日报渲染记录的 Chromium 子进程 pid。
+function terminateDailyRenderBrowser(browserPid: number | null, context: RenderContext, reason: string): void {
+  if (!browserPid) return
+  try {
+    const protection = loadSystemProtection()
+    if (protection && typeof protection.terminateProcessTree === 'function') {
+      protection.terminateProcessTree(browserPid, {
+        reason,
+        source: 'daily_report_render',
+        taskId: context.taskId || '',
+        kind: 'daily_report',
+      })
+    }
+  } catch {
+    /* Cleanup best effort only; S4 text fallback is the priority. */
+  }
 }
 
 function readLinuxMemAvailableMb(): number | null {
@@ -456,7 +517,7 @@ function findBrowser(): string | null {
 }
 
 // Puppeteer截图（带信号量和超时）
-async function renderHtmlToImage(htmlContent: string): Promise<Buffer> {
+async function renderHtmlToImage(htmlContent: string, context: RenderContext = {}): Promise<Buffer> {
   const htmlBytes = Buffer.byteLength(String(htmlContent || ''), 'utf8')
   if (htmlBytes > MAX_HTML_BYTES) throw new Error('render HTML is too large')
   const memoryStatus = assertEnoughMemoryForRender()
@@ -478,12 +539,25 @@ async function renderHtmlToImage(htmlContent: string): Promise<Buffer> {
   const closeBrowser = async (reason: string): Promise<void> => {
     if (!browser) return
     const current = browser
+    const browserPid = getBrowserProcessPid(current)
     browser = null
     try {
       await current.close()
       logRenderStep('browser close ok', reason)
+      writeDailyRenderCleanupEvent('daily_chromium_closed', {
+        taskId: context.taskId || '',
+        browserPid,
+        reason,
+      })
     } catch (error) {
       logRenderStep('browser close failed', `${reason}: ${getErrorMessage(error)}`)
+      writeDailyRenderCleanupEvent('daily_chromium_close_failed', {
+        taskId: context.taskId || '',
+        browserPid,
+        reason,
+        error: getErrorMessage(error),
+      })
+      terminateDailyRenderBrowser(browserPid, context, 'daily_chromium_close_failed')
     }
   }
   try {
@@ -508,6 +582,11 @@ async function renderHtmlToImage(htmlContent: string): Promise<Buffer> {
       ],
     })
     logRenderStep('browser launch ok')
+    writeDailyRenderCleanupEvent('daily_chromium_launched', {
+      taskId: context.taskId || '',
+      browserPid: getBrowserProcessPid(browser),
+      executablePath: browserPath,
+    })
     timeoutId = setTimeout(async () => {
       await closeBrowser('render timeout')
     }, RENDER_TIMEOUT)
@@ -544,10 +623,10 @@ async function renderHtmlToImage(htmlContent: string): Promise<Buffer> {
 }
 
 // 主入口：随机选模板 + 渲染 + 截图
-async function renderReport(data: ReportData, analysis: AnalysisResult): Promise<Buffer> {
+async function renderReport(data: ReportData, analysis: AnalysisResult, context: RenderContext = {}): Promise<Buffer> {
   const template = selectTemplate()
   const html = renderTemplate(template.content, data, analysis, template.name)
-  return renderHtmlToImage(html)
+  return renderHtmlToImage(html, context)
 }
 
 export = { renderReport, renderHtmlToImage, assertRenderEnvironment, assertEnoughMemoryForRender }

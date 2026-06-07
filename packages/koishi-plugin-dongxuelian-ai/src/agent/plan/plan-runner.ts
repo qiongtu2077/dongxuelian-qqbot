@@ -4,11 +4,11 @@
  * 边界: 不创建计划、不直接发送 QQ 消息、不修改 index.js 主流程。
  * 状态: 无模块级可变状态，队列与计划状态分别委托 queue / plan-store。
  */
-const engine = require('../engine') as typeof import('../engine')
-const queue = require('../queue') as typeof import('../queue')
 const { getAgentConfig } = require('../config') as typeof import('../config')
 const planEngine = require('./plan-engine') as typeof import('./plan-engine')
 const planPrompts = require('./plan-prompts') as typeof import('./plan-prompts')
+const { submitAgentWorkerTask } = require('../worker-submission') as typeof import('../worker-submission')
+const { createAgentRunWorkerPayload } = require('../../resource-workers/agent-payload') as typeof import('../../resource-workers/agent-payload')
 
 interface RunnerPlanTask {
   id?: string
@@ -85,26 +85,29 @@ async function resumePlan({ planId = '', channelKey, userId, userName = '', chan
   if (!activeTask) throw new Error('该计划没有待执行任务。')
   const agentConfig = getAgentConfig()
   if (!agentConfig.planMode?.enabled) throw new Error('计划模式当前未开启。')
-  queue.configureAgentQueue(agentConfig.queue || {})
-  return queue.enqueueAgentTask({
-    channelKey: channelKey || plan.channelKey,
+  const workerChannel = channel === 'dashboard' || plan.channel === 'dashboard' ? 'dashboard' : 'qq'
+  const agentRunInput = {
+    userMessage: `继续执行计划 ${plan.id}：${activeTask.desc}`,
+    userName: userName || plan.userName || 'Plan',
     userId: userId || plan.userId,
+    channelKey: channelKey || plan.channelKey,
+    channel: workerChannel,
+    isAdmin,
+    systemExtra: [
+      { role: 'system', content: planPrompts.buildPlanSystemPrompt(plan) },
+    ],
+    forceTools: ['check_plan_status', 'update_task_status', 'finish_plan'],
+    preExecuteTools: [{ name: 'check_plan_status', args: { planId: plan.id } }],
+  }
+  const submission = submitAgentWorkerTask({
+    channel: workerChannel,
+    channelKey: String(channelKey || plan.channelKey || ''),
+    userId: String(userId || plan.userId || ''),
     timeoutMs: agentConfig.queue?.timeoutMs,
-    fn: () => engine.run({
-      userMessage: `继续执行计划 ${plan.id}：${activeTask.desc}`,
-      userName: userName || plan.userName || 'Plan',
-      userId: userId || plan.userId,
-      channelKey: channelKey || plan.channelKey,
-      channel: channel === 'dashboard' || plan.channel === 'dashboard' ? 'dashboard' : 'qq',
-      bot,
-      isAdmin,
-      systemExtra: [
-        { role: 'system', content: planPrompts.buildPlanSystemPrompt(plan) },
-      ],
-      forceTools: ['check_plan_status', 'update_task_status', 'finish_plan'],
-      preExecuteTools: [{ name: 'check_plan_status', args: { planId: plan.id } }],
-    }),
+    maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+    payload: { entry: 'plan-resume', planId: plan.id, agentWorker: createAgentRunWorkerPayload('plan-resume', agentRunInput) },
   })
+  return { ok: submission.accepted, taskId: submission.taskId || '', message: submission.message, reply: submission.message }
 }
 
 export = {

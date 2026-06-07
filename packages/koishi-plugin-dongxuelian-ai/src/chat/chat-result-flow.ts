@@ -4,7 +4,6 @@
  * 边界: 不发送消息、不注册队列、不拥有中间件；chat/Agent/队列由调用方注入。
  * 状态: 无。
  */
-const { createBotResolver } = require('../lifecycle/bot-resolver') as typeof import('../lifecycle/bot-resolver')
 const { getRecentUserMessages } = require('../conversation') as typeof import('../conversation')
 const { externalToolsDenied } = require('../routing/external-tool-policy') as typeof import('../routing/external-tool-policy')
 const { isToolEnabled: isAgentToolEnabled, getAgentConfig } = require('../agent/config') as typeof import('../agent/config')
@@ -15,6 +14,8 @@ const {
 } = require('../agent/router') as typeof import('../agent/router')
 const { recordAgentChatResult, summarizeAgentToolResults } = require('./agent-chat-bridge') as typeof import('./agent-chat-bridge')
 const { guardAgentRetellReply, redactAgentMaterial } = require('./agent-retell-guard') as typeof import('./agent-retell-guard')
+const { submitAgentWorkerTask } = require('../agent/worker-submission') as typeof import('../agent/worker-submission')
+const { createAgentRunWorkerPayload } = require('../resource-workers/agent-payload') as typeof import('../resource-workers/agent-payload')
 
 const AGENT_RETELL_FALLBACK: string = '我查到了点东西，但刚刚没组织好，换个问法。'
 
@@ -194,7 +195,6 @@ async function handleChatResult(chatResult: unknown, {
   enqueueAgentTask,
   configureAgentQueue,
 }: HandleChatResultOptions): Promise<string> {
-  const getBot = typeof resolveBot === 'function' ? resolveBot : createBotResolver(ctx, session)
   if (chatResult && typeof chatResult === 'object' && (chatResult as ChatResultObject).heavyToolsRequested) {
     const chatResultObject = chatResult as ChatResultObject
     const heavyToolsRequested = Array.isArray(chatResultObject.heavyToolsRequested) ? chatResultObject.heavyToolsRequested : []
@@ -226,7 +226,6 @@ async function handleChatResult(chatResult: unknown, {
       return retellToolBlockedReply(chatResult, { ctx, session, userText, randomTriggered, chat, reason: searchContext?.blockedReason || searchContext?.searchReadiness || '' })
     }
     const agentConfig = getAgentConfig()
-    configureAgentQueue(agentConfig.queue || {})
     const explicitFetchOptions = buildExplicitUrlFetchRunOptions(userText)
     const recentUserMessages = searchContext?.recentUserMessages || getRecentUserMessages(session as Parameters<typeof getRecentUserMessages>[0], 4)
     const searchQuery = webSearchRequests[0]?.args?.query || userText
@@ -249,13 +248,25 @@ async function handleChatResult(chatResult: unknown, {
       ]
     }
     try {
-      const agentResult = await enqueueAgentTask({
+      const agentRunInput = {
+        userMessage: searchRunOptions.agentUserMessage || userText,
+        userName,
+        userId: currentUserId,
+        channelKey,
+        channel: 'qq',
+        agentMode: true,
+        isAdmin,
+        ...searchRunOptions,
+      }
+      const submission = submitAgentWorkerTask({
+        channel: 'qq',
         channelKey,
         userId: currentUserId,
         timeoutMs: agentConfig.queue?.timeoutMs,
-        fn: () => agentEngine.run({ userMessage: searchRunOptions.agentUserMessage || userText, userName, userId: currentUserId, channelKey, channel: 'qq', bot: getBot(), agentMode: true, isAdmin, ...searchRunOptions }),
+        maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+        payload: { entry: 'chat-heavy-tool', agentWorker: createAgentRunWorkerPayload('chat-heavy-tool', agentRunInput) },
       })
-      return retellAgentResult(agentResult, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, chat, emptyText: '(搜索未获取有效结果)' })
+      return submission.message
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code || '') : ''
       if (code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED') return getChatResultErrorMessage(error)

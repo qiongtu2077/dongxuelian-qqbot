@@ -1,0 +1,87 @@
+interface ResourceModuleSet {
+    gate: any;
+    scheduler: any;
+    tasks: any;
+    precompute: any;
+    media: any;
+    system: any;
+    files: any;
+}
+declare function sanitizeTask(task: any): {
+    id: any;
+    kind: any;
+    status: any;
+    source: any;
+    channelKey: any;
+    userId: any;
+    priority: any;
+    createdAt: any;
+    updatedAt: any;
+    expiresAt: any;
+    timeoutMs: any;
+    step: any;
+    claimedBy: any;
+    claimedAt: any;
+    startedAt: any;
+    finishedAt: any;
+    notify: any;
+    error: any;
+    payloadKeys: string[];
+};
+declare function buildResourceStatus(mods: ResourceModuleSet): {
+    ok: boolean;
+    mode: any;
+    resourceState: any;
+    memAvailableMb: any;
+    memTotalMb: any;
+    memSource: any;
+    running: {
+        taskId: any;
+        kind: any;
+        step: any;
+        owner: any;
+        channelKey: any;
+        userId: any;
+        startedAt: any;
+        heartbeatAt: any;
+        memAvailableMb: any;
+    };
+    gate: any;
+    queue: any;
+    queueLength: number;
+    workers: any;
+    media: any;
+    precompute: {
+        coverageCount: any;
+        slotCount: any;
+        coverage: any;
+    };
+    system: any;
+    maintenance: boolean;
+    events: any[];
+};
+declare function handleGetResourceStatus(req: any, res: any): any;
+declare function handleGetResourceTasks(req: any, res: any, pathname: any, url: any): any;
+declare function handleGetResourceEvents(req: any, res: any, pathname: any, url: any): any;
+declare function handleGetResourceWorkers(req: any, res: any): any;
+declare function handleGetResourceMedia(req: any, res: any): any;
+declare function handleGetResourcePrecompute(req: any, res: any): any;
+declare function handlePostResourceCancel(req: any, res: any): void;
+declare function handlePostResourceReclaimStale(req: any, res: any): void;
+declare function handlePostResourceMaintenance(req: any, res: any): void;
+declare const _default: {
+    routes: {
+        'GET /dashboard/api/resource/status': typeof handleGetResourceStatus;
+        'GET /dashboard/api/resource/tasks': typeof handleGetResourceTasks;
+        'GET /dashboard/api/resource/events': typeof handleGetResourceEvents;
+        'GET /dashboard/api/resource/workers': typeof handleGetResourceWorkers;
+        'GET /dashboard/api/resource/media': typeof handleGetResourceMedia;
+        'GET /dashboard/api/resource/precompute': typeof handleGetResourcePrecompute;
+        'POST /dashboard/api/resource/cancel': typeof handlePostResourceCancel;
+        'POST /dashboard/api/resource/reclaim-stale': typeof handlePostResourceReclaimStale;
+        'POST /dashboard/api/resource/maintenance': typeof handlePostResourceMaintenance;
+    };
+    buildResourceStatus: typeof buildResourceStatus;
+    sanitizeTask: typeof sanitizeTask;
+};
+export = _default;

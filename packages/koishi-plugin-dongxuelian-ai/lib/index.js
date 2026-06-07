@@ -92,6 +92,10 @@ const { handleAgentAutoRoute, } = require('./routing/agent-auto-route-flow');
 const { sendChatReplyFlow, } = require('./chat/chat-send-flow'); // chat 回复发送流水
 const { channelMissCount, incrementRandomMiss, resetRandomMiss, getRandomTriggerRate: getRandomTriggerRateFromState, isRandomCooldownActive, markRandomReplySent, getRandomMuteRemaining, muteRandomChannel, isRandomMuted, getChannelMessageVersion, bumpChannelMessageVersion, getExplicitInteractionVersion, bumpExplicitInteractionVersion, takePendingRandom, setPendingRandom, cancelPendingRandom, buildRandomSendOptions, isRandomReplyFresh, isSafeSendReplyFresh, } = require('./behavior/random-state'); // 随机回复状态、pending timer 与 freshness
 const { buildAmbientWaterSendOptions } = require('./behavior/random-reply-mode'); // 随机非锚定水群发送策略
+const { classifyCommand } = require('./bot-mode/command-classifier');
+const { readBotModeState } = require('./bot-mode/mode-state');
+const { decideModePolicy } = require('./bot-mode/mode-policy');
+const { buildResourceStatusReply } = require('./bot-mode/status-reply');
 const configureAgentQueueForFlows = (queueConfig) => {
     configureAgentQueue(queueConfig);
 };
@@ -130,6 +134,15 @@ function resolveRandomTriggerRate(channelKey) {
 }
 function safeSendReplyWithFreshness(ctx, session, reply, isRandom = false, resolveBot = null, sendOptions = {}) {
     return safeSendReplyImpl(ctx, session, reply, isRandom, resolveBot, sendOptions, isSafeSendReplyFresh);
+}
+// 在延迟/排队任务真正执行前复检 S5，避免旧聊天任务越过日报静默。
+function shouldDropQueuedBotWork(ctx, channelKey, commandType, label) {
+    const decision = decideModePolicy(commandType, readBotModeState());
+    if (decision.action === 'pass')
+        return false;
+    cancelPendingRandom(channelKey, `queued-${decision.action}`);
+    logDebug(ctx, 'bot-mode', `drop queued work label=${label} channel=${channelKey} command=${commandType} action=${decision.action} reason=${decision.reason}`);
+    return true;
 }
 function apply(ctx) {
     registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue });
@@ -196,6 +209,30 @@ function apply(ctx) {
         if (isReservedCommand(plain)) {
             markExplicitInteraction('reserved-command');
             return next();
+        }
+        const botCommandType = classifyCommand({ plain, analyzed });
+        const botModeSnapshot = readBotModeState();
+        const botModeDecision = decideModePolicy(botCommandType, botModeSnapshot);
+        if (botModeDecision.action === 'queue_daily') {
+            markExplicitInteraction('daily-command');
+            return next();
+        }
+        if (botModeDecision.action === 'status_only') {
+            markExplicitInteraction('resource-status');
+            return buildResourceStatusReply();
+        }
+        if (botModeDecision.action === 'silent_drop' || botModeDecision.action === 'defer') {
+            if (botCommandType === 'media_event') {
+                await handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt, queueMedia: false });
+            }
+            if (inGuild)
+                cancelPendingRandom(channelKey, `bot-mode-${botModeDecision.action}`);
+            return;
+        }
+        if (botModeDecision.action === 'reject') {
+            if (inGuild)
+                cancelPendingRandom(channelKey, 'bot-mode-reject');
+            return '当前资源正忙，Agent 和工具暂时暂停。';
         }
         plain = await handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt });
         const currentUserId = String(session.userId || session.author?.id || session.username || '');
@@ -338,6 +375,8 @@ function apply(ctx) {
                         return;
                     if (getChannelMessageVersion(channelKey) !== p.triggerMessageVersion)
                         return;
+                    if (shouldDropQueuedBotWork(ctx, channelKey, 'normal_chat', 'delayed-random-timer'))
+                        return;
                     if (shouldTriggerRandom(Math.min(resolveRandomTriggerRate(channelKey) * willFactor, 1.0))) {
                         resetRandomMiss(channelKey);
                         markRandomReplySent(channelKey);
@@ -345,6 +384,8 @@ function apply(ctx) {
                             if (getExplicitInteractionVersion(channelKey) !== p.explicitVersion)
                                 return;
                             if (getChannelMessageVersion(channelKey) !== p.triggerMessageVersion)
+                                return;
+                            if (shouldDropQueuedBotWork(ctx, channelKey, 'normal_chat', 'delayed-random-queue'))
                                 return;
                             const liveSession = withCurrentBot(session, resolveBot());
                             const chatMeta = {};
@@ -561,6 +602,8 @@ function apply(ctx) {
             return;
         }
         enqueueForChannel(channelKey, async () => {
+            if (shouldDropQueuedBotWork(ctx, channelKey, botCommandType, randomTriggered ? 'random-chat-queue' : 'chat-queue'))
+                return;
             const liveSession = withCurrentBot(session, resolveBot());
             try {
                 const recentUserMessages = getRecentUserMessages(liveSession, 4);

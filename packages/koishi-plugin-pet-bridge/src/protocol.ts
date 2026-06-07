@@ -6,11 +6,14 @@
  */
 const { loadConfig, resetConfigCache, getThinkingEnabled, setThinkingEnabled } = require('koishi-plugin-dongxuelian-ai/lib/core/runtime-config') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/runtime-config')
 const { requestChatCompletions } = require('koishi-plugin-dongxuelian-ai/lib/core/api') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/api')
+const { admitTask } = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/admission') as typeof import('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/admission')
+const { acquireResourceGate } = require('koishi-plugin-dongxuelian-ai/lib/resource-gate/gate') as typeof import('koishi-plugin-dongxuelian-ai/lib/resource-gate/gate')
 const { getAvailablePersonals, loadPersonalSkill, setUserPersona, getUserPersona } = require('koishi-plugin-dongxuelian-ai/lib/persona/persona') as typeof import('koishi-plugin-dongxuelian-ai/lib/persona/persona')
 const { getMemorySummary } = require('koishi-plugin-dongxuelian-ai/lib/conversation') as typeof import('koishi-plugin-dongxuelian-ai/lib/conversation')
 const { resolveOneBotWsUrl } = require('koishi-plugin-dongxuelian-ai/lib/core/onebot-endpoint') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/onebot-endpoint')
 const { PROVIDER_FILE, MODEL_FILE, SEARCH_ENABLED_FILE, MAINTENANCE_FILE, THINKING_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_WHITELIST_FILE } = require('koishi-plugin-dongxuelian-ai/lib/core/constants') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/constants')
 const fs = require('fs')
+const PET_BRIDGE_CHAT_KIND = 'pet_bridge_chat'
 
 interface BridgeRequest {
   id?: unknown
@@ -55,12 +58,74 @@ interface WebSocketClientLike {
   close(): void
 }
 
+interface PetBridgeGateHandle {
+  updateStep(step: string, memAvailableMb?: number | null): void
+  release(reason?: string): void
+}
+
+interface PetBridgeGateResult {
+  ok: boolean
+  response?: BridgeResponse
+  handle?: PetBridgeGateHandle
+}
+
 function asPayload(value: unknown): BridgePayload {
   return value && typeof value === 'object' ? value as BridgePayload : {}
 }
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+// 生成桌宠桥接聊天的资源任务 ID，供 S0/S1 事件追踪。
+function buildPetBridgeChatTaskId(payload: BridgePayload): string {
+  const userId = String(payload.userId || 'desktop-user').replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 80) || 'desktop-user'
+  return `${PET_BRIDGE_CHAT_KIND}-${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+// 资源忙时返回协议层可识别的低成本错误，不触发模型调用。
+function buildPetBridgeBusyResponse(reason: string): BridgeResponse {
+  return { success: false, payload: { error: 'RESOURCE_BUSY', reason } }
+}
+
+// 为桌宠桥接聊天申请 S1 准入和 S0 独占锁。
+async function acquirePetBridgeChatGate(payload: BridgePayload): Promise<PetBridgeGateResult> {
+  const taskId = buildPetBridgeChatTaskId(payload)
+  const channelKey = String(payload.channelKey || 'pet-bridge')
+  const userId = String(payload.userId || 'desktop-user')
+  const admission = admitTask({
+    taskId,
+    kind: PET_BRIDGE_CHAT_KIND,
+    source: 'pet-bridge',
+    channelKey,
+    userId,
+    exclusive: true,
+    priority: 70,
+    deferable: false,
+    queueTimeoutMs: 5000,
+    runTimeoutMs: 120000,
+  }) as any
+  if (admission.decision !== 'run_now') {
+    return { ok: false, response: buildPetBridgeBusyResponse(admission.reason || 'pet bridge chat rejected by resource scheduler') }
+  }
+  try {
+    const handle = await acquireResourceGate({
+      taskId,
+      kind: PET_BRIDGE_CHAT_KIND,
+      owner: 'pet-bridge',
+      channelKey,
+      userId,
+      priority: 70,
+      timeoutMs: 120000,
+      waitTimeoutMs: 5000,
+      pollMs: 500,
+      memAvailableMb: admission.memAvailableMb,
+      step: 'pet_bridge_prepare',
+    })
+    return { ok: true, handle }
+  } catch (error) {
+    return { ok: false, response: buildPetBridgeBusyResponse(getErrorMessage(error)) }
+  }
 }
 
 function readJsonFileSync(filePath: string, fallback: unknown): unknown {
@@ -234,28 +299,37 @@ async function handleChat(payload: BridgePayload): Promise<BridgeResponse> {
     return { success: true, payload: { reply: mt } }
   }
 
-  const config = await loadConfig()
-  const messages: Array<{ role: string, content: string }> = []
-  const personaName = persona || getUserPersona('desktop-user') || null
-  if (personaName && personaName !== 'default') {
-    const skillContent = loadPersonalSkill(personaName)
-    if (skillContent) {
-      const body = skillContent.replace(/^---[\s\S]*?---\n?/, '').trim()
-      if (body) messages.push({ role: 'system', content: body })
-    }
-  }
-  if (!messages.length) {
-    messages.push({ role: 'system', content: '你是一个AI助手。请用简洁、自然的中文回答。' })
-  }
-  messages.push({ role: 'user', content: text })
-  const extraBody: Record<string, unknown> = {}
-  if (config.searchEnabled) extraBody.enable_search = true
-  if (getThinkingEnabled()) extraBody.enable_thinking = true
+  const gateResult = await acquirePetBridgeChatGate(payload)
+  if (!gateResult.ok) return gateResult.response || buildPetBridgeBusyResponse('pet bridge chat resource busy')
+  const gateHandle = gateResult.handle
+
   try {
+    gateHandle?.updateStep('pet_bridge_config')
+    const config = await loadConfig()
+    const messages: Array<{ role: string, content: string }> = []
+    const personaName = persona || getUserPersona('desktop-user') || null
+    if (personaName && personaName !== 'default') {
+      const skillContent = loadPersonalSkill(personaName)
+      if (skillContent) {
+        const body = skillContent.replace(/^---[\s\S]*?---\n?/, '').trim()
+        if (body) messages.push({ role: 'system', content: body })
+      }
+    }
+    if (!messages.length) {
+      messages.push({ role: 'system', content: '你是一个AI助手。请用简洁、自然的中文回答。' })
+    }
+    messages.push({ role: 'user', content: text })
+    const extraBody: Record<string, unknown> = {}
+    if (config.searchEnabled) extraBody.enable_search = true
+    if (getThinkingEnabled()) extraBody.enable_thinking = true
+    gateHandle?.updateStep('pet_bridge_model')
     const reply = await requestChatCompletions(messages, config, extraBody)
     return { success: true, payload: { reply } }
   } catch (err) {
     return { success: false, payload: { error: getErrorMessage(err) } }
+  } finally {
+    try { gateHandle?.release('pet-bridge-chat-finally') } catch { /* non-critical: stale lock recovery handles release failures */
+    }
   }
 }
 

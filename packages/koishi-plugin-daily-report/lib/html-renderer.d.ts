@@ -47,6 +47,10 @@ interface AnalysisResult {
     qualityReview?: QualityReview | null;
     tokenUsage?: TokenUsage;
 }
+interface RenderContext {
+    taskId?: string;
+    source?: string;
+}
 interface RenderMemoryStatus {
     availableMb: number | null;
     minMb: number;
@@ -54,8 +58,8 @@ interface RenderMemoryStatus {
 }
 declare function assertEnoughMemoryForRender(): RenderMemoryStatus;
 declare function assertRenderEnvironment(): void;
-declare function renderHtmlToImage(htmlContent: string): Promise<Buffer>;
-declare function renderReport(data: ReportData, analysis: AnalysisResult): Promise<Buffer>;
+declare function renderHtmlToImage(htmlContent: string, context?: RenderContext): Promise<Buffer>;
+declare function renderReport(data: ReportData, analysis: AnalysisResult, context?: RenderContext): Promise<Buffer>;
 declare const _default: {
     renderReport: typeof renderReport;
     renderHtmlToImage: typeof renderHtmlToImage;

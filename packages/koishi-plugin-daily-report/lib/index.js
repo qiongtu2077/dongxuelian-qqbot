@@ -4,19 +4,34 @@
  * 职责: 通过中间件拦截消息，识别并处理日报命令。
  * 边界: 不自己管理白名单，复用主插件的 summary-whitelist.json。
  */
-const { h } = require('koishi');
 const fs = require('fs');
 const path = require('path');
 const { TIMEOUTS, DATA_DIR } = require('./config');
-const { collectReportData } = require('./data-collector');
-const { analyzeWithAI } = require('./ai-analyzer');
-const { renderReport, assertRenderEnvironment, } = require('./html-renderer');
 let flushTodayCacheToDisk = () => { };
 try {
     ({ flushTodayCacheToDisk } = require('../../koishi-plugin-dongxuelian-ai/lib/conversation'));
 }
 catch {
     /* 独立安装路径异常时仅跳过 flush */
+}
+let resourceRuntimeCache;
+// 动态加载资源子系统运行时，避免 daily-report 编译期依赖新模块声明文件。
+function getResourceRuntime(ctx) {
+    if (resourceRuntimeCache !== undefined)
+        return resourceRuntimeCache;
+    try {
+        const base = '../../koishi-plugin-dongxuelian-ai/lib';
+        resourceRuntimeCache = {
+            admission: require(`${base}/resource-scheduler/admission`),
+            tasks: require(`${base}/resource-workers/task-store`),
+        };
+    }
+    catch (error) {
+        resourceRuntimeCache = null;
+        if (ctx)
+            ctx.logger('daily-report').warn(`resource runtime unavailable: ${getErrorMessage(error)}`);
+    }
+    return resourceRuntimeCache;
 }
 // 冷却机制
 const cooldown = new Map();
@@ -25,7 +40,7 @@ const inFlightReports = new Map();
 const FAILURE_BACKOFF_MS = 10 * 1000;
 const MAX_RUNTIME_MAP_ENTRIES = 500;
 const SEND_RETRY_DELAY_MS = parsePositiveInt(process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS, 800, 0, 10000);
-const TEXT_FALLBACK_MAX_CHARS = parsePositiveInt(process.env.DAILY_REPORT_TEXT_FALLBACK_MAX_CHARS, 1800, 600, 4000);
+const MAINTENANCE_REPLY_FALLBACK = '优化中';
 function parsePositiveInt(value, fallback, min, max) {
     const parsed = parseInt(String(value), 10);
     if (!Number.isFinite(parsed))
@@ -42,11 +57,17 @@ function delay(ms) {
         return Promise.resolve();
     return new Promise(resolve => setTimeout(resolve, ms));
 }
-// 把长文本裁剪到 OneBot 更容易接受的范围内。
-function clampText(text, maxChars) {
-    if (text.length <= maxChars)
-        return text;
-    return `${text.slice(0, Math.max(0, maxChars - 18))}\n……内容已截断`;
+// 读取全局维护模式文案；文件不存在时返回 null，表示走正常日报流程。
+function readMaintenanceReplyText() {
+    if (!DATA_DIR)
+        return null;
+    try {
+        const raw = fs.readFileSync(path.join(DATA_DIR, 'ai-paused.txt'), 'utf8');
+        return raw.trim() || MAINTENANCE_REPLY_FALLBACK;
+    }
+    catch {
+        return null;
+    }
 }
 function trimTimedMap(map, now, maxAgeMs) {
     for (const [key, value] of map) {
@@ -65,89 +86,75 @@ function trimRuntimeMaps(now = Date.now()) {
     trimTimedMap(failureBackoff, now, FAILURE_BACKOFF_MS * 6);
     trimTimedMap(inFlightReports, now, 10 * 60 * 1000);
 }
-// 将渲染错误按层级归类，方便日志和用户提示分开处理。
-function classifyRenderError(err) {
-    const message = String(err?.message || err || '');
-    if (/available memory is too low for Chromium render/i.test(message)) {
-        return { kind: 'memory', userMessage: '日报渲染失败：服务器可用内存不足，请稍后再试。' };
-    }
-    if (/未找到Chrome\/Chromium浏览器/i.test(message)) {
-        return { kind: 'browser', userMessage: '日报渲染失败：未找到 Chrome/Chromium。' };
-    }
-    if (/daily report render queue timeout/i.test(message)) {
-        return { kind: 'queue-timeout', userMessage: '日报渲染排队超时，请稍后再试。' };
-    }
-    if (/render HTML is too large/i.test(message)) {
-        return { kind: 'html-too-large', userMessage: '日报内容太长，暂时无法渲染。' };
-    }
-    if (/AbortError|timed out|timeout/i.test(message)) {
-        return { kind: 'timeout', userMessage: '日报生成超时了，请稍后再试。' };
-    }
-    return { kind: 'unknown', userMessage: '详细日报生成失败了，请稍后再试。' };
+// 将频道、用户等字段压成可用于 taskId 的短片段。
+function safeResourceIdPart(value, fallback = 'unknown') {
+    return String(value || fallback).replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 120) || fallback;
 }
-// 在 AI 分析前检查 Chromium 渲染环境，避免低内存时浪费 AI 调用。
-function preflightRenderEnvironment() {
-    if (typeof assertRenderEnvironment !== 'function')
+// 生成日报任务 ID，供 S1、S2、S0 串联同一个任务。
+function createDailyReportTaskId(channelKey, detail) {
+    return `daily_report-${Date.now()}-${safeResourceIdPart(channelKey)}-${detail ? 'detail' : 'basic'}`;
+}
+// 从 Koishi session 中提取日报触发用户 ID。
+function getDailyReportUserId(session) {
+    const value = session.userId ||
+        session.author?.id ||
+        session.event?.user?.id;
+    return String(value || '');
+}
+// 构造 S1/S2 共用的日报任务预算。
+function buildDailyReportBudget(taskId, channelKey, userId, detail) {
+    return {
+        taskId,
+        kind: 'daily_report',
+        source: 'koishi-worker',
+        channelKey: String(channelKey || ''),
+        userId,
+        exclusive: true,
+        priority: detail ? 20 : 25,
+        minMemMb: 600,
+        criticalMemMb: 300,
+        degradable: true,
+        deferable: true,
+        fallbacks: ['daily_report_text', 'daily_report_summary'],
+        queueTimeoutMs: 600000,
+        runTimeoutMs: 600000,
+    };
+}
+// 按资源决策给用户发送固定、低成本提示。
+async function sendDailyAdmissionNotice(ctx, session, decision, reason) {
+    if (decision === 'queue') {
+        await safeSendDailyReport(ctx, session, '日报已加入队列，前方有重任务时会按顺序生成。', '日报排队提示');
         return;
-    assertRenderEnvironment();
-}
-// 拼接有限长度的文字版日报，作为图片渲染失败时的降级输出。
-function buildTextFallbackReport(data, analysis, failure, modeLabel) {
-    const lines = [
-        `${modeLabel}文字版`,
-        `图片渲染失败：${failure.userMessage}`,
-        `日期：${data.date || '未知'}`,
-        `消息：${Number(data.totalMessages || 0)} 条`,
-        `活跃成员：${Number(data.activeMembers || 0)} 人`,
-        `表情：${Number(data.emojiCount || 0)} 个`,
-        `总字数：${Number(data.totalChars || 0)} 字`,
-        `高峰：${data.peakHour || '未知'}`,
-    ];
-    const topMembers = Array.isArray(data.topMembers) ? data.topMembers.slice(0, 5) : [];
-    if (topMembers.length) {
-        lines.push('', '活跃群友：');
-        for (let i = 0; i < topMembers.length; i++) {
-            const member = topMembers[i];
-            lines.push(`${i + 1}. ${member.name || '群友'}：${Number(member.msgCount || 0)} 条`);
-        }
     }
-    const topics = Array.isArray(analysis.topics) ? analysis.topics.slice(0, 3) : [];
-    if (topics.length) {
-        lines.push('', '话题摘要：');
-        for (const topic of topics)
-            lines.push(`- ${topic.title || '话题'}：${topic.summary || '无摘要'}`);
-    }
-    const quotes = Array.isArray(analysis.goldenQuotes) ? analysis.goldenQuotes.slice(0, 2) : [];
-    if (quotes.length) {
-        lines.push('', '今日金句：');
-        for (const quote of quotes)
-            lines.push(`- ${quote.sender || '群友'}：${quote.content || ''}${quote.reason ? `（${quote.reason}）` : ''}`);
-    }
-    const titles = Array.isArray(analysis.userTitles) ? analysis.userTitles.slice(0, 3) : [];
-    if (titles.length) {
-        lines.push('', '群友画像：');
-        for (const item of titles)
-            lines.push(`- ${item.name || '群友'}：${item.title || '称号'}${item.reason ? `，${item.reason}` : ''}`);
-    }
-    if (analysis.qualityReview) {
-        lines.push('', '群聊锐评：', `${analysis.qualityReview.title || '今日锐评'}：${analysis.qualityReview.summary || '暂无总结'}`);
-    }
-    return clampText(lines.join('\n'), TEXT_FALLBACK_MAX_CHARS);
-}
-// 将 AI 分析阶段的降级信息打到日志里，方便回查是哪一层出了偏差。
-function logAnalysisWarnings(ctx, modeLabel, analysis) {
-    const warnings = analysis?.meta?.warnings;
-    if (!Array.isArray(warnings) || !warnings.length)
+    if (decision === 'defer') {
+        await safeSendDailyReport(ctx, session, '日报已延期，资源恢复后继续生成。', '日报延期提示');
         return;
-    ctx.logger('daily-report').warn(`${modeLabel}分析降级: ${warnings.join(' | ')}`);
+    }
+    if (decision === 'reject') {
+        await safeSendDailyReport(ctx, session, `当前资源不足，日报暂时不能生成。${reason ? `\n原因：${reason}` : ''}`, '日报拒绝提示');
+    }
 }
-// 安全发送文字版降级日报，失败时只记录日志，不再抛出到主流程。
-async function sendTextFallbackReport(ctx, session, data, analysis, failure, modeLabel) {
-    const message = buildTextFallbackReport(data, analysis, failure, modeLabel);
-    const sent = await safeSendDailyReport(ctx, session, message, '文字降级日报');
-    if (sent)
-        ctx.logger('daily-report').warn(`${modeLabel}图片渲染失败，已发送文字降级日报[${failure.kind}]`);
-    return sent;
+// 向 S2 写入日报任务；实际生成和发送由 daily-worker + result-notifier 完成。
+function submitDailyResourceTask(runtime, taskId, channelKey, userId, detail, status = 'pending') {
+    return runtime.tasks.submitResourceTask({
+        id: taskId,
+        kind: 'daily_report',
+        status,
+        source: 'koishi-worker',
+        channelKey: String(channelKey || ''),
+        userId,
+        priority: detail ? 20 : 25,
+        timeoutMs: 600000,
+        payload: { detail },
+        notify: { target: 'qq-group', channelKey: String(channelKey || ''), status: 'pending' },
+    });
+}
+// 检查同群是否已有未完成日报任务，避免 S2 队列被重复命令刷爆。
+function findOpenDailyReportTask(runtime, channelKey) {
+    const tasks = runtime.tasks.listResourceTasks({ statuses: ['pending', 'claiming', 'running', 'deferred'], limit: 1000 });
+    return tasks.find(task => String(task.kind || '') === 'daily_report' &&
+        String(task.channelKey || '') === String(channelKey || '') &&
+        !['done', 'failed', 'cancelled'].includes(String(task.status || ''))) || null;
 }
 // 包装 session.send，记录耗时并对文本消息做一次短重试。
 async function safeSendDailyReport(ctx, session, message, label = 'message') {
@@ -210,6 +217,11 @@ function apply(ctx) {
         const isFull = content === '群聊详细日报' || content === '/群聊详细日报';
         const isBasic = content === '群聊日报' || content === '/群聊日报';
         if (isFull || isBasic) {
+            const maintenanceText = readMaintenanceReplyText();
+            if (maintenanceText) {
+                await safeSendDailyReport(ctx, session, maintenanceText, '维护模式提示');
+                return;
+            }
             const channelKey = session.guildId || session.channelId || 'private';
             if (!session.guildId) {
                 await safeSendDailyReport(ctx, session, '这个命令只能在群里使用。', '群聊限制提示');
@@ -237,7 +249,7 @@ function apply(ctx) {
                 await safeSendDailyReport(ctx, session, '刚刚生成失败了，稍等几秒再重试。', '失败退避提示');
                 return;
             }
-            // 与内存 today-cache 对齐后再读盘（避免条数/时间与「今日情绪」不一致）
+            // 与内存 today-cache 对齐后再交给 worker 读取，避免 worker 看不到刚进入内存的消息。
             try {
                 if (typeof flushTodayCacheToDisk === 'function')
                     flushTodayCacheToDisk(channelKey);
@@ -245,60 +257,43 @@ function apply(ctx) {
             catch (e) {
                 ctx.logger('daily-report').warn(`flush today-cache failed: ${getErrorMessage(e)}`);
             }
-            // 收集数据
-            const data = collectReportData(channelKey);
-            if (!data || data.messages.length === 0) {
-                await safeSendDailyReport(ctx, session, '今天还没有收录足够消息，稍后再试。', '空数据提示');
-                return;
-            }
-            // 发送提示
             const modeLabel = isFull ? '详细日报' : '日报';
             inFlightReports.set(channelKey, Date.now());
-            let analysis = {};
+            const userId = getDailyReportUserId(session);
+            const taskId = createDailyReportTaskId(channelKey, isFull);
+            const resourceRuntime = getResourceRuntime(ctx);
             try {
-                try {
-                    preflightRenderEnvironment();
-                }
-                catch (err) {
-                    const failure = classifyRenderError(err);
-                    ctx.logger('daily-report').error(`${modeLabel}渲染预检失败[${failure.kind}]: ${getErrorMessage(err)}`);
-                    failureBackoff.set(channelKey, Date.now());
-                    await sendTextFallbackReport(ctx, session, data, {}, failure, modeLabel);
+                if (!resourceRuntime) {
+                    await safeSendDailyReport(ctx, session, '资源任务系统暂不可用，日报不会在主进程里生成，请稍后再试。', '资源系统缺失提示');
                     return;
                 }
-                const started = await safeSendDailyReport(ctx, session, 'Thinking......', '生成中提示');
-                if (!started)
+                const openTask = findOpenDailyReportTask(resourceRuntime, channelKey);
+                if (openTask) {
+                    await safeSendDailyReport(ctx, session, `${modeLabel}已在后台队列中，请等待完成后自动发回结果。\n任务：${String(openTask.id || '')}`, '日报重复提交提示');
                     return;
-                if (isFull) {
-                    try {
-                        analysis = await analyzeWithAI(data, true);
-                        logAnalysisWarnings(ctx, modeLabel, analysis);
-                    }
-                    catch (err) {
-                        ctx.logger('daily-report').error(`${modeLabel}AI分析失败: ${getErrorMessage(err)}`);
-                        failureBackoff.set(channelKey, Date.now());
-                        await safeSendDailyReport(ctx, session, `${modeLabel}分析失败了，请稍后再试。`, 'AI失败提示');
-                        return;
-                    }
                 }
-                const imageBuffer = await renderReport(data, analysis);
-                const base64 = imageBuffer.toString('base64');
-                const imageSent = await safeSendDailyReport(ctx, session, h.image(`data:image/png;base64,${base64}`), '日报图片');
-                if (!imageSent) {
-                    failureBackoff.set(channelKey, Date.now());
+                const budget = buildDailyReportBudget(taskId, channelKey, userId, isFull);
+                const admission = resourceRuntime.admission.admitTask(budget);
+                const task = submitDailyResourceTask(resourceRuntime, taskId, channelKey, userId, isFull);
+                if (admission.decision === 'reject' || admission.decision === 'silent_drop') {
+                    resourceRuntime.tasks.failTask(task, new Error(String(admission.reason || admission.decision)), { level: 'L4', mode: 'rejected', reason: admission.reason || admission.decision });
+                    await sendDailyAdmissionNotice(ctx, session, 'reject', String(admission.reason || ''));
+                    return;
+                }
+                if (admission.decision === 'defer') {
+                    resourceRuntime.tasks.deferTask(task, String(admission.reason || 'resource defer'));
+                    await sendDailyAdmissionNotice(ctx, session, 'defer', String(admission.reason || ''));
                     return;
                 }
                 cooldown.set(channelKey, Date.now());
                 failureBackoff.delete(channelKey);
-                ctx.logger('daily-report').info(`${modeLabel}生成成功: ${data.date}, ${data.totalMessages}条消息`);
+                await safeSendDailyReport(ctx, session, `${modeLabel}已提交后台任务，完成后会自动发回结果。\n任务：${taskId}`, '日报后台任务提示');
+                ctx.logger('daily-report').info(`${modeLabel}已提交后台 worker: task=${taskId}, channel=${channelKey}, admission=${String(admission.decision || 'run_now')}`);
             }
             catch (err) {
-                const failure = classifyRenderError(err);
-                ctx.logger('daily-report').error(`${modeLabel}生成失败[${failure.kind}]: ${getErrorMessage(err)}`);
+                ctx.logger('daily-report').error(`${modeLabel}提交后台任务失败: ${getErrorMessage(err)}`);
                 failureBackoff.set(channelKey, Date.now());
-                const fallbackSent = await sendTextFallbackReport(ctx, session, data, analysis, failure, modeLabel);
-                if (!fallbackSent)
-                    await safeSendDailyReport(ctx, session, failure.userMessage, '失败提示');
+                await safeSendDailyReport(ctx, session, `${modeLabel}提交后台任务失败了，请稍后再试。`, '日报提交失败提示');
             }
             finally {
                 inFlightReports.delete(channelKey);

@@ -39,12 +39,13 @@ const agentRoutes = require('./routes/agent') as RouteModule
 const settingsRoutes = require('./routes/settings') as RouteModule
 const botRoutes = require('./routes/bot') as RouteModule
 const deployRoutes = require('./routes/deploy') as RouteModule
+const resourceRoutes = require('./routes/resource') as RouteModule
 
 const exactRoutes = new Map<string, RouteHandler>()
 const prefixRoutes: PrefixRoute[] = []
 const regexRoutes: RegexRoute[] = []
 
-for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, settingsRoutes, botRoutes, deployRoutes]) {
+for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, settingsRoutes, botRoutes, deployRoutes, resourceRoutes]) {
   if (mod.routes) for (const [key, handler] of Object.entries(mod.routes)) exactRoutes.set(key, handler)
   if (mod.prefixRoutes) {
     if (Array.isArray(mod.prefixRoutes)) {

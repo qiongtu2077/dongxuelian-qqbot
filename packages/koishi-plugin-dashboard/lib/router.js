@@ -7,10 +7,11 @@ const agentRoutes = require('./routes/agent');
 const settingsRoutes = require('./routes/settings');
 const botRoutes = require('./routes/bot');
 const deployRoutes = require('./routes/deploy');
+const resourceRoutes = require('./routes/resource');
 const exactRoutes = new Map();
 const prefixRoutes = [];
 const regexRoutes = [];
-for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, settingsRoutes, botRoutes, deployRoutes]) {
+for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, settingsRoutes, botRoutes, deployRoutes, resourceRoutes]) {
     if (mod.routes)
         for (const [key, handler] of Object.entries(mod.routes))
             exactRoutes.set(key, handler);

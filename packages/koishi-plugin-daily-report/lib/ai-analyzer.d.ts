@@ -19,6 +19,8 @@ interface ReportData {
     peakHour?: string;
     topMembers?: TopMember[];
     messages?: ReportMessage[];
+    precomputedContext?: string;
+    precomputedCoverageRate?: number;
 }
 interface TokenUsage {
     promptTokens: number;

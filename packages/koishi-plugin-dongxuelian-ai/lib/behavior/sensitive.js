@@ -8,7 +8,7 @@ const path = require('path');
 const { POLITICAL_DETECT_FILE, POLITICAL_HANDLER_DIR, SENSITIVE_KEYWORDS_RE, } = require('../core/constants');
 const { readTextFile, readJsonFile, safeChannelKey, errorMessage, } = require('../core/utils');
 const { logDebug } = require('../core/logging-config');
-const { channelSharedCache, pendingSensitiveAlert, clearUserConversationHistory, saveSensitiveCache, analyzeChannelSensitive, } = require('../conversation');
+const { channelSharedCache, pendingSensitiveAlert, clearUserConversationHistory, saveSensitiveCache, analyzeChannelSensitive, consumePendingSensitiveAlert, clearPendingSensitiveAlert, } = require('../conversation');
 const channelMsgCount = new Map();
 const lastSensitiveAlert = new Map();
 let politicalDetectCache = null;
@@ -52,7 +52,7 @@ function clearSensitiveRuntimeState(channelKey) {
     const key = String(channelKey);
     channelMsgCount.delete(key);
     lastSensitiveAlert.delete(key);
-    pendingSensitiveAlert.delete(key);
+    clearPendingSensitiveAlert(key);
 }
 function pruneRuntimeMap(map, getTs, now = Date.now()) {
     for (const [key, value] of map) {
@@ -115,8 +115,7 @@ async function handleSensitiveMessage(session, ctx, params = {}) {
         if (count % 50 === 0)
             analyzeChannelSensitive(normalizedChannelKey).catch((error) => warnSensitiveBackgroundFailure('periodic summary', error));
     }
-    if (isDetectOn && pendingSensitiveAlert.get(normalizedChannelKey)) {
-        pendingSensitiveAlert.delete(normalizedChannelKey);
+    if (isDetectOn && consumePendingSensitiveAlert(normalizedChannelKey)) {
         channelSharedCache.delete(normalizedChannelKey);
         channelMsgCount.delete(normalizedChannelKey);
         if (lastEmotionCache && typeof lastEmotionCache.delete === 'function')

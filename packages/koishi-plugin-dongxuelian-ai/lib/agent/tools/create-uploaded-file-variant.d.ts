@@ -14,6 +14,9 @@ interface UploadedFileEntry {
     messageId?: string;
     fileName: string;
     ext: string;
+    url?: string;
+    fileId?: string | null;
+    fileSize?: number;
     localPath: string | null;
     skipped: boolean;
     skipReason: string | null;

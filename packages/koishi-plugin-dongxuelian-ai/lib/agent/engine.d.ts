@@ -59,6 +59,7 @@ interface RunAgentOptions {
     scheduledTask?: unknown;
     contextPolicy?: unknown;
     isAdmin?: unknown;
+    resourceTaskId?: unknown;
 }
 interface ResumePendingOptions {
     channelKey?: unknown;
@@ -68,6 +69,7 @@ interface ResumePendingOptions {
     onProgress?: ProgressHandler;
     bot?: unknown;
     isAdmin?: unknown;
+    resourceTaskId?: unknown;
 }
 interface ProgressMessage {
     type: string;
@@ -78,8 +80,8 @@ interface ProgressMessage {
 type ProgressHandler = (message: ProgressMessage, round?: number) => unknown;
 declare function normalizeContextPolicy(policy?: unknown): ContextPolicy;
 declare function applyContextPolicyToTools(tools?: ToolDefinition[], contextPolicy?: unknown): ToolDefinition[];
-declare function runAgent({ userMessage, userName, userId, channelKey, channel, systemExtra, history, forceTools, preExecuteTools, onProgress, bot, enableThinking, agentMode, scheduledTask, contextPolicy, isAdmin }: RunAgentOptions): Promise<AgentRunResult>;
-declare function resumePending({ channelKey, userId, channel, expectedId, onProgress, bot, isAdmin }: ResumePendingOptions): Promise<AgentRunResult | AgentPendingResult>;
+declare function runAgent({ userMessage, userName, userId, channelKey, channel, systemExtra, history, forceTools, preExecuteTools, onProgress, bot, enableThinking, agentMode, scheduledTask, contextPolicy, isAdmin, resourceTaskId }: RunAgentOptions): Promise<AgentRunResult>;
+declare function resumePending({ channelKey, userId, channel, expectedId, onProgress, bot, isAdmin, resourceTaskId }: ResumePendingOptions): Promise<AgentRunResult | AgentPendingResult>;
 declare const _default: {
     run: typeof runAgent;
     resumePending: typeof resumePending;

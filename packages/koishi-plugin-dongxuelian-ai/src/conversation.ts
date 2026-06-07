@@ -12,16 +12,18 @@ const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
   MAX_REPEAT_CHECK_HISTORY, MAX_CHANNEL_SHARED_MESSAGES,
   MAX_REPLY_FINGERPRINT_HISTORY, MAX_CHANNEL_PROMPT_MESSAGES,
   MAX_THREAD_CONTEXT_MESSAGES, MAX_REPLY_CHAIN_DEPTH,
-  GLM_KEY_FILE, DASHSCOPE_KEY_FILE, PROVIDERS,
   SENSITIVE_CACHE_PREFIX,
   USER_PROFILE_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE,
   DATA_DIR,
 } = require('./core/constants') as typeof import('./core/constants')
-const { readTextFile, readJsonFile, writeJsonFile, sanitizeUserName, safeChannelKey, todayCst, todayCstMinusDays, formatShanghaiTime24h, normalizeText } = require('./core/utils') as typeof import('./core/utils')
-const { requestChatCompletions } = require('./core/api') as typeof import('./core/api')
-const { loadConfig } = require('./core/runtime-config') as typeof import('./core/runtime-config')
+const { readJsonFile, writeJsonFile, sanitizeUserName, safeChannelKey, todayCst, todayCstMinusDays, formatShanghaiTime24h, normalizeText } = require('./core/utils') as typeof import('./core/utils')
 const { appendGroupSceneEntry } = require('./routing/group-scene-index') as typeof import('./routing/group-scene-index')
 const { redactSensitiveText } = require('./core/redactor') as typeof import('./core/redactor')
+const { appendPrecomputeIndex } = require('./daily-precompute/precompute-index') as typeof import('./daily-precompute/precompute-index')
+const {
+  submitConversationSummaryTask,
+  submitSensitiveCacheAnalysisTask,
+} = require('./resource-workers/background-llm-submission') as typeof import('./resource-workers/background-llm-submission')
 
 interface SessionLike {
   guildId?: string
@@ -159,6 +161,14 @@ interface SensitiveCacheData {
   messages?: Array<{ speakerName?: string; userId?: string; content?: string; ts?: number }>
 }
 
+interface SensitiveAlertData {
+  flagged?: boolean
+  ts?: number
+  channelKey?: string
+  sourceTaskId?: string
+  result?: string
+}
+
 interface MemoryTimerData {
   intervalHours?: number
   lastClearTs?: number
@@ -187,6 +197,8 @@ const lastForwardSummaryCacheTs: Map<string, number> = new Map()
 const pendingSensitiveAlert: Map<string, { flagged?: boolean; ts: number }> = new Map()
 const summaryLocks: Map<string, Promise<void>> = new Map()
 const channelTodayCache: Map<string, TodayCache> = new Map()
+const SENSITIVE_ALERT_DIR = path.join(DATA_DIR, 'sensitive-alerts')
+const SENSITIVE_ALERT_TTL_MS = 2 * 60 * 60 * 1000
 
 const writeQueues: Map<string, Promise<unknown>> = new Map()
 function enqueueWrite<T>(key: string, fn: (value?: unknown) => T | Promise<T>): Promise<T> {
@@ -496,32 +508,12 @@ function saveConversationTurn(session: SessionLike, userText: string, replyText:
 
 async function generateConversationSummary(key: string): Promise<void> {
   const prev = summaryLocks.get(key) || Promise.resolve()
-  const task = prev.then(() => _doGenerateConversationSummary(key)).catch((error) => { warnConversationFailure('conversation summary lock', error) })
+  const task = prev.then(() => {
+    submitConversationSummaryTask({ key, source: 'conversation-summary-trigger' })
+  }).catch((error) => { warnConversationFailure('conversation summary submit', error) })
   summaryLocks.set(key, task)
   task.finally(() => { if (summaryLocks.get(key) === task) summaryLocks.delete(key) })
   return task
-}
-
-function getChatResultContent(resultObj: Awaited<ReturnType<typeof requestChatCompletions>>): string {
-  return typeof resultObj === 'string' ? resultObj : (resultObj.type === 'text' ? resultObj.content : '')
-}
-
-async function _doGenerateConversationSummary(key: string): Promise<void> {
-  const diskData = readConversationDisk(key)
-  if (!diskData || !Array.isArray(diskData.messages) || diskData.messages.length < 5 + MEMORY_HISTORY_LIMIT) return
-  const targets = diskData.messages.slice(0, Math.max(0, diskData.messages.length - MEMORY_HISTORY_LIMIT))
-  const text = targets.map(m => `${m.role}: ${m.content}`).join('\n').slice(0, 4000)
-  try {
-    const cfg = await loadConfig()
-    const resultObj = await requestChatCompletions([{ role: 'system', content: '将以下对话压缩成一段200字以内的摘要，保留关键话题变化和重要信息。用中文，用第三人称。' }, { role: 'user', content: text }], cfg, { max_tokens: 300, _fallbackSet: 'lightweight' })
-    const result = getChatResultContent(resultObj)
-    if (result) {
-      const freshData = readConversationDisk(key)
-      if (freshData) { freshData.summary = result; freshData.summaryTotal = freshData.totalCount; writeConversationDisk(key, freshData) }
-    }
-  } catch (error) {
-    warnConversationFailure('generate conversation summary', error)
-  }
 }
 
 function clearConversationHistory(): void { conversationCache = new Map(); replyFingerprintCache = new Map(); conversationLastActiveAt.clear(); conversationCacheAccessAt.clear(); channelSharedCache.clear() }
@@ -671,6 +663,7 @@ function saveSharedChannelTurn(session: SessionLike, speakerName: string, conten
         if (value || hasMentions) {
           const displayName = speakerName || userId
           const ts = Date.now()
+          const messageId = String(metadata.messageId || '')
           cache.updatedAt = ts
           cache.messages.push({
             time: formatShanghaiTime24h(ts),
@@ -678,8 +671,20 @@ function saveSharedChannelTurn(session: SessionLike, speakerName: string, conten
             user: sanitizeUserName(String(displayName)),
             userId,
             content: (value || '').slice(0, MAX_TODAY_CACHE_CONTENT_CHARS),
-            messageId: String(metadata.messageId || ''),
+            messageId,
             mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [],
+          })
+          appendPrecomputeIndex({
+            channelKey,
+            messageId,
+            timestamp: ts,
+            userId,
+            userName: sanitizeUserName(String(displayName)),
+            text: value,
+            media: [
+              ...(metadata.hasMessageRecordCue ? [{ type: 'message_record', cacheKey: messageId }] : []),
+              ...(metadata.hasAudio ? [{ type: 'voice', cacheKey: messageId }] : []),
+            ],
           })
           trimTodayCacheMessages(cache)
           const now = Date.now(); const elapsed = now - (cache.lastDiskWrite || 0)
@@ -967,6 +972,56 @@ function saveSensitiveCache(channelKey: string, value: string, speakerName: stri
   }
 }
 
+function getSensitiveAlertFile(channelKey: string): string {
+  return path.join(SENSITIVE_ALERT_DIR, safeChannelKey(channelKey) + '.json')
+}
+
+function writePendingSensitiveAlert(channelKey: string, patch: Partial<SensitiveAlertData> = {}): void {
+  const key = String(channelKey || '')
+  if (!key) return
+  const now = Date.now()
+  const payload = {
+    flagged: true,
+    ts: now,
+    channelKey: key,
+    ...patch,
+  }
+  pendingSensitiveAlert.set(key, { flagged: true, ts: now })
+  try {
+    require('fs').mkdirSync(SENSITIVE_ALERT_DIR, { recursive: true })
+    require('fs').writeFileSync(getSensitiveAlertFile(key), JSON.stringify(payload), 'utf8')
+  } catch (error) {
+    warnConversationFailure('write pending sensitive alert', error)
+  }
+}
+
+function consumePendingSensitiveAlert(channelKey: string): SensitiveAlertData | null {
+  const key = String(channelKey || '')
+  if (!key) return null
+  const cached = pendingSensitiveAlert.get(key)
+  if (cached) pendingSensitiveAlert.delete(key)
+  const file = getSensitiveAlertFile(key)
+  let fileAlert: SensitiveAlertData | null = null
+  try {
+    const data = readJsonFileIfSmallSync<SensitiveAlertData | null>(file, MAX_SMALL_CONFIG_FILE_BYTES, null, { unlinkOversize: true })
+    const ts = Number(data?.ts || 0)
+    if (data && data.flagged && ts && Date.now() - ts <= SENSITIVE_ALERT_TTL_MS) fileAlert = data
+  } catch { /* non-critical: missing or malformed alert file is treated as no alert */
+  }
+  try { require('fs').unlinkSync(file) } catch { /* non-critical: alert file may already be absent */
+  }
+  if (!cached && !fileAlert) return null
+  return fileAlert || { flagged: true, ts: cached?.ts || Date.now(), channelKey: key }
+}
+
+function clearPendingSensitiveAlert(channelKey: string): void {
+  const key = String(channelKey || '')
+  if (!key) return
+  pendingSensitiveAlert.delete(key)
+  try { require('fs').unlinkSync(getSensitiveAlertFile(key)) } catch { /* non-critical: no persisted alert to clear */
+  }
+}
+
 async function analyzeChannelSensitive(channelKey: string): Promise<void> {
   const safeKey = safeChannelKey(channelKey); const file = SENSITIVE_CACHE_PREFIX + safeKey + '.json'
   try {
@@ -975,33 +1030,9 @@ async function analyzeChannelSensitive(channelKey: string): Promise<void> {
     if (!stat.isFile() || stat.size > MAX_SENSITIVE_CACHE_FILE_BYTES) { try { fs.unlinkSync(file) } catch { /* non-critical: best-effort oversized sensitive cache cleanup */ }; return }
     const raw = fs.readFileSync(file, 'utf8'); const data = JSON.parse(raw) as SensitiveCacheData
     if (!data || !Array.isArray(data.messages) || data.messages.length < 5) return
-    const text = data.messages.slice(-30).map(m => `${m.userId ? m.speakerName + '：' : ''}${m.content}`).join('\n').slice(0, 3000)
-    const prompt = ['你是一个群聊内容审查员。你的任务是判断一条消息是否包含"明显违规的政治攻击性内容"。', '请严格按照下面规则执行。', '', '一、任务目标', '你只需要做一件事：判断消息里是否存在明显的、带恶意的、指向政治制度、执政党、政治体系、敏感政治事件、政治人物或政治权威机构的攻击、讽刺、影射、谣言传播或煽动性表达。', '如果有，回复：SENSITIVE；如果没有，回复：CLEAN', '除了这一个词，不要输出任何别的内容。', '', '二、什么算违规政治内容', '以下内容，原则上判为 SENSITIVE：', '1. 用隐喻、反讽、谐音、缩写、代称、梗图话术等方式，明显攻击政治制度、执政党或政治体系。', '2. 阴阳怪气地讨论敏感政治事件、政治决策、政治路线，并且带有明显恶意导向。', '3. 传播针对政治体系、政治权威、执政组织或国家治理的恶意谣言、编造信息、煽动性说法。', '4. 对政治人物、领导人、政权机构进行明显侮辱、辱骂、嘲讽或恶意丑化。', '5. 借社会议题、公共事件、历史事件进行明显政治影射，并且攻击指向清晰。', '6. 表面像玩笑、段子或梗，实质是在影射、贬损、讽刺政治体制或敏感政治对象。', '7. 使用"大家都懂""不能明说""你品你细品"之类表达，配合上下文明显指向政治攻击。', '8. 借转述、引用、截图描述等形式，继续传播带恶意的政治讽刺、政治攻击或政治谣言。', '', '三、什么不算违规政治内容', '以下内容，原则上判为 CLEAN：', '1. 日常吐槽工作压力、生活压力、学习压力、工资低、加班多、就业难、房租高、物价高等社会生活问题。', '2. 正常讨论劳动法、社保、公积金、教育、医疗、经济、就业、税收等公共政策，只要语气中性，没有明显政治攻击。', '3. 单纯提到国家、政府、领导人、部门、政策、新闻事件，但语气客观、中立、正面，或只是事实陈述。', '4. 对具体办事流程、行政服务、城市管理、企业经营、学校制度的普通抱怨，如果没有明显上升到政治恶意攻击。', '5. 网络段子、玩梗、夸张吐槽、情绪发泄，只要没有明确政治指向，或政治指向不清晰。', '6. 对现实环境表达失望、无奈、疲惫、抱怨，只要主要是在说个人处境，而不是借机攻击政治体系。', '7. 讨论历史、国际关系、法律法规、时事新闻，只要表达方式正常，不带明显侮辱、煽动、恶意讽刺。', '8. 批评某个具体社会现象、公司、平台、行业、学校、单位、地方执行问题，但没有清楚指向政治制度攻击。', '', '四、重点判定原则', '1. 只抓"明显恶意"。2. 不确定就放过。3. 宁可漏过，不要误报。4. 核心不是看内容负面不负面，而是看这种负面是否明确指向政治制度、执政组织、政治人物或敏感政治议题，并且带明显恶意。5. 不要过度联想。', '五、容易误判的情况：以下通常应判 CLEAN：普通骂生活苦；对某个具体规定有意见；使用夸张、反话、玩梗语气但不足以证明在攻击政治。', '六、输出要求：只能输出以下两种结果之一：SENSITIVE 或 CLEAN。不要输出解释。', ''].join('\n')
-    const messages = [{ role: 'system', content: prompt }, { role: 'user', content: text }]
-    let result = ''
-    const models = [
-      { provider: 'glm', model: 'glm-4.6v-flash', keyFile: GLM_KEY_FILE },
-      { provider: 'dashscope', model: 'qwen-turbo', keyFile: DASHSCOPE_KEY_FILE },
-      { provider: 'dashscope', model: 'qwen3.5-omni-flash', keyFile: DASHSCOPE_KEY_FILE },
-      { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: null },
-    ]
-    for (const am of models) {
-      const provDef = PROVIDERS[am.provider]; if (!provDef) continue
-      try {
-        const cfg = await loadConfig()
-        const apiKey = am.keyFile ? (await readTextFile(am.keyFile).catch(() => '') || cfg.apiKey).replace(/[\r\n]+/g, '') : cfg.apiKey
-        if (!apiKey) continue
-        result = getChatResultContent(await requestChatCompletions(messages, { model: am.model, baseURL: provDef.baseURL.replace(/\/+$/, ''), apiKey, provider: am.provider }, { max_tokens: 20, _fallbackSet: 'lightweight' }))
-        if (result) break
-      } catch (error) {
-        warnConversationFailure('analyze sensitive cache model call', error)
-      }
-    }
-    if (/SENSITIVE/i.test(result)) { pendingSensitiveAlert.set(channelKey, { flagged: true, ts: Date.now() }) }
-    try { require('fs').unlinkSync(file) } catch { /* non-critical: best-effort sensitive cache cleanup after analysis */
-    }
+    submitSensitiveCacheAnalysisTask({ channelKey, source: 'sensitive-cache-trigger' })
   } catch (error) {
-    warnConversationFailure('analyze sensitive cache', error)
+    warnConversationFailure('submit sensitive cache analysis', error)
   }
 }
 
@@ -1035,6 +1066,7 @@ export = {
   conversationLastActiveAt, conversationCacheAccessAt, channelSharedCache, lastForwardSummaryCache,
   setLastForwardSummaryCache,
   pendingSensitiveAlert, channelTodayCache,
+  writePendingSensitiveAlert, consumePendingSensitiveAlert, clearPendingSensitiveAlert,
   getConversationKey, getChannelKey, touchConversation, touchConversationAccess,
   readConversationDisk, writeConversationDisk, replaceImagePlaceholderInConversation,
   getConversationHistory, saveConversationTurn, mergeConversationMessages, generateConversationSummary,

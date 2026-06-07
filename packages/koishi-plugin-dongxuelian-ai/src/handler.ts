@@ -170,7 +170,6 @@ interface HandlerState {
   repeatEnabledCache: Record<string, boolean | undefined>
   channelTodayCache: Map<string, HandlerTodayCache>
   lastEmotionCache: Map<string, HandlerEmotionCacheItem>
-  renderEmotionImage?: (analysis: HandlerEmotionAnalysis, stats: HandlerEmotionStats, history: HandlerEmotionHistoryItem[]) => Promise<unknown>
 }
 
 function getHandlerErrorMessage(error: unknown): string {

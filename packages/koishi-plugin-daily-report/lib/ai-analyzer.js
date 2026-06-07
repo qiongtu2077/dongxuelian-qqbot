@@ -502,6 +502,17 @@ async function compressMessages(messages, meta) {
         addMetaWarning(meta, '压缩摘要为空，后续分析将主要依赖统计兜底。');
     return compressed;
 }
+// Uses S3 precomputed context when available, avoiding another full-day compression pass.
+function getPrecomputedCompressedContext(data, meta) {
+    const context = normalizeString(data.precomputedContext || '').slice(0, MAX_COMPRESSED_CHARS);
+    if (!context)
+        return '';
+    if (meta) {
+        meta.stages.compression = 'precomputed';
+        addMetaWarning(meta, `已使用 S3 预计算输入，覆盖率 ${Number(data.precomputedCoverageRate || 0)}。`);
+    }
+    return context;
+}
 // Runs topic and golden-quote analysis, falling back per section on bad output.
 async function analyzeBasic(compressed, messages, data, meta) {
     const { nameToUserId } = buildMessageMaps(messages);
@@ -619,7 +630,7 @@ async function analyzeWithAI(data, full = false) {
     const meta = createAnalysisMeta();
     try {
         const messages = asArray(data.messages);
-        const compressed = await compressMessages(messages, meta);
+        const compressed = getPrecomputedCompressedContext(data, meta) || await compressMessages(messages, meta);
         if (full) {
             const [basicResult, fullResult] = await Promise.allSettled([
                 analyzeBasic(compressed, messages, data, meta),

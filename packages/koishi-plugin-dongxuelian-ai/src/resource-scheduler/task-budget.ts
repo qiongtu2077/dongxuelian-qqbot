@@ -1,0 +1,342 @@
+/**
+ * MODULE: S1 任务预算定义。
+ * 职责: 将业务入口提交的任务需求归一为资源预算。
+ * 边界: 不读取系统状态，不做准入决策。
+ */
+
+type ResourceTaskKind =
+  | 'daily_report'
+  | 'daily_report_render'
+  | 'daily_report_summary'
+  | 'daily_summary'
+  | 'agent_task'
+  | 'dashboard_agent'
+  | 'agent_memory'
+  | 'agent_memory_compaction'
+  | 'expression_harvest'
+  | 'conversation_summary'
+  | 'sensitive_cache_analysis'
+  | 'emotion_render'
+  | 'browser_action'
+  | 'voice_tts_generation'
+  | 'diagnostic_probe'
+  | 'mcp_local_check'
+  | 'external_video_download'
+  | 'pet_bridge_chat'
+  | 'media_image_analysis'
+  | 'media_file_analysis'
+  | 'media_voice_transcription'
+  | 'status_query'
+  | 'normal_chat'
+  | string
+
+interface TaskBudgetInput {
+  taskId?: string
+  kind?: ResourceTaskKind
+  source?: string
+  channelKey?: string
+  userId?: string
+  exclusive?: boolean
+  priority?: number
+  minMemMb?: number
+  criticalMemMb?: number
+  degradable?: boolean
+  deferable?: boolean
+  fallbacks?: string[]
+  queueTimeoutMs?: number
+  runTimeoutMs?: number
+}
+
+interface TaskBudget extends TaskBudgetInput {
+  taskId: string
+  source: string
+  channelKey: string
+  userId: string
+  exclusive: boolean
+  priority: number
+  minMemMb: number
+  criticalMemMb: number
+  degradable: boolean
+  deferable: boolean
+  fallbacks: string[]
+  queueTimeoutMs: number
+  runTimeoutMs: number
+}
+
+const DEFAULT_BUDGETS: Record<string, Partial<TaskBudget>> = {
+  daily_report: {
+    exclusive: true,
+    priority: 20,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: true,
+    deferable: true,
+    fallbacks: ['daily_report_text', 'daily_report_summary'],
+    queueTimeoutMs: 600000,
+    runTimeoutMs: 600000,
+  },
+  daily_report_render: {
+    exclusive: true,
+    priority: 20,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: true,
+    deferable: true,
+    fallbacks: ['daily_report_text', 'daily_report_summary'],
+    queueTimeoutMs: 600000,
+    runTimeoutMs: 600000,
+  },
+  daily_summary: {
+    exclusive: false,
+    priority: 70,
+    minMemMb: 300,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 300000,
+    runTimeoutMs: 120000,
+  },
+  agent_task: {
+    exclusive: true,
+    priority: 40,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 600000,
+    runTimeoutMs: 600000,
+  },
+  dashboard_agent: {
+    exclusive: true,
+    priority: 45,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 600000,
+    runTimeoutMs: 600000,
+  },
+  agent_memory: {
+    exclusive: true,
+    priority: 95,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 120000,
+    runTimeoutMs: 120000,
+  },
+  agent_memory_compaction: {
+    exclusive: true,
+    priority: 96,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 180000,
+    runTimeoutMs: 180000,
+  },
+  expression_harvest: {
+    exclusive: true,
+    priority: 97,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 180000,
+    runTimeoutMs: 180000,
+  },
+  conversation_summary: {
+    exclusive: true,
+    priority: 98,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 120000,
+    runTimeoutMs: 120000,
+  },
+  sensitive_cache_analysis: {
+    exclusive: true,
+    priority: 60,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 120000,
+    runTimeoutMs: 120000,
+  },
+  emotion_render: {
+    exclusive: true,
+    priority: 55,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: true,
+    deferable: true,
+    fallbacks: ['emotion_text'],
+    queueTimeoutMs: 300000,
+    runTimeoutMs: 180000,
+  },
+  browser_action: {
+    exclusive: true,
+    priority: 50,
+    minMemMb: 900,
+    criticalMemMb: 600,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 300000,
+    runTimeoutMs: 300000,
+  },
+  voice_tts_generation: {
+    exclusive: true,
+    priority: 65,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: false,
+    fallbacks: [],
+    queueTimeoutMs: 5000,
+    runTimeoutMs: 60000,
+  },
+  diagnostic_probe: {
+    exclusive: true,
+    priority: 30,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: false,
+    fallbacks: [],
+    queueTimeoutMs: 5000,
+    runTimeoutMs: 120000,
+  },
+  mcp_local_check: {
+    exclusive: true,
+    priority: 35,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: false,
+    fallbacks: [],
+    queueTimeoutMs: 5000,
+    runTimeoutMs: 120000,
+  },
+  external_video_download: {
+    exclusive: true,
+    priority: 75,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: false,
+    fallbacks: [],
+    queueTimeoutMs: 5000,
+    runTimeoutMs: 900000,
+  },
+  pet_bridge_chat: {
+    exclusive: true,
+    priority: 70,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: false,
+    fallbacks: [],
+    queueTimeoutMs: 5000,
+    runTimeoutMs: 120000,
+  },
+  media_image_analysis: {
+    exclusive: false,
+    priority: 80,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 300000,
+    runTimeoutMs: 180000,
+  },
+  media_file_analysis: {
+    exclusive: false,
+    priority: 85,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 300000,
+    runTimeoutMs: 180000,
+  },
+  media_voice_transcription: {
+    exclusive: false,
+    priority: 88,
+    minMemMb: 600,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: true,
+    fallbacks: [],
+    queueTimeoutMs: 300000,
+    runTimeoutMs: 180000,
+  },
+  normal_chat: {
+    exclusive: false,
+    priority: 90,
+    minMemMb: 300,
+    criticalMemMb: 300,
+    degradable: false,
+    deferable: false,
+    fallbacks: [],
+    queueTimeoutMs: 0,
+    runTimeoutMs: 60000,
+  },
+  status_query: {
+    exclusive: false,
+    priority: 1,
+    minMemMb: 0,
+    criticalMemMb: 0,
+    degradable: false,
+    deferable: false,
+    fallbacks: [],
+    queueTimeoutMs: 0,
+    runTimeoutMs: 10000,
+  },
+}
+
+// 解析有限数字，缺省或非法时返回 fallback。
+function finiteNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+// 归一任务预算，所有入口都应先调用这个函数。
+function normalizeTaskBudget(input: TaskBudgetInput): TaskBudget {
+  const kind = String(input.kind || 'unknown')
+  const defaults = DEFAULT_BUDGETS[kind] || {}
+  return {
+    taskId: String(input.taskId || ''),
+    kind,
+    source: String(input.source || defaults.source || 'unknown'),
+    channelKey: String(input.channelKey || ''),
+    userId: String(input.userId || ''),
+    exclusive: input.exclusive === undefined ? defaults.exclusive !== false : !!input.exclusive,
+    priority: finiteNumber(input.priority, finiteNumber(defaults.priority, 50)),
+    minMemMb: finiteNumber(input.minMemMb, finiteNumber(defaults.minMemMb, 600)),
+    criticalMemMb: finiteNumber(input.criticalMemMb, finiteNumber(defaults.criticalMemMb, 300)),
+    degradable: input.degradable === undefined ? !!defaults.degradable : !!input.degradable,
+    deferable: input.deferable === undefined ? !!defaults.deferable : !!input.deferable,
+    fallbacks: Array.isArray(input.fallbacks) ? input.fallbacks.map(String) : Array.isArray(defaults.fallbacks) ? defaults.fallbacks.map(String) : [],
+    queueTimeoutMs: finiteNumber(input.queueTimeoutMs, finiteNumber(defaults.queueTimeoutMs, 300000)),
+    runTimeoutMs: finiteNumber(input.runTimeoutMs, finiteNumber(defaults.runTimeoutMs, 300000)),
+  }
+}
+
+export = {
+  DEFAULT_BUDGETS,
+  normalizeTaskBudget,
+}

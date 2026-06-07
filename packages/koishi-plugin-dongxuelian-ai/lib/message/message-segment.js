@@ -110,6 +110,36 @@ function getFileSegmentData(session = {}) {
         return normalizeSegmentData(fileSeg);
     return extractFileRefFromContent(session.content || '') || null;
 }
+function extractVoiceRefFromContent(content = '') {
+    const value = String(content || '');
+    const cq = value.match(/\[CQ:record,([^\]]+)\]/i);
+    if (cq) {
+        const body = cq[1] || '';
+        return {
+            url: normalizeUrl(extractCqAttrValue(body, 'url')),
+            file: extractCqAttrValue(body, 'file') || extractCqAttrValue(body, 'id'),
+        };
+    }
+    const tag = value.match(/<(?:audio|record)\b[^>]*>/i);
+    if (!tag)
+        return null;
+    const raw = tag[0];
+    const src = extractAttrValue(raw, 'src') || extractAttrValue(raw, 'url');
+    return {
+        url: normalizeUrl(src),
+        file: extractAttrValue(raw, 'file') || extractAttrValue(raw, 'id') || src,
+    };
+}
+function getVoiceSegmentData(session = {}) {
+    const segments = getMessageSegments(session);
+    const voiceSeg = segments.find(s => {
+        const type = String(isMessageSegmentRecord(s) ? s.type || '' : '');
+        return type === 'record' || type === 'audio';
+    });
+    if (voiceSeg)
+        return normalizeSegmentData(voiceSeg);
+    return extractVoiceRefFromContent(session.content || '') || null;
+}
 module.exports = {
     decodeEntityAttribute,
     extractAttrValue,
@@ -120,4 +150,6 @@ module.exports = {
     normalizeSegmentData,
     extractFileRefFromContent,
     getFileSegmentData,
+    extractVoiceRefFromContent,
+    getVoiceSegmentData,
 };

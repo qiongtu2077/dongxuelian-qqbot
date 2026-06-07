@@ -8,6 +8,8 @@ const { heuristicRoute, buildExplicitSearchRunOptions } = require('../agent/rout
 const { getAgentConfig } = require('../agent/config') as typeof import('../agent/config')
 const { hasAdminPermission, isJailbreakAttempt, sanitizeUserInput } = require('../core/utils') as typeof import('../core/utils')
 const { logDebug } = require('../core/logging-config') as typeof import('../core/logging-config')
+const { submitAgentWorkerTask } = require('../agent/worker-submission') as typeof import('../agent/worker-submission')
+const { createAgentRunWorkerPayload } = require('../resource-workers/agent-payload') as typeof import('../resource-workers/agent-payload')
 
 interface LoggerLike {
   info(message: string): void
@@ -39,6 +41,7 @@ interface AgentRouteResult {
 interface AgentConfigLike {
   queue?: {
     timeoutMs?: number
+    maxPendingPerUser?: number
     [key: string]: unknown
   }
 }
@@ -112,33 +115,25 @@ async function handleAgentAutoRoute({
   const agentConfig = getAgentConfig() as AgentConfigLike
   configureAgentQueue(agentConfig.queue || {})
   try {
-    const agentResult = await enqueueAgentTask({
+    const agentRunInput = {
+      userMessage: searchRunOptions.agentUserMessage || userText,
+      userName,
+      userId: currentUserId,
+      channelKey,
+      channel: 'qq',
+      agentMode: true,
+      isAdmin: hasAdminPermission(liveSession),
+      ...searchRunOptions,
+    }
+    const submission = submitAgentWorkerTask({
+      channel: 'qq',
       channelKey,
       userId: currentUserId,
       timeoutMs: agentConfig.queue?.timeoutMs,
-      fn: () => agentEngine.run({
-        userMessage: searchRunOptions.agentUserMessage || userText,
-        userName,
-        userId: currentUserId,
-        channelKey,
-        channel: 'qq',
-        bot: resolveBot(),
-        agentMode: true,
-        isAdmin: hasAdminPermission(liveSession),
-        ...searchRunOptions,
-      }),
+      maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+      payload: { entry: 'qq-auto-route', reason: route.reason || '', agentWorker: createAgentRunWorkerPayload('qq-auto-route', agentRunInput) },
     })
-    const reply = await retellAgentResult(agentResult, {
-      ctx,
-      session: liveSession,
-      channelKey,
-      currentUserId,
-      userName,
-      userText,
-      randomTriggered,
-      chat,
-    })
-    return { handled: true, reply }
+    return { handled: true, reply: submission.message }
   } catch (error) {
     const errorLike = error && typeof error === 'object' ? error as AutoRouteErrorLike : {}
     const code = errorLike.code ? String(errorLike.code) : ''

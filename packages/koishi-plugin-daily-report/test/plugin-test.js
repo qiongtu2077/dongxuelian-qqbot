@@ -1,15 +1,21 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { spawn } = require('child_process')
 
 const PLUGIN_PATH = path.resolve(__dirname, '..', 'lib', 'index.js')
 const CONFIG_PATH = path.resolve(__dirname, '..', 'lib', 'config.js')
 const DATA_COLLECTOR_PATH = path.resolve(__dirname, '..', 'lib', 'data-collector.js')
 const AI_ANALYZER_PATH = path.resolve(__dirname, '..', 'lib', 'ai-analyzer.js')
 const HTML_RENDERER_PATH = path.resolve(__dirname, '..', 'lib', 'html-renderer.js')
+const REPORT_PIPELINE_PATH = path.resolve(__dirname, '..', 'lib', 'report-pipeline.js')
 const MODELS_PATH = path.resolve(__dirname, '..', 'lib', 'models.js')
 const API_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'core', 'api.js')
 const RUNTIME_CONFIG_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'core', 'runtime-config.js')
+const AI_ADMISSION_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-scheduler', 'admission.js')
+const AI_TASK_STORE_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-workers', 'task-store.js')
+const AI_CONSTANTS_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'core', 'constants.js')
+const AI_SYSTEM_PROTECTION_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-system', 'system-protection.js')
 
 const { requestChatCompletions } = require(API_PATH)
 
@@ -98,6 +104,67 @@ function createSampleReportData() {
       { time: '21:02', user: 'Alice', userId: '10001', content: '再补一条。' },
     ],
   }
+}
+
+function createResourceRuntimeMock(options = {}) {
+  const state = {
+    admissions: [],
+    tasks: [],
+    submissions: [],
+    failed: [],
+    deferred: [],
+    submitAttempts: 0,
+    submitError: options.submitError || null,
+    admissionDecision: options.admissionDecision || { decision: 'run_now', reason: 'accepted' },
+  }
+  const admission = {
+    admitTask(input) {
+      state.admissions.push(input)
+      const raw = typeof state.admissionDecision === 'function'
+        ? state.admissionDecision(input, state)
+        : state.admissionDecision
+      return { decision: 'run_now', reason: 'accepted', ...(raw || {}) }
+    },
+  }
+  const tasks = {
+    submitResourceTask(input) {
+      state.submitAttempts += 1
+      if (state.submitError) throw state.submitError
+      const task = {
+        id: input.id || `task-${state.submitAttempts}`,
+        kind: input.kind || 'daily_report',
+        status: input.status || 'pending',
+        channelKey: input.channelKey || '',
+        userId: input.userId || '',
+        payload: input.payload || {},
+        notify: input.notify || { target: 'none', status: 'pending' },
+      }
+      state.tasks.push(task)
+      state.submissions.push(task)
+      return task
+    },
+    listResourceTasks(options = {}) {
+      const statuses = Array.isArray(options.statuses) ? options.statuses.map(String) : []
+      if (!statuses.length) return state.tasks.slice()
+      return state.tasks.filter(task => statuses.includes(String(task.status || '')))
+    },
+    failTask(task, error, result = {}) {
+      task.status = 'failed'
+      task.error = error instanceof Error ? error.message : String(error || '')
+      task.result = result
+      state.failed.push({ task, error, result })
+      return task
+    },
+    deferTask(task, reason = 'deferred') {
+      task.status = 'deferred'
+      task.deferReason = reason
+      state.deferred.push({ task, reason })
+      return task
+    },
+  }
+  require.cache[AI_ADMISSION_PATH] = { id: AI_ADMISSION_PATH, filename: AI_ADMISSION_PATH, loaded: true, exports: admission }
+  require.cache[AI_TASK_STORE_PATH] = { id: AI_TASK_STORE_PATH, filename: AI_TASK_STORE_PATH, loaded: true, exports: tasks }
+  return { state, admission, tasks }
 }
 
 function createAiRequestMock(routes) {
@@ -191,25 +258,53 @@ async function testRendererTimeoutCleanup() {
   const originalExistsSync = fs.existsSync
   const originalSetTimeout = global.setTimeout
   const originalClearTimeout = global.clearTimeout
+  const originalDataDir = process.env.DONGXUELIAN_AI_DATA_DIR
   const puppeteerPath = require.resolve('puppeteer-core')
   const originalPuppeteerCache = require.cache[puppeteerPath]
+  const originalConstantsCache = require.cache[AI_CONSTANTS_PATH]
+  const originalSystemProtectionCache = require.cache[AI_SYSTEM_PROTECTION_PATH]
+  const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-render-s8-'))
   const timeoutToken = { id: 'render-timeout' }
   let timeoutCreated = false
   let timeoutCleared = false
   let browserClosed = false
+  let fakeChromiumProcess = null
+  let fakePid = null
+
+  const waitWithRealTimer = ms => new Promise(resolve => originalSetTimeout(resolve, ms))
+  const isPidAlive = pid => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (error) {
+      return error && error.code === 'EPERM'
+    }
+  }
 
   fs.existsSync = value => String(value || '').includes('chrome') || originalExistsSync(value)
   global.setTimeout = () => { timeoutCreated = true; return timeoutToken }
   global.clearTimeout = token => { if (token === timeoutToken) timeoutCleared = true }
+  process.env.DONGXUELIAN_AI_DATA_DIR = tempDataDir
+  delete require.cache[AI_CONSTANTS_PATH]
+  delete require.cache[AI_SYSTEM_PROTECTION_PATH]
   require.cache[puppeteerPath] = {
     id: puppeteerPath,
     filename: puppeteerPath,
     loaded: true,
     exports: {
       async launch() {
+        fakeChromiumProcess = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+          stdio: 'ignore',
+          windowsHide: true,
+        })
+        fakePid = fakeChromiumProcess.pid
         return {
+          process: () => fakeChromiumProcess,
           async newPage() { throw new Error('new page failed') },
-          async close() { browserClosed = true },
+          async close() {
+            browserClosed = true
+            throw new Error('mock daily chromium close failed')
+          },
         }
       },
     },
@@ -219,19 +314,40 @@ async function testRendererTimeoutCleanup() {
     delete require.cache[HTML_RENDERER_PATH]
     const renderer = require(HTML_RENDERER_PATH)
     try {
-      await renderer.renderHtmlToImage('<html><body>fail</body></html>')
+      await renderer.renderHtmlToImage('<html><body>fail</body></html>', { taskId: 'daily-render-cleanup-test' })
       check('renderHtmlToImage mock failure throws', false)
     } catch (error) {
       check('renderHtmlToImage mock failure throws', error.message === 'new page failed', error.message)
     }
+    await waitWithRealTimer(500)
+    const fakeAliveAfterClose = fakePid ? isPidAlive(fakePid) : null
+    if (fakeAliveAfterClose) {
+      try { process.kill(fakePid, 'SIGKILL') } catch {}
+    }
+    const systemProtection = require(AI_SYSTEM_PROTECTION_PATH)
+    const status = systemProtection.getSystemProtectionStatus()
+    const cleanupEvents = Array.isArray(status.cleanupEvents) ? status.cleanupEvents : []
+    const dailyCloseFailed = cleanupEvents.filter(event => event.event === 'daily_chromium_close_failed' && Number(event.browserPid) === Number(fakePid))
+    const processTreeTerminated = cleanupEvents.filter(event => event.event === 'process_tree_terminated' && Number(event.rootPid) === Number(fakePid))
     check('renderHtmlToImage clears timeout on failure', timeoutCreated && timeoutCleared, JSON.stringify({ timeoutCreated, timeoutCleared }))
     check('renderHtmlToImage closes browser on failure', browserClosed, JSON.stringify({ browserClosed }))
+    check('renderHtmlToImage writes daily chromium close failure event', dailyCloseFailed.length >= 1, JSON.stringify({ fakePid, cleanupEvents: cleanupEvents.map(event => event.event).slice(-6) }))
+    check('renderHtmlToImage terminates recorded chromium child process', processTreeTerminated.length >= 1 && fakeAliveAfterClose === false, JSON.stringify({ fakePid, fakeAliveAfterClose, cleanupEvents: cleanupEvents.map(event => event.event).slice(-6) }))
   } finally {
+    if (fakePid && isPidAlive(fakePid)) {
+      try { process.kill(fakePid, 'SIGKILL') } catch {}
+    }
     fs.existsSync = originalExistsSync
     global.setTimeout = originalSetTimeout
     global.clearTimeout = originalClearTimeout
+    if (originalDataDir === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
+    else process.env.DONGXUELIAN_AI_DATA_DIR = originalDataDir
     if (originalPuppeteerCache) require.cache[puppeteerPath] = originalPuppeteerCache
     else delete require.cache[puppeteerPath]
+    if (originalConstantsCache) require.cache[AI_CONSTANTS_PATH] = originalConstantsCache
+    else delete require.cache[AI_CONSTANTS_PATH]
+    if (originalSystemProtectionCache) require.cache[AI_SYSTEM_PROTECTION_PATH] = originalSystemProtectionCache
+    else delete require.cache[AI_SYSTEM_PROTECTION_PATH]
     delete require.cache[HTML_RENDERER_PATH]
     require(HTML_RENDERER_PATH)
   }
@@ -413,13 +529,15 @@ async function testAIAnalyzerObjectResponse() {
 async function testConcurrentReportGuard() {
   section('middleware concurrency guard')
   const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-'))
-  fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123']), 'utf8')
+  fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123', '456']), 'utf8')
 
   const originalConfigCache = require.cache[CONFIG_PATH]
   const originalDataCollectorCache = require.cache[DATA_COLLECTOR_PATH]
   const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
   const originalRendererCache = require.cache[HTML_RENDERER_PATH]
   const originalPluginCache = require.cache[PLUGIN_PATH]
+  const originalAdmissionCache = require.cache[AI_ADMISSION_PATH]
+  const originalTaskStoreCache = require.cache[AI_TASK_STORE_PATH]
 
   let collectCalls = 0
   let analyzeCalls = 0
@@ -469,6 +587,7 @@ async function testConcurrentReportGuard() {
         },
       },
     }
+    const runtime = createResourceRuntimeMock()
 
     delete require.cache[PLUGIN_PATH]
     const plugin = require(PLUGIN_PATH)
@@ -483,7 +602,7 @@ async function testConcurrentReportGuard() {
       _sent: firstSent,
       send: async msg => {
         firstSent.push(msg)
-        if (msg === 'Thinking......') return promptPending
+        if (String(msg).includes('已提交后台任务')) return promptPending
         return true
       },
     })
@@ -492,23 +611,27 @@ async function testConcurrentReportGuard() {
     const firstRun = middleware(firstSession, () => 'next-1')
     const secondRun = middleware(secondSession, () => 'next-2')
 
-    check('first report enters generation state', firstSent.includes('Thinking......'), JSON.stringify(firstSent))
+    check('first report submits background task', runtime.state.submissions.length === 1, JSON.stringify(runtime.state.submissions))
+    check('first report enters in-flight while prompt is sending', firstSent.some(item => String(item).includes('已提交后台任务')), JSON.stringify(firstSent))
     check('second report is rejected while first is running', secondSession._sent.some(item => String(item).includes('正在生成中')), JSON.stringify(secondSession._sent))
-    check('second report did not call collector', collectCalls === 1, String(collectCalls))
+    check('second report does not submit another task', runtime.state.submissions.length === 1, JSON.stringify(runtime.state.submissions))
+    check('middleware does not call collector', collectCalls === 0, String(collectCalls))
     check('second report did not call analyzer', analyzeCalls === 0, String(analyzeCalls))
     check('second report did not call renderer', renderCalls === 0, String(renderCalls))
 
     resolvePrompt()
     resolveAnalysis({ topics: [], goldenQuotes: [], userTitles: [], qualityReview: null, tokenUsage: { totalTokens: 0 } })
     await Promise.all([firstRun, secondRun])
-    check('first report completed analyzer', analyzeCalls === 1, String(analyzeCalls))
-    check('first report completed render', renderCalls === 1, String(renderCalls))
+    check('first report clears in-flight after prompt send', !plugin._test.inFlightReports.has('123'))
+    check('background submission writes cooldown', plugin._test.cooldown.has('123'))
   } finally {
     restoreModuleCache(CONFIG_PATH, originalConfigCache)
     restoreModuleCache(DATA_COLLECTOR_PATH, originalDataCollectorCache)
     restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
     restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
     restoreModuleCache(PLUGIN_PATH, originalPluginCache)
+    restoreModuleCache(AI_ADMISSION_PATH, originalAdmissionCache)
+    restoreModuleCache(AI_TASK_STORE_PATH, originalTaskStoreCache)
     try { fs.rmSync(reportDataDir, { recursive: true, force: true }) } catch {}
   }
 }
@@ -516,15 +639,16 @@ async function testConcurrentReportGuard() {
 async function testCooldownAfterSuccessOnly() {
   section('cooldown success/failure regression')
   const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-cooldown-'))
-  fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123']), 'utf8')
+  fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123', '456']), 'utf8')
 
   const originalConfigCache = require.cache[CONFIG_PATH]
   const originalDataCollectorCache = require.cache[DATA_COLLECTOR_PATH]
   const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
   const originalRendererCache = require.cache[HTML_RENDERER_PATH]
   const originalPluginCache = require.cache[PLUGIN_PATH]
+  const originalAdmissionCache = require.cache[AI_ADMISSION_PATH]
+  const originalTaskStoreCache = require.cache[AI_TASK_STORE_PATH]
 
-  let renderShouldFail = true
   let renderCalls = 0
   let now = 100000
   const originalDateNow = Date.now
@@ -556,11 +680,11 @@ async function testCooldownAfterSuccessOnly() {
       exports: {
         renderReport: async () => {
           renderCalls += 1
-          if (renderShouldFail) throw new Error('render failed')
           return Buffer.from('fake-png')
         },
       },
     }
+    const runtime = createResourceRuntimeMock()
 
     delete require.cache[PLUGIN_PATH]
     const plugin = require(PLUGIN_PATH)
@@ -568,24 +692,41 @@ async function testCooldownAfterSuccessOnly() {
     plugin.apply(ctx)
     const middleware = ctx._middlewareList[0]
 
-    const failed = makeSession({ content: '群聊日报', guildId: '123' })
-    await middleware(failed, () => 'next')
-    check('failed report returns text fallback message', failed._sent.some(item => String(item).includes('日报文字版')), JSON.stringify(failed._sent))
-
-    const backoff = makeSession({ content: '群聊日报', guildId: '123' })
-    await middleware(backoff, () => 'next')
-    check('failed report uses short failure backoff', backoff._sent.some(item => String(item).includes('稍等几秒')), JSON.stringify(backoff._sent))
-
-    now += 11000
-    renderShouldFail = false
-    const retry = makeSession({ content: '群聊日报', guildId: '123' })
-    await middleware(retry, () => 'next')
-    check('failed report can retry after short backoff before success cooldown', retry._sent.some(item => String(item).includes('base64')), JSON.stringify(retry._sent))
+    const first = makeSession({ content: '群聊日报', guildId: '123' })
+    await middleware(first, () => 'next')
+    check('successful submit sends background task prompt', first._sent.some(item => String(item).includes('已提交后台任务')), JSON.stringify(first._sent))
+    check('successful submit writes normal cooldown', plugin._test.cooldown.has('123'))
 
     const cooldownHit = makeSession({ content: '群聊日报', guildId: '123' })
     await middleware(cooldownHit, () => 'next')
-    check('successful report writes normal cooldown', cooldownHit._sent.some(item => String(item).includes('生成太频繁')), JSON.stringify(cooldownHit._sent))
-    check('render was called only for failed attempt and retry', renderCalls === 2, String(renderCalls))
+    check('cooldown blocks immediate duplicate submit', cooldownHit._sent.some(item => String(item).includes('生成太频繁')), JSON.stringify(cooldownHit._sent))
+
+    now += 61000
+    runtime.state.submitError = new Error('submit failed')
+    const failed = makeSession({ content: '群聊日报', guildId: '123' })
+    failed.guildId = '456'
+    await middleware(failed, () => 'next')
+    check('submit failure returns controlled message', failed._sent.some(item => String(item).includes('提交后台任务失败')), JSON.stringify(failed._sent))
+    check('submit failure writes short failure backoff', plugin._test.failureBackoff.has('456'))
+
+    const backoff = makeSession({ content: '群聊日报', guildId: '123' })
+    backoff.guildId = '456'
+    await middleware(backoff, () => 'next')
+    check('failed submit uses short failure backoff', backoff._sent.some(item => String(item).includes('稍等几秒')), JSON.stringify(backoff._sent))
+
+    now += 11000
+    runtime.state.submitError = null
+    const retry = makeSession({ content: '群聊日报', guildId: '123' })
+    retry.guildId = '456'
+    await middleware(retry, () => 'next')
+    check('failed submit can retry after short backoff', retry._sent.some(item => String(item).includes('已提交后台任务')), JSON.stringify(retry._sent))
+
+    const secondCooldownHit = makeSession({ content: '群聊日报', guildId: '123' })
+    secondCooldownHit.guildId = '456'
+    await middleware(secondCooldownHit, () => 'next')
+    check('retry success writes normal cooldown', secondCooldownHit._sent.some(item => String(item).includes('生成太频繁')), JSON.stringify(secondCooldownHit._sent))
+    check('daily command middleware does not render synchronously', renderCalls === 0, String(renderCalls))
+    check('successful submissions are recorded', runtime.state.submissions.length === 2, JSON.stringify(runtime.state.submissions))
   } finally {
     Date.now = originalDateNow
     restoreModuleCache(CONFIG_PATH, originalConfigCache)
@@ -593,6 +734,51 @@ async function testCooldownAfterSuccessOnly() {
     restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
     restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
     restoreModuleCache(PLUGIN_PATH, originalPluginCache)
+    restoreModuleCache(AI_ADMISSION_PATH, originalAdmissionCache)
+    restoreModuleCache(AI_TASK_STORE_PATH, originalTaskStoreCache)
+    try { fs.rmSync(reportDataDir, { recursive: true, force: true }) } catch {}
+  }
+}
+
+async function testMaintenanceModeBlocksDailyCommand() {
+  section('maintenance mode command guard')
+  const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-maintenance-'))
+  fs.writeFileSync(path.join(reportDataDir, 'ai-paused.txt'), '优化中\n', 'utf8')
+
+  const originalConfigCache = require.cache[CONFIG_PATH]
+  const originalPluginCache = require.cache[PLUGIN_PATH]
+  const originalAdmissionCache = require.cache[AI_ADMISSION_PATH]
+  const originalTaskStoreCache = require.cache[AI_TASK_STORE_PATH]
+
+  try {
+    require.cache[CONFIG_PATH] = {
+      id: CONFIG_PATH,
+      filename: CONFIG_PATH,
+      loaded: true,
+      exports: { TIMEOUTS: { aiRequest: 30000, cooldown: 60000 }, DATA_DIR: reportDataDir },
+    }
+    const runtime = createResourceRuntimeMock()
+
+    delete require.cache[PLUGIN_PATH]
+    const plugin = require(PLUGIN_PATH)
+    const ctx = makeCtx()
+    plugin.apply(ctx)
+    const middleware = ctx._middlewareList[0]
+    const session = makeSession({ content: '群聊日报', guildId: 'not-whitelisted' })
+    let nextCalled = false
+
+    await middleware(session, () => { nextCalled = true; return 'next' })
+
+    check('maintenance daily command is intercepted', !nextCalled)
+    check('maintenance daily command returns fixed text', session._sent[0] === '优化中', JSON.stringify(session._sent))
+    check('maintenance daily command skips admission', runtime.state.admissions.length === 0, JSON.stringify(runtime.state.admissions))
+    check('maintenance daily command skips S2 submission', runtime.state.submissions.length === 0, JSON.stringify(runtime.state.submissions))
+    check('maintenance daily command does not set cooldown', !plugin._test.cooldown.has('not-whitelisted'))
+  } finally {
+    restoreModuleCache(CONFIG_PATH, originalConfigCache)
+    restoreModuleCache(PLUGIN_PATH, originalPluginCache)
+    restoreModuleCache(AI_ADMISSION_PATH, originalAdmissionCache)
+    restoreModuleCache(AI_TASK_STORE_PATH, originalTaskStoreCache)
     try { fs.rmSync(reportDataDir, { recursive: true, force: true }) } catch {}
   }
 }
@@ -607,6 +793,8 @@ async function testSendFailureBoundary() {
   const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
   const originalRendererCache = require.cache[HTML_RENDERER_PATH]
   const originalPluginCache = require.cache[PLUGIN_PATH]
+  const originalAdmissionCache = require.cache[AI_ADMISSION_PATH]
+  const originalTaskStoreCache = require.cache[AI_TASK_STORE_PATH]
   const oldSendRetryDelay = process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS
 
   let collectCalls = 0
@@ -654,6 +842,7 @@ async function testSendFailureBoundary() {
         },
       },
     }
+    const runtime = createResourceRuntimeMock()
 
     delete require.cache[PLUGIN_PATH]
     const plugin = require(PLUGIN_PATH)
@@ -677,8 +866,9 @@ async function testSendFailureBoundary() {
       rejected = true
     }
     check('daily report prompt send failure does not reject middleware', !rejected)
-    check('daily report stops after prompt send failure', collectCalls === 1 && analyzeCalls === 0 && renderCalls === 0, JSON.stringify({ collectCalls, analyzeCalls, renderCalls }))
-    check('daily report logs controlled send failure', ctx._logs.some(log => log.level === 'warn' && log.msg.includes('生成中提示发送失败')), JSON.stringify(ctx._logs))
+    check('daily report submits background task before prompt send failure', runtime.state.submissions.length === 1, JSON.stringify(runtime.state.submissions))
+    check('daily report does not run synchronous pipeline after prompt failure', collectCalls === 0 && analyzeCalls === 0 && renderCalls === 0, JSON.stringify({ collectCalls, analyzeCalls, renderCalls }))
+    check('daily report logs controlled prompt send failure', ctx._logs.some(log => log.level === 'warn' && log.msg.includes('日报后台任务提示发送失败')), JSON.stringify(ctx._logs))
     check('daily report clears in-flight after prompt send failure', !plugin._test.inFlightReports.has('123'))
 
     let retryAttempts = 0
@@ -702,12 +892,14 @@ async function testSendFailureBoundary() {
     restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
     restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
     restoreModuleCache(PLUGIN_PATH, originalPluginCache)
+    restoreModuleCache(AI_ADMISSION_PATH, originalAdmissionCache)
+    restoreModuleCache(AI_TASK_STORE_PATH, originalTaskStoreCache)
     try { fs.rmSync(reportDataDir, { recursive: true, force: true }) } catch {}
   }
 }
 
 async function testRenderPreflightSkipsAiAndChromium() {
-  section('render preflight regression')
+  section('admission defer regression')
   const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-preflight-'))
   fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123']), 'utf8')
 
@@ -716,6 +908,8 @@ async function testRenderPreflightSkipsAiAndChromium() {
   const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
   const originalRendererCache = require.cache[HTML_RENDERER_PATH]
   const originalPluginCache = require.cache[PLUGIN_PATH]
+  const originalAdmissionCache = require.cache[AI_ADMISSION_PATH]
+  const originalTaskStoreCache = require.cache[AI_TASK_STORE_PATH]
   const oldSendRetryDelay = process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS
 
   let collectCalls = 0
@@ -768,6 +962,9 @@ async function testRenderPreflightSkipsAiAndChromium() {
         },
       },
     }
+    const runtime = createResourceRuntimeMock({
+      admissionDecision: { decision: 'defer', reason: 'resource state black defers heavy task' },
+    })
 
     delete require.cache[PLUGIN_PATH]
     const plugin = require(PLUGIN_PATH)
@@ -778,11 +975,11 @@ async function testRenderPreflightSkipsAiAndChromium() {
 
     await middleware(session, () => 'next')
 
-    check('render preflight runs after data collection', collectCalls === 1 && preflightCalls === 1, JSON.stringify({ collectCalls, preflightCalls }))
-    check('render preflight skips AI and Chromium when memory is low', analyzeCalls === 0 && renderCalls === 0, JSON.stringify({ analyzeCalls, renderCalls }))
-    check('render preflight sends text fallback with memory reason', session._sent.some(item => String(item).includes('详细日报文字版') && String(item).includes('服务器可用内存不足')), JSON.stringify(session._sent))
-    check('render preflight logs memory failure', ctx._logs.some(log => log.level === 'error' && log.msg.includes('渲染预检失败[memory]')), JSON.stringify(ctx._logs))
-    check('render preflight clears in-flight state', !plugin._test.inFlightReports.has('123'))
+    check('admission defer submits one daily task', runtime.state.submissions.length === 1, JSON.stringify(runtime.state.submissions))
+    check('admission defer marks task deferred', runtime.state.deferred.length === 1 && runtime.state.deferred[0].reason.includes('resource state black'), JSON.stringify(runtime.state.deferred))
+    check('admission defer sends low-cost deferred notice', session._sent.some(item => String(item).includes('日报已延期')), JSON.stringify(session._sent))
+    check('admission defer skips synchronous collect/AI/Chromium', collectCalls === 0 && analyzeCalls === 0 && renderCalls === 0 && preflightCalls === 0, JSON.stringify({ collectCalls, analyzeCalls, renderCalls, preflightCalls }))
+    check('admission defer clears in-flight state', !plugin._test.inFlightReports.has('123'))
   } finally {
     if (oldSendRetryDelay === undefined) delete process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS
     else process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS = oldSendRetryDelay
@@ -791,11 +988,13 @@ async function testRenderPreflightSkipsAiAndChromium() {
     restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
     restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
     restoreModuleCache(PLUGIN_PATH, originalPluginCache)
+    restoreModuleCache(AI_ADMISSION_PATH, originalAdmissionCache)
+    restoreModuleCache(AI_TASK_STORE_PATH, originalTaskStoreCache)
     try { fs.rmSync(reportDataDir, { recursive: true, force: true }) } catch {}
   }
 }
 
-async function testRenderFailureSendsTextFallback() {
+async function testRenderFailureSendsTextFallbackLegacy() {
   section('render text fallback regression')
   const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-text-fallback-'))
   fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123']), 'utf8')
@@ -883,6 +1082,109 @@ async function testRenderFailureSendsTextFallback() {
 
 // ===== 3. models 单元测试 =====
 section('models 单元测试')
+async function testRenderFailureSendsTextFallback() {
+  section('report-pipeline render fallback regression')
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-render-fallback-'))
+  const originalDataCollectorCache = require.cache[DATA_COLLECTOR_PATH]
+  const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
+  const originalRendererCache = require.cache[HTML_RENDERER_PATH]
+  const originalPipelineCache = require.cache[REPORT_PIPELINE_PATH]
+
+  let collectCalls = 0
+  let analyzeCalls = 0
+  let renderCalls = 0
+
+  try {
+    require.cache[DATA_COLLECTOR_PATH] = {
+      id: DATA_COLLECTOR_PATH,
+      filename: DATA_COLLECTOR_PATH,
+      loaded: true,
+      exports: {
+        collectReportData: () => {
+          collectCalls += 1
+          return {
+            date: '2099-01-01',
+            totalMessages: 3,
+            activeMembers: 2,
+            emojiCount: 0,
+            totalChars: 48,
+            peakHour: '21:00-21:59',
+            topMembers: [
+              { name: 'Alice', userId: '10001', msgCount: 2 },
+              { name: 'Bob', userId: '10002', msgCount: 1 },
+            ],
+            messages: [
+              { time: '21:00', user: 'Alice', userId: '10001', content: 'first message' },
+              { time: '21:01', user: 'Bob', userId: '10002', content: 'second message' },
+              { time: '21:02', user: 'Alice', userId: '10001', content: 'third message' },
+            ],
+          }
+        },
+      },
+    }
+    require.cache[AI_ANALYZER_PATH] = {
+      id: AI_ANALYZER_PATH,
+      filename: AI_ANALYZER_PATH,
+      loaded: true,
+      exports: {
+        analyzeWithAI: async () => {
+          analyzeCalls += 1
+          return {
+            topics: [{ title: 'Topic Alpha', summary: 'Summary Alpha' }],
+            goldenQuotes: [{ sender: 'Alice', content: 'Quote Alpha', reason: 'Reason Alpha' }],
+            userTitles: [{ name: 'Alice', title: 'Title Alpha', reason: 'Portrait Alpha' }],
+            qualityReview: { title: 'Review Alpha', summary: 'Quality Alpha' },
+          }
+        },
+      },
+    }
+    require.cache[HTML_RENDERER_PATH] = {
+      id: HTML_RENDERER_PATH,
+      filename: HTML_RENDERER_PATH,
+      loaded: true,
+      exports: {
+        assertRenderEnvironment: () => {},
+        renderReport: async () => {
+          renderCalls += 1
+          throw new Error('Target.setAutoAttach timed out while testing render fallback')
+        },
+      },
+    }
+
+    delete require.cache[REPORT_PIPELINE_PATH]
+    const { generateDailyReportResult } = require(REPORT_PIPELINE_PATH)
+    const steps = []
+    const result = await generateDailyReportResult({
+      taskId: 'render-failure-test',
+      channelKey: '123',
+      detail: true,
+      outputDir,
+      renderImage: true,
+      onStep: step => steps.push(step),
+    })
+
+    const textPath = path.join(outputDir, 'report.txt')
+    const resultPath = path.join(outputDir, 'result.json')
+    const text = fs.existsSync(textPath) ? fs.readFileSync(textPath, 'utf8') : ''
+    const json = fs.existsSync(resultPath) ? JSON.parse(fs.readFileSync(resultPath, 'utf8')) : null
+
+    check('render failure collects and analyzes once', collectCalls === 1 && analyzeCalls === 1, JSON.stringify({ collectCalls, analyzeCalls }))
+    check('render failure attempts render once', renderCalls === 1, JSON.stringify({ renderCalls }))
+    check('render failure keeps text mode result', result.mode === 'text' && result.level === 'L2', JSON.stringify(result))
+    check('render failure records render_failed reason', String(result.reason).startsWith('render_failed:Target.setAutoAttach timed out'), String(result.reason))
+    check('render failure writes report.txt without image', result.imagePath === null && fs.existsSync(textPath), JSON.stringify({ imagePath: result.imagePath, textPathExists: fs.existsSync(textPath) }))
+    check('render failure writes result.json as text', !!json && json.mode === 'text' && json.level === 'L2' && json.imagePath === null, JSON.stringify(json))
+    check('render failure text includes AI topics', text.includes('Topic Alpha') && text.includes('Summary Alpha'), text.slice(0, 500))
+    check('render failure emits pipeline steps', ['collecting', 'analyzing', 'compose_text', 'rendering', 'writing_result'].every(step => steps.includes(step)), JSON.stringify(steps))
+  } finally {
+    restoreModuleCache(DATA_COLLECTOR_PATH, originalDataCollectorCache)
+    restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
+    restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
+    restoreModuleCache(REPORT_PIPELINE_PATH, originalPipelineCache)
+    try { fs.rmSync(outputDir, { recursive: true, force: true }) } catch {}
+  }
+}
+
 const result = models.createDefaultAnalysisResult()
 check('createDefaultAnalysisResult returns object', typeof result === 'object')
 check('result has topics', Array.isArray(result.topics))
@@ -936,6 +1238,19 @@ else process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES = oldMaxAnalysisMessages
 delete require.cache[DATA_COLLECTOR_PATH]
 // ===== 5. index 中间件注册 =====
 section('index 中间件注册')
+const middlewareCommandDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-command-'))
+fs.writeFileSync(path.join(middlewareCommandDataDir, 'summary-whitelist.json'), JSON.stringify(['123']), 'utf8')
+const middlewareOriginalConfigCache = require.cache[CONFIG_PATH]
+const middlewareOriginalPluginCache = require.cache[PLUGIN_PATH]
+const middlewareOriginalAdmissionCache = require.cache[AI_ADMISSION_PATH]
+const middlewareOriginalTaskStoreCache = require.cache[AI_TASK_STORE_PATH]
+require.cache[CONFIG_PATH] = {
+  id: CONFIG_PATH,
+  filename: CONFIG_PATH,
+  loaded: true,
+  exports: { TIMEOUTS: { aiRequest: 30000, cooldown: 60000 }, DATA_DIR: middlewareCommandDataDir },
+}
+createResourceRuntimeMock()
 const plugin = reloadPlugin()
 check('plugin has name', plugin.name === 'daily-report')
 check('plugin has apply', typeof plugin.apply === 'function')
@@ -961,7 +1276,6 @@ testMiddleware('你好', '123').then(nonReport => {
   check('非日报命令调用next', nonReport.nextCalled)
 
   // 测试日报命令不调用next（被拦截）
-  process.env.DONGXUELIAN_AI_DATA_DIR = os.tmpdir()
   return testMiddleware('群聊日报', '123')
 }).then(reportResult => {
   check('群聊日报命令被拦截（不调用next）', !reportResult.nextCalled)
@@ -978,7 +1292,11 @@ testMiddleware('你好', '123').then(nonReport => {
   check('群聊详细日报命令被拦截', !fullResult.nextCalled)
 
   // 清理
-  delete process.env.DONGXUELIAN_AI_DATA_DIR
+  restoreModuleCache(CONFIG_PATH, middlewareOriginalConfigCache)
+  restoreModuleCache(PLUGIN_PATH, middlewareOriginalPluginCache)
+  restoreModuleCache(AI_ADMISSION_PATH, middlewareOriginalAdmissionCache)
+  restoreModuleCache(AI_TASK_STORE_PATH, middlewareOriginalTaskStoreCache)
+  try { fs.rmSync(middlewareCommandDataDir, { recursive: true, force: true }) } catch {}
 
   return testRendererTimeoutCleanup()
 }).then(() => testAiFallbackRegression()
@@ -986,6 +1304,7 @@ testMiddleware('你好', '123').then(nonReport => {
 ).then(() => testAIAnalyzerObjectResponse()
 ).then(() => testConcurrentReportGuard()
 ).then(() => testCooldownAfterSuccessOnly()
+).then(() => testMaintenanceModeBlocksDailyCommand()
 ).then(() => testSendFailureBoundary()
 ).then(() => testRenderPreflightSkipsAiAndChromium()
 ).then(() => testRenderFailureSendsTextFallback()

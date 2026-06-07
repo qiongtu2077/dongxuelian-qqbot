@@ -29,6 +29,8 @@ interface BrowserActionParams {
 interface BrowserActionContext {
     userId?: string;
     channelKey?: string;
+    taskId?: unknown;
+    resourceTaskId?: unknown;
 }
 declare function validateUrl(raw: unknown): Promise<string>;
 declare const _default: {

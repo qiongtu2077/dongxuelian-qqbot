@@ -34,30 +34,11 @@ interface EmotionTodayCache {
     date: string;
     messages: EmotionMessage[];
 }
-interface EmotionStats {
-    messageCount: number;
-    userCount: number;
-}
-interface EmotionAnalysis {
-    score: number;
-    confidence: number;
-    mood: string;
-    summary: string;
-    reasons: string[];
-    keywords: string[];
-}
-interface EmotionHistoryItem {
-    date: string;
-    score: number;
-    mood: string;
-    summary: string;
-}
 interface EmotionCacheItem {
     response?: unknown;
     text?: string;
     ts: number;
 }
-type EmotionImageRenderer = (analysis: EmotionAnalysis, stats: EmotionStats, history: EmotionHistoryItem[]) => Promise<unknown>;
 interface EmotionCommandState {
     plain: string;
     inGuild: boolean;
@@ -66,7 +47,6 @@ interface EmotionCommandState {
     callOpenAI: CallOpenAI;
     channelTodayCache: Map<string, EmotionTodayCache>;
     lastEmotionCache: Map<string, EmotionCacheItem>;
-    renderEmotionImage?: EmotionImageRenderer;
 }
 declare function handleEmotionCommand(session: EmotionSessionLike, ctx: EmotionContextLike, state: EmotionCommandState): Promise<ReturnType<typeof handled> | ReturnType<typeof notHandled>>;
 declare const _default: {

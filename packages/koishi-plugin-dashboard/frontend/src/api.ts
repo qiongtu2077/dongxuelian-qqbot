@@ -224,12 +224,22 @@ export async function fetchAgentConfig() { return get('/agent/config', true) }
 export async function saveAgentConfig(data: unknown) { return put('/agent/config', data, true) }
 export async function fetchAgentPersonas() { return get('/agent/personas', true) }
 export async function saveAgentPersona(data: unknown) { return put('/agent/persona', data, true) }
-export async function sendAgentMessage(message: string, history: unknown[] = []) { return post('/agent/chat', { message, history }, true, 60000) }
-export async function confirmAgentTool(pendingId = '') { return post('/agent/confirm', { pendingId }, true, 60000) }
+export async function sendAgentMessage(message: string, history: unknown[] = []) { return post('/agent/chat', { message, history }, true, 10000) }
+export async function confirmAgentTool(pendingId = '') { return post('/agent/confirm', { pendingId }, true, 10000) }
+export async function fetchAgentTask(taskId: string) { return get('/agent/tasks/' + encodeURIComponent(taskId), true) }
 export async function rejectAgentTool(pendingId = '') { return post('/agent/reject', { pendingId }, true) }
 export async function fetchPendingAgentTools() { return get('/tools/pending', true) }
 export async function fetchAgentSessions() { return get('/agent/sessions', true) }
 export async function fetchAgentSession(id: string) { return get('/agent/sessions/' + encodeURIComponent(id), true) }
+export async function fetchResourceStatus() { return get('/resource/status', true) }
+export async function fetchResourceTasks() { return get('/resource/tasks', true) }
+export async function fetchResourceEvents() { return get('/resource/events', true) }
+export async function fetchResourceWorkers() { return get('/resource/workers', true) }
+export async function fetchResourceMedia() { return get('/resource/media', true) }
+export async function fetchResourcePrecompute() { return get('/resource/precompute', true) }
+export async function cancelResourceTask(taskId: string, reason = 'dashboard cancel') { return post('/resource/cancel', { taskId, reason }, true) }
+export async function reclaimResourceStale(staleMs = 30000) { return post('/resource/reclaim-stale', { staleMs }, true) }
+export async function setResourceMaintenance(enabled: boolean, message = '优化中，别急') { return post('/resource/maintenance', { enabled, message }, true) }
 export async function fetchGalleryImages() { return get('/gallery') }
 export async function uploadGalleryImage(data: unknown) { return post('/gallery', data, true, 60000) }
 export async function deleteGalleryImage(idOrIds: string | string[]) { return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, true) }

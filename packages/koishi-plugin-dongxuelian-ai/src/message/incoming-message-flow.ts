@@ -10,14 +10,14 @@ const {
   getMessageSegments,
   normalizeSegmentData,
   getFileSegmentData,
+  getVoiceSegmentData,
 } = require('./message-segment') as typeof import('./message-segment')
 const { storeImageUrl } = require('../media/image/image-store') as typeof import('../media/image/image-store')
-const { enqueueAnalysis } = require('../media/image/image-analyzer') as typeof import('../media/image/image-analyzer')
 const { storeFile } = require('../media/file/file-store') as typeof import('../media/file/file-store')
 const { checkFile, getExtension, sanitizeFileName } = require('../media/file/file-safety') as typeof import('../media/file/file-safety')
-const { cacheSmallFileBackground } = require('../media/file/incoming-file') as typeof import('../media/file/incoming-file')
-const { transcribeVoice } = require('../media/voice/voice') as typeof import('../media/voice/voice')
-const { loadConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
+const { storeVoice, getCachedTranscript } = require('../media/voice/voice-store') as typeof import('../media/voice/voice-store')
+const { enqueueMediaTask } = require('../media/backpressure/media-queue') as typeof import('../media/backpressure/media-queue')
+const { admitTask } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
 const { logStickerShadowIngestDiagnostic } = require('../diagnostics/diagnostics') as typeof import('../diagnostics/diagnostics')
 
 interface IncomingSession {
@@ -54,6 +54,7 @@ interface ImageArtifactOptions {
   plain: string
   content: string
   channelKey: string
+  queueMedia?: boolean
 }
 
 interface FileArtifactOptions {
@@ -61,6 +62,7 @@ interface FileArtifactOptions {
   analyzed: IncomingAnalysis
   plain: string
   channelKey: string
+  queueMedia?: boolean
 }
 
 interface AudioArtifactOptions {
@@ -68,14 +70,14 @@ interface AudioArtifactOptions {
   session: IncomingSession
   analyzed: IncomingAnalysis
   plain: string
+  channelKey: string
   directAt?: boolean
+  queueMedia?: boolean
 }
 
 interface IncomingMessageArtifactOptions extends ImageArtifactOptions {
   directAt?: boolean
 }
-
-type VoiceConfigInput = Parameters<typeof transcribeVoice>[1]
 
 function getIncomingUserId(session: IncomingSession): string {
   return session.userId || session.author?.id || session.username || ''
@@ -86,7 +88,7 @@ function getIncomingMessageFlowErrorMessage(error: unknown): string {
 }
 
 function warnIncomingAudioFailure(ctx: IncomingContext | null | undefined, error: unknown): void {
-  const message = `[incoming-message-flow] asr failed: ${getIncomingMessageFlowErrorMessage(error)}`
+  const message = `[incoming-message-flow] voice ingest failed: ${getIncomingMessageFlowErrorMessage(error)}`
   const logger = ctx && typeof ctx.logger === 'function' ? ctx.logger('dongxuelian-ai') : null
   if (logger && typeof logger.warn === 'function') {
     logger.warn(message)
@@ -95,7 +97,7 @@ function warnIncomingAudioFailure(ctx: IncomingContext | null | undefined, error
   console.warn(message)
 }
 
-async function handleIncomingImage({ ctx, session, analyzed, plain, content, channelKey }: ImageArtifactOptions): Promise<string> {
+async function handleIncomingImage({ ctx, session, analyzed, plain, content, channelKey, queueMedia = true }: ImageArtifactOptions): Promise<string> {
   if (!analyzed.hasVisual || !channelKey || !session.messageId) return plain
   const segments = getMessageSegments(session)
   const imgSeg = segments.find(s => ['image', 'img'].includes(String(s && typeof s === 'object' && 'type' in s ? s.type || '' : '')))
@@ -123,11 +125,20 @@ async function handleIncomingImage({ ctx, session, analyzed, plain, content, cha
       hasUserId: !!imageMeta.userId,
     },
   })
-  await enqueueAnalysis(channelKey, session.messageId)
+  if (queueMedia) {
+    enqueueMediaTask({
+      kind: 'media_image_analysis',
+      channelKey,
+      messageId: session.messageId,
+      url: String(storableUrl || storableFile || ''),
+      payload: { conversationKey: imageMeta.conversationKey, userId: imageMeta.userId },
+    })
+    admitTask({ kind: 'media_image_analysis', source: 'koishi-worker', channelKey, userId: imageMeta.userId, exclusive: false })
+  }
   return plain.includes('[图片]') ? plain : (plain ? plain + ' ' : '') + '[图片]'
 }
 
-async function handleIncomingFile({ session, analyzed, plain, channelKey }: FileArtifactOptions): Promise<string> {
+async function handleIncomingFile({ session, analyzed, plain, channelKey, queueMedia = true }: FileArtifactOptions): Promise<string> {
   if (!analyzed.hasFile || !channelKey || !session.messageId) return plain
   const fileData = getFileSegmentData(session)
   if (!fileData) return plain
@@ -154,38 +165,65 @@ async function handleIncomingFile({ session, analyzed, plain, channelKey }: File
   await storeFile(channelKey, session.messageId, fileMeta)
   if (plain.includes('[文件]')) return plain
   if (safety.allowed) {
-    if (fileUrl && fileSize <= 1024 * 1024) cacheSmallFileBackground(channelKey, session.messageId, fileUrl, ext)
+    if (queueMedia) {
+      enqueueMediaTask({
+        kind: 'media_file_analysis',
+        channelKey,
+        messageId: session.messageId,
+        url: fileUrl,
+        fileId,
+        payload: { fileName: safeName, fileSize, ext, userId: fileMeta.userId },
+      })
+      admitTask({ kind: 'media_file_analysis', source: 'koishi-worker', channelKey, userId: fileMeta.userId, exclusive: false })
+    }
     return (plain ? plain + ' ' : '') + `[文件: ${safeName} (fileId:${session.messageId})]`
   }
   return (plain ? plain + ' ' : '') + `[文件: ${safeName} - 已跳过${safety.reason ? '(' + safety.reason + ')' : ''}]`
 }
 
-async function resolveIncomingAudioPlain({ ctx, session, analyzed, plain, directAt }: AudioArtifactOptions): Promise<string> {
-  if (!analyzed.hasAudio || (!session.isDirect && !directAt)) return plain
+async function resolveIncomingAudioPlain({ ctx, session, analyzed, plain, channelKey, directAt, queueMedia = true }: AudioArtifactOptions): Promise<string> {
+  if (!analyzed.hasAudio) return plain
+  const shouldTranscribe = !!(session.isDirect || directAt)
   try {
-    const cfg = await loadConfig()
-    const voiceConfig: VoiceConfigInput = {
-      apiKey: cfg.apiKey,
-      model: cfg.model,
-      provider: cfg.provider,
-      baseURL: cfg.baseURL,
+    if (!channelKey || !session.messageId) return plain || '[语音消息]'
+    const voiceData = getVoiceSegmentData(session) || {}
+    const voiceUrl = String(voiceData.url || voiceData.src || '')
+    const voiceFileValue = voiceData.file || voiceData.id || voiceData.fileId || voiceData.file_id || null
+    const voiceFile = voiceFileValue === null || voiceFileValue === undefined || voiceFileValue === '' ? null : String(voiceFileValue)
+    const userId = getIncomingUserId(session)
+    await storeVoice(channelKey, session.messageId, {
+      url: voiceUrl,
+      file: voiceFile,
+      conversationKey: getConversationKey(session),
+      userId,
+    })
+    const cached = await getCachedTranscript(channelKey, session.messageId)
+    if (cached && shouldTranscribe) return `[语音转文字：${cached}]`
+    if (queueMedia && shouldTranscribe) {
+      enqueueMediaTask({
+        kind: 'media_voice_transcription',
+        channelKey,
+        messageId: session.messageId,
+        url: String(voiceUrl || voiceFile || ''),
+        fileId: voiceFile,
+        priority: 88,
+        payload: { url: voiceUrl, file: voiceFile, userId },
+      })
+      admitTask({ kind: 'media_voice_transcription', source: 'koishi-worker', channelKey, userId, exclusive: false })
     }
-    const transcribed = await Promise.race([
-      transcribeVoice(session, voiceConfig),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('asr timeout')), 10000)),
-    ])
-    return transcribed ? `[语音转文字：${transcribed}]` : '[语音消息]'
+    if (!shouldTranscribe) return plain
+    return plain.includes('[语音') ? plain : (plain ? plain + ' ' : '') + '[语音消息]'
   } catch (error) {
     warnIncomingAudioFailure(ctx, error)
     return '[语音消息]'
   }
 }
 
-async function handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt }: IncomingMessageArtifactOptions): Promise<string> {
+async function handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt, queueMedia = true }: IncomingMessageArtifactOptions): Promise<string> {
   let nextPlain = plain
-  nextPlain = await handleIncomingImage({ ctx, session, analyzed, plain: nextPlain, content, channelKey })
-  nextPlain = await handleIncomingFile({ session, analyzed, plain: nextPlain, channelKey })
-  nextPlain = await resolveIncomingAudioPlain({ ctx, session, analyzed, plain: nextPlain, directAt })
+  nextPlain = await handleIncomingImage({ ctx, session, analyzed, plain: nextPlain, content, channelKey, queueMedia })
+  nextPlain = await handleIncomingFile({ session, analyzed, plain: nextPlain, channelKey, queueMedia })
+  nextPlain = await resolveIncomingAudioPlain({ ctx, session, analyzed, plain: nextPlain, channelKey, directAt, queueMedia })
   return nextPlain
 }
 

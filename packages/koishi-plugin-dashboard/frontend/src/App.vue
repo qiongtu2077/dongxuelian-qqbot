@@ -55,12 +55,13 @@ import StatusPanel from './components/StatusPanel.vue'
 import LogPanel from './components/LogPanel.vue'
 import GalleryPanel from './components/GalleryPanel.vue'
 import AgentPanel from './components/AgentPanel.vue'
+import ResourcePanel from './components/ResourcePanel.vue'
 
 const componentMap: Record<string, Component> = {
   deploy: DeployPanel, control: ControlPanel, config: ConfigPanel, keys: KeyManager,
   persona: PersonaPanel, features: CommandBrowser, commands: CommandList,
   whitelist: WhitelistPanel, settings: SettingsPanel, status: StatusPanel, logs: LogPanel,
-  gallery: GalleryPanel, agent: AgentPanel
+  gallery: GalleryPanel, agent: AgentPanel, resource: ResourcePanel
 }
 
 defineOptions({ name: 'DashboardApp' })
@@ -101,7 +102,7 @@ defineOptions({ name: 'DashboardApp' })
       { id: 'deploy', label: '部署' }, { id: 'control', label: '终端控制' }, { id: 'config', label: '模型配置' },
       { id: 'keys', label: 'API Keys' }, { id: 'persona', label: '人格实验室' }, { id: 'features', label: '功能地图' },
       { id: 'commands', label: '指令速查' }, { id: 'whitelist', label: '黑白名单' },
-      { id: 'settings', label: '安全设置' }, { id: 'agent', label: 'Agent 控制台' }, { id: 'logs', label: '日志中心' }, { id: 'status', label: '系统状态' }, { id: 'gallery', label: '莲莲图集' }
+      { id: 'settings', label: '安全设置' }, { id: 'agent', label: 'Agent 控制台' }, { id: 'resource', label: '资源中心' }, { id: 'logs', label: '日志中心' }, { id: 'status', label: '系统状态' }, { id: 'gallery', label: '莲莲图集' }
     ]
     const visibleTabs = computed(() => isElectronDeployer ? allTabs.filter(item => item.id !== 'settings') : allTabs)
     const tabs = computed(() => deployUnlocked.value ? visibleTabs.value : visibleTabs.value.filter(item => item.id === 'deploy'))

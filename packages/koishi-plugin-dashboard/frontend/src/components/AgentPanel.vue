@@ -187,7 +187,7 @@
 
 <script lang="ts">
 import { computed, inject, onMounted, reactive, ref } from 'vue'
-import { fetchAgentConfig, saveAgentConfig, fetchAgentPersonas, saveAgentPersona, sendAgentMessage, confirmAgentTool, rejectAgentTool, fetchPendingAgentTools, fetchAgentSessions, fetchAgentSession } from '../api'
+import { fetchAgentConfig, saveAgentConfig, fetchAgentPersonas, saveAgentPersona, sendAgentMessage, confirmAgentTool, rejectAgentTool, fetchPendingAgentTools, fetchAgentSessions, fetchAgentSession, fetchAgentTask } from '../api'
 import type { MessageState, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
@@ -276,6 +276,22 @@ interface AgentSessionDetail {
 interface AgentChatMessage {
   role: 'user' | 'assistant'
   content: string
+}
+
+interface AgentTaskResult {
+  ok?: boolean
+  reply?: string
+  message?: string
+  error?: string
+  pendingId?: string | null
+}
+
+interface AgentTaskStatus {
+  id?: string
+  status?: string
+  step?: string
+  error?: string
+  result?: AgentTaskResult
 }
 
 const defaultConfig: AgentConfigState = {
@@ -389,6 +405,31 @@ export default {
     function getAgentReply(data: unknown, fallback = '') {
       const value = asRecord(data)
       return String(value.reply || value.result || value.message || fallback || '').trim()
+    }
+
+    function getAgentTaskReply(task: AgentTaskStatus | null, fallback = '') {
+      const result = task?.result || {}
+      return String(result.reply || result.message || result.error || task?.error || fallback || '').trim()
+    }
+
+    function sleep(ms: number) {
+      return new Promise(resolve => setTimeout(resolve, ms))
+    }
+
+    async function pollAgentTask(taskId: string, fallback = ''): Promise<AgentTaskStatus | null> {
+      const id = String(taskId || '').trim()
+      if (!id) return null
+      for (let i = 0; i < 90; i++) {
+        const res = await fetchAgentTask(id)
+        const data = asRecord(res.data)
+        if (!res.ok || !data.ok) throw new Error(messageFromData(data, '读取任务状态失败'))
+        const task = asRecord(data.task) as unknown as AgentTaskStatus
+        const status = String(task.status || '')
+        if (status === 'done' || status === 'failed' || status === 'deferred' || status === 'cancelled') return task
+        if (i === 0 && fallback) pushAssistant(fallback)
+        await sleep(i < 10 ? 1000 : 2000)
+      }
+      return { id, status: 'timeout', result: { message: '后台任务仍在执行，可稍后刷新 Agent 会话或资源中心查看结果。' } }
     }
 
     function persistHistory() {
@@ -571,8 +612,15 @@ export default {
         }
         const data = asRecord(res.data)
         if (!res.ok || !data.ok) throw new Error(messageFromData(data, '确认失败'))
-        pushAssistant(getAgentReply(data))
-        pendingId.value = ''
+        const taskId = typeof data.taskId === 'string' ? data.taskId : ''
+        if (taskId) {
+          const task = await pollAgentTask(taskId, getAgentReply(data, '工具确认已提交后台执行。'))
+          pushAssistant(getAgentTaskReply(task, '工具确认任务已结束，但没有返回文本。'))
+          pendingId.value = typeof task?.result?.pendingId === 'string' ? task.result.pendingId : ''
+        } else {
+          pushAssistant(getAgentReply(data))
+          pendingId.value = ''
+        }
         await loadConfig()
       } catch (e) {
         error.value = errorMessage(e, '确认失败')
@@ -623,8 +671,15 @@ export default {
         }
         const data = asRecord(res.data)
         if (!res.ok || !data.ok) throw new Error(messageFromData(data, '发送失败'))
-        pushAssistant(getAgentReply(data, data.pendingId ? '工具请求已进入审批队列，请确认后继续。' : '(无回复)'))
-        pendingId.value = typeof data.pendingId === 'string' ? data.pendingId : ''
+        const taskId = typeof data.taskId === 'string' ? data.taskId : ''
+        if (taskId) {
+          const task = await pollAgentTask(taskId, getAgentReply(data, 'Agent 已提交后台执行。'))
+          pushAssistant(getAgentTaskReply(task, 'Agent 任务已结束，但没有返回文本。'))
+          pendingId.value = typeof task?.result?.pendingId === 'string' ? task.result.pendingId : ''
+        } else {
+          pushAssistant(getAgentReply(data, data.pendingId ? '工具请求已进入审批队列，请确认后继续。' : '(无回复)'))
+          pendingId.value = typeof data.pendingId === 'string' ? data.pendingId : ''
+        }
         persistHistory()
         await loadConfig()
       } catch (e) {

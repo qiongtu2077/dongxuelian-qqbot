@@ -3,7 +3,7 @@
  * 只在用户明确追问文件内容时由 Agent 调用，不会自动下载。
  */
 const { getFileEntry, getRecentFiles } = require('../../media/file/file-store') as typeof import('../../media/file/file-store')
-const { analyzeFileNow } = require('../../media/file/file-analyzer') as typeof import('../../media/file/file-analyzer')
+const { queueFileAnalysisRequest, formatFileQueuedReply } = require('../../media/backpressure/media-requests') as typeof import('../../media/backpressure/media-requests')
 
 interface AnalyzeFileParams {
   messageId?: unknown
@@ -16,6 +16,31 @@ interface AnalyzeFileContext {
   userId?: string
   groupId?: string
   isDirect?: boolean
+}
+
+interface FileEntryLike {
+  url?: unknown
+  fileId?: unknown
+  fileName?: unknown
+  fileSize?: unknown
+  ext?: unknown
+  userId?: unknown
+}
+
+// 将未缓存的文件分析请求交给 S6/media-worker，不在 Agent 当前进程下载或解析。
+function queueAnalyzeFile(channelKey: string, messageId: string, entry: FileEntryLike, userId = ''): string {
+  const { admission } = queueFileAnalysisRequest({
+    channelKey,
+    messageId,
+    url: String(entry?.url || ''),
+    fileId: entry?.fileId ? String(entry.fileId) : null,
+    fileName: String(entry?.fileName || ''),
+    fileSize: Number(entry?.fileSize) || 0,
+    ext: String(entry?.ext || ''),
+    userId: userId || String(entry?.userId || ''),
+    source: 'agent-tool-analyze-file',
+  })
+  return formatFileQueuedReply(admission)
 }
 
 export = {
@@ -41,9 +66,7 @@ export = {
       if (entry.skipped) return `这个文件被跳过了：${entry.skipReason || '不支持的类型'}（${entry.fileName}）`
       if (entry.analyzed && entry.analysis) return entry.analysis
 
-      const result = await analyzeFileNow(channelKey, messageId)
-      if (result) return result
-      return `这个文件下载失败了，可能已经过期。如果还需要，请让用户重新发一次文件。（${entry.fileName}）`
+      return queueAnalyzeFile(channelKey, messageId, entry, context.userId || '')
     }
 
     if (channelKey) {
@@ -60,9 +83,7 @@ export = {
       if (matched.length === 1 && !matched[0].skipped) {
         const only = matched[0]
         if (only.analyzed && only.analysis) return only.analysis
-        const result = await analyzeFileNow(channelKey, only.messageId)
-        if (result) return result
-        return `这个文件下载失败了，可能已经过期。如果还需要，请让用户重新发一次文件。（${only.fileName}）`
+        return queueAnalyzeFile(channelKey, only.messageId, only, context.userId || '')
       }
 
       const list = matched.map(f => {

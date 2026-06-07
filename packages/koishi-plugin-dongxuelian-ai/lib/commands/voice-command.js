@@ -23,16 +23,37 @@ function buildTtsDiagnostics(runtime, context) {
         context,
     };
 }
+// 生成 TTS 被资源门控拦截时的低成本提示。
+function buildVoiceTtsBusyReply() {
+    return '当前资源正忙，语音合成稍后再试。';
+}
+// 在 S1/S0 保护下执行命令 TTS，避免日报或 Agent 运行期间抢资源。
+async function synthesizeCommandSpeech(text, options, state, runtime, context) {
+    const { synthesizeSpeech } = require('../media/voice/tts');
+    const { runVoiceTtsWithResourceGate } = require('../media/voice/tts-resource');
+    return runVoiceTtsWithResourceGate({
+        source: 'koishi-voice-command',
+        owner: 'koishi-voice-command',
+        channelKey: state.channelKey,
+        userId: state.currentUserId,
+        context,
+        logger: getVoiceLogger(runtime),
+        run: () => synthesizeSpeech(text, options),
+    });
+}
 async function handleVoiceCommand(session, state, runtime = {}) {
     const { plain, channelKey, currentUserId } = state;
     if (plain === '东雪莲说句话') {
-        const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice } = require('../media/voice/tts');
+        const { sendVoiceMessage, resolvePersonaVoice } = require('../media/voice/tts');
         const resolved = resolvePersona(channelKey, currentUserId);
         const voiceOpts = resolvePersonaVoice(resolved.name);
         const phrases = ['我在，先说重点吧。', '嗯，我听着。', '有什么事，慢慢说。', '今天也还算安静。', '别急，我会听完。'];
         const text = phrases[Math.floor(Math.random() * phrases.length)];
         const ttsDiagnostics = buildTtsDiagnostics(runtime, 'command:东雪莲说句话');
-        const buf = await synthesizeSpeech(text, { ...voiceOpts, ...ttsDiagnostics });
+        const ttsResult = await synthesizeCommandSpeech(text, { ...voiceOpts, ...ttsDiagnostics }, state, runtime, 'command-say');
+        if (!ttsResult.ok)
+            return handled(buildVoiceTtsBusyReply());
+        const buf = ttsResult.value;
         if (buf) {
             const sent = await sendVoiceMessage(session, buf, ttsDiagnostics);
             if (sent)
@@ -45,13 +66,16 @@ async function handleVoiceCommand(session, state, runtime = {}) {
         const text = readAloudMatch[1].trim();
         if (!text)
             return handled('请告诉我要朗读什么内容。');
-        const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice, MAX_TTS_TEXT_LENGTH } = require('../media/voice/tts');
+        const { sendVoiceMessage, resolvePersonaVoice, MAX_TTS_TEXT_LENGTH } = require('../media/voice/tts');
         if (text.length > MAX_TTS_TEXT_LENGTH)
             return handled(`文本太长了，最多支持 ${MAX_TTS_TEXT_LENGTH} 字。`);
         const resolved = resolvePersona(channelKey, currentUserId);
         const voiceOpts = resolvePersonaVoice(resolved.name);
         const ttsDiagnostics = buildTtsDiagnostics(runtime, 'command:东雪莲朗读');
-        const buf = await synthesizeSpeech(text, { ...voiceOpts, ...ttsDiagnostics });
+        const ttsResult = await synthesizeCommandSpeech(text, { ...voiceOpts, ...ttsDiagnostics }, state, runtime, 'command-read-aloud');
+        if (!ttsResult.ok)
+            return handled(buildVoiceTtsBusyReply());
+        const buf = ttsResult.value;
         if (buf) {
             const sent = await sendVoiceMessage(session, buf, ttsDiagnostics);
             if (sent)
@@ -68,11 +92,14 @@ async function handleVoiceCommand(session, state, runtime = {}) {
         const quoteText = sanitizeUserInput(rawQuote).slice(0, 300);
         if (!quoteText)
             return handled('引用的消息没有可朗读的文本。');
-        const { synthesizeSpeech, sendVoiceMessage, resolvePersonaVoice } = require('../media/voice/tts');
+        const { sendVoiceMessage, resolvePersonaVoice } = require('../media/voice/tts');
         const resolved = resolvePersona(channelKey, currentUserId);
         const voiceOpts = resolvePersonaVoice(resolved.name);
         const ttsDiagnostics = buildTtsDiagnostics(runtime, 'command:朗读引用');
-        const buf = await synthesizeSpeech(quoteText, { ...voiceOpts, ...ttsDiagnostics });
+        const ttsResult = await synthesizeCommandSpeech(quoteText, { ...voiceOpts, ...ttsDiagnostics }, state, runtime, 'command-read-quote');
+        if (!ttsResult.ok)
+            return handled(buildVoiceTtsBusyReply());
+        const buf = ttsResult.value;
         if (buf) {
             const sent = await sendVoiceMessage(session, buf, ttsDiagnostics);
             if (sent)

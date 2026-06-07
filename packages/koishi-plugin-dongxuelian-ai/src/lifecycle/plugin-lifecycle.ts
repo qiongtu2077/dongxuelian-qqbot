@@ -50,6 +50,7 @@ const {
 const {
   scheduleDailyStatsCleanup,
   scheduleExpressionHarvest,
+  scheduleDailyPrecomputePlanning,
   clearStartupSchedulers,
 } = require('./startup-schedulers') as typeof import('./startup-schedulers')
 const {
@@ -60,6 +61,13 @@ const {
 } = require('../behavior/random-state') as typeof import('../behavior/random-state')
 const agentConfig = require('../agent/config') as typeof import('../agent/config')
 const agentCron = require('../agent/cron') as typeof import('../agent/cron')
+const {
+  notifyCompletedTasks,
+  createResourceResultSender,
+} = require('../resource-workers/result-notifier') as typeof import('../resource-workers/result-notifier')
+const {
+  runSupervisorOnce,
+} = require('../resource-workers/worker-supervisor') as typeof import('../resource-workers/worker-supervisor')
 
 interface TodayCacheSnapshot {
   date?: string
@@ -74,11 +82,27 @@ interface TodayCacheSnapshot {
   }>
 }
 
+interface LifecycleBotLike {
+  selfId?: string
+  userId?: string
+  sendPrivateMessage?: (target: string, content: string) => Promise<unknown> | unknown
+  sendMessage?: (target: string, content: unknown) => Promise<unknown> | unknown
+  internal?: {
+    sendPrivateMsg?: (target: string, segments: unknown) => Promise<unknown> | unknown
+    sendGroupMsg?: (target: string, segments: unknown[]) => Promise<unknown> | unknown
+  }
+}
+
+interface LifecycleLoggerLike {
+  info(message: string): void
+  warn(message: string): void
+}
+
 interface LifecycleContext {
-  bots?: unknown[]
-  bot?: unknown
+  bots?: LifecycleBotLike[]
+  bot?: LifecycleBotLike | null
   on(event: 'ready' | 'dispose', handler: () => unknown): void
-  logger(name: string): { info(message: string): void; warn(message: string): void }
+  logger(name: string): LifecycleLoggerLike
 }
 
 interface LifecycleAgentEngine {
@@ -90,8 +114,21 @@ interface PluginLifecycleOptions {
   configureAgentQueue?: (queueConfig: unknown) => void
 }
 
+const RESULT_NOTIFIER_INTERVAL_MS = Math.max(5000, Math.min(120000, Number(process.env.RESOURCE_RESULT_NOTIFIER_INTERVAL_MS || 15000)))
+const RESOURCE_SUPERVISOR_INTERVAL_MS = Math.max(10000, Math.min(300000, Number(process.env.RESOURCE_WORKER_SUPERVISOR_INTERVAL_MS || 30000)))
+
 function getLifecycleErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function resolveLifecycleBot(ctx: LifecycleContext): LifecycleBotLike | null {
+  const bot = Array.isArray(ctx.bots) ? ctx.bots[0] : ctx.bot
+  return bot || null
+}
+
+function isResourceWorkerSupervisorEnabled(): boolean {
+  const raw = String(process.env.RESOURCE_WORKER_SUPERVISOR_ENABLED || '1').trim().toLowerCase()
+  return !['0', 'false', 'off', 'no'].includes(raw)
 }
 
 function restoreTodayCacheEntry(key: string, data: TodayCacheSnapshot | null | undefined): void {
@@ -122,6 +159,38 @@ function restoreTodayCache(): void {
 
 function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycleOptions = {}): void {
   const { agentEngine, configureAgentQueue } = options
+  let resultNotifierBusy = false
+  let supervisorBusy = false
+
+  const runResultNotifierOnce = async (): Promise<void> => {
+    if (resultNotifierBusy) return
+    const bot = resolveLifecycleBot(ctx)
+    if (!bot) return
+    resultNotifierBusy = true
+    try {
+      const logger = ctx.logger('dongxuelian-ai')
+      await notifyCompletedTasks({
+        limit: 50,
+        sender: createResourceResultSender({ bot, logger }),
+      })
+    } catch (error) {
+      ctx.logger('dongxuelian-ai').warn(`result notifier failed: ${getLifecycleErrorMessage(error)}`)
+    } finally {
+      resultNotifierBusy = false
+    }
+  }
+
+  const runResourceSupervisorOnce = async (): Promise<void> => {
+    if (supervisorBusy || !isResourceWorkerSupervisorEnabled()) return
+    supervisorBusy = true
+    try {
+      runSupervisorOnce({ start: true, once: true })
+    } catch (error) {
+      ctx.logger('dongxuelian-ai').warn(`resource worker supervisor failed: ${getLifecycleErrorMessage(error)}`)
+    } finally {
+      supervisorBusy = false
+    }
+  }
 
   ctx.on('ready', async () => {
     await loadRuntimeSettings(true)
@@ -137,17 +206,20 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     restoreTodayCache()
     trimChannelRuntimeCaches()
     cleanupDailyStatsFiles().catch(error => ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${getLifecycleErrorMessage(error)}`))
-    scheduleDailyStatsCleanup(ctx as Parameters<typeof scheduleDailyStatsCleanup>[0])
-    scheduleExpressionHarvest(ctx as Parameters<typeof scheduleExpressionHarvest>[0])
+    scheduleDailyStatsCleanup(ctx)
+    scheduleExpressionHarvest(ctx)
+    scheduleDailyPrecomputePlanning(ctx)
     try {
       const config = agentConfig.getAgentConfig()
       if (typeof configureAgentQueue === 'function') configureAgentQueue(config.queue || {})
-      const bot = Array.isArray(ctx.bots) ? ctx.bots[0] : ctx.bot
+      const bot = resolveLifecycleBot(ctx)
       const count = await agentCron.startCronScheduler({ bot, engine: agentEngine })
       if (config.cron?.enabled) ctx.logger('dongxuelian-ai').info(`agent cron scheduler restored ${count} task(s)`)
     } catch (error) {
       ctx.logger('dongxuelian-ai').warn(`agent cron scheduler restore failed: ${getLifecycleErrorMessage(error)}`)
     }
+    await runResourceSupervisorOnce()
+    await runResultNotifierOnce()
     ctx.logger('dongxuelian-ai').info(`dongxuelian-ai ${PLUGIN_VERSION} loaded`)
   })
 
@@ -164,8 +236,20 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     }
   }, 1800000)
 
+  const resultNotifierTimer = setInterval(() => {
+    runResultNotifierOnce().catch(error => ctx.logger('dongxuelian-ai').warn(`result notifier tick failed: ${getLifecycleErrorMessage(error)}`))
+  }, RESULT_NOTIFIER_INTERVAL_MS)
+  if (resultNotifierTimer.unref) resultNotifierTimer.unref()
+
+  const supervisorTimer = setInterval(() => {
+    runResourceSupervisorOnce().catch(error => ctx.logger('dongxuelian-ai').warn(`resource supervisor tick failed: ${getLifecycleErrorMessage(error)}`))
+  }, RESOURCE_SUPERVISOR_INTERVAL_MS)
+  if (supervisorTimer.unref) supervisorTimer.unref()
+
   ctx.on('dispose', () => {
     clearInterval(sensitiveTimer)
+    clearInterval(resultNotifierTimer)
+    clearInterval(supervisorTimer)
     try { agentCron.stopCronScheduler() } catch (error) { ctx.logger('dongxuelian-ai').warn(`agent cron scheduler stop failed: ${getLifecycleErrorMessage(error)}`) }
     clearChannelQueues()
     clearRandomPendingState()

@@ -8,8 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('../../core/constants');
 const { getFileEntry, getRecentFiles } = require('../../media/file/file-store');
-const { analyzeFileNow } = require('../../media/file/file-analyzer');
 const { sanitizeFileName, getExtension } = require('../../media/file/file-safety');
+const { queueFileAnalysisRequest, formatFileQueuedReply } = require('../../media/backpressure/media-requests');
 const sendFileToUser = require('./send-file-to-user');
 const OUTPUT_DIR = path.join(DATA_DIR, 'agent-user-files');
 const MAX_VARIANT_FILE_BYTES = 10 * 1024 * 1024;
@@ -46,7 +46,6 @@ async function resolveSourceFile(channelKey, messageId, entry) {
             /* non-critical: cached uploaded-file path may have expired */
         }
     }
-    const analyzed = await analyzeFileNow(channelKey, messageId);
     const fresh = await getFileEntry(channelKey, messageId);
     if (fresh && fresh.localPath) {
         try {
@@ -58,8 +57,6 @@ async function resolveSourceFile(channelKey, messageId, entry) {
             /* non-critical: refreshed uploaded-file path may have expired */
         }
     }
-    if (analyzed && fresh?.localPath)
-        return fresh.localPath;
     return null;
 }
 async function pickRecentFile(channelKey, params = {}) {
@@ -137,8 +134,20 @@ async function createVariant(params = {}, context = {}) {
     if (entry.skipped)
         throw new Error(`这个文件被跳过了：${entry.skipReason || '不支持的类型'}`);
     const sourcePath = await resolveSourceFile(channelKey, messageId, entry);
-    if (!sourcePath)
-        throw new Error(`这个文件还没有可用本地副本，可能已过期：${entry.fileName}`);
+    if (!sourcePath) {
+        const { admission } = queueFileAnalysisRequest({
+            channelKey,
+            messageId,
+            url: String(entry.url || ''),
+            fileId: null,
+            fileName: entry.fileName,
+            fileSize: 0,
+            ext: entry.ext,
+            userId: entry.userId,
+            source: 'create-uploaded-file-variant',
+        });
+        throw new Error(formatFileQueuedReply(admission));
+    }
     const stat = await fsp.stat(sourcePath);
     if (!stat.isFile())
         throw new Error('源文件不是普通文件。');

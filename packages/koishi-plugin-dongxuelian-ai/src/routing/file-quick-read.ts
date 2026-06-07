@@ -1,12 +1,12 @@
 /* ==========================================================================
  * MODULE: file-quick-read
  * 职责: 处理"读文件/看文件/分析文件"等显式快捷读取意图，返回可发送摘要文本。
- * 边界: 不发送消息、不注册 middleware、不调用 chat/Agent；只读取文件元数据并触发文件分析。
+ * 边界: 不发送消息、不注册 middleware、不调用 chat/Agent；只读取文件元数据并写入 S6 队列。
  * 状态: 无模块级状态。
  * ========================================================================== */
 const { getRecentFiles } = require('../media/file/file-store') as typeof import('../media/file/file-store')
-const { analyzeFileNow } = require('../media/file/file-analyzer') as typeof import('../media/file/file-analyzer')
 const { summarizeFileContentForChat } = require('../media/file/file-safety') as typeof import('../media/file/file-safety')
+const { queueFileAnalysisRequest, formatFileQueuedReply } = require('../media/backpressure/media-requests') as typeof import('../media/backpressure/media-requests')
 
 const FILE_QUICK_READ_RE = /^(读文件|看文件|分析文件|打开文件|文件内容)$/
 
@@ -16,6 +16,11 @@ interface RecentFileLike {
   analysis?: string
   fileName?: string
   messageId?: string
+  url?: string
+  fileId?: string | null
+  fileSize?: number
+  ext?: string
+  userId?: string
 }
 
 function isFileQuickReadIntent(text: string = ''): boolean {
@@ -31,9 +36,22 @@ async function resolveFileQuickReadReply(channelKey: string): Promise<string> {
   if (target.analyzed && target.analysis) {
     return summarizeFileContentForChat(target.analysis, fileName)
   }
-  const result = await analyzeFileNow(channelKey, target.messageId || '')
-  if (result) return summarizeFileContentForChat(result, fileName)
-  return '文件下载失败了，可能已经过期。如果还需要，请重新发一次文件。'
+  const messageId = String(target.messageId || '').trim()
+  const url = target.url || ''
+  const fileId = target.fileId || null
+  if (!messageId) return '文件记录不完整，请重新发一次文件。'
+  const { admission } = queueFileAnalysisRequest({
+    channelKey,
+    messageId,
+    url,
+    fileId,
+    fileName,
+    fileSize: target.fileSize || 0,
+    ext: target.ext || '',
+    userId: target.userId || '',
+    source: 'file-quick-read',
+  })
+  return formatFileQueuedReply(admission)
 }
 
 export = {

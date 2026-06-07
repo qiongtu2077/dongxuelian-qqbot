@@ -9,6 +9,8 @@ const { heuristicRoute, buildExplicitSearchRunOptions } = require('../agent/rout
 const { getAgentConfig } = require('../agent/config');
 const { hasAdminPermission, isJailbreakAttempt, sanitizeUserInput } = require('../core/utils');
 const { logDebug } = require('../core/logging-config');
+const { submitAgentWorkerTask } = require('../agent/worker-submission');
+const { createAgentRunWorkerPayload } = require('../resource-workers/agent-payload');
 function getAutoRouteErrorMessage(error) {
     return error instanceof Error ? error.message : String(error?.message || error);
 }
@@ -23,33 +25,25 @@ async function handleAgentAutoRoute({ ctx, liveSession, channelKey, currentUserI
     const agentConfig = getAgentConfig();
     configureAgentQueue(agentConfig.queue || {});
     try {
-        const agentResult = await enqueueAgentTask({
+        const agentRunInput = {
+            userMessage: searchRunOptions.agentUserMessage || userText,
+            userName,
+            userId: currentUserId,
+            channelKey,
+            channel: 'qq',
+            agentMode: true,
+            isAdmin: hasAdminPermission(liveSession),
+            ...searchRunOptions,
+        };
+        const submission = submitAgentWorkerTask({
+            channel: 'qq',
             channelKey,
             userId: currentUserId,
             timeoutMs: agentConfig.queue?.timeoutMs,
-            fn: () => agentEngine.run({
-                userMessage: searchRunOptions.agentUserMessage || userText,
-                userName,
-                userId: currentUserId,
-                channelKey,
-                channel: 'qq',
-                bot: resolveBot(),
-                agentMode: true,
-                isAdmin: hasAdminPermission(liveSession),
-                ...searchRunOptions,
-            }),
+            maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+            payload: { entry: 'qq-auto-route', reason: route.reason || '', agentWorker: createAgentRunWorkerPayload('qq-auto-route', agentRunInput) },
         });
-        const reply = await retellAgentResult(agentResult, {
-            ctx,
-            session: liveSession,
-            channelKey,
-            currentUserId,
-            userName,
-            userText,
-            randomTriggered,
-            chat,
-        });
-        return { handled: true, reply };
+        return { handled: true, reply: submission.message };
     }
     catch (error) {
         const errorLike = error && typeof error === 'object' ? error : {};

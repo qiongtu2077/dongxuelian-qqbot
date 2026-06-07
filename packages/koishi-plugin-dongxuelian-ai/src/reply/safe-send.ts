@@ -299,11 +299,32 @@ async function safeSendReply(ctx: SafeSendContext, session: SafeSendSessionLike,
   }
 }
 
+/** 生成资源门控使用的频道 key，保持和聊天入口的粒度一致。 */
+function getSafeSendChannelKey(session: SafeSendSessionLike): string {
+  if (session.guildId || session.channelId) return String(session.guildId || session.channelId || '')
+  if (session.isDirect || session.userId) return `private:${session.userId || ''}`
+  return ''
+}
+
 /** 尝试发送罕见固定语音；失败时返回 false 交给文字回复回退。 */
 async function safeSendRareVoice(ctx: SafeSendContext, session: SafeSendSessionLike): Promise<boolean> {
   try {
     const { sendVoiceMessage } = require('../media/voice/tts') as typeof import('../media/voice/tts')
-    const audioBuf = await readRareVoiceAudioBuffer()
+    const { runVoiceTtsWithResourceGate } = require('../media/voice/tts-resource') as typeof import('../media/voice/tts-resource')
+    const gated = await runVoiceTtsWithResourceGate({
+      source: 'koishi-rare-voice',
+      owner: 'koishi-rare-voice',
+      channelKey: getSafeSendChannelKey(session),
+      userId: String(session.userId || session.author?.id || session.event?.user?.id || ''),
+      context: 'rare-voice',
+      logger: ctx.logger('dongxuelian-ai'),
+      run: () => readRareVoiceAudioBuffer(),
+    })
+    if (!gated.ok) {
+      try { ctx.logger('dongxuelian-ai').warn(`safeSendRareVoice skipped by resource gate: ${gated.reason}`) } catch { /* non-critical: logging only */ }
+      return false
+    }
+    const audioBuf = gated.value
     if (!audioBuf) {
       try { ctx.logger('dongxuelian-ai').warn('safeSendRareVoice skipped: rare voice audio unavailable') } catch { /* non-critical: logging only */ }
       return false

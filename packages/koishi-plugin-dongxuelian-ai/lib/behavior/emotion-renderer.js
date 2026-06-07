@@ -4,6 +4,13 @@
  * 边界: 只把已解析的情绪分析渲染为 HTML 图片，不调用 AI，不读写历史。
  */
 const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer');
+const { admitTask } = require('../resource-scheduler/admission');
+const { acquireResourceGate } = require('../resource-gate/gate');
+const { sanitizeId } = require('../resource-common/files');
+// 生成情绪渲染的资源任务 ID，便于 S0/S1/S7 追踪。
+function createEmotionRenderTaskId(channelKey) {
+    return `emotion_render-${Date.now()}-${sanitizeId(channelKey || 'unknown')}-${Math.random().toString(36).slice(2, 8)}`;
+}
 function esc(value) {
     return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -153,7 +160,47 @@ function renderEmotionHtml(analysis, stats, history = []) {
 </body>
 </html>`;
 }
-async function renderEmotionImage(analysis, stats, history = []) {
-    return renderHtmlToImage(renderEmotionHtml(analysis, stats, history));
+async function renderEmotionImage(analysis, stats, history = [], channelKey = '') {
+    const taskId = createEmotionRenderTaskId(channelKey);
+    const budget = {
+        taskId,
+        kind: 'browser_action',
+        source: 'emotion-renderer',
+        channelKey: channelKey || 'emotion',
+        userId: '',
+        exclusive: true,
+        priority: 55,
+        minMemMb: 600,
+        criticalMemMb: 300,
+        degradable: true,
+        deferable: true,
+        fallbacks: ['emotion_text'],
+        queueTimeoutMs: 10000,
+        runTimeoutMs: 180000,
+    };
+    const admission = admitTask(budget);
+    if (admission.decision !== 'run_now') {
+        throw new Error(`emotion render blocked by resource scheduler: ${admission.decision} ${admission.reason}`);
+    }
+    let gateHandle = null;
+    try {
+        gateHandle = await acquireResourceGate({
+            ...budget,
+            owner: 'emotion-renderer',
+            step: 'rendering_emotion',
+            waitTimeoutMs: 10000,
+            timeoutMs: 180000,
+        });
+        gateHandle.updateStep('rendering_emotion');
+        return await renderHtmlToImage(renderEmotionHtml(analysis, stats, history));
+    }
+    finally {
+        if (gateHandle)
+            gateHandle.release('emotion-render-finally');
+    }
 }
-module.exports = { renderEmotionHtml, renderEmotionImage };
+// 只执行 HTML 到图片的纯渲染；调用方必须已经完成 S1/S0/S2 资源保护。
+async function renderEmotionImageDirect(analysis, stats, history = []) {
+    return await renderHtmlToImage(renderEmotionHtml(analysis, stats, history));
+}
+module.exports = { renderEmotionHtml, renderEmotionImage, renderEmotionImageDirect };

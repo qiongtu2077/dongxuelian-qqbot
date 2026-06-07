@@ -1,20 +1,24 @@
 "use strict";
 /**
  * Agent 工具: analyze_historical_image — 分析图片历史中的某张图片。
- * 优先读本地缓存 → NapCat 缓存 → URL 下载 → 调视觉模型 → 写回分析结果。
+ * 优先读已有分析缓存；未命中时写入 S6 媒体背压队列。
  */
-const { downloadImageAsBase64, isVisionModel, requestChatCompletions } = require('../../core/api');
-const { loadConfig } = require('../../core/runtime-config');
-const { markAnalyzed, getImageEntry, replaceImagePlaceholder, readCachedImage } = require('../../media/image/image-store');
-const { analyzeImageNow } = require('../../media/image/image-analyzer');
-const { isVisionBlindnessReply } = require('../../media/image/vision');
-function getAnalyzeImageErrorMessage(error) {
-    return error instanceof Error ? error.message : String(error || '未知错误');
+const { getImageEntry, getCachedAnalysis, storeImageUrl } = require('../../media/image/image-store');
+const { enqueueMediaTask } = require('../../media/backpressure/media-queue');
+const { admitTask } = require('../../resource-scheduler/admission');
+// 为 URL 直传图片生成稳定的媒体任务 messageId，供 S6 去重和展示。
+function createAgentImageMessageId(messageId, url) {
+    if (messageId)
+        return messageId;
+    let hash = 0;
+    for (const char of String(url || ''))
+        hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+    return `agent-url-${Math.abs(hash).toString(36) || Date.now().toString(36)}`;
 }
 module.exports = {
     definition: {
         name: 'analyze_historical_image',
-        description: '分析图片历史中的某张图片（通过 URL 或 messageId）。下载图片后调用视觉模型生成描述，并将结果写回对话历史。适用于用户问"刚才那张图是什么"等场景。',
+        description: '读取图片历史中的已有分析结果；没有缓存时将图片加入媒体分析队列。适用于用户问"刚才那张图是什么"等场景。',
         parameters: {
             type: 'object',
             properties: {
@@ -27,9 +31,10 @@ module.exports = {
     },
     async execute(params = {}, context = {}) {
         const channelKey = context.channelKey || '';
+        const userId = context.userId || '';
         let url = String(params.url || '').trim();
         const messageId = String(params.messageId || '').trim();
-        const question = String(params.question || '描述这张图片的内容').trim();
+        let mediaMessageId = createAgentImageMessageId(messageId, url);
         let cachedFile = null;
         if (!url && messageId && channelKey) {
             const entry = await getImageEntry(channelKey, messageId);
@@ -39,60 +44,32 @@ module.exports = {
             }
         }
         if (messageId && channelKey) {
-            const analysis = await analyzeImageNow(channelKey, messageId);
-            if (analysis)
-                return `图片分析结果：${analysis}`;
+            const cachedAnalysis = await getCachedAnalysis(channelKey, messageId);
+            if (cachedAnalysis)
+                return `图片分析结果：${cachedAnalysis}`;
         }
         if (!url)
             return '无法获取图片 URL。请先用 read_image_history 查看可用图片。';
-        const config = await loadConfig();
-        if (!isVisionModel(config.provider, config.model)) {
-            return '当前模型不支持视觉分析。';
+        mediaMessageId = createAgentImageMessageId(messageId, url);
+        if (channelKey) {
+            await storeImageUrl(channelKey, mediaMessageId, url, cachedFile, { conversationKey: channelKey, userId });
         }
-        let base64 = null;
-        if (messageId && channelKey) {
-            base64 = await readCachedImage(channelKey, messageId);
-        }
-        if (!base64 && cachedFile) {
-            const { callGetImage, readImageAsBase64 } = require('../../core/api');
-            try {
-                const imgInfo = await callGetImage(cachedFile);
-                if (imgInfo && typeof imgInfo.file === 'string')
-                    base64 = await readImageAsBase64(imgInfo.file);
-            }
-            catch {
-                /* non-critical: cached NapCat file may be expired; fall back to URL download */
-            }
-        }
-        if (!base64)
-            base64 = await downloadImageAsBase64(url, 10000);
-        if (!base64)
-            return '图片下载失败或格式不支持。';
-        const messages = [
-            { role: 'user', content: [
-                    { type: 'text', text: question },
-                    { type: 'image_url', image_url: { url: base64 } },
-                ] },
-        ];
-        try {
-            const result = await requestChatCompletions(messages, config, { max_tokens: 500, _timeoutMs: 15000 });
-            const rawAnalysis = typeof result === 'string' ? result : String(result.content || '');
-            const { sanitizeImageAnalysis } = require('../../media/image/image-analysis-sanitizer');
-            const analysis = sanitizeImageAnalysis(rawAnalysis);
-            if (!analysis)
-                return '视觉模型未返回分析结果。';
-            if (isVisionBlindnessReply(analysis)) {
-                return `视觉模型未能解析图片（provider=${config.provider} model=${config.model}），请稍后再试或换一张图。`;
-            }
-            if (channelKey && messageId) {
-                await markAnalyzed(channelKey, messageId, analysis);
-                await replaceImagePlaceholder(channelKey, messageId, analysis);
-            }
-            return `图片分析结果：${analysis}`;
-        }
-        catch (e) {
-            return `图片分析失败：${getAnalyzeImageErrorMessage(e)}`;
-        }
+        enqueueMediaTask({
+            kind: 'media_image_analysis',
+            channelKey,
+            messageId: mediaMessageId,
+            url,
+            payload: { entry: 'agent-tool-analyze-image', userId, originalMessageId: messageId },
+        });
+        const admission = admitTask({
+            kind: 'media_image_analysis',
+            source: 'agent-tool',
+            channelKey,
+            userId,
+            exclusive: false,
+        });
+        const reason = admission.decision === 'run_now' ? 'media-worker 空闲时会处理' : admission.reason;
+        return `图片已加入媒体分析队列，当前资源状态为 ${admission.resourceState}，原因：${reason}。稍后可通过 read_image_history 查看结果。`;
     },
     dangerous: false,
     defaultChannels: ['dashboard', 'qq'],

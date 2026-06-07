@@ -1,0 +1,20 @@
+declare function getTaskStatusDir(status: string): string;
+declare function getPendingKindDir(kind: string): string;
+declare function getTaskFile(status: string, kind: string, taskId: string): string;
+declare function getTaskResultDir(taskId: string): string;
+declare function getWorkerStateFile(workerName: string): string;
+declare function getWorkerEventFile(date?: Date): string;
+declare const _default: {
+    WORKERS_ROOT: any;
+    TASKS_ROOT: any;
+    RESULTS_ROOT: any;
+    WORKER_STATE_DIR: any;
+    SUPERVISOR_DIR: any;
+    getTaskStatusDir: typeof getTaskStatusDir;
+    getPendingKindDir: typeof getPendingKindDir;
+    getTaskFile: typeof getTaskFile;
+    getTaskResultDir: typeof getTaskResultDir;
+    getWorkerStateFile: typeof getWorkerStateFile;
+    getWorkerEventFile: typeof getWorkerEventFile;
+};
+export = _default;

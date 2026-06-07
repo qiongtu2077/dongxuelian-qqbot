@@ -84,6 +84,7 @@ interface DownloadDeps {
     fs?: typeof fs;
     run?: typeof run;
     probeVideo?: typeof probeVideo;
+    resourceGate?: false;
 }
 interface RecentParseEntry {
     timestamp: number;

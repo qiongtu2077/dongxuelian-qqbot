@@ -64,7 +64,7 @@ declare const _default: {
     regexRoutes: {
         pattern: RegExp;
         method: string;
-        handler: (req: any, res: any, match: any) => void;
+        handler: (req: any, res: any, match: any) => any;
     }[];
     getAgentEnvStatus: typeof getAgentEnvStatus;
 };

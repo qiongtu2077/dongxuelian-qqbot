@@ -6,15 +6,14 @@
  */
 const { hasAdminPermission, sanitizeUserInput, sanitizeUserName, isJailbreakAttempt, pickJailbreakFallbackReply, } = require('../core/utils');
 const { handled, notHandled } = require('./command-result');
+const { submitAgentWorkerTask } = require('../agent/worker-submission');
+const { createAgentRunWorkerPayload, createAgentResumeWorkerPayload, } = require('../resource-workers/agent-payload');
 function getAgentCommandErrorMessage(error, fallback = '') {
     return error instanceof Error ? error.message : String(error?.message || fallback);
 }
 function hasAgentCommandQueueCode(error) {
     const code = error?.code;
     return code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED';
-}
-function asAgentReplyLike(value) {
-    return value && typeof value === 'object' ? value : {};
 }
 async function handleAgentCommand(session, ctx, state, options = {}) {
     const { plain, channelKey, currentUserId, adminCommandMatched } = state;
@@ -103,34 +102,35 @@ async function handleAgentCommand(session, ctx, state, options = {}) {
         const query = agentMatch[1].trim();
         if (isJailbreakAttempt(sanitizeUserInput(query)))
             return handled(pickJailbreakFallbackReply());
-        const engine = require('../agent/engine');
         const agentConfig = require('../agent/config').getAgentConfig();
-        const agentQueue = require('../agent/queue');
-        agentQueue.configureAgentQueue(agentConfig.queue || {});
         const userName = sanitizeUserName(session.author?.nick || session.author?.name || session.username || '群友');
         const isAdmin = hasAdminPermission(adminSession);
         try {
             const router = require('../agent/router');
             const searchRunOptions = router.buildExplicitSearchRunOptions(query);
-            const result = await agentQueue.enqueueAgentTask({
+            const agentRunInput = {
+                userMessage: query,
+                userName,
+                userId: currentUserId,
+                channelKey,
+                channel: 'qq',
+                isAdmin,
+                ...searchRunOptions,
+            };
+            const submission = submitAgentWorkerTask({
+                channel: 'qq',
                 channelKey,
                 userId: currentUserId,
                 timeoutMs: agentConfig.queue?.timeoutMs,
-                fn: () => engine.run({
-                    userMessage: query, userName, userId: currentUserId, channelKey, channel: 'qq', bot: session.bot, isAdmin, ...searchRunOptions,
-                    onProgress: (msg) => {
-                        if (msg.type === 'round' && msg.round === 0) {
-                            // 首轮执行中，不额外输出
-                        }
-                    },
-                }),
+                maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+                payload: { entry: 'qq-agent-command', agentWorker: createAgentRunWorkerPayload('qq-agent-command', agentRunInput) },
             });
-            return handled(asAgentReplyLike(result).reply || '(Agent 未获取有效回复)');
+            return handled(submission.message);
         }
         catch (err) {
             if (hasAgentCommandQueueCode(err))
                 return handled(getAgentCommandErrorMessage(err));
-            ctx.logger('dongxuelian-ai').warn(`agent engine failed: ${getAgentCommandErrorMessage(err)}`);
+            ctx.logger('dongxuelian-ai').warn(`agent worker submit failed: ${getAgentCommandErrorMessage(err)}`);
             return handled('Agent 暂时不可用。');
         }
     }
@@ -138,16 +138,22 @@ async function handleAgentCommand(session, ctx, state, options = {}) {
     if (confirmToolMatch) {
         const pendingId = confirmToolMatch[1] || '';
         const pending = require('../agent/pending');
-        const findPendingById = pending.findPendingToolById || pending.getPendingToolById || (id => (pending.listPendingTools && pending.listPendingTools().find(item => item.id === id)) || null);
-        const p = pendingId ? findPendingById(pendingId) : pending.getPendingTool(channelKey, currentUserId);
+        const p = pendingId ? pending.findPendingToolById(pendingId) : pending.getPendingTool(channelKey, currentUserId);
         if (p) {
             if (p.channelKey !== channelKey || p.userId !== currentUserId)
                 return handled('这个确认 ID 不属于当前会话。');
-            const engine = require('../agent/engine');
-            const result = asAgentReplyLike(await engine.resumePending({ channelKey, userId: currentUserId, channel: 'qq', expectedId: pendingId, bot: session.bot, isAdmin: hasAdminPermission(adminSession) }));
-            if (!result.ok && result.message)
-                return handled(`执行失败：${result.message || result.error || '未知错误'}`);
-            return handled(result.reply || '(Agent 未获取到有效回复)');
+            const agentConfig = require('../agent/config').getAgentConfig();
+            const resolvedPendingId = String(p.id || pendingId || '');
+            const resumeInput = { channelKey, userId: currentUserId, channel: 'qq', expectedId: resolvedPendingId, isAdmin: hasAdminPermission(adminSession) };
+            const submission = submitAgentWorkerTask({
+                channel: 'qq',
+                channelKey,
+                userId: currentUserId,
+                timeoutMs: agentConfig.queue?.timeoutMs,
+                maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+                payload: { entry: 'qq-agent-confirm', pendingId: resolvedPendingId, agentWorker: createAgentResumeWorkerPayload('qq-agent-confirm', resumeInput, p) },
+            });
+            return handled(submission.message);
         }
         if (pendingId)
             return handled('没有匹配的待确认工具。');
