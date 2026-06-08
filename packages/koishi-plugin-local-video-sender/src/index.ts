@@ -119,6 +119,14 @@ interface VideoResourceGateResult {
   handle?: VideoResourceGateHandle | null
 }
 
+type VideoAdmissionModule = typeof import('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/admission')
+type VideoResourceGateModule = typeof import('../../koishi-plugin-dongxuelian-ai/lib/resource-gate/gate')
+
+interface VideoResourceModules {
+  admitTask: VideoAdmissionModule['admitTask']
+  acquireResourceGate: VideoResourceGateModule['acquireResourceGate']
+}
+
 interface RecentParseEntry {
   timestamp: number
   keys: string[]
@@ -226,10 +234,10 @@ function getAiResourceLibPath(...parts: string[]): string {
 }
 
 // 运行时加载 S1/S0 模块；缺失时 fail closed，防止无门控下载。
-function loadVideoResourceModules(ctx: ContextLike): { admitTask: (input: unknown) => any; acquireResourceGate: (input: unknown) => Promise<VideoResourceGateHandle> } | null {
+function loadVideoResourceModules(ctx: ContextLike): VideoResourceModules | null {
   try {
-    const admission = require(getAiResourceLibPath('resource-scheduler', 'admission'))
-    const gate = require(getAiResourceLibPath('resource-gate', 'gate'))
+    const admission = require(getAiResourceLibPath('resource-scheduler', 'admission')) as VideoAdmissionModule
+    const gate = require(getAiResourceLibPath('resource-gate', 'gate')) as VideoResourceGateModule
     if (typeof admission.admitTask !== 'function' || typeof gate.acquireResourceGate !== 'function') {
       throw new Error('resource modules missing admitTask/acquireResourceGate')
     }
