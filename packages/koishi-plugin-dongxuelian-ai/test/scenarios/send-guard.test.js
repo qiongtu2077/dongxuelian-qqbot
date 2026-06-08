@@ -70,7 +70,8 @@ async function run(t) {
   t.section('scenario: send guard platform mute and rate limit')
 
   const safeSend = require('../../lib/reply/safe-send')
-  t.check('scenario safe-send module exports moved send helpers', typeof safeSend.safeSendReply === 'function' && typeof safeSend.safeSendRepeat === 'function' && typeof safeSend.safeSendRareVoice === 'function')
+  t.check('scenario safe-send module exports moved send helpers', typeof safeSend.safeSendReply === 'function' && typeof safeSend.safeSendRepeat === 'function' && typeof safeSend.safeSendRareVoice === 'function' && typeof safeSend.canSendDuringSafeSendWindow === 'function')
+  safeSend.resetSendFailState()
 
   const freshnessSent = []
   const freshnessLogs = []
@@ -144,6 +145,53 @@ async function run(t) {
     }
   }, (session, harness) => harness.logs.some(log => /restricted for 1 hour/.test(log.msg))))
   t.check('scenario safe-send rate limit notifies admins after split', (notifiedRateLimit.internalCalls || []).some(call => call.method === 'sendPrivateMsg' && String(call.userId) === '100000000'), JSON.stringify(notifiedRateLimit.internalCalls))
+
+  const voiceGateLogs = []
+  const voiceGateCtx = {
+    logger() {
+      return {
+        info: msg => voiceGateLogs.push(String(msg)),
+        warn: msg => voiceGateLogs.push(String(msg)),
+        error: msg => voiceGateLogs.push(String(msg)),
+      }
+    },
+  }
+  const makeRateLimitSession = () => ({
+    guildId: '10001',
+    channelId: '10001',
+    userId: '300000000',
+    author: { id: '300000000' },
+    bot: { selfId: '90000', internal: {} },
+    event: { selfId: '90000', sender: { role: 'member' } },
+    async send() {
+      const error = new Error('retcode: 1200 risk control')
+      error.retcode = 1200
+      error.sentParts = 1
+      throw error
+    },
+  })
+  await safeSend.safeSendReply(voiceGateCtx, makeRateLimitSession(), 'first limited')
+    .catch(() => {})
+  await safeSend.safeSendReply(voiceGateCtx, makeRateLimitSession(), 'second limited')
+    .catch(() => {})
+  const canSendVoiceDuringFreeze = safeSend.canSendDuringSafeSendWindow({
+    logger() {
+      return {
+        info: msg => voiceGateLogs.push(String(msg)),
+        warn: msg => voiceGateLogs.push(String(msg)),
+        error: msg => voiceGateLogs.push(String(msg)),
+      }
+    },
+  }, {
+    guildId: '10001',
+    channelId: '10001',
+    userId: '300000000',
+    author: { id: '300000000' },
+    event: { sender: { role: 'member' } },
+    async send(message) { return message },
+  }, 'random voice')
+  t.check('scenario send guard blocks random voice while restricted', canSendVoiceDuringFreeze === false && voiceGateLogs.some(msg => /restricted, skipping non-text send/.test(msg)), JSON.stringify({ canSendVoiceDuringFreeze, voiceGateLogs }))
+  safeSend.resetSendFailState()
 }
 
 module.exports = { run }

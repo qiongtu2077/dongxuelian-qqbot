@@ -8,7 +8,7 @@
 const { logAffectRouterDiagnosticForOutputShadow, logStickerShadowSendDiagnostic, } = require('../diagnostics/diagnostics');
 const { resolvePersona } = require('../persona/persona');
 const { shouldTriggerRareVoice } = require('../behavior/rare-voice');
-const { logStaleRandomSkip, safeSendRareVoice } = require('../reply/safe-send');
+const { logStaleRandomSkip, safeSendRareVoice, canSendDuringSafeSendWindow } = require('../reply/safe-send');
 const { notifySensitiveHandlers } = require('../behavior/sensitive');
 const { isRandomReplyFresh } = require('../behavior/random-state');
 function getChatSendErrorMessage(error) {
@@ -26,6 +26,8 @@ async function trySendRandomVoice({ ctx, liveSession, channelKey, currentUserId,
         const { runVoiceTtsWithResourceGate } = require('../media/voice/tts-resource');
         if (!shouldTriggerRandomVoice(channelKey))
             return false;
+        if (!canSendDuringSafeSendWindow(ctx, liveSession, 'random voice'))
+            return true;
         const resolved = resolvePersona(channelKey, currentUserId);
         const voiceOpts = resolvePersonaVoice(resolved.name);
         const styleOverride = extractVoiceStyle(reply);

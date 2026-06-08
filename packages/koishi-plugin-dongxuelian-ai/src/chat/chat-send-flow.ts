@@ -10,7 +10,7 @@ const {
 } = require('../diagnostics/diagnostics') as typeof import('../diagnostics/diagnostics')
 const { resolvePersona } = require('../persona/persona') as typeof import('../persona/persona')
 const { shouldTriggerRareVoice } = require('../behavior/rare-voice') as typeof import('../behavior/rare-voice')
-const { logStaleRandomSkip, safeSendRareVoice } = require('../reply/safe-send') as typeof import('../reply/safe-send')
+const { logStaleRandomSkip, safeSendRareVoice, canSendDuringSafeSendWindow } = require('../reply/safe-send') as typeof import('../reply/safe-send')
 const { notifySensitiveHandlers } = require('../behavior/sensitive') as typeof import('../behavior/sensitive')
 const { isRandomReplyFresh } = require('../behavior/random-state') as typeof import('../behavior/random-state')
 
@@ -110,6 +110,7 @@ async function trySendRandomVoice({
     } = require('../media/voice/tts') as typeof import('../media/voice/tts')
     const { runVoiceTtsWithResourceGate } = require('../media/voice/tts-resource') as typeof import('../media/voice/tts-resource')
     if (!shouldTriggerRandomVoice(channelKey)) return false
+    if (!canSendDuringSafeSendWindow(ctx, liveSession as { send(message: string): Promise<unknown> | unknown }, 'random voice')) return true
     const resolved = resolvePersona(channelKey, currentUserId)
     const voiceOpts = resolvePersonaVoice(resolved.name)
     const styleOverride = extractVoiceStyle(reply)

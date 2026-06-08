@@ -158,11 +158,45 @@ async function notifyAdminsSendFailure(ctx: SafeSendContext, bot: BotLike | null
 function resetSendFailState(): void {
   sendFailState.streak = 0
   sendFailState.lastFailAt = 0
+  sendFailState.lastNotifyAt = 0
+  sendFailState.restrictedUntil = 0
+  sendFailState.notifyScheduled = false
 }
 
 function logPlatformMute(ctx: SafeSendContext, status: { until?: number; reason?: string }, prefix: string = 'safeSendReply'): void {
   const until = status?.until ? new Date(status.until).toISOString() : 'unknown'
   ctx.logger('dongxuelian-ai').warn(`${prefix}: platform muted, skipping reply (${status?.reason || '平台禁言'}, until=${until})`)
+}
+
+/** 更新发送失败窗口，并在冻结未结束时阻止非管理员群聊发送。 */
+function refreshSafeSendRestrictionWindow(now: number = Date.now()): void {
+  if (now >= sendFailState.restrictedUntil && sendFailState.notifyScheduled) {
+    sendFailState.notifyScheduled = false
+  }
+  if (sendFailState.streak > 0 && now - sendFailState.lastFailAt > sendFailState.cooldownMs) {
+    sendFailState.streak = 0
+  }
+}
+
+/** 更新发送失败窗口，并在冻结未结束时阻止非管理员普通群聊回复。 */
+function isSafeSendRestricted(ctx: SafeSendContext, session: SafeSendSessionLike, prefix: string = 'safeSendReply', now: number = Date.now()): boolean {
+  refreshSafeSendRestrictionWindow(now)
+  if (now < sendFailState.restrictedUntil && !hasAdminPermission(asSafeSendBasicSession(session)) && !isDirectAtBot(asSafeSendBasicSession(session))) {
+    ctx.logger('dongxuelian-ai').warn(`${prefix}: restricted, skipping reply`)
+    return true
+  }
+  return false
+}
+
+/** 发送语音等非文本内容前复用同一套冻结保护。 */
+function canSendDuringSafeSendWindow(ctx: SafeSendContext, session: SafeSendSessionLike, prefix: string): boolean {
+  const now = Date.now()
+  refreshSafeSendRestrictionWindow(now)
+  if (now < sendFailState.restrictedUntil && !hasAdminPermission(asSafeSendBasicSession(session))) {
+    ctx.logger('dongxuelian-ai').warn(`${prefix}: restricted, skipping non-text send`)
+    return false
+  }
+  return true
 }
 
 async function handleRateLimitedSendFailure(ctx: SafeSendContext, session: SafeSendSessionLike, error: unknown, now: number, resolveBot: ResolveBot = null): Promise<void> {
@@ -232,26 +266,14 @@ async function safeSendReply(ctx: SafeSendContext, session: SafeSendSessionLike,
     return
   }
   const now = Date.now()
-  // 冻结到期后重置通知标记
-  if (now >= sendFailState.restrictedUntil && sendFailState.notifyScheduled) {
-    sendFailState.notifyScheduled = false
-  }
-  if (sendFailState.streak > 0 && now - sendFailState.lastFailAt > sendFailState.cooldownMs) {
-    sendFailState.streak = 0
-  }
-  if (now < sendFailState.restrictedUntil) {
-    if (!hasAdminPermission(asSafeSendBasicSession(session))) {
-      if (!isDirectAtBot(asSafeSendBasicSession(session))) {
-        ctx.logger('dongxuelian-ai').warn('safeSendReply: restricted, skipping reply')
-        return
-      }
-      try {
-        await session.send('我被盯上了，有内鬼终止交易')
-        return
-      } catch (error) {
-        ctx.logger('dongxuelian-ai').error(`safeSendReply: restricted notice failed: ${getSafeSendErrorMessage(error)}`)
-        return
-      }
+  if (isSafeSendRestricted(ctx, session, 'safeSendReply', now)) return
+  if (now < sendFailState.restrictedUntil && isDirectAtBot(asSafeSendBasicSession(session)) && !hasAdminPermission(asSafeSendBasicSession(session))) {
+    try {
+      await session.send('我被盯上了，有内鬼终止交易')
+      return
+    } catch (error) {
+      ctx.logger('dongxuelian-ai').error(`safeSendReply: restricted notice failed: ${getSafeSendErrorMessage(error)}`)
+      return
     }
   }
   const cachedMute = getCachedPlatformMuteStatus(session, now)
@@ -309,6 +331,7 @@ function getSafeSendChannelKey(session: SafeSendSessionLike): string {
 /** 尝试发送罕见固定语音；失败时返回 false 交给文字回复回退。 */
 async function safeSendRareVoice(ctx: SafeSendContext, session: SafeSendSessionLike): Promise<boolean> {
   try {
+    if (!canSendDuringSafeSendWindow(ctx, session, 'safeSendRareVoice')) return true
     const { sendVoiceMessage } = require('../media/voice/tts') as typeof import('../media/voice/tts')
     const { runVoiceTtsWithResourceGate } = require('../media/voice/tts-resource') as typeof import('../media/voice/tts-resource')
     const gated = await runVoiceTtsWithResourceGate({
@@ -347,5 +370,6 @@ export = {
   safeSendRepeat,
   safeSendReply,
   safeSendRareVoice,
+  canSendDuringSafeSendWindow,
   resetSendFailState,
 }

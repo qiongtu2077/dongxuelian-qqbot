@@ -61,6 +61,8 @@ type ResolveBot = (() => BotLike | null | undefined) | null;
 type FreshnessChecker = ((isRandom: boolean, sendOptions: SendOptions) => boolean) | null;
 declare function logStaleRandomSkip(ctx: SafeSendContext, stage: string, options?: SendOptions): void;
 declare function resetSendFailState(): void;
+/** 发送语音等非文本内容前复用同一套冻结保护。 */
+declare function canSendDuringSafeSendWindow(ctx: SafeSendContext, session: SafeSendSessionLike, prefix: string): boolean;
 declare function safeSendRepeat(ctx: SafeSendContext, session: SafeSendSessionLike, reply: string): Promise<boolean>;
 declare function safeSendReply(ctx: SafeSendContext, session: SafeSendSessionLike, reply: string, isRandom?: boolean, resolveBot?: ResolveBot, sendOptions?: SendOptions, freshnessChecker?: FreshnessChecker): Promise<void>;
 /** 尝试发送罕见固定语音；失败时返回 false 交给文字回复回退。 */
@@ -70,6 +72,7 @@ declare const _default: {
     safeSendRepeat: typeof safeSendRepeat;
     safeSendReply: typeof safeSendReply;
     safeSendRareVoice: typeof safeSendRareVoice;
+    canSendDuringSafeSendWindow: typeof canSendDuringSafeSendWindow;
     resetSendFailState: typeof resetSendFailState;
 };
 export = _default;
