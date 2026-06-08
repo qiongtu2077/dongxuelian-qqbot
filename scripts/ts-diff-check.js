@@ -32,6 +32,7 @@ const ALLOWED_ADDED_EXPORTS = {
   'core/redactor.js': ['redactSensitiveData'],
   'lifecycle/startup-schedulers.js': ['scheduleDailyPrecomputePlanning'],
   'message/message-segment.js': ['extractVoiceRefFromContent', 'getVoiceSegmentData'],
+  'reply/safe-send.js': ['canSendDuringSafeSendWindow'],
 }
 const ALLOWED_NEW_AI_JS_FILES = new Set([
   'agent/resource-execution.js',

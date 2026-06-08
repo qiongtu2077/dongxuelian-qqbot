@@ -350,10 +350,41 @@ function apiMock(method, pathname, body) {
     queueLength: 2,
     workers: [{ name: 'worker-a', alive: true, step: 'idle', heartbeatLagMs: 128 }],
     media: { imagePending: 1, filePending: 2, voicePending: 0, running: [{ id: 'media-1' }], droppedCount: 0 },
-    precompute: { coverageCount: 1, slotCount: 3, coverage: [{ date: todayShanghaiDate(), channelKey: 'group_10001', coverageRate: 0.8, updatedAt: '12:00' }] },
+    precompute: {
+      coverageCount: 2,
+      slotCount: 3,
+      coverage: [
+        { date: todayShanghaiDate(), channelKey: 'group_10001', coverageRate: 0.8, updatedAt: '12:00' },
+        { date: todayShanghaiDate(), channelKey: 'group_20002', coverageRate: 0.35, updatedAt: '12:05' },
+      ],
+    },
     maintenance: false,
     events: [{ source: 'S1', event: 'mock_status_event', reason: 'resource mock ready', createdAt: '12:00:00' }],
   })
+  if (method === 'GET' && pathname === '/resource/memory-history') {
+    const range = body.searchParams.get('range') || '5m'
+    const now = Date.now()
+    const points = range === '30m'
+      ? [
+        { ts: now - 20000, memAvailableMb: 910, memTotalMb: 2048, rssMb: 120, sampleCount: 1, sources: ['mock-worker'] },
+        { ts: now - 10000, memAvailableMb: 1010, memTotalMb: 2048, rssMb: 125, sampleCount: 1, sources: ['mock-worker'] },
+        { ts: now, memAvailableMb: 1110, memTotalMb: 2048, rssMb: 130, sampleCount: 1, sources: ['dashboard-resource-status'] },
+      ]
+      : [
+        { ts: now - 20000, memAvailableMb: 900, memTotalMb: 2048, rssMb: 120, sampleCount: 1, sources: ['mock-worker'] },
+        { ts: now - 10000, memAvailableMb: 1000, memTotalMb: 2048, rssMb: 125, sampleCount: 1, sources: ['mock-worker'] },
+        { ts: now, memAvailableMb: 1100, memTotalMb: 2048, rssMb: 130, sampleCount: 1, sources: ['dashboard-resource-status'] },
+      ]
+    return ok({
+      ok: true,
+      range,
+      bucketMs: 10000,
+      dashboardSampleIntervalMs: 5000,
+      workerSampleIntervalMs: 10000,
+      pointCount: points.length,
+      points,
+    })
+  }
   if (method === 'GET' && pathname === '/resource/tasks') return ok({
     ok: true,
     tasks: [
@@ -404,6 +435,20 @@ async function installApiMock(page) {
 
 async function waitForText(page, text, timeout = 8000) {
   await page.waitForFunction(value => document.body && document.body.innerText.includes(value), { timeout }, text)
+}
+
+async function waitForTextInSelector(page, selector, text, timeout = 8000) {
+  await page.waitForFunction(({ sel, value }) => {
+    const el = document.querySelector(sel)
+    return !!(el && el.innerText && el.innerText.includes(value))
+  }, { timeout }, { sel: selector, value: text })
+}
+
+async function waitForTextNotInSelector(page, selector, text, timeout = 8000) {
+  await page.waitForFunction(({ sel, value }) => {
+    const el = document.querySelector(sel)
+    return !!(el && el.innerText && !el.innerText.includes(value))
+  }, { timeout }, { sel: selector, value: text })
 }
 
 async function hasText(page, text) {
@@ -756,13 +801,47 @@ async function verifyAgentNavigation(page) {
   await waitForText(page, '莲莲图集')
 }
 
-async function verifyResourcePanel(page) {
+async function verifyResourcePanel(page, options = {}) {
+  const allowWrites = options.allowWrites !== false
+  const expectMockData = options.expectMockData !== false
   await clickSidebarTab(page, '资源中心')
   await waitForText(page, '资源总览')
+  await waitForText(page, '日报预计算')
+  await waitForText(page, '内存走势')
+  if (!expectMockData) return
+  await waitForText(page, 'worker 采样 10s')
+  await waitForText(page, '面板补采样 5s')
+  await waitForText(page, '当前聚合 10s')
+  await waitForText(page, '点数 3')
+  await waitForText(page, '当前 1100 MB')
+  await waitForText(page, '最低 900 MB')
+  await waitForText(page, '最高 1100 MB')
   await waitForText(page, 'mock-running-1')
   await waitForText(page, 'worker-a')
   await waitForText(page, 'mock-task-1')
   await waitForText(page, 'mock_event')
+  await waitForText(page, 'group_10001')
+  await waitForText(page, 'group_20002')
+  await page.waitForFunction(() => {
+    const dots = document.querySelectorAll('.memory-chart-dot')
+    const line = document.querySelector('.memory-chart-line')
+    const points = line ? line.getAttribute('points') || '' : ''
+    const text = document.body.innerText || ''
+    return dots.length >= 3 && points.length > 0 && !text.includes('暂无内存采样')
+  }, { timeout: 8000 })
+  await page.select('.memory-range-select', '30m')
+  await waitForText(page, '当前 1110 MB')
+  await waitForText(page, '最低 910 MB')
+  await waitForText(page, '最高 1110 MB')
+  await typePlaceholder(page, '搜索群号', '20002')
+  await waitForTextInSelector(page, '.resource-precompute-card', 'group_20002')
+  await waitForTextNotInSelector(page, '.resource-precompute-card', 'group_10001')
+  await typePlaceholder(page, '搜索群号', 'no-such-group')
+  await waitForText(page, '未找到匹配群号')
+  await page.click('input[placeholder="搜索群号"]', { clickCount: 3 })
+  await page.keyboard.press('Backspace')
+  await waitForTextInSelector(page, '.resource-precompute-card', 'group_10001')
+  if (!allowWrites) return
   await clickText(page, '刷新')
   await waitForText(page, 'mock-running-1')
   await clickText(page, '刷新队列')
@@ -1088,6 +1167,8 @@ async function runLiveClicks(page) {
 
   await clickSidebarTab(page, '系统状态')
   await waitForText(page, '当前状态')
+
+  await verifyResourcePanel(page, { allowWrites: false, expectMockData: false })
 
   await clickSidebarTab(page, '莲莲图集')
   await waitForText(page, '莲莲图集')
