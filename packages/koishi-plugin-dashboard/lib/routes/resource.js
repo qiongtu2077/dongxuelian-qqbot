@@ -12,6 +12,36 @@ const { AI_LIB, DATA_DIR } = require('../paths');
 const RESOURCE_EVENT_LIMIT = parsePositiveInt(process.env.DASHBOARD_RESOURCE_EVENT_LIMIT, 120, 20, 500);
 const RESOURCE_TASK_LIMIT = parsePositiveInt(process.env.DASHBOARD_RESOURCE_TASK_LIMIT, 120, 20, 500);
 const MAINTENANCE_FILE = path.join(DATA_DIR, 'ai-paused.txt');
+const DASHBOARD_MEMORY_SAMPLE_INTERVAL_MS = parsePositiveInt(process.env.DASHBOARD_MEMORY_SAMPLE_INTERVAL_MS, 5000, 1000, 60000);
+const WORKER_MEMORY_SAMPLE_INTERVAL_MS = parsePositiveInt(process.env.RESOURCE_WORKER_POLL_MS, 2000, 500, 30000);
+const MEMORY_HISTORY_CACHE_TTL_MS = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_CACHE_TTL_MS, 10000, 1000, 60000);
+const MEMORY_HISTORY_MAX_FULL_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_MAX_FULL_FILE_BYTES, 8 * 1024 * 1024, 1024 * 1024, 64 * 1024 * 1024);
+const MEMORY_HISTORY_MAX_SAMPLED_LINES_PER_FILE = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_MAX_SAMPLED_LINES_PER_FILE, 2600, 200, 20000);
+const MEMORY_HISTORY_SAMPLE_CHUNK_BYTES = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_SAMPLE_CHUNK_BYTES, 64 * 1024, 16 * 1024, 512 * 1024);
+const MEMORY_RANGE_OPTIONS = {
+    '1m': 60 * 1000,
+    '5m': 5 * 60 * 1000,
+    '10m': 10 * 60 * 1000,
+    '30m': 30 * 60 * 1000,
+    '1h': 60 * 60 * 1000,
+    '12h': 12 * 60 * 60 * 1000,
+    '24h': 24 * 60 * 60 * 1000,
+    '48h': 48 * 60 * 60 * 1000,
+    '72h': 72 * 60 * 60 * 1000,
+};
+const MEMORY_BUCKET_MS = {
+    '1m': 2000,
+    '5m': 5000,
+    '10m': 10000,
+    '30m': 30000,
+    '1h': 60000,
+    '12h': 5 * 60 * 1000,
+    '24h': 10 * 60 * 1000,
+    '48h': 15 * 60 * 1000,
+    '72h': 30 * 60 * 1000,
+};
+let lastDashboardMemorySampleAt = 0;
+const memoryHistoryCache = new Map();
 // 动态加载 AI 资源模块，避免 Dashboard 编译期反向依赖源码。
 function loadResourceModules() {
     return {
@@ -23,6 +53,245 @@ function loadResourceModules() {
         system: require(path.join(AI_LIB, 'resource-system', 'system-protection')),
         files: require(path.join(AI_LIB, 'resource-common', 'files')),
     };
+}
+// 返回资源系统事件文件名使用的 UTC 日期戳。
+function eventDateStamp(date) {
+    return date.toISOString().slice(0, 10);
+}
+// 返回指定日期的内存 metrics 文件路径。
+function processMetricsFile(systemRoot, date = new Date()) {
+    return path.join(systemRoot, `process-metrics-${eventDateStamp(date)}.jsonl`);
+}
+// 补写 Dashboard 自身的低频内存采样，避免 worker 空闲时折线图没有新点。
+function recordDashboardMemorySample(mods, snapshot) {
+    const now = Date.now();
+    if (now - lastDashboardMemorySampleAt < DASHBOARD_MEMORY_SAMPLE_INTERVAL_MS)
+        return;
+    lastDashboardMemorySampleAt = now;
+    try {
+        mods.files.appendJsonlEvent(processMetricsFile(mods.system.RESOURCE_SYSTEM_ROOT), {
+            event: 'process_metrics',
+            source: 'dashboard-resource-status',
+            pid: process.pid,
+            processName: process.title,
+            rssMb: Math.round((process.memoryUsage().rss || 0) / 1024 / 1024),
+            memAvailableMb: snapshot.memAvailableMb,
+            memTotalMb: snapshot.memTotalMb,
+            memSource: snapshot.memSource || '',
+        });
+    }
+    catch {
+        /* Dashboard 状态读取不应因辅助采样失败而失败。 */
+    }
+}
+// 解析前端传入的内存查询区间。
+function normalizeMemoryRange(value) {
+    const range = String(value || '5m').trim();
+    return Object.prototype.hasOwnProperty.call(MEMORY_RANGE_OPTIONS, range) ? range : '5m';
+}
+// 列出覆盖查询区间的 process-metrics 文件。
+function listProcessMetricFiles(systemRoot, startMs, endMs) {
+    const startDate = new Date(startMs);
+    const endDate = new Date(endMs);
+    let cursor = Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate());
+    const endDay = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate());
+    const files = [];
+    while (cursor <= endDay) {
+        const file = processMetricsFile(systemRoot, new Date(cursor));
+        if (fs.existsSync(file))
+            files.push(file);
+        cursor += 24 * 60 * 60 * 1000;
+    }
+    return files;
+}
+// 从文件尾部读取最近 JSONL 行，短区间优先保留最新精度。
+function readJsonlTailLines(file, maxBytes = MEMORY_HISTORY_MAX_FULL_FILE_BYTES) {
+    try {
+        const stat = fs.statSync(file);
+        if (!stat.isFile())
+            return [];
+        const size = stat.size;
+        const start = Math.max(0, size - maxBytes);
+        const length = size - start;
+        const fd = fs.openSync(file, 'r');
+        try {
+            const buffer = Buffer.alloc(length);
+            fs.readSync(fd, buffer, 0, length, start);
+            const lines = buffer.toString('utf8').split(/\r?\n/).filter(Boolean);
+            return start > 0 ? lines.slice(1) : lines;
+        }
+        finally {
+            fs.closeSync(fd);
+        }
+    }
+    catch {
+        return [];
+    }
+}
+// 从文件指定偏移附近读取 JSONL 行，采样大文件时避免整文件读入。
+function readJsonlChunkLines(file, size, offset) {
+    const half = Math.floor(MEMORY_HISTORY_SAMPLE_CHUNK_BYTES / 2);
+    const start = Math.max(0, Math.min(size, offset - half));
+    const length = Math.max(0, Math.min(MEMORY_HISTORY_SAMPLE_CHUNK_BYTES, size - start));
+    if (!length)
+        return [];
+    try {
+        const fd = fs.openSync(file, 'r');
+        try {
+            const buffer = Buffer.alloc(length);
+            fs.readSync(fd, buffer, 0, length, start);
+            const lines = buffer.toString('utf8').split(/\r?\n/).filter(Boolean);
+            const leftSafe = start === 0 ? 0 : 1;
+            const rightSafe = start + length >= size ? lines.length : Math.max(leftSafe, lines.length - 1);
+            return lines.slice(leftSafe, rightSafe);
+        }
+        finally {
+            fs.closeSync(fd);
+        }
+    }
+    catch {
+        return [];
+    }
+}
+// 读取 metrics 行；小文件全读，大文件按偏移均匀取样。
+function readSampledJsonlLines(file, rangeMs, isEndFile) {
+    let stat;
+    try {
+        stat = fs.statSync(file);
+        if (!stat.isFile())
+            return [];
+    }
+    catch {
+        return [];
+    }
+    if (stat.size <= MEMORY_HISTORY_MAX_FULL_FILE_BYTES) {
+        try {
+            return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean);
+        }
+        catch {
+            return [];
+        }
+    }
+    if (isEndFile && rangeMs <= 60 * 60 * 1000)
+        return readJsonlTailLines(file, MEMORY_HISTORY_MAX_FULL_FILE_BYTES * 2);
+    const maxChunks = Math.max(4, Math.min(96, Math.ceil(MEMORY_HISTORY_MAX_SAMPLED_LINES_PER_FILE / 80)));
+    const seen = new Set();
+    const lines = [];
+    for (let i = 0; i < maxChunks; i += 1) {
+        const offset = maxChunks === 1 ? stat.size - 1 : Math.floor((stat.size - 1) * (i / (maxChunks - 1)));
+        for (const line of readJsonlChunkLines(file, stat.size, offset)) {
+            if (seen.has(line))
+                continue;
+            seen.add(line);
+            lines.push(line);
+        }
+    }
+    if (lines.length <= MEMORY_HISTORY_MAX_SAMPLED_LINES_PER_FILE)
+        return lines;
+    const step = lines.length / MEMORY_HISTORY_MAX_SAMPLED_LINES_PER_FILE;
+    const sampled = [];
+    for (let i = 0; i < MEMORY_HISTORY_MAX_SAMPLED_LINES_PER_FILE; i += 1)
+        sampled.push(lines[Math.floor(i * step)]);
+    return sampled;
+}
+// 将原始 JSONL metrics 聚合为固定桶，长区间采用采样读取以避免 Dashboard 请求超时。
+function collectMemoryHistory(mods, range) {
+    const nowMs = Date.now();
+    const rangeMs = MEMORY_RANGE_OPTIONS[range];
+    const startMs = nowMs - rangeMs;
+    const bucketMs = MEMORY_BUCKET_MS[range] || 10000;
+    const endStamp = eventDateStamp(new Date(nowMs));
+    const buckets = new Map();
+    const sources = new Set();
+    const files = listProcessMetricFiles(mods.system.RESOURCE_SYSTEM_ROOT, startMs, nowMs);
+    let parsedLineCount = 0;
+    for (const file of files) {
+        const isEndFile = path.basename(file).includes(endStamp);
+        const lines = readSampledJsonlLines(file, rangeMs, isEndFile);
+        for (const line of lines) {
+            let item;
+            try {
+                item = JSON.parse(line);
+            }
+            catch {
+                continue;
+            }
+            parsedLineCount += 1;
+            const ts = Date.parse(String(item.createdAt || ''));
+            if (!Number.isFinite(ts) || ts < startMs || ts > nowMs)
+                continue;
+            const available = Number(item.memAvailableMb);
+            if (!Number.isFinite(available))
+                continue;
+            const bucketTs = Math.floor(ts / bucketMs) * bucketMs;
+            const bucket = buckets.get(bucketTs) || {
+                ts: bucketTs,
+                availableSum: 0,
+                availableCount: 0,
+                minAvailableMb: available,
+                maxAvailableMb: available,
+                totalMb: null,
+                rssSum: 0,
+                rssCount: 0,
+                sources: new Set(),
+            };
+            bucket.availableSum += available;
+            bucket.availableCount += 1;
+            bucket.minAvailableMb = Math.min(bucket.minAvailableMb, available);
+            bucket.maxAvailableMb = Math.max(bucket.maxAvailableMb, available);
+            const total = Number(item.memTotalMb);
+            if (Number.isFinite(total))
+                bucket.totalMb = total;
+            const rss = Number(item.rssMb);
+            if (Number.isFinite(rss)) {
+                bucket.rssSum += rss;
+                bucket.rssCount += 1;
+            }
+            const source = String(item.source || item.workerName || item.workerType || item.processName || '').trim();
+            if (source) {
+                sources.add(source);
+                bucket.sources.add(source);
+            }
+            buckets.set(bucketTs, bucket);
+        }
+    }
+    const points = Array.from(buckets.values())
+        .sort((a, b) => a.ts - b.ts)
+        .map(bucket => ({
+        ts: bucket.ts,
+        createdAt: new Date(bucket.ts).toISOString(),
+        memAvailableMb: Math.round(bucket.availableSum / Math.max(1, bucket.availableCount)),
+        minAvailableMb: Math.round(bucket.minAvailableMb),
+        maxAvailableMb: Math.round(bucket.maxAvailableMb),
+        memTotalMb: bucket.totalMb,
+        rssMb: bucket.rssCount ? Math.round(bucket.rssSum / bucket.rssCount) : null,
+        sampleCount: bucket.availableCount,
+        sources: Array.from(bucket.sources).slice(0, 8),
+    }));
+    return {
+        ok: true,
+        range,
+        rangeMs,
+        bucketMs,
+        dashboardSampleIntervalMs: DASHBOARD_MEMORY_SAMPLE_INTERVAL_MS,
+        workerSampleIntervalMs: WORKER_MEMORY_SAMPLE_INTERVAL_MS,
+        uiRefreshMs: 5000,
+        pointCount: points.length,
+        parsedLineCount,
+        fileCount: files.length,
+        cacheTtlMs: MEMORY_HISTORY_CACHE_TTL_MS,
+        sources: Array.from(sources).slice(0, 20),
+        points,
+    };
+}
+// 返回带短缓存的内存历史，避免高频刷新重复扫描大 JSONL。
+function getCachedMemoryHistory(mods, range) {
+    const cached = memoryHistoryCache.get(range);
+    if (cached && cached.expiresAt > Date.now())
+        return cached.payload;
+    const payload = collectMemoryHistory(mods, range);
+    memoryHistoryCache.set(range, { expiresAt: Date.now() + MEMORY_HISTORY_CACHE_TTL_MS, payload });
+    return payload;
 }
 // 将任务 payload 从 Dashboard 响应中移除，避免泄露上下文和文件内容。
 function sanitizeTask(task) {
@@ -54,7 +323,7 @@ function collectResourceEvents(mods, limit = RESOURCE_EVENT_LIMIT) {
     const events = [];
     const read = (dir, prefix, source) => {
         for (const event of mods.files.readRecentJsonlEvents(dir, prefix, limit)) {
-            const item = event && typeof event === 'object' && !Array.isArray(event) ? event : {};
+            const item = event && typeof event === 'object' ? event : {};
             events.push({
                 ...item,
                 source,
@@ -76,6 +345,7 @@ function collectResourceEvents(mods, limit = RESOURCE_EVENT_LIMIT) {
 // 合成资源中心总览状态。
 function buildResourceStatus(mods) {
     const snapshot = mods.scheduler.readResourceSnapshot();
+    recordDashboardMemorySample(mods, snapshot);
     const gate = mods.gate.getResourceGateStatus();
     const queue = mods.tasks.getTaskQueueSummary();
     const workers = mods.tasks.listWorkerStates();
@@ -115,8 +385,17 @@ function buildResourceStatus(mods) {
         events: collectResourceEvents(mods, 40),
     };
 }
-function getErrorMessage(error) {
-    return error instanceof Error ? error.message : String(error || 'unknown error');
+// GET /resource/memory-history：返回按区间聚合后的内存折线图数据。
+function handleGetResourceMemoryHistory(req, res, pathname, url) {
+    if (!requireAdmin(req, res))
+        return;
+    try {
+        const range = normalizeMemoryRange(url.searchParams.get('range'));
+        return json(res, getCachedMemoryHistory(loadResourceModules(), range));
+    }
+    catch (e) {
+        return json(res, { ok: false, message: e.message }, 500);
+    }
 }
 // GET /resource/status：返回资源中心总览。
 function handleGetResourceStatus(req, res) {
@@ -124,7 +403,7 @@ function handleGetResourceStatus(req, res) {
         return json(res, buildResourceStatus(loadResourceModules()));
     }
     catch (e) {
-        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
+        return json(res, { ok: false, message: e.message }, 500);
     }
 }
 // GET /resource/tasks：返回脱敏任务列表。
@@ -135,12 +414,12 @@ function handleGetResourceTasks(req, res, pathname, url) {
         const mods = loadResourceModules();
         const status = String(url.searchParams.get('status') || '').trim();
         const limit = parsePositiveInt(url.searchParams.get('limit'), RESOURCE_TASK_LIMIT, 1, 500);
-        const statuses = status ? status.split(',').map((item) => item.trim()).filter(Boolean) : undefined;
+        const statuses = status ? status.split(',').map(item => item.trim()).filter(Boolean) : undefined;
         const tasks = mods.tasks.listResourceTasks({ statuses, limit }).map(sanitizeTask);
         return json(res, { ok: true, tasks });
     }
     catch (e) {
-        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
+        return json(res, { ok: false, message: e.message }, 500);
     }
 }
 // GET /resource/events：返回最近资源事件。
@@ -153,7 +432,7 @@ function handleGetResourceEvents(req, res, pathname, url) {
         return json(res, { ok: true, events: collectResourceEvents(mods, limit) });
     }
     catch (e) {
-        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
+        return json(res, { ok: false, message: e.message }, 500);
     }
 }
 // GET /resource/workers：返回 worker 心跳。
@@ -164,7 +443,7 @@ function handleGetResourceWorkers(req, res) {
         return json(res, { ok: true, workers: loadResourceModules().tasks.listWorkerStates() });
     }
     catch (e) {
-        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
+        return json(res, { ok: false, message: e.message }, 500);
     }
 }
 // GET /resource/media：返回媒体背压状态。
@@ -175,7 +454,7 @@ function handleGetResourceMedia(req, res) {
         return json(res, { ok: true, media: loadResourceModules().media.getMediaBackpressureStatus() });
     }
     catch (e) {
-        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
+        return json(res, { ok: false, message: e.message }, 500);
     }
 }
 // GET /resource/precompute：返回日报预计算状态。
@@ -186,7 +465,7 @@ function handleGetResourcePrecompute(req, res) {
         return json(res, { ok: true, precompute: loadResourceModules().precompute.getPrecomputeSummary() });
     }
     catch (e) {
-        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
+        return json(res, { ok: false, message: e.message }, 500);
     }
 }
 // POST /resource/cancel：取消 pending/deferred 任务。
@@ -203,7 +482,7 @@ function handlePostResourceCancel(req, res) {
             return json(res, { ok, message: ok ? '任务已取消' : '只能取消 pending/deferred 任务' }, ok ? 200 : 404);
         }
         catch (e) {
-            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
+            return json(res, { ok: false, message: e.message }, 400);
         }
     });
 }
@@ -220,7 +499,7 @@ function handlePostResourceReclaimStale(req, res) {
             return json(res, { ok: true, reclaimed, status: mods.gate.getResourceGateStatus(staleMs) });
         }
         catch (e) {
-            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
+            return json(res, { ok: false, message: e.message }, 400);
         }
     });
 }
@@ -241,12 +520,13 @@ function handlePostResourceMaintenance(req, res) {
             return json(res, { ok: true, enabled: !!data.enabled, message: data.enabled ? '维护模式已开启' : '维护模式已关闭' });
         }
         catch (e) {
-            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
+            return json(res, { ok: false, message: e.message }, 400);
         }
     });
 }
 const routes = {
     'GET /dashboard/api/resource/status': handleGetResourceStatus,
+    'GET /dashboard/api/resource/memory-history': handleGetResourceMemoryHistory,
     'GET /dashboard/api/resource/tasks': handleGetResourceTasks,
     'GET /dashboard/api/resource/events': handleGetResourceEvents,
     'GET /dashboard/api/resource/workers': handleGetResourceWorkers,
@@ -256,4 +536,4 @@ const routes = {
     'POST /dashboard/api/resource/reclaim-stale': handlePostResourceReclaimStale,
     'POST /dashboard/api/resource/maintenance': handlePostResourceMaintenance,
 };
-module.exports = { routes, buildResourceStatus, sanitizeTask };
+module.exports = { routes, buildResourceStatus, sanitizeTask, collectMemoryHistory, normalizeMemoryRange, getCachedMemoryHistory };

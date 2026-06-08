@@ -1,97 +1,119 @@
-import type { IncomingMessage, ServerResponse } from 'http';
-type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => unknown;
-interface ResourceSnapshotLike extends Record<string, unknown> {
-    botMode?: unknown;
-    resourceState?: unknown;
-    memAvailableMb?: unknown;
-    memTotalMb?: unknown;
-    memSource?: unknown;
-}
-interface ResourceGateStatusLike extends Record<string, unknown> {
-    meta?: ResourceGateMetaLike | null;
-}
-interface ResourceGateMetaLike extends Record<string, unknown> {
-    taskId?: unknown;
-    kind?: unknown;
-    step?: unknown;
-    owner?: unknown;
-    channelKey?: unknown;
-    userId?: unknown;
-    startedAt?: unknown;
-    heartbeatAt?: unknown;
-    memAvailableMb?: unknown;
-}
-interface ResourceQueueSummaryLike extends Record<string, unknown> {
-    pending?: unknown;
-}
-interface PrecomputeSummaryLike extends Record<string, unknown> {
-    coverageCount?: unknown;
-    slotCount?: unknown;
-    coverage?: unknown;
-}
-interface ResourceTaskLike extends Record<string, unknown> {
-    payload?: unknown;
-}
 interface ResourceModuleSet {
-    gate: {
-        GATE_ROOT: string;
-        getResourceGateStatus(staleMs?: number): ResourceGateStatusLike;
-        reclaimStaleLock(staleMs: number, source: string): unknown;
-    };
-    scheduler: {
-        SCHEDULER_ROOT: string;
-        readResourceSnapshot(): ResourceSnapshotLike;
-    };
-    tasks: {
-        getTaskQueueSummary(): ResourceQueueSummaryLike;
-        listWorkerStates(): unknown;
-        listResourceTasks(options: {
-            statuses?: string[];
-            limit: number;
-        }): ResourceTaskLike[];
-        cancelTask(taskId: string, source: string, reason: string): boolean;
-    };
-    precompute: {
-        PRECOMPUTE_ROOT: string;
-        getPrecomputeSummary(): PrecomputeSummaryLike;
-    };
-    media: {
-        MEDIA_ROOT: string;
-        getMediaBackpressureStatus(): unknown;
-    };
-    system: {
-        RESOURCE_SYSTEM_ROOT: string;
-        getSystemProtectionStatus(): unknown;
-    };
-    files: {
-        readRecentJsonlEvents(dir: string, prefix: string, limit?: number): unknown[];
-    };
+    gate: any;
+    scheduler: any;
+    tasks: any;
+    precompute: any;
+    media: any;
+    system: any;
+    files: any;
 }
-declare function sanitizeTask(task: ResourceTaskLike): {
-    id: unknown;
-    kind: unknown;
-    status: unknown;
-    source: unknown;
-    channelKey: unknown;
-    userId: unknown;
-    priority: unknown;
-    createdAt: unknown;
-    updatedAt: unknown;
-    expiresAt: unknown;
-    timeoutMs: unknown;
-    step: unknown;
-    claimedBy: unknown;
-    claimedAt: unknown;
-    startedAt: unknown;
-    finishedAt: unknown;
-    notify: unknown;
-    error: unknown;
+declare function normalizeMemoryRange(value: unknown): string;
+declare function collectMemoryHistory(mods: ResourceModuleSet, range: string): {
+    ok: boolean;
+    range: string;
+    rangeMs: number;
+    bucketMs: number;
+    dashboardSampleIntervalMs: any;
+    workerSampleIntervalMs: any;
+    uiRefreshMs: number;
+    pointCount: number;
+    parsedLineCount: number;
+    fileCount: number;
+    cacheTtlMs: any;
+    sources: string[];
+    points: {
+        ts: number;
+        createdAt: string;
+        memAvailableMb: number;
+        minAvailableMb: number;
+        maxAvailableMb: number;
+        memTotalMb: number;
+        rssMb: number;
+        sampleCount: number;
+        sources: string[];
+    }[];
+};
+declare function getCachedMemoryHistory(mods: ResourceModuleSet, range: string): unknown;
+declare function sanitizeTask(task: any): {
+    id: any;
+    kind: any;
+    status: any;
+    source: any;
+    channelKey: any;
+    userId: any;
+    priority: any;
+    createdAt: any;
+    updatedAt: any;
+    expiresAt: any;
+    timeoutMs: any;
+    step: any;
+    claimedBy: any;
+    claimedAt: any;
+    startedAt: any;
+    finishedAt: any;
+    notify: any;
+    error: any;
     payloadKeys: string[];
 };
-declare function buildResourceStatus(mods: ResourceModuleSet): Record<string, unknown>;
+declare function buildResourceStatus(mods: ResourceModuleSet): {
+    ok: boolean;
+    mode: any;
+    resourceState: any;
+    memAvailableMb: any;
+    memTotalMb: any;
+    memSource: any;
+    running: {
+        taskId: any;
+        kind: any;
+        step: any;
+        owner: any;
+        channelKey: any;
+        userId: any;
+        startedAt: any;
+        heartbeatAt: any;
+        memAvailableMb: any;
+    };
+    gate: any;
+    queue: any;
+    queueLength: number;
+    workers: any;
+    media: any;
+    precompute: {
+        coverageCount: any;
+        slotCount: any;
+        coverage: any;
+    };
+    system: any;
+    maintenance: boolean;
+    events: any[];
+};
+declare function handleGetResourceMemoryHistory(req: any, res: any, pathname: any, url: any): any;
+declare function handleGetResourceStatus(req: any, res: any): any;
+declare function handleGetResourceTasks(req: any, res: any, pathname: any, url: any): any;
+declare function handleGetResourceEvents(req: any, res: any, pathname: any, url: any): any;
+declare function handleGetResourceWorkers(req: any, res: any): any;
+declare function handleGetResourceMedia(req: any, res: any): any;
+declare function handleGetResourcePrecompute(req: any, res: any): any;
+declare function handlePostResourceCancel(req: any, res: any): void;
+declare function handlePostResourceReclaimStale(req: any, res: any): void;
+declare function handlePostResourceMaintenance(req: any, res: any): void;
 declare const _default: {
-    routes: Record<string, RouteHandler>;
+    routes: {
+        'GET /dashboard/api/resource/status': typeof handleGetResourceStatus;
+        'GET /dashboard/api/resource/memory-history': typeof handleGetResourceMemoryHistory;
+        'GET /dashboard/api/resource/tasks': typeof handleGetResourceTasks;
+        'GET /dashboard/api/resource/events': typeof handleGetResourceEvents;
+        'GET /dashboard/api/resource/workers': typeof handleGetResourceWorkers;
+        'GET /dashboard/api/resource/media': typeof handleGetResourceMedia;
+        'GET /dashboard/api/resource/precompute': typeof handleGetResourcePrecompute;
+        'POST /dashboard/api/resource/cancel': typeof handlePostResourceCancel;
+        'POST /dashboard/api/resource/reclaim-stale': typeof handlePostResourceReclaimStale;
+        'POST /dashboard/api/resource/maintenance': typeof handlePostResourceMaintenance;
+    };
     buildResourceStatus: typeof buildResourceStatus;
     sanitizeTask: typeof sanitizeTask;
+    collectMemoryHistory: typeof collectMemoryHistory;
+    normalizeMemoryRange: typeof normalizeMemoryRange;
+    getCachedMemoryHistory: typeof getCachedMemoryHistory;
 };
 export = _default;

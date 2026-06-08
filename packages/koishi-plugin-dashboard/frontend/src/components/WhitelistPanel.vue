@@ -1,11 +1,17 @@
 <template>
   <div class="tab-panel-root">
-  <div class="card" style="display:flex;justify-content:space-between;align-items:center">
+  <div class="card whitelist-head">
     <div>
       <h2 style="margin:0">黑白名单管理</h2>
       <div style="font-size:13px;color:var(--text3);margin-top:4px">每 3 秒自动同步，QQ 指令修改也会实时反映</div>
     </div>
-    <div style="display:flex;align-items:center;gap:12px">
+    <div class="whitelist-toolbar">
+      <input
+        v-model="groupSearch"
+        class="whitelist-search"
+        type="search"
+        placeholder="搜索群号"
+      />
       <span v-if="refreshMsg" style="font-size:12px;color:var(--success);animation:fadeIn .2s">{{ refreshMsg }}</span>
       <button class="btn btn-sm" @click="manualRefresh" :disabled="refreshing">
         {{ refreshing ? '刷新中...' : '刷新全部' }}
@@ -18,16 +24,17 @@
   <div v-for="(wl, key) in lists" :key="key" class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <h2 style="margin:0">{{ wl.label }}</h2>
-      <span style="font-size:12px;color:var(--text3)">{{ getCount(wl) }} 条</span>
+      <span style="font-size:12px;color:var(--text3)">{{ getVisibleCount(wl) }} / {{ getCount(wl) }} 条</span>
     </div>
 
     <!-- 空状态 -->
     <div v-if="isEmpty(wl)" style="color:var(--text3);font-size:14px;margin-bottom:12px">暂无数据</div>
+    <div v-else-if="isFilteredEmpty(wl)" style="color:var(--text3);font-size:14px;margin-bottom:12px">没有匹配项</div>
 
     <!-- 列表 -->
-    <div v-for="(item, idx) in getItems(wl)" :key="idx" class="grp" style="display:flex;justify-content:space-between;align-items:center">
-      <span style="font-family:monospace;font-size:14px">{{ item }}</span>
-      <button class="btn btn-sm" style="background:color-mix(in srgb, var(--error) 20%, transparent);color:var(--error)" @click="removeItem(key, idx)">删除</button>
+    <div v-for="item in getVisibleItems(wl)" :key="item.key" class="grp" style="display:flex;justify-content:space-between;align-items:center">
+      <span style="font-family:monospace;font-size:14px">{{ item.label }}</span>
+      <button class="btn btn-sm" style="background:color-mix(in srgb, var(--error) 20%, transparent);color:var(--error)" @click="removeDisplayItem(key, item)">删除</button>
     </div>
 
     <!-- 添加 -->
@@ -49,12 +56,21 @@ import type { MessageState, ShowAdminDialog, WhitelistBuckets, WhitelistData, Wh
 import { errorMessage, isRecord, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
 
+interface WhitelistDisplayItem {
+  key: string
+  label: string
+  raw: string
+  index: number
+  bucket: 'array' | 'groups' | 'users'
+}
+
 export default {
   name: 'WhitelistPanel',
   components: { SelectBox },
   setup() {
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const lists = ref<WhitelistMap>({})
+    const groupSearch = ref('')
     const newValues = reactive<Record<string, string>>({})
     const newTypes = reactive<Record<string, 'groups' | 'users'>>({})
     const msgs = reactive<Record<string, MessageState | null>>({})
@@ -132,6 +148,53 @@ export default {
       return items
     }
 
+    // 构建带原始位置的显示项，搜索过滤后仍能准确删除原数据。
+    function getDisplayItems(wl: WhitelistEntry): WhitelistDisplayItem[] {
+      if (Array.isArray(wl.data)) {
+        return wl.data.map((raw, index) => ({
+          key: `array:${index}:${raw}`,
+          label: raw,
+          raw,
+          index,
+          bucket: 'array',
+        }))
+      }
+      const items: WhitelistDisplayItem[] = []
+      wl.data?.groups?.forEach((raw, index) => items.push({
+        key: `groups:${index}:${raw}`,
+        label: '[群] ' + raw,
+        raw,
+        index,
+        bucket: 'groups',
+      }))
+      wl.data?.users?.forEach((raw, index) => items.push({
+        key: `users:${index}:${raw}`,
+        label: '[用户] ' + raw,
+        raw,
+        index,
+        bucket: 'users',
+      }))
+      return items
+    }
+
+    // 返回当前搜索词下的可见项。
+    function getVisibleItems(wl: WhitelistEntry): WhitelistDisplayItem[] {
+      const query = groupSearch.value.trim().toLowerCase()
+      const items = getDisplayItems(wl)
+      if (!query) return items
+      return items.filter(item => `${item.label} ${item.raw}`.toLowerCase().includes(query))
+    }
+
+    // 返回过滤后的计数。
+    function getVisibleCount(wl: WhitelistEntry): number {
+      return getVisibleItems(wl).length
+    }
+
+    // 判断当前搜索词是否把非空列表过滤为空。
+    function isFilteredEmpty(wl: WhitelistEntry): boolean {
+      return !isEmpty(wl) && getVisibleItems(wl).length === 0
+    }
+
     function inputPlaceholder(wl: WhitelistEntry) {
       if (isObjectList(wl)) return '群号或用户 QQ 号'
       if (wl.label.includes('用户')) return '用户 QQ 号'
@@ -203,7 +266,70 @@ export default {
       setTimeout(() => msgs[key] = null, 2000)
     }
 
-    return { lists, newValues, newTypes, typeOptions, msgs, loadError, refreshing, refreshMsg, manualRefresh, isEmpty, isObjectList, getCount, getItems, inputPlaceholder, getRawItems, addItem, removeItem }
+    // 删除搜索结果中的显示项，按 bucket 和原始值更新对应列表。
+    async function removeDisplayItem(key: string, item: WhitelistDisplayItem) {
+      const wl = lists.value[key]
+      if (!wl) return
+      let newData: WhitelistData
+      if (Array.isArray(wl.data)) {
+        newData = wl.data[item.index] === item.raw
+          ? wl.data.filter((_, i) => i !== item.index)
+          : wl.data.filter(value => value !== item.raw)
+      } else {
+        newData = { ...wl.data }
+        if (item.bucket === 'groups') newData.groups = (newData.groups || []).filter(value => value !== item.raw)
+        else if (item.bucket === 'users') newData.users = (newData.users || []).filter(value => value !== item.raw)
+        else return
+      }
+      const res = await updateWhitelist(key, newData)
+      if (res.code === 'ADMIN_REQUIRED') {
+        if (showAdminDialog) showAdminDialog('修改白名单需要管理员密码', () => removeDisplayItem(key, item))
+        return
+      }
+      if (res.ok) { msgs[key] = { type: 'ok', text: '已删除' }; load() }
+      else msgs[key] = { type: 'err', text: messageFromData(res.data, '删除失败') }
+      setTimeout(() => msgs[key] = null, 2000)
+    }
+
+    return { lists, groupSearch, newValues, newTypes, typeOptions, msgs, loadError, refreshing, refreshMsg, manualRefresh, isEmpty, isFilteredEmpty, isObjectList, getCount, getVisibleCount, getItems, getVisibleItems, inputPlaceholder, getRawItems, addItem, removeItem, removeDisplayItem }
   }
 }
 </script>
+
+<style scoped>
+.whitelist-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.whitelist-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.whitelist-search {
+  width: min(260px, 42vw);
+  font-family: monospace;
+}
+
+@media (max-width: 760px) {
+  .whitelist-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .whitelist-toolbar {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .whitelist-search {
+    width: 100%;
+  }
+}
+</style>

@@ -16,33 +16,91 @@
 
     <div class="resource-grid">
       <section class="card resource-summary">
-        <h2>资源总览</h2>
-        <div class="resource-kpis">
-          <div class="resource-kpi">
-            <span>模式</span>
-            <strong>{{ display(status.mode) }}</strong>
+        <div class="resource-summary-layout">
+          <div class="resource-summary-main">
+            <h2>资源总览</h2>
+            <div class="resource-kpis">
+              <div class="resource-kpi">
+                <span>模式</span>
+                <strong>{{ display(status.mode) }}</strong>
+              </div>
+              <div class="resource-kpi">
+                <span>档位</span>
+                <strong :class="'state-' + display(status.resourceState)">{{ display(status.resourceState) }}</strong>
+              </div>
+              <div class="resource-kpi">
+                <span>可用内存</span>
+                <strong>{{ memoryLabel }}</strong>
+              </div>
+              <div class="resource-kpi">
+                <span>排队</span>
+                <strong>{{ numberValue(status.queueLength) }}</strong>
+              </div>
+            </div>
+            <div class="resource-running">
+              <div class="resource-section-title">当前独占</div>
+              <div v-if="running" class="resource-runbox">
+                <b>{{ display(running.kind) }}</b>
+                <span>{{ display(running.taskId) }}</span>
+                <small>{{ display(running.step) }} · {{ display(running.owner) }}</small>
+              </div>
+              <div v-else class="resource-empty">暂无独占任务</div>
+            </div>
           </div>
-          <div class="resource-kpi">
-            <span>档位</span>
-            <strong :class="'state-' + display(status.resourceState)">{{ display(status.resourceState) }}</strong>
+
+          <div class="memory-chart-panel">
+            <div class="memory-chart-head">
+              <div>
+                <h2>内存走势</h2>
+                <div class="resource-subline">{{ memorySampleLabel }}</div>
+              </div>
+              <select v-model="memoryRange" class="memory-range-select" @change="loadMemoryHistory">
+                <option v-for="option in memoryRangeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+            </div>
+            <div class="memory-chart-wrap">
+              <svg class="memory-chart" viewBox="0 0 640 220" preserveAspectRatio="none" role="img" aria-label="可用内存折线图">
+                <line
+                  v-for="tick in memoryYTicks"
+                  :key="tick.y"
+                  x1="44"
+                  :y1="tick.y"
+                  x2="624"
+                  :y2="tick.y"
+                  class="memory-chart-grid"
+                />
+                <text
+                  v-for="tick in memoryYTicks"
+                  :key="'label-' + tick.y"
+                  x="8"
+                  :y="tick.y + 4"
+                  class="memory-chart-label"
+                >{{ tick.label }}</text>
+                <polyline
+                  v-if="memoryPolyline"
+                  :points="memoryPolyline"
+                  class="memory-chart-line"
+                />
+                <circle
+                  v-for="point in memoryChartPoints"
+                  :key="point.ts"
+                  :cx="point.x"
+                  :cy="point.y"
+                  r="3"
+                  class="memory-chart-dot"
+                />
+              </svg>
+              <div v-if="!memoryHistory.length" class="memory-chart-empty">
+                {{ loadingMemory ? '加载中...' : '暂无内存采样' }}
+              </div>
+            </div>
+            <div class="memory-chart-meta">
+              <span>点数 {{ memoryHistory.length }}</span>
+              <span>当前 {{ memoryCurrentLabel }}</span>
+              <span>最低 {{ memoryMinLabel }}</span>
+              <span>最高 {{ memoryMaxLabel }}</span>
+            </div>
           </div>
-          <div class="resource-kpi">
-            <span>可用内存</span>
-            <strong>{{ memoryLabel }}</strong>
-          </div>
-          <div class="resource-kpi">
-            <span>排队</span>
-            <strong>{{ numberValue(status.queueLength) }}</strong>
-          </div>
-        </div>
-        <div class="resource-running">
-          <div class="resource-section-title">当前独占</div>
-          <div v-if="running" class="resource-runbox">
-            <b>{{ display(running.kind) }}</b>
-            <span>{{ display(running.taskId) }}</span>
-            <small>{{ display(running.step) }} · {{ display(running.owner) }}</small>
-          </div>
-          <div v-else class="resource-empty">暂无独占任务</div>
         </div>
       </section>
 
@@ -147,6 +205,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   cancelResourceTask,
   fetchResourceEvents,
+  fetchResourceMemoryHistory,
   fetchResourceStatus,
   fetchResourceTasks,
   reclaimResourceStale,
@@ -160,12 +219,30 @@ export default {
     const status = ref<JsonRecord>({})
     const tasks = ref<JsonRecord[]>([])
     const events = ref<JsonRecord[]>([])
+    const memoryHistory = ref<JsonRecord[]>([])
+    const memoryRange = ref('5m')
+    const memoryMeta = ref<JsonRecord>({})
     const message = ref<MessageState>({ type: 'info', text: '' })
     const lastRefresh = ref(0)
     const loading = ref(false)
     const loadingTasks = ref(false)
     const loadingEvents = ref(false)
+    const loadingMemory = ref(false)
     let timer: ReturnType<typeof setInterval> | null = null
+    let secondaryTimer: ReturnType<typeof setInterval> | null = null
+    let memoryTimer: ReturnType<typeof setInterval> | null = null
+
+    const memoryRangeOptions = [
+      { value: '1m', label: '1分钟' },
+      { value: '5m', label: '5分钟' },
+      { value: '10m', label: '10分钟' },
+      { value: '30m', label: '30分钟' },
+      { value: '1h', label: '1小时' },
+      { value: '12h', label: '12小时' },
+      { value: '24h', label: '24小时' },
+      { value: '48h', label: '48小时' },
+      { value: '72h', label: '72小时' },
+    ]
 
     const running = computed<JsonRecord | null>(() => {
       const value = status.value.running
@@ -183,6 +260,64 @@ export default {
     })
     const maintenanceLabel = computed(() => status.value.maintenance ? '关闭维护' : '开启维护')
     const lastRefreshLabel = computed(() => lastRefresh.value ? new Date(lastRefresh.value).toLocaleTimeString() : '尚未刷新')
+    const memoryValues = computed(() => memoryHistory.value
+      .map(point => Number(point.memAvailableMb))
+      .filter(value => Number.isFinite(value)))
+    const memoryMinValue = computed(() => memoryValues.value.length ? Math.min(...memoryValues.value) : null)
+    const memoryMaxValue = computed(() => memoryValues.value.length ? Math.max(...memoryValues.value) : null)
+    const memoryCurrentValue = computed(() => {
+      const values = memoryValues.value
+      return values.length ? values[values.length - 1] : null
+    })
+    const memoryCurrentLabel = computed(() => mbLabel(memoryCurrentValue.value))
+    const memoryMinLabel = computed(() => mbLabel(memoryMinValue.value))
+    const memoryMaxLabel = computed(() => mbLabel(memoryMaxValue.value))
+    const memorySampleLabel = computed(() => {
+      const worker = formatInterval(Number(memoryMeta.value.workerSampleIntervalMs))
+      const dashboard = formatInterval(Number(memoryMeta.value.dashboardSampleIntervalMs))
+      const bucket = formatInterval(Number(memoryMeta.value.bucketMs))
+      return `worker 采样 ${worker}，面板补采样 ${dashboard}，当前聚合 ${bucket}`
+    })
+    const memoryChartScale = computed(() => {
+      const min = memoryMinValue.value
+      const max = memoryMaxValue.value
+      const total = Number(status.value.memTotalMb || memoryHistory.value.find(item => Number.isFinite(Number(item.memTotalMb)))?.memTotalMb)
+      const safeMin = min === null ? 0 : min
+      const safeMax = max === null ? Math.max(total || 1, 1) : max
+      const pad = Math.max(32, Math.round((safeMax - safeMin) * 0.12))
+      const top = Math.max(safeMax + pad, total && total > 0 ? Math.min(total, safeMax + pad) : safeMax + pad)
+      const bottom = Math.max(0, safeMin - pad)
+      return top <= bottom ? { min: 0, max: Math.max(1, top || 1) } : { min: bottom, max: top }
+    })
+    const memoryChartPoints = computed(() => {
+      const points = memoryHistory.value
+      const count = points.length
+      const scale = memoryChartScale.value
+      const height = 176
+      const top = 24
+      const left = 44
+      const width = 580
+      const span = Math.max(1, scale.max - scale.min)
+      return points.map((point, index) => {
+        const value = Number(point.memAvailableMb)
+        const ratio = Number.isFinite(value) ? (value - scale.min) / span : 0
+        const x = left + (count <= 1 ? width : (index / (count - 1)) * width)
+        const y = top + height - Math.max(0, Math.min(1, ratio)) * height
+        return { x: round(x), y: round(y), ts: String(point.ts || point.createdAt || index), value }
+      })
+    })
+    const memoryPolyline = computed(() => memoryChartPoints.value.map(point => `${point.x},${point.y}`).join(' '))
+    const memoryYTicks = computed(() => {
+      const scale = memoryChartScale.value
+      const ticks = [0, 0.5, 1]
+      return ticks.map(ratio => {
+        const value = scale.max - (scale.max - scale.min) * ratio
+        return {
+          y: round(24 + 176 * ratio),
+          label: mbLabel(Math.round(value)),
+        }
+      })
+    })
 
     // 将未知值压成短展示文本，避免长对象撑破表格。
     function display(value: unknown, fallback = '-'): string {
@@ -217,6 +352,27 @@ export default {
       return `${Math.round(parsed * 1000) / 10}%`
     }
 
+    // 内存 MB 标签。
+    function mbLabel(value: unknown): string {
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? `${Math.round(parsed)} MB` : '-'
+    }
+
+    // 毫秒间隔标签。
+    function formatInterval(value: unknown): string {
+      const ms = Number(value)
+      if (!Number.isFinite(ms) || ms <= 0) return '-'
+      if (ms < 1000) return `${ms}ms`
+      if (ms < 60000) return `${Math.round(ms / 100) / 10}s`
+      if (ms < 3600000) return `${Math.round(ms / 6000) / 10}m`
+      return `${Math.round(ms / 360000) / 10}h`
+    }
+
+    // SVG 坐标保留一位小数，减少模板噪声。
+    function round(value: number): number {
+      return Math.round(value * 10) / 10
+    }
+
     // coverage 列表稳定 key。
     function coverageKey(item: JsonRecord): string {
       return `${display(item.date)}:${display(item.channelKey)}:${display(item.updatedAt)}`
@@ -234,6 +390,7 @@ export default {
 
     // 读取资源总览。
     async function loadStatus(): Promise<void> {
+      if (loading.value) return
       const res = await fetchResourceStatus()
       if (res.ok && res.data) {
         status.value = asRecord(res.data)
@@ -245,6 +402,7 @@ export default {
 
     // 读取任务列表。
     async function loadTasks(): Promise<void> {
+      if (loadingTasks.value) return
       loadingTasks.value = true
       try {
         const res = await fetchResourceTasks()
@@ -256,6 +414,7 @@ export default {
 
     // 读取最近事件。
     async function loadEvents(): Promise<void> {
+      if (loadingEvents.value) return
       loadingEvents.value = true
       try {
         const res = await fetchResourceEvents()
@@ -265,13 +424,36 @@ export default {
       }
     }
 
+    // 读取内存历史折线图。
+    async function loadMemoryHistory(): Promise<void> {
+      if (loadingMemory.value) return
+      loadingMemory.value = true
+      try {
+        const res = await fetchResourceMemoryHistory(memoryRange.value)
+        if (res.ok && res.data) {
+          const data = asRecord(res.data)
+          memoryMeta.value = data
+          memoryHistory.value = asArray<JsonRecord>(data.points)
+        }
+      } finally {
+        loadingMemory.value = false
+      }
+    }
+
     // 刷新资源中心所有数据。
     async function refreshAll(): Promise<void> {
+      if (loading.value) return
       loading.value = true
       message.value = { type: 'info', text: '' }
       try {
-        await loadStatus()
-        await Promise.all([loadTasks(), loadEvents()])
+        const res = await fetchResourceStatus()
+        if (res.ok && res.data) {
+          status.value = asRecord(res.data)
+          lastRefresh.value = Date.now()
+        } else {
+          throw new Error(errorMessage(res.data, '资源状态读取失败'))
+        }
+        await Promise.all([loadTasks(), loadEvents(), loadMemoryHistory()])
       } catch (error) {
         message.value = { type: 'err', text: errorMessage(error, '刷新失败') }
       } finally {
@@ -305,27 +487,43 @@ export default {
 
     onMounted(() => {
       refreshAll()
-      timer = setInterval(refreshAll, 5000)
+      timer = setInterval(loadStatus, 5000)
+      secondaryTimer = setInterval(() => { loadTasks(); loadEvents() }, 15000)
+      memoryTimer = setInterval(loadMemoryHistory, 10000)
     })
 
     onUnmounted(() => {
       if (timer) clearInterval(timer)
+      if (secondaryTimer) clearInterval(secondaryTimer)
+      if (memoryTimer) clearInterval(memoryTimer)
     })
 
     return {
       status,
       tasks,
       events,
+      memoryHistory,
+      memoryRange,
+      memoryRangeOptions,
+      memoryMeta,
       message,
       loading,
       loadingTasks,
       loadingEvents,
+      loadingMemory,
       running,
       workers,
       media,
       precompute,
       coverage,
       memoryLabel,
+      memorySampleLabel,
+      memoryCurrentLabel,
+      memoryMinLabel,
+      memoryMaxLabel,
+      memoryChartPoints,
+      memoryPolyline,
+      memoryYTicks,
       maintenanceLabel,
       lastRefreshLabel,
       display,
@@ -339,6 +537,7 @@ export default {
       refreshAll,
       loadTasks,
       loadEvents,
+      loadMemoryHistory,
       toggleMaintenance,
       reclaimStale,
       cancelTask,
@@ -384,6 +583,18 @@ export default {
   grid-column: span 2;
 }
 
+.resource-summary-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.resource-summary-main,
+.memory-chart-panel {
+  min-width: 0;
+}
+
 .resource-kpis {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -418,6 +629,93 @@ export default {
 .state-yellow { color: var(--accent) !important }
 .state-red,
 .state-black { color: var(--danger) !important }
+
+.memory-chart-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+  padding: 12px;
+}
+
+.memory-chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.memory-chart-head h2 {
+  margin: 0 0 4px;
+}
+
+.memory-range-select {
+  flex: 0 0 104px;
+  height: 34px;
+}
+
+.memory-chart-wrap {
+  position: relative;
+  height: 220px;
+  min-width: 0;
+}
+
+.memory-chart {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.memory-chart-grid {
+  stroke: color-mix(in srgb, var(--border) 72%, transparent);
+  stroke-width: 1;
+}
+
+.memory-chart-label {
+  fill: var(--text3);
+  font-size: 11px;
+}
+
+.memory-chart-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.memory-chart-dot {
+  fill: var(--accent);
+  stroke: var(--card);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.memory-chart-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.memory-chart-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.memory-chart-meta span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 .resource-section-title {
   color: var(--text2);
@@ -574,6 +872,21 @@ export default {
 
   .resource-summary {
     grid-column: span 1;
+  }
+
+  .resource-summary-layout,
+  .memory-chart-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .memory-chart-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .memory-range-select {
+    width: 100%;
+    flex-basis: auto;
   }
 
   .resource-event {

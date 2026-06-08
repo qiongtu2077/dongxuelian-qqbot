@@ -6,6 +6,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const RECENT_JSONL_TAIL_BYTES = Math.max(64 * 1024, Math.min(4 * 1024 * 1024, Number(process.env.RESOURCE_RECENT_JSONL_TAIL_BYTES || 512 * 1024)));
 // 返回当前 ISO 时间字符串，统一资源系统事件时间格式。
 function nowIso() {
     return new Date().toISOString();
@@ -99,6 +100,30 @@ function renameFileAtomic(src, dst) {
         throw error;
     }
 }
+// 只读取 JSONL 文件尾部，避免 Dashboard 状态页同步读完整大日志。
+function readJsonlTailLines(file) {
+    try {
+        const stat = fs.statSync(file);
+        if (!stat.isFile())
+            return [];
+        const size = stat.size;
+        const start = Math.max(0, size - RECENT_JSONL_TAIL_BYTES);
+        const length = size - start;
+        const fd = fs.openSync(file, 'r');
+        try {
+            const buffer = Buffer.alloc(length);
+            fs.readSync(fd, buffer, 0, length, start);
+            const lines = buffer.toString('utf8').split(/\r?\n/).filter(Boolean);
+            return start > 0 ? lines.slice(1) : lines;
+        }
+        finally {
+            fs.closeSync(fd);
+        }
+    }
+    catch {
+        return [];
+    }
+}
 // 读取最近 JSONL 事件；用于 Dashboard 展示低成本事件尾部。
 function readRecentJsonlEvents(dir, prefix, limit = 80) {
     const max = Math.max(1, Math.min(500, Number(limit || 80)));
@@ -116,7 +141,7 @@ function readRecentJsonlEvents(dir, prefix, limit = 80) {
     const lines = [];
     for (const file of files) {
         try {
-            lines.push(...fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean));
+            lines.push(...readJsonlTailLines(file));
         }
         catch {
             /* 跳过读取失败的事件文件，Dashboard 仍显示其他来源。 */
