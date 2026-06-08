@@ -109,7 +109,7 @@ const MEMORY_HISTORY_CACHE_TTL_MS = parsePositiveInt(process.env.DASHBOARD_MEMOR
 const MEMORY_HISTORY_MAX_FULL_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_MAX_FULL_FILE_BYTES, 8 * 1024 * 1024, 1024 * 1024, 64 * 1024 * 1024)
 const MEMORY_HISTORY_MAX_SAMPLED_LINES_PER_FILE = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_MAX_SAMPLED_LINES_PER_FILE, 2600, 200, 20000)
 const MEMORY_HISTORY_SAMPLE_CHUNK_BYTES = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_SAMPLE_CHUNK_BYTES, 64 * 1024, 16 * 1024, 512 * 1024)
-const MEMORY_HISTORY_RETENTION_MS = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_RETENTION_HOURS, 72, 1, 24 * 30) * 60 * 60 * 1000
+const MEMORY_HISTORY_RETENTION_MS = parsePositiveInt(process.env.RESOURCE_PROCESS_METRICS_RETENTION_HOURS || process.env.DASHBOARD_MEMORY_HISTORY_RETENTION_HOURS, 72, 1, 24 * 30) * 60 * 60 * 1000
 const MEMORY_HISTORY_CLEANUP_INTERVAL_MS = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_CLEANUP_INTERVAL_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000)
 const PROCESS_METRICS_FILE_RE = /^process-metrics-\d{4}-\d{2}-\d{2}\.jsonl$/
 
@@ -376,6 +376,7 @@ function readSampledJsonlLines(file: string, rangeMs: number, isEndFile: boolean
 // 将原始 JSONL metrics 聚合为固定桶，长区间采用采样读取以避免 Dashboard 请求超时。
 function collectMemoryHistory(mods: ResourceModuleSet, range: string) {
   const nowMs = Date.now()
+  cleanupOldProcessMetricFilesThrottled(mods.system.RESOURCE_SYSTEM_ROOT, nowMs)
   const rangeMs = MEMORY_RANGE_OPTIONS[range]
   const startMs = nowMs - rangeMs
   const bucketMs = MEMORY_BUCKET_MS[range] || 10000

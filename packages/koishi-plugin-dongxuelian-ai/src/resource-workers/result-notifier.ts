@@ -8,6 +8,11 @@ const path = require('path')
 const { h } = require('koishi')
 const { listResourceTasks, updateTaskNotifyStatus, writeWorkerEvent } = require('./task-store') as typeof import('./task-store')
 const { getTaskResultDir } = require('./task-paths') as typeof import('./task-paths')
+const {
+  guardAgentRetellReply,
+  hasSearchFailureMaterial,
+  redactAgentMaterial,
+} = require('../chat/agent-retell-guard') as typeof import('../chat/agent-retell-guard')
 
 interface NotifyCompletedOptions {
   limit?: number
@@ -26,11 +31,20 @@ interface ResultNotifierTaskLike extends Record<string, unknown> {
   kind?: string
   status?: string
   channelKey?: string
+  payload?: Record<string, unknown>
   notify?: ResultNotifyInfo
 }
 
 type ResultNotifierResult = Record<string, unknown>
 type ResultNotifierSender = (task: ResultNotifierTaskLike, result: ResultNotifierResult) => Promise<boolean> | boolean
+
+interface AgentNotifyResultLike {
+  reply?: unknown
+  message?: unknown
+  toolResults?: Array<{ name?: string; result?: unknown }>
+}
+
+const AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE = /(?:搜索状态：weak_hit|weak_hit|弱命中|正文质量：(?:short|empty|garbage|error|unknown)|未读到可用正文|未打开候选网页正文|不能作为事实依据)/i
 
 interface ResultNotifierBotLike {
   sendMessage?: (target: string, content: unknown) => Promise<unknown> | unknown
@@ -111,6 +125,18 @@ function buildDailyReportTextMessage(result: ResultNotifierResult): string {
   return `${prefix}${text || '日报已生成，但文字结果为空。'}`.slice(0, 4000)
 }
 
+// 判断 Agent 结果里是否存在通知层必须拦截的搜索失败材料。
+function hasHardSearchFailureSignal(result: AgentNotifyResultLike): boolean {
+  const parts: string[] = []
+  if (result.reply) parts.push(String(result.reply))
+  if (result.message) parts.push(String(result.message))
+  for (const item of Array.isArray(result.toolResults) ? result.toolResults : []) {
+    if (item?.name) parts.push(String(item.name))
+    if (item?.result) parts.push(String(item.result))
+  }
+  return AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE.test(parts.join('\n'))
+}
+
 // 通过 Koishi bot 或 OneBot internal API 发送文字。
 async function sendNotifierText(bot: ResultNotifierBotLike | null | undefined, target: string, text: string): Promise<void> {
   if (!bot) throw new Error('bot unavailable for result notifier')
@@ -167,11 +193,25 @@ function createDailyReportSender(options: DailyReportSenderOptions = {}): Result
 }
 
 // Build the text sent for standalone QQ Agent worker results.
-function buildAgentTaskTextMessage(result: ResultNotifierResult): string {
+function buildAgentTaskTextMessage(result: ResultNotifierResult, task: ResultNotifierTaskLike | null = null): string {
   const reply = String(result.reply || result.message || '').trim()
   const pendingId = String(result.pendingId || '')
   const suffix = pendingId ? `\n\n需要确认的工具 ID: ${pendingId}` : ''
-  return `${reply || 'Agent worker completed but returned an empty reply.'}${suffix}`.slice(0, 4000)
+  const payload = task && typeof task.payload === 'object' && task.payload ? task.payload : {}
+  const entry = String(payload.entry || '')
+  const fallback = entry === 'chat-heavy-tool'
+    ? '后台工具没有返回可靠结果。'
+    : 'Agent 后台任务已完成，但没有返回可发送内容。'
+  const agentResult: AgentNotifyResultLike = {
+    reply,
+    message: result.message,
+    toolResults: Array.isArray(result.toolResults) ? result.toolResults.slice(0, 20) as AgentNotifyResultLike['toolResults'] : [],
+  }
+  if (hasHardSearchFailureSignal(agentResult) || hasSearchFailureMaterial(agentResult)) return `这次搜索没有拿到可靠结果，不能据此下结论。${suffix}`.slice(0, 4000)
+  const safeReply = guardAgentRetellReply(redactAgentMaterial(reply), agentResult, {
+    searchFailureFallback: '这次搜索没有拿到可靠结果，不能据此下结论。',
+  })
+  return `${safeReply || fallback}${suffix}`.slice(0, 4000)
 }
 
 // Construct a sender for standalone QQ Agent worker results.
@@ -183,7 +223,7 @@ function createAgentTaskSender(options: ResourceResultSenderOptions = {}): Resul
     const notify = task?.notify || {}
     const target = String(notify.channelKey || task?.channelKey || '')
     if (!target) throw new Error('agent task notify target is empty')
-    await sendNotifierText(bot, target, buildAgentTaskTextMessage(result))
+    await sendNotifierText(bot, target, buildAgentTaskTextMessage(result, task))
     if (logger) logger.info(`agent task text notified: task=${task.id}, target=${target}`)
     return true
   }
@@ -259,6 +299,8 @@ async function notifyCompletedTasks(options: NotifyCompletedOptions = {}): Promi
 
 export = {
   readTaskResult,
+  hasHardSearchFailureSignal,
+  buildAgentTaskTextMessage,
   createDailyReportSender,
   createAgentTaskSender,
   createEmotionRenderSender,

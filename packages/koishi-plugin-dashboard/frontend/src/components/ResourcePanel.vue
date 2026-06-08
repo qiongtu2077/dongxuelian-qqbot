@@ -139,7 +139,7 @@
             />
           </svg>
           <div v-if="!memoryHistory.length" class="memory-chart-empty">
-            {{ loadingMemory ? '加载中...' : '暂无内存采样' }}
+            {{ memoryEmptyText }}
           </div>
         </div>
         <div class="memory-chart-meta">
@@ -209,7 +209,7 @@
 </template>
 
 <script lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import {
   cancelResourceTask,
   fetchResourceEvents,
@@ -219,17 +219,19 @@ import {
   reclaimResourceStale,
   setResourceMaintenance,
 } from '../api'
-import { asArray, asRecord, errorMessage, type JsonRecord, type MessageState } from '../types'
+import { asArray, asRecord, errorMessage, type JsonRecord, type MessageState, type ShowAdminDialog } from '../types'
 
 export default {
   name: 'ResourcePanel',
   setup() {
+    const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const status = ref<JsonRecord>({})
     const tasks = ref<JsonRecord[]>([])
     const events = ref<JsonRecord[]>([])
     const memoryHistory = ref<JsonRecord[]>([])
     const memoryRange = ref('5m')
     const memoryMeta = ref<JsonRecord>({})
+    const memoryError = ref('')
     const precomputeQuery = ref('')
     const message = ref<MessageState>({ type: 'info', text: '' })
     const lastRefresh = ref(0)
@@ -240,6 +242,7 @@ export default {
     let timer: ReturnType<typeof setInterval> | null = null
     let secondaryTimer: ReturnType<typeof setInterval> | null = null
     let memoryTimer: ReturnType<typeof setInterval> | null = null
+    let lastMemoryAdminPromptAt = 0
 
     const memoryRangeOptions = [
       { value: '1m', label: '1分钟' },
@@ -296,6 +299,10 @@ export default {
       const dashboard = formatInterval(Number(memoryMeta.value.dashboardSampleIntervalMs))
       const bucket = formatInterval(Number(memoryMeta.value.bucketMs))
       return `worker 采样 ${worker}，面板补采样 ${dashboard}，当前聚合 ${bucket}`
+    })
+    const memoryEmptyText = computed(() => {
+      if (loadingMemory.value) return '加载中...'
+      return memoryError.value || '暂无内存采样'
     })
     const memoryChartScale = computed(() => {
       const min = memoryMinValue.value
@@ -407,6 +414,11 @@ export default {
       return ['pending', 'deferred'].includes(String(task.status || ''))
     }
 
+    // 判断 API 响应是否需要管理员密码，兼容 code 位于顶层或 data 内的两种返回。
+    function isAdminRequired(res: { code?: string, data?: unknown } | null | undefined): boolean {
+      return !!res && (res.code === 'ADMIN_REQUIRED' || asRecord(res.data).code === 'ADMIN_REQUIRED')
+    }
+
     // 读取资源总览。
     async function loadStatus(): Promise<void> {
       if (loading.value) return
@@ -453,7 +465,19 @@ export default {
           const data = asRecord(res.data)
           memoryMeta.value = data
           memoryHistory.value = asArray<JsonRecord>(data.points)
+          memoryError.value = ''
+          return
         }
+        if (isAdminRequired(res)) {
+          memoryError.value = '查看内存走势需要管理员密码'
+          const now = Date.now()
+          if (showAdminDialog && now - lastMemoryAdminPromptAt > 30000) {
+            lastMemoryAdminPromptAt = now
+            showAdminDialog('查看内存走势需要管理员密码', loadMemoryHistory)
+          }
+          return
+        }
+        memoryError.value = errorMessage(res.data, '内存走势读取失败')
       } finally {
         loadingMemory.value = false
       }
@@ -525,6 +549,7 @@ export default {
       memoryRange,
       memoryRangeOptions,
       memoryMeta,
+      memoryError,
       precomputeQuery,
       message,
       loading,
@@ -539,6 +564,7 @@ export default {
       filteredCoverage,
       memoryLabel,
       memorySampleLabel,
+      memoryEmptyText,
       memoryCurrentLabel,
       memoryMinLabel,
       memoryMaxLabel,

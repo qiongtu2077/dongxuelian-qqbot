@@ -19,6 +19,8 @@ declare function writeProcessCleanupEvent(data: Record<string, unknown>): void;
 declare function getSystemProtectionStatus(): Record<string, unknown>;
 declare const _default: {
     RESOURCE_SYSTEM_ROOT: any;
+    PROCESS_METRICS_RETENTION_MS: number;
+    MEMORY_BLACK_THRESHOLD_MB: number;
     collectProcessMetrics: typeof collectProcessMetrics;
     checkWorkerMemoryLimit: typeof checkWorkerMemoryLimit;
     writeProcessCleanupEvent: typeof writeProcessCleanupEvent;

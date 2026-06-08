@@ -596,6 +596,7 @@ async function main() {
     agentAutoRouteFlow: path.join(LIB, 'routing', 'agent-auto-route-flow'),
     agentChatBridge: path.join(LIB, 'chat', 'agent-chat-bridge'),
     agentRetellGuard: path.join(LIB, 'chat', 'agent-retell-guard'),
+    resultNotifier: path.join(LIB, 'resource-workers', 'result-notifier'),
     personaFallback: path.join(LIB, 'persona', 'persona-fallback'),
     jailbreakRuleset: path.join(LIB, 'rulesets', 'jailbreak'),
     loggingConfig: path.join(LIB, 'core', 'logging-config'),
@@ -1003,6 +1004,9 @@ async function main() {
     agentRetellGuard: [
       'collectAgentMaterial', 'hasSearchFailureMaterial', 'replyAcknowledgesSearchFailure',
       'buildSearchFailureRetellFallback', 'shouldFilterAgentMaterialLine', 'redactAgentMaterial', 'guardAgentRetellReply',
+    ],
+    resultNotifier: [
+      'buildAgentTaskTextMessage', 'hasHardSearchFailureSignal', 'createAgentTaskSender',
     ],
     jailbreakRuleset: [
       'combinePatterns',
@@ -1974,6 +1978,13 @@ async function main() {
   check('agent retell guard treats weak search candidates as failure material', modules.agentRetellGuard.hasSearchFailureMaterial(weakSearchAgentResult), searchWithFailuresOnly)
   checkEqual('agent retell guard blocks fabricated success after weak search', modules.agentRetellGuard.guardAgentRetellReply('查到了，是新共鸣者。', weakSearchAgentResult), '这次搜索没有拿到可靠结果。')
   checkEqual('agent retell guard keeps caller persona fallback for weak search', modules.agentRetellGuard.guardAgentRetellReply('查到了，是新共鸣者。', weakSearchAgentResult, { searchFailureFallback: 'TEST_PERSONA_MARKER 这次没查稳，我不乱说。' }), 'TEST_PERSONA_MARKER 这次没查稳，我不乱说。')
+  const shortBodyAgentResult = {
+    reply: '官方公告已经确认联动角色。',
+    toolResults: [{ name: 'web_fetch', result: '正文质量：short（正文过短，不能作为事实依据）\n正文：活动页' }],
+  }
+  check('agent retell guard treats short fetched body as failure material', modules.agentRetellGuard.hasSearchFailureMaterial(shortBodyAgentResult), JSON.stringify(shortBodyAgentResult))
+  checkEqual('agent result notifier blocks weak search notification text', modules.resultNotifier.buildAgentTaskTextMessage(weakSearchAgentResult, { payload: { entry: 'chat-heavy-tool' } }), '这次搜索没有拿到可靠结果，不能据此下结论。')
+  checkEqual('agent result notifier blocks short-body notification text', modules.resultNotifier.buildAgentTaskTextMessage(shortBodyAgentResult, { payload: { entry: 'chat-heavy-tool' } }), '这次搜索没有拿到可靠结果，不能据此下结论。')
   const usableSearchAgentResult = {
     reply: '正文读到了。',
     toolResults: [{ name: 'web_search', result: searchWithPages }],

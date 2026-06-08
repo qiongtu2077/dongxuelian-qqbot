@@ -21,6 +21,7 @@ const RESOURCE_SYSTEM_ROOT = path.join(DATA_DIR, 'resource-system');
 const PROCESS_METRICS_FILE_RE = /^process-metrics-\d{4}-\d{2}-\d{2}\.jsonl$/;
 const PROCESS_METRICS_RETENTION_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_RETENTION_HOURS, 72, 1, 24 * 30) * 60 * 60 * 1000;
 const PROCESS_METRICS_CLEANUP_INTERVAL_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_CLEANUP_INTERVAL_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000);
+const MEMORY_BLACK_THRESHOLD_MB = parseBoundedPositiveInt(process.env.RESOURCE_MEMORY_BLACK_THRESHOLD_MB, 450, 64, 8192);
 const DEFAULT_WORKER_RSS_LIMITS = {
     'daily-worker': Number(process.env.RESOURCE_DAILY_WORKER_RSS_MB || 900),
     'agent-worker': Number(process.env.RESOURCE_AGENT_WORKER_RSS_MB || 900),
@@ -405,7 +406,7 @@ function checkWorkerMemoryLimit(workerName, limitMb) {
 // 采集轻量系统指标并落盘。
 function collectProcessMetrics(extra = {}) {
     ensureDir(RESOURCE_SYSTEM_ROOT);
-    cleanupOldProcessMetricsFilesThrottled();
+    cleanupOldProcessMetricsFilesThrottled(Date.now());
     const mem = readLinuxMeminfo();
     const metrics = {
         event: 'process_metrics',
@@ -418,13 +419,14 @@ function collectProcessMetrics(extra = {}) {
         ...extra,
     };
     appendJsonlEvent(systemEventFile('process-metrics'), metrics);
-    if (mem.availableMb !== null && mem.availableMb < 300) {
+    if (mem.availableMb !== null && mem.availableMb < MEMORY_BLACK_THRESHOLD_MB) {
         appendJsonlEvent(systemEventFile('memory-alerts'), {
             event: 'memory_black',
             pid: process.pid,
             memAvailableMb: mem.availableMb,
             memTotalMb: mem.totalMb,
             memSource: mem.source,
+            thresholdMb: MEMORY_BLACK_THRESHOLD_MB,
         });
     }
     return metrics;
@@ -453,6 +455,8 @@ function getSystemProtectionStatus() {
 }
 module.exports = {
     RESOURCE_SYSTEM_ROOT,
+    PROCESS_METRICS_RETENTION_MS,
+    MEMORY_BLACK_THRESHOLD_MB,
     collectProcessMetrics,
     checkWorkerMemoryLimit,
     writeProcessCleanupEvent,
