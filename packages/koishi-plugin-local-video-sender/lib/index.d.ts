@@ -40,6 +40,7 @@ interface RuntimeConfig {
     maxSize: number;
     testVideoFile: string;
     videoBlacklistFile: string;
+    videoMinMemMb: number;
 }
 interface VideoFormat {
     format_id?: string | number;

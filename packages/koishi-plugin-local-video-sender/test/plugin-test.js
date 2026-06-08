@@ -77,6 +77,7 @@ async function withIsolatedPlugin(fn) {
     BILI_COOKIES_FILE: process.env.BILI_COOKIES_FILE,
     BILI_WORKDIR: process.env.BILI_WORKDIR,
     BILI_MAX_SIZE_BYTES: process.env.BILI_MAX_SIZE_BYTES,
+    BILI_MIN_MEM_MB: process.env.BILI_MIN_MEM_MB,
     BILI_TEST_VIDEO_FILE: process.env.BILI_TEST_VIDEO_FILE,
     DONGXUELIAN_AI_DATA_DIR: process.env.DONGXUELIAN_AI_DATA_DIR,
   }
@@ -85,6 +86,7 @@ async function withIsolatedPlugin(fn) {
   process.env.BILI_COOKIES_FILE = path.join(tmpRoot, 'cookies.txt')
   process.env.BILI_WORKDIR = path.join(tmpRoot, 'downloads')
   process.env.BILI_MAX_SIZE_BYTES = '1024'
+  process.env.BILI_MIN_MEM_MB = '450'
   process.env.BILI_TEST_VIDEO_FILE = path.join(tmpRoot, 'test-video.mp4')
   process.env.DONGXUELIAN_AI_DATA_DIR = dataDir
   delete require.cache[PLUGIN_PATH]
@@ -121,6 +123,7 @@ async function run() {
     check('cookies path uses env override', config.cookies === path.join(tmpRoot, 'cookies.txt'), JSON.stringify(config))
     check('workdir path uses env override', config.workdir === path.join(tmpRoot, 'downloads'), JSON.stringify(config))
     check('max size uses env override', config.maxSize === 1024, JSON.stringify(config))
+    check('video min memory uses env override', config.videoMinMemMb === 450, JSON.stringify(config))
     check('test video path uses env override', config.testVideoFile === path.join(tmpRoot, 'test-video.mp4'), JSON.stringify(config))
     check('video blacklist path uses shared data dir', config.videoBlacklistFile === path.join(tmpRoot, 'data', 'video-blacklist.json'), JSON.stringify(config))
     check('file URL helper emits standard file URL', plugin.toFileUrl(path.join(tmpRoot, 'downloads', 'demo.mp4')).startsWith('file:///'), plugin.toFileUrl(path.join(tmpRoot, 'downloads', 'demo.mp4')))

@@ -144,6 +144,10 @@ function shouldDropQueuedBotWork(ctx, channelKey, commandType, label) {
     logDebug(ctx, 'bot-mode', `drop queued work label=${label} channel=${channelKey} command=${commandType} action=${decision.action} reason=${decision.reason}`);
     return true;
 }
+// 判断 AI 状态命令是否需要在资源静默模式下降级为轻量状态回复。
+function shouldUseLightweightAiStatusFallback(plain, action) {
+    return plain === 'AI状态' && (action === 'silent_drop' || action === 'defer' || action === 'reject');
+}
 function apply(ctx) {
     registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue });
     ctx.middleware(async (session, next) => {
@@ -216,6 +220,10 @@ function apply(ctx) {
         if (botModeDecision.action === 'queue_daily') {
             markExplicitInteraction('daily-command');
             return next();
+        }
+        if (shouldUseLightweightAiStatusFallback(plain, botModeDecision.action)) {
+            markExplicitInteraction('resource-status');
+            return buildResourceStatusReply();
         }
         if (botModeDecision.action === 'status_only') {
             markExplicitInteraction('resource-status');

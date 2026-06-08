@@ -27,6 +27,19 @@ async function run(t) {
     checkSentNonEmpty(t, 'scenario AI status replies', status)
     checkNoLeak(t, 'scenario AI status does not leak key', status, ['sk-test-secret', 'Bearer'])
 
+    const previousMemOverride = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
+    const previousTotalOverride = process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
+    process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '420'
+    process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
+    const criticalStatus = await run(makeSession({ content: 'AI\u72b6\u6001' }))
+    if (previousMemOverride === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
+    else process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = previousMemOverride
+    if (previousTotalOverride === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
+    else process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = previousTotalOverride
+    checkSentNonEmpty(t, 'scenario AI status falls back under critical mode', criticalStatus)
+    t.check('scenario AI critical status reports resource mode', criticalStatus.sent.some(item => String(item).includes('critical') && String(item).includes('red')), JSON.stringify(criticalStatus.sent))
+    checkNoLeak(t, 'scenario AI critical status does not leak key', criticalStatus, ['sk-test-secret', 'Bearer'])
+
     const help = await run(makeSession({ content: '\u5e2e\u52a9\u96c6\u5408' }))
     checkNextCalled(t, 'scenario reserved help command calls next', help)
     t.check('scenario reserved help command does not send', help.sent.length === 0, JSON.stringify(help.sent))

@@ -462,7 +462,7 @@ function readLinuxMeminfoReadonly() {
 function classifyResourceState(memAvailableMb) {
   if (memAvailableMb === null || memAvailableMb === undefined) return 'yellow'
   if (memAvailableMb >= 900) return 'green'
-  if (memAvailableMb >= 600) return 'yellow'
+  if (memAvailableMb >= 450) return 'yellow'
   if (memAvailableMb >= 300) return 'red'
   return 'black'
 }

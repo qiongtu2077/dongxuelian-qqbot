@@ -412,6 +412,11 @@ function shouldDropQueuedBotWork(ctx: IndexContext, channelKey: string, commandT
   return true
 }
 
+// 判断 AI 状态命令是否需要在资源静默模式下降级为轻量状态回复。
+function shouldUseLightweightAiStatusFallback(plain: string, action: string): boolean {
+  return plain === 'AI状态' && (action === 'silent_drop' || action === 'defer' || action === 'reject')
+}
+
 function apply(ctx: IndexContext): void {
   registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue })
 
@@ -486,6 +491,10 @@ function apply(ctx: IndexContext): void {
     if (botModeDecision.action === 'queue_daily') {
       markExplicitInteraction('daily-command')
       return next()
+    }
+    if (shouldUseLightweightAiStatusFallback(plain, botModeDecision.action)) {
+      markExplicitInteraction('resource-status')
+      return buildResourceStatusReply()
     }
     if (botModeDecision.action === 'status_only') {
       markExplicitInteraction('resource-status')

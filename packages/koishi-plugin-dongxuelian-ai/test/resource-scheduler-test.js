@@ -42,7 +42,7 @@ function parseScenarioOutput(stdout) {
 
 // Run one child scenario with fresh module cache and env-derived DATA_DIR.
 function runScenario(label, env, timeoutMs = 15000) {
-  const script = String.raw`
+const script = String.raw`
 const { readResourceSnapshot } = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-snapshot')
 const { admitTask } = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-scheduler/admission')
 const { decideModePolicy } = require('./packages/koishi-plugin-dongxuelian-ai/lib/bot-mode/mode-policy')
@@ -60,6 +60,13 @@ const browserAdmission = admitTask({
   channelKey: 'scheduler-test-group',
   userId: 'scheduler-test-user',
 })
+const videoAdmission = admitTask({
+  kind: 'external_video_download',
+  source: 'resource-scheduler-test',
+  channelKey: 'scheduler-test-group',
+  userId: 'scheduler-test-user',
+  minMemMb: 450,
+})
 const normalChatAdmission = admitTask({
   kind: 'normal_chat',
   source: 'resource-scheduler-test',
@@ -76,6 +83,7 @@ const summary = {
   dailyDecision: dailyAdmission.decision,
   dailyFallback: dailyAdmission.fallback || '',
   browserDecision: browserAdmission.decision,
+  videoDecision: videoAdmission.decision,
   normalChatDecision: normalChatAdmission.decision,
   normalPolicyAction: normalPolicy.action,
   agentPolicyAction: agentPolicy.action,
@@ -111,7 +119,23 @@ function testRedMemoryAdmission() {
   check('red injection reports red critical snapshot', summary.resourceState === 'red' && summary.botMode === 'critical' && summary.memAvailableMb === 420, JSON.stringify(summary))
   check('red injection downgrades daily report', summary.dailyDecision === 'downgrade' && summary.dailyFallback === 'daily_report_text', JSON.stringify(summary))
   check('red injection defers browser action', summary.browserDecision === 'defer', JSON.stringify(summary))
+  check('red injection rejects 450MB video budget below minimum', summary.videoDecision === 'reject', JSON.stringify(summary))
   check('red injection silences normal chat', summary.normalChatDecision === 'silent_drop' && summary.normalPolicyAction === 'silent_drop', JSON.stringify(summary))
+}
+
+// Verify 450MB is the yellow boundary and still honors heavy-task budgets.
+function testYellowMemoryAdmission() {
+  const summary = runScenario('S1 yellow memory injection', {
+    DONGXUELIAN_AI_DATA_DIR: createTempDataDir('s1-yellow-test-'),
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '450',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  })
+  if (!summary) return
+  check('yellow injection reports yellow normal snapshot', summary.resourceState === 'yellow' && summary.botMode === 'normal' && summary.memAvailableMb === 450, JSON.stringify(summary))
+  check('yellow injection downgrades daily below task budget', summary.dailyDecision === 'downgrade' && summary.dailyFallback === 'daily_report_text', JSON.stringify(summary))
+  check('yellow injection defers browser below task budget', summary.browserDecision === 'defer', JSON.stringify(summary))
+  check('yellow injection allows 450MB video budget', summary.videoDecision === 'run_now', JSON.stringify(summary))
+  check('yellow injection allows normal chat policy', summary.normalChatDecision === 'run_now' && summary.normalPolicyAction === 'pass', JSON.stringify(summary))
 }
 
 // Verify black memory defers heavy tasks and silences chat.
@@ -132,6 +156,7 @@ function testBlackMemoryAdmission() {
 function main() {
   console.log('=== resource-scheduler S1 tests ===')
   testRedMemoryAdmission()
+  testYellowMemoryAdmission()
   testBlackMemoryAdmission()
   console.log(`passed: ${passed}`)
   console.log(`failed: ${failed}`)

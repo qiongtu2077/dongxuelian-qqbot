@@ -83,6 +83,31 @@ function isChromiumTask(kind: string): boolean {
   return kind === 'daily_report_render' || kind === 'browser_action'
 }
 
+// 判断当前任务是否低于自身最低内存预算，避免全局档位放宽后重任务越过预算运行。
+function isBelowTaskMinMemory(kind: string, budget: TaskBudget, snapshot: ResourceSnapshotLike): boolean {
+  if (isStatusQuery(kind) || isNormalChat(kind)) return false
+  if (snapshot.memAvailableMb === null) return false
+  return snapshot.memAvailableMb < budget.minMemMb
+}
+
+// 在非 red 档下按任务自身预算输出保守降级/延后决策。
+function decideBelowTaskMinMemory(kind: string, budget: TaskBudget, snapshot: ResourceSnapshotLike): AdmissionDecision | null {
+  if (!isBelowTaskMinMemory(kind, budget, snapshot)) return null
+  if (kind === 'daily_report' || kind === 'daily_report_render') {
+    const fallback = budget.fallbacks[0] || 'daily_report_text'
+    return buildDecision('downgrade', 'available memory is below task min memory budget', budget, snapshot, fallback)
+  }
+  if (budget.deferable) return buildDecision('defer', 'available memory is below task min memory budget', budget, snapshot)
+  return buildDecision('reject', 'available memory is below task min memory budget', budget, snapshot)
+}
+
+// 判断当前任务是否可按自身预算在 red 档继续运行。
+function canRunInRedState(kind: string, budget: TaskBudget, snapshot: ResourceSnapshotLike): boolean {
+  if (kind !== 'external_video_download') return false
+  if (snapshot.memAvailableMb === null) return false
+  return snapshot.memAvailableMb >= budget.minMemMb
+}
+
 // 构造准入结果。
 function buildDecision(decision: AdmissionDecisionType, reason: string, budget: TaskBudget, snapshot: ResourceSnapshotLike, fallback = ''): AdmissionDecision {
   return {
@@ -126,6 +151,10 @@ function decideAdmission(input: TaskBudgetInput, snapshot: ResourceSnapshotLike 
 
   if (snapshot.resourceState === 'red') {
     if (isNormalChat(kind)) return buildDecision('silent_drop', 'resource state red silences chat', budget, snapshot)
+    if (canRunInRedState(kind, budget, snapshot)) {
+      if (snapshot.locked && !lockedBySelf && budget.exclusive) return buildDecision('queue', 'exclusive slot is busy', budget, snapshot)
+      return buildDecision('run_now', 'red state accepted by task min memory budget', budget, snapshot)
+    }
     if (kind === 'daily_report' || kind === 'daily_report_render') {
       const fallback = budget.fallbacks[0] || 'daily_report_text'
       return buildDecision('downgrade', 'resource state red disables Chromium', budget, snapshot, fallback)
@@ -137,6 +166,9 @@ function decideAdmission(input: TaskBudgetInput, snapshot: ResourceSnapshotLike 
 
   if (snapshot.locked && !lockedBySelf && budget.exclusive) return buildDecision('queue', 'exclusive slot is busy', budget, snapshot)
   if (snapshot.locked && !lockedBySelf && isMediaTask(kind)) return buildDecision('defer', 'media waits for exclusive slot to clear', budget, snapshot)
+
+  const belowMinDecision = decideBelowTaskMinMemory(kind, budget, snapshot)
+  if (belowMinDecision) return belowMinDecision
 
   if (snapshot.resourceState === 'yellow' && isMediaTask(kind)) return buildDecision('defer', 'media is throttled in yellow state', budget, snapshot)
   return buildDecision('run_now', 'resource budget accepted', budget, snapshot)
@@ -172,6 +204,7 @@ function admitTask(input: TaskBudgetInput): AdmissionDecision {
 export = {
   admissionEventFile,
   decideAdmission,
+  decideBelowTaskMinMemory,
   writeAdmissionEvent,
   admitTask,
 }

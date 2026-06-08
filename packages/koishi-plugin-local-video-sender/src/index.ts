@@ -49,6 +49,7 @@ interface RuntimeConfig {
   maxSize: number
   testVideoFile: string
   videoBlacklistFile: string
+  videoMinMemMb: number
 }
 
 interface VideoFormat {
@@ -146,6 +147,7 @@ const DATA_DIR = resolveRuntimeDataDir()
 const VIDEO_BLACKLIST_FILE = process.env.BILI_VIDEO_BLACKLIST_FILE || path.join(DATA_DIR, 'video-blacklist.json')
 const MAX_SIZE = parsePositiveInteger(process.env.BILI_MAX_SIZE_BYTES, DEFAULT_MAX_SIZE)
 const TEST_VIDEO_FILE = process.env.BILI_TEST_VIDEO_FILE || '/root/test_bili.mp4'
+const VIDEO_MIN_MEM_MB = parsePositiveInteger(process.env.BILI_MIN_MEM_MB, 450)
 const MIN_720_HEIGHT = 700
 const MAX_720_HEIGHT = 720
 const PREFERRED_MAX_HEIGHT = 720
@@ -154,7 +156,7 @@ const DUPLICATE_HISTORY_LIMIT = 3
 const MAX_YTDLP_STDIO_BYTES = 1024 * 1024
 const MAX_VIDEO_BLACKLIST_BYTES = 128 * 1024
 const EXTERNAL_VIDEO_TASK_KIND = 'external_video_download'
-const VIDEO_RESOURCE_BUSY_MESSAGE = '当前资源正忙，视频下载稍后再试。'
+const VIDEO_RESOURCE_BUSY_MESSAGE = '服务器内存紧张，视频搬运稍后再试。'
 const VIDEO_RESOURCE_UNAVAILABLE_MESSAGE = '资源系统不可用，视频下载暂时关闭。'
 
 const recentParseHistory = new Map<string, RecentParseEntry[]>()
@@ -182,6 +184,7 @@ function getRuntimeConfig(): RuntimeConfig {
     maxSize: MAX_SIZE,
     testVideoFile: TEST_VIDEO_FILE,
     videoBlacklistFile: VIDEO_BLACKLIST_FILE,
+    videoMinMemMb: VIDEO_MIN_MEM_MB,
   }
 }
 
@@ -271,12 +274,13 @@ async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionL
     userId,
     exclusive: true,
     priority: 75,
+    minMemMb: VIDEO_MIN_MEM_MB,
     deferable: false,
     queueTimeoutMs: 5000,
     runTimeoutMs: 900000,
   })
   if (admission.decision !== 'run_now') {
-    ctx.logger('bvidl').warn(`video download rejected by resource scheduler: ${admission.reason || admission.decision}`)
+    ctx.logger('bvidl').warn(`video download rejected by resource scheduler: ${admission.reason || admission.decision}; state=${admission.resourceState || 'unknown'} mem=${admission.memAvailableMb ?? 'unknown'}MB min=${VIDEO_MIN_MEM_MB}MB`)
     return { ok: false, message: VIDEO_RESOURCE_BUSY_MESSAGE }
   }
 

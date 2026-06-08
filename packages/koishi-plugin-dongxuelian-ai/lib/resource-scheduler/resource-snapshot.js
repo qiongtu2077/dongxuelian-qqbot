@@ -14,6 +14,9 @@ function isRunningTaskLike(value) {
 }
 const SCHEDULER_ROOT = path.join(DATA_DIR, 'resource-scheduler');
 const SCHEDULER_STATE_FILE = path.join(SCHEDULER_ROOT, 'state.json');
+const GREEN_MEM_AVAILABLE_MB = 900;
+const YELLOW_MEM_AVAILABLE_MB = 450;
+const RED_MEM_AVAILABLE_MB = 300;
 // 读取显式的低内存故障注入值，便于本地和运维验证 red/black 分支。
 function readMeminfoOverride() {
     const rawAvailable = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE;
@@ -90,11 +93,11 @@ function readLinuxMeminfo() {
 function classifyResourceState(memAvailableMb) {
     if (memAvailableMb === null)
         return 'yellow';
-    if (memAvailableMb >= 900)
+    if (memAvailableMb >= GREEN_MEM_AVAILABLE_MB)
         return 'green';
-    if (memAvailableMb >= 600)
+    if (memAvailableMb >= YELLOW_MEM_AVAILABLE_MB)
         return 'yellow';
-    if (memAvailableMb >= 300)
+    if (memAvailableMb >= RED_MEM_AVAILABLE_MB)
         return 'red';
     return 'black';
 }
@@ -134,6 +137,9 @@ function readResourceSnapshot() {
 module.exports = {
     SCHEDULER_ROOT,
     SCHEDULER_STATE_FILE,
+    GREEN_MEM_AVAILABLE_MB,
+    YELLOW_MEM_AVAILABLE_MB,
+    RED_MEM_AVAILABLE_MB,
     readMeminfoOverride,
     readCgroupV2Meminfo,
     readProcMeminfo,

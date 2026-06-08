@@ -29,6 +29,9 @@ declare function readResourceSnapshot(): ResourceSnapshot;
 declare const _default: {
     SCHEDULER_ROOT: string;
     SCHEDULER_STATE_FILE: string;
+    GREEN_MEM_AVAILABLE_MB: number;
+    YELLOW_MEM_AVAILABLE_MB: number;
+    RED_MEM_AVAILABLE_MB: number;
     readMeminfoOverride: typeof readMeminfoOverride;
     readCgroupV2Meminfo: typeof readCgroupV2Meminfo;
     readProcMeminfo: typeof readProcMeminfo;
