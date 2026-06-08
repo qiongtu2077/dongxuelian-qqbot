@@ -1,8 +1,3 @@
-/**
- * MODULE: S2 Agent worker payload helpers.
- * Responsibility: build and validate serializable Agent payloads for standalone workers.
- * Boundary: no Agent execution, no queue state changes, no bot/session references.
- */
 type AgentWorkerAction = 'run' | 'resume_pending';
 interface AgentWorkerPayload {
     action: AgentWorkerAction;

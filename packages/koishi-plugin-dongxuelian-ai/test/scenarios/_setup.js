@@ -15,6 +15,12 @@ function applyPlugin(plugin, harness) {
 function createScenario(options = {}) {
   const data = createTestDataDir(options.data || {})
   const restoreEnv = withDataEnv(data.dataDir)
+  const originalSupervisorEnabled = process.env.RESOURCE_WORKER_SUPERVISOR_ENABLED
+  if (options.enableResourceWorkerSupervisor === true) {
+    process.env.RESOURCE_WORKER_SUPERVISOR_ENABLED = '1'
+  } else {
+    process.env.RESOURCE_WORKER_SUPERVISOR_ENABLED = '0'
+  }
   const clock = options.fakeTimers === true ? installFakeTimers(options.now || 1700000000000) : null
   const originalElementWarn = h.warn
   if (options.silenceElementWarnings !== false) h.warn = () => {}
@@ -33,6 +39,10 @@ function createScenario(options = {}) {
       await flushAsync(4)
     },
     async teardown() {
+      try {
+        await harness.ctx.emit('dispose')
+      } catch { /* non-critical: test teardown should continue cleanup after dispose listener failure */
+      }
       await flushAsync(20)
       for (let i = 0; i < 3; i += 1) {
         await realSleep(50)
@@ -42,6 +52,8 @@ function createScenario(options = {}) {
       if (clock) clock.uninstall()
       h.warn = originalElementWarn
       restoreEnv()
+      if (originalSupervisorEnabled === undefined) delete process.env.RESOURCE_WORKER_SUPERVISOR_ENABLED
+      else process.env.RESOURCE_WORKER_SUPERVISOR_ENABLED = originalSupervisorEnabled
       await realSleep(50)
       data.cleanup()
       await flushAsync(2)

@@ -1,7 +1,23 @@
 const fs = require('fs')
 const path = require('path')
 const { withScenario } = require('./_setup')
+const { AI_ROOT } = require('../fake/file')
 const { checkSentNonEmpty, checkNoLeak, checkNextCalled } = require('../helpers/assert')
+
+async function withGreenResourceSnapshot(fn) {
+  const previousAvailable = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
+  const previousTotal = process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
+  process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
+  process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
+  try {
+    return await fn()
+  } finally {
+    if (previousAvailable === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
+    else process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = previousAvailable
+    if (previousTotal === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
+    else process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = previousTotal
+  }
+}
 
 async function run(t) {
   t.section('scenario: command middleware')
@@ -210,49 +226,25 @@ async function run(t) {
         return Buffer.from('emotion-image-ok')
       },
     }
+    const taskStore = require(path.join(AI_ROOT, 'lib', 'resource-workers', 'task-store'))
+    const listEmotionTasks = () => taskStore.listResourceTasks({ statuses: ['pending', 'deferred', 'failed', 'done'], limit: 50 }).filter(task => task.kind === 'emotion_render')
     const structuredEmotionSession = makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' })
-    const structuredEmotion = await handler.handleCommand(structuredEmotionSession, harness.ctx, state)
+    const structuredEmotion = await withGreenResourceSnapshot(() => handler.handleCommand(structuredEmotionSession, harness.ctx, state))
     const emotionImage = String(structuredEmotion.response || '')
     t.check('scenario today emotion sends thinking immediately', structuredEmotionSession.sent.includes('Thinking......'), JSON.stringify(structuredEmotionSession.sent))
-    t.check('scenario today emotion returns image', emotionImage.includes('data:image/png;base64,ZW1vdGlvbi1pbWFnZS1vaw=='), emotionImage)
+    t.check('scenario today emotion returns queued text report', emotionImage.includes('群聊情绪指数') && emotionImage.includes('图片版已加入后台队列') && emotionImage.includes('任务ID：'), emotionImage)
+    t.check('scenario today emotion response does not inline image data', !emotionImage.includes('data:image/png') && !emotionImage.includes('emotion-image-ok'), emotionImage)
     t.check('scenario today emotion prompt caps display text', promptLimitSeen)
-    t.check('scenario today emotion renders image once', imageRenderCalls === 1, String(imageRenderCalls))
-    const cachedEmotion = await handler.handleCommand(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }), harness.ctx, state)
-    t.check('scenario today emotion cache reuses image response', cachedEmotion.response === structuredEmotion.response && modelCalls === 2, JSON.stringify({ cached: String(cachedEmotion.response), modelCalls }))
-
-    let fallbackModelCalls = 0
-    let fallbackRenderCalls = 0
-    let fallbackPromptSeen = false
-    const fallbackState = {
-      plain: '\u4eca\u65e5\u60c5\u7eea',
-      inGuild: true,
-      channelKey: '10001',
-      currentUserId: '100000000',
-      channelTodayCache: emotionCache,
-      lastEmotionCache: new Map(),
-      async loadConfig() {},
-      async callOpenAI(messages) {
-        fallbackModelCalls += 1
-        const prompt = messages.map(item => item.content).join('\n')
-        if (prompt.includes('500字以内')) {
-          fallbackPromptSeen = true
-          return '图片生成失败后的短文本回退。'.repeat(80)
-        }
-        if (prompt.includes('只输出 JSON')) return JSON.stringify({ score: 68, confidence: 77, mood: '偏乐观', summary: '互动稳定，气氛偏积极。', reasons: ['成员仍在围绕版本交流', '整体反馈比较轻松'], keywords: ['版本', '互动'] })
-        return '版本讨论稳定，整体偏积极。'
-      },
-      async renderEmotionImage() {
-        fallbackRenderCalls += 1
-        throw new Error('forced image failure')
-      },
-    }
-    const fallbackEmotionSession = makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' })
-    const fallbackEmotion = await handler.handleCommand(fallbackEmotionSession, harness.ctx, fallbackState)
-    const fallbackText = String(fallbackEmotion.response || '')
-    t.check('scenario today emotion fallback sends thinking immediately', fallbackEmotionSession.sent.includes('Thinking......'), JSON.stringify(fallbackEmotionSession.sent))
-    t.check('scenario today emotion retries image twice', fallbackRenderCalls === 2, String(fallbackRenderCalls))
-    t.check('scenario today emotion regenerates fallback text', fallbackPromptSeen && fallbackModelCalls === 3, JSON.stringify({ fallbackPromptSeen, fallbackModelCalls }))
-    t.check('scenario today emotion fallback text capped at 500', fallbackText.length <= 500 && !fallbackText.includes('data:image/png'), JSON.stringify({ length: fallbackText.length, fallbackText }))
+    t.check('scenario today emotion image render stays in worker', imageRenderCalls === 0, String(imageRenderCalls))
+    const emotionTasks = listEmotionTasks()
+    const emotionTask = emotionTasks[0] || {}
+    t.check('scenario today emotion submits one S2 render task', emotionTasks.length === 1 && emotionTask.channelKey === '10001' && emotionTask.source === 'emotion-command', JSON.stringify(emotionTasks))
+    t.check('scenario today emotion task notifies qq group later', emotionTask.notify && emotionTask.notify.target === 'qq-group' && emotionTask.notify.status === 'pending', JSON.stringify(emotionTask.notify || {}))
+    t.check('scenario today emotion task carries render payload', !!(emotionTask.payload && emotionTask.payload.analysis && emotionTask.payload.stats && Array.isArray(emotionTask.payload.history) && String(emotionTask.payload.text || '').includes('群聊情绪指数')), JSON.stringify(emotionTask.payload || {}))
+    const taskText = JSON.stringify(emotionTask)
+    t.check('scenario today emotion task avoids inline image and local result path leak', !taskText.includes('data:image/png') && !taskText.includes('emotion-image-ok') && !taskText.includes('result.json'), taskText.slice(0, 500))
+    const cachedEmotion = await withGreenResourceSnapshot(() => handler.handleCommand(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }), harness.ctx, state))
+    t.check('scenario today emotion cache reuses queued text response', cachedEmotion.response === structuredEmotion.response && modelCalls === 2 && listEmotionTasks().length === 1, JSON.stringify({ cached: String(cachedEmotion.response), modelCalls, tasks: listEmotionTasks().length }))
 
     const personaList = await run(makeSession({ content: '\u4e1c\u96ea\u83b2\u4eba\u683c\u5217\u8868' }))
     t.check('scenario persona list command is handled', personaList.sent.length > 0, JSON.stringify(personaList.sent))

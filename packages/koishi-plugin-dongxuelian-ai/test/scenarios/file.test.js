@@ -9,6 +9,15 @@ function atBot(session, content = '') {
   return `<at id="${session.selfId}"/> ${content}`
 }
 
+function findQueuedFileAnalysis(channelKey, messageId) {
+  const mediaQueue = require(path.join(AI_ROOT, 'lib', 'media', 'backpressure', 'media-queue.js'))
+  const pending = mediaQueue.listPendingMediaTasks('media_file_analysis', 20)
+  const running = (mediaQueue.getMediaBackpressureStatus().running || [])
+    .filter(task => task && task.kind === 'media_file_analysis')
+  return [...pending, ...running]
+    .find(task => task && task.channelKey === channelKey && task.messageId === messageId)
+}
+
 async function withFetch(mocked, fn) {
   const originalFetch = global.fetch
   const originalWarn = console.warn
@@ -128,12 +137,23 @@ async function run(t) {
           event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '这个文件里面的内容是什么' } }] },
         })
         const followResult = await run(followSession, { flushTicks: 200 })
-        await followSession.waitForSend(message => String(message).includes('爱弥斯是联络员'), 10000)
-        t.check('scenario incident follow-up eventually replies', followResult.sent.some(message => String(message).includes('爱弥斯是联络员')), JSON.stringify({ sent: followResult.sent, calls: mocked.calls.map(call => call.requestBody?.messages?.slice(-4)) }))
-        checkSentIncludes(t, 'scenario incident file follow-up reads actual file content', followResult, '爱弥斯是联络员')
-        checkSentIncludes(t, 'scenario incident file follow-up includes anti-guessing content', followResult, '不准按文件名猜')
+        await followSession.waitForSend(message => String(message).includes('媒体分析队列'), 10000)
+        checkSentIncludes(t, 'scenario incident file follow-up queues media analysis', followResult, '媒体分析队列')
+        checkSentIncludes(t, 'scenario incident file follow-up tells user to retry later', followResult, '稍后再读取')
+        const queued = findQueuedFileAnalysis(`private:${followSession.userId}`, '945276682')
+        t.check('scenario incident file follow-up enqueues S6 file analysis',
+          queued && queued.kind === 'media_file_analysis' && ['pending', 'running'].includes(queued.status) &&
+            queued.fileId === '3.3版本-爱弥斯-公用.txt' &&
+            queued.payload && queued.payload.fileName === '3.3版本-爱弥斯-公用.txt' &&
+            queued.payload.fileSize === 0 && queued.payload.ext === 'txt' &&
+            queued.payload.userId === followSession.userId,
+          JSON.stringify(queued))
+        checkSentExcludes(t, 'scenario incident file follow-up does not leak unanalyzed file content', followResult, '爱弥斯是联络员')
+        checkSentExcludes(t, 'scenario incident file follow-up does not include anti-guessing content before analysis', followResult, '不准按文件名猜')
         checkSentExcludes(t, 'scenario incident file follow-up does not hallucinate skill intro', followResult, '技能介绍')
-        t.check('scenario incident free route avoids extra model retell after file evidence', mocked.calls.length === 3, JSON.stringify(mocked.calls.map(call => call.requestBody?.messages?.slice(-3))))
+        t.check('scenario incident file follow-up does not ask model to retell queued evidence',
+          !mocked.calls.some(call => (call.requestBody?.messages || []).some(item => String(item.content || '').includes('爱弥斯是联络员'))),
+          JSON.stringify(mocked.calls.map(call => call.requestBody?.messages?.slice(-3))))
       } finally {
         api.callGetFile = originalCallGetFile
       }
@@ -194,11 +214,21 @@ async function run(t) {
           event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '这里面说了啥' } }] },
         })
         const followResult = await run(followSession, { flushTicks: 220 })
-        await followSession.waitForSend(message => String(message).includes('行动路由'), 10000)
-        checkSentIncludes(t, 'scenario short file follow-up reads latest uploaded file', followResult, '行动路由')
+        await followSession.waitForSend(message => String(message).includes('媒体分析队列'), 10000)
+        checkSentIncludes(t, 'scenario short file follow-up queues latest uploaded file', followResult, '媒体分析队列')
+        checkSentIncludes(t, 'scenario short file follow-up tells user to retry later', followResult, '稍后再读取')
+        const queued = findQueuedFileAnalysis(`private:${followSession.userId}`, 'latest-file-id')
+        t.check('scenario short file follow-up enqueues latest uploaded file',
+          queued && queued.kind === 'media_file_analysis' && ['pending', 'running'].includes(queued.status) &&
+            queued.fileId === 'latest-file-id' &&
+            queued.payload && queued.payload.fileName === '2026-05-24-Agent行动路由文件发送与Cron提醒待审核方案.md' &&
+            queued.payload.fileSize === 0 && queued.payload.ext === 'md' &&
+            queued.payload.userId === followSession.userId,
+          JSON.stringify(queued))
+        checkSentExcludes(t, 'scenario short file follow-up does not leak unanalyzed file content', followResult, '真实内容：行动路由要先读取用户上传文件')
         checkSentExcludes(t, 'scenario short file follow-up never sends web_fetch plan', followResult, 'web_fetch url')
-        t.check('scenario short file follow-up downloads latest file id', requestedIds.includes('latest-file-id'), JSON.stringify(requestedIds))
-        t.check('scenario short file follow-up avoids older file when latest is active', !requestedIds.includes('old-file-id') || requestedIds.indexOf('latest-file-id') < requestedIds.indexOf('old-file-id'), JSON.stringify(requestedIds))
+        t.check('scenario short file follow-up queues latest file id without sync download', !requestedIds.includes('latest-file-id'), JSON.stringify(requestedIds))
+        t.check('scenario short file follow-up avoids sync downloading older file', !requestedIds.includes('old-file-id'), JSON.stringify(requestedIds))
         t.check('scenario short file follow-up does not ask model to retell evidence', mocked.calls.length === 1, JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
       } finally {
         api.callGetFile = originalCallGetFile

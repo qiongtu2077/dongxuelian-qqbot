@@ -16,6 +16,7 @@ const {
   sanitizeId,
   writeJsonAtomic,
 } = require('../resource-common/files') as typeof import('../resource-common/files')
+const { redactSensitiveData, redactSensitiveText } = require('../core/redactor') as typeof import('../core/redactor')
 const {
   WORKERS_ROOT,
   TASKS_ROOT,
@@ -80,6 +81,13 @@ interface ResourceWorkerState extends Record<string, unknown> {
   heartbeatLagMs?: number | null
 }
 
+function redactRecord(value: Record<string, unknown> = {}): Record<string, unknown> {
+  const redacted = redactSensitiveData(value)
+  return redacted && typeof redacted === 'object' && !Array.isArray(redacted)
+    ? redacted as Record<string, unknown>
+    : {}
+}
+
 // 初始化 S2 任务系统目录。
 function ensureTaskDirs(): void {
   for (const dir of [
@@ -99,7 +107,7 @@ function ensureTaskDirs(): void {
 
 // 写入 S2 事件，供 Dashboard 资源中心展示。
 function writeWorkerEvent(event: string, data: Record<string, unknown> = {}): void {
-  appendJsonlEvent(getWorkerEventFile(), { event, ...data })
+  appendJsonlEvent(getWorkerEventFile(), { event, ...redactRecord(data) })
 }
 
 // 生成资源任务 ID。
@@ -123,8 +131,8 @@ function submitResourceTask(input: SubmitTaskInput): ResourceTask {
     updatedAt: now,
     expiresAt: input.expiresAt || '',
     timeoutMs: Number.isFinite(Number(input.timeoutMs)) ? Number(input.timeoutMs) : 300000,
-    payload: input.payload || {},
-    notify: input.notify || { target: 'none', status: 'pending' },
+    payload: redactRecord(input.payload || {}),
+    notify: redactRecord(input.notify || { target: 'none', status: 'pending' }),
   }
   writeJsonAtomic(getTaskFile('pending', task.kind, task.id), task)
   writeWorkerEvent('task_created', { taskId: task.id, kind: task.kind, source: task.source, channelKey: task.channelKey, priority: task.priority })
@@ -251,7 +259,7 @@ function writeTaskResult(taskId: string, result: Record<string, unknown>): strin
   const resultDir = getTaskResultDir(taskId)
   ensureDir(resultDir)
   const file = path.join(resultDir, 'result.json')
-  writeJsonAtomic(file, { taskId, createdAt: nowIso(), ...result })
+  writeJsonAtomic(file, { taskId, createdAt: nowIso(), ...redactRecord(result) })
   return file
 }
 
@@ -271,7 +279,7 @@ function completeTask(task: ResourceTask, result: Record<string, unknown> = {}):
 function failTask(task: ResourceTask, error: unknown, result: Record<string, unknown> = {}): ResourceTask {
   const location = findCurrentTaskLocation(task)
   const failedFile = getTaskFile('failed', task.kind, task.id)
-  const message = error instanceof Error ? error.message : String(error || '')
+  const message = redactSensitiveText(error instanceof Error ? error.message : String(error || ''))
   writeTaskResult(task.id, { kind: task.kind, ok: false, error: message, ...result })
   const next: ResourceTask = { ...task, status: 'failed', finishedAt: nowIso(), updatedAt: nowIso(), step: 'failed', error: message }
   if (location && location.status !== 'failed') renameFileAtomic(location.file, failedFile)
@@ -284,10 +292,11 @@ function failTask(task: ResourceTask, error: unknown, result: Record<string, unk
 function deferTask(task: ResourceTask, reason = 'deferred'): ResourceTask {
   const location = findCurrentTaskLocation(task)
   const deferredFile = getTaskFile('deferred', task.kind, task.id)
-  const next: ResourceTask = { ...task, status: 'deferred', updatedAt: nowIso(), step: 'deferred', error: reason }
+  const safeReason = redactSensitiveText(reason)
+  const next: ResourceTask = { ...task, status: 'deferred', updatedAt: nowIso(), step: 'deferred', error: safeReason }
   if (location && location.status !== 'deferred') renameFileAtomic(location.file, deferredFile)
   writeJsonAtomic(deferredFile, next)
-  writeWorkerEvent('task_deferred', { taskId: next.id, kind: next.kind, reason })
+  writeWorkerEvent('task_deferred', { taskId: next.id, kind: next.kind, reason: safeReason })
   return next
 }
 
@@ -295,10 +304,11 @@ function deferTask(task: ResourceTask, reason = 'deferred'): ResourceTask {
 function requeueTask(task: ResourceTask, reason = 'requeued'): ResourceTask {
   const location = findCurrentTaskLocation(task)
   const pendingFile = getTaskFile('pending', task.kind, task.id)
-  const next: ResourceTask = { ...task, status: 'pending', updatedAt: nowIso(), step: 'pending', requeueReason: reason }
+  const safeReason = redactSensitiveText(reason)
+  const next: ResourceTask = { ...task, status: 'pending', updatedAt: nowIso(), step: 'pending', requeueReason: safeReason }
   if (location && location.status !== 'pending') renameFileAtomic(location.file, pendingFile)
   writeJsonAtomic(pendingFile, next)
-  writeWorkerEvent('task_requeued', { taskId: next.id, kind: next.kind, reason })
+  writeWorkerEvent('task_requeued', { taskId: next.id, kind: next.kind, reason: safeReason })
   return next
 }
 
@@ -306,18 +316,19 @@ function requeueTask(task: ResourceTask, reason = 'requeued'): ResourceTask {
 function updateTaskNotifyStatus(task: ResourceTask, status: string, error = ''): ResourceTask {
   const location = findCurrentTaskLocation(task)
   if (!location) return task
+  const safeError = redactSensitiveText(error)
   const next = {
     ...task,
     updatedAt: nowIso(),
     notify: {
       ...(task.notify || {}),
       status,
-      error,
+      error: safeError,
       updatedAt: nowIso(),
     },
   }
   writeJsonAtomic(location.file, next)
-  writeWorkerEvent('task_notify_updated', { taskId: next.id, kind: next.kind, status, error })
+  writeWorkerEvent('task_notify_updated', { taskId: next.id, kind: next.kind, status, error: safeError })
   return next
 }
 
@@ -329,10 +340,11 @@ function cancelTask(taskId: string, actor = 'system', reason = 'cancelled'): boo
   if (!task) return false
   const src = getTaskFile(task.status, task.kind, task.id)
   const dst = getTaskFile('cancelled', task.kind, task.id)
-  const next = { ...task, status: 'cancelled', updatedAt: nowIso(), finishedAt: nowIso(), error: reason }
+  const safeReason = redactSensitiveText(reason)
+  const next = { ...task, status: 'cancelled', updatedAt: nowIso(), finishedAt: nowIso(), error: safeReason }
   renameFileAtomic(src, dst)
   writeJsonAtomic(dst, next)
-  writeWorkerEvent('task_cancelled', { taskId, kind: task.kind, actor, reason })
+  writeWorkerEvent('task_cancelled', { taskId, kind: task.kind, actor, reason: safeReason })
   return true
 }
 

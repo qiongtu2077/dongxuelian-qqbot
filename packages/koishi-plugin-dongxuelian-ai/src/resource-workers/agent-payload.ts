@@ -3,6 +3,7 @@
  * Responsibility: build and validate serializable Agent payloads for standalone workers.
  * Boundary: no Agent execution, no queue state changes, no bot/session references.
  */
+const { redactSensitiveText } = require('../core/redactor') as typeof import('../core/redactor')
 
 type AgentWorkerAction = 'run' | 'resume_pending'
 
@@ -50,7 +51,7 @@ function toJsonSafe(value: unknown, depth: number = 0): unknown {
   if (value === undefined) return undefined
   const type = typeof value
   if (type === 'string') {
-    const text = String(value)
+    const text = redactSensitiveText(String(value))
     return text.length > 20000 ? `${text.slice(0, 20000)}...[truncated]` : text
   }
   if (type === 'number') return Number.isNaN(value as number) ? null : value

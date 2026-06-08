@@ -12,9 +12,17 @@ async function run(t) {
 
   const modulesToReload = [
     '../../lib/core/constants',
+    '../../lib/resource-common/files',
+    '../../lib/resource-workers/task-paths',
+    '../../lib/resource-workers/task-store',
+    '../../lib/resource-scheduler/resource-snapshot',
+    '../../lib/resource-scheduler/task-budget',
+    '../../lib/resource-scheduler/admission',
+    '../../lib/resource-workers/task-client',
     '../../lib/core/api',
     '../../lib/core/runtime-config',
     '../../lib/agent/config',
+    '../../lib/resource-workers/memory-worker',
     '../../lib/agent/memory',
     '../../lib/agent/auto-memory',
     '../../lib/agent/dream',
@@ -24,18 +32,29 @@ async function run(t) {
   }
 
   let mockLLMResponse = { type: 'text', content: '用户喜欢深色主题\n用户是前端开发者' }
+  const modelCalls = []
   const originalFetch = global.fetch
-  global.fetch = async () => ({
-    ok: true,
-    json: async () => ({
-      choices: [{ message: { content: mockLLMResponse.content } }],
-      usage: { total_tokens: 100 },
-    }),
-  })
+  global.fetch = async (url, options = {}) => {
+    modelCalls.push({ url, body: options && options.body })
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: mockLLMResponse.content } }],
+        usage: { total_tokens: 100 },
+      }),
+    }
+  }
 
   try {
     const autoMemory = require('../../lib/agent/auto-memory')
     const dream = require('../../lib/agent/dream')
+    const memoryWorker = require('../../lib/resource-workers/memory-worker')
+    const taskStore = require('../../lib/resource-workers/task-store')
+
+    function listMemoryTasks(kind, userId, statuses = ['pending', 'deferred', 'failed', 'done']) {
+      return taskStore.listResourceTasks({ statuses, limit: 100 })
+        .filter(task => task.kind === kind && String(task.userId || '') === String(userId || ''))
+    }
 
     // Test 1: shouldTrigger returns false for counts < 8
     for (let i = 0; i < 7; i++) {
@@ -49,11 +68,13 @@ async function run(t) {
     autoMemory.resetAutoMemoryCounter('qquser')
     await autoMemory.onAgentReplyComplete({ userId: 'qquser', channel: 'qq', messages: [] })
     const dailyDir = autoMemory.DAILY_DIR
+    t.check('auto-memory: daily dir matches memory worker', dailyDir === memoryWorker.DAILY_DIR)
     let dailyExists = false
     try { dailyExists = fs.existsSync(dailyDir) && fs.readdirSync(dailyDir).length > 0 } catch {}
     t.check('auto-memory: qq channel does not write daily file', !dailyExists)
+    t.check('auto-memory: qq channel does not queue memory task', listMemoryTasks('agent_memory', 'qquser').length === 0)
 
-    // Test 3: onAgentReplyComplete writes for dashboard after 8 messages
+    // Test 3: onAgentReplyComplete queues S2 memory extraction after 8 messages
     autoMemory.resetAutoMemoryCounter('dashuser')
     for (let i = 0; i < 7; i++) autoMemory.shouldTrigger('dashuser')
 
@@ -66,9 +87,23 @@ async function run(t) {
     await autoMemory.onAgentReplyComplete({ userId: 'dashuser', channel: 'dashboard', messages: fakeMessages })
     await new Promise(r => setTimeout(r, 100))
 
+    const callsAfterMemorySubmit = modelCalls.length
+    const memoryTasks = listMemoryTasks('agent_memory', 'dashuser', ['pending', 'deferred', 'failed'])
+    const memoryTask = memoryTasks[0] || null
+    t.check('auto-memory: dashboard queues S2 memory task',
+      callsAfterMemorySubmit === 0 && memoryTasks.length === 1 && memoryTask.payload && Array.isArray(memoryTask.payload.recentMessages) && memoryTask.payload.recentMessages.length >= 2,
+      JSON.stringify({ calls: callsAfterMemorySubmit, tasks: memoryTasks }))
+
     let dailyFiles = []
     try { dailyFiles = fs.readdirSync(dailyDir).filter(f => f.startsWith('dashuser')) } catch {}
-    t.check('auto-memory: dashboard writes daily file', dailyFiles.length > 0, 'files: ' + dailyFiles.join(', '))
+    t.check('auto-memory: dashboard submit does not write daily file synchronously', dailyFiles.length === 0, 'files: ' + dailyFiles.join(', '))
+
+    const memoryResult = memoryTask ? await memoryWorker.runMemoryWorkerTask(memoryTask) : {}
+    t.check('auto-memory: worker writes daily file', memoryResult.mode === 'agent_memory' && memoryResult.extracted === true, JSON.stringify(memoryResult))
+    t.check('auto-memory: worker calls mocked LLM once', modelCalls.length === callsAfterMemorySubmit + 1, JSON.stringify(modelCalls))
+
+    try { dailyFiles = fs.readdirSync(dailyDir).filter(f => f.startsWith('dashuser')) } catch {}
+    t.check('auto-memory: dashboard worker creates daily file', dailyFiles.length > 0, 'files: ' + dailyFiles.join(', '))
 
     if (dailyFiles.length > 0) {
       const content = fs.readFileSync(path.join(dailyDir, dailyFiles[0]), 'utf8')
@@ -81,14 +116,23 @@ async function run(t) {
 
     // Test 5: Dream triggers when daily size > 20KB
     const bigDailyFile = path.join(dailyDir, 'dashuser.2026-01-01.md')
+    fs.mkdirSync(dailyDir, { recursive: true })
     fs.writeFileSync(bigDailyFile, 'x'.repeat(21 * 1024), 'utf8')
     const statusBig = await dream.getDreamStatus('dashuser')
     t.check('dream: large daily file needs dream', statusBig.needsDream)
 
-    // Test 6: runDream consolidates and deletes daily files
+    // Test 6: runDream queues compaction, worker direct consolidates and deletes daily files
     mockLLMResponse = { type: 'text', content: '用户是前端开发者，喜欢深色主题，使用 VS Code。' }
-    const dreamResult = await dream.runDream('dashuser')
-    t.check('dream: runDream succeeds', dreamResult.success === true, JSON.stringify(dreamResult))
+    const callsBeforeDreamSubmit = modelCalls.length
+    const queuedDreamResult = await dream.runDream('dashuser')
+    const compactionTasks = listMemoryTasks('agent_memory_compaction', 'dashuser', ['pending', 'deferred', 'failed'])
+    t.check('dream: runDream queues S2 compaction task',
+      queuedDreamResult.success === true && queuedDreamResult.queued === true && queuedDreamResult.taskId && compactionTasks.some(task => task.id === queuedDreamResult.taskId),
+      JSON.stringify({ queuedDreamResult, compactionTasks }))
+    t.check('dream: runDream submit does not call model synchronously', modelCalls.length === callsBeforeDreamSubmit, JSON.stringify(modelCalls))
+
+    const dreamResult = await memoryWorker.runDreamDirect('dashuser')
+    t.check('dream: runDreamDirect succeeds', dreamResult.success === true, JSON.stringify(dreamResult))
 
     const longTermFile = dream.getLongTermFile('dashuser')
     const longTermExists = fs.existsSync(longTermFile)
@@ -104,9 +148,11 @@ async function run(t) {
     t.check('dream: daily files deleted after consolidation', remainingDaily.length === 0, 'remaining: ' + remainingDaily.join(', '))
 
     // Test 7: Dream creates backup of existing long-term file
+    fs.mkdirSync(dailyDir, { recursive: true })
     fs.writeFileSync(path.join(dailyDir, 'dashuser.2026-02-01.md'), 'y'.repeat(21 * 1024), 'utf8')
     mockLLMResponse = { type: 'text', content: '更新后的记忆内容。' }
-    await dream.runDream('dashuser')
+    const reDreamResult = await memoryWorker.runDreamDirect('dashuser')
+    t.check('dream: runDreamDirect re-dream succeeds', reDreamResult.success === true, JSON.stringify(reDreamResult))
     const backupExists = fs.existsSync(path.join(autoMemory.DASHBOARD_MEMORY_DIR, 'dashuser.md.bak'))
     t.check('dream: backup file created on re-dream', backupExists)
 
@@ -124,26 +170,35 @@ async function run(t) {
     t.check('auto-memory: stats has interval', stats.interval === 8)
     t.check('auto-memory: stats has memoryDir', stats.memoryDir.includes('agent-memory-dashboard'))
 
-    // Test 11: model failure silently skipped (no crash, no new file)
+    // Test 11: model failure is isolated to the worker (entry only queues)
     const dailyFilesBefore = fs.existsSync(dailyDir) ? fs.readdirSync(dailyDir) : []
-    global.fetch = async () => { throw new Error('network timeout') }
+    global.fetch = async (url, options = {}) => { modelCalls.push({ url, body: options && options.body, failed: true }); throw new Error('network timeout') }
     autoMemory.resetAutoMemoryCounter('failuser')
     for (let i = 0; i < 7; i++) autoMemory.shouldTrigger('failuser')
     let threw = false
+    const callsBeforeFailSubmit = modelCalls.length
     try {
       await autoMemory.onAgentReplyComplete({ userId: 'failuser', channel: 'dashboard', messages: fakeMessages })
       await new Promise(r => setTimeout(r, 100))
     } catch { threw = true }
-    t.check('auto-memory: model failure does not throw', !threw)
+    const failTasks = listMemoryTasks('agent_memory', 'failuser', ['pending', 'deferred', 'failed'])
+    t.check('auto-memory: model failure submit does not throw', !threw && failTasks.length === 1 && modelCalls.length === callsBeforeFailSubmit, JSON.stringify({ failTasks, calls: modelCalls.length, callsBeforeFailSubmit }))
+    let workerFailed = false
+    try {
+      if (failTasks[0]) await memoryWorker.runMemoryWorkerTask(failTasks[0])
+    } catch { workerFailed = true }
     const dailyFilesAfter = fs.existsSync(dailyDir) ? fs.readdirSync(dailyDir) : []
     const newFailFiles = dailyFilesAfter.filter(f => f.startsWith('failuser'))
-    t.check('auto-memory: model failure writes no daily file', newFailFiles.length === 0)
+    t.check('auto-memory: worker model failure writes no daily file', workerFailed && newFailFiles.length === 0, JSON.stringify({ workerFailed, before: dailyFilesBefore, after: dailyFilesAfter }))
 
     // Test 12 (L33): memory.enabled=false 时自动记忆直接跳过，不写文件、不计数
-    global.fetch = async () => ({
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: '不该被写入的记忆' } }], usage: { total_tokens: 100 } }),
-    })
+    global.fetch = async (url, options = {}) => {
+      modelCalls.push({ url, body: options && options.body })
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: '不该被写入的记忆' } }], usage: { total_tokens: 100 } }),
+      }
+    }
     const agentConfig = require('../../lib/agent/config')
     await agentConfig.patchAgentConfig({ memory: { enabled: false, adminOnly: false } })
     autoMemory.resetAutoMemoryCounter('disableduser')
@@ -152,11 +207,13 @@ async function run(t) {
     await new Promise(r => setTimeout(r, 100))
     const disabledFiles = (fs.existsSync(dailyDir) ? fs.readdirSync(dailyDir) : []).filter(f => f.startsWith('disableduser'))
     t.check('L33 auto-memory: disabled memory writes no daily file', disabledFiles.length === 0, 'files: ' + disabledFiles.join(', '))
+    t.check('L33 auto-memory: disabled memory queues no task', listMemoryTasks('agent_memory', 'disableduser').length === 0)
     await agentConfig.patchAgentConfig({ memory: { enabled: true, adminOnly: false } })
 
   } finally {
     global.fetch = originalFetch
-    process.env.DONGXUELIAN_AI_DATA_DIR = originalDataDir
+    if (originalDataDir === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
+    else process.env.DONGXUELIAN_AI_DATA_DIR = originalDataDir
     for (const mod of modulesToReload) {
       delete require.cache[require.resolve(mod)]
     }

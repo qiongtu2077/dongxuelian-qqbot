@@ -50,6 +50,33 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+async function withGreenResourceSnapshot(fn) {
+  const previousAvailable = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
+  const previousTotal = process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
+  process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
+  process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
+  try {
+    return await fn()
+  } finally {
+    if (previousAvailable === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
+    else process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = previousAvailable
+    if (previousTotal === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
+    else process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = previousTotal
+  }
+}
+
+function listScenarioAgentTasks(statuses = ['pending', 'deferred', 'failed']) {
+  const taskStore = require(path.join(AI_ROOT, 'lib', 'resource-workers', 'task-store.js'))
+  return taskStore.listResourceTasks({ statuses, limit: 50 }).filter(task => task.kind === 'agent_task')
+}
+
+function getAgentWorkerParts(task = {}) {
+  const payload = task.payload || {}
+  const agentWorker = payload.agentWorker || {}
+  const engineInput = agentWorker.engineInput || {}
+  return { payload, agentWorker, engineInput }
+}
+
 async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
   await withScenario({}, async ({ harness, makeSession, run, data }) => {
     const mocked = mockFetch(fetchQueue)
@@ -62,7 +89,7 @@ async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
         if (typeof options.setup === 'function') await options.setup(session, { harness, mocked, data })
         session.content = atBot(session, options.input || '\u4f60\u597d')
         const beforeCalls = mocked.calls.length
-        let result = await run(session, { flushTicks: 120 })
+        let result = await withGreenResourceSnapshot(() => run(session, { flushTicks: 120 }))
         await session.waitForSend(options.waitFor || (() => true))
         await new Promise(resolve => setImmediate(resolve))
         result = {
@@ -154,19 +181,27 @@ async function run(t) {
   })
 
   await runChatCase(t, 'explicit web_search request routes to Agent even when auto route disabled', [
-    { json: { choices: [{ message: { content: '### Agent raw report\n**secret raw**\n- item' } }] } },
-    { json: { choices: [{ message: { content: 'agent-search-retold' } }] } },
-  ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario explicit web_search request sends chat reply', result, 'agent-search-retold')
-    t.check('scenario explicit web_search sends one final QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
+    { json: { choices: [{ message: { content: 'unused-sync-agent-report' } }] } },
+  ], async (result, mocked, session, calls, data) => {
+    checkSentIncludes(t, 'scenario explicit web_search request submits Agent task', result, 'Agent 已提交后台执行')
+    checkSentIncludes(t, 'scenario explicit web_search request returns task id', result, '任务 ID')
+    checkSentIncludes(t, 'scenario explicit web_search request promises async result', result, '完成后会自动发回结果')
+    t.check('scenario explicit web_search sends one queue QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
     checkSentExcludes(t, 'scenario explicit web_search does not send raw markdown heading', result, '### Agent raw report')
     checkSentExcludes(t, 'scenario explicit web_search does not send raw markdown body', result, '**secret raw**')
-    t.check('scenario explicit web_search pre-executes search tool', Array.isArray(session._webSearchCalls) && session._webSearchCalls.some(item => String(item.query || '').includes('鸣潮')), JSON.stringify(session._webSearchCalls || []))
-    t.check('scenario explicit web_search uses agent then chat (2 calls)', calls.length === 2, `calls=${calls.length}`)
-    const agentPrompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
-    t.check('scenario explicit web_search agent prompt has search instruction', agentPrompt.includes('用户需要联网搜索') && agentPrompt.includes('web_search'), agentPrompt.slice(0, 300))
-    t.check('scenario explicit web_search request exposes web_search', calls[0].requestBody.tools.some(item => item.function && item.function.name === 'web_search'), JSON.stringify(calls[0].requestBody.tools))
-    t.check('scenario explicit web_search chat call has agent context', JSON.stringify(calls[1].requestBody.messages || []).includes('工具查到的信息'), JSON.stringify(calls[1].requestBody.messages))
+    t.check('scenario explicit web_search does not call search tool in entry process', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
+    t.check('scenario explicit web_search queues without model calls in entry process', calls.length === 0 && mocked.calls.length === 0, `calls=${calls.length} mocked=${mocked.calls.length}`)
+    const tasks = listScenarioAgentTasks()
+    const task = tasks[0] || {}
+    const { payload, agentWorker, engineInput } = getAgentWorkerParts(task)
+    t.check('scenario explicit web_search stores one agent task', tasks.length === 1 && task.channelKey === '10001' && task.userId === '100000000', JSON.stringify(tasks))
+    t.check('scenario explicit web_search task records auto route reason', payload.entry === 'qq-auto-route' && payload.reason === 'explicit-tool-request', JSON.stringify(payload))
+    t.check('scenario explicit web_search task contains worker run payload', agentWorker.action === 'run' && agentWorker.entry === 'qq-auto-route', JSON.stringify(agentWorker))
+    t.check('scenario explicit web_search payload forces web_search', Array.isArray(engineInput.forceTools) && engineInput.forceTools.includes('web_search'), JSON.stringify(engineInput))
+    const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+    t.check('scenario explicit web_search payload preserves search query', preExecute.some(item => item && item.name === 'web_search' && JSON.stringify(item.args || {}).includes('鸣潮')), JSON.stringify(preExecute))
+    const serializedTask = JSON.stringify(task)
+    t.check('scenario explicit web_search queued task avoids raw report and runtime object leak', !serializedTask.includes('### Agent raw report') && !serializedTask.includes('**secret raw**') && !serializedTask.includes('sk-test-secret') && !serializedTask.includes('Bearer') && !serializedTask.includes('"ctx"') && !serializedTask.includes('"bot"'), serializedTask.slice(0, 500))
   }, {
     input: '调用web_search查鸣潮最新角色是谁',
     setup(session) {
@@ -178,7 +213,7 @@ async function run(t) {
         return '已搜索：鸣潮 最新角色\n搜索结果：绯雪与达妮娅'
       }
     },
-    waitFor: message => String(message).includes('agent-search-retold'),
+    waitFor: message => String(message).includes('完成后会自动发回结果'),
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -188,22 +223,24 @@ async function run(t) {
     }
   } catch {}
 
-  await runChatCase(t, 'chat heavy web_search routes through Agent then persona chat once', [
+  await runChatCase(t, 'chat heavy web_search submits Agent worker task', [
     { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-heavy', type: 'function', function: { name: 'web_search', arguments: '{"query":"鸣潮最新角色"}' } }] } }] } },
     { json: { choices: [{ message: { content: '让我看看…' } }] } },
-    { json: { choices: [{ message: { content: '### Agent raw report\n**secret heavy raw**\n- item' } }] } },
-    { json: { choices: [{ message: { content: 'heavy-persona-retold' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario heavy web_search sends persona retell', result, 'heavy-persona-retold')
-    t.check('scenario heavy web_search sends one final QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
-    t.check('scenario heavy web_search pre-executes search tool', Array.isArray(session._webSearchCalls) && session._webSearchCalls.some(item => String(item.query || '').includes('鸣潮')), JSON.stringify(session._webSearchCalls || []))
+    checkSentIncludes(t, 'scenario heavy web_search sends queue message', result, '完成后会自动发回结果')
+    t.check('scenario heavy web_search sends one queue QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
+    t.check('scenario heavy web_search does not execute search in entry process', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
     checkSentExcludes(t, 'scenario heavy web_search does not send progress text', result, '让我看看')
     checkSentExcludes(t, 'scenario heavy web_search does not send raw agent report', result, '### Agent raw report')
     checkSentExcludes(t, 'scenario heavy web_search does not send raw markdown body', result, '**secret heavy raw**')
-    t.check('scenario heavy web_search uses chat, follow-up, agent, retell calls', calls.length === 4, `calls=${calls.length}`)
-    const retellPrompt = JSON.stringify(calls[3]?.requestBody?.messages || [])
-    t.check('scenario heavy web_search retell prompt treats report as internal', retellPrompt.includes('当前 chat 人格') && retellPrompt.includes('不要照抄原文'), retellPrompt)
-    t.check('scenario heavy web_search retell prompt includes tool summary evidence', retellPrompt.includes('已搜索：鸣潮 最新角色') && retellPrompt.includes('绯雪与达妮娅'), retellPrompt)
+    t.check('scenario heavy web_search only asks model for tool and short queue text', calls.length === 2, `calls=${calls.length}`)
+    const tasks = listScenarioAgentTasks()
+    const task = tasks[0] || {}
+    const { payload, agentWorker, engineInput } = getAgentWorkerParts(task)
+    t.check('scenario heavy web_search stores one chat-heavy-tool task', tasks.length === 1 && payload.entry === 'chat-heavy-tool' && agentWorker.entry === 'chat-heavy-tool', JSON.stringify(tasks))
+    t.check('scenario heavy web_search payload forces web_search', Array.isArray(engineInput.forceTools) && engineInput.forceTools.includes('web_search'), JSON.stringify(engineInput))
+    const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+    t.check('scenario heavy web_search payload preserves requested query', preExecute.some(item => item && item.name === 'web_search' && JSON.stringify(item.args || {}).includes('鸣潮最新角色')), JSON.stringify(preExecute))
   }, {
     input: '鸣潮这次角色情况咋样',
     setup(session) {
@@ -215,7 +252,7 @@ async function run(t) {
         return '已搜索：鸣潮 最新角色\n搜索结果：绯雪与达妮娅'
       }
     },
-    waitFor: message => String(message).includes('heavy-persona-retold'),
+    waitFor: message => String(message).includes('完成后会自动发回结果'),
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -385,21 +422,23 @@ async function run(t) {
     waitFor: message => String(message).includes('我在'),
   })
 
-  await runChatCase(t, 'chat heavy web_fetch routes through Agent and retells fetched body', [
+  await runChatCase(t, 'chat heavy web_fetch submits Agent worker task', [
     { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-heavy-fetch', type: 'function', function: { name: 'web_fetch', arguments: '{"url":"https://example.com/story"}' } }] } }] } },
     { json: { choices: [{ message: { content: '让我看看…' } }] } },
-    { json: { choices: [{ message: { content: '### Agent fetch raw\n**secret fetch raw**' } }] } },
-    { json: { choices: [{ message: { content: 'heavy-fetch-retold' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario heavy web_fetch sends persona retell', result, 'heavy-fetch-retold')
-    t.check('scenario heavy web_fetch sends one final QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
-    t.check('scenario heavy web_fetch pre-executes fetch tool', Array.isArray(session._webFetchCalls) && session._webFetchCalls.some(item => item.url === 'https://example.com/story'), JSON.stringify(session._webFetchCalls || []))
+    checkSentIncludes(t, 'scenario heavy web_fetch sends queue message', result, '完成后会自动发回结果')
+    t.check('scenario heavy web_fetch sends one queue QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
+    t.check('scenario heavy web_fetch does not execute fetch in entry process', !Array.isArray(session._webFetchCalls) || session._webFetchCalls.length === 0, JSON.stringify(session._webFetchCalls || []))
     checkSentExcludes(t, 'scenario heavy web_fetch does not send progress text', result, '让我看看')
     checkSentExcludes(t, 'scenario heavy web_fetch does not send raw agent report', result, 'Agent fetch raw')
-    const firstTools = calls[0]?.requestBody?.tools || []
-    t.check('scenario heavy web_fetch prompt exposes fetch tool', firstTools.some(item => item.function?.name === 'web_fetch'), JSON.stringify(firstTools))
-    const retellPrompt = JSON.stringify(calls[3]?.requestBody?.messages || [])
-    t.check('scenario heavy web_fetch retell prompt includes fetched body evidence', retellPrompt.includes('已读取网页') && retellPrompt.includes('正文质量：usable') && retellPrompt.includes('自由 fetch 正文证据'), retellPrompt)
+    t.check('scenario heavy web_fetch only asks model for tool and short queue text', calls.length === 2, `calls=${calls.length}`)
+    const tasks = listScenarioAgentTasks()
+    const task = tasks[0] || {}
+    const { payload, agentWorker, engineInput } = getAgentWorkerParts(task)
+    t.check('scenario heavy web_fetch stores one chat-heavy-tool task', tasks.length === 1 && payload.entry === 'chat-heavy-tool' && agentWorker.entry === 'chat-heavy-tool', JSON.stringify(tasks))
+    t.check('scenario heavy web_fetch payload forces web_fetch', Array.isArray(engineInput.forceTools) && engineInput.forceTools.includes('web_fetch'), JSON.stringify(engineInput))
+    const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+    t.check('scenario heavy web_fetch payload preserves requested url', preExecute.some(item => item && item.name === 'web_fetch' && item.args && item.args.url === 'https://example.com/story'), JSON.stringify(preExecute))
   }, {
     input: '这个链接靠谱吗 https://example.com/story',
     setup(session) {
@@ -424,7 +463,7 @@ async function run(t) {
         }
       }
     },
-    waitFor: message => String(message).includes('heavy-fetch-retold'),
+    waitFor: message => String(message).includes('完成后会自动发回结果'),
   })
   try {
     const webFetch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-fetch.js'))
@@ -434,17 +473,19 @@ async function run(t) {
     }
   } catch {}
 
-  await runChatCase(t, 'time-sensitive question routes directly to real web_search', [
-    { json: { choices: [{ message: { content: '### Agent raw report\n**free search raw**' } }] } },
-    { json: { choices: [{ message: { content: 'free-search-retold' } }] } },
+  await runChatCase(t, 'time-sensitive question submits Agent web_search task', [
+    { json: { choices: [{ message: { content: 'unused-free-search-agent' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario time-sensitive free web_search sends retell', result, 'free-search-retold')
-    t.check('scenario time-sensitive free web_search pre-executes search tool', Array.isArray(session._webSearchCalls) && session._webSearchCalls.some(item => String(item.query || '').includes('最近比较火')), JSON.stringify(session._webSearchCalls || []))
-    const agentPrompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
-    t.check('scenario time-sensitive prompt tells agent to search recent hot content', agentPrompt.includes('用户需要联网搜索') && agentPrompt.includes('比较火') && agentPrompt.includes('web_search'), agentPrompt)
-    t.check('scenario time-sensitive prompt exposes web_search tool', calls[0].requestBody.tools.some(item => item.function?.name === 'web_search'), JSON.stringify(calls[0].requestBody.tools))
-    const retellPrompt = JSON.stringify(calls[1]?.requestBody?.messages || [])
-    t.check('scenario time-sensitive retell prompt includes search tool summary', retellPrompt.includes('已搜索：最近比较火的视频') && retellPrompt.includes('搞笑整活视频'), retellPrompt)
+    checkSentIncludes(t, 'scenario time-sensitive free web_search sends queue message', result, '完成后会自动发回结果')
+    t.check('scenario time-sensitive free web_search does not execute search in entry process', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
+    t.check('scenario time-sensitive free web_search queues without model calls', calls.length === 0 && mocked.calls.length === 0, `calls=${calls.length} mocked=${mocked.calls.length}`)
+    const tasks = listScenarioAgentTasks()
+    const task = tasks[0] || {}
+    const { payload, agentWorker, engineInput } = getAgentWorkerParts(task)
+    t.check('scenario time-sensitive search stores qq-auto-route task', tasks.length === 1 && payload.entry === 'qq-auto-route' && payload.reason === 'general-search-intent', JSON.stringify(tasks))
+    t.check('scenario time-sensitive task forces web_search', agentWorker.action === 'run' && Array.isArray(engineInput.forceTools) && engineInput.forceTools.includes('web_search'), JSON.stringify(engineInput))
+    const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+    t.check('scenario time-sensitive task preserves search query', preExecute.some(item => item && item.name === 'web_search' && JSON.stringify(item.args || {}).includes('最近比较火')), JSON.stringify(preExecute))
     checkSentExcludes(t, 'scenario time-sensitive free search does not send progress text', result, '让我看看')
     checkSentExcludes(t, 'scenario time-sensitive free search does not send raw agent report', result, 'free search raw')
   }, {
@@ -458,7 +499,7 @@ async function run(t) {
         return '已搜索：最近比较火的视频\n搜索结果：搞笑整活视频'
       }
     },
-    waitFor: message => String(message).includes('free-search-retold'),
+    waitFor: message => String(message).includes('完成后会自动发回结果'),
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -468,16 +509,19 @@ async function run(t) {
     }
   } catch {}
 
-  await runChatCase(t, 'explicit URL fetch pre-executes web_fetch and retells body', [
-    { json: { choices: [{ message: { content: 'agent-fetch-raw' } }] } },
-    { json: { choices: [{ message: { content: 'fetch-persona-retold' } }] } },
+  await runChatCase(t, 'explicit URL fetch submits Agent web_fetch task', [
+    { json: { choices: [{ message: { content: 'unused-fetch-agent' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario explicit URL fetch sends retell', result, 'fetch-persona-retold')
-    t.check('scenario explicit URL fetch pre-executes fetch tool', Array.isArray(session._webFetchCalls) && session._webFetchCalls.some(item => item.url === 'https://example.com/news/1'), JSON.stringify(session._webFetchCalls || []))
-    const agentPrompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
-    t.check('scenario explicit URL fetch agent prompt has fetch instruction', agentPrompt.includes('必须优先基于 web_fetch 工具结果回答'), agentPrompt)
-    const retellPrompt = JSON.stringify(calls[1]?.requestBody?.messages || [])
-    t.check('scenario explicit URL fetch retell prompt includes fetched body evidence', retellPrompt.includes('已读取网页') && retellPrompt.includes('正文质量：usable') && retellPrompt.includes('页面正文证据'), retellPrompt)
+    checkSentIncludes(t, 'scenario explicit URL fetch sends queue message', result, '完成后会自动发回结果')
+    t.check('scenario explicit URL fetch does not execute fetch in entry process', !Array.isArray(session._webFetchCalls) || session._webFetchCalls.length === 0, JSON.stringify(session._webFetchCalls || []))
+    t.check('scenario explicit URL fetch queues without model calls', calls.length === 0 && mocked.calls.length === 0, `calls=${calls.length} mocked=${mocked.calls.length}`)
+    const tasks = listScenarioAgentTasks()
+    const task = tasks[0] || {}
+    const { payload, agentWorker, engineInput } = getAgentWorkerParts(task)
+    t.check('scenario explicit URL fetch stores qq-auto-route task', tasks.length === 1 && payload.entry === 'qq-auto-route' && payload.reason === 'explicit-url-fetch', JSON.stringify(tasks))
+    t.check('scenario explicit URL fetch task forces web_fetch', agentWorker.action === 'run' && Array.isArray(engineInput.forceTools) && engineInput.forceTools.includes('web_fetch'), JSON.stringify(engineInput))
+    const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+    t.check('scenario explicit URL fetch task preserves url', preExecute.some(item => item && item.name === 'web_fetch' && item.args && item.args.url === 'https://example.com/news/1'), JSON.stringify(preExecute))
   }, {
     input: '帮我看看这个链接 https://example.com/news/1 写了什么',
     setup(session) {
@@ -502,7 +546,7 @@ async function run(t) {
         }
       }
     },
-    waitFor: message => String(message).includes('fetch-persona-retold'),
+    waitFor: message => String(message).includes('完成后会自动发回结果'),
   })
   try {
     const webFetch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-fetch.js'))
@@ -547,23 +591,39 @@ async function run(t) {
     waitFor: message => String(message).includes('长离式拒绝'),
   })
 
-  await runChatCase(t, 'QQ Agent runs in direct mode and chat retells with minimal prompt', [
-    { json: { choices: [{ message: { content: 'agent-direct-raw' } }] } },
-    { json: { choices: [{ message: { content: 'agent-persona-retold' } }] } },
+  await runChatCase(t, 'QQ Agent queues direct mode worker payload', [
+    { json: { choices: [{ message: { content: 'unused-agent-direct-raw' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario QQ Agent direct mode sends persona reply', result, 'agent-persona-retold')
-    const agentPrompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
-    t.check('scenario QQ Agent prompt includes direct mode marker', agentPrompt.includes('Agent 直连模式'), agentPrompt)
-    const chatPrompt = JSON.stringify(calls[1]?.requestBody?.messages || [])
-    t.check('scenario QQ Agent chat call includes agent context', chatPrompt.includes('工具查到的信息'), chatPrompt)
-    t.check('scenario QQ Agent chat call includes core persona', chatPrompt.includes('简短转述'), chatPrompt)
-    t.check('scenario QQ Agent chat call includes chat persona prompt', chatPrompt.includes('AGENT_CORE_MARKER') && chatPrompt.includes('AGENT_PERSONA_MARKER'), chatPrompt)
+    checkSentIncludes(t, 'scenario QQ Agent direct mode submits worker task', result, 'Agent 已提交后台执行')
+    checkSentIncludes(t, 'scenario QQ Agent direct mode returns task id', result, '任务 ID')
+    checkSentIncludes(t, 'scenario QQ Agent direct mode promises async result', result, '完成后会自动发回结果')
+    t.check('scenario QQ Agent direct mode sends one queue QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
+    checkSentExcludes(t, 'scenario QQ Agent direct mode does not send raw agent reply', result, 'agent-direct-raw')
+    checkSentExcludes(t, 'scenario QQ Agent direct mode does not send old chat retell', result, 'agent-persona-retold')
+    t.check('scenario QQ Agent direct mode queues without model calls in entry process', calls.length === 0 && mocked.calls.length === 0, `calls=${calls.length} mocked=${mocked.calls.length}`)
+    t.check('scenario QQ Agent direct mode does not call search tool in entry process', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
+    const tasks = listScenarioAgentTasks()
+    const task = tasks[0] || {}
+    const { payload, agentWorker, engineInput } = getAgentWorkerParts(task)
+    t.check('scenario QQ Agent direct mode stores one agent task', tasks.length === 1 && task.channelKey === '10001' && task.userId === '100000000', JSON.stringify(tasks))
+    t.check('scenario QQ Agent direct mode task records explicit route', payload.entry === 'qq-auto-route' && payload.reason === 'explicit-tool-request', JSON.stringify(payload))
+    t.check('scenario QQ Agent direct mode task contains worker run payload', agentWorker.action === 'run' && agentWorker.entry === 'qq-auto-route', JSON.stringify(agentWorker))
+    t.check('scenario QQ Agent direct mode is deferred to worker agent mode', engineInput.channel === 'qq' && engineInput.agentMode === true && String(engineInput.userMessage || '').includes('天气'), JSON.stringify(engineInput))
+    t.check('scenario QQ Agent direct mode payload forces web_search', Array.isArray(engineInput.forceTools) && engineInput.forceTools.includes('web_search'), JSON.stringify(engineInput))
+    const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+    t.check('scenario QQ Agent direct mode payload preserves search query', preExecute.some(item => item && item.name === 'web_search' && JSON.stringify(item.args || {}).includes('天气')), JSON.stringify(preExecute))
+    const serializedTask = JSON.stringify(task)
+    t.check('scenario QQ Agent direct mode task keeps persona and runtime objects out of queue', !serializedTask.includes('AGENT_CORE_MARKER') && !serializedTask.includes('AGENT_PERSONA_MARKER') && !serializedTask.includes('agent-direct-raw') && !serializedTask.includes('agent-persona-retold') && !serializedTask.includes('sk-test-secret') && !serializedTask.includes('Bearer') && !serializedTask.includes('"ctx"') && !serializedTask.includes('"bot"') && !serializedTask.includes('"session"'), serializedTask.slice(0, 500))
   }, {
     input: '搜一下现在最新的天气是什么',
     async setup(session, { data }) {
       const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
       webSearch.__scenarioOriginalExecute = webSearch.execute
-      webSearch.execute = async () => '已搜索：现在最新的天气\n搜索状态：usable_hit\n正文质量：usable\n正文：天气测试证据'
+      session._webSearchCalls = []
+      webSearch.execute = async (params = {}) => {
+        session._webSearchCalls.push(params)
+        return '已搜索：现在最新的天气\n搜索状态：usable_hit\n正文质量：usable\n正文：天气测试证据'
+      }
       data.writeText('ai-skills/core/SKILL.persona-core.md', [
         '---',
         'name: persona-core',
@@ -583,7 +643,7 @@ async function run(t) {
       const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
       await chatModule.loadSkillsContentCache()
     },
-    waitFor: message => String(message).includes('agent-persona-retold'),
+    waitFor: message => String(message).includes('完成后会自动发回结果'),
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -593,20 +653,36 @@ async function run(t) {
     }
   } catch {}
 
-  await runChatCase(t, 'QQ Agent direct mode skips persona, chat applies it', [
-    { json: { choices: [{ message: { content: 'agent-no-persona-raw' } }] } },
-    { json: { choices: [{ message: { content: 'agent-chat-persona-ok' } }] } },
+  await runChatCase(t, 'QQ Agent direct mode queues without serializing persona', [
+    { json: { choices: [{ message: { content: 'unused-agent-no-persona-raw' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario QQ Agent chat persona reply', result, 'agent-chat-persona-ok')
-    const agentPrompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
-    t.check('scenario QQ Agent direct mode excludes user persona in agent call', !agentPrompt.includes('AMIS_AGENT_MARKER') && !agentPrompt.includes('当前人格：爱弥斯'), agentPrompt)
-    t.check('scenario QQ Agent direct mode uses direct prompt', agentPrompt.includes('Agent 直连模式') && agentPrompt.includes('不需要角色扮演'), agentPrompt)
+    checkSentIncludes(t, 'scenario QQ Agent persona case submits worker task', result, '完成后会自动发回结果')
+    checkSentExcludes(t, 'scenario QQ Agent persona case does not send raw agent reply', result, 'agent-no-persona-raw')
+    checkSentExcludes(t, 'scenario QQ Agent persona case does not send old chat retell', result, 'agent-chat-persona-ok')
+    t.check('scenario QQ Agent persona case queues without model calls in entry process', calls.length === 0 && mocked.calls.length === 0, `calls=${calls.length} mocked=${mocked.calls.length}`)
+    t.check('scenario QQ Agent persona case does not call search tool in entry process', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
+    const tasks = listScenarioAgentTasks()
+    const task = tasks[0] || {}
+    const { payload, agentWorker, engineInput } = getAgentWorkerParts(task)
+    t.check('scenario QQ Agent persona case stores one agent task', tasks.length === 1 && task.channelKey === '10001' && task.userId === '100000000', JSON.stringify(tasks))
+    t.check('scenario QQ Agent persona case task records explicit route', payload.entry === 'qq-auto-route' && payload.reason === 'explicit-tool-request', JSON.stringify(payload))
+    t.check('scenario QQ Agent persona case task contains worker run payload', agentWorker.action === 'run' && agentWorker.entry === 'qq-auto-route', JSON.stringify(agentWorker))
+    t.check('scenario QQ Agent persona case keeps direct-mode worker input', engineInput.channel === 'qq' && engineInput.agentMode === true && String(engineInput.userMessage || '').includes('鸣潮'), JSON.stringify(engineInput))
+    t.check('scenario QQ Agent persona case payload forces web_search', Array.isArray(engineInput.forceTools) && engineInput.forceTools.includes('web_search'), JSON.stringify(engineInput))
+    const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+    t.check('scenario QQ Agent persona case payload preserves search query', preExecute.some(item => item && item.name === 'web_search' && JSON.stringify(item.args || {}).includes('鸣潮')), JSON.stringify(preExecute))
+    const serializedTask = JSON.stringify(task)
+    t.check('scenario QQ Agent persona case keeps persona and runtime objects out of queue', !serializedTask.includes('AMIS_AGENT_MARKER') && !serializedTask.includes('CHANG_LI_AGENT_MARKER') && !serializedTask.includes('当前人格：爱弥斯') && !serializedTask.includes('agent-no-persona-raw') && !serializedTask.includes('agent-chat-persona-ok') && !serializedTask.includes('sk-test-secret') && !serializedTask.includes('Bearer') && !serializedTask.includes('"ctx"') && !serializedTask.includes('"bot"') && !serializedTask.includes('"session"'), serializedTask.slice(0, 500))
   }, {
     input: '帮我查一下最新的鸣潮角色是谁',
     setup(session, { data }) {
       const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
       webSearch.__scenarioOriginalExecute = webSearch.execute
-      webSearch.execute = async () => '已搜索：最新的鸣潮角色\n搜索状态：usable_hit\n正文质量：usable\n正文：新角色测试证据'
+      session._webSearchCalls = []
+      webSearch.execute = async (params = {}) => {
+        session._webSearchCalls.push(params)
+        return '已搜索：最新的鸣潮角色\n搜索状态：usable_hit\n正文质量：usable\n正文：新角色测试证据'
+      }
       data.writeText('ai-skills/personas/SKILL.amis.md', [
         '---',
         'name: 爱弥斯',
@@ -627,7 +703,7 @@ async function run(t) {
       persona.loadPersonaUsers()
       persona.loadPersonaGroups()
     },
-    waitFor: message => String(message).includes('agent-chat-persona-ok'),
+    waitFor: message => String(message).includes('完成后会自动发回结果'),
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -691,21 +767,38 @@ async function run(t) {
     waitFor: message => String(message).includes('骂谁罕见'),
   })
 
-  await runChatCase(t, 'QQ Agent skill prompt uses compact index', [
-    { json: { choices: [{ message: { content: 'agent-skill-index-raw' } }] } },
-    { json: { choices: [{ message: { content: 'agent-skill-index-ok' } }] } },
-  ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario QQ Agent compact skill prompt reply', result, 'agent-skill-index-ok')
-    const prompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
-    t.check('scenario QQ Agent prompt includes compact skill index', prompt.includes('轻量索引') && prompt.includes('read_agent_skill'), prompt)
-    t.check('scenario QQ Agent prompt does not inject full skill body', !prompt.includes('LONG_SKILL_BODY_SHOULD_NOT_BE_IN_PROMPT'), prompt)
-    t.check('scenario QQ Agent exposes read_agent_skill but not read_file', calls[0].requestBody.tools.some(item => item.function?.name === 'read_agent_skill') && !calls[0].requestBody.tools.some(item => item.function?.name === 'read_file'), JSON.stringify(calls[0].requestBody.tools))
+  await runChatCase(t, 'QQ Agent skill prompt queues compact-index worker task', [
+    { json: { choices: [{ message: { content: 'unused-agent-skill-index-raw' } }] } },
+  ], async (result, mocked, session, calls, data) => {
+    checkSentIncludes(t, 'scenario QQ Agent skill prompt submits worker task', result, '完成后会自动发回结果')
+    checkSentExcludes(t, 'scenario QQ Agent skill prompt does not send raw agent reply', result, 'agent-skill-index-raw')
+    checkSentExcludes(t, 'scenario QQ Agent skill prompt does not send old chat retell', result, 'agent-skill-index-ok')
+    t.check('scenario QQ Agent skill prompt queues without model calls in entry process', calls.length === 0 && mocked.calls.length === 0, `calls=${calls.length} mocked=${mocked.calls.length}`)
+    t.check('scenario QQ Agent skill prompt does not call search tool in entry process', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
+    const agentConfig = data.readJson('ai-tool-config.json')
+    t.check('scenario QQ Agent skill prompt keeps read_agent_skill enabled', agentConfig.channels.qq.tools.read_agent_skill === true && agentConfig.channels.qq.tools.read_file !== true && agentConfig.enabledSkills.includes('pptx'), JSON.stringify(agentConfig))
+    const tasks = listScenarioAgentTasks()
+    const task = tasks[0] || {}
+    const { payload, agentWorker, engineInput } = getAgentWorkerParts(task)
+    t.check('scenario QQ Agent skill prompt stores one agent task', tasks.length === 1 && task.channelKey === '10001' && task.userId === '100000000', JSON.stringify(tasks))
+    t.check('scenario QQ Agent skill prompt task records explicit route', payload.entry === 'qq-auto-route' && payload.reason === 'explicit-tool-request', JSON.stringify(payload))
+    t.check('scenario QQ Agent skill prompt task contains worker run payload', agentWorker.action === 'run' && agentWorker.entry === 'qq-auto-route', JSON.stringify(agentWorker))
+    t.check('scenario QQ Agent skill prompt keeps direct-mode worker input', engineInput.channel === 'qq' && engineInput.agentMode === true && String(engineInput.userMessage || '').includes('pptx'), JSON.stringify(engineInput))
+    t.check('scenario QQ Agent skill prompt payload forces web_search', Array.isArray(engineInput.forceTools) && engineInput.forceTools.includes('web_search'), JSON.stringify(engineInput))
+    const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+    t.check('scenario QQ Agent skill prompt payload preserves search query', preExecute.some(item => item && item.name === 'web_search' && JSON.stringify(item.args || {}).includes('pptx')), JSON.stringify(preExecute))
+    const serializedTask = JSON.stringify(task)
+    t.check('scenario QQ Agent skill prompt queue omits full skill body and runtime objects', !serializedTask.includes('LONG_SKILL_BODY_SHOULD_NOT_BE_IN_PROMPT') && !serializedTask.includes('agent-skill-index-raw') && !serializedTask.includes('agent-skill-index-ok') && !serializedTask.includes('sk-test-secret') && !serializedTask.includes('Bearer') && !serializedTask.includes('"ctx"') && !serializedTask.includes('"bot"') && !serializedTask.includes('"session"'), serializedTask.slice(0, 500))
   }, {
     input: '搜一下最新的 pptx 技能资料是什么',
     setup(session, { data }) {
       const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
       webSearch.__scenarioOriginalExecute = webSearch.execute
-      webSearch.execute = async () => '已搜索：最新的 pptx 技能资料\n搜索状态：usable_hit\n正文质量：usable\n正文：pptx 技能资料测试证据'
+      session._webSearchCalls = []
+      webSearch.execute = async (params = {}) => {
+        session._webSearchCalls.push(params)
+        return '已搜索：最新的 pptx 技能资料\n搜索状态：usable_hit\n正文质量：usable\n正文：pptx 技能资料测试证据'
+      }
       data.writeText('ai-skills/docs/pptx/SKILL.md', [
         '---',
         'name: pptx',
@@ -724,7 +817,7 @@ async function run(t) {
         readFileRoots: [],
       })
     },
-    waitFor: message => String(message).includes('agent-skill-index-ok'),
+    waitFor: message => String(message).includes('完成后会自动发回结果'),
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -1079,10 +1172,8 @@ async function run(t) {
     const fallbackPrompt = JSON.stringify(calls[calls.length - 1]?.requestBody?.messages || [])
     t.check('scenario Agent retell fallback keeps persona prompt', fallbackPrompt.includes('AGENT_RETELL_MARKER'), fallbackPrompt)
   }, {
-    input: '搜一下这个配队怎么打',
+    input: '这个配队怎么打',
     setup(session, { data }) {
-      const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
-      webSearch.execute = async () => '已搜索：配队打法\n搜索状态：usable_hit\n正文质量：usable\n正文：配队打法测试证据'
       data.writeText('ai-skills/personas/SKILL.agent-retell-marker.md', [
         '---',
         'name: AgentRetellMarker',
@@ -1094,10 +1185,27 @@ async function run(t) {
       const persona = require(path.join(AI_ROOT, 'lib', 'persona', 'persona.js'))
       persona.loadPersonaUsers()
       const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
+      const originalChat = chatModule.chat
+      chatModule.chat = async (chatSession, text, ctx, options) => {
+        if (options && options.isAgentResult) return originalChat(chatSession, text, ctx, options)
+        return originalChat(chatSession, text, ctx, {
+          ...options,
+          isAgentResult: true,
+          agentResultText: '已搜索：配队打法\n搜索状态：usable_hit\n正文质量：usable\n正文：配队打法测试证据',
+        })
+      }
+      chatModule.__scenarioRestoreChat = () => { chatModule.chat = originalChat }
       return chatModule.loadSkillsContentCache()
     },
     waitFor: message => String(message).includes('AGENT_RETELL_MARKER'),
   })
+  try {
+    const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
+    if (chatModule.__scenarioRestoreChat) {
+      chatModule.__scenarioRestoreChat()
+      delete chatModule.__scenarioRestoreChat
+    }
+  } catch {}
 
   await runChatCase(t, 'Agent retell file wrapper leak retries', [
     { json: { choices: [{ message: { content: '[用户上传文件: plan.txt]\n---文件内容开始---\n先做 A\n再补 B\n---文件内容结束---' } }] } },

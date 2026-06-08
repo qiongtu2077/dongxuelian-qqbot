@@ -182,7 +182,7 @@ function runCommand(commandName, args, timeoutMs = RUN_TIMEOUT_MS) {
         let timer = null;
         let gateHandle = null;
         let settled = false;
-        const finish = (result, reason = 'mcp-local-check-finally') => {
+        const finishMcpLocalCheck = (result, reason = 'mcp-local-check-finally') => {
             if (settled)
                 return;
             settled = true;
@@ -220,18 +220,18 @@ function runCommand(commandName, args, timeoutMs = RUN_TIMEOUT_MS) {
                     child.kill('SIGTERM');
                 }
                 catch { /* non-critical: process may have already exited */ }
-                finish({ ok: false, exitCode: null, timedOut: true, stdout, stderr }, 'mcp-local-check-timeout');
+                finishMcpLocalCheck({ ok: false, exitCode: null, timedOut: true, stdout, stderr }, 'mcp-local-check-timeout');
             }, timeoutMs);
             child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
             child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
             child.on('error', (error) => {
-                finish({ ok: false, exitCode: null, error: error.message, stdout, stderr }, 'mcp-local-check-error');
+                finishMcpLocalCheck({ ok: false, exitCode: null, error: error.message, stdout, stderr }, 'mcp-local-check-error');
             });
             child.on('close', (code) => {
-                finish({ ok: code === 0, exitCode: code, stdout, stderr }, 'mcp-local-check-close');
+                finishMcpLocalCheck({ ok: code === 0, exitCode: code, stdout, stderr }, 'mcp-local-check-close');
             });
         }).catch((error) => {
-            finish(buildMcpLocalCheckBusyResult(error.message || error), 'mcp-local-check-gate-failed');
+            finishMcpLocalCheck(buildMcpLocalCheckBusyResult(error.message || error), 'mcp-local-check-gate-failed');
         });
     });
 }

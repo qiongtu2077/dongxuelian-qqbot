@@ -1,3 +1,15 @@
+function listAgentWorkerTasks(statuses = ['pending', 'deferred', 'failed', 'done']) {
+  const taskStore = require('../../lib/resource-workers/task-store')
+  return taskStore.listResourceTasks({ statuses, limit: 100 }).filter(task => task.kind === 'agent_task')
+}
+
+function agentWorkerParts(task = {}) {
+  const payload = task.payload || {}
+  const agentWorker = payload.agentWorker || {}
+  const engineInput = agentWorker.engineInput || {}
+  return { payload, agentWorker, engineInput }
+}
+
 async function run(t) {
   t.section('scenario: agent phase3 queue plan shell guard')
 
@@ -111,7 +123,11 @@ async function run(t) {
       const planRunner = require('../../lib/agent/plan/plan-runner')
       t.checkEqual('plan runner resolves active plan', (await planRunner.resolvePlan()).id, activePlan.id)
       const resumed = await planRunner.resumePlan({ userId: 'u1', channelKey: 'g1' })
-      t.check('plan runner resumes through agent queue', resumed.reply.includes('resume-ok') && resumed.reply.includes(activePlan.id), resumed.reply)
+      const tasks = listAgentWorkerTasks()
+      const task = tasks.find(item => item.payload && item.payload.planId === activePlan.id) || {}
+      const { payload, agentWorker, engineInput } = agentWorkerParts(task)
+      t.check('plan runner submits S2 worker task', resumed.reply.includes('Agent 已提交后台执行') && resumed.taskId && payload.entry === 'plan-resume' && payload.planId === activePlan.id, JSON.stringify({ resumed, task }))
+      t.check('plan runner worker payload preserves plan tools', agentWorker.action === 'run' && agentWorker.entry === 'plan-resume' && String(engineInput.userMessage || '').includes(activePlan.id) && Array.isArray(engineInput.forceTools) && engineInput.forceTools.includes('check_plan_status'), JSON.stringify(engineInput))
     } finally {
       engine.run = oldRun
     }
@@ -135,7 +151,11 @@ async function run(t) {
         channelMissCount: new Map(),
       })
       t.check('plan resume command is handled', result.matched)
-      t.check('plan resume command returns agent reply', String(result.response || '').includes('command-resume-ok') && String(result.response || '').includes(commandPlan.id), String(result.response || ''))
+      const tasks = listAgentWorkerTasks()
+      const task = tasks.find(item => item.payload && item.payload.planId === commandPlan.id) || {}
+      const { payload, agentWorker, engineInput } = agentWorkerParts(task)
+      t.check('plan resume command returns queued agent task', String(result.response || '').includes('Agent 已提交后台执行') && String(result.response || '').includes(commandPlan.id) && payload.entry === 'plan-resume' && payload.planId === commandPlan.id, String(result.response || ''))
+      t.check('plan resume command worker payload keeps command plan context', agentWorker.action === 'run' && agentWorker.entry === 'plan-resume' && engineInput.channel === 'qq' && engineInput.channelKey === '10001' && engineInput.userId === '100000000' && String(engineInput.userMessage || '').includes(commandPlan.id), JSON.stringify(engineInput))
     } finally {
       engine.run = oldRun
     }
@@ -235,8 +255,15 @@ async function run(t) {
     const agentRun = await cron.runCronNow(agentCron.id)
     const agentData = await cron.loadCrons()
     const agentSaved = agentData.crons.find(item => item.id === agentCron.id)
-    t.check('cron periodic agent task runs engine and keeps schedule', agentRun.ok && agentSent.some(item => item.channelKey === 'g-agent' && item.text.includes('agent-result:总结今天群聊')) && agentSaved && agentSaved.enabled !== false && agentSaved.nextRunAt > Date.now(), JSON.stringify({ agentRun, agentSent, agentSaved }))
-    t.check('cron passes scheduled context policy to agent engine', seenScheduledPolicies.some(policy => policy && policy.allowExternalTools === false && Array.isArray(policy.allowedTools) && policy.allowedTools.includes('read_group_context')), JSON.stringify(seenScheduledPolicies))
+    const agentTasks = listAgentWorkerTasks()
+    const cronTask = agentTasks.find(item => item.payload && item.payload.cronId === agentCron.id) || {}
+    const cronParts = agentWorkerParts(cronTask)
+    const scheduledPolicy = cronParts.engineInput.scheduledTask && cronParts.engineInput.scheduledTask.contextPolicy
+    const agentRunText = String(agentRun.result || '')
+    const agentRunQueued = (agentRunText.includes('Agent 已加入资源队列') || agentRunText.includes('Agent 已提交后台执行')) &&
+      agentRunText.includes('任务 ID') && agentRunText.includes('自动发回结果')
+    t.check('cron periodic agent task queues worker and keeps schedule', agentRun.ok && agentRunQueued && cronTask.source === 'agent-cron' && agentSaved && agentSaved.enabled !== false && agentSaved.nextRunAt > Date.now(), JSON.stringify({ agentRun, agentSent, agentSaved, cronTask }))
+    t.check('cron passes scheduled context policy to agent worker payload', scheduledPolicy && scheduledPolicy.allowExternalTools === false && Array.isArray(scheduledPolicy.allowedTools) && scheduledPolicy.allowedTools.includes('read_group_context'), JSON.stringify(cronParts.engineInput))
     const pausedCron = await cron.pauseCron(agentCron.id)
     t.check('cron pause marks scheduled task paused', pausedCron && pausedCron.enabled === false && pausedCron.status === 'paused', JSON.stringify(pausedCron))
     const resumedCron = await cron.resumeCron(agentCron.id)

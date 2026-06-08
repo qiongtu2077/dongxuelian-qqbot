@@ -45,6 +45,37 @@ function assertNoPromptLeak(t, label, replyText) {
     replyText.slice(0, 300))
 }
 
+function listE2eAgentTasks(statuses = ['pending', 'claiming', 'running', 'deferred', 'failed', 'done']) {
+  const taskStore = require(path.join(AI_ROOT, 'lib', 'resource-workers', 'task-store.js'))
+  return taskStore.listResourceTasks({ statuses, limit: 50 }).filter(task => task.kind === 'agent_task')
+}
+
+function getE2eAgentWorkerParts(task = {}) {
+  const payload = task.payload || {}
+  const agentWorker = payload.agentWorker || {}
+  const engineInput = agentWorker.engineInput || {}
+  return { payload, agentWorker, engineInput }
+}
+
+function findSerializedMatchPaths(value, needle, base = '', result = []) {
+  if (value == null) return result
+  if (typeof value === 'string') {
+    if (value.includes(needle)) result.push(base)
+    return result
+  }
+  if (typeof value !== 'object') return result
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => findSerializedMatchPaths(item, needle, `${base}[${index}]`, result))
+    return result
+  }
+  for (const [key, item] of Object.entries(value)) findSerializedMatchPaths(item, needle, base ? `${base}.${key}` : key, result)
+  return result
+}
+
+function containsSecretLikeText(text = '') {
+  return /\bsk-[A-Za-z0-9][A-Za-z0-9._-]{5,}\b/.test(String(text || '')) || /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/i.test(String(text || ''))
+}
+
 const DEFAULT_TOOL_CONFIG = {
   channels: {
     qq: { enabled: true, tools: { get_current_time: true, calculate: true, web_search: true, web_fetch: true } },
@@ -128,7 +159,7 @@ async function run(t) {
     })
   })
 
-  // 失败 5：reasoning-only 响应 → 不应泄漏 reasoning 也不应空回复
+  // 失败 5：当前性问题可能被 S2 Agent 队列接走；入口不应泄漏 reasoning 也不应空回复
   await withScenario({}, async ({ makeSession, run, data }) => {
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '', reasoning_content: '我得看看现在是什么情况再回复' } }] } },
@@ -143,13 +174,13 @@ async function run(t) {
       const replyText = session.sent.join(' ')
       assertNoEmptyAgentReply(t, 'reasoning-only fallback', replyText)
       assertNoReasoningLeak(t, 'reasoning-only fallback', replyText)
-      t.check('reasoning-only used fallback call', mocked.calls.length >= 2, `calls=${mocked.calls.length}`)
+      t.check('reasoning-only current query queues or uses fallback call', replyText.includes('完成后会自动发回结果') ? mocked.calls.length === 0 : mocked.calls.length >= 2, `reply=${replyText} calls=${mocked.calls.length}`)
     })
   })
 
   // === 正路测试（mocked 模型 + 真实工具路径） ===
 
-  // 正路 0：真实私聊多轮省略追问 → 补全上下文 → 预执行 web_search → 当前人格转述
+  // 正路 0：真实私聊搜索请求 → S2 Agent 队列接管，不在入口泄漏 prompt 或密钥
   await withScenario({}, async ({ makeSession, run, data }) => {
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '我先按搞笑向搜了一轮。' } }] } },
@@ -186,22 +217,26 @@ async function run(t) {
         })
         session.content = '我想看我的世界的搞笑视频'
         await run(session, { flushTicks: 120 })
-        await session.waitForSend(message => String(message).includes('搞笑'), 10000)
-        session.sent.length = 0
-        session.content = '你能帮我找几个吗'
-        await run(session, { flushTicks: 160 })
-        await session.waitForSend(message => String(message).includes('长离语气'), 10000)
+        await session.waitForSend(message => String(message).includes('完成后会自动发回结果'), 10000)
         const replyText = session.sent.join(' ')
-        t.check('mocked private follow-up pre-executes web_search twice', searchCalls.length >= 2, JSON.stringify(searchCalls))
-        t.check('mocked private follow-up pre-executes contextual web_search', searchCalls.slice(-1).some(item => String(item.query || '').includes('我的世界') && String(item.query || '').includes('搞笑视频')), JSON.stringify(searchCalls))
-        const agentCall = mocked.calls.find(call => JSON.stringify(call.requestBody?.messages || []).includes('可检索对象'))
-        const agentPrompt = JSON.stringify(agentCall?.requestBody?.messages || [])
-        t.check('mocked private follow-up sends contextual query to Agent', agentPrompt.includes('可检索对象') && agentPrompt.includes('我的世界') && agentPrompt.includes('不要拼接其他旧聊天'), agentPrompt)
-        const retellCall = mocked.calls.find(call => JSON.stringify(call.requestBody?.messages || []).includes('工具查到的信息') && JSON.stringify(call.requestBody?.messages || []).includes('CHANGLI_E2E_MARKER'))
-        const retellPrompt = JSON.stringify(retellCall?.requestBody?.messages || [])
-        t.check('mocked private follow-up retell uses current persona prompt', retellPrompt.includes('CHANGLI_E2E_MARKER') && retellPrompt.includes('当前 chat 人格是唯一口吻来源'), retellPrompt)
-        t.check('mocked private follow-up redacts secrets before retell', !retellPrompt.includes('sk-tool-secret') && !retellPrompt.includes('sk-secret-e2e') && !replyText.includes('sk-'), retellPrompt)
-        t.check('mocked private follow-up filters external persona switch text', !retellPrompt.includes('切换成默认东雪莲'), retellPrompt)
+        t.check('mocked private search queues without entry web_search', searchCalls.length === 0 && mocked.calls.length === 0, JSON.stringify({ searchCalls, calls: mocked.calls.length }))
+        const tasks = listE2eAgentTasks()
+        const task = tasks.find(item =>
+          item && item.channelKey === 'private-e2e' && item.userId === 'e2e_private' &&
+          item.payload && item.payload.entry === 'qq-auto-route' && item.payload.reason === 'general-search-intent'
+        ) || {}
+        const { payload, agentWorker, engineInput } = getE2eAgentWorkerParts(task)
+        t.check('mocked private search stores S2 agent task', tasks.length === 1 && payload.entry === 'qq-auto-route' && payload.reason === 'general-search-intent' && agentWorker.action === 'run', JSON.stringify(tasks))
+        const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+        t.check('mocked private search preserves query in worker payload', engineInput.agentMode === true && preExecute.some(item => item && item.name === 'web_search' && JSON.stringify(item.args || {}).includes('我的世界')), JSON.stringify(engineInput))
+        const serializedTask = JSON.stringify(task)
+        t.check('mocked private search redacts secrets before queue', !serializedTask.includes('sk-tool-secret') && !serializedTask.includes('sk-secret-e2e') && !serializedTask.includes('CHANGLI_E2E_MARKER') && !containsSecretLikeText(replyText), JSON.stringify({
+          skToolPaths: findSerializedMatchPaths(task, 'sk-tool-secret'),
+          skSecretPaths: findSerializedMatchPaths(task, 'sk-secret-e2e'),
+          markerPaths: findSerializedMatchPaths(task, 'CHANGLI_E2E_MARKER'),
+          replyHasSecretLikeText: containsSecretLikeText(replyText),
+          sample: serializedTask.slice(0, 500),
+        }))
         assertNoEmptyAgentReply(t, 'mocked private contextual search', replyText)
         assertNoReasoningLeak(t, 'mocked private contextual search', replyText)
         assertNoPromptLeak(t, 'mocked private contextual search', replyText)
@@ -213,12 +248,7 @@ async function run(t) {
 
   // 正路 0.25：多话题私聊中的省略追问 → 只继承同类上下文，避免乱感知
   await withScenario({}, async ({ makeSession, run, data }) => {
-    const mocked = mockFetch([
-      { json: { choices: [{ message: { content: '杭州今天气温测试结果。' } }] } },
-      { json: { choices: [{ message: { content: '今天气温转述。' } }] } },
-      { json: { choices: [{ message: { content: '我的世界搞笑视频测试结果。' } }] } },
-      { json: { choices: [{ message: { content: '视频转述。' } }] } },
-    ])
+    const mocked = mockFetch([])
     await withFetch(mocked, async () => {
       const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
       const originalExecute = webSearch.execute
@@ -242,13 +272,6 @@ async function run(t) {
           selfId: '90000',
           isDirect: true,
         })
-        session.content = '杭州今天气温多少'
-        await run(session, { flushTicks: 160 })
-        await session.waitForSend(message => String(message).includes('今天气温'), 10000)
-        session.sent.length = 0
-        session.content = '我想看我的世界的搞笑视频'
-        await run(session, { flushTicks: 160 })
-        await session.waitForSend(message => String(message).includes('视频转述'), 10000)
         const searchContext = require(path.join(AI_ROOT, 'lib', 'routing', 'search-context.js'))
         const now = Date.now()
         const interruptedContext = searchContext.buildPrivateSearchContext(session, [
@@ -256,7 +279,7 @@ async function run(t) {
           { role: 'user', content: '我想看我的世界的搞笑视频', ts: now - 5 * 60 * 1000 },
         ], { currentText: '那明天呢', now })
         t.check('mocked private refinement interrupted by another topic stays in chat gate', interruptedContext.searchReadiness === 'needs_chat_handling' && !interruptedContext.queryCandidate, JSON.stringify(interruptedContext))
-        assertNoEmptyAgentReply(t, 'mocked private refinement context chat', session.sent.join(' '))
+        t.check('mocked private refinement context does not call model or search in gate check', mocked.calls.length === 0 && searchCalls.length === 0 && session.sent.length === 0, JSON.stringify({ calls: mocked.calls.length, searchCalls, sent: session.sent }))
       } finally {
         webSearch.execute = originalExecute
       }
@@ -282,11 +305,15 @@ async function run(t) {
         const session = makeSession({ userId: 'group-user', guildId: '10001', channelId: '10001', selfId: '90000' })
         session.content = atBot(session, '最近有什么比较火的视频，给我推荐几个')
         await run(session, { flushTicks: 160 })
-        await session.waitForSend(message => String(message).includes('群聊转述'), 10000)
+        await session.waitForSend(message => String(message).includes('完成后会自动发回结果'), 10000)
         const replyText = session.sent.join(' ')
-        t.check('mocked group fuzzy search pre-executes web_search', searchCalls.length >= 1 && /比较火|视频|推荐/.test(String(searchCalls[0].query || '')), JSON.stringify(searchCalls))
-        const agentCall = mocked.calls.find(call => JSON.stringify(call.requestBody?.tools || []).includes('web_search'))
-        t.check('mocked group fuzzy search routes directly to Agent tools', !!agentCall && JSON.stringify(agentCall.requestBody?.messages || []).includes('用户需要联网搜索'), JSON.stringify(mocked.calls.map(call => call.requestBody?.messages?.[0]?.content?.slice(0, 80))))
+        t.check('mocked group fuzzy search queues without entry web_search', searchCalls.length === 0 && mocked.calls.length === 0, JSON.stringify({ searchCalls, calls: mocked.calls.length }))
+        const tasks = listE2eAgentTasks()
+        const task = tasks[0] || {}
+        const { payload, agentWorker, engineInput } = getE2eAgentWorkerParts(task)
+        t.check('mocked group fuzzy search stores S2 agent task', tasks.length === 1 && payload.entry === 'qq-auto-route' && payload.reason === 'general-search-intent' && agentWorker.action === 'run', JSON.stringify(tasks))
+        const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+        t.check('mocked group fuzzy search preserves search query', engineInput.agentMode === true && preExecute.some(item => item && item.name === 'web_search' && /比较火|视频|推荐/.test(JSON.stringify(item.args || {}))), JSON.stringify(engineInput))
         assertNoEmptyAgentReply(t, 'mocked group fuzzy search', replyText)
         assertNoPromptLeak(t, 'mocked group fuzzy search', replyText)
       } finally {
@@ -295,7 +322,7 @@ async function run(t) {
     })
   })
 
-  // 正路 1：显式 web_search 请求 → Agent 工具链 → chat 转述
+  // 正路 1：显式 web_search 请求 → S2 Agent 队列
   await withScenario({}, async ({ makeSession, run, data }) => {
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'web_search', arguments: '{"query":"鸣潮最新角色"}' } }] } }] } },
@@ -305,7 +332,11 @@ async function run(t) {
     await withFetch(mocked, async () => {
       const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
       const originalExecute = webSearch.execute
-      webSearch.execute = async () => '已搜索：鸣潮 最新角色\n搜索结果：\n1. 官方公告\n   https://kurogames.com/news\n   可信度分：100\n   绯雪与达妮娅'
+      const searchCalls = []
+      webSearch.execute = async (params = {}) => {
+        searchCalls.push(params)
+        return '已搜索：鸣潮 最新角色\n搜索结果：\n1. 官方公告\n   https://kurogames.com/news\n   可信度分：100\n   绯雪与达妮娅'
+      }
       try {
         data.writeJson('ai-tool-config.json', {
           ...DEFAULT_TOOL_CONFIG,
@@ -314,14 +345,18 @@ async function run(t) {
         const session = makeSession({ userId: 'ok-user', guildId: '10001', channelId: '10001', selfId: '90000' })
         session.content = atBot(session, '调用web_search查鸣潮最新角色是谁')
         const result = await run(session, { flushTicks: 120 })
-        await session.waitForSend(() => true, 10000)
+        await session.waitForSend(message => String(message).includes('完成后会自动发回结果'), 10000)
         const replyText = session.sent.join(' ')
-        t.check('mocked explicit search sends reply', session.sent.length > 0)
+        t.check('mocked explicit search sends queue reply', session.sent.length > 0 && replyText.includes('任务 ID'))
         assertNoEmptyAgentReply(t, 'mocked explicit search', replyText)
         assertNoReasoningLeak(t, 'mocked explicit search', replyText)
-        t.check('mocked explicit search has tool answer', replyText.includes('绯雪') || replyText.includes('搜索结果'), replyText.slice(0, 200))
-        const firstCallTools = mocked.calls[0]?.requestBody?.tools || []
-        t.check('mocked explicit search exposes web_search', firstCallTools.some(item => item.function?.name === 'web_search'), JSON.stringify(firstCallTools))
+        t.check('mocked explicit search does not execute search in entry process', searchCalls.length === 0 && mocked.calls.length === 0, JSON.stringify({ searchCalls, calls: mocked.calls.length }))
+        const tasks = listE2eAgentTasks()
+        const task = tasks[0] || {}
+        const { payload, agentWorker, engineInput } = getE2eAgentWorkerParts(task)
+        t.check('mocked explicit search stores S2 agent task', tasks.length === 1 && payload.entry === 'qq-auto-route' && payload.reason === 'explicit-tool-request' && agentWorker.action === 'run', JSON.stringify(tasks))
+        const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+        t.check('mocked explicit search payload preserves web_search', Array.isArray(engineInput.forceTools) && engineInput.forceTools.includes('web_search') && preExecute.some(item => item && item.name === 'web_search' && JSON.stringify(item.args || {}).includes('鸣潮')), JSON.stringify(engineInput))
       } finally {
         webSearch.execute = originalExecute
       }
@@ -352,7 +387,7 @@ async function run(t) {
     })
   })
 
-  // 正路 3：mocked HTTP 搜索提取路径（不 mock webSearch.execute，mock fetch 返回 HTML）
+  // 正路 3：mocked HTTP 搜索提取路径现在由 S2 worker 执行，入口只入队
   await withScenario({}, async ({ makeSession, run, data }) => {
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'web_search', arguments: '{"query":"测试搜索"}' } }] } }] } },
@@ -373,11 +408,18 @@ async function run(t) {
         const session = makeSession({ userId: 'ok-user', guildId: '10001', channelId: '10001', selfId: '90000' })
         session.content = atBot(session, '调用web_search查测试搜索')
         const result = await run(session, { flushTicks: 120 })
-        await session.waitForSend(() => true, 10000)
+        await session.waitForSend(message => String(message).includes('完成后会自动发回结果'), 10000)
         const replyText = session.sent.join(' ')
-        t.check('mocked http extraction sends reply', session.sent.length > 0)
+        t.check('mocked http extraction sends queue reply', session.sent.length > 0 && replyText.includes('任务 ID'))
         assertNoEmptyAgentReply(t, 'mocked http extraction', replyText)
         assertNoReasoningLeak(t, 'mocked http extraction', replyText)
+        const tasks = listE2eAgentTasks()
+        const task = tasks[0] || {}
+        const { payload, agentWorker, engineInput } = getE2eAgentWorkerParts(task)
+        const searchReasons = new Set(['explicit-tool-request', 'general-search-intent'])
+        t.check('mocked http extraction stores S2 agent task', tasks.length === 1 && payload.entry === 'qq-auto-route' && searchReasons.has(payload.reason) && agentWorker.action === 'run', JSON.stringify(tasks))
+        const preExecute = Array.isArray(engineInput.preExecuteTools) ? engineInput.preExecuteTools : []
+        t.check('mocked http extraction payload preserves query', preExecute.some(item => item && item.name === 'web_search' && JSON.stringify(item.args || {}).includes('测试搜索')), JSON.stringify(engineInput))
       } finally {
         global.fetch = originalFetch
       }
@@ -429,7 +471,7 @@ async function run(t) {
     })
   })
 
-  // 坏路 2：web_search 返回失败结果 → Agent 不应编造答案
+  // 坏路 2：web_search 返回失败结果由 worker 处理；入口不应编造答案或泄漏
   await withScenario({}, async ({ makeSession, run, data }) => {
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'web_search', arguments: '{"query":"未知查询"}' } }] } }] } },
@@ -439,7 +481,11 @@ async function run(t) {
     await withFetch(mocked, async () => {
       const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
       const originalExecute = webSearch.execute
-      webSearch.execute = async () => '搜索失败：未提取到有效搜索结果。'
+      const searchCalls = []
+      webSearch.execute = async (params = {}) => {
+        searchCalls.push(params)
+        return '搜索失败：未提取到有效搜索结果。'
+      }
       try {
         data.writeJson('ai-tool-config.json', {
           ...DEFAULT_TOOL_CONFIG,
@@ -448,11 +494,10 @@ async function run(t) {
         const session = makeSession({ userId: 'fail-user', guildId: '10001', channelId: '10001', selfId: '90000' })
         session.content = atBot(session, '调用web_search查不存在的东西')
         const result = await run(session, { flushTicks: 120 })
-        await session.waitForSend(() => true, 10000)
+        await session.waitForSend(message => String(message).includes('完成后会自动发回结果'), 10000)
         const replyText = session.sent.join(' ')
         assertNoEmptyAgentReply(t, 'search failure response', replyText)
-        // 不应编造直接答案
-        t.check('search failure does not fabricate', replyText.includes('没有拿到可靠结果') || replyText.includes('未提取到') || replyText.includes('搜索失败'), replyText.slice(0, 300))
+        t.check('search failure is deferred without fabricating', searchCalls.length === 0 && replyText.includes('任务 ID') && !replyText.includes('可靠结果') && !replyText.includes('编造'), JSON.stringify({ replyText, searchCalls }))
       } finally {
         webSearch.execute = originalExecute
       }

@@ -29,6 +29,7 @@ const ALLOWED_ADDED_EXPORTS = {
   'agent/pending.js': ['summarizePendingArgs', 'upsertPendingToolSnapshot'],
   'behavior/emotion-renderer.js': ['renderEmotionImageDirect'],
   'conversation.js': ['clearPendingSensitiveAlert', 'consumePendingSensitiveAlert', 'writePendingSensitiveAlert'],
+  'core/redactor.js': ['redactSensitiveData'],
   'lifecycle/startup-schedulers.js': ['scheduleDailyPrecomputePlanning'],
   'message/message-segment.js': ['extractVoiceRefFromContent', 'getVoiceSegmentData'],
 }

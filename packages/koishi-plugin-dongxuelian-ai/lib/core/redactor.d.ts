@@ -4,7 +4,9 @@
  * 边界: 不判断权限、不解析业务结构。
  */
 declare function redactSensitiveText(text?: string): string;
+declare function redactSensitiveData(value: unknown, key?: string, depth?: number): unknown;
 declare const _default: {
     redactSensitiveText: typeof redactSensitiveText;
+    redactSensitiveData: typeof redactSensitiveData;
 };
 export = _default;

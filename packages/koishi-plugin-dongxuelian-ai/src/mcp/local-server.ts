@@ -303,7 +303,7 @@ function runCommand(commandName: string, args: string[], timeoutMs: number = RUN
     let gateHandle: { updateStep(step: string, memAvailableMb?: number | null): void; release(reason?: string): void } | null = null
     let settled = false
 
-    const finish = (result: RunCommandResult, reason = 'mcp-local-check-finally'): void => {
+    const finishMcpLocalCheck = (result: RunCommandResult, reason = 'mcp-local-check-finally'): void => {
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
@@ -336,18 +336,18 @@ function runCommand(commandName: string, args: string[], timeoutMs: number = RUN
       })
       timer = setTimeout(() => {
         try { child.kill('SIGTERM') } catch { /* non-critical: process may have already exited */ }
-        finish({ ok: false, exitCode: null, timedOut: true, stdout, stderr }, 'mcp-local-check-timeout')
+        finishMcpLocalCheck({ ok: false, exitCode: null, timedOut: true, stdout, stderr }, 'mcp-local-check-timeout')
       }, timeoutMs)
       child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8') })
       child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
       child.on('error', (error: Error) => {
-        finish({ ok: false, exitCode: null, error: error.message, stdout, stderr }, 'mcp-local-check-error')
+        finishMcpLocalCheck({ ok: false, exitCode: null, error: error.message, stdout, stderr }, 'mcp-local-check-error')
       })
       child.on('close', (code: number | null) => {
-        finish({ ok: code === 0, exitCode: code, stdout, stderr }, 'mcp-local-check-close')
+        finishMcpLocalCheck({ ok: code === 0, exitCode: code, stdout, stderr }, 'mcp-local-check-close')
       })
     }).catch((error: Error) => {
-      finish(buildMcpLocalCheckBusyResult(error.message || error), 'mcp-local-check-gate-failed')
+      finishMcpLocalCheck(buildMcpLocalCheckBusyResult(error.message || error), 'mcp-local-check-gate-failed')
     })
   })
 }

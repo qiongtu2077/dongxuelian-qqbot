@@ -7,7 +7,14 @@
 const fs = require('fs');
 const path = require('path');
 const { appendJsonlEvent, ensureDir, listJsonFiles, nowIso, readJsonFile, removePath, renameFileAtomic, sanitizeId, writeJsonAtomic, } = require('../resource-common/files');
+const { redactSensitiveData, redactSensitiveText } = require('../core/redactor');
 const { WORKERS_ROOT, TASKS_ROOT, RESULTS_ROOT, WORKER_STATE_DIR, getTaskFile, getTaskResultDir, getTaskStatusDir, getPendingKindDir, getWorkerStateFile, getWorkerEventFile, } = require('./task-paths');
+function redactRecord(value = {}) {
+    const redacted = redactSensitiveData(value);
+    return redacted && typeof redacted === 'object' && !Array.isArray(redacted)
+        ? redacted
+        : {};
+}
 // 初始化 S2 任务系统目录。
 function ensureTaskDirs() {
     for (const dir of [
@@ -27,7 +34,7 @@ function ensureTaskDirs() {
 }
 // 写入 S2 事件，供 Dashboard 资源中心展示。
 function writeWorkerEvent(event, data = {}) {
-    appendJsonlEvent(getWorkerEventFile(), { event, ...data });
+    appendJsonlEvent(getWorkerEventFile(), { event, ...redactRecord(data) });
 }
 // 生成资源任务 ID。
 function createTaskId(kind, channelKey = '') {
@@ -49,8 +56,8 @@ function submitResourceTask(input) {
         updatedAt: now,
         expiresAt: input.expiresAt || '',
         timeoutMs: Number.isFinite(Number(input.timeoutMs)) ? Number(input.timeoutMs) : 300000,
-        payload: input.payload || {},
-        notify: input.notify || { target: 'none', status: 'pending' },
+        payload: redactRecord(input.payload || {}),
+        notify: redactRecord(input.notify || { target: 'none', status: 'pending' }),
     };
     writeJsonAtomic(getTaskFile('pending', task.kind, task.id), task);
     writeWorkerEvent('task_created', { taskId: task.id, kind: task.kind, source: task.source, channelKey: task.channelKey, priority: task.priority });
@@ -177,7 +184,7 @@ function writeTaskResult(taskId, result) {
     const resultDir = getTaskResultDir(taskId);
     ensureDir(resultDir);
     const file = path.join(resultDir, 'result.json');
-    writeJsonAtomic(file, { taskId, createdAt: nowIso(), ...result });
+    writeJsonAtomic(file, { taskId, createdAt: nowIso(), ...redactRecord(result) });
     return file;
 }
 // 将任务标记为 done。
@@ -196,7 +203,7 @@ function completeTask(task, result = {}) {
 function failTask(task, error, result = {}) {
     const location = findCurrentTaskLocation(task);
     const failedFile = getTaskFile('failed', task.kind, task.id);
-    const message = error instanceof Error ? error.message : String(error || '');
+    const message = redactSensitiveText(error instanceof Error ? error.message : String(error || ''));
     writeTaskResult(task.id, { kind: task.kind, ok: false, error: message, ...result });
     const next = { ...task, status: 'failed', finishedAt: nowIso(), updatedAt: nowIso(), step: 'failed', error: message };
     if (location && location.status !== 'failed')
@@ -209,22 +216,24 @@ function failTask(task, error, result = {}) {
 function deferTask(task, reason = 'deferred') {
     const location = findCurrentTaskLocation(task);
     const deferredFile = getTaskFile('deferred', task.kind, task.id);
-    const next = { ...task, status: 'deferred', updatedAt: nowIso(), step: 'deferred', error: reason };
+    const safeReason = redactSensitiveText(reason);
+    const next = { ...task, status: 'deferred', updatedAt: nowIso(), step: 'deferred', error: safeReason };
     if (location && location.status !== 'deferred')
         renameFileAtomic(location.file, deferredFile);
     writeJsonAtomic(deferredFile, next);
-    writeWorkerEvent('task_deferred', { taskId: next.id, kind: next.kind, reason });
+    writeWorkerEvent('task_deferred', { taskId: next.id, kind: next.kind, reason: safeReason });
     return next;
 }
 // 将 claiming/running/deferred 任务放回 S2 pending 队列。
 function requeueTask(task, reason = 'requeued') {
     const location = findCurrentTaskLocation(task);
     const pendingFile = getTaskFile('pending', task.kind, task.id);
-    const next = { ...task, status: 'pending', updatedAt: nowIso(), step: 'pending', requeueReason: reason };
+    const safeReason = redactSensitiveText(reason);
+    const next = { ...task, status: 'pending', updatedAt: nowIso(), step: 'pending', requeueReason: safeReason };
     if (location && location.status !== 'pending')
         renameFileAtomic(location.file, pendingFile);
     writeJsonAtomic(pendingFile, next);
-    writeWorkerEvent('task_requeued', { taskId: next.id, kind: next.kind, reason });
+    writeWorkerEvent('task_requeued', { taskId: next.id, kind: next.kind, reason: safeReason });
     return next;
 }
 // 更新任务通知状态，供 result-notifier 标记发送或跳过结果。
@@ -232,18 +241,19 @@ function updateTaskNotifyStatus(task, status, error = '') {
     const location = findCurrentTaskLocation(task);
     if (!location)
         return task;
+    const safeError = redactSensitiveText(error);
     const next = {
         ...task,
         updatedAt: nowIso(),
         notify: {
             ...(task.notify || {}),
             status,
-            error,
+            error: safeError,
             updatedAt: nowIso(),
         },
     };
     writeJsonAtomic(location.file, next);
-    writeWorkerEvent('task_notify_updated', { taskId: next.id, kind: next.kind, status, error });
+    writeWorkerEvent('task_notify_updated', { taskId: next.id, kind: next.kind, status, error: safeError });
     return next;
 }
 // 取消 pending/deferred 任务。
@@ -255,10 +265,11 @@ function cancelTask(taskId, actor = 'system', reason = 'cancelled') {
         return false;
     const src = getTaskFile(task.status, task.kind, task.id);
     const dst = getTaskFile('cancelled', task.kind, task.id);
-    const next = { ...task, status: 'cancelled', updatedAt: nowIso(), finishedAt: nowIso(), error: reason };
+    const safeReason = redactSensitiveText(reason);
+    const next = { ...task, status: 'cancelled', updatedAt: nowIso(), finishedAt: nowIso(), error: safeReason };
     renameFileAtomic(src, dst);
     writeJsonAtomic(dst, next);
-    writeWorkerEvent('task_cancelled', { taskId, kind: task.kind, actor, reason });
+    writeWorkerEvent('task_cancelled', { taskId, kind: task.kind, actor, reason: safeReason });
     return true;
 }
 // 写入 worker 心跳。

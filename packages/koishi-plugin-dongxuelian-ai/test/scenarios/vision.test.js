@@ -103,6 +103,7 @@ async function run(t) {
     data.writeText('ai-model.txt', 'qwen3.5-omni-flash')
     try { require(path.join(AI_ROOT, 'lib', 'core', 'runtime-config.js')).resetConfigCache() } catch {}
     const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
+    const mediaQueue = require(path.join(AI_ROOT, 'lib', 'media', 'backpressure', 'media-queue.js'))
     const chatTools = require(path.join(AI_ROOT, 'lib', 'chat', 'chat-tools.js'))
     await store.storeImageUrl('group-image-tool', 'msg-file-tool', '', 'tool-local.jpg', { conversationKey: 'group-image-tool::user-a', userId: 'user-a' })
     await store.cacheImageFile('group-image-tool', 'msg-file-tool', ONE_PIXEL_PNG)
@@ -114,9 +115,18 @@ async function run(t) {
         function: { name: 'analyze_historical_image', arguments: '{"messageId":"msg-file-tool","question":"评价一下这张图"}' },
       }], { channelKey: 'group-image-tool' })
       const content = result.results[0]?.content || ''
-      t.check('scenario chat image tool returns analysis in current turn', content.includes('橙色小猫'), JSON.stringify(result))
+      t.check('scenario chat image tool queues analysis in current turn', content.includes('进入媒体分析队列') && content.includes('read_image_history'), JSON.stringify(result))
+      t.check('scenario chat image tool does not call vision model synchronously', mocked.calls.length === 0, `calls=${mocked.calls.length}`)
+      const tasks = mediaQueue.listPendingMediaTasks('media_image_analysis', 20)
+      const queued = tasks.find(task => task && task.channelKey === 'group-image-tool' && task.messageId === 'msg-file-tool')
+      t.check('scenario chat image tool enqueues S6 media image task',
+        queued && queued.kind === 'media_image_analysis' && queued.status === 'pending' &&
+          queued.url === 'tool-local.jpg' && queued.payload && queued.payload.entry === 'chat-tool-analyze-historical-image',
+        JSON.stringify(tasks))
       const entry = await store.getImageEntry('group-image-tool', 'msg-file-tool')
-      t.check('scenario chat image tool writes analysis back', entry && entry.analyzed && /橙色小猫/.test(entry.analysis || ''), JSON.stringify(entry))
+      t.check('scenario chat image tool leaves image pending until media worker writes back',
+        entry && entry.analyzed === false && entry.analysis === null && entry.analysisStatus === 'pending',
+        JSON.stringify(entry))
     })
   })
 
