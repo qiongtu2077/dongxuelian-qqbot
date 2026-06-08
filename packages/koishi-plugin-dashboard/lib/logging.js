@@ -32,7 +32,7 @@ function writeLoggingConfig(data) {
     return next;
 }
 function clampLogLimit(value) {
-    const parsed = parseInt(value, 10);
+    const parsed = parseInt(String(value), 10);
     if (!Number.isFinite(parsed))
         return 200;
     return Math.max(1, Math.min(MAX_LOG_LIMIT, parsed));
@@ -72,7 +72,7 @@ function readLastLogItems(file, limit = MAX_LOG_LIMIT) {
     return items.slice(-clampLogLimit(limit));
 }
 function readLastLogLines(file, limit) {
-    return readLastLogItems(file, limit).map(item => item.text);
+    return readLastLogItems(file, limit).map(item => String(item.text || ''));
 }
 function classifyLogLevel(line = '') {
     if (/\[D\]|\bdebug\b|debug:/i.test(line))
@@ -93,14 +93,15 @@ function parseLogLine(item, index) {
     const structured = line.match(/^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+\[([IWED])\]\s+([^\s]+)\s*(.*)$/);
     const tsMatch = structured ? null : line.match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?|\d{2}:\d{2}:\d{2}/);
     const level = classifyLogLevel(line);
-    const moduleName = structured ? structured[3] : detectLogModule(line);
+    const moduleName = structured ? String(structured[3] || '') : detectLogModule(line);
     const message = structured ? (structured[4] || '').trim() : line.replace(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?\s*/, '').trim();
+    const itemId = typeof item === 'object' ? Number(item.id) : NaN;
     return {
-        id: typeof item === 'object' && Number.isFinite(item.id) ? item.id : index,
+        id: Number.isFinite(itemId) ? itemId : index,
         level,
         levelName: level === 'E' ? 'error' : level === 'W' ? 'warn' : level === 'D' ? 'debug' : 'info',
         module: moduleName,
-        time: structured ? structured[1] : (tsMatch ? tsMatch[0] : ''),
+        time: structured ? String(structured[1] || '') : (tsMatch ? tsMatch[0] : ''),
         message,
         text: line,
     };
@@ -149,7 +150,8 @@ function getFilteredLogEntries(options = {}) {
     const newEntries = Number.isFinite(since) && since > 0 && !filterChanged
         ? entries.filter(item => item.id > since).slice(-limit)
         : windowEntries;
-    const lastId = entries.length ? entries[entries.length - 1].id : (Number.isFinite(since) ? since : 0);
+    const lastEntry = entries[entries.length - 1];
+    const lastId = lastEntry ? lastEntry.id : (Number.isFinite(since) ? since : 0);
     return { entries: windowEntries, lines: windowEntries.map(item => item.text), total, limit, file: logFile, config: readLoggingConfig(), filterKey, filterChanged, lastId, newEntries, newCount: newEntries.length, truncated: total > limit };
 }
 module.exports = {

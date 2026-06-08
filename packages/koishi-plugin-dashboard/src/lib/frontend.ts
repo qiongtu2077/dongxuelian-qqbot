@@ -1,18 +1,37 @@
 'use strict'
-const fs = require('fs')
-const path = require('path')
-const { exec } = require('child_process')
-const { FE_DIR, DIST_DIR } = require('./paths')
+import type { ExecException } from 'child_process'
+
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const { exec } = require('child_process') as typeof import('child_process')
+const { FE_DIR, DIST_DIR } = require('./paths') as { FE_DIR: string; DIST_DIR: string }
+
+interface FrontendBuildStatus {
+  state: string
+  message: string
+  detail: string
+  startedAt: number
+  finishedAt: number
+}
 
 interface FrontendBuildOptions {
   feDir?: string
   distDir?: string
   backupDir?: string
   log?: (message: string) => void
-  updateStatus?: (status: Record<string, unknown>) => void
+  updateStatus?: (status: FrontendBuildStatus) => void
 }
 
 type FrontendBuildCallback = (err: Error | null) => void
+
+function getErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || '')
+  return String(error || '')
+}
+
+function toError(error: unknown, fallback = 'frontend build failed'): Error {
+  return error instanceof Error ? error : new Error(getErrorMessage(error) || fallback)
+}
 
 function getFrontendDistAssetRefs(distDir = DIST_DIR): string[] {
   const indexFile = path.join(distDir, 'index.html')
@@ -49,12 +68,12 @@ function assertFrontendBuildSourceReady(feDir = FE_DIR) {
   }
 }
 
-function rollbackFrontendDist(distDir, backupDir) {
+function rollbackFrontendDist(distDir: string, backupDir: string): string {
   try { fs.rmSync(distDir, { recursive: true, force: true }) }
-  catch (e) { return 'remove incomplete dist failed: ' + e.message }
+  catch (e) { return 'remove incomplete dist failed: ' + getErrorMessage(e) }
   try {
     if (fs.existsSync(backupDir)) fs.renameSync(backupDir, distDir)
-  } catch (e) { return 'restore previous dist failed: ' + e.message }
+  } catch (e) { return 'restore previous dist failed: ' + getErrorMessage(e) }
   return ''
 }
 
@@ -74,14 +93,14 @@ function buildFrontendDist(options: FrontendBuildOptions = {}, callback?: Fronte
     fs.rmSync(backupDir, { recursive: true, force: true })
     if (fs.existsSync(distDir)) fs.renameSync(distDir, backupDir)
   } catch (e) {
-    if (updateStatus) updateStatus({ state: 'failed', message: 'frontend build preparation failed', detail: e.message, startedAt, finishedAt: Date.now() })
-    done(e)
+    if (updateStatus) updateStatus({ state: 'failed', message: 'frontend build preparation failed', detail: getErrorMessage(e), startedAt, finishedAt: Date.now() })
+    done(toError(e, 'frontend build preparation failed'))
     return false
   }
 
   if (updateStatus) updateStatus({ state: 'building', message: 'building', detail: '', startedAt, finishedAt: 0 })
   logFn('frontend build start: npm run build')
-  exec('npm run build', { cwd: feDir, timeout: 120000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+  exec('npm run build', { cwd: feDir, timeout: 120000, maxBuffer: 1024 * 1024 }, (err: ExecException | null, stdout: string, stderr: string) => {
     try {
       if (stdout) logFn(stdout.trim())
       if (stderr) logFn(stderr.trim())
@@ -104,8 +123,8 @@ function buildFrontendDist(options: FrontendBuildOptions = {}, callback?: Fronte
       logFn('frontend build success')
       done(null)
     } catch (e) {
-      if (updateStatus) updateStatus({ state: 'failed', message: 'frontend rebuild cleanup failed', detail: e.message, startedAt, finishedAt: Date.now() })
-      done(e)
+      if (updateStatus) updateStatus({ state: 'failed', message: 'frontend rebuild cleanup failed', detail: getErrorMessage(e), startedAt, finishedAt: Date.now() })
+      done(toError(e, 'frontend rebuild cleanup failed'))
     }
   })
   return true

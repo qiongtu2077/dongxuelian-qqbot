@@ -1,11 +1,13 @@
 'use strict'
 
-const fs = require('fs')
-const path = require('path')
-const { json, collectBody, parsePositiveInt } = require('../utils')
-const { requireAdmin } = require('../auth')
-const { AI_LIB, DATA_DIR } = require('../paths')
-const { isAgentPathInside } = require('../paths')
+import type { IncomingMessage, ServerResponse } from 'http'
+
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const { json, collectBody, parsePositiveInt } = require('../utils') as typeof import('../utils')
+const { requireAdmin } = require('../auth') as typeof import('../auth')
+const { AI_LIB, DATA_DIR } = require('../paths') as typeof import('../paths')
+const { isAgentPathInside } = require('../paths') as typeof import('../paths')
 
 const MAX_DOWNLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLOAD_BYTES, 256 * 1024 * 1024, 8 * 1024 * 1024, 2 * 1024 * 1024 * 1024)
 const MAX_AGENT_PREVIEW_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_AGENT_PREVIEW_MAX_BYTES, 512 * 1024, 64 * 1024, 2 * 1024 * 1024)
@@ -17,19 +19,253 @@ interface AgentWorkspaceListOptions {
   limit?: string | number
 }
 
-interface VoiceDiagnostics {
-  lastError?: {
-    code?: string
-  }
+type AgentPathGuardModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/path-guard')
+type ExistingAgentPath = Awaited<ReturnType<AgentPathGuardModule['assertExistingAgentPathInsideRoots']>>
+type NewAgentPath = Awaited<ReturnType<AgentPathGuardModule['assertNewAgentPathInsideRoots']>>
+
+type AgentWorkspaceFileType = 'dir' | 'file' | 'other'
+
+interface AgentWorkspaceFileItem {
+  path: string
+  rel: string
+  name: string
+  type: AgentWorkspaceFileType
+  size: number
+  mtimeMs: number
+  injectable: boolean
 }
 
-async function resolveAgentWorkspacePath(target) {
-  const guard = require(path.join(AI_LIB, 'agent', 'path-guard'))
+interface AgentWorkspaceListResult {
+  root: string
+  files: AgentWorkspaceFileItem[]
+}
+
+interface AgentFilePreview {
+  path: string
+  name: string
+  size: number
+  mtimeMs: number
+  binary: boolean
+  truncated: boolean
+  content: string
+}
+
+interface AgentEnvFileStatus {
+  name: string
+  exists: boolean
+  configured: boolean
+  size: number
+}
+
+interface AgentTaskResult extends Record<string, unknown> {
+  ok?: unknown
+  reply?: unknown
+  message?: unknown
+  error?: unknown
+  pendingId?: unknown
+  toolCalls?: unknown
+  warnings?: unknown
+}
+
+type AgentConfigModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/config')
+type AgentRegistryModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/tools/registry')
+type AgentSafetyModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/safety')
+type AgentStatsModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/stats')
+type AgentQueueModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/queue')
+type AgentSkillsModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/skills')
+type AgentPersonaContextModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/persona-context')
+type TtsModule = typeof import('koishi-plugin-dongxuelian-ai/lib/media/voice/tts')
+type TtsResourceModule = typeof import('koishi-plugin-dongxuelian-ai/lib/media/voice/tts-resource')
+type VoiceAssetsModule = typeof import('koishi-plugin-dongxuelian-ai/lib/media/voice/voice-assets')
+type PersonaModule = typeof import('koishi-plugin-dongxuelian-ai/lib/persona/persona')
+type RuntimeConfigModule = typeof import('koishi-plugin-dongxuelian-ai/lib/core/runtime-config')
+type ShellGuardModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/tools/shell-guard')
+type AgentPushModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/push')
+type AgentSessionModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/sessions')
+type AgentPlanStoreModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/plan/plan-store')
+type AgentPlanEngineModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/plan/plan-engine')
+type AgentCronModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/cron')
+type AgentWorkerSubmissionModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/worker-submission')
+type AgentWorkerPayloadModule = typeof import('koishi-plugin-dongxuelian-ai/lib/resource-workers/agent-payload')
+type AgentMessagesModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/messages')
+type AgentRouterModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/router')
+type AgentPendingModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/pending')
+type AgentTaskStoreModule = typeof import('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+type AgentPlanRunnerModule = typeof import('koishi-plugin-dongxuelian-ai/lib/agent/plan/plan-runner')
+type TtsOptions = NonNullable<Parameters<TtsModule['synthesizeSpeech']>[1]>
+type VoiceDiagnostics = NonNullable<TtsOptions['diagnostics']>
+type AgentConfigPatch = NonNullable<Parameters<AgentConfigModule['patchAgentConfig']>[0]>
+type AgentCreatePlanOptions = NonNullable<Parameters<AgentPlanEngineModule['createPlan']>[0]>
+type AgentCronCreateBody = Parameters<AgentCronModule['registerCron']>[0]
+interface DashboardPendingTool extends Record<string, unknown> {
+  id: string
+  toolName: string
+  userId: string
+  channelKey: string
+  channel: string
+}
+type DashboardPendingToolSnapshot = Record<string, unknown>
+
+type AgentConfigPutBody = AgentConfigPatch & {
+  config?: AgentConfigPatch
+  mode?: unknown
+}
+
+interface AgentPersonaPutBody extends Record<string, unknown> {
+  dashboardPersona?: unknown
+  qqInheritChatPersona?: unknown
+}
+
+interface TtsLogger {
+  warn(message: string): void
+}
+
+interface TtsResourceBusyResult {
+  decision?: unknown
+  reason?: unknown
+  resourceState?: unknown
+  botMode?: unknown
+}
+
+interface PersonaVoiceConfigEntry {
+  name: string
+  voice: string
+  voiceAssetId: string
+  style: string
+  hasSample: boolean
+}
+
+interface PersonaSkillFile {
+  file: string
+  content: string
+}
+
+interface TtsCloneBody extends Record<string, unknown> {
+  personaName?: unknown
+  audioBase64?: unknown
+  mimeType?: unknown
+  displayName?: unknown
+  description?: unknown
+  sampleText?: unknown
+  voiceStyle?: unknown
+}
+
+interface TtsPreviewBody extends Record<string, unknown> {
+  text?: unknown
+  voice?: unknown
+  style?: unknown
+  personaName?: unknown
+  persona?: unknown
+  voiceAssetId?: unknown
+}
+
+interface TtsCloneRenameBody extends Record<string, unknown> {
+  id?: unknown
+  oldName?: unknown
+  name?: unknown
+  displayName?: unknown
+  newName?: unknown
+  description?: unknown
+  sampleText?: unknown
+}
+
+interface TtsCloneDeleteBody extends Record<string, unknown> {
+  id?: unknown
+  name?: unknown
+  force?: unknown
+}
+
+interface PersonaVoicePutBody extends Record<string, unknown> {
+  personaName?: unknown
+  voiceId?: unknown
+  voiceStyle?: unknown
+  voiceAssetId?: unknown
+}
+
+interface AgentFileUploadBody extends Record<string, unknown> {
+  root?: unknown
+  name?: unknown
+  content?: unknown
+}
+
+interface AgentPlanCreateBody extends Record<string, unknown> {
+  goal?: unknown
+  title?: unknown
+  tasks?: unknown
+  userId?: unknown
+  userName?: unknown
+}
+
+interface AgentChatBody extends Record<string, unknown> {
+  message?: unknown
+  userName?: unknown
+  userId?: unknown
+  history?: unknown
+  enableThinking?: unknown
+  agentMode?: unknown
+}
+
+interface AgentConfirmBody extends Record<string, unknown> {
+  pendingId?: unknown
+}
+
+interface AgentRejectBody extends Record<string, unknown> {
+  pendingId?: unknown
+}
+
+interface AgentPlanResumeBody extends Record<string, unknown> {
+  userId?: unknown
+  userName?: unknown
+}
+
+interface AgentPlanAbandonBody extends Record<string, unknown> {
+  reason?: unknown
+}
+
+type AgentRouteHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+  url: URL
+) => void | Promise<void>
+
+type AgentRegexRouteHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  match: RegExpMatchArray,
+  pathname: string,
+  url: URL
+) => void | Promise<void>
+
+interface AgentRegexRoute {
+  pattern: RegExp
+  method: string
+  handler: AgentRegexRouteHandler
+}
+
+interface DashboardAgentTask {
+  id?: unknown
+  kind?: unknown
+  status?: unknown
+  source?: unknown
+  channelKey?: unknown
+  userId?: unknown
+  step?: unknown
+  createdAt?: unknown
+  updatedAt?: unknown
+  startedAt?: unknown
+  finishedAt?: unknown
+  error?: unknown
+  notify?: unknown
+}
+
+async function resolveAgentWorkspacePath(target: unknown): Promise<ExistingAgentPath> {
+  const guard = require(path.join(AI_LIB, 'agent', 'path-guard')) as AgentPathGuardModule
   return guard.assertExistingAgentPathInsideRoots(String(target || ''), '路径')
 }
 
-async function resolveAgentUploadTarget(root, name) {
-  const guard = require(path.join(AI_LIB, 'agent', 'path-guard'))
+async function resolveAgentUploadTarget(root: unknown, name: unknown): Promise<NewAgentPath> {
+  const guard = require(path.join(AI_LIB, 'agent', 'path-guard')) as AgentPathGuardModule
   const base = String(root || '').trim() || await guard.resolveAgentDefaultRoot()
   const safeName = path.basename(String(name || '').replace(/[\\/:*?"<>|]+/g, '_')).slice(0, 160)
   if (!safeName) throw new Error('文件名不能为空')
@@ -37,8 +273,8 @@ async function resolveAgentUploadTarget(root, name) {
   return guard.assertNewAgentPathInsideRoots(target, '上传文件', true)
 }
 
-async function listAgentWorkspaceFiles({ root, query = '', limit = 120 }: AgentWorkspaceListOptions = {}) {
-  const guard = require(path.join(AI_LIB, 'agent', 'path-guard'))
+async function listAgentWorkspaceFiles({ root, query = '', limit = 120 }: AgentWorkspaceListOptions = {}): Promise<AgentWorkspaceListResult> {
+  const guard = require(path.join(AI_LIB, 'agent', 'path-guard')) as AgentPathGuardModule
   const base = root ? String(root) : await guard.resolveAgentDefaultRoot()
   const { abs } = await guard.assertExistingAgentPathInsideRoots(base, '目录')
   const stat = await fs.promises.stat(abs)
@@ -46,8 +282,8 @@ async function listAgentWorkspaceFiles({ root, query = '', limit = 120 }: AgentW
   const max = Math.max(1, Math.min(300, parseInt(String(limit), 10) || 120))
   const needle = String(query || '').trim().toLowerCase()
   const ignored = new Set(['.git', 'node_modules', 'dist', 'dist-portable', 'tmp'])
-  const items = []
-  async function walk(dir, depth) {
+  const items: AgentWorkspaceFileItem[] = []
+  async function walk(dir: string, depth: number): Promise<void> {
     if (items.length >= max || depth > 4) return
     const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [])
     for (const entry of entries) {
@@ -74,7 +310,7 @@ async function listAgentWorkspaceFiles({ root, query = '', limit = 120 }: AgentW
   return { root: abs, files: items }
 }
 
-async function previewAgentWorkspaceFile(target) {
+async function previewAgentWorkspaceFile(target: unknown): Promise<AgentFilePreview> {
   const { abs } = await resolveAgentWorkspacePath(target)
   const stat = await fs.promises.stat(abs)
   if (!stat.isFile()) throw new Error('不是文件：' + abs)
@@ -88,14 +324,14 @@ async function previewAgentWorkspaceFile(target) {
   return meta
 }
 
-async function getAgentEffectiveReadRoots() {
-  const guard = require(path.join(AI_LIB, 'agent', 'path-guard'))
+async function getAgentEffectiveReadRoots(): Promise<string[]> {
+  const guard = require(path.join(AI_LIB, 'agent', 'path-guard')) as AgentPathGuardModule
   return guard.getAgentPathAllowedRoots()
 }
 
-function getAgentEnvStatus() {
-  const constants = require(path.join(AI_LIB, 'core', 'constants'))
-  const files = [
+function getAgentEnvStatus(): AgentEnvFileStatus[] {
+  const constants = require(path.join(AI_LIB, 'core', 'constants')) as typeof import('koishi-plugin-dongxuelian-ai/lib/core/constants')
+  const files: Array<[string, string]> = [
     ['ai-openai-key.txt', constants.KEY_FILE],
     ['ai-deepseek-key.txt', constants.DEEPSEEK_KEY_FILE],
     ['ai-dashscope-key.txt', constants.DASHSCOPE_KEY_FILE],
@@ -118,15 +354,15 @@ function getAgentEnvStatus() {
   })
 }
 
-function readAgentTaskResult(taskId) {
+function readAgentTaskResult(taskId: unknown): AgentTaskResult {
   try {
-    return require(path.join(AI_LIB, 'resource-workers', 'result-notifier')).readTaskResult(String(taskId || ''))
+    return (require(path.join(AI_LIB, 'resource-workers', 'result-notifier')) as typeof import('koishi-plugin-dongxuelian-ai/lib/resource-workers/result-notifier')).readTaskResult(String(taskId || ''))
   } catch {
     return {}
   }
 }
 
-function sanitizeAgentTaskForDashboard(task, result: any = {}) {
+function sanitizeAgentTaskForDashboard(task: DashboardAgentTask | null | undefined, result: AgentTaskResult = {}) {
   if (!task) return null
   return {
     id: task.id,
@@ -154,17 +390,35 @@ function sanitizeAgentTaskForDashboard(task, result: any = {}) {
   }
 }
 
+function getErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || '')
+  return String(error || '')
+}
+
+function getLegacyErrorMessage(error: unknown): unknown {
+  return (error as { message?: unknown } | null | undefined)?.message
+}
+
+function toDashboardPendingSnapshot(value: unknown): DashboardPendingToolSnapshot | null {
+  if (!value || typeof value !== 'object') return null
+  return value as DashboardPendingToolSnapshot
+}
+
+function toObjectSpreadSource(value: unknown): object {
+  return value == null ? {} : Object(value)
+}
+
 // --- Route Handlers ---
 
-async function handleGetAgentConfig(req, res) {
+async function handleGetAgentConfig(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!requireAdmin(req, res)) return
   try {
-    const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig(true)
-    const registry = require(path.join(AI_LIB, 'agent', 'tools', 'registry'))
-    const safety = require(path.join(AI_LIB, 'agent', 'safety'))
-    const stats = require(path.join(AI_LIB, 'agent', 'stats')).getStats()
-    const skills = require(path.join(AI_LIB, 'agent', 'skills')).listAgentSkills()
-    const personas = require(path.join(AI_LIB, 'agent', 'persona-context')).listAgentPersonasForConsole()
+    const agentConfig = (require(path.join(AI_LIB, 'agent', 'config')) as AgentConfigModule).getAgentConfig(true)
+    const registry = require(path.join(AI_LIB, 'agent', 'tools', 'registry')) as AgentRegistryModule
+    const safety = require(path.join(AI_LIB, 'agent', 'safety')) as AgentSafetyModule
+    const stats = (require(path.join(AI_LIB, 'agent', 'stats')) as AgentStatsModule).getStats()
+    const skills = (require(path.join(AI_LIB, 'agent', 'skills')) as AgentSkillsModule).listAgentSkills()
+    const personas = (require(path.join(AI_LIB, 'agent', 'persona-context')) as AgentPersonaContextModule).listAgentPersonasForConsole()
     const effectiveReadRoots = await getAgentEffectiveReadRoots()
     const qqEnabledTools = new Set(registry.getToolDefinitions('qq').map(item => item.function.name))
     const dashboardEnabledTools = new Set(registry.getToolDefinitions('dashboard').map(item => item.function.name))
@@ -172,43 +426,43 @@ async function handleGetAgentConfig(req, res) {
       ...tool, qqEnabled: qqEnabledTools.has(tool.name), dashboardEnabled: dashboardEnabledTools.has(tool.name),
     }))
     return json(res, { ok: true, config: agentConfig, mode: safety.getMode(), stats, tools, skills, personas, effectiveReadRoots })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
-async function handlePutAgentConfig(req, res) {
+async function handlePutAgentConfig(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const data = JSON.parse(body || '{}')
-      const agentConfig = require(path.join(AI_LIB, 'agent', 'config'))
-      const safety = require(path.join(AI_LIB, 'agent', 'safety'))
+      const data = JSON.parse(body || '{}') as AgentConfigPutBody
+      const agentConfig = require(path.join(AI_LIB, 'agent', 'config')) as AgentConfigModule
+      const safety = require(path.join(AI_LIB, 'agent', 'safety')) as AgentSafetyModule
       // L43: AgentPanel 只提交可见字段，必须用 patch/merge 保留未提交的 queue/cron/memory/planMode/push，
       // 否则保存工具开关或 MCP 时会把这些隐藏高级配置静默重置为默认值。
       const saved = await agentConfig.patchAgentConfig(data.config || data)
       if (data.mode) await safety.setMode(data.mode)
       return json(res, { ok: true, config: saved, mode: safety.getMode(), message: 'Agent 配置已更新' })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetAgentPersonas(req, res) {
+function handleGetAgentPersonas(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   try {
-    const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig(true)
-    const personas = require(path.join(AI_LIB, 'agent', 'persona-context')).listAgentPersonasForConsole()
+    const agentConfig = (require(path.join(AI_LIB, 'agent', 'config')) as AgentConfigModule).getAgentConfig(true)
+    const personas = (require(path.join(AI_LIB, 'agent', 'persona-context')) as AgentPersonaContextModule).listAgentPersonasForConsole()
     return json(res, { ok: true, personas, persona: agentConfig.persona || { dashboardPersona: '', qqInheritChatPersona: true } })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
-function handlePutAgentPersona(req, res) {
+function handlePutAgentPersona(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const data = JSON.parse(body || '{}')
-      const agentConfig = require(path.join(AI_LIB, 'agent', 'config'))
+      const data = JSON.parse(body || '{}') as AgentPersonaPutBody
+      const agentConfig = require(path.join(AI_LIB, 'agent', 'config')) as AgentConfigModule
       const current = agentConfig.getAgentConfig()
       const personaName = String(data.dashboardPersona || '').trim()
-      const personas = require(path.join(AI_LIB, 'agent', 'persona-context')).listAgentPersonasForConsole()
+      const personas = (require(path.join(AI_LIB, 'agent', 'persona-context')) as AgentPersonaContextModule).listAgentPersonasForConsole()
       if (personaName && !personas.some(item => item.name === personaName)) return json(res, { ok: false, message: '未知人格：' + personaName }, 400)
       current.persona = {
         dashboardPersona: personaName,
@@ -216,29 +470,29 @@ function handlePutAgentPersona(req, res) {
       }
       const saved = await agentConfig.saveAgentConfig(current)
       return json(res, { ok: true, persona: saved.persona, message: 'Agent 人格已更新' })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function getTtsModule() {
-  return require(path.join(AI_LIB, 'media', 'voice', 'tts'))
+function getTtsModule(): TtsModule {
+  return require(path.join(AI_LIB, 'media', 'voice', 'tts')) as TtsModule
 }
 
 // 读取 AI 插件中的 TTS 资源门控模块，Dashboard 侧跨进程复用同一 S0/S1 状态。
-function getTtsResourceModule() {
-  return require(path.join(AI_LIB, 'media', 'voice', 'tts-resource'))
+function getTtsResourceModule(): TtsResourceModule {
+  return require(path.join(AI_LIB, 'media', 'voice', 'tts-resource')) as TtsResourceModule
 }
 
-function getTtsLogger() {
+function getTtsLogger(): TtsLogger {
   return {
-    warn(message) {
+    warn(message: string): void {
       console.warn(`[dashboard] ${message}`)
     },
   }
 }
 
 // 将 TTS 资源门控拒绝结果转成 Dashboard API 的结构化低成本响应。
-function buildTtsResourceBusyPayload(result) {
+function buildTtsResourceBusyPayload(result: TtsResourceBusyResult | null | undefined) {
   return {
     ok: false,
     message: '当前资源正忙，语音合成稍后再试',
@@ -250,35 +504,36 @@ function buildTtsResourceBusyPayload(result) {
   }
 }
 
-function getVoiceAssetsModule() {
-  return require(path.join(AI_LIB, 'media', 'voice', 'voice-assets'))
+function getVoiceAssetsModule(): VoiceAssetsModule {
+  return require(path.join(AI_LIB, 'media', 'voice', 'voice-assets')) as VoiceAssetsModule
 }
 
-function getPersonaModule() {
-  return require(path.join(AI_LIB, 'persona', 'persona'))
+function getPersonaModule(): PersonaModule {
+  return require(path.join(AI_LIB, 'persona', 'persona')) as PersonaModule
 }
 
-function getPersonaVoiceConfigs() {
+function getPersonaVoiceConfigs(): PersonaVoiceConfigEntry[] {
   const personaModule = getPersonaModule()
   const personas = personaModule.getAvailablePersonals({ userFacing: true })
   return personas.map(p => {
-    const content = personaModule.loadPersonalSkill(p.name)
+    const name = p.name as string
+    const content = personaModule.loadPersonalSkill(name)
     const meta = content ? personaModule.parsePersonaFrontmatter(content) : {}
     return {
-      name: p.name,
-      voice: meta.voice_id || meta.voice || '',
-      voiceAssetId: meta.voice_asset_id || '',
-      style: meta.voice_style || '',
+      name,
+      voice: (meta.voice_id || meta.voice || '') as string,
+      voiceAssetId: (meta.voice_asset_id || '') as string,
+      style: (meta.voice_style || '') as string,
       hasSample: false,
     }
   })
 }
 
-function findPersonaSkillFile(personaName, personaModule = getPersonaModule()) {
-  const searchDirs = ['personas', 'core', 'modes'].map(d => path.join(DATA_DIR, 'ai-skills', d))
+function findPersonaSkillFile(personaName: unknown, personaModule: PersonaModule = getPersonaModule()): PersonaSkillFile | null {
+  const searchDirs = ['personas', 'core', 'modes'].map((d: string) => path.join(DATA_DIR, 'ai-skills', d))
   for (const skillsDir of searchDirs) {
     if (!fs.existsSync(skillsDir)) continue
-    const entries = fs.readdirSync(skillsDir)
+    const entries = fs.readdirSync(skillsDir) as string[]
     for (const entry of entries) {
       if (!/^SKILL(\.[^.]+)?\.md$/i.test(entry)) continue
       const fp = path.join(skillsDir, entry)
@@ -290,11 +545,11 @@ function findPersonaSkillFile(personaName, personaModule = getPersonaModule()) {
   return null
 }
 
-function cleanFrontmatterValue(value, fallback = '', maxLength = 240) {
+function cleanFrontmatterValue(value: unknown, fallback = '', maxLength = 240): string {
   return String(value || fallback).replace(/[\r\n]+/g, ' ').trim().slice(0, maxLength)
 }
 
-function writePersonaVoiceConfig(personaName, voiceId, voiceStyle, voiceAssetId = '') {
+function writePersonaVoiceConfig(personaName: unknown, voiceId: unknown, voiceStyle: unknown, voiceAssetId: unknown = ''): string | null {
   const personaModule = getPersonaModule()
   const target = findPersonaSkillFile(personaName, personaModule)
   if (!target) return null
@@ -319,7 +574,7 @@ function writePersonaVoiceConfig(personaName, voiceId, voiceStyle, voiceAssetId 
   return target.file
 }
 
-function handleGetTtsVoices(req, res) {
+function handleGetTtsVoices(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   try {
     const tts = getTtsModule()
@@ -345,17 +600,17 @@ function handleGetTtsVoices(req, res) {
         return { ...asset, referencedBy, isCurrent: referencedBy.length > 0, boundPersona: asset.personaName }
       }),
     })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
-function handlePostTtsClone(req, res) {
+function handlePostTtsClone(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const data = JSON.parse(body || '{}')
+      const data = JSON.parse(body || '{}') as TtsCloneBody
       const { personaName, audioBase64, mimeType, displayName, description, sampleText } = data
       if (!personaName || !audioBase64) return json(res, { ok: false, message: '缺少 personaName 或 audioBase64' }, 400)
-      const buf = Buffer.from(audioBase64, 'base64')
+      const buf = Buffer.from(audioBase64 as string, 'base64')
       if (buf.length > MAX_TTS_CLONE_AUDIO_BYTES) return json(res, { ok: false, message: `音频文件超过 ${Math.floor(MAX_TTS_CLONE_AUDIO_BYTES / 1024 / 1024)}MB 限制` }, 400)
       if (buf.length < 1024) return json(res, { ok: false, message: '音频文件过小，可能无效' }, 400)
       const voiceAssets = getVoiceAssetsModule()
@@ -403,23 +658,23 @@ function handlePostTtsClone(req, res) {
         writePersonaVoiceConfig(personaName, '__cloned__', data.voiceStyle || '', asset.id)
       } catch { /* non-critical: voice config best effort */ }
       return json(res, { ok: true, message: '音色克隆成功', file: filename, asset })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
   })
 }
 
-function handlePostTtsPreview(req, res) {
+function handlePostTtsPreview(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const data = JSON.parse(body || '{}')
+      const data = JSON.parse(body || '{}') as TtsPreviewBody
       const { text, voice, style, personaName, voiceAssetId } = data
       if (!text) return json(res, { ok: false, message: '缺少 text' }, 400)
       const tts = getTtsModule()
       const hasExplicitVoice = !!voice
-      let resolvedVoice = voice || '冰糖'
-      let resolvedStyle = style || ''
+      let resolvedVoice: unknown = voice || '冰糖'
+      let resolvedStyle: unknown = style || ''
       if (resolvedVoice === '__cloned__') {
-        let pName = personaName || data.persona || ''
+        let pName: unknown = personaName || data.persona || ''
         if (voiceAssetId) {
           const voiceAssets = getVoiceAssetsModule()
           const sample = voiceAssets.resolveVoiceSampleFile(pName, voiceAssetId)
@@ -430,10 +685,11 @@ function handlePostTtsPreview(req, res) {
             const personaModule = getPersonaModule()
             const personas = personaModule.getAvailablePersonals({ userFacing: true })
             for (const p of personas) {
-              const c = personaModule.loadPersonalSkill(p.name)
+              const candidateName = String(p.name || '')
+              const c = personaModule.loadPersonalSkill(candidateName)
               if (c) {
                 const m = personaModule.parsePersonaFrontmatter(c)
-                if (m.voice_id === '__cloned__') { pName = p.name; break }
+                if (m.voice_id === '__cloned__') { pName = candidateName; break }
               }
             }
           } catch { /* non-critical: persona scan fallback */ }
@@ -463,22 +719,22 @@ function handlePostTtsPreview(req, res) {
         context: 'dashboard-tts-preview',
         waitTimeoutMs: 3000,
         logger: getTtsLogger(),
-        run: () => tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice, style: resolvedStyle, diagnostics, logger: getTtsLogger(), context: 'dashboard:tts-preview' }),
+        run: () => tts.synthesizeSpeech(String(text).slice(0, 200), { voice: resolvedVoice as string, style: resolvedStyle, diagnostics, logger: getTtsLogger(), context: 'dashboard:tts-preview' }),
       })
       if (!ttsResult.ok) return json(res, buildTtsResourceBusyPayload(ttsResult), 503)
       const buf = ttsResult.value
       if (!buf) return json(res, { ok: false, message: '语音合成失败，请检查 API key 或网络', reason: diagnostics.lastError?.code || 'unknown' }, 500)
       const mimeType = tts.detectAudioMime(buf) || buf.mimeType || 'audio/wav'
       return json(res, { ok: true, audio: buf.toString('base64'), format: mimeType.split('/')[1] || 'wav', mimeType })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
   })
 }
 
-function handlePostTtsCloneRename(req, res) {
+function handlePostTtsCloneRename(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const data = JSON.parse(body || '{}')
+      const data = JSON.parse(body || '{}') as TtsCloneRenameBody
       const assetId = data.id || data.oldName || data.name
       const displayName = data.displayName || data.newName
       if (!assetId || !displayName) return json(res, { ok: false, message: '缺少音色 ID 或显示名' }, 400)
@@ -490,15 +746,15 @@ function handlePostTtsCloneRename(req, res) {
       }, getPersonaVoiceConfigs())
       if (!asset) return json(res, { ok: false, message: '未找到音色资产：' + assetId }, 404)
       return json(res, { ok: true, message: '音色信息已更新', asset })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
   })
 }
 
-function handlePostTtsCloneDelete(req, res) {
+function handlePostTtsCloneDelete(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const data = JSON.parse(body || '{}')
+      const data = JSON.parse(body || '{}') as TtsCloneDeleteBody
       const assetId = data.id || data.name
       if (!assetId) return json(res, { ok: false, message: '缺少音色 ID' }, 400)
       const voiceAssets = getVoiceAssetsModule()
@@ -521,15 +777,15 @@ function handlePostTtsCloneDelete(req, res) {
         writePersonaVoiceConfig(vc.name, '冰糖', vc.style || '')
       }
       return json(res, { ok: true, message: '删除成功', deleted: result.deleted, asset: result.asset })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
   })
 }
 
-function handlePutPersonaVoice(req, res) {
+function handlePutPersonaVoice(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const { personaName, voiceId, voiceStyle, voiceAssetId } = JSON.parse(body || '{}')
+      const { personaName, voiceId, voiceStyle, voiceAssetId } = JSON.parse(body || '{}') as PersonaVoicePutBody
       if (!personaName) return json(res, { ok: false, message: '缺少 personaName' }, 400)
       const nextVoice = voiceId || '冰糖'
       if (nextVoice === '__cloned__') {
@@ -540,27 +796,27 @@ function handlePutPersonaVoice(req, res) {
       const targetFile = writePersonaVoiceConfig(personaName, nextVoice, voiceStyle || '', voiceAssetId || '')
       if (!targetFile) return json(res, { ok: false, message: '未找到人格文件' }, 404)
       return json(res, { ok: true, message: '音色配置已更新' })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
   })
 }
 
-function handleGetAgentStats(req, res) {
+function handleGetAgentStats(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   try {
-    const stats = require(path.join(AI_LIB, 'agent', 'stats')).getStats()
+    const stats = (require(path.join(AI_LIB, 'agent', 'stats')) as AgentStatsModule).getStats()
     return json(res, { ok: true, stats })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
-function handleGetAgentQueue(req, res) {
+function handleGetAgentQueue(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   try {
-    const queue = require(path.join(AI_LIB, 'agent', 'queue')).getAgentQueueStats()
+    const queue = (require(path.join(AI_LIB, 'agent', 'queue')) as AgentQueueModule).getAgentQueueStats()
     return json(res, { ok: true, queue })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
-async function handleGetAgentFiles(req, res, pathname, url) {
+async function handleGetAgentFiles(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): Promise<void> {
   if (!requireAdmin(req, res)) return
   try {
     const query = url.searchParams.get('q') || ''
@@ -568,18 +824,18 @@ async function handleGetAgentFiles(req, res, pathname, url) {
     const limit = url.searchParams.get('limit') || 120
     const result = await listAgentWorkspaceFiles({ root, query, limit })
     return json(res, { ok: true, ...result })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
 }
 
-async function handleGetAgentFile(req, res, pathname, url) {
+async function handleGetAgentFile(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): Promise<void> {
   if (!requireAdmin(req, res)) return
   try {
     const file = url.searchParams.get('path') || ''
     return json(res, { ok: true, file: await previewAgentWorkspaceFile(file) })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
 }
 
-async function handleGetAgentFileDownload(req, res, pathname, url) {
+async function handleGetAgentFileDownload(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): Promise<void> {
   if (!requireAdmin(req, res)) return
   try {
     const { abs } = await resolveAgentWorkspacePath(url.searchParams.get('path') || '')
@@ -591,14 +847,14 @@ async function handleGetAgentFileDownload(req, res, pathname, url) {
       'Content-Disposition': `attachment; filename="${encodeURIComponent(path.basename(abs))}"`,
     })
     fs.createReadStream(abs).pipe(res)
-  } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
 }
 
-function handlePostAgentFileUpload(req, res) {
+function handlePostAgentFileUpload(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const data = JSON.parse(body || '{}')
+      const data = JSON.parse(body || '{}') as AgentFileUploadBody
       const content = String(data.content || '')
       if (Buffer.byteLength(content, 'utf8') > 1024 * 1024) return json(res, { ok: false, message: '上传文件过大' }, 413)
       if (content.length > 2 * 1024 * 1024) return json(res, { ok: false, message: '上传文件过大' }, 413)
@@ -606,49 +862,49 @@ function handlePostAgentFileUpload(req, res) {
       await fs.promises.mkdir(path.dirname(abs), { recursive: true })
       await fs.promises.writeFile(abs, content, 'utf8')
       return json(res, { ok: true, file: { path: abs, name: path.basename(abs), size: Buffer.byteLength(content) } })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-async function handleGetAgentEnv(req, res) {
+async function handleGetAgentEnv(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!requireAdmin(req, res)) return
   try {
-    const runtime = await require(path.join(AI_LIB, 'core', 'runtime-config')).loadConfig(true)
+    const runtime = await (require(path.join(AI_LIB, 'core', 'runtime-config')) as RuntimeConfigModule).loadConfig(true)
     return json(res, {
       ok: true,
       env: getAgentEnvStatus(),
       runtime: { provider: runtime.provider, model: runtime.model, baseURL: runtime.baseURL, apiKeyConfigured: !!runtime.apiKey, searchEnabled: !!runtime.searchEnabled },
     })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
-function handleGetAgentShellGuard(req, res) {
+function handleGetAgentShellGuard(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   try {
-    const guard = require(path.join(AI_LIB, 'agent', 'tools', 'shell-guard'))
+    const guard = require(path.join(AI_LIB, 'agent', 'tools', 'shell-guard')) as ShellGuardModule
     const categories = guard.listShellGuardRules()
     const ruleCount = categories.reduce((sum, item) => sum + item.count, 0)
     return json(res, { ok: true, enabled: true, ruleCount, categories })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
-async function handleGetAgentPlans(req, res) {
+async function handleGetAgentPlans(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!requireAdmin(req, res)) return
   try {
-    const plans = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-store')).listPlans(80)
+    const plans = await (require(path.join(AI_LIB, 'agent', 'plan', 'plan-store')) as AgentPlanStoreModule).listPlans(80)
     return json(res, { ok: true, plans })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
-function handlePostAgentPlans(req, res) {
+function handlePostAgentPlans(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const data = JSON.parse(body || '{}')
+      const data = JSON.parse(body || '{}') as AgentPlanCreateBody
       const goal = String(data.goal || data.title || '').trim()
-      const rawTasks = Array.isArray(data.tasks) ? data.tasks : []
+      const rawTasks: unknown[] = Array.isArray(data.tasks) ? data.tasks : []
       if (!goal && rawTasks.length === 0) return json(res, { ok: false, message: '计划目标不能为空。' }, 400)
-      const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig()
+      const agentConfig = (require(path.join(AI_LIB, 'agent', 'config')) as AgentConfigModule).getAgentConfig()
       if (!agentConfig.planMode?.enabled) return json(res, { ok: false, message: '计划模式当前未开启。' }, 400)
       const tasks = rawTasks.length
         ? rawTasks.map(item => typeof item === 'string' ? { desc: item } : item)
@@ -656,66 +912,67 @@ function handlePostAgentPlans(req, res) {
       const fallbackTasks = tasks.length >= 2 ? tasks : [
         { desc: `理解目标：${goal}` }, { desc: '收集必要信息并执行可用工具' }, { desc: '整理结果并汇报完成状态' },
       ]
-      const plan = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-engine')).createPlan({
+      const createOptions: AgentCreatePlanOptions = {
         title: goal.slice(0, 80) || 'Dashboard Agent 计划', tasks: fallbackTasks, channel: 'dashboard',
         channelKey: 'dashboard', userId: String(data.userId || 'dashboard'), userName: String(data.userName || 'Dashboard'),
-      })
+      }
+      const plan = await (require(path.join(AI_LIB, 'agent', 'plan', 'plan-engine')) as AgentPlanEngineModule).createPlan(createOptions)
       return json(res, { ok: true, plan })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetAgentPushLog(req, res) {
+function handleGetAgentPushLog(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   try {
-    const pushLog = require(path.join(AI_LIB, 'agent', 'push')).listPushLog(80)
+    const pushLog = (require(path.join(AI_LIB, 'agent', 'push')) as AgentPushModule).listPushLog(80)
     return json(res, { ok: true, log: pushLog })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
-async function handleGetAgentCrons(req, res) {
+async function handleGetAgentCrons(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!requireAdmin(req, res)) return
   try {
-    const cron = require(path.join(AI_LIB, 'agent', 'cron'))
+    const cron = require(path.join(AI_LIB, 'agent', 'cron')) as AgentCronModule
     const data = await cron.loadCrons()
     const history = await cron.listCronHistory(50)
     return json(res, { ok: true, crons: data.crons, history })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
-function handlePostAgentCrons(req, res) {
+function handlePostAgentCrons(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const data = JSON.parse(body || '{}')
-      const cron = await require(path.join(AI_LIB, 'agent', 'cron')).registerCron(data)
+      const data = JSON.parse(body || '{}') as AgentCronCreateBody
+      const cron = await (require(path.join(AI_LIB, 'agent', 'cron')) as AgentCronModule).registerCron(data)
       return json(res, { ok: true, cron })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetAgentSessions(req, res) {
+function handleGetAgentSessions(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   try {
-    const sessions = require(path.join(AI_LIB, 'agent', 'sessions')).listAgentSessions()
+    const sessions = (require(path.join(AI_LIB, 'agent', 'sessions')) as AgentSessionModule).listAgentSessions()
     return json(res, { ok: true, sessions })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
-function handlePostAgentChat(req, res) {
+function handlePostAgentChat(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const data = JSON.parse(body || '{}')
+      const data = JSON.parse(body || '{}') as AgentChatBody
       const message = String(data.message || '').trim()
       const enableThinking = !!data.enableThinking
       const agentMode = !!data.agentMode
       if (!message) return json(res, { ok: false, message: '消息不能为空' }, 400)
-      const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig()
-      const workerSubmission = require(path.join(AI_LIB, 'agent', 'worker-submission'))
-      const agentPayload = require(path.join(AI_LIB, 'resource-workers', 'agent-payload'))
-      const history = require(path.join(AI_LIB, 'agent', 'messages')).sanitizeAgentHistory(data.history)
-      const searchRunOptions = require(path.join(AI_LIB, 'agent', 'router')).buildExplicitSearchRunOptions(message)
+      const agentConfig = (require(path.join(AI_LIB, 'agent', 'config')) as AgentConfigModule).getAgentConfig()
+      const workerSubmission = require(path.join(AI_LIB, 'agent', 'worker-submission')) as AgentWorkerSubmissionModule
+      const agentPayload = require(path.join(AI_LIB, 'resource-workers', 'agent-payload')) as AgentWorkerPayloadModule
+      const history = (require(path.join(AI_LIB, 'agent', 'messages')) as AgentMessagesModule).sanitizeAgentHistory(data.history)
+      const searchRunOptions = (require(path.join(AI_LIB, 'agent', 'router')) as AgentRouterModule).buildExplicitSearchRunOptions(message)
       const agentRunInput = {
         userMessage: message, userName: String(data.userName || 'Dashboard'), userId: String(data.userId || 'dashboard'),
         channelKey: 'dashboard', channel: 'dashboard', history, enableThinking, agentMode, ...searchRunOptions,
@@ -736,24 +993,29 @@ function handlePostAgentChat(req, res) {
         status: submission.accepted ? 'accepted' : 'blocked',
         message: submission.message,
       }, submission.status || 202)
-    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
   })
 }
 
-function handlePostAgentConfirm(req, res) {
+function handlePostAgentConfirm(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const pending = require(path.join(AI_LIB, 'agent', 'pending'))
-      const data = JSON.parse(body || '{}')
+      const pending = require(path.join(AI_LIB, 'agent', 'pending')) as AgentPendingModule
+      const data = JSON.parse(body || '{}') as AgentConfirmBody
       const expectedId = String(data.pendingId || '')
-      const findPendingById = pending.findPendingToolById || pending.getPendingToolById || (id => (pending.listPendingTools && pending.listPendingTools().find(item => item.id === id)) || null)
-      const p = expectedId ? findPendingById(expectedId) : pending.getPendingTool('dashboard', 'dashboard')
+      const directFindPendingById = pending.findPendingToolById || pending.getPendingToolById
+      const p = expectedId
+        ? directFindPendingById
+          ? directFindPendingById(expectedId)
+          : pending.listPendingTools().find(candidate => candidate.id === expectedId) || null
+        : pending.getPendingTool('dashboard', 'dashboard')
       if (!p) return json(res, { ok: false, message: '没有待确认工具' }, 404)
-      const workerSubmission = require(path.join(AI_LIB, 'agent', 'worker-submission'))
-      const agentPayload = require(path.join(AI_LIB, 'resource-workers', 'agent-payload'))
-      const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig()
+      const workerSubmission = require(path.join(AI_LIB, 'agent', 'worker-submission')) as AgentWorkerSubmissionModule
+      const agentPayload = require(path.join(AI_LIB, 'resource-workers', 'agent-payload')) as AgentWorkerPayloadModule
+      const agentConfig = (require(path.join(AI_LIB, 'agent', 'config')) as AgentConfigModule).getAgentConfig()
       const resumeInput = { channelKey: p.channelKey, userId: p.userId, channel: p.channel || 'dashboard', expectedId }
+      const pendingSnapshot = toDashboardPendingSnapshot(p)
       const submission = workerSubmission.submitAgentWorkerTask({
         channel: p.channel || 'dashboard',
         channelKey: p.channelKey,
@@ -761,7 +1023,7 @@ function handlePostAgentConfirm(req, res) {
         timeoutMs: agentConfig.queue?.timeoutMs,
         maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
         source: 'dashboard-standalone',
-        payload: { entry: 'dashboard-agent-confirm', pendingId: expectedId, agentWorker: agentPayload.createAgentResumeWorkerPayload('dashboard-agent-confirm', resumeInput, p) },
+        payload: { entry: 'dashboard-agent-confirm', pendingId: expectedId, agentWorker: agentPayload.createAgentResumeWorkerPayload('dashboard-agent-confirm', resumeInput, pendingSnapshot) },
       })
       return json(res, {
         ok: submission.accepted,
@@ -771,22 +1033,22 @@ function handlePostAgentConfirm(req, res) {
         status: submission.accepted ? 'accepted' : 'blocked',
         message: submission.message,
       }, submission.status || 202)
-    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
   })
 }
 
-function handlePostAgentReject(req, res) {
+function handlePostAgentReject(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
-      const pending = require(path.join(AI_LIB, 'agent', 'pending'))
-      const data = JSON.parse(body || '{}')
+      const pending = require(path.join(AI_LIB, 'agent', 'pending')) as AgentPendingModule
+      const data = JSON.parse(body || '{}') as AgentRejectBody
       const pendingId = String(data.pendingId || '')
       if (!pendingId) return json(res, { ok: false, message: 'pendingId 不能为空' }, 400)
       const ok = pending.clearPendingToolById(pendingId)
       if (!ok) return json(res, { ok: false, message: '没有匹配的待确认工具' }, 404)
       return json(res, { ok: true, message: '已拒绝工具请求' })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
   })
 }
 
@@ -820,75 +1082,75 @@ const routes = {
   'POST /dashboard/api/agent/chat': handlePostAgentChat,
   'POST /dashboard/api/agent/confirm': handlePostAgentConfirm,
   'POST /dashboard/api/agent/reject': handlePostAgentReject,
-}
+} satisfies Record<string, AgentRouteHandler>
 
-const regexRoutes = [
+const regexRoutes: AgentRegexRoute[] = [
   { pattern: /^\/dashboard\/api\/agent\/plans\/([^/]+)$/, method: 'GET', handler: async (req, res, match) => {
     if (!requireAdmin(req, res)) return
     try {
-      const plan = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-store')).loadPlan(decodeURIComponent(match[1]))
+      const plan = await (require(path.join(AI_LIB, 'agent', 'plan', 'plan-store')) as AgentPlanStoreModule).loadPlan(decodeURIComponent(match[1]))
       if (!plan) return json(res, { ok: false, message: '计划不存在' }, 404)
       return json(res, { ok: true, plan })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
   }},
   { pattern: /^\/dashboard\/api\/agent\/tasks\/([^/]+)$/, method: 'GET', handler: (req, res, match) => {
     if (!requireAdmin(req, res)) return
     try {
       const taskId = decodeURIComponent(match[1])
-      const taskStore = require(path.join(AI_LIB, 'resource-workers', 'task-store'))
+      const taskStore = require(path.join(AI_LIB, 'resource-workers', 'task-store')) as AgentTaskStoreModule
       const task = taskStore.getResourceTaskById(taskId)
       if (!task) return json(res, { ok: false, message: '任务不存在' }, 404)
       const result = ['done', 'failed'].includes(String(task.status || '')) ? readAgentTaskResult(taskId) : {}
       return json(res, { ok: true, task: sanitizeAgentTaskForDashboard(task, result) })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
   }},
   { pattern: /^\/dashboard\/api\/agent\/plans\/([^/]+)\/resume$/, method: 'POST', handler: (req, res, match) => {
     if (!requireAdmin(req, res)) return
     collectBody(req, res, async (body) => {
       try {
-        const data = JSON.parse(body || '{}')
-        const result = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-runner')).resumePlan({
+        const data = JSON.parse(body || '{}') as AgentPlanResumeBody
+        const result = await (require(path.join(AI_LIB, 'agent', 'plan', 'plan-runner')) as AgentPlanRunnerModule).resumePlan({
           planId: decodeURIComponent(match[1]), channelKey: 'dashboard',
           userId: String(data.userId || 'dashboard'), userName: String(data.userName || 'Dashboard'), channel: 'dashboard',
         })
-        return json(res, { ok: true, ...result })
-      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+        return json(res, { ok: true, ...toObjectSpreadSource(result) })
+      } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
     })
   }},
   { pattern: /^\/dashboard\/api\/agent\/plans\/([^/]+)\/abandon$/, method: 'POST', handler: (req, res, match) => {
     if (!requireAdmin(req, res)) return
     collectBody(req, res, async (body) => {
       try {
-        const data = JSON.parse(body || '{}')
-        const plan = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-engine')).abandonPlan({
+        const data = JSON.parse(body || '{}') as AgentPlanAbandonBody
+        const plan = await (require(path.join(AI_LIB, 'agent', 'plan', 'plan-engine')) as AgentPlanEngineModule).abandonPlan({
           planId: decodeURIComponent(match[1]), reason: data.reason || 'Agent Console 放弃计划',
         })
         return json(res, { ok: true, plan })
-      } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+      } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
     })
   }},
   { pattern: /^\/dashboard\/api\/agent\/crons\/([^/]+)\/run$/, method: 'POST', handler: async (req, res, match) => {
     if (!requireAdmin(req, res)) return
     try {
-      const result = await require(path.join(AI_LIB, 'agent', 'cron')).runCronNow(decodeURIComponent(match[1]))
+      const result = await (require(path.join(AI_LIB, 'agent', 'cron')) as AgentCronModule).runCronNow(decodeURIComponent(match[1]))
       return json(res, { ok: true, result })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   }},
   { pattern: /^\/dashboard\/api\/agent\/crons\/([^/]+)$/, method: 'DELETE', handler: async (req, res, match) => {
     if (!requireAdmin(req, res)) return
     try {
-      const removed = await require(path.join(AI_LIB, 'agent', 'cron')).unregisterCron(decodeURIComponent(match[1]))
+      const removed = await (require(path.join(AI_LIB, 'agent', 'cron')) as AgentCronModule).unregisterCron(decodeURIComponent(match[1]))
       return json(res, { ok: true, removed })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   }},
   { pattern: /^\/dashboard\/api\/agent\/sessions\/(.+)$/, method: 'GET', handler: (req, res, match) => {
     if (!requireAdmin(req, res)) return
     try {
       const id = decodeURIComponent(match[1])
-      const session = require(path.join(AI_LIB, 'agent', 'sessions')).getAgentSession(id)
+      const session = (require(path.join(AI_LIB, 'agent', 'sessions')) as AgentSessionModule).getAgentSession(id)
       if (!session) return json(res, { ok: false, message: '会话不存在' }, 404)
       return json(res, { ok: true, session })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 500) }
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
   }},
 ]
 

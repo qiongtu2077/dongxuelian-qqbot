@@ -1,3 +1,10 @@
+import type { IncomingMessage, ServerResponse } from 'http';
+type LoreScope = 'always' | 'keyword' | 'none';
+interface ParsedDashboardFrontmatter {
+    meta: FrontmatterMeta;
+    body: string;
+    raw: string;
+}
 interface FrontmatterMeta {
     [key: string]: unknown;
     name?: string;
@@ -20,31 +27,27 @@ interface FrontmatterMeta {
 interface LorePayload extends FrontmatterMeta {
     content: string;
 }
-declare function parseFrontmatter(content: any): {
-    meta: any;
-    body: any;
-    raw: string;
-};
+declare function parseFrontmatter(content: unknown): ParsedDashboardFrontmatter;
 declare function buildPersonaFrontmatter(meta: FrontmatterMeta, overrides?: FrontmatterMeta): string;
-declare function cleanLoreName(value: any): string;
-declare function normalizeLoreScope(value: any): "none" | "always" | "keyword";
+declare function cleanLoreName(value: unknown): string;
+declare function normalizeLoreScope(value: unknown): LoreScope;
 declare function normalizeLorePayload(data?: FrontmatterMeta, existingName?: string): LorePayload;
 declare function buildLoreFrontmatter(meta: FrontmatterMeta, overrides?: FrontmatterMeta): string;
-declare function handleGetStatus(req: any, res: any): any;
-declare function handleGetProviders(req: any, res: any): any;
-declare function handleGetConfig(req: any, res: any): any;
-declare function handlePutConfig(req: any, res: any): void;
-declare function handleGetPersonas(req: any, res: any, pathname: any, url: any): any;
-declare function handlePostPersonas(req: any, res: any): void;
-declare function handleDeletePersonas(req: any, res: any): void;
-declare function handlePutPersonas(req: any, res: any): void;
-declare function handleGetLoreList(req: any, res: any): any;
-declare function handleGetLores(req: any, res: any): any;
-declare function handlePostLores(req: any, res: any): void;
-declare function handlePutLores(req: any, res: any): void;
-declare function handleDeleteLores(req: any, res: any): void;
-declare function handleGetModes(req: any, res: any): any;
-declare function handleGetPersonaDiagnostics(req: any, res: any): any;
+declare function handleGetStatus(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetProviders(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetConfig(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePutConfig(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetPersonas(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): void;
+declare function handlePostPersonas(req: IncomingMessage, res: ServerResponse): void;
+declare function handleDeletePersonas(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePutPersonas(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetLoreList(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetLores(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostLores(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePutLores(req: IncomingMessage, res: ServerResponse): void;
+declare function handleDeleteLores(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetModes(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetPersonaDiagnostics(req: IncomingMessage, res: ServerResponse): void;
 declare const _default: {
     routes: {
         'GET /dashboard/api/status': typeof handleGetStatus;

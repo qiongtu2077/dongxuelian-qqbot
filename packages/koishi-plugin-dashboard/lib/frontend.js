@@ -3,6 +3,14 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 const { FE_DIR, DIST_DIR } = require('./paths');
+function getErrorMessage(error) {
+    if (error && typeof error === 'object' && 'message' in error)
+        return String(error.message || '');
+    return String(error || '');
+}
+function toError(error, fallback = 'frontend build failed') {
+    return error instanceof Error ? error : new Error(getErrorMessage(error) || fallback);
+}
 function getFrontendDistAssetRefs(distDir = DIST_DIR) {
     const indexFile = path.join(distDir, 'index.html');
     let html = '';
@@ -50,14 +58,14 @@ function rollbackFrontendDist(distDir, backupDir) {
         fs.rmSync(distDir, { recursive: true, force: true });
     }
     catch (e) {
-        return 'remove incomplete dist failed: ' + e.message;
+        return 'remove incomplete dist failed: ' + getErrorMessage(e);
     }
     try {
         if (fs.existsSync(backupDir))
             fs.renameSync(backupDir, distDir);
     }
     catch (e) {
-        return 'restore previous dist failed: ' + e.message;
+        return 'restore previous dist failed: ' + getErrorMessage(e);
     }
     return '';
 }
@@ -79,8 +87,8 @@ function buildFrontendDist(options = {}, callback) {
     }
     catch (e) {
         if (updateStatus)
-            updateStatus({ state: 'failed', message: 'frontend build preparation failed', detail: e.message, startedAt, finishedAt: Date.now() });
-        done(e);
+            updateStatus({ state: 'failed', message: 'frontend build preparation failed', detail: getErrorMessage(e), startedAt, finishedAt: Date.now() });
+        done(toError(e, 'frontend build preparation failed'));
         return false;
     }
     if (updateStatus)
@@ -116,8 +124,8 @@ function buildFrontendDist(options = {}, callback) {
         }
         catch (e) {
             if (updateStatus)
-                updateStatus({ state: 'failed', message: 'frontend rebuild cleanup failed', detail: e.message, startedAt, finishedAt: Date.now() });
-            done(e);
+                updateStatus({ state: 'failed', message: 'frontend rebuild cleanup failed', detail: getErrorMessage(e), startedAt, finishedAt: Date.now() });
+            done(toError(e, 'frontend rebuild cleanup failed'));
         }
     });
     return true;

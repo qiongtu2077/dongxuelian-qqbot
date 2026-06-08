@@ -1,3 +1,16 @@
+import type { Hash } from 'crypto';
+import type { IncomingMessage, ServerResponse } from 'http';
+type DeployMode = 'install' | 'update';
+interface DeployTargetInput extends Record<string, unknown> {
+    server?: unknown;
+    appDir?: unknown;
+    mode?: unknown;
+}
+interface DeployTarget extends DeployTargetInput {
+    server: string;
+    appDir: string;
+    mode: DeployMode;
+}
 interface ScpOptions {
     recursive?: boolean;
 }
@@ -13,6 +26,43 @@ interface RuntimeLayoutOptions {
     includeNapcat?: boolean;
     includeNodeModules?: boolean;
 }
+interface LocalWorkDirSafety {
+    ok: boolean;
+    isTempRuntime: boolean;
+    reasons: string[];
+    projectDir: string;
+    runtimeDir: string;
+    workspaceRoot: string;
+    resourceRoot: string;
+    packaged: boolean;
+}
+interface LocalDeployTarget {
+    kind: string;
+    scope: string;
+    platform: NodeJS.Platform;
+    arch: string;
+    hostname: string;
+    projectDir: string;
+    runtimeDir: string;
+    workspace: LocalWorkDirSafety;
+    isWindowsBackend: boolean;
+    isLocalDeployer: boolean;
+    canRunWindowsLocalDeploy: boolean;
+    blocked: boolean;
+    blockedReason: string;
+    guidance: string;
+}
+interface RuntimeWorkspaceResult {
+    ok: true;
+    skipped: boolean;
+    workspaceRoot: string;
+    resourceRoot: string;
+    version?: string;
+}
+interface ChinesePathWriteResult {
+    ok: boolean;
+    message?: string;
+}
 interface DownloadOptions {
     redirects?: number;
     minBytes?: number;
@@ -21,13 +71,52 @@ interface DownloadOptions {
     preferredName?: string;
     [key: string]: unknown;
 }
+interface DownloadResult {
+    path: string;
+    size: number;
+    name: string;
+}
 type DownloadCallback = (err: Error | null, filePath?: string, detail?: unknown) => void;
 interface RunNpmOptions {
     env?: Record<string, string>;
     cwd?: string;
     timeout?: number;
 }
+interface ProxyEndpointLike {
+    raw: string;
+    hostname: string;
+    port: number;
+    protocol: string;
+}
+interface PortStateLike {
+    status: string;
+    [key: string]: unknown;
+}
+interface NpmProxyCandidate extends ProxyEndpointLike {
+    source: 'env' | 'npm config';
+    key: string;
+}
+interface NpmStaleLoopbackProxyCandidate extends NpmProxyCandidate {
+    portState: PortStateLike;
+}
+interface NpmRepairAction {
+    command: string;
+    ok: boolean;
+    message?: string;
+}
+type NpmInstallFailureCode = 'NPM_PROXY_REFUSED' | 'NPM_DNS_FAILED' | 'NPM_TIMEOUT' | 'NPM_CERT_FAILED' | 'NPM_PERMISSION_FAILED' | 'NPM_AUTH_FAILED' | 'NPM_FAILED';
+interface NpmInstallFailureGuide {
+    code: NpmInstallFailureCode;
+    title: string;
+    summary: string;
+    fixSteps: string[];
+    commands: string[];
+    diagnostics: NpmDiagnostics;
+}
 interface NpmProxyDiagnosis {
+    candidates?: NpmProxyCandidate[];
+    loopback?: NpmProxyCandidate[];
+    staleLoopback?: NpmStaleLoopbackProxyCandidate[];
     shouldBypass?: boolean;
     reason?: string;
     [key: string]: unknown;
@@ -37,7 +126,7 @@ interface NpmRepairState {
     automatic?: boolean;
     envClearedForRetry?: boolean;
     reason?: string;
-    actions?: unknown[];
+    actions?: NpmRepairAction[];
 }
 interface NpmDiagnostics {
     env?: Record<string, unknown>;
@@ -66,6 +155,80 @@ interface LocalDeployManifest {
     files?: LocalDeployManifestFile[];
     [key: string]: unknown;
 }
+interface TrackedLocalDeployFile extends LocalDeployManifestFile {
+    action: string;
+    backup: string;
+    beforeHash: string;
+}
+interface ProjectDependencyStatus {
+    ready: boolean;
+    nodeModules: {
+        exists: boolean;
+        path: string;
+    };
+    packageLock: {
+        exists: boolean;
+        path: string;
+    };
+    packages: Record<string, boolean>;
+    missing: string[];
+    reason: string;
+}
+interface AiKeyStatus {
+    provider: string;
+    configured: boolean;
+    path: string;
+    reason: string;
+}
+interface LoginHint {
+    status: string;
+    reason: string;
+}
+interface LocalReadyChecks {
+    node: boolean;
+    npm: boolean;
+    dependencies: boolean;
+    localConfig: boolean;
+    napcatInstalled: boolean;
+    napcatStarted: boolean;
+    onebotPort: boolean;
+    koishiStarted: boolean;
+    aiKey: boolean;
+}
+interface LocalConfigPreviewFile extends Record<string, unknown> {
+    path: string;
+    action: string;
+    reason?: string;
+    size?: number;
+    sha256?: string;
+}
+interface LocalConfigPreview {
+    ok: boolean;
+    files: LocalConfigPreviewFile[];
+    protected: LocalConfigPreviewFile[];
+    manifest: {
+        exists: boolean;
+        path: string;
+    };
+}
+interface DeleteLocalConfigResult {
+    ok: boolean;
+    deleted: LocalConfigPreviewFile[];
+    kept: LocalConfigPreviewFile[];
+    errors: LocalConfigPreviewFile[];
+}
+interface ArchiveExtractAttempt {
+    method: string;
+    code: unknown;
+    error: string;
+}
+interface ArchiveExtractResult {
+    method: string;
+    attempts: ArchiveExtractAttempt[];
+    archivePath: string;
+    destinationDir: string;
+    size: number;
+}
 interface PrepareNpmInstallOptions {
     forceRepair?: boolean;
 }
@@ -76,207 +239,78 @@ interface GithubReleaseAsset {
 interface GithubRelease {
     assets?: GithubReleaseAsset[];
 }
-type InstallCallback = (err: Error | null, detail?: Record<string, unknown>) => void;
-declare function validateDeployServer(server: any): string;
-declare function validateDeployAppDir(appDir: any): string;
-declare function validateDeployTarget(cfg: any): any;
-declare function remoteJoin(base: any, ...parts: any[]): string;
-declare function sshCommand(server: any, remoteCmd: any): string;
-declare function scpRemoteTarget(server: any, remotePath: any): string;
-declare function scpCommand(source: any, target: any, options?: ScpOptions): string;
-declare function hashFile(hash: any, repoRoot: any, filePath: any): void;
-declare function computeFingerprint(): any;
-declare function writeDeployFingerprint(file: any, extra?: DeployFingerprintExtra): string;
-declare function isBlockedDownloadHost(hostname: any): boolean;
-declare function getLocalWorkDirSafety(): {
+interface NapcatInstallerResult {
+    ran: boolean;
     ok: boolean;
-    isTempRuntime: boolean;
-    reasons: any[];
-    projectDir: any;
-    runtimeDir: any;
-    workspaceRoot: any;
-    resourceRoot: string;
-    packaged: boolean;
-};
-declare function getLocalDeployTarget(): {
-    kind: string;
-    scope: string;
-    platform: NodeJS.Platform;
-    arch: NodeJS.Architecture;
-    hostname: any;
-    projectDir: any;
-    runtimeDir: any;
-    workspace: {
-        ok: boolean;
-        isTempRuntime: boolean;
-        reasons: any[];
-        projectDir: any;
-        runtimeDir: any;
-        workspaceRoot: any;
-        resourceRoot: string;
-        packaged: boolean;
-    };
-    isWindowsBackend: boolean;
-    isLocalDeployer: any;
-    canRunWindowsLocalDeploy: boolean;
-    blocked: boolean;
-    blockedReason: string;
-    guidance: string;
-};
-declare function requireWindowsLocalDeployTarget(req: any, res: any): boolean;
-declare function ensureWritableDir(dir: any): void;
-declare function copyWorkspaceResource(sourceRoot: any, targetRoot: any, relativePath: any, options?: CopyWorkspaceResourceOptions): boolean;
-declare function ensurePackagedWorkspace(options?: RuntimeLayoutOptions): {
-    ok: boolean;
-    skipped: boolean;
-    workspaceRoot: any;
-    resourceRoot: any;
-    version?: undefined;
-} | {
-    ok: boolean;
-    skipped: boolean;
-    workspaceRoot: any;
-    resourceRoot: any;
+    path?: string;
+    reason: string;
+}
+interface PortableNodeAsset {
     version: string;
-};
+    arch: string;
+    fileName: string;
+    url: string;
+}
+type JsonCallback = (err: Error | null, data?: unknown) => void;
+type InstallCallback = (err: Error | null, detail?: Record<string, unknown>) => void;
+declare function validateDeployServer(server: unknown): string;
+declare function validateDeployAppDir(appDir: unknown): string;
+declare function validateDeployTarget(cfg?: DeployTargetInput): DeployTarget;
+declare function remoteJoin(base: unknown, ...parts: unknown[]): string;
+declare function sshCommand(server: unknown, remoteCmd: unknown): string;
+declare function scpRemoteTarget(server: unknown, remotePath: unknown): string;
+declare function scpCommand(source: unknown, target: unknown, options?: ScpOptions): string;
+declare function hashFile(hash: Hash, repoRoot: string, filePath: string): void;
+declare function computeFingerprint(): string;
+declare function writeDeployFingerprint(file: string, extra?: DeployFingerprintExtra): string;
+declare function isBlockedDownloadHost(hostname: unknown): boolean;
+declare function getLocalWorkDirSafety(): LocalWorkDirSafety;
+declare function getLocalDeployTarget(): LocalDeployTarget;
+declare function requireWindowsLocalDeployTarget(req: IncomingMessage, res: ServerResponse): boolean;
+declare function ensureWritableDir(dir: string): void;
+declare function copyWorkspaceResource(sourceRoot: string, targetRoot: string, relativePath: string, options?: CopyWorkspaceResourceOptions): boolean;
+declare function ensurePackagedWorkspace(options?: RuntimeLayoutOptions): RuntimeWorkspaceResult;
 declare function writeRuntimeLayout(options?: RuntimeLayoutOptions): void;
-declare function testChinesePathWrite(dir: any): {
-    ok: boolean;
-    message?: undefined;
-} | {
-    ok: boolean;
-    message: any;
-};
-declare function inspectChinesePathWrite(dir: any): {
-    ok: boolean;
-    message?: undefined;
-} | {
-    ok: boolean;
-    message: any;
-};
-declare function safeDecodeURIComponent(value: any): any;
-declare function sanitizeDownloadName(name: any, fallback?: string): any;
-declare function getContentDispositionFileName(header: any): any;
-declare function ensureExtension(name: any, ext: any): any;
-declare function hasZipMagic(filePath: any): boolean;
-declare function validateDownloadedFile(filePath: any, options?: DownloadOptions): {
-    path: any;
-    size: any;
-    name: any;
-};
-declare function getDownloadFileName(parsed: any, response: any, options?: DownloadOptions): any;
-declare function downloadToRuntime(url: any, options: DownloadOptions | DownloadCallback, callback?: DownloadCallback): void;
-declare function psCommandArg(value: any): string;
-declare function formatLocalNpmCommand(args?: any[]): string;
-declare function getNoProxyEnvOverrides(): {
-    [k: string]: any;
-};
-declare function runNpmConfigGet(name: any): any;
-declare function runNpmCommand(args: any, options?: RunNpmOptions): any;
-declare function collectNpmInstallDiagnostics(force?: boolean): any;
-declare function collectNpmProxyCandidates(diagnostics?: NpmDiagnostics): any[];
-declare function diagnoseNpmProxy(diagnostics?: NpmDiagnostics): {
-    candidates: any[];
-    loopback: any[];
-    staleLoopback: any[];
-    shouldBypass: boolean;
-    reason: string;
-};
-declare function repairNpmProxyConfig(env?: Record<string, string>): any[];
-declare function commandListForNpmProxyFix(hasNpmProxy: any, hasEnvProxy: any): any[];
-declare function buildNpmInstallFailureGuide(logLines?: any[], diagnostics?: NpmDiagnostics | null): {
-    code: string;
-    title: string;
-    summary: string;
-    fixSteps: string[];
-    commands: any[];
-    diagnostics: any;
-};
-declare function getBlockedLocalTaskStatus(key: any, extra?: Record<string, unknown>): any;
-declare function fileSha256(filePath: any): any;
+declare function testChinesePathWrite(dir: string): ChinesePathWriteResult;
+declare function inspectChinesePathWrite(dir: string): ChinesePathWriteResult;
+declare function safeDecodeURIComponent(value: string): string;
+declare function sanitizeDownloadName(name: unknown, fallback?: string): string;
+declare function getContentDispositionFileName(header: unknown): string;
+declare function ensureExtension(name: string, ext: unknown): string;
+declare function hasZipMagic(filePath: string): boolean;
+declare function validateDownloadedFile(filePath: string, options?: DownloadOptions): DownloadResult;
+declare function getDownloadFileName(parsed: URL, response: IncomingMessage, options?: DownloadOptions): string;
+declare function downloadToRuntime(url: string | URL, options?: DownloadOptions | DownloadCallback, callback?: DownloadCallback): void;
+declare function psCommandArg(value: unknown): string;
+declare function formatLocalNpmCommand(args?: string[]): string;
+declare function getNoProxyEnvOverrides(): Record<string, string>;
+declare function runNpmConfigGet(name: string): string;
+declare function runNpmCommand(args: string[], options?: RunNpmOptions): string;
+declare function collectNpmInstallDiagnostics(force?: boolean): NpmDiagnostics;
+declare function collectNpmProxyCandidates(diagnostics?: NpmDiagnostics): NpmProxyCandidate[];
+declare function diagnoseNpmProxy(diagnostics?: NpmDiagnostics): NpmProxyDiagnosis;
+declare function repairNpmProxyConfig(env?: Record<string, string>): NpmRepairAction[];
+declare function commandListForNpmProxyFix(hasNpmProxy: boolean, hasEnvProxy: boolean): string[];
+declare function buildNpmInstallFailureGuide(logLines?: string[] | string, diagnostics?: NpmDiagnostics | null): NpmInstallFailureGuide | null;
+declare function getBlockedLocalTaskStatus(key: string, extra?: Record<string, unknown>): any;
+declare function fileSha256(filePath: string): string;
 declare function readLocalDeployManifest(): LocalDeployManifest;
-declare function backupLocalDeployFile(filePath: any, rel: any, timestamp: any): any;
-declare function writeTrackedLocalFile(rel: any, content: any, options: Partial<LocalDeployManifestFile>, timestamp: any): {
-    path: any;
-    action: string;
-    backup: any;
-    beforeHash: any;
-    sha256: any;
-    deleteByDefault: boolean;
-    sensitive: boolean;
-    kind: string;
-};
-declare function writeLocalDeployManifest(manifest: any): void;
-declare function getProjectDependencyStatus(): {
-    ready: boolean;
-    nodeModules: {
-        exists: any;
-        path: any;
-    };
-    packageLock: {
-        exists: any;
-        path: any;
-    };
-    packages: {
-        [k: string]: any;
-    };
-    missing: string[];
-    reason: string;
-};
-declare function getAiKeyStatus(providerInput?: string): {
-    provider: string;
-    configured: boolean;
-    path: any;
-    reason: string;
-};
-declare function getNapcatLoginHint(): {
-    status: string;
-    reason: string;
-};
+declare function backupLocalDeployFile(filePath: string, rel: string, timestamp: number): string;
+declare function writeTrackedLocalFile(rel: string, content: unknown, options: Partial<LocalDeployManifestFile>, timestamp: number): TrackedLocalDeployFile;
+declare function writeLocalDeployManifest(manifest: LocalDeployManifest): void;
+declare function getProjectDependencyStatus(): ProjectDependencyStatus;
+declare function getAiKeyStatus(providerInput?: string): AiKeyStatus;
+declare function getNapcatLoginHint(): LoginHint;
 declare function getLocalNapcatDeployStatus(): any;
 declare function getLocalKoishiDeployStatus(): any;
 declare function getLocalNpmInstallStatus(): any;
 declare function buildLocalReadyCheck(): {
     ok: boolean;
     blocked: boolean;
-    localDeployTarget: {
-        kind: string;
-        scope: string;
-        platform: NodeJS.Platform;
-        arch: NodeJS.Architecture;
-        hostname: any;
-        projectDir: any;
-        runtimeDir: any;
-        workspace: {
-            ok: boolean;
-            isTempRuntime: boolean;
-            reasons: any[];
-            projectDir: any;
-            runtimeDir: any;
-            workspaceRoot: any;
-            resourceRoot: string;
-            packaged: boolean;
-        };
-        isWindowsBackend: boolean;
-        isLocalDeployer: any;
-        canRunWindowsLocalDeploy: boolean;
-        blocked: boolean;
-        blockedReason: string;
-        guidance: string;
-    };
+    localDeployTarget: LocalDeployTarget;
     basicReady: boolean;
     fullyReady: boolean;
-    checks: {
-        node: boolean;
-        npm: boolean;
-        dependencies: boolean;
-        localConfig: boolean;
-        napcatInstalled: boolean;
-        napcatStarted: boolean;
-        onebotPort: boolean;
-        koishiStarted: boolean;
-        aiKey: boolean;
-    };
+    checks: LocalReadyChecks;
     node: {
         ok: boolean;
         reason: string;
@@ -291,17 +325,12 @@ declare function buildLocalReadyCheck(): {
     };
     localConfig: {
         ok: boolean;
-        files: any[];
-        protected: any[];
+        files: never[];
+        protected: never[];
     };
     napcat: any;
     koishi: any;
-    aiKey: {
-        provider: string;
-        configured: boolean;
-        path: any;
-        reason: string;
-    };
+    aiKey: AiKeyStatus;
     dashboardUrl: string;
     koishiUrl: string;
     napcatUrl: string;
@@ -309,162 +338,50 @@ declare function buildLocalReadyCheck(): {
 } | {
     ok: boolean;
     blocked: boolean;
-    localDeployTarget: {
-        kind: string;
-        scope: string;
-        platform: NodeJS.Platform;
-        arch: NodeJS.Architecture;
-        hostname: any;
-        projectDir: any;
-        runtimeDir: any;
-        workspace: {
-            ok: boolean;
-            isTempRuntime: boolean;
-            reasons: any[];
-            projectDir: any;
-            runtimeDir: any;
-            workspaceRoot: any;
-            resourceRoot: string;
-            packaged: boolean;
-        };
-        isWindowsBackend: boolean;
-        isLocalDeployer: any;
-        canRunWindowsLocalDeploy: boolean;
-        blocked: boolean;
-        blockedReason: string;
-        guidance: string;
-    };
-    basicReady: any;
+    localDeployTarget: LocalDeployTarget;
+    basicReady: boolean;
     fullyReady: boolean;
-    checks: {
-        node: any;
-        npm: any;
-        dependencies: boolean;
-        localConfig: boolean;
-        napcatInstalled: any;
-        napcatStarted: any;
-        onebotPort: boolean;
-        koishiStarted: any;
-        aiKey: boolean;
-    };
+    checks: LocalReadyChecks;
     node: any;
     npm: any;
-    dependencies: {
-        ready: boolean;
-        nodeModules: {
-            exists: any;
-            path: any;
-        };
-        packageLock: {
-            exists: any;
-            path: any;
-        };
-        packages: {
-            [k: string]: any;
-        };
-        missing: string[];
-        reason: string;
-    };
-    localConfig: {
-        ok: boolean;
-        files: any[];
-        protected: {
-            path: string;
-            action: string;
-            reason: string;
-        }[];
-        manifest: {
-            exists: any;
-            path: any;
-        };
-    };
+    dependencies: ProjectDependencyStatus;
+    localConfig: LocalConfigPreview;
     napcat: any;
     koishi: any;
-    aiKey: {
-        provider: string;
-        configured: boolean;
-        path: any;
-        reason: string;
-    };
+    aiKey: AiKeyStatus;
     dashboardUrl: string;
     koishiUrl: string;
     napcatUrl: string;
     message: string;
 };
-declare function buildLocalConfigPreview(): {
-    ok: boolean;
-    files: any[];
-    protected: {
-        path: string;
-        action: string;
-        reason: string;
-    }[];
-    manifest: {
-        exists: any;
-        path: any;
-    };
-};
-declare function deleteLocalConfigFiles(): {
-    ok: boolean;
-    deleted: any[];
-    kept: any[];
-    errors: any[];
-};
-declare function psQuote(value: any): string;
-declare function validateNapcatInstallDir(input: any): any;
-declare function httpsGetJson(url: any, callback: (err: Error | null, data?: unknown) => void, redirects?: number): void;
-declare function pickNapcatWindowsAsset(release?: GithubRelease): GithubReleaseAsset;
-declare function findFilesRecursive(root: any, matcher: any, maxDepth?: number, maxCount?: number): any[];
-declare function cleanupRuntimeInstallStaging(prefix: any): void;
-declare function extractZipArchive(archivePath: any, destinationDir: any): {
-    method: string;
-    attempts: any[];
-    archivePath: any;
-    destinationDir: any;
-    size: any;
-};
-declare function runNapcatInstallerIfPresent(stagingDir: any): {
-    ran: boolean;
-    ok: boolean;
-    reason: string;
-    path?: undefined;
-} | {
-    ran: boolean;
-    ok: boolean;
-    path: any;
-    reason: string;
-};
-declare function findNapcatCopyRoot(stagingDir: any): any;
-declare function buildNapcatManualSteps(archivePath: any, installDir: any): string[];
-declare function downloadNapcatWindowsRelease(installDir: any, callback: InstallCallback): void;
-declare function pickNodeWindowsRelease(releases: any): {
-    version: any;
-    arch: string;
-    fileName: string;
-    url: string;
-};
-declare function findExtractedNodeRoot(stagingDir: any): any;
+declare function buildLocalConfigPreview(): LocalConfigPreview;
+declare function deleteLocalConfigFiles(): DeleteLocalConfigResult;
+declare function psQuote(value: unknown): string;
+declare function validateNapcatInstallDir(input: unknown): string;
+declare function httpsGetJson(url: string, callback: JsonCallback, redirects?: number): void;
+declare function pickNapcatWindowsAsset(release?: GithubRelease): GithubReleaseAsset | null;
+declare function findFilesRecursive(root: string, matcher: (name: string, fullPath: string) => boolean, maxDepth?: number, maxCount?: number): string[];
+declare function cleanupRuntimeInstallStaging(prefix: string): void;
+declare function extractZipArchive(archivePath: string, destinationDir: string): ArchiveExtractResult;
+declare function runNapcatInstallerIfPresent(stagingDir: string): NapcatInstallerResult;
+declare function findNapcatCopyRoot(stagingDir: string): string;
+declare function buildNapcatManualSteps(archivePath: string, installDir: string): string[];
+declare function downloadNapcatWindowsRelease(installDir: string, callback: InstallCallback): void;
+declare function pickNodeWindowsRelease(releases: unknown): PortableNodeAsset;
+declare function findExtractedNodeRoot(stagingDir: string): string;
 declare function installPortableNodeWindows(callback: InstallCallback): void;
 declare function getNapcatStartEntry(): any;
 declare function prepareNpmInstallRun(options?: PrepareNpmInstallOptions): {
-    env: {
-        [k: string]: any;
-    };
-    diagnostics: any;
-    repair: {
-        forced: boolean;
-        automatic: any;
-        envClearedForRetry: any;
-        reason: any;
-        actions: any[];
-    };
+    env: Record<string, string>;
+    diagnostics: NpmDiagnostics;
+    repair: NpmRepairState;
 };
 declare const _default: {
-    MAX_DOWNLOAD_BYTES: any;
-    MAX_DEPLOY_TASK_LOG_BYTES: any;
-    MAX_DEPLOY_UPLOAD_BYTES: any;
-    MAX_DOWNLOAD_REDIRECTS: any;
-    MAX_JSON_RESPONSE_BYTES: any;
+    MAX_DOWNLOAD_BYTES: number;
+    MAX_DEPLOY_TASK_LOG_BYTES: number;
+    MAX_DEPLOY_UPLOAD_BYTES: number;
+    MAX_DOWNLOAD_REDIRECTS: number;
+    MAX_JSON_RESPONSE_BYTES: number;
     HASH_CHUNK_BYTES: number;
     validateDeployServer: typeof validateDeployServer;
     validateDeployAppDir: typeof validateDeployAppDir;

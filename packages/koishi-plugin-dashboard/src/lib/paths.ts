@@ -1,13 +1,15 @@
 'use strict'
-const path = require('path')
-const { isInsidePath } = require('./utils')
+const path = require('path') as typeof import('path')
+const { isInsidePath } = require('./utils') as {
+  isInsidePath(parent: string, child: string): boolean
+}
 
 const PLUGIN_ROOT = path.join(__dirname, '..')
 const AI_LIB = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'lib')
 const KOISHI_DIR = path.resolve(process.env.KOISHI_DIR || process.env.KOISHI_APP_DIR || path.join(PLUGIN_ROOT, '..', '..'))
 const KOISHI_PID_FILE = path.join(path.resolve(KOISHI_DIR), 'koishi.pid')
 
-function resolveRuntimeDataDir() {
+function resolveRuntimeDataDir(): string {
   const configured = String(process.env.DONGXUELIAN_AI_DATA_DIR || '').trim()
   if (configured) return path.resolve(configured)
   return path.resolve(KOISHI_DIR, 'data')
@@ -21,7 +23,7 @@ const MODES_DIR = path.join(DATA_DIR, 'ai-skills', 'modes')
 const FE_DIR = path.join(PLUGIN_ROOT, 'frontend')
 const DIST_DIR = path.join(FE_DIR, 'dist')
 
-function isGlobalLocalMode() {
+function isGlobalLocalMode(): boolean {
   return /^(?:1|true|yes|on)$/i.test(String(process.env.GLOBAL_LOCAL_MODE || '').trim())
 }
 
@@ -50,15 +52,15 @@ const GALLERY_FOIL_STYLES = new Set(['A', 'B', 'C', 'D', 'E', 'F', 'G'])
 const NPM_PROXY_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'npm_config_proxy', 'npm_config_https_proxy', 'npm_config_all_proxy', 'NPM_CONFIG_PROXY', 'NPM_CONFIG_HTTPS_PROXY', 'NPM_CONFIG_ALL_PROXY']
 const MAX_LOG_LIMIT = 6000
 
-function isPackagedLocalWorkspace() {
+function isPackagedLocalWorkspace(): boolean {
   return /^(?:1|true|yes|on)$/i.test(String(process.env.LIANLIAN_PACKAGED || '').trim())
 }
 
-function getResourceRoot() {
+function getResourceRoot(): string {
   return path.resolve(process.env.LIANLIAN_RESOURCE_ROOT || path.join(PLUGIN_ROOT, '..', '..'))
 }
 
-function isAgentPathInside(target, root) {
+function isAgentPathInside(target: unknown, root: unknown): boolean {
   const absTarget = path.resolve(String(target || ''))
   const absRoot = path.resolve(String(root || ''))
   const left = process.platform === 'win32' ? absTarget.toLowerCase() : absTarget
@@ -66,11 +68,11 @@ function isAgentPathInside(target, root) {
   return left === right || left.startsWith(right + path.sep)
 }
 
-function toProjectRel(filePath) {
+function toProjectRel(filePath: string): string {
   return path.relative(path.resolve(KOISHI_DIR), path.resolve(filePath)).replace(/\\/g, '/')
 }
 
-function resolveProjectRel(rel) {
+function resolveProjectRel(rel: unknown): string {
   const normalized = String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '')
   if (!normalized || normalized.includes('\0') || normalized.split('/').includes('..')) throw new Error('invalid local deploy path')
   const full = path.resolve(KOISHI_DIR, normalized)
@@ -78,7 +80,7 @@ function resolveProjectRel(rel) {
   return full
 }
 
-function runtimePath(...parts) {
+function runtimePath(...parts: string[]): string {
   return path.join(KOISHI_DIR, 'runtime', ...parts)
 }
 

@@ -58,13 +58,14 @@ function spawnLocalTask(key, command, args = [], options = {}) {
     task.command = [command].concat(args).join(' ');
     task.cwd = options.cwd || KOISHI_DIR;
     fs.writeFileSync(task.logFile, `[${new Date().toISOString()}] $ ${task.command}\n`, 'utf8');
-    const child = spawn(command, args, {
+    const spawnOptions = {
         cwd: task.cwd,
         env: { ...process.env, ...(options.env || {}) },
         windowsHide: true,
         shell: options.shell === true,
         maxBuffer: 512 * 1024,
-    });
+    };
+    const child = spawn(command, args, spawnOptions);
     task.process = child;
     task.pid = child.pid || 0;
     if (key === 'koishi') {
@@ -74,16 +75,16 @@ function spawnLocalTask(key, command, args = [], options = {}) {
         }
         catch { /* non-critical: pid file best effort */ }
     }
-    child.stdout?.on('data', chunk => appendLocalTaskLog(task, chunk));
-    child.stderr?.on('data', chunk => appendLocalTaskLog(task, chunk));
-    child.on('error', err => {
+    child.stdout?.on('data', (chunk) => appendLocalTaskLog(task, chunk));
+    child.stderr?.on('data', (chunk) => appendLocalTaskLog(task, chunk));
+    child.on('error', (err) => {
         task.error = err.message;
         task.state = 'failed';
         task.running = false;
         task.finishedAt = Date.now();
         appendLocalTaskLog(task, `\n[${new Date().toISOString()}] ERROR ${err.message}\n`);
     });
-    child.on('close', code => {
+    child.on('close', (code) => {
         task.running = false;
         task.process = null;
         task.exitCode = code;

@@ -4,6 +4,9 @@ const path = require('path');
 const { execSync, execFileSync } = require('child_process');
 const { shellQuote, isInsidePath } = require('./utils');
 const { KOISHI_DIR, runtimePath } = require('./paths');
+function isExecFileError(error) {
+    return !!error && typeof error === 'object';
+}
 function getCommandVersion(command) {
     try {
         return execSync(command, { timeout: 3000, encoding: 'utf8' }).trim();
@@ -16,7 +19,7 @@ function getCommandPath(command) {
     try {
         if (process.platform === 'win32') {
             const out = execFileSync('where.exe', [command], { timeout: 3000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-            return out.split(/\r?\n/).map(item => item.trim()).filter(Boolean)[0] || '';
+            return out.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)[0] || '';
         }
         return execFileSync('/bin/sh', ['-lc', 'command -v ' + shellQuote(command)], { timeout: 3000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split(/\r?\n/)[0] || '';
     }
@@ -144,11 +147,12 @@ server.listen({ port, host: '127.0.0.1', exclusive: true }, () => server.close((
         return { available: true, status: 'free', reason: '端口可监听' };
     }
     catch (e) {
-        if (e.status === 2)
+        const error = isExecFileError(e) ? e : null;
+        if (error?.status === 2)
             return { available: false, status: 'occupied', reason: '端口已有监听进程' };
-        if (e.status === 3)
+        if (error?.status === 3)
             return { available: false, status: 'denied', reason: '没有权限监听该端口' };
-        return { available: false, status: 'unknown', reason: String(e.stderr || e.message || '端口检测失败').trim() };
+        return { available: false, status: 'unknown', reason: String(error?.stderr || error?.message || '端口检测失败').trim() };
     }
 }
 function checkPortAvailable(port) {

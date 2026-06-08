@@ -149,6 +149,22 @@ function sanitizeAgentTaskForDashboard(task, result = {}) {
         },
     };
 }
+function getErrorMessage(error) {
+    if (error && typeof error === 'object' && 'message' in error)
+        return String(error.message || '');
+    return String(error || '');
+}
+function getLegacyErrorMessage(error) {
+    return error?.message;
+}
+function toDashboardPendingSnapshot(value) {
+    if (!value || typeof value !== 'object')
+        return null;
+    return value;
+}
+function toObjectSpreadSource(value) {
+    return value == null ? {} : Object(value);
+}
 // --- Route Handlers ---
 async function handleGetAgentConfig(req, res) {
     if (!requireAdmin(req, res))
@@ -169,7 +185,7 @@ async function handleGetAgentConfig(req, res) {
         return json(res, { ok: true, config: agentConfig, mode: safety.getMode(), stats, tools, skills, personas, effectiveReadRoots });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
 async function handlePutAgentConfig(req, res) {
@@ -188,7 +204,7 @@ async function handlePutAgentConfig(req, res) {
             return json(res, { ok: true, config: saved, mode: safety.getMode(), message: 'Agent 配置已更新' });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -201,7 +217,7 @@ function handleGetAgentPersonas(req, res) {
         return json(res, { ok: true, personas, persona: agentConfig.persona || { dashboardPersona: '', qqInheritChatPersona: true } });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
 function handlePutAgentPersona(req, res) {
@@ -224,7 +240,7 @@ function handlePutAgentPersona(req, res) {
             return json(res, { ok: true, persona: saved.persona, message: 'Agent 人格已更新' });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -264,19 +280,20 @@ function getPersonaVoiceConfigs() {
     const personaModule = getPersonaModule();
     const personas = personaModule.getAvailablePersonals({ userFacing: true });
     return personas.map(p => {
-        const content = personaModule.loadPersonalSkill(p.name);
+        const name = p.name;
+        const content = personaModule.loadPersonalSkill(name);
         const meta = content ? personaModule.parsePersonaFrontmatter(content) : {};
         return {
-            name: p.name,
-            voice: meta.voice_id || meta.voice || '',
-            voiceAssetId: meta.voice_asset_id || '',
-            style: meta.voice_style || '',
+            name,
+            voice: (meta.voice_id || meta.voice || ''),
+            voiceAssetId: (meta.voice_asset_id || ''),
+            style: (meta.voice_style || ''),
             hasSample: false,
         };
     });
 }
 function findPersonaSkillFile(personaName, personaModule = getPersonaModule()) {
-    const searchDirs = ['personas', 'core', 'modes'].map(d => path.join(DATA_DIR, 'ai-skills', d));
+    const searchDirs = ['personas', 'core', 'modes'].map((d) => path.join(DATA_DIR, 'ai-skills', d));
     for (const skillsDir of searchDirs) {
         if (!fs.existsSync(skillsDir))
             continue;
@@ -351,7 +368,7 @@ function handleGetTtsVoices(req, res) {
         });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
 function handlePostTtsClone(req, res) {
@@ -422,7 +439,7 @@ function handlePostTtsClone(req, res) {
             return json(res, { ok: true, message: '音色克隆成功', file: filename, asset });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 500);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
         }
     });
 }
@@ -453,11 +470,12 @@ function handlePostTtsPreview(req, res) {
                         const personaModule = getPersonaModule();
                         const personas = personaModule.getAvailablePersonals({ userFacing: true });
                         for (const p of personas) {
-                            const c = personaModule.loadPersonalSkill(p.name);
+                            const candidateName = String(p.name || '');
+                            const c = personaModule.loadPersonalSkill(candidateName);
                             if (c) {
                                 const m = personaModule.parsePersonaFrontmatter(c);
                                 if (m.voice_id === '__cloned__') {
-                                    pName = p.name;
+                                    pName = candidateName;
                                     break;
                                 }
                             }
@@ -506,7 +524,7 @@ function handlePostTtsPreview(req, res) {
             return json(res, { ok: true, audio: buf.toString('base64'), format: mimeType.split('/')[1] || 'wav', mimeType });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 500);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
         }
     });
 }
@@ -531,7 +549,7 @@ function handlePostTtsCloneRename(req, res) {
             return json(res, { ok: true, message: '音色信息已更新', asset });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 500);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
         }
     });
 }
@@ -568,7 +586,7 @@ function handlePostTtsCloneDelete(req, res) {
             return json(res, { ok: true, message: '删除成功', deleted: result.deleted, asset: result.asset });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 500);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
         }
     });
 }
@@ -593,7 +611,7 @@ function handlePutPersonaVoice(req, res) {
             return json(res, { ok: true, message: '音色配置已更新' });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 500);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
         }
     });
 }
@@ -605,7 +623,7 @@ function handleGetAgentStats(req, res) {
         return json(res, { ok: true, stats });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
 function handleGetAgentQueue(req, res) {
@@ -616,7 +634,7 @@ function handleGetAgentQueue(req, res) {
         return json(res, { ok: true, queue });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
 async function handleGetAgentFiles(req, res, pathname, url) {
@@ -630,7 +648,7 @@ async function handleGetAgentFiles(req, res, pathname, url) {
         return json(res, { ok: true, ...result });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 400);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
     }
 }
 async function handleGetAgentFile(req, res, pathname, url) {
@@ -641,7 +659,7 @@ async function handleGetAgentFile(req, res, pathname, url) {
         return json(res, { ok: true, file: await previewAgentWorkspaceFile(file) });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 400);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
     }
 }
 async function handleGetAgentFileDownload(req, res, pathname, url) {
@@ -661,7 +679,7 @@ async function handleGetAgentFileDownload(req, res, pathname, url) {
         fs.createReadStream(abs).pipe(res);
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 400);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
     }
 }
 function handlePostAgentFileUpload(req, res) {
@@ -681,7 +699,7 @@ function handlePostAgentFileUpload(req, res) {
             return json(res, { ok: true, file: { path: abs, name: path.basename(abs), size: Buffer.byteLength(content) } });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -697,7 +715,7 @@ async function handleGetAgentEnv(req, res) {
         });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
 function handleGetAgentShellGuard(req, res) {
@@ -710,7 +728,7 @@ function handleGetAgentShellGuard(req, res) {
         return json(res, { ok: true, enabled: true, ruleCount, categories });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
 async function handleGetAgentPlans(req, res) {
@@ -721,7 +739,7 @@ async function handleGetAgentPlans(req, res) {
         return json(res, { ok: true, plans });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
 function handlePostAgentPlans(req, res) {
@@ -743,14 +761,15 @@ function handlePostAgentPlans(req, res) {
             const fallbackTasks = tasks.length >= 2 ? tasks : [
                 { desc: `理解目标：${goal}` }, { desc: '收集必要信息并执行可用工具' }, { desc: '整理结果并汇报完成状态' },
             ];
-            const plan = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-engine')).createPlan({
+            const createOptions = {
                 title: goal.slice(0, 80) || 'Dashboard Agent 计划', tasks: fallbackTasks, channel: 'dashboard',
                 channelKey: 'dashboard', userId: String(data.userId || 'dashboard'), userName: String(data.userName || 'Dashboard'),
-            });
+            };
+            const plan = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-engine')).createPlan(createOptions);
             return json(res, { ok: true, plan });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -762,7 +781,7 @@ function handleGetAgentPushLog(req, res) {
         return json(res, { ok: true, log: pushLog });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
 async function handleGetAgentCrons(req, res) {
@@ -775,7 +794,7 @@ async function handleGetAgentCrons(req, res) {
         return json(res, { ok: true, crons: data.crons, history });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
 function handlePostAgentCrons(req, res) {
@@ -788,7 +807,7 @@ function handlePostAgentCrons(req, res) {
             return json(res, { ok: true, cron });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -800,7 +819,7 @@ function handleGetAgentSessions(req, res) {
         return json(res, { ok: true, sessions });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
 function handlePostAgentChat(req, res) {
@@ -841,7 +860,7 @@ function handlePostAgentChat(req, res) {
             }, submission.status || 202);
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 500);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
         }
     });
 }
@@ -853,14 +872,19 @@ function handlePostAgentConfirm(req, res) {
             const pending = require(path.join(AI_LIB, 'agent', 'pending'));
             const data = JSON.parse(body || '{}');
             const expectedId = String(data.pendingId || '');
-            const findPendingById = pending.findPendingToolById || pending.getPendingToolById || (id => (pending.listPendingTools && pending.listPendingTools().find(item => item.id === id)) || null);
-            const p = expectedId ? findPendingById(expectedId) : pending.getPendingTool('dashboard', 'dashboard');
+            const directFindPendingById = pending.findPendingToolById || pending.getPendingToolById;
+            const p = expectedId
+                ? directFindPendingById
+                    ? directFindPendingById(expectedId)
+                    : pending.listPendingTools().find(candidate => candidate.id === expectedId) || null
+                : pending.getPendingTool('dashboard', 'dashboard');
             if (!p)
                 return json(res, { ok: false, message: '没有待确认工具' }, 404);
             const workerSubmission = require(path.join(AI_LIB, 'agent', 'worker-submission'));
             const agentPayload = require(path.join(AI_LIB, 'resource-workers', 'agent-payload'));
             const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig();
             const resumeInput = { channelKey: p.channelKey, userId: p.userId, channel: p.channel || 'dashboard', expectedId };
+            const pendingSnapshot = toDashboardPendingSnapshot(p);
             const submission = workerSubmission.submitAgentWorkerTask({
                 channel: p.channel || 'dashboard',
                 channelKey: p.channelKey,
@@ -868,7 +892,7 @@ function handlePostAgentConfirm(req, res) {
                 timeoutMs: agentConfig.queue?.timeoutMs,
                 maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
                 source: 'dashboard-standalone',
-                payload: { entry: 'dashboard-agent-confirm', pendingId: expectedId, agentWorker: agentPayload.createAgentResumeWorkerPayload('dashboard-agent-confirm', resumeInput, p) },
+                payload: { entry: 'dashboard-agent-confirm', pendingId: expectedId, agentWorker: agentPayload.createAgentResumeWorkerPayload('dashboard-agent-confirm', resumeInput, pendingSnapshot) },
             });
             return json(res, {
                 ok: submission.accepted,
@@ -880,7 +904,7 @@ function handlePostAgentConfirm(req, res) {
             }, submission.status || 202);
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 500);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
         }
     });
 }
@@ -900,7 +924,7 @@ function handlePostAgentReject(req, res) {
             return json(res, { ok: true, message: '已拒绝工具请求' });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 500);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
         }
     });
 }
@@ -945,7 +969,7 @@ const regexRoutes = [
                 return json(res, { ok: true, plan });
             }
             catch (e) {
-                return json(res, { ok: false, message: e.message }, 500);
+                return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
             }
         } },
     { pattern: /^\/dashboard\/api\/agent\/tasks\/([^/]+)$/, method: 'GET', handler: (req, res, match) => {
@@ -961,7 +985,7 @@ const regexRoutes = [
                 return json(res, { ok: true, task: sanitizeAgentTaskForDashboard(task, result) });
             }
             catch (e) {
-                return json(res, { ok: false, message: e.message }, 500);
+                return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
             }
         } },
     { pattern: /^\/dashboard\/api\/agent\/plans\/([^/]+)\/resume$/, method: 'POST', handler: (req, res, match) => {
@@ -974,10 +998,10 @@ const regexRoutes = [
                         planId: decodeURIComponent(match[1]), channelKey: 'dashboard',
                         userId: String(data.userId || 'dashboard'), userName: String(data.userName || 'Dashboard'), channel: 'dashboard',
                     });
-                    return json(res, { ok: true, ...result });
+                    return json(res, { ok: true, ...toObjectSpreadSource(result) });
                 }
                 catch (e) {
-                    return json(res, { ok: false, message: e.message }, 400);
+                    return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
                 }
             });
         } },
@@ -993,7 +1017,7 @@ const regexRoutes = [
                     return json(res, { ok: true, plan });
                 }
                 catch (e) {
-                    return json(res, { ok: false, message: e.message }, 400);
+                    return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
                 }
             });
         } },
@@ -1005,7 +1029,7 @@ const regexRoutes = [
                 return json(res, { ok: true, result });
             }
             catch (e) {
-                return json(res, { ok: false, message: e.message }, 400);
+                return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
             }
         } },
     { pattern: /^\/dashboard\/api\/agent\/crons\/([^/]+)$/, method: 'DELETE', handler: async (req, res, match) => {
@@ -1016,7 +1040,7 @@ const regexRoutes = [
                 return json(res, { ok: true, removed });
             }
             catch (e) {
-                return json(res, { ok: false, message: e.message }, 400);
+                return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
             }
         } },
     { pattern: /^\/dashboard\/api\/agent\/sessions\/(.+)$/, method: 'GET', handler: (req, res, match) => {
@@ -1030,7 +1054,7 @@ const regexRoutes = [
                 return json(res, { ok: true, session });
             }
             catch (e) {
-                return json(res, { ok: false, message: e.message }, 500);
+                return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
             }
         } },
 ];

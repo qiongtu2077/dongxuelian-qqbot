@@ -1,46 +1,207 @@
 'use strict'
 
-const fs = require('fs')
-const path = require('path')
-const os = require('os')
-const { execFileSync } = require('child_process')
-const { isInsidePath, removePathWithRetry, uniquePaths, sleepSync } = require('./utils')
-const { KOISHI_DIR, DATA_DIR, LOCAL_NAPCAT_DIR_FILE, isPackagedLocalWorkspace, toProjectRel, resolveProjectRel, runtimePath } = require('./paths')
-const { getCommandInfo, getPortableNodeDir } = require('./tools')
-const { detectNapcatInstallation, inspectNapcatCandidate } = require('./napcat')
-const { localTasks } = require('./deploy-state')
-const { psQuote, getLocalDeployTarget } = require('./deploy-helpers')
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const os = require('os') as typeof import('os')
+const { execFileSync } = require('child_process') as typeof import('child_process')
+const { isInsidePath, removePathWithRetry, uniquePaths, sleepSync } = require('./utils') as typeof import('./utils')
+const { KOISHI_DIR, DATA_DIR, LOCAL_NAPCAT_DIR_FILE, isPackagedLocalWorkspace, toProjectRel, resolveProjectRel, runtimePath } = require('./paths') as typeof import('./paths')
+const { getCommandInfo, getPortableNodeDir } = require('./tools') as typeof import('./tools')
+const { detectNapcatInstallation, inspectNapcatCandidate } = require('./napcat') as typeof import('./napcat')
+const { localTasks } = require('./deploy-state') as typeof import('./deploy-state')
+const { psQuote, getLocalDeployTarget } = require('./deploy-helpers') as typeof import('./deploy-helpers')
+
+type FsStats = import('fs').Stats
+type FsDirent = import('fs').Dirent
+type UninstallTargetScope = 'project' | 'externalNapcat'
+type UninstallItemKind = 'environment' | 'userData' | 'systemTool'
+
+interface PathSummaryMissing {
+  exists: false
+  size: number
+  count: number
+  truncated: boolean
+}
+
+interface PathSummaryExisting {
+  exists: true
+  size: number
+  count: number
+  truncated: boolean
+  directory: boolean
+  symlink: boolean
+}
+
+type PathSummary = PathSummaryMissing | PathSummaryExisting
+
+interface UninstallTargetInput {
+  fullPath: string
+  path?: string
+  scope?: UninstallTargetScope
+}
+
+interface UninstallTarget {
+  path: string
+  fullPath: string
+  scope: UninstallTargetScope
+  size: number
+  count: number
+  truncated: boolean
+  directory: boolean
+  symlink: boolean
+}
+
+interface UninstallPathPreview {
+  path: string
+  size: number
+  count: number
+  truncated: boolean
+  directory: boolean
+  symlink: boolean
+}
 
 interface UninstallItemOptions {
   action?: string
-  kind?: string
+  kind?: UninstallItemKind
   defaultKeep?: boolean
+}
+
+interface UninstallItem {
+  key: string
+  label: string
+  action: string
+  kind: UninstallItemKind
+  reason: string
+  defaultKeep: boolean
+  size: number
+  count: number
+  truncated: boolean
+  paths: UninstallPathPreview[]
+  targets: UninstallTarget[]
+}
+
+interface KeepItem {
+  action: 'keep'
+  kind: 'systemTool'
+  label: string
+  path: string
+  reason: string
+  version: string
+}
+
+interface UninstallWarning {
+  key?: string
+  path?: string
+  type?: 'info' | 'warning'
+  message?: string
+  reason?: string | undefined
+}
+
+interface CommandInfo {
+  found: boolean
+  version: string
+  source: 'runtime/node' | 'PATH'
+  sourcePath: string
+  ownedByProject: boolean
+  ok: boolean
+  reason: string
+}
+
+interface LocalUninstallPreview {
+  ok: true
+  deleteItems: UninstallItem[]
+  userDataItems: UninstallItem[]
+  keepItems: KeepItem[]
+  warnings: UninstallWarning[]
+  stats: {
+    deleteSize: number
+    userDataSize: number
+    deleteCount: number
+    userDataCount: number
+  }
+  systemTools: {
+    node: CommandInfo
+    npm: CommandInfo
+  }
+  projectDir: string
+}
+
+interface RemovedTargetResult {
+  path: string
+  size: number
+  count: number
+  status: 'ok'
+}
+
+interface DeletedTargetResult extends RemovedTargetResult {
+  item: string
+  label: string
+}
+
+interface UninstallError {
+  path: string
+  item: string
+  label: string
+  reason: string | undefined
+}
+
+interface LocalUninstallResult {
+  ok: boolean
+  deleted: DeletedTargetResult[]
+  kept: (KeepItem | UninstallItem)[]
+  warnings: UninstallWarning[]
+  errors: UninstallError[]
+  message: string
 }
 
 interface LocalUninstallOptions {
   deleteUserDataKeys?: unknown[]
 }
 
-function readFileSync(p) {
+interface ExecFileError {
+  stderr?: unknown
+  message?: unknown
+}
+
+function getLegacyErrorMessage(error: unknown): string | undefined {
+  return (error as { message?: string }).message
+}
+
+function getLegacyStderrOrMessage(error: unknown): string {
+  if (!error || typeof error !== 'object') return ''
+  const err = error as ExecFileError
+  return String(err.stderr || err.message || '').trim()
+}
+
+function isUninstallTargetInput(target: UninstallTargetInput | null): target is UninstallTargetInput {
+  return !!target
+}
+
+function isNonEmptyString(value: string | undefined): value is string {
+  return !!value
+}
+
+function readFileSync(p: string): string {
   try { return fs.readFileSync(p, 'utf8').trim() } catch { return '' }
 }
 
-function projectDisplayPath(filePath) {
+function projectDisplayPath(filePath: string): string {
   const resolved = path.resolve(filePath)
   return isInsidePath(KOISHI_DIR, resolved) ? toProjectRel(resolved) : resolved
 }
 
-function safeLstat(filePath) {
+function safeLstat(filePath: string): FsStats | null {
   try { return fs.lstatSync(filePath) } catch { return null }
 }
 
-function summarizePath(filePath, limit = 50000) {
+function summarizePath(filePath: string, limit = 50000): PathSummary {
   const rootStat = safeLstat(filePath)
   if (!rootStat) return { exists: false, size: 0, count: 0, truncated: false }
   let size = 0, count = 0, truncated = false
   const stack = [{ filePath, stat: rootStat }]
   while (stack.length) {
     const item = stack.pop()
+    if (!item) break
     count += 1
     size += Number(item.stat.size) || 0
     if (count > limit) { truncated = true; break }
@@ -56,43 +217,48 @@ function summarizePath(filePath, limit = 50000) {
   return { exists: true, size, count, truncated, directory: rootStat.isDirectory(), symlink: rootStat.isSymbolicLink() }
 }
 
-function uniqueTargets(targets) {
-  const seen = new Set()
+function uniqueTargets(targets: Array<UninstallTarget | null>): UninstallTarget[] {
+  const seen = new Set<string>()
   return targets.filter(target => {
     if (!target?.fullPath) return false
     const key = path.resolve(target.fullPath).toLowerCase()
     if (seen.has(key)) return false
     seen.add(key)
     return true
-  })
+  }) as UninstallTarget[]
 }
 
-function createUninstallItem(key, label, reason, paths, options: UninstallItemOptions = {}) {
+function normalizeTargetInput(item: string | UninstallTargetInput): UninstallTargetInput {
+  return typeof item === 'string' ? { fullPath: item } : item
+}
+
+function createUninstallItem(key: string, label: string, reason: string, paths: Array<string | UninstallTargetInput>, options: UninstallItemOptions = {}): UninstallItem | null {
   const targets = uniqueTargets(paths.map(item => {
-    const fullPath = path.resolve(item.fullPath || item)
+    const input = normalizeTargetInput(item)
+    const fullPath = path.resolve(input.fullPath)
     const summary = summarizePath(fullPath)
     if (!summary.exists) return null
-    return { path: item.path || projectDisplayPath(fullPath), fullPath, scope: item.scope || 'project', size: summary.size, count: summary.count, truncated: summary.truncated, directory: summary.directory, symlink: summary.symlink }
-  }).filter(Boolean))
+    return { path: input.path || projectDisplayPath(fullPath), fullPath, scope: input.scope || 'project', size: summary.size, count: summary.count, truncated: summary.truncated, directory: summary.directory, symlink: summary.symlink }
+  }))
   if (!targets.length) return null
   return { key, label, action: options.action || 'delete', kind: options.kind || 'environment', reason, defaultKeep: !!options.defaultKeep, size: targets.reduce((sum, t) => sum + (t.size || 0), 0), count: targets.reduce((sum, t) => sum + (t.count || 0), 0), truncated: targets.some(t => t.truncated), paths: targets.map(t => ({ path: t.path, size: t.size, count: t.count, truncated: t.truncated, directory: t.directory, symlink: t.symlink })), targets }
 }
 
-function pushUninstallItem(list, item) { if (item) list.push(item) }
+function pushUninstallItem(list: UninstallItem[], item: UninstallItem | null): void { if (item) list.push(item) }
 
-function projectTarget(rel) {
+function projectTarget(rel: string): UninstallTargetInput {
   return { fullPath: resolveProjectRel(rel), path: rel, scope: 'project' }
 }
 
-function existingProjectTarget(rel) {
+function existingProjectTarget(rel: string): UninstallTargetInput | null {
   const target = projectTarget(rel)
   return fs.existsSync(target.fullPath) ? target : null
 }
 
-function listExistingDataChildren(excludedRels) {
+function listExistingDataChildren(excludedRels: Set<string>): UninstallTargetInput[] {
   if (!isInsidePath(KOISHI_DIR, DATA_DIR) || !fs.existsSync(DATA_DIR)) return []
-  const result = []
-  let entries = []
+  const result: UninstallTargetInput[] = []
+  let entries: FsDirent[] = []
   try { entries = fs.readdirSync(DATA_DIR, { withFileTypes: true }) } catch { return result }
   for (const entry of entries) {
     const rel = path.posix.join('data', entry.name)
@@ -102,39 +268,39 @@ function listExistingDataChildren(excludedRels) {
   return result
 }
 
-function listReleaseArtifacts() {
+function listReleaseArtifacts(): UninstallTargetInput[] {
   const releaseDir = path.join(KOISHI_DIR, 'local-deployer', 'release')
   if (!fs.existsSync(releaseDir)) return []
-  let entries = []
+  let entries: FsDirent[] = []
   try { entries = fs.readdirSync(releaseDir, { withFileTypes: true }) } catch { return [] }
   return entries.filter(entry => entry.name !== 'README.txt').map(entry => projectTarget(path.posix.join('local-deployer', 'release', entry.name))).filter(target => fs.existsSync(target.fullPath))
 }
 
-function listExistingProjectChildren(parentRel, matcher) {
+function listExistingProjectChildren(parentRel: string, matcher: (name: string, entry: FsDirent) => boolean): UninstallTargetInput[] {
   const parent = resolveProjectRel(parentRel)
   if (!fs.existsSync(parent)) return []
-  let entries = []
+  let entries: FsDirent[] = []
   try { entries = fs.readdirSync(parent, { withFileTypes: true }) } catch { return [] }
   return entries.filter(entry => matcher(entry.name, entry)).map(entry => projectTarget(path.posix.join(parentRel, entry.name))).filter(target => fs.existsSync(target.fullPath))
 }
 
-function listPackagedWorkspaceResourceTargets() {
+function listPackagedWorkspaceResourceTargets(): UninstallTargetInput[] {
   if (!isPackagedLocalWorkspace()) return []
-  return ['packages', 'scripts', 'package.json', 'package-lock.json', 'start.js', 'koishi.example.yml', '.lianlian-workspace.json'].map(existingProjectTarget).filter(Boolean)
+  return ['packages', 'scripts', 'package.json', 'package-lock.json', 'start.js', 'koishi.example.yml', '.lianlian-workspace.json'].map(existingProjectTarget).filter(isUninstallTargetInput)
 }
 
-function isBlockedDeletePath(filePath) {
+function isBlockedDeletePath(filePath: string): '' | '不能删除磁盘根目录' | '不能删除系统目录或用户主目录根' {
   const resolved = path.resolve(filePath)
   const lower = resolved.toLowerCase()
   const root = path.parse(resolved).root
   if (lower === path.resolve(root).toLowerCase()) return '不能删除磁盘根目录'
-  const blocked = [process.env.WINDIR, process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramData, os.homedir()].filter(Boolean).map(item => path.resolve(item).toLowerCase())
+  const blocked = [process.env.WINDIR, process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramData, os.homedir()].filter(isNonEmptyString).map(item => path.resolve(item).toLowerCase())
   const hit = blocked.find(item => lower === item || lower.startsWith(item + path.sep.toLowerCase()))
   if (hit && (lower === hit || ['windows', 'program files', 'program files (x86)', 'programdata'].some(name => hit.endsWith(path.sep + name)))) return '不能删除系统目录或用户主目录根'
   return ''
 }
 
-function assertSafeProjectDeletePath(filePath) {
+function assertSafeProjectDeletePath(filePath: string): void {
   const resolved = path.resolve(filePath)
   const projectRoot = path.resolve(KOISHI_DIR)
   if (resolved === projectRoot) throw new Error('不能删除项目根目录')
@@ -149,7 +315,7 @@ function assertSafeProjectDeletePath(filePath) {
   if (!isInsidePath(projectRoot, real)) throw new Error('真实路径指向项目目录外')
 }
 
-function assertSafeExternalNapcatDeletePath(filePath) {
+function assertSafeExternalNapcatDeletePath(filePath: string): void {
   const resolved = path.resolve(filePath)
   const recorded = path.resolve(readFileSync(LOCAL_NAPCAT_DIR_FILE) || '')
   if (!recorded || resolved.toLowerCase() !== recorded.toLowerCase()) throw new Error('外部 NapCat 目录未由本工具记录')
@@ -162,40 +328,40 @@ function assertSafeExternalNapcatDeletePath(filePath) {
   if (!inspected.exists || (!inspected.found && inspected.status !== 'partial')) throw new Error('路径无法验证为 NapCat 安装目录')
 }
 
-function assertSafeUninstallTarget(target) {
+function assertSafeUninstallTarget(target: UninstallTarget): void {
   if (target.scope === 'externalNapcat') return assertSafeExternalNapcatDeletePath(target.fullPath)
   return assertSafeProjectDeletePath(target.fullPath)
 }
 
-function buildLocalUninstallPreview() {
-  const deleteItems = []
-  const userDataItems = []
-  const keepItems = []
-  const warnings = []
+function buildLocalUninstallPreview(): LocalUninstallPreview {
+  const deleteItems: UninstallItem[] = []
+  const userDataItems: UninstallItem[] = []
+  const keepItems: KeepItem[] = []
+  const warnings: UninstallWarning[] = []
   const excludedData = new Set(['data/ai-provider.txt', 'data/ai-model.txt', 'data/ai-base-url.txt', 'data/dashboard-local-deploy-manifest.json', 'data/dashboard-napcat-dir.txt', 'data/backups/dashboard-local-deploy'])
 
-  pushUninstallItem(deleteItems, createUninstallItem('root-node-modules', '项目依赖 node_modules', '本项目 npm install 产生的依赖目录，可重新安装', [existingProjectTarget('node_modules')].filter(Boolean)))
-  pushUninstallItem(deleteItems, createUninstallItem('dashboard-frontend-node-modules', 'Dashboard 前端依赖', '前端构建依赖，可重新安装', [existingProjectTarget('packages/koishi-plugin-dashboard/frontend/node_modules')].filter(Boolean)))
-  pushUninstallItem(deleteItems, createUninstallItem('local-deployer-node-modules', '本地部署器依赖', 'Electron 本地部署器依赖，可重新安装', [existingProjectTarget('local-deployer/node_modules')].filter(Boolean)))
-  pushUninstallItem(deleteItems, createUninstallItem('local-deployer-dist', '本地部署器构建产物', '打包输出，可重新构建', [existingProjectTarget('local-deployer/dist')].filter(Boolean)))
+  pushUninstallItem(deleteItems, createUninstallItem('root-node-modules', '项目依赖 node_modules', '本项目 npm install 产生的依赖目录，可重新安装', [existingProjectTarget('node_modules')].filter(isUninstallTargetInput)))
+  pushUninstallItem(deleteItems, createUninstallItem('dashboard-frontend-node-modules', 'Dashboard 前端依赖', '前端构建依赖，可重新安装', [existingProjectTarget('packages/koishi-plugin-dashboard/frontend/node_modules')].filter(isUninstallTargetInput)))
+  pushUninstallItem(deleteItems, createUninstallItem('local-deployer-node-modules', '本地部署器依赖', 'Electron 本地部署器依赖，可重新安装', [existingProjectTarget('local-deployer/node_modules')].filter(isUninstallTargetInput)))
+  pushUninstallItem(deleteItems, createUninstallItem('local-deployer-dist', '本地部署器构建产物', '打包输出，可重新构建', [existingProjectTarget('local-deployer/dist')].filter(isUninstallTargetInput)))
   pushUninstallItem(deleteItems, createUninstallItem('local-deployer-release-artifacts', '本地部署器发布包', '保留 release/README.txt，只清理生成的发布附件', listReleaseArtifacts()))
   pushUninstallItem(deleteItems, createUninstallItem('packaged-workspace-resources', '部署器同步的运行资源', '打包版 EXE 自动同步出来的 packages、scripts 和项目清单，可由部署器重新生成', listPackagedWorkspaceResourceTargets()))
-  pushUninstallItem(deleteItems, createUninstallItem('runtime-node', '项目便携 Node', '仅删除项目 runtime/node 中由本项目管理的 Node', [existingProjectTarget('runtime/node')].filter(Boolean)))
+  pushUninstallItem(deleteItems, createUninstallItem('runtime-node', '项目便携 Node', '仅删除项目 runtime/node 中由本项目管理的 Node', [existingProjectTarget('runtime/node')].filter(isUninstallTargetInput)))
   pushUninstallItem(deleteItems, createUninstallItem('runtime-install-staging', '安装临时解压目录', 'NapCat/Node 安装过程中产生的 napcat-install-* 与 node-install-* 暂存目录', listExistingProjectChildren('runtime', name => /^(?:napcat|node)-install-/i.test(name))))
-  pushUninstallItem(deleteItems, createUninstallItem('local-koishi-config', 'Koishi 本地配置', '本地部署生成的 Koishi 配置和启动脚本', ['koishi.yml', 'start-local.bat'].map(existingProjectTarget).filter(Boolean)))
-  pushUninstallItem(deleteItems, createUninstallItem('local-deploy-runtime-config', '本地部署运行配置', '供应商、模型、baseUrl、部署清单和备份', ['data/ai-provider.txt', 'data/ai-model.txt', 'data/ai-base-url.txt', 'data/dashboard-local-deploy-manifest.json', 'data/dashboard-napcat-dir.txt', 'data/backups/dashboard-local-deploy'].map(existingProjectTarget).filter(Boolean)))
-  pushUninstallItem(deleteItems, createUninstallItem('napcat-runtime', 'NapCat 安装目录', '默认 runtime/napcat 安装目录', [existingProjectTarget('runtime/napcat'), existingProjectTarget('runtime/NapCat')].filter(Boolean)))
-  pushUninstallItem(deleteItems, createUninstallItem('napcat-downloads', 'NapCat 下载缓存', '本工具下载的 NapCat 安装包缓存', [existingProjectTarget('runtime/downloads')].filter(Boolean)))
+  pushUninstallItem(deleteItems, createUninstallItem('local-koishi-config', 'Koishi 本地配置', '本地部署生成的 Koishi 配置和启动脚本', ['koishi.yml', 'start-local.bat'].map(existingProjectTarget).filter(isUninstallTargetInput)))
+  pushUninstallItem(deleteItems, createUninstallItem('local-deploy-runtime-config', '本地部署运行配置', '供应商、模型、baseUrl、部署清单和备份', ['data/ai-provider.txt', 'data/ai-model.txt', 'data/ai-base-url.txt', 'data/dashboard-local-deploy-manifest.json', 'data/dashboard-napcat-dir.txt', 'data/backups/dashboard-local-deploy'].map(existingProjectTarget).filter(isUninstallTargetInput)))
+  pushUninstallItem(deleteItems, createUninstallItem('napcat-runtime', 'NapCat 安装目录', '默认 runtime/napcat 安装目录', [existingProjectTarget('runtime/napcat'), existingProjectTarget('runtime/NapCat')].filter(isUninstallTargetInput)))
+  pushUninstallItem(deleteItems, createUninstallItem('napcat-downloads', 'NapCat 下载缓存', '本工具下载的 NapCat 安装包缓存', [existingProjectTarget('runtime/downloads')].filter(isUninstallTargetInput)))
 
   const recordedNapcat = readFileSync(LOCAL_NAPCAT_DIR_FILE)
   if (recordedNapcat && fs.existsSync(recordedNapcat) && !isInsidePath(KOISHI_DIR, recordedNapcat)) {
     try { assertSafeExternalNapcatDeletePath(recordedNapcat); pushUninstallItem(deleteItems, createUninstallItem('external-napcat', '自定义 NapCat 安装目录', '本工具记录过的项目外 NapCat 目录', [{ fullPath: recordedNapcat, path: recordedNapcat, scope: 'externalNapcat' }])) }
-    catch (e) { warnings.push({ key: 'external-napcat', path: recordedNapcat, reason: '项目外 NapCat 目录未自动删除：' + e.message }) }
+    catch (e) { warnings.push({ key: 'external-napcat', path: recordedNapcat, reason: '项目外 NapCat 目录未自动删除：' + getLegacyErrorMessage(e) }) }
   }
 
-  const keyTargets = []
+  const keyTargets: UninstallTargetInput[] = []
   if (fs.existsSync(DATA_DIR) && isInsidePath(KOISHI_DIR, DATA_DIR)) {
-    let entries = []
+    let entries: FsDirent[] = []
     try { entries = fs.readdirSync(DATA_DIR, { withFileTypes: true }) } catch { /* non-critical: optional data scan */ }
     for (const entry of entries) {
       if (!entry.isFile()) continue
@@ -206,22 +372,22 @@ function buildLocalUninstallPreview() {
 
   const adminTarget = existingProjectTarget('data/ai-admin-ids.json')
   if (adminTarget) excludedData.add('data/ai-admin-ids.json')
-  pushUninstallItem(userDataItems, createUninstallItem('admin-ids', '管理员 ID', '机器人管理员列表，默认保留', [adminTarget].filter(Boolean), { kind: 'userData', defaultKeep: true }))
+  pushUninstallItem(userDataItems, createUninstallItem('admin-ids', '管理员 ID', '机器人管理员列表，默认保留', [adminTarget].filter(isUninstallTargetInput), { kind: 'userData', defaultKeep: true }))
 
   const profileTarget = existingProjectTarget('data/user-profiles')
   if (profileTarget) excludedData.add('data/user-profiles')
-  pushUninstallItem(userDataItems, createUninstallItem('user-profiles', '用户资料', '用户画像、偏好和长期资料，默认保留', [profileTarget].filter(Boolean), { kind: 'userData', defaultKeep: true }))
+  pushUninstallItem(userDataItems, createUninstallItem('user-profiles', '用户资料', '用户画像、偏好和长期资料，默认保留', [profileTarget].filter(isUninstallTargetInput), { kind: 'userData', defaultKeep: true }))
 
   const conversationTarget = existingProjectTarget('data/conversations')
   if (conversationTarget) excludedData.add('data/conversations')
-  pushUninstallItem(userDataItems, createUninstallItem('conversations', '会话与记忆', '聊天上下文、会话缓存和记忆数据，默认保留', [conversationTarget].filter(Boolean), { kind: 'userData', defaultKeep: true }))
+  pushUninstallItem(userDataItems, createUninstallItem('conversations', '会话与记忆', '聊天上下文、会话缓存和记忆数据，默认保留', [conversationTarget].filter(isUninstallTargetInput), { kind: 'userData', defaultKeep: true }))
 
   const galleryTarget = existingProjectTarget('data/gallery')
   if (galleryTarget) excludedData.add('data/gallery')
-  pushUninstallItem(userDataItems, createUninstallItem('gallery-images', '莲莲图集', '用户上传的图集图片，默认保留', [galleryTarget].filter(Boolean), { kind: 'userData', defaultKeep: true }))
+  pushUninstallItem(userDataItems, createUninstallItem('gallery-images', '莲莲图集', '用户上传的图集图片，默认保留', [galleryTarget].filter(isUninstallTargetInput), { kind: 'userData', defaultKeep: true }))
 
   const logTarget = existingProjectTarget('runtime/logs')
-  pushUninstallItem(userDataItems, createUninstallItem('runtime-logs', '运行日志', 'Koishi、Dashboard 和部署过程日志，默认保留', [logTarget].filter(Boolean), { kind: 'userData', defaultKeep: true }))
+  pushUninstallItem(userDataItems, createUninstallItem('runtime-logs', '运行日志', 'Koishi、Dashboard 和部署过程日志，默认保留', [logTarget].filter(isUninstallTargetInput), { kind: 'userData', defaultKeep: true }))
 
   const otherDataTargets = listExistingDataChildren(excludedData)
   pushUninstallItem(userDataItems, createUninstallItem('other-data', '其他 data 用户数据', '白名单、黑名单、暂停状态、缓存和其他运行数据，默认保留', otherDataTargets, { kind: 'userData', defaultKeep: true }))
@@ -235,16 +401,16 @@ function buildLocalUninstallPreview() {
   return { ok: true, deleteItems, userDataItems, keepItems, warnings, stats: { deleteSize: deleteItems.reduce((s, i) => s + i.size, 0), userDataSize: userDataItems.reduce((s, i) => s + i.size, 0), deleteCount: deleteItems.reduce((s, i) => s + i.count, 0), userDataCount: userDataItems.reduce((s, i) => s + i.count, 0) }, systemTools: { node: nodeInfo, npm: npmInfo }, projectDir: path.resolve(KOISHI_DIR) }
 }
 
-function stopLocalDeployProcessesForUninstall() {
+function stopLocalDeployProcessesForUninstall(): UninstallWarning[] {
   if (process.platform !== 'win32') return [{ type: 'info', message: '非 Windows 后端未执行进程停止' }]
   const roots = uniquePaths([path.resolve(KOISHI_DIR), runtimePath(), runtimePath('napcat'), runtimePath('NapCat'), readFileSync(LOCAL_NAPCAT_DIR_FILE)].filter(Boolean))
   const psPaths = roots.map(item => psQuote(path.resolve(item))).join(',')
   const script = `$self = ${process.pid}; $paths = @(${psPaths}); $procs = Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and ($_.Name -match 'node|napcat|qq|electron|koishi') }; foreach ($proc in $procs) { $text = (($proc.CommandLine, $proc.ExecutablePath) -join ' '); foreach ($item in $paths) { if ($item -and $item.Length -gt 3 -and $text -like ('*' + $item + '*')) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue; break } } }`
   try { execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 10000, stdio: ['ignore', 'ignore', 'pipe'] }); sleepSync(600); return [] }
-  catch (e) { return [{ type: 'warning', message: '停止本项目相关进程时遇到问题：' + String(e.stderr || e.message || '').trim() }] }
+  catch (e) { return [{ type: 'warning', message: '停止本项目相关进程时遇到问题：' + getLegacyStderrOrMessage(e) }] }
 }
 
-function removeTarget(target) {
+function removeTarget(target: UninstallTarget): RemovedTargetResult {
   assertSafeUninstallTarget(target)
   const summary = summarizePath(target.fullPath)
   removePathWithRetry(target.fullPath)
@@ -252,24 +418,24 @@ function removeTarget(target) {
   return { path: target.path, size: summary.size, count: summary.count, status: 'ok' }
 }
 
-function pruneEmptyProjectDirs(removeWorkspaceRoot = false) {
+function pruneEmptyProjectDirs(removeWorkspaceRoot = false): void {
   for (const rel of ['runtime/downloads', 'runtime/logs', 'runtime', 'data/backups/dashboard-local-deploy', 'data/backups', 'data']) {
     try { fs.rmdirSync(resolveProjectRel(rel)) } catch { /* non-critical: prune empty dir best effort */ }
   }
   if (removeWorkspaceRoot && isPackagedLocalWorkspace()) { try { fs.rmdirSync(path.resolve(KOISHI_DIR)) } catch { /* non-critical: prune workspace best effort */ } }
 }
 
-function runLocalUninstall(options: LocalUninstallOptions = {}) {
+function runLocalUninstall(options: LocalUninstallOptions = {}): LocalUninstallResult {
   const preview = buildLocalUninstallPreview()
   const deleteUserDataKeys = new Set(Array.isArray(options.deleteUserDataKeys) ? options.deleteUserDataKeys.map(String) : [])
   const deleteAllUserData = preview.userDataItems.every(item => deleteUserDataKeys.has(item.key))
   const selectedItems = preview.deleteItems.concat(preview.userDataItems.filter(item => deleteUserDataKeys.has(item.key)))
-  const deleted = [], kept = preview.keepItems.concat(preview.userDataItems.filter(item => !deleteUserDataKeys.has(item.key))), errors = []
+  const deleted: DeletedTargetResult[] = [], kept: (KeepItem | UninstallItem)[] = [...preview.keepItems, ...preview.userDataItems.filter(item => !deleteUserDataKeys.has(item.key))], errors: UninstallError[] = []
   const warnings = [...(preview.warnings || []), ...stopLocalDeployProcessesForUninstall()]
-  for (const item of selectedItems) { for (const target of item.targets || []) { try { deleted.push({ ...removeTarget(target), item: item.key, label: item.label }) } catch (e) { errors.push({ path: target.path, item: item.key, label: item.label, reason: e.message }) } } }
-  for (const target of listExistingProjectChildren('runtime', name => /^(?:napcat|node)-install-/i.test(name)).concat(['runtime/napcat', 'runtime/NapCat'].map(existingProjectTarget).filter(Boolean))) {
+  for (const item of selectedItems) { for (const target of item.targets || []) { try { deleted.push({ ...removeTarget(target), item: item.key, label: item.label }) } catch (e) { errors.push({ path: target.path, item: item.key, label: item.label, reason: getLegacyErrorMessage(e) }) } } }
+  for (const target of listExistingProjectChildren('runtime', name => /^(?:napcat|node)-install-/i.test(name)).concat(['runtime/napcat', 'runtime/NapCat'].map(existingProjectTarget).filter(isUninstallTargetInput))) {
     if (!fs.existsSync(target.fullPath)) continue
-    if (selectedItems.some(item => item.key === 'runtime-install-staging' || item.key === 'napcat-runtime')) errors.push({ path: target.path, item: 'residual-runtime', label: '残留运行环境', reason: '卸载后路径仍存在，可能被 NapCat/QQ/Node 占用：' + target.fullPath })
+    if (selectedItems.some(item => item.key === 'runtime-install-staging' || item.key === 'napcat-runtime')) errors.push({ path: target.path || projectDisplayPath(target.fullPath), item: 'residual-runtime', label: '残留运行环境', reason: '卸载后路径仍存在，可能被 NapCat/QQ/Node 占用：' + target.fullPath })
   }
   pruneEmptyProjectDirs(deleteAllUserData)
   return { ok: errors.length === 0, deleted, kept, warnings, errors, message: errors.length ? '一键卸载完成，但有项目未能删除' : '一键卸载完成' }

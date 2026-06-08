@@ -1,4 +1,9 @@
-declare function apply(ctx: any): void;
+interface KoishiContextLike {
+    logger(name: string): {
+        info(message: string): void;
+    };
+}
+declare function apply(ctx: KoishiContextLike): void;
 declare const _default: {
     name: string;
     apply: typeof apply;

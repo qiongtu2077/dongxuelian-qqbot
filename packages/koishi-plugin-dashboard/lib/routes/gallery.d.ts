@@ -1,31 +1,25 @@
-declare function resolveGalleryId(id: any): any;
-declare function galleryMimeFromName(name: any): any;
-declare function listGalleryImages(): {
-    id: any;
-    name: any;
-    size: any;
-    mtimeMs: any;
-    mime: any;
+import type { IncomingMessage, ServerResponse } from 'http';
+interface GalleryItem {
+    id: string;
+    name: string;
+    size: number;
+    mtimeMs: number;
+    mime: string;
     url: string;
-    foilStyle: string;
-}[];
-declare function handleGetGallery(req: any, res: any): any;
-declare function handlePostGallery(req: any, res: any): void;
-declare function handleDeleteGallery(req: any, res: any): void;
-declare function handlePutGalleryStyle(req: any, res: any): void;
-declare function handleGetGalleryImage(req: any, res: any, pathname: any): void;
+    foilStyle: string | null;
+}
+type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => unknown;
+interface PrefixRoute {
+    prefix: string;
+    method: string;
+    handler: RouteHandler;
+}
+declare function resolveGalleryId(id: unknown): string;
+declare function galleryMimeFromName(name: unknown): string;
+declare function listGalleryImages(): GalleryItem[];
 declare const _default: {
-    routes: {
-        'GET /dashboard/api/gallery': typeof handleGetGallery;
-        'POST /dashboard/api/gallery': typeof handlePostGallery;
-        'DELETE /dashboard/api/gallery': typeof handleDeleteGallery;
-        'PUT /dashboard/api/gallery/style': typeof handlePutGalleryStyle;
-    };
-    prefixRoutes: {
-        prefix: string;
-        method: string;
-        handler: typeof handleGetGalleryImage;
-    }[];
+    routes: Record<string, RouteHandler>;
+    prefixRoutes: PrefixRoute[];
     listGalleryImages: typeof listGalleryImages;
     resolveGalleryId: typeof resolveGalleryId;
     galleryMimeFromName: typeof galleryMimeFromName;

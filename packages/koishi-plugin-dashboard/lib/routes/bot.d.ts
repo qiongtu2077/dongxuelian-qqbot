@@ -1,57 +1,29 @@
-declare function stopKoishiProcesses(): void;
-declare function getLegacyNapcatStatus(): {
+import type { IncomingMessage, ServerResponse } from 'http';
+interface LegacyNapcatStatus {
     running: boolean;
-    login: string;
+    login: 'online' | 'waiting-login' | 'offline';
     webui: boolean;
     onebot: boolean;
-    webuiPort: any;
-    onebotPort: any;
-    qqExecutable: any;
-    processes: any[];
-};
-declare function readKoishiSelfId(): any;
+    webuiPort: number;
+    onebotPort: number;
+    qqExecutable: string;
+    processes: string[];
+}
+type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => unknown;
+declare function stopKoishiProcesses(): void;
+declare function getLegacyNapcatStatus(): LegacyNapcatStatus;
+declare function readKoishiSelfId(): string;
 declare function resolveNapcatRestartQq(): string;
-declare function handleGetBotStatus(req: any, res: any): any;
-declare function handleGetLogging(req: any, res: any): any;
-declare function handlePutLogging(req: any, res: any): void;
-declare function handlePostBotStart(req: any, res: any): any;
-declare function handlePostBotStop(req: any, res: any): any;
-declare function handleGetMaintenance(req: any, res: any): any;
-declare function handlePutMaintenance(req: any, res: any): void;
-declare function handleGetThrottle(req: any, res: any): any;
-declare function handlePutThrottle(req: any, res: any): void;
-declare function handleGetQqToken(req: any, res: any): any;
-declare function handleGetQqSshInfo(req: any, res: any): any;
-declare function handleGetQqSelfId(req: any, res: any): any;
-declare function handlePutQqSelfId(req: any, res: any): void;
-declare function handleGetNapcatStatus(req: any, res: any): any;
-declare function handlePostNapcatRestart(req: any, res: any): any;
-declare function handleGetBotActivity(req: any, res: any, pathname: any, url: any): any;
 declare const _default: {
-    routes: {
-        'GET /dashboard/api/bot/status': typeof handleGetBotStatus;
-        'GET /dashboard/api/bot/activity': typeof handleGetBotActivity;
-        'GET /dashboard/api/logging': typeof handleGetLogging;
-        'PUT /dashboard/api/logging': typeof handlePutLogging;
-        'POST /dashboard/api/bot/start': typeof handlePostBotStart;
-        'POST /dashboard/api/bot/stop': typeof handlePostBotStop;
-        'GET /dashboard/api/maintenance': typeof handleGetMaintenance;
-        'PUT /dashboard/api/maintenance': typeof handlePutMaintenance;
-        'GET /dashboard/api/throttle': typeof handleGetThrottle;
-        'PUT /dashboard/api/throttle': typeof handlePutThrottle;
-        'GET /dashboard/api/qq/token': typeof handleGetQqToken;
-        'GET /dashboard/api/qq/ssh-info': typeof handleGetQqSshInfo;
-        'GET /dashboard/api/qq/selfid': typeof handleGetQqSelfId;
-        'PUT /dashboard/api/qq/selfid': typeof handlePutQqSelfId;
-        'GET /dashboard/api/napcat/status': typeof handleGetNapcatStatus;
-        'POST /dashboard/api/napcat/restart': typeof handlePostNapcatRestart;
-    };
-    resolveKoishiListenPort: any;
+    routes: Record<string, RouteHandler>;
+    resolveKoishiListenPort: () => number;
     stopKoishiProcesses: typeof stopKoishiProcesses;
     getLegacyNapcatStatus: typeof getLegacyNapcatStatus;
     readKoishiSelfId: typeof readKoishiSelfId;
     resolveNapcatRestartQq: typeof resolveNapcatRestartQq;
-    readLoggingConfig: any;
-    writeLoggingConfig: any;
+    readLoggingConfig: () => unknown;
+    writeLoggingConfig: (config: unknown) => {
+        enabled?: boolean;
+    };
 };
 export = _default;

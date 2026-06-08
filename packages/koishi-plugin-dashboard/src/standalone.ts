@@ -3,10 +3,18 @@
  * Standalone Dashboard server.
  * Runs independently from the Koishi lifecycle on DASHBOARD_PORT.
  */
-const fs = require('fs')
-const path = require('path')
-const http = require('http')
-const { parsePositiveInt, isLoopbackAddress, getRemoteAddress, isInsidePath, log } = require('./lib/utils')
+import type { IncomingMessage, ServerResponse } from 'http'
+
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const http = require('http') as typeof import('http')
+const { parsePositiveInt, isLoopbackAddress, getRemoteAddress, isInsidePath, log } = require('./lib/utils') as {
+  parsePositiveInt(value: unknown, fallback: number, min: number, max: number): number
+  isLoopbackAddress(address: unknown): boolean
+  getRemoteAddress(req: IncomingMessage | null | undefined): string
+  isInsidePath(parent: string, child: string): boolean
+  log(message: unknown): void
+}
 const {
   PORT,
   HOST,
@@ -18,7 +26,18 @@ const {
   ADMIN_PWD_FILE,
   ACCESS_PWD_FILE,
   isGlobalLocalMode,
-} = require('./lib/paths')
+} = require('./lib/paths') as {
+  PORT: number
+  HOST: string
+  DIST_DIR: string
+  AGENT_CONSOLE_DIST_DIR: string
+  KOISHI_PID_FILE: string
+  DATA_DIR: string
+  RESET_TOKEN_FILE: string
+  ADMIN_PWD_FILE: string
+  ACCESS_PWD_FILE: string
+  isGlobalLocalMode(): boolean
+}
 const {
   isLocalAuthBypass,
   requireAdmin,
@@ -28,10 +47,39 @@ const {
   ensureInitialCredentials,
   applyCorsHeaders,
   rejectCrossSiteRequest,
-} = require('./lib/auth')
-const { getNapcatToken } = require('./lib/napcat')
-const { napcatProxy } = require('./lib/napcat-proxy')
-const router = require('./lib/router')
+} = require('./lib/auth') as {
+  isLocalAuthBypass(req: IncomingMessage): boolean
+  requireAdmin(req: IncomingMessage, res: ServerResponse): boolean
+  shouldGenerateResetTokenOnStartup(): boolean
+  getResetToken(): string
+  generateResetToken(): string
+  ensureInitialCredentials(): void
+  applyCorsHeaders(req: IncomingMessage, res: ServerResponse): void
+  rejectCrossSiteRequest(req: IncomingMessage, res: ServerResponse): boolean
+}
+const { getNapcatToken } = require('./lib/napcat') as { getNapcatToken(): string }
+const { napcatProxy } = require('./lib/napcat-proxy') as {
+  napcatProxy(req: IncomingMessage, res: ServerResponse, reqPath: string, body?: string | null, options?: { token?: string }): void
+}
+const router = require('./lib/router') as { dispatch(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): boolean }
+
+const STATIC_MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.mjs': 'application/javascript',
+  '.css': 'text/css',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.json': 'application/json',
+  '.ico': 'image/x-icon',
+}
+
+interface ServerListenError extends Error {
+  code?: string
+}
 
 process.on('uncaughtException', (err) => {
   console.error('[dashboard] UNCAUGHT EXCEPTION:', err.stack || err.message)
@@ -56,7 +104,7 @@ const CONTENT_SECURITY_POLICY = [
 ].join('; ')
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
+  const url = new URL(String(req.url), `http://${req.headers.host || 'localhost'}`)
   const pathname = url.pathname
 
   applyCorsHeaders(req, res)
@@ -95,7 +143,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Serves one static file from a constrained root directory.
-  const serveStaticFile = (rootDir, filePath) => {
+  const serveStaticFile = (rootDir: string, filePath: string): boolean => {
     try {
       if (!isInsidePath(rootDir, filePath)) {
         res.writeHead(403)
@@ -110,7 +158,7 @@ const server = http.createServer(async (req, res) => {
           return true
         }
         const ext = path.extname(filePath)
-        const mime = { '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' }[ext] || 'application/octet-stream'
+        const mime = STATIC_MIME_TYPES[ext] || 'application/octet-stream'
         const rel = path.relative(rootDir, filePath).replace(/\\/g, '/')
         const cache = rel === 'index.html' ? 'no-cache' : (rel.startsWith('assets/') ? 'public, max-age=31536000, immutable' : 'public, max-age=3600')
         res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': cache })
@@ -161,7 +209,7 @@ if (require.main === module) {
   ensureInitialCredentials()
   if (shouldGenerateResetTokenOnStartup() && !getResetToken()) generateResetToken()
 
-  server.on('error', err => {
+  server.on('error', (err: ServerListenError) => {
     if (err && err.code === 'EADDRINUSE') log(`port ${PORT} is already in use`)
     else console.error('[dashboard] HTTP server error:', err.stack || err.message || err)
     process.exit(1)

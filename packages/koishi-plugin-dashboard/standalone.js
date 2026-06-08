@@ -1,9 +1,5 @@
 #!/usr/bin/env node
 "use strict";
-/**
- * Standalone Dashboard server.
- * Runs independently from the Koishi lifecycle on DASHBOARD_PORT.
- */
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -13,6 +9,19 @@ const { isLocalAuthBypass, requireAdmin, shouldGenerateResetTokenOnStartup, getR
 const { getNapcatToken } = require('./lib/napcat');
 const { napcatProxy } = require('./lib/napcat-proxy');
 const router = require('./lib/router');
+const STATIC_MIME_TYPES = {
+    '.html': 'text/html',
+    '.js': 'application/javascript',
+    '.mjs': 'application/javascript',
+    '.css': 'text/css',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.svg': 'image/svg+xml',
+    '.json': 'application/json',
+    '.ico': 'image/x-icon',
+};
 process.on('uncaughtException', (err) => {
     console.error('[dashboard] UNCAUGHT EXCEPTION:', err.stack || err.message);
 });
@@ -34,7 +43,7 @@ const CONTENT_SECURITY_POLICY = [
     "frame-ancestors 'self'",
 ].join('; ');
 const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const url = new URL(String(req.url), `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname;
     applyCorsHeaders(req, res);
     res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
@@ -86,7 +95,7 @@ const server = http.createServer(async (req, res) => {
                     return true;
                 }
                 const ext = path.extname(filePath);
-                const mime = { '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.json': 'application/json', '.ico': 'image/x-icon' }[ext] || 'application/octet-stream';
+                const mime = STATIC_MIME_TYPES[ext] || 'application/octet-stream';
                 const rel = path.relative(rootDir, filePath).replace(/\\/g, '/');
                 const cache = rel === 'index.html' ? 'no-cache' : (rel.startsWith('assets/') ? 'public, max-age=31536000, immutable' : 'public, max-age=3600');
                 res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': cache });
@@ -137,7 +146,7 @@ if (require.main === module) {
     ensureInitialCredentials();
     if (shouldGenerateResetTokenOnStartup() && !getResetToken())
         generateResetToken();
-    server.on('error', err => {
+    server.on('error', (err) => {
         if (err && err.code === 'EADDRINUSE')
             log(`port ${PORT} is already in use`);
         else

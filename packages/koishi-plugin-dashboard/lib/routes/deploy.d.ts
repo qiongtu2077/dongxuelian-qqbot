@@ -1,31 +1,37 @@
-declare function handleGetDeployConfig(req: any, res: any): any;
-declare function handleGetCheckUpdate(req: any, res: any): any;
-declare function handlePutDeployConfig(req: any, res: any): void;
-declare function handlePostDeployRun(req: any, res: any): void;
-declare function handleGetDeployProgress(req: any, res: any, pathname: any): any;
-declare function handlePostFrontendRebuild(req: any, res: any): any;
-declare function handleGetFrontendRebuildStatus(req: any, res: any): any;
-declare function handlePostDeployConfirm(req: any, res: any): void;
-declare function handlePostDeployUpload(req: any, res: any): void;
-declare function handlePostDeployLocal(req: any, res: any): void;
-declare function handleGetLocalConfigPreview(req: any, res: any): any;
-declare function handlePostLocalConfigDelete(req: any, res: any): void;
-declare function handleGetLocalUninstallPreview(req: any, res: any): any;
-declare function handlePostLocalUninstall(req: any, res: any): void;
-declare function handlePostNapcatDownload(req: any, res: any): void;
-declare function handlePostNapcatWindowsDownload(req: any, res: any): void;
-declare function handlePostNodeWindowsInstall(req: any, res: any): void;
-declare function handlePostNpmInstall(req: any, res: any): any;
-declare function handlePostNpmRepairAndInstall(req: any, res: any): any;
-declare function handleGetNpmInstallStatus(req: any, res: any): any;
-declare function handlePostNapcatStart(req: any, res: any): any;
-declare function handleGetNapcatStatus(req: any, res: any): any;
-declare function handlePostKoishiStart(req: any, res: any): any;
-declare function handleGetKoishiStatus(req: any, res: any): any;
-declare function handleGetLocalReadyCheck(req: any, res: any): any;
-declare function handleGetEnvCheck(req: any, res: any): any;
-declare function handleGetBotLocalStatus(req: any, res: any): any;
-declare function handlePostBotLocalStop(req: any, res: any): any;
+import type { IncomingMessage, ServerResponse } from 'http';
+type DeployRouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => void | Promise<void>;
+interface DeployPrefixRoute {
+    prefix: string;
+    method: string;
+    handler: DeployRouteHandler;
+}
+declare function handleGetDeployConfig(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetCheckUpdate(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePutDeployConfig(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostDeployRun(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostFrontendRebuild(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetFrontendRebuildStatus(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostDeployConfirm(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostDeployUpload(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostDeployLocal(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetLocalConfigPreview(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostLocalConfigDelete(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetLocalUninstallPreview(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostLocalUninstall(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostNapcatDownload(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostNapcatWindowsDownload(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostNodeWindowsInstall(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostNpmInstall(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostNpmRepairAndInstall(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetNpmInstallStatus(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostNapcatStart(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetNapcatStatus(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostKoishiStart(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetKoishiStatus(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetLocalReadyCheck(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetEnvCheck(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetBotLocalStatus(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostBotLocalStop(req: IncomingMessage, res: ServerResponse): void;
 declare const _default: {
     routes: {
         'GET /dashboard/api/deploy/config': typeof handleGetDeployConfig;
@@ -56,10 +62,6 @@ declare const _default: {
         'GET /dashboard/api/bot/local-status': typeof handleGetBotLocalStatus;
         'POST /dashboard/api/bot/local-stop': typeof handlePostBotLocalStop;
     };
-    prefixRoutes: {
-        prefix: string;
-        method: string;
-        handler: typeof handleGetDeployProgress;
-    }[];
+    prefixRoutes: DeployPrefixRoute[];
 };
 export = _default;

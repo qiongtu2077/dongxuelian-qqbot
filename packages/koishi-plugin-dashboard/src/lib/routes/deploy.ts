@@ -1,19 +1,21 @@
 'use strict'
 
-const fs = require('fs')
-const path = require('path')
-const os = require('os')
-const crypto = require('crypto')
-const { exec, execSync } = require('child_process')
-const { json, collectBody, log, shellQuote, isInsidePath, copyRecursiveSync } = require('../utils')
-const { KOISHI_DIR, DATA_DIR, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, PORT, toProjectRel } = require('../paths')
-const { requireAdmin } = require('../auth')
-const { getCommandInfo, getLocalToolCommand, checkPortState } = require('../tools')
-const { detectNapcatInstallation, resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort } = require('../napcat')
-const { buildFrontendDist } = require('../frontend')
-const { localTasks, getTaskPublicStatus, spawnLocalTask, getRebuildStatus, setRebuildStatus } = require('../deploy-state')
-const { readLastLogLines } = require('../logging')
-const dh = require('../deploy-helpers')
+import type { IncomingMessage, ServerResponse } from 'http'
+
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const os = require('os') as typeof import('os')
+const crypto = require('crypto') as typeof import('crypto')
+const { exec, execSync } = require('child_process') as typeof import('child_process')
+const { json, collectBody, log, shellQuote, isInsidePath, copyRecursiveSync } = require('../utils') as typeof import('../utils')
+const { KOISHI_DIR, DATA_DIR, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, PORT, toProjectRel } = require('../paths') as typeof import('../paths')
+const { requireAdmin } = require('../auth') as typeof import('../auth')
+const { getCommandInfo, getLocalToolCommand, checkPortState } = require('../tools') as typeof import('../tools')
+const { detectNapcatInstallation, resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort } = require('../napcat') as typeof import('../napcat')
+const { buildFrontendDist } = require('../frontend') as typeof import('../frontend')
+const { localTasks, getTaskPublicStatus, spawnLocalTask, getRebuildStatus, setRebuildStatus } = require('../deploy-state') as typeof import('../deploy-state')
+const { readLastLogLines } = require('../logging') as typeof import('../logging')
+const dh = require('../deploy-helpers') as typeof import('../deploy-helpers')
 
 const DEPLOY_CONFIG_FILE = path.join(DATA_DIR, 'deploy-config.json')
 const DEPLOY_TASKS_DIR = path.join(DATA_DIR, 'deploy-tasks')
@@ -30,20 +32,74 @@ interface InstallDetail {
   [key: string]: unknown
 }
 
-function requireStrictAdmin(req, res) {
-  const { isLocalAuthBypass, validateAdminToken } = require('../auth')
+interface DeployUploadBody extends Record<string, unknown> {
+  name?: unknown
+  data?: unknown
+}
+
+interface LocalDeployBody extends Record<string, unknown> {
+  qq?: unknown
+  provider?: unknown
+  model?: unknown
+  baseUrl?: unknown
+  apiKey?: unknown
+  adminIds?: unknown
+}
+
+interface LocalUninstallBody {
+  confirm?: unknown
+  deleteUserDataKeys?: unknown[]
+}
+
+interface NapcatDownloadBody {
+  url?: unknown
+}
+
+interface NapcatWindowsDownloadBody {
+  installDir?: unknown
+}
+
+interface NpmGuideStep {
+  label: string
+  command: string
+}
+
+type DeployRouteHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+  url: URL
+) => void | Promise<void>
+
+interface DeployPrefixRoute {
+  prefix: string
+  method: string
+  handler: DeployRouteHandler
+}
+
+type PortState = ReturnType<typeof checkPortState>
+type LegacyCommandInfo = ReturnType<typeof getCommandInfo> & {
+  path?: string
+}
+
+function getLegacyErrorMessage(error: unknown): unknown {
+  return (error as { message?: unknown } | null | undefined)?.message
+}
+
+function requireStrictAdmin(req: IncomingMessage, res: ServerResponse): boolean {
+  const { isLocalAuthBypass, validateAdminToken } = require('../auth') as typeof import('../auth')
   if (isLocalAuthBypass(req)) return true
-  const token = (req.headers['x-admin-token'] || '').trim()
+  const token = String(req.headers['x-admin-token'] || '').trim()
   if (!token || !validateAdminToken(token)) { json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403); return false }
   return true
 }
 
-function stopKoishiProcesses() {
-  const { stopKoishiProcesses: doStop } = require('./bot')
+function stopKoishiProcesses(): unknown {
+  const { stopKoishiProcesses: doStop } = require('./bot') as typeof import('./bot')
   return doStop()
 }
 
-function handleGetDeployConfig(req, res) {
+function handleGetDeployConfig(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   try {
     const cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8'))
@@ -54,14 +110,14 @@ function handleGetDeployConfig(req, res) {
   } catch { return json(res, { server: '', appDir: DEFAULT_REMOTE_APP_DIR, botRunning: false, _localFingerprint: dh.computeFingerprint() }) }
 }
 
-function handleGetCheckUpdate(req, res) {
+function handleGetCheckUpdate(req: IncomingMessage, res: ServerResponse): void {
   const local = dh.computeFingerprint()
   let deployed = ''
   try { deployed = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8')).deployFingerprint || '' } catch { /* non-critical: missing deploy config */ }
   return json(res, { local, deployed, upToDate: local === deployed })
 }
 
-function handlePutDeployConfig(req, res) {
+function handlePutDeployConfig(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
@@ -70,11 +126,11 @@ function handlePutDeployConfig(req, res) {
       fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8')
       fs.renameSync(tmp, DEPLOY_CONFIG_FILE)
       json(res, { ok: true, message: '配置已保存' })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handlePostDeployRun(req, res) {
+function handlePostDeployRun(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
@@ -85,7 +141,7 @@ function handlePostDeployRun(req, res) {
       const taskId = Date.now().toString(36) + crypto.randomBytes(4).toString('hex')
       if (!fs.existsSync(DEPLOY_TASKS_DIR)) fs.mkdirSync(DEPLOY_TASKS_DIR, { recursive: true })
       const logFile = path.join(DEPLOY_TASKS_DIR, taskId + '.log')
-      const taskLog = (msg) => { try { fs.appendFileSync(logFile, msg + '\n', 'utf8') } catch { /* non-critical: progress log best effort */ } }
+      const taskLog = (msg: string): void => { try { fs.appendFileSync(logFile, msg + '\n', 'utf8') } catch { /* non-critical: progress log best effort */ } }
       json(res, { ok: true, taskId })
       taskLog('开始远程刷新部署：先重建当前 Dashboard 后端机器上的前端源码')
       buildFrontendDist({ log: taskLog, updateStatus: status => setRebuildStatus(status) }, (buildErr) => {
@@ -93,7 +149,7 @@ function handlePostDeployRun(req, res) {
         const repoRoot = path.join(PLUGIN_ROOT, '..', '..')
         const s = cfg.server, d = cfg.appDir
         const pkgs = ['koishi-plugin-dongxuelian-ai','koishi-plugin-dongxuelian-help','koishi-plugin-group-name-at','koishi-plugin-defense','koishi-plugin-local-video-sender','koishi-plugin-group-leave-notice','koishi-plugin-dongxuelian-poke','koishi-plugin-daily-report']
-        const cmds = []
+        const cmds: string[] = []
         const dashboardDir = dh.remoteJoin(d, 'packages', 'koishi-plugin-dashboard')
         const dashboardFrontendDir = dh.remoteJoin(dashboardDir, 'frontend')
         const dashboardSrcDir = dh.remoteJoin(dashboardFrontendDir, 'src')
@@ -146,18 +202,18 @@ function handlePostDeployRun(req, res) {
         cmds.push(dh.sshCommand(s, `if ss -tlnp | grep -q :5140 || curl -fsS http://127.0.0.1:5140 >/dev/null; then exit 0; fi; echo ${shellQuote('health check failed; last koishi.log lines:')}; tail -30 ${shellQuote(dh.remoteJoin(d, 'koishi.log'))}; exit 1`))
         cmds.push(`echo "✅ 部署完成"`)
         let idx = 0
-        function runNext() {
-          if (idx >= cmds.length) { try { dh.writeDeployFingerprint(DEPLOY_CONFIG_FILE, { server: s, appDir: d, mode: cfg.mode }) } catch (e) { taskLog('warning: deploy fingerprint write failed: ' + e.message) }; taskLog('DONE'); return }
+        function runNext(): void {
+          if (idx >= cmds.length) { try { dh.writeDeployFingerprint(DEPLOY_CONFIG_FILE, { server: s, appDir: d, mode: cfg.mode }) } catch (e) { taskLog('warning: deploy fingerprint write failed: ' + getLegacyErrorMessage(e)) }; taskLog('DONE'); return }
           taskLog('$ ' + cmds[idx])
           exec(cmds[idx], { cwd: repoRoot, timeout: 120000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => { if (stdout) taskLog(stdout.trim()); if (stderr) taskLog(stderr.trim()); if (err) { taskLog('❌ ' + err.message); taskLog('FAIL'); return }; idx++; runNext() })
         }
         runNext()
       })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetDeployProgress(req, res, pathname) {
+function handleGetDeployProgress(req: IncomingMessage, res: ServerResponse, pathname: string): void {
   if (!requireAdmin(req, res)) return
   const taskId = pathname.split('/').pop()
   if (!taskId || !/^[a-z0-9]+$/.test(taskId)) return json(res, { ok: false, message: '无效 taskId' }, 400)
@@ -177,7 +233,7 @@ function handleGetDeployProgress(req, res, pathname) {
   } catch { return json(res, { ok: false, lines: [], done: false }) }
 }
 
-function handlePostFrontendRebuild(req, res) {
+function handlePostFrontendRebuild(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (getRebuildStatus().state === 'building') return json(res, { ok: false, message: '正在构建中，请等待完成' })
   const started = buildFrontendDist({ log: msg => log('frontend rebuild: ' + msg), updateStatus: status => setRebuildStatus(status) }, (err) => { if (err) log('frontend rebuild failed: ' + err.message) })
@@ -185,9 +241,9 @@ function handlePostFrontendRebuild(req, res) {
   return json(res, { ok: true, message: '前端构建已启动' })
 }
 
-function handleGetFrontendRebuildStatus(req, res) { return json(res, getRebuildStatus()) }
+function handleGetFrontendRebuildStatus(req: IncomingMessage, res: ServerResponse): void { return json(res, getRebuildStatus()) }
 
-function handlePostDeployConfirm(req, res) {
+function handlePostDeployConfirm(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   try {
     let cfg: DeployConfirmConfig = {}
@@ -198,14 +254,14 @@ function handlePostDeployConfirm(req, res) {
     fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8')
     fs.renameSync(tmp, DEPLOY_CONFIG_FILE)
     json(res, { ok: true })
-  } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+  } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
 }
 
-function handlePostDeployUpload(req, res) {
+function handlePostDeployUpload(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { name, data } = JSON.parse(body)
+      const { name, data } = JSON.parse(body) as DeployUploadBody
       if (!name || !data) return json(res, { ok: false, message: '文件名或内容为空' }, 400)
       if (name !== 'bilibili-cookies.txt') return json(res, { ok: false, message: 'only bilibili-cookies.txt can be uploaded here' }, 400)
       const filePath = path.join(DATA_DIR, 'bilibili-cookies.txt')
@@ -217,16 +273,16 @@ function handlePostDeployUpload(req, res) {
       fs.mkdirSync(DATA_DIR, { recursive: true })
       fs.writeFileSync(filePath, buf)
       json(res, { ok: true, message: 'bilibili-cookies.txt 已保存到本地，部署时将自动推送' })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handlePostDeployLocal(req, res) {
+function handlePostDeployLocal(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const cfg = JSON.parse(body)
+      const cfg = JSON.parse(body) as LocalDeployBody
       const workDir = path.resolve(KOISHI_DIR)
       const qq = String(cfg.qq || '').trim()
       const provider = String(cfg.provider || 'opencode').trim() || 'opencode'
@@ -239,7 +295,7 @@ function handlePostDeployLocal(req, res) {
       if (!isInsidePath(KOISHI_DIR, workDir)) return json(res, { ok: false, message: '本地部署目录必须在当前项目目录内' }, 400)
       dh.writeRuntimeLayout()
       const pkgs = ['koishi-plugin-dongxuelian-ai','koishi-plugin-dongxuelian-help','koishi-plugin-group-name-at','koishi-plugin-defense','koishi-plugin-local-video-sender','koishi-plugin-group-leave-notice','koishi-plugin-dongxuelian-poke','koishi-plugin-daily-report']
-      const copiedPlugins = []
+      const copiedPlugins: string[] = []
       for (const pkg of pkgs) {
         const src = path.join(PLUGIN_ROOT, '..', pkg)
         const dst = path.join(workDir, 'node_modules', pkg)
@@ -252,12 +308,12 @@ function handlePostDeployLocal(req, res) {
         }
       }
       const timestamp = Date.now()
-      const files = []
+      const files: ReturnType<typeof dh.writeTrackedLocalFile>[] = []
       files.push(dh.writeTrackedLocalFile('data/ai-provider.txt', provider + '\n', { deleteByDefault: true, kind: 'provider' }, timestamp))
       files.push(dh.writeTrackedLocalFile('data/ai-model.txt', model + '\n', { deleteByDefault: true, kind: 'model' }, timestamp))
       files.push(dh.writeTrackedLocalFile('data/ai-base-url.txt', baseUrl + '\n', { deleteByDefault: true, kind: 'baseUrl' }, timestamp))
       const inputApiKey = String(cfg.apiKey || '').trim()
-      const keyFiles = { opencode: 'ai-openai-key.txt', deepseek: 'ai-deepseek-key.txt', dashscope: 'ai-dashscope-key.txt', glm: 'ai-glm-key.txt', mimorium: 'ai-mimorium-key.txt' }
+      const keyFiles: Record<string, string> = { opencode: 'ai-openai-key.txt', deepseek: 'ai-deepseek-key.txt', dashscope: 'ai-dashscope-key.txt', glm: 'ai-glm-key.txt', mimorium: 'ai-mimorium-key.txt' }
       const keyFile = keyFiles[provider] || keyFiles.opencode
       if (inputApiKey) files.push(dh.writeTrackedLocalFile('data/' + keyFile, inputApiKey + '\n', { deleteByDefault: false, sensitive: true, kind: 'apiKey' }, timestamp))
       if (cfg.adminIds) files.push(dh.writeTrackedLocalFile('data/ai-admin-ids.json', JSON.stringify(cfg.adminIds, null, 2) + '\n', { deleteByDefault: false, sensitive: true, kind: 'adminIds' }, timestamp))
@@ -269,70 +325,70 @@ function handlePostDeployLocal(req, res) {
       const manifest = { version: 1, generatedAt: timestamp, qq, onebotEndpoint: 'ws://127.0.0.1:8080/onebot/v11/ws', aiKeyConfigured: aiKey.configured, files }
       dh.writeLocalDeployManifest(manifest)
       json(res, { ok: true, message: aiKey.configured ? 'Koishi 本地配置已写入，NapCat 使用 8080 OneBot WebSocket' : 'Koishi 本地配置已写入；AI Key 未配置，基础部署可继续，AI 回复暂不可用', files, copiedPlugins, aiKeyConfigured: aiKey.configured, aiKey, manifest: { path: toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE), generatedAt: timestamp } })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetLocalConfigPreview(req, res) {
+function handleGetLocalConfigPreview(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
-  try { return json(res, dh.buildLocalConfigPreview()) } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  try { return json(res, dh.buildLocalConfigPreview()) } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
 }
 
-function handlePostLocalConfigDelete(req, res) {
+function handlePostLocalConfigDelete(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   collectBody(req, res, () => {
     try { const result = dh.deleteLocalConfigFiles(); return json(res, { ...result, message: result.errors.length ? '部分配置未能删除' : 'Koishi 本地配置已删除' }, result.errors.length ? 400 : 200) }
-    catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetLocalUninstallPreview(req, res) {
+function handleGetLocalUninstallPreview(req: IncomingMessage, res: ServerResponse): void {
   if (!requireStrictAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   try {
-    const { buildLocalUninstallPreview } = require('../deploy-uninstall')
+    const { buildLocalUninstallPreview } = require('../deploy-uninstall') as typeof import('../deploy-uninstall')
     const preview = buildLocalUninstallPreview()
-    return json(res, { ok: true, ...preview })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    return json(res, { ...preview })
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
 }
 
-function handlePostLocalUninstall(req, res) {
+function handlePostLocalUninstall(req: IncomingMessage, res: ServerResponse): void {
   if (!requireStrictAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const cfg = JSON.parse(body || '{}')
+      const cfg = JSON.parse(body || '{}') as LocalUninstallBody
       if (!cfg.confirm) return json(res, { ok: false, message: '缺少一键卸载确认标记' }, 400)
-      const { runLocalUninstall } = require('../deploy-uninstall')
+      const { runLocalUninstall } = require('../deploy-uninstall') as typeof import('../deploy-uninstall')
       const result = runLocalUninstall(cfg)
-      return json(res, { ok: true, ...result })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+      return json(res, { ...result })
+    } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handlePostNapcatDownload(req, res) {
+function handlePostNapcatDownload(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { url } = JSON.parse(body)
+      const { url } = JSON.parse(body) as NapcatDownloadBody
       if (!url) return json(res, { ok: false, message: '下载地址不能为空' }, 400)
-      dh.downloadToRuntime(url, { preferredName: 'napcat-manual.zip', expectedExt: '.zip', minBytes: 128 * 1024 }, (err, filePath, download) => {
+      dh.downloadToRuntime(String(url), { preferredName: 'napcat-manual.zip', expectedExt: '.zip', minBytes: 128 * 1024 }, (err, filePath, download) => {
         if (err) return json(res, { ok: false, message: err.message }, 400)
         json(res, { ok: true, message: 'NapCat 包已下载到 ' + filePath, path: filePath, download })
       })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handlePostNapcatWindowsDownload(req, res) {
+function handlePostNapcatWindowsDownload(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { installDir } = JSON.parse(body || '{}')
+      const { installDir } = JSON.parse(body || '{}') as NapcatWindowsDownloadBody
       const targetDir = dh.validateNapcatInstallDir(installDir)
       dh.downloadNapcatWindowsRelease(targetDir, (err, detail: InstallDetail = {}) => {
         if (err) return json(res, { ok: false, message: err.message, ...detail }, 400)
@@ -340,11 +396,11 @@ function handlePostNapcatWindowsDownload(req, res) {
         fs.writeFileSync(LOCAL_NAPCAT_DIR_FILE, targetDir, 'utf8')
         json(res, { ok: true, message: detail.message || 'NapCat（Windows）OneKey 包已下载并解压', ...detail, napcat: detectNapcatInstallation() })
       })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handlePostNodeWindowsInstall(req, res) {
+function handlePostNodeWindowsInstall(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   collectBody(req, res, () => {
@@ -353,47 +409,47 @@ function handlePostNodeWindowsInstall(req, res) {
         if (err) return json(res, { ok: false, message: err.message, ...detail }, 400)
         json(res, { ok: true, ...detail, message: detail.message || '便携 Node/npm 已安装' })
       })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handlePostNpmInstall(req, res) {
+function handlePostNpmInstall(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   try {
     const dependencies = dh.getProjectDependencyStatus()
     if (dependencies.ready) return json(res, { ok: true, skipped: true, message: '项目依赖已安装', status: dh.getLocalNpmInstallStatus() })
-    const npmInfo = getCommandInfo('npm')
+    const npmInfo = getCommandInfo('npm') as LegacyCommandInfo
     const cwd = path.resolve(KOISHI_DIR)
     const npmCmd = npmInfo.found ? npmInfo.path : 'npm'
     const steps = [{ label: '打开终端（PowerShell 或 CMD）并进入项目目录', command: `cd /d "${cwd}"` }, { label: '执行依赖安装', command: npmInfo.found ? `"${npmCmd}" install` : 'npm install' }]
     if (!npmInfo.found) steps.unshift({ label: '先安装 Node.js（包含 npm）', command: '前往 https://nodejs.org 下载安装，或在部署器中安装便携 Node' })
     return json(res, { ok: true, guide: true, message: '请在终端中手动执行以下命令安装依赖', steps, cwd, npmPath: npmCmd, status: dh.getLocalNpmInstallStatus() })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
 }
 
-function handlePostNpmRepairAndInstall(req, res) {
+function handlePostNpmRepairAndInstall(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   try {
     const diagnostics = dh.collectNpmInstallDiagnostics(true)
     const proxy = diagnostics.proxy || dh.diagnoseNpmProxy(diagnostics)
     const cwd = path.resolve(KOISHI_DIR)
-    const npmInfo = getCommandInfo('npm')
+    const npmInfo = getCommandInfo('npm') as LegacyCommandInfo
     const npmCmd = npmInfo.found ? npmInfo.path : 'npm'
     const hasNpmProxy = !!(diagnostics.config?.proxy || diagnostics.config?.httpsProxy)
     const hasEnvProxy = Object.entries(diagnostics.env || {}).some(([key, value]) => !/^no_proxy$/i.test(key) && !!value)
     const repairCommands = dh.commandListForNpmProxyFix(hasNpmProxy, hasEnvProxy)
-    const steps = []
+    const steps: NpmGuideStep[] = []
     if (repairCommands.length) steps.push({ label: '在终端中执行以下命令清理代理配置', command: repairCommands.join('\n') })
     steps.push({ label: '修复后执行依赖安装', command: npmInfo.found ? `"${npmCmd}" install` : 'npm install' })
     return json(res, { ok: true, guide: true, message: '请在终端中手动执行以下修复和安装命令', steps, cwd, npmPath: npmCmd, proxy, diagnostics, status: dh.getLocalNpmInstallStatus() })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
 }
 
-function handleGetNpmInstallStatus(req, res) { return json(res, { ok: true, status: dh.getLocalNpmInstallStatus() }) }
+function handleGetNpmInstallStatus(req: IncomingMessage, res: ServerResponse): void { return json(res, { ok: true, status: dh.getLocalNpmInstallStatus() }) }
 
-function handlePostNapcatStart(req, res) {
+function handlePostNapcatStart(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   try {
@@ -403,7 +459,7 @@ function handlePostNapcatStart(req, res) {
     if (!detected.found || !entry) return json(res, { ok: false, message: detected.reason || '未找到可启动的 NapCat，请先安装官方 Windows 包', napcat: detected }, 400)
     const ext = path.extname(entry).toLowerCase()
     const cwd = path.dirname(entry)
-    let command = entry, args = []
+    let command: string = entry, args: string[] = []
     if (ext === '.bat' || ext === '.cmd') { command = 'cmd.exe'; args = ['/d', '/c', entry] }
     else if (/^NapCatWinBootMain\.exe$/i.test(path.basename(entry))) {
       const qq = String(dh.readLocalDeployManifest().qq || '').trim()
@@ -411,15 +467,15 @@ function handlePostNapcatStart(req, res) {
       args = [qq]
     }
     else if (ext === '.js' || ext === '.mjs') { command = getLocalToolCommand('node'); args = [entry] }
-    const { getLocalTaskOptions } = require('../tools')
+    const { getLocalTaskOptions } = require('../tools') as typeof import('../tools')
     spawnLocalTask('napcat', command, args, getLocalTaskOptions({ cwd }))
     return json(res, { ok: true, message: 'NapCat 已启动，请等待 WebUI 或控制台二维码出现后扫码登录', status: dh.getLocalNapcatDeployStatus() })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
 }
 
-function handleGetNapcatStatus(req, res) { return json(res, { ok: true, status: dh.getLocalNapcatDeployStatus() }) }
+function handleGetNapcatStatus(req: IncomingMessage, res: ServerResponse): void { return json(res, { ok: true, status: dh.getLocalNapcatDeployStatus() }) }
 
-function handlePostKoishiStart(req, res) {
+function handlePostKoishiStart(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   try {
@@ -427,20 +483,20 @@ function handlePostKoishiStart(req, res) {
     if (current.running) return json(res, { ok: true, message: 'Koishi 看起来已经在运行', status: current })
     const dependencies = dh.getProjectDependencyStatus()
     if (!dependencies.ready) return json(res, { ok: false, message: '项目依赖尚未完整安装，请先在终端执行 npm install', dependencies }, 400)
-    const { getLocalTaskOptions } = require('../tools')
+    const { getLocalTaskOptions } = require('../tools') as typeof import('../tools')
     if (process.platform === 'win32' && fs.existsSync(path.join(KOISHI_DIR, 'start-local.bat'))) {
       spawnLocalTask('koishi', 'cmd.exe', ['/d', '/c', path.join(KOISHI_DIR, 'start-local.bat')], getLocalTaskOptions({ cwd: KOISHI_DIR }))
     } else {
       spawnLocalTask('koishi', getLocalToolCommand('node'), ['start.js'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', env: { KOISHI_DIR: path.resolve(KOISHI_DIR), DONGXUELIAN_AI_DATA_DIR: path.join(path.resolve(KOISHI_DIR), 'data') } }))
     }
     return json(res, { ok: true, message: 'Koishi 已启动，正在等待 ' + dh.resolveKoishiListenPort() + ' 端口和 OneBot 连接', status: dh.getLocalKoishiDeployStatus() })
-  } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
 }
 
-function handleGetKoishiStatus(req, res) { return json(res, { ok: true, status: dh.getLocalKoishiDeployStatus() }) }
+function handleGetKoishiStatus(req: IncomingMessage, res: ServerResponse): void { return json(res, { ok: true, status: dh.getLocalKoishiDeployStatus() }) }
 
-function handleGetLocalReadyCheck(req, res) {
-  try { return json(res, dh.buildLocalReadyCheck()) } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+function handleGetLocalReadyCheck(req: IncomingMessage, res: ServerResponse): void {
+  try { return json(res, dh.buildLocalReadyCheck()) } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
 }
 
 /** Resolve a temporary path-encoding probe dir without touching KOISHI_DIR. */
@@ -448,18 +504,18 @@ function getEnvCheckPathEncodingDir() {
   return path.join(os.tmpdir(), 'lianlian-path-encoding-check', '中文路径')
 }
 
-function handleGetEnvCheck(req, res) {
+function handleGetEnvCheck(req: IncomingMessage, res: ServerResponse): void {
   const localDeployTarget = dh.getLocalDeployTarget()
   const nodeInfo = getCommandInfo('node', 18)
   const npmInfo = getCommandInfo('npm')
   const dependencyStatus = dh.getProjectDependencyStatus()
   const portList = [dh.resolveKoishiListenPort(), Number(PORT), resolveNapcatOnebotListenPort(), resolveNapcatWebuiListenPort()]
-  const ports = {}
+  const ports: Record<number, PortState> = {}
   for (const port of portList) ports[port] = checkPortState(port)
   return json(res, { platform: process.platform, host: { platform: process.platform, arch: process.arch, hostname: os.hostname() }, localDeployTarget, blocked: localDeployTarget.blocked, blockedReason: localDeployTarget.blockedReason, projectDir: path.resolve(KOISHI_DIR), runtimeDir: dh.getLocalDeployTarget().runtimeDir, node: nodeInfo, npm: npmInfo, dependencies: dependencyStatus, localConfig: dh.buildLocalConfigPreview(), managedArtifacts: { deleteItems: 0, userDataItems: 0, deleteSize: 0, userDataSize: 0 }, workDir: { exists: fs.existsSync(KOISHI_DIR), path: path.resolve(KOISHI_DIR), writable: null, reason: '环境检测不写入项目目录' }, pathEncoding: dh.inspectChinesePathWrite(getEnvCheckPathEncodingDir()), ports, napcat: detectNapcatInstallation() })
 }
 
-function handleGetBotLocalStatus(req, res) {
+function handleGetBotLocalStatus(req: IncomingMessage, res: ServerResponse): void {
   try {
     const target = dh.getLocalDeployTarget()
     if (!target.canRunWindowsLocalDeploy) return json(res, { running: false, workers: 0, blocked: true, localDeployTarget: target, message: target.blockedReason })
@@ -470,11 +526,11 @@ function handleGetBotLocalStatus(req, res) {
   } catch { return json(res, { running: false, workers: 0 }) }
 }
 
-function handlePostBotLocalStop(req, res) {
+function handlePostBotLocalStop(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   if (!dh.requireWindowsLocalDeployTarget(req, res)) return
   try { stopKoishiProcesses(); return json(res, { ok: true, message: '本地 Bot 已停止' }) }
-  catch (e) { return json(res, { ok: false, message: e.message }) }
+  catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }) }
 }
 
 const routes = {
@@ -505,9 +561,9 @@ const routes = {
   'GET /dashboard/api/frontend/rebuild-status': handleGetFrontendRebuildStatus,
   'GET /dashboard/api/bot/local-status': handleGetBotLocalStatus,
   'POST /dashboard/api/bot/local-stop': handlePostBotLocalStop,
-}
+} satisfies Record<string, DeployRouteHandler>
 
-const prefixRoutes = [
+const prefixRoutes: DeployPrefixRoute[] = [
   { prefix: '/dashboard/api/deploy/progress/', method: 'GET', handler: handleGetDeployProgress },
 ]
 

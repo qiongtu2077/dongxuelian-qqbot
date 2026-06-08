@@ -4,7 +4,11 @@
  */
 const name = 'dashboard'
 
-function apply(ctx) {
+interface KoishiContextLike {
+  logger(name: string): { info(message: string): void }
+}
+
+function apply(ctx: KoishiContextLike) {
   ctx.logger('dashboard').info('dashboard running as standalone on port ' + (process.env.DASHBOARD_PORT || 5150))
 }
 

@@ -1,41 +1,50 @@
+type ToolCommand = 'node' | 'npm' | 'npx';
+type LocalToolEnv = NodeJS.ProcessEnv;
 interface LocalToolEnvOptions {
-    env?: Record<string, string>;
+    env?: Record<string, string | undefined>;
+    cwd?: string;
+    shell?: boolean;
 }
-declare function getCommandVersion(command: any): any;
-declare function getCommandPath(command: any): any;
-declare function getPortableNodeDir(): any;
-declare function getPortableToolPath(command: any): any;
-declare function getLocalToolEnv(extra?: {}): {};
-declare function getToolVersion(toolPath: any): any;
-declare function getLocalToolCommand(command: any): any;
-declare function getLocalTaskOptions(options?: LocalToolEnvOptions): {
-    env: {};
-};
-declare function normalizeProxyValue(value: any): string;
-declare function parseProxyEndpoint(value: any): {
+interface ProxyEndpoint {
     raw: string;
     hostname: string;
     port: number;
     protocol: string;
-};
-declare function redactProxyValue(value: any): string;
-declare function isLoopbackProxyHost(hostname: any): boolean;
-declare function isProjectOwnedTool(toolPath: any): any;
-declare function getCommandInfo(command: any, minMajor?: number): {
+}
+interface CommandInfo {
     found: boolean;
-    version: any;
-    source: string;
-    sourcePath: any;
-    ownedByProject: any;
+    version: string;
+    source: 'runtime/node' | 'PATH';
+    sourcePath: string;
+    ownedByProject: boolean;
     ok: boolean;
     reason: string;
-};
-declare function checkPortState(port: any): {
+}
+interface PortState {
     available: boolean;
-    status: string;
+    status: 'invalid' | 'free' | 'occupied' | 'denied' | 'unknown';
     reason: string;
+}
+declare function getCommandVersion(command: string): string;
+declare function getCommandPath(command: string): string;
+declare function getPortableNodeDir(): string;
+declare function getPortableToolPath(command: ToolCommand): string;
+declare function getLocalToolEnv(extra?: LocalToolEnvOptions['env']): LocalToolEnv;
+declare function getToolVersion(toolPath: string): string;
+declare function getLocalToolCommand(command: ToolCommand): string;
+declare function getLocalTaskOptions(options?: LocalToolEnvOptions): {
+    env: NodeJS.ProcessEnv;
+    cwd?: string;
+    shell?: boolean;
 };
-declare function checkPortAvailable(port: any): boolean;
+declare function normalizeProxyValue(value: unknown): string;
+declare function parseProxyEndpoint(value: unknown): ProxyEndpoint | null;
+declare function redactProxyValue(value: unknown): string;
+declare function isLoopbackProxyHost(hostname: unknown): boolean;
+declare function isProjectOwnedTool(toolPath: string): boolean;
+declare function getCommandInfo(command: ToolCommand, minMajor?: number): CommandInfo;
+declare function checkPortState(port: unknown): PortState;
+declare function checkPortAvailable(port: unknown): boolean;
 declare function resolveKoishiListenPort(): number;
 declare const _default: {
     getCommandVersion: typeof getCommandVersion;

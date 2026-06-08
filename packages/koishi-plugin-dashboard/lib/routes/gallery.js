@@ -7,6 +7,21 @@ const { requireAdmin } = require('../auth');
 const { GALLERY_DIR, GALLERY_METADATA_FILE, GALLERY_MAX_BYTES, GALLERY_MIME_EXT, GALLERY_FOIL_STYLES } = require('../paths');
 const MAX_GALLERY_METADATA_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_METADATA_MAX_BYTES, 256 * 1024, 16 * 1024, 1024 * 1024);
 const MAX_GALLERY_UPLOAD_BODY_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_UPLOAD_BODY_MAX_BYTES, Math.ceil(GALLERY_MAX_BYTES * 1.45) + 64 * 1024, 1024 * 1024, 16 * 1024 * 1024);
+function getErrorMessage(error) {
+    if (error && typeof error === 'object' && 'message' in error)
+        return String(error.message || '');
+    return String(error || '');
+}
+function isGalleryItem(item) {
+    return !!item;
+}
+function isStringArray(value) {
+    return Array.isArray(value) && value.every(item => typeof item === 'string');
+}
+function parseJsonObject(body) {
+    const data = JSON.parse(body || '{}');
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+}
 function resolveGalleryId(id) {
     const value = String(id || '').trim();
     if (!/^[A-Za-z0-9._-]+$/.test(value) || value !== path.basename(value))
@@ -18,7 +33,8 @@ function resolveGalleryId(id) {
 }
 function galleryMimeFromName(name) {
     const ext = path.extname(String(name || '')).toLowerCase();
-    return ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' })[ext] || 'application/octet-stream';
+    const mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
+    return mimeMap[ext] || 'application/octet-stream';
 }
 function normalizeGalleryStyle(value) {
     const text = String(value ?? '').trim().toUpperCase();
@@ -110,7 +126,7 @@ function listGalleryImages() {
             return null;
         }
     })
-        .filter(Boolean)
+        .filter(isGalleryItem)
         .sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 function writeGalleryImage(input = {}) {
@@ -150,11 +166,12 @@ function writeGalleryImage(input = {}) {
     return toGalleryItem(fileName, metadata);
 }
 function deleteGalleryImage(id) {
+    const resolvedId = String(id || '');
     const fullPath = resolveGalleryId(id);
     if (!fs.existsSync(fullPath))
         throw new Error('图片不存在');
     fs.unlinkSync(fullPath);
-    return { id };
+    return { id: resolvedId };
 }
 function deleteGalleryImages(ids) {
     const list = Array.isArray(ids) ? ids : [ids];
@@ -163,15 +180,16 @@ function deleteGalleryImages(ids) {
     const deleted = [];
     const errors = [];
     for (const id of list) {
+        const galleryId = String(id || '');
         try {
             deleted.push(deleteGalleryImage(id));
-            if (Object.prototype.hasOwnProperty.call(metadata, id)) {
-                delete metadata[id];
+            if (Object.prototype.hasOwnProperty.call(metadata, galleryId)) {
+                delete metadata[galleryId];
                 metadataChanged = true;
             }
         }
         catch (e) {
-            errors.push({ id, message: e.message });
+            errors.push({ id: galleryId, message: getErrorMessage(e) });
         }
     }
     if (metadataChanged)
@@ -179,13 +197,14 @@ function deleteGalleryImages(ids) {
     return { deleted, errors };
 }
 function updateGalleryImageStyle(id, foilStyle) {
+    const galleryId = String(id || '');
     const fullPath = resolveGalleryId(id);
     if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile())
         throw new Error('图片不存在');
     const metadata = readGalleryMetadata();
-    metadata[id] = { ...(metadata[id] || {}), foilStyle: normalizeGalleryStyle(foilStyle) };
+    metadata[galleryId] = { ...(metadata[galleryId] || {}), foilStyle: normalizeGalleryStyle(foilStyle) };
     writeGalleryMetadata(metadata);
-    return toGalleryItem(id, metadata);
+    return toGalleryItem(galleryId, metadata);
 }
 // --- Route Handlers ---
 function handleGetGallery(req, res) {
@@ -193,7 +212,7 @@ function handleGetGallery(req, res) {
         return json(res, { ok: true, images: listGalleryImages(), maxBytes: GALLERY_MAX_BYTES });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 400);
+        return json(res, { ok: false, message: getErrorMessage(e) }, 400);
     }
 }
 function handlePostGallery(req, res) {
@@ -201,11 +220,16 @@ function handlePostGallery(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const item = writeGalleryImage(JSON.parse(body || '{}'));
+            const input = parseJsonObject(body);
+            const item = writeGalleryImage({
+                type: typeof input.type === 'string' ? input.type : '',
+                data: typeof input.data === 'string' ? input.data : '',
+                name: typeof input.name === 'string' ? input.name : '',
+            });
             return json(res, { ok: true, image: item, message: '图片已加入莲莲图集' });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     }, { maxBytes: MAX_GALLERY_UPLOAD_BODY_BYTES });
 }
@@ -214,13 +238,13 @@ function handleDeleteGallery(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const { id, ids } = JSON.parse(body || '{}');
-            const result = deleteGalleryImages(Array.isArray(ids) ? ids : id);
+            const { id, ids } = parseJsonObject(body);
+            const result = deleteGalleryImages(isStringArray(ids) ? ids : id);
             const ok = result.errors.length === 0;
             return json(res, { ok, ...result, message: ok ? `已删除 ${result.deleted.length} 张图片` : `已删除 ${result.deleted.length} 张图片，${result.errors.length} 张删除失败` }, ok ? 200 : 400);
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
@@ -229,12 +253,12 @@ function handlePutGalleryStyle(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const { id, foilStyle } = JSON.parse(body || '{}');
+            const { id, foilStyle } = parseJsonObject(body);
             const image = updateGalleryImageStyle(id, foilStyle);
             return json(res, { ok: true, image, message: '闪卡样式已保存' });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
@@ -258,9 +282,9 @@ function handleGetGalleryImage(req, res, pathname) {
         fs.createReadStream(filePath).pipe(res);
     }
     catch (e) {
-        log('gallery image request failed: ' + (e.message || e));
+        log('gallery image request failed: ' + (getErrorMessage(e) || e));
         res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Gallery image request failed: ' + (e.message || 'Bad Request'));
+        res.end('Gallery image request failed: ' + (getErrorMessage(e) || 'Bad Request'));
     }
 }
 const routes = {

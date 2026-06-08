@@ -4,6 +4,11 @@ interface LoggingConfig {
     updatedAt?: unknown;
     modules?: Record<string, unknown>;
 }
+interface NormalizedLoggingConfig {
+    enabled: boolean;
+    updatedAt: unknown;
+    modules: Record<string, boolean>;
+}
 interface LogFilterOptions {
     levels?: unknown;
     module?: unknown;
@@ -26,45 +31,30 @@ interface LogEntry {
     message: string;
     text: string;
 }
-declare function normalizeLoggingConfig(input?: LoggingConfig): {
-    enabled: boolean;
-    updatedAt: unknown;
-    modules: {};
-};
-declare function readLoggingConfig(): {
-    enabled: boolean;
-    updatedAt: unknown;
-    modules: {};
-};
-declare function writeLoggingConfig(data: LoggingConfig): {
-    enabled: boolean;
-    updatedAt: unknown;
-    modules: {};
-};
-declare function clampLogLimit(value: any): number;
-declare function readLastLogItems(file: any, limit?: any): RawLogItem[];
-declare function readLastLogLines(file: any, limit: any): string[];
-declare function classifyLogLevel(line?: string): "D" | "E" | "W" | "I";
-declare function detectLogModule(line?: string): string;
-declare function parseLogLine(item: RawLogItem | string, index: any): LogEntry;
-declare function getFilteredLogEntries(options?: LogFilterOptions): {
+interface FilteredLogEntries {
     entries: LogEntry[];
     lines: string[];
     total: number;
     limit: number;
-    file: any;
-    config: {
-        enabled: boolean;
-        updatedAt: unknown;
-        modules: {};
-    };
+    file: string;
+    config: NormalizedLoggingConfig;
     filterKey: string;
     filterChanged: boolean;
     lastId: number;
     newEntries: LogEntry[];
     newCount: number;
     truncated: boolean;
-};
+}
+declare function normalizeLoggingConfig(input?: LoggingConfig): NormalizedLoggingConfig;
+declare function readLoggingConfig(): NormalizedLoggingConfig;
+declare function writeLoggingConfig(data: LoggingConfig): NormalizedLoggingConfig;
+declare function clampLogLimit(value: unknown): number;
+declare function readLastLogItems(file: string, limit?: unknown): RawLogItem[];
+declare function readLastLogLines(file: string, limit: unknown): string[];
+declare function classifyLogLevel(line?: string): string;
+declare function detectLogModule(line?: string): string;
+declare function parseLogLine(item: RawLogItem | string, index: number): LogEntry;
+declare function getFilteredLogEntries(options?: LogFilterOptions): FilteredLogEntries;
 declare const _default: {
     normalizeLoggingConfig: typeof normalizeLoggingConfig;
     readLoggingConfig: typeof readLoggingConfig;

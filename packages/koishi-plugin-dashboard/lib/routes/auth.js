@@ -3,6 +3,10 @@ const fs = require('fs');
 const { json, log, collectBody, getRemoteAddress, writeFileSyncSafe, } = require('../utils');
 const { isLocalAuthBypass, isLoginRateLimited, recordLoginFailure, clearLoginFails, getAccessPasswordRecord, getAdminPassword, createToken, createAdminToken, validateToken, requireAdmin, getResetToken, generateResetToken, resetDashboardCredentials, rotateSessionSecret, safeCompare, verifyPassword, hashPassword, removeLegacyAccessPasswordAfterUpgrade, } = require('../auth');
 const { ADMIN_PWD_FILE, ACCESS_PWD_FILE, LEGACY_ACCESS_PWD_FILE } = require('../paths');
+function parseBody(body) {
+    const parsed = JSON.parse(body);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+}
 // Handles access-password login and returns a normal dashboard token.
 function handleLogin(req, res) {
     const loginIp = getRemoteAddress(req);
@@ -11,7 +15,8 @@ function handleLogin(req, res) {
     }
     collectBody(req, res, (body) => {
         try {
-            const { password } = JSON.parse(body);
+            const { password: rawPassword } = parseBody(body);
+            const password = String(rawPassword || '');
             const accessRecord = getAccessPasswordRecord();
             const stored = accessRecord.value;
             if (!stored && !isLocalAuthBypass(req)) {
@@ -22,7 +27,7 @@ function handleLogin(req, res) {
                 clearLoginFails(loginIp);
                 return json(res, { ok: true, token: createToken() });
             }
-            verifyPassword(password, stored, ACCESS_PWD_FILE).then(match => {
+            verifyPassword(password, stored, ACCESS_PWD_FILE).then((match) => {
                 if (match) {
                     return removeLegacyAccessPasswordAfterUpgrade(accessRecord, password).then(() => {
                         clearLoginFails(loginIp);
@@ -51,9 +56,10 @@ function handleAdminVerify(req, res) {
     }
     collectBody(req, res, (body) => {
         try {
-            const { password } = JSON.parse(body);
+            const { password: rawPassword } = parseBody(body);
+            const password = String(rawPassword || '');
             const stored = getAdminPassword();
-            verifyPassword(password, stored, ADMIN_PWD_FILE).then(match => {
+            verifyPassword(password, stored, ADMIN_PWD_FILE).then((match) => {
                 if (match) {
                     clearLoginFails(loginIp);
                     return json(res, { ok: true, token: createAdminToken() });
@@ -78,7 +84,7 @@ function handleChangePassword(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const { type, oldPassword, newPassword } = JSON.parse(body);
+            const { type, oldPassword, newPassword } = parseBody(body);
             if (!newPassword || newPassword.length < 3) {
                 return json(res, { ok: false, message: 'new password must be at least 3 characters' }, 400);
             }
@@ -87,7 +93,7 @@ function handleChangePassword(req, res) {
             }
             if (type === 'admin') {
                 const stored = getAdminPassword();
-                verifyPassword(oldPassword, stored, ADMIN_PWD_FILE).then(async (match) => {
+                verifyPassword(String(oldPassword || ''), stored, ADMIN_PWD_FILE).then(async (match) => {
                     if (!match) {
                         return json(res, { ok: false, message: 'current admin password is incorrect' }, 401);
                     }
@@ -100,7 +106,7 @@ function handleChangePassword(req, res) {
                 });
             }
             else if (type === 'access') {
-                hashPassword(newPassword).then(hash => {
+                hashPassword(newPassword).then((hash) => {
                     writeFileSyncSafe(ACCESS_PWD_FILE, hash);
                     rotateSessionSecret();
                     return json(res, { ok: true, message: 'access password updated; please log in again' });
@@ -124,7 +130,7 @@ function handleResetPassword(req, res) {
     }
     collectBody(req, res, (body) => {
         try {
-            const { resetToken } = JSON.parse(body);
+            const { resetToken } = parseBody(body);
             const stored = getResetToken();
             const inputToken = String(resetToken || '').trim();
             const storedToken = String(stored || '').trim();
@@ -156,7 +162,7 @@ function handleResetPassword(req, res) {
 function authMiddleware(req, res, pathname) {
     const isPublicGalleryImage = pathname.startsWith('/dashboard/api/gallery/image/') && req.method === 'GET';
     if (pathname.startsWith('/dashboard/api/') && !isPublicGalleryImage && !isLocalAuthBypass(req)) {
-        const authHeader = req.headers['authorization'] || '';
+        const authHeader = String(req.headers['authorization'] || '');
         const token = authHeader.replace(/^Bearer\s+/i, '');
         if (!validateToken(token)) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -172,4 +178,4 @@ const routes = {
     'PUT /dashboard/api/auth/password': handleChangePassword,
     'POST /dashboard/api/auth/reset-password': handleResetPassword,
 };
-module.exports = { routes, authMiddleware };
+module.exports = { routes, authMiddleware: authMiddleware };

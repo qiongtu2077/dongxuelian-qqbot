@@ -13,10 +13,16 @@ const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
 const LOGIN_FAIL_MAX_ENTRIES = 1000;
 const LOGIN_FAIL_CLEANUP_MS = 60 * 1000;
 const loginFailMap = new Map();
-if (!globalThis.__dongxuelianDashboardLoginFailCleanupTimer) {
-    globalThis.__dongxuelianDashboardLoginFailCleanupTimer = setInterval(() => trimLoginFailMap(), LOGIN_FAIL_CLEANUP_MS);
-    if (globalThis.__dongxuelianDashboardLoginFailCleanupTimer.unref)
-        globalThis.__dongxuelianDashboardLoginFailCleanupTimer.unref();
+const dashboardGlobal = globalThis;
+if (!dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer) {
+    dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer = setInterval(() => trimLoginFailMap(), LOGIN_FAIL_CLEANUP_MS);
+    if (dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer.unref)
+        dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer.unref();
+}
+function getErrorMessage(error) {
+    if (error && typeof error === 'object' && 'message' in error)
+        return String(error.message || '');
+    return String(error || '');
 }
 // Reads small secret/config files without throwing.
 function readFileContent(p) {
@@ -46,7 +52,7 @@ function safeCompare(a, b) {
     return crypto.timingSafeEqual(bufA, bufB);
 }
 function isBcryptHash(s) {
-    return /^\$2[aby]\$\d{2}\$.{53}$/.test(s);
+    return /^\$2[aby]\$\d{2}\$.{53}$/.test(String(s || ''));
 }
 async function hashPassword(plain) {
     return bcrypt.hash(plain, BCRYPT_ROUNDS);
@@ -68,7 +74,7 @@ async function verifyPassword(input, stored, upgradeFile) {
             log(`auto-upgraded password to bcrypt: ${path.basename(upgradeFile)}`);
         }
         catch (e) {
-            log(`WARNING: failed to auto-upgrade password: ${e.message}`);
+            log(`WARNING: failed to auto-upgrade password: ${getErrorMessage(e)}`);
         }
     }
     return true;
@@ -93,7 +99,7 @@ async function removeLegacyAccessPasswordAfterUpgrade(record, input) {
         upgradedMatches = await bcrypt.compare(input, upgraded);
     }
     catch (e) {
-        log(`WARNING: failed to verify upgraded access password before legacy cleanup: ${e.message}`);
+        log(`WARNING: failed to verify upgraded access password before legacy cleanup: ${getErrorMessage(e)}`);
         return false;
     }
     if (!upgradedMatches)
@@ -107,7 +113,7 @@ async function removeLegacyAccessPasswordAfterUpgrade(record, input) {
         return true;
     }
     catch (e) {
-        log(`WARNING: failed to remove legacy access password file: ${e.message}`);
+        log(`WARNING: failed to remove legacy access password file: ${getErrorMessage(e)}`);
         return false;
     }
 }
@@ -212,7 +218,7 @@ function generateResetToken() {
         fs.writeFileSync(RESET_TOKEN_FILE, token, 'utf8');
     }
     catch (e) {
-        log('WARNING: 无法写入重置令牌文件: ' + e.message);
+        log('WARNING: 无法写入重置令牌文件: ' + getErrorMessage(e));
     }
     return token;
 }
@@ -234,7 +240,9 @@ function isSameOriginRequest(req) {
         return false;
     try {
         const parsed = new URL(origin);
-        const protocol = req?.socket?.encrypted || req?.connection?.encrypted ? 'https:' : 'http:';
+        const socket = req.socket;
+        const connection = req.connection;
+        const protocol = socket?.encrypted || connection?.encrypted ? 'https:' : 'http:';
         return parsed.protocol === protocol && parsed.host.toLowerCase() === host;
     }
     catch {

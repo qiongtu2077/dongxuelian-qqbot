@@ -1,18 +1,49 @@
 'use strict'
 
+import type { Hash } from 'crypto'
+import type { Dirent } from 'fs'
+import type { IncomingMessage, ServerResponse } from 'http'
+
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
 const crypto = require('crypto')
-const http = require('http')
-const https = require('https')
+const http = require('http') as typeof import('http')
+const https = require('https') as typeof import('https')
 const { execFileSync } = require('child_process')
-const { parsePositiveInt, json, log, shellQuote, commandQuote, isInsidePath, describeFsError, removePathWithRetry, ensureCleanDirectory, copyRecursiveSync, listFilesRecursive, uniquePaths } = require('./utils')
+const { parsePositiveInt, json, log, shellQuote, commandQuote, isInsidePath, describeFsError, removePathWithRetry, ensureCleanDirectory, copyRecursiveSync, listFilesRecursive, uniquePaths } = require('./utils') as {
+  parsePositiveInt(value: unknown, fallback: number, min: number, max: number): number
+  json(res: unknown, data: unknown, status?: number): void
+  log(...args: unknown[]): void
+  shellQuote(value: unknown): string
+  commandQuote(value: unknown): string
+  isInsidePath(parent: string, child: string): boolean
+  describeFsError(error: unknown, fallback?: string): string
+  removePathWithRetry(target: string): void
+  ensureCleanDirectory(target: string): void
+  copyRecursiveSync(source: string, target: string): void
+  listFilesRecursive(root: string, matcher?: (filePath: string) => boolean): string[]
+  uniquePaths(paths: string[]): string[]
+}
 const { KOISHI_DIR, DATA_DIR, PORT, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, NPM_PROXY_ENV_KEYS, isGlobalLocalMode, isPackagedLocalWorkspace, getResourceRoot, toProjectRel, resolveProjectRel, runtimePath } = require('./paths')
 const { getCommandInfo, getLocalToolCommand, getLocalToolEnv, getPortableNodeDir, checkPortState, redactProxyValue, parseProxyEndpoint, isLoopbackProxyHost, resolveKoishiListenPort } = require('./tools')
 const { detectNapcatInstallation, getNapcatStartEntry: napcatGetStartEntry, findNapcatMarkers, sortNapcatEntries, inspectNapcatCandidate, resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getNapcatToken } = require('./napcat')
 const { readLastLogLines } = require('./logging')
 const { localTasks, getTaskPublicStatus, spawnLocalTask, getNpmDiagnosticsCache, setNpmDiagnosticsCache, getRebuildStatus, setRebuildStatus } = require('./deploy-state')
+
+type DeployMode = 'install' | 'update'
+
+interface DeployTargetInput extends Record<string, unknown> {
+  server?: unknown
+  appDir?: unknown
+  mode?: unknown
+}
+
+interface DeployTarget extends DeployTargetInput {
+  server: string
+  appDir: string
+  mode: DeployMode
+}
 
 interface ScpOptions {
   recursive?: boolean
@@ -33,6 +64,47 @@ interface RuntimeLayoutOptions {
   includeNodeModules?: boolean
 }
 
+interface LocalWorkDirSafety {
+  ok: boolean
+  isTempRuntime: boolean
+  reasons: string[]
+  projectDir: string
+  runtimeDir: string
+  workspaceRoot: string
+  resourceRoot: string
+  packaged: boolean
+}
+
+interface LocalDeployTarget {
+  kind: string
+  scope: string
+  platform: NodeJS.Platform
+  arch: string
+  hostname: string
+  projectDir: string
+  runtimeDir: string
+  workspace: LocalWorkDirSafety
+  isWindowsBackend: boolean
+  isLocalDeployer: boolean
+  canRunWindowsLocalDeploy: boolean
+  blocked: boolean
+  blockedReason: string
+  guidance: string
+}
+
+interface RuntimeWorkspaceResult {
+  ok: true
+  skipped: boolean
+  workspaceRoot: string
+  resourceRoot: string
+  version?: string
+}
+
+interface ChinesePathWriteResult {
+  ok: boolean
+  message?: string
+}
+
 interface DownloadOptions {
   redirects?: number
   minBytes?: number
@@ -40,6 +112,12 @@ interface DownloadOptions {
   expectedContentType?: string
   preferredName?: string
   [key: string]: unknown
+}
+
+interface DownloadResult {
+  path: string
+  size: number
+  name: string
 }
 
 type DownloadCallback = (err: Error | null, filePath?: string, detail?: unknown) => void
@@ -50,7 +128,60 @@ interface RunNpmOptions {
   timeout?: number
 }
 
+interface ProxyEndpointLike {
+  raw: string
+  hostname: string
+  port: number
+  protocol: string
+}
+
+interface PortStateLike {
+  status: string
+  [key: string]: unknown
+}
+
+interface NpmProxyCandidate extends ProxyEndpointLike {
+  source: 'env' | 'npm config'
+  key: string
+}
+
+interface NpmStaleLoopbackProxyCandidate extends NpmProxyCandidate {
+  portState: PortStateLike
+}
+
+interface NpmRepairAction {
+  command: string
+  ok: boolean
+  message?: string
+}
+
+type NpmInstallFailureCode =
+  | 'NPM_PROXY_REFUSED'
+  | 'NPM_DNS_FAILED'
+  | 'NPM_TIMEOUT'
+  | 'NPM_CERT_FAILED'
+  | 'NPM_PERMISSION_FAILED'
+  | 'NPM_AUTH_FAILED'
+  | 'NPM_FAILED'
+
+interface NpmInstallFailureGuide {
+  code: NpmInstallFailureCode
+  title: string
+  summary: string
+  fixSteps: string[]
+  commands: string[]
+  diagnostics: NpmDiagnostics
+}
+
+interface ExecFileErrorLike {
+  stderr?: unknown
+  message?: unknown
+}
+
 interface NpmProxyDiagnosis {
+  candidates?: NpmProxyCandidate[]
+  loopback?: NpmProxyCandidate[]
+  staleLoopback?: NpmStaleLoopbackProxyCandidate[]
   shouldBypass?: boolean
   reason?: string
   [key: string]: unknown
@@ -61,7 +192,7 @@ interface NpmRepairState {
   automatic?: boolean
   envClearedForRetry?: boolean
   reason?: string
-  actions?: unknown[]
+  actions?: NpmRepairAction[]
 }
 
 interface NpmDiagnostics {
@@ -94,13 +225,95 @@ interface LocalDeployManifest {
   [key: string]: unknown
 }
 
+interface TrackedLocalDeployFile extends LocalDeployManifestFile {
+  action: string
+  backup: string
+  beforeHash: string
+}
+
+interface ProjectDependencyStatus {
+  ready: boolean
+  nodeModules: { exists: boolean; path: string }
+  packageLock: { exists: boolean; path: string }
+  packages: Record<string, boolean>
+  missing: string[]
+  reason: string
+}
+
+interface AiKeyStatus {
+  provider: string
+  configured: boolean
+  path: string
+  reason: string
+}
+
+interface LoginHint {
+  status: string
+  reason: string
+}
+
+interface LocalReadyChecks {
+  node: boolean
+  npm: boolean
+  dependencies: boolean
+  localConfig: boolean
+  napcatInstalled: boolean
+  napcatStarted: boolean
+  onebotPort: boolean
+  koishiStarted: boolean
+  aiKey: boolean
+}
+
+interface LocalConfigPreviewFile extends Record<string, unknown> {
+  path: string
+  action: string
+  reason?: string
+  size?: number
+  sha256?: string
+}
+
+interface LocalConfigPreview {
+  ok: boolean
+  files: LocalConfigPreviewFile[]
+  protected: LocalConfigPreviewFile[]
+  manifest: { exists: boolean; path: string }
+}
+
+interface DeleteLocalConfigResult {
+  ok: boolean
+  deleted: LocalConfigPreviewFile[]
+  kept: LocalConfigPreviewFile[]
+  errors: LocalConfigPreviewFile[]
+}
+
 interface ArchiveExtractError extends Error {
-  attempts?: unknown[]
+  attempts?: ArchiveExtractAttempt[]
   stage?: string
   archivePath?: string
   destinationDir?: string
   fileSize?: number
   stderr?: Buffer | string
+}
+
+interface ArchiveExtractAttempt {
+  method: string
+  code: unknown
+  error: string
+}
+
+interface ArchiveExtractResult {
+  method: string
+  attempts: ArchiveExtractAttempt[]
+  archivePath: string
+  destinationDir: string
+  size: number
+}
+
+interface ExecFileFailureLike {
+  status?: unknown
+  code?: unknown
+  stderr?: unknown
+  message?: unknown
 }
 
 interface PrepareNpmInstallOptions {
@@ -116,6 +329,36 @@ interface GithubRelease {
   assets?: GithubReleaseAsset[]
 }
 
+interface NapcatInspectionLike {
+  path: string
+  exists: boolean
+  found: boolean
+  status: string
+  reason?: string
+  entry?: string
+}
+
+interface NapcatInstallerResult {
+  ran: boolean
+  ok: boolean
+  path?: string
+  reason: string
+}
+
+interface NodeReleaseInfo {
+  version?: unknown
+  lts?: unknown
+}
+
+interface PortableNodeAsset {
+  version: string
+  arch: string
+  fileName: string
+  url: string
+}
+
+type JsonCallback = (err: Error | null, data?: unknown) => void
+
 type InstallCallback = (err: Error | null, detail?: Record<string, unknown>) => void
 
 const MAX_DOWNLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLOAD_BYTES, 256 * 1024 * 1024, 8 * 1024 * 1024, 2 * 1024 * 1024 * 1024)
@@ -125,7 +368,33 @@ const MAX_DOWNLOAD_REDIRECTS = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLO
 const MAX_JSON_RESPONSE_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_JSON_RESPONSE_BYTES, 10 * 1024 * 1024, 1024, 64 * 1024 * 1024)
 const HASH_CHUNK_BYTES = 64 * 1024
 
-function validateDeployServer(server) {
+function getErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || '')
+  return String(error || '')
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(getErrorMessage(error) || 'unknown error')
+}
+
+function getExecFileErrorText(error: unknown): string {
+  if (!error || typeof error !== 'object') return String(error || '').trim()
+  const detail = error as ExecFileErrorLike
+  return String(detail.stderr || detail.message || '').trim()
+}
+
+function getExecFileFailure(error: unknown): { code: unknown; error: string } {
+  if (!error || typeof error !== 'object') return { code: '', error: String(error || '').trim() }
+  const detail = error as ExecFileFailureLike
+  return { code: detail.status || detail.code || '', error: String(detail.stderr || detail.message || '').trim() }
+}
+
+function toArchiveExtractError(error: unknown): ArchiveExtractError {
+  if (error instanceof Error) return error as ArchiveExtractError
+  return new Error(getErrorMessage(error) || 'unknown error') as ArchiveExtractError
+}
+
+function validateDeployServer(server: unknown): string {
   const value = String(server || '').trim()
   if (!value) throw new Error('deploy server is required')
   if (/[\s;|`$<>"'\\]/.test(value) || value.includes('$(')) throw new Error('invalid deploy server')
@@ -138,39 +407,39 @@ function validateDeployServer(server) {
   return value
 }
 
-function validateDeployAppDir(appDir) {
+function validateDeployAppDir(appDir: unknown): string {
   const value = String(appDir || '').trim().replace(/\/+$/, '') || '/'
   if (!value.startsWith('/')) throw new Error('appDir must be an absolute Linux path')
   if (/[\s;&|`$()<>"'\\]/.test(value)) throw new Error('invalid appDir')
   return value
 }
 
-function validateDeployTarget(cfg) {
+function validateDeployTarget(cfg: DeployTargetInput = {}): DeployTarget {
   return { ...cfg, server: validateDeployServer(cfg?.server), appDir: validateDeployAppDir(cfg?.appDir), mode: cfg?.mode === 'install' ? 'install' : 'update' }
 }
 
-function remoteJoin(base, ...parts) {
+function remoteJoin(base: unknown, ...parts: unknown[]): string {
   const root = validateDeployAppDir(base)
   const suffix = parts.map(part => String(part || '').replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/')
   return suffix ? root.replace(/\/+$/, '') + '/' + suffix : root
 }
 
-function sshCommand(server, remoteCmd) {
+function sshCommand(server: unknown, remoteCmd: unknown): string {
   return `ssh -o StrictHostKeyChecking=no -- ${server} ${commandQuote(remoteCmd)}`
 }
 
-function scpRemoteTarget(server, remotePath) {
+function scpRemoteTarget(server: unknown, remotePath: unknown): string {
   const targetPath = String(remotePath || '')
   if (!targetPath.startsWith('/') || /[\s;&|`$()<>"'\\]/.test(targetPath)) throw new Error('invalid remote path')
   return `${server}:${targetPath}`
 }
 
-function scpCommand(source, target, options: ScpOptions = {}) {
+function scpCommand(source: unknown, target: unknown, options: ScpOptions = {}): string {
   const recursive = options.recursive ? '-r ' : ''
   return `scp -o StrictHostKeyChecking=no ${recursive}${commandQuote(source)} ${target}`
 }
 
-function hashFile(hash, repoRoot, filePath) {
+function hashFile(hash: Hash, repoRoot: string, filePath: string): void {
   try {
     const stat = fs.statSync(filePath)
     if (!stat.isFile()) return
@@ -191,11 +460,11 @@ function hashFile(hash, repoRoot, filePath) {
   } catch { /* non-critical: fingerprint skips unreadable file */ }
 }
 
-function computeFingerprint() {
+function computeFingerprint(): string {
   try {
     const repoRoot = path.join(PLUGIN_ROOT, '..', '..')
     const hash = crypto.createHash('md5')
-    const add = rel => hashFile(hash, repoRoot, path.join(repoRoot, rel))
+    const add = (rel: string): void => hashFile(hash, repoRoot, path.join(repoRoot, rel))
     add('packages/koishi-plugin-dashboard/standalone.js')
     add('packages/koishi-plugin-dashboard/frontend/index.html')
     add('packages/koishi-plugin-dashboard/frontend/package.json')
@@ -207,20 +476,20 @@ function computeFingerprint() {
     for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'public'))) hashFile(hash, repoRoot, file)
     for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'dist', 'assets'))) hashFile(hash, repoRoot, file)
     const packagesDir = path.join(repoRoot, 'packages')
-    let packageNames = []
+    let packageNames: string[] = []
     try { packageNames = fs.readdirSync(packagesDir).sort() } catch { /* non-critical: package scan fallback */ }
     for (const pkg of packageNames) {
       const pkgDir = path.join(packagesDir, pkg)
       try { if (!fs.statSync(pkgDir).isDirectory()) continue } catch { continue }
       add(`packages/${pkg}/package.json`)
-      for (const file of listFilesRecursive(path.join(pkgDir, 'lib'), f => /\.js$/i.test(f))) hashFile(hash, repoRoot, file)
+      for (const file of listFilesRecursive(path.join(pkgDir, 'lib'), (f: string) => /\.js$/i.test(f))) hashFile(hash, repoRoot, file)
       for (const file of listFilesRecursive(path.join(pkgDir, 'templates'))) hashFile(hash, repoRoot, file)
     }
     return hash.digest('hex').slice(0, 8)
   } catch { return 'unknown' }
 }
 
-function writeDeployFingerprint(file, extra: DeployFingerprintExtra = {}) {
+function writeDeployFingerprint(file: string, extra: DeployFingerprintExtra = {}): string {
   let cfg: DeployFingerprintExtra = {}
   try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { /* non-critical: deploy fingerprint config fallback */ }
   Object.assign(cfg, extra)
@@ -233,18 +502,18 @@ function writeDeployFingerprint(file, extra: DeployFingerprintExtra = {}) {
   return cfg.deployFingerprint
 }
 
-function isBlockedDownloadHost(hostname) {
+function isBlockedDownloadHost(hostname: unknown): boolean {
   const h = String(hostname || '')
   if (/^::1$/i.test(h)) return true
   return /^(?:127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|0\.|localhost$|\[::1\])/i.test(h)
 }
 
-function getLocalWorkDirSafety() {
+function getLocalWorkDirSafety(): LocalWorkDirSafety {
   const projectDir = path.resolve(KOISHI_DIR)
   const rDir = runtimePath()
   const tempDir = path.resolve(os.tmpdir()).toLowerCase()
   const values = [projectDir, rDir].map(item => item.toLowerCase())
-  const reasons = []
+  const reasons: string[] = []
   if (values.some(item => item === tempDir || item.startsWith(tempDir + path.sep.toLowerCase()))) reasons.push('工作目录位于系统临时目录')
   if (values.some(item => /[\\/]resources[\\/]app(?:[\\/]|$)/i.test(item))) reasons.push('工作目录位于 Electron 资源临时目录')
   const fallbackReason = String(process.env.LIANLIAN_WORKSPACE_FALLBACK_REASON || '').trim()
@@ -252,28 +521,28 @@ function getLocalWorkDirSafety() {
   return { ok: reasons.length === 0, isTempRuntime: reasons.length > 0, reasons, projectDir, runtimeDir: rDir, workspaceRoot: process.env.LIANLIAN_WORKSPACE_ROOT || projectDir, resourceRoot: process.env.LIANLIAN_RESOURCE_ROOT || '', packaged: /^(?:1|true|yes|on)$/i.test(String(process.env.LIANLIAN_PACKAGED || '').trim()) }
 }
 
-function getLocalDeployTarget() {
+function getLocalDeployTarget(): LocalDeployTarget {
   const isWindowsBackend = process.platform === 'win32'
   const workDirSafety = getLocalWorkDirSafety()
   const blockedReason = isWindowsBackend ? '' : `当前 Dashboard 后端是 ${process.platform}/${process.arch}，Windows 本地部署需要在 Windows 部署器软件中运行。远端网页只能检测服务器，不能检测浏览器所在的 Windows 电脑。`
   return { kind: 'dashboard-backend', scope: 'backend-machine', platform: process.platform, arch: process.arch, hostname: os.hostname(), projectDir: path.resolve(KOISHI_DIR), runtimeDir: runtimePath(), workspace: workDirSafety, isWindowsBackend, isLocalDeployer: isGlobalLocalMode(), canRunWindowsLocalDeploy: isWindowsBackend, blocked: !isWindowsBackend, blockedReason, guidance: isWindowsBackend ? '当前 Dashboard 后端运行在 Windows，可作为本地部署目标。' : `请在要部署的 Windows 本机启动部署器软件，并访问 http://127.0.0.1:${PORT}/dashboard/。` }
 }
 
-function requireWindowsLocalDeployTarget(req, res) {
+function requireWindowsLocalDeployTarget(req: IncomingMessage, res: ServerResponse): boolean {
   const target = getLocalDeployTarget()
   if (target.canRunWindowsLocalDeploy) return true
   json(res, { ok: false, blocked: true, localDeployTarget: target, message: target.blockedReason }, 403)
   return false
 }
 
-function ensureWritableDir(dir) {
+function ensureWritableDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true })
   const probe = path.join(dir, '.write-test-' + Date.now().toString(36))
   fs.writeFileSync(probe, 'ok', 'utf8')
   fs.unlinkSync(probe)
 }
 
-function copyWorkspaceResource(sourceRoot, targetRoot, relativePath, options: CopyWorkspaceResourceOptions = {}) {
+function copyWorkspaceResource(sourceRoot: string, targetRoot: string, relativePath: string, options: CopyWorkspaceResourceOptions = {}): boolean {
   const source = path.join(sourceRoot, relativePath)
   const target = path.join(targetRoot, relativePath)
   if (!fs.existsSync(source)) return false
@@ -283,7 +552,7 @@ function copyWorkspaceResource(sourceRoot, targetRoot, relativePath, options: Co
   return true
 }
 
-function ensurePackagedWorkspace(options: RuntimeLayoutOptions = {}) {
+function ensurePackagedWorkspace(options: RuntimeLayoutOptions = {}): RuntimeWorkspaceResult {
   if (!isPackagedLocalWorkspace()) return { ok: true, skipped: true, workspaceRoot: path.resolve(KOISHI_DIR), resourceRoot: getResourceRoot() }
   const resourceRoot = getResourceRoot()
   const workspaceRoot = path.resolve(process.env.LIANLIAN_WORKSPACE_ROOT || KOISHI_DIR)
@@ -300,41 +569,41 @@ function ensurePackagedWorkspace(options: RuntimeLayoutOptions = {}) {
   return { ok: true, skipped: false, workspaceRoot, resourceRoot, version }
 }
 
-function writeRuntimeLayout(options: RuntimeLayoutOptions = {}) {
+function writeRuntimeLayout(options: RuntimeLayoutOptions = {}): void {
   ensurePackagedWorkspace(options)
   const includeNapcat = options.includeNapcat !== false
   const includeNodeModules = options.includeNodeModules !== false
-  const dirs = [runtimePath(), runtimePath('downloads'), runtimePath('logs'), path.join(KOISHI_DIR, 'data')]
+  const dirs: string[] = [runtimePath(), runtimePath('downloads'), runtimePath('logs'), path.join(KOISHI_DIR, 'data')]
   if (includeNapcat) dirs.push(runtimePath('napcat'))
   if (includeNodeModules) dirs.push(path.join(KOISHI_DIR, 'node_modules'))
   for (const dir of dirs) fs.mkdirSync(dir, { recursive: true })
 }
 
-function testChinesePathWrite(dir) {
+function testChinesePathWrite(dir: string): ChinesePathWriteResult {
   try {
     const testFile = path.join(dir, '中文路径写入测试.tmp')
     fs.writeFileSync(testFile, 'ok', 'utf8')
     const ok = fs.readFileSync(testFile, 'utf8') === 'ok'
     fs.unlinkSync(testFile)
     return { ok }
-  } catch (e) { return { ok: false, message: e.message } }
+  } catch (e) { return { ok: false, message: getErrorMessage(e) } }
 }
 
-function inspectChinesePathWrite(dir) {
+function inspectChinesePathWrite(dir: string): ChinesePathWriteResult {
   try { fs.mkdirSync(dir, { recursive: true }) } catch { /* non-critical: write probe reports failure */ }
   return testChinesePathWrite(dir)
 }
 
-function safeDecodeURIComponent(value) {
+function safeDecodeURIComponent(value: string): string {
   try { return decodeURIComponent(value) } catch { return value }
 }
 
-function sanitizeDownloadName(name, fallback = 'download.bin') {
+function sanitizeDownloadName(name: unknown, fallback = 'download.bin'): string {
   const cleaned = safeDecodeURIComponent(String(name || '')).replace(/^['"]|['"]$/g, '').replace(/[<>":/\\|?*\x00-\x1f]/g, '_').trim()
   return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : fallback
 }
 
-function getContentDispositionFileName(header) {
+function getContentDispositionFileName(header: unknown): string {
   const value = String(header || '')
   const star = value.match(/filename\*\s*=\s*(?:UTF-8''|utf-8'')?([^;\r\n]+)/i)
   if (star?.[1]) return sanitizeDownloadName(star[1])
@@ -342,14 +611,14 @@ function getContentDispositionFileName(header) {
   return normal?.[1] ? sanitizeDownloadName(normal[1]) : ''
 }
 
-function ensureExtension(name, ext) {
+function ensureExtension(name: string, ext: unknown): string {
   const suffix = String(ext || '').trim()
   if (!suffix) return name
   const normalized = suffix.startsWith('.') ? suffix : '.' + suffix
   return name.toLowerCase().endsWith(normalized.toLowerCase()) ? name : name + normalized
 }
 
-function hasZipMagic(filePath) {
+function hasZipMagic(filePath: string): boolean {
   try {
     const fd = fs.openSync(filePath, 'r')
     const buffer = Buffer.alloc(4)
@@ -359,7 +628,7 @@ function hasZipMagic(filePath) {
   } catch { return false }
 }
 
-function validateDownloadedFile(filePath, options: DownloadOptions = {}) {
+function validateDownloadedFile(filePath: string, options: DownloadOptions = {}): DownloadResult {
   const stat = fs.statSync(filePath)
   const minBytes = Number(options.minBytes || 0)
   if (minBytes && stat.size < minBytes) throw new Error(`下载文件过小：${stat.size} 字节，可能是网络错误页或下载不完整`)
@@ -369,7 +638,7 @@ function validateDownloadedFile(filePath, options: DownloadOptions = {}) {
   return { path: filePath, size: stat.size, name: path.basename(filePath) }
 }
 
-function getDownloadFileName(parsed, response, options: DownloadOptions = {}) {
+function getDownloadFileName(parsed: URL, response: IncomingMessage, options: DownloadOptions = {}): string {
   const contentType = String(response.headers['content-type'] || '')
   let name = options.preferredName || getContentDispositionFileName(response.headers['content-disposition']) || sanitizeDownloadName(path.basename(parsed.pathname || ''), 'download.bin')
   if ((!path.extname(name) || /^[0-9a-f-]{16,}$/i.test(name)) && /zip/i.test(contentType)) name = ensureExtension(name, '.zip')
@@ -377,10 +646,10 @@ function getDownloadFileName(parsed, response, options: DownloadOptions = {}) {
   return sanitizeDownloadName(name, 'download.bin')
 }
 
-function downloadToRuntime(url, options: DownloadOptions | DownloadCallback, callback?: DownloadCallback) {
+function downloadToRuntime(url: string | URL, options: DownloadOptions | DownloadCallback = {}, callback?: DownloadCallback): void {
   if (typeof options === 'function') { callback = options; options = {} }
-  options = options || {}
-  const redirects = Number.isFinite(options.redirects) ? options.redirects : 0
+  const downloadOptions: DownloadOptions = options || {}
+  const redirects = Number.isFinite(downloadOptions.redirects) ? Number(downloadOptions.redirects) : 0
   let settled = false
   let currentFilePath = ''
   const finish: DownloadCallback = (err, filePath, detail) => {
@@ -398,25 +667,27 @@ function downloadToRuntime(url, options: DownloadOptions | DownloadCallback, cal
   try { writeRuntimeLayout({ includeNapcat: false, includeNodeModules: false }) }
   catch (e) { finish(new Error('准备本地部署工作目录失败：' + describeFsError(e))); return }
   const client = parsed.protocol === 'https:' ? https : http
-  const req = client.get(parsed, (response) => {
-    if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+  const req = client.get(parsed, (response: IncomingMessage) => {
+    const statusCode = response.statusCode
+    const location = response.headers.location
+    if (typeof statusCode === 'number' && statusCode >= 300 && statusCode < 400 && location) {
       response.resume()
       if (redirects >= MAX_DOWNLOAD_REDIRECTS) {
         finish(new Error('too many download redirects'))
         return
       }
-      downloadToRuntime(new URL(response.headers.location, parsed).toString(), { ...options, redirects: redirects + 1 }, finish)
+      downloadToRuntime(new URL(String(location), parsed).toString(), { ...downloadOptions, redirects: redirects + 1 }, finish)
       return
     }
-    if (response.statusCode !== 200) { response.resume(); finish(new Error('下载失败：HTTP ' + response.statusCode)); return }
-    const declared = parseInt(response.headers['content-length'], 10)
+    if (statusCode !== 200) { response.resume(); finish(new Error('下载失败：HTTP ' + statusCode)); return }
+    const declared = parseInt(String(response.headers['content-length'] || ''), 10)
     if (Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES) { response.resume(); finish(new Error('下载文件过大：' + declared + ' bytes')); return }
-    const name = getDownloadFileName(parsed, response, options)
+    const name = getDownloadFileName(parsed, response, downloadOptions)
     const filePath = runtimePath('downloads', name)
     currentFilePath = filePath
     const stream = fs.createWriteStream(filePath)
     let received = 0
-    response.on('data', chunk => {
+    response.on('data', (chunk: Buffer) => {
       received += chunk.length
       if (received > MAX_DOWNLOAD_BYTES) {
         finish(new Error('下载文件过大：' + received + ' bytes'), filePath)
@@ -425,17 +696,17 @@ function downloadToRuntime(url, options: DownloadOptions | DownloadCallback, cal
       }
     })
     response.pipe(stream)
-    stream.on('finish', () => stream.close(() => { try { finish(null, filePath, validateDownloadedFile(filePath, { ...options, expectedContentType: response.headers['content-type'] })) } catch (e) { finish(e, filePath) } }))
-    stream.on('error', err => finish(err, filePath))
-    response.on('error', err => finish(err, filePath))
+    stream.on('finish', () => stream.close(() => { try { finish(null, filePath, validateDownloadedFile(filePath, { ...downloadOptions, expectedContentType: String(response.headers['content-type'] || '') })) } catch (e) { finish(toError(e), filePath) } }))
+    stream.on('error', (err: Error) => finish(err, filePath))
+    response.on('error', (err: Error) => finish(err, filePath))
   })
   req.setTimeout(120000, () => req.destroy(new Error('下载超时')))
-  req.on('error', err => finish(err, currentFilePath))
+  req.on('error', (err: Error) => finish(err, currentFilePath))
 }
 
-function psCommandArg(value) { return "'" + String(value).replace(/'/g, "''") + "'" }
+function psCommandArg(value: unknown): string { return "'" + String(value).replace(/'/g, "''") + "'" }
 
-function formatLocalNpmCommand(args = []) {
+function formatLocalNpmCommand(args: string[] = []): string {
   const npm = getLocalToolCommand('npm')
   if (process.platform === 'win32') {
     const prefix = npm === 'npm' ? 'npm' : '& ' + psCommandArg(npm)
@@ -444,9 +715,9 @@ function formatLocalNpmCommand(args = []) {
   return [shellQuote(npm)].concat(args.map(shellQuote)).join(' ')
 }
 
-function getNoProxyEnvOverrides() { return Object.fromEntries(NPM_PROXY_ENV_KEYS.map(key => [key, ''])) }
+function getNoProxyEnvOverrides(): Record<string, string> { return Object.fromEntries(NPM_PROXY_ENV_KEYS.map((key: string) => [key, ''])) }
 
-function runNpmConfigGet(name) {
+function runNpmConfigGet(name: string): string {
   const npm = getLocalToolCommand('npm')
   try {
     const args = ['config', 'get', name]
@@ -457,7 +728,7 @@ function runNpmConfigGet(name) {
   } catch { return '' }
 }
 
-function runNpmCommand(args, options: RunNpmOptions = {}) {
+function runNpmCommand(args: string[], options: RunNpmOptions = {}): string {
   const npm = getLocalToolCommand('npm')
   const env = getLocalToolEnv(options.env || {})
   if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(npm)) {
@@ -466,7 +737,7 @@ function runNpmCommand(args, options: RunNpmOptions = {}) {
   return execFileSync(npm, args, { cwd: options.cwd || KOISHI_DIR, env, timeout: options.timeout || 12000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
-function collectNpmInstallDiagnostics(force = false) {
+function collectNpmInstallDiagnostics(force = false): NpmDiagnostics {
   const cache = getNpmDiagnosticsCache()
   const now = Date.now()
   if (!force && cache.data && now - cache.at < 10000) return cache.data
@@ -489,24 +760,24 @@ function collectNpmInstallDiagnostics(force = false) {
   return data
 }
 
-function collectNpmProxyCandidates(diagnostics: NpmDiagnostics = {}) {
-  const candidates = []
+function collectNpmProxyCandidates(diagnostics: NpmDiagnostics = {}): NpmProxyCandidate[] {
+  const candidates: NpmProxyCandidate[] = []
   for (const [key, value] of Object.entries(diagnostics.env || {})) {
     if (/^no_proxy$/i.test(key)) continue
-    const endpoint = parseProxyEndpoint(value)
+    const endpoint = parseProxyEndpoint(value) as ProxyEndpointLike | null
     if (endpoint) candidates.push({ source: 'env', key, ...endpoint })
   }
   for (const [key, value] of Object.entries({ proxy: diagnostics.config?.proxy, httpsProxy: diagnostics.config?.httpsProxy })) {
-    const endpoint = parseProxyEndpoint(value)
+    const endpoint = parseProxyEndpoint(value) as ProxyEndpointLike | null
     if (endpoint) candidates.push({ source: 'npm config', key, ...endpoint })
   }
   return candidates
 }
 
-function diagnoseNpmProxy(diagnostics: NpmDiagnostics = {}) {
+function diagnoseNpmProxy(diagnostics: NpmDiagnostics = {}): NpmProxyDiagnosis {
   const candidates = collectNpmProxyCandidates(diagnostics)
   const loopback = candidates.filter(item => isLoopbackProxyHost(item.hostname))
-  const staleLoopback = []
+  const staleLoopback: NpmStaleLoopbackProxyCandidate[] = []
   for (const item of loopback) {
     const portState = checkPortState(item.port)
     if (portState.status !== 'occupied') staleLoopback.push({ ...item, portState })
@@ -514,24 +785,24 @@ function diagnoseNpmProxy(diagnostics: NpmDiagnostics = {}) {
   return { candidates, loopback, staleLoopback, shouldBypass: staleLoopback.length > 0, reason: staleLoopback.length ? `检测到失效本机代理 ${staleLoopback.map(item => `${item.hostname}:${item.port}`).join('、')}` : (loopback.length ? '检测到本机代理端口正在监听' : '') }
 }
 
-function repairNpmProxyConfig(env: Record<string, string> = getNoProxyEnvOverrides()) {
-  const actions = []
-  for (const args of [['config', 'delete', 'proxy', '--location=project'], ['config', 'delete', 'https-proxy', '--location=project'], ['config', 'set', 'registry', 'https://registry.npmmirror.com', '--location=project']]) {
+function repairNpmProxyConfig(env: Record<string, string> = getNoProxyEnvOverrides()): NpmRepairAction[] {
+  const actions: NpmRepairAction[] = []
+  for (const args of [['config', 'delete', 'proxy', '--location=project'], ['config', 'delete', 'https-proxy', '--location=project'], ['config', 'set', 'registry', 'https://registry.npmmirror.com', '--location=project']] as string[][]) {
     try { runNpmCommand(args, { env }); actions.push({ command: formatLocalNpmCommand(args), ok: true }) }
-    catch (e) { actions.push({ command: formatLocalNpmCommand(args), ok: false, message: String(e.stderr || e.message || '').trim() }) }
+    catch (e) { actions.push({ command: formatLocalNpmCommand(args), ok: false, message: getExecFileErrorText(e) }) }
   }
   return actions
 }
 
-function commandListForNpmProxyFix(hasNpmProxy, hasEnvProxy) {
-  const commands = []
+function commandListForNpmProxyFix(hasNpmProxy: boolean, hasEnvProxy: boolean): string[] {
+  const commands: string[] = []
   if (hasEnvProxy && process.platform === 'win32') { for (const key of NPM_PROXY_ENV_KEYS) commands.push(`$env:${key} = ""`) }
   if (hasNpmProxy) { commands.push(formatLocalNpmCommand(['config', 'delete', 'proxy'])); commands.push(formatLocalNpmCommand(['config', 'delete', 'https-proxy'])) }
   commands.push(formatLocalNpmCommand(['config', 'set', 'registry', 'https://registry.npmmirror.com']))
   return commands
 }
 
-function buildNpmInstallFailureGuide(logLines = [], diagnostics: NpmDiagnostics | null = null) {
+function buildNpmInstallFailureGuide(logLines: string[] | string = [], diagnostics: NpmDiagnostics | null = null): NpmInstallFailureGuide | null {
   const text = Array.isArray(logLines) ? logLines.join('\n') : String(logLines || '')
   const diag = diagnostics || collectNpmInstallDiagnostics()
   const hasNpmProxy = !!(diag.config?.proxy || diag.config?.httpsProxy)
@@ -556,12 +827,12 @@ function buildNpmInstallFailureGuide(logLines = [], diagnostics: NpmDiagnostics 
   return null
 }
 
-function getBlockedLocalTaskStatus(key, extra: Record<string, unknown> = {}) {
+function getBlockedLocalTaskStatus(key: string, extra: Record<string, unknown> = {}) {
   const target = getLocalDeployTarget()
   return getTaskPublicStatus(key, { blocked: true, localDeployTarget: target, running: false, message: target.blockedReason, ...extra })
 }
 
-function fileSha256(filePath) {
+function fileSha256(filePath: string): string {
   try {
     const stat = fs.statSync(filePath)
     if (!stat.isFile()) return ''
@@ -585,7 +856,7 @@ function readLocalDeployManifest(): LocalDeployManifest {
   try { return JSON.parse(fs.readFileSync(LOCAL_DEPLOY_MANIFEST_FILE, 'utf8')) } catch { return { version: 1, files: [] } }
 }
 
-function backupLocalDeployFile(filePath, rel, timestamp) {
+function backupLocalDeployFile(filePath: string, rel: string, timestamp: number): string {
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return ''
   const backupRel = path.posix.join('data', 'backups', 'dashboard-local-deploy', String(timestamp), rel.replace(/[<>:"|?*]/g, '_'))
   const backupPath = resolveProjectRel(backupRel)
@@ -594,7 +865,7 @@ function backupLocalDeployFile(filePath, rel, timestamp) {
   return backupRel
 }
 
-function writeTrackedLocalFile(rel, content, options: Partial<LocalDeployManifestFile>, timestamp) {
+function writeTrackedLocalFile(rel: string, content: unknown, options: Partial<LocalDeployManifestFile>, timestamp: number): TrackedLocalDeployFile {
   const cfg = options || {}
   const filePath = resolveProjectRel(rel)
   const text = String(content)
@@ -607,13 +878,13 @@ function writeTrackedLocalFile(rel, content, options: Partial<LocalDeployManifes
   return { path: rel, action: unchanged ? 'unchanged' : (existed ? 'overwritten' : 'created'), backup, beforeHash, sha256: hash, deleteByDefault: cfg.deleteByDefault !== false, sensitive: !!cfg.sensitive, kind: cfg.kind || 'config' }
 }
 
-function writeLocalDeployManifest(manifest) {
+function writeLocalDeployManifest(manifest: LocalDeployManifest): void {
   fs.mkdirSync(path.dirname(LOCAL_DEPLOY_MANIFEST_FILE), { recursive: true })
   fs.writeFileSync(LOCAL_DEPLOY_MANIFEST_FILE + '.tmp', JSON.stringify(manifest, null, 2), 'utf8')
   fs.renameSync(LOCAL_DEPLOY_MANIFEST_FILE + '.tmp', LOCAL_DEPLOY_MANIFEST_FILE)
 }
 
-function getProjectDependencyStatus() {
+function getProjectDependencyStatus(): ProjectDependencyStatus {
   const packageLock = path.join(KOISHI_DIR, 'package-lock.json')
   const nodeModules = path.join(KOISHI_DIR, 'node_modules')
   const required = ['koishi', 'koishi-plugin-adapter-onebot']
@@ -623,16 +894,16 @@ function getProjectDependencyStatus() {
   return { ready, nodeModules: { exists: fs.existsSync(nodeModules), path: nodeModules }, packageLock: { exists: fs.existsSync(packageLock), path: packageLock }, packages, missing, reason: ready ? '项目依赖已安装' : `项目依赖未完整安装${missing.length ? '，缺少：' + missing.join('、') : ''}` }
 }
 
-function getAiKeyStatus(providerInput = '') {
-  const readFileSync = (p) => { try { const c = fs.readFileSync(p, 'utf8'); return String(c || '').trim() } catch { return '' } }
+function getAiKeyStatus(providerInput = ''): AiKeyStatus {
+  const readFileSync = (p: string): string => { try { const c = fs.readFileSync(p, 'utf8'); return String(c || '').trim() } catch { return '' } }
   const provider = String(providerInput || readFileSync(path.join(DATA_DIR, 'ai-provider.txt')) || 'opencode').trim() || 'opencode'
-  const keyFiles = { opencode: path.join(DATA_DIR, 'ai-openai-key.txt'), deepseek: path.join(DATA_DIR, 'ai-deepseek-key.txt'), dashscope: path.join(DATA_DIR, 'ai-dashscope-key.txt'), glm: path.join(DATA_DIR, 'ai-glm-key.txt'), mimorium: path.join(DATA_DIR, 'ai-mimorium-key.txt') }
+  const keyFiles: Record<string, string> = { opencode: path.join(DATA_DIR, 'ai-openai-key.txt'), deepseek: path.join(DATA_DIR, 'ai-deepseek-key.txt'), dashscope: path.join(DATA_DIR, 'ai-dashscope-key.txt'), glm: path.join(DATA_DIR, 'ai-glm-key.txt'), mimorium: path.join(DATA_DIR, 'ai-mimorium-key.txt') }
   const file = keyFiles[provider] || keyFiles.opencode
   const value = readFileSync(file)
   return { provider, configured: !!value.trim(), path: isInsidePath(KOISHI_DIR, file) ? toProjectRel(file) : file, reason: value.trim() ? 'AI Key 已配置' : 'AI Key 未配置，基础部署可继续，AI 回复暂不可用' }
 }
 
-function getNapcatLoginHint() {
+function getNapcatLoginHint(): LoginHint {
   const lines = readLastLogLines(localTasks.napcat.logFile, 220).join('\n')
   if (/Usage:\s*\.\\NapCatWinBootMain\.exe\s+<quickLogin>|Error Code:\s*2|Process Path:.*QQ\.exe/i.test(lines)) return { status: 'failed', reason: 'NapCat 启动入口失败：当前包可能缺少 bootmain/QQ.exe，或启动脚本缺少 quickLogin 参数。请重新安装官方 Windows 包后重试。' }
   if (/登录成功|已登录|login\s+success|account.*online/i.test(lines)) return { status: 'ok', reason: '日志显示 NapCat 已登录' }
@@ -676,7 +947,7 @@ function getLocalNpmInstallStatus() {
 function buildLocalReadyCheck() {
   const target = getLocalDeployTarget()
   if (!target.canRunWindowsLocalDeploy) {
-    const checks = { node: false, npm: false, dependencies: false, localConfig: false, napcatInstalled: false, napcatStarted: false, onebotPort: false, koishiStarted: false, aiKey: false }
+    const checks: LocalReadyChecks = { node: false, npm: false, dependencies: false, localConfig: false, napcatInstalled: false, napcatStarted: false, onebotPort: false, koishiStarted: false, aiKey: false }
     return { ok: true, blocked: true, localDeployTarget: target, basicReady: false, fullyReady: false, checks, node: { ok: false, reason: target.blockedReason }, npm: { found: false, reason: target.blockedReason }, dependencies: { ready: false, reason: target.blockedReason }, localConfig: { ok: true, files: [], protected: [] }, napcat: getLocalNapcatDeployStatus(), koishi: getLocalKoishiDeployStatus(), aiKey: getAiKeyStatus(), dashboardUrl: '', koishiUrl: '', napcatUrl: '', message: target.blockedReason }
   }
   const nodeInfo = getCommandInfo('node', 18)
@@ -686,21 +957,21 @@ function buildLocalReadyCheck() {
   const napcat = getLocalNapcatDeployStatus()
   const koishi = getLocalKoishiDeployStatus()
   const aiKey = getAiKeyStatus()
-  const checks = { node: nodeInfo.ok, npm: npmInfo.found, dependencies: dependencies.ready, localConfig: (localConfig.files || []).some(item => item.action === 'delete' && item.path === 'koishi.yml'), napcatInstalled: napcat.found, napcatStarted: napcat.running, onebotPort: napcat.onebotPort.status === 'occupied', koishiStarted: koishi.running, aiKey: aiKey.configured }
+  const checks: LocalReadyChecks = { node: nodeInfo.ok, npm: npmInfo.found, dependencies: dependencies.ready, localConfig: (localConfig.files || []).some(item => item.action === 'delete' && item.path === 'koishi.yml'), napcatInstalled: napcat.found, napcatStarted: napcat.running, onebotPort: napcat.onebotPort.status === 'occupied', koishiStarted: koishi.running, aiKey: aiKey.configured }
   const basicReady = checks.node && checks.npm && checks.dependencies && checks.localConfig && checks.napcatInstalled && checks.napcatStarted && checks.onebotPort && checks.koishiStarted
   return { ok: true, blocked: false, localDeployTarget: target, basicReady, fullyReady: basicReady && checks.aiKey, checks, node: nodeInfo, npm: npmInfo, dependencies, localConfig, napcat, koishi, aiKey, dashboardUrl: `http://127.0.0.1:${PORT}/dashboard/`, koishiUrl: 'http://127.0.0.1:' + resolveKoishiListenPort() + '/', napcatUrl: 'http://127.0.0.1:' + resolveNapcatWebuiListenPort() + '/', message: basicReady ? (aiKey.configured ? '本地部署已完成，AI Key 已配置' : '基础部署已完成，AI Key 未配置，AI 回复暂不可用') : '本地部署尚未完全就绪，请查看未通过的检查项' }
 }
 
-function buildLocalConfigPreview() {
+function buildLocalConfigPreview(): LocalConfigPreview {
   const manifest = readLocalDeployManifest()
-  const files = []
+  const files: LocalConfigPreviewFile[] = []
   const manifestFiles: LocalDeployManifestFile[] = Array.isArray(manifest.files) ? manifest.files : []
   const byPath = new Map(manifestFiles.map(item => [item.path, item]))
   for (const rel of ['koishi.yml', 'start-local.bat']) { if (!byPath.has(rel)) byPath.set(rel, { path: rel, deleteByDefault: true, kind: 'config', reason: '标准本地部署文件' }) }
   if (fs.existsSync(LOCAL_DEPLOY_MANIFEST_FILE)) byPath.set(toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE), { path: toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE), deleteByDefault: true, kind: 'manifest', reason: '本地部署清单' })
   for (const item of byPath.values()) {
     let filePath = ''
-    try { filePath = resolveProjectRel(item.path) } catch (e) { files.push({ path: item.path, action: 'error', reason: e.message }); continue }
+    try { filePath = resolveProjectRel(item.path) } catch (e) { files.push({ path: item.path, action: 'error', reason: getErrorMessage(e) }); continue }
     let stat = null
     try { stat = fs.statSync(filePath) } catch { /* non-critical: config preview missing file */ }
     if (!stat) { files.push({ path: item.path, action: 'missing', reason: '文件不存在' }); continue }
@@ -714,27 +985,27 @@ function buildLocalConfigPreview() {
   return { ok: true, files, protected: protectedPaths, manifest: { exists: fs.existsSync(LOCAL_DEPLOY_MANIFEST_FILE), path: toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE) } }
 }
 
-function deleteLocalConfigFiles() {
+function deleteLocalConfigFiles(): DeleteLocalConfigResult {
   const preview = buildLocalConfigPreview()
-  const deleted = [], kept = [], errors = []
+  const deleted: LocalConfigPreviewFile[] = [], kept: LocalConfigPreviewFile[] = [], errors: LocalConfigPreviewFile[] = []
   for (const item of preview.files) {
     if (item.action !== 'delete') { kept.push(item); continue }
-    try { fs.unlinkSync(resolveProjectRel(item.path)); deleted.push({ path: item.path, size: item.size, status: 'ok' }) }
-    catch (e) { errors.push({ path: item.path, reason: e.message }) }
+    try { fs.unlinkSync(resolveProjectRel(item.path)); deleted.push({ path: item.path, action: 'delete', size: item.size, status: 'ok' }) }
+    catch (e) { errors.push({ path: item.path, action: 'error', reason: getErrorMessage(e) }) }
   }
   return { ok: errors.length === 0, deleted, kept: kept.concat(preview.protected || []), errors }
 }
 
-function psQuote(value) { return "'" + String(value).replace(/'/g, "''") + "'" }
+function psQuote(value: unknown): string { return "'" + String(value).replace(/'/g, "''") + "'" }
 
-function validateNapcatInstallDir(input) {
+function validateNapcatInstallDir(input: unknown): string {
   ensurePackagedWorkspace()
   const raw = String(input || '').trim() || runtimePath('napcat')
   const dir = path.resolve(raw)
   if (process.platform === 'win32') {
     const lower = dir.toLowerCase()
     const root = path.parse(dir).root.toLowerCase()
-    const blocked = [process.env.WINDIR, process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean).map(item => path.resolve(item).toLowerCase())
+    const blocked = [process.env.WINDIR, process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter((item): item is string => !!item).map(item => path.resolve(item).toLowerCase())
     if (lower === root || blocked.some(item => lower === item || lower.startsWith(item + path.sep.toLowerCase()))) throw new Error('不能安装到系统根目录、Windows 目录或 Program Files')
   }
   fs.mkdirSync(dir, { recursive: true })
@@ -744,7 +1015,7 @@ function validateNapcatInstallDir(input) {
   return dir
 }
 
-function httpsGetJson(url, callback: (err: Error | null, data?: unknown) => void, redirects = 0) {
+function httpsGetJson(url: string, callback: JsonCallback, redirects = 0): void {
   let settled = false
   const finish = (err: Error | null, data?: unknown) => {
     if (settled) return
@@ -752,13 +1023,14 @@ function httpsGetJson(url, callback: (err: Error | null, data?: unknown) => void
     callback(err, data)
   }
   const req = https.get(url, { headers: { 'User-Agent': 'LianBoard-Dashboard' } }, response => {
-    if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+    const statusCode = typeof response.statusCode === 'number' ? response.statusCode : 0
+    if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
       response.resume()
       if (redirects >= MAX_DOWNLOAD_REDIRECTS) { finish(new Error('GitHub API 重定向次数过多')); return }
       httpsGetJson(new URL(response.headers.location, url).toString(), finish, redirects + 1)
       return
     }
-    if (response.statusCode !== 200) { response.resume(); finish(new Error('GitHub API 请求失败：HTTP ' + response.statusCode)); return }
+    if (statusCode !== 200) { response.resume(); finish(new Error('GitHub API 请求失败：HTTP ' + response.statusCode)); return }
     let body = ''
     response.setEncoding('utf8')
     response.on('data', chunk => {
@@ -768,24 +1040,24 @@ function httpsGetJson(url, callback: (err: Error | null, data?: unknown) => void
         try { req.destroy(new Error('response too large')) } catch { /* non-critical: request may already be closed */ }
       }
     })
-    response.on('end', () => { try { finish(null, JSON.parse(body)) } catch (e) { finish(e) } })
+    response.on('end', () => { try { finish(null, JSON.parse(body)) } catch (e) { finish(toError(e)) } })
   })
   req.setTimeout(30000, () => req.destroy(new Error('GitHub API 请求超时')))
   req.on('error', finish)
 }
 
-function pickNapcatWindowsAsset(release: GithubRelease = {}) {
+function pickNapcatWindowsAsset(release: GithubRelease = {}): GithubReleaseAsset | null {
   const assets = Array.isArray(release?.assets) ? release.assets : []
   const zipAssets = assets.filter(item => /\.zip$/i.test(item.name || '') && !/(linux|darwin|mac|android|arm64|aarch64)/i.test(item.name || ''))
   return zipAssets.find(item => /^NapCat\.Shell\.Windows\.OneKey\.zip$/i.test(item.name || '')) || zipAssets.find(item => /^NapCat\.Shell\.Windows\.Node\.zip$/i.test(item.name || '')) || zipAssets.find(item => /(win|windows)/i.test(item.name || '')) || zipAssets[0] || null
 }
 
-function findFilesRecursive(root, matcher, maxDepth = 6, maxCount = 600) {
-  const matches = []
+function findFilesRecursive(root: string, matcher: (name: string, fullPath: string) => boolean, maxDepth = 6, maxCount = 600): string[] {
+  const matches: string[] = []
   let count = 0
-  function walk(dir, depth) {
+  function walk(dir: string, depth: number): void {
     if (depth > maxDepth || count > maxCount) return
-    let entries = []
+    let entries: Dirent[] = []
     try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const entry of entries) {
       count++
@@ -799,7 +1071,7 @@ function findFilesRecursive(root, matcher, maxDepth = 6, maxCount = 600) {
   return matches
 }
 
-function cleanupRuntimeInstallStaging(prefix) {
+function cleanupRuntimeInstallStaging(prefix: string): void {
   const rDir = runtimePath()
   try {
     for (const entry of fs.readdirSync(rDir, { withFileTypes: true })) {
@@ -810,19 +1082,19 @@ function cleanupRuntimeInstallStaging(prefix) {
   } catch { /* non-critical: staging cleanup scan fallback */ }
 }
 
-function extractZipArchive(archivePath, destinationDir) {
+function extractZipArchive(archivePath: string, destinationDir: string): ArchiveExtractResult {
   if (!fs.existsSync(archivePath)) throw new Error('解压源文件不存在：' + archivePath)
   const stat = fs.statSync(archivePath)
   if (!stat.isFile()) throw new Error('解压源路径不是文件：' + archivePath)
   if (stat.size <= 0) throw new Error('解压源文件为空：' + archivePath)
   if (!hasZipMagic(archivePath)) throw new Error('解压源文件不是有效 zip 包：' + archivePath)
   ensureCleanDirectory(destinationDir)
-  const attempts = []
+  const attempts: ArchiveExtractAttempt[] = []
   try { execFileSync('tar.exe', ['-xf', archivePath, '-C', destinationDir], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] }); return { method: 'tar.exe', attempts, archivePath, destinationDir, size: stat.size } }
-  catch (e) { attempts.push({ method: 'tar.exe', code: e.status || e.code || '', error: String(e.stderr || e.message || '').trim() }) }
+  catch (e) { attempts.push({ method: 'tar.exe', ...getExecFileFailure(e) }) }
   try { execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `Expand-Archive -LiteralPath ${psQuote(archivePath)} -DestinationPath ${psQuote(destinationDir)} -Force`], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] }); return { method: 'PowerShell Expand-Archive', attempts, archivePath, destinationDir, size: stat.size } }
   catch (e) {
-    attempts.push({ method: 'PowerShell Expand-Archive', code: e.status || e.code || '', error: String(e.stderr || e.message || '').trim() })
+    attempts.push({ method: 'PowerShell Expand-Archive', ...getExecFileFailure(e) })
     try { removePathWithRetry(destinationDir) } catch { /* non-critical: failed extraction cleanup */ }
     const err = new Error('自动解压失败：' + attempts.map(item => `${item.method}: ${item.error || '失败'}`).join('；')) as ArchiveExtractError
     err.attempts = attempts; err.stage = 'extract'; err.archivePath = archivePath; err.destinationDir = destinationDir; err.fileSize = stat.size
@@ -830,35 +1102,35 @@ function extractZipArchive(archivePath, destinationDir) {
   }
 }
 
-function runNapcatInstallerIfPresent(stagingDir) {
+function runNapcatInstallerIfPresent(stagingDir: string): NapcatInstallerResult {
   const installers = findFilesRecursive(stagingDir, name => /^NapCatInstaller\.exe$/i.test(name), 6, 800)
   if (!installers.length) return { ran: false, ok: false, reason: '未找到 NapCatInstaller.exe，可手动运行解压目录内的安装器' }
   const installer = installers[0]
   try { execFileSync(installer, [], { cwd: path.dirname(installer), timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false }); return { ran: true, ok: true, path: installer, reason: 'NapCatInstaller.exe 已执行' } }
-  catch (e) { return { ran: true, ok: false, path: installer, reason: 'NapCatInstaller.exe 执行失败或被中断：' + String(e.stderr || e.message || '').trim() } }
+  catch (e) { return { ran: true, ok: false, path: installer, reason: 'NapCatInstaller.exe 执行失败或被中断：' + getExecFileErrorText(e) } }
 }
 
-function findNapcatCopyRoot(stagingDir) {
-  const candidates = [stagingDir]
-  function walk(dir, depth) {
+function findNapcatCopyRoot(stagingDir: string): string {
+  const candidates: string[] = [stagingDir]
+  function walk(dir: string, depth: number): void {
     if (depth >= 3) return
-    let entries = []
+    let entries: Dirent[] = []
     try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const entry of entries) { if (entry.isDirectory()) { const full = path.join(dir, entry.name); candidates.push(full); walk(full, depth + 1) } }
   }
   walk(stagingDir, 0)
-  const inspected = candidates.map(dir => inspectNapcatCandidate(dir))
+  const inspected: NapcatInspectionLike[] = candidates.map(dir => inspectNapcatCandidate(dir))
   const installed = inspected.filter(item => item.found).sort((a, b) => { const aD = a.entry ? path.relative(a.path, a.entry).split(path.sep).filter(Boolean).length : 99; const bD = b.entry ? path.relative(b.path, b.entry).split(path.sep).filter(Boolean).length : 99; return aD - bD || b.path.length - a.path.length })[0]
   if (installed?.path) return installed.path
   const partial = inspected.find(item => item.exists && item.status === 'partial' && /启动文件|配置|安装器|bootmain/i.test(item.reason || ''))
   return partial?.path || stagingDir
 }
 
-function buildNapcatManualSteps(archivePath, installDir) {
+function buildNapcatManualSteps(archivePath: string, installDir: string): string[] {
   return [`打开下载包：${archivePath}`, `把压缩包完整解压到：${installDir}`, '进入解压出的 NapCat.XXXX.Shell 目录，运行 NapCatInstaller.exe 等待自动配置完成。', '确认目录里出现 napcat.bat 或 NapCatWinBootMain.exe 后，回到部署器点击"检测环境"。']
 }
 
-function downloadNapcatWindowsRelease(installDir, callback: InstallCallback) {
+function downloadNapcatWindowsRelease(installDir: string, callback: InstallCallback): void {
   httpsGetJson('https://api.github.com/repos/NapNeko/NapCatQQ/releases/latest', (apiErr, release) => {
     if (apiErr) return callback(apiErr)
     const releaseInfo = release && typeof release === 'object' ? release as GithubRelease : {}
@@ -866,6 +1138,7 @@ function downloadNapcatWindowsRelease(installDir, callback: InstallCallback) {
     if (!asset?.browser_download_url) { return callback(new Error('未找到可自动安装的 Windows zip 资产' + ((releaseInfo.assets || []).map(item => item.name).filter(Boolean).join(', ') ? '，候选：' + (releaseInfo.assets || []).map(item => item.name).filter(Boolean).join(', ') : ''))) }
     downloadToRuntime(asset.browser_download_url, { preferredName: asset.name, expectedExt: '.zip', minBytes: 128 * 1024 }, (downloadErr, filePath, download) => {
       if (downloadErr) return callback(downloadErr)
+      if (!filePath) return callback(new Error('NapCat 下载完成但文件路径为空'))
       const stagingDir = runtimePath('napcat-install-' + Date.now().toString(36))
       try {
         cleanupRuntimeInstallStaging('napcat-install-')
@@ -877,11 +1150,11 @@ function downloadNapcatWindowsRelease(installDir, callback: InstallCallback) {
         const content = fs.readdirSync(sourceRoot)
         if (!content.length) throw new Error('NapCat zip 解压后目录为空')
         copyRecursiveSync(sourceRoot, installDir)
-        const detected = inspectNapcatCandidate(installDir)
+        const detected: NapcatInspectionLike = inspectNapcatCandidate(installDir)
         const needsManualSetup = !detected.found || (installer.ran && !installer.ok)
         callback(null, { asset: asset.name, filePath, download, installDir, extraction, installer, napcat: detected, needsManualSetup, manualSteps: needsManualSetup ? buildNapcatManualSteps(filePath, installDir) : [], message: needsManualSetup ? 'NapCat OneKey 包已下载并解压，但仍需要按提示完成安装器配置' : 'NapCat OneKey 包已下载、解压并完成检测' })
       } catch (e) {
-        const err = e as ArchiveExtractError
+        const err = toArchiveExtractError(e)
         try { removePathWithRetry(installDir) } catch { /* non-critical: failed install cleanup */ }
         callback(new Error('NapCat 下载完成但自动解压/安装失败：' + describeFsError(err, String(err.message || '').trim())), { asset: asset.name, filePath, download, installDir, manualSteps: buildNapcatManualSteps(filePath, installDir), attempts: err.attempts || [], stage: err.stage || 'install', archivePath: err.archivePath || filePath, fileSize: err.fileSize })
       } finally { try { removePathWithRetry(stagingDir) } catch { /* non-critical: staging cleanup best effort */ } }
@@ -889,21 +1162,21 @@ function downloadNapcatWindowsRelease(installDir, callback: InstallCallback) {
   })
 }
 
-function pickNodeWindowsRelease(releases) {
+function pickNodeWindowsRelease(releases: unknown): PortableNodeAsset {
   const arch = process.arch === 'arm64' ? 'arm64' : (process.arch === 'x64' ? 'x64' : '')
   if (!arch) throw new Error('当前架构暂不支持自动安装便携 Node：' + process.arch)
-  const list = Array.isArray(releases) ? releases : []
+  const list: NodeReleaseInfo[] = Array.isArray(releases) ? releases : []
   const selected = list.find(item => item?.lts && /^v\d+\.\d+\.\d+$/.test(String(item.version || '')))
   if (!selected) throw new Error('未找到 Node.js LTS 版本信息')
-  const version = selected.version
+  const version = String(selected.version)
   const fileName = `node-${version}-win-${arch}.zip`
   return { version, arch, fileName, url: `https://nodejs.org/dist/${version}/${fileName}` }
 }
 
-function findExtractedNodeRoot(stagingDir) {
+function findExtractedNodeRoot(stagingDir: string): string {
   const direct = path.join(stagingDir, 'node.exe')
   if (fs.existsSync(direct)) return stagingDir
-  let entries = []
+  let entries: Dirent[] = []
   try { entries = fs.readdirSync(stagingDir, { withFileTypes: true }) } catch { return '' }
   for (const entry of entries) { if (entry.isDirectory() && fs.existsSync(path.join(stagingDir, entry.name, 'node.exe'))) return path.join(stagingDir, entry.name) }
   return ''
@@ -917,9 +1190,10 @@ function installPortableNodeWindows(callback: InstallCallback) {
   httpsGetJson('https://nodejs.org/dist/index.json', (apiErr, releases) => {
     if (apiErr) return callback(apiErr)
     let asset
-    try { asset = pickNodeWindowsRelease(releases) } catch (e) { return callback(e) }
+    try { asset = pickNodeWindowsRelease(releases) } catch (e) { return callback(toError(e)) }
     downloadToRuntime(asset.url, { preferredName: asset.fileName, expectedExt: '.zip', minBytes: 1024 * 1024 }, (downloadErr, archivePath, download) => {
       if (downloadErr) return callback(downloadErr)
+      if (!archivePath) return callback(new Error('便携 Node/npm 下载完成但文件路径为空'))
       const stagingDir = runtimePath('node-install-' + Date.now().toString(36))
       const targetDir = getPortableNodeDir()
       try {
@@ -937,7 +1211,7 @@ function installPortableNodeWindows(callback: InstallCallback) {
         if (!npm.found || !npm.ownedByProject) throw new Error('便携 npm 校验失败：' + (npm.reason || 'npm 不可用'))
         callback(null, { skipped: false, message: '便携 Node/npm 已安装到 runtime/node', asset, archivePath, download, installDir: targetDir, node, npm })
       } catch (e) {
-        const err = e as ArchiveExtractError
+        const err = toArchiveExtractError(e)
         try { removePathWithRetry(targetDir) } catch { /* non-critical: failed node install cleanup */ }
         callback(new Error('便携 Node/npm 安装失败：' + describeFsError(err, String(err.stderr || err.message || '').trim())), { asset, archivePath, download, installDir: targetDir, attempts: err.attempts || [], stage: err.stage || 'install' })
       } finally { try { removePathWithRetry(stagingDir) } catch { /* non-critical: staging cleanup best effort */ } }
@@ -956,7 +1230,7 @@ function prepareNpmInstallRun(options: PrepareNpmInstallOptions = {}) {
   const proxy = diagnostics.proxy || diagnoseNpmProxy(diagnostics)
   const shouldClean = forceRepair || proxy.shouldBypass
   const env = shouldClean ? getNoProxyEnvOverrides() : {}
-  const repair = { forced: forceRepair, automatic: !forceRepair && proxy.shouldBypass, envClearedForRetry: shouldClean, reason: shouldClean ? (proxy.reason || '已清理本次 npm install 的代理环境') : '', actions: [] }
+  const repair: NpmRepairState = { forced: forceRepair, automatic: !forceRepair && proxy.shouldBypass, envClearedForRetry: shouldClean, reason: shouldClean ? (proxy.reason || '已清理本次 npm install 的代理环境') : '', actions: [] }
   if (shouldClean) repair.actions = repairNpmProxyConfig(env)
   diagnostics.proxy = proxy
   diagnostics.repair = repair

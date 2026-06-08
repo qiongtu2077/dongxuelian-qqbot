@@ -1,18 +1,25 @@
-declare function handleGetWhitelist(req: any, res: any): any;
-declare function handlePutWhitelist(req: any, res: any): void;
-declare function handleGetKeys(req: any, res: any): any;
-declare function handleGetKeysUsage(req: any, res: any): any;
-declare function handlePutKeys(req: any, res: any): void;
-declare function handleGetCustomProviders(req: any, res: any): any;
-declare function handlePutCustomProviders(req: any, res: any): void;
-declare function handleGetFallback(req: any, res: any): any;
-declare function handlePutFallback(req: any, res: any): void;
-declare function handleGetFeatures(req: any, res: any): any;
-declare function handleGetCommands(req: any, res: any): any;
-declare function handleGetAdminIds(req: any, res: any): any;
-declare function handlePutAdminIds(req: any, res: any): void;
-declare function handleGetTools(req: any, res: any): any;
-declare function handleGetToolsPending(req: any, res: any): any;
+import type { IncomingMessage, ServerResponse } from 'http';
+type RegexRouteHandler = (req: IncomingMessage, res: ServerResponse, match: RegExpMatchArray, pathname: string, url: URL) => unknown;
+interface RegexRoute {
+    pattern: RegExp;
+    method: string;
+    handler: RegexRouteHandler;
+}
+declare function handleGetWhitelist(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePutWhitelist(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetKeys(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetKeysUsage(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePutKeys(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetCustomProviders(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePutCustomProviders(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetFallback(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePutFallback(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetFeatures(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetCommands(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetAdminIds(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePutAdminIds(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetTools(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetToolsPending(req: IncomingMessage, res: ServerResponse): void;
 declare const _default: {
     routes: {
         'GET /dashboard/api/whitelist': typeof handleGetWhitelist;
@@ -31,10 +38,6 @@ declare const _default: {
         'GET /dashboard/api/tools': typeof handleGetTools;
         'GET /dashboard/api/tools/pending': typeof handleGetToolsPending;
     };
-    regexRoutes: {
-        pattern: RegExp;
-        method: string;
-        handler: (req: any, res: any, match: any) => void;
-    }[];
+    regexRoutes: RegexRoute[];
 };
 export = _default;

@@ -1,6 +1,8 @@
 'use strict'
 
-const fs = require('fs')
+import type { IncomingMessage, ServerResponse } from 'http'
+
+const fs = require('fs') as typeof import('fs')
 const {
   json,
   log,
@@ -30,15 +32,32 @@ const {
 } = require('../auth')
 const { ADMIN_PWD_FILE, ACCESS_PWD_FILE, LEGACY_ACCESS_PWD_FILE } = require('../paths')
 
+type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void
+type AuthMiddleware = (req: IncomingMessage, res: ServerResponse, pathname: string) => boolean
+
+interface AuthBody {
+  password?: string
+  oldPassword?: string
+  newPassword?: string
+  type?: string
+  resetToken?: string
+}
+
+function parseBody(body: string): AuthBody {
+  const parsed = JSON.parse(body)
+  return parsed && typeof parsed === 'object' ? parsed : {}
+}
+
 // Handles access-password login and returns a normal dashboard token.
-function handleLogin(req, res) {
+function handleLogin(req: IncomingMessage, res: ServerResponse): void {
   const loginIp = getRemoteAddress(req)
   if (!isLocalAuthBypass(req) && isLoginRateLimited(loginIp)) {
     return json(res, { ok: false, message: 'too many login attempts; please try again later' }, 429)
   }
-  collectBody(req, res, (body) => {
+  collectBody(req, res, (body: string) => {
     try {
-      const { password } = JSON.parse(body)
+      const { password: rawPassword } = parseBody(body)
+      const password = String(rawPassword || '')
       const accessRecord = getAccessPasswordRecord()
       const stored = accessRecord.value
       if (!stored && !isLocalAuthBypass(req)) {
@@ -49,7 +68,7 @@ function handleLogin(req, res) {
         clearLoginFails(loginIp)
         return json(res, { ok: true, token: createToken() })
       }
-      verifyPassword(password, stored, ACCESS_PWD_FILE).then(match => {
+      verifyPassword(password, stored, ACCESS_PWD_FILE).then((match: boolean) => {
         if (match) {
           return removeLegacyAccessPasswordAfterUpgrade(accessRecord, password).then(() => {
             clearLoginFails(loginIp)
@@ -69,17 +88,18 @@ function handleLogin(req, res) {
 }
 
 // Verifies the admin password after normal access-token authentication.
-function handleAdminVerify(req, res) {
+function handleAdminVerify(req: IncomingMessage, res: ServerResponse): void {
   const loginIp = getRemoteAddress(req)
   if (isLocalAuthBypass(req)) return json(res, { ok: true, token: createAdminToken() })
   if (isLoginRateLimited(loginIp)) {
     return json(res, { ok: false, message: 'too many authentication attempts; please try again later' }, 429)
   }
-  collectBody(req, res, (body) => {
+  collectBody(req, res, (body: string) => {
     try {
-      const { password } = JSON.parse(body)
+      const { password: rawPassword } = parseBody(body)
+      const password = String(rawPassword || '')
       const stored = getAdminPassword()
-      verifyPassword(password, stored, ADMIN_PWD_FILE).then(match => {
+      verifyPassword(password, stored, ADMIN_PWD_FILE).then((match: boolean) => {
         if (match) {
           clearLoginFails(loginIp)
           return json(res, { ok: true, token: createAdminToken() })
@@ -96,14 +116,14 @@ function handleAdminVerify(req, res) {
 }
 
 // Changes access/admin passwords and rotates token signing secrets.
-function handleChangePassword(req, res) {
+function handleChangePassword(req: IncomingMessage, res: ServerResponse): void {
   if (isLocalAuthBypass(req)) {
     return json(res, { ok: false, message: 'password login is disabled in local deployer mode', code: 'AUTH_DISABLED_LOCAL' }, 400)
   }
   if (!requireAdmin(req, res)) return
-  collectBody(req, res, (body) => {
+  collectBody(req, res, (body: string) => {
     try {
-      const { type, oldPassword, newPassword } = JSON.parse(body)
+      const { type, oldPassword, newPassword } = parseBody(body)
       if (!newPassword || newPassword.length < 3) {
         return json(res, { ok: false, message: 'new password must be at least 3 characters' }, 400)
       }
@@ -112,7 +132,7 @@ function handleChangePassword(req, res) {
       }
       if (type === 'admin') {
         const stored = getAdminPassword()
-        verifyPassword(oldPassword, stored, ADMIN_PWD_FILE).then(async (match) => {
+        verifyPassword(String(oldPassword || ''), stored, ADMIN_PWD_FILE).then(async (match: boolean) => {
           if (!match) {
             return json(res, { ok: false, message: 'current admin password is incorrect' }, 401)
           }
@@ -124,7 +144,7 @@ function handleChangePassword(req, res) {
           return json(res, { ok: false, message: 'internal authentication error' }, 500)
         })
       } else if (type === 'access') {
-        hashPassword(newPassword).then(hash => {
+        hashPassword(newPassword).then((hash: string) => {
           writeFileSyncSafe(ACCESS_PWD_FILE, hash)
           rotateSessionSecret()
           return json(res, { ok: true, message: 'access password updated; please log in again' })
@@ -141,13 +161,13 @@ function handleChangePassword(req, res) {
 }
 
 // Resets password files using the filesystem reset token.
-function handleResetPassword(req, res) {
+function handleResetPassword(req: IncomingMessage, res: ServerResponse): void {
   if (isLocalAuthBypass(req)) {
     return json(res, { ok: false, message: 'password login is disabled in local deployer mode', code: 'AUTH_DISABLED_LOCAL' }, 400)
   }
-  collectBody(req, res, (body) => {
+  collectBody(req, res, (body: string) => {
     try {
-      const { resetToken } = JSON.parse(body)
+      const { resetToken } = parseBody(body)
       const stored = getResetToken()
       const inputToken = String(resetToken || '').trim()
       const storedToken = String(stored || '').trim()
@@ -167,10 +187,10 @@ function handleResetPassword(req, res) {
 }
 
 // Enforces normal access-token authentication for dashboard API routes.
-function authMiddleware(req, res, pathname) {
+function authMiddleware(req: IncomingMessage, res: ServerResponse, pathname: string): boolean {
   const isPublicGalleryImage = pathname.startsWith('/dashboard/api/gallery/image/') && req.method === 'GET'
   if (pathname.startsWith('/dashboard/api/') && !isPublicGalleryImage && !isLocalAuthBypass(req)) {
-    const authHeader = req.headers['authorization'] || ''
+    const authHeader = String(req.headers['authorization'] || '')
     const token = authHeader.replace(/^Bearer\s+/i, '')
     if (!validateToken(token)) {
       res.writeHead(401, { 'Content-Type': 'application/json' })
@@ -181,11 +201,11 @@ function authMiddleware(req, res, pathname) {
   return true
 }
 
-const routes = {
+const routes: Record<string, RouteHandler> = {
   'POST /dashboard/api/login': handleLogin,
   'POST /dashboard/api/admin/verify': handleAdminVerify,
   'PUT /dashboard/api/auth/password': handleChangePassword,
   'POST /dashboard/api/auth/reset-password': handleResetPassword,
 }
 
-export = { routes, authMiddleware }
+export = { routes, authMiddleware: authMiddleware as AuthMiddleware }

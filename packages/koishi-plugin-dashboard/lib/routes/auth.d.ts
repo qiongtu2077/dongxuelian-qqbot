@@ -1,15 +1,8 @@
-declare function handleLogin(req: any, res: any): any;
-declare function handleAdminVerify(req: any, res: any): any;
-declare function handleChangePassword(req: any, res: any): any;
-declare function handleResetPassword(req: any, res: any): any;
-declare function authMiddleware(req: any, res: any, pathname: any): boolean;
+import type { IncomingMessage, ServerResponse } from 'http';
+type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void;
+type AuthMiddleware = (req: IncomingMessage, res: ServerResponse, pathname: string) => boolean;
 declare const _default: {
-    routes: {
-        'POST /dashboard/api/login': typeof handleLogin;
-        'POST /dashboard/api/admin/verify': typeof handleAdminVerify;
-        'PUT /dashboard/api/auth/password': typeof handleChangePassword;
-        'POST /dashboard/api/auth/reset-password': typeof handleResetPassword;
-    };
-    authMiddleware: typeof authMiddleware;
+    routes: Record<string, RouteHandler>;
+    authMiddleware: AuthMiddleware;
 };
 export = _default;

@@ -25,17 +25,45 @@ const DEFAULT_FALLBACK_CHAINS = {
     ],
 };
 const ADMIN_IDS_FILE = path.join(DATA_DIR, 'ai-admin-ids.json');
+const WHITELIST_TYPES = ['summary', 'random', 'userBlacklist', 'videoBlacklist'];
 const whitelistFiles = {
     summary: { file: 'summary-whitelist.json', label: '解除上限群白名单', type: 'array' },
     random: { file: 'ai-random-whitelist.json', label: '群聊AI白名单', type: 'array' },
     userBlacklist: { file: 'ai-user-blacklist.json', label: '用户黑名单', type: 'array' },
     videoBlacklist: { file: 'video-blacklist.json', label: '视频黑名单', type: 'object', default: { groups: [], users: [] } },
 };
+function requireToolDefinition(tool) {
+    if (!tool.definition)
+        throw new TypeError("Cannot read properties of undefined (reading 'name')");
+    return tool.definition;
+}
+function getErrorMessage(error) {
+    if (error && typeof error === 'object' && 'message' in error)
+        return String(error.message || '');
+    return String(error || '');
+}
+function getLegacyErrorMessage(error) {
+    return error && typeof error === 'object' && 'message' in error ? error.message : undefined;
+}
+function parseJsonObject(body) {
+    const data = JSON.parse(body || '{}');
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+}
+function isWhitelistType(value) {
+    return typeof value === 'string' && Object.prototype.hasOwnProperty.call(whitelistFiles, value);
+}
+function isWritableKeyFile(value) {
+    return typeof value === 'string' && !!value && !value.includes('..') && value.endsWith('-key.txt');
+}
+function normalizeToolChannel(value) {
+    return value === 'qq' || value === 'dashboard' ? value : 'dashboard';
+}
 function handleGetWhitelist(req, res) {
     if (!requireAdmin(req, res))
         return;
     const result = {};
-    for (const [key, cfg] of Object.entries(whitelistFiles)) {
+    for (const key of WHITELIST_TYPES) {
+        const cfg = whitelistFiles[key];
         try {
             result[key] = { label: cfg.label, data: JSON.parse(fs.readFileSync(path.join(DATA_DIR, cfg.file), 'utf8')) };
         }
@@ -50,10 +78,10 @@ function handlePutWhitelist(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const { type, data } = JSON.parse(body);
-            const cfg = whitelistFiles[type];
-            if (!cfg)
+            const { type, data } = parseJsonObject(body);
+            if (!isWhitelistType(type))
                 return json(res, { ok: false, message: '无效类型' }, 400);
+            const cfg = whitelistFiles[type];
             writeFileSyncSafe(path.join(DATA_DIR, cfg.file), JSON.stringify(data, null, 2));
             try {
                 require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache();
@@ -62,7 +90,7 @@ function handlePutWhitelist(req, res) {
             json(res, { ok: true, message: cfg.label + ' 已更新' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
@@ -76,10 +104,13 @@ function handleGetKeys(req, res) {
         { name: '智谱 GLM', file: 'ai-glm-key.txt' },
         { name: '小米 MiMo', file: 'ai-mimorium-key.txt' },
     ];
-    return json(res, keyFiles.map(k => {
+    return json(res, keyFiles.map((k) => {
         const content = readFileSyncSafe(path.join(DATA_DIR, k.file));
         return { label: k.name, file: k.file, exists: !!content, prefix: content ? content.slice(0, 8) + '****' : '' };
     }));
+}
+function isRecord(value) {
+    return !!value && typeof value === 'object';
 }
 function handleGetKeysUsage(req, res) {
     if (!requireAdmin(req, res))
@@ -89,10 +120,11 @@ function handleGetKeysUsage(req, res) {
         if (!fs.existsSync(usageFile))
             return json(res, { days: [], providers: [], models: [] });
         const raw = fs.readFileSync(usageFile, 'utf8');
-        const data = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        const data = isRecord(parsed) ? parsed : {};
         const providers = new Map();
         const models = new Map();
-        const toNum = value => {
+        const toNum = (value) => {
             const n = Number(value || 0);
             return Number.isFinite(n) && n > 0 ? n : 0;
         };
@@ -110,7 +142,7 @@ function handleGetKeysUsage(req, res) {
             current.cacheRead += toNum(patch.cacheRead);
             map.set(key, current);
         };
-        const unknownModelKey = provider => `${provider || 'unknown'}:unknown`;
+        const unknownModelKey = (provider) => `${provider || 'unknown'}:unknown`;
         const normalizeModelKey = (model, provider = '') => {
             const raw = String(model || '').trim();
             const prov = String(provider || '').trim() || raw.split(':')[0];
@@ -146,16 +178,18 @@ function handleGetKeysUsage(req, res) {
             target[provider] = current;
         };
         const reservedDayKeys = new Set(['date', 'total', 'input', 'output', 'cacheCreation', 'cacheRead', 'requests', 'models']);
-        const providerLabel = p => p === 'opencode' ? 'OpenCode' : p === 'glm' ? 'GLM' : p === 'dashscope' ? '阿里云' : p === 'deepseek' ? 'DeepSeek' : p === 'mimorium' ? 'MiMo' : p;
-        const days = Object.keys(data).sort().slice(-30).map(date => {
-            const source = data[date] || {};
+        const providerLabel = (p) => p === 'opencode' ? 'OpenCode' : p === 'glm' ? 'GLM' : p === 'dashscope' ? '阿里云' : p === 'deepseek' ? 'DeepSeek' : p === 'mimorium' ? 'MiMo' : p;
+        const days = Object.keys(data).sort().slice(-30).map((date) => {
+            const rawSource = data[date];
+            const source = isRecord(rawSource) ? rawSource : {};
             const day = { date, total: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, requests: 0, models: {} };
-            if (source.providers && typeof source.providers === 'object') {
+            const sourceProviders = isRecord(source.providers) ? source.providers : null;
+            if (sourceProviders) {
                 const providerTotals = {};
                 const modelTotalsByProvider = {};
-                for (const [prov, stat] of Object.entries(source.providers)) {
-                    const statObj = stat && typeof stat === 'object' ? stat : {};
-                    const value = typeof stat === 'object' ? toNum(statObj.total) : toNum(stat);
+                for (const [prov, stat] of Object.entries(sourceProviders)) {
+                    const statObj = isRecord(stat) ? stat : {};
+                    const value = isRecord(stat) ? toNum(statObj.total) : toNum(stat);
                     providerTotals[prov] = value;
                     day[prov] = value;
                     addStat(providers, prov, {
@@ -168,8 +202,9 @@ function handleGetKeysUsage(req, res) {
                         cacheRead: statObj.cacheRead,
                     });
                 }
-                for (const [model, stat] of Object.entries(source.models || {})) {
-                    const statObj = stat && typeof stat === 'object' ? stat : {};
+                const sourceModels = isRecord(source.models) ? source.models : {};
+                for (const [model, stat] of Object.entries(sourceModels)) {
+                    const statObj = isRecord(stat) ? stat : {};
                     const provider = statObj.provider || String(model || '').split(':')[0];
                     const modelKey = normalizeModelKey(model, provider);
                     const modelTotal = toNum(statObj.total);
@@ -206,7 +241,8 @@ function handleGetKeysUsage(req, res) {
                     const modelStat = modelTotalsByProvider[prov] || { total: 0, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
                     const residual = total - toNum(modelStat.total);
                     if (residual > 0) {
-                        const providerStat = (source.providers[prov] || {});
+                        const providerSource = sourceProviders[prov];
+                        const providerStat = isRecord(providerSource) ? providerSource : {};
                         const residualKey = unknownModelKey(prov);
                         const residualPatch = {
                             provider: prov,
@@ -220,7 +256,6 @@ function handleGetKeysUsage(req, res) {
                         addDayModelStat(day.models, residualKey, residualPatch);
                         addStat(models, residualKey, {
                             label: `${providerLabel(prov)} 未分模型`,
-                            provider: prov,
                             ...residualPatch,
                         });
                     }
@@ -262,9 +297,9 @@ function handlePutKeys(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const data = JSON.parse(body);
+            const data = parseJsonObject(body);
             const file = data.file;
-            if (!file || file.includes('..') || !file.endsWith('-key.txt'))
+            if (!isWritableKeyFile(file))
                 return json(res, { ok: false, message: '无效文件名' }, 400);
             writeFileSyncSafe(path.join(DATA_DIR, file), data.value);
             try {
@@ -274,7 +309,7 @@ function handlePutKeys(req, res) {
             json(res, { ok: true, message: 'Key 已更新' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
@@ -301,7 +336,7 @@ function handlePutCustomProviders(req, res) {
             json(res, { ok: true, message: '自定义供应商已更新' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
@@ -310,14 +345,14 @@ function handleGetFallback(req, res) {
         return;
     function buildProviderMap() {
         const ps = {};
-        const pDefs = require(path.join(AI_LIB, 'core', 'constants')).PROVIDERS;
+        const { PROVIDERS: pDefs } = require(path.join(AI_LIB, 'core', 'constants'));
         for (const key of Object.keys(pDefs))
             ps[key] = pDefs[key];
         try {
             const custom = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'));
             if (Array.isArray(custom))
-                custom.forEach(p => { if (p.id)
-                    ps[p.id] = p; });
+                custom.forEach((p) => { if (p.id)
+                    ps[String(p.id)] = p; });
         }
         catch { /* non-critical: optional custom providers */ }
         return ps;
@@ -336,8 +371,8 @@ function handlePutFallback(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const { chains } = JSON.parse(body);
-            if (!chains || typeof chains !== 'object')
+            const { chains } = parseJsonObject(body);
+            if (!isRecord(chains))
                 return json(res, { ok: false, message: '参数错误' }, 400);
             const tmp = FALLBACK_CHAINS_FILE + '.tmp';
             fs.writeFileSync(tmp, JSON.stringify(chains, null, 2), 'utf8');
@@ -345,15 +380,17 @@ function handlePutFallback(req, res) {
             json(res, { ok: true, message: 'Fallback 链已更新' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
 function handleGetFeatures(req, res) {
-    return json(res, require('../..').FEATURES_DATA || []);
+    const root = require('../..');
+    return json(res, root.FEATURES_DATA || []);
 }
 function handleGetCommands(req, res) {
-    return json(res, require('../..').COMMANDS_DATA || []);
+    const root = require('../..');
+    return json(res, root.COMMANDS_DATA || []);
 }
 function handleGetAdminIds(req, res) {
     if (!requireAdmin(req, res))
@@ -372,7 +409,7 @@ function handlePutAdminIds(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const { ids } = JSON.parse(body);
+            const { ids } = parseJsonObject(body);
             if (!Array.isArray(ids))
                 return json(res, { ok: false, message: '参数错误' }, 400);
             const cleaned = ids.map(String).filter(Boolean);
@@ -394,33 +431,38 @@ function handleGetTools(req, res) {
     try {
         const registry = require(path.join(AI_LIB, 'agent', 'tools', 'registry'));
         const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig(true);
-        const tools = Object.values(registry.toolRegistry).map(tool => ({
-            name: tool.definition.name,
-            description: tool.definition.description || '',
-            dangerous: !!tool.dangerous,
-            external: tool.definition.name === 'web_search',
-            defaultChannels: tool.defaultChannels || ['dashboard', 'qq'],
-            channels: {
-                qq: !!agentConfig.channels?.qq?.tools?.[tool.definition.name],
-                dashboard: !!agentConfig.channels?.dashboard?.tools?.[tool.definition.name],
-            },
-        }));
+        const tools = Object.values(registry.toolRegistry).map(tool => {
+            const definition = requireToolDefinition(tool);
+            const name = definition.name;
+            return {
+                name,
+                description: definition.description || '',
+                dangerous: !!tool.dangerous,
+                external: name === 'web_search',
+                defaultChannels: tool.defaultChannels || ['dashboard', 'qq'],
+                channels: {
+                    qq: !!agentConfig.channels?.qq?.tools?.[String(name)],
+                    dashboard: !!agentConfig.channels?.dashboard?.tools?.[String(name)],
+                },
+            };
+        });
         return json(res, { ok: true, tools });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
     }
 }
 function handleGetToolsPending(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const p = require(path.join(AI_LIB, 'agent', 'pending')).getPendingTool('dashboard', 'dashboard');
-        const pending = require(path.join(AI_LIB, 'agent', 'pending')).listPendingTools();
+        const pendingModule = require(path.join(AI_LIB, 'agent', 'pending'));
+        const p = pendingModule.getPendingTool('dashboard', 'dashboard');
+        const pending = pendingModule.listPendingTools ? pendingModule.listPendingTools() : [];
         return json(res, { ok: true, pending: pending.length ? pending : (p ? [{ id: p.id, toolName: p.toolName, expireAt: p.expireAt }] : []) });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
     }
 }
 const routes = {
@@ -448,7 +490,7 @@ const regexRoutes = [
                 try {
                     const data = JSON.parse(body || '{}');
                     const toolName = decodeURIComponent(match[1]);
-                    const channel = ['qq', 'dashboard'].includes(data.channel) ? data.channel : 'dashboard';
+                    const channel = normalizeToolChannel(data.channel);
                     const registry = require(path.join(AI_LIB, 'agent', 'tools', 'registry'));
                     if (!registry.toolRegistry[toolName])
                         return json(res, { ok: false, message: '未知工具' }, 404);
@@ -456,7 +498,7 @@ const regexRoutes = [
                     return json(res, { ok: true, config: saved });
                 }
                 catch (e) {
-                    return json(res, { ok: false, message: e.message }, 400);
+                    return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
                 }
             });
         } },
@@ -466,7 +508,7 @@ const regexRoutes = [
             try {
                 const pending = require(path.join(AI_LIB, 'agent', 'pending'));
                 const pendingId = decodeURIComponent(match[1]);
-                const findPendingById = pending.findPendingToolById || pending.getPendingToolById || (id => (pending.listPendingTools && pending.listPendingTools().find(item => item.id === id)) || null);
+                const findPendingById = pending.findPendingToolById || pending.getPendingToolById || ((id) => (pending.listPendingTools && pending.listPendingTools().find(item => item.id === id)) || null);
                 const p = findPendingById(pendingId);
                 if (!p)
                     return json(res, { ok: false, message: '没有匹配的待确认工具' }, 404);
@@ -493,7 +535,7 @@ const regexRoutes = [
                 }, submission.status || 202);
             }
             catch (e) {
-                return json(res, { ok: false, message: e.message }, 500);
+                return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
             }
         } },
 ];

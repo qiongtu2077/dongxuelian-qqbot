@@ -1,36 +1,43 @@
-declare function safeCompare(a: any, b: any): any;
-declare function isBcryptHash(s: any): boolean;
-declare function hashPassword(plain: any): Promise<any>;
-declare function verifyPassword(input: any, stored: any, upgradeFile: any): Promise<any>;
-declare function getAccessPasswordRecord(): {
-    value: any;
-    sourceFile: any;
+import type { IncomingMessage, ServerResponse } from 'http';
+interface AccessPasswordRecord {
+    value: string;
+    sourceFile: string;
     legacy: boolean;
-};
-declare function removeLegacyAccessPasswordAfterUpgrade(record: any, input: any): Promise<boolean>;
-declare function getAdminPassword(): any;
-declare function getAccessPassword(): any;
+}
+interface LoginFailEntry {
+    count: number;
+    firstFail: number;
+    lockedUntil: number;
+}
+declare function safeCompare(a: unknown, b: unknown): boolean;
+declare function isBcryptHash(s: unknown): boolean;
+declare function hashPassword(plain: string): Promise<string>;
+declare function verifyPassword(input: string, stored: string, upgradeFile?: string): Promise<boolean>;
+declare function getAccessPasswordRecord(): AccessPasswordRecord;
+declare function removeLegacyAccessPasswordAfterUpgrade(record: AccessPasswordRecord, input: string): Promise<boolean>;
+declare function getAdminPassword(): string;
+declare function getAccessPassword(): string;
 declare function ensureInitialCredentials(): void;
 declare function resetDashboardCredentials(): void;
-declare function getSessionSecret(): any;
-declare function rotateSessionSecret(): any;
+declare function getSessionSecret(): string;
+declare function rotateSessionSecret(): string;
 declare function createToken(): string;
-declare function validateToken(token: any): any;
+declare function validateToken(token: unknown): boolean;
 declare function createAdminToken(): string;
-declare function validateAdminToken(token: any): any;
-declare function generateResetToken(): any;
-declare function getResetToken(): any;
+declare function validateAdminToken(token: unknown): boolean;
+declare function generateResetToken(): string;
+declare function getResetToken(): string;
 declare function shouldGenerateResetTokenOnStartup(): boolean;
-declare function isSameOriginRequest(req: any): boolean;
-declare function isRequestSiteTrusted(req: any): boolean;
-declare function applyCorsHeaders(req: any, res: any): void;
-declare function rejectCrossSiteRequest(req: any, res: any): boolean;
-declare function isLocalAuthBypass(req: any): boolean;
-declare function requireAdmin(req: any, res: any): boolean;
-declare function requireStrictAdmin(req: any, res: any): boolean;
-declare function isLoginRateLimited(ip: any): boolean;
-declare function recordLoginFailure(ip: any): void;
-declare function clearLoginFails(ip: any): void;
+declare function isSameOriginRequest(req: IncomingMessage): boolean;
+declare function isRequestSiteTrusted(req: IncomingMessage): boolean;
+declare function applyCorsHeaders(req: IncomingMessage, res: ServerResponse): void;
+declare function rejectCrossSiteRequest(req: IncomingMessage, res: ServerResponse): boolean;
+declare function isLocalAuthBypass(req: IncomingMessage | null | undefined): boolean;
+declare function requireAdmin(req: IncomingMessage, res: ServerResponse): boolean;
+declare function requireStrictAdmin(req: IncomingMessage, res: ServerResponse): boolean;
+declare function isLoginRateLimited(ip: string): boolean;
+declare function recordLoginFailure(ip: string): void;
+declare function clearLoginFails(ip: string): void;
 declare function trimLoginFailMap(now?: number): void;
 declare const _default: {
     TOKEN_EXPIRY_MS: number;
@@ -64,6 +71,6 @@ declare const _default: {
     recordLoginFailure: typeof recordLoginFailure;
     clearLoginFails: typeof clearLoginFails;
     trimLoginFailMap: typeof trimLoginFailMap;
-    loginFailMap: Map<any, any>;
+    loginFailMap: Map<string, LoginFailEntry>;
 };
 export = _default;

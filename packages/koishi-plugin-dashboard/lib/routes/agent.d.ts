@@ -1,36 +1,44 @@
-declare function getAgentEnvStatus(): {
-    name: any;
-    exists: any;
+import type { IncomingMessage, ServerResponse } from 'http';
+interface AgentEnvFileStatus {
+    name: string;
+    exists: boolean;
     configured: boolean;
     size: number;
-}[];
-declare function handleGetAgentConfig(req: any, res: any): Promise<any>;
-declare function handlePutAgentConfig(req: any, res: any): Promise<void>;
-declare function handleGetAgentPersonas(req: any, res: any): any;
-declare function handlePutAgentPersona(req: any, res: any): void;
-declare function handleGetTtsVoices(req: any, res: any): any;
-declare function handlePostTtsClone(req: any, res: any): void;
-declare function handlePostTtsPreview(req: any, res: any): void;
-declare function handlePostTtsCloneRename(req: any, res: any): void;
-declare function handlePostTtsCloneDelete(req: any, res: any): void;
-declare function handlePutPersonaVoice(req: any, res: any): void;
-declare function handleGetAgentStats(req: any, res: any): any;
-declare function handleGetAgentQueue(req: any, res: any): any;
-declare function handleGetAgentFiles(req: any, res: any, pathname: any, url: any): Promise<any>;
-declare function handleGetAgentFile(req: any, res: any, pathname: any, url: any): Promise<any>;
-declare function handleGetAgentFileDownload(req: any, res: any, pathname: any, url: any): Promise<any>;
-declare function handlePostAgentFileUpload(req: any, res: any): void;
-declare function handleGetAgentEnv(req: any, res: any): Promise<any>;
-declare function handleGetAgentShellGuard(req: any, res: any): any;
-declare function handleGetAgentPlans(req: any, res: any): Promise<any>;
-declare function handlePostAgentPlans(req: any, res: any): void;
-declare function handleGetAgentPushLog(req: any, res: any): any;
-declare function handleGetAgentCrons(req: any, res: any): Promise<any>;
-declare function handlePostAgentCrons(req: any, res: any): void;
-declare function handleGetAgentSessions(req: any, res: any): any;
-declare function handlePostAgentChat(req: any, res: any): void;
-declare function handlePostAgentConfirm(req: any, res: any): void;
-declare function handlePostAgentReject(req: any, res: any): void;
+}
+type AgentRegexRouteHandler = (req: IncomingMessage, res: ServerResponse, match: RegExpMatchArray, pathname: string, url: URL) => void | Promise<void>;
+interface AgentRegexRoute {
+    pattern: RegExp;
+    method: string;
+    handler: AgentRegexRouteHandler;
+}
+declare function getAgentEnvStatus(): AgentEnvFileStatus[];
+declare function handleGetAgentConfig(req: IncomingMessage, res: ServerResponse): Promise<void>;
+declare function handlePutAgentConfig(req: IncomingMessage, res: ServerResponse): Promise<void>;
+declare function handleGetAgentPersonas(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePutAgentPersona(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetTtsVoices(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostTtsClone(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostTtsPreview(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostTtsCloneRename(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostTtsCloneDelete(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePutPersonaVoice(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetAgentStats(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetAgentQueue(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetAgentFiles(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): Promise<void>;
+declare function handleGetAgentFile(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): Promise<void>;
+declare function handleGetAgentFileDownload(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): Promise<void>;
+declare function handlePostAgentFileUpload(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetAgentEnv(req: IncomingMessage, res: ServerResponse): Promise<void>;
+declare function handleGetAgentShellGuard(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetAgentPlans(req: IncomingMessage, res: ServerResponse): Promise<void>;
+declare function handlePostAgentPlans(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetAgentPushLog(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetAgentCrons(req: IncomingMessage, res: ServerResponse): Promise<void>;
+declare function handlePostAgentCrons(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetAgentSessions(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostAgentChat(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostAgentConfirm(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostAgentReject(req: IncomingMessage, res: ServerResponse): void;
 declare const _default: {
     routes: {
         'GET /dashboard/api/agent/config': typeof handleGetAgentConfig;
@@ -61,11 +69,7 @@ declare const _default: {
         'POST /dashboard/api/agent/confirm': typeof handlePostAgentConfirm;
         'POST /dashboard/api/agent/reject': typeof handlePostAgentReject;
     };
-    regexRoutes: {
-        pattern: RegExp;
-        method: string;
-        handler: (req: any, res: any, match: any) => any;
-    }[];
+    regexRoutes: AgentRegexRoute[];
     getAgentEnvStatus: typeof getAgentEnvStatus;
 };
 export = _default;

@@ -1,18 +1,71 @@
 'use strict'
 
-const fs = require('fs')
-const path = require('path')
-const { exec, execSync } = require('child_process')
-const { json, collectBody, log, readFileSyncSafe, writeFileSyncSafe, sleepSync, shellQuote } = require('../utils')
-const { requireAdmin } = require('../auth')
-const { KOISHI_DIR, KOISHI_PID_FILE, DATA_DIR } = require('../paths')
-const { checkPortState } = require('../tools')
-const { resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getLinuxNapcatQQExecutable, getNapcatToken } = require('../napcat')
-const { readLoggingConfig, writeLoggingConfig, getFilteredLogEntries } = require('../logging')
-const { resolveKoishiListenPort } = require('../tools')
-const { waitKoishiPortFree } = require('../deploy-state')
+import type { ExecException } from 'child_process'
+import type { IncomingMessage, ServerResponse } from 'http'
 
-function stopKoishiProcesses() {
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const { exec, execSync } = require('child_process') as typeof import('child_process')
+const { json, collectBody, log, readFileSyncSafe, writeFileSyncSafe, sleepSync, shellQuote } = require('../utils') as {
+  json(res: unknown, data: unknown, status?: number): void
+  collectBody(req: unknown, res: unknown, callback: (body: string) => void | Promise<void>): void
+  log(message: unknown): void
+  readFileSyncSafe(filePath: string, maxBytes?: number): string
+  writeFileSyncSafe(filePath: string, content: unknown): void
+  sleepSync(ms: number): void
+  shellQuote(value: unknown): string
+}
+const { requireAdmin } = require('../auth') as { requireAdmin(req: unknown, res: unknown): boolean }
+const { KOISHI_DIR, KOISHI_PID_FILE, DATA_DIR } = require('../paths') as { KOISHI_DIR: string; KOISHI_PID_FILE: string; DATA_DIR: string }
+const { checkPortState } = require('../tools') as { checkPortState(port: unknown): PortState }
+const { resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getLinuxNapcatQQExecutable, getNapcatToken } = require('../napcat') as {
+  resolveNapcatWebuiListenPort(): number
+  resolveNapcatOnebotListenPort(): number
+  getLinuxNapcatQQExecutable(): string
+  getNapcatToken(): string
+}
+const { readLoggingConfig, writeLoggingConfig, getFilteredLogEntries } = require('../logging') as {
+  readLoggingConfig(): unknown
+  writeLoggingConfig(config: unknown): { enabled?: boolean }
+  getFilteredLogEntries(options: Record<string, unknown>): unknown
+}
+const { resolveKoishiListenPort } = require('../tools') as { resolveKoishiListenPort(): number }
+const { waitKoishiPortFree } = require('../deploy-state') as { waitKoishiPortFree(): void }
+
+interface PortState {
+  status: string
+}
+
+interface LegacyNapcatStatus {
+  running: boolean
+  login: 'online' | 'waiting-login' | 'offline'
+  webui: boolean
+  onebot: boolean
+  webuiPort: number
+  onebotPort: number
+  qqExecutable: string
+  processes: string[]
+}
+
+interface BotJsonBody {
+  enabled?: unknown
+  maxPerMinute?: unknown
+  selfId?: unknown
+}
+
+type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => unknown
+
+function getErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || '')
+  return String(error || '')
+}
+
+function parseJsonObject(body: string): BotJsonBody {
+  const data = JSON.parse(body || '{}')
+  return data && typeof data === 'object' && !Array.isArray(data) ? data as BotJsonBody : {}
+}
+
+function stopKoishiProcesses(): void {
   let pid = 0
   try {
     const raw = String(fs.readFileSync(KOISHI_PID_FILE, 'utf8') || '').trim().split(/\r?\n/, 2)[0] || ''
@@ -48,12 +101,12 @@ function stopKoishiProcesses() {
   waitKoishiPortFree()
 }
 
-function getLegacyNapcatStatus() {
+function getLegacyNapcatStatus(): LegacyNapcatStatus {
   const webuiPort = resolveNapcatWebuiListenPort()
   const onebotPort = resolveNapcatOnebotListenPort()
   const webui = checkPortState(webuiPort)
   const onebot = checkPortState(onebotPort)
-  let processLines = []
+  let processLines: string[] = []
   try {
     const output = execSync('ps -eo pid=,args=', { encoding: 'utf8', timeout: 3000 })
     processLines = output.split(/\r?\n/).map(line => line.trim()).filter(line => {
@@ -76,11 +129,11 @@ function getLegacyNapcatStatus() {
   }
 }
 
-function normalizeQqNumber(value) {
+function normalizeQqNumber(value: unknown): string {
   return String(value || '').replace(/[^0-9]/g, '')
 }
 
-function readKoishiSelfId() {
+function readKoishiSelfId(): string {
   try {
     const yml = fs.readFileSync(path.join(KOISHI_DIR, 'koishi.yml'), 'utf8')
     const m = yml.match(/selfId:\s*['"]?(\d+)['"]?/)
@@ -90,7 +143,7 @@ function readKoishiSelfId() {
   }
 }
 
-function resolveNapcatRestartQq() {
+function resolveNapcatRestartQq(): string {
   for (const raw of [process.env.DASHBOARD_QQ_NUMBER, process.env.QQ_NUMBER, readKoishiSelfId()]) {
     const qq = normalizeQqNumber(raw)
     if (qq) return qq
@@ -101,7 +154,7 @@ function resolveNapcatRestartQq() {
 
 // --- Route Handlers ---
 
-function handleGetBotStatus(req, res) {
+function handleGetBotStatus(req: IncomingMessage, res: ServerResponse): void {
   try {
     let running = 0
     if (process.platform === 'win32') {
@@ -115,68 +168,68 @@ function handleGetBotStatus(req, res) {
   } catch { return json(res, { running: false, workers: 0 }) }
 }
 
-function handleGetLogging(req, res) {
+function handleGetLogging(req: IncomingMessage, res: ServerResponse): void {
   return json(res, { ok: true, config: readLoggingConfig() })
 }
 
-function handlePutLogging(req, res) {
+function handlePutLogging(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const data = JSON.parse(body || '{}')
+      const data = parseJsonObject(body)
       const config = writeLoggingConfig(data)
       return json(res, { ok: true, config, message: config.enabled ? '调试日志已开启' : '调试日志已关闭' })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   })
 }
 
-function handlePostBotStart(req, res) {
+function handlePostBotStart(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   const restartScript = path.join(KOISHI_DIR, 'restart.sh')
   if (!fs.existsSync(restartScript)) return json(res, { ok: false, message: '启动脚本不存在，请检查部署目录' }, 400)
-  exec(`bash "${restartScript.replace(/\\/g, '/')}"`, { maxBuffer: 512 * 1024 }, (err) => {
+  exec(`bash "${restartScript.replace(/\\/g, '/')}"`, { maxBuffer: 512 * 1024 }, (err: ExecException | null) => {
     if (err) log('start bot failed: ' + err.message)
   })
   return json(res, { ok: true, message: '启动命令已发送' })
 }
 
-function handlePostBotStop(req, res) {
+function handlePostBotStop(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   try {
     stopKoishiProcesses()
     return json(res, { ok: true, message: '已停止所有 koishi 进程' })
-  } catch (e) { return json(res, { ok: false, message: e.message }) }
+  } catch (e) { return json(res, { ok: false, message: getErrorMessage(e) }) }
 }
 
-function handleGetMaintenance(req, res) {
+function handleGetMaintenance(req: IncomingMessage, res: ServerResponse): void {
   return json(res, { enabled: !!readFileSyncSafe(path.join(DATA_DIR, 'ai-paused.txt')) })
 }
 
-function handlePutMaintenance(req, res) {
+function handlePutMaintenance(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { enabled } = JSON.parse(body)
+      const { enabled } = parseJsonObject(body)
       const f = path.join(DATA_DIR, 'ai-paused.txt')
       if (enabled) writeFileSyncSafe(f, '优化中，别急')
       else try { fs.unlinkSync(f) } catch { /* non-critical: stale token cleanup */ }
       return json(res, { ok: true, message: enabled ? '维护模式已开启' : '维护模式已关闭' })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetThrottle(req, res) {
+function handleGetThrottle(req: IncomingMessage, res: ServerResponse): void {
   try {
     const raw = readFileSyncSafe(path.join(DATA_DIR, 'ai-throttle-config.json'))
     return json(res, JSON.parse(raw))
   } catch { return json(res, { maxPerMinute: 20 }) }
 }
 
-function handlePutThrottle(req, res) {
+function handlePutThrottle(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const data = JSON.parse(body)
+      const data = parseJsonObject(body)
       if (typeof data.maxPerMinute !== 'number' || data.maxPerMinute < 1) {
         return json(res, { ok: false, message: 'maxPerMinute 必须 >= 1' }, 400)
       }
@@ -184,46 +237,47 @@ function handlePutThrottle(req, res) {
       fs.writeFileSync(f + '.tmp', JSON.stringify({ maxPerMinute: data.maxPerMinute }, null, 2), 'utf8')
       fs.renameSync(f + '.tmp', f)
       json(res, { ok: true, message: '节流配置已更新' })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetQqToken(req, res) {
+function handleGetQqToken(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   return json(res, { token: process.env.NAPCAT_TOKEN || getNapcatToken() })
 }
 
-function handleGetQqSshInfo(req, res) {
+function handleGetQqSshInfo(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   return json(res, { host: process.env.DASHBOARD_SSH_HOST || '', user: process.env.DASHBOARD_SSH_USER || 'root', port: 22 })
 }
 
-function handleGetQqSelfId(req, res) {
+function handleGetQqSelfId(req: IncomingMessage, res: ServerResponse): void {
   return json(res, { selfId: readKoishiSelfId() })
 }
 
-function handlePutQqSelfId(req, res) {
+function handlePutQqSelfId(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { selfId } = JSON.parse(body)
-      if (!selfId || !/^\d+$/.test(selfId)) return json(res, { ok: false, message: '无效 QQ 号' }, 400)
+      const { selfId } = parseJsonObject(body)
+      const nextSelfId = String(selfId || '')
+      if (!nextSelfId || !/^\d+$/.test(nextSelfId)) return json(res, { ok: false, message: '无效 QQ 号' }, 400)
       const ymlPath = path.join(KOISHI_DIR, 'koishi.yml')
       let yml = fs.readFileSync(ymlPath, 'utf8')
-      yml = yml.replace(/(selfId:\s*['\"]?)\d+(['\"]?)/, '$1' + selfId + '$2')
+      yml = yml.replace(/(selfId:\s*['\"]?)\d+(['\"]?)/, '$1' + nextSelfId + '$2')
       fs.writeFileSync(ymlPath, yml, 'utf8')
       exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`, { maxBuffer: 512 * 1024 })
       json(res, { ok: true, message: 'QQ 号已更新，Koishi 正在重启...' })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetNapcatStatus(req, res) {
+function handleGetNapcatStatus(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   return json(res, getLegacyNapcatStatus())
 }
 
-function handlePostNapcatRestart(req, res) {
+function handlePostNapcatRestart(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   const qq = resolveNapcatRestartQq()
   if (!qq) return json(res, { ok: false, message: '未配置 QQ 号，请设置 DASHBOARD_QQ_NUMBER/QQ_NUMBER 或在 koishi.yml 写入 selfId' }, 400)
@@ -241,7 +295,7 @@ function handlePostNapcatRestart(req, res) {
   return json(res, { ok: true, message: 'NapCat 重启命令已发送', qqExecutable, args })
 }
 
-function handleGetBotActivity(req, res, pathname, url) {
+function handleGetBotActivity(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): void {
   if (!requireAdmin(req, res)) return
   try {
     return json(res, getFilteredLogEntries({
@@ -256,7 +310,7 @@ function handleGetBotActivity(req, res, pathname, url) {
   } catch { return json(res, { entries: [], lines: [], total: 0 }) }
 }
 
-const routes = {
+const routes: Record<string, RouteHandler> = {
   'GET /dashboard/api/bot/status': handleGetBotStatus,
   'GET /dashboard/api/bot/activity': handleGetBotActivity,
   'GET /dashboard/api/logging': handleGetLogging,

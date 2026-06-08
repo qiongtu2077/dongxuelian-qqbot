@@ -16,11 +16,14 @@ const dh = require('../deploy-helpers');
 const DEPLOY_CONFIG_FILE = path.join(DATA_DIR, 'deploy-config.json');
 const DEPLOY_TASKS_DIR = path.join(DATA_DIR, 'deploy-tasks');
 const DEFAULT_REMOTE_APP_DIR = process.env.DASHBOARD_REMOTE_APP_DIR || process.env.KOISHI_REMOTE_APP_DIR || '';
+function getLegacyErrorMessage(error) {
+    return error?.message;
+}
 function requireStrictAdmin(req, res) {
     const { isLocalAuthBypass, validateAdminToken } = require('../auth');
     if (isLocalAuthBypass(req))
         return true;
-    const token = (req.headers['x-admin-token'] || '').trim();
+    const token = String(req.headers['x-admin-token'] || '').trim();
     if (!token || !validateAdminToken(token)) {
         json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403);
         return false;
@@ -70,7 +73,7 @@ function handlePutDeployConfig(req, res) {
             json(res, { ok: true, message: '配置已保存' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -183,7 +186,7 @@ function handlePostDeployRun(req, res) {
                             dh.writeDeployFingerprint(DEPLOY_CONFIG_FILE, { server: s, appDir: d, mode: cfg.mode });
                         }
                         catch (e) {
-                            taskLog('warning: deploy fingerprint write failed: ' + e.message);
+                            taskLog('warning: deploy fingerprint write failed: ' + getLegacyErrorMessage(e));
                         }
                         ;
                         taskLog('DONE');
@@ -202,7 +205,7 @@ function handlePostDeployRun(req, res) {
             });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -265,7 +268,7 @@ function handlePostDeployConfirm(req, res) {
         json(res, { ok: true });
     }
     catch (e) {
-        json(res, { ok: false, message: e.message }, 400);
+        json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
     }
 }
 function handlePostDeployUpload(req, res) {
@@ -291,7 +294,7 @@ function handlePostDeployUpload(req, res) {
             json(res, { ok: true, message: 'bilibili-cookies.txt 已保存到本地，部署时将自动推送' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -363,7 +366,7 @@ function handlePostDeployLocal(req, res) {
             json(res, { ok: true, message: aiKey.configured ? 'Koishi 本地配置已写入，NapCat 使用 8080 OneBot WebSocket' : 'Koishi 本地配置已写入；AI Key 未配置，基础部署可继续，AI 回复暂不可用', files, copiedPlugins, aiKeyConfigured: aiKey.configured, aiKey, manifest: { path: toProjectRel(LOCAL_DEPLOY_MANIFEST_FILE), generatedAt: timestamp } });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -376,7 +379,7 @@ function handleGetLocalConfigPreview(req, res) {
         return json(res, dh.buildLocalConfigPreview());
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 400);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
     }
 }
 function handlePostLocalConfigDelete(req, res) {
@@ -390,7 +393,7 @@ function handlePostLocalConfigDelete(req, res) {
             return json(res, { ...result, message: result.errors.length ? '部分配置未能删除' : 'Koishi 本地配置已删除' }, result.errors.length ? 400 : 200);
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -402,10 +405,10 @@ function handleGetLocalUninstallPreview(req, res) {
     try {
         const { buildLocalUninstallPreview } = require('../deploy-uninstall');
         const preview = buildLocalUninstallPreview();
-        return json(res, { ok: true, ...preview });
+        return json(res, { ...preview });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 400);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
     }
 }
 function handlePostLocalUninstall(req, res) {
@@ -420,10 +423,10 @@ function handlePostLocalUninstall(req, res) {
                 return json(res, { ok: false, message: '缺少一键卸载确认标记' }, 400);
             const { runLocalUninstall } = require('../deploy-uninstall');
             const result = runLocalUninstall(cfg);
-            return json(res, { ok: true, ...result });
+            return json(res, { ...result });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -437,14 +440,14 @@ function handlePostNapcatDownload(req, res) {
             const { url } = JSON.parse(body);
             if (!url)
                 return json(res, { ok: false, message: '下载地址不能为空' }, 400);
-            dh.downloadToRuntime(url, { preferredName: 'napcat-manual.zip', expectedExt: '.zip', minBytes: 128 * 1024 }, (err, filePath, download) => {
+            dh.downloadToRuntime(String(url), { preferredName: 'napcat-manual.zip', expectedExt: '.zip', minBytes: 128 * 1024 }, (err, filePath, download) => {
                 if (err)
                     return json(res, { ok: false, message: err.message }, 400);
                 json(res, { ok: true, message: 'NapCat 包已下载到 ' + filePath, path: filePath, download });
             });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -466,7 +469,7 @@ function handlePostNapcatWindowsDownload(req, res) {
             });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -484,7 +487,7 @@ function handlePostNodeWindowsInstall(req, res) {
             });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -506,7 +509,7 @@ function handlePostNpmInstall(req, res) {
         return json(res, { ok: true, guide: true, message: '请在终端中手动执行以下命令安装依赖', steps, cwd, npmPath: npmCmd, status: dh.getLocalNpmInstallStatus() });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 400);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
     }
 }
 function handlePostNpmRepairAndInstall(req, res) {
@@ -530,7 +533,7 @@ function handlePostNpmRepairAndInstall(req, res) {
         return json(res, { ok: true, guide: true, message: '请在终端中手动执行以下修复和安装命令', steps, cwd, npmPath: npmCmd, proxy, diagnostics, status: dh.getLocalNpmInstallStatus() });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 400);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
     }
 }
 function handleGetNpmInstallStatus(req, res) { return json(res, { ok: true, status: dh.getLocalNpmInstallStatus() }); }
@@ -570,7 +573,7 @@ function handlePostNapcatStart(req, res) {
         return json(res, { ok: true, message: 'NapCat 已启动，请等待 WebUI 或控制台二维码出现后扫码登录', status: dh.getLocalNapcatDeployStatus() });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 400);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
     }
 }
 function handleGetNapcatStatus(req, res) { return json(res, { ok: true, status: dh.getLocalNapcatDeployStatus() }); }
@@ -596,7 +599,7 @@ function handlePostKoishiStart(req, res) {
         return json(res, { ok: true, message: 'Koishi 已启动，正在等待 ' + dh.resolveKoishiListenPort() + ' 端口和 OneBot 连接', status: dh.getLocalKoishiDeployStatus() });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 400);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
     }
 }
 function handleGetKoishiStatus(req, res) { return json(res, { ok: true, status: dh.getLocalKoishiDeployStatus() }); }
@@ -605,7 +608,7 @@ function handleGetLocalReadyCheck(req, res) {
         return json(res, dh.buildLocalReadyCheck());
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 400);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
     }
 }
 /** Resolve a temporary path-encoding probe dir without touching KOISHI_DIR. */
@@ -650,7 +653,7 @@ function handlePostBotLocalStop(req, res) {
         return json(res, { ok: true, message: '本地 Bot 已停止' });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message });
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) });
     }
 }
 const routes = {

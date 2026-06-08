@@ -1,15 +1,20 @@
 'use strict'
 
-const fs = require('fs')
-const path = require('path')
-const { spawn } = require('child_process')
-const { KOISHI_DIR, KOISHI_PID_FILE } = require('./paths')
-const { readLastLogLines } = require('./logging')
+import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from 'child_process'
+
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const { spawn } = require('child_process') as typeof import('child_process')
+const { KOISHI_DIR, KOISHI_PID_FILE } = require('./paths') as { KOISHI_DIR: string; KOISHI_PID_FILE: string }
+const { readLastLogLines } = require('./logging') as { readLastLogLines(file: string, limit?: number): string[] }
+
+type LocalTaskKey = 'npmInstall' | 'napcat' | 'koishi'
+type LocalTaskState = 'idle' | 'running' | 'success' | 'failed'
 
 interface LocalTask {
   label: string
   logFile: string
-  state: string
+  state: LocalTaskState
   running: boolean
   startedAt: number
   finishedAt: number
@@ -18,41 +23,76 @@ interface LocalTask {
   pid: number
   command: string
   cwd: string
-  process: { killed?: boolean } | null
+  process: ChildProcessWithoutNullStreams | null
   diagnostics?: unknown
 }
 
 interface SpawnLocalTaskOptions {
   diagnostics?: unknown
   cwd?: string
-  env?: Record<string, string>
+  env?: Record<string, string | undefined>
   shell?: boolean
 }
 
-const runtimePath = (...args) => path.join(KOISHI_DIR, 'runtime', ...args)
+interface RebuildStatus {
+  state: string
+  message: string
+  detail: string
+  startedAt: number
+  finishedAt: number
+}
 
-const localTasks: Record<string, LocalTask> = {
+interface NpmDiagnosticsCache {
+  at: number
+  data: unknown | null
+}
+
+interface LocalTaskPublicStatus {
+  state: LocalTaskState
+  running: boolean
+  startedAt: number
+  finishedAt: number
+  exitCode: number | null
+  error: string
+  pid: number
+  command: string
+  cwd: string
+  logFile: string
+  logLines: string[]
+  [key: string]: unknown
+}
+
+interface SpawnLocalTaskResult {
+  alreadyRunning: boolean
+  status: LocalTaskPublicStatus
+}
+
+type LocalSpawnOptions = SpawnOptionsWithoutStdio & { maxBuffer: number }
+
+const runtimePath = (...args: string[]): string => path.join(KOISHI_DIR, 'runtime', ...args)
+
+const localTasks: Record<LocalTaskKey, LocalTask> = {
   npmInstall: { label: 'npm install', logFile: runtimePath('logs', 'npm-install.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null },
   napcat: { label: 'NapCat', logFile: runtimePath('logs', 'napcat.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null },
   koishi: { label: 'Koishi', logFile: runtimePath('logs', 'koishi-local.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null },
 }
 
-let rebuildStatus = { state: 'idle', message: '', detail: '', startedAt: 0, finishedAt: 0 }
-let npmDiagnosticsCache = { at: 0, data: null }
+let rebuildStatus: RebuildStatus = { state: 'idle', message: '', detail: '', startedAt: 0, finishedAt: 0 }
+let npmDiagnosticsCache: NpmDiagnosticsCache = { at: 0, data: null }
 
 function getRebuildStatus() { return rebuildStatus }
-function setRebuildStatus(s) { rebuildStatus = s }
+function setRebuildStatus(s: RebuildStatus) { rebuildStatus = s }
 function getNpmDiagnosticsCache() { return npmDiagnosticsCache }
-function setNpmDiagnosticsCache(c) { npmDiagnosticsCache = c }
+function setNpmDiagnosticsCache(c: NpmDiagnosticsCache) { npmDiagnosticsCache = c }
 
-function appendLocalTaskLog(task, chunk) {
+function appendLocalTaskLog(task: LocalTask, chunk: Buffer | string) {
   try {
     fs.mkdirSync(path.dirname(task.logFile), { recursive: true })
     fs.appendFileSync(task.logFile, String(chunk), 'utf8')
   } catch { /* non-critical: task log best effort */ }
 }
 
-function getTaskPublicStatus(key, extra: Record<string, unknown> = {}) {
+function getTaskPublicStatus(key: LocalTaskKey, extra: Record<string, unknown> = {}): LocalTaskPublicStatus {
   const task = localTasks[key]
   return {
     state: task.state,
@@ -70,7 +110,7 @@ function getTaskPublicStatus(key, extra: Record<string, unknown> = {}) {
   }
 }
 
-function spawnLocalTask(key, command, args = [], options: SpawnLocalTaskOptions = {}) {
+function spawnLocalTask(key: LocalTaskKey, command: string, args: string[] = [], options: SpawnLocalTaskOptions = {}): SpawnLocalTaskResult {
   const task = localTasks[key]
   if (!task) throw new Error('unknown local task')
   if (task.running && task.process && !task.process.killed) return { alreadyRunning: true, status: getTaskPublicStatus(key) }
@@ -86,13 +126,14 @@ function spawnLocalTask(key, command, args = [], options: SpawnLocalTaskOptions 
   task.command = [command].concat(args).join(' ')
   task.cwd = options.cwd || KOISHI_DIR
   fs.writeFileSync(task.logFile, `[${new Date().toISOString()}] $ ${task.command}\n`, 'utf8')
-  const child = spawn(command, args, {
+  const spawnOptions: LocalSpawnOptions = {
     cwd: task.cwd,
     env: { ...process.env, ...(options.env || {}) },
     windowsHide: true,
     shell: options.shell === true,
     maxBuffer: 512 * 1024,
-  })
+  }
+  const child = spawn(command, args, spawnOptions)
   task.process = child
   task.pid = child.pid || 0
   if (key === 'koishi') {
@@ -101,16 +142,16 @@ function spawnLocalTask(key, command, args = [], options: SpawnLocalTaskOptions 
       fs.writeFileSync(KOISHI_PID_FILE, String(task.pid), 'utf8')
     } catch { /* non-critical: pid file best effort */ }
   }
-  child.stdout?.on('data', chunk => appendLocalTaskLog(task, chunk))
-  child.stderr?.on('data', chunk => appendLocalTaskLog(task, chunk))
-  child.on('error', err => {
+  child.stdout?.on('data', (chunk: Buffer | string) => appendLocalTaskLog(task, chunk))
+  child.stderr?.on('data', (chunk: Buffer | string) => appendLocalTaskLog(task, chunk))
+  child.on('error', (err: Error) => {
     task.error = err.message
     task.state = 'failed'
     task.running = false
     task.finishedAt = Date.now()
     appendLocalTaskLog(task, `\n[${new Date().toISOString()}] ERROR ${err.message}\n`)
   })
-  child.on('close', code => {
+  child.on('close', (code: number | null) => {
     task.running = false
     task.process = null
     task.exitCode = code

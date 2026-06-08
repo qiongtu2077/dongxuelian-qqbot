@@ -1,11 +1,26 @@
 'use strict'
 
-const fs = require('fs')
-const path = require('path')
-const crypto = require('crypto')
-const { json, log, collectBody, isInsidePath, parsePositiveInt } = require('../utils')
-const { requireAdmin } = require('../auth')
-const { GALLERY_DIR, GALLERY_METADATA_FILE, GALLERY_MAX_BYTES, GALLERY_MIME_EXT, GALLERY_FOIL_STYLES } = require('../paths')
+import type { Dirent, Stats } from 'fs'
+import type { IncomingMessage, ServerResponse } from 'http'
+
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const crypto = require('crypto') as typeof import('crypto')
+const { json, log, collectBody, isInsidePath, parsePositiveInt } = require('../utils') as {
+  json(res: ServerResponse, data: unknown, status?: number): void
+  log(message: unknown): void
+  collectBody(req: IncomingMessage, res: ServerResponse, callback: (body: string) => void | Promise<void>, options?: { maxBytes?: number }): void
+  isInsidePath(parent: string, child: string): boolean
+  parsePositiveInt(value: unknown, fallback: number, min: number, max: number): number
+}
+const { requireAdmin } = require('../auth') as { requireAdmin(req: IncomingMessage, res: ServerResponse): boolean }
+const { GALLERY_DIR, GALLERY_METADATA_FILE, GALLERY_MAX_BYTES, GALLERY_MIME_EXT, GALLERY_FOIL_STYLES } = require('../paths') as {
+  GALLERY_DIR: string
+  GALLERY_METADATA_FILE: string
+  GALLERY_MAX_BYTES: number
+  GALLERY_MIME_EXT: Partial<Record<string, string>>
+  GALLERY_FOIL_STYLES: Set<string>
+}
 
 interface GalleryUploadInput {
   type?: string
@@ -13,10 +28,76 @@ interface GalleryUploadInput {
   name?: string
 }
 
+interface GalleryMetadataEntry {
+  foilStyle?: unknown
+  [key: string]: unknown
+}
+
+type GalleryMetadata = Record<string, GalleryMetadataEntry>
+
+interface GalleryItem {
+  id: string
+  name: string
+  size: number
+  mtimeMs: number
+  mime: string
+  url: string
+  foilStyle: string | null
+}
+
+interface GalleryDeletedItem {
+  id: string
+}
+
+interface GalleryDeleteError {
+  id: string
+  message: string
+}
+
+interface GalleryDeleteResult {
+  deleted: GalleryDeletedItem[]
+  errors: GalleryDeleteError[]
+}
+
+type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => unknown
+
+interface PrefixRoute {
+  prefix: string
+  method: string
+  handler: RouteHandler
+}
+
+interface GalleryJsonBody {
+  id?: unknown
+  ids?: unknown
+  foilStyle?: unknown
+  type?: unknown
+  data?: unknown
+  name?: unknown
+}
+
 const MAX_GALLERY_METADATA_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_METADATA_MAX_BYTES, 256 * 1024, 16 * 1024, 1024 * 1024)
 const MAX_GALLERY_UPLOAD_BODY_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_UPLOAD_BODY_MAX_BYTES, Math.ceil(GALLERY_MAX_BYTES * 1.45) + 64 * 1024, 1024 * 1024, 16 * 1024 * 1024)
 
-function resolveGalleryId(id) {
+function getErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || '')
+  return String(error || '')
+}
+
+function isGalleryItem(item: GalleryItem | null): item is GalleryItem {
+  return !!item
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string')
+}
+
+function parseJsonObject(body: string): GalleryJsonBody {
+  const data = JSON.parse(body || '{}')
+  return data && typeof data === 'object' && !Array.isArray(data) ? data as GalleryJsonBody : {}
+}
+
+function resolveGalleryId(id: unknown): string {
   const value = String(id || '').trim()
   if (!/^[A-Za-z0-9._-]+$/.test(value) || value !== path.basename(value)) throw new Error('图像 ID 无效')
   const fullPath = path.join(GALLERY_DIR, value)
@@ -24,28 +105,29 @@ function resolveGalleryId(id) {
   return fullPath
 }
 
-function galleryMimeFromName(name) {
+function galleryMimeFromName(name: unknown): string {
   const ext = path.extname(String(name || '')).toLowerCase()
-  return ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' })[ext] || 'application/octet-stream'
+  const mimeMap: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' }
+  return mimeMap[ext] || 'application/octet-stream'
 }
 
-function normalizeGalleryStyle(value) {
+function normalizeGalleryStyle(value: unknown): string | null {
   const text = String(value ?? '').trim().toUpperCase()
   if (!text || text === 'NONE' || text === 'NULL') return null
   if (!GALLERY_FOIL_STYLES.has(text)) throw new Error('闪卡样式无效')
   return text
 }
 
-function readGalleryMetadata() {
+function readGalleryMetadata(): GalleryMetadata {
   try {
     const stat = fs.statSync(GALLERY_METADATA_FILE)
     if (!stat.isFile() || stat.size > MAX_GALLERY_METADATA_BYTES) return {}
     const data = JSON.parse(fs.readFileSync(GALLERY_METADATA_FILE, 'utf8') || '{}')
-    return data && typeof data === 'object' && !Array.isArray(data) ? data : {}
+    return data && typeof data === 'object' && !Array.isArray(data) ? data as GalleryMetadata : {}
   } catch { return {} }
 }
 
-function writeGalleryMetadata(metadata) {
+function writeGalleryMetadata(metadata: GalleryMetadata): void {
   fs.mkdirSync(GALLERY_DIR, { recursive: true })
   const tmp = GALLERY_METADATA_FILE + '.tmp'
   const text = JSON.stringify(metadata || {}, null, 2)
@@ -54,17 +136,17 @@ function writeGalleryMetadata(metadata) {
   fs.renameSync(tmp, GALLERY_METADATA_FILE)
 }
 
-function galleryImageUrl(fileName, stat) {
+function galleryImageUrl(fileName: string, stat?: Stats | null): string {
   const version = stat?.mtimeMs ? String(Math.floor(stat.mtimeMs)) : String(Date.now())
   return '/dashboard/api/gallery/image/' + encodeURIComponent(fileName) + '?v=' + version
 }
 
-function getGalleryFoilStyle(metadata, fileName) {
+function getGalleryFoilStyle(metadata: GalleryMetadata | null | undefined, fileName: string): string | null {
   try { return normalizeGalleryStyle(metadata?.[fileName]?.foilStyle) }
   catch { return null }
 }
 
-function toGalleryItem(fileName, metadata = null) {
+function toGalleryItem(fileName: string, metadata: GalleryMetadata | null = null): GalleryItem {
   const galleryMetadata = metadata || readGalleryMetadata()
   const fullPath = resolveGalleryId(fileName)
   const stat = fs.statSync(fullPath)
@@ -79,7 +161,7 @@ function toGalleryItem(fileName, metadata = null) {
   }
 }
 
-function validateGalleryImageMagic(buffer, mime) {
+function validateGalleryImageMagic(buffer: Buffer, mime: string): boolean {
   if (mime === 'image/png' && buffer.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return true
   if (mime === 'image/jpeg' && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer.length > 3) return true
   if (mime === 'image/gif' && /^(?:GIF87a|GIF89a)$/.test(buffer.slice(0, 6).toString('ascii'))) return true
@@ -87,15 +169,15 @@ function validateGalleryImageMagic(buffer, mime) {
   return false
 }
 
-function sanitizeGalleryBaseName(name) {
+function sanitizeGalleryBaseName(name: unknown): string {
   const base = path.basename(String(name || 'image')).replace(/\.[^.]+$/, '')
   return (base.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'image')
 }
 
-function listGalleryImages() {
+function listGalleryImages(): GalleryItem[] {
   fs.mkdirSync(GALLERY_DIR, { recursive: true })
   const metadata = readGalleryMetadata()
-  let entries = []
+  let entries: Dirent[] = []
   try { entries = fs.readdirSync(GALLERY_DIR, { withFileTypes: true }) } catch { return [] }
   return entries
     .filter(entry => entry.isFile() && /\.(?:png|jpe?g|webp|gif)$/i.test(entry.name))
@@ -103,11 +185,11 @@ function listGalleryImages() {
       try { return toGalleryItem(entry.name, metadata) }
       catch { return null }
     })
-    .filter(Boolean)
+    .filter(isGalleryItem)
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
 }
 
-function writeGalleryImage(input: GalleryUploadInput = {}) {
+function writeGalleryImage(input: GalleryUploadInput = {}): GalleryItem {
   const mime = String(input.type || '').toLowerCase()
   const ext = GALLERY_MIME_EXT[mime]
   if (!ext) throw new Error('只支持 PNG、JPG、WebP 或 GIF 图片')
@@ -135,83 +217,91 @@ function writeGalleryImage(input: GalleryUploadInput = {}) {
   return toGalleryItem(fileName, metadata)
 }
 
-function deleteGalleryImage(id) {
+function deleteGalleryImage(id: unknown): GalleryDeletedItem {
+  const resolvedId = String(id || '')
   const fullPath = resolveGalleryId(id)
   if (!fs.existsSync(fullPath)) throw new Error('图片不存在')
   fs.unlinkSync(fullPath)
-  return { id }
+  return { id: resolvedId }
 }
 
-function deleteGalleryImages(ids) {
+function deleteGalleryImages(ids: unknown): GalleryDeleteResult {
   const list = Array.isArray(ids) ? ids : [ids]
   const metadata = readGalleryMetadata()
   let metadataChanged = false
-  const deleted = []
-  const errors = []
+  const deleted: GalleryDeletedItem[] = []
+  const errors: GalleryDeleteError[] = []
   for (const id of list) {
+    const galleryId = String(id || '')
     try {
       deleted.push(deleteGalleryImage(id))
-      if (Object.prototype.hasOwnProperty.call(metadata, id)) {
-        delete metadata[id]
+      if (Object.prototype.hasOwnProperty.call(metadata, galleryId)) {
+        delete metadata[galleryId]
         metadataChanged = true
       }
     }
-    catch (e) { errors.push({ id, message: e.message }) }
+    catch (e) { errors.push({ id: galleryId, message: getErrorMessage(e) }) }
   }
   if (metadataChanged) writeGalleryMetadata(metadata)
   return { deleted, errors }
 }
 
-function updateGalleryImageStyle(id, foilStyle) {
+function updateGalleryImageStyle(id: unknown, foilStyle: unknown): GalleryItem {
+  const galleryId = String(id || '')
   const fullPath = resolveGalleryId(id)
   if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) throw new Error('图片不存在')
   const metadata = readGalleryMetadata()
-  metadata[id] = { ...(metadata[id] || {}), foilStyle: normalizeGalleryStyle(foilStyle) }
+  metadata[galleryId] = { ...(metadata[galleryId] || {}), foilStyle: normalizeGalleryStyle(foilStyle) }
   writeGalleryMetadata(metadata)
-  return toGalleryItem(id, metadata)
+  return toGalleryItem(galleryId, metadata)
 }
 
 // --- Route Handlers ---
 
-function handleGetGallery(req, res) {
+function handleGetGallery(req: IncomingMessage, res: ServerResponse): void {
   try { return json(res, { ok: true, images: listGalleryImages(), maxBytes: GALLERY_MAX_BYTES }) }
-  catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+  catch (e) { return json(res, { ok: false, message: getErrorMessage(e) }, 400) }
 }
 
-function handlePostGallery(req, res) {
+function handlePostGallery(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const item = writeGalleryImage(JSON.parse(body || '{}'))
+      const input = parseJsonObject(body)
+      const item = writeGalleryImage({
+        type: typeof input.type === 'string' ? input.type : '',
+        data: typeof input.data === 'string' ? input.data : '',
+        name: typeof input.name === 'string' ? input.name : '',
+      })
       return json(res, { ok: true, image: item, message: '图片已加入莲莲图集' })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   }, { maxBytes: MAX_GALLERY_UPLOAD_BODY_BYTES })
 }
 
-function handleDeleteGallery(req, res) {
+function handleDeleteGallery(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { id, ids } = JSON.parse(body || '{}')
-      const result = deleteGalleryImages(Array.isArray(ids) ? ids : id)
+      const { id, ids } = parseJsonObject(body)
+      const result = deleteGalleryImages(isStringArray(ids) ? ids : id)
       const ok = result.errors.length === 0
       return json(res, { ok, ...result, message: ok ? `已删除 ${result.deleted.length} 张图片` : `已删除 ${result.deleted.length} 张图片，${result.errors.length} 张删除失败` }, ok ? 200 : 400)
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   })
 }
 
-function handlePutGalleryStyle(req, res) {
+function handlePutGalleryStyle(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { id, foilStyle } = JSON.parse(body || '{}')
+      const { id, foilStyle } = parseJsonObject(body)
       const image = updateGalleryImageStyle(id, foilStyle)
       return json(res, { ok: true, image, message: '闪卡样式已保存' })
-    } catch (e) { return json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { return json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetGalleryImage(req, res, pathname) {
+function handleGetGalleryImage(req: IncomingMessage, res: ServerResponse, pathname: string): void {
   try {
     const id = decodeURIComponent(pathname.slice('/dashboard/api/gallery/image/'.length))
     const filePath = resolveGalleryId(id)
@@ -230,20 +320,20 @@ function handleGetGalleryImage(req, res, pathname) {
     res.writeHead(200, { 'Content-Type': galleryMimeFromName(id), 'Cache-Control': 'public, max-age=3600' })
     fs.createReadStream(filePath).pipe(res)
   } catch (e) {
-    log('gallery image request failed: ' + (e.message || e))
+    log('gallery image request failed: ' + (getErrorMessage(e) || e))
     res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
-    res.end('Gallery image request failed: ' + (e.message || 'Bad Request'))
+    res.end('Gallery image request failed: ' + (getErrorMessage(e) || 'Bad Request'))
   }
 }
 
-const routes = {
+const routes: Record<string, RouteHandler> = {
   'GET /dashboard/api/gallery': handleGetGallery,
   'POST /dashboard/api/gallery': handlePostGallery,
   'DELETE /dashboard/api/gallery': handleDeleteGallery,
   'PUT /dashboard/api/gallery/style': handlePutGalleryStyle,
 }
 
-const prefixRoutes = [
+const prefixRoutes: PrefixRoute[] = [
   { prefix: '/dashboard/api/gallery/image/', method: 'GET', handler: handleGetGalleryImage },
 ]
 

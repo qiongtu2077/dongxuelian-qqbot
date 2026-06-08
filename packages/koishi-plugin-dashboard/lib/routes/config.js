@@ -5,6 +5,9 @@ const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../u
 const { requireAdmin } = require('../auth');
 const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths');
 const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'core', 'frontmatter'));
+function getLegacyErrorMessage(error) {
+    return error && typeof error === 'object' && 'message' in error ? error.message : undefined;
+}
 function parseFrontmatter(content) {
     const raw = String(content || '').replace(/\uFEFF/g, '');
     const parsed = parseFrontmatterDocument(raw);
@@ -148,7 +151,7 @@ function handlePutConfig(req, res) {
             json(res, { ok: true, message: '配置已更新' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -186,7 +189,7 @@ function handlePostPersonas(req, res) {
             json(res, { ok: true, message: '人格 ' + sanitized + ' 已创建' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -219,7 +222,7 @@ function handleDeletePersonas(req, res) {
             json(res, { ok: true, message: '人格 ' + name + ' 已删除' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -253,7 +256,7 @@ function handlePutPersonas(req, res) {
             json(res, { ok: true, message: '人格 ' + name + ' 已更新' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -286,7 +289,7 @@ function handleGetLoreList(req, res) {
 function handleGetLores(req, res) {
     try {
         const files = fs.readdirSync(LORES_DIR).filter(f => f.endsWith('.md'));
-        return json(res, files.map(f => {
+        return json(res, files.map((f) => {
             const raw = String(fs.readFileSync(path.join(LORES_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '');
             const parsed = parseFrontmatter(raw);
             const name = parsed.meta.name || f.replace(/^SKILL\./, '').replace(/\.md$/, '');
@@ -323,7 +326,7 @@ function handlePostLores(req, res) {
             json(res, { ok: true, message: '世界观 ' + name + ' 已创建' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -354,7 +357,7 @@ function handlePutLores(req, res) {
             json(res, { ok: true, message: '世界观 ' + name + ' 已更新' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
@@ -383,14 +386,14 @@ function handleDeleteLores(req, res) {
             json(res, { ok: true, message: '世界观 ' + name + ' 已删除' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
         }
     });
 }
 function handleGetModes(req, res) {
     try {
         const files = fs.readdirSync(MODES_DIR).filter(f => f.endsWith('.md'));
-        return json(res, files.map(f => {
+        return json(res, files.map((f) => {
             const raw = String(fs.readFileSync(path.join(MODES_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '');
             const parsed = parseFrontmatter(raw);
             const name = parsed.meta.name || f.replace('.md', '');
@@ -429,7 +432,7 @@ function handleGetPersonaDiagnostics(req, res) {
         });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message || '人格诊断失败' }, 500);
+        return json(res, { ok: false, message: getLegacyErrorMessage(e) || '人格诊断失败' }, 500);
     }
 }
 const routes = {

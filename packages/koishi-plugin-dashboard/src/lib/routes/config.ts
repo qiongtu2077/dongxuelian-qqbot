@@ -1,11 +1,35 @@
 'use strict'
 
-const fs = require('fs')
-const path = require('path')
-const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils')
-const { requireAdmin } = require('../auth')
-const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths')
-const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'core', 'frontmatter'))
+import type { IncomingMessage, ServerResponse } from 'http'
+
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils') as {
+  json(res: ServerResponse, data: unknown, status?: number): void
+  collectBody(req: IncomingMessage, res: ServerResponse, callback: (body: string) => void | Promise<void>): void
+  readFileSyncSafe(filePath: string, maxBytes?: number): string
+  writeFileSyncSafe(filePath: string, content: unknown): void
+}
+const { requireAdmin } = require('../auth') as { requireAdmin(req: IncomingMessage, res: ServerResponse): boolean }
+const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths') as {
+  DATA_DIR: string
+  AI_LIB: string
+  CUSTOM_PROVIDERS_FILE: string
+  PERSONAS_DIR: string
+  CORE_DIR: string
+  MODES_DIR: string
+  LORES_DIR: string
+}
+const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'core', 'frontmatter')) as typeof import('koishi-plugin-dongxuelian-ai/lib/core/frontmatter')
+
+type LoreScope = 'always' | 'keyword' | 'none'
+type LoreNumberValue = number | ''
+
+interface ParsedDashboardFrontmatter {
+  meta: FrontmatterMeta
+  body: string
+  raw: string
+}
 
 interface FrontmatterMeta {
   [key: string]: unknown
@@ -31,6 +55,32 @@ interface LorePayload extends FrontmatterMeta {
   content: string
 }
 
+interface LoreListItem {
+  id: unknown
+  description: unknown
+  keywords?: unknown
+  scope?: unknown
+  summary?: unknown
+  maxChars?: unknown
+  priority?: unknown
+  file: string
+}
+
+interface LoreDocument {
+  name: unknown
+  description: unknown
+  keywords: unknown
+  scope: unknown
+  summary: unknown
+  maxChars: unknown
+  priority: unknown
+  content: string
+}
+
+interface LoreDeleteBody {
+  name?: unknown
+}
+
 interface PersonaDiagnostic {
   level?: string
   code?: string
@@ -38,17 +88,77 @@ interface PersonaDiagnostic {
   field?: string
 }
 
-function parseFrontmatter(content) {
+interface ModeSummary {
+  name: unknown
+  file: string
+  description: unknown
+}
+
+interface ProviderModel {
+  id: string
+  name: string
+  vision: boolean
+}
+
+interface ProviderDefinition {
+  name: string
+  baseURL: string
+  models: ProviderModel[]
+}
+
+type ProviderMap = Record<string, ProviderDefinition>
+
+interface CustomProviderCandidate {
+  id?: string
+  name?: string
+  baseURL?: string
+  models?: unknown
+}
+
+interface ConfigJsonBody {
+  provider?: unknown
+  model?: unknown
+  baseUrl?: unknown
+}
+
+interface RuntimeConfigModule {
+  resetConfigCache(): void
+}
+
+interface PersonaListItem {
+  name: string
+  description?: string
+  type?: string
+}
+
+interface PersonaModule {
+  getAvailablePersonals(): PersonaListItem[]
+  loadPersonalSkill(name: string): string | null
+}
+
+interface PersonaWriteBody extends FrontmatterMeta {
+  content?: string
+}
+
+interface PersonaDeleteBody {
+  name?: string
+}
+
+function getLegacyErrorMessage(error: unknown): unknown {
+  return error && typeof error === 'object' && 'message' in error ? (error as { message?: unknown }).message : undefined
+}
+
+function parseFrontmatter(content: unknown): ParsedDashboardFrontmatter {
   const raw = String(content || '').replace(/\uFEFF/g, '')
   const parsed = parseFrontmatterDocument(raw)
   return { meta: parsed.meta, body: parsed.body, raw }
 }
 
-function cleanFrontmatterValue(value, maxLength = 240) {
+function cleanFrontmatterValue(value: unknown, maxLength = 240): string {
   return String(value || '').replace(/[\r\n]+/g, ' ').trim().slice(0, maxLength)
 }
 
-function buildPersonaFrontmatter(meta: FrontmatterMeta, overrides: FrontmatterMeta = {}) {
+function buildPersonaFrontmatter(meta: FrontmatterMeta, overrides: FrontmatterMeta = {}): string {
   const next = { ...meta, ...overrides }
   const knownKeys = new Set(['name', 'description', 'lore', 'will', 'nsfw', 'voice', 'voice_id', 'voice_asset_id', 'voice_style'])
   const lines = [
@@ -69,17 +179,17 @@ function buildPersonaFrontmatter(meta: FrontmatterMeta, overrides: FrontmatterMe
   return `---\n${lines.join('\n')}\n---\n\n`
 }
 
-function cleanLoreName(value) {
+function cleanLoreName(value: unknown): string {
   return String(value || '').replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '').trim()
 }
 
-function normalizeLoreScope(value) {
+function normalizeLoreScope(value: unknown): LoreScope {
   const text = String(value || '').trim().toLowerCase()
   if (text === 'always' || text === 'keyword' || text === 'none') return text
   return 'keyword'
 }
 
-function normalizeLoreNumber(value, fallback, min, max) {
+function normalizeLoreNumber(value: unknown, fallback: '', min: number, max: number): LoreNumberValue {
   if (value === undefined || value === null || value === '') return ''
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
@@ -125,19 +235,19 @@ function buildLoreFrontmatter(meta: FrontmatterMeta, overrides: FrontmatterMeta 
   return `---\n${lines.join('\n')}\n---\n\n`
 }
 
-function handleGetStatus(req, res) {
+function handleGetStatus(req: IncomingMessage, res: ServerResponse): void {
   return json(res, {
     provider: readFileSyncSafe(path.join(DATA_DIR, 'ai-provider.txt')) || 'deepseek',
     model: readFileSyncSafe(path.join(DATA_DIR, 'ai-model.txt')) || '',
   })
 }
 
-function handleGetProviders(req, res) {
-  const { PROVIDERS } = require(path.join(AI_LIB, 'core', 'constants'))
+function handleGetProviders(req: IncomingMessage, res: ServerResponse): void {
+  const { PROVIDERS } = require(path.join(AI_LIB, 'core', 'constants')) as { PROVIDERS: ProviderMap }
   const merged = { ...PROVIDERS }
   try {
     const raw = fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8')
-    const custom = JSON.parse(raw)
+    const custom = JSON.parse(raw) as CustomProviderCandidate[]
     if (Array.isArray(custom)) {
       for (const p of custom) {
         if (p.id && p.name && p.baseURL) {
@@ -149,7 +259,7 @@ function handleGetProviders(req, res) {
   return json(res, merged)
 }
 
-function handleGetConfig(req, res) {
+function handleGetConfig(req: IncomingMessage, res: ServerResponse): void {
   return json(res, {
     provider: readFileSyncSafe(path.join(DATA_DIR, 'ai-provider.txt')) || 'deepseek',
     model: readFileSyncSafe(path.join(DATA_DIR, 'ai-model.txt')) || '',
@@ -157,24 +267,24 @@ function handleGetConfig(req, res) {
   })
 }
 
-function handlePutConfig(req, res) {
+function handlePutConfig(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const data = JSON.parse(body)
+      const data = JSON.parse(body) as ConfigJsonBody
       if (data.provider !== undefined) writeFileSyncSafe(path.join(DATA_DIR, 'ai-provider.txt'), data.provider)
       if (data.model !== undefined) writeFileSyncSafe(path.join(DATA_DIR, 'ai-model.txt'), data.model)
       if (data.baseUrl !== undefined) writeFileSyncSafe(path.join(DATA_DIR, 'ai-base-url.txt'), data.baseUrl)
-      const { resetConfigCache } = require(path.join(AI_LIB, 'core', 'runtime-config'))
+      const { resetConfigCache } = require(path.join(AI_LIB, 'core', 'runtime-config')) as RuntimeConfigModule
       resetConfigCache()
       json(res, { ok: true, message: '配置已更新' })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetPersonas(req, res, pathname, url) {
+function handleGetPersonas(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): void {
   try {
-    const { getAvailablePersonals, loadPersonalSkill } = require(path.join(AI_LIB, 'persona', 'persona'))
+    const { getAvailablePersonals, loadPersonalSkill } = require(path.join(AI_LIB, 'persona', 'persona')) as PersonaModule
     const name = url.searchParams.get('name')
     if (name) {
       const content = loadPersonalSkill(name)
@@ -186,11 +296,11 @@ function handleGetPersonas(req, res, pathname, url) {
   } catch { return json(res, []) }
 }
 
-function handlePostPersonas(req, res) {
+function handlePostPersonas(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { name, description, lore, will, nsfw, content } = JSON.parse(body)
+      const { name, description, lore, will, nsfw, content } = JSON.parse(body) as PersonaWriteBody
       if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
       const sanitized = name.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, '')
       const filePath = path.join(PERSONAS_DIR, 'SKILL.' + sanitized + '.md')
@@ -198,17 +308,17 @@ function handlePostPersonas(req, res) {
       const md = buildPersonaFrontmatter({}, { name: sanitized, description, lore, will, nsfw }) + content
       fs.writeFileSync(filePath, md, 'utf8')
       json(res, { ok: true, message: '人格 ' + sanitized + ' 已创建' })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handleDeletePersonas(req, res) {
+function handleDeletePersonas(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { name } = JSON.parse(body)
+      const { name } = JSON.parse(body) as PersonaDeleteBody
       if (!name) return json(res, { ok: false, message: '名称不能为空' }, 400)
-      const all = require(path.join(AI_LIB, 'persona', 'persona')).getAvailablePersonals()
+      const all = (require(path.join(AI_LIB, 'persona', 'persona')) as PersonaModule).getAvailablePersonals()
       if (all.find(p => p.name === name)?.type === 'core') return json(res, { ok: false, message: '核心规则不可删除' }, 400)
       if (all.find(p => p.name === name)?.type === 'mode') return json(res, { ok: false, message: '默认人格不可删除' }, 400)
       const files = fs.readdirSync(PERSONAS_DIR).filter(f => /^SKILL(\.[^.]+)?\.md$/i.test(f))
@@ -224,15 +334,15 @@ function handleDeletePersonas(req, res) {
       }
       if (!deleted) return json(res, { ok: false, message: '未找到人格 ' + name }, 404)
       json(res, { ok: true, message: '人格 ' + name + ' 已删除' })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handlePutPersonas(req, res) {
+function handlePutPersonas(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { name, description, lore, will, nsfw, content } = JSON.parse(body)
+      const { name, description, lore, will, nsfw, content } = JSON.parse(body) as PersonaWriteBody
       if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
       const searchDirs = [PERSONAS_DIR, CORE_DIR, MODES_DIR]
       let found = false
@@ -252,14 +362,14 @@ function handlePutPersonas(req, res) {
       }
       if (!found) return json(res, { ok: false, message: '未找到人格 ' + name }, 404)
       json(res, { ok: true, message: '人格 ' + name + ' 已更新' })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetLoreList(req, res) {
+function handleGetLoreList(req: IncomingMessage, res: ServerResponse): void {
   try {
     const files = fs.readdirSync(LORES_DIR).filter(f => f.endsWith('.md'))
-    const list = files.map(f => {
+    const list: LoreListItem[] = files.map(f => {
       const raw = String(fs.readFileSync(path.join(LORES_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '')
       const parsed = parseFrontmatter(raw)
       const name = parsed.meta.name || f.replace('SKILL.', '').replace('.md', '')
@@ -280,10 +390,10 @@ function handleGetLoreList(req, res) {
   } catch { return json(res, [{ id: 'none', description: '不绑定任何世界观', file: '' }]) }
 }
 
-function handleGetLores(req, res) {
+function handleGetLores(req: IncomingMessage, res: ServerResponse): void {
   try {
     const files = fs.readdirSync(LORES_DIR).filter(f => f.endsWith('.md'))
-    return json(res, files.map(f => {
+    return json(res, files.map((f): LoreDocument => {
       const raw = String(fs.readFileSync(path.join(LORES_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '')
       const parsed = parseFrontmatter(raw)
       const name = parsed.meta.name || f.replace(/^SKILL\./, '').replace(/\.md$/, '')
@@ -301,11 +411,11 @@ function handleGetLores(req, res) {
   } catch { return json(res, []) }
 }
 
-function handlePostLores(req, res) {
+function handlePostLores(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const payload = normalizeLorePayload(JSON.parse(body))
+      const payload = normalizeLorePayload(JSON.parse(body) as FrontmatterMeta)
       const { name, content } = payload
       if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
       const filePath = path.join(LORES_DIR, 'SKILL.' + name + '.md')
@@ -313,15 +423,15 @@ function handlePostLores(req, res) {
       const md = buildLoreFrontmatter({}, payload) + content
       fs.writeFileSync(filePath, md, 'utf8')
       json(res, { ok: true, message: '世界观 ' + name + ' 已创建' })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handlePutLores(req, res) {
+function handlePutLores(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const payload = normalizeLorePayload(JSON.parse(body))
+      const payload = normalizeLorePayload(JSON.parse(body) as FrontmatterMeta)
       const { name, content } = payload
       if (!name || !content) return json(res, { ok: false, message: '名称和内容不能为空' }, 400)
       const files = fs.readdirSync(LORES_DIR).filter(f => f.endsWith('.md'))
@@ -339,15 +449,15 @@ function handlePutLores(req, res) {
       }
       if (!found) return json(res, { ok: false, message: '未找到世界观 ' + name }, 404)
       json(res, { ok: true, message: '世界观 ' + name + ' 已更新' })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handleDeleteLores(req, res) {
+function handleDeleteLores(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
     try {
-      const { name } = JSON.parse(body)
+      const { name } = JSON.parse(body) as LoreDeleteBody
       if (!name) return json(res, { ok: false, message: '名称不能为空' }, 400)
       const files = fs.readdirSync(LORES_DIR).filter(f => f.endsWith('.md'))
       let deleted = false
@@ -363,14 +473,14 @@ function handleDeleteLores(req, res) {
       }
       if (!deleted) return json(res, { ok: false, message: '未找到世界观 ' + name }, 404)
       json(res, { ok: true, message: '世界观 ' + name + ' 已删除' })
-    } catch (e) { json(res, { ok: false, message: e.message }, 400) }
+    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
   })
 }
 
-function handleGetModes(req, res) {
+function handleGetModes(req: IncomingMessage, res: ServerResponse): void {
   try {
     const files = fs.readdirSync(MODES_DIR).filter(f => f.endsWith('.md'))
-    return json(res, files.map(f => {
+    return json(res, files.map((f): ModeSummary => {
       const raw = String(fs.readFileSync(path.join(MODES_DIR, f), 'utf8') || '').replace(/^\uFEFF/, '')
       const parsed = parseFrontmatter(raw)
       const name = parsed.meta.name || f.replace('.md', '')
@@ -389,9 +499,9 @@ function toPublicPersonaDiagnostic(item: PersonaDiagnostic = {}) {
   }
 }
 
-function handleGetPersonaDiagnostics(req, res) {
+function handleGetPersonaDiagnostics(req: IncomingMessage, res: ServerResponse): void {
   try {
-    const diagnostics = require(path.join(AI_LIB, 'persona', 'persona-diagnostics'))
+    const diagnostics = require(path.join(AI_LIB, 'persona', 'persona-diagnostics')) as typeof import('koishi-plugin-dongxuelian-ai/lib/persona/persona-diagnostics')
     const result = diagnostics.scanPersonaDocuments()
     const documents = Array.isArray(result.documents) ? result.documents : []
     return json(res, {
@@ -407,7 +517,7 @@ function handleGetPersonaDiagnostics(req, res) {
       })),
     })
   } catch (e) {
-    return json(res, { ok: false, message: e.message || '人格诊断失败' }, 500)
+    return json(res, { ok: false, message: getLegacyErrorMessage(e) || '人格诊断失败' }, 500)
   }
 }
 

@@ -10,6 +10,15 @@ const { resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getLinuxNap
 const { readLoggingConfig, writeLoggingConfig, getFilteredLogEntries } = require('../logging');
 const { resolveKoishiListenPort } = require('../tools');
 const { waitKoishiPortFree } = require('../deploy-state');
+function getErrorMessage(error) {
+    if (error && typeof error === 'object' && 'message' in error)
+        return String(error.message || '');
+    return String(error || '');
+}
+function parseJsonObject(body) {
+    const data = JSON.parse(body || '{}');
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+}
 function stopKoishiProcesses() {
     let pid = 0;
     try {
@@ -135,12 +144,12 @@ function handlePutLogging(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const data = JSON.parse(body || '{}');
+            const data = parseJsonObject(body);
             const config = writeLoggingConfig(data);
             return json(res, { ok: true, config, message: config.enabled ? '调试日志已开启' : '调试日志已关闭' });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
@@ -164,7 +173,7 @@ function handlePostBotStop(req, res) {
         return json(res, { ok: true, message: '已停止所有 koishi 进程' });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message });
+        return json(res, { ok: false, message: getErrorMessage(e) });
     }
 }
 function handleGetMaintenance(req, res) {
@@ -175,7 +184,7 @@ function handlePutMaintenance(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const { enabled } = JSON.parse(body);
+            const { enabled } = parseJsonObject(body);
             const f = path.join(DATA_DIR, 'ai-paused.txt');
             if (enabled)
                 writeFileSyncSafe(f, '优化中，别急');
@@ -187,7 +196,7 @@ function handlePutMaintenance(req, res) {
             return json(res, { ok: true, message: enabled ? '维护模式已开启' : '维护模式已关闭' });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
@@ -205,7 +214,7 @@ function handlePutThrottle(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const data = JSON.parse(body);
+            const data = parseJsonObject(body);
             if (typeof data.maxPerMinute !== 'number' || data.maxPerMinute < 1) {
                 return json(res, { ok: false, message: 'maxPerMinute 必须 >= 1' }, 400);
             }
@@ -215,7 +224,7 @@ function handlePutThrottle(req, res) {
             json(res, { ok: true, message: '节流配置已更新' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
@@ -237,18 +246,19 @@ function handlePutQqSelfId(req, res) {
         return;
     collectBody(req, res, (body) => {
         try {
-            const { selfId } = JSON.parse(body);
-            if (!selfId || !/^\d+$/.test(selfId))
+            const { selfId } = parseJsonObject(body);
+            const nextSelfId = String(selfId || '');
+            if (!nextSelfId || !/^\d+$/.test(nextSelfId))
                 return json(res, { ok: false, message: '无效 QQ 号' }, 400);
             const ymlPath = path.join(KOISHI_DIR, 'koishi.yml');
             let yml = fs.readFileSync(ymlPath, 'utf8');
-            yml = yml.replace(/(selfId:\s*['\"]?)\d+(['\"]?)/, '$1' + selfId + '$2');
+            yml = yml.replace(/(selfId:\s*['\"]?)\d+(['\"]?)/, '$1' + nextSelfId + '$2');
             fs.writeFileSync(ymlPath, yml, 'utf8');
             exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`, { maxBuffer: 512 * 1024 });
             json(res, { ok: true, message: 'QQ 号已更新，Koishi 正在重启...' });
         }
         catch (e) {
-            json(res, { ok: false, message: e.message }, 400);
+            json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }

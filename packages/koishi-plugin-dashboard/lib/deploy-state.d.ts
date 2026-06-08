@@ -1,7 +1,10 @@
+import type { ChildProcessWithoutNullStreams } from 'child_process';
+type LocalTaskKey = 'npmInstall' | 'napcat' | 'koishi';
+type LocalTaskState = 'idle' | 'running' | 'success' | 'failed';
 interface LocalTask {
     label: string;
     logFile: string;
-    state: string;
+    state: LocalTaskState;
     running: boolean;
     startedAt: number;
     finishedAt: number;
@@ -10,63 +13,54 @@ interface LocalTask {
     pid: number;
     command: string;
     cwd: string;
-    process: {
-        killed?: boolean;
-    } | null;
+    process: ChildProcessWithoutNullStreams | null;
     diagnostics?: unknown;
 }
 interface SpawnLocalTaskOptions {
     diagnostics?: unknown;
     cwd?: string;
-    env?: Record<string, string>;
+    env?: Record<string, string | undefined>;
     shell?: boolean;
 }
-declare function getRebuildStatus(): {
+interface RebuildStatus {
     state: string;
     message: string;
     detail: string;
     startedAt: number;
     finishedAt: number;
-};
-declare function setRebuildStatus(s: any): void;
-declare function getNpmDiagnosticsCache(): {
+}
+interface NpmDiagnosticsCache {
     at: number;
-    data: any;
-};
-declare function setNpmDiagnosticsCache(c: any): void;
-declare function appendLocalTaskLog(task: any, chunk: any): void;
-declare function getTaskPublicStatus(key: any, extra?: Record<string, unknown>): {
-    state: string;
+    data: unknown | null;
+}
+interface LocalTaskPublicStatus {
+    state: LocalTaskState;
     running: boolean;
     startedAt: number;
     finishedAt: number;
-    exitCode: number;
+    exitCode: number | null;
     error: string;
     pid: number;
     command: string;
     cwd: string;
     logFile: string;
-    logLines: any;
-};
-declare function spawnLocalTask(key: any, command: any, args?: any[], options?: SpawnLocalTaskOptions): {
+    logLines: string[];
+    [key: string]: unknown;
+}
+interface SpawnLocalTaskResult {
     alreadyRunning: boolean;
-    status: {
-        state: string;
-        running: boolean;
-        startedAt: number;
-        finishedAt: number;
-        exitCode: number;
-        error: string;
-        pid: number;
-        command: string;
-        cwd: string;
-        logFile: string;
-        logLines: any;
-    };
-};
+    status: LocalTaskPublicStatus;
+}
+declare function getRebuildStatus(): RebuildStatus;
+declare function setRebuildStatus(s: RebuildStatus): void;
+declare function getNpmDiagnosticsCache(): NpmDiagnosticsCache;
+declare function setNpmDiagnosticsCache(c: NpmDiagnosticsCache): void;
+declare function appendLocalTaskLog(task: LocalTask, chunk: Buffer | string): void;
+declare function getTaskPublicStatus(key: LocalTaskKey, extra?: Record<string, unknown>): LocalTaskPublicStatus;
+declare function spawnLocalTask(key: LocalTaskKey, command: string, args?: string[], options?: SpawnLocalTaskOptions): SpawnLocalTaskResult;
 declare function waitKoishiPortFree(): void;
 declare const _default: {
-    localTasks: Record<string, LocalTask>;
+    localTasks: Record<LocalTaskKey, LocalTask>;
     getRebuildStatus: typeof getRebuildStatus;
     setRebuildStatus: typeof setRebuildStatus;
     getNpmDiagnosticsCache: typeof getNpmDiagnosticsCache;

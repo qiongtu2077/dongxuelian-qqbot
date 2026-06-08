@@ -18,6 +18,31 @@ const MAX_DEPLOY_UPLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_DEPLOY_UP
 const MAX_DOWNLOAD_REDIRECTS = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLOAD_REDIRECTS, 5, 0, 10);
 const MAX_JSON_RESPONSE_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_JSON_RESPONSE_BYTES, 10 * 1024 * 1024, 1024, 64 * 1024 * 1024);
 const HASH_CHUNK_BYTES = 64 * 1024;
+function getErrorMessage(error) {
+    if (error && typeof error === 'object' && 'message' in error)
+        return String(error.message || '');
+    return String(error || '');
+}
+function toError(error) {
+    return error instanceof Error ? error : new Error(getErrorMessage(error) || 'unknown error');
+}
+function getExecFileErrorText(error) {
+    if (!error || typeof error !== 'object')
+        return String(error || '').trim();
+    const detail = error;
+    return String(detail.stderr || detail.message || '').trim();
+}
+function getExecFileFailure(error) {
+    if (!error || typeof error !== 'object')
+        return { code: '', error: String(error || '').trim() };
+    const detail = error;
+    return { code: detail.status || detail.code || '', error: String(detail.stderr || detail.message || '').trim() };
+}
+function toArchiveExtractError(error) {
+    if (error instanceof Error)
+        return error;
+    return new Error(getErrorMessage(error) || 'unknown error');
+}
 function validateDeployServer(server) {
     const value = String(server || '').trim();
     if (!value)
@@ -41,7 +66,7 @@ function validateDeployAppDir(appDir) {
         throw new Error('invalid appDir');
     return value;
 }
-function validateDeployTarget(cfg) {
+function validateDeployTarget(cfg = {}) {
     return { ...cfg, server: validateDeployServer(cfg?.server), appDir: validateDeployAppDir(cfg?.appDir), mode: cfg?.mode === 'install' ? 'install' : 'update' };
 }
 function remoteJoin(base, ...parts) {
@@ -92,7 +117,7 @@ function computeFingerprint() {
     try {
         const repoRoot = path.join(PLUGIN_ROOT, '..', '..');
         const hash = crypto.createHash('md5');
-        const add = rel => hashFile(hash, repoRoot, path.join(repoRoot, rel));
+        const add = (rel) => hashFile(hash, repoRoot, path.join(repoRoot, rel));
         add('packages/koishi-plugin-dashboard/standalone.js');
         add('packages/koishi-plugin-dashboard/frontend/index.html');
         add('packages/koishi-plugin-dashboard/frontend/package.json');
@@ -122,7 +147,7 @@ function computeFingerprint() {
                 continue;
             }
             add(`packages/${pkg}/package.json`);
-            for (const file of listFilesRecursive(path.join(pkgDir, 'lib'), f => /\.js$/i.test(f)))
+            for (const file of listFilesRecursive(path.join(pkgDir, 'lib'), (f) => /\.js$/i.test(f)))
                 hashFile(hash, repoRoot, file);
             for (const file of listFilesRecursive(path.join(pkgDir, 'templates')))
                 hashFile(hash, repoRoot, file);
@@ -245,7 +270,7 @@ function testChinesePathWrite(dir) {
         return { ok };
     }
     catch (e) {
-        return { ok: false, message: e.message };
+        return { ok: false, message: getErrorMessage(e) };
     }
 }
 function inspectChinesePathWrite(dir) {
@@ -315,13 +340,13 @@ function getDownloadFileName(parsed, response, options = {}) {
         name = ensureExtension(name, options.expectedExt);
     return sanitizeDownloadName(name, 'download.bin');
 }
-function downloadToRuntime(url, options, callback) {
+function downloadToRuntime(url, options = {}, callback) {
     if (typeof options === 'function') {
         callback = options;
         options = {};
     }
-    options = options || {};
-    const redirects = Number.isFinite(options.redirects) ? options.redirects : 0;
+    const downloadOptions = options || {};
+    const redirects = Number.isFinite(downloadOptions.redirects) ? Number(downloadOptions.redirects) : 0;
     let settled = false;
     let currentFilePath = '';
     const finish = (err, filePath, detail) => {
@@ -362,32 +387,34 @@ function downloadToRuntime(url, options, callback) {
     }
     const client = parsed.protocol === 'https:' ? https : http;
     const req = client.get(parsed, (response) => {
-        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        const statusCode = response.statusCode;
+        const location = response.headers.location;
+        if (typeof statusCode === 'number' && statusCode >= 300 && statusCode < 400 && location) {
             response.resume();
             if (redirects >= MAX_DOWNLOAD_REDIRECTS) {
                 finish(new Error('too many download redirects'));
                 return;
             }
-            downloadToRuntime(new URL(response.headers.location, parsed).toString(), { ...options, redirects: redirects + 1 }, finish);
+            downloadToRuntime(new URL(String(location), parsed).toString(), { ...downloadOptions, redirects: redirects + 1 }, finish);
             return;
         }
-        if (response.statusCode !== 200) {
+        if (statusCode !== 200) {
             response.resume();
-            finish(new Error('下载失败：HTTP ' + response.statusCode));
+            finish(new Error('下载失败：HTTP ' + statusCode));
             return;
         }
-        const declared = parseInt(response.headers['content-length'], 10);
+        const declared = parseInt(String(response.headers['content-length'] || ''), 10);
         if (Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES) {
             response.resume();
             finish(new Error('下载文件过大：' + declared + ' bytes'));
             return;
         }
-        const name = getDownloadFileName(parsed, response, options);
+        const name = getDownloadFileName(parsed, response, downloadOptions);
         const filePath = runtimePath('downloads', name);
         currentFilePath = filePath;
         const stream = fs.createWriteStream(filePath);
         let received = 0;
-        response.on('data', chunk => {
+        response.on('data', (chunk) => {
             received += chunk.length;
             if (received > MAX_DOWNLOAD_BYTES) {
                 finish(new Error('下载文件过大：' + received + ' bytes'), filePath);
@@ -403,16 +430,16 @@ function downloadToRuntime(url, options, callback) {
         });
         response.pipe(stream);
         stream.on('finish', () => stream.close(() => { try {
-            finish(null, filePath, validateDownloadedFile(filePath, { ...options, expectedContentType: response.headers['content-type'] }));
+            finish(null, filePath, validateDownloadedFile(filePath, { ...downloadOptions, expectedContentType: String(response.headers['content-type'] || '') }));
         }
         catch (e) {
-            finish(e, filePath);
+            finish(toError(e), filePath);
         } }));
-        stream.on('error', err => finish(err, filePath));
-        response.on('error', err => finish(err, filePath));
+        stream.on('error', (err) => finish(err, filePath));
+        response.on('error', (err) => finish(err, filePath));
     });
     req.setTimeout(120000, () => req.destroy(new Error('下载超时')));
-    req.on('error', err => finish(err, currentFilePath));
+    req.on('error', (err) => finish(err, currentFilePath));
 }
 function psCommandArg(value) { return "'" + String(value).replace(/'/g, "''") + "'"; }
 function formatLocalNpmCommand(args = []) {
@@ -423,7 +450,7 @@ function formatLocalNpmCommand(args = []) {
     }
     return [shellQuote(npm)].concat(args.map(shellQuote)).join(' ');
 }
-function getNoProxyEnvOverrides() { return Object.fromEntries(NPM_PROXY_ENV_KEYS.map(key => [key, ''])); }
+function getNoProxyEnvOverrides() { return Object.fromEntries(NPM_PROXY_ENV_KEYS.map((key) => [key, ''])); }
 function runNpmConfigGet(name) {
     const npm = getLocalToolCommand('npm');
     try {
@@ -503,7 +530,7 @@ function repairNpmProxyConfig(env = getNoProxyEnvOverrides()) {
             actions.push({ command: formatLocalNpmCommand(args), ok: true });
         }
         catch (e) {
-            actions.push({ command: formatLocalNpmCommand(args), ok: false, message: String(e.stderr || e.message || '').trim() });
+            actions.push({ command: formatLocalNpmCommand(args), ok: false, message: getExecFileErrorText(e) });
         }
     }
     return actions;
@@ -719,7 +746,7 @@ function buildLocalConfigPreview() {
             filePath = resolveProjectRel(item.path);
         }
         catch (e) {
-            files.push({ path: item.path, action: 'error', reason: e.message });
+            files.push({ path: item.path, action: 'error', reason: getErrorMessage(e) });
             continue;
         }
         let stat = null;
@@ -759,10 +786,10 @@ function deleteLocalConfigFiles() {
         }
         try {
             fs.unlinkSync(resolveProjectRel(item.path));
-            deleted.push({ path: item.path, size: item.size, status: 'ok' });
+            deleted.push({ path: item.path, action: 'delete', size: item.size, status: 'ok' });
         }
         catch (e) {
-            errors.push({ path: item.path, reason: e.message });
+            errors.push({ path: item.path, action: 'error', reason: getErrorMessage(e) });
         }
     }
     return { ok: errors.length === 0, deleted, kept: kept.concat(preview.protected || []), errors };
@@ -775,7 +802,7 @@ function validateNapcatInstallDir(input) {
     if (process.platform === 'win32') {
         const lower = dir.toLowerCase();
         const root = path.parse(dir).root.toLowerCase();
-        const blocked = [process.env.WINDIR, process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean).map(item => path.resolve(item).toLowerCase());
+        const blocked = [process.env.WINDIR, process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter((item) => !!item).map(item => path.resolve(item).toLowerCase());
         if (lower === root || blocked.some(item => lower === item || lower.startsWith(item + path.sep.toLowerCase())))
             throw new Error('不能安装到系统根目录、Windows 目录或 Program Files');
     }
@@ -794,7 +821,8 @@ function httpsGetJson(url, callback, redirects = 0) {
         callback(err, data);
     };
     const req = https.get(url, { headers: { 'User-Agent': 'LianBoard-Dashboard' } }, response => {
-        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        const statusCode = typeof response.statusCode === 'number' ? response.statusCode : 0;
+        if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
             response.resume();
             if (redirects >= MAX_DOWNLOAD_REDIRECTS) {
                 finish(new Error('GitHub API 重定向次数过多'));
@@ -803,7 +831,7 @@ function httpsGetJson(url, callback, redirects = 0) {
             httpsGetJson(new URL(response.headers.location, url).toString(), finish, redirects + 1);
             return;
         }
-        if (response.statusCode !== 200) {
+        if (statusCode !== 200) {
             response.resume();
             finish(new Error('GitHub API 请求失败：HTTP ' + response.statusCode));
             return;
@@ -824,7 +852,7 @@ function httpsGetJson(url, callback, redirects = 0) {
             finish(null, JSON.parse(body));
         }
         catch (e) {
-            finish(e);
+            finish(toError(e));
         } });
     });
     req.setTimeout(30000, () => req.destroy(new Error('GitHub API 请求超时')));
@@ -893,14 +921,14 @@ function extractZipArchive(archivePath, destinationDir) {
         return { method: 'tar.exe', attempts, archivePath, destinationDir, size: stat.size };
     }
     catch (e) {
-        attempts.push({ method: 'tar.exe', code: e.status || e.code || '', error: String(e.stderr || e.message || '').trim() });
+        attempts.push({ method: 'tar.exe', ...getExecFileFailure(e) });
     }
     try {
         execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `Expand-Archive -LiteralPath ${psQuote(archivePath)} -DestinationPath ${psQuote(destinationDir)} -Force`], { timeout: 180000, stdio: ['ignore', 'pipe', 'pipe'] });
         return { method: 'PowerShell Expand-Archive', attempts, archivePath, destinationDir, size: stat.size };
     }
     catch (e) {
-        attempts.push({ method: 'PowerShell Expand-Archive', code: e.status || e.code || '', error: String(e.stderr || e.message || '').trim() });
+        attempts.push({ method: 'PowerShell Expand-Archive', ...getExecFileFailure(e) });
         try {
             removePathWithRetry(destinationDir);
         }
@@ -924,7 +952,7 @@ function runNapcatInstallerIfPresent(stagingDir) {
         return { ran: true, ok: true, path: installer, reason: 'NapCatInstaller.exe 已执行' };
     }
     catch (e) {
-        return { ran: true, ok: false, path: installer, reason: 'NapCatInstaller.exe 执行失败或被中断：' + String(e.stderr || e.message || '').trim() };
+        return { ran: true, ok: false, path: installer, reason: 'NapCatInstaller.exe 执行失败或被中断：' + getExecFileErrorText(e) };
     }
 }
 function findNapcatCopyRoot(stagingDir) {
@@ -970,6 +998,8 @@ function downloadNapcatWindowsRelease(installDir, callback) {
         downloadToRuntime(asset.browser_download_url, { preferredName: asset.name, expectedExt: '.zip', minBytes: 128 * 1024 }, (downloadErr, filePath, download) => {
             if (downloadErr)
                 return callback(downloadErr);
+            if (!filePath)
+                return callback(new Error('NapCat 下载完成但文件路径为空'));
             const stagingDir = runtimePath('napcat-install-' + Date.now().toString(36));
             try {
                 cleanupRuntimeInstallStaging('napcat-install-');
@@ -987,7 +1017,7 @@ function downloadNapcatWindowsRelease(installDir, callback) {
                 callback(null, { asset: asset.name, filePath, download, installDir, extraction, installer, napcat: detected, needsManualSetup, manualSteps: needsManualSetup ? buildNapcatManualSteps(filePath, installDir) : [], message: needsManualSetup ? 'NapCat OneKey 包已下载并解压，但仍需要按提示完成安装器配置' : 'NapCat OneKey 包已下载、解压并完成检测' });
             }
             catch (e) {
-                const err = e;
+                const err = toArchiveExtractError(e);
                 try {
                     removePathWithRetry(installDir);
                 }
@@ -1011,7 +1041,7 @@ function pickNodeWindowsRelease(releases) {
     const selected = list.find(item => item?.lts && /^v\d+\.\d+\.\d+$/.test(String(item.version || '')));
     if (!selected)
         throw new Error('未找到 Node.js LTS 版本信息');
-    const version = selected.version;
+    const version = String(selected.version);
     const fileName = `node-${version}-win-${arch}.zip`;
     return { version, arch, fileName, url: `https://nodejs.org/dist/${version}/${fileName}` };
 }
@@ -1047,11 +1077,13 @@ function installPortableNodeWindows(callback) {
             asset = pickNodeWindowsRelease(releases);
         }
         catch (e) {
-            return callback(e);
+            return callback(toError(e));
         }
         downloadToRuntime(asset.url, { preferredName: asset.fileName, expectedExt: '.zip', minBytes: 1024 * 1024 }, (downloadErr, archivePath, download) => {
             if (downloadErr)
                 return callback(downloadErr);
+            if (!archivePath)
+                return callback(new Error('便携 Node/npm 下载完成但文件路径为空'));
             const stagingDir = runtimePath('node-install-' + Date.now().toString(36));
             const targetDir = getPortableNodeDir();
             try {
@@ -1076,7 +1108,7 @@ function installPortableNodeWindows(callback) {
                 callback(null, { skipped: false, message: '便携 Node/npm 已安装到 runtime/node', asset, archivePath, download, installDir: targetDir, node, npm });
             }
             catch (e) {
-                const err = e;
+                const err = toArchiveExtractError(e);
                 try {
                     removePathWithRetry(targetDir);
                 }
