@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP=/root/koishi-app
+APP="${KOISHI_APP_DIR:-${KOISHI_DIR:-$(pwd)}}"
 DASHBOARD_PORT=${DASHBOARD_PORT:-5150}
 cd "$APP"
 
