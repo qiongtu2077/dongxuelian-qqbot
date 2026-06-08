@@ -1,5 +1,20 @@
 import type { Hash } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
+type ToolsModule = typeof import('./tools');
+type NapcatModule = typeof import('./napcat');
+type DeployStateModule = typeof import('./deploy-state');
+type LocalTaskKey = Parameters<DeployStateModule['getTaskPublicStatus']>[0];
+type LocalTaskPublicStatus = ReturnType<DeployStateModule['getTaskPublicStatus']>;
+type CommandInfo = ReturnType<ToolsModule['getCommandInfo']>;
+type PortState = ReturnType<ToolsModule['checkPortState']>;
+type NapcatDetection = ReturnType<NapcatModule['detectNapcatInstallation']>;
+type NapcatStartEntry = ReturnType<NapcatModule['getNapcatStartEntry']>;
+interface UnsupportedPortState extends Record<string, unknown> {
+    available: false;
+    status: 'unsupported';
+    reason: string;
+}
+type LocalDeployPortState = PortState | UnsupportedPortState;
 type DeployMode = 'install' | 'update';
 interface DeployTargetInput extends Record<string, unknown> {
     server?: unknown;
@@ -88,9 +103,63 @@ interface ProxyEndpointLike {
     port: number;
     protocol: string;
 }
-interface PortStateLike {
+type PortStateLike = PortState | {
     status: string;
     [key: string]: unknown;
+};
+interface BlockedLocalTaskExtra extends Record<string, unknown> {
+    blocked: true;
+    localDeployTarget: LocalDeployTarget;
+    running: false;
+    message: string;
+}
+interface LocalNapcatDeployStatus extends LocalTaskPublicStatus {
+    found: boolean;
+    installation: NapcatDetection;
+    running: boolean;
+    webuiPort: LocalDeployPortState;
+    onebotPort: LocalDeployPortState;
+    webuiUrl: string;
+    tokenAvailable: boolean;
+    login: LoginHint;
+}
+interface LocalKoishiDeployStatus extends LocalTaskPublicStatus {
+    running: boolean;
+    port: LocalDeployPortState;
+    loaded: boolean;
+    url: string;
+}
+interface BlockedDependencyStatus {
+    ready: false;
+    reason: string;
+}
+interface LocalNpmInstallStatus extends LocalTaskPublicStatus {
+    dependencies: ProjectDependencyStatus | BlockedDependencyStatus;
+    failureGuide?: NpmInstallFailureGuide | null;
+}
+interface BlockedCommandStatus {
+    ok?: false;
+    found?: false;
+    reason: string;
+}
+interface LocalReadyCheck {
+    ok: true;
+    blocked: boolean;
+    localDeployTarget: LocalDeployTarget;
+    basicReady: boolean;
+    fullyReady: boolean;
+    checks: LocalReadyChecks;
+    node: CommandInfo | BlockedCommandStatus;
+    npm: CommandInfo | BlockedCommandStatus;
+    dependencies: ProjectDependencyStatus | BlockedDependencyStatus;
+    localConfig: LocalConfigPreview;
+    napcat: LocalNapcatDeployStatus;
+    koishi: LocalKoishiDeployStatus;
+    aiKey: AiKeyStatus;
+    dashboardUrl: string;
+    koishiUrl: string;
+    napcatUrl: string;
+    message: string;
 }
 interface NpmProxyCandidate extends ProxyEndpointLike {
     source: 'env' | 'npm config';
@@ -206,7 +275,7 @@ interface LocalConfigPreview {
     ok: boolean;
     files: LocalConfigPreviewFile[];
     protected: LocalConfigPreviewFile[];
-    manifest: {
+    manifest?: {
         exists: boolean;
         path: string;
     };
@@ -292,7 +361,7 @@ declare function diagnoseNpmProxy(diagnostics?: NpmDiagnostics): NpmProxyDiagnos
 declare function repairNpmProxyConfig(env?: Record<string, string>): NpmRepairAction[];
 declare function commandListForNpmProxyFix(hasNpmProxy: boolean, hasEnvProxy: boolean): string[];
 declare function buildNpmInstallFailureGuide(logLines?: string[] | string, diagnostics?: NpmDiagnostics | null): NpmInstallFailureGuide | null;
-declare function getBlockedLocalTaskStatus(key: string, extra?: Record<string, unknown>): any;
+declare function getBlockedLocalTaskStatus<TExtra extends Record<string, unknown>>(key: LocalTaskKey, extra: TExtra): LocalTaskPublicStatus & BlockedLocalTaskExtra & TExtra;
 declare function fileSha256(filePath: string): string;
 declare function readLocalDeployManifest(): LocalDeployManifest;
 declare function backupLocalDeployFile(filePath: string, rel: string, timestamp: number): string;
@@ -301,59 +370,10 @@ declare function writeLocalDeployManifest(manifest: LocalDeployManifest): void;
 declare function getProjectDependencyStatus(): ProjectDependencyStatus;
 declare function getAiKeyStatus(providerInput?: string): AiKeyStatus;
 declare function getNapcatLoginHint(): LoginHint;
-declare function getLocalNapcatDeployStatus(): any;
-declare function getLocalKoishiDeployStatus(): any;
-declare function getLocalNpmInstallStatus(): any;
-declare function buildLocalReadyCheck(): {
-    ok: boolean;
-    blocked: boolean;
-    localDeployTarget: LocalDeployTarget;
-    basicReady: boolean;
-    fullyReady: boolean;
-    checks: LocalReadyChecks;
-    node: {
-        ok: boolean;
-        reason: string;
-    };
-    npm: {
-        found: boolean;
-        reason: string;
-    };
-    dependencies: {
-        ready: boolean;
-        reason: string;
-    };
-    localConfig: {
-        ok: boolean;
-        files: never[];
-        protected: never[];
-    };
-    napcat: any;
-    koishi: any;
-    aiKey: AiKeyStatus;
-    dashboardUrl: string;
-    koishiUrl: string;
-    napcatUrl: string;
-    message: string;
-} | {
-    ok: boolean;
-    blocked: boolean;
-    localDeployTarget: LocalDeployTarget;
-    basicReady: boolean;
-    fullyReady: boolean;
-    checks: LocalReadyChecks;
-    node: any;
-    npm: any;
-    dependencies: ProjectDependencyStatus;
-    localConfig: LocalConfigPreview;
-    napcat: any;
-    koishi: any;
-    aiKey: AiKeyStatus;
-    dashboardUrl: string;
-    koishiUrl: string;
-    napcatUrl: string;
-    message: string;
-};
+declare function getLocalNapcatDeployStatus(): LocalNapcatDeployStatus;
+declare function getLocalKoishiDeployStatus(): LocalKoishiDeployStatus;
+declare function getLocalNpmInstallStatus(): LocalNpmInstallStatus;
+declare function buildLocalReadyCheck(): LocalReadyCheck;
 declare function buildLocalConfigPreview(): LocalConfigPreview;
 declare function deleteLocalConfigFiles(): DeleteLocalConfigResult;
 declare function psQuote(value: unknown): string;
@@ -370,7 +390,7 @@ declare function downloadNapcatWindowsRelease(installDir: string, callback: Inst
 declare function pickNodeWindowsRelease(releases: unknown): PortableNodeAsset;
 declare function findExtractedNodeRoot(stagingDir: string): string;
 declare function installPortableNodeWindows(callback: InstallCallback): void;
-declare function getNapcatStartEntry(): any;
+declare function getNapcatStartEntry(): NapcatStartEntry;
 declare function prepareNpmInstallRun(options?: PrepareNpmInstallOptions): {
     env: Record<string, string>;
     diagnostics: NpmDiagnostics;
@@ -431,7 +451,7 @@ declare const _default: {
     getProjectDependencyStatus: typeof getProjectDependencyStatus;
     getAiKeyStatus: typeof getAiKeyStatus;
     getNapcatLoginHint: typeof getNapcatLoginHint;
-    resolveKoishiListenPort: any;
+    resolveKoishiListenPort: () => number;
     getLocalNapcatDeployStatus: typeof getLocalNapcatDeployStatus;
     getLocalKoishiDeployStatus: typeof getLocalKoishiDeployStatus;
     getLocalNpmInstallStatus: typeof getLocalNpmInstallStatus;

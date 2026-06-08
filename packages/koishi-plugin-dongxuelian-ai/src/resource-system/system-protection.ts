@@ -3,9 +3,9 @@
  * 职责: 采集轻量进程/内存指标，记录内存告警和清理事件。
  * 边界: 只允许清理显式传入的子进程 pid，不执行服务管理或按进程名全局 kill。
  */
-const fs = require('fs')
-const path = require('path')
-const { spawnSync } = require('child_process')
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const { spawnSync } = require('child_process') as typeof import('child_process')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 const { appendJsonlEvent, ensureDir, readRecentJsonlEvents } = require('../resource-common/files') as typeof import('../resource-common/files')
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot') as typeof import('../resource-scheduler/resource-snapshot')

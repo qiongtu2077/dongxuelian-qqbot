@@ -4,13 +4,32 @@ import type { Hash } from 'crypto'
 import type { Dirent } from 'fs'
 import type { IncomingMessage, ServerResponse } from 'http'
 
-const fs = require('fs')
-const path = require('path')
-const os = require('os')
-const crypto = require('crypto')
+type PathsModule = typeof import('./paths')
+type ToolsModule = typeof import('./tools')
+type NapcatModule = typeof import('./napcat')
+type DeployStateModule = typeof import('./deploy-state')
+type LocalTaskKey = Parameters<DeployStateModule['getTaskPublicStatus']>[0]
+type LocalTaskPublicStatus = ReturnType<DeployStateModule['getTaskPublicStatus']>
+type CommandInfo = ReturnType<ToolsModule['getCommandInfo']>
+type PortState = ReturnType<ToolsModule['checkPortState']>
+type NapcatDetection = ReturnType<NapcatModule['detectNapcatInstallation']>
+type NapcatStartEntry = ReturnType<NapcatModule['getNapcatStartEntry']>
+
+interface UnsupportedPortState extends Record<string, unknown> {
+  available: false
+  status: 'unsupported'
+  reason: string
+}
+
+type LocalDeployPortState = PortState | UnsupportedPortState
+
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const os = require('os') as typeof import('os')
+const crypto = require('crypto') as typeof import('crypto')
 const http = require('http') as typeof import('http')
 const https = require('https') as typeof import('https')
-const { execFileSync } = require('child_process')
+const { execFileSync } = require('child_process') as typeof import('child_process')
 const { parsePositiveInt, json, log, shellQuote, commandQuote, isInsidePath, describeFsError, removePathWithRetry, ensureCleanDirectory, copyRecursiveSync, listFilesRecursive, uniquePaths } = require('./utils') as {
   parsePositiveInt(value: unknown, fallback: number, min: number, max: number): number
   json(res: unknown, data: unknown, status?: number): void
@@ -25,11 +44,11 @@ const { parsePositiveInt, json, log, shellQuote, commandQuote, isInsidePath, des
   listFilesRecursive(root: string, matcher?: (filePath: string) => boolean): string[]
   uniquePaths(paths: string[]): string[]
 }
-const { KOISHI_DIR, DATA_DIR, PORT, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, NPM_PROXY_ENV_KEYS, isGlobalLocalMode, isPackagedLocalWorkspace, getResourceRoot, toProjectRel, resolveProjectRel, runtimePath } = require('./paths')
-const { getCommandInfo, getLocalToolCommand, getLocalToolEnv, getPortableNodeDir, checkPortState, redactProxyValue, parseProxyEndpoint, isLoopbackProxyHost, resolveKoishiListenPort } = require('./tools')
-const { detectNapcatInstallation, getNapcatStartEntry: napcatGetStartEntry, findNapcatMarkers, sortNapcatEntries, inspectNapcatCandidate, resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getNapcatToken } = require('./napcat')
-const { readLastLogLines } = require('./logging')
-const { localTasks, getTaskPublicStatus, spawnLocalTask, getNpmDiagnosticsCache, setNpmDiagnosticsCache, getRebuildStatus, setRebuildStatus } = require('./deploy-state')
+const { KOISHI_DIR, DATA_DIR, PORT, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, NPM_PROXY_ENV_KEYS, isGlobalLocalMode, isPackagedLocalWorkspace, getResourceRoot, toProjectRel, resolveProjectRel, runtimePath } = require('./paths') as PathsModule
+const { getCommandInfo, getLocalToolCommand, getLocalToolEnv, getPortableNodeDir, checkPortState, redactProxyValue, parseProxyEndpoint, isLoopbackProxyHost, resolveKoishiListenPort } = require('./tools') as ToolsModule
+const { detectNapcatInstallation, getNapcatStartEntry: napcatGetStartEntry, findNapcatMarkers, sortNapcatEntries, inspectNapcatCandidate, resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getNapcatToken } = require('./napcat') as NapcatModule
+const { readLastLogLines } = require('./logging') as typeof import('./logging')
+const { localTasks, getTaskPublicStatus, spawnLocalTask, getNpmDiagnosticsCache, setNpmDiagnosticsCache, getRebuildStatus, setRebuildStatus } = require('./deploy-state') as DeployStateModule
 
 type DeployMode = 'install' | 'update'
 
@@ -135,9 +154,71 @@ interface ProxyEndpointLike {
   protocol: string
 }
 
-interface PortStateLike {
-  status: string
-  [key: string]: unknown
+type PortStateLike = PortState | { status: string; [key: string]: unknown }
+
+interface BlockedLocalTaskExtra extends Record<string, unknown> {
+  blocked: true
+  localDeployTarget: LocalDeployTarget
+  running: false
+  message: string
+}
+
+interface LocalNapcatDeployStatus extends LocalTaskPublicStatus {
+  found: boolean
+  installation: NapcatDetection
+  running: boolean
+  webuiPort: LocalDeployPortState
+  onebotPort: LocalDeployPortState
+  webuiUrl: string
+  tokenAvailable: boolean
+  login: LoginHint
+}
+
+interface LocalKoishiDeployStatus extends LocalTaskPublicStatus {
+  running: boolean
+  port: LocalDeployPortState
+  loaded: boolean
+  url: string
+}
+
+interface BlockedDependencyStatus {
+  ready: false
+  reason: string
+}
+
+interface LocalNpmInstallStatus extends LocalTaskPublicStatus {
+  dependencies: ProjectDependencyStatus | BlockedDependencyStatus
+  failureGuide?: NpmInstallFailureGuide | null
+}
+
+interface BlockedCommandStatus {
+  ok?: false
+  found?: false
+  reason: string
+}
+
+interface LocalReadyCheck {
+  ok: true
+  blocked: boolean
+  localDeployTarget: LocalDeployTarget
+  basicReady: boolean
+  fullyReady: boolean
+  checks: LocalReadyChecks
+  node: CommandInfo | BlockedCommandStatus
+  npm: CommandInfo | BlockedCommandStatus
+  dependencies: ProjectDependencyStatus | BlockedDependencyStatus
+  localConfig: LocalConfigPreview
+  napcat: LocalNapcatDeployStatus
+  koishi: LocalKoishiDeployStatus
+  aiKey: AiKeyStatus
+  dashboardUrl: string
+  koishiUrl: string
+  napcatUrl: string
+  message: string
+}
+
+function getTypedTaskPublicStatus<TExtra extends Record<string, unknown>>(key: LocalTaskKey, extra: TExtra): LocalTaskPublicStatus & TExtra {
+  return getTaskPublicStatus(key, extra) as LocalTaskPublicStatus & TExtra
 }
 
 interface NpmProxyCandidate extends ProxyEndpointLike {
@@ -225,6 +306,10 @@ interface LocalDeployManifest {
   [key: string]: unknown
 }
 
+function toNpmDiagnostics(value: unknown): NpmDiagnostics | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as NpmDiagnostics : null
+}
+
 interface TrackedLocalDeployFile extends LocalDeployManifestFile {
   action: string
   backup: string
@@ -276,7 +361,7 @@ interface LocalConfigPreview {
   ok: boolean
   files: LocalConfigPreviewFile[]
   protected: LocalConfigPreviewFile[]
-  manifest: { exists: boolean; path: string }
+  manifest?: { exists: boolean; path: string }
 }
 
 interface DeleteLocalConfigResult {
@@ -740,7 +825,8 @@ function runNpmCommand(args: string[], options: RunNpmOptions = {}): string {
 function collectNpmInstallDiagnostics(force = false): NpmDiagnostics {
   const cache = getNpmDiagnosticsCache()
   const now = Date.now()
-  if (!force && cache.data && now - cache.at < 10000) return cache.data
+  const cached = toNpmDiagnostics(cache.data)
+  if (!force && cached && now - cache.at < 10000) return cached
   const nodeInfo = getCommandInfo('node', 18)
   const npmInfo = getCommandInfo('npm')
   const workspace = getLocalWorkDirSafety()
@@ -827,9 +913,9 @@ function buildNpmInstallFailureGuide(logLines: string[] | string = [], diagnosti
   return null
 }
 
-function getBlockedLocalTaskStatus(key: string, extra: Record<string, unknown> = {}) {
+function getBlockedLocalTaskStatus<TExtra extends Record<string, unknown>>(key: LocalTaskKey, extra: TExtra): LocalTaskPublicStatus & BlockedLocalTaskExtra & TExtra {
   const target = getLocalDeployTarget()
-  return getTaskPublicStatus(key, { blocked: true, localDeployTarget: target, running: false, message: target.blockedReason, ...extra })
+  return getTypedTaskPublicStatus(key, { blocked: true, localDeployTarget: target, running: false, message: target.blockedReason, ...extra })
 }
 
 function fileSha256(filePath: string): string {
@@ -911,7 +997,7 @@ function getNapcatLoginHint(): LoginHint {
   return { status: 'unknown', reason: '暂未能从日志确认登录状态，请在 NapCat WebUI 或控制台完成扫码' }
 }
 
-function getLocalNapcatDeployStatus() {
+function getLocalNapcatDeployStatus(): LocalNapcatDeployStatus {
   const target = getLocalDeployTarget()
   if (!target.canRunWindowsLocalDeploy) {
     return getBlockedLocalTaskStatus('napcat', { found: false, installation: detectNapcatInstallation(), webuiPort: { available: false, status: 'unsupported', reason: target.blockedReason }, onebotPort: { available: false, status: 'unsupported', reason: target.blockedReason }, webuiUrl: '', tokenAvailable: false, login: { status: 'blocked', reason: target.blockedReason } })
@@ -923,28 +1009,28 @@ function getLocalNapcatDeployStatus() {
   const onebotPort = checkPortState(onebotListen)
   const token = process.env.NAPCAT_TOKEN || getNapcatToken()
   const login = getNapcatLoginHint()
-  return getTaskPublicStatus('napcat', { found: detected.found, installation: detected, running: localTasks.napcat.running || webuiPort.status === 'occupied' || onebotPort.status === 'occupied', webuiPort, onebotPort, webuiUrl: 'http://127.0.0.1:' + webuiListen + '/', tokenAvailable: !!token, login })
+  return getTypedTaskPublicStatus('napcat', { found: detected.found, installation: detected, running: localTasks.napcat.running || webuiPort.status === 'occupied' || onebotPort.status === 'occupied', webuiPort, onebotPort, webuiUrl: 'http://127.0.0.1:' + webuiListen + '/', tokenAvailable: !!token, login })
 }
 
-function getLocalKoishiDeployStatus() {
+function getLocalKoishiDeployStatus(): LocalKoishiDeployStatus {
   const target = getLocalDeployTarget()
   if (!target.canRunWindowsLocalDeploy) return getBlockedLocalTaskStatus('koishi', { port: { available: false, status: 'unsupported', reason: target.blockedReason }, loaded: false, url: '' })
   const koishiListen = resolveKoishiListenPort()
   const port = checkPortState(koishiListen)
   const lines = readLastLogLines(localTasks.koishi.logFile, 220).join('\n')
   const loaded = /adapter-onebot|dongxuelian-ai|server listening|app started|koishi/i.test(lines)
-  return getTaskPublicStatus('koishi', { running: localTasks.koishi.running || port.status === 'occupied', port, loaded, url: 'http://127.0.0.1:' + koishiListen + '/' })
+  return getTypedTaskPublicStatus('koishi', { running: localTasks.koishi.running || port.status === 'occupied', port, loaded, url: 'http://127.0.0.1:' + koishiListen + '/' })
 }
 
-function getLocalNpmInstallStatus() {
+function getLocalNpmInstallStatus(): LocalNpmInstallStatus {
   const target = getLocalDeployTarget()
   if (!target.canRunWindowsLocalDeploy) return getBlockedLocalTaskStatus('npmInstall', { dependencies: { ready: false, reason: target.blockedReason } })
-  const status = getTaskPublicStatus('npmInstall', { dependencies: getProjectDependencyStatus() })
-  const guide = buildNpmInstallFailureGuide(status.logLines, localTasks.npmInstall.diagnostics)
+  const status = getTypedTaskPublicStatus('npmInstall', { dependencies: getProjectDependencyStatus() })
+  const guide = buildNpmInstallFailureGuide(status.logLines, toNpmDiagnostics(localTasks.npmInstall.diagnostics))
   return { ...status, failureGuide: guide }
 }
 
-function buildLocalReadyCheck() {
+function buildLocalReadyCheck(): LocalReadyCheck {
   const target = getLocalDeployTarget()
   if (!target.canRunWindowsLocalDeploy) {
     const checks: LocalReadyChecks = { node: false, npm: false, dependencies: false, localConfig: false, napcatInstalled: false, napcatStarted: false, onebotPort: false, koishiStarted: false, aiKey: false }
@@ -1219,7 +1305,7 @@ function installPortableNodeWindows(callback: InstallCallback) {
   })
 }
 
-function getNapcatStartEntry() {
+function getNapcatStartEntry(): NapcatStartEntry {
   const result = napcatGetStartEntry()
   return result
 }

@@ -5,11 +5,11 @@ declare function getTaskResultDir(taskId: string): string;
 declare function getWorkerStateFile(workerName: string): string;
 declare function getWorkerEventFile(date?: Date): string;
 declare const _default: {
-    WORKERS_ROOT: any;
-    TASKS_ROOT: any;
-    RESULTS_ROOT: any;
-    WORKER_STATE_DIR: any;
-    SUPERVISOR_DIR: any;
+    WORKERS_ROOT: string;
+    TASKS_ROOT: string;
+    RESULTS_ROOT: string;
+    WORKER_STATE_DIR: string;
+    SUPERVISOR_DIR: string;
     getTaskStatusDir: typeof getTaskStatusDir;
     getPendingKindDir: typeof getPendingKindDir;
     getTaskFile: typeof getTaskFile;

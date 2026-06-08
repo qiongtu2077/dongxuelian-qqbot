@@ -56,10 +56,10 @@ declare function releaseResourceGate(ticketId: string, reason?: string): void;
 declare function getResourceGateStatus(staleMs?: number): ResourceGateStatus;
 declare function isDailyReportRunning(): boolean;
 declare const _default: {
-    GATE_ROOT: any;
-    LOCK_DIR: any;
-    LOCK_META_FILE: any;
-    TICKETS_DIR: any;
+    GATE_ROOT: string;
+    LOCK_DIR: string;
+    LOCK_META_FILE: string;
+    TICKETS_DIR: string;
     createTicket: typeof createTicket;
     listTickets: typeof listTickets;
     readLockMeta: typeof readLockMeta;

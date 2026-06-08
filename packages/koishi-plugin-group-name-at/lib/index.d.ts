@@ -88,12 +88,12 @@ declare const _default: {
     name: string;
     apply: typeof apply;
     _test: {
-        DATA_FILE: any;
-        LEGACY_DATA_FILE: any;
-        SCOPE_DATA_DIR: any;
+        DATA_FILE: string;
+        LEGACY_DATA_FILE: string;
+        SCOPE_DATA_DIR: string;
         USE_LEGACY_STORE: boolean;
-        DISABLED_GROUPS_FILE: any;
-        ADMIN_IDS_FILE: any;
+        DISABLED_GROUPS_FILE: string;
+        ADMIN_IDS_FILE: string;
         pendingConfirms: Map<string, number>;
         trimPendingConfirms: typeof trimPendingConfirms;
         loadDisabledGroups: typeof loadDisabledGroups;

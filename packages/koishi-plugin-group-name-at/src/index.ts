@@ -1,6 +1,6 @@
 const { segment } = require('koishi')
-const fs = require('fs/promises')
-const path = require('path')
+const fs = require('fs/promises') as typeof import('fs/promises')
+const path = require('path') as typeof import('path')
 
 const name = 'group-name-at'
 
@@ -128,12 +128,12 @@ function resolveRuntimeDataDir(): string {
 }
 
 const DEFAULT_DATA_DIR = resolveRuntimeDataDir()
-const LEGACY_DATA_FILE = process.env.GROUP_NAME_AT_DATA_FILE || path.join(DEFAULT_DATA_DIR, 'nickname-collections.json')
-const SCOPE_DATA_DIR = path.resolve(process.env.GROUP_NAME_AT_DATA_DIR || path.join(DEFAULT_DATA_DIR, 'nickname-collections'))
+const LEGACY_DATA_FILE: string = process.env.GROUP_NAME_AT_DATA_FILE || path.join(DEFAULT_DATA_DIR, 'nickname-collections.json')
+const SCOPE_DATA_DIR: string = path.resolve(process.env.GROUP_NAME_AT_DATA_DIR || path.join(DEFAULT_DATA_DIR, 'nickname-collections'))
 const USE_LEGACY_STORE = !!String(process.env.GROUP_NAME_AT_DATA_FILE || '').trim()
-const DATA_FILE = LEGACY_DATA_FILE
-const DISABLED_GROUPS_FILE = process.env.GROUP_NAME_AT_DISABLED_GROUPS_FILE || path.join(DEFAULT_DATA_DIR, 'group-name-at-disabled-groups.json')
-const ADMIN_IDS_FILE = process.env.GROUP_NAME_AT_ADMIN_IDS_FILE || path.join(DEFAULT_DATA_DIR, 'ai-admin-ids.json')
+const DATA_FILE: string = LEGACY_DATA_FILE
+const DISABLED_GROUPS_FILE: string = process.env.GROUP_NAME_AT_DISABLED_GROUPS_FILE || path.join(DEFAULT_DATA_DIR, 'group-name-at-disabled-groups.json')
+const ADMIN_IDS_FILE: string = process.env.GROUP_NAME_AT_ADMIN_IDS_FILE || path.join(DEFAULT_DATA_DIR, 'ai-admin-ids.json')
 const CONFIRM_TIMEOUT = 60 * 1000
 const MAX_DISABLED_GROUPS_BYTES = 128 * 1024
 const MAX_ADMIN_IDS_BYTES = 128 * 1024

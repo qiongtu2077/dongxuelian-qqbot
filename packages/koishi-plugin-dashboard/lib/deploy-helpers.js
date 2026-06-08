@@ -12,6 +12,12 @@ const { getCommandInfo, getLocalToolCommand, getLocalToolEnv, getPortableNodeDir
 const { detectNapcatInstallation, getNapcatStartEntry: napcatGetStartEntry, findNapcatMarkers, sortNapcatEntries, inspectNapcatCandidate, resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getNapcatToken } = require('./napcat');
 const { readLastLogLines } = require('./logging');
 const { localTasks, getTaskPublicStatus, spawnLocalTask, getNpmDiagnosticsCache, setNpmDiagnosticsCache, getRebuildStatus, setRebuildStatus } = require('./deploy-state');
+function getTypedTaskPublicStatus(key, extra) {
+    return getTaskPublicStatus(key, extra);
+}
+function toNpmDiagnostics(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
 const MAX_DOWNLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLOAD_BYTES, 256 * 1024 * 1024, 8 * 1024 * 1024, 2 * 1024 * 1024 * 1024);
 const MAX_DEPLOY_TASK_LOG_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DEPLOY_TASK_LOG_BYTES, 512 * 1024, 64 * 1024, 4 * 1024 * 1024);
 const MAX_DEPLOY_UPLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_DEPLOY_UPLOAD_MAX_BYTES, 1024 * 1024, 4 * 1024, 4 * 1024 * 1024);
@@ -475,8 +481,9 @@ function runNpmCommand(args, options = {}) {
 function collectNpmInstallDiagnostics(force = false) {
     const cache = getNpmDiagnosticsCache();
     const now = Date.now();
-    if (!force && cache.data && now - cache.at < 10000)
-        return cache.data;
+    const cached = toNpmDiagnostics(cache.data);
+    if (!force && cached && now - cache.at < 10000)
+        return cached;
     const nodeInfo = getCommandInfo('node', 18);
     const npmInfo = getCommandInfo('npm');
     const workspace = getLocalWorkDirSafety();
@@ -579,9 +586,9 @@ function buildNpmInstallFailureGuide(logLines = [], diagnostics = null) {
         return { code: 'NPM_FAILED', title: 'npm install 失败', summary: 'npm install 已退出，部署器暂时无法判断唯一原因。请先查看下方原始日志里最靠前的 npm error。', fixSteps: ['优先处理日志中第一条 npm error。', '确认网络、代理、磁盘权限和项目目录可写。', '处理后点击"执行 npm install"重试。'], commands: [formatLocalNpmCommand(['config', 'get', 'registry'])], diagnostics: diag };
     return null;
 }
-function getBlockedLocalTaskStatus(key, extra = {}) {
+function getBlockedLocalTaskStatus(key, extra) {
     const target = getLocalDeployTarget();
-    return getTaskPublicStatus(key, { blocked: true, localDeployTarget: target, running: false, message: target.blockedReason, ...extra });
+    return getTypedTaskPublicStatus(key, { blocked: true, localDeployTarget: target, running: false, message: target.blockedReason, ...extra });
 }
 function fileSha256(filePath) {
     try {
@@ -692,7 +699,7 @@ function getLocalNapcatDeployStatus() {
     const onebotPort = checkPortState(onebotListen);
     const token = process.env.NAPCAT_TOKEN || getNapcatToken();
     const login = getNapcatLoginHint();
-    return getTaskPublicStatus('napcat', { found: detected.found, installation: detected, running: localTasks.napcat.running || webuiPort.status === 'occupied' || onebotPort.status === 'occupied', webuiPort, onebotPort, webuiUrl: 'http://127.0.0.1:' + webuiListen + '/', tokenAvailable: !!token, login });
+    return getTypedTaskPublicStatus('napcat', { found: detected.found, installation: detected, running: localTasks.napcat.running || webuiPort.status === 'occupied' || onebotPort.status === 'occupied', webuiPort, onebotPort, webuiUrl: 'http://127.0.0.1:' + webuiListen + '/', tokenAvailable: !!token, login });
 }
 function getLocalKoishiDeployStatus() {
     const target = getLocalDeployTarget();
@@ -702,14 +709,14 @@ function getLocalKoishiDeployStatus() {
     const port = checkPortState(koishiListen);
     const lines = readLastLogLines(localTasks.koishi.logFile, 220).join('\n');
     const loaded = /adapter-onebot|dongxuelian-ai|server listening|app started|koishi/i.test(lines);
-    return getTaskPublicStatus('koishi', { running: localTasks.koishi.running || port.status === 'occupied', port, loaded, url: 'http://127.0.0.1:' + koishiListen + '/' });
+    return getTypedTaskPublicStatus('koishi', { running: localTasks.koishi.running || port.status === 'occupied', port, loaded, url: 'http://127.0.0.1:' + koishiListen + '/' });
 }
 function getLocalNpmInstallStatus() {
     const target = getLocalDeployTarget();
     if (!target.canRunWindowsLocalDeploy)
         return getBlockedLocalTaskStatus('npmInstall', { dependencies: { ready: false, reason: target.blockedReason } });
-    const status = getTaskPublicStatus('npmInstall', { dependencies: getProjectDependencyStatus() });
-    const guide = buildNpmInstallFailureGuide(status.logLines, localTasks.npmInstall.diagnostics);
+    const status = getTypedTaskPublicStatus('npmInstall', { dependencies: getProjectDependencyStatus() });
+    const guide = buildNpmInstallFailureGuide(status.logLines, toNpmDiagnostics(localTasks.npmInstall.diagnostics));
     return { ...status, failureGuide: guide };
 }
 function buildLocalReadyCheck() {

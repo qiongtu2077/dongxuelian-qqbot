@@ -4,8 +4,8 @@
  * 边界: 不下载、不解析、不调用视觉或文件分析模型。
  */
 const fs = require('fs') as typeof import('fs')
-const path = require('path')
-const crypto = require('crypto')
+const path = require('path') as typeof import('path')
+const crypto = require('crypto') as typeof import('crypto')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
 const {
   appendJsonlEvent,

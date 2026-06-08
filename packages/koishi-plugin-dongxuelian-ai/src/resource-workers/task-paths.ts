@@ -3,7 +3,7 @@
  * 职责: 统一生成 resource-workers 的任务、结果、worker 和事件路径。
  * 边界: 不读写文件，不决定任务状态。
  */
-const path = require('path')
+const path = require('path') as typeof import('path')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 const { sanitizeId } = require('../resource-common/files') as typeof import('../resource-common/files')
 

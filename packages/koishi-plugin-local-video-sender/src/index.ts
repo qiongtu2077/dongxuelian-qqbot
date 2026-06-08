@@ -2,10 +2,10 @@ import type { ExecFileOptions } from 'child_process'
 
 const { segment } = require('koishi')
 const { execFile } = require('child_process')
-const fsSync = require('fs')
-const fs = require('fs/promises')
-const path = require('path')
-const { pathToFileURL } = require('url')
+const fsSync = require('fs') as typeof import('fs')
+const fs = require('fs/promises') as typeof import('fs/promises')
+const path = require('path') as typeof import('path')
+const { pathToFileURL } = require('url') as typeof import('url')
 
 const name = 'local-video-sender'
 
@@ -101,8 +101,10 @@ interface ProbeResult {
   error?: string
 }
 
+type VideoFsApi = Pick<typeof fs, 'mkdir' | 'stat' | 'rm'>
+
 interface DownloadDeps {
-  fs?: typeof fs
+  fs?: VideoFsApi
   run?: typeof run
   probeVideo?: typeof probeVideo
   resourceGate?: false

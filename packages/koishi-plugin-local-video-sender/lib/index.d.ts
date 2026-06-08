@@ -1,5 +1,5 @@
 import type { ExecFileOptions } from 'child_process';
-declare const fs: any;
+declare const fs: typeof import("fs/promises");
 interface LoggerLike {
     warn(...args: unknown[]): void;
 }
@@ -81,8 +81,9 @@ interface ProbeResult {
     picked?: FormatPick;
     error?: string;
 }
+type VideoFsApi = Pick<typeof fs, 'mkdir' | 'stat' | 'rm'>;
 interface DownloadDeps {
-    fs?: typeof fs;
+    fs?: VideoFsApi;
     run?: typeof run;
     probeVideo?: typeof probeVideo;
     resourceGate?: false;

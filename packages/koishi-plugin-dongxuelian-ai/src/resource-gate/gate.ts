@@ -4,7 +4,7 @@
  * 边界: 不保存长期业务队列，长期任务状态归 S2。
  */
 const fs = require('fs') as typeof import('fs')
-const path = require('path')
+const path = require('path') as typeof import('path')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 const {
   appendJsonlEvent,

@@ -52,9 +52,9 @@ declare function failMediaTask(task: MediaTask, error: unknown, reason?: string)
 declare function enqueueMediaTask(input: MediaTaskInput): EnqueueMediaTaskResult;
 declare function getMediaBackpressureStatus(): Record<string, unknown>;
 declare const _default: {
-    MEDIA_ROOT: any;
-    MEDIA_QUEUE_ROOT: any;
-    MEDIA_CACHE_INDEX_FILE: any;
+    MEDIA_ROOT: string;
+    MEDIA_QUEUE_ROOT: string;
+    MEDIA_CACHE_INDEX_FILE: string;
     ensureMediaDirs: typeof ensureMediaDirs;
     writeMediaEvent: typeof writeMediaEvent;
     createMediaHash: typeof createMediaHash;
