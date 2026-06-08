@@ -1,13 +1,34 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { api, setAccessToken, setAdminToken, verifyAdmin } from './api/client'
+import { api, getErrorMessage, setAccessToken, setAdminToken, verifyAdmin } from './api/client'
+import type {
+  AgentConfigResponse,
+  AgentCronDraft,
+  AgentCronEntry,
+  AgentCronHistoryEntry,
+  AgentEnvResponse,
+  AgentPersonaConfig,
+  AgentPersonaEntry,
+  AgentPlan,
+  AgentPushLogEntry,
+  AgentQueueStats,
+  AgentRuntimeConfig,
+  AgentSessionSummary,
+  AgentShellGuardResponse,
+  AgentStats,
+  AgentToolDetailStats,
+  AgentWorkspaceFileItem,
+  AgentWorkspaceFilePreview,
+  ChatHistoryItem,
+  PendingToolListItem,
+} from './api/types'
 import './styles.css'
 
 type TabId = 'chat' | 'inbox' | 'personas' | 'files' | 'skills' | 'tools' | 'plans' | 'cron' | 'stats' | 'runtime' | 'model' | 'env' | 'security'
 
 type RoundRecord = {
   reasoning: string | null
-  toolCalls: Array<{ name: string; args: Record<string, any> }>
+  toolCalls: Array<{ name: string; args: Record<string, unknown> }>
   toolResults?: Array<{ name: string; result: string; ok: boolean }>
 }
 
@@ -85,19 +106,19 @@ const tabs: Array<{ id: TabId; label: string; group: string }> = [
 
 function useAgentData() {
   const [loading, setLoading] = useState(false)
-  const [config, setConfig] = useState<any>(null)
-  const [pending, setPending] = useState<any[]>([])
-  const [sessions, setSessions] = useState<any[]>([])
-  const [stats, setStats] = useState<any>(null)
-  const [queue, setQueue] = useState<any>(null)
-  const [shellGuard, setShellGuard] = useState<any>(null)
-  const [plans, setPlans] = useState<any[]>([])
-  const [crons, setCrons] = useState<any[]>([])
-  const [cronHistory, setCronHistory] = useState<any[]>([])
-  const [pushLog, setPushLog] = useState<any[]>([])
-  const [env, setEnv] = useState<any>(null)
-  const [personas, setPersonas] = useState<any[]>([])
-  const [persona, setPersona] = useState<any>(null)
+  const [config, setConfig] = useState<AgentConfigResponse | null>(null)
+  const [pending, setPending] = useState<PendingToolListItem[]>([])
+  const [sessions, setSessions] = useState<AgentSessionSummary[]>([])
+  const [stats, setStats] = useState<AgentStats | null>(null)
+  const [queue, setQueue] = useState<AgentQueueStats | null>(null)
+  const [shellGuard, setShellGuard] = useState<AgentShellGuardResponse | null>(null)
+  const [plans, setPlans] = useState<AgentPlan[]>([])
+  const [crons, setCrons] = useState<AgentCronEntry[]>([])
+  const [cronHistory, setCronHistory] = useState<AgentCronHistoryEntry[]>([])
+  const [pushLog, setPushLog] = useState<AgentPushLogEntry[]>([])
+  const [env, setEnv] = useState<AgentEnvResponse | null>(null)
+  const [personas, setPersonas] = useState<AgentPersonaEntry[]>([])
+  const [persona, setPersona] = useState<AgentPersonaConfig | null>(null)
   const [error, setError] = useState('')
   const [adminRequired, setAdminRequired] = useState(false)
 
@@ -146,6 +167,9 @@ function useAgentData() {
   useEffect(() => { refresh() }, [])
   return { loading, config, setConfig, pending, sessions, stats, queue, shellGuard, plans, crons, cronHistory, pushLog, env, personas, persona, setPersona, error, adminRequired, refresh }
 }
+
+type AgentData = ReturnType<typeof useAgentData>
+type AgentConfigSetter = AgentData['setConfig']
 
 function AdminGate({ onVerified }: { onVerified: () => void }) {
   const [password, setPassword] = useState('')
@@ -304,7 +328,7 @@ const COMMANDS = [
   { label: '/status', description: '查看状态', value: '/status ' },
 ]
 
-function ChatPage({ refresh, persona }: { refresh: () => void; persona: any }) {
+function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPersonaConfig | null }) {
   const personaName = persona?.dashboardPersona || ''
   const historyKey = getPersonaHistoryKey(personaName)
   const [rememberHistory, setRememberHistory] = useState(() => localStorage.getItem(AGENT_CONSOLE_REMEMBER_HISTORY_KEY) === '1')
@@ -358,7 +382,7 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: any }) {
   async function send() {
     const text = input.trim()
     if (!text || sending) return
-    const history = messages.slice(-12).map(item => ({ role: item.role, content: item.content }))
+    const history: ChatHistoryItem[] = messages.slice(-12).map(item => ({ role: item.role, content: item.content }))
     const pendingMessageId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     setMessages(prev => [...prev, { role: 'user', content: text }, { role: 'system', content: '执行中...', id: pendingMessageId, pending: true }])
     setInput('')
@@ -371,10 +395,10 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: any }) {
         return [...base, { role: 'assistant', content: reply, pendingId: result.data?.pendingId, rounds: result.data?.rounds || [] }]
       })
       refresh()
-    } catch (error: any) {
+    } catch (error: unknown) {
       setMessages(prev => {
         const base = prev.filter(item => item.id !== pendingMessageId)
-        return [...base, { role: 'assistant', content: error?.message || '请求失败' }]
+        return [...base, { role: 'assistant', content: getErrorMessage(error) }]
       })
     } finally {
       setSending(false)
@@ -507,7 +531,7 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: any }) {
   )
 }
 
-function InboxPage({ pending, pushLog, refresh }: { pending: any[]; pushLog: any[]; refresh: () => void }) {
+function InboxPage({ pending, pushLog, refresh }: { pending: PendingToolListItem[]; pushLog: AgentPushLogEntry[]; refresh: () => void }) {
   async function confirm(id: string) { await api.confirm(id); refresh() }
   async function reject(id: string) { await api.reject(id); refresh() }
   return (
@@ -544,11 +568,11 @@ function InboxPage({ pending, pushLog, refresh }: { pending: any[]; pushLog: any
   )
 }
 
-function ToolsPage({ data, setConfig, refresh }: any) {
+function ToolsPage({ data, setConfig, refresh }: { data: AgentData; setConfig: AgentConfigSetter; refresh: () => void }) {
   const config = data.config?.config
   const tools = data.config?.tools || []
   async function toggle(toolName: string, channel: 'qq' | 'dashboard', enabled: boolean) {
-    if (!config) return
+    if (!data.config || !config) return
     const next = structuredClone(config)
     if (!next.channels[channel]) next.channels[channel] = {}
     if (!next.channels[channel].tools) next.channels[channel].tools = {}
@@ -564,7 +588,7 @@ function ToolsPage({ data, setConfig, refresh }: any) {
         <span>{tools.length} 个工具</span>
       </div>
       <div className="card-grid">
-        {tools.map((tool: any) => (
+        {tools.map(tool => (
           <article className="tool-card" key={tool.name}>
             <div className="tool-icon">{tool.name.slice(0, 2)}</div>
             <h3>{tool.name}</h3>
@@ -585,10 +609,11 @@ function ToolsPage({ data, setConfig, refresh }: any) {
   )
 }
 
-function SkillsPage({ data, setConfig, refresh }: any) {
+function SkillsPage({ data, setConfig, refresh }: { data: AgentData; setConfig: AgentConfigSetter; refresh: () => void }) {
   const config = data.config?.config
   const skills = data.config?.skills || []
   async function toggle(skillName: string, enabled: boolean) {
+    if (!data.config || !config) return
     const next = structuredClone(config)
     const current = new Set(Array.isArray(next.enabledSkills) ? next.enabledSkills : [])
     if (enabled) current.add(skillName)
@@ -625,7 +650,7 @@ function SkillsPage({ data, setConfig, refresh }: any) {
   )
 }
 
-function PersonasPage({ personas, persona, setPersona, refresh }: { personas: any[]; persona: any; setPersona: (value: any) => void; refresh: () => void }) {
+function PersonasPage({ personas, persona, setPersona, refresh }: { personas: AgentPersonaEntry[]; persona: AgentPersonaConfig | null; setPersona: React.Dispatch<React.SetStateAction<AgentPersonaConfig | null>>; refresh: () => void }) {
   const current = persona?.dashboardPersona || ''
   const inherit = persona?.qqInheritChatPersona !== false
   const [message, setMessage] = useState('')
@@ -676,8 +701,8 @@ function PersonasPage({ personas, persona, setPersona, refresh }: { personas: an
 function FilesPage({ roots }: { roots: string[] }) {
   const [root, setRoot] = useState('')
   const [query, setQuery] = useState('')
-  const [files, setFiles] = useState<any[]>([])
-  const [preview, setPreview] = useState<any>(null)
+  const [files, setFiles] = useState<AgentWorkspaceFileItem[]>([])
+  const [preview, setPreview] = useState<AgentWorkspaceFilePreview | null>(null)
   const [draft, setDraft] = useState({ name: '', content: '' })
   const [message, setMessage] = useState('')
   async function loadFiles(nextRoot = root, nextQuery = query) {
@@ -690,7 +715,7 @@ function FilesPage({ roots }: { roots: string[] }) {
       setMessage(result.message || result.data?.message || '文件列表读取失败')
     }
   }
-  async function openFile(file: any) {
+  async function openFile(file: AgentWorkspaceFileItem) {
     if (file.type === 'dir') return loadFiles(file.path, '')
     const result = await api.filePreview(file.path)
     if (result.ok) setPreview(result.data?.file)
@@ -707,7 +732,7 @@ function FilesPage({ roots }: { roots: string[] }) {
       setMessage(result.message || result.data?.message || '上传失败')
     }
   }
-  async function downloadFile(file: any) {
+  async function downloadFile(file: AgentWorkspaceFilePreview) {
     try {
       const blob = await api.fileDownload(file.path)
       const url = URL.createObjectURL(blob)
@@ -718,8 +743,8 @@ function FilesPage({ roots }: { roots: string[] }) {
       link.click()
       link.remove()
       URL.revokeObjectURL(url)
-    } catch (error: any) {
-      setMessage(error?.message || '下载失败')
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error, '下载失败'))
     }
   }
   useEffect(() => { loadFiles(roots[0] || '', '') }, [roots.join('|')])
@@ -771,7 +796,7 @@ function FilesPage({ roots }: { roots: string[] }) {
   )
 }
 
-function PlansPage({ plans, refresh }: { plans: any[]; refresh: () => void }) {
+function PlansPage({ plans, refresh }: { plans: AgentPlan[]; refresh: () => void }) {
   const [goal, setGoal] = useState('')
   const [message, setMessage] = useState('')
   async function createPlan() {
@@ -812,7 +837,7 @@ function PlansPage({ plans, refresh }: { plans: any[]; refresh: () => void }) {
             <div className="section-head"><h3>{plan.title}</h3><span>{plan.state}</span></div>
             <p>{plan.id} · {plan.channel}:{plan.channelKey}</p>
             <div className="task-list">
-              {plan.tasks.map((task: any) => <span key={task.id} className={'task ' + task.state}>{task.id} {task.state}</span>)}
+              {plan.tasks.map(task => <span key={task.id} className={'task ' + task.state}>{task.id} {task.state}</span>)}
             </div>
             {plan.state === 'executing' && <div className="row-actions"><button onClick={() => resumePlan(plan.id)}>继续</button><button className="secondary" onClick={() => abandonPlan(plan.id)}>放弃</button></div>}
           </article>
@@ -822,8 +847,8 @@ function PlansPage({ plans, refresh }: { plans: any[]; refresh: () => void }) {
   )
 }
 
-function CronPage({ crons, history, refresh }: { crons: any[]; history: any[]; refresh: () => void }) {
-  const [draft, setDraft] = useState({ id: '', schedule: '0 20 * * *', type: 'text', prompt: '', targetChannel: '', enabled: true })
+function CronPage({ crons, history, refresh }: { crons: AgentCronEntry[]; history: AgentCronHistoryEntry[]; refresh: () => void }) {
+  const [draft, setDraft] = useState<AgentCronDraft>({ id: '', schedule: '0 20 * * *', type: 'text', prompt: '', targetChannel: '', enabled: true })
   const cronTypeOptions = [
     { value: 'text', label: 'text' },
     { value: 'agent', label: 'agent' },
@@ -858,7 +883,8 @@ function CronPage({ crons, history, refresh }: { crons: any[]; history: any[]; r
   )
 }
 
-function StatsPage({ stats, queue, sessions }: { stats: any; queue: any; sessions: any[] }) {
+function StatsPage({ stats, queue, sessions }: { stats: AgentStats | null; queue: AgentQueueStats | null; sessions: AgentSessionSummary[] }) {
+  const byToolDetail: Record<string, AgentToolDetailStats> = stats?.byToolDetail || {}
   const metrics = [
     ['总会话数', sessions.length],
     ['工具调用数', stats?.total || 0],
@@ -874,14 +900,14 @@ function StatsPage({ stats, queue, sessions }: { stats: any; queue: any; session
       <h2>智能体统计</h2>
       <div className="metric-grid">{metrics.map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>
       <div className="page-grid two">
-        <div><h3>按工具</h3>{Object.entries(stats?.byToolDetail || {}).map(([name, item]: any) => <div className="bar-row" key={name}><span>{name}</span><strong>{item.total}</strong></div>)}</div>
+        <div><h3>按工具</h3>{Object.entries(byToolDetail).map(([name, item]) => <div className="bar-row" key={name}><span>{name}</span><strong>{item.total}</strong></div>)}</div>
         <div><h3>最近会话</h3>{sessions.slice(0, 10).map(session => <div className="bar-row" key={session.id}><span>{session.title}</span><strong>{session.toolCalls}</strong></div>)}</div>
       </div>
     </section>
   )
 }
 
-function ModelPage({ config }: { config: any }) {
+function ModelPage({ config }: { config: AgentConfigResponse | null }) {
   return (
     <section className="panel">
       <h2>模型</h2>
@@ -895,9 +921,9 @@ function ModelPage({ config }: { config: any }) {
   )
 }
 
-function RuntimePage({ data, refresh }: any) {
+function RuntimePage({ data, refresh }: { data: AgentData; refresh: () => void }) {
   const config = data.config?.config
-  const [draft, setDraft] = useState<any>(() => config ? structuredClone(config) : null)
+  const [draft, setDraft] = useState<AgentRuntimeConfig | null>(() => config ? structuredClone(config) : null)
   const [message, setMessage] = useState('')
   useEffect(() => { if (config) setDraft(structuredClone(config)) }, [config])
   if (!draft) return <section className="panel"><div className="empty">配置加载中</div></section>
@@ -906,11 +932,17 @@ function RuntimePage({ data, refresh }: any) {
     setMessage(result.ok ? '运行配置已保存' : (result.message || result.data?.message || '保存失败'))
     refresh()
   }
-  function update(path: string[], value: any) {
+  function update(path: string[], value: string | number | boolean) {
     const next = structuredClone(draft)
-    let cursor = next
-    for (const key of path.slice(0, -1)) cursor = cursor[key]
-    cursor[path[path.length - 1]] = value
+    let cursor: Record<string, unknown> = next
+    for (const key of path.slice(0, -1)) {
+      const child = cursor[key]
+      if (typeof child !== 'object' || child === null) return
+      cursor = child as Record<string, unknown>
+    }
+    const lastKey = path[path.length - 1]
+    if (!lastKey) return
+    cursor[lastKey] = value
     setDraft(next)
   }
   return (
@@ -936,7 +968,7 @@ function RuntimePage({ data, refresh }: any) {
   )
 }
 
-function EnvPage({ env }: { env: any }) {
+function EnvPage({ env }: { env: AgentEnvResponse | null }) {
   const rows = env?.env || []
   return (
     <section className="panel">
@@ -948,7 +980,7 @@ function EnvPage({ env }: { env: any }) {
         <div className="metric"><span>联网搜索</span><strong>{env?.runtime?.searchEnabled ? '开启' : '关闭'}</strong></div>
       </div>
       <div className="list">
-        {rows.map((item: any) => (
+        {rows.map(item => (
           <div className="bar-row" key={item.name}>
             <span>{item.name}</span>
             <strong>{item.configured ? '已配置' : '未配置'} · {item.size} bytes</strong>
@@ -959,7 +991,7 @@ function EnvPage({ env }: { env: any }) {
   )
 }
 
-function SecurityPage({ shellGuard, config }: { shellGuard: any; config: any }) {
+function SecurityPage({ shellGuard, config }: { shellGuard: AgentShellGuardResponse | null; config: AgentConfigResponse | null }) {
   return (
     <section className="panel">
       <h2>安全 / Shell Guard</h2>
@@ -969,7 +1001,7 @@ function SecurityPage({ shellGuard, config }: { shellGuard: any; config: any }) 
         <div className="metric"><span>危险策略</span><strong>{config?.config?.dangerousPolicy || 'confirm'}</strong></div>
       </div>
       <div className="card-grid">
-        {(shellGuard?.categories || []).map((category: any) => (
+        {(shellGuard?.categories || []).map(category => (
           <article className="skill-card" key={category.category}>
             <h3>{category.label}</h3>
             <p>{category.description}</p>
