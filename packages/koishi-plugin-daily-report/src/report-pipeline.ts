@@ -55,6 +55,10 @@ interface AnalysisLike {
   meta?: { warnings?: unknown }
 }
 
+type AnalyzerReportData = Parameters<typeof analyzeWithAI>[0]
+type RenderReportData = Parameters<typeof renderReport>[0]
+type RenderAnalysis = Parameters<typeof renderReport>[1]
+
 // 把未知错误压成稳定字符串，供 result.json 和 worker 日志使用。
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error || '')
@@ -207,7 +211,7 @@ async function generateDailyReportResult(options: DailyReportPipelineOptions): P
   }
 
   emitStep('analyzing')
-  const analysis = await analyzeWithAI(data as any, !!options.detail) as AnalysisLike
+  const analysis = await analyzeWithAI(data as AnalyzerReportData, !!options.detail) as AnalysisLike
   const warnings = collectAnalysisWarnings(analysis)
 
   emitStep('compose_text')
@@ -224,7 +228,7 @@ async function generateDailyReportResult(options: DailyReportPipelineOptions): P
 
   emitStep('rendering')
   try {
-    const imageBuffer = await renderReport(data as any, analysis as any, { taskId })
+    const imageBuffer = await renderReport(data as RenderReportData, analysis as RenderAnalysis, { taskId })
     const imagePath = path.join(outputDir, 'report.png')
     writeBufferFile(imagePath, imageBuffer)
     result.level = 'L0'

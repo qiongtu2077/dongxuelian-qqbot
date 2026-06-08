@@ -104,7 +104,7 @@ async function acquirePetBridgeChatGate(payload: BridgePayload): Promise<PetBrid
     deferable: false,
     queueTimeoutMs: 5000,
     runTimeoutMs: 120000,
-  }) as any
+  })
   if (admission.decision !== 'run_now') {
     return { ok: false, response: buildPetBridgeBusyResponse(admission.reason || 'pet bridge chat rejected by resource scheduler') }
   }
