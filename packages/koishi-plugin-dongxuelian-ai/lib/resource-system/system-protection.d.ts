@@ -10,6 +10,7 @@ interface TerminateRecordedProcessPidsOptions extends TerminateProcessTreeOption
     eventNames?: string[];
     limit?: number;
 }
+declare function cleanupOldProcessMetricsFiles(now?: number): number;
 declare function terminateProcessTree(pidValue: unknown, options?: TerminateProcessTreeOptions): Record<string, unknown>;
 declare function terminateRecordedProcessPids(options?: TerminateRecordedProcessPidsOptions): Record<string, unknown>;
 declare function checkWorkerMemoryLimit(workerName: string, limitMb?: number): Record<string, unknown>;
@@ -24,5 +25,6 @@ declare const _default: {
     terminateProcessTree: typeof terminateProcessTree;
     terminateRecordedProcessPids: typeof terminateRecordedProcessPids;
     getSystemProtectionStatus: typeof getSystemProtectionStatus;
+    cleanupOldProcessMetricsFiles: typeof cleanupOldProcessMetricsFiles;
 };
 export = _default;

@@ -68,6 +68,7 @@ interface ResourceModuleSet {
         appendJsonlEvent(file: string, event: Record<string, unknown>): void;
     };
 }
+declare function cleanupOldProcessMetricFiles(systemRoot: string, now?: number): number;
 declare function normalizeMemoryRange(value: unknown): string;
 declare function collectMemoryHistory(mods: ResourceModuleSet, range: string): {
     ok: boolean;
@@ -77,6 +78,7 @@ declare function collectMemoryHistory(mods: ResourceModuleSet, range: string): {
     dashboardSampleIntervalMs: number;
     workerSampleIntervalMs: number;
     uiRefreshMs: number;
+    retentionMs: number;
     pointCount: number;
     parsedLineCount: number;
     fileCount: number;
@@ -124,5 +126,6 @@ declare const _default: {
     collectMemoryHistory: typeof collectMemoryHistory;
     normalizeMemoryRange: typeof normalizeMemoryRange;
     getCachedMemoryHistory: typeof getCachedMemoryHistory;
+    cleanupOldProcessMetricFiles: typeof cleanupOldProcessMetricFiles;
 };
 export = _default;

@@ -75,17 +75,25 @@
 
       <section class="card resource-precompute-card">
         <h2>日报预计算</h2>
+        <input
+          v-model="precomputeQuery"
+          class="precompute-search"
+          type="search"
+          inputmode="numeric"
+          placeholder="搜索群号"
+          aria-label="搜索日报预计算群号"
+        />
         <div class="resource-metric-row"><span>coverage</span><b>{{ numberValue(precompute.coverageCount) }}</b></div>
         <div class="resource-metric-row"><span>slots</span><b>{{ numberValue(precompute.slotCount) }}</b></div>
-        <div v-if="coverage.length" class="resource-list compact">
-          <div v-for="item in coverage" :key="coverageKey(item)" class="resource-row">
+        <div v-if="filteredCoverage.length" class="resource-list compact">
+          <div v-for="item in filteredCoverage" :key="coverageKey(item)" class="resource-row">
             <div>
               <b>{{ display(item.channelKey) }}</b>
               <small>{{ percentLabel(item.coverageRate) }} · {{ display(item.updatedAt) }}</small>
             </div>
           </div>
         </div>
-        <div v-else class="resource-empty">暂无 coverage</div>
+        <div v-else class="resource-empty">{{ coverage.length ? '未找到匹配群号' : '暂无 coverage' }}</div>
       </section>
 
       <section class="card memory-chart-card">
@@ -222,6 +230,7 @@ export default {
     const memoryHistory = ref<JsonRecord[]>([])
     const memoryRange = ref('5m')
     const memoryMeta = ref<JsonRecord>({})
+    const precomputeQuery = ref('')
     const message = ref<MessageState>({ type: 'info', text: '' })
     const lastRefresh = ref(0)
     const loading = ref(false)
@@ -252,6 +261,16 @@ export default {
     const media = computed(() => asRecord(status.value.media))
     const precompute = computed(() => asRecord(status.value.precompute))
     const coverage = computed(() => asArray<JsonRecord>(precompute.value.coverage))
+    const normalizedPrecomputeQuery = computed(() => precomputeQuery.value.trim().toLowerCase())
+    const filteredCoverage = computed(() => {
+      const query = normalizedPrecomputeQuery.value
+      if (!query) return coverage.value
+      return coverage.value.filter(item => [
+        item.channelKey,
+        item.date,
+        item.file,
+      ].some(value => String(value || '').toLowerCase().includes(query)))
+    })
     const memoryLabel = computed(() => {
       const available = status.value.memAvailableMb
       const total = status.value.memTotalMb
@@ -506,6 +525,7 @@ export default {
       memoryRange,
       memoryRangeOptions,
       memoryMeta,
+      precomputeQuery,
       message,
       loading,
       loadingTasks,
@@ -516,6 +536,7 @@ export default {
       media,
       precompute,
       coverage,
+      filteredCoverage,
       memoryLabel,
       memorySampleLabel,
       memoryCurrentLabel,
@@ -603,6 +624,29 @@ export default {
 
 .resource-precompute-card {
   grid-column: 1;
+}
+
+.precompute-search {
+  width: 100%;
+  min-height: 34px;
+  margin: 0 0 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.precompute-search::placeholder {
+  color: var(--text3);
+}
+
+.precompute-search:focus {
+  border-color: color-mix(in srgb, var(--accent) 64%, var(--border));
+  box-shadow: 0 0 0 3px var(--accentDim);
 }
 
 .memory-chart-card {

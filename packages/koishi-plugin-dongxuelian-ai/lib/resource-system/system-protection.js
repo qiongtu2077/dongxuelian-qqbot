@@ -10,16 +10,123 @@ const { spawnSync } = require('child_process');
 const { DATA_DIR } = require('../core/constants');
 const { appendJsonlEvent, ensureDir, readRecentJsonlEvents } = require('../resource-common/files');
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot');
+// Parse a bounded positive integer from env/options and fall back on invalid values.
+function parseBoundedPositiveInt(value, fallback, min, max) {
+    const parsed = parseInt(String(value), 10);
+    if (!Number.isFinite(parsed))
+        return fallback;
+    return Math.max(min, Math.min(max, parsed));
+}
 const RESOURCE_SYSTEM_ROOT = path.join(DATA_DIR, 'resource-system');
+const PROCESS_METRICS_FILE_RE = /^process-metrics-\d{4}-\d{2}-\d{2}\.jsonl$/;
+const PROCESS_METRICS_RETENTION_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_RETENTION_HOURS, 72, 1, 24 * 30) * 60 * 60 * 1000;
+const PROCESS_METRICS_CLEANUP_INTERVAL_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_CLEANUP_INTERVAL_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000);
 const DEFAULT_WORKER_RSS_LIMITS = {
     'daily-worker': Number(process.env.RESOURCE_DAILY_WORKER_RSS_MB || 900),
     'agent-worker': Number(process.env.RESOURCE_AGENT_WORKER_RSS_MB || 900),
     'media-worker': Number(process.env.RESOURCE_MEDIA_WORKER_RSS_MB || 650),
 };
+let lastProcessMetricsCleanupAt = 0;
 // 返回当天系统事件文件路径。
 function systemEventFile(prefix, date = new Date()) {
     const stamp = date.toISOString().slice(0, 10);
     return path.join(RESOURCE_SYSTEM_ROOT, `${prefix}-${stamp}.jsonl`);
+}
+// 裁剪跨越保留边界的 metrics 文件，只保留窗口内 JSONL 行。
+function trimProcessMetricsFile(file, cutoff) {
+    let lines = [];
+    try {
+        lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean);
+    }
+    catch {
+        return false;
+    }
+    const kept = [];
+    let changed = false;
+    for (const line of lines) {
+        const normalizedLine = line.replace(/^\uFEFF/, '');
+        let item;
+        try {
+            item = JSON.parse(normalizedLine);
+        }
+        catch {
+            kept.push(line);
+            continue;
+        }
+        const ts = Date.parse(String(item.createdAt || ''));
+        if (Number.isFinite(ts) && ts < cutoff) {
+            changed = true;
+            continue;
+        }
+        kept.push(normalizedLine);
+    }
+    if (!changed)
+        return false;
+    if (!kept.length) {
+        try {
+            fs.unlinkSync(file);
+        }
+        catch {
+            return false;
+        }
+        return true;
+    }
+    const temp = `${file}.${process.pid}.${Date.now()}.retention.tmp`;
+    try {
+        fs.writeFileSync(temp, `${kept.join('\n')}\n`, 'utf8');
+        fs.renameSync(temp, file);
+        return true;
+    }
+    catch {
+        try {
+            fs.unlinkSync(temp);
+        }
+        catch { /* 清理失败不影响采样写入。 */ }
+        return false;
+    }
+}
+// 清理超过保留时间的 process-metrics 文件；只处理白名单文件名。
+function cleanupOldProcessMetricsFiles(now = Date.now()) {
+    try {
+        const entries = fs.readdirSync(RESOURCE_SYSTEM_ROOT, { withFileTypes: true });
+        const cutoff = now - PROCESS_METRICS_RETENTION_MS;
+        let changed = 0;
+        for (const entry of entries) {
+            if (!entry.isFile() || !PROCESS_METRICS_FILE_RE.test(entry.name))
+                continue;
+            const stamp = entry.name.slice('process-metrics-'.length, 'process-metrics-YYYY-MM-DD'.length);
+            const fileDay = Date.parse(`${stamp}T00:00:00.000Z`);
+            if (!Number.isFinite(fileDay))
+                continue;
+            const fileEnd = fileDay + 24 * 60 * 60 * 1000;
+            const file = path.join(RESOURCE_SYSTEM_ROOT, entry.name);
+            if (fileEnd <= cutoff) {
+                try {
+                    fs.unlinkSync(file);
+                    changed += 1;
+                }
+                catch {
+                    /* 单个旧文件清理失败不影响采样写入。 */
+                }
+                continue;
+            }
+            if (fileDay >= cutoff)
+                continue;
+            if (trimProcessMetricsFile(file, cutoff))
+                changed += 1;
+        }
+        return changed;
+    }
+    catch {
+        return 0;
+    }
+}
+// 节流执行 metrics 清理，避免 worker 高频采样时重复扫描目录。
+function cleanupOldProcessMetricsFilesThrottled(now = Date.now()) {
+    if (now - lastProcessMetricsCleanupAt < PROCESS_METRICS_CLEANUP_INTERVAL_MS)
+        return;
+    lastProcessMetricsCleanupAt = now;
+    cleanupOldProcessMetricsFiles(now);
 }
 // 读取当前进程 RSS，单位 MB。
 function readCurrentProcessRssMb() {
@@ -292,6 +399,7 @@ function checkWorkerMemoryLimit(workerName, limitMb) {
 // 采集轻量系统指标并落盘。
 function collectProcessMetrics(extra = {}) {
     ensureDir(RESOURCE_SYSTEM_ROOT);
+    cleanupOldProcessMetricsFilesThrottled();
     const mem = readLinuxMeminfo();
     const metrics = {
         event: 'process_metrics',
@@ -345,4 +453,5 @@ module.exports = {
     terminateProcessTree,
     terminateRecordedProcessPids,
     getSystemProtectionStatus,
+    cleanupOldProcessMetricsFiles,
 };
