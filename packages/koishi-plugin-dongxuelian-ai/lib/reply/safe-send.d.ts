@@ -45,6 +45,7 @@ interface SendOptions {
     forceQuote?: boolean;
     quoteMessageId?: string | number;
     personaName?: string;
+    allowRestrictedFallback?: boolean;
     randomFreshness?: {
         channelKey: string;
         triggerMessageVersion: number;
@@ -57,6 +58,9 @@ interface SendOptions {
     };
     [key: string]: unknown;
 }
+interface SafeSendRareVoiceOptions {
+    allowRestrictedFallback?: boolean;
+}
 type ResolveBot = (() => BotLike | null | undefined) | null;
 type FreshnessChecker = ((isRandom: boolean, sendOptions: SendOptions) => boolean) | null;
 declare function logStaleRandomSkip(ctx: SafeSendContext, stage: string, options?: SendOptions): void;
@@ -66,7 +70,7 @@ declare function canSendDuringSafeSendWindow(ctx: SafeSendContext, session: Safe
 declare function safeSendRepeat(ctx: SafeSendContext, session: SafeSendSessionLike, reply: string): Promise<boolean>;
 declare function safeSendReply(ctx: SafeSendContext, session: SafeSendSessionLike, reply: string, isRandom?: boolean, resolveBot?: ResolveBot, sendOptions?: SendOptions, freshnessChecker?: FreshnessChecker): Promise<void>;
 /** 尝试发送罕见固定语音；失败时返回 false 交给文字回复回退。 */
-declare function safeSendRareVoice(ctx: SafeSendContext, session: SafeSendSessionLike): Promise<boolean>;
+declare function safeSendRareVoice(ctx: SafeSendContext, session: SafeSendSessionLike, options?: SafeSendRareVoiceOptions): Promise<boolean>;
 declare const _default: {
     logStaleRandomSkip: typeof logStaleRandomSkip;
     safeSendRepeat: typeof safeSendRepeat;

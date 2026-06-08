@@ -27,6 +27,7 @@ interface ChatMeta {
     [key: string]: unknown;
 }
 interface RandomSendOptions {
+    allowRestrictedFallback?: boolean;
     [key: string]: unknown;
 }
 type ResolveBotFn = () => unknown;
