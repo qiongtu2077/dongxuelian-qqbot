@@ -323,7 +323,7 @@ function collectResourceEvents(mods, limit = RESOURCE_EVENT_LIMIT) {
     const events = [];
     const read = (dir, prefix, source) => {
         for (const event of mods.files.readRecentJsonlEvents(dir, prefix, limit)) {
-            const item = event && typeof event === 'object' ? event : {};
+            const item = event && typeof event === 'object' && !Array.isArray(event) ? event : {};
             events.push({
                 ...item,
                 source,
@@ -385,6 +385,9 @@ function buildResourceStatus(mods) {
         events: collectResourceEvents(mods, 40),
     };
 }
+function getErrorMessage(error) {
+    return error instanceof Error ? error.message : String(error || 'unknown error');
+}
 // GET /resource/memory-history：返回按区间聚合后的内存折线图数据。
 function handleGetResourceMemoryHistory(req, res, pathname, url) {
     if (!requireAdmin(req, res))
@@ -394,7 +397,7 @@ function handleGetResourceMemoryHistory(req, res, pathname, url) {
         return json(res, getCachedMemoryHistory(loadResourceModules(), range));
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
     }
 }
 // GET /resource/status：返回资源中心总览。
@@ -403,7 +406,7 @@ function handleGetResourceStatus(req, res) {
         return json(res, buildResourceStatus(loadResourceModules()));
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
     }
 }
 // GET /resource/tasks：返回脱敏任务列表。
@@ -414,12 +417,12 @@ function handleGetResourceTasks(req, res, pathname, url) {
         const mods = loadResourceModules();
         const status = String(url.searchParams.get('status') || '').trim();
         const limit = parsePositiveInt(url.searchParams.get('limit'), RESOURCE_TASK_LIMIT, 1, 500);
-        const statuses = status ? status.split(',').map(item => item.trim()).filter(Boolean) : undefined;
+        const statuses = status ? status.split(',').map((item) => item.trim()).filter(Boolean) : undefined;
         const tasks = mods.tasks.listResourceTasks({ statuses, limit }).map(sanitizeTask);
         return json(res, { ok: true, tasks });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
     }
 }
 // GET /resource/events：返回最近资源事件。
@@ -432,7 +435,7 @@ function handleGetResourceEvents(req, res, pathname, url) {
         return json(res, { ok: true, events: collectResourceEvents(mods, limit) });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
     }
 }
 // GET /resource/workers：返回 worker 心跳。
@@ -443,7 +446,7 @@ function handleGetResourceWorkers(req, res) {
         return json(res, { ok: true, workers: loadResourceModules().tasks.listWorkerStates() });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
     }
 }
 // GET /resource/media：返回媒体背压状态。
@@ -454,7 +457,7 @@ function handleGetResourceMedia(req, res) {
         return json(res, { ok: true, media: loadResourceModules().media.getMediaBackpressureStatus() });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
     }
 }
 // GET /resource/precompute：返回日报预计算状态。
@@ -465,7 +468,7 @@ function handleGetResourcePrecompute(req, res) {
         return json(res, { ok: true, precompute: loadResourceModules().precompute.getPrecomputeSummary() });
     }
     catch (e) {
-        return json(res, { ok: false, message: e.message }, 500);
+        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
     }
 }
 // POST /resource/cancel：取消 pending/deferred 任务。
@@ -482,7 +485,7 @@ function handlePostResourceCancel(req, res) {
             return json(res, { ok, message: ok ? '任务已取消' : '只能取消 pending/deferred 任务' }, ok ? 200 : 404);
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
@@ -499,7 +502,7 @@ function handlePostResourceReclaimStale(req, res) {
             return json(res, { ok: true, reclaimed, status: mods.gate.getResourceGateStatus(staleMs) });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
@@ -520,7 +523,7 @@ function handlePostResourceMaintenance(req, res) {
             return json(res, { ok: true, enabled: !!data.enabled, message: data.enabled ? '维护模式已开启' : '维护模式已关闭' });
         }
         catch (e) {
-            return json(res, { ok: false, message: e.message }, 400);
+            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
         }
     });
 }
