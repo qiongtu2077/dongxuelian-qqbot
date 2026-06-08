@@ -47,64 +47,10 @@
               <div v-else class="resource-empty">暂无独占任务</div>
             </div>
           </div>
-
-          <div class="memory-chart-panel">
-            <div class="memory-chart-head">
-              <div>
-                <h2>内存走势</h2>
-                <div class="resource-subline">{{ memorySampleLabel }}</div>
-              </div>
-              <select v-model="memoryRange" class="memory-range-select" @change="loadMemoryHistory">
-                <option v-for="option in memoryRangeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-              </select>
-            </div>
-            <div class="memory-chart-wrap">
-              <svg class="memory-chart" viewBox="0 0 640 220" preserveAspectRatio="none" role="img" aria-label="可用内存折线图">
-                <line
-                  v-for="tick in memoryYTicks"
-                  :key="tick.y"
-                  x1="44"
-                  :y1="tick.y"
-                  x2="624"
-                  :y2="tick.y"
-                  class="memory-chart-grid"
-                />
-                <text
-                  v-for="tick in memoryYTicks"
-                  :key="'label-' + tick.y"
-                  x="8"
-                  :y="tick.y + 4"
-                  class="memory-chart-label"
-                >{{ tick.label }}</text>
-                <polyline
-                  v-if="memoryPolyline"
-                  :points="memoryPolyline"
-                  class="memory-chart-line"
-                />
-                <circle
-                  v-for="point in memoryChartPoints"
-                  :key="point.ts"
-                  :cx="point.x"
-                  :cy="point.y"
-                  r="3"
-                  class="memory-chart-dot"
-                />
-              </svg>
-              <div v-if="!memoryHistory.length" class="memory-chart-empty">
-                {{ loadingMemory ? '加载中...' : '暂无内存采样' }}
-              </div>
-            </div>
-            <div class="memory-chart-meta">
-              <span>点数 {{ memoryHistory.length }}</span>
-              <span>当前 {{ memoryCurrentLabel }}</span>
-              <span>最低 {{ memoryMinLabel }}</span>
-              <span>最高 {{ memoryMaxLabel }}</span>
-            </div>
-          </div>
         </div>
       </section>
 
-      <section class="card">
+      <section class="card resource-worker-card">
         <h2>worker</h2>
         <div v-if="workers.length" class="resource-list">
           <div v-for="worker in workers" :key="display(worker.name)" class="resource-row">
@@ -118,7 +64,7 @@
         <div v-else class="resource-empty">暂无 worker 心跳</div>
       </section>
 
-      <section class="card">
+      <section class="card resource-media-card">
         <h2>媒体背压</h2>
         <div class="resource-metric-row"><span>图片 pending</span><b>{{ numberValue(media.imagePending) }}</b></div>
         <div class="resource-metric-row"><span>文件 pending</span><b>{{ numberValue(media.filePending) }}</b></div>
@@ -127,7 +73,7 @@
         <div class="resource-metric-row"><span>dropped</span><b>{{ numberValue(media.droppedCount) }}</b></div>
       </section>
 
-      <section class="card">
+      <section class="card resource-precompute-card">
         <h2>日报预计算</h2>
         <div class="resource-metric-row"><span>coverage</span><b>{{ numberValue(precompute.coverageCount) }}</b></div>
         <div class="resource-metric-row"><span>slots</span><b>{{ numberValue(precompute.slotCount) }}</b></div>
@@ -140,6 +86,60 @@
           </div>
         </div>
         <div v-else class="resource-empty">暂无 coverage</div>
+      </section>
+
+      <section class="card memory-chart-card">
+        <div class="memory-chart-head">
+          <div>
+            <h2>内存走势</h2>
+            <div class="resource-subline">{{ memorySampleLabel }}</div>
+          </div>
+          <select v-model="memoryRange" class="memory-range-select" @change="loadMemoryHistory">
+            <option v-for="option in memoryRangeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+        </div>
+        <div class="memory-chart-wrap">
+          <svg class="memory-chart" viewBox="0 0 640 220" preserveAspectRatio="none" role="img" aria-label="可用内存折线图">
+            <line
+              v-for="tick in memoryYTicks"
+              :key="tick.y"
+              x1="44"
+              :y1="tick.y"
+              x2="624"
+              :y2="tick.y"
+              class="memory-chart-grid"
+            />
+            <text
+              v-for="tick in memoryYTicks"
+              :key="'label-' + tick.y"
+              x="8"
+              :y="tick.y + 4"
+              class="memory-chart-label"
+            >{{ tick.label }}</text>
+            <polyline
+              v-if="memoryPolyline"
+              :points="memoryPolyline"
+              class="memory-chart-line"
+            />
+            <circle
+              v-for="point in memoryChartPoints"
+              :key="point.ts"
+              :cx="point.x"
+              :cy="point.y"
+              r="3"
+              class="memory-chart-dot"
+            />
+          </svg>
+          <div v-if="!memoryHistory.length" class="memory-chart-empty">
+            {{ loadingMemory ? '加载中...' : '暂无内存采样' }}
+          </div>
+        </div>
+        <div class="memory-chart-meta">
+          <span>点数 {{ memoryHistory.length }}</span>
+          <span>当前 {{ memoryCurrentLabel }}</span>
+          <span>最低 {{ memoryMinLabel }}</span>
+          <span>最高 {{ memoryMaxLabel }}</span>
+        </div>
       </section>
     </div>
 
@@ -575,24 +575,39 @@ export default {
 
 .resource-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 16px;
-}
-
-.resource-summary {
-  grid-column: span 2;
-}
-
-.resource-summary-layout {
-  display: grid;
-  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+  grid-template-columns: minmax(250px, 0.9fr) minmax(250px, 0.9fr) minmax(270px, 1fr);
   gap: 16px;
   align-items: stretch;
 }
 
-.resource-summary-main,
-.memory-chart-panel {
+.resource-summary {
+  grid-column: 1;
+}
+
+.resource-summary-layout {
+  display: block;
   min-width: 0;
+}
+
+.resource-summary-main {
+  min-width: 0;
+}
+
+.resource-worker-card {
+  grid-column: 2;
+}
+
+.resource-media-card {
+  grid-column: 3;
+}
+
+.resource-precompute-card {
+  grid-column: 1;
+}
+
+.memory-chart-card {
+  grid-column: 2 / 4;
+  min-height: 320px;
 }
 
 .resource-kpis {
@@ -630,13 +645,6 @@ export default {
 .state-red,
 .state-black { color: var(--danger) !important }
 
-.memory-chart-panel {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--input);
-  padding: 12px;
-}
-
 .memory-chart-head {
   display: flex;
   align-items: flex-start;
@@ -656,7 +664,7 @@ export default {
 
 .memory-chart-wrap {
   position: relative;
-  height: 220px;
+  height: 236px;
   min-width: 0;
 }
 
@@ -859,6 +867,24 @@ export default {
   overflow-wrap: anywhere;
 }
 
+@media (max-width: 1100px) {
+  .resource-grid {
+    grid-template-columns: repeat(2, minmax(250px, 1fr));
+  }
+
+  .resource-summary,
+  .resource-worker-card,
+  .resource-media-card,
+  .resource-precompute-card,
+  .memory-chart-card {
+    grid-column: auto;
+  }
+
+  .memory-chart-card {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (max-width: 760px) {
   .resource-toolbar,
   .resource-card-head {
@@ -870,11 +896,18 @@ export default {
     justify-content: flex-start;
   }
 
-  .resource-summary {
-    grid-column: span 1;
+  .resource-grid {
+    grid-template-columns: 1fr;
   }
 
-  .resource-summary-layout,
+  .resource-summary,
+  .resource-worker-card,
+  .resource-media-card,
+  .resource-precompute-card,
+  .memory-chart-card {
+    grid-column: auto;
+  }
+
   .memory-chart-meta {
     grid-template-columns: 1fr;
   }
