@@ -100,6 +100,7 @@ function cleanupOldProcessMetricFiles(systemRoot, now = Date.now()) {
         return changed;
     }
     catch {
+        /* non-critical: missing metrics directory means the history view has no samples yet. */
         return 0;
     }
 }
@@ -110,6 +111,7 @@ function trimProcessMetricFile(file, cutoff) {
         lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean);
     }
     catch {
+        /* non-critical: unreadable metrics files are skipped so status requests still work. */
         return false;
     }
     const kept = [];
@@ -121,6 +123,7 @@ function trimProcessMetricFile(file, cutoff) {
             item = JSON.parse(normalizedLine);
         }
         catch {
+            /* non-critical: keep malformed retention lines instead of deleting possibly useful data. */
             kept.push(line);
             continue;
         }
@@ -137,7 +140,7 @@ function trimProcessMetricFile(file, cutoff) {
         try {
             fs.unlinkSync(file);
         }
-        catch {
+        catch { /* non-critical: retention retry can remove the empty metrics file later. */
             return false;
         }
         return true;
@@ -149,6 +152,7 @@ function trimProcessMetricFile(file, cutoff) {
         return true;
     }
     catch {
+        /* non-critical: failed retention rewrite should leave the previous metrics file in place. */
         try {
             fs.unlinkSync(temp);
         }
@@ -229,6 +233,7 @@ function readJsonlTailLines(file, maxBytes = MEMORY_HISTORY_MAX_FULL_FILE_BYTES)
         }
     }
     catch {
+        /* non-critical: Dashboard status remains usable without an auxiliary memory sample. */
         return [];
     }
 }
@@ -254,6 +259,7 @@ function readJsonlChunkLines(file, size, offset) {
         }
     }
     catch {
+        /* non-critical: Dashboard history sampling skips unreadable file chunks. */
         return [];
     }
 }
@@ -266,13 +272,14 @@ function readSampledJsonlLines(file, rangeMs, isEndFile) {
             return [];
     }
     catch {
+        /* non-critical: Dashboard history treats missing or unreadable metrics files as empty. */
         return [];
     }
     if (stat.size <= MEMORY_HISTORY_MAX_FULL_FILE_BYTES) {
         try {
             return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean);
         }
-        catch {
+        catch { /* non-critical: Dashboard history skips transiently unreadable small metrics files. */
             return [];
         }
     }
@@ -317,7 +324,7 @@ function collectMemoryHistory(mods, range) {
             try {
                 item = JSON.parse(line);
             }
-            catch {
+            catch { /* non-critical: malformed metrics lines are ignored. */
                 continue;
             }
             parsedLineCount += 1;
@@ -507,6 +514,8 @@ function handleGetResourceMemoryHistory(req, res, pathname, url) {
 }
 // GET /resource/status：返回资源中心总览。
 function handleGetResourceStatus(req, res) {
+    if (!requireAdmin(req, res))
+        return;
     try {
         return json(res, buildResourceStatus(loadResourceModules()));
     }

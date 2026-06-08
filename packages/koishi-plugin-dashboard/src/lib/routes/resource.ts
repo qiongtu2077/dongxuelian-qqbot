@@ -191,6 +191,7 @@ function cleanupOldProcessMetricFiles(systemRoot: string, now = Date.now()): num
     }
     return changed
   } catch {
+    /* non-critical: missing metrics directory means the history view has no samples yet. */
     return 0
   }
 }
@@ -201,6 +202,7 @@ function trimProcessMetricFile(file: string, cutoff: number): boolean {
   try {
     lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean)
   } catch {
+    /* non-critical: unreadable metrics files are skipped so status requests still work. */
     return false
   }
   const kept: string[] = []
@@ -209,6 +211,7 @@ function trimProcessMetricFile(file: string, cutoff: number): boolean {
     let item
     const normalizedLine = line.replace(/^\uFEFF/, '')
     try { item = JSON.parse(normalizedLine) } catch {
+      /* non-critical: keep malformed retention lines instead of deleting possibly useful data. */
       kept.push(line)
       continue
     }
@@ -221,7 +224,7 @@ function trimProcessMetricFile(file: string, cutoff: number): boolean {
   }
   if (!changed) return false
   if (!kept.length) {
-    try { fs.unlinkSync(file) } catch { return false }
+    try { fs.unlinkSync(file) } catch { /* non-critical: retention retry can remove the empty metrics file later. */ return false }
     return true
   }
   const temp = `${file}.${process.pid}.${Date.now()}.retention.tmp`
@@ -230,6 +233,7 @@ function trimProcessMetricFile(file: string, cutoff: number): boolean {
     fs.renameSync(temp, file)
     return true
   } catch {
+    /* non-critical: failed retention rewrite should leave the previous metrics file in place. */
     try {
       fs.unlinkSync(temp)
     } catch {
@@ -307,6 +311,7 @@ function readJsonlTailLines(file: string, maxBytes = MEMORY_HISTORY_MAX_FULL_FIL
       fs.closeSync(fd)
     }
   } catch {
+    /* non-critical: Dashboard status remains usable without an auxiliary memory sample. */
     return []
   }
 }
@@ -330,6 +335,7 @@ function readJsonlChunkLines(file: string, size: number, offset: number): string
       fs.closeSync(fd)
     }
   } catch {
+    /* non-critical: Dashboard history sampling skips unreadable file chunks. */
     return []
   }
 }
@@ -341,10 +347,11 @@ function readSampledJsonlLines(file: string, rangeMs: number, isEndFile: boolean
     stat = fs.statSync(file)
     if (!stat.isFile()) return []
   } catch {
+    /* non-critical: Dashboard history treats missing or unreadable metrics files as empty. */
     return []
   }
   if (stat.size <= MEMORY_HISTORY_MAX_FULL_FILE_BYTES) {
-    try { return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean) } catch { return [] }
+    try { return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean) } catch { /* non-critical: Dashboard history skips transiently unreadable small metrics files. */ return [] }
   }
   if (isEndFile && rangeMs <= 60 * 60 * 1000) return readJsonlTailLines(file, MEMORY_HISTORY_MAX_FULL_FILE_BYTES * 2)
 
@@ -393,7 +400,7 @@ function collectMemoryHistory(mods: ResourceModuleSet, range: string) {
     const lines = readSampledJsonlLines(file, rangeMs, isEndFile)
     for (const line of lines) {
       let item
-      try { item = JSON.parse(line) } catch { continue }
+      try { item = JSON.parse(line) } catch { /* non-critical: malformed metrics lines are ignored. */ continue }
       parsedLineCount += 1
       const ts = Date.parse(String(item.createdAt || ''))
       if (!Number.isFinite(ts) || ts < startMs || ts > nowMs) continue
@@ -584,6 +591,7 @@ function handleGetResourceMemoryHistory(req: IncomingMessage, res: ServerRespons
 
 // GET /resource/status：返回资源中心总览。
 function handleGetResourceStatus(req: IncomingMessage, res: ServerResponse) {
+  if (!requireAdmin(req, res)) return
   try {
     return json(res, buildResourceStatus(loadResourceModules()))
   } catch (e) {

@@ -39,6 +39,7 @@ function trimProcessMetricsFile(file, cutoff) {
         lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean);
     }
     catch {
+        /* non-critical: metrics retention should skip unreadable files and keep protection checks running. */
         return false;
     }
     const kept = [];
@@ -50,6 +51,7 @@ function trimProcessMetricsFile(file, cutoff) {
             item = JSON.parse(normalizedLine);
         }
         catch {
+            /* non-critical: keep malformed retention lines instead of deleting possibly useful data. */
             kept.push(line);
             continue;
         }
@@ -66,7 +68,7 @@ function trimProcessMetricsFile(file, cutoff) {
         try {
             fs.unlinkSync(file);
         }
-        catch {
+        catch { /* non-critical: retention retry can handle the remaining empty metrics file later. */
             return false;
         }
         return true;
@@ -78,6 +80,7 @@ function trimProcessMetricsFile(file, cutoff) {
         return true;
     }
     catch {
+        /* non-critical: failed retention rewrite should leave the previous metrics file in place. */
         try {
             fs.unlinkSync(temp);
         }
@@ -118,6 +121,7 @@ function cleanupOldProcessMetricsFiles(now = Date.now()) {
         return changed;
     }
     catch {
+        /* non-critical: missing metrics directory means there are no old samples to clean. */
         return 0;
     }
 }
@@ -134,6 +138,7 @@ function readCurrentProcessRssMb() {
         return Math.round((process.memoryUsage().rss || 0) / 1024 / 1024);
     }
     catch {
+        /* non-critical: memoryUsage failure should only omit this process RSS sample. */
         return null;
     }
 }
@@ -179,6 +184,7 @@ function readLinuxProcessEntries() {
         entries = fs.readdirSync('/proc');
     }
     catch {
+        /* non-critical: /proc may be unavailable outside Linux-like environments. */
         return [];
     }
     const result = [];

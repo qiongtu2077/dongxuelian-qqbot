@@ -60,6 +60,7 @@ function trimProcessMetricsFile(file: string, cutoff: number): boolean {
   try {
     lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean)
   } catch {
+    /* non-critical: metrics retention should skip unreadable files and keep protection checks running. */
     return false
   }
   const kept: string[] = []
@@ -68,6 +69,7 @@ function trimProcessMetricsFile(file: string, cutoff: number): boolean {
     const normalizedLine = line.replace(/^\uFEFF/, '')
     let item
     try { item = JSON.parse(normalizedLine) } catch {
+      /* non-critical: keep malformed retention lines instead of deleting possibly useful data. */
       kept.push(line)
       continue
     }
@@ -80,7 +82,7 @@ function trimProcessMetricsFile(file: string, cutoff: number): boolean {
   }
   if (!changed) return false
   if (!kept.length) {
-    try { fs.unlinkSync(file) } catch { return false }
+    try { fs.unlinkSync(file) } catch { /* non-critical: retention retry can handle the remaining empty metrics file later. */ return false }
     return true
   }
   const temp = `${file}.${process.pid}.${Date.now()}.retention.tmp`
@@ -89,6 +91,7 @@ function trimProcessMetricsFile(file: string, cutoff: number): boolean {
     fs.renameSync(temp, file)
     return true
   } catch {
+    /* non-critical: failed retention rewrite should leave the previous metrics file in place. */
     try { fs.unlinkSync(temp) } catch { /* 清理失败不影响采样写入。 */ }
     return false
   }
@@ -121,6 +124,7 @@ function cleanupOldProcessMetricsFiles(now = Date.now()): number {
     }
     return changed
   } catch {
+    /* non-critical: missing metrics directory means there are no old samples to clean. */
     return 0
   }
 }
@@ -137,6 +141,7 @@ function readCurrentProcessRssMb(): number | null {
   try {
     return Math.round((process.memoryUsage().rss || 0) / 1024 / 1024)
   } catch {
+    /* non-critical: memoryUsage failure should only omit this process RSS sample. */
     return null
   }
 }
@@ -180,6 +185,7 @@ function readLinuxProcessEntries(): LinuxProcessEntry[] {
   try {
     entries = fs.readdirSync('/proc')
   } catch {
+    /* non-critical: /proc may be unavailable outside Linux-like environments. */
     return []
   }
   const result: LinuxProcessEntry[] = []
