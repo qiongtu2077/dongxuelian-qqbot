@@ -110,7 +110,8 @@ async function sendChatReplyFlow({ ctx, liveSession, channelKey, currentUserId, 
             logStaleRandomSkip(ctx, 'rare-voice', randomSendOptions);
             return;
         }
-        const rareVoiceSent = await safeSendRareVoice(ctx, liveSession);
+        const allowRestrictedFallback = randomSendOptions.allowRestrictedFallback === true;
+        const rareVoiceSent = await safeSendRareVoice(ctx, liveSession, { allowRestrictedFallback });
         if (rareVoiceSent)
             return;
     }

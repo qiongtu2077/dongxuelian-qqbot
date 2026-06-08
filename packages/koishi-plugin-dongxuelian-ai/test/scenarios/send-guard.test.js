@@ -191,6 +191,63 @@ async function run(t) {
     async send(message) { return message },
   }, 'random voice')
   t.check('scenario send guard blocks random voice while restricted', canSendVoiceDuringFreeze === false && voiceGateLogs.some(msg => /restricted, skipping non-text send/.test(msg)), JSON.stringify({ canSendVoiceDuringFreeze, voiceGateLogs }))
+  const directAtRareVoiceSent = []
+  const directAtRareVoiceSession = {
+    guildId: '10001',
+    channelId: '10001',
+    userId: '300000000',
+    selfId: '90000',
+    content: '<at id="90000"/> ping',
+    author: { id: '300000000' },
+    bot: { selfId: '90000', internal: {} },
+    event: { selfId: '90000', sender: { role: 'member' } },
+    async send(message) {
+      directAtRareVoiceSent.push(String(message))
+      return message
+    },
+  }
+  const directAtRareVoiceHandled = await safeSend.safeSendRareVoice(voiceGateCtx, directAtRareVoiceSession)
+  t.checkEqual('scenario rare voice restriction lets direct-at fall back to text', directAtRareVoiceHandled, false)
+  await safeSend.safeSendReply(voiceGateCtx, directAtRareVoiceSession, 'direct-at fallback text')
+  checkSentIncludes(t, 'scenario direct-at rare voice fallback sends restricted notice', { sent: directAtRareVoiceSent }, '我被盯上了，有内鬼终止交易')
+  checkSentExcludes(t, 'scenario direct-at rare voice fallback does not send original text during restriction', { sent: directAtRareVoiceSent }, 'direct-at fallback text')
+  const explicitRareVoiceSent = []
+  const explicitRareVoiceSession = {
+    guildId: '10001',
+    channelId: '10001',
+    userId: '300000001',
+    selfId: '90000',
+    content: '莲莲 ping',
+    author: { id: '300000001' },
+    bot: { selfId: '90000', internal: {} },
+    event: { selfId: '90000', sender: { role: 'member' } },
+    async send(message) {
+      explicitRareVoiceSent.push(String(message))
+      return message
+    },
+  }
+  const explicitRareVoiceHandled = await safeSend.safeSendRareVoice(voiceGateCtx, explicitRareVoiceSession, { allowRestrictedFallback: true })
+  t.checkEqual('scenario rare voice restriction lets explicit mention fall back to text', explicitRareVoiceHandled, false)
+  await safeSend.safeSendReply(voiceGateCtx, explicitRareVoiceSession, 'explicit fallback text', false, null, { allowRestrictedFallback: true })
+  checkSentIncludes(t, 'scenario explicit rare voice fallback sends restricted notice', { sent: explicitRareVoiceSent }, '我被盯上了，有内鬼终止交易')
+  checkSentExcludes(t, 'scenario explicit rare voice fallback does not send original text during restriction', { sent: explicitRareVoiceSent }, 'explicit fallback text')
+  const randomRareVoiceSent = []
+  const randomRareVoiceHandled = await safeSend.safeSendRareVoice(voiceGateCtx, {
+    guildId: '10001',
+    channelId: '10001',
+    userId: '300000002',
+    selfId: '90000',
+    content: 'ordinary random line',
+    author: { id: '300000002' },
+    bot: { selfId: '90000', internal: {} },
+    event: { selfId: '90000', sender: { role: 'member' } },
+    async send(message) {
+      randomRareVoiceSent.push(String(message))
+      return message
+    },
+  }, { allowRestrictedFallback: false })
+  t.checkEqual('scenario rare voice restriction treats random voice as handled', randomRareVoiceHandled, true)
+  t.checkEqual('scenario random rare voice restriction stays silent', randomRareVoiceSent.length, 0)
   safeSend.resetSendFailState()
 }
 

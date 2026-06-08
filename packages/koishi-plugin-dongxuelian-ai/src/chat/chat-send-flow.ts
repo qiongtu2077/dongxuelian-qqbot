@@ -43,6 +43,7 @@ interface ChatMeta {
 }
 
 interface RandomSendOptions {
+  allowRestrictedFallback?: boolean
   [key: string]: unknown
 }
 
@@ -204,7 +205,8 @@ async function sendChatReplyFlow({
       logStaleRandomSkip(ctx, 'rare-voice', randomSendOptions)
       return
     }
-    const rareVoiceSent = await safeSendRareVoice(ctx, liveSession as { send(message: string): Promise<unknown> | unknown })
+    const allowRestrictedFallback = randomSendOptions.allowRestrictedFallback === true
+    const rareVoiceSent = await safeSendRareVoice(ctx, liveSession as { send(message: string): Promise<unknown> | unknown }, { allowRestrictedFallback })
     if (rareVoiceSent) return
   }
   return safeSendReplyWithFreshness(ctx, liveSession as SessionLike & { send(message: string): Promise<unknown> | unknown }, finalReply, randomTriggered, resolveBot, {
