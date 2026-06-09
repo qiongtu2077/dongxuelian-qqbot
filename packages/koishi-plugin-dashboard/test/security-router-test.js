@@ -264,6 +264,33 @@ function testResourceMemoryHistoryRequiresAccessOnly() {
   assert.strictEqual(parseJsonResponse(res).ok, true)
 }
 
+// Verifies memory history exposes used-memory fields while keeping available-memory fields.
+function testResourceMemoryHistoryIncludesUsedMemory() {
+  resetDataDir()
+  const resourceRoutes = require('../lib/routes/resource')
+  const systemRoot = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'resource-system')
+  fs.mkdirSync(systemRoot, { recursive: true })
+  const now = new Date()
+  const stamp = now.toISOString().slice(0, 10)
+  const sample = {
+    createdAt: now.toISOString(),
+    event: 'process_metrics',
+    memAvailableMb: 600,
+    memTotalMb: 1000,
+    rssMb: 42,
+    source: 'unit-test',
+  }
+  fs.writeFileSync(path.join(systemRoot, `process-metrics-${stamp}.jsonl`), JSON.stringify(sample) + '\n', 'utf8')
+
+  const payload = resourceRoutes.collectMemoryHistory({ system: { RESOURCE_SYSTEM_ROOT: systemRoot } }, '1m')
+  assert.strictEqual(payload.ok, true)
+  assert.strictEqual(payload.pointCount, 1)
+  assert.strictEqual(payload.points[0].memAvailableMb, 600)
+  assert.strictEqual(payload.points[0].memUsedMb, 400)
+  assert.strictEqual(payload.points[0].minUsedMb, 400)
+  assert.strictEqual(payload.points[0].maxUsedMb, 400)
+}
+
 // Verifies resource center read APIs require only normal access while writes stay admin-gated.
 async function testResourceReadApisRequireAccessOnly() {
   process.env.GLOBAL_LOCAL_MODE = ''
@@ -303,6 +330,7 @@ async function run() {
   testContentSecurityPolicyAllowsPreviewAudio()
   testResourceDiskUsageShape()
   testResourceMemoryHistoryRequiresAccessOnly()
+  testResourceMemoryHistoryIncludesUsedMemory()
   await testResourceReadApisRequireAccessOnly()
 
   fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })

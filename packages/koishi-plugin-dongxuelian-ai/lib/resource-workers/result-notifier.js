@@ -86,6 +86,15 @@ function hasHardSearchFailureSignal(result) {
     }
     return AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE.test(parts.join('\n'));
 }
+// 判断任务是否来自普通聊天自动触发的 heavy tool。
+function isChatHeavyToolTask(task) {
+    const payload = task && typeof task.payload === 'object' && task.payload ? task.payload : {};
+    return String(payload.entry || '') === 'chat-heavy-tool';
+}
+// 判断 result 是否有值得发给群的正文。
+function hasAgentSendableText(result) {
+    return !!String(result.reply || result.message || '').trim();
+}
 // 通过 Koishi bot 或 OneBot internal API 发送文字。
 async function sendNotifierText(bot, target, text) {
     if (!bot)
@@ -177,7 +186,18 @@ function createAgentTaskSender(options = {}) {
         const target = String(notify.channelKey || task?.channelKey || '');
         if (!target)
             throw new Error('agent task notify target is empty');
-        await sendNotifierText(bot, target, buildAgentTaskTextMessage(result, task));
+        if (isChatHeavyToolTask(task) && !hasAgentSendableText(result)) {
+            if (logger)
+                logger.info(`chat-heavy-tool notify skipped empty result: task=${task.id}, target=${target}`);
+            return true;
+        }
+        const text = buildAgentTaskTextMessage(result, task);
+        if (!text.trim()) {
+            if (logger)
+                logger.info(`agent task notify skipped empty text: task=${task.id}, target=${target}`);
+            return true;
+        }
+        await sendNotifierText(bot, target, text);
         if (logger)
             logger.info(`agent task text notified: task=${task.id}, target=${target}`);
         return true;
@@ -261,6 +281,8 @@ async function notifyCompletedTasks(options = {}) {
 module.exports = {
     readTaskResult,
     hasHardSearchFailureSignal,
+    isChatHeavyToolTask,
+    hasAgentSendableText,
     buildAgentTaskTextMessage,
     createDailyReportSender,
     createAgentTaskSender,

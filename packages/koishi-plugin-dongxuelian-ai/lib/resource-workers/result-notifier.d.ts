@@ -46,6 +46,8 @@ interface ResourceResultSenderOptions {
 }
 declare function readTaskResult(taskId: string): ResultNotifierResult;
 declare function hasHardSearchFailureSignal(result: AgentNotifyResultLike): boolean;
+declare function isChatHeavyToolTask(task: ResultNotifierTaskLike | null | undefined): boolean;
+declare function hasAgentSendableText(result: ResultNotifierResult): boolean;
 declare function createDailyReportSender(options?: DailyReportSenderOptions): ResultNotifierSender;
 declare function buildAgentTaskTextMessage(result: ResultNotifierResult, task?: ResultNotifierTaskLike | null): string;
 declare function createAgentTaskSender(options?: ResourceResultSenderOptions): ResultNotifierSender;
@@ -55,6 +57,8 @@ declare function notifyCompletedTasks(options?: NotifyCompletedOptions): Promise
 declare const _default: {
     readTaskResult: typeof readTaskResult;
     hasHardSearchFailureSignal: typeof hasHardSearchFailureSignal;
+    isChatHeavyToolTask: typeof isChatHeavyToolTask;
+    hasAgentSendableText: typeof hasAgentSendableText;
     buildAgentTaskTextMessage: typeof buildAgentTaskTextMessage;
     createDailyReportSender: typeof createDailyReportSender;
     createAgentTaskSender: typeof createAgentTaskSender;

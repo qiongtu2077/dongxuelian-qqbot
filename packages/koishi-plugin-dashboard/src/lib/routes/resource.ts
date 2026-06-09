@@ -452,17 +452,29 @@ function collectMemoryHistory(mods: ResourceModuleSet, range: string) {
 
   const points = Array.from(buckets.values())
     .sort((a, b) => a.ts - b.ts)
-    .map(bucket => ({
-      ts: bucket.ts,
-      createdAt: new Date(bucket.ts).toISOString(),
-      memAvailableMb: Math.round(bucket.availableSum / Math.max(1, bucket.availableCount)),
-      minAvailableMb: Math.round(bucket.minAvailableMb),
-      maxAvailableMb: Math.round(bucket.maxAvailableMb),
-      memTotalMb: bucket.totalMb,
-      rssMb: bucket.rssCount ? Math.round(bucket.rssSum / bucket.rssCount) : null,
-      sampleCount: bucket.availableCount,
-      sources: Array.from(bucket.sources).slice(0, 8),
-    }))
+    .map(bucket => {
+      const memAvailableMb = Math.round(bucket.availableSum / Math.max(1, bucket.availableCount))
+      const minAvailableMb = Math.round(bucket.minAvailableMb)
+      const maxAvailableMb = Math.round(bucket.maxAvailableMb)
+      const total = bucket.totalMb
+      const memUsedMb = total === null ? null : Math.max(0, Math.round(total - memAvailableMb))
+      const minUsedMb = total === null ? null : Math.max(0, Math.round(total - maxAvailableMb))
+      const maxUsedMb = total === null ? null : Math.max(0, Math.round(total - minAvailableMb))
+      return {
+        ts: bucket.ts,
+        createdAt: new Date(bucket.ts).toISOString(),
+        memAvailableMb,
+        minAvailableMb,
+        maxAvailableMb,
+        memUsedMb,
+        minUsedMb,
+        maxUsedMb,
+        memTotalMb: total,
+        rssMb: bucket.rssCount ? Math.round(bucket.rssSum / bucket.rssCount) : null,
+        sampleCount: bucket.availableCount,
+        sources: Array.from(bucket.sources).slice(0, 8),
+      }
+    })
 
   return {
     ok: true,
