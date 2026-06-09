@@ -489,9 +489,6 @@ const THINKING_LEAK_PATTERNS = [
     new RegExp('(?:^|[\\n\\r])\\s*' + TOOL_PLAN_NAME_RE + '\\b\\s*(?:url|query|messageId|keyword|limit|参数|args|arguments|\\{|:)', 'i'),
     new RegExp('(?:^|[\\n\\r])\\s*(?:tool|function|函数|工具)\\s*[:：]\\s*' + TOOL_PLAN_NAME_RE + '\\b', 'i'),
     /用户问的是.{0,120}(?:文件内容|历史记录|相关文件|图片内容|链接内容|工具|调用|检查)/,
-    /历史记录中没有.{0,120}(?:文件|图片|链接|相关记录|相关信息)/,
-    /如果找不到.{0,80}(?:说明|就说明|回复|告诉用户)/,
-    /之后我会.{0,80}(?:根据结果|给出回复|回答)/,
     /用户(?:现在)?(?:是在|在|刚刚|可能|应该|想|需要|质疑).{0,80}(?:引用|重复|测试|问|说|让我|评价|质疑|遇到|觉得)/,
     /(?:保持|使用|用).{0,20}(?:人设|人格|口吻|语气|风格)/,
     /(?:避免使用|不要使用).{0,20}(?:专业术语|markdown|代码块|工具|搜索过程)/,
@@ -504,11 +501,29 @@ const THINKING_LEAK_PATTERNS = [
     /正常聊天/,
     /（[^）]{0,80}?(?:收到.{0,40}新消息|这是什么意思|只有昵称|用户[发说]了|从上下文看|这应该是在|是在回应|是不是在).{0,60}）/,
 ];
+const THINKING_LEAK_WEAK_PATTERNS = [
+    /历史记录中没有.{0,120}(?:文件|图片|链接|相关记录|相关信息)/,
+    /如果找不到.{0,80}(?:说明|就说明|回复|告诉用户)/,
+    /之后我会.{0,80}(?:根据结果|给出回复|回答)/,
+];
+const THINKING_LEAK_WEAK_TOOL_ACTION_RE = new RegExp('(?:调用|使用|执行|检查|读取|分析).{0,24}' + TOOL_PLAN_NAME_RE + '|' + TOOL_PLAN_NAME_RE + '.{0,24}(?:调用|使用|执行|检查|读取|分析|函数|工具)', 'i');
+const THINKING_LEAK_WEAK_INTERNAL_PLAN_CUE_RE = new RegExp('(?:用户问的是|用户询问|用户想|用户需要).{0,120}(?:调用|检查|读取|分析|工具|函数)|' +
+    '(?:我(?:会|将|需要|得|要|尝试|可以先|来).{0,40}(?:调用|使用|执行|检查|读取|分析|根据结果|给出回复|回答|告诉用户))|' +
+    '(?:之后我会|接下来我会|然后我会).{0,80}(?:根据结果|给出回复|回答|告诉用户|调用|检查|读取|分析)|' +
+    '(?:根据结果).{0,40}(?:给出回复|回答|告诉用户)', 'i');
+function hasWeakThinkingLeakPlan(value) {
+    const weakHits = THINKING_LEAK_WEAK_PATTERNS.reduce((count, pattern) => count + (pattern.test(value) ? 1 : 0), 0);
+    if (weakHits <= 0)
+        return false;
+    if (THINKING_LEAK_WEAK_TOOL_ACTION_RE.test(value))
+        return true;
+    return weakHits >= 2 && THINKING_LEAK_WEAK_INTERNAL_PLAN_CUE_RE.test(value);
+}
 function isThinkingLeak(text = '') {
     const value = normalizeText(text).slice(0, THINKING_LEAK_INPUT_MAX_CHARS);
     if (!value || value.length < 6)
         return false;
-    return THINKING_LEAK_PATTERNS.some(pattern => pattern.test(value));
+    return THINKING_LEAK_PATTERNS.some(pattern => pattern.test(value)) || hasWeakThinkingLeakPlan(value);
 }
 function isEvaluationRequest(text = '') { return EVALUATION_REQUEST_RE.test(normalizeText(text)); }
 function getModelDisplayName(providerId, modelId) {
