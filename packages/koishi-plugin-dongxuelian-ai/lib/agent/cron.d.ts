@@ -1,9 +1,5 @@
 interface CronRuntime {
     bot: unknown;
-    engine: AgentEngineLike | null;
-}
-interface AgentEngineLike {
-    run: typeof import('./engine').run;
 }
 interface CronFileData {
     crons: CronEntry[];

@@ -17,17 +17,12 @@ const MAX_HISTORY_ITEMS = 200
 const MAX_TASK_HISTORY_ITEMS = 20
 const DEFAULT_CRON_MAX_RUNTIME_MS = 90 * 1000
 const timers: Map<string, NodeJS.Timeout> = new Map()
-let runtime: CronRuntime = { bot: null, engine: null }
+let runtime: CronRuntime = { bot: null }
 let cronWriteChain: Promise<unknown> = Promise.resolve()
 const runningCrons: Set<string> = new Set()
 
 interface CronRuntime {
   bot: unknown
-  engine: AgentEngineLike | null
-}
-
-interface AgentEngineLike {
-  run: typeof import('./engine').run
 }
 
 interface PushBotLike {

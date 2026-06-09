@@ -66,7 +66,7 @@ function restoreTodayCache() {
     }
 }
 function registerPluginLifecycle(ctx, options = {}) {
-    const { agentEngine, configureAgentQueue } = options;
+    const { configureAgentQueue } = options;
     let resultNotifierBusy = false;
     let supervisorBusy = false;
     const runResultNotifierOnce = async () => {
@@ -126,7 +126,7 @@ function registerPluginLifecycle(ctx, options = {}) {
             if (typeof configureAgentQueue === 'function')
                 configureAgentQueue(config.queue || {});
             const bot = resolveLifecycleBot(ctx);
-            const count = await agentCron.startCronScheduler({ bot, engine: agentEngine });
+            const count = await agentCron.startCronScheduler({ bot });
             if (config.cron?.enabled)
                 ctx.logger('dongxuelian-ai').info(`agent cron scheduler restored ${count} task(s)`);
         }

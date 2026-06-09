@@ -158,7 +158,7 @@ function restoreTodayCache(): void {
 }
 
 function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycleOptions = {}): void {
-  const { agentEngine, configureAgentQueue } = options
+  const { configureAgentQueue } = options
   let resultNotifierBusy = false
   let supervisorBusy = false
 
@@ -213,7 +213,7 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
       const config = agentConfig.getAgentConfig()
       if (typeof configureAgentQueue === 'function') configureAgentQueue(config.queue || {})
       const bot = resolveLifecycleBot(ctx)
-      const count = await agentCron.startCronScheduler({ bot, engine: agentEngine })
+      const count = await agentCron.startCronScheduler({ bot })
       if (config.cron?.enabled) ctx.logger('dongxuelian-ai').info(`agent cron scheduler restored ${count} task(s)`)
     } catch (error) {
       ctx.logger('dongxuelian-ai').warn(`agent cron scheduler restore failed: ${getLifecycleErrorMessage(error)}`)

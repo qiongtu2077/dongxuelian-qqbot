@@ -17,7 +17,7 @@ const MAX_HISTORY_ITEMS = 200;
 const MAX_TASK_HISTORY_ITEMS = 20;
 const DEFAULT_CRON_MAX_RUNTIME_MS = 90 * 1000;
 const timers = new Map();
-let runtime = { bot: null, engine: null };
+let runtime = { bot: null };
 let cronWriteChain = Promise.resolve();
 const runningCrons = new Set();
 function objectRecord(value) {
