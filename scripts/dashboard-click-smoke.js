@@ -801,6 +801,24 @@ async function verifyAgentNavigation(page) {
   await waitForText(page, '莲莲图集')
 }
 
+async function verifyLegacyAgentTabColdStart(page) {
+  await page.evaluate(() => {
+    localStorage.setItem('dashboard_token', 'mock-token')
+    localStorage.setItem('dashboard_deploy_unlocked', 'true')
+    localStorage.setItem('dashboard_active_tab', 'agent')
+    localStorage.setItem('dashboard_sidebar_expanded', 'true')
+  })
+  await page.reload({ waitUntil: 'networkidle0' })
+  await page.waitForFunction(() => ['/', '/dashboard/'].includes(window.location.pathname), { timeout: 8000 })
+  await waitForText(page, '功能介绍')
+  await page.waitForFunction(() => {
+    const text = document.body?.innerText || ''
+    return !text.includes('危险工具策略') && !text.includes('QQ 继承聊天人格') && !text.includes('Mock Session')
+  }, { timeout: 8000 })
+  const storedTab = await page.evaluate(() => localStorage.getItem('dashboard_active_tab'))
+  if (storedTab !== 'features') throw new Error(`legacy agent tab was not normalized: ${storedTab}`)
+}
+
 async function verifyResourcePanel(page, options = {}) {
   const allowWrites = options.allowWrites !== false
   const expectMockData = options.expectMockData !== false
@@ -900,6 +918,7 @@ async function runClicks(page) {
   await waitForText(page, '先完成部署')
   await clickText(page, '我已部署，解锁')
   await waitForText(page, '功能介绍')
+  await verifyLegacyAgentTabColdStart(page)
 
   await verifyDeployPanel(page)
 

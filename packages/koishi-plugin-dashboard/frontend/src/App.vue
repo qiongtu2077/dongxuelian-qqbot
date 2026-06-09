@@ -106,8 +106,16 @@ defineOptions({ name: 'DashboardApp' })
     ]
     const visibleTabs = computed(() => isElectronDeployer ? allTabs.filter(item => item.id !== 'settings') : allTabs)
     const tabs = computed(() => deployUnlocked.value ? visibleTabs.value : visibleTabs.value.filter(item => item.id === 'deploy'))
-    const initialActiveTab = deployUnlocked.value ? (localStorage.getItem('dashboard_active_tab') || 'features') : 'deploy'
-    const activeTab = ref(isElectronDeployer && initialActiveTab === 'settings' ? 'deploy' : initialActiveTab)
+    function normalizeInitialActiveTab(value: string) {
+      if (value === 'agent') {
+        localStorage.setItem('dashboard_active_tab', 'features')
+        return 'features'
+      }
+      if (isElectronDeployer && value === 'settings') return 'deploy'
+      return value
+    }
+    const initialActiveTab = deployUnlocked.value ? normalizeInitialActiveTab(localStorage.getItem('dashboard_active_tab') || 'features') : 'deploy'
+    const activeTab = ref(initialActiveTab)
     const activeComponent = computed(() => componentMap[activeTab.value] || DeployPanel)
     const activeTabLabel = computed(() => tabs.value.find(item => item.id === activeTab.value)?.label || '部署')
     const isMobileSidebarOpen = computed(() => isMobileViewport.value && sidebarExpanded.value)
