@@ -712,7 +712,6 @@ function handleGetResourceMemoryHistory(req: IncomingMessage, res: ServerRespons
 
 // GET /resource/status：返回资源中心总览。
 function handleGetResourceStatus(req: IncomingMessage, res: ServerResponse) {
-  if (!requireAdmin(req, res)) return
   try {
     return json(res, buildResourceStatus(loadResourceModules()))
   } catch (e) {
@@ -722,7 +721,6 @@ function handleGetResourceStatus(req: IncomingMessage, res: ServerResponse) {
 
 // GET /resource/tasks：返回脱敏任务列表。
 function handleGetResourceTasks(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) {
-  if (!requireAdmin(req, res)) return
   try {
     const mods = loadResourceModules()
     const status = String(url.searchParams.get('status') || '').trim()
@@ -737,7 +735,6 @@ function handleGetResourceTasks(req: IncomingMessage, res: ServerResponse, pathn
 
 // GET /resource/events：返回最近资源事件。
 function handleGetResourceEvents(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) {
-  if (!requireAdmin(req, res)) return
   try {
     const mods = loadResourceModules()
     const limit = parsePositiveInt(url.searchParams.get('limit'), RESOURCE_EVENT_LIMIT, 1, 500)
@@ -749,7 +746,6 @@ function handleGetResourceEvents(req: IncomingMessage, res: ServerResponse, path
 
 // GET /resource/workers：返回 worker 心跳。
 function handleGetResourceWorkers(req: IncomingMessage, res: ServerResponse) {
-  if (!requireAdmin(req, res)) return
   try {
     return json(res, { ok: true, workers: loadResourceModules().tasks.listWorkerStates() })
   } catch (e) {
@@ -759,7 +755,6 @@ function handleGetResourceWorkers(req: IncomingMessage, res: ServerResponse) {
 
 // GET /resource/media：返回媒体背压状态。
 function handleGetResourceMedia(req: IncomingMessage, res: ServerResponse) {
-  if (!requireAdmin(req, res)) return
   try {
     return json(res, { ok: true, media: loadResourceModules().media.getMediaBackpressureStatus() })
   } catch (e) {
@@ -769,7 +764,6 @@ function handleGetResourceMedia(req: IncomingMessage, res: ServerResponse) {
 
 // GET /resource/precompute：返回日报预计算状态。
 function handleGetResourcePrecompute(req: IncomingMessage, res: ServerResponse) {
-  if (!requireAdmin(req, res)) return
   try {
     return json(res, { ok: true, precompute: loadResourceModules().precompute.getPrecomputeSummary() })
   } catch (e) {

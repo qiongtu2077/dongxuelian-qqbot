@@ -629,8 +629,6 @@ function handleGetResourceMemoryHistory(req, res, pathname, url) {
 }
 // GET /resource/status：返回资源中心总览。
 function handleGetResourceStatus(req, res) {
-    if (!requireAdmin(req, res))
-        return;
     try {
         return json(res, buildResourceStatus(loadResourceModules()));
     }
@@ -640,8 +638,6 @@ function handleGetResourceStatus(req, res) {
 }
 // GET /resource/tasks：返回脱敏任务列表。
 function handleGetResourceTasks(req, res, pathname, url) {
-    if (!requireAdmin(req, res))
-        return;
     try {
         const mods = loadResourceModules();
         const status = String(url.searchParams.get('status') || '').trim();
@@ -656,8 +652,6 @@ function handleGetResourceTasks(req, res, pathname, url) {
 }
 // GET /resource/events：返回最近资源事件。
 function handleGetResourceEvents(req, res, pathname, url) {
-    if (!requireAdmin(req, res))
-        return;
     try {
         const mods = loadResourceModules();
         const limit = parsePositiveInt(url.searchParams.get('limit'), RESOURCE_EVENT_LIMIT, 1, 500);
@@ -669,8 +663,6 @@ function handleGetResourceEvents(req, res, pathname, url) {
 }
 // GET /resource/workers：返回 worker 心跳。
 function handleGetResourceWorkers(req, res) {
-    if (!requireAdmin(req, res))
-        return;
     try {
         return json(res, { ok: true, workers: loadResourceModules().tasks.listWorkerStates() });
     }
@@ -680,8 +672,6 @@ function handleGetResourceWorkers(req, res) {
 }
 // GET /resource/media：返回媒体背压状态。
 function handleGetResourceMedia(req, res) {
-    if (!requireAdmin(req, res))
-        return;
     try {
         return json(res, { ok: true, media: loadResourceModules().media.getMediaBackpressureStatus() });
     }
@@ -691,8 +681,6 @@ function handleGetResourceMedia(req, res) {
 }
 // GET /resource/precompute：返回日报预计算状态。
 function handleGetResourcePrecompute(req, res) {
-    if (!requireAdmin(req, res))
-        return;
     try {
         return json(res, { ok: true, precompute: loadResourceModules().precompute.getPrecomputeSummary() });
     }

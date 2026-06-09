@@ -264,6 +264,30 @@ function testResourceMemoryHistoryRequiresAccessOnly() {
   assert.strictEqual(parseJsonResponse(res).ok, true)
 }
 
+// Verifies resource center read APIs require only normal access while writes stay admin-gated.
+async function testResourceReadApisRequireAccessOnly() {
+  process.env.GLOBAL_LOCAL_MODE = ''
+  const headers = { authorization: 'Bearer ' + auth.createToken() }
+  const readPaths = [
+    '/dashboard/api/resource/status',
+    '/dashboard/api/resource/tasks',
+    '/dashboard/api/resource/events',
+    '/dashboard/api/resource/workers',
+    '/dashboard/api/resource/media',
+    '/dashboard/api/resource/precompute',
+  ]
+  for (const pathname of readPaths) {
+    const req = makeReq('GET', pathname, headers)
+    const res = makeRes()
+    assert.strictEqual(router.dispatch(req, res, pathname, new URL('http://127.0.0.1:5150' + pathname)), true)
+    assert.notStrictEqual(res.statusCode, 403)
+  }
+
+  const writeRes = await dispatchJson('POST', '/dashboard/api/resource/maintenance', { enabled: true }, headers)
+  assert.strictEqual(writeRes.statusCode, 403)
+  assert.strictEqual(parseJsonResponse(writeRes).code, 'ADMIN_REQUIRED')
+}
+
 // Runs all tests sequentially so rate-limit state remains deterministic.
 async function run() {
   testRegexRouteObjectDispatch()
@@ -279,6 +303,7 @@ async function run() {
   testContentSecurityPolicyAllowsPreviewAudio()
   testResourceDiskUsageShape()
   testResourceMemoryHistoryRequiresAccessOnly()
+  await testResourceReadApisRequireAccessOnly()
 
   fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })
   console.log('dashboard security/router tests passed')
