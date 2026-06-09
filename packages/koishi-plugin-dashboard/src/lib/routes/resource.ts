@@ -702,7 +702,6 @@ function getErrorMessage(error: unknown): string {
 
 // GET /resource/memory-history：返回按区间聚合后的内存折线图数据。
 function handleGetResourceMemoryHistory(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) {
-  if (!requireAdmin(req, res)) return
   try {
     const range = normalizeMemoryRange(url.searchParams.get('range'))
     return json(res, getCachedMemoryHistory(loadResourceModules(), range))
