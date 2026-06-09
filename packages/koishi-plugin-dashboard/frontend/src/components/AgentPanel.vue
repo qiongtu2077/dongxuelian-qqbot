@@ -187,7 +187,7 @@
 
 <script lang="ts">
 import { computed, inject, onMounted, reactive, ref } from 'vue'
-import { fetchAgentConfig, saveAgentConfig, fetchAgentPersonas, saveAgentPersona, sendAgentMessage, confirmAgentTool, rejectAgentTool, fetchPendingAgentTools, fetchAgentSessions, fetchAgentSession, fetchAgentTask } from '../api'
+import { fetchAgentConfig, saveAgentConfig, fetchAgentPersonas, saveAgentPersona, sendAgentMessage, confirmAgentTool, rejectAgentTool, fetchPendingAgentTools, fetchAgentSessions, fetchAgentSession, fetchAgentTask, isAdminRequired } from '../api'
 import type { MessageState, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
@@ -387,10 +387,6 @@ export default {
     function formatTime(ts: number | string | undefined) {
       if (!ts) return '-'
       try { return new Date(ts).toLocaleTimeString() } catch { return '-' }
-    }
-
-    function isAdminRequired(res: { code?: string, data?: unknown } | null | undefined) {
-      return !!res && (res.code === 'ADMIN_REQUIRED' || asRecord(res.data).code === 'ADMIN_REQUIRED')
     }
 
     function requestAdmin(messageText: string, retry: () => void | Promise<void>) {

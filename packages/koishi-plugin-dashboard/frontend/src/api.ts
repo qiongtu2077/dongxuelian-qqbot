@@ -60,6 +60,13 @@ function handle401(res: Response): boolean {
   return false
 }
 
+export function isAdminRequired(res: { code?: string, data?: unknown } | null | undefined): boolean {
+  if (!res) return false
+  if (res.code === 'ADMIN_REQUIRED') return true
+  const data = res.data
+  return !!data && typeof data === 'object' && !Array.isArray(data) && (data as { code?: unknown }).code === 'ADMIN_REQUIRED'
+}
+
 function withTimeout(ms = 10000) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), ms)

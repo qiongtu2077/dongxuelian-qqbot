@@ -216,6 +216,7 @@ import {
   fetchResourceMemoryHistory,
   fetchResourceStatus,
   fetchResourceTasks,
+  isAdminRequired,
   reclaimResourceStale,
   setResourceMaintenance,
 } from '../api'
@@ -412,11 +413,6 @@ export default {
     // 判断任务是否允许从面板取消。
     function canCancel(task: JsonRecord): boolean {
       return ['pending', 'deferred'].includes(String(task.status || ''))
-    }
-
-    // 判断 API 响应是否需要管理员密码，兼容 code 位于顶层或 data 内的两种返回。
-    function isAdminRequired(res: { code?: string, data?: unknown } | null | undefined): boolean {
-      return !!res && (res.code === 'ADMIN_REQUIRED' || asRecord(res.data).code === 'ADMIN_REQUIRED')
     }
 
     // 读取资源总览。
