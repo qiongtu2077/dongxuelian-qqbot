@@ -985,6 +985,10 @@ export default {
       await loadElectronAppInfo()
       setStepStatus('env', 'running')
       const res = await checkLocalEnv()
+      if (withAdminRetry(res, '环境检测需要管理员密码', checkEnv)) {
+        checking.value = false
+        return
+      }
       if (res.ok) {
         const data = dataRecord<EnvCheckData>(res.data)
         env.value = data

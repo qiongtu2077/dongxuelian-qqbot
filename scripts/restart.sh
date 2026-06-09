@@ -8,7 +8,7 @@ KOISHI_PORT="${KOISHI_PORT:-5140}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-5150}"
 DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
 LOG_FILE="$APP_DIR/koishi.log"
-DATA_DIR="$APP_DIR/data"
+DATA_DIR="${DONGXUELIAN_AI_DATA_DIR:-$APP_DIR/data}"
 
 if [ -f "$APP_DIR/scripts/seal-data-dir.sh" ]; then
   KOISHI_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" sh "$APP_DIR/scripts/seal-data-dir.sh"

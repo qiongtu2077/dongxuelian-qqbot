@@ -616,6 +616,8 @@ function getEnvCheckPathEncodingDir() {
     return path.join(os.tmpdir(), 'lianlian-path-encoding-check', '中文路径');
 }
 function handleGetEnvCheck(req, res) {
+    if (!requireAdmin(req, res))
+        return;
     const localDeployTarget = dh.getLocalDeployTarget();
     const nodeInfo = getCommandInfo('node', 18);
     const npmInfo = getCommandInfo('npm');

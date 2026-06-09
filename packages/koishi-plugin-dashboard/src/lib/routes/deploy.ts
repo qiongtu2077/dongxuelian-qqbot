@@ -505,6 +505,7 @@ function getEnvCheckPathEncodingDir() {
 }
 
 function handleGetEnvCheck(req: IncomingMessage, res: ServerResponse): void {
+  if (!requireAdmin(req, res)) return
   const localDeployTarget = dh.getLocalDeployTarget()
   const nodeInfo = getCommandInfo('node', 18)
   const npmInfo = getCommandInfo('npm')

@@ -308,21 +308,34 @@ fi
 echo ""
 log "==================== API key config ===================="
 log "At least one API key is required."
-echo ""
+echo "" 
 
-read -p "DeepSeek API key (sk-xxx, required): " DEEPSEEK_KEY
+read -s -p "DeepSeek API key (sk-xxx, required): " DEEPSEEK_KEY
+printf '\n'
 [ -z "$DEEPSEEK_KEY" ] && err "DeepSeek API key cannot be empty"
 
-read -p "mimorium API key (tp-xxx, optional): " MIMORIUM_KEY
-read -p "opencode API key (sk-xxx, optional): " OPENCODE_KEY
-read -p "dashscope API key (sk-xxx, optional): " DASHSCOPE_KEY
-read -p "GLM API key (optional): " GLM_KEY
+read -s -p "mimorium API key (tp-xxx, optional): " MIMORIUM_KEY
+printf '\n'
+read -s -p "opencode API key (sk-xxx, optional): " OPENCODE_KEY
+printf '\n'
+read -s -p "dashscope API key (sk-xxx, optional): " DASHSCOPE_KEY
+printf '\n'
+read -s -p "GLM API key (optional): " GLM_KEY
+printf '\n'
 
-echo "$DEEPSEEK_KEY" > "$DATA_DIR/ai-deepseek-key.txt"
-[ -n "$MIMORIUM_KEY" ] && echo "$MIMORIUM_KEY" > "$DATA_DIR/ai-mimorium-key.txt"
-[ -n "$OPENCODE_KEY" ] && echo "$OPENCODE_KEY" > "$DATA_DIR/ai-openai-key.txt"
-[ -n "$DASHSCOPE_KEY" ] && echo "$DASHSCOPE_KEY" > "$DATA_DIR/ai-dashscope-key.txt"
-[ -n "$GLM_KEY" ] && echo "$GLM_KEY" > "$DATA_DIR/ai-glm-key.txt"
+write_key_file() {
+  file="$1"
+  value="$2"
+  [ -z "$value" ] && return 0
+  printf '%s\n' "$value" > "$file"
+  chmod 600 "$file"
+}
+
+write_key_file "$DATA_DIR/ai-deepseek-key.txt" "$DEEPSEEK_KEY"
+write_key_file "$DATA_DIR/ai-mimorium-key.txt" "$MIMORIUM_KEY"
+write_key_file "$DATA_DIR/ai-openai-key.txt" "$OPENCODE_KEY"
+write_key_file "$DATA_DIR/ai-dashscope-key.txt" "$DASHSCOPE_KEY"
+write_key_file "$DATA_DIR/ai-glm-key.txt" "$GLM_KEY"
 
 echo "deepseek" > "$DATA_DIR/ai-provider.txt"
 echo "deepseek-chat" > "$DATA_DIR/ai-model.txt"

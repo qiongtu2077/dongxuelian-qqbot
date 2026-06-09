@@ -186,7 +186,7 @@ export async function getDeployProgress(taskId: string) { return get('/deploy/pr
 export async function confirmDeploy() { return post('/deploy/confirm', {}, true) }
 export async function uploadDeploy(name: string, data: string) { return post('/deploy/upload', { name, data }, true) }
 export async function deployLocal(data: unknown) { return post('/deploy/local', data, true) }
-export async function checkLocalEnv() { return get('/env/check') }
+export async function checkLocalEnv() { return get('/env/check', true) }
 export async function downloadNapcat(url: string) { return post('/deploy/napcat-download', { url }, true, 180000) }
 export async function downloadNapcatWindows(installDir: string) { return post('/deploy/napcat-windows-download', { installDir }, true, 240000) }
 export async function installPortableNode() { return post('/deploy/node-windows-install', {}, true, 240000) }
