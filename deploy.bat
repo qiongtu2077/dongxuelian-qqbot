@@ -75,7 +75,7 @@ echo === 4. 创建带数据目录环境变量的启动脚本 ===
     echo cd /d "%%~dp0"
     echo set "DONGXUELIAN_AI_DATA_DIR=%%~dp0data"
     echo set "KOISHI_DIR=%%~dp0"
-    echo node .
+    echo node start.js
 )
 echo start-local.bat 已创建
 echo.
