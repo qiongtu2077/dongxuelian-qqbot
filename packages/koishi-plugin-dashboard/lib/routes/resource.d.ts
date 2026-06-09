@@ -97,6 +97,8 @@ declare function collectMemoryHistory(mods: ResourceModuleSet, range: string): {
     }[];
 };
 declare function getCachedMemoryHistory(mods: ResourceModuleSet, range: string): unknown;
+declare function collectDiskUsage(): Record<string, unknown>;
+declare function getCachedDiskUsage(): unknown;
 declare function sanitizeTask(task: ResourceTaskLike): {
     id: unknown;
     kind: unknown;
@@ -127,5 +129,7 @@ declare const _default: {
     normalizeMemoryRange: typeof normalizeMemoryRange;
     getCachedMemoryHistory: typeof getCachedMemoryHistory;
     cleanupOldProcessMetricFiles: typeof cleanupOldProcessMetricFiles;
+    collectDiskUsage: typeof collectDiskUsage;
+    getCachedDiskUsage: typeof getCachedDiskUsage;
 };
 export = _default;

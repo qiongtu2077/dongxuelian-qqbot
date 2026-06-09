@@ -9,6 +9,7 @@ import type { IncomingMessage, ServerResponse } from 'http'
  */
 const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
+const { execFileSync } = require('child_process') as typeof import('child_process')
 const { json, collectBody, parsePositiveInt, readFileSyncSafe, writeFileSyncSafe } = require('../utils') as {
   json(res: ServerResponse, data: unknown, status?: number): void
   collectBody(req: IncomingMessage, res: ServerResponse, callback: (body: string) => void | Promise<void>): void
@@ -17,7 +18,7 @@ const { json, collectBody, parsePositiveInt, readFileSyncSafe, writeFileSyncSafe
   writeFileSyncSafe(filePath: string, content: string): void
 }
 const { requireAdmin } = require('../auth') as { requireAdmin(req: IncomingMessage, res: ServerResponse): boolean }
-const { AI_LIB, DATA_DIR } = require('../paths') as { AI_LIB: string; DATA_DIR: string }
+const { AI_LIB, DATA_DIR, KOISHI_DIR } = require('../paths') as { AI_LIB: string; DATA_DIR: string; KOISHI_DIR: string }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => unknown
 
@@ -63,6 +64,14 @@ interface ResourceEvent extends Record<string, unknown> {
   source: string
   resourceSource: string
   businessSource: unknown
+}
+
+interface DiskEntry {
+  name: string
+  label: string
+  path: string
+  sizeBytes: number
+  sizeMb: number
 }
 
 interface ResourceModuleSet {
@@ -111,6 +120,7 @@ const MEMORY_HISTORY_MAX_SAMPLED_LINES_PER_FILE = parsePositiveInt(process.env.D
 const MEMORY_HISTORY_SAMPLE_CHUNK_BYTES = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_SAMPLE_CHUNK_BYTES, 64 * 1024, 16 * 1024, 512 * 1024)
 const MEMORY_HISTORY_RETENTION_MS = parsePositiveInt(process.env.RESOURCE_PROCESS_METRICS_RETENTION_HOURS || process.env.DASHBOARD_MEMORY_HISTORY_RETENTION_HOURS, 72, 1, 24 * 30) * 60 * 60 * 1000
 const MEMORY_HISTORY_CLEANUP_INTERVAL_MS = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_CLEANUP_INTERVAL_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000)
+const DISK_USAGE_CACHE_TTL_MS = parsePositiveInt(process.env.DASHBOARD_DISK_USAGE_CACHE_TTL_MS, 60 * 1000, 10 * 1000, 10 * 60 * 1000)
 const PROCESS_METRICS_FILE_RE = /^process-metrics-\d{4}-\d{2}-\d{2}\.jsonl$/
 
 const MEMORY_RANGE_OPTIONS: Record<string, number> = {
@@ -140,6 +150,7 @@ const MEMORY_BUCKET_MS: Record<string, number> = {
 let lastDashboardMemorySampleAt = 0
 let lastMemoryHistoryCleanupAt = 0
 const memoryHistoryCache = new Map<string, { expiresAt: number; payload: unknown }>()
+let diskUsageCache: { expiresAt: number; payload: unknown } | null = null
 
 // 动态加载 AI 资源模块，避免 Dashboard 编译期反向依赖源码。
 function loadResourceModules(): ResourceModuleSet {
@@ -480,6 +491,115 @@ function getCachedMemoryHistory(mods: ResourceModuleSet, range: string) {
   return payload
 }
 
+// 将字节数换算为整数 MB，供接口和前端统一展示。
+function bytesToMb(bytes: number): number {
+  return Math.round(bytes / 1024 / 1024)
+}
+
+// 读取项目所在文件系统的容量和可用空间。
+function getFilesystemUsage(root: string): Record<string, unknown> | null {
+  try {
+    const stat = fs.statfsSync(root)
+    const totalBytes = Number(stat.blocks) * Number(stat.bsize)
+    const freeBytes = Number(stat.bfree) * Number(stat.bsize)
+    const availableBytes = Number(stat.bavail) * Number(stat.bsize)
+    const usedBytes = Math.max(0, totalBytes - freeBytes)
+    return {
+      root,
+      totalBytes,
+      usedBytes,
+      freeBytes,
+      availableBytes,
+      totalMb: bytesToMb(totalBytes),
+      usedMb: bytesToMb(usedBytes),
+      freeMb: bytesToMb(freeBytes),
+      availableMb: bytesToMb(availableBytes),
+      usedPercent: totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 1000) / 10 : null,
+    }
+  } catch {
+    return null
+  }
+}
+
+// 使用系统 du 读取目录体积，避免在 Node 中递归扫描大量文件。
+function getPathSizeBytes(targetPath: string): number | null {
+  try {
+    if (!fs.existsSync(targetPath)) return null
+    const output = execFileSync('du', ['-sk', targetPath], {
+      encoding: 'utf8',
+      timeout: 12000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    const sizeKb = Number(output.split(/\s+/)[0])
+    return Number.isFinite(sizeKb) ? sizeKb * 1024 : null
+  } catch {
+    return getPathSizeBytesByWalk(targetPath)
+  }
+}
+
+// 在缺少 du 的平台上递归累加文件大小，主要用于本地测试和 Windows 环境。
+function getPathSizeBytesByWalk(targetPath: string): number | null {
+  try {
+    const stat = fs.statSync(targetPath)
+    if (stat.isFile()) return stat.size
+    if (!stat.isDirectory()) return 0
+    let total = 0
+    for (const name of fs.readdirSync(targetPath)) {
+      const childSize = getPathSizeBytesByWalk(path.join(targetPath, name))
+      if (childSize !== null) total += childSize
+    }
+    return total
+  } catch {
+    return null
+  }
+}
+
+// 收集资源中心需要展示的关键目录磁盘占用。
+function collectDiskUsage(): Record<string, unknown> {
+  const filesystem = getFilesystemUsage(KOISHI_DIR)
+  const candidates = [
+    { name: 'data', label: '运行数据', path: path.join(KOISHI_DIR, 'data') },
+    { name: 'resource-system', label: '资源采样', path: path.join(DATA_DIR, 'resource-system') },
+    { name: 'resource-scheduler', label: '调度状态', path: path.join(DATA_DIR, 'resource-scheduler') },
+    { name: 'media-backpressure', label: '媒体队列', path: path.join(DATA_DIR, 'media-backpressure') },
+    { name: 'gallery', label: '图库', path: path.join(DATA_DIR, 'gallery') },
+    { name: 'packages', label: '源码包', path: path.join(KOISHI_DIR, 'packages') },
+    { name: 'node_modules', label: '依赖', path: path.join(KOISHI_DIR, 'node_modules') },
+    { name: 'git', label: 'Git 对象', path: path.join(KOISHI_DIR, '.git') },
+    { name: 'backups', label: '备份', path: path.join(KOISHI_DIR, 'backups') },
+    { name: 'deploy-backups', label: '部署备份', path: path.join(KOISHI_DIR, 'deploy-backups') },
+    { name: 'tmp', label: '临时目录', path: path.join(KOISHI_DIR, 'tmp') },
+  ]
+  const entries: DiskEntry[] = []
+  for (const item of candidates) {
+    const sizeBytes = getPathSizeBytes(item.path)
+    if (sizeBytes === null) continue
+    entries.push({
+      name: item.name,
+      label: item.label,
+      path: path.relative(KOISHI_DIR, item.path).replace(/\\/g, '/') || '.',
+      sizeBytes,
+      sizeMb: bytesToMb(sizeBytes),
+    })
+  }
+  entries.sort((a, b) => b.sizeBytes - a.sizeBytes)
+  return {
+    ok: true,
+    collectedAt: new Date().toISOString(),
+    cacheTtlMs: DISK_USAGE_CACHE_TTL_MS,
+    filesystem,
+    entries,
+  }
+}
+
+// 返回带短缓存的磁盘占用详情，避免资源中心刷新时重复执行 du。
+function getCachedDiskUsage(): unknown {
+  if (diskUsageCache && diskUsageCache.expiresAt > Date.now()) return diskUsageCache.payload
+  const payload = collectDiskUsage()
+  diskUsageCache = { expiresAt: Date.now() + DISK_USAGE_CACHE_TTL_MS, payload }
+  return payload
+}
+
 // 将任务 payload 从 Dashboard 响应中移除，避免泄露上下文和文件内容。
 function sanitizeTask(task: ResourceTaskLike) {
   const payload = task && typeof task.payload === 'object' && task.payload ? task.payload : {}
@@ -570,6 +690,7 @@ function buildResourceStatus(mods: ResourceModuleSet): Record<string, unknown> {
       coverage: Array.isArray(precompute.coverage) ? precompute.coverage.slice(0, RESOURCE_PRECOMPUTE_COVERAGE_LIMIT) : [],
     },
     system,
+    disk: getCachedDiskUsage(),
     maintenance: !!readFileSyncSafe(MAINTENANCE_FILE),
     events: collectResourceEvents(mods, 40),
   }
@@ -717,4 +838,4 @@ const routes: Record<string, RouteHandler> = {
   'POST /dashboard/api/resource/maintenance': handlePostResourceMaintenance,
 }
 
-export = { routes, buildResourceStatus, sanitizeTask, collectMemoryHistory, normalizeMemoryRange, getCachedMemoryHistory, cleanupOldProcessMetricFiles }
+export = { routes, buildResourceStatus, sanitizeTask, collectMemoryHistory, normalizeMemoryRange, getCachedMemoryHistory, cleanupOldProcessMetricFiles, collectDiskUsage, getCachedDiskUsage }
