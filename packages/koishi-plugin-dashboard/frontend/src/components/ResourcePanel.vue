@@ -149,6 +149,29 @@
           <span>最高 {{ memoryMaxLabel }}</span>
         </div>
       </section>
+
+      <section class="card resource-disk-card">
+        <div class="resource-card-head compact-head">
+          <div>
+            <h2>磁盘占用</h2>
+            <div class="resource-subline">关键目录按体积排序，数据缓存 {{ diskCacheLabel }}</div>
+          </div>
+        </div>
+        <div class="disk-summary">
+          <div class="resource-metric-row"><span>总占用</span><b>{{ diskUsageLabel }}</b></div>
+          <div class="resource-metric-row"><span>可用空间</span><b>{{ diskAvailableLabel }}</b></div>
+        </div>
+        <div v-if="diskEntries.length" class="resource-list compact disk-list">
+          <div v-for="item in diskEntries" :key="display(item.name)" class="resource-row disk-row">
+            <div>
+              <b>{{ display(item.label || item.name) }}</b>
+              <small>{{ display(item.path) }}</small>
+            </div>
+            <strong>{{ sizeMbLabel(item.sizeMb) }}</strong>
+          </div>
+        </div>
+        <div v-else class="resource-empty">暂无磁盘详情</div>
+      </section>
     </div>
 
     <section class="card">
@@ -264,6 +287,9 @@ export default {
     const workers = computed(() => asArray<JsonRecord>(status.value.workers))
     const media = computed(() => asRecord(status.value.media))
     const precompute = computed(() => asRecord(status.value.precompute))
+    const disk = computed(() => asRecord(status.value.disk))
+    const diskFilesystem = computed(() => asRecord(disk.value.filesystem))
+    const diskEntries = computed(() => asArray<JsonRecord>(disk.value.entries).slice(0, 12))
     const coverage = computed(() => asArray<JsonRecord>(precompute.value.coverage))
     const normalizedPrecomputeQuery = computed(() => precomputeQuery.value.trim().toLowerCase())
     const filteredCoverage = computed(() => {
@@ -281,6 +307,15 @@ export default {
       if (typeof available !== 'number') return 'unknown'
       return typeof total === 'number' ? `${available} / ${total} MB` : `${available} MB`
     })
+    const diskUsageLabel = computed(() => {
+      const used = diskFilesystem.value.usedMb
+      const total = diskFilesystem.value.totalMb
+      const percent = Number(diskFilesystem.value.usedPercent)
+      const usage = `${sizeMbLabel(used)} / ${sizeMbLabel(total)}`
+      return Number.isFinite(percent) ? `${usage} (${percent}%)` : usage
+    })
+    const diskAvailableLabel = computed(() => sizeMbLabel(diskFilesystem.value.availableMb || diskFilesystem.value.freeMb))
+    const diskCacheLabel = computed(() => formatInterval(Number(disk.value.cacheTtlMs)))
     const maintenanceLabel = computed(() => status.value.maintenance ? '关闭维护' : '开启维护')
     const lastRefreshLabel = computed(() => lastRefresh.value ? new Date(lastRefresh.value).toLocaleTimeString() : '尚未刷新')
     const memoryValues = computed(() => memoryHistory.value
@@ -383,6 +418,14 @@ export default {
     function mbLabel(value: unknown): string {
       const parsed = Number(value)
       return Number.isFinite(parsed) ? `${Math.round(parsed)} MB` : '-'
+    }
+
+    // 磁盘容量按大小自动切换 MB/GB，减少长数字噪声。
+    function sizeMbLabel(value: unknown): string {
+      const parsed = Number(value)
+      if (!Number.isFinite(parsed)) return '-'
+      if (Math.abs(parsed) >= 1024) return `${Math.round((parsed / 1024) * 10) / 10} GB`
+      return `${Math.round(parsed)} MB`
     }
 
     // 毫秒间隔标签。
@@ -556,9 +599,15 @@ export default {
       workers,
       media,
       precompute,
+      disk,
+      diskFilesystem,
+      diskEntries,
       coverage,
       filteredCoverage,
       memoryLabel,
+      diskUsageLabel,
+      diskAvailableLabel,
+      diskCacheLabel,
       memorySampleLabel,
       memoryEmptyText,
       memoryCurrentLabel,
@@ -574,6 +623,7 @@ export default {
       arrayLength,
       lagLabel,
       percentLabel,
+      sizeMbLabel,
       coverageKey,
       eventKey,
       canCancel,
@@ -648,6 +698,14 @@ export default {
   grid-column: 1;
 }
 
+.resource-disk-card {
+  grid-column: 1 / -1;
+}
+
+.compact-head {
+  margin-bottom: 10px;
+}
+
 .precompute-search {
   width: 100%;
   min-height: 34px;
@@ -674,6 +732,39 @@ export default {
 .memory-chart-card {
   grid-column: 2 / 4;
   min-height: 320px;
+}
+
+.disk-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.disk-summary .resource-metric-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+  padding: 10px 12px;
+}
+
+.disk-list {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  max-height: 260px;
+}
+
+.disk-row {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.disk-row > div {
+  min-width: 0;
+}
+
+.disk-row strong {
+  color: var(--text);
+  white-space: nowrap;
 }
 
 .resource-kpis {

@@ -234,6 +234,27 @@ function testContentSecurityPolicyAllowsPreviewAudio() {
   assert.doesNotMatch(csp, /script-src[^;]*data:/)
 }
 
+// Verifies resource status can include disk capacity and directory size details.
+function testResourceDiskUsageShape() {
+  const resourceRoutes = require('../lib/routes/resource')
+  const disk = resourceRoutes.collectDiskUsage()
+  assert.strictEqual(disk.ok, true)
+  assert.ok(Array.isArray(disk.entries))
+  assert.ok(disk.entries.length > 0)
+  for (const entry of disk.entries) {
+    assert.strictEqual(typeof entry.name, 'string')
+    assert.strictEqual(typeof entry.label, 'string')
+    assert.strictEqual(typeof entry.path, 'string')
+    assert.strictEqual(typeof entry.sizeBytes, 'number')
+    assert.strictEqual(typeof entry.sizeMb, 'number')
+  }
+  if (disk.filesystem) {
+    assert.strictEqual(typeof disk.filesystem.totalMb, 'number')
+    assert.strictEqual(typeof disk.filesystem.availableMb, 'number')
+    assert.strictEqual(typeof disk.filesystem.usedPercent, 'number')
+  }
+}
+
 // Runs all tests sequentially so rate-limit state remains deterministic.
 async function run() {
   testRegexRouteObjectDispatch()
@@ -247,6 +268,7 @@ async function run() {
   testSessionSecretIgnoresEnvPinning()
   testLocalBypassRejectsCrossSite()
   testContentSecurityPolicyAllowsPreviewAudio()
+  testResourceDiskUsageShape()
 
   fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })
   console.log('dashboard security/router tests passed')
