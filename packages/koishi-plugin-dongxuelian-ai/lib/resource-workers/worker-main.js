@@ -325,6 +325,10 @@ if (require.main === module) {
     runWorkerLoop(parseWorkerCliArgs()).catch(error => {
         console.error('[resource-worker] failed:', error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
+    }).finally(() => {
+        const exitCode = Number(process.exitCode || 0);
+        if (Number.isFinite(exitCode) && exitCode > 0)
+            process.exit(exitCode);
     });
 }
 module.exports = {

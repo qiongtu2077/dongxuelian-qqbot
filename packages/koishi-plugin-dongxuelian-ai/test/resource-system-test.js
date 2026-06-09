@@ -205,6 +205,153 @@ main().catch(error => {
   check('worker timeout terminates recorded chromium child process', summary.processTreeTerminatedCount >= 1 && summary.fakeAliveAfterTimeout === false, JSON.stringify(summary))
 }
 
+// Verify agent worker timeout exits the standalone worker before late engine side effects can land.
+function testAgentWorkerTimeoutStopsLateSideEffects() {
+  const dataDir = createTempDataDir('s8-agent-worker-timeout-')
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+const { spawnSync } = require('child_process')
+
+function readJsonl(file) {
+  if (!fs.existsSync(file)) return []
+  return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function main() {
+  const hookFile = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'agent-worker-timeout-hook.js')
+  const engineStartedFile = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'engine-started.txt')
+  const lateSideEffectFile = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'late-side-effect.txt')
+  const hookSource = [
+    "const fs = require('fs')",
+    "const path = require('path')",
+    "const Module = require('module')",
+    "const startedFile = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'engine-started.txt')",
+    "const lateFile = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'late-side-effect.txt')",
+    "const originalLoad = Module._load",
+    "Module._load = function patchedLoad(request, parent, isMain) {",
+    "  const normalized = String(request || '').replace(/\\\\\\\\/g, '/')",
+    "  if (normalized.endsWith('/agent/engine') || normalized.endsWith('../agent/engine')) {",
+    "    return {",
+    "      run: async () => {",
+    "        fs.writeFileSync(startedFile, 'started', 'utf8')",
+    "        await new Promise(resolve => setTimeout(resolve, 10200))",
+    "        fs.writeFileSync(lateFile, 'late side effect', 'utf8')",
+    "        return { reply: 'late reply' }",
+    "      },",
+    "      resumePending: async () => {",
+    "        fs.writeFileSync(startedFile, 'resume', 'utf8')",
+    "        await new Promise(resolve => setTimeout(resolve, 10200))",
+    "        fs.writeFileSync(lateFile, 'late side effect', 'utf8')",
+    "        return { reply: 'late resume' }",
+    "      },",
+    "    }",
+    "  }",
+    "  return originalLoad.apply(this, arguments)",
+    "}",
+    "",
+  ].join('\n')
+  fs.writeFileSync(hookFile, hookSource, 'utf8')
+
+  const taskStore = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+  const taskPaths = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/task-paths')
+  const payloads = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/agent-payload')
+  const resourceGate = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-gate/gate')
+
+  const task = taskStore.submitResourceTask({
+    id: 's8-timeout-agent-worker',
+    kind: 'agent_task',
+    source: 's8-timeout-agent-worker-test',
+    channelKey: 's8-agent-timeout-group',
+    userId: 's8-agent-timeout-user',
+    priority: 1,
+    timeoutMs: 1,
+    payload: {
+      entry: 's8-timeout-agent-worker-test',
+      agentWorker: payloads.createAgentRunWorkerPayload('s8-timeout-agent-worker-test', {
+        userMessage: '请执行一个会超时的 agent 任务',
+        userName: 'S8 Tester',
+        userId: 's8-agent-timeout-user',
+        channelKey: 's8-agent-timeout-group',
+        channel: 'qq',
+      }),
+    },
+    notify: { target: 'none', status: 'pending' },
+  })
+
+  const workerEntry = path.join(process.cwd(), 'packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-main.js')
+  const child = spawnSync(process.execPath, [workerEntry, '--type', 'agent', '--once'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      DONGXUELIAN_AI_DATA_DIR: process.env.DONGXUELIAN_AI_DATA_DIR,
+      RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+      RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+      RESOURCE_WORKER_RSS_MB: '2048',
+      NODE_OPTIONS: '--require=' + hookFile,
+    },
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+
+  await sleep(700)
+  const taskAfter = taskStore.getResourceTaskById(task.id)
+  const resultFile = path.join(taskPaths.getTaskResultDir(task.id), 'result.json')
+  const result = fs.existsSync(resultFile) ? JSON.parse(fs.readFileSync(resultFile, 'utf8')) : null
+  const workerEvents = readJsonl(taskPaths.getWorkerEventFile())
+  const taskFailedEvents = workerEvents.filter(event => event.event === 'task_failed' && event.taskId === task.id)
+  const taskDoneEvents = workerEvents.filter(event => event.event === 'task_done' && event.taskId === task.id)
+  const gateStatus = resourceGate.getResourceGateStatus()
+  const summary = {
+    childStatus: child.status,
+    childSignal: child.signal,
+    childStdoutTail: String(child.stdout || '').slice(-1000),
+    childStderrTail: String(child.stderr || '').slice(-1000),
+    engineStarted: fs.existsSync(engineStartedFile),
+    sideEffectExists: fs.existsSync(lateSideEffectFile),
+    taskStatus: taskAfter && taskAfter.status,
+    taskStep: taskAfter && taskAfter.step,
+    taskError: taskAfter && taskAfter.error,
+    resultOk: result && result.ok,
+    resultError: result && result.error,
+    taskFailedEventCount: taskFailedEvents.length,
+    taskDoneEventCount: taskDoneEvents.length,
+    gateLocked: gateStatus.locked,
+  }
+  console.log(JSON.stringify(summary, null, 2))
+  const ok = summary.childStatus === 76
+    && summary.engineStarted === true
+    && summary.taskStatus === 'failed'
+    && /timed out/i.test(String(summary.resultError || summary.taskError || ''))
+    && summary.taskFailedEventCount >= 1
+    && summary.taskDoneEventCount === 0
+    && summary.gateLocked === false
+    && summary.sideEffectExists === false
+  process.exitCode = ok ? 0 : 1
+}
+
+main().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('S8 agent worker timeout stops late side effects', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+    RESOURCE_WORKER_RSS_MB: '2048',
+  }, 40000)
+  if (!summary) return
+  check('agent worker timeout actually starts engine before timeout', summary.engineStarted === true, JSON.stringify(summary))
+  check('agent worker timeout exits with 76 and marks task failed', summary.childStatus === 76 && summary.taskStatus === 'failed' && /timed out/i.test(String(summary.resultError || summary.taskError || '')), JSON.stringify(summary))
+  check('agent worker timeout emits failed but no done event and releases gate', summary.taskFailedEventCount >= 1 && summary.taskDoneEventCount === 0 && summary.gateLocked === false, JSON.stringify(summary))
+  check('agent worker timeout prevents late side effects after worker exit', summary.sideEffectExists === false, JSON.stringify(summary))
+}
+
 // Verify browser close failures are recorded as S8 cleanup events.
 function testChromiumCloseFailureInjection() {
   const dataDir = createTempDataDir('s8-chromium-close-test-')
@@ -511,6 +658,7 @@ main().catch(error => {
 function main() {
   console.log('=== resource-system S8 tests ===')
   testWorkerTimeoutInjection()
+  testAgentWorkerTimeoutStopsLateSideEffects()
   testChromiumCloseFailureInjection()
   testBrowserSessionSwitchIsolation()
   console.log(`passed: ${passed}`)
