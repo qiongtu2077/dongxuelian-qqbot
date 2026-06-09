@@ -995,17 +995,7 @@ module.exports = {
             if (resourceTaskId)
                 currentResourceTaskId = resourceTaskId;
             if (sessionKey && currentSessionOwner && currentSessionOwner !== sessionKey) {
-                if (page) {
-                    await resetBrowserPageForSafety(page, 'session switch');
-                    const ctx = page.context();
-                    try {
-                        await ctx.clearCookies();
-                    }
-                    catch (error) {
-                        await closeBrowser().catch(ignoreBrowserPromiseFailure);
-                        throw new Error(`切换浏览器会话时清理 cookies 失败，已关闭浏览器：${getBrowserActionErrorMessage(error)}`);
-                    }
-                }
+                await closeBrowser();
                 currentUrl = '';
                 networkLog = [];
                 consoleLog = [];

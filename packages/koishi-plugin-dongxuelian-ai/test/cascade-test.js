@@ -4059,6 +4059,7 @@ async function main() {
   check('browser action blocks heavy browser resources', browserActionSrc.includes('setRequestInterception') && browserActionSrc.includes('BLOCKED_RESOURCE_TYPES') && browserActionSrc.includes("'image'") && browserActionSrc.includes("'media'"))
   check('browser action validates every intercepted request', browserActionSrc.includes('await validateUrl(url)') && browserActionSrc.includes('req.abort()') && browserActionSrc.includes('evaluateOnNewDocument'), 'browser request guard must block internal redirects/subresources before request continues')
   check('L29 browser action does not return local artifact directories', !browserActionSrc.includes('截图已保存：${file}') && !browserActionSrc.includes('PDF 已保存：${file}') && !browserActionSrc.includes('下载目录已设置：${dir}'), 'browser_action must not expose DATA_DIR artifact paths')
+  check('L32 browser action session switch rebuilds browser context', browserActionSrc.includes('await closeBrowser()') && !browserActionSrc.includes("await resetBrowserPageForSafety(page, 'session switch')"), 'browser_action session switch should close the browser context instead of only resetting the current page')
   const webSearchSrc = read(path.join(LIB, 'agent', 'tools', 'web-search.js'))
   check('web_search defaults away from Chromium fallback', webSearchSrc.includes('DONGXUELIAN_AGENT_BROWSER_SEARCH') && webSearchSrc.includes('轻量 HTTP 搜索') && webSearchSrc.includes('默认跳过 Chromium'))
   const webFetchSrc = read(path.join(LIB, 'agent', 'tools', 'web-fetch.js'))

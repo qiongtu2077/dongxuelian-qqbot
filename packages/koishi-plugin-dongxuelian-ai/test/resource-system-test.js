@@ -320,11 +320,199 @@ main().catch(error => {
   check('chromium close failure terminates recorded child process', summary.processTreeTerminatedCount >= 1 && summary.fakeAliveAfterClose === false, JSON.stringify(summary))
 }
 
+// Verify browser_action rebuilds the entire browser context on session switch.
+function testBrowserSessionSwitchIsolation() {
+  const dataDir = createTempDataDir('s8-browser-session-switch-')
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+const Module = require('module')
+
+function makePage(browserState, id) {
+  let closed = false
+  let currentUrl = 'about:blank'
+  let currentTitle = 'tab-' + id
+  const api = {
+    __id: id,
+    isClosed: () => closed,
+    close: async () => {
+      if (closed) return
+      closed = true
+      browserState.pages = browserState.pages.filter(page => page !== api)
+    },
+    on: () => {},
+    setRequestInterception: async () => {},
+    evaluateOnNewDocument: async () => {},
+    evaluate: async () => null,
+    setUserAgent: async () => {},
+    setViewport: async () => {},
+    setDefaultTimeout: () => {},
+    setDefaultNavigationTimeout: () => {},
+    url: () => currentUrl,
+    title: async () => currentTitle,
+    goto: async (url) => {
+      currentUrl = String(url || '')
+      currentTitle = currentUrl === 'about:blank'
+        ? 'blank'
+        : currentUrl.replace(/^https?:\/\//, '').replace(/[/?#].*$/, '')
+      return null
+    },
+    cookies: async () => browserState.cookies.map(cookie => ({ ...cookie })),
+    setCookie: async (cookie) => {
+      browserState.cookies = browserState.cookies.filter(item => !(item.name === cookie.name && item.url === cookie.url))
+      browserState.cookies.push({ ...cookie })
+    },
+    deleteCookie: async (...cookies) => {
+      const blocked = new Set(cookies.map(cookie => cookie.name + '|' + String(cookie.url || '') + '|' + String(cookie.domain || '') + '|' + String(cookie.path || '')))
+      browserState.cookies = browserState.cookies.filter(cookie => !blocked.has(cookie.name + '|' + String(cookie.url || '') + '|' + String(cookie.domain || '') + '|' + String(cookie.path || '')))
+    },
+    context: () => ({
+      clearCookies: async () => { browserState.cookies = [] },
+    }),
+  }
+  return api
+}
+
+function createBrowserState() {
+  return {
+    pages: [],
+    cookies: [],
+    closed: false,
+  }
+}
+
+function createBrowser(browserState) {
+  let nextPageId = 0
+  return {
+    newPage: async () => {
+      const page = makePage(browserState, ++nextPageId)
+      browserState.pages.push(page)
+      return page
+    },
+    pages: async () => browserState.pages.filter(page => !page.isClosed()),
+    close: async () => {
+      browserState.closed = true
+      const pages = browserState.pages.slice()
+      for (const page of pages) await page.close()
+    },
+    process: () => null,
+  }
+}
+
+async function main() {
+  const fakeBrowserPath = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'fake-chromium.exe')
+  fs.writeFileSync(fakeBrowserPath, '')
+  process.env.DONGXUELIAN_BROWSER_PATH = fakeBrowserPath
+  const launchedBrowsers = []
+  const originalLoad = Module._load
+  Module._load = function patchedLoad(request, parent, isMain) {
+    const normalized = String(request || '').replace(/\\\\/g, '/')
+    if (normalized === 'puppeteer-core') {
+      return {
+        launch: async () => {
+          const browserState = createBrowserState()
+          const browser = createBrowser(browserState)
+          launchedBrowsers.push(browserState)
+          return browser
+        },
+      }
+    }
+    if (normalized.endsWith('/resource-scheduler/admission') || normalized.includes('resource-scheduler/admission')) {
+      return {
+        admitTask: () => ({
+          decision: 'run_now',
+          reason: 'test-allow',
+          resourceState: 'green',
+          botMode: 'normal',
+          memAvailableMb: 1600,
+        }),
+      }
+    }
+    return originalLoad.apply(this, arguments)
+  }
+
+  const browserAction = require('./packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/browser-action')
+  const sessionA = { userId: 'session-a-user', channelKey: 'session-a-channel', taskId: 'browser-l32-a' }
+  const sessionB = { userId: 'session-b-user', channelKey: 'session-b-channel', taskId: 'browser-l32-b' }
+
+  await browserAction.execute({ action: 'start' }, sessionA)
+  await browserAction.execute({ action: 'navigate', url: 'https://session-a-root.example/path' }, sessionA)
+  await browserAction.execute({ action: 'new_tab' }, sessionA)
+  await browserAction.execute({ action: 'navigate', url: 'https://session-a-extra.example/next' }, sessionA)
+  await browserAction.execute({ action: 'cookies_set', name: 'sessionA', value: 'cookie-a' }, sessionA)
+
+  const tabsA = JSON.parse(await browserAction.execute({ action: 'tabs' }, sessionA))
+  const switchA = await browserAction.execute({ action: 'switch_tab', index: 1 }, sessionA)
+  const cookiesA = JSON.parse(await browserAction.execute({ action: 'cookies_get' }, sessionA))
+
+  const tabsB = JSON.parse(await browserAction.execute({ action: 'tabs' }, sessionB))
+  const cookiesB = JSON.parse(await browserAction.execute({ action: 'cookies_get' }, sessionB))
+  let switchBError = ''
+  try {
+    await browserAction.execute({ action: 'switch_tab', index: 1 }, sessionB)
+  } catch (error) {
+    switchBError = String(error && error.message || error)
+  }
+  await browserAction.execute({ action: 'new_tab' }, sessionB)
+  const tabsBAfterNewTab = JSON.parse(await browserAction.execute({ action: 'tabs' }, sessionB))
+  await browserAction.execute({ action: 'close' }, sessionB)
+
+  const summary = {
+    launchCount: launchedBrowsers.length,
+    tabsA,
+    switchA,
+    cookiesA,
+    tabsB,
+    cookiesB,
+    switchBError,
+    tabsBAfterNewTab,
+    browserPageCounts: launchedBrowsers.map(item => item.pages.length),
+    browserClosedStates: launchedBrowsers.map(item => item.closed),
+  }
+  console.log(JSON.stringify(summary, null, 2))
+  const hasSessionARoot = tabsA.some(item => String(item.url || '').includes('session-a-root.example'))
+  const hasSessionAExtra = tabsA.some(item => String(item.url || '').includes('session-a-extra.example'))
+  const sessionBSeesA = tabsB.some(item => String(item.url || '').includes('session-a-root.example') || String(item.url || '').includes('session-a-extra.example'))
+  const ok = launchedBrowsers.length >= 2
+    && tabsA.length === 2
+    && hasSessionARoot
+    && hasSessionAExtra
+    && String(switchA).includes('session-a-extra.example')
+    && cookiesA.some(item => item.name === 'sessionA')
+    && tabsB.length === 1
+    && sessionBSeesA === false
+    && cookiesB.length === 0
+    && /tab index/i.test(switchBError)
+    && tabsBAfterNewTab.length === 2
+    && launchedBrowsers[0] && launchedBrowsers[0].closed === true
+  process.exitCode = ok ? 0 : 1
+}
+
+main().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('S8 browser session switch isolation', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    DONGXUELIAN_BROWSER_MIN_MEM_MB: '1',
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  }, 30000)
+  if (!summary) return
+  check('browser session A keeps same-session extra tabs', summary.tabsA.length === 2, JSON.stringify(summary))
+  check('browser session B does not inherit session A tabs', summary.tabsB.length === 1 && !summary.tabsB.some(item => String(item.url || '').includes('session-a-')), JSON.stringify(summary))
+  check('browser session switch clears old cookies with rebuilt context', Array.isArray(summary.cookiesB) && summary.cookiesB.length === 0, JSON.stringify(summary))
+  check('browser session B cannot switch to session A extra tab index', /tab index/i.test(String(summary.switchBError || '')), JSON.stringify(summary))
+  check('browser session B can still create its own new tab after rebuild', summary.tabsBAfterNewTab.length === 2, JSON.stringify(summary))
+}
+
 // Run all resource-system regression checks.
 function main() {
   console.log('=== resource-system S8 tests ===')
   testWorkerTimeoutInjection()
   testChromiumCloseFailureInjection()
+  testBrowserSessionSwitchIsolation()
   console.log(`passed: ${passed}`)
   console.log(`failed: ${failed}`)
   process.exit(failed > 0 ? 1 : 0)
