@@ -84,6 +84,66 @@ async function run(t) {
     t.check('scenario vision plain text does not mark session', !marked && !vision.isVisionSession(session), JSON.stringify(vision.getVisionPayload(session)))
   })
 
+  await withScenario({}, async ({ makeSession }) => {
+    const apiPath = path.join(AI_ROOT, 'lib', 'core', 'api.js')
+    const storePath = path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js')
+    const visionPath = path.join(AI_ROOT, 'lib', 'media', 'image', 'vision.js')
+    const api = require(apiPath)
+    const store = require(storePath)
+    const originalApi = {
+      callGetImage: api.callGetImage,
+      readImageAsBase64: api.readImageAsBase64,
+      downloadImageAsBase64: api.downloadImageAsBase64,
+      isVisionModel: api.isVisionModel,
+    }
+    const originalReadCachedImage = store.readCachedImage
+    let downloadCalls = 0
+    const cachedBase64 = `data:image/png;base64,${ONE_PIXEL_PNG.toString('base64')}`
+    api.callGetImage = async () => null
+    api.readImageAsBase64 = async () => null
+    api.downloadImageAsBase64 = async () => {
+      downloadCalls += 1
+      return null
+    }
+    api.isVisionModel = () => true
+    store.readCachedImage = async () => cachedBase64
+    delete require.cache[require.resolve(visionPath)]
+    try {
+      const vision = require(visionPath)
+      const session = makeSession({
+        guildId: 'group-vision-cache',
+        messageId: 'img-current-cache',
+        content: '[CQ:image,file=current-cache.jpg]',
+        event: { sender: { role: 'member' }, message: [{ type: 'image', data: { file: 'current-cache.jpg' } }] },
+      })
+      const marked = vision.prepareVisionRequest(session, { hasVisual: true, hasFile: true, hasEmbed: false }, {
+        content: session.content,
+        allowCurrentMessage: true,
+        includeQuote: false,
+      })
+      const messages = []
+      const result = await vision.appendVisionMessage(messages, session, { provider: 'dashscope', model: 'qwen3.5-omni-flash' }, {
+        logger: () => ({ warn: () => {} }),
+      }, {
+        promptText: '看看这张图',
+      })
+      const content = Array.isArray(messages[0] && messages[0].content) ? messages[0].content : []
+      const injectedUrl = content[1] && content[1].image_url && content[1].image_url.url
+      t.check('scenario vision current image reuses cached base64 when source file unavailable',
+        marked && result.ok && injectedUrl === cachedBase64,
+        JSON.stringify({ result, messages }))
+      t.check('scenario vision current image cache path avoids url download fallback', downloadCalls === 0, `downloadCalls=${downloadCalls}`)
+      t.check('scenario vision current image cache path clears session marker', !vision.isVisionSession(session), JSON.stringify(vision.getVisionPayload(session)))
+    } finally {
+      api.callGetImage = originalApi.callGetImage
+      api.readImageAsBase64 = originalApi.readImageAsBase64
+      api.downloadImageAsBase64 = originalApi.downloadImageAsBase64
+      api.isVisionModel = originalApi.isVisionModel
+      store.readCachedImage = originalReadCachedImage
+      delete require.cache[require.resolve(visionPath)]
+    }
+  })
+
   await withScenario({}, async ({ makeSession, run, data }) => {
     const session = makeSession({
       content: '<img src="file://D:\\qq\\nt_data\\Pic\\Thumb\\local-only.jpg" />',

@@ -6,6 +6,8 @@
  */
 const { callGetImage, readImageAsBase64, downloadImageAsBase64, extractImageFileFromElements, isVisionModel, } = require('../../core/api');
 const { extractImageUrls } = require('../../core/utils');
+const { getChannelKey } = require('../../conversation');
+const { readCachedImage } = require('./image-store');
 const VISION_SESSION_KEYS = ['_visionUrls', '_visionFile', '_isVisionRequest'];
 function getVisionErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
@@ -91,41 +93,56 @@ async function appendVisionMessage(messages, session, config, ctx, options = {})
     const visionContext = { provider: config && config.provider, model: config && config.model, promptText, injectedIndex: -1 };
     try {
         const vc2 = config;
+        const visionModelEnabled = isVisionModel(String(vc2.provider || ''), String(vc2.model || ''));
+        const channelKey = getChannelKey(session);
+        const messageId = session?.messageId ? String(session.messageId) : '';
         let localPath = null;
+        let cachedImageTried = false;
+        let localReadFailed = false;
+        const pushVisionImage = (imgBase64) => {
+            visionContext.injectedIndex = messages.push({
+                role: 'user',
+                content: [
+                    { type: 'text', text: promptText },
+                    { type: 'image_url', image_url: { url: imgBase64 } },
+                ],
+            }) - 1;
+            return { ok: true, visionContext };
+        };
+        const tryReadCachedCurrentImage = async () => {
+            if (cachedImageTried || !visionModelEnabled || !channelKey || !messageId)
+                return null;
+            cachedImageTried = true;
+            return readCachedImage(channelKey, messageId);
+        };
         if (payload.file) {
             const imgInfo = await callGetImage(payload.file);
             if (imgInfo && imgInfo.file)
                 localPath = String(imgInfo.file);
         }
-        if (isVisionModel(String(vc2.provider || ''), String(vc2.model || '')) && localPath) {
+        if (visionModelEnabled && localPath) {
             const imgBase64 = await readImageAsBase64(localPath);
-            if (imgBase64) {
-                visionContext.injectedIndex = messages.push({
-                    role: 'user',
-                    content: [
-                        { type: 'text', text: promptText },
-                        { type: 'image_url', image_url: { url: imgBase64 } },
-                    ],
-                }) - 1;
-                return { ok: true, visionContext };
-            }
-            return { ok: false, reply: readFailReply };
+            if (imgBase64)
+                return pushVisionImage(imgBase64);
+            localReadFailed = true;
+        }
+        if (payload.file) {
+            const cachedBase64 = await tryReadCachedCurrentImage();
+            if (cachedBase64)
+                return pushVisionImage(cachedBase64);
         }
         const visionUrl = payload.urls && payload.urls[0];
         if (visionUrl) {
             const imgBase64 = await downloadImageAsBase64(visionUrl, 10000);
-            if (imgBase64 && isVisionModel(String(vc2.provider || ''), String(vc2.model || ''))) {
-                visionContext.injectedIndex = messages.push({
-                    role: 'user',
-                    content: [
-                        { type: 'text', text: promptText },
-                        { type: 'image_url', image_url: { url: imgBase64 } },
-                    ],
-                }) - 1;
-                return { ok: true, visionContext };
-            }
+            if (imgBase64 && visionModelEnabled)
+                return pushVisionImage(imgBase64);
+            const cachedBase64 = await tryReadCachedCurrentImage();
+            if (cachedBase64)
+                return pushVisionImage(cachedBase64);
             return { ok: false, reply: inaccessibleReply };
         }
+        if (localReadFailed)
+            return { ok: false, reply: readFailReply };
         return { ok: false, reply: inaccessibleReply };
     }
     catch (error) {
