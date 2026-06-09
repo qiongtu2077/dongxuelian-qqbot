@@ -11,7 +11,7 @@ const {
   selectFileEvidenceResult,
   resolveUnguardedFileFollowup,
   buildFileEvidenceReply,
-} = require('../media/file/file-followup-guard') as typeof import('../media/file/file-followup-guard')
+} = require('./file-followup-evidence') as typeof import('./file-followup-evidence')
 const { parseReminderActionRequest, parseScheduledTaskRequest, isReminderToolName } = require('../routing/reminder-route') as typeof import('../routing/reminder-route')
 const {
   parseUploadedFileVariantRequest,

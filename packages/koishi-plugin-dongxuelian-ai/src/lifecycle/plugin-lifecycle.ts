@@ -27,7 +27,7 @@ const {
 const {
   loadSkills,
   loadSkillsContentCache,
-} = require('../chat') as typeof import('../chat')
+} = require('../persona/skills/skills-loader') as typeof import('../persona/skills/skills-loader')
 const {
   loadStickerCache,
 } = require('../reply/reply') as typeof import('../reply/reply')

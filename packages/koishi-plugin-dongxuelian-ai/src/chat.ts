@@ -42,7 +42,7 @@ const { getRecentAgentContextNote, clearAgentContextForUser } = require('./chat/
 const { getChatToolDefinitions, getChatToolSystemHint } = require('./chat/chat-tools') as typeof import('./chat/chat-tools') // 聊天内嵌工具（表情包/贴纸等）
 const {
   buildFileFollowupState,
-} = require('./media/file/file-followup-guard') as typeof import('./media/file/file-followup-guard')
+} = require('./media/file/file-followup-state') as typeof import('./media/file/file-followup-state')
 const {
   handleChatToolFlow,
 } = require('./chat/chat-tool-flow') as typeof import('./chat/chat-tool-flow')

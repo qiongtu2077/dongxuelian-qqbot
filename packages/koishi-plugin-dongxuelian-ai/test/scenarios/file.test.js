@@ -816,7 +816,7 @@ async function run(t) {
 
   // L14: 文件追问弱锚点只从 fresh 文件自动选；过期/他人文件不自动补读
   {
-    const guard = require('../../lib/media/file/file-followup-guard')
+    const guard = require('../../lib/media/file/file-followup-state')
     const now = 1_000_000_000_000
     const WIN = 30 * 60 * 1000
     const freshSelf = { messageId: 'fresh-self', fileName: 'a.pdf', userId: 'u1', ts: now - 5 * 60 * 1000 }

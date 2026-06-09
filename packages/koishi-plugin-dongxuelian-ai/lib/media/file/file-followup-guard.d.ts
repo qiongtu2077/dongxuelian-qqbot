@@ -25,22 +25,14 @@ interface FileFollowupState {
     hasFileEvidence?: boolean;
     targetFile?: RecentFileLike | null;
 }
-declare function looksLikeFileFollowup(userText?: string, recentFiles?: RecentFileLike[]): boolean;
-declare function toolCallsIncludeAnalyzeFile(toolCalls?: ToolCallLike[]): boolean;
-declare function toolResultsIncludeFileEvidence(results?: ToolResultLike[]): boolean;
-declare function selectFileEvidenceResult(results?: ToolResultLike[]): string;
-declare function selectActiveFileAnchor(recentFiles?: RecentFileLike[], context?: FileFollowupContext): RecentFileLike | null;
-declare function buildFileFollowupState(channelKey: string, userText: string, context?: FileFollowupContext): Promise<FileFollowupState>;
-declare function resolveUnguardedFileFollowup(state?: FileFollowupState, context?: FileFollowupContext): Promise<string | ToolResultLike | null>;
-declare function buildFileEvidenceReply(fileEvidence?: string, targetFile?: RecentFileLike | null): string;
 declare const _default: {
-    looksLikeFileFollowup: typeof looksLikeFileFollowup;
-    toolCallsIncludeAnalyzeFile: typeof toolCallsIncludeAnalyzeFile;
-    toolResultsIncludeFileEvidence: typeof toolResultsIncludeFileEvidence;
-    selectFileEvidenceResult: typeof selectFileEvidenceResult;
-    selectActiveFileAnchor: typeof selectActiveFileAnchor;
-    buildFileFollowupState: typeof buildFileFollowupState;
-    resolveUnguardedFileFollowup: typeof resolveUnguardedFileFollowup;
-    buildFileEvidenceReply: typeof buildFileEvidenceReply;
+    looksLikeFileFollowup: (userText?: string, recentFiles?: RecentFileLike[]) => boolean;
+    toolCallsIncludeAnalyzeFile: (toolCalls?: ToolCallLike[]) => boolean;
+    toolResultsIncludeFileEvidence: (results?: ToolResultLike[]) => boolean;
+    selectFileEvidenceResult: (results?: ToolResultLike[]) => string;
+    selectActiveFileAnchor: (recentFiles?: RecentFileLike[], context?: FileFollowupContext) => RecentFileLike | null;
+    buildFileFollowupState: (channelKey: string, userText: string, context?: FileFollowupContext) => Promise<FileFollowupState>;
+    resolveUnguardedFileFollowup: (state?: FileFollowupState, context?: FileFollowupContext) => Promise<string | ToolResultLike | null>;
+    buildFileEvidenceReply: (fileEvidence?: string, targetFile?: RecentFileLike | null) => string;
 };
 export = _default;

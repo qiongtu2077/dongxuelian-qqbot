@@ -30,7 +30,7 @@ conversationLastActiveAt, // 会话最后活跃时间戳（用于历史降级判
  } = require('./conversation');
 const { getRecentAgentContextNote, clearAgentContextForUser } = require('./chat/agent-chat-bridge'); // Agent 工具摘要注入 + 话题切换清理
 const { getChatToolDefinitions, getChatToolSystemHint } = require('./chat/chat-tools'); // 聊天内嵌工具（表情包/贴纸等）
-const { buildFileFollowupState, } = require('./media/file/file-followup-guard');
+const { buildFileFollowupState, } = require('./media/file/file-followup-state');
 const { handleChatToolFlow, } = require('./chat/chat-tool-flow');
 const { buildActiveGroupSceneNote } = require('./routing/group-scene-index');
 const { buildRandomModePrompt } = require('./behavior/random-reply-mode'); // 随机回复内部 mode 协议

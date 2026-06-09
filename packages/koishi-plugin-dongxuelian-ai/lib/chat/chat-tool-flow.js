@@ -6,7 +6,7 @@
  * 状态: 无。
  */
 const { handleChatToolCalls, executeChatTool } = require('./chat-tools');
-const { toolCallsIncludeAnalyzeFile, toolResultsIncludeFileEvidence, selectFileEvidenceResult, resolveUnguardedFileFollowup, buildFileEvidenceReply, } = require('../media/file/file-followup-guard');
+const { toolCallsIncludeAnalyzeFile, toolResultsIncludeFileEvidence, selectFileEvidenceResult, resolveUnguardedFileFollowup, buildFileEvidenceReply, } = require('./file-followup-evidence');
 const { parseReminderActionRequest, parseScheduledTaskRequest, isReminderToolName } = require('../routing/reminder-route');
 const { parseUploadedFileVariantRequest, isUploadedFileVariantCapabilityRefusal, formatUploadedFileVariantFallback, } = require('../routing/uploaded-file-action-route');
 const { externalToolsDenied, buildExternalToolPolicyHint } = require('../routing/external-tool-policy');
