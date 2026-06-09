@@ -255,6 +255,15 @@ function testResourceDiskUsageShape() {
   }
 }
 
+// Verifies memory history only requires the normal Dashboard access token.
+function testResourceMemoryHistoryRequiresAccessOnly() {
+  const req = makeReq('GET', '/dashboard/api/resource/memory-history?range=1m', { authorization: 'Bearer ' + auth.createToken() })
+  const res = makeRes()
+  assert.strictEqual(router.dispatch(req, res, '/dashboard/api/resource/memory-history', new URL('http://127.0.0.1:5150/dashboard/api/resource/memory-history?range=1m')), true)
+  assert.strictEqual(res.statusCode, 200)
+  assert.strictEqual(parseJsonResponse(res).ok, true)
+}
+
 // Runs all tests sequentially so rate-limit state remains deterministic.
 async function run() {
   testRegexRouteObjectDispatch()
@@ -269,6 +278,7 @@ async function run() {
   testLocalBypassRejectsCrossSite()
   testContentSecurityPolicyAllowsPreviewAudio()
   testResourceDiskUsageShape()
+  testResourceMemoryHistoryRequiresAccessOnly()
 
   fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })
   console.log('dashboard security/router tests passed')
