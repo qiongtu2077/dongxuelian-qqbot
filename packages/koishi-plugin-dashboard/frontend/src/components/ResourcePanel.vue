@@ -102,12 +102,12 @@
             <h2>内存走势</h2>
             <div class="resource-subline">{{ memorySampleLabel }}</div>
           </div>
-          <select v-model="memoryRange" class="memory-range-select" @change="loadMemoryHistory">
+          <select v-model="memoryRange" class="memory-range-select" @change="loadMemoryHistory({ animate: true })">
             <option v-for="option in memoryRangeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
           </select>
         </div>
         <div class="memory-chart-wrap">
-          <svg class="memory-chart" viewBox="0 0 640 220" preserveAspectRatio="none" role="img" aria-label="可用内存折线图">
+          <svg class="memory-chart" :class="{ 'is-transitioning': memoryChartTransitioning }" viewBox="0 0 640 220" preserveAspectRatio="none" role="img" aria-label="已使用内存折线图">
             <line
               v-for="tick in memoryYTicks"
               :key="tick.y"
@@ -129,24 +129,15 @@
               :points="memoryPolyline"
               class="memory-chart-line"
             />
-            <circle
-              v-for="point in memoryChartPoints"
-              :key="point.ts"
-              :cx="point.x"
-              :cy="point.y"
-              r="3"
-              class="memory-chart-dot"
-            />
           </svg>
-          <div v-if="!memoryHistory.length" class="memory-chart-empty">
+          <div v-if="!hasMemoryChartData" class="memory-chart-empty">
             {{ memoryEmptyText }}
           </div>
         </div>
         <div class="memory-chart-meta">
-          <span>点数 {{ memoryHistory.length }}</span>
-          <span>当前 {{ memoryCurrentLabel }}</span>
-          <span>最低 {{ memoryMinLabel }}</span>
-          <span>最高 {{ memoryMaxLabel }}</span>
+          <span>平均 {{ memoryAverageLabel }}</span>
+          <span>最小 {{ memoryMinLabel }}</span>
+          <span>最大 {{ memoryMaxLabel }}</span>
         </div>
       </section>
 
@@ -263,9 +254,11 @@ export default {
     const loadingTasks = ref(false)
     const loadingEvents = ref(false)
     const loadingMemory = ref(false)
+    const memoryChartTransitioning = ref(false)
     let timer: ReturnType<typeof setInterval> | null = null
     let secondaryTimer: ReturnType<typeof setInterval> | null = null
     let memoryTimer: ReturnType<typeof setInterval> | null = null
+    let memoryTransitionTimer: ReturnType<typeof setTimeout> | null = null
     let lastMemoryAdminPromptAt = 0
 
     const memoryRangeOptions = [
@@ -318,16 +311,21 @@ export default {
     const diskCacheLabel = computed(() => formatInterval(Number(disk.value.cacheTtlMs)))
     const maintenanceLabel = computed(() => status.value.maintenance ? '关闭维护' : '开启维护')
     const lastRefreshLabel = computed(() => lastRefresh.value ? new Date(lastRefresh.value).toLocaleTimeString() : '尚未刷新')
-    const memoryValues = computed(() => memoryHistory.value
-      .map(point => Number(point.memAvailableMb))
-      .filter(value => Number.isFinite(value)))
+    const memorySeriesPoints = computed(() => memoryHistory.value
+      .map((point, index) => ({
+        point,
+        index,
+        value: memoryUsedValue(point),
+      }))
+      .filter(item => Number.isFinite(item.value)))
+    const memoryValues = computed(() => memorySeriesPoints.value.map(item => item.value))
+    const memoryAverageValue = computed(() => {
+      const values = memoryValues.value
+      return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null
+    })
     const memoryMinValue = computed(() => memoryValues.value.length ? Math.min(...memoryValues.value) : null)
     const memoryMaxValue = computed(() => memoryValues.value.length ? Math.max(...memoryValues.value) : null)
-    const memoryCurrentValue = computed(() => {
-      const values = memoryValues.value
-      return values.length ? values[values.length - 1] : null
-    })
-    const memoryCurrentLabel = computed(() => mbLabel(memoryCurrentValue.value))
+    const memoryAverageLabel = computed(() => mbLabel(memoryAverageValue.value))
     const memoryMinLabel = computed(() => mbLabel(memoryMinValue.value))
     const memoryMaxLabel = computed(() => mbLabel(memoryMaxValue.value))
     const memorySampleLabel = computed(() => {
@@ -352,7 +350,7 @@ export default {
       return top <= bottom ? { min: 0, max: Math.max(1, top || 1) } : { min: bottom, max: top }
     })
     const memoryChartPoints = computed(() => {
-      const points = memoryHistory.value
+      const points = memorySeriesPoints.value
       const count = points.length
       const scale = memoryChartScale.value
       const height = 176
@@ -360,14 +358,16 @@ export default {
       const left = 44
       const width = 580
       const span = Math.max(1, scale.max - scale.min)
-      return points.map((point, index) => {
-        const value = Number(point.memAvailableMb)
+      return points.map((item, index) => {
+        const point = item.point
+        const value = item.value
         const ratio = Number.isFinite(value) ? (value - scale.min) / span : 0
         const x = left + (count <= 1 ? width : (index / (count - 1)) * width)
         const y = top + height - Math.max(0, Math.min(1, ratio)) * height
-        return { x: round(x), y: round(y), ts: String(point.ts || point.createdAt || index), value }
+        return { x: round(x), y: round(y), ts: String(point.ts || point.createdAt || item.index), value }
       })
     })
+    const hasMemoryChartData = computed(() => memorySeriesPoints.value.length > 0)
     const memoryPolyline = computed(() => memoryChartPoints.value.map(point => `${point.x},${point.y}`).join(' '))
     const memoryYTicks = computed(() => {
       const scale = memoryChartScale.value
@@ -418,6 +418,16 @@ export default {
     function mbLabel(value: unknown): string {
       const parsed = Number(value)
       return Number.isFinite(parsed) ? `${Math.round(parsed)} MB` : '-'
+    }
+
+    // 优先消费后端已用内存字段，兼容旧采样用 total-available 推导。
+    function memoryUsedValue(point: JsonRecord): number {
+      const direct = Number(point.memUsedMb)
+      if (Number.isFinite(direct)) return Math.max(0, direct)
+      const total = Number(point.memTotalMb)
+      const available = Number(point.memAvailableMb)
+      if (Number.isFinite(total) && Number.isFinite(available)) return Math.max(0, total - available)
+      return Number.NaN
     }
 
     // 磁盘容量按大小自动切换 MB/GB，减少长数字噪声。
@@ -495,8 +505,12 @@ export default {
     }
 
     // 读取内存历史折线图。
-    async function loadMemoryHistory(): Promise<void> {
+    async function loadMemoryHistory(options: { animate?: boolean } = {}): Promise<void> {
       if (loadingMemory.value) return
+      if (options.animate) {
+        if (memoryTransitionTimer) clearTimeout(memoryTransitionTimer)
+        memoryChartTransitioning.value = true
+      }
       loadingMemory.value = true
       try {
         const res = await fetchResourceMemoryHistory(memoryRange.value)
@@ -519,6 +533,12 @@ export default {
         memoryError.value = errorMessage(res.data, '内存走势读取失败')
       } finally {
         loadingMemory.value = false
+        if (options.animate) {
+          memoryTransitionTimer = setTimeout(() => {
+            memoryChartTransitioning.value = false
+            memoryTransitionTimer = null
+          }, 220)
+        }
       }
     }
 
@@ -578,6 +598,7 @@ export default {
       if (timer) clearInterval(timer)
       if (secondaryTimer) clearInterval(secondaryTimer)
       if (memoryTimer) clearInterval(memoryTimer)
+      if (memoryTransitionTimer) clearTimeout(memoryTransitionTimer)
     })
 
     return {
@@ -595,6 +616,7 @@ export default {
       loadingTasks,
       loadingEvents,
       loadingMemory,
+      memoryChartTransitioning,
       running,
       workers,
       media,
@@ -610,10 +632,11 @@ export default {
       diskCacheLabel,
       memorySampleLabel,
       memoryEmptyText,
-      memoryCurrentLabel,
+      memoryAverageLabel,
       memoryMinLabel,
       memoryMaxLabel,
       memoryChartPoints,
+      hasMemoryChartData,
       memoryPolyline,
       memoryYTicks,
       maintenanceLabel,
@@ -848,13 +871,12 @@ export default {
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
+  transition: opacity 180ms ease, transform 220ms ease;
 }
 
-.memory-chart-dot {
-  fill: var(--accent);
-  stroke: var(--card);
-  stroke-width: 2;
-  vector-effect: non-scaling-stroke;
+.memory-chart.is-transitioning .memory-chart-line {
+  opacity: 0.35;
+  transform: translateY(4px);
 }
 
 .memory-chart-empty {
@@ -870,7 +892,7 @@ export default {
 
 .memory-chart-meta {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-top: 10px;
   color: var(--text2);

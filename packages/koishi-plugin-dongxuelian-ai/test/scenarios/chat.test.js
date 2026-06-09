@@ -261,7 +261,8 @@ async function run(t) {
     { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-heavy', type: 'function', function: { name: 'web_search', arguments: '{"query":"鸣潮最新角色"}' } }] } }] } },
     { json: { choices: [{ message: { content: '让我看看…' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario heavy web_search sends queue message', result, '完成后会自动发回结果')
+    checkSentIncludes(t, 'scenario heavy web_search sends quiet queue message', result, '拿到可靠结果再说')
+    checkSentExcludes(t, 'scenario heavy web_search quiet queue does not promise async result', result, '完成后会自动发回结果')
     t.check('scenario heavy web_search sends one queue QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
     t.check('scenario heavy web_search does not execute search in entry process', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
     checkSentExcludes(t, 'scenario heavy web_search does not send progress text', result, '让我看看')
@@ -286,7 +287,7 @@ async function run(t) {
         return '已搜索：鸣潮 最新角色\n搜索结果：绯雪与达妮娅'
       }
     },
-    waitFor: message => String(message).includes('完成后会自动发回结果'),
+    waitFor: message => String(message).includes('拿到可靠结果再说'),
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -460,7 +461,8 @@ async function run(t) {
     { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-heavy-fetch', type: 'function', function: { name: 'web_fetch', arguments: '{"url":"https://example.com/story"}' } }] } }] } },
     { json: { choices: [{ message: { content: '让我看看…' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario heavy web_fetch sends queue message', result, '完成后会自动发回结果')
+    checkSentIncludes(t, 'scenario heavy web_fetch sends quiet queue message', result, '拿到可靠结果再说')
+    checkSentExcludes(t, 'scenario heavy web_fetch quiet queue does not promise async result', result, '完成后会自动发回结果')
     t.check('scenario heavy web_fetch sends one queue QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
     t.check('scenario heavy web_fetch does not execute fetch in entry process', !Array.isArray(session._webFetchCalls) || session._webFetchCalls.length === 0, JSON.stringify(session._webFetchCalls || []))
     checkSentExcludes(t, 'scenario heavy web_fetch does not send progress text', result, '让我看看')
@@ -497,7 +499,7 @@ async function run(t) {
         }
       }
     },
-    waitFor: message => String(message).includes('完成后会自动发回结果'),
+    waitFor: message => String(message).includes('拿到可靠结果再说'),
   })
   try {
     const webFetch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-fetch.js'))

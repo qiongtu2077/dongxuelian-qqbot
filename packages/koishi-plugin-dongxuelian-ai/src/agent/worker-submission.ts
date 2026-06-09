@@ -15,6 +15,8 @@ interface SubmitAgentWorkerTaskOptions {
   priority?: number
   timeoutMs?: number
   maxActivePerUser?: number
+  notifyTarget?: 'qq-group' | 'dashboard' | 'none' | string
+  acceptedMessageMode?: 'normal' | 'quiet'
   payload: Record<string, unknown>
 }
 
@@ -61,10 +63,11 @@ function formatAdmissionBlockedMessage(admission: AdmissionDecisionLike | null |
 }
 
 // 返回用户可见的提交成功提示。
-function formatAcceptedMessage(task: ResourceTaskLike | null | undefined, admission: AdmissionDecisionLike | null | undefined): string {
+function formatAcceptedMessage(task: ResourceTaskLike | null | undefined, admission: AdmissionDecisionLike | null | undefined, mode: 'normal' | 'quiet' = 'normal'): string {
   const taskId = String(task?.id || '')
   const decision = String(admission?.decision || '')
   const prefix = decision === 'queue' ? 'Agent 已加入资源队列' : 'Agent 已提交后台执行'
+  if (mode === 'quiet') return `我先去后台查一下，拿到可靠结果再说。${taskId ? `任务 ID：${taskId}。` : ''}`
   return `${prefix}，任务 ID：${taskId}。完成后会自动发回结果。`
 }
 
@@ -74,6 +77,8 @@ function submitAgentWorkerTask(options: SubmitAgentWorkerTaskOptions): AgentWork
   const kind = resolveAgentTaskKind(channel, options.taskKind || '')
   const channelKey = String(options.channelKey || '')
   const userId = String(options.userId || '')
+  const notifyTarget = options.notifyTarget || (channel === 'dashboard' ? 'dashboard' : 'qq-group')
+  const acceptedMessageMode = options.acceptedMessageMode === 'quiet' ? 'quiet' : 'normal'
   const maxActivePerUser = Math.max(1, Math.min(10, Number(options.maxActivePerUser || 1)))
   const activeCount = countActiveAgentWorkerTasks(kind, channelKey, userId)
   if (activeCount >= maxActivePerUser) {
@@ -97,7 +102,7 @@ function submitAgentWorkerTask(options: SubmitAgentWorkerTaskOptions): AgentWork
       ...(options.payload || {}),
     },
     notify: {
-      target: channel === 'dashboard' ? 'dashboard' : 'qq-group',
+      target: notifyTarget,
       channelKey,
       status: 'pending',
     },
@@ -120,11 +125,12 @@ function submitAgentWorkerTask(options: SubmitAgentWorkerTaskOptions): AgentWork
     admission: result.admission,
     taskId: result.task?.id,
     status: 202,
-    message: formatAcceptedMessage(result.task, result.admission),
+    message: formatAcceptedMessage(result.task, result.admission, acceptedMessageMode),
   }
 }
 
 export = {
   submitAgentWorkerTask,
   countActiveAgentWorkerTasks,
+  formatAcceptedMessage,
 }

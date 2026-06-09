@@ -7,6 +7,8 @@ interface SubmitAgentWorkerTaskOptions {
     priority?: number;
     timeoutMs?: number;
     maxActivePerUser?: number;
+    notifyTarget?: 'qq-group' | 'dashboard' | 'none' | string;
+    acceptedMessageMode?: 'normal' | 'quiet';
     payload: Record<string, unknown>;
 }
 interface AgentWorkerSubmissionResult {
@@ -25,9 +27,11 @@ interface AdmissionDecisionLike {
     reason?: unknown;
 }
 declare function countActiveAgentWorkerTasks(kind: string, channelKey: string, userId: string): number;
+declare function formatAcceptedMessage(task: ResourceTaskLike | null | undefined, admission: AdmissionDecisionLike | null | undefined, mode?: 'normal' | 'quiet'): string;
 declare function submitAgentWorkerTask(options: SubmitAgentWorkerTaskOptions): AgentWorkerSubmissionResult;
 declare const _default: {
     submitAgentWorkerTask: typeof submitAgentWorkerTask;
     countActiveAgentWorkerTasks: typeof countActiveAgentWorkerTasks;
+    formatAcceptedMessage: typeof formatAcceptedMessage;
 };
 export = _default;

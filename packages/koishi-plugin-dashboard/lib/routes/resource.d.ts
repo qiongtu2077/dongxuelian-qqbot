@@ -90,6 +90,9 @@ declare function collectMemoryHistory(mods: ResourceModuleSet, range: string): {
         memAvailableMb: number;
         minAvailableMb: number;
         maxAvailableMb: number;
+        memUsedMb: number | null;
+        minUsedMb: number | null;
+        maxUsedMb: number | null;
         memTotalMb: number | null;
         rssMb: number | null;
         sampleCount: number;

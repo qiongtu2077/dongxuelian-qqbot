@@ -648,6 +648,7 @@ async function main() {
     agentSkillHubDownload: path.join(LIB, 'agent', 'skills', 'hub'),
     agentSkillHubGithub: path.join(LIB, 'agent', 'skills', 'hub-github'),
     agentRouter: path.join(LIB, 'agent', 'router'),
+    agentWorkerSubmission: path.join(LIB, 'agent', 'worker-submission'),
     agentSessions: path.join(LIB, 'agent', 'sessions'),
     agentStats: path.join(LIB, 'agent', 'stats'),
     agentPending: path.join(LIB, 'agent', 'pending'),
@@ -1015,7 +1016,7 @@ async function main() {
       'buildSearchFailureRetellFallback', 'shouldFilterAgentMaterialLine', 'redactAgentMaterial', 'guardAgentRetellReply',
     ],
     resultNotifier: [
-      'buildAgentTaskTextMessage', 'hasHardSearchFailureSignal', 'createAgentTaskSender',
+      'buildAgentTaskTextMessage', 'hasHardSearchFailureSignal', 'isChatHeavyToolTask', 'hasAgentSendableText', 'createAgentTaskSender',
     ],
     jailbreakRuleset: [
       'combinePatterns',
@@ -1155,6 +1156,9 @@ async function main() {
     ],
     agentRouter: [
       'heuristicRoute', 'isExplicitSearchRequest', 'isExplicitUrlFetchRequest', 'isGeneralSearchIntent', 'isSearchFollowUpRequest', 'isSearchRefinementRequest', 'isPreviousSearchContextQuestion', 'hasSearchableRecentContext', 'pickRecentSearchContext', 'extractSingleUrl', 'buildContextualSearchQuery', 'buildSearchAgentUserMessage', 'buildExplicitSearchRunOptions', 'buildExplicitUrlFetchRunOptions', 'getStructuredSearchContext', 'canUseStructuredSearchContext', 'isStructuredSearchBlocked',
+    ],
+    agentWorkerSubmission: [
+      'submitAgentWorkerTask', 'countActiveAgentWorkerTasks', 'formatAcceptedMessage',
     ],
     searchContext: [
       'buildPrivateSearchContext', 'mergeSearchContext', 'hasConcreteSearchSubject', 'isPotentialSearchFollowUp',
@@ -2092,6 +2096,13 @@ async function main() {
   check('agent retell guard treats short fetched body as failure material', modules.agentRetellGuard.hasSearchFailureMaterial(shortBodyAgentResult), JSON.stringify(shortBodyAgentResult))
   checkEqual('agent result notifier blocks weak search notification text', modules.resultNotifier.buildAgentTaskTextMessage(weakSearchAgentResult, { payload: { entry: 'chat-heavy-tool' } }), '这次搜索没有拿到可靠结果，不能据此下结论。')
   checkEqual('agent result notifier blocks short-body notification text', modules.resultNotifier.buildAgentTaskTextMessage(shortBodyAgentResult, { payload: { entry: 'chat-heavy-tool' } }), '这次搜索没有拿到可靠结果，不能据此下结论。')
+  check('agent result notifier detects chat-heavy-tool task', modules.resultNotifier.isChatHeavyToolTask({ payload: { entry: 'chat-heavy-tool' } }) && !modules.resultNotifier.isChatHeavyToolTask({ payload: { entry: 'qq-agent-command' } }))
+  check('agent result notifier treats empty chat-heavy-tool result as not sendable', !modules.resultNotifier.hasAgentSendableText({}) && !modules.resultNotifier.hasAgentSendableText({ reply: '   ' }) && modules.resultNotifier.hasAgentSendableText({ reply: '正文读到了。' }))
+  const acceptedTask = { id: 'agent_task-cascade' }
+  const normalAcceptedMessage = modules.agentWorkerSubmission.formatAcceptedMessage(acceptedTask, { decision: 'run' })
+  const quietAcceptedMessage = modules.agentWorkerSubmission.formatAcceptedMessage(acceptedTask, { decision: 'run' }, 'quiet')
+  check('agent worker normal accepted message keeps auto-result promise', normalAcceptedMessage.includes('完成后会自动发回结果'), normalAcceptedMessage)
+  check('agent worker quiet accepted message removes auto-result promise', quietAcceptedMessage.includes('拿到可靠结果再说') && !quietAcceptedMessage.includes('完成后会自动发回结果'), quietAcceptedMessage)
   const usableSearchAgentResult = {
     reply: '正文读到了。',
     toolResults: [{ name: 'web_search', result: searchWithPages }],

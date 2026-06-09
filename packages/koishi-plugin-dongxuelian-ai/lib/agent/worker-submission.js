@@ -31,10 +31,12 @@ function formatAdmissionBlockedMessage(admission, taskId = '') {
     return `Agent 任务暂时不能进入队列：${reason}`;
 }
 // 返回用户可见的提交成功提示。
-function formatAcceptedMessage(task, admission) {
+function formatAcceptedMessage(task, admission, mode = 'normal') {
     const taskId = String(task?.id || '');
     const decision = String(admission?.decision || '');
     const prefix = decision === 'queue' ? 'Agent 已加入资源队列' : 'Agent 已提交后台执行';
+    if (mode === 'quiet')
+        return `我先去后台查一下，拿到可靠结果再说。${taskId ? `任务 ID：${taskId}。` : ''}`;
     return `${prefix}，任务 ID：${taskId}。完成后会自动发回结果。`;
 }
 // 提交 Agent worker 任务：入口只落 S2 队列，真正执行交给 agent-worker。
@@ -43,6 +45,8 @@ function submitAgentWorkerTask(options) {
     const kind = resolveAgentTaskKind(channel, options.taskKind || '');
     const channelKey = String(options.channelKey || '');
     const userId = String(options.userId || '');
+    const notifyTarget = options.notifyTarget || (channel === 'dashboard' ? 'dashboard' : 'qq-group');
+    const acceptedMessageMode = options.acceptedMessageMode === 'quiet' ? 'quiet' : 'normal';
     const maxActivePerUser = Math.max(1, Math.min(10, Number(options.maxActivePerUser || 1)));
     const activeCount = countActiveAgentWorkerTasks(kind, channelKey, userId);
     if (activeCount >= maxActivePerUser) {
@@ -65,7 +69,7 @@ function submitAgentWorkerTask(options) {
             ...(options.payload || {}),
         },
         notify: {
-            target: channel === 'dashboard' ? 'dashboard' : 'qq-group',
+            target: notifyTarget,
             channelKey,
             status: 'pending',
         },
@@ -86,10 +90,11 @@ function submitAgentWorkerTask(options) {
         admission: result.admission,
         taskId: result.task?.id,
         status: 202,
-        message: formatAcceptedMessage(result.task, result.admission),
+        message: formatAcceptedMessage(result.task, result.admission, acceptedMessageMode),
     };
 }
 module.exports = {
     submitAgentWorkerTask,
     countActiveAgentWorkerTasks,
+    formatAcceptedMessage,
 };

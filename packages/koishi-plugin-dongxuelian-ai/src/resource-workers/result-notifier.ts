@@ -137,6 +137,17 @@ function hasHardSearchFailureSignal(result: AgentNotifyResultLike): boolean {
   return AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE.test(parts.join('\n'))
 }
 
+// 判断任务是否来自普通聊天自动触发的 heavy tool。
+function isChatHeavyToolTask(task: ResultNotifierTaskLike | null | undefined): boolean {
+  const payload = task && typeof task.payload === 'object' && task.payload ? task.payload : {}
+  return String(payload.entry || '') === 'chat-heavy-tool'
+}
+
+// 判断 result 是否有值得发给群的正文。
+function hasAgentSendableText(result: ResultNotifierResult): boolean {
+  return !!String(result.reply || result.message || '').trim()
+}
+
 // 通过 Koishi bot 或 OneBot internal API 发送文字。
 async function sendNotifierText(bot: ResultNotifierBotLike | null | undefined, target: string, text: string): Promise<void> {
   if (!bot) throw new Error('bot unavailable for result notifier')
@@ -223,7 +234,16 @@ function createAgentTaskSender(options: ResourceResultSenderOptions = {}): Resul
     const notify = task?.notify || {}
     const target = String(notify.channelKey || task?.channelKey || '')
     if (!target) throw new Error('agent task notify target is empty')
-    await sendNotifierText(bot, target, buildAgentTaskTextMessage(result, task))
+    if (isChatHeavyToolTask(task) && !hasAgentSendableText(result)) {
+      if (logger) logger.info(`chat-heavy-tool notify skipped empty result: task=${task.id}, target=${target}`)
+      return true
+    }
+    const text = buildAgentTaskTextMessage(result, task)
+    if (!text.trim()) {
+      if (logger) logger.info(`agent task notify skipped empty text: task=${task.id}, target=${target}`)
+      return true
+    }
+    await sendNotifierText(bot, target, text)
     if (logger) logger.info(`agent task text notified: task=${task.id}, target=${target}`)
     return true
   }
@@ -300,6 +320,8 @@ async function notifyCompletedTasks(options: NotifyCompletedOptions = {}): Promi
 export = {
   readTaskResult,
   hasHardSearchFailureSignal,
+  isChatHeavyToolTask,
+  hasAgentSendableText,
   buildAgentTaskTextMessage,
   createDailyReportSender,
   createAgentTaskSender,
