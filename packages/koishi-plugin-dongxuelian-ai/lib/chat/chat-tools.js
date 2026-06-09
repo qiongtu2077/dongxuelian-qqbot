@@ -311,6 +311,18 @@ function isLightweightTool(name) {
 function isHeavyTool(name) {
     return toolPolicy.isHeavyTool(name);
 }
+function isAnalysisTimeoutTool(name) {
+    return name === 'analyze_historical_image' || name === 'analyze_file';
+}
+function isToolTimeoutError(error) {
+    return getChatToolErrorMessage(error) === 'tool timeout';
+}
+function buildChatToolFailureContent(name, error) {
+    if (name === 'analyze_file' && isToolTimeoutError(error)) {
+        return '文件仍在分析或处理超时，可稍后再读取。';
+    }
+    return '工具执行失败';
+}
 function looksLikeShortMediaFollowUp(text = '') {
     const value = String(text || '').replace(/\s+/g, '').trim();
     return !!(value && value.length <= SHORT_MEDIA_FOLLOWUP_MAX_CHARS);
@@ -534,7 +546,7 @@ async function handleChatToolCalls(toolCalls, context = {}) {
         }
         if (Date.now() >= deadline)
             break;
-        const timeout = name === 'analyze_historical_image' ? CHAT_TOOL_ANALYZE_TIMEOUT_MS : CHAT_TOOL_TIMEOUT_MS;
+        const timeout = isAnalysisTimeoutTool(name) ? CHAT_TOOL_ANALYZE_TIMEOUT_MS : CHAT_TOOL_TIMEOUT_MS;
         try {
             const resultPromise = executeChatTool(tc, context);
             const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('tool timeout')), timeout));
@@ -543,7 +555,7 @@ async function handleChatToolCalls(toolCalls, context = {}) {
         }
         catch (err) {
             console.warn('[chat-tools] lightweight tool failed:', name || 'unknown', getChatToolErrorMessage(err));
-            results.push({ tool_call_id: tc.id, role: 'tool', content: '工具执行失败' });
+            results.push({ tool_call_id: tc.id, role: 'tool', content: buildChatToolFailureContent(name, err) });
         }
     }
     return { results, heavyTools };

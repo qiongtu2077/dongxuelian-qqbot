@@ -366,6 +366,21 @@ function isHeavyTool(name: string): boolean {
   return toolPolicy.isHeavyTool(name)
 }
 
+function isAnalysisTimeoutTool(name: string): boolean {
+  return name === 'analyze_historical_image' || name === 'analyze_file'
+}
+
+function isToolTimeoutError(error: unknown): boolean {
+  return getChatToolErrorMessage(error) === 'tool timeout'
+}
+
+function buildChatToolFailureContent(name: string, error: unknown): string {
+  if (name === 'analyze_file' && isToolTimeoutError(error)) {
+    return '文件仍在分析或处理超时，可稍后再读取。'
+  }
+  return '工具执行失败'
+}
+
 function looksLikeShortMediaFollowUp(text: string = ''): boolean {
   const value = String(text || '').replace(/\s+/g, '').trim()
   return !!(value && value.length <= SHORT_MEDIA_FOLLOWUP_MAX_CHARS)
@@ -578,7 +593,7 @@ async function handleChatToolCalls(toolCalls?: ChatToolCall[], context: ChatTool
       continue
     }
     if (Date.now() >= deadline) break
-    const timeout = name === 'analyze_historical_image' ? CHAT_TOOL_ANALYZE_TIMEOUT_MS : CHAT_TOOL_TIMEOUT_MS
+    const timeout = isAnalysisTimeoutTool(name) ? CHAT_TOOL_ANALYZE_TIMEOUT_MS : CHAT_TOOL_TIMEOUT_MS
     try {
       const resultPromise = executeChatTool(tc, context)
       const timeoutPromise = new Promise<never>((_, reject) =>
@@ -588,7 +603,7 @@ async function handleChatToolCalls(toolCalls?: ChatToolCall[], context: ChatTool
       results.push({ tool_call_id: tc.id, role: 'tool', content: String(result || '') })
     } catch (err) {
       console.warn('[chat-tools] lightweight tool failed:', name || 'unknown', getChatToolErrorMessage(err))
-      results.push({ tool_call_id: tc.id, role: 'tool', content: '工具执行失败' })
+      results.push({ tool_call_id: tc.id, role: 'tool', content: buildChatToolFailureContent(name, err) })
     }
   }
 

@@ -2501,6 +2501,40 @@ async function main() {
     }
     const enabledDashboardTools = isolatedChatTools.getChatToolDefinitions({ channel: 'dashboard', userText: '读一下刚才文件，十分钟后提醒我' }).map(item => item.function?.name)
     check('chat tool definitions still allow enabled dashboard tools', enabledDashboardTools.includes('analyze_file') && enabledDashboardTools.includes('create_reminder') && enabledDashboardTools.includes('get_current_time'), JSON.stringify(enabledDashboardTools))
+    const isolatedFileFollowupEvidence = require(path.join(LIB, 'chat', 'file-followup-evidence'))
+    const isolatedAnalyzeFile = require(path.join(LIB, 'agent', 'tools', 'analyze-file'))
+    const originalAnalyzeFileExecute = isolatedAnalyzeFile.execute
+    try {
+      isolatedAnalyzeFile.execute = async () => {
+        await new Promise(resolve => setTimeout(resolve, 3500))
+        return '[用户上传文件: slow.txt]\n---文件内容开始---\n慢速文件证据\n---文件内容结束---'
+      }
+      const slowAnalyzeFileResult = await isolatedChatTools.handleChatToolCalls([
+        { id: 'tc-slow-file', type: 'function', function: { name: 'analyze_file', arguments: '{}' } },
+      ], { channel: 'dashboard', channelKey: 'g-chat' })
+      check('chat analyze_file uses analysis timeout for slow evidence', slowAnalyzeFileResult.heavyTools.length === 0 && String(slowAnalyzeFileResult.results[0]?.content || '').includes('慢速文件证据'), JSON.stringify(slowAnalyzeFileResult))
+
+      const originalSetTimeout = global.setTimeout
+      const timeoutDelays = []
+      try {
+        isolatedAnalyzeFile.execute = async () => new Promise(() => {})
+        global.setTimeout = (fn, ms, ...args) => {
+          timeoutDelays.push(Number(ms))
+          return originalSetTimeout(fn, Number(ms) >= 3000 ? 0 : ms, ...args)
+        }
+        const timeoutAnalyzeFileResult = await isolatedChatTools.handleChatToolCalls([
+          { id: 'tc-timeout-file', type: 'function', function: { name: 'analyze_file', arguments: '{}' } },
+        ], { channel: 'dashboard', channelKey: 'g-chat' })
+        const timeoutContent = String(timeoutAnalyzeFileResult.results[0]?.content || '')
+        check('chat analyze_file timeout uses analysis budget', timeoutDelays.includes(25000), JSON.stringify(timeoutDelays))
+        check('chat analyze_file timeout reports pending state instead of generic failure', /文件.*(?:分析|处理).*(?:超时|稍后|仍在)/.test(timeoutContent) && !timeoutContent.includes('工具执行失败'), JSON.stringify(timeoutAnalyzeFileResult))
+        check('chat analyze_file timeout is treated as terminal file evidence', isolatedFileFollowupEvidence.buildFileEvidenceReply(timeoutContent).includes('稍后再读取'), timeoutContent)
+      } finally {
+        global.setTimeout = originalSetTimeout
+      }
+    } finally {
+      isolatedAnalyzeFile.execute = originalAnalyzeFileExecute
+    }
     await isolatedConfig.patchAgentConfig({ persona: { dashboardPersona: '测试人格', qqInheritChatPersona: false } })
     check('agent config stores persona settings', isolatedConfig.getAgentPersonaConfig().dashboardPersona === '测试人格' && isolatedConfig.getAgentPersonaConfig().qqInheritChatPersona === false)
     const writeRoot = path.join(agentTmp, 'workspace')
