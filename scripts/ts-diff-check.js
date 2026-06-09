@@ -51,6 +51,7 @@ const ALLOWED_NEW_AI_JS_FILES = new Set([
   'media/backpressure/media-requests.js',
   'media/voice/tts-resource.js',
   'media/voice/voice-store.js',
+  'public/pet-bridge-runtime.js',
   'resource-common/files.js',
   'resource-gate/gate.js',
   'resource-scheduler/admission.js',
@@ -87,8 +88,21 @@ const ALLOWED_REQUIRE_CHANGES_BY_PLUGIN = {
   'koishi-plugin-pet-bridge': {
     'lib/protocol.js': {
       added: [
+        'koishi-plugin-dongxuelian-ai/lib/public/pet-bridge-runtime',
+      ],
+      removed: [
+        'koishi-plugin-dongxuelian-ai/lib/core/runtime-config',
+        'koishi-plugin-dongxuelian-ai/lib/core/api',
         'koishi-plugin-dongxuelian-ai/lib/resource-gate/gate',
         'koishi-plugin-dongxuelian-ai/lib/resource-scheduler/admission',
+        'koishi-plugin-dongxuelian-ai/lib/persona/persona',
+        'koishi-plugin-dongxuelian-ai/lib/conversation',
+        'koishi-plugin-dongxuelian-ai/lib/core/onebot-endpoint',
+        'koishi-plugin-dongxuelian-ai/lib/core/constants',
+        'fs',
+        'fs',
+        'fs',
+        'ws',
       ],
     },
   },

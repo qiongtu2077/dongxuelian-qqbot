@@ -1,19 +1,24 @@
 /**
  * MODULE: pet-bridge protocol handlers.
  * 职责: Dispatch and handle all pet bridge WebSocket message types (query/command/chat).
- * 边界: Reads config through runtime-config; calls AI through api.js.
+ * 边界: Reads AI state only through the AI public pet-bridge runtime adapter.
  *        Does NOT modify core plugin logic, handle Koishi sessions, or send messages on its own.
  */
-const { loadConfig, resetConfigCache, getThinkingEnabled, setThinkingEnabled } = require('koishi-plugin-dongxuelian-ai/lib/core/runtime-config') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/runtime-config')
-const { requestChatCompletions } = require('koishi-plugin-dongxuelian-ai/lib/core/api') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/api')
-const { admitTask } = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/admission') as typeof import('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/admission')
-const { acquireResourceGate } = require('koishi-plugin-dongxuelian-ai/lib/resource-gate/gate') as typeof import('koishi-plugin-dongxuelian-ai/lib/resource-gate/gate')
-const { getAvailablePersonals, loadPersonalSkill, setUserPersona, getUserPersona } = require('koishi-plugin-dongxuelian-ai/lib/persona/persona') as typeof import('koishi-plugin-dongxuelian-ai/lib/persona/persona')
-const { getMemorySummary } = require('koishi-plugin-dongxuelian-ai/lib/conversation') as typeof import('koishi-plugin-dongxuelian-ai/lib/conversation')
-const { resolveOneBotWsUrl } = require('koishi-plugin-dongxuelian-ai/lib/core/onebot-endpoint') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/onebot-endpoint')
-const { PROVIDER_FILE, MODEL_FILE, SEARCH_ENABLED_FILE, MAINTENANCE_FILE, THINKING_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_WHITELIST_FILE } = require('koishi-plugin-dongxuelian-ai/lib/core/constants') as typeof import('koishi-plugin-dongxuelian-ai/lib/core/constants')
-const fs = require('fs')
-const PET_BRIDGE_CHAT_KIND = 'pet_bridge_chat'
+const {
+  getPetBridgeStatus,
+  listPetBridgePersonas,
+  getPetBridgeMemorySummary,
+  listPetBridgeSummaryGroups,
+  switchPetBridgeModel,
+  setPetBridgeSearchEnabled,
+  setPetBridgeThinkingEnabled,
+  setPetBridgeMaintenanceEnabled,
+  sendPetBridgeGroupMessage,
+  managePetBridgeRandomWhitelist,
+  switchPetBridgePersona,
+  getCurrentPetBridgePersona,
+  generatePetBridgeChatReply,
+} = require('koishi-plugin-dongxuelian-ai/lib/public/pet-bridge-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/pet-bridge-runtime')
 
 interface BridgeRequest {
   id?: unknown
@@ -45,292 +50,93 @@ interface BridgePayload {
   persona?: string
 }
 
-interface OneBotResponse {
-  status?: string
-  [key: string]: unknown
-}
-
-interface WebSocketClientLike {
-  on(event: 'open' | 'close', handler: () => unknown): unknown
-  on(event: 'message', handler: (data: Buffer | string) => unknown): unknown
-  on(event: 'error', handler: (error: Error) => unknown): unknown
-  send(data: string): void
-  close(): void
-}
-
-interface PetBridgeGateHandle {
-  updateStep(step: string, memAvailableMb?: number | null): void
-  release(reason?: string): void
-}
-
-interface PetBridgeGateResult {
-  ok: boolean
-  response?: BridgeResponse
-  handle?: PetBridgeGateHandle
-}
-
 function asPayload(value: unknown): BridgePayload {
   return value && typeof value === 'object' ? value as BridgePayload : {}
+}
+
+// 资源忙时返回协议层可识别的低成本错误，不触发模型调用。
+function buildPetBridgeBusyResponse(reason: unknown): BridgeResponse {
+  return { success: false, payload: { error: 'RESOURCE_BUSY', reason } }
 }
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-// 生成桌宠桥接聊天的资源任务 ID，供 S0/S1 事件追踪。
-function buildPetBridgeChatTaskId(payload: BridgePayload): string {
-  const userId = String(payload.userId || 'desktop-user').replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 80) || 'desktop-user'
-  return `${PET_BRIDGE_CHAT_KIND}-${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-}
-
-// 资源忙时返回协议层可识别的低成本错误，不触发模型调用。
-function buildPetBridgeBusyResponse(reason: string): BridgeResponse {
-  return { success: false, payload: { error: 'RESOURCE_BUSY', reason } }
-}
-
-// 为桌宠桥接聊天申请 S1 准入和 S0 独占锁。
-async function acquirePetBridgeChatGate(payload: BridgePayload): Promise<PetBridgeGateResult> {
-  const taskId = buildPetBridgeChatTaskId(payload)
-  const channelKey = String(payload.channelKey || 'pet-bridge')
-  const userId = String(payload.userId || 'desktop-user')
-  const admission = admitTask({
-    taskId,
-    kind: PET_BRIDGE_CHAT_KIND,
-    source: 'pet-bridge',
-    channelKey,
-    userId,
-    exclusive: true,
-    priority: 70,
-    deferable: false,
-    queueTimeoutMs: 5000,
-    runTimeoutMs: 120000,
-  })
-  if (admission.decision !== 'run_now') {
-    return { ok: false, response: buildPetBridgeBusyResponse(admission.reason || 'pet bridge chat rejected by resource scheduler') }
-  }
-  try {
-    const handle = await acquireResourceGate({
-      taskId,
-      kind: PET_BRIDGE_CHAT_KIND,
-      owner: 'pet-bridge',
-      channelKey,
-      userId,
-      priority: 70,
-      timeoutMs: 120000,
-      waitTimeoutMs: 5000,
-      pollMs: 500,
-      memAvailableMb: admission.memAvailableMb,
-      step: 'pet_bridge_prepare',
-    })
-    return { ok: true, handle }
-  } catch (error) {
-    return { ok: false, response: buildPetBridgeBusyResponse(getErrorMessage(error)) }
-  }
-}
-
-function readJsonFileSync(filePath: string, fallback: unknown): unknown {
-  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')) } catch { return fallback }
-}
-
-function readStringListSync(filePath: string): string[] {
-  const value = readJsonFileSync(filePath, [])
-  return Array.isArray(value) ? value.map(item => String(item)).filter(Boolean) : []
-}
-
-function writeJsonFileSync(filePath: string, data: unknown): void {
-  const tmp = filePath + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
-  fs.renameSync(tmp, filePath)
-}
-
-function writeTextFileSync(filePath: string, content: string): void {
-  fs.writeFileSync(filePath, content, 'utf8')
-}
-
-function callOneBot(action: string, params: Record<string, unknown>): Promise<OneBotResponse | null> {
-  return new Promise((resolve) => {
-    let ws: WebSocketClientLike | null = null
-    let timer: ReturnType<typeof setTimeout> | null = null
-    let settled = false
-    const finish = (value: OneBotResponse | null) => {
-      if (settled) return
-      settled = true
-      if (timer) clearTimeout(timer)
-      try { if (ws) ws.close() } catch { /* non-critical: best-effort OneBot WS cleanup */
-      }
-      resolve(value)
-    }
-    try {
-      ws = new (require('ws'))(resolveOneBotWsUrl()) as WebSocketClientLike
-      timer = setTimeout(() => finish(null), 5000)
-      ws.on('open', () => {
-        try { ws?.send(JSON.stringify({ action, params, echo: 'pet-bridge' })) } catch { finish(null) }
-      })
-      ws.on('message', (d) => {
-        let msg: OneBotResponse | null = null
-        try { msg = JSON.parse(d.toString()) as OneBotResponse } catch { return finish(null) }
-        if (msg.status === 'ok') finish(msg)
-        else finish(null)
-      })
-      ws.on('error', (e) => { console.error('[pet-bridge] callOneBot WS error:', e.message); finish(null) })
-      ws.on('close', () => finish(null))
-    } catch (e) { console.error('[pet-bridge] callOneBot connect error:', getErrorMessage(e)); finish(null) }
-  })
-}
-
 async function handleStatus(): Promise<BridgeResponse> {
-  const config = await loadConfig()
-  return {
-    success: true,
-    payload: {
-      provider: config.provider,
-      model: config.model,
-      baseURL: config.baseURL,
-      online: true,
-      searchEnabled: config.searchEnabled,
-      thinkingEnabled: getThinkingEnabled(),
-    },
-  }
+  return { success: true, payload: await getPetBridgeStatus() }
 }
 
 function handlePersonas(): BridgeResponse {
-  const personas = getAvailablePersonals()
-  return { success: true, payload: { personas } }
+  return { success: true, payload: { personas: listPetBridgePersonas() } }
 }
 
 async function handleMemory(payload: BridgePayload): Promise<BridgeResponse> {
   const { userId, channelKey } = payload
   if (!userId) return { success: false, payload: { error: 'missing userId' } }
-  const summary = await getMemorySummary(userId, channelKey || 'default')
+  const summary = await getPetBridgeMemorySummary(userId, channelKey || 'default')
   return { success: true, payload: { summary } }
 }
 
 function handleSummaries(): BridgeResponse {
-  return { success: true, payload: { groups: readStringListSync(SUMMARY_WHITELIST_FILE) } }
+  return { success: true, payload: { groups: listPetBridgeSummaryGroups() } }
 }
 
 async function handleSwitchModel(payload: BridgePayload): Promise<BridgeResponse> {
   const { provider, model } = payload
-  if (provider) writeTextFileSync(PROVIDER_FILE, provider)
-  if (model) writeTextFileSync(MODEL_FILE, model)
-  resetConfigCache()
-  const config = await loadConfig(true)
-  return { success: true, payload: { provider: config.provider, model: config.model } }
+  return { success: true, payload: await switchPetBridgeModel(provider, model) }
 }
 
 function handleToggleSearch(payload: BridgePayload): BridgeResponse {
   const enabled = !!payload.enabled
-  writeTextFileSync(SEARCH_ENABLED_FILE, enabled ? '1' : '0')
-  resetConfigCache()
-  return { success: true, payload: { searchEnabled: enabled } }
+  return { success: true, payload: setPetBridgeSearchEnabled(enabled) }
 }
 
 function handleToggleThinking(payload: BridgePayload): BridgeResponse {
   const enabled = !!payload.enabled
-  setThinkingEnabled(enabled)
-  writeTextFileSync(THINKING_MODE_FILE, enabled ? 'on' : 'off')
-  return { success: true, payload: { thinkingEnabled: enabled } }
+  return { success: true, payload: setPetBridgeThinkingEnabled(enabled) }
 }
 
 function handleToggleMaintenance(payload: BridgePayload): BridgeResponse {
-  const enabled = !!payload.enabled
-  if (enabled) {
-    writeTextFileSync(MAINTENANCE_FILE, '优化中，别急~')
-  } else {
-    try { fs.unlinkSync(MAINTENANCE_FILE) } catch { /* non-critical: maintenance file may already be absent */
-    }
-  }
-  return { success: true, payload: { maintenanceEnabled: enabled } }
+  return { success: true, payload: setPetBridgeMaintenanceEnabled(!!payload.enabled) }
 }
 
 async function handleSendGroupMsg(payload: BridgePayload): Promise<BridgeResponse> {
   const { groupId, text } = payload
   if (!groupId || !text) return { success: false, payload: { error: 'missing groupId or text' } }
   if (!/^\d+$/.test(String(groupId))) return { success: false, payload: { error: 'groupId must be numeric' } }
-  const result = await callOneBot('send_group_msg', { group_id: Number(groupId), message: text })
+  const result = await sendPetBridgeGroupMessage(groupId, text)
   return { success: !!result, payload: result || { error: 'send failed' } }
 }
 
 function handleManageWhitelist(payload: BridgePayload): BridgeResponse {
   const op = payload.whitelistAction || payload.action
-  const groupId = payload.groupId
-  let list = readStringListSync(RANDOM_WHITELIST_FILE)
-  if (op === 'add') {
-    const gid = String(groupId || '')
-    if (!gid) return { success: false, payload: { error: 'missing groupId' } }
-    if (!list.includes(gid)) list.push(gid)
-    writeJsonFileSync(RANDOM_WHITELIST_FILE, list)
-    return { success: true, payload: { whitelist: list } }
-  }
-  if (op === 'remove') {
-    const gid = String(groupId || '')
-    if (!gid) return { success: false, payload: { error: 'missing groupId' } }
-    list = list.filter(id => id !== gid)
-    writeJsonFileSync(RANDOM_WHITELIST_FILE, list)
-    return { success: true, payload: { whitelist: list } }
-  }
-  if (op === 'list') {
-    return { success: true, payload: { whitelist: list } }
-  }
-  return { success: false, payload: { error: 'invalid action; use add/remove/list' } }
+  const result = managePetBridgeRandomWhitelist(op || '', payload.groupId)
+  if (!result.ok) return { success: false, payload: { error: result.error || 'invalid action; use add/remove/list' } }
+  return { success: true, payload: { whitelist: result.whitelist || [] } }
 }
 
 function handleSwitchPersona(payload: BridgePayload): BridgeResponse {
   const { name } = payload
-  if (!name) return { success: false, payload: { error: 'missing persona name' } }
-  const skill = loadPersonalSkill(name)
-  if (!skill) return { success: false, payload: { error: 'persona not found' } }
-  setUserPersona('desktop-user', name)
+  const result = switchPetBridgePersona(name || '')
+  if (!result.ok) return { success: false, payload: { error: result.error || 'persona not found' } }
   return { success: true, payload: { persona: name } }
 }
 
 function handleGetCurrentPersona(): BridgeResponse {
-  const current = getUserPersona('desktop-user') || 'default'
-  return { success: true, payload: { persona: current } }
+  return { success: true, payload: { persona: getCurrentPetBridgePersona() } }
 }
 
 async function handleChat(payload: BridgePayload): Promise<BridgeResponse> {
   const { text, persona } = payload
   if (!text) return { success: false, payload: { error: 'missing text' } }
 
-  // 维护模式检查：与 bot index.js 逻辑一致
-  if (require('fs').existsSync(MAINTENANCE_FILE)) {
-    const mt = require('fs').readFileSync(MAINTENANCE_FILE, 'utf8').trim() || '优化中，别急~'
-    return { success: true, payload: { reply: mt } }
+  const result = await generatePetBridgeChatReply({ text, persona, userId: payload.userId, channelKey: payload.channelKey })
+  if (!result.ok) {
+    if (result.error === 'RESOURCE_BUSY') return buildPetBridgeBusyResponse(result.reason || 'pet bridge chat resource busy')
+    return { success: false, payload: { error: result.error || 'chat failed' } }
   }
-
-  const gateResult = await acquirePetBridgeChatGate(payload)
-  if (!gateResult.ok) return gateResult.response || buildPetBridgeBusyResponse('pet bridge chat resource busy')
-  const gateHandle = gateResult.handle
-
-  try {
-    gateHandle?.updateStep('pet_bridge_config')
-    const config = await loadConfig()
-    const messages: Array<{ role: string, content: string }> = []
-    const personaName = persona || getUserPersona('desktop-user') || null
-    if (personaName && personaName !== 'default') {
-      const skillContent = loadPersonalSkill(personaName)
-      if (skillContent) {
-        const body = skillContent.replace(/^---[\s\S]*?---\n?/, '').trim()
-        if (body) messages.push({ role: 'system', content: body })
-      }
-    }
-    if (!messages.length) {
-      messages.push({ role: 'system', content: '你是一个AI助手。请用简洁、自然的中文回答。' })
-    }
-    messages.push({ role: 'user', content: text })
-    const extraBody: Record<string, unknown> = {}
-    if (config.searchEnabled) extraBody.enable_search = true
-    if (getThinkingEnabled()) extraBody.enable_thinking = true
-    gateHandle?.updateStep('pet_bridge_model')
-    const reply = await requestChatCompletions(messages, config, extraBody)
-    return { success: true, payload: { reply } }
-  } catch (err) {
-    return { success: false, payload: { error: getErrorMessage(err) } }
-  } finally {
-    try { gateHandle?.release('pet-bridge-chat-finally') } catch { /* non-critical: stale lock recovery handles release failures */
-    }
-  }
+  return { success: true, payload: { reply: result.reply } }
 }
 
 async function handleMessage(input: unknown): Promise<BridgeResponse> {

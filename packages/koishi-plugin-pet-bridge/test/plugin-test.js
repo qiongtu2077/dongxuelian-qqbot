@@ -30,14 +30,25 @@ function check(label, ok, detail) {
 function clearModule(modulePath) {
   try {
     delete require.cache[require.resolve(modulePath)]
-  } catch {}
+  } catch { /* non-critical: cache cleanup skips modules that were never loaded */
+  }
 }
 
 // Clears plugin and AI runtime modules that capture data paths at load time.
 function clearPluginCaches() {
   clearModule(PLUGIN_PATH)
   clearModule(PROTOCOL_PATH)
-  for (const rel of ['constants', 'runtime-config', 'persona', 'conversation', 'api']) {
+  for (const rel of [
+    'public/pet-bridge-runtime',
+    'core/constants',
+    'core/runtime-config',
+    'persona/persona',
+    'conversation',
+    'core/api',
+    'resource-scheduler/admission',
+    'resource-gate/gate',
+    'core/onebot-endpoint',
+  ]) {
     clearModule('koishi-plugin-dongxuelian-ai/lib/' + rel)
   }
 }
@@ -88,10 +99,17 @@ async function withIsolatedPlugin(fn) {
   clearPluginCaches()
 
   try {
+    let petBridgeRuntime = null
+    let petBridgeRuntimeLoadError = null
+    try {
+      petBridgeRuntime = require('koishi-plugin-dongxuelian-ai/lib/public/pet-bridge-runtime')
+    } catch (error) {
+      petBridgeRuntimeLoadError = error
+    }
     const protocol = require(PROTOCOL_PATH)
     const plugin = reloadPlugin()
     const constants = require('koishi-plugin-dongxuelian-ai/lib/core/constants')
-    await fn({ protocol, plugin, constants, tmpRoot, dataDir })
+    await fn({ protocol, plugin, constants, petBridgeRuntime, petBridgeRuntimeLoadError, tmpRoot, dataDir })
   } finally {
     clearPluginCaches()
     if (oldEnv.DONGXUELIAN_AI_DATA_DIR === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
@@ -104,12 +122,42 @@ async function withIsolatedPlugin(fn) {
 
 // Executes pet-bridge protocol and lifecycle regression checks.
 async function run() {
-  await withIsolatedPlugin(async ({ protocol, plugin, constants, dataDir }) => {
+  await withIsolatedPlugin(async ({ protocol, plugin, constants, petBridgeRuntime, petBridgeRuntimeLoadError, dataDir }) => {
     section('module loading and exports')
     check('protocol exports handleMessage', typeof protocol.handleMessage === 'function')
     check('plugin has name', plugin.name === 'pet-bridge')
     check('plugin has apply', typeof plugin.apply === 'function')
     check('constants use isolated data dir', constants.THINKING_MODE_FILE.startsWith(dataDir), constants.THINKING_MODE_FILE)
+    const runtimeExports = [
+      'getPetBridgeStatus',
+      'listPetBridgePersonas',
+      'getPetBridgeMemorySummary',
+      'listPetBridgeSummaryGroups',
+      'switchPetBridgeModel',
+      'setPetBridgeSearchEnabled',
+      'setPetBridgeThinkingEnabled',
+      'setPetBridgeMaintenanceEnabled',
+      'getPetBridgeMaintenanceMessage',
+      'sendPetBridgeGroupMessage',
+      'managePetBridgeRandomWhitelist',
+      'switchPetBridgePersona',
+      'getCurrentPetBridgePersona',
+      'generatePetBridgeChatReply',
+    ]
+    check('pet bridge runtime loads from public AI boundary', !!petBridgeRuntime && !petBridgeRuntimeLoadError, petBridgeRuntimeLoadError && petBridgeRuntimeLoadError.message)
+    check('pet bridge runtime exports public domain operations', !!petBridgeRuntime && runtimeExports.every(name => typeof petBridgeRuntime[name] === 'function'), runtimeExports.filter(name => !petBridgeRuntime || typeof petBridgeRuntime[name] !== 'function').join(', '))
+    const protocolSource = fs.readFileSync(PROTOCOL_PATH, 'utf8')
+    const forbiddenDeepRequires = [
+      'koishi-plugin-dongxuelian-ai/lib/core/runtime-config',
+      'koishi-plugin-dongxuelian-ai/lib/core/api',
+      'koishi-plugin-dongxuelian-ai/lib/resource-scheduler/admission',
+      'koishi-plugin-dongxuelian-ai/lib/resource-gate/gate',
+      'koishi-plugin-dongxuelian-ai/lib/persona/persona',
+      'koishi-plugin-dongxuelian-ai/lib/conversation',
+      'koishi-plugin-dongxuelian-ai/lib/core/onebot-endpoint',
+      'koishi-plugin-dongxuelian-ai/lib/core/constants',
+    ]
+    check('protocol uses only AI public pet bridge runtime', protocolSource.includes('koishi-plugin-dongxuelian-ai/lib/public/pet-bridge-runtime') && forbiddenDeepRequires.every(item => !protocolSource.includes(item)), forbiddenDeepRequires.filter(item => protocolSource.includes(item)).join(', '))
 
     section('plugin apply')
     const ctx = makeCtx()
