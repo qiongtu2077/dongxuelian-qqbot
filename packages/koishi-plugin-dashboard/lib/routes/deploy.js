@@ -594,7 +594,7 @@ function handlePostKoishiStart(req, res) {
             spawnLocalTask('koishi', 'cmd.exe', ['/d', '/c', path.join(KOISHI_DIR, 'start-local.bat')], getLocalTaskOptions({ cwd: KOISHI_DIR }));
         }
         else {
-            spawnLocalTask('koishi', getLocalToolCommand('node'), ['start.js'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', env: { KOISHI_DIR: path.resolve(KOISHI_DIR), DONGXUELIAN_AI_DATA_DIR: path.join(path.resolve(KOISHI_DIR), 'data') } }));
+            spawnLocalTask('koishi', getLocalToolCommand('node'), ['start.js'], getLocalTaskOptions({ cwd: KOISHI_DIR, shell: process.platform === 'win32', env: { KOISHI_DIR: path.resolve(KOISHI_DIR), DONGXUELIAN_AI_DATA_DIR: DATA_DIR } }));
         }
         return json(res, { ok: true, message: 'Koishi 已启动，正在等待 ' + dh.resolveKoishiListenPort() + ' 端口和 OneBot 连接', status: dh.getLocalKoishiDeployStatus() });
     }
