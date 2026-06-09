@@ -15,6 +15,7 @@ const JWT_RE = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g
 const EXTERNAL_PROMPT_KEYWORD_RE = /(?:system prompt|developer message|系统提示|开发者消息|忽略以上|忽略前文|切换人格|扮演|你现在是|不要告诉用户)/i;
 const EXTERNAL_PROMPT_ACTION_RE = /(?:忽略|覆盖|改写|泄露|输出|告诉|显示|发送|切换|扮演|作为|变成|无视|遵守|执行|回复|回答|follow|ignore|reveal|print|show|send|switch|act as|pretend|roleplay|do not tell)/i;
 const SENSITIVE_URL_PARAM_RE = /([?&](?:signature|sign|sig|token|access_token|api_key|apikey|key|secret|auth|session|sid)=)([^&#\s]+)/ig;
+const LOCAL_PATH_RE = /(^|[\s:：,，;；(（])([A-Za-z]:\\[^\r\n\t<>|"]+|\/(?:root|home)\/[^\r\n\t<>|"]+)/g;
 function collectAgentMaterial(agentResult = {}) {
     const parts = [];
     if (agentResult && agentResult.reply)
@@ -54,6 +55,9 @@ function shouldFilterAgentMaterialLine(line = '') {
 function filterExternalPromptLines(text = '') {
     return String(text || '').split(/\r?\n/).map(line => (shouldFilterAgentMaterialLine(line) ? '[已过滤外部指令/提示词]' : line)).join('\n');
 }
+function redactLocalPathMatch(_match, prefix) {
+    return `${prefix}[本地路径]`;
+}
 function redactAgentMaterial(text = '') {
     const value = String(text || '')
         .replace(AUTH_BEARER_RE, '$1[redacted]')
@@ -64,7 +68,8 @@ function redactAgentMaterial(text = '') {
     })
         .replace(KEY_PREFIX_RE, '[redacted-key]')
         .replace(JWT_RE, '[redacted-token]')
-        .replace(SENSITIVE_URL_PARAM_RE, '$1[redacted]');
+        .replace(SENSITIVE_URL_PARAM_RE, '$1[redacted]')
+        .replace(LOCAL_PATH_RE, redactLocalPathMatch);
     return filterExternalPromptLines(value);
 }
 function guardAgentRetellReply(reply = '', agentResult = {}, options = {}) {

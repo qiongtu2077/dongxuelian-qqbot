@@ -96,6 +96,12 @@ function ignoreBrowserPromiseFailure(error: unknown): void {
   void error
 }
 
+function formatBrowserArtifactResult(label: string, file: string, stat: { size?: number } | null = null): string {
+  const name = path.basename(file)
+  const size = stat && Number.isFinite(Number(stat.size)) ? `${Number(stat.size)} bytes` : '大小未知'
+  return `${label}已保存（${name}，${size}）`
+}
+
 function warnBrowserActionBackgroundFailure(action: string, error: unknown): void {
   console.warn(`[dongxuelian-ai] browser_action ${action} failed: ${getBrowserActionErrorMessage(error)}`)
 }
@@ -650,7 +656,7 @@ async function takeScreenshot(fullPage = false) {
     await fs.promises.unlink(file).catch(ignoreBrowserPromiseFailure)
     throw new Error(`截图文件过大：${stat.size} bytes`)
   }
-  return `截图已保存：${file}`
+  return formatBrowserArtifactResult('截图', file, stat)
 }
 
 async function navigateHistory(action: string): Promise<string> {
@@ -763,7 +769,7 @@ async function savePdf(params: BrowserActionParams = {}) {
     await fs.promises.unlink(file).catch(ignoreBrowserPromiseFailure)
     throw new Error(`PDF 文件过大：${stat.size} bytes`)
   }
-  return `PDF 已保存：${file}`
+  return formatBrowserArtifactResult('PDF', file, stat)
 }
 
 async function manageTabs(action: string, params: BrowserActionParams = {}) {
@@ -846,7 +852,7 @@ async function configureDownload(params: BrowserActionParams = {}) {
   const client = await p.target().createCDPSession()
   await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: dir })
   if (params.selector) await clickSelector(params.selector)
-  return `下载目录已设置：${dir}`
+  return '下载目录已配置'
 }
 
 async function clearBrowserCache() {

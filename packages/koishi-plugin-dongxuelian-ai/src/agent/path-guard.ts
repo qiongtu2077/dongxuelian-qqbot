@@ -5,7 +5,6 @@
  * 状态: 无。
  */
 const fsp = require('fs/promises')
-const fs = require('fs')
 const path = require('path')
 const { DATA_DIR, SKILLS_DIR } = require('../core/constants') as typeof import('../core/constants')
 const { getReadFileRoots } = require('./config') as typeof import('./config')
@@ -92,7 +91,6 @@ function mergeConfiguredAndDefaultRoots(roots: unknown[] = []): string[] {
 
 async function realpathOrResolvedAgentPath(target: string): Promise<string> {
   const resolved = path.resolve(target)
-  if (fs.existsSync(resolved)) return resolved
   try { return await fsp.realpath(resolved) } catch { /* non-critical: non-existing root uses resolved path for later existence checks */ return resolved }
 }
 
