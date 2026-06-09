@@ -218,13 +218,13 @@ if (require.main === module) {
     const shownHost = HOST === '0.0.0.0' ? 'localhost' : HOST
     log(`LianBoard running on http://${shownHost}:${PORT}/dashboard/`)
     log(`listen host: ${HOST}`)
-    log(`runtime data dir: ${DATA_DIR}`)
+    log(`runtime data dir ready: ${path.basename(DATA_DIR) || 'data'}`)
     log('bot control: start/stop/maintenance')
     log('napcat proxy: /webui/ -> NapCat WebUI')
     if (!isGlobalLocalMode()) {
-      log(`password reset token file: ${RESET_TOKEN_FILE}`)
-      log(`access password file: ${ACCESS_PWD_FILE}`)
-      log(`admin password file: ${ADMIN_PWD_FILE}`)
+      log(`password reset token file ready: ${path.basename(RESET_TOKEN_FILE)}`)
+      log(`access password file ready: ${path.basename(ACCESS_PWD_FILE)}`)
+      log(`admin password file ready: ${path.basename(ADMIN_PWD_FILE)}`)
     }
   })
 
