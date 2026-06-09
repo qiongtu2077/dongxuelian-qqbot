@@ -20,6 +20,8 @@ const {
 } = require('../routing/uploaded-file-action-route') as typeof import('../routing/uploaded-file-action-route')
 const { externalToolsDenied, buildExternalToolPolicyHint } = require('../routing/external-tool-policy') as typeof import('../routing/external-tool-policy')
 
+const FILE_EVIDENCE_ANSWER_HINT = '上面是刚才文件的实际读取结果。请回答原始用户问题；只能依据这个结果回答。如果结果显示下载失败、无法提取或证据不足，就直接说明不能确认，绝对不要按文件名或印象猜内容。'
+
 interface ToolCallLike {
   id?: string
   function?: {
@@ -116,7 +118,7 @@ function getFlowErrorMessage(error: unknown): string {
 function updateChatToolUsageState(toolCalls: ToolCallLike[] = [], results: ToolResultLike[] = []) {
   return {
     usedAnalyzeFile: toolCallsIncludeAnalyzeFile(toolCalls),
-    hasFileEvidence: toolResultsIncludeFileEvidence(results),
+    hasFileEvidence: toolResultsIncludeFileEvidence(results, toolCalls),
     usedReminderAction: (toolCalls || []).some(tc => isReminderToolName(tc?.function?.name)),
     usedUploadedFileVariant: (toolCalls || []).some(tc => tc?.function?.name === 'create_uploaded_file_variant'),
   }
@@ -176,10 +178,10 @@ async function handleChatToolFlow({
     })
     toolContext.userText = cleanInput
     const { results, heavyTools } = await handleChatToolCalls(reply.tool_calls, toolContext)
-    hasFileToolEvidence = toolResultsIncludeFileEvidence(results)
+    hasFileToolEvidence = toolResultsIncludeFileEvidence(results, reply.tool_calls)
     const targetFile = fileFollowupState.targetFile as Parameters<typeof buildFileEvidenceReply>[1]
     const fileToolEvidenceReply = hasFileToolEvidence
-      ? buildFileEvidenceReply(selectFileEvidenceResult(results), targetFile)
+      ? buildFileEvidenceReply(selectFileEvidenceResult(results, reply.tool_calls), targetFile)
       : ''
 
     if (heavyTools.length > 0) {
@@ -212,12 +214,16 @@ async function handleChatToolFlow({
           heavyToolsRequested,
         }
       }
-    } else if (fileToolEvidenceReply) {
-      reply = fileToolEvidenceReply
     } else if (results.length > 0) {
       messages.push({ role: 'assistant', content: null, tool_calls: reply.tool_calls })
       for (const r of results) messages.push(r)
-      if (options.randomTriggered) {
+      if (fileToolEvidenceReply) {
+        reply = fileToolEvidenceReply
+      } else if (hasFileToolEvidence) {
+        messages.push({ role: 'system', content: FILE_EVIDENCE_ANSWER_HINT })
+        reply = await callModel(messages, options.randomTriggered)
+        if (isToolCallReply(reply)) reply = reply.message?.content || ''
+      } else if (options.randomTriggered) {
         reply = await callModel(messages, options.randomTriggered)
       } else {
         let loopCount = 0
@@ -232,7 +238,7 @@ async function handleChatToolFlow({
           usedUploadedFileVariantTool = usedUploadedFileVariantTool || nextUsage.usedUploadedFileVariant
           const nextToolContext = { ...toolContext }
           const { results: nextResults, heavyTools: nextHeavy } = await handleChatToolCalls(reply.tool_calls, nextToolContext)
-          hasFileToolEvidence = hasFileToolEvidence || toolResultsIncludeFileEvidence(nextResults)
+          hasFileToolEvidence = hasFileToolEvidence || toolResultsIncludeFileEvidence(nextResults, reply.tool_calls)
           if (nextHeavy.length > 0) {
             const heavyToolsRequested = nextHeavy.map(tc => {
               const args = parseToolArguments(tc.function?.arguments)
@@ -255,6 +261,18 @@ async function handleChatToolFlow({
           }
           messages.push({ role: 'assistant', content: null, tool_calls: reply.tool_calls })
           for (const r of nextResults) messages.push(r)
+          const nextFileEvidence = selectFileEvidenceResult(nextResults, reply.tool_calls)
+          const nextFileEvidenceReply = buildFileEvidenceReply(nextFileEvidence)
+          if (nextFileEvidenceReply) {
+            reply = nextFileEvidenceReply
+            break
+          }
+          if (toolResultsIncludeFileEvidence(nextResults, reply.tool_calls)) {
+            messages.push({ role: 'system', content: FILE_EVIDENCE_ANSWER_HINT })
+            reply = await callModel(messages, options.randomTriggered)
+            if (isToolCallReply(reply)) reply = reply.message?.content || ''
+            break
+          }
         }
         if (isToolCallReply(reply)) {
           reply = reply.message?.content || ''
@@ -357,15 +375,15 @@ async function handleChatToolFlow({
     options,
   }))
   if (fileEvidence) {
+    hasFileToolEvidence = true
     const targetFile = fileFollowupState.targetFile as Parameters<typeof buildFileEvidenceReply>[1]
     const evidenceReply = buildFileEvidenceReply(String(fileEvidence as unknown), targetFile)
     if (evidenceReply) {
       reply = evidenceReply
-      hasFileToolEvidence = true
     } else {
       messages.push({ role: 'assistant', content: typeof reply === 'string' ? reply : '' })
       messages.push({ role: 'system', content: `【文件读取结果】\n${String(fileEvidence || '')}` })
-      messages.push({ role: 'user', content: '【系统提示：上面是刚才文件的实际读取结果。只能依据这个结果回答；如果结果显示下载失败/无法提取，就直接说明不能确认，绝对不要按文件名或印象猜内容。】' })
+      messages.push({ role: 'system', content: FILE_EVIDENCE_ANSWER_HINT })
       reply = await callModel(messages, options.randomTriggered)
       if (isToolCallReply(reply)) reply = reply.message?.content || ''
     }

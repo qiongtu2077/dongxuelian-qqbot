@@ -262,16 +262,16 @@ async function run(t) {
   await withScenario({}, async ({ makeSession, run }) => {
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-file', type: 'function', function: { name: 'analyze_file', arguments: '{}' } }] } }] } },
-      { json: { choices: [{ message: { content: '文件里主要讲的是说课流程和课堂安排。' } }] } },
+      { json: { choices: [{ message: { content: '第二条是课堂安排。' } }] } },
     ])
     await withFetch(mocked, async () => {
       const session = makeSession({
-        content: '文件里面说了什么',
+        content: '文件第二条是什么',
         messageId: 'file-natural-chat-tool',
         isDirect: true,
         guildId: undefined,
         channelId: undefined,
-        event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '文件里面说了什么' } }] },
+        event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '文件第二条是什么' } }] },
       })
       const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
       const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
@@ -289,12 +289,55 @@ async function run(t) {
       })
       await store.markFileAnalyzed(channelKey, 'natural-file-1', '[用户上传文件: 说课.md]\n---文件内容开始---\n说课流程\n课堂安排\n---文件内容结束---')
       const result = await run(session, { flushTicks: 160 })
-      await session.waitForSend(message => String(message).includes('说课流程'), 10000)
-      checkSentIncludes(t, 'scenario natural file follow-up uses chat analyze_file', result, '说课流程')
+      await session.waitForSend(message => String(message).includes('第二条是课堂安排'), 10000)
+      checkSentIncludes(t, 'scenario natural file follow-up answers concrete file question', result, '第二条是课堂安排')
+      checkSentExcludes(t, 'scenario natural file follow-up does not use fixed summary', result, '内容大致是')
       checkSentExcludes(t, 'scenario natural file follow-up hides wrapper', result, '---文件内容开始---')
       const firstTools = mocked.calls[0]?.requestBody?.tools || []
       t.check('scenario natural file follow-up exposes analyze_file tool', firstTools.some(item => item.function?.name === 'analyze_file'), JSON.stringify(firstTools))
-      t.check('scenario natural file follow-up skips model retell after file evidence', mocked.calls.length === 1, JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
+      const secondMessages = mocked.calls[1]?.requestBody?.messages || []
+      t.check('scenario natural file follow-up retells from file evidence', mocked.calls.length === 2 && secondMessages.some(item => item.role === 'tool' && String(item.content || '').includes('课堂安排')), JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
+      t.check('scenario natural file follow-up keeps anti-guess guard as system hint', secondMessages.some(item => item.role === 'system' && String(item.content || '').includes('只能依据') && String(item.content || '').includes('不要按文件名') && String(item.content || '').includes('原始用户问题')), JSON.stringify(secondMessages))
+    })
+  })
+
+  await withScenario({}, async ({ makeSession, run }) => {
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-file-multiple', type: 'function', function: { name: 'analyze_file', arguments: '{}' } }] } }] } },
+    ])
+    await withFetch(mocked, async () => {
+      const session = makeSession({
+        content: '这些材料分别是什么',
+        messageId: 'file-terminal-multiple',
+        isDirect: true,
+        guildId: undefined,
+        channelId: undefined,
+        event: { sender: { role: 'member' }, message: [{ type: 'text', attrs: { content: '这些材料分别是什么' } }] },
+      })
+      const store = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
+      const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+      const channelKey = conversation.getChannelKey(session)
+      for (const [messageId, fileName] of [['multi-file-a', 'A计划.txt'], ['multi-file-b', 'B计划.txt']]) {
+        await store.storeFile(channelKey, messageId, {
+          fileName,
+          fileSize: 20,
+          mimeType: 'text/plain',
+          ext: 'txt',
+          url: '',
+          fileId: `${messageId}-token`,
+          conversationKey: conversation.getConversationKey(session),
+          userId: session.userId,
+          skipped: false,
+        })
+        await store.markFileAnalyzed(channelKey, messageId, `[用户上传文件: ${fileName}]\n---文件内容开始---\n${fileName} 的正文\n---文件内容结束---`)
+      }
+      const result = await run(session, { flushTicks: 160 })
+      await session.waitForSend(message => String(message).includes('可能相关的文件'), 10000)
+      checkSentIncludes(t, 'scenario terminal multiple file evidence asks visible clarification', result, '可能相关的文件')
+      checkSentIncludes(t, 'scenario terminal multiple file evidence includes file names', result, 'A计划.txt')
+      checkSentExcludes(t, 'scenario terminal multiple file evidence hides message ids', result, 'messageId')
+      checkSentExcludes(t, 'scenario terminal multiple file evidence hides tool instruction', result, '再次调用')
+      t.check('scenario terminal multiple file evidence does not ask model to retell failure', mocked.calls.length === 1, JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
     })
   })
 
@@ -461,6 +504,7 @@ async function run(t) {
   await withScenario({}, async ({ makeSession, run }) => {
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: 'NO' } }] } },
+      { json: { choices: [{ message: { content: '文件里说先做 A，再补 B。' } }] } },
     ])
     await withFetch(mocked, async () => {
       const session = makeSession({
@@ -481,11 +525,13 @@ async function run(t) {
       })
       await store.markFileAnalyzed(session.guildId, 'file-agent-1', '[用户上传文件: plan.txt]\n---文件内容开始---\n先做 A\n再补 B\n---文件内容结束---')
       const result = await run(session, { flushTicks: 120 })
-      await session.waitForSend(message => String(message).includes('先做 A'))
-      checkSentIncludes(t, 'scenario file follow-up can be answered by evidence summary', result, 'plan.txt 的内容大致是')
-      checkSentIncludes(t, 'scenario file follow-up includes actual file content', result, '先做 A')
+      await session.waitForSend(message => String(message).includes('先做 A'), 10000)
+      checkSentIncludes(t, 'scenario file follow-up can be answered by model from evidence', result, '先做 A')
+      checkSentExcludes(t, 'scenario file follow-up does not use fixed summary', result, '内容大致是')
       checkSentExcludes(t, 'scenario file follow-up hides wrapper', result, '---文件内容开始---')
-      t.check('scenario file follow-up does not need model retell after evidence', mocked.calls.length === 1, JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
+      const evidencePrompt = JSON.stringify(mocked.calls[1]?.requestBody?.messages || [])
+      t.check('scenario file follow-up retells evidence through model', mocked.calls.length === 2 && evidencePrompt.includes('先做 A') && evidencePrompt.includes('只能依据'), JSON.stringify(mocked.calls.map(call => call.requestBody?.messages || [])))
+      t.check('scenario file follow-up anti-guess prompt is system role', (mocked.calls[1]?.requestBody?.messages || []).some(item => item.role === 'system' && String(item.content || '').includes('原始用户问题')), JSON.stringify(mocked.calls[1]?.requestBody?.messages || []))
     })
   })
 
