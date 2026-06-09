@@ -1772,6 +1772,19 @@ async function main() {
     { userId: 'bot', role: 'assistant', speakerName: '东雪莲', personaName: '爱弥斯', content: '你没机会撤回了', messageId: 'scene-m2', replyToId: 'scene-m1', mentionUserIds: [], hasMessageRecordCue: false, ts: Date.now() },
   ], 'user-b', { currentText: 'who jb you', directAt: true })
   check('explicit scene note keeps current user on top', explicitSceneNote.includes('当前是用户直接找你说话') && !explicitSceneNote.includes('优先承接这条公开回复'), explicitSceneNote)
+  const coldSceneNote = modules.groupSceneIndex.buildActiveGroupSceneNote('scene-cold', [
+    { userId: 'user-a', role: 'user', speakerName: 'A', content: '两小时前的旧话题', messageId: 'scene-cold-1', replyToId: '', mentionUserIds: [], ts: Date.now() - 2 * 60 * 60 * 1000 },
+    { userId: 'user-b', role: 'user', speakerName: 'B', content: '旧讨论继续了一句', messageId: 'scene-cold-2', replyToId: '', mentionUserIds: [], ts: Date.now() - 2 * 60 * 60 * 1000 + 1000 },
+  ], 'user-c', { currentText: '真的吗', randomTriggered: true })
+  checkEqual('cold scene fallback does not create current scene note', coldSceneNote, '')
+  const warmSceneNote = modules.groupSceneIndex.buildActiveGroupSceneNote('scene-warm', [
+    { userId: 'user-a', role: 'user', speakerName: 'A', content: '五分钟前的背景话题', messageId: 'scene-warm-1', replyToId: '', mentionUserIds: [], ts: Date.now() - 5 * 60 * 1000 },
+  ], 'user-c', { currentText: '真的吗' })
+  check('warm fallback stays old background instead of current scene', !warmSceneNote.includes('[当前群聊现场-最高优先级]') && warmSceneNote.includes('旧背景'), warmSceneNote)
+  const hotSceneNote = modules.groupSceneIndex.buildActiveGroupSceneNote('scene-hot', [
+    { userId: 'user-a', role: 'user', speakerName: 'A', content: '一分钟内的当前话题', messageId: 'scene-hot-1', replyToId: '', mentionUserIds: [], ts: Date.now() - 60 * 1000 },
+  ], 'user-c', { currentText: '真的吗', randomTriggered: true })
+  check('hot fallback still creates current scene note', hotSceneNote.includes('[当前群聊现场-最高优先级]') && hotSceneNote.includes('一分钟内的当前话题'), hotSceneNote)
   const emptyNestedForwardSummary = reader.summarizeForwardNodes([
     { type: 'forward', data: { content: [] } },
   ])

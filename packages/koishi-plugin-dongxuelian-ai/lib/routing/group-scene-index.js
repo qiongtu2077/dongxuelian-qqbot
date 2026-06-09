@@ -361,6 +361,17 @@ function classifySceneItemsForActive(items = [], options = {}) {
         oldBackground: oldBackground.slice(-ACTIVE_SCENE_MAX_ITEMS),
     };
 }
+function buildOldBackgroundSceneNote(items = []) {
+    const lines = items.map(formatSceneLine).filter(Boolean);
+    if (!lines.length)
+        return '';
+    return [
+        '[旧群聊背景-低优先级]',
+        '下面是近期但不是当前焦点的群聊背景。只用于理解关系与指代；当前消息没有明确拉回它时，不要主动把它当成回复主语。',
+        '--- 旧背景 old_background（仅供理解关系，不要主动续聊） ---',
+        ...lines,
+    ].join('\n');
+}
 function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', options = {}) {
     if (!channelKey || !Array.isArray(items) || !items.length)
         return '';
@@ -393,8 +404,25 @@ function buildActiveGroupSceneNote(channelKey, items = [], currentUserId = '', o
     const explicitInteraction = !!(options.directAt || options.nameMentioned || options.isDirect);
     const shortMediaFollowUp = hasRecentMedia && looksLikeShortSceneFollowUp(currentText);
     const fallbackNeeded = (!explicitInteraction && active.length < 3 && (currentText.length <= 12 || options.randomTriggered)) || shortMediaFollowUp;
+    const fallbackItems = fallbackNeeded ? recent.slice(-Math.min(ACTIVE_SCENE_MAX_ITEMS, 8)) : [];
+    const fallbackLayers = fallbackItems.length
+        ? classifySceneItemsForActive(fallbackItems, {
+            now,
+            currentMessageId: options.currentMessageId,
+            currentReplyToId: options.currentReplyToId,
+            currentUserId,
+        })
+        : { currentTurn: [], hotContext: [], oldBackground: [] };
+    const fallbackActiveItems = fallbackNeeded
+        ? fallbackLayers.currentTurn.concat(fallbackLayers.hotContext).slice(-ACTIVE_SCENE_MAX_ITEMS)
+        : [];
+    if (fallbackNeeded && !fallbackActiveItems.length) {
+        if (options.randomTriggered)
+            return '';
+        return buildOldBackgroundSceneNote(fallbackLayers.oldBackground.slice(-ACTIVE_SCENE_MAX_ITEMS));
+    }
     const finalItems = fallbackNeeded
-        ? recent.slice(-Math.min(ACTIVE_SCENE_MAX_ITEMS, 8))
+        ? fallbackActiveItems
         : active.slice(-ACTIVE_SCENE_MAX_ITEMS);
     if (!finalItems.length)
         return '';
