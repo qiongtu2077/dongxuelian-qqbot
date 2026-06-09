@@ -25,6 +25,54 @@ const TYPE_ESCAPE_PATTERNS = {
   readonlyArrayUnknown: /\bReadonlyArray<unknown>/g,
 }
 
+const PATH_CONFIG_GROUPS = [
+  {
+    key: 'crossPackagePath',
+    label: '跨包内部路径',
+    patterns: [
+      /koishi-plugin-dongxuelian-ai\/lib/g,
+      /getAiResourceLibPath\s*\(/g,
+      /const\s+base\s*=\s*['"]\.\.\/\.\.\/koishi-plugin-dongxuelian-ai\/lib['"]/g,
+      /path\.join\s*\(\s*AI_LIB\b/g,
+    ],
+  },
+  {
+    key: 'envKeyEntry',
+    label: '环境变量与密钥入口',
+    patterns: [
+      /\b(?:KOISHI_DIR|KOISHI_APP_DIR|DONGXUELIAN_AI_DATA_DIR|DASHBOARD_HOST|DASHBOARD_PORT|NAPCAT_TOKEN|X-Admin-Token|ADMIN_PWD_FILE|ACCESS_PWD_FILE|RESET_TOKEN_FILE|KEY_FILE|TOKEN_FILE)\b/g,
+      /process\.env\.[A-Z0-9_]+/g,
+    ],
+  },
+  {
+    key: 'pathUrlChain',
+    label: '路径与 URL 与旧部署链路',
+    patterns: [
+      /\b(?:127\.0\.0\.1|0\.0\.0\.0|localhost)\b/g,
+      /\bhttps?:\/\/[^\s'"`]+/g,
+      /\bws:\/\/[^\s'"`]+/g,
+      /\bwss:\/\/[^\s'"`]+/g,
+      /\bssh\s+/g,
+      /\bscp\s+/g,
+      /\bgit pull\b/g,
+      /\bgit clone\b/g,
+      /node_modules\/koishi\/bin\.js start/g,
+    ],
+  },
+  {
+    key: 'sensitiveFallback',
+    label: '真敏感值兜底',
+    patterns: [
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----/g,
+      /\bsk-[A-Za-z0-9_-]{8,}/g,
+      /\bghp_[A-Za-z0-9]{8,}/g,
+      /\bcookie\s*:/gi,
+      /\btoken\s*:/gi,
+      /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
+    ],
+  },
+]
+
 function normalizeRel(relPath) {
   return relPath.replace(/\\/g, '/')
 }
@@ -39,14 +87,36 @@ function isTrackedSourceFile(relPath) {
   return true
 }
 
-function listSourceFiles() {
-  const output = execFileSync('git', ['ls-files', '--', 'packages'], { cwd: ROOT, encoding: 'utf8' })
+function listTrackedFiles(scopes = ['packages']) {
+  const output = execFileSync('git', ['ls-files', '--', ...scopes], { cwd: ROOT, encoding: 'utf8' })
   return output
     .split(/\r?\n/)
     .map(normalizeRel)
     .filter(Boolean)
-    .filter(isTrackedSourceFile)
     .sort()
+}
+
+function listSourceFiles() {
+  return listTrackedFiles(['packages'])
+    .filter(isTrackedSourceFile)
+}
+
+function isPathConfigFile(relPath) {
+  if (!relPath) return false
+  if (/\.md$/i.test(relPath)) return false
+  if (relPath === 'scripts/audit-src-metrics.js') return false
+  if (/^packages\/[^/]+\/(?:lib|dist|test|__tests__)\//.test(relPath)) return false
+  if (/^packages\/[^/]+\/src\//.test(relPath)) return true
+  if (/^packages\/[^/]+\/package\.json$/.test(relPath)) return true
+  if (/^(?:start\.js|setup\.sh|deploy\.bat|package\.json)$/.test(relPath)) return true
+  if (/^scripts\/.+\.(?:sh|bat|js)$/i.test(relPath)) return true
+  if (/^local-deployer\/(?!README)(?!.*\/dist\/)(?!.*\/node_modules\/).+\.(?:cjs|js|json|bat|cmd|ps1|html)$/i.test(relPath)) return true
+  return false
+}
+
+function listPathConfigFiles() {
+  return listTrackedFiles(['packages', 'scripts', 'local-deployer', 'start.js', 'setup.sh', 'deploy.bat', 'package.json'])
+    .filter(isPathConfigFile)
 }
 
 function getSourceRoot(relPath) {
@@ -655,6 +725,51 @@ function analyzeLongFiles(files) {
   }
 }
 
+function redactSensitiveSnippet(text) {
+  return text
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-<REDACTED>')
+    .replace(/\bghp_[A-Za-z0-9]{8,}\b/g, 'ghp_<REDACTED>')
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----/g, '-----BEGIN <REDACTED> PRIVATE KEY-----')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '<IP>')
+}
+
+function analyzePathConfig(files) {
+  const groups = {}
+  for (const group of PATH_CONFIG_GROUPS) {
+    const hits = []
+    for (const relPath of files) {
+      const raw = readFile(relPath)
+      const lines = raw.split(/\r?\n/)
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+        for (const pattern of group.patterns) {
+          pattern.lastIndex = 0
+          let count = 0
+          while (pattern.exec(line)) count++
+          if (count) {
+            hits.push({
+              file: relPath,
+              line: i + 1,
+              count,
+              text: redactSensitiveSnippet(line.trim().slice(0, 240)),
+            })
+          }
+        }
+      }
+    }
+    groups[group.key] = {
+      label: group.label,
+      rawHitCount: hits.reduce((sum, item) => sum + item.count, 0),
+      fileCount: new Set(hits.map((item) => item.file)).size,
+      hits: hits.slice(0, 120),
+    }
+  }
+  return {
+    scope: 'packages/**/src + packages/**/package.json + root startup/deploy scripts + local-deployer runtime files',
+    groups,
+  }
+}
+
 function main() {
   const mode = process.argv[2]
   const files = listSourceFiles()
@@ -669,8 +784,13 @@ function main() {
   else if (mode === 'type-escape') Object.assign(result, analyzeTypeEscape(files))
   else if (mode === 'console-misc') Object.assign(result, analyzeConsoleMisc(files))
   else if (mode === 'long-files') Object.assign(result, analyzeLongFiles(files))
+  else if (mode === 'path-config') {
+    const pathFiles = listPathConfigFiles()
+    result.fileCount = pathFiles.length
+    Object.assign(result, analyzePathConfig(pathFiles))
+  }
   else {
-    console.error('usage: node scripts/audit-src-metrics.js <dynamic-require|duplicate-helper|type-escape|console-misc|long-files>')
+    console.error('usage: node scripts/audit-src-metrics.js <dynamic-require|duplicate-helper|type-escape|console-misc|long-files|path-config>')
     process.exit(2)
   }
 
