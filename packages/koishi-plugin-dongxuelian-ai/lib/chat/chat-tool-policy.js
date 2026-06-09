@@ -21,6 +21,8 @@ const CHAT_DANGEROUS_ACTION_TOOLS = new Set([
     'create_uploaded_file_variant',
 ]);
 const RANDOM_REPLY_BLOCKED_TOOLS = new Set([
+    'web_search',
+    'web_fetch',
     'create_reminder',
     'list_reminders',
     'cancel_reminder',

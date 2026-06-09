@@ -550,7 +550,11 @@ async function handleChatToolCalls(toolCalls, context = {}) {
 }
 function getChatToolSystemHint(channelKey, options = {}) {
     const channel = resolveChatToolChannel(options);
-    const can = (name) => isChatToolAllowed(channel, name);
+    const can = (name) => {
+        if (options.randomTriggered && toolPolicy.isRandomReplyBlockedTool(name))
+            return false;
+        return isChatToolAllowed(channel, name);
+    };
     const hintParts = ['你有辅助工具可用。只在确实需要时自主调用，不要告诉用户你使用了工具，把结果自然融入回复。大多数闲聊不需要工具，直接回复即可。'];
     if (can('web_search') || can('web_fetch')) {
         if (can('web_search'))

@@ -162,7 +162,7 @@ async function callOpenAI(messages, isRandom, extraBody = {}, tools = null) {
         _explicitThinkingKeys: ['enable_thinking', 'thinking'].filter(key => extraBody[key] !== undefined),
     };
     const capability = getSearchCapability(config);
-    if (!config.searchEnabled || !capability.supported) {
+    if (isRandom || !config.searchEnabled || !capability.supported) {
         const result = await requestChatCompletions(asChatApiMessages(messages), config, { ...getThinkingArgs(config), ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody, ...managedThinkingMeta }, asChatTools(tools));
         if (result && result.type === 'tool_calls')
             return result;
@@ -411,12 +411,14 @@ async function chat(session, userText, ctx, options = {}) {
     });
     if (loreMessage)
         messages.push(loreMessage);
-    // 联网搜索时强制模型先搜索再回答
-    const configForSearch = await loadConfig();
-    const searchCap = getSearchCapability(configForSearch);
-    const searchRuleMessage = createChatPromptSearchRuleMessage(configForSearch, searchCap);
-    if (searchRuleMessage)
-        messages.push(searchRuleMessage);
+    if (!isRandomTriggered) {
+        // 联网搜索时强制模型先搜索再回答；随机主动回复不暴露外部搜索职责。
+        const configForSearch = await loadConfig();
+        const searchCap = getSearchCapability(configForSearch);
+        const searchRuleMessage = createChatPromptSearchRuleMessage(configForSearch, searchCap);
+        if (searchRuleMessage)
+            messages.push(searchRuleMessage);
+    }
     if (options.sharedContextNote) {
         messages.push({ role: 'system', content: options.sharedContextNote });
     }
@@ -701,7 +703,7 @@ async function chat(session, userText, ctx, options = {}) {
             activeFileName: fileFollowupState.targetFile.fileName || '',
         }
         : {};
-    messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { channel: 'qq', userText: cleanInput }) });
+    messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered }) });
     // 表达学习旁路诊断（v2.3，shadow，仅日志，不修改 messages）
     try {
         const shadowNow = Date.now();

@@ -33,6 +33,8 @@ const CHAT_DANGEROUS_ACTION_TOOLS: Set<string> = new Set([
 ])
 
 const RANDOM_REPLY_BLOCKED_TOOLS: Set<string> = new Set([
+  'web_search',
+  'web_fetch',
   'create_reminder',
   'list_reminders',
   'cancel_reminder',

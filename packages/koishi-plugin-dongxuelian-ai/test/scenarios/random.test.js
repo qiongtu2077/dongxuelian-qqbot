@@ -34,6 +34,7 @@ async function run(t) {
       randomWhitelist: ['10001'],
       randomRate: { 10001: 1 },
       randomVoiceRate: { 10001: 0 },
+      searchEnabled: true,
     },
   }, async ({ ready, makeSession, run }) => {
     await ready()
@@ -52,6 +53,13 @@ async function run(t) {
       t.check('scenario random trigger calls model once', mocked.calls.length === 1, JSON.stringify(mocked.calls.map(call => call.requestBody && call.requestBody.model)))
       const prompt = JSON.stringify(mocked.calls[0]?.requestBody?.messages || [])
       t.check('scenario random prompt includes active group scene window', prompt.includes('当前群聊现场-最高优先级') && prompt.includes('随机主动插话内部模式'), prompt)
+      t.check('scenario random prompt hides external search rule', !prompt.includes('联网搜索') && !prompt.includes('web_search 负责找候选来源') && !prompt.includes('应调用 web_fetch'), prompt)
+      const firstBody = mocked.calls[0]?.requestBody || {}
+      const firstTools = firstBody.tools || []
+      t.check('scenario random first request hides web_search tool', !firstTools.some(item => item.function?.name === 'web_search'), JSON.stringify(firstTools))
+      t.check('scenario random first request hides web_fetch tool', !firstTools.some(item => item.function?.name === 'web_fetch'), JSON.stringify(firstTools))
+      t.check('scenario random first request keeps group context tool', firstTools.some(item => item.function?.name === 'read_group_context'), JSON.stringify(firstTools))
+      t.check('scenario random first request disables provider search params', firstBody.enable_search !== true && !firstBody.web_search_options && !firstBody.search_options, JSON.stringify(firstBody))
     })
   })
 
