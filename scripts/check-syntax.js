@@ -23,6 +23,7 @@ const CHECK_FILES = [
   'packages/koishi-plugin-local-video-sender/lib/index.js',
   'packages/koishi-plugin-pet-bridge/lib/index.js',
   'packages/koishi-plugin-pet-bridge/lib/protocol.js',
+  'scripts/agent-console-admin-smoke.js',
   'scripts/dashboard-click-smoke.js',
   'scripts/skill-hub.js',
 ]
