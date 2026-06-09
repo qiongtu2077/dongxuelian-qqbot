@@ -23,6 +23,7 @@ const MEMORY_HISTORY_SAMPLE_CHUNK_BYTES = parsePositiveInt(process.env.DASHBOARD
 const MEMORY_HISTORY_RETENTION_MS = parsePositiveInt(process.env.RESOURCE_PROCESS_METRICS_RETENTION_HOURS || process.env.DASHBOARD_MEMORY_HISTORY_RETENTION_HOURS, 72, 1, 24 * 30) * 60 * 60 * 1000;
 const MEMORY_HISTORY_CLEANUP_INTERVAL_MS = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_CLEANUP_INTERVAL_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000);
 const DISK_USAGE_CACHE_TTL_MS = parsePositiveInt(process.env.DASHBOARD_DISK_USAGE_CACHE_TTL_MS, 60 * 1000, 10 * 1000, 10 * 60 * 1000);
+const DISK_USAGE_WALK_TOTAL_BUDGET_MS = parsePositiveInt(process.env.DASHBOARD_DISK_USAGE_WALK_TOTAL_BUDGET_MS, 1200, 200, 10 * 1000);
 const PROCESS_METRICS_FILE_RE = /^process-metrics-\d{4}-\d{2}-\d{2}\.jsonl$/;
 const MEMORY_RANGE_OPTIONS = {
     '1m': 60 * 1000,
@@ -452,12 +453,14 @@ function getPathSizeBytes(targetPath) {
         return Number.isFinite(sizeKb) ? sizeKb * 1024 : null;
     }
     catch {
-        return getPathSizeBytesByWalk(targetPath);
+        return null;
     }
 }
-// 在缺少 du 的平台上递归累加文件大小，主要用于本地测试和 Windows 环境。
-function getPathSizeBytesByWalk(targetPath) {
+// 在缺少 du 的平台上递归累加文件大小，但总耗时受预算约束，避免阻塞资源中心。
+function getPathSizeBytesByWalk(targetPath, state) {
     try {
+        if (Date.now() > state.deadline)
+            return null;
         const stat = fs.statSync(targetPath);
         if (stat.isFile())
             return stat.size;
@@ -465,9 +468,12 @@ function getPathSizeBytesByWalk(targetPath) {
             return 0;
         let total = 0;
         for (const name of fs.readdirSync(targetPath)) {
-            const childSize = getPathSizeBytesByWalk(path.join(targetPath, name));
-            if (childSize !== null)
-                total += childSize;
+            if (Date.now() > state.deadline)
+                return null;
+            const childSize = getPathSizeBytesByWalk(path.join(targetPath, name), state);
+            if (childSize === null)
+                return null;
+            total += childSize;
         }
         return total;
     }
@@ -478,6 +484,7 @@ function getPathSizeBytesByWalk(targetPath) {
 // 收集资源中心需要展示的关键目录磁盘占用。
 function collectDiskUsage() {
     const filesystem = getFilesystemUsage(KOISHI_DIR);
+    const walkState = { deadline: Date.now() + DISK_USAGE_WALK_TOTAL_BUDGET_MS };
     const candidates = [
         { name: 'data', label: '运行数据', path: path.join(KOISHI_DIR, 'data') },
         { name: 'resource-system', label: '资源采样', path: path.join(DATA_DIR, 'resource-system') },
@@ -485,15 +492,18 @@ function collectDiskUsage() {
         { name: 'media-backpressure', label: '媒体队列', path: path.join(DATA_DIR, 'media-backpressure') },
         { name: 'gallery', label: '图库', path: path.join(DATA_DIR, 'gallery') },
         { name: 'packages', label: '源码包', path: path.join(KOISHI_DIR, 'packages') },
-        { name: 'node_modules', label: '依赖', path: path.join(KOISHI_DIR, 'node_modules') },
-        { name: 'git', label: 'Git 对象', path: path.join(KOISHI_DIR, '.git') },
+        { name: 'node_modules', label: '依赖', path: path.join(KOISHI_DIR, 'node_modules'), allowWalkFallback: false },
+        { name: 'git', label: 'Git 对象', path: path.join(KOISHI_DIR, '.git'), allowWalkFallback: false },
         { name: 'backups', label: '备份', path: path.join(KOISHI_DIR, 'backups') },
         { name: 'deploy-backups', label: '部署备份', path: path.join(KOISHI_DIR, 'deploy-backups') },
         { name: 'tmp', label: '临时目录', path: path.join(KOISHI_DIR, 'tmp') },
     ];
     const entries = [];
     for (const item of candidates) {
-        const sizeBytes = getPathSizeBytes(item.path);
+        let sizeBytes = getPathSizeBytes(item.path);
+        if (sizeBytes === null && item.allowWalkFallback !== false) {
+            sizeBytes = getPathSizeBytesByWalk(item.path, walkState);
+        }
         if (sizeBytes === null)
             continue;
         entries.push({

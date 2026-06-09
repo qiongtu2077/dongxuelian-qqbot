@@ -241,6 +241,7 @@ function testResourceDiskUsageShape() {
   assert.strictEqual(disk.ok, true)
   assert.ok(Array.isArray(disk.entries))
   assert.ok(disk.entries.length > 0)
+  assert.ok(disk.entries.some(entry => ['data', 'tmp', 'gallery', 'resource-system'].includes(entry.name)))
   for (const entry of disk.entries) {
     assert.strictEqual(typeof entry.name, 'string')
     assert.strictEqual(typeof entry.label, 'string')
@@ -252,6 +253,33 @@ function testResourceDiskUsageShape() {
     assert.strictEqual(typeof disk.filesystem.totalMb, 'number')
     assert.strictEqual(typeof disk.filesystem.availableMb, 'number')
     assert.strictEqual(typeof disk.filesystem.usedPercent, 'number')
+  }
+}
+
+// Verifies heavy directories do not recurse when du is unavailable.
+function testResourceDiskUsageSkipsHeavyWalkFallback() {
+  const childProcess = require('child_process')
+  const dashboardPaths = require('../lib/paths')
+  const resourceRoutes = require('../lib/routes/resource')
+  const originalExecFileSync = childProcess.execFileSync
+  const originalReaddirSync = fs.readdirSync
+  const visited = []
+  const blockedRoots = [
+    path.resolve(dashboardPaths.KOISHI_DIR, 'node_modules'),
+    path.resolve(dashboardPaths.KOISHI_DIR, '.git'),
+  ]
+  try {
+    childProcess.execFileSync = () => { throw new Error('du unavailable') }
+    fs.readdirSync = (targetPath, ...args) => {
+      visited.push(path.resolve(String(targetPath)))
+      return originalReaddirSync.call(fs, targetPath, ...args)
+    }
+    const disk = resourceRoutes.collectDiskUsage()
+    assert.strictEqual(disk.ok, true)
+    assert.ok(blockedRoots.every(targetPath => !visited.includes(targetPath)))
+  } finally {
+    childProcess.execFileSync = originalExecFileSync
+    fs.readdirSync = originalReaddirSync
   }
 }
 
@@ -302,6 +330,7 @@ async function run() {
   testLocalBypassRejectsCrossSite()
   testContentSecurityPolicyAllowsPreviewAudio()
   testResourceDiskUsageShape()
+  testResourceDiskUsageSkipsHeavyWalkFallback()
   testResourceMemoryHistoryRequiresAccessOnly()
   await testResourceReadApisRequireAccessOnly()
 
