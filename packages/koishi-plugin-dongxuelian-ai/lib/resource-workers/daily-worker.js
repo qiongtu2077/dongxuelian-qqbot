@@ -7,6 +7,18 @@
 const path = require('path');
 const { getTaskResultDir } = require('./task-paths');
 const { updateTaskStep, writeWorkerEvent } = require('./task-store');
+function isMissingCandidateModule(error, candidate) {
+    if (!error || typeof error !== 'object')
+        return false;
+    const failure = error;
+    if (failure.code !== 'MODULE_NOT_FOUND' || typeof failure.message !== 'string')
+        return false;
+    const normalizedCandidate = candidate.replace(/\\/g, '/');
+    return (failure.message.includes(`'${candidate}'`) ||
+        failure.message.includes(`'${normalizedCandidate}'`) ||
+        failure.message.includes(`"${candidate}"`) ||
+        failure.message.includes(`"${normalizedCandidate}"`));
+}
 // 动态加载 sibling daily-report 包的 pipeline，兼容构建后 lib 和开发期 src。
 function loadDailyReportPipeline() {
     const candidates = [
@@ -19,8 +31,10 @@ function loadDailyReportPipeline() {
             if (mod && typeof mod.generateDailyReportResult === 'function')
                 return mod;
         }
-        catch {
-            /* try next candidate */
+        catch (error) {
+            if (isMissingCandidateModule(error, candidate))
+                continue;
+            throw error;
         }
     }
     throw new Error('daily-report report-pipeline is unavailable; run daily-report build first');
