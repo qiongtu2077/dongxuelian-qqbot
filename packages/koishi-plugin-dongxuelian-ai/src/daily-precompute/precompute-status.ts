@@ -5,7 +5,7 @@
  */
 const path = require('path') as typeof import('path')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
-const { listJsonFiles, readJsonFile, readRecentJsonlEvents } = require('../resource-common/files') as typeof import('../resource-common/files')
+const { listJsonFiles, readJsonFile, readRecentJsonlEvents, sanitizeId } = require('../resource-common/files') as typeof import('../resource-common/files')
 const { INDEX_ROOT } = require('./precompute-index') as typeof import('./precompute-index')
 
 const PRECOMPUTE_ROOT = path.join(DATA_DIR, 'daily-precompute')
@@ -19,6 +19,11 @@ interface CoverageItemLike extends Record<string, unknown> {
 }
 
 type DailyFinalInputLike = Record<string, unknown>
+
+// 返回 final-input 文件路径，保持和写入阶段同一套安全标识规则。
+function getDailyFinalInputFile(date: string, channelKey: string): string {
+  return path.join(FINAL_INPUT_ROOT, sanitizeId(date), `${sanitizeId(channelKey)}.json`)
+}
 
 // 列出预计算覆盖率文件，用于资源中心展示。
 function listDailyCoverage(limit = 80): CoverageItemLike[] {
@@ -35,7 +40,7 @@ function listDailyCoverage(limit = 80): CoverageItemLike[] {
 
 // 读取指定日期和频道的 final-input。
 function readDailyFinalInput(date: string, channelKey: string): DailyFinalInputLike | null {
-  return readJsonFile<DailyFinalInputLike>(path.join(FINAL_INPUT_ROOT, String(date), `${String(channelKey)}.json`), null)
+  return readJsonFile<DailyFinalInputLike>(getDailyFinalInputFile(date, channelKey), null)
 }
 
 // 统计 slot 文件数量，便于 Dashboard 快速判断预计算是否在产出。
@@ -58,6 +63,7 @@ export = {
   COVERAGE_ROOT,
   SLOTS_ROOT,
   FINAL_INPUT_ROOT,
+  getDailyFinalInputFile,
   listDailyCoverage,
   readDailyFinalInput,
   getPrecomputeSummary,

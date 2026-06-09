@@ -4,8 +4,9 @@
  * 职责: 将业务入口提交的任务需求归一为资源预算。
  * 边界: 不读取系统状态，不做准入决策。
  */
+const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds');
 const DEFAULT_BUDGETS = {
-    daily_report: {
+    [RESOURCE_TASK_KIND.DAILY_REPORT]: {
         exclusive: true,
         priority: 20,
         minMemMb: 600,
@@ -16,7 +17,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 600000,
         runTimeoutMs: 600000,
     },
-    daily_report_render: {
+    [RESOURCE_TASK_KIND.DAILY_REPORT_RENDER]: {
         exclusive: true,
         priority: 20,
         minMemMb: 600,
@@ -27,7 +28,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 600000,
         runTimeoutMs: 600000,
     },
-    daily_summary: {
+    [RESOURCE_TASK_KIND.DAILY_SUMMARY]: {
         exclusive: false,
         priority: 70,
         minMemMb: 300,
@@ -38,7 +39,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 300000,
         runTimeoutMs: 120000,
     },
-    agent_task: {
+    [RESOURCE_TASK_KIND.AGENT_TASK]: {
         exclusive: true,
         priority: 40,
         minMemMb: 600,
@@ -49,7 +50,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 600000,
         runTimeoutMs: 600000,
     },
-    dashboard_agent: {
+    [RESOURCE_TASK_KIND.DASHBOARD_AGENT]: {
         exclusive: true,
         priority: 45,
         minMemMb: 600,
@@ -60,7 +61,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 600000,
         runTimeoutMs: 600000,
     },
-    agent_memory: {
+    [RESOURCE_TASK_KIND.AGENT_MEMORY]: {
         exclusive: true,
         priority: 95,
         minMemMb: 600,
@@ -71,7 +72,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 120000,
         runTimeoutMs: 120000,
     },
-    agent_memory_compaction: {
+    [RESOURCE_TASK_KIND.AGENT_MEMORY_COMPACTION]: {
         exclusive: true,
         priority: 96,
         minMemMb: 600,
@@ -82,7 +83,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 180000,
         runTimeoutMs: 180000,
     },
-    expression_harvest: {
+    [RESOURCE_TASK_KIND.EXPRESSION_HARVEST]: {
         exclusive: true,
         priority: 97,
         minMemMb: 600,
@@ -93,7 +94,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 180000,
         runTimeoutMs: 180000,
     },
-    conversation_summary: {
+    [RESOURCE_TASK_KIND.CONVERSATION_SUMMARY]: {
         exclusive: true,
         priority: 98,
         minMemMb: 600,
@@ -104,7 +105,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 120000,
         runTimeoutMs: 120000,
     },
-    sensitive_cache_analysis: {
+    [RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS]: {
         exclusive: true,
         priority: 60,
         minMemMb: 600,
@@ -115,7 +116,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 120000,
         runTimeoutMs: 120000,
     },
-    emotion_render: {
+    [RESOURCE_TASK_KIND.EMOTION_RENDER]: {
         exclusive: true,
         priority: 55,
         minMemMb: 600,
@@ -126,7 +127,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 300000,
         runTimeoutMs: 180000,
     },
-    browser_action: {
+    [RESOURCE_TASK_KIND.BROWSER_ACTION]: {
         exclusive: true,
         priority: 50,
         minMemMb: 900,
@@ -137,7 +138,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 300000,
         runTimeoutMs: 300000,
     },
-    voice_tts_generation: {
+    [RESOURCE_TASK_KIND.VOICE_TTS_GENERATION]: {
         exclusive: true,
         priority: 65,
         minMemMb: 600,
@@ -148,7 +149,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 5000,
         runTimeoutMs: 60000,
     },
-    diagnostic_probe: {
+    [RESOURCE_TASK_KIND.DIAGNOSTIC_PROBE]: {
         exclusive: true,
         priority: 30,
         minMemMb: 600,
@@ -159,7 +160,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 5000,
         runTimeoutMs: 120000,
     },
-    mcp_local_check: {
+    [RESOURCE_TASK_KIND.MCP_LOCAL_CHECK]: {
         exclusive: true,
         priority: 35,
         minMemMb: 600,
@@ -170,7 +171,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 5000,
         runTimeoutMs: 120000,
     },
-    external_video_download: {
+    [RESOURCE_TASK_KIND.EXTERNAL_VIDEO_DOWNLOAD]: {
         exclusive: true,
         priority: 75,
         minMemMb: 600,
@@ -181,7 +182,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 5000,
         runTimeoutMs: 900000,
     },
-    pet_bridge_chat: {
+    [RESOURCE_TASK_KIND.PET_BRIDGE_CHAT]: {
         exclusive: true,
         priority: 70,
         minMemMb: 600,
@@ -192,7 +193,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 5000,
         runTimeoutMs: 120000,
     },
-    media_image_analysis: {
+    [RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS]: {
         exclusive: false,
         priority: 80,
         minMemMb: 600,
@@ -203,7 +204,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 300000,
         runTimeoutMs: 180000,
     },
-    media_file_analysis: {
+    [RESOURCE_TASK_KIND.MEDIA_FILE_ANALYSIS]: {
         exclusive: false,
         priority: 85,
         minMemMb: 600,
@@ -214,7 +215,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 300000,
         runTimeoutMs: 180000,
     },
-    media_voice_transcription: {
+    [RESOURCE_TASK_KIND.MEDIA_VOICE_TRANSCRIPTION]: {
         exclusive: false,
         priority: 88,
         minMemMb: 600,
@@ -225,7 +226,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 300000,
         runTimeoutMs: 180000,
     },
-    normal_chat: {
+    [RESOURCE_TASK_KIND.NORMAL_CHAT]: {
         exclusive: false,
         priority: 90,
         minMemMb: 300,
@@ -236,7 +237,7 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 0,
         runTimeoutMs: 60000,
     },
-    status_query: {
+    [RESOURCE_TASK_KIND.STATUS_QUERY]: {
         exclusive: false,
         priority: 1,
         minMemMb: 0,

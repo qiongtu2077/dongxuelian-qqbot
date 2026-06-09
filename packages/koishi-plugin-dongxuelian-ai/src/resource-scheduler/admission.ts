@@ -5,6 +5,14 @@
  */
 const path = require('path') as typeof import('path')
 const { appendJsonlEvent } = require('../resource-common/files') as typeof import('../resource-common/files')
+const {
+  isStatusQueryKind,
+  isNormalChatKind,
+  isMediaTaskKind,
+  isChromiumTaskKind,
+  isDailyReportKind,
+  canRunInRedStateByKind,
+} = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
 
 type AdmissionDecisionType = 'run_now' | 'queue' | 'downgrade' | 'defer' | 'reject' | 'silent_drop'
 
@@ -63,29 +71,9 @@ function admissionEventFile(date = new Date()): string {
   return path.join(SCHEDULER_ROOT, `admissions-${stamp}.jsonl`)
 }
 
-// 判断某任务是否允许作为低成本状态查询绕过重任务限制。
-function isStatusQuery(kind: string): boolean {
-  return kind === 'status_query'
-}
-
-// 判断任务是否属于普通聊天入口。
-function isNormalChat(kind: string): boolean {
-  return kind === 'normal_chat'
-}
-
-// 判断任务是否属于媒体后台负载。
-function isMediaTask(kind: string): boolean {
-  return kind === 'media_image_analysis' || kind === 'media_file_analysis' || kind === 'media_voice_transcription'
-}
-
-// 判断任务是否需要 Chromium 或浏览器工具。
-function isChromiumTask(kind: string): boolean {
-  return kind === 'daily_report_render' || kind === 'browser_action'
-}
-
 // 判断当前任务是否低于自身最低内存预算，避免全局档位放宽后重任务越过预算运行。
 function isBelowTaskMinMemory(kind: string, budget: TaskBudget, snapshot: ResourceSnapshotLike): boolean {
-  if (isStatusQuery(kind) || isNormalChat(kind)) return false
+  if (isStatusQueryKind(kind) || isNormalChatKind(kind)) return false
   if (snapshot.memAvailableMb === null) return false
   return snapshot.memAvailableMb < budget.minMemMb
 }
@@ -93,7 +81,7 @@ function isBelowTaskMinMemory(kind: string, budget: TaskBudget, snapshot: Resour
 // 在非 red 档下按任务自身预算输出保守降级/延后决策。
 function decideBelowTaskMinMemory(kind: string, budget: TaskBudget, snapshot: ResourceSnapshotLike): AdmissionDecision | null {
   if (!isBelowTaskMinMemory(kind, budget, snapshot)) return null
-  if (kind === 'daily_report' || kind === 'daily_report_render') {
+  if (isDailyReportKind(kind)) {
     const fallback = budget.fallbacks[0] || 'daily_report_text'
     return buildDecision('downgrade', 'available memory is below task min memory budget', budget, snapshot, fallback)
   }
@@ -103,7 +91,7 @@ function decideBelowTaskMinMemory(kind: string, budget: TaskBudget, snapshot: Re
 
 // 判断当前任务是否可按自身预算在 red 档继续运行。
 function canRunInRedState(kind: string, budget: TaskBudget, snapshot: ResourceSnapshotLike): boolean {
-  if (kind !== 'external_video_download') return false
+  if (!canRunInRedStateByKind(kind)) return false
   if (snapshot.memAvailableMb === null) return false
   return snapshot.memAvailableMb >= budget.minMemMb
 }
@@ -129,48 +117,48 @@ function decideAdmission(input: TaskBudgetInput, snapshot: ResourceSnapshotLike 
   const currentLock = snapshot.running || null
   const lockedBySelf = !!(budget.taskId && isRunningTaskLike(currentLock) && currentLock.taskId === budget.taskId)
 
-  if (isStatusQuery(kind)) return buildDecision('run_now', 'status query is always low cost', budget, snapshot)
+  if (isStatusQueryKind(kind)) return buildDecision('run_now', 'status query is always low cost', budget, snapshot)
 
   if (snapshot.botMode === 'maintenance') {
-    if (isNormalChat(kind)) return buildDecision('silent_drop', 'maintenance mode silences normal chat', budget, snapshot)
+    if (isNormalChatKind(kind)) return buildDecision('silent_drop', 'maintenance mode silences normal chat', budget, snapshot)
     return buildDecision('reject', 'maintenance mode rejects heavy tasks', budget, snapshot)
   }
 
   if (snapshot.botMode === 'report_silent') {
-    if (isNormalChat(kind)) return buildDecision('silent_drop', 'daily report is running', budget, snapshot)
-    if (isMediaTask(kind)) return buildDecision('defer', 'media drain paused during daily report', budget, snapshot)
-    if (kind === 'daily_report' || kind === 'daily_report_render') return buildDecision('queue', 'daily report already running', budget, snapshot)
+    if (isNormalChatKind(kind)) return buildDecision('silent_drop', 'daily report is running', budget, snapshot)
+    if (isMediaTaskKind(kind)) return buildDecision('defer', 'media drain paused during daily report', budget, snapshot)
+    if (isDailyReportKind(kind)) return buildDecision('queue', 'daily report already running', budget, snapshot)
     if (budget.exclusive) return buildDecision('queue', 'exclusive task waits for current report', budget, snapshot)
   }
 
   if (snapshot.resourceState === 'black') {
-    if (isNormalChat(kind)) return buildDecision('silent_drop', 'resource state black silences chat', budget, snapshot)
+    if (isNormalChatKind(kind)) return buildDecision('silent_drop', 'resource state black silences chat', budget, snapshot)
     if (budget.deferable) return buildDecision('defer', 'resource state black defers heavy task', budget, snapshot)
     return buildDecision('reject', 'resource state black rejects heavy task', budget, snapshot)
   }
 
   if (snapshot.resourceState === 'red') {
-    if (isNormalChat(kind)) return buildDecision('silent_drop', 'resource state red silences chat', budget, snapshot)
+    if (isNormalChatKind(kind)) return buildDecision('silent_drop', 'resource state red silences chat', budget, snapshot)
     if (canRunInRedState(kind, budget, snapshot)) {
       if (snapshot.locked && !lockedBySelf && budget.exclusive) return buildDecision('queue', 'exclusive slot is busy', budget, snapshot)
       return buildDecision('run_now', 'red state accepted by task min memory budget', budget, snapshot)
     }
-    if (kind === 'daily_report' || kind === 'daily_report_render') {
+    if (isDailyReportKind(kind)) {
       const fallback = budget.fallbacks[0] || 'daily_report_text'
       return buildDecision('downgrade', 'resource state red disables Chromium', budget, snapshot, fallback)
     }
-    if (isChromiumTask(kind)) return buildDecision(budget.deferable ? 'defer' : 'reject', 'Chromium task blocked in red state', budget, snapshot)
-    if (isMediaTask(kind)) return buildDecision('defer', 'media task deferred in red state', budget, snapshot)
+    if (isChromiumTaskKind(kind)) return buildDecision(budget.deferable ? 'defer' : 'reject', 'Chromium task blocked in red state', budget, snapshot)
+    if (isMediaTaskKind(kind)) return buildDecision('defer', 'media task deferred in red state', budget, snapshot)
     if (budget.exclusive) return buildDecision(budget.deferable ? 'defer' : 'reject', 'exclusive task deferred in red state', budget, snapshot)
   }
 
   if (snapshot.locked && !lockedBySelf && budget.exclusive) return buildDecision('queue', 'exclusive slot is busy', budget, snapshot)
-  if (snapshot.locked && !lockedBySelf && isMediaTask(kind)) return buildDecision('defer', 'media waits for exclusive slot to clear', budget, snapshot)
+  if (snapshot.locked && !lockedBySelf && isMediaTaskKind(kind)) return buildDecision('defer', 'media waits for exclusive slot to clear', budget, snapshot)
 
   const belowMinDecision = decideBelowTaskMinMemory(kind, budget, snapshot)
   if (belowMinDecision) return belowMinDecision
 
-  if (snapshot.resourceState === 'yellow' && isMediaTask(kind)) return buildDecision('defer', 'media is throttled in yellow state', budget, snapshot)
+  if (snapshot.resourceState === 'yellow' && isMediaTaskKind(kind)) return buildDecision('defer', 'media is throttled in yellow state', budget, snapshot)
   return buildDecision('run_now', 'resource budget accepted', budget, snapshot)
 }
 

@@ -5,7 +5,7 @@
  * 边界: 不渲染日报，不调用 AI。
  */
 const path = require('path');
-const { FINAL_INPUT_ROOT, SLOTS_ROOT } = require('./precompute-status');
+const { SLOTS_ROOT, getDailyFinalInputFile } = require('./precompute-status');
 const { readPrecomputeIndex, writePrecomputeEvent } = require('./precompute-index');
 const { listJsonFiles, readJsonFile, sanitizeId, writeJsonAtomic } = require('../resource-common/files');
 // 读取指定频道的全部 slot。
@@ -45,7 +45,7 @@ function mergeDailyFinalInput(date, channelKey) {
         uncoveredTail,
         updatedAt: new Date().toISOString(),
     };
-    const file = path.join(FINAL_INPUT_ROOT, sanitizeId(date), `${sanitizeId(channelKey)}.json`);
+    const file = getDailyFinalInputFile(date, channelKey);
     writeJsonAtomic(file, finalInput);
     writePrecomputeEvent('daily_final_input_written', { date, channelKey, slotCount: slots.length, totalMessages: index.length });
     return finalInput;

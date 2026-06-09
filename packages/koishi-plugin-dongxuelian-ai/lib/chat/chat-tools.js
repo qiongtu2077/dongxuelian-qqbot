@@ -9,30 +9,15 @@ const { getMemorySummary } = require('../conversation');
 const { readGroupContext } = require('../routing/group-scene-index');
 const { filterExternalToolDefinitions, buildExternalToolPolicyHint } = require('../routing/external-tool-policy');
 const { isToolEnabled } = require('../agent/config');
-const { parseReminderActionRequest, parseScheduledTaskRequest } = require('../routing/reminder-route');
 const safety = require('../agent/safety');
 const pending = require('../agent/pending');
 const { admitTask } = require('../resource-scheduler/admission');
 const { enqueueMediaTask } = require('../media/backpressure/media-queue');
+const toolPolicy = require('./chat-tool-policy');
 const CHAT_TOOL_TIMEOUT_MS = 3000;
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000;
 const CHAT_TOOLS_TOTAL_DEADLINE_MS = 5000;
 const SHORT_MEDIA_FOLLOWUP_MAX_CHARS = 12;
-const LIGHTWEIGHT_TOOLS = new Set(['get_current_time', 'calculate', 'search_memory', 'read_image_history', 'analyze_historical_image', 'read_group_context', 'analyze_file', 'create_uploaded_file_variant', 'create_reminder', 'list_reminders', 'cancel_reminder', 'create_scheduled_task', 'list_scheduled_tasks', 'get_scheduled_task', 'pause_scheduled_task', 'resume_scheduled_task', 'delete_scheduled_task', 'run_scheduled_task_now']);
-const HEAVY_TOOLS = new Set(['web_search', 'web_fetch', 'browser_action', 'execute_shell', 'file_write']);
-const CHAT_WRITE_ACTION_TOOLS = new Set([
-    'create_reminder',
-    'cancel_reminder',
-    'create_scheduled_task',
-    'pause_scheduled_task',
-    'resume_scheduled_task',
-    'delete_scheduled_task',
-    'run_scheduled_task_now',
-]);
-const CHAT_DANGEROUS_ACTION_TOOLS = new Set([
-    ...CHAT_WRITE_ACTION_TOOLS,
-    'create_uploaded_file_variant',
-]);
 const DEFAULT_CHAT_TOOL_CHANNEL = 'qq';
 function getChatToolErrorMessage(error) {
     return error instanceof Error ? error.message : String(error || 'unknown error');
@@ -44,9 +29,6 @@ function getArgString(args, key) {
 function getArgNumber(args, key) {
     const value = args[key];
     return typeof value === 'number' ? value : Number(value);
-}
-function getArgBoolean(args, key) {
-    return args[key] === true;
 }
 function parsePositiveInt(value, fallback) {
     const parsed = parseInt(String(value === null || value === undefined ? '' : value), 10);
@@ -319,15 +301,15 @@ function getChatToolDefinitions(options = {}) {
     const channel = resolveChatToolChannel(options);
     const enabledTools = tools.filter(tool => isChatToolAllowed(channel, tool.function?.name || ''));
     const filtered = options.randomTriggered
-        ? enabledTools.filter(tool => !['create_reminder', 'list_reminders', 'cancel_reminder', 'create_scheduled_task', 'list_scheduled_tasks', 'get_scheduled_task', 'pause_scheduled_task', 'resume_scheduled_task', 'delete_scheduled_task', 'run_scheduled_task_now', 'create_uploaded_file_variant'].includes(tool.function?.name))
+        ? enabledTools.filter(tool => !toolPolicy.isRandomReplyBlockedTool(tool.function?.name || ''))
         : enabledTools;
     return filterExternalToolDefinitions(filtered, options.userText || options.currentText || '');
 }
 function isLightweightTool(name) {
-    return LIGHTWEIGHT_TOOLS.has(name);
+    return toolPolicy.isLightweightTool(name);
 }
 function isHeavyTool(name) {
-    return HEAVY_TOOLS.has(name) || !LIGHTWEIGHT_TOOLS.has(name);
+    return toolPolicy.isHeavyTool(name);
 }
 function looksLikeShortMediaFollowUp(text = '') {
     const value = String(text || '').replace(/\s+/g, '').trim();
@@ -365,32 +347,8 @@ async function executeSearchMemory(context = {}) {
     const summary = await getMemorySummary(userId, channelKey);
     return summary || '没有找到相关记忆';
 }
-function isExplicitChatWriteActionAllowed(name = '', args = {}, context = {}) {
-    if (!CHAT_WRITE_ACTION_TOOLS.has(name))
-        return true;
-    if (context.allowParsedReminderAction)
-        return true;
-    const userText = String(context.userText || context.currentText || '').trim();
-    if (!userText)
-        return false;
-    const parsed = parseScheduledTaskRequest(userText) || parseReminderActionRequest(userText);
-    if (!parsed || parsed.name !== name)
-        return false;
-    const parsedArgs = parsed.args;
-    if (name === 'create_reminder') {
-        const parsedRunAt = Number(parsedArgs.runAt || 0);
-        const toolRunAt = Number(getArgNumber(args, 'runAt') || getArgNumber(args, 'dueAt') || 0);
-        const sameRunAt = parsedRunAt && toolRunAt ? Math.abs(parsedRunAt - toolRunAt) <= 60 * 1000 : true;
-        return sameRunAt && String(args.text || args.message || '').trim().length > 0;
-    }
-    if (name === 'create_scheduled_task')
-        return !!String(args.prompt || args.text || args.message || '').trim();
-    if (name === 'cancel_reminder')
-        return !!(args.id || args.reminderId || args.keyword || args.text || getArgBoolean(args, 'latest') || parsedArgs.latest === true || parsedArgs.keyword);
-    return !!(args.id || args.taskId || parsedArgs.id || parsedArgs.taskId);
-}
 function guardDangerousChatTool(name = '', args = {}, context = {}, channel = DEFAULT_CHAT_TOOL_CHANNEL) {
-    if (!CHAT_DANGEROUS_ACTION_TOOLS.has(name))
+    if (!toolPolicy.isDangerousChatActionTool(name))
         return '';
     const safeResult = safety.check(name);
     if (safeResult.allowed)
@@ -426,7 +384,7 @@ async function executeChatTool(toolCall, context = {}) {
     catch {
         /* non-critical: invalid model tool JSON is treated as empty args and tool-level guards decide outcome */
     }
-    if (!isExplicitChatWriteActionAllowed(name, args, context)) {
+    if (!toolPolicy.isExplicitChatWriteActionAllowed(name, args, context)) {
         return `工具 ${name} 未执行：当前用户消息没有明确的写状态意图。`;
     }
     const dangerousBlocked = guardDangerousChatTool(name, args, context, channel);

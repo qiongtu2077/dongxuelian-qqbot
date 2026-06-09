@@ -5,6 +5,7 @@
  * 边界: 不发送消息，不绕过 S1/S0。
  */
 const { admitTask } = require('../resource-scheduler/admission');
+const { isImageMediaTaskKind, isFileMediaTaskKind, isVoiceMediaTaskKind, } = require('../resource-common/resource-task-kinds');
 const { acquireResourceGate } = require('../resource-gate/gate');
 const { writeProcessCleanupEvent } = require('../resource-system/system-protection');
 const { analyzeImageNow } = require('../media/image/image-analyzer');
@@ -16,15 +17,15 @@ const { claimNextMediaTask, requeueMediaTask, completeMediaTask, failMediaTask, 
 const MEDIA_TASK_TIMEOUT_MS = Math.max(10000, Math.min(10 * 60 * 1000, Number(process.env.RESOURCE_MEDIA_TASK_TIMEOUT_MS || 180000)));
 // 判断媒体任务类型是否为图片分析。
 function isImageMediaTask(task) {
-    return String(task?.kind || '') === 'media_image_analysis';
+    return isImageMediaTaskKind(task?.kind);
 }
 // 判断媒体任务类型是否为文件分析。
 function isFileMediaTask(task) {
-    return String(task?.kind || '') === 'media_file_analysis';
+    return isFileMediaTaskKind(task?.kind);
 }
 // 判断媒体任务类型是否为语音转写。
 function isVoiceMediaTask(task) {
-    return String(task?.kind || '') === 'media_voice_transcription';
+    return isVoiceMediaTaskKind(task?.kind);
 }
 // 从语音任务 payload 中提取可用 URL。
 function getVoiceTaskUrl(task) {

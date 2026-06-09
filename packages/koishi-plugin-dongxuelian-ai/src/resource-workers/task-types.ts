@@ -3,9 +3,11 @@
  * 职责: 定义资源 worker 任务、结果和 worker 心跳结构。
  * 边界: 不包含执行逻辑。
  */
+import type resourceTaskKinds = require('../resource-common/resource-task-kinds')
 
 type ResourceTaskStatus = 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred'
-type ResourceTaskKind = 'daily_report' | 'agent_task' | 'media_task' | string
+type KnownResourceTaskKind = typeof resourceTaskKinds.RESOURCE_TASK_KIND[keyof typeof resourceTaskKinds.RESOURCE_TASK_KIND]
+type ResourceTaskKind = KnownResourceTaskKind | string
 
 interface ResourceTaskNotify {
   target?: 'qq-group' | 'dashboard' | 'none' | string

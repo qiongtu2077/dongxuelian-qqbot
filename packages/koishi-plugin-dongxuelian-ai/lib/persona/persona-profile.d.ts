@@ -71,7 +71,6 @@ interface PersonaProfileOptions extends ProfileRecord {
     file?: string;
 }
 declare function hashPersonaProfileValue(value?: unknown, length?: number): string;
-declare function sanitizePersonaProfileKey(value?: unknown): string;
 declare function normalizePersonaProfileText(value?: unknown, maxLength?: number): string;
 declare function getPersonaProfileShadowLogFile(ts?: unknown, rootDir?: string): string;
 declare function buildPersonaProfileEvidence(input?: PersonaProfileEvidence & ProfileRecord): PersonaProfileEvidence;
@@ -160,12 +159,6 @@ declare function buildPersonaProfileReinforceDiagnostic(input?: ProfileRecord): 
 };
 declare function formatPersonaProfileReinforceDiagnostic(diagnostic?: ProfileRecord): string;
 declare function buildPersonaProfileBlocksFromLegacyData(data?: ProfileRecord, options?: PersonaProfileOptions): PersonaProfile;
-declare function safePersonaProfileFile(userId: string, channelKey: string, rootDir?: string): string;
-declare function readLegacyPersonaProfileData({ userId, channelKey, rootDir }?: {
-    userId?: string;
-    channelKey?: string;
-    rootDir?: string;
-}): Promise<ProfileRecord | null>;
 declare function buildPersonaProfileBlocks(options?: PersonaProfileOptions): Promise<PersonaProfile>;
 declare function summarizePersonaProfileBlocks(profile?: PersonaProfile): {
     version: number;
@@ -210,7 +203,7 @@ declare const _default: {
     PROFILE_SENSITIVITY: readonly string[];
     PROFILE_CATEGORIES: readonly string[];
     hashPersonaProfileValue: typeof hashPersonaProfileValue;
-    sanitizePersonaProfileKey: typeof sanitizePersonaProfileKey;
+    sanitizePersonaProfileKey: (value?: unknown) => string;
     normalizePersonaProfileText: typeof normalizePersonaProfileText;
     buildPersonaProfileEvidence: typeof buildPersonaProfileEvidence;
     buildPersonaProfileBlock: typeof buildPersonaProfileBlock;
@@ -232,8 +225,14 @@ declare const _default: {
     appendPersonaProfileShadowLog: typeof appendPersonaProfileShadowLog;
     formatPersonaProfileShadowLearningDiagnostic: typeof formatPersonaProfileShadowLearningDiagnostic;
     formatPersonaProfileShadowPromptPreviewDiagnostic: typeof formatPersonaProfileShadowPromptPreviewDiagnostic;
-    safePersonaProfileFile: typeof safePersonaProfileFile;
-    readLegacyPersonaProfileData: typeof readLegacyPersonaProfileData;
+    safePersonaProfileFile: (userId: string, channelKey: string, rootDir?: string) => string;
+    readLegacyPersonaProfileData: ({ userId, channelKey, rootDir }?: {
+        userId?: string;
+        channelKey?: string;
+        rootDir?: string;
+    }) => Promise<{
+        [x: string]: unknown;
+    } | null>;
     buildPersonaProfileBlocks: typeof buildPersonaProfileBlocks;
     summarizePersonaProfileBlocks: typeof summarizePersonaProfileBlocks;
     formatPersonaProfileSummary: typeof formatPersonaProfileSummary;

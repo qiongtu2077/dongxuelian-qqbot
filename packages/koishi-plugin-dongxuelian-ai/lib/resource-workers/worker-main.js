@@ -5,6 +5,7 @@
  * 边界: 不注册 Koishi middleware，不直接处理用户消息入口。
  */
 const { admitTask } = require('../resource-scheduler/admission');
+const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds');
 const { acquireResourceGate } = require('../resource-gate/gate');
 const { collectProcessMetrics, checkWorkerMemoryLimit, writeProcessCleanupEvent, terminateRecordedProcessPids, } = require('../resource-system/system-protection');
 const { claimNextTask, markTaskRunning, completeTask, failTask, deferTask, requeueTask, updateTaskStep, writeWorkerHeartbeat, } = require('./task-store');
@@ -100,9 +101,18 @@ function startWorkerHeartbeat(workerName, type, initialStep) {
 // 将 worker 类型映射为 S2 任务 kind 列表。
 function getWorkerTaskKinds(type) {
     if (type === 'daily')
-        return ['daily_report', 'daily_summary', 'emotion_render'];
-    if (type === 'agent')
-        return ['agent_task', 'dashboard_agent', 'agent_memory', 'agent_memory_compaction', 'expression_harvest', 'conversation_summary', 'sensitive_cache_analysis'];
+        return [RESOURCE_TASK_KIND.DAILY_REPORT, RESOURCE_TASK_KIND.DAILY_SUMMARY, RESOURCE_TASK_KIND.EMOTION_RENDER];
+    if (type === 'agent') {
+        return [
+            RESOURCE_TASK_KIND.AGENT_TASK,
+            RESOURCE_TASK_KIND.DASHBOARD_AGENT,
+            RESOURCE_TASK_KIND.AGENT_MEMORY,
+            RESOURCE_TASK_KIND.AGENT_MEMORY_COMPACTION,
+            RESOURCE_TASK_KIND.EXPRESSION_HARVEST,
+            RESOURCE_TASK_KIND.CONVERSATION_SUMMARY,
+            RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS,
+        ];
+    }
     return [String(type || '')].filter(Boolean);
 }
 // 生成 worker 名称。
@@ -111,29 +121,29 @@ function getWorkerName(type, explicit = '') {
 }
 // 根据任务类型调用对应执行器。
 async function executeWorkerTask(task) {
-    if (task.kind === 'daily_report')
+    if (task.kind === RESOURCE_TASK_KIND.DAILY_REPORT)
         return await runDailyWorkerTask(task);
-    if (task.kind === 'daily_summary')
+    if (task.kind === RESOURCE_TASK_KIND.DAILY_SUMMARY)
         return runDailySlotTask(task);
-    if (task.kind === 'emotion_render')
+    if (task.kind === RESOURCE_TASK_KIND.EMOTION_RENDER)
         return await runEmotionRenderWorkerTask(task);
-    if (task.kind === 'agent_task' || task.kind === 'dashboard_agent')
+    if (task.kind === RESOURCE_TASK_KIND.AGENT_TASK || task.kind === RESOURCE_TASK_KIND.DASHBOARD_AGENT)
         return await runAgentWorkerTask(task);
-    if (task.kind === 'agent_memory' || task.kind === 'agent_memory_compaction')
+    if (task.kind === RESOURCE_TASK_KIND.AGENT_MEMORY || task.kind === RESOURCE_TASK_KIND.AGENT_MEMORY_COMPACTION)
         return await runMemoryWorkerTask(task);
-    if (task.kind === 'expression_harvest' || task.kind === 'conversation_summary' || task.kind === 'sensitive_cache_analysis')
+    if (task.kind === RESOURCE_TASK_KIND.EXPRESSION_HARVEST || task.kind === RESOURCE_TASK_KIND.CONVERSATION_SUMMARY || task.kind === RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS)
         return await runBackgroundLlmWorkerTask(task);
     throw new Error(`unsupported S2 worker task kind: ${String(task.kind || '')}`);
 }
 // 判断任务是否需要 S0 独占锁；daily_summary 是非 AI 预计算统计，不占高风险运行槽。
 function requiresExclusiveGate(task) {
-    return task.kind !== 'daily_summary';
+    return task.kind !== RESOURCE_TASK_KIND.DAILY_SUMMARY;
 }
 // 按 S1 降级决策调整任务 payload，避免 worker 继续执行被禁止的高成本阶段。
 function applyAdmissionDecisionToTask(task, admission) {
     if (!admission || admission.decision !== 'downgrade')
         return task;
-    if (task.kind !== 'daily_report')
+    if (task.kind !== RESOURCE_TASK_KIND.DAILY_REPORT)
         return task;
     return {
         ...task,

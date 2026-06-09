@@ -568,6 +568,158 @@ main().catch(error => {
   check('conversation summary releases S0 gate', summary.gateLocked === false, JSON.stringify(summary))
 }
 
+// Verify final-input reader uses the same sanitized date/channel path as the writer.
+function testDailyFinalInputPathContract() {
+  const dataDir = createTempDataDir('resource-flow-final-input-')
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+
+async function main() {
+  const precomputeIndex = require('./packages/koishi-plugin-dongxuelian-ai/lib/daily-precompute/precompute-index')
+  const slotWorker = require('./packages/koishi-plugin-dongxuelian-ai/lib/daily-precompute/daily-slot-worker')
+  const summaryMerge = require('./packages/koishi-plugin-dongxuelian-ai/lib/daily-precompute/daily-summary-merge')
+  const status = require('./packages/koishi-plugin-dongxuelian-ai/lib/daily-precompute/precompute-status')
+  const files = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-common/files')
+
+  const date = '2026/06/09'
+  const channelKey = 'group final/input test 中文'
+  precomputeIndex.appendPrecomputeIndex({
+    date,
+    channelKey,
+    messageId: 'msg-final-1',
+    timestamp: Date.now(),
+    userId: 'user-final',
+    userName: 'Final Tester',
+    text: '这条消息用于验证 final-input 读写路径一致。',
+  })
+  slotWorker.runDailySlotTask({
+    id: 'slot final/input 1',
+    channelKey,
+    payload: { date, channelKey, slotId: 'slot final/input 1', messageIds: ['msg-final-1'] },
+  })
+  const written = summaryMerge.mergeDailyFinalInput(date, channelKey)
+  const readBack = status.readDailyFinalInput(date, channelKey)
+  const expectedFile = path.join(status.FINAL_INPUT_ROOT, files.sanitizeId(date), files.sanitizeId(channelKey) + '.json')
+  const rawFile = path.join(status.FINAL_INPUT_ROOT, String(date), String(channelKey) + '.json')
+  const summary = {
+    writtenChannelKey: written && written.channelKey,
+    readBackChannelKey: readBack && readBack.channelKey,
+    readBackSlotCount: readBack && readBack.slotCount,
+    expectedFileExists: fs.existsSync(expectedFile),
+    rawFileExists: fs.existsSync(rawFile),
+  }
+  console.log(JSON.stringify(summary, null, 2))
+  const ok = summary.writtenChannelKey === channelKey
+    && summary.readBackChannelKey === channelKey
+    && summary.readBackSlotCount === 1
+    && summary.expectedFileExists === true
+    && summary.rawFileExists === false
+  process.exitCode = ok ? 0 : 1
+}
+
+main().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('S3 daily final-input path contract', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+  }, 15000)
+  if (!summary) return
+  check('daily final-input writer stores sanitized path only', summary.expectedFileExists === true && summary.rawFileExists === false, JSON.stringify(summary))
+  check('daily final-input reader uses the writer path', summary.readBackChannelKey === 'group final/input test 中文' && summary.readBackSlotCount === 1, JSON.stringify(summary))
+}
+
+// Characterize analyze_historical_image queue/admission ordering before changing any behavior.
+function testAnalyzeHistoricalImageAdmissionQueueContract() {
+  const dataDir = createTempDataDir('resource-flow-image-admission-')
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+
+function removeIfExists(file) {
+  try { fs.unlinkSync(file) } catch {}
+}
+
+function tasksFor(mediaQueue, messageId) {
+  return mediaQueue.listPendingMediaTasks('media_image_analysis', 200)
+    .filter(task => task && task.messageId === messageId)
+}
+
+async function main() {
+  const analyzeImage = require('./packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/analyze-image')
+  const mediaQueue = require('./packages/koishi-plugin-dongxuelian-ai/lib/media/backpressure/media-queue')
+  const constants = require('./packages/koishi-plugin-dongxuelian-ai/lib/core/constants')
+  const scenarios = [
+    { name: 'normal', mem: '1200', maintenance: false },
+    { name: 'yellow', mem: '600', maintenance: false },
+    { name: 'red', mem: '350', maintenance: false },
+    { name: 'black', mem: '100', maintenance: false },
+    { name: 'maintenance', mem: '1200', maintenance: true },
+  ]
+  const results = []
+  for (const scenario of scenarios) {
+    process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = scenario.mem
+    process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
+    if (scenario.maintenance) {
+      fs.mkdirSync(path.dirname(constants.MAINTENANCE_FILE), { recursive: true })
+      fs.writeFileSync(constants.MAINTENANCE_FILE, 'maintenance', 'utf8')
+    } else {
+      removeIfExists(constants.MAINTENANCE_FILE)
+    }
+    const channelKey = 'image-admission-' + scenario.name
+    const userId = 'image-user-' + scenario.name
+    const messageId = 'image-msg-' + scenario.name
+    const url = 'https://example.test/image-admission-' + scenario.name + '.png'
+    const before = tasksFor(mediaQueue, messageId).length
+    const response = await analyzeImage.execute({ url, messageId }, { channelKey, userId })
+    const afterTasks = tasksFor(mediaQueue, messageId)
+    const after = afterTasks.length
+    const duplicateResponse = await analyzeImage.execute({ url, messageId }, { channelKey, userId })
+    const afterDuplicate = tasksFor(mediaQueue, messageId).length
+    results.push({
+      name: scenario.name,
+      before,
+      after,
+      afterDuplicate,
+      response,
+      duplicateResponse,
+      task: afterTasks[0] || null,
+    })
+  }
+  removeIfExists(constants.MAINTENANCE_FILE)
+  console.log(JSON.stringify({ results }, null, 2))
+}
+
+main().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('S6 analyze_historical_image admission queue contract', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_WORKER_RSS_MB: '2048',
+  }, 30000)
+  if (!summary) return
+  const byName = Object.fromEntries((summary.results || []).map(item => [item.name, item]))
+  check('image tool queues exactly once in normal green state',
+    byName.normal && byName.normal.after === byName.normal.before + 1 && byName.normal.afterDuplicate === byName.normal.after && /green/.test(byName.normal.response || '') && /media-worker/.test(byName.normal.response || ''),
+    JSON.stringify(byName.normal))
+  check('image tool queues exactly once while yellow admission defers',
+    byName.yellow && byName.yellow.after === byName.yellow.before + 1 && byName.yellow.afterDuplicate === byName.yellow.after && /yellow/.test(byName.yellow.response || '') && /media is throttled in yellow state/.test(byName.yellow.response || ''),
+    JSON.stringify(byName.yellow))
+  check('image tool queues exactly once while red admission defers',
+    byName.red && byName.red.after === byName.red.before + 1 && byName.red.afterDuplicate === byName.red.after && /red/.test(byName.red.response || '') && /media task deferred in red state/.test(byName.red.response || ''),
+    JSON.stringify(byName.red))
+  check('image tool queues exactly once while black admission defers',
+    byName.black && byName.black.after === byName.black.before + 1 && byName.black.afterDuplicate === byName.black.after && /black/.test(byName.black.response || '') && /resource state black defers heavy task/.test(byName.black.response || ''),
+    JSON.stringify(byName.black))
+  check('image tool queues exactly once while maintenance admission rejects',
+    byName.maintenance && byName.maintenance.after === byName.maintenance.before + 1 && byName.maintenance.afterDuplicate === byName.maintenance.after && /maintenance mode rejects heavy tasks/.test(byName.maintenance.response || ''),
+    JSON.stringify(byName.maintenance))
+}
+
 // Run all resource flow regression checks.
 function main() {
   console.log('=== resource-flow S2/S10 tests ===')
@@ -575,6 +727,8 @@ function main() {
   testAgentMemoryWorkerFlow()
   testAgentMemoryCompactionWorkerFlow()
   testConversationSummaryWorkerFlow()
+  testDailyFinalInputPathContract()
+  testAnalyzeHistoricalImageAdmissionQueueContract()
   console.log(`passed: ${passed}`)
   console.log(`failed: ${failed}`)
   process.exit(failed > 0 ? 1 : 0)

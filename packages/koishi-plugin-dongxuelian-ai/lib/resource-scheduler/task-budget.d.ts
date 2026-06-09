@@ -3,7 +3,33 @@
  * 职责: 将业务入口提交的任务需求归一为资源预算。
  * 边界: 不读取系统状态，不做准入决策。
  */
-type ResourceTaskKind = 'daily_report' | 'daily_report_render' | 'daily_report_summary' | 'daily_summary' | 'agent_task' | 'dashboard_agent' | 'agent_memory' | 'agent_memory_compaction' | 'expression_harvest' | 'conversation_summary' | 'sensitive_cache_analysis' | 'emotion_render' | 'browser_action' | 'voice_tts_generation' | 'diagnostic_probe' | 'mcp_local_check' | 'external_video_download' | 'pet_bridge_chat' | 'media_image_analysis' | 'media_file_analysis' | 'media_voice_transcription' | 'status_query' | 'normal_chat' | string;
+declare const RESOURCE_TASK_KIND: {
+    readonly DAILY_REPORT: "daily_report";
+    readonly DAILY_REPORT_RENDER: "daily_report_render";
+    readonly DAILY_REPORT_SUMMARY: "daily_report_summary";
+    readonly DAILY_SUMMARY: "daily_summary";
+    readonly AGENT_TASK: "agent_task";
+    readonly DASHBOARD_AGENT: "dashboard_agent";
+    readonly AGENT_MEMORY: "agent_memory";
+    readonly AGENT_MEMORY_COMPACTION: "agent_memory_compaction";
+    readonly EXPRESSION_HARVEST: "expression_harvest";
+    readonly CONVERSATION_SUMMARY: "conversation_summary";
+    readonly SENSITIVE_CACHE_ANALYSIS: "sensitive_cache_analysis";
+    readonly EMOTION_RENDER: "emotion_render";
+    readonly BROWSER_ACTION: "browser_action";
+    readonly VOICE_TTS_GENERATION: "voice_tts_generation";
+    readonly DIAGNOSTIC_PROBE: "diagnostic_probe";
+    readonly MCP_LOCAL_CHECK: "mcp_local_check";
+    readonly EXTERNAL_VIDEO_DOWNLOAD: "external_video_download";
+    readonly PET_BRIDGE_CHAT: "pet_bridge_chat";
+    readonly MEDIA_IMAGE_ANALYSIS: "media_image_analysis";
+    readonly MEDIA_FILE_ANALYSIS: "media_file_analysis";
+    readonly MEDIA_VOICE_TRANSCRIPTION: "media_voice_transcription";
+    readonly STATUS_QUERY: "status_query";
+    readonly NORMAL_CHAT: "normal_chat";
+};
+type KnownResourceTaskKind = typeof RESOURCE_TASK_KIND[keyof typeof RESOURCE_TASK_KIND];
+type ResourceTaskKind = KnownResourceTaskKind | string;
 interface TaskBudgetInput {
     taskId?: string;
     kind?: ResourceTaskKind;

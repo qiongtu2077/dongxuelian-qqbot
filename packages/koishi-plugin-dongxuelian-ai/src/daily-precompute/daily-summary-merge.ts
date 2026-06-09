@@ -4,7 +4,7 @@
  * 边界: 不渲染日报，不调用 AI。
  */
 const path = require('path') as typeof import('path')
-const { FINAL_INPUT_ROOT, SLOTS_ROOT } = require('./precompute-status') as typeof import('./precompute-status')
+const { SLOTS_ROOT, getDailyFinalInputFile } = require('./precompute-status') as typeof import('./precompute-status')
 const { readPrecomputeIndex, writePrecomputeEvent } = require('./precompute-index') as typeof import('./precompute-index')
 const { listJsonFiles, readJsonFile, sanitizeId, writeJsonAtomic } = require('../resource-common/files') as typeof import('../resource-common/files')
 
@@ -56,7 +56,7 @@ function mergeDailyFinalInput(date: string, channelKey: string): Record<string, 
     uncoveredTail,
     updatedAt: new Date().toISOString(),
   }
-  const file = path.join(FINAL_INPUT_ROOT, sanitizeId(date), `${sanitizeId(channelKey)}.json`)
+  const file = getDailyFinalInputFile(date, channelKey)
   writeJsonAtomic(file, finalInput)
   writePrecomputeEvent('daily_final_input_written', { date, channelKey, slotCount: slots.length, totalMessages: index.length })
   return finalInput

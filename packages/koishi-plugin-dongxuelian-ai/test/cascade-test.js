@@ -470,6 +470,7 @@ async function main() {
   check('syntax runner covers startup schedulers syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/startup-schedulers.js'))
   check('syntax runner covers persona runtime plan syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/persona/persona-runtime-plan.js'))
   check('syntax runner covers persona profile syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/persona/persona-profile.js'))
+  check('syntax runner covers persona profile sources syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/persona/persona-profile-sources.js'))
   check('syntax runner covers web search tool syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/web-search.js'))
   check('syntax runner covers web fetch tool syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/web-fetch.js'))
   check('syntax runner covers dashboard standalone syntax', syntaxFileSet.has('packages/koishi-plugin-dashboard/standalone.js'))
@@ -539,6 +540,7 @@ async function main() {
     personaDiagnostics: path.join(LIB, 'persona', 'persona-diagnostics'),
     personaRuntimePlan: path.join(LIB, 'persona', 'persona-runtime-plan'),
     personaProfile: path.join(LIB, 'persona', 'persona-profile'),
+    personaProfileSources: path.join(LIB, 'persona', 'persona-profile-sources'),
     personaLoreRouter: path.join(LIB, 'persona', 'persona-lore-router'),
     skillsLoader: path.join(LIB, 'persona', 'skills', 'skills-loader'),
     skillSeeds: path.join(LIB, 'persona', 'skills', 'skill-seeds'),
@@ -597,6 +599,7 @@ async function main() {
     agentChatBridge: path.join(LIB, 'chat', 'agent-chat-bridge'),
     agentRetellGuard: path.join(LIB, 'chat', 'agent-retell-guard'),
     resultNotifier: path.join(LIB, 'resource-workers', 'result-notifier'),
+    resourceTaskKinds: path.join(LIB, 'resource-common', 'resource-task-kinds'),
     personaFallback: path.join(LIB, 'persona', 'persona-fallback'),
     jailbreakRuleset: path.join(LIB, 'rulesets', 'jailbreak'),
     loggingConfig: path.join(LIB, 'core', 'logging-config'),
@@ -623,6 +626,7 @@ async function main() {
     agentQueue: path.join(LIB, 'agent', 'queue'),
     agentMemory: path.join(LIB, 'agent', 'memory'),
     chatTools: path.join(LIB, 'chat', 'chat-tools'),
+    chatToolPolicy: path.join(LIB, 'chat', 'chat-tool-policy'),
     agentAutoMemory: path.join(LIB, 'agent', 'auto-memory'),
     agentDream: path.join(LIB, 'agent', 'dream'),
     agentPush: path.join(LIB, 'agent', 'push'),
@@ -763,6 +767,9 @@ async function main() {
       'safePersonaProfileFile',
       'readLegacyPersonaProfileData', 'buildPersonaProfileBlocks',
       'summarizePersonaProfileBlocks', 'formatPersonaProfileSummary',
+    ],
+    personaProfileSources: [
+      'sanitizePersonaProfileKey', 'safePersonaProfileFile', 'readLegacyPersonaProfileData',
     ],
     personaLoreRouter: [
       'normalizeLoreText', 'normalizeLoreId', 'normalizeLoreScope',
@@ -1105,6 +1112,9 @@ async function main() {
       'getChatToolDefinitions', 'resolveChatToolChannel', 'isChatToolAllowed',
       'isLightweightTool', 'isHeavyTool', 'executeChatTool', 'handleChatToolCalls', 'getChatToolSystemHint',
     ],
+    chatToolPolicy: [
+      'isLightweightTool', 'isHeavyTool', 'isRandomReplyBlockedTool', 'isExplicitChatWriteActionAllowed',
+    ],
     agentAutoMemory: [
       'onAgentReplyComplete', 'resetAutoMemoryCounter', 'getAutoMemoryStats', 'shouldTrigger', 'getDailyTotalSize', 'safeUserId',
     ],
@@ -1235,6 +1245,15 @@ async function main() {
   check('expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_WINDOW_MS exported', modules.expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_WINDOW_MS === 300000)
   check('expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS exported', Array.isArray(modules.expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS) && modules.expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS.includes('住院'))
   check('agentSkillScanner.SEVERITY_ORDER exported', !!(modules.agentSkillScanner.SEVERITY_ORDER && typeof modules.agentSkillScanner.SEVERITY_ORDER === 'object'))
+  check('persona profile source reader keeps bounded legacy file size', modules.personaProfileSources.MAX_PROFILE_SOURCE_FILE_BYTES === 512 * 1024)
+  check('persona profile re-exports source reader helpers from dedicated source module', modules.personaProfile.safePersonaProfileFile === modules.personaProfileSources.safePersonaProfileFile && modules.personaProfile.readLegacyPersonaProfileData === modules.personaProfileSources.readLegacyPersonaProfileData)
+  ;(() => {
+    const kinds = modules.resourceTaskKinds || {}
+    check('resourceTaskKinds exports task kind constants', kinds.RESOURCE_TASK_KIND && kinds.RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS === 'media_image_analysis' && kinds.RESOURCE_TASK_KIND.DAILY_REPORT === 'daily_report')
+    check('resourceTaskKinds classifies media task kinds', kinds.isMediaTaskKind && kinds.isMediaTaskKind('media_image_analysis') && kinds.isMediaTaskKind('media_file_analysis') && kinds.isMediaTaskKind('media_voice_transcription') && !kinds.isMediaTaskKind('daily_report'))
+    check('resourceTaskKinds classifies scheduler special kinds', kinds.isStatusQueryKind && kinds.isStatusQueryKind('status_query') && kinds.isNormalChatKind('normal_chat') && kinds.isDailyReportKind('daily_report_render') && !kinds.isDailyReportKind('daily_summary'))
+    check('resourceTaskKinds classifies chromium and red-state exception kinds', kinds.isChromiumTaskKind && kinds.isChromiumTaskKind('browser_action') && kinds.isChromiumTaskKind('daily_report_render') && !kinds.isChromiumTaskKind('daily_report') && kinds.canRunInRedStateByKind('external_video_download') && !kinds.canRunInRedStateByKind('browser_action'))
+  })()
   checkEqual('AI plugin name', index.name, 'dongxuelian-ai')
   check('AI plugin does not export _testOnly', index._testOnly === undefined)
   check('handler.handleCommand exported', typeof handler.handleCommand === 'function')
@@ -2234,7 +2253,7 @@ async function main() {
   const agentTmp = fs.mkdtempSync(path.join(agentTmpRoot, 'cascade-agent-'))
   try {
     process.env.DONGXUELIAN_AI_DATA_DIR = agentTmp
-    for (const rel of ['core/constants', 'core/runtime-config', 'core/api', 'agent/config', 'agent/engine', 'agent/workspace-context', 'agent/path-guard', 'agent/skills', 'agent/http-search', 'chat/chat-tools', 'agent/tools/registry', 'agent/tools/read-agent-skill', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/tools/create-reminder', 'agent/tools/reminder-tools', 'agent/tools/scheduled-task-tools', 'agent/cron', 'agent/pending', 'agent/safety', 'agent/stats']) {
+    for (const rel of ['core/constants', 'core/runtime-config', 'core/api', 'agent/config', 'agent/engine', 'agent/workspace-context', 'agent/path-guard', 'agent/skills', 'agent/http-search', 'chat/chat-tools', 'chat/chat-tool-policy', 'agent/tools/registry', 'agent/tools/read-agent-skill', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/tools/create-reminder', 'agent/tools/reminder-tools', 'agent/tools/scheduled-task-tools', 'agent/cron', 'agent/pending', 'agent/safety', 'agent/stats']) {
       delete require.cache[require.resolve(path.join(LIB, rel))]
     }
     const isolatedConstants = require(path.join(LIB, 'core', 'constants'))
@@ -2311,6 +2330,11 @@ async function main() {
     }
     check('read_agent_skill allows auto relevant search strategy skill', (await isolatedReadAgentSkill.execute({ name: 'web_search_strategy' }, { channel: 'qq', userMessage: '联网查最新消息来源' })).includes('只看标题和摘要不算完成搜索'))
     const isolatedChatTools = require(path.join(LIB, 'chat', 'chat-tools'))
+    const isolatedChatToolPolicy = require(path.join(LIB, 'chat', 'chat-tool-policy'))
+    check('chat tool policy classifies lightweight and heavy tools', isolatedChatToolPolicy.isLightweightTool('calculate') === true && isolatedChatToolPolicy.isHeavyTool('web_fetch') === true && isolatedChatToolPolicy.isHeavyTool('unknown_tool') === true)
+    check('chat tool policy blocks random write-like tools', isolatedChatToolPolicy.isRandomReplyBlockedTool('create_reminder') && isolatedChatToolPolicy.isRandomReplyBlockedTool('create_uploaded_file_variant') && !isolatedChatToolPolicy.isRandomReplyBlockedTool('calculate'))
+    check('chat tool policy rejects casual reminder writes', isolatedChatToolPolicy.isExplicitChatWriteActionAllowed('create_reminder', { text: '起床', runAt: Date.now() + 10 * 60 * 1000 }, { userText: '你在吗' }) === false)
+    check('chat tool policy accepts explicit reminder writes', isolatedChatToolPolicy.isExplicitChatWriteActionAllowed('create_reminder', { text: '起床', runAt: Date.now() + 10 * 60 * 1000 }, { userText: '十分钟后提醒我起床' }) === true)
     await isolatedConfig.saveAgentConfig({
       version: 2,
       channels: {
@@ -3097,6 +3121,16 @@ async function main() {
     fs.writeFileSync(oversizedFile, 'x'.repeat(520 * 1024), 'utf8')
     const oversizedProfile = await personaProfile.buildPersonaProfileBlocks({ userId: 'u2', channelKey: 'g:2', rootDir: profileTmp, includeRecentMessages: false, now: profileNow })
     check('persona profile skips oversized legacy files without throwing', oversizedProfile.blocks.length === 0 && oversizedProfile.summary.total === 0, JSON.stringify(oversizedProfile))
+    const sourceFile = modules.personaProfileSources.safePersonaProfileFile('u3', 'g:3', profileTmp)
+    fs.mkdirSync(path.dirname(sourceFile), { recursive: true })
+    fs.writeFileSync(sourceFile, '\uFEFF' + JSON.stringify({ userId: 'u3', names: ['源读取'], memory: [] }), 'utf8')
+    const sourceData = await modules.personaProfileSources.readLegacyPersonaProfileData({ userId: 'u3', channelKey: 'g:3', rootDir: profileTmp })
+    check('persona profile source reader reads BOM legacy data from sanitized path', sourceData && sourceData.userId === 'u3' && Array.isArray(sourceData.names) && sourceData.names[0] === '源读取', JSON.stringify(sourceData))
+    const sourceOversizedFile = modules.personaProfileSources.safePersonaProfileFile('u4', 'g:4', profileTmp)
+    fs.mkdirSync(path.dirname(sourceOversizedFile), { recursive: true })
+    fs.writeFileSync(sourceOversizedFile, 'x'.repeat(520 * 1024), 'utf8')
+    const sourceOversizedData = await modules.personaProfileSources.readLegacyPersonaProfileData({ userId: 'u4', channelKey: 'g:4', rootDir: profileTmp })
+    check('persona profile source reader skips oversized legacy files directly', sourceOversizedData === null, JSON.stringify(sourceOversizedData))
   } finally {
     try { fs.rmSync(profileTmp, { recursive: true, force: true }) } catch {}
   }
@@ -3946,6 +3980,8 @@ async function main() {
   const startupSchedulersSrc = read(path.join(LIB, 'lifecycle', 'startup-schedulers.js'))
   const pluginLifecycleSrc = read(path.join(LIB, 'lifecycle', 'plugin-lifecycle.js'))
   const resultNotifierSrc = read(path.join(LIB, 'resource-workers', 'result-notifier.js'))
+  const resourceTaskKindsSrc = read(path.join(LIB, 'resource-common', 'resource-task-kinds.js'))
+  const resourceTaskTypesSrc = read(path.join(AI_ROOT, 'src', 'resource-workers', 'task-types.ts'))
   const messageSegmentSrc = read(path.join(LIB, 'message', 'message-segment.js'))
   const incomingFileSrc = read(path.join(LIB, 'media', 'file', 'incoming-file.js'))
   const fileStoreSrc = read(path.join(LIB, 'media', 'file', 'file-store.js'))
@@ -4150,6 +4186,7 @@ async function main() {
   const unlockTimerBody = (safeSendSrc.match(/setTimeout\(function\s*\(\) \{[\s\S]*?30 \* 60 \* 1000\)/) || [''])[0]
   check('safe-send delayed unlock notification resolves current bot', unlockTimerBody.includes('const bot = getBot()') && !unlockTimerBody.includes('session?.bot') && !unlockTimerBody.includes('session.bot'))
   check('queued agent paths resolve current bot for inline sends and lifecycle notifier', indexSrc.includes("require('./lifecycle/bot-resolver')") && botResolverSrc.includes('function createBotResolver') && botResolverSrc.includes('function withCurrentBot') && indexSrc.includes('const resolveBot = createBotResolver(ctx, session)') && indexSrc.includes('resolveBot,') && chatResultFlowSrc.includes("require('../agent/worker-submission')") && chatResultFlowSrc.includes('submitAgentWorkerTask({') && agentAutoRouteFlowSrc.includes("require('../agent/worker-submission')") && agentAutoRouteFlowSrc.includes('submitAgentWorkerTask({') && pluginLifecycleSrc.includes('function resolveLifecycleBot') && pluginLifecycleSrc.includes('const bot = resolveLifecycleBot(ctx)') && pluginLifecycleSrc.includes('sender: createResourceResultSender({ bot, logger })') && resultNotifierSrc.includes('function createAgentTaskSender') && resultNotifierSrc.includes("String(task?.kind || '') !== 'agent_task'"))
+  check('resource task kinds stay in shared vocabulary without stale media_task placeholder', resourceTaskKindsSrc.includes('RESOURCE_TASK_KIND') && resourceTaskTypesSrc.includes('KnownResourceTaskKind') && resourceTaskTypesSrc.includes('resourceTaskKinds.RESOURCE_TASK_KIND') && !resourceTaskTypesSrc.includes("'media_task'"))
   check('file followup guard lives in media/file directory', fileFollowupGuardSrc.includes('function looksLikeFileFollowup') && fileFollowupGuardSrc.includes("require('./file-safety')"))
   check('skill/persona loaders skip oversized markdown', skillsLoaderSrc.includes('MAX_SKILL_FILE_BYTES') && personaSrc.includes('MAX_PERSONA_SKILL_BYTES') && agentPersonaSrc.includes('MAX_AGENT_PERSONA_FILE_BYTES'))
   check('agent config cron memory files have size guards', agentConfigSrc.includes('MAX_TOOL_CONFIG_BYTES') && agentCronSrc.includes('MAX_CRON_FILE_BYTES') && agentMemorySrc.includes('MAX_MEMORY_FILE_BYTES'))

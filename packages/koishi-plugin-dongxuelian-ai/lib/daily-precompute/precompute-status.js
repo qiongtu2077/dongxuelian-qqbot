@@ -6,12 +6,16 @@
  */
 const path = require('path');
 const { DATA_DIR } = require('../core/constants');
-const { listJsonFiles, readJsonFile, readRecentJsonlEvents } = require('../resource-common/files');
+const { listJsonFiles, readJsonFile, readRecentJsonlEvents, sanitizeId } = require('../resource-common/files');
 const { INDEX_ROOT } = require('./precompute-index');
 const PRECOMPUTE_ROOT = path.join(DATA_DIR, 'daily-precompute');
 const COVERAGE_ROOT = path.join(PRECOMPUTE_ROOT, 'coverage');
 const SLOTS_ROOT = path.join(PRECOMPUTE_ROOT, 'slots');
 const FINAL_INPUT_ROOT = path.join(PRECOMPUTE_ROOT, 'final-input');
+// 返回 final-input 文件路径，保持和写入阶段同一套安全标识规则。
+function getDailyFinalInputFile(date, channelKey) {
+    return path.join(FINAL_INPUT_ROOT, sanitizeId(date), `${sanitizeId(channelKey)}.json`);
+}
 // 列出预计算覆盖率文件，用于资源中心展示。
 function listDailyCoverage(limit = 80) {
     const files = listJsonFiles(COVERAGE_ROOT, { recursive: true, maxFiles: Math.max(1, Math.min(1000, Number(limit || 80))) });
@@ -27,7 +31,7 @@ function listDailyCoverage(limit = 80) {
 }
 // 读取指定日期和频道的 final-input。
 function readDailyFinalInput(date, channelKey) {
-    return readJsonFile(path.join(FINAL_INPUT_ROOT, String(date), `${String(channelKey)}.json`), null);
+    return readJsonFile(getDailyFinalInputFile(date, channelKey), null);
 }
 // 统计 slot 文件数量，便于 Dashboard 快速判断预计算是否在产出。
 function getPrecomputeSummary() {
@@ -48,6 +52,7 @@ module.exports = {
     COVERAGE_ROOT,
     SLOTS_ROOT,
     FINAL_INPUT_ROOT,
+    getDailyFinalInputFile,
     listDailyCoverage,
     readDailyFinalInput,
     getPrecomputeSummary,
