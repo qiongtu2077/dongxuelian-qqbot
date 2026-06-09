@@ -52,7 +52,7 @@ interface SafeSendSessionLike {
   author?: { id?: string; nick?: string; name?: string }
   event?: { user?: { id?: string }; selfId?: string }
   bot?: BotLike
-  send(message: string): Promise<unknown> | unknown
+  send(message: unknown): Promise<unknown> | unknown
 }
 
 interface SendOptions {
@@ -91,6 +91,27 @@ interface BasicSessionLike {
 
 interface ReplySessionLike extends SafeSendSessionLike {
   bot?: BotLike & { internal?: { sendGroupMsg?: (guildId: string, message: unknown) => Promise<unknown> | unknown } }
+}
+
+interface RepeatMfaceMessageSegment {
+  type: 'mface'
+  data: {
+    emoji_id: string
+    emoji_package_id?: string
+    key?: string
+    summary?: string
+  }
+}
+
+interface RepeatPayload {
+  type?: string
+  message?: readonly RepeatMfaceMessageSegment[]
+}
+
+interface RepeatCandidateLike {
+  reply?: string
+  kind?: string
+  payload?: RepeatPayload
 }
 
 type ResolveBot = (() => BotLike | null | undefined) | null
@@ -245,7 +266,44 @@ async function handleRateLimitedSendFailure(ctx: SafeSendContext, session: SafeS
   }
 }
 
-async function safeSendRepeat(ctx: SafeSendContext, session: SafeSendSessionLike, reply: string): Promise<boolean> {
+async function sendRepeatMface(ctx: SafeSendContext, session: SafeSendSessionLike, payload: RepeatPayload): Promise<boolean> {
+  const message = Array.isArray(payload?.message) ? payload.message : []
+  if (!message.length) return false
+  const replySession = asReplySession(session)
+  try {
+    if (replySession.isDirect) {
+      const sendPrivateMsg = replySession.bot?.internal?.sendPrivateMsg
+      if (typeof sendPrivateMsg !== 'function' || !replySession.userId) throw new Error('missing private onebot internal send for mface repeat')
+      await sendPrivateMsg(replySession.userId, message)
+    } else {
+      const sendGroupMsg = replySession.bot?.internal?.sendGroupMsg
+      const targetGroupId = replySession.guildId || replySession.channelId
+      if (typeof sendGroupMsg !== 'function' || !targetGroupId) throw new Error('missing group onebot internal send for mface repeat')
+      await sendGroupMsg(targetGroupId, message)
+    }
+    return true
+  } catch (error) {
+    const classified = classifySendError(error)
+    if (classified.type === 'muted') {
+      markPlatformMute(session, { reason: classified.reason })
+      ctx.logger('dongxuelian-ai').warn(`repeat mface send muted: ${classified.message.slice(0, 120)}`)
+      return false
+    }
+    if (classified.type === 'rate-limit') {
+      ctx.logger('dongxuelian-ai').warn(`repeat mface send rate-limited: ${classified.message.slice(0, 120)}`)
+      return false
+    }
+    ctx.logger('dongxuelian-ai').warn(`repeat mface send failed: ${classified.message.slice(0, 120)}`)
+    return false
+  }
+}
+
+async function safeSendRepeat(ctx: SafeSendContext, session: SafeSendSessionLike, candidate: RepeatCandidateLike | string): Promise<boolean> {
+  const repeatCandidate = typeof candidate === 'string' ? { reply: candidate, kind: 'text' } : (candidate || {})
+  if (repeatCandidate.kind === 'mface') {
+    return sendRepeatMface(ctx, session, repeatCandidate.payload || {})
+  }
+  const reply = String(repeatCandidate.reply || '')
   try {
     await session.send(reply)
     return true

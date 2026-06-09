@@ -1871,7 +1871,15 @@ async function main() {
   checkEqual('repeat double face reply', repeatDoubleFace.reply, '<face id="76"/><face id="76"/>')
   const mixedCqFace = candidate({ content: 'ok[CQ:face,id=76]' }, `ok ${STR.qqFaceLike}`, { hasVisual: true })
   check('mixed text plus CQ face is not sent as pure face', !mixedCqFace.supported && mixedCqFace.reason === 'visual')
-  checkEqual('repeat mface unsupported reason', candidate({ content: '[CQ:mface,file=x]' }, STR.qqStickerLike, { hasVisual: true }).reason, 'visual')
+  const repeatStructuredMface = candidate({
+    content: '[CQ:mface,emoji_package_id=1,emoji_id=42,key=hello,summary=Hi]',
+    event: { message: [{ type: 'mface', data: { emoji_package_id: 1, emoji_id: 42, key: 'hello', summary: 'Hi' } }] },
+  }, STR.qqStickerLike, { hasVisual: true })
+  check('repeat structured mface supported', repeatStructuredMface.supported && repeatStructuredMface.kind === 'mface', JSON.stringify(repeatStructuredMface))
+  checkEqual('repeat structured mface key', repeatStructuredMface.key, 'mface:42')
+  const repeatContentMface = candidate({ content: '[CQ:mface,emoji_package_id=1,emoji_id=42,key=hello,summary=Hi]' }, STR.qqStickerLike, { hasVisual: true })
+  checkEqual('repeat content mface key', repeatContentMface.key, 'mface:42')
+  checkEqual('repeat mface without emoji id unsupported reason', candidate({ content: '[CQ:mface,file=x]' }, STR.qqStickerLike, { hasVisual: true }).reason, 'mface')
   checkEqual('repeat image unsupported reason', candidate({ content: '[CQ:image,file=x]' }, '', { hasVisual: true }).reason, 'visual')
   checkEqual('repeat file unsupported reason', candidate({ content: '[CQ:file,file=x]' }, '', { hasFile: true }).reason, 'file')
   check('reply send guard only strips internal parenthetical hints', read(path.join(LIB, 'reply', 'reply.js')).includes('stripInternalParenthetical') && read(path.join(LIB, 'reply', 'reply.js')).includes('我(?:需要|应该|会|可以先)'))

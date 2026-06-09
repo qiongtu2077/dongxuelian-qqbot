@@ -8,12 +8,26 @@ interface RepeatSession {
         };
     };
 }
+interface RepeatMfaceData {
+    emoji_id: string;
+    emoji_package_id?: string;
+    key?: string;
+    summary?: string;
+}
+interface RepeatMessageSegment {
+    type: 'mface';
+    data: RepeatMfaceData;
+}
 interface RepeatCandidate {
     key: string;
     reply: string;
     kind: string;
     supported: boolean;
     reason?: string;
+    payload?: {
+        type: 'mface';
+        message: readonly RepeatMessageSegment[];
+    };
 }
 interface RepeatAnalysis {
     hasFile?: boolean;

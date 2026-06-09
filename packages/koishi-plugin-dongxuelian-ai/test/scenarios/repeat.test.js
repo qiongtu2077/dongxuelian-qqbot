@@ -56,6 +56,38 @@ async function run(t) {
     const faceDuplicate = await run(userSession(makeSession, '1015', '[CQ:face,id=76]'))
     t.check('scenario QQ face repeat blocks duplicate in same group', faceDuplicate.sent.length === 0, JSON.stringify(faceDuplicate.sent))
 
+    await run(userSession(makeSession, '1015a', '[CQ:mface,emoji_package_id=1,emoji_id=42,key=hello,summary=Hi]', {
+      event: {
+        sender: { role: 'member' },
+        message: [{ type: 'mface', data: { emoji_package_id: 1, emoji_id: 42, key: 'hello', summary: 'Hi' } }],
+      },
+    }))
+    const mfaceRepeat = await run(userSession(makeSession, '1015b', '[CQ:mface,emoji_package_id=1,emoji_id=42,key=hello,summary=Hi]', {
+      event: {
+        sender: { role: 'member' },
+        message: [{ type: 'mface', data: { emoji_package_id: 1, emoji_id: 42, key: 'hello', summary: 'Hi' } }],
+      },
+    }))
+    t.check(
+      'scenario QQ mface repeat sends via onebot internal segment',
+      mfaceRepeat.sent.length === 0
+        && mfaceRepeat.internalCalls.some(call => call.method === 'sendGroupMsg'
+          && Array.isArray(call.message)
+          && call.message.length === 1
+          && call.message[0]
+          && call.message[0].type === 'mface'
+          && String(call.message[0].data?.emoji_id || '') === '42'
+          && String(call.message[0].data?.summary || '') === 'Hi'),
+      JSON.stringify({ sent: mfaceRepeat.sent, internalCalls: mfaceRepeat.internalCalls }),
+    )
+    const mfaceDuplicate = await run(userSession(makeSession, '1015c', '[CQ:mface,emoji_package_id=1,emoji_id=42,key=hello,summary=Hi]', {
+      event: {
+        sender: { role: 'member' },
+        message: [{ type: 'mface', data: { emoji_package_id: 1, emoji_id: 42, key: 'hello', summary: 'Hi' } }],
+      },
+    }))
+    t.check('scenario QQ mface repeat blocks duplicate in same group', mfaceDuplicate.sent.length === 0 && mfaceDuplicate.internalCalls.length === 0, JSON.stringify(mfaceDuplicate.internalCalls))
+
     await run(userSession(makeSession, '1016', '[CQ:face,id=76]\u54c8\u54c8\u54c8'))
     const mixedFace = await run(userSession(makeSession, '1017', '[CQ:face,id=76]\u54c8\u54c8\u54c8'))
     t.check('scenario mixed face text is not sent as pure face', !mixedFace.sent.some(item => String(item).includes('<face id="76"/>')), JSON.stringify(mixedFace.sent))
@@ -103,6 +135,12 @@ async function run(t) {
 
     const faceCandidate = repeat.buildRepeatCandidate(userSession(makeSession, '2021', '[CQ:face,id=76]'), '', { hasVisual: true })
     t.check('scenario QQ face repeat candidate remains pure face', faceCandidate.reply === '<face id="76"/>', JSON.stringify(faceCandidate))
+    const mfaceCandidate = repeat.buildRepeatCandidate(userSession(makeSession, '2022', '[CQ:mface,emoji_package_id=1,emoji_id=42,key=hello,summary=Hi]', {
+      event: {
+        message: [{ type: 'mface', data: { emoji_package_id: 1, emoji_id: 42, key: 'hello', summary: 'Hi' } }],
+      },
+    }), '【QQ表情包】', { hasVisual: true })
+    t.check('scenario QQ mface repeat candidate keeps stable emoji key', mfaceCandidate.supported && mfaceCandidate.kind === 'mface' && mfaceCandidate.key === 'mface:42', JSON.stringify(mfaceCandidate))
   })
 }
 

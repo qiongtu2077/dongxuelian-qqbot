@@ -628,7 +628,7 @@ function apply(ctx: IndexContext): void {
       const repeatResult = checkGroupRepeat(session, repeatCandidate, channelKey, currentUserId)
       if (repeatResult && !SENSITIVE_KEYWORDS_RE.test(String(repeatResult.reply || ''))) {
         ctx.logger('dongxuelian-ai').info(`repeat triggered in ${channelKey}: kind=${repeatResult.kind} keyLen=${String(repeatResult.key || '').length}`)
-        await safeSendRepeat(ctx, session, repeatResult.reply)
+        await safeSendRepeat(ctx, session, repeatResult)
         return next()
       }
     }

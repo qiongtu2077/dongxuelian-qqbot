@@ -6,6 +6,10 @@
 const fs = require('fs')
 const { REPEAT_ENABLED_FILE } = require('../core/constants') as typeof import('../core/constants')
 const { normalizeText, getSegmentData, getSessionMessageSegments, writeJsonFileSync } = require('../core/utils') as typeof import('../core/utils')
+const {
+  extractAttrValue,
+  extractCqAttrValue,
+} = require('../message/message-segment') as typeof import('../message/message-segment')
 
 const REPEAT_MATCH_WINDOW_MS = 120000
 const MAX_REPEAT_CONFIG_BYTES = 128 * 1024
@@ -25,12 +29,28 @@ interface RepeatSession {
   }
 }
 
+interface RepeatMfaceData {
+  emoji_id: string
+  emoji_package_id?: string
+  key?: string
+  summary?: string
+}
+
+interface RepeatMessageSegment {
+  type: 'mface'
+  data: RepeatMfaceData
+}
+
 interface RepeatCandidate {
   key: string
   reply: string
   kind: string
   supported: boolean
   reason?: string
+  payload?: {
+    type: 'mface'
+    message: readonly RepeatMessageSegment[]
+  }
 }
 
 interface RepeatAnalysis {
@@ -140,6 +160,80 @@ function extractContentFaceIds(content: string = ''): string[] | null {
   return ids.length && !remainder.trim() ? ids : null
 }
 
+function normalizeMfaceData(data: Record<string, unknown>): RepeatMfaceData | null {
+  const emojiId = String(data.emoji_id ?? data.emojiId ?? data.id ?? '').trim()
+  if (!/^\d+$/.test(emojiId)) return null
+
+  const emojiPackageId = String(data.emoji_package_id ?? data.emojiPackageId ?? data.package_id ?? data.packageId ?? '').trim()
+  const key = String(data.key ?? data.file ?? '').trim()
+  const summary = String(data.summary ?? data.text ?? data.name ?? '').trim()
+
+  const normalized: RepeatMfaceData = { emoji_id: emojiId }
+  if (/^\d+$/.test(emojiPackageId)) normalized.emoji_package_id = emojiPackageId
+  if (key) normalized.key = key
+  if (summary) normalized.summary = summary
+  return normalized
+}
+
+interface MfaceInspection {
+  segments: RepeatMessageSegment[] | null
+  invalidPure: boolean
+}
+
+function inspectStructuredMfaceSegments(session: RepeatSession): MfaceInspection {
+  const segments = getSessionMessageSegments(session) as SegmentLike[]
+  if (!segments.length) return { segments: null, invalidPure: false }
+
+  const mfaces: RepeatMessageSegment[] = []
+  for (const segment of segments) {
+    const type = String(segment?.type || '').toLowerCase()
+    const data = getSegmentData(segment) as Record<string, unknown>
+
+    if (type === 'text') {
+      const text = data.text ?? data.content ?? ''
+      if (!normalizeText(String(text))) continue
+      return { segments: null, invalidPure: false }
+    }
+
+    if (type === 'at') continue
+
+    if (type === 'mface') {
+      const normalized = normalizeMfaceData(data)
+      if (!normalized) return { segments: null, invalidPure: true }
+      mfaces.push({ type: 'mface', data: normalized })
+      continue
+    }
+
+    return { segments: null, invalidPure: false }
+  }
+
+  return { segments: mfaces.length ? mfaces : null, invalidPure: false }
+}
+
+function inspectContentMfaceSegments(content: string = ''): MfaceInspection {
+  const value = String(content || '')
+  if (!value.trim()) return { segments: null, invalidPure: false }
+
+  const segments: RepeatMessageSegment[] = []
+  let invalidPure = false
+  const tokenRe = /\[CQ:mface,([^\]]+)\]|(<mface\b[^>]*\/?>)/gi
+  const remainder = value.replace(tokenRe, (_token, cqBody: string | undefined, htmlToken: string | undefined) => {
+    const normalized = normalizeMfaceData({
+      emoji_package_id: cqBody ? extractCqAttrValue(cqBody, 'emoji_package_id') : extractAttrValue(htmlToken, 'emoji_package_id'),
+      emoji_id: cqBody ? extractCqAttrValue(cqBody, 'emoji_id') : extractAttrValue(htmlToken, 'emoji_id'),
+      key: cqBody ? extractCqAttrValue(cqBody, 'key') : extractAttrValue(htmlToken, 'key'),
+      summary: cqBody ? extractCqAttrValue(cqBody, 'summary') : extractAttrValue(htmlToken, 'summary'),
+    })
+    if (!normalized) invalidPure = true
+    else segments.push({ type: 'mface', data: normalized })
+    return ''
+  })
+
+  if (remainder.trim()) return { segments: null, invalidPure: false }
+  if (segments.length) return invalidPure ? { segments: null, invalidPure: true } : { segments, invalidPure: false }
+  return { segments: null, invalidPure, }
+}
+
 function buildFaceRepeatCandidate(faceIds: string[]): RepeatCandidate {
   const ids = faceIds.map(id => String(id))
   return {
@@ -147,6 +241,19 @@ function buildFaceRepeatCandidate(faceIds: string[]): RepeatCandidate {
     reply: ids.map(id => `<face id="${id}"/>`).join(''),
     kind: 'face',
     supported: true,
+  }
+}
+
+function buildMfaceRepeatCandidate(message: RepeatMessageSegment[]): RepeatCandidate {
+  return {
+    key: message.map(item => `mface:${item.data.emoji_id}`).join('|'),
+    reply: '【QQ表情包】',
+    kind: 'mface',
+    supported: true,
+    payload: {
+      type: 'mface',
+      message,
+    },
   }
 }
 
@@ -166,6 +273,14 @@ function buildRepeatCandidate(session: RepeatSession, plain: string, analyzed: R
 
   const contentFaceIds = extractContentFaceIds(session?.content || '')
   if (contentFaceIds) return buildFaceRepeatCandidate(contentFaceIds)
+
+  const structuredMface = inspectStructuredMfaceSegments(session)
+  if (structuredMface.segments) return buildMfaceRepeatCandidate(structuredMface.segments)
+  if (structuredMface.invalidPure) return buildUnsupportedRepeatCandidate('mface')
+
+  const contentMface = inspectContentMfaceSegments(session?.content || '')
+  if (contentMface.segments) return buildMfaceRepeatCandidate(contentMface.segments)
+  if (contentMface.invalidPure) return buildUnsupportedRepeatCandidate('mface')
 
   if (analyzed.hasFile) return buildUnsupportedRepeatCandidate('file')
   if (analyzed.hasEmbed || analyzed.hasMessageRecordCue) return buildUnsupportedRepeatCandidate('embed')
