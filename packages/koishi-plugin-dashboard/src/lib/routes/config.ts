@@ -20,7 +20,6 @@ const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_D
   MODES_DIR: string
   LORES_DIR: string
 }
-const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'core', 'frontmatter')) as typeof import('koishi-plugin-dongxuelian-ai/lib/core/frontmatter')
 
 type LoreScope = 'always' | 'keyword' | 'none'
 type LoreNumberValue = number | ''
@@ -149,6 +148,7 @@ function getLegacyErrorMessage(error: unknown): unknown {
 
 function parseFrontmatter(content: unknown): ParsedDashboardFrontmatter {
   const raw = String(content || '').replace(/\uFEFF/g, '')
+  const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'core', 'frontmatter')) as typeof import('koishi-plugin-dongxuelian-ai/lib/core/frontmatter')
   const parsed = parseFrontmatterDocument(raw)
   return { meta: parsed.meta, body: parsed.body, raw }
 }

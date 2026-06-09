@@ -4,12 +4,12 @@ const path = require('path');
 const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils');
 const { requireAdmin } = require('../auth');
 const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths');
-const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'core', 'frontmatter'));
 function getLegacyErrorMessage(error) {
     return error && typeof error === 'object' && 'message' in error ? error.message : undefined;
 }
 function parseFrontmatter(content) {
     const raw = String(content || '').replace(/\uFEFF/g, '');
+    const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'core', 'frontmatter'));
     const parsed = parseFrontmatterDocument(raw);
     return { meta: parsed.meta, body: parsed.body, raw };
 }
