@@ -28,7 +28,9 @@ interface AdminCommandResult {
     response?: string;
 }
 declare function handleAdminInlineCommands(session: AdminSessionLike, ctx: unknown, { plain, inGuild, channelKey, isGroupAdmin, armEventDump, getArmedEventDump, clearArmedEventDump, }: AdminInlineOptions): Promise<AdminCommandResult>;
+declare function isAdminCommand(plain: string): boolean;
 declare const _default: {
     handleAdminInlineCommands: typeof handleAdminInlineCommands;
+    isAdminCommand: typeof isAdminCommand;
 };
 export = _default;

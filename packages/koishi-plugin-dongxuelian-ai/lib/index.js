@@ -39,7 +39,7 @@ const { prepareVisionRequest, isVisionSession } = require('./media/image/vision'
 const { handleIncomingMessageArtifacts, } = require('./message/incoming-message-flow'); // 入站图片/文件/语音材料处理
 const { handleSensitiveMessage, // 敏感消息拦截主逻辑
  } = require('./behavior/sensitive');
-const { handleAdminInlineCommands } = require('./commands/admin-commands'); // 白名单/黑名单/概率/敏感等内联管理命令
+const { handleAdminInlineCommands, isAdminCommand } = require('./commands/admin-commands'); // 白名单/黑名单/概率/敏感等内联管理命令
 const { setRepeatEnabled, // 设置复读开关
 getRepeatEnabledCache, // 查询复读开关缓存
 buildRepeatCandidate, // 构建复读候选（判断是否跟读）
@@ -248,13 +248,7 @@ function apply(ctx) {
             session.author?.name ||
             session.username ||
             '群友');
-        const adminCommandMatched = /^(?:东雪莲)?测试(?:开|关)$/.test(plain) ||
-            /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
-            /^东雪莲联网(?:开|关)$/.test(plain) ||
-            /^东雪莲思考(?:开|关)$/.test(plain) ||
-            /^解除上限群白名单/.test(plain) ||
-            /^敏感话题处理者/.test(plain) ||
-            plain === 'AI重载';
+        const adminCommandMatched = isAdminCommand(plain);
         if (adminCommandMatched)
             markExplicitInteraction('admin-command');
         await handleSensitiveMessage(session, ctx, {
