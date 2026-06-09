@@ -14,6 +14,7 @@ fi
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 DEFAULT_APP_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)"
 APP_DIR="${KOISHI_APP_DIR:-${KOISHI_DIR:-$DEFAULT_APP_DIR}}"
+DATA_DIR="${DONGXUELIAN_AI_DATA_DIR:-${DATA_DIR:-$APP_DIR/data}}"
 KOISHI_YML="${KOISHI_YML:-$APP_DIR/koishi.yml}"
 NODE_MODULES_DIR="$APP_DIR/node_modules"
 if [ -d "$SCRIPT_DIR/../packages" ]; then
@@ -58,12 +59,12 @@ if [ -d "$SRC/templates" ]; then
 fi
 
 if [ "$COPY_AI_SKILLS" = "--copy-ai-skills" ]; then
-  mkdir -p "$APP_DIR/data/ai-skills"
-  chmod 700 "$APP_DIR/data" 2>/dev/null || true
+  mkdir -p "$DATA_DIR/ai-skills"
+  chmod 700 "$DATA_DIR" 2>/dev/null || true
   if [ -d "$SRC/data/ai-skills" ]; then
-    (cd "$SRC/data/ai-skills" && find . -type d -exec mkdir -p "$APP_DIR/data/ai-skills/{}" \;)
+    (cd "$SRC/data/ai-skills" && find . -type d -exec mkdir -p "$DATA_DIR/ai-skills/{}" \;)
     (cd "$SRC/data/ai-skills" && find . -type f | while IFS= read -r rel; do
-      target="$APP_DIR/data/ai-skills/$rel"
+      target="$DATA_DIR/ai-skills/$rel"
       if [ ! -e "$target" ]; then
         mkdir -p "$(dirname "$target")"
         cp "$SRC/data/ai-skills/$rel" "$target"
