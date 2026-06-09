@@ -9,6 +9,7 @@ const {
   readCustomProvidersSync,
   resolveProviderDefinitionSync,
   resolveProviderApiKeySync,
+  resolveProviderKeyFile,
 } = require('./provider-registry') as typeof import('./provider-registry')
 const { resolveOneBotWsUrl } = require('./onebot-endpoint') as typeof import('./onebot-endpoint')
 const WebSocket = require('ws') as typeof import('ws')
@@ -279,6 +280,10 @@ function readApiJsonFileSync<T>(file: string, fallback: T, maxBytes: number = MA
   }
 }
 
+function isFallbackChainMap(value: unknown): value is Record<string, FallbackStep[]> {
+  return isRecord(value) && Object.values(value).every(item => Array.isArray(item))
+}
+
 function buildResponsesInput(messages: ChatMessage[] = []): Array<{ role: string; content: Array<{ type: string; text: string }> }> {
   return messages.filter(item => item && item.content).map(item => ({
     role: item.role === 'assistant' ? 'assistant' : item.role === 'system' ? 'system' : 'user',
@@ -492,8 +497,9 @@ const FALLBACK_DEFAULTS: Record<string, FallbackStep[]> = {
 }
 
 function readFallbackSteps(): Record<string, FallbackStep[]> | null {
-  const data = readApiJsonFileSync<FallbackChainsConfig | null>(FALLBACK_CHAINS_FILE, null)
-  if (data && data.chains) return data.chains
+  const data = readApiJsonFileSync<FallbackChainsConfig | Record<string, FallbackStep[]> | null>(FALLBACK_CHAINS_FILE, null)
+  if (data && 'chains' in data && isFallbackChainMap(data.chains)) return data.chains
+  if (isFallbackChainMap(data)) return data
   return null
 }
 
@@ -512,9 +518,9 @@ async function buildFallbackConfig(config: ApiConfig, step: number, fallbackSet:
   if (!provider) return null
   let nextKey = config.apiKey
   if (fb.keyFile) {
-    nextKey = readApiTextFileSync(fb.keyFile).replace(/[\r\n]+/g, '') || nextKey
+    nextKey = readApiTextFileSync(resolveProviderKeyFile(fb.keyFile)).replace(/[\r\n]+/g, '') || nextKey
   } else if (provider.custom && provider.keyFile) {
-    nextKey = resolveProviderApiKeySync(fb.provider, nextKey)
+    nextKey = resolveProviderApiKeySync(fb.provider, nextKey, { allowFallback: false })
   }
   return Object.assign({}, config, {
     _fallbackTried: step,

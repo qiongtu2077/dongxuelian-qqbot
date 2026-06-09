@@ -1,6 +1,6 @@
 const path = require('path')
 const { withScenario } = require('./_setup')
-const { AI_ROOT } = require('../fake/file')
+const { AI_ROOT, createTestDataDir, withDataEnv } = require('../fake/file')
 const { mockFetch } = require('../fake/fetch')
 
 async function withApi(t, queue, fn) {
@@ -24,6 +24,30 @@ async function withApi(t, queue, fn) {
 function getFallbackStep(api, index) {
   const fb = api.getFallbackSteps()
   return (fb.chat || [])[index - 1]
+}
+
+function clearAiModuleCache() {
+  const root = path.resolve(AI_ROOT) + path.sep
+  for (const key of Object.keys(require.cache)) {
+    const resolved = path.resolve(key)
+    if (resolved === path.resolve(AI_ROOT) || resolved.startsWith(root)) delete require.cache[key]
+  }
+}
+
+async function withRuntimeConfigData(options, setup, fn) {
+  const data = createTestDataDir(options)
+  const restoreEnv = withDataEnv(data.dataDir)
+  try {
+    await setup(data)
+    clearAiModuleCache()
+    const runtime = require(path.join(AI_ROOT, 'lib', 'core', 'runtime-config.js'))
+    runtime.resetConfigCache()
+    return await fn(runtime, data)
+  } finally {
+    restoreEnv()
+    data.cleanup()
+    clearAiModuleCache()
+  }
 }
 
 function checkFallbackCallMatchesStep(t, label, call, step, constants) {
@@ -184,6 +208,78 @@ async function run(t) {
       const msg = String(error && error.message || error)
       t.check('scenario all fallbacks fail without key leak', !msg.includes('sk-current'), msg)
     }
+  })
+
+  await withScenario({}, async (scenario) => {
+    scenario.data.writeText('ai-providers-custom.json', JSON.stringify([{
+      id: 'openai-official',
+      name: 'OpenAI 官方',
+      baseURL: 'https://api.openai.com/v1',
+      keyFile: 'ai-openai-official-key.txt',
+      models: [{ id: 'gpt-4o', vision: true }],
+    }]))
+    scenario.data.writeText('ai-fallback-chains.json', JSON.stringify({
+      chat: [
+        { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
+        { provider: 'openai-official', model: 'gpt-4o', keyFile: 'ai-openai-official-key.txt' },
+      ],
+    }))
+    scenario.data.writeText('ai-openai-official-key.txt', 'sk-custom-openai')
+    const originalFetch = global.fetch
+    const mocked = mockFetch([
+      { status: 429, text: 'rate limited' },
+      { status: 429, text: 'fallback rate limited' },
+      { json: { choices: [{ message: { content: 'custom-fallback-ok' } }] } },
+    ])
+    global.fetch = mocked.fetch
+    try {
+      const api = require(path.join(AI_ROOT, 'lib', 'core', 'api.js'))
+      const result = await api.requestChatCompletions([], {
+        model: 'deepseek-chat',
+        baseURL: 'https://example.invalid/v1',
+        apiKey: 'sk-current',
+        provider: 'deepseek',
+      })
+      const resultText = typeof result === 'string' ? result : result.content
+      t.checkEqual('scenario custom provider fallback result', resultText, 'custom-fallback-ok')
+      t.check('scenario custom provider baseURL used', mocked.calls[2].url.startsWith('https://api.openai.com/v1'), mocked.calls[2].url)
+      t.checkEqual('scenario custom provider model used', mocked.calls[2].requestBody.model, 'gpt-4o')
+      const customAuth = mocked.calls[2].options.headers.Authorization || mocked.calls[2].options.headers.authorization
+      t.checkEqual('scenario custom provider key from data dir', customAuth, 'Bearer sk-custom-openai')
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  await withRuntimeConfigData({ provider: 'openai-official', model: '' }, async (data) => {
+    data.writeText('ai-providers-custom.json', JSON.stringify([{
+      id: 'openai-official',
+      name: 'OpenAI official',
+      baseURL: 'https://api.openai.com/v1',
+      keyFile: 'ai-openai-official-key.txt',
+      models: [{ id: 'gpt-4o', vision: true }],
+    }]))
+    data.writeText('ai-openai-official-key.txt', 'sk-official-main')
+  }, async (runtime) => {
+    const config = await runtime.loadConfig(true)
+    t.checkEqual('scenario custom main provider id retained', config.provider, 'openai-official')
+    t.checkEqual('scenario custom main provider model defaults to custom model', config.model, 'gpt-4o')
+    t.checkEqual('scenario custom main provider baseURL used', config.baseURL, 'https://api.openai.com/v1')
+    t.checkEqual('scenario custom main provider uses own key file', config.apiKey, 'sk-official-main')
+  })
+
+  await withRuntimeConfigData({ provider: 'openai-official', apiKey: 'sk-legacy-opencode' }, async (data) => {
+    data.writeText('ai-providers-custom.json', JSON.stringify([{
+      id: 'openai-official',
+      name: 'OpenAI official',
+      baseURL: 'https://api.openai.com/v1',
+      keyFile: 'ai-openai-official-key.txt',
+      models: [{ id: 'gpt-4o-mini', vision: true }],
+    }]))
+    data.writeText('ai-openai-official-key.txt', '')
+  }, async (runtime) => {
+    const config = await runtime.loadConfig(true)
+    t.checkEqual('scenario custom main provider empty key does not reuse legacy key', config.apiKey, '')
   })
 }
 

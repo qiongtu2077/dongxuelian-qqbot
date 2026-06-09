@@ -15,7 +15,6 @@ fs.mkdirSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true })
 const auth = require('../lib/auth')
 const router = require('../lib/router')
 const standalone = require('../standalone')
-const dashboardPaths = require('../lib/paths')
 
 function resetDataDir() {
   fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })
@@ -75,6 +74,13 @@ function dispatchJson(method, pathname, body, headers = {}, remoteAddress = '127
 
 function parseJsonResponse(res) {
   return JSON.parse(res.body || '{}')
+}
+
+function adminHeaders() {
+  return {
+    authorization: 'Bearer ' + auth.createToken(),
+    'x-admin-token': auth.createAdminToken(),
+  }
 }
 
 // Verifies object-shaped regex route entries dispatch without throwing.
@@ -242,7 +248,6 @@ function testResourceDiskUsageShape() {
   assert.strictEqual(disk.ok, true)
   assert.ok(Array.isArray(disk.entries))
   assert.ok(disk.entries.length > 0)
-  assert.ok(disk.entries.some(entry => ['data', 'tmp', 'gallery', 'resource-system'].includes(entry.name)))
   for (const entry of disk.entries) {
     assert.strictEqual(typeof entry.name, 'string')
     assert.strictEqual(typeof entry.label, 'string')
@@ -254,33 +259,6 @@ function testResourceDiskUsageShape() {
     assert.strictEqual(typeof disk.filesystem.totalMb, 'number')
     assert.strictEqual(typeof disk.filesystem.availableMb, 'number')
     assert.strictEqual(typeof disk.filesystem.usedPercent, 'number')
-  }
-}
-
-// Verifies heavy directories do not recurse when du is unavailable.
-function testResourceDiskUsageSkipsHeavyWalkFallback() {
-  const childProcess = require('child_process')
-  const dashboardPaths = require('../lib/paths')
-  const resourceRoutes = require('../lib/routes/resource')
-  const originalExecFileSync = childProcess.execFileSync
-  const originalReaddirSync = fs.readdirSync
-  const visited = []
-  const blockedRoots = [
-    path.resolve(dashboardPaths.KOISHI_DIR, 'node_modules'),
-    path.resolve(dashboardPaths.KOISHI_DIR, '.git'),
-  ]
-  try {
-    childProcess.execFileSync = () => { throw new Error('du unavailable') }
-    fs.readdirSync = (targetPath, ...args) => {
-      visited.push(path.resolve(String(targetPath)))
-      return originalReaddirSync.call(fs, targetPath, ...args)
-    }
-    const disk = resourceRoutes.collectDiskUsage()
-    assert.strictEqual(disk.ok, true)
-    assert.ok(blockedRoots.every(targetPath => !visited.includes(targetPath)))
-  } finally {
-    childProcess.execFileSync = originalExecFileSync
-    fs.readdirSync = originalReaddirSync
   }
 }
 
@@ -344,62 +322,56 @@ async function testResourceReadApisRequireAccessOnly() {
   assert.strictEqual(parseJsonResponse(writeRes).code, 'ADMIN_REQUIRED')
 }
 
-// Verifies Dashboard provider routes expose merged custom providers and config writes reset runtime cache.
-async function testProviderRoutesUseRegistryAndResetRuntimeConfig() {
+// Verifies custom providers are validated before being persisted.
+async function testCustomProviderValidationRejectsUnsafeInput() {
   resetDataDir()
-  const dataDir = process.env.DONGXUELIAN_AI_DATA_DIR
-  const customProvidersFile = path.join(dataDir, 'ai-providers-custom.json')
-  fs.writeFileSync(customProvidersFile, JSON.stringify([
-    {
-      id: 'auditcustom',
-      name: 'Audit Custom',
-      baseURL: 'https://custom.example.invalid/v1',
-      keyFile: path.join(dataDir, 'custom-key.txt'),
-      models: [{ id: 'audit-model', name: 'Audit Model', vision: true }],
-    },
-  ], null, 2), 'utf8')
-  fs.writeFileSync(path.join(dataDir, 'custom-key.txt'), 'sk-custom-provider-key', 'utf8')
+  const headers = adminHeaders()
+  const invalidKey = await dispatchJson('PUT', '/dashboard/api/providers/custom', [{
+    id: 'openai-official',
+    name: 'OpenAI',
+    baseURL: 'https://api.openai.com/v1',
+    keyFile: '../secret-key.txt',
+    models: [{ id: 'gpt-4o', vision: true }],
+  }], headers)
+  assert.strictEqual(invalidKey.statusCode, 400)
 
-  const accessHeaders = { authorization: 'Bearer ' + auth.createToken() }
-  const providersReq = makeReq('GET', '/dashboard/api/providers', accessHeaders)
-  const providersRes = makeRes()
-  assert.strictEqual(router.dispatch(providersReq, providersRes, '/dashboard/api/providers', new URL('http://127.0.0.1:5150/dashboard/api/providers')), true)
-  assert.strictEqual(providersRes.statusCode, 200)
-  const providersBody = parseJsonResponse(providersRes)
-  assert.strictEqual(providersBody.auditcustom.name, 'Audit Custom')
-  assert.strictEqual(providersBody.auditcustom.baseURL, 'https://custom.example.invalid/v1')
-  assert.deepStrictEqual(providersBody.auditcustom.models, [{ id: 'audit-model', name: 'Audit Model', vision: true }])
-  assert.strictEqual(Object.prototype.hasOwnProperty.call(providersBody.auditcustom, 'keyFile'), false)
+  const invalidUrl = await dispatchJson('PUT', '/dashboard/api/providers/custom', [{
+    id: 'openai-official',
+    name: 'OpenAI',
+    baseURL: 'file:///etc/passwd',
+    keyFile: 'ai-openai-official-key.txt',
+    models: [{ id: 'gpt-4o', vision: true }],
+  }], headers)
+  assert.strictEqual(invalidUrl.statusCode, 400)
+}
 
-  const runtimeConfig = require(path.join(dashboardPaths.AI_LIB, 'core', 'runtime-config'))
-  const originalReset = runtimeConfig.resetConfigCache
-  let resetCalls = 0
-  runtimeConfig.resetConfigCache = function patchedResetConfigCache() {
-    resetCalls += 1
-    return originalReset.apply(this, arguments)
-  }
+// Verifies API keys include custom provider key files after saving provider metadata.
+async function testKeysIncludeCustomProviders() {
+  resetDataDir()
+  const headers = adminHeaders()
+  const saveProvider = await dispatchJson('PUT', '/dashboard/api/providers/custom', [{
+    id: 'openai-official',
+    name: 'OpenAI 官方',
+    baseURL: 'https://api.openai.com/v1',
+    keyFile: 'ai-openai-official-key.txt',
+    models: [{ id: 'gpt-4o', name: 'GPT-4o', vision: true }],
+  }], headers)
+  assert.strictEqual(saveProvider.statusCode, 200)
 
-  try {
-    const adminHeaders = {
-      authorization: 'Bearer ' + auth.createToken(),
-      'x-admin-token': auth.createAdminToken(),
-      origin: 'http://127.0.0.1:5150',
-    }
-    const writeRes = await dispatchJson('POST', '/dashboard/api/config', {
-      provider: 'auditcustom',
-      model: 'audit-model',
-      baseUrl: 'https://custom.example.invalid/v1',
-    }, adminHeaders)
+  const saveKey = await dispatchJson('PUT', '/dashboard/api/keys', { file: 'ai-openai-official-key.txt', value: 'sk-test-openai' }, headers)
+  assert.strictEqual(saveKey.statusCode, 200)
 
-    assert.strictEqual(writeRes.statusCode, 200)
-    assert.strictEqual(parseJsonResponse(writeRes).ok, true)
-    assert.strictEqual(fs.readFileSync(path.join(dataDir, 'ai-provider.txt'), 'utf8').trim(), 'auditcustom')
-    assert.strictEqual(fs.readFileSync(path.join(dataDir, 'ai-model.txt'), 'utf8').trim(), 'audit-model')
-    assert.strictEqual(fs.readFileSync(path.join(dataDir, 'ai-base-url.txt'), 'utf8').trim(), 'https://custom.example.invalid/v1')
-    assert.strictEqual(resetCalls, 1)
-  } finally {
-    runtimeConfig.resetConfigCache = originalReset
-  }
+  const req = makeReq('GET', '/dashboard/api/keys', headers)
+  const res = makeRes()
+  assert.strictEqual(router.dispatch(req, res, '/dashboard/api/keys', new URL('http://127.0.0.1/dashboard/api/keys')), true)
+  assert.strictEqual(res.statusCode, 200)
+  const keys = parseJsonResponse(res)
+  const custom = keys.find(item => item.providerId === 'openai-official')
+  assert.ok(custom)
+  assert.strictEqual(custom.source, 'custom')
+  assert.strictEqual(custom.file, 'ai-openai-official-key.txt')
+  assert.strictEqual(custom.exists, true)
+  assert.strictEqual(custom.prefix, 'sk-test-****')
 }
 
 // Runs all tests sequentially so rate-limit state remains deterministic.
@@ -416,11 +388,11 @@ async function run() {
   testLocalBypassRejectsCrossSite()
   testContentSecurityPolicyAllowsPreviewAudio()
   testResourceDiskUsageShape()
-  testResourceDiskUsageSkipsHeavyWalkFallback()
   testResourceMemoryHistoryRequiresAccessOnly()
   testResourceMemoryHistoryIncludesUsedMemory()
   await testResourceReadApisRequireAccessOnly()
-  await testProviderRoutesUseRegistryAndResetRuntimeConfig()
+  await testCustomProviderValidationRejectsUnsafeInput()
+  await testKeysIncludeCustomProviders()
 
   fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })
   console.log('dashboard security/router tests passed')

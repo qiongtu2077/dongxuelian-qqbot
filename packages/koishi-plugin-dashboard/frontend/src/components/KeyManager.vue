@@ -4,10 +4,13 @@
     <div style="color:var(--text3);font-size:13px;margin-bottom:16px">
       修改后自动热加载，无需重启
     </div>
+    <div class="api-toolbar">
+      <button class="icon-btn" type="button" title="新增 API 配置" @click="openProviderDialog">+</button>
+    </div>
     <div v-for="k in keys" :key="k.file" class="grp">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div>
-          <div class="grp-name">{{ k.label }}</div>
+          <div class="grp-name">{{ k.label }} <span v-if="k.source === 'custom'" class="source-pill">Custom</span></div>
           <div style="font-size:12px;color:var(--text3);font-family:monospace">{{ k.exists ? k.prefix : '（未设置）' }}</div>
         </div>
         <button class="btn btn-sm" @click="editKey(k)">编辑</button>
@@ -24,6 +27,104 @@
       <div v-if="keyMsg" style="margin-top:8px;font-size:13px" :style="{color: keyMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ keyMsg.text }}</div>
     </div>
     <div v-else-if="keyMsg" class="msg" :class="keyMsg.type" style="margin-top:16px">{{ keyMsg.text }}</div>
+  </div>
+
+  <div v-if="providerDialogOpen" class="modal-backdrop" @click.self="closeProviderDialog">
+    <div class="modal-panel">
+      <div class="modal-head">
+        <h2>新增 API 配置</h2>
+        <button class="icon-btn ghost" type="button" title="关闭" @click="closeProviderDialog">×</button>
+      </div>
+      <div class="provider-grid">
+        <label>
+          <span>供应商 ID</span>
+          <input v-model="providerDraft.id" placeholder="openai-official" />
+        </label>
+        <label>
+          <span>显示名称</span>
+          <input v-model="providerDraft.name" placeholder="OpenAI 官方" />
+        </label>
+        <label class="wide">
+          <span>Base URL</span>
+          <input v-model="providerDraft.baseURL" placeholder="https://api.openai.com/v1" />
+        </label>
+        <label>
+          <span>Key 文件</span>
+          <input v-model="providerDraft.keyFile" placeholder="ai-openai-official-key.txt" />
+        </label>
+        <label>
+          <span>API Key</span>
+          <input v-model="providerDraft.apiKey" type="password" autocomplete="off" placeholder="sk-..." />
+        </label>
+      </div>
+      <div class="model-editor">
+        <div class="editor-title">
+          <strong>模型</strong>
+          <button class="btn btn-sm" type="button" @click="addProviderModel">+ 模型</button>
+        </div>
+        <div v-for="(model, index) in providerDraft.models" :key="index" class="model-row">
+          <input v-model="model.id" placeholder="gpt-4o" />
+          <input v-model="model.name" placeholder="显示名" />
+          <label class="check-label"><input type="checkbox" v-model="model.vision" /> 视觉</label>
+          <button class="icon-btn danger" type="button" title="删除模型" :disabled="providerDraft.models.length <= 1" @click="removeProviderModel(index)">×</button>
+        </div>
+      </div>
+      <div v-if="providerMsg" class="msg" :class="providerMsg.type">{{ providerMsg.text }}</div>
+      <div class="modal-actions">
+        <button class="btn" type="button" @click="saveProvider" :disabled="savingProvider">{{ savingProvider ? '保存中...' : '保存配置' }}</button>
+        <button class="btn btn-sm muted-btn" type="button" @click="closeProviderDialog">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="priority-dashboard">
+    <section v-for="card in fallbackCards" :key="card.key" class="card priority-card">
+      <div class="priority-head">
+        <div>
+          <h2>{{ card.label }}</h2>
+          <div class="priority-subtitle">上方优先使用，失败后按顺序切换</div>
+        </div>
+        <button class="btn btn-sm" type="button" @click="saveFallback" :disabled="savingFallback">{{ savingFallback ? '保存中...' : '保存排序' }}</button>
+      </div>
+      <TransitionGroup name="priority" tag="div" class="priority-list">
+        <div
+          v-for="(step, index) in fallbackChains[card.key] || []"
+          :key="priorityStepKey(card.key, step, index)"
+          class="priority-item"
+          :class="{ dragging: dragging && dragging.key === card.key && dragging.index === index }"
+          @dragover.prevent="onPriorityDragOver(card.key, index)"
+          @drop.prevent="onPriorityDrop"
+        >
+          <button
+            class="drag-handle"
+            type="button"
+            title="拖拽排序"
+            draggable="true"
+            @dragstart="onPriorityDragStart(card.key, index, $event)"
+            @dragend="onPriorityDragEnd"
+          >☰</button>
+          <div class="priority-rank">{{ index + 1 }}</div>
+          <div class="priority-fields">
+            <select v-model="step.provider" @change="onFallbackProviderChange(card.key, index)">
+              <option value="" disabled>供应商</option>
+              <option v-for="option in providerSelectOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <select v-model="step.model">
+              <option value="" disabled>模型</option>
+              <option v-for="option in fallbackModelOptions(step.provider)" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <input v-model="step.keyFile" placeholder="Key 文件" />
+          </div>
+          <div class="priority-actions">
+            <button class="icon-btn ghost" type="button" title="上移" :disabled="index === 0" @click="moveFallbackStep(card.key, index, -1)">↑</button>
+            <button class="icon-btn ghost" type="button" title="下移" :disabled="index >= (fallbackChains[card.key] || []).length - 1" @click="moveFallbackStep(card.key, index, 1)">↓</button>
+            <button class="icon-btn danger" type="button" title="删除" @click="removeFallbackStep(card.key, index)">×</button>
+          </div>
+        </div>
+      </TransitionGroup>
+      <button class="btn btn-sm add-step" type="button" @click="addFallbackStep(card.key)">+ 添加步骤</button>
+      <div v-if="fallbackMsg" class="msg" :class="fallbackMsg.type">{{ fallbackMsg.text }}</div>
+    </section>
   </div>
 
   <div class="token-dashboard">
@@ -117,8 +218,8 @@
 
 <script lang="ts">
 import { computed, inject, ref, onMounted } from 'vue'
-import { fetchKeys, updateKey, fetchKeysUsage } from '../api'
-import type { MessageState, ShowAdminDialog } from '../types'
+import { fetchKeys, updateKey, fetchKeysUsage, fetchProviders, fetchFallbackChains, saveFallbackChains, fetchCustomProviders, saveCustomProviders } from '../api'
+import type { CustomProvider, FallbackChains, FallbackStep, MessageState, ProviderInfo, ProviderModel, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
 
 const providerColors: Record<string, string> = {
@@ -167,6 +268,31 @@ interface KeyItem {
   label: string
   exists?: boolean
   prefix?: string
+  source?: 'builtin' | 'custom'
+  providerId?: string
+  baseURL?: string
+  models?: ProviderModel[]
+}
+
+type FallbackKey = 'chat' | 'vision' | 'lightweight'
+
+interface FallbackCard {
+  key: FallbackKey
+  label: string
+}
+
+interface ProviderDraft {
+  id: string
+  name: string
+  baseURL: string
+  keyFile: string
+  apiKey: string
+  models: Array<ProviderModel & { name?: string }>
+}
+
+interface DragState {
+  key: FallbackKey
+  index: number
 }
 
 interface UsageStat {
@@ -228,6 +354,48 @@ const rangePresets: Array<{ key: UsageRange, label: string }> = [
   { key: '30d', label: '30天' },
   { key: 'date', label: '指定日' },
 ]
+
+const FALLBACK_CARDS: FallbackCard[] = [
+  { key: 'chat', label: '聊天优先级' },
+  { key: 'vision', label: '视觉优先级' },
+  { key: 'lightweight', label: '轻量任务优先级' },
+]
+
+function createProviderDraft(): ProviderDraft {
+  return {
+    id: 'openai-official',
+    name: 'OpenAI 官方',
+    baseURL: 'https://api.openai.com/v1',
+    keyFile: 'ai-openai-official-key.txt',
+    apiKey: '',
+    models: [
+      { id: 'gpt-4o', name: 'GPT-4o', vision: true },
+      { id: 'gpt-4o-mini', name: 'GPT-4o mini', vision: true },
+    ],
+  }
+}
+
+function pickProviderModelForQueue(provider: CustomProvider, key: FallbackKey): string {
+  const models = Array.isArray(provider.models) ? provider.models : []
+  if (key === 'vision') return (models.find(model => model.vision) || models[0])?.id || ''
+  if (key === 'lightweight') return (models.find(model => /(?:mini|flash|lite|turbo|small)/i.test(model.id || model.name || '')) || models[0])?.id || ''
+  return models[0]?.id || ''
+}
+
+function appendProviderToFallbackTail(chains: FallbackChains, provider: CustomProvider): FallbackChains {
+  const next: FallbackChains = { ...chains }
+  for (const card of FALLBACK_CARDS) {
+    const list = [...(next[card.key] || [])]
+    if (list.some(step => step.provider === provider.id)) {
+      next[card.key] = list
+      continue
+    }
+    const model = pickProviderModelForQueue(provider, card.key)
+    if (model) list.push({ provider: provider.id, model, keyFile: provider.keyFile || '' })
+    next[card.key] = list
+  }
+  return next
+}
 
 function formatTokens(n: unknown) {
   const value = Number(n || 0)
@@ -527,9 +695,21 @@ export default {
     const loadingUsage = ref(false)
     const usageRange = ref<UsageRange>('7d')
     const selectedUsageDate = ref('')
+    const providers = ref<Record<string, ProviderInfo>>({})
+    const customProviders = ref<CustomProvider[]>([])
+    const fallbackChains = ref<FallbackChains>({})
+    const providerDialogOpen = ref(false)
+    const providerDraft = ref<ProviderDraft>(createProviderDraft())
+    const providerMsg = ref<MessageState | null>(null)
+    const savingProvider = ref(false)
+    const fallbackMsg = ref<MessageState | null>(null)
+    const savingFallback = ref(false)
+    const dragging = ref<DragState | null>(null)
 
     const usageMinDate = computed(() => usageDays.value[0]?.date || '')
     const usageMaxDate = computed(() => usageDays.value[usageDays.value.length - 1]?.date || '')
+    const fallbackCards = computed(() => FALLBACK_CARDS)
+    const providerSelectOptions = computed(() => Object.entries(providers.value).map(([value, provider]) => ({ value, label: provider.name || value })))
     const filteredUsageDays = computed(() => filterUsageDays(usageDays.value, usageRange.value, selectedUsageDate.value))
     const usageTotal = computed(() => filteredUsageDays.value.reduce((sum, day) => sum + dayTotal(day), 0))
     const chart = { width: 760, height: 250, left: 70, right: 700, top: 28, bottom: 205 }
@@ -548,7 +728,29 @@ export default {
       if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('查看 Key 需要管理员密码', loadKeys); return }
       if (res.ok) keys.value = Array.isArray(res.data) ? res.data as KeyItem[] : []
     }
-    onMounted(() => { loadKeys(); loadUsage() })
+    async function loadProviderConfig() {
+      const [providerRes, customRes, fallbackRes] = await Promise.all([
+        fetchProviders(),
+        fetchCustomProviders(),
+        fetchFallbackChains(),
+      ])
+      if (providerRes.ok && providerRes.data) providers.value = providerRes.data
+      if (customRes.code === 'ADMIN_REQUIRED') {
+        if (showAdminDialog) showAdminDialog('查看自定义供应商需要管理员密码', loadProviderConfig)
+      } else if (customRes.ok) {
+        customProviders.value = Array.isArray(customRes.data) ? customRes.data : []
+      }
+      if (fallbackRes.code === 'ADMIN_REQUIRED') {
+        if (showAdminDialog) showAdminDialog('查看 Fallback 链需要管理员密码', loadProviderConfig)
+      } else if (fallbackRes.ok && fallbackRes.data) {
+        fallbackChains.value = fallbackRes.data.chains || {}
+      }
+      for (const card of FALLBACK_CARDS) {
+        if (!fallbackChains.value[card.key]) fallbackChains.value[card.key] = []
+      }
+    }
+
+    onMounted(() => { loadKeys(); loadProviderConfig(); loadUsage() })
 
     function editKey(k: KeyItem) {
       editing.value = k
@@ -574,6 +776,178 @@ export default {
         }
       } catch (e) { keyMsg.value = { type: 'err', text: errorMessage(e) } }
       saving.value = false
+    }
+
+    function openProviderDialog() {
+      providerDraft.value = createProviderDraft()
+      providerMsg.value = null
+      providerDialogOpen.value = true
+    }
+
+    function closeProviderDialog() {
+      providerDialogOpen.value = false
+      providerMsg.value = null
+    }
+
+    function addProviderModel() {
+      providerDraft.value.models.push({ id: '', name: '', vision: false })
+    }
+
+    function removeProviderModel(index: number) {
+      if (providerDraft.value.models.length > 1) providerDraft.value.models.splice(index, 1)
+    }
+
+    function normalizeDraftProvider(): CustomProvider {
+      const draft = providerDraft.value
+      return {
+        id: String(draft.id || '').trim(),
+        name: String(draft.name || '').trim(),
+        baseURL: String(draft.baseURL || '').trim(),
+        keyFile: String(draft.keyFile || '').trim(),
+        models: draft.models.map(model => ({
+          id: String(model.id || '').trim(),
+          name: String(model.name || '').trim() || undefined,
+          vision: !!model.vision,
+        })).filter(model => model.id),
+      }
+    }
+
+    async function saveProvider() {
+      savingProvider.value = true
+      providerMsg.value = null
+      try {
+        const provider = normalizeDraftProvider()
+        if (!provider.id || !provider.name || !provider.baseURL || !provider.keyFile || !provider.models.length) {
+          providerMsg.value = { type: 'err', text: '供应商、Base URL、Key 文件和模型不能为空' }
+          savingProvider.value = false
+          return
+        }
+        const isNewProvider = !customProviders.value.some(item => item.id === provider.id)
+        const existing = customProviders.value.filter(item => item.id !== provider.id)
+        const providerRes = await saveCustomProviders([...existing, provider])
+        if (providerRes.code === 'ADMIN_REQUIRED') {
+          if (showAdminDialog) showAdminDialog('保存自定义供应商需要管理员密码', saveProvider)
+          savingProvider.value = false
+          return
+        }
+        if (!providerRes.ok) {
+          providerMsg.value = { type: 'err', text: messageFromData(providerRes.data, '保存供应商失败') }
+          savingProvider.value = false
+          return
+        }
+        if (providerDraft.value.apiKey.trim()) {
+          const keyRes = await updateKey(provider.keyFile || '', providerDraft.value.apiKey.trim())
+          if (keyRes.code === 'ADMIN_REQUIRED') {
+            if (showAdminDialog) showAdminDialog('保存 API Key 需要管理员密码', saveProvider)
+            savingProvider.value = false
+            return
+          }
+          if (!keyRes.ok) {
+            providerMsg.value = { type: 'err', text: messageFromData(keyRes.data, '保存 Key 失败') }
+            savingProvider.value = false
+            return
+          }
+        }
+        if (isNewProvider) {
+          const nextChains = appendProviderToFallbackTail(fallbackChains.value, provider)
+          const fallbackRes = await saveFallbackChains(nextChains)
+          if (fallbackRes.code === 'ADMIN_REQUIRED') {
+            if (showAdminDialog) showAdminDialog('保存 Fallback 链需要管理员密码', saveProvider)
+            savingProvider.value = false
+            return
+          }
+          if (!fallbackRes.ok) {
+            providerMsg.value = { type: 'err', text: messageFromData(fallbackRes.data, '供应商已保存，但追加优先级队列失败') }
+            savingProvider.value = false
+            return
+          }
+          fallbackChains.value = nextChains
+        }
+        await Promise.all([loadKeys(), loadProviderConfig()])
+        providerMsg.value = { type: 'ok', text: 'API 配置已保存' }
+        closeProviderDialog()
+      } catch (e) {
+        providerMsg.value = { type: 'err', text: errorMessage(e) }
+      }
+      savingProvider.value = false
+    }
+
+    function fallbackModelOptions(provider: string) {
+      return (providers.value[provider]?.models || []).map(model => ({ value: model.id, label: model.name || model.id }))
+    }
+
+    function onFallbackProviderChange(key: FallbackKey, index: number) {
+      const step = (fallbackChains.value[key] || [])[index]
+      if (!step) return
+      const firstModel = providers.value[step.provider]?.models?.[0]
+      step.model = firstModel?.id || ''
+      const keyItem = keys.value.find(item => item.providerId === step.provider)
+      step.keyFile = keyItem?.file || step.keyFile || ''
+    }
+
+    function addFallbackStep(key: FallbackKey) {
+      if (!fallbackChains.value[key]) fallbackChains.value[key] = []
+      fallbackChains.value[key].push({ provider: '', model: '', keyFile: '' })
+    }
+
+    function removeFallbackStep(key: FallbackKey, index: number) {
+      fallbackChains.value[key]?.splice(index, 1)
+    }
+
+    function moveFallbackStep(key: FallbackKey, index: number, delta: number) {
+      const list = fallbackChains.value[key] || []
+      const next = index + delta
+      if (next < 0 || next >= list.length) return
+      const [item] = list.splice(index, 1)
+      list.splice(next, 0, item)
+    }
+
+    function priorityStepKey(key: FallbackKey, step: FallbackStep, index: number) {
+      return `${key}-${index}-${step.provider || 'empty'}-${step.model || 'model'}-${step.keyFile || 'key'}`
+    }
+
+    function onPriorityDragStart(key: FallbackKey, index: number, event: DragEvent) {
+      dragging.value = { key, index }
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move'
+        event.dataTransfer.setData('text/plain', `${key}:${index}`)
+      }
+    }
+
+    function onPriorityDragOver(key: FallbackKey, index: number) {
+      if (!dragging.value || dragging.value.key !== key || dragging.value.index === index) return
+      moveFallbackStep(key, dragging.value.index, index - dragging.value.index)
+      dragging.value = { key, index }
+    }
+
+    function onPriorityDrop() {
+      dragging.value = null
+    }
+
+    function onPriorityDragEnd() {
+      dragging.value = null
+    }
+
+    async function saveFallback() {
+      savingFallback.value = true
+      fallbackMsg.value = null
+      const chains: FallbackChains = {}
+      for (const card of FALLBACK_CARDS) {
+        chains[card.key] = (fallbackChains.value[card.key] || []).filter(step => step.provider && step.model)
+      }
+      const res = await saveFallbackChains(chains)
+      if (res.code === 'ADMIN_REQUIRED') {
+        if (showAdminDialog) showAdminDialog('保存 Fallback 链需要管理员密码', saveFallback)
+        savingFallback.value = false
+        return
+      }
+      if (res.ok) {
+        fallbackChains.value = chains
+        fallbackMsg.value = { type: 'ok', text: '优先级排序已保存' }
+      } else {
+        fallbackMsg.value = { type: 'err', text: messageFromData(res.data, '保存排序失败') }
+      }
+      savingFallback.value = false
     }
 
     async function loadUsage() {
@@ -749,6 +1123,11 @@ export default {
 
     return {
       keys, editing, editValue, saving, keyMsg, editKey, saveKey,
+      providerDialogOpen, providerDraft, providerMsg, savingProvider, openProviderDialog, closeProviderDialog,
+      addProviderModel, removeProviderModel, saveProvider,
+      fallbackCards, fallbackChains, fallbackMsg, savingFallback, providerSelectOptions, dragging,
+      fallbackModelOptions, onFallbackProviderChange, addFallbackStep, removeFallbackStep,
+      moveFallbackStep, priorityStepKey, onPriorityDragStart, onPriorityDragOver, onPriorityDrop, onPriorityDragEnd, saveFallback,
       usageDays, filteredUsageDays, usageProviders, loadingUsage, loadUsage, usageTotal,
       usageRange, selectedUsageDate, usageMinDate, usageMaxDate, rangePresets, rangeLabel, setUsageRange,
       chart, yTicks, xLabels, trendLines, inputAreaPath, cacheReadAreaPath, hasCacheHitRate,
@@ -760,6 +1139,276 @@ export default {
 </script>
 
 <style scoped>
+.api-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin: -8px 0 12px;
+}
+
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--card2));
+  color: var(--text);
+  font: inherit;
+  font-size: 18px;
+  font-weight: 850;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform .16s ease, border-color .16s ease, background .16s ease, opacity .16s ease;
+}
+
+.icon-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--accent);
+}
+
+.icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.icon-btn.ghost {
+  background: color-mix(in srgb, var(--card2) 80%, transparent);
+  color: var(--text2);
+}
+
+.icon-btn.danger {
+  border-color: color-mix(in srgb, var(--danger, #ef4444) 62%, var(--border));
+  background: color-mix(in srgb, var(--danger, #ef4444) 14%, var(--card2));
+  color: var(--danger, #ef4444);
+}
+
+.source-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0,0,0,.48);
+}
+
+.modal-panel {
+  width: min(720px, 100%);
+  max-height: min(760px, calc(100vh - 40px));
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 8px;
+  background: var(--card);
+  padding: 20px;
+  box-shadow: 0 24px 80px rgba(0,0,0,.32);
+}
+
+.modal-head,
+.editor-title,
+.priority-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal-head h2,
+.priority-head h2 {
+  margin: 0;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.provider-grid label,
+.model-row,
+.check-label {
+  min-width: 0;
+}
+
+.provider-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.provider-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.provider-grid input,
+.model-row input,
+.priority-fields input,
+.priority-fields select {
+  width: 100%;
+  min-height: 36px;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 8px;
+  background: var(--input, var(--card2));
+  color: var(--text);
+  padding: 7px 10px;
+  font: inherit;
+}
+
+.model-editor {
+  margin-top: 16px;
+}
+
+.model-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(110px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text2);
+  font-size: 13px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.muted-btn {
+  background: var(--border);
+  color: var(--text2);
+}
+
+.priority-dashboard {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.priority-card {
+  min-width: 0;
+  padding: 18px;
+}
+
+.priority-subtitle {
+  color: var(--text3);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.priority-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.priority-item {
+  display: grid;
+  grid-template-columns: 34px 30px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card2) 86%, transparent);
+  padding: 8px;
+  transition: transform .18s ease, box-shadow .18s ease, opacity .18s ease, border-color .18s ease;
+}
+
+.priority-item.dragging {
+  opacity: .72;
+  transform: scale(.985);
+  border-color: color-mix(in srgb, var(--accent) 64%, var(--border));
+  box-shadow: 0 14px 32px rgba(0,0,0,.18);
+}
+
+.drag-handle {
+  width: 34px;
+  height: 34px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text2);
+  cursor: grab;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.priority-rank {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.priority-fields {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(110px, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.priority-fields input {
+  grid-column: 1 / -1;
+}
+
+.priority-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.add-step {
+  margin-top: 10px;
+}
+
+.priority-move,
+.priority-enter-active,
+.priority-leave-active {
+  transition: all .2s ease;
+}
+
+.priority-enter-from,
+.priority-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.priority-leave-active {
+  position: absolute;
+}
+
 .token-dashboard {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

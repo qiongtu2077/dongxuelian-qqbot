@@ -1777,10 +1777,12 @@ async function main() {
 
     fs.writeFileSync(runtimeConstants.CUSTOM_PROVIDERS_FILE, JSON.stringify([], null, 2), 'utf8')
     runtimeConfig.resetConfigCache()
-    const deletedCustomRuntimeConfig = await runtimeConfig.loadConfig(true)
-    checkEqual('L37 deleted custom provider falls back to default baseURL', deletedCustomRuntimeConfig.baseURL, 'https://api.openai.com/v1')
-    checkEqual('L37 deleted custom provider falls back to generic model', deletedCustomRuntimeConfig.model, 'gpt-4o-mini')
-    checkEqual('L37 deleted custom provider falls back to generic key', deletedCustomRuntimeConfig.apiKey, 'sk-generic-openai-key')
+    try {
+      await runtimeConfig.loadConfig(true)
+      check('L37 deleted custom provider fails explicitly', false, 'loadConfig unexpectedly succeeded')
+    } catch (error) {
+      check('L37 deleted custom provider fails explicitly', /Unknown AI provider: auditcustom/.test(String(error && error.message || error)))
+    }
   } finally {
     if (originalRuntimeDataDir === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
     else process.env.DONGXUELIAN_AI_DATA_DIR = originalRuntimeDataDir

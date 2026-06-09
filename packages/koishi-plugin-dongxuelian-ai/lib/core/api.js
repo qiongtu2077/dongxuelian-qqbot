@@ -6,7 +6,7 @@
  */
 const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE, MIMORIUM_KEY_FILE, FALLBACK_CHAINS_FILE, DATA_DIR } = require('./constants');
 const { readTextFile, isDashScopeConfig, todayCst, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('./utils');
-const { readCustomProvidersSync, resolveProviderDefinitionSync, resolveProviderApiKeySync, } = require('./provider-registry');
+const { readCustomProvidersSync, resolveProviderDefinitionSync, resolveProviderApiKeySync, resolveProviderKeyFile, } = require('./provider-registry');
 const { resolveOneBotWsUrl } = require('./onebot-endpoint');
 const WebSocket = require('ws');
 const path = require('path');
@@ -176,6 +176,9 @@ function readApiJsonFileSync(file, fallback, maxBytes = MAX_API_CONFIG_FILE_BYTE
     catch {
         return fallback;
     }
+}
+function isFallbackChainMap(value) {
+    return isRecord(value) && Object.values(value).every(item => Array.isArray(item));
 }
 function buildResponsesInput(messages = []) {
     return messages.filter(item => item && item.content).map(item => ({
@@ -419,8 +422,10 @@ const FALLBACK_DEFAULTS = {
 };
 function readFallbackSteps() {
     const data = readApiJsonFileSync(FALLBACK_CHAINS_FILE, null);
-    if (data && data.chains)
+    if (data && 'chains' in data && isFallbackChainMap(data.chains))
         return data.chains;
+    if (isFallbackChainMap(data))
+        return data;
     return null;
 }
 async function buildFallbackConfig(config, step, fallbackSet) {
@@ -439,10 +444,10 @@ async function buildFallbackConfig(config, step, fallbackSet) {
         return null;
     let nextKey = config.apiKey;
     if (fb.keyFile) {
-        nextKey = readApiTextFileSync(fb.keyFile).replace(/[\r\n]+/g, '') || nextKey;
+        nextKey = readApiTextFileSync(resolveProviderKeyFile(fb.keyFile)).replace(/[\r\n]+/g, '') || nextKey;
     }
     else if (provider.custom && provider.keyFile) {
-        nextKey = resolveProviderApiKeySync(fb.provider, nextKey);
+        nextKey = resolveProviderApiKeySync(fb.provider, nextKey, { allowFallback: false });
     }
     return Object.assign({}, config, {
         _fallbackTried: step,

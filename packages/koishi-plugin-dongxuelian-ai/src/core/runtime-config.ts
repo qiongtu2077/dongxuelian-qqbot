@@ -101,6 +101,13 @@ function getThinkingArgs(config: RuntimeConfig): ThinkingArgs {
   return {}
 }
 
+function selectRuntimeModel(model: string, providerDef: Awaited<ReturnType<typeof resolveProviderDefinition>>): string {
+  const models = Array.isArray(providerDef?.models) ? providerDef.models : []
+  const modelIds = new Set(models.map(item => String(item.id || '').trim()).filter(Boolean))
+  if (providerDef?.custom && model && !modelIds.has(model)) return models[0]?.id || 'gpt-4o-mini'
+  return model || models[0]?.id || 'gpt-4o-mini'
+}
+
 async function loadConfig(force: boolean = false): Promise<RuntimeConfig> {
   if (configCache && !force) return configCache
 
@@ -114,12 +121,13 @@ async function loadConfig(force: boolean = false): Promise<RuntimeConfig> {
 
   const activeProvider = provider || 'opencode'
   const providerDef = await resolveProviderDefinition(activeProvider)
+  if (!providerDef) throw new Error(`Unknown AI provider: ${activeProvider}`)
   const resolvedBaseURL = String(providerDef?.baseURL || baseURL || 'https://api.openai.com/v1').replace(/\/+$/, '')
-  const resolvedApiKey = await resolveProviderApiKey(activeProvider, apiKey)
+  const resolvedApiKey = await resolveProviderApiKey(activeProvider, apiKey, { allowFallback: !providerDef.custom })
 
   configCache = {
     apiKey: resolvedApiKey,
-    model: model || (providerDef?.models?.[0]?.id || 'gpt-4o-mini'),
+    model: selectRuntimeModel(model, providerDef),
     baseURL: resolvedBaseURL,
     searchEnabled: parseRuntimeEnabledText(searchEnabledText),
     provider: activeProvider,

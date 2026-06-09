@@ -5,6 +5,7 @@
  */
 const {
   PROVIDERS,
+  DATA_DIR,
   CUSTOM_PROVIDERS_FILE,
   KEY_FILE,
   DEEPSEEK_KEY_FILE,
@@ -14,6 +15,7 @@ const {
 } = require('./constants') as typeof import('./constants')
 const fs = require('fs') as typeof import('fs')
 const fsp = require('fs/promises') as typeof import('fs/promises')
+const path = require('path') as typeof import('path')
 
 interface ProviderModel {
   id: string
@@ -50,6 +52,10 @@ interface KeyFileMap {
   dashscope: string
   glm: string
   mimorium: string
+}
+
+interface ResolveProviderKeyOptions {
+  allowFallback?: boolean
 }
 
 const BUILTIN_PROVIDER_KEY_FILES: KeyFileMap = {
@@ -171,6 +177,12 @@ function getBuiltinProviderKeyFile(providerId: string): string {
   return BUILTIN_PROVIDER_KEY_FILES[providerId as keyof KeyFileMap] || BUILTIN_PROVIDER_KEY_FILES.default
 }
 
+function resolveProviderKeyFile(file: string): string {
+  const value = String(file || '').trim()
+  if (!value) return ''
+  return path.isAbsolute(value) ? value : path.join(DATA_DIR, value)
+}
+
 async function resolveProviderDefinition(providerId: string): Promise<ResolvedProviderDefinition | null> {
   const merged = await getMergedProviderMap()
   return merged[String(providerId || '').trim()] || null
@@ -181,16 +193,20 @@ function resolveProviderDefinitionSync(providerId: string): ResolvedProviderDefi
   return merged[String(providerId || '').trim()] || null
 }
 
-async function resolveProviderApiKey(providerId: string, fallbackKey: string): Promise<string> {
+async function resolveProviderApiKey(providerId: string, fallbackKey: string, options: ResolveProviderKeyOptions = {}): Promise<string> {
   const provider = await resolveProviderDefinition(providerId)
-  if (!provider || !provider.keyFile) return String(fallbackKey || '').replace(/[\r\n]+/g, '')
-  return ((await readTextFileDirect(provider.keyFile).catch(() => '')) || fallbackKey || '').replace(/[\r\n]+/g, '')
+  const fallback = options.allowFallback === false ? '' : String(fallbackKey || '')
+  if (!provider || !provider.keyFile) return fallback.replace(/[\r\n]+/g, '')
+  const keyFile = resolveProviderKeyFile(provider.keyFile)
+  return ((await readTextFileDirect(keyFile).catch(() => '')) || fallback).replace(/[\r\n]+/g, '')
 }
 
-function resolveProviderApiKeySync(providerId: string, fallbackKey: string): string {
+function resolveProviderApiKeySync(providerId: string, fallbackKey: string, options: ResolveProviderKeyOptions = {}): string {
   const provider = resolveProviderDefinitionSync(providerId)
-  if (!provider || !provider.keyFile) return String(fallbackKey || '').replace(/[\r\n]+/g, '')
-  return ((readTextFileDirectSync(provider.keyFile)) || fallbackKey || '').replace(/[\r\n]+/g, '')
+  const fallback = options.allowFallback === false ? '' : String(fallbackKey || '')
+  if (!provider || !provider.keyFile) return fallback.replace(/[\r\n]+/g, '')
+  const keyFile = resolveProviderKeyFile(provider.keyFile)
+  return ((readTextFileDirectSync(keyFile)) || fallback).replace(/[\r\n]+/g, '')
 }
 
 async function readJsonFileDirect<T>(file: string, fallback: T): Promise<T> {
@@ -242,5 +258,6 @@ export = {
   resolveProviderDefinitionSync,
   resolveProviderApiKey,
   resolveProviderApiKeySync,
+  resolveProviderKeyFile,
   getBuiltinProviderKeyFile,
 }

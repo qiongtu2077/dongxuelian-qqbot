@@ -50,6 +50,7 @@ type WhitelistResponse = Record<WhitelistType, WhitelistEntry>
 interface KeyFileConfig {
   name: string
   file: KeyFileName
+  providerId?: string
 }
 
 interface KeySummary {
@@ -57,6 +58,10 @@ interface KeySummary {
   file: KeyFileName
   exists: boolean
   prefix: string
+  source?: 'builtin' | 'custom'
+  providerId?: string
+  baseURL?: string
+  models?: ProviderModelConfig[]
 }
 
 interface SettingsJsonBody {
@@ -146,6 +151,20 @@ interface ProviderRegistryEntry {
   models: unknown[]
   keyFile?: string
   custom: boolean
+}
+
+interface ProviderModelConfig {
+  id: string
+  name?: string
+  vision?: boolean
+}
+
+interface CustomProviderConfig {
+  id: string
+  name: string
+  baseURL: string
+  keyFile?: KeyFileName | ''
+  models: ProviderModelConfig[]
 }
 
 type ProviderMap = Record<string, unknown>
@@ -244,7 +263,111 @@ function isWhitelistType(value: unknown): value is WhitelistType {
 }
 
 function isWritableKeyFile(value: unknown): value is KeyFileName {
-  return typeof value === 'string' && !!value && !value.includes('..') && value.endsWith('-key.txt')
+  return typeof value === 'string' && /^[A-Za-z0-9_-]+-key\.txt$/.test(value)
+}
+
+function isSafeProviderId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9_-]{1,64}$/.test(value)
+}
+
+function isValidProviderBaseURL(value: unknown): value is string {
+  if (typeof value !== 'string' || !value.trim()) return false
+  try {
+    const url = new URL(value.trim())
+    return (url.protocol === 'http:' || url.protocol === 'https:') && !!url.hostname && !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
+function readBuiltinProviders(): ProviderMap {
+  try {
+    const { PROVIDERS } = require(path.join(AI_LIB, 'core', 'constants')) as { PROVIDERS: ProviderMap }
+    return PROVIDERS || {}
+  } catch {
+    return {}
+  }
+}
+
+function normalizeProviderModel(value: unknown): ProviderModelConfig | null {
+  if (typeof value === 'string') {
+    const id = value.trim()
+    return id ? { id } : null
+  }
+  if (!isRecord(value)) return null
+  const id = String(value.id || '').trim()
+  if (!id) return null
+  const name = String(value.name || '').trim()
+  return {
+    id,
+    ...(name ? { name } : {}),
+    vision: !!value.vision,
+  }
+}
+
+function normalizeCustomProvider(value: unknown, builtinProviders: ProviderMap): CustomProviderConfig {
+  if (!isRecord(value)) throw new Error('供应商配置必须是对象')
+  const id = String(value.id || '').trim()
+  if (!isSafeProviderId(id)) throw new Error('供应商 ID 只能包含小写字母、数字、短横线和下划线')
+  if (Object.prototype.hasOwnProperty.call(builtinProviders, id)) throw new Error(`供应商 ID 已被内置供应商占用: ${id}`)
+  const name = String(value.name || '').trim()
+  if (!name) throw new Error('供应商名称不能为空')
+  const baseURL = String(value.baseURL || '').trim().replace(/\/+$/, '')
+  if (!isValidProviderBaseURL(baseURL)) throw new Error('Base URL 必须是 http 或 https 地址')
+  const rawKeyFile = String(value.keyFile || '').trim()
+  if (rawKeyFile && !isWritableKeyFile(rawKeyFile)) throw new Error('Key 文件名必须是不含路径的 *-key.txt')
+  const models = Array.isArray(value.models)
+    ? value.models.map(normalizeProviderModel).filter((item): item is ProviderModelConfig => !!item)
+    : []
+  if (!models.length) throw new Error('至少需要保留一个有效模型 ID')
+  return { id, name, baseURL, keyFile: rawKeyFile as KeyFileName | '', models }
+}
+
+function readCustomProviderConfigs(strict = false): CustomProviderConfig[] {
+  try {
+    const raw: unknown = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'))
+    if (!Array.isArray(raw)) return []
+    const builtinProviders = readBuiltinProviders()
+    const result: CustomProviderConfig[] = []
+    for (const item of raw) {
+      try {
+        result.push(normalizeCustomProvider(item, builtinProviders))
+      } catch (error) {
+        if (strict) throw error
+      }
+    }
+    return result
+  } catch (error) {
+    if (strict) throw error
+    return []
+  }
+}
+
+function normalizeCustomProviderList(data: unknown): CustomProviderConfig[] {
+  if (!Array.isArray(data)) throw new Error('参数错误')
+  const builtinProviders = readBuiltinProviders()
+  const seenIds = new Set<string>()
+  const cleaned = data.map(item => normalizeCustomProvider(item, builtinProviders))
+  for (const provider of cleaned) {
+    if (seenIds.has(provider.id)) throw new Error(`供应商 ID 重复: ${provider.id}`)
+    seenIds.add(provider.id)
+  }
+  return cleaned
+}
+
+function resetRuntimeConfigCache(): void {
+  try { require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache() } catch { /* non-critical: cache reset best effort */ }
+}
+
+function providerIdFromKeyFile(file: KeyFileName): string {
+  const map: Record<KeyFileName, string> = {
+    'ai-openai-key.txt': 'opencode',
+    'ai-deepseek-key.txt': 'deepseek',
+    'ai-dashscope-key.txt': 'dashscope',
+    'ai-glm-key.txt': 'glm',
+    'ai-mimorium-key.txt': 'mimorium',
+  }
+  return map[file] || file.replace(/^ai-/, '').replace(/-key\.txt$/, '')
 }
 
 function normalizeToolChannel(value: unknown): ToolChannel {
@@ -273,7 +396,7 @@ function handlePutWhitelist(req: IncomingMessage, res: ServerResponse): void {
       if (!isWhitelistType(type)) return json(res, { ok: false, message: '无效类型' }, 400)
       const cfg = whitelistFiles[type]
       writeFileSyncSafe(path.join(DATA_DIR, cfg.file), JSON.stringify(data, null, 2))
-      try { require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache() } catch { /* non-critical: cache reset best effort */ }
+      resetRuntimeConfigCache()
       json(res, { ok: true, message: cfg.label + ' 已更新' })
     } catch (e) { json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   })
@@ -288,10 +411,32 @@ function handleGetKeys(req: IncomingMessage, res: ServerResponse): void {
     { name: '智谱 GLM', file: 'ai-glm-key.txt' },
     { name: '小米 MiMo', file: 'ai-mimorium-key.txt' },
   ]
-  return json(res, keyFiles.map((k): KeySummary => {
+  const builtinSummaries = keyFiles.map((k): KeySummary => {
     const content = readFileSyncSafe(path.join(DATA_DIR, k.file))
-    return { label: k.name, file: k.file, exists: !!content, prefix: content ? content.slice(0, 8) + '****' : '' }
-  }))
+    return {
+      label: k.name,
+      file: k.file,
+      exists: !!content,
+      prefix: content ? content.slice(0, 8) + '****' : '',
+      source: 'builtin',
+      providerId: k.providerId || providerIdFromKeyFile(k.file),
+    }
+  })
+  const customSummaries = readCustomProviderConfigs().map((provider): KeySummary | null => {
+    if (!provider.keyFile) return null
+    const content = readFileSyncSafe(path.join(DATA_DIR, provider.keyFile))
+    return {
+      label: provider.name,
+      file: provider.keyFile,
+      exists: !!content,
+      prefix: content ? content.slice(0, 8) + '****' : '',
+      source: 'custom',
+      providerId: provider.id,
+      baseURL: provider.baseURL,
+      models: provider.models,
+    }
+  }).filter((item): item is KeySummary => !!item)
+  return json(res, [...builtinSummaries, ...customSummaries])
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -475,7 +620,7 @@ function handlePutKeys(req: IncomingMessage, res: ServerResponse): void {
       const file = data.file
       if (!isWritableKeyFile(file)) return json(res, { ok: false, message: '无效文件名' }, 400)
       writeFileSyncSafe(path.join(DATA_DIR, file), data.value)
-      try { require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache() } catch { /* non-critical: cache reset best effort */ }
+      resetRuntimeConfigCache()
       json(res, { ok: true, message: 'Key 已更新' })
     } catch (e) { json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   })
@@ -483,8 +628,7 @@ function handlePutKeys(req: IncomingMessage, res: ServerResponse): void {
 
 function handleGetCustomProviders(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
-  try { return json(res, JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'))) }
-  catch { return json(res, []) }
+  return json(res, readCustomProviderConfigs())
 }
 
 function handlePutCustomProviders(req: IncomingMessage, res: ServerResponse): void {
@@ -493,9 +637,9 @@ function handlePutCustomProviders(req: IncomingMessage, res: ServerResponse): vo
     try {
       const data: unknown = JSON.parse(body)
       if (!Array.isArray(data)) return json(res, { ok: false, message: '参数错误' }, 400)
-      fs.writeFileSync(CUSTOM_PROVIDERS_FILE + '.tmp', JSON.stringify(data, null, 2), 'utf8')
+      fs.writeFileSync(CUSTOM_PROVIDERS_FILE + '.tmp', JSON.stringify(normalizeCustomProviderList(data), null, 2), 'utf8')
       fs.renameSync(CUSTOM_PROVIDERS_FILE + '.tmp', CUSTOM_PROVIDERS_FILE)
-      try { require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache() } catch { /* non-critical: cache reset best effort */ }
+      resetRuntimeConfigCache()
       json(res, { ok: true, message: '自定义供应商已更新' })
     } catch (e) { json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   })
@@ -542,6 +686,7 @@ function handlePutFallback(req: IncomingMessage, res: ServerResponse): void {
       const tmp = FALLBACK_CHAINS_FILE + '.tmp'
       fs.writeFileSync(tmp, JSON.stringify(chains, null, 2), 'utf8')
       fs.renameSync(tmp, FALLBACK_CHAINS_FILE)
+      resetRuntimeConfigCache()
       json(res, { ok: true, message: 'Fallback 链已更新' })
     } catch (e) { json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   })

@@ -4,9 +4,10 @@
  * 职责: 统一读取内置 provider、自定义 provider，以及按 provider 解析 baseURL/models/keyFile。
  * 边界: 只读 provider 定义与 key 文件，不缓存运行时主配置。
  */
-const { PROVIDERS, CUSTOM_PROVIDERS_FILE, KEY_FILE, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE, } = require('./constants');
+const { PROVIDERS, DATA_DIR, CUSTOM_PROVIDERS_FILE, KEY_FILE, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE, } = require('./constants');
 const fs = require('fs');
 const fsp = require('fs/promises');
+const path = require('path');
 const BUILTIN_PROVIDER_KEY_FILES = {
     default: KEY_FILE,
     opencode: KEY_FILE,
@@ -115,6 +116,12 @@ function buildBuiltinProviderMap() {
 function getBuiltinProviderKeyFile(providerId) {
     return BUILTIN_PROVIDER_KEY_FILES[providerId] || BUILTIN_PROVIDER_KEY_FILES.default;
 }
+function resolveProviderKeyFile(file) {
+    const value = String(file || '').trim();
+    if (!value)
+        return '';
+    return path.isAbsolute(value) ? value : path.join(DATA_DIR, value);
+}
 async function resolveProviderDefinition(providerId) {
     const merged = await getMergedProviderMap();
     return merged[String(providerId || '').trim()] || null;
@@ -123,17 +130,21 @@ function resolveProviderDefinitionSync(providerId) {
     const merged = getMergedProviderMapSync();
     return merged[String(providerId || '').trim()] || null;
 }
-async function resolveProviderApiKey(providerId, fallbackKey) {
+async function resolveProviderApiKey(providerId, fallbackKey, options = {}) {
     const provider = await resolveProviderDefinition(providerId);
+    const fallback = options.allowFallback === false ? '' : String(fallbackKey || '');
     if (!provider || !provider.keyFile)
-        return String(fallbackKey || '').replace(/[\r\n]+/g, '');
-    return ((await readTextFileDirect(provider.keyFile).catch(() => '')) || fallbackKey || '').replace(/[\r\n]+/g, '');
+        return fallback.replace(/[\r\n]+/g, '');
+    const keyFile = resolveProviderKeyFile(provider.keyFile);
+    return ((await readTextFileDirect(keyFile).catch(() => '')) || fallback).replace(/[\r\n]+/g, '');
 }
-function resolveProviderApiKeySync(providerId, fallbackKey) {
+function resolveProviderApiKeySync(providerId, fallbackKey, options = {}) {
     const provider = resolveProviderDefinitionSync(providerId);
+    const fallback = options.allowFallback === false ? '' : String(fallbackKey || '');
     if (!provider || !provider.keyFile)
-        return String(fallbackKey || '').replace(/[\r\n]+/g, '');
-    return ((readTextFileDirectSync(provider.keyFile)) || fallbackKey || '').replace(/[\r\n]+/g, '');
+        return fallback.replace(/[\r\n]+/g, '');
+    const keyFile = resolveProviderKeyFile(provider.keyFile);
+    return ((readTextFileDirectSync(keyFile)) || fallback).replace(/[\r\n]+/g, '');
 }
 async function readJsonFileDirect(file, fallback) {
     try {
@@ -188,5 +199,6 @@ module.exports = {
     resolveProviderDefinitionSync,
     resolveProviderApiKey,
     resolveProviderApiKeySync,
+    resolveProviderKeyFile,
     getBuiltinProviderKeyFile,
 };
