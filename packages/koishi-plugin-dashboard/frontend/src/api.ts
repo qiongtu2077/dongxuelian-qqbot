@@ -238,13 +238,13 @@ export async function rejectAgentTool(pendingId = '') { return post('/agent/reje
 export async function fetchPendingAgentTools() { return get('/tools/pending', true) }
 export async function fetchAgentSessions() { return get('/agent/sessions', true) }
 export async function fetchAgentSession(id: string) { return get('/agent/sessions/' + encodeURIComponent(id), true) }
-export async function fetchResourceStatus() { return get('/resource/status', true) }
+export async function fetchResourceStatus() { return get('/resource/status') }
 export async function fetchResourceMemoryHistory(range = '5m') { return get('/resource/memory-history?range=' + encodeURIComponent(range), false, 20000) }
-export async function fetchResourceTasks() { return get('/resource/tasks', true) }
-export async function fetchResourceEvents() { return get('/resource/events', true) }
-export async function fetchResourceWorkers() { return get('/resource/workers', true) }
-export async function fetchResourceMedia() { return get('/resource/media', true) }
-export async function fetchResourcePrecompute() { return get('/resource/precompute', true) }
+export async function fetchResourceTasks() { return get('/resource/tasks') }
+export async function fetchResourceEvents() { return get('/resource/events') }
+export async function fetchResourceWorkers() { return get('/resource/workers') }
+export async function fetchResourceMedia() { return get('/resource/media') }
+export async function fetchResourcePrecompute() { return get('/resource/precompute') }
 export async function cancelResourceTask(taskId: string, reason = 'dashboard cancel') { return post('/resource/cancel', { taskId, reason }, true) }
 export async function reclaimResourceStale(staleMs = 30000) { return post('/resource/reclaim-stale', { staleMs }, true) }
 export async function setResourceMaintenance(enabled: boolean, message = '优化中，别急') { return post('/resource/maintenance', { enabled, message }, true) }
