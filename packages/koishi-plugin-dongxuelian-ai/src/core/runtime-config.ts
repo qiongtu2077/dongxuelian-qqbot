@@ -7,10 +7,14 @@ const {
   KEY_FILE, MODEL_FILE, BASE_URL_FILE,
   SEARCH_ENABLED_FILE,
   ADMIN_IDS_FILE,
-  PROVIDERS, PROVIDER_FILE, DEEPSEEK_KEY_FILE, DASHSCOPE_KEY_FILE, GLM_KEY_FILE, MIMORIUM_KEY_FILE,
+  PROVIDER_FILE,
 } = require('./constants') as typeof import('./constants')
 const fs = require('fs')
 const fsp = require('fs/promises')
+const {
+  resolveProviderDefinition,
+  resolveProviderApiKey,
+} = require('./provider-registry') as typeof import('./provider-registry')
 
 interface RuntimeConfig {
   apiKey: string
@@ -100,34 +104,22 @@ function getThinkingArgs(config: RuntimeConfig): ThinkingArgs {
 async function loadConfig(force: boolean = false): Promise<RuntimeConfig> {
   if (configCache && !force) return configCache
 
-  const [apiKey, model, baseURL, searchEnabledText, provider, deepseekKey, dashscopeKey, glmKey, mimoriumKey] = await Promise.all([
+  const [apiKey, model, baseURL, searchEnabledText, provider] = await Promise.all([
     readRuntimeTextFile(KEY_FILE),
     readRuntimeTextFile(MODEL_FILE),
     readRuntimeTextFile(BASE_URL_FILE),
     readRuntimeTextFile(SEARCH_ENABLED_FILE),
     readRuntimeTextFile(PROVIDER_FILE),
-    readRuntimeTextFile(DEEPSEEK_KEY_FILE),
-    readRuntimeTextFile(DASHSCOPE_KEY_FILE).catch(() => ''),
-    readRuntimeTextFile(GLM_KEY_FILE).catch(() => ''),
-    readRuntimeTextFile(MIMORIUM_KEY_FILE).catch(() => ''),
   ])
 
   const activeProvider = provider || 'opencode'
-  const providerDef = PROVIDERS[activeProvider]
-  const resolvedBaseURL = (providerDef ? providerDef.baseURL : baseURL || 'https://api.openai.com/v1').replace(/\/+$/, '')
-  const resolvedApiKey = activeProvider === 'deepseek'
-    ? (deepseekKey || apiKey).replace(/[\r\n]+/g, '')
-    : activeProvider === 'dashscope'
-    ? (dashscopeKey || apiKey).replace(/[\r\n]+/g, '')
-    : activeProvider === 'glm'
-    ? (glmKey || apiKey).replace(/[\r\n]+/g, '')
-    : activeProvider === 'mimorium'
-    ? (mimoriumKey || apiKey).replace(/[\r\n]+/g, '')
-    : apiKey.replace(/[\r\n]+/g, '')
+  const providerDef = await resolveProviderDefinition(activeProvider)
+  const resolvedBaseURL = String(providerDef?.baseURL || baseURL || 'https://api.openai.com/v1').replace(/\/+$/, '')
+  const resolvedApiKey = await resolveProviderApiKey(activeProvider, apiKey)
 
   configCache = {
     apiKey: resolvedApiKey,
-    model: model || (providerDef ? providerDef.models[0].id : 'gpt-4o-mini'),
+    model: model || (providerDef?.models?.[0]?.id || 'gpt-4o-mini'),
     baseURL: resolvedBaseURL,
     searchEnabled: parseRuntimeEnabledText(searchEnabledText),
     provider: activeProvider,

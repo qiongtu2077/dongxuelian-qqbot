@@ -106,14 +106,13 @@ interface ProviderDefinition {
   models: ProviderModel[]
 }
 
-type ProviderMap = Record<string, ProviderDefinition>
-
-interface CustomProviderCandidate {
-  id?: string
-  name?: string
-  baseURL?: string
-  models?: unknown
+interface ProviderRegistryEntry extends ProviderDefinition {
+  id: string
+  keyFile?: string
+  custom: boolean
 }
+
+type ProviderMap = Record<string, ProviderDefinition>
 
 interface ConfigJsonBody {
   provider?: unknown
@@ -243,20 +242,22 @@ function handleGetStatus(req: IncomingMessage, res: ServerResponse): void {
 }
 
 function handleGetProviders(req: IncomingMessage, res: ServerResponse): void {
-  const { PROVIDERS } = require(path.join(AI_LIB, 'core', 'constants')) as { PROVIDERS: ProviderMap }
-  const merged = { ...PROVIDERS }
   try {
-    const raw = fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8')
-    const custom = JSON.parse(raw) as CustomProviderCandidate[]
-    if (Array.isArray(custom)) {
-      for (const p of custom) {
-        if (p.id && p.name && p.baseURL) {
-          merged[p.id] = { name: p.name, baseURL: p.baseURL, models: Array.isArray(p.models) ? p.models : [] }
-        }
+    const registry = require(path.join(AI_LIB, 'core', 'provider-registry')) as typeof import('koishi-plugin-dongxuelian-ai/lib/core/provider-registry')
+    const merged = registry.getMergedProviderMapSync()
+    const publicMap = {} as ProviderMap
+    for (const [id, provider] of Object.entries(merged) as Array<[string, ProviderRegistryEntry]>) {
+      publicMap[id] = {
+        name: provider.name,
+        baseURL: provider.baseURL,
+        models: Array.isArray(provider.models) ? provider.models : [],
       }
     }
-  } catch { /* non-critical: optional custom providers */ }
-  return json(res, merged)
+    return json(res, publicMap)
+  } catch {
+    const { PROVIDERS } = require(path.join(AI_LIB, 'core', 'constants')) as { PROVIDERS: ProviderMap }
+    return json(res, PROVIDERS)
+  }
 }
 
 function handleGetConfig(req: IncomingMessage, res: ServerResponse): void {

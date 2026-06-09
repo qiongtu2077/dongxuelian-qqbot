@@ -111,21 +111,23 @@ function handleGetStatus(req, res) {
     });
 }
 function handleGetProviders(req, res) {
-    const { PROVIDERS } = require(path.join(AI_LIB, 'core', 'constants'));
-    const merged = { ...PROVIDERS };
     try {
-        const raw = fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8');
-        const custom = JSON.parse(raw);
-        if (Array.isArray(custom)) {
-            for (const p of custom) {
-                if (p.id && p.name && p.baseURL) {
-                    merged[p.id] = { name: p.name, baseURL: p.baseURL, models: Array.isArray(p.models) ? p.models : [] };
-                }
-            }
+        const registry = require(path.join(AI_LIB, 'core', 'provider-registry'));
+        const merged = registry.getMergedProviderMapSync();
+        const publicMap = {};
+        for (const [id, provider] of Object.entries(merged)) {
+            publicMap[id] = {
+                name: provider.name,
+                baseURL: provider.baseURL,
+                models: Array.isArray(provider.models) ? provider.models : [],
+            };
         }
+        return json(res, publicMap);
     }
-    catch { /* non-critical: optional custom providers */ }
-    return json(res, merged);
+    catch {
+        const { PROVIDERS } = require(path.join(AI_LIB, 'core', 'constants'));
+        return json(res, PROVIDERS);
+    }
 }
 function handleGetConfig(req, res) {
     return json(res, {

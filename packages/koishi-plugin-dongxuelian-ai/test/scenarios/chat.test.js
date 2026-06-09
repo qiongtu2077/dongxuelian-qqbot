@@ -122,6 +122,40 @@ async function run(t) {
     waitFor: message => String(message).includes('final-visible'),
   })
 
+  await runChatCase(t, 'custom provider main runtime config drives chat request', [
+    { json: { choices: [{ message: { content: 'custom-provider-ok' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentIncludes(t, 'scenario custom provider sends reply', result, 'custom-provider-ok')
+    const firstCall = calls[0] || mocked.calls[0] || {}
+    const requestHeaders = firstCall.options && firstCall.options.headers || {}
+    t.check('scenario custom provider uses custom baseURL', String(firstCall.url || '').startsWith('https://custom.example.invalid/v1/'), String(firstCall.url || ''))
+    t.checkEqual('scenario custom provider uses default custom model when ai-model empty', firstCall.requestBody && firstCall.requestBody.model, 'audit-model')
+    t.checkEqual('scenario custom provider uses custom key file authorization', requestHeaders.Authorization, 'Bearer sk-custom-provider-key')
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    const history = conversation.getConversationHistory(session)
+    t.check('scenario custom provider still records assistant reply', history.some(item => item.role === 'assistant' && String(item.content || '').includes('custom-provider-ok')), JSON.stringify(history))
+  }, {
+    input: '你好吗',
+    setup(session, { data }) {
+      data.writeText('ai-provider.txt', 'auditcustom')
+      data.writeText('ai-model.txt', '')
+      data.writeText('ai-base-url.txt', '')
+      data.writeText('ai-openai-key.txt', 'sk-generic-openai-key')
+      data.writeText('custom-key.txt', 'sk-custom-provider-key')
+      data.writeJson('ai-providers-custom.json', [
+        {
+          id: 'auditcustom',
+          name: 'Audit Custom',
+          baseURL: 'https://custom.example.invalid/v1',
+          keyFile: data.pathFor('custom-key.txt'),
+          models: [{ id: 'audit-model', name: 'Audit Model', vision: true }],
+        },
+      ])
+      try { require(path.join(AI_ROOT, 'lib', 'core', 'runtime-config.js')).resetConfigCache() } catch {}
+    },
+    waitFor: message => String(message).includes('custom-provider-ok'),
+  })
+
   await withScenario({}, async ({ harness, makeSession }) => {
     const mocked = mockFetch([
       { json: { choices: [{ message: { content: '转发内容大概是在讨论网易云能不能听周杰伦。' } }] } },

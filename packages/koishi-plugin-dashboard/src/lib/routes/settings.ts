@@ -139,9 +139,13 @@ const whitelistFiles: Record<WhitelistType, WhitelistConfig> = {
   videoBlacklist: { file: 'video-blacklist.json', label: '视频黑名单', type: 'object', default: { groups: [], users: [] } },
 }
 
-interface CustomProviderCandidate {
-  id?: unknown
-  [key: string]: unknown
+interface ProviderRegistryEntry {
+  id: string
+  name: string
+  baseURL: string
+  models: unknown[]
+  keyFile?: string
+  custom: boolean
 }
 
 type ProviderMap = Record<string, unknown>
@@ -491,6 +495,7 @@ function handlePutCustomProviders(req: IncomingMessage, res: ServerResponse): vo
       if (!Array.isArray(data)) return json(res, { ok: false, message: '参数错误' }, 400)
       fs.writeFileSync(CUSTOM_PROVIDERS_FILE + '.tmp', JSON.stringify(data, null, 2), 'utf8')
       fs.renameSync(CUSTOM_PROVIDERS_FILE + '.tmp', CUSTOM_PROVIDERS_FILE)
+      try { require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache() } catch { /* non-critical: cache reset best effort */ }
       json(res, { ok: true, message: '自定义供应商已更新' })
     } catch (e) { json(res, { ok: false, message: getErrorMessage(e) }, 400) }
   })
@@ -499,14 +504,25 @@ function handlePutCustomProviders(req: IncomingMessage, res: ServerResponse): vo
 function handleGetFallback(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   function buildProviderMap(): ProviderMap {
-    const ps: ProviderMap = {}
-    const { PROVIDERS: pDefs } = require(path.join(AI_LIB, 'core', 'constants')) as { PROVIDERS: ProviderMap }
-    for (const key of Object.keys(pDefs)) ps[key] = pDefs[key]
     try {
-      const custom: unknown = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'))
-      if (Array.isArray(custom)) custom.forEach((p: CustomProviderCandidate) => { if (p.id) ps[String(p.id)] = p })
-    } catch { /* non-critical: optional custom providers */ }
-    return ps
+      const registry = require(path.join(AI_LIB, 'core', 'provider-registry')) as typeof import('koishi-plugin-dongxuelian-ai/lib/core/provider-registry')
+      const merged = registry.getMergedProviderMapSync()
+      const publicMap = {} as ProviderMap
+      for (const [id, provider] of Object.entries(merged) as Array<[string, ProviderRegistryEntry]>) {
+        publicMap[id] = {
+          name: provider.name,
+          baseURL: provider.baseURL,
+          models: Array.isArray(provider.models) ? provider.models : [],
+          keyFile: provider.keyFile,
+        }
+      }
+      return publicMap
+    } catch {
+      const ps: ProviderMap = {}
+      const { PROVIDERS: pDefs } = require(path.join(AI_LIB, 'core', 'constants')) as { PROVIDERS: ProviderMap }
+      for (const key of Object.keys(pDefs)) ps[key] = pDefs[key]
+      return ps
+    }
   }
   try {
     const raw = fs.readFileSync(FALLBACK_CHAINS_FILE, 'utf8')

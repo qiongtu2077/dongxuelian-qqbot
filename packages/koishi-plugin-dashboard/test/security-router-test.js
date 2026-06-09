@@ -15,6 +15,7 @@ fs.mkdirSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true })
 const auth = require('../lib/auth')
 const router = require('../lib/router')
 const standalone = require('../standalone')
+const dashboardPaths = require('../lib/paths')
 
 function resetDataDir() {
   fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })
@@ -316,6 +317,64 @@ async function testResourceReadApisRequireAccessOnly() {
   assert.strictEqual(parseJsonResponse(writeRes).code, 'ADMIN_REQUIRED')
 }
 
+// Verifies Dashboard provider routes expose merged custom providers and config writes reset runtime cache.
+async function testProviderRoutesUseRegistryAndResetRuntimeConfig() {
+  resetDataDir()
+  const dataDir = process.env.DONGXUELIAN_AI_DATA_DIR
+  const customProvidersFile = path.join(dataDir, 'ai-providers-custom.json')
+  fs.writeFileSync(customProvidersFile, JSON.stringify([
+    {
+      id: 'auditcustom',
+      name: 'Audit Custom',
+      baseURL: 'https://custom.example.invalid/v1',
+      keyFile: path.join(dataDir, 'custom-key.txt'),
+      models: [{ id: 'audit-model', name: 'Audit Model', vision: true }],
+    },
+  ], null, 2), 'utf8')
+  fs.writeFileSync(path.join(dataDir, 'custom-key.txt'), 'sk-custom-provider-key', 'utf8')
+
+  const accessHeaders = { authorization: 'Bearer ' + auth.createToken() }
+  const providersReq = makeReq('GET', '/dashboard/api/providers', accessHeaders)
+  const providersRes = makeRes()
+  assert.strictEqual(router.dispatch(providersReq, providersRes, '/dashboard/api/providers', new URL('http://127.0.0.1:5150/dashboard/api/providers')), true)
+  assert.strictEqual(providersRes.statusCode, 200)
+  const providersBody = parseJsonResponse(providersRes)
+  assert.strictEqual(providersBody.auditcustom.name, 'Audit Custom')
+  assert.strictEqual(providersBody.auditcustom.baseURL, 'https://custom.example.invalid/v1')
+  assert.deepStrictEqual(providersBody.auditcustom.models, [{ id: 'audit-model', name: 'Audit Model', vision: true }])
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(providersBody.auditcustom, 'keyFile'), false)
+
+  const runtimeConfig = require(path.join(dashboardPaths.AI_LIB, 'core', 'runtime-config'))
+  const originalReset = runtimeConfig.resetConfigCache
+  let resetCalls = 0
+  runtimeConfig.resetConfigCache = function patchedResetConfigCache() {
+    resetCalls += 1
+    return originalReset.apply(this, arguments)
+  }
+
+  try {
+    const adminHeaders = {
+      authorization: 'Bearer ' + auth.createToken(),
+      'x-admin-token': auth.createAdminToken(),
+      origin: 'http://127.0.0.1:5150',
+    }
+    const writeRes = await dispatchJson('POST', '/dashboard/api/config', {
+      provider: 'auditcustom',
+      model: 'audit-model',
+      baseUrl: 'https://custom.example.invalid/v1',
+    }, adminHeaders)
+
+    assert.strictEqual(writeRes.statusCode, 200)
+    assert.strictEqual(parseJsonResponse(writeRes).ok, true)
+    assert.strictEqual(fs.readFileSync(path.join(dataDir, 'ai-provider.txt'), 'utf8').trim(), 'auditcustom')
+    assert.strictEqual(fs.readFileSync(path.join(dataDir, 'ai-model.txt'), 'utf8').trim(), 'audit-model')
+    assert.strictEqual(fs.readFileSync(path.join(dataDir, 'ai-base-url.txt'), 'utf8').trim(), 'https://custom.example.invalid/v1')
+    assert.strictEqual(resetCalls, 1)
+  } finally {
+    runtimeConfig.resetConfigCache = originalReset
+  }
+}
+
 // Runs all tests sequentially so rate-limit state remains deterministic.
 async function run() {
   testRegexRouteObjectDispatch()
@@ -333,6 +392,7 @@ async function run() {
   testResourceDiskUsageSkipsHeavyWalkFallback()
   testResourceMemoryHistoryRequiresAccessOnly()
   await testResourceReadApisRequireAccessOnly()
+  await testProviderRoutesUseRegistryAndResetRuntimeConfig()
 
   fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })
   console.log('dashboard security/router tests passed')

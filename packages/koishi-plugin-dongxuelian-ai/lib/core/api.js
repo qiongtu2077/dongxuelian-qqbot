@@ -4,8 +4,9 @@
  * 职责: requestChatCompletions + fallback 链 + 图片/转发拉取。
  * 边界: 不存 conversation，不做业务判断。结果返回给调用方（chat.js）处理。
  */
-const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE, MIMORIUM_KEY_FILE, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE, DATA_DIR } = require('./constants');
+const { PROVIDERS, REQUEST_TIMEOUT, GLM_KEY_FILE, DASHSCOPE_KEY_FILE, MIMORIUM_KEY_FILE, FALLBACK_CHAINS_FILE, DATA_DIR } = require('./constants');
 const { readTextFile, isDashScopeConfig, todayCst, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('./utils');
+const { readCustomProvidersSync, resolveProviderDefinitionSync, resolveProviderApiKeySync, } = require('./provider-registry');
 const { resolveOneBotWsUrl } = require('./onebot-endpoint');
 const WebSocket = require('ws');
 const path = require('path');
@@ -422,36 +423,6 @@ function readFallbackSteps() {
         return data.chains;
     return null;
 }
-function readCustomProviders() {
-    const data = readApiJsonFileSync(CUSTOM_PROVIDERS_FILE, []);
-    return Array.isArray(data) ? data : [];
-}
-function resolveCustomProviderKey(providerId, fallbackKey) {
-    const custom = readCustomProviders();
-    const cp = custom.find(function (p) { return p.id === providerId; });
-    if (!cp || !cp.keyFile)
-        return fallbackKey;
-    return readApiTextFileSync(cp.keyFile).replace(/[\r\n]+/g, '') || fallbackKey;
-}
-function resolveFallbackProvider(fbStep, config) {
-    const provider = PROVIDERS[fbStep.provider];
-    if (provider) {
-        const keyFileRef = fbStep.keyFile;
-        if (keyFileRef)
-            return readTextFile(keyFileRef).catch(function () { return ''; }).then(function (val) { return (val || config.apiKey).replace(/[\r\n]+/g, ''); });
-        return config.apiKey;
-    }
-    const custom = readCustomProviders();
-    const cp = custom.find(function (p) { return p.id === fbStep.provider; });
-    if (!cp)
-        return config.apiKey;
-    if (cp.keyFile) {
-        const key = readApiTextFileSync(cp.keyFile).replace(/[\r\n]+/g, '');
-        if (key)
-            return key;
-    }
-    return config.apiKey;
-}
 async function buildFallbackConfig(config, step, fallbackSet) {
     const chain = FALLBACK_DEFAULTS[fallbackSet] || DEFAULT_CHAT_FALLBACK;
     const custom = readFallbackSteps();
@@ -463,21 +434,23 @@ async function buildFallbackConfig(config, step, fallbackSet) {
         }
         return null;
     }
-    const provider = PROVIDERS[fb.provider];
-    if (!provider) {
-        const cp = (readCustomProviders()).find(function (p) { return p.id === fb.provider; });
-        if (!cp)
-            return null;
-        let apiKey = config.apiKey;
-        if (cp.keyFile)
-            apiKey = readApiTextFileSync(cp.keyFile).replace(/[\r\n]+/g, '') || apiKey;
-        return Object.assign({}, config, { _fallbackTried: step, provider: fb.provider, model: fb.model, baseURL: String(cp.baseURL || '').replace(/\/+$/, ''), apiKey: apiKey });
-    }
+    const provider = resolveProviderDefinitionSync(fb.provider);
+    if (!provider)
+        return null;
     let nextKey = config.apiKey;
     if (fb.keyFile) {
         nextKey = readApiTextFileSync(fb.keyFile).replace(/[\r\n]+/g, '') || nextKey;
     }
-    return Object.assign({}, config, { _fallbackTried: step, provider: fb.provider, model: fb.model, baseURL: String(provider.baseURL).replace(/\/+$/, ''), apiKey: nextKey });
+    else if (provider.custom && provider.keyFile) {
+        nextKey = resolveProviderApiKeySync(fb.provider, nextKey);
+    }
+    return Object.assign({}, config, {
+        _fallbackTried: step,
+        provider: fb.provider,
+        model: fb.model,
+        baseURL: String(provider.baseURL || '').replace(/\/+$/, ''),
+        apiKey: nextKey,
+    });
 }
 function getFallbackSteps() {
     return {
@@ -679,19 +652,12 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
     });
 }
 function isVisionModel(provider, modelId) {
-    // 1. 查内置 PROVIDERS 的 vision 标记
-    const p = PROVIDERS[provider];
-    if (p) {
-        const m = p.models.find(function (x) { return x.id === modelId; });
-        if (m)
-            return !!m.vision;
+    const resolved = resolveProviderDefinitionSync(provider);
+    if (resolved) {
+        const match = Array.isArray(resolved.models) ? resolved.models.find(function (model) { return model.id === modelId; }) : null;
+        if (match)
+            return !!match.vision;
     }
-    // 2. 查自定义供应商
-    const custom = readCustomProviders();
-    const cp = custom.find(function (x) { return x.id === provider; });
-    if (cp)
-        return Array.isArray(cp.models) && cp.models.some(function (x) { return x.id === modelId && !!x.vision; });
-    // 3. fallback 正则（兼容旧数据）
     return /qwen|glm|kimi|omni/i.test(modelId);
 }
 module.exports = {

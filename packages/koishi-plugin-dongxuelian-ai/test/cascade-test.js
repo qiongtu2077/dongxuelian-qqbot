@@ -1722,6 +1722,69 @@ async function main() {
   check('vision model detects qwen', api.isVisionModel('dashscope', 'qwen3.5-omni-flash'))
   check('vision model detects glm', api.isVisionModel('glm', 'glm-4.6v-flash'))
   check('vision model rejects plain deepseek', !api.isVisionModel('deepseek', 'deepseek-chat'))
+  const originalRuntimeDataDir = process.env.DONGXUELIAN_AI_DATA_DIR
+  const runtimeTmpRoot = path.join(ROOT, 'tmp')
+  fs.mkdirSync(runtimeTmpRoot, { recursive: true })
+  const runtimeTmp = fs.mkdtempSync(path.join(runtimeTmpRoot, 'cascade-runtime-'))
+  try {
+    process.env.DONGXUELIAN_AI_DATA_DIR = runtimeTmp
+    for (const rel of ['core/constants', 'core/provider-registry', 'core/runtime-config', 'core/api']) {
+      delete require.cache[require.resolve(path.join(LIB, rel))]
+    }
+    const runtimeConstants = require(path.join(LIB, 'core', 'constants'))
+    const runtimeConfig = require(path.join(LIB, 'core', 'runtime-config'))
+    const runtimeApi = require(path.join(LIB, 'core', 'api'))
+    fs.writeFileSync(runtimeConstants.KEY_FILE, 'sk-generic-openai-key', 'utf8')
+    fs.writeFileSync(runtimeConstants.PROVIDER_FILE, 'auditcustom', 'utf8')
+    fs.writeFileSync(runtimeConstants.MODEL_FILE, '', 'utf8')
+    fs.writeFileSync(runtimeConstants.BASE_URL_FILE, '', 'utf8')
+    fs.writeFileSync(runtimeConstants.CUSTOM_PROVIDERS_FILE, JSON.stringify([
+      {
+        id: 'auditcustom',
+        name: 'Audit Custom',
+        baseURL: 'https://custom.example.invalid/v1',
+        keyFile: path.join(runtimeTmp, 'custom-key.txt'),
+        models: [{ id: 'audit-model', vision: true }],
+      },
+    ], null, 2), 'utf8')
+    fs.writeFileSync(path.join(runtimeTmp, 'custom-key.txt'), 'sk-custom-provider-key', 'utf8')
+    runtimeConfig.resetConfigCache()
+    const customRuntimeConfig = await runtimeConfig.loadConfig(true)
+    checkEqual('L37 runtime config uses custom provider baseURL', customRuntimeConfig.baseURL, 'https://custom.example.invalid/v1')
+    checkEqual('L37 runtime config uses custom provider default model', customRuntimeConfig.model, 'audit-model')
+    checkEqual('L37 runtime config uses custom provider key file', customRuntimeConfig.apiKey, 'sk-custom-provider-key')
+    check('L37 custom provider vision stays aligned with runtime config', runtimeApi.isVisionModel(customRuntimeConfig.provider, customRuntimeConfig.model))
+
+    fs.writeFileSync(runtimeConstants.CUSTOM_PROVIDERS_FILE, JSON.stringify([
+      {
+        id: 'auditcustom',
+        name: 'Audit Custom',
+        baseURL: 'https://custom-updated.example.invalid/v1',
+        keyFile: path.join(runtimeTmp, 'custom-key-updated.txt'),
+        models: [{ id: 'audit-model-updated', vision: true }],
+      },
+    ], null, 2), 'utf8')
+    fs.writeFileSync(path.join(runtimeTmp, 'custom-key-updated.txt'), 'sk-custom-provider-key-updated', 'utf8')
+    runtimeConfig.resetConfigCache()
+    const refreshedRuntimeConfig = await runtimeConfig.loadConfig(true)
+    checkEqual('L37 runtime config hot reloads updated custom baseURL', refreshedRuntimeConfig.baseURL, 'https://custom-updated.example.invalid/v1')
+    checkEqual('L37 runtime config hot reloads updated custom model', refreshedRuntimeConfig.model, 'audit-model-updated')
+    checkEqual('L37 runtime config hot reloads updated custom key file', refreshedRuntimeConfig.apiKey, 'sk-custom-provider-key-updated')
+
+    fs.writeFileSync(runtimeConstants.CUSTOM_PROVIDERS_FILE, JSON.stringify([], null, 2), 'utf8')
+    runtimeConfig.resetConfigCache()
+    const deletedCustomRuntimeConfig = await runtimeConfig.loadConfig(true)
+    checkEqual('L37 deleted custom provider falls back to default baseURL', deletedCustomRuntimeConfig.baseURL, 'https://api.openai.com/v1')
+    checkEqual('L37 deleted custom provider falls back to generic model', deletedCustomRuntimeConfig.model, 'gpt-4o-mini')
+    checkEqual('L37 deleted custom provider falls back to generic key', deletedCustomRuntimeConfig.apiKey, 'sk-generic-openai-key')
+  } finally {
+    if (originalRuntimeDataDir === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
+    else process.env.DONGXUELIAN_AI_DATA_DIR = originalRuntimeDataDir
+    for (const rel of ['core/constants', 'core/provider-registry', 'core/runtime-config', 'core/api']) {
+      delete require.cache[require.resolve(path.join(LIB, rel))]
+    }
+    try { fs.rmSync(runtimeTmp, { recursive: true, force: true }) } catch {}
+  }
 
   section('7. message reader behavior')
   const structuredFace = reader.analyzeIncomingMessage({ content: '', event: { message: [{ type: 'face', data: { id: 76 } }] } })

@@ -333,6 +333,10 @@ function handlePutCustomProviders(req, res) {
                 return json(res, { ok: false, message: '参数错误' }, 400);
             fs.writeFileSync(CUSTOM_PROVIDERS_FILE + '.tmp', JSON.stringify(data, null, 2), 'utf8');
             fs.renameSync(CUSTOM_PROVIDERS_FILE + '.tmp', CUSTOM_PROVIDERS_FILE);
+            try {
+                require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache();
+            }
+            catch { /* non-critical: cache reset best effort */ }
             json(res, { ok: true, message: '自定义供应商已更新' });
         }
         catch (e) {
@@ -344,18 +348,27 @@ function handleGetFallback(req, res) {
     if (!requireAdmin(req, res))
         return;
     function buildProviderMap() {
-        const ps = {};
-        const { PROVIDERS: pDefs } = require(path.join(AI_LIB, 'core', 'constants'));
-        for (const key of Object.keys(pDefs))
-            ps[key] = pDefs[key];
         try {
-            const custom = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'));
-            if (Array.isArray(custom))
-                custom.forEach((p) => { if (p.id)
-                    ps[String(p.id)] = p; });
+            const registry = require(path.join(AI_LIB, 'core', 'provider-registry'));
+            const merged = registry.getMergedProviderMapSync();
+            const publicMap = {};
+            for (const [id, provider] of Object.entries(merged)) {
+                publicMap[id] = {
+                    name: provider.name,
+                    baseURL: provider.baseURL,
+                    models: Array.isArray(provider.models) ? provider.models : [],
+                    keyFile: provider.keyFile,
+                };
+            }
+            return publicMap;
         }
-        catch { /* non-critical: optional custom providers */ }
-        return ps;
+        catch {
+            const ps = {};
+            const { PROVIDERS: pDefs } = require(path.join(AI_LIB, 'core', 'constants'));
+            for (const key of Object.keys(pDefs))
+                ps[key] = pDefs[key];
+            return ps;
+        }
     }
     try {
         const raw = fs.readFileSync(FALLBACK_CHAINS_FILE, 'utf8');
