@@ -13,6 +13,11 @@ interface SkillScanResult {
     maxSeverity: SkillSeverity;
     scannedAt: string;
 }
+interface ScannedSkillFileList {
+    files: string[];
+    truncated: boolean;
+}
+declare function listScannedSkillFiles(skillDir: string, maxFiles?: number): ScannedSkillFileList;
 declare function hashFileContent(content: string | Buffer): string;
 /**
  * MODULE: computeDirectoryHash
@@ -39,6 +44,7 @@ declare const _default: {
     scanSkillFile: typeof scanSkillFile;
     hashFileContent: typeof hashFileContent;
     computeDirectoryHash: typeof computeDirectoryHash;
+    listScannedSkillFiles: typeof listScannedSkillFiles;
     addToWhitelist: typeof addToWhitelist;
     removeFromWhitelist: typeof removeFromWhitelist;
     SCAN_RULES: {

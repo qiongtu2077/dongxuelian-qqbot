@@ -114,6 +114,7 @@ async function testPoolService(t, tmpBase) {
 
   clearSkillModuleCache()
   const poolService = require('../../lib/agent/skills/pool-service')
+  const { scanSkillDirectory } = require('../../lib/agent/skills/scanner')
 
   const skillDir = path.join(tmpBase, 'install-skill')
   fs.mkdirSync(skillDir, { recursive: true })
@@ -138,6 +139,34 @@ async function testPoolService(t, tmpBase) {
 
   const badInstall = await poolService.installToPool(path.join(tmpBase, 'nonexist'))
   t.check('pool install nonexist fails', badInstall.ok === false)
+
+  const deepSkillDir = path.join(tmpBase, 'install-skill-deep')
+  fs.mkdirSync(path.join(deepSkillDir, 'a', 'b'), { recursive: true })
+  fs.writeFileSync(path.join(deepSkillDir, 'SKILL.deep-pool.md'), '---\nname: deep-pool\ndescription: deep pool test\nversion: 1.0.0\n---\nDeep pool skill content')
+  fs.writeFileSync(path.join(deepSkillDir, 'a', 'b', 'evil.md'), 'DEEP_UNSCANNED_REFERENCE_BODY')
+
+  const deepScanResult = scanSkillDirectory(deepSkillDir)
+  t.check('scanner deep skill still passes bounded scan', deepScanResult.safe === true)
+  t.check('scanner deep skill has no findings before install', deepScanResult.findings.length === 0)
+
+  const deepInstallResult = await poolService.installToPool(deepSkillDir, { source: 'local' })
+  t.check('pool install deep skill succeeds', deepInstallResult.ok === true)
+
+  const installedDeepFile = path.join(tmpBase, 'skill-pool', 'deep-pool', 'a', 'b', 'evil.md')
+  t.check('pool install excludes unscanned deep file', fs.existsSync(installedDeepFile) === false)
+
+  clearSkillModuleCache()
+  const { readAgentSkill } = require('../../lib/agent/skills')
+  try {
+    readAgentSkill('deep-pool', { file: 'a/b/evil.md' })
+    t.check('skills.js rejects unscanned deep file after pool install', false, 'deep file was readable after install')
+  } catch (error) {
+    const message = String(error && error.message || error)
+    t.check('skills.js rejects unscanned deep file after pool install', /已登记|不存在|不可读取|未知|不能|超出/.test(message), message)
+  }
+
+  const deepRemoveResult = await poolService.removeFromPool('deep-pool')
+  t.check('pool remove deep skill succeeds', deepRemoveResult.ok === true)
 }
 
 async function testWorkspaceService(t, tmpBase) {
@@ -243,4 +272,3 @@ function clearSkillModuleCache() {
 }
 
 module.exports = { run }
-

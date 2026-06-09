@@ -124,22 +124,29 @@ function isSymlink(filePath) {
         return false;
     }
 }
-function listSkillFiles(skillDir, maxFiles = MAX_SKILL_FILES) {
+function collectScannedSkillFiles(skillDir, maxFiles = MAX_SKILL_FILES) {
     const files = [];
+    let truncated = false;
+    const pushFile = (filePath) => {
+        if (files.length >= maxFiles) {
+            truncated = true;
+            return false;
+        }
+        files.push(filePath);
+        return true;
+    };
     const entries = fs.readdirSync(skillDir, { withFileTypes: true });
-    for (const entry of entries) {
-        if (files.length >= maxFiles)
+    outer: for (const entry of entries) {
+        if (entry.isFile() && !pushFile(path.join(skillDir, entry.name)))
             break;
-        if (entry.isFile())
-            files.push(path.join(skillDir, entry.name));
         if (entry.isDirectory() && !entry.name.startsWith('.')) {
             try {
                 const subEntries = fs.readdirSync(path.join(skillDir, entry.name), { withFileTypes: true });
                 for (const sub of subEntries) {
-                    if (files.length >= maxFiles)
-                        break;
-                    if (sub.isFile())
-                        files.push(path.join(skillDir, entry.name, sub.name));
+                    if (!sub.isFile())
+                        continue;
+                    if (!pushFile(path.join(skillDir, entry.name, sub.name)))
+                        break outer;
                 }
             }
             catch {
@@ -147,7 +154,13 @@ function listSkillFiles(skillDir, maxFiles = MAX_SKILL_FILES) {
             }
         }
     }
-    return files;
+    return { files, truncated };
+}
+function listSkillFiles(skillDir, maxFiles = MAX_SKILL_FILES) {
+    return collectScannedSkillFiles(skillDir, maxFiles).files;
+}
+function listScannedSkillFiles(skillDir, maxFiles = MAX_SKILL_FILES) {
+    return collectScannedSkillFiles(skillDir, maxFiles);
 }
 function hashFileContent(content) {
     return 'sha256:' + crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
@@ -184,7 +197,7 @@ function computeDirectoryHash(dirPath) {
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
         throw new Error(`computeDirectoryHash: not a directory: ${dirPath}`);
     }
-    const files = listSkillFiles(resolved);
+    const files = listScannedSkillFiles(resolved).files;
     const parts = [];
     for (const file of files) {
         try {
@@ -255,15 +268,16 @@ function scanSkillDirectory(skillDir) {
             scannedAt: new Date().toISOString(),
         };
     }
-    let files;
+    let scannedFiles;
     try {
-        files = listSkillFiles(skillDir);
+        scannedFiles = listScannedSkillFiles(skillDir);
     }
     catch {
         return { safe: false, findings: [{ severity: 'HIGH', category: 'meta', description: 'Cannot read skill directory' }], maxSeverity: 'HIGH', scannedAt: new Date().toISOString() };
     }
-    if (files.length > MAX_SKILL_FILES) {
-        findings.push({ file: '', severity: 'HIGH', category: 'resource_abuse', rule: 'META-001', description: `Too many files (${files.length} > ${MAX_SKILL_FILES})` });
+    const files = scannedFiles.files;
+    if (scannedFiles.truncated) {
+        findings.push({ file: '', severity: 'HIGH', category: 'resource_abuse', rule: 'META-001', description: `Skill directory exceeds file scan limit (${MAX_SKILL_FILES})` });
     }
     let totalSize = 0;
     for (const file of files) {
@@ -331,6 +345,7 @@ module.exports = {
     scanSkillFile,
     hashFileContent,
     computeDirectoryHash,
+    listScannedSkillFiles,
     addToWhitelist,
     removeFromWhitelist,
     SCAN_RULES,

@@ -135,6 +135,11 @@ interface SkillScanResult {
 
 type SkillWhitelist = Record<string, { sha256?: string; addedAt?: string; reason?: string }>
 
+interface ScannedSkillFileList {
+  files: string[]
+  truncated: boolean
+}
+
 function getScannerErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String((error as { message?: unknown } | null)?.message || error)
 }
@@ -157,25 +162,42 @@ function isSymlink(filePath: string): boolean {
   }
 }
 
-function listSkillFiles(skillDir: string, maxFiles: number = MAX_SKILL_FILES): string[] {
+function collectScannedSkillFiles(skillDir: string, maxFiles: number = MAX_SKILL_FILES): ScannedSkillFileList {
   const files: string[] = []
+  let truncated = false
+  const pushFile = (filePath: string): boolean => {
+    if (files.length >= maxFiles) {
+      truncated = true
+      return false
+    }
+    files.push(filePath)
+    return true
+  }
   const entries = fs.readdirSync(skillDir, { withFileTypes: true })
+  outer:
   for (const entry of entries) {
-    if (files.length >= maxFiles) break
-    if (entry.isFile()) files.push(path.join(skillDir, entry.name))
+    if (entry.isFile() && !pushFile(path.join(skillDir, entry.name))) break
     if (entry.isDirectory() && !entry.name.startsWith('.')) {
       try {
         const subEntries = fs.readdirSync(path.join(skillDir, entry.name), { withFileTypes: true })
         for (const sub of subEntries) {
-          if (files.length >= maxFiles) break
-          if (sub.isFile()) files.push(path.join(skillDir, entry.name, sub.name))
+          if (!sub.isFile()) continue
+          if (!pushFile(path.join(skillDir, entry.name, sub.name))) break outer
         }
       } catch {
         /* non-critical: unreadable subdirectory is skipped during bounded scan */
       }
     }
   }
-  return files
+  return { files, truncated }
+}
+
+function listSkillFiles(skillDir: string, maxFiles: number = MAX_SKILL_FILES): string[] {
+  return collectScannedSkillFiles(skillDir, maxFiles).files
+}
+
+function listScannedSkillFiles(skillDir: string, maxFiles: number = MAX_SKILL_FILES): ScannedSkillFileList {
+  return collectScannedSkillFiles(skillDir, maxFiles)
 }
 
 function hashFileContent(content: string | Buffer): string {
@@ -215,7 +237,7 @@ function computeDirectoryHash(dirPath: string): string {
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
     throw new Error(`computeDirectoryHash: not a directory: ${dirPath}`)
   }
-  const files = listSkillFiles(resolved)
+  const files = listScannedSkillFiles(resolved).files
   const parts: Buffer[] = []
   for (const file of files) {
     try {
@@ -289,15 +311,16 @@ function scanSkillDirectory(skillDir: string): SkillScanResult {
     }
   }
 
-  let files: string[]
+  let scannedFiles: ScannedSkillFileList
   try {
-    files = listSkillFiles(skillDir)
+    scannedFiles = listScannedSkillFiles(skillDir)
   } catch {
     return { safe: false, findings: [{ severity: 'HIGH', category: 'meta', description: 'Cannot read skill directory' }], maxSeverity: 'HIGH', scannedAt: new Date().toISOString() }
   }
+  const files = scannedFiles.files
 
-  if (files.length > MAX_SKILL_FILES) {
-    findings.push({ file: '', severity: 'HIGH', category: 'resource_abuse', rule: 'META-001', description: `Too many files (${files.length} > ${MAX_SKILL_FILES})` })
+  if (scannedFiles.truncated) {
+    findings.push({ file: '', severity: 'HIGH', category: 'resource_abuse', rule: 'META-001', description: `Skill directory exceeds file scan limit (${MAX_SKILL_FILES})` })
   }
 
   let totalSize = 0
@@ -372,6 +395,7 @@ export = {
   scanSkillFile,
   hashFileContent,
   computeDirectoryHash,
+  listScannedSkillFiles,
   addToWhitelist,
   removeFromWhitelist,
   SCAN_RULES,

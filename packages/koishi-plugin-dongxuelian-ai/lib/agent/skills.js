@@ -73,6 +73,10 @@ function skillPathKey(value = '') {
     const resolved = path.resolve(String(value || ''));
     return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
+function skillReferenceKey(value = '') {
+    const normalized = String(value || '').replace(/\\/g, '/').trim();
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
 function skillPathInside(target, root) {
     const targetKey = skillPathKey(target);
     const rootKey = skillPathKey(root);
@@ -141,7 +145,7 @@ function skillBuildEntry(group, file, options = {}) {
     const name = skillNormalizeName(meta.name || options.name || path.basename(file).replace(/^SKILL\.|\.md$/gi, ''));
     if (!name)
         return null;
-    const allowReferences = group.kind === 'docs' && !!rootDir;
+    const allowReferences = (group.kind === 'docs' || group.kind === 'pool') && !!rootDir;
     const entry = {
         kind: meta.kind || group.kind,
         file,
@@ -255,6 +259,11 @@ function skillResolveRequestedFile(skill, requestedFile = '') {
         return skill.file;
     if (!TEXT_FILE_RE.test(normalized))
         throw new Error('只能读取 Skill 目录内的文本参考文件');
+    const normalizedReference = normalized.replace(/\\/g, '/');
+    const allowedReferences = new Set(skill.references.map(item => skillReferenceKey(item)));
+    if (!allowedReferences.has(skillReferenceKey(normalizedReference))) {
+        throw new Error('只能读取 Skill 已登记的参考文件');
+    }
     const root = fs.realpathSync(skill.dir);
     const resolvedTarget = path.resolve(skill.dir, normalized);
     if (!skillPathInside(resolvedTarget, root))

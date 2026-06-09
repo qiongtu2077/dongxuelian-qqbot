@@ -7,8 +7,8 @@
 const fs = require('fs')
 const fsp = require('fs/promises')
 const path = require('path')
-const { SKILL_POOL_DIR, validateSkillName, ensureDir, copyDir, removeDir, isPathSafe } = require('./store') as typeof import('./store')
-const { scanSkillDirectory } = require('./scanner') as typeof import('./scanner')
+const { SKILL_POOL_DIR, validateSkillName, ensureDir, removeDir, isPathSafe } = require('./store') as typeof import('./store')
+const { scanSkillDirectory, listScannedSkillFiles } = require('./scanner') as typeof import('./scanner')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
 const { readJsonFile, writeJsonFile } = require('../../core/utils') as typeof import('../../core/utils')
 const { ensureRuntimeSkillSeeds } = require('../../persona/skills/skill-seeds') as typeof import('../../persona/skills/skill-seeds')
@@ -92,6 +92,17 @@ function parseSkillMeta(skillDir: string): SkillMeta | null {
   return { name, description, version, author, raw: content }
 }
 
+async function copyScannedSkillFiles(skillDir: string, destDir: string): Promise<void> {
+  const { files } = listScannedSkillFiles(skillDir)
+  await ensureDir(destDir)
+  for (const file of files) {
+    const relative = path.relative(skillDir, file)
+    const target = path.join(destDir, relative)
+    await ensureDir(path.dirname(target))
+    await fsp.copyFile(file, target)
+  }
+}
+
 async function installToPool(skillDir: string, { source = 'local', force = false }: InstallPoolOptions = {}): Promise<PoolOperationResult> {
   if (!fs.existsSync(skillDir) || !fs.statSync(skillDir).isDirectory()) {
     return { ok: false, error: 'Skill directory does not exist' }
@@ -109,7 +120,7 @@ async function installToPool(skillDir: string, { source = 'local', force = false
   const destDir = path.join(SKILL_POOL_DIR, meta.name)
   await ensureDir(SKILL_POOL_DIR)
   if (fs.existsSync(destDir)) await removeDir(destDir)
-  await copyDir(skillDir, destDir)
+  await copyScannedSkillFiles(skillDir, destDir)
 
   const manifest = await readPoolManifest()
   manifest.skills[meta.name] = {

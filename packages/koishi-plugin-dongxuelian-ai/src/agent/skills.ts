@@ -130,6 +130,11 @@ function skillPathKey(value: unknown = ''): string {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
 
+function skillReferenceKey(value: unknown = ''): string {
+  const normalized = String(value || '').replace(/\\/g, '/').trim()
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
 function skillPathInside(target: unknown, root: unknown): boolean {
   const targetKey = skillPathKey(target)
   const rootKey = skillPathKey(root)
@@ -184,7 +189,7 @@ function skillBuildEntry(group: SkillGroup, file: string, options: SkillBuildOpt
   const rootDir = options.rootDir || (isDirectorySkill ? path.dirname(file) : '')
   const name = skillNormalizeName(meta.name || options.name || path.basename(file).replace(/^SKILL\.|\.md$/gi, ''))
   if (!name) return null
-  const allowReferences = group.kind === 'docs' && !!rootDir
+  const allowReferences = (group.kind === 'docs' || group.kind === 'pool') && !!rootDir
   const entry: AgentSkill = {
     kind: meta.kind || group.kind,
     file,
@@ -271,6 +276,11 @@ function skillResolveRequestedFile(skill: AgentSkill, requestedFile: unknown = '
   }
   if (path.basename(normalized) === DIRECTORY_SKILL_FILE || normalized === skill.path) return skill.file
   if (!TEXT_FILE_RE.test(normalized)) throw new Error('只能读取 Skill 目录内的文本参考文件')
+  const normalizedReference = normalized.replace(/\\/g, '/')
+  const allowedReferences = new Set(skill.references.map(item => skillReferenceKey(item)))
+  if (!allowedReferences.has(skillReferenceKey(normalizedReference))) {
+    throw new Error('只能读取 Skill 已登记的参考文件')
+  }
   const root = fs.realpathSync(skill.dir)
   const resolvedTarget = path.resolve(skill.dir, normalized)
   if (!skillPathInside(resolvedTarget, root)) throw new Error('Skill 参考文件超出技能目录')

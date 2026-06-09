@@ -8,8 +8,8 @@
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
-const { SKILL_POOL_DIR, validateSkillName, ensureDir, copyDir, removeDir, isPathSafe } = require('./store');
-const { scanSkillDirectory } = require('./scanner');
+const { SKILL_POOL_DIR, validateSkillName, ensureDir, removeDir, isPathSafe } = require('./store');
+const { scanSkillDirectory, listScannedSkillFiles } = require('./scanner');
 const { DATA_DIR } = require('../../core/constants');
 const { readJsonFile, writeJsonFile } = require('../../core/utils');
 const { ensureRuntimeSkillSeeds } = require('../../persona/skills/skill-seeds');
@@ -43,6 +43,16 @@ function parseSkillMeta(skillDir) {
     const author = String(parsed.meta.author || '');
     return { name, description, version, author, raw: content };
 }
+async function copyScannedSkillFiles(skillDir, destDir) {
+    const { files } = listScannedSkillFiles(skillDir);
+    await ensureDir(destDir);
+    for (const file of files) {
+        const relative = path.relative(skillDir, file);
+        const target = path.join(destDir, relative);
+        await ensureDir(path.dirname(target));
+        await fsp.copyFile(file, target);
+    }
+}
 async function installToPool(skillDir, { source = 'local', force = false } = {}) {
     if (!fs.existsSync(skillDir) || !fs.statSync(skillDir).isDirectory()) {
         return { ok: false, error: 'Skill directory does not exist' };
@@ -60,7 +70,7 @@ async function installToPool(skillDir, { source = 'local', force = false } = {})
     await ensureDir(SKILL_POOL_DIR);
     if (fs.existsSync(destDir))
         await removeDir(destDir);
-    await copyDir(skillDir, destDir);
+    await copyScannedSkillFiles(skillDir, destDir);
     const manifest = await readPoolManifest();
     manifest.skills[meta.name] = {
         name: meta.name,
