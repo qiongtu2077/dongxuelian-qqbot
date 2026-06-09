@@ -125,6 +125,9 @@ declare function todayCstMinusDays(daysBack: number): string;
 declare function errorMessage(error: unknown): string;
 /** 从 catch 到的未知错误里安全取出 Node errno code（如 EEXIST/EPERM） */
 declare function errorCode(error: unknown): string;
+declare function withTimeout<T>(fn: () => Promise<T> | T, timeoutMs: number, options?: {
+    code?: string;
+}): Promise<T>;
 declare const _default: {
     isRareProvocation: typeof isRareProvocation;
     isWideRareProvocation: typeof isWideRareProvocation;
@@ -200,5 +203,6 @@ declare const _default: {
     todayCstMinusDays: typeof todayCstMinusDays;
     errorMessage: typeof errorMessage;
     errorCode: typeof errorCode;
+    withTimeout: typeof withTimeout;
 };
 export = _default;

@@ -30,7 +30,6 @@ interface AgentQueueStats {
     activeKeys: string[];
 }
 declare function configureAgentQueue(nextOptions?: unknown): QueueOptions;
-declare function withTimeout<T>(fn: () => Promise<T> | T, timeoutMs: number): Promise<T>;
 declare function enqueueAgentTask({ channelKey, userId, fn, timeoutMs, maxDepth }?: EnqueueAgentTaskOptions): Promise<unknown>;
 declare function clearAgentQueue(channelKey?: unknown, userId?: unknown): number;
 declare function getAgentQueueStats(): AgentQueueStats;
@@ -40,7 +39,9 @@ declare const _default: {
     getAgentQueueStats: typeof getAgentQueueStats;
     clearAgentQueue: typeof clearAgentQueue;
     configureAgentQueue: typeof configureAgentQueue;
-    withTimeout: typeof withTimeout;
+    withTimeout: <T>(fn: () => Promise<T> | T, timeoutMs: number, options?: {
+        code?: string;
+    }) => Promise<T>;
     resetAgentQueueForTests: typeof resetAgentQueueForTests;
 };
 export = _default;

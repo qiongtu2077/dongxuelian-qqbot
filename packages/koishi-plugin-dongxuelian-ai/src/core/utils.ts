@@ -846,6 +846,21 @@ function errorCode(error: unknown): string {
   return ''
 }
 
+function withTimeout<T>(fn: () => Promise<T> | T, timeoutMs: number, options: { code?: string } = {}): Promise<T> {
+  let timeoutId: NodeJS.Timeout | null = null
+  const code = typeof options.code === 'string' && options.code ? options.code : 'TIMEOUT'
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const error = new Error(`agent task timeout (${timeoutMs}ms)`) as Error & { code?: string }
+      error.code = code
+      reject(error)
+    }, timeoutMs)
+    if (timeoutId.unref) timeoutId.unref()
+  })
+  return Promise.race([Promise.resolve().then(fn), timeoutPromise])
+    .finally(() => { if (timeoutId) clearTimeout(timeoutId) })
+}
+
 export = {
   isRareProvocation, isWideRareProvocation, isHostileInput,
   normalizeText,
@@ -875,4 +890,5 @@ export = {
   trimReply, sanitizeReply, stripMarkdownForQQ, splitSentences, splitReplyForQQBubbles,
   todayCst, formatShanghaiTime24h, getShanghaiHourFromTs, todayCstMinusDays,
   errorMessage, errorCode,
+  withTimeout,
 }

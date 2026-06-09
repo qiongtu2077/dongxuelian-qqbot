@@ -873,6 +873,22 @@ function errorCode(error) {
     }
     return '';
 }
+function withTimeout(fn, timeoutMs, options = {}) {
+    let timeoutId = null;
+    const code = typeof options.code === 'string' && options.code ? options.code : 'TIMEOUT';
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+            const error = new Error(`agent task timeout (${timeoutMs}ms)`);
+            error.code = code;
+            reject(error);
+        }, timeoutMs);
+        if (timeoutId.unref)
+            timeoutId.unref();
+    });
+    return Promise.race([Promise.resolve().then(fn), timeoutPromise])
+        .finally(() => { if (timeoutId)
+        clearTimeout(timeoutId); });
+}
 module.exports = {
     isRareProvocation, isWideRareProvocation, isHostileInput,
     normalizeText,
@@ -902,4 +918,5 @@ module.exports = {
     trimReply, sanitizeReply, stripMarkdownForQQ, splitSentences, splitReplyForQQBubbles,
     todayCst, formatShanghaiTime24h, getShanghaiHourFromTs, todayCstMinusDays,
     errorMessage, errorCode,
+    withTimeout,
 };

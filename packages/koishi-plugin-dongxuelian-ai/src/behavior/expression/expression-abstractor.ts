@@ -17,7 +17,7 @@ const { loadConfig } = require('../../core/runtime-config') as typeof import('..
 const { filterExpressionLearningMessages } = require('./expression-learner') as typeof import('./expression-learner')
 const { appendExpressionCandidate, expressionPoolSafeChannelKey,
   EXPRESSION_POOL_MAX_TEXT_LEN } = require('./expression-pool-store') as typeof import('./expression-pool-store')
-const { withTimeout } = require('../../agent/queue') as typeof import('../../agent/queue')
+const { withTimeout } = require('../../core/utils') as typeof import('../../core/utils')
 
 interface AbstractorModelRef {
   provider: string

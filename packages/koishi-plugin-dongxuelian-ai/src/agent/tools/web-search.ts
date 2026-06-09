@@ -10,7 +10,7 @@ const { runHttpSearch, mergeHttpSearchCandidates, formatCandidateList } = requir
 const { rankSearchCandidates } = require('../search-results') as typeof import('../search-results')
 const { readCandidatePage } = require('../fetch-reader') as typeof import('../fetch-reader')
 const { normalizeFetchedText } = require('./web-fetch') as typeof import('./web-fetch')
-const { withTimeout } = require('../queue') as typeof import('../queue')
+const { withTimeout } = require('../../core/utils') as typeof import('../../core/utils')
 
 interface WebSearchParams {
   query?: unknown
@@ -70,7 +70,7 @@ const URL_RE = /https?:\/\/[^\s"'<>）)\]]+/ig
 
 function runWebSearchWithTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T | string> {
   return withTimeout(() => promise, timeoutMs).catch((error: unknown) => {
-    if (error && (error as { code?: string }).code === 'AGENT_QUEUE_TIMEOUT') return `${label}超时（${timeoutMs}ms）`
+    if (error && (error as { code?: string }).code === 'TIMEOUT') return `${label}超时（${timeoutMs}ms）`
     throw error
   }) as Promise<T | string>
 }

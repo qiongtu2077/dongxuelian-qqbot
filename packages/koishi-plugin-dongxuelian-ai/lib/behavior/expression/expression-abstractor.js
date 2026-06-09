@@ -16,7 +16,7 @@ const { readTextFile, readJsonFile, truncateText, errorMessage } = require('../.
 const { loadConfig } = require('../../core/runtime-config');
 const { filterExpressionLearningMessages } = require('./expression-learner');
 const { appendExpressionCandidate, expressionPoolSafeChannelKey, EXPRESSION_POOL_MAX_TEXT_LEN } = require('./expression-pool-store');
-const { withTimeout } = require('../../agent/queue');
+const { withTimeout } = require('../../core/utils');
 function getAbstractorResultContent(result) {
     if (typeof result === 'string')
         return result;

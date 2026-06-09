@@ -11,7 +11,7 @@ const { runHttpSearch, mergeHttpSearchCandidates, formatCandidateList } = requir
 const { rankSearchCandidates } = require('../search-results');
 const { readCandidatePage } = require('../fetch-reader');
 const { normalizeFetchedText } = require('./web-fetch');
-const { withTimeout } = require('../queue');
+const { withTimeout } = require('../../core/utils');
 const API_SEARCH_TIMEOUT_MS = 12000;
 const BROWSER_SEARCH_QUERY_LIMIT = 2;
 const CHROMIUM_SEARCH_ENV = 'DONGXUELIAN_AGENT_BROWSER_SEARCH';
@@ -21,7 +21,7 @@ const API_SEARCH_URL_LIMIT = 8;
 const URL_RE = /https?:\/\/[^\s"'<>）)\]]+/ig;
 function runWebSearchWithTimeout(promise, timeoutMs, label) {
     return withTimeout(() => promise, timeoutMs).catch((error) => {
-        if (error && error.code === 'AGENT_QUEUE_TIMEOUT')
+        if (error && error.code === 'TIMEOUT')
             return `${label}超时（${timeoutMs}ms）`;
         throw error;
     });

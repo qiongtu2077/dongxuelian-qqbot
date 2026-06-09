@@ -62,21 +62,7 @@ function decChannelDepth(channelKey) {
     else
         channelDepth.set(key, next);
 }
-function withTimeout(fn, timeoutMs) {
-    let timeoutId = null;
-    const timeoutPromise = new Promise((_, reject) => {
-        timeoutId = setTimeout(() => {
-            const error = new Error(`agent task timeout (${timeoutMs}ms)`);
-            error.code = 'AGENT_QUEUE_TIMEOUT';
-            reject(error);
-        }, timeoutMs);
-        if (timeoutId.unref)
-            timeoutId.unref();
-    });
-    return Promise.race([Promise.resolve().then(fn), timeoutPromise])
-        .finally(() => { if (timeoutId)
-        clearTimeout(timeoutId); });
-}
+const { withTimeout } = require('../core/utils');
 function rejectTask(task, reason) {
     rejectedCount++;
     task.reject(Object.assign(new Error(reason), { code: 'AGENT_QUEUE_REJECTED' }));
@@ -85,7 +71,7 @@ function startTask(task) {
     activeCount++;
     activeKeys.add(task.key);
     incChannelDepth(task.channelKey);
-    withTimeout(task.fn, task.timeoutMs)
+    withTimeout(task.fn, task.timeoutMs, { code: 'AGENT_QUEUE_TIMEOUT' })
         .then(result => {
         completedCount++;
         task.resolve(result);

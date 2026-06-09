@@ -291,4 +291,16 @@ async function handleAdminInlineCommands(session: AdminSessionLike, ctx: unknown
   return { matched: false }
 }
 
-export = { handleAdminInlineCommands }
+function isAdminCommand(plain: string): boolean {
+  return (
+    /^(?:东雪莲)?测试(?:开|关)$/.test(plain) ||
+    /^群聊AI白名单(?:添加|删除|查看|列表)/.test(plain) ||
+    /^东雪莲联网(?:开|关)$/.test(plain) ||
+    /^东雪莲思考(?:开|关)$/.test(plain) ||
+    /^解除上限群白名单/.test(plain) ||
+    /^敏感话题处理者/.test(plain) ||
+    plain === 'AI重载'
+  )
+}
+
+export = { handleAdminInlineCommands, isAdminCommand }

@@ -370,10 +370,12 @@ function trimConversationRuntimeCaches(now: number = Date.now()): void {
   }
 }
 
+// 与 core/utils.safeUserId 的区别：本函数接受 session 对象，safeUserId 接受字符串值
 function getSessionUserId(session: SessionLike): string {
   return String(session?.userId || session?.author?.id || session?.username || 'unknown')
 }
 
+// 与 core/utils.safeChannelKey 的区别：本函数接受 session 对象，safeChannelKey 接受字符串值
 function getChannelKey(session: SessionLike): string {
   if (session?.guildId || session?.channelId) return String(session.guildId || session.channelId)
   if (session?.isDirect) return `private:${getSessionUserId(session)}`
