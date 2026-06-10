@@ -9,6 +9,8 @@ const { appendJsonlEvent } = require('../resource-common/files');
 const { isStatusQueryKind, isNormalChatKind, isMediaTaskKind, isChromiumTaskKind, isDailyReportKind, canRunInRedStateByKind, } = require('../resource-common/resource-task-kinds');
 const { normalizeTaskBudget } = require('./task-budget');
 const { SCHEDULER_ROOT, readResourceSnapshot } = require('./resource-snapshot');
+const ADMISSION_EVENT_DEDUPE_WINDOW_MS = Math.max(1000, Math.min(60000, Number(process.env.RESOURCE_ADMISSION_EVENT_DEDUPE_MS || 10000)));
+const recentAdmissionEvents = new Map();
 function isRunningTaskLike(value) {
     return !!value && typeof value === 'object';
 }
@@ -57,6 +59,30 @@ function buildDecision(decision, reason, budget, snapshot, fallback = '') {
         budget,
         snapshot,
     };
+}
+function buildAdmissionEventKey(decision) {
+    const budget = decision.budget;
+    return [
+        String(budget.taskId || ''),
+        String(budget.kind || ''),
+        String(budget.source || ''),
+        String(decision.decision || ''),
+        String(decision.reason || ''),
+        String(decision.resourceState || ''),
+        String(decision.botMode || ''),
+    ].join('|');
+}
+function shouldWriteAdmissionEvent(decision, now = Date.now()) {
+    const key = buildAdmissionEventKey(decision);
+    const lastAt = recentAdmissionEvents.get(key) || 0;
+    if (now - lastAt < ADMISSION_EVENT_DEDUPE_WINDOW_MS)
+        return false;
+    recentAdmissionEvents.set(key, now);
+    for (const [entryKey, entryAt] of recentAdmissionEvents) {
+        if (now - entryAt > ADMISSION_EVENT_DEDUPE_WINDOW_MS)
+            recentAdmissionEvents.delete(entryKey);
+    }
+    return true;
 }
 // 按 S1 最终计划输出统一资源准入决策。
 function decideAdmission(input, snapshot = readResourceSnapshot()) {
@@ -120,6 +146,8 @@ function decideAdmission(input, snapshot = readResourceSnapshot()) {
 }
 // 记录准入事件；Dashboard 只展示事件，不反推业务原因。
 function writeAdmissionEvent(decision) {
+    if (!shouldWriteAdmissionEvent(decision))
+        return;
     const budget = decision.budget;
     appendJsonlEvent(admissionEventFile(), {
         event: 'admission_decided',

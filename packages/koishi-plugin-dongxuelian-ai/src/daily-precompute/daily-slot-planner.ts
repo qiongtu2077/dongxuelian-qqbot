@@ -8,6 +8,7 @@ const { getResourceTaskById } = require('../resource-workers/task-store') as typ
 const { sanitizeId } = require('../resource-common/files') as typeof import('../resource-common/files')
 const { readPrecomputeIndex, writePrecomputeEvent } = require('./precompute-index') as typeof import('./precompute-index')
 const { readDailySlots } = require('./daily-summary-merge') as typeof import('./daily-summary-merge')
+const { readResourceSnapshot } = require('../resource-scheduler/resource-snapshot') as typeof import('../resource-scheduler/resource-snapshot')
 
 interface PlanSlotOptions {
   slotSize?: number
@@ -43,14 +44,23 @@ function getCoveredMessageIds(date: string, channelKey: string): Set<string> {
 }
 
 // 判断确定性 slot 任务是否已经在 S2 队列或历史中，不重复提交同一个 taskId。
+// failed 也算已追踪：避免每轮对失败 slot 无限重提交（retryAfter 尚未支持前的止血）。
 function isSlotTaskAlreadyTracked(taskId: string): boolean {
   const task = getResourceTaskById(taskId)
   if (!task) return false
-  return ['pending', 'claiming', 'running', 'done', 'deferred'].includes(String(task.status || ''))
+  return ['pending', 'claiming', 'running', 'done', 'deferred', 'failed'].includes(String(task.status || ''))
 }
 
 // 规划指定日期频道的 slot 任务。
 function planDailySlotTasks(date: string, channelKey: string, options: PlanSlotOptions = {}): SlotPlanningResultLike[] {
+  // 止血：red/black/维护模式下后台预计算必须让路，连规划扫描都不做。
+  // S3 是机会式增强，不具备默认运行权（见 S0-S8 资源架构重整计划 9.6 节）。
+  const snapshot = readResourceSnapshot()
+  const resourceState = String(snapshot.resourceState || '')
+  if (resourceState === 'red' || resourceState === 'black' || snapshot.maintenance) {
+    writePrecomputeEvent('daily_slot_planning_skipped', { date, channelKey, resourceState, maintenance: !!snapshot.maintenance })
+    return []
+  }
   const records = readPrecomputeIndex(date, channelKey) as PrecomputeRecordLike[]
   const coveredIds = getCoveredMessageIds(date, channelKey)
   const slotSize = Math.max(20, Math.min(500, Number(options.slotSize || 120)))

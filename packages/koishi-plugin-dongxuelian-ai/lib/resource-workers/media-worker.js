@@ -122,7 +122,7 @@ function handleMediaTaskTimeout(workerName, task, error) {
     });
     process.exitCode = process.exitCode || 76;
 }
-// 领取并执行一个 S6 媒体任务；没有任务时返回 false。
+// 领取并执行一个 S6 媒体任务；没有任务或本轮被资源拒绝时返回 false，让主循环走 pollMs 退避。
 async function drainOneMediaTask(options = {}) {
     const workerName = String(options.workerName || 'media-worker');
     const task = claimNextMediaTask(workerName);
@@ -137,8 +137,10 @@ async function drainOneMediaTask(options = {}) {
         exclusive: false,
     });
     if (admission.decision !== 'run_now') {
+        // 止血：资源不足时 requeue 后返回 false，避免 worked=true 触发 200ms claim/requeue 忙等。
+        // 返回 false 让 runWorkerLoop 走 pollMs（默认 2s）退避，形成真背压而非忙等。
         requeueMediaTask(task, String(admission.reason || admission.decision));
-        return true;
+        return false;
     }
     let gateHandle = null;
     try {
@@ -159,12 +161,13 @@ async function drainOneMediaTask(options = {}) {
         return true;
     }
     catch (error) {
-        if (!gateHandle)
+        if (!gateHandle) {
+            // 锁等待失败也属于资源繁忙，requeue 后返回 false 退避，不立刻重抢。
             requeueMediaTask(task, error instanceof Error ? error.message : String(error || 'lock_wait_failed'));
-        else {
-            failMediaTask(task, error, 'media_worker_failed');
-            handleMediaTaskTimeout(workerName, task, error);
+            return false;
         }
+        failMediaTask(task, error, 'media_worker_failed');
+        handleMediaTaskTimeout(workerName, task, error);
         return true;
     }
     finally {

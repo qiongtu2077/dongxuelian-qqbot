@@ -313,11 +313,19 @@ function requeueTask(task: ResourceTask, reason = 'requeued'): ResourceTask {
 }
 
 // 更新任务通知状态，供 result-notifier 标记发送或跳过结果。
+// 幂等：若 notify.status 已是目标值则跳过，避免每轮 tick 重复写同一 taskId。
+// 写回路径以传入 task 所在位置（task.status）为准，不走多副本猜测。
 function updateTaskNotifyStatus(task: ResourceTask, status: string, error = ''): ResourceTask {
-  const location = findCurrentTaskLocation(task)
+  const currentNotifyStatus = String((task.notify || {}).status || '')
+  if (currentNotifyStatus === status) return task
+  // 优先写回扫描到的实体所在位置，不依赖 findCurrentTaskLocation 跨目录猜测
+  const knownFile = getTaskFile(task.status, task.kind, task.id)
+  const location = fs.existsSync(knownFile)
+    ? { file: knownFile }
+    : findCurrentTaskLocation(task)
   if (!location) return task
   const safeError = redactSensitiveText(error)
-  const next = {
+  const next: ResourceTask = {
     ...task,
     updatedAt: nowIso(),
     notify: {

@@ -40,7 +40,10 @@ const RESOURCE_SYSTEM_ROOT = path.join(DATA_DIR, 'resource-system')
 const PROCESS_METRICS_FILE_RE = /^process-metrics-\d{4}-\d{2}-\d{2}\.jsonl$/
 const PROCESS_METRICS_RETENTION_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_RETENTION_HOURS, 72, 1, 24 * 30) * 60 * 60 * 1000
 const PROCESS_METRICS_CLEANUP_INTERVAL_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_CLEANUP_INTERVAL_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000)
+const PROCESS_METRICS_SAMPLE_INTERVAL_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_SAMPLE_INTERVAL_MS, 5000, 1000, 10 * 60 * 1000)
 const MEMORY_BLACK_THRESHOLD_MB = parseBoundedPositiveInt(process.env.RESOURCE_MEMORY_BLACK_THRESHOLD_MB, 450, 64, 8192)
+const MEMORY_BLACK_ALERT_COOLDOWN_MS = parseBoundedPositiveInt(process.env.RESOURCE_MEMORY_BLACK_ALERT_COOLDOWN_MS, 30000, 1000, 10 * 60 * 1000)
+const WORKER_MEMORY_ALERT_COOLDOWN_MS = parseBoundedPositiveInt(process.env.RESOURCE_WORKER_MEMORY_ALERT_COOLDOWN_MS, 30000, 1000, 10 * 60 * 1000)
 const DEFAULT_WORKER_RSS_LIMITS: Record<string, number> = {
   'daily-worker': Number(process.env.RESOURCE_DAILY_WORKER_RSS_MB || 900),
   'agent-worker': Number(process.env.RESOURCE_AGENT_WORKER_RSS_MB || 900),
@@ -48,6 +51,9 @@ const DEFAULT_WORKER_RSS_LIMITS: Record<string, number> = {
 }
 
 let lastProcessMetricsCleanupAt = 0
+const recentProcessMetricsSamples = new Map<string, number>()
+const recentMemoryBlackAlerts = new Map<string, number>()
+const recentWorkerMemoryAlerts = new Map<string, number>()
 
 // 返回当天系统事件文件路径。
 function systemEventFile(prefix: string, date = new Date()): string {
@@ -135,6 +141,48 @@ function cleanupOldProcessMetricsFilesThrottled(now = Date.now()): void {
   if (now - lastProcessMetricsCleanupAt < PROCESS_METRICS_CLEANUP_INTERVAL_MS) return
   lastProcessMetricsCleanupAt = now
   cleanupOldProcessMetricsFiles(now)
+}
+
+function cleanupRecentEntries(store: Map<string, number>, now: number, ttlMs: number): void {
+  for (const [key, at] of store) {
+    if (now - at > ttlMs) store.delete(key)
+  }
+}
+
+function shouldWriteProcessMetricsSample(extra: Record<string, unknown>, now = Date.now()): boolean {
+  const sampleKey = [
+    String(extra.workerName || ''),
+    String(extra.workerType || ''),
+    String(process.pid),
+  ].join('|')
+  const lastAt = recentProcessMetricsSamples.get(sampleKey) || 0
+  if (now - lastAt < PROCESS_METRICS_SAMPLE_INTERVAL_MS) return false
+  recentProcessMetricsSamples.set(sampleKey, now)
+  cleanupRecentEntries(recentProcessMetricsSamples, now, PROCESS_METRICS_SAMPLE_INTERVAL_MS)
+  return true
+}
+
+function shouldWriteMemoryBlackAlert(memAvailableMb: number, memTotalMb: number | null, source: string, now = Date.now()): boolean {
+  const alertKey = [
+    String(process.pid),
+    String(memAvailableMb),
+    String(memTotalMb),
+    String(source || ''),
+  ].join('|')
+  const lastAt = recentMemoryBlackAlerts.get(alertKey) || 0
+  if (now - lastAt < MEMORY_BLACK_ALERT_COOLDOWN_MS) return false
+  recentMemoryBlackAlerts.set(alertKey, now)
+  cleanupRecentEntries(recentMemoryBlackAlerts, now, MEMORY_BLACK_ALERT_COOLDOWN_MS)
+  return true
+}
+
+function shouldWriteWorkerMemoryAlert(workerName: string, pid: number, limitMb: number, now = Date.now()): boolean {
+  const alertKey = [String(workerName || ''), String(pid), String(limitMb)].join('|')
+  const lastAt = recentWorkerMemoryAlerts.get(alertKey) || 0
+  if (now - lastAt < WORKER_MEMORY_ALERT_COOLDOWN_MS) return false
+  recentWorkerMemoryAlerts.set(alertKey, now)
+  cleanupRecentEntries(recentWorkerMemoryAlerts, now, WORKER_MEMORY_ALERT_COOLDOWN_MS)
+  return true
 }
 
 // 读取当前进程 RSS，单位 MB。
@@ -352,6 +400,20 @@ function terminateRecordedProcessPids(options: TerminateRecordedProcessPidsOptio
     seen.add(pid)
     candidates.push(pid)
   }
+  if (!candidates.length) {
+    return {
+      event: 'recorded_process_cleanup_skipped',
+      reason: options.reason || 'recorded_process_cleanup',
+      source: options.source || '',
+      taskId,
+      kind: options.kind || '',
+      owner: options.owner || '',
+      skippedReason: 'no_recorded_pid',
+      candidateCount: 0,
+      pids: [],
+      resultEvents: [],
+    }
+  }
   const results = candidates.map(pid => terminateProcessTree(pid, {
     reason: options.reason || 'recorded_process_cleanup',
     source: options.source || 'recorded_process_cleanup',
@@ -388,7 +450,7 @@ function checkWorkerMemoryLimit(workerName: string, limitMb?: number): Record<st
     limitMb: resolvedLimit,
     exceeded,
   }
-  if (exceeded) {
+  if (exceeded && shouldWriteWorkerMemoryAlert(workerName, process.pid, resolvedLimit)) {
     appendJsonlEvent(systemEventFile('memory-alerts'), {
       event: 'worker_memory_limit_exceeded',
       ...result,
@@ -405,7 +467,8 @@ function checkWorkerMemoryLimit(workerName: string, limitMb?: number): Record<st
 // 采集轻量系统指标并落盘。
 function collectProcessMetrics(extra: Record<string, unknown> = {}): Record<string, unknown> {
   ensureDir(RESOURCE_SYSTEM_ROOT)
-  cleanupOldProcessMetricsFilesThrottled(Date.now())
+  const now = Date.now()
+  cleanupOldProcessMetricsFilesThrottled(now)
   const mem = readLinuxMeminfo()
   const metrics = {
     event: 'process_metrics',
@@ -417,8 +480,14 @@ function collectProcessMetrics(extra: Record<string, unknown> = {}): Record<stri
     memSource: mem.source,
     ...extra,
   }
-  appendJsonlEvent(systemEventFile('process-metrics'), metrics)
-  if (mem.availableMb !== null && mem.availableMb < MEMORY_BLACK_THRESHOLD_MB) {
+  if (shouldWriteProcessMetricsSample(extra, now)) {
+    appendJsonlEvent(systemEventFile('process-metrics'), metrics)
+  }
+  if (
+    mem.availableMb !== null
+    && mem.availableMb < MEMORY_BLACK_THRESHOLD_MB
+    && shouldWriteMemoryBlackAlert(mem.availableMb, mem.totalMb, mem.source, now)
+  ) {
     appendJsonlEvent(systemEventFile('memory-alerts'), {
       event: 'memory_black',
       pid: process.pid,

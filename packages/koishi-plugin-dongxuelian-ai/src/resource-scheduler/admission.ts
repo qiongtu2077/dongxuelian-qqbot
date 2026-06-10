@@ -46,6 +46,9 @@ interface ResourceSnapshotLike {
 const { normalizeTaskBudget } = require('./task-budget') as { normalizeTaskBudget(input: TaskBudgetInput): TaskBudget }
 const { SCHEDULER_ROOT, readResourceSnapshot } = require('./resource-snapshot') as { SCHEDULER_ROOT: string; readResourceSnapshot(): ResourceSnapshotLike }
 
+const ADMISSION_EVENT_DEDUPE_WINDOW_MS = Math.max(1000, Math.min(60000, Number(process.env.RESOURCE_ADMISSION_EVENT_DEDUPE_MS || 10000)))
+const recentAdmissionEvents = new Map<string, number>()
+
 interface RunningTaskLike {
   taskId?: unknown
 }
@@ -110,6 +113,30 @@ function buildDecision(decision: AdmissionDecisionType, reason: string, budget: 
   }
 }
 
+function buildAdmissionEventKey(decision: AdmissionDecision): string {
+  const budget = decision.budget as TaskBudget
+  return [
+    String(budget.taskId || ''),
+    String(budget.kind || ''),
+    String(budget.source || ''),
+    String(decision.decision || ''),
+    String(decision.reason || ''),
+    String(decision.resourceState || ''),
+    String(decision.botMode || ''),
+  ].join('|')
+}
+
+function shouldWriteAdmissionEvent(decision: AdmissionDecision, now = Date.now()): boolean {
+  const key = buildAdmissionEventKey(decision)
+  const lastAt = recentAdmissionEvents.get(key) || 0
+  if (now - lastAt < ADMISSION_EVENT_DEDUPE_WINDOW_MS) return false
+  recentAdmissionEvents.set(key, now)
+  for (const [entryKey, entryAt] of recentAdmissionEvents) {
+    if (now - entryAt > ADMISSION_EVENT_DEDUPE_WINDOW_MS) recentAdmissionEvents.delete(entryKey)
+  }
+  return true
+}
+
 // 按 S1 最终计划输出统一资源准入决策。
 function decideAdmission(input: TaskBudgetInput, snapshot: ResourceSnapshotLike = readResourceSnapshot()): AdmissionDecision {
   const budget = normalizeTaskBudget(input)
@@ -164,6 +191,7 @@ function decideAdmission(input: TaskBudgetInput, snapshot: ResourceSnapshotLike 
 
 // 记录准入事件；Dashboard 只展示事件，不反推业务原因。
 function writeAdmissionEvent(decision: AdmissionDecision): void {
+  if (!shouldWriteAdmissionEvent(decision)) return
   const budget = decision.budget as TaskBudget
   appendJsonlEvent(admissionEventFile(), {
     event: 'admission_decided',

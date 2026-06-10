@@ -9,6 +9,7 @@ const { getResourceTaskById } = require('../resource-workers/task-store');
 const { sanitizeId } = require('../resource-common/files');
 const { readPrecomputeIndex, writePrecomputeEvent } = require('./precompute-index');
 const { readDailySlots } = require('./daily-summary-merge');
+const { readResourceSnapshot } = require('../resource-scheduler/resource-snapshot');
 // 生成 slot id，使用索引范围和消息时间便于排障。
 function buildSlotId(records, start, end) {
     const first = records[start];
@@ -25,14 +26,23 @@ function getCoveredMessageIds(date, channelKey) {
     return covered;
 }
 // 判断确定性 slot 任务是否已经在 S2 队列或历史中，不重复提交同一个 taskId。
+// failed 也算已追踪：避免每轮对失败 slot 无限重提交（retryAfter 尚未支持前的止血）。
 function isSlotTaskAlreadyTracked(taskId) {
     const task = getResourceTaskById(taskId);
     if (!task)
         return false;
-    return ['pending', 'claiming', 'running', 'done', 'deferred'].includes(String(task.status || ''));
+    return ['pending', 'claiming', 'running', 'done', 'deferred', 'failed'].includes(String(task.status || ''));
 }
 // 规划指定日期频道的 slot 任务。
 function planDailySlotTasks(date, channelKey, options = {}) {
+    // 止血：red/black/维护模式下后台预计算必须让路，连规划扫描都不做。
+    // S3 是机会式增强，不具备默认运行权（见 S0-S8 资源架构重整计划 9.6 节）。
+    const snapshot = readResourceSnapshot();
+    const resourceState = String(snapshot.resourceState || '');
+    if (resourceState === 'red' || resourceState === 'black' || snapshot.maintenance) {
+        writePrecomputeEvent('daily_slot_planning_skipped', { date, channelKey, resourceState, maintenance: !!snapshot.maintenance });
+        return [];
+    }
     const records = readPrecomputeIndex(date, channelKey);
     const coveredIds = getCoveredMessageIds(date, channelKey);
     const slotSize = Math.max(20, Math.min(500, Number(options.slotSize || 120)));
