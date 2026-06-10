@@ -308,7 +308,7 @@ fi
 echo ""
 log "==================== API key config ===================="
 log "At least one API key is required."
-echo "" 
+echo ""
 
 read -s -p "DeepSeek API key (sk-xxx, required): " DEEPSEEK_KEY
 printf '\n'
