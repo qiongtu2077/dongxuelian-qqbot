@@ -25,7 +25,9 @@ const CHECK_FILES = [
   'packages/koishi-plugin-pet-bridge/lib/protocol.js',
   'scripts/agent-console-admin-smoke.js',
   'scripts/dashboard-click-smoke.js',
+  'scripts/resource-cleanup.js',
   'scripts/skill-hub.js',
+  'scripts/verify-ai-plugin-sync.js',
 ]
 
 const MODULE_INPUT_CHECKS = []

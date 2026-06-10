@@ -453,6 +453,9 @@ async function main() {
   check('npm test runs quick and scenario entries', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:quick') && rootPkg.scripts.test.includes('npm run test:scenario'))
   check('npm test includes plugin tests', rootPkg.scripts && rootPkg.scripts.test && rootPkg.scripts.test.includes('npm run test:plugins'))
   checkEqual('npm check uses syntax runner', rootPkg.scripts && rootPkg.scripts.check, 'node scripts/check-syntax.js')
+  checkEqual('root package exposes resource cleanup dry-run helper', rootPkg.scripts && rootPkg.scripts['resource:cleanup:dry-run'], 'node scripts/resource-cleanup.js')
+  checkEqual('root package exposes resource cleanup apply helper', rootPkg.scripts && rootPkg.scripts['resource:cleanup:apply'], 'node scripts/resource-cleanup.js --apply')
+  checkEqual('root package exposes AI plugin sync verifier', rootPkg.scripts && rootPkg.scripts['verify:ai-plugin-sync'], 'node scripts/verify-ai-plugin-sync.js')
   const syntaxRunner = require(path.join(ROOT, 'scripts', 'check-syntax.js'))
   const syntaxTargets = syntaxRunner.buildCheckTargets()
   const syntaxFileSet = new Set(syntaxTargets.fileChecks)
@@ -477,9 +480,25 @@ async function main() {
   check('syntax runner covers dashboard route modules', syntaxFileSet.has('packages/koishi-plugin-dashboard/lib/routes/config.js'))
   check('syntax runner covers daily report analyzer syntax', syntaxFileSet.has('packages/koishi-plugin-daily-report/lib/ai-analyzer.js'))
   check('syntax runner covers local deployer runtime syntax', syntaxFileSet.has('local-deployer/lib/runtime.cjs'))
+  check('syntax runner covers resource cleanup script syntax', syntaxFileSet.has('scripts/resource-cleanup.js'))
+  check('syntax runner covers AI sync verifier syntax', syntaxFileSet.has('scripts/verify-ai-plugin-sync.js'))
   check('syntax runner no longer module-checks frontend TS source', syntaxModuleSet.size === 0)
   check('syntax runner avoids checked-in dist bundles', !syntaxTargets.fileChecks.some(file => file.includes('/dist/')))
   check('syntax runner keeps npm check command short for Windows', rootPkg.scripts.check.length < 120)
+  const aiPackageManifest = readJson(path.join(AI_ROOT, 'package.json'))
+  check('AI package resource test includes cleanup regression', aiPackageManifest.scripts && aiPackageManifest.scripts['test:resource'] && aiPackageManifest.scripts['test:resource'].includes('test:resource-cleanup'))
+  checkEqual('AI package exposes cleanup regression entry', aiPackageManifest.scripts && aiPackageManifest.scripts['test:resource-cleanup'], 'node test/resource-cleanup-test.js')
+  const syncVerifyResult = spawnSync(process.execPath, ['scripts/verify-ai-plugin-sync.js', '--json'], { cwd: ROOT, encoding: 'utf8' })
+  check('AI sync verifier exits 0 in local workspace', syncVerifyResult.status === 0, `status=${syncVerifyResult.status} stdout=${syncVerifyResult.stdout} stderr=${syncVerifyResult.stderr}`)
+  if (syncVerifyResult.status === 0) {
+    try {
+      const syncSummary = JSON.parse(String(syncVerifyResult.stdout || '{}'))
+      check('AI sync verifier reports ok', syncSummary.ok === true, JSON.stringify(syncSummary))
+      check('AI sync verifier detects linked or copied install mode', syncSummary.installMode === 'linked' || syncSummary.installMode === 'copied', JSON.stringify(syncSummary))
+    } catch (error) {
+      fail('AI sync verifier outputs JSON', error && error.message || String(error))
+    }
+  }
   checkEqual('npm start uses start.js', rootPkg.scripts && rootPkg.scripts.start, 'node start.js')
   check('workspace package glob exists', Array.isArray(rootPkg.workspaces) && rootPkg.workspaces.includes('packages/*'))
   const localDeployerPkg = readJson(path.join(ROOT, 'local-deployer', 'package.json'))
@@ -3952,6 +3971,7 @@ async function main() {
   check('deploy helper copies ai-skills without overwriting runtime edits', deployHelper.includes('if [ ! -e "$target" ]') && !deployHelper.includes('cp -R "$SRC/data/ai-skills/." "$APP_DIR/data/ai-skills/"'))
   check('deploy helper refuses unsafe destination', deployHelper.includes('Refusing to remove unsafe destination'))
   check('deploy helper normalizes old koishi keys', deployHelper.includes('renamed koishi entry'))
+  check('deploy helper verifies AI plugin sync before finishing', deployHelper.includes('verify-ai-plugin-sync.js') && deployHelper.includes('koishi-plugin-dongxuelian-ai'))
   const deployMap = {
     'ai.sh': 'koishi-plugin-dongxuelian-ai',
     'help.sh': 'koishi-plugin-dongxuelian-help',

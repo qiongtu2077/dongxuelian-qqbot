@@ -78,6 +78,10 @@ for js_file in "$DEST"/lib/*.js; do
   node -c "$js_file"
 done
 
+if [ "$PACKAGE_NAME" = "koishi-plugin-dongxuelian-ai" ]; then
+  node "$REPO_ROOT/scripts/verify-ai-plugin-sync.js" --app-dir "$APP_DIR"
+fi
+
 node - "$KOISHI_YML" "$KOISHI_KEY" "$ALIASES" <<'NODE'
 const fs = require('fs')
 const [configPath, desiredKey, aliasesCsv = ''] = process.argv.slice(2)

@@ -5,6 +5,9 @@
   "scripts": {
     "start": "node start.js",
     "check": "node scripts/check-syntax.js",
+    "resource:cleanup:dry-run": "node scripts/resource-cleanup.js",
+    "resource:cleanup:apply": "node scripts/resource-cleanup.js --apply",
+    "verify:ai-plugin-sync": "node scripts/verify-ai-plugin-sync.js",
     "build:agent-console": "npm run build --prefix packages/agent-console",
     "build:ai": "npm run build --prefix packages/koishi-plugin-dongxuelian-ai",
     "build:plugins:batch1": "npm run build --prefix packages/koishi-plugin-dongxuelian-poke && npm run build --prefix packages/koishi-plugin-group-leave-notice && npm run build --prefix packages/koishi-plugin-defense && npm run build --prefix packages/koishi-plugin-dongxuelian-help",
