@@ -33,6 +33,7 @@ interface ResourceRuntimeLike {
   tasks: {
     submitResourceTask(input: Record<string, unknown>): Record<string, unknown>
     listResourceTasks(options?: Record<string, unknown>): Record<string, unknown>[]
+    findResourceTaskByKindAndChannel?(kind: string, channelKey: string, statuses?: string[]): Record<string, unknown> | null
     failTask(task: Record<string, unknown>, error: unknown, result?: Record<string, unknown>): Record<string, unknown>
     deferTask(task: Record<string, unknown>, reason?: string): Record<string, unknown>
   }
@@ -187,7 +188,10 @@ function submitDailyResourceTask(runtime: ResourceRuntimeLike, taskId: string, c
 
 // 检查同群是否已有未完成日报任务，避免 S2 队列被重复命令刷爆。
 function findOpenDailyReportTask(runtime: ResourceRuntimeLike, channelKey: unknown): Record<string, unknown> | null {
-  const tasks = runtime.tasks.listResourceTasks({ statuses: ['pending', 'claiming', 'running', 'deferred'], limit: 1000 })
+  const statuses = ['pending', 'claiming', 'running', 'deferred']
+  const direct = runtime.tasks.findResourceTaskByKindAndChannel?.('daily_report', String(channelKey || ''), statuses)
+  if (direct) return direct
+  const tasks = runtime.tasks.listResourceTasks({ statuses, limit: 1000 })
   return tasks.find(task =>
     String(task.kind || '') === 'daily_report' &&
     String(task.channelKey || '') === String(channelKey || '') &&

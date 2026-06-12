@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { FORCE_TEMPLATE } = require('./config');
 const { getShanghaiHourFromTs } = require('../../koishi-plugin-dongxuelian-ai/lib/core/utils');
+const { acquireResourceActivityLease } = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease');
 const TEMPLATES_DIR = path.join(__dirname, '..', 'templates');
 // 信号量：限制并发Puppeteer实例
 let activeRenderers = 0;
@@ -416,6 +417,11 @@ async function renderHtmlToImage(htmlContent, context = {}) {
     }
     let browser = null;
     let timeoutId = null;
+    const releaseRenderLease = acquireResourceActivityLease('render_active', {
+        owner: context.source || 'daily_report_render',
+        taskId: context.taskId || '',
+        ttlMs: Math.max(RENDER_TIMEOUT + 60000, 120000),
+    });
     // 关闭浏览器实例并避免成功、失败、超时路径重复 close。
     const closeBrowser = async (reason) => {
         if (!browser)
@@ -502,6 +508,10 @@ async function renderHtmlToImage(htmlContent, context = {}) {
         if (timeoutId)
             clearTimeout(timeoutId);
         await closeBrowser('finally');
+        try {
+            releaseRenderLease('render-finished');
+        }
+        catch { /* non-critical: lease cleanup is best effort */ }
         releaseRendererSlot();
         logRenderStep('cleanup ok', `active=${activeRenderers}`);
     }

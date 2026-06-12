@@ -8,6 +8,11 @@ const { isPrivateHostname, isPrivateIp, validatePublicHttpUrl, resolveAndValidat
 const { assertExistingAgentPathInsideRoots } = require('../path-guard') as typeof import('../path-guard')
 const { rankSearchCandidates, formatSearchResults, buildSearchFailureText } = require('../search-results') as typeof import('../search-results')
 const { admitTask } = require('../../resource-scheduler/admission') as typeof import('../../resource-scheduler/admission')
+const {
+  acquireResourceActivityLease,
+  readResourceActivityLease,
+  buildResourceActivityLeaseBlockReason,
+} = require('../../resource-scheduler/resource-activity-lease') as typeof import('../../resource-scheduler/resource-activity-lease')
 const { writeProcessCleanupEvent, terminateProcessTree } = require('../../resource-system/system-protection') as typeof import('../../resource-system/system-protection')
 
 interface BrowserActionParams {
@@ -141,6 +146,10 @@ function writeBrowserCleanupEvent(event: string, data: Record<string, unknown> =
 function assertBrowserActionAdmission(params: BrowserActionParams = {}, context: BrowserActionContext = {}): void {
   const action = String(params.action || '').trim().toLowerCase()
   if (action === 'stop' || action === 'close') return
+  const renderLease = readResourceActivityLease('render_active')
+  if (renderLease) {
+    throw new Error(`browser_action 被资源保护拦截：${buildResourceActivityLeaseBlockReason('tool_active', renderLease)}`)
+  }
   const resourceTaskId = String(context.taskId || context.resourceTaskId || '')
   const admission = admitTask({
     taskId: resourceTaskId,
@@ -184,6 +193,7 @@ let consoleLog: BrowserActionConsoleLogEntry[] = []
 let currentSessionOwner = ''
 let currentResourceTaskId = ''
 let currentBrowserPid: number | null = null
+let releaseToolActivityLease: ((reason?: string) => void) | null = null
 const BROWSER_CLEANUP_HOOK = Symbol.for('dongxuelian.browser-action.cleanupHook')
 const BROWSER_CLEANUP_RESET = Symbol.for('dongxuelian.browser-action.cleanupReset')
 const BROWSER_CLEANUP_INSTALLED = Symbol.for('dongxuelian.browser-action.cleanupInstalled')
@@ -300,6 +310,17 @@ function refreshIdleTimer() {
   if (idleTimer.unref) idleTimer.unref()
 }
 
+function ensureActiveToolLeaseForLiveBrowser(): void {
+  if (!browser) return
+  const activeLease = readResourceActivityLease('tool_active')
+  if (activeLease) return
+  releaseToolActivityLease = acquireResourceActivityLease('tool_active', {
+    owner: currentSessionOwner || 'browser_action',
+    taskId: currentResourceTaskId || 'browser_action',
+    ttlMs: Math.max(IDLE_CLOSE_MS + 60000, 120000),
+  })
+}
+
 function findBrowser(): string | null {
   const envPath = process.env.DONGXUELIAN_BROWSER_PATH || process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH
   const candidates = [
@@ -341,6 +362,14 @@ async function launchPage(): Promise<BrowserActionPage> {
   const puppeteer = require('puppeteer-core')
   const executablePath = findBrowser()
   if (!executablePath) throw new Error('未找到 Chrome/Edge/Chromium，请设置 DONGXUELIAN_BROWSER_PATH')
+  const acquiredToolLease = !releaseToolActivityLease
+  if (acquiredToolLease) {
+    releaseToolActivityLease = acquireResourceActivityLease('tool_active', {
+      owner: currentSessionOwner || 'browser_action',
+      taskId: currentResourceTaskId || 'browser_action',
+      ttlMs: Math.max(IDLE_CLOSE_MS + 60000, 120000),
+    })
+  }
   const launchArgs = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -358,46 +387,56 @@ async function launchPage(): Promise<BrowserActionPage> {
     '--js-flags=--max-old-space-size=96',
   ]
   if (/^(1|true|yes|on)$/i.test(String(process.env.DONGXUELIAN_BROWSER_SINGLE_PROCESS || '').trim())) launchArgs.push('--single-process')
-  browser = await puppeteer.launch({
-    executablePath,
-    headless: 'new',
-    args: launchArgs,
-  })
-  currentBrowserPid = getBrowserProcessPid(browser)
-  writeBrowserCleanupEvent('chromium_launched', { executablePath, browserPid: currentBrowserPid })
-  registerCleanup()
-  const activeBrowser = browser
-  if (!activeBrowser) throw new Error('浏览器启动失败')
-  page = await activeBrowser.newPage() as BrowserActionPage
-  await enableBrowserRequestGuards(page)
-  page.on('console', (msg: ConsoleMessage) => {
-    consoleLog.unshift({ type: msg.type(), text: msg.text().slice(0, 300), at: Date.now() })
-    if (consoleLog.length > 80) consoleLog.length = 80
-  })
-  page.on('requestfinished', (req: HTTPRequest) => {
-    const res = req.response()
-    if (res) {
-      const remote = res.remoteAddress()
-      if (remote && remote.ip && isPrivateIp(remote.ip)) {
-        resetBrowserPageForSafety(page, 'private response').catch((error) => warnBrowserActionBackgroundFailure('private response reset task', error))
-        return
+  try {
+    browser = await puppeteer.launch({
+      executablePath,
+      headless: 'new',
+      args: launchArgs,
+    })
+    currentBrowserPid = getBrowserProcessPid(browser)
+    writeBrowserCleanupEvent('chromium_launched', { executablePath, browserPid: currentBrowserPid })
+    registerCleanup()
+    const activeBrowser = browser
+    if (!activeBrowser) throw new Error('浏览器启动失败')
+    page = await activeBrowser.newPage() as BrowserActionPage
+    await enableBrowserRequestGuards(page)
+    page.on('console', (msg: ConsoleMessage) => {
+      consoleLog.unshift({ type: msg.type(), text: msg.text().slice(0, 300), at: Date.now() })
+      if (consoleLog.length > 80) consoleLog.length = 80
+    })
+    page.on('requestfinished', (req: HTTPRequest) => {
+      const res = req.response()
+      if (res) {
+        const remote = res.remoteAddress()
+        if (remote && remote.ip && isPrivateIp(remote.ip)) {
+          resetBrowserPageForSafety(page, 'private response').catch((error) => warnBrowserActionBackgroundFailure('private response reset task', error))
+          return
+        }
       }
+      networkLog.unshift({ method: req.method(), url: req.url().slice(0, 300), status: res ? res.status() : 0, at: Date.now() })
+      if (networkLog.length > 120) networkLog.length = 120
+    })
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36')
+    await page.setViewport({ width: 1024, height: 700 })
+    page.setDefaultTimeout(12000)
+    page.setDefaultNavigationTimeout(20000)
+    currentUrl = page.url()
+    refreshIdleTimer()
+    return page
+  } catch (error) {
+    if (acquiredToolLease && releaseToolActivityLease) {
+      const release = releaseToolActivityLease
+      releaseToolActivityLease = null
+      try { release('browser-launch-failed') } catch { /* non-critical: lease cleanup is best effort */ }
     }
-    networkLog.unshift({ method: req.method(), url: req.url().slice(0, 300), status: res ? res.status() : 0, at: Date.now() })
-    if (networkLog.length > 120) networkLog.length = 120
-  })
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36')
-  await page.setViewport({ width: 1024, height: 700 })
-  page.setDefaultTimeout(12000)
-  page.setDefaultNavigationTimeout(20000)
-  currentUrl = page.url()
-  refreshIdleTimer()
-  return page
+    throw error
+  }
 }
 
 async function ensurePage(): Promise<BrowserActionPage> {
   if (closePromise) await closePromise
   if (page && !page.isClosed()) {
+    ensureActiveToolLeaseForLiveBrowser()
     refreshIdleTimer()
     return page
   }
@@ -418,6 +457,8 @@ async function closeBrowser(): Promise<void> {
     const closingPage = page
     const closingBrowser = browser
     const closingBrowserPid = currentBrowserPid || getBrowserProcessPid(closingBrowser)
+    const closingTaskId = currentResourceTaskId
+    const closingOwner = currentSessionOwner
     if (idleTimer) clearTimeout(idleTimer)
     idleTimer = null
     page = null
@@ -448,14 +489,19 @@ async function closeBrowser(): Promise<void> {
             terminateProcessTree(closingBrowserPid, {
               reason: 'chromium_close_failed',
               source: 'browser_action',
-              taskId: currentResourceTaskId,
+              taskId: closingTaskId,
               kind: 'browser_action',
-              owner: currentSessionOwner,
+              owner: closingOwner,
             })
           }
         }
       }
     } finally {
+      if (releaseToolActivityLease) {
+        const release = releaseToolActivityLease
+        releaseToolActivityLease = null
+        try { release('browser-closed') } catch { /* non-critical: lease cleanup is best effort */ }
+      }
       closePromise = null
     }
   })()

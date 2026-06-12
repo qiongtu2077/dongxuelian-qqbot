@@ -7,6 +7,9 @@ const fs = require('fs')
 const path = require('path')
 const { FORCE_TEMPLATE } = require('./config') as typeof import('./config')
 const { getShanghaiHourFromTs } = require('../../koishi-plugin-dongxuelian-ai/lib/core/utils') as typeof import('../../koishi-plugin-dongxuelian-ai/lib/core/utils')
+const { acquireResourceActivityLease } = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease') as {
+  acquireResourceActivityLease: (kind: string, options?: { owner?: string, taskId?: string, ttlMs?: number }) => (reason?: string) => void
+}
 
 interface Topic {
   title?: string
@@ -535,6 +538,11 @@ async function renderHtmlToImage(htmlContent: string, context: RenderContext = {
 
   let browser: BrowserLike | null = null
   let timeoutId: ReturnType<typeof setTimeout> | null = null
+  const releaseRenderLease = acquireResourceActivityLease('render_active', {
+    owner: context.source || 'daily_report_render',
+    taskId: context.taskId || '',
+    ttlMs: Math.max(RENDER_TIMEOUT + 60000, 120000),
+  })
   // 关闭浏览器实例并避免成功、失败、超时路径重复 close。
   const closeBrowser = async (reason: string): Promise<void> => {
     if (!browser) return
@@ -617,6 +625,7 @@ async function renderHtmlToImage(htmlContent: string, context: RenderContext = {
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
     await closeBrowser('finally')
+    try { releaseRenderLease('render-finished') } catch { /* non-critical: lease cleanup is best effort */ }
     releaseRendererSlot()
     logRenderStep('cleanup ok', `active=${activeRenderers}`)
   }

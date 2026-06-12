@@ -13,6 +13,7 @@ const MODELS_PATH = path.resolve(__dirname, '..', 'lib', 'models.js')
 const API_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'core', 'api.js')
 const RUNTIME_CONFIG_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'core', 'runtime-config.js')
 const AI_ADMISSION_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-scheduler', 'admission.js')
+const AI_ACTIVITY_LEASE_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-scheduler', 'resource-activity-lease.js')
 const AI_TASK_STORE_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-workers', 'task-store.js')
 const AI_CONSTANTS_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'core', 'constants.js')
 const AI_SYSTEM_PROTECTION_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-system', 'system-protection.js')
@@ -145,8 +146,19 @@ function createResourceRuntimeMock(options = {}) {
     },
     listResourceTasks(options = {}) {
       const statuses = Array.isArray(options.statuses) ? options.statuses.map(String) : []
-      if (!statuses.length) return state.tasks.slice()
-      return state.tasks.filter(task => statuses.includes(String(task.status || '')))
+      const limit = Math.max(1, Math.min(1000, Number(options.limit || 200)))
+      const tasks = statuses.length
+        ? state.tasks.filter(task => statuses.includes(String(task.status || '')))
+        : state.tasks.slice()
+      return tasks.slice(0, limit)
+    },
+    findResourceTaskByKindAndChannel(kind, channelKey, statuses = ['pending', 'claiming', 'running', 'deferred']) {
+      const allowedStatuses = new Set((Array.isArray(statuses) ? statuses : []).map(String))
+      return state.tasks.find(task =>
+        String(task.kind || '') === String(kind || '') &&
+        String(task.channelKey || '') === String(channelKey || '') &&
+        (!allowedStatuses.size || allowedStatuses.has(String(task.status || '')))
+      ) || null
     },
     failTask(task, error, result = {}) {
       task.status = 'failed'
@@ -740,6 +752,70 @@ async function testCooldownAfterSuccessOnly() {
   }
 }
 
+async function testOpenDailyReportTaskLookupDoesNotMissUnderBacklogWindow() {
+  section('open daily task lookup backlog-window regression')
+  const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-open-task-backlog-'))
+  fs.writeFileSync(path.join(reportDataDir, 'summary-whitelist.json'), JSON.stringify(['123']), 'utf8')
+
+  const originalConfigCache = require.cache[CONFIG_PATH]
+  const originalPluginCache = require.cache[PLUGIN_PATH]
+  const originalAdmissionCache = require.cache[AI_ADMISSION_PATH]
+  const originalTaskStoreCache = require.cache[AI_TASK_STORE_PATH]
+
+  try {
+    require.cache[CONFIG_PATH] = {
+      id: CONFIG_PATH,
+      filename: CONFIG_PATH,
+      loaded: true,
+      exports: { TIMEOUTS: { aiRequest: 30000, cooldown: 60000 }, DATA_DIR: reportDataDir },
+    }
+    const runtime = createResourceRuntimeMock()
+    for (let i = 0; i < 1000; i += 1) {
+      runtime.state.tasks.push({
+        id: `unrelated-active-${i}`,
+        kind: 'agent_task',
+        status: 'pending',
+        channelKey: `other-${i}`,
+        userId: `user-${i}`,
+        payload: {},
+        notify: { target: 'none', status: 'pending' },
+      })
+    }
+    runtime.state.tasks.push({
+      id: 'daily-report-open-existing',
+      kind: 'daily_report',
+      status: 'deferred',
+      channelKey: '123',
+      userId: 'daily-user',
+      payload: { detail: false },
+      notify: { target: 'qq-group', channelKey: '123', status: 'pending' },
+    })
+
+    delete require.cache[PLUGIN_PATH]
+    const plugin = require(PLUGIN_PATH)
+    const ctx = makeCtx()
+    plugin.apply(ctx)
+    const middleware = ctx._middlewareList[0]
+
+    const session = makeSession({ content: '群聊日报', guildId: '123' })
+    await middleware(session, () => 'next')
+
+    check('daily report duplicate lookup sees existing task beyond global list window',
+      session._sent.some(item => String(item).includes('已在后台队列中')) &&
+        session._sent.some(item => String(item).includes('daily-report-open-existing')),
+      JSON.stringify(session._sent))
+    check('daily report duplicate lookup does not submit another task under backlog window',
+      runtime.state.submissions.length === 0,
+      JSON.stringify(runtime.state.submissions))
+  } finally {
+    restoreModuleCache(CONFIG_PATH, originalConfigCache)
+    restoreModuleCache(PLUGIN_PATH, originalPluginCache)
+    restoreModuleCache(AI_ADMISSION_PATH, originalAdmissionCache)
+    restoreModuleCache(AI_TASK_STORE_PATH, originalTaskStoreCache)
+    try { fs.rmSync(reportDataDir, { recursive: true, force: true }) } catch {}
+  }
+}
+
 async function testMaintenanceModeBlocksDailyCommand() {
   section('maintenance mode command guard')
   const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-maintenance-'))
@@ -1185,6 +1261,100 @@ async function testRenderFailureSendsTextFallback() {
   }
 }
 
+async function testRenderBlockedByActiveToolLease() {
+  section('render blocked by active tool lease regression')
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-tool-lease-'))
+  const originalDataCollectorCache = require.cache[DATA_COLLECTOR_PATH]
+  const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
+  const originalRendererCache = require.cache[HTML_RENDERER_PATH]
+  const originalPipelineCache = require.cache[REPORT_PIPELINE_PATH]
+  const originalLeaseCache = require.cache[AI_ACTIVITY_LEASE_PATH]
+
+  let collectCalls = 0
+  let analyzeCalls = 0
+  let renderCalls = 0
+  let toolLeaseChecks = 0
+
+  try {
+    require.cache[DATA_COLLECTOR_PATH] = {
+      id: DATA_COLLECTOR_PATH,
+      filename: DATA_COLLECTOR_PATH,
+      loaded: true,
+      exports: {
+        collectReportData: () => {
+          collectCalls += 1
+          return createSampleReportData()
+        },
+      },
+    }
+    require.cache[AI_ANALYZER_PATH] = {
+      id: AI_ANALYZER_PATH,
+      filename: AI_ANALYZER_PATH,
+      loaded: true,
+      exports: {
+        analyzeWithAI: async () => {
+          analyzeCalls += 1
+          return {
+            topics: [{ title: 'Tool Active', summary: 'Render should stay text-only.' }],
+            goldenQuotes: [],
+            userTitles: [],
+            qualityReview: null,
+          }
+        },
+      },
+    }
+    require.cache[HTML_RENDERER_PATH] = {
+      id: HTML_RENDERER_PATH,
+      filename: HTML_RENDERER_PATH,
+      loaded: true,
+      exports: {
+        renderReport: async () => {
+          renderCalls += 1
+          return Buffer.from('unexpected-render')
+        },
+      },
+    }
+    require.cache[AI_ACTIVITY_LEASE_PATH] = {
+      id: AI_ACTIVITY_LEASE_PATH,
+      filename: AI_ACTIVITY_LEASE_PATH,
+      loaded: true,
+      exports: {
+        hasActiveResourceActivityLease(kind) {
+          if (kind === 'tool_active') toolLeaseChecks += 1
+          return kind === 'tool_active'
+        },
+      },
+    }
+
+    delete require.cache[REPORT_PIPELINE_PATH]
+    const { generateDailyReportResult } = require(REPORT_PIPELINE_PATH)
+    const steps = []
+    const result = await generateDailyReportResult({
+      taskId: 'render-blocked-by-tool-lease',
+      channelKey: 'lease-group',
+      detail: true,
+      outputDir,
+      renderImage: true,
+      onStep: step => steps.push(step),
+    })
+
+    const resultPath = path.join(outputDir, 'result.json')
+    const json = fs.existsSync(resultPath) ? JSON.parse(fs.readFileSync(resultPath, 'utf8')) : null
+    check('tool_active lease still allows collect/analyze/text', collectCalls === 1 && analyzeCalls === 1 && fs.existsSync(path.join(outputDir, 'report.txt')), JSON.stringify({ collectCalls, analyzeCalls }))
+    check('tool_active lease blocks renderReport after text is ready', renderCalls === 0 && toolLeaseChecks >= 1, JSON.stringify({ renderCalls, toolLeaseChecks }))
+    check('tool_active lease keeps report in text mode', result.mode === 'text' && result.imagePath === null, JSON.stringify(result))
+    check('tool_active lease records render_blocked_by_tool_active reason', String(result.reason || '').includes('render_blocked_by_tool_active'), String(result.reason))
+    check('tool_active lease writes result.json without rendering step', !!json && json.mode === 'text' && !steps.includes('rendering') && steps.includes('writing_result'), JSON.stringify({ json, steps }))
+  } finally {
+    restoreModuleCache(DATA_COLLECTOR_PATH, originalDataCollectorCache)
+    restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
+    restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
+    restoreModuleCache(REPORT_PIPELINE_PATH, originalPipelineCache)
+    restoreModuleCache(AI_ACTIVITY_LEASE_PATH, originalLeaseCache)
+    try { fs.rmSync(outputDir, { recursive: true, force: true }) } catch {}
+  }
+}
+
 const result = models.createDefaultAnalysisResult()
 check('createDefaultAnalysisResult returns object', typeof result === 'object')
 check('result has topics', Array.isArray(result.topics))
@@ -1304,9 +1474,11 @@ testMiddleware('你好', '123').then(nonReport => {
 ).then(() => testAIAnalyzerObjectResponse()
 ).then(() => testConcurrentReportGuard()
 ).then(() => testCooldownAfterSuccessOnly()
+).then(() => testOpenDailyReportTaskLookupDoesNotMissUnderBacklogWindow()
 ).then(() => testMaintenanceModeBlocksDailyCommand()
 ).then(() => testSendFailureBoundary()
 ).then(() => testRenderPreflightSkipsAiAndChromium()
+).then(() => testRenderBlockedByActiveToolLease()
 ).then(() => testRenderFailureSendsTextFallback()
 ).then(() => {
 

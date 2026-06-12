@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('../core/constants');
 const { todayCst } = require('../core/utils');
-const { appendJsonlEvent, ensureDir, sanitizeId, writeJsonAtomic } = require('../resource-common/files');
+const { appendJsonlEvent, ensureDir, readJsonFile, sanitizeId, writeJsonAtomic } = require('../resource-common/files');
 const PRECOMPUTE_ROOT = path.join(DATA_DIR, 'daily-precompute');
 const INDEX_ROOT = path.join(PRECOMPUTE_ROOT, 'index');
 const COVERAGE_ROOT = path.join(PRECOMPUTE_ROOT, 'coverage');
@@ -50,6 +50,44 @@ function getPrecomputeIndexFile(date, channelKey) {
 function getPrecomputeCoverageFile(date, channelKey) {
     return path.join(COVERAGE_ROOT, sanitizeId(date), `${sanitizeId(channelKey)}.json`);
 }
+// 读取当前 coverage 快照；缺失或损坏时返回 null。
+function readPrecomputeCoverage(date, channelKey) {
+    return readJsonFile(getPrecomputeCoverageFile(date, channelKey), null);
+}
+// 生成当前 slot 面的轻量目录戳；slot 未变化时可复用现有 covered 口径。
+function getPrecomputeSlotStamp(date, channelKey) {
+    const slotsDir = path.join(PRECOMPUTE_ROOT, 'slots', sanitizeId(date), sanitizeId(channelKey));
+    try {
+        const stat = fs.statSync(slotsDir);
+        return `${slotsDir}:${Number(stat.mtimeMs || 0)}`;
+    }
+    catch {
+        return `${slotsDir}:missing`;
+    }
+}
+// 当 slot 面未变化时，直接在旧 coverage 上增量更新 totalMessages，避免每条消息全量重算。
+function tryUpdatePrecomputeCoverageIncrementally(date, channelKey) {
+    const current = readPrecomputeCoverage(date, channelKey);
+    if (!current)
+        return null;
+    const slotStamp = getPrecomputeSlotStamp(date, channelKey);
+    if (String(current.slotStamp || '') !== slotStamp)
+        return null;
+    const totalMessages = Math.max(0, Number(current.totalMessages || 0) + 1);
+    const coveredMessages = Math.max(0, Math.min(totalMessages, Number(current.coveredMessages || 0)));
+    const next = {
+        ...current,
+        date,
+        channelKey,
+        totalMessages,
+        coveredMessages,
+        coverageRate: totalMessages > 0 ? Number((coveredMessages / totalMessages).toFixed(3)) : 0,
+        updatedAt: new Date().toISOString(),
+        slotStamp,
+    };
+    writeJsonAtomic(getPrecomputeCoverageFile(date, channelKey), next);
+    return next;
+}
 // 将一条消息写入轻量索引。
 function appendPrecomputeIndex(input) {
     const channelKey = String(input.channelKey || '');
@@ -68,7 +106,7 @@ function appendPrecomputeIndex(input) {
         media,
     };
     appendJsonlEvent(getPrecomputeIndexFile(date, channelKey), record);
-    updatePrecomputeCoverage(date, channelKey);
+    tryUpdatePrecomputeCoverageIncrementally(date, channelKey) || updatePrecomputeCoverage(date, channelKey);
     writePrecomputeEvent('precompute_index_appended', { date, channelKey, messageId: record.messageId, hasMedia: media.length > 0 });
     return record;
 }
@@ -108,6 +146,7 @@ function updatePrecomputeCoverage(date, channelKey) {
     const index = readPrecomputeIndex(date, channelKey);
     const covered = countCoveredMessagesFromSlots(date, channelKey);
     const totalMessages = index.length;
+    const slotStamp = getPrecomputeSlotStamp(date, channelKey);
     const coverage = {
         date,
         channelKey,
@@ -116,6 +155,7 @@ function updatePrecomputeCoverage(date, channelKey) {
         coverageRate: totalMessages > 0 ? Number((Math.min(totalMessages, covered.covered) / totalMessages).toFixed(3)) : 0,
         failedSlots: covered.failedSlots,
         updatedAt: new Date().toISOString(),
+        slotStamp,
     };
     writeJsonAtomic(getPrecomputeCoverageFile(date, channelKey), coverage);
     return coverage;

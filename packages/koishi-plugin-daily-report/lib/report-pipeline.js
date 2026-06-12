@@ -9,6 +9,7 @@ const path = require('path');
 const { collectReportData } = require('./data-collector');
 const { analyzeWithAI } = require('./ai-analyzer');
 const { renderReport } = require('./html-renderer');
+const { hasActiveResourceActivityLease } = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease');
 // 把未知错误压成稳定字符串，供 result.json 和 worker 日志使用。
 function getErrorMessage(error) {
     return error instanceof Error ? error.message : String(error || '');
@@ -157,6 +158,15 @@ async function generateDailyReportResult(options) {
     const result = buildResultBase(taskId, data, analysis, textPath, warnings);
     if (options.renderImage === false) {
         result.reason = 'render_disabled';
+        writeJsonFile(path.join(outputDir, 'result.json'), result);
+        return result;
+    }
+    if (hasActiveResourceActivityLease('tool_active')) {
+        result.level = 'L2';
+        result.mode = 'text';
+        result.reason = 'render_blocked_by_tool_active';
+        result.warnings = [...result.warnings, result.reason];
+        emitStep('writing_result');
         writeJsonFile(path.join(outputDir, 'result.json'), result);
         return result;
     }

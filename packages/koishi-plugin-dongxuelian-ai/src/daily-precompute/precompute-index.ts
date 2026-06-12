@@ -7,7 +7,7 @@ const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 const { todayCst } = require('../core/utils') as typeof import('../core/utils')
-const { appendJsonlEvent, ensureDir, sanitizeId, writeJsonAtomic } = require('../resource-common/files') as typeof import('../resource-common/files')
+const { appendJsonlEvent, ensureDir, readJsonFile, sanitizeId, writeJsonAtomic } = require('../resource-common/files') as typeof import('../resource-common/files')
 
 const PRECOMPUTE_ROOT = path.join(DATA_DIR, 'daily-precompute')
 const INDEX_ROOT = path.join(PRECOMPUTE_ROOT, 'index')
@@ -37,6 +37,17 @@ interface DailySlotLike extends Record<string, unknown> {
   slotId?: unknown
   failed?: unknown
   coveredMessageIds?: unknown
+}
+
+interface CoverageSnapshotLike extends Record<string, unknown> {
+  date?: unknown
+  channelKey?: unknown
+  totalMessages?: unknown
+  coveredMessages?: unknown
+  coverageRate?: unknown
+  failedSlots?: unknown
+  updatedAt?: unknown
+  slotStamp?: unknown
 }
 
 function parsePrecomputeRecord(line: string): PrecomputeRecord | null {
@@ -80,6 +91,44 @@ function getPrecomputeCoverageFile(date: string, channelKey: string): string {
   return path.join(COVERAGE_ROOT, sanitizeId(date), `${sanitizeId(channelKey)}.json`)
 }
 
+// 读取当前 coverage 快照；缺失或损坏时返回 null。
+function readPrecomputeCoverage(date: string, channelKey: string): CoverageSnapshotLike | null {
+  return readJsonFile<CoverageSnapshotLike>(getPrecomputeCoverageFile(date, channelKey), null)
+}
+
+// 生成当前 slot 面的轻量目录戳；slot 未变化时可复用现有 covered 口径。
+function getPrecomputeSlotStamp(date: string, channelKey: string): string {
+  const slotsDir = path.join(PRECOMPUTE_ROOT, 'slots', sanitizeId(date), sanitizeId(channelKey))
+  try {
+    const stat = fs.statSync(slotsDir)
+    return `${slotsDir}:${Number(stat.mtimeMs || 0)}`
+  } catch {
+    return `${slotsDir}:missing`
+  }
+}
+
+// 当 slot 面未变化时，直接在旧 coverage 上增量更新 totalMessages，避免每条消息全量重算。
+function tryUpdatePrecomputeCoverageIncrementally(date: string, channelKey: string): Record<string, unknown> | null {
+  const current = readPrecomputeCoverage(date, channelKey)
+  if (!current) return null
+  const slotStamp = getPrecomputeSlotStamp(date, channelKey)
+  if (String(current.slotStamp || '') !== slotStamp) return null
+  const totalMessages = Math.max(0, Number(current.totalMessages || 0) + 1)
+  const coveredMessages = Math.max(0, Math.min(totalMessages, Number(current.coveredMessages || 0)))
+  const next = {
+    ...current,
+    date,
+    channelKey,
+    totalMessages,
+    coveredMessages,
+    coverageRate: totalMessages > 0 ? Number((coveredMessages / totalMessages).toFixed(3)) : 0,
+    updatedAt: new Date().toISOString(),
+    slotStamp,
+  }
+  writeJsonAtomic(getPrecomputeCoverageFile(date, channelKey), next)
+  return next
+}
+
 // 将一条消息写入轻量索引。
 function appendPrecomputeIndex(input: PrecomputeIndexInput): PrecomputeRecord | null {
   const channelKey = String(input.channelKey || '')
@@ -97,7 +146,7 @@ function appendPrecomputeIndex(input: PrecomputeIndexInput): PrecomputeRecord | 
     media,
   }
   appendJsonlEvent(getPrecomputeIndexFile(date, channelKey), record)
-  updatePrecomputeCoverage(date, channelKey)
+  tryUpdatePrecomputeCoverageIncrementally(date, channelKey) || updatePrecomputeCoverage(date, channelKey)
   writePrecomputeEvent('precompute_index_appended', { date, channelKey, messageId: record.messageId, hasMedia: media.length > 0 })
   return record
 }
@@ -136,6 +185,7 @@ function updatePrecomputeCoverage(date: string, channelKey: string): Record<stri
   const index = readPrecomputeIndex(date, channelKey)
   const covered = countCoveredMessagesFromSlots(date, channelKey)
   const totalMessages = index.length
+  const slotStamp = getPrecomputeSlotStamp(date, channelKey)
   const coverage = {
     date,
     channelKey,
@@ -144,6 +194,7 @@ function updatePrecomputeCoverage(date: string, channelKey: string): Record<stri
     coverageRate: totalMessages > 0 ? Number((Math.min(totalMessages, covered.covered) / totalMessages).toFixed(3)) : 0,
     failedSlots: covered.failedSlots,
     updatedAt: new Date().toISOString(),
+    slotStamp,
   }
   writeJsonAtomic(getPrecomputeCoverageFile(date, channelKey), coverage)
   return coverage

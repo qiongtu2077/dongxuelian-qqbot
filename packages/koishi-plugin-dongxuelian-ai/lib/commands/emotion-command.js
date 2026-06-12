@@ -7,6 +7,7 @@
 const path = require('path');
 const { DATA_DIR } = require('../core/constants');
 const { submitWorkerTaskWithAdmission } = require('../resource-workers/task-client');
+const { findResourceTaskByKindAndChannel } = require('../resource-workers/task-store');
 const { readJsonFile, writeJsonFile, todayCst, todayCstMinusDays, safeChannelKey, truncateText, } = require('../core/utils');
 const { logDebug } = require('../core/logging-config');
 const { handled, notHandled } = require('./command-result');
@@ -14,6 +15,8 @@ const EMOTION_IMAGE_TEXT_LIMIT = 1500;
 const EMOTION_ANALYSIS_MAX_MESSAGES = 1200;
 const EMOTION_COMPRESS_BATCH_SIZE = 100;
 const EMOTION_MAX_SUMMARY_CHARS = 10000;
+const EMOTION_RENDER_TIMEOUT_MS = 180000;
+const EMOTION_RENDER_EXPIRY_GRACE_MS = Math.max(60 * 1000, Math.min(10 * 60 * 1000, Number(process.env.EMOTION_RENDER_EXPIRY_GRACE_MS || 2 * 60 * 1000)));
 function isEmotionRecord(value) {
     return !!value && typeof value === 'object';
 }
@@ -188,6 +191,18 @@ function trimEmotionCache(map) {
         map.delete(oldestKey);
     }
 }
+function getEmotionRenderExpiryIso(timeoutMs = EMOTION_RENDER_TIMEOUT_MS) {
+    return new Date(Date.now() + Math.max(60 * 1000, timeoutMs + EMOTION_RENDER_EXPIRY_GRACE_MS)).toISOString();
+}
+function buildQueuedEmotionResponse(text, taskId, accepted) {
+    const suffix = accepted
+        ? `\n\n图片版已加入后台队列，完成后会自动发回。\n任务ID：${taskId}`
+        : `\n\n当前资源紧张，图片版已延期；资源恢复后会继续尝试。\n任务ID：${taskId || '未生成'}`;
+    return `${text}${suffix}`;
+}
+function findOpenEmotionRenderTask(channelKey) {
+    return findResourceTaskByKindAndChannel('emotion_render', channelKey, ['pending', 'claiming', 'running', 'deferred']);
+}
 async function summarizeEmotionMessages(msgs, callOpenAI) {
     const source = (Array.isArray(msgs) ? msgs : []).slice(-EMOTION_ANALYSIS_MAX_MESSAGES);
     const summaries = [];
@@ -221,7 +236,8 @@ function submitEmotionRenderTask(channelKey, analysis, stats, history, text) {
         source: 'emotion-command',
         channelKey,
         priority: 55,
-        timeoutMs: 180000,
+        timeoutMs: EMOTION_RENDER_TIMEOUT_MS,
+        expiresAt: getEmotionRenderExpiryIso(EMOTION_RENDER_TIMEOUT_MS),
         payload: { analysis, stats, history, text },
         notify: { target: 'qq-group', channelKey, status: 'pending' },
     }, { exclusive: true });
@@ -248,6 +264,14 @@ async function handleEmotionCommand(session, ctx, state) {
         return handled(cached.response || cached.text);
     if (cached)
         lastEmotionCache.delete(channelKey);
+    const openRenderTask = findOpenEmotionRenderTask(channelKey);
+    if (openRenderTask) {
+        const existingText = String((openRenderTask.payload || {}).text || '').trim();
+        const responseText = buildQueuedEmotionResponse(existingText || '图片版还在后台队列里，完成后会自动发回。', String(openRenderTask.id || ''), true);
+        lastEmotionCache.set(channelKey, { text: responseText, ts: Date.now() });
+        trimEmotionCache(lastEmotionCache);
+        return handled(responseText);
+    }
     await Promise.resolve(session.send('Thinking......')).catch(() => {
         /* non-critical: thinking indicator failure should not block emotion analysis */
     });
@@ -293,10 +317,7 @@ async function handleEmotionCommand(session, ctx, state) {
         logDebug(ctx, 'emotion', `analysis done channel=${channelKey} score=${analysis.score} messages=${msgs.length}`);
         try {
             const submit = submitEmotionRenderTask(channelKey, displayAnalysis, stats, recentHistory, rendered);
-            const suffix = submit.accepted
-                ? `\n\n图片版已加入后台队列，完成后会自动发回。\n任务ID：${submit.taskId}`
-                : `\n\n当前资源紧张，图片版已延期；资源恢复后会继续尝试。\n任务ID：${submit.taskId || '未生成'}`;
-            const responseText = `${rendered}${suffix}`;
+            const responseText = buildQueuedEmotionResponse(rendered, submit.taskId, submit.accepted);
             lastEmotionCache.set(channelKey, { text: responseText, ts: Date.now() });
             trimEmotionCache(lastEmotionCache);
             return handled(responseText);
