@@ -4,10 +4,14 @@
  * 边界: 不读取资源状态，不执行任何业务逻辑。
  */
 
-type BotCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'media_event'
+type BotCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'interactive_chat' | 'media_event'
 
 interface ClassifyCommandInput {
   plain?: string
+  directAt?: boolean
+  isPrivate?: boolean
+  nameMentioned?: boolean
+  quotedSelf?: boolean
   analyzed?: {
     hasVisual?: boolean
     hasFile?: boolean
@@ -36,6 +40,11 @@ function isMediaEvent(analyzed: ClassifyCommandInput['analyzed']): boolean {
   return !!(analyzed && (analyzed.hasVisual || analyzed.hasFile || analyzed.hasAudio || analyzed.hasEmbed))
 }
 
+// 判断消息是否属于显式 Bot 交互，应该区别于随机闲聊。
+function isInteractiveChat(input: ClassifyCommandInput): boolean {
+  return !!(input.directAt || input.isPrivate || input.nameMentioned || input.quotedSelf)
+}
+
 // 将消息归类，顺序不能调整：日报命令优先透传，状态命令优先保留。
 function classifyCommand(input: ClassifyCommandInput = {}): BotCommandType {
   const plain = String(input.plain || '').trim()
@@ -43,6 +52,7 @@ function classifyCommand(input: ClassifyCommandInput = {}): BotCommandType {
   if (isStatusCommand(plain)) return 'status_command'
   if (isAgentCommand(plain)) return 'agent_command'
   if (isMediaEvent(input.analyzed)) return 'media_event'
+  if (isInteractiveChat(input)) return 'interactive_chat'
   return 'normal_chat'
 }
 
@@ -52,4 +62,5 @@ export = {
   isStatusCommand,
   isAgentCommand,
   isMediaEvent,
+  isInteractiveChat,
 }

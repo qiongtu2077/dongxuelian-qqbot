@@ -12,9 +12,14 @@ const FILE_QUICK_READ_RE = /^(读文件|看文件|分析文件|打开文件|文�
 function isFileQuickReadIntent(text = '') {
     return FILE_QUICK_READ_RE.test(String(text || '').trim());
 }
-async function resolveFileQuickReadReply(channelKey) {
+async function resolveFileQuickReadReply(channelKey, preferredMessageId = '') {
     const recentFiles = await getRecentFiles(channelKey, 10);
-    const target = recentFiles.find(file => !file.skipped && !file.analyzed)
+    const explicitTarget = String(preferredMessageId || '').trim();
+    const preferred = explicitTarget
+        ? recentFiles.find(file => String(file.messageId || '').trim() === explicitTarget && !file.skipped)
+        : null;
+    const target = preferred
+        || recentFiles.find(file => !file.skipped && !file.analyzed)
         || recentFiles.find(file => !file.skipped && file.analyzed);
     if (!target)
         return '没有找到最近可分析的文件。';

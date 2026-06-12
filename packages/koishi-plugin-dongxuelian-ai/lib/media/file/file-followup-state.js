@@ -9,14 +9,19 @@ const FILE_FOLLOWUP_ACTIVE_WINDOW_MS = 30 * 60 * 1000;
 function normalize(text = '') {
     return String(text || '').replace(/\s+/g, ' ').trim();
 }
-function looksLikeFileFollowup(userText = '', recentFiles = []) {
+function looksLikeFileFollowupTextHint(userText = '') {
     const text = normalize(userText);
-    if (!text || !Array.isArray(recentFiles) || !recentFiles.some(file => file && !file.skipped))
+    if (!text)
         return false;
     const hasFileWord = /文件|文档|附件/.test(text);
     const hasReference = hasFileWord || /这个|那个|刚才|刚刚|上面|前面|里面|内容/.test(text);
-    const asksContent = /说了什么|写了什么|是什么|有啥|有什么|内容|里面|解析|总结|读|看|看一下|瞅瞅/.test(text);
+    const asksContent = /说了什么|写了什么|讲了什么|是什么|有啥|有什么|内容|里面|解析|总结|读|看|看一下|瞅瞅/.test(text);
     return hasReference && asksContent;
+}
+function looksLikeFileFollowup(userText = '', recentFiles = []) {
+    if (!looksLikeFileFollowupTextHint(userText))
+        return false;
+    return Array.isArray(recentFiles) && recentFiles.some(file => file && !file.skipped);
 }
 function selectActiveFileAnchor(recentFiles = [], context = {}) {
     const files = Array.isArray(recentFiles)
@@ -40,6 +45,13 @@ function selectActiveFileAnchor(recentFiles = [], context = {}) {
     return sameUser[0] || (!userId ? fresh[0] : null);
 }
 async function buildFileFollowupState(channelKey, userText, context = {}) {
+    if (!looksLikeFileFollowupTextHint(userText)) {
+        return {
+            recentFiles: [],
+            shouldVerify: false,
+            targetFile: null,
+        };
+    }
     const recentFiles = channelKey ? await getRecentFiles(channelKey, 15) : [];
     const shouldVerify = looksLikeFileFollowup(userText, recentFiles);
     return {

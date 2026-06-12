@@ -8,12 +8,13 @@
 function decideModePolicy(commandType, snapshot) {
     const mode = String(snapshot?.botMode || 'normal');
     const resourceState = String(snapshot?.resourceState || 'yellow');
+    const isChatLike = commandType === 'normal_chat' || commandType === 'interactive_chat';
     if (commandType === 'status_command')
         return { action: 'status_only', reason: 'status command is low cost' };
     if (commandType === 'daily_command')
         return { action: mode === 'maintenance' ? 'reject' : 'queue_daily', reason: 'daily command is handled by daily-report' };
     if (mode === 'maintenance') {
-        if (commandType === 'normal_chat' || commandType === 'media_event')
+        if (isChatLike || commandType === 'media_event')
             return { action: 'silent_drop', reason: 'maintenance mode' };
         return { action: 'reject', reason: 'maintenance mode' };
     }
@@ -21,7 +22,9 @@ function decideModePolicy(commandType, snapshot) {
         if (commandType === 'media_event')
             return { action: 'defer', reason: 'daily report is running' };
         if (commandType === 'agent_command')
-            return { action: 'reject', reason: 'agent is blocked during daily report' };
+            return { action: 'pass', reason: 'explicit agent entry defers to downstream admission during daily report' };
+        if (commandType === 'interactive_chat')
+            return { action: 'pass', reason: 'explicit chat stays available during daily report' };
         return { action: 'silent_drop', reason: 'daily report is running' };
     }
     if (mode === 'critical' || resourceState === 'red' || resourceState === 'black') {
@@ -29,6 +32,8 @@ function decideModePolicy(commandType, snapshot) {
             return { action: 'defer', reason: 'resource state is critical' };
         if (commandType === 'agent_command')
             return { action: 'reject', reason: 'agent is blocked in critical mode' };
+        if (isChatLike)
+            return { action: 'silent_drop', reason: 'resource state is critical' };
         return { action: 'silent_drop', reason: 'resource state is critical' };
     }
     if (mode === 'busy') {
@@ -36,6 +41,8 @@ function decideModePolicy(commandType, snapshot) {
             return { action: 'defer', reason: 'media waits while exclusive task is busy' };
         if (commandType === 'agent_command')
             return { action: 'pass', reason: 'agent entry may queue' };
+        if (commandType === 'interactive_chat')
+            return { action: 'pass', reason: 'explicit chat stays available while exclusive task is busy' };
         return { action: 'silent_drop', reason: 'busy mode silences normal chat' };
     }
     return { action: 'pass', reason: 'normal mode' };

@@ -12,6 +12,7 @@ const safety = require('../agent/safety') as typeof import('../agent/safety')
 const pending = require('../agent/pending') as typeof import('../agent/pending')
 const { admitTask } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
 const { enqueueMediaTask } = require('../media/backpressure/media-queue') as typeof import('../media/backpressure/media-queue')
+const { shouldEnqueueMediaForAdmission } = require('../media/backpressure/media-requests') as typeof import('../media/backpressure/media-requests')
 const toolPolicy = require('./chat-tool-policy') as typeof import('./chat-tool-policy')
 
 const CHAT_TOOL_TIMEOUT_MS: number = 3000
@@ -500,13 +501,6 @@ async function executeChatTool(toolCall: ChatToolCall, context: ChatToolContext 
       if (cached) return `图片内容：${cached}`
       const entry = await getImageEntry(ck, msgId)
       if (!entry) return '找不到该图片记录。'
-      enqueueMediaTask({
-        kind: 'media_image_analysis',
-        channelKey: ck,
-        messageId: msgId,
-        url: String(entry.url || entry.file || ''),
-        payload: { entry: 'chat-tool-analyze-historical-image', userId: context.userId || '' },
-      })
       const admission = admitTask({
         kind: 'media_image_analysis',
         source: 'chat-tool',
@@ -514,7 +508,18 @@ async function executeChatTool(toolCall: ChatToolCall, context: ChatToolContext 
         userId: context.userId || '',
         exclusive: false,
       })
+      const shouldQueue = shouldEnqueueMediaForAdmission(admission)
+      if (shouldQueue) {
+        enqueueMediaTask({
+          kind: 'media_image_analysis',
+          channelKey: ck,
+          messageId: msgId,
+          url: String(entry.url || entry.file || ''),
+          payload: { entry: 'chat-tool-analyze-historical-image', userId: context.userId || '' },
+        })
+      }
       const reason = admission.decision === 'run_now' ? 'media-worker 空闲时会处理' : admission.reason
+      if (!shouldQueue) return `当前资源状态为 ${admission.resourceState}，暂时不能加入图片分析队列，原因：${reason}。请稍后再试。`
       return `该图片已进入媒体分析队列，当前资源状态为 ${admission.resourceState}，原因：${reason}。稍后可通过 read_image_history 查看结果。`
     }
     case 'create_reminder': {

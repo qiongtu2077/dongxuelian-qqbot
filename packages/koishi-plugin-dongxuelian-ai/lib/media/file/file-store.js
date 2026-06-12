@@ -94,22 +94,30 @@ function normalizeData(data) {
     }
     return { files };
 }
-function cleanExpired(data) {
+function cleanExpiredWithChange(data) {
     const now = Date.now();
     const files = data.files || {};
+    let changed = false;
     for (const id of Object.keys(files)) {
         const expiry = files[id].analyzed ? FILE_ANALYZED_EXPIRE_MS : FILE_EXPIRE_MS;
-        if (now - (files[id].ts || 0) > expiry)
+        if (now - (files[id].ts || 0) > expiry) {
             delete files[id];
+            changed = true;
+        }
     }
     const keys = Object.keys(files);
     if (keys.length > MAX_FILES_PER_CHANNEL) {
         keys.sort((a, b) => (files[a].ts || 0) - (files[b].ts || 0));
-        for (let i = 0; i < keys.length - MAX_FILES_PER_CHANNEL; i++)
+        for (let i = 0; i < keys.length - MAX_FILES_PER_CHANNEL; i++) {
             delete files[keys[i]];
+            changed = true;
+        }
     }
     data.files = files;
-    return data;
+    return { data, changed };
+}
+function cleanExpired(data) {
+    return cleanExpiredWithChange(data).data;
 }
 async function readFileHistory(channelKey) {
     const cacheKey = getQueueKey(channelKey);
@@ -242,9 +250,10 @@ async function getRecentFiles(channelKey, limit = 5) {
     if (!channelKey)
         return [];
     const current = await enqueueTask(channelKey, async () => {
-        const data = cleanExpired(await readFileHistory(channelKey));
-        await writeFileHistory(channelKey, data);
-        return Object.entries(data.files || {})
+        const cleaned = cleanExpiredWithChange(await readFileHistory(channelKey));
+        if (cleaned.changed)
+            await writeFileHistory(channelKey, cleaned.data);
+        return Object.entries(cleaned.data.files || {})
             .map(([id, entry]) => ({ messageId: id, ...entry }))
             .sort((a, b) => (b.ts || 0) - (a.ts || 0))
             .slice(0, limit);

@@ -12,20 +12,6 @@ function queueFileAnalysisRequest(input) {
     const messageId = String(input.messageId || '');
     const userId = String(input.userId || '');
     const source = String(input.source || 'media-request');
-    const queued = enqueueMediaTask({
-        kind: 'media_file_analysis',
-        channelKey,
-        messageId,
-        url: String(input.url || ''),
-        fileId: input.fileId || null,
-        payload: {
-            entry: source,
-            fileName: String(input.fileName || ''),
-            fileSize: Number(input.fileSize) || 0,
-            ext: String(input.ext || ''),
-            userId,
-        },
-    });
     const admission = admitTask({
         kind: 'media_file_analysis',
         source,
@@ -33,14 +19,49 @@ function queueFileAnalysisRequest(input) {
         userId,
         exclusive: false,
     });
+    const queued = shouldEnqueueMediaForAdmission(admission)
+        ? enqueueMediaTask({
+            kind: 'media_file_analysis',
+            channelKey,
+            messageId,
+            url: String(input.url || ''),
+            fileId: input.fileId || null,
+            payload: {
+                entry: source,
+                fileName: String(input.fileName || ''),
+                fileSize: Number(input.fileSize) || 0,
+                ext: String(input.ext || ''),
+                userId,
+            },
+        })
+        : null;
     return { admission, queued };
+}
+// 判断 admission 结果是否仍允许前门写入 S6 pending。
+function shouldEnqueueMediaForAdmission(admission) {
+    const decision = String(admission?.decision || '');
+    if (decision === 'run_now' || decision === 'queue' || decision === 'downgrade')
+        return true;
+    if (decision !== 'defer')
+        return false;
+    const botMode = String(admission?.botMode || '');
+    const resourceState = String(admission?.resourceState || '');
+    const reason = String(admission?.reason || '');
+    return botMode === 'report_silent' ||
+        reason === 'media drain paused during daily report' ||
+        (resourceState === 'yellow' && reason === 'media is throttled in yellow state') ||
+        (resourceState === 'green' && /daily report/i.test(reason));
 }
 // 生成低成本文件排队提示，不调用 AI。
 function formatFileQueuedReply(admission) {
     const reason = admission?.decision === 'run_now' ? 'media-worker 空闲时会处理' : String(admission?.reason || admission?.decision || '已排队');
+    if (!shouldEnqueueMediaForAdmission(admission)) {
+        return `当前资源状态为 ${admission?.resourceState || 'unknown'}，暂时不能加入媒体分析队列，原因：${reason}。请稍后再试。`;
+    }
     return `这个文件已加入媒体分析队列，当前资源状态为 ${admission?.resourceState || 'unknown'}，原因：${reason}。稍后再读取即可。`;
 }
 module.exports = {
     queueFileAnalysisRequest,
     formatFileQueuedReply,
+    shouldEnqueueMediaForAdmission,
 };

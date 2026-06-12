@@ -3,9 +3,13 @@
  * 职责: 将入站消息归类为日报、状态、Agent、普通聊天或媒体事件。
  * 边界: 不读取资源状态，不执行任何业务逻辑。
  */
-type BotCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'media_event';
+type BotCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'interactive_chat' | 'media_event';
 interface ClassifyCommandInput {
     plain?: string;
+    directAt?: boolean;
+    isPrivate?: boolean;
+    nameMentioned?: boolean;
+    quotedSelf?: boolean;
     analyzed?: {
         hasVisual?: boolean;
         hasFile?: boolean;
@@ -17,6 +21,7 @@ declare function isDailyCommand(plain: string): boolean;
 declare function isStatusCommand(plain: string): boolean;
 declare function isAgentCommand(plain: string): boolean;
 declare function isMediaEvent(analyzed: ClassifyCommandInput['analyzed']): boolean;
+declare function isInteractiveChat(input: ClassifyCommandInput): boolean;
 declare function classifyCommand(input?: ClassifyCommandInput): BotCommandType;
 declare const _default: {
     classifyCommand: typeof classifyCommand;
@@ -24,5 +29,6 @@ declare const _default: {
     isStatusCommand: typeof isStatusCommand;
     isAgentCommand: typeof isAgentCommand;
     isMediaEvent: typeof isMediaEvent;
+    isInteractiveChat: typeof isInteractiveChat;
 };
 export = _default;

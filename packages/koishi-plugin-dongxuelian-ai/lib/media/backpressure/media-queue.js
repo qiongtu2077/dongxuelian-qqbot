@@ -19,6 +19,9 @@ const MAX_IMAGE_QUEUE = Number(process.env.MEDIA_BACKPRESSURE_IMAGE_MAX || 120);
 const MAX_FILE_QUEUE = Number(process.env.MEDIA_BACKPRESSURE_FILE_MAX || 60);
 const MAX_VOICE_QUEUE = Number(process.env.MEDIA_BACKPRESSURE_VOICE_MAX || 80);
 const DEFAULT_MEDIA_TTL_MS = Number(process.env.MEDIA_BACKPRESSURE_TTL_MS || 2 * 60 * 60 * 1000);
+const DEFAULT_MEDIA_REQUEUE_DELAY_MS = Math.max(5000, Math.min(5 * 60 * 1000, Number(process.env.MEDIA_BACKPRESSURE_REQUEUE_DELAY_MS || 15000)));
+const MEDIA_CACHE_INDEX_MAX_ENTRIES = Math.max(1, Math.min(20000, Number(process.env.MEDIA_BACKPRESSURE_CACHE_INDEX_MAX_ENTRIES || 500)));
+const pendingMediaProbeCache = new Map();
 // 返回当天 S6 事件日志路径。
 function mediaEventFile(date = new Date()) {
     const stamp = date.toISOString().slice(0, 10);
@@ -58,6 +61,70 @@ function mediaKindDir(kind) {
         return path.join(MEDIA_QUEUE_ROOT, 'file');
     return path.join(MEDIA_QUEUE_ROOT, 'image');
 }
+// 返回指定 kind 需要观测的队列目录，用于轻量判断队列是否发生过变化。
+function getMediaQueueWatchDirs(kind = '') {
+    if (kind)
+        return [mediaKindDir(kind)];
+    return [
+        path.join(MEDIA_QUEUE_ROOT, 'image'),
+        path.join(MEDIA_QUEUE_ROOT, 'file'),
+        path.join(MEDIA_QUEUE_ROOT, 'voice'),
+    ];
+}
+// 返回指定 kind 对应的 pending 队列目录；空 kind 退回整个 queue root。
+function getMediaQueueScanRoot(kind = '') {
+    return kind ? mediaKindDir(kind) : MEDIA_QUEUE_ROOT;
+}
+// 生成轻量队列目录戳；目录未变化时不必重复全盘扫 deferred pending。
+function getMediaQueueStamp(kind = '') {
+    return getMediaQueueWatchDirs(kind)
+        .map(dir => {
+        try {
+            const stat = fs.statSync(dir);
+            return `${dir}:${Number(stat.mtimeMs || 0)}`;
+        }
+        catch {
+            return `${dir}:missing`;
+        }
+    })
+        .join('|');
+}
+// pending probe cache key；空 kind 代表全量媒体队列。
+function getPendingMediaProbeCacheKey(kind = '') {
+    return kind ? String(kind) : '*';
+}
+// 读取 deferred 冷却期的轻量短路缓存；目录没变且还没到期时可直接返回空。
+function shouldShortCircuitPendingMediaScan(kind = '', now = Date.now()) {
+    const key = getPendingMediaProbeCacheKey(kind);
+    const cached = pendingMediaProbeCache.get(key);
+    if (!cached)
+        return false;
+    if (!(cached.nextScanAtMs > now)) {
+        pendingMediaProbeCache.delete(key);
+        return false;
+    }
+    if (cached.queueStamp !== getMediaQueueStamp(kind)) {
+        pendingMediaProbeCache.delete(key);
+        return false;
+    }
+    return true;
+}
+// 写入 deferred 冷却期的短路缓存，避免 worker 在冷却窗口内重复空扫目录。
+function rememberPendingMediaProbe(kind = '', nextScanAtMs = 0) {
+    const key = getPendingMediaProbeCacheKey(kind);
+    if (!(nextScanAtMs > Date.now())) {
+        pendingMediaProbeCache.delete(key);
+        return;
+    }
+    pendingMediaProbeCache.set(key, {
+        queueStamp: getMediaQueueStamp(kind),
+        nextScanAtMs,
+    });
+}
+// 本进程发生队列写操作后，清掉轻量缓存；跨进程变更仍由目录戳兜底失效。
+function invalidatePendingMediaProbeCache() {
+    pendingMediaProbeCache.clear();
+}
 // 读取 cache-index。
 function readCacheIndex() {
     return readJsonFile(MEDIA_CACHE_INDEX_FILE, {}) || {};
@@ -66,12 +133,24 @@ function readCacheIndex() {
 function writeCacheIndex(index) {
     writeJsonAtomic(MEDIA_CACHE_INDEX_FILE, index);
 }
+// 只保留最近使用的媒体缓存索引，避免前门整文件读取无限增长。
+function trimCacheIndex(index) {
+    const entries = Object.entries(index || {});
+    if (entries.length <= MEDIA_CACHE_INDEX_MAX_ENTRIES)
+        return index;
+    entries.sort((a, b) => {
+        const aUpdated = String(a[1]?.updatedAt || '');
+        const bUpdated = String(b[1]?.updatedAt || '');
+        return bUpdated.localeCompare(aUpdated);
+    });
+    return Object.fromEntries(entries.slice(0, MEDIA_CACHE_INDEX_MAX_ENTRIES));
+}
 // 清理过期 pending 媒体任务。
-function cleanupExpiredMediaTasks() {
+function cleanupExpiredMediaTasks(kind = '') {
     ensureMediaDirs();
     const now = Date.now();
     let removed = 0;
-    for (const file of listJsonFiles(MEDIA_QUEUE_ROOT, { recursive: true, maxFiles: 20000 })) {
+    for (const file of listJsonFiles(getMediaQueueScanRoot(kind), { recursive: true, maxFiles: 20000 })) {
         const task = readJsonFile(file, null);
         if (!task)
             continue;
@@ -79,17 +158,18 @@ function cleanupExpiredMediaTasks() {
         if (Number.isFinite(expiresAt) && expiresAt < now) {
             removePath(file);
             removed++;
+            invalidatePendingMediaProbeCache();
             writeMediaEvent('media_task_expired', { taskId: task.id, kind: task.kind });
         }
     }
     return removed;
 }
-// 判断同 hash 任务是否已经存在。
-function findExistingMediaTask(hash) {
+// 判断同 hash 任务是否已经存在于 active 队列。
+// 已完成结果复用统一走 cache-index；前门不再为 done 历史全盘扫描背锅。
+function findExistingMediaTask(hash, kind = '') {
     const files = [
-        ...listJsonFiles(MEDIA_QUEUE_ROOT, { recursive: true, maxFiles: 20000 }),
+        ...listJsonFiles(getMediaQueueScanRoot(kind), { recursive: true, maxFiles: 20000 }),
         ...listJsonFiles(MEDIA_RUNNING_ROOT, { maxFiles: 20000 }),
-        ...listJsonFiles(MEDIA_DONE_ROOT, { maxFiles: 20000 }),
     ];
     for (const file of files) {
         const task = readJsonFile(file, null);
@@ -105,15 +185,44 @@ function readMediaTaskFile(file) {
         return null;
     return task;
 }
+// 判断 pending 媒体任务是否仍处于冷却窗口。
+function isMediaTaskDeferred(task, now = Date.now()) {
+    const deferredUntil = Date.parse(String(task?.deferredUntil || task?.notBefore || ''));
+    return Number.isFinite(deferredUntil) && deferredUntil > now;
+}
 // 列出 pending 媒体任务，按优先级和创建时间排序。
 function listPendingMediaTasks(kind = '', limit = 500) {
     ensureMediaDirs();
-    cleanupExpiredMediaTasks();
-    const tasks = listJsonFiles(MEDIA_QUEUE_ROOT, { recursive: true, maxFiles: Math.max(1, Math.min(20000, Number(limit || 500))) })
+    if (shouldShortCircuitPendingMediaScan(kind))
+        return [];
+    cleanupExpiredMediaTasks(kind);
+    const now = Date.now();
+    let earliestNextScanAtMs = 0;
+    const tasks = listJsonFiles(getMediaQueueScanRoot(kind), { recursive: true, maxFiles: Math.max(1, Math.min(20000, Number(limit || 500))) })
         .map(readMediaTaskFile)
-        .filter((task) => task !== null && (!kind || task.kind === kind));
+        .filter((task) => task !== null && (!kind || task.kind === kind))
+        .filter(task => {
+        const deferredUntil = Date.parse(String(task.deferredUntil || task.notBefore || ''));
+        if (!Number.isFinite(deferredUntil) || deferredUntil <= now)
+            return true;
+        const expiresAt = Date.parse(String(task.expiresAt || ''));
+        const candidateNextScanAtMs = Number.isFinite(expiresAt)
+            ? Math.min(deferredUntil, expiresAt)
+            : deferredUntil;
+        if (!(earliestNextScanAtMs > 0) || candidateNextScanAtMs < earliestNextScanAtMs) {
+            earliestNextScanAtMs = candidateNextScanAtMs;
+        }
+        return false;
+    });
     tasks.sort((a, b) => Number(a.priority || 80) - Number(b.priority || 80) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
-    return tasks.slice(0, limit);
+    const readyTasks = tasks.slice(0, limit);
+    if (readyTasks.length > 0) {
+        rememberPendingMediaProbe(kind, 0);
+    }
+    else {
+        rememberPendingMediaProbe(kind, earliestNextScanAtMs);
+    }
+    return readyTasks;
 }
 // 返回 running/done/dropped 媒体任务文件路径。
 function getFlatMediaTaskFile(root, taskId) {
@@ -132,7 +241,16 @@ function claimNextMediaTask(workerName = 'media-worker', kind = '') {
         catch {
             continue;
         }
-        const next = { ...task, status: 'running', claimedBy: workerName, claimedAt: nowIso(), updatedAt: nowIso() };
+        invalidatePendingMediaProbeCache();
+        const next = {
+            ...task,
+            status: 'running',
+            claimedBy: workerName,
+            claimedAt: nowIso(),
+            updatedAt: nowIso(),
+            deferredUntil: '',
+            notBefore: '',
+        };
         writeJsonAtomic(dst, next);
         writeMediaEvent('media_task_claimed', { taskId: next.id, kind: next.kind, workerName });
         return next;
@@ -140,11 +258,22 @@ function claimNextMediaTask(workerName = 'media-worker', kind = '') {
     return null;
 }
 // 将已领取但暂不能执行的媒体任务放回 pending。
-function requeueMediaTask(task, reason = 'resource_defer') {
+function requeueMediaTask(task, reason = 'resource_defer', delayMs = DEFAULT_MEDIA_REQUEUE_DELAY_MS) {
     ensureMediaDirs();
     const src = getFlatMediaTaskFile(MEDIA_RUNNING_ROOT, task.id);
     const dst = path.join(mediaKindDir(task.kind), `${sanitizeId(task.id)}.json`);
-    const next = { ...task, status: 'pending', updatedAt: nowIso(), deferredReason: reason };
+    const deferMs = Math.max(1000, Number.isFinite(Number(delayMs)) ? Number(delayMs) : DEFAULT_MEDIA_REQUEUE_DELAY_MS);
+    const deferredUntil = new Date(Date.now() + deferMs).toISOString();
+    const next = {
+        ...task,
+        status: 'pending',
+        updatedAt: nowIso(),
+        deferredReason: reason,
+        deferredUntil,
+        notBefore: deferredUntil,
+        claimedBy: '',
+        claimedAt: '',
+    };
     try {
         fs.renameSync(src, dst);
     }
@@ -152,7 +281,8 @@ function requeueMediaTask(task, reason = 'resource_defer') {
         removePath(src);
     }
     writeJsonAtomic(dst, next);
-    writeMediaEvent('media_task_requeued', { taskId: next.id, kind: next.kind, reason });
+    invalidatePendingMediaProbeCache();
+    writeMediaEvent('media_task_requeued', { taskId: next.id, kind: next.kind, reason, deferredUntil });
     return next;
 }
 // 将媒体任务标记为完成，并按 urlHash 写入轻量 cache-index。
@@ -168,10 +298,11 @@ function completeMediaTask(task, result = {}) {
         removePath(src);
     }
     writeJsonAtomic(dst, next);
+    invalidatePendingMediaProbeCache();
     if (task.urlHash) {
         const index = readCacheIndex();
         index[task.urlHash] = { taskId: task.id, kind: task.kind, channelKey: task.channelKey, messageId: task.messageId, updatedAt: next.updatedAt, result };
-        writeCacheIndex(index);
+        writeCacheIndex(trimCacheIndex(index));
     }
     writeMediaEvent('media_task_done', { taskId: next.id, kind: next.kind, hasResult: Object.keys(result || {}).length > 0 });
     return next;
@@ -190,6 +321,7 @@ function failMediaTask(task, error, reason = 'failed') {
         removePath(src);
     }
     writeJsonAtomic(dst, next);
+    invalidatePendingMediaProbeCache();
     writeMediaEvent('media_task_failed', { taskId: next.id, kind: next.kind, reason, error: message });
     return next;
 }
@@ -197,6 +329,9 @@ function failMediaTask(task, error, reason = 'failed') {
 function enforceMediaQueueLimit(kind) {
     const dir = mediaKindDir(kind);
     const max = /voice/i.test(kind) ? MAX_VOICE_QUEUE : /file/i.test(kind) ? MAX_FILE_QUEUE : MAX_IMAGE_QUEUE;
+    const files = listJsonFiles(dir, { maxFiles: Math.max(1, max + 1) });
+    if (files.length <= max)
+        return 0;
     const tasks = listJsonFiles(dir, { maxFiles: 20000 })
         .map(file => ({ file, task: readJsonFile(file, null) }))
         .filter((item) => Boolean(item.task));
@@ -219,14 +354,14 @@ function enforceMediaQueueLimit(kind) {
 // 创建媒体任务；已有缓存或 pending/running 时不会重复入队。
 function enqueueMediaTask(input) {
     ensureMediaDirs();
-    cleanupExpiredMediaTasks();
+    cleanupExpiredMediaTasks(input.kind);
     const hash = createMediaHash(input);
     const cacheIndex = readCacheIndex();
     if (cacheIndex[hash]) {
         writeMediaEvent('media_cache_reused', { kind: input.kind, channelKey: input.channelKey, messageId: input.messageId, urlHash: hash });
         return { reused: true, cache: cacheIndex[hash], urlHash: hash };
     }
-    const existing = findExistingMediaTask(hash);
+    const existing = findExistingMediaTask(hash, input.kind);
     if (existing) {
         writeMediaEvent('media_task_deduped', { taskId: existing.id, kind: existing.kind, urlHash: hash });
         return { reused: false, existing, urlHash: hash };
@@ -247,6 +382,7 @@ function enqueueMediaTask(input) {
         payload: input.payload || {},
     };
     writeJsonAtomic(path.join(mediaKindDir(input.kind), `${task.id}.json`), task);
+    invalidatePendingMediaProbeCache();
     const dropped = enforceMediaQueueLimit(input.kind);
     writeMediaEvent('media_task_created', { taskId: task.id, kind: task.kind, channelKey: task.channelKey, messageId: task.messageId, dropped });
     return task;
@@ -281,4 +417,5 @@ module.exports = {
     completeMediaTask,
     failMediaTask,
     getMediaBackpressureStatus,
+    isMediaTaskDeferred,
 };

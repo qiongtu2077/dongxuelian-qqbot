@@ -32,6 +32,9 @@ const { registerPluginLifecycle, } = require('./lifecycle/plugin-lifecycle'); //
 const { logReplyTimingDiagnostic, logAffectRouterDiagnosticForOutputShadow, logStickerShadowSendDiagnostic, } = require('./diagnostics/diagnostics'); // 入口旁路诊断日志
 const { resolveSharedRecordText, } = require('./diagnostics/shared-record-text'); // 群共享上下文保存文本归一
 const { isFileQuickReadIntent, resolveFileQuickReadReply, } = require('./routing/file-quick-read'); // 显式读文件快捷分支
+const { buildFileFollowupState, } = require('./media/file/file-followup-state'); // 文件自然追问语义，供资源静默期恢复判断复用
+const { isVoiceQuickReadIntent, resolveVoiceQuickReadReply, } = require('./routing/voice-quick-read'); // 显式语音转写快捷分支
+const analyzeHistoricalImage = require('./agent/tools/analyze-image'); // 显式读图低成本排队恢复
 const { handleCommand } = require('./handler'); // 指令路由（/help /reset 等）
 const { analyzeIncomingMessage, normalizeText } = require('./message/message-reader');
 const { resolveForwardSummary } = require('./message/forward');
@@ -67,7 +70,7 @@ getConversationKey, // 用户会话唯一标识生成
 getChannelKey, // 频道唯一标识生成
 saveSharedChannelTurn, // 保存群聊共享消息轮次
 findChannelMessageById, collectReplyChain, // 消息查找 + 引用链收集
-getQuotedMessageNote, getSharedContextNote, // 引用/共享上下文注入文本
+getQuoteInfo, getQuotedMessageNote, getSharedContextNote, // 引用/共享上下文注入文本
 getRecentUserMessages, // 取最近用户消息，用于搜索追问补全
 getRecentUserMessageRecords, // 带时间戳的用户消息记录
  } = require('./conversation');
@@ -93,8 +96,7 @@ const { sendChatReplyFlow, } = require('./chat/chat-send-flow'); // chat 回复�
 const { channelMissCount, incrementRandomMiss, resetRandomMiss, getRandomTriggerRate: getRandomTriggerRateFromState, isRandomCooldownActive, markRandomReplySent, getRandomMuteRemaining, muteRandomChannel, isRandomMuted, getChannelMessageVersion, bumpChannelMessageVersion, getExplicitInteractionVersion, bumpExplicitInteractionVersion, takePendingRandom, setPendingRandom, cancelPendingRandom, buildRandomSendOptions, isRandomReplyFresh, isSafeSendReplyFresh, } = require('./behavior/random-state'); // 随机回复状态、pending timer 与 freshness
 const { buildAmbientWaterSendOptions } = require('./behavior/random-reply-mode'); // 随机非锚定水群发送策略
 const { classifyCommand } = require('./bot-mode/command-classifier');
-const { readBotModeState } = require('./bot-mode/mode-state');
-const { decideModePolicy } = require('./bot-mode/mode-policy');
+const { decideEntryDirective, } = require('./resource-scheduler/resource-directive');
 const { buildResourceStatusReply } = require('./bot-mode/status-reply');
 const configureAgentQueueForFlows = (queueConfig) => {
     configureAgentQueue(queueConfig);
@@ -137,16 +139,33 @@ function safeSendReplyWithFreshness(ctx, session, reply, isRandom = false, resol
 }
 // 在延迟/排队任务真正执行前复检 S5，避免旧聊天任务越过日报静默。
 function shouldDropQueuedBotWork(ctx, channelKey, commandType, label) {
-    const decision = decideModePolicy(commandType, readBotModeState());
-    if (decision.action === 'pass')
+    const { directive } = decideEntryDirective(commandType);
+    if (directive.action === 'pass')
         return false;
-    cancelPendingRandom(channelKey, `queued-${decision.action}`);
-    logDebug(ctx, 'bot-mode', `drop queued work label=${label} channel=${channelKey} command=${commandType} action=${decision.action} reason=${decision.reason}`);
+    cancelPendingRandom(channelKey, `queued-${directive.action}`);
+    logDebug(ctx, 'bot-mode', `drop queued work label=${label} channel=${channelKey} command=${commandType} action=${directive.action} reason=${directive.reason}`);
     return true;
 }
 // 判断 AI 状态命令是否需要在资源静默模式下降级为轻量状态回复。
 function shouldUseLightweightAiStatusFallback(plain, action) {
     return plain === 'AI状态' && (action === 'silent_drop' || action === 'defer' || action === 'reject');
+}
+// 日报/独占忙锁期间，显式图片追问只恢复到后台排队提示，不放开前台识图。
+function isImageQuickReadIntent(text = '') {
+    const value = normalizeText(text);
+    if (!value)
+        return false;
+    return /(?:这张图|这图|图里|图片|画面|表情)/.test(value)
+        || /^(?:这是什么|这啥|帮我看看|看看|看下|看一下|评价一下|分析一下)$/.test(value);
+}
+async function resolveGuardedFileQuickReadReply(channelKey, plain, entryUserId, preferDirectIntent = false) {
+    const fileFollowupState = await buildFileFollowupState(channelKey, plain, { userId: entryUserId });
+    if (!fileFollowupState.shouldVerify)
+        return null;
+    const preferredFileMessageId = String(fileFollowupState.targetFile?.messageId || '').trim();
+    if (!preferredFileMessageId && preferDirectIntent)
+        return null;
+    return await resolveFileQuickReadReply(channelKey, preferredFileMessageId);
 }
 function apply(ctx) {
     registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue });
@@ -177,6 +196,7 @@ function apply(ctx) {
         const isPrivate = !!session.isDirect;
         const inGuild = !isPrivate;
         const channelKey = getChannelKey(session);
+        const entryUserId = String(session.userId || session.author?.id || session.username || '');
         let currentMessageVersion = getChannelMessageVersion(channelKey);
         let explicitInteractionMarked = false;
         const markExplicitInteraction = (reason) => {
@@ -214,30 +234,95 @@ function apply(ctx) {
             markExplicitInteraction('reserved-command');
             return next();
         }
-        const botCommandType = classifyCommand({ plain, analyzed });
-        const botModeSnapshot = readBotModeState();
-        const botModeDecision = decideModePolicy(botCommandType, botModeSnapshot);
-        if (botModeDecision.action === 'queue_daily') {
+        const nameMentionedForBotMode = /莲莲|东雪莲/.test(plain);
+        const quoteInfoForBotMode = getQuoteInfo(session, { replyToId: analyzed.replyToId });
+        const quotedBotSelf = !!quoteInfoForBotMode.isSelf;
+        const botCommandType = classifyCommand({
+            plain,
+            analyzed,
+            directAt,
+            isPrivate,
+            nameMentioned: nameMentionedForBotMode,
+            quotedSelf: quotedBotSelf,
+        });
+        const { directive: botDirective } = decideEntryDirective(botCommandType);
+        if (botDirective.action === 'queue_daily') {
             markExplicitInteraction('daily-command');
             return next();
         }
-        if (shouldUseLightweightAiStatusFallback(plain, botModeDecision.action)) {
+        if (shouldUseLightweightAiStatusFallback(plain, botDirective.action)) {
             markExplicitInteraction('resource-status');
             return buildResourceStatusReply();
         }
-        if (botModeDecision.action === 'status_only') {
+        if (botDirective.action === 'status_only') {
             markExplicitInteraction('resource-status');
             return buildResourceStatusReply();
         }
-        if (botModeDecision.action === 'silent_drop' || botModeDecision.action === 'defer') {
+        if (botDirective.action === 'silent_drop' || botDirective.action === 'defer') {
             if (botCommandType === 'media_event') {
                 await handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt, queueMedia: false });
+                const isExplicitFileRecovery = (directAt || nameMentionedForBotMode || isPrivate) &&
+                    analyzed.hasFile &&
+                    !analyzed.hasVisual &&
+                    !analyzed.hasEmbed;
+                const allowFileQuickReadRecovery = isExplicitFileRecovery &&
+                    (botDirective.botMode === 'report_silent' || botDirective.botMode === 'busy') &&
+                    botDirective.resourceState !== 'red' &&
+                    botDirective.resourceState !== 'black';
+                if (allowFileQuickReadRecovery) {
+                    if (isFileQuickReadIntent(plain)) {
+                        const guardedReply = await resolveGuardedFileQuickReadReply(channelKey, plain, entryUserId, true);
+                        if (guardedReply) {
+                            markExplicitInteraction('file-quick-read');
+                            return guardedReply;
+                        }
+                    }
+                    else {
+                        const guardedReply = await resolveGuardedFileQuickReadReply(channelKey, plain, entryUserId);
+                        if (guardedReply) {
+                            markExplicitInteraction('file-quick-read');
+                            return guardedReply;
+                        }
+                    }
+                }
+                if ((directAt || nameMentionedForBotMode || isPrivate) &&
+                    analyzed.hasAudio &&
+                    !analyzed.hasVisual &&
+                    !analyzed.hasFile &&
+                    !analyzed.hasEmbed &&
+                    (botDirective.botMode === 'report_silent' || botDirective.botMode === 'busy') &&
+                    botDirective.resourceState !== 'red' &&
+                    botDirective.resourceState !== 'black' &&
+                    session.messageId &&
+                    isVoiceQuickReadIntent(plain)) {
+                    markExplicitInteraction('voice-quick-read');
+                    return await resolveVoiceQuickReadReply(channelKey, String(session.messageId || ''));
+                }
+                if ((directAt || nameMentionedForBotMode || isPrivate) &&
+                    analyzed.hasVisual &&
+                    !analyzed.hasFile &&
+                    !analyzed.hasAudio &&
+                    !analyzed.hasEmbed &&
+                    (botDirective.botMode === 'report_silent' || botDirective.botMode === 'busy') &&
+                    botDirective.resourceState !== 'red' &&
+                    botDirective.resourceState !== 'black' &&
+                    session.messageId &&
+                    isImageQuickReadIntent(plain)) {
+                    markExplicitInteraction('image-quick-read');
+                    return await analyzeHistoricalImage.execute({
+                        messageId: String(session.messageId || ''),
+                        question: plain,
+                    }, {
+                        channelKey,
+                        userId: entryUserId,
+                    });
+                }
             }
             if (inGuild)
-                cancelPendingRandom(channelKey, `bot-mode-${botModeDecision.action}`);
+                cancelPendingRandom(channelKey, `bot-mode-${botDirective.action}`);
             return;
         }
-        if (botModeDecision.action === 'reject') {
+        if (botDirective.action === 'reject') {
             if (inGuild)
                 cancelPendingRandom(channelKey, 'bot-mode-reject');
             return '当前资源正忙，Agent 和工具暂时暂停。';
@@ -309,9 +394,12 @@ function apply(ctx) {
         const groupPersonaName = getGroupPersonaName(channelKey);
         const randomPersonaHighRisk = isPersonaSwitchRisky({ source: personaResolution.source, name: currentPersonaNameText }, groupPersonaName);
         const personaWillContent = currentPersonaName ? loadPersonalSkill(currentPersonaName) || undefined : undefined;
-        const nameMentioned = !currentPersonaName && /莲莲|东雪莲/.test(plain);
+        const nameMentioned = !currentPersonaName && nameMentionedForBotMode;
+        const explicitBotInteraction = directAt || nameMentioned || isPrivate || quotedBotSelf;
+        if (quotedBotSelf && !directAt)
+            markExplicitInteraction('quoted-self');
         const inRandomWhitelist = getRandomWhitelistStatus(channelKey);
-        let isRandomCandidate = inGuild && !directAt && !otherMentions && !nameMentioned && inRandomWhitelist && !analyzed.shouldSkipForRandomReply;
+        let isRandomCandidate = inGuild && !explicitBotInteraction && !otherMentions && inRandomWhitelist && !analyzed.shouldSkipForRandomReply;
         // 30秒冷却：触发后不再次主动发言
         let randomCooldownActive = false;
         if (isRandomCooldownActive(channelKey)) {
@@ -323,7 +411,7 @@ function apply(ctx) {
         const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId });
         const sharedRecordText = resolveSharedRecordText(plain, analyzed);
         // "闭嘴" 静默十分钟主动回复
-        if (inGuild && !directAt && !nameMentioned && /^(?:闭嘴|别吵|别说了|不要说话)/.test(plain)) {
+        if (inGuild && !explicitBotInteraction && /^(?:闭嘴|别吵|别说了|不要说话)/.test(plain)) {
             const remaining = getRandomMuteRemaining(channelKey);
             if (remaining < 600000) {
                 muteRandomChannel(channelKey);
@@ -339,7 +427,7 @@ function apply(ctx) {
             isRandomCandidate = false;
         }
         // 连续复读检测（在随机回复之前，2人相同→bot跟第3条）
-        if (inGuild && !directAt && !otherMentions) {
+        if (inGuild && !directAt && !otherMentions && !quotedBotSelf) {
             const repeatCandidate = buildRepeatCandidate(session, plain, analyzed);
             const repeatResult = checkGroupRepeat(session, repeatCandidate, channelKey, currentUserId);
             if (repeatResult && !SENSITIVE_KEYWORDS_RE.test(String(repeatResult.reply || ''))) {
@@ -352,7 +440,7 @@ function apply(ctx) {
         const randomHit = randomTriggered;
         let delayedRandomScheduled = false;
         // 连续发言延迟触发
-        if (randomTriggered && isRandomCandidate && inGuild && !directAt && !nameMentioned) {
+        if (randomTriggered && isRandomCandidate && inGuild && !explicitBotInteraction) {
             const recentMsgs = channelSharedCache.get(channelKey)
                 ?.filter(e => e.userId === currentUserId && e.role === 'user')
                 ?.slice(-2) || [];
@@ -474,7 +562,7 @@ function apply(ctx) {
                 });
             }
         }
-        if (inGuild && !directAt && !nameMentioned) {
+        if (inGuild && !explicitBotInteraction) {
             const randomBaseRate = resolveRandomTriggerRate(channelKey);
             logDebug(ctx, 'random', `key=${channelKey} whitelist=${inRandomWhitelist} candidate=${isRandomCandidate} hit=${randomHit} triggered=${randomTriggered} delayed=${delayedRandomScheduled} rate=${resolveRandomTriggerRate(channelKey)} skip=${analyzed.shouldSkipForRandomReply} hasUsableText=${analyzed.hasUsableText} hasLink=${analyzed.hasLink} hasVisual=${analyzed.hasVisual} hasFile=${analyzed.hasFile} hasEmbed=${analyzed.hasEmbed} directAt=${directAt} otherMentions=${otherMentions} nameMentioned=${nameMentioned} whitelistSize=${randomWhitelistCache.size}`);
             logReplyTimingDiagnostic(ctx, {
@@ -525,7 +613,7 @@ function apply(ctx) {
             currentText: userText,
             personaName: currentPersonaName || '',
             directAt,
-            nameMentioned,
+            nameMentioned: nameMentioned || quotedBotSelf,
             isDirect: isPrivate,
         });
         if (inGuild && sharedRecordText) {
@@ -543,7 +631,7 @@ function apply(ctx) {
             if (userBlacklist.has(String(currentUserId)))
                 return next();
         }
-        if (!isPrivate && !directAt && !nameMentioned) {
+        if (!explicitBotInteraction) {
             if (analyzed.hasVisual || analyzed.hasFile || analyzed.hasEmbed) {
                 if (!inRandomWhitelist)
                     return next();
@@ -563,7 +651,7 @@ function apply(ctx) {
         }
         // 引用/回复中的图片：当前消息不含图，但被引用的消息可能含图片
         prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: false, includeQuote: true });
-        if ((directAt || nameMentioned || isPrivate) && (analyzed.hasVisual || analyzed.hasFile || analyzed.hasEmbed)) {
+        if (explicitBotInteraction && (analyzed.hasVisual || analyzed.hasFile || analyzed.hasEmbed)) {
             if (analyzed.hasFile && !analyzed.hasVisual && !analyzed.hasEmbed && !analyzed.hasUsableText)
                 return;
             // 有图片 → 尝试识图
@@ -571,7 +659,7 @@ function apply(ctx) {
                 return;
             }
         }
-        else if ((directAt || nameMentioned) && !analyzed.hasUsableText) {
+        else if ((directAt || nameMentioned || quotedBotSelf) && !analyzed.hasUsableText) {
             if (analyzed.hasLink)
                 return next();
             return;

@@ -75,6 +75,10 @@ interface AudioArtifactOptions {
   queueMedia?: boolean
 }
 
+interface MediaAdmissionDecisionLike {
+  decision?: string
+}
+
 interface IncomingMessageArtifactOptions extends ImageArtifactOptions {
   directAt?: boolean
 }
@@ -95,6 +99,11 @@ function warnIncomingAudioFailure(ctx: IncomingContext | null | undefined, error
     return
   }
   console.warn(message)
+}
+
+function shouldEnqueuePassiveMedia(admission: MediaAdmissionDecisionLike | null | undefined): boolean {
+  const decision = String(admission?.decision || '')
+  return decision === 'run_now' || decision === 'queue' || decision === 'downgrade'
 }
 
 async function handleIncomingImage({ ctx, session, analyzed, plain, content, channelKey, queueMedia = true }: ImageArtifactOptions): Promise<string> {
@@ -126,14 +135,16 @@ async function handleIncomingImage({ ctx, session, analyzed, plain, content, cha
     },
   })
   if (queueMedia) {
-    enqueueMediaTask({
-      kind: 'media_image_analysis',
-      channelKey,
-      messageId: session.messageId,
-      url: String(storableUrl || storableFile || ''),
-      payload: { conversationKey: imageMeta.conversationKey, userId: imageMeta.userId },
-    })
-    admitTask({ kind: 'media_image_analysis', source: 'koishi-worker', channelKey, userId: imageMeta.userId, exclusive: false })
+    const admission = admitTask({ kind: 'media_image_analysis', source: 'koishi-worker', channelKey, userId: imageMeta.userId, exclusive: false })
+    if (shouldEnqueuePassiveMedia(admission)) {
+      enqueueMediaTask({
+        kind: 'media_image_analysis',
+        channelKey,
+        messageId: session.messageId,
+        url: String(storableUrl || storableFile || ''),
+        payload: { conversationKey: imageMeta.conversationKey, userId: imageMeta.userId },
+      })
+    }
   }
   return plain.includes('[图片]') ? plain : (plain ? plain + ' ' : '') + '[图片]'
 }
@@ -166,15 +177,17 @@ async function handleIncomingFile({ session, analyzed, plain, channelKey, queueM
   if (plain.includes('[文件]')) return plain
   if (safety.allowed) {
     if (queueMedia) {
-      enqueueMediaTask({
-        kind: 'media_file_analysis',
-        channelKey,
-        messageId: session.messageId,
-        url: fileUrl,
-        fileId,
-        payload: { fileName: safeName, fileSize, ext, userId: fileMeta.userId },
-      })
-      admitTask({ kind: 'media_file_analysis', source: 'koishi-worker', channelKey, userId: fileMeta.userId, exclusive: false })
+      const admission = admitTask({ kind: 'media_file_analysis', source: 'koishi-worker', channelKey, userId: fileMeta.userId, exclusive: false })
+      if (shouldEnqueuePassiveMedia(admission)) {
+        enqueueMediaTask({
+          kind: 'media_file_analysis',
+          channelKey,
+          messageId: session.messageId,
+          url: fileUrl,
+          fileId,
+          payload: { fileName: safeName, fileSize, ext, userId: fileMeta.userId },
+        })
+      }
     }
     return (plain ? plain + ' ' : '') + `[文件: ${safeName} (fileId:${session.messageId})]`
   }
@@ -200,16 +213,18 @@ async function resolveIncomingAudioPlain({ ctx, session, analyzed, plain, channe
     const cached = await getCachedTranscript(channelKey, session.messageId)
     if (cached && shouldTranscribe) return `[语音转文字：${cached}]`
     if (queueMedia && shouldTranscribe) {
-      enqueueMediaTask({
-        kind: 'media_voice_transcription',
-        channelKey,
-        messageId: session.messageId,
-        url: String(voiceUrl || voiceFile || ''),
-        fileId: voiceFile,
-        priority: 88,
-        payload: { url: voiceUrl, file: voiceFile, userId },
-      })
-      admitTask({ kind: 'media_voice_transcription', source: 'koishi-worker', channelKey, userId, exclusive: false })
+      const admission = admitTask({ kind: 'media_voice_transcription', source: 'koishi-worker', channelKey, userId, exclusive: false })
+      if (shouldEnqueuePassiveMedia(admission)) {
+        enqueueMediaTask({
+          kind: 'media_voice_transcription',
+          channelKey,
+          messageId: session.messageId,
+          url: String(voiceUrl || voiceFile || ''),
+          fileId: voiceFile,
+          priority: 88,
+          payload: { url: voiceUrl, file: voiceFile, userId },
+        })
+      }
     }
     if (!shouldTranscribe) return plain
     return plain.includes('[语音') ? plain : (plain ? plain + ' ' : '') + '[语音消息]'

@@ -26,6 +26,8 @@ interface MediaTask extends Record<string, unknown> {
     updatedAt?: string;
     finishedAt?: string;
     deferredReason?: string;
+    deferredUntil?: string;
+    notBefore?: string;
     error?: string;
     result?: Record<string, unknown>;
 }
@@ -43,10 +45,11 @@ declare function writeMediaEvent(event: string, data?: Record<string, unknown>):
 declare function createMediaHash(input: MediaTaskInput): string;
 declare function readCacheIndex(): Record<string, unknown>;
 declare function writeCacheIndex(index: Record<string, unknown>): void;
-declare function cleanupExpiredMediaTasks(): number;
+declare function cleanupExpiredMediaTasks(kind?: string): number;
+declare function isMediaTaskDeferred(task: MediaTask | null | undefined, now?: number): boolean;
 declare function listPendingMediaTasks(kind?: string, limit?: number): MediaTask[];
 declare function claimNextMediaTask(workerName?: string, kind?: string): MediaTask | null;
-declare function requeueMediaTask(task: MediaTask, reason?: string): MediaTask;
+declare function requeueMediaTask(task: MediaTask, reason?: string, delayMs?: number): MediaTask;
 declare function completeMediaTask(task: MediaTask, result?: Record<string, unknown>): MediaTask;
 declare function failMediaTask(task: MediaTask, error: unknown, reason?: string): MediaTask;
 declare function enqueueMediaTask(input: MediaTaskInput): EnqueueMediaTaskResult;
@@ -68,5 +71,6 @@ declare const _default: {
     completeMediaTask: typeof completeMediaTask;
     failMediaTask: typeof failMediaTask;
     getMediaBackpressureStatus: typeof getMediaBackpressureStatus;
+    isMediaTaskDeferred: typeof isMediaTaskDeferred;
 };
 export = _default;

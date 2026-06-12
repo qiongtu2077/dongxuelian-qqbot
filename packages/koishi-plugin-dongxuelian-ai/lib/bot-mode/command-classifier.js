@@ -20,6 +20,10 @@ function isAgentCommand(plain) {
 function isMediaEvent(analyzed) {
     return !!(analyzed && (analyzed.hasVisual || analyzed.hasFile || analyzed.hasAudio || analyzed.hasEmbed));
 }
+// 判断消息是否属于显式 Bot 交互，应该区别于随机闲聊。
+function isInteractiveChat(input) {
+    return !!(input.directAt || input.isPrivate || input.nameMentioned || input.quotedSelf);
+}
 // 将消息归类，顺序不能调整：日报命令优先透传，状态命令优先保留。
 function classifyCommand(input = {}) {
     const plain = String(input.plain || '').trim();
@@ -31,6 +35,8 @@ function classifyCommand(input = {}) {
         return 'agent_command';
     if (isMediaEvent(input.analyzed))
         return 'media_event';
+    if (isInteractiveChat(input))
+        return 'interactive_chat';
     return 'normal_chat';
 }
 module.exports = {
@@ -39,4 +45,5 @@ module.exports = {
     isStatusCommand,
     isAgentCommand,
     isMediaEvent,
+    isInteractiveChat,
 };

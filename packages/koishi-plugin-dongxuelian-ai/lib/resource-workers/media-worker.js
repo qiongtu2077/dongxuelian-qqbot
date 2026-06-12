@@ -5,7 +5,8 @@
  * 边界: 不发送消息，不绕过 S1/S0。
  */
 const { admitTask } = require('../resource-scheduler/admission');
-const { isImageMediaTaskKind, isFileMediaTaskKind, isVoiceMediaTaskKind, } = require('../resource-common/resource-task-kinds');
+const { RESOURCE_TASK_KIND, isImageMediaTaskKind, isFileMediaTaskKind, isVoiceMediaTaskKind, } = require('../resource-common/resource-task-kinds');
+const { decideBackgroundDirective } = require('../resource-scheduler/background-directive');
 const { acquireResourceGate } = require('../resource-gate/gate');
 const { writeProcessCleanupEvent } = require('../resource-system/system-protection');
 const { analyzeImageNow } = require('../media/image/image-analyzer');
@@ -125,6 +126,19 @@ function handleMediaTaskTimeout(workerName, task, error) {
 // 领取并执行一个 S6 媒体任务；没有任务或本轮被资源拒绝时返回 false，让主循环走 pollMs 退避。
 async function drainOneMediaTask(options = {}) {
     const workerName = String(options.workerName || 'media-worker');
+    const gate = decideBackgroundDirective({
+        kind: RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS,
+        source: workerName,
+        channelKey: 'media',
+        userId: '',
+        priority: 60,
+        exclusive: false,
+        timeoutMs: MEDIA_TASK_TIMEOUT_MS,
+        queueTimeoutMs: MEDIA_TASK_TIMEOUT_MS,
+        runTimeoutMs: MEDIA_TASK_TIMEOUT_MS,
+    });
+    if (gate.directive.action === 'park')
+        return false;
     const task = claimNextMediaTask(workerName);
     if (!task)
         return false;

@@ -4,6 +4,7 @@
  */
 const { getImageEntry, getCachedAnalysis, storeImageUrl } = require('../../media/image/image-store') as typeof import('../../media/image/image-store')
 const { enqueueMediaTask } = require('../../media/backpressure/media-queue') as typeof import('../../media/backpressure/media-queue')
+const { shouldEnqueueMediaForAdmission } = require('../../media/backpressure/media-requests') as typeof import('../../media/backpressure/media-requests')
 const { admitTask } = require('../../resource-scheduler/admission') as typeof import('../../resource-scheduler/admission')
 
 interface AnalyzeImageParams {
@@ -60,16 +61,6 @@ export = {
     }
     if (!url) return '无法获取图片 URL。请先用 read_image_history 查看可用图片。'
     mediaMessageId = createAgentImageMessageId(messageId, url)
-    if (channelKey) {
-      await storeImageUrl(channelKey, mediaMessageId, url, cachedFile, { conversationKey: channelKey, userId })
-    }
-    enqueueMediaTask({
-      kind: 'media_image_analysis',
-      channelKey,
-      messageId: mediaMessageId,
-      url,
-      payload: { entry: 'agent-tool-analyze-image', userId, originalMessageId: messageId },
-    })
     const admission = admitTask({
       kind: 'media_image_analysis',
       source: 'agent-tool',
@@ -77,7 +68,21 @@ export = {
       userId,
       exclusive: false,
     })
+    const shouldQueue = shouldEnqueueMediaForAdmission(admission)
+    if (shouldQueue) {
+      if (channelKey) {
+        await storeImageUrl(channelKey, mediaMessageId, url, cachedFile, { conversationKey: channelKey, userId })
+      }
+      enqueueMediaTask({
+        kind: 'media_image_analysis',
+        channelKey,
+        messageId: mediaMessageId,
+        url,
+        payload: { entry: 'agent-tool-analyze-image', userId, originalMessageId: messageId },
+      })
+    }
     const reason = admission.decision === 'run_now' ? 'media-worker 空闲时会处理' : admission.reason
+    if (!shouldQueue) return `当前资源状态为 ${admission.resourceState}，暂时不能加入图片分析队列，原因：${reason}。请稍后再试。`
     return `图片已加入媒体分析队列，当前资源状态为 ${admission.resourceState}，原因：${reason}。稍后可通过 read_image_history 查看结果。`
   },
   dangerous: false,
