@@ -34,11 +34,13 @@ interface ResourceTaskLike extends Record<string, unknown> {
 declare function runTaskWithTimeout(task: ResourceTaskLike): Promise<Record<string, unknown>>;
 declare function runOneQueuedTask(options?: WorkerMainOptions, heartbeat?: WorkerHeartbeatHandle | null): Promise<boolean>;
 declare function runWorkerTick(options?: WorkerMainOptions, heartbeat?: WorkerHeartbeatHandle | null): Promise<boolean>;
+declare function resolveWorkerIdleSleepMs(options?: WorkerMainOptions, worked?: boolean): number;
 declare function runWorkerLoop(options?: WorkerMainOptions): Promise<void>;
 declare function parseWorkerCliArgs(argv?: string[]): WorkerMainOptions;
 declare const _default: {
     runWorkerLoop: typeof runWorkerLoop;
     runWorkerTick: typeof runWorkerTick;
+    resolveWorkerIdleSleepMs: typeof resolveWorkerIdleSleepMs;
     runOneQueuedTask: typeof runOneQueuedTask;
     runTaskWithTimeout: typeof runTaskWithTimeout;
     parseWorkerCliArgs: typeof parseWorkerCliArgs;

@@ -8,9 +8,27 @@ const fs = require('fs');
 const path = require('path');
 const { DATA_DIR, MAINTENANCE_FILE } = require('../core/constants');
 const { readLockMeta } = require('../resource-gate/gate');
-const { ensureDir, nowIso, writeJsonAtomic } = require('../resource-common/files');
+const { ensureDir, nowIso, readJsonFile, writeJsonAtomic } = require('../resource-common/files');
 function isRunningTaskLike(value) {
     return !!value && typeof value === 'object';
+}
+function buildStableRunningView(running) {
+    if (!running || typeof running !== 'object')
+        return null;
+    const value = running;
+    return {
+        taskId: value.taskId || null,
+        kind: value.kind || null,
+        owner: value.owner || null,
+        pid: value.pid ?? null,
+        channelKey: value.channelKey || null,
+        userId: value.userId || null,
+        startedAt: value.startedAt || null,
+        step: value.step || null,
+        memAvailableMb: value.memAvailableMb ?? null,
+        timeoutMs: value.timeoutMs ?? null,
+        ticketId: value.ticketId || null,
+    };
 }
 const SCHEDULER_ROOT = path.join(DATA_DIR, 'resource-scheduler');
 const SCHEDULER_STATE_FILE = path.join(SCHEDULER_ROOT, 'state.json');
@@ -113,6 +131,18 @@ function classifyBotMode(resourceState, running, maintenance) {
         return 'busy';
     return 'normal';
 }
+function buildSnapshotStableKey(snapshot) {
+    return JSON.stringify({
+        resourceState: snapshot?.resourceState || 'yellow',
+        botMode: snapshot?.botMode || 'normal',
+        memAvailableMb: snapshot?.memAvailableMb === undefined ? null : snapshot?.memAvailableMb,
+        memTotalMb: snapshot?.memTotalMb === undefined ? null : snapshot?.memTotalMb,
+        memSource: snapshot?.memSource || '',
+        locked: !!snapshot?.locked,
+        running: buildStableRunningView(snapshot?.running || null),
+        maintenance: !!snapshot?.maintenance,
+    });
+}
 // 读取当前资源快照，并写入 state.json 供 Dashboard 低成本读取。
 function readResourceSnapshot() {
     ensureDir(SCHEDULER_ROOT);
@@ -131,7 +161,10 @@ function readResourceSnapshot() {
         maintenance,
         createdAt: nowIso(),
     };
-    writeJsonAtomic(SCHEDULER_STATE_FILE, snapshot);
+    const previous = readJsonFile(SCHEDULER_STATE_FILE, null);
+    if (buildSnapshotStableKey(previous) !== buildSnapshotStableKey(snapshot)) {
+        writeJsonAtomic(SCHEDULER_STATE_FILE, snapshot);
+    }
     return snapshot;
 }
 module.exports = {

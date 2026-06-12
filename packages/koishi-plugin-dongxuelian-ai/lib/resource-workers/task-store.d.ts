@@ -14,6 +14,16 @@ interface ListTasksOptions {
     statuses?: string[];
     limit?: number;
 }
+interface CountTasksOptions {
+    statuses?: string[];
+    limit?: number;
+    kind?: string;
+}
+interface CountTasksByKindOptions {
+    statuses?: string[];
+    limit?: number;
+    kind: string;
+}
 type ResourceTaskStatus = 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred';
 interface ResourceTask extends Record<string, unknown> {
     id: string;
@@ -35,6 +45,7 @@ interface ResourceTask extends Record<string, unknown> {
     startedAt?: string;
     finishedAt?: string;
     error?: string;
+    retryAfter?: string;
 }
 interface ResourceWorkerState extends Record<string, unknown> {
     name: string;
@@ -49,11 +60,16 @@ declare function writeWorkerEvent(event: string, data?: Record<string, unknown>)
 declare function createTaskId(kind: string, channelKey?: string): string;
 declare function submitResourceTask(input: SubmitTaskInput): ResourceTask;
 declare function listResourceTasks(options?: ListTasksOptions): ResourceTask[];
+declare function countResourceTasks(options?: CountTasksOptions): number;
+declare function countResourceTasksByKind(options: CountTasksByKindOptions, matcher?: (task: ResourceTask) => boolean): number;
+declare function findResourceTaskByKindAndChannel(kind: string, channelKey: string, statuses?: string[]): ResourceTask | null;
 declare function getTaskQueueSummary(): Record<string, unknown>;
 declare function claimNextTask(kind: string | string[], workerName: string): ResourceTask | null;
 declare function claimTaskById(taskId: string, workerName: string): ResourceTask | null;
+declare function getResourceTaskByIdForKind(taskId: string, kind: string, statuses?: ResourceTaskStatus[]): ResourceTask | null;
 declare function getResourceTaskById(taskId: string): ResourceTask | null;
 declare function markTaskRunning(task: ResourceTask, workerName: string, step?: string): ResourceTask;
+declare function failIsolatedClaimingTask(task: ResourceTask, error: unknown, result?: Record<string, unknown>): ResourceTask;
 declare function updateTaskStep(taskId: string, kind: string, step: string): ResourceTask | null;
 declare function writeTaskResult(taskId: string, result: Record<string, unknown>): string;
 declare function completeTask(task: ResourceTask, result?: Record<string, unknown>): ResourceTask;
@@ -71,11 +87,16 @@ declare const _default: {
     createTaskId: typeof createTaskId;
     submitResourceTask: typeof submitResourceTask;
     getResourceTaskById: typeof getResourceTaskById;
+    getResourceTaskByIdForKind: typeof getResourceTaskByIdForKind;
+    findResourceTaskByKindAndChannel: typeof findResourceTaskByKindAndChannel;
     listResourceTasks: typeof listResourceTasks;
+    countResourceTasks: typeof countResourceTasks;
+    countResourceTasksByKind: typeof countResourceTasksByKind;
     getTaskQueueSummary: typeof getTaskQueueSummary;
     claimNextTask: typeof claimNextTask;
     claimTaskById: typeof claimTaskById;
     markTaskRunning: typeof markTaskRunning;
+    failIsolatedClaimingTask: typeof failIsolatedClaimingTask;
     updateTaskStep: typeof updateTaskStep;
     writeTaskResult: typeof writeTaskResult;
     completeTask: typeof completeTask;

@@ -6,9 +6,10 @@
  */
 const { admitTask } = require('../resource-scheduler/admission');
 const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds');
+const { decideBackgroundDirective } = require('../resource-scheduler/background-directive');
 const { acquireResourceGate } = require('../resource-gate/gate');
 const { collectProcessMetrics, checkWorkerMemoryLimit, writeProcessCleanupEvent, terminateRecordedProcessPids, } = require('../resource-system/system-protection');
-const { claimNextTask, markTaskRunning, completeTask, failTask, deferTask, requeueTask, updateTaskStep, writeWorkerHeartbeat, } = require('./task-store');
+const { claimNextTask, markTaskRunning, failIsolatedClaimingTask, completeTask, failTask, deferTask, requeueTask, updateTaskStep, writeWorkerHeartbeat, } = require('./task-store');
 const { runDailyWorkerTask } = require('./daily-worker');
 const { runAgentWorkerTask } = require('./agent-worker');
 const { drainOneMediaTask } = require('./media-worker');
@@ -119,6 +120,39 @@ function getWorkerTaskKinds(type) {
 function getWorkerName(type, explicit = '') {
     return explicit || `${type || 'resource'}-worker`;
 }
+function getWorkerBackgroundDirectiveProbe(type, workerName) {
+    if (type === 'media') {
+        return {
+            kind: RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS,
+            source: workerName,
+            channelKey: 'media',
+            userId: '',
+        };
+    }
+    if (type === 'daily') {
+        return {
+            kind: RESOURCE_TASK_KIND.DAILY_REPORT,
+            source: workerName,
+            channelKey: 'global',
+            userId: '',
+        };
+    }
+    if (type === 'agent') {
+        return {
+            kind: RESOURCE_TASK_KIND.AGENT_TASK,
+            source: workerName,
+            channelKey: 'global',
+            userId: '',
+        };
+    }
+    return null;
+}
+function readWorkerBackgroundDirective(type, workerName) {
+    const probe = getWorkerBackgroundDirectiveProbe(type, workerName);
+    if (!probe)
+        return null;
+    return decideBackgroundDirective(probe);
+}
 // 根据任务类型调用对应执行器。
 async function executeWorkerTask(task) {
     if (task.kind === RESOURCE_TASK_KIND.DAILY_REPORT)
@@ -161,6 +195,12 @@ async function runTaskWithoutGate(task, workerName, heartbeat) {
     if (heartbeat)
         heartbeat.setStep('running', { taskId: task.id, taskKind: task.kind });
     const runningTask = markTaskRunning(task, workerName, 'running');
+    if (runningTask.status !== 'running') {
+        failIsolatedClaimingTask(runningTask, new Error('task did not enter running'), { reason: 'task_did_not_enter_running' });
+        if (heartbeat)
+            heartbeat.setStep('tick');
+        return true;
+    }
     try {
         const result = await runTaskWithTimeout(runningTask);
         if (result && result.defer) {
@@ -207,16 +247,22 @@ async function runOneQueuedTask(options = {}, heartbeat) {
     }
     if (admission.decision === 'defer') {
         deferTask(task, String(admission.reason || admission.decision));
-        return true;
+        return false;
     }
     if (admission.decision === 'queue') {
         requeueTask(task, String(admission.reason || admission.decision));
-        return true;
+        return false;
     }
     const admittedTask = applyAdmissionDecisionToTask(task, admission);
     if (!exclusive)
         return runTaskWithoutGate(admittedTask, workerName, heartbeat);
     let runningTask = markTaskRunning(admittedTask, workerName, 'waiting_lock');
+    if (runningTask.status !== 'running') {
+        failIsolatedClaimingTask(runningTask, new Error('task did not enter running'), { reason: 'task_did_not_enter_running' });
+        if (heartbeat)
+            heartbeat.setStep('tick');
+        return true;
+    }
     let gateHandle = null;
     try {
         if (heartbeat)
@@ -236,6 +282,10 @@ async function runOneQueuedTask(options = {}, heartbeat) {
         if (heartbeat)
             heartbeat.setStep('running', { taskId: task.id, taskKind: task.kind });
         runningTask = markTaskRunning(runningTask, workerName, 'running');
+        if (runningTask.status !== 'running') {
+            failIsolatedClaimingTask(runningTask, new Error('task did not enter running'), { reason: 'task_did_not_enter_running' });
+            return true;
+        }
         const result = await runTaskWithTimeout(runningTask);
         if (result && result.defer) {
             deferTask(runningTask, String(result.reason || 'worker deferred'));
@@ -246,8 +296,10 @@ async function runOneQueuedTask(options = {}, heartbeat) {
         return true;
     }
     catch (error) {
-        if (!gateHandle)
+        if (!gateHandle) {
             requeueTask(runningTask, error instanceof Error ? error.message : String(error || 'lock_wait_failed'));
+            return false;
+        }
         else {
             failTask(runningTask, error, { reason: error instanceof Error ? error.message : String(error || '') });
             if (isTaskTimeoutError(error))
@@ -282,7 +334,28 @@ async function runWorkerTick(options = {}, heartbeat) {
     }
     if (type === 'media')
         return drainOneMediaTask({ workerName, gateWaitMs: options.gateWaitMs });
+    const backgroundDirective = readWorkerBackgroundDirective(type, workerName);
+    if (backgroundDirective && backgroundDirective.directive.action === 'park') {
+        if (heartbeat) {
+            heartbeat.setStep('parked', {
+                reason: backgroundDirective.directive.reason,
+                resourceState: backgroundDirective.directive.resourceState,
+            });
+        }
+        return false;
+    }
     return runOneQueuedTask(options, heartbeat);
+}
+function resolveWorkerIdleSleepMs(options = {}, worked = false) {
+    const pollMs = Math.max(500, Math.min(30000, Number(options.pollMs || 2000)));
+    if (worked)
+        return 200;
+    const type = String(options.type || 'daily');
+    const workerName = getWorkerName(type, options.workerName || '');
+    const backgroundDirective = readWorkerBackgroundDirective(type, workerName);
+    if (!backgroundDirective || backgroundDirective.directive.action !== 'park')
+        return pollMs;
+    return Math.max(pollMs, Number(backgroundDirective.directive.sleepMs || pollMs));
 }
 // 运行 worker 主循环；once=true 时只执行一轮，便于运维手动验证。
 async function runWorkerLoop(options = {}) {
@@ -296,7 +369,7 @@ async function runWorkerLoop(options = {}) {
             const worked = await runWorkerTick({ ...options, type, workerName }, heartbeat);
             if (options.once)
                 break;
-            await sleep(worked ? 200 : pollMs);
+            await sleep(resolveWorkerIdleSleepMs({ ...options, type, workerName, pollMs }, worked));
         } while (!process.exitCode);
     }
     finally {
@@ -334,6 +407,7 @@ if (require.main === module) {
 module.exports = {
     runWorkerLoop,
     runWorkerTick,
+    resolveWorkerIdleSleepMs,
     runOneQueuedTask,
     runTaskWithTimeout,
     parseWorkerCliArgs,

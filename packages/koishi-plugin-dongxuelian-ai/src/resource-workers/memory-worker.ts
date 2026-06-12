@@ -10,7 +10,7 @@ const { requestChatCompletions } = require('../core/api') as typeof import('../c
 const { loadConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
 const { safeUserId, legacySafeUserId } = require('../core/utils') as typeof import('../core/utils')
 const { submitWorkerTaskWithAdmission } = require('./task-client') as typeof import('./task-client')
-const { listResourceTasks } = require('./task-store') as typeof import('./task-store')
+const { countResourceTasksByKind } = require('./task-store') as typeof import('./task-store')
 
 const DASHBOARD_MEMORY_DIR: string = path.join(DATA_DIR, 'agent-memory-dashboard')
 const DAILY_DIR: string = path.join(DASHBOARD_MEMORY_DIR, 'daily')
@@ -291,11 +291,12 @@ async function runDreamDirect(userId: unknown): Promise<DreamResult> {
 }
 
 // Count active S2 memory tasks for a user to avoid hidden queue explosions.
-function countActiveMemoryTasks(kind: string, userId: unknown): number {
-  return listResourceTasks({ statuses: ['pending', 'claiming', 'running', 'deferred'], limit: 1000 })
-    .filter(task => String(task.kind || '') === kind)
-    .filter(task => String(task.userId || '') === String(userId || ''))
-    .length
+function countActiveMemoryTasks(kind: string, userId: unknown, limit = 1): number {
+  return countResourceTasksByKind({
+    kind,
+    statuses: ['pending', 'claiming', 'running', 'deferred'],
+    limit: Math.max(1, Math.min(10, Number(limit || 1))),
+  }, task => String(task.userId || '') === String(userId || ''))
 }
 
 // Convert a task-client result into a small submission result.
@@ -316,7 +317,7 @@ function normalizeMemorySubmission(result: SubmissionResultLike, kind: string): 
 function submitAgentMemoryTask(options: MemorySubmissionOptions): MemorySubmissionResult {
   const userId = String(options.userId || '')
   if (!userId) return { accepted: false, status: 'invalid', message: 'userId is empty' }
-  if (countActiveMemoryTasks('agent_memory', userId) >= 2) {
+  if (countActiveMemoryTasks('agent_memory', userId, 2) >= 2) {
     return { accepted: false, status: 'skipped', message: 'active agent_memory task already exists' }
   }
   const recentMessages = normalizeRecentMessages(options.recentMessages || [])
@@ -340,7 +341,7 @@ function submitAgentMemoryTask(options: MemorySubmissionOptions): MemorySubmissi
 function submitAgentMemoryCompactionTask(userId: unknown, source = 'agent-dream'): MemorySubmissionResult {
   const safeUser = String(userId || '')
   if (!safeUser) return { accepted: false, status: 'invalid', message: 'userId is empty' }
-  if (countActiveMemoryTasks('agent_memory_compaction', safeUser) >= 1) {
+  if (countActiveMemoryTasks('agent_memory_compaction', safeUser, 1) >= 1) {
     return { accepted: false, status: 'skipped', message: 'active agent_memory_compaction task already exists' }
   }
   const result = submitWorkerTaskWithAdmission({

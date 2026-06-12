@@ -5,6 +5,7 @@
  */
 const { admitTask } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
 const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
+const { decideBackgroundDirective } = require('../resource-scheduler/background-directive') as typeof import('../resource-scheduler/background-directive')
 const { acquireResourceGate } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
 const {
   collectProcessMetrics,
@@ -15,6 +16,7 @@ const {
 const {
   claimNextTask,
   markTaskRunning,
+  failIsolatedClaimingTask,
   completeTask,
   failTask,
   deferTask,
@@ -71,6 +73,13 @@ interface AdmissionDecisionLike {
   decision: string
   reason?: unknown
   fallback?: unknown
+}
+
+interface BackgroundDirectiveProbe extends Record<string, unknown> {
+  kind: string
+  source: string
+  channelKey: string
+  userId: string
 }
 
 // 等待指定毫秒，用于 worker 空转和退避。
@@ -179,6 +188,40 @@ function getWorkerName(type: string, explicit = ''): string {
   return explicit || `${type || 'resource'}-worker`
 }
 
+function getWorkerBackgroundDirectiveProbe(type: string, workerName: string): BackgroundDirectiveProbe | null {
+  if (type === 'media') {
+    return {
+      kind: RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS,
+      source: workerName,
+      channelKey: 'media',
+      userId: '',
+    }
+  }
+  if (type === 'daily') {
+    return {
+      kind: RESOURCE_TASK_KIND.DAILY_REPORT,
+      source: workerName,
+      channelKey: 'global',
+      userId: '',
+    }
+  }
+  if (type === 'agent') {
+    return {
+      kind: RESOURCE_TASK_KIND.AGENT_TASK,
+      source: workerName,
+      channelKey: 'global',
+      userId: '',
+    }
+  }
+  return null
+}
+
+function readWorkerBackgroundDirective(type: string, workerName: string) {
+  const probe = getWorkerBackgroundDirectiveProbe(type, workerName)
+  if (!probe) return null
+  return decideBackgroundDirective(probe)
+}
+
 // 根据任务类型调用对应执行器。
 async function executeWorkerTask(task: ResourceTaskLike): Promise<Record<string, unknown>> {
   if (task.kind === RESOURCE_TASK_KIND.DAILY_REPORT) return await runDailyWorkerTask(task)
@@ -215,6 +258,11 @@ function applyAdmissionDecisionToTask(task: ResourceTaskLike, admission: Admissi
 async function runTaskWithoutGate(task: ResourceTaskLike, workerName: string, heartbeat?: WorkerHeartbeatHandle | null): Promise<boolean> {
   if (heartbeat) heartbeat.setStep('running', { taskId: task.id, taskKind: task.kind })
   const runningTask = markTaskRunning(task, workerName, 'running')
+  if (runningTask.status !== 'running') {
+    failIsolatedClaimingTask(runningTask, new Error('task did not enter running'), { reason: 'task_did_not_enter_running' })
+    if (heartbeat) heartbeat.setStep('tick')
+    return true
+  }
   try {
     const result = await runTaskWithTimeout(runningTask)
     if (result && result.defer) {
@@ -257,16 +305,21 @@ async function runOneQueuedTask(options: WorkerMainOptions = {}, heartbeat?: Wor
   }
   if (admission.decision === 'defer') {
     deferTask(task, String(admission.reason || admission.decision))
-    return true
+    return false
   }
   if (admission.decision === 'queue') {
     requeueTask(task, String(admission.reason || admission.decision))
-    return true
+    return false
   }
   const admittedTask = applyAdmissionDecisionToTask(task, admission)
   if (!exclusive) return runTaskWithoutGate(admittedTask, workerName, heartbeat)
 
   let runningTask = markTaskRunning(admittedTask, workerName, 'waiting_lock')
+  if (runningTask.status !== 'running') {
+    failIsolatedClaimingTask(runningTask, new Error('task did not enter running'), { reason: 'task_did_not_enter_running' })
+    if (heartbeat) heartbeat.setStep('tick')
+    return true
+  }
   let gateHandle: { updateStep(step: string, memAvailableMb?: number | null): void; release(reason?: string): void } | null = null
   try {
     if (heartbeat) heartbeat.setStep('waiting_lock', { taskId: task.id, taskKind: task.kind })
@@ -284,6 +337,10 @@ async function runOneQueuedTask(options: WorkerMainOptions = {}, heartbeat?: Wor
     gateHandle.updateStep('running')
     if (heartbeat) heartbeat.setStep('running', { taskId: task.id, taskKind: task.kind })
     runningTask = markTaskRunning(runningTask, workerName, 'running')
+    if (runningTask.status !== 'running') {
+      failIsolatedClaimingTask(runningTask, new Error('task did not enter running'), { reason: 'task_did_not_enter_running' })
+      return true
+    }
     const result = await runTaskWithTimeout(runningTask)
     if (result && result.defer) {
       deferTask(runningTask, String(result.reason || 'worker deferred'))
@@ -292,7 +349,10 @@ async function runOneQueuedTask(options: WorkerMainOptions = {}, heartbeat?: Wor
     }
     return true
   } catch (error) {
-    if (!gateHandle) requeueTask(runningTask, error instanceof Error ? error.message : String(error || 'lock_wait_failed'))
+    if (!gateHandle) {
+      requeueTask(runningTask, error instanceof Error ? error.message : String(error || 'lock_wait_failed'))
+      return false
+    }
     else {
       failTask(runningTask, error, { reason: error instanceof Error ? error.message : String(error || '') })
       if (isTaskTimeoutError(error)) handleTaskTimeoutExit(workerName, runningTask, error)
@@ -319,7 +379,27 @@ async function runWorkerTick(options: WorkerMainOptions = {}, heartbeat?: Worker
     return false
   }
   if (type === 'media') return drainOneMediaTask({ workerName, gateWaitMs: options.gateWaitMs })
+  const backgroundDirective = readWorkerBackgroundDirective(type, workerName)
+  if (backgroundDirective && backgroundDirective.directive.action === 'park') {
+    if (heartbeat) {
+      heartbeat.setStep('parked', {
+        reason: backgroundDirective.directive.reason,
+        resourceState: backgroundDirective.directive.resourceState,
+      })
+    }
+    return false
+  }
   return runOneQueuedTask(options, heartbeat)
+}
+
+function resolveWorkerIdleSleepMs(options: WorkerMainOptions = {}, worked = false): number {
+  const pollMs = Math.max(500, Math.min(30000, Number(options.pollMs || 2000)))
+  if (worked) return 200
+  const type = String(options.type || 'daily')
+  const workerName = getWorkerName(type, options.workerName || '')
+  const backgroundDirective = readWorkerBackgroundDirective(type, workerName)
+  if (!backgroundDirective || backgroundDirective.directive.action !== 'park') return pollMs
+  return Math.max(pollMs, Number(backgroundDirective.directive.sleepMs || pollMs))
 }
 
 // 运行 worker 主循环；once=true 时只执行一轮，便于运维手动验证。
@@ -333,7 +413,7 @@ async function runWorkerLoop(options: WorkerMainOptions = {}): Promise<void> {
     do {
       const worked = await runWorkerTick({ ...options, type, workerName }, heartbeat)
       if (options.once) break
-      await sleep(worked ? 200 : pollMs)
+      await sleep(resolveWorkerIdleSleepMs({ ...options, type, workerName, pollMs }, worked))
     } while (!process.exitCode)
   } finally {
     heartbeat.stop('stopped')
@@ -367,6 +447,7 @@ if (require.main === module) {
 export = {
   runWorkerLoop,
   runWorkerTick,
+  resolveWorkerIdleSleepMs,
   runOneQueuedTask,
   runTaskWithTimeout,
   parseWorkerCliArgs,

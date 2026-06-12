@@ -17,8 +17,16 @@ interface AdmissionDecisionLike {
     decision: string;
     reason?: string;
 }
+interface ResourceDirectiveLike {
+    action: string;
+    reason?: string;
+}
 type SkippedAdmissionDecision = {
     decision: 'run_now';
+    reason: string;
+};
+type SkippedDirective = {
+    action: 'pass';
     reason: string;
 };
 interface SubmitWorkerTaskInput {
@@ -40,6 +48,7 @@ interface SubmitWorkerTaskOptions {
 interface SubmitWorkerTaskWithAdmissionResult {
     task: ResourceTaskLike;
     admission: AdmissionDecisionLike | SkippedAdmissionDecision;
+    directive: ResourceDirectiveLike | SkippedDirective;
     accepted: boolean;
 }
 declare function buildAdmissionInput(taskId: string, input: SubmitWorkerTaskInput, options?: SubmitWorkerTaskOptions): Record<string, unknown>;

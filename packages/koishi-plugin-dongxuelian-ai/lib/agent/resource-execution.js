@@ -6,7 +6,7 @@
  */
 const { admitTask } = require('../resource-scheduler/admission');
 const { acquireResourceGate } = require('../resource-gate/gate');
-const { submitResourceTask, claimTaskById, markTaskRunning, updateTaskStep, completeTask, failTask, deferTask, updateTaskNotifyStatus, } = require('../resource-workers/task-store');
+const { submitResourceTask, claimTaskById, markTaskRunning, failIsolatedClaimingTask, updateTaskStep, completeTask, failTask, deferTask, updateTaskNotifyStatus, } = require('../resource-workers/task-store');
 const { sanitizeId } = require('../resource-common/files');
 // 生成 Agent 资源任务 ID。
 function createAgentResourceTaskId(kind, channelKey, userId) {
@@ -65,6 +65,10 @@ async function runAgentWithResourceGate(options) {
     }
     task = claimTaskById(taskId, 'agent-inline-worker') || task;
     task = markTaskRunning(task, 'agent-inline-worker', 'waiting_lock');
+    if (task.status !== 'running') {
+        failIsolatedClaimingTask(task, new Error('resource task did not enter running'), { mode: 'agent', reason: 'task_did_not_enter_running' });
+        throw new Error('resource task did not enter running');
+    }
     let gateHandle = null;
     try {
         gateHandle = await acquireResourceGate({

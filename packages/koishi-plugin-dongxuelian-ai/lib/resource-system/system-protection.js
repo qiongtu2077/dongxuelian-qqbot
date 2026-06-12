@@ -425,13 +425,22 @@ function terminateRecordedProcessPids(options = {}) {
         owner: options.owner || '',
         timeoutMs: options.timeoutMs,
     }));
+    const hasRealCleanup = results.some((item) => {
+        const event = item && typeof item === 'object' ? String(item.event || '') : '';
+        const killedPidsValue = item && typeof item === 'object'
+            ? item.killedPids
+            : null;
+        const killedPids = Array.isArray(killedPidsValue) ? killedPidsValue : [];
+        return event === 'process_tree_terminated' && killedPids.length > 0;
+    });
     const result = {
-        event: 'recorded_process_cleanup_completed',
+        event: hasRealCleanup ? 'recorded_process_cleanup_completed' : 'recorded_process_cleanup_skipped',
         reason: options.reason || 'recorded_process_cleanup',
         source: options.source || '',
         taskId,
         kind: options.kind || '',
         owner: options.owner || '',
+        skippedReason: hasRealCleanup ? '' : 'no_process_terminated',
         candidateCount: candidates.length,
         pids: candidates,
         resultEvents: results.map(item => item.event),

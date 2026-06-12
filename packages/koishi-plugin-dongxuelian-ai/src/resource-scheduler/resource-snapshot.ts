@@ -7,7 +7,7 @@ const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
 const { DATA_DIR, MAINTENANCE_FILE } = require('../core/constants') as typeof import('../core/constants')
 const { readLockMeta } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
-const { ensureDir, nowIso, writeJsonAtomic } = require('../resource-common/files') as typeof import('../resource-common/files')
+const { ensureDir, nowIso, readJsonFile, writeJsonAtomic } = require('../resource-common/files') as typeof import('../resource-common/files')
 
 type ResourceState = 'green' | 'yellow' | 'red' | 'black'
 type BotMode = 'normal' | 'busy' | 'report_silent' | 'critical' | 'maintenance'
@@ -24,6 +24,8 @@ interface ResourceSnapshot {
   createdAt: string
 }
 
+type ResourceSnapshotPersisted = Omit<ResourceSnapshot, 'createdAt'> & { createdAt?: string }
+
 interface MemorySnapshot {
   availableMb: number | null
   totalMb: number | null
@@ -34,8 +36,40 @@ interface RunningTaskLike {
   kind?: unknown
 }
 
+interface SnapshotStableRunningView {
+  taskId?: unknown
+  kind?: unknown
+  owner?: unknown
+  pid?: unknown
+  channelKey?: unknown
+  userId?: unknown
+  startedAt?: unknown
+  step?: unknown
+  memAvailableMb?: unknown
+  timeoutMs?: unknown
+  ticketId?: unknown
+}
+
 function isRunningTaskLike(value: unknown): value is RunningTaskLike {
   return !!value && typeof value === 'object'
+}
+
+function buildStableRunningView(running: unknown): SnapshotStableRunningView | null {
+  if (!running || typeof running !== 'object') return null
+  const value = running as Record<string, unknown>
+  return {
+    taskId: value.taskId || null,
+    kind: value.kind || null,
+    owner: value.owner || null,
+    pid: value.pid ?? null,
+    channelKey: value.channelKey || null,
+    userId: value.userId || null,
+    startedAt: value.startedAt || null,
+    step: value.step || null,
+    memAvailableMb: value.memAvailableMb ?? null,
+    timeoutMs: value.timeoutMs ?? null,
+    ticketId: value.ticketId || null,
+  }
 }
 
 const SCHEDULER_ROOT = path.join(DATA_DIR, 'resource-scheduler')
@@ -129,6 +163,19 @@ function classifyBotMode(resourceState: ResourceState, running: unknown, mainten
   return 'normal'
 }
 
+function buildSnapshotStableKey(snapshot: ResourceSnapshotPersisted | null | undefined): string {
+  return JSON.stringify({
+    resourceState: snapshot?.resourceState || 'yellow',
+    botMode: snapshot?.botMode || 'normal',
+    memAvailableMb: snapshot?.memAvailableMb === undefined ? null : snapshot?.memAvailableMb,
+    memTotalMb: snapshot?.memTotalMb === undefined ? null : snapshot?.memTotalMb,
+    memSource: snapshot?.memSource || '',
+    locked: !!snapshot?.locked,
+    running: buildStableRunningView(snapshot?.running || null),
+    maintenance: !!snapshot?.maintenance,
+  })
+}
+
 // 读取当前资源快照，并写入 state.json 供 Dashboard 低成本读取。
 function readResourceSnapshot(): ResourceSnapshot {
   ensureDir(SCHEDULER_ROOT)
@@ -147,7 +194,10 @@ function readResourceSnapshot(): ResourceSnapshot {
     maintenance,
     createdAt: nowIso(),
   }
-  writeJsonAtomic(SCHEDULER_STATE_FILE, snapshot)
+  const previous = readJsonFile<ResourceSnapshotPersisted>(SCHEDULER_STATE_FILE, null)
+  if (buildSnapshotStableKey(previous) !== buildSnapshotStableKey(snapshot)) {
+    writeJsonAtomic(SCHEDULER_STATE_FILE, snapshot)
+  }
   return snapshot
 }
 

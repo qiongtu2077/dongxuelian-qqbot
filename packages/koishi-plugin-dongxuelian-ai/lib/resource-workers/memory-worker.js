@@ -11,7 +11,7 @@ const { requestChatCompletions } = require('../core/api');
 const { loadConfig } = require('../core/runtime-config');
 const { safeUserId, legacySafeUserId } = require('../core/utils');
 const { submitWorkerTaskWithAdmission } = require('./task-client');
-const { listResourceTasks } = require('./task-store');
+const { countResourceTasksByKind } = require('./task-store');
 const DASHBOARD_MEMORY_DIR = path.join(DATA_DIR, 'agent-memory-dashboard');
 const DAILY_DIR = path.join(DASHBOARD_MEMORY_DIR, 'daily');
 const AUTO_MEMORY_INTERVAL = 8;
@@ -230,11 +230,12 @@ async function runDreamDirect(userId) {
     return { success: true, beforeSize: input.length, afterSize: consolidated.length, deletedFiles: dailyFiles.length };
 }
 // Count active S2 memory tasks for a user to avoid hidden queue explosions.
-function countActiveMemoryTasks(kind, userId) {
-    return listResourceTasks({ statuses: ['pending', 'claiming', 'running', 'deferred'], limit: 1000 })
-        .filter(task => String(task.kind || '') === kind)
-        .filter(task => String(task.userId || '') === String(userId || ''))
-        .length;
+function countActiveMemoryTasks(kind, userId, limit = 1) {
+    return countResourceTasksByKind({
+        kind,
+        statuses: ['pending', 'claiming', 'running', 'deferred'],
+        limit: Math.max(1, Math.min(10, Number(limit || 1))),
+    }, task => String(task.userId || '') === String(userId || ''));
 }
 // Convert a task-client result into a small submission result.
 function normalizeMemorySubmission(result, kind) {
@@ -254,7 +255,7 @@ function submitAgentMemoryTask(options) {
     const userId = String(options.userId || '');
     if (!userId)
         return { accepted: false, status: 'invalid', message: 'userId is empty' };
-    if (countActiveMemoryTasks('agent_memory', userId) >= 2) {
+    if (countActiveMemoryTasks('agent_memory', userId, 2) >= 2) {
         return { accepted: false, status: 'skipped', message: 'active agent_memory task already exists' };
     }
     const recentMessages = normalizeRecentMessages(options.recentMessages || []);
@@ -278,7 +279,7 @@ function submitAgentMemoryCompactionTask(userId, source = 'agent-dream') {
     const safeUser = String(userId || '');
     if (!safeUser)
         return { accepted: false, status: 'invalid', message: 'userId is empty' };
-    if (countActiveMemoryTasks('agent_memory_compaction', safeUser) >= 1) {
+    if (countActiveMemoryTasks('agent_memory_compaction', safeUser, 1) >= 1) {
         return { accepted: false, status: 'skipped', message: 'active agent_memory_compaction task already exists' };
     }
     const result = submitWorkerTaskWithAdmission({

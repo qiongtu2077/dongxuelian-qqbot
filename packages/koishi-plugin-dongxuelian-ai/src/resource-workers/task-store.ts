@@ -48,6 +48,22 @@ interface ListTasksOptions {
   limit?: number
 }
 
+interface CountTasksOptions {
+  statuses?: string[]
+  limit?: number
+  kind?: string
+}
+
+interface CountTasksByKindOptions {
+  statuses?: string[]
+  limit?: number
+  kind: string
+}
+
+interface ScanTasksOptions {
+  kinds?: string[]
+}
+
 type ResourceTaskStatus = 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred'
 
 interface ResourceTask extends Record<string, unknown> {
@@ -70,6 +86,7 @@ interface ResourceTask extends Record<string, unknown> {
   startedAt?: string
   finishedAt?: string
   error?: string
+  retryAfter?: string
 }
 
 interface ResourceWorkerState extends Record<string, unknown> {
@@ -81,11 +98,33 @@ interface ResourceWorkerState extends Record<string, unknown> {
   heartbeatLagMs?: number | null
 }
 
+const RESOURCE_TASK_CANONICAL_STATUS_ORDER: ResourceTaskStatus[] = [
+  'cancelled',
+  'done',
+  'failed',
+  'deferred',
+  'running',
+  'claiming',
+  'pending',
+]
+
+const DEFAULT_ACTIVE_TASK_STATUSES: ResourceTaskStatus[] = ['pending', 'claiming', 'running', 'deferred']
+
 function redactRecord(value: Record<string, unknown> = {}): Record<string, unknown> {
   const redacted = redactSensitiveData(value)
   return redacted && typeof redacted === 'object' && !Array.isArray(redacted)
     ? redacted as Record<string, unknown>
     : {}
+}
+
+const DEFAULT_DAILY_SUMMARY_RETRY_AFTER_MS = Math.max(
+  5 * 60 * 1000,
+  Math.min(6 * 60 * 60 * 1000, Number(process.env.DAILY_SUMMARY_RETRY_AFTER_MS || 30 * 60 * 1000)),
+)
+
+function buildTaskRetryAfter(task: ResourceTask): string {
+  if (String(task.kind || '') !== 'daily_summary') return ''
+  return new Date(Date.now() + DEFAULT_DAILY_SUMMARY_RETRY_AFTER_MS).toISOString()
 }
 
 // 初始化 S2 任务系统目录。
@@ -146,13 +185,25 @@ function readTaskFile(file: string): ResourceTask | null {
   return task
 }
 
+function normalizeKinds(kinds: string[] = []): string[] {
+  return Array.from(new Set(kinds.map(String).filter(Boolean)))
+}
+
 // 扫描指定状态的任务，pending 会递归扫描 kind 子目录。
-function scanTasksByStatus(status: string, limit = 500): ResourceTask[] {
+function scanTasksByStatus(status: string, limit = 500, options: ScanTasksOptions = {}): ResourceTask[] {
   const recursive = status === 'pending'
-  const files = listJsonFiles(getTaskStatusDir(status), { recursive, maxFiles: limit })
+  const kinds = status === 'pending' ? normalizeKinds(options.kinds || []) : []
+  const files = kinds.length
+    ? kinds.flatMap(kind => listJsonFiles(getPendingKindDir(kind), { recursive, maxFiles: limit }))
+    : listJsonFiles(getTaskStatusDir(status), { recursive, maxFiles: limit })
   const tasks = files.map(readTaskFile).filter((task): task is ResourceTask => Boolean(task))
   tasks.sort((a, b) => Number(a.priority || 50) - Number(b.priority || 50) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
   return tasks.slice(0, limit)
+}
+
+function countTaskFilesByStatus(status: string, limit = 20000): number {
+  const recursive = status === 'pending'
+  return listJsonFiles(getTaskStatusDir(status), { recursive, maxFiles: limit }).length
 }
 
 // 列出任务，用于 Dashboard 队列视图。
@@ -171,20 +222,94 @@ function listResourceTasks(options: ListTasksOptions = {}): ResourceTask[] {
   return tasks.slice(0, limit)
 }
 
+// 按 kind + statuses 统计任务数量，供后台提交前门做轻量 backlog 判断。
+function countResourceTasks(options: CountTasksOptions = {}): number {
+  const kind = String(options.kind || '')
+  const limit = Math.max(1, Math.min(20000, Number(options.limit || 20000)))
+  if (kind) {
+    return countResourceTasksByKind({
+      kind,
+      statuses: options.statuses,
+      limit,
+    })
+  }
+  const tasks = listResourceTasks({
+    statuses: options.statuses,
+    limit,
+  })
+  return tasks.length
+}
+
+// 按 kind 统计任务数量；当只需要判断是否超过阈值时可提前停。
+function countResourceTasksByKind(options: CountTasksByKindOptions, matcher: (task: ResourceTask) => boolean = () => true): number {
+  const kind = String(options.kind || '')
+  if (!kind) return 0
+  const statuses = Array.isArray(options.statuses) && options.statuses.length
+    ? options.statuses.map(String)
+    : ['pending', 'claiming', 'running', 'deferred']
+  const limit = Math.max(1, Math.min(20000, Number(options.limit || 20000)))
+  let total = 0
+  for (const status of statuses) {
+    if (total >= limit) break
+    const dir = status === 'pending' ? getPendingKindDir(kind) : getTaskStatusDir(status)
+    const files = listJsonFiles(dir, { recursive: false, maxFiles: 20000 })
+    for (const file of files) {
+      const task = readTaskFile(file)
+      if (!task) continue
+      if (String(task.kind || '') !== kind) continue
+      if (!matcher(task)) continue
+      total += 1
+      if (total >= limit) break
+    }
+  }
+  return total
+}
+
+function isResourceTaskStatus(status: string): status is ResourceTaskStatus {
+  return (RESOURCE_TASK_CANONICAL_STATUS_ORDER as string[]).includes(status)
+}
+
+function normalizeTaskStatusList(statuses?: string[]): ResourceTaskStatus[] {
+  const raw = Array.isArray(statuses) && statuses.length ? statuses.map(String) : DEFAULT_ACTIVE_TASK_STATUSES
+  const result = raw.filter(isResourceTaskStatus)
+  return result.length ? result : DEFAULT_ACTIVE_TASK_STATUSES
+}
+
+// 按已知 kind + channel 查找活跃任务，避免调用方用全局窗口扫盘后再过滤。
+function findResourceTaskByKindAndChannel(kind: string, channelKey: string, statuses?: string[]): ResourceTask | null {
+  ensureTaskDirs()
+  const targetKind = String(kind || '')
+  const targetChannel = String(channelKey || '')
+  if (!targetKind) return null
+  for (const status of normalizeTaskStatusList(statuses)) {
+    const dir = status === 'pending' ? getPendingKindDir(targetKind) : getTaskStatusDir(status)
+    const files = listJsonFiles(dir, { recursive: false, maxFiles: 20000 })
+    for (const file of files) {
+      const task = readTaskFile(file)
+      if (!task) continue
+      if (String(task.kind || '') !== targetKind) continue
+      if (String(task.channelKey || '') !== targetChannel) continue
+      return task
+    }
+  }
+  return null
+}
+
 // 汇总任务队列状态，供 S7 总览读取。
 function getTaskQueueSummary(): Record<string, unknown> {
   const statuses = ['pending', 'claiming', 'running', 'done', 'failed', 'cancelled', 'deferred']
   const summary: Record<string, number> = {}
-  for (const status of statuses) summary[status] = scanTasksByStatus(status, 20000).length
+  for (const status of statuses) summary[status] = countTaskFilesByStatus(status, 20000)
   return summary
 }
 
 // claim 一个 pending 任务；rename 成功才算抢到。
 function claimNextTask(kind: string | string[], workerName: string): ResourceTask | null {
   ensureTaskDirs()
-  const kinds = Array.isArray(kind) ? kind.map(String).filter(Boolean) : [String(kind || '')].filter(Boolean)
-  const tasks = scanTasksByStatus('pending', 1000).filter(task => !kinds.length || kinds.includes(String(task.kind || '')))
+  const kinds = normalizeKinds(Array.isArray(kind) ? kind : [String(kind || '')])
+  const tasks = scanTasksByStatus('pending', 1000, { kinds }).filter(task => !kinds.length || kinds.includes(String(task.kind || '')))
   for (const task of tasks) {
+    if (hasNonPendingTaskCopy(task.kind, task.id)) continue
     const pendingFile = getTaskFile('pending', task.kind, task.id)
     const claimingFile = getTaskFile('claiming', task.kind, task.id)
     if (!renameFileAtomic(pendingFile, claimingFile)) continue
@@ -202,6 +327,7 @@ function claimTaskById(taskId: string, workerName: string): ResourceTask | null 
   const tasks = scanTasksByStatus('pending', 20000)
   const task = tasks.find(item => item.id === taskId)
   if (!task) return null
+  if (hasNonPendingTaskCopy(task.kind, task.id)) return null
   const pendingFile = getTaskFile('pending', task.kind, task.id)
   const claimingFile = getTaskFile('claiming', task.kind, task.id)
   if (!renameFileAtomic(pendingFile, claimingFile)) return null
@@ -220,27 +346,101 @@ function findCurrentTaskLocation(task: ResourceTask): { status: string; file: st
   return null
 }
 
-// 按 taskId 读取任务；用于 Dashboard 轮询单个后台任务状态。
-function getResourceTaskById(taskId: string): ResourceTask | null {
-  ensureTaskDirs()
+function hasNonPendingTaskCopy(kind: string, taskId: string): boolean {
+  for (const status of ['claiming', 'running', 'done', 'failed', 'cancelled', 'deferred']) {
+    if (fs.existsSync(getTaskFile(status, kind, taskId))) return true
+  }
+  return false
+}
+
+function hasTaskCopyInStatuses(kind: string, taskId: string, statuses: string[]): boolean {
+  for (const status of statuses) {
+    if (fs.existsSync(getTaskFile(status, kind, taskId))) return true
+  }
+  return false
+}
+
+function hasHigherRankTaskCopy(task: ResourceTask): boolean {
+  const currentStatus = String(task.status || '') as ResourceTaskStatus
+  const currentIndex = RESOURCE_TASK_CANONICAL_STATUS_ORDER.indexOf(currentStatus)
+  if (currentIndex <= 0) return false
+  return hasTaskCopyInStatuses(
+    task.kind,
+    task.id,
+    RESOURCE_TASK_CANONICAL_STATUS_ORDER.slice(0, currentIndex),
+  )
+}
+
+function getCanonicalTaskCopyById(taskId: string, statuses?: ResourceTaskStatus[]): ResourceTask | null {
   const target = String(taskId || '')
   if (!target) return null
-  for (const status of ['pending', 'claiming', 'running', 'done', 'failed', 'deferred', 'cancelled']) {
+  const allowedStatuses = new Set<ResourceTaskStatus>(
+    Array.isArray(statuses) && statuses.length
+      ? statuses.map(String).filter(Boolean) as ResourceTaskStatus[]
+      : RESOURCE_TASK_CANONICAL_STATUS_ORDER,
+  )
+  for (const status of RESOURCE_TASK_CANONICAL_STATUS_ORDER) {
+    if (!allowedStatuses.has(status)) continue
     const task = scanTasksByStatus(status, 20000).find(item => String(item.id || '') === target)
     if (task) return task
   }
   return null
 }
 
+function getResourceTaskByIdForKind(taskId: string, kind: string, statuses?: ResourceTaskStatus[]): ResourceTask | null {
+  const target = String(taskId || '')
+  const targetKind = String(kind || '')
+  if (!target || !targetKind) return null
+  const allowedStatuses = new Set<ResourceTaskStatus>(
+    Array.isArray(statuses) && statuses.length
+      ? statuses.map(String).filter(Boolean) as ResourceTaskStatus[]
+      : RESOURCE_TASK_CANONICAL_STATUS_ORDER,
+  )
+  for (const status of RESOURCE_TASK_CANONICAL_STATUS_ORDER) {
+    if (!allowedStatuses.has(status)) continue
+    const task = readTaskFile(getTaskFile(status, targetKind, target))
+    if (task) return task
+  }
+  return null
+}
+
+function prepareTaskTransition(task: ResourceTask, targetStatus: ResourceTaskStatus): { file: string } | null {
+  const targetFile = getTaskFile(targetStatus, task.kind, task.id)
+  const knownFile = getTaskFile(task.status, task.kind, task.id)
+  if (fs.existsSync(targetFile)) return null
+  if (hasHigherRankTaskCopy(task)) return null
+  if (task.status === targetStatus) return { file: targetFile }
+  if (fs.existsSync(knownFile)) {
+    if (!renameFileAtomic(knownFile, targetFile)) return null
+    return { file: targetFile }
+  }
+  return null
+}
+
+// 按 taskId 读取任务；用于 Dashboard 轮询单个后台任务状态。
+function getResourceTaskById(taskId: string): ResourceTask | null {
+  ensureTaskDirs()
+  return getCanonicalTaskCopyById(taskId)
+}
+
 // 将 claiming 任务移动为 running。
 function markTaskRunning(task: ResourceTask, workerName: string, step = 'starting'): ResourceTask {
-  const location = findCurrentTaskLocation(task)
-  const runningFile = getTaskFile('running', task.kind, task.id)
+  const target = prepareTaskTransition(task, 'running')
+  if (!target) return task
   const next: ResourceTask = { ...task, status: 'running', claimedBy: workerName, startedAt: task.startedAt || nowIso(), updatedAt: nowIso(), step }
-  if (location && location.status !== 'running') renameFileAtomic(location.file, runningFile)
-  writeJsonAtomic(runningFile, next)
+  writeJsonAtomic(target.file, next)
   writeWorkerEvent('task_running', { taskId: next.id, kind: next.kind, workerName, step })
   return next
+}
+
+// 当任务未能从 claiming 进入 running 且当前仍是唯一 claiming 副本时，
+// 保守地将其收为 failed，避免新任务永久沉底在 claiming。
+function failIsolatedClaimingTask(task: ResourceTask, error: unknown, result: Record<string, unknown> = {}): ResourceTask {
+  if (String(task?.status || '') !== 'claiming') return task
+  const claimingFile = getTaskFile('claiming', task.kind, task.id)
+  if (!fs.existsSync(claimingFile)) return task
+  if (hasTaskCopyInStatuses(task.kind, task.id, ['pending', 'running', 'done', 'failed', 'cancelled', 'deferred'])) return task
+  return failTask(task, error, result)
 }
 
 // 更新 running 任务步骤。
@@ -265,36 +465,43 @@ function writeTaskResult(taskId: string, result: Record<string, unknown>): strin
 
 // 将任务标记为 done。
 function completeTask(task: ResourceTask, result: Record<string, unknown> = {}): ResourceTask {
-  const location = findCurrentTaskLocation(task)
-  const doneFile = getTaskFile('done', task.kind, task.id)
-  writeTaskResult(task.id, { kind: task.kind, ok: true, ...result })
   const next: ResourceTask = { ...task, status: 'done', finishedAt: nowIso(), updatedAt: nowIso(), step: 'done' }
-  if (location && location.status !== 'done') renameFileAtomic(location.file, doneFile)
-  writeJsonAtomic(doneFile, next)
+  const target = prepareTaskTransition(task, 'done')
+  if (!target) return task
+  writeTaskResult(task.id, { kind: task.kind, ok: true, ...result })
+  writeJsonAtomic(target.file, next)
   writeWorkerEvent('task_done', { taskId: next.id, kind: next.kind })
   return next
 }
 
 // 将任务标记为 failed。
 function failTask(task: ResourceTask, error: unknown, result: Record<string, unknown> = {}): ResourceTask {
-  const location = findCurrentTaskLocation(task)
-  const failedFile = getTaskFile('failed', task.kind, task.id)
   const message = redactSensitiveText(error instanceof Error ? error.message : String(error || ''))
+  const retryAfter = buildTaskRetryAfter(task)
+  const next: ResourceTask = {
+    ...task,
+    status: 'failed',
+    finishedAt: nowIso(),
+    updatedAt: nowIso(),
+    step: 'failed',
+    error: message,
+    retryAfter: retryAfter || undefined,
+  }
+  const target = prepareTaskTransition(task, 'failed')
+  if (!target) return task
   writeTaskResult(task.id, { kind: task.kind, ok: false, error: message, ...result })
-  const next: ResourceTask = { ...task, status: 'failed', finishedAt: nowIso(), updatedAt: nowIso(), step: 'failed', error: message }
-  if (location && location.status !== 'failed') renameFileAtomic(location.file, failedFile)
-  writeJsonAtomic(failedFile, next)
-  writeWorkerEvent('task_failed', { taskId: next.id, kind: next.kind, error: message })
+  writeJsonAtomic(target.file, next)
+  writeWorkerEvent('task_failed', { taskId: next.id, kind: next.kind, error: message, retryAfter: retryAfter || '' })
   return next
 }
 
 // 将任务标记为 deferred，供 S1 返回 defer 时保存长期状态。
 function deferTask(task: ResourceTask, reason = 'deferred'): ResourceTask {
-  const location = findCurrentTaskLocation(task)
   const deferredFile = getTaskFile('deferred', task.kind, task.id)
   const safeReason = redactSensitiveText(reason)
   const next: ResourceTask = { ...task, status: 'deferred', updatedAt: nowIso(), step: 'deferred', error: safeReason }
-  if (location && location.status !== 'deferred') renameFileAtomic(location.file, deferredFile)
+  const target = prepareTaskTransition(task, 'deferred')
+  if (!target) return task
   writeJsonAtomic(deferredFile, next)
   writeWorkerEvent('task_deferred', { taskId: next.id, kind: next.kind, reason: safeReason })
   return next
@@ -302,11 +509,23 @@ function deferTask(task: ResourceTask, reason = 'deferred'): ResourceTask {
 
 // 将 claiming/running/deferred 任务放回 S2 pending 队列。
 function requeueTask(task: ResourceTask, reason = 'requeued'): ResourceTask {
-  const location = findCurrentTaskLocation(task)
   const pendingFile = getTaskFile('pending', task.kind, task.id)
   const safeReason = redactSensitiveText(reason)
-  const next: ResourceTask = { ...task, status: 'pending', updatedAt: nowIso(), step: 'pending', requeueReason: safeReason }
-  if (location && location.status !== 'pending') renameFileAtomic(location.file, pendingFile)
+  const next: ResourceTask = {
+    ...task,
+    status: 'pending',
+    updatedAt: nowIso(),
+    step: 'pending',
+    requeueReason: safeReason,
+    claimedBy: undefined,
+    claimedAt: undefined,
+    startedAt: undefined,
+    finishedAt: undefined,
+    error: undefined,
+    retryAfter: undefined,
+  }
+  const target = prepareTaskTransition(task, 'pending')
+  if (!target) return task
   writeJsonAtomic(pendingFile, next)
   writeWorkerEvent('task_requeued', { taskId: next.id, kind: next.kind, reason: safeReason })
   return next
@@ -316,8 +535,6 @@ function requeueTask(task: ResourceTask, reason = 'requeued'): ResourceTask {
 // 幂等：若 notify.status 已是目标值则跳过，避免每轮 tick 重复写同一 taskId。
 // 写回路径以传入 task 所在位置（task.status）为准，不走多副本猜测。
 function updateTaskNotifyStatus(task: ResourceTask, status: string, error = ''): ResourceTask {
-  const currentNotifyStatus = String((task.notify || {}).status || '')
-  if (currentNotifyStatus === status) return task
   // 优先写回扫描到的实体所在位置，不依赖 findCurrentTaskLocation 跨目录猜测
   const knownFile = getTaskFile(task.status, task.kind, task.id)
   const location = fs.existsSync(knownFile)
@@ -325,11 +542,15 @@ function updateTaskNotifyStatus(task: ResourceTask, status: string, error = ''):
     : findCurrentTaskLocation(task)
   if (!location) return task
   const safeError = redactSensitiveText(error)
+  const currentTask = readTaskFile(location.file) || task
+  const currentNotifyStatus = String((currentTask.notify || {}).status || '')
+  if (currentNotifyStatus === status && status !== 'failed') return currentTask
+  if (['sent', 'skipped'].includes(currentNotifyStatus) && status !== currentNotifyStatus) return currentTask
   const next: ResourceTask = {
-    ...task,
+    ...currentTask,
     updatedAt: nowIso(),
     notify: {
-      ...(task.notify || {}),
+      ...(currentTask.notify || {}),
       status,
       error: safeError,
       updatedAt: nowIso(),
@@ -343,15 +564,13 @@ function updateTaskNotifyStatus(task: ResourceTask, status: string, error = ''):
 // 取消 pending/deferred 任务。
 function cancelTask(taskId: string, actor = 'system', reason = 'cancelled'): boolean {
   ensureTaskDirs()
-  const candidates = [...scanTasksByStatus('pending', 20000), ...scanTasksByStatus('deferred', 20000)]
-  const task = candidates.find(item => item.id === taskId)
+  const task = getCanonicalTaskCopyById(taskId, ['deferred', 'pending'])
   if (!task) return false
-  const src = getTaskFile(task.status, task.kind, task.id)
-  const dst = getTaskFile('cancelled', task.kind, task.id)
+  const target = prepareTaskTransition(task, 'cancelled')
+  if (!target) return false
   const safeReason = redactSensitiveText(reason)
-  const next = { ...task, status: 'cancelled', updatedAt: nowIso(), finishedAt: nowIso(), error: safeReason }
-  renameFileAtomic(src, dst)
-  writeJsonAtomic(dst, next)
+  const next: ResourceTask = { ...task, status: 'cancelled', updatedAt: nowIso(), finishedAt: nowIso(), error: safeReason }
+  writeJsonAtomic(target.file, next)
   writeWorkerEvent('task_cancelled', { taskId, kind: task.kind, actor, reason: safeReason })
   return true
 }
@@ -399,11 +618,16 @@ export = {
   createTaskId,
   submitResourceTask,
   getResourceTaskById,
+  getResourceTaskByIdForKind,
+  findResourceTaskByKindAndChannel,
   listResourceTasks,
+  countResourceTasks,
+  countResourceTasksByKind,
   getTaskQueueSummary,
   claimNextTask,
   claimTaskById,
   markTaskRunning,
+  failIsolatedClaimingTask,
   updateTaskStep,
   writeTaskResult,
   completeTask,

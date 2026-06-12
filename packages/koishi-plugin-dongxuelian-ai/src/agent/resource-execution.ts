@@ -9,6 +9,7 @@ const {
   submitResourceTask,
   claimTaskById,
   markTaskRunning,
+  failIsolatedClaimingTask,
   updateTaskStep,
   completeTask,
   failTask,
@@ -94,6 +95,10 @@ async function runAgentWithResourceGate<T>(options: AgentResourceRunOptions<T>):
 
   task = claimTaskById(taskId, 'agent-inline-worker') || task
   task = markTaskRunning(task, 'agent-inline-worker', 'waiting_lock')
+  if (task.status !== 'running') {
+    failIsolatedClaimingTask(task, new Error('resource task did not enter running'), { mode: 'agent', reason: 'task_did_not_enter_running' })
+    throw new Error('resource task did not enter running')
+  }
   let gateHandle: { updateStep(step: string, memAvailableMb?: number | null): void; release(reason?: string): void } | null = null
   try {
     gateHandle = await acquireResourceGate({

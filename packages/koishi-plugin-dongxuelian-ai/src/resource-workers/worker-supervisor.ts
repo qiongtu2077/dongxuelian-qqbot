@@ -6,9 +6,10 @@
 const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
-const { admitTask } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
+const { decideAdmission } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
+const { readResourceSnapshot } = require('../resource-scheduler/resource-snapshot') as typeof import('../resource-scheduler/resource-snapshot')
 const { SUPERVISOR_DIR } = require('./task-paths') as typeof import('./task-paths')
-const { listWorkerStates, listResourceTasks, failTask, requeueTask, writeWorkerEvent } = require('./task-store') as typeof import('./task-store')
+const { listWorkerStates, listResourceTasks, countResourceTasks, failTask, failIsolatedClaimingTask, requeueTask, writeWorkerEvent } = require('./task-store') as typeof import('./task-store')
 const { ensureDir, isProcessAlive, nowIso, writeJsonAtomic } = require('../resource-common/files') as typeof import('../resource-common/files')
 const { writeProcessCleanupEvent } = require('../resource-system/system-protection') as typeof import('../resource-system/system-protection')
 
@@ -55,6 +56,10 @@ const WORKER_MEMORY_LIMITS: Record<string, number> = {
   media: Number(process.env.RESOURCE_MEDIA_WORKER_OLD_SPACE_MB || 512),
 }
 const DEFAULT_WORKER_TYPES = ['daily', 'agent', 'media']
+const DEFERRED_RESTORE_MAX_ACTIVE = Math.max(
+  1,
+  Number(process.env.RESOURCE_DEFERRED_RESTORE_MAX_ACTIVE || process.env.DAILY_SLOT_BACKLOG_STOP_MAX_PENDING || 8),
+)
 
 // 判断 deferred 任务是否已经超过自身有效期。
 function isTaskExpired(task: ResourceTaskLike): boolean {
@@ -65,6 +70,24 @@ function isTaskExpired(task: ResourceTaskLike): boolean {
 // 判断 S1 决策是否代表任务可以回到 S2 pending 队列等待 worker 执行。
 function canRestoreDeferredTask(decision: string): boolean {
   return decision === 'run_now' || decision === 'queue' || decision === 'downgrade'
+}
+
+function didDeferredTaskTransition(task: ResourceTaskLike, next: ResourceTaskLike | null | undefined, expectedStatus: string): boolean {
+  return String(task?.status || '') !== expectedStatus
+    && String(next?.status || '') === expectedStatus
+}
+
+function getDeferredRestoreMaxActive(kind: string): number | null {
+  if (String(kind || '') !== 'daily_summary') return null
+  return DEFERRED_RESTORE_MAX_ACTIVE
+}
+
+function getDeferredRestoreActiveBacklog(kind: string): number {
+  return countResourceTasks({
+    kind,
+    statuses: ['pending', 'claiming', 'running'],
+    limit: 20000,
+  })
 }
 
 // 返回 supervisor 状态文件路径。
@@ -166,8 +189,31 @@ function auditStaleRunningTasks(staleMs = 30000): number {
     const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > staleMs
     const alive = worker && isProcessAlive(worker.pid)
     if (!stale || alive) continue
-    failTask(task, new Error(`worker heartbeat stale: ${workerName}`), { reason: 'worker_stale' })
+    const next = failTask(task, new Error(`worker heartbeat stale: ${workerName}`), { reason: 'worker_stale' })
+    if (String(next?.status || '') !== 'failed') continue
     writeProcessCleanupEvent({ event: 'worker_stale_recovered', workerName, taskId: task.id, kind: task.kind, pid: worker?.pid || null })
+    recovered++
+  }
+  return recovered
+}
+
+// 检查 claiming 任务对应 worker 是否 stale；仅回收无活 worker 且仍是唯一 claiming 副本的孤儿任务。
+function auditStaleClaimingTasks(staleMs = 30000): number {
+  const workers = listWorkerStates()
+  const workerByName: Record<string, ResourceWorkerStateLike> = {}
+  for (const worker of workers) workerByName[String(worker.name || '')] = worker
+  const claiming = listResourceTasks({ statuses: ['claiming'], limit: 500 })
+  let recovered = 0
+  for (const task of claiming) {
+    const workerName = String(task.claimedBy || '')
+    const worker = workerByName[workerName]
+    const heartbeatAt = Date.parse(String(worker?.heartbeatAt || task.updatedAt || task.claimedAt || ''))
+    const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > staleMs
+    const alive = worker && isProcessAlive(worker.pid)
+    if (!stale || alive) continue
+    const next = failIsolatedClaimingTask(task, new Error(`worker claiming stale: ${workerName}`), { reason: 'claiming_stale' })
+    if (String(next?.status || '') !== 'failed') continue
+    writeProcessCleanupEvent({ event: 'claiming_stale_recovered', workerName, taskId: task.id, kind: task.kind, pid: worker?.pid || null })
     recovered++
   }
   return recovered
@@ -176,16 +222,34 @@ function auditStaleRunningTasks(staleMs = 30000): number {
 // 复检 deferred 任务；资源恢复后搬回 pending，过期或被明确拒绝时失败落盘。
 function auditDeferredTasks(limit = 500): Record<string, number> {
   const deferred = listResourceTasks({ statuses: ['deferred'], limit })
+  const restoreBudgetByKind = new Map<string, { maxActive: number, activeBacklog: number }>()
   let restored = 0
   let failed = 0
   let kept = 0
   for (const task of deferred) {
     if (isTaskExpired(task)) {
-      failTask(task, new Error('deferred task expired'), { reason: 'task_expired_while_deferred' })
-      failed++
+      const next = failTask(task, new Error('deferred task expired'), { reason: 'task_expired_while_deferred' })
+      if (didDeferredTaskTransition(task, next, 'failed')) failed++
+      else kept++
       continue
     }
-    const admission = admitTask({
+    const kind = String(task.kind || '')
+    const restoreMaxActive = getDeferredRestoreMaxActive(kind)
+    if (restoreMaxActive !== null) {
+      let budget = restoreBudgetByKind.get(kind)
+      if (!budget) {
+        budget = {
+          maxActive: restoreMaxActive,
+          activeBacklog: getDeferredRestoreActiveBacklog(kind),
+        }
+        restoreBudgetByKind.set(kind, budget)
+      }
+      if (budget.activeBacklog >= budget.maxActive) {
+        kept++
+        continue
+      }
+    }
+    const admission = decideAdmission({
       taskId: task.id,
       kind: task.kind,
       source: 'worker-supervisor-deferred-audit',
@@ -195,15 +259,20 @@ function auditDeferredTasks(limit = 500): Record<string, number> {
       priority: task.priority,
       queueTimeoutMs: task.timeoutMs,
       runTimeoutMs: task.timeoutMs,
-    })
+    }, readResourceSnapshot())
     if (canRestoreDeferredTask(String(admission.decision || ''))) {
-      requeueTask(task, `deferred restored: ${admission.reason || admission.decision}`)
-      restored++
+      const next = requeueTask(task, `deferred restored: ${admission.reason || admission.decision}`)
+      if (didDeferredTaskTransition(task, next, 'pending')) {
+        restored++
+        const budget = restoreBudgetByKind.get(kind)
+        if (budget) budget.activeBacklog += 1
+      } else kept++
       continue
     }
     if (admission.decision === 'reject' || admission.decision === 'silent_drop') {
-      failTask(task, new Error(String(admission.reason || admission.decision)), { reason: admission.reason || admission.decision })
-      failed++
+      const next = failTask(task, new Error(String(admission.reason || admission.decision)), { reason: admission.reason || admission.decision })
+      if (didDeferredTaskTransition(task, next, 'failed')) failed++
+      else kept++
       continue
     }
     kept++
@@ -233,8 +302,9 @@ function runSupervisorOnce(options: SupervisorOptions = {}): Record<string, unkn
   const types = options.types && options.types.length ? options.types : DEFAULT_WORKER_TYPES
   const started = options.start ? ensureWorkerProcesses(types) : []
   const staleRecovered = auditStaleRunningTasks()
+  const staleClaimingRecovered = auditStaleClaimingTasks()
   const deferred = auditDeferredTasks()
-  return writeSupervisorState({ started, staleRecovered, deferred, workers: listWorkerStates() })
+  return writeSupervisorState({ started, staleRecovered, staleClaimingRecovered, deferred, workers: listWorkerStates() })
 }
 
 if (require.main === module) {
@@ -248,6 +318,7 @@ export = {
   startWorkerProcess,
   ensureWorkerProcesses,
   auditStaleRunningTasks,
+  auditStaleClaimingTasks,
   auditDeferredTasks,
   getSupervisorStatus,
   runSupervisorOnce,

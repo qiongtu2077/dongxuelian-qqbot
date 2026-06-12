@@ -38,6 +38,16 @@ interface ResultNotifierTaskLike extends Record<string, unknown> {
 type ResultNotifierResult = Record<string, unknown>
 type ResultNotifierSender = (task: ResultNotifierTaskLike, result: ResultNotifierResult) => Promise<boolean> | boolean
 
+const WAITING_SENDER_EVENT_DEDUPE_WINDOW_MS = Math.max(
+  1000,
+  Math.min(5 * 60 * 1000, Number(process.env.RESOURCE_NOTIFY_WAITING_SENDER_DEDUPE_MS || 60000)),
+)
+const recentWaitingSenderEvents = new Map<string, number>()
+const FAILED_NOTIFY_RETRY_COOLDOWN_MS = Math.max(
+  1000,
+  Math.min(30 * 60 * 1000, Number(process.env.RESOURCE_NOTIFY_FAILED_RETRY_COOLDOWN_MS || 60000)),
+)
+
 interface AgentNotifyResultLike {
   reply?: unknown
   message?: unknown
@@ -82,7 +92,37 @@ function readTaskResult(taskId: string): ResultNotifierResult {
 function shouldNotifyTask(task: ResultNotifierTaskLike): boolean {
   const notify = task?.notify || {}
   if (!notify || notify.status === 'sent' || notify.status === 'skipped') return false
+  if (notify.status === 'failed' && isFailedNotifyCoolingDown(notify)) return false
   return task.status === 'done'
+}
+
+function isFailedNotifyCoolingDown(notify: ResultNotifyInfo, now = Date.now()): boolean {
+  const updatedAtMs = Date.parse(String(notify?.updatedAt || ''))
+  if (!Number.isFinite(updatedAtMs) || updatedAtMs <= 0) return false
+  return now - updatedAtMs < FAILED_NOTIFY_RETRY_COOLDOWN_MS
+}
+
+function buildWaitingSenderEventKey(task: ResultNotifierTaskLike, target: string): string {
+  return [
+    String(task?.id || ''),
+    String(task?.kind || ''),
+    String(target || ''),
+  ].join('|')
+}
+
+function shouldWriteWaitingSenderEvent(task: ResultNotifierTaskLike, target: string, now = Date.now()): boolean {
+  const key = buildWaitingSenderEventKey(task, target)
+  const lastAt = recentWaitingSenderEvents.get(key) || 0
+  if (now - lastAt < WAITING_SENDER_EVENT_DEDUPE_WINDOW_MS) return false
+  recentWaitingSenderEvents.set(key, now)
+  for (const [entryKey, entryAt] of recentWaitingSenderEvents) {
+    if (now - entryAt > WAITING_SENDER_EVENT_DEDUPE_WINDOW_MS) recentWaitingSenderEvents.delete(entryKey)
+  }
+  return true
+}
+
+function didNotifyStatusPersist(next: ResultNotifierTaskLike | null | undefined, expectedStatus: string): boolean {
+  return String(next && next.notify && next.notify.status || '') === expectedStatus
 }
 
 // 把未知错误压成日志可读文本。
@@ -296,22 +336,27 @@ async function notifyCompletedTasks(options: NotifyCompletedOptions = {}): Promi
     const target = String(notify.target || 'none')
     const result = readTaskResult(String(task.id || ''))
     if (target === 'none' || target === 'dashboard' || /^media_/i.test(String(task.kind || ''))) {
-      updateTaskNotifyStatus(task, 'skipped')
-      skipped++
+      const next = updateTaskNotifyStatus(task, 'skipped')
+      if (didNotifyStatusPersist(next, 'skipped')) skipped++
       continue
     }
     if (!options.sender) {
-      writeWorkerEvent('task_notify_waiting_sender', { taskId: task.id, kind: task.kind, target })
+      if (shouldWriteWaitingSenderEvent(task, target)) {
+        writeWorkerEvent('task_notify_waiting_sender', { taskId: task.id, kind: task.kind, target })
+      }
       continue
     }
     try {
       const ok = await Promise.resolve(options.sender(task, result))
-      updateTaskNotifyStatus(task, ok ? 'sent' : 'failed', ok ? '' : 'sender returned false')
-      if (ok) sent++
-      else failed++
+      const next = updateTaskNotifyStatus(task, ok ? 'sent' : 'failed', ok ? '' : 'sender returned false')
+      if (ok) {
+        if (didNotifyStatusPersist(next, 'sent')) sent++
+      } else if (didNotifyStatusPersist(next, 'failed')) {
+        failed++
+      }
     } catch (error) {
-      updateTaskNotifyStatus(task, 'failed', error instanceof Error ? error.message : String(error || 'notify failed'))
-      failed++
+      const next = updateTaskNotifyStatus(task, 'failed', error instanceof Error ? error.message : String(error || 'notify failed'))
+      if (didNotifyStatusPersist(next, 'failed')) failed++
     }
   }
   return { scanned: tasks.length, sent, skipped, failed }

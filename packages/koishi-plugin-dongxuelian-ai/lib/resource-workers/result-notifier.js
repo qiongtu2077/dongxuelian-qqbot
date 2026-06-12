@@ -10,6 +10,9 @@ const { h } = require('koishi');
 const { listResourceTasks, updateTaskNotifyStatus, writeWorkerEvent } = require('./task-store');
 const { getTaskResultDir } = require('./task-paths');
 const { guardAgentRetellReply, hasSearchFailureMaterial, redactAgentMaterial, } = require('../chat/agent-retell-guard');
+const WAITING_SENDER_EVENT_DEDUPE_WINDOW_MS = Math.max(1000, Math.min(5 * 60 * 1000, Number(process.env.RESOURCE_NOTIFY_WAITING_SENDER_DEDUPE_MS || 60000)));
+const recentWaitingSenderEvents = new Map();
+const FAILED_NOTIFY_RETRY_COOLDOWN_MS = Math.max(1000, Math.min(30 * 60 * 1000, Number(process.env.RESOURCE_NOTIFY_FAILED_RETRY_COOLDOWN_MS || 60000)));
 const AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE = /(?:搜索状态：weak_hit|weak_hit|弱命中|正文质量：(?:short|empty|garbage|error|unknown)|未读到可用正文|未打开候选网页正文|不能作为事实依据)/i;
 // 读取任务 result.json，缺失时返回空对象。
 function readTaskResult(taskId) {
@@ -26,7 +29,37 @@ function shouldNotifyTask(task) {
     const notify = task?.notify || {};
     if (!notify || notify.status === 'sent' || notify.status === 'skipped')
         return false;
+    if (notify.status === 'failed' && isFailedNotifyCoolingDown(notify))
+        return false;
     return task.status === 'done';
+}
+function isFailedNotifyCoolingDown(notify, now = Date.now()) {
+    const updatedAtMs = Date.parse(String(notify?.updatedAt || ''));
+    if (!Number.isFinite(updatedAtMs) || updatedAtMs <= 0)
+        return false;
+    return now - updatedAtMs < FAILED_NOTIFY_RETRY_COOLDOWN_MS;
+}
+function buildWaitingSenderEventKey(task, target) {
+    return [
+        String(task?.id || ''),
+        String(task?.kind || ''),
+        String(target || ''),
+    ].join('|');
+}
+function shouldWriteWaitingSenderEvent(task, target, now = Date.now()) {
+    const key = buildWaitingSenderEventKey(task, target);
+    const lastAt = recentWaitingSenderEvents.get(key) || 0;
+    if (now - lastAt < WAITING_SENDER_EVENT_DEDUPE_WINDOW_MS)
+        return false;
+    recentWaitingSenderEvents.set(key, now);
+    for (const [entryKey, entryAt] of recentWaitingSenderEvents) {
+        if (now - entryAt > WAITING_SENDER_EVENT_DEDUPE_WINDOW_MS)
+            recentWaitingSenderEvents.delete(entryKey);
+    }
+    return true;
+}
+function didNotifyStatusPersist(next, expectedStatus) {
+    return String(next && next.notify && next.notify.status || '') === expectedStatus;
 }
 // 把未知错误压成日志可读文本。
 function getNotifierErrorMessage(error) {
@@ -255,25 +288,32 @@ async function notifyCompletedTasks(options = {}) {
         const target = String(notify.target || 'none');
         const result = readTaskResult(String(task.id || ''));
         if (target === 'none' || target === 'dashboard' || /^media_/i.test(String(task.kind || ''))) {
-            updateTaskNotifyStatus(task, 'skipped');
-            skipped++;
+            const next = updateTaskNotifyStatus(task, 'skipped');
+            if (didNotifyStatusPersist(next, 'skipped'))
+                skipped++;
             continue;
         }
         if (!options.sender) {
-            writeWorkerEvent('task_notify_waiting_sender', { taskId: task.id, kind: task.kind, target });
+            if (shouldWriteWaitingSenderEvent(task, target)) {
+                writeWorkerEvent('task_notify_waiting_sender', { taskId: task.id, kind: task.kind, target });
+            }
             continue;
         }
         try {
             const ok = await Promise.resolve(options.sender(task, result));
-            updateTaskNotifyStatus(task, ok ? 'sent' : 'failed', ok ? '' : 'sender returned false');
-            if (ok)
-                sent++;
-            else
+            const next = updateTaskNotifyStatus(task, ok ? 'sent' : 'failed', ok ? '' : 'sender returned false');
+            if (ok) {
+                if (didNotifyStatusPersist(next, 'sent'))
+                    sent++;
+            }
+            else if (didNotifyStatusPersist(next, 'failed')) {
                 failed++;
+            }
         }
         catch (error) {
-            updateTaskNotifyStatus(task, 'failed', error instanceof Error ? error.message : String(error || 'notify failed'));
-            failed++;
+            const next = updateTaskNotifyStatus(task, 'failed', error instanceof Error ? error.message : String(error || 'notify failed'));
+            if (didNotifyStatusPersist(next, 'failed'))
+                failed++;
         }
     }
     return { scanned: tasks.length, sent, skipped, failed };

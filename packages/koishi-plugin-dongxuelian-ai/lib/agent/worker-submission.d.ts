@@ -26,8 +26,12 @@ interface AdmissionDecisionLike {
     decision?: string;
     reason?: unknown;
 }
-declare function countActiveAgentWorkerTasks(kind: string, channelKey: string, userId: string): number;
-declare function formatAcceptedMessage(task: ResourceTaskLike | null | undefined, admission: AdmissionDecisionLike | null | undefined, mode?: 'normal' | 'quiet'): string;
+interface ResourceDirectiveLike {
+    action?: string;
+    reason?: unknown;
+}
+declare function countActiveAgentWorkerTasks(kind: string, channelKey: string, userId: string, limit?: number): number;
+declare function formatAcceptedMessage(task: ResourceTaskLike | null | undefined, directiveOrAdmission: ResourceDirectiveLike | AdmissionDecisionLike | null | undefined, admissionOrMode: AdmissionDecisionLike | 'normal' | 'quiet' | null | undefined, modeArg?: 'normal' | 'quiet'): string;
 declare function submitAgentWorkerTask(options: SubmitAgentWorkerTaskOptions): AgentWorkerSubmissionResult;
 declare const _default: {
     submitAgentWorkerTask: typeof submitAgentWorkerTask;
