@@ -122,10 +122,52 @@ function testResourceCleanupLifecycle() {
     error: 'old failed copy',
     updatedAt: '2026-04-30T00:00:00.000Z',
   })
+  writeJson(path.join(tasksRoot, 'done', 'cancelled-vs-done-task.json'), {
+    ...baseTask,
+    id: 'cancelled-vs-done-task',
+    kind: 'agent_task',
+    status: 'done',
+    notify: { target: 'group', channelKey: 'group-cleanup', status: 'sent' },
+  })
+  writeJson(path.join(tasksRoot, 'cancelled', 'cancelled-vs-done-task.json'), {
+    ...baseTask,
+    id: 'cancelled-vs-done-task',
+    kind: 'agent_task',
+    status: 'cancelled',
+    error: 'user cancelled',
+    finishedAt: oldIso,
+    notify: { target: 'group', channelKey: 'group-cleanup', status: 'sent' },
+  })
   writeJson(path.join(resultsRoot, 'dup-task-1', 'result.json'), {
     taskId: 'dup-task-1',
     createdAt: '2026-05-01T00:00:00.000Z',
     ok: true,
+  })
+  writeJson(path.join(tasksRoot, 'done', 'notify-pending-task.json'), {
+    ...baseTask,
+    id: 'notify-pending-task',
+    kind: 'agent_task',
+    status: 'done',
+    notify: { target: 'group', channelKey: 'group-cleanup', status: 'pending' },
+  })
+  writeJson(path.join(resultsRoot, 'notify-pending-task', 'result.json'), {
+    taskId: 'notify-pending-task',
+    createdAt: '2026-05-01T00:00:00.000Z',
+    ok: true,
+    reply: 'still waiting to notify',
+  })
+  writeJson(path.join(tasksRoot, 'done', 'notify-sent-task.json'), {
+    ...baseTask,
+    id: 'notify-sent-task',
+    kind: 'agent_task',
+    status: 'done',
+    notify: { target: 'group', channelKey: 'group-cleanup', status: 'sent' },
+  })
+  writeJson(path.join(resultsRoot, 'notify-sent-task', 'result.json'), {
+    taskId: 'notify-sent-task',
+    createdAt: '2026-05-01T00:00:00.000Z',
+    ok: true,
+    reply: 'already notified',
   })
   writeJson(path.join(resultsRoot, 'fresh-task', 'result.json'), {
     taskId: 'fresh-task',
@@ -137,13 +179,15 @@ function testResourceCleanupLifecycle() {
 
   const dryRun1 = runCleanup('resource cleanup dry-run before apply', dataDir, ['--results-ttl-days', '7'])
   if (!dryRun1) return
-  check('dry-run reports duplicate task ids', dryRun1.summary.duplicateTaskIds === 1, JSON.stringify(dryRun1.summary))
-  check('dry-run reports duplicate copies to archive', dryRun1.summary.duplicateCopiesArchived === 1, JSON.stringify(dryRun1.summary))
+  check('dry-run reports duplicate task ids', dryRun1.summary.duplicateTaskIds === 2, JSON.stringify(dryRun1.summary))
+  check('dry-run reports duplicate copies to archive', dryRun1.summary.duplicateCopiesArchived === 2, JSON.stringify(dryRun1.summary))
   check('dry-run reports daily summary notify fix', dryRun1.summary.dailySummarySkippedFixed === 1, JSON.stringify(dryRun1.summary))
-  check('dry-run reports expired result archive', dryRun1.summary.resultsExpiredArchived === 1, JSON.stringify(dryRun1.summary))
+  check('dry-run reports expired result archive only for safe terminal results', dryRun1.summary.resultsExpiredArchived === 2, JSON.stringify(dryRun1.summary))
 
   const beforeApplyCopies = listTaskFiles(tasksRoot, 'dup-task-1').length
   check('fixture starts with duplicate task copies', beforeApplyCopies === 2, String(beforeApplyCopies))
+  const beforeCancelledVsDoneCopies = listTaskFiles(tasksRoot, 'cancelled-vs-done-task').length
+  check('fixture starts with cancelled + done duplicate task copies', beforeCancelledVsDoneCopies === 2, String(beforeCancelledVsDoneCopies))
 
   const applyRun = runCleanup('resource cleanup apply', dataDir, ['--apply', '--results-ttl-days', '7'])
   if (!applyRun) return
@@ -151,8 +195,16 @@ function testResourceCleanupLifecycle() {
   check('apply keeps only one live task copy', remainingCopies.length === 1, JSON.stringify(remainingCopies))
   const keptTask = JSON.parse(fs.readFileSync(remainingCopies[0], 'utf8'))
   check('apply rewrites done daily_summary notify status to skipped', keptTask.status === 'done' && keptTask.notify && keptTask.notify.status === 'skipped', JSON.stringify(keptTask))
+  const cancelledVsDoneCopies = listTaskFiles(tasksRoot, 'cancelled-vs-done-task')
+  check('apply keeps only one live copy for cancelled-vs-done task', cancelledVsDoneCopies.length === 1, JSON.stringify(cancelledVsDoneCopies))
+  const keptCancelledVsDoneTask = JSON.parse(fs.readFileSync(cancelledVsDoneCopies[0], 'utf8'))
+  check('apply keeps canonical cancelled copy instead of done copy when cancelled and done coexist',
+    keptCancelledVsDoneTask.status === 'cancelled',
+    JSON.stringify(keptCancelledVsDoneTask))
   check('apply archives duplicate task copy', fs.existsSync(path.join(workersRoot, '_archive')) && fs.readdirSync(path.join(workersRoot, '_archive')).length >= 1)
-  check('apply archives expired result and keeps fresh result', !fs.existsSync(path.join(resultsRoot, 'dup-task-1', 'result.json')) && fs.existsSync(path.join(resultsRoot, 'fresh-task', 'result.json')))
+  check('apply keeps expired result for done task whose notify is still pending', fs.existsSync(path.join(resultsRoot, 'notify-pending-task', 'result.json')) === true)
+  check('apply archives expired result for done task already marked sent', fs.existsSync(path.join(resultsRoot, 'notify-sent-task', 'result.json')) === false)
+  check('apply archives expired daily_summary result after same-run skipped fix and keeps fresh result', !fs.existsSync(path.join(resultsRoot, 'dup-task-1', 'result.json')) && fs.existsSync(path.join(resultsRoot, 'fresh-task', 'result.json')))
   check('apply creates backup snapshot before mutation', fs.existsSync(path.join(workersRoot, '_backup')) && fs.readdirSync(path.join(workersRoot, '_backup')).length >= 1)
   const eventFile = path.join(workersRoot, `events-${recentIso.slice(0, 10)}.jsonl`)
   check('cleanup script does not append task events during apply', fs.readFileSync(eventFile, 'utf8') === '')

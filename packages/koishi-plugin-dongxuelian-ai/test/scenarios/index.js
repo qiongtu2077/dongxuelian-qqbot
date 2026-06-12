@@ -20,6 +20,7 @@ const skillMarket = require('./skill-market.test')
 const voiceTts = require('./voice-tts.test')
 const file = require('./file.test')
 const deployer = require('./deployer.test')
+const botRegression = require('./bot-regression.test')
 
 const SCENARIOS = [
   command,
@@ -44,6 +45,7 @@ const SCENARIOS = [
   voiceTts,
   file,
   deployer,
+  botRegression,
 ]
 
 async function runScenarioTests(t) {

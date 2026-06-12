@@ -163,6 +163,11 @@ const COVERAGE_MAP = [
     needles: ['scenario: dashboard deployer security', 'deployer isLocalAuthBypass rejects loopback without GLOBAL_LOCAL_MODE', 'deployer isLocalAuthBypass rejects non-loopback with GLOBAL_LOCAL_MODE', 'deployer KOISHI_PID_FILE follows KOISHI_DIR env', 'deployer stale pid pointing non Dashboard does not kill', 'deployer stale pid pointing Dashboard command kills'],
   },
   {
+    behavior: 'bot resource gate regression',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'bot-regression.test.js'),
+    needles: ['scenario: bot resource gate regression', 'scenario daily report running does not globally mute explicit chat', 'scenario daily report running keeps explicit voice follow-up recoverable'],
+  },
+  {
     behavior: 'retaliation score calculation',
     file: path.join(AI_ROOT, 'lib', 'behavior', 'retaliation.js'),
     needles: [],
@@ -455,6 +460,7 @@ async function main() {
   checkEqual('npm check uses syntax runner', rootPkg.scripts && rootPkg.scripts.check, 'node scripts/check-syntax.js')
   checkEqual('root package exposes resource cleanup dry-run helper', rootPkg.scripts && rootPkg.scripts['resource:cleanup:dry-run'], 'node scripts/resource-cleanup.js')
   checkEqual('root package exposes resource cleanup apply helper', rootPkg.scripts && rootPkg.scripts['resource:cleanup:apply'], 'node scripts/resource-cleanup.js --apply')
+  checkEqual('root package exposes resource loop-stress helper', rootPkg.scripts && rootPkg.scripts['resource:loop-stress'], 'npm run test:resource-loop-stress --prefix packages/koishi-plugin-dongxuelian-ai')
   checkEqual('root package exposes AI plugin sync verifier', rootPkg.scripts && rootPkg.scripts['verify:ai-plugin-sync'], 'node scripts/verify-ai-plugin-sync.js')
   const syntaxRunner = require(path.join(ROOT, 'scripts', 'check-syntax.js'))
   const syntaxTargets = syntaxRunner.buildCheckTargets()
@@ -488,6 +494,7 @@ async function main() {
   const aiPackageManifest = readJson(path.join(AI_ROOT, 'package.json'))
   check('AI package resource test includes cleanup regression', aiPackageManifest.scripts && aiPackageManifest.scripts['test:resource'] && aiPackageManifest.scripts['test:resource'].includes('test:resource-cleanup'))
   checkEqual('AI package exposes cleanup regression entry', aiPackageManifest.scripts && aiPackageManifest.scripts['test:resource-cleanup'], 'node test/resource-cleanup-test.js')
+  checkEqual('AI package exposes loop-stress regression entry', aiPackageManifest.scripts && aiPackageManifest.scripts['test:resource-loop-stress'], 'node test/resource-loop-stress-test.js')
   const syncVerifyResult = spawnSync(process.execPath, ['scripts/verify-ai-plugin-sync.js', '--json'], { cwd: ROOT, encoding: 'utf8' })
   check('AI sync verifier exits 0 in local workspace', syncVerifyResult.status === 0, `status=${syncVerifyResult.status} stdout=${syncVerifyResult.stdout} stderr=${syncVerifyResult.stderr}`)
   if (syncVerifyResult.status === 0) {
@@ -616,6 +623,10 @@ async function main() {
     chatAgentRetellFlow: path.join(LIB, 'chat', 'chat-agent-retell-flow'),
     chatResultFlow: path.join(LIB, 'chat', 'chat-result-flow'),
     chatSendFlow: path.join(LIB, 'chat', 'chat-send-flow'),
+    resourceDirective: path.join(LIB, 'resource-scheduler', 'resource-directive'),
+    backgroundDirective: path.join(LIB, 'resource-scheduler', 'background-directive'),
+    resourceActivityLease: path.join(LIB, 'resource-scheduler', 'resource-activity-lease'),
+    resourceTaskStore: path.join(LIB, 'resource-workers', 'task-store'),
     agentAutoRouteFlow: path.join(LIB, 'routing', 'agent-auto-route-flow'),
     agentChatBridge: path.join(LIB, 'chat', 'agent-chat-bridge'),
     agentRetellGuard: path.join(LIB, 'chat', 'agent-retell-guard'),
@@ -701,6 +712,7 @@ async function main() {
     agentToolAnalyzeFile: path.join(LIB, 'agent', 'tools', 'analyze-file'),
     mcpLocalServer: path.join(LIB, 'mcp', 'local-server'),
     rareVoice: path.join(LIB, 'behavior', 'rare-voice'),
+    voiceQuickRead: path.join(LIB, 'routing', 'voice-quick-read'),
     index: path.join(LIB, 'index'),
     voice: path.join(LIB, 'media', 'voice', 'voice'),
     tts: path.join(LIB, 'media', 'voice', 'tts'),
@@ -874,6 +886,18 @@ async function main() {
       'parseRandomReplyDecision', 'buildRandomModePrompt', 'buildAmbientWaterSendOptions',
       'looksLikeRawInternalProtocol',
     ],
+    resourceDirective: [
+      'readResourceContext', 'directiveFromEntryPolicy', 'directiveFromAdmission',
+      'decideEntryDirective', 'decideTaskDirective', 'admitTaskDirective', 'isDirectiveBlocking',
+    ],
+    backgroundDirective: [
+      'getBackgroundDirectiveSleepMs', 'shouldParkBackgroundDirective', 'decideBackgroundDirective',
+    ],
+    resourceActivityLease: [
+      'readResourceActivityLease', 'hasActiveResourceActivityLease',
+      'findBlockingResourceActivityLease', 'buildResourceActivityLeaseBlockReason',
+      'acquireResourceActivityLease',
+    ],
     randomPersonaRisk: [
       'getGroupPersonaName', 'isPersonaSwitchRisky',
     ],
@@ -893,7 +917,7 @@ async function main() {
     ],
     startupSchedulers: [
       'getNextShanghaiMidnightDelayMs', 'scheduleDailyStatsCleanup',
-      'getExpressionHarvestDelayMs', 'scheduleExpressionHarvest', 'clearStartupSchedulers',
+      'getExpressionHarvestDelayMs', 'scheduleExpressionHarvest', 'runExpressionHarvestTick', 'clearStartupSchedulers',
     ],
     pluginLifecycle: [
       'restoreTodayCacheEntry', 'restoreTodayCache', 'registerPluginLifecycle',
@@ -1179,6 +1203,16 @@ async function main() {
     agentWorkerSubmission: [
       'submitAgentWorkerTask', 'countActiveAgentWorkerTasks', 'formatAcceptedMessage',
     ],
+    resourceTaskStore: [
+      'ensureTaskDirs', 'writeWorkerEvent', 'createTaskId', 'submitResourceTask',
+      'getResourceTaskById', 'getResourceTaskByIdForKind', 'findResourceTaskByKindAndChannel',
+      'listResourceTasks', 'countResourceTasks',
+      'countResourceTasksByKind', 'getTaskQueueSummary', 'claimNextTask',
+      'claimTaskById', 'markTaskRunning', 'failIsolatedClaimingTask',
+      'updateTaskStep', 'writeTaskResult', 'completeTask', 'failTask',
+      'deferTask', 'requeueTask', 'updateTaskNotifyStatus', 'cancelTask',
+      'writeWorkerHeartbeat', 'listWorkerStates', 'removeTaskFile',
+    ],
     searchContext: [
       'buildPrivateSearchContext', 'mergeSearchContext', 'hasConcreteSearchSubject', 'isPotentialSearchFollowUp',
     ],
@@ -1221,6 +1255,9 @@ async function main() {
       'executeRunScheduledTaskNow', 'resolveRunAt', 'resolveTarget',
     ],
     agentToolAnalyzeFile: ['execute'],
+    voiceQuickRead: [
+      'isVoiceQuickReadIntent', 'resolveVoiceQuickReadReply', 'formatVoiceQueuedReply',
+    ],
     voice: [
       'extractVoicePayload', 'downloadVoiceFile', 'convertToWav', 'callModelAsr', 'transcribeVoice',
     ],
@@ -1261,6 +1298,8 @@ async function main() {
     }
   }
   check('onebotEndpoint.DEFAULT_ONEBOT_WS_URL exported', typeof modules.onebotEndpoint.DEFAULT_ONEBOT_WS_URL === 'string' && modules.onebotEndpoint.DEFAULT_ONEBOT_WS_URL.startsWith('ws://127.0.0.1:'))
+  check('backgroundDirective exports sleep helper', typeof modules.backgroundDirective.getBackgroundDirectiveSleepMs === 'function')
+  check('resourceActivityLease.ACTIVITY_ROOT exported', typeof modules.resourceActivityLease.ACTIVITY_ROOT === 'string' && modules.resourceActivityLease.ACTIVITY_ROOT.includes('resource-activity'))
   check('randomState.channelMissCount exported as Map', modules.randomState.channelMissCount instanceof Map)
   check('agentSkillScanner.SCAN_RULES exported', Array.isArray(modules.agentSkillScanner.SCAN_RULES) && modules.agentSkillScanner.SCAN_RULES.length > 0)
   check('expressionLearner.EXPRESSION_LEARNER_VERSION exported', typeof modules.expressionLearner.EXPRESSION_LEARNER_VERSION === 'number')
@@ -1411,6 +1450,9 @@ async function main() {
     path.join(LIB, 'chat', 'chat-agent-retell-flow.js'),
     path.join(LIB, 'chat', 'chat-result-flow.js'),
     path.join(LIB, 'chat', 'chat-send-flow.js'),
+    path.join(LIB, 'resource-scheduler', 'resource-directive.js'),
+    path.join(LIB, 'resource-scheduler', 'background-directive.js'),
+    path.join(LIB, 'resource-scheduler', 'resource-activity-lease.js'),
     path.join(LIB, 'routing', 'agent-auto-route-flow.js'),
     path.join(LIB, 'chat', 'agent-chat-bridge.js'),
     path.join(LIB, 'chat', 'agent-retell-guard.js'),
@@ -1491,6 +1533,7 @@ async function main() {
     path.join(LIB, 'media', 'file', 'incoming-file.js'),
     path.join(LIB, 'media', 'file', 'file-analyzer.js'),
     path.join(LIB, 'persona', 'persona-fallback.js'),
+    path.join(LIB, 'routing', 'voice-quick-read.js'),
     path.join(LIB, 'media', 'voice', 'voice.js'),
     path.join(LIB, 'media', 'voice', 'tts.js'),
     path.join(LIB, 'behavior', 'random-voice-rate.js'),
@@ -1506,7 +1549,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'core/constants.js', 'core/utils.js', 'persona/persona.js', 'persona/persona-schema.js', 'persona/persona-diagnostics.js', 'persona/persona-runtime-plan.js', 'persona/persona-profile.js', 'persona/persona-lore-router.js', 'persona/skills/skills-loader.js', 'persona/skills/skill-seeds.js', 'reply/reply-timing.js', 'behavior/affect-router.js', 'behavior/sticker-shadow.js', 'diagnostics/diagnostics.js', 'behavior/expression/expression-learner.js', 'behavior/expression/expression-pool-store.js', 'behavior/expression/expression-abstractor.js', 'behavior/expression/expression-shadow-router.js', 'routing/group-scene-index.js', 'behavior/random-reply-mode.js', 'behavior/random-persona-risk.js', 'lifecycle/session-compat.js', 'lifecycle/bot-resolver.js', 'lifecycle/channel-task-queue.js', 'lifecycle/event-dump.js', 'lifecycle/startup-schedulers.js', 'lifecycle/plugin-lifecycle.js', 'message/message-segment.js', 'message/incoming-message-flow.js', 'behavior/runtime-settings.js', 'core/user-blacklist.js', 'commands/admin-commands.js', 'diagnostics/shared-record-text.js', 'routing/search-context.js', 'reply/safe-send.js', 'behavior/random-state.js', 'core/api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message/message-reader.js', 'chat.js', 'chat/chat-prompt-builder.js', 'chat/chat-memory.js', 'chat/chat-tool-flow.js', 'chat/chat-final-output-flow.js', 'chat/chat-jailbreak-flow.js', 'chat/chat-topic-switch.js', 'chat/chat-agent-retell-flow.js', 'chat/chat-result-flow.js', 'chat/chat-send-flow.js', 'routing/agent-auto-route-flow.js', 'chat/agent-chat-bridge.js', 'chat/agent-retell-guard.js', 'chat/chat-tools.js', 'persona/persona-fallback.js', 'media/file/file-safety.js', 'media/file/file-followup-state.js', 'chat/file-followup-evidence.js', 'media/file/file-followup-guard.js', 'media/file/file-store.js', 'media/file/incoming-file.js', 'media/file/file-analyzer.js', 'media/image/image-store.js', 'media/image/image-analyzer.js', 'media/image/image-analysis-sanitizer.js', 'media/image/vision.js', 'rulesets/jailbreak.js', 'core/logging-config.js', 'core/runtime-config.js', 'diagnostics/health-check.js', 'reply/reply.js', 'reply/reply-guard.js', 'behavior/repeat.js', 'message/forward.js', 'behavior/sensitive.js', 'behavior/retaliation.js', 'reply/send-guard.js', 'behavior/rare-voice.js', 'behavior/random-voice-rate.js', 'media/voice/voice-assets.js', 'media/voice/voice.js', 'media/voice/tts.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js', 'mcp/local-server.js']
+  const duplicateScanFiles = ['index.js', 'core/constants.js', 'core/utils.js', 'persona/persona.js', 'persona/persona-schema.js', 'persona/persona-diagnostics.js', 'persona/persona-runtime-plan.js', 'persona/persona-profile.js', 'persona/persona-lore-router.js', 'persona/skills/skills-loader.js', 'persona/skills/skill-seeds.js', 'reply/reply-timing.js', 'behavior/affect-router.js', 'behavior/sticker-shadow.js', 'diagnostics/diagnostics.js', 'behavior/expression/expression-learner.js', 'behavior/expression/expression-pool-store.js', 'behavior/expression/expression-abstractor.js', 'behavior/expression/expression-shadow-router.js', 'routing/group-scene-index.js', 'behavior/random-reply-mode.js', 'behavior/random-persona-risk.js', 'lifecycle/session-compat.js', 'lifecycle/bot-resolver.js', 'lifecycle/channel-task-queue.js', 'lifecycle/event-dump.js', 'lifecycle/startup-schedulers.js', 'lifecycle/plugin-lifecycle.js', 'message/message-segment.js', 'message/incoming-message-flow.js', 'behavior/runtime-settings.js', 'core/user-blacklist.js', 'commands/admin-commands.js', 'diagnostics/shared-record-text.js', 'routing/search-context.js', 'routing/voice-quick-read.js', 'reply/safe-send.js', 'behavior/random-state.js', 'core/api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message/message-reader.js', 'chat.js', 'chat/chat-prompt-builder.js', 'chat/chat-memory.js', 'chat/chat-tool-flow.js', 'chat/chat-final-output-flow.js', 'chat/chat-jailbreak-flow.js', 'chat/chat-topic-switch.js', 'chat/chat-agent-retell-flow.js', 'chat/chat-result-flow.js', 'chat/chat-send-flow.js', 'resource-scheduler/resource-directive.js', 'resource-scheduler/background-directive.js', 'resource-scheduler/resource-activity-lease.js', 'routing/agent-auto-route-flow.js', 'chat/agent-chat-bridge.js', 'chat/agent-retell-guard.js', 'chat/chat-tools.js', 'persona/persona-fallback.js', 'media/file/file-safety.js', 'media/file/file-followup-state.js', 'chat/file-followup-evidence.js', 'media/file/file-followup-guard.js', 'media/file/file-store.js', 'media/file/incoming-file.js', 'media/file/file-analyzer.js', 'media/image/image-store.js', 'media/image/image-analyzer.js', 'media/image/image-analysis-sanitizer.js', 'media/image/vision.js', 'rulesets/jailbreak.js', 'core/logging-config.js', 'core/runtime-config.js', 'diagnostics/health-check.js', 'reply/reply.js', 'reply/reply-guard.js', 'behavior/repeat.js', 'message/forward.js', 'behavior/sensitive.js', 'behavior/retaliation.js', 'reply/send-guard.js', 'behavior/rare-voice.js', 'behavior/random-voice-rate.js', 'media/voice/voice-assets.js', 'media/voice/voice.js', 'media/voice/tts.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js', 'mcp/local-server.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -4190,6 +4233,7 @@ async function main() {
   const incomingMessageFlowSrc = read(path.join(LIB, 'message', 'incoming-message-flow.js'))
   const sharedRecordTextSrc = read(path.join(LIB, 'diagnostics', 'shared-record-text.js'))
   const fileQuickReadSrc = read(path.join(LIB, 'routing', 'file-quick-read.js'))
+  const voiceQuickReadSrc = read(path.join(LIB, 'routing', 'voice-quick-read.js'))
   const externalToolPolicySrc = read(path.join(LIB, 'routing', 'external-tool-policy.js'))
   const loggingConfigSrc = read(path.join(LIB, 'core', 'logging-config.js'))
   const runtimeConfigSrc = read(path.join(LIB, 'core', 'runtime-config.js'))
@@ -4319,6 +4363,10 @@ async function main() {
   check('index incoming message flow is imported, not defined inline', indexSrc.includes("require('./message/incoming-message-flow')") && indexSrc.includes('handleIncomingMessageArtifacts({') && !indexSrc.includes('await storeImageUrl(') && !indexSrc.includes('await storeFile(') && !indexSrc.includes('await storeVoice(') && incomingMessageFlowSrc.includes('async function handleIncomingMessageArtifacts') && incomingMessageFlowSrc.includes('await storeImageUrl(') && incomingMessageFlowSrc.includes('await storeFile(') && incomingMessageFlowSrc.includes('await storeVoice(') && incomingMessageFlowSrc.includes('enqueueMediaTask({') && !incomingMessageFlowSrc.includes("require('../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(|agentEngine|enqueueAgentTask/.test(incomingMessageFlowSrc), 'incoming-message-flow ownership')
   check('index shared record text helper is imported, not defined inline', indexSrc.includes("require('./diagnostics/shared-record-text')") && !indexSrc.includes('function resolveSharedRecordText') && sharedRecordTextSrc.includes('function resolveSharedRecordText') && !sharedRecordTextSrc.includes("require('../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(|saveSharedChannelTurn/.test(sharedRecordTextSrc), 'shared-record-text helper ownership')
   check('index file quick read helper is imported, not defined inline', indexSrc.includes("require('./routing/file-quick-read')") && indexSrc.includes('isFileQuickReadIntent(userText)') && indexSrc.includes('resolveFileQuickReadReply(channelKey)') && !indexSrc.includes("require('./media/file/file-analyzer')") && !indexSrc.includes('function resolveFileQuickReadReply') && fileQuickReadSrc.includes('function isFileQuickReadIntent') && fileQuickReadSrc.includes('async function resolveFileQuickReadReply') && fileQuickReadSrc.includes("require('../media/file/file-store')") && fileQuickReadSrc.includes("require('../media/backpressure/media-requests')") && fileQuickReadSrc.includes('queueFileAnalysisRequest') && fileQuickReadSrc.includes('formatFileQueuedReply') && fileQuickReadSrc.includes("source: 'file-quick-read'") && fileQuickReadSrc.includes("const messageId = String(target.messageId || '').trim()") && fileQuickReadSrc.includes('文件记录不完整，请重新发一次文件。') && !fileQuickReadSrc.includes("require('../media/file/file-analyzer')") && !fileQuickReadSrc.includes("require('../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(|agentEngine|enqueueAgentTask/.test(fileQuickReadSrc), 'file-quick-read ownership')
+  check('index voice quick read helper is imported, not defined inline', indexSrc.includes("require('./routing/voice-quick-read')") && indexSrc.includes('isVoiceQuickReadIntent(plain)') && indexSrc.includes('resolveVoiceQuickReadReply(channelKey, String(session.messageId || \'\'))') && !indexSrc.includes('function resolveVoiceQuickReadReply'), 'voice-quick-read index ownership')
+  check('voice quick read helper owns intent and reply resolver exports', voiceQuickReadSrc.includes('function isVoiceQuickReadIntent') && voiceQuickReadSrc.includes('async function resolveVoiceQuickReadReply'), 'voice-quick-read exports')
+  check('voice quick read helper owns S6 queue/admission dependencies', voiceQuickReadSrc.includes("require('../media/voice/voice-store')") && voiceQuickReadSrc.includes("require('../media/backpressure/media-queue')") && voiceQuickReadSrc.includes("require('../media/backpressure/media-requests')") && voiceQuickReadSrc.includes("require('../resource-scheduler/admission')") && voiceQuickReadSrc.includes("source: 'voice-quick-read'"), 'voice-quick-read resource ownership')
+  check('voice quick read helper stays out of chat/index/send layers', !voiceQuickReadSrc.includes("require('../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(|agentEngine|enqueueAgentTask/.test(voiceQuickReadSrc), 'voice-quick-read layer boundary')
   check('index random persona risk helper is imported, not defined inline', indexSrc.includes("require('./behavior/random-persona-risk')") && !indexSrc.includes('function getGroupPersonaName') && !indexSrc.includes('function isPersonaSwitchRisky') && randomPersonaRiskSrc.includes('function getGroupPersonaName') && randomPersonaRiskSrc.includes('function isPersonaSwitchRisky') && randomPersonaRiskSrc.includes("require('../persona/persona')") && !randomPersonaRiskSrc.includes("require('../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(/.test(randomPersonaRiskSrc), 'random-persona-risk helper ownership')
   check('index runtime settings and user blacklist are imported, not defined inline', indexSrc.includes("require('./behavior/runtime-settings')") && indexSrc.includes("require('./core/user-blacklist')") && !indexSrc.includes('function getFileFingerprint') && !indexSrc.includes('function loadRuntimeSettings') && !indexSrc.includes('function loadUserBlacklist') && runtimeSettingsSrc.includes('function loadRuntimeSettings') && runtimeSettingsSrc.includes('function getRandomTriggerBaseRate') && runtimeSettingsSrc.includes('function getRandomWhitelistStatus') && userBlacklistSrc.includes('function loadUserBlacklist') && userBlacklistSrc.includes('function setBlacklistFingerprint'), 'runtime-settings/user-blacklist helper ownership')
   check('index safe-send helpers are imported, not defined inline', indexSrc.includes("require('./reply/safe-send')") && !indexSrc.includes('const sendFailState') && !indexSrc.includes('async function notifyAdminsSendFailure') && !indexSrc.includes('async function handleRateLimitedSendFailure') && !indexSrc.includes('async function safeSendRareVoice') && !indexSrc.includes('async function safeSendRepeat') && safeSendSrc.includes('const sendFailState') && safeSendSrc.includes('async function safeSendReply') && safeSendSrc.includes('async function safeSendRareVoice'), 'safe-send helper ownership')

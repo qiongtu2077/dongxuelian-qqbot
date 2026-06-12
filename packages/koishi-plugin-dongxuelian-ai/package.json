@@ -10,6 +10,7 @@
     "test:resource": "npm run test:resource-scheduler && npm run test:resource-system && npm run test:resource-flow && npm run test:resource-regression && npm run test:resource-cleanup",
     "test:resource-cleanup": "node test/resource-cleanup-test.js",
     "test:resource-flow": "node test/resource-flow-test.js",
+    "test:resource-loop-stress": "node test/resource-loop-stress-test.js",
     "test:resource-regression": "node test/resource-regression-test.js",
     "test:resource-scheduler": "node test/resource-scheduler-test.js",
     "test:resource-system": "node test/resource-system-test.js",

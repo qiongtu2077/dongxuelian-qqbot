@@ -108,9 +108,9 @@ function moveFileInto(srcFile, srcRoot, destRoot) {
 
 // 状态可信优先级：值越大越权威，作为多副本去重时的首要排序键。
 const STATUS_RANK = {
-  done: 6,
-  failed: 5,
-  cancelled: 4,
+  cancelled: 6,
+  done: 5,
+  failed: 4,
   deferred: 3,
   running: 2,
   claiming: 1,
@@ -130,6 +130,17 @@ function pickCanonical(copies) {
     const bt = String(b.task.updatedAt || b.task.createdAt || '')
     return bt.localeCompare(at)
   })[0]
+}
+
+function getNotifyStatus(task) {
+  const notify = task && typeof task.notify === 'object' && task.notify ? task.notify : {}
+  return String(notify.status || '')
+}
+
+function shouldKeepExpiredResult(task) {
+  if (!task || typeof task !== 'object') return false
+  const notifyStatus = getNotifyStatus(task)
+  return notifyStatus !== 'sent' && notifyStatus !== 'skipped'
 }
 
 function main() {
@@ -212,6 +223,9 @@ function main() {
     if (opts.apply) {
       const next = { ...task, updatedAt: new Date().toISOString(), notify: { ...notify, status: 'skipped', updatedAt: new Date().toISOString() } }
       writeJsonSafe(canonical.file, next)
+      canonical.task = next
+    } else {
+      canonical.task = { ...task, notify: { ...notify, status: 'skipped' } }
     }
   }
 
@@ -220,6 +234,10 @@ function main() {
     const cutoff = Date.now() - opts.resultsTtlDays * 24 * 60 * 60 * 1000
     for (const file of listJsonFilesRecursive(resultsRoot, opts.max)) {
       if (path.basename(file) !== 'result.json') continue
+      const taskId = path.basename(path.dirname(file))
+      const canonicalCopies = byId.get(taskId)
+      const canonical = Array.isArray(canonicalCopies) && canonicalCopies.length ? pickCanonical(canonicalCopies) : null
+      if (canonical && shouldKeepExpiredResult(canonical.task)) continue
       const result = readJsonSafe(file)
       const createdAt = result && Date.parse(String(result.createdAt || ''))
       let mtime = NaN
@@ -242,5 +260,3 @@ function main() {
 }
 
 process.exitCode = main()
-
-

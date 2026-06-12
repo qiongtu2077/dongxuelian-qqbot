@@ -46,6 +46,7 @@ const script = String.raw`
 const { readResourceSnapshot } = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-snapshot')
 const { admitTask } = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-scheduler/admission')
 const { decideModePolicy } = require('./packages/koishi-plugin-dongxuelian-ai/lib/bot-mode/mode-policy')
+const { decideEntryDirective, decideTaskDirective } = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-directive')
 
 const snapshot = readResourceSnapshot()
 const dailyAdmission = admitTask({
@@ -75,6 +76,20 @@ const normalChatAdmission = admitTask({
 })
 const normalPolicy = decideModePolicy('normal_chat', snapshot)
 const agentPolicy = decideModePolicy('agent_command', snapshot)
+const normalDirective = decideEntryDirective('normal_chat', snapshot)
+const agentDirective = decideEntryDirective('agent_command', snapshot)
+const dailyDirective = decideTaskDirective({
+  kind: 'daily_report',
+  source: 'resource-scheduler-test',
+  channelKey: 'scheduler-test-group',
+  userId: 'scheduler-test-user',
+}, snapshot)
+const browserDirective = decideTaskDirective({
+  kind: 'browser_action',
+  source: 'resource-scheduler-test',
+  channelKey: 'scheduler-test-group',
+  userId: 'scheduler-test-user',
+}, snapshot)
 const summary = {
   resourceState: snapshot.resourceState,
   botMode: snapshot.botMode,
@@ -87,6 +102,12 @@ const summary = {
   normalChatDecision: normalChatAdmission.decision,
   normalPolicyAction: normalPolicy.action,
   agentPolicyAction: agentPolicy.action,
+  normalDirectiveAction: normalDirective.directive.action,
+  normalDirectiveReason: normalDirective.directive.reason,
+  agentDirectiveAction: agentDirective.directive.action,
+  dailyDirectiveAction: dailyDirective.directive.action,
+  dailyDirectiveFallback: dailyDirective.directive.fallback || '',
+  browserDirectiveAction: browserDirective.directive.action,
 }
 console.log(JSON.stringify(summary, null, 2))
 `
@@ -121,6 +142,8 @@ function testRedMemoryAdmission() {
   check('red injection defers browser action', summary.browserDecision === 'defer', JSON.stringify(summary))
   check('red injection rejects 450MB video budget below minimum', summary.videoDecision === 'reject', JSON.stringify(summary))
   check('red injection silences normal chat', summary.normalChatDecision === 'silent_drop' && summary.normalPolicyAction === 'silent_drop', JSON.stringify(summary))
+  check('red injection entry directive matches legacy mode policy', summary.normalDirectiveAction === summary.normalPolicyAction && summary.agentDirectiveAction === summary.agentPolicyAction, JSON.stringify(summary))
+  check('red injection task directive matches legacy admission', summary.dailyDirectiveAction === 'downgrade' && summary.dailyDirectiveFallback === summary.dailyFallback && summary.browserDirectiveAction === summary.browserDecision.replace('run_now', 'pass'), JSON.stringify(summary))
 }
 
 // Verify 450MB is the yellow boundary and still honors heavy-task budgets.
@@ -136,6 +159,8 @@ function testYellowMemoryAdmission() {
   check('yellow injection defers browser below task budget', summary.browserDecision === 'defer', JSON.stringify(summary))
   check('yellow injection allows 450MB video budget', summary.videoDecision === 'run_now', JSON.stringify(summary))
   check('yellow injection allows normal chat policy', summary.normalChatDecision === 'run_now' && summary.normalPolicyAction === 'pass', JSON.stringify(summary))
+  check('yellow injection entry directive matches legacy mode policy', summary.normalDirectiveAction === summary.normalPolicyAction && summary.agentDirectiveAction === summary.agentPolicyAction, JSON.stringify(summary))
+  check('yellow injection task directive matches legacy admission', summary.dailyDirectiveAction === 'downgrade' && summary.dailyDirectiveFallback === summary.dailyFallback && summary.browserDirectiveAction === summary.browserDecision, JSON.stringify(summary))
 }
 
 // Verify black memory defers heavy tasks and silences chat.
@@ -150,6 +175,8 @@ function testBlackMemoryAdmission() {
   check('black injection defers daily report', summary.dailyDecision === 'defer', JSON.stringify(summary))
   check('black injection defers browser action', summary.browserDecision === 'defer', JSON.stringify(summary))
   check('black injection silences normal chat and rejects agent policy', summary.normalChatDecision === 'silent_drop' && summary.normalPolicyAction === 'silent_drop' && summary.agentPolicyAction === 'reject', JSON.stringify(summary))
+  check('black injection entry directive matches legacy mode policy', summary.normalDirectiveAction === summary.normalPolicyAction && summary.agentDirectiveAction === summary.agentPolicyAction, JSON.stringify(summary))
+  check('black injection task directive matches legacy admission', summary.dailyDirectiveAction === summary.dailyDecision && summary.browserDirectiveAction === summary.browserDecision, JSON.stringify(summary))
 }
 
 // Run all resource-scheduler regression checks.

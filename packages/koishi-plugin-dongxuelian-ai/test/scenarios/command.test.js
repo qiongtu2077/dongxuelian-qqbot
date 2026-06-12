@@ -214,13 +214,14 @@ async function run(t) {
     let modelCalls = 0
     let imageRenderCalls = 0
     let promptLimitSeen = false
+    const lastEmotionCache = new Map()
     const state = {
       plain: '\u4eca\u65e5\u60c5\u7eea',
       inGuild: true,
       channelKey: '10001',
       currentUserId: '100000000',
       channelTodayCache: emotionCache,
-      lastEmotionCache: new Map(),
+      lastEmotionCache,
       async loadConfig() {},
       async callOpenAI(messages) {
         modelCalls += 1
@@ -253,11 +254,21 @@ async function run(t) {
     const emotionTask = emotionTasks[0] || {}
     t.check('scenario today emotion submits one S2 render task', emotionTasks.length === 1 && emotionTask.channelKey === '10001' && emotionTask.source === 'emotion-command', JSON.stringify(emotionTasks))
     t.check('scenario today emotion task notifies qq group later', emotionTask.notify && emotionTask.notify.target === 'qq-group' && emotionTask.notify.status === 'pending', JSON.stringify(emotionTask.notify || {}))
+    t.check('scenario today emotion task carries bounded expiry', typeof emotionTask.expiresAt === 'string' && Date.parse(emotionTask.expiresAt) > Date.now(), JSON.stringify(emotionTask))
     t.check('scenario today emotion task carries render payload', !!(emotionTask.payload && emotionTask.payload.analysis && emotionTask.payload.stats && Array.isArray(emotionTask.payload.history) && String(emotionTask.payload.text || '').includes('群聊情绪指数')), JSON.stringify(emotionTask.payload || {}))
     const taskText = JSON.stringify(emotionTask)
     t.check('scenario today emotion task avoids inline image and local result path leak', !taskText.includes('data:image/png') && !taskText.includes('emotion-image-ok') && !taskText.includes('result.json'), taskText.slice(0, 500))
     const cachedEmotion = await withGreenResourceSnapshot(() => handler.handleCommand(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }), harness.ctx, state))
     t.check('scenario today emotion cache reuses queued text response', cachedEmotion.response === structuredEmotion.response && modelCalls === 2 && listEmotionTasks().length === 1, JSON.stringify({ cached: String(cachedEmotion.response), modelCalls, tasks: listEmotionTasks().length }))
+    for (const item of lastEmotionCache.values()) item.ts = Date.now() - 301000
+    const modelCallsBeforeExpiredCacheRetry = modelCalls
+    const expiredCacheRetry = await withGreenResourceSnapshot(() => handler.handleCommand(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }), harness.ctx, state))
+    t.check('scenario today emotion expired cache reuses active S2 render task without new model call',
+      String(expiredCacheRetry.response || '').includes('群聊情绪指数')
+        && String(expiredCacheRetry.response || '').includes(String(emotionTask.id || ''))
+        && modelCalls === modelCallsBeforeExpiredCacheRetry
+        && listEmotionTasks().length === 1,
+      JSON.stringify({ response: String(expiredCacheRetry.response || ''), modelCalls, before: modelCallsBeforeExpiredCacheRetry, tasks: listEmotionTasks() }))
 
     const personaList = await run(makeSession({ content: '\u4e1c\u96ea\u83b2\u4eba\u683c\u5217\u8868' }))
     t.check('scenario persona list command is handled', personaList.sent.length > 0, JSON.stringify(personaList.sent))

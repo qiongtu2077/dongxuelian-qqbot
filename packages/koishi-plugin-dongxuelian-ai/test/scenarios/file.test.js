@@ -880,6 +880,8 @@ async function run(t) {
     t.check('L14 private chat falls back to fresh file', guard.selectActiveFileAnchor([freshSelf], { now })?.messageId === 'fresh-self')
     // 私聊全部过期：返回 null
     t.check('L14 private chat returns null when stale', guard.selectActiveFileAnchor([oldSelf], { now }) === null)
+    // 自然说法“讲了什么”也应算文件追问，不该只认“说了什么/写了什么”
+    t.check('L14 natural wording file follow-up is recognized', guard.looksLikeFileFollowup('这个文件里讲了什么', [freshSelf]) === true)
   }
 }
 

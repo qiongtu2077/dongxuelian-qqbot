@@ -631,7 +631,7 @@ main().catch(error => {
   check('daily final-input reader uses the writer path', summary.readBackChannelKey === 'group final/input test 中文' && summary.readBackSlotCount === 1, JSON.stringify(summary))
 }
 
-// Characterize analyze_historical_image queue/admission ordering before changing any behavior.
+// analyze_historical_image must queue only when the explicit-media frontdoor policy allows it.
 function testAnalyzeHistoricalImageAdmissionQueueContract() {
   const dataDir = createTempDataDir('resource-flow-image-admission-')
   const script = String.raw`
@@ -709,14 +709,14 @@ main().catch(error => {
   check('image tool queues exactly once while yellow admission defers',
     byName.yellow && byName.yellow.after === byName.yellow.before + 1 && byName.yellow.afterDuplicate === byName.yellow.after && /yellow/.test(byName.yellow.response || '') && /media is throttled in yellow state/.test(byName.yellow.response || ''),
     JSON.stringify(byName.yellow))
-  check('image tool queues exactly once while red admission defers',
-    byName.red && byName.red.after === byName.red.before + 1 && byName.red.afterDuplicate === byName.red.after && /red/.test(byName.red.response || '') && /media task deferred in red state/.test(byName.red.response || ''),
+  check('image tool does not queue while red admission defers',
+    byName.red && byName.red.after === byName.red.before && byName.red.afterDuplicate === byName.red.after && /red/.test(byName.red.response || '') && /media task deferred in red state/.test(byName.red.response || '') && /暂时不能加入图片分析队列/.test(byName.red.response || ''),
     JSON.stringify(byName.red))
-  check('image tool queues exactly once while black admission defers',
-    byName.black && byName.black.after === byName.black.before + 1 && byName.black.afterDuplicate === byName.black.after && /black/.test(byName.black.response || '') && /resource state black defers heavy task/.test(byName.black.response || ''),
+  check('image tool does not queue while black admission defers',
+    byName.black && byName.black.after === byName.black.before && byName.black.afterDuplicate === byName.black.after && /black/.test(byName.black.response || '') && /resource state black defers heavy task/.test(byName.black.response || '') && /暂时不能加入图片分析队列/.test(byName.black.response || ''),
     JSON.stringify(byName.black))
-  check('image tool queues exactly once while maintenance admission rejects',
-    byName.maintenance && byName.maintenance.after === byName.maintenance.before + 1 && byName.maintenance.afterDuplicate === byName.maintenance.after && /maintenance mode rejects heavy tasks/.test(byName.maintenance.response || ''),
+  check('image tool does not queue while maintenance admission rejects',
+    byName.maintenance && byName.maintenance.after === byName.maintenance.before && byName.maintenance.afterDuplicate === byName.maintenance.after && /maintenance mode rejects heavy tasks/.test(byName.maintenance.response || '') && /暂时不能加入图片分析队列/.test(byName.maintenance.response || ''),
     JSON.stringify(byName.maintenance))
 }
 
