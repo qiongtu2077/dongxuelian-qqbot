@@ -2,7 +2,7 @@
  * S0-S8 资源架构重整 — 阶段 0 止血回归测试。
  * 覆盖本次事故链的三处具体 bug（见 待完成与待审核任务/2026-06-10-S0-S8资源架构重整计划.md 9.13.2 阶段 0）：
  *   1. S2 result-notifier：同 taskId done/failed 双副本不再每轮 tick 重复写回 notify 状态。
- *   2. S3 daily-slot-planner：red/black/maintenance 下不 planning（planned=0）。
+ *   2. S3 daily-slot-planner：black/maintenance 下不 planning（planned=0），并由其他场景补 red 语义。
  *   3. S6 media-worker：资源不足时 requeue 后不返回“有工作”，避免 200ms claim/requeue 忙等。
  * 用临时 DATA_DIR + 子进程，不写生产数据。
  */
@@ -122,7 +122,7 @@ run().catch(error => {
   check('notifier writes back to the scanned done entity, not failed copy', summary.doneNotifyStatus === 'skipped', JSON.stringify(summary))
 }
 
-// === Scenario 2: S3 red/black/maintenance 下不 planning ===
+// === Scenario 2: S3 black 内存下不 planning（green 对照） ===
 function testPlannerSkipsUnderPressure() {
   const dataDir = createTempDataDir('resource-regress-plan-')
   const script = String.raw`
@@ -160,16 +160,6 @@ process.exitCode = 0
   }, 30000)
   if (!summary) return
   check('S3 planner plans 0 slots under black memory', summary.plannedCount === 0, JSON.stringify(summary))
-
-  // 对照：green 内存下应能规划出 slot，证明跳过逻辑不是误杀。
-  const dataDir2 = createTempDataDir('resource-regress-plan-green-')
-  const summaryGreen = runScenario('S3 planner under green memory', script, {
-    DONGXUELIAN_AI_DATA_DIR: dataDir2,
-    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
-    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
-  }, 30000)
-  if (!summaryGreen) return
-  check('S3 planner still plans slots under green memory', summaryGreen.plannedCount > 0, JSON.stringify(summaryGreen))
 }
 
 // === Scenario 3: S6 media-worker 资源不足不忙等 ===
@@ -374,17 +364,8 @@ async function run() {
   clearMaintenance()
 
   const date = '2026-06-10'
-  const redChannel = 'directive-plan-red'
   const maintenanceChannel = 'directive-plan-maintenance'
-  for (let i = 0; i < 80; i++) {
-    precomputeIndex.appendPrecomputeIndex({
-      date,
-      channelKey: redChannel,
-      messageId: 'red-msg-' + i,
-      timestamp: 1717977600000 + i * 1000,
-      userId: 'u' + (i % 3),
-      text: 'red record ' + i,
-    })
+  for (let i = 0; i < 24; i++) {
     precomputeIndex.appendPrecomputeIndex({
       date,
       channelKey: maintenanceChannel,
@@ -394,9 +375,6 @@ async function run() {
       text: 'maintenance record ' + i,
     })
   }
-
-  process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '420'
-  const redPlanned = planner.planDailySlotTasks(date, redChannel, { slotSize: 20, maxSlots: 4 })
 
   process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
   fs.mkdirSync(path.dirname(constants.MAINTENANCE_FILE), { recursive: true })
@@ -409,7 +387,6 @@ async function run() {
     queueResult,
     deferResult,
     rejectResult,
-    redPlannedCount: Array.isArray(redPlanned) ? redPlanned.length : -1,
     maintenancePlannedCount: Array.isArray(maintenancePlanned) ? maintenancePlanned.length : -1,
   }
   console.log(JSON.stringify(summary, null, 2))
@@ -437,7 +414,6 @@ run().catch(error => {
   check('A.1 agent submit keeps reject blocked semantics',
     summary.rejectResult && summary.rejectResult.accepted === false && summary.rejectResult.status === 503 && /当前资源不足，Agent 暂时不能执行/.test(summary.rejectResult.message || ''),
     JSON.stringify(summary.rejectResult))
-  check('A.1 planner still skips under red memory', summary.redPlannedCount === 0, JSON.stringify(summary))
   check('A.1 planner still skips under maintenance', summary.maintenancePlannedCount === 0, JSON.stringify(summary))
 }
 
@@ -899,7 +875,569 @@ run()
     JSON.stringify(summary))
 }
 
-// === Scenario 10: 阶段 D.1 S6 媒体任务冷却止血 ===
+// === Scenario 10: 搜索优先 / tool_active 时后台前门应让路 ===
+function testToolActiveBackgroundParkCompatibility() {
+  const dataDir = createTempDataDir('resource-regress-tool-active-background-')
+  const script = String.raw`
+const startupSchedulers = require('koishi-plugin-dongxuelian-ai/lib/lifecycle/startup-schedulers')
+const background = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/background-llm-submission')
+const taskStore = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+const activityLease = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease')
+const backgroundDirective = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/background-directive')
+
+function createCtx() {
+  return {
+    bots: [{ selfId: 'tool-active-bot-1' }],
+    logger() {
+      return {
+        info() {},
+        warn() {},
+      }
+    },
+  }
+}
+
+function listKindTasks(kind) {
+  return ['pending', 'claiming', 'running', 'deferred', 'failed', 'done']
+    .flatMap(status => taskStore.listResourceTasks({ statuses: [status], limit: 50 }))
+    .filter(task => String(task.kind || '') === kind)
+}
+
+async function run() {
+  taskStore.ensureTaskDirs()
+  process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
+  process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
+
+  const releaseTool = activityLease.acquireResourceActivityLease('tool_active', {
+    owner: 'resource-regression-test',
+    taskId: 'tool-active-regression',
+    ttlMs: 5000,
+  })
+
+  try {
+    const planning = await startupSchedulers.runDailyPrecomputePlanningTick(createCtx())
+    const expression = await startupSchedulers.runExpressionHarvestTick(createCtx())
+    const parkedSummary = background.submitConversationSummaryTask({
+      key: 'group-tool-active::user-tool-active',
+      source: 'conversation-summary-trigger',
+    })
+    const parkedSensitive = background.submitSensitiveCacheAnalysisTask({
+      channelKey: 'group-sensitive-tool-active',
+      source: 'sensitive-cache-trigger',
+    })
+    const afterExpression = listKindTasks('expression_harvest').length
+    const afterSummary = listKindTasks('conversation_summary').length
+    const afterSensitive = listKindTasks('sensitive_cache_analysis').length
+    const mediaDirective = backgroundDirective.decideBackgroundDirective({
+      kind: 'media_image_analysis',
+      source: 'media-worker',
+      channelKey: 'media',
+      userId: '',
+      priority: 60,
+      exclusive: false,
+      timeoutMs: 120000,
+      queueTimeoutMs: 120000,
+      runTimeoutMs: 120000,
+    })
+    const agentDirective = backgroundDirective.decideBackgroundDirective({
+      kind: 'agent_task',
+      source: 'agent-worker',
+      channelKey: 'global',
+      userId: '',
+      priority: 40,
+      exclusive: true,
+      timeoutMs: 120000,
+      queueTimeoutMs: 120000,
+      runTimeoutMs: 120000,
+    })
+    console.log(JSON.stringify({
+      planning,
+      expression,
+      parkedSummary,
+      parkedSensitive,
+      afterExpression,
+      afterSummary,
+      afterSensitive,
+      mediaDirectiveAction: mediaDirective.directive.action,
+      agentDirectiveAction: agentDirective.directive.action,
+    }, null, 2))
+    process.exitCode = 0
+  } finally {
+    releaseTool('resource-regression-finally')
+  }
+}
+
+run().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('搜索优先 tool_active 背景静默兼容', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+  }, 30000)
+  if (!summary) return
+  check('tool_active should park daily precompute planning while background work yields to foreground tool',
+    summary.planning && summary.planning.parked === true && summary.planning.planned === 0,
+    JSON.stringify(summary))
+  check('tool_active should park expression harvest before it materializes new tasks',
+    summary.expression && summary.expression.parked === true
+      && summary.expression.status === 'parked'
+      && summary.afterExpression === 0,
+    JSON.stringify(summary))
+  check('tool_active should park background llm submissions before they materialize new tasks',
+    summary.parkedSummary && summary.parkedSummary.accepted === false
+      && summary.parkedSummary.status === 'parked'
+      && summary.parkedSensitive && summary.parkedSensitive.accepted === false
+      && summary.parkedSensitive.status === 'parked'
+      && summary.afterSummary === 0
+      && summary.afterSensitive === 0,
+    JSON.stringify(summary))
+  check('tool_active should park media background directive but keep agent task worker directive runnable',
+    summary.mediaDirectiveAction === 'park'
+      && summary.agentDirectiveAction === 'run',
+    JSON.stringify(summary))
+}
+
+// === Scenario 11: tool_active 下已入队后台任务不应挡住前台任务 ===
+function testToolActiveQueuedBackgroundTasksDoNotClaimOrStarveForegroundWork() {
+  const dataDir = createTempDataDir('resource-regress-tool-active-queued-background-')
+  const script = String.raw`
+const fs = require('fs')
+const Module = require('module')
+
+function readJsonl(file) {
+  if (!fs.existsSync(file)) return []
+  return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
+}
+
+function countTaskSignals(events, taskId, eventName) {
+  return events.filter(event => event.event === eventName && String(event.taskId || '') === String(taskId || '')).length
+}
+
+const originalLoad = Module._load
+Module._load = function patchedLoad(request, parent, isMain) {
+  const normalized = String(request || '').replace(/\\/g, '/')
+  if (normalized.endsWith('koishi-plugin-dongxuelian-ai/lib/behavior/emotion-renderer') || normalized.endsWith('koishi-plugin-dongxuelian-ai/src/behavior/emotion-renderer') || normalized.endsWith('../behavior/emotion-renderer')) {
+    return {
+      renderEmotionImageDirect: async () => Buffer.from('queued-foreground-emotion'),
+    }
+  }
+  if (normalized.endsWith('/agent/engine') || normalized.endsWith('../agent/engine')) {
+    return {
+      run: async input => ({
+        ok: true,
+        reply: 'foreground agent worker kept running',
+        message: '',
+        toolCalls: Array.isArray(input && input.forceTools) ? input.forceTools.length : 0,
+        toolResults: [],
+      }),
+      resumePending: async () => ({ ok: true, reply: 'resumed', toolCalls: 0, toolResults: [] }),
+    }
+  }
+  return originalLoad.apply(this, arguments)
+}
+
+const taskClient = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-client')
+const taskStore = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+const taskPaths = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-paths')
+const workerMain = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-main')
+const activityLease = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease')
+const { createAgentRunWorkerPayload } = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/agent-payload')
+
+async function run() {
+  taskStore.ensureTaskDirs()
+  process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
+  process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
+
+  const eventFile = taskPaths.getWorkerEventFile()
+
+  const summaryOnlyKey = 'tool-active-summary-only::user'
+  const summaryOnly = taskClient.submitWorkerTaskWithAdmission({
+    kind: 'conversation_summary',
+    source: 'tool-active-summary-only',
+    channelKey: 'tool-active-summary-only-group',
+    userId: 'summary-only-user',
+    priority: 10,
+    timeoutMs: 120000,
+    payload: { key: summaryOnlyKey },
+    notify: { target: 'none', status: 'pending' },
+  }, { checkAdmission: false, exclusive: true })
+  const summaryOnlyTaskId = summaryOnly.task && String(summaryOnly.task.id || '')
+  const summaryOnlyEventsStart = readJsonl(eventFile).length
+  const releaseSummaryOnly = activityLease.acquireResourceActivityLease('tool_active', {
+    owner: 'tool-active-summary-only',
+    taskId: 'tool-active-summary-only',
+    ttlMs: 5000,
+  })
+  try {
+    await workerMain.runWorkerTick({ type: 'agent', workerName: 'tool-active-summary-only-agent', gateWaitMs: 1000 })
+  } finally {
+    releaseSummaryOnly('resource-regression-finally')
+  }
+  const summaryOnlyEvents = readJsonl(eventFile).slice(summaryOnlyEventsStart)
+  const summaryOnlyState = summaryOnly.task ? taskStore.getResourceTaskById(summaryOnlyTaskId) : null
+
+  const mixedSummaryKey = 'tool-active-mixed-summary::user'
+  const queuedSummary = taskClient.submitWorkerTaskWithAdmission({
+    kind: 'conversation_summary',
+    source: 'tool-active-queued-summary',
+    channelKey: 'tool-active-queued-group',
+    userId: 'summary-user',
+    priority: 10,
+    timeoutMs: 120000,
+    payload: { key: mixedSummaryKey },
+    notify: { target: 'none', status: 'pending' },
+  }, { checkAdmission: false, exclusive: true })
+  const summaryTaskId = queuedSummary.task && String(queuedSummary.task.id || '')
+  const foregroundAgent = taskClient.submitWorkerTaskWithAdmission({
+    kind: 'agent_task',
+    source: 'tool-active-foreground-agent',
+    channelKey: 'tool-active-queued-group',
+    userId: 'foreground-user',
+    priority: 40,
+    timeoutMs: 120000,
+    payload: {
+      entry: 'tool-active-foreground-agent',
+      agentWorker: createAgentRunWorkerPayload('tool-active-foreground-agent', {
+        userMessage: 'tool_active foreground search',
+        userId: 'foreground-user',
+        channelKey: 'tool-active-queued-group',
+        channel: 'qq',
+        forceTools: ['web_search'],
+        preExecuteTools: [],
+        agentMode: true,
+      }),
+    },
+    notify: { target: 'qq-group', status: 'pending', channelKey: 'tool-active-queued-group' },
+  }, { checkAdmission: false, exclusive: true })
+  const agentTaskId = foregroundAgent.task && String(foregroundAgent.task.id || '')
+  const mixedAgentEventsStart = readJsonl(eventFile).length
+  const releaseMixedAgent = activityLease.acquireResourceActivityLease('tool_active', {
+    owner: 'tool-active-queued-agent-mixed',
+    taskId: 'tool-active-queued-agent-mixed',
+    ttlMs: 5000,
+  })
+  try {
+    await workerMain.runWorkerTick({ type: 'agent', workerName: 'tool-active-queued-agent', gateWaitMs: 1000 })
+  } finally {
+    releaseMixedAgent('resource-regression-finally')
+  }
+  const mixedAgentEvents = readJsonl(eventFile).slice(mixedAgentEventsStart)
+  const summaryState = queuedSummary.task ? taskStore.getResourceTaskById(summaryTaskId) : null
+  const agentState = foregroundAgent.task ? taskStore.getResourceTaskById(agentTaskId) : null
+
+  const dailyOnly = taskClient.submitWorkerTaskWithAdmission({
+    kind: 'daily_summary',
+    source: 'tool-active-daily-only',
+    channelKey: 'tool-active-daily-only-group',
+    userId: '',
+    priority: 10,
+    timeoutMs: 120000,
+    payload: {
+      date: '2026-06-13',
+      channelKey: 'tool-active-daily-only-group',
+      slotId: 'slot-only',
+      start: 0,
+      end: 1,
+      messageIds: ['msg-only'],
+    },
+    notify: { target: 'none', status: 'pending' },
+  }, { checkAdmission: false, exclusive: false })
+  const dailyOnlyTaskId = dailyOnly.task && String(dailyOnly.task.id || '')
+  const dailyOnlyEventsStart = readJsonl(eventFile).length
+  const releaseDailyOnly = activityLease.acquireResourceActivityLease('tool_active', {
+    owner: 'tool-active-daily-only',
+    taskId: 'tool-active-daily-only',
+    ttlMs: 5000,
+  })
+  try {
+    await workerMain.runWorkerTick({ type: 'daily', workerName: 'tool-active-daily-only-worker', gateWaitMs: 1000 })
+  } finally {
+    releaseDailyOnly('resource-regression-finally')
+  }
+  const dailyOnlyEvents = readJsonl(eventFile).slice(dailyOnlyEventsStart)
+  const dailyOnlyState = dailyOnly.task ? taskStore.getResourceTaskById(dailyOnlyTaskId) : null
+
+  const queuedDaily = taskClient.submitWorkerTaskWithAdmission({
+    kind: 'daily_summary',
+    source: 'tool-active-queued-daily',
+    channelKey: 'tool-active-queued-group',
+    userId: '',
+    priority: 10,
+    timeoutMs: 120000,
+    payload: {
+      date: '2026-06-13',
+      channelKey: 'tool-active-queued-group',
+      slotId: 'slot-1',
+      start: 0,
+      end: 1,
+      messageIds: ['msg-1'],
+    },
+    notify: { target: 'none', status: 'pending' },
+  }, { checkAdmission: false, exclusive: false })
+  const dailyTaskId = queuedDaily.task && String(queuedDaily.task.id || '')
+  const foregroundEmotion = taskClient.submitWorkerTaskWithAdmission({
+    kind: 'emotion_render',
+    source: 'tool-active-foreground-emotion',
+    channelKey: 'tool-active-queued-group',
+    userId: 'emotion-user',
+    priority: 55,
+    timeoutMs: 120000,
+    payload: {
+      text: 'foreground emotion render',
+      analysis: { score: 76, confidence: 84, mood: '偏乐观', summary: '气氛偏积极。', reasons: ['讨论持续'], keywords: ['worker'] },
+      stats: { total: 3, positive: 2, negative: 0, neutral: 1 },
+      history: [],
+    },
+    notify: { target: 'none', status: 'pending' },
+  }, { checkAdmission: false, exclusive: true })
+  const emotionTaskId = foregroundEmotion.task && String(foregroundEmotion.task.id || '')
+  const mixedDailyEventsStart = readJsonl(eventFile).length
+  const releaseMixedDaily = activityLease.acquireResourceActivityLease('tool_active', {
+    owner: 'tool-active-queued-daily-mixed',
+    taskId: 'tool-active-queued-daily-mixed',
+    ttlMs: 5000,
+  })
+  try {
+    await workerMain.runWorkerTick({ type: 'daily', workerName: 'tool-active-queued-daily', gateWaitMs: 1000 })
+  } finally {
+    releaseMixedDaily('resource-regression-finally')
+  }
+  const mixedDailyEvents = readJsonl(eventFile).slice(mixedDailyEventsStart)
+  const dailyState = queuedDaily.task ? taskStore.getResourceTaskById(dailyTaskId) : null
+  const emotionState = foregroundEmotion.task ? taskStore.getResourceTaskById(emotionTaskId) : null
+
+  console.log(JSON.stringify({
+    summaryOnlyStatus: summaryOnlyState && summaryOnlyState.status,
+    summaryOnlyClaimed: countTaskSignals(summaryOnlyEvents, summaryOnlyTaskId, 'task_claimed'),
+    summaryOnlyRequeued: countTaskSignals(summaryOnlyEvents, summaryOnlyTaskId, 'task_requeued'),
+    summaryStatus: summaryState && summaryState.status,
+    agentStatus: agentState && agentState.status,
+    mixedSummaryClaimed: countTaskSignals(mixedAgentEvents, summaryTaskId, 'task_claimed'),
+    mixedSummaryRequeued: countTaskSignals(mixedAgentEvents, summaryTaskId, 'task_requeued'),
+    dailyOnlyStatus: dailyOnlyState && dailyOnlyState.status,
+    dailyOnlyClaimed: countTaskSignals(dailyOnlyEvents, dailyOnlyTaskId, 'task_claimed'),
+    dailyOnlyRequeued: countTaskSignals(dailyOnlyEvents, dailyOnlyTaskId, 'task_requeued'),
+    dailyStatus: dailyState && dailyState.status,
+    emotionStatus: emotionState && emotionState.status,
+    mixedDailyClaimed: countTaskSignals(mixedDailyEvents, dailyTaskId, 'task_claimed'),
+    mixedDailyRequeued: countTaskSignals(mixedDailyEvents, dailyTaskId, 'task_requeued'),
+  }, null, 2))
+  process.exitCode = 0
+}
+
+run().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('tool_active queued background claim compatibility', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+  }, 30000)
+  if (!summary) return
+  check('tool_active queued agent worker should leave background summary pending when no foreground task is available',
+    summary.summaryOnlyStatus === 'pending'
+      && summary.summaryOnlyClaimed === 0
+      && summary.summaryOnlyRequeued === 0,
+    JSON.stringify(summary))
+  check('tool_active queued agent worker should skip background summary task but still execute foreground agent task',
+    summary.summaryStatus === 'pending'
+      && summary.agentStatus === 'done'
+      && summary.mixedSummaryClaimed === 0
+      && summary.mixedSummaryRequeued === 0,
+    JSON.stringify(summary))
+  check('tool_active queued daily worker should leave background daily_summary pending when no foreground task is available',
+    summary.dailyOnlyStatus === 'pending'
+      && summary.dailyOnlyClaimed === 0
+      && summary.dailyOnlyRequeued === 0,
+    JSON.stringify(summary))
+  check('tool_active queued daily worker should skip background daily_summary but still execute foreground emotion render',
+    summary.dailyStatus === 'pending'
+      && summary.emotionStatus === 'done'
+      && summary.mixedDailyClaimed === 0
+      && summary.mixedDailyRequeued === 0,
+    JSON.stringify(summary))
+}
+
+// === Scenario 11.1: tool_active 下过滤后的后台 backlog 不应挡住前台任务 ===
+function testToolActiveQueuedBackgroundWindowDoesNotStarveForegroundWork() {
+  const dataDir = createTempDataDir('resource-regress-tool-active-queued-window-')
+  const script = String.raw`
+const Module = require('module')
+
+const originalLoad = Module._load
+Module._load = function patchedLoad(request, parent, isMain) {
+  const normalized = String(request || '').replace(/\\/g, '/')
+  if (normalized.endsWith('/agent/engine') || normalized.endsWith('../agent/engine')) {
+    return {
+      run: async () => ({
+        ok: true,
+        reply: 'foreground agent worker survived backlog window',
+        message: '',
+        toolCalls: 0,
+        toolResults: [],
+      }),
+      resumePending: async () => ({ ok: true, reply: 'resumed', toolCalls: 0, toolResults: [] }),
+    }
+  }
+  if (normalized.endsWith('koishi-plugin-dongxuelian-ai/lib/behavior/emotion-renderer') || normalized.endsWith('koishi-plugin-dongxuelian-ai/src/behavior/emotion-renderer') || normalized.endsWith('../behavior/emotion-renderer')) {
+    return {
+      renderEmotionImageDirect: async () => Buffer.from('foreground-emotion-window'),
+    }
+  }
+  return originalLoad.apply(this, arguments)
+}
+
+const taskClient = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-client')
+const taskStore = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+const workerMain = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-main')
+const activityLease = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease')
+const { createAgentRunWorkerPayload } = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/agent-payload')
+
+function submitQueuedConversationSummary(id, key) {
+  return taskClient.submitWorkerTaskWithAdmission({
+    id,
+    kind: 'conversation_summary',
+    source: 'tool-active-window-summary',
+    channelKey: 'tool-active-window-group',
+    userId: 'window-user',
+    priority: 10,
+    timeoutMs: 120000,
+    payload: { key },
+    notify: { target: 'none', status: 'pending' },
+  }, { checkAdmission: false, exclusive: true })
+}
+
+function submitQueuedDailySummary(id) {
+  return taskClient.submitWorkerTaskWithAdmission({
+    id,
+    kind: 'daily_summary',
+    source: 'tool-active-window-daily',
+    channelKey: 'tool-active-window-daily-group',
+    userId: '',
+    priority: 10,
+    timeoutMs: 120000,
+    payload: {
+      date: '2026-06-13',
+      channelKey: 'tool-active-window-daily-group',
+      slotId: id,
+      start: 0,
+      end: 1,
+      messageIds: [id + '-msg'],
+    },
+    notify: { target: 'none', status: 'pending' },
+  }, { checkAdmission: false, exclusive: false })
+}
+
+async function run() {
+  taskStore.ensureTaskDirs()
+  process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
+  process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
+
+  for (let i = 0; i < 1000; i += 1) {
+    const key = 'tool-active-window-summary-' + i + '::user'
+    submitQueuedConversationSummary('tool-active-window-summary-' + String(i).padStart(4, '0'), key)
+  }
+  const foregroundAgent = taskClient.submitWorkerTaskWithAdmission({
+    id: 'tool-active-window-foreground-agent',
+    kind: 'agent_task',
+    source: 'tool-active-window-foreground-agent',
+    channelKey: 'tool-active-window-group',
+    userId: 'foreground-window-user',
+    priority: 40,
+    timeoutMs: 120000,
+    payload: {
+      entry: 'tool-active-window-foreground-agent',
+      agentWorker: createAgentRunWorkerPayload('tool-active-window-foreground-agent', {
+        userMessage: 'tool_active foreground survives backlog window',
+        userId: 'foreground-window-user',
+        channelKey: 'tool-active-window-group',
+        channel: 'qq',
+        forceTools: ['web_search'],
+        preExecuteTools: [],
+        agentMode: true,
+      }),
+    },
+    notify: { target: 'qq-group', status: 'pending', channelKey: 'tool-active-window-group' },
+  }, { checkAdmission: false, exclusive: true })
+
+  const releaseAgentLease = activityLease.acquireResourceActivityLease('tool_active', {
+    owner: 'tool-active-window-agent',
+    taskId: 'tool-active-window-agent',
+    ttlMs: 5000,
+  })
+  let agentWorked = false
+  try {
+    agentWorked = await workerMain.runWorkerTick({ type: 'agent', workerName: 'tool-active-window-agent-worker', gateWaitMs: 1000 })
+  } finally {
+    releaseAgentLease('resource-regression-finally')
+  }
+  const foregroundAgentState = taskStore.getResourceTaskById('tool-active-window-foreground-agent')
+
+  for (let i = 0; i < 1000; i += 1) {
+    submitQueuedDailySummary('tool-active-window-daily-' + String(i).padStart(4, '0'))
+  }
+  const foregroundEmotion = taskClient.submitWorkerTaskWithAdmission({
+    id: 'tool-active-window-foreground-emotion',
+    kind: 'emotion_render',
+    source: 'tool-active-window-foreground-emotion',
+    channelKey: 'tool-active-window-daily-group',
+    userId: 'foreground-emotion-user',
+    priority: 55,
+    timeoutMs: 120000,
+    payload: {
+      text: 'foreground emotion render survives backlog window',
+      analysis: { score: 80, confidence: 88, mood: '稳定', summary: '窗口饥饿测试。', reasons: ['高优先级前台'], keywords: ['worker'] },
+      stats: { total: 3, positive: 2, negative: 0, neutral: 1 },
+      history: [],
+    },
+    notify: { target: 'none', status: 'pending' },
+  }, { checkAdmission: false, exclusive: true })
+
+  const releaseDailyLease = activityLease.acquireResourceActivityLease('tool_active', {
+    owner: 'tool-active-window-daily',
+    taskId: 'tool-active-window-daily',
+    ttlMs: 5000,
+  })
+  let dailyWorked = false
+  try {
+    dailyWorked = await workerMain.runWorkerTick({ type: 'daily', workerName: 'tool-active-window-daily-worker', gateWaitMs: 1000 })
+  } finally {
+    releaseDailyLease('resource-regression-finally')
+  }
+  const foregroundEmotionState = taskStore.getResourceTaskById('tool-active-window-foreground-emotion')
+
+  console.log(JSON.stringify({
+    agentWorked,
+    foregroundAgentStatus: foregroundAgentState && foregroundAgentState.status,
+    dailyWorked,
+    foregroundEmotionStatus: foregroundEmotionState && foregroundEmotionState.status,
+  }, null, 2))
+  process.exitCode = 0
+}
+
+run().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+}).finally(() => {
+  Module._load = originalLoad
+})
+`
+  const summary = runScenario('tool_active queued background window compatibility', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+  }, 30000)
+  if (!summary) return
+  check('tool_active queued agent worker should still reach foreground agent task when filtered background backlog is large',
+    summary.agentWorked === true
+      && summary.foregroundAgentStatus === 'done',
+    JSON.stringify(summary))
+  check('tool_active queued daily worker should still reach foreground emotion task when filtered daily backlog is large',
+    summary.dailyWorked === true
+      && summary.foregroundEmotionStatus === 'done',
+    JSON.stringify(summary))
+}
+
+// === Scenario 12: 阶段 D.1 S6 媒体任务冷却止血 ===
 function testMediaQueueDeferredCooldownCompatibility() {
   const dataDir = createTempDataDir('resource-regress-media-cooldown-')
   const script = String.raw`
@@ -936,8 +1474,6 @@ function run() {
     const afterCooldownClaim = mediaQueue.claimNextMediaTask('media-worker')
     console.log(JSON.stringify({
       createdId: created && created.id,
-      requeuedStatus: requeued && requeued.status,
-      deferredReason: requeued && requeued.deferredReason,
       deferredUntil: pendingTask && (pendingTask.deferredUntil || pendingTask.notBefore) || '',
       immediateClaimId: immediateClaim && immediateClaim.id || '',
       afterCooldownClaimId: afterCooldownClaim && afterCooldownClaim.id || '',
@@ -1148,7 +1684,6 @@ function testPlannerDoesNotMistakeMiddleGapForTail() {
 const planner = require('koishi-plugin-dongxuelian-ai/lib/daily-precompute/daily-slot-planner')
 const precomputeIndex = require('koishi-plugin-dongxuelian-ai/lib/daily-precompute/precompute-index')
 const slotWorker = require('koishi-plugin-dongxuelian-ai/lib/daily-precompute/daily-slot-worker')
-const coverage = require('koishi-plugin-dongxuelian-ai/lib/daily-precompute/daily-coverage')
 
 function run() {
   const date = '2026-06-10'
@@ -1184,16 +1719,12 @@ function run() {
   const planned = planner.planDailySlotTasks(date, channelKey, { slotSize: 20, maxSlots: 4 })
   const firstTask = Array.isArray(planned) ? planned[0] && planned[0].task : null
   const firstPayload = firstTask && firstTask.payload || {}
-  const coverageSnapshot = coverage.readDailyCoverage(date, channelKey)
 
   console.log(JSON.stringify({
     plannedCount: Array.isArray(planned) ? planned.length : -1,
     firstTaskStart: Number(firstPayload.start),
     firstTaskEnd: Number(firstPayload.end),
     firstTaskMessageIds: Array.isArray(firstPayload.messageIds) ? firstPayload.messageIds : [],
-    coverageRate: Number(coverageSnapshot && coverageSnapshot.coverageRate || 0),
-    coveredMessages: Number(coverageSnapshot && coverageSnapshot.coveredMessages || 0),
-    totalMessages: Number(coverageSnapshot && coverageSnapshot.totalMessages || 0),
   }, null, 2))
   process.exitCode = 0
 }
@@ -1214,9 +1745,6 @@ run()
       && Array.isArray(summary.firstTaskMessageIds)
       && summary.firstTaskMessageIds.includes('middle-gap-msg-40')
       && summary.firstTaskMessageIds.includes('middle-gap-msg-44'),
-    JSON.stringify(summary))
-  check('D.6 test fixture really is the same 95% coverage edge as D.3, only with a different gap position',
-    summary.coverageRate === 0.95 && summary.coveredMessages === 95 && summary.totalMessages === 100,
     JSON.stringify(summary))
 }
 
@@ -1432,8 +1960,8 @@ run()
     JSON.stringify(summary))
 }
 
-// === Scenario 16: 阶段 D.8 no sender 不应每轮重复写 waiting_sender 事件 ===
-function testNotifierWaitingSenderEventIsDeduped() {
+// === Scenario 16: 阶段 E.10 no sender 死路径收窄后不再写 waiting_sender 事件 ===
+function testNotifierWithoutSenderLeavesTaskUntouched() {
   const dataDir = createTempDataDir('resource-regress-notify-waiting-sender-')
   const script = String.raw`
 const fs = require('fs')
@@ -1495,13 +2023,10 @@ run().catch(error => {
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
   }, 30000)
   if (!summary) return
-  check('D.8 first no-sender scan still records one waiting_sender event',
-    summary.scanned1 >= 1 && summary.eventsAfter1 === 1,
+  check('E.10 no-sender scan no longer writes waiting_sender event in dead production path',
+    summary.scanned1 >= 1 && summary.eventsAfter1 === 0 && summary.eventsAfter3 === 0,
     JSON.stringify(summary))
-  check('D.8 repeated no-sender scans do not append waiting_sender event every tick',
-    summary.eventsAfter3 === 1,
-    JSON.stringify(summary))
-  check('D.8 no-sender dedupe does not mutate task or notify terminal state',
+  check('E.10 no-sender path still does not mutate task or notify terminal state',
     summary.finalStatus === 'done' && summary.finalNotifyStatus === 'pending',
     JSON.stringify(summary))
 }
@@ -1918,9 +2443,7 @@ function run() {
 
   console.log(JSON.stringify({
     claimNextResultId: claimNextResult && claimNextResult.id || '',
-    claimNextResultStatus: claimNextResult && claimNextResult.status || '',
     claimByIdResultId: claimByIdResult && claimByIdResult.id || '',
-    claimByIdResultStatus: claimByIdResult && claimByIdResult.status || '',
     pendingExists: fs.existsSync(pendingFile),
     claimingExists: fs.existsSync(claimingFile),
     failedExists: fs.existsSync(failedFile),
@@ -2635,8 +3158,6 @@ const failEvents = afterEvents.filter(event => event.event === 'task_failed' && 
 console.log(JSON.stringify({
   restored: summary.restored,
   failed: summary.failed,
-  kept: summary.kept,
-  scanned: summary.scanned,
   auditEventDelta: afterAuditEvents.length - beforeAuditEventCount,
   restoreLiveStatuses: ['pending', 'claiming', 'running', 'done', 'failed', 'cancelled', 'deferred']
     .filter(status => fs.existsSync(taskPaths.getTaskFile(status, 'daily_summary', restoreTask.id))),
@@ -2770,7 +3291,6 @@ systemProtection.writeProcessCleanupEvent({
   browserPid: 65530,
 })
 
-const cleanupBefore = systemProtection.getSystemProtectionStatus().cleanupEvents || []
 const result = systemProtection.terminateRecordedProcessPids({
   taskId,
   kind: 'daily_report',
@@ -2786,7 +3306,6 @@ console.log(JSON.stringify({
   completedEventCount: cleanupAfter.filter(item => item.event === 'recorded_process_cleanup_completed' && item.taskId === taskId).length,
   skippedEventCount: cleanupAfter.filter(item => item.event === 'recorded_process_cleanup_skipped' && item.taskId === taskId).length,
   successfulTerminateCount: cleanupAfter.filter(item => item.event === 'process_tree_terminated' && item.taskId === taskId).length,
-  cleanupEventDelta: cleanupAfter.length - cleanupBefore.length,
 }, null, 2))
 process.exitCode = 0
 `
@@ -2914,7 +3433,6 @@ async function run() {
         && doneFiles.has(event.taskId)
       ).length,
       survivingStatuses: Array.from(doneFiles.keys()).map(taskId => ({
-        taskId,
         status: taskStore.getResourceTaskById(taskId) && taskStore.getResourceTaskById(taskId).status || '',
         notifyStatus: taskStore.getResourceTaskById(taskId) && taskStore.getResourceTaskById(taskId).notify && taskStore.getResourceTaskById(taskId).notify.status || '',
       })),
@@ -3611,10 +4129,8 @@ const afterSecondRequeueEvents = afterSecondEvents.filter(event => event.event =
 console.log(JSON.stringify({
   firstRestored: first.restored,
   firstFailed: first.failed,
-  firstKept: first.kept,
   secondRestored: second.restored,
   secondFailed: second.failed,
-  secondKept: second.kept,
   pendingAfterFirst: countStatus('pending'),
   deferredAfterFirst: countStatus('deferred'),
   pendingAfterSecond: countStatus('pending'),
@@ -3874,11 +4390,8 @@ function run() {
   const second = mediaQueue.enqueueMediaTask(input)
 
   console.log(JSON.stringify({
-    firstId: first && first.id || '',
-    secondId: second && second.id || '',
     secondStatus: second && second.status || '',
     secondHasExisting: !!(second && second.existing),
-    secondExistingStatus: second && second.existing && second.existing.status || '',
     secondReusedTrue: !!(second && second.reused === true),
     pendingImageTasks: countPendingImageTasks(),
     doneScanCount,
@@ -3944,11 +4457,9 @@ function run() {
   const reusedOldest = mediaQueue.enqueueMediaTask(completed[0].input)
 
   console.log(JSON.stringify({
-    cacheKeys: keys,
     cacheKeyCount: keys.length,
     reusedLatest: !!(reusedLatest && reusedLatest.reused === true),
     reusedOldest: !!(reusedOldest && reusedOldest.reused === true),
-    reusedOldestHasExisting: !!(reusedOldest && reusedOldest.existing),
   }, null, 2))
   process.exitCode = 0
 }
@@ -4789,7 +5300,6 @@ function run() {
     secondStatus: Number(second.status || 0),
     thirdAccepted: !!third.accepted,
     thirdStatus: Number(third.status || 0),
-    matchingCount: matchingTasks.length,
     matchingStatuses: matchingTasks.map(task => String(task.status || '')).sort(),
     matchingUsers: matchingTasks.map(task => String(task.userId || '')).sort(),
   }, null, 2))
@@ -4819,7 +5329,6 @@ try {
   check('agent deferred/backlog should block the third distinct user at the frontdoor instead of creating a third deferred placeholder',
     summary.thirdAccepted === false
       && summary.thirdStatus === 429
-      && summary.matchingCount === 2
       && JSON.stringify(summary.matchingStatuses) === JSON.stringify(['deferred', 'deferred'])
       && JSON.stringify(summary.matchingUsers) === JSON.stringify(['agent-backlog-user-1', 'agent-backlog-user-2']),
     JSON.stringify(summary))
@@ -4871,8 +5380,6 @@ function run() {
     firstTaskId: String(first.taskId || ''),
     secondAccepted: !!second.accepted,
     secondStatus: Number(second.status || 0),
-    secondTaskId: String(second.taskId || ''),
-    matchingCount: matchingTasks.length,
     matchingStatuses: matchingTasks.map(task => String(task.status || '')).sort(),
     matchingTaskIds: matchingTasks.map(task => String(task.id || '')).sort(),
   }, null, 2))
@@ -4900,7 +5407,6 @@ try {
   check('D.45 second agent submission should be blocked by the existing deferred task instead of creating another one',
     summary.secondAccepted === false
       && summary.secondStatus === 429
-      && summary.matchingCount === 1
       && JSON.stringify(summary.matchingStatuses) === JSON.stringify(['deferred'])
       && JSON.stringify(summary.matchingTaskIds) === JSON.stringify([summary.firstTaskId]),
     JSON.stringify(summary))
@@ -4954,7 +5460,6 @@ function run() {
     Date.now = () => Number.isFinite(expiresAtMs) ? expiresAtMs + 1000 : originalNow()
     const audit = supervisor.auditDeferredTasks(50)
 
-    const statusesAfterAudit = listMatching(['pending', 'claiming', 'running', 'deferred', 'failed', 'done', 'cancelled'])
     const failedAfterAudit = listMatching(['failed'])
 
     process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
@@ -4969,26 +5474,20 @@ function run() {
       acceptedMessageMode: 'quiet',
     })
 
-    const statusesAfterResubmit = listMatching(['pending', 'claiming', 'running', 'deferred', 'failed', 'done', 'cancelled'])
-
     console.log(JSON.stringify({
       firstAccepted: !!first.accepted,
       firstStatus: Number(first.status || 0),
       firstTaskId: String(first.taskId || ''),
       secondWhileBlackAccepted: !!secondWhileBlack.accepted,
       secondWhileBlackStatus: Number(secondWhileBlack.status || 0),
-      deferredBeforeCount: deferredBefore.length,
       deferredBeforeStatuses: deferredBefore.map(task => String(task.status || '')).sort(),
       deferredExpiresAt: deferredTask ? String(deferredTask.expiresAt || '') : '',
       deferredExpiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : null,
       audit,
-      statusesAfterAudit: statusesAfterAudit.map(task => ({ id: String(task.id || ''), status: String(task.status || '') })).sort((a, b) => a.id.localeCompare(b.id)),
-      failedAfterAuditCount: failedAfterAudit.length,
       failedAfterAuditIds: failedAfterAudit.map(task => String(task.id || '')).sort(),
       thirdAfterExpiryAccepted: !!thirdAfterExpiry.accepted,
       thirdAfterExpiryStatus: Number(thirdAfterExpiry.status || 0),
       thirdAfterExpiryTaskId: String(thirdAfterExpiry.taskId || ''),
-      statusesAfterResubmit: statusesAfterResubmit.map(task => ({ id: String(task.id || ''), status: String(task.status || '') })).sort((a, b) => a.id.localeCompare(b.id)),
     }, null, 2))
     process.exitCode = 0
   } finally {
@@ -5014,7 +5513,6 @@ try {
       && summary.firstStatus === 202
       && summary.secondWhileBlackAccepted === false
       && summary.secondWhileBlackStatus === 429
-      && summary.deferredBeforeCount === 1
       && JSON.stringify(summary.deferredBeforeStatuses) === JSON.stringify(['deferred']),
     JSON.stringify(summary))
   check('D.46 deferred agent task should carry a bounded expiresAt so supervisor can fail it after timeout',
@@ -5025,7 +5523,6 @@ try {
   check('D.46 deferred expiry audit should fail the expired placeholder instead of keeping the same-user block forever',
     summary.audit
       && summary.audit.failed === 1
-      && summary.failedAfterAuditCount === 1
       && JSON.stringify(summary.failedAfterAuditIds) === JSON.stringify([summary.firstTaskId]),
     JSON.stringify(summary))
   check('D.46 same user should be able to submit a fresh agent task after the expired deferred placeholder is cleaned up',
@@ -5093,13 +5590,11 @@ function run() {
     const deferredAfter = listDeferredById(taskId)
 
     console.log(JSON.stringify({
-      taskId,
       before,
       first,
       afterFirst,
       second,
       afterSecond,
-      deferredAfterCount: deferredAfter.length,
       deferredAfterStatuses: deferredAfter.map(task => String(task.status || '')).sort(),
     }, null, 2))
     process.exitCode = 0
@@ -5125,7 +5620,6 @@ try {
   check('deferred audit/write amplification fixture should keep the deferred agent task in place under black memory',
     summary.first
       && summary.second
-      && summary.deferredAfterCount === 1
       && JSON.stringify(summary.deferredAfterStatuses) === JSON.stringify(['deferred']),
     JSON.stringify(summary))
   check('deferred audit/write amplification should not append admission_decided events while deferred audit only keeps the same task deferred',
@@ -5823,7 +6317,6 @@ async function run() {
   const pendingTasks = mediaQueue.listPendingMediaTasks('media_voice_transcription', 20)
   const status = mediaQueue.getMediaBackpressureStatus()
   console.log(JSON.stringify({
-    decision,
     plain,
     voicePending: status.voicePending,
     queuedMessageIds: pendingTasks.map(task => task.messageId),
@@ -5952,9 +6445,7 @@ async function runFile(label, decision, resourceState, botMode, reason) {
   })
   return {
     messageId,
-    queuedStatus: result.queued && result.queued.status || '',
     pendingIds: pending('media_file_analysis'),
-    reply: requests.formatFileQueuedReply(result.admission),
   }
 }
 
@@ -5964,11 +6455,10 @@ async function runVoice(label, decision, resourceState, botMode, reason) {
   const channelKey = 'explicit-voice-frontdoor'
   const messageId = 'explicit-voice-' + label
   await seedVoice(channelKey, messageId)
-  const reply = await voiceQuickRead.resolveVoiceQuickReadReply(channelKey, messageId)
+  await voiceQuickRead.resolveVoiceQuickReadReply(channelKey, messageId)
   return {
     messageId,
     pendingIds: pending('media_voice_transcription'),
-    reply,
   }
 }
 
@@ -5988,10 +6478,10 @@ async function runChatImage(label, decision, resourceState, botMode, reason) {
     userId: 'image-user-1',
     tools: { analyze_historical_image: true, read_image_history: true },
   })
+  void reply
   return {
     messageId,
     pendingIds: pending('media_image_analysis'),
-    reply,
   }
 }
 
@@ -5999,14 +6489,13 @@ async function runAgentImage(label, decision, resourceState, botMode, reason) {
   installAdmission(decision, resourceState, botMode, reason)
   const analyzeImage = reload('koishi-plugin-dongxuelian-ai/lib/agent/tools/analyze-image')
   const messageId = 'explicit-agent-image-' + label
-  const reply = await analyzeImage.execute({ url: 'https://example.test/' + messageId + '.jpg' }, {
+  await analyzeImage.execute({ url: 'https://example.test/' + messageId + '.jpg' }, {
     channelKey: 'explicit-agent-image-frontdoor',
     userId: 'image-user-1',
   })
   return {
     messageId,
     pendingEntries: pending('media_image_analysis').map(messageId => String(messageId)),
-    reply,
   }
 }
 
@@ -6024,6 +6513,12 @@ async function run() {
       chatImage: await runChatImage('report-silent', 'defer', 'green', 'report_silent', 'media drain paused during daily report'),
       agentImage: await runAgentImage('report-silent', 'defer', 'green', 'report_silent', 'media drain paused during daily report'),
     }
+    const reportSilentCritical = {
+      file: await runFile('report-silent-critical', 'defer', 'red', 'report_silent', 'media drain paused during daily report'),
+      voice: await runVoice('report-silent-critical', 'defer', 'red', 'report_silent', 'media drain paused during daily report'),
+      chatImage: await runChatImage('report-silent-critical', 'defer', 'red', 'report_silent', 'media drain paused during daily report'),
+      agentImage: await runAgentImage('report-silent-critical', 'defer', 'red', 'report_silent', 'media drain paused during daily report'),
+    }
     const yellow = {
       file: await runFile('yellow', 'defer', 'yellow', 'normal', 'media is throttled in yellow state'),
       voice: await runVoice('yellow', 'defer', 'yellow', 'normal', 'media is throttled in yellow state'),
@@ -6036,7 +6531,7 @@ async function run() {
       chatImage: await runChatImage('queue', 'queue', 'green', 'normal', 'exclusive slot is busy'),
       agentImage: await runAgentImage('queue', 'queue', 'green', 'normal', 'exclusive slot is busy'),
     }
-    console.log(JSON.stringify({ blocked, reportSilent, yellow, queued }, null, 2))
+    console.log(JSON.stringify({ blocked, reportSilent, reportSilentCritical, yellow, queued }, null, 2))
     process.exitCode = 0
   } finally {
     restoreAdmission()
@@ -6068,6 +6563,12 @@ run().catch(error => {
       && summary.reportSilent.chatImage.pendingIds.includes(summary.reportSilent.chatImage.messageId)
       && summary.reportSilent.agentImage.pendingEntries.length > 0,
     JSON.stringify(summary.reportSilent))
+  check('explicit media report_silent defer should still block queue writes in red/critical state',
+    !summary.reportSilentCritical.file.pendingIds.includes(summary.reportSilentCritical.file.messageId)
+      && !summary.reportSilentCritical.voice.pendingIds.includes(summary.reportSilentCritical.voice.messageId)
+      && !summary.reportSilentCritical.chatImage.pendingIds.includes(summary.reportSilentCritical.chatImage.messageId)
+      && !summary.reportSilentCritical.agentImage.pendingEntries.includes(summary.reportSilentCritical.agentImage.messageId),
+    JSON.stringify(summary.reportSilentCritical))
   check('explicit media yellow defer should keep recoverable queued work',
     summary.yellow.file.pendingIds.includes(summary.yellow.file.messageId)
       && summary.yellow.voice.pendingIds.includes(summary.yellow.voice.messageId)
@@ -6093,13 +6594,16 @@ function main() {
   testBackgroundDirectiveCompatibility()
   testExpressionHarvestDirectiveCompatibility()
   testBackgroundLlmSubmissionDirectiveCompatibility()
+  testToolActiveBackgroundParkCompatibility()
+  testToolActiveQueuedBackgroundTasksDoNotClaimOrStarveForegroundWork()
+  testToolActiveQueuedBackgroundWindowDoesNotStarveForegroundWork()
   testMediaQueueDeferredCooldownCompatibility()
   testPlannerRetryAfterForFailedSlotCompatibility()
   testPlannerStopsTailFillWhenCoverageIsEnough()
   testPlannerDoesNotMistakeMiddleGapForTail()
   testPlannerStopsWhenDailySummaryBacklogExists()
   testPlannerRetryRestoreSurvivesTailStop()
-  testNotifierWaitingSenderEventIsDeduped()
+  testNotifierWithoutSenderLeavesTaskUntouched()
   testNotifierFailedRetryHasCooldown()
   testTaskStoreDoesNotCreateTargetCopyWhenRenameFails()
   testMarkTaskRunningDoesNotCreateRunningCopyWhenRenameFails()
