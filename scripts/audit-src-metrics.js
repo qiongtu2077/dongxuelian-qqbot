@@ -54,9 +54,22 @@ const PATH_CONFIG_GROUPS = [
       /\bwss:\/\/[^\s'"`]+/g,
       /\bssh\s+/g,
       /\bscp\s+/g,
+      /\brsync\s+/g,
+      /\bcurl\s+-k\b/g,
       /\bgit pull\b/g,
       /\bgit clone\b/g,
       /node_modules\/koishi\/bin\.js start/g,
+    ],
+  },
+  {
+    key: 'absolutePathLiteral',
+    label: '绝对路径与机器绑定路径',
+    patterns: [
+      /\B\/root\/[^\s'"`]+/g,
+      /\B\/usr\/local\/bin\/[^\s'"`]+/g,
+      /\B\/usr\/bin\/[^\s'"`]+/g,
+      /\B\/tmp\/[^\s'"`]+/g,
+      /\b[A-Za-z]:\\[^\s'"`]+/g,
     ],
   },
   {
@@ -1299,13 +1312,35 @@ function makePathConfigClassification(groupKey, relPath, lineText) {
     if (/node_modules\/koishi\/bin\.js start/.test(text)) {
       return make('local_koishi_binary_entry', 'observe', 'runtime-entry', 'local Koishi binary is the expected runtime entry but still belongs in entry-drift inventory')
     }
+    if (/\bcurl\s+-k\b/.test(lower)) {
+      return make('insecure_bootstrap_download', 'fix-candidate', 'transport-security/entry-drift', 'curl -k disables TLS verification in bootstrap/deploy flow and increases drift risk')
+    }
     if (/\b(?:ssh|scp)\s+/.test(lower) || /\bgit (?:pull|clone)\b/.test(lower)) {
       return make('legacy_deploy_network_chain', 'fix-candidate', 'entry-drift/supply-chain', 'direct ssh/scp/git deployment path conflicts with the packaged deploy chain and increases drift risk')
+    }
+    if (/\brsync\s+/.test(lower)) {
+      return make('legacy_deploy_network_chain', 'fix-candidate', 'entry-drift/supply-chain', 'direct rsync deployment path conflicts with the packaged deploy chain and increases drift risk')
     }
     if (/\bhttps?:\/\/[^\s'"`]+/i.test(text) || /\bwss?:\/\/[^\s'"`]+/i.test(text)) {
       return make('external_public_url_or_base_url', 'observe', 'external-url-boundary', 'external URL/baseURL needs ownership review but is not automatically a hardcoded secret')
     }
     return make('path_url_chain_unclassified', 'manual-review', 'path-url-chain', 'path/URL chain hit needs point review')
+  }
+
+  if (groupKey === 'absolutePathLiteral') {
+    if (/\B\/root\//.test(text)) {
+      return make('machine_bound_root_path', 'fix-candidate', 'path-hardcode/machine-binding', 'root-owned absolute path binds runtime or deploy flow to one machine layout')
+    }
+    if (/\b[A-Za-z]:\\/.test(text)) {
+      return make('windows_machine_path_literal', 'fix-candidate', 'path-hardcode/machine-binding', 'Windows absolute path literal binds behavior to one machine layout')
+    }
+    if (/\/usr\/(?:local\/)?bin\//.test(text)) {
+      return make('system_binary_path_assumption', 'observe', 'runtime-entry/path-assumption', 'system binary absolute path is a machine assumption that needs owner review before changing')
+    }
+    if (/\B\/tmp\//.test(text)) {
+      return make('temporary_runtime_path', 'observe', 'runtime-temp-boundary', 'temporary absolute path may be intentional runtime scratch space')
+    }
+    return make('absolute_path_literal_unclassified', 'manual-review', 'absolute-path-literal', 'absolute path literal hit needs point review')
   }
 
   if (groupKey === 'sensitiveFallback') {
