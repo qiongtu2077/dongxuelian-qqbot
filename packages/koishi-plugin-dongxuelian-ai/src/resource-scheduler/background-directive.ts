@@ -7,6 +7,13 @@ const {
   decideTaskDirective,
   readResourceContext,
 } = require('./resource-directive') as typeof import('./resource-directive')
+const {
+  RESOURCE_TASK_KIND,
+  shouldYieldToToolActiveKind,
+} = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
+const {
+  readResourceActivityLease,
+} = require('./resource-activity-lease') as typeof import('./resource-activity-lease')
 
 type ResourceDirectiveAction =
   | 'pass'
@@ -83,12 +90,34 @@ function shouldParkBackgroundDirective(action: string): boolean {
   return action === 'defer' || action === 'reject' || action === 'silent_drop' || action === 'queue'
 }
 
+function getBackgroundDirectiveKind(input: TaskDirectiveInput): string {
+  return String(input.kind || '')
+}
+
 function decideBackgroundDirective(input: TaskDirectiveInput, snapshot: ResourceSnapshotView = readResourceContext() as unknown as ResourceSnapshotView): BackgroundDirectiveResult {
   const task = decideTaskDirective(
     input,
     snapshot as unknown as Parameters<typeof decideTaskDirective>[1],
   ) as unknown as TaskDirectiveResultView
   const taskAction = String(task.directive?.action || '')
+  const kind = getBackgroundDirectiveKind(input)
+  const toolActiveLease = shouldYieldToToolActiveKind(kind)
+    ? readResourceActivityLease('tool_active')
+    : null
+  if (toolActiveLease) {
+    return {
+      directive: {
+        action: 'park',
+        reason: `foreground tool active (${String(toolActiveLease.owner || toolActiveLease.taskId || toolActiveLease.pid || 'unknown')})`,
+        resourceState: normalizeResourceState(snapshot),
+        botMode: normalizeBotMode(snapshot),
+        sleepMs: getBackgroundDirectiveSleepMs(snapshot, 'queue'),
+        taskAction,
+      },
+      task,
+      snapshot,
+    }
+  }
   const parked = shouldParkBackgroundDirective(taskAction)
   return {
     directive: {

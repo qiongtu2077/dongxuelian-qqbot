@@ -5,8 +5,9 @@
  * 边界: 不注册 Koishi middleware，不直接处理用户消息入口。
  */
 const { admitTask } = require('../resource-scheduler/admission');
-const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds');
+const { RESOURCE_TASK_KIND, shouldYieldToToolActiveKind, } = require('../resource-common/resource-task-kinds');
 const { decideBackgroundDirective } = require('../resource-scheduler/background-directive');
+const { readResourceActivityLease } = require('../resource-scheduler/resource-activity-lease');
 const { acquireResourceGate } = require('../resource-gate/gate');
 const { collectProcessMetrics, checkWorkerMemoryLimit, writeProcessCleanupEvent, terminateRecordedProcessPids, } = require('../resource-system/system-protection');
 const { claimNextTask, markTaskRunning, failIsolatedClaimingTask, completeTask, failTask, deferTask, requeueTask, updateTaskStep, writeWorkerHeartbeat, } = require('./task-store');
@@ -153,6 +154,12 @@ function readWorkerBackgroundDirective(type, workerName) {
         return null;
     return decideBackgroundDirective(probe);
 }
+function resolveClaimKindsForToolActive(kinds, toolActive) {
+    if (!toolActive)
+        return kinds;
+    const allowed = kinds.filter(kind => !shouldYieldToToolActiveKind(kind));
+    return allowed.length ? allowed : kinds;
+}
 // 根据任务类型调用对应执行器。
 async function executeWorkerTask(task) {
     if (task.kind === RESOURCE_TASK_KIND.DAILY_REPORT)
@@ -226,7 +233,9 @@ async function runOneQueuedTask(options = {}, heartbeat) {
     const type = String(options.type || 'daily');
     const workerName = getWorkerName(type, options.workerName || '');
     const kinds = getWorkerTaskKinds(type);
-    const task = claimNextTask(kinds, workerName);
+    const toolActive = !!readResourceActivityLease('tool_active');
+    const claimKinds = resolveClaimKindsForToolActive(kinds, toolActive);
+    const task = claimNextTask(claimKinds, workerName);
     if (!task)
         return false;
     const exclusive = requiresExclusiveGate(task);

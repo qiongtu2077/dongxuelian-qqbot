@@ -13,6 +13,8 @@ declare function isMediaTaskKind(kind: unknown): boolean;
 declare function isChromiumTaskKind(kind: unknown): boolean;
 declare function isDailyReportKind(kind: unknown): boolean;
 declare function canRunInRedStateByKind(kind: unknown): boolean;
+declare function isBackgroundLlmTaskKind(kind: unknown): boolean;
+declare function shouldYieldToToolActiveKind(kind: unknown): boolean;
 declare const _default: {
     RESOURCE_TASK_KIND: {
         readonly DAILY_REPORT: "daily_report";
@@ -49,5 +51,7 @@ declare const _default: {
     isChromiumTaskKind: typeof isChromiumTaskKind;
     isDailyReportKind: typeof isDailyReportKind;
     canRunInRedStateByKind: typeof canRunInRedStateByKind;
+    isBackgroundLlmTaskKind: typeof isBackgroundLlmTaskKind;
+    shouldYieldToToolActiveKind: typeof shouldYieldToToolActiveKind;
 };
 export = _default;

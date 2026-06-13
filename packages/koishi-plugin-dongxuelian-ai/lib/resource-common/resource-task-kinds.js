@@ -45,6 +45,11 @@ const DAILY_REPORT_KINDS = new Set([
 const RED_STATE_EXCEPTION_KINDS = new Set([
     RESOURCE_TASK_KIND.EXTERNAL_VIDEO_DOWNLOAD,
 ]);
+const BACKGROUND_LLM_TASK_KINDS = new Set([
+    RESOURCE_TASK_KIND.EXPRESSION_HARVEST,
+    RESOURCE_TASK_KIND.CONVERSATION_SUMMARY,
+    RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS,
+]);
 function normalizeResourceTaskKind(kind) {
     return String(kind || '');
 }
@@ -75,6 +80,15 @@ function isDailyReportKind(kind) {
 function canRunInRedStateByKind(kind) {
     return RED_STATE_EXCEPTION_KINDS.has(normalizeResourceTaskKind(kind));
 }
+function isBackgroundLlmTaskKind(kind) {
+    return BACKGROUND_LLM_TASK_KINDS.has(normalizeResourceTaskKind(kind));
+}
+function shouldYieldToToolActiveKind(kind) {
+    const normalized = normalizeResourceTaskKind(kind);
+    return normalized === RESOURCE_TASK_KIND.DAILY_SUMMARY
+        || isBackgroundLlmTaskKind(normalized)
+        || isMediaTaskKind(normalized);
+}
 module.exports = {
     RESOURCE_TASK_KIND,
     normalizeResourceTaskKind,
@@ -87,4 +101,6 @@ module.exports = {
     isChromiumTaskKind,
     isDailyReportKind,
     canRunInRedStateByKind,
+    isBackgroundLlmTaskKind,
+    shouldYieldToToolActiveKind,
 };

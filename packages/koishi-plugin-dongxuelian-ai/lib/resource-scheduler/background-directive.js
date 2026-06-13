@@ -5,6 +5,8 @@
  * 边界: 不接管 worker 状态机，不创建新的资源中心，不复制 admission 判断树。
  */
 const { decideTaskDirective, readResourceContext, } = require('./resource-directive');
+const { RESOURCE_TASK_KIND, shouldYieldToToolActiveKind, } = require('../resource-common/resource-task-kinds');
+const { readResourceActivityLease, } = require('./resource-activity-lease');
 function normalizeResourceState(snapshot) {
     return String(snapshot?.resourceState || 'yellow');
 }
@@ -29,9 +31,30 @@ function getBackgroundDirectiveSleepMs(snapshot, taskAction) {
 function shouldParkBackgroundDirective(action) {
     return action === 'defer' || action === 'reject' || action === 'silent_drop' || action === 'queue';
 }
+function getBackgroundDirectiveKind(input) {
+    return String(input.kind || '');
+}
 function decideBackgroundDirective(input, snapshot = readResourceContext()) {
     const task = decideTaskDirective(input, snapshot);
     const taskAction = String(task.directive?.action || '');
+    const kind = getBackgroundDirectiveKind(input);
+    const toolActiveLease = shouldYieldToToolActiveKind(kind)
+        ? readResourceActivityLease('tool_active')
+        : null;
+    if (toolActiveLease) {
+        return {
+            directive: {
+                action: 'park',
+                reason: `foreground tool active (${String(toolActiveLease.owner || toolActiveLease.taskId || toolActiveLease.pid || 'unknown')})`,
+                resourceState: normalizeResourceState(snapshot),
+                botMode: normalizeBotMode(snapshot),
+                sleepMs: getBackgroundDirectiveSleepMs(snapshot, 'queue'),
+                taskAction,
+            },
+            task,
+            snapshot,
+        };
+    }
     const parked = shouldParkBackgroundDirective(taskAction);
     return {
         directive: {

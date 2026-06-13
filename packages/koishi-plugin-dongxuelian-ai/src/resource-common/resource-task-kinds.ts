@@ -50,6 +50,12 @@ const RED_STATE_EXCEPTION_KINDS: Set<string> = new Set([
   RESOURCE_TASK_KIND.EXTERNAL_VIDEO_DOWNLOAD,
 ])
 
+const BACKGROUND_LLM_TASK_KINDS: Set<string> = new Set([
+  RESOURCE_TASK_KIND.EXPRESSION_HARVEST,
+  RESOURCE_TASK_KIND.CONVERSATION_SUMMARY,
+  RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS,
+])
+
 function normalizeResourceTaskKind(kind: unknown): string {
   return String(kind || '')
 }
@@ -90,6 +96,17 @@ function canRunInRedStateByKind(kind: unknown): boolean {
   return RED_STATE_EXCEPTION_KINDS.has(normalizeResourceTaskKind(kind))
 }
 
+function isBackgroundLlmTaskKind(kind: unknown): boolean {
+  return BACKGROUND_LLM_TASK_KINDS.has(normalizeResourceTaskKind(kind))
+}
+
+function shouldYieldToToolActiveKind(kind: unknown): boolean {
+  const normalized = normalizeResourceTaskKind(kind)
+  return normalized === RESOURCE_TASK_KIND.DAILY_SUMMARY
+    || isBackgroundLlmTaskKind(normalized)
+    || isMediaTaskKind(normalized)
+}
+
 export = {
   RESOURCE_TASK_KIND,
   normalizeResourceTaskKind,
@@ -102,4 +119,6 @@ export = {
   isChromiumTaskKind,
   isDailyReportKind,
   canRunInRedStateByKind,
+  isBackgroundLlmTaskKind,
+  shouldYieldToToolActiveKind,
 }

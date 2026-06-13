@@ -4,8 +4,12 @@
  * 边界: 不注册 Koishi middleware，不直接处理用户消息入口。
  */
 const { admitTask } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
-const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
+const {
+  RESOURCE_TASK_KIND,
+  shouldYieldToToolActiveKind,
+} = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
 const { decideBackgroundDirective } = require('../resource-scheduler/background-directive') as typeof import('../resource-scheduler/background-directive')
+const { readResourceActivityLease } = require('../resource-scheduler/resource-activity-lease') as typeof import('../resource-scheduler/resource-activity-lease')
 const { acquireResourceGate } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
 const {
   collectProcessMetrics,
@@ -222,6 +226,12 @@ function readWorkerBackgroundDirective(type: string, workerName: string) {
   return decideBackgroundDirective(probe)
 }
 
+function resolveClaimKindsForToolActive(kinds: string[], toolActive: boolean): string[] {
+  if (!toolActive) return kinds
+  const allowed = kinds.filter(kind => !shouldYieldToToolActiveKind(kind))
+  return allowed.length ? allowed : kinds
+}
+
 // 根据任务类型调用对应执行器。
 async function executeWorkerTask(task: ResourceTaskLike): Promise<Record<string, unknown>> {
   if (task.kind === RESOURCE_TASK_KIND.DAILY_REPORT) return await runDailyWorkerTask(task)
@@ -284,7 +294,9 @@ async function runOneQueuedTask(options: WorkerMainOptions = {}, heartbeat?: Wor
   const type = String(options.type || 'daily')
   const workerName = getWorkerName(type, options.workerName || '')
   const kinds = getWorkerTaskKinds(type)
-  const task = claimNextTask(kinds, workerName)
+  const toolActive = !!readResourceActivityLease('tool_active')
+  const claimKinds = resolveClaimKindsForToolActive(kinds, toolActive)
+  const task = claimNextTask(claimKinds, workerName)
   if (!task) return false
   const exclusive = requiresExclusiveGate(task)
 
