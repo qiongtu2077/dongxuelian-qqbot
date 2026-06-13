@@ -365,6 +365,96 @@ async function testRendererTimeoutCleanup() {
   }
 }
 
+async function testRendererSlotReleasedWhenLeaseAcquireFails() {
+  section('html-renderer lease acquire cleanup regression')
+  const originalExistsSync = fs.existsSync
+  const originalSetTimeout = global.setTimeout
+  const originalDateNow = Date.now
+  const originalDataDir = process.env.DONGXUELIAN_AI_DATA_DIR
+  const originalQueueTimeout = process.env.DAILY_REPORT_QUEUE_TIMEOUT_MS
+  const puppeteerPath = require.resolve('puppeteer-core')
+  const originalPuppeteerCache = require.cache[puppeteerPath]
+  const originalRendererCache = require.cache[HTML_RENDERER_PATH]
+  const originalConstantsCache = require.cache[AI_CONSTANTS_PATH]
+  const originalLeaseCache = require.cache[AI_ACTIVITY_LEASE_PATH]
+  const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-render-lease-slot-'))
+  let releaseToolLease = null
+  let launchCalls = 0
+
+  fs.existsSync = value => {
+    const text = String(value || '')
+    if (/chrome|edge|msedge/i.test(text)) return true
+    return originalExistsSync(value)
+  }
+  process.env.DONGXUELIAN_AI_DATA_DIR = tempDataDir
+  process.env.DAILY_REPORT_QUEUE_TIMEOUT_MS = '5000'
+  delete require.cache[AI_CONSTANTS_PATH]
+  delete require.cache[AI_ACTIVITY_LEASE_PATH]
+  delete require.cache[HTML_RENDERER_PATH]
+  require.cache[puppeteerPath] = {
+    id: puppeteerPath,
+    filename: puppeteerPath,
+    loaded: true,
+    exports: {
+      async launch() {
+        launchCalls += 1
+        return {
+          async newPage() { throw new Error('unexpected launch while render_active is blocked') },
+          async close() {},
+        }
+      },
+    },
+  }
+
+  try {
+    const activityLease = require(AI_ACTIVITY_LEASE_PATH)
+    releaseToolLease = activityLease.acquireResourceActivityLease('tool_active', {
+      owner: 'daily-render-lease-slot-test',
+      taskId: 'daily-render-lease-slot-test',
+      ttlMs: 60000,
+    })
+    const renderer = require(HTML_RENDERER_PATH)
+
+    try {
+      await renderer.renderHtmlToImage('<html><body>blocked</body></html>', { taskId: 'lease-slot-first' })
+      check('renderHtmlToImage throws when render_active conflicts with tool_active', false)
+    } catch (error) {
+      check('renderHtmlToImage throws when render_active conflicts with tool_active', String(error.message || error).includes('tool_active'), String(error.message || error))
+    }
+
+    let fakeNow = 1000
+    Date.now = () => fakeNow
+    global.setTimeout = (fn, ms, ...args) => {
+      void ms
+      fakeNow += 6000
+      return originalSetTimeout(fn, 0, ...args)
+    }
+
+    try {
+      await renderer.renderHtmlToImage('<html><body>blocked again</body></html>', { taskId: 'lease-slot-second' })
+      check('renderer slot is released after lease acquire failure', false)
+    } catch (error) {
+      const message = String(error.message || error)
+      check('renderer slot is released after lease acquire failure', message.includes('tool_active') && !message.includes('queue timeout'), message)
+    }
+    check('lease acquire failure does not launch Chromium', launchCalls === 0, JSON.stringify({ launchCalls }))
+  } finally {
+    try { if (releaseToolLease) releaseToolLease('test-finished') } catch {}
+    fs.existsSync = originalExistsSync
+    global.setTimeout = originalSetTimeout
+    Date.now = originalDateNow
+    if (originalDataDir === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
+    else process.env.DONGXUELIAN_AI_DATA_DIR = originalDataDir
+    if (originalQueueTimeout === undefined) delete process.env.DAILY_REPORT_QUEUE_TIMEOUT_MS
+    else process.env.DAILY_REPORT_QUEUE_TIMEOUT_MS = originalQueueTimeout
+    restoreModuleCache(AI_CONSTANTS_PATH, originalConstantsCache)
+    restoreModuleCache(AI_ACTIVITY_LEASE_PATH, originalLeaseCache)
+    restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
+    restoreModuleCache(puppeteerPath, originalPuppeteerCache)
+    try { fs.rmSync(tempDataDir, { recursive: true, force: true }) } catch {}
+  }
+}
+
 section('AI fallback unit')
 const fallbackFull = aiAnalyzer.buildFallbackFullAnalysis({
   totalMessages: 120,
@@ -1469,7 +1559,8 @@ testMiddleware('你好', '123').then(nonReport => {
   try { fs.rmSync(middlewareCommandDataDir, { recursive: true, force: true }) } catch {}
 
   return testRendererTimeoutCleanup()
-}).then(() => testAiFallbackRegression()
+}).then(() => testRendererSlotReleasedWhenLeaseAcquireFails()
+).then(() => testAiFallbackRegression()
 ).then(() => testRequestChatCompletionsPayload()
 ).then(() => testAIAnalyzerObjectResponse()
 ).then(() => testConcurrentReportGuard()

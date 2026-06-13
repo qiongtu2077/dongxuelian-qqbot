@@ -528,21 +528,18 @@ async function renderHtmlToImage(htmlContent: string, context: RenderContext = {
   logRenderStep('html accepted', `${htmlBytes} bytes`)
   const releaseRendererSlot = await acquireRendererSlot()
   logRenderStep('queue slot acquired', `active=${activeRenderers}`)
-
+  let rendererSlotReleased = false
+  const releaseRendererSlotOnce = () => {
+    if (rendererSlotReleased) return
+    rendererSlotReleased = true
+    releaseRendererSlot()
+    logRenderStep('cleanup ok', `active=${activeRenderers}`)
+  }
   const puppeteer = require('puppeteer-core') as PuppeteerLike
   const browserPath = findBrowser()
-  if (!browserPath) {
-    releaseRendererSlot()
-    throw new Error('未找到Chrome/Chromium浏览器')
-  }
-
   let browser: BrowserLike | null = null
   let timeoutId: ReturnType<typeof setTimeout> | null = null
-  const releaseRenderLease = acquireResourceActivityLease('render_active', {
-    owner: context.source || 'daily_report_render',
-    taskId: context.taskId || '',
-    ttlMs: Math.max(RENDER_TIMEOUT + 60000, 120000),
-  })
+  let releaseRenderLease: ((reason?: string) => void) | null = null
   // 关闭浏览器实例并避免成功、失败、超时路径重复 close。
   const closeBrowser = async (reason: string): Promise<void> => {
     if (!browser) return
@@ -569,6 +566,18 @@ async function renderHtmlToImage(htmlContent: string, context: RenderContext = {
     }
   }
   try {
+    if (!browserPath) throw new Error('未找到Chrome/Chromium浏览器')
+
+    try {
+      releaseRenderLease = acquireResourceActivityLease('render_active', {
+        owner: context.source || 'daily_report_render',
+        taskId: context.taskId || '',
+        ttlMs: Math.max(RENDER_TIMEOUT + 60000, 120000),
+      })
+    } catch (error) {
+      releaseRendererSlotOnce()
+      throw error
+    }
     logRenderStep('browser launch start', `path=${browserPath}, protocolTimeout=${RENDER_PROTOCOL_TIMEOUT}`)
     browser = await puppeteer.launch({
       executablePath: browserPath, headless: 'new', protocolTimeout: RENDER_PROTOCOL_TIMEOUT,
@@ -625,9 +634,8 @@ async function renderHtmlToImage(htmlContent: string, context: RenderContext = {
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
     await closeBrowser('finally')
-    try { releaseRenderLease('render-finished') } catch { /* non-critical: lease cleanup is best effort */ }
-    releaseRendererSlot()
-    logRenderStep('cleanup ok', `active=${activeRenderers}`)
+    try { if (releaseRenderLease) releaseRenderLease('render-finished') } catch { /* non-critical: lease cleanup is best effort */ }
+    releaseRendererSlotOnce()
   }
 }
 
