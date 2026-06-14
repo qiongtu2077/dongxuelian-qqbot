@@ -45,6 +45,21 @@ export interface StatusData extends JsonObject {
   model?: string
 }
 
+export interface ResourceStatusData extends JsonObject {
+  mode?: string
+  resourceState?: string
+  serverMode?: string
+  serverModeSource?: string
+  tool_active?: boolean
+  render_active?: boolean
+  background_allowed?: boolean
+  memAvailableMb?: number | null
+  memTotalMb?: number | null
+  memSource?: string
+  queueLength?: number
+  maintenance?: boolean
+}
+
 export interface FeatureInfo extends JsonObject {
   id: string
   title: string

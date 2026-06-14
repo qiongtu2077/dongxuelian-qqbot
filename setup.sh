@@ -365,3 +365,14 @@ if tail -20 koishi.log | grep -q 'adapter connect to server'; then
 else
   warn "Koishi is starting. Check logs manually: tail -f <YOUR_APP_DIR>/koishi.log"
 fi
+
+# ==========================================
+# 11. install Dashboard auto-start (systemd)
+# ==========================================
+# 只给 Dashboard 网页装开机自起 + 崩溃自愈；koishi/napcat 保持手动。
+# 此脚本在无 systemd 的环境会自动跳过；Dashboard 未运行时会顺带首次拉起它。
+if [ -f "$KOISHI_DIR/scripts/install-dashboard-service.sh" ]; then
+  log "Installing Dashboard auto-start service..."
+  KOISHI_APP_DIR="$KOISHI_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" DASHBOARD_PORT="${DASHBOARD_PORT:-5150}" \
+    bash "$KOISHI_DIR/scripts/install-dashboard-service.sh" || warn "Dashboard 自起安装失败，可稍后手动执行该脚本"
+fi

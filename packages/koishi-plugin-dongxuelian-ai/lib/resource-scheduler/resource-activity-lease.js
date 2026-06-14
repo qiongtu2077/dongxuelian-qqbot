@@ -7,6 +7,7 @@
 const path = require('path');
 const { DATA_DIR } = require('../core/constants');
 const { ensureDir, isProcessAlive, nowIso, readJsonFile, removePath, sanitizeId, writeJsonAtomic, } = require('../resource-common/files');
+const serverModePolicy = require('./server-mode-policy');
 const ACTIVITY_ROOT = path.join(DATA_DIR, 'resource-activity');
 const DEFAULT_TOOL_TTL_MS = 3 * 60 * 1000;
 const DEFAULT_RENDER_TTL_MS = 10 * 60 * 1000;
@@ -49,6 +50,11 @@ function hasActiveResourceActivityLease(kind) {
     return !!readResourceActivityLease(kind);
 }
 function findBlockingResourceActivityLease(kind) {
+    const strictMutualExclusion = typeof serverModePolicy.readResourceActivityMutualExclusionState === 'function'
+        ? !!serverModePolicy.readResourceActivityMutualExclusionState().strictActivityMutualExclusion
+        : String(serverModePolicy.readServerModeConfig?.().serverMode || 'large').trim().toLowerCase() === 'small';
+    if (!strictMutualExclusion)
+        return null;
     const conflictKinds = CONFLICTING_ACTIVITY_LEASES[String(kind)] || [];
     for (const conflictKind of conflictKinds) {
         const blocking = readResourceActivityLease(conflictKind);

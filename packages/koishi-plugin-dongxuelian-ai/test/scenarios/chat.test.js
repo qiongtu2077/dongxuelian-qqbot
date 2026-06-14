@@ -50,11 +50,11 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-async function withGreenResourceSnapshot(fn) {
+async function withResourceSnapshot(fn, snapshot = {}) {
   const previousAvailable = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
   const previousTotal = process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
-  process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
-  process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
+  process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = String(snapshot.availableMb ?? 1200)
+  process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = String(snapshot.totalMb ?? 1600)
   try {
     return await fn()
   } finally {
@@ -89,16 +89,19 @@ async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
         if (typeof options.setup === 'function') await options.setup(session, { harness, mocked, data })
         session.content = atBot(session, options.input || '\u4f60\u597d')
         const beforeCalls = mocked.calls.length
-        let result = await withGreenResourceSnapshot(() => run(session, { flushTicks: 120 }))
-        await session.waitForSend(options.waitFor || (() => true))
-        await new Promise(resolve => setImmediate(resolve))
-        result = {
-          ...result,
-          sent: session.sent,
-          internalCalls: session.internalCalls,
-          timeline: session.timeline,
-          logs: harness.logs,
-        }
+        let result = null
+        await withResourceSnapshot(async () => {
+          result = await run(session, { flushTicks: 120 })
+          await session.waitForSend(options.waitFor || (() => true))
+          await new Promise(resolve => setImmediate(resolve))
+          result = {
+            ...result,
+            sent: session.sent,
+            internalCalls: session.internalCalls,
+            timeline: session.timeline,
+            logs: harness.logs,
+          }
+        }, options.resourceSnapshot)
         await assertions(result, mocked, session, mocked.calls.slice(beforeCalls), data)
       } finally {
         Math.random = originalRandom
@@ -288,6 +291,41 @@ async function run(t) {
       }
     },
     waitFor: message => String(message).includes('拿到可靠结果再说'),
+  })
+  try {
+    const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
+    if (webSearch.__scenarioOriginalExecute) {
+      webSearch.execute = webSearch.__scenarioOriginalExecute
+      delete webSearch.__scenarioOriginalExecute
+    }
+  } catch {}
+
+  await runChatCase(t, 'chat heavy web_search defer does not leak internal deferred task wording', [
+    { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-heavy-defer-search', type: 'function', function: { name: 'web_search', arguments: '{"query":"BW 2026 抢票最新消息"}' } }] } }] } },
+    { json: { choices: [{ message: { content: '让我看看…' } }] } },
+  ], async (result, mocked, session, calls) => {
+    checkSentNonEmpty(t, 'scenario heavy web_search defer still replies something visible', result)
+    checkSentExcludes(t, 'scenario heavy web_search defer does not expose internal deferred wording', result, '当前资源紧张，Agent 任务已记录为延期任务')
+    checkSentExcludes(t, 'scenario heavy web_search defer does not expose internal task id', result, 'agent_task-')
+    t.check('scenario heavy web_search defer keeps entry process free of search execution', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
+    const tasks = listScenarioAgentTasks(['deferred'])
+    const task = tasks[0] || {}
+    const { payload, agentWorker } = getAgentWorkerParts(task)
+    t.check('scenario heavy web_search defer still materializes one deferred chat-heavy-tool task', tasks.length === 1 && payload.entry === 'chat-heavy-tool' && agentWorker.entry === 'chat-heavy-tool' && String(task.status || '') === 'deferred', JSON.stringify(tasks))
+    t.check('scenario heavy web_search defer still only uses two model calls for tool detection and short follow-up', calls.length === 2, `calls=${calls.length}`)
+  }, {
+    input: 'BW 2026 抢票最新消息有吗',
+    setup(session) {
+      const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
+      webSearch.__scenarioOriginalExecute = webSearch.execute
+      session._webSearchCalls = []
+      webSearch.execute = async (params = {}) => {
+        session._webSearchCalls.push(params)
+        return 'SHOULD_NOT_SEARCH'
+      }
+    },
+    resourceSnapshot: { availableMb: 569, totalMb: 1600 },
+    waitFor: () => true,
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))

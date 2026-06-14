@@ -25,6 +25,11 @@ type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string
 interface ResourceSnapshotLike extends Record<string, unknown> {
   botMode?: unknown
   resourceState?: unknown
+  serverMode?: unknown
+  serverModeSource?: unknown
+  toolActive?: unknown
+  renderActive?: unknown
+  backgroundAllowed?: unknown
   memAvailableMb?: unknown
   memTotalMb?: unknown
   memSource?: unknown
@@ -83,6 +88,10 @@ interface ResourceModuleSet {
   scheduler: {
     SCHEDULER_ROOT: string
     readResourceSnapshot(): ResourceSnapshotLike
+  }
+  mode: {
+    readServerModeConfig(): { serverMode?: unknown; serverModeSource?: unknown }
+    writeServerModeConfig(serverMode: unknown, meta?: Record<string, unknown>): { serverMode?: unknown; serverModeSource?: unknown }
   }
   tasks: {
     getTaskQueueSummary(): ResourceQueueSummaryLike
@@ -158,6 +167,7 @@ function loadResourceModules(): ResourceModuleSet {
   return {
     gate: require(path.join(AI_LIB, 'resource-gate', 'gate')),
     scheduler: require(path.join(AI_LIB, 'resource-scheduler', 'resource-snapshot')),
+    mode: require(path.join(AI_LIB, 'resource-scheduler', 'server-mode-policy')),
     tasks: require(path.join(AI_LIB, 'resource-workers', 'task-store')),
     precompute: require(path.join(AI_LIB, 'daily-precompute', 'precompute-status')),
     media: require(path.join(AI_LIB, 'media', 'backpressure', 'media-queue')),
@@ -689,6 +699,11 @@ function buildResourceStatus(mods: ResourceModuleSet): Record<string, unknown> {
     ok: true,
     mode: snapshot.botMode,
     resourceState: snapshot.resourceState,
+    serverMode: snapshot.serverMode,
+    serverModeSource: snapshot.serverModeSource || '',
+    tool_active: !!snapshot.toolActive,
+    render_active: !!snapshot.renderActive,
+    background_allowed: !!snapshot.backgroundAllowed,
     memAvailableMb: snapshot.memAvailableMb,
     memTotalMb: snapshot.memTotalMb,
     memSource: snapshot.memSource || '',
@@ -717,6 +732,25 @@ function buildResourceStatus(mods: ResourceModuleSet): Record<string, unknown> {
     disk: getCachedDiskUsage(),
     maintenance: !!readFileSyncSafe(MAINTENANCE_FILE),
     events: collectResourceEvents(mods, 40),
+  }
+}
+
+// GET /resource/mode：读取服务器资源模式与派生门禁状态。
+function handleGetResourceMode(req: IncomingMessage, res: ServerResponse) {
+  try {
+    const mods = loadResourceModules()
+    const snapshot = mods.scheduler.readResourceSnapshot()
+    const mode = mods.mode.readServerModeConfig()
+    return json(res, {
+      ok: true,
+      serverMode: mode.serverMode || snapshot.serverMode || 'large',
+      serverModeSource: mode.serverModeSource || snapshot.serverModeSource || 'default',
+      tool_active: !!snapshot.toolActive,
+      render_active: !!snapshot.renderActive,
+      background_allowed: !!snapshot.backgroundAllowed,
+    })
+  } catch (e) {
+    return json(res, { ok: false, message: getErrorMessage(e) }, 500)
   }
 }
 
@@ -842,6 +876,33 @@ function handlePostResourceMaintenance(req: IncomingMessage, res: ServerResponse
   })
 }
 
+// POST /resource/mode：切换服务器资源模式并回读最新状态。
+function handlePostResourceMode(req: IncomingMessage, res: ServerResponse) {
+  if (!requireAdmin(req, res)) return
+  collectBody(req, res, (body) => {
+    try {
+      const data = JSON.parse(body || '{}')
+      const serverMode = String(data.serverMode || '').trim().toLowerCase()
+      if (serverMode !== 'small' && serverMode !== 'large') {
+        return json(res, { ok: false, message: 'serverMode 只能是 small 或 large' }, 400)
+      }
+      const mods = loadResourceModules()
+      const saved = mods.mode.writeServerModeConfig(serverMode, { updatedBy: 'dashboard' })
+      const snapshot = mods.scheduler.readResourceSnapshot()
+      return json(res, {
+        ok: true,
+        serverMode: saved.serverMode || snapshot.serverMode || 'large',
+        serverModeSource: saved.serverModeSource || snapshot.serverModeSource || 'resource-control/config.json',
+        tool_active: !!snapshot.toolActive,
+        render_active: !!snapshot.renderActive,
+        background_allowed: !!snapshot.backgroundAllowed,
+      })
+    } catch (e) {
+      return json(res, { ok: false, message: getErrorMessage(e) }, 400)
+    }
+  })
+}
+
 const routes: Record<string, RouteHandler> = {
   'GET /dashboard/api/resource/status': handleGetResourceStatus,
   'GET /dashboard/api/resource/memory-history': handleGetResourceMemoryHistory,
@@ -850,9 +911,11 @@ const routes: Record<string, RouteHandler> = {
   'GET /dashboard/api/resource/workers': handleGetResourceWorkers,
   'GET /dashboard/api/resource/media': handleGetResourceMedia,
   'GET /dashboard/api/resource/precompute': handleGetResourcePrecompute,
+  'GET /dashboard/api/resource/mode': handleGetResourceMode,
   'POST /dashboard/api/resource/cancel': handlePostResourceCancel,
   'POST /dashboard/api/resource/reclaim-stale': handlePostResourceReclaimStale,
   'POST /dashboard/api/resource/maintenance': handlePostResourceMaintenance,
+  'POST /dashboard/api/resource/mode': handlePostResourceMode,
 }
 
 export = { routes, buildResourceStatus, sanitizeTask, collectMemoryHistory, normalizeMemoryRange, getCachedMemoryHistory, cleanupOldProcessMetricFiles, collectDiskUsage, getCachedDiskUsage }

@@ -25,8 +25,13 @@ function buildResourceStatusReply(): string {
     : '无'
   return [
     `模式：${snapshot.botMode}`,
+    `服务器模式：${snapshot.serverMode || 'large'}`,
+    `模式来源：${snapshot.serverModeSource || 'default'}`,
     `资源档位：${snapshot.resourceState}`,
     `可用内存：${formatMemory(snapshot.memAvailableMb, snapshot.memTotalMb)}`,
+    `tool_active：${snapshot.toolActive ? '是' : '否'}`,
+    `render_active：${snapshot.renderActive ? '是' : '否'}`,
+    `background_allowed：${snapshot.backgroundAllowed ? '是' : '否'}`,
     `当前运行：${running}`,
     `任务队列：pending=${queue.pending || 0}, running=${queue.running || 0}, failed=${queue.failed || 0}`,
     `媒体背压：图片=${media.imagePending || 0}, 文件=${media.filePending || 0}, 语音=${media.voicePending || 0}, dropped=${media.droppedCount || 0}`,

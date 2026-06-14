@@ -13,6 +13,11 @@ interface BackgroundDirective {
 interface ResourceSnapshotView extends Record<string, unknown> {
     resourceState?: unknown;
     botMode?: unknown;
+    serverMode?: unknown;
+    serverModeSource?: unknown;
+    toolActive?: unknown;
+    renderActive?: unknown;
+    backgroundAllowed?: unknown;
     maintenance?: unknown;
     memAvailableMb?: unknown;
     memTotalMb?: unknown;

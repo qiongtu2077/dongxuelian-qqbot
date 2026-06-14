@@ -179,12 +179,99 @@ function testBlackMemoryAdmission() {
   check('black injection task directive matches legacy admission', summary.dailyDirectiveAction === summary.dailyDecision && summary.browserDirectiveAction === summary.browserDecision, JSON.stringify(summary))
 }
 
+function runModeScenario(label, env, timeoutMs = 15000) {
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+const snapshot = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-snapshot')
+const serverMode = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/server-mode-policy')
+const backgroundDirective = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/background-directive')
+const activityLease = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease')
+
+const defaultSnapshot = snapshot.readResourceSnapshot()
+const modeFile = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'resource-control', 'config.json')
+serverMode.writeServerModeConfig('small', { updatedBy: 'resource-scheduler-test' })
+const defaultModeState = serverMode.readServerModeState({
+  resourceState: 'green',
+  maintenance: false,
+  toolActive: false,
+  renderActive: false,
+})
+const releaseRender = activityLease.acquireResourceActivityLease('render_active', {
+  owner: 'resource-scheduler-test',
+  taskId: 'resource-scheduler-mode-render',
+  ttlMs: 5000,
+})
+try {
+  const modeSnapshot = snapshot.readResourceSnapshot()
+  const parked = backgroundDirective.decideBackgroundDirective({
+    kind: 'expression_harvest',
+    source: 'resource-scheduler-test',
+    channelKey: 'global',
+    userId: '',
+    priority: 40,
+    exclusive: true,
+    timeoutMs: 120000,
+    queueTimeoutMs: 120000,
+    runTimeoutMs: 120000,
+  }, modeSnapshot)
+  console.log(JSON.stringify({
+    defaultSnapshot,
+    defaultModeState,
+    modeSnapshot,
+    parkedAction: parked.directive.action,
+    parkedReason: parked.directive.reason,
+    modeFileExists: fs.existsSync(modeFile),
+  }, null, 2))
+  process.exitCode = 0
+} finally {
+  releaseRender('resource-scheduler-test-finally')
+}
+`
+  const result = spawnSync(process.execPath, ['-e', script], {
+    cwd: path.resolve(__dirname, '..', '..', '..'),
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+    timeout: timeoutMs,
+  })
+  check(`${label} exits 0`, result.status === 0, `status=${result.status} stdout=${result.stdout} stderr=${result.stderr}`)
+  if (result.status !== 0) return null
+  try {
+    return parseScenarioOutput(result.stdout)
+  } catch (error) {
+    fail(`${label} output is JSON`, error instanceof Error ? error.message : String(error))
+    return null
+  }
+}
+
+function testServerModeSnapshotAndBackgroundAllowed() {
+  const summary = runModeScenario('server mode snapshot and background allowed', {
+    DONGXUELIAN_AI_DATA_DIR: createTempDataDir('resource-scheduler-mode-'),
+  })
+  if (!summary) return
+  check('server mode defaults to large before config exists',
+    summary.defaultSnapshot && summary.defaultSnapshot.serverMode === 'large' && summary.defaultSnapshot.backgroundAllowed === true,
+    JSON.stringify(summary.defaultSnapshot))
+  check('server mode config round-trips through config file and write helper',
+    summary.defaultModeState && summary.defaultModeState.serverMode === 'small' && summary.defaultModeState.serverModeSource === 'resource-control/config.json',
+    JSON.stringify(summary.defaultModeState))
+  check('render_active lease forces background_allowed false in small mode',
+    summary.modeSnapshot && summary.modeSnapshot.serverMode === 'small'
+      && summary.modeSnapshot.renderActive === true
+      && summary.modeSnapshot.backgroundAllowed === false,
+    JSON.stringify(summary.modeSnapshot))
+  check('small mode background directive parks expression harvest while render_active is held',
+    summary.parkedAction === 'park' && /render_active|background|资源保护/i.test(String(summary.parkedReason || '')),
+    JSON.stringify({ parkedAction: summary.parkedAction, parkedReason: summary.parkedReason }))
+}
+
 // Run all resource-scheduler regression checks.
 function main() {
   console.log('=== resource-scheduler S1 tests ===')
   testRedMemoryAdmission()
   testYellowMemoryAdmission()
   testBlackMemoryAdmission()
+  testServerModeSnapshotAndBackgroundAllowed()
   console.log(`passed: ${passed}`)
   console.log(`failed: ${failed}`)
   process.exit(failed > 0 ? 1 : 0)

@@ -8,6 +8,8 @@ const path = require('path') as typeof import('path')
 const { DATA_DIR, MAINTENANCE_FILE } = require('../core/constants') as typeof import('../core/constants')
 const { readLockMeta } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
 const { ensureDir, nowIso, readJsonFile, writeJsonAtomic } = require('../resource-common/files') as typeof import('../resource-common/files')
+const { readResourceActivityLease } = require('./resource-activity-lease') as typeof import('./resource-activity-lease')
+const { readServerModeState, normalizeServerMode } = require('./server-mode-policy') as typeof import('./server-mode-policy')
 
 type ResourceState = 'green' | 'yellow' | 'red' | 'black'
 type BotMode = 'normal' | 'busy' | 'report_silent' | 'critical' | 'maintenance'
@@ -15,6 +17,11 @@ type BotMode = 'normal' | 'busy' | 'report_silent' | 'critical' | 'maintenance'
 interface ResourceSnapshot {
   resourceState: ResourceState
   botMode: BotMode
+  serverMode: string
+  serverModeSource: string
+  toolActive: boolean
+  renderActive: boolean
+  backgroundAllowed: boolean
   memAvailableMb: number | null
   memTotalMb: number | null
   memSource: string
@@ -167,6 +174,11 @@ function buildSnapshotStableKey(snapshot: ResourceSnapshotPersisted | null | und
   return JSON.stringify({
     resourceState: snapshot?.resourceState || 'yellow',
     botMode: snapshot?.botMode || 'normal',
+    serverMode: normalizeServerMode(snapshot?.serverMode),
+    serverModeSource: snapshot?.serverModeSource || '',
+    toolActive: !!snapshot?.toolActive,
+    renderActive: !!snapshot?.renderActive,
+    backgroundAllowed: snapshot?.backgroundAllowed !== undefined ? !!snapshot?.backgroundAllowed : true,
     memAvailableMb: snapshot?.memAvailableMb === undefined ? null : snapshot?.memAvailableMb,
     memTotalMb: snapshot?.memTotalMb === undefined ? null : snapshot?.memTotalMb,
     memSource: snapshot?.memSource || '',
@@ -183,9 +195,23 @@ function readResourceSnapshot(): ResourceSnapshot {
   const running = readLockMeta()
   const resourceState = classifyResourceState(mem.availableMb)
   const maintenance = fs.existsSync(MAINTENANCE_FILE)
+  const toolActive = !!readResourceActivityLease('tool_active')
+  const renderActive = !!readResourceActivityLease('render_active')
+  const serverModeState = readServerModeState({
+    serverMode: undefined,
+    resourceState,
+    maintenance,
+    toolActive,
+    renderActive,
+  })
   const snapshot: ResourceSnapshot = {
     resourceState,
     botMode: classifyBotMode(resourceState, running, maintenance),
+    serverMode: serverModeState.serverMode,
+    serverModeSource: serverModeState.serverModeSource,
+    toolActive,
+    renderActive,
+    backgroundAllowed: serverModeState.backgroundAllowed,
     memAvailableMb: mem.availableMb,
     memTotalMb: mem.totalMb,
     memSource: mem.source,

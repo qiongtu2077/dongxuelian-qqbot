@@ -239,6 +239,8 @@ export async function fetchPendingAgentTools() { return get('/tools/pending', tr
 export async function fetchAgentSessions() { return get('/agent/sessions', true) }
 export async function fetchAgentSession(id: string) { return get('/agent/sessions/' + encodeURIComponent(id), true) }
 export async function fetchResourceStatus() { return get('/resource/status') }
+export async function fetchResourceMode() { return get('/resource/mode') }
+export async function setResourceMode(serverMode: string) { return post('/resource/mode', { serverMode }, true) }
 export async function fetchResourceMemoryHistory(range = '5m') { return get('/resource/memory-history?range=' + encodeURIComponent(range), false, 20000) }
 export async function fetchResourceTasks() { return get('/resource/tasks') }
 export async function fetchResourceEvents() { return get('/resource/events') }

@@ -107,16 +107,40 @@ function isChatHeavyToolTask(task) {
 function hasAgentSendableText(result) {
     return !!String(result.reply || result.message || '').trim();
 }
+function resolveNotifierTarget(target) {
+    const text = String(target || '').trim();
+    if (!text)
+        return { type: 'group', id: '' };
+    if (/^private:/.test(text))
+        return { type: 'private', id: text.slice('private:'.length).trim() };
+    return { type: 'group', id: text };
+}
 // 通过 Koishi bot 或 OneBot internal API 发送文字。
 async function sendNotifierText(bot, target, text) {
     if (!bot)
         throw new Error('bot unavailable for result notifier');
+    const resolved = resolveNotifierTarget(target);
+    if (resolved.type === 'private') {
+        if (!resolved.id)
+            throw new Error('private notify target is empty');
+        if (typeof bot.sendPrivateMessage === 'function') {
+            await bot.sendPrivateMessage(resolved.id, text);
+            return;
+        }
+        if (bot.internal && typeof bot.internal.sendPrivateMsg === 'function') {
+            await bot.internal.sendPrivateMsg(resolved.id, [{ type: 'text', data: { text } }]);
+            return;
+        }
+        throw new Error('bot private text send API unavailable for result notifier');
+    }
+    if (!resolved.id)
+        throw new Error('group notify target is empty');
     if (bot.internal && typeof bot.internal.sendGroupMsg === 'function') {
-        await bot.internal.sendGroupMsg(target, [{ type: 'text', data: { text } }]);
+        await bot.internal.sendGroupMsg(resolved.id, [{ type: 'text', data: { text } }]);
         return;
     }
     if (typeof bot.sendMessage === 'function') {
-        await bot.sendMessage(target, text);
+        await bot.sendMessage(resolved.id, text);
         return;
     }
     throw new Error('bot text send API unavailable for result notifier');

@@ -25,6 +25,10 @@
                 <strong>{{ display(status.mode) }}</strong>
               </div>
               <div class="resource-kpi">
+                <span>服务器模式</span>
+                <strong>{{ display(status.serverMode) }}</strong>
+              </div>
+              <div class="resource-kpi">
                 <span>档位</span>
                 <strong :class="'state-' + display(status.resourceState)">{{ display(status.resourceState) }}</strong>
               </div>
@@ -35,6 +39,33 @@
               <div class="resource-kpi">
                 <span>排队</span>
                 <strong>{{ numberValue(status.queueLength) }}</strong>
+              </div>
+            </div>
+            <div class="resource-mode-switch">
+              <div class="resource-section-title">服务器资源模式</div>
+              <div class="resource-segmented">
+                <button
+                  class="resource-segmented-btn"
+                  :class="{ active: status.serverMode === 'small' }"
+                  :disabled="loadingMode"
+                  @click="setMode('small')"
+                >
+                  小内存服务器
+                </button>
+                <button
+                  class="resource-segmented-btn"
+                  :class="{ active: status.serverMode === 'large' }"
+                  :disabled="loadingMode"
+                  @click="setMode('large')"
+                >
+                  大内存服务器
+                </button>
+              </div>
+              <div class="resource-subline">配置来源：{{ display(status.serverModeSource) }}</div>
+              <div class="resource-mode-meta">
+                <span class="resource-pill" :class="status.tool_active ? 'pill-warn' : ''">tool_active: {{ boolText(status.tool_active) }}</span>
+                <span class="resource-pill" :class="status.render_active ? 'pill-warn' : ''">render_active: {{ boolText(status.render_active) }}</span>
+                <span class="resource-pill" :class="status.background_allowed ? 'pill-ok' : 'pill-off'">background_allowed: {{ boolText(status.background_allowed) }}</span>
               </div>
             </div>
             <div class="resource-running">
@@ -227,11 +258,13 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import {
   cancelResourceTask,
   fetchResourceEvents,
+  fetchResourceMode,
   fetchResourceMemoryHistory,
   fetchResourceStatus,
   fetchResourceTasks,
   isAdminRequired,
   reclaimResourceStale,
+  setResourceMode,
   setResourceMaintenance,
 } from '../api'
 import { asArray, asRecord, errorMessage, type JsonRecord, type MessageState, type ShowAdminDialog } from '../types'
@@ -251,6 +284,7 @@ export default {
     const message = ref<MessageState>({ type: 'info', text: '' })
     const lastRefresh = ref(0)
     const loading = ref(false)
+    const loadingMode = ref(false)
     const loadingTasks = ref(false)
     const loadingEvents = ref(false)
     const loadingMemory = ref(false)
@@ -300,6 +334,9 @@ export default {
       if (typeof available !== 'number') return 'unknown'
       return typeof total === 'number' ? `${available} / ${total} MB` : `${available} MB`
     })
+    function boolText(value: unknown): string {
+      return value ? '是' : '否'
+    }
     const diskUsageLabel = computed(() => {
       const used = diskFilesystem.value.usedMb
       const total = diskFilesystem.value.totalMb
@@ -470,10 +507,21 @@ export default {
 
     // 读取资源总览。
     async function loadStatus(): Promise<void> {
-      if (loading.value) return
       const res = await fetchResourceStatus()
       if (res.ok && res.data) {
         status.value = asRecord(res.data)
+        const modeRes = await fetchResourceMode()
+        if (modeRes.ok && modeRes.data) {
+          const modeData = asRecord(modeRes.data)
+          status.value = {
+            ...status.value,
+            serverMode: modeData.serverMode ?? status.value.serverMode,
+            serverModeSource: modeData.serverModeSource ?? status.value.serverModeSource,
+            tool_active: modeData.tool_active ?? status.value.tool_active,
+            render_active: modeData.render_active ?? status.value.render_active,
+            background_allowed: modeData.background_allowed ?? status.value.background_allowed,
+          }
+        }
         lastRefresh.value = Date.now()
         return
       }
@@ -543,18 +591,14 @@ export default {
     }
 
     // 刷新资源中心所有数据。
-    async function refreshAll(): Promise<void> {
+    async function refreshAllInternal(options: { preserveMessage?: boolean } = {}): Promise<void> {
       if (loading.value) return
       loading.value = true
-      message.value = { type: 'info', text: '' }
+      if (!options.preserveMessage) {
+        message.value = { type: 'info', text: '' }
+      }
       try {
-        const res = await fetchResourceStatus()
-        if (res.ok && res.data) {
-          status.value = asRecord(res.data)
-          lastRefresh.value = Date.now()
-        } else {
-          throw new Error(errorMessage(res.data, '资源状态读取失败'))
-        }
+        await loadStatus()
         await Promise.all([loadTasks(), loadEvents(), loadMemoryHistory()])
       } catch (error) {
         message.value = { type: 'err', text: errorMessage(error, '刷新失败') }
@@ -563,19 +607,45 @@ export default {
       }
     }
 
+    async function refreshAll(): Promise<void> {
+      await refreshAllInternal()
+    }
+
     // 切换维护模式，复用后端 ai-paused.txt。
     async function toggleMaintenance(): Promise<void> {
       const next = !status.value.maintenance
       const res = await setResourceMaintenance(next)
       message.value = { type: res.ok ? 'ok' : 'err', text: errorMessage(res.data, next ? '维护模式已开启' : '维护模式已关闭') }
-      await refreshAll()
+      await refreshAllInternal({ preserveMessage: true })
     }
 
     // 请求后端按 stale 规则回收 S0 锁。
     async function reclaimStale(): Promise<void> {
       const res = await reclaimResourceStale()
       message.value = { type: res.ok ? 'ok' : 'err', text: res.ok ? 'stale 回收检查已完成' : errorMessage(res.data, '回收失败') }
-      await refreshAll()
+      await refreshAllInternal({ preserveMessage: true })
+    }
+
+    // 切换服务器资源模式。
+    async function setMode(serverMode: string): Promise<void> {
+      if (loadingMode.value) return
+      loadingMode.value = true
+      try {
+        const res = await setResourceMode(serverMode)
+        if (res.ok) {
+          message.value = { type: 'ok', text: serverMode === 'small' ? '已切换到小内存服务器' : '已切换到大内存服务器' }
+          await refreshAllInternal({ preserveMessage: true })
+          return
+        }
+        if (isAdminRequired(res)) {
+          message.value = { type: 'warn', text: '切换服务器资源模式需要管理员密码' }
+          if (showAdminDialog) showAdminDialog('切换服务器资源模式需要管理员密码', () => setMode(serverMode))
+          return
+        }
+        message.value = { type: 'err', text: errorMessage(res.data, '模式切换失败') }
+      } finally {
+        loadingMode.value = false
+      }
     }
 
     // 取消 pending/deferred 任务。
@@ -584,7 +654,7 @@ export default {
       if (!taskId) return
       const res = await cancelResourceTask(taskId)
       message.value = { type: res.ok ? 'ok' : 'err', text: res.ok ? '任务已取消' : errorMessage(res.data, '取消失败') }
-      await refreshAll()
+      await refreshAllInternal({ preserveMessage: true })
     }
 
     onMounted(() => {
@@ -613,6 +683,7 @@ export default {
       precomputeQuery,
       message,
       loading,
+      loadingMode,
       loadingTasks,
       loadingEvents,
       loadingMemory,
@@ -642,6 +713,7 @@ export default {
       maintenanceLabel,
       lastRefreshLabel,
       display,
+      boolText,
       numberValue,
       arrayLength,
       lagLabel,
@@ -656,6 +728,7 @@ export default {
       loadMemoryHistory,
       toggleMaintenance,
       reclaimStale,
+      setMode,
       cancelTask,
     }
   },
@@ -795,6 +868,65 @@ export default {
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
   margin-bottom: 16px;
+}
+
+.resource-mode-switch {
+  margin-bottom: 16px;
+}
+
+.resource-segmented {
+  display: inline-flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--input);
+}
+
+.resource-segmented-btn {
+  min-width: 118px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text2);
+  font: inherit;
+  font-size: 13px;
+}
+
+.resource-segmented-btn:last-child {
+  border-right: 0;
+}
+
+.resource-segmented-btn.active {
+  background: color-mix(in srgb, var(--accent) 14%, var(--input));
+  color: var(--text);
+  font-weight: 800;
+}
+
+.resource-segmented-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.resource-mode-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pill-ok {
+  border-color: color-mix(in srgb, var(--success) 36%, var(--border));
+}
+
+.pill-warn {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+}
+
+.pill-off {
+  border-color: color-mix(in srgb, var(--danger) 48%, var(--border));
 }
 
 .resource-kpi {

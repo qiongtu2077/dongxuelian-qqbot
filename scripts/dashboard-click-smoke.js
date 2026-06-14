@@ -124,6 +124,8 @@ function jsonResponse(data, status = 200) {
 const mockState = {
   voiceEnabled: false,
   voiceAssetId: '',
+  serverMode: 'large',
+  serverModeSource: 'resource-control/config.json',
   clonedVoice: {
     id: 'voice_asset_a',
     personaName: '测试人格',
@@ -343,6 +345,8 @@ function apiMock(method, pathname, body) {
     ok: true,
     mode: 'interactive',
     resourceState: 'green',
+    serverMode: mockState.serverMode,
+    serverModeSource: mockState.serverModeSource,
     memAvailableMb: 1024,
     memTotalMb: 2048,
     memSource: 'mock',
@@ -360,6 +364,14 @@ function apiMock(method, pathname, body) {
     },
     maintenance: false,
     events: [{ source: 'S1', event: 'mock_status_event', reason: 'resource mock ready', createdAt: '12:00:00' }],
+  })
+  if (method === 'GET' && pathname === '/resource/mode') return ok({
+    ok: true,
+    serverMode: mockState.serverMode,
+    serverModeSource: mockState.serverModeSource,
+    tool_active: false,
+    render_active: false,
+    background_allowed: false,
   })
   if (method === 'GET' && pathname === '/resource/memory-history') {
     const range = body.searchParams.get('range') || '5m'
@@ -402,6 +414,19 @@ function apiMock(method, pathname, body) {
   if (method === 'POST' && pathname === '/resource/cancel') return ok({ ok: true, message: '任务已取消' })
   if (method === 'POST' && pathname === '/resource/reclaim-stale') return ok({ ok: true, reclaimed: false })
   if (method === 'POST' && pathname === '/resource/maintenance') return ok({ ok: true, enabled: !!body.body?.enabled, message: '维护模式已切换' })
+  if (method === 'POST' && pathname === '/resource/mode') {
+    const next = String(body.body?.serverMode || '').trim().toLowerCase()
+    if (next !== 'small' && next !== 'large') return jsonResponse({ ok: false, message: 'serverMode 只能是 small 或 large' }, 400)
+    mockState.serverMode = next
+    return ok({
+      ok: true,
+      serverMode: mockState.serverMode,
+      serverModeSource: mockState.serverModeSource,
+      tool_active: false,
+      render_active: false,
+      background_allowed: false,
+    })
+  }
 
   return ok({ ok: true, message: `mocked ${method} ${pathname}` })
 }
@@ -830,10 +855,15 @@ async function verifyResourcePanel(page, options = {}) {
   await waitForText(page, 'worker 采样 10s')
   await waitForText(page, '面板补采样 5s')
   await waitForText(page, '当前聚合 10s')
-  await waitForText(page, '点数 3')
-  await waitForText(page, '当前 1100 MB')
-  await waitForText(page, '最低 900 MB')
-  await waitForText(page, '最高 1100 MB')
+  await waitForText(page, '服务器模式')
+  await waitForText(page, '大内存服务器')
+  await waitForText(page, '配置来源：resource-control/config.json')
+  await waitForText(page, 'tool_active: 否')
+  await waitForText(page, 'render_active: 否')
+  await waitForText(page, 'background_allowed: 否')
+  await waitForText(page, '平均 1048 MB')
+  await waitForText(page, '最小 948 MB')
+  await waitForText(page, '最大 1148 MB')
   await waitForText(page, 'mock-running-1')
   await waitForText(page, 'worker-a')
   await waitForText(page, 'mock-task-1')
@@ -841,16 +871,15 @@ async function verifyResourcePanel(page, options = {}) {
   await waitForText(page, 'group_10001')
   await waitForText(page, 'group_20002')
   await page.waitForFunction(() => {
-    const dots = document.querySelectorAll('.memory-chart-dot')
     const line = document.querySelector('.memory-chart-line')
     const points = line ? line.getAttribute('points') || '' : ''
     const text = document.body.innerText || ''
-    return dots.length >= 3 && points.length > 0 && !text.includes('暂无内存采样')
+    return points.length > 0 && !text.includes('暂无内存采样')
   }, { timeout: 8000 })
   await page.select('.memory-range-select', '30m')
-  await waitForText(page, '当前 1110 MB')
-  await waitForText(page, '最低 910 MB')
-  await waitForText(page, '最高 1110 MB')
+  await waitForText(page, '平均 1038 MB')
+  await waitForText(page, '最小 938 MB')
+  await waitForText(page, '最大 1138 MB')
   await typePlaceholder(page, '搜索群号', '20002')
   await waitForTextInSelector(page, '.resource-precompute-card', 'group_20002')
   await waitForTextNotInSelector(page, '.resource-precompute-card', 'group_10001')
@@ -862,6 +891,11 @@ async function verifyResourcePanel(page, options = {}) {
   if (!allowWrites) return
   await clickText(page, '刷新')
   await waitForText(page, 'mock-running-1')
+  await clickText(page, '小内存服务器')
+  await waitForText(page, '已切换到小内存服务器')
+  await waitForText(page, '小内存服务器')
+  await clickText(page, '大内存服务器')
+  await waitForText(page, '已切换到大内存服务器')
   await clickText(page, '刷新队列')
   await waitForText(page, 'mock-task-2')
   await clickText(page, '刷新事件')

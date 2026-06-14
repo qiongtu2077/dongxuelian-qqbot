@@ -9,6 +9,8 @@ const path = require('path');
 const { DATA_DIR, MAINTENANCE_FILE } = require('../core/constants');
 const { readLockMeta } = require('../resource-gate/gate');
 const { ensureDir, nowIso, readJsonFile, writeJsonAtomic } = require('../resource-common/files');
+const { readResourceActivityLease } = require('./resource-activity-lease');
+const { readServerModeState, normalizeServerMode } = require('./server-mode-policy');
 function isRunningTaskLike(value) {
     return !!value && typeof value === 'object';
 }
@@ -135,6 +137,11 @@ function buildSnapshotStableKey(snapshot) {
     return JSON.stringify({
         resourceState: snapshot?.resourceState || 'yellow',
         botMode: snapshot?.botMode || 'normal',
+        serverMode: normalizeServerMode(snapshot?.serverMode),
+        serverModeSource: snapshot?.serverModeSource || '',
+        toolActive: !!snapshot?.toolActive,
+        renderActive: !!snapshot?.renderActive,
+        backgroundAllowed: snapshot?.backgroundAllowed !== undefined ? !!snapshot?.backgroundAllowed : true,
         memAvailableMb: snapshot?.memAvailableMb === undefined ? null : snapshot?.memAvailableMb,
         memTotalMb: snapshot?.memTotalMb === undefined ? null : snapshot?.memTotalMb,
         memSource: snapshot?.memSource || '',
@@ -150,9 +157,23 @@ function readResourceSnapshot() {
     const running = readLockMeta();
     const resourceState = classifyResourceState(mem.availableMb);
     const maintenance = fs.existsSync(MAINTENANCE_FILE);
+    const toolActive = !!readResourceActivityLease('tool_active');
+    const renderActive = !!readResourceActivityLease('render_active');
+    const serverModeState = readServerModeState({
+        serverMode: undefined,
+        resourceState,
+        maintenance,
+        toolActive,
+        renderActive,
+    });
     const snapshot = {
         resourceState,
         botMode: classifyBotMode(resourceState, running, maintenance),
+        serverMode: serverModeState.serverMode,
+        serverModeSource: serverModeState.serverModeSource,
+        toolActive,
+        renderActive,
+        backgroundAllowed: serverModeState.backgroundAllowed,
         memAvailableMb: mem.availableMb,
         memTotalMb: mem.totalMb,
         memSource: mem.source,

@@ -42,6 +42,11 @@ interface BackgroundDirective {
 interface ResourceSnapshotView extends Record<string, unknown> {
   resourceState?: unknown
   botMode?: unknown
+  serverMode?: unknown
+  serverModeSource?: unknown
+  toolActive?: unknown
+  renderActive?: unknown
+  backgroundAllowed?: unknown
   maintenance?: unknown
   memAvailableMb?: unknown
   memTotalMb?: unknown
@@ -75,6 +80,24 @@ function normalizeBotMode(snapshot: ResourceSnapshotView | null | undefined): st
   return String(snapshot?.botMode || 'normal')
 }
 
+function normalizeServerMode(snapshot: ResourceSnapshotView | null | undefined): string {
+  const mode = String(snapshot?.serverMode || 'large').trim().toLowerCase()
+  return mode === 'small' ? 'small' : 'large'
+}
+
+function normalizeBackgroundAllowed(snapshot: ResourceSnapshotView | null | undefined): boolean {
+  if (snapshot && typeof snapshot.backgroundAllowed === 'boolean') return snapshot.backgroundAllowed
+  const serverMode = normalizeServerMode(snapshot)
+  const resourceState = normalizeResourceState(snapshot)
+  const botMode = normalizeBotMode(snapshot)
+  const toolActive = !!snapshot?.toolActive
+  const renderActive = !!snapshot?.renderActive
+  if (botMode === 'maintenance') return false
+  if (resourceState === 'black' || resourceState === 'red') return false
+  if (serverMode === 'small' && (toolActive || renderActive)) return false
+  return true
+}
+
 function getBackgroundDirectiveSleepMs(snapshot: ResourceSnapshotView | null | undefined, taskAction: string): number {
   const resourceState = normalizeResourceState(snapshot)
   const botMode = normalizeBotMode(snapshot)
@@ -101,9 +124,24 @@ function decideBackgroundDirective(input: TaskDirectiveInput, snapshot: Resource
   ) as unknown as TaskDirectiveResultView
   const taskAction = String(task.directive?.action || '')
   const kind = getBackgroundDirectiveKind(input)
+  const backgroundAllowed = normalizeBackgroundAllowed(snapshot)
   const toolActiveLease = shouldYieldToToolActiveKind(kind)
     ? readResourceActivityLease('tool_active')
     : null
+  if (!backgroundAllowed) {
+    return {
+      directive: {
+        action: 'park',
+        reason: `background not allowed in ${normalizeServerMode(snapshot)} mode`,
+        resourceState: normalizeResourceState(snapshot),
+        botMode: normalizeBotMode(snapshot),
+        sleepMs: getBackgroundDirectiveSleepMs(snapshot, taskAction),
+        taskAction,
+      },
+      task,
+      snapshot,
+    }
+  }
   if (toolActiveLease) {
     return {
       directive: {

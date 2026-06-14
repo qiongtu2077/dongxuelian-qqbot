@@ -13,6 +13,26 @@ function normalizeResourceState(snapshot) {
 function normalizeBotMode(snapshot) {
     return String(snapshot?.botMode || 'normal');
 }
+function normalizeServerMode(snapshot) {
+    const mode = String(snapshot?.serverMode || 'large').trim().toLowerCase();
+    return mode === 'small' ? 'small' : 'large';
+}
+function normalizeBackgroundAllowed(snapshot) {
+    if (snapshot && typeof snapshot.backgroundAllowed === 'boolean')
+        return snapshot.backgroundAllowed;
+    const serverMode = normalizeServerMode(snapshot);
+    const resourceState = normalizeResourceState(snapshot);
+    const botMode = normalizeBotMode(snapshot);
+    const toolActive = !!snapshot?.toolActive;
+    const renderActive = !!snapshot?.renderActive;
+    if (botMode === 'maintenance')
+        return false;
+    if (resourceState === 'black' || resourceState === 'red')
+        return false;
+    if (serverMode === 'small' && (toolActive || renderActive))
+        return false;
+    return true;
+}
 function getBackgroundDirectiveSleepMs(snapshot, taskAction) {
     const resourceState = normalizeResourceState(snapshot);
     const botMode = normalizeBotMode(snapshot);
@@ -38,9 +58,24 @@ function decideBackgroundDirective(input, snapshot = readResourceContext()) {
     const task = decideTaskDirective(input, snapshot);
     const taskAction = String(task.directive?.action || '');
     const kind = getBackgroundDirectiveKind(input);
+    const backgroundAllowed = normalizeBackgroundAllowed(snapshot);
     const toolActiveLease = shouldYieldToToolActiveKind(kind)
         ? readResourceActivityLease('tool_active')
         : null;
+    if (!backgroundAllowed) {
+        return {
+            directive: {
+                action: 'park',
+                reason: `background not allowed in ${normalizeServerMode(snapshot)} mode`,
+                resourceState: normalizeResourceState(snapshot),
+                botMode: normalizeBotMode(snapshot),
+                sleepMs: getBackgroundDirectiveSleepMs(snapshot, taskAction),
+                taskAction,
+            },
+            task,
+            snapshot,
+        };
+    }
     if (toolActiveLease) {
         return {
             directive: {

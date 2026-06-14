@@ -147,6 +147,7 @@ async function handleChatResult(chatResult, { ctx, session, channelKey, currentU
                 timeoutMs: agentConfig.queue?.timeoutMs,
                 maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
                 acceptedMessageMode: 'quiet',
+                blockedMessageMode: 'natural',
                 notifyTarget: 'qq-group',
                 payload: { entry: 'chat-heavy-tool', agentWorker: createAgentRunWorkerPayload('chat-heavy-tool', agentRunInput) },
             });

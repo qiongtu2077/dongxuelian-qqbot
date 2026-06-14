@@ -377,6 +377,8 @@ async function testRendererSlotReleasedWhenLeaseAcquireFails() {
   const originalRendererCache = require.cache[HTML_RENDERER_PATH]
   const originalConstantsCache = require.cache[AI_CONSTANTS_PATH]
   const originalLeaseCache = require.cache[AI_ACTIVITY_LEASE_PATH]
+  const serverModePath = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-scheduler', 'server-mode-policy.js')
+  const originalServerModeCache = require.cache[serverModePath]
   const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-render-lease-slot-'))
   let releaseToolLease = null
   let launchCalls = 0
@@ -388,8 +390,12 @@ async function testRendererSlotReleasedWhenLeaseAcquireFails() {
   }
   process.env.DONGXUELIAN_AI_DATA_DIR = tempDataDir
   process.env.DAILY_REPORT_QUEUE_TIMEOUT_MS = '5000'
+  const modeFile = path.join(tempDataDir, 'resource-control', 'config.json')
+  fs.mkdirSync(path.dirname(modeFile), { recursive: true })
+  fs.writeFileSync(modeFile, JSON.stringify({ serverMode: 'small', updatedAt: '2026-06-14T00:00:00.000Z' }, null, 2))
   delete require.cache[AI_CONSTANTS_PATH]
   delete require.cache[AI_ACTIVITY_LEASE_PATH]
+  delete require.cache[serverModePath]
   delete require.cache[HTML_RENDERER_PATH]
   require.cache[puppeteerPath] = {
     id: puppeteerPath,
@@ -449,9 +455,107 @@ async function testRendererSlotReleasedWhenLeaseAcquireFails() {
     else process.env.DAILY_REPORT_QUEUE_TIMEOUT_MS = originalQueueTimeout
     restoreModuleCache(AI_CONSTANTS_PATH, originalConstantsCache)
     restoreModuleCache(AI_ACTIVITY_LEASE_PATH, originalLeaseCache)
+    restoreModuleCache(serverModePath, originalServerModeCache)
     restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
     restoreModuleCache(puppeteerPath, originalPuppeteerCache)
     try { fs.rmSync(tempDataDir, { recursive: true, force: true }) } catch {}
+  }
+}
+
+async function testToolActiveRenderBlockRespectsServerMode() {
+  section('report-pipeline serverMode gating regression')
+  const originalDataCollectorCache = require.cache[DATA_COLLECTOR_PATH]
+  const originalAnalyzerCache = require.cache[AI_ANALYZER_PATH]
+  const originalRendererCache = require.cache[HTML_RENDERER_PATH]
+  const originalPipelineCache = require.cache[REPORT_PIPELINE_PATH]
+  const originalLeaseCache = require.cache[AI_ACTIVITY_LEASE_PATH]
+  const serverModePath = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-scheduler', 'server-mode-policy.js')
+  const originalServerModeCache = require.cache[serverModePath]
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-server-mode-'))
+  let renderCalls = 0
+
+  try {
+    require.cache[DATA_COLLECTOR_PATH] = {
+      id: DATA_COLLECTOR_PATH,
+      filename: DATA_COLLECTOR_PATH,
+      loaded: true,
+      exports: {
+        collectReportData: () => createSampleReportData(),
+      },
+    }
+    require.cache[AI_ANALYZER_PATH] = {
+      id: AI_ANALYZER_PATH,
+      filename: AI_ANALYZER_PATH,
+      loaded: true,
+      exports: {
+        analyzeWithAI: async () => ({
+          topics: [{ title: 'Server Mode', summary: 'Large mode should preserve Chromium render.' }],
+          goldenQuotes: [],
+          userTitles: [],
+          qualityReview: null,
+          meta: {},
+        }),
+      },
+    }
+    require.cache[HTML_RENDERER_PATH] = {
+      id: HTML_RENDERER_PATH,
+      filename: HTML_RENDERER_PATH,
+      loaded: true,
+      exports: {
+        renderReport: async () => {
+          renderCalls += 1
+          return Buffer.from('rendered-in-large-mode')
+        },
+      },
+    }
+    require.cache[AI_ACTIVITY_LEASE_PATH] = {
+      id: AI_ACTIVITY_LEASE_PATH,
+      filename: AI_ACTIVITY_LEASE_PATH,
+      loaded: true,
+      exports: {
+        hasActiveResourceActivityLease(kind) {
+          return kind === 'tool_active'
+        },
+      },
+    }
+    require.cache[serverModePath] = {
+      id: serverModePath,
+      filename: serverModePath,
+      loaded: true,
+      exports: {
+        readResourceActivityMutualExclusionState() {
+          return { strictActivityMutualExclusion: false, serverMode: 'large', serverModeSource: 'test' }
+        },
+        readServerModeConfig() {
+          return { serverMode: 'large', serverModeSource: 'test' }
+        },
+      },
+    }
+
+    delete require.cache[REPORT_PIPELINE_PATH]
+    const { generateDailyReportResult } = require(REPORT_PIPELINE_PATH)
+    const result = await generateDailyReportResult({
+      taskId: 'large-mode-tool-active-render',
+      channelKey: 'large-mode-group',
+      detail: true,
+      outputDir,
+      renderImage: true,
+    })
+
+    check('large mode does not skip Chromium render only because tool_active exists',
+      renderCalls === 1 && result.mode === 'image' && !!result.imagePath,
+      JSON.stringify({ renderCalls, result }))
+    check('large mode does not record render_blocked_by_tool_active fallback',
+      !String(result.reason || '').includes('render_blocked_by_tool_active'),
+      JSON.stringify(result))
+  } finally {
+    restoreModuleCache(DATA_COLLECTOR_PATH, originalDataCollectorCache)
+    restoreModuleCache(AI_ANALYZER_PATH, originalAnalyzerCache)
+    restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
+    restoreModuleCache(REPORT_PIPELINE_PATH, originalPipelineCache)
+    restoreModuleCache(AI_ACTIVITY_LEASE_PATH, originalLeaseCache)
+    restoreModuleCache(serverModePath, originalServerModeCache)
+    try { fs.rmSync(outputDir, { recursive: true, force: true }) } catch {}
   }
 }
 
@@ -1359,6 +1463,8 @@ async function testRenderBlockedByActiveToolLease() {
   const originalRendererCache = require.cache[HTML_RENDERER_PATH]
   const originalPipelineCache = require.cache[REPORT_PIPELINE_PATH]
   const originalLeaseCache = require.cache[AI_ACTIVITY_LEASE_PATH]
+  const serverModePath = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-scheduler', 'server-mode-policy.js')
+  const originalServerModeCache = require.cache[serverModePath]
 
   let collectCalls = 0
   let analyzeCalls = 0
@@ -1415,6 +1521,19 @@ async function testRenderBlockedByActiveToolLease() {
         },
       },
     }
+    require.cache[serverModePath] = {
+      id: serverModePath,
+      filename: serverModePath,
+      loaded: true,
+      exports: {
+        readResourceActivityMutualExclusionState() {
+          return { strictActivityMutualExclusion: true, serverMode: 'small', serverModeSource: 'test' }
+        },
+        readServerModeConfig() {
+          return { serverMode: 'small', serverModeSource: 'test' }
+        },
+      },
+    }
 
     delete require.cache[REPORT_PIPELINE_PATH]
     const { generateDailyReportResult } = require(REPORT_PIPELINE_PATH)
@@ -1441,6 +1560,7 @@ async function testRenderBlockedByActiveToolLease() {
     restoreModuleCache(HTML_RENDERER_PATH, originalRendererCache)
     restoreModuleCache(REPORT_PIPELINE_PATH, originalPipelineCache)
     restoreModuleCache(AI_ACTIVITY_LEASE_PATH, originalLeaseCache)
+    restoreModuleCache(serverModePath, originalServerModeCache)
     try { fs.rmSync(outputDir, { recursive: true, force: true }) } catch {}
   }
 }
@@ -1560,6 +1680,7 @@ testMiddleware('你好', '123').then(nonReport => {
 
   return testRendererTimeoutCleanup()
 }).then(() => testRendererSlotReleasedWhenLeaseAcquireFails()
+).then(() => testToolActiveRenderBlockRespectsServerMode()
 ).then(() => testAiFallbackRegression()
 ).then(() => testRequestChatCompletionsPayload()
 ).then(() => testAIAnalyzerObjectResponse()

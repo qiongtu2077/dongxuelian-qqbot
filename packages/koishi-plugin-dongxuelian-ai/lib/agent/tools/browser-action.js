@@ -7,6 +7,7 @@ const { assertExistingAgentPathInsideRoots } = require('../path-guard');
 const { rankSearchCandidates, formatSearchResults, buildSearchFailureText } = require('../search-results');
 const { admitTask } = require('../../resource-scheduler/admission');
 const { acquireResourceActivityLease, readResourceActivityLease, buildResourceActivityLeaseBlockReason, } = require('../../resource-scheduler/resource-activity-lease');
+const serverModePolicy = require('../../resource-scheduler/server-mode-policy');
 const { writeProcessCleanupEvent, terminateProcessTree } = require('../../resource-system/system-protection');
 function getBrowserActionErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
@@ -60,7 +61,10 @@ function assertBrowserActionAdmission(params = {}, context = {}) {
     if (action === 'stop' || action === 'close')
         return;
     const renderLease = readResourceActivityLease('render_active');
-    if (renderLease) {
+    const strictMutualExclusion = typeof serverModePolicy.readResourceActivityMutualExclusionState === 'function'
+        ? !!serverModePolicy.readResourceActivityMutualExclusionState().strictActivityMutualExclusion
+        : String(serverModePolicy.readServerModeConfig?.().serverMode || 'large').trim().toLowerCase() === 'small';
+    if (renderLease && strictMutualExclusion) {
         throw new Error(`browser_action 被资源保护拦截：${buildResourceActivityLeaseBlockReason('tool_active', renderLease)}`);
     }
     const resourceTaskId = String(context.taskId || context.resourceTaskId || '');

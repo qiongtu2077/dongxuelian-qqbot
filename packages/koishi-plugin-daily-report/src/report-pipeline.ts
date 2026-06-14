@@ -11,6 +11,10 @@ const { renderReport } = require('./html-renderer') as typeof import('./html-ren
 const { hasActiveResourceActivityLease } = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease') as {
   hasActiveResourceActivityLease: (kind: string) => boolean
 }
+const serverModePolicy = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/server-mode-policy') as {
+  readResourceActivityMutualExclusionState?: () => { strictActivityMutualExclusion?: boolean }
+  readServerModeConfig?: () => { serverMode?: string }
+}
 
 interface DailyReportPipelineOptions {
   taskId?: string
@@ -229,7 +233,10 @@ async function generateDailyReportResult(options: DailyReportPipelineOptions): P
     return result
   }
 
-  if (hasActiveResourceActivityLease('tool_active')) {
+  const strictMutualExclusion = typeof serverModePolicy.readResourceActivityMutualExclusionState === 'function'
+    ? !!serverModePolicy.readResourceActivityMutualExclusionState().strictActivityMutualExclusion
+    : String(serverModePolicy.readServerModeConfig?.().serverMode || 'large').trim().toLowerCase() === 'small'
+  if (strictMutualExclusion && hasActiveResourceActivityLease('tool_active')) {
     result.level = 'L2'
     result.mode = 'text'
     result.reason = 'render_blocked_by_tool_active'

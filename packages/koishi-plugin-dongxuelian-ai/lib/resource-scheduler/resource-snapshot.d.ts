@@ -3,6 +3,11 @@ type BotMode = 'normal' | 'busy' | 'report_silent' | 'critical' | 'maintenance';
 interface ResourceSnapshot {
     resourceState: ResourceState;
     botMode: BotMode;
+    serverMode: string;
+    serverModeSource: string;
+    toolActive: boolean;
+    renderActive: boolean;
+    backgroundAllowed: boolean;
     memAvailableMb: number | null;
     memTotalMb: number | null;
     memSource: string;

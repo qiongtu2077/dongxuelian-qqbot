@@ -10,6 +10,7 @@ const { collectReportData } = require('./data-collector');
 const { analyzeWithAI } = require('./ai-analyzer');
 const { renderReport } = require('./html-renderer');
 const { hasActiveResourceActivityLease } = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease');
+const serverModePolicy = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/server-mode-policy');
 // 把未知错误压成稳定字符串，供 result.json 和 worker 日志使用。
 function getErrorMessage(error) {
     return error instanceof Error ? error.message : String(error || '');
@@ -161,7 +162,10 @@ async function generateDailyReportResult(options) {
         writeJsonFile(path.join(outputDir, 'result.json'), result);
         return result;
     }
-    if (hasActiveResourceActivityLease('tool_active')) {
+    const strictMutualExclusion = typeof serverModePolicy.readResourceActivityMutualExclusionState === 'function'
+        ? !!serverModePolicy.readResourceActivityMutualExclusionState().strictActivityMutualExclusion
+        : String(serverModePolicy.readServerModeConfig?.().serverMode || 'large').trim().toLowerCase() === 'small';
+    if (strictMutualExclusion && hasActiveResourceActivityLease('tool_active')) {
         result.level = 'L2';
         result.mode = 'text';
         result.reason = 'render_blocked_by_tool_active';

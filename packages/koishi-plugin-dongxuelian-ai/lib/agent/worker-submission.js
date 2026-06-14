@@ -67,6 +67,15 @@ function formatAdmissionBlockedMessage(directive, admission, taskId = '') {
         return `当前资源不足，Agent 暂时不能执行：${reason}`;
     return `Agent 任务暂时不能进入队列：${reason}`;
 }
+// 聊天口径：资源保护触发时不向前台暴露内部 taskId / defer 机制。
+function formatNaturalBlockedMessage(directive, admission) {
+    const action = resolveAgentDirectiveAction(directive, admission);
+    if (action === 'defer')
+        return '我先不乱查，等资源缓一缓再看。';
+    if (action === 'reject' || action === 'silent_drop' || action === 'downgrade')
+        return '这会儿不太适合继续查，我先按现有信息回答你。';
+    return '我先不乱动工具，先按眼下能确定的说。';
+}
 // 返回用户可见的提交成功提示。
 function formatAcceptedMessage(task, directiveOrAdmission, admissionOrMode, modeArg = 'normal') {
     const mode = admissionOrMode === 'quiet' || admissionOrMode === 'normal' ? admissionOrMode : modeArg;
@@ -91,6 +100,7 @@ function submitAgentWorkerTask(options) {
     const userId = String(options.userId || '');
     const notifyTarget = options.notifyTarget || (channel === 'dashboard' ? 'dashboard' : 'qq-group');
     const acceptedMessageMode = options.acceptedMessageMode === 'quiet' ? 'quiet' : 'normal';
+    const blockedMessageMode = options.blockedMessageMode === 'natural' ? 'natural' : 'system';
     const maxActivePerUser = Math.max(1, Math.min(10, Number(options.maxActivePerUser || 1)));
     const timeoutMs = resolveAgentTaskTimeoutMs(options.timeoutMs);
     const activeCount = countActiveAgentWorkerTasks(kind, channelKey, userId, maxActivePerUser);
@@ -137,7 +147,9 @@ function submitAgentWorkerTask(options) {
             admission: result.admission,
             taskId: result.task?.id,
             status: action === 'defer' ? 202 : 503,
-            message: formatAdmissionBlockedMessage(result.directive, result.admission, result.task?.id),
+            message: blockedMessageMode === 'natural'
+                ? formatNaturalBlockedMessage(result.directive, result.admission)
+                : formatAdmissionBlockedMessage(result.directive, result.admission, result.task?.id),
         };
     }
     const action = resolveAgentDirectiveAction(result.directive, result.admission);
@@ -154,4 +166,5 @@ module.exports = {
     submitAgentWorkerTask,
     countActiveAgentWorkerTasks,
     formatAcceptedMessage,
+    formatNaturalBlockedMessage,
 };

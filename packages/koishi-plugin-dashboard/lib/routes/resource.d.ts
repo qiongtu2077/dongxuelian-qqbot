@@ -3,6 +3,11 @@ type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string
 interface ResourceSnapshotLike extends Record<string, unknown> {
     botMode?: unknown;
     resourceState?: unknown;
+    serverMode?: unknown;
+    serverModeSource?: unknown;
+    toolActive?: unknown;
+    renderActive?: unknown;
+    backgroundAllowed?: unknown;
     memAvailableMb?: unknown;
     memTotalMb?: unknown;
     memSource?: unknown;
@@ -41,6 +46,16 @@ interface ResourceModuleSet {
     scheduler: {
         SCHEDULER_ROOT: string;
         readResourceSnapshot(): ResourceSnapshotLike;
+    };
+    mode: {
+        readServerModeConfig(): {
+            serverMode?: unknown;
+            serverModeSource?: unknown;
+        };
+        writeServerModeConfig(serverMode: unknown, meta?: Record<string, unknown>): {
+            serverMode?: unknown;
+            serverModeSource?: unknown;
+        };
     };
     tasks: {
         getTaskQueueSummary(): ResourceQueueSummaryLike;

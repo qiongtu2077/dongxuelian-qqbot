@@ -423,9 +423,30 @@ function testBrowserActivityLeaseCompatibility() {
   const script = String.raw`
 const fs = require('fs')
 const path = require('path')
+const Module = require('module')
 const constants = require('koishi-plugin-dongxuelian-ai/lib/core/constants')
-const browserAction = require('koishi-plugin-dongxuelian-ai/lib/agent/tools/browser-action')
 const activityLease = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease')
+
+const fakeBrowserPath = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'fake-blocked-chromium.exe')
+fs.writeFileSync(fakeBrowserPath, '')
+process.env.DONGXUELIAN_BROWSER_PATH = fakeBrowserPath
+process.env.DONGXUELIAN_BROWSER_MIN_MEM_MB = '1'
+const modeFile = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'resource-control', 'config.json')
+fs.mkdirSync(path.dirname(modeFile), { recursive: true })
+fs.writeFileSync(modeFile, JSON.stringify({ serverMode: 'small', updatedAt: '2026-06-14T00:00:00.000Z' }, null, 2))
+
+const originalLoad = Module._load
+Module._load = function patchedLoad(request, parent, isMain) {
+  const normalized = String(request || '').replace(/\\\\/g, '/')
+  if (normalized === 'puppeteer-core') {
+    return {
+      launch: async () => {
+        throw new Error('unexpected launch while render_active is blocked')
+      },
+    }
+  }
+  return originalLoad.apply(this, arguments)
+}
 
 const browserDir = path.join(constants.DATA_DIR, 'agent-browser')
 const before = fs.existsSync(browserDir) ? fs.readdirSync(browserDir).length : 0
@@ -437,6 +458,7 @@ const releaseRender = activityLease.acquireResourceActivityLease('render_active'
 
 async function run() {
   try {
+    const browserAction = require('koishi-plugin-dongxuelian-ai/lib/agent/tools/browser-action')
     let blocked = ''
     try {
       blocked = await browserAction.execute({
@@ -465,6 +487,7 @@ async function run() {
     process.exitCode = 0
   } finally {
     releaseRender('resource-regression-finally')
+    Module._load = originalLoad
   }
 }
 
@@ -475,7 +498,6 @@ run().catch(error => {
 `
   const summary = runScenario('B.0 browser activity lease compatibility', script, {
     DONGXUELIAN_AI_DATA_DIR: dataDir,
-    DONGXUELIAN_BROWSER_PATH: process.execPath,
     RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
   }, 30000)
@@ -491,6 +513,136 @@ run().catch(error => {
     JSON.stringify(summary))
   check('B.0 blocked browser_action does not create browser artifact side effects',
     summary.before === summary.afterBlocked,
+    JSON.stringify(summary))
+}
+
+function testBrowserActivityLeaseAllowsLargeMode() {
+  const dataDir = createTempDataDir('resource-regress-browser-large-mode-')
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+const Module = require('module')
+
+function makePage(browserState, id) {
+  let closed = false
+  return {
+    __id: id,
+    isClosed: () => closed,
+    close: async () => {
+      if (closed) return
+      closed = true
+      browserState.pages = browserState.pages.filter(page => page.__id !== id)
+    },
+    on: () => {},
+    setRequestInterception: async () => {},
+    evaluateOnNewDocument: async () => {},
+    evaluate: async () => null,
+    setUserAgent: async () => {},
+    setViewport: async () => {},
+    setDefaultTimeout: () => {},
+    setDefaultNavigationTimeout: () => {},
+    url: () => 'about:blank',
+    title: async () => 'fake-browser-title',
+    target: () => ({ createCDPSession: async () => ({ send: async () => {} }) }),
+    cookies: async () => [],
+    context: () => ({ clearCookies: async () => {} }),
+  }
+}
+
+function createBrowser(browserState) {
+  let nextPageId = 0
+  return {
+    newPage: async () => {
+      const page = makePage(browserState, ++nextPageId)
+      browserState.pages.push(page)
+      return page
+    },
+    pages: async () => browserState.pages.filter(page => !page.isClosed()),
+    close: async () => {
+      browserState.closed = true
+      const pages = browserState.pages.slice()
+      for (const page of pages) await page.close()
+    },
+    process: () => null,
+  }
+}
+
+async function run() {
+  const fakeBrowserPath = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'fake-chromium.exe')
+  fs.writeFileSync(fakeBrowserPath, '')
+  process.env.DONGXUELIAN_BROWSER_PATH = fakeBrowserPath
+  process.env.DONGXUELIAN_BROWSER_MIN_MEM_MB = '1'
+
+  const constants = require('koishi-plugin-dongxuelian-ai/lib/core/constants')
+  const activityLease = require('koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease')
+  const modeFile = path.join(constants.DATA_DIR, 'resource-control', 'config.json')
+  fs.mkdirSync(path.dirname(modeFile), { recursive: true })
+  fs.writeFileSync(modeFile, JSON.stringify({ serverMode: 'large', updatedAt: '2026-06-14T00:00:00.000Z' }, null, 2))
+
+  const originalLoad = Module._load
+  Module._load = function patchedLoad(request, parent, isMain) {
+    const normalized = String(request || '').replace(/\\\\/g, '/')
+    if (normalized === 'puppeteer-core') {
+      return {
+        launch: async () => createBrowser({ pages: [], cookies: [], closed: false }),
+      }
+    }
+    return originalLoad.apply(this, arguments)
+  }
+
+  const releaseRender = activityLease.acquireResourceActivityLease('render_active', {
+    owner: 'resource-regression-test',
+    taskId: 'render-active-large-mode',
+    ttlMs: 5000,
+  })
+
+  try {
+    const browserAction = require('koishi-plugin-dongxuelian-ai/lib/agent/tools/browser-action')
+    const started = await browserAction.execute({
+      action: 'start',
+    }, {
+      channel: 'dashboard',
+      channelKey: 'dashboard-large-mode',
+      userId: 'dashboard-user',
+      resourceTaskId: 'browser-tool-large-mode',
+      taskId: 'browser-tool-large-mode',
+    })
+    const toolLease = activityLease.readResourceActivityLease('tool_active')
+    await browserAction.execute({ action: 'close' }, {
+      channel: 'dashboard',
+      channelKey: 'dashboard-large-mode',
+      userId: 'dashboard-user',
+      resourceTaskId: 'browser-tool-large-mode',
+      taskId: 'browser-tool-large-mode',
+    })
+    console.log(JSON.stringify({
+      started,
+      toolLeaseExists: !!toolLease,
+      toolLeaseOwner: toolLease && toolLease.owner || '',
+    }, null, 2))
+    process.exitCode = 0
+  } finally {
+    releaseRender('resource-regression-finally')
+    Module._load = originalLoad
+  }
+}
+
+run().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('B.0 browser activity lease large mode compatibility', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  }, 30000)
+  if (!summary) return
+  check('B.0 large mode allows browser_action even while render_active exists',
+    String(summary.started || '').includes('浏览器已启动'),
+    JSON.stringify(summary))
+  check('B.0 large mode still creates tool_active lease for active browser session',
+    summary.toolLeaseExists === true && String(summary.toolLeaseOwner || '').includes('dashboard-user:dashboard-large-mode'),
     JSON.stringify(summary))
 }
 
@@ -2118,6 +2270,84 @@ run().catch(error => {
     JSON.stringify(summary))
   check('D.9 failed notify becomes retryable again after cooldown elapses',
     summary.callsAfterCooldown === 2 && summary.notifyStatusAfterCooldown === 'failed',
+    JSON.stringify(summary))
+}
+
+// === Scenario 17.1: 私聊结果通知不能误走群发 API ===
+function testNotifierPrivateTargetUsesPrivateSend() {
+  const dataDir = createTempDataDir('resource-regress-notify-private-target-')
+  const script = String.raw`
+const notifier = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/result-notifier')
+
+async function run() {
+  const groupCalls = []
+  const privateCalls = []
+  const bot = {
+    internal: {
+      async sendGroupMsg(target, message) {
+        groupCalls.push({ target: String(target || ''), message })
+      },
+      async sendPrivateMsg(target, message) {
+        privateCalls.push({ target: String(target || ''), message })
+      },
+    },
+  }
+
+  const sender = notifier.createAgentTaskSender({ bot })
+
+  const privateTask = {
+    id: 'private-agent-notify-1',
+    kind: 'agent_task',
+    status: 'done',
+    channelKey: 'private:3514272382',
+    notify: {
+      target: 'qq-group',
+      channelKey: 'private:3514272382',
+      status: 'pending',
+    },
+    payload: { entry: 'qq-auto-route' },
+  }
+  const groupTask = {
+    id: 'group-agent-notify-1',
+    kind: 'agent_task',
+    status: 'done',
+    channelKey: '587702552',
+    notify: {
+      target: 'qq-group',
+      channelKey: '587702552',
+      status: 'pending',
+    },
+    payload: { entry: 'qq-auto-route' },
+  }
+
+  await sender(privateTask, { reply: 'private notify text' })
+  await sender(groupTask, { reply: 'group notify text' })
+
+  console.log(JSON.stringify({
+    privateCalls,
+    groupCalls,
+  }, null, 2))
+  process.exitCode = 0
+}
+
+run().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('notifier private target should prefer private send api', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  }, 30000)
+  if (!summary) return
+  check('notifier private target uses private send instead of group send',
+    Array.isArray(summary.privateCalls)
+      && summary.privateCalls.length === 1
+      && String(summary.privateCalls[0] && summary.privateCalls[0].target || '') === '3514272382'
+      && Array.isArray(summary.groupCalls)
+      && summary.groupCalls.length === 1
+      && String(summary.groupCalls[0] && summary.groupCalls[0].target || '') === '587702552',
     JSON.stringify(summary))
 }
 
@@ -6590,6 +6820,7 @@ function main() {
   testResourceWriteDeduping()
   testDirectiveBridgeCompatibility()
   testBrowserActivityLeaseCompatibility()
+  testBrowserActivityLeaseAllowsLargeMode()
   testBrowserActionLeaseRefreshKeepsActiveToolVisible()
   testBackgroundDirectiveCompatibility()
   testExpressionHarvestDirectiveCompatibility()
@@ -6605,6 +6836,7 @@ function main() {
   testPlannerRetryRestoreSurvivesTailStop()
   testNotifierWithoutSenderLeavesTaskUntouched()
   testNotifierFailedRetryHasCooldown()
+  testNotifierPrivateTargetUsesPrivateSend()
   testTaskStoreDoesNotCreateTargetCopyWhenRenameFails()
   testMarkTaskRunningDoesNotCreateRunningCopyWhenRenameFails()
   testCancelTaskDoesNotCreateCancelledCopyWhenRenameFails()

@@ -298,11 +298,48 @@ function testResourceMemoryHistoryIncludesUsedMemory() {
   assert.strictEqual(payload.points[0].maxUsedMb, 400)
 }
 
+// Verifies resource status surfaces server mode and activity flags from the shared runtime facts.
+function testResourceStatusIncludesServerModeFlags() {
+  resetDataDir()
+  const dataDir = process.env.DONGXUELIAN_AI_DATA_DIR
+  const controlDir = path.join(dataDir, 'resource-control')
+  fs.mkdirSync(controlDir, { recursive: true })
+  fs.writeFileSync(path.join(controlDir, 'config.json'), JSON.stringify({
+    serverMode: 'small',
+    updatedAt: '2026-06-14T00:00:00.000Z',
+  }, null, 2), 'utf8')
+
+  const activityLease = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease')
+  const releaseTool = activityLease.acquireResourceActivityLease('tool_active', {
+    owner: 'dashboard-security-router-test',
+    taskId: 'dashboard-resource-status-mode',
+    ttlMs: 120000,
+  })
+
+  try {
+    const req = makeReq('GET', '/dashboard/api/resource/status', { authorization: 'Bearer ' + auth.createToken() })
+    const res = makeRes()
+    assert.strictEqual(router.dispatch(req, res, '/dashboard/api/resource/status', new URL('http://127.0.0.1:5150/dashboard/api/resource/status')), true)
+    assert.strictEqual(res.statusCode, 200)
+    const payload = parseJsonResponse(res)
+    assert.strictEqual(payload.ok, true)
+    assert.strictEqual(payload.serverMode, 'small')
+    assert.strictEqual(payload.tool_active, true)
+    assert.strictEqual(payload.render_active, false)
+    assert.strictEqual(payload.background_allowed, false)
+    assert.ok(typeof payload.mode === 'string')
+    assert.ok(typeof payload.resourceState === 'string')
+  } finally {
+    releaseTool('resource-status-test-finally')
+  }
+}
+
 // Verifies resource center read APIs require only normal access while writes stay admin-gated.
 async function testResourceReadApisRequireAccessOnly() {
   process.env.GLOBAL_LOCAL_MODE = ''
   const headers = { authorization: 'Bearer ' + auth.createToken() }
   const readPaths = [
+    '/dashboard/api/resource/mode',
     '/dashboard/api/resource/status',
     '/dashboard/api/resource/tasks',
     '/dashboard/api/resource/events',
@@ -320,6 +357,43 @@ async function testResourceReadApisRequireAccessOnly() {
   const writeRes = await dispatchJson('POST', '/dashboard/api/resource/maintenance', { enabled: true }, headers)
   assert.strictEqual(writeRes.statusCode, 403)
   assert.strictEqual(parseJsonResponse(writeRes).code, 'ADMIN_REQUIRED')
+
+  const modeWriteRes = await dispatchJson('POST', '/dashboard/api/resource/mode', { serverMode: 'small' }, headers)
+  assert.strictEqual(modeWriteRes.statusCode, 403)
+  assert.strictEqual(parseJsonResponse(modeWriteRes).code, 'ADMIN_REQUIRED')
+}
+
+// Verifies resource mode updates require admin and round-trip through mode + status endpoints.
+async function testResourceModeRoundTripRequiresAdminAndUpdatesStatus() {
+  resetDataDir()
+  const headers = { authorization: 'Bearer ' + auth.createToken() }
+  const rejected = await dispatchJson('POST', '/dashboard/api/resource/mode', { serverMode: 'small' }, headers)
+  assert.strictEqual(rejected.statusCode, 403)
+  assert.strictEqual(parseJsonResponse(rejected).code, 'ADMIN_REQUIRED')
+
+  const writeRes = await dispatchJson('POST', '/dashboard/api/resource/mode', { serverMode: 'small' }, adminHeaders())
+  assert.strictEqual(writeRes.statusCode, 200)
+  const writeBody = parseJsonResponse(writeRes)
+  assert.strictEqual(writeBody.ok, true)
+  assert.strictEqual(writeBody.serverMode, 'small')
+
+  const modeReq = makeReq('GET', '/dashboard/api/resource/mode', headers)
+  const modeRes = makeRes()
+  assert.strictEqual(router.dispatch(modeReq, modeRes, '/dashboard/api/resource/mode', new URL('http://127.0.0.1:5150/dashboard/api/resource/mode')), true)
+  assert.strictEqual(modeRes.statusCode, 200)
+  const modeBody = parseJsonResponse(modeRes)
+  assert.strictEqual(modeBody.ok, true)
+  assert.strictEqual(modeBody.serverMode, 'small')
+  assert.strictEqual(modeBody.serverModeSource, 'resource-control/config.json')
+
+  const statusReq = makeReq('GET', '/dashboard/api/resource/status', headers)
+  const statusRes = makeRes()
+  assert.strictEqual(router.dispatch(statusReq, statusRes, '/dashboard/api/resource/status', new URL('http://127.0.0.1:5150/dashboard/api/resource/status')), true)
+  assert.strictEqual(statusRes.statusCode, 200)
+  const statusBody = parseJsonResponse(statusRes)
+  assert.strictEqual(statusBody.ok, true)
+  assert.strictEqual(statusBody.serverMode, 'small')
+  assert.strictEqual(statusBody.serverModeSource, 'resource-control/config.json')
 }
 
 // Verifies custom providers are validated before being persisted.
@@ -390,7 +464,9 @@ async function run() {
   testResourceDiskUsageShape()
   testResourceMemoryHistoryRequiresAccessOnly()
   testResourceMemoryHistoryIncludesUsedMemory()
+  testResourceStatusIncludesServerModeFlags()
   await testResourceReadApisRequireAccessOnly()
+  await testResourceModeRoundTripRequiresAdminAndUpdatesStatus()
   await testCustomProviderValidationRejectsUnsafeInput()
   await testKeysIncludeCustomProviders()
 

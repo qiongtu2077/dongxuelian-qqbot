@@ -28,7 +28,9 @@ interface AgentNotifyResultLike {
 }
 interface ResultNotifierBotLike {
     sendMessage?: (target: string, content: unknown) => Promise<unknown> | unknown;
+    sendPrivateMessage?: (target: string, content: string) => Promise<unknown> | unknown;
     internal?: {
+        sendPrivateMsg?: (target: string, segments: unknown[]) => Promise<unknown> | unknown;
         sendGroupMsg?: (target: string, segments: unknown[]) => Promise<unknown> | unknown;
     };
 }

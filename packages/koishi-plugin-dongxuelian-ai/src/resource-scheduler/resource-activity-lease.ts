@@ -14,6 +14,7 @@ const {
   sanitizeId,
   writeJsonAtomic,
 } = require('../resource-common/files') as typeof import('../resource-common/files')
+const serverModePolicy = require('./server-mode-policy') as typeof import('./server-mode-policy')
 
 type ResourceActivityLeaseKind = 'tool_active' | 'render_active' | string
 
@@ -83,6 +84,10 @@ function hasActiveResourceActivityLease(kind: ResourceActivityLeaseKind): boolea
 }
 
 function findBlockingResourceActivityLease(kind: ResourceActivityLeaseKind): ResourceActivityLeaseMeta | null {
+  const strictMutualExclusion = typeof serverModePolicy.readResourceActivityMutualExclusionState === 'function'
+    ? !!serverModePolicy.readResourceActivityMutualExclusionState().strictActivityMutualExclusion
+    : String(serverModePolicy.readServerModeConfig?.().serverMode || 'large').trim().toLowerCase() === 'small'
+  if (!strictMutualExclusion) return null
   const conflictKinds = CONFLICTING_ACTIVITY_LEASES[String(kind)] || []
   for (const conflictKind of conflictKinds) {
     const blocking = readResourceActivityLease(conflictKind)

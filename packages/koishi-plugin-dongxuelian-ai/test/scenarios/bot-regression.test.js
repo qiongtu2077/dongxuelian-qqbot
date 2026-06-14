@@ -265,7 +265,20 @@ async function run(t) {
     })
     const session = makeSession({ content: '资源状态' })
     const result = await withMemOverride(1200, 1600, () => run(session, { flushTicks: 40 }))
-    t.check('scenario daily report running still keeps status command alive', result.sent.some(item => String(item).includes('模式：report_silent') && String(item).includes('资源档位：green')), formatResult(result))
+    t.check(
+      'scenario daily report running still keeps status command alive',
+      result.sent.some(item => {
+        const text = String(item)
+        return text.includes('模式：report_silent')
+          && text.includes('资源档位：green')
+          && text.includes('服务器模式：')
+          && text.includes('模式来源：')
+          && text.includes('tool_active：')
+          && text.includes('render_active：')
+          && text.includes('background_allowed：')
+      }),
+      formatResult(result)
+    )
     t.check('scenario daily report status command stays low cost without next', result.sent.length > 0 && !result.nextCalled, formatResult(result))
     checkNoLeak(t, 'scenario daily report status command does not leak secrets', result, ['sk-test-secret', 'Bearer'])
   })

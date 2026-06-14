@@ -13,6 +13,7 @@ const {
   readResourceActivityLease,
   buildResourceActivityLeaseBlockReason,
 } = require('../../resource-scheduler/resource-activity-lease') as typeof import('../../resource-scheduler/resource-activity-lease')
+const serverModePolicy = require('../../resource-scheduler/server-mode-policy') as typeof import('../../resource-scheduler/server-mode-policy')
 const { writeProcessCleanupEvent, terminateProcessTree } = require('../../resource-system/system-protection') as typeof import('../../resource-system/system-protection')
 
 interface BrowserActionParams {
@@ -147,7 +148,10 @@ function assertBrowserActionAdmission(params: BrowserActionParams = {}, context:
   const action = String(params.action || '').trim().toLowerCase()
   if (action === 'stop' || action === 'close') return
   const renderLease = readResourceActivityLease('render_active')
-  if (renderLease) {
+  const strictMutualExclusion = typeof serverModePolicy.readResourceActivityMutualExclusionState === 'function'
+    ? !!serverModePolicy.readResourceActivityMutualExclusionState().strictActivityMutualExclusion
+    : String(serverModePolicy.readServerModeConfig?.().serverMode || 'large').trim().toLowerCase() === 'small'
+  if (renderLease && strictMutualExclusion) {
     throw new Error(`browser_action 被资源保护拦截：${buildResourceActivityLeaseBlockReason('tool_active', renderLease)}`)
   }
   const resourceTaskId = String(context.taskId || context.resourceTaskId || '')

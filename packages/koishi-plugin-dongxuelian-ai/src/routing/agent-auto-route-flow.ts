@@ -131,6 +131,7 @@ async function handleAgentAutoRoute({
       userId: currentUserId,
       timeoutMs: agentConfig.queue?.timeoutMs,
       maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+      blockedMessageMode: 'natural',
       payload: { entry: 'qq-auto-route', reason: route.reason || '', agentWorker: createAgentRunWorkerPayload('qq-auto-route', agentRunInput) },
     })
     return { handled: true, reply: submission.message }
