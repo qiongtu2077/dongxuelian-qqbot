@@ -19,6 +19,38 @@ const RESOURCE_TASK_CANONICAL_STATUS_ORDER = [
     'pending',
 ];
 const DEFAULT_ACTIVE_TASK_STATUSES = ['pending', 'claiming', 'running', 'deferred'];
+// 任务完成回调集合 - 用于事件驱动通知
+const taskCompletedCallbacks = new Set();
+/**
+ * 注册任务完成回调
+ * @param fn 回调函数，接收 taskId 参数
+ */
+function registerTaskCompletedCallback(fn) {
+    if (typeof fn === 'function') {
+        taskCompletedCallbacks.add(fn);
+    }
+}
+/**
+ * 取消注册任务完成回调
+ * @param fn 回调函数
+ */
+function unregisterTaskCompletedCallback(fn) {
+    taskCompletedCallbacks.delete(fn);
+}
+/**
+ * 触发所有任务完成回调
+ * @param taskId 完成的任务 ID
+ */
+function triggerTaskCompletedCallbacks(taskId) {
+    for (const fn of taskCompletedCallbacks) {
+        try {
+            fn(taskId);
+        }
+        catch {
+            // 单个回调出错不影响其他回调
+        }
+    }
+}
 function redactRecord(value = {}) {
     const redacted = redactSensitiveData(value);
     return redacted && typeof redacted === 'object' && !Array.isArray(redacted)
@@ -377,6 +409,7 @@ function completeTask(task, result = {}) {
     writeTaskResult(task.id, { kind: task.kind, ok: true, ...result });
     writeJsonAtomic(target.file, next);
     writeWorkerEvent('task_done', { taskId: next.id, kind: next.kind });
+    triggerTaskCompletedCallbacks(next.id);
     return next;
 }
 // 将任务标记为 failed。
@@ -545,4 +578,6 @@ module.exports = {
     writeWorkerHeartbeat,
     listWorkerStates,
     removeTaskFile,
+    registerTaskCompletedCallback,
+    unregisterTaskCompletedCallback,
 };

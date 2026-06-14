@@ -110,6 +110,41 @@ const RESOURCE_TASK_CANONICAL_STATUS_ORDER: ResourceTaskStatus[] = [
 
 const DEFAULT_ACTIVE_TASK_STATUSES: ResourceTaskStatus[] = ['pending', 'claiming', 'running', 'deferred']
 
+// 任务完成回调集合 - 用于事件驱动通知
+const taskCompletedCallbacks: Set<(taskId: string) => void> = new Set()
+
+/**
+ * 注册任务完成回调
+ * @param fn 回调函数，接收 taskId 参数
+ */
+function registerTaskCompletedCallback(fn: (taskId: string) => void): void {
+  if (typeof fn === 'function') {
+    taskCompletedCallbacks.add(fn)
+  }
+}
+
+/**
+ * 取消注册任务完成回调
+ * @param fn 回调函数
+ */
+function unregisterTaskCompletedCallback(fn: (taskId: string) => void): void {
+  taskCompletedCallbacks.delete(fn)
+}
+
+/**
+ * 触发所有任务完成回调
+ * @param taskId 完成的任务 ID
+ */
+function triggerTaskCompletedCallbacks(taskId: string): void {
+  for (const fn of taskCompletedCallbacks) {
+    try {
+      fn(taskId)
+    } catch {
+      // 单个回调出错不影响其他回调
+    }
+  }
+}
+
 function redactRecord(value: Record<string, unknown> = {}): Record<string, unknown> {
   const redacted = redactSensitiveData(value)
   return redacted && typeof redacted === 'object' && !Array.isArray(redacted)
@@ -471,6 +506,7 @@ function completeTask(task: ResourceTask, result: Record<string, unknown> = {}):
   writeTaskResult(task.id, { kind: task.kind, ok: true, ...result })
   writeJsonAtomic(target.file, next)
   writeWorkerEvent('task_done', { taskId: next.id, kind: next.kind })
+  triggerTaskCompletedCallbacks(next.id)
   return next
 }
 
@@ -639,4 +675,6 @@ export = {
   writeWorkerHeartbeat,
   listWorkerStates,
   removeTaskFile,
+  registerTaskCompletedCallback,
+  unregisterTaskCompletedCallback,
 }

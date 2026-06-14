@@ -55,6 +55,16 @@ interface ResourceWorkerState extends Record<string, unknown> {
     alive: boolean;
     heartbeatLagMs?: number | null;
 }
+/**
+ * 注册任务完成回调
+ * @param fn 回调函数，接收 taskId 参数
+ */
+declare function registerTaskCompletedCallback(fn: (taskId: string) => void): void;
+/**
+ * 取消注册任务完成回调
+ * @param fn 回调函数
+ */
+declare function unregisterTaskCompletedCallback(fn: (taskId: string) => void): void;
 declare function ensureTaskDirs(): void;
 declare function writeWorkerEvent(event: string, data?: Record<string, unknown>): void;
 declare function createTaskId(kind: string, channelKey?: string): string;
@@ -108,5 +118,7 @@ declare const _default: {
     writeWorkerHeartbeat: typeof writeWorkerHeartbeat;
     listWorkerStates: typeof listWorkerStates;
     removeTaskFile: typeof removeTaskFile;
+    registerTaskCompletedCallback: typeof registerTaskCompletedCallback;
+    unregisterTaskCompletedCallback: typeof unregisterTaskCompletedCallback;
 };
 export = _default;

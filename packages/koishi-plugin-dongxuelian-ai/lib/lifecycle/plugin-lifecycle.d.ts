@@ -36,6 +36,8 @@ interface LifecycleAgentEngine {
 interface PluginLifecycleOptions {
     agentEngine?: LifecycleAgentEngine | null;
     configureAgentQueue?: (queueConfig: unknown) => void;
+    chat?: unknown;
+    retellAgentResult?: unknown;
 }
 declare function restoreTodayCacheEntry(key: string, data: TodayCacheSnapshot | null | undefined): void;
 declare function restoreTodayCache(): void;

@@ -23,8 +23,9 @@ const { clearRandomPendingState, } = require('../behavior/random-state');
 const agentConfig = require('../agent/config');
 const agentCron = require('../agent/cron');
 const { notifyCompletedTasks, createResourceResultSender, } = require('../resource-workers/result-notifier');
+const { registerTaskCompletedCallback, unregisterTaskCompletedCallback, } = require('../resource-workers/task-store');
 const { runSupervisorOnce, } = require('../resource-workers/worker-supervisor');
-const RESULT_NOTIFIER_INTERVAL_MS = Math.max(5000, Math.min(120000, Number(process.env.RESOURCE_RESULT_NOTIFIER_INTERVAL_MS || 15000)));
+const RESULT_NOTIFIER_INTERVAL_MS = Math.max(5000, Math.min(120000, Number(process.env.RESOURCE_RESULT_NOTIFIER_INTERVAL_MS || 60000)));
 const RESOURCE_SUPERVISOR_INTERVAL_MS = Math.max(10000, Math.min(300000, Number(process.env.RESOURCE_WORKER_SUPERVISOR_INTERVAL_MS || 30000)));
 function getLifecycleErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
@@ -66,7 +67,7 @@ function restoreTodayCache() {
     }
 }
 function registerPluginLifecycle(ctx, options = {}) {
-    const { configureAgentQueue } = options;
+    const { configureAgentQueue, chat, retellAgentResult } = options;
     let resultNotifierBusy = false;
     let supervisorBusy = false;
     const runResultNotifierOnce = async () => {
@@ -80,7 +81,7 @@ function registerPluginLifecycle(ctx, options = {}) {
             const logger = ctx.logger('dongxuelian-ai');
             await notifyCompletedTasks({
                 limit: 50,
-                sender: createResourceResultSender({ bot, logger }),
+                sender: createResourceResultSender({ bot, logger, ctx, chat, retellAgentResult }),
             });
         }
         catch (error) {
@@ -89,6 +90,10 @@ function registerPluginLifecycle(ctx, options = {}) {
         finally {
             resultNotifierBusy = false;
         }
+    };
+    // 任务完成事件驱动回调 - 立刻触发结果通知
+    const onTaskCompleted = (_taskId) => {
+        runResultNotifierOnce().catch(error => ctx.logger('dongxuelian-ai').warn(`event-driven result notifier failed: ${getLifecycleErrorMessage(error)}`));
     };
     const runResourceSupervisorOnce = async () => {
         if (supervisorBusy || !isResourceWorkerSupervisorEnabled())
@@ -135,6 +140,7 @@ function registerPluginLifecycle(ctx, options = {}) {
         }
         await runResourceSupervisorOnce();
         await runResultNotifierOnce();
+        registerTaskCompletedCallback(onTaskCompleted);
         ctx.logger('dongxuelian-ai').info(`dongxuelian-ai ${PLUGIN_VERSION} loaded`);
     });
     const sensitiveTimer = setInterval(async () => {
@@ -161,6 +167,7 @@ function registerPluginLifecycle(ctx, options = {}) {
     if (supervisorTimer.unref)
         supervisorTimer.unref();
     ctx.on('dispose', () => {
+        unregisterTaskCompletedCallback(onTaskCompleted);
         clearInterval(sensitiveTimer);
         clearInterval(resultNotifierTimer);
         clearInterval(supervisorTimer);
