@@ -168,7 +168,7 @@ async function resolveGuardedFileQuickReadReply(channelKey, plain, entryUserId, 
     return await resolveFileQuickReadReply(channelKey, preferredFileMessageId);
 }
 function apply(ctx) {
-    registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue });
+    registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue, chat, retellAgentResult });
     ctx.middleware(async (session, next) => {
         const content = session.content || '';
         const selfId = String(session.selfId || session.bot?.selfId || '');

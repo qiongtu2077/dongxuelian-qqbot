@@ -449,7 +449,7 @@ async function resolveGuardedFileQuickReadReply(
 }
 
 function apply(ctx: IndexContext): void {
-  registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue })
+  registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue, chat, retellAgentResult })
 
   ctx.middleware(async (session, next) => {
     const content = session.content || ''

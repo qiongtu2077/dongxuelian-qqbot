@@ -122,6 +122,88 @@ run().catch(error => {
   check('notifier writes back to the scanned done entity, not failed copy', summary.doneNotifyStatus === 'skipped', JSON.stringify(summary))
 }
 
+// === Scenario 1b: S2 事件驱动 — fs.watch 监听 done 目录跨进程触发 notifier ===
+// 命门：worker 子进程把任务写入 tasks/done/，主进程的 in-process 回调收不到（无 IPC）。
+// 唯一主路径是 plugin-lifecycle 在 ready 时对 done 目录起 fs.watch；本测试把轮询间隔顶到
+// 极大值，确保 ready 之后新出现的 done 文件只能由 fs.watch 触发 notifier，而非轮询兜底。
+function testDoneWatcherTriggersNotifierEventDriven() {
+  const dataDir = createTempDataDir('resource-regress-watch-')
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+const lifecycle = require('koishi-plugin-dongxuelian-ai/lib/lifecycle/plugin-lifecycle')
+const taskStore = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+const taskPaths = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-paths')
+
+const readyHandlers = []
+const disposeHandlers = []
+const ctx = {
+  bots: [{ selfId: '90000', sendMessage: async () => {}, sendPrivateMessage: async () => {} }],
+  on(event, handler) {
+    if (event === 'ready') readyHandlers.push(handler)
+    else if (event === 'dispose') disposeHandlers.push(handler)
+  },
+  logger() { return { info() {}, warn() {} } },
+}
+
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
+
+async function run() {
+  taskStore.ensureTaskDirs()
+  // 注册生命周期：debounce 调到 50ms 让测试更快；轮询间隔无法从这里改（默认 60s），
+  // 测试窗口（<3s）内轮询绝不会触发，故任何写回都只能来自 fs.watch。
+  process.env.RESOURCE_DONE_WATCH_DEBOUNCE_MS = '50'
+  lifecycle.registerPluginLifecycle(ctx, {})
+  // 触发 ready：起 fs.watch + 跑一次启动期 notifier（此刻 done 目录为空）。
+  for (const handler of readyHandlers) { await handler() }
+  await sleep(100)
+
+  const kind = 'daily_summary'
+  const taskId = kind + '-watch-eventdriven-1'
+  const base = {
+    id: taskId, kind, source: 'test', channelKey: '', userId: '', priority: 70,
+    createdAt: '2026-06-10T00:00:00.000Z', updatedAt: '2026-06-10T00:00:00.000Z',
+    expiresAt: '', timeoutMs: 120000, payload: {},
+  }
+  const doneFile = taskPaths.getTaskFile('done', kind, taskId)
+  // ready 之后才写 done 文件 —— 模拟 worker 子进程完成任务、主进程没有 in-process 事件。
+  // target=none 的 done 任务会被 notifier 标 skipped，是 notifier 确实跑过的可观测证据。
+  fs.writeFileSync(doneFile, JSON.stringify({ ...base, status: 'done', notify: { target: 'none', status: 'pending' } }))
+
+  // 只等 fs.watch + debounce，不主动调用 notifier。最多等 2.5s（远小于 60s 轮询）。
+  let notifyStatus = 'pending'
+  const deadline = Date.now() + 2500
+  while (Date.now() < deadline) {
+    await sleep(60)
+    try {
+      const task = JSON.parse(fs.readFileSync(doneFile, 'utf8'))
+      notifyStatus = task.notify && task.notify.status
+      if (notifyStatus && notifyStatus !== 'pending') break
+    } catch (e) { /* 文件可能正被原子替换，重试 */ }
+  }
+
+  for (const handler of disposeHandlers) { try { handler() } catch (e) {} }
+
+  const summary = { notifyStatusAfterWatch: notifyStatus }
+  console.log(JSON.stringify(summary, null, 2))
+  process.exitCode = 0
+}
+
+run().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('S2 done watcher event-driven scenario', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_WORKER_SUPERVISOR_ENABLED: '0',
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  }, 30000)
+  if (!summary) return
+  check('done dir fs.watch triggers notifier without polling', summary.notifyStatusAfterWatch === 'skipped', JSON.stringify(summary))
+}
+
 // === Scenario 2: S3 black 内存下不 planning（green 对照） ===
 function testPlannerSkipsUnderPressure() {
   const dataDir = createTempDataDir('resource-regress-plan-')
@@ -2348,6 +2430,157 @@ run().catch(error => {
       && Array.isArray(summary.groupCalls)
       && summary.groupCalls.length === 1
       && String(summary.groupCalls[0] && summary.groupCalls[0].target || '') === '587702552',
+      JSON.stringify(summary))
+}
+
+// === Scenario 17.2: 成功搜索结果不能被单条 short body 误判成失败兜底 ===
+function testNotifierDoesNotOverrideUsableSearchSuccess() {
+  const dataDir = createTempDataDir('resource-regress-notify-usable-success-')
+  const script = String.raw`
+const notifier = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/result-notifier')
+
+async function run() {
+  const privateCalls = []
+  const bot = {
+    internal: {
+      async sendPrivateMsg(target, message) {
+        privateCalls.push({ target: String(target || ''), message })
+      },
+    },
+  }
+
+  const sender = notifier.createAgentTaskSender({ bot })
+  const task = {
+    id: 'private-agent-usable-success-1',
+    kind: 'agent_task',
+    status: 'done',
+    channelKey: 'private:3514272382',
+    notify: {
+      target: 'qq-group',
+      channelKey: 'private:3514272382',
+      status: 'pending',
+    },
+    payload: { entry: 'qq-auto-route' },
+  }
+  const result = {
+    reply: '根据已经读到的可靠网页正文，鸣潮最新角色目前是官方刚公布的新角色。',
+    toolResults: [
+      {
+        name: 'web_search',
+        result: [
+          '已搜索：鸣潮 最新角色',
+          '搜索状态：usable_hit',
+          '【来源 1】标题：官方公告',
+          '正文质量：usable',
+          '正文：官方公告已明确写出最新角色信息。',
+        ].join('\n'),
+      },
+      {
+        name: 'web_fetch',
+        result: '正文质量：short（正文过短，不能作为事实依据）\n正文：活动页',
+      },
+    ],
+  }
+
+  const builtText = notifier.buildAgentTaskTextMessage(result, task)
+  await sender(task, result)
+
+  console.log(JSON.stringify({
+    builtText,
+    privateCalls,
+  }, null, 2))
+  process.exitCode = 0
+}
+
+run().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('notifier usable search success should survive short body noise', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  }, 30000)
+  if (!summary) return
+  check('notifier keeps success reply text when usable_hit already exists',
+    String(summary.builtText || '').includes('可靠网页正文')
+      && !String(summary.builtText || '').includes('这次搜索没有拿到可靠结果'),
+    JSON.stringify(summary))
+  check('notifier sends usable success reply to private target instead of failure fallback',
+    Array.isArray(summary.privateCalls)
+      && summary.privateCalls.length === 1
+      && JSON.stringify(summary.privateCalls[0] && summary.privateCalls[0].message || []).includes('可靠网页正文')
+      && !JSON.stringify(summary.privateCalls[0] && summary.privateCalls[0].message || []).includes('这次搜索没有拿到可靠结果'),
+    JSON.stringify(summary))
+}
+
+// === Scenario 17.3: 空 Agent 回复不能再被当作可发送正文通知用户 ===
+function testNotifierSkipsPlaceholderEmptyAgentReply() {
+  const dataDir = createTempDataDir('resource-regress-notify-empty-agent-reply-')
+  const script = String.raw`
+const notifier = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/result-notifier')
+
+async function run() {
+  const privateCalls = []
+  const bot = {
+    internal: {
+      async sendPrivateMsg(target, message) {
+        privateCalls.push({ target: String(target || ''), message })
+      },
+    },
+  }
+
+  const sender = notifier.createAgentTaskSender({ bot })
+  const task = {
+    id: 'private-agent-empty-reply-1',
+    kind: 'agent_task',
+    status: 'done',
+    channelKey: 'private:3514272382',
+    notify: {
+      target: 'qq-group',
+      channelKey: 'private:3514272382',
+      status: 'pending',
+    },
+    payload: { entry: 'qq-auto-route' },
+  }
+  const result = {
+    reply: '(Agent 未获取到有效回复)',
+    toolResults: [
+      {
+        name: 'web_search',
+        result: '已搜索：鸣潮 最新角色\n搜索状态：usable_hit\n正文质量：usable\n正文：官方正文已经读到了。',
+      },
+    ],
+  }
+
+  const builtText = notifier.buildAgentTaskTextMessage(result, task)
+  await sender(task, result)
+
+  console.log(JSON.stringify({
+    builtText,
+    sendable: notifier.hasAgentSendableText(result),
+    privateCalls,
+  }, null, 2))
+  process.exitCode = 0
+}
+
+run().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('notifier should skip placeholder empty agent reply', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  }, 30000)
+  if (!summary) return
+  check('notifier treats placeholder empty agent reply as not sendable',
+    summary.sendable === false && Array.isArray(summary.privateCalls) && summary.privateCalls.length === 0,
+    JSON.stringify(summary))
+  check('notifier does not keep placeholder empty agent reply text',
+    !String(summary.builtText || '').includes('Agent 未获取到有效回复'),
     JSON.stringify(summary))
 }
 
@@ -6815,6 +7048,7 @@ run().catch(error => {
 
 function main() {
   testNotifierNoDuplicateWriteback()
+  testDoneWatcherTriggersNotifierEventDriven()
   testPlannerSkipsUnderPressure()
   testMediaWorkerNoBusyLoop()
   testResourceWriteDeduping()
@@ -6837,6 +7071,7 @@ function main() {
   testNotifierWithoutSenderLeavesTaskUntouched()
   testNotifierFailedRetryHasCooldown()
   testNotifierPrivateTargetUsesPrivateSend()
+  testNotifierDoesNotOverrideUsableSearchSuccess()
   testTaskStoreDoesNotCreateTargetCopyWhenRenameFails()
   testMarkTaskRunningDoesNotCreateRunningCopyWhenRenameFails()
   testCancelTaskDoesNotCreateCancelledCopyWhenRenameFails()

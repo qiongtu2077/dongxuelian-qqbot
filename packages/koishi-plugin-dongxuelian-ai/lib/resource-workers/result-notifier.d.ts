@@ -45,6 +45,17 @@ interface DailyReportSenderOptions {
 interface ResourceResultSenderOptions {
     bot?: ResultNotifierBotLike | null;
     logger?: ResultNotifierLoggerLike | null;
+    ctx?: unknown;
+    chat?: unknown;
+    retellAgentResult?: unknown;
+}
+interface ResultNotifierSessionLike {
+    guildId?: string;
+    channelId?: string;
+    isDirect?: boolean;
+    userId?: string;
+    username?: string;
+    [key: string]: unknown;
 }
 declare function readTaskResult(taskId: string): ResultNotifierResult;
 declare function hasHardSearchFailureSignal(result: AgentNotifyResultLike): boolean;
@@ -52,6 +63,13 @@ declare function isChatHeavyToolTask(task: ResultNotifierTaskLike | null | undef
 declare function hasAgentSendableText(result: ResultNotifierResult): boolean;
 declare function createDailyReportSender(options?: DailyReportSenderOptions): ResultNotifierSender;
 declare function buildAgentTaskTextMessage(result: ResultNotifierResult, task?: ResultNotifierTaskLike | null): string;
+declare function extractSessionFromPayload(task: ResultNotifierTaskLike): {
+    session: ResultNotifierSessionLike;
+    channelKey: string;
+    userId: string;
+    userName: string;
+    userText: string;
+};
 declare function createAgentTaskSender(options?: ResourceResultSenderOptions): ResultNotifierSender;
 declare function createEmotionRenderSender(options?: ResourceResultSenderOptions): ResultNotifierSender;
 declare function createResourceResultSender(options?: ResourceResultSenderOptions): ResultNotifierSender;
@@ -62,6 +80,7 @@ declare const _default: {
     isChatHeavyToolTask: typeof isChatHeavyToolTask;
     hasAgentSendableText: typeof hasAgentSendableText;
     buildAgentTaskTextMessage: typeof buildAgentTaskTextMessage;
+    extractSessionFromPayload: typeof extractSessionFromPayload;
     createDailyReportSender: typeof createDailyReportSender;
     createAgentTaskSender: typeof createAgentTaskSender;
     createEmotionRenderSender: typeof createEmotionRenderSender;

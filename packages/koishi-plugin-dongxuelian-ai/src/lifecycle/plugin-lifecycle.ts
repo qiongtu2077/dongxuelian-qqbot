@@ -70,6 +70,9 @@ const {
   unregisterTaskCompletedCallback,
 } = require('../resource-workers/task-store') as typeof import('../resource-workers/task-store')
 const {
+  getTaskStatusDir,
+} = require('../resource-workers/task-paths') as typeof import('../resource-workers/task-paths')
+const {
   runSupervisorOnce,
 } = require('../resource-workers/worker-supervisor') as typeof import('../resource-workers/worker-supervisor')
 
@@ -122,6 +125,13 @@ interface PluginLifecycleOptions {
 
 const RESULT_NOTIFIER_INTERVAL_MS = Math.max(5000, Math.min(120000, Number(process.env.RESOURCE_RESULT_NOTIFIER_INTERVAL_MS || 60000)))
 const RESOURCE_SUPERVISOR_INTERVAL_MS = Math.max(10000, Math.min(300000, Number(process.env.RESOURCE_WORKER_SUPERVISOR_INTERVAL_MS || 30000)))
+// fs.watch 去抖：worker 子进程写入 done 文件触发多次事件，合并到一次结果通知。
+const DONE_WATCH_DEBOUNCE_MS = Math.max(50, Math.min(5000, Number(process.env.RESOURCE_DONE_WATCH_DEBOUNCE_MS || 300)))
+
+interface FsWatcherLike {
+  close(): void
+  on?(event: 'error', handler: (error: unknown) => void): void
+}
 
 function getLifecycleErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -186,9 +196,49 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     }
   }
 
-  // 任务完成事件驱动回调 - 立刻触发结果通知
+  // 任务完成事件驱动回调 - 立刻触发结果通知（同进程；worker 子进程内的完成不会经此路径）
   const onTaskCompleted = (_taskId: string): void => {
     runResultNotifierOnce().catch(error => ctx.logger('dongxuelian-ai').warn(`event-driven result notifier failed: ${getLifecycleErrorMessage(error)}`))
+  }
+
+  // 跨进程事件驱动：worker 子进程把任务文件写入 tasks/done/，主进程用 fs.watch 监听该目录，
+  // 文件出现即触发结果通知。这是主路径（Linux 下走 inotify），轮询仅作纯兜底。
+  let doneWatcher: FsWatcherLike | null = null
+  let doneWatchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+  const scheduleWatchedNotify = (): void => {
+    if (doneWatchDebounceTimer) return
+    doneWatchDebounceTimer = setTimeout(() => {
+      doneWatchDebounceTimer = null
+      runResultNotifierOnce().catch(error => ctx.logger('dongxuelian-ai').warn(`watch-driven result notifier failed: ${getLifecycleErrorMessage(error)}`))
+    }, DONE_WATCH_DEBOUNCE_MS)
+    if (doneWatchDebounceTimer.unref) doneWatchDebounceTimer.unref()
+  }
+
+  const startDoneWatcher = (): void => {
+    if (doneWatcher) return
+    try {
+      const doneDir = getTaskStatusDir('done')
+      fsSync.mkdirSync(doneDir, { recursive: true })
+      const watcher: FsWatcherLike = fsSync.watch(doneDir, { persistent: false }, (_eventType: string, fileName: string | null) => {
+        // 只关心 .json 任务文件的出现/改动，忽略其它噪声事件。
+        if (fileName && !String(fileName).endsWith('.json')) return
+        scheduleWatchedNotify()
+      })
+      watcher.on?.('error', (error: unknown) => {
+        ctx.logger('dongxuelian-ai').warn(`done watcher error, falling back to polling: ${getLifecycleErrorMessage(error)}`)
+      })
+      doneWatcher = watcher
+      ctx.logger('dongxuelian-ai').info(`done dir watcher started: ${doneDir}`)
+    } catch (error) {
+      doneWatcher = null
+      ctx.logger('dongxuelian-ai').warn(`failed to start done dir watcher, relying on polling fallback: ${getLifecycleErrorMessage(error)}`)
+    }
+  }
+
+  const stopDoneWatcher = (): void => {
+    if (doneWatchDebounceTimer) { clearTimeout(doneWatchDebounceTimer); doneWatchDebounceTimer = null }
+    if (doneWatcher) { try { doneWatcher.close() } catch { /* watcher 已关闭 */ } doneWatcher = null }
   }
 
   const runResourceSupervisorOnce = async (): Promise<void> => {
@@ -232,6 +282,7 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     await runResourceSupervisorOnce()
     await runResultNotifierOnce()
     registerTaskCompletedCallback(onTaskCompleted)
+    startDoneWatcher()
     ctx.logger('dongxuelian-ai').info(`dongxuelian-ai ${PLUGIN_VERSION} loaded`)
   })
 
@@ -260,6 +311,7 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
 
   ctx.on('dispose', () => {
     unregisterTaskCompletedCallback(onTaskCompleted)
+    stopDoneWatcher()
     clearInterval(sensitiveTimer)
     clearInterval(resultNotifierTimer)
     clearInterval(supervisorTimer)

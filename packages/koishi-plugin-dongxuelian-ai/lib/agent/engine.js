@@ -26,6 +26,7 @@ const MAX_ROUNDS = MAX_TOOL_ROUNDS;
 const MAX_TOOLS_PER_ROUND = 3;
 const MAX_WEB_SEARCH_CALLS = 6;
 const EXTERNAL_TOOL_NAMES = new Set(['web_search', 'web_fetch', 'browser_action']);
+const EMPTY_AGENT_REPLY_RE = /^\(Agent 未获取到有效回复\)/i;
 function isFallbackTool(value) {
     return !!value && typeof value === 'object' && typeof value.name === 'string';
 }
@@ -149,6 +150,12 @@ function compressOldToolResults(messages, currentRound) {
 function toAgentToolCalls(toolCalls) {
     return Array.isArray(toolCalls) ? toolCalls : [];
 }
+function normalizeAgentFinalReply(text = '') {
+    const value = String(text || '').trim();
+    if (!value || EMPTY_AGENT_REPLY_RE.test(value))
+        return '';
+    return value;
+}
 async function continueAgent({ messages, config, tools, allowedToolNames, channel, channelKey, userId, userName, userMessage, toolCount = 0, toolResults = [], onProgress, bot, enableThinking = false, isAdmin = false, resourceTaskId = '' }) {
     let reply = '';
     const rounds = [];
@@ -247,8 +254,33 @@ async function continueAgent({ messages, config, tools, allowedToolNames, channe
         if (onProgress)
             onProgress({ type: 'round', round, toolCount, estimatedTokens: estimated }, round);
     }
-    if (!reply)
-        reply = '(Agent 未获取到有效回复)';
+    reply = normalizeAgentFinalReply(reply);
+    // 收尾合成：MAX_ROUNDS 耗尽时模型若仍在调工具（从未返回纯文本），reply 会是空串，
+    // 下游会显示“(Agent 未获取到有效回复)”。此时已有工具结果（如搜索正文）可用，
+    // 强制再做一次「禁用工具」的合成调用，让模型基于已收集信息给出最终回答。
+    if (!reply && toolResults.length > 0) {
+        try {
+            const synthMessages = [
+                ...messages,
+                { role: 'system', content: '已达到工具调用上限，现在不要再调用任何工具。请基于上面已获取的工具结果，直接用中文给出对用户问题的最终回答；若信息不足也要如实说明，不要返回空内容。' },
+            ];
+            const synthResponse = await requestChatCompletions(asApiMessages(synthMessages), config, { _thinkingEnabled: false }, null);
+            if (typeof synthResponse === 'string') {
+                reply = synthResponse;
+            }
+            else if (synthResponse.type === 'text') {
+                reply = synthResponse.content || '';
+            }
+            else if (typeof synthResponse.message?.content === 'string') {
+                reply = synthResponse.message.content;
+            }
+            reply = normalizeAgentFinalReply(reply);
+        }
+        catch (error) {
+            // 合成失败保持空 reply，交由下游兜底，不让收尾异常打断已完成的工具执行。
+            void getAgentEngineErrorMessage(error);
+        }
+    }
     recordAgentSession({ channel, channelKey, userId, userName, userMessage, reply, toolCalls: toolCount, pendingId: null });
     return { reply, toolCalls: toolCount, pendingId: null, toolResults, rounds };
 }

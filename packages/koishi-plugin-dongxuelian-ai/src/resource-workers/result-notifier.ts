@@ -50,6 +50,8 @@ interface AgentNotifyResultLike {
 }
 
 const AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE = /(?:搜索状态：weak_hit|weak_hit|弱命中|正文质量：(?:short|empty|garbage|error|unknown)|未读到可用正文|未打开候选网页正文|不能作为事实依据)/i
+const AGENT_NOTIFY_SEARCH_SUCCESS_RE = /(?:搜索状态：usable_hit|已打开候选网页正文|正文质量：usable|已用 web_fetch 验证正文|已读取网页：)/i
+const EMPTY_AGENT_REPLY_RE = /^\(Agent 未获取到有效回复\)/i
 
 interface ResultNotifierBotLike {
   sendMessage?: (target: string, content: unknown) => Promise<unknown> | unknown
@@ -73,7 +75,47 @@ interface DailyReportSenderOptions {
 interface ResourceResultSenderOptions {
   bot?: ResultNotifierBotLike | null
   logger?: ResultNotifierLoggerLike | null
+  ctx?: unknown
+  chat?: unknown
+  retellAgentResult?: unknown
 }
+
+// Context-like object with logger capability for notifier — uses broad
+// parameter types so it is assignable from both LifecycleContext and
+// ChatContextLike.
+interface ResultNotifierContextLike {
+  logger(name: string): { info?: (...args: unknown[]) => void; warn?: (...args: unknown[]) => void; [key: string]: unknown }
+  [key: string]: unknown
+}
+
+// Session-like object for chat function — broad enough to accept
+// ChatSessionLike from chat.ts or SessionLike from chat-result-flow.ts.
+interface ResultNotifierSessionLike {
+  guildId?: string
+  channelId?: string
+  isDirect?: boolean
+  userId?: string
+  username?: string
+  [key: string]: unknown
+}
+
+// Chat function signature — accepts the session, userText, ctx, and
+// optional run options. Parameter types are relaxed to Record<string, unknown>
+// so that the concrete chat() function is assignable without identical imports.
+// Callers should use type assertion when passing the actual chat function.
+type ResultNotifierChatFn = (
+  session: Record<string, unknown>,
+  userText: string,
+  ctx: Record<string, unknown>,
+  options?: Record<string, unknown>,
+) => Promise<unknown>
+
+// RetellAgentResult function signature — accepts agent result and options.
+// Callers should use type assertion when passing the actual retellAgentResult function.
+type ResultNotifierRetellAgentResultFn = (
+  agentResult: Record<string, unknown>,
+  options: Record<string, unknown>,
+) => Promise<string>
 
 // 读取任务 result.json，缺失时返回空对象。
 function readTaskResult(taskId: string): ResultNotifierResult {
@@ -152,7 +194,8 @@ function hasHardSearchFailureSignal(result: AgentNotifyResultLike): boolean {
     if (item?.name) parts.push(String(item.name))
     if (item?.result) parts.push(String(item.result))
   }
-  return AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE.test(parts.join('\n'))
+  const material = parts.join('\n')
+  return AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE.test(material) && !AGENT_NOTIFY_SEARCH_SUCCESS_RE.test(material)
 }
 
 // 判断任务是否来自普通聊天自动触发的 heavy tool。
@@ -163,7 +206,8 @@ function isChatHeavyToolTask(task: ResultNotifierTaskLike | null | undefined): b
 
 // 判断 result 是否有值得发给群的正文。
 function hasAgentSendableText(result: ResultNotifierResult): boolean {
-  return !!String(result.reply || result.message || '').trim()
+  const text = String(result.reply || result.message || '').trim()
+  return !!text && !EMPTY_AGENT_REPLY_RE.test(text)
 }
 
 function resolveNotifierTarget(target: string): { type: 'private' | 'group'; id: string } {
@@ -257,6 +301,7 @@ function buildAgentTaskTextMessage(result: ResultNotifierResult, task: ResultNot
     message: result.message,
     toolResults: Array.isArray(result.toolResults) ? result.toolResults.slice(0, 20) as AgentNotifyResultLike['toolResults'] : [],
   }
+  if (!hasAgentSendableText(result)) return ''
   if (hasHardSearchFailureSignal(agentResult) || hasSearchFailureMaterial(agentResult)) return `这次搜索没有拿到可靠结果，不能据此下结论。${suffix}`.slice(0, 4000)
   const safeReply = guardAgentRetellReply(redactAgentMaterial(reply), agentResult, {
     searchFailureFallback: '这次搜索没有拿到可靠结果，不能据此下结论。',
@@ -264,10 +309,42 @@ function buildAgentTaskTextMessage(result: ResultNotifierResult, task: ResultNot
   return `${safeReply || fallback}${suffix}`.slice(0, 4000)
 }
 
+// Extract session info from task.payload.agentWorker for retellAgentResult.
+function extractSessionFromPayload(task: ResultNotifierTaskLike): {
+  session: ResultNotifierSessionLike
+  channelKey: string
+  userId: string
+  userName: string
+  userText: string
+} {
+  const payload = task && typeof task.payload === 'object' && task.payload ? task.payload : {}
+  const agentWorker = payload.agentWorker && typeof payload.agentWorker === 'object' ? payload.agentWorker as Record<string, unknown> : {}
+  const engineInput = agentWorker.engineInput && typeof agentWorker.engineInput === 'object' ? agentWorker.engineInput as Record<string, unknown> : {}
+  const channelKey = String(engineInput.channelKey || task?.channelKey || payload.channelKey || '')
+  const userId = String(engineInput.userId || task?.userId || payload.userId || '')
+  const userName = String(engineInput.userName || payload.userName || '')
+  const userText = String(engineInput.userMessage || payload.userMessage || '')
+  const isDirect = /^private:/i.test(channelKey)
+  const session: ResultNotifierSessionLike = {
+    guildId: isDirect ? undefined : channelKey,
+    channelId: channelKey,
+    isDirect,
+    userId,
+    username: userName,
+  }
+  return { session, channelKey, userId, userName, userText }
+}
+
 // Construct a sender for standalone QQ Agent worker results.
 function createAgentTaskSender(options: ResourceResultSenderOptions = {}): ResultNotifierSender {
   const bot = options.bot || null
   const logger = options.logger || null
+  // Type assertions for external dependencies - these are safe because the
+  // caller (plugin-lifecycle.ts) passes the actual functions from chat.ts
+  // and chat-result-flow.ts, which have compatible signatures.
+  const ctx = options.ctx as ResultNotifierContextLike | null
+  const chatFn = options.chat as ResultNotifierChatFn | null
+  const retellAgentResultFn = options.retellAgentResult as ResultNotifierRetellAgentResultFn | null
   return async (task: ResultNotifierTaskLike, result: ResultNotifierResult): Promise<boolean> => {
     if (String(task?.kind || '') !== 'agent_task') return false
     const notify = task?.notify || {}
@@ -277,6 +354,43 @@ function createAgentTaskSender(options: ResourceResultSenderOptions = {}): Resul
       if (logger) logger.info(`chat-heavy-tool notify skipped empty result: task=${task.id}, target=${target}`)
       return true
     }
+
+    // Try retellAgentResult for persona retelling when dependencies are available
+    if (ctx && chatFn && retellAgentResultFn) {
+      const { session, channelKey, userId, userName, userText } = extractSessionFromPayload(task)
+      if (channelKey && userId && userText) {
+        const agentResult: Record<string, unknown> = {
+          reply: result.reply,
+          toolResults: Array.isArray(result.toolResults) ? result.toolResults.slice(0, 20) : [],
+          toolCalls: result.toolCalls,
+          pendingId: result.pendingId,
+        }
+        try {
+          const retoldText = await retellAgentResultFn(agentResult, {
+            ctx,
+            session,
+            channelKey,
+            currentUserId: userId,
+            userName: userName || '用户',
+            userText,
+            chat: chatFn,
+          })
+          const finalText = String(retoldText || '').trim()
+          if (finalText) {
+            const pendingId = String(result.pendingId || '')
+            const suffix = pendingId ? `\n\n需要确认的工具 ID: ${pendingId}` : ''
+            const textToSend = `${finalText}${suffix}`.slice(0, 4000)
+            await sendNotifierText(bot, target, textToSend)
+            if (logger) logger.info(`agent task retold text notified: task=${task.id}, target=${target}`)
+            return true
+          }
+        } catch (error) {
+          if (logger) logger.warn(`agent task retell failed, falling back to guard: task=${task.id}, error=${getNotifierErrorMessage(error)}`)
+        }
+      }
+    }
+
+    // Fallback: original guardAgentRetellReply + redactAgentMaterial path
     const text = buildAgentTaskTextMessage(result, task)
     if (!text.trim()) {
       if (logger) logger.info(`agent task notify skipped empty text: task=${task.id}, target=${target}`)
@@ -364,6 +478,7 @@ export = {
   isChatHeavyToolTask,
   hasAgentSendableText,
   buildAgentTaskTextMessage,
+  extractSessionFromPayload,
   createDailyReportSender,
   createAgentTaskSender,
   createEmotionRenderSender,

@@ -50,6 +50,16 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+async function waitUntil(checker, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await checker()) return
+    await flushAsync(6)
+    await sleep(10)
+  }
+  throw new Error(`waitUntil timed out after ${timeoutMs}ms`)
+}
+
 async function withResourceSnapshot(fn, snapshot = {}) {
   const previousAvailable = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
   const previousTotal = process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
@@ -92,7 +102,12 @@ async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
         let result = null
         await withResourceSnapshot(async () => {
           result = await run(session, { flushTicks: 120 })
-          await session.waitForSend(options.waitFor || (() => true))
+          if (typeof options.waitUntil === 'function') {
+            await waitUntil(() => options.waitUntil({ session, mocked, data, harness }), options.waitUntilTimeoutMs || 5000)
+          }
+          if (options.waitFor !== null) {
+            await session.waitForSend(options.waitFor || (() => true))
+          }
           await new Promise(resolve => setImmediate(resolve))
           result = {
             ...result,
@@ -220,10 +235,11 @@ async function run(t) {
   await runChatCase(t, 'explicit web_search request routes to Agent even when auto route disabled', [
     { json: { choices: [{ message: { content: 'unused-sync-agent-report' } }] } },
   ], async (result, mocked, session, calls, data) => {
-    checkSentIncludes(t, 'scenario explicit web_search request submits Agent task', result, 'Agent 已提交后台执行')
-    checkSentIncludes(t, 'scenario explicit web_search request returns task id', result, '任务 ID')
-    checkSentIncludes(t, 'scenario explicit web_search request promises async result', result, '完成后会自动发回结果')
-    t.check('scenario explicit web_search sends one queue QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
+    t.check('scenario explicit web_search request keeps entry silent while queueing agent task', result.sent.length === 0, `sent=${JSON.stringify(result.sent)}`)
+    checkSentExcludes(t, 'scenario explicit web_search request does not expose placeholder queue wording', result, '拿到可靠结果再说')
+    checkSentExcludes(t, 'scenario explicit web_search request does not expose task id', result, '任务 ID')
+    checkSentExcludes(t, 'scenario explicit web_search request does not expose backend completion promise', result, '完成后会自动发回结果')
+    checkSentExcludes(t, 'scenario explicit web_search request does not expose backend execution wording', result, 'Agent 已提交后台执行')
     checkSentExcludes(t, 'scenario explicit web_search does not send raw markdown heading', result, '### Agent raw report')
     checkSentExcludes(t, 'scenario explicit web_search does not send raw markdown body', result, '**secret raw**')
     t.check('scenario explicit web_search does not call search tool in entry process', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
@@ -250,7 +266,8 @@ async function run(t) {
         return '已搜索：鸣潮 最新角色\n搜索结果：绯雪与达妮娅'
       }
     },
-    waitFor: message => String(message).includes('完成后会自动发回结果'),
+    waitUntil: () => listScenarioAgentTasks().length === 1,
+    waitFor: null,
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -264,14 +281,14 @@ async function run(t) {
     { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-heavy', type: 'function', function: { name: 'web_search', arguments: '{"query":"鸣潮最新角色"}' } }] } }] } },
     { json: { choices: [{ message: { content: '让我看看…' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario heavy web_search sends quiet queue message', result, '拿到可靠结果再说')
+    t.check('scenario heavy web_search keeps entry silent while queueing task', result.sent.length === 0, `sent=${JSON.stringify(result.sent)}`)
+    checkSentExcludes(t, 'scenario heavy web_search does not expose placeholder queue wording', result, '拿到可靠结果再说')
     checkSentExcludes(t, 'scenario heavy web_search quiet queue does not promise async result', result, '完成后会自动发回结果')
-    t.check('scenario heavy web_search sends one queue QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
     t.check('scenario heavy web_search does not execute search in entry process', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
     checkSentExcludes(t, 'scenario heavy web_search does not send progress text', result, '让我看看')
     checkSentExcludes(t, 'scenario heavy web_search does not send raw agent report', result, '### Agent raw report')
     checkSentExcludes(t, 'scenario heavy web_search does not send raw markdown body', result, '**secret heavy raw**')
-    t.check('scenario heavy web_search only asks model for tool and short queue text', calls.length === 2, `calls=${calls.length}`)
+    t.check('scenario heavy web_search keeps old tool-detection and short follow-up model budget while staying silent', calls.length === 2, `calls=${calls.length}`)
     const tasks = listScenarioAgentTasks()
     const task = tasks[0] || {}
     const { payload, agentWorker, engineInput } = getAgentWorkerParts(task)
@@ -290,7 +307,8 @@ async function run(t) {
         return '已搜索：鸣潮 最新角色\n搜索结果：绯雪与达妮娅'
       }
     },
-    waitFor: message => String(message).includes('拿到可靠结果再说'),
+    waitUntil: () => listScenarioAgentTasks().length === 1,
+    waitFor: null,
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -499,13 +517,13 @@ async function run(t) {
     { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-heavy-fetch', type: 'function', function: { name: 'web_fetch', arguments: '{"url":"https://example.com/story"}' } }] } }] } },
     { json: { choices: [{ message: { content: '让我看看…' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario heavy web_fetch sends quiet queue message', result, '拿到可靠结果再说')
+    t.check('scenario heavy web_fetch keeps entry silent while queueing task', result.sent.length === 0, `sent=${JSON.stringify(result.sent)}`)
+    checkSentExcludes(t, 'scenario heavy web_fetch does not expose placeholder queue wording', result, '拿到可靠结果再说')
     checkSentExcludes(t, 'scenario heavy web_fetch quiet queue does not promise async result', result, '完成后会自动发回结果')
-    t.check('scenario heavy web_fetch sends one queue QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
     t.check('scenario heavy web_fetch does not execute fetch in entry process', !Array.isArray(session._webFetchCalls) || session._webFetchCalls.length === 0, JSON.stringify(session._webFetchCalls || []))
     checkSentExcludes(t, 'scenario heavy web_fetch does not send progress text', result, '让我看看')
     checkSentExcludes(t, 'scenario heavy web_fetch does not send raw agent report', result, 'Agent fetch raw')
-    t.check('scenario heavy web_fetch only asks model for tool and short queue text', calls.length === 2, `calls=${calls.length}`)
+    t.check('scenario heavy web_fetch keeps old tool-detection and short follow-up model budget while staying silent', calls.length === 2, `calls=${calls.length}`)
     const tasks = listScenarioAgentTasks()
     const task = tasks[0] || {}
     const { payload, agentWorker, engineInput } = getAgentWorkerParts(task)
@@ -537,7 +555,8 @@ async function run(t) {
         }
       }
     },
-    waitFor: message => String(message).includes('拿到可靠结果再说'),
+    waitUntil: () => listScenarioAgentTasks().length === 1,
+    waitFor: null,
   })
   try {
     const webFetch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-fetch.js'))
@@ -550,7 +569,10 @@ async function run(t) {
   await runChatCase(t, 'time-sensitive question submits Agent web_search task', [
     { json: { choices: [{ message: { content: 'unused-free-search-agent' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario time-sensitive free web_search sends queue message', result, '完成后会自动发回结果')
+    t.check('scenario time-sensitive free web_search keeps entry silent while queueing task', result.sent.length === 0, `sent=${JSON.stringify(result.sent)}`)
+    checkSentExcludes(t, 'scenario time-sensitive free web_search does not expose placeholder queue wording', result, '拿到可靠结果再说')
+    checkSentExcludes(t, 'scenario time-sensitive free web_search does not expose backend completion promise', result, '完成后会自动发回结果')
+    checkSentExcludes(t, 'scenario time-sensitive free web_search does not expose backend execution wording', result, 'Agent 已提交后台执行')
     t.check('scenario time-sensitive free web_search does not execute search in entry process', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
     t.check('scenario time-sensitive free web_search queues without model calls', calls.length === 0 && mocked.calls.length === 0, `calls=${calls.length} mocked=${mocked.calls.length}`)
     const tasks = listScenarioAgentTasks()
@@ -573,7 +595,8 @@ async function run(t) {
         return '已搜索：最近比较火的视频\n搜索结果：搞笑整活视频'
       }
     },
-    waitFor: message => String(message).includes('完成后会自动发回结果'),
+    waitUntil: () => listScenarioAgentTasks().length === 1,
+    waitFor: null,
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -586,7 +609,10 @@ async function run(t) {
   await runChatCase(t, 'explicit URL fetch submits Agent web_fetch task', [
     { json: { choices: [{ message: { content: 'unused-fetch-agent' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario explicit URL fetch sends queue message', result, '完成后会自动发回结果')
+    t.check('scenario explicit URL fetch keeps entry silent while queueing task', result.sent.length === 0, `sent=${JSON.stringify(result.sent)}`)
+    checkSentExcludes(t, 'scenario explicit URL fetch does not expose placeholder queue wording', result, '拿到可靠结果再说')
+    checkSentExcludes(t, 'scenario explicit URL fetch does not expose backend completion promise', result, '完成后会自动发回结果')
+    checkSentExcludes(t, 'scenario explicit URL fetch does not expose backend execution wording', result, 'Agent 已提交后台执行')
     t.check('scenario explicit URL fetch does not execute fetch in entry process', !Array.isArray(session._webFetchCalls) || session._webFetchCalls.length === 0, JSON.stringify(session._webFetchCalls || []))
     t.check('scenario explicit URL fetch queues without model calls', calls.length === 0 && mocked.calls.length === 0, `calls=${calls.length} mocked=${mocked.calls.length}`)
     const tasks = listScenarioAgentTasks()
@@ -620,7 +646,8 @@ async function run(t) {
         }
       }
     },
-    waitFor: message => String(message).includes('完成后会自动发回结果'),
+    waitUntil: () => listScenarioAgentTasks().length === 1,
+    waitFor: null,
   })
   try {
     const webFetch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-fetch.js'))
@@ -668,10 +695,11 @@ async function run(t) {
   await runChatCase(t, 'QQ Agent queues direct mode worker payload', [
     { json: { choices: [{ message: { content: 'unused-agent-direct-raw' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario QQ Agent direct mode submits worker task', result, 'Agent 已提交后台执行')
-    checkSentIncludes(t, 'scenario QQ Agent direct mode returns task id', result, '任务 ID')
-    checkSentIncludes(t, 'scenario QQ Agent direct mode promises async result', result, '完成后会自动发回结果')
-    t.check('scenario QQ Agent direct mode sends one queue QQ message', result.sent.length === 1, `sent=${JSON.stringify(result.sent)}`)
+    t.check('scenario QQ Agent direct mode keeps entry silent while queueing task', result.sent.length === 0, `sent=${JSON.stringify(result.sent)}`)
+    checkSentExcludes(t, 'scenario QQ Agent direct mode does not expose placeholder queue wording', result, '拿到可靠结果再说')
+    checkSentExcludes(t, 'scenario QQ Agent direct mode does not expose task id', result, '任务 ID')
+    checkSentExcludes(t, 'scenario QQ Agent direct mode does not expose backend completion promise', result, '完成后会自动发回结果')
+    checkSentExcludes(t, 'scenario QQ Agent direct mode does not expose backend execution wording', result, 'Agent 已提交后台执行')
     checkSentExcludes(t, 'scenario QQ Agent direct mode does not send raw agent reply', result, 'agent-direct-raw')
     checkSentExcludes(t, 'scenario QQ Agent direct mode does not send old chat retell', result, 'agent-persona-retold')
     t.check('scenario QQ Agent direct mode queues without model calls in entry process', calls.length === 0 && mocked.calls.length === 0, `calls=${calls.length} mocked=${mocked.calls.length}`)
@@ -717,7 +745,7 @@ async function run(t) {
       const chatModule = require(path.join(AI_ROOT, 'lib', 'chat.js'))
       await chatModule.loadSkillsContentCache()
     },
-    waitFor: message => String(message).includes('完成后会自动发回结果'),
+    waitFor: null,
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -730,7 +758,11 @@ async function run(t) {
   await runChatCase(t, 'QQ Agent direct mode queues without serializing persona', [
     { json: { choices: [{ message: { content: 'unused-agent-no-persona-raw' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario QQ Agent persona case submits worker task', result, '完成后会自动发回结果')
+    t.check('scenario QQ Agent persona case keeps entry silent while queueing task', result.sent.length === 0, `sent=${JSON.stringify(result.sent)}`)
+    checkSentExcludes(t, 'scenario QQ Agent persona case does not expose placeholder queue wording', result, '拿到可靠结果再说')
+    checkSentExcludes(t, 'scenario QQ Agent persona case does not expose task id', result, '任务 ID')
+    checkSentExcludes(t, 'scenario QQ Agent persona case does not expose backend completion promise', result, '完成后会自动发回结果')
+    checkSentExcludes(t, 'scenario QQ Agent persona case does not expose backend execution wording', result, 'Agent 已提交后台执行')
     checkSentExcludes(t, 'scenario QQ Agent persona case does not send raw agent reply', result, 'agent-no-persona-raw')
     checkSentExcludes(t, 'scenario QQ Agent persona case does not send old chat retell', result, 'agent-chat-persona-ok')
     t.check('scenario QQ Agent persona case queues without model calls in entry process', calls.length === 0 && mocked.calls.length === 0, `calls=${calls.length} mocked=${mocked.calls.length}`)
@@ -777,7 +809,8 @@ async function run(t) {
       persona.loadPersonaUsers()
       persona.loadPersonaGroups()
     },
-    waitFor: message => String(message).includes('完成后会自动发回结果'),
+    waitUntil: () => listScenarioAgentTasks().length === 1,
+    waitFor: null,
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -844,7 +877,11 @@ async function run(t) {
   await runChatCase(t, 'QQ Agent skill prompt queues compact-index worker task', [
     { json: { choices: [{ message: { content: 'unused-agent-skill-index-raw' } }] } },
   ], async (result, mocked, session, calls, data) => {
-    checkSentIncludes(t, 'scenario QQ Agent skill prompt submits worker task', result, '完成后会自动发回结果')
+    t.check('scenario QQ Agent skill prompt keeps entry silent while queueing task', result.sent.length === 0, `sent=${JSON.stringify(result.sent)}`)
+    checkSentExcludes(t, 'scenario QQ Agent skill prompt does not expose placeholder queue wording', result, '拿到可靠结果再说')
+    checkSentExcludes(t, 'scenario QQ Agent skill prompt does not expose task id', result, '任务 ID')
+    checkSentExcludes(t, 'scenario QQ Agent skill prompt does not expose backend completion promise', result, '完成后会自动发回结果')
+    checkSentExcludes(t, 'scenario QQ Agent skill prompt does not expose backend execution wording', result, 'Agent 已提交后台执行')
     checkSentExcludes(t, 'scenario QQ Agent skill prompt does not send raw agent reply', result, 'agent-skill-index-raw')
     checkSentExcludes(t, 'scenario QQ Agent skill prompt does not send old chat retell', result, 'agent-skill-index-ok')
     t.check('scenario QQ Agent skill prompt queues without model calls in entry process', calls.length === 0 && mocked.calls.length === 0, `calls=${calls.length} mocked=${mocked.calls.length}`)
@@ -891,7 +928,8 @@ async function run(t) {
         readFileRoots: [],
       })
     },
-    waitFor: message => String(message).includes('完成后会自动发回结果'),
+    waitUntil: () => listScenarioAgentTasks().length === 1,
+    waitFor: null,
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))

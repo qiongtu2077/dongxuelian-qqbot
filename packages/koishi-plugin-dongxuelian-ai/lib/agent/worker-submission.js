@@ -78,16 +78,18 @@ function formatNaturalBlockedMessage(directive, admission) {
 }
 // 返回用户可见的提交成功提示。
 function formatAcceptedMessage(task, directiveOrAdmission, admissionOrMode, modeArg = 'normal') {
-    const mode = admissionOrMode === 'quiet' || admissionOrMode === 'normal' ? admissionOrMode : modeArg;
-    const directive = admissionOrMode === 'quiet' || admissionOrMode === 'normal'
+    const mode = admissionOrMode === 'quiet' || admissionOrMode === 'normal' || admissionOrMode === 'silent' ? admissionOrMode : modeArg;
+    const directive = admissionOrMode === 'quiet' || admissionOrMode === 'normal' || admissionOrMode === 'silent'
         ? null
         : directiveOrAdmission;
-    const admission = admissionOrMode === 'quiet' || admissionOrMode === 'normal'
+    const admission = admissionOrMode === 'quiet' || admissionOrMode === 'normal' || admissionOrMode === 'silent'
         ? directiveOrAdmission
         : admissionOrMode;
     const taskId = String(task?.id || '');
     const action = resolveAgentDirectiveAction(directive, admission);
     const prefix = action === 'queue' ? 'Agent 已加入资源队列' : 'Agent 已提交后台执行';
+    if (mode === 'silent')
+        return '';
     if (mode === 'quiet')
         return `我先去后台查一下，拿到可靠结果再说。${taskId ? `任务 ID：${taskId}。` : ''}`;
     return `${prefix}，任务 ID：${taskId}。完成后会自动发回结果。`;
@@ -99,7 +101,11 @@ function submitAgentWorkerTask(options) {
     const channelKey = String(options.channelKey || '');
     const userId = String(options.userId || '');
     const notifyTarget = options.notifyTarget || (channel === 'dashboard' ? 'dashboard' : 'qq-group');
-    const acceptedMessageMode = options.acceptedMessageMode === 'quiet' ? 'quiet' : 'normal';
+    const acceptedMessageMode = options.acceptedMessageMode === 'silent'
+        ? 'silent'
+        : options.acceptedMessageMode === 'quiet'
+            ? 'quiet'
+            : 'normal';
     const blockedMessageMode = options.blockedMessageMode === 'natural' ? 'natural' : 'system';
     const maxActivePerUser = Math.max(1, Math.min(10, Number(options.maxActivePerUser || 1)));
     const timeoutMs = resolveAgentTaskTimeoutMs(options.timeoutMs);

@@ -45,6 +45,17 @@ function assertNoPromptLeak(t, label, replyText) {
     replyText.slice(0, 300))
 }
 
+// 静默受理契约：触发搜索/Agent 队列后，入口绝不向用户发占位垃圾话。
+// 用户原始 bug 就是 "我先去后台查一下，拿到可靠结果再说" 与 "完成后会自动发回结果" 这类占位回复，
+// 真正结果由 worker 完成后经 notifier→chat 人格转述发回，入口阶段保持沉默。
+function assertSilentQueueNoPlaceholder(t, label, sentMessages) {
+  const joined = (Array.isArray(sentMessages) ? sentMessages : [sentMessages]).join(' ')
+  t.check(`${label} entry stays silent (no placeholder garbage)`,
+    !joined.includes('拿到可靠结果再说') && !joined.includes('完成后会自动发回结果') &&
+    !joined.includes('我先去后台查一下') && !joined.includes('Agent 未获取'),
+    JSON.stringify({ sent: sentMessages }))
+}
+
 function listE2eAgentTasks(statuses = ['pending', 'claiming', 'running', 'deferred', 'failed', 'done']) {
   const taskStore = require(path.join(AI_ROOT, 'lib', 'resource-workers', 'task-store.js'))
   return taskStore.listResourceTasks({ statuses, limit: 50 }).filter(task => task.kind === 'agent_task')
@@ -170,11 +181,12 @@ async function run(t) {
       const session = makeSession({ userId: 'fail-user', guildId: '10001', channelId: '10001', selfId: '90000' })
       session.content = atBot(session, '今天怎么样')
       const result = await run(session, { flushTicks: 120 })
-      await session.waitForSend(() => true, 5000)
       const replyText = session.sent.join(' ')
       assertNoEmptyAgentReply(t, 'reasoning-only fallback', replyText)
       assertNoReasoningLeak(t, 'reasoning-only fallback', replyText)
-      t.check('reasoning-only current query queues or uses fallback call', replyText.includes('完成后会自动发回结果') ? mocked.calls.length === 0 : mocked.calls.length >= 2, `reply=${replyText} calls=${mocked.calls.length}`)
+      // 静默契约：当前性问题被 chat-heavy-tool 静默入队时，入口不发占位话；
+      // 若没入队而是普通聊天回复，则该回复也不能是占位垃圾话。
+      assertSilentQueueNoPlaceholder(t, 'reasoning-only current query', session.sent)
     })
   })
 
@@ -217,8 +229,8 @@ async function run(t) {
         })
         session.content = '我想看我的世界的搞笑视频'
         await run(session, { flushTicks: 120 })
-        await session.waitForSend(message => String(message).includes('完成后会自动发回结果'), 10000)
         const replyText = session.sent.join(' ')
+        assertSilentQueueNoPlaceholder(t, 'mocked private search', session.sent)
         t.check('mocked private search queues without entry web_search', searchCalls.length === 0 && mocked.calls.length === 0, JSON.stringify({ searchCalls, calls: mocked.calls.length }))
         const tasks = listE2eAgentTasks()
         const task = tasks.find(item =>
@@ -305,8 +317,8 @@ async function run(t) {
         const session = makeSession({ userId: 'group-user', guildId: '10001', channelId: '10001', selfId: '90000' })
         session.content = atBot(session, '最近有什么比较火的视频，给我推荐几个')
         await run(session, { flushTicks: 160 })
-        await session.waitForSend(message => String(message).includes('完成后会自动发回结果'), 10000)
         const replyText = session.sent.join(' ')
+        assertSilentQueueNoPlaceholder(t, 'mocked group fuzzy search', session.sent)
         t.check('mocked group fuzzy search queues without entry web_search', searchCalls.length === 0 && mocked.calls.length === 0, JSON.stringify({ searchCalls, calls: mocked.calls.length }))
         const tasks = listE2eAgentTasks()
         const task = tasks[0] || {}
@@ -345,9 +357,8 @@ async function run(t) {
         const session = makeSession({ userId: 'ok-user', guildId: '10001', channelId: '10001', selfId: '90000' })
         session.content = atBot(session, '调用web_search查鸣潮最新角色是谁')
         const result = await run(session, { flushTicks: 120 })
-        await session.waitForSend(message => String(message).includes('完成后会自动发回结果'), 10000)
         const replyText = session.sent.join(' ')
-        t.check('mocked explicit search sends queue reply', session.sent.length > 0 && replyText.includes('任务 ID'))
+        assertSilentQueueNoPlaceholder(t, 'mocked explicit search', session.sent)
         assertNoEmptyAgentReply(t, 'mocked explicit search', replyText)
         assertNoReasoningLeak(t, 'mocked explicit search', replyText)
         t.check('mocked explicit search does not execute search in entry process', searchCalls.length === 0 && mocked.calls.length === 0, JSON.stringify({ searchCalls, calls: mocked.calls.length }))
@@ -408,9 +419,8 @@ async function run(t) {
         const session = makeSession({ userId: 'ok-user', guildId: '10001', channelId: '10001', selfId: '90000' })
         session.content = atBot(session, '调用web_search查测试搜索')
         const result = await run(session, { flushTicks: 120 })
-        await session.waitForSend(message => String(message).includes('完成后会自动发回结果'), 10000)
         const replyText = session.sent.join(' ')
-        t.check('mocked http extraction sends queue reply', session.sent.length > 0 && replyText.includes('任务 ID'))
+        assertSilentQueueNoPlaceholder(t, 'mocked http extraction', session.sent)
         assertNoEmptyAgentReply(t, 'mocked http extraction', replyText)
         assertNoReasoningLeak(t, 'mocked http extraction', replyText)
         const tasks = listE2eAgentTasks()
@@ -494,10 +504,11 @@ async function run(t) {
         const session = makeSession({ userId: 'fail-user', guildId: '10001', channelId: '10001', selfId: '90000' })
         session.content = atBot(session, '调用web_search查不存在的东西')
         const result = await run(session, { flushTicks: 120 })
-        await session.waitForSend(message => String(message).includes('完成后会自动发回结果'), 10000)
         const replyText = session.sent.join(' ')
+        assertSilentQueueNoPlaceholder(t, 'search failure response', session.sent)
         assertNoEmptyAgentReply(t, 'search failure response', replyText)
-        t.check('search failure is deferred without fabricating', searchCalls.length === 0 && replyText.includes('任务 ID') && !replyText.includes('可靠结果') && !replyText.includes('编造'), JSON.stringify({ replyText, searchCalls }))
+        const tasks = listE2eAgentTasks()
+        t.check('search failure is deferred without fabricating final answer', searchCalls.length === 0 && mocked.calls.length === 0 && tasks.length === 1 && !replyText.includes('绯雪') && !replyText.includes('编造'), JSON.stringify({ replyText, searchCalls, tasks: tasks.length }))
       } finally {
         webSearch.execute = originalExecute
       }

@@ -610,7 +610,7 @@ export default {
         if (!res.ok || !data.ok) throw new Error(messageFromData(data, '确认失败'))
         const taskId = typeof data.taskId === 'string' ? data.taskId : ''
         if (taskId) {
-          const task = await pollAgentTask(taskId, getAgentReply(data, '工具确认已提交后台执行。'))
+          const task = await pollAgentTask(taskId, getAgentReply(data, '这个工具我先放去后台处理，拿到结果再告诉你。'))
           pushAssistant(getAgentTaskReply(task, '工具确认任务已结束，但没有返回文本。'))
           pendingId.value = typeof task?.result?.pendingId === 'string' ? task.result.pendingId : ''
         } else {
@@ -669,7 +669,7 @@ export default {
         if (!res.ok || !data.ok) throw new Error(messageFromData(data, '发送失败'))
         const taskId = typeof data.taskId === 'string' ? data.taskId : ''
         if (taskId) {
-          const task = await pollAgentTask(taskId, getAgentReply(data, 'Agent 已提交后台执行。'))
+          const task = await pollAgentTask(taskId, getAgentReply(data, '我先去后台查一下，拿到可靠结果再说。'))
           pushAssistant(getAgentTaskReply(task, 'Agent 任务已结束，但没有返回文本。'))
           pendingId.value = typeof task?.result?.pendingId === 'string' ? task.result.pendingId : ''
         } else {

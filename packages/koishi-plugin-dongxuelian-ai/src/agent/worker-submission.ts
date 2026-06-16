@@ -16,7 +16,7 @@ interface SubmitAgentWorkerTaskOptions {
   timeoutMs?: number
   maxActivePerUser?: number
   notifyTarget?: 'qq-group' | 'dashboard' | 'none' | string
-  acceptedMessageMode?: 'normal' | 'quiet'
+  acceptedMessageMode?: 'normal' | 'quiet' | 'silent'
   blockedMessageMode?: 'system' | 'natural'
   payload: Record<string, unknown>
 }
@@ -133,19 +133,20 @@ function formatNaturalBlockedMessage(directive: ResourceDirectiveLike | null | u
 function formatAcceptedMessage(
   task: ResourceTaskLike | null | undefined,
   directiveOrAdmission: ResourceDirectiveLike | AdmissionDecisionLike | null | undefined,
-  admissionOrMode: AdmissionDecisionLike | 'normal' | 'quiet' | null | undefined,
-  modeArg: 'normal' | 'quiet' = 'normal'
+  admissionOrMode: AdmissionDecisionLike | 'normal' | 'quiet' | 'silent' | null | undefined,
+  modeArg: 'normal' | 'quiet' | 'silent' = 'normal'
 ): string {
-  const mode = admissionOrMode === 'quiet' || admissionOrMode === 'normal' ? admissionOrMode : modeArg
-  const directive = admissionOrMode === 'quiet' || admissionOrMode === 'normal'
+  const mode = admissionOrMode === 'quiet' || admissionOrMode === 'normal' || admissionOrMode === 'silent' ? admissionOrMode : modeArg
+  const directive = admissionOrMode === 'quiet' || admissionOrMode === 'normal' || admissionOrMode === 'silent'
     ? null
     : directiveOrAdmission as ResourceDirectiveLike | null | undefined
-  const admission = admissionOrMode === 'quiet' || admissionOrMode === 'normal'
+  const admission = admissionOrMode === 'quiet' || admissionOrMode === 'normal' || admissionOrMode === 'silent'
     ? directiveOrAdmission as AdmissionDecisionLike | null | undefined
     : admissionOrMode
   const taskId = String(task?.id || '')
   const action = resolveAgentDirectiveAction(directive, admission)
   const prefix = action === 'queue' ? 'Agent 已加入资源队列' : 'Agent 已提交后台执行'
+  if (mode === 'silent') return ''
   if (mode === 'quiet') return `我先去后台查一下，拿到可靠结果再说。${taskId ? `任务 ID：${taskId}。` : ''}`
   return `${prefix}，任务 ID：${taskId}。完成后会自动发回结果。`
 }
@@ -157,7 +158,11 @@ function submitAgentWorkerTask(options: SubmitAgentWorkerTaskOptions): AgentWork
   const channelKey = String(options.channelKey || '')
   const userId = String(options.userId || '')
   const notifyTarget = options.notifyTarget || (channel === 'dashboard' ? 'dashboard' : 'qq-group')
-  const acceptedMessageMode = options.acceptedMessageMode === 'quiet' ? 'quiet' : 'normal'
+  const acceptedMessageMode = options.acceptedMessageMode === 'silent'
+    ? 'silent'
+    : options.acceptedMessageMode === 'quiet'
+      ? 'quiet'
+      : 'normal'
   const blockedMessageMode = options.blockedMessageMode === 'natural' ? 'natural' : 'system'
   const maxActivePerUser = Math.max(1, Math.min(10, Number(options.maxActivePerUser || 1)))
   const timeoutMs = resolveAgentTaskTimeoutMs(options.timeoutMs)

@@ -848,6 +848,7 @@ function handlePostAgentChat(req, res) {
                 userId: String(data.userId || 'dashboard'),
                 timeoutMs: agentConfig.queue?.timeoutMs,
                 maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+                acceptedMessageMode: 'quiet',
                 source: 'dashboard-standalone',
                 payload: { entry: 'dashboard-agent-chat', agentWorker: agentPayload.createAgentRunWorkerPayload('dashboard-agent-chat', agentRunInput) },
             });
@@ -891,6 +892,7 @@ function handlePostAgentConfirm(req, res) {
                 userId: p.userId,
                 timeoutMs: agentConfig.queue?.timeoutMs,
                 maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+                acceptedMessageMode: 'quiet',
                 source: 'dashboard-standalone',
                 payload: { entry: 'dashboard-agent-confirm', pendingId: expectedId, agentWorker: agentPayload.createAgentResumeWorkerPayload('dashboard-agent-confirm', resumeInput, pendingSnapshot) },
             });

@@ -76,8 +76,55 @@ function checkManagedThinkingDisabled(t, label, requestBody, step) {
   t.skip(label, `no disabled-thinking assertion for provider=${step.provider} model=${step.model}`)
 }
 
+// 真实失败输入复现：模型在 MAX_ROUNDS(5) 轮内每轮都返回 tool_calls、从不返回纯文本，
+// 旧逻辑会让 engine 返回空 reply，下游显示“(Agent 未获取到有效回复)”。
+// 修复后：轮次耗尽且已有工具结果时，强制做一次「禁用工具」的合成调用，必须产出非空回答。
+async function runRoundExhaustionSynthesis(t) {
+  const toolCallResponse = {
+    json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-time', type: 'function', function: { name: 'get_current_time', arguments: '{}' } }] } }] },
+  }
+  await withScenario({}, async () => {
+    const originalFetch = global.fetch
+    const originalWarn = console.warn
+    // 5 轮全部要求调用工具（永不收口），第 6 次是收尾合成调用，返回最终文本。
+    const mocked = mockFetch([
+      toolCallResponse,
+      toolCallResponse,
+      toolCallResponse,
+      toolCallResponse,
+      toolCallResponse,
+      { json: { choices: [{ message: { content: '现在是中午12点整（基于已查询到的时间结果）。' } }] } },
+    ])
+    global.fetch = mocked.fetch
+    console.warn = () => {}
+    try {
+      const engine = require(path.join(AI_ROOT, 'lib', 'agent', 'engine.js'))
+      const result = await engine.run({
+        userMessage: '现在几点了',
+        userName: '验证测试',
+        userId: 'u-round-exhaust',
+        channelKey: 'g-round-exhaust',
+        channel: 'qq',
+        agentMode: true,
+      })
+      t.check('round-exhaustion synthesis produces non-empty reply', typeof result.reply === 'string' && result.reply.trim().length > 0, JSON.stringify({ reply: result.reply, toolCalls: result.toolCalls }))
+      t.check('round-exhaustion synthesis returns synthesized text not placeholder', result.reply.includes('现在是中午12点整') && !result.reply.includes('未获取到有效回复'), result.reply)
+      t.checkEqual('round-exhaustion ran exactly MAX_ROUNDS + 1 synthesis calls', mocked.calls.length, 6)
+      const synthCall = mocked.calls[5]
+      t.check('round-exhaustion synthesis call disables tools', synthCall && (!synthCall.requestBody.tools || synthCall.requestBody.tools.length === 0), JSON.stringify(synthCall ? Object.keys(synthCall.requestBody) : null))
+      t.check('round-exhaustion earlier rounds did expose tools', Array.isArray(mocked.calls[0].requestBody.tools) && mocked.calls[0].requestBody.tools.length > 0, JSON.stringify(Object.keys(mocked.calls[0].requestBody)))
+    } finally {
+      global.fetch = originalFetch
+      console.warn = originalWarn
+      delete require.cache[require.resolve(path.join(AI_ROOT, 'lib', 'agent', 'engine.js'))]
+    }
+  })
+}
+
 async function run(t) {
   t.section('scenario: API fallback chain')
+
+  await runRoundExhaustionSynthesis(t)
 
   await withApi(t, [
     { status: 429, text: 'rate limited' },

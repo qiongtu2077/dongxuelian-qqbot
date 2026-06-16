@@ -8,7 +8,7 @@ interface SubmitAgentWorkerTaskOptions {
     timeoutMs?: number;
     maxActivePerUser?: number;
     notifyTarget?: 'qq-group' | 'dashboard' | 'none' | string;
-    acceptedMessageMode?: 'normal' | 'quiet';
+    acceptedMessageMode?: 'normal' | 'quiet' | 'silent';
     blockedMessageMode?: 'system' | 'natural';
     payload: Record<string, unknown>;
 }
@@ -33,7 +33,7 @@ interface ResourceDirectiveLike {
 }
 declare function countActiveAgentWorkerTasks(kind: string, channelKey: string, userId: string, limit?: number): number;
 declare function formatNaturalBlockedMessage(directive: ResourceDirectiveLike | null | undefined, admission: AdmissionDecisionLike | null | undefined): string;
-declare function formatAcceptedMessage(task: ResourceTaskLike | null | undefined, directiveOrAdmission: ResourceDirectiveLike | AdmissionDecisionLike | null | undefined, admissionOrMode: AdmissionDecisionLike | 'normal' | 'quiet' | null | undefined, modeArg?: 'normal' | 'quiet'): string;
+declare function formatAcceptedMessage(task: ResourceTaskLike | null | undefined, directiveOrAdmission: ResourceDirectiveLike | AdmissionDecisionLike | null | undefined, admissionOrMode: AdmissionDecisionLike | 'normal' | 'quiet' | 'silent' | null | undefined, modeArg?: 'normal' | 'quiet' | 'silent'): string;
 declare function submitAgentWorkerTask(options: SubmitAgentWorkerTaskOptions): AgentWorkerSubmissionResult;
 declare const _default: {
     submitAgentWorkerTask: typeof submitAgentWorkerTask;

@@ -12,6 +12,8 @@ const { getTaskResultDir } = require('./task-paths');
 const { guardAgentRetellReply, hasSearchFailureMaterial, redactAgentMaterial, } = require('../chat/agent-retell-guard');
 const FAILED_NOTIFY_RETRY_COOLDOWN_MS = Math.max(1000, Math.min(30 * 60 * 1000, Number(process.env.RESOURCE_NOTIFY_FAILED_RETRY_COOLDOWN_MS || 60000)));
 const AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE = /(?:搜索状态：weak_hit|weak_hit|弱命中|正文质量：(?:short|empty|garbage|error|unknown)|未读到可用正文|未打开候选网页正文|不能作为事实依据)/i;
+const AGENT_NOTIFY_SEARCH_SUCCESS_RE = /(?:搜索状态：usable_hit|已打开候选网页正文|正文质量：usable|已用 web_fetch 验证正文|已读取网页：)/i;
+const EMPTY_AGENT_REPLY_RE = /^\(Agent 未获取到有效回复\)/i;
 // 读取任务 result.json，缺失时返回空对象。
 function readTaskResult(taskId) {
     const file = path.join(getTaskResultDir(taskId), 'result.json');
@@ -96,7 +98,8 @@ function hasHardSearchFailureSignal(result) {
         if (item?.result)
             parts.push(String(item.result));
     }
-    return AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE.test(parts.join('\n'));
+    const material = parts.join('\n');
+    return AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE.test(material) && !AGENT_NOTIFY_SEARCH_SUCCESS_RE.test(material);
 }
 // 判断任务是否来自普通聊天自动触发的 heavy tool。
 function isChatHeavyToolTask(task) {
@@ -105,7 +108,8 @@ function isChatHeavyToolTask(task) {
 }
 // 判断 result 是否有值得发给群的正文。
 function hasAgentSendableText(result) {
-    return !!String(result.reply || result.message || '').trim();
+    const text = String(result.reply || result.message || '').trim();
+    return !!text && !EMPTY_AGENT_REPLY_RE.test(text);
 }
 function resolveNotifierTarget(target) {
     const text = String(target || '').trim();
@@ -204,6 +208,8 @@ function buildAgentTaskTextMessage(result, task = null) {
         message: result.message,
         toolResults: Array.isArray(result.toolResults) ? result.toolResults.slice(0, 20) : [],
     };
+    if (!hasAgentSendableText(result))
+        return '';
     if (hasHardSearchFailureSignal(agentResult) || hasSearchFailureMaterial(agentResult))
         return `这次搜索没有拿到可靠结果，不能据此下结论。${suffix}`.slice(0, 4000);
     const safeReply = guardAgentRetellReply(redactAgentMaterial(reply), agentResult, {
@@ -211,10 +217,35 @@ function buildAgentTaskTextMessage(result, task = null) {
     });
     return `${safeReply || fallback}${suffix}`.slice(0, 4000);
 }
+// Extract session info from task.payload.agentWorker for retellAgentResult.
+function extractSessionFromPayload(task) {
+    const payload = task && typeof task.payload === 'object' && task.payload ? task.payload : {};
+    const agentWorker = payload.agentWorker && typeof payload.agentWorker === 'object' ? payload.agentWorker : {};
+    const engineInput = agentWorker.engineInput && typeof agentWorker.engineInput === 'object' ? agentWorker.engineInput : {};
+    const channelKey = String(engineInput.channelKey || task?.channelKey || payload.channelKey || '');
+    const userId = String(engineInput.userId || task?.userId || payload.userId || '');
+    const userName = String(engineInput.userName || payload.userName || '');
+    const userText = String(engineInput.userMessage || payload.userMessage || '');
+    const isDirect = /^private:/i.test(channelKey);
+    const session = {
+        guildId: isDirect ? undefined : channelKey,
+        channelId: channelKey,
+        isDirect,
+        userId,
+        username: userName,
+    };
+    return { session, channelKey, userId, userName, userText };
+}
 // Construct a sender for standalone QQ Agent worker results.
 function createAgentTaskSender(options = {}) {
     const bot = options.bot || null;
     const logger = options.logger || null;
+    // Type assertions for external dependencies - these are safe because the
+    // caller (plugin-lifecycle.ts) passes the actual functions from chat.ts
+    // and chat-result-flow.ts, which have compatible signatures.
+    const ctx = options.ctx;
+    const chatFn = options.chat;
+    const retellAgentResultFn = options.retellAgentResult;
     return async (task, result) => {
         if (String(task?.kind || '') !== 'agent_task')
             return false;
@@ -227,6 +258,44 @@ function createAgentTaskSender(options = {}) {
                 logger.info(`chat-heavy-tool notify skipped empty result: task=${task.id}, target=${target}`);
             return true;
         }
+        // Try retellAgentResult for persona retelling when dependencies are available
+        if (ctx && chatFn && retellAgentResultFn) {
+            const { session, channelKey, userId, userName, userText } = extractSessionFromPayload(task);
+            if (channelKey && userId && userText) {
+                const agentResult = {
+                    reply: result.reply,
+                    toolResults: Array.isArray(result.toolResults) ? result.toolResults.slice(0, 20) : [],
+                    toolCalls: result.toolCalls,
+                    pendingId: result.pendingId,
+                };
+                try {
+                    const retoldText = await retellAgentResultFn(agentResult, {
+                        ctx,
+                        session,
+                        channelKey,
+                        currentUserId: userId,
+                        userName: userName || '用户',
+                        userText,
+                        chat: chatFn,
+                    });
+                    const finalText = String(retoldText || '').trim();
+                    if (finalText) {
+                        const pendingId = String(result.pendingId || '');
+                        const suffix = pendingId ? `\n\n需要确认的工具 ID: ${pendingId}` : '';
+                        const textToSend = `${finalText}${suffix}`.slice(0, 4000);
+                        await sendNotifierText(bot, target, textToSend);
+                        if (logger)
+                            logger.info(`agent task retold text notified: task=${task.id}, target=${target}`);
+                        return true;
+                    }
+                }
+                catch (error) {
+                    if (logger)
+                        logger.warn(`agent task retell failed, falling back to guard: task=${task.id}, error=${getNotifierErrorMessage(error)}`);
+                }
+            }
+        }
+        // Fallback: original guardAgentRetellReply + redactAgentMaterial path
         const text = buildAgentTaskTextMessage(result, task);
         if (!text.trim()) {
             if (logger)
@@ -324,6 +393,7 @@ module.exports = {
     isChatHeavyToolTask,
     hasAgentSendableText,
     buildAgentTaskTextMessage,
+    extractSessionFromPayload,
     createDailyReportSender,
     createAgentTaskSender,
     createEmotionRenderSender,

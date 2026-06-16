@@ -41,6 +41,7 @@ async function handleAgentAutoRoute({ ctx, liveSession, channelKey, currentUserI
             userId: currentUserId,
             timeoutMs: agentConfig.queue?.timeoutMs,
             maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
+            acceptedMessageMode: 'silent',
             blockedMessageMode: 'natural',
             payload: { entry: 'qq-auto-route', reason: route.reason || '', agentWorker: createAgentRunWorkerPayload('qq-auto-route', agentRunInput) },
         });
