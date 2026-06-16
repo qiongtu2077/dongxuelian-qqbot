@@ -9,7 +9,7 @@ const { trimChannelRuntimeCaches, cleanupDailyStatsFiles, } = require('../conver
 const { todayCst } = require('../core/utils');
 const { logDebug } = require('../core/logging-config');
 const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds');
-const { countResourceTasks } = require('../resource-workers/task-store');
+const { countResourceTasks, cleanupFinishedTasks } = require('../resource-workers/task-store');
 const { submitExpressionHarvestTask, } = require('../resource-workers/background-llm-submission');
 const { planDailySlotTasks } = require('../daily-precompute/daily-slot-planner');
 const { listDailyCoverage } = require('../daily-precompute/precompute-status');
@@ -31,7 +31,8 @@ function scheduleDailyStatsCleanup(ctx) {
         try {
             const result = await cleanupDailyStatsFiles();
             trimChannelRuntimeCaches();
-            logDebug(ctx, 'cleanup', `daily stats cleanup removed=${result.removed} compacted=${result.compacted}`);
+            const gc = cleanupFinishedTasks();
+            logDebug(ctx, 'cleanup', `daily stats cleanup removed=${result.removed} compacted=${result.compacted} tasksRemoved=${gc.removed} resultsRemoved=${gc.resultsRemoved} orphanResults=${gc.orphanResultsRemoved}`);
         }
         catch (error) {
             ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${getStartupSchedulerErrorMessage(error)}`);

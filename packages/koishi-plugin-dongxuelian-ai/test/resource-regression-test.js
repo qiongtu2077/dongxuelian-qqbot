@@ -122,6 +122,69 @@ run().catch(error => {
   check('notifier writes back to the scanned done entity, not failed copy', summary.doneNotifyStatus === 'skipped', JSON.stringify(summary))
 }
 
+// === Scenario 1c: 终态任务回收 — cleanupFinishedTasks 删旧 done/result + 孤儿，保留近期 ===
+// 命门：done/failed/cancelled 任务文件与 result 目录无运行时 GC，长期累积拖慢全表扫描并占盘。
+// 本测试造「4 天前 done + result」「1 小时前 done + result」「孤儿 result（无任务文件）」，
+// 跑 cleanupFinishedTasks(retentionDays=3)，断言旧的连同 result 被删、近的保留、孤儿被清。
+function testCleanupFinishedTasksRemovesAgedAndOrphans() {
+  const dataDir = createTempDataDir('resource-regress-gc-')
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+const taskStore = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+const taskPaths = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-paths')
+
+taskStore.ensureTaskDirs()
+const now = Date.now()
+const dayMs = 24 * 60 * 60 * 1000
+
+function writeDone(taskId, kind, finishedAt) {
+  const file = taskPaths.getTaskFile('done', kind, taskId)
+  fs.writeFileSync(file, JSON.stringify({
+    id: taskId, kind, status: 'done', source: 'test', channelKey: '', userId: '', priority: 70,
+    createdAt: new Date(finishedAt).toISOString(), updatedAt: new Date(finishedAt).toISOString(),
+    finishedAt: new Date(finishedAt).toISOString(), expiresAt: '', timeoutMs: 120000, payload: {}, notify: { target: 'none', status: 'skipped' },
+  }))
+  const resultDir = taskPaths.getTaskResultDir(taskId)
+  fs.mkdirSync(resultDir, { recursive: true })
+  fs.writeFileSync(path.join(resultDir, 'result.json'), JSON.stringify({ taskId, ok: true }))
+  return { file, resultDir }
+}
+
+// 4 天前的旧任务（应删）
+const aged = writeDone('daily_slot-gc-aged-1', 'daily_slot', now - 4 * dayMs)
+// 1 小时前的近任务（应保留）
+const fresh = writeDone('daily_slot-gc-fresh-1', 'daily_slot', now - 60 * 60 * 1000)
+// 孤儿 result：只有 result 目录，没有任何任务文件（应删）
+const orphanDir = taskPaths.getTaskResultDir('daily_slot-gc-orphan-1')
+fs.mkdirSync(orphanDir, { recursive: true })
+fs.writeFileSync(path.join(orphanDir, 'result.json'), JSON.stringify({ taskId: 'daily_slot-gc-orphan-1', ok: true }))
+
+const gc = taskStore.cleanupFinishedTasks({ retentionDays: 3, now })
+
+const summary = {
+  removed: gc.removed,
+  resultsRemoved: gc.resultsRemoved,
+  orphanResultsRemoved: gc.orphanResultsRemoved,
+  agedTaskGone: !fs.existsSync(aged.file),
+  agedResultGone: !fs.existsSync(aged.resultDir),
+  freshTaskKept: fs.existsSync(fresh.file),
+  freshResultKept: fs.existsSync(fresh.resultDir),
+  orphanGone: !fs.existsSync(orphanDir),
+}
+console.log(JSON.stringify(summary, null, 2))
+process.exitCode = 0
+`
+  const summary = runScenario('S2 cleanupFinishedTasks scenario', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+  }, 30000)
+  if (!summary) return
+  check('cleanup removes aged done task file', summary.agedTaskGone && summary.removed >= 1, JSON.stringify(summary))
+  check('cleanup removes aged result dir', summary.agedResultGone && summary.resultsRemoved >= 1, JSON.stringify(summary))
+  check('cleanup keeps fresh done task and result', summary.freshTaskKept && summary.freshResultKept, JSON.stringify(summary))
+  check('cleanup removes orphan result dir', summary.orphanGone && summary.orphanResultsRemoved >= 1, JSON.stringify(summary))
+}
+
 // === Scenario 1b: S2 事件驱动 — fs.watch 监听 done 目录跨进程触发 notifier ===
 // 命门：worker 子进程把任务写入 tasks/done/，主进程的 in-process 回调收不到（无 IPC）。
 // 唯一主路径是 plugin-lifecycle 在 ready 时对 done 目录起 fs.watch；本测试把轮询间隔顶到
@@ -7048,6 +7111,7 @@ run().catch(error => {
 
 function main() {
   testNotifierNoDuplicateWriteback()
+  testCleanupFinishedTasksRemovesAgedAndOrphans()
   testDoneWatcherTriggersNotifierEventDriven()
   testPlannerSkipsUnderPressure()
   testMediaWorkerNoBusyLoop()

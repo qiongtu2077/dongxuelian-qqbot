@@ -551,6 +551,71 @@ function listWorkerStates() {
 function removeTaskFile(status, kind, taskId) {
     return removePath(getTaskFile(status, kind, taskId));
 }
+// 终态任务的回收：done/failed/cancelled 超过保留期的任务文件 + 其 result 目录一并删除，
+// 并清掉「任务文件早已不存在、只剩 result 目录」的孤儿。
+// 安全边界：默认保留 3 天，远大于 notifier 通知窗口，绝不会删到尚未推送的任务。
+function cleanupFinishedTasks(options = {}) {
+    ensureTaskDirs();
+    const retentionDays = Math.max(1, Number(options.retentionDays || process.env.RESOURCE_TASK_RETENTION_DAYS || 3));
+    const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
+    const maxScan = Math.max(1, Math.min(20000, Number(options.maxScan || 20000)));
+    const cutoff = now - retentionDays * 24 * 60 * 60 * 1000;
+    const result = { removed: 0, resultsRemoved: 0, orphanResultsRemoved: 0, scanned: 0 };
+    const liveTaskIds = new Set();
+    // 先扫所有活跃 + 未到期终态任务，记录仍存活的 taskId（用于孤儿判定）。
+    for (const status of ['pending', 'claiming', 'running', 'deferred', 'done', 'failed', 'cancelled']) {
+        const files = listJsonFiles(getTaskStatusDir(status), { recursive: status === 'pending', maxFiles: maxScan });
+        for (const file of files) {
+            const task = readTaskFile(file);
+            if (!task)
+                continue;
+            result.scanned += 1;
+            const isTerminal = status === 'done' || status === 'failed' || status === 'cancelled';
+            if (!isTerminal) {
+                liveTaskIds.add(task.id);
+                continue;
+            }
+            const stamp = Date.parse(String(task.finishedAt || task.updatedAt || task.createdAt || ''));
+            const age = Number.isFinite(stamp) ? stamp : now;
+            if (age >= cutoff) {
+                liveTaskIds.add(task.id);
+                continue;
+            }
+            if (removePath(file)) {
+                result.removed += 1;
+                if (removePath(getTaskResultDir(task.id)))
+                    result.resultsRemoved += 1;
+            }
+            else {
+                liveTaskIds.add(task.id);
+            }
+        }
+    }
+    // 清孤儿 result 目录：result 在、但任何状态都已无对应任务文件。
+    let resultDirs = [];
+    try {
+        resultDirs = fs.readdirSync(RESULTS_ROOT, { withFileTypes: true });
+    }
+    catch {
+        resultDirs = [];
+    }
+    for (const entry of resultDirs) {
+        if (!entry.isDirectory())
+            continue;
+        const taskId = String(entry.name);
+        if (liveTaskIds.has(taskId))
+            continue;
+        if (removePath(path.join(RESULTS_ROOT, taskId)))
+            result.orphanResultsRemoved += 1;
+    }
+    writeWorkerEvent('task_cleanup', {
+        removed: result.removed,
+        resultsRemoved: result.resultsRemoved,
+        orphanResultsRemoved: result.orphanResultsRemoved,
+        retentionDays,
+    });
+    return result;
+}
 module.exports = {
     ensureTaskDirs,
     writeWorkerEvent,
@@ -578,6 +643,7 @@ module.exports = {
     writeWorkerHeartbeat,
     listWorkerStates,
     removeTaskFile,
+    cleanupFinishedTasks,
     registerTaskCompletedCallback,
     unregisterTaskCompletedCallback,
 };

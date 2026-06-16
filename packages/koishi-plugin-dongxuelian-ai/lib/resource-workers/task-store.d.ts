@@ -91,6 +91,18 @@ declare function cancelTask(taskId: string, actor?: string, reason?: string): bo
 declare function writeWorkerHeartbeat(workerName: string, state?: Record<string, unknown>): ResourceWorkerState;
 declare function listWorkerStates(): ResourceWorkerState[];
 declare function removeTaskFile(status: string, kind: string, taskId: string): boolean;
+interface CleanupFinishedTasksOptions {
+    retentionDays?: number;
+    now?: number;
+    maxScan?: number;
+}
+interface CleanupFinishedTasksResult {
+    removed: number;
+    resultsRemoved: number;
+    orphanResultsRemoved: number;
+    scanned: number;
+}
+declare function cleanupFinishedTasks(options?: CleanupFinishedTasksOptions): CleanupFinishedTasksResult;
 declare const _default: {
     ensureTaskDirs: typeof ensureTaskDirs;
     writeWorkerEvent: typeof writeWorkerEvent;
@@ -118,6 +130,7 @@ declare const _default: {
     writeWorkerHeartbeat: typeof writeWorkerHeartbeat;
     listWorkerStates: typeof listWorkerStates;
     removeTaskFile: typeof removeTaskFile;
+    cleanupFinishedTasks: typeof cleanupFinishedTasks;
     registerTaskCompletedCallback: typeof registerTaskCompletedCallback;
     unregisterTaskCompletedCallback: typeof unregisterTaskCompletedCallback;
 };
