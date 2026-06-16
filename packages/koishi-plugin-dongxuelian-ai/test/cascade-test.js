@@ -2106,6 +2106,21 @@ async function main() {
   check('agent http search extracts decoded redirected URLs', httpSearchCandidates.length === 1 && httpSearchCandidates[0].url.includes('wutheringwaves.kurogames.com/news/mock'), JSON.stringify(httpSearchCandidates))
   const httpPageText = modules.agentHttpSearch.extractHttpPageText('<html><body><script>window.__noise="bad"</script><nav>首页 导航</nav><main>库洛官方公告正文：新共鸣者情报、版本前瞻、卡池说明都会在这里集中发布，轻量 HTTP 读取候选网页正文可以继续补充搜索结果。</main><footer>ICP备案 隐私政策</footer></body></html>', 300)
   check('agent http search extracts candidate page body without script/nav noise', httpPageText.includes('库洛官方公告正文') && !httpPageText.includes('window.__noise') && !httpPageText.includes('首页 导航'), httpPageText)
+  // 回归：正文夹在多个 <script> 之间时，贪婪有界量词 [\s\S]{0,50000} 会从第一个 <script>
+  // 吃到最后一个 </script>，把中间正文全吞掉只剩标题（实测央视页 39111 字符 HTML 被吞到 43 字）。
+  // 非贪婪修复后两段正文都应保留。真实失败输入复现见此。
+  const multiScriptHtml = '<html><head><title>页面标题</title></head><body>'
+    + '<script>var a=1;</script>'
+    + '<article>第一段正文：这是夹在脚本之间的关键内容，必须被保留下来才能让搜索读到可用正文。</article>'
+    + '<script>var b=2;</script>'
+    + '<article>第二段正文：央视那类页面正文也是这样被多个脚本块夹住的，贪婪匹配会把这里整段吞掉。</article>'
+    + '<script>var c=3;</script>'
+    + '</body></html>'
+  const multiScriptText = modules.agentHttpSearch.extractHttpPageText(multiScriptHtml, 1000)
+  check('agent http search keeps body wedged between multiple script blocks (non-greedy strip)',
+    multiScriptText.includes('第一段正文') && multiScriptText.includes('第二段正文')
+    && !multiScriptText.includes('var a=1') && !multiScriptText.includes('var b=2') && !multiScriptText.includes('var c=3'),
+    multiScriptText)
   const searchWithPages = modules.agentHttpSearch.formatSearchWithPages('鸣潮 最新角色', rankedSearch, { pages: [{ title: '《鸣潮》官方公告 新共鸣者', url: 'https://wutheringwaves.kurogames.com/news/mock', finalUrl: 'https://wutheringwaves.kurogames.com/news/mock', status: 200, contentType: 'text/html', textQuality: 'usable', reason: '已读取可用正文', text: '候选网页正文提到新共鸣者和版本前瞻。' }], failures: ['短正文候选: 正文过短'] })
   check('agent http search appends bounded opened page evidence', searchWithPages.includes('已打开候选网页正文') && searchWithPages.includes('正文质量：usable') && searchWithPages.includes('候选网页正文提到新共鸣者'), searchWithPages)
   check('agent http search marks opened page results as usable_hit', searchWithPages.includes('搜索状态：usable_hit'), searchWithPages)

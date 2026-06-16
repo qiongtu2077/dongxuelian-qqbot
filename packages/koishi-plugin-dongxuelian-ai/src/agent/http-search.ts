@@ -175,13 +175,16 @@ function stripHttpSearchTags(html: unknown = ''): string {
 }
 
 function extractHttpPageText(html: unknown = '', maxChars: number = HTTP_SEARCH_DEFAULT_PAGE_TEXT_CHARS): string {
+  // 这些有界量词必须用非贪婪（?），否则贪婪匹配会从第一个开标签一路吃到最后一个闭标签，
+  // 把夹在多个 <script>/<nav> 等块之间的正文全部吞掉，导致正文只剩标题（实测央视页 39111 字符
+  // HTML 被吞到只剩 43 字）。改非贪婪后只匹配到最近的闭标签，正文得以保留。
   const withoutNoise = String(html || '')
-    .replace(/<script\b[^>]{0,500}>[\s\S]{0,50000}<\/script>/gi, ' ')
-    .replace(/<style\b[^>]{0,500}>[\s\S]{0,50000}<\/style>/gi, ' ')
-    .replace(/<noscript\b[^>]{0,500}>[\s\S]{0,20000}<\/noscript>/gi, ' ')
-    .replace(/<nav\b[^>]{0,500}>[\s\S]{0,30000}<\/nav>/gi, ' ')
-    .replace(/<footer\b[^>]{0,500}>[\s\S]{0,30000}<\/footer>/gi, ' ')
-    .replace(/<aside\b[^>]{0,500}>[\s\S]{0,30000}<\/aside>/gi, ' ')
+    .replace(/<script\b[^>]{0,500}>[\s\S]{0,50000}?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]{0,500}>[\s\S]{0,50000}?<\/style>/gi, ' ')
+    .replace(/<noscript\b[^>]{0,500}>[\s\S]{0,20000}?<\/noscript>/gi, ' ')
+    .replace(/<nav\b[^>]{0,500}>[\s\S]{0,30000}?<\/nav>/gi, ' ')
+    .replace(/<footer\b[^>]{0,500}>[\s\S]{0,30000}?<\/footer>/gi, ' ')
+    .replace(/<aside\b[^>]{0,500}>[\s\S]{0,30000}?<\/aside>/gi, ' ')
   const text = stripHttpSearchTags(withoutNoise)
   return text
     .replace(/(?:版权所有|Copyright|ICP备案|隐私政策|用户协议).{0,200}/gi, ' ')
