@@ -86,9 +86,16 @@
         <div v-if="workers.length" class="resource-list">
           <div v-for="worker in workers" :key="display(worker.name)" class="resource-row">
             <span class="status-dot" :class="worker.alive ? 'active' : 'offline'"></span>
-            <div>
-              <b>{{ display(worker.name) }}</b>
-              <small>{{ display(worker.step) }} · {{ lagLabel(worker.heartbeatLagMs) }}</small>
+            <div class="resource-worker-main">
+              <div class="resource-worker-head">
+                <b>{{ display(worker.name) }}</b>
+                <span
+                  class="resource-pill worker-progress-pill"
+                  :class="'worker-progress-' + workerProgressStatus(worker).level"
+                  :title="workerProgressStatus(worker).title"
+                >{{ workerProgressStatus(worker).label }}</span>
+              </div>
+              <small>{{ display(worker.step) }} · {{ lagLabel(worker.heartbeatLagMs) }} · {{ workerProgressMeta(worker) }}</small>
             </div>
           </div>
         </div>
@@ -268,6 +275,26 @@ import {
   setResourceMaintenance,
 } from '../api'
 import { asArray, asRecord, errorMessage, type JsonRecord, type MessageState, type ShowAdminDialog } from '../types'
+
+interface WorkerProgressDisplay {
+  label: string
+  level: 'ok' | 'warn' | 'danger' | 'off'
+  title: string
+}
+
+const WORKER_ZOMBIE_STAGNATION_MS = 15 * 60 * 1000
+const WORKER_HEARTBEAT_FRESH_MS = 10000
+const DAILY_WORKER_KINDS = ['daily_report', 'daily_summary', 'emotion_render']
+const AGENT_WORKER_KINDS = [
+  'agent_task',
+  'dashboard_agent',
+  'agent_memory',
+  'agent_memory_compaction',
+  'expression_harvest',
+  'conversation_summary',
+  'sensitive_cache_analysis',
+]
+const MEDIA_WORKER_KINDS = ['media_image_analysis', 'media_file_analysis', 'media_voice_transcription']
 
 export default {
   name: 'ResourcePanel',
@@ -483,6 +510,89 @@ export default {
       if (ms < 60000) return `${Math.round(ms / 100) / 10}s`
       if (ms < 3600000) return `${Math.round(ms / 6000) / 10}m`
       return `${Math.round(ms / 360000) / 10}h`
+    }
+
+    function elapsedLabel(iso: unknown): string {
+      const ts = Date.parse(String(iso || ''))
+      if (!Number.isFinite(ts)) return '无认领'
+      return `${formatInterval(Date.now() - ts)}前`
+    }
+
+    function workerKind(worker: JsonRecord): string {
+      const explicit = String(worker.kind || '').trim().toLowerCase()
+      if (explicit) return explicit
+      const name = String(worker.name || '').trim().toLowerCase()
+      return name.endsWith('-worker') ? name.slice(0, -'-worker'.length) : name
+    }
+
+    function workerTaskKinds(worker: JsonRecord): string[] {
+      const kind = workerKind(worker)
+      if (kind === 'daily') return DAILY_WORKER_KINDS
+      if (kind === 'agent') return AGENT_WORKER_KINDS
+      if (kind === 'media') return MEDIA_WORKER_KINDS
+      return []
+    }
+
+    function workerBacklogCount(worker: JsonRecord): number {
+      if (workerKind(worker) === 'media') {
+        return numberValue(media.value.imagePending) + numberValue(media.value.filePending) + numberValue(media.value.voicePending)
+      }
+      const kinds = new Set(workerTaskKinds(worker))
+      if (!kinds.size) return numberValue(status.value.queueLength)
+      return tasks.value.filter(task => String(task.status || '') === 'pending' && kinds.has(String(task.kind || ''))).length
+    }
+
+    function findRunningTaskForWorker(worker: JsonRecord): JsonRecord | null {
+      const currentTaskId = String(worker.currentTaskId || '').trim()
+      if (!currentTaskId) return null
+      return tasks.value.find(task => String(task.id || '') === currentTaskId && String(task.status || '') === 'running') || null
+    }
+
+    function isWorkerRunningWithinTimeout(worker: JsonRecord): boolean {
+      const currentTaskId = String(worker.currentTaskId || '').trim()
+      if (!currentTaskId) return false
+      const task = findRunningTaskForWorker(worker)
+      if (!task) return false
+      const timeoutMs = Number(task.timeoutMs || 0)
+      const startedAt = Date.parse(String(worker.currentTaskStartedAt || task.startedAt || ''))
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(startedAt)) return false
+      return Date.now() - startedAt < timeoutMs
+    }
+
+    function workerProgressMeta(worker: JsonRecord): string {
+      const loops = Number(worker.loopIterations)
+      const loopLabel = Number.isFinite(loops) ? `loop ${loops}` : 'loop -'
+      return `${loopLabel} · 认领 ${elapsedLabel(worker.lastClaimAttemptAt)} · backlog ${workerBacklogCount(worker)}`
+    }
+
+    function workerProgressStatus(worker: JsonRecord): WorkerProgressDisplay {
+      if (!worker.alive) {
+        return { label: '离线', level: 'off', title: 'worker 心跳已失效或进程不可用' }
+      }
+      if (worker.parked === true) {
+        return { label: '已停放', level: 'off', title: `worker 正按后台指令休眠 ${formatInterval(worker.parkSleepMs)}` }
+      }
+      if (isWorkerRunningWithinTimeout(worker)) {
+        return { label: '运行中', level: 'ok', title: `当前任务 ${display(worker.currentTaskId)}` }
+      }
+      const heartbeatLagMs = Number(worker.heartbeatLagMs)
+      const claimAttemptAt = Date.parse(String(worker.lastClaimAttemptAt || ''))
+      const claimLagMs = Number.isFinite(claimAttemptAt) ? Date.now() - claimAttemptAt : Number.MAX_SAFE_INTEGER
+      const backlog = workerBacklogCount(worker)
+      if (Number.isFinite(heartbeatLagMs)
+        && heartbeatLagMs <= WORKER_HEARTBEAT_FRESH_MS
+        && claimLagMs > WORKER_ZOMBIE_STAGNATION_MS
+        && backlog > 0) {
+        return {
+          label: '疑似僵尸',
+          level: 'danger',
+          title: '心跳仍新鲜，但认领进度长时间未推进且仍有待处理任务',
+        }
+      }
+      if (backlog > 0 && claimLagMs > WORKER_ZOMBIE_STAGNATION_MS) {
+        return { label: '进度停滞', level: 'warn', title: '该 worker 有积压任务，但最近认领时间已超过观察窗口' }
+      }
+      return { label: '推进中', level: 'ok', title: 'worker 心跳和认领进度未显示异常' }
     }
 
     // SVG 坐标保留一位小数，减少模板噪声。
@@ -717,6 +827,8 @@ export default {
       numberValue,
       arrayLength,
       lagLabel,
+      workerProgressMeta,
+      workerProgressStatus,
       percentLabel,
       sizeMbLabel,
       coverageKey,
@@ -1087,6 +1199,46 @@ export default {
   gap: 10px;
 }
 
+.resource-worker-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.resource-worker-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.worker-progress-pill {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.worker-progress-ok {
+  border-color: color-mix(in srgb, var(--success) 36%, var(--border));
+  color: var(--success);
+}
+
+.worker-progress-warn {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--border));
+  color: var(--accent);
+}
+
+.worker-progress-danger {
+  border-color: color-mix(in srgb, var(--danger) 58%, var(--border));
+  color: var(--danger);
+}
+
+.worker-progress-off {
+  border-color: color-mix(in srgb, var(--text3) 48%, var(--border));
+  color: var(--text3);
+}
+
 .resource-metric-row {
   display: flex;
   align-items: center;
@@ -1236,6 +1388,11 @@ export default {
   .resource-event {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+
+  .resource-worker-head {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 </style>

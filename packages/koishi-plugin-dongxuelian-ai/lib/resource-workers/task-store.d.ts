@@ -54,6 +54,15 @@ interface ResourceWorkerState extends Record<string, unknown> {
     heartbeatAt: string;
     alive: boolean;
     heartbeatLagMs?: number | null;
+    kind?: string;
+    step?: string;
+    loopIterations?: number;
+    lastClaimAttemptAt?: string;
+    lastTaskFinishedAt?: string;
+    currentTaskId?: string;
+    currentTaskStartedAt?: string;
+    parked?: boolean;
+    parkSleepMs?: number;
 }
 /**
  * 注册任务完成回调

@@ -310,10 +310,22 @@ function testResourceStatusIncludesServerModeFlags() {
   }, null, 2), 'utf8')
 
   const activityLease = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease')
+  const taskStore = require('../../koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
   const releaseTool = activityLease.acquireResourceActivityLease('tool_active', {
     owner: 'dashboard-security-router-test',
     taskId: 'dashboard-resource-status-mode',
     ttlMs: 120000,
+  })
+  taskStore.writeWorkerHeartbeat('agent-worker', {
+    kind: 'agent',
+    step: 'tick',
+    loopIterations: 3,
+    lastClaimAttemptAt: '2026-06-16T00:00:00.000Z',
+    lastTaskFinishedAt: '2026-06-16T00:01:00.000Z',
+    currentTaskId: '',
+    currentTaskStartedAt: '',
+    parked: false,
+    parkSleepMs: 0,
   })
 
   try {
@@ -329,6 +341,14 @@ function testResourceStatusIncludesServerModeFlags() {
     assert.strictEqual(payload.background_allowed, false)
     assert.ok(typeof payload.mode === 'string')
     assert.ok(typeof payload.resourceState === 'string')
+    assert.ok(Array.isArray(payload.workers))
+    const worker = payload.workers.find(item => item && item.name === 'agent-worker')
+    assert.ok(worker)
+    assert.strictEqual(worker.loopIterations, 3)
+    assert.strictEqual(worker.lastClaimAttemptAt, '2026-06-16T00:00:00.000Z')
+    assert.strictEqual(worker.lastTaskFinishedAt, '2026-06-16T00:01:00.000Z')
+    assert.strictEqual(worker.currentTaskId, '')
+    assert.strictEqual(worker.parked, false)
   } finally {
     releaseTool('resource-status-test-finally')
   }

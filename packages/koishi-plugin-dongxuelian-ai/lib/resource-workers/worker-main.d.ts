@@ -7,6 +7,7 @@ interface WorkerMainOptions {
 }
 interface WorkerHeartbeatHandle {
     setStep(step: string, patch?: Record<string, unknown>): void;
+    patchProgress(patch?: Partial<WorkerProgressState>): void;
     stop(step?: string): void;
 }
 type ResourceTaskStatus = 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred';
@@ -31,9 +32,18 @@ interface ResourceTaskLike extends Record<string, unknown> {
     finishedAt?: string;
     error?: string;
 }
+interface WorkerProgressState {
+    loopIterations: number;
+    lastClaimAttemptAt: string;
+    lastTaskFinishedAt: string;
+    currentTaskId: string;
+    currentTaskStartedAt: string;
+    parked: boolean;
+    parkSleepMs: number;
+}
 declare function runTaskWithTimeout(task: ResourceTaskLike): Promise<Record<string, unknown>>;
-declare function runOneQueuedTask(options?: WorkerMainOptions, heartbeat?: WorkerHeartbeatHandle | null): Promise<boolean>;
-declare function runWorkerTick(options?: WorkerMainOptions, heartbeat?: WorkerHeartbeatHandle | null): Promise<boolean>;
+declare function runOneQueuedTask(options?: WorkerMainOptions, heartbeat?: WorkerHeartbeatHandle | null, progress?: WorkerProgressState): Promise<boolean>;
+declare function runWorkerTick(options?: WorkerMainOptions, heartbeat?: WorkerHeartbeatHandle | null, progress?: WorkerProgressState): Promise<boolean>;
 declare function resolveWorkerIdleSleepMs(options?: WorkerMainOptions, worked?: boolean): number;
 declare function runWorkerLoop(options?: WorkerMainOptions): Promise<void>;
 declare function parseWorkerCliArgs(argv?: string[]): WorkerMainOptions;

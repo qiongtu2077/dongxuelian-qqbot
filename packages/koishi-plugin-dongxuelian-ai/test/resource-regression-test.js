@@ -3166,6 +3166,474 @@ run().catch(error => {
     JSON.stringify(summary))
 }
 
+function buildSupervisorZombieScenarioScript(config) {
+  return String.raw`
+const fs = require('fs')
+const path = require('path')
+const Module = require('module')
+const config = ${JSON.stringify(config)}
+const originalLoad = Module._load
+const terminateCalls = []
+const spawnCalls = []
+
+function readJsonl(file) {
+  if (!fs.existsSync(file)) return []
+  return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
+}
+
+Module._load = function patchedLoad(request, parent, isMain) {
+  if (request === 'child_process') {
+    const loaded = originalLoad.apply(this, arguments)
+    return {
+      ...loaded,
+      spawn(command, args, options = {}) {
+        spawnCalls.push({
+          command: String(command || ''),
+          args: Array.isArray(args) ? args.map(item => String(item || '')) : [],
+          cwd: String(options.cwd || ''),
+        })
+        return {
+          pid: 54321,
+          unref() {},
+        }
+      },
+    }
+  }
+
+  const loaded = originalLoad.apply(this, arguments)
+  const normalized = String(request || '').replace(/\\\\/g, '/')
+  if (normalized === '../resource-system/system-protection' || normalized.endsWith('/resource-system/system-protection')) {
+    return {
+      ...loaded,
+      terminateProcessTree(pid, options = {}) {
+        const numericPid = Number(pid)
+        terminateCalls.push({
+          pid: numericPid,
+          reason: String(options.reason || ''),
+          source: String(options.source || ''),
+          owner: String(options.owner || ''),
+        })
+        loaded.writeProcessCleanupEvent({
+          event: 'worker_process_zombie_recovered',
+          workerName: String(options.owner || config.workerName || ''),
+          pid: numericPid,
+          source: String(options.source || ''),
+          reason: String(options.reason || ''),
+        })
+        return {
+          event: 'process_tree_terminated',
+          rootPid: numericPid,
+          killedPids: [numericPid],
+          failedPids: [],
+        }
+      },
+    }
+  }
+  return loaded
+}
+
+try {
+  const taskStore = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+  const taskPaths = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-paths')
+  const supervisor = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-supervisor')
+  const systemProtection = require('koishi-plugin-dongxuelian-ai/lib/resource-system/system-protection')
+
+  taskStore.ensureTaskDirs()
+
+  if (config.backlogKind) {
+    taskStore.submitResourceTask({
+      id: String(config.backlogTaskId || (config.workerName + '-backlog-1')),
+      kind: String(config.backlogKind),
+      source: 'resource-regression-zombie-backlog',
+      channelKey: 'group-zombie-backlog',
+      userId: 'tester',
+      priority: 40,
+      timeoutMs: 120000,
+      payload: { entry: 'zombie-backlog' },
+      notify: { target: 'none', status: 'pending' },
+    })
+  }
+
+  if (config.currentTaskId) {
+    const runningSeed = taskStore.submitResourceTask({
+      id: String(config.currentTaskId),
+      kind: String(config.currentTaskKind || config.backlogKind || 'daily_report'),
+      source: 'resource-regression-zombie-running',
+      channelKey: 'group-zombie-running',
+      userId: 'tester',
+      priority: 35,
+      timeoutMs: Number(config.currentTaskTimeoutMs || 480000),
+      payload: { entry: 'zombie-running' },
+      notify: { target: 'none', status: 'pending' },
+    })
+    const claiming = taskStore.claimTaskById(runningSeed.id, String(config.workerName || 'resource-worker'))
+    if (!claiming) throw new Error('expected running task claim before zombie fixture')
+    const running = taskStore.markTaskRunning(claiming, String(config.workerName || 'resource-worker'), 'running')
+    if (!running || running.status !== 'running') throw new Error('expected running task before zombie fixture')
+    const runningFile = taskPaths.getTaskFile('running', running.kind, running.id)
+    const runningOnDisk = JSON.parse(fs.readFileSync(runningFile, 'utf8'))
+    if (config.currentTaskStartedAt) runningOnDisk.startedAt = String(config.currentTaskStartedAt)
+    fs.writeFileSync(runningFile, JSON.stringify(runningOnDisk, null, 2), 'utf8')
+  }
+
+  const workerStateFile = taskPaths.getWorkerStateFile(String(config.workerName || 'resource-worker'))
+  fs.mkdirSync(path.dirname(workerStateFile), { recursive: true })
+  const workerState = {
+    name: String(config.workerName || 'resource-worker'),
+    pid: config.useCurrentPid ? process.pid : Number(config.pid || 0),
+    startedAt: String(config.startedAt || '2026-06-01T00:00:00.000Z'),
+    heartbeatAt: String(config.heartbeatAt || new Date().toISOString()),
+    alive: true,
+    step: String(config.step || 'tick'),
+    loopIterations: Number(config.loopIterations || 7),
+    lastClaimAttemptAt: String(config.lastClaimAttemptAt || ''),
+    lastTaskFinishedAt: String(config.lastTaskFinishedAt || ''),
+    currentTaskId: String(config.currentTaskId || ''),
+    currentTaskStartedAt: String(config.currentTaskStartedAt || ''),
+    parked: !!config.parked,
+    parkSleepMs: Number(config.parkSleepMs || 0),
+  }
+  fs.writeFileSync(workerStateFile, JSON.stringify({
+    ...workerState,
+  }, null, 2), 'utf8')
+
+  if (config.previousSupervisorState) {
+    const supervisorStateFile = path.join(taskPaths.SUPERVISOR_DIR, 'state.json')
+    fs.mkdirSync(path.dirname(supervisorStateFile), { recursive: true })
+    fs.writeFileSync(supervisorStateFile, JSON.stringify({
+      updatedAt: String(config.previousSupervisorState.updatedAt || new Date().toISOString()),
+      pid: process.pid,
+      workers: [{
+        ...workerState,
+        ...(config.previousSupervisorState.worker || {}),
+      }],
+    }, null, 2), 'utf8')
+  }
+
+  const started = config.useRunSupervisorOnce
+    ? [supervisor.runSupervisorOnce({ start: true, once: true })]
+    : supervisor.ensureWorkerProcesses([String(config.type || 'agent')])
+  const workerEvents = readJsonl(taskPaths.getWorkerEventFile())
+  const cleanupEvents = Array.isArray(systemProtection.getSystemProtectionStatus().cleanupEvents)
+    ? systemProtection.getSystemProtectionStatus().cleanupEvents
+    : []
+
+  console.log(JSON.stringify({
+    startedCount: Array.isArray(started) ? started.length : 0,
+    terminateCallCount: terminateCalls.length,
+    terminatedPid: terminateCalls.length ? terminateCalls[0].pid : 0,
+    spawnCallCount: spawnCalls.length,
+    zombieRecoveryWorkerEventCount: workerEvents.filter(event => event.event === 'worker_process_zombie_recovered' && event.workerName === config.workerName).length,
+    zombieRecoveryCleanupEventCount: cleanupEvents.filter(event => event.event === 'worker_process_zombie_recovered' && event.workerName === config.workerName).length,
+    suspectedBlockedEventCount: workerEvents.filter(event => event.event === 'worker_process_suspected_blocked' && event.workerName === config.workerName).length,
+    pendingCount: taskStore.countResourceTasks({ kind: String(config.backlogKind || ''), statuses: ['pending'], limit: 20000 }),
+  }, null, 2))
+  process.exitCode = 0
+} finally {
+  Module._load = originalLoad
+}
+`
+}
+
+function testSupervisorReplacesLivePidZombieWithStagnantLoop() {
+  const dataDir = createTempDataDir('resource-regress-zombie-live-pid-')
+  const summary = runScenario('zombie worker live pid should be recovered when loop progress stalls', buildSupervisorZombieScenarioScript({
+    type: 'agent',
+    workerName: 'agent-worker',
+    backlogKind: 'agent_task',
+    useCurrentPid: true,
+    heartbeatAt: '2099-01-01T00:00:00.000Z',
+    lastClaimAttemptAt: '2026-06-01T00:00:00.000Z',
+    loopIterations: 7,
+    parked: false,
+  }), {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+    RESOURCE_WORKER_ZOMBIE_STAGNATION_MS: '60000',
+  }, 30000)
+  if (!summary) return
+  check('zombie worker live pid should be terminated when heartbeat is fresh but claim progress is stale',
+    summary.terminateCallCount >= 1
+      && summary.terminatedPid > 0
+      && (summary.zombieRecoveryWorkerEventCount + summary.zombieRecoveryCleanupEventCount) >= 1,
+    JSON.stringify(summary))
+}
+
+function testSupervisorReplacesLivePidZombieWhenOnlyLoopStallsAcrossFreshSupervisorWrites() {
+  const dataDir = createTempDataDir('resource-regress-zombie-loop-only-')
+  const summary = runScenario('zombie worker should be recovered when only loop sample is stale', buildSupervisorZombieScenarioScript({
+    type: 'agent',
+    workerName: 'agent-worker',
+    backlogKind: 'agent_task',
+    useCurrentPid: true,
+    useRunSupervisorOnce: true,
+    heartbeatAt: new Date().toISOString(),
+    lastClaimAttemptAt: new Date().toISOString(),
+    loopIterations: 7,
+    parked: false,
+    previousSupervisorState: {
+      updatedAt: new Date().toISOString(),
+      worker: {
+        loopIterations: 7,
+        loopChangedAt: '2026-06-01T00:00:00.000Z',
+      },
+    },
+  }), {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+    RESOURCE_WORKER_ZOMBIE_STAGNATION_MS: '60000',
+  }, 30000)
+  if (!summary) return
+  check('zombie worker live pid should be terminated when heartbeat and claim are fresh but loop progress sample is stale',
+    summary.terminateCallCount >= 1
+      && summary.terminatedPid > 0
+      && (summary.zombieRecoveryWorkerEventCount + summary.zombieRecoveryCleanupEventCount) >= 1,
+    JSON.stringify(summary))
+}
+
+function testSupervisorDoesNotKillParkedWorker() {
+  const dataDir = createTempDataDir('resource-regress-zombie-parked-')
+  const summary = runScenario('parked worker should not be treated as zombie', buildSupervisorZombieScenarioScript({
+    type: 'agent',
+    workerName: 'agent-worker',
+    backlogKind: 'agent_task',
+    useCurrentPid: true,
+    heartbeatAt: '2099-01-01T00:00:00.000Z',
+    lastClaimAttemptAt: '2026-06-01T00:00:00.000Z',
+    loopIterations: 7,
+    parked: true,
+    parkSleepMs: 15000,
+    step: 'parked',
+  }), {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+    RESOURCE_WORKER_ZOMBIE_STAGNATION_MS: '60000',
+  }, 30000)
+  if (!summary) return
+  check('parked worker should not be terminated even when backlog exists and claim attempt timestamp is old',
+    summary.terminateCallCount === 0
+      && summary.zombieRecoveryWorkerEventCount === 0
+      && summary.zombieRecoveryCleanupEventCount === 0,
+    JSON.stringify(summary))
+}
+
+function testSupervisorDoesNotKillWorkerRunningLongTask() {
+  const dataDir = createTempDataDir('resource-regress-zombie-long-task-')
+  const startedAt = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+  const summary = runScenario('worker with in-flight long task should not be treated as zombie', buildSupervisorZombieScenarioScript({
+    type: 'daily',
+    workerName: 'daily-worker',
+    backlogKind: 'daily_report',
+    useCurrentPid: true,
+    heartbeatAt: '2099-01-01T00:00:00.000Z',
+    lastClaimAttemptAt: '2026-06-01T00:00:00.000Z',
+    loopIterations: 11,
+    parked: false,
+    currentTaskId: 'task-zombie-long-running-1',
+    currentTaskKind: 'daily_report',
+    currentTaskTimeoutMs: 480000,
+    currentTaskStartedAt: startedAt,
+    step: 'running',
+  }), {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+    RESOURCE_WORKER_ZOMBIE_STAGNATION_MS: '60000',
+  }, 30000)
+  if (!summary) return
+  check('worker with active long task should not be terminated just because claim progress timestamp is old',
+    summary.terminateCallCount === 0
+      && summary.zombieRecoveryWorkerEventCount === 0
+      && summary.zombieRecoveryCleanupEventCount === 0,
+    JSON.stringify(summary))
+}
+
+function testSupervisorDoesNotKillIdleWorkerWithoutBacklog() {
+  const dataDir = createTempDataDir('resource-regress-zombie-no-backlog-')
+  const summary = runScenario('idle worker without backlog should not be treated as zombie', buildSupervisorZombieScenarioScript({
+    type: 'agent',
+    workerName: 'agent-worker',
+    backlogKind: '',
+    useCurrentPid: true,
+    heartbeatAt: '2099-01-01T00:00:00.000Z',
+    lastClaimAttemptAt: '2026-06-01T00:00:00.000Z',
+    loopIterations: 9,
+    parked: false,
+  }), {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+    RESOURCE_WORKER_ZOMBIE_STAGNATION_MS: '60000',
+  }, 30000)
+  if (!summary) return
+  check('idle worker without pending backlog should not be terminated as zombie',
+    summary.pendingCount === 0
+      && summary.terminateCallCount === 0
+      && summary.zombieRecoveryWorkerEventCount === 0
+      && summary.zombieRecoveryCleanupEventCount === 0,
+    JSON.stringify(summary))
+}
+
+function testWorkerSelfExitsOnConsecutiveClaimFailures() {
+  const dataDir = createTempDataDir('resource-regress-zombie-claim-failures-')
+  const script = String.raw`
+const fs = require('fs')
+const taskStorePath = require.resolve('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+const workerMainPath = require.resolve('koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-main')
+const originalTaskStore = require(taskStorePath)
+const originalTaskStoreCache = require.cache[taskStorePath]
+
+require.cache[taskStorePath] = {
+  id: taskStorePath,
+  filename: taskStorePath,
+  loaded: true,
+  exports: {
+    ...originalTaskStore,
+    claimNextTask() {
+      throw new Error('resource regression forced claim failure')
+    },
+  },
+}
+delete require.cache[workerMainPath]
+
+async function run() {
+  const workerMain = require(workerMainPath)
+  let loopResolved = false
+  let loopError = ''
+  try {
+    await workerMain.runWorkerLoop({
+      type: 'agent',
+      workerName: 'claim-failure-zombie-worker',
+      pollMs: 1,
+      gateWaitMs: 1000,
+    })
+    loopResolved = true
+  } catch (error) {
+    loopError = error instanceof Error ? error.message : String(error || '')
+  }
+  console.log(JSON.stringify({
+    loopResolved,
+    loopError,
+    exitCode: Number(process.exitCode || 0),
+  }, null, 2))
+  process.exitCode = 0
+}
+
+run().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+}).finally(() => {
+  if (originalTaskStoreCache) require.cache[taskStorePath] = originalTaskStoreCache
+  else delete require.cache[taskStorePath]
+  delete require.cache[workerMainPath]
+})
+`
+  const summary = runScenario('worker loop should self-exit after consecutive claim failures', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+    RESOURCE_WORKER_MAX_CONSECUTIVE_FAILURES: '2',
+  }, 30000)
+  if (!summary) return
+  check('worker loop should stop with exitCode 77 instead of rejecting on first claim failure',
+    summary.loopResolved === true
+      && summary.loopError === ''
+      && summary.exitCode === 77,
+    JSON.stringify(summary))
+}
+
+function testWorkerSelfExitThresholdFallsBackWhenConfiguredInvalid() {
+  const dataDir = createTempDataDir('resource-regress-zombie-invalid-failure-threshold-')
+  const script = String.raw`
+const fs = require('fs')
+const taskPaths = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-paths')
+const taskStorePath = require.resolve('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+const workerMainPath = require.resolve('koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-main')
+const originalTaskStore = require(taskStorePath)
+const originalTaskStoreCache = require.cache[taskStorePath]
+
+require.cache[taskStorePath] = {
+  id: taskStorePath,
+  filename: taskStorePath,
+  loaded: true,
+  exports: {
+    ...originalTaskStore,
+    claimNextTask() {
+      throw new Error('resource regression forced invalid threshold claim failure')
+    },
+  },
+}
+delete require.cache[workerMainPath]
+
+async function run() {
+  const workerMain = require(workerMainPath)
+  const watchdog = setTimeout(() => {
+    const workerEventsFile = taskPaths.getWorkerEventFile()
+    const failedTickEvents = fs.existsSync(workerEventsFile)
+      ? fs.readFileSync(workerEventsFile, 'utf8').split(/\r?\n/).filter(line => line.includes('worker_tick_failed')).length
+      : 0
+    console.log(JSON.stringify({
+      loopResolved: false,
+      loopError: 'watchdog_timeout',
+      exitCode: Number(process.exitCode || 0),
+      failedTickEvents,
+    }, null, 2))
+    process.exit(0)
+  }, 6000)
+  let loopResolved = false
+  let loopError = ''
+  try {
+    await workerMain.runWorkerLoop({
+      type: 'agent',
+      workerName: 'invalid-threshold-zombie-worker',
+      pollMs: 1,
+      gateWaitMs: 1000,
+    })
+    loopResolved = true
+  } catch (error) {
+    loopError = error instanceof Error ? error.message : String(error || '')
+  } finally {
+    clearTimeout(watchdog)
+  }
+  const workerEventsFile = taskPaths.getWorkerEventFile()
+  const failedTickEvents = fs.existsSync(workerEventsFile)
+    ? fs.readFileSync(workerEventsFile, 'utf8').split(/\r?\n/).filter(line => line.includes('worker_tick_failed')).length
+    : 0
+  console.log(JSON.stringify({
+    loopResolved,
+    loopError,
+    exitCode: Number(process.exitCode || 0),
+    failedTickEvents,
+  }, null, 2))
+  process.exitCode = 0
+}
+
+run().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+}).finally(() => {
+  if (originalTaskStoreCache) require.cache[taskStorePath] = originalTaskStoreCache
+  else delete require.cache[taskStorePath]
+  delete require.cache[workerMainPath]
+})
+`
+  const summary = runScenario('worker loop should use default self-exit threshold when env threshold is invalid', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+    RESOURCE_WORKER_MAX_CONSECUTIVE_FAILURES: 'not-a-number',
+  }, 30000)
+  if (!summary) return
+  check('worker loop invalid self-exit threshold should fall back to default and stop with exitCode 77',
+    summary.loopResolved === true
+      && summary.loopError === ''
+      && summary.exitCode === 77,
+    JSON.stringify(summary))
+}
+
 // === Scenario 23: 阶段 D.16 supervisor 应回收 stale claiming 残留 ===
 function testSupervisorDoesNotLeaveStaleClaimingResidue() {
   const dataDir = createTempDataDir('resource-regress-supervisor-claiming-stale-')
@@ -7141,6 +7609,13 @@ function main() {
   testCancelTaskDoesNotCreateCancelledCopyWhenRenameFails()
   testClaimDoesNotReclaimStalePendingWhenHigherRankCopyExists()
   testExecutionDoesNotContinueWhenTaskNeverEntersRunning()
+  testSupervisorReplacesLivePidZombieWithStagnantLoop()
+  testSupervisorReplacesLivePidZombieWhenOnlyLoopStallsAcrossFreshSupervisorWrites()
+  testSupervisorDoesNotKillParkedWorker()
+  testSupervisorDoesNotKillWorkerRunningLongTask()
+  testSupervisorDoesNotKillIdleWorkerWithoutBacklog()
+  testWorkerSelfExitsOnConsecutiveClaimFailures()
+  testWorkerSelfExitThresholdFallsBackWhenConfiguredInvalid()
   testSupervisorDoesNotLeaveStaleClaimingResidue()
   testCanonicalTaskReadAndCancelSelection()
   testTransitionChainDoesNotMigrateFromStaleOrGuessedSource()

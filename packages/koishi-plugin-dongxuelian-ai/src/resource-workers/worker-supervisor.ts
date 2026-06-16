@@ -11,7 +11,8 @@ const { readResourceSnapshot } = require('../resource-scheduler/resource-snapsho
 const { SUPERVISOR_DIR } = require('./task-paths') as typeof import('./task-paths')
 const { listWorkerStates, listResourceTasks, countResourceTasks, failTask, failIsolatedClaimingTask, requeueTask, writeWorkerEvent } = require('./task-store') as typeof import('./task-store')
 const { ensureDir, isProcessAlive, nowIso, writeJsonAtomic } = require('../resource-common/files') as typeof import('../resource-common/files')
-const { writeProcessCleanupEvent } = require('../resource-system/system-protection') as typeof import('../resource-system/system-protection')
+const { writeProcessCleanupEvent, terminateProcessTree } = require('../resource-system/system-protection') as typeof import('../resource-system/system-protection')
+const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
 
 interface WorkerLaunchSpec {
   type: string
@@ -48,6 +49,20 @@ interface ResourceWorkerStateLike {
   heartbeatAt?: string
   heartbeatLagMs?: number | null
   step?: string
+  kind?: string
+  loopIterations?: unknown
+  lastClaimAttemptAt?: string
+  lastTaskFinishedAt?: string
+  currentTaskId?: string
+  currentTaskStartedAt?: string
+  parked?: unknown
+  parkSleepMs?: unknown
+}
+
+interface SupervisorWorkerSampleLike extends Record<string, unknown> {
+  loopIterations?: unknown
+  loopChangedAt?: unknown
+  updatedAt?: unknown
 }
 
 const WORKER_MEMORY_LIMITS: Record<string, number> = {
@@ -59,6 +74,20 @@ const DEFAULT_WORKER_TYPES = ['daily', 'agent', 'media']
 const DEFERRED_RESTORE_MAX_ACTIVE = Math.max(
   1,
   Number(process.env.RESOURCE_DEFERRED_RESTORE_MAX_ACTIVE || process.env.DAILY_SLOT_BACKLOG_STOP_MAX_PENDING || 8),
+)
+const WORKER_HEARTBEAT_STALE_MS = 10000
+
+function resolveBoundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
+const RESOURCE_WORKER_ZOMBIE_STAGNATION_MS = resolveBoundedNumber(
+  process.env.RESOURCE_WORKER_ZOMBIE_STAGNATION_MS,
+  15 * 60 * 1000,
+  60000,
+  60 * 60 * 1000,
 )
 
 // 判断 deferred 任务是否已经超过自身有效期。
@@ -88,6 +117,156 @@ function getDeferredRestoreActiveBacklog(kind: string): number {
     statuses: ['pending', 'claiming', 'running'],
     limit: 20000,
   })
+}
+
+function getWorkerKinds(type: string): string[] {
+  const normalized = String(type || '').trim().toLowerCase()
+  if (normalized === 'daily') return [RESOURCE_TASK_KIND.DAILY_REPORT, RESOURCE_TASK_KIND.DAILY_SUMMARY, RESOURCE_TASK_KIND.EMOTION_RENDER]
+  if (normalized === 'agent') {
+    return [
+      RESOURCE_TASK_KIND.AGENT_TASK,
+      RESOURCE_TASK_KIND.DASHBOARD_AGENT,
+      RESOURCE_TASK_KIND.AGENT_MEMORY,
+      RESOURCE_TASK_KIND.AGENT_MEMORY_COMPACTION,
+      RESOURCE_TASK_KIND.EXPRESSION_HARVEST,
+      RESOURCE_TASK_KIND.CONVERSATION_SUMMARY,
+      RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS,
+    ]
+  }
+  if (normalized === 'media') return []
+  return []
+}
+
+function getSupervisorWorkerSamples(): Record<string, SupervisorWorkerSampleLike> {
+  try {
+    const state = JSON.parse(fs.readFileSync(getSupervisorStateFile(), 'utf8'))
+    const stateUpdatedAt = String(state?.updatedAt || '')
+    const workers = Array.isArray(state?.workers) ? state.workers : []
+    const result: Record<string, SupervisorWorkerSampleLike> = {}
+    for (const worker of workers) {
+      const item = worker && typeof worker === 'object' ? worker as SupervisorWorkerSampleLike & { name?: unknown } : {}
+      const name = String(item.name || '')
+      if (!name) continue
+      result[name] = { ...item, updatedAt: String(item.updatedAt || stateUpdatedAt) }
+    }
+    return result
+  } catch {
+    return {}
+  }
+}
+
+function attachWorkerProgressSamples(workers: ResourceWorkerStateLike[], previousSamples: Record<string, SupervisorWorkerSampleLike> = {}): ResourceWorkerStateLike[] {
+  const now = nowIso()
+  return workers.map(worker => {
+    const name = String(worker?.name || '')
+    const previous = previousSamples[name] || {}
+    const currentLoopIterations = Number(worker?.loopIterations)
+    const previousLoopIterations = Number(previous.loopIterations)
+    const previousLoopChangedAt = String(previous.loopChangedAt || previous.updatedAt || '')
+    const loopChangedAt = Number.isFinite(currentLoopIterations)
+      && Number.isFinite(previousLoopIterations)
+      && currentLoopIterations <= previousLoopIterations
+      && previousLoopChangedAt
+      ? previousLoopChangedAt
+      : now
+    return {
+      ...worker,
+      loopChangedAt,
+    }
+  })
+}
+
+function getWorkerTypeFromNameOrState(worker: ResourceWorkerStateLike, fallbackName = ''): string {
+  const explicit = String(worker?.kind || '').trim()
+  if (explicit) return explicit
+  const name = String(worker?.name || fallbackName || '').trim()
+  if (name.endsWith('-worker')) return name.slice(0, -'-worker'.length)
+  return name
+}
+
+function getWorkerBacklogCount(type: string): number {
+  const normalized = String(type || '').trim().toLowerCase()
+  if (normalized === 'media') {
+    const media = require('../media/backpressure/media-queue') as typeof import('../media/backpressure/media-queue')
+    const status = media.getMediaBackpressureStatus()
+    return Number(status.imagePending || 0) + Number(status.filePending || 0) + Number(status.voicePending || 0)
+  }
+  return countPendingTasksForKinds(getWorkerKinds(normalized))
+}
+
+function countPendingTasksForKinds(kinds: string[]): number {
+  let total = 0
+  for (const kind of kinds) {
+    total += countResourceTasks({
+      kind,
+      statuses: ['pending'],
+      limit: 20000,
+    })
+  }
+  return total
+}
+
+function hasWorkerBacklog(type: string): number {
+  const normalized = String(type || '').trim().toLowerCase()
+  if (normalized === 'media') return getWorkerBacklogCount('media')
+  return countPendingTasksForKinds(getWorkerKinds(normalized))
+}
+
+function isWorkerRunningLongTask(worker: ResourceWorkerStateLike): boolean {
+  const currentTaskId = String(worker?.currentTaskId || '').trim()
+  if (!currentTaskId) return false
+  const startedAt = Date.parse(String(worker?.currentTaskStartedAt || ''))
+  if (!Number.isFinite(startedAt)) return false
+  const task = listResourceTasks({ statuses: ['running'], limit: 500 }).find(item => String(item.id || '') === currentTaskId)
+  const timeoutMs = Number(task?.timeoutMs || 0)
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return false
+  return Date.now() - startedAt < timeoutMs
+}
+
+function isWorkerZombie(worker: ResourceWorkerStateLike, previousSample: SupervisorWorkerSampleLike | null = null): boolean {
+  const pidAlive = isProcessAlive(worker?.pid)
+  if (!pidAlive) return false
+  const heartbeatLagMs = Number(worker?.heartbeatLagMs ?? Number.MAX_SAFE_INTEGER)
+  const claimAttemptAt = Date.parse(String(worker?.lastClaimAttemptAt || worker?.heartbeatAt || ''))
+  const claimLagMs = Number.isFinite(claimAttemptAt) ? Date.now() - claimAttemptAt : Number.MAX_SAFE_INTEGER
+  const previousLoopIterations = Number(previousSample?.loopIterations)
+  const currentLoopIterations = Number(worker?.loopIterations)
+  const previousLoopChangedAt = Date.parse(String(previousSample?.loopChangedAt || previousSample?.updatedAt || ''))
+  const sampleWindowElapsed = Number.isFinite(previousLoopChangedAt) && Date.now() - previousLoopChangedAt >= RESOURCE_WORKER_ZOMBIE_STAGNATION_MS
+  const loopStalled = sampleWindowElapsed
+    && Number.isFinite(previousLoopIterations)
+    && Number.isFinite(currentLoopIterations)
+    && currentLoopIterations <= previousLoopIterations
+  const progressStalled = heartbeatLagMs > WORKER_HEARTBEAT_STALE_MS || claimLagMs > RESOURCE_WORKER_ZOMBIE_STAGNATION_MS || loopStalled
+  if (!progressStalled) return false
+  if (worker?.parked === true) return false
+  if (isWorkerRunningLongTask(worker)) return false
+  const backlog = hasWorkerBacklog(getWorkerTypeFromNameOrState(worker))
+  return backlog > 0
+}
+
+function recoverZombieWorker(worker: ResourceWorkerStateLike): boolean {
+  const workerName = String(worker?.name || '')
+  const pid = Number(worker?.pid || 0)
+  if (!workerName || !(pid > 0)) return false
+  const backlogCount = hasWorkerBacklog(getWorkerTypeFromNameOrState(worker))
+  const result = terminateProcessTree(pid, {
+    owner: workerName,
+    source: 'resource_worker_supervisor',
+    reason: 'worker_process_zombie_recovered',
+  })
+  const killedPids = Array.isArray((result as Record<string, unknown>).killedPids)
+    ? (result as Record<string, unknown>).killedPids as unknown[]
+    : []
+  if (!killedPids.length) return false
+  writeWorkerEvent('worker_process_zombie_recovered', {
+    workerName,
+    pid,
+    loopIterations: Number(worker?.loopIterations || 0),
+    backlogCount,
+    currentTaskId: String(worker?.currentTaskId || ''),
+  })
+  return true
 }
 
 // 返回 supervisor 状态文件路径。
@@ -138,12 +317,16 @@ function startWorkerProcess(type: string): Record<string, unknown> {
 // 只在同名 worker 没有活进程时补启动，避免 heartbeat 过期但 pid 仍活着时重复拉起。
 function ensureWorkerProcesses(types: string[] = DEFAULT_WORKER_TYPES): unknown[] {
   const workers = listWorkerStates()
+  const previousSamples = getSupervisorWorkerSamples()
   const activeNames = new Set<string>()
   for (const worker of workers) {
     const name = String(worker?.name || '')
     if (!name) continue
     const pidAlive = isProcessAlive(worker?.pid)
     if (pidAlive) {
+      if (isWorkerZombie(worker, previousSamples[name] || null)) {
+        if (recoverZombieWorker(worker)) continue
+      }
       activeNames.add(name)
       if (!worker?.alive) {
         writeWorkerEvent('worker_process_suspected_blocked', {
@@ -300,11 +483,12 @@ function getSupervisorStatus(): Record<string, unknown> {
 // 执行一次 supervisor 审计；start=true 时会补启动未存活 worker。
 function runSupervisorOnce(options: SupervisorOptions = {}): Record<string, unknown> {
   const types = options.types && options.types.length ? options.types : DEFAULT_WORKER_TYPES
+  const previousSamples = getSupervisorWorkerSamples()
   const started = options.start ? ensureWorkerProcesses(types) : []
   const staleRecovered = auditStaleRunningTasks()
   const staleClaimingRecovered = auditStaleClaimingTasks()
   const deferred = auditDeferredTasks()
-  return writeSupervisorState({ started, staleRecovered, staleClaimingRecovered, deferred, workers: listWorkerStates() })
+  return writeSupervisorState({ started, staleRecovered, staleClaimingRecovered, deferred, workers: attachWorkerProgressSamples(listWorkerStates(), previousSamples) })
 }
 
 if (require.main === module) {

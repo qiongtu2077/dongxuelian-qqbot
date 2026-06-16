@@ -18,6 +18,13 @@ const { runEmotionRenderWorkerTask } = require('./emotion-worker');
 const { runMemoryWorkerTask } = require('./memory-worker');
 const { runBackgroundLlmWorkerTask } = require('./background-llm-worker');
 const { runDailySlotTask } = require('../daily-precompute/daily-slot-worker');
+function resolveBoundedNumber(value, fallback, min, max) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed))
+        return fallback;
+    return Math.max(min, Math.min(max, parsed));
+}
+const DEFAULT_WORKER_MAX_CONSECUTIVE_FAILURES = resolveBoundedNumber(process.env.RESOURCE_WORKER_MAX_CONSECUTIVE_FAILURES, 5, 1, 20);
 // 等待指定毫秒，用于 worker 空转和退避。
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -28,6 +35,21 @@ function resolveTaskTimeoutMs(task, fallbackMs = 300000) {
     if (!Number.isFinite(timeout))
         return fallbackMs;
     return Math.max(10000, Math.min(30 * 60 * 1000, timeout));
+}
+function createInitialWorkerProgress() {
+    return {
+        loopIterations: 0,
+        lastClaimAttemptAt: '',
+        lastTaskFinishedAt: '',
+        currentTaskId: '',
+        currentTaskStartedAt: '',
+        parked: false,
+        parkSleepMs: 0,
+    };
+}
+function updateWorkerProgress(progress, patch = {}) {
+    Object.assign(progress, patch);
+    return progress;
 }
 // 给单个 worker 任务加 S8 运行超时兜底；超时后由调用方标记失败并退出进程。
 async function runTaskWithTimeout(task) {
@@ -75,12 +97,12 @@ function handleTaskTimeoutExit(workerName, task, error) {
     process.exitCode = process.exitCode || 76;
 }
 // 启动 worker 周期心跳，避免长任务执行期间被 supervisor 误判为死亡。
-function startWorkerHeartbeat(workerName, type, initialStep) {
+function startWorkerHeartbeat(workerName, type, initialStep, progress) {
     let step = initialStep;
     let extra = {};
     const startedAt = new Date().toISOString();
     const write = () => {
-        writeWorkerHeartbeat(workerName, { kind: type, startedAt, step, ...extra });
+        writeWorkerHeartbeat(workerName, { kind: type, startedAt, step, ...progress, ...extra });
     };
     const timer = setInterval(write, 2000);
     if (timer.unref)
@@ -90,6 +112,10 @@ function startWorkerHeartbeat(workerName, type, initialStep) {
         setStep(nextStep, patch = {}) {
             step = nextStep || step;
             extra = patch;
+            write();
+        },
+        patchProgress(patch = {}) {
+            Object.assign(progress, patch);
             write();
         },
         stop(finalStep = 'stopped') {
@@ -198,14 +224,36 @@ function applyAdmissionDecisionToTask(task, admission) {
     };
 }
 // 执行不需要 S0 独占锁的低风险任务，同时保留 S2 状态迁移和结果落盘。
-async function runTaskWithoutGate(task, workerName, heartbeat) {
-    if (heartbeat)
+async function runTaskWithoutGate(task, workerName, heartbeat, progress) {
+    const startedAt = new Date().toISOString();
+    if (progress) {
+        updateWorkerProgress(progress, {
+            currentTaskId: task.id,
+            currentTaskStartedAt: startedAt,
+            parked: false,
+            parkSleepMs: 0,
+        });
+    }
+    if (heartbeat) {
+        if (progress)
+            heartbeat.patchProgress(progress);
         heartbeat.setStep('running', { taskId: task.id, taskKind: task.kind });
+    }
     const runningTask = markTaskRunning(task, workerName, 'running');
     if (runningTask.status !== 'running') {
         failIsolatedClaimingTask(runningTask, new Error('task did not enter running'), { reason: 'task_did_not_enter_running' });
-        if (heartbeat)
+        if (progress) {
+            updateWorkerProgress(progress, {
+                currentTaskId: '',
+                currentTaskStartedAt: '',
+                lastTaskFinishedAt: new Date().toISOString(),
+            });
+        }
+        if (heartbeat) {
+            if (progress)
+                heartbeat.patchProgress(progress);
             heartbeat.setStep('tick');
+        }
         return true;
     }
     try {
@@ -223,18 +271,37 @@ async function runTaskWithoutGate(task, workerName, heartbeat) {
             handleTaskTimeoutExit(workerName, runningTask, error);
     }
     finally {
-        if (heartbeat)
+        if (progress) {
+            updateWorkerProgress(progress, {
+                currentTaskId: '',
+                currentTaskStartedAt: '',
+                lastTaskFinishedAt: new Date().toISOString(),
+            });
+        }
+        if (heartbeat) {
+            if (progress)
+                heartbeat.patchProgress(progress);
             heartbeat.setStep('tick');
+        }
     }
     return true;
 }
 // 处理一个 S2 pending 任务；没有任务时返回 false。
-async function runOneQueuedTask(options = {}, heartbeat) {
+async function runOneQueuedTask(options = {}, heartbeat, progress) {
     const type = String(options.type || 'daily');
     const workerName = getWorkerName(type, options.workerName || '');
     const kinds = getWorkerTaskKinds(type);
     const toolActive = !!readResourceActivityLease('tool_active');
     const claimKinds = resolveClaimKindsForToolActive(kinds, toolActive);
+    if (progress) {
+        updateWorkerProgress(progress, {
+            lastClaimAttemptAt: new Date().toISOString(),
+            parked: false,
+            parkSleepMs: 0,
+        });
+    }
+    if (heartbeat && progress)
+        heartbeat.patchProgress(progress);
     const task = claimNextTask(claimKinds, workerName);
     if (!task)
         return false;
@@ -256,26 +323,53 @@ async function runOneQueuedTask(options = {}, heartbeat) {
     }
     if (admission.decision === 'defer') {
         deferTask(task, String(admission.reason || admission.decision));
+        if (progress)
+            updateWorkerProgress(progress, { lastTaskFinishedAt: new Date().toISOString() });
+        if (heartbeat && progress)
+            heartbeat.patchProgress(progress);
         return false;
     }
     if (admission.decision === 'queue') {
         requeueTask(task, String(admission.reason || admission.decision));
+        if (progress)
+            updateWorkerProgress(progress, { lastTaskFinishedAt: new Date().toISOString() });
+        if (heartbeat && progress)
+            heartbeat.patchProgress(progress);
         return false;
     }
     const admittedTask = applyAdmissionDecisionToTask(task, admission);
     if (!exclusive)
-        return runTaskWithoutGate(admittedTask, workerName, heartbeat);
+        return runTaskWithoutGate(admittedTask, workerName, heartbeat, progress);
     let runningTask = markTaskRunning(admittedTask, workerName, 'waiting_lock');
     if (runningTask.status !== 'running') {
         failIsolatedClaimingTask(runningTask, new Error('task did not enter running'), { reason: 'task_did_not_enter_running' });
-        if (heartbeat)
+        if (progress) {
+            updateWorkerProgress(progress, {
+                lastTaskFinishedAt: new Date().toISOString(),
+                currentTaskId: '',
+                currentTaskStartedAt: '',
+            });
+        }
+        if (heartbeat) {
+            if (progress)
+                heartbeat.patchProgress(progress);
             heartbeat.setStep('tick');
+        }
         return true;
     }
     let gateHandle = null;
     try {
-        if (heartbeat)
+        if (progress) {
+            updateWorkerProgress(progress, {
+                currentTaskId: task.id,
+                currentTaskStartedAt: new Date().toISOString(),
+            });
+        }
+        if (heartbeat) {
+            if (progress)
+                heartbeat.patchProgress(progress);
             heartbeat.setStep('waiting_lock', { taskId: task.id, taskKind: task.kind });
+        }
         gateHandle = await acquireResourceGate({
             taskId: task.id,
             kind: task.kind,
@@ -288,8 +382,11 @@ async function runOneQueuedTask(options = {}, heartbeat) {
             step: 'running',
         });
         gateHandle.updateStep('running');
-        if (heartbeat)
+        if (heartbeat) {
+            if (progress)
+                heartbeat.patchProgress(progress);
             heartbeat.setStep('running', { taskId: task.id, taskKind: task.kind });
+        }
         runningTask = markTaskRunning(runningTask, workerName, 'running');
         if (runningTask.status !== 'running') {
             failIsolatedClaimingTask(runningTask, new Error('task did not enter running'), { reason: 'task_did_not_enter_running' });
@@ -307,6 +404,15 @@ async function runOneQueuedTask(options = {}, heartbeat) {
     catch (error) {
         if (!gateHandle) {
             requeueTask(runningTask, error instanceof Error ? error.message : String(error || 'lock_wait_failed'));
+            if (progress) {
+                updateWorkerProgress(progress, {
+                    lastTaskFinishedAt: new Date().toISOString(),
+                    currentTaskId: '',
+                    currentTaskStartedAt: '',
+                });
+            }
+            if (heartbeat && progress)
+                heartbeat.patchProgress(progress);
             return false;
         }
         else {
@@ -319,25 +425,45 @@ async function runOneQueuedTask(options = {}, heartbeat) {
     finally {
         if (gateHandle)
             gateHandle.release('worker-finally');
-        if (heartbeat)
+        if (progress) {
+            updateWorkerProgress(progress, {
+                currentTaskId: '',
+                currentTaskStartedAt: '',
+                lastTaskFinishedAt: new Date().toISOString(),
+            });
+        }
+        if (heartbeat) {
+            if (progress)
+                heartbeat.patchProgress(progress);
             heartbeat.setStep('tick');
+        }
     }
 }
 // 执行一次 worker tick，media 类型走 S6 队列，其余类型走 S2 队列。
-async function runWorkerTick(options = {}, heartbeat) {
+async function runWorkerTick(options = {}, heartbeat, progress) {
     const type = String(options.type || 'daily');
     const workerName = getWorkerName(type, options.workerName || '');
-    if (heartbeat)
+    if (progress) {
+        updateWorkerProgress(progress, {
+            loopIterations: Number(progress.loopIterations || 0) + 1,
+            parked: false,
+            parkSleepMs: 0,
+        });
+    }
+    if (heartbeat) {
+        if (progress)
+            heartbeat.patchProgress(progress);
         heartbeat.setStep('tick');
+    }
     else
-        writeWorkerHeartbeat(workerName, { kind: type, step: 'tick' });
+        writeWorkerHeartbeat(workerName, { kind: type, step: 'tick', ...(progress || {}) });
     collectProcessMetrics({ workerName, workerType: type });
     const memory = checkWorkerMemoryLimit(workerName);
     if (memory.exceeded) {
         if (heartbeat)
             heartbeat.setStep('memory_limit_exceeded', { rssMb: memory.rssMb });
         else
-            writeWorkerHeartbeat(workerName, { kind: type, step: 'memory_limit_exceeded', rssMb: memory.rssMb });
+            writeWorkerHeartbeat(workerName, { kind: type, step: 'memory_limit_exceeded', rssMb: memory.rssMb, ...(progress || {}) });
         process.exitCode = 75;
         return false;
     }
@@ -345,7 +471,15 @@ async function runWorkerTick(options = {}, heartbeat) {
         return drainOneMediaTask({ workerName, gateWaitMs: options.gateWaitMs });
     const backgroundDirective = readWorkerBackgroundDirective(type, workerName);
     if (backgroundDirective && backgroundDirective.directive.action === 'park') {
+        if (progress) {
+            updateWorkerProgress(progress, {
+                parked: true,
+                parkSleepMs: Number(backgroundDirective.directive.sleepMs || 0),
+            });
+        }
         if (heartbeat) {
+            if (progress)
+                heartbeat.patchProgress(progress);
             heartbeat.setStep('parked', {
                 reason: backgroundDirective.directive.reason,
                 resourceState: backgroundDirective.directive.resourceState,
@@ -353,7 +487,7 @@ async function runWorkerTick(options = {}, heartbeat) {
         }
         return false;
     }
-    return runOneQueuedTask(options, heartbeat);
+    return runOneQueuedTask(options, heartbeat, progress);
 }
 function resolveWorkerIdleSleepMs(options = {}, worked = false) {
     const pollMs = Math.max(500, Math.min(30000, Number(options.pollMs || 2000)));
@@ -371,11 +505,33 @@ async function runWorkerLoop(options = {}) {
     const type = String(options.type || 'daily');
     const workerName = getWorkerName(type, options.workerName || '');
     const pollMs = Math.max(500, Math.min(30000, Number(options.pollMs || 2000)));
-    const heartbeat = startWorkerHeartbeat(workerName, type, 'started');
+    const progress = createInitialWorkerProgress();
+    const heartbeat = startWorkerHeartbeat(workerName, type, 'started', progress);
+    let consecutiveFailures = 0;
     try {
+        heartbeat.patchProgress(progress);
         heartbeat.setStep('started', { startedAt: new Date().toISOString() });
         do {
-            const worked = await runWorkerTick({ ...options, type, workerName }, heartbeat);
+            let worked = false;
+            try {
+                worked = await runWorkerTick({ ...options, type, workerName }, heartbeat, progress);
+                consecutiveFailures = 0;
+            }
+            catch (error) {
+                consecutiveFailures += 1;
+                writeProcessCleanupEvent({
+                    event: 'worker_tick_failed',
+                    workerName,
+                    workerType: type,
+                    consecutiveFailures,
+                    error: error instanceof Error ? error.message : String(error || 'worker tick failed'),
+                });
+                if (consecutiveFailures >= DEFAULT_WORKER_MAX_CONSECUTIVE_FAILURES) {
+                    process.exitCode = 77;
+                    break;
+                }
+                worked = false;
+            }
             if (options.once)
                 break;
             await sleep(resolveWorkerIdleSleepMs({ ...options, type, workerName, pollMs }, worked));
