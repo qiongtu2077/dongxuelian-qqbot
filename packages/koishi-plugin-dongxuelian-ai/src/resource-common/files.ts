@@ -24,7 +24,7 @@ function nowIso(): string {
 
 // 将任意标识压成可用于文件名的稳定短字符串。
 function sanitizeId(value: unknown, fallback = 'unknown'): string {
-  const text = String(value || fallback).replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 160)
+  const text = String(value || fallback).replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 160)
   return text || fallback
 }
 

@@ -631,6 +631,7 @@ async function main() {
     agentChatBridge: path.join(LIB, 'chat', 'agent-chat-bridge'),
     agentRetellGuard: path.join(LIB, 'chat', 'agent-retell-guard'),
     resultNotifier: path.join(LIB, 'resource-workers', 'result-notifier'),
+    resourceFiles: path.join(LIB, 'resource-common', 'files'),
     resourceTaskKinds: path.join(LIB, 'resource-common', 'resource-task-kinds'),
     personaFallback: path.join(LIB, 'persona', 'persona-fallback'),
     jailbreakRuleset: path.join(LIB, 'rulesets', 'jailbreak'),
@@ -2052,6 +2053,7 @@ async function main() {
   check('agent safety confirms uploaded file variant and memory writes', modules.agentSafety.check('create_uploaded_file_variant').action === 'confirm' && modules.agentSafety.check('remember_memory').action === 'confirm' && modules.agentSafety.check('forget_memory').action === 'confirm')
   check('agent safety confirms plan and scheduled write tools', modules.agentSafety.check('update_task_status').action === 'confirm' && modules.agentSafety.check('pause_scheduled_task').action === 'confirm' && modules.agentSafety.check('delete_scheduled_task').action === 'confirm' && modules.agentSafety.check('run_scheduled_task_now').action === 'confirm')
   check('agent memory safe user id is Windows portable', modules.agentMemory.safeUserId('private:10001') === 'private_10001')
+  check('resource sanitizeId is Windows portable for private channel keys', modules.resourceFiles.sanitizeId('private:10001') === 'private_10001')
   check('agent scheduled context policy filters external tools', !modules.agentEngine.applyContextPolicyToTools(modules.agentToolRegistry.getToolDefinitions('qq'), { allowExternalTools: false }).some(item => ['web_search', 'web_fetch', 'browser_action'].includes(item.function?.name)))
   checkEqual('agent token estimate counts content', modules.agentContext.estimateTokens([{ role: 'user', content: 'hello' }]), 2)
   check('agent tool result truncates long output', modules.agentContext.truncateToolResult('x'.repeat(8100)).includes('结果截断'))
@@ -3947,6 +3949,9 @@ async function main() {
   const directSession = makeSession({ isDirect: true, guildId: undefined, channelId: undefined, userId: 'userDirectA', author: { id: 'userDirectA' } })
   checkEqual('direct channel key isolates missing channel id by user', conv.getChannelKey(directSession), 'private:userDirectA')
   checkEqual('direct conversation key uses isolated private channel', conv.getConversationKey(directSession), 'private:userDirectA::userDirectA')
+  const directSessionWithChannel = makeSession({ isDirect: true, guildId: undefined, channelId: 'userDirectB', userId: 'userDirectB', author: { id: 'userDirectB' } })
+  checkEqual('direct channel key ignores private channel id and isolates by user', conv.getChannelKey(directSessionWithChannel), 'private:userDirectB')
+  checkEqual('direct conversation key ignores private channel id', conv.getConversationKey(directSessionWithChannel), 'private:userDirectB::userDirectB')
   conv.channelSharedCache.set('guildA', [
     { userId: 'userA', role: 'user', speakerName: 'Alice', content: 'first', messageId: 'm1', replyToId: '', mentionUserIds: [], ts: 1 },
     { userId: 'userB', role: 'user', speakerName: 'Bob', content: 'second', messageId: 'm2', replyToId: 'm1', mentionUserIds: ['userA'], ts: 2 },

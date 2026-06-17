@@ -39,6 +39,160 @@ async function run(t) {
     t.check('scenario vision clear removes current image marker', (vision.clearVisionSession(session), !vision.isVisionSession(session)), JSON.stringify(vision.getVisionPayload(session)))
   })
 
+  await withScenario({}, async ({ makeSession, harness, data }) => {
+    const apiPath = path.join(AI_ROOT, 'lib', 'core', 'api.js')
+    const chatPath = path.join(AI_ROOT, 'lib', 'chat.js')
+    const visionPath = path.join(AI_ROOT, 'lib', 'media', 'image', 'vision.js')
+    const storePath = path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js')
+    const conversationPath = path.join(AI_ROOT, 'lib', 'conversation.js')
+    const api = require(apiPath)
+    const originalApi = {
+      callGetImage: api.callGetImage,
+      readImageAsBase64: api.readImageAsBase64,
+      isVisionModel: api.isVisionModel,
+    }
+    api.callGetImage = async () => ({ file: 'vision-sync-local.png' })
+    api.readImageAsBase64 = async () => `data:image/png;base64,${ONE_PIXEL_PNG.toString('base64')}`
+    api.isVisionModel = () => true
+    const mocked = mockFetch([{
+      json: {
+        choices: [{
+          message: {
+            content: '<image_fact>图中是一个提示框，内容为“Bad Gateway (502)”。</image_fact>哎呀，网页炸掉了嘛，过一会儿再刷新试试看！',
+          },
+        }],
+      },
+    }])
+    await withFetch(mocked, async () => {
+      delete require.cache[require.resolve(chatPath)]
+      delete require.cache[require.resolve(visionPath)]
+      const session = makeSession({
+        guildId: '',
+        channelId: '',
+        isDirect: true,
+        userId: 'vision-sync-user',
+        author: { id: 'vision-sync-user', name: 'tester', nick: 'tester' },
+        messageId: 'vision-sync-image',
+        content: '[CQ:image,file=vision-sync.jpg]',
+        event: {
+          sender: { role: 'member' },
+          message: [{ type: 'image', data: { file: 'vision-sync.jpg' } }],
+        },
+      })
+      try {
+        data.writeText('ai-model.txt', 'qwen3.5-omni-flash')
+        try { require(path.join(AI_ROOT, 'lib', 'core', 'runtime-config.js')).resetConfigCache() } catch {}
+        const vision = require(visionPath)
+        const chatModule = require(chatPath)
+        const store = require(storePath)
+        const conversation = require(conversationPath)
+        await store.storeImageUrl('private:vision-sync-user', 'vision-sync-image', '', 'vision-sync.jpg', {
+          conversationKey: conversation.getConversationKey(session),
+          userId: session.userId,
+        })
+        vision.prepareVisionRequest(session, { hasVisual: true, hasFile: true, hasEmbed: false }, {
+          content: session.content,
+          allowCurrentMessage: true,
+          includeQuote: false,
+        })
+        const reply = await chatModule.chat(session, '[图片]', harness.ctx, {})
+        const entry = await store.getImageEntry('private:vision-sync-user', 'vision-sync-image')
+        const history = conversation.getConversationHistory(session)
+        const visibleReply = String(reply || '')
+        t.check('scenario current vision reply strips hidden image fact from visible output',
+          visibleReply.includes('网页炸掉了嘛') && !visibleReply.includes('<image_fact>') && !visibleReply.includes('Bad Gateway (502)'),
+          JSON.stringify({ reply: visibleReply, calls: mocked.calls }))
+        t.check('scenario current vision reply writes objective fact into image history',
+          entry && entry.analyzed === true && entry.analysisStatus === 'analyzed' && /Bad Gateway \(502\)/.test(entry.analysis || ''),
+          JSON.stringify(entry))
+        t.check('scenario current vision reply backfills conversation image placeholder',
+          history.some(item => /\[图片\]: 图中是一个提示框/.test(String(item.content || ''))),
+          JSON.stringify(history))
+      } finally {
+        api.callGetImage = originalApi.callGetImage
+        api.readImageAsBase64 = originalApi.readImageAsBase64
+        api.isVisionModel = originalApi.isVisionModel
+      }
+    })
+  })
+
+  await withScenario({}, async ({ makeSession, harness, data }) => {
+    const apiPath = path.join(AI_ROOT, 'lib', 'core', 'api.js')
+    const chatPath = path.join(AI_ROOT, 'lib', 'chat.js')
+    const visionPath = path.join(AI_ROOT, 'lib', 'media', 'image', 'vision.js')
+    const storePath = path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js')
+    const conversationPath = path.join(AI_ROOT, 'lib', 'conversation.js')
+    const api = require(apiPath)
+    const originalApi = {
+      callGetImage: api.callGetImage,
+      readImageAsBase64: api.readImageAsBase64,
+      isVisionModel: api.isVisionModel,
+    }
+    api.callGetImage = async () => ({ file: 'vision-fallback-local.png' })
+    api.readImageAsBase64 = async () => `data:image/png;base64,${ONE_PIXEL_PNG.toString('base64')}`
+    api.isVisionModel = () => true
+    const mocked = mockFetch([{
+      json: {
+        choices: [{
+          message: {
+            content: '图中是一个提示框，内容为“Bad Gateway (502)”。哎呀，网页炸掉了嘛，过一会儿再刷新试试看！',
+          },
+        }],
+      },
+    }])
+    await withFetch(mocked, async () => {
+      delete require.cache[require.resolve(chatPath)]
+      delete require.cache[require.resolve(visionPath)]
+      const session = makeSession({
+        guildId: '',
+        channelId: '',
+        isDirect: true,
+        userId: 'vision-fallback-user',
+        author: { id: 'vision-fallback-user', name: 'tester', nick: 'tester' },
+        messageId: 'vision-fallback-image',
+        content: '[CQ:image,file=vision-fallback.jpg]',
+        event: {
+          sender: { role: 'member' },
+          message: [{ type: 'image', data: { file: 'vision-fallback.jpg' } }],
+        },
+      })
+      try {
+        data.writeText('ai-model.txt', 'qwen3.5-omni-flash')
+        try { require(path.join(AI_ROOT, 'lib', 'core', 'runtime-config.js')).resetConfigCache() } catch {}
+        const vision = require(visionPath)
+        const chatModule = require(chatPath)
+        const store = require(storePath)
+        const conversation = require(conversationPath)
+        await store.storeImageUrl('private:vision-fallback-user', 'vision-fallback-image', '', 'vision-fallback.jpg', {
+          conversationKey: conversation.getConversationKey(session),
+          userId: session.userId,
+        })
+        vision.prepareVisionRequest(session, { hasVisual: true, hasFile: true, hasEmbed: false }, {
+          content: session.content,
+          allowCurrentMessage: true,
+          includeQuote: false,
+        })
+        const reply = await chatModule.chat(session, '[图片]', harness.ctx, {})
+        const entry = await store.getImageEntry('private:vision-fallback-user', 'vision-fallback-image')
+        const history = conversation.getConversationHistory(session)
+        const visibleReply = String(reply || '')
+        t.check('scenario current vision reply without hidden tag keeps visible persona reply',
+          visibleReply.includes('网页炸掉了嘛') && !visibleReply.includes('<image_fact>'),
+          JSON.stringify({ reply: visibleReply, calls: mocked.calls }))
+        t.check('scenario current vision reply without hidden tag still writes image history',
+          entry && entry.analyzed === true && entry.analysisStatus === 'analyzed' && /Bad Gateway \(502\)/.test(entry.analysis || ''),
+          JSON.stringify(entry))
+        t.check('scenario current vision reply without hidden tag still backfills conversation image placeholder',
+          history.some(item => /\[图片\]: 图中是一个提示框/.test(String(item.content || ''))),
+          JSON.stringify(history))
+      } finally {
+        api.callGetImage = originalApi.callGetImage
+        api.readImageAsBase64 = originalApi.readImageAsBase64
+        api.isVisionModel = originalApi.isVisionModel
+      }
+    })
+  })
+
   await withScenario({}, async ({ makeSession }) => {
     const vision = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'vision.js'))
     const session = makeSession({

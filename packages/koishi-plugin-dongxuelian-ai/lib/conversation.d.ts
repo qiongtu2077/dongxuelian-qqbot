@@ -158,7 +158,7 @@ declare function writeConversationDisk(key: string, data: ConversationDiskData):
 declare function replaceImagePlaceholderInConversation(key: string, messageId: string, analysis: string): Promise<boolean>;
 declare function getConversationHistory(session: SessionLike): ConversationMessage[];
 declare function mergeConversationMessages(diskMessages?: ConversationMessage[], cachedMessages?: ConversationMessage[]): ConversationMessage[];
-declare function saveConversationTurn(session: SessionLike, userText: string, replyText: string): void;
+declare function saveConversationTurn(session: SessionLike, userText: string, replyText: string): Promise<void>;
 declare function generateConversationSummary(key: string): Promise<void>;
 declare function clearConversationHistory(): void;
 declare function clearUserConversationHistory(session: SessionLike): void;

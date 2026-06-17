@@ -16,6 +16,8 @@ requestOpenAIResponsesWithSearch, // OpenAI Responses API（联网搜索）
 isVisionModel, // 判断模型是否支持视觉
  } = require('./core/api');
 const { isVisionSession, clearVisionSession, appendVisionMessage, isVisionBlindnessReply, downgradeVisionMessageToText } = require('./media/image/vision'); // 多模态图片会话管理
+const { markAnalyzed, replaceImagePlaceholder } = require('./media/image/image-store');
+const { sanitizeImageAnalysis } = require('./media/image/image-analysis-sanitizer');
 const { getConversationKey, getChannelKey, // 会话/频道唯一标识生成
 readConversationDisk, // 从磁盘加载历史（冷启动）
 getConversationHistory, // 获取当前会话历史（内存缓存 + 磁盘回退）
@@ -108,6 +110,56 @@ function toChatText(value) {
         return String(message.content || '');
     }
     return String(value || '');
+}
+function extractVisionObjectiveFact(reply = '') {
+    const text = String(reply || '');
+    if (!text)
+        return { visibleReply: '', fact: '' };
+    const match = text.match(/<image_fact>([\s\S]*?)<\/image_fact>/i);
+    if (match) {
+        const fact = sanitizeImageAnalysis(String(match[1] || ''));
+        const visibleReply = text.replace(/<image_fact>[\s\S]*?<\/image_fact>/gi, '').trim();
+        return { visibleReply, fact };
+    }
+    const trimmed = text.trim();
+    const candidates = [];
+    const firstSentenceMatch = trimmed.match(/^([\s\S]{1,120}?[。！？!?])/);
+    if (firstSentenceMatch && firstSentenceMatch[1])
+        candidates.push(String(firstSentenceMatch[1] || '').trim());
+    const firstLine = trimmed.split(/\r?\n/, 1)[0]?.trim() || '';
+    if (firstLine)
+        candidates.push(firstLine);
+    candidates.push(trimmed);
+    let fact = '';
+    let consumedPrefix = '';
+    for (const candidate of candidates) {
+        const sanitized = sanitizeImageAnalysis(candidate);
+        if (!sanitized)
+            continue;
+        fact = sanitized;
+        consumedPrefix = candidate;
+        break;
+    }
+    if (!fact)
+        return { visibleReply: trimmed, fact: '' };
+    const remaining = consumedPrefix && trimmed.startsWith(consumedPrefix)
+        ? trimmed.slice(consumedPrefix.length).trim()
+        : '';
+    return {
+        visibleReply: remaining || trimmed,
+        fact,
+    };
+}
+async function syncVisionAnalysisArtifacts(channelKey, messageId, analysis) {
+    if (!channelKey || !messageId || !analysis)
+        return;
+    try {
+        await markAnalyzed(channelKey, messageId, analysis);
+        await replaceImagePlaceholder(channelKey, messageId, analysis);
+    }
+    catch {
+        /* non-critical: image-history sync should never block visible chat reply */
+    }
 }
 function asRecord(value) {
     return value && typeof value === 'object' ? value : {};
@@ -310,14 +362,14 @@ async function chat(session, userText, ctx, options = {}) {
         const repeatedReply = Math.random() < 0.5
             ? trimReply(cleanInput, MAX_OUTPUT_CHARS_FRIENDLY)
             : trimReply(pickRepeatedFallbackReply(session), MAX_OUTPUT_CHARS_ABUSIVE);
-        saveConversationTurn(session, currentUserMessage, repeatedReply);
+        await saveConversationTurn(session, currentUserMessage, repeatedReply);
         return repeatedReply;
     }
     // 输入层越狱拦截：检测到 prompt injection 走专用嘲讽模型，不走正常 chat 流程
     if (isJailbreakAttempt(cleanInput)) {
         ctx.logger('dongxuelian-ai').warn(`jailbreak attempt detected, blocking. input: ${cleanInput.slice(0, 80)}`);
         const jailbreakReply = await chatJailbreak(session, cleanInput, ctx, { systemPrompt });
-        saveConversationTurn(session, currentUserMessage, jailbreakReply);
+        await saveConversationTurn(session, currentUserMessage, jailbreakReply);
         return jailbreakReply;
     }
     // 上下文越狱检测：历史回复显示已被软越狱积累（如持续出现喵/主人），清空历史重置
@@ -325,7 +377,7 @@ async function chat(session, userText, ctx, options = {}) {
         ctx.logger('dongxuelian-ai').warn(`context jailbreak detected, clearing history. key: ${getConversationKey(session)}`);
         clearUserConversationHistory(session);
         const jailbreakReply = await chatJailbreak(session, cleanInput, ctx, { systemPrompt });
-        saveConversationTurn(session, currentUserMessage, jailbreakReply);
+        await saveConversationTurn(session, currentUserMessage, jailbreakReply);
         return jailbreakReply;
     }
     // Agent 结果注入：Agent 结果作为上下文，走正常 chat 流程（1 次 AI 调用）
@@ -344,7 +396,7 @@ async function chat(session, userText, ctx, options = {}) {
             callModel: callOpenAIForText,
             now,
         });
-        saveConversationTurn(session, currentUserMessage, agentFinal);
+        await saveConversationTurn(session, currentUserMessage, agentFinal);
         return agentFinal;
     }
     const contextTag = isRandomTriggered ? '\n[群聊刷到]' : '';
@@ -675,8 +727,8 @@ async function chat(session, userText, ctx, options = {}) {
             }
         }
         const visionPromptText = options.randomTriggered
-            ? '[群里刷到一张图。如果你看清了图，按你的人设风格说一句感受；不要假设这是有人专程拿给你看的。]'
-            : '[用户发来一张图。按你的人设风格简单回应一句。]';
+            ? '[群里刷到一张图。如果你看清了图，先输出 <image_fact>标签包住的一句客观图片事实（只描述图片里客观看到的内容，60字内，不要称呼用户，不要续聊），再输出按你人设风格的一句可见回应；不要假设这是有人专程拿给你看的。]'
+            : '[用户发来一张图。先输出 <image_fact>标签包住的一句客观图片事实（只描述图片里客观看到的内容，60字内，不要称呼用户，不要续聊），再输出按你人设风格的一句可见回应。]';
         const visionResult = await appendVisionMessage(asVisionMessages(messages), session, vc, ctx, {
             promptText: visionPromptText,
             readFailReply: '图片读取失败，换个图试试？',
@@ -764,6 +816,7 @@ async function chat(session, userText, ctx, options = {}) {
     let replyText = toChatText(toolFlowResult.reply);
     const usedReminderActionTool = toolFlowResult.usedReminderActionTool;
     const usedUploadedFileVariantTool = toolFlowResult.usedUploadedFileVariantTool;
+    let visionObjectiveFact = '';
     // 记录 AI 提问"需要记住"的时间戳，供 memory 确认超时使用
     rememberMemoryPrompt(currentUserId, channelKey, replyText);
     // 模型输出文本格式 tool_call 时，strip 后重试（不带 tools）
@@ -777,6 +830,11 @@ async function chat(session, userText, ctx, options = {}) {
             messages.push({ role: 'user', content: '【系统提示：不要输出工具调用格式，直接用自然语言回答。】' });
             replyText = await callOpenAIForText(messages, !!options.randomTriggered);
         }
+    }
+    if (wasVisionRequest) {
+        const extracted = extractVisionObjectiveFact(replyText);
+        replyText = extracted.visibleReply;
+        visionObjectiveFact = extracted.fact;
     }
     // vision 对账：模型说"看不到图/再发一遍"通常意味着 image_url 没被 provider/model 真正解析。
     // 把多模态 user 消息降级为纯文本占位，再请求一次，避免输出"我没法看到你说的图 + 编造话题硬蹭"这类自相矛盾结果。
@@ -793,7 +851,7 @@ async function chat(session, userText, ctx, options = {}) {
     if (JAILBREAK_OUTPUT_RE.test(replyText)) {
         ctx.logger('dongxuelian-ai').warn(`jailbreak output detected, forcing fallback. reply: ${replyText.slice(0, 80)}`);
         const jailbreakReply = await chatJailbreak(session, cleanInput, ctx, { systemPrompt });
-        saveConversationTurn(session, currentUserMessage, jailbreakReply);
+        await saveConversationTurn(session, currentUserMessage, jailbreakReply);
         return jailbreakReply;
     }
     const finalResult = await finalizeChatReply({
@@ -817,7 +875,10 @@ async function chat(session, userText, ctx, options = {}) {
     if (!finalResult.shouldSend)
         return '';
     const finalReply = finalResult.finalReply;
-    saveConversationTurn(session, currentUserMessage, finalReply);
+    await saveConversationTurn(session, currentUserMessage, finalReply);
+    if (wasVisionRequest && session.messageId && visionObjectiveFact) {
+        await syncVisionAnalysisArtifacts(channelKey, String(session.messageId || ''), visionObjectiveFact);
+    }
     return finalReply;
 }
 module.exports = {

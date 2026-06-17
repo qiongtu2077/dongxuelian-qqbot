@@ -206,10 +206,10 @@ function getSessionUserId(session) {
 }
 // 与 core/utils.safeChannelKey 的区别：本函数接受 session 对象，safeChannelKey 接受字符串值
 function getChannelKey(session) {
-    if (session?.guildId || session?.channelId)
-        return String(session.guildId || session.channelId);
     if (session?.isDirect)
         return `private:${getSessionUserId(session)}`;
+    if (session?.guildId || session?.channelId)
+        return String(session.guildId || session.channelId);
     return 'private';
 }
 function getConversationKey(session) { return `${getChannelKey(session)}::${getSessionUserId(session)}`; }
@@ -330,7 +330,7 @@ function mergeConversationMessages(diskMessages = [], cachedMessages = []) {
 }
 function saveConversationTurn(session, userText, replyText) {
     const key = getConversationKey(session);
-    enqueueWrite(key, () => {
+    return enqueueWrite(key, () => {
         const diskData = readConversationDisk(key) || { summary: '', summaryTotal: 0, totalCount: 0, messages: [] };
         diskData.messages = mergeConversationMessages(diskData.messages, conversationCache.get(key));
         diskData.totalCount = Math.max(Number(diskData.totalCount || 0), diskData.messages.filter(item => item && item.role === 'user').length);

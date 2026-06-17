@@ -232,9 +232,10 @@ async function run(t) {
         const replyText = session.sent.join(' ')
         assertSilentQueueNoPlaceholder(t, 'mocked private search', session.sent)
         t.check('mocked private search queues without entry web_search', searchCalls.length === 0 && mocked.calls.length === 0, JSON.stringify({ searchCalls, calls: mocked.calls.length }))
+        const privateChannelKey = 'private:e2e_private'
         const tasks = listE2eAgentTasks()
         const task = tasks.find(item =>
-          item && item.channelKey === 'private-e2e' && item.userId === 'e2e_private' &&
+          item && item.channelKey === privateChannelKey && item.userId === 'e2e_private' &&
           item.payload && item.payload.entry === 'qq-auto-route' && item.payload.reason === 'general-search-intent'
         ) || {}
         const { payload, agentWorker, engineInput } = getE2eAgentWorkerParts(task)
