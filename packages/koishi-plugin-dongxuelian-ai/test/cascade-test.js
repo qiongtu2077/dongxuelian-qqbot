@@ -425,13 +425,13 @@ const CMD = {
   thinkingOff: '\u4e1c\u96ea\u83b2\u601d\u8003\u5173',
   todayEmotion: '\u4eca\u65e5\u60c5\u7eea',
   helpCollection: '\u5e2e\u52a9\u96c6\u5408',
-  quickRef: '\u6307\u4ee4\u901f\u67e5',
-  common: '\u5e38\u7528',
+  helpCollectionDongxuelian: '东雪莲集合',
+  misc: '杂项功能',
+  provider: '供应商',
   other: '\u5176\u4ed6',
   groupReply: '\u7fa4\u804a\u4e3b\u52a8\u56de\u590d',
   network: '\u8054\u7f51',
   eventDump: '\u6293\u53d6\u539f\u59cb\u4e8b\u4ef6',
-  blacklist: '\u9ed1\u540d\u5355\u7ba1\u7406',
   whitelistBlacklist: '\u767d\u540d\u5355\u9ed1\u540d\u5355\u7ba1\u7406',
   persona: '\u4eba\u683c',
   sensitive: '\u654f\u611f\u8bdd\u9898\u68c0\u6d4b',
@@ -3992,17 +3992,22 @@ async function main() {
   const renderCalls = [...helpSrc.matchAll(/return\s+(render\w+)\s*\(/g)].map(m => m[1])
   const missingRender = [...new Set(renderCalls.filter(name => !renderDefs.has(name)))]
   check('help render functions complete', missingRender.length === 0, missingRender.join(', '))
-  for (const name of ['renderCollectionHelp', 'renderQuickReference', 'renderSensitiveHelp', 'renderPersonaHelp']) {
+  for (const name of ['renderCollectionHelp', 'renderMiscHelp', 'renderSensitiveHelp', 'renderPersonaHelp']) {
     check(`help ${name} exists`, renderDefs.has(name))
   }
+  check('help quick reference renderer removed', !renderDefs.has('renderQuickReference'))
 
   for (const command of [
-    CMD.helpCollection, CMD.common, CMD.groupReply, CMD.network,
-    CMD.eventDump, CMD.blacklist, CMD.whitelistBlacklist, CMD.persona, CMD.sensitive,
-    CMD.quickRef,
+    CMD.helpCollection, CMD.helpCollectionDongxuelian, CMD.misc, CMD.groupReply, CMD.network,
+    CMD.eventDump, CMD.whitelistBlacklist, CMD.persona, CMD.sensitive,
+    CMD.provider,
   ]) {
     check(`reserved command recognized: ${command}`, u.isReservedCommand(command))
     check(`reserved command listed in constants: ${command}`, constantsSrc.includes(`'${command}'`))
+  }
+  for (const removedCommand of ['常用', '指令速查', '其他帮助', '黑名单管理']) {
+    check(`removed menu command not reserved: ${removedCommand}`, !u.isReservedCommand(removedCommand))
+    check(`removed menu command absent from constants: ${removedCommand}`, !constantsSrc.includes(`'${removedCommand}'`))
   }
 
   section('13. gitignore and sensitive data protection')

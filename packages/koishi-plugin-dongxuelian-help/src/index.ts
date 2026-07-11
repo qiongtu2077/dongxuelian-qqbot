@@ -30,11 +30,14 @@ interface ProviderInfo {
   models: ModelInfo[]
 }
 
+// --- 文本处理 --- #
+
 // 统一压缩消息里的多余空白，方便做精确指令匹配。
 function normalizeText(text: string = ''): string {
   return String(text).replace(/\s+/g, ' ').trim()
 }
 
+// 去掉消息里的 at 片段，让菜单命令可以在 @bot 后正常匹配。
 function stripMentions(text: string = ''): string {
   return String(text)
     .replace(/<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi, ' ')
@@ -99,30 +102,31 @@ const PROVIDERS: Record<string, ProviderInfo> = {
   },
 }
 
-// 根帮助菜单：列出当前可查看的子菜单与速查入口。
+// --- 菜单渲染 --- #
+
+// 根帮助菜单：列出一级菜单入口和模糊搜索入口。
 function renderRootHelp(): string {
   return [
     '东雪莲帮助',
     '',
-    '可用子菜单：',
+    '可用菜单：',
     '- helpAI / 帮助AI / AI帮助',
-    '- help集合 / 帮助集合',
-    '- 其他帮助 / 指令速查',
-    '- 人格',
+    '- 【杂项功能】',
+    '- help集合 / 帮助集合 / 东雪莲集合',
+    '- /help <关键词>',
   ].join('\n')
 }
 
+// 渲染 AI 菜单目录，详细分支由同名精确入口打开。
 function renderAiHelp(): string {
   return [
     'AI帮助',
     'helpAI / 帮助AI / AI帮助',
     '',
-    '【常用】',
-    '【切换模型】',
+    '【切换模型与供应商】',
     '【群聊主动回复】',
     '【联网】',
     '【抓取原始事件】',
-    '【集合】',
     '【记忆】',
     '【敏感话题检测】',
     '【白名单黑名单管理】',
@@ -130,17 +134,16 @@ function renderAiHelp(): string {
   ].join('\n')
 }
 
-function renderCommonHelp(): string {
+// 渲染根菜单下的杂项功能分支。
+function renderMiscHelp(): string {
   return [
-    '【常用】',
-    '@东雪莲 你的问题',
+    '【杂项功能】',
     'AI状态',
-    '- AI诊断',
+    'AI诊断',
     'AI重载',
     '东雪莲帮我选 A 还是 B',
     '东雪莲吐槽我',
     '东雪莲帮我说话 <内容>',
-    '东雪莲复读开 / 关 / 状态（群管理员/群主）',
     '今日情绪',
     '群聊日报 / 群聊详细日报',
     '谁艾特我 / 谁@我',
@@ -148,6 +151,7 @@ function renderCommonHelp(): string {
   ].join('\n')
 }
 
+// 渲染 AI 菜单里的记忆分支。
 function renderMemoryHelp(): string {
   return [
     '【记忆】',
@@ -158,6 +162,7 @@ function renderMemoryHelp(): string {
   ].join('\n')
 }
 
+// 渲染 AI 菜单里的白名单黑名单管理分支。
 function renderBlacklistHelp(): string {
   return [
     '【白名单黑名单管理】',
@@ -169,6 +174,7 @@ function renderBlacklistHelp(): string {
   ].join('\n')
 }
 
+// 渲染 AI 菜单里的群聊主动回复分支。
 function renderGroupReplyHelp(): string {
   return [
     '【群聊主动回复】',
@@ -182,10 +188,11 @@ function renderGroupReplyHelp(): string {
     '群聊AI白名单查看',
     '群聊AI白名单添加群号',
     '群聊AI白名单删除群号',
-    '东雪莲复读开 / 关 / 状态',
+    '东雪莲复读开 / 关 / 状态（群管理员/群主）',
   ].join('\n')
 }
 
+// 渲染 AI 菜单里的联网分支。
 function renderNetworkHelp(): string {
   return [
     '【联网】',
@@ -195,6 +202,7 @@ function renderNetworkHelp(): string {
   ].join('\n')
 }
 
+// 渲染 AI 菜单里的原始事件抓取分支。
 function renderEventHelp(): string {
   return [
     '【抓取原始事件】',
@@ -204,6 +212,7 @@ function renderEventHelp(): string {
   ].join('\n')
 }
 
+// 渲染根菜单下的集合分支。
 function renderCollectionHelp(): string {
   return [
     '\u3010\u96c6\u5408\u3011',
@@ -221,21 +230,7 @@ function renderCollectionHelp(): string {
   ].join('\n')
 }
 
-function renderQuickReference(): string {
-  return [
-    '【其他帮助】',
-    'help东雪莲：查看总菜单',
-    '今日情绪',
-    '群聊日报 / 群聊详细日报',
-    '谁艾特我 / 谁@我',
-    '定位消息 <编号>（引用跳转）',
-    '东雪莲复读开 / 关 / 状态',
-    '东雪莲测试开 / 关',
-    '东雪莲嘴臭开 / 关（管理员）',
-    '东雪莲思考开 / 关',
-  ].join('\n')
-}
-
+// 渲染 AI 菜单里的敏感话题检测分支。
 function renderSensitiveHelp(): string {
   return [
     '【敏感话题检测】',
@@ -248,6 +243,7 @@ function renderSensitiveHelp(): string {
   ].join('\n')
 }
 
+// 渲染 AI 菜单里的人格分支。
 function renderPersonaHelp(): string {
   return [
     '【人格】',
@@ -264,8 +260,10 @@ function renderPersonaHelp(): string {
   ].join('\n')
 }
 
+// 渲染切换模型与供应商分支的供应商入口。
 function renderSwitchModels(): string {
   return [
+    '【切换模型与供应商】',
     '供应商 opencode',
     '供应商 dashscope',
     '供应商 deepseek',
@@ -274,6 +272,7 @@ function renderSwitchModels(): string {
   ].join('\n')
 }
 
+// 渲染指定供应商下的可切换模型。
 function renderProviderModels(providerId: string): string {
   const id = String(providerId).toLowerCase()
   const prov = PROVIDERS[id] || Object.values(PROVIDERS).find(p => p.name.toLowerCase() === id)
@@ -284,6 +283,7 @@ function renderProviderModels(providerId: string): string {
   ].join('\n')
 }
 
+// 渲染全部供应商和模型 id。
 function renderAvailableModels(): string {
   let text = ''
   for (const [, prov] of Object.entries(PROVIDERS)) {
@@ -293,6 +293,9 @@ function renderAvailableModels(): string {
   return text.trim()
 }
 
+// --- 插件入口 --- #
+
+// 注册帮助菜单 middleware，并按菜单树做精确匹配和模糊搜索。
 function apply(ctx: ContextLike): void {
   ctx.on('ready', () => {
     ctx.logger('dongxuelian-help').info(`dongxuelian-help ${PLUGIN_VERSION} loaded`)
@@ -309,51 +312,43 @@ function apply(ctx: ContextLike): void {
       return renderAiHelp()
     }
 
-    if (plain === 'help集合' || plain === '帮助集合') {
+    if (plain === '杂项功能' || plain === '【杂项功能】') {
+      return renderMiscHelp()
+    }
+
+    if (plain === 'help集合' || plain === '帮助集合' || plain === '东雪莲集合') {
       return renderCollectionHelp()
     }
 
-    if (plain === '指令速查' || plain === 'help速查' || plain === '帮助速查' || plain === '其他帮助') {
-      return renderQuickReference()
-    }
-
-    if (plain === '常用') {
-      return renderCommonHelp()
-    }
-
-    if (plain === '群聊主动回复') {
+    if (plain === '群聊主动回复' || plain === '【群聊主动回复】') {
       return renderGroupReplyHelp()
     }
 
-    if (plain === '联网') {
+    if (plain === '联网' || plain === '【联网】') {
       return renderNetworkHelp()
     }
 
-    if (plain === '抓取原始事件') {
+    if (plain === '抓取原始事件' || plain === '【抓取原始事件】') {
       return renderEventHelp()
     }
 
-    if (plain === '黑名单管理' || plain === '白名单黑名单管理' || plain === '黑名单白名单管理') {
+    if (plain === '白名单黑名单管理' || plain === '【白名单黑名单管理】') {
       return renderBlacklistHelp()
     }
 
-    if (plain === '人格') {
+    if (plain === '人格' || plain === '【人格】') {
       return renderPersonaHelp()
     }
 
-    if (plain === '集合') {
-      return renderCollectionHelp()
-    }
-
-    if (plain === '记忆') {
+    if (plain === '记忆' || plain === '【记忆】') {
       return renderMemoryHelp()
     }
 
-    if (plain === '敏感话题检测') {
+    if (plain === '敏感话题检测' || plain === '【敏感话题检测】') {
       return renderSensitiveHelp()
     }
 
-    if (plain === '切换模型') {
+    if (plain === '切换模型' || plain === '【切换模型与供应商】') {
       return renderSwitchModels()
     }
 
@@ -367,10 +362,10 @@ function apply(ctx: ContextLike): void {
       const keyword = helpSearchMatch[1].trim()
       if (!keyword) return ''
       const allRenderers = [
-        renderRootHelp, renderAiHelp, renderCommonHelp, renderMemoryHelp,
+        renderRootHelp, renderAiHelp, renderMiscHelp, renderMemoryHelp,
         renderGroupReplyHelp, renderNetworkHelp, renderEventHelp, renderCollectionHelp,
         renderBlacklistHelp, renderSensitiveHelp, renderPersonaHelp,
-        renderSwitchModels, renderAvailableModels, renderQuickReference,
+        renderSwitchModels, renderAvailableModels,
       ]
       const allText = allRenderers.map(fn => fn()).join('\n')
       const matchedLines = allText.split('\n').filter(line => line.includes(keyword))

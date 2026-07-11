@@ -73,13 +73,34 @@ async function run() {
 
   let result = await runHelpCase(ctx, 'help东雪莲')
   check('root help returns menu', typeof result.result === 'string' && result.result.includes('东雪莲帮助') && result.result.includes('helpAI'), String(result.result))
+  check('root help lists misc and collection at root level', typeof result.result === 'string' && result.result.includes('【杂项功能】') && result.result.includes('东雪莲集合'), String(result.result))
+  check('root help no longer lists quick reference menu', typeof result.result === 'string' && !result.result.includes('指令速查') && !result.result.includes('其他帮助'), String(result.result))
   check('root help does not call next', result.nextCalled === false)
 
   result = await runHelpCase(ctx, '[CQ:at,qq=90000] helpAI')
   check('mentions are stripped before helpAI match', typeof result.result === 'string' && result.result.includes('AI帮助'), String(result.result))
+  check('AI help lists tree branches only', typeof result.result === 'string' && result.result.includes('【切换模型与供应商】') && !result.result.includes('【常用】') && !result.result.includes('【集合】'), String(result.result))
+
+  result = await runHelpCase(ctx, '杂项功能')
+  check('misc help returns root-level misc branch', typeof result.result === 'string' && result.result.includes('【杂项功能】') && result.result.includes('今日情绪'), String(result.result))
+
+  result = await runHelpCase(ctx, '【杂项功能】')
+  check('bracketed misc branch title also matches', typeof result.result === 'string' && result.result.includes('【杂项功能】'), String(result.result))
 
   result = await runHelpCase(ctx, 'help集合')
   check('collection help returns collection commands', typeof result.result === 'string' && result.result.includes('集合添加'), String(result.result))
+
+  result = await runHelpCase(ctx, '东雪莲集合')
+  check('new collection alias returns collection commands', typeof result.result === 'string' && result.result.includes('集合添加'), String(result.result))
+
+  result = await runHelpCase(ctx, '指令速查')
+  check('removed quick reference exact command falls through', result.result === 'NEXT' && result.nextCalled === true, JSON.stringify(result))
+
+  result = await runHelpCase(ctx, '常用')
+  check('removed common exact command falls through', result.result === 'NEXT' && result.nextCalled === true, JSON.stringify(result))
+
+  result = await runHelpCase(ctx, '集合')
+  check('removed bare collection exact command falls through', result.result === 'NEXT' && result.nextCalled === true, JSON.stringify(result))
 
   result = await runHelpCase(ctx, '/help 人格')
   check('fuzzy help returns matching lines', typeof result.result === 'string' && result.result.includes('/help人格 结果'), String(result.result))
