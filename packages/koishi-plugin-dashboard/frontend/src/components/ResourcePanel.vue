@@ -252,7 +252,7 @@
         <div v-for="event in events" :key="eventKey(event)" class="resource-event">
           <span>{{ display(event.source) }}</span>
           <b>{{ display(event.event) }}</b>
-          <small>{{ display(event.reason || event.error || event.createdAt) }}</small>
+          <small>{{ eventDetail(event) }}</small>
         </div>
         <div v-if="!events.length" class="resource-empty">暂无事件</div>
       </div>
@@ -450,6 +450,14 @@ export default {
       if (value === null || value === undefined || value === '') return fallback
       if (typeof value === 'object') return JSON.stringify(value).slice(0, 120)
       return String(value)
+    }
+
+    // 格式化资源事件详情，并明确标注只确认根进程退出的清理结果。
+    function eventDetail(event: JsonRecord): string {
+      if (String(event.event || '') === 'process_tree_terminated' && event.treeTerminationConfirmed === false) {
+        return '根进程已终止，子进程树未确认'
+      }
+      return display(event.reason || event.error || event.createdAt)
     }
 
     // 数字展示统一归一，未知值显示 0。
@@ -785,6 +793,7 @@ export default {
       status,
       tasks,
       events,
+      eventDetail,
       memoryHistory,
       memoryRange,
       memoryRangeOptions,

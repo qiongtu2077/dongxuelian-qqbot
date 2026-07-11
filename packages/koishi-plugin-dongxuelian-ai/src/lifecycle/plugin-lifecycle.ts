@@ -74,6 +74,7 @@ const {
 } = require('../resource-workers/task-paths') as typeof import('../resource-workers/task-paths')
 const {
   runSupervisorOnce,
+  clearOwnedWorkerProcesses,
 } = require('../resource-workers/worker-supervisor') as typeof import('../resource-workers/worker-supervisor')
 
 interface TodayCacheSnapshot {
@@ -319,6 +320,7 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     clearChannelQueues()
     clearRandomPendingState()
     clearStartupSchedulers()
+    clearOwnedWorkerProcesses()
   })
 }
 

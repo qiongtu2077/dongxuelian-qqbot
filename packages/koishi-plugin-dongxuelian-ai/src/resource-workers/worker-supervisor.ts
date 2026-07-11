@@ -5,7 +5,7 @@
  */
 const fs = require('fs')
 const path = require('path')
-const { spawn } = require('child_process')
+const { spawn } = require('child_process') as typeof import('child_process')
 const { decideAdmission } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
 const { readResourceSnapshot } = require('../resource-scheduler/resource-snapshot') as typeof import('../resource-scheduler/resource-snapshot')
 const { SUPERVISOR_DIR } = require('./task-paths') as typeof import('./task-paths')
@@ -76,6 +76,31 @@ const DEFERRED_RESTORE_MAX_ACTIVE = Math.max(
   Number(process.env.RESOURCE_DEFERRED_RESTORE_MAX_ACTIVE || process.env.DAILY_SLOT_BACKLOG_STOP_MAX_PENDING || 8),
 )
 const WORKER_HEARTBEAT_STALE_MS = 10000
+const ownedWorkerProcesses = new Map<string, import('child_process').ChildProcess>()
+
+// 记录当前 supervisor 亲自启动的 worker，并在进程退出后撤销所有权。
+function rememberOwnedWorkerProcess(workerName: string, child: import('child_process').ChildProcess): void {
+  ownedWorkerProcesses.set(workerName, child)
+  const release = (): void => {
+    if (ownedWorkerProcesses.get(workerName) === child) ownedWorkerProcesses.delete(workerName)
+  }
+  child.once('exit', release)
+  child.once('error', release)
+}
+
+// 判断 worker PID 是否仍对应当前 supervisor 持有的活子进程句柄。
+function isOwnedWorkerProcessAlive(workerName: string, pid: number): boolean {
+  const child = ownedWorkerProcesses.get(workerName)
+  return !!child
+    && Number(child.pid) === pid
+    && child.exitCode === null
+    && child.signalCode === null
+}
+
+// 清空 supervisor 持有的 worker 句柄引用；不额外终止子进程。
+function clearOwnedWorkerProcesses(): void {
+  ownedWorkerProcesses.clear()
+}
 
 function resolveBoundedNumber(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = Number(value)
@@ -254,6 +279,7 @@ function recoverZombieWorker(worker: ResourceWorkerStateLike): boolean {
     owner: workerName,
     source: 'resource_worker_supervisor',
     reason: 'worker_process_zombie_recovered',
+    allowSingleProcessFallback: isOwnedWorkerProcessAlive(workerName, pid),
   })
   const killedPids = Array.isArray((result as Record<string, unknown>).killedPids)
     ? (result as Record<string, unknown>).killedPids as unknown[]
@@ -309,6 +335,7 @@ function startWorkerProcess(type: string): Record<string, unknown> {
     stdio: 'ignore',
     windowsHide: true,
   })
+  rememberOwnedWorkerProcess(spec.name, child)
   child.unref()
   writeWorkerEvent('worker_process_started', { workerName: spec.name, type: spec.type, pid: child.pid, maxOldSpaceMb: spec.maxOldSpaceMb })
   return { ...spec, pid: child.pid }
@@ -500,6 +527,8 @@ if (require.main === module) {
 export = {
   buildWorkerLaunchSpec,
   startWorkerProcess,
+  recoverZombieWorker,
+  clearOwnedWorkerProcesses,
   ensureWorkerProcesses,
   auditStaleRunningTasks,
   auditStaleClaimingTasks,

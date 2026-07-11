@@ -10,6 +10,24 @@ interface SupervisorOptions {
     once?: boolean;
     types?: string[];
 }
+interface ResourceWorkerStateLike {
+    name?: string;
+    pid?: unknown;
+    alive?: boolean;
+    heartbeatAt?: string;
+    heartbeatLagMs?: number | null;
+    step?: string;
+    kind?: string;
+    loopIterations?: unknown;
+    lastClaimAttemptAt?: string;
+    lastTaskFinishedAt?: string;
+    currentTaskId?: string;
+    currentTaskStartedAt?: string;
+    parked?: unknown;
+    parkSleepMs?: unknown;
+}
+declare function clearOwnedWorkerProcesses(): void;
+declare function recoverZombieWorker(worker: ResourceWorkerStateLike): boolean;
 declare function buildWorkerLaunchSpec(type: string): WorkerLaunchSpec;
 declare function startWorkerProcess(type: string): Record<string, unknown>;
 declare function ensureWorkerProcesses(types?: string[]): unknown[];
@@ -21,6 +39,8 @@ declare function runSupervisorOnce(options?: SupervisorOptions): Record<string, 
 declare const _default: {
     buildWorkerLaunchSpec: typeof buildWorkerLaunchSpec;
     startWorkerProcess: typeof startWorkerProcess;
+    recoverZombieWorker: typeof recoverZombieWorker;
+    clearOwnedWorkerProcesses: typeof clearOwnedWorkerProcesses;
     ensureWorkerProcesses: typeof ensureWorkerProcesses;
     auditStaleRunningTasks: typeof auditStaleRunningTasks;
     auditStaleClaimingTasks: typeof auditStaleClaimingTasks;

@@ -25,7 +25,7 @@ const agentCron = require('../agent/cron');
 const { notifyCompletedTasks, createResourceResultSender, } = require('../resource-workers/result-notifier');
 const { registerTaskCompletedCallback, unregisterTaskCompletedCallback, } = require('../resource-workers/task-store');
 const { getTaskStatusDir, } = require('../resource-workers/task-paths');
-const { runSupervisorOnce, } = require('../resource-workers/worker-supervisor');
+const { runSupervisorOnce, clearOwnedWorkerProcesses, } = require('../resource-workers/worker-supervisor');
 const RESULT_NOTIFIER_INTERVAL_MS = Math.max(5000, Math.min(120000, Number(process.env.RESOURCE_RESULT_NOTIFIER_INTERVAL_MS || 60000)));
 const RESOURCE_SUPERVISOR_INTERVAL_MS = Math.max(10000, Math.min(300000, Number(process.env.RESOURCE_WORKER_SUPERVISOR_INTERVAL_MS || 30000)));
 // fs.watch 去抖：worker 子进程写入 done 文件触发多次事件，合并到一次结果通知。
@@ -235,6 +235,7 @@ function registerPluginLifecycle(ctx, options = {}) {
         clearChannelQueues();
         clearRandomPendingState();
         clearStartupSchedulers();
+        clearOwnedWorkerProcesses();
     });
 }
 module.exports = {

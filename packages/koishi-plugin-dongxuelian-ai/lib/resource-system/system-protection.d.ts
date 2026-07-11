@@ -5,10 +5,24 @@ interface TerminateProcessTreeOptions {
     kind?: string;
     owner?: string;
     timeoutMs?: number;
+    allowSingleProcessFallback?: boolean;
+    windowsRuntime?: WindowsTerminationRuntime;
 }
 interface TerminateRecordedProcessPidsOptions extends TerminateProcessTreeOptions {
     eventNames?: string[];
     limit?: number;
+}
+interface WindowsTaskkillResult {
+    status: number | null;
+    signal?: string | null;
+    error?: unknown;
+    stdout?: unknown;
+    stderr?: unknown;
+}
+interface WindowsTerminationRuntime {
+    runTaskkill(pid: number, timeoutMs: number): WindowsTaskkillResult;
+    isPidAlive(pid: number): boolean;
+    killPid(pid: number): void;
 }
 declare function cleanupOldProcessMetricsFiles(now?: number): number;
 declare function terminateProcessTree(pidValue: unknown, options?: TerminateProcessTreeOptions): Record<string, unknown>;

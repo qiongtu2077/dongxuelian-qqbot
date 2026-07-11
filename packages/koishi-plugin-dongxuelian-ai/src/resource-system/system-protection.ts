@@ -17,6 +17,8 @@ interface TerminateProcessTreeOptions {
   kind?: string
   owner?: string
   timeoutMs?: number
+  allowSingleProcessFallback?: boolean
+  windowsRuntime?: WindowsTerminationRuntime
 }
 
 interface TerminateRecordedProcessPidsOptions extends TerminateProcessTreeOptions {
@@ -27,6 +29,20 @@ interface TerminateRecordedProcessPidsOptions extends TerminateProcessTreeOption
 interface LinuxProcessEntry {
   pid: number
   ppid: number
+}
+
+interface WindowsTaskkillResult {
+  status: number | null
+  signal?: string | null
+  error?: unknown
+  stdout?: unknown
+  stderr?: unknown
+}
+
+interface WindowsTerminationRuntime {
+  runTaskkill(pid: number, timeoutMs: number): WindowsTaskkillResult
+  isPidAlive(pid: number): boolean
+  killPid(pid: number): void
 }
 
 // Parse a bounded positive integer from env/options and fall back on invalid values.
@@ -227,6 +243,41 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+// 提取系统调用错误码，供清理事件保留可诊断信息。
+function getProcessErrorCode(error: unknown): string {
+  if (!error || typeof error !== 'object') return ''
+  return String((error as { code?: unknown }).code || '')
+}
+
+// 提取系统调用错误消息，避免事件中丢失非 Error 异常。
+function getProcessErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message?: unknown }).message || '')
+  }
+  return error ? String(error) : ''
+}
+
+// 使用 Windows taskkill 清理指定根进程及其子进程树。
+function runWindowsTaskkill(pid: number, timeoutMs: number): WindowsTaskkillResult {
+  return spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    windowsHide: true,
+  })
+}
+
+// 使用 Node 的 Windows 单进程强制终止能力清理根 PID。
+function killWindowsPid(pid: number): void {
+  process.kill(pid, 'SIGKILL')
+}
+
+const DEFAULT_WINDOWS_TERMINATION_RUNTIME: WindowsTerminationRuntime = {
+  runTaskkill: runWindowsTaskkill,
+  isPidAlive,
+  killPid: killWindowsPid,
+}
+
 // 读取 Linux /proc 进程父子关系，用于只清理指定 root pid 的子树。
 function readLinuxProcessEntries(): LinuxProcessEntry[] {
   if (process.platform !== 'linux') return []
@@ -276,22 +327,87 @@ function collectLinuxProcessTree(rootPid: number): number[] {
   return result
 }
 
-// 在 Windows 上使用 taskkill 定点清理指定 pid 的子树。
-function terminateWindowsProcessTree(pid: number, timeoutMs: number): Record<string, unknown> {
-  const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
-    encoding: 'utf8',
-    timeout: timeoutMs,
-    windowsHide: true,
-  })
-  return {
+// 在 Windows 上优先清理进程树，并按显式授权决定是否兜底终止根 PID。
+function terminateWindowsProcessTree(
+  pid: number,
+  timeoutMs: number,
+  allowSingleProcessFallback: boolean,
+  runtime: WindowsTerminationRuntime,
+): Record<string, unknown> {
+  const taskkill = runtime.runTaskkill(pid, timeoutMs)
+  const aliveAfterTaskkill = runtime.isPidAlive(pid)
+  const taskkillError = getProcessErrorMessage(taskkill.error)
+  const taskkillErrorCode = getProcessErrorCode(taskkill.error)
+  const base = {
     command: 'taskkill',
-    status: result.status,
-    signal: result.signal || null,
-    error: result.error ? String(result.error.message || result.error) : '',
-    stdout: String(result.stdout || '').slice(0, 1000),
-    stderr: String(result.stderr || '').slice(0, 1000),
-    killedPids: result.status === 0 ? [pid] : [],
-    failedPids: result.status === 0 ? [] : [pid],
+    status: taskkill.status,
+    signal: taskkill.signal || null,
+    error: taskkillError,
+    errorCode: taskkillErrorCode,
+    stdout: String(taskkill.stdout || '').slice(0, 1000),
+    stderr: String(taskkill.stderr || '').slice(0, 1000),
+    fallbackAttempted: false,
+    fallbackScope: 'none',
+    aliveAfterTaskkill,
+    aliveAfterFallback: null,
+    treeTerminationConfirmed: taskkill.status === 0 && !aliveAfterTaskkill,
+  }
+
+  if (!aliveAfterTaskkill) {
+    return { ...base, killedPids: [pid], failedPids: [] }
+  }
+  if (taskkill.status === 0) {
+    const error = 'process_still_alive_after_taskkill'
+    return { ...base, error, killedPids: [], failedPids: [{ pid, error, errorCode: '' }] }
+  }
+  if (!allowSingleProcessFallback) {
+    const error = 'single_process_fallback_not_authorized'
+    return { ...base, error, killedPids: [], failedPids: [{ pid, error, errorCode: taskkillErrorCode }] }
+  }
+
+  try {
+    runtime.killPid(pid)
+  } catch (error) {
+    const fallbackError = getProcessErrorMessage(error)
+    const fallbackErrorCode = getProcessErrorCode(error)
+    return {
+      ...base,
+      command: 'taskkill+process.kill',
+      error: fallbackError,
+      errorCode: fallbackErrorCode,
+      fallbackAttempted: true,
+      fallbackScope: 'root_only',
+      aliveAfterFallback: runtime.isPidAlive(pid),
+      treeTerminationConfirmed: false,
+      killedPids: [],
+      failedPids: [{ pid, error: fallbackError, errorCode: fallbackErrorCode }],
+    }
+  }
+
+  const aliveAfterFallback = runtime.isPidAlive(pid)
+  if (aliveAfterFallback) {
+    const error = 'process_still_alive_after_fallback'
+    return {
+      ...base,
+      command: 'taskkill+process.kill',
+      error,
+      fallbackAttempted: true,
+      fallbackScope: 'root_only',
+      aliveAfterFallback,
+      treeTerminationConfirmed: false,
+      killedPids: [],
+      failedPids: [{ pid, error, errorCode: '' }],
+    }
+  }
+  return {
+    ...base,
+    command: 'taskkill+process.kill',
+    fallbackAttempted: true,
+    fallbackScope: 'root_only',
+    aliveAfterFallback,
+    treeTerminationConfirmed: false,
+    killedPids: [pid],
+    failedPids: [],
   }
 }
 
@@ -321,9 +437,10 @@ function terminatePosixProcessTree(pid: number): Record<string, unknown> {
 function terminateProcessTree(pidValue: unknown, options: TerminateProcessTreeOptions = {}): Record<string, unknown> {
   ensureDir(RESOURCE_SYSTEM_ROOT)
   const pid = normalizePid(pidValue)
+  const platform = options.windowsRuntime ? 'win32' : process.platform
   const base = {
     rootPid: pid,
-    platform: process.platform,
+    platform,
     reason: options.reason || 'process_tree_terminate',
     source: options.source || '',
     taskId: options.taskId || '',
@@ -341,14 +458,16 @@ function terminateProcessTree(pidValue: unknown, options: TerminateProcessTreeOp
     writeProcessCleanupEvent(result)
     return result
   }
-  if (!isPidAlive(pid)) {
+  const windowsRuntime = options.windowsRuntime || DEFAULT_WINDOWS_TERMINATION_RUNTIME
+  const pidAlive = platform === 'win32' ? windowsRuntime.isPidAlive(pid) : isPidAlive(pid)
+  if (!pidAlive) {
     const result = { ...base, event: 'process_tree_not_running' }
     writeProcessCleanupEvent(result)
     return result
   }
   const timeoutMs = Math.max(1000, Math.min(15000, Number(options.timeoutMs || 5000)))
-  const detail = process.platform === 'win32'
-    ? terminateWindowsProcessTree(pid, timeoutMs)
+  const detail = platform === 'win32'
+    ? terminateWindowsProcessTree(pid, timeoutMs, options.allowSingleProcessFallback === true, windowsRuntime)
     : terminatePosixProcessTree(pid)
   const failed = Array.isArray(detail.failedPids) && detail.failedPids.length > 0
   const result = {
@@ -421,6 +540,7 @@ function terminateRecordedProcessPids(options: TerminateRecordedProcessPidsOptio
     kind: options.kind || '',
     owner: options.owner || '',
     timeoutMs: options.timeoutMs,
+    windowsRuntime: options.windowsRuntime,
   }))
   const hasRealCleanup = results.some((item) => {
     const event = item && typeof item === 'object' ? String((item as Record<string, unknown>).event || '') : ''

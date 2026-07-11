@@ -94,6 +94,12 @@ interface NetworkApiWindow {
   sendBeacon?: unknown
 }
 
+interface BrowserChildProcessLike {
+  pid?: number | null
+  exitCode?: number | null
+  signalCode?: NodeJS.Signals | null
+}
+
 function getBrowserActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -222,16 +228,30 @@ function parseBrowserPositiveInt(value: string | number | undefined, fallback: n
   return Math.max(min, Math.min(max, parsed))
 }
 
-// 读取 Puppeteer Browser 的子进程 pid；失败时只影响 S8 定点清理增强。
-function getBrowserProcessPid(targetBrowser: unknown): number | null {
+// 读取 Puppeteer Browser 当前持有的子进程句柄。
+function getBrowserChildProcess(targetBrowser: unknown): BrowserChildProcessLike | null {
   try {
-    const item = targetBrowser as { process?: () => { pid?: number | null } | null }
-    const child = item && typeof item.process === 'function' ? item.process() : null
-    const pid = Number(child && child.pid)
-    return Number.isInteger(pid) && pid > 0 ? pid : null
+    const item = targetBrowser as { process?: () => BrowserChildProcessLike | null }
+    return item && typeof item.process === 'function' ? item.process() : null
   } catch {
     return null
   }
+}
+
+// 读取 Puppeteer Browser 的子进程 pid；失败时只影响 S8 定点清理增强。
+function getBrowserProcessPid(targetBrowser: unknown): number | null {
+  const child = getBrowserChildProcess(targetBrowser)
+  const pid = Number(child && child.pid)
+  return Number.isInteger(pid) && pid > 0 ? pid : null
+}
+
+// 判断浏览器 PID 是否仍由当前活子进程句柄所有。
+function isOwnedBrowserProcessAlive(child: BrowserChildProcessLike | null, pid: number | null): boolean {
+  return !!child
+    && !!pid
+    && Number(child.pid) === pid
+    && child.exitCode === null
+    && child.signalCode === null
 }
 
 function readLinuxMemAvailableMb(): number | null {
@@ -452,7 +472,7 @@ async function ensurePage(): Promise<BrowserActionPage> {
 
 async function closeBrowser(): Promise<void> {
   if (closePromise) return closePromise
-  closePromise = (async () => {
+  const activeClose = (async () => {
     if (launchPromise) {
       try { await launchPromise } catch {
         /* non-critical: failed launch is cleared during close */
@@ -460,6 +480,7 @@ async function closeBrowser(): Promise<void> {
     }
     const closingPage = page
     const closingBrowser = browser
+    const closingBrowserProcess = getBrowserChildProcess(closingBrowser)
     const closingBrowserPid = currentBrowserPid || getBrowserProcessPid(closingBrowser)
     const closingTaskId = currentResourceTaskId
     const closingOwner = currentSessionOwner
@@ -496,6 +517,7 @@ async function closeBrowser(): Promise<void> {
               taskId: closingTaskId,
               kind: 'browser_action',
               owner: closingOwner,
+              allowSingleProcessFallback: isOwnedBrowserProcessAlive(closingBrowserProcess, closingBrowserPid),
             })
           }
         }
@@ -506,10 +528,14 @@ async function closeBrowser(): Promise<void> {
         releaseToolActivityLease = null
         try { release('browser-closed') } catch { /* non-critical: lease cleanup is best effort */ }
       }
-      closePromise = null
     }
   })()
-  return closePromise
+  closePromise = activeClose
+  try {
+    await activeClose
+  } finally {
+    if (closePromise === activeClose) closePromise = null
+  }
 }
 
 async function openUrl(url: unknown): Promise<string> {

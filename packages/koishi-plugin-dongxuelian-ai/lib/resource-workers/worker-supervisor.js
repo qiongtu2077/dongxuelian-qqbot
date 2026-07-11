@@ -22,6 +22,29 @@ const WORKER_MEMORY_LIMITS = {
 const DEFAULT_WORKER_TYPES = ['daily', 'agent', 'media'];
 const DEFERRED_RESTORE_MAX_ACTIVE = Math.max(1, Number(process.env.RESOURCE_DEFERRED_RESTORE_MAX_ACTIVE || process.env.DAILY_SLOT_BACKLOG_STOP_MAX_PENDING || 8));
 const WORKER_HEARTBEAT_STALE_MS = 10000;
+const ownedWorkerProcesses = new Map();
+// 记录当前 supervisor 亲自启动的 worker，并在进程退出后撤销所有权。
+function rememberOwnedWorkerProcess(workerName, child) {
+    ownedWorkerProcesses.set(workerName, child);
+    const release = () => {
+        if (ownedWorkerProcesses.get(workerName) === child)
+            ownedWorkerProcesses.delete(workerName);
+    };
+    child.once('exit', release);
+    child.once('error', release);
+}
+// 判断 worker PID 是否仍对应当前 supervisor 持有的活子进程句柄。
+function isOwnedWorkerProcessAlive(workerName, pid) {
+    const child = ownedWorkerProcesses.get(workerName);
+    return !!child
+        && Number(child.pid) === pid
+        && child.exitCode === null
+        && child.signalCode === null;
+}
+// 清空 supervisor 持有的 worker 句柄引用；不额外终止子进程。
+function clearOwnedWorkerProcesses() {
+    ownedWorkerProcesses.clear();
+}
 function resolveBoundedNumber(value, fallback, min, max) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed))
@@ -195,6 +218,7 @@ function recoverZombieWorker(worker) {
         owner: workerName,
         source: 'resource_worker_supervisor',
         reason: 'worker_process_zombie_recovered',
+        allowSingleProcessFallback: isOwnedWorkerProcessAlive(workerName, pid),
     });
     const killedPids = Array.isArray(result.killedPids)
         ? result.killedPids
@@ -247,6 +271,7 @@ function startWorkerProcess(type) {
         stdio: 'ignore',
         windowsHide: true,
     });
+    rememberOwnedWorkerProcess(spec.name, child);
     child.unref();
     writeWorkerEvent('worker_process_started', { workerName: spec.name, type: spec.type, pid: child.pid, maxOldSpaceMb: spec.maxOldSpaceMb });
     return { ...spec, pid: child.pid };
@@ -449,6 +474,8 @@ if (require.main === module) {
 module.exports = {
     buildWorkerLaunchSpec,
     startWorkerProcess,
+    recoverZombieWorker,
+    clearOwnedWorkerProcesses,
     ensureWorkerProcesses,
     auditStaleRunningTasks,
     auditStaleClaimingTasks,

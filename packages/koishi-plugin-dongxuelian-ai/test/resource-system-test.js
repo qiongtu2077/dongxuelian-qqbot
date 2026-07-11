@@ -60,6 +60,352 @@ function runScenario(label, script, env, timeoutMs = 30000) {
 
 // --- S8 Scenarios --- #
 
+// Verify Windows taskkill fallback policy and result verification without real process termination.
+function testWindowsTerminationFallbackPolicy() {
+  const dataDir = createTempDataDir('s8-windows-termination-policy-')
+  const script = String.raw`
+const systemProtection = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-system/system-protection')
+
+// Build a deterministic Windows process runtime and retain every dangerous call.
+function createRuntime(options = {}) {
+  const alive = Array.isArray(options.alive) ? options.alive.slice() : [true]
+  const calls = { taskkill: 0, alive: 0, kill: 0 }
+  let lastAlive = alive.length ? !!alive[alive.length - 1] : true
+  return {
+    calls,
+    runtime: {
+      runTaskkill() {
+        calls.taskkill += 1
+        return {
+          status: options.status === undefined ? 1 : options.status,
+          signal: null,
+          error: options.taskkillError || null,
+          stdout: options.stdout || '',
+          stderr: options.stderr || '',
+        }
+      },
+      isPidAlive() {
+        calls.alive += 1
+        if (alive.length) lastAlive = !!alive.shift()
+        return lastAlive
+      },
+      killPid() {
+        calls.kill += 1
+        if (options.killError) throw options.killError
+      },
+    },
+  }
+}
+
+// Run one public terminateProcessTree case with an injected Windows runtime.
+function runCase(pid, runtimeCase, options = {}) {
+  const result = systemProtection.terminateProcessTree(pid, {
+    reason: 'windows_fallback_policy_test',
+    windowsRuntime: runtimeCase.runtime,
+    ...options,
+  })
+  return { result, calls: runtimeCase.calls }
+}
+
+const taskkillSuccess = runCase(910001, createRuntime({ status: 0, alive: [true, false] }))
+const taskkillNonzeroGone = runCase(910002, createRuntime({ status: 1, alive: [true, false], stderr: 'already gone' }))
+const unauthorizedRuntime = createRuntime({ status: 1, alive: [true, true], stderr: 'taskkill failed' })
+const unauthorized = runCase(910003, unauthorizedRuntime)
+const fallbackSuccess = runCase(
+  910004,
+  createRuntime({ status: 1, alive: [true, true, false], stderr: 'taskkill failed' }),
+  { allowSingleProcessFallback: true },
+)
+const fallbackStillAlive = runCase(
+  910005,
+  createRuntime({ status: 1, alive: [true, true, true], stderr: 'taskkill failed' }),
+  { allowSingleProcessFallback: true },
+)
+const permissionError = new Error('operation not permitted')
+permissionError.code = 'EPERM'
+const fallbackDenied = runCase(
+  910006,
+  createRuntime({ status: 1, alive: [true, true, true], killError: permissionError }),
+  { allowSingleProcessFallback: true },
+)
+
+const unsafeRuntime = createRuntime({ status: 1, alive: [true] })
+const unsafePidOne = runCase(1, unsafeRuntime)
+const unsafeCurrent = runCase(process.pid, unsafeRuntime)
+const unsafeParent = runCase(process.ppid, unsafeRuntime)
+
+systemProtection.writeProcessCleanupEvent({
+  event: 'chromium_launched',
+  taskId: 'recorded-fallback-policy-task',
+  browserPid: 910007,
+})
+const recordedRuntime = createRuntime({ status: 1, alive: [true, true], stderr: 'recorded taskkill failed' })
+const recorded = systemProtection.terminateRecordedProcessPids({
+  taskId: 'recorded-fallback-policy-task',
+  windowsRuntime: recordedRuntime.runtime,
+})
+
+console.log(JSON.stringify({
+  taskkillSuccess,
+  taskkillNonzeroGone,
+  unauthorized,
+  fallbackSuccess,
+  fallbackStillAlive,
+  fallbackDenied,
+  unsafe: {
+    pidOne: unsafePidOne.result,
+    current: unsafeCurrent.result,
+    parent: unsafeParent.result,
+    calls: unsafeRuntime.calls,
+  },
+  recorded: { result: recorded, calls: recordedRuntime.calls },
+}, null, 2))
+`
+  const summary = runScenario('S8 Windows termination fallback policy', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+  })
+  if (!summary) return
+
+  check('taskkill success skips fallback and confirms tree termination',
+    summary.taskkillSuccess.calls.kill === 0
+      && summary.taskkillSuccess.result.treeTerminationConfirmed === true
+      && summary.taskkillSuccess.result.event === 'process_tree_terminated',
+    JSON.stringify(summary.taskkillSuccess))
+  check('taskkill nonzero with exited root skips fallback without false failure',
+    summary.taskkillNonzeroGone.calls.kill === 0
+      && summary.taskkillNonzeroGone.result.treeTerminationConfirmed === false
+      && summary.taskkillNonzeroGone.result.event === 'process_tree_terminated',
+    JSON.stringify(summary.taskkillNonzeroGone))
+  check('taskkill failure without ownership refuses single-process fallback',
+    summary.unauthorized.calls.kill === 0
+      && summary.unauthorized.result.event === 'process_tree_terminate_failed'
+      && summary.unauthorized.result.error === 'single_process_fallback_not_authorized',
+    JSON.stringify(summary.unauthorized))
+  check('authorized fallback only succeeds after root exit verification',
+    summary.fallbackSuccess.calls.kill === 1
+      && summary.fallbackSuccess.result.event === 'process_tree_terminated'
+      && summary.fallbackSuccess.result.fallbackScope === 'root_only'
+      && summary.fallbackSuccess.result.aliveAfterFallback === false
+      && summary.fallbackSuccess.result.killedPids.length === 1,
+    JSON.stringify(summary.fallbackSuccess))
+  check('authorized fallback does not report a still-alive root as killed',
+    summary.fallbackStillAlive.calls.kill === 1
+      && summary.fallbackStillAlive.result.event === 'process_tree_terminate_failed'
+      && summary.fallbackStillAlive.result.aliveAfterFallback === true
+      && summary.fallbackStillAlive.result.killedPids.length === 0,
+    JSON.stringify(summary.fallbackStillAlive))
+  check('fallback EPERM preserves error code and reports failure',
+    summary.fallbackDenied.calls.kill === 1
+      && summary.fallbackDenied.result.event === 'process_tree_terminate_failed'
+      && summary.fallbackDenied.result.errorCode === 'EPERM'
+      && summary.fallbackDenied.result.failedPids[0].errorCode === 'EPERM',
+    JSON.stringify(summary.fallbackDenied))
+  check('unsafe pids are rejected before any Windows runtime call',
+    summary.unsafe.calls.taskkill === 0
+      && summary.unsafe.calls.kill === 0
+      && summary.unsafe.calls.alive === 0
+      && summary.unsafe.pidOne.skippedReason === 'pid_le_1'
+      && summary.unsafe.current.skippedReason === 'current_process'
+      && summary.unsafe.parent.skippedReason === 'parent_process',
+    JSON.stringify(summary.unsafe))
+  check('recorded historical pid never receives single-process fallback authorization',
+    summary.recorded.calls.taskkill === 1
+      && summary.recorded.calls.kill === 0
+      && summary.recorded.result.event === 'recorded_process_cleanup_skipped',
+    JSON.stringify(summary.recorded))
+}
+
+// Verify worker fallback authorization follows the live ChildProcess handle lifecycle.
+function testWorkerFallbackOwnership() {
+  const dataDir = createTempDataDir('s8-worker-fallback-ownership-')
+  const script = String.raw`
+const Module = require('module')
+const { EventEmitter } = require('events')
+const realChildProcess = require('child_process')
+
+class FakeChildProcess extends EventEmitter {
+  // Build a live ChildProcess-compatible test handle.
+  constructor(pid) {
+    super()
+    this.pid = pid
+    this.exitCode = null
+    this.signalCode = null
+  }
+
+  // Match ChildProcess.unref without changing test process lifetime.
+  unref() {}
+}
+
+const fakeChildren = []
+const terminateCalls = []
+let nextPid = 920001
+
+// Return a new owned worker handle for each supervisor spawn.
+function fakeSpawn() {
+  const child = new FakeChildProcess(nextPid++)
+  fakeChildren.push(child)
+  return child
+}
+
+const originalLoad = Module._load
+let supervisor
+try {
+  Module._load = function patchedLoad(request, parent, isMain) {
+    const normalized = String(request || '').replace(/\\/g, '/')
+    if (normalized === 'child_process') return { ...realChildProcess, spawn: fakeSpawn }
+    if (normalized === '../resource-system/system-protection' || normalized.endsWith('/resource-system/system-protection')) {
+      return {
+        writeProcessCleanupEvent: () => {},
+        terminateProcessTree(pid, options = {}) {
+          terminateCalls.push({ pid: Number(pid), allow: options.allowSingleProcessFallback === true })
+          return { event: 'process_tree_terminated', killedPids: [Number(pid)], failedPids: [] }
+        },
+      }
+    }
+    return originalLoad.apply(this, arguments)
+  }
+  supervisor = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-supervisor')
+} finally {
+  Module._load = originalLoad
+}
+
+const started = supervisor.startWorkerProcess('daily')
+const ownedPid = Number(started.pid)
+supervisor.recoverZombieWorker({ name: 'daily-worker', pid: ownedPid, kind: 'daily' })
+supervisor.recoverZombieWorker({ name: 'daily-worker', pid: ownedPid + 100, kind: 'daily' })
+fakeChildren[0].exitCode = 0
+fakeChildren[0].emit('exit', 0, null)
+supervisor.recoverZombieWorker({ name: 'daily-worker', pid: ownedPid, kind: 'daily' })
+const restarted = supervisor.startWorkerProcess('daily')
+supervisor.clearOwnedWorkerProcesses()
+supervisor.recoverZombieWorker({ name: 'daily-worker', pid: Number(restarted.pid), kind: 'daily' })
+
+console.log(JSON.stringify({ ownedPid, restartedPid: restarted.pid, terminateCalls }, null, 2))
+`
+  const summary = runScenario('S8 worker fallback ownership', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+  })
+  if (!summary) return
+  check('worker live owned handle authorizes fallback',
+    summary.terminateCalls[0].pid === summary.ownedPid && summary.terminateCalls[0].allow === true,
+    JSON.stringify(summary))
+  check('worker mismatched pid does not authorize fallback',
+    summary.terminateCalls[1].allow === false,
+    JSON.stringify(summary))
+  check('worker exited handle does not authorize fallback',
+    summary.terminateCalls[2].allow === false,
+    JSON.stringify(summary))
+  check('worker ownership map clear revokes fallback authorization',
+    summary.terminateCalls[3].pid === Number(summary.restartedPid) && summary.terminateCalls[3].allow === false,
+    JSON.stringify(summary))
+}
+
+// Verify browser fallback authorization requires the same live process handle at close time.
+function testBrowserFallbackOwnership() {
+  const dataDir = createTempDataDir('s8-browser-fallback-ownership-')
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+const Module = require('module')
+
+// Create the minimum page surface required by browser_action startup and close.
+function createPage() {
+  return {
+    on: () => {},
+    setRequestInterception: async () => {},
+    evaluateOnNewDocument: async () => {},
+    evaluate: async () => null,
+    setUserAgent: async () => {},
+    setViewport: async () => {},
+    setDefaultTimeout: () => {},
+    setDefaultNavigationTimeout: () => {},
+    url: () => 'about:blank',
+    close: async () => {},
+  }
+}
+
+const fakeBrowserPath = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'fake-chromium.exe')
+fs.writeFileSync(fakeBrowserPath, '')
+process.env.DONGXUELIAN_BROWSER_PATH = fakeBrowserPath
+const browserStates = []
+const terminateCalls = []
+let nextPid = 930001
+
+// Create a browser whose process handle can disappear before close.
+function createBrowser() {
+  const state = {
+    exposeProcess: true,
+    child: { pid: nextPid++, exitCode: null, signalCode: null },
+    processCalls: 0,
+    closeCalls: 0,
+  }
+  browserStates.push(state)
+  return {
+    process: () => {
+      state.processCalls += 1
+      return state.exposeProcess ? state.child : null
+    },
+    newPage: async () => createPage(),
+    close: async () => {
+      state.closeCalls += 1
+      throw new Error('mock browser close failed')
+    },
+  }
+}
+
+const originalLoad = Module._load
+Module._load = function patchedLoad(request, parent, isMain) {
+  const normalized = String(request || '').replace(/\\/g, '/')
+  if (normalized === 'puppeteer-core') return { launch: async () => createBrowser() }
+  if (normalized.endsWith('/resource-scheduler/admission') || normalized.includes('resource-scheduler/admission')) {
+    return {
+      admitTask: () => ({ decision: 'run_now', reason: 'test-allow', resourceState: 'green', botMode: 'normal', memAvailableMb: 1600 }),
+    }
+  }
+  if (normalized.endsWith('/resource-system/system-protection') || normalized.includes('resource-system/system-protection')) {
+    return {
+      writeProcessCleanupEvent: () => {},
+      terminateProcessTree(pid, options = {}) {
+        terminateCalls.push({ pid: Number(pid), allow: options.allowSingleProcessFallback === true })
+        return { event: 'process_tree_terminated', killedPids: [Number(pid)], failedPids: [] }
+      },
+    }
+  }
+  return originalLoad.apply(this, arguments)
+}
+
+async function main() {
+  const browserAction = require('./packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/browser-action')
+  await browserAction.execute({ action: 'start' }, { userId: 'owned-browser', channelKey: 'owned-browser', taskId: 'owned-browser' })
+  await browserAction.execute({ action: 'close' }, { userId: 'owned-browser', channelKey: 'owned-browser', taskId: 'owned-browser' })
+
+  await browserAction.execute({ action: 'start' }, { userId: 'lost-browser', channelKey: 'lost-browser', taskId: 'lost-browser' })
+  browserStates[1].exposeProcess = false
+  await browserAction.execute({ action: 'close' }, { userId: 'lost-browser', channelKey: 'lost-browser', taskId: 'lost-browser' })
+
+  console.log(JSON.stringify({ browserStates, terminateCalls }, null, 2))
+}
+
+main().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('S8 browser fallback ownership', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    DONGXUELIAN_BROWSER_MIN_MEM_MB: '1',
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  })
+  if (!summary) return
+  check('browser live matching handle authorizes fallback',
+    summary.terminateCalls[0].pid === summary.browserStates[0].child.pid && summary.terminateCalls[0].allow === true,
+    JSON.stringify(summary))
+  check('browser missing close-time handle does not authorize fallback',
+    summary.terminateCalls[1]?.pid === summary.browserStates[1]?.child?.pid && summary.terminateCalls[1]?.allow === false,
+    JSON.stringify(summary))
+}
+
 // Verify worker timeout writes S8/S2 evidence and releases S0.
 function testWorkerTimeoutInjection() {
   const dataDir = createTempDataDir('s8-worker-timeout-test-')
@@ -657,6 +1003,9 @@ main().catch(error => {
 // Run all resource-system regression checks.
 function main() {
   console.log('=== resource-system S8 tests ===')
+  testWindowsTerminationFallbackPolicy()
+  testWorkerFallbackOwnership()
+  testBrowserFallbackOwnership()
   testWorkerTimeoutInjection()
   testAgentWorkerTimeoutStopsLateSideEffects()
   testChromiumCloseFailureInjection()
