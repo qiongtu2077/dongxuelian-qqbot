@@ -75,9 +75,9 @@ function renderRootHelp() {
     return [
         '东雪莲帮助：',
         '- helpAI / 帮助AI / AI帮助',
-        '- 杂项功能',
         '- help集合 / 帮助集合 / 东雪莲集合',
-        '- /help XX（模糊查询）',
+        '- 杂项功能',
+        '- /help XX （模糊查询）',
     ].join('\n');
 }
 // 渲染 AI 菜单目录，详细分支由同名精确入口打开。

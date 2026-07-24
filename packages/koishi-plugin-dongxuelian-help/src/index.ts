@@ -109,9 +109,9 @@ function renderRootHelp(): string {
   return [
     '东雪莲帮助：',
     '- helpAI / 帮助AI / AI帮助',
-    '- 杂项功能',
     '- help集合 / 帮助集合 / 东雪莲集合',
-    '- /help XX（模糊查询）',
+    '- 杂项功能',
+    '- /help XX （模糊查询）',
   ].join('\n')
 }
 
