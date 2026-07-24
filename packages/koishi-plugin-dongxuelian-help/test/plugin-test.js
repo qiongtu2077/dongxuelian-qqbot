@@ -72,8 +72,14 @@ async function run() {
   check('ready event logs loaded message', ctx.logs.some(log => log.level === 'info' && log.msg.includes('loaded')), JSON.stringify(ctx.logs))
 
   let result = await runHelpCase(ctx, 'help东雪莲')
-  check('root help returns menu', typeof result.result === 'string' && result.result.includes('东雪莲帮助') && result.result.includes('helpAI'), String(result.result))
-  check('root help lists misc and collection at root level', typeof result.result === 'string' && result.result.includes('【杂项功能】') && result.result.includes('东雪莲集合'), String(result.result))
+  const expectedRootHelp = [
+    '东雪莲帮助：',
+    '- helpAI / 帮助AI / AI帮助',
+    '- 杂项功能',
+    '- help集合 / 帮助集合 / 东雪莲集合',
+    '- /help XX（模糊查询）',
+  ].join('\n')
+  check('root help returns exact compact menu', result.result === expectedRootHelp, String(result.result))
   check('root help no longer lists quick reference menu', typeof result.result === 'string' && !result.result.includes('指令速查') && !result.result.includes('其他帮助'), String(result.result))
   check('root help does not call next', result.nextCalled === false)
 

@@ -107,13 +107,11 @@ const PROVIDERS: Record<string, ProviderInfo> = {
 // 根帮助菜单：列出一级菜单入口和模糊搜索入口。
 function renderRootHelp(): string {
   return [
-    '东雪莲帮助',
-    '',
-    '可用菜单：',
+    '东雪莲帮助：',
     '- helpAI / 帮助AI / AI帮助',
-    '- 【杂项功能】',
+    '- 杂项功能',
     '- help集合 / 帮助集合 / 东雪莲集合',
-    '- /help <关键词>',
+    '- /help XX（模糊查询）',
   ].join('\n')
 }
 
