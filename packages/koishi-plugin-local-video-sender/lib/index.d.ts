@@ -12,6 +12,7 @@ interface ContextLike {
     command(name: string, desc: string): CommandLike;
     middleware(handler: (session: VideoSessionLike, next: () => unknown) => unknown): unknown;
     logger(name: string): LoggerLike;
+    on?(event: 'dispose', handler: () => unknown): unknown;
 }
 interface VideoSessionLike {
     userId?: string | number;
@@ -86,11 +87,16 @@ interface DownloadDeps {
     fs?: VideoFsApi;
     run?: typeof run;
     probeVideo?: typeof probeVideo;
+    resolveShortLink?: typeof resolveBiliShortLink;
     resourceGate?: false;
 }
 interface RecentParseEntry {
     timestamp: number;
     keys: string[];
+}
+interface RedirectResponse {
+    statusCode: number;
+    location: string;
 }
 interface VideoBlacklistCache {
     fingerprint: string;
@@ -102,16 +108,29 @@ declare function getRuntimeConfig(): RuntimeConfig;
 declare function run(file: string, args: string[], options?: ExecFileOptions): Promise<RunResult>;
 declare function extractBiliUrl(input?: string): string | null;
 declare function buildBiliKeys(input?: string): string[];
+declare function isAllowedBiliRedirectUrl(input: string): boolean;
+declare function isPrivateIpAddress(address: string): boolean;
+declare function requestRedirectLocation(input: string, timeoutMs: number): Promise<RedirectResponse>;
+declare function resolveBiliShortLink(input: string, requestRedirect?: typeof requestRedirectLocation): Promise<string>;
 declare function loadVideoBlacklist(force?: boolean): VideoBlacklistCache;
 declare function isBlacklistedGroup(session: VideoSessionLike): boolean;
 declare function isRecentDuplicateParse(session: VideoSessionLike, keys: string[], now?: number): boolean;
 declare function rememberRecentParse(session: VideoSessionLike, keys: string[], now?: number): RecentParseEntry | null;
+declare function formatDecimalMb(bytes: number): string;
+declare function buildOversizeMessage(bytes: number): string;
+declare function cleanupVideoCache(ctx: ContextLike | null, now?: number): Promise<{
+    entriesRemoved: number;
+    filesRemoved: number;
+    staleActive: number;
+}>;
+declare function getVideoCacheStatus(): Record<string, unknown>;
 declare function getShortestBiliUrl(info?: VideoInfo): string;
 declare function pickFormat(info: VideoInfo): FormatPick | null;
 declare function safeSend(ctx: ContextLike, session: VideoSessionLike, message: unknown, label?: string): Promise<boolean>;
 declare function probeVideo(url: string): Promise<ProbeResult>;
 declare function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url: string, source?: string, deps?: DownloadDeps): Promise<string | undefined>;
 declare function apply(ctx: ContextLike): void;
+declare function clearVideoRuntimeState(): Promise<void>;
 declare const _default: {
     name: string;
     apply: typeof apply;
@@ -120,6 +139,8 @@ declare const _default: {
     pickFormat: typeof pickFormat;
     getShortestBiliUrl: typeof getShortestBiliUrl;
     downloadAndSend: typeof downloadAndSend;
+    formatDecimalMb: typeof formatDecimalMb;
+    buildOversizeMessage: typeof buildOversizeMessage;
     getRuntimeConfig: typeof getRuntimeConfig;
     toFileUrl: typeof toFileUrl;
     safeSend: typeof safeSend;
@@ -128,5 +149,11 @@ declare const _default: {
     isRecentDuplicateParse: typeof isRecentDuplicateParse;
     rememberRecentParse: typeof rememberRecentParse;
     clearRecentParseHistory: () => void;
+    resolveBiliShortLink: typeof resolveBiliShortLink;
+    isAllowedBiliRedirectUrl: typeof isAllowedBiliRedirectUrl;
+    isPrivateIpAddress: typeof isPrivateIpAddress;
+    cleanupVideoCache: typeof cleanupVideoCache;
+    getVideoCacheStatus: typeof getVideoCacheStatus;
+    clearVideoRuntimeState: typeof clearVideoRuntimeState;
 };
 export = _default;
