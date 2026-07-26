@@ -19,7 +19,7 @@ const WORKER_MEMORY_LIMITS = {
     agent: Number(process.env.RESOURCE_AGENT_WORKER_OLD_SPACE_MB || 768),
     media: Number(process.env.RESOURCE_MEDIA_WORKER_OLD_SPACE_MB || 512),
 };
-const DEFAULT_WORKER_TYPES = ['daily', 'agent', 'media'];
+const DEFAULT_WORKER_TYPES = ['agent', 'daily', 'media'];
 const DEFERRED_RESTORE_MAX_ACTIVE = Math.max(1, Number(process.env.RESOURCE_DEFERRED_RESTORE_MAX_ACTIVE || process.env.DAILY_SLOT_BACKLOG_STOP_MAX_PENDING || 8));
 const WORKER_HEARTBEAT_STALE_MS = 10000;
 const ownedWorkerProcesses = new Map();
@@ -41,9 +41,41 @@ function isOwnedWorkerProcessAlive(workerName, pid) {
         && child.exitCode === null
         && child.signalCode === null;
 }
-// 清空 supervisor 持有的 worker 句柄引用；不额外终止子进程。
+// 清空 supervisor 持有的 worker 句柄引用；仅用于所有权撤销和测试隔离。
 function clearOwnedWorkerProcesses() {
     ownedWorkerProcesses.clear();
+}
+// 停止本代 supervisor 亲自启动的 worker；先 SIGTERM，超时后再定点强停。
+async function stopOwnedWorkerProcesses(timeoutMs = 5000) {
+    const targets = [...ownedWorkerProcesses.entries()].flatMap(([workerName, child]) => {
+        const pid = Number(child.pid || 0);
+        return pid > 0 && isOwnedWorkerProcessAlive(workerName, pid) ? [{ workerName, child, pid }] : [];
+    });
+    for (const target of targets) {
+        try {
+            target.child.kill?.('SIGTERM');
+        }
+        catch { /* bounded fallback below handles a failed graceful signal */ }
+    }
+    const deadline = Date.now() + Math.max(1000, Math.min(15000, Number(timeoutMs || 5000)));
+    while (Date.now() < deadline && targets.some(target => isOwnedWorkerProcessAlive(target.workerName, target.pid))) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    const forced = [];
+    for (const target of targets) {
+        if (!isOwnedWorkerProcessAlive(target.workerName, target.pid))
+            continue;
+        const result = terminateProcessTree(target.pid, {
+            owner: target.workerName,
+            source: 'resource_worker_supervisor_dispose',
+            reason: 'owned_worker_dispose_timeout',
+            allowSingleProcessFallback: true,
+        });
+        if (Array.isArray(result.killedPids) && result.killedPids.length > 0)
+            forced.push(target.pid);
+    }
+    clearOwnedWorkerProcesses();
+    return { requested: targets.map(target => target.pid), forced };
 }
 function resolveBoundedNumber(value, fallback, min, max) {
     const parsed = Number(value);
@@ -239,12 +271,16 @@ function getSupervisorStateFile() {
     return path.join(SUPERVISOR_DIR, 'state.json');
 }
 // 构造独立 worker 的 Node 启动参数。
-function buildWorkerLaunchSpec(type) {
+function buildWorkerLaunchSpec(type, generation = '') {
     const normalized = String(type || 'daily');
     const maxOldSpaceMb = WORKER_MEMORY_LIMITS[normalized] || 512;
+    const ownerGeneration = String(generation || `${process.pid}-${Date.now()}`);
+    const startToken = `${ownerGeneration}-${normalized}-${Math.random().toString(36).slice(2, 10)}`;
     return {
         type: normalized,
         name: `${normalized}-worker`,
+        generation: ownerGeneration,
+        startToken,
         maxOldSpaceMb,
         command: process.execPath,
         args: [
@@ -252,6 +288,10 @@ function buildWorkerLaunchSpec(type) {
             path.join(__dirname, 'worker-main.js'),
             '--type',
             normalized,
+            '--generation',
+            ownerGeneration,
+            '--start-token',
+            startToken,
         ],
     };
 }
@@ -263,8 +303,8 @@ function writeSupervisorState(state) {
     return payload;
 }
 // 启动一个 worker 子进程；仅在调用方显式 start=true 时执行。
-function startWorkerProcess(type) {
-    const spec = buildWorkerLaunchSpec(type);
+function startWorkerProcess(type, generation = '') {
+    const spec = buildWorkerLaunchSpec(type, generation);
     const child = spawn(spec.command, spec.args, {
         cwd: process.cwd(),
         detached: false,
@@ -273,11 +313,31 @@ function startWorkerProcess(type) {
     });
     rememberOwnedWorkerProcess(spec.name, child);
     child.unref();
-    writeWorkerEvent('worker_process_started', { workerName: spec.name, type: spec.type, pid: child.pid, maxOldSpaceMb: spec.maxOldSpaceMb });
+    writeWorkerEvent('worker_process_started', {
+        workerName: spec.name,
+        type: spec.type,
+        pid: child.pid,
+        maxOldSpaceMb: spec.maxOldSpaceMb,
+        ownerGeneration: spec.generation,
+        startToken: spec.startToken,
+    });
     return { ...spec, pid: child.pid };
 }
-// 只在同名 worker 没有活进程时补启动，避免 heartbeat 过期但 pid 仍活着时重复拉起。
-function ensureWorkerProcesses(types = DEFAULT_WORKER_TYPES) {
+// small 模式只允许一个有 backlog 的 worker；red/black 或后台禁用时不拉起重进程。
+function selectWorkerTypesToStart(types, activeNames, snapshot) {
+    const normalizedTypes = types.map(item => String(item || '').trim()).filter(Boolean);
+    if (String(snapshot.serverMode || 'large') !== 'small') {
+        return normalizedTypes.filter(type => !activeNames.has(`${type}-worker`));
+    }
+    if (snapshot.backgroundAllowed === false || snapshot.resourceState === 'red' || snapshot.resourceState === 'black')
+        return [];
+    if (activeNames.size > 0)
+        return [];
+    const selected = normalizedTypes.find(type => getWorkerBacklogCount(type) > 0);
+    return selected ? [selected] : [];
+}
+// 只在策略允许且同名 worker 没有活进程时补启动，避免重复拉起和空闲常驻。
+function ensureWorkerProcesses(types = DEFAULT_WORKER_TYPES, options = {}) {
     const workers = listWorkerStates();
     const previousSamples = getSupervisorWorkerSamples();
     const activeNames = new Set();
@@ -306,12 +366,11 @@ function ensureWorkerProcesses(types = DEFAULT_WORKER_TYPES) {
             activeNames.add(name);
     }
     const started = [];
-    for (const type of types.map(item => String(item || '').trim()).filter(Boolean)) {
+    const snapshot = readResourceSnapshot();
+    for (const type of selectWorkerTypesToStart(types, activeNames, snapshot)) {
         const name = `${type}-worker`;
-        if (activeNames.has(name))
-            continue;
         try {
-            started.push(startWorkerProcess(type));
+            started.push(startWorkerProcess(type, options.generation || ''));
         }
         catch (error) {
             writeWorkerEvent('worker_process_start_failed', {
@@ -452,7 +511,7 @@ function getSupervisorStatus() {
     }
     return {
         state,
-        launchSpecs: ['daily', 'agent', 'media'].map(buildWorkerLaunchSpec),
+        launchSpecs: ['agent', 'daily', 'media'].map(type => buildWorkerLaunchSpec(type, 'status-preview')),
         workers: listWorkerStates(),
     };
 }
@@ -460,11 +519,23 @@ function getSupervisorStatus() {
 function runSupervisorOnce(options = {}) {
     const types = options.types && options.types.length ? options.types : DEFAULT_WORKER_TYPES;
     const previousSamples = getSupervisorWorkerSamples();
-    const started = options.start ? ensureWorkerProcesses(types) : [];
+    const media = require('../media/backpressure/media-queue');
+    const mediaExpired = media.cleanupExpiredMediaTasksThrottled();
+    const mediaRetention = media.cleanupFinishedMediaTasksThrottled();
+    const started = options.start ? ensureWorkerProcesses(types, options) : [];
     const staleRecovered = auditStaleRunningTasks();
     const staleClaimingRecovered = auditStaleClaimingTasks();
     const deferred = auditDeferredTasks();
-    return writeSupervisorState({ started, staleRecovered, staleClaimingRecovered, deferred, workers: attachWorkerProgressSamples(listWorkerStates(), previousSamples) });
+    return writeSupervisorState({
+        generation: String(options.generation || ''),
+        started,
+        mediaExpired,
+        mediaRetention,
+        staleRecovered,
+        staleClaimingRecovered,
+        deferred,
+        workers: attachWorkerProgressSamples(listWorkerStates(), previousSamples),
+    });
 }
 if (require.main === module) {
     const start = process.argv.includes('--start');
@@ -476,6 +547,8 @@ module.exports = {
     startWorkerProcess,
     recoverZombieWorker,
     clearOwnedWorkerProcesses,
+    stopOwnedWorkerProcesses,
+    selectWorkerTypesToStart,
     ensureWorkerProcesses,
     auditStaleRunningTasks,
     auditStaleClaimingTasks,

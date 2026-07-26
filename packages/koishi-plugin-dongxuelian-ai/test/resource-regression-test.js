@@ -364,6 +364,9 @@ function readJsonl(file) {
 }
 
 const originalMemoryUsage = process.memoryUsage
+const originalDateNow = Date.now
+let fakeNow = Date.parse('2026-07-26T00:00:00.000Z')
+Date.now = () => fakeNow
 process.memoryUsage = () => ({
   rss: 900 * 1024 * 1024,
   heapTotal: 0,
@@ -385,7 +388,10 @@ try {
     runTimeoutMs: 30000,
   }
   const decision1 = admission.admitTask(admissionInput)
-  const decision2 = admission.admitTask(admissionInput)
+  fakeNow += 100
+  const decision2 = admission.admitTask({ ...admissionInput, taskId: 's1-dedup-task-2' })
+  fakeNow += 1100
+  const decision3 = admission.admitTask({ ...admissionInput, taskId: 's1-dedup-task-3' })
   systemProtection.collectProcessMetrics({ workerName: 'daily-worker', workerType: 'daily' })
   systemProtection.collectProcessMetrics({ workerName: 'daily-worker', workerType: 'daily' })
   systemProtection.checkWorkerMemoryLimit('daily-worker')
@@ -408,7 +414,9 @@ try {
   const summary = {
     admissionDecision1: decision1.decision,
     admissionDecision2: decision2.decision,
-    admissionEvents: admissions.filter(item => item.event === 'admission_decided' && item.taskId === 's1-dedup-task-1').length,
+    admissionDecision3: decision3.decision,
+    admissionEvents: admissions.filter(item => item.event === 'admission_decided' && item.kind === 'media_image_analysis').length,
+    admissionAggregateTotal: admissions.filter(item => item.event === 'admission_decided' && item.kind === 'media_image_analysis').reduce((sum, item) => sum + Number(item.aggregateCount || 0), 0),
     processMetricsEvents: protection.processMetrics.filter(item => item.event === 'process_metrics' && item.workerName === 'daily-worker').length,
     memoryBlackEvents: protection.memoryAlerts.filter(item => item.event === 'memory_black' && item.thresholdMb).length,
     workerMemoryExceededEvents: protection.memoryAlerts.filter(item => item.event === 'worker_memory_limit_exceeded' && item.workerName === 'daily-worker').length,
@@ -420,6 +428,7 @@ try {
   console.log(JSON.stringify(summary, null, 2))
   process.exitCode = 0
 } finally {
+  Date.now = originalDateNow
   process.memoryUsage = originalMemoryUsage
 }
 `
@@ -428,9 +437,10 @@ try {
     RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '50',
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
     RESOURCE_DAILY_WORKER_RSS_MB: '128',
+    RESOURCE_ADMISSION_EVENT_AGGREGATE_MS: '1000',
   }, 30000)
   if (!summary) return
-  check('S1 admission duplicate decision writes only one event', summary.admissionEvents === 1, JSON.stringify(summary))
+  check('S1 admission aggregates different taskIds by stable decision dimensions', summary.admissionEvents === 2 && summary.admissionAggregateTotal === 3, JSON.stringify(summary))
   check('S8 process metrics duplicate sample writes only one event', summary.processMetricsEvents === 1, JSON.stringify(summary))
   check('S8 memory_black duplicate alert writes only one event', summary.memoryBlackEvents === 1, JSON.stringify(summary))
   check('S8 worker memory duplicate alert writes only one event per file', summary.workerMemoryExceededEvents === 1 && summary.workerShouldExitEvents === 1, JSON.stringify(summary))

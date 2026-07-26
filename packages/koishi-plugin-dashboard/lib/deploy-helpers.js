@@ -131,6 +131,7 @@ function computeFingerprint() {
         add('packages/koishi-plugin-dashboard/frontend/dist/index.html');
         add('scripts/restart-bot.sh');
         add('scripts/watchdog.sh');
+        add('scripts/install-logrotate.sh');
         for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'src')))
             hashFile(hash, repoRoot, file);
         for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'public')))

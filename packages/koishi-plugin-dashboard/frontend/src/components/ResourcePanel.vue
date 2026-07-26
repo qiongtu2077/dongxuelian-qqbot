@@ -393,10 +393,9 @@ export default {
     const memoryMinLabel = computed(() => mbLabel(memoryMinValue.value))
     const memoryMaxLabel = computed(() => mbLabel(memoryMaxValue.value))
     const memorySampleLabel = computed(() => {
-      const worker = formatInterval(Number(memoryMeta.value.workerSampleIntervalMs))
-      const dashboard = formatInterval(Number(memoryMeta.value.dashboardSampleIntervalMs))
+      const sample = formatInterval(Number(memoryMeta.value.hostSampleIntervalMs))
       const bucket = formatInterval(Number(memoryMeta.value.bucketMs))
-      return `worker 采样 ${worker}，面板补采样 ${dashboard}，当前聚合 ${bucket}`
+      return `统一采样 ${sample}，当前聚合 ${bucket}`
     })
     const memoryEmptyText = computed(() => {
       if (loadingMemory.value) return '加载中...'
@@ -584,12 +583,12 @@ export default {
         return { label: '运行中', level: 'ok', title: `当前任务 ${display(worker.currentTaskId)}` }
       }
       const heartbeatLagMs = Number(worker.heartbeatLagMs)
-      const claimAttemptAt = Date.parse(String(worker.lastClaimAttemptAt || ''))
-      const claimLagMs = Number.isFinite(claimAttemptAt) ? Date.now() - claimAttemptAt : Number.MAX_SAFE_INTEGER
+      const progressAt = Date.parse(String(worker.lastClaimAttemptAt || worker.loopChangedAt || worker.heartbeatAt || ''))
+      const progressLagMs = Number.isFinite(progressAt) ? Date.now() - progressAt : Number.MAX_SAFE_INTEGER
       const backlog = workerBacklogCount(worker)
       if (Number.isFinite(heartbeatLagMs)
         && heartbeatLagMs <= WORKER_HEARTBEAT_FRESH_MS
-        && claimLagMs > WORKER_ZOMBIE_STAGNATION_MS
+        && progressLagMs > WORKER_ZOMBIE_STAGNATION_MS
         && backlog > 0) {
         return {
           label: '疑似僵尸',
@@ -597,7 +596,7 @@ export default {
           title: '心跳仍新鲜，但认领进度长时间未推进且仍有待处理任务',
         }
       }
-      if (backlog > 0 && claimLagMs > WORKER_ZOMBIE_STAGNATION_MS) {
+      if (backlog > 0 && progressLagMs > WORKER_ZOMBIE_STAGNATION_MS) {
         return { label: '进度停滞', level: 'warn', title: '该 worker 有积压任务，但最近认领时间已超过观察窗口' }
       }
       return { label: '推进中', level: 'ok', title: 'worker 心跳和认领进度未显示异常' }

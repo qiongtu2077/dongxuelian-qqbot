@@ -427,6 +427,21 @@ function shouldUseLightweightAiStatusFallback(plain: string, action: string): bo
   return plain === 'AI状态' && (action === 'silent_drop' || action === 'defer' || action === 'reject')
 }
 
+const RESOURCE_NOTICE_COOLDOWN_MS = Math.max(30000, Math.min(60000, Number(process.env.RESOURCE_NOTICE_COOLDOWN_MS || 45000)))
+const resourceNoticeAtByChannel = new Map<string, number>()
+
+// 返回低内存固定提示；同频道同一资源状态在短窗口内只发送一次。
+function buildThrottledResourceNotice(channelKey: string, resourceState: string, now = Date.now()): string | undefined {
+  const key = `${channelKey || 'unknown'}|${resourceState || 'critical'}`
+  const previous = resourceNoticeAtByChannel.get(key) || 0
+  if (now - previous < RESOURCE_NOTICE_COOLDOWN_MS) return undefined
+  resourceNoticeAtByChannel.set(key, now)
+  for (const [entryKey, at] of resourceNoticeAtByChannel) {
+    if (now - at > RESOURCE_NOTICE_COOLDOWN_MS) resourceNoticeAtByChannel.delete(entryKey)
+  }
+  return '当前服务器内存不足，AI 和视频搬运暂时暂停；可发送 AI状态 查看。'
+}
+
 // 日报/独占忙锁期间，显式图片追问只恢复到后台排队提示，不放开前台识图。
 function isImageQuickReadIntent(text: string = ''): boolean {
   const value = normalizeText(text)
@@ -541,6 +556,11 @@ function apply(ctx: IndexContext): void {
       markExplicitInteraction('resource-status')
       return buildResourceStatusReply()
     }
+    if (botDirective.action === 'resource_notice') {
+      markExplicitInteraction('resource-notice')
+      if (inGuild) cancelPendingRandom(channelKey, 'bot-mode-resource-notice')
+      return buildThrottledResourceNotice(channelKey, botDirective.resourceState)
+    }
     if (botDirective.action === 'silent_drop' || botDirective.action === 'defer') {
       if (botCommandType === 'media_event') {
         await handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt, queueMedia: false })
@@ -605,6 +625,15 @@ function apply(ctx: IndexContext): void {
             userId: entryUserId,
           })
         }
+      }
+      if (
+        botCommandType === 'media_event' &&
+        (directAt || nameMentionedForBotMode || isPrivate || quotedBotSelf) &&
+        (botDirective.resourceState === 'red' || botDirective.resourceState === 'black')
+      ) {
+        markExplicitInteraction('resource-notice')
+        if (inGuild) cancelPendingRandom(channelKey, 'bot-mode-resource-notice')
+        return buildThrottledResourceNotice(channelKey, botDirective.resourceState)
       }
       if (inGuild) cancelPendingRandom(channelKey, `bot-mode-${botDirective.action}`)
       return

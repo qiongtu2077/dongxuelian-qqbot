@@ -74,8 +74,9 @@ const {
 } = require('../resource-workers/task-paths') as typeof import('../resource-workers/task-paths')
 const {
   runSupervisorOnce,
-  clearOwnedWorkerProcesses,
+  stopOwnedWorkerProcesses,
 } = require('../resource-workers/worker-supervisor') as typeof import('../resource-workers/worker-supervisor')
+const { collectProcessMetrics } = require('../resource-system/system-protection') as typeof import('../resource-system/system-protection')
 
 interface TodayCacheSnapshot {
   date?: string
@@ -126,6 +127,7 @@ interface PluginLifecycleOptions {
 
 const RESULT_NOTIFIER_INTERVAL_MS = Math.max(5000, Math.min(120000, Number(process.env.RESOURCE_RESULT_NOTIFIER_INTERVAL_MS || 60000)))
 const RESOURCE_SUPERVISOR_INTERVAL_MS = Math.max(10000, Math.min(300000, Number(process.env.RESOURCE_WORKER_SUPERVISOR_INTERVAL_MS || 30000)))
+const RESOURCE_HOST_SAMPLE_INTERVAL_MS = Math.max(30000, Math.min(10 * 60 * 1000, Number(process.env.RESOURCE_HOST_SAMPLE_INTERVAL_MS || 30000)))
 // fs.watch 去抖：worker 子进程写入 done 文件触发多次事件，合并到一次结果通知。
 const DONE_WATCH_DEBOUNCE_MS = Math.max(50, Math.min(5000, Number(process.env.RESOURCE_DONE_WATCH_DEBOUNCE_MS || 300)))
 
@@ -176,6 +178,7 @@ function restoreTodayCache(): void {
 
 function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycleOptions = {}): void {
   const { configureAgentQueue, chat, retellAgentResult } = options
+  const supervisorGeneration = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   let resultNotifierBusy = false
   let supervisorBusy = false
 
@@ -246,7 +249,7 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     if (supervisorBusy || !isResourceWorkerSupervisorEnabled()) return
     supervisorBusy = true
     try {
-      runSupervisorOnce({ start: true, once: true })
+      runSupervisorOnce({ start: true, once: true, generation: supervisorGeneration })
     } catch (error) {
       ctx.logger('dongxuelian-ai').warn(`resource worker supervisor failed: ${getLifecycleErrorMessage(error)}`)
     } finally {
@@ -281,6 +284,7 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
       ctx.logger('dongxuelian-ai').warn(`agent cron scheduler restore failed: ${getLifecycleErrorMessage(error)}`)
     }
     await runResourceSupervisorOnce()
+    collectProcessMetrics({ sampler: 'koishi-main', supervisorGeneration })
     await runResultNotifierOnce()
     registerTaskCompletedCallback(onTaskCompleted)
     startDoneWatcher()
@@ -310,17 +314,27 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
   }, RESOURCE_SUPERVISOR_INTERVAL_MS)
   if (supervisorTimer.unref) supervisorTimer.unref()
 
-  ctx.on('dispose', () => {
+  const hostSampleTimer = setInterval(() => {
+    collectProcessMetrics({ sampler: 'koishi-main', supervisorGeneration })
+  }, RESOURCE_HOST_SAMPLE_INTERVAL_MS)
+  if (hostSampleTimer.unref) hostSampleTimer.unref()
+
+  ctx.on('dispose', async () => {
     unregisterTaskCompletedCallback(onTaskCompleted)
     stopDoneWatcher()
     clearInterval(sensitiveTimer)
     clearInterval(resultNotifierTimer)
     clearInterval(supervisorTimer)
+    clearInterval(hostSampleTimer)
     try { agentCron.stopCronScheduler() } catch (error) { ctx.logger('dongxuelian-ai').warn(`agent cron scheduler stop failed: ${getLifecycleErrorMessage(error)}`) }
     clearChannelQueues()
     clearRandomPendingState()
     clearStartupSchedulers()
-    clearOwnedWorkerProcesses()
+    try {
+      await stopOwnedWorkerProcesses()
+    } catch (error) {
+      ctx.logger('dongxuelian-ai').warn(`resource worker dispose failed: ${getLifecycleErrorMessage(error)}`)
+    }
   })
 }
 

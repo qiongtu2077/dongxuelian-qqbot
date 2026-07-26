@@ -1,7 +1,7 @@
 type EntryCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'interactive_chat' | 'media_event';
-type EntryPolicyAction = 'pass' | 'queue_daily' | 'status_only' | 'silent_drop' | 'reject' | 'defer';
+type EntryPolicyAction = 'pass' | 'queue_daily' | 'status_only' | 'resource_notice' | 'silent_drop' | 'reject' | 'defer';
 type TaskAdmissionAction = 'run_now' | 'queue' | 'downgrade' | 'defer' | 'reject' | 'silent_drop';
-type ResourceDirectiveAction = 'pass' | 'queue_daily' | 'status_only' | 'silent_drop' | 'reject' | 'defer' | 'queue' | 'downgrade';
+type ResourceDirectiveAction = 'pass' | 'queue_daily' | 'status_only' | 'resource_notice' | 'silent_drop' | 'reject' | 'defer' | 'queue' | 'downgrade';
 interface ResourceSnapshotView {
     resourceState: string;
     botMode: string;

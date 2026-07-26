@@ -14,17 +14,14 @@ const RESOURCE_EVENT_LIMIT = parsePositiveInt(process.env.DASHBOARD_RESOURCE_EVE
 const RESOURCE_TASK_LIMIT = parsePositiveInt(process.env.DASHBOARD_RESOURCE_TASK_LIMIT, 120, 20, 500);
 const RESOURCE_PRECOMPUTE_COVERAGE_LIMIT = parsePositiveInt(process.env.DASHBOARD_RESOURCE_PRECOMPUTE_COVERAGE_LIMIT, 80, 12, 500);
 const MAINTENANCE_FILE = path.join(DATA_DIR, 'ai-paused.txt');
-const DASHBOARD_MEMORY_SAMPLE_INTERVAL_MS = parsePositiveInt(process.env.DASHBOARD_MEMORY_SAMPLE_INTERVAL_MS, 5000, 1000, 60000);
-const WORKER_MEMORY_SAMPLE_INTERVAL_MS = parsePositiveInt(process.env.RESOURCE_WORKER_POLL_MS, 2000, 500, 30000);
+const HOST_MEMORY_SAMPLE_INTERVAL_MS = parsePositiveInt(process.env.RESOURCE_PROCESS_METRICS_SAMPLE_INTERVAL_MS, 30000, 1000, 10 * 60 * 1000);
 const MEMORY_HISTORY_CACHE_TTL_MS = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_CACHE_TTL_MS, 10000, 1000, 60000);
 const MEMORY_HISTORY_MAX_FULL_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_MAX_FULL_FILE_BYTES, 8 * 1024 * 1024, 1024 * 1024, 64 * 1024 * 1024);
 const MEMORY_HISTORY_MAX_SAMPLED_LINES_PER_FILE = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_MAX_SAMPLED_LINES_PER_FILE, 2600, 200, 20000);
 const MEMORY_HISTORY_SAMPLE_CHUNK_BYTES = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_SAMPLE_CHUNK_BYTES, 64 * 1024, 16 * 1024, 512 * 1024);
 const MEMORY_HISTORY_RETENTION_MS = parsePositiveInt(process.env.RESOURCE_PROCESS_METRICS_RETENTION_HOURS || process.env.DASHBOARD_MEMORY_HISTORY_RETENTION_HOURS, 72, 1, 24 * 30) * 60 * 60 * 1000;
-const MEMORY_HISTORY_CLEANUP_INTERVAL_MS = parsePositiveInt(process.env.DASHBOARD_MEMORY_HISTORY_CLEANUP_INTERVAL_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000);
 const DISK_USAGE_CACHE_TTL_MS = parsePositiveInt(process.env.DASHBOARD_DISK_USAGE_CACHE_TTL_MS, 60 * 1000, 10 * 1000, 10 * 60 * 1000);
 const DISK_USAGE_WALK_TOTAL_BUDGET_MS = parsePositiveInt(process.env.DASHBOARD_DISK_USAGE_WALK_TOTAL_BUDGET_MS, 1200, 200, 10 * 1000);
-const PROCESS_METRICS_FILE_RE = /^process-metrics-\d{4}-\d{2}-\d{2}\.jsonl$/;
 const MEMORY_RANGE_OPTIONS = {
     '1m': 60 * 1000,
     '5m': 5 * 60 * 1000,
@@ -47,8 +44,6 @@ const MEMORY_BUCKET_MS = {
     '48h': 15 * 60 * 1000,
     '72h': 30 * 60 * 1000,
 };
-let lastDashboardMemorySampleAt = 0;
-let lastMemoryHistoryCleanupAt = 0;
 const memoryHistoryCache = new Map();
 let diskUsageCache = null;
 // 动态加载 AI 资源模块，避免 Dashboard 编译期反向依赖源码。
@@ -58,6 +53,7 @@ function loadResourceModules() {
         scheduler: require(path.join(AI_LIB, 'resource-scheduler', 'resource-snapshot')),
         mode: require(path.join(AI_LIB, 'resource-scheduler', 'server-mode-policy')),
         tasks: require(path.join(AI_LIB, 'resource-workers', 'task-store')),
+        supervisor: require(path.join(AI_LIB, 'resource-workers', 'worker-supervisor')),
         precompute: require(path.join(AI_LIB, 'daily-precompute', 'precompute-status')),
         media: require(path.join(AI_LIB, 'media', 'backpressure', 'media-queue')),
         system: require(path.join(AI_LIB, 'resource-system', 'system-protection')),
@@ -71,131 +67,6 @@ function eventDateStamp(date) {
 // 返回指定日期的内存 metrics 文件路径。
 function processMetricsFile(systemRoot, date = new Date()) {
     return path.join(systemRoot, `process-metrics-${eventDateStamp(date)}.jsonl`);
-}
-// 清理超过保留时间的内存采样文件，只删除白名单命名的 process-metrics JSONL。
-function cleanupOldProcessMetricFiles(systemRoot, now = Date.now()) {
-    try {
-        const entries = fs.readdirSync(systemRoot, { withFileTypes: true });
-        const cutoff = now - MEMORY_HISTORY_RETENTION_MS;
-        let changed = 0;
-        for (const entry of entries) {
-            if (!entry.isFile() || !PROCESS_METRICS_FILE_RE.test(entry.name))
-                continue;
-            const stamp = entry.name.slice('process-metrics-'.length, 'process-metrics-YYYY-MM-DD'.length);
-            const fileDay = Date.parse(`${stamp}T00:00:00.000Z`);
-            if (!Number.isFinite(fileDay))
-                continue;
-            const fileEnd = fileDay + 24 * 60 * 60 * 1000;
-            const file = path.join(systemRoot, entry.name);
-            if (fileEnd <= cutoff) {
-                try {
-                    fs.unlinkSync(file);
-                    changed += 1;
-                }
-                catch {
-                    /* 单个旧文件清理失败不影响采样写入。 */
-                }
-                continue;
-            }
-            if (fileDay >= cutoff)
-                continue;
-            if (trimProcessMetricFile(file, cutoff))
-                changed += 1;
-        }
-        return changed;
-    }
-    catch {
-        /* non-critical: missing metrics directory means the history view has no samples yet. */
-        return 0;
-    }
-}
-// 裁剪跨越保留边界的当天采样文件，保留 createdAt 仍在窗口内的 JSONL 行。
-function trimProcessMetricFile(file, cutoff) {
-    let lines = [];
-    try {
-        lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean);
-    }
-    catch {
-        /* non-critical: unreadable metrics files are skipped so status requests still work. */
-        return false;
-    }
-    const kept = [];
-    let changed = false;
-    for (const line of lines) {
-        let item;
-        const normalizedLine = line.replace(/^\uFEFF/, '');
-        try {
-            item = JSON.parse(normalizedLine);
-        }
-        catch {
-            /* non-critical: keep malformed retention lines instead of deleting possibly useful data. */
-            kept.push(line);
-            continue;
-        }
-        const ts = Date.parse(String(item.createdAt || ''));
-        if (Number.isFinite(ts) && ts < cutoff) {
-            changed = true;
-            continue;
-        }
-        kept.push(normalizedLine);
-    }
-    if (!changed)
-        return false;
-    if (!kept.length) {
-        try {
-            fs.unlinkSync(file);
-        }
-        catch { /* non-critical: retention retry can remove the empty metrics file later. */
-            return false;
-        }
-        return true;
-    }
-    const temp = `${file}.${process.pid}.${Date.now()}.retention.tmp`;
-    try {
-        fs.writeFileSync(temp, `${kept.join('\n')}\n`, 'utf8');
-        fs.renameSync(temp, file);
-        return true;
-    }
-    catch {
-        /* non-critical: failed retention rewrite should leave the previous metrics file in place. */
-        try {
-            fs.unlinkSync(temp);
-        }
-        catch {
-            /* 清理临时文件失败不影响后续采样。 */
-        }
-        return false;
-    }
-}
-// 节流执行采样文件清理，避免 Dashboard 高频状态刷新时重复扫目录。
-function cleanupOldProcessMetricFilesThrottled(systemRoot, now = Date.now()) {
-    if (now - lastMemoryHistoryCleanupAt < MEMORY_HISTORY_CLEANUP_INTERVAL_MS)
-        return;
-    lastMemoryHistoryCleanupAt = now;
-    cleanupOldProcessMetricFiles(systemRoot, now);
-}
-// 补写 Dashboard 自身的低频内存采样，避免 worker 空闲时折线图没有新点。
-function recordDashboardMemorySample(mods, snapshot) {
-    const now = Date.now();
-    if (now - lastDashboardMemorySampleAt < DASHBOARD_MEMORY_SAMPLE_INTERVAL_MS)
-        return;
-    lastDashboardMemorySampleAt = now;
-    try {
-        cleanupOldProcessMetricFilesThrottled(mods.system.RESOURCE_SYSTEM_ROOT, now);
-        mods.files.appendJsonlEvent(processMetricsFile(mods.system.RESOURCE_SYSTEM_ROOT), {
-            event: 'process_metrics',
-            source: 'dashboard-resource-status',
-            pid: process.pid,
-            processName: process.title,
-            rssMb: Math.round((process.memoryUsage().rss || 0) / 1024 / 1024),
-            memAvailableMb: snapshot.memAvailableMb,
-            memTotalMb: snapshot.memTotalMb,
-            memSource: snapshot.memSource || '',
-        });
-    }
-    catch {
-        /* Dashboard 状态读取不应因辅助采样失败而失败。 */
-    }
 }
 // 解析前端传入的内存查询区间。
 function normalizeMemoryRange(value) {
@@ -313,7 +184,6 @@ function readSampledJsonlLines(file, rangeMs, isEndFile) {
 // 将原始 JSONL metrics 聚合为固定桶，长区间采用采样读取以避免 Dashboard 请求超时。
 function collectMemoryHistory(mods, range) {
     const nowMs = Date.now();
-    cleanupOldProcessMetricFilesThrottled(mods.system.RESOURCE_SYSTEM_ROOT, nowMs);
     const rangeMs = MEMORY_RANGE_OPTIONS[range];
     const startMs = nowMs - rangeMs;
     const bucketMs = MEMORY_BUCKET_MS[range] || 10000;
@@ -402,8 +272,7 @@ function collectMemoryHistory(mods, range) {
         range,
         rangeMs,
         bucketMs,
-        dashboardSampleIntervalMs: DASHBOARD_MEMORY_SAMPLE_INTERVAL_MS,
-        workerSampleIntervalMs: WORKER_MEMORY_SAMPLE_INTERVAL_MS,
+        hostSampleIntervalMs: HOST_MEMORY_SAMPLE_INTERVAL_MS,
         uiRefreshMs: 5000,
         retentionMs: MEMORY_HISTORY_RETENTION_MS,
         pointCount: points.length,
@@ -596,7 +465,6 @@ function collectResourceEvents(mods, limit = RESOURCE_EVENT_LIMIT) {
 // 合成资源中心总览状态。
 function buildResourceStatus(mods) {
     const snapshot = mods.scheduler.readResourceSnapshot();
-    recordDashboardMemorySample(mods, snapshot);
     const gate = mods.gate.getResourceGateStatus();
     const queue = mods.tasks.getTaskQueueSummary();
     const workers = mods.tasks.listWorkerStates();
@@ -711,7 +579,16 @@ function handleGetResourceEvents(req, res, pathname, url) {
 // GET /resource/workers：返回 worker 心跳。
 function handleGetResourceWorkers(req, res) {
     try {
-        return json(res, { ok: true, workers: loadResourceModules().tasks.listWorkerStates() });
+        const mods = loadResourceModules();
+        const rawWorkers = mods.tasks.listWorkerStates();
+        const workers = Array.isArray(rawWorkers) ? rawWorkers : [];
+        const sampledWorkers = mods.supervisor.getSupervisorStatus().state?.workers || [];
+        const sampledByName = new Map(sampledWorkers.map(worker => [String(worker.name || ''), worker]));
+        const merged = workers.map(worker => {
+            const sample = sampledByName.get(String(worker.name || '')) || {};
+            return { ...worker, loopChangedAt: sample.loopChangedAt || worker.heartbeatAt || '' };
+        });
+        return json(res, { ok: true, workers: merged });
     }
     catch (e) {
         return json(res, { ok: false, message: getErrorMessage(e) }, 500);
@@ -833,4 +710,4 @@ const routes = {
     'POST /dashboard/api/resource/maintenance': handlePostResourceMaintenance,
     'POST /dashboard/api/resource/mode': handlePostResourceMode,
 };
-module.exports = { routes, buildResourceStatus, sanitizeTask, collectMemoryHistory, normalizeMemoryRange, getCachedMemoryHistory, cleanupOldProcessMetricFiles, collectDiskUsage, getCachedDiskUsage };
+module.exports = { routes, buildResourceStatus, sanitizeTask, collectMemoryHistory, normalizeMemoryRange, getCachedMemoryHistory, collectDiskUsage, getCachedDiskUsage };

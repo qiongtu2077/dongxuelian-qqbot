@@ -182,8 +182,8 @@ async function run(t) {
         const session = makeSession()
         session.content = atBot(session, '现在回我一句')
         const result = await run(session, { flushTicks: 120 })
-        t.check('scenario critical mode still silences explicit chat for memory safety', result.sent.length === 0 && !result.nextCalled, formatResult(result))
-        t.check('scenario critical mode does not call model for silenced chat', mocked.calls.length === 0, `calls=${mocked.calls.length} ${formatResult(result)}`)
+        t.check('scenario critical mode returns fixed notice for explicit chat', result.sent.some(item => String(item).includes('内存不足')) && !result.nextCalled, formatResult(result))
+        t.check('scenario critical mode does not call model for resource notice', mocked.calls.length === 0, `calls=${mocked.calls.length} ${formatResult(result)}`)
         checkSentExcludes(t, 'scenario critical mode does not accidentally send fake model reply', result, '这句不该被看到')
       })
     })
@@ -202,8 +202,8 @@ async function run(t) {
       const result = await run(session, { flushTicks: 80 })
       const queued = findQueuedFileAnalysis('10001', 'critical-file-read-1')
       t.check(
-        'scenario critical mode does not recover explicit file quick read',
-        result.sent.length === 0 && !result.nextCalled,
+        'scenario critical mode returns notice instead of recovering explicit file quick read',
+        result.sent.some(item => String(item).includes('内存不足')) && !result.nextCalled,
         formatResult(result)
       )
       t.check(
@@ -550,9 +550,9 @@ async function run(t) {
       .find(task => task && task.channelKey === '10001' && task.messageId === 'yellow-passive-image-1')
     const entry = await imageStore.getImageEntry('10001', 'yellow-passive-image-1')
     t.check(
-      'scenario yellow passive image ingest keeps metadata but stops background media enqueue',
+      'scenario yellow passive image ingest queues work when its memory budget is met',
       result.sent.length === 0 &&
-        !queued &&
+        !!queued &&
         entry && entry.file === 'yellow-passive-image-file',
       JSON.stringify({ result: formatResult(result), queued, entry })
     )
@@ -572,9 +572,9 @@ async function run(t) {
     const fileStore = require(path.join(AI_ROOT, 'lib', 'media', 'file', 'file-store.js'))
     const entry = await fileStore.getFileEntry('10001', 'yellow-passive-file-1')
     t.check(
-      'scenario yellow passive file ingest keeps metadata but stops background media enqueue',
+      'scenario yellow passive file ingest queues work when its memory budget is met',
       result.sent.length === 0 &&
-        !queued &&
+        !!queued &&
         entry && entry.fileName === 'yellow-passive-file.txt' && entry.fileId === 'yellow-passive-file-token',
       JSON.stringify({ result: formatResult(result), queued, entry })
     )

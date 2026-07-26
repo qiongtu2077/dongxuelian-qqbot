@@ -4,7 +4,7 @@
  * 边界: 不发送消息，不调用 AI，不写任务队列。
  */
 
-type BotModeAction = 'pass' | 'queue_daily' | 'status_only' | 'silent_drop' | 'reject' | 'defer'
+type BotModeAction = 'pass' | 'queue_daily' | 'status_only' | 'resource_notice' | 'silent_drop' | 'reject' | 'defer'
 type BotCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'interactive_chat' | 'media_event'
 
 interface BotModeSnapshotLike {
@@ -40,8 +40,9 @@ function decideModePolicy(commandType: BotCommandType, snapshot: BotModeSnapshot
 
   if (mode === 'critical' || resourceState === 'red' || resourceState === 'black') {
     if (commandType === 'media_event') return { action: 'defer', reason: 'resource state is critical' }
-    if (commandType === 'agent_command') return { action: 'reject', reason: 'agent is blocked in critical mode' }
-    if (isChatLike) return { action: 'silent_drop', reason: 'resource state is critical' }
+    if (commandType === 'agent_command') return { action: 'resource_notice', reason: 'agent is blocked in critical mode' }
+    if (commandType === 'interactive_chat') return { action: 'resource_notice', reason: 'resource state is critical' }
+    if (commandType === 'normal_chat') return { action: 'silent_drop', reason: 'resource state is critical' }
     return { action: 'silent_drop', reason: 'resource state is critical' }
   }
 

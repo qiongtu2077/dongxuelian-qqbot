@@ -7,8 +7,8 @@ const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
 const { spawnSync } = require('child_process') as typeof import('child_process')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
-const { appendJsonlEvent, ensureDir, readRecentJsonlEvents } = require('../resource-common/files') as typeof import('../resource-common/files')
-const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot') as typeof import('../resource-scheduler/resource-snapshot')
+const { appendJsonlEvent, ensureDir, readJsonFile, readRecentJsonlEvents } = require('../resource-common/files') as typeof import('../resource-common/files')
+const { classifyResourceState, readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot') as typeof import('../resource-scheduler/resource-snapshot')
 
 interface TerminateProcessTreeOptions {
   reason?: string
@@ -53,12 +53,15 @@ function parseBoundedPositiveInt(value: unknown, fallback: number, min: number, 
 }
 
 const RESOURCE_SYSTEM_ROOT = path.join(DATA_DIR, 'resource-system')
+const RESOURCE_RETENTION_CONTROL_FILE = path.join(DATA_DIR, 'resource-retention-control.json')
 const PROCESS_METRICS_FILE_RE = /^process-metrics-\d{4}-\d{2}-\d{2}\.jsonl$/
 const PROCESS_METRICS_RETENTION_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_RETENTION_HOURS, 72, 1, 24 * 30) * 60 * 60 * 1000
-const PROCESS_METRICS_CLEANUP_INTERVAL_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_CLEANUP_INTERVAL_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000)
-const PROCESS_METRICS_SAMPLE_INTERVAL_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_SAMPLE_INTERVAL_MS, 5000, 1000, 10 * 60 * 1000)
+const PROCESS_METRICS_CLEANUP_INTERVAL_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_CLEANUP_INTERVAL_MS, 24 * 60 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000)
+const RESOURCE_HISTORY_RETENTION_MS = parseBoundedPositiveInt(process.env.RESOURCE_HISTORY_RETENTION_DAYS, 14, 1, 365) * 24 * 60 * 60 * 1000
+const RESOURCE_HISTORY_DELETE_BATCH = parseBoundedPositiveInt(process.env.RESOURCE_HISTORY_DELETE_BATCH, 100, 1, 1000)
+const PROCESS_METRICS_SAMPLE_INTERVAL_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_SAMPLE_INTERVAL_MS, 30000, 1000, 10 * 60 * 1000)
 const MEMORY_BLACK_THRESHOLD_MB = parseBoundedPositiveInt(process.env.RESOURCE_MEMORY_BLACK_THRESHOLD_MB, 450, 64, 8192)
-const MEMORY_BLACK_ALERT_COOLDOWN_MS = parseBoundedPositiveInt(process.env.RESOURCE_MEMORY_BLACK_ALERT_COOLDOWN_MS, 30000, 1000, 10 * 60 * 1000)
+const MEMORY_BLACK_ALERT_COOLDOWN_MS = parseBoundedPositiveInt(process.env.RESOURCE_MEMORY_BLACK_ALERT_COOLDOWN_MS, 5 * 60 * 1000, 1000, 10 * 60 * 1000)
 const WORKER_MEMORY_ALERT_COOLDOWN_MS = parseBoundedPositiveInt(process.env.RESOURCE_WORKER_MEMORY_ALERT_COOLDOWN_MS, 30000, 1000, 10 * 60 * 1000)
 const DEFAULT_WORKER_RSS_LIMITS: Record<string, number> = {
   'daily-worker': Number(process.env.RESOURCE_DAILY_WORKER_RSS_MB || 900),
@@ -66,7 +69,7 @@ const DEFAULT_WORKER_RSS_LIMITS: Record<string, number> = {
   'media-worker': Number(process.env.RESOURCE_MEDIA_WORKER_RSS_MB || 650),
 }
 
-let lastProcessMetricsCleanupAt = 0
+let lastResourceHistoryCleanupAt = 0
 const recentProcessMetricsSamples = new Map<string, number>()
 const recentMemoryBlackAlerts = new Map<string, number>()
 const recentWorkerMemoryAlerts = new Map<string, number>()
@@ -152,24 +155,82 @@ function cleanupOldProcessMetricsFiles(now = Date.now()): number {
   }
 }
 
-// 节流执行 metrics 清理，避免 worker 高频采样时重复扫描目录。
-function cleanupOldProcessMetricsFilesThrottled(now = Date.now()): void {
-  if (now - lastProcessMetricsCleanupAt < PROCESS_METRICS_CLEANUP_INTERVAL_MS) return
-  lastProcessMetricsCleanupAt = now
-  cleanupOldProcessMetricsFiles(now)
+// 读取资源历史清理门禁；只有显式控制文件和外部备份路径同时有效才允许删除。
+function readResourceRetentionControl(): { enabled: boolean; backupPath: string } {
+  const control = readJsonFile(RESOURCE_RETENTION_CONTROL_FILE, null) as Record<string, unknown> | null
+  const rawBackupPath = String(control?.backupPath || '').trim()
+  const backupPath = rawBackupPath ? path.resolve(rawBackupPath) : ''
+  return {
+    enabled: control?.enabled === true
+      && path.isAbsolute(rawBackupPath)
+      && backupPath !== path.parse(backupPath).root
+      && fs.existsSync(backupPath),
+    backupPath,
+  }
 }
 
+// 从白名单 JSONL 文件名中提取 UTC 日期；不匹配的文件永远不进入删除集合。
+function getResourceHistoryFileDay(name: string): string {
+  const match = /^(?:admissions|memory-alerts|process-cleanup|events)-(\d{4}-\d{2}-\d{2})\.jsonl$/.exec(name)
+  return match ? match[1] : ''
+}
+
+// 在备份门禁下分批清理各资源域的过期按日 JSONL，并复用 process metrics 精细保留逻辑。
+function cleanupOldResourceHistoryFiles(now = Date.now()): Record<string, unknown> {
+  const control = readResourceRetentionControl()
+  if (!control.enabled) return { enabled: false, deleted: 0, metricsChanged: 0, backupPath: control.backupPath }
+  const roots = [
+    path.join(DATA_DIR, 'resource-scheduler'),
+    RESOURCE_SYSTEM_ROOT,
+    path.join(DATA_DIR, 'media-backpressure'),
+    path.join(DATA_DIR, 'resource-workers'),
+    path.join(DATA_DIR, 'resource-gate'),
+    path.join(DATA_DIR, 'daily-precompute'),
+  ]
+  const cutoff = now - RESOURCE_HISTORY_RETENTION_MS
+  let deleted = 0
+  for (const root of roots) {
+    let entries: import('fs').Dirent[] = []
+    try { entries = fs.readdirSync(root, { withFileTypes: true }) } catch { continue }
+    for (const entry of entries) {
+      if (deleted >= RESOURCE_HISTORY_DELETE_BATCH || !entry.isFile()) continue
+      const day = getResourceHistoryFileDay(entry.name)
+      if (!day) continue
+      const dayEnd = Date.parse(`${day}T00:00:00.000Z`) + 24 * 60 * 60 * 1000
+      if (!Number.isFinite(dayEnd) || dayEnd > cutoff) continue
+      try {
+        fs.unlinkSync(path.join(root, entry.name))
+        deleted += 1
+      } catch {
+        /* A later daily pass retries an old file that could not be removed. */
+      }
+    }
+  }
+  const metricsChanged = cleanupOldProcessMetricsFiles(now)
+  return { enabled: true, deleted, metricsChanged, backupPath: control.backupPath }
+}
+
+// 由统一 Koishi sampler 每天触发一次资源历史维护，worker 和 Dashboard 不参与。
+function cleanupOldResourceHistoryFilesThrottled(now = Date.now()): void {
+  if (now - lastResourceHistoryCleanupAt < PROCESS_METRICS_CLEANUP_INTERVAL_MS) return
+  lastResourceHistoryCleanupAt = now
+  const result = cleanupOldResourceHistoryFiles(now)
+  if (result.enabled === true && (Number(result.deleted || 0) > 0 || Number(result.metricsChanged || 0) > 0)) {
+    appendJsonlEvent(systemEventFile('process-cleanup'), { event: 'resource_history_retention_completed', ...result })
+  }
+}
+
+// 清除超过节流窗口的内存态记录，限制常驻 Map 大小。
 function cleanupRecentEntries(store: Map<string, number>, now: number, ttlMs: number): void {
   for (const [key, at] of store) {
     if (now - at > ttlMs) store.delete(key)
   }
 }
 
+// 判断统一 sampler 当前是否允许写入一条主机指标。
 function shouldWriteProcessMetricsSample(extra: Record<string, unknown>, now = Date.now()): boolean {
   const sampleKey = [
-    String(extra.workerName || ''),
-    String(extra.workerType || ''),
-    String(process.pid),
+    String(extra.sampler || extra.workerName || 'host'),
   ].join('|')
   const lastAt = recentProcessMetricsSamples.get(sampleKey) || 0
   if (now - lastAt < PROCESS_METRICS_SAMPLE_INTERVAL_MS) return false
@@ -178,11 +239,10 @@ function shouldWriteProcessMetricsSample(extra: Record<string, unknown>, now = D
   return true
 }
 
-function shouldWriteMemoryBlackAlert(memAvailableMb: number, memTotalMb: number | null, source: string, now = Date.now()): boolean {
+// 按资源档位和内存来源节流告警，档位变化时立即允许新事件。
+function shouldWriteMemoryBlackAlert(resourceState: string, source: string, now = Date.now()): boolean {
   const alertKey = [
-    String(process.pid),
-    String(memAvailableMb),
-    String(memTotalMb),
+    String(resourceState || 'unknown'),
     String(source || ''),
   ].join('|')
   const lastAt = recentMemoryBlackAlerts.get(alertKey) || 0
@@ -192,6 +252,7 @@ function shouldWriteMemoryBlackAlert(memAvailableMb: number, memTotalMb: number 
   return true
 }
 
+// 按 worker 身份与上限节流单进程 RSS 告警。
 function shouldWriteWorkerMemoryAlert(workerName: string, pid: number, limitMb: number, now = Date.now()): boolean {
   const alertKey = [String(workerName || ''), String(pid), String(limitMb)].join('|')
   const lastAt = recentWorkerMemoryAlerts.get(alertKey) || 0
@@ -597,8 +658,9 @@ function checkWorkerMemoryLimit(workerName: string, limitMb?: number): Record<st
 function collectProcessMetrics(extra: Record<string, unknown> = {}): Record<string, unknown> {
   ensureDir(RESOURCE_SYSTEM_ROOT)
   const now = Date.now()
-  cleanupOldProcessMetricsFilesThrottled(now)
+  cleanupOldResourceHistoryFilesThrottled(now)
   const mem = readLinuxMeminfo()
+  const resourceState = classifyResourceState(mem.availableMb)
   const metrics = {
     event: 'process_metrics',
     pid: process.pid,
@@ -615,7 +677,7 @@ function collectProcessMetrics(extra: Record<string, unknown> = {}): Record<stri
   if (
     mem.availableMb !== null
     && mem.availableMb < MEMORY_BLACK_THRESHOLD_MB
-    && shouldWriteMemoryBlackAlert(mem.availableMb, mem.totalMb, mem.source, now)
+    && shouldWriteMemoryBlackAlert(resourceState, mem.source, now)
   ) {
     appendJsonlEvent(systemEventFile('memory-alerts'), {
       event: 'memory_black',
@@ -623,6 +685,7 @@ function collectProcessMetrics(extra: Record<string, unknown> = {}): Record<stri
       memAvailableMb: mem.availableMb,
       memTotalMb: mem.totalMb,
       memSource: mem.source,
+      resourceState,
       thresholdMb: MEMORY_BLACK_THRESHOLD_MB,
     })
   }
@@ -655,6 +718,7 @@ function getSystemProtectionStatus(): Record<string, unknown> {
 
 export = {
   RESOURCE_SYSTEM_ROOT,
+  RESOURCE_RETENTION_CONTROL_FILE,
   PROCESS_METRICS_RETENTION_MS,
   MEMORY_BLACK_THRESHOLD_MB,
   collectProcessMetrics,
@@ -664,4 +728,5 @@ export = {
   terminateRecordedProcessPids,
   getSystemProtectionStatus,
   cleanupOldProcessMetricsFiles,
+  cleanupOldResourceHistoryFiles,
 }

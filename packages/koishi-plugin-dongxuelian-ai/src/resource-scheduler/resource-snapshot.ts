@@ -29,6 +29,8 @@ interface ResourceSnapshot {
   running: unknown | null
   maintenance: boolean
   createdAt: string
+  resourceStateChangedAt: string
+  recoveryCandidateAt: string
 }
 
 type ResourceSnapshotPersisted = Omit<ResourceSnapshot, 'createdAt'> & { createdAt?: string }
@@ -84,6 +86,8 @@ const SCHEDULER_STATE_FILE = path.join(SCHEDULER_ROOT, 'state.json')
 const GREEN_MEM_AVAILABLE_MB = 900
 const YELLOW_MEM_AVAILABLE_MB = 450
 const RED_MEM_AVAILABLE_MB = 300
+const RED_RECOVERY_MEM_AVAILABLE_MB = Math.max(YELLOW_MEM_AVAILABLE_MB, Number(process.env.RESOURCE_RED_RECOVERY_MEM_MB || 550))
+const RED_RECOVERY_HOLD_MS = Math.max(2 * 60 * 1000, Math.min(5 * 60 * 1000, Number(process.env.RESOURCE_RED_RECOVERY_HOLD_MS || 2 * 60 * 1000)))
 
 // 读取显式的低内存故障注入值，便于本地和运维验证 red/black 分支。
 function readMeminfoOverride(): { availableMb: number | null; totalMb: number | null } | null {
@@ -161,6 +165,28 @@ function classifyResourceState(memAvailableMb: number | null): ResourceState {
   return 'black'
 }
 
+// 为 red/black 恢复增加持续时间门槛，避免可用内存在阈值附近反复抖动。
+function resolveResourceStateWithHysteresis(
+  memAvailableMb: number | null,
+  previous: ResourceSnapshotPersisted | null,
+  now = Date.now(),
+): { resourceState: ResourceState, recoveryCandidateAt: string } {
+  const classified = classifyResourceState(memAvailableMb)
+  const previousState = String(previous?.resourceState || '')
+  if ((previousState !== 'red' && previousState !== 'black') || classified === 'red' || classified === 'black') {
+    return { resourceState: classified, recoveryCandidateAt: '' }
+  }
+  if (memAvailableMb === null || memAvailableMb < RED_RECOVERY_MEM_AVAILABLE_MB) {
+    return { resourceState: 'red', recoveryCandidateAt: '' }
+  }
+  const candidateAt = String(previous?.recoveryCandidateAt || new Date(now).toISOString())
+  const candidateMs = Date.parse(candidateAt)
+  if (!Number.isFinite(candidateMs) || now - candidateMs < RED_RECOVERY_HOLD_MS) {
+    return { resourceState: 'red', recoveryCandidateAt: candidateAt }
+  }
+  return { resourceState: classified, recoveryCandidateAt: '' }
+}
+
 // 根据资源状态、维护文件和 S0 锁推导 Bot 模式。
 function classifyBotMode(resourceState: ResourceState, running: unknown, maintenance: boolean): BotMode {
   if (maintenance) return 'maintenance'
@@ -185,6 +211,8 @@ function buildSnapshotStableKey(snapshot: ResourceSnapshotPersisted | null | und
     locked: !!snapshot?.locked,
     running: buildStableRunningView(snapshot?.running || null),
     maintenance: !!snapshot?.maintenance,
+    resourceStateChangedAt: snapshot?.resourceStateChangedAt || '',
+    recoveryCandidateAt: snapshot?.recoveryCandidateAt || '',
   })
 }
 
@@ -192,8 +220,12 @@ function buildSnapshotStableKey(snapshot: ResourceSnapshotPersisted | null | und
 function readResourceSnapshot(): ResourceSnapshot {
   ensureDir(SCHEDULER_ROOT)
   const mem = readLinuxMeminfo()
+  const previous = readJsonFile<ResourceSnapshotPersisted>(SCHEDULER_STATE_FILE, null)
   const running = readLockMeta()
-  const resourceState = classifyResourceState(mem.availableMb)
+  const resolvedState = mem.source === 'env-override'
+    ? { resourceState: classifyResourceState(mem.availableMb), recoveryCandidateAt: '' }
+    : resolveResourceStateWithHysteresis(mem.availableMb, previous)
+  const resourceState = resolvedState.resourceState
   const maintenance = fs.existsSync(MAINTENANCE_FILE)
   const toolActive = !!readResourceActivityLease('tool_active')
   const renderActive = !!readResourceActivityLease('render_active')
@@ -219,8 +251,11 @@ function readResourceSnapshot(): ResourceSnapshot {
     running,
     maintenance,
     createdAt: nowIso(),
+    resourceStateChangedAt: previous?.resourceState === resourceState && previous.resourceStateChangedAt
+      ? previous.resourceStateChangedAt
+      : nowIso(),
+    recoveryCandidateAt: resolvedState.recoveryCandidateAt,
   }
-  const previous = readJsonFile<ResourceSnapshotPersisted>(SCHEDULER_STATE_FILE, null)
   if (buildSnapshotStableKey(previous) !== buildSnapshotStableKey(snapshot)) {
     writeJsonAtomic(SCHEDULER_STATE_FILE, snapshot)
   }
@@ -233,11 +268,14 @@ export = {
   GREEN_MEM_AVAILABLE_MB,
   YELLOW_MEM_AVAILABLE_MB,
   RED_MEM_AVAILABLE_MB,
+  RED_RECOVERY_MEM_AVAILABLE_MB,
+  RED_RECOVERY_HOLD_MS,
   readMeminfoOverride,
   readCgroupV2Meminfo,
   readProcMeminfo,
   readLinuxMeminfo,
   classifyResourceState,
+  resolveResourceStateWithHysteresis,
   classifyBotMode,
   readResourceSnapshot,
 }

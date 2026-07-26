@@ -298,6 +298,20 @@ function testResourceMemoryHistoryIncludesUsedMemory() {
   assert.strictEqual(payload.points[0].maxUsedMb, 400)
 }
 
+// Verifies opening resource status never writes an extra Dashboard process-metrics sample.
+function testResourceStatusDoesNotWriteMemorySample() {
+  resetDataDir()
+  const req = makeReq('GET', '/dashboard/api/resource/status', { authorization: 'Bearer ' + auth.createToken() })
+  const res = makeRes()
+  assert.strictEqual(router.dispatch(req, res, '/dashboard/api/resource/status', new URL('http://127.0.0.1:5150/dashboard/api/resource/status')), true)
+  assert.strictEqual(res.statusCode, 200)
+  const systemRoot = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'resource-system')
+  const metricsFiles = fs.existsSync(systemRoot)
+    ? fs.readdirSync(systemRoot).filter(name => /^process-metrics-.*\.jsonl$/.test(name))
+    : []
+  assert.deepStrictEqual(metricsFiles, [])
+}
+
 // Verifies resource status surfaces server mode and activity flags from the shared runtime facts.
 function testResourceStatusIncludesServerModeFlags() {
   resetDataDir()
@@ -484,6 +498,7 @@ async function run() {
   testResourceDiskUsageShape()
   testResourceMemoryHistoryRequiresAccessOnly()
   testResourceMemoryHistoryIncludesUsedMemory()
+  testResourceStatusDoesNotWriteMemorySample()
   testResourceStatusIncludesServerModeFlags()
   await testResourceReadApisRequireAccessOnly()
   await testResourceModeRoundTripRequiresAdminAndUpdatesStatus()

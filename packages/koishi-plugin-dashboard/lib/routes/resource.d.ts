@@ -66,6 +66,13 @@ interface ResourceModuleSet {
         }): ResourceTaskLike[];
         cancelTask(taskId: string, source: string, reason: string): boolean;
     };
+    supervisor: {
+        getSupervisorStatus(): {
+            state?: {
+                workers?: Array<Record<string, unknown>>;
+            } | null;
+        };
+    };
     precompute: {
         PRECOMPUTE_ROOT: string;
         getPrecomputeSummary(): PrecomputeSummaryLike;
@@ -80,18 +87,15 @@ interface ResourceModuleSet {
     };
     files: {
         readRecentJsonlEvents(dir: string, prefix: string, limit?: number): unknown[];
-        appendJsonlEvent(file: string, event: Record<string, unknown>): void;
     };
 }
-declare function cleanupOldProcessMetricFiles(systemRoot: string, now?: number): number;
 declare function normalizeMemoryRange(value: unknown): string;
 declare function collectMemoryHistory(mods: ResourceModuleSet, range: string): {
     ok: boolean;
     range: string;
     rangeMs: number;
     bucketMs: number;
-    dashboardSampleIntervalMs: number;
-    workerSampleIntervalMs: number;
+    hostSampleIntervalMs: number;
     uiRefreshMs: number;
     retentionMs: number;
     pointCount: number;
@@ -146,7 +150,6 @@ declare const _default: {
     collectMemoryHistory: typeof collectMemoryHistory;
     normalizeMemoryRange: typeof normalizeMemoryRange;
     getCachedMemoryHistory: typeof getCachedMemoryHistory;
-    cleanupOldProcessMetricFiles: typeof cleanupOldProcessMetricFiles;
     collectDiskUsage: typeof collectDiskUsage;
     getCachedDiskUsage: typeof getCachedDiskUsage;
 };

@@ -14,11 +14,22 @@ const MEDIA_QUEUE_ROOT = path.join(MEDIA_ROOT, 'queue');
 const MEDIA_RUNNING_ROOT = path.join(MEDIA_ROOT, 'running');
 const MEDIA_DONE_ROOT = path.join(MEDIA_ROOT, 'done');
 const MEDIA_DROPPED_ROOT = path.join(MEDIA_ROOT, 'dropped');
+const MEDIA_ARCHIVE_ROOT = path.join(MEDIA_ROOT, 'archive');
+const MEDIA_RETENTION_CONTROL_FILE = path.join(MEDIA_ROOT, 'retention-control.json');
 const MEDIA_CACHE_INDEX_FILE = path.join(MEDIA_ROOT, 'cache-index.json');
 const MAX_IMAGE_QUEUE = Number(process.env.MEDIA_BACKPRESSURE_IMAGE_MAX || 120);
 const MAX_FILE_QUEUE = Number(process.env.MEDIA_BACKPRESSURE_FILE_MAX || 60);
 const MAX_VOICE_QUEUE = Number(process.env.MEDIA_BACKPRESSURE_VOICE_MAX || 80);
 const DEFAULT_MEDIA_TTL_MS = Number(process.env.MEDIA_BACKPRESSURE_TTL_MS || 2 * 60 * 60 * 1000);
+const MEDIA_EXPIRED_CLEANUP_INTERVAL_MS = Math.max(10000, Math.min(10 * 60 * 1000, Number(process.env.MEDIA_EXPIRED_CLEANUP_INTERVAL_MS || 60000)));
+let lastExpiredMediaCleanupAt = 0;
+const MEDIA_RETENTION_INTERVAL_MS = Math.max(10 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, Number(process.env.MEDIA_RETENTION_INTERVAL_MS || 60 * 60 * 1000)));
+const MEDIA_FINISHED_RETENTION_MS = Math.max(1, Number(process.env.MEDIA_FINISHED_RETENTION_DAYS || 14)) * 24 * 60 * 60 * 1000;
+const MEDIA_ARCHIVE_RETENTION_MS = Math.max(1, Number(process.env.MEDIA_ARCHIVE_RETENTION_DAYS || 30)) * 24 * 60 * 60 * 1000;
+const MEDIA_DONE_MAX_ENTRIES = Math.max(100, Math.min(20000, Number(process.env.MEDIA_DONE_MAX_ENTRIES || 2000)));
+const MEDIA_DROPPED_MAX_ENTRIES = Math.max(100, Math.min(20000, Number(process.env.MEDIA_DROPPED_MAX_ENTRIES || 2000)));
+const MEDIA_RETENTION_BATCH_SIZE = Math.max(10, Math.min(1000, Number(process.env.MEDIA_RETENTION_BATCH_SIZE || 200)));
+let lastFinishedMediaCleanupAt = 0;
 const DEFAULT_MEDIA_REQUEUE_DELAY_MS = Math.max(5000, Math.min(5 * 60 * 1000, Number(process.env.MEDIA_BACKPRESSURE_REQUEUE_DELAY_MS || 15000)));
 const MEDIA_CACHE_INDEX_MAX_ENTRIES = Math.max(1, Math.min(20000, Number(process.env.MEDIA_BACKPRESSURE_CACHE_INDEX_MAX_ENTRIES || 500)));
 const pendingMediaProbeCache = new Map();
@@ -38,6 +49,7 @@ function ensureMediaDirs() {
         MEDIA_RUNNING_ROOT,
         MEDIA_DONE_ROOT,
         MEDIA_DROPPED_ROOT,
+        MEDIA_ARCHIVE_ROOT,
     ])
         ensureDir(dir);
 }
@@ -163,6 +175,101 @@ function cleanupExpiredMediaTasks(kind = '') {
         }
     }
     return removed;
+}
+// 低频清理过期媒体任务，供 supervisor 在 worker claim 之前独立维护队列。
+function cleanupExpiredMediaTasksThrottled(kind = '', now = Date.now()) {
+    if (now - lastExpiredMediaCleanupAt < MEDIA_EXPIRED_CLEANUP_INTERVAL_MS)
+        return 0;
+    lastExpiredMediaCleanupAt = now;
+    return cleanupExpiredMediaTasks(kind);
+}
+// 读取媒体保留控制文件；只有外部备份路径存在时才允许归档或删除历史。
+function readMediaRetentionControl() {
+    const control = readJsonFile(MEDIA_RETENTION_CONTROL_FILE, null);
+    const rawBackupPath = String(control?.backupPath || '').trim();
+    const backupPath = rawBackupPath ? path.resolve(rawBackupPath) : '';
+    return {
+        enabled: control?.enabled === true
+            && path.isAbsolute(rawBackupPath)
+            && backupPath !== path.parse(backupPath).root
+            && fs.existsSync(backupPath),
+        backupPath,
+    };
+}
+// 返回媒体历史任务的稳定时间戳，供按年龄和数量挑选最旧记录。
+function getFinishedMediaTaskTimestamp(task) {
+    const value = Date.parse(String(task.finishedAt || task.updatedAt || task.createdAt || ''));
+    return Number.isFinite(value) ? value : 0;
+}
+// 将一个 done/dropped 目录中超龄或超量的最旧记录分批移入观察归档区。
+function archiveFinishedMediaTasks(root, status, maxEntries, now) {
+    const tasks = listJsonFiles(root, { maxFiles: 20000 })
+        .map(file => ({ file, task: readJsonFile(file, null) }))
+        .filter((item) => !!item.task)
+        .sort((a, b) => getFinishedMediaTaskTimestamp(a.task) - getFinishedMediaTaskTimestamp(b.task));
+    const overflowCount = Math.max(0, tasks.length - maxEntries);
+    const cutoff = now - MEDIA_FINISHED_RETENTION_MS;
+    const candidates = tasks.filter((item, index) => index < overflowCount || getFinishedMediaTaskTimestamp(item.task) < cutoff)
+        .slice(0, MEDIA_RETENTION_BATCH_SIZE);
+    let archived = 0;
+    for (const item of candidates) {
+        const day = new Date(now).toISOString().slice(0, 10);
+        const targetDir = path.join(MEDIA_ARCHIVE_ROOT, day, status);
+        ensureDir(targetDir);
+        try {
+            fs.renameSync(item.file, path.join(targetDir, path.basename(item.file)));
+            archived += 1;
+        }
+        catch {
+            /* A later maintenance pass retries files that could not be moved atomically. */
+        }
+    }
+    return archived;
+}
+// 删除已超过二阶段保留期的日期归档目录；外部备份门禁由调用方统一保证。
+function cleanupOldMediaArchiveDirs(now) {
+    let removed = 0;
+    let entries = [];
+    try {
+        entries = fs.readdirSync(MEDIA_ARCHIVE_ROOT, { withFileTypes: true });
+    }
+    catch {
+        return 0;
+    }
+    const cutoff = now - MEDIA_ARCHIVE_RETENTION_MS;
+    for (const entry of entries) {
+        if (!entry.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(entry.name))
+            continue;
+        const dayEnd = Date.parse(`${entry.name}T00:00:00.000Z`) + 24 * 60 * 60 * 1000;
+        if (!Number.isFinite(dayEnd) || dayEnd > cutoff)
+            continue;
+        if (removePath(path.join(MEDIA_ARCHIVE_ROOT, entry.name)))
+            removed += 1;
+    }
+    return removed;
+}
+// 执行一次受备份门禁保护的媒体历史保留维护。
+function cleanupFinishedMediaTasks(now = Date.now()) {
+    ensureMediaDirs();
+    const control = readMediaRetentionControl();
+    if (!control.enabled)
+        return { enabled: false, archivedDone: 0, archivedDropped: 0, deletedArchiveDirs: 0, backupPath: control.backupPath };
+    const archivedDone = archiveFinishedMediaTasks(MEDIA_DONE_ROOT, 'done', MEDIA_DONE_MAX_ENTRIES, now);
+    const archivedDropped = archiveFinishedMediaTasks(MEDIA_DROPPED_ROOT, 'dropped', MEDIA_DROPPED_MAX_ENTRIES, now);
+    const deletedArchiveDirs = cleanupOldMediaArchiveDirs(now);
+    if (archivedDone || archivedDropped || deletedArchiveDirs) {
+        writeMediaEvent('media_retention_completed', { archivedDone, archivedDropped, deletedArchiveDirs, backupPath: control.backupPath });
+    }
+    return { enabled: true, archivedDone, archivedDropped, deletedArchiveDirs, backupPath: control.backupPath };
+}
+// 低频执行媒体历史保留，避免 supervisor 每轮扫描大量 finished 文件。
+function cleanupFinishedMediaTasksThrottled(now = Date.now()) {
+    if (now - lastFinishedMediaCleanupAt < MEDIA_RETENTION_INTERVAL_MS) {
+        const control = readMediaRetentionControl();
+        return { enabled: control.enabled, archivedDone: 0, archivedDropped: 0, deletedArchiveDirs: 0, backupPath: control.backupPath };
+    }
+    lastFinishedMediaCleanupAt = now;
+    return cleanupFinishedMediaTasks(now);
 }
 // 判断同 hash 任务是否已经存在于 active 队列。
 // 已完成结果复用统一走 cache-index；前门不再为 done 历史全盘扫描背锅。
@@ -404,12 +511,17 @@ module.exports = {
     MEDIA_ROOT,
     MEDIA_QUEUE_ROOT,
     MEDIA_CACHE_INDEX_FILE,
+    MEDIA_ARCHIVE_ROOT,
+    MEDIA_RETENTION_CONTROL_FILE,
     ensureMediaDirs,
     writeMediaEvent,
     createMediaHash,
     readCacheIndex,
     writeCacheIndex,
     cleanupExpiredMediaTasks,
+    cleanupExpiredMediaTasksThrottled,
+    cleanupFinishedMediaTasks,
+    cleanupFinishedMediaTasksThrottled,
     enqueueMediaTask,
     listPendingMediaTasks,
     claimNextMediaTask,

@@ -46,8 +46,14 @@ interface ResourceSnapshotLike {
 const { normalizeTaskBudget } = require('./task-budget') as { normalizeTaskBudget(input: TaskBudgetInput): TaskBudget }
 const { SCHEDULER_ROOT, readResourceSnapshot } = require('./resource-snapshot') as { SCHEDULER_ROOT: string; readResourceSnapshot(): ResourceSnapshotLike }
 
-const ADMISSION_EVENT_DEDUPE_WINDOW_MS = Math.max(1000, Math.min(60000, Number(process.env.RESOURCE_ADMISSION_EVENT_DEDUPE_MS || 10000)))
-const recentAdmissionEvents = new Map<string, number>()
+const ADMISSION_EVENT_AGGREGATE_WINDOW_MS = Math.max(1000, Math.min(60000, Number(process.env.RESOURCE_ADMISSION_EVENT_AGGREGATE_MS || process.env.RESOURCE_ADMISSION_EVENT_DEDUPE_MS || 10000)))
+
+interface AdmissionEventAggregate {
+  lastWrittenAt: number
+  suppressedCount: number
+}
+
+const recentAdmissionEvents = new Map<string, AdmissionEventAggregate>()
 
 interface RunningTaskLike {
   taskId?: unknown
@@ -64,6 +70,7 @@ interface AdmissionDecision {
   snapshot: unknown
 }
 
+// 判断 S0 running 元数据是否可安全读取任务 ID。
 function isRunningTaskLike(value: unknown): value is RunningTaskLike {
   return !!value && typeof value === 'object'
 }
@@ -113,28 +120,31 @@ function buildDecision(decision: AdmissionDecisionType, reason: string, budget: 
   }
 }
 
+// 使用稳定业务维度生成聚合键；禁止把每次变化的 taskId 带入键中。
 function buildAdmissionEventKey(decision: AdmissionDecision): string {
   const budget = decision.budget as TaskBudget
   return [
-    String(budget.taskId || ''),
     String(budget.kind || ''),
-    String(budget.source || ''),
     String(decision.decision || ''),
     String(decision.reason || ''),
     String(decision.resourceState || ''),
-    String(decision.botMode || ''),
   ].join('|')
 }
 
-function shouldWriteAdmissionEvent(decision: AdmissionDecision, now = Date.now()): boolean {
+// 合并聚合窗口内的同类准入事件；窗口结束后的下一条携带完整累计数量。
+function takeAdmissionEventAggregateCount(decision: AdmissionDecision, now = Date.now()): number | null {
   const key = buildAdmissionEventKey(decision)
-  const lastAt = recentAdmissionEvents.get(key) || 0
-  if (now - lastAt < ADMISSION_EVENT_DEDUPE_WINDOW_MS) return false
-  recentAdmissionEvents.set(key, now)
-  for (const [entryKey, entryAt] of recentAdmissionEvents) {
-    if (now - entryAt > ADMISSION_EVENT_DEDUPE_WINDOW_MS) recentAdmissionEvents.delete(entryKey)
+  const aggregate = recentAdmissionEvents.get(key)
+  if (aggregate && now - aggregate.lastWrittenAt < ADMISSION_EVENT_AGGREGATE_WINDOW_MS) {
+    aggregate.suppressedCount += 1
+    return null
   }
-  return true
+  const aggregateCount = 1 + Number(aggregate?.suppressedCount || 0)
+  recentAdmissionEvents.set(key, { lastWrittenAt: now, suppressedCount: 0 })
+  for (const [entryKey, entry] of recentAdmissionEvents) {
+    if (now - entry.lastWrittenAt > ADMISSION_EVENT_AGGREGATE_WINDOW_MS * 6) recentAdmissionEvents.delete(entryKey)
+  }
+  return aggregateCount
 }
 
 // 按 S1 最终计划输出统一资源准入决策。
@@ -185,13 +195,13 @@ function decideAdmission(input: TaskBudgetInput, snapshot: ResourceSnapshotLike 
   const belowMinDecision = decideBelowTaskMinMemory(kind, budget, snapshot)
   if (belowMinDecision) return belowMinDecision
 
-  if (snapshot.resourceState === 'yellow' && isMediaTaskKind(kind)) return buildDecision('defer', 'media is throttled in yellow state', budget, snapshot)
   return buildDecision('run_now', 'resource budget accepted', budget, snapshot)
 }
 
 // 记录准入事件；Dashboard 只展示事件，不反推业务原因。
 function writeAdmissionEvent(decision: AdmissionDecision): void {
-  if (!shouldWriteAdmissionEvent(decision)) return
+  const aggregateCount = takeAdmissionEventAggregateCount(decision)
+  if (aggregateCount === null) return
   const budget = decision.budget as TaskBudget
   appendJsonlEvent(admissionEventFile(), {
     event: 'admission_decided',
@@ -206,6 +216,8 @@ function writeAdmissionEvent(decision: AdmissionDecision): void {
     memAvailableMb: decision.memAvailableMb,
     fallback: decision.fallback || '',
     reason: decision.reason,
+    aggregateCount,
+    aggregateWindowMs: ADMISSION_EVENT_AGGREGATE_WINDOW_MS,
   })
 }
 

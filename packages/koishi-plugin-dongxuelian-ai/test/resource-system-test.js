@@ -269,7 +269,7 @@ try {
   Module._load = originalLoad
 }
 
-const started = supervisor.startWorkerProcess('daily')
+const started = supervisor.startWorkerProcess('daily', 'generation-a')
 const ownedPid = Number(started.pid)
 supervisor.recoverZombieWorker({ name: 'daily-worker', pid: ownedPid, kind: 'daily' })
 supervisor.recoverZombieWorker({ name: 'daily-worker', pid: ownedPid + 100, kind: 'daily' })
@@ -280,7 +280,7 @@ const restarted = supervisor.startWorkerProcess('daily')
 supervisor.clearOwnedWorkerProcesses()
 supervisor.recoverZombieWorker({ name: 'daily-worker', pid: Number(restarted.pid), kind: 'daily' })
 
-console.log(JSON.stringify({ ownedPid, restartedPid: restarted.pid, terminateCalls }, null, 2))
+console.log(JSON.stringify({ ownedPid, restartedPid: restarted.pid, terminateCalls, startedGeneration: started.generation, startedToken: started.startToken, startedArgs: started.args }, null, 2))
 `
   const summary = runScenario('S8 worker fallback ownership', script, {
     DONGXUELIAN_AI_DATA_DIR: dataDir,
@@ -288,6 +288,13 @@ console.log(JSON.stringify({ ownedPid, restartedPid: restarted.pid, terminateCal
   if (!summary) return
   check('worker live owned handle authorizes fallback',
     summary.terminateCalls[0].pid === summary.ownedPid && summary.terminateCalls[0].allow === true,
+    JSON.stringify(summary))
+  check('worker launch carries generation and one-time start token',
+    summary.startedGeneration === 'generation-a'
+      && typeof summary.startedToken === 'string'
+      && summary.startedToken.startsWith('generation-a-daily-')
+      && summary.startedArgs.includes('--generation')
+      && summary.startedArgs.includes('--start-token'),
     JSON.stringify(summary))
   check('worker mismatched pid does not authorize fallback',
     summary.terminateCalls[1].allow === false,

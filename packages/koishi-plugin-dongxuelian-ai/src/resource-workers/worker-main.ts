@@ -12,7 +12,6 @@ const { decideBackgroundDirective } = require('../resource-scheduler/background-
 const { readResourceActivityLease } = require('../resource-scheduler/resource-activity-lease') as typeof import('../resource-scheduler/resource-activity-lease')
 const { acquireResourceGate } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
 const {
-  collectProcessMetrics,
   checkWorkerMemoryLimit,
   writeProcessCleanupEvent,
   terminateRecordedProcessPids,
@@ -42,6 +41,9 @@ interface WorkerMainOptions {
   once?: boolean
   pollMs?: number
   gateWaitMs?: number
+  ownerGeneration?: string
+  startToken?: string
+  idleExitMs?: number
 }
 
 interface WorkerHeartbeatHandle {
@@ -95,6 +97,7 @@ interface WorkerProgressState {
   currentTaskStartedAt: string
   parked: boolean
   parkSleepMs: number
+  idleSinceAt: string
 }
 
 function resolveBoundedNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -108,6 +111,12 @@ const DEFAULT_WORKER_MAX_CONSECUTIVE_FAILURES = resolveBoundedNumber(
   5,
   1,
   20,
+)
+const DEFAULT_WORKER_IDLE_EXIT_MS = resolveBoundedNumber(
+  process.env.RESOURCE_WORKER_IDLE_EXIT_MS,
+  45000,
+  30000,
+  5 * 60 * 1000,
 )
 
 // 等待指定毫秒，用于 worker 空转和退避。
@@ -131,6 +140,7 @@ function createInitialWorkerProgress(): WorkerProgressState {
     currentTaskStartedAt: '',
     parked: false,
     parkSleepMs: 0,
+    idleSinceAt: '',
   }
 }
 
@@ -186,12 +196,18 @@ function handleTaskTimeoutExit(workerName: string, task: ResourceTaskLike, error
 }
 
 // 启动 worker 周期心跳，避免长任务执行期间被 supervisor 误判为死亡。
-function startWorkerHeartbeat(workerName: string, type: string, initialStep: string, progress: WorkerProgressState): WorkerHeartbeatHandle {
+function startWorkerHeartbeat(
+  workerName: string,
+  type: string,
+  initialStep: string,
+  progress: WorkerProgressState,
+  identity: Record<string, unknown> = {},
+): WorkerHeartbeatHandle {
   let step = initialStep
   let extra: Record<string, unknown> = {}
   const startedAt = new Date().toISOString()
   const write = (): void => {
-    writeWorkerHeartbeat(workerName, { kind: type, startedAt, step, ...progress, ...extra })
+    writeWorkerHeartbeat(workerName, { kind: type, startedAt, step, ...identity, ...progress, ...extra })
   }
   const timer = setInterval(write, 2000)
   if (timer.unref) timer.unref()
@@ -521,7 +537,6 @@ async function runWorkerTick(options: WorkerMainOptions = {}, heartbeat?: Worker
     heartbeat.setStep('tick')
   }
   else writeWorkerHeartbeat(workerName, { kind: type, step: 'tick', ...(progress || {}) })
-  collectProcessMetrics({ workerName, workerType: type })
   const memory = checkWorkerMemoryLimit(workerName)
   if (memory.exceeded) {
     if (heartbeat) heartbeat.setStep('memory_limit_exceeded', { rssMb: memory.rssMb })
@@ -529,7 +544,6 @@ async function runWorkerTick(options: WorkerMainOptions = {}, heartbeat?: Worker
     process.exitCode = 75
     return false
   }
-  if (type === 'media') return drainOneMediaTask({ workerName, gateWaitMs: options.gateWaitMs })
   const backgroundDirective = readWorkerBackgroundDirective(type, workerName)
   if (backgroundDirective && backgroundDirective.directive.action === 'park') {
     if (progress) {
@@ -547,6 +561,7 @@ async function runWorkerTick(options: WorkerMainOptions = {}, heartbeat?: Worker
     }
     return false
   }
+  if (type === 'media') return drainOneMediaTask({ workerName, gateWaitMs: options.gateWaitMs })
   return runOneQueuedTask(options, heartbeat, progress)
 }
 
@@ -560,13 +575,30 @@ function resolveWorkerIdleSleepMs(options: WorkerMainOptions = {}, worked = fals
   return Math.max(pollMs, Number(backgroundDirective.directive.sleepMs || pollMs))
 }
 
+// 判断受 supervisor 管理的 small 模式 worker 是否已超过空闲退出窗口。
+function shouldExitManagedWorker(options: WorkerMainOptions, idleSinceAt: string, now = Date.now()): boolean {
+  if (!String(options.ownerGeneration || '') || !String(options.startToken || '')) return false
+  const idleSince = Date.parse(String(idleSinceAt || ''))
+  if (!Number.isFinite(idleSince)) return false
+  const idleExitMs = resolveBoundedNumber(options.idleExitMs, DEFAULT_WORKER_IDLE_EXIT_MS, 30000, 5 * 60 * 1000)
+  if (now - idleSince < idleExitMs) return false
+  const workerName = getWorkerName(String(options.type || 'daily'), options.workerName || '')
+  const directive = readWorkerBackgroundDirective(String(options.type || 'daily'), workerName)
+  return String(directive?.snapshot?.serverMode || 'large') === 'small'
+}
+
 // 运行 worker 主循环；once=true 时只执行一轮，便于运维手动验证。
 async function runWorkerLoop(options: WorkerMainOptions = {}): Promise<void> {
   const type = String(options.type || 'daily')
   const workerName = getWorkerName(type, options.workerName || '')
   const pollMs = Math.max(500, Math.min(30000, Number(options.pollMs || 2000)))
   const progress = createInitialWorkerProgress()
-  const heartbeat = startWorkerHeartbeat(workerName, type, 'started', progress)
+  const heartbeat = startWorkerHeartbeat(workerName, type, 'started', progress, {
+    ownerGeneration: String(options.ownerGeneration || ''),
+    startToken: String(options.startToken || ''),
+    executable: process.execPath,
+    args: process.argv.slice(1),
+  })
   let consecutiveFailures = 0
   try {
     heartbeat.patchProgress(progress)
@@ -591,6 +623,22 @@ async function runWorkerLoop(options: WorkerMainOptions = {}): Promise<void> {
         }
         worked = false
       }
+      if (worked) {
+        updateWorkerProgress(progress, { idleSinceAt: '' })
+      } else if (!progress.idleSinceAt) {
+        updateWorkerProgress(progress, { idleSinceAt: new Date().toISOString() })
+      }
+      heartbeat.patchProgress(progress)
+      if (!options.once && shouldExitManagedWorker({ ...options, type, workerName }, progress.idleSinceAt)) {
+        writeProcessCleanupEvent({
+          event: 'worker_idle_exit',
+          workerName,
+          workerType: type,
+          ownerGeneration: String(options.ownerGeneration || ''),
+          idleSinceAt: progress.idleSinceAt,
+        })
+        break
+      }
       if (options.once) break
       await sleep(resolveWorkerIdleSleepMs({ ...options, type, workerName, pollMs }, worked))
     } while (!process.exitCode)
@@ -609,6 +657,9 @@ function parseWorkerCliArgs(argv: string[] = process.argv.slice(2)): WorkerMainO
     else if (arg === '--once') options.once = true
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--gate-wait-ms') options.gateWaitMs = Number(argv[++i])
+    else if (arg === '--generation') options.ownerGeneration = argv[++i]
+    else if (arg === '--start-token') options.startToken = argv[++i]
+    else if (arg === '--idle-exit-ms') options.idleExitMs = Number(argv[++i])
   }
   return options
 }
@@ -627,6 +678,7 @@ export = {
   runWorkerLoop,
   runWorkerTick,
   resolveWorkerIdleSleepMs,
+  shouldExitManagedWorker,
   runOneQueuedTask,
   runTaskWithTimeout,
   parseWorkerCliArgs,

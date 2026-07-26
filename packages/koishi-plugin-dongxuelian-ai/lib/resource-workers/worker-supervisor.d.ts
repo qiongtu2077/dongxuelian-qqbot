@@ -1,6 +1,8 @@
 interface WorkerLaunchSpec {
     type: string;
     name: string;
+    generation: string;
+    startToken: string;
     maxOldSpaceMb: number;
     command: string;
     args: string[];
@@ -9,6 +11,7 @@ interface SupervisorOptions {
     start?: boolean;
     once?: boolean;
     types?: string[];
+    generation?: string;
 }
 interface ResourceWorkerStateLike {
     name?: string;
@@ -25,12 +28,16 @@ interface ResourceWorkerStateLike {
     currentTaskStartedAt?: string;
     parked?: unknown;
     parkSleepMs?: unknown;
+    ownerGeneration?: unknown;
+    startToken?: unknown;
 }
 declare function clearOwnedWorkerProcesses(): void;
+declare function stopOwnedWorkerProcesses(timeoutMs?: number): Promise<Record<string, unknown>>;
 declare function recoverZombieWorker(worker: ResourceWorkerStateLike): boolean;
-declare function buildWorkerLaunchSpec(type: string): WorkerLaunchSpec;
-declare function startWorkerProcess(type: string): Record<string, unknown>;
-declare function ensureWorkerProcesses(types?: string[]): unknown[];
+declare function buildWorkerLaunchSpec(type: string, generation?: string): WorkerLaunchSpec;
+declare function startWorkerProcess(type: string, generation?: string): Record<string, unknown>;
+declare function selectWorkerTypesToStart(types: string[], activeNames: Set<string>, snapshot: Record<string, unknown>): string[];
+declare function ensureWorkerProcesses(types?: string[], options?: SupervisorOptions): unknown[];
 declare function auditStaleRunningTasks(staleMs?: number): number;
 declare function auditStaleClaimingTasks(staleMs?: number): number;
 declare function auditDeferredTasks(limit?: number): Record<string, number>;
@@ -41,6 +48,8 @@ declare const _default: {
     startWorkerProcess: typeof startWorkerProcess;
     recoverZombieWorker: typeof recoverZombieWorker;
     clearOwnedWorkerProcesses: typeof clearOwnedWorkerProcesses;
+    stopOwnedWorkerProcesses: typeof stopOwnedWorkerProcesses;
+    selectWorkerTypesToStart: typeof selectWorkerTypesToStart;
     ensureWorkerProcesses: typeof ensureWorkerProcesses;
     auditStaleRunningTasks: typeof auditStaleRunningTasks;
     auditStaleClaimingTasks: typeof auditStaleClaimingTasks;

@@ -40,12 +40,22 @@ type EnqueueMediaTaskResult = MediaTask | {
     existing: MediaTask;
     urlHash: string;
 };
+interface MediaRetentionResult {
+    enabled: boolean;
+    archivedDone: number;
+    archivedDropped: number;
+    deletedArchiveDirs: number;
+    backupPath: string;
+}
 declare function ensureMediaDirs(): void;
 declare function writeMediaEvent(event: string, data?: Record<string, unknown>): void;
 declare function createMediaHash(input: MediaTaskInput): string;
 declare function readCacheIndex(): Record<string, unknown>;
 declare function writeCacheIndex(index: Record<string, unknown>): void;
 declare function cleanupExpiredMediaTasks(kind?: string): number;
+declare function cleanupExpiredMediaTasksThrottled(kind?: string, now?: number): number;
+declare function cleanupFinishedMediaTasks(now?: number): MediaRetentionResult;
+declare function cleanupFinishedMediaTasksThrottled(now?: number): MediaRetentionResult;
 declare function isMediaTaskDeferred(task: MediaTask | null | undefined, now?: number): boolean;
 declare function listPendingMediaTasks(kind?: string, limit?: number): MediaTask[];
 declare function claimNextMediaTask(workerName?: string, kind?: string): MediaTask | null;
@@ -58,12 +68,17 @@ declare const _default: {
     MEDIA_ROOT: string;
     MEDIA_QUEUE_ROOT: string;
     MEDIA_CACHE_INDEX_FILE: string;
+    MEDIA_ARCHIVE_ROOT: string;
+    MEDIA_RETENTION_CONTROL_FILE: string;
     ensureMediaDirs: typeof ensureMediaDirs;
     writeMediaEvent: typeof writeMediaEvent;
     createMediaHash: typeof createMediaHash;
     readCacheIndex: typeof readCacheIndex;
     writeCacheIndex: typeof writeCacheIndex;
     cleanupExpiredMediaTasks: typeof cleanupExpiredMediaTasks;
+    cleanupExpiredMediaTasksThrottled: typeof cleanupExpiredMediaTasksThrottled;
+    cleanupFinishedMediaTasks: typeof cleanupFinishedMediaTasks;
+    cleanupFinishedMediaTasksThrottled: typeof cleanupFinishedMediaTasksThrottled;
     enqueueMediaTask: typeof enqueueMediaTask;
     listPendingMediaTasks: typeof listPendingMediaTasks;
     claimNextMediaTask: typeof claimNextMediaTask;

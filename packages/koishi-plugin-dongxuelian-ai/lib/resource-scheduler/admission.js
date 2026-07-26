@@ -9,8 +9,9 @@ const { appendJsonlEvent } = require('../resource-common/files');
 const { isStatusQueryKind, isNormalChatKind, isMediaTaskKind, isChromiumTaskKind, isDailyReportKind, canRunInRedStateByKind, } = require('../resource-common/resource-task-kinds');
 const { normalizeTaskBudget } = require('./task-budget');
 const { SCHEDULER_ROOT, readResourceSnapshot } = require('./resource-snapshot');
-const ADMISSION_EVENT_DEDUPE_WINDOW_MS = Math.max(1000, Math.min(60000, Number(process.env.RESOURCE_ADMISSION_EVENT_DEDUPE_MS || 10000)));
+const ADMISSION_EVENT_AGGREGATE_WINDOW_MS = Math.max(1000, Math.min(60000, Number(process.env.RESOURCE_ADMISSION_EVENT_AGGREGATE_MS || process.env.RESOURCE_ADMISSION_EVENT_DEDUPE_MS || 10000)));
 const recentAdmissionEvents = new Map();
+// 判断 S0 running 元数据是否可安全读取任务 ID。
 function isRunningTaskLike(value) {
     return !!value && typeof value === 'object';
 }
@@ -60,29 +61,31 @@ function buildDecision(decision, reason, budget, snapshot, fallback = '') {
         snapshot,
     };
 }
+// 使用稳定业务维度生成聚合键；禁止把每次变化的 taskId 带入键中。
 function buildAdmissionEventKey(decision) {
     const budget = decision.budget;
     return [
-        String(budget.taskId || ''),
         String(budget.kind || ''),
-        String(budget.source || ''),
         String(decision.decision || ''),
         String(decision.reason || ''),
         String(decision.resourceState || ''),
-        String(decision.botMode || ''),
     ].join('|');
 }
-function shouldWriteAdmissionEvent(decision, now = Date.now()) {
+// 合并聚合窗口内的同类准入事件；窗口结束后的下一条携带完整累计数量。
+function takeAdmissionEventAggregateCount(decision, now = Date.now()) {
     const key = buildAdmissionEventKey(decision);
-    const lastAt = recentAdmissionEvents.get(key) || 0;
-    if (now - lastAt < ADMISSION_EVENT_DEDUPE_WINDOW_MS)
-        return false;
-    recentAdmissionEvents.set(key, now);
-    for (const [entryKey, entryAt] of recentAdmissionEvents) {
-        if (now - entryAt > ADMISSION_EVENT_DEDUPE_WINDOW_MS)
+    const aggregate = recentAdmissionEvents.get(key);
+    if (aggregate && now - aggregate.lastWrittenAt < ADMISSION_EVENT_AGGREGATE_WINDOW_MS) {
+        aggregate.suppressedCount += 1;
+        return null;
+    }
+    const aggregateCount = 1 + Number(aggregate?.suppressedCount || 0);
+    recentAdmissionEvents.set(key, { lastWrittenAt: now, suppressedCount: 0 });
+    for (const [entryKey, entry] of recentAdmissionEvents) {
+        if (now - entry.lastWrittenAt > ADMISSION_EVENT_AGGREGATE_WINDOW_MS * 6)
             recentAdmissionEvents.delete(entryKey);
     }
-    return true;
+    return aggregateCount;
 }
 // 按 S1 最终计划输出统一资源准入决策。
 function decideAdmission(input, snapshot = readResourceSnapshot()) {
@@ -140,13 +143,12 @@ function decideAdmission(input, snapshot = readResourceSnapshot()) {
     const belowMinDecision = decideBelowTaskMinMemory(kind, budget, snapshot);
     if (belowMinDecision)
         return belowMinDecision;
-    if (snapshot.resourceState === 'yellow' && isMediaTaskKind(kind))
-        return buildDecision('defer', 'media is throttled in yellow state', budget, snapshot);
     return buildDecision('run_now', 'resource budget accepted', budget, snapshot);
 }
 // 记录准入事件；Dashboard 只展示事件，不反推业务原因。
 function writeAdmissionEvent(decision) {
-    if (!shouldWriteAdmissionEvent(decision))
+    const aggregateCount = takeAdmissionEventAggregateCount(decision);
+    if (aggregateCount === null)
         return;
     const budget = decision.budget;
     appendJsonlEvent(admissionEventFile(), {
@@ -162,6 +164,8 @@ function writeAdmissionEvent(decision) {
         memAvailableMb: decision.memAvailableMb,
         fallback: decision.fallback || '',
         reason: decision.reason,
+        aggregateCount,
+        aggregateWindowMs: ADMISSION_EVENT_AGGREGATE_WINDOW_MS,
     });
 }
 // 统一入口：读取快照、决策、写事件并返回结果。

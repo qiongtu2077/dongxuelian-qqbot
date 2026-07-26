@@ -706,8 +706,8 @@ main().catch(error => {
   check('image tool queues exactly once in normal green state',
     byName.normal && byName.normal.after === byName.normal.before + 1 && byName.normal.afterDuplicate === byName.normal.after && /green/.test(byName.normal.response || '') && /media-worker/.test(byName.normal.response || ''),
     JSON.stringify(byName.normal))
-  check('image tool queues exactly once while yellow admission defers',
-    byName.yellow && byName.yellow.after === byName.yellow.before + 1 && byName.yellow.afterDuplicate === byName.yellow.after && /yellow/.test(byName.yellow.response || '') && /media is throttled in yellow state/.test(byName.yellow.response || ''),
+  check('image tool queues exactly once when yellow media budget is met',
+    byName.yellow && byName.yellow.after === byName.yellow.before + 1 && byName.yellow.afterDuplicate === byName.yellow.after && /yellow/.test(byName.yellow.response || '') && /media-worker/.test(byName.yellow.response || ''),
     JSON.stringify(byName.yellow))
   check('image tool does not queue while red admission defers',
     byName.red && byName.red.after === byName.red.before && byName.red.afterDuplicate === byName.red.after && /red/.test(byName.red.response || '') && /media task deferred in red state/.test(byName.red.response || '') && /暂时不能加入图片分析队列/.test(byName.red.response || ''),

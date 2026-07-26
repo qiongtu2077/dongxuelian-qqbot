@@ -31,14 +31,49 @@ async function run(t) {
     const previousTotalOverride = process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
     process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '420'
     process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
-    const criticalStatus = await run(makeSession({ content: 'AI\u72b6\u6001' }))
-    if (previousMemOverride === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
-    else process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = previousMemOverride
-    if (previousTotalOverride === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
-    else process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = previousTotalOverride
+    let criticalStatus
+    let privateNotice
+    let throttledNotice
+    let agentNotice
+    let randomDrop
+    let mediaNotice
+    let redHelp
+    let mediaStatus
+    try {
+      criticalStatus = await run(makeSession({ content: 'AI\u72b6\u6001' }))
+      privateNotice = await run(makeSession({ isDirect: true, guildId: '', channelId: 'private-red-1', content: '\u4f60\u597d' }))
+      throttledNotice = await run(makeSession({ isDirect: true, guildId: '', channelId: 'private-red-1', content: '\u8fd8\u5728\u5417' }))
+      agentNotice = await run(makeSession({ content: '\u83b2\u83b2 agent \u67e5\u4e00\u4e0b\u72b6\u6001' }))
+      randomDrop = await run(makeSession({ content: '\u4eca\u5929\u5929\u6c14\u4e0d\u9519' }))
+      mediaNotice = await run(makeSession({
+        userId: 'red-media-user',
+        author: { id: 'red-media-user', name: 'red-media-user' },
+        isDirect: true,
+        guildId: '',
+        channelId: 'private-red-media',
+        content: '[\u56fe\u7247]',
+        event: { sender: { role: 'member' }, message: [{ type: 'image', data: { url: 'http://example.test/red-media.jpg' } }] },
+      }))
+      redHelp = await run(makeSession({ content: '\u5e2e\u52a9\u96c6\u5408' }))
+      mediaStatus = require('../../lib/media/backpressure/media-queue').getMediaBackpressureStatus()
+    } finally {
+      process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
+      process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
+      require('../../lib/resource-scheduler/resource-snapshot').readResourceSnapshot()
+      if (previousMemOverride === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
+      else process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = previousMemOverride
+      if (previousTotalOverride === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
+      else process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = previousTotalOverride
+    }
     checkSentNonEmpty(t, 'scenario AI status falls back under critical mode', criticalStatus)
     t.check('scenario AI critical status reports resource mode', criticalStatus.sent.some(item => String(item).includes('critical') && String(item).includes('red')), JSON.stringify(criticalStatus.sent))
     checkNoLeak(t, 'scenario AI critical status does not leak key', criticalStatus, ['sk-test-secret', 'Bearer'])
+    t.check('scenario red private chat receives fixed resource notice', privateNotice.sent.some(item => String(item).includes('\u5185\u5b58\u4e0d\u8db3')), JSON.stringify(privateNotice.sent))
+    t.check('scenario red resource notice is throttled per channel and state', throttledNotice.sent.length === 0, JSON.stringify(throttledNotice.sent))
+    t.check('scenario red Agent command receives fixed resource notice', agentNotice.sent.some(item => String(item).includes('\u5185\u5b58\u4e0d\u8db3')), JSON.stringify(agentNotice.sent))
+    t.check('scenario red random group chat stays silent', randomDrop.sent.length === 0, JSON.stringify(randomDrop.sent))
+    t.check('scenario red explicit media receives notice without queueing work', mediaNotice.sent.some(item => String(item).includes('\u5185\u5b58\u4e0d\u8db3')) && Number(mediaStatus.imagePending || 0) === 0, JSON.stringify({ sent: mediaNotice.sent, mediaStatus }))
+    checkNextCalled(t, 'scenario reserved help command stays available under red', redHelp)
 
     const help = await run(makeSession({ content: '\u5e2e\u52a9\u96c6\u5408' }))
     checkNextCalled(t, 'scenario reserved help command calls next', help)

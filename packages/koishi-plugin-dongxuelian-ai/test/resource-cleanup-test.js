@@ -214,8 +214,148 @@ function testResourceCleanupLifecycle() {
   check('second dry-run is near zero after apply', dryRun2.summary.duplicateTaskIds === 0 && dryRun2.summary.duplicateCopiesArchived === 0 && dryRun2.summary.dailySummarySkippedFixed === 0 && dryRun2.summary.resultsExpiredArchived === 0, JSON.stringify(dryRun2.summary))
 }
 
+// Verify media retention cannot move history until an explicit external backup path exists.
+function testMediaRetentionBackupGate() {
+  const dataDir = createTempDataDir('media-retention-test-')
+  const mediaRoot = path.join(dataDir, 'media-backpressure')
+  const doneFile = path.join(mediaRoot, 'done', 'old-done.json')
+  const droppedFile = path.join(mediaRoot, 'dropped', 'old-dropped.json')
+  const oldTask = {
+    id: 'old-media-task',
+    kind: 'media_image_analysis',
+    channelKey: 'group-retention',
+    messageId: 'message-retention',
+    urlHash: 'hash-retention',
+    url: '',
+    fileId: null,
+    createdAt: '2026-06-01T00:00:00.000Z',
+    updatedAt: '2026-06-01T00:00:00.000Z',
+    finishedAt: '2026-06-01T00:00:00.000Z',
+    expiresAt: '',
+    priority: 80,
+    status: 'done',
+    payload: {},
+  }
+  writeJson(doneFile, oldTask)
+  writeJson(droppedFile, { ...oldTask, id: 'old-media-dropped', status: 'failed' })
+
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+const media = require('koishi-plugin-dongxuelian-ai/lib/media/backpressure/media-queue')
+const now = Date.parse('2026-07-26T00:00:00.000Z')
+const controlFile = media.MEDIA_RETENTION_CONTROL_FILE
+const backupPath = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'external-backup')
+const noControl = media.cleanupFinishedMediaTasks(now)
+fs.mkdirSync(path.dirname(controlFile), { recursive: true })
+fs.writeFileSync(controlFile, JSON.stringify({ enabled: true, backupPath }), 'utf8')
+const missingBackup = media.cleanupFinishedMediaTasks(now)
+fs.mkdirSync(backupPath, { recursive: true })
+const enabled = media.cleanupFinishedMediaTasks(now)
+const archiveFiles = []
+const stack = [media.MEDIA_ARCHIVE_ROOT]
+while (stack.length) {
+  const current = stack.pop()
+  if (!fs.existsSync(current)) continue
+  for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    const full = path.join(current, entry.name)
+    if (entry.isDirectory()) stack.push(full)
+    else if (entry.isFile() && entry.name.endsWith('.json')) archiveFiles.push(full)
+  }
+}
+const expired = media.cleanupFinishedMediaTasks(now + 31 * 24 * 60 * 60 * 1000)
+const retainedArchiveFiles = []
+const retainedStack = [media.MEDIA_ARCHIVE_ROOT]
+while (retainedStack.length) {
+  const current = retainedStack.pop()
+  if (!fs.existsSync(current)) continue
+  for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    const full = path.join(current, entry.name)
+    if (entry.isDirectory()) retainedStack.push(full)
+    else if (entry.isFile() && entry.name.endsWith('.json')) retainedArchiveFiles.push(full)
+  }
+}
+console.log(JSON.stringify({
+  noControl,
+  missingBackup,
+  enabled,
+  expired,
+  archiveCount: archiveFiles.length,
+  retainedArchiveCount: retainedArchiveFiles.length,
+}, null, 2))
+`
+  const result = spawnSync(process.execPath, ['-e', script], {
+    cwd: path.resolve(__dirname, '..', '..', '..'),
+    env: {
+      ...process.env,
+      DONGXUELIAN_AI_DATA_DIR: dataDir,
+      MEDIA_FINISHED_RETENTION_DAYS: '1',
+      MEDIA_RETENTION_BATCH_SIZE: '10',
+    },
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+  check('media retention backup gate scenario exits 0', result.status === 0, `status=${result.status} stdout=${result.stdout} stderr=${result.stderr}`)
+  if (result.status !== 0) return
+  const summary = JSON.parse(String(result.stdout || '').trim())
+  check('media retention stays disabled without control or backup', summary.noControl.enabled === false && summary.missingBackup.enabled === false, JSON.stringify(summary))
+  check('media retention archives old done and dropped only after backup exists', summary.enabled.enabled === true && summary.enabled.archivedDone === 1 && summary.enabled.archivedDropped === 1 && summary.archiveCount === 2, JSON.stringify(summary))
+  check('media retention removes archive bucket only after second-stage retention expires', summary.expired.deletedArchiveDirs === 1 && summary.retainedArchiveCount === 0, JSON.stringify(summary))
+}
+
+// Verify cross-domain JSONL retention is single-owner and protected by the same backup requirement.
+function testResourceHistoryRetentionBackupGate() {
+  const dataDir = createTempDataDir('resource-history-retention-test-')
+  const oldAdmission = path.join(dataDir, 'resource-scheduler', 'admissions-2026-06-01.jsonl')
+  const currentAdmission = path.join(dataDir, 'resource-scheduler', 'admissions-2026-07-26.jsonl')
+  const oldAlert = path.join(dataDir, 'resource-system', 'memory-alerts-2026-06-01.jsonl')
+  for (const file of [oldAdmission, currentAdmission, oldAlert]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{"event":"fixture"}\n', 'utf8')
+  }
+
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+const protection = require('koishi-plugin-dongxuelian-ai/lib/resource-system/system-protection')
+const now = Date.parse('2026-07-26T12:00:00.000Z')
+const backupPath = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'history-backup')
+const noControl = protection.cleanupOldResourceHistoryFiles(now)
+fs.writeFileSync(protection.RESOURCE_RETENTION_CONTROL_FILE, JSON.stringify({ enabled: true, backupPath }), 'utf8')
+const missingBackup = protection.cleanupOldResourceHistoryFiles(now)
+fs.mkdirSync(backupPath, { recursive: true })
+const enabled = protection.cleanupOldResourceHistoryFiles(now)
+const exists = rel => fs.existsSync(path.join(process.env.DONGXUELIAN_AI_DATA_DIR, rel))
+console.log(JSON.stringify({
+  noControl,
+  missingBackup,
+  enabled,
+  oldAdmissionExists: exists('resource-scheduler/admissions-2026-06-01.jsonl'),
+  currentAdmissionExists: exists('resource-scheduler/admissions-2026-07-26.jsonl'),
+  oldAlertExists: exists('resource-system/memory-alerts-2026-06-01.jsonl'),
+}, null, 2))
+`
+  const result = spawnSync(process.execPath, ['-e', script], {
+    cwd: path.resolve(__dirname, '..', '..', '..'),
+    env: {
+      ...process.env,
+      DONGXUELIAN_AI_DATA_DIR: dataDir,
+      RESOURCE_HISTORY_RETENTION_DAYS: '14',
+    },
+    encoding: 'utf8',
+    timeout: 30000,
+  })
+  check('resource history retention backup gate scenario exits 0', result.status === 0, `status=${result.status} stdout=${result.stdout} stderr=${result.stderr}`)
+  if (result.status !== 0) return
+  const summary = JSON.parse(String(result.stdout || '').trim())
+  check('resource history retention stays disabled until backup exists', summary.noControl.enabled === false && summary.missingBackup.enabled === false, JSON.stringify(summary))
+  check('resource history retention deletes only old whitelisted daily files', summary.enabled.enabled === true && summary.enabled.deleted === 2 && !summary.oldAdmissionExists && !summary.oldAlertExists && summary.currentAdmissionExists, JSON.stringify(summary))
+}
+
 function main() {
   testResourceCleanupLifecycle()
+  testMediaRetentionBackupGate()
+  testResourceHistoryRetentionBackupGate()
   console.log(`passed: ${passed}`)
   console.log(`failed: ${failed}`)
   process.exitCode = failed === 0 ? 0 : 1

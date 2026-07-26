@@ -31,8 +31,10 @@ function decideModePolicy(commandType, snapshot) {
         if (commandType === 'media_event')
             return { action: 'defer', reason: 'resource state is critical' };
         if (commandType === 'agent_command')
-            return { action: 'reject', reason: 'agent is blocked in critical mode' };
-        if (isChatLike)
+            return { action: 'resource_notice', reason: 'agent is blocked in critical mode' };
+        if (commandType === 'interactive_chat')
+            return { action: 'resource_notice', reason: 'resource state is critical' };
+        if (commandType === 'normal_chat')
             return { action: 'silent_drop', reason: 'resource state is critical' };
         return { action: 'silent_drop', reason: 'resource state is critical' };
     }

@@ -25,6 +25,7 @@ interface WindowsTerminationRuntime {
     killPid(pid: number): void;
 }
 declare function cleanupOldProcessMetricsFiles(now?: number): number;
+declare function cleanupOldResourceHistoryFiles(now?: number): Record<string, unknown>;
 declare function terminateProcessTree(pidValue: unknown, options?: TerminateProcessTreeOptions): Record<string, unknown>;
 declare function terminateRecordedProcessPids(options?: TerminateRecordedProcessPidsOptions): Record<string, unknown>;
 declare function checkWorkerMemoryLimit(workerName: string, limitMb?: number): Record<string, unknown>;
@@ -33,6 +34,7 @@ declare function writeProcessCleanupEvent(data: Record<string, unknown>): void;
 declare function getSystemProtectionStatus(): Record<string, unknown>;
 declare const _default: {
     RESOURCE_SYSTEM_ROOT: string;
+    RESOURCE_RETENTION_CONTROL_FILE: string;
     PROCESS_METRICS_RETENTION_MS: number;
     MEMORY_BLACK_THRESHOLD_MB: number;
     collectProcessMetrics: typeof collectProcessMetrics;
@@ -42,5 +44,6 @@ declare const _default: {
     terminateRecordedProcessPids: typeof terminateRecordedProcessPids;
     getSystemProtectionStatus: typeof getSystemProtectionStatus;
     cleanupOldProcessMetricsFiles: typeof cleanupOldProcessMetricsFiles;
+    cleanupOldResourceHistoryFiles: typeof cleanupOldResourceHistoryFiles;
 };
 export = _default;
