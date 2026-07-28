@@ -44,6 +44,11 @@ interface VideoSessionLike {
     user?: { id?: string | number }
     sender?: { userId?: string | number, id?: string | number }
   }
+  bot?: {
+    internal?: {
+      sendPrivateMsg?: (userId: string, message: unknown) => Promise<unknown> | unknown
+    }
+  }
   send(message: unknown): Promise<unknown>
 }
 
@@ -107,6 +112,7 @@ interface ProbeResult {
 }
 
 type VideoFsApi = Pick<typeof fs, 'mkdir' | 'stat' | 'rm'>
+type StagingFsApi = Pick<typeof fs, 'lstat' | 'realpath' | 'rm' | 'stat' | 'readFile'>
 
 type VideoUserErrorNumber =
   | '001' | '002' | '003' | '004' | '005' | '006' | '007' | '008' | '009'
@@ -144,8 +150,34 @@ type SendOutcome =
 
 type StagingPrepareResult =
   | { status: 'ready', path: string }
-  | { status: 'create_failed', error: unknown }
-  | { status: 'safety_validation_failed' }
+  | { status: 'create_failed', path: string, error: unknown }
+  | { status: 'safety_validation_failed', path: string }
+
+type StagingValidationResult =
+  | { status: 'safe' }
+  | { status: 'missing' }
+  | { status: 'rejected', error: string }
+  | { status: 'failed', code: string, error: string }
+
+interface StagingCleanupFailure {
+  event: 'staging_cleanup_failed' | 'staging_cleanup_rejected'
+  taskId: string
+  bvId: string
+  stagingDir: string
+  errorCode: string
+  errorText: string
+  beijingTime: string
+}
+
+interface StagingCleanupOptions {
+  fs?: StagingFsApi
+  adminIdsFile?: string
+  now?: number
+}
+
+type AdminIdLoadResult =
+  | { status: 'ready', ids: string[], invalidCount: number }
+  | { status: 'failed', code: string, error: string }
 
 interface RecentDuplicateMatch {
   entry: RecentParseEntry
@@ -157,9 +189,14 @@ interface DownloadDeps {
   run?: typeof run
   probeVideo?: typeof probeVideo
   createStagingDirectory?: typeof createRequestStagingDirectory
+  removeStagingDirectory?: typeof removeRequestStagingDirectory
   resolveShortLink?: typeof resolveBiliShortLink
   resourceModules?: VideoResourceModules | null
   resourceGate?: false
+}
+
+interface DownloadRequestOptions {
+  explicitCommand?: boolean
 }
 
 interface VideoResourceGateHandle {
@@ -188,7 +225,13 @@ interface RecentParseEntry {
 
 interface ShortLinkResolutionEntry {
   bvKey: string
+  p1Url: string
   expiresAt: number
+}
+
+interface ResolvedBiliInput {
+  keys: string[]
+  p1Url: string
 }
 
 interface VideoFileCacheEntry {
@@ -202,6 +245,7 @@ interface VideoFileCacheEntry {
   expiresAt: number
   hardCleanupAt: number
   activeSends: number
+  lastSendStatus: SendOutcome['status']
   expired: boolean
   expiryTimer: NodeJS.Timeout | null
 }
@@ -244,6 +288,7 @@ function resolveRuntimeDataDir(): string {
 }
 
 const DATA_DIR = resolveRuntimeDataDir()
+const ADMIN_IDS_FILE = path.join(DATA_DIR, 'ai-admin-ids.json')
 const VIDEO_BLACKLIST_FILE = process.env.BILI_VIDEO_BLACKLIST_FILE || path.join(DATA_DIR, 'video-blacklist.json')
 const MAX_SIZE = parsePositiveInteger(process.env.BILI_MAX_SIZE_BYTES, DEFAULT_MAX_SIZE)
 const TEST_VIDEO_FILE = process.env.BILI_TEST_VIDEO_FILE || '/root/test_bili.mp4'
@@ -262,6 +307,7 @@ const SHORT_LINK_TIMEOUT_MS = 5000
 const SHORT_LINK_MAX_HEADER_BYTES = 16 * 1024
 const MAX_YTDLP_STDIO_BYTES = 1024 * 1024
 const MAX_VIDEO_BLACKLIST_BYTES = 128 * 1024
+const MAX_ADMIN_IDS_BYTES = 128 * 1024
 const EXTERNAL_VIDEO_TASK_KIND = 'external_video_download'
 const CACHE_FILE_RE = /^bili-cache-[a-z0-9]+-\d+-[a-z0-9]+\.mp4$/
 const STAGING_DIR_RE = /^bili-job-[a-z0-9]+-\d+-[a-z0-9]+$/
@@ -408,7 +454,7 @@ function buildVideoTaskId(session: VideoSessionLike, source: string): string {
 }
 
 // 在启动 yt-dlp 前申请 S1 准入和 S0 独占锁。
-async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionLike, source: string, deps: DownloadDeps = {}): Promise<VideoResourceGateResult> {
+async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionLike, source: string, deps: DownloadDeps = {}, existingTaskId: string = ''): Promise<VideoResourceGateResult> {
   if (deps.resourceGate === false) return { ok: true, handle: null }
   const modules = Object.prototype.hasOwnProperty.call(deps, 'resourceModules') ? deps.resourceModules || null : loadVideoResourceModules(ctx)
   if (!modules) {
@@ -417,7 +463,7 @@ async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionL
     return { ok: false, userError }
   }
 
-  const taskId = buildVideoTaskId(session, source)
+  const taskId = existingTaskId || buildVideoTaskId(session, source)
   const channelKey = getVideoChannelKey(session)
   const userId = getVideoUserId(session)
   const admission = modules.admitTask({
@@ -560,6 +606,29 @@ function buildBiliKeys(input: string = ''): string[] {
 function extractBvKey(input: string = ''): string {
   const match = normalizeSharedText(input).match(/\bBV[0-9A-Za-z]{10}\b/i)
   return match ? normalizeBiliIdentifier(match[0]) : ''
+}
+
+// 从任意 B 站文本或地址中提取保留原始大小写的 BV 号。
+function extractBvId(input: string = ''): string {
+  const match = normalizeSharedText(input).match(/\bBV[0-9A-Za-z]{10}\b/i)
+  return match ? match[0] : ''
+}
+
+// 将 BV 或普通视频地址统一为只指向第一分 P 的规范地址。
+function normalizeBiliP1Url(input: string = ''): string {
+  const value = normalizeSharedText(input).trim()
+  const bvId = extractBvId(value)
+  if (bvId) return `https://www.bilibili.com/video/${bvId}?p=1`
+
+  try {
+    const parsed = new URL(value)
+    const host = parsed.hostname.toLowerCase()
+    if (host !== 'bilibili.com' && host !== 'www.bilibili.com' && host !== 'm.bilibili.com') return ''
+    const identifier = parsed.pathname.match(/^\/video\/(av\d+)\/?$/i)?.[1]
+    return identifier ? `https://www.bilibili.com/video/${identifier}?p=1` : ''
+  } catch {
+    return ''
+  }
 }
 
 // 判断 URL 是否为需要轻量解析的 b23.tv 短链。
@@ -742,14 +811,14 @@ async function requestRedirectLocation(input: string, timeoutMs: number): Promis
   })
 }
 
-// 沿受限重定向链把一个 b23 短链归一化为 BV 缓存键。
+// 沿受限重定向链把一个 b23 短链归一化为第一分 P 地址。
 async function resolveBiliShortLink(input: string, requestRedirect: typeof requestRedirectLocation = requestRedirectLocation): Promise<string> {
   let current = String(input || '').trim()
-  if (!isB23ShortUrl(current)) return extractBvKey(current)
+  if (!isB23ShortUrl(current)) return normalizeBiliP1Url(current)
   const deadline = Date.now() + SHORT_LINK_TIMEOUT_MS
 
   for (let index = 0; index <= SHORT_LINK_MAX_REDIRECTS; index++) {
-    const existing = extractBvKey(current)
+    const existing = normalizeBiliP1Url(current)
     if (existing) return existing
     if (index === SHORT_LINK_MAX_REDIRECTS) throw new Error('short link redirect limit exceeded')
     if (!isAllowedBiliRedirectUrl(current)) throw new Error('short link redirect escaped Bilibili allowlist')
@@ -762,32 +831,36 @@ async function resolveBiliShortLink(input: string, requestRedirect: typeof reque
   return ''
 }
 
-// 清理十分钟短链归一化缓存并返回仍有效的 BV 键。
-function getCachedShortLinkBv(urlKey: string, now: number = Date.now()): string {
+// 清理十分钟短链归一化缓存并返回仍有效的第一分 P 结果。
+function getCachedShortLinkResolution(urlKey: string, now: number = Date.now()): ShortLinkResolutionEntry | null {
   for (const [key, entry] of shortLinkResolutionCache) {
     if (entry.expiresAt <= now) shortLinkResolutionCache.delete(key)
   }
   const entry = shortLinkResolutionCache.get(urlKey)
-  return entry && entry.expiresAt > now ? entry.bvKey : ''
+  return entry && entry.expiresAt > now ? entry : null
 }
 
-// 在媒体探测前把输入短链安全归一化并补齐去重、缓存查询键。
-async function resolveInputBiliKeys(ctx: ContextLike, url: string, source: string, deps: DownloadDeps = {}): Promise<string[]> {
+// 在媒体探测前生成统一的第一分 P 地址，并补齐去重和缓存查询键。
+async function resolveInputBiliTarget(ctx: ContextLike, url: string, source: string, deps: DownloadDeps = {}): Promise<ResolvedBiliInput> {
   const keys = uniqueStrings(buildBiliKeys(source).concat(buildBiliKeys(url)))
-  if (!isB23ShortUrl(url)) return keys
+  const directP1Url = normalizeBiliP1Url(url) || normalizeBiliP1Url(source)
+  if (directP1Url) return { keys: uniqueStrings(keys.concat(buildBiliKeys(directP1Url))), p1Url: directP1Url }
+  if (!isB23ShortUrl(url)) return { keys, p1Url: '' }
+
   const urlKey = normalizeBiliUrlKey(url)
-  const cached = getCachedShortLinkBv(urlKey)
-  if (cached) return uniqueStrings(keys.concat(cached))
+  const cached = getCachedShortLinkResolution(urlKey)
+  if (cached) return { keys: uniqueStrings(keys.concat(cached.bvKey).concat(buildBiliKeys(cached.p1Url))), p1Url: cached.p1Url }
 
   try {
     const resolver = deps.resolveShortLink || resolveBiliShortLink
-    const bvKey = await resolver(url)
-    if (!bvKey) return keys
-    shortLinkResolutionCache.set(urlKey, { bvKey, expiresAt: Date.now() + SHORT_LINK_CACHE_TTL_MS })
-    return uniqueStrings(keys.concat(bvKey))
+    const p1Url = normalizeBiliP1Url(await resolver(url))
+    const bvKey = extractBvKey(p1Url)
+    if (!p1Url || !bvKey) throw new Error('short link did not resolve to a Bilibili video BV address')
+    shortLinkResolutionCache.set(urlKey, { bvKey, p1Url, expiresAt: Date.now() + SHORT_LINK_CACHE_TTL_MS })
+    return { keys: uniqueStrings(keys.concat(bvKey).concat(buildBiliKeys(p1Url))), p1Url }
   } catch (error) {
     ctx.logger('bvidl').warn(`short link resolution failed: ${getErrorMessage(error)}`)
-    return keys
+    return { keys, p1Url: '' }
   }
 }
 
@@ -962,20 +1035,47 @@ function isStagingPathShapeSafe(stagingDir: string): boolean {
   return path.dirname(resolved) === stagingRoot && STAGING_DIR_RE.test(path.basename(resolved))
 }
 
-// 校验暂存目录不是符号链接，且真实路径仍是暂存根目录的直接子目录。
-async function isSafeStagingDirectory(stagingDir: string): Promise<boolean> {
-  if (!isStagingPathShapeSafe(stagingDir)) return false
+// 读取系统错误码；缺少错误码时返回固定占位值。
+function getNodeErrorCode(error: unknown, fallback: string = 'UNKNOWN'): string {
+  const code = error && typeof error === 'object' ? (error as NodeJS.ErrnoException).code : ''
+  return typeof code === 'string' && code.trim() ? code.trim() : fallback
+}
+
+// 校验暂存目录类型与真实路径，并保留读取失败的准确原因。
+async function validateStagingDirectory(stagingDir: string, fsApi: StagingFsApi = fs): Promise<StagingValidationResult> {
+  const resolved = path.resolve(stagingDir)
+  if (!isStagingPathShapeSafe(resolved)) return { status: 'rejected', error: '暂存目录不是暂存根目录下命名合规的直接子目录' }
+
+  let stat: Awaited<ReturnType<StagingFsApi['lstat']>>
   try {
-    const stat = await fs.lstat(stagingDir)
-    if (!stat.isDirectory() || stat.isSymbolicLink()) return false
-    const [realRoot, realDir] = await Promise.all([
-      fs.realpath(STAGING_ROOT),
-      fs.realpath(stagingDir),
-    ])
-    return path.dirname(realDir) === realRoot
-  } catch {
-    return false
+    stat = await fsApi.lstat(resolved)
+  } catch (error) {
+    if (getNodeErrorCode(error) === 'ENOENT') return { status: 'missing' }
+    return { status: 'failed', code: getNodeErrorCode(error), error: `读取暂存目录信息失败：${getErrorMessage(error)}` }
   }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return { status: 'rejected', error: '暂存目标不是普通目录或目标是符号链接' }
+
+  let realRoot: string
+  try {
+    realRoot = await fsApi.realpath(STAGING_ROOT)
+  } catch (error) {
+    return { status: 'failed', code: getNodeErrorCode(error), error: `解析暂存根目录真实路径失败：${getErrorMessage(error)}` }
+  }
+
+  let realDir: string
+  try {
+    realDir = await fsApi.realpath(resolved)
+  } catch (error) {
+    if (getNodeErrorCode(error) === 'ENOENT') return { status: 'missing' }
+    return { status: 'failed', code: getNodeErrorCode(error), error: `解析暂存目录真实路径失败：${getErrorMessage(error)}` }
+  }
+  if (path.dirname(realDir) !== realRoot) return { status: 'rejected', error: '暂存目录真实路径已离开暂存根目录' }
+  return { status: 'safe' }
+}
+
+// 校验暂存目录是否可以由当前任务安全删除。
+async function isSafeStagingDirectory(stagingDir: string, fsApi: StagingFsApi = fs): Promise<boolean> {
+  return (await validateStagingDirectory(stagingDir, fsApi)).status === 'safe'
 }
 
 // 为单次首次下载创建权限受限的暂存目录，并返回精确失败阶段。
@@ -985,34 +1085,154 @@ async function createRequestStagingDirectory(cacheSlug: string): Promise<Staging
   try {
     await fs.mkdir(stagingDir, { mode: 0o700 })
   } catch (error) {
-    return { status: 'create_failed', error }
+    return { status: 'create_failed', path: stagingDir, error }
   }
   if (!await isSafeStagingDirectory(stagingDir)) {
-    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {})
-    return { status: 'safety_validation_failed' }
+    return { status: 'safety_validation_failed', path: stagingDir }
   }
   return { status: 'ready', path: stagingDir }
 }
 
-// 删除一条经过严格校验的请求暂存目录，并记录不含敏感参数的失败证据。
-async function removeRequestStagingDirectory(ctx: ContextLike | null, stagingDir: string, bvKey: string): Promise<boolean> {
-  const resolved = path.resolve(stagingDir)
+// 把时间转换为固定的北京时间文本。
+function formatBeijingTime(now: number = Date.now()): string {
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(now))
+  const values = Object.fromEntries(parts.map(item => [item.type, item.value]))
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`
+}
+
+// 清理错误文本中的换行、完整地址和登录凭据路径。
+function sanitizeStagingCleanupError(error: unknown): string {
+  return getErrorMessage(error)
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .split(COOKIES).join('[cookies-file]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 1000) || '未提供错误文本'
+}
+
+// 从运行数据目录读取并严格筛选纯数字超级管理员账号。
+async function loadStagingCleanupAdminIds(adminIdsFile: string, fsApi: StagingFsApi): Promise<AdminIdLoadResult> {
   try {
-    await fs.lstat(resolved)
+    const stat = await fsApi.stat(adminIdsFile)
+    if (!stat.isFile()) return { status: 'failed', code: 'ADMIN_IDS_NOT_FILE', error: '超级管理员名单路径不是普通文件' }
+    if (stat.size > MAX_ADMIN_IDS_BYTES) return { status: 'failed', code: 'ADMIN_IDS_TOO_LARGE', error: `超级管理员名单文件超过${MAX_ADMIN_IDS_BYTES}字节` }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true
-    ctx?.logger('bvidl').warn(`staging_cleanup_failed: bv=${bvKey || 'unknown'} dir=${path.basename(resolved)} code=${(error as NodeJS.ErrnoException).code || 'unknown'} error=${getErrorMessage(error)}`)
-    return false
+    return { status: 'failed', code: getNodeErrorCode(error), error: `读取超级管理员名单文件信息失败：${sanitizeStagingCleanupError(error)}` }
   }
-  if (!await isSafeStagingDirectory(resolved)) {
-    ctx?.logger('bvidl').warn(`staging_cleanup_rejected: bv=${bvKey || 'unknown'} dir=${path.basename(resolved)}`)
-    return false
-  }
+
+  let parsed: unknown
   try {
-    await fs.rm(resolved, { recursive: true, force: true })
+    parsed = JSON.parse(String(await fsApi.readFile(adminIdsFile, 'utf8')))
+  } catch (error) {
+    return { status: 'failed', code: 'ADMIN_IDS_INVALID_JSON', error: `超级管理员名单不是有效 JSON：${sanitizeStagingCleanupError(error)}` }
+  }
+  if (!Array.isArray(parsed)) return { status: 'failed', code: 'ADMIN_IDS_NOT_ARRAY', error: '超级管理员名单顶层结构不是数组' }
+
+  const values = parsed.map(value => value === null || value === undefined ? '' : String(value).trim())
+  const ids = [...new Set(values.filter(value => /^\d+$/.test(value)))]
+  const invalidCount = values.filter(value => !/^\d+$/.test(value)).length
+  if (!ids.length) return { status: 'failed', code: 'ADMIN_IDS_EMPTY', error: '超级管理员名单中没有有效的纯数字 QQ 号' }
+  return { status: 'ready', ids, invalidCount }
+}
+
+// 构造发给超级管理员的固定清理失败文本。
+function buildStagingCleanupAdminMessage(failure: StagingCleanupFailure): string {
+  return [
+    '【视频暂存目录清理失败】',
+    `任务：${failure.taskId}`,
+    `视频：${failure.bvId}`,
+    `暂存目录：${failure.stagingDir}`,
+    `错误码：${failure.errorCode}`,
+    `错误信息：${failure.errorText}`,
+    `时间：${failure.beijingTime}`,
+    '请登录服务器人工处理。',
+  ].join('\n')
+}
+
+// 将一次清理失败逐个私聊给有效超级管理员，不重试失败通知。
+async function notifyStagingCleanupFailure(ctx: ContextLike, session: VideoSessionLike, failure: StagingCleanupFailure, options: StagingCleanupOptions): Promise<void> {
+  const fsApi = options.fs || fs
+  const adminIdsFile = options.adminIdsFile || ADMIN_IDS_FILE
+  const adminResult = await loadStagingCleanupAdminIds(adminIdsFile, fsApi)
+  if (adminResult.status === 'failed') {
+    ctx.logger('bvidl').warn(`staging_cleanup_admin_ids_unavailable: file=${JSON.stringify(path.resolve(adminIdsFile))} code=${adminResult.code} error=${JSON.stringify(adminResult.error)}`)
+    return
+  }
+  if (adminResult.invalidCount > 0) {
+    ctx.logger('bvidl').warn(`staging_cleanup_admin_ids_invalid: invalid_count=${adminResult.invalidCount}`)
+  }
+
+  const internal = session.bot?.internal
+  const sendPrivateMsg = internal?.sendPrivateMsg
+  if (typeof sendPrivateMsg !== 'function') {
+    ctx.logger('bvidl').warn(`staging_cleanup_admin_notify_unavailable: reason=sendPrivateMsg_unavailable admin_count=${adminResult.ids.length}`)
+    return
+  }
+
+  const message = buildStagingCleanupAdminMessage(failure)
+  await Promise.all(adminResult.ids.map(async adminId => {
+    try {
+      await sendPrivateMsg.call(internal, adminId, message)
+    } catch (error) {
+      ctx.logger('bvidl').warn(`staging_cleanup_admin_notify_failed: admin=${adminId} code=${getNodeErrorCode(error)} error=${JSON.stringify(sanitizeStagingCleanupError(error))}`)
+    }
+  }))
+}
+
+// 记录并通知同一份结构化暂存目录清理失败信息。
+async function reportStagingCleanupFailure(ctx: ContextLike | null, session: VideoSessionLike, failure: StagingCleanupFailure, options: StagingCleanupOptions): Promise<void> {
+  if (!ctx) return
+  ctx.logger('bvidl').warn(`${failure.event}: task=${failure.taskId} bv=${failure.bvId} dir=${JSON.stringify(failure.stagingDir)} code=${failure.errorCode} error=${JSON.stringify(failure.errorText)} beijing_time=${JSON.stringify(failure.beijingTime)}`)
+  await notifyStagingCleanupFailure(ctx, session, failure, options)
+}
+
+// 在当前任务 finally 中安全删除一次暂存目录；失败时只告警，不重删。
+async function removeRequestStagingDirectory(ctx: ContextLike | null, session: VideoSessionLike, stagingDir: string, bvId: string, taskId: string, options: StagingCleanupOptions = {}): Promise<boolean> {
+  const fsApi = options.fs || fs
+  const resolved = path.resolve(stagingDir)
+  const normalizedBvId = extractBvId(bvId) || 'unknown'
+  const normalizedTaskId = String(taskId || '').trim() || 'unknown'
+  const validation = await validateStagingDirectory(resolved, fsApi)
+  if (validation.status === 'missing') return true
+  if (validation.status === 'rejected' || validation.status === 'failed') {
+    const failure: StagingCleanupFailure = {
+      event: validation.status === 'rejected' ? 'staging_cleanup_rejected' : 'staging_cleanup_failed',
+      taskId: normalizedTaskId,
+      bvId: normalizedBvId,
+      stagingDir: resolved,
+      errorCode: validation.status === 'rejected' ? 'SAFETY_VALIDATION_FAILED' : validation.code,
+      errorText: sanitizeStagingCleanupError(validation.error),
+      beijingTime: formatBeijingTime(options.now),
+    }
+    await reportStagingCleanupFailure(ctx, session, failure, options)
+    return false
+  }
+
+  try {
+    await fsApi.rm(resolved, { recursive: true, force: true })
     return true
   } catch (error) {
-    ctx?.logger('bvidl').warn(`staging_cleanup_failed: bv=${bvKey || 'unknown'} dir=${path.basename(resolved)} code=${(error as NodeJS.ErrnoException).code || 'unknown'} error=${getErrorMessage(error)}`)
+    if (getNodeErrorCode(error) === 'ENOENT') return true
+    const failure: StagingCleanupFailure = {
+      event: 'staging_cleanup_failed',
+      taskId: normalizedTaskId,
+      bvId: normalizedBvId,
+      stagingDir: resolved,
+      errorCode: getNodeErrorCode(error),
+      errorText: sanitizeStagingCleanupError(error),
+      beijingTime: formatBeijingTime(options.now),
+    }
+    await reportStagingCleanupFailure(ctx, session, failure, options)
     return false
   }
 }
@@ -1049,7 +1269,7 @@ function expireVideoCacheEntry(ctx: ContextLike | null, entry: VideoFileCacheEnt
 }
 
 // 把首次成功上传的 MP4 登记为五分钟全局 BV 缓存。
-function registerVideoFileCache(ctx: ContextLike, filePath: string, sizeBytes: number, infoMessage: string, keys: string[], now: number = Date.now()): VideoFileCacheEntry | null {
+function registerVideoFileCache(ctx: ContextLike, filePath: string, sizeBytes: number, infoMessage: string, keys: string[], lastSendStatus: SendOutcome['status'], now: number = Date.now()): VideoFileCacheEntry | null {
   if (cacheDisposed || !isSafeVideoCacheFile(filePath) || sizeBytes <= 0 || sizeBytes > MAX_SIZE) return null
   const aliases = uniqueStrings(keys)
   const primaryKey = aliases.find(key => key.startsWith('bv:')) || ''
@@ -1068,6 +1288,7 @@ function registerVideoFileCache(ctx: ContextLike, filePath: string, sizeBytes: n
     expiresAt: now + VIDEO_CACHE_TTL_MS,
     hardCleanupAt: now + VIDEO_CACHE_HARD_CLEANUP_MS,
     activeSends: 0,
+    lastSendStatus,
     expired: false,
     expiryTimer: null,
   }
@@ -1120,6 +1341,7 @@ async function sendCachedVideo(ctx: ContextLike, session: VideoSessionLike, entr
       return userError
     }
     const videoOutcome = await safeSend(ctx, session, segment.video(toFileUrl(entry.filePath)), 'cached video')
+    entry.lastSendStatus = videoOutcome.status
     if (videoOutcome.status === 'uncertain') return undefined
     if (videoOutcome.status === 'failed') {
       const userError = videoOutcome.reason === 'rejected'
@@ -1207,6 +1429,7 @@ function getVideoCacheStatus(): Record<string, unknown> {
       sizeBytes: entry.sizeBytes,
       expiresAt: entry.expiresAt,
       activeSends: entry.activeSends,
+      lastSendStatus: entry.lastSendStatus,
       expired: entry.expired,
     })),
   }
@@ -1459,11 +1682,12 @@ function getProbePartNumber(url: string, info: VideoInfo): number {
 }
 
 // 探测视频元数据，并将无可用格式转换为受控中文错误。
-async function probeVideo(url: string): Promise<ProbeResult> {
-  const { stdout } = await run(YTDLP, [
+async function probeVideo(url: string, runCommand: typeof run = run): Promise<ProbeResult> {
+  const { stdout } = await runCommand(YTDLP, [
     '--cookies', COOKIES,
     '--dump-single-json',
     '--no-warnings',
+    '--no-playlist',
     url,
   ], { timeout: 2 * 60 * 1000 })
 
@@ -1538,15 +1762,18 @@ async function removeOutputFileOnce(ctx: ContextLike, fsApi: VideoFsApi, filePat
 
 // 为首次请求执行探测、大小门禁、下载、首发和缓存登记。
 async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessionLike, url: string, source: string, keys: string[], recentEntry: RecentParseEntry | null, deps: DownloadDeps): Promise<SharedVideoResult> {
-  const gateResult = await acquireVideoResourceGate(ctx, session, source, deps)
+  const taskId = buildVideoTaskId(session, source)
+  const gateResult = await acquireVideoResourceGate(ctx, session, source, deps, taskId)
   if (!gateResult.ok) return { kind: 'failed', userError: gateResult.userError || buildVideoUserError({ id: 'video-003' }) }
   const gateHandle = gateResult.handle || null
   const fsApi = deps.fs || fs
   const runCommand = deps.run || run
   const probe = deps.probeVideo || probeVideo
   const createStagingDirectory = deps.createStagingDirectory || createRequestStagingDirectory
+  const removeStagingDirectory = deps.removeStagingDirectory || removeRequestStagingDirectory
   let outputFile = ''
   let stagingDir = ''
+  let bvId = ''
   let bvKey = ''
   let cacheId = ''
   let pickedFormat = ''
@@ -1593,6 +1820,7 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
       .concat(buildBiliKeys(getShortestBiliUrl(info))))
     mergeRecentParseKeys(recentEntry, canonicalKeys)
     const infoMessage = buildInfoMessage(info, picked)
+    bvId = getProbeBvId(url, info)
 
     gateHandle?.updateStep('video_preview')
     const previewOutcome = await safeSend(ctx, session, infoMessage, 'preview')
@@ -1627,8 +1855,9 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
     try {
       stagingResult = await createStagingDirectory(cacheSlug)
     } catch (error) {
-      stagingResult = { status: 'create_failed', error }
+      stagingResult = { status: 'create_failed', path: '', error }
     }
+    stagingDir = stagingResult.path
     if (stagingResult.status !== 'ready') {
       const userError = buildVideoUserError({ id: stagingResult.status === 'create_failed' ? 'video-016' : 'video-017' })
       const technicalDetail = stagingResult.status === 'create_failed' ? getErrorMessage(stagingResult.error) : 'safety_validation_failed'
@@ -1636,7 +1865,6 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
       logVideoUserError(ctx, userError)
       return { kind: 'failed', userError }
     }
-    stagingDir = stagingResult.path
 
     gateHandle?.updateStep('video_download')
     pickedFormat = picked.format
@@ -1644,6 +1872,7 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
     try {
       await runCommand(YTDLP, [
         '--cookies', COOKIES,
+        '--no-playlist',
         '-f', picked.format,
         '--merge-output-format', 'mp4',
         '-P', `home:${CACHE_DIR}`,
@@ -1694,7 +1923,7 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
       return { kind: 'failed', userError }
     }
 
-    const cacheEntry = registerVideoFileCache(ctx, outputFile, actualSize, infoMessage, canonicalKeys)
+    const cacheEntry = registerVideoFileCache(ctx, outputFile, actualSize, infoMessage, canonicalKeys, videoOutcome.status)
     if (!cacheEntry) {
       await removeOutputFileOnce(ctx, fsApi, outputFile, videoOutcome.status === 'uncertain' ? 'uncertain_cache_registration' : 'cache_registration')
       outputFile = ''
@@ -1704,7 +1933,7 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
     return { kind: 'cached', entry: cacheEntry }
   } finally {
     if (outputFile) await removeOutputFileOnce(ctx, fsApi, outputFile, 'request_finally')
-    const cleanupOk = stagingDir ? await removeRequestStagingDirectory(ctx, stagingDir, bvKey) : true
+    const cleanupOk = stagingDir ? await removeStagingDirectory(ctx, session, stagingDir, bvId, taskId) : true
     if (commandFailure) {
       ctx.logger('bvidl').warn(`video_download_failed: cacheId=${cacheId || 'unknown'} bv=${bvKey || 'unknown'} format=${pickedFormat || 'unknown'} duration_ms=${downloadStartedAt ? Date.now() - downloadStartedAt : 0} exit_code=${commandFailure.code ?? 'unknown'} signal=${commandFailure.signal || 'none'} cleanup_ok=${cleanupOk} user_error_id=video-018 error=${getSafeCommandErrorSummary(commandFailure)}`)
     }
@@ -1748,30 +1977,28 @@ function unregisterInflightDownload(keys: string[], promise: Promise<SharedVideo
 }
 
 // 编排同群去重、短链归一化、缓存命中、并发合并和首次处理。
-async function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url: string, source: string = url, deps: DownloadDeps = {}): Promise<string | undefined> {
+async function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url: string, source: string = url, deps: DownloadDeps = {}, options: DownloadRequestOptions = {}): Promise<string | undefined> {
   if (isBlacklistedGroup(session)) return
 
   const now = Date.now()
-  const immediateKeys = uniqueStrings(buildBiliKeys(source).concat(buildBiliKeys(url)))
-  const immediateDuplicate = findRecentDuplicateParse(session, immediateKeys, now)
-  if (immediateDuplicate) {
-    const userError = buildVideoUserError({ id: 'video-002', remainingSeconds: immediateDuplicate.remainingSeconds })
-    logVideoUserError(ctx, userError, `remaining_seconds=${immediateDuplicate.remainingSeconds}`)
-    await safeSend(ctx, session, userError.message, 'duplicate parse notice')
-    return undefined
+  const resolvedInput = await resolveInputBiliTarget(ctx, url, source, deps)
+  const keys = resolvedInput.keys
+  if (!resolvedInput.p1Url) {
+    const userError = buildVideoUserError({ id: 'video-010' })
+    logVideoUserError(ctx, userError, 'input_normalization_failed')
+    return userError.message
   }
-
-  const keys = await resolveInputBiliKeys(ctx, url, source, deps)
   const resolvedDuplicate = findRecentDuplicateParse(session, keys, now)
-  if (resolvedDuplicate) {
+  const cached = findVideoFileCache(ctx, keys, now)
+  const canRetryUncertainCache = !!(options.explicitCommand && resolvedDuplicate && cached?.lastSendStatus === 'uncertain')
+  if (resolvedDuplicate && !canRetryUncertainCache) {
     const userError = buildVideoUserError({ id: 'video-002', remainingSeconds: resolvedDuplicate.remainingSeconds })
     logVideoUserError(ctx, userError, `remaining_seconds=${resolvedDuplicate.remainingSeconds}`)
     await safeSend(ctx, session, userError.message, 'duplicate parse notice')
     return undefined
   }
-  const recentEntry = rememberRecentParse(session, keys, now)
+  const recentEntry = canRetryUncertainCache ? null : rememberRecentParse(session, keys, now)
 
-  const cached = findVideoFileCache(ctx, keys, now)
   if (cached) {
     const result = await sendCachedVideoWithGate(ctx, session, cached, source, deps)
     if (result) forgetRecentParse(session, recentEntry)
@@ -1787,7 +2014,7 @@ async function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url:
   }
 
   let work!: Promise<SharedVideoResult>
-  work = processInitialVideoRequest(ctx, session, url, source, keys, recentEntry, deps)
+  work = processInitialVideoRequest(ctx, session, resolvedInput.p1Url, source, keys, recentEntry, deps)
   const registeredKeys = registerInflightDownload(keys, work)
   try {
     const result = await work
@@ -1812,7 +2039,7 @@ function apply(ctx: ContextLike): void {
 
     const url = extractBiliUrl(text)
     if (!url) return buildVideoUserError({ id: 'video-001' }).message
-    return downloadAndSend(ctx, session, url, text || url)
+    return downloadAndSend(ctx, session, url, text || url, {}, { explicitCommand: true })
   })
 
   ctx.middleware(async (session, next) => {
@@ -1864,9 +2091,12 @@ export = {
   rememberRecentParse,
   clearRecentParseHistory,
   resolveBiliShortLink,
+  normalizeBiliP1Url,
+  probeVideo,
   isAllowedBiliRedirectUrl,
   isPrivateIpAddress,
   cleanupVideoCache,
+  removeRequestStagingDirectory,
   getVideoCacheStatus,
   clearVideoRuntimeState,
 }

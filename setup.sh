@@ -122,6 +122,7 @@ plugins:
     protocol: ws
     selfId: '$QQ_NUMBER'
     endpoint: ws://127.0.0.1:8080/onebot/v11/ws
+    responseTimeout: 240000
   group-name-at:nyxxfd: {}
   dongxuelian-help:rlmpxx: {}
   koishi-plugin-defense:xlyp9f: {}

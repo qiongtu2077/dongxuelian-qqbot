@@ -4,6 +4,7 @@ const os = require('os')
 const path = require('path')
 
 const PLUGIN_PATH = path.resolve(__dirname, '..', 'lib', 'index.js')
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const MAX_SIZE = 60_000_000
 const TEST_BV = 'BV1xx411c7mD'
 const TEST_URL = `https://www.bilibili.com/video/${TEST_BV}`
@@ -138,7 +139,7 @@ async function withIsolatedPlugin(fn) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
-    fs.rmSync(tmpRoot, { recursive: true, force: true })
+    fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   }
 }
 
@@ -244,6 +245,18 @@ function makeVideoFs(overrides = {}) {
   }
 }
 
+// 创建可精确覆写暂存目录检查和删除阶段的文件系统替身。
+function makeStagingFs(overrides = {}) {
+  return {
+    lstat: (...args) => fsp.lstat(...args),
+    realpath: (...args) => fsp.realpath(...args),
+    rm: (...args) => fsp.rm(...args),
+    stat: (...args) => fsp.stat(...args),
+    readFile: (...args) => fsp.readFile(...args),
+    ...overrides,
+  }
+}
+
 // 创建只暴露本次测试所需准入结果的资源模块替身。
 function makeResourceModules(admission, acquire = async () => ({ updateStep() {}, release() {} })) {
   return {
@@ -278,10 +291,60 @@ async function testConfigAndParsing() {
     check('restricts redirect host allowlist', plugin.isAllowedBiliRedirectUrl('https://www.bilibili.com/video/BV1xx411c7mD') && !plugin.isAllowedBiliRedirectUrl('https://example.com/'))
     const resolved = await plugin.resolveBiliShortLink('https://b23.tv/testKey', async input => ({
       statusCode: 302,
-      location: input.includes('testKey') ? TEST_URL : '',
+      location: input.includes('testKey') ? `${TEST_URL}?p=2` : '',
     }))
-    check('normalizes an allowed short-link redirect to BV key', resolved === 'bv:1xx411c7md', String(resolved))
+    check('normalizes an allowed short-link redirect to P1 URL', resolved === `${TEST_URL}?p=1`, String(resolved))
   })
+}
+
+// 验证所有输入固定处理 P1，且部署配置统一使用 240 秒等待。
+async function testP1NormalizationAndResponseTimeout() {
+  section('P1 normalization and OneBot response timeout')
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const p2Url = `${TEST_URL}?p=2&spm_id_from=333`
+    check('direct P2 URL is normalized to P1', plugin.normalizeBiliP1Url(p2Url) === `${TEST_URL}?p=1`)
+    check('plain BV input is normalized to P1', plugin.normalizeBiliP1Url(TEST_BV) === `${TEST_URL}?p=1`)
+    check('P1 and P2 share the same BV key', plugin.buildBiliKeys(`${TEST_URL}?p=1`).includes('bv:1xx411c7md') && plugin.buildBiliKeys(p2Url).includes('bv:1xx411c7md'))
+
+    let probeArgs = []
+    const probeResult = await plugin.probeVideo(`${TEST_URL}?p=1`, async (_command, args) => {
+      probeArgs = [...args]
+      return { stdout: JSON.stringify(sampleInfo()), stderr: '' }
+    })
+    check('probe uses --no-playlist and exact P1 URL', probeArgs.includes('--no-playlist') && probeArgs.at(-1) === `${TEST_URL}?p=1`, JSON.stringify(probeArgs))
+    check('P1 probe still selects a usable format', probeResult.picked && probeResult.picked.format === '30064+30280', JSON.stringify(probeResult))
+
+    const ctx = makeCtx()
+    const counters = { probes: 0, downloads: 0 }
+    let probedUrl = ''
+    const session = makeSession({ guildId: 'p1-direct', channelId: 'p1-direct' })
+    await plugin.downloadAndSend(ctx, session, p2Url, p2Url, makeDeps(1_000_000, 1_000_000, counters, {
+      probeVideo: async input => {
+        probedUrl = input
+        counters.probes += 1
+        return { info: sampleInfo(), picked: { format: '30064+30280', label: '720P AVC', totalSize: 1_000_000, height: 720 } }
+      },
+    }))
+    check('direct P2 probe and download both use exact P1 URL', probedUrl === `${TEST_URL}?p=1` && counters.args.at(-1) === probedUrl, JSON.stringify({ probedUrl, args: counters.args }))
+    check('download uses --no-playlist', counters.args.includes('--no-playlist'), JSON.stringify(counters.args))
+    check('multi-P handling adds no group notice', session.sent.length === 2, JSON.stringify(session.sent))
+
+    const shortP1 = await plugin.resolveBiliShortLink('https://b23.tv/p2Key', async () => ({ statusCode: 302, location: `${TEST_URL}?p=3` }))
+    check('short link ending at P3 is normalized to P1', shortP1 === `${TEST_URL}?p=1`, String(shortP1))
+  })
+
+  const example = fs.readFileSync(path.join(REPO_ROOT, 'koishi.example.yml'), 'utf8')
+  const setup = fs.readFileSync(path.join(REPO_ROOT, 'setup.sh'), 'utf8')
+  const deploySource = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'koishi-plugin-dashboard', 'src', 'lib', 'routes', 'deploy.ts'), 'utf8')
+  const deployLib = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'koishi-plugin-dashboard', 'lib', 'routes', 'deploy.js'), 'utf8')
+  const videoSource = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'koishi-plugin-local-video-sender', 'src', 'index.ts'), 'utf8')
+  const stagingBlock = videoSource.slice(videoSource.indexOf('function isStagingPathShapeSafe'), videoSource.indexOf('function detachVideoCacheEntry'))
+  check('example config uses 240-second OneBot timeout', example.includes('responseTimeout: 240000'))
+  check('setup template uses 240-second OneBot timeout', setup.includes('responseTimeout: 240000'))
+  check('Dashboard source template uses 240-second OneBot timeout', deploySource.includes('responseTimeout: 240000'))
+  check('Dashboard built template uses 240-second OneBot timeout', deployLib.includes('responseTimeout: 240000'))
+  check('staging cleanup has no timer, scan or repeated delete', !/setInterval|setTimeout|readdir/.test(stagingBlock) && (stagingBlock.match(/\.rm\(/g) || []).length === 1)
+  check('registered bvidl command marks explicit cache retry', videoSource.includes("downloadAndSend(ctx, session, url, text || url, {}, { explicitCommand: true })"))
 }
 
 // 验证 video-001 至 video-027 的完整中文文案和动态数据。
@@ -465,6 +528,61 @@ async function testDuplicateAndCacheReuse() {
   })
 }
 
+// 验证只有显式 bvidl 可以复用同群未过期的未知发送缓存。
+async function testExplicitUncertainCacheRetry() {
+  section('explicit uncertain cache retry')
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const ctx = makeCtx()
+    const counters = { probes: 0, downloads: 0 }
+    const deps = makeDeps(1_000_000, 1_000_000, counters)
+    const timeoutSession = makeSession({
+      guildId: 'uncertain-retry',
+      channelId: 'uncertain-retry',
+      async send(message) {
+        if (String(message).includes('<video')) throw new TimeoutError()
+        return message
+      },
+    })
+    await plugin.downloadAndSend(ctx, timeoutSession, TEST_URL, TEST_BV, deps)
+    const initialStatus = plugin.getVideoCacheStatus()
+    const initialExpiry = initialStatus.items[0].expiresAt
+    check('initial video timeout records uncertain cache status', initialStatus.items[0].lastSendStatus === 'uncertain', JSON.stringify(initialStatus))
+
+    const ordinaryRepeat = makeSession({ guildId: 'uncertain-retry', channelId: 'uncertain-retry' })
+    await plugin.downloadAndSend(ctx, ordinaryRepeat, TEST_URL, TEST_BV, deps)
+    check('ordinary same-group repeat remains blocked', ordinaryRepeat.sent.length === 1 && ordinaryRepeat.sent[0].includes('错误编号：video-002'), JSON.stringify(ordinaryRepeat.sent))
+
+    const explicitRetry = makeSession({ guildId: 'uncertain-retry', channelId: 'uncertain-retry' })
+    await plugin.downloadAndSend(ctx, explicitRetry, TEST_URL, TEST_BV, deps, { explicitCommand: true })
+    const confirmedStatus = plugin.getVideoCacheStatus()
+    check('explicit retry reuses preview and cached file', explicitRetry.sent.length === 2 && counters.probes === 1 && counters.downloads === 1, JSON.stringify({ sent: explicitRetry.sent, counters }))
+    check('explicit cache retry does not renew expiry', confirmedStatus.items[0].expiresAt === initialExpiry, JSON.stringify({ initialExpiry, current: confirmedStatus.items[0].expiresAt }))
+    check('confirmed retry updates cache status', confirmedStatus.items[0].lastSendStatus === 'confirmed', JSON.stringify(confirmedStatus))
+
+    const secondExplicit = makeSession({ guildId: 'uncertain-retry', channelId: 'uncertain-retry' })
+    await plugin.downloadAndSend(ctx, secondExplicit, TEST_URL, TEST_BV, deps, { explicitCommand: true })
+    check('confirmed cache cannot bypass duplicate suppression', secondExplicit.sent.length === 1 && secondExplicit.sent[0].includes('错误编号：video-002'), JSON.stringify(secondExplicit.sent))
+
+    await plugin.clearVideoRuntimeState()
+    const repeatedTimeoutCounters = { probes: 0, downloads: 0 }
+    const repeatedTimeoutDeps = makeDeps(1_000_000, 1_000_000, repeatedTimeoutCounters)
+    const makeTimeoutSession = () => makeSession({
+      guildId: 'uncertain-again',
+      channelId: 'uncertain-again',
+      async send(message) {
+        if (String(message).includes('<video')) throw new TimeoutError()
+        return message
+      },
+    })
+    await plugin.downloadAndSend(ctx, makeTimeoutSession(), TEST_URL, TEST_BV, repeatedTimeoutDeps)
+    const repeatedExpiry = plugin.getVideoCacheStatus().items[0].expiresAt
+    await plugin.downloadAndSend(ctx, makeTimeoutSession(), TEST_URL, TEST_BV, repeatedTimeoutDeps, { explicitCommand: true })
+    const repeatedStatus = plugin.getVideoCacheStatus()
+    check('explicit retry timeout stays uncertain without redownload', repeatedStatus.items[0].lastSendStatus === 'uncertain' && repeatedTimeoutCounters.downloads === 1, JSON.stringify({ repeatedStatus, repeatedTimeoutCounters }))
+    check('repeated timeout does not extend cache lifetime', repeatedStatus.items[0].expiresAt === repeatedExpiry, JSON.stringify({ repeatedExpiry, current: repeatedStatus.items[0].expiresAt }))
+  })
+}
+
 // 验证并发请求会等待同一个首次下载任务。
 async function testInflightReuse() {
   section('concurrent inflight reuse')
@@ -500,7 +618,7 @@ async function testShortLinkNormalization() {
     const secondShort = 'https://b23.tv/secondKey'
     const resolveShortLink = async () => {
       counters.resolutions += 1
-      return 'bv:1xx411c7md'
+      return `${TEST_URL}?p=1`
     }
     const deps = makeDeps(1_000_000, 1_000_000, counters, { resolveShortLink })
 
@@ -565,6 +683,155 @@ async function testCleanupAndSafety() {
     await ctx.dispose()
     check('plugin dispose clears registered cache entries', plugin.getVideoCacheStatus().entries === 0, JSON.stringify(plugin.getVideoCacheStatus()))
     check('plugin dispose leaves unrelated workdir files alone', fs.existsSync(unrelatedFile))
+  })
+}
+
+// 验证暂存目录只删除一次，并把精确失败信息发给全部有效管理员。
+async function testStagingCleanupAlerts() {
+  section('single staging cleanup and admin alerts')
+  await withIsolatedPlugin(async ({ plugin, tmpRoot, dataDir }) => {
+    const ctx = makeCtx()
+    const stagingRoot = path.join(tmpRoot, 'downloads', '.staging')
+    const adminIdsFile = path.join(dataDir, 'ai-admin-ids.json')
+    fs.mkdirSync(stagingRoot, { recursive: true })
+    fs.mkdirSync(dataDir, { recursive: true })
+    fs.writeFileSync(adminIdsFile, JSON.stringify(['111', '222', '111', 'bad-id', null]), 'utf8')
+
+    const successfulDir = path.join(stagingRoot, 'bili-job-success-1000-abc123')
+    fs.mkdirSync(successfulDir)
+    let successfulRmCalls = 0
+    const successfulSession = makeSession()
+    const successful = await plugin.removeRequestStagingDirectory(ctx, successfulSession, successfulDir, TEST_BV, 'task-success', {
+      fs: makeStagingFs({
+        rm: async (...args) => {
+          successfulRmCalls += 1
+          return fsp.rm(...args)
+        },
+      }),
+      adminIdsFile,
+    })
+    check('safe staging directory is deleted exactly once', successful && successfulRmCalls === 1 && !fs.existsSync(successfulDir), JSON.stringify({ successful, successfulRmCalls }))
+
+    let missingRmCalls = 0
+    const missing = await plugin.removeRequestStagingDirectory(ctx, successfulSession, path.join(stagingRoot, 'bili-job-missing-1001-abc123'), TEST_BV, 'task-missing', {
+      fs: makeStagingFs({ rm: async () => { missingRmCalls += 1 } }),
+      adminIdsFile,
+    })
+    check('ENOENT staging directory is successful without delete or alert', missing && missingRmCalls === 0, JSON.stringify({ missing, missingRmCalls }))
+
+    const failedDir = path.join(stagingRoot, 'bili-job-failed-1002-abc123')
+    fs.mkdirSync(failedDir)
+    let failedRmCalls = 0
+    const privateCalls = []
+    const alertSession = makeSession({
+      bot: {
+        internal: {
+          async sendPrivateMsg(userId, message) {
+            privateCalls.push({ userId: String(userId), message: String(message) })
+            if (String(userId) === '111') {
+              const error = new Error('first admin offline')
+              error.code = 'ECONNRESET'
+              throw error
+            }
+          },
+        },
+      },
+    })
+    const cleanupError = new Error(`permission denied\nhttps://secret.example/video ${process.env.BILI_COOKIES_FILE}`)
+    cleanupError.code = 'EACCES'
+    const fixedNow = Date.UTC(2026, 6, 28, 12, 34, 56)
+    const failed = await plugin.removeRequestStagingDirectory(ctx, alertSession, failedDir, TEST_BV, 'task-cleanup-1', {
+      fs: makeStagingFs({
+        rm: async () => {
+          failedRmCalls += 1
+          throw cleanupError
+        },
+      }),
+      adminIdsFile,
+      now: fixedNow,
+    })
+    const alertText = privateCalls[0] && privateCalls[0].message
+    const cleanupLog = ctx.logs.find(entry => entry.msg.includes('staging_cleanup_failed:') && entry.msg.includes('task-cleanup-1'))
+    check('failed delete is attempted exactly once', !failed && failedRmCalls === 1, JSON.stringify({ failed, failedRmCalls }))
+    check('duplicate and invalid admin IDs are filtered before send', JSON.stringify(privateCalls.map(call => call.userId)) === JSON.stringify(['111', '222']), JSON.stringify(privateCalls))
+    check('admin alert contains complete cleanup evidence', alertText && alertText.includes('任务：task-cleanup-1') && alertText.includes(`视频：${TEST_BV}`) && alertText.includes(`暂存目录：${path.resolve(failedDir)}`) && alertText.includes('错误码：EACCES') && alertText.includes('时间：2026-07-28 20:34:56'), alertText)
+    check('admin alert sanitizes URL, cookies path and line breaks', alertText && alertText.includes('[url]') && alertText.includes('[cookies-file]') && !alertText.includes('secret.example') && !alertText.includes(String(process.env.BILI_COOKIES_FILE)), alertText)
+    check('cleanup log contains exact path, code and sanitized error', cleanupLog && cleanupLog.msg.includes(JSON.stringify(path.resolve(failedDir))) && cleanupLog.msg.includes('code=EACCES') && !cleanupLog.msg.includes('secret.example'), cleanupLog && cleanupLog.msg)
+    check('one failed admin notification does not block the other', ctx.logs.some(entry => entry.msg.includes('staging_cleanup_admin_notify_failed: admin=111')) && privateCalls.some(call => call.userId === '222'))
+
+    const outsideDir = path.join(tmpRoot, 'outside', 'bili-job-outside-1003-abc123')
+    fs.mkdirSync(outsideDir, { recursive: true })
+    let rejectedRmCalls = 0
+    const rejectedCalls = []
+    const rejectedSession = makeSession({ bot: { internal: { async sendPrivateMsg(userId, message) { rejectedCalls.push({ userId, message: String(message) }) } } } })
+    const rejected = await plugin.removeRequestStagingDirectory(ctx, rejectedSession, outsideDir, TEST_BV, 'task-rejected', {
+      fs: makeStagingFs({ rm: async () => { rejectedRmCalls += 1 } }),
+      adminIdsFile,
+      now: fixedNow,
+    })
+    check('unsafe path is not deleted', !rejected && rejectedRmCalls === 0 && fs.existsSync(outsideDir), JSON.stringify({ rejected, rejectedRmCalls }))
+    check('unsafe path alerts both admins with safety code', rejectedCalls.length === 2 && rejectedCalls.every(call => call.message.includes('错误码：SAFETY_VALIDATION_FAILED')), JSON.stringify(rejectedCalls))
+
+    const noAdminDir = path.join(stagingRoot, 'bili-job-noadmin-1004-abc123')
+    fs.mkdirSync(noAdminDir)
+    const busyError = new Error('directory busy')
+    busyError.code = 'EBUSY'
+    const noAdminCalls = []
+    await plugin.removeRequestStagingDirectory(ctx, makeSession({ bot: { internal: { async sendPrivateMsg(...args) { noAdminCalls.push(args) } } } }), noAdminDir, TEST_BV, 'task-no-admin', {
+      fs: makeStagingFs({ rm: async () => { throw busyError } }),
+      adminIdsFile: path.join(dataDir, 'missing-admins.json'),
+    })
+    check('missing admin file logs exact reason without private fallback', noAdminCalls.length === 0 && ctx.logs.some(entry => entry.msg.includes('staging_cleanup_admin_ids_unavailable:') && entry.msg.includes('code=ENOENT')), JSON.stringify(noAdminCalls))
+
+    const noApiDir = path.join(stagingRoot, 'bili-job-noapi-1005-abc123')
+    fs.mkdirSync(noApiDir)
+    await plugin.removeRequestStagingDirectory(ctx, makeSession(), noApiDir, TEST_BV, 'task-no-api', {
+      fs: makeStagingFs({ rm: async () => { throw busyError } }),
+      adminIdsFile,
+    })
+    check('missing private API is logged without another delete', ctx.logs.some(entry => entry.msg.includes('staging_cleanup_admin_notify_unavailable: reason=sendPrivateMsg_unavailable')))
+  })
+}
+
+// 验证首次任务的每条收尾路径最多调用一次暂存目录删除函数。
+async function testSingleCleanupCallPerRequest() {
+  section('single cleanup call per request')
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const ctx = makeCtx()
+    const basePath = path.join(plugin.getRuntimeConfig().workdir, '.staging', 'bili-job-count-2000-abc123')
+
+    const runCase = async (name, session, overrides, expectedCalls) => {
+      let cleanupCalls = 0
+      const deps = {
+        ...makeDeps(1_000_000, 1_000_000),
+        createStagingDirectory: async () => ({ status: 'ready', path: `${basePath}-${name}` }),
+        removeStagingDirectory: async () => {
+          cleanupCalls += 1
+          return true
+        },
+        ...overrides,
+      }
+      await plugin.downloadAndSend(ctx, session, TEST_URL, TEST_BV, deps)
+      check(`${name} calls staging cleanup at most once`, cleanupCalls === expectedCalls && cleanupCalls <= 1, `cleanupCalls=${cleanupCalls}`)
+      await plugin.clearVideoRuntimeState()
+    }
+
+    await runCase('success', makeSession({ guildId: 'cleanup-success', channelId: 'cleanup-success' }), {}, 1)
+    await runCase('download-failure', makeSession({ guildId: 'cleanup-download', channelId: 'cleanup-download' }), { run: async () => { throw new Error('download failed') } }, 1)
+    await runCase('send-failure', makeSession({ guildId: 'cleanup-send', channelId: 'cleanup-send', async send(message) { if (String(message).includes('<video')) throw new Error('send failed'); return message } }), {}, 1)
+    await runCase('send-timeout', makeSession({ guildId: 'cleanup-timeout', channelId: 'cleanup-timeout', async send(message) { if (String(message).includes('<video')) throw new TimeoutError(); return message } }), {}, 1)
+    await runCase('probe-failure', makeSession({ guildId: 'cleanup-probe', channelId: 'cleanup-probe' }), { probeVideo: async () => { throw new Error('probe failed') } }, 0)
+
+    let rejectedCleanupCalls = 0
+    await plugin.downloadAndSend(ctx, makeSession({ guildId: 'cleanup-rejected', channelId: 'cleanup-rejected' }), TEST_URL, TEST_BV, {
+      ...makeDeps(1_000_000, 1_000_000),
+      createStagingDirectory: async () => ({ status: 'safety_validation_failed', path: `${basePath}-rejected` }),
+      removeStagingDirectory: async () => {
+        rejectedCleanupCalls += 1
+        return false
+      },
+    })
+    check('staging prepare rejection still reaches one finally cleanup', rejectedCleanupCalls === 1, `cleanupCalls=${rejectedCleanupCalls}`)
   })
 }
 
@@ -673,8 +940,8 @@ async function testDetailedErrorRouting() {
     check('preview call error returns video-013', String(previewCallError).includes('错误编号：video-013'), String(previewCallError))
 
     const stagingCases = [
-      ['video-016', { status: 'create_failed', error: new Error('request staging mkdir failed') }],
-      ['video-017', { status: 'safety_validation_failed' }],
+      ['video-016', { status: 'create_failed', path: path.join(workdir, '.staging', 'bili-job-create-3000-abc123'), error: new Error('request staging mkdir failed') }],
+      ['video-017', { status: 'safety_validation_failed', path: path.join(workdir, '.staging', 'bili-job-safety-3001-abc123') }],
     ]
     for (let index = 0; index < stagingCases.length; index += 1) {
       const [id, stagingResult] = stagingCases[index]
@@ -800,13 +1067,17 @@ async function testStagingDownloadLifecycle() {
 // 顺序运行插件测试，避免共享环境变量相互污染。
 async function run() {
   await testConfigAndParsing()
+  await testP1NormalizationAndResponseTimeout()
   await testChineseUserErrorCatalog()
   await testFormatPicking()
   await testSizeGates()
   await testDuplicateAndCacheReuse()
+  await testExplicitUncertainCacheRetry()
   await testInflightReuse()
   await testShortLinkNormalization()
   await testCleanupAndSafety()
+  await testStagingCleanupAlerts()
+  await testSingleCleanupCallPerRequest()
   await testFailurePaths()
   await testDetailedErrorRouting()
   await testStagingDownloadLifecycle()
