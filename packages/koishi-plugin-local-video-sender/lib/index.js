@@ -48,7 +48,9 @@ const VIDEO_RESOURCE_UNAVAILABLE_MESSAGE = '资源系统不可用，视频下载
 const DUPLICATE_PARSE_MESSAGE = '请勿在短时间内重复解析';
 const UNKNOWN_SIZE_MESSAGE = '视频文件大小无法预估，请自行去 bilibili 观看。';
 const CACHE_FILE_RE = /^bili-cache-[a-z0-9]+-\d+-[a-z0-9]+\.mp4$/;
+const STAGING_DIR_RE = /^bili-job-[a-z0-9]+-\d+-[a-z0-9]+$/;
 const CACHE_DIR = path.join(WORKDIR, 'cache');
+const STAGING_ROOT = path.join(WORKDIR, '.staging');
 const recentParseHistory = new Map();
 const shortLinkResolutionCache = new Map();
 const videoFileCache = new Map();
@@ -534,6 +536,7 @@ function formatDecimalMb(bytes) {
 function buildOversizeMessage(bytes) {
     return `视频文件过大（${formatDecimalMb(bytes)}），请自行去 bilibili 观看。`;
 }
+// --- 视频缓存与暂存目录安全 ---
 // 检查缓存文件路径、类型和真实位置均留在专用缓存目录内。
 function isSafeVideoCacheFile(filePath) {
     try {
@@ -549,6 +552,67 @@ function isSafeVideoCacheFile(filePath) {
         return realFile.startsWith(`${realRoot}${path.sep}`);
     }
     catch {
+        return false;
+    }
+}
+// 判断路径是否为暂存根目录下命名合规的直接子目录。
+function isStagingPathShapeSafe(stagingDir) {
+    const stagingRoot = path.resolve(STAGING_ROOT);
+    const resolved = path.resolve(stagingDir);
+    return path.dirname(resolved) === stagingRoot && STAGING_DIR_RE.test(path.basename(resolved));
+}
+// 校验暂存目录不是符号链接，且真实路径仍是暂存根目录的直接子目录。
+async function isSafeStagingDirectory(stagingDir) {
+    if (!isStagingPathShapeSafe(stagingDir))
+        return false;
+    try {
+        const stat = await fs.lstat(stagingDir);
+        if (!stat.isDirectory() || stat.isSymbolicLink())
+            return false;
+        const [realRoot, realDir] = await Promise.all([
+            fs.realpath(STAGING_ROOT),
+            fs.realpath(stagingDir),
+        ]);
+        return path.dirname(realDir) === realRoot;
+    }
+    catch {
+        return false;
+    }
+}
+// 为单次首次下载创建权限受限的暂存目录。
+async function createRequestStagingDirectory(cacheSlug) {
+    await fs.mkdir(STAGING_ROOT, { recursive: true, mode: 0o700 });
+    const stagingName = `bili-job-${cacheSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const stagingDir = path.join(STAGING_ROOT, stagingName);
+    await fs.mkdir(stagingDir, { mode: 0o700 });
+    if (!await isSafeStagingDirectory(stagingDir)) {
+        await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => { });
+        throw new Error('created staging directory failed safety validation');
+    }
+    return stagingDir;
+}
+// 删除一条经过严格校验的请求暂存目录，并记录不含敏感参数的失败证据。
+async function removeRequestStagingDirectory(ctx, stagingDir, bvKey) {
+    const resolved = path.resolve(stagingDir);
+    try {
+        await fs.lstat(resolved);
+    }
+    catch (error) {
+        if (error.code === 'ENOENT')
+            return true;
+        ctx?.logger('bvidl').warn(`staging_cleanup_failed: bv=${bvKey || 'unknown'} dir=${path.basename(resolved)} code=${error.code || 'unknown'} error=${getErrorMessage(error)}`);
+        return false;
+    }
+    if (!await isSafeStagingDirectory(resolved)) {
+        ctx?.logger('bvidl').warn(`staging_cleanup_rejected: bv=${bvKey || 'unknown'} dir=${path.basename(resolved)}`);
+        return false;
+    }
+    try {
+        await fs.rm(resolved, { recursive: true, force: true });
+        return true;
+    }
+    catch (error) {
+        ctx?.logger('bvidl').warn(`staging_cleanup_failed: bv=${bvKey || 'unknown'} dir=${path.basename(resolved)} code=${error.code || 'unknown'} error=${getErrorMessage(error)}`);
         return false;
     }
 }
@@ -707,7 +771,7 @@ async function cleanupVideoCache(ctx, now = Date.now()) {
     }
     return { entriesRemoved, filesRemoved, staleActive };
 }
-// 启动一分钟缓存清理，并注册插件关闭时的收口动作。
+// 启动一分钟最终缓存清理，并注册插件关闭时的收口动作。
 function startVideoCacheMaintenance(ctx) {
     cacheDisposed = false;
     if (!videoCacheSweepTimer) {
@@ -941,6 +1005,15 @@ async function probeVideo(url) {
     }
     return { info, picked };
 }
+// 生成不含完整 URL 和 Cookie 路径的 yt-dlp 错误摘要。
+function getSafeCommandErrorSummary(error) {
+    return getCommandErrorMessage(error)
+        .replace(/https?:\/\/\S+/gi, '[url]')
+        .split(COOKIES).join('[cookies-file]')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 1000) || 'unknown';
+}
 // 显式发送拒绝提示，避免 action 返回值造成重复消息。
 async function sendRejectedVideo(ctx, session, infoMessage, message, includePreview = true) {
     if (includePreview)
@@ -975,10 +1048,17 @@ async function processInitialVideoRequest(ctx, session, url, source, keys, recen
     const runCommand = deps.run || run;
     const probe = deps.probeVideo || probeVideo;
     let outputFile = '';
+    let stagingDir = '';
+    let bvKey = '';
+    let cacheId = '';
+    let pickedFormat = '';
+    let downloadStartedAt = 0;
+    let commandFailure = null;
     try {
         try {
             await fsApi.mkdir(WORKDIR, { recursive: true });
             await fsApi.mkdir(CACHE_DIR, { recursive: true });
+            await fsApi.mkdir(STAGING_ROOT, { recursive: true });
         }
         catch (error) {
             ctx.logger('bvidl').warn(getErrorMessage(error));
@@ -1020,20 +1100,32 @@ async function processInitialVideoRequest(ctx, session, url, source, keys, recen
             ctx.logger('bvidl').warn(`rejected_before_download: reason=oversize estimated=${picked.totalSize} limit=${MAX_SIZE} keys=${canonicalKeys.join(',')}`);
             return { kind: 'rejected', infoMessage, message };
         }
-        const bvKey = canonicalKeys.find(key => key.startsWith('bv:')) || '';
+        bvKey = canonicalKeys.find(key => key.startsWith('bv:')) || '';
         const cacheSlug = (bvKey.replace(/^bv:/, '') || 'unknown').replace(/[^a-z0-9]/g, '').slice(0, 32) || 'unknown';
-        const id = `bili-cache-${cacheSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const outputTemplate = path.join(CACHE_DIR, `${id}.%(ext)s`);
-        outputFile = path.join(CACHE_DIR, `${id}.mp4`);
+        cacheId = `bili-cache-${cacheSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        outputFile = path.join(CACHE_DIR, `${cacheId}.mp4`);
+        try {
+            stagingDir = await createRequestStagingDirectory(cacheSlug);
+        }
+        catch (error) {
+            ctx.logger('bvidl').warn(`staging_prepare_failed: bv=${bvKey || 'unknown'} error=${getErrorMessage(error)}`);
+            return { kind: 'failed', message: 'Failed to prepare download directory. Please check logs later.' };
+        }
         gateHandle?.updateStep('video_download');
+        pickedFormat = picked.format;
+        downloadStartedAt = Date.now();
         try {
             await runCommand(YTDLP, [
                 '--cookies', COOKIES,
                 '-f', picked.format,
                 '--merge-output-format', 'mp4',
-                '-o', outputTemplate,
+                '-P', `home:${CACHE_DIR}`,
+                '-P', `temp:${stagingDir}`,
+                '-o', `${cacheId}.%(ext)s`,
                 url,
             ], { timeout: 10 * 60 * 1000 });
+            if (!isSafeVideoCacheFile(outputFile))
+                throw new Error('yt-dlp final output failed safety validation');
             const stat = await fsApi.stat(outputFile);
             if (stat.size > MAX_SIZE) {
                 const message = buildOversizeMessage(stat.size);
@@ -1060,11 +1152,11 @@ async function processInitialVideoRequest(ctx, session, url, source, keys, recen
             return { kind: 'cached', entry: cacheEntry };
         }
         catch (error) {
+            commandFailure = error instanceof Error ? error : new Error(String(error));
             if (outputFile)
                 await fsApi.rm(outputFile, { force: true }).catch(() => {
                 });
             outputFile = '';
-            ctx.logger('bvidl').warn(getCommandErrorMessage(error));
             return { kind: 'failed', message: 'Failed to download or send video. Please check logs later.' };
         }
     }
@@ -1072,6 +1164,10 @@ async function processInitialVideoRequest(ctx, session, url, source, keys, recen
         if (outputFile)
             await fsApi.rm(outputFile, { force: true }).catch(() => {
             });
+        const cleanupOk = stagingDir ? await removeRequestStagingDirectory(ctx, stagingDir, bvKey) : true;
+        if (commandFailure) {
+            ctx.logger('bvidl').warn(`video_download_failed: cacheId=${cacheId || 'unknown'} bv=${bvKey || 'unknown'} format=${pickedFormat || 'unknown'} duration_ms=${downloadStartedAt ? Date.now() - downloadStartedAt : 0} exit_code=${commandFailure.code ?? 'unknown'} signal=${commandFailure.signal || 'none'} cleanup_ok=${cleanupOk} error=${getSafeCommandErrorSummary(commandFailure)}`);
+        }
         try {
             gateHandle?.release('external-video-finally');
         }

@@ -158,14 +158,28 @@ function createSparseFile(filePath, size) {
   }
 }
 
+// 读取 yt-dlp `-P kind:path` 参数中的指定目录。
+function getYtdlpPath(args, kind) {
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (args[index] !== '-P') continue
+    const value = String(args[index + 1])
+    if (value.startsWith(`${kind}:`)) return value.slice(kind.length + 1)
+  }
+  return ''
+}
+
 // 创建会按 yt-dlp 输出模板生成 MP4 的下载器替身。
 function makeDownloader(size, counters = null, beforeWrite = null) {
   return async (_command, args) => {
-    if (counters) counters.downloads += 1
+    if (counters) {
+      counters.downloads += 1
+      counters.args = [...args]
+    }
     if (beforeWrite) await beforeWrite()
+    const homeDir = getYtdlpPath(args, 'home')
     const outputIndex = args.indexOf('-o')
     const outputTemplate = args[outputIndex + 1]
-    createSparseFile(outputTemplate.replace('%(ext)s', 'mp4'), size)
+    createSparseFile(path.join(homeDir, outputTemplate.replace('%(ext)s', 'mp4')), size)
     return { stdout: '', stderr: '' }
   }
 }
@@ -292,6 +306,7 @@ async function testSizeGates() {
     await plugin.downloadAndSend(ctx, postDownloadSession, TEST_URL, TEST_BV, makeDeps(MAX_SIZE - 1, MAX_SIZE + 1))
     check('actual oversize blocks video upload', postDownloadSession.sent.length === 2 && postDownloadSession.sent[1] === '视频文件过大（60.0 MB），请自行去 bilibili 观看。', JSON.stringify(postDownloadSession.sent))
     check('actual oversize is deleted and not cached', plugin.getVideoCacheStatus().entries === 0 && fs.readdirSync(path.join(tmpRoot, 'downloads', 'cache')).length === 0, JSON.stringify(plugin.getVideoCacheStatus()))
+    check('actual oversize removes request staging', fs.readdirSync(path.join(tmpRoot, 'downloads', '.staging')).length === 0)
 
     await ctx.dispose()
   })
@@ -368,10 +383,13 @@ async function testInflightReuse() {
     const secondSession = makeSession({ guildId: 'parallel-b', channelId: 'parallel-b' })
     const first = plugin.downloadAndSend(ctx, firstSession, TEST_URL, TEST_BV, deps)
     await waitFor(() => counters.downloads === 1)
+    const stagingRoot = path.join(plugin.getRuntimeConfig().workdir, '.staging')
+    check('active inflight owns one request staging directory', fs.readdirSync(stagingRoot).length === 1)
     const second = plugin.downloadAndSend(ctx, secondSession, TEST_URL, TEST_BV, deps)
     releaseDownload.resolve()
     await Promise.all([first, second])
     check('parallel groups probe and download once', counters.probes === 1 && counters.downloads === 1, JSON.stringify(counters))
+    check('parallel groups use one staging directory and clean it', fs.readdirSync(stagingRoot).length === 0)
     check('parallel waiter receives preview and video', secondSession.sent.length === 2, JSON.stringify(secondSession.sent))
   })
 }
@@ -489,6 +507,65 @@ async function testFailurePaths() {
     const result = await plugin.downloadAndSend(ctx, uploadFailure, TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000))
     check('upload failure returns controlled error', String(result).includes('Failed to send video'), String(result))
     check('upload failure leaves no cache entry', plugin.getVideoCacheStatus().entries === 0, JSON.stringify(plugin.getVideoCacheStatus()))
+    check('upload failure removes final file and staging', fs.readdirSync(path.join(plugin.getRuntimeConfig().workdir, 'cache')).length === 0 && fs.readdirSync(path.join(plugin.getRuntimeConfig().workdir, '.staging')).length === 0)
+  })
+}
+
+// 验证 yt-dlp 中间流在错误、signal 和成功路径都由请求目录统一收口。
+async function testStagingDownloadLifecycle() {
+  section('request staging download lifecycle')
+  await withIsolatedPlugin(async ({ plugin, tmpRoot }) => {
+    const ctx = makeCtx()
+    const workdir = path.join(tmpRoot, 'downloads')
+    const cacheDir = path.join(workdir, 'cache')
+    const stagingRoot = path.join(workdir, '.staging')
+
+    const refusedSession = makeSession({ guildId: 'refused', channelId: 'refused' })
+    const refusedResult = await plugin.downloadAndSend(ctx, refusedSession, TEST_URL, TEST_BV, {
+      resourceGate: false,
+      probeVideo: makeProbe(1_000_000),
+      run: async (_command, args) => {
+        const tempDir = getYtdlpPath(args, 'temp')
+        createSparseFile(path.join(tempDir, 'fragment.f30032.mp4'), 1024)
+        createSparseFile(path.join(tempDir, 'fragment.f30280.m4a'), 512)
+        createSparseFile(path.join(tempDir, 'fragment.part'), 128)
+        const error = new Error('download failed')
+        error.code = 'ECONNREFUSED'
+        error.stderr = 'ERROR: media https://cdn.example/video failed after 10 retries'
+        throw error
+      },
+    })
+    const refusedLog = ctx.logs.find(entry => entry.msg.includes('video_download_failed:'))
+    check('ECONNREFUSED returns controlled failure', String(refusedResult).includes('Failed to download'))
+    check('failed split streams leave cache and staging empty', fs.readdirSync(cacheDir).length === 0 && fs.readdirSync(stagingRoot).length === 0)
+    check('failure log records exit and cleanup without media URL', refusedLog && refusedLog.msg.includes('exit_code=ECONNREFUSED') && refusedLog.msg.includes('cleanup_ok=true') && refusedLog.msg.includes('[url]') && !refusedLog.msg.includes('cdn.example'), refusedLog && refusedLog.msg)
+
+    await plugin.clearVideoRuntimeState()
+    const signalSession = makeSession({ guildId: 'signal', channelId: 'signal' })
+    await plugin.downloadAndSend(ctx, signalSession, TEST_URL, TEST_BV, {
+      resourceGate: false,
+      probeVideo: makeProbe(1_000_000),
+      run: async (_command, args) => {
+        createSparseFile(path.join(getYtdlpPath(args, 'temp'), 'timeout.part'), 64)
+        const error = new Error('command timed out')
+        error.code = 'ETIMEDOUT'
+        error.signal = 'SIGTERM'
+        throw error
+      },
+    })
+    const signalLog = ctx.logs.find(entry => entry.msg.includes('exit_code=ETIMEDOUT'))
+    check('timeout signal cleanup removes request staging', fs.readdirSync(stagingRoot).length === 0)
+    check('timeout log records signal and cleanup result', signalLog && signalLog.msg.includes('signal=SIGTERM') && signalLog.msg.includes('cleanup_ok=true'), signalLog && signalLog.msg)
+
+    await plugin.clearVideoRuntimeState()
+    const counters = { probes: 0, downloads: 0 }
+    const successSession = makeSession({ guildId: 'staging-success', channelId: 'staging-success' })
+    await plugin.downloadAndSend(ctx, successSession, TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000, counters))
+    const outputName = counters.args[counters.args.indexOf('-o') + 1]
+    check('yt-dlp uses exact home cache directory', getYtdlpPath(counters.args, 'home') === cacheDir, JSON.stringify(counters.args))
+    check('yt-dlp uses a unique temp staging directory', path.dirname(getYtdlpPath(counters.args, 'temp')) === stagingRoot, JSON.stringify(counters.args))
+    check('yt-dlp output template is a safe basename', !path.isAbsolute(outputName) && path.dirname(outputName) === '.' && /^bili-cache-[a-z0-9]+-\d+-[a-z0-9]+\.%\(ext\)s$/.test(outputName), outputName)
+    check('successful download retains only final cache file', fs.readdirSync(cacheDir).length === 1 && fs.readdirSync(stagingRoot).length === 0, JSON.stringify(fs.readdirSync(cacheDir)))
   })
 }
 
@@ -502,6 +579,7 @@ async function run() {
   await testShortLinkNormalization()
   await testCleanupAndSafety()
   await testFailurePaths()
+  await testStagingDownloadLifecycle()
 
   console.log(`\n=== local-video-sender summary ===`)
   console.log(`  passed: ${passed}`)
