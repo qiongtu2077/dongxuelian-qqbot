@@ -103,16 +103,62 @@ interface RunResult {
 interface ProbeResult {
   info?: VideoInfo
   picked?: FormatPick
-  error?: string
+  userError?: VideoUserError
 }
 
 type VideoFsApi = Pick<typeof fs, 'mkdir' | 'stat' | 'rm'>
+
+type VideoUserErrorNumber =
+  | '001' | '002' | '003' | '004' | '005' | '006' | '007' | '008' | '009'
+  | '010' | '011' | '012' | '013' | '014' | '015' | '016' | '017' | '018'
+  | '019' | '020' | '021' | '022' | '023' | '024' | '025' | '026' | '027'
+
+type VideoUserErrorId = `video-${VideoUserErrorNumber}`
+
+interface VideoUserError {
+  id: VideoUserErrorId
+  message: string
+  stage: string
+}
+
+type StaticVideoUserErrorId =
+  | 'video-001' | 'video-003' | 'video-006' | 'video-007' | 'video-008' | 'video-009'
+  | 'video-010' | 'video-013' | 'video-014' | 'video-016' | 'video-017' | 'video-018'
+  | 'video-019' | 'video-020' | 'video-023' | 'video-025' | 'video-027'
+
+type VideoUserErrorInput =
+  | { id: StaticVideoUserErrorId }
+  | { id: 'video-002', remainingSeconds: number }
+  | { id: 'video-004', resourceState: string, availableMemoryMb: number, minimumMemoryMb: number, decision: string }
+  | { id: 'video-005', resourceState: string, minimumMemoryMb: number, decision: string }
+  | { id: 'video-011', bvId: string, partNumber: number }
+  | { id: 'video-012' | 'video-022' | 'video-024' | 'video-026', retcode: number }
+  | { id: 'video-015', estimatedBytes: number }
+  | { id: 'video-021', actualBytes: number }
+
+type SendOutcome =
+  | { status: 'confirmed' }
+  | { status: 'uncertain', reason: 'timeout', error: string }
+  | { status: 'failed', reason: 'rejected', retcode: number, error: string }
+  | { status: 'failed', reason: 'call_error', error: string }
+
+type StagingPrepareResult =
+  | { status: 'ready', path: string }
+  | { status: 'create_failed', error: unknown }
+  | { status: 'safety_validation_failed' }
+
+interface RecentDuplicateMatch {
+  entry: RecentParseEntry
+  remainingSeconds: number
+}
 
 interface DownloadDeps {
   fs?: VideoFsApi
   run?: typeof run
   probeVideo?: typeof probeVideo
+  createStagingDirectory?: typeof createRequestStagingDirectory
   resolveShortLink?: typeof resolveBiliShortLink
+  resourceModules?: VideoResourceModules | null
   resourceGate?: false
 }
 
@@ -123,7 +169,7 @@ interface VideoResourceGateHandle {
 
 interface VideoResourceGateResult {
   ok: boolean
-  message?: string
+  userError?: VideoUserError
   handle?: VideoResourceGateHandle | null
 }
 
@@ -162,8 +208,8 @@ interface VideoFileCacheEntry {
 
 type SharedVideoResult =
   | { kind: 'cached', entry: VideoFileCacheEntry }
-  | { kind: 'rejected', infoMessage: string, message: string }
-  | { kind: 'failed', message: string }
+  | { kind: 'rejected', infoMessage: string, userError: VideoUserError }
+  | { kind: 'failed', userError: VideoUserError }
   | { kind: 'sent' }
 
 interface RedirectResponse {
@@ -217,14 +263,45 @@ const SHORT_LINK_MAX_HEADER_BYTES = 16 * 1024
 const MAX_YTDLP_STDIO_BYTES = 1024 * 1024
 const MAX_VIDEO_BLACKLIST_BYTES = 128 * 1024
 const EXTERNAL_VIDEO_TASK_KIND = 'external_video_download'
-const VIDEO_RESOURCE_BUSY_MESSAGE = '服务器内存紧张，视频搬运稍后再试。'
-const VIDEO_RESOURCE_UNAVAILABLE_MESSAGE = '资源系统不可用，视频下载暂时关闭。'
-const DUPLICATE_PARSE_MESSAGE = '请勿在短时间内重复解析'
-const UNKNOWN_SIZE_MESSAGE = '视频文件大小无法预估，请自行去 bilibili 观看。'
 const CACHE_FILE_RE = /^bili-cache-[a-z0-9]+-\d+-[a-z0-9]+\.mp4$/
 const STAGING_DIR_RE = /^bili-job-[a-z0-9]+-\d+-[a-z0-9]+$/
 const CACHE_DIR = path.join(WORKDIR, 'cache')
 const STAGING_ROOT = path.join(WORKDIR, '.staging')
+
+const STATIC_VIDEO_USER_ERRORS: Record<StaticVideoUserErrorId, { stage: string, message: string }> = {
+  'video-001': { stage: 'command_usage', message: '视频解析命令格式错误。详细信息：请在“bvidl”后填写B站链接；也可以填写BV号。错误编号：video-001。' },
+  'video-003': { stage: 'resource_module_load', message: '视频下载暂时关闭。详细信息：视频资源门禁模块加载失败。错误编号：video-003。' },
+  'video-006': { stage: 'resource_gate_acquire', message: '视频搬运暂时无法执行，请稍后再试。详细信息：视频资源锁在5秒内未申请成功。错误编号：video-006。' },
+  'video-007': { stage: 'workdir_create', message: '视频目录准备失败，请稍后再试。详细信息：视频工作目录创建失败。错误编号：video-007。' },
+  'video-008': { stage: 'cache_dir_create', message: '视频目录准备失败，请稍后再试。详细信息：五分钟视频缓存目录创建失败。错误编号：video-008。' },
+  'video-009': { stage: 'staging_root_create', message: '视频目录准备失败，请稍后再试。详细信息：下载暂存根目录创建失败。错误编号：video-009。' },
+  'video-010': { stage: 'video_probe', message: '视频信息获取失败，请稍后再试。详细信息：视频信息探测命令执行失败。错误编号：video-010。' },
+  'video-013': { stage: 'preview_send_call', message: '视频信息发送失败，请稍后再试。详细信息：封面、标题和链接消息调用接口失败。错误编号：video-013。' },
+  'video-014': { stage: 'size_estimate', message: '视频文件大小无法预估，请自行去 bilibili 观看。详细信息：所选清晰度缺少可用的文件大小、码率和时长数据。错误编号：video-014。' },
+  'video-016': { stage: 'staging_create', message: '视频目录准备失败，请稍后再试。详细信息：本次下载的独立暂存目录创建失败。错误编号：video-016。' },
+  'video-017': { stage: 'staging_validate', message: '视频目录准备失败，请稍后再试。详细信息：本次下载的独立暂存目录未通过安全校验。错误编号：video-017。' },
+  'video-018': { stage: 'video_download', message: '视频下载失败，请稍后再试。详细信息：视频下载命令执行失败。错误编号：video-018。' },
+  'video-019': { stage: 'output_path_validate', message: '视频文件校验失败，请稍后再试。详细信息：下载结果未通过视频缓存路径安全校验。错误编号：video-019。' },
+  'video-020': { stage: 'output_stat', message: '视频文件校验失败，请稍后再试。详细信息：下载结果的文件信息读取失败。错误编号：video-020。' },
+  'video-023': { stage: 'video_send_call', message: '视频发送失败，请稍后再试。详细信息：视频发送接口调用失败。错误编号：video-023。' },
+  'video-025': { stage: 'cached_preview_send_call', message: '缓存视频信息发送失败，请稍后再试。详细信息：缓存视频的封面、标题和链接消息调用接口失败。错误编号：video-025。' },
+  'video-027': { stage: 'cached_video_send_call', message: '缓存视频发送失败，请稍后再试。详细信息：缓存视频发送接口调用失败。错误编号：video-027。' },
+}
+
+const RESOURCE_STATE_LABELS: Record<string, string> = {
+  green: '正常',
+  yellow: '注意',
+  red: '紧张',
+  black: '不可用',
+}
+
+const ADMISSION_DECISION_LABELS: Record<string, string> = {
+  reject: '拒绝',
+  defer: '延后',
+  queue: '排队',
+  downgrade: '降级',
+  silent_drop: '静默丢弃',
+}
 
 const recentParseHistory = new Map<string, RecentParseEntry[]>()
 const shortLinkResolutionCache = new Map<string, ShortLinkResolutionEntry>()
@@ -333,8 +410,12 @@ function buildVideoTaskId(session: VideoSessionLike, source: string): string {
 // 在启动 yt-dlp 前申请 S1 准入和 S0 独占锁。
 async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionLike, source: string, deps: DownloadDeps = {}): Promise<VideoResourceGateResult> {
   if (deps.resourceGate === false) return { ok: true, handle: null }
-  const modules = loadVideoResourceModules(ctx)
-  if (!modules) return { ok: false, message: VIDEO_RESOURCE_UNAVAILABLE_MESSAGE }
+  const modules = Object.prototype.hasOwnProperty.call(deps, 'resourceModules') ? deps.resourceModules || null : loadVideoResourceModules(ctx)
+  if (!modules) {
+    const userError = buildVideoUserError({ id: 'video-003' })
+    logVideoUserError(ctx, userError)
+    return { ok: false, userError }
+  }
 
   const taskId = buildVideoTaskId(session, source)
   const channelKey = getVideoChannelKey(session)
@@ -354,7 +435,22 @@ async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionL
   })
   if (admission.decision !== 'run_now') {
     ctx.logger('bvidl').warn(`video download rejected by resource scheduler: ${admission.reason || admission.decision}; state=${admission.resourceState || 'unknown'} mem=${admission.memAvailableMb ?? 'unknown'}MB min=${VIDEO_MIN_MEM_MB}MB`)
-    return { ok: false, message: VIDEO_RESOURCE_BUSY_MESSAGE }
+    const userError = typeof admission.memAvailableMb === 'number' && Number.isFinite(admission.memAvailableMb)
+      ? buildVideoUserError({
+        id: 'video-004',
+        resourceState: admission.resourceState,
+        availableMemoryMb: admission.memAvailableMb,
+        minimumMemoryMb: VIDEO_MIN_MEM_MB,
+        decision: admission.decision,
+      })
+      : buildVideoUserError({
+        id: 'video-005',
+        resourceState: admission.resourceState,
+        minimumMemoryMb: VIDEO_MIN_MEM_MB,
+        decision: admission.decision,
+      })
+    logVideoUserError(ctx, userError)
+    return { ok: false, userError }
   }
 
   try {
@@ -374,7 +470,9 @@ async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionL
     return { ok: true, handle }
   } catch (error) {
     ctx.logger('bvidl').warn(`video download gate wait failed: ${getErrorMessage(error)}`)
-    return { ok: false, message: VIDEO_RESOURCE_BUSY_MESSAGE }
+    const userError = buildVideoUserError({ id: 'video-006' })
+    logVideoUserError(ctx, userError)
+    return { ok: false, userError }
   }
 }
 
@@ -471,6 +569,101 @@ function isB23ShortUrl(input: string = ''): boolean {
   } catch {
     return false
   }
+}
+
+// 按固定编号生成只包含安全动态数据的中文用户报错。
+function buildVideoUserError(input: VideoUserErrorInput): VideoUserError {
+  switch (input.id) {
+    case 'video-002': {
+      const remainingSeconds = Math.min(300, Math.max(1, Math.ceil(safeNumber(input.remainingSeconds))))
+      return {
+        id: input.id,
+        stage: 'duplicate_request',
+        message: `请勿在短时间内重复解析。详细信息：当前群对相同视频的300秒限制仍在生效，剩余${remainingSeconds}秒。错误编号：video-002。`,
+      }
+    }
+    case 'video-004': {
+      const resourceState = RESOURCE_STATE_LABELS[String(input.resourceState)] || '未识别'
+      const decision = ADMISSION_DECISION_LABELS[String(input.decision)] || '未识别'
+      const availableMemoryMb = Math.max(0, Math.round(safeNumber(input.availableMemoryMb)))
+      const minimumMemoryMb = Math.max(1, Math.round(safeNumber(input.minimumMemoryMb)))
+      return {
+        id: input.id,
+        stage: 'resource_admission_with_memory',
+        message: `视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为${resourceState}，当前可用内存${availableMemoryMb}MB，视频任务最低需要${minimumMemoryMb}MB，调度结果为${decision}。错误编号：video-004。`,
+      }
+    }
+    case 'video-005': {
+      const resourceState = RESOURCE_STATE_LABELS[String(input.resourceState)] || '未识别'
+      const decision = ADMISSION_DECISION_LABELS[String(input.decision)] || '未识别'
+      const minimumMemoryMb = Math.max(1, Math.round(safeNumber(input.minimumMemoryMb)))
+      return {
+        id: input.id,
+        stage: 'resource_admission_without_memory',
+        message: `视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为${resourceState}，当前可用内存数据未取得，视频任务最低需要${minimumMemoryMb}MB，调度结果为${decision}。错误编号：video-005。`,
+      }
+    }
+    case 'video-011': {
+      const bvMatch = String(input.bvId || '').match(/^BV[0-9A-Za-z]{10}$/i)
+      const partNumber = Math.max(1, Math.floor(safeNumber(input.partNumber)))
+      const target = bvMatch ? `${bvMatch[0]}第${partNumber}P` : `当前链接第${partNumber}P`
+      return {
+        id: input.id,
+        stage: 'format_select',
+        message: `视频信息获取失败，请稍后再试。详细信息：${target}未找到可用的视频格式。错误编号：video-011。`,
+      }
+    }
+    case 'video-012':
+      return {
+        id: input.id,
+        stage: 'preview_send_rejected',
+        message: `视频信息发送失败，请稍后再试。详细信息：封面、标题和链接消息被消息接口拒绝，返回码为${Math.trunc(input.retcode)}。错误编号：video-012。`,
+      }
+    case 'video-015': {
+      const estimatedBytes = Math.max(0, Math.round(safeNumber(input.estimatedBytes)))
+      return {
+        id: input.id,
+        stage: 'estimated_size_limit',
+        message: `视频文件过大（${formatDecimalMb(estimatedBytes)}），请自行去 bilibili 观看。详细信息：预计大小为${estimatedBytes}字节，上传限制为${MAX_SIZE}字节。错误编号：video-015。`,
+      }
+    }
+    case 'video-021': {
+      const actualBytes = Math.max(0, Math.round(safeNumber(input.actualBytes)))
+      return {
+        id: input.id,
+        stage: 'actual_size_limit',
+        message: `视频文件过大（${formatDecimalMb(actualBytes)}），请自行去 bilibili 观看。详细信息：实际大小为${actualBytes}字节，上传限制为${MAX_SIZE}字节。错误编号：video-021。`,
+      }
+    }
+    case 'video-022':
+      return {
+        id: input.id,
+        stage: 'video_send_rejected',
+        message: `视频发送失败，请稍后再试。详细信息：视频发送请求被消息接口拒绝，返回码为${Math.trunc(input.retcode)}。错误编号：video-022。`,
+      }
+    case 'video-024':
+      return {
+        id: input.id,
+        stage: 'cached_preview_send_rejected',
+        message: `缓存视频信息发送失败，请稍后再试。详细信息：缓存视频的封面、标题和链接消息被消息接口拒绝，返回码为${Math.trunc(input.retcode)}。错误编号：video-024。`,
+      }
+    case 'video-026':
+      return {
+        id: input.id,
+        stage: 'cached_video_send_rejected',
+        message: `缓存视频发送失败，请稍后再试。详细信息：缓存视频发送请求被消息接口拒绝，返回码为${Math.trunc(input.retcode)}。错误编号：video-026。`,
+      }
+    default: {
+      const definition = STATIC_VIDEO_USER_ERRORS[input.id]
+      return { id: input.id, stage: definition.stage, message: definition.message }
+    }
+  }
+}
+
+// 记录用户错误编号和固定阶段，原始技术详情只进入服务端日志。
+function logVideoUserError(ctx: ContextLike, userError: VideoUserError, technicalDetail: string = ''): void {
+  const suffix = technicalDetail ? ` detail=${technicalDetail}` : ''
+  ctx.logger('bvidl').warn(`user_error_id=${userError.id} stage=${userError.stage}${suffix}`)
 }
 
 // 限定短链跳转只能留在 B 站公开域名内。
@@ -681,10 +874,19 @@ function pruneRecentParseHistory(session: VideoSessionLike, now: number = Date.n
   return nextHistory
 }
 
-function isRecentDuplicateParse(session: VideoSessionLike, keys: string[], now: number = Date.now()): boolean {
-  if (!keys.length) return false
+// 返回当前群命中的重复记录和剩余限制秒数。
+function findRecentDuplicateParse(session: VideoSessionLike, keys: string[], now: number = Date.now()): RecentDuplicateMatch | null {
+  if (!keys.length) return null
   const history = pruneRecentParseHistory(session, now)
-  return history.some(entry => entry.keys.some(key => keys.includes(key)))
+  const entry = history.find(item => item.keys.some(key => keys.includes(key)))
+  if (!entry) return null
+  const remainingMs = Math.max(1, DUPLICATE_WINDOW_MS - Math.max(0, now - entry.timestamp))
+  return { entry, remainingSeconds: Math.ceil(remainingMs / 1000) }
+}
+
+// 判断当前群是否仍处于相同视频的重复解析窗口。
+function isRecentDuplicateParse(session: VideoSessionLike, keys: string[], now: number = Date.now()): boolean {
+  return !!findRecentDuplicateParse(session, keys, now)
 }
 
 function rememberRecentParse(session: VideoSessionLike, keys: string[], now: number = Date.now()): RecentParseEntry | null {
@@ -725,9 +927,14 @@ function formatDecimalMb(bytes: number): string {
   return `${(Math.max(0, safeNumber(bytes)) / 1_000_000).toFixed(1)} MB`
 }
 
-// 生成统一的超限提示。
+// 生成下载前预计体积超限的详细中文提示。
 function buildOversizeMessage(bytes: number): string {
-  return `视频文件过大（${formatDecimalMb(bytes)}），请自行去 bilibili 观看。`
+  return buildVideoUserError({ id: 'video-015', estimatedBytes: bytes }).message
+}
+
+// 生成下载后实际体积超限的详细中文提示。
+function buildActualOversizeMessage(bytes: number): string {
+  return buildVideoUserError({ id: 'video-021', actualBytes: bytes }).message
 }
 
 // --- 视频缓存与暂存目录安全 ---
@@ -771,17 +978,20 @@ async function isSafeStagingDirectory(stagingDir: string): Promise<boolean> {
   }
 }
 
-// 为单次首次下载创建权限受限的暂存目录。
-async function createRequestStagingDirectory(cacheSlug: string): Promise<string> {
-  await fs.mkdir(STAGING_ROOT, { recursive: true, mode: 0o700 })
+// 为单次首次下载创建权限受限的暂存目录，并返回精确失败阶段。
+async function createRequestStagingDirectory(cacheSlug: string): Promise<StagingPrepareResult> {
   const stagingName = `bili-job-${cacheSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const stagingDir = path.join(STAGING_ROOT, stagingName)
-  await fs.mkdir(stagingDir, { mode: 0o700 })
+  try {
+    await fs.mkdir(stagingDir, { mode: 0o700 })
+  } catch (error) {
+    return { status: 'create_failed', error }
+  }
   if (!await isSafeStagingDirectory(stagingDir)) {
     await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {})
-    throw new Error('created staging directory failed safety validation')
+    return { status: 'safety_validation_failed' }
   }
-  return stagingDir
+  return { status: 'ready', path: stagingDir }
 }
 
 // 删除一条经过严格校验的请求暂存目录，并记录不含敏感参数的失败证据。
@@ -897,13 +1107,27 @@ function findVideoFileCache(ctx: ContextLike, keys: string[], now: number = Date
 }
 
 // 使用现有封面信息和磁盘 MP4 向当前会话发送缓存视频。
-async function sendCachedVideo(ctx: ContextLike, session: VideoSessionLike, entry: VideoFileCacheEntry): Promise<string | undefined> {
+async function sendCachedVideo(ctx: ContextLike, session: VideoSessionLike, entry: VideoFileCacheEntry): Promise<VideoUserError | undefined> {
   entry.activeSends += 1
   try {
-    const previewSent = await safeSend(ctx, session, entry.infoMessage, 'cached preview')
-    if (!previewSent) return 'Failed to send video preview. Please try again later.'
-    const videoSent = await safeSend(ctx, session, segment.video(toFileUrl(entry.filePath)), 'cached video')
-    if (!videoSent) return 'Failed to send video. Please try again later.'
+    const previewOutcome = await safeSend(ctx, session, entry.infoMessage, 'cached preview')
+    if (previewOutcome.status === 'uncertain') return undefined
+    if (previewOutcome.status === 'failed') {
+      const userError = previewOutcome.reason === 'rejected'
+        ? buildVideoUserError({ id: 'video-024', retcode: previewOutcome.retcode })
+        : buildVideoUserError({ id: 'video-025' })
+      logVideoUserError(ctx, userError)
+      return userError
+    }
+    const videoOutcome = await safeSend(ctx, session, segment.video(toFileUrl(entry.filePath)), 'cached video')
+    if (videoOutcome.status === 'uncertain') return undefined
+    if (videoOutcome.status === 'failed') {
+      const userError = videoOutcome.reason === 'rejected'
+        ? buildVideoUserError({ id: 'video-026', retcode: videoOutcome.retcode })
+        : buildVideoUserError({ id: 'video-027' })
+      logVideoUserError(ctx, userError)
+      return userError
+    }
     return undefined
   } finally {
     entry.activeSends = Math.max(0, entry.activeSends - 1)
@@ -1188,16 +1412,53 @@ function getCommandErrorMessage(error: unknown): string {
   return String(error)
 }
 
-async function safeSend(ctx: ContextLike, session: VideoSessionLike, message: unknown, label: string = 'message'): Promise<boolean> {
+// 将消息接口异常严格区分为超时、明确拒绝和普通调用异常。
+async function safeSend(ctx: ContextLike, session: VideoSessionLike, message: unknown, label: string = 'message'): Promise<SendOutcome> {
   try {
     await session.send(message)
-    return true
+    return { status: 'confirmed' }
   } catch (error) {
-    ctx.logger('bvidl').warn(`${label} send failed: ${getErrorMessage(error)}`)
-    return false
+    const candidate = error as Error & { url?: unknown, code?: unknown }
+    const constructorName = error instanceof Error ? error.constructor.name : ''
+    if (constructorName === 'TimeoutError' && candidate.url === 'send_group_msg') {
+      const messageText = getErrorMessage(error)
+      ctx.logger('bvidl').warn(`${label} send failed: ${messageText} send_status=uncertain`)
+      return { status: 'uncertain', reason: 'timeout', error: messageText }
+    }
+    if (constructorName === 'SenderError' && candidate.url === 'send_group_msg' && typeof candidate.code === 'number' && Number.isFinite(candidate.code)) {
+      const messageText = getErrorMessage(error)
+      ctx.logger('bvidl').warn(`${label} send failed: ${messageText} send_status=failed reason=rejected retcode=${Math.trunc(candidate.code)}`)
+      return { status: 'failed', reason: 'rejected', retcode: Math.trunc(candidate.code), error: messageText }
+    }
+    const messageText = getErrorMessage(error)
+    ctx.logger('bvidl').warn(`${label} send failed: ${messageText} send_status=failed reason=call_error`)
+    return { status: 'failed', reason: 'call_error', error: messageText }
   }
 }
 
+// 从探测目标和元数据中提取可安全显示的规范 BV 号。
+function getProbeBvId(url: string, info: VideoInfo): string {
+  const candidates = [info.id, info.display_id, info.webpage_url, info.original_url, url]
+  for (const candidate of candidates) {
+    const match = String(candidate || '').match(/\bBV[0-9A-Za-z]{10}\b/i)
+    if (match) return match[0]
+  }
+  return ''
+}
+
+// 从显式查询参数和 yt-dlp 条目标识中解析正整数分 P，缺省为 P1。
+function getProbePartNumber(url: string, info: VideoInfo): number {
+  try {
+    const value = Number(new URL(url).searchParams.get('p'))
+    if (Number.isInteger(value) && value > 0) return value
+  } catch { /* canonical BV input may be supplied without a URL wrapper */
+  }
+  const entryMatch = String(info.id || '').match(/_p(\d+)$/i)
+  const entryPart = entryMatch ? Number(entryMatch[1]) : 0
+  return Number.isInteger(entryPart) && entryPart > 0 ? entryPart : 1
+}
+
+// 探测视频元数据，并将无可用格式转换为受控中文错误。
 async function probeVideo(url: string): Promise<ProbeResult> {
   const { stdout } = await run(YTDLP, [
     '--cookies', COOKIES,
@@ -1210,7 +1471,14 @@ async function probeVideo(url: string): Promise<ProbeResult> {
   const picked = pickFormat(info)
 
   if (!picked) {
-    return { error: 'No available video format found.' }
+    return {
+      info,
+      userError: buildVideoUserError({
+        id: 'video-011',
+        bvId: getProbeBvId(url, info),
+        partNumber: getProbePartNumber(url, info),
+      }),
+    }
   }
 
   return { info, picked }
@@ -1235,25 +1503,48 @@ async function sendRejectedVideo(ctx: ContextLike, session: VideoSessionLike, in
 // 给缓存命中请求单独申请资源锁并发送磁盘视频。
 async function sendCachedVideoWithGate(ctx: ContextLike, session: VideoSessionLike, entry: VideoFileCacheEntry, source: string, deps: DownloadDeps): Promise<string | undefined> {
   const gateResult = await acquireVideoResourceGate(ctx, session, source, deps)
-  if (!gateResult.ok) return gateResult.message || VIDEO_RESOURCE_BUSY_MESSAGE
+  if (!gateResult.ok) return (gateResult.userError || buildVideoUserError({ id: 'video-003' })).message
   const gateHandle = gateResult.handle || null
   try {
     gateHandle?.updateStep('video_cached_send')
-    return await sendCachedVideo(ctx, session, entry)
+    const userError = await sendCachedVideo(ctx, session, entry)
+    return userError?.message
   } finally {
     try { gateHandle?.release('external-video-cache-finally') } catch { /* resource gate records stale releases independently */
     }
   }
 }
 
+// 创建一个视频运行目录，并把失败转换为指定的目录错误编号。
+async function ensureVideoDirectory(ctx: ContextLike, fsApi: VideoFsApi, directory: string, errorId: 'video-007' | 'video-008' | 'video-009'): Promise<VideoUserError | null> {
+  try {
+    await fsApi.mkdir(directory, { recursive: true })
+    return null
+  } catch (error) {
+    const userError = buildVideoUserError({ id: errorId })
+    logVideoUserError(ctx, userError, getErrorMessage(error))
+    return userError
+  }
+}
+
+// 对最终视频文件只执行一次删除，失败只记录服务端日志。
+async function removeOutputFileOnce(ctx: ContextLike, fsApi: VideoFsApi, filePath: string, reason: string): Promise<void> {
+  try {
+    await fsApi.rm(filePath, { force: true })
+  } catch (error) {
+    ctx.logger('bvidl').warn(`video output delete failed: reason=${reason} error=${getErrorMessage(error)}`)
+  }
+}
+
 // 为首次请求执行探测、大小门禁、下载、首发和缓存登记。
 async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessionLike, url: string, source: string, keys: string[], recentEntry: RecentParseEntry | null, deps: DownloadDeps): Promise<SharedVideoResult> {
   const gateResult = await acquireVideoResourceGate(ctx, session, source, deps)
-  if (!gateResult.ok) return { kind: 'failed', message: gateResult.message || VIDEO_RESOURCE_BUSY_MESSAGE }
+  if (!gateResult.ok) return { kind: 'failed', userError: gateResult.userError || buildVideoUserError({ id: 'video-003' }) }
   const gateHandle = gateResult.handle || null
   const fsApi = deps.fs || fs
   const runCommand = deps.run || run
   const probe = deps.probeVideo || probeVideo
+  const createStagingDirectory = deps.createStagingDirectory || createRequestStagingDirectory
   let outputFile = ''
   let stagingDir = ''
   let bvKey = ''
@@ -1263,27 +1554,38 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
   let commandFailure: ExecFileError | null = null
 
   try {
-    try {
-      await fsApi.mkdir(WORKDIR, { recursive: true })
-      await fsApi.mkdir(CACHE_DIR, { recursive: true })
-      await fsApi.mkdir(STAGING_ROOT, { recursive: true })
-    } catch (error) {
-      ctx.logger('bvidl').warn(getErrorMessage(error))
-      return { kind: 'failed', message: 'Failed to prepare download directory. Please check logs later.' }
-    }
+    const workdirError = await ensureVideoDirectory(ctx, fsApi, WORKDIR, 'video-007')
+    if (workdirError) return { kind: 'failed', userError: workdirError }
+    const cacheDirError = await ensureVideoDirectory(ctx, fsApi, CACHE_DIR, 'video-008')
+    if (cacheDirError) return { kind: 'failed', userError: cacheDirError }
+    const stagingRootError = await ensureVideoDirectory(ctx, fsApi, STAGING_ROOT, 'video-009')
+    if (stagingRootError) return { kind: 'failed', userError: stagingRootError }
 
     let info: VideoInfo
     let picked: FormatPick
     gateHandle?.updateStep('video_probe')
     try {
       const result = await probe(url)
-      if (result.error) return { kind: 'failed', message: result.error }
-      if (!result.info || !result.picked) return { kind: 'failed', message: 'No available video format found.' }
+      if (result.userError) {
+        logVideoUserError(ctx, result.userError)
+        return { kind: 'failed', userError: result.userError }
+      }
+      if (!result.info || !result.picked) {
+        const userError = buildVideoUserError({
+          id: 'video-011',
+          bvId: getProbeBvId(url, result.info || {}),
+          partNumber: getProbePartNumber(url, result.info || {}),
+        })
+        logVideoUserError(ctx, userError)
+        return { kind: 'failed', userError }
+      }
       info = result.info
       picked = result.picked
     } catch (error) {
       ctx.logger('bvidl').warn(getCommandErrorMessage(error))
-      return { kind: 'failed', message: 'Failed to probe video. Please try again later.' }
+      const userError = buildVideoUserError({ id: 'video-010' })
+      logVideoUserError(ctx, userError, getSafeCommandErrorSummary(error))
+      return { kind: 'failed', userError }
     }
 
     const canonicalKeys = uniqueStrings(keys
@@ -1293,19 +1595,27 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
     const infoMessage = buildInfoMessage(info, picked)
 
     gateHandle?.updateStep('video_preview')
-    const previewSent = await safeSend(ctx, session, infoMessage, 'preview')
-    if (!previewSent) return { kind: 'failed', message: 'Failed to send video preview. Please try again later.' }
+    const previewOutcome = await safeSend(ctx, session, infoMessage, 'preview')
+    if (previewOutcome.status === 'uncertain') return { kind: 'sent' }
+    if (previewOutcome.status === 'failed') {
+      const userError = previewOutcome.reason === 'rejected'
+        ? buildVideoUserError({ id: 'video-012', retcode: previewOutcome.retcode })
+        : buildVideoUserError({ id: 'video-013' })
+      logVideoUserError(ctx, userError)
+      return { kind: 'failed', userError }
+    }
 
     if (picked.totalSize <= 0) {
-      await sendRejectedVideo(ctx, session, infoMessage, UNKNOWN_SIZE_MESSAGE, false)
-      ctx.logger('bvidl').warn(`rejected_before_download: reason=size_unknown keys=${canonicalKeys.join(',')}`)
-      return { kind: 'rejected', infoMessage, message: UNKNOWN_SIZE_MESSAGE }
+      const userError = buildVideoUserError({ id: 'video-014' })
+      await sendRejectedVideo(ctx, session, infoMessage, userError.message, false)
+      ctx.logger('bvidl').warn(`rejected_before_download: reason=size_unknown keys=${canonicalKeys.join(',')} user_error_id=${userError.id}`)
+      return { kind: 'rejected', infoMessage, userError }
     }
     if (picked.totalSize > MAX_SIZE) {
-      const message = buildOversizeMessage(picked.totalSize)
-      await sendRejectedVideo(ctx, session, infoMessage, message, false)
-      ctx.logger('bvidl').warn(`rejected_before_download: reason=oversize estimated=${picked.totalSize} limit=${MAX_SIZE} keys=${canonicalKeys.join(',')}`)
-      return { kind: 'rejected', infoMessage, message }
+      const userError = buildVideoUserError({ id: 'video-015', estimatedBytes: picked.totalSize })
+      await sendRejectedVideo(ctx, session, infoMessage, userError.message, false)
+      ctx.logger('bvidl').warn(`rejected_before_download: reason=oversize estimated=${picked.totalSize} limit=${MAX_SIZE} keys=${canonicalKeys.join(',')} user_error_id=${userError.id}`)
+      return { kind: 'rejected', infoMessage, userError }
     }
 
     bvKey = canonicalKeys.find(key => key.startsWith('bv:')) || ''
@@ -1313,12 +1623,20 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
     cacheId = `bili-cache-${cacheSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     outputFile = path.join(CACHE_DIR, `${cacheId}.mp4`)
 
+    let stagingResult: StagingPrepareResult
     try {
-      stagingDir = await createRequestStagingDirectory(cacheSlug)
+      stagingResult = await createStagingDirectory(cacheSlug)
     } catch (error) {
-      ctx.logger('bvidl').warn(`staging_prepare_failed: bv=${bvKey || 'unknown'} error=${getErrorMessage(error)}`)
-      return { kind: 'failed', message: 'Failed to prepare download directory. Please check logs later.' }
+      stagingResult = { status: 'create_failed', error }
     }
+    if (stagingResult.status !== 'ready') {
+      const userError = buildVideoUserError({ id: stagingResult.status === 'create_failed' ? 'video-016' : 'video-017' })
+      const technicalDetail = stagingResult.status === 'create_failed' ? getErrorMessage(stagingResult.error) : 'safety_validation_failed'
+      ctx.logger('bvidl').warn(`staging_prepare_failed: bv=${bvKey || 'unknown'} reason=${stagingResult.status} user_error_id=${userError.id} error=${technicalDetail}`)
+      logVideoUserError(ctx, userError)
+      return { kind: 'failed', userError }
+    }
+    stagingDir = stagingResult.path
 
     gateHandle?.updateStep('video_download')
     pickedFormat = picked.format
@@ -1333,47 +1651,62 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
         '-o', `${cacheId}.%(ext)s`,
         url,
       ], { timeout: 10 * 60 * 1000 })
-
-      if (!isSafeVideoCacheFile(outputFile)) throw new Error('yt-dlp final output failed safety validation')
-      const stat = await fsApi.stat(outputFile)
-      if (stat.size > MAX_SIZE) {
-        const message = buildOversizeMessage(stat.size)
-        await fsApi.rm(outputFile, { force: true })
-        outputFile = ''
-        await sendRejectedVideo(ctx, session, infoMessage, message, false)
-        ctx.logger('bvidl').warn(`rejected_after_download: estimated=${picked.totalSize} actual=${stat.size} limit=${MAX_SIZE} keys=${canonicalKeys.join(',')}`)
-        return { kind: 'rejected', infoMessage, message }
-      }
-
-      gateHandle?.updateStep('video_send')
-      const videoSent = await safeSend(ctx, session, segment.video(toFileUrl(outputFile)), 'video')
-      if (!videoSent) {
-        await fsApi.rm(outputFile, { force: true })
-        outputFile = ''
-        return { kind: 'failed', message: 'Failed to send video. Please try again later.' }
-      }
-
-      const cacheEntry = registerVideoFileCache(ctx, outputFile, stat.size, infoMessage, canonicalKeys)
-      if (!cacheEntry) {
-        await fsApi.rm(outputFile, { force: true })
-        outputFile = ''
-        return { kind: 'sent' }
-      }
-      outputFile = ''
-      return { kind: 'cached', entry: cacheEntry }
     } catch (error) {
       commandFailure = error instanceof Error ? error as ExecFileError : new Error(String(error)) as ExecFileError
-      if (outputFile) await fsApi.rm(outputFile, { force: true }).catch(() => { /* best-effort cleanup after command failure */
-      })
-      outputFile = ''
-      return { kind: 'failed', message: 'Failed to download or send video. Please check logs later.' }
+      const userError = buildVideoUserError({ id: 'video-018' })
+      logVideoUserError(ctx, userError, getSafeCommandErrorSummary(commandFailure))
+      return { kind: 'failed', userError }
     }
+
+    if (!isSafeVideoCacheFile(outputFile)) {
+      const userError = buildVideoUserError({ id: 'video-019' })
+      logVideoUserError(ctx, userError)
+      return { kind: 'failed', userError }
+    }
+
+    let actualSize: number
+    try {
+      actualSize = (await fsApi.stat(outputFile)).size
+    } catch (error) {
+      const userError = buildVideoUserError({ id: 'video-020' })
+      logVideoUserError(ctx, userError, getErrorMessage(error))
+      return { kind: 'failed', userError }
+    }
+
+    if (actualSize > MAX_SIZE) {
+      const userError = buildVideoUserError({ id: 'video-021', actualBytes: actualSize })
+      await removeOutputFileOnce(ctx, fsApi, outputFile, 'actual_size_limit')
+      outputFile = ''
+      await sendRejectedVideo(ctx, session, infoMessage, userError.message, false)
+      ctx.logger('bvidl').warn(`rejected_after_download: estimated=${picked.totalSize} actual=${actualSize} limit=${MAX_SIZE} keys=${canonicalKeys.join(',')} user_error_id=${userError.id}`)
+      return { kind: 'rejected', infoMessage, userError }
+    }
+
+    gateHandle?.updateStep('video_send')
+    const videoOutcome = await safeSend(ctx, session, segment.video(toFileUrl(outputFile)), 'video')
+    if (videoOutcome.status === 'failed') {
+      const userError = videoOutcome.reason === 'rejected'
+        ? buildVideoUserError({ id: 'video-022', retcode: videoOutcome.retcode })
+        : buildVideoUserError({ id: 'video-023' })
+      await removeOutputFileOnce(ctx, fsApi, outputFile, userError.stage)
+      outputFile = ''
+      logVideoUserError(ctx, userError)
+      return { kind: 'failed', userError }
+    }
+
+    const cacheEntry = registerVideoFileCache(ctx, outputFile, actualSize, infoMessage, canonicalKeys)
+    if (!cacheEntry) {
+      await removeOutputFileOnce(ctx, fsApi, outputFile, videoOutcome.status === 'uncertain' ? 'uncertain_cache_registration' : 'cache_registration')
+      outputFile = ''
+      return { kind: 'sent' }
+    }
+    outputFile = ''
+    return { kind: 'cached', entry: cacheEntry }
   } finally {
-    if (outputFile) await fsApi.rm(outputFile, { force: true }).catch(() => { /* final cache temp cleanup */
-    })
+    if (outputFile) await removeOutputFileOnce(ctx, fsApi, outputFile, 'request_finally')
     const cleanupOk = stagingDir ? await removeRequestStagingDirectory(ctx, stagingDir, bvKey) : true
     if (commandFailure) {
-      ctx.logger('bvidl').warn(`video_download_failed: cacheId=${cacheId || 'unknown'} bv=${bvKey || 'unknown'} format=${pickedFormat || 'unknown'} duration_ms=${downloadStartedAt ? Date.now() - downloadStartedAt : 0} exit_code=${commandFailure.code ?? 'unknown'} signal=${commandFailure.signal || 'none'} cleanup_ok=${cleanupOk} error=${getSafeCommandErrorSummary(commandFailure)}`)
+      ctx.logger('bvidl').warn(`video_download_failed: cacheId=${cacheId || 'unknown'} bv=${bvKey || 'unknown'} format=${pickedFormat || 'unknown'} duration_ms=${downloadStartedAt ? Date.now() - downloadStartedAt : 0} exit_code=${commandFailure.code ?? 'unknown'} signal=${commandFailure.signal || 'none'} cleanup_ok=${cleanupOk} user_error_id=video-018 error=${getSafeCommandErrorSummary(commandFailure)}`)
     }
     try { gateHandle?.release('external-video-finally') } catch { /* resource gate records stale releases independently */
     }
@@ -1384,10 +1717,10 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
 async function deliverSharedVideoResult(ctx: ContextLike, session: VideoSessionLike, result: SharedVideoResult, source: string, deps: DownloadDeps): Promise<string | undefined> {
   if (result.kind === 'cached') return sendCachedVideoWithGate(ctx, session, result.entry, source, deps)
   if (result.kind === 'rejected') {
-    await sendRejectedVideo(ctx, session, result.infoMessage, result.message)
+    await sendRejectedVideo(ctx, session, result.infoMessage, result.userError.message)
     return undefined
   }
-  if (result.kind === 'failed') return result.message
+  if (result.kind === 'failed') return result.userError.message
   return undefined
 }
 
@@ -1420,14 +1753,20 @@ async function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url:
 
   const now = Date.now()
   const immediateKeys = uniqueStrings(buildBiliKeys(source).concat(buildBiliKeys(url)))
-  if (isRecentDuplicateParse(session, immediateKeys, now)) {
-    await safeSend(ctx, session, DUPLICATE_PARSE_MESSAGE, 'duplicate parse notice')
+  const immediateDuplicate = findRecentDuplicateParse(session, immediateKeys, now)
+  if (immediateDuplicate) {
+    const userError = buildVideoUserError({ id: 'video-002', remainingSeconds: immediateDuplicate.remainingSeconds })
+    logVideoUserError(ctx, userError, `remaining_seconds=${immediateDuplicate.remainingSeconds}`)
+    await safeSend(ctx, session, userError.message, 'duplicate parse notice')
     return undefined
   }
 
   const keys = await resolveInputBiliKeys(ctx, url, source, deps)
-  if (isRecentDuplicateParse(session, keys, now)) {
-    await safeSend(ctx, session, DUPLICATE_PARSE_MESSAGE, 'duplicate parse notice')
+  const resolvedDuplicate = findRecentDuplicateParse(session, keys, now)
+  if (resolvedDuplicate) {
+    const userError = buildVideoUserError({ id: 'video-002', remainingSeconds: resolvedDuplicate.remainingSeconds })
+    logVideoUserError(ctx, userError, `remaining_seconds=${resolvedDuplicate.remainingSeconds}`)
+    await safeSend(ctx, session, userError.message, 'duplicate parse notice')
     return undefined
   }
   const recentEntry = rememberRecentParse(session, keys, now)
@@ -1454,7 +1793,7 @@ async function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url:
     const result = await work
     if (result.kind === 'failed') {
       forgetRecentParse(session, recentEntry)
-      return result.message
+      return result.userError.message
     }
     return undefined
   } finally {
@@ -1472,7 +1811,7 @@ function apply(ctx: ContextLike): void {
     if (isBlacklistedGroup(session)) return
 
     const url = extractBiliUrl(text)
-    if (!url) return 'Usage: bvidl Bilibili_URL_or_BV_ID'
+    if (!url) return buildVideoUserError({ id: 'video-001' }).message
     return downloadAndSend(ctx, session, url, text || url)
   })
 
@@ -1514,6 +1853,8 @@ export = {
   downloadAndSend,
   formatDecimalMb,
   buildOversizeMessage,
+  buildActualOversizeMessage,
+  buildVideoUserError,
   getRuntimeConfig,
   toFileUrl,
   safeSend,

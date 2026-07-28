@@ -1,4 +1,5 @@
 const fs = require('fs')
+const fsp = require('fs/promises')
 const os = require('os')
 const path = require('path')
 
@@ -9,6 +10,25 @@ const TEST_URL = `https://www.bilibili.com/video/${TEST_BV}`
 
 let passed = 0
 let failed = 0
+
+// 构造与 OneBot 适配器一致的明确拒绝错误。
+class SenderError extends Error {
+  // 保存消息接口动作和整数返回码。
+  constructor(retcode) {
+    super(`sender rejected with retcode ${retcode}`)
+    this.url = 'send_group_msg'
+    this.code = retcode
+  }
+}
+
+// 构造与 OneBot 适配器一致的响应超时错误。
+class TimeoutError extends Error {
+  // 保存超时对应的消息接口动作。
+  constructor() {
+    super('sender response timed out')
+    this.url = 'send_group_msg'
+  }
+}
 
 // 打印一个测试分组标题。
 function section(title) {
@@ -214,6 +234,24 @@ function makeDeps(totalSize, fileSize, counters = null, overrides = {}) {
   }
 }
 
+// 创建可按单个文件系统阶段覆写行为的异步接口替身。
+function makeVideoFs(overrides = {}) {
+  return {
+    mkdir: (...args) => fsp.mkdir(...args),
+    stat: (...args) => fsp.stat(...args),
+    rm: (...args) => fsp.rm(...args),
+    ...overrides,
+  }
+}
+
+// 创建只暴露本次测试所需准入结果的资源模块替身。
+function makeResourceModules(admission, acquire = async () => ({ updateStep() {}, release() {} })) {
+  return {
+    admitTask: () => admission,
+    acquireResourceGate: acquire,
+  }
+}
+
 // 验证环境配置、解析和纯函数行为。
 async function testConfigAndParsing() {
   section('env config and pure parsing')
@@ -226,7 +264,7 @@ async function testConfigAndParsing() {
     check('test video path uses env override', config.testVideoFile === path.join(tmpRoot, 'test-video.mp4'), JSON.stringify(config))
     check('file URL helper emits standard file URL', plugin.toFileUrl(path.join(tmpRoot, 'downloads', 'demo.mp4')).startsWith('file:///'))
     check('formats decimal MB with one decimal', plugin.formatDecimalMb(60_000_001) === '60.0 MB')
-    check('builds exact oversize text', plugin.buildOversizeMessage(61_250_000) === '视频文件过大（61.3 MB），请自行去 bilibili 观看。')
+    check('builds exact oversize text', plugin.buildOversizeMessage(61_250_000) === '视频文件过大（61.3 MB），请自行去 bilibili 观看。详细信息：预计大小为61250000字节，上传限制为60000000字节。错误编号：video-015。')
 
     const bvUrl = plugin.extractBiliUrl(`看看这个 ${TEST_BV}`)
     check('extracts BV id as canonical URL', bvUrl === TEST_URL, String(bvUrl))
@@ -243,6 +281,64 @@ async function testConfigAndParsing() {
       location: input.includes('testKey') ? TEST_URL : '',
     }))
     check('normalizes an allowed short-link redirect to BV key', resolved === 'bv:1xx411c7md', String(resolved))
+  })
+}
+
+// 验证 video-001 至 video-027 的完整中文文案和动态数据。
+async function testChineseUserErrorCatalog() {
+  section('Chinese user error catalog')
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const cases = [
+      [{ id: 'video-001' }, '视频解析命令格式错误。详细信息：请在“bvidl”后填写B站链接；也可以填写BV号。错误编号：video-001。'],
+      [{ id: 'video-002', remainingSeconds: 300 }, '请勿在短时间内重复解析。详细信息：当前群对相同视频的300秒限制仍在生效，剩余300秒。错误编号：video-002。'],
+      [{ id: 'video-003' }, '视频下载暂时关闭。详细信息：视频资源门禁模块加载失败。错误编号：video-003。'],
+      [{ id: 'video-004', resourceState: 'red', availableMemoryMb: 321.4, minimumMemoryMb: 450, decision: 'reject' }, '视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为紧张，当前可用内存321MB，视频任务最低需要450MB，调度结果为拒绝。错误编号：video-004。'],
+      [{ id: 'video-005', resourceState: 'black', minimumMemoryMb: 450, decision: 'queue' }, '视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为不可用，当前可用内存数据未取得，视频任务最低需要450MB，调度结果为排队。错误编号：video-005。'],
+      [{ id: 'video-006' }, '视频搬运暂时无法执行，请稍后再试。详细信息：视频资源锁在5秒内未申请成功。错误编号：video-006。'],
+      [{ id: 'video-007' }, '视频目录准备失败，请稍后再试。详细信息：视频工作目录创建失败。错误编号：video-007。'],
+      [{ id: 'video-008' }, '视频目录准备失败，请稍后再试。详细信息：五分钟视频缓存目录创建失败。错误编号：video-008。'],
+      [{ id: 'video-009' }, '视频目录准备失败，请稍后再试。详细信息：下载暂存根目录创建失败。错误编号：video-009。'],
+      [{ id: 'video-010' }, '视频信息获取失败，请稍后再试。详细信息：视频信息探测命令执行失败。错误编号：video-010。'],
+      [{ id: 'video-011', bvId: TEST_BV, partNumber: 2 }, `视频信息获取失败，请稍后再试。详细信息：${TEST_BV}第2P未找到可用的视频格式。错误编号：video-011。`],
+      [{ id: 'video-012', retcode: 1200 }, '视频信息发送失败，请稍后再试。详细信息：封面、标题和链接消息被消息接口拒绝，返回码为1200。错误编号：video-012。'],
+      [{ id: 'video-013' }, '视频信息发送失败，请稍后再试。详细信息：封面、标题和链接消息调用接口失败。错误编号：video-013。'],
+      [{ id: 'video-014' }, '视频文件大小无法预估，请自行去 bilibili 观看。详细信息：所选清晰度缺少可用的文件大小、码率和时长数据。错误编号：video-014。'],
+      [{ id: 'video-015', estimatedBytes: 60_000_001 }, '视频文件过大（60.0 MB），请自行去 bilibili 观看。详细信息：预计大小为60000001字节，上传限制为60000000字节。错误编号：video-015。'],
+      [{ id: 'video-016' }, '视频目录准备失败，请稍后再试。详细信息：本次下载的独立暂存目录创建失败。错误编号：video-016。'],
+      [{ id: 'video-017' }, '视频目录准备失败，请稍后再试。详细信息：本次下载的独立暂存目录未通过安全校验。错误编号：video-017。'],
+      [{ id: 'video-018' }, '视频下载失败，请稍后再试。详细信息：视频下载命令执行失败。错误编号：video-018。'],
+      [{ id: 'video-019' }, '视频文件校验失败，请稍后再试。详细信息：下载结果未通过视频缓存路径安全校验。错误编号：video-019。'],
+      [{ id: 'video-020' }, '视频文件校验失败，请稍后再试。详细信息：下载结果的文件信息读取失败。错误编号：video-020。'],
+      [{ id: 'video-021', actualBytes: 60_000_001 }, '视频文件过大（60.0 MB），请自行去 bilibili 观看。详细信息：实际大小为60000001字节，上传限制为60000000字节。错误编号：video-021。'],
+      [{ id: 'video-022', retcode: 1200 }, '视频发送失败，请稍后再试。详细信息：视频发送请求被消息接口拒绝，返回码为1200。错误编号：video-022。'],
+      [{ id: 'video-023' }, '视频发送失败，请稍后再试。详细信息：视频发送接口调用失败。错误编号：video-023。'],
+      [{ id: 'video-024', retcode: 1200 }, '缓存视频信息发送失败，请稍后再试。详细信息：缓存视频的封面、标题和链接消息被消息接口拒绝，返回码为1200。错误编号：video-024。'],
+      [{ id: 'video-025' }, '缓存视频信息发送失败，请稍后再试。详细信息：缓存视频的封面、标题和链接消息调用接口失败。错误编号：video-025。'],
+      [{ id: 'video-026', retcode: 1200 }, '缓存视频发送失败，请稍后再试。详细信息：缓存视频发送请求被消息接口拒绝，返回码为1200。错误编号：video-026。'],
+      [{ id: 'video-027' }, '缓存视频发送失败，请稍后再试。详细信息：缓存视频发送接口调用失败。错误编号：video-027。'],
+    ]
+
+    const stages = new Set()
+    for (const [input, expected] of cases) {
+      const userError = plugin.buildVideoUserError(input)
+      stages.add(userError.stage)
+      check(`${input.id} emits exact Chinese detail`, userError.id === input.id && userError.message === expected, JSON.stringify(userError))
+      check(`${input.id} has one detailed stage`, userError.message.includes('详细信息：') && userError.message.endsWith(`错误编号：${input.id}。`) && !/下载或暂存|下载或发送|创建或校验/.test(userError.message), userError.message)
+    }
+    check('all 27 error IDs use distinct fixed stages', cases.length === 27 && stages.size === 27, JSON.stringify([...stages]))
+
+    const stateLabels = { green: '正常', yellow: '注意', red: '紧张', black: '不可用' }
+    for (const [state, label] of Object.entries(stateLabels)) {
+      const message = plugin.buildVideoUserError({ id: 'video-004', resourceState: state, availableMemoryMb: 0, minimumMemoryMb: 450, decision: 'reject' }).message
+      check(`resource state ${state} is translated`, message.includes(`资源状态为${label}`), message)
+    }
+    const decisionLabels = { reject: '拒绝', defer: '延后', queue: '排队', downgrade: '降级', silent_drop: '静默丢弃' }
+    for (const [decision, label] of Object.entries(decisionLabels)) {
+      const message = plugin.buildVideoUserError({ id: 'video-005', resourceState: 'yellow', minimumMemoryMb: 450, decision }).message
+      check(`admission decision ${decision} is translated`, message.includes(`调度结果为${label}`), message)
+    }
+    const unknownLabels = plugin.buildVideoUserError({ id: 'video-005', resourceState: 'future', minimumMemoryMb: 450, decision: 'future' }).message
+    check('unknown resource values stay Chinese', unknownLabels.includes('资源状态为未识别') && unknownLabels.includes('调度结果为未识别'), unknownLabels)
   })
 }
 
@@ -284,13 +380,13 @@ async function testSizeGates() {
       run: async () => { runCalled = true },
     })
     check('estimated oversize returns undefined after explicit sends', oversizeResult === undefined, String(oversizeResult))
-    check('estimated oversize sends preview then exact refusal', oversizeSession.sent.length === 2 && oversizeSession.sent[0].includes('Demo Video') && oversizeSession.sent[1] === '视频文件过大（60.0 MB），请自行去 bilibili 观看。', JSON.stringify(oversizeSession.sent))
+    check('estimated oversize sends preview then exact refusal', oversizeSession.sent.length === 2 && oversizeSession.sent[0].includes('Demo Video') && oversizeSession.sent[1] === '视频文件过大（60.0 MB），请自行去 bilibili 观看。详细信息：预计大小为60000001字节，上传限制为60000000字节。错误编号：video-015。', JSON.stringify(oversizeSession.sent))
     check('estimated oversize does not run downloader', !runCalled)
 
     await plugin.clearVideoRuntimeState()
     const unknownSession = makeSession({ guildId: '10002', channelId: '10002' })
     await plugin.downloadAndSend(ctx, unknownSession, TEST_URL, TEST_BV, makeDeps(0, 1))
-    check('unknown size sends preview then exact refusal', unknownSession.sent.length === 2 && unknownSession.sent[1] === '视频文件大小无法预估，请自行去 bilibili 观看。', JSON.stringify(unknownSession.sent))
+    check('unknown size sends preview then exact refusal', unknownSession.sent.length === 2 && unknownSession.sent[1] === '视频文件大小无法预估，请自行去 bilibili 观看。详细信息：所选清晰度缺少可用的文件大小、码率和时长数据。错误编号：video-014。', JSON.stringify(unknownSession.sent))
 
     for (const size of [MAX_SIZE, MAX_SIZE - 1]) {
       await plugin.clearVideoRuntimeState()
@@ -304,7 +400,7 @@ async function testSizeGates() {
     await plugin.clearVideoRuntimeState()
     const postDownloadSession = makeSession({ guildId: '10003', channelId: '10003' })
     await plugin.downloadAndSend(ctx, postDownloadSession, TEST_URL, TEST_BV, makeDeps(MAX_SIZE - 1, MAX_SIZE + 1))
-    check('actual oversize blocks video upload', postDownloadSession.sent.length === 2 && postDownloadSession.sent[1] === '视频文件过大（60.0 MB），请自行去 bilibili 观看。', JSON.stringify(postDownloadSession.sent))
+    check('actual oversize blocks video upload', postDownloadSession.sent.length === 2 && postDownloadSession.sent[1] === '视频文件过大（60.0 MB），请自行去 bilibili 观看。详细信息：实际大小为60000001字节，上传限制为60000000字节。错误编号：video-021。', JSON.stringify(postDownloadSession.sent))
     check('actual oversize is deleted and not cached', plugin.getVideoCacheStatus().entries === 0 && fs.readdirSync(path.join(tmpRoot, 'downloads', 'cache')).length === 0, JSON.stringify(plugin.getVideoCacheStatus()))
     check('actual oversize removes request staging', fs.readdirSync(path.join(tmpRoot, 'downloads', '.staging')).length === 0)
 
@@ -324,7 +420,7 @@ async function testDuplicateAndCacheReuse() {
 
     const duplicate = makeSession({ guildId: 'group-a', channelId: 'group-a' })
     await plugin.downloadAndSend(ctx, duplicate, `${TEST_URL}?from=repeat`, TEST_BV, deps)
-    check('same group duplicate gets exact 300-second notice', duplicate.sent.length === 1 && duplicate.sent[0] === '请勿在短时间内重复解析', JSON.stringify(duplicate.sent))
+    check('same group duplicate gets exact 300-second notice', duplicate.sent.length === 1 && duplicate.sent[0] === '请勿在短时间内重复解析。详细信息：当前群对相同视频的300秒限制仍在生效，剩余300秒。错误编号：video-002。', JSON.stringify(duplicate.sent))
     check('same group duplicate does no extra work', counters.probes === 1 && counters.downloads === 1, JSON.stringify(counters))
 
     const otherGroup = makeSession({ guildId: 'group-b', channelId: 'group-b' })
@@ -346,7 +442,7 @@ async function testDuplicateAndCacheReuse() {
       now += 1
       const released = makeSession(boundarySession)
       await plugin.downloadAndSend(ctx, released, TEST_URL, TEST_BV, boundaryDeps)
-      check('299,999 ms is blocked by duplicate window', blocked.sent.length === 1 && blocked.sent[0] === '请勿在短时间内重复解析', JSON.stringify(blocked.sent))
+      check('299,999 ms is blocked by duplicate window', blocked.sent.length === 1 && blocked.sent[0] === '请勿在短时间内重复解析。详细信息：当前群对相同视频的300秒限制仍在生效，剩余1秒。错误编号：video-002。', JSON.stringify(blocked.sent))
       check('300,000 ms boundary resumes processing', boundaryCounters.probes === 2 && released.sent.length === 2, JSON.stringify({ boundaryCounters, sent: released.sent }))
 
       await plugin.clearVideoRuntimeState()
@@ -493,7 +589,7 @@ async function testFailurePaths() {
     const failedFirst = await plugin.downloadAndSend(ctx, makeSession({ guildId: 'fail-a', channelId: 'fail-a' }), TEST_URL, TEST_BV, failedDeps)
     const failedSecond = await plugin.downloadAndSend(ctx, makeSession({ guildId: 'fail-a', channelId: 'fail-a' }), TEST_URL, TEST_BV, failedDeps)
     check('probe failure can be retried immediately', probes === 2, `probes=${probes}`)
-    check('probe failure keeps controlled user error', String(failedFirst).includes('Failed to probe') && String(failedSecond).includes('Failed to probe'))
+    check('probe failure keeps controlled user error', String(failedFirst).includes('错误编号：video-010') && String(failedSecond).includes('错误编号：video-010'))
 
     await plugin.clearVideoRuntimeState()
     const uploadFailure = makeSession({
@@ -505,9 +601,141 @@ async function testFailurePaths() {
       },
     })
     const result = await plugin.downloadAndSend(ctx, uploadFailure, TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000))
-    check('upload failure returns controlled error', String(result).includes('Failed to send video'), String(result))
+    check('upload failure returns controlled error', String(result).includes('错误编号：video-023'), String(result))
     check('upload failure leaves no cache entry', plugin.getVideoCacheStatus().entries === 0, JSON.stringify(plugin.getVideoCacheStatus()))
     check('upload failure removes final file and staging', fs.readdirSync(path.join(plugin.getRuntimeConfig().workdir, 'cache')).length === 0 && fs.readdirSync(path.join(plugin.getRuntimeConfig().workdir, '.staging')).length === 0)
+  })
+}
+
+// 验证资源、目录、校验和消息接口失败会路由到唯一编号。
+async function testDetailedErrorRouting() {
+  section('detailed error routing')
+  await withIsolatedPlugin(async ({ plugin, tmpRoot }) => {
+    const ctx = makeCtx()
+    plugin.apply(ctx)
+
+    const bvidl = ctx.commands.find(command => command.name.startsWith('bvidl '))
+    const usage = bvidl ? await bvidl.fn({ session: makeSession() }, '') : ''
+    check('invalid bvidl input returns video-001', String(usage).includes('错误编号：video-001'), String(usage))
+
+    const resourceCases = [
+      ['video-003', { resourceModules: null }],
+      ['video-004', { resourceModules: makeResourceModules({ decision: 'reject', reason: 'low memory', resourceState: 'red', memAvailableMb: 321 }) }],
+      ['video-005', { resourceModules: makeResourceModules({ decision: 'queue', reason: 'busy', resourceState: 'yellow', memAvailableMb: null }) }],
+      ['video-006', { resourceModules: makeResourceModules({ decision: 'run_now', reason: 'accepted', resourceState: 'green', memAvailableMb: 1024 }, async () => { throw new Error('gate timed out') }) }],
+    ]
+    for (let index = 0; index < resourceCases.length; index += 1) {
+      const [id, deps] = resourceCases[index]
+      const result = await plugin.downloadAndSend(ctx, makeSession({ guildId: `resource-${index}`, channelId: `resource-${index}` }), TEST_URL, TEST_BV, deps)
+      check(`resource path returns ${id}`, String(result).includes(`错误编号：${id}`), String(result))
+    }
+
+    const workdir = path.join(tmpRoot, 'downloads')
+    const directoryCases = [
+      ['video-007', workdir],
+      ['video-008', path.join(workdir, 'cache')],
+      ['video-009', path.join(workdir, '.staging')],
+    ]
+    for (let index = 0; index < directoryCases.length; index += 1) {
+      const [id, failedDirectory] = directoryCases[index]
+      const videoFs = makeVideoFs({
+        mkdir: async (directory, options) => {
+          if (path.resolve(String(directory)) === path.resolve(failedDirectory)) throw new Error(`mkdir blocked for ${id}`)
+          return fsp.mkdir(directory, options)
+        },
+      })
+      const result = await plugin.downloadAndSend(ctx, makeSession({ guildId: `directory-${index}`, channelId: `directory-${index}` }), TEST_URL, TEST_BV, {
+        ...makeDeps(1_000_000, 1_000_000),
+        fs: videoFs,
+      })
+      check(`directory path returns ${id}`, String(result).includes(`错误编号：${id}`), String(result))
+    }
+
+    await plugin.clearVideoRuntimeState()
+    const formatResult = await plugin.downloadAndSend(ctx, makeSession({ guildId: 'format-empty', channelId: 'format-empty' }), TEST_URL, TEST_BV, {
+      resourceGate: false,
+      probeVideo: async () => ({ info: sampleInfo({ formats: [] }) }),
+    })
+    check('empty format result returns video-011 with BV and P1', String(formatResult).includes(`详细信息：${TEST_BV}第1P未找到可用的视频格式`) && String(formatResult).includes('错误编号：video-011'), String(formatResult))
+
+    const previewRejected = await plugin.downloadAndSend(ctx, makeSession({
+      guildId: 'preview-rejected',
+      channelId: 'preview-rejected',
+      async send() { throw new SenderError(1200) },
+    }), TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000))
+    check('preview rejection returns video-012 with retcode', String(previewRejected).includes('返回码为1200') && String(previewRejected).includes('错误编号：video-012'), String(previewRejected))
+
+    const previewCallError = await plugin.downloadAndSend(ctx, makeSession({
+      guildId: 'preview-call',
+      channelId: 'preview-call',
+      async send() { throw new Error('preview transport failed') },
+    }), TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000))
+    check('preview call error returns video-013', String(previewCallError).includes('错误编号：video-013'), String(previewCallError))
+
+    const stagingCases = [
+      ['video-016', { status: 'create_failed', error: new Error('request staging mkdir failed') }],
+      ['video-017', { status: 'safety_validation_failed' }],
+    ]
+    for (let index = 0; index < stagingCases.length; index += 1) {
+      const [id, stagingResult] = stagingCases[index]
+      const result = await plugin.downloadAndSend(ctx, makeSession({ guildId: `staging-${index}`, channelId: `staging-${index}` }), TEST_URL, TEST_BV, {
+        ...makeDeps(1_000_000, 1_000_000),
+        createStagingDirectory: async () => stagingResult,
+      })
+      check(`staging path returns ${id}`, String(result).includes(`错误编号：${id}`), String(result))
+    }
+
+    const missingOutput = await plugin.downloadAndSend(ctx, makeSession({ guildId: 'missing-output', channelId: 'missing-output' }), TEST_URL, TEST_BV, {
+      resourceGate: false,
+      probeVideo: makeProbe(1_000_000),
+      run: async () => ({ stdout: '', stderr: '' }),
+    })
+    check('missing final output returns video-019', String(missingOutput).includes('错误编号：video-019'), String(missingOutput))
+
+    const statFailure = await plugin.downloadAndSend(ctx, makeSession({ guildId: 'stat-failure', channelId: 'stat-failure' }), TEST_URL, TEST_BV, {
+      ...makeDeps(1_000_000, 1_000_000),
+      fs: makeVideoFs({ stat: async () => { throw new Error('stat failed') } }),
+    })
+    check('final output stat failure returns video-020', String(statFailure).includes('错误编号：video-020'), String(statFailure))
+
+    const sendRejectedSession = makeSession({
+      guildId: 'send-rejected',
+      channelId: 'send-rejected',
+      async send(message) {
+        if (String(message).includes('<video')) throw new SenderError(1200)
+        return message
+      },
+    })
+    const sendRejected = await plugin.downloadAndSend(ctx, sendRejectedSession, TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000))
+    check('first video rejection returns video-022 with retcode', String(sendRejected).includes('返回码为1200') && String(sendRejected).includes('错误编号：video-022'), String(sendRejected))
+
+    await plugin.clearVideoRuntimeState()
+    await plugin.downloadAndSend(ctx, makeSession({ guildId: 'cache-seed', channelId: 'cache-seed' }), TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000))
+    const cachedCases = [
+      ['video-024', async () => { throw new SenderError(1200) }],
+      ['video-025', async () => { throw new Error('cached preview failed') }],
+      ['video-026', async message => { if (String(message).includes('<video')) throw new SenderError(1200); return message }],
+      ['video-027', async message => { if (String(message).includes('<video')) throw new Error('cached video failed'); return message }],
+    ]
+    for (let index = 0; index < cachedCases.length; index += 1) {
+      const [id, send] = cachedCases[index]
+      const result = await plugin.downloadAndSend(ctx, makeSession({ guildId: `cached-${index}`, channelId: `cached-${index}`, send }), TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000))
+      check(`cached send path returns ${id}`, String(result).includes(`错误编号：${id}`), String(result))
+    }
+
+    await plugin.clearVideoRuntimeState()
+    const uncertainSession = makeSession({
+      guildId: 'send-timeout',
+      channelId: 'send-timeout',
+      async send(message) {
+        if (String(message).includes('<video')) throw new TimeoutError()
+        return message
+      },
+    })
+    const uncertainResult = await plugin.downloadAndSend(ctx, uncertainSession, TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000))
+    check('video timeout does not return a contradictory failure', uncertainResult === undefined && plugin.getVideoCacheStatus().entries === 1, JSON.stringify({ uncertainResult, cache: plugin.getVideoCacheStatus() }))
+
+    await ctx.dispose()
   })
 }
 
@@ -536,7 +764,7 @@ async function testStagingDownloadLifecycle() {
       },
     })
     const refusedLog = ctx.logs.find(entry => entry.msg.includes('video_download_failed:'))
-    check('ECONNREFUSED returns controlled failure', String(refusedResult).includes('Failed to download'))
+    check('ECONNREFUSED returns controlled failure', String(refusedResult).includes('错误编号：video-018'))
     check('failed split streams leave cache and staging empty', fs.readdirSync(cacheDir).length === 0 && fs.readdirSync(stagingRoot).length === 0)
     check('failure log records exit and cleanup without media URL', refusedLog && refusedLog.msg.includes('exit_code=ECONNREFUSED') && refusedLog.msg.includes('cleanup_ok=true') && refusedLog.msg.includes('[url]') && !refusedLog.msg.includes('cdn.example'), refusedLog && refusedLog.msg)
 
@@ -572,6 +800,7 @@ async function testStagingDownloadLifecycle() {
 // 顺序运行插件测试，避免共享环境变量相互污染。
 async function run() {
   await testConfigAndParsing()
+  await testChineseUserErrorCatalog()
   await testFormatPicking()
   await testSizeGates()
   await testDuplicateAndCacheReuse()
@@ -579,6 +808,7 @@ async function run() {
   await testShortLinkNormalization()
   await testCleanupAndSafety()
   await testFailurePaths()
+  await testDetailedErrorRouting()
   await testStagingDownloadLifecycle()
 
   console.log(`\n=== local-video-sender summary ===`)

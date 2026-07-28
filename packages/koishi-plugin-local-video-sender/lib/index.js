@@ -43,14 +43,42 @@ const SHORT_LINK_MAX_HEADER_BYTES = 16 * 1024;
 const MAX_YTDLP_STDIO_BYTES = 1024 * 1024;
 const MAX_VIDEO_BLACKLIST_BYTES = 128 * 1024;
 const EXTERNAL_VIDEO_TASK_KIND = 'external_video_download';
-const VIDEO_RESOURCE_BUSY_MESSAGE = '服务器内存紧张，视频搬运稍后再试。';
-const VIDEO_RESOURCE_UNAVAILABLE_MESSAGE = '资源系统不可用，视频下载暂时关闭。';
-const DUPLICATE_PARSE_MESSAGE = '请勿在短时间内重复解析';
-const UNKNOWN_SIZE_MESSAGE = '视频文件大小无法预估，请自行去 bilibili 观看。';
 const CACHE_FILE_RE = /^bili-cache-[a-z0-9]+-\d+-[a-z0-9]+\.mp4$/;
 const STAGING_DIR_RE = /^bili-job-[a-z0-9]+-\d+-[a-z0-9]+$/;
 const CACHE_DIR = path.join(WORKDIR, 'cache');
 const STAGING_ROOT = path.join(WORKDIR, '.staging');
+const STATIC_VIDEO_USER_ERRORS = {
+    'video-001': { stage: 'command_usage', message: '视频解析命令格式错误。详细信息：请在“bvidl”后填写B站链接；也可以填写BV号。错误编号：video-001。' },
+    'video-003': { stage: 'resource_module_load', message: '视频下载暂时关闭。详细信息：视频资源门禁模块加载失败。错误编号：video-003。' },
+    'video-006': { stage: 'resource_gate_acquire', message: '视频搬运暂时无法执行，请稍后再试。详细信息：视频资源锁在5秒内未申请成功。错误编号：video-006。' },
+    'video-007': { stage: 'workdir_create', message: '视频目录准备失败，请稍后再试。详细信息：视频工作目录创建失败。错误编号：video-007。' },
+    'video-008': { stage: 'cache_dir_create', message: '视频目录准备失败，请稍后再试。详细信息：五分钟视频缓存目录创建失败。错误编号：video-008。' },
+    'video-009': { stage: 'staging_root_create', message: '视频目录准备失败，请稍后再试。详细信息：下载暂存根目录创建失败。错误编号：video-009。' },
+    'video-010': { stage: 'video_probe', message: '视频信息获取失败，请稍后再试。详细信息：视频信息探测命令执行失败。错误编号：video-010。' },
+    'video-013': { stage: 'preview_send_call', message: '视频信息发送失败，请稍后再试。详细信息：封面、标题和链接消息调用接口失败。错误编号：video-013。' },
+    'video-014': { stage: 'size_estimate', message: '视频文件大小无法预估，请自行去 bilibili 观看。详细信息：所选清晰度缺少可用的文件大小、码率和时长数据。错误编号：video-014。' },
+    'video-016': { stage: 'staging_create', message: '视频目录准备失败，请稍后再试。详细信息：本次下载的独立暂存目录创建失败。错误编号：video-016。' },
+    'video-017': { stage: 'staging_validate', message: '视频目录准备失败，请稍后再试。详细信息：本次下载的独立暂存目录未通过安全校验。错误编号：video-017。' },
+    'video-018': { stage: 'video_download', message: '视频下载失败，请稍后再试。详细信息：视频下载命令执行失败。错误编号：video-018。' },
+    'video-019': { stage: 'output_path_validate', message: '视频文件校验失败，请稍后再试。详细信息：下载结果未通过视频缓存路径安全校验。错误编号：video-019。' },
+    'video-020': { stage: 'output_stat', message: '视频文件校验失败，请稍后再试。详细信息：下载结果的文件信息读取失败。错误编号：video-020。' },
+    'video-023': { stage: 'video_send_call', message: '视频发送失败，请稍后再试。详细信息：视频发送接口调用失败。错误编号：video-023。' },
+    'video-025': { stage: 'cached_preview_send_call', message: '缓存视频信息发送失败，请稍后再试。详细信息：缓存视频的封面、标题和链接消息调用接口失败。错误编号：video-025。' },
+    'video-027': { stage: 'cached_video_send_call', message: '缓存视频发送失败，请稍后再试。详细信息：缓存视频发送接口调用失败。错误编号：video-027。' },
+};
+const RESOURCE_STATE_LABELS = {
+    green: '正常',
+    yellow: '注意',
+    red: '紧张',
+    black: '不可用',
+};
+const ADMISSION_DECISION_LABELS = {
+    reject: '拒绝',
+    defer: '延后',
+    queue: '排队',
+    downgrade: '降级',
+    silent_drop: '静默丢弃',
+};
 const recentParseHistory = new Map();
 const shortLinkResolutionCache = new Map();
 const videoFileCache = new Map();
@@ -149,9 +177,12 @@ function buildVideoTaskId(session, source) {
 async function acquireVideoResourceGate(ctx, session, source, deps = {}) {
     if (deps.resourceGate === false)
         return { ok: true, handle: null };
-    const modules = loadVideoResourceModules(ctx);
-    if (!modules)
-        return { ok: false, message: VIDEO_RESOURCE_UNAVAILABLE_MESSAGE };
+    const modules = Object.prototype.hasOwnProperty.call(deps, 'resourceModules') ? deps.resourceModules || null : loadVideoResourceModules(ctx);
+    if (!modules) {
+        const userError = buildVideoUserError({ id: 'video-003' });
+        logVideoUserError(ctx, userError);
+        return { ok: false, userError };
+    }
     const taskId = buildVideoTaskId(session, source);
     const channelKey = getVideoChannelKey(session);
     const userId = getVideoUserId(session);
@@ -170,7 +201,22 @@ async function acquireVideoResourceGate(ctx, session, source, deps = {}) {
     });
     if (admission.decision !== 'run_now') {
         ctx.logger('bvidl').warn(`video download rejected by resource scheduler: ${admission.reason || admission.decision}; state=${admission.resourceState || 'unknown'} mem=${admission.memAvailableMb ?? 'unknown'}MB min=${VIDEO_MIN_MEM_MB}MB`);
-        return { ok: false, message: VIDEO_RESOURCE_BUSY_MESSAGE };
+        const userError = typeof admission.memAvailableMb === 'number' && Number.isFinite(admission.memAvailableMb)
+            ? buildVideoUserError({
+                id: 'video-004',
+                resourceState: admission.resourceState,
+                availableMemoryMb: admission.memAvailableMb,
+                minimumMemoryMb: VIDEO_MIN_MEM_MB,
+                decision: admission.decision,
+            })
+            : buildVideoUserError({
+                id: 'video-005',
+                resourceState: admission.resourceState,
+                minimumMemoryMb: VIDEO_MIN_MEM_MB,
+                decision: admission.decision,
+            });
+        logVideoUserError(ctx, userError);
+        return { ok: false, userError };
     }
     try {
         const handle = await modules.acquireResourceGate({
@@ -190,7 +236,9 @@ async function acquireVideoResourceGate(ctx, session, source, deps = {}) {
     }
     catch (error) {
         ctx.logger('bvidl').warn(`video download gate wait failed: ${getErrorMessage(error)}`);
-        return { ok: false, message: VIDEO_RESOURCE_BUSY_MESSAGE };
+        const userError = buildVideoUserError({ id: 'video-006' });
+        logVideoUserError(ctx, userError);
+        return { ok: false, userError };
     }
 }
 function normalizeSharedText(input = '') {
@@ -280,6 +328,99 @@ function isB23ShortUrl(input = '') {
     catch {
         return false;
     }
+}
+// 按固定编号生成只包含安全动态数据的中文用户报错。
+function buildVideoUserError(input) {
+    switch (input.id) {
+        case 'video-002': {
+            const remainingSeconds = Math.min(300, Math.max(1, Math.ceil(safeNumber(input.remainingSeconds))));
+            return {
+                id: input.id,
+                stage: 'duplicate_request',
+                message: `请勿在短时间内重复解析。详细信息：当前群对相同视频的300秒限制仍在生效，剩余${remainingSeconds}秒。错误编号：video-002。`,
+            };
+        }
+        case 'video-004': {
+            const resourceState = RESOURCE_STATE_LABELS[String(input.resourceState)] || '未识别';
+            const decision = ADMISSION_DECISION_LABELS[String(input.decision)] || '未识别';
+            const availableMemoryMb = Math.max(0, Math.round(safeNumber(input.availableMemoryMb)));
+            const minimumMemoryMb = Math.max(1, Math.round(safeNumber(input.minimumMemoryMb)));
+            return {
+                id: input.id,
+                stage: 'resource_admission_with_memory',
+                message: `视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为${resourceState}，当前可用内存${availableMemoryMb}MB，视频任务最低需要${minimumMemoryMb}MB，调度结果为${decision}。错误编号：video-004。`,
+            };
+        }
+        case 'video-005': {
+            const resourceState = RESOURCE_STATE_LABELS[String(input.resourceState)] || '未识别';
+            const decision = ADMISSION_DECISION_LABELS[String(input.decision)] || '未识别';
+            const minimumMemoryMb = Math.max(1, Math.round(safeNumber(input.minimumMemoryMb)));
+            return {
+                id: input.id,
+                stage: 'resource_admission_without_memory',
+                message: `视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为${resourceState}，当前可用内存数据未取得，视频任务最低需要${minimumMemoryMb}MB，调度结果为${decision}。错误编号：video-005。`,
+            };
+        }
+        case 'video-011': {
+            const bvMatch = String(input.bvId || '').match(/^BV[0-9A-Za-z]{10}$/i);
+            const partNumber = Math.max(1, Math.floor(safeNumber(input.partNumber)));
+            const target = bvMatch ? `${bvMatch[0]}第${partNumber}P` : `当前链接第${partNumber}P`;
+            return {
+                id: input.id,
+                stage: 'format_select',
+                message: `视频信息获取失败，请稍后再试。详细信息：${target}未找到可用的视频格式。错误编号：video-011。`,
+            };
+        }
+        case 'video-012':
+            return {
+                id: input.id,
+                stage: 'preview_send_rejected',
+                message: `视频信息发送失败，请稍后再试。详细信息：封面、标题和链接消息被消息接口拒绝，返回码为${Math.trunc(input.retcode)}。错误编号：video-012。`,
+            };
+        case 'video-015': {
+            const estimatedBytes = Math.max(0, Math.round(safeNumber(input.estimatedBytes)));
+            return {
+                id: input.id,
+                stage: 'estimated_size_limit',
+                message: `视频文件过大（${formatDecimalMb(estimatedBytes)}），请自行去 bilibili 观看。详细信息：预计大小为${estimatedBytes}字节，上传限制为${MAX_SIZE}字节。错误编号：video-015。`,
+            };
+        }
+        case 'video-021': {
+            const actualBytes = Math.max(0, Math.round(safeNumber(input.actualBytes)));
+            return {
+                id: input.id,
+                stage: 'actual_size_limit',
+                message: `视频文件过大（${formatDecimalMb(actualBytes)}），请自行去 bilibili 观看。详细信息：实际大小为${actualBytes}字节，上传限制为${MAX_SIZE}字节。错误编号：video-021。`,
+            };
+        }
+        case 'video-022':
+            return {
+                id: input.id,
+                stage: 'video_send_rejected',
+                message: `视频发送失败，请稍后再试。详细信息：视频发送请求被消息接口拒绝，返回码为${Math.trunc(input.retcode)}。错误编号：video-022。`,
+            };
+        case 'video-024':
+            return {
+                id: input.id,
+                stage: 'cached_preview_send_rejected',
+                message: `缓存视频信息发送失败，请稍后再试。详细信息：缓存视频的封面、标题和链接消息被消息接口拒绝，返回码为${Math.trunc(input.retcode)}。错误编号：video-024。`,
+            };
+        case 'video-026':
+            return {
+                id: input.id,
+                stage: 'cached_video_send_rejected',
+                message: `缓存视频发送失败，请稍后再试。详细信息：缓存视频发送请求被消息接口拒绝，返回码为${Math.trunc(input.retcode)}。错误编号：video-026。`,
+            };
+        default: {
+            const definition = STATIC_VIDEO_USER_ERRORS[input.id];
+            return { id: input.id, stage: definition.stage, message: definition.message };
+        }
+    }
+}
+// 记录用户错误编号和固定阶段，原始技术详情只进入服务端日志。
+function logVideoUserError(ctx, userError, technicalDetail = '') {
+    const suffix = technicalDetail ? ` detail=${technicalDetail}` : '';
+    ctx.logger('bvidl').warn(`user_error_id=${userError.id} stage=${userError.stage}${suffix}`);
 }
 // 限定短链跳转只能留在 B 站公开域名内。
 function isAllowedBiliRedirectUrl(input) {
@@ -491,11 +632,20 @@ function pruneRecentParseHistory(session, now = Date.now()) {
     }
     return nextHistory;
 }
-function isRecentDuplicateParse(session, keys, now = Date.now()) {
+// 返回当前群命中的重复记录和剩余限制秒数。
+function findRecentDuplicateParse(session, keys, now = Date.now()) {
     if (!keys.length)
-        return false;
+        return null;
     const history = pruneRecentParseHistory(session, now);
-    return history.some(entry => entry.keys.some(key => keys.includes(key)));
+    const entry = history.find(item => item.keys.some(key => keys.includes(key)));
+    if (!entry)
+        return null;
+    const remainingMs = Math.max(1, DUPLICATE_WINDOW_MS - Math.max(0, now - entry.timestamp));
+    return { entry, remainingSeconds: Math.ceil(remainingMs / 1000) };
+}
+// 判断当前群是否仍处于相同视频的重复解析窗口。
+function isRecentDuplicateParse(session, keys, now = Date.now()) {
+    return !!findRecentDuplicateParse(session, keys, now);
 }
 function rememberRecentParse(session, keys, now = Date.now()) {
     if (!keys.length)
@@ -532,9 +682,13 @@ function mergeRecentParseKeys(entry, keys) {
 function formatDecimalMb(bytes) {
     return `${(Math.max(0, safeNumber(bytes)) / 1000000).toFixed(1)} MB`;
 }
-// 生成统一的超限提示。
+// 生成下载前预计体积超限的详细中文提示。
 function buildOversizeMessage(bytes) {
-    return `视频文件过大（${formatDecimalMb(bytes)}），请自行去 bilibili 观看。`;
+    return buildVideoUserError({ id: 'video-015', estimatedBytes: bytes }).message;
+}
+// 生成下载后实际体积超限的详细中文提示。
+function buildActualOversizeMessage(bytes) {
+    return buildVideoUserError({ id: 'video-021', actualBytes: bytes }).message;
 }
 // --- 视频缓存与暂存目录安全 ---
 // 检查缓存文件路径、类型和真实位置均留在专用缓存目录内。
@@ -579,17 +733,21 @@ async function isSafeStagingDirectory(stagingDir) {
         return false;
     }
 }
-// 为单次首次下载创建权限受限的暂存目录。
+// 为单次首次下载创建权限受限的暂存目录，并返回精确失败阶段。
 async function createRequestStagingDirectory(cacheSlug) {
-    await fs.mkdir(STAGING_ROOT, { recursive: true, mode: 0o700 });
     const stagingName = `bili-job-${cacheSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const stagingDir = path.join(STAGING_ROOT, stagingName);
-    await fs.mkdir(stagingDir, { mode: 0o700 });
+    try {
+        await fs.mkdir(stagingDir, { mode: 0o700 });
+    }
+    catch (error) {
+        return { status: 'create_failed', error };
+    }
     if (!await isSafeStagingDirectory(stagingDir)) {
         await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => { });
-        throw new Error('created staging directory failed safety validation');
+        return { status: 'safety_validation_failed' };
     }
-    return stagingDir;
+    return { status: 'ready', path: stagingDir };
 }
 // 删除一条经过严格校验的请求暂存目录，并记录不含敏感参数的失败证据。
 async function removeRequestStagingDirectory(ctx, stagingDir, bvKey) {
@@ -714,12 +872,26 @@ function findVideoFileCache(ctx, keys, now = Date.now()) {
 async function sendCachedVideo(ctx, session, entry) {
     entry.activeSends += 1;
     try {
-        const previewSent = await safeSend(ctx, session, entry.infoMessage, 'cached preview');
-        if (!previewSent)
-            return 'Failed to send video preview. Please try again later.';
-        const videoSent = await safeSend(ctx, session, segment.video(toFileUrl(entry.filePath)), 'cached video');
-        if (!videoSent)
-            return 'Failed to send video. Please try again later.';
+        const previewOutcome = await safeSend(ctx, session, entry.infoMessage, 'cached preview');
+        if (previewOutcome.status === 'uncertain')
+            return undefined;
+        if (previewOutcome.status === 'failed') {
+            const userError = previewOutcome.reason === 'rejected'
+                ? buildVideoUserError({ id: 'video-024', retcode: previewOutcome.retcode })
+                : buildVideoUserError({ id: 'video-025' });
+            logVideoUserError(ctx, userError);
+            return userError;
+        }
+        const videoOutcome = await safeSend(ctx, session, segment.video(toFileUrl(entry.filePath)), 'cached video');
+        if (videoOutcome.status === 'uncertain')
+            return undefined;
+        if (videoOutcome.status === 'failed') {
+            const userError = videoOutcome.reason === 'rejected'
+                ? buildVideoUserError({ id: 'video-026', retcode: videoOutcome.retcode })
+                : buildVideoUserError({ id: 'video-027' });
+            logVideoUserError(ctx, userError);
+            return userError;
+        }
         return undefined;
     }
     finally {
@@ -981,16 +1153,54 @@ function getCommandErrorMessage(error) {
     }
     return String(error);
 }
+// 将消息接口异常严格区分为超时、明确拒绝和普通调用异常。
 async function safeSend(ctx, session, message, label = 'message') {
     try {
         await session.send(message);
-        return true;
+        return { status: 'confirmed' };
     }
     catch (error) {
-        ctx.logger('bvidl').warn(`${label} send failed: ${getErrorMessage(error)}`);
-        return false;
+        const candidate = error;
+        const constructorName = error instanceof Error ? error.constructor.name : '';
+        if (constructorName === 'TimeoutError' && candidate.url === 'send_group_msg') {
+            const messageText = getErrorMessage(error);
+            ctx.logger('bvidl').warn(`${label} send failed: ${messageText} send_status=uncertain`);
+            return { status: 'uncertain', reason: 'timeout', error: messageText };
+        }
+        if (constructorName === 'SenderError' && candidate.url === 'send_group_msg' && typeof candidate.code === 'number' && Number.isFinite(candidate.code)) {
+            const messageText = getErrorMessage(error);
+            ctx.logger('bvidl').warn(`${label} send failed: ${messageText} send_status=failed reason=rejected retcode=${Math.trunc(candidate.code)}`);
+            return { status: 'failed', reason: 'rejected', retcode: Math.trunc(candidate.code), error: messageText };
+        }
+        const messageText = getErrorMessage(error);
+        ctx.logger('bvidl').warn(`${label} send failed: ${messageText} send_status=failed reason=call_error`);
+        return { status: 'failed', reason: 'call_error', error: messageText };
     }
 }
+// 从探测目标和元数据中提取可安全显示的规范 BV 号。
+function getProbeBvId(url, info) {
+    const candidates = [info.id, info.display_id, info.webpage_url, info.original_url, url];
+    for (const candidate of candidates) {
+        const match = String(candidate || '').match(/\bBV[0-9A-Za-z]{10}\b/i);
+        if (match)
+            return match[0];
+    }
+    return '';
+}
+// 从显式查询参数和 yt-dlp 条目标识中解析正整数分 P，缺省为 P1。
+function getProbePartNumber(url, info) {
+    try {
+        const value = Number(new URL(url).searchParams.get('p'));
+        if (Number.isInteger(value) && value > 0)
+            return value;
+    }
+    catch { /* canonical BV input may be supplied without a URL wrapper */
+    }
+    const entryMatch = String(info.id || '').match(/_p(\d+)$/i);
+    const entryPart = entryMatch ? Number(entryMatch[1]) : 0;
+    return Number.isInteger(entryPart) && entryPart > 0 ? entryPart : 1;
+}
+// 探测视频元数据，并将无可用格式转换为受控中文错误。
 async function probeVideo(url) {
     const { stdout } = await run(YTDLP, [
         '--cookies', COOKIES,
@@ -1001,7 +1211,14 @@ async function probeVideo(url) {
     const info = JSON.parse(stdout);
     const picked = pickFormat(info);
     if (!picked) {
-        return { error: 'No available video format found.' };
+        return {
+            info,
+            userError: buildVideoUserError({
+                id: 'video-011',
+                bvId: getProbeBvId(url, info),
+                partNumber: getProbePartNumber(url, info),
+            }),
+        };
     }
     return { info, picked };
 }
@@ -1024,11 +1241,12 @@ async function sendRejectedVideo(ctx, session, infoMessage, message, includePrev
 async function sendCachedVideoWithGate(ctx, session, entry, source, deps) {
     const gateResult = await acquireVideoResourceGate(ctx, session, source, deps);
     if (!gateResult.ok)
-        return gateResult.message || VIDEO_RESOURCE_BUSY_MESSAGE;
+        return (gateResult.userError || buildVideoUserError({ id: 'video-003' })).message;
     const gateHandle = gateResult.handle || null;
     try {
         gateHandle?.updateStep('video_cached_send');
-        return await sendCachedVideo(ctx, session, entry);
+        const userError = await sendCachedVideo(ctx, session, entry);
+        return userError?.message;
     }
     finally {
         try {
@@ -1038,15 +1256,37 @@ async function sendCachedVideoWithGate(ctx, session, entry, source, deps) {
         }
     }
 }
+// 创建一个视频运行目录，并把失败转换为指定的目录错误编号。
+async function ensureVideoDirectory(ctx, fsApi, directory, errorId) {
+    try {
+        await fsApi.mkdir(directory, { recursive: true });
+        return null;
+    }
+    catch (error) {
+        const userError = buildVideoUserError({ id: errorId });
+        logVideoUserError(ctx, userError, getErrorMessage(error));
+        return userError;
+    }
+}
+// 对最终视频文件只执行一次删除，失败只记录服务端日志。
+async function removeOutputFileOnce(ctx, fsApi, filePath, reason) {
+    try {
+        await fsApi.rm(filePath, { force: true });
+    }
+    catch (error) {
+        ctx.logger('bvidl').warn(`video output delete failed: reason=${reason} error=${getErrorMessage(error)}`);
+    }
+}
 // 为首次请求执行探测、大小门禁、下载、首发和缓存登记。
 async function processInitialVideoRequest(ctx, session, url, source, keys, recentEntry, deps) {
     const gateResult = await acquireVideoResourceGate(ctx, session, source, deps);
     if (!gateResult.ok)
-        return { kind: 'failed', message: gateResult.message || VIDEO_RESOURCE_BUSY_MESSAGE };
+        return { kind: 'failed', userError: gateResult.userError || buildVideoUserError({ id: 'video-003' }) };
     const gateHandle = gateResult.handle || null;
     const fsApi = deps.fs || fs;
     const runCommand = deps.run || run;
     const probe = deps.probeVideo || probeVideo;
+    const createStagingDirectory = deps.createStagingDirectory || createRequestStagingDirectory;
     let outputFile = '';
     let stagingDir = '';
     let bvKey = '';
@@ -1055,30 +1295,41 @@ async function processInitialVideoRequest(ctx, session, url, source, keys, recen
     let downloadStartedAt = 0;
     let commandFailure = null;
     try {
-        try {
-            await fsApi.mkdir(WORKDIR, { recursive: true });
-            await fsApi.mkdir(CACHE_DIR, { recursive: true });
-            await fsApi.mkdir(STAGING_ROOT, { recursive: true });
-        }
-        catch (error) {
-            ctx.logger('bvidl').warn(getErrorMessage(error));
-            return { kind: 'failed', message: 'Failed to prepare download directory. Please check logs later.' };
-        }
+        const workdirError = await ensureVideoDirectory(ctx, fsApi, WORKDIR, 'video-007');
+        if (workdirError)
+            return { kind: 'failed', userError: workdirError };
+        const cacheDirError = await ensureVideoDirectory(ctx, fsApi, CACHE_DIR, 'video-008');
+        if (cacheDirError)
+            return { kind: 'failed', userError: cacheDirError };
+        const stagingRootError = await ensureVideoDirectory(ctx, fsApi, STAGING_ROOT, 'video-009');
+        if (stagingRootError)
+            return { kind: 'failed', userError: stagingRootError };
         let info;
         let picked;
         gateHandle?.updateStep('video_probe');
         try {
             const result = await probe(url);
-            if (result.error)
-                return { kind: 'failed', message: result.error };
-            if (!result.info || !result.picked)
-                return { kind: 'failed', message: 'No available video format found.' };
+            if (result.userError) {
+                logVideoUserError(ctx, result.userError);
+                return { kind: 'failed', userError: result.userError };
+            }
+            if (!result.info || !result.picked) {
+                const userError = buildVideoUserError({
+                    id: 'video-011',
+                    bvId: getProbeBvId(url, result.info || {}),
+                    partNumber: getProbePartNumber(url, result.info || {}),
+                });
+                logVideoUserError(ctx, userError);
+                return { kind: 'failed', userError };
+            }
             info = result.info;
             picked = result.picked;
         }
         catch (error) {
             ctx.logger('bvidl').warn(getCommandErrorMessage(error));
-            return { kind: 'failed', message: 'Failed to probe video. Please try again later.' };
+            const userError = buildVideoUserError({ id: 'video-010' });
+            logVideoUserError(ctx, userError, getSafeCommandErrorSummary(error));
+            return { kind: 'failed', userError };
         }
         const canonicalKeys = uniqueStrings(keys
             .concat(buildBiliKeys(getCanonicalBiliUrl(info)))
@@ -1086,31 +1337,47 @@ async function processInitialVideoRequest(ctx, session, url, source, keys, recen
         mergeRecentParseKeys(recentEntry, canonicalKeys);
         const infoMessage = buildInfoMessage(info, picked);
         gateHandle?.updateStep('video_preview');
-        const previewSent = await safeSend(ctx, session, infoMessage, 'preview');
-        if (!previewSent)
-            return { kind: 'failed', message: 'Failed to send video preview. Please try again later.' };
+        const previewOutcome = await safeSend(ctx, session, infoMessage, 'preview');
+        if (previewOutcome.status === 'uncertain')
+            return { kind: 'sent' };
+        if (previewOutcome.status === 'failed') {
+            const userError = previewOutcome.reason === 'rejected'
+                ? buildVideoUserError({ id: 'video-012', retcode: previewOutcome.retcode })
+                : buildVideoUserError({ id: 'video-013' });
+            logVideoUserError(ctx, userError);
+            return { kind: 'failed', userError };
+        }
         if (picked.totalSize <= 0) {
-            await sendRejectedVideo(ctx, session, infoMessage, UNKNOWN_SIZE_MESSAGE, false);
-            ctx.logger('bvidl').warn(`rejected_before_download: reason=size_unknown keys=${canonicalKeys.join(',')}`);
-            return { kind: 'rejected', infoMessage, message: UNKNOWN_SIZE_MESSAGE };
+            const userError = buildVideoUserError({ id: 'video-014' });
+            await sendRejectedVideo(ctx, session, infoMessage, userError.message, false);
+            ctx.logger('bvidl').warn(`rejected_before_download: reason=size_unknown keys=${canonicalKeys.join(',')} user_error_id=${userError.id}`);
+            return { kind: 'rejected', infoMessage, userError };
         }
         if (picked.totalSize > MAX_SIZE) {
-            const message = buildOversizeMessage(picked.totalSize);
-            await sendRejectedVideo(ctx, session, infoMessage, message, false);
-            ctx.logger('bvidl').warn(`rejected_before_download: reason=oversize estimated=${picked.totalSize} limit=${MAX_SIZE} keys=${canonicalKeys.join(',')}`);
-            return { kind: 'rejected', infoMessage, message };
+            const userError = buildVideoUserError({ id: 'video-015', estimatedBytes: picked.totalSize });
+            await sendRejectedVideo(ctx, session, infoMessage, userError.message, false);
+            ctx.logger('bvidl').warn(`rejected_before_download: reason=oversize estimated=${picked.totalSize} limit=${MAX_SIZE} keys=${canonicalKeys.join(',')} user_error_id=${userError.id}`);
+            return { kind: 'rejected', infoMessage, userError };
         }
         bvKey = canonicalKeys.find(key => key.startsWith('bv:')) || '';
         const cacheSlug = (bvKey.replace(/^bv:/, '') || 'unknown').replace(/[^a-z0-9]/g, '').slice(0, 32) || 'unknown';
         cacheId = `bili-cache-${cacheSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         outputFile = path.join(CACHE_DIR, `${cacheId}.mp4`);
+        let stagingResult;
         try {
-            stagingDir = await createRequestStagingDirectory(cacheSlug);
+            stagingResult = await createStagingDirectory(cacheSlug);
         }
         catch (error) {
-            ctx.logger('bvidl').warn(`staging_prepare_failed: bv=${bvKey || 'unknown'} error=${getErrorMessage(error)}`);
-            return { kind: 'failed', message: 'Failed to prepare download directory. Please check logs later.' };
+            stagingResult = { status: 'create_failed', error };
         }
+        if (stagingResult.status !== 'ready') {
+            const userError = buildVideoUserError({ id: stagingResult.status === 'create_failed' ? 'video-016' : 'video-017' });
+            const technicalDetail = stagingResult.status === 'create_failed' ? getErrorMessage(stagingResult.error) : 'safety_validation_failed';
+            ctx.logger('bvidl').warn(`staging_prepare_failed: bv=${bvKey || 'unknown'} reason=${stagingResult.status} user_error_id=${userError.id} error=${technicalDetail}`);
+            logVideoUserError(ctx, userError);
+            return { kind: 'failed', userError };
+        }
+        stagingDir = stagingResult.path;
         gateHandle?.updateStep('video_download');
         pickedFormat = picked.format;
         downloadStartedAt = Date.now();
@@ -1124,49 +1391,61 @@ async function processInitialVideoRequest(ctx, session, url, source, keys, recen
                 '-o', `${cacheId}.%(ext)s`,
                 url,
             ], { timeout: 10 * 60 * 1000 });
-            if (!isSafeVideoCacheFile(outputFile))
-                throw new Error('yt-dlp final output failed safety validation');
-            const stat = await fsApi.stat(outputFile);
-            if (stat.size > MAX_SIZE) {
-                const message = buildOversizeMessage(stat.size);
-                await fsApi.rm(outputFile, { force: true });
-                outputFile = '';
-                await sendRejectedVideo(ctx, session, infoMessage, message, false);
-                ctx.logger('bvidl').warn(`rejected_after_download: estimated=${picked.totalSize} actual=${stat.size} limit=${MAX_SIZE} keys=${canonicalKeys.join(',')}`);
-                return { kind: 'rejected', infoMessage, message };
-            }
-            gateHandle?.updateStep('video_send');
-            const videoSent = await safeSend(ctx, session, segment.video(toFileUrl(outputFile)), 'video');
-            if (!videoSent) {
-                await fsApi.rm(outputFile, { force: true });
-                outputFile = '';
-                return { kind: 'failed', message: 'Failed to send video. Please try again later.' };
-            }
-            const cacheEntry = registerVideoFileCache(ctx, outputFile, stat.size, infoMessage, canonicalKeys);
-            if (!cacheEntry) {
-                await fsApi.rm(outputFile, { force: true });
-                outputFile = '';
-                return { kind: 'sent' };
-            }
-            outputFile = '';
-            return { kind: 'cached', entry: cacheEntry };
         }
         catch (error) {
             commandFailure = error instanceof Error ? error : new Error(String(error));
-            if (outputFile)
-                await fsApi.rm(outputFile, { force: true }).catch(() => {
-                });
-            outputFile = '';
-            return { kind: 'failed', message: 'Failed to download or send video. Please check logs later.' };
+            const userError = buildVideoUserError({ id: 'video-018' });
+            logVideoUserError(ctx, userError, getSafeCommandErrorSummary(commandFailure));
+            return { kind: 'failed', userError };
         }
+        if (!isSafeVideoCacheFile(outputFile)) {
+            const userError = buildVideoUserError({ id: 'video-019' });
+            logVideoUserError(ctx, userError);
+            return { kind: 'failed', userError };
+        }
+        let actualSize;
+        try {
+            actualSize = (await fsApi.stat(outputFile)).size;
+        }
+        catch (error) {
+            const userError = buildVideoUserError({ id: 'video-020' });
+            logVideoUserError(ctx, userError, getErrorMessage(error));
+            return { kind: 'failed', userError };
+        }
+        if (actualSize > MAX_SIZE) {
+            const userError = buildVideoUserError({ id: 'video-021', actualBytes: actualSize });
+            await removeOutputFileOnce(ctx, fsApi, outputFile, 'actual_size_limit');
+            outputFile = '';
+            await sendRejectedVideo(ctx, session, infoMessage, userError.message, false);
+            ctx.logger('bvidl').warn(`rejected_after_download: estimated=${picked.totalSize} actual=${actualSize} limit=${MAX_SIZE} keys=${canonicalKeys.join(',')} user_error_id=${userError.id}`);
+            return { kind: 'rejected', infoMessage, userError };
+        }
+        gateHandle?.updateStep('video_send');
+        const videoOutcome = await safeSend(ctx, session, segment.video(toFileUrl(outputFile)), 'video');
+        if (videoOutcome.status === 'failed') {
+            const userError = videoOutcome.reason === 'rejected'
+                ? buildVideoUserError({ id: 'video-022', retcode: videoOutcome.retcode })
+                : buildVideoUserError({ id: 'video-023' });
+            await removeOutputFileOnce(ctx, fsApi, outputFile, userError.stage);
+            outputFile = '';
+            logVideoUserError(ctx, userError);
+            return { kind: 'failed', userError };
+        }
+        const cacheEntry = registerVideoFileCache(ctx, outputFile, actualSize, infoMessage, canonicalKeys);
+        if (!cacheEntry) {
+            await removeOutputFileOnce(ctx, fsApi, outputFile, videoOutcome.status === 'uncertain' ? 'uncertain_cache_registration' : 'cache_registration');
+            outputFile = '';
+            return { kind: 'sent' };
+        }
+        outputFile = '';
+        return { kind: 'cached', entry: cacheEntry };
     }
     finally {
         if (outputFile)
-            await fsApi.rm(outputFile, { force: true }).catch(() => {
-            });
+            await removeOutputFileOnce(ctx, fsApi, outputFile, 'request_finally');
         const cleanupOk = stagingDir ? await removeRequestStagingDirectory(ctx, stagingDir, bvKey) : true;
         if (commandFailure) {
-            ctx.logger('bvidl').warn(`video_download_failed: cacheId=${cacheId || 'unknown'} bv=${bvKey || 'unknown'} format=${pickedFormat || 'unknown'} duration_ms=${downloadStartedAt ? Date.now() - downloadStartedAt : 0} exit_code=${commandFailure.code ?? 'unknown'} signal=${commandFailure.signal || 'none'} cleanup_ok=${cleanupOk} error=${getSafeCommandErrorSummary(commandFailure)}`);
+            ctx.logger('bvidl').warn(`video_download_failed: cacheId=${cacheId || 'unknown'} bv=${bvKey || 'unknown'} format=${pickedFormat || 'unknown'} duration_ms=${downloadStartedAt ? Date.now() - downloadStartedAt : 0} exit_code=${commandFailure.code ?? 'unknown'} signal=${commandFailure.signal || 'none'} cleanup_ok=${cleanupOk} user_error_id=video-018 error=${getSafeCommandErrorSummary(commandFailure)}`);
         }
         try {
             gateHandle?.release('external-video-finally');
@@ -1180,11 +1459,11 @@ async function deliverSharedVideoResult(ctx, session, result, source, deps) {
     if (result.kind === 'cached')
         return sendCachedVideoWithGate(ctx, session, result.entry, source, deps);
     if (result.kind === 'rejected') {
-        await sendRejectedVideo(ctx, session, result.infoMessage, result.message);
+        await sendRejectedVideo(ctx, session, result.infoMessage, result.userError.message);
         return undefined;
     }
     if (result.kind === 'failed')
-        return result.message;
+        return result.userError.message;
     return undefined;
 }
 // 找到任一 BV/alias 正在执行的首次处理任务。
@@ -1216,13 +1495,19 @@ async function downloadAndSend(ctx, session, url, source = url, deps = {}) {
         return;
     const now = Date.now();
     const immediateKeys = uniqueStrings(buildBiliKeys(source).concat(buildBiliKeys(url)));
-    if (isRecentDuplicateParse(session, immediateKeys, now)) {
-        await safeSend(ctx, session, DUPLICATE_PARSE_MESSAGE, 'duplicate parse notice');
+    const immediateDuplicate = findRecentDuplicateParse(session, immediateKeys, now);
+    if (immediateDuplicate) {
+        const userError = buildVideoUserError({ id: 'video-002', remainingSeconds: immediateDuplicate.remainingSeconds });
+        logVideoUserError(ctx, userError, `remaining_seconds=${immediateDuplicate.remainingSeconds}`);
+        await safeSend(ctx, session, userError.message, 'duplicate parse notice');
         return undefined;
     }
     const keys = await resolveInputBiliKeys(ctx, url, source, deps);
-    if (isRecentDuplicateParse(session, keys, now)) {
-        await safeSend(ctx, session, DUPLICATE_PARSE_MESSAGE, 'duplicate parse notice');
+    const resolvedDuplicate = findRecentDuplicateParse(session, keys, now);
+    if (resolvedDuplicate) {
+        const userError = buildVideoUserError({ id: 'video-002', remainingSeconds: resolvedDuplicate.remainingSeconds });
+        logVideoUserError(ctx, userError, `remaining_seconds=${resolvedDuplicate.remainingSeconds}`);
+        await safeSend(ctx, session, userError.message, 'duplicate parse notice');
         return undefined;
     }
     const recentEntry = rememberRecentParse(session, keys, now);
@@ -1248,7 +1533,7 @@ async function downloadAndSend(ctx, session, url, source = url, deps = {}) {
         const result = await work;
         if (result.kind === 'failed') {
             forgetRecentParse(session, recentEntry);
-            return result.message;
+            return result.userError.message;
         }
         return undefined;
     }
@@ -1266,7 +1551,7 @@ function apply(ctx) {
             return;
         const url = extractBiliUrl(text);
         if (!url)
-            return 'Usage: bvidl Bilibili_URL_or_BV_ID';
+            return buildVideoUserError({ id: 'video-001' }).message;
         return downloadAndSend(ctx, session, url, text || url);
     });
     ctx.middleware(async (session, next) => {
@@ -1304,6 +1589,8 @@ module.exports = {
     downloadAndSend,
     formatDecimalMb,
     buildOversizeMessage,
+    buildActualOversizeMessage,
+    buildVideoUserError,
     getRuntimeConfig,
     toFileUrl,
     safeSend,
