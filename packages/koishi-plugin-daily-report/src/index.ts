@@ -148,7 +148,7 @@ function buildDailyReportBudget(taskId: string, channelKey: unknown, userId: str
     minMemMb: 600,
     degradable: true,
     deferable: true,
-    fallbacks: ['daily_report_text', 'daily_report_summary'],
+    fallbacks: ['daily_report_text'],
     queueTimeoutMs: 600000,
     runTimeoutMs: 600000,
   }

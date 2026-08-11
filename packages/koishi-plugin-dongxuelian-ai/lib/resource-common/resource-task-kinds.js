@@ -7,7 +7,6 @@
 const RESOURCE_TASK_KIND = {
     DAILY_REPORT: 'daily_report',
     DAILY_REPORT_RENDER: 'daily_report_render',
-    DAILY_REPORT_SUMMARY: 'daily_report_summary',
     DAILY_SUMMARY: 'daily_summary',
     AGENT_TASK: 'agent_task',
     DASHBOARD_AGENT: 'dashboard_agent',
