@@ -39,7 +39,6 @@ interface TaskBudgetInput {
     exclusive?: boolean;
     priority?: number;
     minMemMb?: number;
-    criticalMemMb?: number;
     degradable?: boolean;
     deferable?: boolean;
     fallbacks?: string[];
@@ -54,7 +53,6 @@ interface TaskBudget extends TaskBudgetInput {
     exclusive: boolean;
     priority: number;
     minMemMb: number;
-    criticalMemMb: number;
     degradable: boolean;
     deferable: boolean;
     fallbacks: string[];

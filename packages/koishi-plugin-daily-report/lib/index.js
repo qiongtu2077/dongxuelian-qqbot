@@ -112,7 +112,6 @@ function buildDailyReportBudget(taskId, channelKey, userId, detail) {
         exclusive: true,
         priority: detail ? 20 : 25,
         minMemMb: 600,
-        criticalMemMb: 300,
         degradable: true,
         deferable: true,
         fallbacks: ['daily_report_text', 'daily_report_summary'],

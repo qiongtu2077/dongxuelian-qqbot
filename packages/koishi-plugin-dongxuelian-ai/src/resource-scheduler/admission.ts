@@ -27,7 +27,6 @@ interface TaskBudget {
   exclusive: boolean
   priority: number
   minMemMb: number
-  criticalMemMb: number
   degradable: boolean
   deferable: boolean
   fallbacks: string[]

@@ -202,7 +202,6 @@ async function renderEmotionImage(analysis: EmotionAnalysis, stats: EmotionStats
     exclusive: true,
     priority: 55,
     minMemMb: 600,
-    criticalMemMb: 300,
     degradable: true,
     deferable: true,
     fallbacks: ['emotion_text'],

@@ -37,7 +37,6 @@ async function runAgentWithResourceGate(options) {
         exclusive: true,
         priority,
         minMemMb: 600,
-        criticalMemMb: 300,
         degradable: false,
         deferable: true,
         queueTimeoutMs: timeoutMs,
