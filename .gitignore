@@ -26,6 +26,7 @@ packages/*/data/ai-persona-users.json
 koishi.yml
 *.bak-*
 package-lock.json
+!Jest_AND_Cypress/package-lock.json
 *.b64
 tmp_*.js
 tmp/

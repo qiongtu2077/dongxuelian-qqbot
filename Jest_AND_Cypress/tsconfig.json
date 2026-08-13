@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "allowJs": true,
+    "skipLibCheck": true,
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": [
+    "../packages/koishi-plugin-dashboard/frontend/src/**/*.ts",
+    "../packages/koishi-plugin-dashboard/frontend/src/**/*.vue",
+    "tests/**/*.js"
+  ]
+}
