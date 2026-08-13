@@ -27,7 +27,7 @@ function decideModePolicy(commandType, snapshot) {
             return { action: 'pass', reason: 'explicit chat stays available during daily report' };
         return { action: 'silent_drop', reason: 'daily report is running' };
     }
-    if (mode === 'critical' || resourceState === 'red' || resourceState === 'black') {
+    if (mode === 'critical' || resourceState === 'red') {
         if (commandType === 'media_event')
             return { action: 'defer', reason: 'resource state is critical' };
         if (commandType === 'agent_command')

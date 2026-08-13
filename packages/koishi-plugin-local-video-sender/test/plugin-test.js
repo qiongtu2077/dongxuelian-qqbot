@@ -72,7 +72,10 @@ function makeCtx() {
       }
       return command
     },
-    middleware() {},
+    middlewares: [],
+    middleware(handler, prepend = false) {
+      this.middlewares.push({ handler, prepend })
+    },
     logger(name) {
       const push = (level, args) => logs.push({ level, name, msg: args.map(String).join(' ') })
       return {
@@ -123,7 +126,7 @@ async function withIsolatedPlugin(fn) {
   process.env.BILI_COOKIES_FILE = path.join(tmpRoot, 'cookies.txt')
   process.env.BILI_WORKDIR = path.join(tmpRoot, 'downloads')
   process.env.BILI_MAX_SIZE_BYTES = String(MAX_SIZE)
-  process.env.BILI_MIN_MEM_MB = '450'
+  process.env.BILI_MIN_MEM_MB = '300'
   process.env.BILI_TEST_VIDEO_FILE = path.join(tmpRoot, 'test-video.mp4')
   process.env.DONGXUELIAN_AI_DATA_DIR = dataDir
   delete require.cache[PLUGIN_PATH]
@@ -273,7 +276,15 @@ async function testConfigAndParsing() {
     check('cookies path uses env override', config.cookies === path.join(tmpRoot, 'cookies.txt'), JSON.stringify(config))
     check('workdir path uses env override', config.workdir === path.join(tmpRoot, 'downloads'), JSON.stringify(config))
     check('max size uses 60,000,000-byte override', config.maxSize === MAX_SIZE, JSON.stringify(config))
-    check('video min memory uses env override', config.videoMinMemMb === 450, JSON.stringify(config))
+    check('video min memory uses env override', config.videoMinMemMb === 300, JSON.stringify(config))
+    process.env.BILI_MIN_MEM_MB = '200'
+    delete require.cache[PLUGIN_PATH]
+    const clampedPlugin = reloadPlugin()
+    check('video min memory clamps values below red boundary to 300MB', clampedPlugin.getRuntimeConfig().videoMinMemMb === 300)
+    process.env.BILI_MIN_MEM_MB = '550'
+    delete require.cache[PLUGIN_PATH]
+    const explicitPlugin = reloadPlugin()
+    check('video min memory keeps explicit values above 300MB', explicitPlugin.getRuntimeConfig().videoMinMemMb === 550)
     check('test video path uses env override', config.testVideoFile === path.join(tmpRoot, 'test-video.mp4'), JSON.stringify(config))
     check('file URL helper emits standard file URL', plugin.toFileUrl(path.join(tmpRoot, 'downloads', 'demo.mp4')).startsWith('file:///'))
     check('formats decimal MB with one decimal', plugin.formatDecimalMb(60_000_001) === '60.0 MB')
@@ -294,6 +305,97 @@ async function testConfigAndParsing() {
       location: input.includes('testKey') ? `${TEST_URL}?p=2` : '',
     }))
     check('normalizes an allowed short-link redirect to P1 URL', resolved === `${TEST_URL}?p=1`, String(resolved))
+
+    const acceptedStandaloneInputs = [
+      TEST_BV,
+      `${TEST_BV}?p=2`,
+      TEST_URL,
+      `${TEST_URL}?p=2`,
+      'https://b23.tv/abc123?x=1',
+    ]
+    check('standalone detector accepts bare BV and standalone Bilibili links', acceptedStandaloneInputs.every(input => plugin.isStandaloneBilibiliVideoInput(input)), JSON.stringify(acceptedStandaloneInputs))
+    const rejectedStandaloneInputs = [
+      `这个视频讲了什么 ${TEST_BV}`,
+      `${TEST_URL} 讲了什么`,
+      `查看评论区 ${TEST_URL}`,
+      '普通文本',
+      'https://example.com/video',
+      `bvidl ${TEST_BV}`,
+    ]
+    check('standalone detector leaves natural-language and non-Bilibili inputs to later middleware', rejectedStandaloneInputs.every(input => !plugin.isStandaloneBilibiliVideoInput(input)), JSON.stringify(rejectedStandaloneInputs))
+  })
+}
+
+// 验证前置入口注册顺序和不匹配消息的透传行为。
+async function testStandaloneMiddlewareRegistration() {
+  section('standalone middleware registration')
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const ctx = makeCtx()
+    plugin.apply(ctx)
+    check('plugin registers one prepended and one normal middleware', ctx.middlewares.length === 2 && ctx.middlewares[0].prepend === true && ctx.middlewares[1].prepend === false, JSON.stringify(ctx.middlewares.map(item => item.prepend)))
+
+    for (const content of [`这个视频讲了什么 ${TEST_BV}`, '普通文本', 'https://example.com/video', `bvidl ${TEST_BV}`]) {
+      let nextCalls = 0
+      await ctx.middlewares[0].handler(makeSession({ content }), () => { nextCalls += 1 })
+      check(`prepended middleware passes through: ${content}`, nextCalls === 1)
+    }
+  })
+}
+
+// 验证裸 BV 前置入口在三档边界上进入统一准入，且红档不启动探测或下载。
+async function testStandaloneMiddlewareResourceBoundaries() {
+  section('standalone middleware resource boundaries')
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const { decideAdmission } = require(path.join(REPO_ROOT, 'packages', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-scheduler', 'admission.js'))
+    const scenarios = [
+      { mem: 523, state: 'yellow', decision: 'run_now' },
+      { mem: 300, state: 'yellow', decision: 'run_now' },
+      { mem: 600, state: 'green', decision: 'run_now' },
+      { mem: 299, state: 'red', decision: 'reject' },
+    ]
+    const inputs = [TEST_BV, `${TEST_BV}?p=2`]
+
+    for (const scenario of scenarios) {
+      for (const content of inputs) {
+        await plugin.clearVideoRuntimeState()
+        const counters = { probes: 0, downloads: 0 }
+        let nextCalls = 0
+        let admissionCalls = 0
+        const snapshot = {
+          resourceState: scenario.state,
+          botMode: scenario.state === 'red' ? 'critical' : 'normal',
+          memAvailableMb: scenario.mem,
+          locked: false,
+          running: null,
+        }
+        const admission = decideAdmission({ kind: 'external_video_download' }, snapshot)
+        const deps = makeDeps(1_000_000, 1_000_000, counters, {
+          resourceGate: true,
+          resourceModules: {
+            admitTask() {
+              admissionCalls += 1
+              return admission
+            },
+            async acquireResourceGate() {
+              return { updateStep() {}, release() {} }
+            },
+          },
+        })
+        const session = makeSession({
+          guildId: `standalone-${scenario.mem}-${content.includes('?') ? 'p2' : 'bv'}`,
+          channelId: `standalone-${scenario.mem}-${content.includes('?') ? 'p2' : 'bv'}`,
+          content,
+        })
+        const result = await plugin.handleStandaloneBilibiliVideoInput(makeCtx(), session, () => { nextCalls += 1 }, deps)
+        const detail = JSON.stringify({ scenario, content, admission, admissionCalls, nextCalls, counters, sent: session.sent, result })
+        check(`${scenario.mem}MB ${content.includes('?') ? 'BV?p=2' : 'bare BV'} reaches video admission once`, admissionCalls === 1 && nextCalls === 0 && admission.decision === scenario.decision, detail)
+        if (scenario.decision === 'run_now') {
+          check(`${scenario.mem}MB accepted standalone input probes and downloads once`, counters.probes === 1 && counters.downloads === 1, detail)
+        } else {
+          check(`${scenario.mem}MB rejected standalone input performs no probe or download`, counters.probes === 0 && counters.downloads === 0 && String(result).includes('最低需要300MB'), detail)
+        }
+      }
+    }
   })
 }
 
@@ -355,8 +457,8 @@ async function testChineseUserErrorCatalog() {
       [{ id: 'video-001' }, '视频解析命令格式错误。详细信息：请在“bvidl”后填写B站链接；也可以填写BV号。错误编号：video-001。'],
       [{ id: 'video-002', remainingSeconds: 300 }, '请勿在短时间内重复解析。详细信息：当前群对相同视频的300秒限制仍在生效，剩余300秒。错误编号：video-002。'],
       [{ id: 'video-003' }, '视频下载暂时关闭。详细信息：视频资源门禁模块加载失败。错误编号：video-003。'],
-      [{ id: 'video-004', resourceState: 'red', availableMemoryMb: 321.4, minimumMemoryMb: 450, decision: 'reject' }, '视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为紧张，当前可用内存321MB，视频任务最低需要450MB，调度结果为拒绝。错误编号：video-004。'],
-      [{ id: 'video-005', resourceState: 'black', minimumMemoryMb: 450, decision: 'queue' }, '视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为不可用，当前可用内存数据未取得，视频任务最低需要450MB，调度结果为排队。错误编号：video-005。'],
+      [{ id: 'video-004', resourceState: 'red', availableMemoryMb: 299.4, minimumMemoryMb: 300, decision: 'reject' }, '视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为紧张，当前可用内存299MB，视频任务最低需要300MB，调度结果为拒绝。错误编号：video-004。'],
+      [{ id: 'video-005', resourceState: 'red', minimumMemoryMb: 300, decision: 'queue' }, '视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为紧张，当前可用内存数据未取得，视频任务最低需要300MB，调度结果为排队。错误编号：video-005。'],
       [{ id: 'video-006' }, '视频搬运暂时无法执行，请稍后再试。详细信息：视频资源锁在5秒内未申请成功。错误编号：video-006。'],
       [{ id: 'video-007' }, '视频目录准备失败，请稍后再试。详细信息：视频工作目录创建失败。错误编号：video-007。'],
       [{ id: 'video-008' }, '视频目录准备失败，请稍后再试。详细信息：五分钟视频缓存目录创建失败。错误编号：video-008。'],
@@ -390,17 +492,17 @@ async function testChineseUserErrorCatalog() {
     }
     check('all 27 error IDs use distinct fixed stages', cases.length === 27 && stages.size === 27, JSON.stringify([...stages]))
 
-    const stateLabels = { green: '正常', yellow: '注意', red: '紧张', black: '不可用' }
+    const stateLabels = { green: '正常', yellow: '注意', red: '紧张' }
     for (const [state, label] of Object.entries(stateLabels)) {
-      const message = plugin.buildVideoUserError({ id: 'video-004', resourceState: state, availableMemoryMb: 0, minimumMemoryMb: 450, decision: 'reject' }).message
+      const message = plugin.buildVideoUserError({ id: 'video-004', resourceState: state, availableMemoryMb: 0, minimumMemoryMb: 300, decision: 'reject' }).message
       check(`resource state ${state} is translated`, message.includes(`资源状态为${label}`), message)
     }
     const decisionLabels = { reject: '拒绝', defer: '延后', queue: '排队', downgrade: '降级', silent_drop: '静默丢弃' }
     for (const [decision, label] of Object.entries(decisionLabels)) {
-      const message = plugin.buildVideoUserError({ id: 'video-005', resourceState: 'yellow', minimumMemoryMb: 450, decision }).message
+      const message = plugin.buildVideoUserError({ id: 'video-005', resourceState: 'yellow', minimumMemoryMb: 300, decision }).message
       check(`admission decision ${decision} is translated`, message.includes(`调度结果为${label}`), message)
     }
-    const unknownLabels = plugin.buildVideoUserError({ id: 'video-005', resourceState: 'future', minimumMemoryMb: 450, decision: 'future' }).message
+    const unknownLabels = plugin.buildVideoUserError({ id: 'video-005', resourceState: 'future', minimumMemoryMb: 300, decision: 'future' }).message
     check('unknown resource values stay Chinese', unknownLabels.includes('资源状态为未识别') && unknownLabels.includes('调度结果为未识别'), unknownLabels)
   })
 }
@@ -1067,6 +1169,8 @@ async function testStagingDownloadLifecycle() {
 // 顺序运行插件测试，避免共享环境变量相互污染。
 async function run() {
   await testConfigAndParsing()
+  await testStandaloneMiddlewareRegistration()
+  await testStandaloneMiddlewareResourceBoundaries()
   await testP1NormalizationAndResponseTimeout()
   await testChineseUserErrorCatalog()
   await testFormatPicking()

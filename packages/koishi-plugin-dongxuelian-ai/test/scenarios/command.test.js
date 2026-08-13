@@ -29,7 +29,7 @@ async function run(t) {
 
     const previousMemOverride = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
     const previousTotalOverride = process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
-    process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '420'
+    process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '299'
     process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
     let criticalStatus
     let privateNotice
@@ -68,11 +68,11 @@ async function run(t) {
     checkSentNonEmpty(t, 'scenario AI status falls back under critical mode', criticalStatus)
     t.check('scenario AI critical status reports resource mode', criticalStatus.sent.some(item => String(item).includes('critical') && String(item).includes('red')), JSON.stringify(criticalStatus.sent))
     checkNoLeak(t, 'scenario AI critical status does not leak key', criticalStatus, ['sk-test-secret', 'Bearer'])
-    t.check('scenario red private chat receives fixed resource notice', privateNotice.sent.some(item => String(item).includes('\u5185\u5b58\u4e0d\u8db3')), JSON.stringify(privateNotice.sent))
+    t.check('scenario red private chat receives fixed resource notice', privateNotice.sent.some(item => String(item).includes('\u53ef\u7528\u5185\u5b58\u4f4e\u4e8e 300 MB')), JSON.stringify(privateNotice.sent))
     t.check('scenario red resource notice is throttled per channel and state', throttledNotice.sent.length === 0, JSON.stringify(throttledNotice.sent))
-    t.check('scenario red Agent command receives fixed resource notice', agentNotice.sent.some(item => String(item).includes('\u5185\u5b58\u4e0d\u8db3')), JSON.stringify(agentNotice.sent))
+    t.check('scenario red Agent command receives fixed resource notice', agentNotice.sent.some(item => String(item).includes('\u53ef\u7528\u5185\u5b58\u4f4e\u4e8e 300 MB')), JSON.stringify(agentNotice.sent))
     t.check('scenario red random group chat stays silent', randomDrop.sent.length === 0, JSON.stringify(randomDrop.sent))
-    t.check('scenario red explicit media receives notice without queueing work', mediaNotice.sent.some(item => String(item).includes('\u5185\u5b58\u4e0d\u8db3')) && Number(mediaStatus.imagePending || 0) === 0, JSON.stringify({ sent: mediaNotice.sent, mediaStatus }))
+    t.check('scenario red explicit media receives notice without queueing work', mediaNotice.sent.some(item => String(item).includes('\u53ef\u7528\u5185\u5b58\u4f4e\u4e8e 300 MB')) && Number(mediaStatus.imagePending || 0) === 0, JSON.stringify({ sent: mediaNotice.sent, mediaStatus }))
     checkNextCalled(t, 'scenario reserved help command stays available under red', redHelp)
 
     const help = await run(makeSession({ content: '\u5e2e\u52a9\u96c6\u5408' }))

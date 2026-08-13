@@ -38,7 +38,7 @@ function decideModePolicy(commandType: BotCommandType, snapshot: BotModeSnapshot
     return { action: 'silent_drop', reason: 'daily report is running' }
   }
 
-  if (mode === 'critical' || resourceState === 'red' || resourceState === 'black') {
+  if (mode === 'critical' || resourceState === 'red') {
     if (commandType === 'media_event') return { action: 'defer', reason: 'resource state is critical' }
     if (commandType === 'agent_command') return { action: 'resource_notice', reason: 'agent is blocked in critical mode' }
     if (commandType === 'interactive_chat') return { action: 'resource_notice', reason: 'resource state is critical' }

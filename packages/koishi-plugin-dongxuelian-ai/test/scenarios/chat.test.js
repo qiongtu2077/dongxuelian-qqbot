@@ -342,7 +342,7 @@ async function run(t) {
         return 'SHOULD_NOT_SEARCH'
       }
     },
-    resourceSnapshot: { availableMb: 569, totalMb: 1600 },
+    resourceSnapshot: { availableMb: 399, totalMb: 1600 },
     waitFor: () => true,
   })
   try {

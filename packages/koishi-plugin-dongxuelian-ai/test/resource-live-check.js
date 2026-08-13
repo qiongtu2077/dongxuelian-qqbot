@@ -323,7 +323,7 @@ function buildTargetEvidence(dataDir, target, snapshot, gate, tasks, system, das
   const memoryEvents = readMatchingJsonlEvents(systemRoot, 'memory-alerts-', eventMatches, scanOptions).map(sanitizeEventRecord)
   const resultSummaries = readTargetResults(dataDir, targetTasks)
   const lowMemoryObserved = snapshot.memAvailableMb !== null && snapshot.memAvailableMb < 600
-  const admissionStates = [...new Set(admissionEvents.map(event => String(event.resourceState || '')).filter(state => state === 'red' || state === 'black'))]
+  const admissionStates = [...new Set(admissionEvents.map(event => String(event.resourceState || '')).filter(state => state === 'red'))]
   const memoryAlertNames = [...new Set(memoryEvents.map(event => String(event.event || '')).filter(name => name.startsWith('memory_')))]
   const latestTargetMs = latestTargetTimeMs(targetTasks, [gateEvents, workerEvents, admissionEvents, cleanupEvents, memoryEvents])
   const targetAgeMinutes = latestTargetMs === null ? null : Math.max(0, Math.floor((Date.now() - latestTargetMs) / 60000))
@@ -335,10 +335,10 @@ function buildTargetEvidence(dataDir, target, snapshot, gate, tasks, system, das
     : memoryAlertNames.length
       ? `memory alerts observed for target: ${memoryAlertNames.join(',')}`
       : lowMemoryObserved
-        ? `current MemAvailable=${snapshot.memAvailableMb}MB classified as ${snapshot.resourceState}, but no target red/black admission or matching target memory event was found`
+        ? `current MemAvailable=${snapshot.memAvailableMb}MB classified as ${snapshot.resourceState}, but no target red admission or matching target memory event was found`
         : latestTargetMs !== null
-          ? `target latest evidence is ${targetAgeMinutes} minutes old; no target red/black admission or matching target memory event was found`
-          : 'no red/black memory context found for target admission or target memory events'
+          ? `target latest evidence is ${targetAgeMinutes} minutes old; no target red admission or matching target memory event was found`
+          : 'no red memory context found for target admission or target memory events'
   return {
     target,
     targetWindowMinutes,
@@ -461,10 +461,9 @@ function readLinuxMeminfoReadonly() {
 // Classify memory using the same S1 thresholds.
 function classifyResourceState(memAvailableMb) {
   if (memAvailableMb === null || memAvailableMb === undefined) return 'yellow'
-  if (memAvailableMb >= 900) return 'green'
-  if (memAvailableMb >= 450) return 'yellow'
-  if (memAvailableMb >= 300) return 'red'
-  return 'black'
+  if (memAvailableMb >= 600) return 'green'
+  if (memAvailableMb >= 300) return 'yellow'
+  return 'red'
 }
 
 // Return S0 gate state by directly reading files.
@@ -545,11 +544,11 @@ function buildVerdicts(snapshot, gate, tasks, system, dashboard) {
   const verdicts = []
   const actualLowMemory = snapshot.memAvailableMb !== null && snapshot.memAvailableMb < 600
   verdicts.push({
-    id: 'real_low_memory_red_black',
+    id: 'real_low_memory_red',
     status: actualLowMemory ? 'confirmed' : 'unverified',
     evidence: actualLowMemory
       ? `current MemAvailable=${snapshot.memAvailableMb}MB classified as ${snapshot.resourceState}`
-      : `current MemAvailable=${snapshot.memAvailableMb === null ? 'unknown' : snapshot.memAvailableMb + 'MB'}; no live red/black pressure observed`,
+      : `current MemAvailable=${snapshot.memAvailableMb === null ? 'unknown' : snapshot.memAvailableMb + 'MB'}; no live red pressure observed`,
   })
 
   const cleanupEventPresent = hasEvent(system.cleanupEvents, [

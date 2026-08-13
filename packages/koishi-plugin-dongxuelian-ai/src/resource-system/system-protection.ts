@@ -60,8 +60,8 @@ const PROCESS_METRICS_CLEANUP_INTERVAL_MS = parseBoundedPositiveInt(process.env.
 const RESOURCE_HISTORY_RETENTION_MS = parseBoundedPositiveInt(process.env.RESOURCE_HISTORY_RETENTION_DAYS, 14, 1, 365) * 24 * 60 * 60 * 1000
 const RESOURCE_HISTORY_DELETE_BATCH = parseBoundedPositiveInt(process.env.RESOURCE_HISTORY_DELETE_BATCH, 100, 1, 1000)
 const PROCESS_METRICS_SAMPLE_INTERVAL_MS = parseBoundedPositiveInt(process.env.RESOURCE_PROCESS_METRICS_SAMPLE_INTERVAL_MS, 30000, 1000, 10 * 60 * 1000)
-const MEMORY_BLACK_THRESHOLD_MB = parseBoundedPositiveInt(process.env.RESOURCE_MEMORY_BLACK_THRESHOLD_MB, 450, 64, 8192)
-const MEMORY_BLACK_ALERT_COOLDOWN_MS = parseBoundedPositiveInt(process.env.RESOURCE_MEMORY_BLACK_ALERT_COOLDOWN_MS, 5 * 60 * 1000, 1000, 10 * 60 * 1000)
+const MEMORY_RED_THRESHOLD_MB = parseBoundedPositiveInt(process.env.RESOURCE_MEMORY_RED_THRESHOLD_MB, 300, 64, 8192)
+const MEMORY_RED_ALERT_COOLDOWN_MS = parseBoundedPositiveInt(process.env.RESOURCE_MEMORY_RED_ALERT_COOLDOWN_MS, 5 * 60 * 1000, 1000, 10 * 60 * 1000)
 const WORKER_MEMORY_ALERT_COOLDOWN_MS = parseBoundedPositiveInt(process.env.RESOURCE_WORKER_MEMORY_ALERT_COOLDOWN_MS, 30000, 1000, 10 * 60 * 1000)
 const DEFAULT_WORKER_RSS_LIMITS: Record<string, number> = {
   'daily-worker': Number(process.env.RESOURCE_DAILY_WORKER_RSS_MB || 900),
@@ -71,7 +71,7 @@ const DEFAULT_WORKER_RSS_LIMITS: Record<string, number> = {
 
 let lastResourceHistoryCleanupAt = 0
 const recentProcessMetricsSamples = new Map<string, number>()
-const recentMemoryBlackAlerts = new Map<string, number>()
+const recentMemoryRedAlerts = new Map<string, number>()
 const recentWorkerMemoryAlerts = new Map<string, number>()
 
 // 返回当天系统事件文件路径。
@@ -240,15 +240,15 @@ function shouldWriteProcessMetricsSample(extra: Record<string, unknown>, now = D
 }
 
 // 按资源档位和内存来源节流告警，档位变化时立即允许新事件。
-function shouldWriteMemoryBlackAlert(resourceState: string, source: string, now = Date.now()): boolean {
+function shouldWriteMemoryRedAlert(resourceState: string, source: string, now = Date.now()): boolean {
   const alertKey = [
     String(resourceState || 'unknown'),
     String(source || ''),
   ].join('|')
-  const lastAt = recentMemoryBlackAlerts.get(alertKey) || 0
-  if (now - lastAt < MEMORY_BLACK_ALERT_COOLDOWN_MS) return false
-  recentMemoryBlackAlerts.set(alertKey, now)
-  cleanupRecentEntries(recentMemoryBlackAlerts, now, MEMORY_BLACK_ALERT_COOLDOWN_MS)
+  const lastAt = recentMemoryRedAlerts.get(alertKey) || 0
+  if (now - lastAt < MEMORY_RED_ALERT_COOLDOWN_MS) return false
+  recentMemoryRedAlerts.set(alertKey, now)
+  cleanupRecentEntries(recentMemoryRedAlerts, now, MEMORY_RED_ALERT_COOLDOWN_MS)
   return true
 }
 
@@ -676,17 +676,17 @@ function collectProcessMetrics(extra: Record<string, unknown> = {}): Record<stri
   }
   if (
     mem.availableMb !== null
-    && mem.availableMb < MEMORY_BLACK_THRESHOLD_MB
-    && shouldWriteMemoryBlackAlert(resourceState, mem.source, now)
+    && mem.availableMb < MEMORY_RED_THRESHOLD_MB
+    && shouldWriteMemoryRedAlert(resourceState, mem.source, now)
   ) {
     appendJsonlEvent(systemEventFile('memory-alerts'), {
-      event: 'memory_black',
+      event: 'memory_red',
       pid: process.pid,
       memAvailableMb: mem.availableMb,
       memTotalMb: mem.totalMb,
       memSource: mem.source,
       resourceState,
-      thresholdMb: MEMORY_BLACK_THRESHOLD_MB,
+      thresholdMb: MEMORY_RED_THRESHOLD_MB,
     })
   }
   return metrics
@@ -720,7 +720,7 @@ export = {
   RESOURCE_SYSTEM_ROOT,
   RESOURCE_RETENTION_CONTROL_FILE,
   PROCESS_METRICS_RETENTION_MS,
-  MEMORY_BLACK_THRESHOLD_MB,
+  MEMORY_RED_THRESHOLD_MB,
   collectProcessMetrics,
   checkWorkerMemoryLimit,
   writeProcessCleanupEvent,

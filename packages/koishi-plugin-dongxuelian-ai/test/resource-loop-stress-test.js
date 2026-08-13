@@ -179,8 +179,8 @@ async function main() {
     event.event === 'process_metrics'
     && event.workerName === 'loop-stress-worker'
   ).length
-  const memoryBlackCount = (systemStatus.memoryAlerts || []).filter(event =>
-    event.event === 'memory_black'
+  const memoryRedCount = (systemStatus.memoryAlerts || []).filter(event =>
+    event.event === 'memory_red'
   ).length
   const plannerSkippedEvents = plannerEvents.filter(event =>
     event.event === 'daily_slot_planning_skipped'
@@ -201,7 +201,7 @@ async function main() {
     mediaAdmissionCount,
     notifyUpdatedCount,
     processMetricsCount,
-    memoryBlackCount,
+    memoryRedCount,
     rssSamplesMb,
     rssMinMb,
     rssMaxMb,
@@ -225,7 +225,7 @@ main().catch(error => {
   if (!summary) return
 
   check(
-    'loop-stress keeps S3 planning at 0 across repeated black-memory ticks',
+    'loop-stress keeps S3 planning at 0 across repeated red-memory ticks',
     Array.isArray(summary.planningPlannedCounts)
       && summary.planningPlannedCounts.length === summary.loopTicks
       && summary.planningPlannedCounts.every(count => count === 0),
@@ -247,9 +247,9 @@ main().catch(error => {
     JSON.stringify(summary)
   )
   check(
-    'loop-stress keeps S8 metrics and memory-black events bounded under repeated ticks',
+    'loop-stress keeps S8 metrics and memory-red events bounded under repeated ticks',
     summary.processMetricsCount <= 2
-      && summary.memoryBlackCount <= 2,
+      && summary.memoryRedCount <= 2,
     JSON.stringify(summary)
   )
   check(

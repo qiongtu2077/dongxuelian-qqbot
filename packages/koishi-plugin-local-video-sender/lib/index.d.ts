@@ -10,7 +10,7 @@ interface CommandLike {
 }
 interface ContextLike {
     command(name: string, desc: string): CommandLike;
-    middleware(handler: (session: VideoSessionLike, next: () => unknown) => unknown): unknown;
+    middleware(handler: (session: VideoSessionLike, next: () => unknown) => unknown, prepend?: boolean): unknown;
     logger(name: string): LoggerLike;
     on?(event: 'dispose', handler: () => unknown): unknown;
 }
@@ -211,6 +211,7 @@ declare function buildOversizeMessage(bytes: number): string;
 declare function buildActualOversizeMessage(bytes: number): string;
 declare function createRequestStagingDirectory(cacheSlug: string): Promise<StagingPrepareResult>;
 declare function removeRequestStagingDirectory(ctx: ContextLike | null, session: VideoSessionLike, stagingDir: string, bvId: string, taskId: string, options?: StagingCleanupOptions): Promise<boolean>;
+declare function isStandaloneBilibiliVideoInput(input?: string): boolean;
 declare function cleanupVideoCache(ctx: ContextLike | null, now?: number): Promise<{
     entriesRemoved: number;
     filesRemoved: number;
@@ -222,12 +223,15 @@ declare function pickFormat(info: VideoInfo): FormatPick | null;
 declare function safeSend(ctx: ContextLike, session: VideoSessionLike, message: unknown, label?: string): Promise<SendOutcome>;
 declare function probeVideo(url: string, runCommand?: typeof run): Promise<ProbeResult>;
 declare function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url: string, source?: string, deps?: DownloadDeps, options?: DownloadRequestOptions): Promise<string | undefined>;
+declare function handleStandaloneBilibiliVideoInput(ctx: ContextLike, session: VideoSessionLike, next: () => unknown, deps?: DownloadDeps): Promise<unknown>;
 declare function apply(ctx: ContextLike): void;
 declare function clearVideoRuntimeState(): Promise<void>;
 declare const _default: {
     name: string;
     apply: typeof apply;
     extractBiliUrl: typeof extractBiliUrl;
+    isStandaloneBilibiliVideoInput: typeof isStandaloneBilibiliVideoInput;
+    handleStandaloneBilibiliVideoInput: typeof handleStandaloneBilibiliVideoInput;
     buildBiliKeys: typeof buildBiliKeys;
     pickFormat: typeof pickFormat;
     getShortestBiliUrl: typeof getShortestBiliUrl;

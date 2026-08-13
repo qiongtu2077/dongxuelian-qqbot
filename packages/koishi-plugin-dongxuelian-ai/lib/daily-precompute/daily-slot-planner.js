@@ -139,7 +139,7 @@ function ensureSlotTaskReadyForPlanning(taskId) {
 }
 // 规划指定日期频道的 slot 任务。
 function planDailySlotTasks(date, channelKey, options = {}) {
-    // 止血：red/black/维护模式下后台预计算必须让路，连规划扫描都不做。
+    // 止血：red/维护模式下后台预计算必须让路，连规划扫描都不做。
     // S3 是机会式增强，不具备默认运行权（见 S0-S8 资源架构重整计划 9.6 节）。
     const snapshot = readResourceContext();
     const resourceState = String(snapshot.resourceState || '');

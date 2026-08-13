@@ -27,7 +27,7 @@ function normalizeBackgroundAllowed(snapshot) {
     const renderActive = !!snapshot?.renderActive;
     if (botMode === 'maintenance')
         return false;
-    if (resourceState === 'black' || resourceState === 'red')
+    if (resourceState === 'red')
         return false;
     if (serverMode === 'small' && (toolActive || renderActive))
         return false;
@@ -37,8 +37,6 @@ function getBackgroundDirectiveSleepMs(snapshot, taskAction) {
     const resourceState = normalizeResourceState(snapshot);
     const botMode = normalizeBotMode(snapshot);
     if (botMode === 'maintenance')
-        return 30000;
-    if (resourceState === 'black')
         return 30000;
     if (resourceState === 'red')
         return 15000;

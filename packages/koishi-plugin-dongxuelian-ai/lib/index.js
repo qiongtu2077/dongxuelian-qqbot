@@ -163,7 +163,7 @@ function buildThrottledResourceNotice(channelKey, resourceState, now = Date.now(
         if (now - at > RESOURCE_NOTICE_COOLDOWN_MS)
             resourceNoticeAtByChannel.delete(entryKey);
     }
-    return '当前服务器内存不足，AI 和视频搬运暂时暂停；可发送 AI状态 查看。';
+    return '当前服务器可用内存低于 300 MB，除“AI状态”查询外，所有业务功能暂时暂停。';
 }
 // 日报/独占忙锁期间，显式图片追问只恢复到后台排队提示，不放开前台识图。
 function isImageQuickReadIntent(text = '') {
@@ -288,8 +288,7 @@ function apply(ctx) {
                     !analyzed.hasEmbed;
                 const allowFileQuickReadRecovery = isExplicitFileRecovery &&
                     (botDirective.botMode === 'report_silent' || botDirective.botMode === 'busy') &&
-                    botDirective.resourceState !== 'red' &&
-                    botDirective.resourceState !== 'black';
+                    botDirective.resourceState !== 'red';
                 if (allowFileQuickReadRecovery) {
                     if (isFileQuickReadIntent(plain)) {
                         const guardedReply = await resolveGuardedFileQuickReadReply(channelKey, plain, entryUserId, true);
@@ -313,7 +312,6 @@ function apply(ctx) {
                     !analyzed.hasEmbed &&
                     (botDirective.botMode === 'report_silent' || botDirective.botMode === 'busy') &&
                     botDirective.resourceState !== 'red' &&
-                    botDirective.resourceState !== 'black' &&
                     session.messageId &&
                     isVoiceQuickReadIntent(plain)) {
                     markExplicitInteraction('voice-quick-read');
@@ -326,7 +324,6 @@ function apply(ctx) {
                     !analyzed.hasEmbed &&
                     (botDirective.botMode === 'report_silent' || botDirective.botMode === 'busy') &&
                     botDirective.resourceState !== 'red' &&
-                    botDirective.resourceState !== 'black' &&
                     session.messageId &&
                     isImageQuickReadIntent(plain)) {
                     markExplicitInteraction('image-quick-read');
@@ -341,7 +338,7 @@ function apply(ctx) {
             }
             if (botCommandType === 'media_event' &&
                 (directAt || nameMentionedForBotMode || isPrivate || quotedBotSelf) &&
-                (botDirective.resourceState === 'red' || botDirective.resourceState === 'black')) {
+                botDirective.resourceState === 'red') {
                 markExplicitInteraction('resource-notice');
                 if (inGuild)
                     cancelPendingRandom(channelKey, 'bot-mode-resource-notice');

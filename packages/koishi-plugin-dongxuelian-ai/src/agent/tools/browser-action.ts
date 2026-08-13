@@ -214,7 +214,7 @@ type BrowserCleanupGlobal = typeof globalThis & {
 }
 const browserCleanupGlobal = globalThis as BrowserCleanupGlobal
 const IDLE_CLOSE_MS = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_IDLE_MS, 60 * 1000, 10 * 1000, 5 * 60 * 1000)
-const BROWSER_MIN_AVAILABLE_MB = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_MIN_MEM_MB, 900, 256, 8192)
+const BROWSER_MIN_AVAILABLE_MB = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_MIN_MEM_MB, 500, 256, 8192)
 const SEARCH_NAVIGATION_TIMEOUT_MS = 12000
 const SEARCH_SELECTOR_TIMEOUT_MS = 3000
 const MAX_BROWSER_UPLOAD_FILE_BYTES = parseBrowserPositiveInt(process.env.DONGXUELIAN_BROWSER_UPLOAD_MAX_MB, 16, 1, 256) * 1024 * 1024
@@ -255,6 +255,11 @@ function isOwnedBrowserProcessAlive(child: BrowserChildProcessLike | null, pid: 
 }
 
 function readLinuxMemAvailableMb(): number | null {
+  const override = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
+  if (override !== undefined && override !== '') {
+    const parsed = Math.floor(Number(override))
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed
+  }
   if (process.platform !== 'linux') return null
   try {
     const raw = fs.readFileSync('/proc/meminfo', 'utf8')
@@ -1085,6 +1090,8 @@ export = {
   validateUrl,
   isPrivateIp,
   isPrivateHostname,
+  BROWSER_MIN_AVAILABLE_MB,
+  assertEnoughMemoryForBrowser,
   dangerous: true,
   defaultChannels: ['dashboard'],
 }

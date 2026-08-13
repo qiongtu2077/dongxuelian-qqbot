@@ -65,7 +65,6 @@ async function runAgentWithResourceGate<T>(options: AgentResourceRunOptions<T>):
     userId,
     exclusive: true,
     priority,
-    minMemMb: 600,
     degradable: false,
     deferable: true,
     queueTimeoutMs: timeoutMs,

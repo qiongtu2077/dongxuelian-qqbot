@@ -6,7 +6,7 @@
  */
 const path = require('path');
 const { appendJsonlEvent } = require('../resource-common/files');
-const { isStatusQueryKind, isNormalChatKind, isMediaTaskKind, isChromiumTaskKind, isDailyReportKind, canRunInRedStateByKind, } = require('../resource-common/resource-task-kinds');
+const { isStatusQueryKind, isNormalChatKind, isMediaTaskKind, isDailyReportKind, } = require('../resource-common/resource-task-kinds');
 const { normalizeTaskBudget } = require('./task-budget');
 const { SCHEDULER_ROOT, readResourceSnapshot } = require('./resource-snapshot');
 const ADMISSION_EVENT_AGGREGATE_WINDOW_MS = Math.max(1000, Math.min(60000, Number(process.env.RESOURCE_ADMISSION_EVENT_AGGREGATE_MS || process.env.RESOURCE_ADMISSION_EVENT_DEDUPE_MS || 10000)));
@@ -39,14 +39,6 @@ function decideBelowTaskMinMemory(kind, budget, snapshot) {
     if (budget.deferable)
         return buildDecision('defer', 'available memory is below task min memory budget', budget, snapshot);
     return buildDecision('reject', 'available memory is below task min memory budget', budget, snapshot);
-}
-// 判断当前任务是否可按自身预算在 red 档继续运行。
-function canRunInRedState(kind, budget, snapshot) {
-    if (!canRunInRedStateByKind(kind))
-        return false;
-    if (snapshot.memAvailableMb === null)
-        return false;
-    return snapshot.memAvailableMb >= budget.minMemMb;
 }
 // 构造准入结果。
 function buildDecision(decision, reason, budget, snapshot, fallback = '') {
@@ -110,31 +102,12 @@ function decideAdmission(input, snapshot = readResourceSnapshot()) {
         if (budget.exclusive)
             return buildDecision('queue', 'exclusive task waits for current report', budget, snapshot);
     }
-    if (snapshot.resourceState === 'black') {
-        if (isNormalChatKind(kind))
-            return buildDecision('silent_drop', 'resource state black silences chat', budget, snapshot);
-        if (budget.deferable)
-            return buildDecision('defer', 'resource state black defers heavy task', budget, snapshot);
-        return buildDecision('reject', 'resource state black rejects heavy task', budget, snapshot);
-    }
     if (snapshot.resourceState === 'red') {
         if (isNormalChatKind(kind))
             return buildDecision('silent_drop', 'resource state red silences chat', budget, snapshot);
-        if (canRunInRedState(kind, budget, snapshot)) {
-            if (snapshot.locked && !lockedBySelf && budget.exclusive)
-                return buildDecision('queue', 'exclusive slot is busy', budget, snapshot);
-            return buildDecision('run_now', 'red state accepted by task min memory budget', budget, snapshot);
-        }
-        if (isDailyReportKind(kind)) {
-            const fallback = budget.fallbacks[0] || 'daily_report_text';
-            return buildDecision('downgrade', 'resource state red disables Chromium', budget, snapshot, fallback);
-        }
-        if (isChromiumTaskKind(kind))
-            return buildDecision(budget.deferable ? 'defer' : 'reject', 'Chromium task blocked in red state', budget, snapshot);
-        if (isMediaTaskKind(kind))
-            return buildDecision('defer', 'media task deferred in red state', budget, snapshot);
-        if (budget.exclusive)
-            return buildDecision(budget.deferable ? 'defer' : 'reject', 'exclusive task deferred in red state', budget, snapshot);
+        if (budget.deferable)
+            return buildDecision('defer', 'resource state red defers business task', budget, snapshot);
+        return buildDecision('reject', 'resource state red rejects business task', budget, snapshot);
     }
     if (snapshot.locked && !lockedBySelf && budget.exclusive)
         return buildDecision('queue', 'exclusive slot is busy', budget, snapshot);

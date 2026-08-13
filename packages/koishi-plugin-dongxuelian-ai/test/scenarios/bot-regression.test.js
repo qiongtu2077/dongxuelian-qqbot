@@ -178,11 +178,11 @@ async function run(t) {
       { json: { choices: [{ message: { content: '这句不该被看到' } }] } },
     ])
     await withFetch(mocked, async () => {
-      await withMemOverride(420, 1600, async () => {
+      await withMemOverride(299, 1600, async () => {
         const session = makeSession()
         session.content = atBot(session, '现在回我一句')
         const result = await run(session, { flushTicks: 120 })
-        t.check('scenario critical mode returns fixed notice for explicit chat', result.sent.some(item => String(item).includes('内存不足')) && !result.nextCalled, formatResult(result))
+        t.check('scenario critical mode returns fixed notice for explicit chat', result.sent.some(item => String(item).includes('可用内存低于 300 MB')) && !result.nextCalled, formatResult(result))
         t.check('scenario critical mode does not call model for resource notice', mocked.calls.length === 0, `calls=${mocked.calls.length} ${formatResult(result)}`)
         checkSentExcludes(t, 'scenario critical mode does not accidentally send fake model reply', result, '这句不该被看到')
       })
@@ -190,7 +190,7 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ makeSession, run }) => {
-    await withMemOverride(420, 1600, async () => {
+    await withMemOverride(299, 1600, async () => {
       const session = makeSession({
         content: atBot(makeSession(), '读文件'),
         messageId: 'critical-file-read-1',
@@ -203,7 +203,7 @@ async function run(t) {
       const queued = findQueuedFileAnalysis('10001', 'critical-file-read-1')
       t.check(
         'scenario critical mode returns notice instead of recovering explicit file quick read',
-        result.sent.some(item => String(item).includes('内存不足')) && !result.nextCalled,
+        result.sent.some(item => String(item).includes('可用内存低于 300 MB')) && !result.nextCalled,
         formatResult(result)
       )
       t.check(
@@ -528,7 +528,7 @@ async function run(t) {
       t.check(
         'scenario daily report explicit image follow-up stays off frontstage vision model',
         mocked.calls.length === 0,
-        `calls=${mocked.calls.length} ${formatResult(result)}`
+        `calls=${JSON.stringify(mocked.calls)} ${formatResult(result)}`
       )
       checkNoLeak(t, 'scenario daily report explicit image follow-up does not leak secrets', result, ['sk-test-secret', 'Bearer'])
     })

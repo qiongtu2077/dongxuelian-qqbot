@@ -32,6 +32,7 @@ interface BrowserActionContext {
     taskId?: unknown;
     resourceTaskId?: unknown;
 }
+declare function assertEnoughMemoryForBrowser(): void;
 declare function validateUrl(raw: unknown): Promise<string>;
 declare const _default: {
     definition: {
@@ -137,6 +138,8 @@ declare const _default: {
     validateUrl: typeof validateUrl;
     isPrivateIp: (ip?: unknown) => boolean;
     isPrivateHostname: (hostname?: unknown) => boolean;
+    BROWSER_MIN_AVAILABLE_MB: number;
+    assertEnoughMemoryForBrowser: typeof assertEnoughMemoryForBrowser;
     dangerous: boolean;
     defaultChannels: string[];
 };

@@ -66,7 +66,6 @@ const videoAdmission = admitTask({
   source: 'resource-scheduler-test',
   channelKey: 'scheduler-test-group',
   userId: 'scheduler-test-user',
-  minMemMb: 450,
 })
 const mediaAdmission = admitTask({
   kind: 'media_image_analysis',
@@ -140,86 +139,153 @@ console.log(JSON.stringify(summary, null, 2))
 
 // --- S1 Scenarios --- #
 
-// Verify red memory forces daily downgrade and blocks Chromium-class work.
+// Verify 299 MB enters red and pauses every business task.
 function testRedMemoryAdmission() {
   const summary = runScenario('S1 red memory injection', {
     DONGXUELIAN_AI_DATA_DIR: createTempDataDir('s1-red-test-'),
-    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '420',
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '299',
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
   })
   if (!summary) return
-  check('red injection reports red critical snapshot', summary.resourceState === 'red' && summary.botMode === 'critical' && summary.memAvailableMb === 420, JSON.stringify(summary))
-  check('red injection downgrades daily report', summary.dailyDecision === 'downgrade' && summary.dailyFallback === 'daily_report_text', JSON.stringify(summary))
+  check('299MB injection reports red critical snapshot', summary.resourceState === 'red' && summary.botMode === 'critical' && summary.memAvailableMb === 299, JSON.stringify(summary))
+  check('red injection defers daily report without fallback execution', summary.dailyDecision === 'defer' && summary.dailyFallback === '', JSON.stringify(summary))
   check('red injection defers browser action', summary.browserDecision === 'defer', JSON.stringify(summary))
-  check('red injection rejects 450MB video budget below minimum', summary.videoDecision === 'reject', JSON.stringify(summary))
-  check('red injection defers media below its task budget', summary.mediaDecision === 'defer', JSON.stringify(summary))
+  check('red injection rejects video before probe or download', summary.videoDecision === 'reject', JSON.stringify(summary))
+  check('red injection defers media', summary.mediaDecision === 'defer', JSON.stringify(summary))
   check('red injection silences normal chat', summary.normalChatDecision === 'silent_drop' && summary.normalPolicyAction === 'silent_drop', JSON.stringify(summary))
   check('red injection returns resource notices for explicit Agent and chat entries', summary.agentPolicyAction === 'resource_notice' && summary.interactivePolicyAction === 'resource_notice', JSON.stringify(summary))
   check('red injection entry directive matches mode policy', summary.normalDirectiveAction === summary.normalPolicyAction && summary.agentDirectiveAction === summary.agentPolicyAction && summary.interactiveDirectiveAction === summary.interactivePolicyAction, JSON.stringify(summary))
-  check('red injection task directive matches legacy admission', summary.dailyDirectiveAction === 'downgrade' && summary.dailyDirectiveFallback === summary.dailyFallback && summary.browserDirectiveAction === summary.browserDecision.replace('run_now', 'pass'), JSON.stringify(summary))
+  check('red injection task directive matches admission', summary.dailyDirectiveAction === summary.dailyDecision && summary.dailyDirectiveFallback === summary.dailyFallback && summary.browserDirectiveAction === summary.browserDecision, JSON.stringify(summary))
 }
 
-// Verify 450MB is the yellow boundary and still honors heavy-task budgets.
+// Verify 300 MB is the yellow boundary and task-specific budgets still apply.
 function testYellowMemoryAdmission() {
   const summary = runScenario('S1 yellow memory injection', {
     DONGXUELIAN_AI_DATA_DIR: createTempDataDir('s1-yellow-test-'),
-    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '450',
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '300',
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
   })
   if (!summary) return
-  check('yellow injection reports yellow normal snapshot', summary.resourceState === 'yellow' && summary.botMode === 'normal' && summary.memAvailableMb === 450, JSON.stringify(summary))
+  check('300MB injection reports yellow normal snapshot', summary.resourceState === 'yellow' && summary.botMode === 'normal' && summary.memAvailableMb === 300, JSON.stringify(summary))
   check('yellow injection downgrades daily below task budget', summary.dailyDecision === 'downgrade' && summary.dailyFallback === 'daily_report_text', JSON.stringify(summary))
   check('yellow injection defers browser below task budget', summary.browserDecision === 'defer', JSON.stringify(summary))
-  check('yellow injection allows 450MB video budget', summary.videoDecision === 'run_now', JSON.stringify(summary))
-  check('yellow injection defers media below its 600MB task budget', summary.mediaDecision === 'defer', JSON.stringify(summary))
+  check('yellow injection allows video at its 300MB boundary', summary.videoDecision === 'run_now', JSON.stringify(summary))
+  check('yellow injection defers media below its 400MB task budget', summary.mediaDecision === 'defer', JSON.stringify(summary))
   check('yellow injection allows normal chat policy', summary.normalChatDecision === 'run_now' && summary.normalPolicyAction === 'pass', JSON.stringify(summary))
   check('yellow injection entry directive matches legacy mode policy', summary.normalDirectiveAction === summary.normalPolicyAction && summary.agentDirectiveAction === summary.agentPolicyAction, JSON.stringify(summary))
-  check('yellow injection task directive matches legacy admission', summary.dailyDirectiveAction === 'downgrade' && summary.dailyDirectiveFallback === summary.dailyFallback && summary.browserDirectiveAction === summary.browserDecision, JSON.stringify(summary))
+  check('yellow injection task directive matches admission', summary.dailyDirectiveAction === 'downgrade' && summary.dailyDirectiveFallback === summary.dailyFallback && summary.browserDirectiveAction === summary.browserDecision, JSON.stringify(summary))
 }
 
-// Verify black memory defers heavy tasks and silences chat.
-function testBlackMemoryAdmission() {
-  const summary = runScenario('S1 black memory injection', {
-    DONGXUELIAN_AI_DATA_DIR: createTempDataDir('s1-black-test-'),
-    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '250',
+// Verify task thresholds at 400 MB allow daily and media but still defer browser.
+function testTaskBudgetAdmission() {
+  const summary = runScenario('S1 task budget injection', {
+    DONGXUELIAN_AI_DATA_DIR: createTempDataDir('s1-task-budget-test-'),
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '400',
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
   })
   if (!summary) return
-  check('black injection reports black critical snapshot', summary.resourceState === 'black' && summary.botMode === 'critical' && summary.memAvailableMb === 250, JSON.stringify(summary))
-  check('black injection defers daily report', summary.dailyDecision === 'defer', JSON.stringify(summary))
-  check('black injection defers browser action', summary.browserDecision === 'defer', JSON.stringify(summary))
-  check('black injection silences normal chat and returns explicit resource notices', summary.normalChatDecision === 'silent_drop' && summary.normalPolicyAction === 'silent_drop' && summary.agentPolicyAction === 'resource_notice' && summary.interactivePolicyAction === 'resource_notice', JSON.stringify(summary))
-  check('black injection entry directive matches legacy mode policy', summary.normalDirectiveAction === summary.normalPolicyAction && summary.agentDirectiveAction === summary.agentPolicyAction, JSON.stringify(summary))
-  check('black injection task directive matches legacy admission', summary.dailyDirectiveAction === summary.dailyDecision && summary.browserDirectiveAction === summary.browserDecision, JSON.stringify(summary))
+  check('400MB remains yellow', summary.resourceState === 'yellow' && summary.memAvailableMb === 400, JSON.stringify(summary))
+  check('400MB allows daily, video, and media budgets', summary.dailyDecision === 'run_now' && summary.videoDecision === 'run_now' && summary.mediaDecision === 'run_now', JSON.stringify(summary))
+  check('400MB still defers the 500MB browser budget', summary.browserDecision === 'defer', JSON.stringify(summary))
 }
 
-// Verify yellow media runs once its own 600MB budget is met instead of waiting for green=900MB.
-function testYellowMediaBudgetAdmission() {
-  const summary = runScenario('S1 yellow media budget injection', {
-    DONGXUELIAN_AI_DATA_DIR: createTempDataDir('s1-yellow-media-test-'),
-    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '650',
-    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
-  })
-  if (!summary) return
-  check('yellow media budget scenario remains yellow', summary.resourceState === 'yellow' && summary.memAvailableMb === 650, JSON.stringify(summary))
-  check('yellow media budget allows media above its own minimum', summary.mediaDecision === 'run_now', JSON.stringify(summary))
-}
-
-// Verify red recovery requires 550MB to remain available for the full two-minute hold.
-function testRedRecoveryHysteresis() {
+// Verify all state and browser boundaries without any recovery delay.
+function testImmediateStateAndBrowserBoundaries() {
   const snapshot = require('../lib/resource-scheduler/resource-snapshot')
-  const startedAt = Date.parse('2026-07-26T00:00:00.000Z')
-  const previous = {
-    resourceState: 'red',
-    recoveryCandidateAt: '',
+  const states = [299, 300, 599, 600].map(value => snapshot.classifyResourceState(value))
+  check('299/300/599/600MB map to red/yellow/yellow/green', JSON.stringify(states) === JSON.stringify(['red', 'yellow', 'yellow', 'green']), JSON.stringify(states))
+
+  const below = runScenario('S1 browser 499MB injection', {
+    DONGXUELIAN_AI_DATA_DIR: createTempDataDir('s1-browser-499-'),
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '499',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  })
+  const boundary = runScenario('S1 browser 500MB injection', {
+    DONGXUELIAN_AI_DATA_DIR: createTempDataDir('s1-browser-500-'),
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '500',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  })
+  check('browser rejects at 499MB and runs at 500MB', below?.browserDecision === 'defer' && boundary?.browserDecision === 'run_now', JSON.stringify({ below, boundary }))
+}
+
+// Verify the full registered budget table and direct-call overrides stay aligned.
+function testRegisteredBudgetsAndDirectOverrides() {
+  const { normalizeTaskBudget } = require('../lib/resource-scheduler/task-budget')
+  const expected = {
+    daily_report: 400,
+    daily_report_render: 600,
+    daily_summary: 300,
+    agent_task: 400,
+    dashboard_agent: 300,
+    agent_memory: 300,
+    agent_memory_compaction: 300,
+    expression_harvest: 400,
+    conversation_summary: 300,
+    sensitive_cache_analysis: 400,
+    emotion_render: 400,
+    browser_action: 500,
+    voice_tts_generation: 400,
+    diagnostic_probe: 300,
+    mcp_local_check: 600,
+    external_video_download: 300,
+    pet_bridge_chat: 600,
+    media_image_analysis: 400,
+    media_file_analysis: 400,
+    media_voice_transcription: 400,
+    normal_chat: 300,
+    status_query: 0,
   }
-  const first = snapshot.resolveResourceStateWithHysteresis(550, previous, startedAt)
-  const holding = snapshot.resolveResourceStateWithHysteresis(550, { ...previous, recoveryCandidateAt: first.recoveryCandidateAt }, startedAt + 119999)
-  const recovered = snapshot.resolveResourceStateWithHysteresis(550, { ...previous, recoveryCandidateAt: first.recoveryCandidateAt }, startedAt + 120000)
-  const reset = snapshot.resolveResourceStateWithHysteresis(549, { ...previous, recoveryCandidateAt: first.recoveryCandidateAt }, startedAt + 120000)
-  check('red recovery starts and preserves a candidate timestamp', first.resourceState === 'red' && !!first.recoveryCandidateAt && holding.resourceState === 'red', JSON.stringify({ first, holding }))
-  check('red recovery exits only after two minutes at 550MB', recovered.resourceState === 'yellow' && recovered.recoveryCandidateAt === '', JSON.stringify(recovered))
-  check('red recovery candidate resets below 550MB', reset.resourceState === 'red' && reset.recoveryCandidateAt === '', JSON.stringify(reset))
+  const actual = Object.fromEntries(Object.keys(expected).map(kind => [kind, normalizeTaskBudget({ kind }).minMemMb]))
+  check('all registered task budgets match the plan table', JSON.stringify(actual) === JSON.stringify(expected), JSON.stringify(actual))
+  check('future unknown task kinds keep the explicit 600MB fallback', normalizeTaskBudget({ kind: 'future_unknown_task' }).minMemMb === 600)
+
+  const root = path.resolve(__dirname, '..', '..', '..')
+  const agentExecution = fs.readFileSync(path.join(root, 'packages', 'koishi-plugin-dongxuelian-ai', 'src', 'agent', 'resource-execution.ts'), 'utf8')
+  const emotionRenderer = fs.readFileSync(path.join(root, 'packages', 'koishi-plugin-dongxuelian-ai', 'src', 'behavior', 'emotion-renderer.ts'), 'utf8')
+  const dailyReport = fs.readFileSync(path.join(root, 'packages', 'koishi-plugin-daily-report', 'src', 'index.ts'), 'utf8')
+  check('agent and dashboard submissions no longer override the registered budget', !/minMemMb\s*:/.test(agentExecution))
+  check('emotion renderer direct override is 400MB', /source:\s*['"]emotion-renderer['"][\s\S]{0,250}minMemMb:\s*400/.test(emotionRenderer))
+  check('daily report direct override is 400MB', /kind:\s*['"]daily_report['"][\s\S]{0,350}minMemMb:\s*400/.test(dailyReport))
+  check('daily_report_render is not submitted as an independent resource task', !/kind:\s*['"]daily_report_render['"]/.test(dailyReport))
+}
+
+// Verify browser startup guard defaults and explicit environment bounds in fresh processes.
+function testBrowserStartupMemoryGuard() {
+  const script = String.raw`
+const browserAction = require('./packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/browser-action')
+let result = 'pass'
+try { browserAction.assertEnoughMemoryForBrowser() } catch (error) { result = String(error && error.message || error) }
+console.log(JSON.stringify({ min: browserAction.BROWSER_MIN_AVAILABLE_MB, result }))
+`
+  const runBrowserGuard = (label, env) => {
+    const result = spawnSync(process.execPath, ['-e', script], {
+      cwd: path.resolve(__dirname, '..', '..', '..'),
+      env: { ...process.env, DONGXUELIAN_BROWSER_FORCE: '', ...env },
+      encoding: 'utf8',
+      timeout: 15000,
+    })
+    check(`${label} exits 0`, result.status === 0, String(result.stderr || result.stdout))
+    return result.status === 0 ? JSON.parse(String(result.stdout).trim()) : null
+  }
+  const below = runBrowserGuard('browser startup guard 499MB', {
+    DONGXUELIAN_BROWSER_MIN_MEM_MB: '',
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '499',
+  })
+  const boundary = runBrowserGuard('browser startup guard 500MB', {
+    DONGXUELIAN_BROWSER_MIN_MEM_MB: '',
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '500',
+  })
+  const lowerBound = runBrowserGuard('browser startup guard env lower bound', {
+    DONGXUELIAN_BROWSER_MIN_MEM_MB: '1',
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '8192',
+  })
+  const upperBound = runBrowserGuard('browser startup guard env upper bound', {
+    DONGXUELIAN_BROWSER_MIN_MEM_MB: '99999',
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '8192',
+  })
+  check('browser startup guard defaults to 500MB and rejects 499MB', below?.min === 500 && /需要至少 500MB/.test(below.result), JSON.stringify(below))
+  check('browser startup guard passes at 500MB', boundary?.min === 500 && boundary.result === 'pass', JSON.stringify(boundary))
+  check('browser startup guard clamps explicit env to 256–8192MB', lowerBound?.min === 256 && upperBound?.min === 8192, JSON.stringify({ lowerBound, upperBound }))
 }
 
 function runModeScenario(label, env, timeoutMs = 15000) {
@@ -366,9 +432,10 @@ function main() {
   console.log('=== resource-scheduler S1 tests ===')
   testRedMemoryAdmission()
   testYellowMemoryAdmission()
-  testBlackMemoryAdmission()
-  testYellowMediaBudgetAdmission()
-  testRedRecoveryHysteresis()
+  testTaskBudgetAdmission()
+  testImmediateStateAndBrowserBoundaries()
+  testRegisteredBudgetsAndDirectOverrides()
+  testBrowserStartupMemoryGuard()
   testServerModeSnapshotAndBackgroundAllowed()
   console.log(`passed: ${passed}`)
   console.log(`failed: ${failed}`)

@@ -1074,8 +1074,7 @@ export default {
 
 .state-green { color: var(--success) !important }
 .state-yellow { color: var(--accent) !important }
-.state-red,
-.state-black { color: var(--danger) !important }
+.state-red { color: var(--danger) !important }
 
 .memory-chart-head {
   display: flex;

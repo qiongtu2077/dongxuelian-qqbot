@@ -170,7 +170,7 @@ async function renderEmotionImage(analysis, stats, history = [], channelKey = ''
         userId: '',
         exclusive: true,
         priority: 55,
-        minMemMb: 600,
+        minMemMb: 400,
         degradable: true,
         deferable: true,
         fallbacks: ['emotion_text'],

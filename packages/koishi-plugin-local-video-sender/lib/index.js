@@ -28,7 +28,7 @@ const ADMIN_IDS_FILE = path.join(DATA_DIR, 'ai-admin-ids.json');
 const VIDEO_BLACKLIST_FILE = process.env.BILI_VIDEO_BLACKLIST_FILE || path.join(DATA_DIR, 'video-blacklist.json');
 const MAX_SIZE = parsePositiveInteger(process.env.BILI_MAX_SIZE_BYTES, DEFAULT_MAX_SIZE);
 const TEST_VIDEO_FILE = process.env.BILI_TEST_VIDEO_FILE || '/root/test_bili.mp4';
-const VIDEO_MIN_MEM_MB = parsePositiveInteger(process.env.BILI_MIN_MEM_MB, 450);
+const VIDEO_MIN_MEM_MB = Math.max(300, parsePositiveInteger(process.env.BILI_MIN_MEM_MB, 300));
 const MIN_720_HEIGHT = 700;
 const MAX_720_HEIGHT = 720;
 const PREFERRED_MAX_HEIGHT = 720;
@@ -72,7 +72,6 @@ const RESOURCE_STATE_LABELS = {
     green: '正常',
     yellow: '注意',
     red: '紧张',
-    black: '不可用',
 };
 const ADMISSION_DECISION_LABELS = {
     reject: '拒绝',
@@ -1042,6 +1041,28 @@ function findVideoFileCache(ctx, keys, now = Date.now()) {
     }
     return null;
 }
+// 判断消息是否只包含一个可直接搬运的 B 站视频标识或地址。
+function isStandaloneBilibiliVideoInput(input = '') {
+    const text = normalizeSharedText(input).trim();
+    if (!text)
+        return false;
+    if (/^BV[0-9A-Za-z]{10}(?:\?p=\d+)?$/i.test(text))
+        return true;
+    try {
+        const parsed = new URL(text);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+            return false;
+        const host = parsed.hostname.toLowerCase();
+        if (host === 'b23.tv')
+            return parsed.pathname !== '/';
+        if (host !== 'bilibili.com' && host !== 'www.bilibili.com' && host !== 'm.bilibili.com')
+            return false;
+        return /^\/video\/(?:BV[0-9A-Za-z]{10}|av\d+)\/?$/i.test(parsed.pathname);
+    }
+    catch {
+        return false;
+    }
+}
 // 使用现有封面信息和磁盘 MP4 向当前会话发送缓存视频。
 async function sendCachedVideo(ctx, session, entry) {
     entry.activeSends += 1;
@@ -1722,6 +1743,18 @@ async function downloadAndSend(ctx, session, url, source = url, deps = {}, optio
         unregisterInflightDownload(registeredKeys, work);
     }
 }
+// 处理独立 B 站视频输入；不匹配时继续消息链，命中时复用统一下载与准入流程。
+async function handleStandaloneBilibiliVideoInput(ctx, session, next, deps = {}) {
+    if (isBlacklistedGroup(session))
+        return next();
+    const content = session.content || '';
+    if (!isStandaloneBilibiliVideoInput(content))
+        return next();
+    const url = extractBiliUrl(content);
+    if (!url)
+        return next();
+    return downloadAndSend(ctx, session, url, content, deps);
+}
 function apply(ctx) {
     startVideoCacheMaintenance(ctx);
     ctx.command('sendtestvideo', 'send local test video').action(() => {
@@ -1735,6 +1768,7 @@ function apply(ctx) {
             return buildVideoUserError({ id: 'video-001' }).message;
         return downloadAndSend(ctx, session, url, text || url, {}, { explicitCommand: true });
     });
+    ctx.middleware((session, next) => handleStandaloneBilibiliVideoInput(ctx, session, next), true);
     ctx.middleware(async (session, next) => {
         if (isBlacklistedGroup(session))
             return next();
@@ -1764,6 +1798,8 @@ module.exports = {
     name,
     apply,
     extractBiliUrl,
+    isStandaloneBilibiliVideoInput,
+    handleStandaloneBilibiliVideoInput,
     buildBiliKeys,
     pickFormat,
     getShortestBiliUrl,

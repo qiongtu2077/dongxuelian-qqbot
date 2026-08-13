@@ -1318,7 +1318,7 @@ async function main() {
     check('resourceTaskKinds exports task kind constants', kinds.RESOURCE_TASK_KIND && kinds.RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS === 'media_image_analysis' && kinds.RESOURCE_TASK_KIND.DAILY_REPORT === 'daily_report')
     check('resourceTaskKinds classifies media task kinds', kinds.isMediaTaskKind && kinds.isMediaTaskKind('media_image_analysis') && kinds.isMediaTaskKind('media_file_analysis') && kinds.isMediaTaskKind('media_voice_transcription') && !kinds.isMediaTaskKind('daily_report'))
     check('resourceTaskKinds classifies scheduler special kinds', kinds.isStatusQueryKind && kinds.isStatusQueryKind('status_query') && kinds.isNormalChatKind('normal_chat') && kinds.isDailyReportKind('daily_report_render') && !kinds.isDailyReportKind('daily_summary'))
-    check('resourceTaskKinds classifies chromium and red-state exception kinds', kinds.isChromiumTaskKind && kinds.isChromiumTaskKind('browser_action') && kinds.isChromiumTaskKind('daily_report_render') && !kinds.isChromiumTaskKind('daily_report') && kinds.canRunInRedStateByKind('external_video_download') && !kinds.canRunInRedStateByKind('browser_action'))
+    check('resourceTaskKinds classifies chromium task kinds', kinds.isChromiumTaskKind && kinds.isChromiumTaskKind('browser_action') && kinds.isChromiumTaskKind('daily_report_render') && !kinds.isChromiumTaskKind('daily_report'))
   })()
   checkEqual('AI plugin name', index.name, 'dongxuelian-ai')
   check('AI plugin does not export _testOnly', index._testOnly === undefined)

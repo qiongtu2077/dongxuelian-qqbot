@@ -2,7 +2,7 @@
  * S0-S8 资源架构重整 — 阶段 0 止血回归测试。
  * 覆盖本次事故链的三处具体 bug（见 待完成与待审核任务/2026-06-10-S0-S8资源架构重整计划.md 9.13.2 阶段 0）：
  *   1. S2 result-notifier：同 taskId done/failed 双副本不再每轮 tick 重复写回 notify 状态。
- *   2. S3 daily-slot-planner：black/maintenance 下不 planning（planned=0），并由其他场景补 red 语义。
+ *   2. S3 daily-slot-planner：red/maintenance 下不 planning（planned=0）。
  *   3. S6 media-worker：资源不足时 requeue 后不返回“有工作”，避免 200ms claim/requeue 忙等。
  * 用临时 DATA_DIR + 子进程，不写生产数据。
  */
@@ -267,7 +267,7 @@ run().catch(error => {
   check('done dir fs.watch triggers notifier without polling', summary.notifyStatusAfterWatch === 'skipped', JSON.stringify(summary))
 }
 
-// === Scenario 2: S3 black 内存下不 planning（green 对照） ===
+// === Scenario 2: S3 red 内存下不 planning（green 对照） ===
 function testPlannerSkipsUnderPressure() {
   const dataDir = createTempDataDir('resource-regress-plan-')
   const script = String.raw`
@@ -297,14 +297,14 @@ const summary = {
 console.log(JSON.stringify(summary, null, 2))
 process.exitCode = 0
 `
-  // black 内存注入：availableMb 远低于 RED 阈值（300）。
-  const summary = runScenario('S3 planner under black memory', script, {
+  // red 内存注入：availableMb 低于 300 MB 阈值。
+  const summary = runScenario('S3 planner under red memory', script, {
     DONGXUELIAN_AI_DATA_DIR: dataDir,
     RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '50',
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
   }, 30000)
   if (!summary) return
-  check('S3 planner plans 0 slots under black memory', summary.plannedCount === 0, JSON.stringify(summary))
+  check('S3 planner plans 0 slots under red memory', summary.plannedCount === 0, JSON.stringify(summary))
 }
 
 // === Scenario 3: S6 media-worker 资源不足不忙等 ===
@@ -325,7 +325,7 @@ mediaQueue.enqueueMediaTask({
   url: 'http://example.invalid/regress-image-1.png',
 })
 
-// black 内存下，admission 应拒绝；drainOneMediaTask 必须返回 false（退避），不返回 true（忙等）。
+// red 内存下，admission 应拒绝；drainOneMediaTask 必须返回 false（退避），不返回 true（忙等）。
 mediaWorker.drainOneMediaTask({ workerName: 'media-worker', gateWaitMs: 1000 }).then(worked => {
   const status = mediaQueue.getMediaBackpressureStatus()
   const summary = {
@@ -340,7 +340,7 @@ mediaWorker.drainOneMediaTask({ workerName: 'media-worker', gateWaitMs: 1000 }).
   process.exitCode = 1
 })
 `
-  const summary = runScenario('S6 media-worker under black memory', script, {
+  const summary = runScenario('S6 media-worker under red memory', script, {
     DONGXUELIAN_AI_DATA_DIR: dataDir,
     RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '50',
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
@@ -418,7 +418,7 @@ try {
     admissionEvents: admissions.filter(item => item.event === 'admission_decided' && item.kind === 'media_image_analysis').length,
     admissionAggregateTotal: admissions.filter(item => item.event === 'admission_decided' && item.kind === 'media_image_analysis').reduce((sum, item) => sum + Number(item.aggregateCount || 0), 0),
     processMetricsEvents: protection.processMetrics.filter(item => item.event === 'process_metrics' && item.workerName === 'daily-worker').length,
-    memoryBlackEvents: protection.memoryAlerts.filter(item => item.event === 'memory_black' && item.thresholdMb).length,
+    memoryRedEvents: protection.memoryAlerts.filter(item => item.event === 'memory_red' && item.thresholdMb).length,
     workerMemoryExceededEvents: protection.memoryAlerts.filter(item => item.event === 'worker_memory_limit_exceeded' && item.workerName === 'daily-worker').length,
     workerShouldExitEvents: protection.cleanupEvents.filter(item => item.event === 'worker_should_exit' && item.workerName === 'daily-worker').length,
     recordedCleanupCompletedEvents: protection.cleanupEvents.filter(item => item.event === 'recorded_process_cleanup_completed' && item.taskId === 'no-recorded-pid-task').length,
@@ -442,7 +442,7 @@ try {
   if (!summary) return
   check('S1 admission aggregates different taskIds by stable decision dimensions', summary.admissionEvents === 2 && summary.admissionAggregateTotal === 3, JSON.stringify(summary))
   check('S8 process metrics duplicate sample writes only one event', summary.processMetricsEvents === 1, JSON.stringify(summary))
-  check('S8 memory_black duplicate alert writes only one event', summary.memoryBlackEvents === 1, JSON.stringify(summary))
+  check('S8 memory_red duplicate alert writes only one event', summary.memoryRedEvents === 1, JSON.stringify(summary))
   check('S8 worker memory duplicate alert writes only one event per file', summary.workerMemoryExceededEvents === 1 && summary.workerShouldExitEvents === 1, JSON.stringify(summary))
   check('S8 recorded cleanup without candidates does not write completed summary', summary.recordedCleanupCompletedEvents === 0, JSON.stringify(summary))
 }
@@ -1019,10 +1019,10 @@ run().catch(error => {
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
   }, 30000)
   if (!summary) return
-  check('C.0 daily precompute planning tick parks under black memory',
+  check('C.0 daily precompute planning tick parks under red memory',
     summary.planning && summary.planning.parked === true && summary.planning.planned === 0,
     JSON.stringify(summary))
-  check('C.0 media worker parks before claim under black memory',
+  check('C.0 media worker parks before claim under red memory',
     summary.mediaWorked === false && summary.imagePending === 1 && summary.running === 0,
     JSON.stringify(summary))
   check('C.0 background idle sleep adopts directive backoff while worked path stays fast',
@@ -1085,7 +1085,7 @@ run().catch(error => {
     DONGXUELIAN_AI_DATA_DIR: dataDir,
   }, 30000)
   if (!summary) return
-  check('C.1 expression harvest parks before submission under black memory',
+  check('C.1 expression harvest parks before submission under red memory',
     summary.parked && summary.parked.parked === true && summary.parkedCount === 0,
     JSON.stringify(summary))
   check('C.1 expression harvest still submits under green memory',
@@ -1162,10 +1162,10 @@ run()
     DONGXUELIAN_AI_DATA_DIR: dataDir,
   }, 30000)
   if (!summary) return
-  check('C.2 conversation_summary parks before submission under black memory',
+  check('C.2 conversation_summary parks before submission under red memory',
     summary.parkedSummary && summary.parkedSummary.accepted === false && summary.parkedSummaryCount === 0,
     JSON.stringify(summary))
-  check('C.2 sensitive_cache_analysis parks before submission under black memory',
+  check('C.2 sensitive_cache_analysis parks before submission under red memory',
     summary.parkedSensitive && summary.parkedSensitive.accepted === false && summary.parkedSensitiveCount === 0,
     JSON.stringify(summary))
   check('C.2 conversation_summary still submits under green memory',
@@ -4620,7 +4620,7 @@ process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
 const green = planner.planDailySlotTasks(date, channelKey, { slotSize: 40, maxSlots: 3 })
 
 process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '50'
-const blackAfterGreen = planner.planDailySlotTasks(date, channelKey, { slotSize: 40, maxSlots: 3 })
+const redAfterGreen = planner.planDailySlotTasks(date, channelKey, { slotSize: 40, maxSlots: 3 })
 const skippedAfterRecovery = countStopEvents()
 
 console.log(JSON.stringify({
@@ -4629,7 +4629,7 @@ console.log(JSON.stringify({
   thirdCount: Array.isArray(third) ? third.length : -1,
   skippedAfterBlackTicks,
   greenCount: Array.isArray(green) ? green.length : -1,
-  blackAfterGreenCount: Array.isArray(blackAfterGreen) ? blackAfterGreen.length : -1,
+  redAfterGreenCount: Array.isArray(redAfterGreen) ? redAfterGreen.length : -1,
   skippedAfterRecovery,
 }, null, 2))
 process.exitCode = 0
@@ -4638,7 +4638,7 @@ process.exitCode = 0
     DONGXUELIAN_AI_DATA_DIR: dataDir,
   }, 30000)
   if (!summary) return
-  check('D.26 repeated black ticks do not keep appending identical stop events',
+  check('D.26 repeated red ticks do not keep appending identical stop events',
     summary.firstCount === 0
       && summary.secondCount === 0
       && summary.thirdCount === 0
@@ -4646,7 +4646,7 @@ process.exitCode = 0
     JSON.stringify(summary))
   check('D.26 planner recovery re-arms a future stop event after green planning resumes',
     summary.greenCount > 0
-      && summary.blackAfterGreenCount === 0
+      && summary.redAfterGreenCount === 0
       && summary.skippedAfterRecovery === 2,
     JSON.stringify(summary))
 }
@@ -4953,11 +4953,11 @@ run().catch(error => {
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
   }, 30000)
   if (!summary) return
-  check('D.28 daily worker parks before claim and leaves task pending under black memory',
+  check('D.28 daily worker parks before claim and leaves task pending under red memory',
     summary.dailyWorked === false
       && JSON.stringify(summary.dailyStatuses) === JSON.stringify(['pending']),
     JSON.stringify(summary))
-  check('D.28 agent worker parks before claim and leaves task pending under black memory',
+  check('D.28 agent worker parks before claim and leaves task pending under red memory',
     summary.agentWorked === false
       && JSON.stringify(summary.agentStatuses) === JSON.stringify(['pending']),
     JSON.stringify(summary))
@@ -6324,7 +6324,7 @@ try {
     RESOURCE_AGENT_ACTIVE_BACKLOG_MAX: '2',
   }, 30000)
   if (!summary) return
-  check('agent deferred/backlog should still allow the first two distinct users to materialize deferred placeholders under black memory',
+  check('agent deferred/backlog should still allow the first two distinct users to materialize deferred placeholders under red memory',
     summary.firstAccepted === false
       && summary.firstStatus === 202
       && summary.secondAccepted === false
@@ -6403,7 +6403,7 @@ try {
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
   }, 30000)
   if (!summary) return
-  check('D.45 first agent submission may still materialize one deferred task under black memory',
+  check('D.45 first agent submission may still materialize one deferred task under red memory',
     summary.firstAccepted === false
       && summary.firstStatus === 202
       && !!summary.firstTaskId,
@@ -6512,7 +6512,7 @@ try {
     RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
   }, 30000)
   if (!summary) return
-  check('D.46 fixture should start from one deferred agent task that blocks a same-user resubmit under black memory',
+  check('D.46 fixture should start from one deferred agent task that blocks a same-user resubmit under red memory',
     summary.firstAccepted === false
       && summary.firstStatus === 202
       && summary.secondWhileBlackAccepted === false
@@ -6621,7 +6621,7 @@ try {
     RESOURCE_ADMISSION_EVENT_DEDUPE_MS: '10000',
   }, 30000)
   if (!summary) return
-  check('deferred audit/write amplification fixture should keep the deferred agent task in place under black memory',
+  check('deferred audit/write amplification fixture should keep the deferred agent task in place under red memory',
     summary.first
       && summary.second
       && JSON.stringify(summary.deferredAfterStatuses) === JSON.stringify(['deferred']),
@@ -6922,7 +6922,7 @@ try {
       && summary.unchangedMtime === true,
     JSON.stringify(summary))
   check('D.40 readResourceSnapshot should still persist scheduler state when inputs actually change',
-    summary.thirdState === 'black'
+    summary.thirdState === 'red'
       && summary.changedTextDifferent === true
       && summary.changedMtimeGreater === true,
     JSON.stringify(summary))

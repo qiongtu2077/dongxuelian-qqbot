@@ -323,13 +323,13 @@ function startWorkerProcess(type, generation = '') {
     });
     return { ...spec, pid: child.pid };
 }
-// small 模式只允许一个有 backlog 的 worker；red/black 或后台禁用时不拉起重进程。
+// small 模式只允许一个有 backlog 的 worker；red 或后台禁用时不拉起重进程。
 function selectWorkerTypesToStart(types, activeNames, snapshot) {
     const normalizedTypes = types.map(item => String(item || '').trim()).filter(Boolean);
     if (String(snapshot.serverMode || 'large') !== 'small') {
         return normalizedTypes.filter(type => !activeNames.has(`${type}-worker`));
     }
-    if (snapshot.backgroundAllowed === false || snapshot.resourceState === 'red' || snapshot.resourceState === 'black')
+    if (snapshot.backgroundAllowed === false || snapshot.resourceState === 'red')
         return [];
     if (activeNames.size > 0)
         return [];

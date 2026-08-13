@@ -653,9 +653,9 @@ async function main() {
   const constants = require('./packages/koishi-plugin-dongxuelian-ai/lib/core/constants')
   const scenarios = [
     { name: 'normal', mem: '1200', maintenance: false },
-    { name: 'yellow', mem: '600', maintenance: false },
-    { name: 'red', mem: '350', maintenance: false },
-    { name: 'black', mem: '100', maintenance: false },
+    { name: 'yellow', mem: '400', maintenance: false },
+    { name: 'yellowBelowBudget', mem: '399', maintenance: false },
+    { name: 'red', mem: '299', maintenance: false },
     { name: 'maintenance', mem: '1200', maintenance: true },
   ]
   const results = []
@@ -709,12 +709,12 @@ main().catch(error => {
   check('image tool queues exactly once when yellow media budget is met',
     byName.yellow && byName.yellow.after === byName.yellow.before + 1 && byName.yellow.afterDuplicate === byName.yellow.after && /yellow/.test(byName.yellow.response || '') && /media-worker/.test(byName.yellow.response || ''),
     JSON.stringify(byName.yellow))
+  check('image tool does not queue below its 400MB budget in yellow',
+    byName.yellowBelowBudget && byName.yellowBelowBudget.after === byName.yellowBelowBudget.before && byName.yellowBelowBudget.afterDuplicate === byName.yellowBelowBudget.after && /yellow/.test(byName.yellowBelowBudget.response || '') && /available memory is below task min memory budget/.test(byName.yellowBelowBudget.response || '') && /暂时不能加入图片分析队列/.test(byName.yellowBelowBudget.response || ''),
+    JSON.stringify(byName.yellowBelowBudget))
   check('image tool does not queue while red admission defers',
-    byName.red && byName.red.after === byName.red.before && byName.red.afterDuplicate === byName.red.after && /red/.test(byName.red.response || '') && /media task deferred in red state/.test(byName.red.response || '') && /暂时不能加入图片分析队列/.test(byName.red.response || ''),
+    byName.red && byName.red.after === byName.red.before && byName.red.afterDuplicate === byName.red.after && /red/.test(byName.red.response || '') && /resource state red defers business task/.test(byName.red.response || '') && /暂时不能加入图片分析队列/.test(byName.red.response || ''),
     JSON.stringify(byName.red))
-  check('image tool does not queue while black admission defers',
-    byName.black && byName.black.after === byName.black.before && byName.black.afterDuplicate === byName.black.after && /black/.test(byName.black.response || '') && /resource state black defers heavy task/.test(byName.black.response || '') && /暂时不能加入图片分析队列/.test(byName.black.response || ''),
-    JSON.stringify(byName.black))
   check('image tool does not queue while maintenance admission rejects',
     byName.maintenance && byName.maintenance.after === byName.maintenance.before && byName.maintenance.afterDuplicate === byName.maintenance.after && /maintenance mode rejects heavy tasks/.test(byName.maintenance.response || '') && /暂时不能加入图片分析队列/.test(byName.maintenance.response || ''),
     JSON.stringify(byName.maintenance))

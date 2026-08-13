@@ -36,7 +36,7 @@ declare const _default: {
     RESOURCE_SYSTEM_ROOT: string;
     RESOURCE_RETENTION_CONTROL_FILE: string;
     PROCESS_METRICS_RETENTION_MS: number;
-    MEMORY_BLACK_THRESHOLD_MB: number;
+    MEMORY_RED_THRESHOLD_MB: number;
     collectProcessMetrics: typeof collectProcessMetrics;
     checkWorkerMemoryLimit: typeof checkWorkerMemoryLimit;
     writeProcessCleanupEvent: typeof writeProcessCleanupEvent;

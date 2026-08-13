@@ -78,7 +78,7 @@ function writeServerModeConfig(serverMode: unknown, meta: Record<string, unknown
   }
 }
 
-// 计算后台是否允许运行：维护、红黑档和 small 模式下的 tool/render 活跃都会关闸。
+// 计算后台是否允许运行：维护、红档和 small 模式下的 tool/render 活跃都会关闸。
 function resolveBackgroundAllowed(input: BackgroundAllowedInput = {}): boolean {
   const serverMode = normalizeServerMode(input.serverMode)
   const resourceState = String(input.resourceState || 'yellow')
@@ -86,7 +86,7 @@ function resolveBackgroundAllowed(input: BackgroundAllowedInput = {}): boolean {
   const toolActive = !!input.toolActive
   const renderActive = !!input.renderActive
   if (maintenance) return false
-  if (resourceState === 'red' || resourceState === 'black') return false
+  if (resourceState === 'red') return false
   if (serverMode === 'small' && (toolActive || renderActive)) return false
   return true
 }

@@ -9,7 +9,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.DAILY_REPORT]: {
         exclusive: true,
         priority: 20,
-        minMemMb: 600,
+        minMemMb: 400,
         degradable: true,
         deferable: true,
         fallbacks: ['daily_report_text'],
@@ -39,7 +39,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.AGENT_TASK]: {
         exclusive: true,
         priority: 40,
-        minMemMb: 600,
+        minMemMb: 400,
         degradable: false,
         deferable: true,
         fallbacks: [],
@@ -49,7 +49,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.DASHBOARD_AGENT]: {
         exclusive: true,
         priority: 45,
-        minMemMb: 600,
+        minMemMb: 300,
         degradable: false,
         deferable: true,
         fallbacks: [],
@@ -59,7 +59,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.AGENT_MEMORY]: {
         exclusive: true,
         priority: 95,
-        minMemMb: 600,
+        minMemMb: 300,
         degradable: false,
         deferable: true,
         fallbacks: [],
@@ -69,7 +69,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.AGENT_MEMORY_COMPACTION]: {
         exclusive: true,
         priority: 96,
-        minMemMb: 600,
+        minMemMb: 300,
         degradable: false,
         deferable: true,
         fallbacks: [],
@@ -79,7 +79,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.EXPRESSION_HARVEST]: {
         exclusive: true,
         priority: 97,
-        minMemMb: 600,
+        minMemMb: 400,
         degradable: false,
         deferable: true,
         fallbacks: [],
@@ -89,7 +89,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.CONVERSATION_SUMMARY]: {
         exclusive: true,
         priority: 98,
-        minMemMb: 600,
+        minMemMb: 300,
         degradable: false,
         deferable: true,
         fallbacks: [],
@@ -99,7 +99,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS]: {
         exclusive: true,
         priority: 60,
-        minMemMb: 600,
+        minMemMb: 400,
         degradable: false,
         deferable: true,
         fallbacks: [],
@@ -109,7 +109,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.EMOTION_RENDER]: {
         exclusive: true,
         priority: 55,
-        minMemMb: 600,
+        minMemMb: 400,
         degradable: true,
         deferable: true,
         fallbacks: ['emotion_text'],
@@ -119,7 +119,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.BROWSER_ACTION]: {
         exclusive: true,
         priority: 50,
-        minMemMb: 900,
+        minMemMb: 500,
         degradable: false,
         deferable: true,
         fallbacks: [],
@@ -129,7 +129,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.VOICE_TTS_GENERATION]: {
         exclusive: true,
         priority: 65,
-        minMemMb: 600,
+        minMemMb: 400,
         degradable: false,
         deferable: false,
         fallbacks: [],
@@ -139,7 +139,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.DIAGNOSTIC_PROBE]: {
         exclusive: true,
         priority: 30,
-        minMemMb: 600,
+        minMemMb: 300,
         degradable: false,
         deferable: false,
         fallbacks: [],
@@ -159,7 +159,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.EXTERNAL_VIDEO_DOWNLOAD]: {
         exclusive: true,
         priority: 75,
-        minMemMb: 600,
+        minMemMb: 300,
         degradable: false,
         deferable: false,
         fallbacks: [],
@@ -179,7 +179,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS]: {
         exclusive: false,
         priority: 80,
-        minMemMb: 600,
+        minMemMb: 400,
         degradable: false,
         deferable: true,
         fallbacks: [],
@@ -189,7 +189,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.MEDIA_FILE_ANALYSIS]: {
         exclusive: false,
         priority: 85,
-        minMemMb: 600,
+        minMemMb: 400,
         degradable: false,
         deferable: true,
         fallbacks: [],
@@ -199,7 +199,7 @@ const DEFAULT_BUDGETS = {
     [RESOURCE_TASK_KIND.MEDIA_VOICE_TRANSCRIPTION]: {
         exclusive: false,
         priority: 88,
-        minMemMb: 600,
+        minMemMb: 400,
         degradable: false,
         deferable: true,
         fallbacks: [],

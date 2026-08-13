@@ -67,7 +67,7 @@ function shouldEnqueueMediaForAdmission(admission: AdmissionDecisionLike | null 
   const botMode = String(admission?.botMode || '')
   const resourceState = String(admission?.resourceState || '')
   const reason = String(admission?.reason || '')
-  if (resourceState === 'red' || resourceState === 'black') return false
+  if (resourceState === 'red') return false
   return botMode === 'report_silent' ||
     reason === 'media drain paused during daily report' ||
     (resourceState === 'yellow' && reason === 'media is throttled in yellow state') ||
