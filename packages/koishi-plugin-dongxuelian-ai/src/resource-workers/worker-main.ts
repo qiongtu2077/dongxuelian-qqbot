@@ -240,7 +240,6 @@ function getWorkerTaskKinds(type: string): string[] {
       RESOURCE_TASK_KIND.DASHBOARD_AGENT,
       RESOURCE_TASK_KIND.AGENT_MEMORY,
       RESOURCE_TASK_KIND.AGENT_MEMORY_COMPACTION,
-      RESOURCE_TASK_KIND.EXPRESSION_HARVEST,
       RESOURCE_TASK_KIND.CONVERSATION_SUMMARY,
       RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS,
     ]
@@ -300,7 +299,7 @@ async function executeWorkerTask(task: ResourceTaskLike): Promise<Record<string,
   if (task.kind === RESOURCE_TASK_KIND.EMOTION_RENDER) return await runEmotionRenderWorkerTask(task)
   if (task.kind === RESOURCE_TASK_KIND.AGENT_TASK || task.kind === RESOURCE_TASK_KIND.DASHBOARD_AGENT) return await runAgentWorkerTask(task)
   if (task.kind === RESOURCE_TASK_KIND.AGENT_MEMORY || task.kind === RESOURCE_TASK_KIND.AGENT_MEMORY_COMPACTION) return await runMemoryWorkerTask(task)
-  if (task.kind === RESOURCE_TASK_KIND.EXPRESSION_HARVEST || task.kind === RESOURCE_TASK_KIND.CONVERSATION_SUMMARY || task.kind === RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS) return await runBackgroundLlmWorkerTask(task)
+  if (task.kind === RESOURCE_TASK_KIND.CONVERSATION_SUMMARY || task.kind === RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS) return await runBackgroundLlmWorkerTask(task)
   throw new Error(`unsupported S2 worker task kind: ${String(task.kind || '')}`)
 }
 

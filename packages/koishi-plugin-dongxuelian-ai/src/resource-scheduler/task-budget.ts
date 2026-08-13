@@ -110,16 +110,6 @@ const DEFAULT_BUDGETS: Record<string, Partial<TaskBudget>> = {
     queueTimeoutMs: 180000,
     runTimeoutMs: 180000,
   },
-  [RESOURCE_TASK_KIND.EXPRESSION_HARVEST]: {
-    exclusive: true,
-    priority: 97,
-    minMemMb: 400,
-    degradable: false,
-    deferable: true,
-    fallbacks: [],
-    queueTimeoutMs: 180000,
-    runTimeoutMs: 180000,
-  },
   [RESOURCE_TASK_KIND.CONVERSATION_SUMMARY]: {
     exclusive: true,
     priority: 98,

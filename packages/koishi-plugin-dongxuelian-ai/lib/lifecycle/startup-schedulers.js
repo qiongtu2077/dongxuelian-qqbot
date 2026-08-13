@@ -2,20 +2,17 @@
 /* ==========================================================================
  * MODULE: startup-schedulers
  * 职责：管理插件启动后的周期性维护任务定时器。
- * 边界：不注册 middleware、不发送消息、不修改聊天/随机策略；只调度清理和表达学习 harvest。
- * 状态：持有 dailyCleanupTimer 与 expressionHarvestTimer，dispose 时由调用方显式清理。
+ * 边界：不注册 middleware、不发送消息、不修改聊天/随机策略；只调度清理和日报预计算。
+ * 状态：持有 dailyCleanupTimer 与 dailyPrecomputeTimer，dispose 时由调用方显式清理。
  * ========================================================================== */
 const { trimChannelRuntimeCaches, cleanupDailyStatsFiles, } = require('../conversation');
 const { todayCst } = require('../core/utils');
 const { logDebug } = require('../core/logging-config');
-const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds');
 const { countResourceTasks, cleanupFinishedTasks } = require('../resource-workers/task-store');
-const { submitExpressionHarvestTask, } = require('../resource-workers/background-llm-submission');
 const { planDailySlotTasks } = require('../daily-precompute/daily-slot-planner');
 const { listDailyCoverage } = require('../daily-precompute/precompute-status');
 const { decideBackgroundDirective } = require('../resource-scheduler/background-directive');
 let dailyCleanupTimer = null;
-let expressionHarvestTimer = null;
 let dailyPrecomputeTimer = null;
 const DAILY_SLOT_BACKLOG_STOP_MAX_PENDING = Math.max(1, Number(process.env.DAILY_SLOT_BACKLOG_STOP_MAX_PENDING || 8));
 function getStartupSchedulerErrorMessage(error) {
@@ -46,60 +43,6 @@ function scheduleDailyStatsCleanup(ctx) {
     dailyCleanupTimer = setTimeout(runDailyStatsCleanup, getNextShanghaiMidnightDelayMs());
     if (dailyCleanupTimer && typeof dailyCleanupTimer.unref === 'function')
         dailyCleanupTimer.unref();
-}
-function getExpressionHarvestDelayMs(now = Date.now()) {
-    const fiveMinutesMs = 5 * 60 * 1000;
-    const delayUntilNextMidnight = getNextShanghaiMidnightDelayMs(now);
-    if (delayUntilNextMidnight > fiveMinutesMs)
-        return delayUntilNextMidnight - fiveMinutesMs;
-    return delayUntilNextMidnight + (24 * 60 * 60 * 1000) - fiveMinutesMs;
-}
-async function runExpressionHarvestTick(ctx) {
-    const gate = decideBackgroundDirective({
-        kind: RESOURCE_TASK_KIND.EXPRESSION_HARVEST,
-        source: 'expression-harvest-scheduler',
-        channelKey: 'global',
-        userId: '',
-        priority: 97,
-        exclusive: true,
-        timeoutMs: 180000,
-        queueTimeoutMs: 180000,
-        runTimeoutMs: 180000,
-    });
-    if (gate.directive.action === 'park') {
-        logDebug(ctx, 'expression-pool', `expression_harvest parked reason=${gate.directive.reason} resource=${gate.directive.resourceState} sleepMs=${gate.directive.sleepMs}`);
-        return { parked: true, status: 'parked', reason: gate.directive.reason };
-    }
-    const firstBot = ctx && Array.isArray(ctx.bots) ? ctx.bots[0] : null;
-    const result = submitExpressionHarvestTask({
-        source: 'expression-harvest-scheduler',
-        selfUserId: String(firstBot?.selfId || firstBot?.userId || ''),
-    });
-    logDebug(ctx, 'expression-pool', `expression_harvest status=${result.status} taskId=${result.taskId || ''}`);
-    return {
-        parked: false,
-        status: String(result.status || ''),
-        taskId: result.taskId || undefined,
-        reason: 'submitted',
-    };
-}
-function scheduleExpressionHarvest(ctx) {
-    const runExpressionHarvestTimerTick = async () => {
-        try {
-            await runExpressionHarvestTick(ctx);
-        }
-        catch (error) {
-            ctx.logger('dongxuelian-ai').warn(`expression harvest failed: ${getStartupSchedulerErrorMessage(error)}`);
-        }
-        finally {
-            expressionHarvestTimer = setTimeout(runExpressionHarvestTimerTick, getExpressionHarvestDelayMs());
-            if (expressionHarvestTimer && typeof expressionHarvestTimer.unref === 'function')
-                expressionHarvestTimer.unref();
-        }
-    };
-    expressionHarvestTimer = setTimeout(runExpressionHarvestTimerTick, getExpressionHarvestDelayMs());
-    if (expressionHarvestTimer && typeof expressionHarvestTimer.unref === 'function')
-        expressionHarvestTimer.unref();
 }
 async function runDailyPrecomputePlanningTick(ctx) {
     const gate = decideBackgroundDirective({
@@ -169,10 +112,6 @@ function clearStartupSchedulers() {
         clearTimeout(dailyCleanupTimer);
         dailyCleanupTimer = null;
     }
-    if (expressionHarvestTimer) {
-        clearTimeout(expressionHarvestTimer);
-        expressionHarvestTimer = null;
-    }
     if (dailyPrecomputeTimer) {
         clearTimeout(dailyPrecomputeTimer);
         dailyPrecomputeTimer = null;
@@ -181,9 +120,6 @@ function clearStartupSchedulers() {
 module.exports = {
     getNextShanghaiMidnightDelayMs,
     scheduleDailyStatsCleanup,
-    getExpressionHarvestDelayMs,
-    scheduleExpressionHarvest,
-    runExpressionHarvestTick,
     runDailyPrecomputePlanningTick,
     scheduleDailyPrecomputePlanning,
     clearStartupSchedulers,

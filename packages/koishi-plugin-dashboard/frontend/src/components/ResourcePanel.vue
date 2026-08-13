@@ -290,7 +290,6 @@ const AGENT_WORKER_KINDS = [
   'dashboard_agent',
   'agent_memory',
   'agent_memory_compaction',
-  'expression_harvest',
   'conversation_summary',
   'sensitive_cache_analysis',
 ]

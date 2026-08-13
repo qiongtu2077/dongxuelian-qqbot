@@ -12,7 +12,6 @@ const RESOURCE_TASK_KIND = {
   DASHBOARD_AGENT: 'dashboard_agent',
   AGENT_MEMORY: 'agent_memory',
   AGENT_MEMORY_COMPACTION: 'agent_memory_compaction',
-  EXPRESSION_HARVEST: 'expression_harvest',
   CONVERSATION_SUMMARY: 'conversation_summary',
   SENSITIVE_CACHE_ANALYSIS: 'sensitive_cache_analysis',
   EMOTION_RENDER: 'emotion_render',
@@ -46,7 +45,6 @@ const DAILY_REPORT_KINDS: Set<string> = new Set([
 ])
 
 const BACKGROUND_LLM_TASK_KINDS: Set<string> = new Set([
-  RESOURCE_TASK_KIND.EXPRESSION_HARVEST,
   RESOURCE_TASK_KIND.CONVERSATION_SUMMARY,
   RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS,
 ])

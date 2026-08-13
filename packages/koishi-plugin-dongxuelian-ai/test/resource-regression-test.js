@@ -1030,72 +1030,6 @@ run().catch(error => {
     JSON.stringify(summary))
 }
 
-// === Scenario 8: 阶段 C.1 expression harvest 调度前门收口 ===
-function testExpressionHarvestDirectiveCompatibility() {
-  const dataDir = createTempDataDir('resource-regress-expression-harvest-')
-  const script = String.raw`
-const startupSchedulers = require('koishi-plugin-dongxuelian-ai/lib/lifecycle/startup-schedulers')
-const taskStore = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
-
-function createCtx() {
-  return {
-    bots: [{ selfId: 'harvest-bot-1' }],
-    logger() {
-      return {
-        info() {},
-        warn() {},
-      }
-    },
-  }
-}
-
-async function run() {
-  taskStore.ensureTaskDirs()
-
-  process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '50'
-  process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
-  const parked = await startupSchedulers.runExpressionHarvestTick(createCtx())
-  const afterParked = taskStore.listResourceTasks({ statuses: ['pending', 'claiming', 'running', 'deferred'], limit: 50 })
-    .filter(task => String(task.kind || '') === 'expression_harvest')
-
-  process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
-  const submitted = await startupSchedulers.runExpressionHarvestTick(createCtx())
-  const afterSubmitted = taskStore.listResourceTasks({ statuses: ['pending', 'claiming', 'running', 'deferred'], limit: 50 })
-    .filter(task => String(task.kind || '') === 'expression_harvest')
-
-  const firstTask = afterSubmitted[0] || {}
-  const summary = {
-    parked,
-    parkedCount: afterParked.length,
-    submitted,
-    submittedCount: afterSubmitted.length,
-    taskSource: String(firstTask.source || ''),
-    taskSelfUserId: String(firstTask.payload && firstTask.payload.selfUserId || ''),
-  }
-  console.log(JSON.stringify(summary, null, 2))
-  process.exitCode = 0
-}
-
-run().catch(error => {
-  console.error(error && error.stack || error)
-  process.exitCode = 1
-})
-`
-  const summary = runScenario('C.1 expression harvest directive compatibility', script, {
-    DONGXUELIAN_AI_DATA_DIR: dataDir,
-  }, 30000)
-  if (!summary) return
-  check('C.1 expression harvest parks before submission under red memory',
-    summary.parked && summary.parked.parked === true && summary.parkedCount === 0,
-    JSON.stringify(summary))
-  check('C.1 expression harvest still submits under green memory',
-    summary.submitted && summary.submitted.parked === false && summary.submittedCount === 1,
-    JSON.stringify(summary))
-  check('C.1 expression harvest preserves source and selfUserId on submit',
-    summary.taskSource === 'expression-harvest-scheduler' && summary.taskSelfUserId === 'harvest-bot-1',
-    JSON.stringify(summary))
-}
-
 // === Scenario 9: 阶段 C.2 事件型后台 LLM 提交前门收口 ===
 function testBackgroundLlmSubmissionDirectiveCompatibility() {
   const dataDir = createTempDataDir('resource-regress-background-llm-submit-')
@@ -1223,7 +1157,6 @@ async function run() {
 
   try {
     const planning = await startupSchedulers.runDailyPrecomputePlanningTick(createCtx())
-    const expression = await startupSchedulers.runExpressionHarvestTick(createCtx())
     const parkedSummary = background.submitConversationSummaryTask({
       key: 'group-tool-active::user-tool-active',
       source: 'conversation-summary-trigger',
@@ -1232,7 +1165,6 @@ async function run() {
       channelKey: 'group-sensitive-tool-active',
       source: 'sensitive-cache-trigger',
     })
-    const afterExpression = listKindTasks('expression_harvest').length
     const afterSummary = listKindTasks('conversation_summary').length
     const afterSensitive = listKindTasks('sensitive_cache_analysis').length
     const mediaDirective = backgroundDirective.decideBackgroundDirective({
@@ -1259,10 +1191,8 @@ async function run() {
     })
     console.log(JSON.stringify({
       planning,
-      expression,
       parkedSummary,
       parkedSensitive,
-      afterExpression,
       afterSummary,
       afterSensitive,
       mediaDirectiveAction: mediaDirective.directive.action,
@@ -1285,11 +1215,6 @@ run().catch(error => {
   if (!summary) return
   check('tool_active should park daily precompute planning while background work yields to foreground tool',
     summary.planning && summary.planning.parked === true && summary.planning.planned === 0,
-    JSON.stringify(summary))
-  check('tool_active should park expression harvest before it materializes new tasks',
-    summary.expression && summary.expression.parked === true
-      && summary.expression.status === 'parked'
-      && summary.afterExpression === 0,
     JSON.stringify(summary))
   check('tool_active should park background llm submissions before they materialize new tasks',
     summary.parkedSummary && summary.parkedSummary.accepted === false
@@ -7599,7 +7524,6 @@ function main() {
   testBrowserActivityLeaseAllowsLargeMode()
   testBrowserActionLeaseRefreshKeepsActiveToolVisible()
   testBackgroundDirectiveCompatibility()
-  testExpressionHarvestDirectiveCompatibility()
   testBackgroundLlmSubmissionDirectiveCompatibility()
   testToolActiveBackgroundParkCompatibility()
   testToolActiveQueuedBackgroundTasksDoNotClaimOrStarveForegroundWork()

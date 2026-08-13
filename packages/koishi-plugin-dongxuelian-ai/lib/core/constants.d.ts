@@ -79,7 +79,6 @@ declare const _default: {
     SENSITIVE_CACHE_PREFIX: string;
     STICKER_DIR: string;
     CONVERSATIONS_DIR: string;
-    EXPRESSION_POOL_DIR: string;
     TOOL_MODE_FILE: string;
     TOOL_CONFIG_FILE: string;
     MAX_TOOL_ROUNDS: number;

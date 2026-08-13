@@ -9,7 +9,6 @@ const { CONVERSATION_SUMMARY_INTERVAL, MEMORY_HISTORY_LIMIT, GLM_KEY_FILE, DASHS
 const { readTextFile, safeChannelKey } = require('../core/utils');
 const { requestChatCompletions } = require('../core/api');
 const { loadConfig } = require('../core/runtime-config');
-const { runExpressionHarvestForAllChannels, formatExpressionHarvestDiagnostic, } = require('../behavior/expression/expression-abstractor');
 const { readConversationDisk, writeConversationDisk, writePendingSensitiveAlert, } = require('../conversation');
 const MAX_SENSITIVE_CACHE_FILE_BYTES = Math.max(64 * 1024, Math.min(4 * 1024 * 1024, parseInt(String(process.env.DONGXUELIAN_SENSITIVE_CACHE_MAX_BYTES || 512 * 1024), 10) || 512 * 1024));
 function toBackgroundRecord(value) {
@@ -22,24 +21,6 @@ function formatConversationSummaryMessage(message) {
 // 从 ChatCompletion 结果中取文本内容。
 function getBackgroundChatResultContent(resultObj) {
     return typeof resultObj === 'string' ? resultObj : (resultObj.type === 'text' ? resultObj.content : '');
-}
-// 执行表达学习 harvest，真实模型调用只发生在 worker 进程。
-async function runExpressionHarvestWorkerTask(task) {
-    const channels = Array.isArray(task?.payload?.channels)
-        ? task.payload.channels.map(String).filter(Boolean)
-        : [];
-    const options = channels.length ? { channels } : {};
-    const result = await runExpressionHarvestForAllChannels(null, {
-        ...options,
-        selfUserId: String(task?.payload?.selfUserId || ''),
-        botName: String(task?.payload?.botName || ''),
-    });
-    return {
-        mode: 'expression_harvest',
-        diagnostic: formatExpressionHarvestDiagnostic(result),
-        ...result,
-        reason: 'expression harvest completed',
-    };
 }
 // 执行对话摘要压缩并写回 conversation disk。
 async function runConversationSummaryWorkerTask(task) {
@@ -163,8 +144,6 @@ async function runSensitiveCacheAnalysisWorkerTask(task) {
 }
 // 根据任务 kind 分发后台 LLM 执行器。
 async function runBackgroundLlmWorkerTask(task) {
-    if (task?.kind === 'expression_harvest')
-        return runExpressionHarvestWorkerTask(task);
     if (task?.kind === 'conversation_summary')
         return runConversationSummaryWorkerTask(task);
     if (task?.kind === 'sensitive_cache_analysis')
@@ -175,5 +154,4 @@ module.exports = {
     runBackgroundLlmWorkerTask,
     runConversationSummaryWorkerTask,
     runSensitiveCacheAnalysisWorkerTask,
-    runExpressionHarvestWorkerTask,
 };

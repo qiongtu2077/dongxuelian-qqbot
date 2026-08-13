@@ -11,7 +11,6 @@ declare const RESOURCE_TASK_KIND: {
     readonly DASHBOARD_AGENT: "dashboard_agent";
     readonly AGENT_MEMORY: "agent_memory";
     readonly AGENT_MEMORY_COMPACTION: "agent_memory_compaction";
-    readonly EXPRESSION_HARVEST: "expression_harvest";
     readonly CONVERSATION_SUMMARY: "conversation_summary";
     readonly SENSITIVE_CACHE_ANALYSIS: "sensitive_cache_analysis";
     readonly EMOTION_RENDER: "emotion_render";

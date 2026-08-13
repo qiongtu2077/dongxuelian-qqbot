@@ -1,8 +1,8 @@
 /* ==========================================================================
  * MODULE: startup-schedulers
  * 职责：管理插件启动后的周期性维护任务定时器。
- * 边界：不注册 middleware、不发送消息、不修改聊天/随机策略；只调度清理和表达学习 harvest。
- * 状态：持有 dailyCleanupTimer 与 expressionHarvestTimer，dispose 时由调用方显式清理。
+ * 边界：不注册 middleware、不发送消息、不修改聊天/随机策略；只调度清理和日报预计算。
+ * 状态：持有 dailyCleanupTimer 与 dailyPrecomputeTimer，dispose 时由调用方显式清理。
  * ========================================================================== */
 const {
   trimChannelRuntimeCaches,
@@ -10,11 +10,7 @@ const {
 } = require('../conversation') as typeof import('../conversation')
 const { todayCst } = require('../core/utils') as typeof import('../core/utils')
 const { logDebug } = require('../core/logging-config') as typeof import('../core/logging-config')
-const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
 const { countResourceTasks, cleanupFinishedTasks } = require('../resource-workers/task-store') as typeof import('../resource-workers/task-store')
-const {
-  submitExpressionHarvestTask,
-} = require('../resource-workers/background-llm-submission') as typeof import('../resource-workers/background-llm-submission')
 const { planDailySlotTasks } = require('../daily-precompute/daily-slot-planner') as typeof import('../daily-precompute/daily-slot-planner')
 const { listDailyCoverage } = require('../daily-precompute/precompute-status') as typeof import('../daily-precompute/precompute-status')
 const { decideBackgroundDirective } = require('../resource-scheduler/background-directive') as typeof import('../resource-scheduler/background-directive')
@@ -27,7 +23,6 @@ interface StartupSchedulerContext {
 type StartupTimer = ReturnType<typeof setTimeout> | null
 
 let dailyCleanupTimer: StartupTimer = null
-let expressionHarvestTimer: StartupTimer = null
 let dailyPrecomputeTimer: StartupTimer = null
 const DAILY_SLOT_BACKLOG_STOP_MAX_PENDING = Math.max(1, Number(process.env.DAILY_SLOT_BACKLOG_STOP_MAX_PENDING || 8))
 
@@ -57,59 +52,6 @@ function scheduleDailyStatsCleanup(ctx: StartupSchedulerContext): void {
   }
   dailyCleanupTimer = setTimeout(runDailyStatsCleanup, getNextShanghaiMidnightDelayMs())
   if (dailyCleanupTimer && typeof dailyCleanupTimer.unref === 'function') dailyCleanupTimer.unref()
-}
-
-function getExpressionHarvestDelayMs(now: number = Date.now()): number {
-  const fiveMinutesMs = 5 * 60 * 1000
-  const delayUntilNextMidnight = getNextShanghaiMidnightDelayMs(now)
-  if (delayUntilNextMidnight > fiveMinutesMs) return delayUntilNextMidnight - fiveMinutesMs
-  return delayUntilNextMidnight + (24 * 60 * 60 * 1000) - fiveMinutesMs
-}
-
-async function runExpressionHarvestTick(ctx: StartupSchedulerContext): Promise<{ parked: boolean, status: string, taskId?: string, reason: string }> {
-  const gate = decideBackgroundDirective({
-    kind: RESOURCE_TASK_KIND.EXPRESSION_HARVEST,
-    source: 'expression-harvest-scheduler',
-    channelKey: 'global',
-    userId: '',
-    priority: 97,
-    exclusive: true,
-    timeoutMs: 180000,
-    queueTimeoutMs: 180000,
-    runTimeoutMs: 180000,
-  })
-  if (gate.directive.action === 'park') {
-    logDebug(ctx, 'expression-pool', `expression_harvest parked reason=${gate.directive.reason} resource=${gate.directive.resourceState} sleepMs=${gate.directive.sleepMs}`)
-    return { parked: true, status: 'parked', reason: gate.directive.reason }
-  }
-
-  const firstBot = ctx && Array.isArray(ctx.bots) ? ctx.bots[0] : null
-  const result = submitExpressionHarvestTask({
-    source: 'expression-harvest-scheduler',
-    selfUserId: String(firstBot?.selfId || firstBot?.userId || ''),
-  })
-  logDebug(ctx, 'expression-pool', `expression_harvest status=${result.status} taskId=${result.taskId || ''}`)
-  return {
-    parked: false,
-    status: String(result.status || ''),
-    taskId: result.taskId || undefined,
-    reason: 'submitted',
-  }
-}
-
-function scheduleExpressionHarvest(ctx: StartupSchedulerContext): void {
-  const runExpressionHarvestTimerTick = async () => {
-    try {
-      await runExpressionHarvestTick(ctx)
-    } catch (error) {
-      ctx.logger('dongxuelian-ai').warn(`expression harvest failed: ${getStartupSchedulerErrorMessage(error)}`)
-    } finally {
-      expressionHarvestTimer = setTimeout(runExpressionHarvestTimerTick, getExpressionHarvestDelayMs())
-      if (expressionHarvestTimer && typeof expressionHarvestTimer.unref === 'function') expressionHarvestTimer.unref()
-    }
-  }
-  expressionHarvestTimer = setTimeout(runExpressionHarvestTimerTick, getExpressionHarvestDelayMs())
-  if (expressionHarvestTimer && typeof expressionHarvestTimer.unref === 'function') expressionHarvestTimer.unref()
 }
 
 async function runDailyPrecomputePlanningTick(ctx: StartupSchedulerContext): Promise<{ parked: boolean, planned: number, channels: number, reason: string }> {
@@ -180,10 +122,6 @@ function clearStartupSchedulers(): void {
     clearTimeout(dailyCleanupTimer)
     dailyCleanupTimer = null
   }
-  if (expressionHarvestTimer) {
-    clearTimeout(expressionHarvestTimer)
-    expressionHarvestTimer = null
-  }
   if (dailyPrecomputeTimer) {
     clearTimeout(dailyPrecomputeTimer)
     dailyPrecomputeTimer = null
@@ -193,9 +131,6 @@ function clearStartupSchedulers(): void {
 export = {
   getNextShanghaiMidnightDelayMs,
   scheduleDailyStatsCleanup,
-  getExpressionHarvestDelayMs,
-  scheduleExpressionHarvest,
-  runExpressionHarvestTick,
   runDailyPrecomputePlanningTick,
   scheduleDailyPrecomputePlanning,
   clearStartupSchedulers,

@@ -1,6 +1,6 @@
 /**
  * MODULE: 后台 LLM 任务提交器。
- * 职责: 为 Koishi 主进程提交表达抽象、对话摘要、敏感缓存分析任务。
+ * 职责: 为 Koishi 主进程提交对话摘要、敏感缓存分析任务。
  * 边界: 不调用模型，不执行后台 LLM，只写 S2 任务。
  */
 const { submitWorkerTaskWithAdmission } = require('./task-client') as typeof import('./task-client')
@@ -34,13 +34,6 @@ interface SubmissionResultLike {
   task?: ResourceTaskLike
   admission?: AdmissionDecisionLike
   accepted?: boolean
-}
-
-interface ExpressionHarvestSubmissionOptions {
-  source?: string
-  channels?: string[]
-  selfUserId?: string
-  botName?: string
 }
 
 interface ConversationSummarySubmissionOptions {
@@ -110,32 +103,6 @@ function getParkedBackgroundSubmission(input: BackgroundSubmissionGateInput): Ba
   }
 }
 
-// 提交表达学习抽象任务；真正模型调用由 background-llm-worker 执行。
-function submitExpressionHarvestTask(options: ExpressionHarvestSubmissionOptions = {}): BackgroundSubmissionResult {
-  const channels = Array.isArray(options.channels) ? options.channels.map(String).filter(Boolean).slice(0, 200) : []
-  const dedupeKey = channels.length ? channels.sort().join(',') : 'all'
-  if (countActiveBackgroundTasks('expression_harvest', task => String(task.payload?.dedupeKey || 'all') === dedupeKey, 1) >= 1) {
-    return { accepted: false, status: 'skipped', message: 'active expression_harvest task already exists' }
-  }
-  const result = submitWorkerTaskWithAdmission({
-    kind: 'expression_harvest',
-    source: String(options.source || 'expression-harvest-scheduler'),
-    channelKey: 'global',
-    userId: '',
-    priority: 97,
-    timeoutMs: 180000,
-    expiresAt: getBackgroundExpiryIso(24 * 60 * 60 * 1000),
-    payload: {
-      dedupeKey,
-      channels,
-      selfUserId: String(options.selfUserId || ''),
-      botName: String(options.botName || ''),
-    },
-    notify: { target: 'none', status: 'pending' },
-  }, { checkAdmission: true, exclusive: true })
-  return normalizeBackgroundSubmission(result, 'expression_harvest')
-}
-
 // 提交对话摘要任务；主进程不再同步调用轻量模型。
 function submitConversationSummaryTask(options: ConversationSummarySubmissionOptions): BackgroundSubmissionResult {
   const key = String(options.key || '')
@@ -199,7 +166,6 @@ function submitSensitiveCacheAnalysisTask(options: SensitiveAnalysisSubmissionOp
 }
 
 export = {
-  submitExpressionHarvestTask,
   submitConversationSummaryTask,
   submitSensitiveCacheAnalysisTask,
 }

@@ -132,12 +132,6 @@ const {
   getSkillsCount,
 } = require('./persona/skills/skills-loader') as typeof import('./persona/skills/skills-loader') // 技能文件加载、缓存刷新和基础 system prompt
 const {
-  buildExpressionShadowPlan,
-  formatExpressionShadowDiagnostic,
-  detectExpressionSensitiveTopicActive,
-  EXPRESSION_SHADOW_RECENT_SPEAKER_WINDOW_MS,
-} = require('./behavior/expression/expression-shadow-router') as typeof import('./behavior/expression/expression-shadow-router') // 表达学习旁路诊断（v2.3，仅日志）
-const {
   buildPersonaProfileBlocks,
   buildPersonaProfileReinforcementShadow,
   formatPersonaProfileReinforcementShadowDiagnostic,
@@ -989,37 +983,6 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
       }
     : {}
   messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered }) })
-
-  // 表达学习旁路诊断（v2.3，shadow，仅日志，不修改 messages）
-  try {
-    const shadowNow = Date.now()
-    const cacheItems = (channelSharedCache && typeof channelSharedCache.get === 'function')
-      ? (channelSharedCache.get(channelKey) || [])
-      : []
-    const recentItems: Array<{ content?: string; ts?: number; timestamp?: number }> = []
-    const recentSpeakerSet: Set<string> = new Set()
-    const since = shadowNow - EXPRESSION_SHADOW_RECENT_SPEAKER_WINDOW_MS
-    for (const it of cacheItems) {
-      if (!it || typeof it !== 'object') continue
-      const ts = Number(it.ts || 0)
-      if (Number.isFinite(ts) && ts > 0 && ts < since) continue
-      recentItems.push(it)
-      const uid = String(it.userId || '').trim()
-      if (uid) recentSpeakerSet.add(uid)
-    }
-    const sensitiveTopicActive = detectExpressionSensitiveTopicActive(recentItems, shadowNow)
-    const shadowPlan = buildExpressionShadowPlan({
-      channelKey,
-      personaName,
-      cleanInput,
-      recentSpeakerIds: Array.from(recentSpeakerSet),
-      sensitiveTopicActive,
-      now: shadowNow,
-    } as Parameters<typeof buildExpressionShadowPlan>[0] & { cleanInput?: string })
-    logDebug(ctx, 'expression-pool', formatExpressionShadowDiagnostic(shadowPlan))
-  } catch (shadowError) {
-    try { logDebug(ctx, 'expression-pool', `shadow_failed reason=${String(errorMessage(shadowError) || 'unknown').slice(0, 80)}`) } catch { /* non-critical: expression shadow diagnostics never block chat */ }
-  }
 
   let reply = await callOpenAI(messages, isRandomTriggered, {}, chatTools) as ChatToolFlowReply
 

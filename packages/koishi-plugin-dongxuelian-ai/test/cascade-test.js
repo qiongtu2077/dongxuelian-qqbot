@@ -472,10 +472,6 @@ async function main() {
   check('syntax runner covers reply timing syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/reply/reply-timing.js'))
   check('syntax runner covers affect router syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/affect-router.js'))
   check('syntax runner covers sticker shadow syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/sticker-shadow.js'))
-  check('syntax runner covers expression learner syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/expression/expression-learner.js'))
-  check('syntax runner covers expression pool store syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/expression/expression-pool-store.js'))
-  check('syntax runner covers expression abstractor syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/expression/expression-abstractor.js'))
-  check('syntax runner covers expression shadow router syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/behavior/expression/expression-shadow-router.js'))
   check('syntax runner covers startup schedulers syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/startup-schedulers.js'))
   check('syntax runner covers persona runtime plan syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/persona/persona-runtime-plan.js'))
   check('syntax runner covers persona profile syntax', syntaxFileSet.has('packages/koishi-plugin-dongxuelian-ai/lib/persona/persona-profile.js'))
@@ -575,10 +571,6 @@ async function main() {
     affectRouter: path.join(LIB, 'behavior', 'affect-router'),
     stickerShadow: path.join(LIB, 'behavior', 'sticker-shadow'),
     diagnostics: path.join(LIB, 'diagnostics', 'diagnostics'),
-    expressionLearner: path.join(LIB, 'behavior', 'expression', 'expression-learner'),
-    expressionPoolStore: path.join(LIB, 'behavior', 'expression', 'expression-pool-store'),
-    expressionAbstractor: path.join(LIB, 'behavior', 'expression', 'expression-abstractor'),
-    expressionShadowRouter: path.join(LIB, 'behavior', 'expression', 'expression-shadow-router'),
     groupSceneIndex: path.join(LIB, 'routing', 'group-scene-index'),
     randomReplyMode: path.join(LIB, 'behavior', 'random-reply-mode'),
     randomPersonaRisk: path.join(LIB, 'behavior', 'random-persona-risk'),
@@ -863,22 +855,6 @@ async function main() {
       'buildAffectRouterDiagnosticForShadow', 'logAffectRouterDiagnosticForOutputShadow',
       'logStickerShadowPlan', 'logStickerShadowIngestDiagnostic', 'logStickerShadowSendDiagnostic',
     ],
-    expressionLearner: [
-      'filterExpressionLearningMessages',
-    ],
-    expressionPoolStore: [
-      'loadExpressionPool', 'appendExpressionCandidate', 'archiveByContributor',
-      'computeSituationStyleSimilarity', 'expressionPoolSafeChannelKey', 'expressionPoolFilePath',
-    ],
-    expressionAbstractor: [
-      'runExpressionHarvestForChannel', 'runExpressionHarvestForAllChannels',
-      'abstractorBuildSystemPrompt', 'abstractorBuildUserPayload', 'abstractorParseModelOutput',
-      'buildExpressionHarvestDiagnostic', 'formatExpressionHarvestDiagnostic',
-    ],
-    expressionShadowRouter: [
-      'resolveExpressionInjectionMode', 'detectExpressionSensitiveTopicActive',
-      'buildExpressionShadowPlan', 'formatExpressionShadowDiagnostic',
-    ],
     groupSceneIndex: [
       'appendGroupSceneEntry', 'loadGroupScenes', 'readGroupContext',
       'buildActiveGroupSceneNote', 'classifySceneItemsForActive', 'sanitizeSceneText', 'safeSceneChannelKey',
@@ -918,7 +894,7 @@ async function main() {
     ],
     startupSchedulers: [
       'getNextShanghaiMidnightDelayMs', 'scheduleDailyStatsCleanup',
-      'getExpressionHarvestDelayMs', 'scheduleExpressionHarvest', 'runExpressionHarvestTick', 'clearStartupSchedulers',
+      'clearStartupSchedulers',
     ],
     pluginLifecycle: [
       'restoreTodayCacheEntry', 'restoreTodayCache', 'registerPluginLifecycle',
@@ -1304,12 +1280,6 @@ async function main() {
   check('resourceActivityLease.ACTIVITY_ROOT exported', typeof modules.resourceActivityLease.ACTIVITY_ROOT === 'string' && modules.resourceActivityLease.ACTIVITY_ROOT.includes('resource-activity'))
   check('randomState.channelMissCount exported as Map', modules.randomState.channelMissCount instanceof Map)
   check('agentSkillScanner.SCAN_RULES exported', Array.isArray(modules.agentSkillScanner.SCAN_RULES) && modules.agentSkillScanner.SCAN_RULES.length > 0)
-  check('expressionLearner.EXPRESSION_LEARNER_VERSION exported', typeof modules.expressionLearner.EXPRESSION_LEARNER_VERSION === 'number')
-  check('expressionLearner.EXPRESSION_LEARNER_SKIP_REASONS exported', !!modules.expressionLearner.EXPRESSION_LEARNER_SKIP_REASONS && typeof modules.expressionLearner.EXPRESSION_LEARNER_SKIP_REASONS === 'object')
-  check('expressionLearner.EXPRESSION_LEARNER_REPEAT_WINDOW_MS exported', modules.expressionLearner.EXPRESSION_LEARNER_REPEAT_WINDOW_MS === 120000)
-  check('expressionLearner.EXPRESSION_LEARNER_REPEAT_MIN_USERS exported', modules.expressionLearner.EXPRESSION_LEARNER_REPEAT_MIN_USERS === 2)
-  check('expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_WINDOW_MS exported', modules.expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_WINDOW_MS === 300000)
-  check('expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS exported', Array.isArray(modules.expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS) && modules.expressionLearner.EXPRESSION_LEARNER_SENSITIVE_TOPIC_KEYWORDS.includes('住院'))
   check('agentSkillScanner.SEVERITY_ORDER exported', !!(modules.agentSkillScanner.SEVERITY_ORDER && typeof modules.agentSkillScanner.SEVERITY_ORDER === 'object'))
   check('persona profile source reader keeps bounded legacy file size', modules.personaProfileSources.MAX_PROFILE_SOURCE_FILE_BYTES === 512 * 1024)
   check('persona profile re-exports source reader helpers from dedicated source module', modules.personaProfile.safePersonaProfileFile === modules.personaProfileSources.safePersonaProfileFile && modules.personaProfile.readLegacyPersonaProfileData === modules.personaProfileSources.readLegacyPersonaProfileData)
@@ -1420,10 +1390,6 @@ async function main() {
     path.join(LIB, 'behavior', 'affect-router.js'),
     path.join(LIB, 'behavior', 'sticker-shadow.js'),
     path.join(LIB, 'diagnostics', 'diagnostics.js'),
-    path.join(LIB, 'behavior', 'expression', 'expression-learner.js'),
-    path.join(LIB, 'behavior', 'expression', 'expression-pool-store.js'),
-    path.join(LIB, 'behavior', 'expression', 'expression-abstractor.js'),
-    path.join(LIB, 'behavior', 'expression', 'expression-shadow-router.js'),
     path.join(LIB, 'routing', 'group-scene-index.js'),
     path.join(LIB, 'behavior', 'random-reply-mode.js'),
     path.join(LIB, 'behavior', 'random-persona-risk.js'),
@@ -1551,7 +1517,7 @@ async function main() {
     runSyntaxCheck(`node -c ${path.relative(ROOT, file)}`, file)
   }
 
-  const duplicateScanFiles = ['index.js', 'core/constants.js', 'core/utils.js', 'persona/persona.js', 'persona/persona-schema.js', 'persona/persona-diagnostics.js', 'persona/persona-runtime-plan.js', 'persona/persona-profile.js', 'persona/persona-lore-router.js', 'persona/skills/skills-loader.js', 'persona/skills/skill-seeds.js', 'reply/reply-timing.js', 'behavior/affect-router.js', 'behavior/sticker-shadow.js', 'diagnostics/diagnostics.js', 'behavior/expression/expression-learner.js', 'behavior/expression/expression-pool-store.js', 'behavior/expression/expression-abstractor.js', 'behavior/expression/expression-shadow-router.js', 'routing/group-scene-index.js', 'behavior/random-reply-mode.js', 'behavior/random-persona-risk.js', 'lifecycle/session-compat.js', 'lifecycle/bot-resolver.js', 'lifecycle/channel-task-queue.js', 'lifecycle/event-dump.js', 'lifecycle/startup-schedulers.js', 'lifecycle/plugin-lifecycle.js', 'message/message-segment.js', 'message/incoming-message-flow.js', 'behavior/runtime-settings.js', 'core/user-blacklist.js', 'commands/admin-commands.js', 'diagnostics/shared-record-text.js', 'routing/search-context.js', 'routing/voice-quick-read.js', 'reply/safe-send.js', 'behavior/random-state.js', 'core/api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message/message-reader.js', 'chat.js', 'chat/chat-prompt-builder.js', 'chat/chat-memory.js', 'chat/chat-tool-flow.js', 'chat/chat-final-output-flow.js', 'chat/chat-jailbreak-flow.js', 'chat/chat-topic-switch.js', 'chat/chat-agent-retell-flow.js', 'chat/chat-result-flow.js', 'chat/chat-send-flow.js', 'resource-scheduler/resource-directive.js', 'resource-scheduler/background-directive.js', 'resource-scheduler/resource-activity-lease.js', 'routing/agent-auto-route-flow.js', 'chat/agent-chat-bridge.js', 'chat/agent-retell-guard.js', 'chat/chat-tools.js', 'persona/persona-fallback.js', 'media/file/file-safety.js', 'media/file/file-followup-state.js', 'chat/file-followup-evidence.js', 'media/file/file-followup-guard.js', 'media/file/file-store.js', 'media/file/incoming-file.js', 'media/file/file-analyzer.js', 'media/image/image-store.js', 'media/image/image-analyzer.js', 'media/image/image-analysis-sanitizer.js', 'media/image/vision.js', 'rulesets/jailbreak.js', 'core/logging-config.js', 'core/runtime-config.js', 'diagnostics/health-check.js', 'reply/reply.js', 'reply/reply-guard.js', 'behavior/repeat.js', 'message/forward.js', 'behavior/sensitive.js', 'behavior/retaliation.js', 'reply/send-guard.js', 'behavior/rare-voice.js', 'behavior/random-voice-rate.js', 'media/voice/voice-assets.js', 'media/voice/voice.js', 'media/voice/tts.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js', 'mcp/local-server.js']
+  const duplicateScanFiles = ['index.js', 'core/constants.js', 'core/utils.js', 'persona/persona.js', 'persona/persona-schema.js', 'persona/persona-diagnostics.js', 'persona/persona-runtime-plan.js', 'persona/persona-profile.js', 'persona/persona-lore-router.js', 'persona/skills/skills-loader.js', 'persona/skills/skill-seeds.js', 'reply/reply-timing.js', 'behavior/affect-router.js', 'behavior/sticker-shadow.js', 'diagnostics/diagnostics.js', 'routing/group-scene-index.js', 'behavior/random-reply-mode.js', 'behavior/random-persona-risk.js', 'lifecycle/session-compat.js', 'lifecycle/bot-resolver.js', 'lifecycle/channel-task-queue.js', 'lifecycle/event-dump.js', 'lifecycle/startup-schedulers.js', 'lifecycle/plugin-lifecycle.js', 'message/message-segment.js', 'message/incoming-message-flow.js', 'behavior/runtime-settings.js', 'core/user-blacklist.js', 'commands/admin-commands.js', 'diagnostics/shared-record-text.js', 'routing/search-context.js', 'routing/voice-quick-read.js', 'reply/safe-send.js', 'behavior/random-state.js', 'core/api.js', 'conversation.js', 'handler.js', 'commands/command-result.js', 'commands/voice-command.js', 'commands/memory-command.js', 'commands/plan-command.js', 'commands/agent-command.js', 'commands/emotion-command.js', 'message/message-reader.js', 'chat.js', 'chat/chat-prompt-builder.js', 'chat/chat-memory.js', 'chat/chat-tool-flow.js', 'chat/chat-final-output-flow.js', 'chat/chat-jailbreak-flow.js', 'chat/chat-topic-switch.js', 'chat/chat-agent-retell-flow.js', 'chat/chat-result-flow.js', 'chat/chat-send-flow.js', 'resource-scheduler/resource-directive.js', 'resource-scheduler/background-directive.js', 'resource-scheduler/resource-activity-lease.js', 'routing/agent-auto-route-flow.js', 'chat/agent-chat-bridge.js', 'chat/agent-retell-guard.js', 'chat/chat-tools.js', 'persona/persona-fallback.js', 'media/file/file-safety.js', 'media/file/file-followup-state.js', 'chat/file-followup-evidence.js', 'media/file/file-followup-guard.js', 'media/file/file-store.js', 'media/file/incoming-file.js', 'media/file/file-analyzer.js', 'media/image/image-store.js', 'media/image/image-analyzer.js', 'media/image/image-analysis-sanitizer.js', 'media/image/vision.js', 'rulesets/jailbreak.js', 'core/logging-config.js', 'core/runtime-config.js', 'diagnostics/health-check.js', 'reply/reply.js', 'reply/reply-guard.js', 'behavior/repeat.js', 'message/forward.js', 'behavior/sensitive.js', 'behavior/retaliation.js', 'reply/send-guard.js', 'behavior/rare-voice.js', 'behavior/random-voice-rate.js', 'media/voice/voice-assets.js', 'media/voice/voice.js', 'media/voice/tts.js', 'agent/engine.js', 'agent/messages.js', 'agent/config.js', 'agent/context.js', 'agent/persona-context.js', 'agent/workspace-context.js', 'agent/search-query.js', 'agent/search-results.js', 'agent/http-search.js', 'agent/queue.js', 'agent/memory.js', 'agent/auto-memory.js', 'agent/push.js', 'agent/cron.js', 'agent/plan/plan-store.js', 'agent/plan/plan-engine.js', 'agent/plan/plan-prompts.js', 'agent/plan/plan-tools.js', 'agent/plan/plan-runner.js', 'agent/path-guard.js', 'agent/skills.js', 'agent/skills/scanner.js', 'agent/skill-hub.js', 'agent/router.js', 'agent/sessions.js', 'agent/stats.js', 'agent/pending.js', 'agent/safety.js', 'agent/tools/registry.js', 'agent/tools/get-time.js', 'agent/tools/calculator.js', 'agent/tools/web-search.js', 'agent/tools/web-fetch.js', 'agent/tools/read-agent-skill.js', 'agent/tools/browser-action.js', 'agent/tools/read-file.js', 'agent/tools/list-files.js', 'agent/tools/find-files.js', 'agent/tools/write-file.js', 'agent/tools/edit-file.js', 'agent/tools/shell.js', 'agent/tools/shell-guard.js', 'agent/tools/memory-tools.js', 'agent/tools/append-file.js', 'agent/tools/grep-search.js', 'agent/tools/execute-javascript.js', 'agent/tools/send-file-to-user.js', 'agent/tools/create-uploaded-file-variant.js', 'agent/tools/get-token-usage.js', 'agent/tools/set-user-timezone.js', 'agent/tools/query-logs.js', 'agent/tools/create-reminder.js', 'agent/tools/analyze-file.js', 'mcp/local-server.js']
   const functions = []
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
@@ -3556,80 +3522,10 @@ async function main() {
   } finally {
     try { require('fs').rmSync(stickerShadowTmp, { recursive: true, force: true }) } catch {}
   }
-  const expressionLearner = modules.expressionLearner
-  const exprBaseTs = 1700000000000
-  const exprFilterResult = expressionLearner.filterExpressionLearningMessages([
-    { userId: 'bot', role: 'assistant', content: '主角自己发的应被剔除', ts: exprBaseTs + 1000 },
-    { userId: 'u1', content: '看图就知道 [图片] 拼接的', ts: exprBaseTs + 2000 },
-    { userId: 'u2', content: '@东雪莲 在不在', ts: exprBaseTs + 3000, mentionUserIds: ['100001'] },
-    { userId: 'u3', content: '台独 这种事', ts: exprBaseTs + 4000 },
-    { userId: 'u4', content: '我朋友昨天住院了', ts: exprBaseTs + 6000 },
-    { userId: 'u5', content: '我们都很担心', ts: exprBaseTs + 60000 },
-    { userId: 'u4b', content: '今天典中典现场', ts: exprBaseTs + 600000 },
-    { userId: 'u7', content: '复读这句', ts: exprBaseTs + 800000 },
-    { userId: 'u8', content: '复读这句', ts: exprBaseTs + 800500 },
-    { userId: 'u9', content: '复读这句', ts: exprBaseTs + 801000 },
-    { userId: 'u10', content: '正经能学的句子', ts: exprBaseTs + 900000 },
-  ], { selfUserIds: ['100001'], botUserIds: ['100001'], botName: '东雪莲' })
-  const exprKeptContents = exprFilterResult.kept.map((entry) => entry.content)
-  check('expression learner skips bot self message', exprFilterResult.skipped.selfBot >= 1, JSON.stringify(exprFilterResult.skipped))
-  check('expression learner skips image/emoji bracket messages', exprFilterResult.skipped.hasImageOrEmoji >= 1, JSON.stringify(exprFilterResult.skipped))
-  check('expression learner skips messages mentioning bot', exprFilterResult.skipped.mentionsBot >= 1, JSON.stringify(exprFilterResult.skipped))
-  check('expression learner skips sensitive keyword messages', exprFilterResult.skipped.sensitiveKeyword >= 1, JSON.stringify(exprFilterResult.skipped))
-  check('expression learner skips repeat-window messages', exprFilterResult.skipped.repeatWindow >= 3, JSON.stringify(exprFilterResult.skipped))
-  check('expression learner blacks out sensitive topic windows', exprFilterResult.skipped.sensitiveTopicWindow >= 2, JSON.stringify(exprFilterResult.skipped))
-  check('expression learner keeps neutral chatter outside windows', exprKeptContents.includes('今天典中典现场') && exprKeptContents.includes('正经能学的句子'), JSON.stringify(exprKeptContents))
-  check('expression learner does not leak repeat or sensitive content into kept', !exprKeptContents.includes('复读这句') && !exprKeptContents.some((text) => text.includes('住院')), JSON.stringify(exprKeptContents))
-  const exprEmpty = expressionLearner.filterExpressionLearningMessages([])
-  check('expression learner returns zero counts for empty input', exprEmpty.kept.length === 0 && exprEmpty.total === 0 && exprEmpty.skipped.selfBot === 0, JSON.stringify(exprEmpty))
-  const expressionPoolStore = modules.expressionPoolStore
-  const exprPoolChannel = '__cascade_test_pool__:' + Date.now() + '_' + Math.random().toString(16).slice(2)
-  const exprPoolFile = expressionPoolStore.expressionPoolFilePath(exprPoolChannel)
-  check('expression pool safe channel key strips colon', !expressionPoolStore.expressionPoolSafeChannelKey('a:b/c').includes(':') && !expressionPoolStore.expressionPoolSafeChannelKey('a:b/c').includes('/'), expressionPoolStore.expressionPoolSafeChannelKey('a:b/c'))
-  try { require('fs').unlinkSync(exprPoolFile) } catch {}
-  const exprPoolEmpty = expressionPoolStore.loadExpressionPool(exprPoolChannel)
-  check('expression pool load empty file returns empty entries array', Array.isArray(exprPoolEmpty.entries) && exprPoolEmpty.entries.length === 0, JSON.stringify(exprPoolEmpty))
-  const exprPoolAppend1 = await expressionPoolStore.appendExpressionCandidate(exprPoolChannel, { situation: '群友水群打字', style: '按 X 发工资', contributors: ['u1', 'u2'] }, { now: 1700000000000 })
-  check('expression pool append creates new entry on first insert', exprPoolAppend1.mode === 'created' && exprPoolAppend1.entry && exprPoolAppend1.entry.count === 1, JSON.stringify(exprPoolAppend1))
-  const exprPoolAppend2 = await expressionPoolStore.appendExpressionCandidate(exprPoolChannel, { situation: '群友水群打字', style: '按 X 发工资', contributors: ['u3'] }, { now: 1700000060000 })
-  check('expression pool append merges similar candidate count up', exprPoolAppend2.mode === 'merged' && exprPoolAppend2.entry.count === 2 && exprPoolAppend2.entry.contributors.includes('u3'), JSON.stringify(exprPoolAppend2))
-  const exprPoolAppend3 = await expressionPoolStore.appendExpressionCandidate(exprPoolChannel, { situation: '群友讨论代码', style: '典中典 X 现场' }, { now: 1700000120000 })
-  check('expression pool append creates separate entry for distinct situation', exprPoolAppend3.mode === 'created' && exprPoolAppend3.entry.id !== exprPoolAppend1.entry.id, JSON.stringify(exprPoolAppend3))
-  const exprPoolLoaded = expressionPoolStore.loadExpressionPool(exprPoolChannel)
-  check('expression pool load reflects appended entries', exprPoolLoaded.entries.length === 2 && exprPoolLoaded.entries.some((e) => e.count === 2), JSON.stringify(exprPoolLoaded.entries.map((e) => ({ count: e.count, status: e.status }))))
-  const exprPoolArchive = await expressionPoolStore.archiveByContributor(exprPoolChannel, 'u1')
-  check('expression pool archive by contributor flags entries', exprPoolArchive.archived === 1, JSON.stringify(exprPoolArchive))
-  const exprPoolArchived = expressionPoolStore.loadExpressionPool(exprPoolChannel)
-  const exprArchivedEntry = exprPoolArchived.entries.find((e) => e.status === 'archived')
-  check('expression pool archive removes contributor and sets status', exprArchivedEntry && !exprArchivedEntry.contributors.includes('u1'), JSON.stringify(exprArchivedEntry))
-  const exprPoolReject = await expressionPoolStore.appendExpressionCandidate(exprPoolChannel, { situation: '', style: '' })
-  check('expression pool append rejects empty candidate', exprPoolReject.mode === 'rejected', JSON.stringify(exprPoolReject))
-  const exprSimSame = expressionPoolStore.computeSituationStyleSimilarity({ situation: 'abc', style: 'xyz' }, { situation: 'abc', style: 'xyz' })
-  const exprSimDiff = expressionPoolStore.computeSituationStyleSimilarity({ situation: 'abc', style: 'xyz' }, { situation: '完全不同', style: '另一个' })
-  check('expression pool similarity scoring reaches one for identical and below threshold for distinct', exprSimSame >= 0.99 && exprSimDiff < 0.5, `same=${exprSimSame} diff=${exprSimDiff}`)
-  try { require('fs').unlinkSync(exprPoolFile) } catch {}
-  const expressionAbstractor = modules.expressionAbstractor
-  const exprAbsParseEmpty = expressionAbstractor.abstractorParseModelOutput('')
-  check('expression abstractor parses empty raw to empty array', Array.isArray(exprAbsParseEmpty) && exprAbsParseEmpty.length === 0, JSON.stringify(exprAbsParseEmpty))
-  const exprAbsParseFenced = expressionAbstractor.abstractorParseModelOutput('```json\n[{"situation":"群友水群","style":"按 X 发工资"}]\n```')
-  check('expression abstractor parses fenced JSON arrays', exprAbsParseFenced.length === 1 && exprAbsParseFenced[0].situation === '群友水群', JSON.stringify(exprAbsParseFenced))
-  const exprAbsParseTrim = expressionAbstractor.abstractorParseModelOutput('结果：[{"situation":"  好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长好长更多","style":"X 啊 X"}]')
-  check('expression abstractor clamps situation to 20 chars', exprAbsParseTrim.length === 1 && exprAbsParseTrim[0].situation.length <= 20, JSON.stringify(exprAbsParseTrim))
-  const exprAbsParseInvalid = expressionAbstractor.abstractorParseModelOutput('not a json')
-  check('expression abstractor returns empty on broken json', Array.isArray(exprAbsParseInvalid) && exprAbsParseInvalid.length === 0, JSON.stringify(exprAbsParseInvalid))
-  const exprAbsPayload = expressionAbstractor.abstractorBuildUserPayload([
-    { content: '今天天气不错' },
-    { content: '   ' },
-    { content: '看吧又是这样' },
-  ])
-  check('expression abstractor user payload skips empty lines', exprAbsPayload.includes('今天天气不错') && exprAbsPayload.includes('看吧又是这样') && !/-\s\s/.test(exprAbsPayload), exprAbsPayload)
-  const exprAbsHarvestSummary = expressionAbstractor.formatExpressionHarvestDiagnostic({ channels: 2, totalKept: 30, abstractOk: 1, abstractFailed: 1, created: 4, merged: 2, rejected: 0 })
-  check('expression abstractor diagnostic line carries counts', exprAbsHarvestSummary.includes('channels=2') && exprAbsHarvestSummary.includes('created=4') && exprAbsHarvestSummary.includes('merged=2'), exprAbsHarvestSummary)
   const startupSchedulers = modules.startupSchedulers
   const shanghaiMidnightBase = Date.parse('2026-05-24T16:00:00.000Z')
   check('startup scheduler next midnight uses Shanghai date boundary', startupSchedulers.getNextShanghaiMidnightDelayMs(shanghaiMidnightBase) === 24 * 60 * 60 * 1000, String(startupSchedulers.getNextShanghaiMidnightDelayMs(shanghaiMidnightBase)))
   check('startup scheduler next midnight has one second lower bound', startupSchedulers.getNextShanghaiMidnightDelayMs(Date.parse('2026-05-25T15:59:59.500Z')) === 1000, String(startupSchedulers.getNextShanghaiMidnightDelayMs(Date.parse('2026-05-25T15:59:59.500Z'))))
-  check('startup scheduler expression harvest runs five minutes before midnight', startupSchedulers.getExpressionHarvestDelayMs(shanghaiMidnightBase) === (24 * 60 * 60 * 1000) - (5 * 60 * 1000), String(startupSchedulers.getExpressionHarvestDelayMs(shanghaiMidnightBase)))
   const messageSegment = modules.messageSegment
   const cqImageRef = messageSegment.extractImageRefFromContent('[CQ:img,file=abc.png,url=https://example.com/a.png]')
   check('message segment extracts CQ image url and file', cqImageRef.url === 'https://example.com/a.png' && cqImageRef.file === 'abc.png', JSON.stringify(cqImageRef))
@@ -3644,100 +3540,6 @@ async function main() {
   check('message segment prefers file segment over content fallback', fileFromElements.name === 'from-elements.txt' && fileFromElements.file === 'file-token-elements', JSON.stringify(fileFromElements))
   const cqFileRef = messageSegment.extractFileRefFromContent('[CQ:file,file=lesson.md,name=说课.md,url=https://example.com/lesson.md,size=12,mime=text/plain]')
   check('message segment extracts CQ file metadata', cqFileRef.name === '说课.md' && cqFileRef.file === 'lesson.md' && cqFileRef.url === 'https://example.com/lesson.md' && cqFileRef.size === 12 && cqFileRef.mime === 'text/plain', JSON.stringify(cqFileRef))
-  const exprFakeAppendCalls = []
-  const exprFakeAppend = async (channelKey, candidate) => { exprFakeAppendCalls.push({ channelKey, candidate }); return { mode: 'created', entry: candidate } }
-  const exprStubChannel = '__cascade_test_abstract__:' + Date.now()
-  const exprStubSafeKey = expressionPoolStore.expressionPoolSafeChannelKey(exprStubChannel)
-  const exprStubCacheFile = modules.constants.TODAY_CACHE_PREFIX + exprStubSafeKey + '.json'
-  try { require('fs').mkdirSync(path.dirname(exprStubCacheFile), { recursive: true }) } catch {}
-  const exprStubMessages = []
-  for (let i = 0; i < 12; i += 1) exprStubMessages.push({ userId: `u${i}`, content: `测试中性发言 ${i} 啊啊啊`, ts: 1700000000000 + i * 1000 })
-  require('fs').writeFileSync(exprStubCacheFile, JSON.stringify({ date: '2099-01-01', messages: exprStubMessages }), 'utf8')
-  const exprHarvestOk = await expressionAbstractor.runExpressionHarvestForChannel(null, exprStubChannel, {
-    callModel: async () => '[{"situation":"群里水群闲聊","style":"X 啊 X 啊"}]',
-    appendCandidate: exprFakeAppend,
-    selfUserId: 'bot',
-    botName: '东雪莲',
-    now: 1700000050000,
-  })
-  check('expression abstractor harvest channel uses appendCandidate when model returns valid json', exprHarvestOk.abstractOk === 1 && exprFakeAppendCalls.length >= 1 && exprHarvestOk.created >= 1, JSON.stringify(exprHarvestOk))
-  const exprFakeAppendCalls2 = []
-  const exprFakeAppend2 = async (channelKey, candidate) => { exprFakeAppendCalls2.push(candidate); return { mode: 'merged' } }
-  const exprHarvestBad = await expressionAbstractor.runExpressionHarvestForChannel(null, exprStubChannel, {
-    callModel: async () => 'not json',
-    appendCandidate: exprFakeAppend2,
-    selfUserId: 'bot',
-    botName: '东雪莲',
-    now: 1700000060000,
-  })
-  check('expression abstractor harvest counts abstractFailed when json broken', exprHarvestBad.abstractFailed === 1 && exprFakeAppendCalls2.length === 0, JSON.stringify(exprHarvestBad))
-  try { require('fs').unlinkSync(exprStubCacheFile) } catch {}
-
-  // v2.3 expression-shadow-router 旁路诊断单测
-  const expressionShadowRouter = modules.expressionShadowRouter
-  const exprShadowEmptyPool = expressionShadowRouter.buildExpressionShadowPlan({
-    channelKey: '__shadow_test_empty__',
-    personaName: '东雪莲',
-    cleanInput: '今天天气不错',
-    recentSpeakerIds: [],
-    sensitiveTopicActive: false,
-    now: 1700000000000,
-  }, { loadPool: () => ({ entries: [] }) })
-  check('expression shadow router skips when pool empty', exprShadowEmptyPool.decision === 'silent' && exprShadowEmptyPool.skipped.poolEmpty === 1, JSON.stringify(exprShadowEmptyPool))
-  const exprShadowOff = expressionShadowRouter.buildExpressionShadowPlan({
-    channelKey: '__shadow_test_off__',
-    personaName: '长离',
-    cleanInput: 'hello',
-    recentSpeakerIds: [],
-    sensitiveTopicActive: false,
-    now: 1700000000000,
-  }, { loadPool: () => ({ entries: [{ id: 'x', situation: 's', style: 't', count: 5, lastUsedAt: 0, createdAt: 0, status: 'active' }] }) })
-  check('expression shadow router honours persona injection off', exprShadowOff.decision === 'silent' && exprShadowOff.skipped.injectionOff === 1 && exprShadowOff.injectionMode === 'off', JSON.stringify(exprShadowOff))
-  const exprShadowSensitive = expressionShadowRouter.buildExpressionShadowPlan({
-    channelKey: '__shadow_test_sensitive__',
-    personaName: '东雪莲',
-    cleanInput: 'hello',
-    recentSpeakerIds: [],
-    sensitiveTopicActive: true,
-    now: 1700000000000,
-  }, { loadPool: () => ({ entries: [{ id: 'x', situation: 's', style: 't', count: 5, lastUsedAt: 0, createdAt: 0, status: 'active' }] }) })
-  check('expression shadow router skips on sensitive topic window', exprShadowSensitive.decision === 'silent' && exprShadowSensitive.skipped.sensitiveTopicWindow === 1, JSON.stringify(exprShadowSensitive))
-  const exprShadowColdEntries = []
-  for (let i = 0; i < 5; i += 1) exprShadowColdEntries.push({ id: 'c' + i, situation: 's' + i, style: 't' + i, count: 5, createdAt: 0, lastUsedAt: 0, status: 'active' })
-  const exprShadowCold = expressionShadowRouter.buildExpressionShadowPlan({
-    channelKey: '__shadow_test_cold__',
-    personaName: '东雪莲',
-    cleanInput: 'hi',
-    now: 1700000100000,
-  }, { loadPool: () => ({ entries: exprShadowColdEntries }) })
-  check('expression shadow router cold-starts when pool below min', exprShadowCold.decision === 'silent' && exprShadowCold.skipped.coldStart === 1, JSON.stringify(exprShadowCold))
-  const exprShadowReadyEntries = []
-  for (let i = 0; i < 12; i += 1) exprShadowReadyEntries.push({ id: 'r' + i, situation: 'situation_' + i, style: 'style_' + i, count: 3 + i, createdAt: 1700000000000 - 10 * 24 * 60 * 60 * 1000, lastUsedAt: 0, status: 'active', contributors: ['x' + i] })
-  const exprShadowReady = expressionShadowRouter.buildExpressionShadowPlan({
-    channelKey: '__shadow_test_ready__',
-    personaName: '东雪莲',
-    cleanInput: 'hi',
-    recentSpeakerIds: ['nobody'],
-    sensitiveTopicActive: false,
-    now: 1700000100000 + 30 * 24 * 60 * 60 * 1000,
-  }, { loadPool: () => ({ entries: exprShadowReadyEntries }) })
-  check('expression shadow router picks candidates when pool ready', exprShadowReady.decision === 'shadow_inject' && exprShadowReady.candidatesPicked > 0 && exprShadowReady.candidatesPicked <= 3, JSON.stringify(exprShadowReady))
-  const exprShadowFiltered = expressionShadowRouter.buildExpressionShadowPlan({
-    channelKey: '__shadow_test_filtered__',
-    personaName: '东雪莲',
-    cleanInput: 'hi',
-    recentSpeakerIds: exprShadowReadyEntries.map((e) => e.contributors[0]),
-    sensitiveTopicActive: false,
-    now: 1700000100000 + 30 * 24 * 60 * 60 * 1000,
-  }, { loadPool: () => ({ entries: exprShadowReadyEntries }) })
-  check('expression shadow router filters out entries with active contributor', exprShadowFiltered.decision === 'silent' && exprShadowFiltered.skipped.contributorActive === exprShadowReadyEntries.length, JSON.stringify(exprShadowFiltered))
-  const exprShadowLine = expressionShadowRouter.formatExpressionShadowDiagnostic(exprShadowReady)
-  check('expression shadow router diagnostic line carries hashes and reasons without raw text', exprShadowLine.includes('decision=') && exprShadowLine.includes('persona=') && exprShadowLine.includes('reasons=') && !exprShadowLine.includes('situation_') && !exprShadowLine.includes('style_'), exprShadowLine)
-  const exprShadowMode = expressionShadowRouter.resolveExpressionInjectionMode('爱弥斯')
-  check('expression shadow router resolves persona injection mode by policy', exprShadowMode === 'abstract' && expressionShadowRouter.resolveExpressionInjectionMode('特蕾西娅') === 'off' && expressionShadowRouter.resolveExpressionInjectionMode('陌生人格') === 'on', exprShadowMode)
-  const exprShadowSensitiveActive = expressionShadowRouter.detectExpressionSensitiveTopicActive([{ content: '我朋友昨天住院了', ts: 1700000000000 }], 1700000000000 + 60 * 1000)
-  const exprShadowSensitiveInactive = expressionShadowRouter.detectExpressionSensitiveTopicActive([{ content: '今天天气真好', ts: 1700000000000 }], 1700000000000 + 60 * 1000)
-  check('expression shadow router detects sensitive window from cache items', exprShadowSensitiveActive === true && exprShadowSensitiveInactive === false, `${exprShadowSensitiveActive}/${exprShadowSensitiveInactive}`)
   const loreRouter = modules.personaLoreRouter
   check('persona lore router normalizes keyword metadata', JSON.stringify(loreRouter.normalizeLoreKeywords('今州, 源石，今州')) === JSON.stringify(['今州', '源石']), JSON.stringify(loreRouter.normalizeLoreKeywords('今州, 源石，今州')))
   check('persona lore router keeps legacy wuwa and terra keyword fallbacks', loreRouter.getLegacyLoreKeywords('wuwa-lore').includes('今州') && loreRouter.getLegacyLoreKeywords('terra-lore').includes('矿石病'))
@@ -4401,7 +4203,7 @@ async function main() {
   check('chat-send-flow sticker shadow caller only observes reply before send', stickerShadowCallerBlock.includes('affectDiagnostic') && stickerShadowCallerBlock.includes('replyText: reply') && !/messages\.(?:push|splice|unshift)|session\.send|sendReply\(/.test(stickerShadowCallerBlock), stickerShadowCallerBlock)
   check('index diagnostics helpers are imported, not defined inline', indexSrc.includes("require('./diagnostics/diagnostics')") && !indexSrc.includes('function logReplyTimingDiagnostic') && !indexSrc.includes('function logStickerShadowSendDiagnostic') && diagnosticsSrc.includes('function logReplyTimingDiagnostic') && diagnosticsSrc.includes('function logStickerShadowSendDiagnostic'), 'diagnostics helper ownership')
   check('index plugin lifecycle is imported, not defined inline', indexSrc.includes("require('./lifecycle/plugin-lifecycle')") && indexSrc.includes('registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue, chat, retellAgentResult })') && !indexSrc.includes("ctx.on('ready'") && !indexSrc.includes('function restoreTodayCacheEntry') && !indexSrc.includes('const sensitiveTimer') && pluginLifecycleSrc.includes("ctx.on('ready'") && pluginLifecycleSrc.includes('function restoreTodayCacheEntry') && pluginLifecycleSrc.includes('const sensitiveTimer') && pluginLifecycleSrc.includes("require('../persona/skills/skills-loader')") && !pluginLifecycleSrc.includes("require('../chat')") && !pluginLifecycleSrc.includes("require('../index')") && !/ctx\.middleware|session\.send|safeSendReply|chat\(/.test(pluginLifecycleSrc), 'plugin-lifecycle ownership')
-  check('plugin lifecycle owns startup schedulers and dispose cleanup', pluginLifecycleSrc.includes("require('./startup-schedulers')") && pluginLifecycleSrc.includes('scheduleDailyStatsCleanup(ctx)') && pluginLifecycleSrc.includes('scheduleExpressionHarvest(ctx)') && pluginLifecycleSrc.includes('clearStartupSchedulers()') && pluginLifecycleSrc.includes('clearChannelQueues()') && pluginLifecycleSrc.includes('clearRandomPendingState()') && !indexSrc.includes('scheduleDailyStatsCleanup(ctx)') && !indexSrc.includes('clearStartupSchedulers()') && startupSchedulersSrc.includes('function getNextShanghaiMidnightDelayMs') && startupSchedulersSrc.includes('function clearStartupSchedulers'), 'plugin-lifecycle startup scheduler ownership')
+  check('plugin lifecycle owns startup schedulers and dispose cleanup', pluginLifecycleSrc.includes("require('./startup-schedulers')") && pluginLifecycleSrc.includes('scheduleDailyStatsCleanup(ctx)') && pluginLifecycleSrc.includes('clearStartupSchedulers()') && pluginLifecycleSrc.includes('clearChannelQueues()') && pluginLifecycleSrc.includes('clearRandomPendingState()') && !indexSrc.includes('scheduleDailyStatsCleanup(ctx)') && !indexSrc.includes('clearStartupSchedulers()') && startupSchedulersSrc.includes('function getNextShanghaiMidnightDelayMs') && startupSchedulersSrc.includes('function clearStartupSchedulers'), 'plugin-lifecycle startup scheduler ownership')
   check('index message segment helpers are owned by incoming-message-flow, not defined inline', indexSrc.includes("require('./message/incoming-message-flow')") && !indexSrc.includes("require('./message/message-segment')") && !indexSrc.includes('function extractImageRefFromContent') && !indexSrc.includes('function getFileSegmentData') && incomingMessageFlowSrc.includes("require('./message-segment')") && incomingMessageFlowSrc.includes('extractImageRefFromContent') && incomingMessageFlowSrc.includes('getFileSegmentData') && messageSegmentSrc.includes('function extractImageRefFromContent') && messageSegmentSrc.includes('function getFileSegmentData'), 'message-segment helper ownership')
   check('incoming media analysis is queued by incoming-message-flow, not index', !indexSrc.includes("require('./media/file/incoming-file')") && !indexSrc.includes('function cacheSmallFileBackground') && !indexSrc.includes('enqueueMediaTask({') && incomingMessageFlowSrc.includes("require('../media/file/file-store')") && incomingMessageFlowSrc.includes("require('../media/backpressure/media-queue')") && incomingMessageFlowSrc.includes("require('../resource-scheduler/admission')") && incomingMessageFlowSrc.includes("kind: 'media_file_analysis'") && incomingMessageFlowSrc.includes("kind: 'media_voice_transcription'") && !incomingMessageFlowSrc.includes("require('../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(/.test(incomingMessageFlowSrc), 'incoming-message-flow media queue ownership')
   check('index incoming message flow is imported, not defined inline', indexSrc.includes("require('./message/incoming-message-flow')") && indexSrc.includes('handleIncomingMessageArtifacts({') && !indexSrc.includes('await storeImageUrl(') && !indexSrc.includes('await storeFile(') && !indexSrc.includes('await storeVoice(') && incomingMessageFlowSrc.includes('async function handleIncomingMessageArtifacts') && incomingMessageFlowSrc.includes('await storeImageUrl(') && incomingMessageFlowSrc.includes('await storeFile(') && incomingMessageFlowSrc.includes('await storeVoice(') && incomingMessageFlowSrc.includes('enqueueMediaTask({') && !incomingMessageFlowSrc.includes("require('../index')") && !/session\.send|safeSendReply|ctx\.middleware|exports\.apply|chat\(|agentEngine|enqueueAgentTask/.test(incomingMessageFlowSrc), 'incoming-message-flow ownership')
@@ -4431,12 +4233,6 @@ async function main() {
   const fileFollowupEvidenceSrc = read(path.join(LIB, 'chat', 'file-followup-evidence.js'))
   const fileFollowupGuardSrc = read(path.join(LIB, 'media', 'file', 'file-followup-guard.js'))
   check('sticker shadow module never sends or mutates production sticker pool', !/sendSticker|sendReply|session\.send|sendGroupMsg|sendPrivateMsg|sticker-pool|pending\.json|index\.json|banlist\.json|callOpenAI|requestChatCompletions/.test(stickerShadowSrc), 'sticker-shadow.js')
-  const expressionShadowIndex = chatSrc.indexOf('buildExpressionShadowPlan({')
-  const callOpenAIIndex = chatSrc.indexOf('let reply = await callOpenAI(messages')
-  const expressionShadowBlock = chatSrc.slice(Math.max(0, expressionShadowIndex - 500), callOpenAIIndex > expressionShadowIndex ? callOpenAIIndex : expressionShadowIndex + 1500)
-  check('chat.js expression shadow diagnostic runs before model call', expressionShadowIndex >= 0 && callOpenAIIndex > expressionShadowIndex, `shadow=${expressionShadowIndex} call=${callOpenAIIndex}`)
-  check('chat.js expression shadow logs only through expression-pool debug channel', expressionShadowBlock.includes("logDebug(ctx, 'expression-pool'") && expressionShadowBlock.includes('formatExpressionShadowDiagnostic(shadowPlan)'), expressionShadowBlock.slice(0, 300))
-  check('chat.js expression shadow does not inject prompt messages in v2.3', !/messages\.(?:push|splice|unshift)/.test(expressionShadowBlock), expressionShadowBlock)
   const profileShadowIndex = chatSrc.indexOf("isDebugLogEnabled('persona-profile')")
   const memoryMessageIndex = chatSrc.indexOf('const memoryMessage = createChatPromptMemoryMessage')
   const profileShadowEnd = chatSrc.indexOf('const historyBackgroundMessage = createChatPromptHistoryBackgroundMessage', profileShadowIndex)

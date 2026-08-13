@@ -219,7 +219,6 @@ function testRegisteredBudgetsAndDirectOverrides() {
     dashboard_agent: 300,
     agent_memory: 300,
     agent_memory_compaction: 300,
-    expression_harvest: 400,
     conversation_summary: 300,
     sensitive_cache_analysis: 400,
     emotion_render: 400,
@@ -353,7 +352,7 @@ const releaseRender = activityLease.acquireResourceActivityLease('render_active'
 try {
   const modeSnapshot = snapshot.readResourceSnapshot()
   const parked = backgroundDirective.decideBackgroundDirective({
-    kind: 'expression_harvest',
+    kind: 'conversation_summary',
     source: 'resource-scheduler-test',
     channelKey: 'global',
     userId: '',
@@ -413,7 +412,7 @@ function testServerModeSnapshotAndBackgroundAllowed() {
       && summary.modeSnapshot.renderActive === true
       && summary.modeSnapshot.backgroundAllowed === false,
     JSON.stringify(summary.modeSnapshot))
-  check('small mode background directive parks expression harvest while render_active is held',
+  check('small mode background directive parks conversation summary while render_active is held',
     summary.parkedAction === 'park' && /render_active|background|资源保护/i.test(String(summary.parkedReason || '')),
     JSON.stringify({ parkedAction: summary.parkedAction, parkedReason: summary.parkedReason }))
   check('small mode selects only the highest-priority backlog worker',

@@ -16,10 +16,6 @@ const { readTextFile, safeChannelKey } = require('../core/utils') as typeof impo
 const { requestChatCompletions } = require('../core/api') as typeof import('../core/api')
 const { loadConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
 const {
-  runExpressionHarvestForAllChannels,
-  formatExpressionHarvestDiagnostic,
-} = require('../behavior/expression/expression-abstractor') as typeof import('../behavior/expression/expression-abstractor')
-const {
   readConversationDisk,
   writeConversationDisk,
   writePendingSensitiveAlert,
@@ -58,25 +54,6 @@ function formatConversationSummaryMessage(message: unknown): string {
 // 从 ChatCompletion 结果中取文本内容。
 function getBackgroundChatResultContent(resultObj: Awaited<ReturnType<typeof requestChatCompletions>>): string {
   return typeof resultObj === 'string' ? resultObj : (resultObj.type === 'text' ? resultObj.content : '')
-}
-
-// 执行表达学习 harvest，真实模型调用只发生在 worker 进程。
-async function runExpressionHarvestWorkerTask(task: BackgroundLlmTaskLike): Promise<Record<string, unknown>> {
-  const channels = Array.isArray(task?.payload?.channels)
-    ? task.payload.channels.map(String).filter(Boolean)
-    : []
-  const options = channels.length ? { channels } : {}
-  const result = await runExpressionHarvestForAllChannels(null, {
-    ...options,
-    selfUserId: String(task?.payload?.selfUserId || ''),
-    botName: String(task?.payload?.botName || ''),
-  })
-  return {
-    mode: 'expression_harvest',
-    diagnostic: formatExpressionHarvestDiagnostic(result),
-    ...result,
-    reason: 'expression harvest completed',
-  }
 }
 
 // 执行对话摘要压缩并写回 conversation disk。
@@ -193,7 +170,6 @@ async function runSensitiveCacheAnalysisWorkerTask(task: BackgroundLlmTaskLike):
 
 // 根据任务 kind 分发后台 LLM 执行器。
 async function runBackgroundLlmWorkerTask(task: BackgroundLlmTaskLike): Promise<Record<string, unknown>> {
-  if (task?.kind === 'expression_harvest') return runExpressionHarvestWorkerTask(task)
   if (task?.kind === 'conversation_summary') return runConversationSummaryWorkerTask(task)
   if (task?.kind === 'sensitive_cache_analysis') return runSensitiveCacheAnalysisWorkerTask(task)
   throw new Error(`unsupported background LLM task kind: ${String(task?.kind || '')}`)
@@ -203,5 +179,4 @@ export = {
   runBackgroundLlmWorkerTask,
   runConversationSummaryWorkerTask,
   runSensitiveCacheAnalysisWorkerTask,
-  runExpressionHarvestWorkerTask,
 }

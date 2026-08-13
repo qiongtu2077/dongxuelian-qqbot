@@ -67,7 +67,6 @@ setThinkingEnabled, // 设置 thinking 开关
  } = require('./core/runtime-config');
 const { isDebugLogEnabled, logDebug } = require('./core/logging-config'); // 调试日志开关 + 输出
 const { loadSkills, loadSkillsContentCache, refreshSkillsContentCacheIfChanged, getSkillsContentCache, buildTestSystemPrompt, buildFriendlySystemPrompt, buildFriendlySafetyFramework, buildAbusiveSystemPrompt, shouldInjectLore, shouldInjectTerraLore, getSkillsCount, } = require('./persona/skills/skills-loader'); // 技能文件加载、缓存刷新和基础 system prompt
-const { buildExpressionShadowPlan, formatExpressionShadowDiagnostic, detectExpressionSensitiveTopicActive, EXPRESSION_SHADOW_RECENT_SPEAKER_WINDOW_MS, } = require('./behavior/expression/expression-shadow-router'); // 表达学习旁路诊断（v2.3，仅日志）
 const { buildPersonaProfileBlocks, buildPersonaProfileReinforcementShadow, formatPersonaProfileReinforcementShadowDiagnostic, selectPersonaProfileBlocksByEffectiveConfidence, buildPersonaProfileSelectionDiagnostic, formatPersonaProfileSelectionDiagnostic, buildPersonaProfileSourceDiagnostic, formatPersonaProfileSourceDiagnostic, buildPersonaProfileShadowPreview, appendPersonaProfileShadowLog, formatPersonaProfileShadowLearningDiagnostic, formatPersonaProfileShadowPromptPreviewDiagnostic, } = require('./persona/persona-profile'); // 证据化 profile 影子选择诊断（不注入 prompt）
 function asChatApiMessages(messages) {
     return messages;
@@ -756,43 +755,6 @@ async function chat(session, userText, ctx, options = {}) {
         }
         : {};
     messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered }) });
-    // 表达学习旁路诊断（v2.3，shadow，仅日志，不修改 messages）
-    try {
-        const shadowNow = Date.now();
-        const cacheItems = (channelSharedCache && typeof channelSharedCache.get === 'function')
-            ? (channelSharedCache.get(channelKey) || [])
-            : [];
-        const recentItems = [];
-        const recentSpeakerSet = new Set();
-        const since = shadowNow - EXPRESSION_SHADOW_RECENT_SPEAKER_WINDOW_MS;
-        for (const it of cacheItems) {
-            if (!it || typeof it !== 'object')
-                continue;
-            const ts = Number(it.ts || 0);
-            if (Number.isFinite(ts) && ts > 0 && ts < since)
-                continue;
-            recentItems.push(it);
-            const uid = String(it.userId || '').trim();
-            if (uid)
-                recentSpeakerSet.add(uid);
-        }
-        const sensitiveTopicActive = detectExpressionSensitiveTopicActive(recentItems, shadowNow);
-        const shadowPlan = buildExpressionShadowPlan({
-            channelKey,
-            personaName,
-            cleanInput,
-            recentSpeakerIds: Array.from(recentSpeakerSet),
-            sensitiveTopicActive,
-            now: shadowNow,
-        });
-        logDebug(ctx, 'expression-pool', formatExpressionShadowDiagnostic(shadowPlan));
-    }
-    catch (shadowError) {
-        try {
-            logDebug(ctx, 'expression-pool', `shadow_failed reason=${String(errorMessage(shadowError) || 'unknown').slice(0, 80)}`);
-        }
-        catch { /* non-critical: expression shadow diagnostics never block chat */ }
-    }
     let reply = await callOpenAI(messages, isRandomTriggered, {}, chatTools);
     const toolFlowResult = await handleChatToolFlow({
         reply,

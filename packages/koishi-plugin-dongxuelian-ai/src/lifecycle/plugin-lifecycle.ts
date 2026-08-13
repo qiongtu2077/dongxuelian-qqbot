@@ -49,7 +49,6 @@ const {
 } = require('../conversation') as typeof import('../conversation')
 const {
   scheduleDailyStatsCleanup,
-  scheduleExpressionHarvest,
   scheduleDailyPrecomputePlanning,
   clearStartupSchedulers,
 } = require('./startup-schedulers') as typeof import('./startup-schedulers')
@@ -272,7 +271,6 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     trimChannelRuntimeCaches()
     cleanupDailyStatsFiles().catch(error => ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${getLifecycleErrorMessage(error)}`))
     scheduleDailyStatsCleanup(ctx)
-    scheduleExpressionHarvest(ctx)
     scheduleDailyPrecomputePlanning(ctx)
     try {
       const config = agentConfig.getAgentConfig()

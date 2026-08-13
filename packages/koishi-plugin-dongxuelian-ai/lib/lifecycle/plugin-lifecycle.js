@@ -17,7 +17,7 @@ const { loadPersonaGroups, loadPersonaUsers, } = require('../persona/persona');
 const { loadRepeatConfig, } = require('../behavior/repeat');
 const { loadRandomVoiceRateCache, } = require('../behavior/random-voice-rate');
 const { channelTodayCache, trimChannelRuntimeCaches, cleanupDailyStatsFiles, analyzeChannelSensitive, } = require('../conversation');
-const { scheduleDailyStatsCleanup, scheduleExpressionHarvest, scheduleDailyPrecomputePlanning, clearStartupSchedulers, } = require('./startup-schedulers');
+const { scheduleDailyStatsCleanup, scheduleDailyPrecomputePlanning, clearStartupSchedulers, } = require('./startup-schedulers');
 const { clearChannelQueues, } = require('./channel-task-queue');
 const { clearRandomPendingState, } = require('../behavior/random-state');
 const agentConfig = require('../agent/config');
@@ -180,7 +180,6 @@ function registerPluginLifecycle(ctx, options = {}) {
         trimChannelRuntimeCaches();
         cleanupDailyStatsFiles().catch(error => ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${getLifecycleErrorMessage(error)}`));
         scheduleDailyStatsCleanup(ctx);
-        scheduleExpressionHarvest(ctx);
         scheduleDailyPrecomputePlanning(ctx);
         try {
             const config = agentConfig.getAgentConfig();
