@@ -66,7 +66,17 @@ async function run(t) {
       else process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = previousTotalOverride
     }
     checkSentNonEmpty(t, 'scenario AI status falls back under critical mode', criticalStatus)
-    t.check('scenario AI critical status reports resource mode', criticalStatus.sent.some(item => String(item).includes('critical') && String(item).includes('red')), JSON.stringify(criticalStatus.sent))
+    t.check(
+      'scenario AI critical status keeps compact Chinese status reply',
+      criticalStatus.sent.some(item => {
+        const text = String(item)
+        return text.includes('运行状态：正常')
+          && text.includes('当前任务：无')
+          && text.includes('可用内存：299 / 1600 MB')
+          && text.includes('聊天 AI：OpenCode Go / DSv4')
+      }),
+      JSON.stringify(criticalStatus.sent)
+    )
     checkNoLeak(t, 'scenario AI critical status does not leak key', criticalStatus, ['sk-test-secret', 'Bearer'])
     t.check('scenario red private chat receives fixed resource notice', privateNotice.sent.some(item => String(item).includes('\u53ef\u7528\u5185\u5b58\u4f4e\u4e8e 300 MB')), JSON.stringify(privateNotice.sent))
     t.check('scenario red resource notice is throttled per channel and state', throttledNotice.sent.length === 0, JSON.stringify(throttledNotice.sent))

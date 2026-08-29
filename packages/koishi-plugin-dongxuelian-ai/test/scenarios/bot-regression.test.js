@@ -269,18 +269,46 @@ async function run(t) {
       'scenario daily report running still keeps status command alive',
       result.sent.some(item => {
         const text = String(item)
-        return text.includes('模式：report_silent')
-          && text.includes('资源档位：green')
-          && text.includes('服务器模式：')
-          && text.includes('模式来源：')
-          && text.includes('tool_active：')
-          && text.includes('render_active：')
-          && text.includes('background_allowed：')
+        return text.includes('运行状态：正常')
+          && text.includes('当前任务：日报生成（正在执行）')
+          && text.includes('可用内存：1200 / 1600 MB')
+          && text.includes('聊天 AI：OpenCode Go / DSv4')
       }),
       formatResult(result)
     )
     t.check('scenario daily report status command stays low cost without next', result.sent.length > 0 && !result.nextCalled, formatResult(result))
     checkNoLeak(t, 'scenario daily report status command does not leak secrets', result, ['sk-test-secret', 'Bearer'])
+  })
+
+  await withScenario({}, async ({ data, makeSession, run }) => {
+    writeRunningLock(data, {
+      taskId: 'external-video-status-1',
+      kind: 'external_video_download',
+      owner: 'test',
+      pid: process.pid,
+      channelKey: '10001',
+      userId: '100000000',
+      startedAt: '2026-06-11T00:00:00.000Z',
+      heartbeatAt: '2026-06-11T00:00:01.000Z',
+      step: 'video_download',
+      memAvailableMb: 770,
+      timeoutMs: 600000,
+      ticketId: 'external-video-ticket-1',
+    })
+    const session = makeSession({ content: '资源状态' })
+    const result = await withMemOverride(770, 1608, () => run(session, { flushTicks: 40 }))
+    const expected = [
+      '运行状态：正常',
+      '当前任务：外部视频下载（正在下载 B 站视频）',
+      '可用内存：770 / 1608 MB',
+      '聊天 AI：OpenCode Go / DSv4',
+    ].join('\n')
+    t.check(
+      'scenario external video status uses the compact Chinese reply',
+      result.sent.some(item => String(item) === expected),
+      formatResult(result)
+    )
+    checkNoLeak(t, 'scenario external video status does not leak task metadata', result, ['external-video-status-1', 'video_download', 'Bearer'])
   })
 
   await withScenario({}, async ({ data, makeSession, run }) => {

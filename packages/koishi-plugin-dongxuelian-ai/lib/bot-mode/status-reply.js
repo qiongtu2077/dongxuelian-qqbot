@@ -6,35 +6,64 @@
  */
 const { readResourceSnapshot } = require('../resource-scheduler/resource-snapshot');
 const { getResourceGateStatus } = require('../resource-gate/gate');
-const { getTaskQueueSummary } = require('../resource-workers/task-store');
-const { getMediaBackpressureStatus } = require('../media/backpressure/media-queue');
+const { loadConfig } = require('../core/runtime-config');
+const { resolveProviderDefinition } = require('../core/provider-registry');
+const RESOURCE_TASK_LABELS = {
+    daily_report: '日报生成',
+    daily_report_render: '日报渲染',
+    daily_summary: '日报摘要',
+    agent_task: 'Agent 任务',
+    dashboard_agent: '控制台 Agent 任务',
+    agent_memory: '记忆整理',
+    agent_memory_compaction: '记忆压缩',
+    conversation_summary: '对话摘要',
+    sensitive_cache_analysis: '敏感内容分析',
+    emotion_render: '表情渲染',
+    browser_action: '浏览器操作',
+    voice_tts_generation: '语音生成',
+    diagnostic_probe: '诊断检查',
+    mcp_local_check: '本地检查',
+    external_video_download: '外部视频下载',
+    pet_bridge_chat: '宠物桥接聊天',
+    media_image_analysis: '图片分析',
+    media_file_analysis: '文件分析',
+    media_voice_transcription: '语音转写',
+    status_query: '状态查询',
+    normal_chat: '普通聊天',
+};
+// --- 状态文案 --- //
 // 格式化内存展示。
 function formatMemory(available, total) {
     if (typeof available !== 'number')
-        return 'unknown';
-    return typeof total === 'number' ? `${available}/${total}MB` : `${available}MB`;
+        return '暂无数据';
+    return typeof total === 'number' ? `${available} / ${total} MB` : `${available} MB`;
 }
-// 生成固定资源状态文本，不调用模型。
-function buildResourceStatusReply() {
+// 将正在执行的内部任务转换为群聊可读的中文描述。
+function formatRunningTask(meta) {
+    if (!meta)
+        return '无';
+    const kind = String(meta.kind || '');
+    if (kind === 'external_video_download')
+        return '外部视频下载（正在下载 B 站视频）';
+    return `${RESOURCE_TASK_LABELS[kind] || '其他任务'}（正在执行）`;
+}
+// 读取默认聊天配置并生成供应商与模型名称。
+async function formatDefaultChatModel() {
+    const config = await loadConfig();
+    const provider = await resolveProviderDefinition(config.provider);
+    const model = provider?.models.find(item => item.id === config.model || item.name === config.model);
+    return `${provider?.name || config.provider} / ${model?.name || config.model}`;
+}
+// --- 状态回复 --- //
+// 生成固定资源状态文本，只读取运行时配置和状态，不调用模型或工具。
+async function buildResourceStatusReply() {
     const snapshot = readResourceSnapshot();
     const gate = getResourceGateStatus();
-    const queue = getTaskQueueSummary();
-    const media = getMediaBackpressureStatus();
-    const running = gate.meta
-        ? `${gate.meta.kind}/${gate.meta.step || 'running'} (${gate.meta.taskId})`
-        : '无';
     return [
-        `模式：${snapshot.botMode}`,
-        `服务器模式：${snapshot.serverMode || 'large'}`,
-        `模式来源：${snapshot.serverModeSource || 'default'}`,
-        `资源档位：${snapshot.resourceState}`,
+        '运行状态：正常',
+        `当前任务：${formatRunningTask(gate.meta)}`,
         `可用内存：${formatMemory(snapshot.memAvailableMb, snapshot.memTotalMb)}`,
-        `tool_active：${snapshot.toolActive ? '是' : '否'}`,
-        `render_active：${snapshot.renderActive ? '是' : '否'}`,
-        `background_allowed：${snapshot.backgroundAllowed ? '是' : '否'}`,
-        `当前运行：${running}`,
-        `任务队列：pending=${queue.pending || 0}, running=${queue.running || 0}, failed=${queue.failed || 0}`,
-        `媒体背压：图片=${media.imagePending || 0}, 文件=${media.filePending || 0}, 语音=${media.voicePending || 0}, dropped=${media.droppedCount || 0}`,
+        `聊天 AI：${await formatDefaultChatModel()}`,
     ].join('\n');
 }
 module.exports = {
