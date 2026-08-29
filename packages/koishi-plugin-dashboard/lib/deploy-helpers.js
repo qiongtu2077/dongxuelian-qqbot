@@ -68,6 +68,10 @@ function validateDeployAppDir(appDir) {
     const value = String(appDir || '').trim().replace(/\/+$/, '') || '/';
     if (!value.startsWith('/'))
         throw new Error('appDir must be an absolute Linux path');
+    if (value === '/')
+        throw new Error('appDir must not be the filesystem root');
+    if (value.split('/').some(part => part === '.' || part === '..'))
+        throw new Error('appDir must not contain dot path segments');
     if (/[\s;&|`$()<>"'\\]/.test(value))
         throw new Error('invalid appDir');
     return value;
@@ -81,7 +85,7 @@ function remoteJoin(base, ...parts) {
     return suffix ? root.replace(/\/+$/, '') + '/' + suffix : root;
 }
 function sshCommand(server, remoteCmd) {
-    return `ssh -o StrictHostKeyChecking=no -- ${server} ${commandQuote(remoteCmd)}`;
+    return `ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -- ${server} ${commandQuote(remoteCmd)}`;
 }
 function scpRemoteTarget(server, remotePath) {
     const targetPath = String(remotePath || '');
@@ -91,98 +95,7 @@ function scpRemoteTarget(server, remotePath) {
 }
 function scpCommand(source, target, options = {}) {
     const recursive = options.recursive ? '-r ' : '';
-    return `scp -o StrictHostKeyChecking=no ${recursive}${commandQuote(source)} ${target}`;
-}
-function hashFile(hash, repoRoot, filePath) {
-    try {
-        const stat = fs.statSync(filePath);
-        if (!stat.isFile())
-            return;
-        const rel = path.relative(repoRoot, filePath).replace(/\\/g, '/');
-        hash.update(rel);
-        hash.update('\0');
-        const fd = fs.openSync(filePath, 'r');
-        const buffer = Buffer.alloc(Math.min(HASH_CHUNK_BYTES, Math.max(1, stat.size || 1)));
-        try {
-            let position = 0;
-            while (position < stat.size) {
-                const bytesRead = fs.readSync(fd, buffer, 0, Math.min(buffer.length, stat.size - position), position);
-                if (!bytesRead)
-                    break;
-                hash.update(buffer.subarray(0, bytesRead));
-                position += bytesRead;
-            }
-        }
-        finally {
-            fs.closeSync(fd);
-        }
-    }
-    catch { /* non-critical: fingerprint skips unreadable file */ }
-}
-function computeFingerprint() {
-    try {
-        const repoRoot = path.join(PLUGIN_ROOT, '..', '..');
-        const hash = crypto.createHash('md5');
-        const add = (rel) => hashFile(hash, repoRoot, path.join(repoRoot, rel));
-        add('packages/koishi-plugin-dashboard/standalone.js');
-        add('packages/koishi-plugin-dashboard/frontend/index.html');
-        add('packages/koishi-plugin-dashboard/frontend/package.json');
-        add('packages/koishi-plugin-dashboard/frontend/vite.config.ts');
-        add('packages/koishi-plugin-dashboard/frontend/dist/index.html');
-        add('scripts/activate-dashboard-release.sh');
-        add('scripts/verify-release-manifest.js');
-        add('scripts/restart-bot.sh');
-        add('scripts/seal-data-dir.sh');
-        add('scripts/watchdog.sh');
-        add('scripts/install-dashboard-service.sh');
-        add('scripts/install-logrotate.sh');
-        for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'src')))
-            hashFile(hash, repoRoot, file);
-        for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'public')))
-            hashFile(hash, repoRoot, file);
-        for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'dist', 'assets')))
-            hashFile(hash, repoRoot, file);
-        const packagesDir = path.join(repoRoot, 'packages');
-        let packageNames = [];
-        try {
-            packageNames = fs.readdirSync(packagesDir).sort();
-        }
-        catch { /* non-critical: package scan fallback */ }
-        for (const pkg of packageNames) {
-            const pkgDir = path.join(packagesDir, pkg);
-            try {
-                if (!fs.statSync(pkgDir).isDirectory())
-                    continue;
-            }
-            catch {
-                continue;
-            }
-            add(`packages/${pkg}/package.json`);
-            for (const file of listFilesRecursive(path.join(pkgDir, 'lib'), (f) => /\.js$/i.test(f)))
-                hashFile(hash, repoRoot, file);
-            for (const file of listFilesRecursive(path.join(pkgDir, 'templates')))
-                hashFile(hash, repoRoot, file);
-        }
-        return hash.digest('hex').slice(0, 8);
-    }
-    catch {
-        return 'unknown';
-    }
-}
-function writeDeployFingerprint(file, extra = {}) {
-    let cfg = {};
-    try {
-        cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
-    }
-    catch { /* non-critical: deploy fingerprint config fallback */ }
-    Object.assign(cfg, extra);
-    cfg.deployedAt = Date.now();
-    cfg.deployFingerprint = computeFingerprint();
-    const tmp = file + '.tmp';
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8');
-    fs.renameSync(tmp, file);
-    return cfg.deployFingerprint;
+    return `scp -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new ${recursive}${commandQuote(source)} ${target}`;
 }
 function isBlockedDownloadHost(hostname) {
     const h = String(hostname || '');
@@ -1157,7 +1070,6 @@ module.exports = {
     MAX_DOWNLOAD_BYTES, MAX_DEPLOY_TASK_LOG_BYTES, MAX_DEPLOY_UPLOAD_BYTES, MAX_DOWNLOAD_REDIRECTS, MAX_JSON_RESPONSE_BYTES, HASH_CHUNK_BYTES,
     validateDeployServer, validateDeployAppDir, validateDeployTarget,
     remoteJoin, sshCommand, scpRemoteTarget, scpCommand,
-    hashFile, computeFingerprint, writeDeployFingerprint,
     isBlockedDownloadHost, getLocalWorkDirSafety, getLocalDeployTarget, requireWindowsLocalDeployTarget,
     ensureWritableDir, copyWorkspaceResource, ensurePackagedWorkspace, writeRuntimeLayout,
     testChinesePathWrite, inspectChinesePathWrite,

@@ -67,6 +67,9 @@ function listReleaseFiles(root) {
                 const stat = fs.statSync(fullPath);
                 files.push({ path: relativePath, size: stat.size, sha256: sha256File(fullPath) });
             }
+            else {
+                throw new Error(`发布物包含不允许的链接或特殊文件: ${path.relative(root, fullPath).replace(/\\/g, '/')}`);
+            }
         }
     }
     walk(root);
@@ -189,7 +192,7 @@ function verifyReleaseManifest(releaseRoot) {
     const root = path.resolve(releaseRoot);
     const manifestPath = path.join(root, MANIFEST_NAME);
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    if (manifest.schemaVersion !== 1 || !manifest.releaseId || !manifest.commit || !manifest.contentHash || !Array.isArray(manifest.files))
+    if (manifest.schemaVersion !== 1 || !/^[a-z0-9-]+$/.test(String(manifest.releaseId || '')) || !/^[a-f0-9]{40,64}$/i.test(String(manifest.commit || '')) || !/^[a-f0-9]{64}$/.test(String(manifest.contentHash || '')) || !/^[a-f0-9]{64}$/.test(String(manifest.manifestHash || '')) || !Array.isArray(manifest.files))
         throw new Error('发布清单结构无效');
     const { manifestHash, ...manifestBase } = manifest;
     if (computeManifestHash(manifestBase) !== manifestHash)

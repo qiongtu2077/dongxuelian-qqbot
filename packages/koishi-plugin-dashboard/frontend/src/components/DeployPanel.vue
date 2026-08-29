@@ -282,7 +282,7 @@
 
     <div v-if="mode === 'remote'" class="card">
       <h2>远程 Linux 部署</h2>
-      <div class="grp-desc" style="margin-bottom:14px">需要本机可以直接 SSH 到服务器。部署会先重建当前 Dashboard 后端机器上的最新前端，再上传插件代码、前端源码、全新 dist 和必要脚本到远程目录。</div>
+      <div class="grp-desc" style="margin-bottom:14px">先在当前 Dashboard 后端机器构建并冻结 30 分钟预览，再核对远端身份、版本、磁盘和发布锁。执行时只使用已确认的冻结发布物。</div>
       <div class="row"><label>服务器</label><input v-model="remote.server" placeholder="<YOUR_SERVER_USER>@<YOUR_SERVER_HOST>" /></div>
       <div class="row"><label>应用目录</label><input v-model="remote.appDir" placeholder="<YOUR_DATA_DIR>" /></div>
       <div class="row"><label>模式</label><SelectBox v-model="remote.mode" :options="remoteModeOptions" /></div>
@@ -290,15 +290,36 @@
       <div class="deploy-actions">
         <button class="btn btn-sm" type="button" @click="loadRemoteConfig">自动填入服务器地址</button>
         <button class="btn btn-sm" type="button" @click="saveRemoteConfig" :disabled="savingRemote">{{ savingRemote ? '保存中...' : '保存服务器地址' }}</button>
-        <button class="btn btn-sm" type="button" @click="checkRemoteUpdate">核对远端发布版本</button>
-        <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="deploying || rebuilding">{{ deploying ? '部署中...' : '构建不可变版本并发布' }}</button>
-        <button class="btn btn-sm btn-ghost" type="button" @click="doRebuildFrontend" :disabled="rebuilding || deploying">{{ rebuilding ? '构建中...' : '重建前端' }}</button>
+        <button class="btn btn-sm" type="button" @click="generateRemotePreview" :disabled="previewingRemote || deploying || rebuilding">{{ previewingRemote ? '生成中...' : '生成部署预览' }}</button>
+        <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="!canRunRemoteDeploy || deploying || rebuilding">{{ deploying ? '部署中...' : '发布已确认预览' }}</button>
+        <button class="btn btn-sm btn-ghost" type="button" @click="doRebuildFrontend" :disabled="rebuilding || deploying || previewingRemote">{{ rebuilding ? '构建中...' : '重建前端' }}</button>
       </div>
       <div class="deploy-action-notes" aria-label="远程部署按钮说明">
-        <p><strong>构建不可变版本并发布：</strong>构建完整插件与浏览器资源，逐项校验发布清单后原子切换；重启或健康检查失败会自动切回旧版本。</p>
-        <p><strong>核对远端发布版本：</strong>通过已保存的 SSH 目标完整校验当前发布清单；连接失败、清单缺失或内容不一致时只显示“无法确认”。</p>
-        <p><strong>重建前端：</strong>只在当前 Dashboard 后端所在机器本地执行构建并刷新本机 dist；需要更新服务器页面时，直接点“重建并部署到远端”。</p>
+        <p><strong>生成部署预览：</strong>要求 Git 工作区干净，构建全部插件并冻结不可变发布物，同时只读核对远端主机、目录、当前发布、磁盘和发布锁。</p>
+        <p><strong>发布已确认预览：</strong>执行前再次核对源与远端基线；原子切换后的运行检查失败会自动切回旧版本。</p>
+        <p><strong>重建前端：</strong>只在当前 Dashboard 后端所在机器本地执行构建并刷新本机 dist；远端发布必须重新生成预览。</p>
       </div>
+
+      <section v-if="deployPreview" class="remote-preview" aria-label="远程部署预览">
+        <div class="remote-preview-grid">
+          <div><span>源提交</span><code>{{ deployPreview.source?.commit || '不可用' }}</code></div>
+          <div><span>目标主机</span><code>{{ deployPreview.target?.hostname || deployPreview.target?.server || '不可用' }}</code></div>
+          <div><span>目标目录</span><code>{{ deployPreview.target?.appDir || '不可用' }}</code></div>
+          <div><span>远端当前发布</span><code>{{ deployPreview.target?.release?.releaseId || '无法校验' }}</code></div>
+          <div><span>冻结发布</span><code>{{ deployPreview.release?.releaseId || '未生成' }}</code></div>
+          <div><span>有效期至</span><strong>{{ formatTimestamp(deployPreview.expiresAt) }}</strong></div>
+          <div><span>文件变化</span><strong>新增 {{ deployPreview.changes?.added || 0 }} / 修改 {{ deployPreview.changes?.modified || 0 }} / 删除 {{ deployPreview.changes?.removed || 0 }}</strong></div>
+          <div><span>远端空间</span><strong>{{ formatSize(deployPreview.target?.availableBytes || 0) }}（需要 {{ formatSize(deployPreview.requiredBytes || 0) }}）</strong></div>
+        </div>
+        <div v-if="deployPreview.blockers?.length" class="remote-preview-blockers">
+          <strong>不能发布</strong>
+          <ul><li v-for="blocker in deployPreview.blockers" :key="blocker">{{ blocker }}</li></ul>
+        </div>
+        <label v-else class="confirm-check remote-confirm">
+          <input type="checkbox" v-model="deployConfirmed" :disabled="deploying" />
+          <span>我确认目标主机、目录和短暂停机影响。</span>
+        </label>
+      </section>
 
       <div style="margin-top:12px">
         <input ref="cookieInput" type="file" accept=".txt" style="display:none" @change="uploadCookie" />
@@ -314,7 +335,7 @@
 <script lang="ts">
 import { computed, inject, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { getDongxuelianDeployerBridge, isElectronDeployerEnv } from '../electron-deployer'
-import { checkDeployUpdate, checkLocalEnv, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, installPortableNode, koishiDeployStatus, localReadyCheck, napcatDeployStatus, npmInstallStatus, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, repairNpmProxyAndInstall, runDeploy, startKoishiLocal, startNapcat, startNpmInstall, updateDeployConfig, uploadDeploy } from '../api'
+import { checkLocalEnv, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, installPortableNode, koishiDeployStatus, localReadyCheck, napcatDeployStatus, npmInstallStatus, previewDeploy, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, repairNpmProxyAndInstall, runDeploy, startKoishiLocal, startNapcat, startNpmInstall, updateDeployConfig, uploadDeploy } from '../api'
 import type { ApiResult, MessageState, SelectOption, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
@@ -496,6 +517,8 @@ interface DeployProgressData {
   stage?: string
   error?: string
   code?: string
+  rolledBack?: boolean
+  rollbackState?: 'not_needed' | 'success' | 'failed'
 }
 
 interface RebuildStatusData {
@@ -516,17 +539,22 @@ interface DeployActionData {
   steps?: NpmGuideStep[]
 }
 
-interface DeployUpdateData {
-  ok?: boolean
-  verified?: boolean
-  upToDate?: boolean
-  local?: string
-  deployed?: string
-  message?: string
-  remote?: {
-    releaseId?: string
-    manifestHash?: string
+interface RemoteDeployPreviewData {
+  previewId?: string
+  expiresAt?: number
+  canDeploy?: boolean
+  blockers?: string[]
+  source?: { hostname?: string, repoRoot?: string, commit?: string, clean?: boolean, changeCount?: number }
+  target?: {
+    server?: string
+    hostname?: string
+    appDir?: string
+    availableBytes?: number
+    release?: { releaseId?: string, commit?: string, manifestHash?: string } | null
   }
+  release?: { releaseId?: string, commit?: string, manifestHash?: string, totalBytes?: number, fileCount?: number } | null
+  requiredBytes?: number
+  changes?: { added?: number, modified?: number, removed?: number, unchanged?: number, totalFiles?: number, totalBytes?: number }
 }
 
 function readString(value: unknown, fallback = ''): string {
@@ -631,6 +659,9 @@ export default {
     const koishiTaskStatus = ref<DeployTaskStatus | null>(null)
     const readyCheck = ref<ReadyCheck | null>(null)
     const savingRemote = ref(false)
+    const previewingRemote = ref(false)
+    const deployPreview = ref<RemoteDeployPreviewData | null>(null)
+    const deployConfirmed = ref(false)
     const deploying = ref(false)
     const rebuilding = ref(false)
     let progressTimer: ReturnType<typeof setTimeout> | null = null
@@ -641,6 +672,7 @@ export default {
     let localStatusPending = false
     let rebuildTimer: ReturnType<typeof setInterval> | null = null
     let rebuildTimeout: ReturnType<typeof setTimeout> | null = null
+    let previewExpiryTimer: ReturnType<typeof setTimeout> | null = null
 
     const localFlowText = '环境检测 -> 安装 NapCat -> 生成配置 -> npm install -> 启动 NapCat -> 等待扫码 -> 启动 Koishi -> 健康检查'
     const localStepDefs: LocalStepDef[] = [
@@ -659,6 +691,7 @@ export default {
     const localDeployTarget = computed<LocalDeployTarget | null>(() => env.value?.localDeployTarget || null)
     const backendPlatform = computed(() => localDeployTarget.value?.platform || env.value?.host?.platform || env.value?.platform || '')
     const isWindows = computed(() => (backendPlatform.value || deployerBridge.value?.platform) === 'win32')
+    const canRunRemoteDeploy = computed(() => !!deployPreview.value?.previewId && !!deployPreview.value.canDeploy && !deployPreview.value.blockers?.length && (deployPreview.value.expiresAt || 0) > Date.now() && deployConfirmed.value)
     const canRunWindowsLocalDeploy = computed(() => localDeployTarget.value ? !!localDeployTarget.value.canRunWindowsLocalDeploy : isWindows.value)
     const localDeployBlocked = computed(() => !!env.value && !canRunWindowsLocalDeploy.value)
     const localDeployBlockedReason = computed(() => localDeployTarget.value?.blockedReason || '当前 Dashboard 后端不是 Windows，不能执行 Windows 本地部署。')
@@ -1421,17 +1454,43 @@ export default {
       savingRemote.value = false
     }
 
-    async function checkRemoteUpdate() {
-      const res = await checkDeployUpdate()
-      const data = dataRecord<DeployUpdateData>(res.data)
-      if (res.ok && data.verified) {
-        const releaseId = data.remote?.releaseId || '未知版本'
-        remoteMsg.value = data.upToDate
-          ? { type: 'ok', text: `远端发布清单已完整核验，本机代码与远端版本一致（${releaseId}）` }
-          : { type: 'warn', text: `远端发布清单已完整核验，但本机代码或部署记录与远端版本不一致（${releaseId}）` }
+    /** 构建并显示绑定当前源与目标的 30 分钟远程发布预览。 */
+    async function generateRemotePreview() {
+      clearPreviewExpiryTimer()
+      previewingRemote.value = true
+      deployPreview.value = null
+      deployConfirmed.value = false
+      remoteMsg.value = { type: 'ok', text: '正在构建并核对远端，只读探测可能需要几分钟...' }
+      const res = await previewDeploy(remote)
+      if (withAdminRetry(res, '生成部署预览需要管理员密码', generateRemotePreview)) { previewingRemote.value = false; return }
+      const data = dataRecord<RemoteDeployPreviewData & { message?: string }>(res.data)
+      if (res.ok && data.previewId) {
+        deployPreview.value = data
+        schedulePreviewExpiry(data.expiresAt || 0)
+        remoteMsg.value = data.blockers?.length
+          ? { type: 'err', text: `预览已生成，但有 ${data.blockers.length} 个阻止项` }
+          : { type: 'ok', text: '预览已冻结，请核对目标并勾选确认' }
       } else {
-        remoteMsg.value = { type: 'err', text: data.message || '无法确认远端实际版本' }
+        remoteMsg.value = { type: 'err', text: data.message || '生成部署预览失败' }
       }
+      previewingRemote.value = false
+    }
+
+    /** 清理当前预览的浏览器过期计时器。 */
+    function clearPreviewExpiryTimer(): void {
+      if (previewExpiryTimer) clearTimeout(previewExpiryTimer)
+      previewExpiryTimer = null
+    }
+
+    /** 到达服务端截止时间后立即在页面禁用发布按钮。 */
+    function schedulePreviewExpiry(expiresAt: number): void {
+      clearPreviewExpiryTimer()
+      const delay = Math.max(0, expiresAt - Date.now())
+      previewExpiryTimer = setTimeout(() => {
+        if (deployPreview.value) deployPreview.value.canDeploy = false
+        deployConfirmed.value = false
+        remoteMsg.value = { type: 'warn', text: '部署预览已过期，请重新生成' }
+      }, Math.min(delay, 2_147_000_000))
     }
 
     function clearRebuildPolling() {
@@ -1464,10 +1523,15 @@ export default {
       rebuildTimeout = setTimeout(() => { clearRebuildPolling(); if (rebuilding.value) { rebuilding.value = false; remoteMsg.value = { type: 'err', text: '构建超时' } } }, 150000)
     }
 
+    /** 提交唯一的已确认预览编号，不允许页面在执行时替换目标。 */
     async function startRemoteDeploy() {
+      if (!canRunRemoteDeploy.value || !deployPreview.value?.previewId) {
+        remoteMsg.value = { type: 'err', text: '请先生成有效预览并确认目标主机、目录和停机影响' }
+        return
+      }
       deploying.value = true
       logs.value = []
-      const res = await runDeploy(remote)
+      const res = await runDeploy({ previewId: deployPreview.value.previewId, confirmed: deployConfirmed.value })
       if (withAdminRetry(res, '执行远程部署需要管理员密码', startRemoteDeploy)) { deploying.value = false; return }
       const data = dataRecord<DeployRunData>(res.data)
       if (!res.ok || !data.taskId) {
@@ -1475,6 +1539,9 @@ export default {
         deploying.value = false
         return
       }
+      deployPreview.value.canDeploy = false
+      deployConfirmed.value = false
+      clearPreviewExpiryTimer()
       pollProgress(data.taskId)
     }
 
@@ -1527,7 +1594,8 @@ export default {
       if (data.state === 'failed') {
         const stage = data.stage || 'unknown'
         const detail = data.error || '服务器未提供错误详情'
-        finishProgress('err', `部署失败（${stage}）：${detail}`, `远程部署失败\n阶段：${stage}\n原因：${detail}`)
+        const rollbackText = data.rollbackState === 'success' ? '；旧版本已恢复' : data.rollbackState === 'failed' ? '；旧版本回滚失败，需要人工处理' : '；正式版本未切换'
+        finishProgress('err', `部署失败（${stage}）：${detail}${rollbackText}`, `远程部署失败\n阶段：${stage}\n原因：${detail}\n回滚：${rollbackText.slice(1)}`)
         return
       }
       scheduleDeployProgress(taskId, 1500)
@@ -1566,6 +1634,12 @@ export default {
       if (value < 1024) return value + ' B'
       if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KB'
       return (value / 1024 / 1024).toFixed(1) + ' MB'
+    }
+
+    /** 将预览截止时间显示为当前浏览器时区的可读时间。 */
+    function formatTimestamp(value: unknown): string {
+      const timestamp = readNumber(value)
+      return timestamp > 0 ? new Date(timestamp).toLocaleString() : '不可用'
     }
 
     function formatPreviewAction(action: string): string {
@@ -1623,6 +1697,13 @@ export default {
 
     watch(logs, scrollDeployLogToBottom)
     watch(currentLocalLogLines, scrollLocalLogToBottom)
+    watch(() => [remote.server, remote.appDir, remote.mode], () => {
+      if (!deployPreview.value) return
+      clearPreviewExpiryTimer()
+      deployPreview.value = null
+      deployConfirmed.value = false
+      remoteMsg.value = { type: 'warn', text: '部署目标已修改，请重新生成预览' }
+    })
     watch(mode, value => {
       if (value === 'remote') scrollDeployLogToBottom()
       if (value === 'local' && canRunWindowsLocalDeploy.value) refreshLocalTaskStatuses(false)
@@ -1640,11 +1721,12 @@ export default {
     onActivated(scrollDeployLogToBottom)
     onUnmounted(() => {
       clearProgressPolling()
+      clearPreviewExpiryTimer()
       if (localStatusTimer) clearInterval(localStatusTimer)
       clearRebuildPolling()
     })
 
-    return { mode, local, remote, remoteModeOptions, env, electronAppInfo, electronPathRows, electronPathHint, localMsg, localAlert, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployLogRef, localLogRef, cookieInput, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmGuideSteps, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, deploying, rebuilding, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, closeLocalAlert, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, confirmNpmDone, copyNpmGuideCommands, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, onUserDataKeepChange, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, checkRemoteUpdate, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatPreviewAction, copyNpmFixCommands, openElectronPath, copyElectronPath }
+    return { mode, local, remote, remoteModeOptions, env, electronAppInfo, electronPathRows, electronPathHint, localMsg, localAlert, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployPreview, deployConfirmed, deployLogRef, localLogRef, cookieInput, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmGuideSteps, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, previewingRemote, deploying, rebuilding, canRunRemoteDeploy, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, closeLocalAlert, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, confirmNpmDone, copyNpmGuideCommands, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, onUserDataKeepChange, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, generateRemotePreview, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatTimestamp, formatPreviewAction, copyNpmFixCommands, openElectronPath, copyElectronPath }
   },
 }
 </script>

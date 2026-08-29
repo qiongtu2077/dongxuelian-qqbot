@@ -185,10 +185,9 @@ export async function fetchSelfId() { return get('/qq/selfid') }
 export async function updateSelfId(selfId: string) { return put('/qq/selfid', { selfId }, true) }
 export async function fetchDeployConfig() { return get('/deploy/config', true) }
 export async function updateDeployConfig(data: unknown) { return put('/deploy/config', data, true) }
-export async function checkDeployUpdate() { return get('/deploy/check-update') }
-export async function runDeploy(data: unknown) { return post('/deploy/run', data, true) }
+export async function previewDeploy(data: unknown) { return post('/deploy/preview', data, true, 10 * 60 * 1000) }
+export async function runDeploy(data: unknown) { return post('/deploy/run', data, true, 4 * 60 * 1000) }
 export async function getDeployProgress(taskId: string) { return get('/deploy/progress/' + encodeURIComponent(taskId), true) }
-export async function confirmDeploy() { return post('/deploy/confirm', {}, true) }
 export async function uploadDeploy(name: string, data: string) { return post('/deploy/upload', { name, data }, true) }
 export async function deployLocal(data: unknown) { return post('/deploy/local', data, true) }
 export async function checkLocalEnv() { return get('/env/check', true) }

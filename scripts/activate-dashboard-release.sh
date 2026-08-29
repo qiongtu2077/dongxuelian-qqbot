@@ -4,6 +4,7 @@ set -Eeuo pipefail
 APP_DIR="${1:-}"
 RELEASE_ID="${2:-}"
 RESULT_FILE="${3:-}"
+EXPECTED_BASELINE_HASH="${4:-}"
 DATA_DIR="${DONGXUELIAN_AI_DATA_DIR:-$APP_DIR/data}"
 RELEASE_ROOT="$APP_DIR/.lian-releases"
 NEXT_DIR="$RELEASE_ROOT/$RELEASE_ID.next"
@@ -16,13 +17,23 @@ MIGRATED=0
 MIGRATION_LEGACY=""
 MANIFEST_HASH=""
 CONTENT_HASH=""
+LOCK_DIR="$RELEASE_ROOT/deploy.lock"
+LOCK_ACQUIRED=0
+LOCK_TOKEN="${RELEASE_ID}-$$-${RANDOM:-0}"
 
 case "$APP_DIR" in
   /*) ;;
   *) echo "app dir must be absolute" >&2; exit 2 ;;
 esac
+case "$APP_DIR/" in
+  *"/../"*|*"/./"*) echo "app dir contains unsafe dot segments" >&2; exit 2 ;;
+esac
 if [ "$APP_DIR" = "/" ] || ! printf '%s' "$RELEASE_ID" | grep -Eq '^[a-z0-9-]+$'; then
   echo "unsafe release target" >&2
+  exit 2
+fi
+if ! printf '%s' "$EXPECTED_BASELINE_HASH" | grep -Eq '^([a-f0-9]{64}|none)$'; then
+  echo "expected baseline hash is invalid" >&2
   exit 2
 fi
 case "$RESULT_FILE" in
@@ -38,14 +49,40 @@ write_result() {
   stage="$2"
   error_text="${3:-}"
   rolled_back="${4:-false}"
+  rollback_state="${5:-not_needed}"
   mkdir -p "$(dirname "$RESULT_FILE")"
-  node - "$RESULT_FILE" "$state" "$stage" "$error_text" "$rolled_back" "$RELEASE_ID" "$MANIFEST_HASH" "$CONTENT_HASH" <<'NODE'
+  node - "$RESULT_FILE" "$state" "$stage" "$error_text" "$rolled_back" "$rollback_state" "$RELEASE_ID" "$MANIFEST_HASH" "$CONTENT_HASH" <<'NODE'
 const fs = require('fs')
-const [file, state, stage, error, rolledBack, releaseId, manifestHash, contentHash] = process.argv.slice(2)
+const [file, state, stage, error, rolledBack, rollbackState, releaseId, manifestHash, contentHash] = process.argv.slice(2)
 const next = file + '.tmp'
-fs.writeFileSync(next, JSON.stringify({ state, stage, error: String(error || '').slice(0, 2000), rolledBack: rolledBack === 'true', releaseId, manifestHash, contentHash, updatedAt: Date.now() }, null, 2))
+fs.writeFileSync(next, JSON.stringify({ state, stage, error: String(error || '').slice(0, 2000), rolledBack: rolledBack === 'true', rollbackState, releaseId, manifestHash, contentHash, updatedAt: Date.now() }, null, 2))
 fs.renameSync(next, file)
 NODE
+}
+
+# Releases only the lock acquired by this activation process.
+release_deploy_lock() {
+  if [ "$LOCK_ACQUIRED" = "1" ]; then
+    current_token="$(cat "$LOCK_DIR/token" 2>/dev/null || true)"
+    if [ "$current_token" = "$LOCK_TOKEN" ]; then rm -rf "$LOCK_DIR"; fi
+    LOCK_ACQUIRED=0
+  fi
+}
+
+# Acquires the target-wide atomic release lock without deleting a stale owner.
+acquire_deploy_lock() {
+  mkdir -p "$RELEASE_ROOT"
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    owner="$(cat "$LOCK_DIR/owner" 2>/dev/null || true)"
+    write_result failed lock "another release owns deploy.lock${owner:+: $owner}" false not_needed
+    return 1
+  fi
+  LOCK_ACQUIRED=1
+  if ! printf '%s\n' "$LOCK_TOKEN" > "$LOCK_DIR/token" || ! printf 'pid=%s release=%s started=%s\n' "$$" "$RELEASE_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_DIR/owner"; then
+    release_deploy_lock
+    write_result failed lock "failed to record deploy.lock owner" false not_needed
+    return 1
+  fi
 }
 
 # Waits for Dashboard, bot, and the expected release identity to become healthy.
@@ -60,7 +97,7 @@ wait_for_runtime() {
       if node - "$expected_manifest" "$status_json" <<'NODE'
 try {
   const status = JSON.parse(process.argv[3])
-  process.exit(status.ok && status.release && status.release.manifestHash === process.argv[2] && status.bot && status.bot.listening ? 0 : 1)
+  process.exit(status.ok && status.dashboard && status.dashboard.healthy && status.release && status.release.manifestHash === process.argv[2] && status.bot && status.bot.listening && status.worker && status.worker.processes > 0 && status.onebot && status.onebot.listening ? 0 : 1)
 } catch { process.exit(1) }
 NODE
       then return 0; fi
@@ -77,7 +114,9 @@ rollback_release() {
   trap - ERR INT TERM
   set +e
   rolled_back=false
+  rollback_state=not_needed
   if [ "$SWITCHED" = "1" ] && [ -n "$OLD_TARGET" ] && [ -d "$OLD_TARGET" ]; then
+    rollback_state=failed
     ln -s "$OLD_TARGET" "$CURRENT_LINK.rollback"
     mv -Tf "$CURRENT_LINK.rollback" "$CURRENT_LINK"
     if [ -x "$CURRENT_LINK/scripts/restart-bot.sh" ]; then
@@ -90,8 +129,9 @@ rollback_release() {
     if [ -f "$OLD_TARGET/release-manifest.json" ]; then
       old_manifest_hash="$(node -e "try{process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).manifestHash||'')}catch{}" "$OLD_TARGET/release-manifest.json")"
     fi
-    if wait_for_runtime "$old_manifest_hash"; then rolled_back=true; fi
+    if wait_for_runtime "$old_manifest_hash"; then rolled_back=true; rollback_state=success; fi
   elif [ "$MIGRATED" = "1" ] && [ -n "$MIGRATION_LEGACY" ] && [ -d "$MIGRATION_LEGACY" ]; then
+    rollback_state=failed
     for base in packages node_modules; do
       for package_name in $PACKAGES; do
         rel="$base/$package_name"
@@ -106,11 +146,17 @@ rollback_release() {
     rm -f "$CURRENT_LINK"
     if [ -x "$APP_DIR/restart.sh" ]; then bash "$APP_DIR/restart.sh" >/dev/null 2>&1 || true; fi
     systemctl restart lian-dashboard >/dev/null 2>&1 || true
-    if wait_for_runtime ""; then rolled_back=true; fi
+    if wait_for_runtime ""; then rolled_back=true; rollback_state=success; fi
   fi
-  write_result failed "$STAGE" "release activation failed at $STAGE (exit $exit_code)" "$rolled_back"
+  write_result failed "$STAGE" "release activation failed at $STAGE (exit $exit_code)" "$rolled_back" "$rollback_state"
+  release_deploy_lock
   exit 1
 }
+trap 'release_deploy_lock; exit 1' INT TERM
+if ! acquire_deploy_lock; then
+  trap - INT TERM
+  exit 1
+fi
 trap rollback_release ERR INT TERM
 
 # Migrates managed paths once so one current-link switch changes every package together.
@@ -156,6 +202,23 @@ MANIFEST_HASH="$(printf '%s' "$VERIFY_JSON" | node -e "let s='';process.stdin.on
 CONTENT_HASH="$(printf '%s' "$VERIFY_JSON" | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>process.stdout.write(JSON.parse(s).contentHash||''))")"
 test -n "$MANIFEST_HASH"
 
+STAGE="verify_baseline"
+write_result running "$STAGE"
+if [ "$EXPECTED_BASELINE_HASH" = "none" ]; then
+  test ! -e "$CURRENT_LINK"
+  test ! -L "$CURRENT_LINK"
+else
+  test -L "$CURRENT_LINK"
+  CURRENT_TARGET="$(readlink -f "$CURRENT_LINK")"
+  case "$CURRENT_TARGET" in
+    "$RELEASE_ROOT"/*) ;;
+    *) echo "current points outside release root" >&2; false ;;
+  esac
+  node "$CURRENT_LINK/scripts/verify-release-manifest.js" "$CURRENT_LINK" >/dev/null
+  CURRENT_BASELINE_HASH="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).manifestHash||'')" "$CURRENT_LINK/release-manifest.json")"
+  test "$CURRENT_BASELINE_HASH" = "$EXPECTED_BASELINE_HASH"
+fi
+
 STAGE="prepare_logrotate"
 write_result running "$STAGE"
 KOISHI_APP_DIR="$APP_DIR" bash "$NEXT_DIR/scripts/install-logrotate.sh"
@@ -191,7 +254,8 @@ healthy=0
 if wait_for_runtime "$MANIFEST_HASH"; then healthy=1; fi
 test "$healthy" = "1"
 
-trap - ERR INT TERM
 STAGE="complete"
 write_result success "$STAGE"
+release_deploy_lock
+trap - ERR INT TERM
 exit 0

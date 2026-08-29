@@ -25,6 +25,11 @@ function interceptCommonReads() {
     },
   })
   cy.intercept('GET', '**/dashboard/api/providers/custom', [])
+  cy.intercept('GET', '**/dashboard/api/env/check', {
+    host: { platform: 'linux', arch: 'x64', hostname: 'source-host' },
+    localDeployTarget: { platform: 'linux', arch: 'x64', canRunWindowsLocalDeploy: false, blockedReason: 'e2e backend is Linux' },
+  })
+  cy.intercept('GET', '**/dashboard/api/deploy/config', { server: 'root@target-host', appDir: '/srv/app', mode: 'update' })
 }
 
 // 以已登录且已跳过部署引导的状态进入主控制台。
@@ -90,6 +95,35 @@ describe('主控制台按钮浏览器审查（排除独立 Agent 控制台）', 
     cy.contains('button', '保存全部备用链').should('have.length', 1)
     cy.contains('button', '保存 聊天 Fallback').should('not.exist')
     cy.contains('主模型兜底（最后试一次主模型）').should('not.exist')
+  })
+
+  it('远程发布必须先预览并确认且执行只提交预览编号', () => {
+    const previewId = 'a'.repeat(32)
+    cy.intercept('POST', '**/dashboard/api/deploy/preview', {
+      previewId,
+      expiresAt: Date.now() + 30 * 60 * 1000,
+      canDeploy: true,
+      blockers: [],
+      source: { hostname: 'source-host', commit: 'b'.repeat(40), clean: true },
+      target: { server: 'root@target-host', hostname: 'target-host', appDir: '/srv/app', availableBytes: 1024 * 1024 * 1024, release: { releaseId: 'old-release' } },
+      release: { releaseId: 'new-release', totalBytes: 1024, fileCount: 10 },
+      requiredBytes: 64 * 1024 * 1024,
+      changes: { added: 1, modified: 2, removed: 0, unchanged: 7 },
+    }).as('previewDeploy')
+    cy.intercept('POST', '**/dashboard/api/deploy/run', { taskId: 'task123' }).as('runDeploy')
+    cy.intercept('GET', '**/dashboard/api/deploy/progress/task123', { state: 'success', stage: 'complete', lines: ['done'] })
+    visitUnlockedDashboard()
+
+    cy.contains('button', '部署').click()
+    cy.contains('button', '切换到远程 Linux 部署').click()
+    cy.contains('button', '发布已确认预览').should('be.disabled')
+    cy.contains('button', '生成部署预览').click()
+    cy.wait('@previewDeploy')
+    cy.contains('new-release')
+    cy.contains('button', '发布已确认预览').should('be.disabled')
+    cy.contains('label', '我确认目标主机、目录和短暂停机影响').find('input').check()
+    cy.contains('button', '发布已确认预览').should('not.be.disabled').click()
+    cy.wait('@runDeploy').its('request.body').should('deep.equal', { previewId, confirmed: true })
   })
 
   it('不会进入或点击独立 Agent 控制台', () => {

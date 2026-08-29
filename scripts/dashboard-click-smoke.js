@@ -281,7 +281,17 @@ function apiMock(method, pathname, body) {
 
   if (method === 'GET' && pathname === '/deploy/config') return ok({ server: 'mock-user@mock-host.invalid', appDir: '/opt/mock-koishi', mode: 'update' })
   if (method === 'PUT' && pathname === '/deploy/config') return writeOk('deploy config saved')
-  if (method === 'GET' && pathname === '/deploy/check-update') return ok({ upToDate: false, local: 'local-mock', deployed: 'remote-mock' })
+  if (method === 'POST' && pathname === '/deploy/preview') return ok({
+    previewId: 'a'.repeat(32),
+    expiresAt: Date.now() + 30 * 60 * 1000,
+    canDeploy: true,
+    blockers: [],
+    source: { commit: 'b'.repeat(40), hostname: 'source-host', clean: true },
+    target: { server: 'mock-user@mock-host.invalid', hostname: 'target-host', appDir: '/opt/mock-koishi', availableBytes: 1024 * 1024 * 1024, release: { releaseId: 'old-release' } },
+    release: { releaseId: 'new-release', totalBytes: 1024, fileCount: 10 },
+    requiredBytes: 64 * 1024 * 1024,
+    changes: { added: 1, modified: 2, removed: 0, unchanged: 7 },
+  })
   if (method === 'POST' && pathname === '/deploy/rebuild-frontend') return ok({ ok: true, taskId: 'rebuild-mock' })
   if (method === 'GET' && pathname === '/deploy/rebuild-frontend/status') return ok({ ok: true, done: true, success: true, message: 'mock rebuild complete' })
   if (method === 'GET' && pathname === '/env/check') return ok({
@@ -391,8 +401,7 @@ function apiMock(method, pathname, body) {
       ok: true,
       range,
       bucketMs: 10000,
-      dashboardSampleIntervalMs: 5000,
-      workerSampleIntervalMs: 10000,
+      hostSampleIntervalMs: 10000,
       pointCount: points.length,
       points,
     })
@@ -795,12 +804,13 @@ async function verifyDeployPanel(page) {
   await waitForText(page, '远程 Linux 部署')
   await waitForInputValue(page, 'mock-user@mock-host.invalid')
   await waitForInputValue(page, '/opt/mock-koishi')
-  await waitForText(page, '重建并部署到远端')
+  await waitForText(page, '发布已确认预览')
   await waitForText(page, '重建前端')
   await clickText(page, '自动填入服务器地址')
   await waitForText(page, '已读取部署配置')
-  await clickText(page, '检查更新')
-  await waitForText(page, '本地 local-mock，远程 remote-mock')
+  await clickText(page, '生成部署预览')
+  await waitForText(page, '预览已冻结')
+  await waitForText(page, 'new-release')
   await clickSidebarTab(page, '功能地图')
   await waitForText(page, '功能介绍')
 }
@@ -814,7 +824,9 @@ async function verifyControlPanel(page) {
   await clickText(page, '查看 NapCat token')
   await verifyAdminModalCancel(page)
   await typePlaceholder(page, '输入新的监听 QQ 号', '654321')
-  await clickText(page, '重载配置')
+  // 更换 QQ 号会先进行浏览器确认，再进入管理员二次验证。
+  page.once('dialog', dialog => dialog.accept())
+  await clickText(page, '更换 QQ 号并重启机器人')
   await verifyAdminModalCancel(page)
   await clickText(page, '保存')
   await waitForText(page, '节流配置已保存')
@@ -852,8 +864,7 @@ async function verifyResourcePanel(page, options = {}) {
   await waitForText(page, '日报预计算')
   await waitForText(page, '内存走势')
   if (!expectMockData) return
-  await waitForText(page, 'worker 采样 10s')
-  await waitForText(page, '面板补采样 5s')
+  await waitForText(page, '统一采样 10s')
   await waitForText(page, '当前聚合 10s')
   await waitForText(page, '服务器模式')
   await waitForText(page, '大内存服务器')
@@ -950,7 +961,7 @@ async function runClicks(page) {
   await page.reload({ waitUntil: 'networkidle0' })
 
   await waitForText(page, '先完成部署')
-  await clickText(page, '我已部署，解锁')
+  await clickText(page, '跳过部署引导并进入控制台')
   await waitForText(page, '功能介绍')
   await verifyLegacyAgentTabColdStart(page)
 
@@ -975,7 +986,7 @@ async function runClicks(page) {
   await clickText(page, '保存自定义供应商')
   await waitForText(page, '自定义供应商已保存')
   await clickText(page, '+ 添加步骤')
-  await clickText(page, '保存 聊天 Fallback')
+  await clickText(page, '保存全部备用链')
   await waitForText(page, 'Fallback 链已保存')
 
   await clickSidebarTab(page, '人格实验室')
@@ -1115,7 +1126,14 @@ async function runClicks(page) {
   await waitForText(page, '访问密码')
   await typePlaceholder(page, '新访问密码', 'abc123')
   await clickText(page, '修改访问密码')
-  await waitForText(page, 'password changed')
+  await waitForText(page, '密码已修改，请重新登录')
+  // 修改访问密码会清除登录态；mock 烟测重新登录后再检查剩余页面。
+  await page.evaluate(() => {
+    localStorage.setItem('dashboard_token', 'mock-token')
+    localStorage.setItem('dashboard_deploy_unlocked', 'true')
+  })
+  await page.reload({ waitUntil: 'networkidle0' })
+  await waitForText(page, '访问密码')
 
   await clickSidebarTab(page, '日志中心')
   await waitForText(page, 'mock log line')
@@ -1157,7 +1175,7 @@ async function runLiveClicks(page) {
   }
   await waitForText(page, 'LianBoard 控制中心', 15000)
   if (await hasText(page, '先完成部署')) {
-    await clickText(page, '我已部署，解锁')
+    await clickText(page, '跳过部署引导并进入控制台')
   }
   await waitForText(page, '功能介绍', 15000)
 
@@ -1258,6 +1276,7 @@ async function main() {
     page.on('console', msg => {
       const text = msg.text()
       if (/Failed to load resource: the server responded with a status of (403|404)/.test(text)) return
+      if (/WebSocket connection to .* failed: Page entered Back-Forward Cache\./.test(text)) return
       if (msg.type() === 'error') consoleErrors.push(text)
     })
     page.on('pageerror', error => consoleErrors.push(error.message))

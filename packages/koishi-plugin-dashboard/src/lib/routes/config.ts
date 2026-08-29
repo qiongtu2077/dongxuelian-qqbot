@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'http'
 
 const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
+const { execSync } = require('child_process') as typeof import('child_process')
 const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils') as {
   json(res: ServerResponse, data: unknown, status?: number): void
   collectBody(req: IncomingMessage, res: ServerResponse, callback: (body: string) => void | Promise<void>): void
@@ -22,6 +23,7 @@ const { DATA_DIR, AI_LIB, PLUGIN_ROOT, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE
   LORES_DIR: string
 }
 const { checkPortState } = require('../tools') as typeof import('../tools')
+const { resolveNapcatOnebotListenPort } = require('../napcat') as typeof import('../napcat')
 
 type LoreScope = 'always' | 'keyword' | 'none'
 type LoreNumberValue = number | ''
@@ -262,10 +264,30 @@ function handleGetStatus(req: IncomingMessage, res: ServerResponse): void {
   })
 }
 
+// Counts active Koishi worker processes without exposing their command lines.
+function countKoishiWorkers(botListening: boolean): number {
+  if (process.platform === 'win32') return botListening ? 1 : 0
+  try {
+    const output = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim()
+    return output ? output.split('\n').filter(Boolean).length : 0
+  } catch {
+    return 0
+  }
+}
+
 // Exposes a public, non-sensitive endpoint for release activation health checks.
 function handleGetReleaseStatus(req: IncomingMessage, res: ServerResponse): void {
   const botPort = Number(process.env.KOISHI_PORT || 5140)
-  return json(res, { ok: true, release: readReleaseMetadata(), bot: { port: botPort, listening: checkPortState(botPort).status === 'occupied' } })
+  const botListening = checkPortState(botPort).status === 'occupied'
+  const onebotPort = resolveNapcatOnebotListenPort()
+  return json(res, {
+    ok: true,
+    dashboard: { healthy: true },
+    release: readReleaseMetadata(),
+    bot: { port: botPort, listening: botListening },
+    worker: { processes: countKoishiWorkers(botListening) },
+    onebot: { port: onebotPort, listening: checkPortState(onebotPort).status === 'occupied' },
+  })
 }
 
 function handleGetProviders(req: IncomingMessage, res: ServerResponse): void {

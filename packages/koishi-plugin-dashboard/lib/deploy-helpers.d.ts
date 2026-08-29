@@ -1,4 +1,3 @@
-import type { Hash } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 type ToolsModule = typeof import('./tools');
 type NapcatModule = typeof import('./napcat');
@@ -28,11 +27,6 @@ interface DeployTarget extends DeployTargetInput {
 }
 interface ScpOptions {
     recursive?: boolean;
-}
-interface DeployFingerprintExtra {
-    deployedAt?: number;
-    deployFingerprint?: string;
-    [key: string]: unknown;
 }
 interface CopyWorkspaceResourceOptions {
     replace?: boolean;
@@ -329,9 +323,6 @@ declare function remoteJoin(base: unknown, ...parts: unknown[]): string;
 declare function sshCommand(server: unknown, remoteCmd: unknown): string;
 declare function scpRemoteTarget(server: unknown, remotePath: unknown): string;
 declare function scpCommand(source: unknown, target: unknown, options?: ScpOptions): string;
-declare function hashFile(hash: Hash, repoRoot: string, filePath: string): void;
-declare function computeFingerprint(): string;
-declare function writeDeployFingerprint(file: string, extra?: DeployFingerprintExtra): string;
 declare function isBlockedDownloadHost(hostname: unknown): boolean;
 declare function getLocalWorkDirSafety(): LocalWorkDirSafety;
 declare function getLocalDeployTarget(): LocalDeployTarget;
@@ -410,9 +401,6 @@ declare const _default: {
     sshCommand: typeof sshCommand;
     scpRemoteTarget: typeof scpRemoteTarget;
     scpCommand: typeof scpCommand;
-    hashFile: typeof hashFile;
-    computeFingerprint: typeof computeFingerprint;
-    writeDeployFingerprint: typeof writeDeployFingerprint;
     isBlockedDownloadHost: typeof isBlockedDownloadHost;
     getLocalWorkDirSafety: typeof getLocalWorkDirSafety;
     getLocalDeployTarget: typeof getLocalDeployTarget;

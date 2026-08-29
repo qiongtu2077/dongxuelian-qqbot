@@ -12,13 +12,14 @@ const { detectNapcatInstallation, resolveNapcatWebuiListenPort, resolveNapcatOne
 const { buildFrontendDist } = require('../frontend');
 const { localTasks, getTaskPublicStatus, spawnLocalTask, getRebuildStatus, setRebuildStatus } = require('../deploy-state');
 const { readLastLogLines } = require('../logging');
-const { buildDashboardRelease } = require('../release');
 const dh = require('../deploy-helpers');
+const remoteRelease = require('../remote-release');
 const DEPLOY_CONFIG_FILE = path.join(DATA_DIR, 'deploy-config.json');
 const DEPLOY_TASKS_DIR = path.join(DATA_DIR, 'deploy-tasks');
 const DEFAULT_REMOTE_APP_DIR = process.env.DASHBOARD_REMOTE_APP_DIR || process.env.KOISHI_REMOTE_APP_DIR || '';
 const REMOTE_DEPLOY_TIMEOUT_MS = 30 * 60 * 1000;
-const LOCAL_RELEASES_DIR = path.join(KOISHI_DIR, 'runtime', 'dashboard-releases');
+const LOCAL_RELEASES_DIR = path.join(DATA_DIR, 'deploy-releases');
+const DEPLOY_PREVIEWS_DIR = path.join(DATA_DIR, 'deploy-previews');
 function getLegacyErrorMessage(error) {
     return error?.message;
 }
@@ -79,6 +80,29 @@ function readRemoteDeployTask(taskId) {
         return null;
     }
 }
+// Records exact immutable release identity after target-side activation succeeds.
+function writeSuccessfulReleaseRecord(task) {
+    let cfg = {};
+    try {
+        cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8'));
+    }
+    catch { /* missing config is recreated from the task */ }
+    Object.assign(cfg, {
+        server: task.server,
+        appDir: task.appDir,
+        mode: 'update',
+        deployedAt: Date.now(),
+        releaseId: task.releaseId,
+        releaseCommit: task.commit,
+        releaseManifestHash: task.manifestHash,
+        releaseContentHash: task.contentHash,
+    });
+    delete cfg.deployFingerprint;
+    const next = DEPLOY_CONFIG_FILE + '.tmp';
+    fs.mkdirSync(path.dirname(DEPLOY_CONFIG_FILE), { recursive: true });
+    fs.writeFileSync(next, JSON.stringify(cfg, null, 2), 'utf8');
+    fs.renameSync(next, DEPLOY_CONFIG_FILE);
+}
 // Pulls the detached target-side activation result into the local durable task state.
 function refreshRemoteDeployTask(task) {
     if (task.state !== 'running' || !task.server || !task.appDir)
@@ -90,6 +114,8 @@ function refreshRemoteDeployTask(task) {
         task.stage = String(result.stage || task.stage);
         task.updatedAt = Date.now();
         task.rolledBack = !!result.rolledBack;
+        if (result.rollbackState)
+            task.rollbackState = result.rollbackState;
         if (result.releaseId)
             task.releaseId = result.releaseId;
         if (result.manifestHash)
@@ -97,14 +123,7 @@ function refreshRemoteDeployTask(task) {
         if (result.contentHash)
             task.contentHash = result.contentHash;
         if (result.state === 'success') {
-            dh.writeDeployFingerprint(DEPLOY_CONFIG_FILE, {
-                server: task.server,
-                appDir: task.appDir,
-                mode: 'update',
-                releaseId: task.releaseId,
-                releaseManifestHash: task.manifestHash,
-                releaseContentHash: task.contentHash,
-            });
+            writeSuccessfulReleaseRecord(task);
             finishRemoteDeployTask(task, 'success', task.stage);
         }
         else if (result.state === 'failed') {
@@ -171,56 +190,29 @@ function handleGetDeployConfig(req, res) {
             botRunning = true;
         }
         catch { /* non-critical: port probe fallback */ }
-        cfg._localFingerprint = dh.computeFingerprint();
         return json(res, { ...cfg, botRunning });
     }
     catch {
-        return json(res, { server: '', appDir: DEFAULT_REMOTE_APP_DIR, botRunning: false, _localFingerprint: dh.computeFingerprint() });
+        return json(res, { server: '', appDir: DEFAULT_REMOTE_APP_DIR, botRunning: false });
     }
 }
-// Reads and fully verifies the active immutable release on the configured SSH target.
-function readVerifiedRemoteRelease(server, appDir) {
-    const currentDir = dh.remoteJoin(appDir, '.lian-releases', 'current');
-    const verifier = dh.remoteJoin(currentDir, 'scripts', 'verify-release-manifest.js');
-    const manifestFile = dh.remoteJoin(currentDir, 'release-manifest.json');
-    const command = `node ${shellQuote(verifier)} ${shellQuote(currentDir)} >/dev/null && cat ${shellQuote(manifestFile)}`;
-    const output = execSync(dh.sshCommand(server, command), { encoding: 'utf8', timeout: 3 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 });
-    const manifest = JSON.parse(String(output || '{}'));
-    if (manifest.schemaVersion !== 1 || !/^[a-z0-9-]+$/.test(String(manifest.releaseId || '')) || !/^[a-f0-9]{64}$/.test(String(manifest.manifestHash || '')) || !/^[a-f0-9]{64}$/.test(String(manifest.contentHash || '')))
-        throw new Error('远端发布清单结构无效');
-    return manifest;
-}
-// Compares current local code with a fully verified active manifest on the saved SSH target.
-function handleGetCheckUpdate(req, res) {
-    const local = dh.computeFingerprint();
-    try {
-        const saved = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8'));
-        const cfg = dh.validateDeployTarget(saved);
-        if (!cfg.server || !cfg.appDir)
-            throw new Error('未保存远端发布目标');
-        const remote = readVerifiedRemoteRelease(cfg.server, cfg.appDir);
-        const deployed = String(saved.deployFingerprint || '');
-        const recordedManifestHash = String(saved.releaseManifestHash || '');
-        return json(res, {
-            ok: true,
-            verified: true,
-            local,
-            deployed,
-            recordedManifestHash,
-            remote: {
-                releaseId: remote.releaseId,
-                version: remote.version,
-                commit: remote.commit,
-                builtAt: remote.builtAt,
-                manifestHash: remote.manifestHash,
-                contentHash: remote.contentHash,
-            },
-            upToDate: local !== 'unknown' && local === deployed && remote.manifestHash === recordedManifestHash,
-        });
-    }
-    catch {
-        return json(res, { ok: false, verified: false, code: 'REMOTE_RELEASE_UNVERIFIED', message: '无法确认远端实际版本：连接失败、配置缺失或发布清单校验失败' }, 502);
-    }
+// Builds and returns one frozen, read-only deployment preview for an administrator.
+function handlePostDeployPreview(req, res) {
+    if (!requireAdmin(req, res))
+        return;
+    collectBody(req, res, (body) => {
+        try {
+            const input = JSON.parse(body);
+            const cfg = dh.validateDeployTarget(input);
+            if (cfg.mode === 'install')
+                return json(res, { ok: false, message: '首次安装请使用 setup.sh 或本地部署器；Web 远程发布只更新已有部署' }, 400);
+            const preview = remoteRelease.createRemoteReleasePreview({ repoRoot: path.join(PLUGIN_ROOT, '..', '..'), releasesRoot: LOCAL_RELEASES_DIR, previewsDir: DEPLOY_PREVIEWS_DIR, server: cfg.server, appDir: cfg.appDir });
+            return json(res, remoteRelease.toPublicRemoteReleasePreview(preview));
+        }
+        catch (error) {
+            return json(res, { ok: false, message: sanitizeDeployError(error) }, 400);
+        }
+    });
 }
 function handlePutDeployConfig(req, res) {
     if (!requireAdmin(req, res))
@@ -238,68 +230,47 @@ function handlePutDeployConfig(req, res) {
         }
     });
 }
-// Builds one immutable release, uploads it to a new version directory, and starts detached activation.
+// Uploads one already-frozen preview release and starts detached target activation.
 function handlePostSafeDeployRun(req, res) {
     if (!requireAdmin(req, res))
         return;
     collectBody(req, res, (body) => {
         try {
-            const cfg = dh.validateDeployTarget(JSON.parse(body));
-            if (cfg.mode === 'install')
-                return json(res, { ok: false, message: '首次安装请使用 setup.sh 或本地部署器；Web 远程发布只更新已有部署' }, 400);
-            if (!cfg.server || !cfg.appDir)
-                return json(res, { ok: false, message: '配置不完整' }, 400);
+            const input = JSON.parse(body);
+            const repoRoot = path.join(PLUGIN_ROOT, '..', '..');
+            const preview = remoteRelease.validateRemoteReleasePreview({ repoRoot, releasesRoot: LOCAL_RELEASES_DIR, previewsDir: DEPLOY_PREVIEWS_DIR, previewId: input.previewId, confirmed: input.confirmed });
+            const release = preview.release;
+            if (!release || !preview.target.release)
+                throw new Error('部署预览没有完整的冻结发布物或远端基线');
             const taskId = Date.now().toString(36) + crypto.randomBytes(4).toString('hex');
             const task = createRemoteDeployTask(taskId);
-            task.server = cfg.server;
-            task.appDir = cfg.appDir;
+            task.server = preview.target.server;
+            task.appDir = preview.target.requestedAppDir;
+            task.previewId = preview.previewId;
+            task.releaseId = release.releaseId;
+            task.commit = release.commit;
+            task.manifestHash = release.manifestHash;
+            task.contentHash = release.contentHash;
+            task.baselineManifestHash = preview.target.release.manifestHash;
             writeRemoteDeployTask(task);
-            fs.writeFileSync(path.join(DEPLOY_TASKS_DIR, taskId + '.log'), '开始构建不可变发布物\n', 'utf8');
+            fs.writeFileSync(path.join(DEPLOY_TASKS_DIR, taskId + '.log'), `使用已确认预览 ${preview.previewId} 的冻结发布物\n`, 'utf8');
             json(res, { ok: true, taskId });
-            const repoRoot = path.join(PLUGIN_ROOT, '..', '..');
-            const npmCommand = process.platform === 'win32' ? 'npm.cmd run build:plugins' : 'npm run build:plugins';
-            setRemoteDeployStage(task, 'build_all_plugins');
-            exec(npmCommand, { cwd: repoRoot, timeout: 10 * 60 * 1000, maxBuffer: 8 * 1024 * 1024 }, (buildError, stdout, stderr) => {
-                if (stdout)
-                    try {
-                        fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, taskId + '.log'), stdout.trim() + '\n', 'utf8');
-                    }
-                    catch { /* progress log is best effort */ }
-                if (stderr)
-                    try {
-                        fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, taskId + '.log'), stderr.trim() + '\n', 'utf8');
-                    }
-                    catch { /* progress log is best effort */ }
-                if (buildError)
-                    return finishRemoteDeployTask(task, 'failed', 'build_all_plugins', buildError);
+            const remoteReleaseRoot = dh.remoteJoin(task.appDir, '.lian-releases');
+            const remoteNext = dh.remoteJoin(remoteReleaseRoot, release.releaseId + '.next');
+            const remoteResult = dh.remoteJoin(task.appDir, 'data', 'deploy-tasks', taskId + '.remote.json');
+            const unitName = 'lian-release-' + release.releaseId.replace(/[^a-z0-9-]/g, '-');
+            const commands = [
+                { stage: 'prepare_remote_version', command: dh.sshCommand(task.server, `mkdir -p ${shellQuote(remoteReleaseRoot)} ${shellQuote(path.dirname(remoteResult))} && rm -rf ${shellQuote(remoteNext)}`), timeout: 30000 },
+                { stage: 'upload_release', command: dh.scpCommand(release.releaseDir, dh.scpRemoteTarget(task.server, remoteNext), { recursive: true }), timeout: 10 * 60 * 1000 },
+                { stage: 'verify_remote_manifest', command: dh.sshCommand(task.server, `node ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'verify-release-manifest.js'))} ${shellQuote(remoteNext)}`), timeout: 3 * 60 * 1000 },
+                { stage: 'start_detached_activation', command: dh.sshCommand(task.server, `systemd-run --unit=${shellQuote(unitName)} --collect --quiet --property=Type=oneshot --property=TimeoutStartSec=1800 /bin/bash ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'activate-dashboard-release.sh'))} ${shellQuote(task.appDir)} ${shellQuote(release.releaseId)} ${shellQuote(remoteResult)} ${shellQuote(task.baselineManifestHash)}`), timeout: 30000 },
+            ];
+            runSafeDeployCommands(task, commands, () => {
+                setRemoteDeployStage(task, 'target_activation');
                 try {
-                    setRemoteDeployStage(task, 'build_release_manifest');
-                    const release = buildDashboardRelease(repoRoot, LOCAL_RELEASES_DIR);
-                    task.releaseId = release.manifest.releaseId;
-                    task.manifestHash = release.manifest.manifestHash;
-                    task.contentHash = release.manifest.contentHash;
-                    writeRemoteDeployTask(task);
-                    const remoteReleaseRoot = dh.remoteJoin(cfg.appDir, '.lian-releases');
-                    const remoteNext = dh.remoteJoin(remoteReleaseRoot, release.manifest.releaseId + '.next');
-                    const remoteResult = dh.remoteJoin(cfg.appDir, 'data', 'deploy-tasks', taskId + '.remote.json');
-                    const unitName = 'lian-release-' + release.manifest.releaseId.replace(/[^a-z0-9-]/g, '-');
-                    const commands = [
-                        { stage: 'prepare_remote_version', command: dh.sshCommand(cfg.server, `mkdir -p ${shellQuote(remoteReleaseRoot)} ${shellQuote(path.dirname(remoteResult))} && rm -rf ${shellQuote(remoteNext)}`), timeout: 30000 },
-                        { stage: 'upload_release', command: dh.scpCommand(release.releaseDir, dh.scpRemoteTarget(cfg.server, remoteNext), { recursive: true }), timeout: 10 * 60 * 1000 },
-                        { stage: 'verify_remote_manifest', command: dh.sshCommand(cfg.server, `node ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'verify-release-manifest.js'))} ${shellQuote(remoteNext)}`), timeout: 3 * 60 * 1000 },
-                        { stage: 'start_detached_activation', command: dh.sshCommand(cfg.server, `systemd-run --unit=${shellQuote(unitName)} --collect --quiet --property=Type=oneshot --property=TimeoutStartSec=1800 /bin/bash ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'activate-dashboard-release.sh'))} ${shellQuote(cfg.appDir)} ${shellQuote(release.manifest.releaseId)} ${shellQuote(remoteResult)}`), timeout: 30000 },
-                    ];
-                    runSafeDeployCommands(task, commands, () => {
-                        setRemoteDeployStage(task, 'target_activation');
-                        try {
-                            fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, taskId + '.log'), '目标服务器已启动独立发布单元，等待切换、重启和健康检查\n', 'utf8');
-                        }
-                        catch { /* progress log is best effort */ }
-                    });
+                    fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, taskId + '.log'), '目标服务器已启动独立发布单元，等待切换、重启和健康检查\n', 'utf8');
                 }
-                catch (error) {
-                    finishRemoteDeployTask(task, 'failed', task.stage || 'build_release_manifest', error);
-                }
+                catch { /* progress log is best effort */ }
             });
         }
         catch (error) {
@@ -331,7 +302,7 @@ function handleGetDeployProgress(req, res, pathname) {
         }
         const raw = buffer.toString('utf8').trim();
         const lines = raw ? raw.split('\n') : [];
-        return json(res, { ok: true, lines, state: task.state, stage: task.stage, error: task.error, startedAt: task.startedAt, updatedAt: task.updatedAt, finishedAt: task.finishedAt, expiresAt: task.expiresAt });
+        return json(res, { ok: true, lines, state: task.state, stage: task.stage, error: task.error, rolledBack: task.rolledBack, rollbackState: task.rollbackState, previewId: task.previewId, releaseId: task.releaseId, startedAt: task.startedAt, updatedAt: task.updatedAt, finishedAt: task.finishedAt, expiresAt: task.expiresAt });
     }
     catch (error) {
         return json(res, { ok: false, message: sanitizeDeployError(error), code: 'DEPLOY_PROGRESS_READ_FAILED' }, 500);
@@ -349,26 +320,6 @@ function handlePostFrontendRebuild(req, res) {
     return json(res, { ok: true, message: '前端构建已启动' });
 }
 function handleGetFrontendRebuildStatus(req, res) { return json(res, getRebuildStatus()); }
-function handlePostDeployConfirm(req, res) {
-    if (!requireAdmin(req, res))
-        return;
-    try {
-        let cfg = {};
-        try {
-            cfg = JSON.parse(fs.readFileSync(DEPLOY_CONFIG_FILE, 'utf8'));
-        }
-        catch { /* non-critical: missing deploy config */ }
-        cfg.deployedAt = Date.now();
-        cfg.deployFingerprint = dh.computeFingerprint();
-        const tmp = DEPLOY_CONFIG_FILE + '.tmp';
-        fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8');
-        fs.renameSync(tmp, DEPLOY_CONFIG_FILE);
-        json(res, { ok: true });
-    }
-    catch (e) {
-        json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400);
-    }
-}
 function handlePostDeployUpload(req, res) {
     if (!requireAdmin(req, res))
         return;
@@ -758,10 +709,9 @@ function handlePostBotLocalStop(req, res) {
 }
 const routes = {
     'GET /dashboard/api/deploy/config': handleGetDeployConfig,
-    'GET /dashboard/api/deploy/check-update': handleGetCheckUpdate,
+    'POST /dashboard/api/deploy/preview': handlePostDeployPreview,
     'PUT /dashboard/api/deploy/config': handlePutDeployConfig,
     'POST /dashboard/api/deploy/run': handlePostSafeDeployRun,
-    'POST /dashboard/api/deploy/confirm': handlePostDeployConfirm,
     'POST /dashboard/api/deploy/upload': handlePostDeployUpload,
     'POST /dashboard/api/deploy/local': handlePostDeployLocal,
     'GET /dashboard/api/deploy/local-config-preview': handleGetLocalConfigPreview,

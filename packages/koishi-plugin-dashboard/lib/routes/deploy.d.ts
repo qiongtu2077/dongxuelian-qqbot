@@ -6,12 +6,11 @@ interface DeployPrefixRoute {
     handler: DeployRouteHandler;
 }
 declare function handleGetDeployConfig(req: IncomingMessage, res: ServerResponse): void;
-declare function handleGetCheckUpdate(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostDeployPreview(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePutDeployConfig(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePostSafeDeployRun(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePostFrontendRebuild(req: IncomingMessage, res: ServerResponse): void;
 declare function handleGetFrontendRebuildStatus(req: IncomingMessage, res: ServerResponse): void;
-declare function handlePostDeployConfirm(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePostDeployUpload(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePostDeployLocal(req: IncomingMessage, res: ServerResponse): void;
 declare function handleGetLocalConfigPreview(req: IncomingMessage, res: ServerResponse): void;
@@ -35,10 +34,9 @@ declare function handlePostBotLocalStop(req: IncomingMessage, res: ServerRespons
 declare const _default: {
     routes: {
         'GET /dashboard/api/deploy/config': typeof handleGetDeployConfig;
-        'GET /dashboard/api/deploy/check-update': typeof handleGetCheckUpdate;
+        'POST /dashboard/api/deploy/preview': typeof handlePostDeployPreview;
         'PUT /dashboard/api/deploy/config': typeof handlePutDeployConfig;
         'POST /dashboard/api/deploy/run': typeof handlePostSafeDeployRun;
-        'POST /dashboard/api/deploy/confirm': typeof handlePostDeployConfirm;
         'POST /dashboard/api/deploy/upload': typeof handlePostDeployUpload;
         'POST /dashboard/api/deploy/local': typeof handlePostDeployLocal;
         'GET /dashboard/api/deploy/local-config-preview': typeof handleGetLocalConfigPreview;

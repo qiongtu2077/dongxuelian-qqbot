@@ -166,20 +166,29 @@ describe('主控制台前后端契约审查', () => {
     expect(botBackend).toMatch(/function handlePutQqSelfId[\s\S]*?writeConfigAtomic\(ymlPath, nextYml\)[\s\S]*?机器人已通过重启健康检查/)
   })
 
-  test('普通发布不携带 B 站 cookies，发布入口只走不可变版本链路', () => {
+  test('普通发布不携带 B 站 cookies，执行入口只接受已确认预览', () => {
     const deployBackend = readSource('packages/koishi-plugin-dashboard/src/lib/routes/deploy.ts')
     const release = readSource('packages/koishi-plugin-dashboard/src/lib/release.ts')
+    const api = readSource('packages/koishi-plugin-dashboard/frontend/src/api.ts')
 
+    expect(deployBackend).toMatch(/'POST \/dashboard\/api\/deploy\/preview': handlePostDeployPreview/)
     expect(deployBackend).toMatch(/'POST \/dashboard\/api\/deploy\/run': handlePostSafeDeployRun/)
+    expect(deployBackend).toMatch(/validateRemoteReleasePreview\([\s\S]*?previewId: input\.previewId[\s\S]*?confirmed: input\.confirmed/)
+    expect(api).toMatch(/previewDeploy\(data: unknown\).*post\('\/deploy\/preview', data, true/)
     expect(deployBackend).not.toMatch(/scpCommand\([^\n]*bilibili-cookies\.txt/)
     expect(release).not.toContain('bilibili-cookies.txt')
   })
 
-  test('远端版本检查执行完整清单校验且失败返回无法确认', () => {
-    const deployBackend = readSource('packages/koishi-plugin-dashboard/src/lib/routes/deploy.ts')
+  test('远端预览完整校验当前清单并冻结提交、基线和有效期', () => {
+    const remoteRelease = readSource('packages/koishi-plugin-dashboard/src/lib/remote-release.ts')
+    const deployHelpers = readSource('packages/koishi-plugin-dashboard/src/lib/deploy-helpers.ts')
 
-    expect(deployBackend).toMatch(/verify-release-manifest\.js/)
-    expect(deployBackend).toMatch(/REMOTE_RELEASE_UNVERIFIED/)
-    expect(deployBackend).toMatch(/无法确认远端实际版本/)
+    expect(remoteRelease).toMatch(/git'[\s\S]*?'status'[\s\S]*?'--porcelain=v1'/)
+    expect(remoteRelease).toMatch(/verify-release-manifest\.js/)
+    expect(remoteRelease).toMatch(/PREVIEW_TTL_MS = 30 \* 60 \* 1000/)
+    expect(remoteRelease).toMatch(/compareRemoteBaseline/)
+    expect(deployHelpers).toContain('StrictHostKeyChecking=accept-new')
+    expect(deployHelpers).not.toContain('StrictHostKeyChecking=no')
+    expect(remoteRelease).not.toContain("createHash('md5')")
   })
 })

@@ -1,10 +1,12 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils');
 const { requireAdmin } = require('../auth');
 const { DATA_DIR, AI_LIB, PLUGIN_ROOT, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths');
 const { checkPortState } = require('../tools');
+const { resolveNapcatOnebotListenPort } = require('../napcat');
 function getLegacyErrorMessage(error) {
     return error && typeof error === 'object' && 'message' in error ? error.message : undefined;
 }
@@ -130,10 +132,31 @@ function handleGetStatus(req, res) {
         release: readReleaseMetadata(),
     });
 }
+// Counts active Koishi worker processes without exposing their command lines.
+function countKoishiWorkers(botListening) {
+    if (process.platform === 'win32')
+        return botListening ? 1 : 0;
+    try {
+        const output = execSync("ps aux | grep 'koishi/lib/worker' | grep -v grep", { encoding: 'utf8', timeout: 3000 }).trim();
+        return output ? output.split('\n').filter(Boolean).length : 0;
+    }
+    catch {
+        return 0;
+    }
+}
 // Exposes a public, non-sensitive endpoint for release activation health checks.
 function handleGetReleaseStatus(req, res) {
     const botPort = Number(process.env.KOISHI_PORT || 5140);
-    return json(res, { ok: true, release: readReleaseMetadata(), bot: { port: botPort, listening: checkPortState(botPort).status === 'occupied' } });
+    const botListening = checkPortState(botPort).status === 'occupied';
+    const onebotPort = resolveNapcatOnebotListenPort();
+    return json(res, {
+        ok: true,
+        dashboard: { healthy: true },
+        release: readReleaseMetadata(),
+        bot: { port: botPort, listening: botListening },
+        worker: { processes: countKoishiWorkers(botListening) },
+        onebot: { port: onebotPort, listening: checkPortState(onebotPort).status === 'occupied' },
+    });
 }
 function handleGetProviders(req, res) {
     try {

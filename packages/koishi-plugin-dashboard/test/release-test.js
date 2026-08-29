@@ -91,12 +91,13 @@ esac
   writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
 manifest="$TEST_APP_DIR/.lian-releases/current/release-manifest.json"
 current="$(readlink -f "$TEST_APP_DIR/.lian-releases/current" 2>/dev/null || true)"
+if [ "\${FAIL_ALL_HEALTH:-0}" = "1" ]; then exit 22; fi
 if [ -n "\${FAIL_HEALTH_RELEASE_ID:-}" ] && [ "$(basename "$current")" = "$FAIL_HEALTH_RELEASE_ID" ]; then exit 22; fi
 if [ -f "$manifest" ]; then
   hash="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).manifestHash)" "$manifest")"
-  printf '{"ok":true,"release":{"manifestHash":"%s"},"bot":{"listening":true}}\\n' "$hash"
+  printf '{"ok":true,"dashboard":{"healthy":true},"release":{"manifestHash":"%s"},"bot":{"listening":true},"worker":{"processes":1},"onebot":{"listening":true}}\\n' "$hash"
 else
-  printf '{"ok":true,"release":null,"bot":{"listening":true}}\\n'
+  printf '{"ok":true,"dashboard":{"healthy":true},"release":null,"bot":{"listening":true},"worker":{"processes":1},"onebot":{"listening":true}}\\n'
 fi
 `)
   writeExecutable(path.join(binDir, 'ss'), '#!/bin/bash\nprintf "LISTEN 0 128 127.0.0.1:5140 0.0.0.0:*\\n"\n')
@@ -157,6 +158,11 @@ function testReleaseManifest(tempRoot) {
   fs.writeFileSync(path.join(extra, 'unexpected.txt'), 'unexpected')
   assert.throws(() => verifyReleaseManifest(extra), /发布物文件清单不一致/)
 
+  const linked = path.join(tempRoot, 'linked-file')
+  fs.cpSync(first.releaseDir, linked, { recursive: true })
+  fs.symlinkSync(path.join(linked, 'packages'), path.join(linked, 'unexpected-link'), process.platform === 'win32' ? 'junction' : 'dir')
+  assert.throws(() => verifyReleaseManifest(linked), /不允许的链接或特殊文件/)
+
   waitForNextMillisecond()
   const second = buildDashboardRelease(REPO_ROOT, outputRoot)
   return { oldRelease: first, newRelease: second }
@@ -192,7 +198,7 @@ exit 0
       }
     }
   }
-  return { appDir, oldDir, nextDir, resultFile: path.join(appDir, 'data', 'deploy-tasks', 'activation.remote.json') }
+  return { appDir, oldDir, nextDir, baselineHash: includeCurrent ? releases.oldRelease.manifest.manifestHash : 'none', resultFile: path.join(appDir, 'data', 'deploy-tasks', 'activation.remote.json') }
 }
 
 // Runs the real activation script against fake systemctl/curl/ss commands.
@@ -204,10 +210,12 @@ function runActivation(app, releaseId, fakeBin, failures = {}) {
     `export FAIL_RELEASE_ID=${shellQuote(failures.dashboardReleaseId || '')}`,
     `export FAIL_BOT_RELEASE_ID=${shellQuote(failures.botReleaseId || '')}`,
     `export FAIL_HEALTH_RELEASE_ID=${shellQuote(failures.healthReleaseId || '')}`,
+    `export FAIL_ALL_HEALTH=${shellQuote(failures.allHealth ? '1' : '0')}`,
     `export FAIL_LOGROTATE=${shellQuote(failures.logrotate ? '1' : '0')}`,
     `export FAIL_SWITCH=${shellQuote(failures.switch ? '1' : '0')}`,
   ].join('; ')
-  const command = `${envPrefix}; exec ${shellQuote(toBashPath(activation))} ${shellQuote(toBashPath(app.appDir))} ${shellQuote(releaseId)} ${shellQuote(toBashPath(app.resultFile))}`
+  const baselineHash = failures.baselineHash || app.baselineHash
+  const command = `${envPrefix}; exec ${shellQuote(toBashPath(activation))} ${shellQuote(toBashPath(app.appDir))} ${shellQuote(releaseId)} ${shellQuote(toBashPath(app.resultFile))} ${shellQuote(baselineHash)}`
   return runBash(command)
 }
 
@@ -232,6 +240,28 @@ function testActivationScenarios(tempRoot, releases) {
   const successResult = JSON.parse(fs.readFileSync(successApp.resultFile, 'utf8'))
   assert.strictEqual(successResult.state, 'success')
   assert.strictEqual(successResult.manifestHash, releases.newRelease.manifest.manifestHash)
+  assert.strictEqual(fs.existsSync(path.join(successApp.appDir, '.lian-releases', 'deploy.lock')), false)
+
+  const lockedApp = prepareVersionedApp(tempRoot, 'activation-locked', releases)
+  const lockDir = path.join(lockedApp.appDir, '.lian-releases', 'deploy.lock')
+  fs.mkdirSync(lockDir)
+  fs.writeFileSync(path.join(lockDir, 'owner'), 'pid=999 release=other')
+  const locked = runActivation(lockedApp, newId, fakeBin)
+  assert.notStrictEqual(locked.status, 0, 'concurrent activation unexpectedly acquired an existing lock')
+  assert.strictEqual(activeReleaseId(lockedApp.appDir), oldId)
+  const lockedResult = JSON.parse(fs.readFileSync(lockedApp.resultFile, 'utf8'))
+  assert.strictEqual(lockedResult.stage, 'lock')
+  assert.strictEqual(lockedResult.rollbackState, 'not_needed')
+  assert.strictEqual(fs.existsSync(lockDir), true, 'activation must not delete a lock it does not own')
+
+  const staleBaselineApp = prepareVersionedApp(tempRoot, 'activation-stale-baseline', releases)
+  const staleBaseline = runActivation(staleBaselineApp, newId, fakeBin, { baselineHash: '0'.repeat(64) })
+  assert.notStrictEqual(staleBaseline.status, 0, 'stale remote baseline unexpectedly switched versions')
+  assert.strictEqual(activeReleaseId(staleBaselineApp.appDir), oldId)
+  const staleBaselineResult = JSON.parse(fs.readFileSync(staleBaselineApp.resultFile, 'utf8'))
+  assert.strictEqual(staleBaselineResult.stage, 'verify_baseline')
+  assert.strictEqual(staleBaselineResult.rollbackState, 'not_needed')
+  assert.strictEqual(fs.existsSync(path.join(staleBaselineApp.appDir, '.lian-releases', 'deploy.lock')), false)
 
   const rollbackApp = prepareVersionedApp(tempRoot, 'activation-rollback', releases)
   const failed = runActivation(rollbackApp, newId, fakeBin, { dashboardReleaseId: newId })
@@ -241,7 +271,9 @@ function testActivationScenarios(tempRoot, releases) {
   assert.strictEqual(failureResult.state, 'failed')
   assert.strictEqual(failureResult.stage, 'restart_dashboard')
   assert.strictEqual(failureResult.rolledBack, true)
+  assert.strictEqual(failureResult.rollbackState, 'success')
   assert.match(failureResult.error, /exit 42/)
+  assert.strictEqual(fs.existsSync(path.join(rollbackApp.appDir, '.lian-releases', 'deploy.lock')), false)
 
   const switchApp = prepareVersionedApp(tempRoot, 'activation-switch-failure', releases)
   const switchFailed = runActivation(switchApp, newId, fakeBin, { switch: true })
@@ -265,6 +297,15 @@ function testActivationScenarios(tempRoot, releases) {
   const healthResult = JSON.parse(fs.readFileSync(healthApp.resultFile, 'utf8'))
   assert.strictEqual(healthResult.stage, 'health_check')
   assert.strictEqual(healthResult.rolledBack, true)
+
+  const rollbackHealthApp = prepareVersionedApp(tempRoot, 'activation-rollback-health-failure', releases)
+  const rollbackHealthFailed = runActivation(rollbackHealthApp, newId, fakeBin, { allHealth: true })
+  assert.notStrictEqual(rollbackHealthFailed.status, 0)
+  assert.strictEqual(activeReleaseId(rollbackHealthApp.appDir), oldId)
+  const rollbackHealthResult = JSON.parse(fs.readFileSync(rollbackHealthApp.resultFile, 'utf8'))
+  assert.strictEqual(rollbackHealthResult.rolledBack, false)
+  assert.strictEqual(rollbackHealthResult.rollbackState, 'failed')
+  assert.strictEqual(fs.existsSync(path.join(rollbackHealthApp.appDir, '.lian-releases', 'deploy.lock')), false)
 
   const logrotateApp = prepareVersionedApp(tempRoot, 'activation-logrotate-failure', releases)
   const logrotateFailed = runActivation(logrotateApp, newId, fakeBin, { logrotate: true })
