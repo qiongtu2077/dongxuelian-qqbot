@@ -67,7 +67,12 @@ const {
 const {
   registerTaskCompletedCallback,
   unregisterTaskCompletedCallback,
+  discardInterruptedResourceTaskState,
 } = require('../resource-workers/task-store') as typeof import('../resource-workers/task-store')
+const { discardInterruptedResourceGateState } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
+const { discardResourceActivityLeases } = require('../resource-scheduler/resource-activity-lease') as typeof import('../resource-scheduler/resource-activity-lease')
+const { clearPersistedResourceSnapshot } = require('../resource-scheduler/resource-snapshot') as typeof import('../resource-scheduler/resource-snapshot')
+const { discardInterruptedMediaTasks } = require('../media/backpressure/media-queue') as typeof import('../media/backpressure/media-queue')
 const {
   getTaskStatusDir,
 } = require('../resource-workers/task-paths') as typeof import('../resource-workers/task-paths')
@@ -76,6 +81,10 @@ const {
   stopOwnedWorkerProcesses,
 } = require('../resource-workers/worker-supervisor') as typeof import('../resource-workers/worker-supervisor')
 const { collectProcessMetrics } = require('../resource-system/system-protection') as typeof import('../resource-system/system-protection')
+const {
+  readJsonFile: readResourceJsonFile,
+  writeJsonAtomic,
+} = require('../resource-common/files') as typeof import('../resource-common/files')
 
 interface TodayCacheSnapshot {
   date?: string
@@ -129,6 +138,14 @@ const RESOURCE_SUPERVISOR_INTERVAL_MS = Math.max(10000, Math.min(300000, Number(
 const RESOURCE_HOST_SAMPLE_INTERVAL_MS = Math.max(30000, Math.min(10 * 60 * 1000, Number(process.env.RESOURCE_HOST_SAMPLE_INTERVAL_MS || 30000)))
 // fs.watch 去抖：worker 子进程写入 done 文件触发多次事件，合并到一次结果通知。
 const DONE_WATCH_DEBOUNCE_MS = Math.max(50, Math.min(5000, Number(process.env.RESOURCE_DONE_WATCH_DEBOUNCE_MS || 300)))
+const LINUX_BOOT_ID_FILE = '/proc/sys/kernel/random/boot_id'
+const STARTUP_RECOVERY_STATE_FILE = path.join(DATA_DIR, 'startup-recovery-state.json')
+
+interface StartupRecoveryState {
+  pid: number
+  bootId: string
+  startedAt: string
+}
 
 interface FsWatcherLike {
   close(): void
@@ -174,6 +191,54 @@ function restoreTodayCache(): void {
   } catch { /* non-critical: missing data dir or cache listing failure only disables startup cache restore */
   }
 }
+
+// --- 启动恢复 --- //
+
+// 读取本次 Linux 系统启动编号；非 Linux 环境返回空字符串。
+function readLinuxBootId(): string {
+  try {
+    return String(fsSync.readFileSync(LINUX_BOOT_ID_FILE, 'utf8') || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+// 根据上次启动记录判断本次属于首次启动、服务器重启还是 Bot 进程重启。
+function classifyStartupRecovery(previous: StartupRecoveryState | null, currentBootId: string): string {
+  if (!previous) return 'first_start'
+  if (previous.bootId && currentBootId && previous.bootId !== currentBootId) return 'server_restart'
+  return 'bot_restart'
+}
+
+// 在 worker 启动前丢弃上一次进程中断的运行态，未开始任务保持原状。
+function discardInterruptedRuntimeState(bootId = readLinuxBootId()): Record<string, unknown> {
+  const reason = 'restart_discarded'
+  const previous = readResourceJsonFile<StartupRecoveryState>(STARTUP_RECOVERY_STATE_FILE, null)
+  const restartType = classifyStartupRecovery(previous, bootId)
+  const gate = discardInterruptedResourceGateState(reason)
+  const activityLeasesRemoved = discardResourceActivityLeases()
+  const tasks = discardInterruptedResourceTaskState(reason)
+  const media = discardInterruptedMediaTasks(reason)
+  const schedulerSnapshotRemoved = clearPersistedResourceSnapshot()
+  writeJsonAtomic(STARTUP_RECOVERY_STATE_FILE, {
+    pid: process.pid,
+    bootId,
+    startedAt: new Date().toISOString(),
+  } satisfies StartupRecoveryState)
+  return {
+    reason,
+    restartType,
+    bootIdAvailable: !!bootId,
+    previousPid: previous?.pid || null,
+    gate,
+    activityLeasesRemoved,
+    tasks,
+    media,
+    schedulerSnapshotRemoved,
+  }
+}
+
+// --- 生命周期注册 --- //
 
 function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycleOptions = {}): void {
   const { configureAgentQueue, chat, retellAgentResult } = options
@@ -257,6 +322,13 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
   }
 
   ctx.on('ready', async () => {
+    const recovery = discardInterruptedRuntimeState()
+    const gate = recovery.gate as { lockRemoved?: boolean, ticketsRemoved?: number }
+    const tasks = recovery.tasks as { cancelled?: number, workerStateFilesRemoved?: number, supervisorStateFilesRemoved?: number }
+    const media = recovery.media as { discarded?: number, invalidFilesRemoved?: number, failed?: number }
+    ctx.logger('dongxuelian-ai').info(
+      `startup recovery: reason=${String(recovery.reason || '')}, type=${String(recovery.restartType || '')}, bootId=${recovery.bootIdAvailable ? 'available' : 'unavailable'}, tasks=${tasks.cancelled || 0}, media=${media.discarded || 0}, mediaInvalid=${media.invalidFilesRemoved || 0}, mediaFailed=${media.failed || 0}, lock=${gate.lockRemoved ? 1 : 0}, tickets=${gate.ticketsRemoved || 0}, activityLeases=${Number(recovery.activityLeasesRemoved || 0)}, workerStates=${tasks.workerStateFilesRemoved || 0}, supervisorStates=${tasks.supervisorStateFilesRemoved || 0}, snapshot=${recovery.schedulerSnapshotRemoved ? 1 : 0}`,
+    )
     await loadRuntimeSettings(true)
     await loadConfig(true)
     await loadSkills()
@@ -337,7 +409,12 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
 }
 
 export = {
+  LINUX_BOOT_ID_FILE,
+  STARTUP_RECOVERY_STATE_FILE,
   restoreTodayCacheEntry,
   restoreTodayCache,
+  readLinuxBootId,
+  classifyStartupRecovery,
+  discardInterruptedRuntimeState,
   registerPluginLifecycle,
 }

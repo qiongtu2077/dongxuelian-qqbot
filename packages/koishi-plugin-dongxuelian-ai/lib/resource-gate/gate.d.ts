@@ -51,6 +51,11 @@ declare function createTicket(input: ResourceGateTicketInput): ResourceGateTicke
 declare function listTickets(): ResourceGateTicket[];
 declare function readLockMeta(): ResourceGateLockMeta | null;
 declare function reclaimStaleLock(staleMs?: number, actor?: string): boolean;
+interface DiscardInterruptedResourceGateStateResult {
+    lockRemoved: boolean;
+    ticketsRemoved: number;
+}
+declare function discardInterruptedResourceGateState(reason?: string): DiscardInterruptedResourceGateStateResult;
 declare function acquireResourceGate(input: AcquireGateOptions): Promise<ResourceGateHandle>;
 declare function releaseResourceGate(ticketId: string, reason?: string): void;
 declare function getResourceGateStatus(staleMs?: number): ResourceGateStatus;
@@ -66,6 +71,7 @@ declare const _default: {
     acquireResourceGate: typeof acquireResourceGate;
     releaseResourceGate: typeof releaseResourceGate;
     reclaimStaleLock: typeof reclaimStaleLock;
+    discardInterruptedResourceGateState: typeof discardInterruptedResourceGateState;
     getResourceGateStatus: typeof getResourceGateStatus;
     isDailyReportRunning: typeof isDailyReportRunning;
     writeGateEvent: typeof writeGateEvent;

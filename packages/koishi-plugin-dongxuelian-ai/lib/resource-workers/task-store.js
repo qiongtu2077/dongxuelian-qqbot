@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { appendJsonlEvent, ensureDir, listJsonFiles, nowIso, readJsonFile, removePath, renameFileAtomic, sanitizeId, writeJsonAtomic, } = require('../resource-common/files');
 const { redactSensitiveData, redactSensitiveText } = require('../core/redactor');
-const { WORKERS_ROOT, TASKS_ROOT, RESULTS_ROOT, WORKER_STATE_DIR, getTaskFile, getTaskResultDir, getTaskStatusDir, getPendingKindDir, getWorkerStateFile, getWorkerEventFile, } = require('./task-paths');
+const { WORKERS_ROOT, TASKS_ROOT, RESULTS_ROOT, WORKER_STATE_DIR, SUPERVISOR_DIR, getTaskFile, getTaskResultDir, getTaskStatusDir, getPendingKindDir, getWorkerStateFile, getWorkerEventFile, } = require('./task-paths');
 const RESOURCE_TASK_CANONICAL_STATUS_ORDER = [
     'cancelled',
     'done',
@@ -547,6 +547,42 @@ function listWorkerStates() {
     }
     return states;
 }
+// Bot 启动时将已领取或正在执行的 S2 任务标为已取消，并清除旧 worker 状态。
+function discardInterruptedResourceTaskState(reason = 'restart_discarded') {
+    ensureTaskDirs();
+    const safeReason = redactSensitiveText(reason) || 'restart_discarded';
+    let cancelled = 0;
+    for (const status of ['claiming', 'running']) {
+        for (const task of scanTasksByStatus(status, 20000)) {
+            const target = prepareTaskTransition(task, 'cancelled');
+            if (!target)
+                continue;
+            const next = {
+                ...task,
+                status: 'cancelled',
+                finishedAt: nowIso(),
+                updatedAt: nowIso(),
+                step: 'cancelled',
+                error: safeReason,
+                retryAfter: undefined,
+            };
+            writeJsonAtomic(target.file, next);
+            writeWorkerEvent('task_discarded_on_startup', { taskId: next.id, kind: next.kind, previousStatus: status, reason: safeReason });
+            cancelled++;
+        }
+    }
+    const workerStateFilesRemoved = listJsonFiles(WORKER_STATE_DIR, { maxFiles: 20000 }).length;
+    const supervisorStateFilesRemoved = listJsonFiles(SUPERVISOR_DIR, { maxFiles: 20000 }).length;
+    if (workerStateFilesRemoved > 0)
+        removePath(WORKER_STATE_DIR);
+    if (supervisorStateFilesRemoved > 0)
+        removePath(SUPERVISOR_DIR);
+    ensureTaskDirs();
+    if (cancelled || workerStateFilesRemoved || supervisorStateFilesRemoved) {
+        writeWorkerEvent('startup_runtime_discarded', { cancelled, workerStateFilesRemoved, supervisorStateFilesRemoved, reason: safeReason });
+    }
+    return { cancelled, workerStateFilesRemoved, supervisorStateFilesRemoved };
+}
 // 清理任务系统状态，测试或管理员回收时使用。
 function removeTaskFile(status, kind, taskId) {
     return removePath(getTaskFile(status, kind, taskId));
@@ -642,6 +678,7 @@ module.exports = {
     cancelTask,
     writeWorkerHeartbeat,
     listWorkerStates,
+    discardInterruptedResourceTaskState,
     removeTaskFile,
     cleanupFinishedTasks,
     registerTaskCompletedCallback,

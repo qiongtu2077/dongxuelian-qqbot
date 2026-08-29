@@ -39,12 +39,25 @@ interface PluginLifecycleOptions {
     chat?: unknown;
     retellAgentResult?: unknown;
 }
+interface StartupRecoveryState {
+    pid: number;
+    bootId: string;
+    startedAt: string;
+}
 declare function restoreTodayCacheEntry(key: string, data: TodayCacheSnapshot | null | undefined): void;
 declare function restoreTodayCache(): void;
+declare function readLinuxBootId(): string;
+declare function classifyStartupRecovery(previous: StartupRecoveryState | null, currentBootId: string): string;
+declare function discardInterruptedRuntimeState(bootId?: string): Record<string, unknown>;
 declare function registerPluginLifecycle(ctx: LifecycleContext, options?: PluginLifecycleOptions): void;
 declare const _default: {
+    LINUX_BOOT_ID_FILE: string;
+    STARTUP_RECOVERY_STATE_FILE: any;
     restoreTodayCacheEntry: typeof restoreTodayCacheEntry;
     restoreTodayCache: typeof restoreTodayCache;
+    readLinuxBootId: typeof readLinuxBootId;
+    classifyStartupRecovery: typeof classifyStartupRecovery;
+    discardInterruptedRuntimeState: typeof discardInterruptedRuntimeState;
     registerPluginLifecycle: typeof registerPluginLifecycle;
 };
 export = _default;

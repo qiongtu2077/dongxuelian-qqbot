@@ -504,6 +504,52 @@ function failMediaTask(task: MediaTask, error: unknown, reason = 'failed'): Medi
   return next
 }
 
+interface DiscardInterruptedMediaTasksResult {
+  discarded: number
+  invalidFilesRemoved: number
+  failed: number
+}
+
+// Bot 启动时把 S6 running 任务移入 dropped，pending 队列保持不变。
+function discardInterruptedMediaTasks(reason = 'restart_discarded'): DiscardInterruptedMediaTasksResult {
+  ensureMediaDirs()
+  const result: DiscardInterruptedMediaTasksResult = { discarded: 0, invalidFilesRemoved: 0, failed: 0 }
+  for (const file of listJsonFiles(MEDIA_RUNNING_ROOT, { maxFiles: 20000 })) {
+    const task = readMediaTaskFile(file)
+    if (!task) {
+      if (removePath(file)) result.invalidFilesRemoved++
+      continue
+    }
+    const targetFile = getFlatMediaTaskFile(MEDIA_DROPPED_ROOT, task.id)
+    if (fs.existsSync(targetFile)) {
+      if (removePath(file)) {
+        result.discarded++
+        writeMediaEvent('media_task_discarded_on_startup', { taskId: task.id, kind: task.kind, reason, duplicateTerminalCopy: true })
+      } else {
+        result.failed++
+      }
+      continue
+    }
+    try {
+      fs.renameSync(file, targetFile)
+      const next: MediaTask = {
+        ...task,
+        status: 'cancelled',
+        finishedAt: nowIso(),
+        updatedAt: nowIso(),
+        error: reason,
+      }
+      writeJsonAtomic(targetFile, next)
+      result.discarded++
+      writeMediaEvent('media_task_discarded_on_startup', { taskId: task.id, kind: task.kind, reason })
+    } catch {
+      result.failed++
+    }
+  }
+  invalidatePendingMediaProbeCache()
+  return result
+}
+
 // 队列超限时丢弃低优先级旧任务。
 function enforceMediaQueueLimit(kind: string): number {
   const dir = mediaKindDir(kind)
@@ -596,6 +642,7 @@ export = {
   requeueMediaTask,
   completeMediaTask,
   failMediaTask,
+  discardInterruptedMediaTasks,
   getMediaBackpressureStatus,
   isMediaTaskDeferred,
 }

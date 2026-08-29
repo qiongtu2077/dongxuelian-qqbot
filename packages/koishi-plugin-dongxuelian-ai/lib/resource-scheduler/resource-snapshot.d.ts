@@ -31,6 +31,7 @@ declare function readProcMeminfo(): MemorySnapshot;
 declare function readLinuxMeminfo(): MemorySnapshot;
 declare function classifyResourceState(memAvailableMb: number | null): ResourceState;
 declare function classifyBotMode(resourceState: ResourceState, running: unknown, maintenance: boolean): BotMode;
+declare function clearPersistedResourceSnapshot(): boolean;
 declare function readResourceSnapshot(): ResourceSnapshot;
 declare const _default: {
     SCHEDULER_ROOT: string;
@@ -43,6 +44,7 @@ declare const _default: {
     readLinuxMeminfo: typeof readLinuxMeminfo;
     classifyResourceState: typeof classifyResourceState;
     classifyBotMode: typeof classifyBotMode;
+    clearPersistedResourceSnapshot: typeof clearPersistedResourceSnapshot;
     readResourceSnapshot: typeof readResourceSnapshot;
 };
 export = _default;

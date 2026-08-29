@@ -3,6 +3,7 @@
  * 职责: 提供短 TTL 文件租约，协调浏览器类重任务的短时互斥。
  * 边界: 不接管 S0/S1/S2，不保存长期队列，不扩展为通用资源控制中心。
  */
+const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 const {
@@ -135,6 +136,18 @@ function acquireResourceActivityLease(kind: ResourceActivityLeaseKind, options: 
   }
 }
 
+// Bot 启动时清除已中断的浏览器工具与渲染活动租约。
+function discardResourceActivityLeases(): number {
+  ensureDir(ACTIVITY_ROOT)
+  let leaseCount = 0
+  for (const kind of ['tool_active', 'render_active']) {
+    const file = getResourceActivityLeaseFile(kind)
+    if (fs.existsSync(file) && removePath(file)) leaseCount++
+  }
+  ensureDir(ACTIVITY_ROOT)
+  return leaseCount
+}
+
 export = {
   ACTIVITY_ROOT,
   readResourceActivityLease,
@@ -142,4 +155,5 @@ export = {
   findBlockingResourceActivityLease,
   buildResourceActivityLeaseBlockReason,
   acquireResourceActivityLease,
+  discardResourceActivityLeases,
 }

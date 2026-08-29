@@ -22,6 +22,7 @@ const {
   TASKS_ROOT,
   RESULTS_ROOT,
   WORKER_STATE_DIR,
+  SUPERVISOR_DIR,
   getTaskFile,
   getTaskResultDir,
   getTaskStatusDir,
@@ -652,6 +653,47 @@ function listWorkerStates(): ResourceWorkerState[] {
   return states
 }
 
+interface DiscardInterruptedResourceTaskStateResult {
+  cancelled: number
+  workerStateFilesRemoved: number
+  supervisorStateFilesRemoved: number
+}
+
+// Bot 启动时将已领取或正在执行的 S2 任务标为已取消，并清除旧 worker 状态。
+function discardInterruptedResourceTaskState(reason = 'restart_discarded'): DiscardInterruptedResourceTaskStateResult {
+  ensureTaskDirs()
+  const safeReason = redactSensitiveText(reason) || 'restart_discarded'
+  let cancelled = 0
+  for (const status of ['claiming', 'running'] as ResourceTaskStatus[]) {
+    for (const task of scanTasksByStatus(status, 20000)) {
+      const target = prepareTaskTransition(task, 'cancelled')
+      if (!target) continue
+      const next: ResourceTask = {
+        ...task,
+        status: 'cancelled',
+        finishedAt: nowIso(),
+        updatedAt: nowIso(),
+        step: 'cancelled',
+        error: safeReason,
+        retryAfter: undefined,
+      }
+      writeJsonAtomic(target.file, next)
+      writeWorkerEvent('task_discarded_on_startup', { taskId: next.id, kind: next.kind, previousStatus: status, reason: safeReason })
+      cancelled++
+    }
+  }
+
+  const workerStateFilesRemoved = listJsonFiles(WORKER_STATE_DIR, { maxFiles: 20000 }).length
+  const supervisorStateFilesRemoved = listJsonFiles(SUPERVISOR_DIR, { maxFiles: 20000 }).length
+  if (workerStateFilesRemoved > 0) removePath(WORKER_STATE_DIR)
+  if (supervisorStateFilesRemoved > 0) removePath(SUPERVISOR_DIR)
+  ensureTaskDirs()
+  if (cancelled || workerStateFilesRemoved || supervisorStateFilesRemoved) {
+    writeWorkerEvent('startup_runtime_discarded', { cancelled, workerStateFilesRemoved, supervisorStateFilesRemoved, reason: safeReason })
+  }
+  return { cancelled, workerStateFilesRemoved, supervisorStateFilesRemoved }
+}
+
 // 清理任务系统状态，测试或管理员回收时使用。
 function removeTaskFile(status: string, kind: string, taskId: string): boolean {
   return removePath(getTaskFile(status, kind, taskId))
@@ -758,6 +800,7 @@ export = {
   cancelTask,
   writeWorkerHeartbeat,
   listWorkerStates,
+  discardInterruptedResourceTaskState,
   removeTaskFile,
   cleanupFinishedTasks,
   registerTaskCompletedCallback,

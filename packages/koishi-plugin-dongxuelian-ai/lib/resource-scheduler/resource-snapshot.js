@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { DATA_DIR, MAINTENANCE_FILE } = require('../core/constants');
 const { readLockMeta } = require('../resource-gate/gate');
-const { ensureDir, nowIso, readJsonFile, writeJsonAtomic } = require('../resource-common/files');
+const { ensureDir, nowIso, readJsonFile, removePath, writeJsonAtomic } = require('../resource-common/files');
 const { readResourceActivityLease } = require('./resource-activity-lease');
 const { readServerModeState, normalizeServerMode } = require('./server-mode-policy');
 function isRunningTaskLike(value) {
@@ -148,6 +148,12 @@ function buildSnapshotStableKey(snapshot) {
         resourceStateChangedAt: snapshot?.resourceStateChangedAt || '',
     });
 }
+// 删除上一次进程留下的资源快照，避免启动早期展示已结束任务。
+function clearPersistedResourceSnapshot() {
+    if (!fs.existsSync(SCHEDULER_STATE_FILE))
+        return false;
+    return removePath(SCHEDULER_STATE_FILE);
+}
 // 读取当前资源快照，并写入 state.json 供 Dashboard 低成本读取。
 function readResourceSnapshot() {
     ensureDir(SCHEDULER_ROOT);
@@ -200,5 +206,6 @@ module.exports = {
     readLinuxMeminfo,
     classifyResourceState,
     classifyBotMode,
+    clearPersistedResourceSnapshot,
     readResourceSnapshot,
 };

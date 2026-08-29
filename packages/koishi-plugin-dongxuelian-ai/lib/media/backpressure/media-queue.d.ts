@@ -62,6 +62,12 @@ declare function claimNextMediaTask(workerName?: string, kind?: string): MediaTa
 declare function requeueMediaTask(task: MediaTask, reason?: string, delayMs?: number): MediaTask;
 declare function completeMediaTask(task: MediaTask, result?: Record<string, unknown>): MediaTask;
 declare function failMediaTask(task: MediaTask, error: unknown, reason?: string): MediaTask;
+interface DiscardInterruptedMediaTasksResult {
+    discarded: number;
+    invalidFilesRemoved: number;
+    failed: number;
+}
+declare function discardInterruptedMediaTasks(reason?: string): DiscardInterruptedMediaTasksResult;
 declare function enqueueMediaTask(input: MediaTaskInput): EnqueueMediaTaskResult;
 declare function getMediaBackpressureStatus(): Record<string, unknown>;
 declare const _default: {
@@ -85,6 +91,7 @@ declare const _default: {
     requeueMediaTask: typeof requeueMediaTask;
     completeMediaTask: typeof completeMediaTask;
     failMediaTask: typeof failMediaTask;
+    discardInterruptedMediaTasks: typeof discardInterruptedMediaTasks;
     getMediaBackpressureStatus: typeof getMediaBackpressureStatus;
     isMediaTaskDeferred: typeof isMediaTaskDeferred;
 };

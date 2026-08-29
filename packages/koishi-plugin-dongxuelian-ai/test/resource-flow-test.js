@@ -631,6 +631,157 @@ main().catch(error => {
   check('daily final-input reader uses the writer path', summary.readBackChannelKey === 'group final/input test 中文' && summary.readBackSlotCount === 1, JSON.stringify(summary))
 }
 
+// Verify startup recovery cancels only interrupted runtime work and releases video admission.
+function testStartupRecoveryDiscardsInterruptedRuntimeState() {
+  const dataDir = createTempDataDir('resource-flow-startup-recovery-')
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+const taskStore = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+const taskPaths = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/task-paths')
+const resourceGate = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-gate/gate')
+const activityLease = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease')
+const resourceSnapshot = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-snapshot')
+const mediaQueue = require('./packages/koishi-plugin-dongxuelian-ai/lib/media/backpressure/media-queue')
+const admission = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-scheduler/admission')
+const lifecycle = require('./packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/plugin-lifecycle')
+
+taskStore.ensureTaskDirs()
+const pendingTask = taskStore.submitResourceTask({ id: 'startup-pending', kind: 'agent_task', source: 'test' })
+const deferredTask = taskStore.deferTask(
+  taskStore.submitResourceTask({ id: 'startup-deferred', kind: 'agent_task', source: 'test' }),
+  'scheduled_for_later',
+)
+const claimingTask = taskStore.claimTaskById(
+  taskStore.submitResourceTask({ id: 'startup-claiming', kind: 'agent_task', source: 'test' }).id,
+  'dead-worker',
+)
+const runningClaim = taskStore.claimTaskById(
+  taskStore.submitResourceTask({ id: 'startup-running', kind: 'agent_task', source: 'test' }).id,
+  'dead-worker',
+)
+const runningTask = taskStore.markTaskRunning(runningClaim, 'dead-worker', 'downloading')
+
+fs.mkdirSync(taskPaths.WORKER_STATE_DIR, { recursive: true })
+fs.mkdirSync(taskPaths.SUPERVISOR_DIR, { recursive: true })
+fs.writeFileSync(path.join(taskPaths.WORKER_STATE_DIR, 'dead-worker.json'), JSON.stringify({ name: 'dead-worker', pid: 987654 }))
+fs.writeFileSync(path.join(taskPaths.SUPERVISOR_DIR, 'dead-supervisor.json'), JSON.stringify({ pid: 987654 }))
+
+fs.mkdirSync(resourceGate.LOCK_DIR, { recursive: true })
+fs.mkdirSync(resourceGate.TICKETS_DIR, { recursive: true })
+fs.writeFileSync(resourceGate.LOCK_META_FILE, JSON.stringify({
+  taskId: 'external-video-stale', kind: 'external_video_download', owner: 'dead-video', pid: 987654,
+  channelKey: 'group-startup', userId: 'user-startup', startedAt: '2026-08-29T00:00:00.000Z',
+  heartbeatAt: '2026-08-29T00:00:00.000Z', step: 'downloading', memAvailableMb: 900,
+  timeoutMs: 900000, ticketId: 'stale-ticket-1',
+}))
+fs.writeFileSync(path.join(resourceGate.TICKETS_DIR, 'stale-ticket-1.json'), JSON.stringify({ ticketId: 'stale-ticket-1', taskId: 'external-video-stale', pid: 987654 }))
+fs.writeFileSync(path.join(resourceGate.TICKETS_DIR, 'stale-ticket-2.json'), JSON.stringify({ ticketId: 'stale-ticket-2', taskId: 'queued-stale', pid: 987654 }))
+
+activityLease.acquireResourceActivityLease('tool_active', { owner: 'dead-tool', taskId: 'tool-stale' })
+activityLease.acquireResourceActivityLease('render_active', { owner: 'dead-render', taskId: 'render-stale' })
+
+fs.mkdirSync(path.dirname(resourceSnapshot.SCHEDULER_STATE_FILE), { recursive: true })
+fs.writeFileSync(resourceSnapshot.SCHEDULER_STATE_FILE, JSON.stringify({
+  locked: true,
+  running: { taskId: 'external-video-stale', kind: 'external_video_download', step: 'downloading' },
+}))
+
+const pendingMedia = mediaQueue.enqueueMediaTask({
+  kind: 'media_file_analysis', channelKey: 'group-startup', messageId: 'media-pending', url: 'https://example.test/pending', priority: 20,
+})
+mediaQueue.enqueueMediaTask({
+  kind: 'media_file_analysis', channelKey: 'group-startup', messageId: 'media-running', url: 'https://example.test/running', priority: 10,
+})
+const runningMedia = mediaQueue.claimNextMediaTask('dead-media-worker', 'media_file_analysis')
+
+fs.writeFileSync(lifecycle.STARTUP_RECOVERY_STATE_FILE, JSON.stringify({
+  pid: 43210, bootId: 'boot-old', startedAt: '2026-08-29T00:00:00.000Z',
+}))
+const classification = {
+  first: lifecycle.classifyStartupRecovery(null, 'boot-new'),
+  server: lifecycle.classifyStartupRecovery({ pid: 1, bootId: 'boot-old', startedAt: '' }, 'boot-new'),
+  bot: lifecycle.classifyStartupRecovery({ pid: 1, bootId: 'boot-new', startedAt: '' }, 'boot-new'),
+}
+
+const recovery = lifecycle.discardInterruptedRuntimeState('boot-new')
+const pendingAfter = taskStore.getResourceTaskById(pendingTask.id)
+const deferredAfter = taskStore.getResourceTaskById(deferredTask.id)
+const claimingAfter = taskStore.getResourceTaskById(claimingTask.id)
+const runningAfter = taskStore.getResourceTaskById(runningTask.id)
+const gateAfter = resourceGate.getResourceGateStatus()
+const mediaAfter = mediaQueue.getMediaBackpressureStatus()
+const droppedMediaFile = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'media-backpressure', 'dropped', runningMedia.id + '.json')
+const droppedMedia = fs.existsSync(droppedMediaFile) ? JSON.parse(fs.readFileSync(droppedMediaFile, 'utf8')) : null
+const snapshotRemovedBeforeAdmission = !fs.existsSync(resourceSnapshot.SCHEDULER_STATE_FILE)
+const videoAdmission = admission.admitTask({
+  taskId: 'external-video-new', kind: 'external_video_download', source: 'test', channelKey: 'group-startup',
+  userId: 'user-startup', exclusive: true, priority: 75, minMemMb: 350, deferable: false,
+  queueTimeoutMs: 5000, runTimeoutMs: 900000,
+})
+const savedRecoveryState = JSON.parse(fs.readFileSync(lifecycle.STARTUP_RECOVERY_STATE_FILE, 'utf8'))
+
+console.log(JSON.stringify({
+  classification,
+  recovery,
+  taskStates: {
+    pending: pendingAfter && pendingAfter.status,
+    deferred: deferredAfter && deferredAfter.status,
+    claiming: claimingAfter && { status: claimingAfter.status, error: claimingAfter.error },
+    running: runningAfter && { status: runningAfter.status, error: runningAfter.error },
+  },
+  gate: { locked: gateAfter.locked, tickets: gateAfter.tickets.length },
+  leasesRemain: fs.existsSync(path.join(activityLease.ACTIVITY_ROOT, 'tool_active.json')) || fs.existsSync(path.join(activityLease.ACTIVITY_ROOT, 'render_active.json')),
+  workerStateRemains: fs.existsSync(path.join(taskPaths.WORKER_STATE_DIR, 'dead-worker.json')),
+  supervisorStateRemains: fs.existsSync(path.join(taskPaths.SUPERVISOR_DIR, 'dead-supervisor.json')),
+  snapshotRemovedBeforeAdmission,
+  media: {
+    pendingIds: mediaQueue.listPendingMediaTasks('media_file_analysis', 20).map(task => task.id),
+    runningCount: mediaAfter.running.length,
+    dropped: droppedMedia && { status: droppedMedia.status, error: droppedMedia.error },
+  },
+  pendingMediaId: pendingMedia.id,
+  videoAdmission: videoAdmission.decision,
+  savedRecoveryState,
+}, null, 2))
+`
+
+  const summary = runScenario('startup recovery interrupted runtime scenario', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  }, 30000)
+  if (!summary) return
+
+  check('startup recovery classifies first/server/bot restarts from boot id',
+    summary.classification.first === 'first_start' && summary.classification.server === 'server_restart' && summary.classification.bot === 'bot_restart',
+    JSON.stringify(summary.classification))
+  check('startup recovery removes stale gate, leases, worker state, supervisor state, and snapshot',
+    summary.gate.locked === false && summary.gate.tickets === 0 && summary.leasesRemain === false
+      && summary.workerStateRemains === false && summary.supervisorStateRemains === false && summary.snapshotRemovedBeforeAdmission === true,
+    JSON.stringify(summary))
+  check('startup recovery cancels claiming and running S2 tasks with restart_discarded',
+    summary.taskStates.claiming.status === 'cancelled' && summary.taskStates.claiming.error === 'restart_discarded'
+      && summary.taskStates.running.status === 'cancelled' && summary.taskStates.running.error === 'restart_discarded',
+    JSON.stringify(summary.taskStates))
+  check('startup recovery preserves pending and deferred S2 tasks',
+    summary.taskStates.pending === 'pending' && summary.taskStates.deferred === 'deferred',
+    JSON.stringify(summary.taskStates))
+  check('startup recovery cancels running media work and preserves pending media work',
+    summary.media.runningCount === 0 && summary.media.dropped.status === 'cancelled' && summary.media.dropped.error === 'restart_discarded'
+      && summary.media.pendingIds.includes(summary.pendingMediaId),
+    JSON.stringify(summary.media))
+  check('startup recovery records cleanup counts and the new boot id',
+    summary.recovery.restartType === 'server_restart' && summary.recovery.previousPid === 43210
+      && summary.recovery.tasks.cancelled === 2 && summary.recovery.media.discarded === 1
+      && summary.recovery.gate.lockRemoved === true && summary.recovery.gate.ticketsRemoved === 2
+      && summary.recovery.activityLeasesRemoved === 2 && summary.recovery.tasks.workerStateFilesRemoved === 1
+      && summary.recovery.tasks.supervisorStateFilesRemoved === 1 && summary.recovery.schedulerSnapshotRemoved === true
+      && summary.savedRecoveryState.bootId === 'boot-new',
+    JSON.stringify(summary.recovery))
+  check('new external video admission runs immediately after startup recovery', summary.videoAdmission === 'run_now', JSON.stringify(summary.videoAdmission))
+}
+
 // analyze_historical_image must queue only when the explicit-media frontdoor policy allows it.
 function testAnalyzeHistoricalImageAdmissionQueueContract() {
   const dataDir = createTempDataDir('resource-flow-image-admission-')
@@ -728,6 +879,7 @@ function main() {
   testAgentMemoryCompactionWorkerFlow()
   testConversationSummaryWorkerFlow()
   testDailyFinalInputPathContract()
+  testStartupRecoveryDiscardsInterruptedRuntimeState()
   testAnalyzeHistoricalImageAdmissionQueueContract()
   console.log(`passed: ${passed}`)
   console.log(`failed: ${failed}`)

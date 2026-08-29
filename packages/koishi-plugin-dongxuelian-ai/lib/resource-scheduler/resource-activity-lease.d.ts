@@ -20,6 +20,7 @@ declare function hasActiveResourceActivityLease(kind: ResourceActivityLeaseKind)
 declare function findBlockingResourceActivityLease(kind: ResourceActivityLeaseKind): ResourceActivityLeaseMeta | null;
 declare function buildResourceActivityLeaseBlockReason(kind: ResourceActivityLeaseKind, blocking: ResourceActivityLeaseMeta | null | undefined): string;
 declare function acquireResourceActivityLease(kind: ResourceActivityLeaseKind, options?: AcquireResourceActivityLeaseOptions): (reason?: string) => void;
+declare function discardResourceActivityLeases(): number;
 declare const _default: {
     ACTIVITY_ROOT: string;
     readResourceActivityLease: typeof readResourceActivityLease;
@@ -27,5 +28,6 @@ declare const _default: {
     findBlockingResourceActivityLease: typeof findBlockingResourceActivityLease;
     buildResourceActivityLeaseBlockReason: typeof buildResourceActivityLeaseBlockReason;
     acquireResourceActivityLease: typeof acquireResourceActivityLease;
+    discardResourceActivityLeases: typeof discardResourceActivityLeases;
 };
 export = _default;

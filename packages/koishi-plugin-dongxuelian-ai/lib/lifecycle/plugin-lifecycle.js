@@ -23,15 +23,22 @@ const { clearRandomPendingState, } = require('../behavior/random-state');
 const agentConfig = require('../agent/config');
 const agentCron = require('../agent/cron');
 const { notifyCompletedTasks, createResourceResultSender, } = require('../resource-workers/result-notifier');
-const { registerTaskCompletedCallback, unregisterTaskCompletedCallback, } = require('../resource-workers/task-store');
+const { registerTaskCompletedCallback, unregisterTaskCompletedCallback, discardInterruptedResourceTaskState, } = require('../resource-workers/task-store');
+const { discardInterruptedResourceGateState } = require('../resource-gate/gate');
+const { discardResourceActivityLeases } = require('../resource-scheduler/resource-activity-lease');
+const { clearPersistedResourceSnapshot } = require('../resource-scheduler/resource-snapshot');
+const { discardInterruptedMediaTasks } = require('../media/backpressure/media-queue');
 const { getTaskStatusDir, } = require('../resource-workers/task-paths');
 const { runSupervisorOnce, stopOwnedWorkerProcesses, } = require('../resource-workers/worker-supervisor');
 const { collectProcessMetrics } = require('../resource-system/system-protection');
+const { readJsonFile: readResourceJsonFile, writeJsonAtomic, } = require('../resource-common/files');
 const RESULT_NOTIFIER_INTERVAL_MS = Math.max(5000, Math.min(120000, Number(process.env.RESOURCE_RESULT_NOTIFIER_INTERVAL_MS || 60000)));
 const RESOURCE_SUPERVISOR_INTERVAL_MS = Math.max(10000, Math.min(300000, Number(process.env.RESOURCE_WORKER_SUPERVISOR_INTERVAL_MS || 30000)));
 const RESOURCE_HOST_SAMPLE_INTERVAL_MS = Math.max(30000, Math.min(10 * 60 * 1000, Number(process.env.RESOURCE_HOST_SAMPLE_INTERVAL_MS || 30000)));
 // fs.watch 去抖：worker 子进程写入 done 文件触发多次事件，合并到一次结果通知。
 const DONE_WATCH_DEBOUNCE_MS = Math.max(50, Math.min(5000, Number(process.env.RESOURCE_DONE_WATCH_DEBOUNCE_MS || 300)));
+const LINUX_BOOT_ID_FILE = '/proc/sys/kernel/random/boot_id';
+const STARTUP_RECOVERY_STATE_FILE = path.join(DATA_DIR, 'startup-recovery-state.json');
 function getLifecycleErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -71,6 +78,52 @@ function restoreTodayCache() {
     catch { /* non-critical: missing data dir or cache listing failure only disables startup cache restore */
     }
 }
+// --- 启动恢复 --- //
+// 读取本次 Linux 系统启动编号；非 Linux 环境返回空字符串。
+function readLinuxBootId() {
+    try {
+        return String(fsSync.readFileSync(LINUX_BOOT_ID_FILE, 'utf8') || '').trim();
+    }
+    catch {
+        return '';
+    }
+}
+// 根据上次启动记录判断本次属于首次启动、服务器重启还是 Bot 进程重启。
+function classifyStartupRecovery(previous, currentBootId) {
+    if (!previous)
+        return 'first_start';
+    if (previous.bootId && currentBootId && previous.bootId !== currentBootId)
+        return 'server_restart';
+    return 'bot_restart';
+}
+// 在 worker 启动前丢弃上一次进程中断的运行态，未开始任务保持原状。
+function discardInterruptedRuntimeState(bootId = readLinuxBootId()) {
+    const reason = 'restart_discarded';
+    const previous = readResourceJsonFile(STARTUP_RECOVERY_STATE_FILE, null);
+    const restartType = classifyStartupRecovery(previous, bootId);
+    const gate = discardInterruptedResourceGateState(reason);
+    const activityLeasesRemoved = discardResourceActivityLeases();
+    const tasks = discardInterruptedResourceTaskState(reason);
+    const media = discardInterruptedMediaTasks(reason);
+    const schedulerSnapshotRemoved = clearPersistedResourceSnapshot();
+    writeJsonAtomic(STARTUP_RECOVERY_STATE_FILE, {
+        pid: process.pid,
+        bootId,
+        startedAt: new Date().toISOString(),
+    });
+    return {
+        reason,
+        restartType,
+        bootIdAvailable: !!bootId,
+        previousPid: previous?.pid || null,
+        gate,
+        activityLeasesRemoved,
+        tasks,
+        media,
+        schedulerSnapshotRemoved,
+    };
+}
+// --- 生命周期注册 --- //
 function registerPluginLifecycle(ctx, options = {}) {
     const { configureAgentQueue, chat, retellAgentResult } = options;
     const supervisorGeneration = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -166,6 +219,11 @@ function registerPluginLifecycle(ctx, options = {}) {
         }
     };
     ctx.on('ready', async () => {
+        const recovery = discardInterruptedRuntimeState();
+        const gate = recovery.gate;
+        const tasks = recovery.tasks;
+        const media = recovery.media;
+        ctx.logger('dongxuelian-ai').info(`startup recovery: reason=${String(recovery.reason || '')}, type=${String(recovery.restartType || '')}, bootId=${recovery.bootIdAvailable ? 'available' : 'unavailable'}, tasks=${tasks.cancelled || 0}, media=${media.discarded || 0}, mediaInvalid=${media.invalidFilesRemoved || 0}, mediaFailed=${media.failed || 0}, lock=${gate.lockRemoved ? 1 : 0}, tickets=${gate.ticketsRemoved || 0}, activityLeases=${Number(recovery.activityLeasesRemoved || 0)}, workerStates=${tasks.workerStateFilesRemoved || 0}, supervisorStates=${tasks.supervisorStateFilesRemoved || 0}, snapshot=${recovery.schedulerSnapshotRemoved ? 1 : 0}`);
         await loadRuntimeSettings(true);
         await loadConfig(true);
         await loadSkills();
@@ -253,7 +311,12 @@ function registerPluginLifecycle(ctx, options = {}) {
     });
 }
 module.exports = {
+    LINUX_BOOT_ID_FILE,
+    STARTUP_RECOVERY_STATE_FILE,
     restoreTodayCacheEntry,
     restoreTodayCache,
+    readLinuxBootId,
+    classifyStartupRecovery,
+    discardInterruptedRuntimeState,
     registerPluginLifecycle,
 };

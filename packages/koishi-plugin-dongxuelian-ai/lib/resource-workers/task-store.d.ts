@@ -99,6 +99,12 @@ declare function updateTaskNotifyStatus(task: ResourceTask, status: string, erro
 declare function cancelTask(taskId: string, actor?: string, reason?: string): boolean;
 declare function writeWorkerHeartbeat(workerName: string, state?: Record<string, unknown>): ResourceWorkerState;
 declare function listWorkerStates(): ResourceWorkerState[];
+interface DiscardInterruptedResourceTaskStateResult {
+    cancelled: number;
+    workerStateFilesRemoved: number;
+    supervisorStateFilesRemoved: number;
+}
+declare function discardInterruptedResourceTaskState(reason?: string): DiscardInterruptedResourceTaskStateResult;
 declare function removeTaskFile(status: string, kind: string, taskId: string): boolean;
 interface CleanupFinishedTasksOptions {
     retentionDays?: number;
@@ -138,6 +144,7 @@ declare const _default: {
     cancelTask: typeof cancelTask;
     writeWorkerHeartbeat: typeof writeWorkerHeartbeat;
     listWorkerStates: typeof listWorkerStates;
+    discardInterruptedResourceTaskState: typeof discardInterruptedResourceTaskState;
     removeTaskFile: typeof removeTaskFile;
     cleanupFinishedTasks: typeof cleanupFinishedTasks;
     registerTaskCompletedCallback: typeof registerTaskCompletedCallback;

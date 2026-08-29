@@ -135,6 +135,32 @@ function reclaimStaleLock(staleMs = DEFAULT_STALE_MS, actor = 'system') {
         writeGateEvent('stale_reclaimed', { taskId: meta.taskId, kind: meta.kind, pid: meta.pid, actor });
     return removed;
 }
+// Bot 启动时丢弃上一次进程遗留的独占锁和全部排队 ticket。
+function discardInterruptedResourceGateState(reason = 'restart_discarded') {
+    const meta = readLockMeta();
+    const lockExisted = fs.existsSync(LOCK_DIR);
+    let ticketsRemoved = 0;
+    try {
+        ticketsRemoved = fs.readdirSync(TICKETS_DIR).length;
+    }
+    catch {
+        ticketsRemoved = 0;
+    }
+    const lockRemoved = lockExisted && removePath(LOCK_DIR);
+    if (ticketsRemoved > 0)
+        removePath(TICKETS_DIR);
+    ensureGateDirs();
+    if (lockExisted || ticketsRemoved > 0) {
+        writeGateEvent('startup_runtime_discarded', {
+            reason,
+            lockRemoved,
+            ticketsRemoved,
+            taskId: meta?.taskId || '',
+            kind: meta?.kind || '',
+        });
+    }
+    return { lockRemoved, ticketsRemoved };
+}
 // 更新当前锁心跳和执行步骤。
 function updateLockMeta(ticketId, step, memAvailableMb) {
     const meta = readLockMeta();
@@ -228,6 +254,7 @@ module.exports = {
     acquireResourceGate,
     releaseResourceGate,
     reclaimStaleLock,
+    discardInterruptedResourceGateState,
     getResourceGateStatus,
     isDailyReportRunning,
     writeGateEvent,
