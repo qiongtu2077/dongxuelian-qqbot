@@ -124,7 +124,7 @@
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn" @click="doSaveVoice" :disabled="voiceSaving || !voicePersona">{{ voiceSaving ? '保存中...' : '保存配置' }}</button>
-        <button class="btn" @click="doPreview" :disabled="voicePreviewing" style="background:transparent;border:1px solid var(--accent);color:var(--accent)">{{ voicePreviewing ? '合成中...' : '试听' }}</button>
+          <button class="btn" @click="doPreview()" :disabled="voicePreviewing" style="background:transparent;border:1px solid var(--accent);color:var(--accent)">{{ voicePreviewing ? '合成中...' : '试听' }}</button>
       </div>
       <div>
         <div style="font-size:13px;color:var(--text2);margin-bottom:4px">试听文本</div>
@@ -139,7 +139,7 @@
           <input v-model="cloneSampleText" placeholder="试听文本，默认：你好，这是一段语音测试。" style="width:100%" />
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <input type="file" accept=".mp3,.wav,.ogg,.m4a" @change="onCloneFileChange" style="font-size:13px" />
-            <button class="btn btn-sm" @click="doClone" :disabled="voiceCloning || !cloneFile || !voicePersona" style="background:transparent;border:1px solid var(--accent);color:var(--accent)">{{ voiceCloning ? '克隆中...' : '测试克隆' }}</button>
+            <button class="btn btn-sm" @click="doClone()" :disabled="voiceCloning || !cloneFile || !voicePersona" style="background:transparent;border:1px solid var(--accent);color:var(--accent)">{{ voiceCloning ? '克隆中...' : '测试克隆' }}</button>
             <span v-if="cloneStatus" style="font-size:12px" :style="{color: cloneStatus.includes('成功') ? 'var(--success)' : 'var(--error)'}">{{ cloneStatus }}</span>
           </div>
         </div>
@@ -533,10 +533,16 @@ const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
       })
     }
 
-    async function doPersonaDelete(name: string) {
+    async function doPersonaDelete(name: string, confirmed = false, retried = false) {
+      if (!confirmed && !window.confirm(`确定删除人格“${name}”吗？删除后无法从控制台恢复。`)) return
       personaDeleting.value = name; createMsg.value = null
       const res = await deletePersona(name)
-      if (res.code === 'ADMIN_REQUIRED') { personaDeleting.value = null; if (showAdminDialog) showAdminDialog('删除人格需要管理员密码', () => doPersonaDelete(name)); return }
+      if (res.code === 'ADMIN_REQUIRED') {
+        personaDeleting.value = null
+        if (!retried && showAdminDialog) showAdminDialog('删除人格需要管理员密码', () => doPersonaDelete(name, true, true))
+        else createMsg.value = { type: 'err', text: '管理员验证后删除人格仍被拒绝' }
+        return
+      }
       if (res.ok) {
         createMsg.value = { type: 'ok', text: '删除成功' }
         const pRes = await fetchPersonas()
@@ -609,10 +615,16 @@ const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
       loreSaving.value = false
     }
 
-    async function doLoreDelete(name: string) {
+    async function doLoreDelete(name: string, confirmed = false, retried = false) {
+      if (!confirmed && !window.confirm(`确定删除世界观“${name}”吗？删除后无法从控制台恢复。`)) return
       loreDeleting.value = name; loreMsg.value = null
       const res = await deleteLore(name)
-      if (res.code === 'ADMIN_REQUIRED') { loreDeleting.value = null; if (showAdminDialog) showAdminDialog('删除世界观需要管理员密码', () => doLoreDelete(name)); return }
+      if (res.code === 'ADMIN_REQUIRED') {
+        loreDeleting.value = null
+        if (!retried && showAdminDialog) showAdminDialog('删除世界观需要管理员密码', () => doLoreDelete(name, true, true))
+        else loreMsg.value = { type: 'err', text: '管理员验证后删除世界观仍被拒绝' }
+        return
+      }
       if (res.ok) {
         loreMsg.value = { type: 'ok', text: messageFromData(res.data, '删除成功') }
         const [loRes, lRes] = await Promise.all([fetchLores(), fetchLoreList()])
@@ -807,7 +819,7 @@ const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
       voiceSaving.value = false
     }
 
-    async function doPreview() {
+    async function doPreview(retried = false) {
       voicePreviewing.value = true; clearPreviewAudio(); voiceMsg.value = null
       const text = previewText.value.trim() || '你好，这是一段语音测试。'
       const selectedAssetId = voiceId.value === '__cloned__' ? selectedVoiceAssetId.value : ''
@@ -817,6 +829,12 @@ const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
         return
       }
       const res = await ttsPreview(text, voiceId.value || '', voiceStyle.value.trim(), voicePersona.value, selectedAssetId)
+      if (res.code === 'ADMIN_REQUIRED') {
+        voicePreviewing.value = false
+        if (!retried && showAdminDialog) showAdminDialog('普通语音试听需要管理员密码', () => doPreview(true))
+        else voiceMsg.value = { type: 'err', text: '管理员验证后试听仍被拒绝' }
+        return
+      }
       if (!res.ok || !setPreviewAudio(res.data)) {
         voiceMsg.value = { type: 'err', text: messageFromData(res.data, '试听失败') }
       }
@@ -859,6 +877,35 @@ const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
       })
     }
 
+    // Sends already-read audio bytes so administrator verification retries do not re-read the file.
+    async function submitCloneUpload(base64: string, mimeType: string, personaName: string, metadata: Record<string, string>, retried = false): Promise<void> {
+      voiceCloning.value = true
+      cloneStatus.value = '上传中...'
+      voiceMsg.value = null
+      const res = await ttsClone(personaName, base64, mimeType, metadata)
+      if (res.code === 'ADMIN_REQUIRED') {
+        voiceCloning.value = false
+        cloneStatus.value = '等待管理员验证'
+        if (!retried && showAdminDialog) showAdminDialog('测试克隆需要管理员密码', () => submitCloneUpload(base64, mimeType, personaName, metadata, true))
+        else voiceMsg.value = { type: 'err', text: '管理员验证后测试克隆仍被拒绝' }
+        return
+      }
+      if (res.ok) {
+        cloneStatus.value = '克隆成功'
+        const data = asRecord(res.data)
+        const asset = asRecord(data.asset)
+        const assetId = readString(asset.id)
+        voiceId.value = '__cloned__'
+        selectedVoiceAssetId.value = assetId
+        personaVoiceMap.value = { ...personaVoiceMap.value, [personaName]: { ...(personaVoiceMap.value[personaName] || {}), voiceId: '__cloned__', voiceStyle: metadata.voiceStyle, hasSample: true, voiceAssetId: assetId } }
+        await loadVoices()
+      } else {
+        cloneStatus.value = '克隆失败'
+        voiceMsg.value = { type: 'err', text: messageFromData(res.data, '克隆失败') }
+      }
+      voiceCloning.value = false
+    }
+
     async function doClone() {
       const file = cloneFile.value
       if (!file || !voicePersona.value) return
@@ -885,26 +932,13 @@ const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
       reader.onload = async () => {
         const base64 = String(reader.result || '').split(',')[1] || ''
         const mimeType = file.type || 'audio/mpeg'
-        const res = await ttsClone(voicePersona.value, base64, mimeType, {
+        const personaName = voicePersona.value
+        await submitCloneUpload(base64, mimeType, personaName, {
           displayName: cloneDisplayName.value.trim() || `${voicePersona.value} 克隆音色`,
           description: cloneDescription.value.trim(),
           sampleText: cloneSampleText.value.trim() || previewText.value.trim() || '你好，这是一段语音测试。',
           voiceStyle: voiceStyle.value.trim(),
         })
-        if (res.ok) {
-          cloneStatus.value = '克隆成功'
-          const data = asRecord(res.data)
-          const asset = asRecord(data.asset)
-          const assetId = readString(asset.id)
-          voiceId.value = '__cloned__'
-          selectedVoiceAssetId.value = assetId
-          personaVoiceMap.value = { ...personaVoiceMap.value, [voicePersona.value]: { ...(personaVoiceMap.value[voicePersona.value] || {}), voiceId: '__cloned__', voiceStyle: voiceStyle.value, hasSample: true, voiceAssetId: assetId } }
-          await loadVoices()
-        } else {
-          cloneStatus.value = '克隆失败'
-          voiceMsg.value = { type: 'err', text: messageFromData(res.data, '克隆失败') }
-        }
-        voiceCloning.value = false
       }
       reader.onerror = () => { voiceCloning.value = false; cloneStatus.value = '读取失败'; voiceMsg.value = { type: 'err', text: '文件读取失败' } }
       reader.readAsDataURL(file)

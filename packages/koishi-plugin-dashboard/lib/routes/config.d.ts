@@ -34,6 +34,7 @@ declare function normalizeLoreScope(value: unknown): LoreScope;
 declare function normalizeLorePayload(data?: FrontmatterMeta, existingName?: string): LorePayload;
 declare function buildLoreFrontmatter(meta: FrontmatterMeta, overrides?: FrontmatterMeta): string;
 declare function handleGetStatus(req: IncomingMessage, res: ServerResponse): void;
+declare function handleGetReleaseStatus(req: IncomingMessage, res: ServerResponse): void;
 declare function handleGetProviders(req: IncomingMessage, res: ServerResponse): void;
 declare function handleGetConfig(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePutConfig(req: IncomingMessage, res: ServerResponse): void;
@@ -51,6 +52,7 @@ declare function handleGetPersonaDiagnostics(req: IncomingMessage, res: ServerRe
 declare const _default: {
     routes: {
         'GET /dashboard/api/status': typeof handleGetStatus;
+        'GET /dashboard/api/release-status': typeof handleGetReleaseStatus;
         'GET /dashboard/api/providers': typeof handleGetProviders;
         'GET /dashboard/api/config': typeof handleGetConfig;
         'PUT /dashboard/api/config': typeof handlePutConfig;

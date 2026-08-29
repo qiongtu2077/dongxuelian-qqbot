@@ -3871,6 +3871,7 @@ async function main() {
   const readerDeploy = read(path.join(scriptsDir, 'message-reader.sh'))
   const restartBot = read(path.join(scriptsDir, 'restart-bot.sh'))
   const logrotateInstaller = read(path.join(scriptsDir, 'install-logrotate.sh'))
+  const dashboardActivation = read(path.join(scriptsDir, 'activate-dashboard-release.sh'))
   const dashboardDir = path.join(PKG_ROOT, 'koishi-plugin-dashboard')
   const dashboardStandalone = [
     read(path.join(dashboardDir, 'standalone.js')),
@@ -4010,7 +4011,7 @@ async function main() {
   check('restart-bot terminates only exact managed resource workers', restartBot.includes('RESOURCE_WORKER_ENTRY') && restartBot.includes('is_managed_resource_worker_pid') && !restartBot.includes("pkill -9 -f '.*worker-main"))
   check('restart-bot gates success on current worker generation', restartBot.includes('validate_resource_worker_generation') && restartBot.includes('ownerGeneration') && restartBot.includes('worker generation healthy'))
   check('logrotate installer bounds both text logs without restarting services', logrotateInstaller.includes('koishi.log') && logrotateInstaller.includes('/root/napcat.log') && logrotateInstaller.includes('size $ROTATE_SIZE') && logrotateInstaller.includes('rotate $ROTATE_COUNT') && logrotateInstaller.includes('copytruncate') && logrotateInstaller.includes('logrotate --debug'))
-  check('dashboard deploy uploads and installs logrotate policy', dashboardStandalone.includes('install-logrotate.sh') && dashboardStandalone.includes('安装 Koishi/NapCat 日志轮转'))
+  check('dashboard deploy uploads and installs logrotate policy', dashboardStandalone.includes('install-logrotate.sh') && dashboardActivation.includes('STAGE="prepare_logrotate"') && dashboardActivation.includes('bash "$NEXT_DIR/scripts/install-logrotate.sh"'))
   const sealDataSrc = read(path.join(ROOT, 'scripts', 'seal-data-dir.sh'))
   check('seal-data-dir preserves tracked package data dirs', sealDataSrc.includes('checked package data seed allowlist without mutating source') && !sealDataSrc.includes('ln -s "$DATA_DIR" "$pkg_data"'))
   check('seal-data-dir avoids moving normal package data dirs', !/mv "\$pkg_data" "\$BACKUP_DIR\/\$rel"\s*(?:$|[\r\n])/.test(sealDataSrc))

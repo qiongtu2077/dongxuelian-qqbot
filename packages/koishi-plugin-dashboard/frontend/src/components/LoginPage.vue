@@ -8,6 +8,7 @@
         <h1 class="gate-title">莲莲 Bot 控制台</h1>
         <template v-if="!electronDeployer">
         <p class="gate-copy">请输入访问密码以继续</p>
+        <div v-if="notice" class="gate-error" style="color:var(--success)">{{ notice }}</div>
 
         <PasswordField
           v-model="password"
@@ -62,6 +63,9 @@ import PasswordField from './PasswordField.vue'
 export default {
   name: 'LoginPage',
   components: { LoginBackdrop, PasswordField },
+  props: {
+    notice: { type: String, default: '' },
+  },
   setup(props, { emit }) {
     const electronDeployer = isElectronDeployerEnv()
     const password = ref('')

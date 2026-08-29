@@ -17,141 +17,169 @@ function sourceBetween(source, start, end) {
 }
 
 describe('主控制台前后端契约审查', () => {
-  test('已确认：Fallback 后端返回 defaults，ConfigPanel 却读取 default', () => {
+  test('Fallback 前后端统一使用 defaults 字段', () => {
     const backend = readSource('packages/koishi-plugin-dashboard/src/lib/routes/settings.ts')
     const frontend = readSource('packages/koishi-plugin-dashboard/frontend/src/components/ConfigPanel.vue')
 
     expect(backend).toMatch(/defaults:\s*DEFAULT_FALLBACK_CHAINS/)
-    expect(frontend).toMatch(/fRes\.data\.default\s*\|\|\s*\{\}/)
-    expect(frontend).not.toMatch(/fRes\.data\.defaults\s*\|\|\s*\{\}/)
+    expect(frontend).toMatch(/fRes\.data\.defaults\s*\|\|\s*\{\}/)
+    expect(frontend).not.toMatch(/fRes\.data\.default\s*\|\|\s*\{\}/)
   })
 
-  test('已确认：诊断测试和正常启动共用同一个 startBot 写接口', () => {
+  test('诊断启动入口已删除，只保留正常启动调用', () => {
     const api = readSource('packages/koishi-plugin-dashboard/frontend/src/api.ts')
     const control = readSource('packages/koishi-plugin-dashboard/frontend/src/components/ControlPanel.vue')
 
     expect(api).toMatch(/startBot\(\).*post\('\/bot\/start'/)
-    expect(control).toMatch(/async function testStartBot\(\)[\s\S]*?await startBot\(\)/)
     expect(control).toMatch(/async function doStart\(\)[\s\S]*?await startBot\(\)/)
+    expect(control).not.toMatch(/testStartBot|测试 startBot API/)
   })
 
-  test('已确认：主模型兜底开关没有对应后端配置字段', () => {
+  test('无效主模型兜底浏览器状态已删除', () => {
     const frontend = readSource('packages/koishi-plugin-dashboard/frontend/src/components/ConfigPanel.vue')
     const settings = readSource('packages/koishi-plugin-dashboard/src/lib/routes/settings.ts')
 
-    expect(frontend).toContain("const LIGHTWEIGHT_MAIN_TOGGLE_KEY = 'cfg_lightweight_main'")
+    expect(frontend).not.toContain('cfg_lightweight_main')
+    expect(frontend).not.toContain('useMainFallback')
     expect(settings).not.toContain('cfg_lightweight_main')
     expect(settings).not.toContain('useMainFallback')
   })
 
-  test('已确认：人格、世界观和黑白名单删除入口没有确认调用', () => {
+  test('人格、世界观和黑白名单删除都先确认准确对象', () => {
     const persona = readSource('packages/koishi-plugin-dashboard/frontend/src/components/PersonaPanel.vue')
     const whitelist = readSource('packages/koishi-plugin-dashboard/frontend/src/components/WhitelistPanel.vue')
-    const personaDeleteBody = persona.match(/async function doPersonaDelete[\s\S]*?\n\s*}\n\s*\n\s*function resetLoreForm/)?.[0] || ''
-    const loreDeleteBody = persona.match(/async function doLoreDelete[\s\S]*?\n\s*}\n\s*\n\s*const voicePersona/)?.[0] || ''
-    const whitelistDeleteBody = whitelist.match(/async function removeDisplayItem[\s\S]*?\n\s*}\n\s*\n\s*return \{/)?.[0] || ''
+    const personaDeleteBody = sourceBetween(persona, 'async function doPersonaDelete', 'function resetLoreForm')
+    const loreDeleteBody = sourceBetween(persona, 'async function doLoreDelete', 'const voicePersona')
+    const whitelistDeleteBody = sourceBetween(whitelist, 'async function removeDisplayItem', 'return {')
 
-    expect(personaDeleteBody).not.toMatch(/confirm\s*\(/)
-    expect(loreDeleteBody).not.toMatch(/confirm\s*\(/)
-    expect(whitelistDeleteBody).not.toMatch(/confirm\s*\(/)
+    expect(personaDeleteBody).toMatch(/window\.confirm/)
+    expect(loreDeleteBody).toMatch(/window\.confirm/)
+    expect(whitelistDeleteBody).toMatch(/window\.confirm/)
   })
 
-  test('已确认：新增 API 配置分三次写入，后续失败没有恢复前序写入', () => {
+  test('新增 API 配置只调用一次完整事务接口并在成功后回读', () => {
     const keyManager = readSource('packages/koishi-plugin-dashboard/frontend/src/components/KeyManager.vue')
-    const saveProviderBody = sourceBetween(keyManager, 'async function saveProvider()', 'function fallbackModelOptions')
+    const saveProviderBody = sourceBetween(keyManager, 'async function saveProvider(', 'async function loadUsage')
 
-    expect(saveProviderBody).toMatch(/await saveCustomProviders\(/)
-    expect(saveProviderBody).toMatch(/await updateKey\(/)
-    expect(saveProviderBody).toMatch(/await saveFallbackChains\(/)
-    expect(saveProviderBody).not.toMatch(/rollback|restore|snapshot|transaction/i)
+    expect(saveProviderBody).toMatch(/await saveApiConfigTransaction\(/)
+    expect(saveProviderBody).toMatch(/await reloadSavedApiConfig\(/)
+    expect(saveProviderBody).not.toMatch(/await saveCustomProviders\(|await updateKey\(|await saveFallbackChains\(/)
   })
 
-  test('已确认：API Keys 三张排序卡的任一保存按钮都会写入全部链', () => {
+  test('备用链编辑只存在于模型配置页的单一保存入口', () => {
     const keyManager = readSource('packages/koishi-plugin-dashboard/frontend/src/components/KeyManager.vue')
-    const saveFallbackBody = sourceBetween(keyManager, 'async function saveFallback()', 'async function loadUsage')
+    const configPanel = readSource('packages/koishi-plugin-dashboard/frontend/src/components/ConfigPanel.vue')
 
-    expect(keyManager).toMatch(/v-for="card in fallbackCards"[\s\S]*?@click="saveFallback"/)
-    expect(saveFallbackBody).toMatch(/for \(const card of FALLBACK_CARDS\)/)
-    expect(saveFallbackBody).toMatch(/saveFallbackChains\(chains\)/)
+    expect(keyManager).not.toMatch(/v-for="card in fallbackCards"|async function saveFallback\(/)
+    expect((configPanel.match(/保存全部备用链/g) || [])).toHaveLength(1)
+    expect(configPanel).toMatch(/saveFallbackChains\(chains\)/)
   })
 
-  test('已确认：部署进度后端要求管理员令牌，但前端请求不携带且失败后永久继续轮询', () => {
+  test('部署进度携带管理员令牌并使用有界、非重叠轮询', () => {
     const api = readSource('packages/koishi-plugin-dashboard/frontend/src/api.ts')
     const deployPanel = readSource('packages/koishi-plugin-dashboard/frontend/src/components/DeployPanel.vue')
     const deployBackend = readSource('packages/koishi-plugin-dashboard/src/lib/routes/deploy.ts')
-    const pollBody = sourceBetween(deployPanel, 'function pollProgress(taskId: string)', 'function uploadCookie')
+    const pollBody = sourceBetween(deployPanel, 'function clearProgressPolling()', 'function uploadCookie')
 
     expect(deployBackend).toMatch(/function handleGetDeployProgress[\s\S]*?requireAdmin\(req, res\)/)
-    expect(api).toMatch(/getDeployProgress\(taskId: string\).*return get\('\/deploy\/progress\/' \+ encodeURIComponent\(taskId\)\)/)
-    expect(api).not.toMatch(/getDeployProgress\(taskId: string\).*return get\('\/deploy\/progress\/' \+ encodeURIComponent\(taskId\), true\)/)
-    expect(pollBody).toContain('if (!res.ok) return')
-    expect(pollBody).not.toMatch(/setTimeout|timeout|ADMIN_REQUIRED|isAdminRequired/)
+    expect(api).toMatch(/getDeployProgress\(taskId: string\).*return get\('\/deploy\/progress\/' \+ encodeURIComponent\(taskId\), true\)/)
+    expect(pollBody).toMatch(/code === 'ADMIN_REQUIRED'/)
+    expect(pollBody).toMatch(/progressNetworkFailures >= 3/)
+    expect(pollBody).toMatch(/setTimeout/)
+    expect(pollBody).not.toMatch(/setInterval/)
   })
 
-  test('已确认：管理员密码验证的 401 与访问令牌失效共用全局退出处理', () => {
+  test('管理员密码错误使用 403，只有普通 401 触发全局退出', () => {
     const api = readSource('packages/koishi-plugin-dashboard/frontend/src/api.ts')
     const authBackend = readSource('packages/koishi-plugin-dashboard/src/lib/routes/auth.ts')
 
-    expect(authBackend).toMatch(/admin password is incorrect' }, 401/)
+    expect(authBackend).toMatch(/admin password is incorrect'[\s\S]*?ADMIN_PASSWORD_INCORRECT'[\s\S]*?403/)
     expect(api).toMatch(/verifyAdmin\(password: string\).*return post<[^>]+>\('\/admin\/verify'/)
-    expect(api).toMatch(/function handle401[\s\S]*?removeItem\('dashboard_token'\)[\s\S]*?auth-expired/)
+    expect(api).toMatch(/function clearDashboardSession[\s\S]*?removeItem\('dashboard_token'\)[\s\S]*?auth-expired/)
+    expect(api).toMatch(/function handle401[\s\S]*?res\.status === 401[\s\S]*?clearDashboardSession\(\)/)
   })
 
-  test('已确认：修改任一种密码都会使访问令牌失效，但成功页不会立即退出', () => {
+  test('修改任一种密码成功后立即清理两层会话', () => {
     const settingsPanel = readSource('packages/koishi-plugin-dashboard/frontend/src/components/SettingsPanel.vue')
     const authBackend = readSource('packages/koishi-plugin-dashboard/src/lib/routes/auth.ts')
 
     expect((authBackend.match(/rotateSessionSecret\(\)/g) || [])).toHaveLength(2)
-    expect(settingsPanel).not.toContain("localStorage.removeItem('dashboard_token')")
-    expect(settingsPanel).not.toContain("dispatchEvent(new Event('auth-expired'))")
+    expect((settingsPanel.match(/clearDashboardSession\('密码已修改，请重新登录'\)/g) || [])).toHaveLength(2)
   })
 
-  test('已确认：图集三类写操作缺少管理员验证后的重试分支', () => {
+  test('图集三类写操作都有单次管理员验证重试', () => {
     const gallery = readSource('packages/koishi-plugin-dashboard/frontend/src/components/GalleryPanel.vue')
 
     expect(gallery).toMatch(/await uploadGalleryImage\(/)
     expect(gallery).toMatch(/await deleteGalleryImage\(/)
     expect(gallery).toMatch(/await updateGalleryImageStyle\(/)
-    expect(gallery).not.toMatch(/ADMIN_REQUIRED|isAdminRequired|showAdminDialog/)
+    expect(gallery).toMatch(/isAdminRequired\(res\)/)
+    expect(gallery).toMatch(/showAdminDialog\('上传图集图片需要管理员密码'/)
+    expect(gallery).toMatch(/showAdminDialog\('批量删除图集图片需要管理员密码'/)
+    expect(gallery).toMatch(/showAdminDialog\('保存图集闪卡样式需要管理员密码'/)
   })
 
-  test('已确认：资源维护、stale 回收和取消任务缺少管理员验证后的重试分支', () => {
+  test('资源维护、stale 回收和取消任务都有管理员验证闭环', () => {
     const resource = readSource('packages/koishi-plugin-dashboard/frontend/src/components/ResourcePanel.vue')
-    const maintenanceBody = sourceBetween(resource, 'async function toggleMaintenance()', 'async function reclaimStale')
-    const reclaimBody = sourceBetween(resource, 'async function reclaimStale()', 'async function setMode')
-    const cancelBody = sourceBetween(resource, 'async function cancelTask(task: JsonRecord)', 'onMounted(() =>')
+    const maintenanceBody = sourceBetween(resource, 'async function toggleMaintenance', 'async function reclaimStale')
+    const reclaimBody = sourceBetween(resource, 'async function reclaimStale', 'async function setMode')
+    const cancelBody = sourceBetween(resource, 'async function cancelTask', 'onMounted(() =>')
 
     expect(maintenanceBody).toMatch(/setResourceMaintenance\(/)
     expect(reclaimBody).toMatch(/reclaimResourceStale\(/)
     expect(cancelBody).toMatch(/cancelResourceTask\(/)
-    expect(maintenanceBody + reclaimBody + cancelBody).not.toMatch(/ADMIN_REQUIRED|isAdminRequired|showAdminDialog/)
+    expect(maintenanceBody + reclaimBody + cancelBody).toMatch(/ADMIN_REQUIRED|isAdminRequired|showAdminDialog/)
+    expect(maintenanceBody).toMatch(/retried/)
+    expect(reclaimBody).toMatch(/retried/)
+    expect(cancelBody).toMatch(/retried/)
   })
 
-  test('已确认：普通 TTS 试听和测试克隆缺少管理员验证后的重试分支', () => {
+  test('普通 TTS 试听和测试克隆复用已读内容完成管理员重试', () => {
     const persona = readSource('packages/koishi-plugin-dashboard/frontend/src/components/PersonaPanel.vue')
-    const previewBody = sourceBetween(persona, 'async function doPreview()', 'function onCloneFileChange')
-    const cloneBody = sourceBetween(persona, 'async function doClone()', 'async function doPreviewAsset')
+    const previewBody = sourceBetween(persona, 'async function doPreview', 'function onCloneFileChange')
+    const cloneBody = sourceBetween(persona, 'async function submitCloneUpload', 'async function doPreviewAsset')
 
     expect(previewBody).toMatch(/await ttsPreview\(/)
     expect(cloneBody).toMatch(/await ttsClone\(/)
-    expect(previewBody).not.toMatch(/ADMIN_REQUIRED|isAdminRequired|showAdminDialog/)
-    expect(cloneBody).not.toMatch(/ADMIN_REQUIRED|isAdminRequired|showAdminDialog/)
+    expect(previewBody).toMatch(/ADMIN_REQUIRED|isAdminRequired|showAdminDialog/)
+    expect(cloneBody).toMatch(/ADMIN_REQUIRED|isAdminRequired|showAdminDialog/)
+    expect(cloneBody).toMatch(/submitCloneUpload\(base64, mimeType, personaName, metadata, true\)/)
   })
 
-  test('已确认：Fallback 保存接口没有校验链条内部结构', () => {
+  test('Fallback 保存接口统一执行严格的三链引用校验', () => {
     const settings = readSource('packages/koishi-plugin-dashboard/src/lib/routes/settings.ts')
     const handlerBody = sourceBetween(settings, 'function handlePutFallback', 'function handleGetAdminIds')
 
-    expect(handlerBody).toMatch(/if \(!isRecord\(chains\)\)/)
-    expect(handlerBody).toMatch(/JSON\.stringify\(chains, null, 2\)/)
-    expect(handlerBody).not.toMatch(/provider.*model|model.*provider|normalize.*fallback|validate.*fallback/i)
+    expect(handlerBody).toMatch(/normalizeFallbackChains\(chains\)/)
+    expect(settings).toMatch(/引用未知供应商/)
+    expect(settings).toMatch(/引用供应商未登记模型/)
+    expect(settings).toMatch(/Key 文件名无效/)
   })
 
-  test('已确认：更换 QQ 号会改写配置并立即重启，但按钮仍叫“重载配置”', () => {
+  test('更换 QQ 号文案、原子写、重启和健康检查语义一致', () => {
     const control = readSource('packages/koishi-plugin-dashboard/frontend/src/components/ControlPanel.vue')
     const botBackend = readSource('packages/koishi-plugin-dashboard/src/lib/routes/bot.ts')
 
-    expect(control).toMatch(/@click="saveSelfId"[\s\S]*?'重载配置'/)
-    expect(botBackend).toMatch(/function handlePutQqSelfId[\s\S]*?writeFileSync\(ymlPath[\s\S]*?restart\.sh/)
+    expect(control).toMatch(/@click="saveSelfId\(\)"[\s\S]*?更换 QQ 号并重启机器人/)
+    expect(control).toMatch(/window\.confirm\([\s\S]*?短暂离线/)
+    expect(botBackend).toMatch(/function writeConfigAtomic[\s\S]*?renameSync\(nextPath, filePath\)/)
+    expect(botBackend).toMatch(/function handlePutQqSelfId[\s\S]*?writeConfigAtomic\(ymlPath, nextYml\)[\s\S]*?机器人已通过重启健康检查/)
+  })
+
+  test('普通发布不携带 B 站 cookies，发布入口只走不可变版本链路', () => {
+    const deployBackend = readSource('packages/koishi-plugin-dashboard/src/lib/routes/deploy.ts')
+    const release = readSource('packages/koishi-plugin-dashboard/src/lib/release.ts')
+
+    expect(deployBackend).toMatch(/'POST \/dashboard\/api\/deploy\/run': handlePostSafeDeployRun/)
+    expect(deployBackend).not.toMatch(/scpCommand\([^\n]*bilibili-cookies\.txt/)
+    expect(release).not.toContain('bilibili-cookies.txt')
+  })
+
+  test('远端版本检查执行完整清单校验且失败返回无法确认', () => {
+    const deployBackend = readSource('packages/koishi-plugin-dashboard/src/lib/routes/deploy.ts')
+
+    expect(deployBackend).toMatch(/verify-release-manifest\.js/)
+    expect(deployBackend).toMatch(/REMOTE_RELEASE_UNVERIFIED/)
+    expect(deployBackend).toMatch(/无法确认远端实际版本/)
   })
 })

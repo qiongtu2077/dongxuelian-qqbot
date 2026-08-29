@@ -71,60 +71,10 @@
       </div>
       <div v-if="providerMsg" class="msg" :class="providerMsg.type">{{ providerMsg.text }}</div>
       <div class="modal-actions">
-        <button class="btn" type="button" @click="saveProvider" :disabled="savingProvider">{{ savingProvider ? '保存中...' : '保存配置' }}</button>
+        <button class="btn" type="button" @click="saveProvider()" :disabled="savingProvider">{{ savingProvider ? '保存中...' : '保存配置' }}</button>
         <button class="btn btn-sm muted-btn" type="button" @click="closeProviderDialog">取消</button>
       </div>
     </div>
-  </div>
-
-  <div class="priority-dashboard">
-    <section v-for="card in fallbackCards" :key="card.key" class="card priority-card">
-      <div class="priority-head">
-        <div>
-          <h2>{{ card.label }}</h2>
-          <div class="priority-subtitle">上方优先使用，失败后按顺序切换</div>
-        </div>
-        <button class="btn btn-sm" type="button" @click="saveFallback" :disabled="savingFallback">{{ savingFallback ? '保存中...' : '保存排序' }}</button>
-      </div>
-      <TransitionGroup name="priority" tag="div" class="priority-list">
-        <div
-          v-for="(step, index) in fallbackChains[card.key] || []"
-          :key="priorityStepKey(card.key, step, index)"
-          class="priority-item"
-          :class="{ dragging: dragging && dragging.key === card.key && dragging.index === index }"
-          @dragover.prevent="onPriorityDragOver(card.key, index)"
-          @drop.prevent="onPriorityDrop"
-        >
-          <button
-            class="drag-handle"
-            type="button"
-            title="拖拽排序"
-            draggable="true"
-            @dragstart="onPriorityDragStart(card.key, index, $event)"
-            @dragend="onPriorityDragEnd"
-          >☰</button>
-          <div class="priority-rank">{{ index + 1 }}</div>
-          <div class="priority-fields">
-            <select v-model="step.provider" @change="onFallbackProviderChange(card.key, index)">
-              <option value="" disabled>供应商</option>
-              <option v-for="option in providerSelectOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
-            <select v-model="step.model">
-              <option value="" disabled>模型</option>
-              <option v-for="option in fallbackModelOptions(step.provider)" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
-            <input v-model="step.keyFile" placeholder="Key 文件" />
-          </div>
-          <div class="priority-actions">
-            <button class="icon-btn ghost" type="button" title="上移" :disabled="index === 0" @click="moveFallbackStep(card.key, index, -1)">↑</button>
-            <button class="icon-btn ghost" type="button" title="下移" :disabled="index >= (fallbackChains[card.key] || []).length - 1" @click="moveFallbackStep(card.key, index, 1)">↓</button>
-            <button class="icon-btn danger" type="button" title="删除" @click="removeFallbackStep(card.key, index)">×</button>
-          </div>
-        </div>
-      </TransitionGroup>
-      <button class="btn btn-sm add-step" type="button" @click="addFallbackStep(card.key)">+ 添加步骤</button>
-      <div v-if="fallbackMsg" class="msg" :class="fallbackMsg.type">{{ fallbackMsg.text }}</div>
-    </section>
   </div>
 
   <div class="token-dashboard">
@@ -218,8 +168,8 @@
 
 <script lang="ts">
 import { computed, inject, ref, onMounted } from 'vue'
-import { fetchKeys, updateKey, fetchKeysUsage, fetchProviders, fetchFallbackChains, saveFallbackChains, fetchCustomProviders, saveCustomProviders } from '../api'
-import type { CustomProvider, FallbackChains, FallbackStep, MessageState, ProviderInfo, ProviderModel, ShowAdminDialog } from '../types'
+import { fetchKeys, updateKey, fetchKeysUsage, fetchProviders, fetchFallbackChains, fetchCustomProviders, saveApiConfigTransaction } from '../api'
+import type { CustomProvider, FallbackChains, MessageState, ProviderInfo, ProviderModel, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
 
 const providerColors: Record<string, string> = {
@@ -288,11 +238,6 @@ interface ProviderDraft {
   keyFile: string
   apiKey: string
   models: Array<ProviderModel & { name?: string }>
-}
-
-interface DragState {
-  key: FallbackKey
-  index: number
 }
 
 interface UsageStat {
@@ -702,14 +647,9 @@ export default {
     const providerDraft = ref<ProviderDraft>(createProviderDraft())
     const providerMsg = ref<MessageState | null>(null)
     const savingProvider = ref(false)
-    const fallbackMsg = ref<MessageState | null>(null)
-    const savingFallback = ref(false)
-    const dragging = ref<DragState | null>(null)
 
     const usageMinDate = computed(() => usageDays.value[0]?.date || '')
     const usageMaxDate = computed(() => usageDays.value[usageDays.value.length - 1]?.date || '')
-    const fallbackCards = computed(() => FALLBACK_CARDS)
-    const providerSelectOptions = computed(() => Object.entries(providers.value).map(([value, provider]) => ({ value, label: provider.name || value })))
     const filteredUsageDays = computed(() => filterUsageDays(usageDays.value, usageRange.value, selectedUsageDate.value))
     const usageTotal = computed(() => filteredUsageDays.value.reduce((sum, day) => sum + dayTotal(day), 0))
     const chart = { width: 760, height: 250, left: 70, right: 700, top: 28, bottom: 205 }
@@ -812,7 +752,29 @@ export default {
       }
     }
 
-    async function saveProvider() {
+    // Reloads and verifies all three public views before the provider dialog can close.
+    async function reloadSavedApiConfig(provider: CustomProvider, expectedChains: FallbackChains, expectKey: boolean): Promise<boolean> {
+      const [keysRes, customRes, fallbackRes, providersRes] = await Promise.all([
+        fetchKeys(),
+        fetchCustomProviders(),
+        fetchFallbackChains(),
+        fetchProviders(),
+      ])
+      if (!keysRes.ok || !customRes.ok || !fallbackRes.ok || !providersRes.ok) return false
+      const reloadedProviders = Array.isArray(customRes.data) ? customRes.data : []
+      const reloadedKeys = Array.isArray(keysRes.data) ? keysRes.data as KeyItem[] : []
+      const savedProvider = reloadedProviders.find(item => item.id === provider.id)
+      const keyReady = !expectKey || reloadedKeys.some(item => item.providerId === provider.id && item.file === provider.keyFile && item.exists)
+      if (!savedProvider || JSON.stringify(savedProvider) !== JSON.stringify(provider) || !keyReady || JSON.stringify(fallbackRes.data?.chains || {}) !== JSON.stringify(expectedChains)) return false
+      customProviders.value = reloadedProviders
+      keys.value = reloadedKeys
+      fallbackChains.value = fallbackRes.data?.chains || {}
+      providers.value = providersRes.data || {}
+      return true
+    }
+
+    // Commits the complete provider, Key, and fallback-chain transaction once.
+    async function saveProvider(retried = false) {
       savingProvider.value = true
       providerMsg.value = null
       try {
@@ -824,130 +786,32 @@ export default {
         }
         const isNewProvider = !customProviders.value.some(item => item.id === provider.id)
         const existing = customProviders.value.filter(item => item.id !== provider.id)
-        const providerRes = await saveCustomProviders([...existing, provider])
-        if (providerRes.code === 'ADMIN_REQUIRED') {
-          if (showAdminDialog) showAdminDialog('保存自定义供应商需要管理员密码', saveProvider)
+        const nextProviders = [...existing, provider]
+        const nextChains = isNewProvider ? appendProviderToFallbackTail(fallbackChains.value, provider) : fallbackChains.value
+        const keyValue = providerDraft.value.apiKey.trim() || undefined
+        const transactionRes = await saveApiConfigTransaction(nextProviders, provider.id, keyValue, nextChains)
+        if (transactionRes.code === 'ADMIN_REQUIRED') {
+          if (!retried && showAdminDialog) showAdminDialog('完整保存 API 配置需要管理员密码', () => saveProvider(true))
+          else providerMsg.value = { type: 'err', text: '管理员验证后完整保存仍被拒绝' }
           savingProvider.value = false
           return
         }
-        if (!providerRes.ok) {
-          providerMsg.value = { type: 'err', text: messageFromData(providerRes.data, '保存供应商失败') }
+        if (!transactionRes.ok) {
+          providerMsg.value = { type: 'err', text: messageFromData(transactionRes.data, 'API 配置未生效，旧配置已恢复') }
           savingProvider.value = false
           return
         }
-        if (providerDraft.value.apiKey.trim()) {
-          const keyRes = await updateKey(provider.keyFile || '', providerDraft.value.apiKey.trim())
-          if (keyRes.code === 'ADMIN_REQUIRED') {
-            if (showAdminDialog) showAdminDialog('保存 API Key 需要管理员密码', saveProvider)
-            savingProvider.value = false
-            return
-          }
-          if (!keyRes.ok) {
-            providerMsg.value = { type: 'err', text: messageFromData(keyRes.data, '保存 Key 失败') }
-            savingProvider.value = false
-            return
-          }
+        if (!await reloadSavedApiConfig(provider, nextChains, keyValue !== undefined)) {
+          providerMsg.value = { type: 'err', text: 'API 配置已提交，但回读不一致，请保持页面并人工检查' }
+          savingProvider.value = false
+          return
         }
-        if (isNewProvider) {
-          const nextChains = appendProviderToFallbackTail(fallbackChains.value, provider)
-          const fallbackRes = await saveFallbackChains(nextChains)
-          if (fallbackRes.code === 'ADMIN_REQUIRED') {
-            if (showAdminDialog) showAdminDialog('保存 Fallback 链需要管理员密码', saveProvider)
-            savingProvider.value = false
-            return
-          }
-          if (!fallbackRes.ok) {
-            providerMsg.value = { type: 'err', text: messageFromData(fallbackRes.data, '供应商已保存，但追加优先级队列失败') }
-            savingProvider.value = false
-            return
-          }
-          fallbackChains.value = nextChains
-        }
-        await Promise.all([loadKeys(), loadProviderConfig()])
         providerMsg.value = { type: 'ok', text: 'API 配置已保存' }
         closeProviderDialog()
       } catch (e) {
         providerMsg.value = { type: 'err', text: errorMessage(e) }
       }
       savingProvider.value = false
-    }
-
-    function fallbackModelOptions(provider: string) {
-      return (providers.value[provider]?.models || []).map(model => ({ value: model.id, label: model.name || model.id }))
-    }
-
-    function onFallbackProviderChange(key: FallbackKey, index: number) {
-      const step = (fallbackChains.value[key] || [])[index]
-      if (!step) return
-      const firstModel = providers.value[step.provider]?.models?.[0]
-      step.model = firstModel?.id || ''
-      const keyItem = keys.value.find(item => item.providerId === step.provider)
-      step.keyFile = keyItem?.file || step.keyFile || ''
-    }
-
-    function addFallbackStep(key: FallbackKey) {
-      if (!fallbackChains.value[key]) fallbackChains.value[key] = []
-      fallbackChains.value[key].push({ provider: '', model: '', keyFile: '' })
-    }
-
-    function removeFallbackStep(key: FallbackKey, index: number) {
-      fallbackChains.value[key]?.splice(index, 1)
-    }
-
-    function moveFallbackStep(key: FallbackKey, index: number, delta: number) {
-      const list = fallbackChains.value[key] || []
-      const next = index + delta
-      if (next < 0 || next >= list.length) return
-      const [item] = list.splice(index, 1)
-      list.splice(next, 0, item)
-    }
-
-    function priorityStepKey(key: FallbackKey, step: FallbackStep, index: number) {
-      return `${key}-${index}-${step.provider || 'empty'}-${step.model || 'model'}-${step.keyFile || 'key'}`
-    }
-
-    function onPriorityDragStart(key: FallbackKey, index: number, event: DragEvent) {
-      dragging.value = { key, index }
-      if (event.dataTransfer) {
-        event.dataTransfer.effectAllowed = 'move'
-        event.dataTransfer.setData('text/plain', `${key}:${index}`)
-      }
-    }
-
-    function onPriorityDragOver(key: FallbackKey, index: number) {
-      if (!dragging.value || dragging.value.key !== key || dragging.value.index === index) return
-      moveFallbackStep(key, dragging.value.index, index - dragging.value.index)
-      dragging.value = { key, index }
-    }
-
-    function onPriorityDrop() {
-      dragging.value = null
-    }
-
-    function onPriorityDragEnd() {
-      dragging.value = null
-    }
-
-    async function saveFallback() {
-      savingFallback.value = true
-      fallbackMsg.value = null
-      const chains: FallbackChains = {}
-      for (const card of FALLBACK_CARDS) {
-        chains[card.key] = (fallbackChains.value[card.key] || []).filter(step => step.provider && step.model)
-      }
-      const res = await saveFallbackChains(chains)
-      if (res.code === 'ADMIN_REQUIRED') {
-        if (showAdminDialog) showAdminDialog('保存 Fallback 链需要管理员密码', saveFallback)
-        savingFallback.value = false
-        return
-      }
-      if (res.ok) {
-        fallbackChains.value = chains
-        fallbackMsg.value = { type: 'ok', text: '优先级排序已保存' }
-      } else {
-        fallbackMsg.value = { type: 'err', text: messageFromData(res.data, '保存排序失败') }
-      }
-      savingFallback.value = false
     }
 
     async function loadUsage() {
@@ -1125,9 +989,6 @@ export default {
       keys, editing, editValue, saving, keyMsg, editKey, saveKey,
       providerDialogOpen, providerDraft, providerMsg, savingProvider, openProviderDialog, closeProviderDialog,
       addProviderModel, removeProviderModel, saveProvider,
-      fallbackCards, fallbackChains, fallbackMsg, savingFallback, providerSelectOptions, dragging,
-      fallbackModelOptions, onFallbackProviderChange, addFallbackStep, removeFallbackStep,
-      moveFallbackStep, priorityStepKey, onPriorityDragStart, onPriorityDragOver, onPriorityDrop, onPriorityDragEnd, saveFallback,
       usageDays, filteredUsageDays, usageProviders, loadingUsage, loadUsage, usageTotal,
       usageRange, selectedUsageDate, usageMinDate, usageMaxDate, rangePresets, rangeLabel, setUsageRange,
       chart, yTicks, xLabels, trendLines, inputAreaPath, cacheReadAreaPath, hasCacheHitRate,

@@ -84,24 +84,31 @@ export default {
       { value: 'users', label: '用户' },
     ]
 
-    async function load() {
+    async function load(promptForAdmin = true): Promise<boolean> {
       try {
         const res = await fetchWhitelist()
-        if (res.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('查看白名单需要管理员密码', load); return }
+        if (res.code === 'ADMIN_REQUIRED') {
+          loadError.value = '查看黑白名单需要管理员密码'
+          if (promptForAdmin && showAdminDialog) showAdminDialog('查看黑白名单需要管理员密码', async () => { await load(true) })
+          return false
+        }
         if (res.ok && res.data) {
           lists.value = res.data
           loadError.value = ''
+          return true
         } else {
           loadError.value = messageFromData(res.data, '加载失败')
+          return false
         }
       } catch (e) {
         loadError.value = errorMessage(e)
+        return false
       }
     }
 
     function startPoll() {
       stopPoll()
-      pollTimer = setInterval(load, 3000)
+      pollTimer = setInterval(() => { void load(false) }, 3000)
     }
     function stopPoll() {
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
@@ -109,10 +116,14 @@ export default {
 
     async function manualRefresh() {
       refreshing.value = true
-      await load()
+      const success = await load(true)
       refreshing.value = false
-      refreshMsg.value = '已刷新'
-      setTimeout(() => refreshMsg.value = '', 2000)
+      if (success) {
+        refreshMsg.value = '已刷新'
+        setTimeout(() => refreshMsg.value = '', 2000)
+      } else {
+        refreshMsg.value = ''
+      }
     }
 
     onMounted(() => { load(); startPoll() })
@@ -138,14 +149,6 @@ export default {
       if (Array.isArray(wl.data)) return wl.data.length
       if (isBuckets(wl.data)) return (wl.data.groups?.length || 0) + (wl.data.users?.length || 0)
       return 0
-    }
-
-    function getItems(wl: WhitelistEntry): string[] {
-      if (Array.isArray(wl.data)) return wl.data
-      const items: string[] = []
-      if (wl.data?.groups) wl.data.groups.forEach(g => items.push('[群] ' + g))
-      if (wl.data?.users) wl.data.users.forEach(u => items.push('[用户] ' + u))
-      return items
     }
 
     // 构建带原始位置的显示项，搜索过滤后仍能准确删除原数据。
@@ -201,14 +204,6 @@ export default {
       return '群号'
     }
 
-    function getRawItems(wl: WhitelistEntry): string[] {
-      if (Array.isArray(wl.data)) return wl.data
-      const items: string[] = []
-      if (wl.data?.groups) wl.data.groups.forEach(g => items.push(g))
-      if (wl.data?.users) wl.data.users.forEach(u => items.push(u))
-      return items
-    }
-
     async function addItem(key: string) {
       const val = (newValues[key] || '').trim()
       if (!val) return
@@ -242,34 +237,12 @@ export default {
       setTimeout(() => msgs[key] = null, 2000)
     }
 
-    async function removeItem(key: string, idx: number) {
-      const wl = lists.value[key]
-      if (!wl) return
-      let newData: WhitelistData
-      if (Array.isArray(wl.data)) {
-        newData = wl.data.filter((_, i) => i !== idx)
-      } else {
-        const items = getItems(wl)
-        const raw = items[idx].replace('[群] ', '').replace('[用户] ', '')
-        const isGroup = items[idx].startsWith('[群]')
-        newData = { ...wl.data }
-        if (isGroup) newData.groups = (newData.groups || []).filter(g => g !== raw)
-        else newData.users = (newData.users || []).filter(u => u !== raw)
-      }
-      const res = await updateWhitelist(key, newData)
-      if (res.code === 'ADMIN_REQUIRED') {
-        if (showAdminDialog) showAdminDialog('修改白名单需要管理员密码', () => removeItem(key, idx))
-        return
-      }
-      if (res.ok) { msgs[key] = { type: 'ok', text: '已删除' }; load() }
-      else msgs[key] = { type: 'err', text: messageFromData(res.data, '删除失败') }
-      setTimeout(() => msgs[key] = null, 2000)
-    }
-
     // 删除搜索结果中的显示项，按 bucket 和原始值更新对应列表。
-    async function removeDisplayItem(key: string, item: WhitelistDisplayItem) {
+    async function removeDisplayItem(key: string, item: WhitelistDisplayItem, confirmed = false, retried = false) {
       const wl = lists.value[key]
       if (!wl) return
+      const itemType = item.bucket === 'groups' ? '群' : item.bucket === 'users' ? '用户' : '条目'
+      if (!confirmed && !window.confirm(`确定从“${wl.label}”删除${itemType}“${item.raw}”吗？`)) return
       let newData: WhitelistData
       if (Array.isArray(wl.data)) {
         newData = wl.data[item.index] === item.raw
@@ -283,7 +256,8 @@ export default {
       }
       const res = await updateWhitelist(key, newData)
       if (res.code === 'ADMIN_REQUIRED') {
-        if (showAdminDialog) showAdminDialog('修改白名单需要管理员密码', () => removeDisplayItem(key, item))
+        if (!retried && showAdminDialog) showAdminDialog('删除黑白名单条目需要管理员密码', () => removeDisplayItem(key, item, true, true))
+        else msgs[key] = { type: 'err', text: '管理员验证后删除仍被拒绝' }
         return
       }
       if (res.ok) { msgs[key] = { type: 'ok', text: '已删除' }; load() }
@@ -291,7 +265,7 @@ export default {
       setTimeout(() => msgs[key] = null, 2000)
     }
 
-    return { lists, groupSearch, newValues, newTypes, typeOptions, msgs, loadError, refreshing, refreshMsg, manualRefresh, isEmpty, isFilteredEmpty, isObjectList, getCount, getVisibleCount, getItems, getVisibleItems, inputPlaceholder, getRawItems, addItem, removeItem, removeDisplayItem }
+    return { lists, groupSearch, newValues, newTypes, typeOptions, msgs, loadError, refreshing, refreshMsg, manualRefresh, isEmpty, isFilteredEmpty, isObjectList, getCount, getVisibleCount, getVisibleItems, inputPlaceholder, addItem, removeDisplayItem }
   }
 }
 </script>

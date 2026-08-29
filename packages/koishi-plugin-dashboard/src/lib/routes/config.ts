@@ -11,15 +11,17 @@ const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../u
   writeFileSyncSafe(filePath: string, content: unknown): void
 }
 const { requireAdmin } = require('../auth') as { requireAdmin(req: IncomingMessage, res: ServerResponse): boolean }
-const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths') as {
+const { DATA_DIR, AI_LIB, PLUGIN_ROOT, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths') as {
   DATA_DIR: string
   AI_LIB: string
+  PLUGIN_ROOT: string
   CUSTOM_PROVIDERS_FILE: string
   PERSONAS_DIR: string
   CORE_DIR: string
   MODES_DIR: string
   LORES_DIR: string
 }
+const { checkPortState } = require('../tools') as typeof import('../tools')
 
 type LoreScope = 'always' | 'keyword' | 'none'
 type LoreNumberValue = number | ''
@@ -234,11 +236,36 @@ function buildLoreFrontmatter(meta: FrontmatterMeta, overrides: FrontmatterMeta 
   return `---\n${lines.join('\n')}\n---\n\n`
 }
 
+// Reads only non-sensitive release identity fields from the current immutable release.
+function readReleaseMetadata(): Record<string, unknown> | null {
+  try {
+    const manifestPath = path.resolve(PLUGIN_ROOT, '..', '..', 'release-manifest.json')
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>
+    return {
+      releaseId: String(manifest.releaseId || ''),
+      version: String(manifest.version || ''),
+      commit: String(manifest.commit || ''),
+      builtAt: String(manifest.builtAt || ''),
+      manifestHash: String(manifest.manifestHash || ''),
+      contentHash: String(manifest.contentHash || ''),
+    }
+  } catch {
+    return null
+  }
+}
+
 function handleGetStatus(req: IncomingMessage, res: ServerResponse): void {
   return json(res, {
     provider: readFileSyncSafe(path.join(DATA_DIR, 'ai-provider.txt')) || 'deepseek',
     model: readFileSyncSafe(path.join(DATA_DIR, 'ai-model.txt')) || '',
+    release: readReleaseMetadata(),
   })
+}
+
+// Exposes a public, non-sensitive endpoint for release activation health checks.
+function handleGetReleaseStatus(req: IncomingMessage, res: ServerResponse): void {
+  const botPort = Number(process.env.KOISHI_PORT || 5140)
+  return json(res, { ok: true, release: readReleaseMetadata(), bot: { port: botPort, listening: checkPortState(botPort).status === 'occupied' } })
 }
 
 function handleGetProviders(req: IncomingMessage, res: ServerResponse): void {
@@ -524,6 +551,7 @@ function handleGetPersonaDiagnostics(req: IncomingMessage, res: ServerResponse):
 
 const routes = {
   'GET /dashboard/api/status': handleGetStatus,
+  'GET /dashboard/api/release-status': handleGetReleaseStatus,
   'GET /dashboard/api/providers': handleGetProviders,
   'GET /dashboard/api/config': handleGetConfig,
   'PUT /dashboard/api/config': handlePutConfig,

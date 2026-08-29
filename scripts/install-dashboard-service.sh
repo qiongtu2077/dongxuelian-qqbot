@@ -34,7 +34,9 @@ export DONGXUELIAN_AI_DATA_DIR="$DATA_DIR"
 export DASHBOARD_HOST="$DASHBOARD_HOST"
 export DASHBOARD_PORT="$DASHBOARD_PORT"
 export NODE_PATH="\$APP_DIR/node_modules"
-if [ -f "\$APP_DIR/scripts/seal-data-dir.sh" ]; then
+if [ -f "\$APP_DIR/.lian-releases/current/scripts/seal-data-dir.sh" ]; then
+  sh "\$APP_DIR/.lian-releases/current/scripts/seal-data-dir.sh"
+elif [ -f "\$APP_DIR/scripts/seal-data-dir.sh" ]; then
   sh "\$APP_DIR/scripts/seal-data-dir.sh"
 fi
 exec node packages/koishi-plugin-dashboard/standalone.js >> "\$LOG_FILE" 2>&1

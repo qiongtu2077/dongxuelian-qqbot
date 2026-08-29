@@ -32,7 +32,7 @@ function visitUnlockedDashboard() {
   cy.visit('', {
     onBeforeLoad(win) {
       win.localStorage.setItem('dashboard_token', 'e2e-access-token')
-      win.localStorage.setItem('dashboard_deploy_unlocked', 'true')
+      win.localStorage.setItem('dashboard_deploy_guide_skipped', 'true')
       win.localStorage.setItem('dashboard_active_tab', 'features')
     },
   })
@@ -43,37 +43,53 @@ describe('主控制台按钮浏览器审查（排除独立 Agent 控制台）', 
     interceptCommonReads()
   })
 
-  it('已确认：解锁按钮只写浏览器状态就进入控制台', () => {
+  it('旧部署解锁键只迁移一次并从浏览器存储删除', () => {
+    cy.visit('', {
+      onBeforeLoad(win) {
+        win.localStorage.setItem('dashboard_token', 'e2e-access-token')
+        win.localStorage.setItem('dashboard_deploy_unlocked', 'true')
+      },
+    })
+
+    cy.window().then(win => {
+      expect(win.localStorage.getItem('dashboard_deploy_guide_skipped')).to.equal('true')
+      expect(win.localStorage.getItem('dashboard_deploy_unlocked')).to.equal(null)
+    })
+    cy.contains('.active-view-label', '功能地图')
+  })
+
+  it('跳过部署引导明确说明不检查或证明部署成功', () => {
     cy.visit('', {
       onBeforeLoad(win) {
         win.localStorage.setItem('dashboard_token', 'e2e-access-token')
       },
     })
 
-    cy.contains('button', '我已部署，解锁').click()
+    cy.contains('不会检查或证明机器人已经部署成功')
+    cy.contains('button', '跳过部署引导并进入控制台').click()
     cy.window().then(win => {
-      expect(win.localStorage.getItem('dashboard_deploy_unlocked')).to.equal('true')
+      expect(win.localStorage.getItem('dashboard_deploy_guide_skipped')).to.equal('true')
     })
     cy.contains('.active-view-label', '功能地图')
   })
 
-  it('已确认：“测试 startBot API”会发出真实启动请求', () => {
+  it('只保留正常启动入口且点击后只发出一次启动请求', () => {
     cy.intercept('POST', '**/dashboard/api/bot/start', { ok: true, message: '启动命令已发送' }).as('startBot')
     visitUnlockedDashboard()
 
     cy.contains('button', '终端控制').click()
-    cy.contains('button', '测试 startBot API').click()
+    cy.contains('测试 startBot API').should('not.exist')
+    cy.contains('button', '启动引擎').click()
     cy.wait('@startBot').its('request.body').should('deep.equal', {})
   })
 
-  it('已确认：模型页面出现三个会全量保存的 Fallback 保存按钮', () => {
+  it('模型页面只有一个备用链保存入口且没有无效兜底开关', () => {
     visitUnlockedDashboard()
 
     cy.contains('button', '模型配置').click()
-    cy.contains('button', '保存 聊天 Fallback')
-    cy.contains('button', '保存 视觉 Fallback')
-    cy.contains('button', '保存 轻量功能 Fallback')
-    cy.contains('主模型兜底（最后试一次主模型）')
+    cy.contains('button', '保存全部备用链').should('have.length', 1)
+    cy.contains('button', '保存 聊天 Fallback').should('not.exist')
+    cy.contains('主模型兜底（最后试一次主模型）').should('not.exist')
   })
 
   it('不会进入或点击独立 Agent 控制台', () => {

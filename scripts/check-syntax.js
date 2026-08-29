@@ -26,6 +26,7 @@ const CHECK_FILES = [
   'scripts/agent-console-admin-smoke.js',
   'scripts/dashboard-click-smoke.js',
   'scripts/resource-cleanup.js',
+  'scripts/verify-release-manifest.js',
   'scripts/skill-hub.js',
   'scripts/verify-ai-plugin-sync.js',
 ]

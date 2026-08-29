@@ -175,7 +175,8 @@ async function testAdminVerifyRateLimit() {
   const headers = { authorization: authHeader, origin: 'http://127.0.0.1:5150' }
   for (let i = 0; i < 10; i += 1) {
     const res = await dispatchJson('POST', '/dashboard/api/admin/verify', { password: 'wrong-pass' }, headers, '203.0.113.10')
-    assert.strictEqual(res.statusCode, 401)
+    assert.strictEqual(res.statusCode, 403)
+    assert.strictEqual(parseJsonResponse(res).code, 'ADMIN_PASSWORD_INCORRECT')
   }
 
   const locked = await dispatchJson('POST', '/dashboard/api/admin/verify', { password: 'admin-pass' }, headers, '203.0.113.10')
@@ -482,6 +483,29 @@ async function testKeysIncludeCustomProviders() {
   assert.strictEqual(custom.prefix, 'sk-test-****')
 }
 
+// Verifies malformed, unknown, and path-shaped fallback steps return 400 without changing storage.
+async function testFallbackValidationIsStrictAndAtomic() {
+  resetDataDir()
+  const fallbackFile = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'ai-fallback-chains.json')
+  const original = '{"chat":[],"vision":[],"lightweight":[]}'
+  fs.writeFileSync(fallbackFile, original, 'utf8')
+  const invalidChains = [
+    { chat: 'not-an-array', vision: [], lightweight: [] },
+    { chat: [{ provider: 'missing-provider', model: 'model' }], vision: [], lightweight: [] },
+    { chat: [{ provider: 'deepseek', model: 'missing-model' }], vision: [], lightweight: [] },
+    { chat: [{ provider: 'deepseek', model: 'deepseek-chat', keyFile: '../secret-key.txt' }], vision: [], lightweight: [] },
+  ]
+  for (const chains of invalidChains) {
+    const res = await dispatchJson('PUT', '/dashboard/api/fallback', { chains }, adminHeaders())
+    assert.strictEqual(res.statusCode, 400)
+    assert.strictEqual(fs.readFileSync(fallbackFile, 'utf8'), original)
+  }
+
+  const accepted = await dispatchJson('PUT', '/dashboard/api/fallback', { chains: { chat: [], vision: [], lightweight: [] } }, adminHeaders())
+  assert.strictEqual(accepted.statusCode, 200)
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(fallbackFile, 'utf8')), { chat: [], vision: [], lightweight: [] })
+}
+
 // Runs all tests sequentially so rate-limit state remains deterministic.
 async function run() {
   testRegexRouteObjectDispatch()
@@ -504,6 +528,7 @@ async function run() {
   await testResourceModeRoundTripRequiresAdminAndUpdatesStatus()
   await testCustomProviderValidationRejectsUnsafeInput()
   await testKeysIncludeCustomProviders()
+  await testFallbackValidationIsStrictAndAtomic()
 
   fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })
   console.log('dashboard security/router tests passed')

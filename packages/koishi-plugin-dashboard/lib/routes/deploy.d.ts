@@ -8,7 +8,7 @@ interface DeployPrefixRoute {
 declare function handleGetDeployConfig(req: IncomingMessage, res: ServerResponse): void;
 declare function handleGetCheckUpdate(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePutDeployConfig(req: IncomingMessage, res: ServerResponse): void;
-declare function handlePostDeployRun(req: IncomingMessage, res: ServerResponse): void;
+declare function handlePostSafeDeployRun(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePostFrontendRebuild(req: IncomingMessage, res: ServerResponse): void;
 declare function handleGetFrontendRebuildStatus(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePostDeployConfirm(req: IncomingMessage, res: ServerResponse): void;
@@ -37,7 +37,7 @@ declare const _default: {
         'GET /dashboard/api/deploy/config': typeof handleGetDeployConfig;
         'GET /dashboard/api/deploy/check-update': typeof handleGetCheckUpdate;
         'PUT /dashboard/api/deploy/config': typeof handlePutDeployConfig;
-        'POST /dashboard/api/deploy/run': typeof handlePostDeployRun;
+        'POST /dashboard/api/deploy/run': typeof handlePostSafeDeployRun;
         'POST /dashboard/api/deploy/confirm': typeof handlePostDeployConfirm;
         'POST /dashboard/api/deploy/upload': typeof handlePostDeployUpload;
         'POST /dashboard/api/deploy/local': typeof handlePostDeployLocal;

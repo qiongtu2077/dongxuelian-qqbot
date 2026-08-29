@@ -39,6 +39,13 @@ function clearAdminToken() {
   localStorage.removeItem(LEGACY_ADMIN_TOKEN_KEY)
 }
 
+// Clears both authentication layers and tells the application why login is required again.
+function clearDashboardSession(reason = '登录已失效，请重新登录') {
+  localStorage.removeItem('dashboard_token')
+  clearAdminToken()
+  window.dispatchEvent(new CustomEvent('auth-expired', { detail: { reason } }))
+}
+
 function headers(admin = false): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' }
   const token = localStorage.getItem('dashboard_token')
@@ -52,9 +59,7 @@ function headers(admin = false): Record<string, string> {
 
 function handle401(res: Response): boolean {
   if (res.status === 401) {
-    localStorage.removeItem('dashboard_token')
-    // 抛出自定义事件，让 App.vue 去优雅处理退出，而不是暴力刷新
-    window.dispatchEvent(new Event('auth-expired')) 
+    clearDashboardSession()
     return true
   }
   return false
@@ -146,7 +151,7 @@ export async function login(password: string): Promise<ApiResult<ApiMessageData>
 export async function verifyAdmin(password: string): Promise<ApiResult<ApiMessageData | null>> { return post<ApiMessageData>('/admin/verify', { password }) }
 export async function changePassword(type: string, oldPassword: string, newPassword: string): Promise<ApiResult<ApiMessageData | null>> { return put<ApiMessageData>('/auth/password', { type, oldPassword, newPassword }, true) }
 export async function resetPassword(resetToken: string): Promise<ApiResult<ApiMessageData>> { return postPlain<ApiMessageData>('/auth/reset-password', { resetToken }) }
-export { setAdminToken, getAdminToken, clearAdminToken }
+export { setAdminToken, getAdminToken, clearAdminToken, clearDashboardSession }
 export async function fetchStatus(): Promise<ApiResult<StatusData | null>> { return get<StatusData>('/status') }
 export async function fetchProviders(): Promise<ApiResult<Record<string, ProviderInfo> | null>> { return get<Record<string, ProviderInfo>>('/providers') }
 export async function fetchConfig(): Promise<ApiResult<DashboardConfig | null>> { return get<DashboardConfig>('/config') }
@@ -182,7 +187,7 @@ export async function fetchDeployConfig() { return get('/deploy/config', true) }
 export async function updateDeployConfig(data: unknown) { return put('/deploy/config', data, true) }
 export async function checkDeployUpdate() { return get('/deploy/check-update') }
 export async function runDeploy(data: unknown) { return post('/deploy/run', data, true) }
-export async function getDeployProgress(taskId: string) { return get('/deploy/progress/' + encodeURIComponent(taskId)) }
+export async function getDeployProgress(taskId: string) { return get('/deploy/progress/' + encodeURIComponent(taskId), true) }
 export async function confirmDeploy() { return post('/deploy/confirm', {}, true) }
 export async function uploadDeploy(name: string, data: string) { return post('/deploy/upload', { name, data }, true) }
 export async function deployLocal(data: unknown) { return post('/deploy/local', data, true) }
@@ -211,6 +216,11 @@ export async function fetchFallbackChains(): Promise<ApiResult<FallbackData | nu
 export async function saveFallbackChains(chains: unknown): Promise<ApiResult<ApiMessageData | null>> { return put<ApiMessageData>('/fallback', { chains }, true) }
 export async function fetchCustomProviders(): Promise<ApiResult<CustomProvider[] | null>> { return get<CustomProvider[]>('/providers/custom', true) }
 export async function saveCustomProviders(data: unknown): Promise<ApiResult<ApiMessageData | null>> { return put<ApiMessageData>('/providers/custom', data, true) }
+export async function saveApiConfigTransaction(providers: unknown, providerId: string, keyValue: string | undefined, chains: unknown): Promise<ApiResult<ApiMessageData | null>> {
+  const payload: JsonObject = { providers, providerId, chains }
+  if (keyValue !== undefined) payload.keyValue = keyValue
+  return put<ApiMessageData>('/api-config/transaction', payload, true)
+}
 export async function fetchAdminIds() { return get('/admin-ids', true) }
 export async function updateAdminIds(ids: string[]) { return put('/admin-ids', { ids }, true) }
 export async function fetchThrottle() { return get('/throttle') }

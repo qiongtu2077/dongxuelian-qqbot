@@ -49,14 +49,14 @@ function findCard(wrapper, title) {
   return wrapper.findAll('.card').find(card => card.find('h2').text() === title)
 }
 
-describe('ConfigPanel 当前按钮行为审查', () => {
+describe('ConfigPanel 备用链目标行为', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     localStorage.clear()
     arrangeConfigResponses()
   })
 
-  test('已确认：真实 defaults 字段未被读取，重置会把当前链清空', async () => {
+  test('读取真实 defaults 字段并能把单卡恢复为默认链', async () => {
     const wrapper = mount(ConfigPanel, { global: { provide: { showAdminDialog: jest.fn() } } })
     await flushPromises()
     const card = findCard(wrapper, '聊天 Fallback')
@@ -66,15 +66,18 @@ describe('ConfigPanel 当前按钮行为审查', () => {
     const reset = card.findAll('button').find(button => button.text() === '重置为默认')
     await reset.trigger('click')
 
-    expect(card.findAll('.sb-wrap')).toHaveLength(0)
+    expect(card.findAll('.sb-wrap')).toHaveLength(2)
+    expect(card.text()).toContain('default-chat')
+    expect(card.text()).not.toContain('current-chat')
+    expect(wrapper.text()).toContain('已恢复默认，尚未保存')
     wrapper.unmount()
   })
 
-  test('已确认：三张卡各有保存按钮，但任一按钮都会提交全部三条链', async () => {
+  test('三张编辑卡只有一个全量保存入口', async () => {
     const wrapper = mount(ConfigPanel, { global: { provide: { showAdminDialog: jest.fn() } } })
     await flushPromises()
-    const saveButtons = wrapper.findAll('button').filter(button => /^保存 .*Fallback$/.test(button.text()))
-    expect(saveButtons).toHaveLength(3)
+    const saveButtons = wrapper.findAll('button').filter(button => button.text() === '保存全部备用链')
+    expect(saveButtons).toHaveLength(1)
 
     await saveButtons[0].trigger('click')
     await flushPromises()
@@ -84,17 +87,17 @@ describe('ConfigPanel 当前按钮行为审查', () => {
     wrapper.unmount()
   })
 
-  test('已确认：主模型兜底开关只写浏览器，不进入保存接口', async () => {
+  test('无效主模型兜底开关和浏览器存储键已删除', async () => {
     const wrapper = mount(ConfigPanel, { global: { provide: { showAdminDialog: jest.fn() } } })
     await flushPromises()
-    const toggle = wrapper.find('input[type="checkbox"]')
-    await toggle.setValue(false)
-    const saveButton = wrapper.findAll('button').find(button => button.text() === '保存 轻量功能 Fallback')
+    const saveButton = wrapper.findAll('button').find(button => button.text() === '保存全部备用链')
 
     await saveButton.trigger('click')
     await flushPromises()
 
-    expect(localStorage.getItem('cfg_lightweight_main')).toBe('0')
+    expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('主模型兜底（最后试一次主模型）')
+    expect(localStorage.getItem('cfg_lightweight_main')).toBeNull()
     const payload = dashboardApi.saveFallbackChains.mock.calls[0][0]
     expect(payload).not.toHaveProperty('useMainFallback')
     expect(payload.lightweight).toEqual(chains.lightweight)

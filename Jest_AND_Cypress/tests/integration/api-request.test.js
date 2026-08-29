@@ -56,17 +56,18 @@ describe('主控制台 API 请求封装', () => {
     window.removeEventListener('auth-expired', listener)
   })
 
-  test('已确认：管理员密码输错返回 401 时也会清理整个 Dashboard 登录状态', async () => {
+  test('管理员密码输错返回 403 时保留普通登录状态', async () => {
     localStorage.setItem('dashboard_token', 'valid-access-token')
     const listener = jest.fn()
     window.addEventListener('auth-expired', listener)
-    global.fetch.mockResolvedValue(response(401, { ok: false, message: 'admin password is incorrect' }))
+    global.fetch.mockResolvedValue(response(403, { ok: false, message: 'admin password is incorrect', code: 'ADMIN_PASSWORD_INCORRECT' }))
 
     const result = await verifyAdmin('wrong-admin-password')
 
     expect(result.ok).toBe(false)
-    expect(localStorage.getItem('dashboard_token')).toBeNull()
-    expect(listener).toHaveBeenCalledTimes(1)
+    expect(result.code).toBe('ADMIN_PASSWORD_INCORRECT')
+    expect(localStorage.getItem('dashboard_token')).toBe('valid-access-token')
+    expect(listener).not.toHaveBeenCalled()
     window.removeEventListener('auth-expired', listener)
   })
 })

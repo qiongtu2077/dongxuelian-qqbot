@@ -4,9 +4,9 @@
       <div>
         <div class="gate-kicker">Setup</div>
         <h2>先完成部署，再进入控制台</h2>
-        <p>新用户可以在这里完成 Windows 本地部署，或把当前项目部署到 Linux 服务器。已经部署过的用户可以直接解锁进入完整控制台。</p>
+        <p>新用户可以在这里完成 Windows 本地部署，或把当前项目部署到 Linux 服务器。你也可以跳过本页进入控制台，但这不会检查或证明机器人已经部署成功。</p>
       </div>
-      <button class="btn" type="button" @click="$emit('unlocked')">我已部署，解锁</button>
+      <button class="btn" type="button" @click="$emit('unlocked')">跳过部署引导并进入控制台</button>
     </div>
 
     <div class="card">
@@ -290,18 +290,19 @@
       <div class="deploy-actions">
         <button class="btn btn-sm" type="button" @click="loadRemoteConfig">自动填入服务器地址</button>
         <button class="btn btn-sm" type="button" @click="saveRemoteConfig" :disabled="savingRemote">{{ savingRemote ? '保存中...' : '保存服务器地址' }}</button>
-        <button class="btn btn-sm" type="button" @click="checkRemoteUpdate">检查更新</button>
-        <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="deploying || rebuilding">{{ deploying ? '部署中...' : '重建并部署到远端' }}</button>
+        <button class="btn btn-sm" type="button" @click="checkRemoteUpdate">核对远端发布版本</button>
+        <button class="btn btn-sm" type="button" @click="startRemoteDeploy" :disabled="deploying || rebuilding">{{ deploying ? '部署中...' : '构建不可变版本并发布' }}</button>
         <button class="btn btn-sm btn-ghost" type="button" @click="doRebuildFrontend" :disabled="rebuilding || deploying">{{ rebuilding ? '构建中...' : '重建前端' }}</button>
       </div>
       <div class="deploy-action-notes" aria-label="远程部署按钮说明">
-        <p><strong>重建并部署到远端：</strong>会先在当前 Dashboard 后端机器重建最新前端源码，再上传插件代码、前端源码和新的 dist；远端旧 dist 会被清理后切换为新 dist，并执行重启脚本。</p>
+        <p><strong>构建不可变版本并发布：</strong>构建完整插件与浏览器资源，逐项校验发布清单后原子切换；重启或健康检查失败会自动切回旧版本。</p>
+        <p><strong>核对远端发布版本：</strong>通过已保存的 SSH 目标完整校验当前发布清单；连接失败、清单缺失或内容不一致时只显示“无法确认”。</p>
         <p><strong>重建前端：</strong>只在当前 Dashboard 后端所在机器本地执行构建并刷新本机 dist；需要更新服务器页面时，直接点“重建并部署到远端”。</p>
       </div>
 
       <div style="margin-top:12px">
         <input ref="cookieInput" type="file" accept=".txt" style="display:none" @change="uploadCookie" />
-        <button class="btn btn-sm btn-ghost" type="button" @click="cookieInput?.click()">上传 B 站 cookies.txt</button>
+        <button class="btn btn-sm btn-ghost" type="button" @click="cookieInput?.click()">保存 B 站 cookies.txt 到当前主控制台机器</button>
       </div>
 
       <div v-if="remoteMsg" class="msg" :class="remoteMsg.type">{{ remoteMsg.text }}</div>
@@ -313,13 +314,13 @@
 <script lang="ts">
 import { computed, inject, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { getDongxuelianDeployerBridge, isElectronDeployerEnv } from '../electron-deployer'
-import { checkDeployUpdate, checkLocalEnv, confirmDeploy, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, installPortableNode, koishiDeployStatus, localReadyCheck, napcatDeployStatus, npmInstallStatus, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, repairNpmProxyAndInstall, runDeploy, startKoishiLocal, startNapcat, startNpmInstall, updateDeployConfig, uploadDeploy } from '../api'
+import { checkDeployUpdate, checkLocalEnv, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, installPortableNode, koishiDeployStatus, localReadyCheck, napcatDeployStatus, npmInstallStatus, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, repairNpmProxyAndInstall, runDeploy, startKoishiLocal, startNapcat, startNpmInstall, updateDeployConfig, uploadDeploy } from '../api'
 import type { ApiResult, MessageState, SelectOption, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
 
 type DeployMode = 'local' | 'remote'
-type RemoteMode = 'install' | 'update'
+type RemoteMode = 'update'
 type LocalStepId = 'env' | 'install' | 'config' | 'npm' | 'napcat-start' | 'scan' | 'koishi' | 'health'
 type LocalStepStatus = 'pending' | 'running' | 'success' | 'waiting' | 'failed' | 'skipped'
 type AdminRetry = () => unknown
@@ -491,8 +492,10 @@ interface DeployRunData {
 
 interface DeployProgressData {
   lines?: string[]
-  done?: boolean
-  success?: boolean
+  state?: 'running' | 'success' | 'failed'
+  stage?: string
+  error?: string
+  code?: string
 }
 
 interface RebuildStatusData {
@@ -514,9 +517,16 @@ interface DeployActionData {
 }
 
 interface DeployUpdateData {
+  ok?: boolean
+  verified?: boolean
   upToDate?: boolean
   local?: string
   deployed?: string
+  message?: string
+  remote?: {
+    releaseId?: string
+    manifestHash?: string
+  }
 }
 
 function readString(value: unknown, fallback = ''): string {
@@ -582,7 +592,6 @@ export default {
     const local = reactive<LocalConfig>({ qq: '', provider: 'opencode', model: 'deepseek-v4-flash', baseUrl: 'https://opencode.ai/zen/go/v1', apiKey: '' })
     const remote = reactive<RemoteConfig>({ server: '', appDir: '', mode: 'update' })
     const remoteModeOptions: SelectOption<RemoteMode>[] = [
-      { value: 'install', label: '实验性首次安装' },
       { value: 'update', label: '更新已有部署' },
     ]
     const env = ref<EnvCheckData | null>(null)
@@ -624,7 +633,9 @@ export default {
     const savingRemote = ref(false)
     const deploying = ref(false)
     const rebuilding = ref(false)
-    let progressTimer: ReturnType<typeof setInterval> | null = null
+    let progressTimer: ReturnType<typeof setTimeout> | null = null
+    let progressNetworkFailures = 0
+    let progressAdminRetries = 0
     let localStatusTimer: ReturnType<typeof setInterval> | null = null
     let localStatusLoading = false
     let localStatusPending = false
@@ -1413,8 +1424,14 @@ export default {
     async function checkRemoteUpdate() {
       const res = await checkDeployUpdate()
       const data = dataRecord<DeployUpdateData>(res.data)
-      if (res.ok) remoteMsg.value = { type: 'ok', text: data.upToDate ? '远程记录已是最新版本' : `本地 ${data.local}，远程 ${data.deployed || '未记录'}` }
-      else remoteMsg.value = { type: 'err', text: '检查更新失败' }
+      if (res.ok && data.verified) {
+        const releaseId = data.remote?.releaseId || '未知版本'
+        remoteMsg.value = data.upToDate
+          ? { type: 'ok', text: `远端发布清单已完整核验，本机代码与远端版本一致（${releaseId}）` }
+          : { type: 'warn', text: `远端发布清单已完整核验，但本机代码或部署记录与远端版本不一致（${releaseId}）` }
+      } else {
+        remoteMsg.value = { type: 'err', text: data.message || '无法确认远端实际版本' }
+      }
     }
 
     function clearRebuildPolling() {
@@ -1461,24 +1478,72 @@ export default {
       pollProgress(data.taskId)
     }
 
-    function pollProgress(taskId: string) {
-      if (progressTimer) clearInterval(progressTimer)
-      progressTimer = setInterval(async () => {
-        const res = await getDeployProgress(taskId)
-        if (!res.ok) return
-        const data = dataRecord<DeployProgressData>(res.data)
-        logs.value = data.lines || []
-        if (data.done) {
-          if (progressTimer) clearInterval(progressTimer)
-          progressTimer = null
-          deploying.value = false
-          remoteMsg.value = { type: data.success ? 'ok' : 'err', text: data.success ? '部署完成' : '部署失败，请查看日志' }
-          if (data.success) {
-            const confirm = await confirmDeploy()
-            if (!confirm.ok) remoteMsg.value = { type: 'err', text: '部署成功，但版本记录写入失败' }
-          }
+    // Stops the active deployment poll without changing the server-side task.
+    function clearProgressPolling() {
+      if (progressTimer) clearTimeout(progressTimer)
+      progressTimer = null
+    }
+
+    // Ends the local waiting state and optionally displays a terminal failure dialog.
+    function finishProgress(type: 'ok' | 'err', text: string, alertText = '') {
+      clearProgressPolling()
+      deploying.value = false
+      remoteMsg.value = { type, text }
+      if (alertText) window.alert(alertText)
+    }
+
+    // Reads one server state and schedules the next non-overlapping progress request.
+    async function readDeployProgress(taskId: string): Promise<void> {
+      const res = await getDeployProgress(taskId)
+      const data = dataRecord<DeployProgressData>(res.data)
+      const code = res.code || data.code || ''
+      if (code === 'ADMIN_REQUIRED') {
+        clearProgressPolling()
+        if (progressAdminRetries >= 1 || !showAdminDialog) {
+          finishProgress('err', '管理员身份已失效，部署任务仍保留在服务器', '无法继续读取部署进度：管理员身份验证已失效。')
+          return
         }
-      }, 1500)
+        progressAdminRetries += 1
+        showAdminDialog('继续读取同一个部署任务需要管理员密码', () => scheduleDeployProgress(taskId, 0))
+        return
+      }
+      if (!res.ok) {
+        progressNetworkFailures += 1
+        if (code === 'DEPLOY_TASK_NOT_FOUND' || progressNetworkFailures >= 3) {
+          const reason = messageFromData(res.data, code === 'DEPLOY_TASK_NOT_FOUND' ? '部署任务不存在' : '部署进度读取连续失败')
+          finishProgress('err', reason, `无法继续读取部署进度：${reason}`)
+          return
+        }
+        remoteMsg.value = { type: 'warn', text: `部署任务仍在服务器执行，进度读取失败，正在重试（${progressNetworkFailures}/3）` }
+        scheduleDeployProgress(taskId, 2000)
+        return
+      }
+      progressNetworkFailures = 0
+      logs.value = data.lines || []
+      if (data.state === 'success') {
+        finishProgress('ok', '部署完成')
+        return
+      }
+      if (data.state === 'failed') {
+        const stage = data.stage || 'unknown'
+        const detail = data.error || '服务器未提供错误详情'
+        finishProgress('err', `部署失败（${stage}）：${detail}`, `远程部署失败\n阶段：${stage}\n原因：${detail}`)
+        return
+      }
+      scheduleDeployProgress(taskId, 1500)
+    }
+
+    // Schedules a single progress read so requests never overlap.
+    function scheduleDeployProgress(taskId: string, delayMs: number): void {
+      clearProgressPolling()
+      progressTimer = setTimeout(() => { void readDeployProgress(taskId) }, delayMs)
+    }
+
+    // Starts polling a newly created task and resets the bounded retry counters.
+    function pollProgress(taskId: string) {
+      progressNetworkFailures = 0
+      progressAdminRetries = 0
+      scheduleDeployProgress(taskId, 0)
     }
 
     function uploadCookie(event: Event) {
@@ -1490,7 +1555,7 @@ export default {
         const base64 = String(reader.result || '').split(',')[1]
         const res = await uploadDeploy('bilibili-cookies.txt', base64)
         if (withAdminRetry(res, '上传 cookies 需要管理员密码', () => uploadCookie(event))) return
-        remoteMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? 'cookies 已上传' : '上传失败') }
+        remoteMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? 'cookies 已保存到当前主控制台机器' : '保存失败') }
       }
       reader.readAsDataURL(file)
     }
@@ -1574,7 +1639,7 @@ export default {
     })
     onActivated(scrollDeployLogToBottom)
     onUnmounted(() => {
-      if (progressTimer) clearInterval(progressTimer)
+      clearProgressPolling()
       if (localStatusTimer) clearInterval(localStatusTimer)
       clearRebuildPolling()
     })

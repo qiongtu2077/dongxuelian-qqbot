@@ -112,7 +112,7 @@ export type FallbackChains = Record<string, FallbackStep[]>
 
 export interface FallbackData extends JsonObject {
   chains?: FallbackChains
-  default?: FallbackChains
+  defaults?: FallbackChains
   message?: string
 }
 

@@ -105,7 +105,7 @@ function handleAdminVerify(req: IncomingMessage, res: ServerResponse): void {
           return json(res, { ok: true, token: createAdminToken() })
         }
         recordLoginFailure(loginIp)
-        return json(res, { ok: false, message: 'admin password is incorrect' }, 401)
+        return json(res, { ok: false, message: 'admin password is incorrect', code: 'ADMIN_PASSWORD_INCORRECT' }, 403)
       }).catch(() => {
         return json(res, { ok: false, message: 'internal authentication error' }, 500)
       })
@@ -134,7 +134,7 @@ function handleChangePassword(req: IncomingMessage, res: ServerResponse): void {
         const stored = getAdminPassword()
         verifyPassword(String(oldPassword || ''), stored, ADMIN_PWD_FILE).then(async (match: boolean) => {
           if (!match) {
-            return json(res, { ok: false, message: 'current admin password is incorrect' }, 401)
+            return json(res, { ok: false, message: 'current admin password is incorrect', code: 'CURRENT_ADMIN_PASSWORD_INCORRECT' }, 403)
           }
           const hash = await hashPassword(newPassword)
           writeFileSyncSafe(ADMIN_PWD_FILE, hash)
@@ -189,7 +189,8 @@ function handleResetPassword(req: IncomingMessage, res: ServerResponse): void {
 // Enforces normal access-token authentication for dashboard API routes.
 function authMiddleware(req: IncomingMessage, res: ServerResponse, pathname: string): boolean {
   const isPublicGalleryImage = pathname.startsWith('/dashboard/api/gallery/image/') && req.method === 'GET'
-  if (pathname.startsWith('/dashboard/api/') && !isPublicGalleryImage && !isLocalAuthBypass(req)) {
+  const isPublicReleaseStatus = pathname === '/dashboard/api/release-status' && req.method === 'GET'
+  if (pathname.startsWith('/dashboard/api/') && !isPublicGalleryImage && !isPublicReleaseStatus && !isLocalAuthBypass(req)) {
     const authHeader = String(req.headers['authorization'] || '')
     const token = authHeader.replace(/^Bearer\s+/i, '')
     if (!validateToken(token)) {

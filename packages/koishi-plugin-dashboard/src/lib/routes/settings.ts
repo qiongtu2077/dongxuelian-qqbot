@@ -11,6 +11,7 @@ const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../u
   writeFileSyncSafe(filePath: string, content: unknown): void
 }
 const { requireAdmin } = require('../auth') as { requireAdmin(req: IncomingMessage, res: ServerResponse): boolean }
+const { ConfigTransactionError, executeConfigTransaction, recoverPendingConfigTransactions } = require('../config-transaction') as typeof import('../config-transaction')
 const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE } = require('../paths') as {
   DATA_DIR: string
   AI_LIB: string
@@ -26,6 +27,18 @@ type WhitelistBuckets = { groups: string[]; users: string[] }
 type WhitelistData = unknown[] | WhitelistBuckets
 type KeyFileName = `${string}-key.txt`
 type ToolChannel = 'qq' | 'dashboard'
+type FallbackKey = 'chat' | 'vision' | 'lightweight'
+
+interface FallbackStep {
+  provider: string
+  model: string
+  keyFile?: KeyFileName
+}
+
+// Restores any uncommitted multi-file API configuration before routes become available.
+recoverPendingConfigTransactions(DATA_DIR)
+
+type FallbackChains = Record<FallbackKey, FallbackStep[]>
 
 interface RegexRoute {
   pattern: RegExp
@@ -73,6 +86,9 @@ interface SettingsJsonBody {
   ids?: unknown
   channel?: unknown
   enabled?: unknown
+  providers?: unknown
+  providerId?: unknown
+  keyValue?: unknown
 }
 
 type UsageMetricKey = 'total' | 'requests' | 'input' | 'output' | 'cacheCreation' | 'cacheRead'
@@ -132,6 +148,8 @@ const DEFAULT_FALLBACK_CHAINS = {
     { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
   ],
 }
+
+const FALLBACK_KEYS: readonly FallbackKey[] = ['chat', 'vision', 'lightweight']
 
 const ADMIN_IDS_FILE = path.join(DATA_DIR, 'ai-admin-ids.json')
 
@@ -323,7 +341,9 @@ function normalizeCustomProvider(value: unknown, builtinProviders: ProviderMap):
   return { id, name, baseURL, keyFile: rawKeyFile as KeyFileName | '', models }
 }
 
+// Reads custom providers; a missing optional file is an empty list while malformed content can fail strictly.
 function readCustomProviderConfigs(strict = false): CustomProviderConfig[] {
+  if (!fs.existsSync(CUSTOM_PROVIDERS_FILE)) return []
   try {
     const raw: unknown = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'))
     if (!Array.isArray(raw)) return []
@@ -440,7 +460,72 @@ function handleGetKeys(req: IncomingMessage, res: ServerResponse): void {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object'
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+// Builds the provider/model registry used to validate fallback chain references.
+function buildFallbackProviderMap(customProviders = readCustomProviderConfigs(true)): Record<string, ProviderModelConfig[]> {
+  const result: Record<string, ProviderModelConfig[]> = {}
+  for (const [id, rawProvider] of Object.entries(readBuiltinProviders())) {
+    const provider = isRecord(rawProvider) ? rawProvider : {}
+    result[id] = Array.isArray(provider.models)
+      ? provider.models.map(normalizeProviderModel).filter((item): item is ProviderModelConfig => !!item)
+      : []
+  }
+  for (const provider of customProviders) result[provider.id] = provider.models
+  return result
+}
+
+// Validates and normalizes the complete three-chain fallback contract.
+function normalizeFallbackChains(value: unknown, customProviders = readCustomProviderConfigs(true)): FallbackChains {
+  if (!isRecord(value)) throw new Error('Fallback 链必须是对象')
+  const keys = Object.keys(value)
+  if (keys.length !== FALLBACK_KEYS.length || keys.some(key => !FALLBACK_KEYS.includes(key as FallbackKey))) {
+    throw new Error('Fallback 链只能包含 chat、vision 和 lightweight')
+  }
+  const providers = buildFallbackProviderMap(customProviders)
+  const normalized = {} as FallbackChains
+  for (const key of FALLBACK_KEYS) {
+    const rawChain = value[key]
+    if (!Array.isArray(rawChain)) throw new Error(`${key} Fallback 链必须是数组`)
+    normalized[key] = rawChain.map((rawStep, index): FallbackStep => {
+      if (!isRecord(rawStep)) throw new Error(`${key} 第 ${index + 1} 步必须是对象`)
+      const provider = String(rawStep.provider || '').trim()
+      const model = String(rawStep.model || '').trim()
+      const keyFile = String(rawStep.keyFile || '').trim()
+      if (!provider || !model) throw new Error(`${key} 第 ${index + 1} 步缺少供应商或模型`)
+      const providerModels = providers[provider]
+      if (!providerModels) throw new Error(`${key} 第 ${index + 1} 步引用未知供应商: ${provider}`)
+      if (!providerModels.some(item => item.id === model)) throw new Error(`${key} 第 ${index + 1} 步引用供应商未登记模型: ${provider}/${model}`)
+      if (keyFile && !isWritableKeyFile(keyFile)) throw new Error(`${key} 第 ${index + 1} 步的 Key 文件名无效`)
+      return { provider, model, ...(keyFile ? { keyFile: keyFile as KeyFileName } : {}) }
+    })
+  }
+  return normalized
+}
+
+// Produces stable JSON for exact transaction readback comparisons.
+function stableJson(value: unknown): string {
+  return JSON.stringify(value)
+}
+
+// Verifies that formal files and the runtime provider registry expose the committed transaction.
+function verifyApiConfigReadback(providers: CustomProviderConfig[], chains: FallbackChains, keyFile: KeyFileName, keyValue?: string): void {
+  const storedProviders = readCustomProviderConfigs(true)
+  if (stableJson(storedProviders) !== stableJson(providers)) throw new Error('供应商配置回读不一致')
+  const storedChains = normalizeFallbackChains(JSON.parse(fs.readFileSync(FALLBACK_CHAINS_FILE, 'utf8')), storedProviders)
+  if (stableJson(storedChains) !== stableJson(chains)) throw new Error('Fallback 链回读不一致')
+  if (keyValue !== undefined && fs.readFileSync(path.join(DATA_DIR, keyFile), 'utf8') !== keyValue) throw new Error('Key 文件回读不一致')
+  const registry = require(path.join(AI_LIB, 'core', 'provider-registry')) as typeof import('koishi-plugin-dongxuelian-ai/lib/core/provider-registry')
+  const runtimeProviders = registry.getMergedProviderMapSync()
+  for (const provider of providers) {
+    const runtimeProvider = runtimeProviders[provider.id]
+    const runtimeModels = (runtimeProvider?.models || []).map(model => ({ id: model.id, vision: !!model.vision }))
+    const expectedModels = provider.models.map(model => ({ id: model.id, vision: !!model.vision }))
+    if (!runtimeProvider || runtimeProvider.baseURL !== provider.baseURL || runtimeProvider.keyFile !== (provider.keyFile || undefined) || stableJson(runtimeModels) !== stableJson(expectedModels)) {
+      throw new Error(`运行时供应商回读不一致: ${provider.id}`)
+    }
+  }
 }
 
 function handleGetKeysUsage(req: IncomingMessage, res: ServerResponse): void {
@@ -645,6 +730,43 @@ function handlePutCustomProviders(req: IncomingMessage, res: ServerResponse): vo
   })
 }
 
+// Saves custom providers, one derived Key target, and all fallback chains as one transaction.
+function handlePutApiConfigTransaction(req: IncomingMessage, res: ServerResponse): void {
+  if (!requireAdmin(req, res)) return
+  collectBody(req, res, (body) => {
+    try {
+      const data = parseJsonObject(body)
+      const providers = normalizeCustomProviderList(data.providers)
+      const providerId = String(data.providerId || '').trim()
+      const provider = providers.find(item => item.id === providerId)
+      if (!provider) return json(res, { ok: false, message: '事务供应商不存在' }, 400)
+      if (!provider.keyFile || !isWritableKeyFile(provider.keyFile)) return json(res, { ok: false, message: '事务供应商必须使用安全 Key 文件名' }, 400)
+      const chains = normalizeFallbackChains(data.chains, providers)
+      const hasKeyValue = Object.prototype.hasOwnProperty.call(data, 'keyValue')
+      if (hasKeyValue && typeof data.keyValue !== 'string') return json(res, { ok: false, message: 'Key 值必须是字符串' }, 400)
+      const keyValue = hasKeyValue ? String(data.keyValue) : undefined
+      const targets = [
+        { name: 'providers', filePath: CUSTOM_PROVIDERS_FILE, content: Buffer.from(JSON.stringify(providers, null, 2), 'utf8'), mode: 0o600 },
+        { name: 'fallback', filePath: FALLBACK_CHAINS_FILE, content: Buffer.from(JSON.stringify(chains, null, 2), 'utf8'), mode: 0o600 },
+        ...(keyValue === undefined ? [] : [{ name: 'key', filePath: path.join(DATA_DIR, provider.keyFile), content: Buffer.from(keyValue, 'utf8'), mode: 0o600 }]),
+      ]
+      const result = executeConfigTransaction({
+        dataDir: DATA_DIR,
+        targets,
+        refresh: resetRuntimeConfigCache,
+        verify: () => verifyApiConfigReadback(providers, chains, provider.keyFile as KeyFileName, keyValue),
+      })
+      json(res, { ok: true, message: result.cleanupWarning ? 'API 配置已保存；事务临时文件稍后清理' : 'API 配置已完整保存', transactionId: result.id })
+    } catch (error) {
+      if (error instanceof ConfigTransactionError) {
+        const status = error.code === 'API_CONFIG_BUSY' ? 409 : (error.code === 'API_CONFIG_ROLLBACK_FAILED' ? 500 : 400)
+        return json(res, { ok: false, message: error.message, code: error.code, transactionId: error.transactionId, stage: error.stage, files: error.files }, status)
+      }
+      return json(res, { ok: false, message: getErrorMessage(error) }, 400)
+    }
+  })
+}
+
 function handleGetFallback(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   function buildProviderMap(): ProviderMap {
@@ -682,9 +804,9 @@ function handlePutFallback(req: IncomingMessage, res: ServerResponse): void {
   collectBody(req, res, (body) => {
     try {
       const { chains } = parseJsonObject(body)
-      if (!isRecord(chains)) return json(res, { ok: false, message: '参数错误' }, 400)
+      const normalized = normalizeFallbackChains(chains)
       const tmp = FALLBACK_CHAINS_FILE + '.tmp'
-      fs.writeFileSync(tmp, JSON.stringify(chains, null, 2), 'utf8')
+      fs.writeFileSync(tmp, JSON.stringify(normalized, null, 2), 'utf8')
       fs.renameSync(tmp, FALLBACK_CHAINS_FILE)
       resetRuntimeConfigCache()
       json(res, { ok: true, message: 'Fallback 链已更新' })
@@ -770,6 +892,7 @@ const routes = {
   'PUT /dashboard/api/keys': handlePutKeys,
   'GET /dashboard/api/providers/custom': handleGetCustomProviders,
   'PUT /dashboard/api/providers/custom': handlePutCustomProviders,
+  'PUT /dashboard/api/api-config/transaction': handlePutApiConfigTransaction,
   'GET /dashboard/api/fallback': handleGetFallback,
   'PUT /dashboard/api/fallback': handlePutFallback,
   'GET /dashboard/api/features': handleGetFeatures,
@@ -828,4 +951,4 @@ const regexRoutes: RegexRoute[] = [
   }},
 ]
 
-export = { routes, regexRoutes }
+export = { routes, regexRoutes, normalizeFallbackChains }

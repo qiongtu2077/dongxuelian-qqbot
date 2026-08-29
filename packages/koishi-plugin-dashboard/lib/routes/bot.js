@@ -110,6 +110,14 @@ function readKoishiSelfId() {
         return '';
     }
 }
+// Replaces a configuration file in its own directory while preserving its existing mode.
+function writeConfigAtomic(filePath, content) {
+    const nextPath = filePath + '.next';
+    const mode = fs.statSync(filePath).mode & 0o777;
+    fs.writeFileSync(nextPath, content, { encoding: 'utf8', mode });
+    fs.renameSync(nextPath, filePath);
+    fs.chmodSync(filePath, mode);
+}
 function resolveNapcatRestartQq() {
     for (const raw of [process.env.DASHBOARD_QQ_NUMBER, process.env.QQ_NUMBER, readKoishiSelfId()]) {
         const qq = normalizeQqNumber(raw);
@@ -251,11 +259,28 @@ function handlePutQqSelfId(req, res) {
             if (!nextSelfId || !/^\d+$/.test(nextSelfId))
                 return json(res, { ok: false, message: '无效 QQ 号' }, 400);
             const ymlPath = path.join(KOISHI_DIR, 'koishi.yml');
-            let yml = fs.readFileSync(ymlPath, 'utf8');
-            yml = yml.replace(/(selfId:\s*['\"]?)\d+(['\"]?)/, '$1' + nextSelfId + '$2');
-            fs.writeFileSync(ymlPath, yml, 'utf8');
-            exec(`bash "${path.join(KOISHI_DIR, 'restart.sh').replace(/\\/g, '/')}"`, { maxBuffer: 512 * 1024 });
-            json(res, { ok: true, message: 'QQ 号已更新，Koishi 正在重启...' });
+            const restartScript = path.join(KOISHI_DIR, 'restart.sh');
+            if (!fs.existsSync(restartScript))
+                return json(res, { ok: false, message: '重启脚本不存在，配置未修改' }, 400);
+            const previousYml = fs.readFileSync(ymlPath, 'utf8');
+            if (!/selfId:\s*['\"]?\d+['\"]?/.test(previousYml))
+                return json(res, { ok: false, message: 'koishi.yml 中未找到可更新的 selfId' }, 400);
+            const nextYml = previousYml.replace(/(selfId:\s*['\"]?)\d+(['\"]?)/, '$1' + nextSelfId + '$2');
+            writeConfigAtomic(ymlPath, nextYml);
+            exec(`bash "${restartScript.replace(/\\/g, '/')}"`, { maxBuffer: 512 * 1024 }, (restartError) => {
+                if (!restartError) {
+                    return json(res, { ok: true, message: 'QQ 号已更新，机器人已通过重启健康检查', stages: { configWritten: true, restartStarted: true, onlineConfirmed: true, rolledBack: false } });
+                }
+                try {
+                    writeConfigAtomic(ymlPath, previousYml);
+                }
+                catch (restoreError) {
+                    return json(res, { ok: false, message: '机器人重启失败，且旧配置自动恢复失败', code: 'QQ_CONFIG_ROLLBACK_FAILED', stages: { configWritten: true, restartStarted: true, onlineConfirmed: false, rolledBack: false }, detail: getErrorMessage(restoreError) }, 500);
+                }
+                exec(`bash "${restartScript.replace(/\\/g, '/')}"`, { maxBuffer: 512 * 1024 }, (restoreRestartError) => {
+                    return json(res, { ok: false, message: restoreRestartError ? '机器人重启失败；旧 QQ 配置已恢复，但旧配置重启也失败' : '机器人重启失败；旧 QQ 配置已恢复并重新上线', code: 'QQ_RESTART_FAILED', stages: { configWritten: true, restartStarted: true, onlineConfirmed: false, rolledBack: true, rollbackRestarted: !restoreRestartError } }, 500);
+                });
+            });
         }
         catch (e) {
             json(res, { ok: false, message: getErrorMessage(e) }, 400);

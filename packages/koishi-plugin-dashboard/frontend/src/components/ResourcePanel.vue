@@ -7,8 +7,8 @@
       </div>
       <div class="resource-actions">
         <button class="btn btn-sm" :disabled="loading" @click="refreshAll">刷新</button>
-        <button class="btn btn-sm" @click="toggleMaintenance">{{ maintenanceLabel }}</button>
-        <button class="btn btn-sm" @click="reclaimStale">回收 stale</button>
+        <button class="btn btn-sm" @click="toggleMaintenance()">{{ maintenanceLabel }}</button>
+        <button class="btn btn-sm" @click="reclaimStale()">回收 stale</button>
       </div>
     </div>
 
@@ -728,16 +728,26 @@ export default {
     }
 
     // 切换维护模式，复用后端 ai-paused.txt。
-    async function toggleMaintenance(): Promise<void> {
-      const next = !status.value.maintenance
+    async function toggleMaintenance(savedTarget?: boolean, retried = false): Promise<void> {
+      const next = savedTarget ?? !status.value.maintenance
       const res = await setResourceMaintenance(next)
+      if (isAdminRequired(res)) {
+        if (!retried && showAdminDialog) showAdminDialog('切换资源维护模式需要管理员密码', () => toggleMaintenance(next, true))
+        else message.value = { type: 'err', text: '管理员验证后维护模式操作仍被拒绝' }
+        return
+      }
       message.value = { type: res.ok ? 'ok' : 'err', text: errorMessage(res.data, next ? '维护模式已开启' : '维护模式已关闭') }
       await refreshAllInternal({ preserveMessage: true })
     }
 
     // 请求后端按 stale 规则回收 S0 锁。
-    async function reclaimStale(): Promise<void> {
+    async function reclaimStale(retried = false): Promise<void> {
       const res = await reclaimResourceStale()
+      if (isAdminRequired(res)) {
+        if (!retried && showAdminDialog) showAdminDialog('回收过期资源锁需要管理员密码', () => reclaimStale(true))
+        else message.value = { type: 'err', text: '管理员验证后回收操作仍被拒绝' }
+        return
+      }
       message.value = { type: res.ok ? 'ok' : 'err', text: res.ok ? 'stale 回收检查已完成' : errorMessage(res.data, '回收失败') }
       await refreshAllInternal({ preserveMessage: true })
     }
@@ -765,10 +775,15 @@ export default {
     }
 
     // 取消 pending/deferred 任务。
-    async function cancelTask(task: JsonRecord): Promise<void> {
-      const taskId = display(task.id, '')
+    async function cancelTask(task: JsonRecord, savedTaskId = '', retried = false): Promise<void> {
+      const taskId = savedTaskId || display(task.id, '')
       if (!taskId) return
       const res = await cancelResourceTask(taskId)
+      if (isAdminRequired(res)) {
+        if (!retried && showAdminDialog) showAdminDialog('取消资源任务需要管理员密码', () => cancelTask(task, taskId, true))
+        else message.value = { type: 'err', text: '管理员验证后取消任务仍被拒绝' }
+        return
+      }
       message.value = { type: res.ok ? 'ok' : 'err', text: res.ok ? '任务已取消' : errorMessage(res.data, '取消失败') }
       await refreshAllInternal({ preserveMessage: true })
     }

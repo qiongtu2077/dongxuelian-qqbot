@@ -21,7 +21,7 @@
       <span>{{ selectedCount ? `已选择 ${selectedCount} 张` : '点击图片选择要删除的项目' }}</span>
       <div>
         <button class="btn btn-sm btn-ghost" type="button" @click="clearSelection">取消</button>
-        <button class="btn btn-sm btn-danger" type="button" @click="deleteSelectedImages" :disabled="!selectedCount || deletingId === 'bulk'">{{ deletingId === 'bulk' ? '删除中...' : '删除选中' }}</button>
+        <button class="btn btn-sm btn-danger" type="button" @click="deleteSelectedImages()" :disabled="!selectedCount || deletingId === 'bulk'">{{ deletingId === 'bulk' ? '删除中...' : '删除选中' }}</button>
       </div>
     </div>
 
@@ -70,9 +70,9 @@
 </template>
 
 <script lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { deleteGalleryImage, fetchGalleryImages, updateGalleryImageStyle, uploadGalleryImage } from '../api'
-import type { MessageState } from '../types'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { deleteGalleryImage, fetchGalleryImages, isAdminRequired, updateGalleryImageStyle, uploadGalleryImage } from '../api'
+import type { MessageState, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
 
 const STOP_THRESHOLD = 0.001
@@ -236,6 +236,7 @@ function preloadGalleryImage(url: string): Promise<boolean> {
 export default {
   name: 'GalleryPanel',
   setup() {
+    const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const images = ref<GalleryImage[]>([])
     const loading = ref(false)
     const uploading = ref(false)
@@ -272,12 +273,18 @@ export default {
       loading.value = false
     }
     function openUpload() { fileInput.value?.click() }
-    async function uploadFile(file: File) {
+    // Uploads already-read bytes so an admin retry never asks the browser to read the file again.
+    async function uploadPreparedFile(file: File, dataUrl: string, retried = false) {
       uploading.value = true
       message.value = null
       try {
-        const dataUrl = await fileToDataUrl(file)
         const res = await uploadGalleryImage({ name: file.name, type: file.type, data: dataUrl })
+        if (isAdminRequired(res)) {
+          uploading.value = false
+          if (!retried && showAdminDialog) showAdminDialog('上传图集图片需要管理员密码', () => uploadPreparedFile(file, dataUrl, true))
+          else message.value = { type: 'err', text: '管理员验证后上传仍被拒绝' }
+          return
+        }
         if (!res.ok) throw new Error(messageFromData(res.data, '上传失败'))
         const image = asRecord(res.data).image as GalleryImage | undefined
         if (!image) throw new Error('上传失败')
@@ -289,6 +296,16 @@ export default {
         await loadImages()
       }
       uploading.value = false
+    }
+
+    // Reads one selected file once before passing its bytes into the retryable upload path.
+    async function uploadFile(file: File) {
+      try {
+        await uploadPreparedFile(file, await fileToDataUrl(file))
+      } catch (error) {
+        uploading.value = false
+        message.value = { type: 'err', text: errorMessage(error, '读取图片失败') }
+      }
     }
     function onImageError(image: GalleryImage) {
       if (!image?.name) return
@@ -316,12 +333,18 @@ export default {
       bulkDeleteMode.value = false
       selectedIds.value = new Set()
     }
-    async function deleteSelectedImages() {
-      const ids = Array.from(selectedIds.value)
+    async function deleteSelectedImages(savedIds?: string[], confirmed = false, retried = false) {
+      const ids = savedIds || Array.from(selectedIds.value)
       if (!ids.length) return
-      if (!window.confirm(`确定删除选中的 ${ids.length} 张图片吗？`)) return
+      if (!confirmed && !window.confirm(`确定删除选中的 ${ids.length} 张图片吗？`)) return
       deletingId.value = 'bulk'
       const res = await deleteGalleryImage(ids)
+      if (isAdminRequired(res)) {
+        deletingId.value = ''
+        if (!retried && showAdminDialog) showAdminDialog('批量删除图集图片需要管理员密码', () => deleteSelectedImages(ids, true, true))
+        else message.value = { type: 'err', text: '管理员验证后删除仍被拒绝' }
+        return
+      }
       const data = asRecord(res.data)
       const deletedIds = new Set((Array.isArray(data.deleted) ? data.deleted : []).map(item => String(asRecord(item).id || '')))
       if (deletedIds.size) images.value = images.value.filter(item => !deletedIds.has(item.id))
@@ -343,16 +366,19 @@ export default {
     function replaceImage(updated: GalleryImage) {
       images.value = images.value.map(item => item.id === updated.id ? { ...item, ...updated } : item)
     }
-    async function setPreviewFoilStyle(foilStyle: FoilStyle) {
-      const image = previewImage.value
+    async function setPreviewFoilStyle(foilStyle: FoilStyle, savedImage?: GalleryImage, retried = false) {
+      const image = savedImage || previewImage.value
       if (!image || updatingStyle.value || image.foilStyle === foilStyle) return
-      const previous = image.foilStyle || null
-      replaceImage({ ...image, foilStyle })
       updatingStyle.value = true
       const res = await updateGalleryImageStyle(image.id, foilStyle)
+      if (isAdminRequired(res)) {
+        updatingStyle.value = false
+        if (!retried && showAdminDialog) showAdminDialog('保存图集闪卡样式需要管理员密码', () => setPreviewFoilStyle(foilStyle, image, true))
+        else message.value = { type: 'err', text: '管理员验证后保存样式仍被拒绝' }
+        return
+      }
       if (res.ok) replaceImage((asRecord(res.data).image as GalleryImage | undefined) || { ...image, foilStyle })
       else {
-        replaceImage({ ...image, foilStyle: previous })
         message.value = { type: 'err', text: messageFromData(res.data, '保存闪卡样式失败') }
       }
       updatingStyle.value = false

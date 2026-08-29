@@ -1,7 +1,7 @@
 <template>
-  <LoginPage v-if="!loggedIn && !isElectronDeployer" @logged-in="onLoggedIn" />
+  <LoginPage v-if="!loggedIn && !isElectronDeployer" :notice="loginNotice" @logged-in="onLoggedIn" />
   <template v-else>
-    <LoginBackdrop :class="{ 'backdrop-dim': deployUnlocked }" />
+    <LoginBackdrop :class="{ 'backdrop-dim': deployGuideSkipped }" />
     <Sidebar
       :tabs="tabs"
       :active-tab="activeTab"
@@ -23,7 +23,7 @@
 
       <div style="position:relative;z-index:1">
         <KeepAlive>
-          <component :is="activeComponent" :key="activeTab" :locked="!deployUnlocked" @unlocked="unlockDeploy" />
+          <component :is="activeComponent" :key="activeTab" :locked="!deployGuideSkipped" @unlocked="skipDeployGuide" />
         </KeepAlive>
       </div>
     </div>
@@ -68,6 +68,7 @@ defineOptions({ name: 'DashboardApp' })
 
     const isElectronDeployer = isElectronDeployerEnv()
     const loggedIn = ref(isElectronDeployer || !!localStorage.getItem('dashboard_token'))
+    const loginNotice = ref('')
     const isMobileViewport = ref(window.matchMedia('(max-width: 760px)').matches)
     const sidebarStored = localStorage.getItem('dashboard_sidebar_expanded')
     const sidebarExpanded = ref(sidebarStored === null ? !isMobileViewport.value : sidebarStored === 'true')
@@ -97,7 +98,10 @@ defineOptions({ name: 'DashboardApp' })
     applyTheme(theme.value)
     function setTheme(nextTheme: string) { theme.value = normalizeTheme(nextTheme); applyTheme(theme.value) }
 
-    const deployUnlocked = ref(localStorage.getItem('dashboard_deploy_unlocked') === 'true')
+    const legacyDeployUnlocked = localStorage.getItem('dashboard_deploy_unlocked') === 'true'
+    if (legacyDeployUnlocked) localStorage.setItem('dashboard_deploy_guide_skipped', 'true')
+    localStorage.removeItem('dashboard_deploy_unlocked')
+    const deployGuideSkipped = ref(localStorage.getItem('dashboard_deploy_guide_skipped') === 'true')
     const allTabs: DashboardTab[] = [
       { id: 'deploy', label: '部署' }, { id: 'control', label: '终端控制' }, { id: 'config', label: '模型配置' },
       { id: 'keys', label: 'API Keys' }, { id: 'persona', label: '人格实验室' }, { id: 'features', label: '功能地图' },
@@ -105,7 +109,7 @@ defineOptions({ name: 'DashboardApp' })
       { id: 'settings', label: '安全设置' }, { id: 'agent', label: 'Agent 控制台' }, { id: 'resource', label: '资源中心' }, { id: 'logs', label: '日志中心' }, { id: 'status', label: '系统状态' }, { id: 'gallery', label: '莲莲图集' }
     ]
     const visibleTabs = computed(() => isElectronDeployer ? allTabs.filter(item => item.id !== 'settings') : allTabs)
-    const tabs = computed(() => deployUnlocked.value ? visibleTabs.value : visibleTabs.value.filter(item => item.id === 'deploy'))
+    const tabs = computed(() => deployGuideSkipped.value ? visibleTabs.value : visibleTabs.value.filter(item => item.id === 'deploy'))
     function normalizeInitialActiveTab(value: string) {
       if (value === 'agent') {
         localStorage.setItem('dashboard_active_tab', 'features')
@@ -114,7 +118,7 @@ defineOptions({ name: 'DashboardApp' })
       if (isElectronDeployer && value === 'settings') return 'deploy'
       return value
     }
-    const initialActiveTab = deployUnlocked.value ? normalizeInitialActiveTab(localStorage.getItem('dashboard_active_tab') || 'features') : 'deploy'
+    const initialActiveTab = deployGuideSkipped.value ? normalizeInitialActiveTab(localStorage.getItem('dashboard_active_tab') || 'features') : 'deploy'
     const activeTab = ref(initialActiveTab)
     const activeComponent = computed(() => componentMap[activeTab.value] || DeployPanel)
     const activeTabLabel = computed(() => tabs.value.find(item => item.id === activeTab.value)?.label || '部署')
@@ -124,7 +128,8 @@ defineOptions({ name: 'DashboardApp' })
 
     function onLoggedIn() {
       loggedIn.value = true
-      activeTab.value = localStorage.getItem('dashboard_deploy_unlocked') === 'true' ? 'features' : 'deploy'
+      loginNotice.value = ''
+      activeTab.value = localStorage.getItem('dashboard_deploy_guide_skipped') === 'true' ? 'features' : 'deploy'
     }
 
     const adminModalOpen = ref(false)
@@ -163,7 +168,7 @@ defineOptions({ name: 'DashboardApp' })
       if (tabSwitchUnlockTimer) clearTimeout(tabSwitchUnlockTimer)
       tabSwitchUnlockTimer = setTimeout(() => { tabSwitchLocked = false; tabSwitchUnlockTimer = null }, 150)
       activeTab.value = id
-      if (deployUnlocked.value) localStorage.setItem('dashboard_active_tab', id)
+      if (deployGuideSkipped.value) localStorage.setItem('dashboard_active_tab', id)
       if (isMobileViewport.value) setSidebarExpanded(false)
     }
 
@@ -174,15 +179,18 @@ defineOptions({ name: 'DashboardApp' })
 
     function toggleSidebar() { setSidebarExpanded(!sidebarExpanded.value) }
 
-    function unlockDeploy() {
-      deployUnlocked.value = true
-      localStorage.setItem('dashboard_deploy_unlocked', 'true')
+    // Closes the deployment guide without claiming that deployment succeeded.
+    function skipDeployGuide() {
+      deployGuideSkipped.value = true
+      localStorage.setItem('dashboard_deploy_guide_skipped', 'true')
       doSwitchTab('features')
     }
 
-    function logout() {
+    // Clears the current UI session and preserves an optional one-time logout reason.
+    function logout(event?: Event) {
       if (isElectronDeployer) { loggedIn.value = true; return }
       localStorage.removeItem('dashboard_token'); clearAdminToken()
+      if (event instanceof CustomEvent && event.detail && typeof event.detail.reason === 'string') loginNotice.value = event.detail.reason
       loggedIn.value = false
     }
 

@@ -62,16 +62,13 @@
       <div v-if="fc.showMainLast" style="font-size:12px;color:var(--text2);padding:4px 8px;background:var(--tabBg);border-radius:4px;margin-top:8px">
         最后兜底 → 主模型（不可编辑）
       </div>
-      <div v-if="fc.hasMainToggle" style="margin-top:8px">
-        <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:4px">
-          <input type="checkbox" v-model="lightweightMainToggle" /> 主模型兜底（最后试一次主模型）
-        </label>
-      </div>
-
       <div style="display:flex;gap:8px;margin-top:8px">
-        <button class="btn btn-sm" @click="saveFallback" :disabled="savingFallback">{{ savingFallback ? '保存中...' : '保存 ' + fc.label }}</button>
         <button class="btn btn-sm" @click="resetFallbackCard(fc.key)" style="background:var(--tabBg);color:var(--text2);border:1px solid var(--border)">重置为默认</button>
       </div>
+    </div>
+
+    <div class="card">
+      <button class="btn" @click="saveFallback" :disabled="savingFallback">{{ savingFallback ? '保存中...' : '保存全部备用链' }}</button>
       <div v-if="fallbackMsg" class="msg" :class="fallbackMsg.type" style="margin-top:8px">{{ fallbackMsg.text }}</div>
     </div>
   </div>
@@ -84,8 +81,6 @@ import type { CustomProvider, FallbackChains, MessageState, ProviderInfo, Provid
 import { errorMessage, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
 
-const LIGHTWEIGHT_MAIN_TOGGLE_KEY = 'cfg_lightweight_main'
-
 type FallbackKey = 'chat' | 'vision' | 'lightweight'
 
 interface FallbackCard {
@@ -94,14 +89,12 @@ interface FallbackCard {
   desc: string
   showMainFirst: boolean
   showMainLast: boolean
-  hasMainToggle: boolean
-  useMainFallback?: boolean
 }
 
 const FALLBACK_CARDS: FallbackCard[] = [
-  { key: 'chat', label: '聊天 Fallback', desc: '主聊天、吐槽我、帮我说话', showMainFirst: true, showMainLast: true, hasMainToggle: false },
-  { key: 'vision', label: '视觉 Fallback', desc: '多模态 / 识图调用', showMainFirst: true, showMainLast: true, hasMainToggle: false },
-  { key: 'lightweight', label: '轻量功能 Fallback', desc: '反击打分、摘要、敏感检测、话题切换、越狱回复、今日情绪、评价总结', showMainFirst: false, showMainLast: false, hasMainToggle: true },
+  { key: 'chat', label: '聊天 Fallback', desc: '主聊天、吐槽我、帮我说话', showMainFirst: true, showMainLast: true },
+  { key: 'vision', label: '视觉 Fallback', desc: '多模态 / 识图调用', showMainFirst: true, showMainLast: true },
+  { key: 'lightweight', label: '轻量功能 Fallback', desc: '反击打分、摘要、敏感检测、话题切换、越狱回复、今日情绪、评价总结', showMainFirst: false, showMainLast: false },
 ]
 
 defineOptions({ name: 'ConfigPanel' })
@@ -124,8 +117,6 @@ defineOptions({ name: 'ConfigPanel' })
     const savingFallback = ref(false)
     const fallbackMsg = ref<MessageState | null>(null)
 
-    const lightweightMainToggle = ref(localStorage.getItem(LIGHTWEIGHT_MAIN_TOGGLE_KEY) !== '0')
-
     const currentModels = computed(() => {
       const p = providers.value[selectedProvider.value]
       return p ? p.models : []
@@ -143,11 +134,7 @@ defineOptions({ name: 'ConfigPanel' })
       ]
     }
 
-    const fallbackCards = computed<FallbackCard[]>(() =>
-      FALLBACK_CARDS.map(function(fc) {
-        return Object.assign({}, fc, fc.key === 'lightweight' ? { useMainFallback: lightweightMainToggle.value } : {})
-      })
-    )
+    const fallbackCards = computed<FallbackCard[]>(() => FALLBACK_CARDS)
 
     function buildAllProviders() {
       const allP: Record<string, ProviderInfo> = Object.assign({}, providers.value)
@@ -178,7 +165,7 @@ defineOptions({ name: 'ConfigPanel' })
         }
         if (fRes.ok && fRes.data) {
           fallbackChains.value = fRes.data.chains || {}
-          defaultFallback.value = fRes.data.default || {}
+          defaultFallback.value = fRes.data.defaults || {}
         }
         if (cpRes.code === 'ADMIN_REQUIRED') { if (showAdminDialog) showAdminDialog('查看自定义供应商需要管理员密码', () => loadCustomProviders()) }
         else if (cpRes.ok) {
@@ -288,13 +275,11 @@ defineOptions({ name: 'ConfigPanel' })
 
     function resetFallbackCard(key: FallbackKey) {
       fallbackChains.value[key] = JSON.parse(JSON.stringify(defaultFallback.value[key] || []))
+      fallbackMsg.value = { type: 'warn', text: '已恢复默认，尚未保存' }
     }
 
     async function saveFallback() {
       savingFallback.value = true; fallbackMsg.value = null
-      if (lightweightMainToggle.value !== (localStorage.getItem(LIGHTWEIGHT_MAIN_TOGGLE_KEY) !== '0')) {
-        localStorage.setItem(LIGHTWEIGHT_MAIN_TOGGLE_KEY, lightweightMainToggle.value ? '1' : '0')
-      }
       const chains: FallbackChains = {}
       for (let _i = 0; _i < FALLBACK_CARDS.length; _i++) {
         const fc = FALLBACK_CARDS[_i]

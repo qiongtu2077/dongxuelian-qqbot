@@ -3,7 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils');
 const { requireAdmin } = require('../auth');
-const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths');
+const { DATA_DIR, AI_LIB, PLUGIN_ROOT, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths');
+const { checkPortState } = require('../tools');
 function getLegacyErrorMessage(error) {
     return error && typeof error === 'object' && 'message' in error ? error.message : undefined;
 }
@@ -104,11 +105,35 @@ function buildLoreFrontmatter(meta, overrides = {}) {
     }
     return `---\n${lines.join('\n')}\n---\n\n`;
 }
+// Reads only non-sensitive release identity fields from the current immutable release.
+function readReleaseMetadata() {
+    try {
+        const manifestPath = path.resolve(PLUGIN_ROOT, '..', '..', 'release-manifest.json');
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        return {
+            releaseId: String(manifest.releaseId || ''),
+            version: String(manifest.version || ''),
+            commit: String(manifest.commit || ''),
+            builtAt: String(manifest.builtAt || ''),
+            manifestHash: String(manifest.manifestHash || ''),
+            contentHash: String(manifest.contentHash || ''),
+        };
+    }
+    catch {
+        return null;
+    }
+}
 function handleGetStatus(req, res) {
     return json(res, {
         provider: readFileSyncSafe(path.join(DATA_DIR, 'ai-provider.txt')) || 'deepseek',
         model: readFileSyncSafe(path.join(DATA_DIR, 'ai-model.txt')) || '',
+        release: readReleaseMetadata(),
     });
+}
+// Exposes a public, non-sensitive endpoint for release activation health checks.
+function handleGetReleaseStatus(req, res) {
+    const botPort = Number(process.env.KOISHI_PORT || 5140);
+    return json(res, { ok: true, release: readReleaseMetadata(), bot: { port: botPort, listening: checkPortState(botPort).status === 'occupied' } });
 }
 function handleGetProviders(req, res) {
     try {
@@ -439,6 +464,7 @@ function handleGetPersonaDiagnostics(req, res) {
 }
 const routes = {
     'GET /dashboard/api/status': handleGetStatus,
+    'GET /dashboard/api/release-status': handleGetReleaseStatus,
     'GET /dashboard/api/providers': handleGetProviders,
     'GET /dashboard/api/config': handleGetConfig,
     'PUT /dashboard/api/config': handlePutConfig,

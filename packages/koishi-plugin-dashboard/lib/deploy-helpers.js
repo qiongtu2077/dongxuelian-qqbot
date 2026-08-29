@@ -129,8 +129,12 @@ function computeFingerprint() {
         add('packages/koishi-plugin-dashboard/frontend/package.json');
         add('packages/koishi-plugin-dashboard/frontend/vite.config.ts');
         add('packages/koishi-plugin-dashboard/frontend/dist/index.html');
+        add('scripts/activate-dashboard-release.sh');
+        add('scripts/verify-release-manifest.js');
         add('scripts/restart-bot.sh');
+        add('scripts/seal-data-dir.sh');
         add('scripts/watchdog.sh');
+        add('scripts/install-dashboard-service.sh');
         add('scripts/install-logrotate.sh');
         for (const file of listFilesRecursive(path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'src')))
             hashFile(hash, repoRoot, file);

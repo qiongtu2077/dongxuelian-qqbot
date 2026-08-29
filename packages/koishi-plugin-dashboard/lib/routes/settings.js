@@ -3,7 +3,10 @@ const fs = require('fs');
 const path = require('path');
 const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils');
 const { requireAdmin } = require('../auth');
+const { ConfigTransactionError, executeConfigTransaction, recoverPendingConfigTransactions } = require('../config-transaction');
 const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE } = require('../paths');
+// Restores any uncommitted multi-file API configuration before routes become available.
+recoverPendingConfigTransactions(DATA_DIR);
 const DEFAULT_FALLBACK_CHAINS = {
     chat: [
         { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
@@ -24,6 +27,7 @@ const DEFAULT_FALLBACK_CHAINS = {
         { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: 'ai-dashscope-key.txt' },
     ],
 };
+const FALLBACK_KEYS = ['chat', 'vision', 'lightweight'];
 const ADMIN_IDS_FILE = path.join(DATA_DIR, 'ai-admin-ids.json');
 const WHITELIST_TYPES = ['summary', 'random', 'userBlacklist', 'videoBlacklist'];
 const whitelistFiles = {
@@ -119,7 +123,10 @@ function normalizeCustomProvider(value, builtinProviders) {
         throw new Error('至少需要保留一个有效模型 ID');
     return { id, name, baseURL, keyFile: rawKeyFile, models };
 }
+// Reads custom providers; a missing optional file is an empty list while malformed content can fail strictly.
 function readCustomProviderConfigs(strict = false) {
+    if (!fs.existsSync(CUSTOM_PROVIDERS_FILE))
+        return [];
     try {
         const raw = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'));
         if (!Array.isArray(raw))
@@ -247,7 +254,79 @@ function handleGetKeys(req, res) {
     return json(res, [...builtinSummaries, ...customSummaries]);
 }
 function isRecord(value) {
-    return !!value && typeof value === 'object';
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+// Builds the provider/model registry used to validate fallback chain references.
+function buildFallbackProviderMap(customProviders = readCustomProviderConfigs(true)) {
+    const result = {};
+    for (const [id, rawProvider] of Object.entries(readBuiltinProviders())) {
+        const provider = isRecord(rawProvider) ? rawProvider : {};
+        result[id] = Array.isArray(provider.models)
+            ? provider.models.map(normalizeProviderModel).filter((item) => !!item)
+            : [];
+    }
+    for (const provider of customProviders)
+        result[provider.id] = provider.models;
+    return result;
+}
+// Validates and normalizes the complete three-chain fallback contract.
+function normalizeFallbackChains(value, customProviders = readCustomProviderConfigs(true)) {
+    if (!isRecord(value))
+        throw new Error('Fallback 链必须是对象');
+    const keys = Object.keys(value);
+    if (keys.length !== FALLBACK_KEYS.length || keys.some(key => !FALLBACK_KEYS.includes(key))) {
+        throw new Error('Fallback 链只能包含 chat、vision 和 lightweight');
+    }
+    const providers = buildFallbackProviderMap(customProviders);
+    const normalized = {};
+    for (const key of FALLBACK_KEYS) {
+        const rawChain = value[key];
+        if (!Array.isArray(rawChain))
+            throw new Error(`${key} Fallback 链必须是数组`);
+        normalized[key] = rawChain.map((rawStep, index) => {
+            if (!isRecord(rawStep))
+                throw new Error(`${key} 第 ${index + 1} 步必须是对象`);
+            const provider = String(rawStep.provider || '').trim();
+            const model = String(rawStep.model || '').trim();
+            const keyFile = String(rawStep.keyFile || '').trim();
+            if (!provider || !model)
+                throw new Error(`${key} 第 ${index + 1} 步缺少供应商或模型`);
+            const providerModels = providers[provider];
+            if (!providerModels)
+                throw new Error(`${key} 第 ${index + 1} 步引用未知供应商: ${provider}`);
+            if (!providerModels.some(item => item.id === model))
+                throw new Error(`${key} 第 ${index + 1} 步引用供应商未登记模型: ${provider}/${model}`);
+            if (keyFile && !isWritableKeyFile(keyFile))
+                throw new Error(`${key} 第 ${index + 1} 步的 Key 文件名无效`);
+            return { provider, model, ...(keyFile ? { keyFile: keyFile } : {}) };
+        });
+    }
+    return normalized;
+}
+// Produces stable JSON for exact transaction readback comparisons.
+function stableJson(value) {
+    return JSON.stringify(value);
+}
+// Verifies that formal files and the runtime provider registry expose the committed transaction.
+function verifyApiConfigReadback(providers, chains, keyFile, keyValue) {
+    const storedProviders = readCustomProviderConfigs(true);
+    if (stableJson(storedProviders) !== stableJson(providers))
+        throw new Error('供应商配置回读不一致');
+    const storedChains = normalizeFallbackChains(JSON.parse(fs.readFileSync(FALLBACK_CHAINS_FILE, 'utf8')), storedProviders);
+    if (stableJson(storedChains) !== stableJson(chains))
+        throw new Error('Fallback 链回读不一致');
+    if (keyValue !== undefined && fs.readFileSync(path.join(DATA_DIR, keyFile), 'utf8') !== keyValue)
+        throw new Error('Key 文件回读不一致');
+    const registry = require(path.join(AI_LIB, 'core', 'provider-registry'));
+    const runtimeProviders = registry.getMergedProviderMapSync();
+    for (const provider of providers) {
+        const runtimeProvider = runtimeProviders[provider.id];
+        const runtimeModels = (runtimeProvider?.models || []).map(model => ({ id: model.id, vision: !!model.vision }));
+        const expectedModels = provider.models.map(model => ({ id: model.id, vision: !!model.vision }));
+        if (!runtimeProvider || runtimeProvider.baseURL !== provider.baseURL || runtimeProvider.keyFile !== (provider.keyFile || undefined) || stableJson(runtimeModels) !== stableJson(expectedModels)) {
+            throw new Error(`运行时供应商回读不一致: ${provider.id}`);
+        }
+    }
 }
 function handleGetKeysUsage(req, res) {
     if (!requireAdmin(req, res))
@@ -470,6 +549,47 @@ function handlePutCustomProviders(req, res) {
         }
     });
 }
+// Saves custom providers, one derived Key target, and all fallback chains as one transaction.
+function handlePutApiConfigTransaction(req, res) {
+    if (!requireAdmin(req, res))
+        return;
+    collectBody(req, res, (body) => {
+        try {
+            const data = parseJsonObject(body);
+            const providers = normalizeCustomProviderList(data.providers);
+            const providerId = String(data.providerId || '').trim();
+            const provider = providers.find(item => item.id === providerId);
+            if (!provider)
+                return json(res, { ok: false, message: '事务供应商不存在' }, 400);
+            if (!provider.keyFile || !isWritableKeyFile(provider.keyFile))
+                return json(res, { ok: false, message: '事务供应商必须使用安全 Key 文件名' }, 400);
+            const chains = normalizeFallbackChains(data.chains, providers);
+            const hasKeyValue = Object.prototype.hasOwnProperty.call(data, 'keyValue');
+            if (hasKeyValue && typeof data.keyValue !== 'string')
+                return json(res, { ok: false, message: 'Key 值必须是字符串' }, 400);
+            const keyValue = hasKeyValue ? String(data.keyValue) : undefined;
+            const targets = [
+                { name: 'providers', filePath: CUSTOM_PROVIDERS_FILE, content: Buffer.from(JSON.stringify(providers, null, 2), 'utf8'), mode: 0o600 },
+                { name: 'fallback', filePath: FALLBACK_CHAINS_FILE, content: Buffer.from(JSON.stringify(chains, null, 2), 'utf8'), mode: 0o600 },
+                ...(keyValue === undefined ? [] : [{ name: 'key', filePath: path.join(DATA_DIR, provider.keyFile), content: Buffer.from(keyValue, 'utf8'), mode: 0o600 }]),
+            ];
+            const result = executeConfigTransaction({
+                dataDir: DATA_DIR,
+                targets,
+                refresh: resetRuntimeConfigCache,
+                verify: () => verifyApiConfigReadback(providers, chains, provider.keyFile, keyValue),
+            });
+            json(res, { ok: true, message: result.cleanupWarning ? 'API 配置已保存；事务临时文件稍后清理' : 'API 配置已完整保存', transactionId: result.id });
+        }
+        catch (error) {
+            if (error instanceof ConfigTransactionError) {
+                const status = error.code === 'API_CONFIG_BUSY' ? 409 : (error.code === 'API_CONFIG_ROLLBACK_FAILED' ? 500 : 400);
+                return json(res, { ok: false, message: error.message, code: error.code, transactionId: error.transactionId, stage: error.stage, files: error.files }, status);
+            }
+            return json(res, { ok: false, message: getErrorMessage(error) }, 400);
+        }
+    });
+}
 function handleGetFallback(req, res) {
     if (!requireAdmin(req, res))
         return;
@@ -511,10 +631,9 @@ function handlePutFallback(req, res) {
     collectBody(req, res, (body) => {
         try {
             const { chains } = parseJsonObject(body);
-            if (!isRecord(chains))
-                return json(res, { ok: false, message: '参数错误' }, 400);
+            const normalized = normalizeFallbackChains(chains);
             const tmp = FALLBACK_CHAINS_FILE + '.tmp';
-            fs.writeFileSync(tmp, JSON.stringify(chains, null, 2), 'utf8');
+            fs.writeFileSync(tmp, JSON.stringify(normalized, null, 2), 'utf8');
             fs.renameSync(tmp, FALLBACK_CHAINS_FILE);
             resetRuntimeConfigCache();
             json(res, { ok: true, message: 'Fallback 链已更新' });
@@ -613,6 +732,7 @@ const routes = {
     'PUT /dashboard/api/keys': handlePutKeys,
     'GET /dashboard/api/providers/custom': handleGetCustomProviders,
     'PUT /dashboard/api/providers/custom': handlePutCustomProviders,
+    'PUT /dashboard/api/api-config/transaction': handlePutApiConfigTransaction,
     'GET /dashboard/api/fallback': handleGetFallback,
     'PUT /dashboard/api/fallback': handlePutFallback,
     'GET /dashboard/api/features': handleGetFeatures,
@@ -679,4 +799,4 @@ const regexRoutes = [
             }
         } },
 ];
-module.exports = { routes, regexRoutes };
+module.exports = { routes, regexRoutes, normalizeFallbackChains };

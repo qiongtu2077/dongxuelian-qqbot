@@ -83,19 +83,13 @@
           <div style="color:var(--info);font-weight:700;margin-bottom:8px;font-size:14px">Step 3：热重载监听目标</div>
           <div style="display:flex;gap:12px;max-width:400px;align-items:center">
             <input v-model="newSelfId" placeholder="输入新的监听 QQ 号" style="font-family:monospace" />
-            <button class="btn btn-sm" @click="saveSelfId" :disabled="savingSelfId" style="white-space:nowrap">{{ savingSelfId ? '覆写中...' : '重载配置' }}</button>
+            <button class="btn btn-sm" @click="saveSelfId()" :disabled="savingSelfId" style="white-space:nowrap">{{ savingSelfId ? '更换并重启中...' : '更换 QQ 号并重启机器人' }}</button>
           </div>
           <div v-if="selfIdMsg" style="margin-top:12px;font-size:13px" :style="{color: selfIdMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ selfIdMsg.text }}</div>
         </div>
 
         <div v-if="copiedMsg" style="margin-top:16px;font-size:13px;color:var(--accent);text-align:center;font-weight:700;animation:fadeIn 0.2s">{{ copiedMsg }}</div>
       </div>
-    </div>
-
-    <div class="card">
-      <h2>诊断测试</h2>
-      <button class="btn btn-sm" @click="testStartBot">测试 startBot API</button>
-      <div v-if="diagMsg" class="msg" style="margin-top:8px;font-size:12px;white-space:pre-wrap;font-family:monospace">{{ diagMsg }}</div>
     </div>
 
     <div class="card">
@@ -196,9 +190,9 @@ export default {
 
     const sshUser = ref('root')
     const newSelfId = ref('')
+    const currentSelfId = ref('')
     const savingSelfId = ref(false)
     const selfIdMsg = ref<MessageState | null>(null)
-    const diagMsg = ref('')
 
     async function loadStatus() {
       const res = await botStatus()
@@ -249,21 +243,29 @@ export default {
     async function loadSelfId() {
       const res = await fetchSelfId()
       const data = asRecord(res.data)
-      if (res.ok && data.selfId) newSelfId.value = String(data.selfId)
+      if (res.ok && data.selfId) {
+        currentSelfId.value = String(data.selfId)
+        newSelfId.value = currentSelfId.value
+      }
     }
-    async function saveSelfId() {
+    // Confirms and updates the QQ account while allowing one administrator retry.
+    async function saveSelfId(confirmed = false, retried = false) {
       if (!newSelfId.value.trim() || !/^\d+$/.test(newSelfId.value.trim())) {
         selfIdMsg.value = { type: 'err', text: '无效 QQ 号' }; return
       }
+      const targetSelfId = newSelfId.value.trim()
+      if (!confirmed && !window.confirm(`即将把机器人 QQ 从 ${currentSelfId.value || '未配置'} 更换为 ${targetSelfId}。机器人会短暂离线并完成重启健康检查，是否继续？`)) return
       savingSelfId.value = true; selfIdMsg.value = null
       try {
-        const res = await updateSelfId(newSelfId.value.trim())
+        const res = await updateSelfId(targetSelfId)
         if (res.code === 'ADMIN_REQUIRED') {
-          if (showAdminDialog) showAdminDialog('更换 QQ 号需要管理员密码', saveSelfId)
+          if (!retried && showAdminDialog) showAdminDialog('更换 QQ 号需要管理员密码', () => saveSelfId(true, true))
+          else selfIdMsg.value = { type: 'err', text: '管理员验证后更换 QQ 号仍被拒绝' }
           savingSelfId.value = false
           return
         }
-        selfIdMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? '已保存，Koishi 正在重启' : '保存失败') }
+        selfIdMsg.value = { type: res.ok ? 'ok' : 'err', text: messageFromData(res.data, res.ok ? 'QQ 号已更换，机器人已重新上线' : '更换失败') }
+        if (res.ok) currentSelfId.value = targetSelfId
       } catch (e) { selfIdMsg.value = { type: 'err', text: errorMessage(e) }
       } finally { savingSelfId.value = false }
     }
@@ -293,17 +295,6 @@ export default {
       if (res.ok) throttleMsg.value = { type: 'ok', text: '节流配置已保存' }
       else throttleMsg.value = { type: 'err', text: messageFromData(res.data, '保存失败') }
       savingThrottle.value = false
-    }
-
-    async function testStartBot() {
-      diagMsg.value = '发起请求...'
-      try {
-        const res = await startBot()
-        diagMsg.value = '返回: ' + JSON.stringify({ ok: res.ok, code: res.code, data: res.data }, null, 2)
-      } catch (e) {
-        diagMsg.value = '异常: ' + errorMessage(e)
-      }
-      setTimeout(() => diagMsg.value = '', 8000)
     }
 
     function copyText(id: string) {
@@ -406,7 +397,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, throttleMax, savingThrottle, throttleMsg, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, restartingNapcat, napcatRestartMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, diagMsg, copyText, copyValue, requestQQToken, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, doRestartNapcat, toggleMaintenance, saveThrottleConfig, testStartBot, sshUser }
+    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, throttleMax, savingThrottle, throttleMsg, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, restartingNapcat, napcatRestartMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, copyText, copyValue, requestQQToken, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, doRestartNapcat, toggleMaintenance, saveThrottleConfig, sshUser }
   }
 }
 </script>
