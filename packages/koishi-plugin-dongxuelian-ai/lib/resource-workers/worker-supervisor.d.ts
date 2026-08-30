@@ -1,3 +1,4 @@
+type ResourceWorkerState = import('./task-types').ResourceWorkerState;
 interface WorkerLaunchSpec {
     type: string;
     name: string;
@@ -13,27 +14,9 @@ interface SupervisorOptions {
     types?: string[];
     generation?: string;
 }
-interface ResourceWorkerStateLike {
-    name?: string;
-    pid?: unknown;
-    alive?: boolean;
-    heartbeatAt?: string;
-    heartbeatLagMs?: number | null;
-    step?: string;
-    kind?: string;
-    loopIterations?: unknown;
-    lastClaimAttemptAt?: string;
-    lastTaskFinishedAt?: string;
-    currentTaskId?: string;
-    currentTaskStartedAt?: string;
-    parked?: unknown;
-    parkSleepMs?: unknown;
-    ownerGeneration?: unknown;
-    startToken?: unknown;
-}
 declare function clearOwnedWorkerProcesses(): void;
 declare function stopOwnedWorkerProcesses(timeoutMs?: number): Promise<Record<string, unknown>>;
-declare function recoverZombieWorker(worker: ResourceWorkerStateLike): boolean;
+declare function recoverZombieWorker(worker: ResourceWorkerState): boolean;
 declare function buildWorkerLaunchSpec(type: string, generation?: string): WorkerLaunchSpec;
 declare function startWorkerProcess(type: string, generation?: string): Record<string, unknown>;
 declare function selectWorkerTypesToStart(types: string[], activeNames: Set<string>, snapshot: Record<string, unknown>): string[];

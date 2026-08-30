@@ -1,3 +1,4 @@
+type ResourceTask = import('./task-types').ResourceTask;
 interface BackgroundSubmissionResult {
     accepted: boolean;
     task?: ResourceTaskLike;
@@ -6,13 +7,7 @@ interface BackgroundSubmissionResult {
     status: string;
     message: string;
 }
-interface ResourceTaskLike extends Record<string, unknown> {
-    id?: string;
-    kind?: string;
-    channelKey?: string;
-    userId?: string;
-    payload?: Record<string, unknown>;
-}
+type ResourceTaskLike = Partial<Pick<ResourceTask, 'id' | 'kind' | 'channelKey' | 'userId' | 'payload'>>;
 interface AdmissionDecisionLike {
     decision?: string;
     reason?: unknown;

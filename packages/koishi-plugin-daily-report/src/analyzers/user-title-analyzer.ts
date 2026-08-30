@@ -4,6 +4,7 @@
  * 边界: 只做分析，不调API，通过 aiClient.callAI 间接调用。
  */
 const { createUserTitle } = require('../models') as typeof import('../models')
+const { getErrorMessage } = require('../error-utils') as typeof import('../error-utils')
 
 interface TokenUsage {
   promptTokens: number
@@ -46,10 +47,6 @@ interface UserTitlePayload {
 interface UserTitleResult {
   userTitles: UserTitle[]
   tokenUsage: TokenUsage
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 async function analyzeUserTitles(

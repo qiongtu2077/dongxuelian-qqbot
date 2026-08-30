@@ -14,6 +14,7 @@ interface LocalTask {
     command: string;
     cwd: string;
     process: ChildProcessWithoutNullStreams | null;
+    warnings: string[];
     diagnostics?: unknown;
 }
 interface SpawnLocalTaskOptions {
@@ -45,6 +46,7 @@ interface LocalTaskPublicStatus {
     cwd: string;
     logFile: string;
     logLines: string[];
+    warnings: string[];
     [key: string]: unknown;
 }
 interface SpawnLocalTaskResult {

@@ -29,8 +29,9 @@ const crypto = require('crypto') as typeof import('crypto')
 const http = require('http') as typeof import('http')
 const https = require('https') as typeof import('https')
 const { execFileSync } = require('child_process') as typeof import('child_process')
-const { parsePositiveInt, json, log, shellQuote, commandQuote, isInsidePath, describeFsError, removePathWithRetry, ensureCleanDirectory, copyRecursiveSync, listFilesRecursive, uniquePaths } = require('./utils') as {
+const { parsePositiveInt, getErrorMessage, json, log, shellQuote, commandQuote, isInsidePath, describeFsError, removePathWithRetry, ensureCleanDirectory, copyRecursiveSync, listFilesRecursive, uniquePaths } = require('./utils') as {
   parsePositiveInt(value: unknown, fallback: number, min: number, max: number): number
+  getErrorMessage(error: unknown): string
   json(res: unknown, data: unknown, status?: number): void
   log(...args: unknown[]): void
   shellQuote(value: unknown): string
@@ -48,24 +49,16 @@ const { getCommandInfo, getLocalToolCommand, getLocalToolEnv, getPortableNodeDir
 const { detectNapcatInstallation, getNapcatStartEntry: napcatGetStartEntry, findNapcatMarkers, sortNapcatEntries, inspectNapcatCandidate, resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getNapcatToken } = require('./napcat') as NapcatModule
 const { readLastLogLines } = require('./logging') as typeof import('./logging')
 const { localTasks, getTaskPublicStatus, spawnLocalTask, getNpmDiagnosticsCache, setNpmDiagnosticsCache, getRebuildStatus, setRebuildStatus } = require('./deploy-state') as DeployStateModule
-
-type DeployMode = 'install' | 'update'
-
-interface DeployTargetInput extends Record<string, unknown> {
-  server?: unknown
-  appDir?: unknown
-  mode?: unknown
-}
-
-interface DeployTarget extends DeployTargetInput {
-  server: string
-  appDir: string
-  mode: DeployMode
-}
-
-interface ScpOptions {
-  recursive?: boolean
-}
+const remoteTarget = require('./remote-target') as typeof import('./remote-target')
+const {
+  remoteJoin,
+  scpCommand,
+  scpRemoteTarget,
+  sshCommand,
+  validateDeployAppDir,
+  validateDeployServer,
+  validateDeployTarget,
+} = remoteTarget
 
 interface CopyWorkspaceResourceOptions {
   replace?: boolean
@@ -446,11 +439,6 @@ const MAX_DOWNLOAD_REDIRECTS = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLO
 const MAX_JSON_RESPONSE_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_JSON_RESPONSE_BYTES, 10 * 1024 * 1024, 1024, 64 * 1024 * 1024)
 const HASH_CHUNK_BYTES = 64 * 1024
 
-function getErrorMessage(error: unknown): string {
-  if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || '')
-  return String(error || '')
-}
-
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(getErrorMessage(error) || 'unknown error')
 }
@@ -470,53 +458,6 @@ function getExecFileFailure(error: unknown): { code: unknown; error: string } {
 function toArchiveExtractError(error: unknown): ArchiveExtractError {
   if (error instanceof Error) return error as ArchiveExtractError
   return new Error(getErrorMessage(error) || 'unknown error') as ArchiveExtractError
-}
-
-function validateDeployServer(server: unknown): string {
-  const value = String(server || '').trim()
-  if (!value) throw new Error('deploy server is required')
-  if (/[\s;|`$<>"'\\]/.test(value) || value.includes('$(')) throw new Error('invalid deploy server')
-  const user = '(?:[A-Za-z0-9._-]+@)?'
-  const hostname = '(?:[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)'
-  const ipv4 = '(?:\\d{1,3}\\.){3}\\d{1,3}'
-  const ipv6 = '\\[[0-9A-Fa-f:.]+\\]'
-  const re = new RegExp('^' + user + '(?:' + hostname + '|' + ipv4 + '|' + ipv6 + ')$')
-  if (!re.test(value)) throw new Error('invalid deploy server')
-  return value
-}
-
-function validateDeployAppDir(appDir: unknown): string {
-  const value = String(appDir || '').trim().replace(/\/+$/, '') || '/'
-  if (!value.startsWith('/')) throw new Error('appDir must be an absolute Linux path')
-  if (value === '/') throw new Error('appDir must not be the filesystem root')
-  if (value.split('/').some(part => part === '.' || part === '..')) throw new Error('appDir must not contain dot path segments')
-  if (/[\s;&|`$()<>"'\\]/.test(value)) throw new Error('invalid appDir')
-  return value
-}
-
-function validateDeployTarget(cfg: DeployTargetInput = {}): DeployTarget {
-  return { ...cfg, server: validateDeployServer(cfg?.server), appDir: validateDeployAppDir(cfg?.appDir), mode: cfg?.mode === 'install' ? 'install' : 'update' }
-}
-
-function remoteJoin(base: unknown, ...parts: unknown[]): string {
-  const root = validateDeployAppDir(base)
-  const suffix = parts.map(part => String(part || '').replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/')
-  return suffix ? root.replace(/\/+$/, '') + '/' + suffix : root
-}
-
-function sshCommand(server: unknown, remoteCmd: unknown): string {
-  return `ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -- ${server} ${commandQuote(remoteCmd)}`
-}
-
-function scpRemoteTarget(server: unknown, remotePath: unknown): string {
-  const targetPath = String(remotePath || '')
-  if (!targetPath.startsWith('/') || /[\s;&|`$()<>"'\\]/.test(targetPath)) throw new Error('invalid remote path')
-  return `${server}:${targetPath}`
-}
-
-function scpCommand(source: unknown, target: unknown, options: ScpOptions = {}): string {
-  const recursive = options.recursive ? '-r ' : ''
-  return `scp -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new ${recursive}${commandQuote(source)} ${target}`
 }
 
 function isBlockedDownloadHost(hostname: unknown): boolean {

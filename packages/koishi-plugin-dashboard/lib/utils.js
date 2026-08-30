@@ -7,6 +7,20 @@ function parsePositiveInt(value, fallback, min, max) {
         return fallback;
     return Math.max(min, Math.min(max, parsed));
 }
+// 提取异常的稳定文本，保持 Dashboard 原有的空值和 message 字段语义。
+function getErrorMessage(error) {
+    if (error && typeof error === 'object' && 'message' in error)
+        return String(error.message || '');
+    return String(error || '');
+}
+// 读取对象异常的原始 message 值，供保留旧接口响应形状的路由使用。
+function getObjectErrorMessage(error) {
+    return error && typeof error === 'object' && 'message' in error ? error.message : undefined;
+}
+// 读取任意非空异常的可选 message 属性，保持旧的可选属性访问语义。
+function getOptionalErrorMessage(error) {
+    return error?.message;
+}
 function json(res, data, status = 200) {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data));
@@ -232,6 +246,9 @@ function collectBody(req, res, callback, options = {}) {
 }
 module.exports = {
     parsePositiveInt,
+    getErrorMessage,
+    getObjectErrorMessage,
+    getOptionalErrorMessage,
     json,
     log,
     getRemoteAddress,

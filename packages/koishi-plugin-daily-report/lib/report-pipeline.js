@@ -9,12 +9,11 @@ const path = require('path');
 const { collectReportData } = require('./data-collector');
 const { analyzeWithAI } = require('./ai-analyzer');
 const { renderReport } = require('./html-renderer');
-const { hasActiveResourceActivityLease } = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease');
-const serverModePolicy = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/server-mode-policy');
+const { getErrorMessage } = require('./error-utils');
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
+const { hasActiveResourceActivityLease } = loadManagementModule('resource.activityLease');
+const serverModePolicy = loadManagementModule('resource.serverModePolicy');
 // 把未知错误压成稳定字符串，供 result.json 和 worker 日志使用。
-function getErrorMessage(error) {
-    return error instanceof Error ? error.message : String(error || '');
-}
 // 确保输出目录存在。
 function ensureOutputDir(dir) {
     fs.mkdirSync(dir, { recursive: true });
@@ -187,7 +186,7 @@ async function generateDailyReportResult(options) {
     catch (error) {
         result.level = 'L2';
         result.mode = 'text';
-        result.reason = `render_failed:${getErrorMessage(error)}`;
+        result.reason = `render_failed:${getErrorMessage(error, '')}`;
         result.warnings = [...result.warnings, result.reason];
     }
     emitStep('writing_result');

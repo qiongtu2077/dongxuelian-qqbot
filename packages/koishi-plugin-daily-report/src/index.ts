@@ -6,6 +6,9 @@
 const fs = require('fs')
 const path = require('path')
 const { TIMEOUTS, DATA_DIR } = require('./config') as typeof import('./config')
+const { getErrorMessage } = require('./error-utils') as typeof import('./error-utils')
+const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
 
 interface LoggerLike {
   info(...args: unknown[]): void
@@ -26,22 +29,19 @@ interface DailyReportSessionLike {
   send(message: unknown): Promise<unknown>
 }
 
+type ManagementModule<Name extends import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime').ManagementModuleName> = import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime').ManagementModule<Name>
+type ResourceAdmissionModule = ManagementModule<'resource.admission'>
+type ResourceTaskStoreModule = ManagementModule<'resource.taskStore'>
+type ResourceTask = ReturnType<ResourceTaskStoreModule['submitResourceTask']>
+
 interface ResourceRuntimeLike {
-  admission: {
-    admitTask(input: Record<string, unknown>): { decision?: string, reason?: string, fallback?: string, memAvailableMb?: number | null }
-  }
-  tasks: {
-    submitResourceTask(input: Record<string, unknown>): Record<string, unknown>
-    listResourceTasks(options?: Record<string, unknown>): Record<string, unknown>[]
-    findResourceTaskByKindAndChannel?(kind: string, channelKey: string, statuses?: string[]): Record<string, unknown> | null
-    failTask(task: Record<string, unknown>, error: unknown, result?: Record<string, unknown>): Record<string, unknown>
-    deferTask(task: Record<string, unknown>, reason?: string): Record<string, unknown>
-  }
+  admission: ResourceAdmissionModule
+  tasks: ResourceTaskStoreModule
 }
 
 let flushTodayCacheToDisk: (channelKey: string) => void = () => {}
 try {
-  ({ flushTodayCacheToDisk } = require('../../koishi-plugin-dongxuelian-ai/lib/conversation') as typeof import('../../koishi-plugin-dongxuelian-ai/lib/conversation'))
+  ({ flushTodayCacheToDisk } = loadManagementModule('core.conversation'))
 } catch {
   /* 独立安装路径异常时仅跳过 flush */
 }
@@ -52,11 +52,10 @@ let resourceRuntimeCache: ResourceRuntimeLike | null | undefined
 function getResourceRuntime(ctx?: DailyReportContextLike): ResourceRuntimeLike | null {
   if (resourceRuntimeCache !== undefined) return resourceRuntimeCache
   try {
-    const base = '../../koishi-plugin-dongxuelian-ai/lib'
     resourceRuntimeCache = {
-      admission: require(`${base}/resource-scheduler/admission`),
-      tasks: require(`${base}/resource-workers/task-store`),
-    } as ResourceRuntimeLike
+      admission: loadManagementModule('resource.admission'),
+      tasks: loadManagementModule('resource.taskStore'),
+    }
   } catch (error) {
     resourceRuntimeCache = null
     if (ctx) ctx.logger('daily-report').warn(`resource runtime unavailable: ${getErrorMessage(error)}`)
@@ -73,17 +72,7 @@ const MAX_RUNTIME_MAP_ENTRIES = 500
 const SEND_RETRY_DELAY_MS = parsePositiveInt(process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS, 800, 0, 10000)
 const MAINTENANCE_REPLY_FALLBACK = '优化中'
 
-function parsePositiveInt(value: string | undefined, fallback: number, min: number, max: number): number {
-  const parsed = parseInt(String(value), 10)
-  if (!Number.isFinite(parsed)) return fallback
-  return Math.max(min, Math.min(max, parsed))
-}
-
 // 将未知错误压成稳定的日志字符串。
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 // 用于发送重试前的短延迟，避免 OneBot 瞬时无响应时直接放弃文本提示。
 function delay(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve()
@@ -136,7 +125,7 @@ function getDailyReportUserId(session: DailyReportSessionLike): string {
 }
 
 // 构造 S1/S2 共用的日报任务预算。
-function buildDailyReportBudget(taskId: string, channelKey: unknown, userId: string, detail: boolean): Record<string, unknown> {
+function buildDailyReportBudget(taskId: string, channelKey: unknown, userId: string, detail: boolean): Parameters<ResourceAdmissionModule['admitTask']>[0] {
   return {
     taskId,
     kind: 'daily_report',
@@ -170,11 +159,10 @@ async function sendDailyAdmissionNotice(ctx: DailyReportContextLike, session: Da
 }
 
 // 向 S2 写入日报任务；实际生成和发送由 daily-worker + result-notifier 完成。
-function submitDailyResourceTask(runtime: ResourceRuntimeLike, taskId: string, channelKey: unknown, userId: string, detail: boolean, status = 'pending'): Record<string, unknown> {
+function submitDailyResourceTask(runtime: ResourceRuntimeLike, taskId: string, channelKey: unknown, userId: string, detail: boolean): ResourceTask {
   return runtime.tasks.submitResourceTask({
     id: taskId,
     kind: 'daily_report',
-    status,
     source: 'koishi-worker',
     channelKey: String(channelKey || ''),
     userId,
@@ -186,7 +174,7 @@ function submitDailyResourceTask(runtime: ResourceRuntimeLike, taskId: string, c
 }
 
 // 检查同群是否已有未完成日报任务，避免 S2 队列被重复命令刷爆。
-function findOpenDailyReportTask(runtime: ResourceRuntimeLike, channelKey: unknown): Record<string, unknown> | null {
+function findOpenDailyReportTask(runtime: ResourceRuntimeLike, channelKey: unknown): ResourceTask | null {
   const statuses = ['pending', 'claiming', 'running', 'deferred']
   const direct = runtime.tasks.findResourceTaskByKindAndChannel?.('daily_report', String(channelKey || ''), statuses)
   if (direct) return direct

@@ -7,7 +7,6 @@ declare function resolveProjectRel(rel: unknown): string;
 declare function runtimePath(...parts: string[]): string;
 declare const _default: {
     PLUGIN_ROOT: string;
-    AI_LIB: string;
     KOISHI_DIR: string;
     KOISHI_PID_FILE: string;
     DATA_DIR: string;

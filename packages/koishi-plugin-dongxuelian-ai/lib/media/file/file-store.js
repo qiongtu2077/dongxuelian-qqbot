@@ -8,7 +8,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { DATA_DIR } = require('../../core/constants');
-const { safeChannelKey } = require('../../core/utils');
+const { getSafeMediaStorageKey: getSafeKey, getMediaHistoryFilePath, getLegacyMediaHistoryFilePath, } = require('../storage-key');
 const FILE_HISTORY_DIR = path.join(DATA_DIR, 'file-history');
 const FILE_CACHE_DIR = path.join(DATA_DIR, 'file-cache');
 const FILE_EXPIRE_MS = 4 * 60 * 60 * 1000;
@@ -17,10 +17,6 @@ const MAX_FILES_PER_CHANNEL = 20;
 const MAX_HISTORY_FILE_BYTES = 256 * 1024;
 const fileHistoryCache = new Map();
 const fileStoreQueues = new Map();
-function getSafeKey(channelKey) {
-    const key = String(channelKey || '');
-    return key ? safeChannelKey(key) : '';
-}
 function getLegacyPrivateKey(channelKey) {
     return /^private:/.test(String(channelKey || '')) ? 'private' : '';
 }
@@ -33,19 +29,8 @@ function matchesPrivateUser(entry, channelKey) {
         return true;
     return String(entry?.userId || '') === userId;
 }
-function getFilePath(channelKey) {
-    return path.join(FILE_HISTORY_DIR, getSafeKey(channelKey) + '.json');
-}
 function getQueueKey(channelKey) {
     return getSafeKey(channelKey) || 'unknown';
-}
-function getLegacyUnsafeKey(channelKey) {
-    return String(channelKey || '').replace(/[^a-zA-Z0-9.:_-]/g, '_');
-}
-function getLegacyUnsafeFilePath(channelKey) {
-    const legacyKey = getLegacyUnsafeKey(channelKey);
-    const safeKey = getSafeKey(channelKey);
-    return legacyKey && legacyKey !== safeKey ? path.join(FILE_HISTORY_DIR, legacyKey + '.json') : '';
 }
 function ignoreFileStoreQueueFailure(error) {
     void error;
@@ -123,13 +108,13 @@ async function readFileHistory(channelKey) {
     const cacheKey = getQueueKey(channelKey);
     try {
         await fs.mkdir(FILE_HISTORY_DIR, { recursive: true });
-        let fp = getFilePath(channelKey);
+        let fp = getMediaHistoryFilePath(FILE_HISTORY_DIR, channelKey);
         let stat;
         try {
             stat = await fs.stat(fp);
         }
         catch (error) {
-            const legacyPath = getLegacyUnsafeFilePath(channelKey);
+            const legacyPath = getLegacyMediaHistoryFilePath(FILE_HISTORY_DIR, channelKey);
             if (!legacyPath || error?.code !== 'ENOENT')
                 throw error;
             fp = legacyPath;
@@ -155,7 +140,7 @@ async function writeFileHistory(channelKey, data) {
     try {
         await fs.mkdir(FILE_HISTORY_DIR, { recursive: true });
         const normalized = normalizeData(data);
-        await fs.writeFile(getFilePath(channelKey), JSON.stringify(normalized), 'utf8');
+        await fs.writeFile(getMediaHistoryFilePath(FILE_HISTORY_DIR, channelKey), JSON.stringify(normalized), 'utf8');
         fileHistoryCache.set(getQueueKey(channelKey), normalized);
         return true;
     }

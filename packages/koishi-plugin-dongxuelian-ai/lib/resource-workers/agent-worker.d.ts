@@ -3,7 +3,7 @@ interface WorkerTaskResult extends Record<string, unknown> {
     reason?: string;
     mode?: string;
 }
-interface AgentWorkerTaskLike extends Record<string, unknown> {
+interface AgentWorkerTaskLike {
     id?: string;
     payload?: Record<string, unknown>;
 }

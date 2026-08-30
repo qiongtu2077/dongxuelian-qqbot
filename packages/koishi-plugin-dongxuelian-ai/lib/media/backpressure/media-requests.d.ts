@@ -4,7 +4,7 @@ interface AdmissionDecisionLike {
     resourceState?: string;
     botMode?: string;
 }
-type QueuedMediaTaskLike = Record<string, unknown> | null;
+type QueuedMediaTaskLike = ReturnType<typeof import('./media-queue')['enqueueMediaTask']> | null;
 interface QueueFileAnalysisInput {
     channelKey: string;
     messageId: string;

@@ -7,12 +7,48 @@ const { redactSensitiveText } = require('../core/redactor') as typeof import('..
 
 type AgentWorkerAction = 'run' | 'resume_pending'
 
+interface AgentRunWorkerInput {
+  userMessage?: unknown
+  userName?: unknown
+  userId?: unknown
+  channelKey?: unknown
+  channel?: unknown
+  systemExtra?: unknown
+  history?: unknown
+  forceTools?: unknown
+  preExecuteTools?: unknown
+  enableThinking?: unknown
+  agentMode?: unknown
+  scheduledTask?: unknown
+  contextPolicy?: unknown
+  isAdmin?: unknown
+}
+
+interface AgentResumeWorkerInput {
+  channelKey?: unknown
+  userId?: unknown
+  channel?: unknown
+  expectedId?: unknown
+  isAdmin?: unknown
+}
+
+interface AgentPendingSnapshot {
+  id?: unknown
+  toolName?: unknown
+  args?: unknown
+  userId?: unknown
+  channelKey?: unknown
+  channel?: unknown
+  expireAt?: unknown
+  resume?: unknown
+}
+
 interface AgentWorkerPayload {
   action: AgentWorkerAction
   entry: string
-  engineInput?: Record<string, unknown>
-  resumeInput?: Record<string, unknown>
-  pendingSnapshot?: Record<string, unknown> | null
+  engineInput?: AgentRunWorkerInput
+  resumeInput?: AgentResumeWorkerInput
+  pendingSnapshot?: AgentPendingSnapshot | null
   warnings?: string[]
 }
 
@@ -85,10 +121,6 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
 
-function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
-  return recordOrNull(value) || undefined
-}
-
 function stringArrayOrUndefined(value: unknown): string[] | undefined {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : undefined
 }
@@ -98,7 +130,7 @@ function createAgentRunWorkerPayload(entry: string, input: Record<string, unknow
   return {
     action: 'run',
     entry: String(entry || 'agent-run'),
-    engineInput: pickSerializableFields(input, RUN_INPUT_FIELDS),
+    engineInput: pickSerializableFields(input, RUN_INPUT_FIELDS) as AgentRunWorkerInput,
     warnings: warnings.map(String).filter(Boolean),
   }
 }
@@ -108,8 +140,8 @@ function createAgentResumeWorkerPayload(entry: string, input: Record<string, unk
   return {
     action: 'resume_pending',
     entry: String(entry || 'agent-resume'),
-    resumeInput: pickSerializableFields(input, RESUME_INPUT_FIELDS),
-    pendingSnapshot: pendingSnapshot ? toJsonSafe(pendingSnapshot) as Record<string, unknown> : null,
+    resumeInput: pickSerializableFields(input, RESUME_INPUT_FIELDS) as AgentResumeWorkerInput,
+    pendingSnapshot: pendingSnapshot ? toJsonSafe(pendingSnapshot) as AgentPendingSnapshot : null,
     warnings: warnings.map(String).filter(Boolean),
   }
 }
@@ -124,9 +156,9 @@ function getAgentWorkerPayload(task: AgentWorkerTaskLike | null | undefined): Ag
   return {
     action,
     entry: String(worker.entry || 'agent-worker'),
-    engineInput: recordOrUndefined(worker.engineInput),
-    resumeInput: recordOrUndefined(worker.resumeInput),
-    pendingSnapshot: recordOrNull(worker.pendingSnapshot),
+    engineInput: recordOrNull(worker.engineInput) as AgentRunWorkerInput | null || undefined,
+    resumeInput: recordOrNull(worker.resumeInput) as AgentResumeWorkerInput | null || undefined,
+    pendingSnapshot: recordOrNull(worker.pendingSnapshot) as AgentPendingSnapshot | null,
     warnings: stringArrayOrUndefined(worker.warnings),
   }
 }

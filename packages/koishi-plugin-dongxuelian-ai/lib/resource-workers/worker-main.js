@@ -463,7 +463,12 @@ async function runWorkerTick(options = {}, heartbeat, progress) {
         if (heartbeat)
             heartbeat.setStep('memory_limit_exceeded', { rssMb: memory.rssMb });
         else
-            writeWorkerHeartbeat(workerName, { kind: type, step: 'memory_limit_exceeded', rssMb: memory.rssMb, ...(progress || {}) });
+            writeWorkerHeartbeat(workerName, {
+                kind: type,
+                step: 'memory_limit_exceeded',
+                rssMb: Number.isFinite(Number(memory.rssMb)) ? Number(memory.rssMb) : null,
+                ...(progress || {}),
+            });
         process.exitCode = 75;
         return false;
     }

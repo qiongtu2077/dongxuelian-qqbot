@@ -1,23 +1,10 @@
+type ResourceTask = import('./task-types').ResourceTask;
 interface NotifyCompletedOptions {
     limit?: number;
     sender?: ResultNotifierSender;
 }
-interface ResultNotifyInfo extends Record<string, unknown> {
-    target?: string;
-    channelKey?: string;
-    status?: string;
-    error?: string;
-}
-interface ResultNotifierTaskLike extends Record<string, unknown> {
-    id?: string;
-    kind?: string;
-    status?: string;
-    channelKey?: string;
-    payload?: Record<string, unknown>;
-    notify?: ResultNotifyInfo;
-}
 type ResultNotifierResult = Record<string, unknown>;
-type ResultNotifierSender = (task: ResultNotifierTaskLike, result: ResultNotifierResult) => Promise<boolean> | boolean;
+type ResultNotifierSender = (task: ResourceTask, result: ResultNotifierResult) => Promise<boolean> | boolean;
 interface AgentNotifyResultLike {
     reply?: unknown;
     message?: unknown;
@@ -59,11 +46,11 @@ interface ResultNotifierSessionLike {
 }
 declare function readTaskResult(taskId: string): ResultNotifierResult;
 declare function hasHardSearchFailureSignal(result: AgentNotifyResultLike): boolean;
-declare function isChatHeavyToolTask(task: ResultNotifierTaskLike | null | undefined): boolean;
+declare function isChatHeavyToolTask(task: ResourceTask | null | undefined): boolean;
 declare function hasAgentSendableText(result: ResultNotifierResult): boolean;
 declare function createDailyReportSender(options?: DailyReportSenderOptions): ResultNotifierSender;
-declare function buildAgentTaskTextMessage(result: ResultNotifierResult, task?: ResultNotifierTaskLike | null): string;
-declare function extractSessionFromPayload(task: ResultNotifierTaskLike): {
+declare function buildAgentTaskTextMessage(result: ResultNotifierResult, task?: ResourceTask | null): string;
+declare function extractSessionFromPayload(task: ResourceTask): {
     session: ResultNotifierSessionLike;
     channelKey: string;
     userId: string;

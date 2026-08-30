@@ -6,7 +6,9 @@ const fs = require('fs')
 const path = require('path')
 
 const { DATA_DIR } = require('./config') as typeof import('./config')
-const { todayCst, getShanghaiHourFromTs, safeChannelKey } = require('../../koishi-plugin-dongxuelian-ai/lib/core/utils') as typeof import('../../koishi-plugin-dongxuelian-ai/lib/core/utils')
+const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
+const { todayCst, getShanghaiHourFromTs, safeChannelKey } = loadManagementModule('core.utils')
 
 interface ReportMessage {
   time?: string
@@ -52,12 +54,6 @@ const CQ_EMOJI_RE = /\[CQ:(?:face|mface)\b[^\]]*\]/gi
 const XML_EMOJI_RE = /<(?:face|mface)\b[^>]*\/?>/gi
 const TEXT_EMOJI_RE = /【QQ表情[^】]*】/g
 const UNICODE_EMOJI_RE = /\p{Extended_Pictographic}/gu
-
-function parsePositiveInt(value: string | undefined, fallback: number, min: number, max: number): number {
-  const parsed = parseInt(String(value), 10)
-  if (!Number.isFinite(parsed)) return fallback
-  return Math.max(min, Math.min(max, parsed))
-}
 
 /** 计算上海日历日边界，用于把 today-cache 中跨日恢复的消息过滤掉。 */
 function getShanghaiDayBounds(today: string): { startMs: number, endMs: number } | null {
@@ -132,9 +128,8 @@ function collectReportData(channelKey: unknown): ReportData | null {
 // 动态读取 S3 final-input；不可用时保持日报旧路径。
 function readPrecomputedFinalInput(date: string, channelKey: string): Record<string, unknown> | null {
   try {
-    const base = '../../koishi-plugin-dongxuelian-ai/lib'
-    const merge = require(`${base}/daily-precompute/daily-summary-merge`)
-    const status = require(`${base}/daily-precompute/precompute-status`)
+    const merge = loadManagementModule('daily.summaryMerge')
+    const status = loadManagementModule('resource.precomputeStatus')
     const generated = merge && typeof merge.mergeDailyFinalInput === 'function'
       ? merge.mergeDailyFinalInput(date, channelKey)
       : null

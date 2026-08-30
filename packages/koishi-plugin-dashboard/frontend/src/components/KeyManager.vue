@@ -171,6 +171,8 @@ import { computed, inject, ref, onMounted } from 'vue'
 import { fetchKeys, updateKey, fetchKeysUsage, fetchProviders, fetchFallbackChains, fetchCustomProviders, saveApiConfigTransaction } from '../api'
 import type { CustomProvider, FallbackChains, MessageState, ProviderInfo, ProviderModel, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
+import { buildProviderTransaction, createProviderDraft, FALLBACK_CARDS } from '../services/key-manager-model'
+import type { ProviderDraft } from '../services/key-manager-model'
 
 const providerColors: Record<string, string> = {
   opencode: '#f7c948',
@@ -222,22 +224,6 @@ interface KeyItem {
   providerId?: string
   baseURL?: string
   models?: ProviderModel[]
-}
-
-type FallbackKey = 'chat' | 'vision' | 'lightweight'
-
-interface FallbackCard {
-  key: FallbackKey
-  label: string
-}
-
-interface ProviderDraft {
-  id: string
-  name: string
-  baseURL: string
-  keyFile: string
-  apiKey: string
-  models: Array<ProviderModel & { name?: string }>
 }
 
 interface UsageStat {
@@ -299,48 +285,6 @@ const rangePresets: Array<{ key: UsageRange, label: string }> = [
   { key: '30d', label: '30天' },
   { key: 'date', label: '指定日' },
 ]
-
-const FALLBACK_CARDS: FallbackCard[] = [
-  { key: 'chat', label: '聊天优先级' },
-  { key: 'vision', label: '视觉优先级' },
-  { key: 'lightweight', label: '轻量任务优先级' },
-]
-
-function createProviderDraft(): ProviderDraft {
-  return {
-    id: 'openai-official',
-    name: 'OpenAI 官方',
-    baseURL: 'https://api.openai.com/v1',
-    keyFile: 'ai-openai-official-key.txt',
-    apiKey: '',
-    models: [
-      { id: 'gpt-4o', name: 'GPT-4o', vision: true },
-      { id: 'gpt-4o-mini', name: 'GPT-4o mini', vision: true },
-    ],
-  }
-}
-
-function pickProviderModelForQueue(provider: CustomProvider, key: FallbackKey): string {
-  const models = Array.isArray(provider.models) ? provider.models : []
-  if (key === 'vision') return (models.find(model => model.vision) || models[0])?.id || ''
-  if (key === 'lightweight') return (models.find(model => /(?:mini|flash|lite|turbo|small)/i.test(model.id || model.name || '')) || models[0])?.id || ''
-  return models[0]?.id || ''
-}
-
-function appendProviderToFallbackTail(chains: FallbackChains, provider: CustomProvider): FallbackChains {
-  const next: FallbackChains = { ...chains }
-  for (const card of FALLBACK_CARDS) {
-    const list = [...(next[card.key] || [])]
-    if (list.some(step => step.provider === provider.id)) {
-      next[card.key] = list
-      continue
-    }
-    const model = pickProviderModelForQueue(provider, card.key)
-    if (model) list.push({ provider: provider.id, model, keyFile: provider.keyFile || '' })
-    next[card.key] = list
-  }
-  return next
-}
 
 function formatTokens(n: unknown) {
   const value = Number(n || 0)
@@ -737,21 +681,6 @@ export default {
       if (providerDraft.value.models.length > 1) providerDraft.value.models.splice(index, 1)
     }
 
-    function normalizeDraftProvider(): CustomProvider {
-      const draft = providerDraft.value
-      return {
-        id: String(draft.id || '').trim(),
-        name: String(draft.name || '').trim(),
-        baseURL: String(draft.baseURL || '').trim(),
-        keyFile: String(draft.keyFile || '').trim(),
-        models: draft.models.map(model => ({
-          id: String(model.id || '').trim(),
-          name: String(model.name || '').trim() || undefined,
-          vision: !!model.vision,
-        })).filter(model => model.id),
-      }
-    }
-
     // Reloads and verifies all three public views before the provider dialog can close.
     async function reloadSavedApiConfig(provider: CustomProvider, expectedChains: FallbackChains, expectKey: boolean): Promise<boolean> {
       const [keysRes, customRes, fallbackRes, providersRes] = await Promise.all([
@@ -778,17 +707,13 @@ export default {
       savingProvider.value = true
       providerMsg.value = null
       try {
-        const provider = normalizeDraftProvider()
-        if (!provider.id || !provider.name || !provider.baseURL || !provider.keyFile || !provider.models.length) {
-          providerMsg.value = { type: 'err', text: '供应商、Base URL、Key 文件和模型不能为空' }
+        const transaction = buildProviderTransaction(providerDraft.value, customProviders.value, fallbackChains.value)
+        if (transaction.error) {
+          providerMsg.value = { type: 'err', text: transaction.error }
           savingProvider.value = false
           return
         }
-        const isNewProvider = !customProviders.value.some(item => item.id === provider.id)
-        const existing = customProviders.value.filter(item => item.id !== provider.id)
-        const nextProviders = [...existing, provider]
-        const nextChains = isNewProvider ? appendProviderToFallbackTail(fallbackChains.value, provider) : fallbackChains.value
-        const keyValue = providerDraft.value.apiKey.trim() || undefined
+        const { provider, providers: nextProviders, chains: nextChains, keyValue } = transaction
         const transactionRes = await saveApiConfigTransaction(nextProviders, provider.id, keyValue, nextChains)
         if (transactionRes.code === 'ADMIN_REQUIRED') {
           if (!retried && showAdminDialog) showAdminDialog('完整保存 API 配置需要管理员密码', () => saveProvider(true))

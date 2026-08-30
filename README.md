@@ -547,11 +547,19 @@ npm run test:scenario
 npm run test:plugins
 ```
 
-完整测试：
+完整测试（提交、发布和 CI 的唯一信任入口，包含 Dashboard、Agent Console、类型检查、构建和同步验证）：
 
 ```bash
 npm test
 ```
+
+本机安装 Chrome 或 Edge 时，可额外运行 Dashboard 点击烟测：
+
+```bash
+npm run test:dashboard-click
+```
+
+当前发布继续提交各插件 `lib/` 及前端 `dist/`；完整测试会重建并校验这些生成物没有漂移。新临时文件放入 `tmp/workspace/`，临时发布包放入 `tmp/releases/`。
 
 Dashboard 前端开发：
 
@@ -568,7 +576,7 @@ cd packages/koishi-plugin-dashboard/frontend
 npm run build
 ```
 
-更多测试细节见 `TESTING.md`。
+更多测试细节见 `测试文件维护指南.md`。
 
 ---
 
@@ -675,10 +683,10 @@ ss -ltnp | grep 8080
 
 - 部署脚本只做部署，不内嵌插件业务源码。
 - 插件逻辑放在 `packages/*/lib/`，不要继续把大段 JS 塞回 Markdown。
-- 修改 AI 主插件前先看 `AI协作规则.md`、`教训总结.md`、`TESTING.md`。
+- 修改 AI 主插件前先看 `AI协作规则.md`、`教训总结.md`、`测试文件维护指南.md`。
 - 已完成的维护经验写进 `开发总结.md` 或对应专题文档；未来路线只写进 `未完待续.md`。
 - 改 Dashboard 前端后记得在 `packages/koishi-plugin-dashboard/frontend/` 里重新 `npm run build`。
-- 改插件后至少跑 `npm run check`，风险高的改动继续跑 `npm test`。
+- 改插件后至少跑对应领域测试；提交和发布前必须跑完整 `npm test`。
 - 修改端口、数据目录、部署路径时，同时检查 README、`setup.sh`、`scripts/restart-bot.sh`、`packages/koishi-plugin-dashboard/standalone.js`。
 
 当前推荐继续沿着三层结构维护：

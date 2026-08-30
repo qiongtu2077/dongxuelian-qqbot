@@ -56,6 +56,7 @@ function drainQueue() {
         });
     }
 }
+// 执行一次图片读取、视觉分析和占位符回写流程。
 async function runAnalysis({ channelKey, messageId, url, file }) {
     try {
         const freshEntry = await getImageEntry(channelKey, messageId);
@@ -77,7 +78,8 @@ async function runAnalysis({ channelKey, messageId, url, file }) {
                     }
                 }
             }
-            catch { /* non-critical: OneBot get_image failure falls back to URL download */
+            catch (error) {
+                console.warn(`[image-analyzer] onebot_get_image_failed detail=${getImageAnalyzerErrorMessage(error)}`);
             }
         }
         if (!base64 && url) {

@@ -1,14 +1,12 @@
 "use strict";
 const { segment } = require('koishi');
 const { execFile } = require('child_process');
-const dns = require('dns/promises');
 const fsSync = require('fs');
 const fs = require('fs/promises');
-const http = require('http');
-const https = require('https');
-const net = require('net');
 const path = require('path');
 const { pathToFileURL } = require('url');
+const biliInput = require('./bili-input');
+const { buildBiliKeys, extractBvId, extractBiliUrl, isAllowedBiliRedirectUrl, isPrivateIpAddress, normalizeBiliP1Url, normalizeSharedText, resolveBiliShortLink, uniqueStrings, } = biliInput;
 const name = 'local-video-sender';
 const DEFAULT_MAX_SIZE = 60000000;
 const YTDLP = process.env.BILI_YTDLP || '/usr/local/bin/yt-dlp';
@@ -37,10 +35,6 @@ const DUPLICATE_HISTORY_LIMIT = 3;
 const VIDEO_CACHE_TTL_MS = 5 * 60 * 1000;
 const VIDEO_CACHE_HARD_CLEANUP_MS = 10 * 60 * 1000;
 const VIDEO_CACHE_SWEEP_MS = 60 * 1000;
-const SHORT_LINK_CACHE_TTL_MS = 10 * 60 * 1000;
-const SHORT_LINK_MAX_REDIRECTS = 5;
-const SHORT_LINK_TIMEOUT_MS = 5000;
-const SHORT_LINK_MAX_HEADER_BYTES = 16 * 1024;
 const MAX_YTDLP_STDIO_BYTES = 1024 * 1024;
 const MAX_VIDEO_BLACKLIST_BYTES = 128 * 1024;
 const MAX_ADMIN_IDS_BYTES = 128 * 1024;
@@ -81,7 +75,6 @@ const ADMISSION_DECISION_LABELS = {
     silent_drop: '静默丢弃',
 };
 const recentParseHistory = new Map();
-const shortLinkResolutionCache = new Map();
 const videoFileCache = new Map();
 const videoCacheAliases = new Map();
 const inflightDownloads = new Map();
@@ -242,117 +235,6 @@ async function acquireVideoResourceGate(ctx, session, source, deps = {}, existin
         return { ok: false, userError };
     }
 }
-function normalizeSharedText(input = '') {
-    let text = String(input);
-    for (let index = 0; index < 3; index++) {
-        const previous = text;
-        text = text
-            .replace(/\\\//g, '/')
-            .replace(/&amp;/g, '&')
-            .replace(/&quot;/g, '"')
-            .replace(/&#44;/g, ',')
-            .replace(/&#91;/g, '[')
-            .replace(/&#93;/g, ']')
-            .replace(/&#123;/g, '{')
-            .replace(/&#125;/g, '}')
-            .replace(/&#58;/g, ':')
-            .replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
-        try {
-            const decoded = decodeURIComponent(text);
-            if (decoded !== text)
-                text = decoded;
-        }
-        catch { /* non-critical: malformed shared text can continue undecoded */
-        }
-        if (text === previous)
-            break;
-    }
-    return text;
-}
-function uniqueStrings(values = []) {
-    return [...new Set(values.filter(Boolean).map(value => String(value)))];
-}
-function normalizeBiliIdentifier(identifier = '') {
-    const value = String(identifier).trim();
-    if (!value)
-        return '';
-    return `bv:${value.replace(/^bv/i, '').toLowerCase()}`;
-}
-function normalizeBiliUrlKey(input = '') {
-    const value = normalizeSharedText(input).trim();
-    if (!value)
-        return '';
-    try {
-        const parsed = new URL(value);
-        const host = parsed.hostname.toLowerCase();
-        const pathname = parsed.pathname.replace(/\/+$/, '');
-        if (!host)
-            return '';
-        return `url:${host}${pathname.toLowerCase()}`;
-    }
-    catch {
-        return `url:${value.replace(/[?#].*$/, '').replace(/\/+$/, '').toLowerCase()}`;
-    }
-}
-function extractBiliUrl(input = '') {
-    const text = normalizeSharedText(input);
-    const urlMatch = text.match(/https?:\/\/(?:www\.bilibili\.com|m\.bilibili\.com|bilibili\.com|b23\.tv)\/[^\s"'<>\\\]}),，。！？、]+/i);
-    if (urlMatch)
-        return urlMatch[0];
-    const bvMatch = text.match(/\bBV[0-9A-Za-z]{10}\b/i);
-    if (bvMatch)
-        return `https://www.bilibili.com/video/${bvMatch[0]}`;
-    return null;
-}
-function buildBiliKeys(input = '') {
-    const text = normalizeSharedText(input);
-    const keys = [];
-    const bvMatches = text.match(/\bBV[0-9A-Za-z]{10}\b/gi) || [];
-    for (const bv of bvMatches) {
-        keys.push(normalizeBiliIdentifier(bv));
-    }
-    const url = extractBiliUrl(text);
-    if (url)
-        keys.push(normalizeBiliUrlKey(url));
-    return uniqueStrings(keys);
-}
-// 从任意 B 站文本或地址中提取规范化 BV 缓存键。
-function extractBvKey(input = '') {
-    const match = normalizeSharedText(input).match(/\bBV[0-9A-Za-z]{10}\b/i);
-    return match ? normalizeBiliIdentifier(match[0]) : '';
-}
-// 从任意 B 站文本或地址中提取保留原始大小写的 BV 号。
-function extractBvId(input = '') {
-    const match = normalizeSharedText(input).match(/\bBV[0-9A-Za-z]{10}\b/i);
-    return match ? match[0] : '';
-}
-// 将 BV 或普通视频地址统一为只指向第一分 P 的规范地址。
-function normalizeBiliP1Url(input = '') {
-    const value = normalizeSharedText(input).trim();
-    const bvId = extractBvId(value);
-    if (bvId)
-        return `https://www.bilibili.com/video/${bvId}?p=1`;
-    try {
-        const parsed = new URL(value);
-        const host = parsed.hostname.toLowerCase();
-        if (host !== 'bilibili.com' && host !== 'www.bilibili.com' && host !== 'm.bilibili.com')
-            return '';
-        const identifier = parsed.pathname.match(/^\/video\/(av\d+)\/?$/i)?.[1];
-        return identifier ? `https://www.bilibili.com/video/${identifier}?p=1` : '';
-    }
-    catch {
-        return '';
-    }
-}
-// 判断 URL 是否为需要轻量解析的 b23.tv 短链。
-function isB23ShortUrl(input = '') {
-    try {
-        return new URL(input).hostname.toLowerCase() === 'b23.tv';
-    }
-    catch {
-        return false;
-    }
-}
 // 按固定编号生成只包含安全动态数据的中文用户报错。
 function buildVideoUserError(input) {
     switch (input.id) {
@@ -446,141 +328,14 @@ function logVideoUserError(ctx, userError, technicalDetail = '') {
     const suffix = technicalDetail ? ` detail=${technicalDetail}` : '';
     ctx.logger('bvidl').warn(`user_error_id=${userError.id} stage=${userError.stage}${suffix}`);
 }
-// 限定短链跳转只能留在 B 站公开域名内。
-function isAllowedBiliRedirectUrl(input) {
-    try {
-        const parsed = new URL(input);
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
-            return false;
-        const host = parsed.hostname.toLowerCase();
-        return host === 'b23.tv' || host === 'bilibili.com' || host.endsWith('.bilibili.com');
-    }
-    catch {
-        return false;
-    }
-}
-// 判断 DNS 结果是否属于本机、私网、链路本地或保留地址。
-function isPrivateIpAddress(address) {
-    const normalized = String(address || '').toLowerCase().split('%')[0];
-    const version = net.isIP(normalized);
-    if (version === 4) {
-        const parts = normalized.split('.').map(Number);
-        const [a, b] = parts;
-        return a === 0 || a === 10 || a === 127 ||
-            (a === 100 && b >= 64 && b <= 127) ||
-            (a === 169 && b === 254) ||
-            (a === 172 && b >= 16 && b <= 31) ||
-            (a === 192 && b === 168) ||
-            a >= 224;
-    }
-    if (version === 6) {
-        if (normalized === '::' || normalized === '::1')
-            return true;
-        if (/^f[cd]/.test(normalized) || /^fe[89ab]/.test(normalized))
-            return true;
-        const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-        return !!(mapped && isPrivateIpAddress(mapped[1]));
-    }
-    return true;
-}
-// 解析并验证白名单域名，返回已通过公网检查的固定连接地址。
-async function resolvePublicBiliHost(input) {
-    if (!isAllowedBiliRedirectUrl(input))
-        throw new Error('short link redirect escaped Bilibili allowlist');
-    const hostname = new URL(input).hostname;
-    const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
-    if (!addresses.length || addresses.some(item => isPrivateIpAddress(item.address))) {
-        throw new Error('short link redirect resolved to private or invalid address');
-    }
-    return addresses[0];
-}
-// 固定到已校验 IP 读取短链响应，保留原域名 Host 和 TLS SNI。
-async function requestRedirectLocation(input, timeoutMs) {
-    const parsed = new URL(input);
-    const destination = await resolvePublicBiliHost(input);
-    const transport = parsed.protocol === 'https:' ? https : http;
-    return new Promise((resolve, reject) => {
-        const request = transport.request({
-            protocol: parsed.protocol,
-            hostname: destination.address,
-            family: destination.family,
-            port: parsed.port || undefined,
-            path: `${parsed.pathname}${parsed.search}`,
-            method: 'HEAD',
-            servername: parsed.hostname,
-            maxHeaderSize: SHORT_LINK_MAX_HEADER_BYTES,
-            headers: {
-                host: parsed.host,
-                'user-agent': 'dongxuelian-local-video-sender/0.2',
-            },
-        }, response => {
-            const location = Array.isArray(response.headers.location) ? response.headers.location[0] : response.headers.location || '';
-            response.resume();
-            resolve({ statusCode: Number(response.statusCode || 0), location: String(location) });
-        });
-        request.setTimeout(Math.max(100, timeoutMs), () => request.destroy(new Error('short link redirect timeout')));
-        request.on('error', reject);
-        request.end();
-    });
-}
-// 沿受限重定向链把一个 b23 短链归一化为第一分 P 地址。
-async function resolveBiliShortLink(input, requestRedirect = requestRedirectLocation) {
-    let current = String(input || '').trim();
-    if (!isB23ShortUrl(current))
-        return normalizeBiliP1Url(current);
-    const deadline = Date.now() + SHORT_LINK_TIMEOUT_MS;
-    for (let index = 0; index <= SHORT_LINK_MAX_REDIRECTS; index++) {
-        const existing = normalizeBiliP1Url(current);
-        if (existing)
-            return existing;
-        if (index === SHORT_LINK_MAX_REDIRECTS)
-            throw new Error('short link redirect limit exceeded');
-        if (!isAllowedBiliRedirectUrl(current))
-            throw new Error('short link redirect escaped Bilibili allowlist');
-        const remaining = deadline - Date.now();
-        if (remaining <= 0)
-            throw new Error('short link redirect timeout');
-        const response = await requestRedirect(current, remaining);
-        if (response.statusCode < 300 || response.statusCode >= 400 || !response.location)
-            return '';
-        current = new URL(response.location, current).toString();
-    }
-    return '';
-}
-// 清理十分钟短链归一化缓存并返回仍有效的第一分 P 结果。
-function getCachedShortLinkResolution(urlKey, now = Date.now()) {
-    for (const [key, entry] of shortLinkResolutionCache) {
-        if (entry.expiresAt <= now)
-            shortLinkResolutionCache.delete(key);
-    }
-    const entry = shortLinkResolutionCache.get(urlKey);
-    return entry && entry.expiresAt > now ? entry : null;
-}
-// 在媒体探测前生成统一的第一分 P 地址，并补齐去重和缓存查询键。
+// 将主插件上下文适配到独立的 B 站输入与短链安全边界。
 async function resolveInputBiliTarget(ctx, url, source, deps = {}) {
-    const keys = uniqueStrings(buildBiliKeys(source).concat(buildBiliKeys(url)));
-    const directP1Url = normalizeBiliP1Url(url) || normalizeBiliP1Url(source);
-    if (directP1Url)
-        return { keys: uniqueStrings(keys.concat(buildBiliKeys(directP1Url))), p1Url: directP1Url };
-    if (!isB23ShortUrl(url))
-        return { keys, p1Url: '' };
-    const urlKey = normalizeBiliUrlKey(url);
-    const cached = getCachedShortLinkResolution(urlKey);
-    if (cached)
-        return { keys: uniqueStrings(keys.concat(cached.bvKey).concat(buildBiliKeys(cached.p1Url))), p1Url: cached.p1Url };
-    try {
-        const resolver = deps.resolveShortLink || resolveBiliShortLink;
-        const p1Url = normalizeBiliP1Url(await resolver(url));
-        const bvKey = extractBvKey(p1Url);
-        if (!p1Url || !bvKey)
-            throw new Error('short link did not resolve to a Bilibili video BV address');
-        shortLinkResolutionCache.set(urlKey, { bvKey, p1Url, expiresAt: Date.now() + SHORT_LINK_CACHE_TTL_MS });
-        return { keys: uniqueStrings(keys.concat(bvKey).concat(buildBiliKeys(p1Url))), p1Url };
-    }
-    catch (error) {
-        ctx.logger('bvidl').warn(`short link resolution failed: ${getErrorMessage(error)}`);
-        return { keys, p1Url: '' };
-    }
+    return biliInput.resolveBiliInput({
+        url,
+        source,
+        resolveShortLink: deps.resolveShortLink,
+        onError: message => ctx.logger('bvidl').warn(`short link resolution failed: ${message}`),
+    });
 }
 function getParseChannelKey(session) {
     return String(session.guildId || session.channelId || session.userId || 'private');
@@ -1157,7 +912,7 @@ function startVideoCacheMaintenance(ctx) {
             if (entry.activeSends === 0)
                 await deleteVideoCacheEntry(ctx, entry);
         }
-        shortLinkResolutionCache.clear();
+        biliInput.clearBiliInputCache();
         inflightDownloads.clear();
     });
 }
@@ -1167,7 +922,7 @@ function getVideoCacheStatus() {
         entries: videoFileCache.size,
         aliases: videoCacheAliases.size,
         inflight: inflightDownloads.size,
-        shortLinks: shortLinkResolutionCache.size,
+        shortLinks: biliInput.getBiliInputCacheSize(),
         items: [...videoFileCache.values()].map(entry => ({
             bvKey: entry.bvKey,
             sizeBytes: entry.sizeBytes,
@@ -1785,7 +1540,7 @@ const clearRecentParseHistory = () => recentParseHistory.clear();
 // 清理测试可见的内存状态和无活动缓存文件。
 async function clearVideoRuntimeState() {
     recentParseHistory.clear();
-    shortLinkResolutionCache.clear();
+    biliInput.clearBiliInputCache();
     inflightDownloads.clear();
     for (const entry of [...videoFileCache.values()]) {
         detachVideoCacheEntry(entry);

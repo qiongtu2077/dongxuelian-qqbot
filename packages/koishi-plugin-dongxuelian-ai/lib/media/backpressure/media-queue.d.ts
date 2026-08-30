@@ -8,7 +8,7 @@ interface MediaTaskInput {
     ttlMs?: number;
     payload?: Record<string, unknown>;
 }
-interface MediaTask extends Record<string, unknown> {
+interface MediaTask {
     id: string;
     kind: string;
     channelKey: string;
@@ -49,6 +49,7 @@ interface MediaRetentionResult {
 }
 declare function ensureMediaDirs(): void;
 declare function writeMediaEvent(event: string, data?: Record<string, unknown>): void;
+declare function parseMediaTask(value: unknown): MediaTask | null;
 declare function createMediaHash(input: MediaTaskInput): string;
 declare function readCacheIndex(): Record<string, unknown>;
 declare function writeCacheIndex(index: Record<string, unknown>): void;
@@ -94,5 +95,8 @@ declare const _default: {
     discardInterruptedMediaTasks: typeof discardInterruptedMediaTasks;
     getMediaBackpressureStatus: typeof getMediaBackpressureStatus;
     isMediaTaskDeferred: typeof isMediaTaskDeferred;
+    _test: {
+        parseMediaTask: typeof parseMediaTask;
+    };
 };
 export = _default;

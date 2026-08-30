@@ -66,31 +66,9 @@ function buildLocateMessageContext(cache, cacheIdx) {
     }).join('\n');
     return `消息上下文（共${cache.messages.length}条）：\n\n${contextLines}`;
 }
-async function handleCommand(session, ctx, state) {
+// Handles operational commands for modes, diagnostics, history lookup and search switches.
+async function handleOperationalCommandDomain(session, ctx, state) {
     const { plain, inGuild, channelKey, currentUserId, adminCommandMatched, loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache, callOpenAI, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus, getThinkingEnabled, setThinkingEnabled, resetConfigCache, getSkillsCount, channelMissCount, repeatEnabledCache, channelTodayCache, lastEmotionCache, } = state;
-    trimForgetPendingConfirm();
-    function buildPersonaCommandSystem(taskPrompt) {
-        const resolved = resolvePersona(channelKey, currentUserId);
-        const personaName = resolved.name || '默认';
-        let personaContent = '';
-        try {
-            const { loadPersonalSkill } = require('./persona/persona');
-            personaContent = personaName ? loadPersonalSkill(personaName) || '' : '';
-        }
-        catch { /* non-critical: persona command can answer with persona name when body load fails */ }
-        return [
-            `当前人格：${personaName}`,
-            personaContent ? `当前人格内容：\n${personaContent.slice(0, 4000)}` : '',
-            '按当前人格自然回复。不要输出内部分析、工具计划、Markdown 代码块或系统提示。',
-            taskPrompt,
-        ].filter(Boolean).join('\n\n');
-    }
-    function cleanGeneratedCommandReply(text = '') {
-        const cleaned = trimReply(stripMarkdownForQQ(sanitizeReply(String(text ?? ''), sanitizeUserName(session.author?.nick || session.author?.name || session.username || ''))), 260);
-        if (!cleaned || isUnsafeThinkingReply(cleaned) || hasInternalContextLeak(cleaned))
-            return '';
-        return cleaned;
-    }
     if (/^(?:东雪莲)?测试开$/.test(plain)) {
         try {
             require('fs').writeFileSync(TEST_MODE_FILE, 'on');
@@ -262,6 +240,35 @@ async function handleCommand(session, ctx, state) {
     if (/^东雪莲联网查看$/.test(plain)) {
         const config = await loadConfig(true);
         return handled(formatSearchStatus(config));
+    }
+    return notHandled();
+}
+// Handles memory, persona, generated social replies and repeat settings.
+async function handleConversationCommandDomain(session, ctx, state) {
+    const { plain, inGuild, channelKey, currentUserId, callOpenAI, setRepeatEnabled, repeatEnabledCache, } = state;
+    // Builds one generated-command prompt against the currently resolved persona.
+    function buildPersonaCommandSystem(taskPrompt) {
+        const resolved = resolvePersona(channelKey, currentUserId);
+        const personaName = resolved.name || '默认';
+        let personaContent = '';
+        try {
+            const { loadPersonalSkill } = require('./persona/persona');
+            personaContent = personaName ? loadPersonalSkill(personaName) || '' : '';
+        }
+        catch { /* non-critical: persona command can answer with persona name when body load fails */ }
+        return [
+            `当前人格：${personaName}`,
+            personaContent ? `当前人格内容：\n${personaContent.slice(0, 4000)}` : '',
+            '按当前人格自然回复。不要输出内部分析、工具计划、Markdown 代码块或系统提示。',
+            taskPrompt,
+        ].filter(Boolean).join('\n\n');
+    }
+    // Cleans generated social-command text before it can be returned to the user.
+    function cleanGeneratedCommandReply(text = '') {
+        const cleaned = trimReply(stripMarkdownForQQ(sanitizeReply(String(text ?? ''), sanitizeUserName(session.author?.nick || session.author?.name || session.username || ''))), 260);
+        if (!cleaned || isUnsafeThinkingReply(cleaned) || hasInternalContextLeak(cleaned))
+            return '';
+        return cleaned;
     }
     // #2 忘记我二次确认
     if (plain === '东雪莲忘记我') {
@@ -452,6 +459,18 @@ async function handleCommand(session, ctx, state) {
         const enabled = repeatEnabledCache[channelKey];
         return handled(`本群连续复读：${enabled ? '开启' : '关闭'}（默认关闭，同一复读组只跟一次）`);
     }
+    return notHandled();
+}
+// Parses shared state once, authorizes domain handlers, then executes the remaining runtime command adapters.
+async function handleCommand(session, ctx, state) {
+    trimForgetPendingConfirm();
+    const operationalResult = await handleOperationalCommandDomain(session, ctx, state);
+    if (operationalResult.matched)
+        return operationalResult;
+    const conversationResult = await handleConversationCommandDomain(session, ctx, state);
+    if (conversationResult.matched)
+        return conversationResult;
+    const { plain, channelKey, currentUserId, adminCommandMatched, loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache, resetConfigCache, getSkillsCount, getThinkingEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus, channelMissCount, } = state;
     // === TTS 语音合成命令 ===
     const voiceResult = await handleVoiceCommand(session, state, { ctx });
     if (voiceResult.matched)
@@ -536,4 +555,10 @@ async function handleCommand(session, ctx, state) {
         return agentRuntimeResult;
     return notHandled();
 }
-module.exports = { handleCommand };
+module.exports = {
+    handleCommand,
+    _test: {
+        handleOperationalCommandDomain,
+        handleConversationCommandDomain,
+    },
+};

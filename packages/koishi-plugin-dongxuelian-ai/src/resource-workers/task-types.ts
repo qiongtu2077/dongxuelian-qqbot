@@ -5,18 +5,19 @@
  */
 import type resourceTaskKinds = require('../resource-common/resource-task-kinds')
 
-type ResourceTaskStatus = 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred'
-type KnownResourceTaskKind = typeof resourceTaskKinds.RESOURCE_TASK_KIND[keyof typeof resourceTaskKinds.RESOURCE_TASK_KIND]
-type ResourceTaskKind = KnownResourceTaskKind | string
+export type ResourceTaskStatus = 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred'
+export type KnownResourceTaskKind = typeof resourceTaskKinds.RESOURCE_TASK_KIND[keyof typeof resourceTaskKinds.RESOURCE_TASK_KIND]
+export type ResourceTaskKind = KnownResourceTaskKind | string
 
-interface ResourceTaskNotify {
+export interface ResourceTaskNotify {
   target?: 'qq-group' | 'dashboard' | 'none' | string
   channelKey?: string
   status?: 'pending' | 'sent' | 'failed' | string
   error?: string
+  updatedAt?: string
 }
 
-interface ResourceTask {
+export interface ResourceTask {
   id: string
   kind: ResourceTaskKind
   status: ResourceTaskStatus
@@ -25,8 +26,8 @@ interface ResourceTask {
   userId: string
   priority: number
   createdAt: string
-  updatedAt?: string
-  expiresAt?: string
+  updatedAt: string
+  expiresAt: string
   timeoutMs: number
   step?: string
   claimedBy?: string
@@ -34,11 +35,13 @@ interface ResourceTask {
   startedAt?: string
   finishedAt?: string
   payload: Record<string, unknown>
-  notify?: ResourceTaskNotify
+  notify: ResourceTaskNotify
   error?: string
+  retryAfter?: string
+  requeueReason?: string
 }
 
-interface ResourceTaskResult {
+export interface ResourceTaskResult {
   taskId: string
   kind: string
   ok: boolean
@@ -52,16 +55,25 @@ interface ResourceTaskResult {
   createdAt: string
 }
 
-interface ResourceWorkerState {
+export interface ResourceWorkerState {
   name: string
   pid: number
-  kind: string
+  kind?: string
   taskId?: string
   step?: string
   startedAt: string
   heartbeatAt: string
   rssMb?: number | null
-  alive?: boolean
+  alive: boolean
+  heartbeatLagMs?: number | null
+  loopIterations?: number
+  loopChangedAt?: string
+  lastClaimAttemptAt?: string
+  lastTaskFinishedAt?: string
+  currentTaskId?: string
+  currentTaskStartedAt?: string
+  parked?: boolean
+  parkSleepMs?: number
+  ownerGeneration?: string
+  startToken?: string
 }
-
-export = {}

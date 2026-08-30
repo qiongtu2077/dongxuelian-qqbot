@@ -3,9 +3,12 @@
  * 职责: 根据模式执行不同深度的分析。
  * 边界: 复用主插件的 runtime-config.js + api.js。
  */
-const { loadConfig } = require('../../koishi-plugin-dongxuelian-ai/lib/core/runtime-config') as typeof import('../../koishi-plugin-dongxuelian-ai/lib/core/runtime-config')
-const { requestChatCompletions } = require('../../koishi-plugin-dongxuelian-ai/lib/core/api') as typeof import('../../koishi-plugin-dongxuelian-ai/lib/core/api')
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
+const { loadConfig } = loadManagementModule('core.runtimeConfig')
+const { requestChatCompletions } = loadManagementModule('core.api')
 const { createDefaultAnalysisResult, createTopic, createGoldenQuote, createUserTitle } = require('./models') as typeof import('./models')
+const { getErrorMessage } = require('./error-utils') as typeof import('./error-utils')
+const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
 
 interface ReportMessage {
   time?: string
@@ -125,22 +128,11 @@ const REPORT_ANALYSIS_TIMEOUT_MS = parsePositiveInt(process.env.DAILY_REPORT_AI_
 
 // --- Config helpers --- #
 
-// Parses bounded integer config values from environment variables.
-function parsePositiveInt(value: string | undefined, fallback: number, min: number, max: number): number {
-  const parsed = parseInt(String(value), 10)
-  if (!Number.isFinite(parsed)) return fallback
-  return Math.max(min, Math.min(max, parsed))
-}
-
 // Parses bounded float config values from environment variables.
 function parsePositiveFloat(value: string | undefined, fallback: number, min: number, max: number): number {
   const parsed = parseFloat(String(value))
   if (!Number.isFinite(parsed)) return fallback
   return Math.max(min, Math.min(max, parsed))
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 function asRecord(value: unknown): JsonRecord {

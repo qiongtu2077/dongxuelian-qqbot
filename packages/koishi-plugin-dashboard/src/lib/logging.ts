@@ -7,7 +7,8 @@ const { KOISHI_DIR, DEBUG_LOG_CONFIG_FILE, MAX_LOG_LIMIT } = require('./paths') 
   DEBUG_LOG_CONFIG_FILE: string
   MAX_LOG_LIMIT: number
 }
-const { redactSensitiveText } = require('koishi-plugin-dongxuelian-ai/lib/core/redactor') as {
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
+const { redactSensitiveText } = loadManagementModule('core.redactor') as {
   redactSensitiveText(input: string): string
 }
 

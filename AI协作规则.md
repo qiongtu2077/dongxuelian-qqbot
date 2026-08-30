@@ -23,8 +23,8 @@
 
 3. **新增模块同步。** 新增生产模块时，同步更新：
    - package.json scripts.check 加 node -c 检查
-   - cascade-test.js 的 modPaths、syntaxFiles、duplicateScanFiles
-   - 函数导出放 expectedExports；非函数导出单独写类型断言
+   - `test/cascade/module-contract.js` 的 modPaths 与 expectedExports
+   - `test/cascade/core-contracts.js` 的 syntaxFiles 与 duplicateScanFiles；非函数导出单独写类型断言
 
 4. **代码风格。** 新增或本轮修改的 lib 代码禁止新增 var，统一 const/let。旧 var 不追溯，触碰相关函数时顺手清理。
 
@@ -69,7 +69,7 @@
 
 5. **不靠猜定位。** 测试挂了先分清楚是语法、导出、行为、环境 skip、断言脆弱，还是暴露真实旧 bug。阻塞当前任务或同改动面的明确小 bug 可以最小修复；无关大问题不顺手展开。
 
-6. **验证闭环。** 相关文件先跑 `node -c`；常规收尾跑 `npm run check`、按范围跑 `npm run test:quick` / `npm run test:scenario` / `npm run test:plugins`，最后跑 `npm test` 和 `git diff --check`。环境限制导致 skip 要说明清楚。
+6. **验证闭环。** 相关文件先跑 `node -c`；开发中按范围跑 `npm run test:quick` / `npm run test:scenario` / `npm run test:plugins` / `npm run test:dashboard`；提交和发布前统一跑完整 `npm test` 与 `git diff --check`。环境限制导致 skip 要说明清楚。
 
 7. **不越界。** 不做破坏性 git 操作，不回滚已有改动，不加 `_testOnly`，不引入新框架/新依赖/新数据库，不把小需求扩成大重构。
 

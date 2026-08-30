@@ -1,10 +1,11 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils');
+const { json, collectBody, readFileSyncSafe, writeFileSyncSafe, getErrorMessage, getObjectErrorMessage: getLegacyErrorMessage, } = require('../utils');
 const { requireAdmin } = require('../auth');
 const { ConfigTransactionError, executeConfigTransaction, recoverPendingConfigTransactions } = require('../config-transaction');
-const { DATA_DIR, AI_LIB, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE } = require('../paths');
+const { DATA_DIR, CUSTOM_PROVIDERS_FILE, FALLBACK_CHAINS_FILE } = require('../paths');
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
 // Restores any uncommitted multi-file API configuration before routes become available.
 recoverPendingConfigTransactions(DATA_DIR);
 const DEFAULT_FALLBACK_CHAINS = {
@@ -41,14 +42,6 @@ function requireToolDefinition(tool) {
         throw new TypeError("Cannot read properties of undefined (reading 'name')");
     return tool.definition;
 }
-function getErrorMessage(error) {
-    if (error && typeof error === 'object' && 'message' in error)
-        return String(error.message || '');
-    return String(error || '');
-}
-function getLegacyErrorMessage(error) {
-    return error && typeof error === 'object' && 'message' in error ? error.message : undefined;
-}
 function parseJsonObject(body) {
     const data = JSON.parse(body || '{}');
     return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
@@ -75,7 +68,7 @@ function isValidProviderBaseURL(value) {
 }
 function readBuiltinProviders() {
     try {
-        const { PROVIDERS } = require(path.join(AI_LIB, 'core', 'constants'));
+        const { PROVIDERS } = loadManagementModule('core.constants');
         return PROVIDERS || {};
     }
     catch {
@@ -163,11 +156,14 @@ function normalizeCustomProviderList(data) {
     }
     return cleaned;
 }
+// 刷新 AI 运行时配置缓存；失败时记录稳定警告但不回滚已落盘配置。
 function resetRuntimeConfigCache() {
     try {
-        require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache();
+        loadManagementModule('core.runtimeConfig').resetConfigCache();
     }
-    catch { /* non-critical: cache reset best effort */ }
+    catch (error) {
+        console.warn(`[dashboard] runtime_config_cache_reset_failed detail=${getErrorMessage(error)}`);
+    }
 }
 function providerIdFromKeyFile(file) {
     const map = {
@@ -317,7 +313,7 @@ function verifyApiConfigReadback(providers, chains, keyFile, keyValue) {
         throw new Error('Fallback 链回读不一致');
     if (keyValue !== undefined && fs.readFileSync(path.join(DATA_DIR, keyFile), 'utf8') !== keyValue)
         throw new Error('Key 文件回读不一致');
-    const registry = require(path.join(AI_LIB, 'core', 'provider-registry'));
+    const registry = loadManagementModule('core.providerRegistry');
     const runtimeProviders = registry.getMergedProviderMapSync();
     for (const provider of providers) {
         const runtimeProvider = runtimeProviders[provider.id];
@@ -595,7 +591,7 @@ function handleGetFallback(req, res) {
         return;
     function buildProviderMap() {
         try {
-            const registry = require(path.join(AI_LIB, 'core', 'provider-registry'));
+            const registry = loadManagementModule('core.providerRegistry');
             const merged = registry.getMergedProviderMapSync();
             const publicMap = {};
             for (const [id, provider] of Object.entries(merged)) {
@@ -610,7 +606,7 @@ function handleGetFallback(req, res) {
         }
         catch {
             const ps = {};
-            const { PROVIDERS: pDefs } = require(path.join(AI_LIB, 'core', 'constants'));
+            const { PROVIDERS: pDefs } = loadManagementModule('core.constants');
             for (const key of Object.keys(pDefs))
                 ps[key] = pDefs[key];
             return ps;
@@ -675,10 +671,7 @@ function handlePutAdminIds(req, res) {
             const tmp = ADMIN_IDS_FILE + '.tmp';
             fs.writeFileSync(tmp, JSON.stringify(cleaned, null, 2), 'utf8');
             fs.renameSync(tmp, ADMIN_IDS_FILE);
-            try {
-                require(path.join(AI_LIB, 'core', 'runtime-config')).resetConfigCache();
-            }
-            catch { /* non-critical: cache reset best effort */ }
+            resetRuntimeConfigCache();
             return json(res, { ok: true, message: '管理员列表已更新' });
         }
         catch {
@@ -688,8 +681,8 @@ function handlePutAdminIds(req, res) {
 }
 function handleGetTools(req, res) {
     try {
-        const registry = require(path.join(AI_LIB, 'agent', 'tools', 'registry'));
-        const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig(true);
+        const registry = loadManagementModule('agent.toolRegistry');
+        const agentConfig = loadManagementModule('agent.config').getAgentConfig(true);
         const tools = Object.values(registry.toolRegistry).map(tool => {
             const definition = requireToolDefinition(tool);
             const name = definition.name;
@@ -715,7 +708,7 @@ function handleGetToolsPending(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const pendingModule = require(path.join(AI_LIB, 'agent', 'pending'));
+        const pendingModule = loadManagementModule('agent.pending');
         const p = pendingModule.getPendingTool('dashboard', 'dashboard');
         const pending = pendingModule.listPendingTools ? pendingModule.listPendingTools() : [];
         return json(res, { ok: true, pending: pending.length ? pending : (p ? [{ id: p.id, toolName: p.toolName, expireAt: p.expireAt }] : []) });
@@ -751,10 +744,10 @@ const regexRoutes = [
                     const data = JSON.parse(body || '{}');
                     const toolName = decodeURIComponent(match[1]);
                     const channel = normalizeToolChannel(data.channel);
-                    const registry = require(path.join(AI_LIB, 'agent', 'tools', 'registry'));
+                    const registry = loadManagementModule('agent.toolRegistry');
                     if (!registry.toolRegistry[toolName])
                         return json(res, { ok: false, message: '未知工具' }, 404);
-                    const saved = await require(path.join(AI_LIB, 'agent', 'config')).setToolEnabled(channel, toolName, !!data.enabled);
+                    const saved = await loadManagementModule('agent.config').setToolEnabled(channel, toolName, !!data.enabled);
                     return json(res, { ok: true, config: saved });
                 }
                 catch (e) {
@@ -766,16 +759,26 @@ const regexRoutes = [
             if (!requireAdmin(req, res))
                 return;
             try {
-                const pending = require(path.join(AI_LIB, 'agent', 'pending'));
+                const pending = loadManagementModule('agent.pending');
                 const pendingId = decodeURIComponent(match[1]);
                 const findPendingById = pending.findPendingToolById || pending.getPendingToolById || ((id) => (pending.listPendingTools && pending.listPendingTools().find(item => item.id === id)) || null);
                 const p = findPendingById(pendingId);
                 if (!p)
                     return json(res, { ok: false, message: '没有匹配的待确认工具' }, 404);
-                const workerSubmission = require(path.join(AI_LIB, 'agent', 'worker-submission'));
-                const agentPayload = require(path.join(AI_LIB, 'resource-workers', 'agent-payload'));
-                const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig();
+                const workerSubmission = loadManagementModule('agent.workerSubmission');
+                const agentPayload = loadManagementModule('resource.agentPayload');
+                const agentConfig = loadManagementModule('agent.config').getAgentConfig();
                 const resumeInput = { channelKey: p.channelKey, userId: p.userId, channel: p.channel || 'dashboard', expectedId: pendingId };
+                const pendingSnapshot = {
+                    id: p.id,
+                    toolName: p.toolName,
+                    args: p.args,
+                    userId: p.userId,
+                    channelKey: p.channelKey,
+                    channel: p.channel,
+                    expireAt: p.expireAt,
+                    resume: p.resume,
+                };
                 const submission = workerSubmission.submitAgentWorkerTask({
                     channel: p.channel || 'dashboard',
                     channelKey: p.channelKey,
@@ -783,7 +786,7 @@ const regexRoutes = [
                     timeoutMs: agentConfig.queue?.timeoutMs,
                     maxActivePerUser: agentConfig.queue?.maxPendingPerUser,
                     source: 'dashboard-standalone',
-                    payload: { entry: 'settings-pending-approve', pendingId, agentWorker: agentPayload.createAgentResumeWorkerPayload('settings-pending-approve', resumeInput, p) },
+                    payload: { entry: 'settings-pending-approve', pendingId, agentWorker: agentPayload.createAgentResumeWorkerPayload('settings-pending-approve', resumeInput, pendingSnapshot) },
                 });
                 return json(res, {
                     ok: submission.accepted,

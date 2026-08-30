@@ -1,11 +1,11 @@
-interface BackgroundLlmPayloadLike extends Record<string, unknown> {
+interface BackgroundLlmPayloadLike {
     channels?: unknown;
     selfUserId?: unknown;
     botName?: unknown;
     key?: unknown;
     channelKey?: unknown;
 }
-interface BackgroundLlmTaskLike extends Record<string, unknown> {
+interface BackgroundLlmTaskLike {
     id?: string;
     kind?: string;
     channelKey?: string;

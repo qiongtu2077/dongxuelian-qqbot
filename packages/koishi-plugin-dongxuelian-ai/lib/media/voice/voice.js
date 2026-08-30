@@ -33,6 +33,7 @@ function extractVoicePayload(session) {
         return { url: '', file: cqFile[1] };
     return null;
 }
+// 下载经过公网校验且满足大小限制的语音到临时文件。
 async function downloadVoiceFile(url, destPath) {
     return new Promise((resolve) => {
         let req = null;
@@ -58,7 +59,8 @@ async function downloadVoiceFile(url, destPath) {
                 parsed = validatePublicHttpUrl(url);
                 await resolveAndValidateHostname(parsed);
             }
-            catch { /* non-critical: invalid or private voice URL is treated as unreadable */
+            catch (error) {
+                console.warn(`[voice-asr] download_url_rejected detail=${getVoiceErrorMessage(error)}`);
                 return finish(null);
             }
             try {
@@ -95,7 +97,8 @@ async function downloadVoiceFile(url, destPath) {
                             fs.writeFileSync(destPath, buf);
                             finish(destPath);
                         }
-                        catch { /* non-critical: temp voice write failure makes ASR unavailable */
+                        catch (error) {
+                            console.warn(`[voice-asr] temp_voice_write_failed detail=${getVoiceErrorMessage(error)}`);
                             finish(null);
                         }
                     });
@@ -104,12 +107,14 @@ async function downloadVoiceFile(url, destPath) {
                 req = currentReq;
                 currentReq.on('error', () => finish(null));
             }
-            catch { /* non-critical: network setup failure makes this voice unreadable */
+            catch (error) {
+                console.warn(`[voice-asr] network_setup_failed detail=${getVoiceErrorMessage(error)}`);
                 finish(null);
             }
         })();
     });
 }
+// 优先用 ffmpeg 转码，失败后尝试 Silk 解码并返回 WAV 路径。
 function convertToWav(srcPath) {
     return new Promise((resolve) => {
         const outPath = srcPath + '.wav';
@@ -126,7 +131,8 @@ function convertToWav(srcPath) {
                     return resolve(outPath);
                 }
             }
-            catch { /* non-critical: silk fallback is optional after ffmpeg conversion failure */
+            catch (error) {
+                console.warn(`[voice-asr] conversion_fallback_failed ffmpeg=${getVoiceErrorMessage(err)} silk=${getVoiceErrorMessage(error)}`);
             }
             resolve(null);
         });
@@ -181,6 +187,7 @@ async function callModelAsr(wavPath, config) {
     const text = typeof result === 'string' ? result : (resultRecord && resultRecord.content || '');
     return String(text || '').trim();
 }
+// 依次提取、下载、转码和识别会话中的语音，无法识别时返回 null。
 async function transcribeVoice(session, config) {
     const payload = extractVoicePayload(session);
     if (!payload)
@@ -199,7 +206,8 @@ async function transcribeVoice(session, config) {
             if (recordInfo && recordInfo.file && fs.existsSync(recordInfo.file))
                 downloaded = String(recordInfo.file);
         }
-        catch { /* non-critical: OneBot get_record failure makes ASR unavailable */
+        catch (error) {
+            console.warn(`[voice-asr] onebot_get_record_failed detail=${getVoiceErrorMessage(error)}`);
         }
     }
     if (!downloaded)

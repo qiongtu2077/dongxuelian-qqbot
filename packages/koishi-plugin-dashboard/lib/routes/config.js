@@ -2,17 +2,15 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils');
+const { json, collectBody, readFileSyncSafe, writeFileSyncSafe, getObjectErrorMessage: getLegacyErrorMessage, } = require('../utils');
 const { requireAdmin } = require('../auth');
-const { DATA_DIR, AI_LIB, PLUGIN_ROOT, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths');
+const { DATA_DIR, PLUGIN_ROOT, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths');
 const { checkPortState } = require('../tools');
 const { resolveNapcatOnebotListenPort } = require('../napcat');
-function getLegacyErrorMessage(error) {
-    return error && typeof error === 'object' && 'message' in error ? error.message : undefined;
-}
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
 function parseFrontmatter(content) {
     const raw = String(content || '').replace(/\uFEFF/g, '');
-    const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'core', 'frontmatter'));
+    const { parseFrontmatterDocument } = loadManagementModule('core.frontmatter');
     const parsed = parseFrontmatterDocument(raw);
     return { meta: parsed.meta, body: parsed.body, raw };
 }
@@ -160,7 +158,7 @@ function handleGetReleaseStatus(req, res) {
 }
 function handleGetProviders(req, res) {
     try {
-        const registry = require(path.join(AI_LIB, 'core', 'provider-registry'));
+        const registry = loadManagementModule('core.providerRegistry');
         const merged = registry.getMergedProviderMapSync();
         const publicMap = {};
         for (const [id, provider] of Object.entries(merged)) {
@@ -173,7 +171,7 @@ function handleGetProviders(req, res) {
         return json(res, publicMap);
     }
     catch {
-        const { PROVIDERS } = require(path.join(AI_LIB, 'core', 'constants'));
+        const { PROVIDERS } = loadManagementModule('core.constants');
         return json(res, PROVIDERS);
     }
 }
@@ -196,7 +194,7 @@ function handlePutConfig(req, res) {
                 writeFileSyncSafe(path.join(DATA_DIR, 'ai-model.txt'), data.model);
             if (data.baseUrl !== undefined)
                 writeFileSyncSafe(path.join(DATA_DIR, 'ai-base-url.txt'), data.baseUrl);
-            const { resetConfigCache } = require(path.join(AI_LIB, 'core', 'runtime-config'));
+            const { resetConfigCache } = loadManagementModule('core.runtimeConfig');
             resetConfigCache();
             json(res, { ok: true, message: '配置已更新' });
         }
@@ -207,7 +205,7 @@ function handlePutConfig(req, res) {
 }
 function handleGetPersonas(req, res, pathname, url) {
     try {
-        const { getAvailablePersonals, loadPersonalSkill } = require(path.join(AI_LIB, 'persona', 'persona'));
+        const { getAvailablePersonals, loadPersonalSkill } = loadManagementModule('media.persona');
         const name = url.searchParams.get('name');
         if (name) {
             const content = loadPersonalSkill(name);
@@ -251,7 +249,7 @@ function handleDeletePersonas(req, res) {
             const { name } = JSON.parse(body);
             if (!name)
                 return json(res, { ok: false, message: '名称不能为空' }, 400);
-            const all = require(path.join(AI_LIB, 'persona', 'persona')).getAvailablePersonals();
+            const all = loadManagementModule('media.persona').getAvailablePersonals();
             if (all.find(p => p.name === name)?.type === 'core')
                 return json(res, { ok: false, message: '核心规则不可删除' }, 400);
             if (all.find(p => p.name === name)?.type === 'mode')
@@ -465,7 +463,7 @@ function toPublicPersonaDiagnostic(item = {}) {
 }
 function handleGetPersonaDiagnostics(req, res) {
     try {
-        const diagnostics = require(path.join(AI_LIB, 'persona', 'persona-diagnostics'));
+        const diagnostics = loadManagementModule('media.personaDiagnostics');
         const result = diagnostics.scanPersonaDocuments();
         const documents = Array.isArray(result.documents) ? result.documents : [];
         return json(res, {

@@ -211,58 +211,18 @@ LianLianBot 传统 Linux 部署教程
 更新部署（已有服务器，只更新代码）
 ------------------------------------
 
-方式 A：全量更新（精简版）
-  从本地仓库根目录：
-  scp packages/koishi-plugin-dongxuelian-ai/lib/*.js \
-    root@服务器IP:<YOUR_APP_DIR>/packages/koishi-plugin-dongxuelian-ai/lib/
-  scp packages/koishi-plugin-dongxuelian-help/lib/index.js \
-    root@服务器IP:<YOUR_APP_DIR>/packages/koishi-plugin-dongxuelian-help/lib/
-  scp packages/koishi-plugin-group-name-at/lib/index.js \
-    root@服务器IP:<YOUR_APP_DIR>/packages/koishi-plugin-group-name-at/lib/
-  scp packages/koishi-plugin-local-video-sender/lib/index.js \
-    root@服务器IP:<YOUR_APP_DIR>/packages/koishi-plugin-local-video-sender/lib/
-  scp packages/koishi-plugin-dongxuelian-ai/data/ai-skills/core/* \
-    root@服务器IP:<YOUR_DATA_DIR>/ai-skills/core/
-  scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.长离.md" \
-    root@服务器IP:<YOUR_DATA_DIR>/ai-skills/personas/
-  scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.椿.md" \
-    root@服务器IP:<YOUR_DATA_DIR>/ai-skills/personas/
-  scp "packages/koishi-plugin-dongxuelian-ai/data/ai-skills/personas/SKILL.特蕾西娅.md" \
-    root@服务器IP:<YOUR_DATA_DIR>/ai-skills/personas/
-  # 重启服务
-  ssh root@服务器IP "bash <YOUR_APP_DIR>/restart.sh"
+唯一方式：Dashboard 安全不可变发布
+  打开 Dashboard 的“部署”页，先生成并检查发布预览，再确认执行。
 
-方式 B：scripts/ 按插件更新（推荐）
-  scripts/ 目录下每个插件都有独立的部署脚本，共享 deploy-package.sh 工具：
+  该入口会统一发布后端插件、Dashboard 前端、脚本与数据种子，并强制执行：
+  - 发布文件清单与内容哈希校验
+  - 发布预览和人工确认
+  - 发布锁与部署前远端基线复核
+  - 不可变发布目录、健康检查和失败自动回滚
 
-  scripts/
-  ├── deploy-package.sh     ← 共享部署工具（语法检查、koishi.yml 注册、安全路径校验）
-  ├── ai.sh                 ← 部署 AI 插件（含 SKILL 文件）
-  ├── help.sh               ← 部署 help 插件
-  ├── name.sh               ← 部署 group-name-at 插件
-  ├── poke.sh               ← 部署 poke 插件
-  ├── defense.sh            ← 部署 defense 插件
-  ├── leave.sh              ← 部署 group-leave-notice 插件
-  ├── vedio.sh              ← 部署 local-video-sender 插件
-  └── message-reader.sh     ← 部署 message-reader.js
+  不要用 SCP、scripts/ 下的单插件本地安装脚本或旧 BAT 文件直接更新远程生产目录；这些方式无法保证完整性与自动回滚。
 
-  在本地仓库根目录执行：
-
-  单个插件更新：
-  bash scripts/ai.sh          # 只更新 AI 插件（含语法检查 + koishi.yml 注册）
-  bash scripts/help.sh        # 只更新 help 插件
-  bash scripts/name.sh        # 只更新群昵称插件
-
-  全部更新：
-  for f in scripts/*.sh; do bash "$f"; done
-
-  每个脚本会自动：
-  - 从 packages/ 复制文件到服务器的 node_modules 对应目录
-  - 对每个 .js 文件执行 node -c 语法检查
-  - 在 koishi.yml 中注册插件（如果尚未注册）
-  - 支持设置部署目标目录（通过 KOISHI_APP_DIR 环境变量）
-
-方式 C：远程一键重启（已经部署完成后快速重启）
+远程一键重启（代码未变化）
   如果你只是修改了 koishi.yml 或 data 目录下的配置文件，不需要更新代码：
 
   ssh root@服务器IP "bash <YOUR_APP_DIR>/restart.sh"
@@ -279,10 +239,10 @@ LianLianBot 传统 Linux 部署教程
   BILI_WORKDIR             → 视频下载目录（默认 /root/koishi-bili-downloads）
   BILI_MAX_SIZE_BYTES      → 视频大小限制（默认 200MB）
   BILI_TEST_VIDEO_FILE     → 测试视频路径（默认 /root/test_bili.mp4）
-  KOISHI_APP_DIR           → Koishi 部署目录（默认 <YOUR_APP_DIR>，scripts/ 部署用）
+  KOISHI_APP_DIR           → Koishi 本地安装目录（默认 <YOUR_APP_DIR>，不用于远程生产代码更新）
 
   例：
-  DONGXUELIAN_DATA_DIR=/custom/data bash scripts/ai.sh
+  DONGXUELIAN_DATA_DIR=/custom/data bash scripts/ai.sh  （仅限本地/初次安装环境）
 
 
 常用命令

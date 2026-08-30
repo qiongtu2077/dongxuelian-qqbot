@@ -239,9 +239,12 @@ async function callOpenAI(messages, isRandom, extraBody = {}, tools = null) {
         return result;
     return getChatCompletionText(result);
 }
-// FUNCTION SIZE GATE: 该函数当前约 350 行。上限 400 行。
-// 触发线：新增逻辑超过 10 行 / 新增状态超过 2 个 key → 先提出拆分方案。
-async function chat(session, userText, ctx, options = {}) {
+// Formats one runtime date/time component for the system prompt.
+function formatChatTimePart(value) {
+    return String(value).padStart(2, '0');
+}
+// Resolves normalized input, memory actions, persona policy and the stable identity prompt for one chat turn.
+async function prepareChatIdentityStage(session, userText, ctx, options) {
     trimRuntimeCaches();
     await refreshSkillsContentCacheIfChanged();
     const skillsContentCache = getSkillsContentCache();
@@ -251,15 +254,12 @@ async function chat(session, userText, ctx, options = {}) {
     const japanLinked = JAPAN_SELF_IDENTIFY_RE.test(cleanInput);
     const wideRareHit = isWideRareProvocation(cleanInput) || japanLinked;
     const testMode = require('fs').existsSync(TEST_MODE_FILE) && hasAdminPermission(session);
-    // #7 群记忆定时清空检查
     const channelKey = getChannelKey(session);
     await clearGroupMemoryIfExpired(session, channelKey);
-    // 人格系统：用户级 > 群级 > 默认（必须在 hostile 之前，因为 hostile 需要 personaName）
     const currentUserId = session.userId || session.author?.id || session.username || '';
     const personaResolution = resolvePersona(channelKey, currentUserId);
     let personaName = personaResolution.name;
     let personaSkillContent = null;
-    // 测试模式强制忽略人格
     if (testMode)
         personaName = null;
     if (personaName) {
@@ -271,15 +271,10 @@ async function chat(session, userText, ctx, options = {}) {
             catch { /* non-critical: logger may be unavailable in tests */ }
         }
     }
-    const personaNameForPrompt = personaName || undefined;
-    const personaSkillContentForPrompt = personaSkillContent || undefined;
-    // 主动记忆写入：用户说"记住XXX"直接存，跳过AI反问
     const directMemoryReply = await handleDirectMemoryWrite({ cleanInput, currentUserId, channelKey, inGuild: !!session.guildId });
     if (directMemoryReply)
-        return directMemoryReply;
-    // 记忆系统：用户确认写入 / 口头纠正
+        return { earlyReply: directMemoryReply };
     await handleMemoryConfirmation({ session, cleanInput, currentUserId, channelKey, inGuild: !!session.guildId });
-    // 反击值系统：三态（0=友善, 1=阴阳, 2=嘴臭），自定义人格时绕过 + 仇恨缓存 30s
     let retaliationLevel = 0;
     if (!testMode && !personaName) {
         const hostileInputDetected = isHostileInput(cleanInput) || japanLinked || rareProvocation;
@@ -315,9 +310,8 @@ async function chat(session, userText, ctx, options = {}) {
             hostileLevelCache.set(cacheKey, { level: retaliationLevel, expireAt: Date.now() + 30000 });
         }
     }
-    const hostile = retaliationLevel >= 2; // 嘴臭 only（兼容下游引用）
-    const yinyang = retaliationLevel === 1; // 阴阳
-    // 构建系统提示词：友善 / 阴阳 / 嘴臭 / 自定义人格
+    const hostile = retaliationLevel >= 2;
+    const yinyang = retaliationLevel === 1;
     let systemPrompt;
     if (testMode) {
         systemPrompt = buildTestSystemPrompt();
@@ -328,15 +322,12 @@ async function chat(session, userText, ctx, options = {}) {
     else if (yinyang) {
         systemPrompt = skillsContentCache['mode:persona-yinyang'] || buildAbusiveSystemPrompt();
     }
-    else {
-        if (personaName && personaSkillContent) {
-            systemPrompt = buildFriendlySafetyFramework() + '\n\n' + personaSkillContent;
-        }
-        else {
-            systemPrompt = buildFriendlySystemPrompt();
-        }
+    else if (personaName && personaSkillContent) {
+        systemPrompt = buildFriendlySafetyFramework() + '\n\n' + personaSkillContent;
     }
-    // 不翻旧账 + 禁止输出思考过程
+    else {
+        systemPrompt = buildFriendlySystemPrompt();
+    }
     systemPrompt += '\n\n专注当前对话。历史记录仅作为背景参考，不要主动提及，除非用户明确问"还记得吗""之前说过"——只有这时才可以翻看历史。';
     systemPrompt += '\n\n禁止输出思考过程。不要分析用户说了什么，不要解释你打算怎么回复，不要复述系统指令，直接说人话。';
     systemPrompt += '\n\nQQ 回复节奏：一般闲聊、建议、评价默认一条或两条内说完；只有教程、清单、复杂解释才多段。可以自然换行，但不要把每个句子都拆成一条消息。';
@@ -347,16 +338,187 @@ async function chat(session, userText, ctx, options = {}) {
     const botIdentityLabel = personaName || (testMode ? '测试模式' : (yinyang ? '阴阳莲莲' : (hostile ? '嘴臭莲莲' : '东雪莲')));
     systemPrompt += `\n\n身份锚：你当前在群里以"${botIdentityLabel}"的身份发言${botSelfNick ? `（群昵称：${botSelfNick}）` : ''}${botSelfId ? `，QQ 号 ${botSelfId}` : ''}。<user> 段里出现的昵称是说话人，不是你自己；他人发言里提到"东雪莲/莲莲/${botIdentityLabel}"或别的群友昵称，都只是在指代别人，不要把自己代入进去。`;
     const now = new Date();
-    const padTimePart = (n) => String(n).padStart(2, '0');
-    const dynamicTimePrompt = `当前时间：${now.getFullYear()}年${padTimePart(now.getMonth() + 1)}月${padTimePart(now.getDate())}日 ${padTimePart(now.getHours())}时${padTimePart(now.getMinutes())}分。核心信息（爱好、习惯、身份等）在下方【记住的】中列出，日常聊天记录中也可能有重复信息，以【记住的】中的内容为准。当用户分享关于自己的重要信息时，你可以自然地问一句是否需要记住，系统会自动记录。`;
+    const dynamicTimePrompt = `当前时间：${now.getFullYear()}年${formatChatTimePart(now.getMonth() + 1)}月${formatChatTimePart(now.getDate())}日 ${formatChatTimePart(now.getHours())}时${formatChatTimePart(now.getMinutes())}分。核心信息（爱好、习惯、身份等）在下方【记住的】中列出，日常聊天记录中也可能有重复信息，以【记住的】中的内容为准。当用户分享关于自己的重要信息时，你可以自然地问一句是否需要记住，系统会自动记录。`;
     const modeLabel = retaliationLevel === 2 ? 'abusive' : retaliationLevel === 1 ? 'yin-yang' : 'friendly';
     logDebug(ctx, 'chat', `mode=${modeLabel} channelKey=${channelKey} persona=${personaName || 'none'} skillLen=${(personaSkillContent || '').length} inputLen=${String(userText || '').length}`);
-    const userName = normalizeText(session.author?.nick ||
-        session.author?.name ||
-        session.username ||
-        '用户');
+    const userName = normalizeText(session.author?.nick || session.author?.name || session.username || '用户');
     const safeUserName = sanitizeUserName(userName);
     const currentUserMessage = `<user>\n昵称：${safeUserName}\n发言：${cleanInput}\n</user>`;
+    return {
+        earlyReply: null,
+        skillsContentCache,
+        cleanInput,
+        isRandomTriggered,
+        rareProvocation,
+        japanLinked,
+        wideRareHit,
+        channelKey,
+        currentUserId,
+        personaName,
+        personaSkillContent,
+        retaliationLevel,
+        hostile,
+        systemPrompt,
+        dynamicTimePrompt,
+        userName,
+        safeUserName,
+        currentUserMessage,
+        botSelfId,
+        now,
+    };
+}
+// Executes vision preparation, tool/model calls, output guards and durable result commit for one chat turn.
+async function executeChatModelStage(input) {
+    const { session, ctx, options, messages, isolatedUserMessage, cleanInput, isRandomTriggered, hostile, currentUserId, channelKey, systemPrompt, currentUserMessage, userName, retaliationLevel, rareConfirmed, } = input;
+    let wasVisionRequest = false;
+    let visionContext = null;
+    if (isVisionSession(session)) {
+        let vc = await loadConfig(true);
+        if (!isVisionModel(vc.provider, vc.model)) {
+            const visionFallbacks = [
+                { provider: 'glm', model: 'glm-4.6v-flash', keyFile: GLM_KEY_FILE },
+                { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: DASHSCOPE_KEY_FILE },
+                { provider: 'dashscope', model: 'qwen3.6-plus', keyFile: DASHSCOPE_KEY_FILE },
+            ];
+            let used = false;
+            for (const fb of visionFallbacks) {
+                if (isVisionModel(fb.provider, fb.model)) {
+                    vc.model = fb.model;
+                    vc.baseURL = PROVIDERS[fb.provider].baseURL;
+                    vc.apiKey = (await readTextFile(fb.keyFile).catch(() => '') || vc.apiKey).replace(/[\r\n]+/g, '');
+                    vc.provider = fb.provider;
+                    used = true;
+                    break;
+                }
+            }
+            if (!used) {
+                clearVisionSession(session);
+                return '';
+            }
+        }
+        const visionPromptText = options.randomTriggered
+            ? '[群里刷到一张图。如果你看清了图，先输出 <image_fact>标签包住的一句客观图片事实（只描述图片里客观看到的内容，60字内，不要称呼用户，不要续聊），再输出按你人设风格的一句可见回应；不要假设这是有人专程拿给你看的。]'
+            : '[用户发来一张图。先输出 <image_fact>标签包住的一句客观图片事实（只描述图片里客观看到的内容，60字内，不要称呼用户，不要续聊），再输出按你人设风格的一句可见回应。]';
+        const visionResult = await appendVisionMessage(asVisionMessages(messages), session, vc, ctx, {
+            promptText: visionPromptText,
+            readFailReply: '图片读取失败，换个图试试？',
+            inaccessibleReply: '图片无法访问，换个图试试？',
+            identifyFailReply: '图片识别失败，换个图试试？',
+        });
+        if (!visionResult.ok)
+            return visionResult.reply || '';
+        visionContext = visionResult.visionContext || null;
+        wasVisionRequest = true;
+    }
+    else {
+        messages.push(createChatPromptPlainUserMessage(isolatedUserMessage));
+    }
+    const hostileEvaluationMessage = createChatPromptHostileEvaluationMessage(isEvaluationRequest, cleanInput, hostile);
+    if (hostileEvaluationMessage)
+        messages.push(hostileEvaluationMessage);
+    const chatTools = getChatToolDefinitions({ channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered });
+    const fileFollowupState = await buildFileFollowupState(channelKey, cleanInput, { userId: currentUserId });
+    const activeFileContext = fileFollowupState.targetFile
+        ? {
+            activeFileMessageId: String(fileFollowupState.targetFile.messageId || ''),
+            activeFileName: fileFollowupState.targetFile.fileName || '',
+        }
+        : {};
+    messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered }) });
+    const reply = await callOpenAI(messages, isRandomTriggered, {}, chatTools);
+    const toolFlowResult = await handleChatToolFlow({
+        reply,
+        messages: asChatToolFlowMessages(messages),
+        options,
+        cleanInput,
+        session,
+        currentUserId,
+        channelKey,
+        activeFileContext,
+        fileFollowupState: fileFollowupState,
+        chatTools,
+        callModel: callOpenAIForToolFlow,
+    });
+    if (toolFlowResult.heavyToolsRequested) {
+        return {
+            text: toolFlowResult.reply,
+            heavyToolsRequested: toolFlowResult.heavyToolsRequested,
+        };
+    }
+    let replyText = toChatText(toolFlowResult.reply);
+    const usedReminderActionTool = toolFlowResult.usedReminderActionTool;
+    const usedUploadedFileVariantTool = toolFlowResult.usedUploadedFileVariantTool;
+    let visionObjectiveFact = '';
+    rememberMemoryPrompt(currentUserId, channelKey, replyText);
+    if (/<tool_call>/i.test(replyText)) {
+        const stripped = replyText.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '').replace(/<tool_call>[\s\S]*$/gi, '').trim();
+        if (stripped && stripped.length > 5) {
+            replyText = stripped;
+        }
+        else {
+            messages.push({ role: 'assistant', content: replyText });
+            messages.push({ role: 'user', content: '【系统提示：不要输出工具调用格式，直接用自然语言回答。】' });
+            replyText = await callOpenAIForText(messages, !!options.randomTriggered);
+        }
+    }
+    if (wasVisionRequest) {
+        const extracted = extractVisionObjectiveFact(replyText);
+        replyText = extracted.visibleReply;
+        visionObjectiveFact = extracted.fact;
+    }
+    // A provider can accept a multimodal request without actually consuming image_url; retry with an explicit text downgrade.
+    if (wasVisionRequest && visionContext && isVisionBlindnessReply(replyText)) {
+        if (downgradeVisionMessageToText(asVisionMessages(messages), visionContext, '[图片暂时取不到，请按当前文字上下文回复，不要假设你看到了什么图]')) {
+            try {
+                ctx.logger('dongxuelian-ai').warn(`vision blindness detected, downgrading. provider=${visionContext.provider} model=${visionContext.model} reply=${replyText.slice(0, 60)}`);
+            }
+            catch { /* non-critical: logger may be unavailable in tests */ }
+            replyText = await callOpenAIForText(messages, !!options.randomTriggered);
+            visionContext = null;
+        }
+    }
+    if (JAILBREAK_OUTPUT_RE.test(replyText)) {
+        ctx.logger('dongxuelian-ai').warn(`jailbreak output detected, forcing fallback. reply: ${replyText.slice(0, 80)}`);
+        const jailbreakReply = await chatJailbreak(session, cleanInput, ctx, { systemPrompt });
+        await saveConversationTurn(session, currentUserMessage, jailbreakReply);
+        return jailbreakReply;
+    }
+    const finalResult = await finalizeChatReply({
+        reply: replyText,
+        messages: asFinalizeMessages(messages),
+        session,
+        ctx,
+        options,
+        cleanInput,
+        currentUserId,
+        channelKey,
+        systemPrompt,
+        currentUserMessage,
+        userName,
+        retaliationLevel,
+        rareConfirmed,
+        usedReminderActionTool,
+        usedUploadedFileVariantTool,
+        callModel: callOpenAIForText,
+    });
+    if (!finalResult.shouldSend)
+        return '';
+    const finalReply = finalResult.finalReply;
+    await saveConversationTurn(session, currentUserMessage, finalReply);
+    if (wasVisionRequest && session.messageId && visionObjectiveFact) {
+        await syncVisionAnalysisArtifacts(channelKey, String(session.messageId || ''), visionObjectiveFact);
+    }
+    return finalReply;
+}
+// FUNCTION SIZE GATE: 该函数上限 400 行；身份策略与模型执行必须留在独立阶段。
+// 触发线：新增逻辑超过 10 行 / 新增状态超过 2 个 key → 先提出拆分方案。
+async function chat(session, userText, ctx, options = {}) {
+    const identity = await prepareChatIdentityStage(session, userText, ctx, options);
+    if (identity.earlyReply !== null)
+        return identity.earlyReply;
+    const { skillsContentCache, cleanInput, isRandomTriggered, rareProvocation, japanLinked, wideRareHit, channelKey, currentUserId, personaName, personaSkillContent, retaliationLevel, hostile, systemPrompt, dynamicTimePrompt, userName, safeUserName, currentUserMessage, botSelfId, now, } = identity;
+    const personaNameForPrompt = personaName || undefined;
+    const personaSkillContentForPrompt = personaSkillContent || undefined;
     if (isConsecutiveUserRepeat(session, cleanInput)) {
         const repeatedReply = Math.random() < 0.5
             ? trimReply(cleanInput, MAX_OUTPUT_CHARS_FRIENDLY)
@@ -698,131 +860,15 @@ async function chat(session, userText, ctx, options = {}) {
     });
     if (politicalSensitiveMessage)
         messages.push(politicalSensitiveMessage);
-    // 识图：获取本地图片 → 多模态或 OCR 回退
-    let wasVisionRequest = false;
-    let visionContext = null;
-    if (isVisionSession(session)) {
-        let vc = await loadConfig(true);
-        if (!isVisionModel(vc.provider, vc.model)) {
-            const visionFallbacks = [
-                { provider: 'glm', model: 'glm-4.6v-flash', keyFile: GLM_KEY_FILE },
-                { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: DASHSCOPE_KEY_FILE },
-                { provider: 'dashscope', model: 'qwen3.6-plus', keyFile: DASHSCOPE_KEY_FILE },
-            ];
-            let used = false;
-            for (const fb of visionFallbacks) {
-                if (isVisionModel(fb.provider, fb.model)) {
-                    vc.model = fb.model;
-                    vc.baseURL = PROVIDERS[fb.provider].baseURL;
-                    vc.apiKey = (await readTextFile(fb.keyFile).catch(() => '') || vc.apiKey).replace(/[\r\n]+/g, '');
-                    vc.provider = fb.provider;
-                    used = true;
-                    break;
-                }
-            }
-            if (!used) {
-                clearVisionSession(session);
-                return '';
-            }
-        }
-        const visionPromptText = options.randomTriggered
-            ? '[群里刷到一张图。如果你看清了图，先输出 <image_fact>标签包住的一句客观图片事实（只描述图片里客观看到的内容，60字内，不要称呼用户，不要续聊），再输出按你人设风格的一句可见回应；不要假设这是有人专程拿给你看的。]'
-            : '[用户发来一张图。先输出 <image_fact>标签包住的一句客观图片事实（只描述图片里客观看到的内容，60字内，不要称呼用户，不要续聊），再输出按你人设风格的一句可见回应。]';
-        const visionResult = await appendVisionMessage(asVisionMessages(messages), session, vc, ctx, {
-            promptText: visionPromptText,
-            readFailReply: '图片读取失败，换个图试试？',
-            inaccessibleReply: '图片无法访问，换个图试试？',
-            identifyFailReply: '图片识别失败，换个图试试？',
-        });
-        if (!visionResult.ok)
-            return visionResult.reply || '';
-        visionContext = visionResult.visionContext || null;
-        wasVisionRequest = true;
-    }
-    else {
-        messages.push(createChatPromptPlainUserMessage(isolatedUserMessage));
-    }
-    const hostileEvaluationMessage = createChatPromptHostileEvaluationMessage(isEvaluationRequest, cleanInput, hostile);
-    if (hostileEvaluationMessage)
-        messages.push(hostileEvaluationMessage);
-    // Chat 轻量工具注入
-    const chatTools = getChatToolDefinitions({ channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered });
-    const fileFollowupState = await buildFileFollowupState(channelKey, cleanInput, { userId: currentUserId });
-    const activeFileContext = fileFollowupState.targetFile
-        ? {
-            activeFileMessageId: String(fileFollowupState.targetFile.messageId || ''),
-            activeFileName: fileFollowupState.targetFile.fileName || '',
-        }
-        : {};
-    messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered }) });
-    let reply = await callOpenAI(messages, isRandomTriggered, {}, chatTools);
-    const toolFlowResult = await handleChatToolFlow({
-        reply,
-        messages: asChatToolFlowMessages(messages),
-        options,
-        cleanInput,
-        session,
-        currentUserId,
-        channelKey,
-        activeFileContext,
-        fileFollowupState: fileFollowupState,
-        chatTools,
-        callModel: callOpenAIForToolFlow,
-    });
-    if (toolFlowResult.heavyToolsRequested) {
-        return {
-            text: toolFlowResult.reply,
-            heavyToolsRequested: toolFlowResult.heavyToolsRequested,
-        };
-    }
-    let replyText = toChatText(toolFlowResult.reply);
-    const usedReminderActionTool = toolFlowResult.usedReminderActionTool;
-    const usedUploadedFileVariantTool = toolFlowResult.usedUploadedFileVariantTool;
-    let visionObjectiveFact = '';
-    // 记录 AI 提问"需要记住"的时间戳，供 memory 确认超时使用
-    rememberMemoryPrompt(currentUserId, channelKey, replyText);
-    // 模型输出文本格式 tool_call 时，strip 后重试（不带 tools）
-    if (/<tool_call>/i.test(replyText)) {
-        const stripped = replyText.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '').replace(/<tool_call>[\s\S]*$/gi, '').trim();
-        if (stripped && stripped.length > 5) {
-            replyText = stripped;
-        }
-        else {
-            messages.push({ role: 'assistant', content: replyText });
-            messages.push({ role: 'user', content: '【系统提示：不要输出工具调用格式，直接用自然语言回答。】' });
-            replyText = await callOpenAIForText(messages, !!options.randomTriggered);
-        }
-    }
-    if (wasVisionRequest) {
-        const extracted = extractVisionObjectiveFact(replyText);
-        replyText = extracted.visibleReply;
-        visionObjectiveFact = extracted.fact;
-    }
-    // vision 对账：模型说"看不到图/再发一遍"通常意味着 image_url 没被 provider/model 真正解析。
-    // 把多模态 user 消息降级为纯文本占位，再请求一次，避免输出"我没法看到你说的图 + 编造话题硬蹭"这类自相矛盾结果。
-    if (wasVisionRequest && visionContext && isVisionBlindnessReply(replyText)) {
-        if (downgradeVisionMessageToText(asVisionMessages(messages), visionContext, '[图片暂时取不到，请按当前文字上下文回复，不要假设你看到了什么图]')) {
-            try {
-                ctx.logger('dongxuelian-ai').warn(`vision blindness detected, downgrading. provider=${visionContext.provider} model=${visionContext.model} reply=${replyText.slice(0, 60)}`);
-            }
-            catch { /* non-critical: logger may be unavailable in tests */ }
-            replyText = await callOpenAIForText(messages, !!options.randomTriggered);
-            visionContext = null;
-        }
-    }
-    if (JAILBREAK_OUTPUT_RE.test(replyText)) {
-        ctx.logger('dongxuelian-ai').warn(`jailbreak output detected, forcing fallback. reply: ${replyText.slice(0, 80)}`);
-        const jailbreakReply = await chatJailbreak(session, cleanInput, ctx, { systemPrompt });
-        await saveConversationTurn(session, currentUserMessage, jailbreakReply);
-        return jailbreakReply;
-    }
-    const finalResult = await finalizeChatReply({
-        reply: replyText,
-        messages: asFinalizeMessages(messages),
+    return executeChatModelStage({
         session,
         ctx,
         options,
+        messages,
+        isolatedUserMessage,
         cleanInput,
+        isRandomTriggered,
+        hostile,
         currentUserId,
         channelKey,
         systemPrompt,
@@ -830,18 +876,7 @@ async function chat(session, userText, ctx, options = {}) {
         userName,
         retaliationLevel,
         rareConfirmed,
-        usedReminderActionTool,
-        usedUploadedFileVariantTool,
-        callModel: callOpenAIForText,
     });
-    if (!finalResult.shouldSend)
-        return '';
-    const finalReply = finalResult.finalReply;
-    await saveConversationTurn(session, currentUserMessage, finalReply);
-    if (wasVisionRequest && session.messageId && visionObjectiveFact) {
-        await syncVisionAnalysisArtifacts(channelKey, String(session.messageId || ''), visionObjectiveFact);
-    }
-    return finalReply;
 }
 module.exports = {
     chat, // 主聊天入口（session → AI 回复）
@@ -855,4 +890,8 @@ module.exports = {
     getSkillsCount, // 已加载技能数量
     getThinkingEnabled, // re-export: thinking 开关查询
     setThinkingEnabled, // re-export: thinking 开关设置
+    _test: {
+        prepareChatIdentityStage,
+        executeChatModelStage,
+    },
 };

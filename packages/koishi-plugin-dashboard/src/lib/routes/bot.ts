@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'http'
 const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
 const { exec, execSync } = require('child_process') as typeof import('child_process')
-const { json, collectBody, log, readFileSyncSafe, writeFileSyncSafe, sleepSync, shellQuote } = require('../utils') as {
+const { json, collectBody, log, readFileSyncSafe, writeFileSyncSafe, sleepSync, shellQuote, getErrorMessage } = require('../utils') as {
   json(res: unknown, data: unknown, status?: number): void
   collectBody(req: unknown, res: unknown, callback: (body: string) => void | Promise<void>): void
   log(message: unknown): void
@@ -14,6 +14,7 @@ const { json, collectBody, log, readFileSyncSafe, writeFileSyncSafe, sleepSync, 
   writeFileSyncSafe(filePath: string, content: unknown): void
   sleepSync(ms: number): void
   shellQuote(value: unknown): string
+  getErrorMessage(error: unknown): string
 }
 const { requireAdmin } = require('../auth') as { requireAdmin(req: unknown, res: unknown): boolean }
 const { KOISHI_DIR, KOISHI_PID_FILE, DATA_DIR } = require('../paths') as { KOISHI_DIR: string; KOISHI_PID_FILE: string; DATA_DIR: string }
@@ -54,11 +55,6 @@ interface BotJsonBody {
 }
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => unknown
-
-function getErrorMessage(error: unknown): string {
-  if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || '')
-  return String(error || '')
-}
 
 function parseJsonObject(body: string): BotJsonBody {
   const data = JSON.parse(body || '{}')

@@ -34,6 +34,7 @@ const { runEmotionRenderWorkerTask } = require('./emotion-worker') as typeof imp
 const { runMemoryWorkerTask } = require('./memory-worker') as typeof import('./memory-worker')
 const { runBackgroundLlmWorkerTask } = require('./background-llm-worker') as typeof import('./background-llm-worker')
 const { runDailySlotTask } = require('../daily-precompute/daily-slot-worker') as typeof import('../daily-precompute/daily-slot-worker')
+type ResourceTaskLike = import('./task-types').ResourceTask
 
 interface WorkerMainOptions {
   type?: string
@@ -50,30 +51,6 @@ interface WorkerHeartbeatHandle {
   setStep(step: string, patch?: Record<string, unknown>): void
   patchProgress(patch?: Partial<WorkerProgressState>): void
   stop(step?: string): void
-}
-
-type ResourceTaskStatus = 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred'
-
-interface ResourceTaskLike extends Record<string, unknown> {
-  id: string
-  kind: string
-  status: ResourceTaskStatus
-  source: string
-  channelKey: string
-  userId: string
-  priority: number
-  createdAt: string
-  updatedAt: string
-  expiresAt: string
-  timeoutMs: number
-  payload: Record<string, unknown>
-  notify: Record<string, unknown>
-  step?: string
-  claimedBy?: string
-  claimedAt?: string
-  startedAt?: string
-  finishedAt?: string
-  error?: string
 }
 
 interface AdmissionDecisionLike {
@@ -539,7 +516,12 @@ async function runWorkerTick(options: WorkerMainOptions = {}, heartbeat?: Worker
   const memory = checkWorkerMemoryLimit(workerName)
   if (memory.exceeded) {
     if (heartbeat) heartbeat.setStep('memory_limit_exceeded', { rssMb: memory.rssMb })
-    else writeWorkerHeartbeat(workerName, { kind: type, step: 'memory_limit_exceeded', rssMb: memory.rssMb, ...(progress || {}) })
+    else writeWorkerHeartbeat(workerName, {
+      kind: type,
+      step: 'memory_limit_exceeded',
+      rssMb: Number.isFinite(Number(memory.rssMb)) ? Number(memory.rssMb) : null,
+      ...(progress || {}),
+    })
     process.exitCode = 75
     return false
   }

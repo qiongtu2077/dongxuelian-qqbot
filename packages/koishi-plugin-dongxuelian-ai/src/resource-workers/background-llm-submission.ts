@@ -7,6 +7,7 @@ const { submitWorkerTaskWithAdmission } = require('./task-client') as typeof imp
 const { countResourceTasksByKind } = require('./task-store') as typeof import('./task-store')
 const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
 const { decideBackgroundDirective } = require('../resource-scheduler/background-directive') as typeof import('../resource-scheduler/background-directive')
+type ResourceTask = import('./task-types').ResourceTask
 
 interface BackgroundSubmissionResult {
   accepted: boolean
@@ -17,13 +18,7 @@ interface BackgroundSubmissionResult {
   message: string
 }
 
-interface ResourceTaskLike extends Record<string, unknown> {
-  id?: string
-  kind?: string
-  channelKey?: string
-  userId?: string
-  payload?: Record<string, unknown>
-}
+type ResourceTaskLike = Partial<Pick<ResourceTask, 'id' | 'kind' | 'channelKey' | 'userId' | 'payload'>>
 
 interface AdmissionDecisionLike {
   decision?: string

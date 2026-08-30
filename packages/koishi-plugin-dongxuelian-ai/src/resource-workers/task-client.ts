@@ -5,22 +5,8 @@
  */
 const { admitTaskDirective } = require('../resource-scheduler/resource-directive') as typeof import('../resource-scheduler/resource-directive')
 const { submitResourceTask, deferTask, failTask, createTaskId, getResourceTaskByIdForKind } = require('./task-store') as typeof import('./task-store')
-
-interface ResourceTaskLike extends Record<string, unknown> {
-  id: string
-  kind: string
-  status: string
-  source: string
-  channelKey: string
-  userId: string
-  priority: number
-  createdAt: string
-  updatedAt: string
-  expiresAt: string
-  timeoutMs: number
-  payload: Record<string, unknown>
-  notify: Record<string, unknown>
-}
+type ResourceTask = import('./task-types').ResourceTask
+type ResourceTaskNotify = import('./task-types').ResourceTaskNotify
 
 interface AdmissionDecisionLike {
   decision: string
@@ -52,7 +38,7 @@ interface SubmitWorkerTaskInput {
   expiresAt?: string
   timeoutMs?: number
   payload?: Record<string, unknown>
-  notify?: Record<string, unknown>
+  notify?: ResourceTaskNotify
 }
 
 interface SubmitWorkerTaskOptions {
@@ -61,13 +47,13 @@ interface SubmitWorkerTaskOptions {
 }
 
 interface SubmitWorkerTaskWithAdmissionResult {
-  task: ResourceTaskLike
+  task: ResourceTask
   admission: AdmissionDecisionLike | SkippedAdmissionDecision
   directive: ResourceDirectiveLike | SkippedDirective
   accepted: boolean
 }
 
-function getExistingExplicitTask(input: SubmitWorkerTaskInput): ResourceTaskLike | null {
+function getExistingExplicitTask(input: SubmitWorkerTaskInput): ResourceTask | null {
   const explicitTaskId = String(input.id || '')
   const kind = String(input.kind || '')
   if (!explicitTaskId) return null
@@ -77,7 +63,7 @@ function getExistingExplicitTask(input: SubmitWorkerTaskInput): ResourceTaskLike
   return existing
 }
 
-function buildExistingTaskResult(task: ResourceTaskLike): SubmitWorkerTaskWithAdmissionResult {
+function buildExistingTaskResult(task: ResourceTask): SubmitWorkerTaskWithAdmissionResult {
   const status = String(task.status || '')
   if (status === 'deferred') {
     return {
@@ -119,7 +105,7 @@ function buildAdmissionInput(taskId: string, input: SubmitWorkerTaskInput, optio
 }
 
 // 只提交 S2 pending 任务，适合入口已完成 S1 判断的调用方。
-function submitWorkerTask(input: SubmitWorkerTaskInput): ResourceTaskLike {
+function submitWorkerTask(input: SubmitWorkerTaskInput): ResourceTask {
   const existing = getExistingExplicitTask(input)
   if (existing) return existing
   const taskId = input.id || createTaskId(input.kind, input.channelKey || '')

@@ -165,13 +165,15 @@ async function parseFile(filePath, ext) {
         default: return null;
     }
 }
+// 优先直链下载，失败后依次尝试 OneBot 文件标识和消息标识。
 async function downloadWithFallback(url, fileId, destPath, messageId = '') {
     if (url) {
         try {
             await downloadFile(url, destPath);
             return destPath;
         }
-        catch { /* non-critical: direct URL download failure falls back to OneBot get_file */
+        catch (error) {
+            console.warn(`[file-analyzer] direct_download_failed detail=${getFileAnalyzerErrorMessage(error)}`);
         }
     }
     const candidates = [];
@@ -197,7 +199,8 @@ async function downloadWithFallback(url, fileId, destPath, messageId = '') {
                 return destPath;
             }
         }
-        catch { /* non-critical: try next get_file candidate before reporting download failure */
+        catch (error) {
+            console.warn(`[file-analyzer] onebot_get_file_failed detail=${getFileAnalyzerErrorMessage(error)}`);
         }
     }
     return null;

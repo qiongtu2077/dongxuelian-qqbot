@@ -1,5 +1,6 @@
 import type { ExecFileOptions } from 'child_process';
 declare const fs: typeof import("fs/promises");
+declare const resolveBiliShortLink: typeof import("./bili-input").resolveBiliShortLink;
 interface LoggerLike {
     warn(...args: unknown[]): void;
 }
@@ -182,10 +183,6 @@ interface RecentParseEntry {
     timestamp: number;
     keys: string[];
 }
-interface RedirectResponse {
-    statusCode: number;
-    location: string;
-}
 interface VideoBlacklistCache {
     fingerprint: string;
     groups: Set<string>;
@@ -194,14 +191,7 @@ interface VideoBlacklistCache {
 declare function toFileUrl(filePath: string): string;
 declare function getRuntimeConfig(): RuntimeConfig;
 declare function run(file: string, args: string[], options?: ExecFileOptions): Promise<RunResult>;
-declare function extractBiliUrl(input?: string): string | null;
-declare function buildBiliKeys(input?: string): string[];
-declare function normalizeBiliP1Url(input?: string): string;
 declare function buildVideoUserError(input: VideoUserErrorInput): VideoUserError;
-declare function isAllowedBiliRedirectUrl(input: string): boolean;
-declare function isPrivateIpAddress(address: string): boolean;
-declare function requestRedirectLocation(input: string, timeoutMs: number): Promise<RedirectResponse>;
-declare function resolveBiliShortLink(input: string, requestRedirect?: typeof requestRedirectLocation): Promise<string>;
 declare function loadVideoBlacklist(force?: boolean): VideoBlacklistCache;
 declare function isBlacklistedGroup(session: VideoSessionLike): boolean;
 declare function isRecentDuplicateParse(session: VideoSessionLike, keys: string[], now?: number): boolean;
@@ -229,10 +219,10 @@ declare function clearVideoRuntimeState(): Promise<void>;
 declare const _default: {
     name: string;
     apply: typeof apply;
-    extractBiliUrl: typeof extractBiliUrl;
+    extractBiliUrl: typeof import("./bili-input").extractBiliUrl;
     isStandaloneBilibiliVideoInput: typeof isStandaloneBilibiliVideoInput;
     handleStandaloneBilibiliVideoInput: typeof handleStandaloneBilibiliVideoInput;
-    buildBiliKeys: typeof buildBiliKeys;
+    buildBiliKeys: typeof import("./bili-input").buildBiliKeys;
     pickFormat: typeof pickFormat;
     getShortestBiliUrl: typeof getShortestBiliUrl;
     downloadAndSend: typeof downloadAndSend;
@@ -248,11 +238,11 @@ declare const _default: {
     isRecentDuplicateParse: typeof isRecentDuplicateParse;
     rememberRecentParse: typeof rememberRecentParse;
     clearRecentParseHistory: () => void;
-    resolveBiliShortLink: typeof resolveBiliShortLink;
-    normalizeBiliP1Url: typeof normalizeBiliP1Url;
+    resolveBiliShortLink: typeof import("./bili-input").resolveBiliShortLink;
+    normalizeBiliP1Url: typeof import("./bili-input").normalizeBiliP1Url;
     probeVideo: typeof probeVideo;
-    isAllowedBiliRedirectUrl: typeof isAllowedBiliRedirectUrl;
-    isPrivateIpAddress: typeof isPrivateIpAddress;
+    isAllowedBiliRedirectUrl: typeof import("./bili-input").isAllowedBiliRedirectUrl;
+    isPrivateIpAddress: typeof import("./bili-input").isPrivateIpAddress;
     cleanupVideoCache: typeof cleanupVideoCache;
     removeRequestStagingDirectory: typeof removeRequestStagingDirectory;
     getVideoCacheStatus: typeof getVideoCacheStatus;

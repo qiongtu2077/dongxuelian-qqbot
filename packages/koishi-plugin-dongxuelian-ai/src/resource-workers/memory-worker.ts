@@ -11,6 +11,7 @@ const { loadConfig } = require('../core/runtime-config') as typeof import('../co
 const { safeUserId, legacySafeUserId } = require('../core/utils') as typeof import('../core/utils')
 const { submitWorkerTaskWithAdmission } = require('./task-client') as typeof import('./task-client')
 const { countResourceTasksByKind } = require('./task-store') as typeof import('./task-store')
+type ResourceTask = import('./task-types').ResourceTask
 
 const DASHBOARD_MEMORY_DIR: string = path.join(DATA_DIR, 'agent-memory-dashboard')
 const DAILY_DIR: string = path.join(DASHBOARD_MEMORY_DIR, 'daily')
@@ -65,12 +66,7 @@ interface MemorySubmissionResult {
   message: string
 }
 
-interface ResourceTaskLike extends Record<string, unknown> {
-  id?: string
-  kind?: string
-  userId?: string
-  payload?: Record<string, unknown>
-}
+type ResourceTaskLike = Partial<Pick<ResourceTask, 'id' | 'kind' | 'userId' | 'payload'>>
 
 interface AdmissionDecisionLike {
   decision?: string

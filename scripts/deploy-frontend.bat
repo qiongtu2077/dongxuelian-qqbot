@@ -1,40 +1,7 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 
-set "SERVER=%~1"
-if "%SERVER%"=="" set "SERVER=%DEPLOY_SERVER%"
-if "%SERVER%"=="" (
-  echo Usage: scripts\deploy-frontend.bat root@server-ip [<YOUR_APP_DIR>]
-  echo Or set DEPLOY_SERVER=root@server-ip before running this script.
-  exit /b 1
-)
-
-set "APP_DIR=%~2"
-if "%APP_DIR%"=="" set "APP_DIR=%DEPLOY_APP_DIR%"
-if "%APP_DIR%"=="" set "APP_DIR=<YOUR_APP_DIR>"
-
-set "FRONTEND_DIR=packages\koishi-plugin-dashboard\frontend"
-set "REMOTE_DIR=%APP_DIR%/packages/koishi-plugin-dashboard/frontend"
-
-echo === Build frontend ===
-cd /d "%~dp0\..\packages\koishi-plugin-dashboard\frontend"
-call npm run build
-if %errorlevel% neq 0 exit /b %errorlevel%
-cd /d "%~dp0\.."
-
-echo === Deploy dist ===
-scp "%FRONTEND_DIR%\dist\index.html" "%SERVER%:%REMOTE_DIR%/dist/index.html"
-scp "%FRONTEND_DIR%\dist\assets\*" "%SERVER%:%REMOTE_DIR%/dist/assets/"
-
-echo === Clean old assets ===
-ssh "%SERVER%" "cd %REMOTE_DIR%/dist/assets && ls -t | tail -n +3 | xargs rm -f 2>/dev/null; echo done"
-
-echo === Sync frontend src ===
-scp "%FRONTEND_DIR%\src\*.css" "%SERVER%:%REMOTE_DIR%/src/" 2>nul
-scp "%FRONTEND_DIR%\src\*.vue" "%SERVER%:%REMOTE_DIR%/src/" 2>nul
-scp "%FRONTEND_DIR%\src\*.js" "%SERVER%:%REMOTE_DIR%/src/" 2>nul
-scp "%FRONTEND_DIR%\src\components\*.vue" "%SERVER%:%REMOTE_DIR%/src/components/" 2>nul
-
-echo.
-echo === Done ===
-echo.
+echo [已停用] 此脚本会绕过发布清单、预览、发布锁、基线复核和自动回滚。
+echo 远程生产更新请打开 Dashboard 的“部署”页，先生成预览，再确认执行不可变发布。
+echo 如需本地开发构建，请在 packages\koishi-plugin-dashboard\frontend 运行 npm run build。
+exit /b 2

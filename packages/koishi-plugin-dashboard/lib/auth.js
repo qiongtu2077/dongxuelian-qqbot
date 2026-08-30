@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const { json, log, getRemoteAddress, isLoopbackAddress } = require('./utils');
+const { json, log, getRemoteAddress, isLoopbackAddress, getErrorMessage } = require('./utils');
 const { ADMIN_PWD_FILE, ACCESS_PWD_FILE, LEGACY_ACCESS_PWD_FILE, RESET_TOKEN_FILE, SESSION_SECRET_FILE, PASSWORD, ADMIN_PASSWORD, isGlobalLocalMode } = require('./paths');
 const BCRYPT_ROUNDS = 12;
 const TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
@@ -18,11 +18,6 @@ if (!dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer) {
     dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer = setInterval(() => trimLoginFailMap(), LOGIN_FAIL_CLEANUP_MS);
     if (dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer.unref)
         dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer.unref();
-}
-function getErrorMessage(error) {
-    if (error && typeof error === 'object' && 'message' in error)
-        return String(error.message || '');
-    return String(error || '');
 }
 // Reads small secret/config files without throwing.
 function readFileContent(p) {

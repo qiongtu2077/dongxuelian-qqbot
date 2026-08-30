@@ -7,7 +7,11 @@
 const fs = require('fs/promises')
 const path = require('path')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
-const { safeChannelKey } = require('../../core/utils') as typeof import('../../core/utils')
+const {
+  getSafeMediaStorageKey: getSafeKey,
+  getMediaHistoryFilePath,
+  getLegacyMediaHistoryFilePath,
+} = require('../storage-key') as typeof import('../storage-key')
 
 const FILE_HISTORY_DIR: string = path.join(DATA_DIR, 'file-history')
 const FILE_CACHE_DIR: string = path.join(DATA_DIR, 'file-cache')
@@ -66,11 +70,6 @@ interface CacheEntry {
 const fileHistoryCache: Map<string, FileHistoryData> = new Map()
 const fileStoreQueues: Map<string, Promise<unknown>> = new Map()
 
-function getSafeKey(channelKey: unknown): string {
-  const key = String(channelKey || '')
-  return key ? safeChannelKey(key) : ''
-}
-
 function getLegacyPrivateKey(channelKey: unknown): string {
   return /^private:/.test(String(channelKey || '')) ? 'private' : ''
 }
@@ -85,22 +84,8 @@ function matchesPrivateUser(entry: Partial<FileEntry> | null | undefined, channe
   return String(entry?.userId || '') === userId
 }
 
-function getFilePath(channelKey: unknown): string {
-  return path.join(FILE_HISTORY_DIR, getSafeKey(channelKey) + '.json')
-}
-
 function getQueueKey(channelKey: unknown): string {
   return getSafeKey(channelKey) || 'unknown'
-}
-
-function getLegacyUnsafeKey(channelKey: unknown): string {
-  return String(channelKey || '').replace(/[^a-zA-Z0-9.:_-]/g, '_')
-}
-
-function getLegacyUnsafeFilePath(channelKey: unknown): string {
-  const legacyKey = getLegacyUnsafeKey(channelKey)
-  const safeKey = getSafeKey(channelKey)
-  return legacyKey && legacyKey !== safeKey ? path.join(FILE_HISTORY_DIR, legacyKey + '.json') : ''
 }
 
 function ignoreFileStoreQueueFailure(error: unknown): void {
@@ -182,12 +167,12 @@ async function readFileHistory(channelKey: unknown): Promise<FileHistoryData> {
   const cacheKey = getQueueKey(channelKey)
   try {
     await fs.mkdir(FILE_HISTORY_DIR, { recursive: true })
-    let fp = getFilePath(channelKey)
+    let fp = getMediaHistoryFilePath(FILE_HISTORY_DIR, channelKey)
     let stat
     try {
       stat = await fs.stat(fp)
     } catch (error) {
-      const legacyPath = getLegacyUnsafeFilePath(channelKey)
+      const legacyPath = getLegacyMediaHistoryFilePath(FILE_HISTORY_DIR, channelKey)
       if (!legacyPath || (error as FileStoreError | null)?.code !== 'ENOENT') throw error
       fp = legacyPath
       stat = await fs.stat(fp)
@@ -211,7 +196,7 @@ async function writeFileHistory(channelKey: unknown, data: FileHistoryData): Pro
   try {
     await fs.mkdir(FILE_HISTORY_DIR, { recursive: true })
     const normalized = normalizeData(data)
-    await fs.writeFile(getFilePath(channelKey), JSON.stringify(normalized), 'utf8')
+    await fs.writeFile(getMediaHistoryFilePath(FILE_HISTORY_DIR, channelKey), JSON.stringify(normalized), 'utf8')
     fileHistoryCache.set(getQueueKey(channelKey), normalized)
     return true
   } catch (error) {

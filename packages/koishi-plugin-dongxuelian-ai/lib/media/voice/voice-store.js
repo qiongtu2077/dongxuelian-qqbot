@@ -7,7 +7,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { DATA_DIR } = require('../../core/constants');
-const { safeChannelKey } = require('../../core/utils');
+const { getSafeMediaStorageKey: getSafeKey, getMediaHistoryFilePath } = require('../storage-key');
 const VOICE_HISTORY_DIR = path.join(DATA_DIR, 'voice-history');
 const VOICE_EXPIRE_MS = 4 * 60 * 60 * 1000;
 const VOICE_TRANSCRIBED_EXPIRE_MS = 24 * 60 * 60 * 1000;
@@ -15,15 +15,6 @@ const MAX_VOICES_PER_CHANNEL = 40;
 const MAX_VOICE_HISTORY_BYTES = 256 * 1024;
 const voiceHistoryCache = new Map();
 const voiceStoreQueues = new Map();
-// 返回可用于文件名的频道 key。
-function getSafeKey(channelKey) {
-    const key = String(channelKey || '');
-    return key ? safeChannelKey(key) : '';
-}
-// 返回当前频道语音历史文件路径。
-function getVoiceHistoryFile(channelKey) {
-    return path.join(VOICE_HISTORY_DIR, getSafeKey(channelKey) + '.json');
-}
 // 返回队列 key，保证同一频道写入串行。
 function getVoiceQueueKey(channelKey) {
     return getSafeKey(channelKey) || 'unknown';
@@ -97,7 +88,7 @@ async function readVoiceHistory(channelKey) {
     const cacheKey = getVoiceQueueKey(channelKey);
     try {
         await fs.mkdir(VOICE_HISTORY_DIR, { recursive: true });
-        const file = getVoiceHistoryFile(channelKey);
+        const file = getMediaHistoryFilePath(VOICE_HISTORY_DIR, channelKey);
         const stat = await fs.stat(file);
         if (!stat.isFile() || stat.size > MAX_VOICE_HISTORY_BYTES)
             return { voices: {} };
@@ -120,7 +111,7 @@ async function writeVoiceHistory(channelKey, data) {
     try {
         await fs.mkdir(VOICE_HISTORY_DIR, { recursive: true });
         const normalized = normalizeVoiceHistoryData(data);
-        await fs.writeFile(getVoiceHistoryFile(channelKey), JSON.stringify(normalized), 'utf8');
+        await fs.writeFile(getMediaHistoryFilePath(VOICE_HISTORY_DIR, channelKey), JSON.stringify(normalized), 'utf8');
         voiceHistoryCache.set(getVoiceQueueKey(channelKey), normalized);
         return true;
     }

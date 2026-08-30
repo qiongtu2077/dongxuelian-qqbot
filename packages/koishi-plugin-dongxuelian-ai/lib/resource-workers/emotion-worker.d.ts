@@ -2,13 +2,13 @@ interface WorkerTaskResult extends Record<string, unknown> {
     mode?: string;
     reason?: string;
 }
-interface EmotionPayloadLike extends Record<string, unknown> {
+interface EmotionPayloadLike {
     analysis?: unknown;
     stats?: unknown;
     history?: unknown;
     text?: unknown;
 }
-interface EmotionRenderTaskLike extends Record<string, unknown> {
+interface EmotionRenderTaskLike {
     id?: unknown;
     payload?: EmotionPayloadLike;
 }

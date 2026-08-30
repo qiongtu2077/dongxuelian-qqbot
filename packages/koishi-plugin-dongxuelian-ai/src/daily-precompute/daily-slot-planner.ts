@@ -12,6 +12,7 @@ const {
   decideTaskDirective,
   readResourceContext,
 } = require('../resource-scheduler/resource-directive') as typeof import('../resource-scheduler/resource-directive')
+type ResourceTask = import('../resource-workers/task-types').ResourceTask
 
 interface PlanSlotOptions {
   slotSize?: number
@@ -31,12 +32,7 @@ interface SlotPlanningResultLike {
   restored?: unknown
 }
 
-interface ResourceTaskLike extends Record<string, unknown> {
-  id?: string
-  kind?: string
-  status?: string
-  retryAfter?: string
-}
+type ResourceTaskLike = Partial<Pick<ResourceTask, 'id' | 'kind' | 'status' | 'retryAfter'>>
 
 interface SlotTaskTrackingState {
   tracked: boolean

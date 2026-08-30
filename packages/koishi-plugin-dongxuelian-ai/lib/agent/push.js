@@ -120,7 +120,9 @@ async function appendLog(entry) {
                 await fsp.writeFile(PUSH_LOG_FILE, trimmed || text, 'utf8');
             }
         }
-        catch { /* non-critical: push log compaction failure should not fail the send result */ }
+        catch (error) {
+            console.warn(`[agent-push] push_log_compaction_failed detail=${error instanceof Error ? error.message : String(error || 'unknown error')}`);
+        }
     });
     pushLogWriteChain = run.catch(ignorePushQueueFailure);
     return run;

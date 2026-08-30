@@ -2,7 +2,6 @@
 const path = require('path');
 const { isInsidePath } = require('./utils');
 const PLUGIN_ROOT = path.join(__dirname, '..');
-const AI_LIB = path.join(PLUGIN_ROOT, '..', 'koishi-plugin-dongxuelian-ai', 'lib');
 const KOISHI_DIR = path.resolve(process.env.KOISHI_DIR || process.env.KOISHI_APP_DIR || path.join(PLUGIN_ROOT, '..', '..'));
 const KOISHI_PID_FILE = path.join(path.resolve(KOISHI_DIR), 'koishi.pid');
 function resolveRuntimeDataDir() {
@@ -74,7 +73,6 @@ function runtimePath(...parts) {
 }
 module.exports = {
     PLUGIN_ROOT,
-    AI_LIB,
     KOISHI_DIR,
     KOISHI_PID_FILE,
     DATA_DIR,

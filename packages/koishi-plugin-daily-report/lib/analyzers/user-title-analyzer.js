@@ -5,9 +5,7 @@
  * 边界: 只做分析，不调API，通过 aiClient.callAI 间接调用。
  */
 const { createUserTitle } = require('../models');
-function getErrorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
-}
+const { getErrorMessage } = require('../error-utils');
 async function analyzeUserTitles(aiClient, messages, topMembers) {
     const memberData = topMembers.slice(0, 10).map(m => {
         const memberMsgs = messages

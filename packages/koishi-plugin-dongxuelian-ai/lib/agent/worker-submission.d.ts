@@ -1,3 +1,4 @@
+type ResourceTask = import('../resource-workers/task-types').ResourceTask;
 interface SubmitAgentWorkerTaskOptions {
     channel?: string;
     channelKey: string;
@@ -20,9 +21,7 @@ interface AgentWorkerSubmissionResult {
     message: string;
     status: number;
 }
-interface ResourceTaskLike extends Record<string, unknown> {
-    id?: string;
-}
+type ResourceTaskLike = Partial<Pick<ResourceTask, 'id'>>;
 interface AdmissionDecisionLike {
     decision?: string;
     reason?: unknown;

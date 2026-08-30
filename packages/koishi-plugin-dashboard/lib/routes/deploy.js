@@ -4,7 +4,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { exec, execSync } = require('child_process');
-const { json, collectBody, log, shellQuote, isInsidePath, copyRecursiveSync } = require('../utils');
+const { json, collectBody, log, shellQuote, isInsidePath, copyRecursiveSync, getOptionalErrorMessage: getLegacyErrorMessage, } = require('../utils');
 const { KOISHI_DIR, DATA_DIR, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, PORT, toProjectRel } = require('../paths');
 const { requireAdmin } = require('../auth');
 const { getCommandInfo, getLocalToolCommand, checkPortState } = require('../tools');
@@ -20,9 +20,6 @@ const DEFAULT_REMOTE_APP_DIR = process.env.DASHBOARD_REMOTE_APP_DIR || process.e
 const REMOTE_DEPLOY_TIMEOUT_MS = 30 * 60 * 1000;
 const LOCAL_RELEASES_DIR = path.join(DATA_DIR, 'deploy-releases');
 const DEPLOY_PREVIEWS_DIR = path.join(DATA_DIR, 'deploy-previews');
-function getLegacyErrorMessage(error) {
-    return error?.message;
-}
 // --- Remote deployment task state ---
 // Removes common credential assignments before a deployment error reaches logs or the browser.
 function sanitizeDeployError(error) {
@@ -42,10 +39,20 @@ function writeRemoteDeployTask(task) {
     fs.writeFileSync(next, JSON.stringify(task, null, 2), 'utf8');
     fs.renameSync(next, target);
 }
+// 把不中断发布的次要写入失败保存到任务状态并写入结构化日志。
+function recordRemoteDeployWarning(task, code, error) {
+    const detail = sanitizeDeployError(error);
+    const warning = `${code}: ${detail}`.slice(0, 500);
+    const warnings = Array.isArray(task.warnings) ? task.warnings : [];
+    if (!warnings.includes(warning))
+        task.warnings = warnings.concat(warning).slice(-20);
+    log(`remote_deploy_warning taskId=${task.taskId} code=${code} detail=${detail}`);
+    writeRemoteDeployTask(task);
+}
 // Creates the initial running state and its server-enforced deadline.
 function createRemoteDeployTask(taskId) {
     const now = Date.now();
-    const task = { taskId, state: 'running', stage: 'queued', error: '', startedAt: now, updatedAt: now, finishedAt: 0, expiresAt: now + REMOTE_DEPLOY_TIMEOUT_MS };
+    const task = { taskId, state: 'running', stage: 'queued', error: '', warnings: [], startedAt: now, updatedAt: now, finishedAt: 0, expiresAt: now + REMOTE_DEPLOY_TIMEOUT_MS };
     writeRemoteDeployTask(task);
     return task;
 }
@@ -150,12 +157,16 @@ function runSafeDeployCommands(task, commands, onComplete) {
                 try {
                     fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, task.taskId + '.log'), stdout.trim() + '\n', 'utf8');
                 }
-                catch { /* progress log is best effort */ }
+                catch (logError) {
+                    recordRemoteDeployWarning(task, 'stdout_log_write_failed', logError);
+                }
             if (stderr)
                 try {
                     fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, task.taskId + '.log'), stderr.trim() + '\n', 'utf8');
                 }
-                catch { /* progress log is best effort */ }
+                catch (logError) {
+                    recordRemoteDeployWarning(task, 'stderr_log_write_failed', logError);
+                }
             if (error)
                 return finishRemoteDeployTask(task, 'failed', current.stage, error);
             index += 1;
@@ -270,7 +281,9 @@ function handlePostSafeDeployRun(req, res) {
                 try {
                     fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, taskId + '.log'), '目标服务器已启动独立发布单元，等待切换、重启和健康检查\n', 'utf8');
                 }
-                catch { /* progress log is best effort */ }
+                catch (logError) {
+                    recordRemoteDeployWarning(task, 'activation_log_write_failed', logError);
+                }
             });
         }
         catch (error) {
@@ -302,7 +315,7 @@ function handleGetDeployProgress(req, res, pathname) {
         }
         const raw = buffer.toString('utf8').trim();
         const lines = raw ? raw.split('\n') : [];
-        return json(res, { ok: true, lines, state: task.state, stage: task.stage, error: task.error, rolledBack: task.rolledBack, rollbackState: task.rollbackState, previewId: task.previewId, releaseId: task.releaseId, startedAt: task.startedAt, updatedAt: task.updatedAt, finishedAt: task.finishedAt, expiresAt: task.expiresAt });
+        return json(res, { ok: true, lines, state: task.state, stage: task.stage, error: task.error, warnings: task.warnings || [], rolledBack: task.rolledBack, rollbackState: task.rollbackState, previewId: task.previewId, releaseId: task.releaseId, startedAt: task.startedAt, updatedAt: task.updatedAt, finishedAt: task.finishedAt, expiresAt: task.expiresAt });
     }
     catch (error) {
         return json(res, { ok: false, message: sanitizeDeployError(error), code: 'DEPLOY_PROGRESS_READ_FAILED' }, 500);

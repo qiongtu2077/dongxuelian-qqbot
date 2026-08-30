@@ -6,8 +6,11 @@
 const fs = require('fs')
 const path = require('path')
 const { FORCE_TEMPLATE } = require('./config') as typeof import('./config')
-const { getShanghaiHourFromTs } = require('../../koishi-plugin-dongxuelian-ai/lib/core/utils') as typeof import('../../koishi-plugin-dongxuelian-ai/lib/core/utils')
-const { acquireResourceActivityLease } = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease') as {
+const { getErrorMessage } = require('./error-utils') as typeof import('./error-utils')
+const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
+const { getShanghaiHourFromTs } = loadManagementModule('core.utils')
+const { acquireResourceActivityLease } = loadManagementModule('resource.activityLease') as {
   acquireResourceActivityLease: (kind: string, options?: { owner?: string, taskId?: string, ttlMs?: number }) => (reason?: string) => void
 }
 
@@ -137,20 +140,10 @@ interface RenderMemoryStatus {
   forced: boolean
 }
 
-function parsePositiveInt(value: string | undefined, fallback: number, min: number, max: number): number {
-  const parsed = parseInt(String(value), 10)
-  if (!Number.isFinite(parsed)) return fallback
-  return Math.max(min, Math.min(max, parsed))
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 // 动态加载 S8 系统保护模块；缺失时只跳过事件增强，不影响日报保底。
 function loadSystemProtection(): SystemProtectionLike | null {
   try {
-    return require('../../koishi-plugin-dongxuelian-ai/lib/resource-system/system-protection') as SystemProtectionLike
+    return loadManagementModule('resource.systemProtection') as SystemProtectionLike
   } catch {
     return null
   }
@@ -174,8 +167,8 @@ function writeDailyRenderCleanupEvent(event: string, data: Record<string, unknow
     if (protection && typeof protection.writeProcessCleanupEvent === 'function') {
       protection.writeProcessCleanupEvent({ event, source: 'daily_report_render', ...data })
     }
-  } catch {
-    /* S8 event writing must not break report rendering. */
+  } catch (error) {
+    console.warn(`[daily-report] render_cleanup_event_write_failed event=${event} detail=${getErrorMessage(error)}`)
   }
 }
 

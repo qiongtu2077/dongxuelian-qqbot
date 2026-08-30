@@ -4,6 +4,7 @@
  * 边界: 只做分析，不调API，通过 aiClient.callAI 间接调用。
  */
 const { createGoldenQuote } = require('../models') as typeof import('../models')
+const { getErrorMessage } = require('../error-utils') as typeof import('../error-utils')
 
 interface TokenUsage {
   promptTokens: number
@@ -38,10 +39,6 @@ interface GoldenQuotePayload {
 interface GoldenQuoteResult {
   goldenQuotes: GoldenQuote[]
   tokenUsage: TokenUsage
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 async function analyzeGoldenQuotes(

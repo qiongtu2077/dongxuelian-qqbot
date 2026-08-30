@@ -2,12 +2,12 @@ interface MediaWorkerOptions {
     workerName?: string;
     gateWaitMs?: number;
 }
-interface MediaTaskPayloadLike extends Record<string, unknown> {
+interface MediaTaskPayloadLike {
     userId?: unknown;
     url?: unknown;
     file?: unknown;
 }
-interface MediaTaskLike extends Record<string, unknown> {
+interface MediaTaskLike {
     id: string;
     kind: string;
     channelKey: string;

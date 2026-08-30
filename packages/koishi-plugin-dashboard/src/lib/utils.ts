@@ -27,6 +27,22 @@ function parsePositiveInt(value: unknown, fallback: number, min: number, max: nu
   return Math.max(min, Math.min(max, parsed))
 }
 
+// 提取异常的稳定文本，保持 Dashboard 原有的空值和 message 字段语义。
+function getErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || '')
+  return String(error || '')
+}
+
+// 读取对象异常的原始 message 值，供保留旧接口响应形状的路由使用。
+function getObjectErrorMessage(error: unknown): unknown {
+  return error && typeof error === 'object' && 'message' in error ? (error as { message?: unknown }).message : undefined
+}
+
+// 读取任意非空异常的可选 message 属性，保持旧的可选属性访问语义。
+function getOptionalErrorMessage(error: unknown): unknown {
+  return (error as { message?: unknown } | null | undefined)?.message
+}
+
 function json(res: ServerResponse, data: unknown, status = 200): void {
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(data))
@@ -185,6 +201,9 @@ function readFileContent(p: string, maxBytes = 64 * 1024): string {
 
 export = {
   parsePositiveInt,
+  getErrorMessage,
+  getObjectErrorMessage,
+  getOptionalErrorMessage,
   json,
   log,
   getRemoteAddress,

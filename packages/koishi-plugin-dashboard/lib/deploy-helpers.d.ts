@@ -14,20 +14,6 @@ interface UnsupportedPortState extends Record<string, unknown> {
     reason: string;
 }
 type LocalDeployPortState = PortState | UnsupportedPortState;
-type DeployMode = 'install' | 'update';
-interface DeployTargetInput extends Record<string, unknown> {
-    server?: unknown;
-    appDir?: unknown;
-    mode?: unknown;
-}
-interface DeployTarget extends DeployTargetInput {
-    server: string;
-    appDir: string;
-    mode: DeployMode;
-}
-interface ScpOptions {
-    recursive?: boolean;
-}
 interface CopyWorkspaceResourceOptions {
     replace?: boolean;
 }
@@ -316,13 +302,6 @@ interface PortableNodeAsset {
 }
 type JsonCallback = (err: Error | null, data?: unknown) => void;
 type InstallCallback = (err: Error | null, detail?: Record<string, unknown>) => void;
-declare function validateDeployServer(server: unknown): string;
-declare function validateDeployAppDir(appDir: unknown): string;
-declare function validateDeployTarget(cfg?: DeployTargetInput): DeployTarget;
-declare function remoteJoin(base: unknown, ...parts: unknown[]): string;
-declare function sshCommand(server: unknown, remoteCmd: unknown): string;
-declare function scpRemoteTarget(server: unknown, remotePath: unknown): string;
-declare function scpCommand(source: unknown, target: unknown, options?: ScpOptions): string;
 declare function isBlockedDownloadHost(hostname: unknown): boolean;
 declare function getLocalWorkDirSafety(): LocalWorkDirSafety;
 declare function getLocalDeployTarget(): LocalDeployTarget;
@@ -394,13 +373,13 @@ declare const _default: {
     MAX_DOWNLOAD_REDIRECTS: number;
     MAX_JSON_RESPONSE_BYTES: number;
     HASH_CHUNK_BYTES: number;
-    validateDeployServer: typeof validateDeployServer;
-    validateDeployAppDir: typeof validateDeployAppDir;
-    validateDeployTarget: typeof validateDeployTarget;
-    remoteJoin: typeof remoteJoin;
-    sshCommand: typeof sshCommand;
-    scpRemoteTarget: typeof scpRemoteTarget;
-    scpCommand: typeof scpCommand;
+    validateDeployServer: typeof import("./remote-target").validateDeployServer;
+    validateDeployAppDir: typeof import("./remote-target").validateDeployAppDir;
+    validateDeployTarget: typeof import("./remote-target").validateDeployTarget;
+    remoteJoin: typeof import("./remote-target").remoteJoin;
+    sshCommand: typeof import("./remote-target").sshCommand;
+    scpRemoteTarget: typeof import("./remote-target").scpRemoteTarget;
+    scpCommand: typeof import("./remote-target").scpCommand;
     isBlockedDownloadHost: typeof isBlockedDownloadHost;
     getLocalWorkDirSafety: typeof getLocalWorkDirSafety;
     getLocalDeployTarget: typeof getLocalDeployTarget;

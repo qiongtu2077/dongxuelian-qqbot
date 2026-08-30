@@ -7,9 +7,12 @@
 const fs = require('fs');
 const path = require('path');
 const { TIMEOUTS, DATA_DIR } = require('./config');
+const { getErrorMessage } = require('./error-utils');
+const { parseBoundedInt: parsePositiveInt } = require('./config-utils');
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
 let flushTodayCacheToDisk = () => { };
 try {
-    ({ flushTodayCacheToDisk } = require('../../koishi-plugin-dongxuelian-ai/lib/conversation'));
+    ({ flushTodayCacheToDisk } = loadManagementModule('core.conversation'));
 }
 catch {
     /* 独立安装路径异常时仅跳过 flush */
@@ -20,10 +23,9 @@ function getResourceRuntime(ctx) {
     if (resourceRuntimeCache !== undefined)
         return resourceRuntimeCache;
     try {
-        const base = '../../koishi-plugin-dongxuelian-ai/lib';
         resourceRuntimeCache = {
-            admission: require(`${base}/resource-scheduler/admission`),
-            tasks: require(`${base}/resource-workers/task-store`),
+            admission: loadManagementModule('resource.admission'),
+            tasks: loadManagementModule('resource.taskStore'),
         };
     }
     catch (error) {
@@ -41,16 +43,7 @@ const FAILURE_BACKOFF_MS = 10 * 1000;
 const MAX_RUNTIME_MAP_ENTRIES = 500;
 const SEND_RETRY_DELAY_MS = parsePositiveInt(process.env.DAILY_REPORT_SEND_RETRY_DELAY_MS, 800, 0, 10000);
 const MAINTENANCE_REPLY_FALLBACK = '优化中';
-function parsePositiveInt(value, fallback, min, max) {
-    const parsed = parseInt(String(value), 10);
-    if (!Number.isFinite(parsed))
-        return fallback;
-    return Math.max(min, Math.min(max, parsed));
-}
 // 将未知错误压成稳定的日志字符串。
-function getErrorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
-}
 // 用于发送重试前的短延迟，避免 OneBot 瞬时无响应时直接放弃文本提示。
 function delay(ms) {
     if (ms <= 0)
@@ -134,11 +127,10 @@ async function sendDailyAdmissionNotice(ctx, session, decision, reason) {
     }
 }
 // 向 S2 写入日报任务；实际生成和发送由 daily-worker + result-notifier 完成。
-function submitDailyResourceTask(runtime, taskId, channelKey, userId, detail, status = 'pending') {
+function submitDailyResourceTask(runtime, taskId, channelKey, userId, detail) {
     return runtime.tasks.submitResourceTask({
         id: taskId,
         kind: 'daily_report',
-        status,
         source: 'koishi-worker',
         channelKey: String(channelKey || ''),
         userId,

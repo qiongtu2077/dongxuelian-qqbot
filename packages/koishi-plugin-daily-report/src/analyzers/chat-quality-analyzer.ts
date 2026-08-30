@@ -3,6 +3,7 @@
  * 职责: 分析群聊氛围，生成质量锐评。
  * 边界: 只做分析，不调API，通过 aiClient.callAI 间接调用。
  */
+const { getErrorMessage } = require('../error-utils') as typeof import('../error-utils')
 
 interface TokenUsage {
   promptTokens: number
@@ -38,10 +39,6 @@ interface AiClientLike {
 interface ChatQualityResult {
   qualityReview: QualityReview | null
   tokenUsage: TokenUsage
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 async function analyzeChatQuality(

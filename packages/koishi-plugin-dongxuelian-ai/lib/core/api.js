@@ -33,6 +33,10 @@ const TOKEN_USAGE_EXIT_FLUSH = Symbol.for('dongxuelian.ai.tokenUsageExitFlush');
 const tokenUsageGlobal = globalThis;
 let _tokenUsageCache = null;
 let _tokenUsageFlushTimer = null;
+// 记录不会阻断请求、但会导致 token 用量磁盘状态滞后的写入失败。
+function warnTokenUsagePersistence(stage, error) {
+    console.warn(`[ai-api] token_usage_persistence_failed stage=${stage} detail=${errorMessage(error)}`);
+}
 function usageNumber(value) {
     const n = Number(value || 0);
     return Number.isFinite(n) && n > 0 ? n : 0;
@@ -130,7 +134,9 @@ function recordTokenUsage(provider, tokens, details = {}) {
             try {
                 fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(_tokenUsageCache, null, 2));
             }
-            catch { /* non-critical: token usage flush is best-effort */ }
+            catch (error) {
+                warnTokenUsagePersistence('delayed_flush', error);
+            }
         }, 5000);
     }
 }
@@ -141,7 +147,9 @@ function flushTokenUsage() {
         try {
             fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(_tokenUsageCache, null, 2));
         }
-        catch { /* non-critical: token usage exit flush is best-effort */ }
+        catch (error) {
+            warnTokenUsagePersistence('exit_flush', error);
+        }
     }
 }
 tokenUsageGlobal[TOKEN_USAGE_EXIT_FLUSH] = flushTokenUsage;

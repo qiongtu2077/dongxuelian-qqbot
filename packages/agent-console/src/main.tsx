@@ -122,6 +122,7 @@ function useAgentData() {
   const [error, setError] = useState('')
   const [adminRequired, setAdminRequired] = useState(false)
 
+  /** Refreshes all Agent Console datasets in one parallel request batch. */
   async function refresh() {
     setLoading(true)
     setError('')
@@ -144,8 +145,8 @@ function useAgentData() {
     else setError(cfg.message || cfg.data?.message || '加载 Agent 配置失败')
     if (pnd.ok) setPending(pnd.data?.pending || [])
     if (ses.ok) setSessions(ses.data?.sessions || [])
-    if (sta.ok) setStats(sta.data?.stats)
-    if (que.ok) setQueue(que.data?.queue)
+    if (sta.ok) setStats(sta.data?.stats ?? null)
+    if (que.ok) setQueue(que.data?.queue ?? null)
     if (guard.ok) setShellGuard(guard.data)
     if (planRes.ok) setPlans(planRes.data?.plans || [])
     if (cronRes.ok) {
@@ -488,7 +489,7 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
           <article key={index} className={'message ' + message.role}>
             <div className="avatar">{message.role === 'user' ? '你' : message.role === 'assistant' ? '莲' : '…'}</div>
             <div className="bubble">
-              {message.role === 'assistant' && renderRounds(message.rounds)}
+              {message.role === 'assistant' && renderRounds(message.rounds || [])}
               <pre>{message.content}</pre>
               {message.pendingId && <span className="tag warn">等待确认 {message.pendingId}</span>}
             </div>
@@ -637,7 +638,7 @@ function SkillsPage({ data, setConfig, refresh }: { data: AgentData; setConfig: 
             <div className="tags">
               <span className={config?.enabledSkills?.includes(skill.name) ? 'tag ok' : 'tag'}>{config?.enabledSkills?.includes(skill.name) ? '已启用' : '已禁用'}</span>
               <span className="tag">{skill.kind || 'skill'}</span>
-              {skill.references?.length > 0 && <span className="tag">参考 {skill.references.length}</span>}
+              {(skill.references?.length || 0) > 0 && <span className="tag">参考 {skill.references?.length || 0}</span>}
             </div>
             <label className="switch-row">
               <input type="checkbox" checked={!!config?.enabledSkills?.includes(skill.name)} onChange={event => toggle(skill.name, event.target.checked)} />
@@ -715,10 +716,11 @@ function FilesPage({ roots }: { roots: string[] }) {
       setMessage(result.message || result.data?.message || '文件列表读取失败')
     }
   }
+  /** Opens a directory or loads a file preview for the workspace browser. */
   async function openFile(file: AgentWorkspaceFileItem) {
     if (file.type === 'dir') return loadFiles(file.path, '')
     const result = await api.filePreview(file.path)
-    if (result.ok) setPreview(result.data?.file)
+    if (result.ok) setPreview(result.data?.file ?? null)
     else setMessage(result.message || result.data?.message || '预览失败')
   }
   async function upload() {
@@ -927,14 +929,18 @@ function RuntimePage({ data, refresh }: { data: AgentData; refresh: () => void }
   const [message, setMessage] = useState('')
   useEffect(() => { if (config) setDraft(structuredClone(config)) }, [config])
   if (!draft) return <section className="panel"><div className="empty">配置加载中</div></section>
+  /** Persists the current runtime configuration draft. */
   async function save() {
+    if (!draft) return
     const result = await api.saveConfig({ config: draft, mode: data.config?.mode })
     setMessage(result.ok ? '运行配置已保存' : (result.message || result.data?.message || '保存失败'))
     refresh()
   }
+  /** Updates one existing leaf in the runtime configuration draft. */
   function update(path: string[], value: string | number | boolean) {
+    if (!draft) return
     const next = structuredClone(draft)
-    let cursor: Record<string, unknown> = next
+    let cursor = next as unknown as Record<string, unknown>
     for (const key of path.slice(0, -1)) {
       const child = cursor[key]
       if (typeof child !== 'object' || child === null) return

@@ -107,7 +107,51 @@ type ChatModelReply = string | ChatToolCallReplyLike;
 type ChatResult = string | ChatHeavyToolResult;
 type PublicLoadConfig = (force?: boolean) => Promise<PublicRuntimeConfig>;
 type PublicGetThinkingArgs = (config: PublicRuntimeConfig) => Record<string, unknown>;
+interface PreparedChatIdentity {
+    earlyReply: null;
+    skillsContentCache: Record<string, string>;
+    cleanInput: string;
+    isRandomTriggered: boolean;
+    rareProvocation: boolean;
+    japanLinked: boolean;
+    wideRareHit: boolean;
+    channelKey: string;
+    currentUserId: string;
+    personaName: string | null;
+    personaSkillContent: string | null;
+    retaliationLevel: number;
+    hostile: boolean;
+    systemPrompt: string;
+    dynamicTimePrompt: string;
+    userName: string;
+    safeUserName: string;
+    currentUserMessage: string;
+    botSelfId: string;
+    now: Date;
+}
+type ChatIdentityStageResult = PreparedChatIdentity | {
+    earlyReply: string;
+};
+interface ExecuteChatModelStageOptions {
+    session: ChatSessionLike;
+    ctx: ChatContextLike;
+    options: ChatRunOptions;
+    messages: ChatMessageLike[];
+    isolatedUserMessage: string;
+    cleanInput: string;
+    isRandomTriggered: boolean;
+    hostile: boolean;
+    currentUserId: string;
+    channelKey: string;
+    systemPrompt: string;
+    currentUserMessage: string;
+    userName: string;
+    retaliationLevel: number;
+    rareConfirmed: boolean;
+}
 declare function callOpenAI(messages: ChatMessageLike[], isRandom: boolean, extraBody?: Record<string, unknown>, tools?: unknown): Promise<ChatModelReply>;
+declare function prepareChatIdentityStage(session: ChatSessionLike, userText: string, ctx: ChatContextLike, options: ChatRunOptions): Promise<ChatIdentityStageResult>;
+declare function executeChatModelStage(input: ExecuteChatModelStageOptions): Promise<ChatResult>;
 declare function chat(session: ChatSessionLike, userText: string, ctx: ChatContextLike, options?: ChatRunOptions): Promise<ChatResult>;
 declare const _default: {
     chat: typeof chat;
@@ -121,5 +165,9 @@ declare const _default: {
     getSkillsCount: () => number;
     getThinkingEnabled: () => boolean;
     setThinkingEnabled: (value: boolean) => void;
+    _test: {
+        prepareChatIdentityStage: typeof prepareChatIdentityStage;
+        executeChatModelStage: typeof executeChatModelStage;
+    };
 };
 export = _default;

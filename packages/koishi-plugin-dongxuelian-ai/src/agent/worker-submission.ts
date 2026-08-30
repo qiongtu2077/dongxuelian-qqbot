@@ -5,6 +5,7 @@
  */
 const { submitWorkerTaskWithAdmission } = require('../resource-workers/task-client') as typeof import('../resource-workers/task-client')
 const { countResourceTasksByKind } = require('../resource-workers/task-store') as typeof import('../resource-workers/task-store')
+type ResourceTask = import('../resource-workers/task-types').ResourceTask
 
 interface SubmitAgentWorkerTaskOptions {
   channel?: string
@@ -30,9 +31,7 @@ interface AgentWorkerSubmissionResult {
   status: number
 }
 
-interface ResourceTaskLike extends Record<string, unknown> {
-  id?: string
-}
+type ResourceTaskLike = Partial<Pick<ResourceTask, 'id'>>
 
 interface AdmissionDecisionLike {
   decision?: string

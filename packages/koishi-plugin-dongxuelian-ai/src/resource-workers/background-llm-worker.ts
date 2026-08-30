@@ -25,7 +25,7 @@ interface SensitiveCacheData {
   messages?: Array<{ speakerName?: string; userId?: string; content?: string; ts?: number }>
 }
 
-interface BackgroundLlmPayloadLike extends Record<string, unknown> {
+interface BackgroundLlmPayloadLike {
   channels?: unknown
   selfUserId?: unknown
   botName?: unknown
@@ -33,7 +33,7 @@ interface BackgroundLlmPayloadLike extends Record<string, unknown> {
   channelKey?: unknown
 }
 
-interface BackgroundLlmTaskLike extends Record<string, unknown> {
+interface BackgroundLlmTaskLike {
   id?: string
   kind?: string
   channelKey?: string

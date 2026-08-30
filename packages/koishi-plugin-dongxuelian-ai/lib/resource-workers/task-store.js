@@ -111,12 +111,30 @@ function submitResourceTask(input) {
     writeWorkerEvent('task_created', { taskId: task.id, kind: task.kind, source: task.source, channelKey: task.channelKey, priority: task.priority });
     return task;
 }
-// 从任意状态目录读取任务文件。
-function readTaskFile(file) {
-    const task = readJsonFile(file, null);
-    if (!task || !task.id || !task.kind)
+// 在 JSON 文件边界验证完整任务 DTO；非法或历史残缺记录不会进入可信域。
+function parseResourceTask(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        return null;
+    const task = value;
+    if (typeof task.id !== 'string' || !task.id
+        || typeof task.kind !== 'string' || !task.kind
+        || typeof task.status !== 'string' || !isResourceTaskStatus(task.status)
+        || typeof task.source !== 'string'
+        || typeof task.channelKey !== 'string'
+        || typeof task.userId !== 'string'
+        || typeof task.priority !== 'number' || !Number.isFinite(task.priority)
+        || typeof task.createdAt !== 'string'
+        || typeof task.updatedAt !== 'string'
+        || typeof task.expiresAt !== 'string'
+        || typeof task.timeoutMs !== 'number' || !Number.isFinite(task.timeoutMs)
+        || !task.payload || typeof task.payload !== 'object' || Array.isArray(task.payload)
+        || !task.notify || typeof task.notify !== 'object' || Array.isArray(task.notify))
         return null;
     return task;
+}
+// 从任意状态目录读取任务文件。
+function readTaskFile(file) {
+    return parseResourceTask(readJsonFile(file, null));
 }
 function normalizeKinds(kinds = []) {
     return Array.from(new Set(kinds.map(String).filter(Boolean)));
@@ -683,4 +701,7 @@ module.exports = {
     cleanupFinishedTasks,
     registerTaskCompletedCallback,
     unregisterTaskCompletedCallback,
+    _test: {
+        parseResourceTask,
+    },
 };

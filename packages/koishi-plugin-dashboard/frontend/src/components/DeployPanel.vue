@@ -338,6 +338,8 @@ import { getDongxuelianDeployerBridge, isElectronDeployerEnv } from '../electron
 import { checkLocalEnv, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, installPortableNode, koishiDeployStatus, localReadyCheck, napcatDeployStatus, npmInstallStatus, previewDeploy, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, repairNpmProxyAndInstall, runDeploy, startKoishiLocal, startNapcat, startNpmInstall, updateDeployConfig, uploadDeploy } from '../api'
 import type { ApiResult, MessageState, SelectOption, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
+import { dataRecord, listFromData, normalizeDeletePreview, normalizeUninstallPreview, readNumber, readString } from '../services/deploy-model'
+import type { DeletePreview, PreviewItem, UninstallPreview } from '../services/deploy-model'
 import SelectBox from './SelectBox.vue'
 
 type DeployMode = 'local' | 'remote'
@@ -414,23 +416,6 @@ interface DependencyInfo {
   reason?: string
 }
 
-interface PreviewItem {
-  key: string
-  label: string
-  action: string
-  path: string
-  reason: string
-  size?: number
-  version?: string
-  message: string
-  paths?: Array<{ path?: string; size?: number }>
-}
-
-interface DeletePreview {
-  files?: PreviewItem[]
-  protected?: PreviewItem[]
-}
-
 interface NapcatInfo {
   found?: boolean
   status?: string
@@ -499,13 +484,6 @@ interface ReadyCheck {
   koishiUrl?: string
 }
 
-interface UninstallPreview {
-  deleteItems?: PreviewItem[]
-  userDataItems?: PreviewItem[]
-  keepItems?: PreviewItem[]
-  warnings?: PreviewItem[]
-}
-
 interface DeployRunData {
   taskId?: string
   message?: string
@@ -555,58 +533,6 @@ interface RemoteDeployPreviewData {
   release?: { releaseId?: string, commit?: string, manifestHash?: string, totalBytes?: number, fileCount?: number } | null
   requiredBytes?: number
   changes?: { added?: number, modified?: number, removed?: number, unchanged?: number, totalFiles?: number, totalBytes?: number }
-}
-
-function readString(value: unknown, fallback = ''): string {
-  if (typeof value === 'string') return value
-  if (value === undefined || value === null) return fallback
-  return String(value)
-}
-
-function readNumber(value: unknown, fallback = 0): number {
-  const number = Number(value)
-  return Number.isFinite(number) ? number : fallback
-}
-
-function listFromData<T>(value: unknown): T[] {
-  return Array.isArray(value) ? value as T[] : []
-}
-
-function dataRecord<T extends object>(value: unknown): T {
-  return asRecord(value) as T
-}
-
-function normalizePreviewItem(value: unknown): PreviewItem {
-  const raw = asRecord(value)
-  return {
-    key: readString(raw.key, readString(raw.path) || readString(raw.label)),
-    label: readString(raw.label),
-    action: readString(raw.action),
-    path: readString(raw.path),
-    reason: readString(raw.reason),
-    size: raw.size === undefined ? undefined : readNumber(raw.size),
-    version: readString(raw.version) || undefined,
-    message: readString(raw.message),
-    paths: listFromData<Record<string, unknown>>(raw.paths).map(item => ({ path: readString(item.path), size: item.size === undefined ? undefined : readNumber(item.size) })),
-  }
-}
-
-function normalizeDeletePreview(value: unknown): DeletePreview {
-  const raw = asRecord(value)
-  return {
-    files: listFromData<unknown>(raw.files).map(normalizePreviewItem),
-    protected: listFromData<unknown>(raw.protected).map(normalizePreviewItem),
-  }
-}
-
-function normalizeUninstallPreview(value: unknown): UninstallPreview {
-  const raw = asRecord(value)
-  return {
-    deleteItems: listFromData<unknown>(raw.deleteItems).map(normalizePreviewItem),
-    userDataItems: listFromData<unknown>(raw.userDataItems).map(normalizePreviewItem),
-    keepItems: listFromData<unknown>(raw.keepItems).map(normalizePreviewItem),
-    warnings: listFromData<unknown>(raw.warnings).map(normalizePreviewItem),
-  }
 }
 
 export default {

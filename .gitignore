@@ -18,6 +18,8 @@ packages/*/data/conversations/
 packages/*/data/persona-diagnostics/
 packages/*/data/sticker-diagnostics/
 packages/*/data/media-backpressure/
+packages/*/data/agent-tool-results/*cascade-test-tool.txt
+packages/*/data/image-history/test
 packages/*/data/*cache*
 packages/*/data/*dump*
 packages/*/data/ai-persona-users.json

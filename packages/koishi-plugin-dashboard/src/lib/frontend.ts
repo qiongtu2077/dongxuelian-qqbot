@@ -5,6 +5,7 @@ const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
 const { exec } = require('child_process') as typeof import('child_process')
 const { FE_DIR, DIST_DIR } = require('./paths') as { FE_DIR: string; DIST_DIR: string }
+const { getErrorMessage } = require('./utils') as typeof import('./utils')
 
 interface FrontendBuildStatus {
   state: string
@@ -23,11 +24,6 @@ interface FrontendBuildOptions {
 }
 
 type FrontendBuildCallback = (err: Error | null) => void
-
-function getErrorMessage(error: unknown): string {
-  if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || '')
-  return String(error || '')
-}
 
 function toError(error: unknown, fallback = 'frontend build failed'): Error {
   return error instanceof Error ? error : new Error(getErrorMessage(error) || fallback)

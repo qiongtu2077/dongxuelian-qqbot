@@ -20,6 +20,7 @@ interface SafetyCheckResult {
 }
 
 let mode: SafetyMode = 'config'
+let modePersistenceError = ''
 
 function isSafetyMode(value: unknown): value is SafetyMode {
   return value === 'auto' || value === 'confirm' || value === 'block' || value === 'config'
@@ -30,10 +31,21 @@ try { const v = fs.readFileSync(TOOL_MODE_FILE, 'utf8').trim(); if (isSafetyMode
 
 function getMode(): SafetyMode { return mode }
 
+// 返回最近一次工具模式持久化结果，供管理端诊断内存状态与磁盘状态是否一致。
+function getModePersistenceStatus(): { ok: boolean; error: string } {
+  return { ok: !modePersistenceError, error: modePersistenceError }
+}
+
 async function setMode(m: unknown): Promise<void> {
   if (!isSafetyMode(m)) return
   mode = m
-  try { await fsp.writeFile(TOOL_MODE_FILE, mode, 'utf8') } catch { /* non-critical: in-memory mode still applies if persistence fails */ }
+  try {
+    await fsp.writeFile(TOOL_MODE_FILE, mode, 'utf8')
+    modePersistenceError = ''
+  } catch (error) {
+    modePersistenceError = error instanceof Error ? error.message : String(error || 'unknown error')
+    console.warn(`[agent-safety] tool_mode_persistence_failed mode=${mode} detail=${modePersistenceError}`)
+  }
 }
 
 const DANGEROUS_TOOLS: Set<string> = new Set(['execute_shell', 'write_file', 'edit_file', 'execute_javascript', 'browser_action', 'append_file'])
@@ -53,4 +65,4 @@ function check(toolName: unknown): SafetyCheckResult {
   return { allowed: true, action: 'auto' }
 }
 
-export = { getMode, setMode, getEffectivePolicy, check, DANGEROUS_TOOLS }
+export = { getMode, getModePersistenceStatus, setMode, getEffectivePolicy, check, DANGEROUS_TOOLS }

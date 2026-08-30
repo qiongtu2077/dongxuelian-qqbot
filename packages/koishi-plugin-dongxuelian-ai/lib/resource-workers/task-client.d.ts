@@ -1,18 +1,5 @@
-interface ResourceTaskLike extends Record<string, unknown> {
-    id: string;
-    kind: string;
-    status: string;
-    source: string;
-    channelKey: string;
-    userId: string;
-    priority: number;
-    createdAt: string;
-    updatedAt: string;
-    expiresAt: string;
-    timeoutMs: number;
-    payload: Record<string, unknown>;
-    notify: Record<string, unknown>;
-}
+type ResourceTask = import('./task-types').ResourceTask;
+type ResourceTaskNotify = import('./task-types').ResourceTaskNotify;
 interface AdmissionDecisionLike {
     decision: string;
     reason?: string;
@@ -39,20 +26,20 @@ interface SubmitWorkerTaskInput {
     expiresAt?: string;
     timeoutMs?: number;
     payload?: Record<string, unknown>;
-    notify?: Record<string, unknown>;
+    notify?: ResourceTaskNotify;
 }
 interface SubmitWorkerTaskOptions {
     checkAdmission?: boolean;
     exclusive?: boolean;
 }
 interface SubmitWorkerTaskWithAdmissionResult {
-    task: ResourceTaskLike;
+    task: ResourceTask;
     admission: AdmissionDecisionLike | SkippedAdmissionDecision;
     directive: ResourceDirectiveLike | SkippedDirective;
     accepted: boolean;
 }
 declare function buildAdmissionInput(taskId: string, input: SubmitWorkerTaskInput, options?: SubmitWorkerTaskOptions): Record<string, unknown>;
-declare function submitWorkerTask(input: SubmitWorkerTaskInput): ResourceTaskLike;
+declare function submitWorkerTask(input: SubmitWorkerTaskInput): ResourceTask;
 declare function submitWorkerTaskWithAdmission(input: SubmitWorkerTaskInput, options?: SubmitWorkerTaskOptions): SubmitWorkerTaskWithAdmissionResult;
 declare const _default: {
     submitWorkerTask: typeof submitWorkerTask;

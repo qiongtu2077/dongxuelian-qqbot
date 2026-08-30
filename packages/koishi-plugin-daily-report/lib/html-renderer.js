@@ -7,8 +7,11 @@
 const fs = require('fs');
 const path = require('path');
 const { FORCE_TEMPLATE } = require('./config');
-const { getShanghaiHourFromTs } = require('../../koishi-plugin-dongxuelian-ai/lib/core/utils');
-const { acquireResourceActivityLease } = require('../../koishi-plugin-dongxuelian-ai/lib/resource-scheduler/resource-activity-lease');
+const { getErrorMessage } = require('./error-utils');
+const { parseBoundedInt: parsePositiveInt } = require('./config-utils');
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
+const { getShanghaiHourFromTs } = loadManagementModule('core.utils');
+const { acquireResourceActivityLease } = loadManagementModule('resource.activityLease');
 const TEMPLATES_DIR = path.join(__dirname, '..', 'templates');
 // 信号量：限制并发Puppeteer实例
 let activeRenderers = 0;
@@ -23,19 +26,10 @@ const MAX_CAPTURE_HEIGHT = parsePositiveInt(process.env.DAILY_REPORT_MAX_CAPTURE
 const MAX_HTML_BYTES = parsePositiveInt(process.env.DAILY_REPORT_MAX_HTML_BYTES, 512 * 1024, 64 * 1024, 2 * 1024 * 1024);
 const BLOCKED_RESOURCE_TYPES = new Set(['media']);
 const BLOCKED_HOST_RE = /(?:doubleclick|googlesyndication|google-analytics|googletagmanager|adservice|adsystem|bat\.bing|clarity\.ms|facebook\.net|scorecardresearch|cnzz|hm\.baidu|pos\.baidu)/i;
-function parsePositiveInt(value, fallback, min, max) {
-    const parsed = parseInt(String(value), 10);
-    if (!Number.isFinite(parsed))
-        return fallback;
-    return Math.max(min, Math.min(max, parsed));
-}
-function getErrorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
-}
 // 动态加载 S8 系统保护模块；缺失时只跳过事件增强，不影响日报保底。
 function loadSystemProtection() {
     try {
-        return require('../../koishi-plugin-dongxuelian-ai/lib/resource-system/system-protection');
+        return loadManagementModule('resource.systemProtection');
     }
     catch {
         return null;
@@ -60,8 +54,8 @@ function writeDailyRenderCleanupEvent(event, data = {}) {
             protection.writeProcessCleanupEvent({ event, source: 'daily_report_render', ...data });
         }
     }
-    catch {
-        /* S8 event writing must not break report rendering. */
+    catch (error) {
+        console.warn(`[daily-report] render_cleanup_event_write_failed event=${event} detail=${getErrorMessage(error)}`);
     }
 }
 // close 失败后只清理当前日报渲染记录的 Chromium 子进程 pid。

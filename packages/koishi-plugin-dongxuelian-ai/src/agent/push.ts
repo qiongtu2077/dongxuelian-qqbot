@@ -185,7 +185,9 @@ async function appendLog(entry: PushLogEntry): Promise<unknown> {
         const trimmed = firstNewline >= 0 ? text.slice(firstNewline + 1) : text
         await fsp.writeFile(PUSH_LOG_FILE, trimmed || text, 'utf8')
       }
-    } catch { /* non-critical: push log compaction failure should not fail the send result */ }
+    } catch (error) {
+      console.warn(`[agent-push] push_log_compaction_failed detail=${error instanceof Error ? error.message : String(error || 'unknown error')}`)
+    }
   })
   pushLogWriteChain = run.catch(ignorePushQueueFailure)
   return run

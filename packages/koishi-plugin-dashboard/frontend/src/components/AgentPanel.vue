@@ -441,6 +441,7 @@ export default {
       persistHistory()
     }
 
+    // 刷新待确认工具；失败时保留现有列表并向用户显示降级原因。
     async function loadPendingTools() {
       try {
         const res = await fetchPendingAgentTools()
@@ -449,15 +450,20 @@ export default {
           pendingTools.value = Array.isArray(data.pending) ? data.pending as PendingAgentTool[] : []
           pendingId.value = pendingTools.value[0]?.id || ''
         }
-      } catch { /* non-critical: pending approvals can be refreshed manually */ }
+      } catch (e) {
+        error.value = errorMessage(e, '待确认工具加载失败，可稍后手动刷新')
+      }
     }
 
+    // 刷新可选会话历史；失败不阻断 Agent 主配置加载。
     async function loadSessions() {
       try {
         const res = await fetchAgentSessions()
         const data = asRecord(res.data)
         if (res.ok && data.ok) sessions.value = Array.isArray(data.sessions) ? data.sessions as AgentSessionSummary[] : []
-      } catch { /* non-critical: session history is optional for the console */ }
+      } catch (e) {
+        error.value = errorMessage(e, '会话历史加载失败，Agent 其他功能仍可使用')
+      }
     }
 
     async function loadConfig() {
@@ -523,12 +529,15 @@ export default {
       }
     }
 
+    // 加载单个会话详情并把读取失败显示在控制台状态区。
     async function loadSessionDetail(id: string) {
       try {
         const res = await fetchAgentSession(id)
         const data = asRecord(res.data)
         if (res.ok && data.ok) selectedSession.value = (data.session as AgentSessionDetail | undefined) || null
-      } catch { /* non-critical: failed session detail should not break the panel */ }
+      } catch (e) {
+        error.value = errorMessage(e, '会话详情加载失败')
+      }
     }
 
     async function saveConfig() {

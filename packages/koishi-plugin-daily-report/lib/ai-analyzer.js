@@ -4,9 +4,12 @@
  * 职责: 根据模式执行不同深度的分析。
  * 边界: 复用主插件的 runtime-config.js + api.js。
  */
-const { loadConfig } = require('../../koishi-plugin-dongxuelian-ai/lib/core/runtime-config');
-const { requestChatCompletions } = require('../../koishi-plugin-dongxuelian-ai/lib/core/api');
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
+const { loadConfig } = loadManagementModule('core.runtimeConfig');
+const { requestChatCompletions } = loadManagementModule('core.api');
 const { createDefaultAnalysisResult, createTopic, createGoldenQuote, createUserTitle } = require('./models');
+const { getErrorMessage } = require('./error-utils');
+const { parseBoundedInt: parsePositiveInt } = require('./config-utils');
 const COMPRESS_BATCH_SIZE = parsePositiveInt(process.env.DAILY_REPORT_COMPRESS_BATCH_SIZE, 100, 20, 200);
 const MAX_COMPRESS_BATCHES = parsePositiveInt(process.env.DAILY_REPORT_MAX_COMPRESS_BATCHES, 20, 1, 60);
 const MAX_COMPRESSED_CHARS = parsePositiveInt(process.env.DAILY_REPORT_MAX_COMPRESSED_CHARS, 12000, 2000, 40000);
@@ -14,22 +17,12 @@ const REPORT_AI_TEMPERATURE = parsePositiveFloat(process.env.DAILY_REPORT_AI_TEM
 const REPORT_COMPRESS_TIMEOUT_MS = parsePositiveInt(process.env.DAILY_REPORT_COMPRESS_TIMEOUT_MS, 45000, 5000, 180000);
 const REPORT_ANALYSIS_TIMEOUT_MS = parsePositiveInt(process.env.DAILY_REPORT_AI_TIMEOUT_MS, 60000, 10000, 180000);
 // --- Config helpers --- #
-// Parses bounded integer config values from environment variables.
-function parsePositiveInt(value, fallback, min, max) {
-    const parsed = parseInt(String(value), 10);
-    if (!Number.isFinite(parsed))
-        return fallback;
-    return Math.max(min, Math.min(max, parsed));
-}
 // Parses bounded float config values from environment variables.
 function parsePositiveFloat(value, fallback, min, max) {
     const parsed = parseFloat(String(value));
     if (!Number.isFinite(parsed))
         return fallback;
     return Math.max(min, Math.min(max, parsed));
-}
-function getErrorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
 }
 function asRecord(value) {
     return value && typeof value === 'object' ? value : {};

@@ -3,7 +3,8 @@
  * MODULE: 配置和常量定义。
  * 边界: 只定义静态配置，不含业务逻辑。
  */
-const { DATA_DIR } = require('../../koishi-plugin-dongxuelian-ai/lib/core/constants');
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
+const { DATA_DIR } = loadManagementModule('core.constants');
 // 限时配置
 const TIMEOUTS = {
     aiRequest: 30000,

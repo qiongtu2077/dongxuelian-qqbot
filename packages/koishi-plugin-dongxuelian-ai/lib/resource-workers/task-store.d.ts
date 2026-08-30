@@ -1,3 +1,7 @@
+type ResourceTask = import('./task-types').ResourceTask;
+type ResourceTaskNotify = import('./task-types').ResourceTaskNotify;
+type ResourceTaskStatus = import('./task-types').ResourceTaskStatus;
+type ResourceWorkerState = import('./task-types').ResourceWorkerState;
 interface SubmitTaskInput {
     id?: string;
     kind: string;
@@ -8,7 +12,7 @@ interface SubmitTaskInput {
     expiresAt?: string;
     timeoutMs?: number;
     payload?: Record<string, unknown>;
-    notify?: Record<string, unknown>;
+    notify?: ResourceTaskNotify;
 }
 interface ListTasksOptions {
     statuses?: string[];
@@ -24,46 +28,6 @@ interface CountTasksByKindOptions {
     limit?: number;
     kind: string;
 }
-type ResourceTaskStatus = 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred';
-interface ResourceTask extends Record<string, unknown> {
-    id: string;
-    kind: string;
-    status: ResourceTaskStatus;
-    source: string;
-    channelKey: string;
-    userId: string;
-    priority: number;
-    createdAt: string;
-    updatedAt: string;
-    expiresAt: string;
-    timeoutMs: number;
-    payload: Record<string, unknown>;
-    notify: Record<string, unknown>;
-    step?: string;
-    claimedBy?: string;
-    claimedAt?: string;
-    startedAt?: string;
-    finishedAt?: string;
-    error?: string;
-    retryAfter?: string;
-}
-interface ResourceWorkerState extends Record<string, unknown> {
-    name: string;
-    pid: number;
-    startedAt: string;
-    heartbeatAt: string;
-    alive: boolean;
-    heartbeatLagMs?: number | null;
-    kind?: string;
-    step?: string;
-    loopIterations?: number;
-    lastClaimAttemptAt?: string;
-    lastTaskFinishedAt?: string;
-    currentTaskId?: string;
-    currentTaskStartedAt?: string;
-    parked?: boolean;
-    parkSleepMs?: number;
-}
 /**
  * 注册任务完成回调
  * @param fn 回调函数，接收 taskId 参数
@@ -78,6 +42,7 @@ declare function ensureTaskDirs(): void;
 declare function writeWorkerEvent(event: string, data?: Record<string, unknown>): void;
 declare function createTaskId(kind: string, channelKey?: string): string;
 declare function submitResourceTask(input: SubmitTaskInput): ResourceTask;
+declare function parseResourceTask(value: unknown): ResourceTask | null;
 declare function listResourceTasks(options?: ListTasksOptions): ResourceTask[];
 declare function countResourceTasks(options?: CountTasksOptions): number;
 declare function countResourceTasksByKind(options: CountTasksByKindOptions, matcher?: (task: ResourceTask) => boolean): number;
@@ -97,7 +62,7 @@ declare function deferTask(task: ResourceTask, reason?: string): ResourceTask;
 declare function requeueTask(task: ResourceTask, reason?: string): ResourceTask;
 declare function updateTaskNotifyStatus(task: ResourceTask, status: string, error?: string): ResourceTask;
 declare function cancelTask(taskId: string, actor?: string, reason?: string): boolean;
-declare function writeWorkerHeartbeat(workerName: string, state?: Record<string, unknown>): ResourceWorkerState;
+declare function writeWorkerHeartbeat(workerName: string, state?: Partial<ResourceWorkerState>): ResourceWorkerState;
 declare function listWorkerStates(): ResourceWorkerState[];
 interface DiscardInterruptedResourceTaskStateResult {
     cancelled: number;
@@ -149,5 +114,8 @@ declare const _default: {
     cleanupFinishedTasks: typeof cleanupFinishedTasks;
     registerTaskCompletedCallback: typeof registerTaskCompletedCallback;
     unregisterTaskCompletedCallback: typeof unregisterTaskCompletedCallback;
+    _test: {
+        parseResourceTask: typeof parseResourceTask;
+    };
 };
 export = _default;

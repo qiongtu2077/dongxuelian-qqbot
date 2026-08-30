@@ -1,48 +1,7 @@
 @echo off
-REM 同步文件并重启服务器 Bot
-REM 用法: scripts\deploy-and-restart.bat root@服务器IP [文件名...]
-REM 或先 set DEPLOY_SERVER=root@服务器IP，再运行 scripts\deploy-and-restart.bat [文件名...]
-REM 如果不传文件名，默认同步所有 lib/ + templates/
+setlocal
 
-setlocal enabledelayedexpansion
-
-set "SERVER=%DEPLOY_SERVER%"
-if not "%~1"=="" (
-  echo %~1 | findstr /r "^[A-Za-z0-9._-][A-Za-z0-9._-]*@.*" >nul
-  if !errorlevel! equ 0 (
-    set "SERVER=%~1"
-    shift /1
-  )
-)
-if "%SERVER%"=="" (
-  echo 用法: scripts\deploy-and-restart.bat root@服务器IP [文件名...]
-  echo 或先 set DEPLOY_SERVER=root@服务器IP，再运行 scripts\deploy-and-restart.bat [文件名...]
-  exit /b 1
-)
-
-set "APP_DIR=%DEPLOY_APP_DIR%"
-if "%APP_DIR%"=="" set "APP_DIR=<YOUR_APP_DIR>"
-set "REMOTE_DIR=%APP_DIR%/packages/koishi-plugin-daily-report"
-
-if "%1"=="" (
-  echo 同步全部 lib/ + templates/ ...
-  scp packages/koishi-plugin-daily-report/lib/*.js "!SERVER!:%REMOTE_DIR%/lib/"
-  scp packages/koishi-plugin-daily-report/templates/*.html "!SERVER!:%REMOTE_DIR%/templates/"
-) else (
-  goto copy_files
-)
-
-goto restart_bot
-
-:copy_files
-if "%~1"=="" goto restart_bot
-echo 同步 %~1 ...
-scp "%~1" "!SERVER!:%REMOTE_DIR%/%~1"
-if errorlevel 1 exit /b %errorlevel%
-shift /1
-goto copy_files
-
-:restart_bot
-REM 执行远程重启脚本
-echo 重启 bot ...
-ssh "!SERVER!" "bash %APP_DIR%/restart.sh"
+echo [已停用] 此脚本会绕过发布清单、预览、发布锁、基线复核和自动回滚。
+echo 远程生产更新请打开 Dashboard 的“部署”页，先生成预览，再确认执行不可变发布。
+echo Dashboard 发布物已经包含日报插件，不再支持直传单个文件后远程重启。
+exit /b 2

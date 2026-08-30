@@ -182,6 +182,7 @@ async function resolveGuardedFileQuickReadReply(channelKey, plain, entryUserId, 
         return null;
     return await resolveFileQuickReadReply(channelKey, preferredFileMessageId);
 }
+// 注册插件生命周期与消息处理中间件。
 function apply(ctx) {
     registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue, chat, retellAgentResult });
     ctx.middleware(async (session, next) => {

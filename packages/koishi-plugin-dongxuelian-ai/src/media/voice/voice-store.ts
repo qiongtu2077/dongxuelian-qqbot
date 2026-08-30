@@ -6,7 +6,7 @@
 const fs = require('fs/promises')
 const path = require('path')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
-const { safeChannelKey } = require('../../core/utils') as typeof import('../../core/utils')
+const { getSafeMediaStorageKey: getSafeKey, getMediaHistoryFilePath } = require('../storage-key') as typeof import('../storage-key')
 
 const VOICE_HISTORY_DIR: string = path.join(DATA_DIR, 'voice-history')
 const VOICE_EXPIRE_MS = 4 * 60 * 60 * 1000
@@ -42,17 +42,6 @@ interface VoiceStoreError {
 
 const voiceHistoryCache: Map<string, VoiceHistoryData> = new Map()
 const voiceStoreQueues: Map<string, Promise<unknown>> = new Map()
-
-// 返回可用于文件名的频道 key。
-function getSafeKey(channelKey: unknown): string {
-  const key = String(channelKey || '')
-  return key ? safeChannelKey(key) : ''
-}
-
-// 返回当前频道语音历史文件路径。
-function getVoiceHistoryFile(channelKey: unknown): string {
-  return path.join(VOICE_HISTORY_DIR, getSafeKey(channelKey) + '.json')
-}
 
 // 返回队列 key，保证同一频道写入串行。
 function getVoiceQueueKey(channelKey: unknown): string {
@@ -128,7 +117,7 @@ async function readVoiceHistory(channelKey: unknown): Promise<VoiceHistoryData> 
   const cacheKey = getVoiceQueueKey(channelKey)
   try {
     await fs.mkdir(VOICE_HISTORY_DIR, { recursive: true })
-    const file = getVoiceHistoryFile(channelKey)
+    const file = getMediaHistoryFilePath(VOICE_HISTORY_DIR, channelKey)
     const stat = await fs.stat(file)
     if (!stat.isFile() || stat.size > MAX_VOICE_HISTORY_BYTES) return { voices: {} }
     const parsed = JSON.parse(await fs.readFile(file, 'utf8'))
@@ -150,7 +139,7 @@ async function writeVoiceHistory(channelKey: unknown, data: VoiceHistoryData): P
   try {
     await fs.mkdir(VOICE_HISTORY_DIR, { recursive: true })
     const normalized = normalizeVoiceHistoryData(data)
-    await fs.writeFile(getVoiceHistoryFile(channelKey), JSON.stringify(normalized), 'utf8')
+    await fs.writeFile(getMediaHistoryFilePath(VOICE_HISTORY_DIR, channelKey), JSON.stringify(normalized), 'utf8')
     voiceHistoryCache.set(getVoiceQueueKey(channelKey), normalized)
     return true
   } catch (error) {

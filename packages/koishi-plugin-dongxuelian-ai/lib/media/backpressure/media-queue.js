@@ -57,6 +57,26 @@ function ensureMediaDirs() {
 function writeMediaEvent(event, data = {}) {
     appendJsonlEvent(mediaEventFile(), { event, ...data });
 }
+// 在媒体任务 JSON 边界验证队列 DTO，避免宽泛对象进入队列状态机。
+function parseMediaTask(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        return null;
+    const task = value;
+    if (typeof task.id !== 'string' || !task.id
+        || typeof task.kind !== 'string' || !task.kind
+        || typeof task.channelKey !== 'string'
+        || typeof task.messageId !== 'string'
+        || typeof task.urlHash !== 'string'
+        || typeof task.url !== 'string'
+        || (typeof task.fileId !== 'string' && task.fileId !== null)
+        || typeof task.createdAt !== 'string'
+        || typeof task.expiresAt !== 'string'
+        || typeof task.priority !== 'number' || !Number.isFinite(task.priority)
+        || typeof task.status !== 'string'
+        || !task.payload || typeof task.payload !== 'object' || Array.isArray(task.payload))
+        return null;
+    return task;
+}
 // 根据 URL/file/message 生成去重 hash。
 function createMediaHash(input) {
     const hash = crypto.createHash('sha256');
@@ -163,7 +183,7 @@ function cleanupExpiredMediaTasks(kind = '') {
     const now = Date.now();
     let removed = 0;
     for (const file of listJsonFiles(getMediaQueueScanRoot(kind), { recursive: true, maxFiles: 20000 })) {
-        const task = readJsonFile(file, null);
+        const task = parseMediaTask(readJsonFile(file, null));
         if (!task)
             continue;
         const expiresAt = Date.parse(String(task.expiresAt || ''));
@@ -204,7 +224,7 @@ function getFinishedMediaTaskTimestamp(task) {
 // 将一个 done/dropped 目录中超龄或超量的最旧记录分批移入观察归档区。
 function archiveFinishedMediaTasks(root, status, maxEntries, now) {
     const tasks = listJsonFiles(root, { maxFiles: 20000 })
-        .map(file => ({ file, task: readJsonFile(file, null) }))
+        .map(file => ({ file, task: parseMediaTask(readJsonFile(file, null)) }))
         .filter((item) => !!item.task)
         .sort((a, b) => getFinishedMediaTaskTimestamp(a.task) - getFinishedMediaTaskTimestamp(b.task));
     const overflowCount = Math.max(0, tasks.length - maxEntries);
@@ -279,7 +299,7 @@ function findExistingMediaTask(hash, kind = '') {
         ...listJsonFiles(MEDIA_RUNNING_ROOT, { maxFiles: 20000 }),
     ];
     for (const file of files) {
-        const task = readJsonFile(file, null);
+        const task = parseMediaTask(readJsonFile(file, null));
         if (task && task.urlHash === hash)
             return task;
     }
@@ -287,10 +307,7 @@ function findExistingMediaTask(hash, kind = '') {
 }
 // 读取媒体任务文件，非法任务返回 null。
 function readMediaTaskFile(file) {
-    const task = readJsonFile(file, null);
-    if (!task || !task.id || !task.kind)
-        return null;
-    return task;
+    return parseMediaTask(readJsonFile(file, null));
 }
 // 判断 pending 媒体任务是否仍处于冷却窗口。
 function isMediaTaskDeferred(task, now = Date.now()) {
@@ -482,7 +499,7 @@ function enforceMediaQueueLimit(kind) {
     if (files.length <= max)
         return 0;
     const tasks = listJsonFiles(dir, { maxFiles: 20000 })
-        .map(file => ({ file, task: readJsonFile(file, null) }))
+        .map(file => ({ file, task: parseMediaTask(readJsonFile(file, null)) }))
         .filter((item) => Boolean(item.task));
     if (tasks.length <= max)
         return 0;
@@ -573,4 +590,7 @@ module.exports = {
     discardInterruptedMediaTasks,
     getMediaBackpressureStatus,
     isMediaTaskDeferred,
+    _test: {
+        parseMediaTask,
+    },
 };

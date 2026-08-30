@@ -7,7 +7,11 @@
 const fs = require('fs/promises')
 const path = require('path')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
-const { safeChannelKey } = require('../../core/utils') as typeof import('../../core/utils')
+const {
+  getSafeMediaStorageKey: getSafeKey,
+  getMediaHistoryFilePath,
+  getLegacyMediaHistoryFilePath,
+} = require('../storage-key') as typeof import('../storage-key')
 
 const IMAGE_HISTORY_DIR: string = path.join(DATA_DIR, 'image-history')
 const IMAGE_CACHE_DIR: string = path.join(DATA_DIR, 'image-cache')
@@ -67,25 +71,6 @@ function ignoreImageStoreQueueFailure(): void {
 
 function ignoreImageStoreCleanupFailure(): void {
   // non-critical: queue cleanup promise only guards map cleanup
-}
-
-function getSafeKey(channelKey: unknown): string {
-  const key = String(channelKey || '')
-  return key ? safeChannelKey(key) : ''
-}
-
-function getLegacyUnsafeKey(channelKey: unknown): string {
-  return String(channelKey || '').replace(/[^a-zA-Z0-9.:_-]/g, '_')
-}
-
-function getLegacyUnsafeFilePath(channelKey: unknown): string {
-  const legacyKey = getLegacyUnsafeKey(channelKey)
-  const safeKey = getSafeKey(channelKey)
-  return legacyKey && legacyKey !== safeKey ? path.join(IMAGE_HISTORY_DIR, legacyKey + '.json') : ''
-}
-
-function getFilePath(channelKey: unknown): string {
-  return path.join(IMAGE_HISTORY_DIR, getSafeKey(channelKey) + '.json')
 }
 
 function getImageStoreQueueKey(channelKey: unknown): string {
@@ -152,12 +137,12 @@ async function readImageHistory(channelKey: unknown): Promise<ImageHistoryData> 
   const cacheKey = getImageStoreQueueKey(channelKey)
   try {
     await fs.mkdir(IMAGE_HISTORY_DIR, { recursive: true })
-    let file = getFilePath(channelKey)
+    let file = getMediaHistoryFilePath(IMAGE_HISTORY_DIR, channelKey)
     let stat
     try {
       stat = await fs.stat(file)
     } catch (error) {
-      const legacyPath = getLegacyUnsafeFilePath(channelKey)
+      const legacyPath = getLegacyMediaHistoryFilePath(IMAGE_HISTORY_DIR, channelKey)
       if (!legacyPath || (error as ImageStoreError | null)?.code !== 'ENOENT') throw error
       file = legacyPath
       stat = await fs.stat(file)
@@ -165,7 +150,7 @@ async function readImageHistory(channelKey: unknown): Promise<ImageHistoryData> 
     if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return { images: {} }
     const parsed = JSON.parse(await fs.readFile(file, 'utf8'))
     const data = normalizeImageHistoryData(parsed)
-    if (file !== getFilePath(channelKey)) {
+    if (file !== getMediaHistoryFilePath(IMAGE_HISTORY_DIR, channelKey)) {
       await writeImageHistory(channelKey, data)
     }
     imageHistoryCache.set(cacheKey, cloneImageHistoryData(data))
@@ -184,7 +169,7 @@ async function writeImageHistory(channelKey: unknown, data: ImageHistoryData): P
   try {
     await fs.mkdir(IMAGE_HISTORY_DIR, { recursive: true })
     const normalized = normalizeImageHistoryData(data)
-    await fs.writeFile(getFilePath(channelKey), JSON.stringify(normalized), 'utf8')
+    await fs.writeFile(getMediaHistoryFilePath(IMAGE_HISTORY_DIR, channelKey), JSON.stringify(normalized), 'utf8')
     imageHistoryCache.set(getImageStoreQueueKey(channelKey), cloneImageHistoryData(normalized))
     return true
   } catch (error) {

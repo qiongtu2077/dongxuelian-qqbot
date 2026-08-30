@@ -1,121 +1,16 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { json, collectBody, parsePositiveInt } = require('../utils');
+const { json, collectBody, parsePositiveInt, getErrorMessage, getOptionalErrorMessage: getLegacyErrorMessage, } = require('../utils');
 const { requireAdmin } = require('../auth');
-const { AI_LIB, DATA_DIR } = require('../paths');
-const { isAgentPathInside } = require('../paths');
+const { DATA_DIR } = require('../paths');
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
+const { getAgentEffectiveReadRoots, getAgentEnvStatus, listAgentWorkspaceFiles, previewAgentWorkspaceFile, resolveAgentUploadTarget, resolveAgentWorkspacePath, } = require('../agent-workspace');
 const MAX_DOWNLOAD_BYTES = parsePositiveInt(process.env.DASHBOARD_MAX_DOWNLOAD_BYTES, 256 * 1024 * 1024, 8 * 1024 * 1024, 2 * 1024 * 1024 * 1024);
-const MAX_AGENT_PREVIEW_FILE_BYTES = parsePositiveInt(process.env.DASHBOARD_AGENT_PREVIEW_MAX_BYTES, 512 * 1024, 64 * 1024, 2 * 1024 * 1024);
 const MAX_TTS_CLONE_AUDIO_BYTES = parsePositiveInt(process.env.DASHBOARD_TTS_CLONE_AUDIO_MAX_BYTES, 7 * 1024 * 1024, 1024, 10 * 1024 * 1024);
-async function resolveAgentWorkspacePath(target) {
-    const guard = require(path.join(AI_LIB, 'agent', 'path-guard'));
-    return guard.assertExistingAgentPathInsideRoots(String(target || ''), '路径');
-}
-async function resolveAgentUploadTarget(root, name) {
-    const guard = require(path.join(AI_LIB, 'agent', 'path-guard'));
-    const base = String(root || '').trim() || await guard.resolveAgentDefaultRoot();
-    const safeName = path.basename(String(name || '').replace(/[\\/:*?"<>|]+/g, '_')).slice(0, 160);
-    if (!safeName)
-        throw new Error('文件名不能为空');
-    const target = path.join(base, safeName);
-    return guard.assertNewAgentPathInsideRoots(target, '上传文件', true);
-}
-async function listAgentWorkspaceFiles({ root, query = '', limit = 120 } = {}) {
-    const guard = require(path.join(AI_LIB, 'agent', 'path-guard'));
-    const base = root ? String(root) : await guard.resolveAgentDefaultRoot();
-    const { abs } = await guard.assertExistingAgentPathInsideRoots(base, '目录');
-    const stat = await fs.promises.stat(abs);
-    if (!stat.isDirectory())
-        throw new Error('不是目录：' + abs);
-    const max = Math.max(1, Math.min(300, parseInt(String(limit), 10) || 120));
-    const needle = String(query || '').trim().toLowerCase();
-    const ignored = new Set(['.git', 'node_modules', 'dist', 'dist-portable', 'tmp']);
-    const items = [];
-    async function walk(dir, depth) {
-        if (items.length >= max || depth > 4)
-            return;
-        const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => []);
-        for (const entry of entries) {
-            if (items.length >= max)
-                return;
-            if (entry.isDirectory() && ignored.has(entry.name))
-                continue;
-            const full = path.join(dir, entry.name);
-            if (!isAgentPathInside(full, abs))
-                continue;
-            const rel = path.relative(abs, full) || entry.name;
-            const matches = !needle || rel.toLowerCase().includes(needle);
-            let itemStat = null;
-            if (matches)
-                itemStat = await fs.promises.stat(full).catch(() => null);
-            if (matches && itemStat) {
-                items.push({
-                    path: full, rel, name: entry.name,
-                    type: entry.isDirectory() ? 'dir' : entry.isFile() ? 'file' : 'other',
-                    size: itemStat.size, mtimeMs: itemStat.mtimeMs,
-                    injectable: entry.isFile() && itemStat.size <= MAX_AGENT_PREVIEW_FILE_BYTES,
-                });
-            }
-            if (entry.isDirectory())
-                await walk(full, depth + 1);
-        }
-    }
-    await walk(abs, 0);
-    return { root: abs, files: items };
-}
-async function previewAgentWorkspaceFile(target) {
-    const { abs } = await resolveAgentWorkspacePath(target);
-    const stat = await fs.promises.stat(abs);
-    if (!stat.isFile())
-        throw new Error('不是文件：' + abs);
-    const meta = { path: abs, name: path.basename(abs), size: stat.size, mtimeMs: stat.mtimeMs, binary: false, truncated: false, content: '' };
-    if (stat.size > MAX_AGENT_PREVIEW_FILE_BYTES) {
-        meta.truncated = true;
-        return meta;
-    }
-    const buffer = await fs.promises.readFile(abs);
-    if (buffer.includes(0)) {
-        meta.binary = true;
-        return meta;
-    }
-    const content = buffer.toString('utf8');
-    meta.truncated = content.length > 12000;
-    meta.content = content.slice(0, 12000);
-    return meta;
-}
-async function getAgentEffectiveReadRoots() {
-    const guard = require(path.join(AI_LIB, 'agent', 'path-guard'));
-    return guard.getAgentPathAllowedRoots();
-}
-function getAgentEnvStatus() {
-    const constants = require(path.join(AI_LIB, 'core', 'constants'));
-    const files = [
-        ['ai-openai-key.txt', constants.KEY_FILE],
-        ['ai-deepseek-key.txt', constants.DEEPSEEK_KEY_FILE],
-        ['ai-dashscope-key.txt', constants.DASHSCOPE_KEY_FILE],
-        ['ai-glm-key.txt', constants.GLM_KEY_FILE],
-        ['ai-mimorium-key.txt', constants.MIMORIUM_KEY_FILE],
-        ['ai-provider.txt', constants.PROVIDER_FILE],
-        ['ai-model.txt', constants.MODEL_FILE],
-        ['ai-base-url.txt', constants.BASE_URL_FILE],
-        ['ai-enable-search.txt', constants.SEARCH_ENABLED_FILE],
-    ];
-    return files.map(([name, file]) => {
-        const exists = fs.existsSync(file);
-        let size = 0, configured = false;
-        try {
-            const stat = fs.statSync(file);
-            size = stat.size;
-            configured = stat.size > 0 && String(fs.readFileSync(file, 'utf8')).trim().length > 0;
-        }
-        catch { /* non-critical: optional env file probe */ }
-        return { name, exists, configured, size };
-    });
-}
 function readAgentTaskResult(taskId) {
     try {
-        return require(path.join(AI_LIB, 'resource-workers', 'result-notifier')).readTaskResult(String(taskId || ''));
+        return loadManagementModule('resource.resultNotifier').readTaskResult(String(taskId || ''));
     }
     catch {
         return {};
@@ -149,14 +44,6 @@ function sanitizeAgentTaskForDashboard(task, result = {}) {
         },
     };
 }
-function getErrorMessage(error) {
-    if (error && typeof error === 'object' && 'message' in error)
-        return String(error.message || '');
-    return String(error || '');
-}
-function getLegacyErrorMessage(error) {
-    return error?.message;
-}
 function toDashboardPendingSnapshot(value) {
     if (!value || typeof value !== 'object')
         return null;
@@ -170,12 +57,12 @@ async function handleGetAgentConfig(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig(true);
-        const registry = require(path.join(AI_LIB, 'agent', 'tools', 'registry'));
-        const safety = require(path.join(AI_LIB, 'agent', 'safety'));
-        const stats = require(path.join(AI_LIB, 'agent', 'stats')).getStats();
-        const skills = require(path.join(AI_LIB, 'agent', 'skills')).listAgentSkills();
-        const personas = require(path.join(AI_LIB, 'agent', 'persona-context')).listAgentPersonasForConsole();
+        const agentConfig = loadManagementModule('agent.config').getAgentConfig(true);
+        const registry = loadManagementModule('agent.toolRegistry');
+        const safety = loadManagementModule('agent.safety');
+        const stats = loadManagementModule('agent.stats').getStats();
+        const skills = loadManagementModule('agent.skills').listAgentSkills();
+        const personas = loadManagementModule('agent.personaContext').listAgentPersonasForConsole();
         const effectiveReadRoots = await getAgentEffectiveReadRoots();
         const qqEnabledTools = new Set(registry.getToolDefinitions('qq').map(item => item.function.name));
         const dashboardEnabledTools = new Set(registry.getToolDefinitions('dashboard').map(item => item.function.name));
@@ -194,8 +81,8 @@ async function handlePutAgentConfig(req, res) {
     collectBody(req, res, async (body) => {
         try {
             const data = JSON.parse(body || '{}');
-            const agentConfig = require(path.join(AI_LIB, 'agent', 'config'));
-            const safety = require(path.join(AI_LIB, 'agent', 'safety'));
+            const agentConfig = loadManagementModule('agent.config');
+            const safety = loadManagementModule('agent.safety');
             // L43: AgentPanel 只提交可见字段，必须用 patch/merge 保留未提交的 queue/cron/memory/planMode/push，
             // 否则保存工具开关或 MCP 时会把这些隐藏高级配置静默重置为默认值。
             const saved = await agentConfig.patchAgentConfig(data.config || data);
@@ -212,8 +99,8 @@ function handleGetAgentPersonas(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig(true);
-        const personas = require(path.join(AI_LIB, 'agent', 'persona-context')).listAgentPersonasForConsole();
+        const agentConfig = loadManagementModule('agent.config').getAgentConfig(true);
+        const personas = loadManagementModule('agent.personaContext').listAgentPersonasForConsole();
         return json(res, { ok: true, personas, persona: agentConfig.persona || { dashboardPersona: '', qqInheritChatPersona: true } });
     }
     catch (e) {
@@ -226,10 +113,10 @@ function handlePutAgentPersona(req, res) {
     collectBody(req, res, async (body) => {
         try {
             const data = JSON.parse(body || '{}');
-            const agentConfig = require(path.join(AI_LIB, 'agent', 'config'));
+            const agentConfig = loadManagementModule('agent.config');
             const current = agentConfig.getAgentConfig();
             const personaName = String(data.dashboardPersona || '').trim();
-            const personas = require(path.join(AI_LIB, 'agent', 'persona-context')).listAgentPersonasForConsole();
+            const personas = loadManagementModule('agent.personaContext').listAgentPersonasForConsole();
             if (personaName && !personas.some(item => item.name === personaName))
                 return json(res, { ok: false, message: '未知人格：' + personaName }, 400);
             current.persona = {
@@ -245,11 +132,11 @@ function handlePutAgentPersona(req, res) {
     });
 }
 function getTtsModule() {
-    return require(path.join(AI_LIB, 'media', 'voice', 'tts'));
+    return loadManagementModule('media.tts');
 }
 // 读取 AI 插件中的 TTS 资源门控模块，Dashboard 侧跨进程复用同一 S0/S1 状态。
 function getTtsResourceModule() {
-    return require(path.join(AI_LIB, 'media', 'voice', 'tts-resource'));
+    return loadManagementModule('media.ttsResource');
 }
 function getTtsLogger() {
     return {
@@ -271,10 +158,10 @@ function buildTtsResourceBusyPayload(result) {
     };
 }
 function getVoiceAssetsModule() {
-    return require(path.join(AI_LIB, 'media', 'voice', 'voice-assets'));
+    return loadManagementModule('media.voiceAssets');
 }
 function getPersonaModule() {
-    return require(path.join(AI_LIB, 'persona', 'persona'));
+    return loadManagementModule('media.persona');
 }
 function getPersonaVoiceConfigs() {
     const personaModule = getPersonaModule();
@@ -432,11 +319,15 @@ function handlePostTtsClone(req, res) {
                 sampleText: cleanSampleText,
                 mimeType: mimeType || voiceAssets.getAudioMimeFromFilename(filename),
             });
+            let personaConfigWarning = '';
             try {
                 writePersonaVoiceConfig(personaName, '__cloned__', data.voiceStyle || '', asset.id);
             }
-            catch { /* non-critical: voice config best effort */ }
-            return json(res, { ok: true, message: '音色克隆成功', file: filename, asset });
+            catch (configError) {
+                personaConfigWarning = `音色已创建，但人格音色配置保存失败：${getErrorMessage(configError) || '未知错误'}`;
+                console.warn(`[dashboard] persona_voice_config_write_failed persona=${personaName} detail=${getErrorMessage(configError)}`);
+            }
+            return json(res, { ok: true, message: personaConfigWarning || '音色克隆成功', warnings: personaConfigWarning ? [personaConfigWarning] : [], file: filename, asset });
         }
         catch (e) {
             return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
@@ -619,7 +510,7 @@ function handleGetAgentStats(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const stats = require(path.join(AI_LIB, 'agent', 'stats')).getStats();
+        const stats = loadManagementModule('agent.stats').getStats();
         return json(res, { ok: true, stats });
     }
     catch (e) {
@@ -630,7 +521,7 @@ function handleGetAgentQueue(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const queue = require(path.join(AI_LIB, 'agent', 'queue')).getAgentQueueStats();
+        const queue = loadManagementModule('agent.queue').getAgentQueueStats();
         return json(res, { ok: true, queue });
     }
     catch (e) {
@@ -707,7 +598,7 @@ async function handleGetAgentEnv(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const runtime = await require(path.join(AI_LIB, 'core', 'runtime-config')).loadConfig(true);
+        const runtime = await loadManagementModule('core.runtimeConfig').loadConfig(true);
         return json(res, {
             ok: true,
             env: getAgentEnvStatus(),
@@ -722,7 +613,7 @@ function handleGetAgentShellGuard(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const guard = require(path.join(AI_LIB, 'agent', 'tools', 'shell-guard'));
+        const guard = loadManagementModule('agent.shellGuard');
         const categories = guard.listShellGuardRules();
         const ruleCount = categories.reduce((sum, item) => sum + item.count, 0);
         return json(res, { ok: true, enabled: true, ruleCount, categories });
@@ -735,7 +626,7 @@ async function handleGetAgentPlans(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const plans = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-store')).listPlans(80);
+        const plans = await loadManagementModule('agent.planStore').listPlans(80);
         return json(res, { ok: true, plans });
     }
     catch (e) {
@@ -752,7 +643,7 @@ function handlePostAgentPlans(req, res) {
             const rawTasks = Array.isArray(data.tasks) ? data.tasks : [];
             if (!goal && rawTasks.length === 0)
                 return json(res, { ok: false, message: '计划目标不能为空。' }, 400);
-            const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig();
+            const agentConfig = loadManagementModule('agent.config').getAgentConfig();
             if (!agentConfig.planMode?.enabled)
                 return json(res, { ok: false, message: '计划模式当前未开启。' }, 400);
             const tasks = rawTasks.length
@@ -765,7 +656,7 @@ function handlePostAgentPlans(req, res) {
                 title: goal.slice(0, 80) || 'Dashboard Agent 计划', tasks: fallbackTasks, channel: 'dashboard',
                 channelKey: 'dashboard', userId: String(data.userId || 'dashboard'), userName: String(data.userName || 'Dashboard'),
             };
-            const plan = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-engine')).createPlan(createOptions);
+            const plan = await loadManagementModule('agent.planEngine').createPlan(createOptions);
             return json(res, { ok: true, plan });
         }
         catch (e) {
@@ -777,7 +668,7 @@ function handleGetAgentPushLog(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const pushLog = require(path.join(AI_LIB, 'agent', 'push')).listPushLog(80);
+        const pushLog = loadManagementModule('agent.push').listPushLog(80);
         return json(res, { ok: true, log: pushLog });
     }
     catch (e) {
@@ -788,7 +679,7 @@ async function handleGetAgentCrons(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const cron = require(path.join(AI_LIB, 'agent', 'cron'));
+        const cron = loadManagementModule('agent.cron');
         const data = await cron.loadCrons();
         const history = await cron.listCronHistory(50);
         return json(res, { ok: true, crons: data.crons, history });
@@ -803,7 +694,7 @@ function handlePostAgentCrons(req, res) {
     collectBody(req, res, async (body) => {
         try {
             const data = JSON.parse(body || '{}');
-            const cron = await require(path.join(AI_LIB, 'agent', 'cron')).registerCron(data);
+            const cron = await loadManagementModule('agent.cron').registerCron(data);
             return json(res, { ok: true, cron });
         }
         catch (e) {
@@ -815,7 +706,7 @@ function handleGetAgentSessions(req, res) {
     if (!requireAdmin(req, res))
         return;
     try {
-        const sessions = require(path.join(AI_LIB, 'agent', 'sessions')).listAgentSessions();
+        const sessions = loadManagementModule('agent.sessions').listAgentSessions();
         return json(res, { ok: true, sessions });
     }
     catch (e) {
@@ -833,11 +724,11 @@ function handlePostAgentChat(req, res) {
             const agentMode = !!data.agentMode;
             if (!message)
                 return json(res, { ok: false, message: '消息不能为空' }, 400);
-            const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig();
-            const workerSubmission = require(path.join(AI_LIB, 'agent', 'worker-submission'));
-            const agentPayload = require(path.join(AI_LIB, 'resource-workers', 'agent-payload'));
-            const history = require(path.join(AI_LIB, 'agent', 'messages')).sanitizeAgentHistory(data.history);
-            const searchRunOptions = require(path.join(AI_LIB, 'agent', 'router')).buildExplicitSearchRunOptions(message);
+            const agentConfig = loadManagementModule('agent.config').getAgentConfig();
+            const workerSubmission = loadManagementModule('agent.workerSubmission');
+            const agentPayload = loadManagementModule('resource.agentPayload');
+            const history = loadManagementModule('agent.messages').sanitizeAgentHistory(data.history);
+            const searchRunOptions = loadManagementModule('agent.router').buildExplicitSearchRunOptions(message);
             const agentRunInput = {
                 userMessage: message, userName: String(data.userName || 'Dashboard'), userId: String(data.userId || 'dashboard'),
                 channelKey: 'dashboard', channel: 'dashboard', history, enableThinking, agentMode, ...searchRunOptions,
@@ -870,7 +761,7 @@ function handlePostAgentConfirm(req, res) {
         return;
     collectBody(req, res, async (body) => {
         try {
-            const pending = require(path.join(AI_LIB, 'agent', 'pending'));
+            const pending = loadManagementModule('agent.pending');
             const data = JSON.parse(body || '{}');
             const expectedId = String(data.pendingId || '');
             const directFindPendingById = pending.findPendingToolById || pending.getPendingToolById;
@@ -881,9 +772,9 @@ function handlePostAgentConfirm(req, res) {
                 : pending.getPendingTool('dashboard', 'dashboard');
             if (!p)
                 return json(res, { ok: false, message: '没有待确认工具' }, 404);
-            const workerSubmission = require(path.join(AI_LIB, 'agent', 'worker-submission'));
-            const agentPayload = require(path.join(AI_LIB, 'resource-workers', 'agent-payload'));
-            const agentConfig = require(path.join(AI_LIB, 'agent', 'config')).getAgentConfig();
+            const workerSubmission = loadManagementModule('agent.workerSubmission');
+            const agentPayload = loadManagementModule('resource.agentPayload');
+            const agentConfig = loadManagementModule('agent.config').getAgentConfig();
             const resumeInput = { channelKey: p.channelKey, userId: p.userId, channel: p.channel || 'dashboard', expectedId };
             const pendingSnapshot = toDashboardPendingSnapshot(p);
             const submission = workerSubmission.submitAgentWorkerTask({
@@ -915,7 +806,7 @@ function handlePostAgentReject(req, res) {
         return;
     collectBody(req, res, async (body) => {
         try {
-            const pending = require(path.join(AI_LIB, 'agent', 'pending'));
+            const pending = loadManagementModule('agent.pending');
             const data = JSON.parse(body || '{}');
             const pendingId = String(data.pendingId || '');
             if (!pendingId)
@@ -965,7 +856,7 @@ const regexRoutes = [
             if (!requireAdmin(req, res))
                 return;
             try {
-                const plan = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-store')).loadPlan(decodeURIComponent(match[1]));
+                const plan = await loadManagementModule('agent.planStore').loadPlan(decodeURIComponent(match[1]));
                 if (!plan)
                     return json(res, { ok: false, message: '计划不存在' }, 404);
                 return json(res, { ok: true, plan });
@@ -979,7 +870,7 @@ const regexRoutes = [
                 return;
             try {
                 const taskId = decodeURIComponent(match[1]);
-                const taskStore = require(path.join(AI_LIB, 'resource-workers', 'task-store'));
+                const taskStore = loadManagementModule('resource.taskStore');
                 const task = taskStore.getResourceTaskById(taskId);
                 if (!task)
                     return json(res, { ok: false, message: '任务不存在' }, 404);
@@ -996,7 +887,7 @@ const regexRoutes = [
             collectBody(req, res, async (body) => {
                 try {
                     const data = JSON.parse(body || '{}');
-                    const result = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-runner')).resumePlan({
+                    const result = await loadManagementModule('agent.planRunner').resumePlan({
                         planId: decodeURIComponent(match[1]), channelKey: 'dashboard',
                         userId: String(data.userId || 'dashboard'), userName: String(data.userName || 'Dashboard'), channel: 'dashboard',
                     });
@@ -1013,7 +904,7 @@ const regexRoutes = [
             collectBody(req, res, async (body) => {
                 try {
                     const data = JSON.parse(body || '{}');
-                    const plan = await require(path.join(AI_LIB, 'agent', 'plan', 'plan-engine')).abandonPlan({
+                    const plan = await loadManagementModule('agent.planEngine').abandonPlan({
                         planId: decodeURIComponent(match[1]), reason: data.reason || 'Agent Console 放弃计划',
                     });
                     return json(res, { ok: true, plan });
@@ -1027,7 +918,7 @@ const regexRoutes = [
             if (!requireAdmin(req, res))
                 return;
             try {
-                const result = await require(path.join(AI_LIB, 'agent', 'cron')).runCronNow(decodeURIComponent(match[1]));
+                const result = await loadManagementModule('agent.cron').runCronNow(decodeURIComponent(match[1]));
                 return json(res, { ok: true, result });
             }
             catch (e) {
@@ -1038,7 +929,7 @@ const regexRoutes = [
             if (!requireAdmin(req, res))
                 return;
             try {
-                const removed = await require(path.join(AI_LIB, 'agent', 'cron')).unregisterCron(decodeURIComponent(match[1]));
+                const removed = await loadManagementModule('agent.cron').unregisterCron(decodeURIComponent(match[1]));
                 return json(res, { ok: true, removed });
             }
             catch (e) {
@@ -1050,7 +941,7 @@ const regexRoutes = [
                 return;
             try {
                 const id = decodeURIComponent(match[1]);
-                const session = require(path.join(AI_LIB, 'agent', 'sessions')).getAgentSession(id);
+                const session = loadManagementModule('agent.sessions').getAgentSession(id);
                 if (!session)
                     return json(res, { ok: false, message: '会话不存在' }, 404);
                 return json(res, { ok: true, session });

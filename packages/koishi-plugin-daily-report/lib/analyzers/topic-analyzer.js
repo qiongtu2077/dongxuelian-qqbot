@@ -5,9 +5,7 @@
  * 边界: 只做分析，不调API，通过 aiClient.callAI 间接调用。
  */
 const { createTopic } = require('../models');
-function getErrorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
-}
+const { getErrorMessage } = require('../error-utils');
 async function analyzeTopics(aiClient, messages) {
     const sample = messages.slice(0, 300);
     const messagesText = sample.map(m => `[${m.time}] ${m.user}：${m.content}`).join('\n');

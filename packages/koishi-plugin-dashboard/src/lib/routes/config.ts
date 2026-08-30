@@ -5,16 +5,22 @@ import type { IncomingMessage, ServerResponse } from 'http'
 const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
 const { execSync } = require('child_process') as typeof import('child_process')
-const { json, collectBody, readFileSyncSafe, writeFileSyncSafe } = require('../utils') as {
+const {
+  json,
+  collectBody,
+  readFileSyncSafe,
+  writeFileSyncSafe,
+  getObjectErrorMessage: getLegacyErrorMessage,
+} = require('../utils') as {
   json(res: ServerResponse, data: unknown, status?: number): void
   collectBody(req: IncomingMessage, res: ServerResponse, callback: (body: string) => void | Promise<void>): void
   readFileSyncSafe(filePath: string, maxBytes?: number): string
   writeFileSyncSafe(filePath: string, content: unknown): void
+  getObjectErrorMessage(error: unknown): unknown
 }
 const { requireAdmin } = require('../auth') as { requireAdmin(req: IncomingMessage, res: ServerResponse): boolean }
-const { DATA_DIR, AI_LIB, PLUGIN_ROOT, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths') as {
+const { DATA_DIR, PLUGIN_ROOT, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE_DIR, MODES_DIR, LORES_DIR } = require('../paths') as {
   DATA_DIR: string
-  AI_LIB: string
   PLUGIN_ROOT: string
   CUSTOM_PROVIDERS_FILE: string
   PERSONAS_DIR: string
@@ -24,6 +30,7 @@ const { DATA_DIR, AI_LIB, PLUGIN_ROOT, CUSTOM_PROVIDERS_FILE, PERSONAS_DIR, CORE
 }
 const { checkPortState } = require('../tools') as typeof import('../tools')
 const { resolveNapcatOnebotListenPort } = require('../napcat') as typeof import('../napcat')
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
 
 type LoreScope = 'always' | 'keyword' | 'none'
 type LoreNumberValue = number | ''
@@ -146,13 +153,9 @@ interface PersonaDeleteBody {
   name?: string
 }
 
-function getLegacyErrorMessage(error: unknown): unknown {
-  return error && typeof error === 'object' && 'message' in error ? (error as { message?: unknown }).message : undefined
-}
-
 function parseFrontmatter(content: unknown): ParsedDashboardFrontmatter {
   const raw = String(content || '').replace(/\uFEFF/g, '')
-  const { parseFrontmatterDocument } = require(path.join(AI_LIB, 'core', 'frontmatter')) as typeof import('koishi-plugin-dongxuelian-ai/lib/core/frontmatter')
+  const { parseFrontmatterDocument } = loadManagementModule('core.frontmatter')
   const parsed = parseFrontmatterDocument(raw)
   return { meta: parsed.meta, body: parsed.body, raw }
 }
@@ -292,7 +295,7 @@ function handleGetReleaseStatus(req: IncomingMessage, res: ServerResponse): void
 
 function handleGetProviders(req: IncomingMessage, res: ServerResponse): void {
   try {
-    const registry = require(path.join(AI_LIB, 'core', 'provider-registry')) as typeof import('koishi-plugin-dongxuelian-ai/lib/core/provider-registry')
+    const registry = loadManagementModule('core.providerRegistry')
     const merged = registry.getMergedProviderMapSync()
     const publicMap = {} as ProviderMap
     for (const [id, provider] of Object.entries(merged) as Array<[string, ProviderRegistryEntry]>) {
@@ -304,7 +307,7 @@ function handleGetProviders(req: IncomingMessage, res: ServerResponse): void {
     }
     return json(res, publicMap)
   } catch {
-    const { PROVIDERS } = require(path.join(AI_LIB, 'core', 'constants')) as { PROVIDERS: ProviderMap }
+    const { PROVIDERS } = loadManagementModule('core.constants') as { PROVIDERS: ProviderMap }
     return json(res, PROVIDERS)
   }
 }
@@ -325,7 +328,7 @@ function handlePutConfig(req: IncomingMessage, res: ServerResponse): void {
       if (data.provider !== undefined) writeFileSyncSafe(path.join(DATA_DIR, 'ai-provider.txt'), data.provider)
       if (data.model !== undefined) writeFileSyncSafe(path.join(DATA_DIR, 'ai-model.txt'), data.model)
       if (data.baseUrl !== undefined) writeFileSyncSafe(path.join(DATA_DIR, 'ai-base-url.txt'), data.baseUrl)
-      const { resetConfigCache } = require(path.join(AI_LIB, 'core', 'runtime-config')) as RuntimeConfigModule
+      const { resetConfigCache } = loadManagementModule('core.runtimeConfig') as RuntimeConfigModule
       resetConfigCache()
       json(res, { ok: true, message: '配置已更新' })
     } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
@@ -334,7 +337,7 @@ function handlePutConfig(req: IncomingMessage, res: ServerResponse): void {
 
 function handleGetPersonas(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): void {
   try {
-    const { getAvailablePersonals, loadPersonalSkill } = require(path.join(AI_LIB, 'persona', 'persona')) as PersonaModule
+    const { getAvailablePersonals, loadPersonalSkill } = loadManagementModule('media.persona') as PersonaModule
     const name = url.searchParams.get('name')
     if (name) {
       const content = loadPersonalSkill(name)
@@ -368,7 +371,7 @@ function handleDeletePersonas(req: IncomingMessage, res: ServerResponse): void {
     try {
       const { name } = JSON.parse(body) as PersonaDeleteBody
       if (!name) return json(res, { ok: false, message: '名称不能为空' }, 400)
-      const all = (require(path.join(AI_LIB, 'persona', 'persona')) as PersonaModule).getAvailablePersonals()
+      const all = (loadManagementModule('media.persona') as PersonaModule).getAvailablePersonals()
       if (all.find(p => p.name === name)?.type === 'core') return json(res, { ok: false, message: '核心规则不可删除' }, 400)
       if (all.find(p => p.name === name)?.type === 'mode') return json(res, { ok: false, message: '默认人格不可删除' }, 400)
       const files = fs.readdirSync(PERSONAS_DIR).filter(f => /^SKILL(\.[^.]+)?\.md$/i.test(f))
@@ -551,7 +554,7 @@ function toPublicPersonaDiagnostic(item: PersonaDiagnostic = {}) {
 
 function handleGetPersonaDiagnostics(req: IncomingMessage, res: ServerResponse): void {
   try {
-    const diagnostics = require(path.join(AI_LIB, 'persona', 'persona-diagnostics')) as typeof import('koishi-plugin-dongxuelian-ai/lib/persona/persona-diagnostics')
+    const diagnostics = loadManagementModule('media.personaDiagnostics')
     const result = diagnostics.scanPersonaDocuments()
     const documents = Array.isArray(result.documents) ? result.documents : []
     return json(res, {

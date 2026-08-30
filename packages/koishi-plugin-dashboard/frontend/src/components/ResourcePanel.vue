@@ -275,25 +275,7 @@ import {
   setResourceMaintenance,
 } from '../api'
 import { asArray, asRecord, errorMessage, type JsonRecord, type MessageState, type ShowAdminDialog } from '../types'
-
-interface WorkerProgressDisplay {
-  label: string
-  level: 'ok' | 'warn' | 'danger' | 'off'
-  title: string
-}
-
-const WORKER_ZOMBIE_STAGNATION_MS = 15 * 60 * 1000
-const WORKER_HEARTBEAT_FRESH_MS = 10000
-const DAILY_WORKER_KINDS = ['daily_report', 'daily_summary', 'emotion_render']
-const AGENT_WORKER_KINDS = [
-  'agent_task',
-  'dashboard_agent',
-  'agent_memory',
-  'agent_memory_compaction',
-  'conversation_summary',
-  'sensitive_cache_analysis',
-]
-const MEDIA_WORKER_KINDS = ['media_image_analysis', 'media_file_analysis', 'media_voice_transcription']
+import { arrayLength, boolText, canCancel, coverageKey, display, eventDetail, eventKey, formatInterval, lagLabel, mbLabel, memoryUsedValue, numberValue, percentLabel, round, sizeMbLabel, workerBacklogCount as calculateWorkerBacklogCount, workerProgressMeta as buildWorkerProgressMeta, workerProgressStatus as buildWorkerProgressStatus } from '../services/resource-model'
 
 export default {
   name: 'ResourcePanel',
@@ -360,9 +342,6 @@ export default {
       if (typeof available !== 'number') return 'unknown'
       return typeof total === 'number' ? `${available} / ${total} MB` : `${available} MB`
     })
-    function boolText(value: unknown): string {
-      return value ? '是' : '否'
-    }
     const diskUsageLabel = computed(() => {
       const used = diskFilesystem.value.usedMb
       const total = diskFilesystem.value.totalMb
@@ -443,182 +422,19 @@ export default {
       })
     })
 
-    // 将未知值压成短展示文本，避免长对象撑破表格。
-    function display(value: unknown, fallback = '-'): string {
-      if (value === null || value === undefined || value === '') return fallback
-      if (typeof value === 'object') return JSON.stringify(value).slice(0, 120)
-      return String(value)
-    }
-
-    // 格式化资源事件详情，并明确标注只确认根进程退出的清理结果。
-    function eventDetail(event: JsonRecord): string {
-      if (String(event.event || '') === 'process_tree_terminated' && event.treeTerminationConfirmed === false) {
-        return '根进程已终止，子进程树未确认'
-      }
-      return display(event.reason || event.error || event.createdAt)
-    }
-
-    // 数字展示统一归一，未知值显示 0。
-    function numberValue(value: unknown): number {
-      const parsed = Number(value || 0)
-      return Number.isFinite(parsed) ? parsed : 0
-    }
-
-    // 数组长度展示，非数组按 0 处理。
-    function arrayLength(value: unknown): number {
-      return Array.isArray(value) ? value.length : 0
-    }
-
-    // 心跳延迟展示。
-    function lagLabel(value: unknown): string {
-      const ms = Number(value)
-      if (!Number.isFinite(ms)) return '无心跳'
-      if (ms < 1000) return `${ms}ms`
-      return `${Math.round(ms / 1000)}s`
-    }
-
-    // coverage 百分比展示。
-    function percentLabel(value: unknown): string {
-      const parsed = Number(value)
-      if (!Number.isFinite(parsed)) return '-'
-      return `${Math.round(parsed * 1000) / 10}%`
-    }
-
-    // 内存 MB 标签。
-    function mbLabel(value: unknown): string {
-      const parsed = Number(value)
-      return Number.isFinite(parsed) ? `${Math.round(parsed)} MB` : '-'
-    }
-
-    // 优先消费后端已用内存字段，兼容旧采样用 total-available 推导。
-    function memoryUsedValue(point: JsonRecord): number {
-      const direct = Number(point.memUsedMb)
-      if (Number.isFinite(direct)) return Math.max(0, direct)
-      const total = Number(point.memTotalMb)
-      const available = Number(point.memAvailableMb)
-      if (Number.isFinite(total) && Number.isFinite(available)) return Math.max(0, total - available)
-      return Number.NaN
-    }
-
-    // 磁盘容量按大小自动切换 MB/GB，减少长数字噪声。
-    function sizeMbLabel(value: unknown): string {
-      const parsed = Number(value)
-      if (!Number.isFinite(parsed)) return '-'
-      if (Math.abs(parsed) >= 1024) return `${Math.round((parsed / 1024) * 10) / 10} GB`
-      return `${Math.round(parsed)} MB`
-    }
-
-    // 毫秒间隔标签。
-    function formatInterval(value: unknown): string {
-      const ms = Number(value)
-      if (!Number.isFinite(ms) || ms <= 0) return '-'
-      if (ms < 1000) return `${ms}ms`
-      if (ms < 60000) return `${Math.round(ms / 100) / 10}s`
-      if (ms < 3600000) return `${Math.round(ms / 6000) / 10}m`
-      return `${Math.round(ms / 360000) / 10}h`
-    }
-
-    function elapsedLabel(iso: unknown): string {
-      const ts = Date.parse(String(iso || ''))
-      if (!Number.isFinite(ts)) return '无认领'
-      return `${formatInterval(Date.now() - ts)}前`
-    }
-
-    function workerKind(worker: JsonRecord): string {
-      const explicit = String(worker.kind || '').trim().toLowerCase()
-      if (explicit) return explicit
-      const name = String(worker.name || '').trim().toLowerCase()
-      return name.endsWith('-worker') ? name.slice(0, -'-worker'.length) : name
-    }
-
-    function workerTaskKinds(worker: JsonRecord): string[] {
-      const kind = workerKind(worker)
-      if (kind === 'daily') return DAILY_WORKER_KINDS
-      if (kind === 'agent') return AGENT_WORKER_KINDS
-      if (kind === 'media') return MEDIA_WORKER_KINDS
-      return []
-    }
-
+    // Binds the pure worker model to the current reactive resource snapshot.
     function workerBacklogCount(worker: JsonRecord): number {
-      if (workerKind(worker) === 'media') {
-        return numberValue(media.value.imagePending) + numberValue(media.value.filePending) + numberValue(media.value.voicePending)
-      }
-      const kinds = new Set(workerTaskKinds(worker))
-      if (!kinds.size) return numberValue(status.value.queueLength)
-      return tasks.value.filter(task => String(task.status || '') === 'pending' && kinds.has(String(task.kind || ''))).length
+      return calculateWorkerBacklogCount(worker, { media: media.value, status: status.value, tasks: tasks.value })
     }
 
-    function findRunningTaskForWorker(worker: JsonRecord): JsonRecord | null {
-      const currentTaskId = String(worker.currentTaskId || '').trim()
-      if (!currentTaskId) return null
-      return tasks.value.find(task => String(task.id || '') === currentTaskId && String(task.status || '') === 'running') || null
-    }
-
-    function isWorkerRunningWithinTimeout(worker: JsonRecord): boolean {
-      const currentTaskId = String(worker.currentTaskId || '').trim()
-      if (!currentTaskId) return false
-      const task = findRunningTaskForWorker(worker)
-      if (!task) return false
-      const timeoutMs = Number(task.timeoutMs || 0)
-      const startedAt = Date.parse(String(worker.currentTaskStartedAt || task.startedAt || ''))
-      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(startedAt)) return false
-      return Date.now() - startedAt < timeoutMs
-    }
-
+    // Builds worker progress metadata from the current reactive resource snapshot.
     function workerProgressMeta(worker: JsonRecord): string {
-      const loops = Number(worker.loopIterations)
-      const loopLabel = Number.isFinite(loops) ? `loop ${loops}` : 'loop -'
-      return `${loopLabel} · 认领 ${elapsedLabel(worker.lastClaimAttemptAt)} · backlog ${workerBacklogCount(worker)}`
+      return buildWorkerProgressMeta(worker, { media: media.value, status: status.value, tasks: tasks.value })
     }
 
-    function workerProgressStatus(worker: JsonRecord): WorkerProgressDisplay {
-      if (!worker.alive) {
-        return { label: '离线', level: 'off', title: 'worker 心跳已失效或进程不可用' }
-      }
-      if (worker.parked === true) {
-        return { label: '已停放', level: 'off', title: `worker 正按后台指令休眠 ${formatInterval(worker.parkSleepMs)}` }
-      }
-      if (isWorkerRunningWithinTimeout(worker)) {
-        return { label: '运行中', level: 'ok', title: `当前任务 ${display(worker.currentTaskId)}` }
-      }
-      const heartbeatLagMs = Number(worker.heartbeatLagMs)
-      const progressAt = Date.parse(String(worker.lastClaimAttemptAt || worker.loopChangedAt || worker.heartbeatAt || ''))
-      const progressLagMs = Number.isFinite(progressAt) ? Date.now() - progressAt : Number.MAX_SAFE_INTEGER
-      const backlog = workerBacklogCount(worker)
-      if (Number.isFinite(heartbeatLagMs)
-        && heartbeatLagMs <= WORKER_HEARTBEAT_FRESH_MS
-        && progressLagMs > WORKER_ZOMBIE_STAGNATION_MS
-        && backlog > 0) {
-        return {
-          label: '疑似僵尸',
-          level: 'danger',
-          title: '心跳仍新鲜，但认领进度长时间未推进且仍有待处理任务',
-        }
-      }
-      if (backlog > 0 && progressLagMs > WORKER_ZOMBIE_STAGNATION_MS) {
-        return { label: '进度停滞', level: 'warn', title: '该 worker 有积压任务，但最近认领时间已超过观察窗口' }
-      }
-      return { label: '推进中', level: 'ok', title: 'worker 心跳和认领进度未显示异常' }
-    }
-
-    // SVG 坐标保留一位小数，减少模板噪声。
-    function round(value: number): number {
-      return Math.round(value * 10) / 10
-    }
-
-    // coverage 列表稳定 key。
-    function coverageKey(item: JsonRecord): string {
-      return `${display(item.date)}:${display(item.channelKey)}:${display(item.updatedAt)}`
-    }
-
-    // event 列表稳定 key。
-    function eventKey(item: JsonRecord): string {
-      return `${display(item.source)}:${display(item.event)}:${display(item.createdAt)}:${display(item.taskId)}`
-    }
-
-    // 判断任务是否允许从面板取消。
-    function canCancel(task: JsonRecord): boolean {
-      return ['pending', 'deferred'].includes(String(task.status || ''))
+    // Classifies worker progress from the current reactive resource snapshot.
+    function workerProgressStatus(worker: JsonRecord) {
+      return buildWorkerProgressStatus(worker, { media: media.value, status: status.value, tasks: tasks.value })
     }
 
     // 读取资源总览。

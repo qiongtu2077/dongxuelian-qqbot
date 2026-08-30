@@ -1,17 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-interface AgentEnvFileStatus {
-    name: string;
-    exists: boolean;
-    configured: boolean;
-    size: number;
-}
 type AgentRegexRouteHandler = (req: IncomingMessage, res: ServerResponse, match: RegExpMatchArray, pathname: string, url: URL) => void | Promise<void>;
 interface AgentRegexRoute {
     pattern: RegExp;
     method: string;
     handler: AgentRegexRouteHandler;
 }
-declare function getAgentEnvStatus(): AgentEnvFileStatus[];
 declare function handleGetAgentConfig(req: IncomingMessage, res: ServerResponse): Promise<void>;
 declare function handlePutAgentConfig(req: IncomingMessage, res: ServerResponse): Promise<void>;
 declare function handleGetAgentPersonas(req: IncomingMessage, res: ServerResponse): void;
@@ -70,6 +63,6 @@ declare const _default: {
         'POST /dashboard/api/agent/reject': typeof handlePostAgentReject;
     };
     regexRoutes: AgentRegexRoute[];
-    getAgentEnvStatus: typeof getAgentEnvStatus;
+    getAgentEnvStatus: typeof import("../agent-workspace").getAgentEnvStatus;
 };
 export = _default;

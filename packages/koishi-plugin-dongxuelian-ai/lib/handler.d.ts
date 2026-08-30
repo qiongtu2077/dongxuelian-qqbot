@@ -96,8 +96,14 @@ interface HandlerState {
     channelTodayCache: Map<string, HandlerTodayCache>;
     lastEmotionCache: Map<string, HandlerEmotionCacheItem>;
 }
+declare function handleOperationalCommandDomain(session: HandlerSession, ctx: HandlerContext, state: HandlerState): Promise<HandlerCommandResult>;
+declare function handleConversationCommandDomain(session: HandlerSession, ctx: HandlerContext, state: HandlerState): Promise<HandlerCommandResult>;
 declare function handleCommand(session: HandlerSession, ctx: HandlerContext, state: HandlerState): Promise<HandlerCommandResult>;
 declare const _default: {
     handleCommand: typeof handleCommand;
+    _test: {
+        handleOperationalCommandDomain: typeof handleOperationalCommandDomain;
+        handleConversationCommandDomain: typeof handleConversationCommandDomain;
+    };
 };
 export = _default;

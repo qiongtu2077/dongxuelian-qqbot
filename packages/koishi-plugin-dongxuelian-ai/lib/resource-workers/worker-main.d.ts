@@ -1,3 +1,4 @@
+type ResourceTaskLike = import('./task-types').ResourceTask;
 interface WorkerMainOptions {
     type?: string;
     workerName?: string;
@@ -12,28 +13,6 @@ interface WorkerHeartbeatHandle {
     setStep(step: string, patch?: Record<string, unknown>): void;
     patchProgress(patch?: Partial<WorkerProgressState>): void;
     stop(step?: string): void;
-}
-type ResourceTaskStatus = 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred';
-interface ResourceTaskLike extends Record<string, unknown> {
-    id: string;
-    kind: string;
-    status: ResourceTaskStatus;
-    source: string;
-    channelKey: string;
-    userId: string;
-    priority: number;
-    createdAt: string;
-    updatedAt: string;
-    expiresAt: string;
-    timeoutMs: number;
-    payload: Record<string, unknown>;
-    notify: Record<string, unknown>;
-    step?: string;
-    claimedBy?: string;
-    claimedAt?: string;
-    startedAt?: string;
-    finishedAt?: string;
-    error?: string;
 }
 interface WorkerProgressState {
     loopIterations: number;

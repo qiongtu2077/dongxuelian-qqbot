@@ -7,7 +7,15 @@ const path = require('path') as typeof import('path')
 const os = require('os') as typeof import('os')
 const crypto = require('crypto') as typeof import('crypto')
 const { exec, execSync } = require('child_process') as typeof import('child_process')
-const { json, collectBody, log, shellQuote, isInsidePath, copyRecursiveSync } = require('../utils') as typeof import('../utils')
+const {
+  json,
+  collectBody,
+  log,
+  shellQuote,
+  isInsidePath,
+  copyRecursiveSync,
+  getOptionalErrorMessage: getLegacyErrorMessage,
+} = require('../utils') as typeof import('../utils')
 const { KOISHI_DIR, DATA_DIR, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, PORT, toProjectRel } = require('../paths') as typeof import('../paths')
 const { requireAdmin } = require('../auth') as typeof import('../auth')
 const { getCommandInfo, getLocalToolCommand, checkPortState } = require('../tools') as typeof import('../tools')
@@ -46,6 +54,7 @@ interface RemoteDeployTask {
   baselineManifestHash?: string
   rolledBack?: boolean
   rollbackState?: 'not_needed' | 'success' | 'failed'
+  warnings?: string[]
 }
 
 interface InstallDetail {
@@ -103,10 +112,6 @@ type LegacyCommandInfo = ReturnType<typeof getCommandInfo> & {
   path?: string
 }
 
-function getLegacyErrorMessage(error: unknown): unknown {
-  return (error as { message?: unknown } | null | undefined)?.message
-}
-
 // --- Remote deployment task state ---
 
 // Removes common credential assignments before a deployment error reaches logs or the browser.
@@ -130,10 +135,20 @@ function writeRemoteDeployTask(task: RemoteDeployTask): void {
   fs.renameSync(next, target)
 }
 
+// 把不中断发布的次要写入失败保存到任务状态并写入结构化日志。
+function recordRemoteDeployWarning(task: RemoteDeployTask, code: string, error: unknown): void {
+  const detail = sanitizeDeployError(error)
+  const warning = `${code}: ${detail}`.slice(0, 500)
+  const warnings = Array.isArray(task.warnings) ? task.warnings : []
+  if (!warnings.includes(warning)) task.warnings = warnings.concat(warning).slice(-20)
+  log(`remote_deploy_warning taskId=${task.taskId} code=${code} detail=${detail}`)
+  writeRemoteDeployTask(task)
+}
+
 // Creates the initial running state and its server-enforced deadline.
 function createRemoteDeployTask(taskId: string): RemoteDeployTask {
   const now = Date.now()
-  const task: RemoteDeployTask = { taskId, state: 'running', stage: 'queued', error: '', startedAt: now, updatedAt: now, finishedAt: 0, expiresAt: now + REMOTE_DEPLOY_TIMEOUT_MS }
+  const task: RemoteDeployTask = { taskId, state: 'running', stage: 'queued', error: '', warnings: [], startedAt: now, updatedAt: now, finishedAt: 0, expiresAt: now + REMOTE_DEPLOY_TIMEOUT_MS }
   writeRemoteDeployTask(task)
   return task
 }
@@ -235,8 +250,8 @@ function runSafeDeployCommands(task: RemoteDeployTask, commands: Array<{ stage: 
     const current = commands[index]
     setRemoteDeployStage(task, current.stage)
     exec(current.command, { cwd: path.join(PLUGIN_ROOT, '..', '..'), timeout: current.timeout, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (stdout) try { fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, task.taskId + '.log'), stdout.trim() + '\n', 'utf8') } catch { /* progress log is best effort */ }
-      if (stderr) try { fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, task.taskId + '.log'), stderr.trim() + '\n', 'utf8') } catch { /* progress log is best effort */ }
+      if (stdout) try { fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, task.taskId + '.log'), stdout.trim() + '\n', 'utf8') } catch (logError) { recordRemoteDeployWarning(task, 'stdout_log_write_failed', logError) }
+      if (stderr) try { fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, task.taskId + '.log'), stderr.trim() + '\n', 'utf8') } catch (logError) { recordRemoteDeployWarning(task, 'stderr_log_write_failed', logError) }
       if (error) return finishRemoteDeployTask(task, 'failed', current.stage, error)
       index += 1
       runNext()
@@ -333,7 +348,7 @@ function handlePostSafeDeployRun(req: IncomingMessage, res: ServerResponse): voi
       ]
       runSafeDeployCommands(task, commands, () => {
         setRemoteDeployStage(task, 'target_activation')
-        try { fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, taskId + '.log'), '目标服务器已启动独立发布单元，等待切换、重启和健康检查\n', 'utf8') } catch { /* progress log is best effort */ }
+        try { fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, taskId + '.log'), '目标服务器已启动独立发布单元，等待切换、重启和健康检查\n', 'utf8') } catch (logError) { recordRemoteDeployWarning(task, 'activation_log_write_failed', logError) }
       })
     } catch (error) {
       json(res, { ok: false, message: sanitizeDeployError(error) }, 400)
@@ -357,7 +372,7 @@ function handleGetDeployProgress(req: IncomingMessage, res: ServerResponse, path
     try { fs.readSync(fd, buffer, 0, buffer.length, start) } finally { fs.closeSync(fd) }
     const raw = buffer.toString('utf8').trim()
     const lines = raw ? raw.split('\n') : []
-    return json(res, { ok: true, lines, state: task.state, stage: task.stage, error: task.error, rolledBack: task.rolledBack, rollbackState: task.rollbackState, previewId: task.previewId, releaseId: task.releaseId, startedAt: task.startedAt, updatedAt: task.updatedAt, finishedAt: task.finishedAt, expiresAt: task.expiresAt })
+    return json(res, { ok: true, lines, state: task.state, stage: task.stage, error: task.error, warnings: task.warnings || [], rolledBack: task.rolledBack, rollbackState: task.rollbackState, previewId: task.previewId, releaseId: task.releaseId, startedAt: task.startedAt, updatedAt: task.updatedAt, finishedAt: task.finishedAt, expiresAt: task.expiresAt })
   } catch (error) { return json(res, { ok: false, message: sanitizeDeployError(error), code: 'DEPLOY_PROGRESS_READ_FAILED' }, 500) }
 }
 

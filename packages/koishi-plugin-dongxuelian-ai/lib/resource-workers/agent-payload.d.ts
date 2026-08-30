@@ -1,10 +1,43 @@
 type AgentWorkerAction = 'run' | 'resume_pending';
+interface AgentRunWorkerInput {
+    userMessage?: unknown;
+    userName?: unknown;
+    userId?: unknown;
+    channelKey?: unknown;
+    channel?: unknown;
+    systemExtra?: unknown;
+    history?: unknown;
+    forceTools?: unknown;
+    preExecuteTools?: unknown;
+    enableThinking?: unknown;
+    agentMode?: unknown;
+    scheduledTask?: unknown;
+    contextPolicy?: unknown;
+    isAdmin?: unknown;
+}
+interface AgentResumeWorkerInput {
+    channelKey?: unknown;
+    userId?: unknown;
+    channel?: unknown;
+    expectedId?: unknown;
+    isAdmin?: unknown;
+}
+interface AgentPendingSnapshot {
+    id?: unknown;
+    toolName?: unknown;
+    args?: unknown;
+    userId?: unknown;
+    channelKey?: unknown;
+    channel?: unknown;
+    expireAt?: unknown;
+    resume?: unknown;
+}
 interface AgentWorkerPayload {
     action: AgentWorkerAction;
     entry: string;
-    engineInput?: Record<string, unknown>;
-    resumeInput?: Record<string, unknown>;
-    pendingSnapshot?: Record<string, unknown> | null;
+    engineInput?: AgentRunWorkerInput;
+    resumeInput?: AgentResumeWorkerInput;
+    pendingSnapshot?: AgentPendingSnapshot | null;
     warnings?: string[];
 }
 interface AgentWorkerTaskLike {

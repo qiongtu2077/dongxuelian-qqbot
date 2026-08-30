@@ -11,6 +11,7 @@ const { TOOL_MODE_FILE } = require('../core/constants');
 const fs = require('fs');
 const fsp = require('fs/promises');
 let mode = 'config';
+let modePersistenceError = '';
 function isSafetyMode(value) {
     return value === 'auto' || value === 'confirm' || value === 'block' || value === 'config';
 }
@@ -22,14 +23,22 @@ try {
 }
 catch { /* non-critical: missing tool mode file uses config policy */ }
 function getMode() { return mode; }
+// 返回最近一次工具模式持久化结果，供管理端诊断内存状态与磁盘状态是否一致。
+function getModePersistenceStatus() {
+    return { ok: !modePersistenceError, error: modePersistenceError };
+}
 async function setMode(m) {
     if (!isSafetyMode(m))
         return;
     mode = m;
     try {
         await fsp.writeFile(TOOL_MODE_FILE, mode, 'utf8');
+        modePersistenceError = '';
     }
-    catch { /* non-critical: in-memory mode still applies if persistence fails */ }
+    catch (error) {
+        modePersistenceError = error instanceof Error ? error.message : String(error || 'unknown error');
+        console.warn(`[agent-safety] tool_mode_persistence_failed mode=${mode} detail=${modePersistenceError}`);
+    }
 }
 const DANGEROUS_TOOLS = new Set(['execute_shell', 'write_file', 'edit_file', 'execute_javascript', 'browser_action', 'append_file']);
 function getEffectivePolicy() {
@@ -49,4 +58,4 @@ function check(toolName) {
         return { allowed: false, action: 'confirm', error: `工具 '${toolName}' 需要确认（confirm 模式）` };
     return { allowed: true, action: 'auto' };
 }
-module.exports = { getMode, setMode, getEffectivePolicy, check, DANGEROUS_TOOLS };
+module.exports = { getMode, getModePersistenceStatus, setMode, getEffectivePolicy, check, DANGEROUS_TOOLS };

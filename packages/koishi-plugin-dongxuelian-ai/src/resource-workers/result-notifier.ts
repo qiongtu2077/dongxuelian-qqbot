@@ -13,30 +13,16 @@ const {
   hasSearchFailureMaterial,
   redactAgentMaterial,
 } = require('../chat/agent-retell-guard') as typeof import('../chat/agent-retell-guard')
+type ResourceTask = import('./task-types').ResourceTask
+type ResourceTaskNotify = import('./task-types').ResourceTaskNotify
 
 interface NotifyCompletedOptions {
   limit?: number
   sender?: ResultNotifierSender
 }
 
-interface ResultNotifyInfo extends Record<string, unknown> {
-  target?: string
-  channelKey?: string
-  status?: string
-  error?: string
-}
-
-interface ResultNotifierTaskLike extends Record<string, unknown> {
-  id?: string
-  kind?: string
-  status?: string
-  channelKey?: string
-  payload?: Record<string, unknown>
-  notify?: ResultNotifyInfo
-}
-
 type ResultNotifierResult = Record<string, unknown>
-type ResultNotifierSender = (task: ResultNotifierTaskLike, result: ResultNotifierResult) => Promise<boolean> | boolean
+type ResultNotifierSender = (task: ResourceTask, result: ResultNotifierResult) => Promise<boolean> | boolean
 
 const FAILED_NOTIFY_RETRY_COOLDOWN_MS = Math.max(
   1000,
@@ -128,20 +114,20 @@ function readTaskResult(taskId: string): ResultNotifierResult {
 }
 
 // 判断任务是否需要 result-notifier 处理。
-function shouldNotifyTask(task: ResultNotifierTaskLike): boolean {
+function shouldNotifyTask(task: ResourceTask): boolean {
   const notify = task?.notify || {}
   if (!notify || notify.status === 'sent' || notify.status === 'skipped') return false
   if (notify.status === 'failed' && isFailedNotifyCoolingDown(notify)) return false
   return task.status === 'done'
 }
 
-function isFailedNotifyCoolingDown(notify: ResultNotifyInfo, now = Date.now()): boolean {
+function isFailedNotifyCoolingDown(notify: ResourceTaskNotify, now = Date.now()): boolean {
   const updatedAtMs = Date.parse(String(notify?.updatedAt || ''))
   if (!Number.isFinite(updatedAtMs) || updatedAtMs <= 0) return false
   return now - updatedAtMs < FAILED_NOTIFY_RETRY_COOLDOWN_MS
 }
 
-function didNotifyStatusPersist(next: ResultNotifierTaskLike | null | undefined, expectedStatus: string): boolean {
+function didNotifyStatusPersist(next: ResourceTask | null | undefined, expectedStatus: string): boolean {
   return String(next && next.notify && next.notify.status || '') === expectedStatus
 }
 
@@ -199,7 +185,7 @@ function hasHardSearchFailureSignal(result: AgentNotifyResultLike): boolean {
 }
 
 // 判断任务是否来自普通聊天自动触发的 heavy tool。
-function isChatHeavyToolTask(task: ResultNotifierTaskLike | null | undefined): boolean {
+function isChatHeavyToolTask(task: ResourceTask | null | undefined): boolean {
   const payload = task && typeof task.payload === 'object' && task.payload ? task.payload : {}
   return String(payload.entry || '') === 'chat-heavy-tool'
 }
@@ -264,7 +250,7 @@ async function sendNotifierImage(bot: ResultNotifierBotLike | null | undefined, 
 function createDailyReportSender(options: DailyReportSenderOptions = {}): ResultNotifierSender {
   const bot = options.bot || null
   const logger = options.logger || null
-  return async (task: ResultNotifierTaskLike, result: ResultNotifierResult): Promise<boolean> => {
+  return async (task: ResourceTask, result: ResultNotifierResult): Promise<boolean> => {
     if (String(task?.kind || '') !== 'daily_report') return false
     const notify = task?.notify || {}
     const target = String(notify.channelKey || task?.channelKey || '')
@@ -287,7 +273,7 @@ function createDailyReportSender(options: DailyReportSenderOptions = {}): Result
 }
 
 // Build the text sent for standalone QQ Agent worker results.
-function buildAgentTaskTextMessage(result: ResultNotifierResult, task: ResultNotifierTaskLike | null = null): string {
+function buildAgentTaskTextMessage(result: ResultNotifierResult, task: ResourceTask | null = null): string {
   const reply = String(result.reply || result.message || '').trim()
   const pendingId = String(result.pendingId || '')
   const suffix = pendingId ? `\n\n需要确认的工具 ID: ${pendingId}` : ''
@@ -310,7 +296,7 @@ function buildAgentTaskTextMessage(result: ResultNotifierResult, task: ResultNot
 }
 
 // Extract session info from task.payload.agentWorker for retellAgentResult.
-function extractSessionFromPayload(task: ResultNotifierTaskLike): {
+function extractSessionFromPayload(task: ResourceTask): {
   session: ResultNotifierSessionLike
   channelKey: string
   userId: string
@@ -345,7 +331,7 @@ function createAgentTaskSender(options: ResourceResultSenderOptions = {}): Resul
   const ctx = options.ctx as ResultNotifierContextLike | null
   const chatFn = options.chat as ResultNotifierChatFn | null
   const retellAgentResultFn = options.retellAgentResult as ResultNotifierRetellAgentResultFn | null
-  return async (task: ResultNotifierTaskLike, result: ResultNotifierResult): Promise<boolean> => {
+  return async (task: ResourceTask, result: ResultNotifierResult): Promise<boolean> => {
     if (String(task?.kind || '') !== 'agent_task') return false
     const notify = task?.notify || {}
     const target = String(notify.channelKey || task?.channelKey || '')
@@ -406,7 +392,7 @@ function createAgentTaskSender(options: ResourceResultSenderOptions = {}): Resul
 function createEmotionRenderSender(options: ResourceResultSenderOptions = {}): ResultNotifierSender {
   const bot = options.bot || null
   const logger = options.logger || null
-  return async (task: ResultNotifierTaskLike, result: ResultNotifierResult): Promise<boolean> => {
+  return async (task: ResourceTask, result: ResultNotifierResult): Promise<boolean> => {
     if (String(task?.kind || '') !== 'emotion_render') return false
     const notify = task?.notify || {}
     const target = String(notify.channelKey || task?.channelKey || '')
@@ -429,7 +415,7 @@ function createResourceResultSender(options: ResourceResultSenderOptions = {}): 
   const dailySender = createDailyReportSender(options)
   const agentSender = createAgentTaskSender(options)
   const emotionSender = createEmotionRenderSender(options)
-  return async (task: ResultNotifierTaskLike, result: ResultNotifierResult): Promise<boolean> => {
+  return async (task: ResourceTask, result: ResultNotifierResult): Promise<boolean> => {
     if (String(task?.kind || '') === 'daily_report') return dailySender(task, result)
     if (String(task?.kind || '') === 'agent_task') return agentSender(task, result)
     if (String(task?.kind || '') === 'emotion_render') return emotionSender(task, result)

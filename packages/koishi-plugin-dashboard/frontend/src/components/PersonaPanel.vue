@@ -217,6 +217,8 @@ import { ref, computed, inject, onMounted, onBeforeUnmount, nextTick, watch } fr
 import { fetchPersonas, fetchPersonaDetail, fetchPersonaDiagnostics, fetchLoreList, createPersona, updatePersona, deletePersona, fetchLores, createLore, updateLore, deleteLore, fetchTtsVoices, ttsPreview, ttsClone, updateTtsClone, deleteTtsClone, savePersonaVoice } from '../api'
 import type { MessageState, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
+import { assetOptionLabel, base64ToUint8Array, findVoiceAssetById as findVoiceAsset, flattenPersonaDiagnostics, formatBytes, formatTime, listFromData, normalizeVoiceAsset, pickDefaultVoiceAsset as pickVoiceAsset, readNumber, readString } from '../services/persona-model'
+import type { PersonaDiagnosticDocument, PersonaDiagnosticItem, VoiceAsset } from '../services/persona-model'
 import SelectBox from './SelectBox.vue'
 
 defineOptions({ name: 'PersonaPanel' })
@@ -247,20 +249,6 @@ interface LoreDocument {
   content?: string
 }
 
-interface PersonaDiagnostic {
-  level?: string
-  code?: string
-  field?: string
-  message?: string
-}
-
-interface PersonaDiagnosticDocument {
-  type: string
-  name: string
-  file?: string
-  diagnostics?: PersonaDiagnostic[]
-}
-
 interface PersonaDiagnosticsSummary {
   totalDocuments: number
   totals: {
@@ -271,35 +259,11 @@ interface PersonaDiagnosticsSummary {
   byType?: Record<string, unknown>
 }
 
-interface PersonaDiagnosticItem {
-  key: string
-  type: string
-  name: string
-  file?: string
-  level: string
-  field: string
-  message: string
-}
-
 interface PersonaVoiceConfig {
   voiceId: string
   voiceStyle: string
   voiceAssetId?: string
   hasSample?: boolean
-}
-
-interface VoiceAsset {
-  id: string
-  filename?: string
-  displayName: string
-  description?: string
-  sampleText?: string
-  personaName: string
-  size?: number
-  mtime?: number
-  referencedBy?: string[]
-  isCurrent?: boolean
-  missing?: boolean
 }
 
 interface PreviewAudioData {
@@ -321,42 +285,6 @@ const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
   totals: { error: 0, warning: 0, info: 0 },
   byType: {},
 }
-
-    function readString(value: unknown, fallback = ''): string {
-      if (typeof value === 'string') return value
-      if (value === undefined || value === null) return fallback
-      return String(value)
-    }
-
-    function readNumber(value: unknown, fallback = 0): number {
-      const number = Number(value)
-      return Number.isFinite(number) ? number : fallback
-    }
-
-    function listFromData<T>(value: unknown): T[] {
-      return Array.isArray(value) ? value as T[] : []
-    }
-
-    function normalizeVoiceAsset(value: unknown): VoiceAsset | null {
-      const raw = asRecord(value)
-      const id = readString(raw.id)
-      if (!id) return null
-      const size = raw.size === undefined ? undefined : readNumber(raw.size)
-      const mtime = raw.mtime === undefined ? undefined : readNumber(raw.mtime)
-      return {
-        id,
-        filename: readString(raw.filename) || undefined,
-        displayName: readString(raw.displayName, id),
-        description: readString(raw.description),
-        sampleText: readString(raw.sampleText),
-        personaName: readString(raw.personaName),
-        size,
-        mtime,
-        referencedBy: Array.isArray(raw.referencedBy) ? raw.referencedBy.map(item => readString(item)).filter(Boolean) : [],
-        isCurrent: !!raw.isCurrent,
-        missing: !!raw.missing,
-      }
-    }
 
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const personas = ref<PersonaSummary[]>([])
@@ -429,24 +357,7 @@ const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
       { value: 'always', label: '绑定后总是注入' },
       { value: 'none', label: '禁用注入' },
     ]
-    const personaDiagnosticItems = computed<PersonaDiagnosticItem[]>(() => {
-      const items: PersonaDiagnosticItem[] = []
-      for (const doc of personaDiagnosticsDocuments.value || []) {
-        for (const diagnostic of doc.diagnostics || []) {
-          if (diagnostic.level === 'info') continue
-          items.push({
-            key: `${doc.type}:${doc.name}:${diagnostic.code}:${diagnostic.field}:${items.length}`,
-            type: doc.type,
-            name: doc.name,
-            file: doc.file,
-            level: diagnostic.level || 'warning',
-            field: diagnostic.field || '',
-            message: diagnostic.message || diagnostic.code || '未知诊断',
-          })
-        }
-      }
-      return items
-    })
+    const personaDiagnosticItems = computed<PersonaDiagnosticItem[]>(() => flattenPersonaDiagnostics(personaDiagnosticsDocuments.value))
 
     function diagnosticLevelColor(level: string) {
       if (level === 'error') return 'var(--error)'
@@ -668,21 +579,11 @@ const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
     })
 
     function findVoiceAssetById(id: string): VoiceAsset | null {
-      return clonedVoices.value.find(asset => asset.id === id && !asset.missing) || null
+      return findVoiceAsset(clonedVoices.value, id)
     }
 
     function pickDefaultVoiceAsset(personaName: string, preferredId = ''): VoiceAsset | null {
-      return findVoiceAssetById(preferredId) ||
-        usableClonedVoices.value.find(asset => asset.personaName === personaName) ||
-        usableClonedVoices.value[0] ||
-        null
-    }
-
-    function assetOptionLabel(asset: VoiceAsset): string {
-      const name = asset.displayName || asset.id
-      const owner = asset.personaName ? `（${asset.personaName}）` : ''
-      const refs = asset.referencedBy?.length ? ` · 使用：${asset.referencedBy.join('、')}` : ''
-      return `${name}${owner}${asset.missing ? ' · 文件缺失' : refs}`
+      return pickVoiceAsset(clonedVoices.value, personaName, preferredId)
     }
 
     async function loadVoices() {
@@ -729,19 +630,6 @@ const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
       if (next !== '__cloned__') selectedVoiceAssetId.value = ''
     })
 
-    function formatBytes(size: unknown): string {
-      const bytes = Number(size) || 0
-      if (bytes < 1024) return `${bytes} B`
-      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-      return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-    }
-
-    function formatTime(ms: unknown): string {
-      const value = Number(ms) || 0
-      if (!value) return '未知时间'
-      return new Date(value).toLocaleString()
-    }
-
     function revokePreviewAudioUrl() {
       if (!previewAudioObjectUrl.value) return
       try { URL.revokeObjectURL(previewAudioObjectUrl.value) } catch { /* non-critical: preview object URL may already be released */ }
@@ -751,13 +639,6 @@ const EMPTY_DIAGNOSTICS_SUMMARY: PersonaDiagnosticsSummary = {
     function clearPreviewAudio() {
       previewAudioSrc.value = ''
       revokePreviewAudioUrl()
-    }
-
-    function base64ToUint8Array(base64: string): Uint8Array {
-      const raw = atob(String(base64 || '').replace(/\s+/g, ''))
-      const bytes = new Uint8Array(raw.length)
-      for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i)
-      return bytes
     }
 
     function buildPreviewAudioUrl(data: unknown): string {

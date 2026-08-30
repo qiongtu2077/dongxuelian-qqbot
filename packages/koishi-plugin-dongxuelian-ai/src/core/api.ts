@@ -139,6 +139,11 @@ const tokenUsageGlobal = globalThis as TokenUsageGlobal
 let _tokenUsageCache: Record<string, TokenUsageDay> | null = null
 let _tokenUsageFlushTimer: ReturnType<typeof setTimeout> | null = null
 
+// 记录不会阻断请求、但会导致 token 用量磁盘状态滞后的写入失败。
+function warnTokenUsagePersistence(stage: string, error: unknown): void {
+  console.warn(`[ai-api] token_usage_persistence_failed stage=${stage} detail=${errorMessage(error)}`)
+}
+
 function usageNumber(value: unknown): number {
   const n = Number(value || 0)
   return Number.isFinite(n) && n > 0 ? n : 0
@@ -234,7 +239,7 @@ function recordTokenUsage(provider: string, tokens: number, details: { model?: s
   if (!_tokenUsageFlushTimer) {
     _tokenUsageFlushTimer = setTimeout(() => {
       _tokenUsageFlushTimer = null
-      try { fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(_tokenUsageCache, null, 2)) } catch { /* non-critical: token usage flush is best-effort */ }
+      try { fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(_tokenUsageCache, null, 2)) } catch (error) { warnTokenUsagePersistence('delayed_flush', error) }
     }, 5000)
   }
 }
@@ -243,7 +248,7 @@ function flushTokenUsage(): void {
   if (_tokenUsageCache && _tokenUsageFlushTimer) {
     clearTimeout(_tokenUsageFlushTimer)
     _tokenUsageFlushTimer = null
-    try { fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(_tokenUsageCache, null, 2)) } catch { /* non-critical: token usage exit flush is best-effort */ }
+    try { fs.writeFileSync(TOKEN_USAGE_FILE, JSON.stringify(_tokenUsageCache, null, 2)) } catch (error) { warnTokenUsagePersistence('exit_flush', error) }
   }
 }
 

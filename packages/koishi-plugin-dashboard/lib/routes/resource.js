@@ -9,7 +9,8 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { json, collectBody, parsePositiveInt, readFileSyncSafe, writeFileSyncSafe } = require('../utils');
 const { requireAdmin } = require('../auth');
-const { AI_LIB, DATA_DIR, KOISHI_DIR } = require('../paths');
+const { DATA_DIR, KOISHI_DIR } = require('../paths');
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
 const RESOURCE_EVENT_LIMIT = parsePositiveInt(process.env.DASHBOARD_RESOURCE_EVENT_LIMIT, 120, 20, 500);
 const RESOURCE_TASK_LIMIT = parsePositiveInt(process.env.DASHBOARD_RESOURCE_TASK_LIMIT, 120, 20, 500);
 const RESOURCE_PRECOMPUTE_COVERAGE_LIMIT = parsePositiveInt(process.env.DASHBOARD_RESOURCE_PRECOMPUTE_COVERAGE_LIMIT, 80, 12, 500);
@@ -46,19 +47,36 @@ const MEMORY_BUCKET_MS = {
 };
 const memoryHistoryCache = new Map();
 let diskUsageCache = null;
-// 动态加载 AI 资源模块，避免 Dashboard 编译期反向依赖源码。
+// 通过 AI 插件公开契约加载资源模块，保持 Dashboard 与私有目录布局解耦。
 function loadResourceModules() {
     return {
-        gate: require(path.join(AI_LIB, 'resource-gate', 'gate')),
-        scheduler: require(path.join(AI_LIB, 'resource-scheduler', 'resource-snapshot')),
-        mode: require(path.join(AI_LIB, 'resource-scheduler', 'server-mode-policy')),
-        tasks: require(path.join(AI_LIB, 'resource-workers', 'task-store')),
-        supervisor: require(path.join(AI_LIB, 'resource-workers', 'worker-supervisor')),
-        precompute: require(path.join(AI_LIB, 'daily-precompute', 'precompute-status')),
-        media: require(path.join(AI_LIB, 'media', 'backpressure', 'media-queue')),
-        system: require(path.join(AI_LIB, 'resource-system', 'system-protection')),
-        files: require(path.join(AI_LIB, 'resource-common', 'files')),
+        gate: loadManagementModule('resource.gate'),
+        scheduler: loadManagementModule('resource.snapshot'),
+        mode: loadManagementModule('resource.serverModePolicy'),
+        tasks: loadManagementModule('resource.taskStore'),
+        supervisor: loadManagementModule('resource.workerSupervisor'),
+        precompute: loadManagementModule('resource.precomputeStatus'),
+        media: loadManagementModule('resource.mediaQueue'),
+        system: loadManagementModule('resource.systemProtection'),
+        files: loadManagementModule('resource.files'),
     };
+}
+// 从 supervisor 持久化状态中提取 Dashboard 所需的 worker 进度时间。
+function readSupervisorWorkerSamples(status) {
+    if (!status || typeof status !== 'object')
+        return [];
+    const state = status.state;
+    if (!state || typeof state !== 'object')
+        return [];
+    const workers = state.workers;
+    if (!Array.isArray(workers))
+        return [];
+    return workers.flatMap((worker) => {
+        if (!worker || typeof worker !== 'object')
+            return [];
+        const item = worker;
+        return [{ name: String(item.name || ''), loopChangedAt: item.loopChangedAt }];
+    });
 }
 // 返回资源系统事件文件名使用的 UTC 日期戳。
 function eventDateStamp(date) {
@@ -580,13 +598,12 @@ function handleGetResourceEvents(req, res, pathname, url) {
 function handleGetResourceWorkers(req, res) {
     try {
         const mods = loadResourceModules();
-        const rawWorkers = mods.tasks.listWorkerStates();
-        const workers = Array.isArray(rawWorkers) ? rawWorkers : [];
-        const sampledWorkers = mods.supervisor.getSupervisorStatus().state?.workers || [];
+        const workers = mods.tasks.listWorkerStates();
+        const sampledWorkers = readSupervisorWorkerSamples(mods.supervisor.getSupervisorStatus());
         const sampledByName = new Map(sampledWorkers.map(worker => [String(worker.name || ''), worker]));
         const merged = workers.map(worker => {
-            const sample = sampledByName.get(String(worker.name || '')) || {};
-            return { ...worker, loopChangedAt: sample.loopChangedAt || worker.heartbeatAt || '' };
+            const sample = sampledByName.get(String(worker.name || ''));
+            return { ...worker, loopChangedAt: sample?.loopChangedAt || worker.heartbeatAt || '' };
         });
         return json(res, { ok: true, workers: merged });
     }

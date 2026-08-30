@@ -17,6 +17,10 @@ const {
   writeJsonAtomic,
 } = require('../resource-common/files') as typeof import('../resource-common/files')
 const { redactSensitiveData, redactSensitiveText } = require('../core/redactor') as typeof import('../core/redactor')
+type ResourceTask = import('./task-types').ResourceTask
+type ResourceTaskNotify = import('./task-types').ResourceTaskNotify
+type ResourceTaskStatus = import('./task-types').ResourceTaskStatus
+type ResourceWorkerState = import('./task-types').ResourceWorkerState
 const {
   WORKERS_ROOT,
   TASKS_ROOT,
@@ -41,7 +45,7 @@ interface SubmitTaskInput {
   expiresAt?: string
   timeoutMs?: number
   payload?: Record<string, unknown>
-  notify?: Record<string, unknown>
+  notify?: ResourceTaskNotify
 }
 
 interface ListTasksOptions {
@@ -63,49 +67,6 @@ interface CountTasksByKindOptions {
 
 interface ScanTasksOptions {
   kinds?: string[]
-}
-
-type ResourceTaskStatus = 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred'
-
-interface ResourceTask extends Record<string, unknown> {
-  id: string
-  kind: string
-  status: ResourceTaskStatus
-  source: string
-  channelKey: string
-  userId: string
-  priority: number
-  createdAt: string
-  updatedAt: string
-  expiresAt: string
-  timeoutMs: number
-  payload: Record<string, unknown>
-  notify: Record<string, unknown>
-  step?: string
-  claimedBy?: string
-  claimedAt?: string
-  startedAt?: string
-  finishedAt?: string
-  error?: string
-  retryAfter?: string
-}
-
-interface ResourceWorkerState extends Record<string, unknown> {
-  name: string
-  pid: number
-  startedAt: string
-  heartbeatAt: string
-  alive: boolean
-  heartbeatLagMs?: number | null
-  kind?: string
-  step?: string
-  loopIterations?: number
-  lastClaimAttemptAt?: string
-  lastTaskFinishedAt?: string
-  currentTaskId?: string
-  currentTaskStartedAt?: string
-  parked?: boolean
-  parkSleepMs?: number
 }
 
 const RESOURCE_TASK_CANONICAL_STATUS_ORDER: ResourceTaskStatus[] = [
@@ -155,7 +116,7 @@ function triggerTaskCompletedCallbacks(taskId: string): void {
   }
 }
 
-function redactRecord(value: Record<string, unknown> = {}): Record<string, unknown> {
+function redactRecord(value: unknown = {}): Record<string, unknown> {
   const redacted = redactSensitiveData(value)
   return redacted && typeof redacted === 'object' && !Array.isArray(redacted)
     ? redacted as Record<string, unknown>
@@ -223,11 +184,31 @@ function submitResourceTask(input: SubmitTaskInput): ResourceTask {
   return task
 }
 
+// 在 JSON 文件边界验证完整任务 DTO；非法或历史残缺记录不会进入可信域。
+function parseResourceTask(value: unknown): ResourceTask | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const task = value as Partial<ResourceTask>
+  if (
+    typeof task.id !== 'string' || !task.id
+    || typeof task.kind !== 'string' || !task.kind
+    || typeof task.status !== 'string' || !isResourceTaskStatus(task.status)
+    || typeof task.source !== 'string'
+    || typeof task.channelKey !== 'string'
+    || typeof task.userId !== 'string'
+    || typeof task.priority !== 'number' || !Number.isFinite(task.priority)
+    || typeof task.createdAt !== 'string'
+    || typeof task.updatedAt !== 'string'
+    || typeof task.expiresAt !== 'string'
+    || typeof task.timeoutMs !== 'number' || !Number.isFinite(task.timeoutMs)
+    || !task.payload || typeof task.payload !== 'object' || Array.isArray(task.payload)
+    || !task.notify || typeof task.notify !== 'object' || Array.isArray(task.notify)
+  ) return null
+  return task as ResourceTask
+}
+
 // 从任意状态目录读取任务文件。
 function readTaskFile(file: string): ResourceTask | null {
-  const task = readJsonFile<ResourceTask>(file, null)
-  if (!task || !task.id || !task.kind) return null
-  return task
+  return parseResourceTask(readJsonFile<unknown>(file, null))
 }
 
 function normalizeKinds(kinds: string[] = []): string[] {
@@ -622,7 +603,7 @@ function cancelTask(taskId: string, actor = 'system', reason = 'cancelled'): boo
 }
 
 // 写入 worker 心跳。
-function writeWorkerHeartbeat(workerName: string, state: Record<string, unknown> = {}): ResourceWorkerState {
+function writeWorkerHeartbeat(workerName: string, state: Partial<ResourceWorkerState> = {}): ResourceWorkerState {
   ensureTaskDirs()
   const now = nowIso()
   const payload: ResourceWorkerState = {
@@ -805,4 +786,7 @@ export = {
   cleanupFinishedTasks,
   registerTaskCompletedCallback,
   unregisterTaskCompletedCallback,
+  _test: {
+    parseResourceTask,
+  },
 }

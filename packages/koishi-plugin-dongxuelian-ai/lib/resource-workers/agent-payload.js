@@ -75,9 +75,6 @@ function pickSerializableFields(input, fields) {
 function recordOrNull(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
-function recordOrUndefined(value) {
-    return recordOrNull(value) || undefined;
-}
 function stringArrayOrUndefined(value) {
     return Array.isArray(value) ? value.map(String).filter(Boolean) : undefined;
 }
@@ -112,8 +109,8 @@ function getAgentWorkerPayload(task) {
     return {
         action,
         entry: String(worker.entry || 'agent-worker'),
-        engineInput: recordOrUndefined(worker.engineInput),
-        resumeInput: recordOrUndefined(worker.resumeInput),
+        engineInput: recordOrNull(worker.engineInput) || undefined,
+        resumeInput: recordOrNull(worker.resumeInput) || undefined,
         pendingSnapshot: recordOrNull(worker.pendingSnapshot),
         warnings: stringArrayOrUndefined(worker.warnings),
     };

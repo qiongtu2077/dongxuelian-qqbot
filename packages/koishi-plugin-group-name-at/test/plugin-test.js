@@ -3,6 +3,7 @@ const os = require('os')
 const path = require('path')
 
 const PLUGIN_PATH = path.resolve(__dirname, '..', 'lib', 'index.js')
+const STORAGE_PATH = path.resolve(__dirname, '..', 'lib', 'storage.js')
 const TEST_GROUP_MAIN = 'test-group-main'
 const TEST_GROUP_OTHER = 'test-group-other'
 const TEST_BLACKLIST_GROUP = '900000001'
@@ -37,6 +38,7 @@ function check(label, ok, detail = '') {
 
 function reloadPlugin() {
   delete require.cache[PLUGIN_PATH]
+  delete require.cache[STORAGE_PATH]
   return require(PLUGIN_PATH)
 }
 
@@ -153,6 +155,7 @@ async function withIsolatedPlugin(fn, options = {}) {
   fs.mkdirSync(dataDir, { recursive: true })
   fs.writeFileSync(adminIdsFile, JSON.stringify([TEST_ADMIN_ID]), 'utf8')
   delete require.cache[PLUGIN_PATH]
+  delete require.cache[STORAGE_PATH]
 
   try {
     const plugin = reloadPlugin()
@@ -161,6 +164,7 @@ async function withIsolatedPlugin(fn, options = {}) {
     await fn({ plugin, ctx, tmpRoot, dataDir, dataFile, scopeDataDir, adminIdsFile })
   } finally {
     delete require.cache[PLUGIN_PATH]
+    delete require.cache[STORAGE_PATH]
     if (oldEnv.GROUP_NAME_AT_DATA_FILE === undefined) delete process.env.GROUP_NAME_AT_DATA_FILE
     else process.env.GROUP_NAME_AT_DATA_FILE = oldEnv.GROUP_NAME_AT_DATA_FILE
     if (oldEnv.GROUP_NAME_AT_DATA_DIR === undefined) delete process.env.GROUP_NAME_AT_DATA_DIR

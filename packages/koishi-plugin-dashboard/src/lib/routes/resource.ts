@@ -18,9 +18,11 @@ const { json, collectBody, parsePositiveInt, readFileSyncSafe, writeFileSyncSafe
   writeFileSyncSafe(filePath: string, content: string): void
 }
 const { requireAdmin } = require('../auth') as { requireAdmin(req: IncomingMessage, res: ServerResponse): boolean }
-const { AI_LIB, DATA_DIR, KOISHI_DIR } = require('../paths') as { AI_LIB: string; DATA_DIR: string; KOISHI_DIR: string }
+const { DATA_DIR, KOISHI_DIR } = require('../paths') as { DATA_DIR: string; KOISHI_DIR: string }
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => unknown
+type ManagementModule<Name extends import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime').ManagementModuleName> = import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime').ManagementModule<Name>
 
 interface ResourceSnapshotLike extends Record<string, unknown> {
   botMode?: unknown
@@ -61,9 +63,7 @@ interface PrecomputeSummaryLike extends Record<string, unknown> {
   coverage?: unknown
 }
 
-interface ResourceTaskLike extends Record<string, unknown> {
-  payload?: unknown
-}
+type ResourceTaskLike = ReturnType<ManagementModule<'resource.taskStore'>['listResourceTasks']>[number]
 
 interface ResourceEvent extends Record<string, unknown> {
   source: string
@@ -79,44 +79,21 @@ interface DiskEntry {
   sizeMb: number
 }
 
+interface SupervisorWorkerSample {
+  name: string
+  loopChangedAt: unknown
+}
+
 interface ResourceModuleSet {
-  gate: {
-    GATE_ROOT: string
-    getResourceGateStatus(staleMs?: number): ResourceGateStatusLike
-    reclaimStaleLock(staleMs: number, source: string): unknown
-  }
-  scheduler: {
-    SCHEDULER_ROOT: string
-    readResourceSnapshot(): ResourceSnapshotLike
-  }
-  mode: {
-    readServerModeConfig(): { serverMode?: unknown; serverModeSource?: unknown }
-    writeServerModeConfig(serverMode: unknown, meta?: Record<string, unknown>): { serverMode?: unknown; serverModeSource?: unknown }
-  }
-  tasks: {
-    getTaskQueueSummary(): ResourceQueueSummaryLike
-    listWorkerStates(): unknown
-    listResourceTasks(options: { statuses?: string[]; limit: number }): ResourceTaskLike[]
-    cancelTask(taskId: string, source: string, reason: string): boolean
-  }
-  supervisor: {
-    getSupervisorStatus(): { state?: { workers?: Array<Record<string, unknown>> } | null }
-  }
-  precompute: {
-    PRECOMPUTE_ROOT: string
-    getPrecomputeSummary(): PrecomputeSummaryLike
-  }
-  media: {
-    MEDIA_ROOT: string
-    getMediaBackpressureStatus(): unknown
-  }
-  system: {
-    RESOURCE_SYSTEM_ROOT: string
-    getSystemProtectionStatus(): unknown
-  }
-  files: {
-    readRecentJsonlEvents(dir: string, prefix: string, limit?: number): unknown[]
-  }
+  gate: ManagementModule<'resource.gate'>
+  scheduler: ManagementModule<'resource.snapshot'>
+  mode: ManagementModule<'resource.serverModePolicy'>
+  tasks: ManagementModule<'resource.taskStore'>
+  supervisor: ManagementModule<'resource.workerSupervisor'>
+  precompute: ManagementModule<'resource.precomputeStatus'>
+  media: ManagementModule<'resource.mediaQueue'>
+  system: ManagementModule<'resource.systemProtection'>
+  files: ManagementModule<'resource.files'>
 }
 
 const RESOURCE_EVENT_LIMIT = parsePositiveInt(process.env.DASHBOARD_RESOURCE_EVENT_LIMIT, 120, 20, 500)
@@ -159,19 +136,33 @@ const MEMORY_BUCKET_MS: Record<string, number> = {
 const memoryHistoryCache = new Map<string, { expiresAt: number; payload: unknown }>()
 let diskUsageCache: { expiresAt: number; payload: unknown } | null = null
 
-// 动态加载 AI 资源模块，避免 Dashboard 编译期反向依赖源码。
+// 通过 AI 插件公开契约加载资源模块，保持 Dashboard 与私有目录布局解耦。
 function loadResourceModules(): ResourceModuleSet {
   return {
-    gate: require(path.join(AI_LIB, 'resource-gate', 'gate')),
-    scheduler: require(path.join(AI_LIB, 'resource-scheduler', 'resource-snapshot')),
-    mode: require(path.join(AI_LIB, 'resource-scheduler', 'server-mode-policy')),
-    tasks: require(path.join(AI_LIB, 'resource-workers', 'task-store')),
-    supervisor: require(path.join(AI_LIB, 'resource-workers', 'worker-supervisor')),
-    precompute: require(path.join(AI_LIB, 'daily-precompute', 'precompute-status')),
-    media: require(path.join(AI_LIB, 'media', 'backpressure', 'media-queue')),
-    system: require(path.join(AI_LIB, 'resource-system', 'system-protection')),
-    files: require(path.join(AI_LIB, 'resource-common', 'files')),
+    gate: loadManagementModule('resource.gate'),
+    scheduler: loadManagementModule('resource.snapshot'),
+    mode: loadManagementModule('resource.serverModePolicy'),
+    tasks: loadManagementModule('resource.taskStore'),
+    supervisor: loadManagementModule('resource.workerSupervisor'),
+    precompute: loadManagementModule('resource.precomputeStatus'),
+    media: loadManagementModule('resource.mediaQueue'),
+    system: loadManagementModule('resource.systemProtection'),
+    files: loadManagementModule('resource.files'),
   }
+}
+
+// 从 supervisor 持久化状态中提取 Dashboard 所需的 worker 进度时间。
+function readSupervisorWorkerSamples(status: unknown): SupervisorWorkerSample[] {
+  if (!status || typeof status !== 'object') return []
+  const state = (status as { state?: unknown }).state
+  if (!state || typeof state !== 'object') return []
+  const workers = (state as { workers?: unknown }).workers
+  if (!Array.isArray(workers)) return []
+  return workers.flatMap((worker) => {
+    if (!worker || typeof worker !== 'object') return []
+    const item = worker as { name?: unknown; loopChangedAt?: unknown }
+    return [{ name: String(item.name || ''), loopChangedAt: item.loopChangedAt }]
+  })
 }
 
 // 返回资源系统事件文件名使用的 UTC 日期戳。
@@ -693,13 +684,12 @@ function handleGetResourceEvents(req: IncomingMessage, res: ServerResponse, path
 function handleGetResourceWorkers(req: IncomingMessage, res: ServerResponse) {
   try {
     const mods = loadResourceModules()
-    const rawWorkers = mods.tasks.listWorkerStates()
-    const workers = Array.isArray(rawWorkers) ? rawWorkers as Array<Record<string, unknown>> : []
-    const sampledWorkers = mods.supervisor.getSupervisorStatus().state?.workers || []
+    const workers = mods.tasks.listWorkerStates()
+    const sampledWorkers = readSupervisorWorkerSamples(mods.supervisor.getSupervisorStatus())
     const sampledByName = new Map(sampledWorkers.map(worker => [String(worker.name || ''), worker]))
     const merged = workers.map(worker => {
-      const sample = sampledByName.get(String(worker.name || '')) || {}
-      return { ...worker, loopChangedAt: sample.loopChangedAt || worker.heartbeatAt || '' }
+      const sample = sampledByName.get(String(worker.name || ''))
+      return { ...worker, loopChangedAt: sample?.loopChangedAt || worker.heartbeatAt || '' }
     })
     return json(res, { ok: true, workers: merged })
   } catch (e) {

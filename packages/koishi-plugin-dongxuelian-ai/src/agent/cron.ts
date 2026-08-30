@@ -539,7 +539,8 @@ async function runCronNow(id: string): Promise<CronRunResult> {
       return current || null
     })
     if (!savedCron) shouldSchedule = false
-  } catch { /* non-critical: failed run-result persistence should not leave recurring scheduler permanently stopped */
+  } catch (error) {
+    console.warn(`[agent-cron] run_result_persistence_failed cronId=${cron.id} detail=${error instanceof Error ? error.message : String(error || 'unknown error')}`)
     shouldSchedule = true
   } finally {
     if (shouldSchedule && nextCron.mode !== 'once') scheduleCron(nextCron)

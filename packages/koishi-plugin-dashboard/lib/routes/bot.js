@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { exec, execSync } = require('child_process');
-const { json, collectBody, log, readFileSyncSafe, writeFileSyncSafe, sleepSync, shellQuote } = require('../utils');
+const { json, collectBody, log, readFileSyncSafe, writeFileSyncSafe, sleepSync, shellQuote, getErrorMessage } = require('../utils');
 const { requireAdmin } = require('../auth');
 const { KOISHI_DIR, KOISHI_PID_FILE, DATA_DIR } = require('../paths');
 const { checkPortState } = require('../tools');
@@ -10,11 +10,6 @@ const { resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getLinuxNap
 const { readLoggingConfig, writeLoggingConfig, getFilteredLogEntries } = require('../logging');
 const { resolveKoishiListenPort } = require('../tools');
 const { waitKoishiPortFree } = require('../deploy-state');
-function getErrorMessage(error) {
-    if (error && typeof error === 'object' && 'message' in error)
-        return String(error.message || '');
-    return String(error || '');
-}
 function parseJsonObject(body) {
     const data = JSON.parse(body || '{}');
     return data && typeof data === 'object' && !Array.isArray(data) ? data : {};

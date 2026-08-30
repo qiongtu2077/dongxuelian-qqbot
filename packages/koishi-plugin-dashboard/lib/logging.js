@@ -2,7 +2,8 @@
 const fs = require('fs');
 const path = require('path');
 const { KOISHI_DIR, DEBUG_LOG_CONFIG_FILE, MAX_LOG_LIMIT } = require('./paths');
-const { redactSensitiveText } = require('koishi-plugin-dongxuelian-ai/lib/core/redactor');
+const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
+const { redactSensitiveText } = loadManagementModule('core.redactor');
 let logEntryCache = { file: '', size: -1, mtimeMs: -1, entries: [] };
 function normalizeLoggingConfig(input = {}) {
     const source = input && typeof input === 'object' ? input : {};

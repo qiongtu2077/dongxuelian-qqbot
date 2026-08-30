@@ -5,9 +5,7 @@
  * 边界: 只做分析，不调API，通过 aiClient.callAI 间接调用。
  */
 const { createGoldenQuote } = require('../models');
-function getErrorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
-}
+const { getErrorMessage } = require('../error-utils');
 async function analyzeGoldenQuotes(aiClient, messages) {
     const prompt = `你是段子手，请从今日群聊中精选3-5条最有趣/最有梗的对话。
 

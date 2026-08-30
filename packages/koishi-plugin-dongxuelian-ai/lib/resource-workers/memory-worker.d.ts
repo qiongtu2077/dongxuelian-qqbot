@@ -1,3 +1,4 @@
+type ResourceTask = import('./task-types').ResourceTask;
 interface AutoMemoryMessage {
     role?: unknown;
     content?: unknown;
@@ -24,12 +25,7 @@ interface MemorySubmissionResult {
     status: string;
     message: string;
 }
-interface ResourceTaskLike extends Record<string, unknown> {
-    id?: string;
-    kind?: string;
-    userId?: string;
-    payload?: Record<string, unknown>;
-}
+type ResourceTaskLike = Partial<Pick<ResourceTask, 'id' | 'kind' | 'userId' | 'payload'>>;
 interface AdmissionDecisionLike {
     decision?: string;
     reason?: unknown;

@@ -29,7 +29,7 @@ interface MediaTaskInput {
   payload?: Record<string, unknown>
 }
 
-interface MediaTask extends Record<string, unknown> {
+interface MediaTask {
   id: string
   kind: string
   channelKey: string
@@ -125,6 +125,27 @@ function ensureMediaDirs(): void {
 // 写入 S6 事件。
 function writeMediaEvent(event: string, data: Record<string, unknown> = {}): void {
   appendJsonlEvent(mediaEventFile(), { event, ...data })
+}
+
+// 在媒体任务 JSON 边界验证队列 DTO，避免宽泛对象进入队列状态机。
+function parseMediaTask(value: unknown): MediaTask | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const task = value as Partial<MediaTask>
+  if (
+    typeof task.id !== 'string' || !task.id
+    || typeof task.kind !== 'string' || !task.kind
+    || typeof task.channelKey !== 'string'
+    || typeof task.messageId !== 'string'
+    || typeof task.urlHash !== 'string'
+    || typeof task.url !== 'string'
+    || (typeof task.fileId !== 'string' && task.fileId !== null)
+    || typeof task.createdAt !== 'string'
+    || typeof task.expiresAt !== 'string'
+    || typeof task.priority !== 'number' || !Number.isFinite(task.priority)
+    || typeof task.status !== 'string'
+    || !task.payload || typeof task.payload !== 'object' || Array.isArray(task.payload)
+  ) return null
+  return task as MediaTask
 }
 
 // 根据 URL/file/message 生成去重 hash。
@@ -239,7 +260,7 @@ function cleanupExpiredMediaTasks(kind = ''): number {
   const now = Date.now()
   let removed = 0
   for (const file of listJsonFiles(getMediaQueueScanRoot(kind), { recursive: true, maxFiles: 20000 })) {
-    const task = readJsonFile<MediaTask>(file, null)
+    const task = parseMediaTask(readJsonFile<unknown>(file, null))
     if (!task) continue
     const expiresAt = Date.parse(String(task.expiresAt || ''))
     if (Number.isFinite(expiresAt) && expiresAt < now) {
@@ -282,7 +303,7 @@ function getFinishedMediaTaskTimestamp(task: MediaTask): number {
 // 将一个 done/dropped 目录中超龄或超量的最旧记录分批移入观察归档区。
 function archiveFinishedMediaTasks(root: string, status: 'done' | 'dropped', maxEntries: number, now: number): number {
   const tasks = listJsonFiles(root, { maxFiles: 20000 })
-    .map(file => ({ file, task: readJsonFile<MediaTask>(file, null) }))
+    .map(file => ({ file, task: parseMediaTask(readJsonFile<unknown>(file, null)) }))
     .filter((item): item is { file: string; task: MediaTask } => !!item.task)
     .sort((a, b) => getFinishedMediaTaskTimestamp(a.task) - getFinishedMediaTaskTimestamp(b.task))
   const overflowCount = Math.max(0, tasks.length - maxEntries)
@@ -351,7 +372,7 @@ function findExistingMediaTask(hash: string, kind = ''): MediaTask | null {
     ...listJsonFiles(MEDIA_RUNNING_ROOT, { maxFiles: 20000 }),
   ]
   for (const file of files) {
-    const task = readJsonFile<MediaTask>(file, null)
+    const task = parseMediaTask(readJsonFile<unknown>(file, null))
     if (task && task.urlHash === hash) return task
   }
   return null
@@ -359,9 +380,7 @@ function findExistingMediaTask(hash: string, kind = ''): MediaTask | null {
 
 // 读取媒体任务文件，非法任务返回 null。
 function readMediaTaskFile(file: string): MediaTask | null {
-  const task = readJsonFile<MediaTask>(file, null)
-  if (!task || !task.id || !task.kind) return null
-  return task
+  return parseMediaTask(readJsonFile<unknown>(file, null))
 }
 
 // 判断 pending 媒体任务是否仍处于冷却窗口。
@@ -557,7 +576,7 @@ function enforceMediaQueueLimit(kind: string): number {
   const files = listJsonFiles(dir, { maxFiles: Math.max(1, max + 1) })
   if (files.length <= max) return 0
   const tasks = listJsonFiles(dir, { maxFiles: 20000 })
-    .map(file => ({ file, task: readJsonFile<MediaTask>(file, null) }))
+    .map(file => ({ file, task: parseMediaTask(readJsonFile<unknown>(file, null)) }))
     .filter((item): item is { file: string; task: MediaTask } => Boolean(item.task))
   if (tasks.length <= max) return 0
   tasks.sort((a, b) => Number(b.task.priority || 80) - Number(a.task.priority || 80) || String(a.task.createdAt || '').localeCompare(String(b.task.createdAt || '')))
@@ -645,4 +664,7 @@ export = {
   discardInterruptedMediaTasks,
   getMediaBackpressureStatus,
   isMediaTaskDeferred,
+  _test: {
+    parseMediaTask,
+  },
 }

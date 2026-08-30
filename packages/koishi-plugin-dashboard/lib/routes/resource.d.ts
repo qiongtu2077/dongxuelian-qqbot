@@ -1,93 +1,17 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => unknown;
-interface ResourceSnapshotLike extends Record<string, unknown> {
-    botMode?: unknown;
-    resourceState?: unknown;
-    serverMode?: unknown;
-    serverModeSource?: unknown;
-    toolActive?: unknown;
-    renderActive?: unknown;
-    backgroundAllowed?: unknown;
-    memAvailableMb?: unknown;
-    memTotalMb?: unknown;
-    memSource?: unknown;
-}
-interface ResourceGateStatusLike extends Record<string, unknown> {
-    meta?: ResourceGateMetaLike | null;
-}
-interface ResourceGateMetaLike extends Record<string, unknown> {
-    taskId?: unknown;
-    kind?: unknown;
-    step?: unknown;
-    owner?: unknown;
-    channelKey?: unknown;
-    userId?: unknown;
-    startedAt?: unknown;
-    heartbeatAt?: unknown;
-    memAvailableMb?: unknown;
-}
-interface ResourceQueueSummaryLike extends Record<string, unknown> {
-    pending?: unknown;
-}
-interface PrecomputeSummaryLike extends Record<string, unknown> {
-    coverageCount?: unknown;
-    slotCount?: unknown;
-    coverage?: unknown;
-}
-interface ResourceTaskLike extends Record<string, unknown> {
-    payload?: unknown;
-}
+type ManagementModule<Name extends import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime').ManagementModuleName> = import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime').ManagementModule<Name>;
+type ResourceTaskLike = ReturnType<ManagementModule<'resource.taskStore'>['listResourceTasks']>[number];
 interface ResourceModuleSet {
-    gate: {
-        GATE_ROOT: string;
-        getResourceGateStatus(staleMs?: number): ResourceGateStatusLike;
-        reclaimStaleLock(staleMs: number, source: string): unknown;
-    };
-    scheduler: {
-        SCHEDULER_ROOT: string;
-        readResourceSnapshot(): ResourceSnapshotLike;
-    };
-    mode: {
-        readServerModeConfig(): {
-            serverMode?: unknown;
-            serverModeSource?: unknown;
-        };
-        writeServerModeConfig(serverMode: unknown, meta?: Record<string, unknown>): {
-            serverMode?: unknown;
-            serverModeSource?: unknown;
-        };
-    };
-    tasks: {
-        getTaskQueueSummary(): ResourceQueueSummaryLike;
-        listWorkerStates(): unknown;
-        listResourceTasks(options: {
-            statuses?: string[];
-            limit: number;
-        }): ResourceTaskLike[];
-        cancelTask(taskId: string, source: string, reason: string): boolean;
-    };
-    supervisor: {
-        getSupervisorStatus(): {
-            state?: {
-                workers?: Array<Record<string, unknown>>;
-            } | null;
-        };
-    };
-    precompute: {
-        PRECOMPUTE_ROOT: string;
-        getPrecomputeSummary(): PrecomputeSummaryLike;
-    };
-    media: {
-        MEDIA_ROOT: string;
-        getMediaBackpressureStatus(): unknown;
-    };
-    system: {
-        RESOURCE_SYSTEM_ROOT: string;
-        getSystemProtectionStatus(): unknown;
-    };
-    files: {
-        readRecentJsonlEvents(dir: string, prefix: string, limit?: number): unknown[];
-    };
+    gate: ManagementModule<'resource.gate'>;
+    scheduler: ManagementModule<'resource.snapshot'>;
+    mode: ManagementModule<'resource.serverModePolicy'>;
+    tasks: ManagementModule<'resource.taskStore'>;
+    supervisor: ManagementModule<'resource.workerSupervisor'>;
+    precompute: ManagementModule<'resource.precomputeStatus'>;
+    media: ManagementModule<'resource.mediaQueue'>;
+    system: ManagementModule<'resource.systemProtection'>;
+    files: ManagementModule<'resource.files'>;
 }
 declare function normalizeMemoryRange(value: unknown): string;
 declare function collectMemoryHistory(mods: ResourceModuleSet, range: string): {
@@ -122,24 +46,24 @@ declare function getCachedMemoryHistory(mods: ResourceModuleSet, range: string):
 declare function collectDiskUsage(): Record<string, unknown>;
 declare function getCachedDiskUsage(): unknown;
 declare function sanitizeTask(task: ResourceTaskLike): {
-    id: unknown;
-    kind: unknown;
-    status: unknown;
-    source: unknown;
-    channelKey: unknown;
-    userId: unknown;
-    priority: unknown;
-    createdAt: unknown;
-    updatedAt: unknown;
-    expiresAt: unknown;
-    timeoutMs: unknown;
-    step: unknown;
-    claimedBy: unknown;
-    claimedAt: unknown;
-    startedAt: unknown;
-    finishedAt: unknown;
-    notify: unknown;
-    error: unknown;
+    id: string;
+    kind: string;
+    status: import("koishi-plugin-dongxuelian-ai/lib/resource-workers/task-types").ResourceTaskStatus;
+    source: string;
+    channelKey: string;
+    userId: string;
+    priority: number;
+    createdAt: string;
+    updatedAt: string;
+    expiresAt: string;
+    timeoutMs: number;
+    step: string | undefined;
+    claimedBy: string | undefined;
+    claimedAt: string | undefined;
+    startedAt: string | undefined;
+    finishedAt: string | undefined;
+    notify: import("koishi-plugin-dongxuelian-ai/lib/resource-workers/task-types").ResourceTaskNotify;
+    error: string | undefined;
     payloadKeys: string[];
 };
 declare function buildResourceStatus(mods: ResourceModuleSet): Record<string, unknown>;

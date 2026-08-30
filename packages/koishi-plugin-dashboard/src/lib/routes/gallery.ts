@@ -6,12 +6,13 @@ import type { IncomingMessage, ServerResponse } from 'http'
 const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
 const crypto = require('crypto') as typeof import('crypto')
-const { json, log, collectBody, isInsidePath, parsePositiveInt } = require('../utils') as {
+const { json, log, collectBody, isInsidePath, parsePositiveInt, getErrorMessage } = require('../utils') as {
   json(res: ServerResponse, data: unknown, status?: number): void
   log(message: unknown): void
   collectBody(req: IncomingMessage, res: ServerResponse, callback: (body: string) => void | Promise<void>, options?: { maxBytes?: number }): void
   isInsidePath(parent: string, child: string): boolean
   parsePositiveInt(value: unknown, fallback: number, min: number, max: number): number
+  getErrorMessage(error: unknown): string
 }
 const { requireAdmin } = require('../auth') as { requireAdmin(req: IncomingMessage, res: ServerResponse): boolean }
 const { GALLERY_DIR, GALLERY_METADATA_FILE, GALLERY_MAX_BYTES, GALLERY_MIME_EXT, GALLERY_FOIL_STYLES } = require('../paths') as {
@@ -78,11 +79,6 @@ interface GalleryJsonBody {
 
 const MAX_GALLERY_METADATA_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_METADATA_MAX_BYTES, 256 * 1024, 16 * 1024, 1024 * 1024)
 const MAX_GALLERY_UPLOAD_BODY_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_UPLOAD_BODY_MAX_BYTES, Math.ceil(GALLERY_MAX_BYTES * 1.45) + 64 * 1024, 1024 * 1024, 16 * 1024 * 1024)
-
-function getErrorMessage(error: unknown): string {
-  if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || '')
-  return String(error || '')
-}
 
 function isGalleryItem(item: GalleryItem | null): item is GalleryItem {
   return !!item

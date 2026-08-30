@@ -38,8 +38,8 @@ LianLianBot 当前主要服务三类场景：
 | 场景 | 推荐入口 | 说明 |
 |---|---|---|
 | Windows 新用户本机跑 Bot | `local-deployer/` 打包出来的部署器，或根目录 `启动本地部署器.bat` | 图形化完成 Node/npm、NapCat、Koishi 配置、扫码登录、健康检查 |
-| 已有 Linux 服务器，想更新或维护 | Dashboard 的“部署”页 | 通过 SSH/SCP 把当前后端机器上的代码、前端 dist、脚本和数据种子推到远端 |
-| 维护者/开发者精确部署 | `setup.sh`、`scripts/*.sh`、`deploy.bat` | 保留手工可控路径，方便排错、修复旧服务器和单插件发布 |
+| 已有 Linux 服务器，想更新或维护 | Dashboard 的“部署”页 | 唯一远程生产更新入口；发布必须经过清单、预览、发布锁、基线复核和自动回滚 |
+| 维护者/开发者本地准备与排错 | `setup.sh`、`scripts/*.sh`、`deploy.bat` | 只用于本地目录、初次准备或开发排错，不得用于绕过 Dashboard 更新远程生产环境 |
 
 项目名对外统一称为 LianLianBot。历史包名里仍保留 `dongxuelian-*`，这是为了兼容 Koishi 插件名、数据文件和已有部署。
 
@@ -740,7 +740,7 @@ deploy.bat
 deploy.bat D:\Some\KoishiApp
 ```
 
-它是保留方案。普通用户优先用 Windows 部署器或 Dashboard 部署页。
+它是保留的 Windows 本地目录部署方案，不用于远程生产发布。远程生产更新只能使用 Dashboard 的“部署”页。
 
 ### `setup.bat`
 
@@ -750,23 +750,11 @@ deploy.bat D:\Some\KoishiApp
 - 创建 `runtime/downloads`、`runtime/logs`、`runtime/napcat`、`data`。
 - 提示使用 Dashboard 生成 `koishi.yml`。
 
-### `scripts/deploy-frontend.bat`
+### 已停用的旧远程直传脚本
 
-构建 Dashboard 前端并同步到远程服务器：
+`scripts/deploy-frontend.bat` 与 `scripts/deploy-and-restart.bat` 已停用并固定返回失败。它们曾经直接上传前端或日报文件后重启，会绕过发布清单、预览、发布锁、远端基线复核和自动回滚。
 
-```powershell
-scripts\deploy-frontend.bat root@服务器IP <YOUR_APP_DIR>
-```
-
-### `scripts/deploy-and-restart.bat`
-
-主要用于日报插件快速同步并远程重启：
-
-```powershell
-scripts\deploy-and-restart.bat root@服务器IP
-```
-
-不传文件时同步 `koishi-plugin-daily-report` 的 `lib/` 和 `templates/`。
+Dashboard 的“部署”页是唯一远程生产更新入口；完整不可变发布物已经同时包含 Dashboard 前端与日报插件，不再支持单文件直传更新。
 
 ---
 
@@ -995,11 +983,19 @@ npm run test:scenario
 npm run test:plugins
 ```
 
-完整测试：
+完整测试（提交、发布和 CI 的唯一信任入口，包含 Dashboard、Agent Console、类型检查、构建和同步验证）：
 
 ```bash
 npm test
 ```
+
+本机安装 Chrome 或 Edge 时，可额外运行 Dashboard 点击烟测：
+
+```bash
+npm run test:dashboard-click
+```
+
+当前发布继续提交各插件 `lib/` 及前端 `dist/`；完整测试会重建并校验这些生成物没有漂移。新临时文件放入 `tmp/workspace/`，临时发布包放入 `tmp/releases/`。
 
 Dashboard 前端开发：
 
@@ -1022,7 +1018,7 @@ Agent Console 构建：
 npm run build:agent-console
 ```
 
-更多测试规范见 `TESTING.md`。
+更多测试规范见 `测试文件维护指南.md`。
 
 ---
 
@@ -1108,7 +1104,7 @@ ss -ltnp | grep 8080
 - 插件业务逻辑放在 `packages/*/lib/`。
 - 部署脚本只做部署，不把大段业务 JS 内嵌进 Markdown。
 - 修改 Dashboard 前端后，记得在 `packages/koishi-plugin-dashboard/frontend/` 里重新 `npm run build`。
-- 修改 AI 主插件前，先看 `AI协作规则.md`、`教训总结.md`、`TESTING.md`。
+- 修改 AI 主插件前，先看 `AI协作规则.md`、`教训总结.md`、`测试文件维护指南.md`。
 - 修改端口、数据目录、部署路径时，同步检查 `README.md`、`readme2.md`、`setup.sh`、`scripts/restart-bot.sh`、`packages/koishi-plugin-dashboard/standalone.js`。
 - 改插件后至少跑 `npm run check`；涉及 shared 行为、Agent、部署、日报、Dashboard 时继续跑相关测试。
 - 服务器数据统一以根 `data/` 为准，包内 `data` 只作为随包种子或软链入口。
@@ -1124,7 +1120,7 @@ ss -ltnp | grep 8080
 | `readme2.md` | 当前重新整理版 |
 | `local-deployer/README.md` | Windows 部署器专项说明 |
 | `部署教程.txt` | 传统 Linux 部署备份教程 |
-| `TESTING.md` | 测试说明 |
+| `测试文件维护指南.md` | 测试说明 |
 | `开发总结.md` | 维护记录 |
 | `教训总结.md` | 排错经验 |
 | `后续优化.md` | 后续优化方向 |

@@ -4,9 +4,7 @@
  * 职责: 分析群聊氛围，生成质量锐评。
  * 边界: 只做分析，不调API，通过 aiClient.callAI 间接调用。
  */
-function getErrorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
-}
+const { getErrorMessage } = require('../error-utils');
 async function analyzeChatQuality(aiClient, data) {
     const prompt = `你是群聊氛围评论员，请为今日群聊写一段犀利的质量锐评。
 

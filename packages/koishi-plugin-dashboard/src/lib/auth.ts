@@ -4,7 +4,7 @@ const path = require('path') as typeof import('path')
 const crypto = require('crypto') as typeof import('crypto')
 import type { IncomingMessage, ServerResponse } from 'http'
 const bcrypt = require('bcryptjs') as BcryptLike
-const { json, log, getRemoteAddress, isLoopbackAddress } = require('./utils')
+const { json, log, getRemoteAddress, isLoopbackAddress, getErrorMessage } = require('./utils') as typeof import('./utils')
 const { ADMIN_PWD_FILE, ACCESS_PWD_FILE, LEGACY_ACCESS_PWD_FILE, RESET_TOKEN_FILE, SESSION_SECRET_FILE, PASSWORD, ADMIN_PASSWORD, isGlobalLocalMode } = require('./paths')
 
 interface EnsurePasswordOptions {
@@ -52,11 +52,6 @@ const dashboardGlobal = globalThis as typeof globalThis & DashboardGlobalWithTim
 if (!dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer) {
   dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer = setInterval(() => trimLoginFailMap(), LOGIN_FAIL_CLEANUP_MS)
   if (dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer.unref) dashboardGlobal.__dongxuelianDashboardLoginFailCleanupTimer.unref()
-}
-
-function getErrorMessage(error: unknown): string {
-  if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || '')
-  return String(error || '')
 }
 
 // Reads small secret/config files without throwing.

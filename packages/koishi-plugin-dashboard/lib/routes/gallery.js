@@ -2,16 +2,11 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { json, log, collectBody, isInsidePath, parsePositiveInt } = require('../utils');
+const { json, log, collectBody, isInsidePath, parsePositiveInt, getErrorMessage } = require('../utils');
 const { requireAdmin } = require('../auth');
 const { GALLERY_DIR, GALLERY_METADATA_FILE, GALLERY_MAX_BYTES, GALLERY_MIME_EXT, GALLERY_FOIL_STYLES } = require('../paths');
 const MAX_GALLERY_METADATA_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_METADATA_MAX_BYTES, 256 * 1024, 16 * 1024, 1024 * 1024);
 const MAX_GALLERY_UPLOAD_BODY_BYTES = parsePositiveInt(process.env.DASHBOARD_GALLERY_UPLOAD_BODY_MAX_BYTES, Math.ceil(GALLERY_MAX_BYTES * 1.45) + 64 * 1024, 1024 * 1024, 16 * 1024 * 1024);
-function getErrorMessage(error) {
-    if (error && typeof error === 'object' && 'message' in error)
-        return String(error.message || '');
-    return String(error || '');
-}
 function isGalleryItem(item) {
     return !!item;
 }

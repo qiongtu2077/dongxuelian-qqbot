@@ -12,6 +12,9 @@ interface CollectBodyOptions {
 }
 type BodyCallback = (body: string) => void | Promise<void>;
 declare function parsePositiveInt(value: unknown, fallback: number, min: number, max: number): number;
+declare function getErrorMessage(error: unknown): string;
+declare function getObjectErrorMessage(error: unknown): unknown;
+declare function getOptionalErrorMessage(error: unknown): unknown;
 declare function json(res: ServerResponse, data: unknown, status?: number): void;
 declare function log(msg: unknown): void;
 declare function getRemoteAddress(req: IncomingMessage | null | undefined): string;
@@ -33,6 +36,9 @@ declare function uniquePaths(paths: string[]): string[];
 declare function readFileContent(p: string, maxBytes?: number): string;
 declare const _default: {
     parsePositiveInt: typeof parsePositiveInt;
+    getErrorMessage: typeof getErrorMessage;
+    getObjectErrorMessage: typeof getObjectErrorMessage;
+    getOptionalErrorMessage: typeof getOptionalErrorMessage;
     json: typeof json;
     log: typeof log;
     getRemoteAddress: typeof getRemoteAddress;

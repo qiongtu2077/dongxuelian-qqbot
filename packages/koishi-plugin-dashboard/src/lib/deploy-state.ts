@@ -24,6 +24,7 @@ interface LocalTask {
   command: string
   cwd: string
   process: ChildProcessWithoutNullStreams | null
+  warnings: string[]
   diagnostics?: unknown
 }
 
@@ -59,6 +60,7 @@ interface LocalTaskPublicStatus {
   cwd: string
   logFile: string
   logLines: string[]
+  warnings: string[]
   [key: string]: unknown
 }
 
@@ -72,9 +74,9 @@ type LocalSpawnOptions = SpawnOptionsWithoutStdio & { maxBuffer: number }
 const runtimePath = (...args: string[]): string => path.join(KOISHI_DIR, 'runtime', ...args)
 
 const localTasks: Record<LocalTaskKey, LocalTask> = {
-  npmInstall: { label: 'npm install', logFile: runtimePath('logs', 'npm-install.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null },
-  napcat: { label: 'NapCat', logFile: runtimePath('logs', 'napcat.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null },
-  koishi: { label: 'Koishi', logFile: runtimePath('logs', 'koishi-local.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null },
+  npmInstall: { label: 'npm install', logFile: runtimePath('logs', 'npm-install.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null, warnings: [] },
+  napcat: { label: 'NapCat', logFile: runtimePath('logs', 'napcat.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null, warnings: [] },
+  koishi: { label: 'Koishi', logFile: runtimePath('logs', 'koishi-local.log'), state: 'idle', running: false, startedAt: 0, finishedAt: 0, exitCode: null, error: '', pid: 0, command: '', cwd: '', process: null, warnings: [] },
 }
 
 let rebuildStatus: RebuildStatus = { state: 'idle', message: '', detail: '', startedAt: 0, finishedAt: 0 }
@@ -85,11 +87,22 @@ function setRebuildStatus(s: RebuildStatus) { rebuildStatus = s }
 function getNpmDiagnosticsCache() { return npmDiagnosticsCache }
 function setNpmDiagnosticsCache(c: NpmDiagnosticsCache) { npmDiagnosticsCache = c }
 
+// 记录不会终止本地任务、但需要从状态接口看到的次要失败。
+function recordLocalTaskWarning(task: LocalTask, code: string, error: unknown): void {
+  const detail = error instanceof Error ? error.message : String(error || 'unknown error')
+  const warning = `${code}: ${detail}`.slice(0, 500)
+  if (!task.warnings.includes(warning)) task.warnings = task.warnings.concat(warning).slice(-20)
+  console.warn(`[dashboard] local_task_warning task=${task.label} code=${code} detail=${detail}`)
+}
+
+// 追加本地任务输出，写入失败时转存为可查询 warning。
 function appendLocalTaskLog(task: LocalTask, chunk: Buffer | string) {
   try {
     fs.mkdirSync(path.dirname(task.logFile), { recursive: true })
     fs.appendFileSync(task.logFile, String(chunk), 'utf8')
-  } catch { /* non-critical: task log best effort */ }
+  } catch (error) {
+    recordLocalTaskWarning(task, 'task_log_write_failed', error)
+  }
 }
 
 function getTaskPublicStatus(key: LocalTaskKey, extra: Record<string, unknown> = {}): LocalTaskPublicStatus {
@@ -106,6 +119,7 @@ function getTaskPublicStatus(key: LocalTaskKey, extra: Record<string, unknown> =
     cwd: task.cwd,
     logFile: task.logFile,
     logLines: readLastLogLines(task.logFile, 160),
+    warnings: task.warnings.slice(),
     ...extra,
   }
 }
@@ -121,6 +135,7 @@ function spawnLocalTask(key: LocalTaskKey, command: string, args: string[] = [],
   task.finishedAt = 0
   task.exitCode = null
   task.error = ''
+  task.warnings = []
   task.diagnostics = options.diagnostics || null
   task.pid = 0
   task.command = [command].concat(args).join(' ')
@@ -140,7 +155,9 @@ function spawnLocalTask(key: LocalTaskKey, command: string, args: string[] = [],
     try {
       fs.mkdirSync(path.dirname(KOISHI_PID_FILE), { recursive: true })
       fs.writeFileSync(KOISHI_PID_FILE, String(task.pid), 'utf8')
-    } catch { /* non-critical: pid file best effort */ }
+    } catch (error) {
+      recordLocalTaskWarning(task, 'pid_file_write_failed', error)
+    }
   }
   child.stdout?.on('data', (chunk: Buffer | string) => appendLocalTaskLog(task, chunk))
   child.stderr?.on('data', (chunk: Buffer | string) => appendLocalTaskLog(task, chunk))

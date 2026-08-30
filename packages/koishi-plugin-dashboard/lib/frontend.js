@@ -3,11 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 const { FE_DIR, DIST_DIR } = require('./paths');
-function getErrorMessage(error) {
-    if (error && typeof error === 'object' && 'message' in error)
-        return String(error.message || '');
-    return String(error || '');
-}
+const { getErrorMessage } = require('./utils');
 function toError(error, fallback = 'frontend build failed') {
     return error instanceof Error ? error : new Error(getErrorMessage(error) || fallback);
 }
