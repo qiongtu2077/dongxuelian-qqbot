@@ -137,7 +137,8 @@ async function readImageHistory(channelKey: unknown): Promise<ImageHistoryData> 
   const cacheKey = getImageStoreQueueKey(channelKey)
   try {
     await fs.mkdir(IMAGE_HISTORY_DIR, { recursive: true })
-    let file = getMediaHistoryFilePath(IMAGE_HISTORY_DIR, channelKey)
+    const safeFile = getMediaHistoryFilePath(IMAGE_HISTORY_DIR, channelKey)
+    let file = safeFile
     let stat
     try {
       stat = await fs.stat(file)
@@ -150,8 +151,9 @@ async function readImageHistory(channelKey: unknown): Promise<ImageHistoryData> 
     if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return { images: {} }
     const parsed = JSON.parse(await fs.readFile(file, 'utf8'))
     const data = normalizeImageHistoryData(parsed)
-    if (file !== getMediaHistoryFilePath(IMAGE_HISTORY_DIR, channelKey)) {
-      await writeImageHistory(channelKey, data)
+    if (file !== safeFile) {
+      // Only remove the legacy filename after its replacement is safely written.
+      if (await writeImageHistory(channelKey, data)) await fs.unlink(file)
     }
     imageHistoryCache.set(cacheKey, cloneImageHistoryData(data))
     return data
