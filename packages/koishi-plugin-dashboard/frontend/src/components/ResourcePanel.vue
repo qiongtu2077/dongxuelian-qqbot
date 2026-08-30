@@ -3,12 +3,11 @@
     <div class="resource-toolbar">
       <div>
         <h2>资源中心</h2>
-        <div class="resource-subline">最后刷新：{{ lastRefreshLabel }}</div>
+        <div class="resource-subline">资源总览更新于 {{ lastRefreshLabel }}；页面会自动更新</div>
       </div>
       <div class="resource-actions">
-        <button class="btn btn-sm" :disabled="loading" @click="refreshAll">刷新</button>
+        <button class="btn btn-sm" title="立即读取最新总览、任务、事件和内存数据；页面本身也会自动更新" :disabled="loading" @click="refreshAll">立即刷新</button>
         <button class="btn btn-sm" @click="toggleMaintenance()">{{ maintenanceLabel }}</button>
-        <button class="btn btn-sm" @click="reclaimStale()">回收 stale</button>
       </div>
     </div>
 
@@ -21,28 +20,28 @@
             <h2>资源总览</h2>
             <div class="resource-kpis">
               <div class="resource-kpi">
-                <span>模式</span>
-                <strong>{{ display(status.mode) }}</strong>
+                <span>服务状态</span>
+                <strong :class="'readable-' + botDisplay.level">{{ botDisplay.label }}</strong>
+                <small>{{ botDisplay.detail }}</small>
               </div>
               <div class="resource-kpi">
-                <span>服务器模式</span>
-                <strong>{{ display(status.serverMode) }}</strong>
+                <span>资源余量</span>
+                <strong :class="'readable-' + resourceDisplay.level">{{ resourceDisplay.label }}</strong>
+                <small>{{ resourceDisplay.detail }}</small>
               </div>
               <div class="resource-kpi">
-                <span>档位</span>
-                <strong :class="'state-' + display(status.resourceState)">{{ display(status.resourceState) }}</strong>
+                <span>资源保护策略</span>
+                <strong>{{ policyDisplay.label }}</strong>
+                <small>{{ policyDisplay.detail }}</small>
               </div>
               <div class="resource-kpi">
-                <span>可用内存</span>
-                <strong>{{ memoryLabel }}</strong>
-              </div>
-              <div class="resource-kpi">
-                <span>排队</span>
+                <span>全部排队任务</span>
                 <strong>{{ numberValue(status.queueLength) }}</strong>
+                <small>未知类型不会归到任一处理器</small>
               </div>
             </div>
             <div class="resource-mode-switch">
-              <div class="resource-section-title">服务器资源模式</div>
+              <div class="resource-section-title">资源保护策略</div>
               <div class="resource-segmented">
                 <button
                   class="resource-segmented-btn"
@@ -50,7 +49,7 @@
                   :disabled="loadingMode"
                   @click="setMode('small')"
                 >
-                  小内存服务器
+                  小内存策略
                 </button>
                 <button
                   class="resource-segmented-btn"
@@ -58,22 +57,29 @@
                   :disabled="loadingMode"
                   @click="setMode('large')"
                 >
-                  大内存服务器
+                  大内存策略
                 </button>
               </div>
-              <div class="resource-subline">配置来源：{{ display(status.serverModeSource) }}</div>
-              <div class="resource-mode-meta">
-                <span class="resource-pill" :class="status.tool_active ? 'pill-warn' : ''">tool_active: {{ boolText(status.tool_active) }}</span>
-                <span class="resource-pill" :class="status.render_active ? 'pill-warn' : ''">render_active: {{ boolText(status.render_active) }}</span>
-                <span class="resource-pill" :class="status.background_allowed ? 'pill-ok' : 'pill-off'">background_allowed: {{ boolText(status.background_allowed) }}</span>
-              </div>
+              <div class="resource-subline">{{ policyDisplay.detail }}</div>
+              <div class="resource-background-state" :class="status.background_allowed === false ? 'readable-danger' : 'readable-ok'">{{ activityDisplay.background }}</div>
+              <details class="resource-diagnostic-details">
+                <summary>资源保护详情</summary>
+                <div>{{ activityDisplay.browser }}</div>
+                <div>{{ activityDisplay.render }}</div>
+                <div>配置来源：{{ display(status.serverModeSource) }}</div>
+              </details>
             </div>
             <div class="resource-running">
               <div class="resource-section-title">当前独占</div>
               <div v-if="running" class="resource-runbox">
-                <b>{{ display(running.kind) }}</b>
-                <span>{{ display(running.taskId) }}</span>
-                <small>{{ display(running.step) }} · {{ display(running.owner) }}</small>
+                <b>{{ taskKindDisplay(running.kind) }}</b>
+                <span>已有独占任务正在运行</span>
+                <details class="resource-diagnostic-details">
+                  <summary>查看诊断详情</summary>
+                  <small>内部任务标识：{{ display(running.taskId) }}</small>
+                  <small>内部步骤：{{ display(running.step) }}</small>
+                  <small>处理所有者：{{ display(running.owner) }}</small>
+                </details>
               </div>
               <div v-else class="resource-empty">暂无独占任务</div>
             </div>
@@ -82,33 +88,58 @@
       </section>
 
       <section class="card resource-worker-card">
-        <h2>worker</h2>
+        <h2>后台处理器</h2>
         <div v-if="workers.length" class="resource-list">
           <div v-for="worker in workers" :key="display(worker.name)" class="resource-row">
-            <span class="status-dot" :class="worker.alive ? 'active' : 'offline'"></span>
+            <span class="status-dot" :class="workerDisplay(worker).level === 'danger' ? 'offline' : worker.alive ? 'active' : 'offline'"></span>
             <div class="resource-worker-main">
               <div class="resource-worker-head">
-                <b>{{ display(worker.name) }}</b>
+                <b>{{ workerDisplay(worker).name }}</b>
                 <span
                   class="resource-pill worker-progress-pill"
-                  :class="'worker-progress-' + workerProgressStatus(worker).level"
-                  :title="workerProgressStatus(worker).title"
-                >{{ workerProgressStatus(worker).label }}</span>
+                  :class="'worker-progress-' + workerDisplay(worker).level"
+                >{{ workerDisplay(worker).label }}</span>
               </div>
-              <small>{{ display(worker.step) }} · {{ lagLabel(worker.heartbeatLagMs) }} · {{ workerProgressMeta(worker) }}</small>
+              <small>{{ workerDisplay(worker).lastContactText }} · {{ workerDisplay(worker).backlogText }}</small>
+              <small v-if="workerDisplay(worker).pauseReasons.length">暂停原因：{{ workerDisplay(worker).pauseReasons.join('、') }}</small>
+              <details class="resource-diagnostic-details">
+                <summary>查看诊断详情</summary>
+                <small>内部名称：{{ display(worker.name) }}</small>
+                <small>原始步骤：{{ display(worker.step) }}</small>
+                <small>轮询次数：{{ display(worker.loopIterations) }}</small>
+                <small>最近检查队列：{{ display(worker.lastClaimAttemptAt) }}</small>
+                <small>当前内部任务标识：{{ display(worker.currentTaskId) }}</small>
+                <small>现在可以处理：{{ numberValue(worker.readyCount) }} · 稍后重试：{{ numberValue(worker.deferredCount) }}</small>
+              </details>
             </div>
           </div>
         </div>
-        <div v-else class="resource-empty">暂无 worker 心跳</div>
+        <div v-else class="resource-empty">暂无后台处理器状态</div>
       </section>
 
       <section class="card resource-media-card">
-        <h2>媒体背压</h2>
-        <div class="resource-metric-row"><span>图片 pending</span><b>{{ numberValue(media.imagePending) }}</b></div>
-        <div class="resource-metric-row"><span>文件 pending</span><b>{{ numberValue(media.filePending) }}</b></div>
-        <div class="resource-metric-row"><span>语音 pending</span><b>{{ numberValue(media.voicePending) }}</b></div>
-        <div class="resource-metric-row"><span>running</span><b>{{ arrayLength(media.running) }}</b></div>
-        <div class="resource-metric-row"><span>dropped</span><b>{{ numberValue(media.droppedCount) }}</b></div>
+        <h2>媒体处理队列：{{ mediaSummary.label }}</h2>
+        <div class="resource-subline">用于排队处理图片、文件和语音，避免高峰时占满资源。{{ mediaSummary.detail }}</div>
+        <div v-for="queue in mediaQueues" :key="queue.kind" class="media-queue-box" :class="'media-risk-' + queue.display.level">
+          <div class="media-queue-head"><b>{{ queue.display.name }}</b><span>{{ queue.display.label }}</span></div>
+          <div class="resource-metric-row"><span>排队总数</span><b>{{ queue.display.queueTotal }} / {{ queue.display.queueLimit }}</b></div>
+          <div class="resource-metric-row"><span>现在可以处理</span><b>{{ queue.display.readyCount }}</b></div>
+          <div class="resource-metric-row"><span>稍后重试</span><b>{{ queue.display.deferredCount }}</b></div>
+          <div class="resource-metric-row"><span>正在处理</span><b>{{ queue.display.runningCount }}</b></div>
+        </div>
+        <div v-if="numberValue(mediaUnfinished.queue_limit) > 0" class="media-history-notice">
+          曾因队列超限舍弃 {{ numberValue(mediaUnfinished.queue_limit) }} 项，最近一次发生在 {{ dateTimeDisplay(media.lastQueueLimitAt, '未记录发生时间') }}。
+          <a href="#resource-diagnostics">前往任务诊断记录</a>
+        </div>
+        <details class="resource-diagnostic-details media-history-details">
+          <summary>保留记录与缓存统计</summary>
+          <div class="resource-metric-row"><span>已完成记录（保留）</span><b>{{ numberValue(media.doneCount) }}</b></div>
+          <div class="resource-metric-row"><span>缓存可复用</span><b>{{ numberValue(media.cacheIndexSize) }}</b></div>
+          <div class="resource-metric-row"><span>因队列超限舍弃</span><b>{{ numberValue(mediaUnfinished.queue_limit) }}</b></div>
+          <div class="resource-metric-row"><span>处理失败</span><b>{{ numberValue(mediaUnfinished.processing_failed) }}</b></div>
+          <div class="resource-metric-row"><span>服务重启时中断</span><b>{{ numberValue(mediaUnfinished.restart_interrupted) }}</b></div>
+          <div class="resource-metric-row"><span>历史原因未知</span><b>{{ numberValue(mediaUnfinished.legacy_unknown) }}</b></div>
+        </details>
       </section>
 
       <section class="card resource-precompute-card">
@@ -203,6 +234,8 @@
       </section>
     </div>
 
+    <ResourceDiagnosticsPanel />
+
     <section class="card">
       <div class="resource-card-head">
         <h2>任务队列</h2>
@@ -265,20 +298,20 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import {
   cancelResourceTask,
   fetchResourceEvents,
-  fetchResourceMode,
   fetchResourceMemoryHistory,
   fetchResourceStatus,
   fetchResourceTasks,
   isAdminRequired,
-  reclaimResourceStale,
   setResourceMode,
   setResourceMaintenance,
 } from '../api'
 import { asArray, asRecord, errorMessage, type JsonRecord, type MessageState, type ShowAdminDialog } from '../types'
-import { arrayLength, boolText, canCancel, coverageKey, display, eventDetail, eventKey, formatInterval, lagLabel, mbLabel, memoryUsedValue, numberValue, percentLabel, round, sizeMbLabel, workerBacklogCount as calculateWorkerBacklogCount, workerProgressMeta as buildWorkerProgressMeta, workerProgressStatus as buildWorkerProgressStatus } from '../services/resource-model'
+import { activityLeaseDisplay, botModeDisplay, canCancel, coverageKey, dateTimeDisplay, display, eventDetail, eventKey, formatInterval, mbLabel, mediaQueueDisplay, mediaSummaryDisplay, memoryUsedValue, numberValue, percentLabel, resourceStateDisplay, round, serverModeDisplay, sizeMbLabel, taskKindDisplay, workerDisplay } from '../services/resource-model'
+import ResourceDiagnosticsPanel from './ResourceDiagnosticsPanel.vue'
 
 export default {
   name: 'ResourcePanel',
+  components: { ResourceDiagnosticsPanel },
   setup() {
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const status = ref<JsonRecord>({})
@@ -321,6 +354,20 @@ export default {
     })
     const workers = computed(() => asArray<JsonRecord>(status.value.workers))
     const media = computed(() => asRecord(status.value.media))
+    const botDisplay = computed(() => botModeDisplay(status.value.mode))
+    const resourceDisplay = computed(() => resourceStateDisplay(status.value.resourceState, status.value.memAvailableMb, status.value.memTotalMb))
+    const policyDisplay = computed(() => serverModeDisplay(status.value.serverMode))
+    const activityDisplay = computed(() => activityLeaseDisplay(status.value))
+    const mediaSummary = computed(() => mediaSummaryDisplay(media.value))
+    const mediaUnfinished = computed(() => asRecord(media.value.unfinishedByReason))
+    const mediaQueues = computed(() => {
+      const queues = asRecord(media.value.queues)
+      const risks = asRecord(media.value.mediaRiskByKind)
+      return ['image', 'file', 'voice'].map(kind => ({
+        kind,
+        display: mediaQueueDisplay(kind, asRecord(queues[kind]), risks[kind]),
+      }))
+    })
     const precompute = computed(() => asRecord(status.value.precompute))
     const disk = computed(() => asRecord(status.value.disk))
     const diskFilesystem = computed(() => asRecord(disk.value.filesystem))
@@ -336,12 +383,6 @@ export default {
         item.file,
       ].some(value => String(value || '').toLowerCase().includes(query)))
     })
-    const memoryLabel = computed(() => {
-      const available = status.value.memAvailableMb
-      const total = status.value.memTotalMb
-      if (typeof available !== 'number') return 'unknown'
-      return typeof total === 'number' ? `${available} / ${total} MB` : `${available} MB`
-    })
     const diskUsageLabel = computed(() => {
       const used = diskFilesystem.value.usedMb
       const total = diskFilesystem.value.totalMb
@@ -351,7 +392,7 @@ export default {
     })
     const diskAvailableLabel = computed(() => sizeMbLabel(diskFilesystem.value.availableMb || diskFilesystem.value.freeMb))
     const diskCacheLabel = computed(() => formatInterval(Number(disk.value.cacheTtlMs)))
-    const maintenanceLabel = computed(() => status.value.maintenance ? '关闭维护' : '开启维护')
+    const maintenanceLabel = computed(() => status.value.maintenance ? '结束维护模式' : '进入维护模式')
     const lastRefreshLabel = computed(() => lastRefresh.value ? new Date(lastRefresh.value).toLocaleTimeString() : '尚未刷新')
     const memorySeriesPoints = computed(() => memoryHistory.value
       .map((point, index) => ({
@@ -422,38 +463,11 @@ export default {
       })
     })
 
-    // Binds the pure worker model to the current reactive resource snapshot.
-    function workerBacklogCount(worker: JsonRecord): number {
-      return calculateWorkerBacklogCount(worker, { media: media.value, status: status.value, tasks: tasks.value })
-    }
-
-    // Builds worker progress metadata from the current reactive resource snapshot.
-    function workerProgressMeta(worker: JsonRecord): string {
-      return buildWorkerProgressMeta(worker, { media: media.value, status: status.value, tasks: tasks.value })
-    }
-
-    // Classifies worker progress from the current reactive resource snapshot.
-    function workerProgressStatus(worker: JsonRecord) {
-      return buildWorkerProgressStatus(worker, { media: media.value, status: status.value, tasks: tasks.value })
-    }
-
     // 读取资源总览。
     async function loadStatus(): Promise<void> {
       const res = await fetchResourceStatus()
       if (res.ok && res.data) {
         status.value = asRecord(res.data)
-        const modeRes = await fetchResourceMode()
-        if (modeRes.ok && modeRes.data) {
-          const modeData = asRecord(modeRes.data)
-          status.value = {
-            ...status.value,
-            serverMode: modeData.serverMode ?? status.value.serverMode,
-            serverModeSource: modeData.serverModeSource ?? status.value.serverModeSource,
-            tool_active: modeData.tool_active ?? status.value.tool_active,
-            render_active: modeData.render_active ?? status.value.render_active,
-            background_allowed: modeData.background_allowed ?? status.value.background_allowed,
-          }
-        }
         lastRefresh.value = Date.now()
         return
       }
@@ -544,44 +558,50 @@ export default {
     }
 
     // 切换维护模式，复用后端 ai-paused.txt。
-    async function toggleMaintenance(savedTarget?: boolean, retried = false): Promise<void> {
+    async function toggleMaintenance(savedTarget?: boolean, retried = false, confirmed = false): Promise<void> {
       const next = savedTarget ?? !status.value.maintenance
+      if (next && !confirmed) {
+        const accepted = window.confirm('进入维护模式后，机器人将暂停智能回复和后台任务。是否继续？')
+        if (!accepted) return
+        confirmed = true
+      }
       const res = await setResourceMaintenance(next)
       if (isAdminRequired(res)) {
-        if (!retried && showAdminDialog) showAdminDialog('切换资源维护模式需要管理员密码', () => toggleMaintenance(next, true))
+        if (!retried && showAdminDialog) showAdminDialog('切换资源维护模式需要管理员密码', () => toggleMaintenance(next, true, confirmed))
         else message.value = { type: 'err', text: '管理员验证后维护模式操作仍被拒绝' }
         return
       }
-      message.value = { type: res.ok ? 'ok' : 'err', text: errorMessage(res.data, next ? '维护模式已开启' : '维护模式已关闭') }
-      await refreshAllInternal({ preserveMessage: true })
-    }
-
-    // 请求后端按 stale 规则回收 S0 锁。
-    async function reclaimStale(retried = false): Promise<void> {
-      const res = await reclaimResourceStale()
-      if (isAdminRequired(res)) {
-        if (!retried && showAdminDialog) showAdminDialog('回收过期资源锁需要管理员密码', () => reclaimStale(true))
-        else message.value = { type: 'err', text: '管理员验证后回收操作仍被拒绝' }
-        return
+      message.value = {
+        type: res.ok ? 'ok' : 'err',
+        text: errorMessage(res.data, next
+          ? '维护模式已开启，机器人将回复维护提示'
+          : '维护模式已结束，智能回复和后台任务已恢复'),
       }
-      message.value = { type: res.ok ? 'ok' : 'err', text: res.ok ? 'stale 回收检查已完成' : errorMessage(res.data, '回收失败') }
       await refreshAllInternal({ preserveMessage: true })
     }
 
-    // 切换服务器资源模式。
-    async function setMode(serverMode: string): Promise<void> {
+    // 确认影响后切换资源保护策略，并在管理员过期时只重试同一操作。
+    async function setMode(serverMode: string, retried = false, confirmed = false): Promise<void> {
       if (loadingMode.value) return
+      if (String(status.value.serverMode || '') === serverMode) return
+      if (!confirmed) {
+        const label = serverMode === 'small' ? '小内存策略' : '大内存策略'
+        const accepted = window.confirm(`切换到${label}会改变浏览器任务与后台任务的并行保护方式。是否继续？`)
+        if (!accepted) return
+        confirmed = true
+      }
       loadingMode.value = true
       try {
         const res = await setResourceMode(serverMode)
         if (res.ok) {
-          message.value = { type: 'ok', text: serverMode === 'small' ? '已切换到小内存服务器' : '已切换到大内存服务器' }
+          message.value = { type: 'ok', text: serverMode === 'small' ? '资源保护策略已切换为小内存策略' : '资源保护策略已切换为大内存策略' }
           await refreshAllInternal({ preserveMessage: true })
           return
         }
         if (isAdminRequired(res)) {
-          message.value = { type: 'warn', text: '切换服务器资源模式需要管理员密码' }
-          if (showAdminDialog) showAdminDialog('切换服务器资源模式需要管理员密码', () => setMode(serverMode))
+          message.value = { type: 'warn', text: '切换资源保护策略需要管理员密码' }
+          if (!retried && showAdminDialog) showAdminDialog('切换资源保护策略需要管理员密码', () => setMode(serverMode, true, confirmed))
+          else message.value = { type: 'err', text: '管理员验证后资源保护策略操作仍被拒绝' }
           return
         }
         message.value = { type: 'err', text: errorMessage(res.data, '模式切换失败') }
@@ -639,13 +659,19 @@ export default {
       running,
       workers,
       media,
+      botDisplay,
+      resourceDisplay,
+      policyDisplay,
+      activityDisplay,
+      mediaSummary,
+      mediaUnfinished,
+      mediaQueues,
       precompute,
       disk,
       diskFilesystem,
       diskEntries,
       coverage,
       filteredCoverage,
-      memoryLabel,
       diskUsageLabel,
       diskAvailableLabel,
       diskCacheLabel,
@@ -661,12 +687,10 @@ export default {
       maintenanceLabel,
       lastRefreshLabel,
       display,
-      boolText,
+      dateTimeDisplay,
       numberValue,
-      arrayLength,
-      lagLabel,
-      workerProgressMeta,
-      workerProgressStatus,
+      taskKindDisplay,
+      workerDisplay,
       percentLabel,
       sizeMbLabel,
       coverageKey,
@@ -677,7 +701,6 @@ export default {
       loadEvents,
       loadMemoryHistory,
       toggleMaintenance,
-      reclaimStale,
       setMode,
       cancelTask,
     }
@@ -902,6 +925,63 @@ export default {
   overflow-wrap: anywhere;
 }
 
+.resource-kpi small {
+  display: block;
+  margin-top: 5px;
+  color: var(--text3);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.readable-ok { color: var(--success) !important; }
+.readable-info { color: var(--accent) !important; }
+.readable-warn { color: var(--accent) !important; }
+.readable-danger { color: var(--danger) !important; }
+.readable-off { color: var(--text3) !important; }
+
+.resource-background-state {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.resource-diagnostic-details {
+  margin-top: 9px;
+  color: var(--text3);
+  font-size: 12px;
+}
+
+.resource-diagnostic-details summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.resource-diagnostic-details[open] summary { margin-bottom: 7px; }
+
+.media-queue-box {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+}
+
+.media-queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+
+.media-queue-head span { color: var(--text2); font-size: 12px; font-weight: 800; }
+.media-risk-warn { border-color: color-mix(in srgb, var(--accent) 58%, var(--border)); }
+.media-risk-danger { border-color: color-mix(in srgb, var(--danger) 62%, var(--border)); }
+.media-history-notice { margin-top: 12px; color: var(--text2); font-size: 12px; line-height: 1.55; }
+.media-history-notice a { color: var(--accent); font-weight: 700; }
+.media-history-details { margin-top: 12px; }
+
 .state-green { color: var(--success) !important }
 .state-yellow { color: var(--accent) !important }
 .state-red { color: var(--danger) !important }
@@ -1059,6 +1139,11 @@ export default {
 .worker-progress-ok {
   border-color: color-mix(in srgb, var(--success) 36%, var(--border));
   color: var(--success);
+}
+
+.worker-progress-info {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  color: var(--accent);
 }
 
 .worker-progress-warn {

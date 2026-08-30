@@ -7,11 +7,13 @@ interface ResourceModuleSet {
     scheduler: ManagementModule<'resource.snapshot'>;
     mode: ManagementModule<'resource.serverModePolicy'>;
     tasks: ManagementModule<'resource.taskStore'>;
+    timeout: ManagementModule<'resource.taskTimeout'>;
     supervisor: ManagementModule<'resource.workerSupervisor'>;
     precompute: ManagementModule<'resource.precomputeStatus'>;
     media: ManagementModule<'resource.mediaQueue'>;
     system: ManagementModule<'resource.systemProtection'>;
     files: ManagementModule<'resource.files'>;
+    redactor: ManagementModule<'core.redactor'>;
 }
 declare function normalizeMemoryRange(value: unknown): string;
 declare function collectMemoryHistory(mods: ResourceModuleSet, range: string): {

@@ -595,6 +595,7 @@ async function renderHtmlToImage(htmlContent: string, context: RenderContext = {
     writeDailyRenderCleanupEvent('daily_chromium_launched', {
       taskId: context.taskId || '',
       browserPid: getBrowserProcessPid(browser),
+      parentPid: process.pid,
       executablePath: browserPath,
     })
     timeoutId = setTimeout(async () => {

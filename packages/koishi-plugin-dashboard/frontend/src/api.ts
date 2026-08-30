@@ -252,12 +252,24 @@ export async function fetchResourceMode() { return get('/resource/mode') }
 export async function setResourceMode(serverMode: string) { return post('/resource/mode', { serverMode }, true) }
 export async function fetchResourceMemoryHistory(range = '5m') { return get('/resource/memory-history?range=' + encodeURIComponent(range), false, 20000) }
 export async function fetchResourceTasks() { return get('/resource/tasks') }
+// Reads one stable page of resource diagnostic summaries.
+export async function fetchResourceDiagnostics(options: { group?: string; reason?: string; cursor?: string } = {}) {
+  const params = new URLSearchParams()
+  if (options.group) params.set('group', options.group)
+  if (options.reason) params.set('reason', options.reason)
+  if (options.cursor) params.set('cursor', options.cursor)
+  const query = params.toString()
+  return get('/resource/diagnostics' + (query ? `?${query}` : ''))
+}
+// Reads one diagnostic detail only after the administrator expands its record.
+export async function fetchResourceDiagnosticDetail(recordId: string) {
+  return get('/resource/diagnostics/detail?id=' + encodeURIComponent(recordId))
+}
 export async function fetchResourceEvents() { return get('/resource/events') }
 export async function fetchResourceWorkers() { return get('/resource/workers') }
 export async function fetchResourceMedia() { return get('/resource/media') }
 export async function fetchResourcePrecompute() { return get('/resource/precompute') }
 export async function cancelResourceTask(taskId: string, reason = 'dashboard cancel') { return post('/resource/cancel', { taskId, reason }, true) }
-export async function reclaimResourceStale(staleMs = 30000) { return post('/resource/reclaim-stale', { staleMs }, true) }
 export async function setResourceMaintenance(enabled: boolean, message = '优化中，别急') { return post('/resource/maintenance', { enabled, message }, true) }
 export async function fetchGalleryImages() { return get('/gallery') }
 export async function uploadGalleryImage(data: unknown) { return post('/gallery', data, true, 60000) }

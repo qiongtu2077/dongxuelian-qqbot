@@ -90,7 +90,20 @@ async function verifyLegacyAgentTabColdStart(page) {
   if (storedTab !== 'features') throw new Error(`legacy agent tab was not normalized: ${storedTab}`)
 }
 
-/** Exercises resource status and task controls for the selected mode. */
+/** Switches the mock backend to one resource scenario and refreshes only through the real UI action. */
+async function injectResourceScenario(page, scenario) {
+  await page.evaluate(async value => {
+    const response = await fetch('/dashboard/api/resource/mock-scenario', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scenario: value }),
+    })
+    if (!response.ok) throw new Error(`resource scenario failed: ${response.status}`)
+  }, scenario)
+  await clickText(page, '立即刷新')
+}
+
+/** Exercises readable resource states, diagnostics pagination, and protected controls. */
 async function verifyResourcePanel(page, options = {}) {
   const allowWrites = options.allowWrites !== false
   const expectMockData = options.expectMockData !== false
@@ -99,19 +112,20 @@ async function verifyResourcePanel(page, options = {}) {
   await waitForText(page, '日报预计算')
   await waitForText(page, '内存走势')
   if (!expectMockData) return
+
+  await waitForText(page, '服务状态')
+  await waitForText(page, '正常')
+  await waitForText(page, '资源余量')
+  await waitForText(page, '注意')
+  await waitForText(page, '智能助手后台处理器')
+  await waitForText(page, '正常待命')
+  await waitForText(page, '媒体处理队列：当前空闲')
+  await waitForText(page, '当前没有等待的媒体分析任务')
   await waitForText(page, '统一采样 10s')
   await waitForText(page, '当前聚合 10s')
-  await waitForText(page, '服务器模式')
-  await waitForText(page, '大内存服务器')
-  await waitForText(page, '配置来源：resource-control/config.json')
-  await waitForText(page, 'tool_active: 否')
-  await waitForText(page, 'render_active: 否')
-  await waitForText(page, 'background_allowed: 否')
   await waitForText(page, '平均 1048 MB')
   await waitForText(page, '最小 948 MB')
   await waitForText(page, '最大 1148 MB')
-  await waitForText(page, 'mock-running-1')
-  await waitForText(page, 'worker-a')
   await waitForText(page, 'mock-task-1')
   await waitForText(page, 'mock_event')
   await waitForText(page, 'group_10001')
@@ -119,9 +133,53 @@ async function verifyResourcePanel(page, options = {}) {
   await page.waitForFunction(() => {
     const line = document.querySelector('.memory-chart-line')
     const points = line ? line.getAttribute('points') || '' : ''
-    const text = document.body.innerText || ''
-    return points.length > 0 && !text.includes('暂无内存采样')
+    return points.length > 0 && !(document.body.innerText || '').includes('暂无内存采样')
   }, { timeout: 8000 })
+
+  const scenarios = [
+    ['working', '正在处理 1 项任务'],
+    ['stopped_idle', '已停止'],
+    ['stopped_backlog', '处理器已停止，仍有 3 项任务等待处理'],
+    ['task_timeout', '任务运行超时'],
+    ['small_browser_active', '已暂停，将自动恢复'],
+    ['media_near_limit', '媒体处理队列：接近上限'],
+    ['media_at_limit', '媒体处理队列：已达上限'],
+    ['unknown_queue', '未知类型不会归到任一处理器'],
+    ['exclusive_anomaly', '正在忙碌'],
+  ]
+  for (const [scenario, expected] of scenarios) {
+    await injectResourceScenario(page, scenario)
+    await waitForTextInSelector(page, '.resource-grid', expected)
+    if (scenario === 'media_near_limit') await waitForTextInSelector(page, '.resource-media-card', '图片队列接近上限')
+    if (scenario === 'media_at_limit') await waitForTextInSelector(page, '.resource-media-card', '文件队列已达上限')
+    if (scenario === 'unknown_queue') {
+      await page.waitForFunction(() => {
+        const kpis = [...document.querySelectorAll('.resource-kpi')]
+        const queue = kpis.find(item => (item.innerText || '').includes('全部排队任务'))
+        const worker = document.querySelector('.resource-worker-card')?.innerText || ''
+        return queue?.querySelector('strong')?.innerText === '1' && worker.includes('暂无待处理任务')
+      }, { timeout: 8000 })
+    }
+  }
+  await page.waitForFunction(() => {
+    const text = document.querySelector('.resource-grid')?.innerText || ''
+    return !['tool_active', 'render_active', 'background_allowed', 'backlog', 'loop ', 'stale'].some(token => text.includes(token))
+  }, { timeout: 8000 })
+  const hasReclaimButton = await page.evaluate(() => [...document.querySelectorAll('button')].some(button => (button.innerText || '').includes('回收 stale')))
+  if (hasReclaimButton) throw new Error('resource panel still exposes the removed reclaim button')
+
+  await clickText(page, '打开诊断记录')
+  await page.waitForFunction(() => document.querySelectorAll('.diagnostic-item').length === 120, { timeout: 8000 })
+  await waitForText(page, '已加载 120 / 125 条')
+  await clickText(page, '加载更多')
+  await page.waitForFunction(() => document.querySelectorAll('.diagnostic-item').length === 125, { timeout: 8000 })
+  await waitForText(page, '因队列超限舍弃')
+  await waitForText(page, '处理失败')
+  await waitForText(page, '服务重启时中断')
+  await waitForText(page, '历史原因未知')
+  await clickVisibleSelector(page, '.diagnostic-summary')
+  await waitForText(page, 'mock saved diagnostic error')
+
   await page.select('.memory-range-select', '30m')
   await waitForText(page, '平均 1038 MB')
   await waitForText(page, '最小 938 MB')
@@ -135,21 +193,23 @@ async function verifyResourcePanel(page, options = {}) {
   await page.keyboard.press('Backspace')
   await waitForTextInSelector(page, '.resource-precompute-card', 'group_10001')
   if (!allowWrites) return
-  await clickText(page, '刷新')
-  await waitForText(page, 'mock-running-1')
-  await clickText(page, '小内存服务器')
-  await waitForText(page, '已切换到小内存服务器')
-  await waitForText(page, '小内存服务器')
-  await clickText(page, '大内存服务器')
-  await waitForText(page, '已切换到大内存服务器')
+
+  await injectResourceScenario(page, 'idle')
+  page.once('dialog', dialog => dialog.accept())
+  await clickText(page, '小内存策略')
+  await waitForText(page, '资源保护策略已切换为小内存策略')
+  page.once('dialog', dialog => dialog.accept())
+  await clickText(page, '大内存策略')
+  await waitForText(page, '资源保护策略已切换为大内存策略')
   await clickText(page, '刷新队列')
   await waitForText(page, 'mock-task-2')
   await clickText(page, '刷新事件')
   await waitForText(page, 'worker event')
-  await clickText(page, '回收 stale')
-  await waitForText(page, 'mock-running-1')
-  await clickText(page, '开启维护')
-  await waitForText(page, 'mock-running-1')
+  page.once('dialog', dialog => dialog.accept())
+  await clickText(page, '进入维护模式')
+  await waitForText(page, '维护模式已开启，机器人将回复维护提示')
+  await clickText(page, '结束维护模式')
+  await waitForText(page, '维护模式已结束，智能回复和后台任务已恢复')
   await clickButtonNearText(page, 'mock-task-1', '取消')
   await waitForText(page, 'mock-task-1')
 }

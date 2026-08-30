@@ -48,6 +48,7 @@ export interface ManagementModuleMap {
     'resource.snapshot': typeof import('../resource-scheduler/resource-snapshot');
     'resource.systemProtection': typeof import('../resource-system/system-protection');
     'resource.taskStore': typeof import('../resource-workers/task-store');
+    'resource.taskTimeout': typeof import('../resource-workers/task-timeout');
     'resource.workerSupervisor': typeof import('../resource-workers/worker-supervisor');
     'daily.summaryMerge': typeof import('../daily-precompute/daily-summary-merge');
 }

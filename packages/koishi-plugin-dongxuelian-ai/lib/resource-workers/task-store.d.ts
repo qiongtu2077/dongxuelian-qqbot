@@ -44,6 +44,7 @@ declare function createTaskId(kind: string, channelKey?: string): string;
 declare function submitResourceTask(input: SubmitTaskInput): ResourceTask;
 declare function parseResourceTask(value: unknown): ResourceTask | null;
 declare function listResourceTasks(options?: ListTasksOptions): ResourceTask[];
+declare function listResourceTasksForDiagnostics(): ResourceTask[];
 declare function countResourceTasks(options?: CountTasksOptions): number;
 declare function countResourceTasksByKind(options: CountTasksByKindOptions, matcher?: (task: ResourceTask) => boolean): number;
 declare function findResourceTaskByKindAndChannel(kind: string, channelKey: string, statuses?: string[]): ResourceTask | null;
@@ -92,6 +93,7 @@ declare const _default: {
     getResourceTaskByIdForKind: typeof getResourceTaskByIdForKind;
     findResourceTaskByKindAndChannel: typeof findResourceTaskByKindAndChannel;
     listResourceTasks: typeof listResourceTasks;
+    listResourceTasksForDiagnostics: typeof listResourceTasksForDiagnostics;
     countResourceTasks: typeof countResourceTasks;
     countResourceTasksByKind: typeof countResourceTasksByKind;
     getTaskQueueSummary: typeof getTaskQueueSummary;

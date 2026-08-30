@@ -77,6 +77,8 @@ const mockState = {
   voiceAssetId: '',
   serverMode: 'large',
   serverModeSource: 'resource-control/config.json',
+  maintenance: false,
+  resourceScenario: 'idle',
   clonedVoice: {
     id: 'voice_asset_a',
     personaName: '测试人格',
@@ -87,6 +89,122 @@ const mockState = {
     mtime: Date.now(),
     sampleText: '你好，这是克隆音色测试。',
   },
+}
+
+/** Builds empty media queue facts with the production capacity limits. */
+function emptyMediaQueues() {
+  return {
+    image: { kind: 'image', queueTotal: 0, readyCount: 0, deferredCount: 0, runningCount: 0, queueLimit: 120, doneCount: 4, cacheReusableCount: 2 },
+    file: { kind: 'file', queueTotal: 0, readyCount: 0, deferredCount: 0, runningCount: 0, queueLimit: 60, doneCount: 3, cacheReusableCount: 1 },
+    voice: { kind: 'voice', queueTotal: 0, readyCount: 0, deferredCount: 0, runningCount: 0, queueLimit: 80, doneCount: 2, cacheReusableCount: 1 },
+  }
+}
+
+/** Builds one independently injectable resource-status scenario. */
+function resourceScenarioStatus(name) {
+  const queues = emptyMediaQueues()
+  const base = {
+    ok: true,
+    mode: mockState.maintenance ? 'maintenance' : 'normal',
+    resourceState: 'yellow',
+    serverMode: mockState.serverMode,
+    serverModeSource: mockState.serverModeSource,
+    memAvailableMb: 556,
+    memTotalMb: 1608,
+    memSource: 'mock',
+    tool_active: false,
+    render_active: false,
+    background_allowed: !mockState.maintenance,
+    backgroundPauseReasons: mockState.maintenance ? ['maintenance'] : [],
+    running: null,
+    queueLength: 0,
+    workers: [{ name: 'agent-worker', workerType: 'agent', alive: true, workerHealthCode: 'idle', workerPauseReasons: [], heartbeatLagMs: 120, backlogTotal: 0, readyCount: 0, deferredCount: 0, runningCount: 0 }],
+    media: {
+      queues,
+      mediaRiskByKind: { image: 'idle', file: 'idle', voice: 'idle' },
+      mediaRiskCode: 'idle',
+      mediaRiskKinds: ['image', 'file', 'voice'],
+      doneCount: 9,
+      cacheIndexSize: 4,
+      unfinishedByReason: { queue_limit: 1, processing_failed: 1, restart_interrupted: 1, legacy_unknown: 1 },
+    },
+    precompute: {
+      coverageCount: 2,
+      slotCount: 3,
+      coverage: [
+        { date: todayShanghaiDate(), channelKey: 'group_10001', coverageRate: 0.8, updatedAt: '12:00' },
+        { date: todayShanghaiDate(), channelKey: 'group_20002', coverageRate: 0.35, updatedAt: '12:05' },
+      ],
+    },
+    maintenance: mockState.maintenance,
+    events: [{ source: 'S1', event: 'mock_status_event', reason: 'resource mock ready', createdAt: '12:00:00' }],
+  }
+  if (name === 'working') {
+    base.running = { taskId: 'mock-running-1', kind: 'agent_task', step: 'working', owner: 'agent-worker' }
+    base.workers = [{ name: 'agent-worker', workerType: 'agent', alive: true, workerHealthCode: 'working', workerPauseReasons: [], heartbeatLagMs: 80, backlogTotal: 0, readyCount: 0, deferredCount: 0, runningCount: 1, currentTaskId: 'mock-running-1' }]
+  } else if (name === 'stopped_idle') {
+    base.workers = [{ name: 'agent-worker', workerType: 'agent', alive: false, workerHealthCode: 'stopped_idle', workerPauseReasons: [], heartbeatLagMs: 32020000, backlogTotal: 0, readyCount: 0, deferredCount: 0, runningCount: 0 }]
+  } else if (name === 'stopped_backlog') {
+    base.queueLength = 3
+    base.workers = [{ name: 'agent-worker', workerType: 'agent', alive: false, workerHealthCode: 'stopped_backlog', workerPauseReasons: [], heartbeatLagMs: 900000, backlogTotal: 3, readyCount: 2, deferredCount: 1, runningCount: 0 }]
+  } else if (name === 'task_timeout') {
+    base.running = { taskId: 'mock-timeout-task', kind: 'daily_report', step: 'rendering', owner: 'daily-worker' }
+    base.workers = [{ name: 'daily-worker', workerType: 'daily', alive: true, workerHealthCode: 'task_timeout', workerPauseReasons: [], heartbeatLagMs: 100, backlogTotal: 0, readyCount: 0, deferredCount: 0, runningCount: 1, currentTaskId: 'mock-timeout-task' }]
+  } else if (name === 'small_browser_active') {
+    base.serverMode = 'small'
+    base.tool_active = true
+    base.background_allowed = false
+    base.backgroundPauseReasons = ['browser_active']
+    base.workers = [{ name: 'media-worker', workerType: 'media', alive: true, workerHealthCode: 'paused_auto_resume', workerPauseReasons: ['browser_active'], heartbeatLagMs: 100, backlogTotal: 0, readyCount: 0, deferredCount: 0, runningCount: 0 }]
+  } else if (name === 'media_near_limit') {
+    queues.image = { ...queues.image, queueTotal: 96, readyCount: 90, deferredCount: 6, runningCount: 1 }
+    base.media.mediaRiskByKind.image = 'near_limit'
+    base.media.mediaRiskCode = 'near_limit'
+    base.media.mediaRiskKinds = ['image']
+  } else if (name === 'media_at_limit') {
+    queues.file = { ...queues.file, queueTotal: 60, readyCount: 55, deferredCount: 5, runningCount: 1 }
+    base.media.mediaRiskByKind.file = 'at_limit'
+    base.media.mediaRiskCode = 'at_limit'
+    base.media.mediaRiskKinds = ['file']
+  } else if (name === 'unknown_queue') {
+    base.queueLength = 1
+    base.workers = [{ name: 'agent-worker', workerType: 'agent', alive: true, workerHealthCode: 'idle', workerPauseReasons: [], heartbeatLagMs: 100, backlogTotal: 0, readyCount: 0, deferredCount: 0, runningCount: 0 }]
+  } else if (name === 'exclusive_anomaly') {
+    base.mode = 'busy'
+    base.running = { taskId: 'exclusive-anomaly-1', kind: 'diagnostic_probe', step: 'checking', owner: 'diagnostic-owner' }
+  }
+  return base
+}
+
+/** Builds more than one diagnostic page with all required record categories. */
+function mockDiagnosticRecords() {
+  const unknown = Array.from({ length: 121 }, (_, index) => ({
+    recordId: `unknown:mock-unknown-${String(index).padStart(3, '0')}`,
+    recordType: 'unknown_task',
+    taskId: `mock-unknown-${String(index).padStart(3, '0')}`,
+    kind: 'unknown_queue',
+    status: 'failed',
+    createdAt: new Date(Date.now() - index * 1000).toISOString(),
+    updatedAt: new Date(Date.now() - index * 1000).toISOString(),
+    relatedAt: new Date(Date.now() - index * 1000).toISOString(),
+    finishReason: '',
+    hasError: index === 0,
+  }))
+  const reasons = ['queue_limit', 'processing_failed', 'restart_interrupted', 'legacy_unknown']
+  const media = reasons.map((finishReason, index) => ({
+    recordId: `media:mock-media-${index}`,
+    recordType: 'unfinished_media',
+    taskId: `mock-media-${index}`,
+    kind: index % 2 ? 'media_file_analysis' : 'media_image_analysis',
+    status: 'failed',
+    createdAt: new Date(Date.now() - 200000 - index * 1000).toISOString(),
+    updatedAt: new Date(Date.now() - 190000 - index * 1000).toISOString(),
+    finishedAt: new Date(Date.now() - 180000 - index * 1000).toISOString(),
+    relatedAt: new Date(Date.now() - 180000 - index * 1000).toISOString(),
+    finishReason,
+    hasError: finishReason === 'processing_failed',
+  }))
+  return [...unknown, ...media]
 }
 
 /** Resolves a Dashboard API request against the local smoke-test fixture state. */
@@ -303,30 +421,7 @@ function apiMock(method, pathname, body) {
   if (method === 'GET' && pathname.startsWith('/agent/sessions/')) return ok({ ok: true, session: { id: 'session-1', turns: [{ at: Date.now(), userMessage: '你好', reply: '你好，mock reply' }] } })
   if (method === 'POST' && pathname === '/agent/chat') return ok({ ok: true, reply: 'Agent mock reply' })
 
-  if (method === 'GET' && pathname === '/resource/status') return ok({
-    ok: true,
-    mode: 'interactive',
-    resourceState: 'green',
-    serverMode: mockState.serverMode,
-    serverModeSource: mockState.serverModeSource,
-    memAvailableMb: 1024,
-    memTotalMb: 2048,
-    memSource: 'mock',
-    running: { taskId: 'mock-running-1', kind: 'agent', step: 'working', owner: 'worker-a' },
-    queueLength: 2,
-    workers: [{ name: 'worker-a', alive: true, step: 'idle', heartbeatLagMs: 128 }],
-    media: { imagePending: 1, filePending: 2, voicePending: 0, running: [{ id: 'media-1' }], droppedCount: 0 },
-    precompute: {
-      coverageCount: 2,
-      slotCount: 3,
-      coverage: [
-        { date: todayShanghaiDate(), channelKey: 'group_10001', coverageRate: 0.8, updatedAt: '12:00' },
-        { date: todayShanghaiDate(), channelKey: 'group_20002', coverageRate: 0.35, updatedAt: '12:05' },
-      ],
-    },
-    maintenance: false,
-    events: [{ source: 'S1', event: 'mock_status_event', reason: 'resource mock ready', createdAt: '12:00:00' }],
-  })
+  if (method === 'GET' && pathname === '/resource/status') return ok(resourceScenarioStatus(mockState.resourceScenario))
   if (method === 'GET' && pathname === '/resource/mode') return ok({
     ok: true,
     serverMode: mockState.serverMode,
@@ -369,12 +464,62 @@ function apiMock(method, pathname, body) {
     ok: true,
     events: [{ source: 'S2', event: 'mock_event', reason: 'worker event', createdAt: '12:00:03', taskId: 'mock-task-1' }],
   })
-  if (method === 'GET' && pathname === '/resource/workers') return ok({ ok: true, workers: [{ name: 'worker-a', alive: true, step: 'idle' }] })
-  if (method === 'GET' && pathname === '/resource/media') return ok({ ok: true, media: { imagePending: 1, filePending: 2, voicePending: 0, running: [], droppedCount: 0 } })
+  if (method === 'GET' && pathname === '/resource/diagnostics') {
+    const all = mockDiagnosticRecords()
+    const group = body.searchParams.get('group') || 'all'
+    const reason = body.searchParams.get('reason') || ''
+    const filtered = all.filter(item => {
+      if (group === 'unknown' && item.recordType !== 'unknown_task') return false
+      if (group === 'media' && item.recordType !== 'unfinished_media') return false
+      if (reason && item.finishReason !== reason) return false
+      return true
+    })
+    const offset = Math.max(0, Number(body.searchParams.get('cursor') || 0))
+    const items = filtered.slice(offset, offset + 120)
+    const nextOffset = offset + items.length
+    return ok({
+      ok: true,
+      items,
+      total: filtered.length,
+      counts: {
+        all: all.length,
+        unknown: all.filter(item => item.recordType === 'unknown_task').length,
+        media: all.filter(item => item.recordType === 'unfinished_media').length,
+      },
+      nextCursor: nextOffset < filtered.length ? String(nextOffset) : '',
+      hasMore: nextOffset < filtered.length,
+      pageSize: 120,
+    })
+  }
+  if (method === 'GET' && pathname === '/resource/diagnostics/detail') {
+    const recordId = body.searchParams.get('id') || ''
+    const record = mockDiagnosticRecords().find(item => item.recordId === recordId)
+    if (!record) return jsonResponse({ ok: false, message: '诊断记录不存在或已被清理' }, 404)
+    return ok({
+      ok: true,
+      item: record,
+      error: record.hasError ? 'mock saved diagnostic error' : '',
+      diagnostics: { step: 'mock-step', source: 'dashboard-smoke', finishReason: record.finishReason },
+    })
+  }
+  if (method === 'GET' && pathname === '/resource/workers') return ok({ ok: true, workers: resourceScenarioStatus(mockState.resourceScenario).workers })
+  if (method === 'GET' && pathname === '/resource/media') return ok({ ok: true, media: resourceScenarioStatus(mockState.resourceScenario).media })
   if (method === 'GET' && pathname === '/resource/precompute') return ok({ ok: true, precompute: { coverageCount: 1, slotCount: 3, coverage: [] } })
   if (method === 'POST' && pathname === '/resource/cancel') return ok({ ok: true, message: '任务已取消' })
-  if (method === 'POST' && pathname === '/resource/reclaim-stale') return ok({ ok: true, reclaimed: false })
-  if (method === 'POST' && pathname === '/resource/maintenance') return ok({ ok: true, enabled: !!body.body?.enabled, message: '维护模式已切换' })
+  if (method === 'POST' && pathname === '/resource/mock-scenario') {
+    mockState.resourceScenario = String(body.body?.scenario || 'idle')
+    return ok({ ok: true, scenario: mockState.resourceScenario })
+  }
+  if (method === 'POST' && pathname === '/resource/maintenance') {
+    mockState.maintenance = !!body.body?.enabled
+    return ok({
+      ok: true,
+      enabled: mockState.maintenance,
+      message: mockState.maintenance
+        ? '维护模式已开启，机器人将回复维护提示'
+        : '维护模式已结束，智能回复和后台任务已恢复',
+    })
+  }
   if (method === 'POST' && pathname === '/resource/mode') {
     const next = String(body.body?.serverMode || '').trim().toLowerCase()
     if (next !== 'small' && next !== 'large') return jsonResponse({ ok: false, message: 'serverMode 只能是 small 或 large' }, 400)

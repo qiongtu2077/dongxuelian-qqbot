@@ -2,7 +2,7 @@
 /**
  * MODULE: S2 worker supervisor。
  * 职责: 生成 worker 启动配置、记录 supervisor 状态、审计 stale running 任务。
- * 边界: 不执行系统级 kill，不实现 S9 扩容迁移。
+ * 边界: 只定点清理明确归属当前异常任务的进程，不实现 S9 扩容迁移。
  */
 const fs = require('fs');
 const path = require('path');
@@ -12,8 +12,10 @@ const { readResourceSnapshot } = require('../resource-scheduler/resource-snapsho
 const { SUPERVISOR_DIR } = require('./task-paths');
 const { listWorkerStates, listResourceTasks, countResourceTasks, failTask, failIsolatedClaimingTask, requeueTask, writeWorkerEvent } = require('./task-store');
 const { ensureDir, isProcessAlive, nowIso, writeJsonAtomic } = require('../resource-common/files');
-const { writeProcessCleanupEvent, terminateProcessTree } = require('../resource-system/system-protection');
+const { writeProcessCleanupEvent, terminateProcessTree, terminateRecordedProcessPids } = require('../resource-system/system-protection');
+const { getResourceGateStatus, reclaimStaleLock, releaseResourceGate } = require('../resource-gate/gate');
 const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds');
+const { resolveTaskTimeoutMs } = require('./task-timeout');
 const WORKER_MEMORY_LIMITS = {
     daily: Number(process.env.RESOURCE_DAILY_WORKER_OLD_SPACE_MB || 768),
     agent: Number(process.env.RESOURCE_AGENT_WORKER_OLD_SPACE_MB || 768),
@@ -209,9 +211,9 @@ function isWorkerRunningLongTask(worker) {
     if (!Number.isFinite(startedAt))
         return false;
     const task = listResourceTasks({ statuses: ['running'], limit: 500 }).find(item => String(item.id || '') === currentTaskId);
-    const timeoutMs = Number(task?.timeoutMs || 0);
-    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+    if (!task)
         return false;
+    const timeoutMs = resolveTaskTimeoutMs(task);
     return Date.now() - startedAt < timeoutMs;
 }
 function isWorkerZombie(worker, previousSample = null) {
@@ -405,6 +407,88 @@ function auditStaleRunningTasks(staleMs = 30000) {
     }
     return recovered;
 }
+// --- 超时任务自动恢复 --- //
+// 按系统保护模块的定点清理结果确认目标根进程已收到不可恢复的终止处理。
+function didTerminateTargetProcess(result, pid) {
+    const killedPids = Array.isArray(result.killedPids) ? result.killedPids.map(Number) : [];
+    const failedPids = Array.isArray(result.failedPids) ? result.failedPids : [];
+    return String(result.event || '') === 'process_tree_terminated'
+        && killedPids.includes(pid)
+        && failedPids.length === 0;
+}
+// 结束仍存活但已超过既有最长运行时间的任务，并释放与它完全匹配的独占位置。
+function auditTimedOutRunningTasks(now = Date.now()) {
+    const workers = listWorkerStates();
+    const workerByName = {};
+    for (const worker of workers)
+        workerByName[String(worker.name || '')] = worker;
+    const running = listResourceTasks({ statuses: ['running'], limit: 500 });
+    let recovered = 0;
+    for (const task of running) {
+        const workerName = String(task.claimedBy || '');
+        const worker = workerByName[workerName];
+        const pid = Number(worker?.pid || 0);
+        if (!worker || !(pid > 0) || !isProcessAlive(pid))
+            continue;
+        const startedAt = Date.parse(String(task.startedAt || worker.currentTaskStartedAt || ''));
+        if (!Number.isFinite(startedAt))
+            continue;
+        const timeoutMs = resolveTaskTimeoutMs(task);
+        if (now - startedAt <= timeoutMs)
+            continue;
+        // 先清理任务显式记录的浏览器子进程，再终止对应 worker 进程树。
+        terminateRecordedProcessPids({
+            taskId: task.id,
+            kind: task.kind,
+            owner: workerName,
+            source: 'resource_worker_supervisor_timeout',
+            reason: 'task_timed_out',
+        });
+        const termination = terminateProcessTree(pid, {
+            taskId: task.id,
+            kind: task.kind,
+            owner: workerName,
+            source: 'resource_worker_supervisor_timeout',
+            reason: 'task_timed_out',
+            allowSingleProcessFallback: isOwnedWorkerProcessAlive(workerName, pid),
+        });
+        if (!didTerminateTargetProcess(termination, pid)) {
+            writeProcessCleanupEvent({
+                event: 'task_timeout_recovery_failed',
+                workerName,
+                taskId: task.id,
+                kind: task.kind,
+                pid,
+                timeoutMs,
+                elapsedMs: now - startedAt,
+            });
+            continue;
+        }
+        const next = failTask(task, new Error(`resource worker task timed out after ${timeoutMs}ms`), { reason: 'task_timed_out' });
+        if (String(next?.status || '') !== 'failed')
+            continue;
+        const gate = getResourceGateStatus();
+        const meta = gate.meta;
+        const gateMatches = !!meta
+            && String(meta.taskId || '') === String(task.id || '')
+            && Number(meta.pid || 0) === pid
+            && String(meta.owner || '') === workerName;
+        if (gateMatches && meta)
+            releaseResourceGate(String(meta.ticketId || ''), 'task-timeout-supervisor');
+        writeProcessCleanupEvent({
+            event: 'task_timeout_recovered',
+            workerName,
+            taskId: task.id,
+            kind: task.kind,
+            pid,
+            timeoutMs,
+            elapsedMs: now - startedAt,
+            gateReleased: gateMatches,
+        });
+        recovered++;
+    }
+    return recovered;
+}
 // 检查 claiming 任务对应 worker 是否 stale；仅回收无活 worker 且仍是唯一 claiming 副本的孤儿任务。
 function auditStaleClaimingTasks(staleMs = 30000) {
     const workers = listWorkerStates();
@@ -521,17 +605,21 @@ function runSupervisorOnce(options = {}) {
     const media = require('../media/backpressure/media-queue');
     const mediaExpired = media.cleanupExpiredMediaTasksThrottled();
     const mediaRetention = media.cleanupFinishedMediaTasksThrottled();
-    const started = options.start ? ensureWorkerProcesses(types, options) : [];
+    const timedOutRecovered = auditTimedOutRunningTasks();
     const staleRecovered = auditStaleRunningTasks();
     const staleClaimingRecovered = auditStaleClaimingTasks();
+    const gateReclaimed = reclaimStaleLock(30000, 'worker-supervisor');
     const deferred = auditDeferredTasks();
+    const started = options.start ? ensureWorkerProcesses(types, options) : [];
     return writeSupervisorState({
         generation: String(options.generation || ''),
         started,
         mediaExpired,
         mediaRetention,
+        timedOutRecovered,
         staleRecovered,
         staleClaimingRecovered,
+        gateReclaimed,
         deferred,
         workers: attachWorkerProgressSamples(listWorkerStates(), previousSamples),
     });
@@ -549,6 +637,7 @@ module.exports = {
     stopOwnedWorkerProcesses,
     selectWorkerTypesToStart,
     ensureWorkerProcesses,
+    auditTimedOutRunningTasks,
     auditStaleRunningTasks,
     auditStaleClaimingTasks,
     auditDeferredTasks,

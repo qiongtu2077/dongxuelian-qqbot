@@ -248,6 +248,17 @@ function listResourceTasks(options: ListTasksOptions = {}): ResourceTask[] {
   return tasks.slice(0, limit)
 }
 
+// 列出每个状态目录中仍被系统保留的任务，供管理员诊断分页统一排序。
+function listResourceTasksForDiagnostics(): ResourceTask[] {
+  ensureTaskDirs()
+  const tasks: ResourceTask[] = []
+  for (const status of ['pending', 'claiming', 'running', 'done', 'failed', 'cancelled', 'deferred']) {
+    tasks.push(...scanTasksByStatus(status, 20000))
+  }
+  tasks.sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))
+  return tasks
+}
+
 // 按 kind + statuses 统计任务数量，供后台提交前门做轻量 backlog 判断。
 function countResourceTasks(options: CountTasksOptions = {}): number {
   const kind = String(options.kind || '')
@@ -764,6 +775,7 @@ export = {
   getResourceTaskByIdForKind,
   findResourceTaskByKindAndChannel,
   listResourceTasks,
+  listResourceTasksForDiagnostics,
   countResourceTasks,
   countResourceTasksByKind,
   getTaskQueueSummary,

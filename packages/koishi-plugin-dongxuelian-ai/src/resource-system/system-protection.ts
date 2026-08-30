@@ -569,18 +569,18 @@ function terminateRecordedProcessPids(options: TerminateRecordedProcessPidsOptio
   }
   const limit = Math.max(40, Math.min(500, Number(options.limit || 160)))
   const events = readRecentJsonlEvents(RESOURCE_SYSTEM_ROOT, 'process-cleanup-', limit)
-  const candidates: number[] = []
-  const seen = new Set<number>()
+  const candidates = new Map<number, boolean>()
   for (const rawEvent of events) {
     const event = rawEvent && typeof rawEvent === 'object' ? rawEvent as Record<string, unknown> : {}
     if (String(event.taskId || '') !== taskId) continue
     if (!eventNames.has(String(event.event || ''))) continue
     const pid = readRecordedProcessPid(event)
-    if (!pid || seen.has(pid)) continue
-    seen.add(pid)
-    candidates.push(pid)
+    if (!pid) continue
+    // 只有明确由当前进程启动并记录的子进程才允许 Windows 根进程兜底。
+    const ownedByCurrentProcess = Number(event.parentPid || 0) === process.pid
+    candidates.set(pid, (candidates.get(pid) || false) || ownedByCurrentProcess)
   }
-  if (!candidates.length) {
+  if (!candidates.size) {
     return {
       event: 'recorded_process_cleanup_skipped',
       reason: options.reason || 'recorded_process_cleanup',
@@ -594,13 +594,15 @@ function terminateRecordedProcessPids(options: TerminateRecordedProcessPidsOptio
       resultEvents: [],
     }
   }
-  const results = candidates.map(pid => terminateProcessTree(pid, {
+  const candidateEntries = Array.from(candidates.entries())
+  const results = candidateEntries.map(([pid, allowSingleProcessFallback]) => terminateProcessTree(pid, {
     reason: options.reason || 'recorded_process_cleanup',
     source: options.source || 'recorded_process_cleanup',
     taskId,
     kind: options.kind || '',
     owner: options.owner || '',
     timeoutMs: options.timeoutMs,
+    allowSingleProcessFallback,
     windowsRuntime: options.windowsRuntime,
   }))
   const hasRealCleanup = results.some((item) => {
@@ -619,8 +621,8 @@ function terminateRecordedProcessPids(options: TerminateRecordedProcessPidsOptio
     kind: options.kind || '',
     owner: options.owner || '',
     skippedReason: hasRealCleanup ? '' : 'no_process_terminated',
-    candidateCount: candidates.length,
-    pids: candidates,
+    candidateCount: candidateEntries.length,
+    pids: candidateEntries.map(([pid]) => pid),
     resultEvents: results.map(item => item.event),
   }
   writeProcessCleanupEvent(result)

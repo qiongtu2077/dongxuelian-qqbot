@@ -17,6 +17,7 @@ const {
   sanitizeId,
   writeJsonAtomic,
 } = require('../../resource-common/files') as typeof import('../../resource-common/files')
+const { redactSensitiveText } = require('../../core/redactor') as typeof import('../../core/redactor')
 
 interface MediaTaskInput {
   kind: 'media_image_analysis' | 'media_file_analysis' | 'media_voice_transcription' | string
@@ -50,7 +51,31 @@ interface MediaTask {
   deferredUntil?: string
   notBefore?: string
   error?: string
+  finishReason?: 'queue_limit' | 'processing_failed' | 'restart_interrupted' | 'legacy_unknown'
   result?: Record<string, unknown>
+}
+
+interface MediaQueueKindStatus {
+  kind: 'image' | 'file' | 'voice'
+  queueTotal: number
+  readyCount: number
+  deferredCount: number
+  runningCount: number
+  queueLimit: number
+  doneCount: number
+  cacheReusableCount: number
+}
+
+interface MediaDiagnosticTask {
+  id: string
+  kind: string
+  status: string
+  createdAt: string
+  updatedAt: string
+  finishedAt: string
+  finishReason: 'queue_limit' | 'processing_failed' | 'restart_interrupted' | 'legacy_unknown'
+  error: string
+  claimedBy: string
 }
 
 type EnqueueMediaTaskResult =
@@ -162,6 +187,20 @@ function mediaKindDir(kind: string): string {
   if (/voice/i.test(kind)) return path.join(MEDIA_QUEUE_ROOT, 'voice')
   if (/file/i.test(kind)) return path.join(MEDIA_QUEUE_ROOT, 'file')
   return path.join(MEDIA_QUEUE_ROOT, 'image')
+}
+
+// 将内部媒体任务 kind 归一为资源中心使用的三类队列键。
+function mediaKindKey(kind: string): 'image' | 'file' | 'voice' {
+  if (/voice/i.test(kind)) return 'voice'
+  if (/file/i.test(kind)) return 'file'
+  return 'image'
+}
+
+// 返回媒体队列键对应的既有容量上限。
+function mediaQueueLimit(kind: 'image' | 'file' | 'voice'): number {
+  if (kind === 'voice') return MAX_VOICE_QUEUE
+  if (kind === 'file') return MAX_FILE_QUEUE
+  return MAX_IMAGE_QUEUE
 }
 
 // 返回指定 kind 需要观测的队列目录，用于轻量判断队列是否发生过变化。
@@ -510,8 +549,15 @@ function failMediaTask(task: MediaTask, error: unknown, reason = 'failed'): Medi
   ensureMediaDirs()
   const src = getFlatMediaTaskFile(MEDIA_RUNNING_ROOT, task.id)
   const dst = getFlatMediaTaskFile(MEDIA_DROPPED_ROOT, task.id)
-  const message = error instanceof Error ? error.message : String(error || reason)
-  const next: MediaTask = { ...task, status: 'failed', finishedAt: nowIso(), updatedAt: nowIso(), error: message }
+  const message = redactSensitiveText(error instanceof Error ? error.message : String(error || reason))
+  const next: MediaTask = {
+    ...task,
+    status: 'failed',
+    finishedAt: nowIso(),
+    updatedAt: nowIso(),
+    finishReason: 'processing_failed',
+    error: message,
+  }
   try {
     fs.renameSync(src, dst)
   } catch {
@@ -556,7 +602,8 @@ function discardInterruptedMediaTasks(reason = 'restart_discarded'): DiscardInte
         status: 'cancelled',
         finishedAt: nowIso(),
         updatedAt: nowIso(),
-        error: reason,
+        finishReason: 'restart_interrupted',
+        error: redactSensitiveText(reason),
       }
       writeJsonAtomic(targetFile, next)
       result.discarded++
@@ -584,6 +631,14 @@ function enforceMediaQueueLimit(kind: string): number {
   for (const item of drop) {
     const dst = path.join(MEDIA_DROPPED_ROOT, path.basename(item.file))
     try { fs.renameSync(item.file, dst) } catch { removePath(item.file) }
+    const finishedAt = nowIso()
+    writeJsonAtomic(dst, {
+      ...item.task,
+      status: 'cancelled',
+      updatedAt: finishedAt,
+      finishedAt,
+      finishReason: 'queue_limit',
+    })
     writeMediaEvent('media_task_dropped', { taskId: item.task.id, kind: item.task.kind, reason: 'queue_limit' })
   }
   return drop.length
@@ -626,17 +681,115 @@ function enqueueMediaTask(input: MediaTaskInput): EnqueueMediaTaskResult {
   return task
 }
 
-// 汇总媒体背压状态。
+// --- 资源中心媒体诊断与状态汇总 --- //
+
+// 读取仍保留的媒体任务，并忽略损坏或历史残缺文件。
+function listStoredMediaTasks(root: string): MediaTask[] {
+  return listJsonFiles(root, { maxFiles: 20000 })
+    .map(readMediaTaskFile)
+    .filter((task): task is MediaTask => task !== null)
+}
+
+// 归一媒体未完成记录的结束原因；旧记录无法判断时明确归入历史未知。
+function normalizeMediaFinishReason(task: MediaTask): MediaDiagnosticTask['finishReason'] {
+  if (task.finishReason === 'queue_limit') return 'queue_limit'
+  if (task.finishReason === 'processing_failed') return 'processing_failed'
+  if (task.finishReason === 'restart_interrupted') return 'restart_interrupted'
+  return 'legacy_unknown'
+}
+
+// 列出资源中心诊断区块需要的未完成媒体任务摘要与已脱敏报错。
+function listUnfinishedMediaTasksForDiagnostics(): MediaDiagnosticTask[] {
+  ensureMediaDirs()
+  return listStoredMediaTasks(MEDIA_DROPPED_ROOT).map(task => ({
+    id: task.id,
+    kind: task.kind,
+    status: task.status,
+    createdAt: task.createdAt,
+    updatedAt: String(task.updatedAt || ''),
+    finishedAt: String(task.finishedAt || task.updatedAt || task.createdAt || ''),
+    finishReason: normalizeMediaFinishReason(task),
+    error: redactSensitiveText(String(task.error || '')),
+    claimedBy: String(task.claimedBy || ''),
+  }))
+}
+
+// 汇总单类媒体队列的当前排队、延后、运行、完成和缓存数量。
+function buildMediaQueueKindStatus(
+  kind: 'image' | 'file' | 'voice',
+  pending: MediaTask[],
+  running: MediaTask[],
+  done: MediaTask[],
+  cacheValues: Record<string, unknown>[],
+  now = Date.now(),
+): MediaQueueKindStatus {
+  const pendingForKind = pending.filter(task => mediaKindKey(task.kind) === kind)
+  const deferredCount = pendingForKind.filter(task => isMediaTaskDeferred(task, now)).length
+  return {
+    kind,
+    queueTotal: pendingForKind.length,
+    readyCount: pendingForKind.length - deferredCount,
+    deferredCount,
+    runningCount: running.filter(task => mediaKindKey(task.kind) === kind).length,
+    queueLimit: mediaQueueLimit(kind),
+    doneCount: done.filter(task => mediaKindKey(task.kind) === kind).length,
+    cacheReusableCount: cacheValues.filter(item => {
+      const storedKind = String(item?.kind || '')
+      return !!storedKind && mediaKindKey(storedKind) === kind
+    }).length,
+  }
+}
+
+// 只返回资源中心判断运行数量和诊断详情需要的媒体任务字段。
+function sanitizeRunningMediaTask(task: MediaTask): Record<string, unknown> {
+  return {
+    id: task.id,
+    kind: task.kind,
+    status: task.status,
+    claimedBy: String(task.claimedBy || ''),
+    claimedAt: String(task.claimedAt || ''),
+    updatedAt: String(task.updatedAt || ''),
+  }
+}
+
+// 汇总媒体处理队列状态，保留旧字段并补充三类队列的可读审计数据。
 function getMediaBackpressureStatus(): Record<string, unknown> {
   ensureMediaDirs()
+  const pending = listJsonFiles(MEDIA_QUEUE_ROOT, { recursive: true, maxFiles: 20000 })
+    .map(readMediaTaskFile)
+    .filter((task): task is MediaTask => task !== null)
+  const running = listStoredMediaTasks(MEDIA_RUNNING_ROOT)
+  const done = listStoredMediaTasks(MEDIA_DONE_ROOT)
+  const unfinished = listUnfinishedMediaTasksForDiagnostics()
+  const cacheIndex = readCacheIndex()
+  const cacheValues = Object.values(cacheIndex)
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
+  const queues = {
+    image: buildMediaQueueKindStatus('image', pending, running, done, cacheValues),
+    file: buildMediaQueueKindStatus('file', pending, running, done, cacheValues),
+    voice: buildMediaQueueKindStatus('voice', pending, running, done, cacheValues),
+  }
+  const unfinishedByReason = {
+    queue_limit: unfinished.filter(task => task.finishReason === 'queue_limit').length,
+    processing_failed: unfinished.filter(task => task.finishReason === 'processing_failed').length,
+    restart_interrupted: unfinished.filter(task => task.finishReason === 'restart_interrupted').length,
+    legacy_unknown: unfinished.filter(task => task.finishReason === 'legacy_unknown').length,
+  }
+  const lastQueueLimitAt = unfinished
+    .filter(task => task.finishReason === 'queue_limit')
+    .map(task => task.finishedAt)
+    .sort((a, b) => b.localeCompare(a))[0] || ''
   return {
-    imagePending: listJsonFiles(path.join(MEDIA_QUEUE_ROOT, 'image'), { maxFiles: 20000 }).length,
-    filePending: listJsonFiles(path.join(MEDIA_QUEUE_ROOT, 'file'), { maxFiles: 20000 }).length,
-    voicePending: listJsonFiles(path.join(MEDIA_QUEUE_ROOT, 'voice'), { maxFiles: 20000 }).length,
-    running: listJsonFiles(MEDIA_RUNNING_ROOT, { maxFiles: 20000 }).map(file => readJsonFile(file, null)).filter(Boolean),
-    doneCount: listJsonFiles(MEDIA_DONE_ROOT, { maxFiles: 20000 }).length,
-    droppedCount: listJsonFiles(MEDIA_DROPPED_ROOT, { maxFiles: 20000 }).length,
-    cacheIndexSize: Object.keys(readCacheIndex()).length,
+    imagePending: queues.image.queueTotal,
+    filePending: queues.file.queueTotal,
+    voicePending: queues.voice.queueTotal,
+    running: running.map(sanitizeRunningMediaTask),
+    doneCount: done.length,
+    droppedCount: unfinished.length,
+    cacheIndexSize: cacheValues.length,
+    queues,
+    unfinishedByReason,
+    lastQueueLimitAt,
   }
 }
 
@@ -662,6 +815,7 @@ export = {
   completeMediaTask,
   failMediaTask,
   discardInterruptedMediaTasks,
+  listUnfinishedMediaTasksForDiagnostics,
   getMediaBackpressureStatus,
   isMediaTaskDeferred,
   _test: {

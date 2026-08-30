@@ -52,6 +52,7 @@ const MANAGEMENT_MODULE_PATHS = {
     'resource.snapshot': '../resource-scheduler/resource-snapshot',
     'resource.systemProtection': '../resource-system/system-protection',
     'resource.taskStore': '../resource-workers/task-store',
+    'resource.taskTimeout': '../resource-workers/task-timeout',
     'resource.workerSupervisor': '../resource-workers/worker-supervisor',
     'daily.summaryMerge': '../daily-precompute/daily-summary-merge',
 };

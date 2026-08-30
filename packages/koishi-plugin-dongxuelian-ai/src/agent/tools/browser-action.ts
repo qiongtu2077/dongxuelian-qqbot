@@ -423,7 +423,7 @@ async function launchPage(): Promise<BrowserActionPage> {
       args: launchArgs,
     })
     currentBrowserPid = getBrowserProcessPid(browser)
-    writeBrowserCleanupEvent('chromium_launched', { executablePath, browserPid: currentBrowserPid })
+    writeBrowserCleanupEvent('chromium_launched', { executablePath, browserPid: currentBrowserPid, parentPid: process.pid })
     registerCleanup()
     const activeBrowser = browser
     if (!activeBrowser) throw new Error('浏览器启动失败')

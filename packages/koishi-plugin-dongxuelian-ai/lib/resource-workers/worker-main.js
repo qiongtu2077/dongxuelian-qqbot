@@ -18,6 +18,7 @@ const { runEmotionRenderWorkerTask } = require('./emotion-worker');
 const { runMemoryWorkerTask } = require('./memory-worker');
 const { runBackgroundLlmWorkerTask } = require('./background-llm-worker');
 const { runDailySlotTask } = require('../daily-precompute/daily-slot-worker');
+const { resolveTaskTimeoutMs } = require('./task-timeout');
 function resolveBoundedNumber(value, fallback, min, max) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed))
@@ -29,13 +30,6 @@ const DEFAULT_WORKER_IDLE_EXIT_MS = resolveBoundedNumber(process.env.RESOURCE_WO
 // 等待指定毫秒，用于 worker 空转和退避。
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
-}
-// 解析任务运行超时；避免异常配置让 worker 永久等待。
-function resolveTaskTimeoutMs(task, fallbackMs = 300000) {
-    const timeout = Number(task?.timeoutMs || task?.payload?.timeoutMs || fallbackMs);
-    if (!Number.isFinite(timeout))
-        return fallbackMs;
-    return Math.max(10000, Math.min(30 * 60 * 1000, timeout));
 }
 function createInitialWorkerProgress() {
     return {

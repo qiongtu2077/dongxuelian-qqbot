@@ -460,6 +460,7 @@ async function main() {
             source: 'daily_report_render',
             taskId: String(options.taskId || 's8-timeout-daily'),
             browserPid: fakeChromiumPid,
+            parentPid: process.pid,
           })
           return new Promise(() => {})
         },
@@ -1007,6 +1008,210 @@ main().catch(error => {
   check('browser session B can still create its own new tab after rebuild', summary.tabsBAfterNewTab.length === 2, JSON.stringify(summary))
 }
 
+// Verify supervisor recovery for dead locks, timed-out live tasks, and healthy live tasks.
+function testSupervisorAutomaticRecovery() {
+  const dataDir = createTempDataDir('s8-supervisor-recovery-')
+  const script = String.raw`
+const { spawn } = require('child_process')
+const Module = require('module')
+
+// Waits for asynchronous child-process state to settle.
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+// Checks whether one test child process is still addressable.
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error && error.code === 'EPERM'
+  }
+}
+
+// Resolves after the child process emits its terminal event.
+function waitForExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
+  return new Promise(resolve => child.once('exit', resolve))
+}
+
+// Starts an inert child process used by supervisor recovery assertions.
+function startSleeper() {
+  return spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+}
+
+// Writes one exact resource-gate owner fixture.
+function writeGate(gate, files, input) {
+  files.ensureDir(gate.LOCK_DIR)
+  files.writeJsonAtomic(gate.LOCK_META_FILE, {
+    taskId: input.taskId,
+    kind: input.kind,
+    owner: input.owner,
+    pid: input.pid,
+    channelKey: '',
+    userId: '',
+    startedAt: input.startedAt,
+    heartbeatAt: input.heartbeatAt,
+    step: 'running',
+    memAvailableMb: 1200,
+    timeoutMs: input.timeoutMs,
+    ticketId: input.ticketId,
+  })
+}
+
+// Creates one running task and its matching worker-state fixture.
+function createRunningTask(taskStore, taskPaths, files, input) {
+  const submitted = taskStore.submitResourceTask({
+    id: input.id,
+    kind: 'agent_task',
+    source: 'supervisor-recovery-test',
+    timeoutMs: input.timeoutMs,
+    payload: {},
+    notify: { target: 'none', status: 'pending' },
+  })
+  const claimed = taskStore.claimNextTask('agent_task', input.workerName)
+  const running = taskStore.markTaskRunning(claimed, input.workerName, 'test-running')
+  const next = { ...running, startedAt: input.startedAt, updatedAt: input.startedAt }
+  files.writeJsonAtomic(taskPaths.getTaskFile('running', next.kind, next.id), next)
+  files.writeJsonAtomic(taskPaths.getWorkerStateFile(input.workerName), {
+    name: input.workerName,
+    kind: 'agent',
+    pid: input.pid,
+    startedAt: input.startedAt,
+    heartbeatAt: new Date().toISOString(),
+    alive: true,
+    currentTaskId: next.id,
+    currentTaskStartedAt: input.startedAt,
+    step: 'test-running',
+  })
+  return submitted
+}
+
+// Executes dead-lock, timeout, and healthy-task recovery scenarios.
+async function main() {
+  const files = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-common/files')
+  const gate = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-gate/gate')
+  const taskPaths = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/task-paths')
+  const taskStore = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+  const originalLoad = Module._load
+  // Replaces only process cleanup so the scenario can terminate its own child safely.
+  Module._load = function patchedLoad(request, parent, isMain) {
+    const normalized = String(request || '').replace(/\\/g, '/')
+    if (normalized === '../resource-system/system-protection' || normalized.endsWith('/resource-system/system-protection')) {
+      return {
+        writeProcessCleanupEvent: () => {},
+        terminateRecordedProcessPids: () => ({ event: 'recorded_process_cleanup_skipped' }),
+        // Terminates the exact child pid created by this isolated test.
+        terminateProcessTree(pid) {
+          process.kill(Number(pid), 'SIGKILL')
+          return { event: 'process_tree_terminated', killedPids: [Number(pid)], failedPids: [] }
+        },
+      }
+    }
+    return originalLoad.apply(this, arguments)
+  }
+  let supervisor
+  try {
+    supervisor = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-supervisor')
+  } finally {
+    Module._load = originalLoad
+  }
+
+  const dead = startSleeper()
+  const deadPid = dead.pid
+  dead.kill('SIGKILL')
+  await waitForExit(dead)
+  const oldAt = new Date(Date.now() - 60000).toISOString()
+  writeGate(gate, files, {
+    taskId: 'dead-lock-task', kind: 'agent_task', owner: 'agent-worker', pid: deadPid,
+    startedAt: oldAt, heartbeatAt: oldAt, timeoutMs: 10000, ticketId: 'dead-lock-ticket',
+  })
+  const staleResult = supervisor.runSupervisorOnce({ start: false })
+  const staleGateLocked = gate.getResourceGateStatus().locked
+
+  const timedOutChild = startSleeper()
+  const timedOutStartedAt = new Date(Date.now() - 11000).toISOString()
+  createRunningTask(taskStore, taskPaths, files, {
+    id: 'timed-out-live-task', workerName: 'agent-worker', pid: timedOutChild.pid,
+    timeoutMs: 1, startedAt: timedOutStartedAt,
+  })
+  writeGate(gate, files, {
+    taskId: 'timed-out-live-task', kind: 'agent_task', owner: 'agent-worker', pid: timedOutChild.pid,
+    startedAt: timedOutStartedAt, heartbeatAt: new Date().toISOString(), timeoutMs: 1, ticketId: 'timed-out-ticket',
+  })
+  const timedOutResult = supervisor.runSupervisorOnce({ start: false })
+  await sleep(300)
+  const timedOutTask = taskStore.getResourceTaskById('timed-out-live-task')
+  const timedOutAlive = isPidAlive(timedOutChild.pid)
+  const timedOutGateLocked = gate.getResourceGateStatus().locked
+  if (timedOutAlive) timedOutChild.kill('SIGKILL')
+
+  const healthyChild = startSleeper()
+  const healthyStartedAt = new Date().toISOString()
+  createRunningTask(taskStore, taskPaths, files, {
+    id: 'healthy-live-task', workerName: 'agent-worker', pid: healthyChild.pid,
+    timeoutMs: 30000, startedAt: healthyStartedAt,
+  })
+  writeGate(gate, files, {
+    taskId: 'healthy-live-task', kind: 'agent_task', owner: 'agent-worker', pid: healthyChild.pid,
+    startedAt: healthyStartedAt, heartbeatAt: new Date().toISOString(), timeoutMs: 30000, ticketId: 'healthy-ticket',
+  })
+  const healthyResult = supervisor.runSupervisorOnce({ start: false })
+  const healthyTask = taskStore.getResourceTaskById('healthy-live-task')
+  const healthyAlive = isPidAlive(healthyChild.pid)
+  const healthyGateLocked = gate.getResourceGateStatus().locked
+  healthyChild.kill('SIGKILL')
+  await waitForExit(healthyChild)
+
+  const summary = {
+    staleGateReclaimed: staleResult.gateReclaimed,
+    staleGateLocked,
+    timedOutRecovered: timedOutResult.timedOutRecovered,
+    timedOutStatus: timedOutTask && timedOutTask.status,
+    timedOutError: timedOutTask && timedOutTask.error,
+    timedOutAlive,
+    timedOutGateLocked,
+    healthyRecovered: healthyResult.timedOutRecovered,
+    healthyStatus: healthyTask && healthyTask.status,
+    healthyAlive,
+    healthyGateLocked,
+  }
+  console.log(JSON.stringify(summary, null, 2))
+  const ok = summary.staleGateReclaimed === true
+    && summary.staleGateLocked === false
+    && summary.timedOutRecovered === 1
+    && summary.timedOutStatus === 'failed'
+    && /timed out/i.test(String(summary.timedOutError || ''))
+    && summary.timedOutAlive === false
+    && summary.timedOutGateLocked === false
+    && summary.healthyRecovered === 0
+    && summary.healthyStatus === 'running'
+    && summary.healthyAlive === true
+    && summary.healthyGateLocked === true
+  process.exitCode = ok ? 0 : 1
+}
+
+main().catch(error => {
+  console.error(error && error.stack || error)
+  process.exitCode = 1
+})
+`
+  const summary = runScenario('S8 supervisor automatic recovery', script, {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  }, 30000)
+  if (!summary) return
+  check('supervisor reclaims a stale lock whose process exited', summary.staleGateReclaimed === true && summary.staleGateLocked === false, JSON.stringify(summary))
+  check('supervisor terminates and fails a live timed-out task', summary.timedOutRecovered === 1 && summary.timedOutStatus === 'failed' && summary.timedOutAlive === false, JSON.stringify(summary))
+  check('supervisor releases only the timed-out task matching gate', summary.timedOutGateLocked === false, JSON.stringify(summary))
+  check('supervisor leaves a live task inside its timeout untouched', summary.healthyRecovered === 0 && summary.healthyStatus === 'running' && summary.healthyAlive === true && summary.healthyGateLocked === true, JSON.stringify(summary))
+}
+
 // Run all resource-system regression checks.
 function main() {
   console.log('=== resource-system S8 tests ===')
@@ -1017,6 +1222,7 @@ function main() {
   testAgentWorkerTimeoutStopsLateSideEffects()
   testChromiumCloseFailureInjection()
   testBrowserSessionSwitchIsolation()
+  testSupervisorAutomaticRecovery()
   console.log(`passed: ${passed}`)
   console.log(`failed: ${failed}`)
   process.exit(failed > 0 ? 1 : 0)

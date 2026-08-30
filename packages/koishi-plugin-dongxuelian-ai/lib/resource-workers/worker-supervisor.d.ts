@@ -22,6 +22,7 @@ declare function startWorkerProcess(type: string, generation?: string): Record<s
 declare function selectWorkerTypesToStart(types: string[], activeNames: Set<string>, snapshot: Record<string, unknown>): string[];
 declare function ensureWorkerProcesses(types?: string[], options?: SupervisorOptions): unknown[];
 declare function auditStaleRunningTasks(staleMs?: number): number;
+declare function auditTimedOutRunningTasks(now?: number): number;
 declare function auditStaleClaimingTasks(staleMs?: number): number;
 declare function auditDeferredTasks(limit?: number): Record<string, number>;
 declare function getSupervisorStatus(): Record<string, unknown>;
@@ -34,6 +35,7 @@ declare const _default: {
     stopOwnedWorkerProcesses: typeof stopOwnedWorkerProcesses;
     selectWorkerTypesToStart: typeof selectWorkerTypesToStart;
     ensureWorkerProcesses: typeof ensureWorkerProcesses;
+    auditTimedOutRunningTasks: typeof auditTimedOutRunningTasks;
     auditStaleRunningTasks: typeof auditStaleRunningTasks;
     auditStaleClaimingTasks: typeof auditStaleClaimingTasks;
     auditDeferredTasks: typeof auditDeferredTasks;

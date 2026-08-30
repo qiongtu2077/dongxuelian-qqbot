@@ -346,7 +346,7 @@ async function launchPage() {
             args: launchArgs,
         });
         currentBrowserPid = getBrowserProcessPid(browser);
-        writeBrowserCleanupEvent('chromium_launched', { executablePath, browserPid: currentBrowserPid });
+        writeBrowserCleanupEvent('chromium_launched', { executablePath, browserPid: currentBrowserPid, parentPid: process.pid });
         registerCleanup();
         const activeBrowser = browser;
         if (!activeBrowser)

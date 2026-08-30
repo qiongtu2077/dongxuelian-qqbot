@@ -29,7 +29,19 @@ interface MediaTask {
     deferredUntil?: string;
     notBefore?: string;
     error?: string;
+    finishReason?: 'queue_limit' | 'processing_failed' | 'restart_interrupted' | 'legacy_unknown';
     result?: Record<string, unknown>;
+}
+interface MediaDiagnosticTask {
+    id: string;
+    kind: string;
+    status: string;
+    createdAt: string;
+    updatedAt: string;
+    finishedAt: string;
+    finishReason: 'queue_limit' | 'processing_failed' | 'restart_interrupted' | 'legacy_unknown';
+    error: string;
+    claimedBy: string;
 }
 type EnqueueMediaTaskResult = MediaTask | {
     reused: true;
@@ -70,6 +82,7 @@ interface DiscardInterruptedMediaTasksResult {
 }
 declare function discardInterruptedMediaTasks(reason?: string): DiscardInterruptedMediaTasksResult;
 declare function enqueueMediaTask(input: MediaTaskInput): EnqueueMediaTaskResult;
+declare function listUnfinishedMediaTasksForDiagnostics(): MediaDiagnosticTask[];
 declare function getMediaBackpressureStatus(): Record<string, unknown>;
 declare const _default: {
     MEDIA_ROOT: string;
@@ -93,6 +106,7 @@ declare const _default: {
     completeMediaTask: typeof completeMediaTask;
     failMediaTask: typeof failMediaTask;
     discardInterruptedMediaTasks: typeof discardInterruptedMediaTasks;
+    listUnfinishedMediaTasksForDiagnostics: typeof listUnfinishedMediaTasksForDiagnostics;
     getMediaBackpressureStatus: typeof getMediaBackpressureStatus;
     isMediaTaskDeferred: typeof isMediaTaskDeferred;
     _test: {

@@ -34,6 +34,7 @@ const { runEmotionRenderWorkerTask } = require('./emotion-worker') as typeof imp
 const { runMemoryWorkerTask } = require('./memory-worker') as typeof import('./memory-worker')
 const { runBackgroundLlmWorkerTask } = require('./background-llm-worker') as typeof import('./background-llm-worker')
 const { runDailySlotTask } = require('../daily-precompute/daily-slot-worker') as typeof import('../daily-precompute/daily-slot-worker')
+const { resolveTaskTimeoutMs } = require('./task-timeout') as typeof import('./task-timeout')
 type ResourceTaskLike = import('./task-types').ResourceTask
 
 interface WorkerMainOptions {
@@ -99,13 +100,6 @@ const DEFAULT_WORKER_IDLE_EXIT_MS = resolveBoundedNumber(
 // 等待指定毫秒，用于 worker 空转和退避。
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-// 解析任务运行超时；避免异常配置让 worker 永久等待。
-function resolveTaskTimeoutMs(task: ResourceTaskLike, fallbackMs = 300000): number {
-  const timeout = Number(task?.timeoutMs || task?.payload?.timeoutMs || fallbackMs)
-  if (!Number.isFinite(timeout)) return fallbackMs
-  return Math.max(10000, Math.min(30 * 60 * 1000, timeout))
 }
 
 function createInitialWorkerProgress(): WorkerProgressState {

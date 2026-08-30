@@ -119,19 +119,22 @@ describe('主控制台前后端契约审查', () => {
     expect(gallery).toMatch(/showAdminDialog\('保存图集闪卡样式需要管理员密码'/)
   })
 
-  test('资源维护、stale 回收和取消任务都有管理员验证闭环', () => {
+  test('资源维护、保护策略和取消任务都有确认及管理员验证闭环', () => {
     const resource = readSource('packages/koishi-plugin-dashboard/frontend/src/components/ResourcePanel.vue')
-    const maintenanceBody = sourceBetween(resource, 'async function toggleMaintenance', 'async function reclaimStale')
-    const reclaimBody = sourceBetween(resource, 'async function reclaimStale', 'async function setMode')
+    const maintenanceBody = sourceBetween(resource, 'async function toggleMaintenance', 'async function setMode')
+    const modeBody = sourceBetween(resource, 'async function setMode', 'async function cancelTask')
     const cancelBody = sourceBetween(resource, 'async function cancelTask', 'onMounted(() =>')
 
     expect(maintenanceBody).toMatch(/setResourceMaintenance\(/)
-    expect(reclaimBody).toMatch(/reclaimResourceStale\(/)
+    expect(modeBody).toMatch(/setResourceMode\(/)
     expect(cancelBody).toMatch(/cancelResourceTask\(/)
-    expect(maintenanceBody + reclaimBody + cancelBody).toMatch(/ADMIN_REQUIRED|isAdminRequired|showAdminDialog/)
+    expect(maintenanceBody + modeBody + cancelBody).toMatch(/ADMIN_REQUIRED|isAdminRequired|showAdminDialog/)
+    expect(maintenanceBody).toMatch(/window\.confirm/)
+    expect(modeBody).toMatch(/window\.confirm/)
     expect(maintenanceBody).toMatch(/retried/)
-    expect(reclaimBody).toMatch(/retried/)
+    expect(modeBody).toMatch(/retried/)
     expect(cancelBody).toMatch(/retried/)
+    expect(resource).not.toMatch(/reclaimResourceStale|回收 stale/)
   })
 
   test('普通 TTS 试听和测试克隆复用已读内容完成管理员重试', () => {
@@ -181,14 +184,14 @@ describe('主控制台前后端契约审查', () => {
 
   test('远端预览完整校验当前清单并冻结提交、基线和有效期', () => {
     const remoteRelease = readSource('packages/koishi-plugin-dashboard/src/lib/remote-release.ts')
-    const deployHelpers = readSource('packages/koishi-plugin-dashboard/src/lib/deploy-helpers.ts')
+    const remoteTarget = readSource('packages/koishi-plugin-dashboard/src/lib/remote-target.ts')
 
     expect(remoteRelease).toMatch(/git'[\s\S]*?'status'[\s\S]*?'--porcelain=v1'/)
     expect(remoteRelease).toMatch(/verify-release-manifest\.js/)
     expect(remoteRelease).toMatch(/PREVIEW_TTL_MS = 30 \* 60 \* 1000/)
     expect(remoteRelease).toMatch(/compareRemoteBaseline/)
-    expect(deployHelpers).toContain('StrictHostKeyChecking=accept-new')
-    expect(deployHelpers).not.toContain('StrictHostKeyChecking=no')
+    expect(remoteTarget).toContain('StrictHostKeyChecking=accept-new')
+    expect(remoteTarget).not.toContain('StrictHostKeyChecking=no')
     expect(remoteRelease).not.toContain("createHash('md5')")
   })
 })

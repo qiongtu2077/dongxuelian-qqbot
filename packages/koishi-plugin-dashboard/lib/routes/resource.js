@@ -1,4 +1,6 @@
 'use strict';
+const resource_readability_1 = require("../resource-readability");
+const resource_diagnostics_1 = require("../resource-diagnostics");
 /**
  * MODULE: Dashboard 资源中心路由。
  * 职责: 读取 S0-S8 资源状态，并提供受控管理操作。
@@ -54,11 +56,13 @@ function loadResourceModules() {
         scheduler: loadManagementModule('resource.snapshot'),
         mode: loadManagementModule('resource.serverModePolicy'),
         tasks: loadManagementModule('resource.taskStore'),
+        timeout: loadManagementModule('resource.taskTimeout'),
         supervisor: loadManagementModule('resource.workerSupervisor'),
         precompute: loadManagementModule('resource.precomputeStatus'),
         media: loadManagementModule('resource.mediaQueue'),
         system: loadManagementModule('resource.systemProtection'),
         files: loadManagementModule('resource.files'),
+        redactor: loadManagementModule('core.redactor'),
     };
 }
 // 从 supervisor 持久化状态中提取 Dashboard 所需的 worker 进度时间。
@@ -486,7 +490,15 @@ function buildResourceStatus(mods) {
     const gate = mods.gate.getResourceGateStatus();
     const queue = mods.tasks.getTaskQueueSummary();
     const workers = mods.tasks.listWorkerStates();
+    const activeTasks = mods.tasks.listResourceTasks({ statuses: ['pending', 'claiming', 'running', 'deferred'], limit: 1000 });
     const media = mods.media.getMediaBackpressureStatus();
+    const readability = (0, resource_readability_1.buildResourceReadability)({
+        snapshot: snapshot,
+        workers: workers,
+        tasks: activeTasks,
+        media,
+        resolveTaskTimeoutMs: task => mods.timeout.resolveTaskTimeoutMs(task),
+    });
     const precompute = mods.precompute.getPrecomputeSummary();
     const system = mods.system.getSystemProtectionStatus();
     return {
@@ -515,8 +527,17 @@ function buildResourceStatus(mods) {
         gate,
         queue,
         queueLength: Number(queue.pending || 0),
-        workers,
-        media,
+        backgroundPauseReasons: readability.backgroundPauseReasons,
+        workers: readability.workers,
+        media: {
+            ...media,
+            mediaRiskByKind: readability.mediaRiskByKind,
+            mediaRiskCode: readability.mediaRiskCode,
+            mediaRiskKinds: readability.mediaRiskKinds,
+        },
+        mediaRiskByKind: readability.mediaRiskByKind,
+        mediaRiskCode: readability.mediaRiskCode,
+        mediaRiskKinds: readability.mediaRiskKinds,
         precompute: {
             coverageCount: precompute.coverageCount,
             slotCount: precompute.slotCount,
@@ -526,6 +547,14 @@ function buildResourceStatus(mods) {
         disk: getCachedDiskUsage(),
         maintenance: !!readFileSyncSafe(MAINTENANCE_FILE),
         events: collectResourceEvents(mods, 40),
+    };
+}
+// 读取诊断接口需要的两类任务源，并只交给独立诊断模块处理。
+function loadResourceDiagnosticSource(mods) {
+    return {
+        resourceTasks: mods.tasks.listResourceTasksForDiagnostics(),
+        mediaTasks: mods.media.listUnfinishedMediaTasksForDiagnostics(),
+        redactText: (value) => mods.redactor.redactSensitiveText(value),
     };
 }
 // GET /resource/mode：读取服务器资源模式与派生门禁状态。
@@ -583,6 +612,32 @@ function handleGetResourceTasks(req, res, pathname, url) {
         return json(res, { ok: false, message: getErrorMessage(e) }, 500);
     }
 }
+// GET /resource/diagnostics：按稳定游标分页读取未知任务和未完成媒体任务摘要。
+function handleGetResourceDiagnostics(req, res, pathname, url) {
+    try {
+        const mods = loadResourceModules();
+        return json(res, (0, resource_diagnostics_1.buildResourceDiagnosticsPage)(loadResourceDiagnosticSource(mods), {
+            group: url.searchParams.get('group'),
+            reason: url.searchParams.get('reason'),
+            cursor: url.searchParams.get('cursor'),
+        }));
+    }
+    catch (e) {
+        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
+    }
+}
+// GET /resource/diagnostics/detail：按需返回一条已脱敏的完整保存报错。
+function handleGetResourceDiagnosticDetail(req, res, pathname, url) {
+    try {
+        const detail = (0, resource_diagnostics_1.buildResourceDiagnosticDetail)(loadResourceDiagnosticSource(loadResourceModules()), url.searchParams.get('id'));
+        return detail
+            ? json(res, detail)
+            : json(res, { ok: false, message: '诊断记录不存在或已被清理' }, 404);
+    }
+    catch (e) {
+        return json(res, { ok: false, message: getErrorMessage(e) }, 500);
+    }
+}
 // GET /resource/events：返回最近资源事件。
 function handleGetResourceEvents(req, res, pathname, url) {
     try {
@@ -614,7 +669,8 @@ function handleGetResourceWorkers(req, res) {
 // GET /resource/media：返回媒体背压状态。
 function handleGetResourceMedia(req, res) {
     try {
-        return json(res, { ok: true, media: loadResourceModules().media.getMediaBackpressureStatus() });
+        const media = loadResourceModules().media.getMediaBackpressureStatus();
+        return json(res, { ok: true, media: { ...media, ...(0, resource_readability_1.buildMediaRisk)(media) } });
     }
     catch (e) {
         return json(res, { ok: false, message: getErrorMessage(e) }, 500);
@@ -647,23 +703,6 @@ function handlePostResourceCancel(req, res) {
         }
     });
 }
-// POST /resource/reclaim-stale：回收已确认 stale 的 S0 锁。
-function handlePostResourceReclaimStale(req, res) {
-    if (!requireAdmin(req, res))
-        return;
-    collectBody(req, res, (body) => {
-        try {
-            const data = JSON.parse(body || '{}');
-            const staleMs = parsePositiveInt(data.staleMs, 30000, 5000, 10 * 60 * 1000);
-            const mods = loadResourceModules();
-            const reclaimed = mods.gate.reclaimStaleLock(staleMs, 'dashboard');
-            return json(res, { ok: true, reclaimed, status: mods.gate.getResourceGateStatus(staleMs) });
-        }
-        catch (e) {
-            return json(res, { ok: false, message: getErrorMessage(e) }, 400);
-        }
-    });
-}
 // POST /resource/maintenance：切换同一份 ai-paused.txt 维护模式。
 function handlePostResourceMaintenance(req, res) {
     if (!requireAdmin(req, res))
@@ -678,7 +717,13 @@ function handlePostResourceMaintenance(req, res) {
                     fs.unlinkSync(MAINTENANCE_FILE);
                 }
                 catch { /* non-critical: missing maintenance file is already disabled */ }
-            return json(res, { ok: true, enabled: !!data.enabled, message: data.enabled ? '维护模式已开启' : '维护模式已关闭' });
+            return json(res, {
+                ok: true,
+                enabled: !!data.enabled,
+                message: data.enabled
+                    ? '维护模式已开启，机器人将回复维护提示'
+                    : '维护模式已结束，智能回复和后台任务已恢复',
+            });
         }
         catch (e) {
             return json(res, { ok: false, message: getErrorMessage(e) }, 400);
@@ -717,13 +762,14 @@ const routes = {
     'GET /dashboard/api/resource/status': handleGetResourceStatus,
     'GET /dashboard/api/resource/memory-history': handleGetResourceMemoryHistory,
     'GET /dashboard/api/resource/tasks': handleGetResourceTasks,
+    'GET /dashboard/api/resource/diagnostics': handleGetResourceDiagnostics,
+    'GET /dashboard/api/resource/diagnostics/detail': handleGetResourceDiagnosticDetail,
     'GET /dashboard/api/resource/events': handleGetResourceEvents,
     'GET /dashboard/api/resource/workers': handleGetResourceWorkers,
     'GET /dashboard/api/resource/media': handleGetResourceMedia,
     'GET /dashboard/api/resource/precompute': handleGetResourcePrecompute,
     'GET /dashboard/api/resource/mode': handleGetResourceMode,
     'POST /dashboard/api/resource/cancel': handlePostResourceCancel,
-    'POST /dashboard/api/resource/reclaim-stale': handlePostResourceReclaimStale,
     'POST /dashboard/api/resource/maintenance': handlePostResourceMaintenance,
     'POST /dashboard/api/resource/mode': handlePostResourceMode,
 };
