@@ -201,11 +201,16 @@ function linkBuildDependencies(repoRoot: string, worktreeRoot: string): void {
   }
 }
 
+// Unlinks temporary build dependencies before Git inspects generated changes.
+function unlinkBuildDependencies(repoRoot: string, worktreeRoot: string): void {
+  for (const link of getBuildDependencyLinks(repoRoot, worktreeRoot).reverse()) {
+    try { if (fs.existsSync(link.target)) fs.unlinkSync(link.target) } catch { /* unexpected links remain visible to the Git change gate */ }
+  }
+}
+
 // Removes one detached build worktree without following its dependency symlinks.
 function removeBuildWorktree(repoRoot: string, worktreeRoot: string): void {
-  for (const link of getBuildDependencyLinks(repoRoot, worktreeRoot).reverse()) {
-    try { if (fs.existsSync(link.target)) fs.unlinkSync(link.target) } catch { /* Git removal below remains authoritative */ }
-  }
+  unlinkBuildDependencies(repoRoot, worktreeRoot)
   try {
     execFileSync('git', ['worktree', 'remove', '--force', worktreeRoot], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] })
   } catch {
@@ -221,6 +226,7 @@ function buildFrozenRelease(repoRoot: string, worktreeRoot: string, releasesRoot
   try {
     linkBuildDependencies(repoRoot, worktreeRoot)
     buildTrackedArtifacts(worktreeRoot)
+    unlinkBuildDependencies(repoRoot, worktreeRoot)
     const builtSource = inspectGitSource(worktreeRoot)
     const unexpectedChanges = builtSource.changes.filter(change => !isAllowedBuildChange(change))
     if (unexpectedChanges.length) return { release: null, changes: unexpectedChanges }

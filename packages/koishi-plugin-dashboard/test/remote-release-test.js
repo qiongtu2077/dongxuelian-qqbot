@@ -84,6 +84,8 @@ function testPreviewComparison() {
   assert.strictEqual(remoteRelease.isAllowedBuildChange(' M packages/koishi-plugin-dashboard/frontend/dist/index.html'), true)
   assert.strictEqual(remoteRelease.isAllowedBuildChange(' M packages/koishi-plugin-dashboard/lib/routes/deploy.js'), true)
   assert.strictEqual(remoteRelease.isAllowedBuildChange(' M packages/koishi-plugin-dashboard/src/lib/routes/deploy.ts'), false)
+  assert.strictEqual(remoteRelease.isAllowedBuildChange('?? node_modules'), false)
+  assert.strictEqual(remoteRelease.isAllowedBuildChange('?? packages/koishi-plugin-dashboard/frontend/node_modules'), false)
   assert.match(remoteRelease.describeRemoteProbeFailure('REMOTE HOST IDENTIFICATION HAS CHANGED'), /主机密钥校验失败/)
 
   const blockers = remoteRelease.collectPreviewBlockers(

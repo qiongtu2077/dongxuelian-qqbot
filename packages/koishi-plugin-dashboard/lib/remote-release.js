@@ -99,15 +99,19 @@ function linkBuildDependencies(repoRoot, worktreeRoot) {
         fs.symlinkSync(link.source, link.target, process.platform === 'win32' ? 'junction' : 'dir');
     }
 }
-// Removes one detached build worktree without following its dependency symlinks.
-function removeBuildWorktree(repoRoot, worktreeRoot) {
+// Unlinks temporary build dependencies before Git inspects generated changes.
+function unlinkBuildDependencies(repoRoot, worktreeRoot) {
     for (const link of getBuildDependencyLinks(repoRoot, worktreeRoot).reverse()) {
         try {
             if (fs.existsSync(link.target))
                 fs.unlinkSync(link.target);
         }
-        catch { /* Git removal below remains authoritative */ }
+        catch { /* unexpected links remain visible to the Git change gate */ }
     }
+}
+// Removes one detached build worktree without following its dependency symlinks.
+function removeBuildWorktree(repoRoot, worktreeRoot) {
+    unlinkBuildDependencies(repoRoot, worktreeRoot);
     try {
         execFileSync('git', ['worktree', 'remove', '--force', worktreeRoot], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
     }
@@ -129,6 +133,7 @@ function buildFrozenRelease(repoRoot, worktreeRoot, releasesRoot, commit) {
     try {
         linkBuildDependencies(repoRoot, worktreeRoot);
         buildTrackedArtifacts(worktreeRoot);
+        unlinkBuildDependencies(repoRoot, worktreeRoot);
         const builtSource = inspectGitSource(worktreeRoot);
         const unexpectedChanges = builtSource.changes.filter(change => !isAllowedBuildChange(change));
         if (unexpectedChanges.length)
