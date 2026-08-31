@@ -110,6 +110,8 @@ case "\${1:-}" in
     : > "$TEST_APP_DIR/logrotate-installed"
     exit 0 ;;
   *restart-bot.sh)
+    if [ "\${KOISHI_APP_DIR:-}" != "$TEST_APP_DIR" ]; then exit 46; fi
+    if [ "\${DONGXUELIAN_AI_DATA_DIR:-}" != "$TEST_APP_DIR/data" ]; then exit 47; fi
     current="$(readlink -f "$TEST_APP_DIR/.lian-releases/current" 2>/dev/null || true)"
     if [ -n "\${FAIL_BOT_RELEASE_ID:-}" ] && [ "$(basename "$current")" = "$FAIL_BOT_RELEASE_ID" ]; then exit 44; fi
     exit 0 ;;

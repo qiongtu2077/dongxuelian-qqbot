@@ -120,7 +120,7 @@ rollback_release() {
     ln -s "$OLD_TARGET" "$CURRENT_LINK.rollback"
     mv -Tf "$CURRENT_LINK.rollback" "$CURRENT_LINK"
     if [ -x "$CURRENT_LINK/scripts/restart-bot.sh" ]; then
-      bash "$CURRENT_LINK/scripts/restart-bot.sh" >/dev/null 2>&1 || true
+      KOISHI_APP_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" bash "$CURRENT_LINK/scripts/restart-bot.sh" >/dev/null 2>&1 || true
     elif [ -x "$APP_DIR/restart.sh" ]; then
       bash "$APP_DIR/restart.sh" >/dev/null 2>&1 || true
     fi
@@ -242,7 +242,7 @@ SWITCHED=1
 
 STAGE="restart_bot"
 write_result running "$STAGE"
-bash "$CURRENT_LINK/scripts/restart-bot.sh"
+KOISHI_APP_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" bash "$CURRENT_LINK/scripts/restart-bot.sh"
 
 STAGE="restart_dashboard"
 write_result running "$STAGE"
