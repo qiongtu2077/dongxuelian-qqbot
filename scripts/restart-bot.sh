@@ -15,7 +15,9 @@ LOG_FILE="$APP_DIR/koishi.log"
 DATA_DIR="${DONGXUELIAN_AI_DATA_DIR:-$APP_DIR/data}"
 DASHBOARD_DIR="$APP_DIR/packages/koishi-plugin-dashboard"
 NODE_MODULES="$APP_DIR/node_modules"
-RESOURCE_WORKER_ENTRY="$APP_DIR/packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-main.js"
+RESOURCE_WORKER_RELATIVE="node_modules/koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-main.js"
+RESOURCE_WORKER_ENTRY="$APP_DIR/$RESOURCE_WORKER_RELATIVE"
+RESOURCE_RELEASE_ROOT="$APP_DIR/.lian-releases"
 RESOURCE_WORKER_STATE_DIR="$DATA_DIR/resource-workers/workers"
 RESOURCE_SUPERVISOR_STATE="$DATA_DIR/resource-workers/supervisor/state.json"
 
@@ -38,7 +40,8 @@ is_managed_resource_worker_pid() {
   [ -r "/proc/$pid/cmdline" ] || return 1
   cmdline="$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' ' || true)"
   case "$cmdline" in
-    *"$RESOURCE_WORKER_ENTRY --type daily"*|*"$RESOURCE_WORKER_ENTRY --type agent"*|*"$RESOURCE_WORKER_ENTRY --type media"*) return 0 ;;
+    *"$RESOURCE_WORKER_ENTRY --type daily"*|*"$RESOURCE_WORKER_ENTRY --type agent"*|*"$RESOURCE_WORKER_ENTRY --type media"*|\
+    *"$RESOURCE_RELEASE_ROOT/"*"/$RESOURCE_WORKER_RELATIVE --type daily"*|*"$RESOURCE_RELEASE_ROOT/"*"/$RESOURCE_WORKER_RELATIVE --type agent"*|*"$RESOURCE_RELEASE_ROOT/"*"/$RESOURCE_WORKER_RELATIVE --type media"*) return 0 ;;
     *) return 1 ;;
   esac
 }
