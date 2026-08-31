@@ -7,10 +7,14 @@ const fs = require('fs/promises') as typeof import('fs/promises')
 const path = require('path') as typeof import('path')
 const { pathToFileURL } = require('url') as typeof import('url')
 const biliInput = require('./bili-input') as typeof import('./bili-input')
+const cookieFile = require('./cookie-file') as typeof import('./cookie-file')
+const videoTaskQueueModule = require('./video-task-queue') as typeof import('./video-task-queue')
+const videoTraceModule = require('./video-trace') as typeof import('./video-trace')
 const {
   buildBiliKeys,
   extractBvId,
   extractBiliUrl,
+  isBilibiliCardInput,
   isAllowedBiliRedirectUrl,
   isPrivateIpAddress,
   normalizeBiliP1Url,
@@ -18,13 +22,23 @@ const {
   resolveBiliShortLink,
   uniqueStrings,
 } = biliInput
+const {
+  clearBiliCookieHealthCache,
+  getBiliCookieHealth,
+  resolveBiliCookiePath,
+} = cookieFile
 type ResolvedBiliInput = import('./bili-input').ResolvedBiliInput
+type VideoTraceContext = import('./video-trace').VideoTraceContext
+type VideoTraceEvent = import('./video-trace').VideoTraceEvent
+type VideoTraceFields = import('./video-trace').VideoTraceFields
+type ResourceTask = import('../../koishi-plugin-dongxuelian-ai/lib/resource-workers/task-types').ResourceTask
+type VideoTaskQueueController = ReturnType<typeof videoTaskQueueModule.createVideoTaskQueue>
+type VideoTaskStore = Parameters<typeof videoTaskQueueModule.createVideoTaskQueue>[0]['store']
 
 const name = 'local-video-sender'
 
 const DEFAULT_MAX_SIZE = 60_000_000
 const YTDLP = process.env.BILI_YTDLP || '/usr/local/bin/yt-dlp'
-const COOKIES = process.env.BILI_COOKIES_FILE || '/root/bilibili-cookies.txt'
 const WORKDIR = process.env.BILI_WORKDIR || '/root/koishi-bili-downloads'
 
 interface LoggerLike {
@@ -127,6 +141,7 @@ type VideoUserErrorNumber =
   | '001' | '002' | '003' | '004' | '005' | '006' | '007' | '008' | '009'
   | '010' | '011' | '012' | '013' | '014' | '015' | '016' | '017' | '018'
   | '019' | '020' | '021' | '022' | '023' | '024' | '025' | '026' | '027'
+  | '028' | '029' | '030' | '031' | '032'
 
 type VideoUserErrorId = `video-${VideoUserErrorNumber}`
 
@@ -139,7 +154,8 @@ interface VideoUserError {
 type StaticVideoUserErrorId =
   | 'video-001' | 'video-003' | 'video-006' | 'video-007' | 'video-008' | 'video-009'
   | 'video-010' | 'video-013' | 'video-014' | 'video-016' | 'video-017' | 'video-018'
-  | 'video-019' | 'video-020' | 'video-023' | 'video-025' | 'video-027'
+  | 'video-019' | 'video-020' | 'video-023' | 'video-025' | 'video-027' | 'video-028'
+  | 'video-029' | 'video-030' | 'video-031' | 'video-032'
 
 type VideoUserErrorInput =
   | { id: StaticVideoUserErrorId }
@@ -156,6 +172,10 @@ type SendOutcome =
   | { status: 'uncertain', reason: 'timeout', error: string }
   | { status: 'failed', reason: 'rejected', retcode: number, error: string }
   | { status: 'failed', reason: 'call_error', error: string }
+
+type CachedVideoSendResult =
+  | { status: 'done' }
+  | { status: 'failed', reason: string, userError?: VideoUserError }
 
 type StagingPrepareResult =
   | { status: 'ready', path: string }
@@ -184,6 +204,31 @@ interface StagingCleanupOptions {
   now?: number
 }
 
+interface ResourceGateStorageFailure {
+  failureCode: string
+  errno: string
+  stage: string
+  safePath: string
+}
+
+interface GateAdminAlertOptions extends StagingCleanupOptions {
+  schedule?: (handler: () => void, delayMs: number) => NodeJS.Timeout
+}
+
+interface GateAdminAlertWindow {
+  count: number
+  firstAt: number
+  lastAt: number
+  timer: NodeJS.Timeout
+  ctx: ContextLike
+  session: VideoSessionLike
+  failure: ResourceGateStorageFailure
+  traceId: string
+  taskId: string
+  options: GateAdminAlertOptions
+  trace: VideoTraceContext
+}
+
 type AdminIdLoadResult =
   | { status: 'ready', ids: string[], invalidCount: number }
   | { status: 'failed', code: string, error: string }
@@ -202,6 +247,9 @@ interface DownloadDeps {
   resolveShortLink?: typeof resolveBiliShortLink
   resourceModules?: VideoResourceModules | null
   resourceGate?: false
+  gateAdminAlertOptions?: GateAdminAlertOptions
+  taskStore?: VideoTaskStore
+  finalNoticeDelay?: (delayMs: number) => Promise<void>
 }
 
 interface DownloadRequestOptions {
@@ -215,6 +263,8 @@ interface VideoResourceGateHandle {
 
 interface VideoResourceGateResult {
   ok: boolean
+  busy?: boolean
+  taskId?: string
   userError?: VideoUserError
   handle?: VideoResourceGateHandle | null
 }
@@ -252,7 +302,13 @@ type SharedVideoResult =
   | { kind: 'cached', entry: VideoFileCacheEntry }
   | { kind: 'rejected', infoMessage: string, userError: VideoUserError }
   | { kind: 'failed', userError: VideoUserError }
-  | { kind: 'sent' }
+  | { kind: 'busy', taskId: string, p1Url: string, keys: string[], userError: VideoUserError }
+  | { kind: 'sent', sendStatus: SendOutcome['status'] }
+
+type QueuedVideoExecutionResult =
+  | { status: 'done', result?: Record<string, unknown> }
+  | { status: 'retry', reason: string }
+  | { status: 'failed', reason: string, result?: Record<string, unknown>, notify?: boolean }
 
 interface VideoBlacklistCache {
   fingerprint: string
@@ -276,6 +332,7 @@ function resolveRuntimeDataDir(): string {
 }
 
 const DATA_DIR = resolveRuntimeDataDir()
+const COOKIES = resolveBiliCookiePath(DATA_DIR, process.env.BILI_COOKIES_FILE)
 const ADMIN_IDS_FILE = path.join(DATA_DIR, 'ai-admin-ids.json')
 const VIDEO_BLACKLIST_FILE = process.env.BILI_VIDEO_BLACKLIST_FILE || path.join(DATA_DIR, 'video-blacklist.json')
 const MAX_SIZE = parsePositiveInteger(process.env.BILI_MAX_SIZE_BYTES, DEFAULT_MAX_SIZE)
@@ -316,6 +373,11 @@ const STATIC_VIDEO_USER_ERRORS: Record<StaticVideoUserErrorId, { stage: string, 
   'video-023': { stage: 'video_send_call', message: '视频发送失败，请稍后再试。详细信息：视频发送接口调用失败。错误编号：video-023。' },
   'video-025': { stage: 'cached_preview_send_call', message: '缓存视频信息发送失败，请稍后再试。详细信息：缓存视频的封面、标题和链接消息调用接口失败。错误编号：video-025。' },
   'video-027': { stage: 'cached_video_send_call', message: '缓存视频发送失败，请稍后再试。详细信息：缓存视频发送接口调用失败。错误编号：video-027。' },
+  'video-028': { stage: 'resource_busy_not_queued', message: '视频搬运资源正忙，本次没有进入队列，请稍后重新发送。错误编号：video-028。' },
+  'video-029': { stage: 'queue_persist_failed', message: '视频任务排队保存失败，本次没有进入队列，请稍后重新发送。错误编号：video-029。' },
+  'video-030': { stage: 'cookie_health', message: '视频凭据不可用，请联系管理员更新 B 站 Cookie。错误编号：video-030。' },
+  'video-031': { stage: 'shortlink_resolution', message: 'B 站短链接解析失败，请重新复制链接或发送 BV 号。错误编号：video-031。' },
+  'video-032': { stage: 'resource_gate_storage_failed', message: '视频资源系统故障，本次未执行。错误编号：video-032。' },
 }
 
 const RESOURCE_STATE_LABELS: Record<string, string> = {
@@ -336,8 +398,12 @@ const recentParseHistory = new Map<string, RecentParseEntry[]>()
 const videoFileCache = new Map<string, VideoFileCacheEntry>()
 const videoCacheAliases = new Map<string, string>()
 const inflightDownloads = new Map<string, Promise<SharedVideoResult>>()
+const queuedVideoSessions = new Map<string, VideoSessionLike>()
+let videoTaskQueue: VideoTaskQueueController | null = null
 let videoCacheSweepTimer: NodeJS.Timeout | null = null
 let cacheDisposed = false
+let lastValidVideoAdminIds: string[] = []
+const gateAdminAlertWindows = new Map<string, GateAdminAlertWindow>()
 let videoBlacklistCache: VideoBlacklistCache = {
   fingerprint: '',
   groups: new Set(),
@@ -398,6 +464,11 @@ function sanitizeResourceId(value: unknown, fallback: string = 'unknown'): strin
   return text || fallback
 }
 
+// 通过统一模块写入白名单视频生命周期事件。
+function writeVideoTrace(ctx: ContextLike, trace: VideoTraceContext | null | undefined, event: VideoTraceEvent, fields: VideoTraceFields = {}): boolean {
+  return !!trace && videoTraceModule.writeVideoTrace(ctx.logger('bvidl'), trace, event, fields)
+}
+
 // 计算 sibling AI 插件 lib 产物路径，避免本插件引入编译期跨包依赖。
 function getAiResourceLibPath(...parts: string[]): string {
   return path.join(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', ...parts)
@@ -436,8 +507,12 @@ function buildVideoTaskId(session: VideoSessionLike, source: string): string {
 }
 
 // 在启动 yt-dlp 前申请 S1 准入和 S0 独占锁。
-async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionLike, source: string, deps: DownloadDeps = {}, existingTaskId: string = ''): Promise<VideoResourceGateResult> {
-  if (deps.resourceGate === false) return { ok: true, handle: null }
+async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionLike, source: string, deps: DownloadDeps = {}, existingTaskId: string = '', trace?: VideoTraceContext): Promise<VideoResourceGateResult> {
+  if (deps.resourceGate === false) {
+    writeVideoTrace(ctx, trace, 'admission_decided', { decision: 'bypassed', reason: 'test_dependency_override' })
+    writeVideoTrace(ctx, trace, 'gate_acquired', { stage: 'resource_gate_bypassed' })
+    return { ok: true, handle: null, taskId: existingTaskId }
+  }
   const modules = Object.prototype.hasOwnProperty.call(deps, 'resourceModules') ? deps.resourceModules || null : loadVideoResourceModules(ctx)
   if (!modules) {
     const userError = buildVideoUserError({ id: 'video-003' })
@@ -461,24 +536,29 @@ async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionL
     queueTimeoutMs: 5000,
     runTimeoutMs: 900000,
   })
+  writeVideoTrace(ctx, trace, 'admission_decided', { decision: String(admission.decision), reason: String(admission.reason || admission.decision) })
   if (admission.decision !== 'run_now') {
     ctx.logger('bvidl').warn(`video download rejected by resource scheduler: ${admission.reason || admission.decision}; state=${admission.resourceState || 'unknown'} mem=${admission.memAvailableMb ?? 'unknown'}MB min=${VIDEO_MIN_MEM_MB}MB`)
-    const userError = typeof admission.memAvailableMb === 'number' && Number.isFinite(admission.memAvailableMb)
-      ? buildVideoUserError({
-        id: 'video-004',
-        resourceState: admission.resourceState,
-        availableMemoryMb: admission.memAvailableMb,
-        minimumMemoryMb: VIDEO_MIN_MEM_MB,
-        decision: admission.decision,
-      })
-      : buildVideoUserError({
-        id: 'video-005',
-        resourceState: admission.resourceState,
-        minimumMemoryMb: VIDEO_MIN_MEM_MB,
-        decision: admission.decision,
-      })
+    ctx.logger('bvidl').warn(`admission_decided decision=${admission.decision} queue_persisted=false reason=${sanitizeResourceId(admission.reason || admission.decision)}`)
+    const canOnlyQueue = ['queue', 'defer', 'downgrade'].includes(String(admission.decision))
+    const userError = canOnlyQueue
+      ? buildVideoUserError({ id: 'video-028' })
+      : typeof admission.memAvailableMb === 'number' && Number.isFinite(admission.memAvailableMb)
+        ? buildVideoUserError({
+          id: 'video-004',
+          resourceState: admission.resourceState,
+          availableMemoryMb: admission.memAvailableMb,
+          minimumMemoryMb: VIDEO_MIN_MEM_MB,
+          decision: admission.decision,
+        })
+        : buildVideoUserError({
+          id: 'video-005',
+          resourceState: admission.resourceState,
+          minimumMemoryMb: VIDEO_MIN_MEM_MB,
+          decision: admission.decision,
+        })
     logVideoUserError(ctx, userError)
-    return { ok: false, userError }
+    return { ok: false, busy: canOnlyQueue, taskId, userError }
   }
 
   try {
@@ -495,8 +575,25 @@ async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionL
       memAvailableMb: admission.memAvailableMb,
       step: 'video_prepare',
     })
-    return { ok: true, handle }
+    writeVideoTrace(ctx, trace, 'gate_acquired', { stage: 'video_prepare' })
+    return { ok: true, handle, taskId }
   } catch (error) {
+    const storageFailure = getResourceGateStorageFailure(error)
+    if (storageFailure) {
+      await reportResourceGateStorageFailure(ctx, session, storageFailure, trace?.traceId || taskId, taskId, deps.gateAdminAlertOptions, trace)
+      const userError = buildVideoUserError({ id: 'video-032' })
+      logVideoUserError(ctx, userError, `failureCode=${storageFailure.failureCode} errno=${storageFailure.errno} stage=${storageFailure.stage} safePath=${storageFailure.safePath}`)
+      return { ok: false, userError }
+    }
+    const isBusyTimeout = !!(error && typeof error === 'object' && (
+      (error as { code?: unknown }).code === 'gate_busy_timeout'
+      || (error as { name?: unknown }).name === 'ResourceGateBusyTimeoutError'
+    ))
+    if (isBusyTimeout) {
+      ctx.logger('bvidl').warn(`gate_busy_timeout taskId=${taskId} queue_persisted=false`)
+      const userError = buildVideoUserError({ id: 'video-028' })
+      return { ok: false, busy: true, taskId, userError }
+    }
     ctx.logger('bvidl').warn(`video download gate wait failed: ${getErrorMessage(error)}`)
     const userError = buildVideoUserError({ id: 'video-006' })
     logVideoUserError(ctx, userError)
@@ -523,7 +620,7 @@ function buildVideoUserError(input: VideoUserErrorInput): VideoUserError {
       return {
         id: input.id,
         stage: 'resource_admission_with_memory',
-        message: `视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为${resourceState}，当前可用内存${availableMemoryMb}MB，视频任务最低需要${minimumMemoryMb}MB，调度结果为${decision}。错误编号：video-004。`,
+        message: `视频搬运暂时无法执行，本次请求未执行。详细信息：资源状态为${resourceState}，当前可用内存${availableMemoryMb}MB，视频任务最低需要${minimumMemoryMb}MB，调度结果为${decision}。错误编号：video-004。`,
       }
     }
     case 'video-005': {
@@ -533,7 +630,7 @@ function buildVideoUserError(input: VideoUserErrorInput): VideoUserError {
       return {
         id: input.id,
         stage: 'resource_admission_without_memory',
-        message: `视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为${resourceState}，当前可用内存数据未取得，视频任务最低需要${minimumMemoryMb}MB，调度结果为${decision}。错误编号：video-005。`,
+        message: `视频搬运暂时无法执行，本次请求未执行。详细信息：资源状态为${resourceState}，当前可用内存数据未取得，视频任务最低需要${minimumMemoryMb}MB，调度结果为${decision}。错误编号：video-005。`,
       }
     }
     case 'video-011': {
@@ -600,12 +697,20 @@ function logVideoUserError(ctx: ContextLike, userError: VideoUserError, technica
 }
 
 // 将主插件上下文适配到独立的 B 站输入与短链安全边界。
-async function resolveInputBiliTarget(ctx: ContextLike, url: string, source: string, deps: DownloadDeps = {}): Promise<ResolvedBiliInput> {
+async function resolveInputBiliTarget(ctx: ContextLike, url: string, source: string, deps: DownloadDeps = {}, trace?: VideoTraceContext): Promise<ResolvedBiliInput> {
+  const shortCodeHash = videoTraceModule.hashVideoTraceValue(url)
   return biliInput.resolveBiliInput({
     url,
     source,
     resolveShortLink: deps.resolveShortLink,
-    onError: message => ctx.logger('bvidl').warn(`short link resolution failed: ${message}`),
+    onShortLinkHop: event => {
+      ctx.logger('bvidl').warn(`shortlink_hop hop=${event.hop} statusCode=${event.statusCode ?? 'none'} finalHost=${event.finalHost} finalPath=${event.finalPath} failureCode=${event.failureCode || 'none'} elapsedMs=${event.elapsedMs}`)
+      writeVideoTrace(ctx, trace, 'shortlink_hop', { shortCodeHash, hop: event.hop, statusCode: event.statusCode, finalHost: event.finalHost, finalPath: event.finalPath, code: event.failureCode, durationMs: event.elapsedMs })
+    },
+    onError: failure => {
+      ctx.logger('bvidl').warn(`shortlink_failed failureCode=${failure.code} hops=${failure.hops} statusCode=${failure.statusCode ?? 'none'}`)
+      writeVideoTrace(ctx, trace, 'shortlink_failed', { shortCodeHash, hop: failure.hops, statusCode: failure.statusCode, code: failure.code })
+    },
   })
 }
 
@@ -865,8 +970,8 @@ function sanitizeStagingCleanupError(error: unknown): string {
     .slice(0, 1000) || '未提供错误文本'
 }
 
-// 从运行数据目录读取并严格筛选纯数字超级管理员账号。
-async function loadStagingCleanupAdminIds(adminIdsFile: string, fsApi: StagingFsApi): Promise<AdminIdLoadResult> {
+// 从运行数据目录读取并严格筛选纯数字超级管理员账号，成功后更新最后有效缓存。
+async function loadVideoAdminIds(adminIdsFile: string, fsApi: StagingFsApi): Promise<AdminIdLoadResult> {
   try {
     const stat = await fsApi.stat(adminIdsFile)
     if (!stat.isFile()) return { status: 'failed', code: 'ADMIN_IDS_NOT_FILE', error: '超级管理员名单路径不是普通文件' }
@@ -887,6 +992,7 @@ async function loadStagingCleanupAdminIds(adminIdsFile: string, fsApi: StagingFs
   const ids = [...new Set(values.filter(value => /^\d+$/.test(value)))]
   const invalidCount = values.filter(value => !/^\d+$/.test(value)).length
   if (!ids.length) return { status: 'failed', code: 'ADMIN_IDS_EMPTY', error: '超级管理员名单中没有有效的纯数字 QQ 号' }
+  lastValidVideoAdminIds = ids.slice()
   return { status: 'ready', ids, invalidCount }
 }
 
@@ -904,34 +1010,46 @@ function buildStagingCleanupAdminMessage(failure: StagingCleanupFailure): string
   ].join('\n')
 }
 
-// 将一次清理失败逐个私聊给有效超级管理员，不重试失败通知。
-async function notifyStagingCleanupFailure(ctx: ContextLike, session: VideoSessionLike, failure: StagingCleanupFailure, options: StagingCleanupOptions): Promise<void> {
+// 读取最新管理员名单；读取失败时返回进程内最后一次有效名单。
+async function resolveVideoAdminIds(ctx: ContextLike, adminIdsFile: string, fsApi: StagingFsApi, logPrefix: string): Promise<string[]> {
+  const adminResult = await loadVideoAdminIds(adminIdsFile, fsApi)
+  if (adminResult.status === 'failed') {
+    ctx.logger('bvidl').warn(`${logPrefix}_admin_ids_unavailable: file=${JSON.stringify(path.resolve(adminIdsFile))} code=${adminResult.code} error=${JSON.stringify(adminResult.error)} cached_count=${lastValidVideoAdminIds.length}`)
+    return lastValidVideoAdminIds.slice()
+  }
+  if (adminResult.invalidCount > 0) ctx.logger('bvidl').warn(`${logPrefix}_admin_ids_invalid: invalid_count=${adminResult.invalidCount}`)
+  return adminResult.ids
+}
+
+// 复用同一管理员配置向全部有效 QQ 私聊，单个发送失败只记录一次且不递归告警。
+async function sendVideoAdminAlert(ctx: ContextLike, session: VideoSessionLike, message: string, options: StagingCleanupOptions, logPrefix: string): Promise<boolean> {
   const fsApi = options.fs || fs
   const adminIdsFile = options.adminIdsFile || ADMIN_IDS_FILE
-  const adminResult = await loadStagingCleanupAdminIds(adminIdsFile, fsApi)
-  if (adminResult.status === 'failed') {
-    ctx.logger('bvidl').warn(`staging_cleanup_admin_ids_unavailable: file=${JSON.stringify(path.resolve(adminIdsFile))} code=${adminResult.code} error=${JSON.stringify(adminResult.error)}`)
-    return
-  }
-  if (adminResult.invalidCount > 0) {
-    ctx.logger('bvidl').warn(`staging_cleanup_admin_ids_invalid: invalid_count=${adminResult.invalidCount}`)
-  }
+  const adminIds = await resolveVideoAdminIds(ctx, adminIdsFile, fsApi, logPrefix)
+  if (!adminIds.length) return false
 
   const internal = session.bot?.internal
   const sendPrivateMsg = internal?.sendPrivateMsg
   if (typeof sendPrivateMsg !== 'function') {
-    ctx.logger('bvidl').warn(`staging_cleanup_admin_notify_unavailable: reason=sendPrivateMsg_unavailable admin_count=${adminResult.ids.length}`)
-    return
+    ctx.logger('bvidl').warn(`${logPrefix}_admin_notify_unavailable: reason=sendPrivateMsg_unavailable admin_count=${adminIds.length}`)
+    return false
   }
 
-  const message = buildStagingCleanupAdminMessage(failure)
-  await Promise.all(adminResult.ids.map(async adminId => {
+  const results = await Promise.all(adminIds.map(async adminId => {
     try {
       await sendPrivateMsg.call(internal, adminId, message)
+      return true
     } catch (error) {
-      ctx.logger('bvidl').warn(`staging_cleanup_admin_notify_failed: admin=${adminId} code=${getNodeErrorCode(error)} error=${JSON.stringify(sanitizeStagingCleanupError(error))}`)
+      ctx.logger('bvidl').warn(`${logPrefix}_admin_notify_failed: admin=${adminId} code=${getNodeErrorCode(error)} error=${JSON.stringify(sanitizeStagingCleanupError(error))}`)
+      return false
     }
   }))
+  return results.some(Boolean)
+}
+
+// 将一次暂存目录清理失败通过通用视频管理员通道发送，不重试失败通知。
+async function notifyStagingCleanupFailure(ctx: ContextLike, session: VideoSessionLike, failure: StagingCleanupFailure, options: StagingCleanupOptions): Promise<void> {
+  await sendVideoAdminAlert(ctx, session, buildStagingCleanupAdminMessage(failure), options, 'staging_cleanup')
 }
 
 // 记录并通知同一份结构化暂存目录清理失败信息。
@@ -939,6 +1057,109 @@ async function reportStagingCleanupFailure(ctx: ContextLike | null, session: Vid
   if (!ctx) return
   ctx.logger('bvidl').warn(`${failure.event}: task=${failure.taskId} bv=${failure.bvId} dir=${JSON.stringify(failure.stagingDir)} code=${failure.errorCode} error=${JSON.stringify(failure.errorText)} beijing_time=${JSON.stringify(failure.beijingTime)}`)
   await notifyStagingCleanupFailure(ctx, session, failure, options)
+}
+
+const GATE_FAILURE_CHINESE_REASON: Record<string, string> = {
+  gate_permission_denied: '资源锁路径权限不足',
+  gate_readonly_filesystem: '资源锁所在文件系统只读',
+  gate_storage_full: '资源锁所在磁盘空间或 inode 已用尽',
+  gate_quota_exceeded: '资源锁所在磁盘配额已耗尽',
+  gate_path_invalid: '资源锁路径结构错误',
+  gate_fd_exhausted: '资源锁进程或系统文件描述符已耗尽',
+  gate_io_error: '资源锁磁盘输入输出错误',
+  gate_state_unreadable: '资源锁状态存在但无法读取或校验',
+  gate_event_write_failed: '资源锁事件日志写入失败',
+  gate_cleanup_failed: '资源锁残留状态清理失败',
+}
+
+// 从跨包或注入异常中提取计划规定的资源锁结构化存储故障。
+function getResourceGateStorageFailure(error: unknown): ResourceGateStorageFailure | null {
+  if (!error || typeof error !== 'object') return null
+  const candidate = error as Partial<ResourceGateStorageFailure>
+  const failureCode = String(candidate.failureCode || '')
+  if (!Object.prototype.hasOwnProperty.call(GATE_FAILURE_CHINESE_REASON, failureCode)) return null
+  return {
+    failureCode,
+    errno: String(candidate.errno || 'UNKNOWN').slice(0, 40),
+    stage: sanitizeResourceId(candidate.stage || 'unknown'),
+    safePath: String(candidate.safePath || '.').replace(/[^a-zA-Z0-9._/-]/g, '_').slice(0, 240) || '.',
+  }
+}
+
+// 构造不含 Cookie、正文、完整 URL 或堆栈的资源锁管理员私聊文本。
+function buildGateAdminAlertMessage(failure: ResourceGateStorageFailure, traceId: string, taskId: string, now: number): string {
+  return [
+    '【视频资源锁存储故障】',
+    `时间：${formatBeijingTime(now)}`,
+    `中文原因：${GATE_FAILURE_CHINESE_REASON[failure.failureCode] || '资源锁存储故障'}`,
+    `内部代码：${failure.failureCode}`,
+    `系统错误码：${failure.errno}`,
+    `链路编号：${sanitizeResourceId(traceId)}`,
+    `任务编号：${sanitizeResourceId(taskId)}`,
+    `失败步骤：${failure.stage}`,
+    `脱敏路径：${failure.safePath}`,
+    '本次任务未入队。',
+  ].join('\n')
+}
+
+// 为 5 分钟告警合并窗口生成稳定键。
+function buildGateAdminAlertKey(failure: ResourceGateStorageFailure): string {
+  return [failure.failureCode, failure.errno, failure.stage, failure.safePath].join('|')
+}
+
+// 窗口结束时仅为出现重复的同类故障发送一次累计汇总。
+async function flushGateAdminAlertWindow(key: string): Promise<void> {
+  const window = gateAdminAlertWindows.get(key)
+  if (!window) return
+  gateAdminAlertWindows.delete(key)
+  if (window.count <= 1) return
+  const message = [
+    '【视频资源锁故障五分钟汇总】',
+    `内部代码：${window.failure.failureCode}`,
+    `系统错误码：${window.failure.errno}`,
+    `失败步骤：${window.failure.stage}`,
+    `脱敏路径：${window.failure.safePath}`,
+    `总次数：${window.count}`,
+    `首次时间：${formatBeijingTime(window.firstAt)}`,
+    `最后时间：${formatBeijingTime(window.lastAt)}`,
+  ].join('\n')
+  await sendVideoAdminAlert(window.ctx, window.session, message, window.options, 'gate')
+  window.ctx.logger('bvidl').warn(`gate_admin_alert_summary failureCode=${window.failure.failureCode} errno=${window.failure.errno} stage=${window.failure.stage} safePath=${window.failure.safePath} count=${window.count}`)
+  writeVideoTrace(window.ctx, window.trace, 'gate_admin_alert_summary', { code: window.failure.failureCode, reason: `count=${window.count}` })
+}
+
+// 首次故障立即通知全部管理员，同键后续故障只计数并在五分钟结束时汇总。
+async function reportResourceGateStorageFailure(ctx: ContextLike, session: VideoSessionLike, failure: ResourceGateStorageFailure, traceId: string, taskId: string, options: GateAdminAlertOptions = {}, trace?: VideoTraceContext): Promise<void> {
+  const now = options.now === undefined ? Date.now() : options.now
+  const traceContext = trace || videoTraceModule.createVideoTrace({ traceId, taskId, inputType: 'unknown', startedAt: now })
+  const key = buildGateAdminAlertKey(failure)
+  const current = gateAdminAlertWindows.get(key)
+  ctx.logger('bvidl').warn(`gate_storage_failed failureCode=${failure.failureCode} errno=${failure.errno} stage=${failure.stage} safePath=${failure.safePath} traceId=${sanitizeResourceId(traceId)} taskId=${sanitizeResourceId(taskId)}`)
+  writeVideoTrace(ctx, traceContext, 'gate_storage_failed', { stage: failure.stage, code: failure.failureCode, reason: `${failure.errno}:${failure.safePath}` })
+  if (current) {
+    current.count += 1
+    current.lastAt = now
+    ctx.logger('bvidl').warn(`gate_admin_alert_suppressed failureCode=${failure.failureCode} errno=${failure.errno} stage=${failure.stage} safePath=${failure.safePath} count=${current.count}`)
+    writeVideoTrace(ctx, traceContext, 'gate_admin_alert_suppressed', { stage: failure.stage, code: failure.failureCode, reason: `count=${current.count}` })
+    return
+  }
+
+  const schedule = options.schedule || ((handler: () => void, delayMs: number) => setTimeout(handler, delayMs))
+  const timer = schedule(() => { void flushGateAdminAlertWindow(key) }, 5 * 60 * 1000)
+  timer.unref?.()
+  gateAdminAlertWindows.set(key, { count: 1, firstAt: now, lastAt: now, timer, ctx, session, failure, traceId, taskId, options, trace: traceContext })
+  const sent = await sendVideoAdminAlert(ctx, session, buildGateAdminAlertMessage(failure, traceId, taskId, now), options, 'gate')
+  if (sent) {
+    ctx.logger('bvidl').warn(`gate_admin_alert_sent failureCode=${failure.failureCode} errno=${failure.errno} stage=${failure.stage} safePath=${failure.safePath}`)
+    writeVideoTrace(ctx, traceContext, 'gate_admin_alert_sent', { stage: failure.stage, code: failure.failureCode })
+  }
+}
+
+// 清理资源锁告警窗口及管理员缓存，供插件关闭和测试隔离。
+function clearVideoAdminAlertState(): void {
+  for (const window of gateAdminAlertWindows.values()) clearTimeout(window.timer)
+  gateAdminAlertWindows.clear()
+  lastValidVideoAdminIds = []
 }
 
 // 在当前任务 finally 中安全删除一次暂存目录；失败时只告警，不重删。
@@ -1072,49 +1293,42 @@ function findVideoFileCache(ctx: ContextLike, keys: string[], now: number = Date
   return null
 }
 
-// 判断消息是否只包含一个可直接搬运的 B 站视频标识或地址。
+// 判断消息是否包含可直接搬运的 B 站视频标识或地址；显式命令仍交给命令处理器。
 function isStandaloneBilibiliVideoInput(input: string = ''): boolean {
   const text = normalizeSharedText(input).trim()
-  if (!text) return false
-  if (/^BV[0-9A-Za-z]{10}(?:\?p=\d+)?$/i.test(text)) return true
-
-  try {
-    const parsed = new URL(text)
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
-
-    const host = parsed.hostname.toLowerCase()
-    if (host === 'b23.tv') return parsed.pathname !== '/'
-    if (host !== 'bilibili.com' && host !== 'www.bilibili.com' && host !== 'm.bilibili.com') return false
-    return /^\/video\/(?:BV[0-9A-Za-z]{10}|av\d+)\/?$/i.test(parsed.pathname)
-  } catch {
-    return false
-  }
+  return !!text && !/^bvidl\b/i.test(text) && !!extractBiliUrl(text)
 }
 
 // 使用现有封面信息和磁盘 MP4 向当前会话发送缓存视频。
-async function sendCachedVideo(ctx: ContextLike, session: VideoSessionLike, entry: VideoFileCacheEntry): Promise<VideoUserError | undefined> {
+async function sendCachedVideo(ctx: ContextLike, session: VideoSessionLike, entry: VideoFileCacheEntry, trace?: VideoTraceContext): Promise<CachedVideoSendResult> {
   entry.activeSends += 1
   try {
     const previewOutcome = await safeSend(ctx, session, entry.infoMessage, 'cached preview')
-    if (previewOutcome.status === 'uncertain') return undefined
+    writeVideoTrace(ctx, trace, 'preview_send_finished', { stage: 'cached_preview', ok: previewOutcome.status === 'confirmed', reason: previewOutcome.status })
+    if (previewOutcome.status === 'uncertain') {
+      return { status: 'failed', reason: 'cached_preview_send_uncertain' }
+    }
     if (previewOutcome.status === 'failed') {
       const userError = previewOutcome.reason === 'rejected'
         ? buildVideoUserError({ id: 'video-024', retcode: previewOutcome.retcode })
         : buildVideoUserError({ id: 'video-025' })
       logVideoUserError(ctx, userError)
-      return userError
+      return { status: 'failed', reason: previewOutcome.reason, userError }
     }
     const videoOutcome = await safeSend(ctx, session, segment.video(toFileUrl(entry.filePath)), 'cached video')
+    writeVideoTrace(ctx, trace, 'video_send_finished', { stage: 'cached_video', ok: videoOutcome.status === 'confirmed', reason: videoOutcome.status })
     entry.lastSendStatus = videoOutcome.status
-    if (videoOutcome.status === 'uncertain') return undefined
+    if (videoOutcome.status === 'uncertain') {
+      return { status: 'failed', reason: 'cached_video_send_uncertain' }
+    }
     if (videoOutcome.status === 'failed') {
       const userError = videoOutcome.reason === 'rejected'
         ? buildVideoUserError({ id: 'video-026', retcode: videoOutcome.retcode })
         : buildVideoUserError({ id: 'video-027' })
       logVideoUserError(ctx, userError)
-      return userError
+      return { status: 'failed', reason: videoOutcome.reason, userError }
     }
-    return undefined
+    return { status: 'done' }
   } finally {
     entry.activeSends = Math.max(0, entry.activeSends - 1)
     if (entry.expired && entry.activeSends === 0) await deleteVideoCacheEntry(ctx, entry)
@@ -1177,8 +1391,39 @@ function startVideoCacheMaintenance(ctx: ContextLike): void {
       if (entry.activeSends === 0) await deleteVideoCacheEntry(ctx, entry)
     }
     biliInput.clearBiliInputCache()
+    clearBiliCookieHealthCache()
+    clearVideoAdminAlertState()
     inflightDownloads.clear()
   })
+}
+
+// 插件启动时只清理命名和真实路径均属于视频暂存根目录的上次运行遗留目录。
+function cleanupInterruptedVideoStagingDirectories(ctx: ContextLike): { removed: number, failed: number } {
+  let removed = 0
+  let failed = 0
+  try {
+    fsSync.mkdirSync(STAGING_ROOT, { recursive: true, mode: 0o700 })
+    const realRoot = fsSync.realpathSync(STAGING_ROOT)
+    for (const entry of fsSync.readdirSync(STAGING_ROOT, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !STAGING_DIR_RE.test(entry.name)) continue
+      const target = path.join(STAGING_ROOT, entry.name)
+      try {
+        const stat = fsSync.lstatSync(target)
+        const realTarget = fsSync.realpathSync(target)
+        if (!stat.isDirectory() || stat.isSymbolicLink() || path.dirname(realTarget) !== realRoot) continue
+        fsSync.rmSync(target, { recursive: true, force: true })
+        removed += 1
+      } catch (error) {
+        failed += 1
+        ctx.logger('bvidl').warn(`startup_staging_cleanup_failed path=${JSON.stringify(entry.name)} code=${getNodeErrorCode(error)}`)
+      }
+    }
+  } catch (error) {
+    failed += 1
+    ctx.logger('bvidl').warn(`startup_staging_scan_failed code=${getNodeErrorCode(error)}`)
+  }
+  ctx.logger('bvidl').warn(`startup_staging_discarded removed=${removed} failed=${failed}`)
+  return { removed, failed }
 }
 
 // 返回可用于测试和运行时验收的无敏感缓存摘要。
@@ -1445,8 +1690,18 @@ function getProbePartNumber(url: string, info: VideoInfo): number {
   return Number.isInteger(entryPart) && entryPart > 0 ? entryPart : 1
 }
 
+// 记录不含 Cookie 内容的运行健康摘要，供启动和每次处理链路定位文件变化。
+function logBiliCookieHealth(ctx: ContextLike, stage: string, trace?: VideoTraceContext): ReturnType<typeof getBiliCookieHealth> {
+  const health = getBiliCookieHealth(COOKIES)
+  ctx.logger('bvidl').warn(`cookie_health_checked stage=${sanitizeResourceId(stage)} ok=${health.ok} code=${health.code} path=${JSON.stringify(health.path)} size=${health.size} records=${health.recordCount} mtime_ms=${health.mtimeMs}`)
+  writeVideoTrace(ctx, trace, 'cookie_health_checked', { stage, ok: health.ok, code: health.code })
+  return health
+}
+
 // 探测视频元数据，并将无可用格式转换为受控中文错误。
 async function probeVideo(url: string, runCommand: typeof run = run): Promise<ProbeResult> {
+  const cookieHealth = getBiliCookieHealth(COOKIES)
+  if (!cookieHealth.ok) return { userError: buildVideoUserError({ id: 'video-030' }) }
   const { stdout } = await runCommand(YTDLP, [
     '--cookies', COOKIES,
     '--dump-single-json',
@@ -1488,19 +1743,48 @@ async function sendRejectedVideo(ctx: ContextLike, session: VideoSessionLike, in
   await safeSend(ctx, session, message, 'video refusal')
 }
 
+// 释放已取得的 S0 锁；释放期存储故障仍告警，但不覆盖已经明确的发送结果。
+async function releaseAcquiredVideoGate(ctx: ContextLike, session: VideoSessionLike, handle: VideoResourceGateHandle | null, reason: string, taskId: string, options: GateAdminAlertOptions = {}, trace?: VideoTraceContext): Promise<void> {
+  try {
+    handle?.release(reason)
+    writeVideoTrace(ctx, trace, 'gate_released', { stage: reason })
+  } catch (error) {
+    const storageFailure = getResourceGateStorageFailure(error)
+    if (!storageFailure) {
+      ctx.logger('bvidl').warn(`video resource gate release failed: ${getErrorMessage(error)}`)
+      return
+    }
+    await reportResourceGateStorageFailure(ctx, session, storageFailure, trace?.traceId || taskId, taskId, options, trace)
+  }
+}
+
 // 给缓存命中请求单独申请资源锁并发送磁盘视频。
-async function sendCachedVideoWithGate(ctx: ContextLike, session: VideoSessionLike, entry: VideoFileCacheEntry, source: string, deps: DownloadDeps): Promise<string | undefined> {
-  const gateResult = await acquireVideoResourceGate(ctx, session, source, deps)
+async function sendCachedVideoWithGate(ctx: ContextLike, session: VideoSessionLike, entry: VideoFileCacheEntry, source: string, deps: DownloadDeps, trace?: VideoTraceContext): Promise<string | undefined> {
+  const taskId = buildVideoTaskId(session, source)
+  const taskTrace = trace ? videoTraceModule.withVideoTraceTask(trace, taskId) : undefined
+  const gateResult = await acquireVideoResourceGate(ctx, session, source, deps, taskId, taskTrace)
   if (!gateResult.ok) return (gateResult.userError || buildVideoUserError({ id: 'video-003' })).message
   const gateHandle = gateResult.handle || null
+  let sendResult: CachedVideoSendResult = { status: 'failed', reason: 'cached_send_not_started' }
   try {
     gateHandle?.updateStep('video_cached_send')
-    const userError = await sendCachedVideo(ctx, session, entry)
-    return userError?.message
+    sendResult = await sendCachedVideo(ctx, session, entry, taskTrace)
+  } catch (error) {
+    const storageFailure = getResourceGateStorageFailure(error)
+    if (!storageFailure) throw error
+    await reportResourceGateStorageFailure(ctx, session, storageFailure, taskTrace?.traceId || taskId, taskId, deps.gateAdminAlertOptions, taskTrace)
+    const userError = buildVideoUserError({ id: 'video-032' })
+    logVideoUserError(ctx, userError, `failureCode=${storageFailure.failureCode} errno=${storageFailure.errno} stage=${storageFailure.stage} safePath=${storageFailure.safePath}`)
+    sendResult = { status: 'failed', reason: storageFailure.failureCode, userError }
   } finally {
-    try { gateHandle?.release('external-video-cache-finally') } catch { /* resource gate records stale releases independently */
-    }
+    await releaseAcquiredVideoGate(ctx, session, gateHandle, 'external-video-cache-finally', taskId, deps.gateAdminAlertOptions, taskTrace)
   }
+  writeVideoTrace(ctx, taskTrace, 'terminal_status', {
+    status: sendResult.status === 'done' ? 'done' : 'failed',
+    errorId: sendResult.status === 'failed' ? sendResult.userError?.id : undefined,
+    reason: sendResult.status === 'done' ? 'cached_video_sent' : sendResult.reason,
+  })
+  return sendResult.status === 'failed' ? sendResult.userError?.message : undefined
 }
 
 // 创建一个视频运行目录，并把失败转换为指定的目录错误编号。
@@ -1525,10 +1809,14 @@ async function removeOutputFileOnce(ctx: ContextLike, fsApi: VideoFsApi, filePat
 }
 
 // 为首次请求执行探测、大小门禁、下载、首发和缓存登记。
-async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessionLike, url: string, source: string, keys: string[], recentEntry: RecentParseEntry | null, deps: DownloadDeps): Promise<SharedVideoResult> {
-  const taskId = buildVideoTaskId(session, source)
-  const gateResult = await acquireVideoResourceGate(ctx, session, source, deps, taskId)
-  if (!gateResult.ok) return { kind: 'failed', userError: gateResult.userError || buildVideoUserError({ id: 'video-003' }) }
+async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessionLike, url: string, source: string, keys: string[], recentEntry: RecentParseEntry | null, deps: DownloadDeps, existingTaskId: string = '', trace?: VideoTraceContext): Promise<SharedVideoResult> {
+  const taskId = existingTaskId || buildVideoTaskId(session, source)
+  const taskTrace = trace ? videoTraceModule.withVideoTraceTask(trace, taskId) : undefined
+  const gateResult = await acquireVideoResourceGate(ctx, session, source, deps, taskId, taskTrace)
+  if (!gateResult.ok) {
+    const userError = gateResult.userError || buildVideoUserError({ id: 'video-003' })
+    return gateResult.busy ? { kind: 'busy', taskId: gateResult.taskId || taskId, p1Url: url, keys, userError } : { kind: 'failed', userError }
+  }
   const gateHandle = gateResult.handle || null
   const fsApi = deps.fs || fs
   const runCommand = deps.run || run
@@ -1555,9 +1843,18 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
     let info: VideoInfo
     let picked: FormatPick
     gateHandle?.updateStep('video_probe')
+    const probeCookieHealth = logBiliCookieHealth(ctx, 'before_probe', taskTrace)
+    if (!probeCookieHealth.ok) {
+      const userError = buildVideoUserError({ id: 'video-030' })
+      logVideoUserError(ctx, userError, `code=${probeCookieHealth.code}`)
+      return { kind: 'failed', userError }
+    }
+    const probeStartedAt = Date.now()
+    writeVideoTrace(ctx, taskTrace, 'probe_started', { stage: 'video_probe' })
     try {
       const result = await probe(url)
       if (result.userError) {
+        writeVideoTrace(ctx, taskTrace, 'probe_finished', { stage: 'video_probe', durationMs: Date.now() - probeStartedAt, ok: false, errorId: result.userError.id })
         logVideoUserError(ctx, result.userError)
         return { kind: 'failed', userError: result.userError }
       }
@@ -1567,14 +1864,17 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
           bvId: getProbeBvId(url, result.info || {}),
           partNumber: getProbePartNumber(url, result.info || {}),
         })
+        writeVideoTrace(ctx, taskTrace, 'probe_finished', { stage: 'video_probe', durationMs: Date.now() - probeStartedAt, ok: false, errorId: userError.id })
         logVideoUserError(ctx, userError)
         return { kind: 'failed', userError }
       }
       info = result.info
       picked = result.picked
+      writeVideoTrace(ctx, taskTrace, 'probe_finished', { stage: 'video_probe', durationMs: Date.now() - probeStartedAt, ok: true })
     } catch (error) {
       ctx.logger('bvidl').warn(getCommandErrorMessage(error))
       const userError = buildVideoUserError({ id: 'video-010' })
+      writeVideoTrace(ctx, taskTrace, 'probe_finished', { stage: 'video_probe', durationMs: Date.now() - probeStartedAt, ok: false, errorId: userError.id, reason: getSafeCommandErrorSummary(error) })
       logVideoUserError(ctx, userError, getSafeCommandErrorSummary(error))
       return { kind: 'failed', userError }
     }
@@ -1588,7 +1888,8 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
 
     gateHandle?.updateStep('video_preview')
     const previewOutcome = await safeSend(ctx, session, infoMessage, 'preview')
-    if (previewOutcome.status === 'uncertain') return { kind: 'sent' }
+    writeVideoTrace(ctx, taskTrace, 'preview_send_finished', { stage: 'video_preview', ok: previewOutcome.status === 'confirmed', reason: previewOutcome.status })
+    if (previewOutcome.status === 'uncertain') return { kind: 'sent', sendStatus: 'uncertain' }
     if (previewOutcome.status === 'failed') {
       const userError = previewOutcome.reason === 'rejected'
         ? buildVideoUserError({ id: 'video-012', retcode: previewOutcome.retcode })
@@ -1631,8 +1932,15 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
     }
 
     gateHandle?.updateStep('video_download')
+    const downloadCookieHealth = logBiliCookieHealth(ctx, 'before_download', taskTrace)
+    if (!downloadCookieHealth.ok) {
+      const userError = buildVideoUserError({ id: 'video-030' })
+      logVideoUserError(ctx, userError, `code=${downloadCookieHealth.code}`)
+      return { kind: 'failed', userError }
+    }
     pickedFormat = picked.format
     downloadStartedAt = Date.now()
+    writeVideoTrace(ctx, taskTrace, 'download_started', { stage: 'video_download' })
     try {
       await runCommand(YTDLP, [
         '--cookies', COOKIES,
@@ -1644,9 +1952,11 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
         '-o', `${cacheId}.%(ext)s`,
         url,
       ], { timeout: 10 * 60 * 1000 })
+      writeVideoTrace(ctx, taskTrace, 'download_finished', { stage: 'video_download', durationMs: Date.now() - downloadStartedAt, ok: true })
     } catch (error) {
       commandFailure = error instanceof Error ? error as ExecFileError : new Error(String(error)) as ExecFileError
       const userError = buildVideoUserError({ id: 'video-018' })
+      writeVideoTrace(ctx, taskTrace, 'download_finished', { stage: 'video_download', durationMs: Date.now() - downloadStartedAt, ok: false, errorId: userError.id, reason: getSafeCommandErrorSummary(commandFailure) })
       logVideoUserError(ctx, userError, getSafeCommandErrorSummary(commandFailure))
       return { kind: 'failed', userError }
     }
@@ -1677,6 +1987,7 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
 
     gateHandle?.updateStep('video_send')
     const videoOutcome = await safeSend(ctx, session, segment.video(toFileUrl(outputFile)), 'video')
+    writeVideoTrace(ctx, taskTrace, 'video_send_finished', { stage: 'video_send', ok: videoOutcome.status === 'confirmed', reason: videoOutcome.status })
     if (videoOutcome.status === 'failed') {
       const userError = videoOutcome.reason === 'rejected'
         ? buildVideoUserError({ id: 'video-022', retcode: videoOutcome.retcode })
@@ -1691,24 +2002,186 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
     if (!cacheEntry) {
       await removeOutputFileOnce(ctx, fsApi, outputFile, videoOutcome.status === 'uncertain' ? 'uncertain_cache_registration' : 'cache_registration')
       outputFile = ''
-      return { kind: 'sent' }
+      return { kind: 'sent', sendStatus: videoOutcome.status }
     }
     outputFile = ''
     return { kind: 'cached', entry: cacheEntry }
+  } catch (error) {
+    const storageFailure = getResourceGateStorageFailure(error)
+    if (!storageFailure) throw error
+    await reportResourceGateStorageFailure(ctx, session, storageFailure, taskTrace?.traceId || taskId, taskId, deps.gateAdminAlertOptions, taskTrace)
+    const userError = buildVideoUserError({ id: 'video-032' })
+    logVideoUserError(ctx, userError, `failureCode=${storageFailure.failureCode} errno=${storageFailure.errno} stage=${storageFailure.stage} safePath=${storageFailure.safePath}`)
+    return { kind: 'failed', userError }
   } finally {
     if (outputFile) await removeOutputFileOnce(ctx, fsApi, outputFile, 'request_finally')
     const cleanupOk = stagingDir ? await removeStagingDirectory(ctx, session, stagingDir, bvId, taskId) : true
     if (commandFailure) {
       ctx.logger('bvidl').warn(`video_download_failed: cacheId=${cacheId || 'unknown'} bv=${bvKey || 'unknown'} format=${pickedFormat || 'unknown'} duration_ms=${downloadStartedAt ? Date.now() - downloadStartedAt : 0} exit_code=${commandFailure.code ?? 'unknown'} signal=${commandFailure.signal || 'none'} cleanup_ok=${cleanupOk} user_error_id=video-018 error=${getSafeCommandErrorSummary(commandFailure)}`)
     }
-    try { gateHandle?.release('external-video-finally') } catch { /* resource gate records stale releases independently */
-    }
+    await releaseAcquiredVideoGate(ctx, session, gateHandle, 'external-video-finally', taskId, deps.gateAdminAlertOptions, taskTrace)
   }
 }
 
+// 根据已归一化输入和原消息形态生成不含正文的输入类型标签。
+function detectBiliInputType(url: string, source: string): string {
+  const normalizedSource = normalizeSharedText(source).trim()
+  if (/^BV[0-9A-Za-z]{10}(?:\?p=\d+)?$/i.test(normalizedSource)) return 'bare_bv'
+  try {
+    if (new URL(url).hostname.toLowerCase() === 'b23.tv') return 'short_link'
+  } catch { /* 已归一化 URL 的最终校验由 bili-input 负责。 */ }
+  if (isBilibiliCardInput(normalizedSource)) return 'qq_card'
+  return 'long_link'
+}
+
+// 从 session 生成队列允许持久化的原发送目标，不保存整个会话对象。
+function getQueuedVideoTarget(session: VideoSessionLike): { targetType: 'group' | 'private', targetId: string } {
+  if (session.isDirect) return { targetType: 'private', targetId: getVideoUserId(session) }
+  return { targetType: 'group', targetId: String(session.channelId || session.guildId || '') }
+}
+
+// 最终失败通知第一次明确失败后等待 10 秒只重试一次文字，不重新执行视频。
+async function sendQueuedVideoFailureNotice(ctx: ContextLike, task: ResourceTask, reason: string, deps: DownloadDeps): Promise<void> {
+  const session = queuedVideoSessions.get(task.id)
+  if (!session) return
+  const safeReason = /错误编号：video-\d{3}。/.test(reason)
+    ? reason
+    : `视频任务执行失败，请稍后重新发送。任务编号：${sanitizeResourceId(task.id)}。`
+  try {
+    const first = await safeSend(ctx, session, safeReason, 'queued video terminal failure')
+    if (first.status !== 'failed') return
+    const delay = deps.finalNoticeDelay || ((delayMs: number) => new Promise<void>(resolve => setTimeout(resolve, delayMs)))
+    await delay(10_000)
+    await safeSend(ctx, session, safeReason, 'queued video terminal failure retry')
+  } finally {
+    queuedVideoSessions.delete(task.id)
+  }
+}
+
+// 从持久视频任务的最小 payload 恢复原 trace，不读取或记录消息正文。
+function getQueuedVideoTrace(task: ResourceTask): VideoTraceContext {
+  const payload = task.payload as Record<string, unknown>
+  const requestedAt = Date.parse(String(payload.requestedAt || task.createdAt || ''))
+  return videoTraceModule.createVideoTrace({
+    traceId: String(payload.traceId || ''),
+    taskId: task.id,
+    inputType: String(payload.inputType || 'unknown'),
+    videoKey: payload.bvId,
+    startedAt: Number.isFinite(requestedAt) ? requestedAt : Date.now(),
+  })
+}
+
+// 为队列完成、失败或重启取消写入唯一终态。
+function recordQueuedVideoTerminal(ctx: ContextLike, task: ResourceTask, status: 'done' | 'failed' | 'cancelled', reason: string): void {
+  const trace = getQueuedVideoTrace(task)
+  writeVideoTrace(ctx, trace, 'terminal_status', { status, reason: reason || status, stage: 'video_queue_terminal' })
+}
+
+// 使用持久任务中经过严格校验的最小 payload 复用直接请求的下载发送函数。
+async function executeQueuedVideoTask(ctx: ContextLike, task: ResourceTask, deps: DownloadDeps): Promise<QueuedVideoExecutionResult> {
+  const payload = task.payload as Record<string, unknown>
+  const p1Url = String(payload.p1Url || '')
+  const bvId = String(payload.bvId || '')
+  const traceId = String(payload.traceId || '')
+  const keys = uniqueStrings(buildBiliKeys(p1Url).concat(buildBiliKeys(bvId)))
+  const session = queuedVideoSessions.get(task.id)
+  const trace = getQueuedVideoTrace(task)
+  if (!session || normalizeBiliP1Url(p1Url) !== p1Url || !/^BV[0-9A-Za-z]{10}$/i.test(bvId) || !traceId || !keys.length) {
+    queuedVideoSessions.delete(task.id)
+    return { status: 'failed', reason: 'invalid_video_task_payload', notify: false }
+  }
+
+  const result = await processInitialVideoRequest(ctx, session, p1Url, bvId, keys, null, deps, task.id, trace)
+  if (result.kind === 'busy') return { status: 'retry', reason: 'resource_busy' }
+  if (result.kind === 'failed') return { status: 'failed', reason: result.userError.message }
+  if (result.kind === 'rejected') {
+    queuedVideoSessions.delete(task.id)
+    return { status: 'failed', reason: result.userError.message, notify: false, result: { userErrorId: result.userError.id } }
+  }
+  if (result.kind === 'cached' && result.entry.lastSendStatus !== 'confirmed') {
+    queuedVideoSessions.delete(task.id)
+    return { status: 'failed', reason: 'video_send_outcome_uncertain', notify: false }
+  }
+  if (result.kind === 'sent' && result.sendStatus !== 'confirmed') {
+    queuedVideoSessions.delete(task.id)
+    return { status: 'failed', reason: 'video_send_outcome_uncertain', notify: false }
+  }
+  queuedVideoSessions.delete(task.id)
+  return { status: 'done', result: { traceId, bvId } }
+}
+
+// 创建并初始化唯一主进程视频队列；接口缺失时保持不可用状态且不半启用。
+function getOrCreateVideoTaskQueue(ctx: ContextLike, deps: DownloadDeps = {}): VideoTaskQueueController {
+  if (videoTaskQueue) return videoTaskQueue
+  videoTaskQueue = videoTaskQueueModule.createVideoTaskQueue({
+    store: deps.taskStore,
+    execute: task => executeQueuedVideoTask(ctx, task, deps),
+    onTerminalFailure: (task, reason) => sendQueuedVideoFailureNotice(ctx, task, reason, deps),
+    onTerminal: (task, status, reason) => recordQueuedVideoTerminal(ctx, task, status, reason),
+  })
+  const startup = videoTaskQueue.initialize()
+  ctx.logger('bvidl').warn(`video_queue_initialized available=${startup.available} cancelled=${startup.cancelled} reason=${sanitizeResourceId(startup.reason || 'none')}`)
+  return videoTaskQueue
+}
+
+// 先持久化并全状态确认资源忙请求，再发送真实排队、队满或失败回执。
+async function enqueueBusyVideoRequest(ctx: ContextLike, session: VideoSessionLike, result: Extract<SharedVideoResult, { kind: 'busy' }>, deps: DownloadDeps, trace: VideoTraceContext): Promise<boolean> {
+  const queue = getOrCreateVideoTaskQueue(ctx, deps)
+  const target = getQueuedVideoTarget(session)
+  const bvId = extractBvId(result.p1Url)
+  const taskTrace = videoTraceModule.withVideoTraceTask(trace, result.taskId)
+  writeVideoTrace(ctx, taskTrace, 'queue_write_started', { stage: 'video_queue_persist' })
+  queuedVideoSessions.set(result.taskId, session)
+  const queued = await queue.enqueue({
+    taskId: result.taskId,
+    p1Url: result.p1Url,
+    bvId,
+    inputType: taskTrace.inputType,
+    targetType: target.targetType,
+    targetId: target.targetId,
+    channelKey: getVideoChannelKey(session),
+    userId: getVideoUserId(session),
+    requestedAt: new Date().toISOString(),
+    retryCount: 0,
+    traceId: taskTrace.traceId,
+  })
+  if (queued.status === 'queued') {
+    ctx.logger('bvidl').warn(`queue_persisted taskId=${queued.task.id} traceId=${taskTrace.traceId} waiting=${queued.waiting} capacity=${queued.capacity}`)
+    writeVideoTrace(ctx, taskTrace, 'queue_persisted', { waiting: queued.waiting, capacity: queued.capacity, stage: String(queued.task.status || 'pending') })
+    const observedStatus = String(queued.task.status || '')
+    if (observedStatus === 'pending' || observedStatus === 'deferred') {
+      await safeSend(ctx, session, `视频任务已排队，当前等待 ${queued.waiting}/${queued.capacity}，任务编号：${queued.task.id}。`, 'video queued')
+      queue.kick()
+    } else if (observedStatus === 'claiming' || observedStatus === 'running') {
+      await safeSend(ctx, session, `视频任务已保存并开始处理，任务编号：${queued.task.id}。`, 'video running')
+    } else if (observedStatus === 'done') {
+      queuedVideoSessions.delete(queued.task.id)
+      writeVideoTrace(ctx, taskTrace, 'terminal_status', { status: 'done', reason: 'task_already_done', stage: 'video_queue_terminal' })
+      await safeSend(ctx, session, `视频任务已完成，任务编号：${queued.task.id}。`, 'video already done')
+    } else {
+      queuedVideoSessions.delete(queued.task.id)
+      const statusLabel = observedStatus === 'cancelled' ? '已取消' : '已失败'
+      writeVideoTrace(ctx, taskTrace, 'terminal_status', { status: observedStatus === 'cancelled' ? 'cancelled' : 'failed', reason: `task_already_${observedStatus}`, stage: 'video_queue_terminal' })
+      await safeSend(ctx, session, `视频任务${statusLabel}，本次不会继续执行。任务编号：${queued.task.id}。`, 'video already terminal')
+    }
+    return true
+  }
+  queuedVideoSessions.delete(result.taskId)
+  if (queued.status === 'full') {
+    writeVideoTrace(ctx, taskTrace, 'queue_persist_failed', { reason: 'queue_full', waiting: queued.waiting, capacity: queued.capacity })
+    await safeSend(ctx, session, '视频队列已满，本次未入队，请稍后重新发送。', 'video queue full')
+    return false
+  }
+  const userError = buildVideoUserError({ id: queued.status === 'persist_failed' ? 'video-029' : 'video-028' })
+  writeVideoTrace(ctx, taskTrace, 'queue_persist_failed', { errorId: userError.id, reason: queued.status === 'unavailable' ? queued.reason : queued.status })
+  logVideoUserError(ctx, userError, queued.status === 'unavailable' ? `reason=${sanitizeResourceId(queued.reason)}` : `taskId=${queued.taskId}`)
+  await safeSend(ctx, session, userError.message, 'video queue unavailable')
+  return false
+}
+
 // 把共享首次处理结果投递给等待中的其他群请求。
-async function deliverSharedVideoResult(ctx: ContextLike, session: VideoSessionLike, result: SharedVideoResult, source: string, deps: DownloadDeps): Promise<string | undefined> {
-  if (result.kind === 'cached') return sendCachedVideoWithGate(ctx, session, result.entry, source, deps)
+async function deliverSharedVideoResult(ctx: ContextLike, session: VideoSessionLike, result: SharedVideoResult, source: string, deps: DownloadDeps, trace: VideoTraceContext): Promise<string | undefined> {
+  if (result.kind === 'cached') return sendCachedVideoWithGate(ctx, session, result.entry, source, deps, trace)
   if (result.kind === 'rejected') {
     await sendRejectedVideo(ctx, session, result.infoMessage, result.userError.message)
     return undefined
@@ -1740,18 +2213,45 @@ function unregisterInflightDownload(keys: string[], promise: Promise<SharedVideo
   }
 }
 
+// 根据一次直接处理结果写入成功或失败终态，busy 留给真实队列继续同一 trace。
+function recordDirectVideoTerminal(ctx: ContextLike, trace: VideoTraceContext, result: Exclude<SharedVideoResult, { kind: 'busy' }>, overrideError?: string): void {
+  if (overrideError) {
+    writeVideoTrace(ctx, trace, 'terminal_status', { status: 'failed', reason: overrideError })
+    return
+  }
+  if (result.kind === 'cached') {
+    writeVideoTrace(ctx, trace, 'terminal_status', { status: result.entry.lastSendStatus === 'confirmed' ? 'done' : 'failed', reason: `video_send_${result.entry.lastSendStatus}` })
+    return
+  }
+  if (result.kind === 'sent') {
+    writeVideoTrace(ctx, trace, 'terminal_status', { status: result.sendStatus === 'confirmed' ? 'done' : 'failed', reason: `video_send_${result.sendStatus}` })
+    return
+  }
+  writeVideoTrace(ctx, trace, 'terminal_status', { status: 'failed', errorId: result.userError.id, reason: result.userError.stage })
+}
+
 // 编排同群去重、短链归一化、缓存命中、并发合并和首次处理。
 async function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url: string, source: string = url, deps: DownloadDeps = {}, options: DownloadRequestOptions = {}): Promise<string | undefined> {
   if (isBlacklistedGroup(session)) return
 
   const now = Date.now()
-  const resolvedInput = await resolveInputBiliTarget(ctx, url, source, deps)
+  let trace = videoTraceModule.createVideoTrace({ inputType: detectBiliInputType(url, source), videoKey: buildBiliKeys(url)[0], startedAt: now })
+  writeVideoTrace(ctx, trace, 'input_detected', { stage: 'video_input' })
+  const resolvedInput = await resolveInputBiliTarget(ctx, url, source, deps, trace)
   const keys = resolvedInput.keys
   if (!resolvedInput.p1Url) {
-    const userError = buildVideoUserError({ id: 'video-010' })
-    logVideoUserError(ctx, userError, 'input_normalization_failed')
+    const shortLinkFailure = resolvedInput.shortLink?.ok === false ? resolvedInput.shortLink : null
+    const userError = buildVideoUserError({ id: shortLinkFailure ? 'video-031' : 'video-010' })
+    const detail = shortLinkFailure
+      ? `failureCode=${shortLinkFailure.code} hops=${shortLinkFailure.hops} statusCode=${shortLinkFailure.statusCode ?? 'none'}`
+      : 'input_normalization_failed'
+    writeVideoTrace(ctx, trace, 'input_rejected', { errorId: userError.id, reason: detail })
+    writeVideoTrace(ctx, trace, 'terminal_status', { status: 'failed', errorId: userError.id, reason: userError.stage })
+    logVideoUserError(ctx, userError, detail)
     return userError.message
   }
+  trace = videoTraceModule.withVideoTraceKey(trace, keys.find(key => key.startsWith('bv:')) || keys[0] || resolvedInput.p1Url)
+  writeVideoTrace(ctx, trace, 'input_normalized', { stage: 'video_input_normalized' })
   const resolvedDuplicate = findRecentDuplicateParse(session, keys, now)
   const cached = findVideoFileCache(ctx, keys, now)
   const canRetryUncertainCache = !!(options.explicitCommand && resolvedDuplicate && cached?.lastSendStatus === 'uncertain')
@@ -1759,33 +2259,50 @@ async function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url:
     const userError = buildVideoUserError({ id: 'video-002', remainingSeconds: resolvedDuplicate.remainingSeconds })
     logVideoUserError(ctx, userError, `remaining_seconds=${resolvedDuplicate.remainingSeconds}`)
     await safeSend(ctx, session, userError.message, 'duplicate parse notice')
+    writeVideoTrace(ctx, trace, 'terminal_status', { status: 'failed', errorId: userError.id, reason: userError.stage })
     return undefined
   }
   const recentEntry = canRetryUncertainCache ? null : rememberRecentParse(session, keys, now)
 
   if (cached) {
-    const result = await sendCachedVideoWithGate(ctx, session, cached, source, deps)
+    const result = await sendCachedVideoWithGate(ctx, session, cached, source, deps, trace)
     if (result) forgetRecentParse(session, recentEntry)
+    writeVideoTrace(ctx, trace, 'terminal_status', { status: result ? 'failed' : 'done', reason: result ? 'cached_send_failed' : 'cached_send_complete' })
     return result
   }
 
   const inflight = findInflightDownload(keys)
   if (inflight) {
     const result = await inflight
-    const delivered = await deliverSharedVideoResult(ctx, session, result, source, deps)
+    if (result.kind === 'busy') {
+      const queued = await enqueueBusyVideoRequest(ctx, session, { ...result, taskId: buildVideoTaskId(session, source) }, deps, trace)
+      if (!queued) forgetRecentParse(session, recentEntry)
+      if (!queued) writeVideoTrace(ctx, trace, 'terminal_status', { status: 'failed', reason: 'queue_not_persisted' })
+      return undefined
+    }
+    const delivered = await deliverSharedVideoResult(ctx, session, result, source, deps, trace)
     if (result.kind === 'failed' || delivered) forgetRecentParse(session, recentEntry)
+    recordDirectVideoTerminal(ctx, trace, result, delivered ? 'shared_result_delivery_failed' : undefined)
     return delivered
   }
 
   let work!: Promise<SharedVideoResult>
-  work = processInitialVideoRequest(ctx, session, resolvedInput.p1Url, source, keys, recentEntry, deps)
+  work = processInitialVideoRequest(ctx, session, resolvedInput.p1Url, source, keys, recentEntry, deps, '', trace)
   const registeredKeys = registerInflightDownload(keys, work)
   try {
     const result = await work
     if (result.kind === 'failed') {
       forgetRecentParse(session, recentEntry)
+      recordDirectVideoTerminal(ctx, trace, result)
       return result.userError.message
     }
+    if (result.kind === 'busy') {
+      const queued = await enqueueBusyVideoRequest(ctx, session, result, deps, trace)
+      if (!queued) forgetRecentParse(session, recentEntry)
+      if (!queued) writeVideoTrace(ctx, trace, 'terminal_status', { status: 'failed', reason: 'queue_not_persisted' })
+      return undefined
+    }
+    recordDirectVideoTerminal(ctx, trace, result)
     return undefined
   } finally {
     unregisterInflightDownload(registeredKeys, work)
@@ -1797,15 +2314,32 @@ async function handleStandaloneBilibiliVideoInput(ctx: ContextLike, session: Vid
   if (isBlacklistedGroup(session)) return next()
 
   const content = session.content || ''
-  if (!isStandaloneBilibiliVideoInput(content)) return next()
-
   const url = extractBiliUrl(content)
-  if (!url) return next()
+  if (!url) {
+    if (!isBilibiliCardInput(content)) return next()
+    const trace = videoTraceModule.createVideoTrace({ inputType: 'qq_card' })
+    writeVideoTrace(ctx, trace, 'input_detected', { stage: 'qq_card' })
+    const userError = buildVideoUserError({ id: 'video-010' })
+    writeVideoTrace(ctx, trace, 'input_rejected', { errorId: userError.id, reason: 'recognized_bilibili_card_without_video_url' })
+    writeVideoTrace(ctx, trace, 'terminal_status', { status: 'failed', errorId: userError.id, reason: userError.stage })
+    logVideoUserError(ctx, userError, 'recognized_bilibili_card_without_video_url')
+    return userError.message
+  }
+  if (!isStandaloneBilibiliVideoInput(content)) return next()
   return downloadAndSend(ctx, session, url, content, deps)
 }
 
 function apply(ctx: ContextLike): void {
+  logBiliCookieHealth(ctx, 'startup')
+  cleanupInterruptedVideoStagingDirectories(ctx)
   startVideoCacheMaintenance(ctx)
+  getOrCreateVideoTaskQueue(ctx)
+  ctx.on?.('dispose', () => {
+    videoTaskQueue?.dispose()
+    videoTaskQueue = null
+    queuedVideoSessions.clear()
+    videoTraceModule.clearVideoTraceState()
+  })
   ctx.command('sendtestvideo', 'send local test video').action(() => {
     return segment.video(toFileUrl(TEST_VIDEO_FILE))
   })
@@ -1837,8 +2371,14 @@ const clearRecentParseHistory = (): void => recentParseHistory.clear()
 
 // 清理测试可见的内存状态和无活动缓存文件。
 async function clearVideoRuntimeState(): Promise<void> {
+  videoTaskQueue?.dispose()
+  videoTaskQueue = null
+  queuedVideoSessions.clear()
   recentParseHistory.clear()
   biliInput.clearBiliInputCache()
+  clearBiliCookieHealthCache()
+  videoTraceModule.clearVideoTraceState()
+  clearVideoAdminAlertState()
   inflightDownloads.clear()
   for (const entry of [...videoFileCache.values()]) {
     detachVideoCacheEntry(entry)
@@ -1852,6 +2392,7 @@ export = {
   name,
   apply,
   extractBiliUrl,
+  isBilibiliCardInput,
   isStandaloneBilibiliVideoInput,
   handleStandaloneBilibiliVideoInput,
   buildBiliKeys,
@@ -1877,6 +2418,9 @@ export = {
   isPrivateIpAddress,
   cleanupVideoCache,
   removeRequestStagingDirectory,
+  getResourceGateStorageFailure,
+  reportResourceGateStorageFailure,
+  flushGateAdminAlertWindow,
   getVideoCacheStatus,
   clearVideoRuntimeState,
 }

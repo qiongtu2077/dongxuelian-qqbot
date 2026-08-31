@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeSharedText = normalizeSharedText;
 exports.uniqueStrings = uniqueStrings;
+exports.isBilibiliCardInput = isBilibiliCardInput;
 exports.extractBiliUrl = extractBiliUrl;
 exports.buildBiliKeys = buildBiliKeys;
 exports.extractBvId = extractBvId;
@@ -26,6 +27,43 @@ const SHORT_LINK_MAX_REDIRECTS = 5;
 const SHORT_LINK_TIMEOUT_MS = 5000;
 const SHORT_LINK_MAX_HEADER_BYTES = 16 * 1024;
 const shortLinkResolutionCache = new Map();
+const blockedIpv4Ranges = new net.BlockList();
+const blockedIpv6Ranges = new net.BlockList();
+const BLOCKED_IP_SUBNETS = [
+    ['0.0.0.0', 8, 'ipv4'],
+    ['10.0.0.0', 8, 'ipv4'],
+    ['100.64.0.0', 10, 'ipv4'],
+    ['127.0.0.0', 8, 'ipv4'],
+    ['169.254.0.0', 16, 'ipv4'],
+    ['172.16.0.0', 12, 'ipv4'],
+    ['192.0.0.0', 24, 'ipv4'],
+    ['192.0.2.0', 24, 'ipv4'],
+    ['192.88.99.0', 24, 'ipv4'],
+    ['192.168.0.0', 16, 'ipv4'],
+    ['198.18.0.0', 15, 'ipv4'],
+    ['198.51.100.0', 24, 'ipv4'],
+    ['203.0.113.0', 24, 'ipv4'],
+    ['224.0.0.0', 4, 'ipv4'],
+    ['240.0.0.0', 4, 'ipv4'],
+    ['::', 128, 'ipv6'],
+    ['::1', 128, 'ipv6'],
+    ['::ffff:0:0', 96, 'ipv6'],
+    ['64:ff9b::', 96, 'ipv6'],
+    ['64:ff9b:1::', 48, 'ipv6'],
+    ['100::', 64, 'ipv6'],
+    ['2001::', 23, 'ipv6'],
+    ['2001:db8::', 32, 'ipv6'],
+    ['2002::', 16, 'ipv6'],
+    ['3fff::', 20, 'ipv6'],
+    ['fc00::', 7, 'ipv6'],
+    ['fe80::', 10, 'ipv6'],
+    ['ff00::', 8, 'ipv6'],
+];
+for (const [network, prefix, type] of BLOCKED_IP_SUBNETS) {
+    const blockList = type === 'ipv4' ? blockedIpv4Ranges : blockedIpv6Ranges;
+    blockList.addSubnet(network, prefix, type);
+}
+// --- 文本归一化与视频键 --- //
 // 反复解码常见分享转义，保留无法解码的原始文本。
 function normalizeSharedText(input = '') {
     let text = String(input);
@@ -79,14 +117,60 @@ function normalizeBiliUrlKey(input = '') {
         return `url:${value.replace(/[?#].*$/, '').replace(/\/+$/, '').toLowerCase()}`;
     }
 }
-// 从分享文本中提取 B 站视频 URL 或裸 BV 号。
-function extractBiliUrl(input = '') {
+// 从普通文字中提取 B 站视频 URL 或裸 BV 号。
+function extractBiliUrlFromText(input = '') {
     const text = normalizeSharedText(input);
     const urlMatch = text.match(/https?:\/\/(?:www\.bilibili\.com|m\.bilibili\.com|bilibili\.com|b23\.tv)\/[^\s"'<>\\\]}),，。！？、]+/i);
     if (urlMatch)
         return urlMatch[0];
     const bvMatch = text.match(/\bBV[0-9A-Za-z]{10}\b/i);
     return bvMatch ? `https://www.bilibili.com/video/${bvMatch[0]}` : null;
+}
+// 从序列化消息或其 JSON 子串中解析一个结构化卡片对象。
+function parseSharedCardJson(input = '') {
+    const text = normalizeSharedText(input).trim();
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start < 0 || end <= start)
+        return null;
+    try {
+        const parsed = JSON.parse(text.slice(start, end + 1));
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    }
+    catch {
+        return null;
+    }
+}
+// 只遍历卡片中语义明确的 URL/link 字段，拒绝从标题、prompt 或 desc 提取 BV。
+function extractBiliUrlFromCardValue(value, fieldName = '') {
+    if (typeof value === 'string')
+        return /(?:url|link)$/i.test(fieldName) ? extractBiliUrlFromText(value) : null;
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const found = extractBiliUrlFromCardValue(item, fieldName);
+            if (found)
+                return found;
+        }
+        return null;
+    }
+    if (!value || typeof value !== 'object')
+        return null;
+    for (const [key, child] of Object.entries(value)) {
+        const found = extractBiliUrlFromCardValue(child, key);
+        if (found)
+            return found;
+    }
+    return null;
+}
+// 判断消息是否为带 B 站品牌标识的结构化 QQ 卡片。
+function isBilibiliCardInput(input = '') {
+    const card = parseSharedCardJson(input);
+    return !!card && /(?:bilibili|哔哩哔哩|b23\.tv)/i.test(JSON.stringify(card));
+}
+// 从普通文字或结构化卡片的链接字段提取 B 站视频地址。
+function extractBiliUrl(input = '') {
+    const card = parseSharedCardJson(input);
+    return card ? extractBiliUrlFromCardValue(card) : extractBiliUrlFromText(input);
 }
 // 为去重和缓存生成 BV 键与 URL 键。
 function buildBiliKeys(input = '') {
@@ -134,6 +218,7 @@ function isB23ShortUrl(input = '') {
         return false;
     }
 }
+// --- 短链网络安全与重定向 --- //
 // 限定短链跳转只能留在 B 站公开域名内。
 function isAllowedBiliRedirectUrl(input) {
     try {
@@ -151,38 +236,28 @@ function isAllowedBiliRedirectUrl(input) {
 function isPrivateIpAddress(address) {
     const normalized = String(address || '').toLowerCase().split('%')[0];
     const version = net.isIP(normalized);
-    if (version === 4) {
-        const [a, b] = normalized.split('.').map(Number);
-        return a === 0 || a === 10 || a === 127
-            || (a === 100 && b >= 64 && b <= 127)
-            || (a === 169 && b === 254)
-            || (a === 172 && b >= 16 && b <= 31)
-            || (a === 192 && b === 168) || a >= 224;
-    }
-    if (version === 6) {
-        if (normalized === '::' || normalized === '::1')
-            return true;
-        if (/^f[cd]/.test(normalized) || /^fe[89ab]/.test(normalized))
-            return true;
-        const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-        return !!(mapped && isPrivateIpAddress(mapped[1]));
-    }
+    if (version === 4)
+        return blockedIpv4Ranges.check(normalized, 'ipv4');
+    if (version === 6)
+        return blockedIpv6Ranges.check(normalized, 'ipv6');
     return true;
 }
 // 解析并验证白名单域名，返回已通过公网检查的固定连接地址。
-async function resolvePublicBiliHost(input) {
+async function resolvePublicBiliHost(input, lookup) {
     if (!isAllowedBiliRedirectUrl(input))
-        throw new Error('short link redirect escaped Bilibili allowlist');
+        return { ok: false, code: 'redirect_outside_allowlist' };
     const hostname = new URL(input).hostname;
-    const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
-    if (!addresses.length || addresses.some(item => isPrivateIpAddress(item.address)))
-        throw new Error('short link redirect resolved to private or invalid address');
-    return addresses[0];
+    const resolveHost = lookup || (async (value) => dns.lookup(value, { all: true, verbatim: true }));
+    const addresses = await resolveHost(hostname);
+    if (!addresses.length)
+        return { ok: false, code: 'dns_empty' };
+    if (addresses.some(item => isPrivateIpAddress(item.address)))
+        return { ok: false, code: 'dns_private_address' };
+    return { ok: true, destination: addresses[0] };
 }
 // 固定到已校验 IP 读取短链响应，保留原域名 Host 和 TLS SNI。
-async function requestRedirectLocation(input, timeoutMs) {
+async function requestRedirectLocation(input, timeoutMs, destination) {
     const parsed = new URL(input);
-    const destination = await resolvePublicBiliHost(input);
     const transport = parsed.protocol === 'https:' ? https : http;
     return new Promise((resolve, reject) => {
         const request = transport.request({
@@ -200,35 +275,141 @@ async function requestRedirectLocation(input, timeoutMs) {
             response.resume();
             resolve({ statusCode: Number(response.statusCode || 0), location: String(location) });
         });
-        request.setTimeout(Math.max(100, timeoutMs), () => request.destroy(new Error('short link redirect timeout')));
+        request.setTimeout(Math.max(1, timeoutMs), () => {
+            const error = Object.assign(new Error('short link redirect timeout'), { code: 'ETIMEDOUT' });
+            request.destroy(error);
+        });
         request.on('error', reject);
         request.end();
     });
 }
+// 返回日志允许记录的 host/path，主动丢弃完整查询参数。
+function getSafeUrlParts(input) {
+    try {
+        const parsed = new URL(input);
+        return { finalHost: parsed.hostname.toLowerCase(), finalPath: parsed.pathname };
+    }
+    catch {
+        return { finalHost: 'invalid', finalPath: '/' };
+    }
+}
+// 判断网络异常是否属于计划允许的一次性重试范围。
+function isRetryableNetworkError(error) {
+    const code = String(error?.code || '').toUpperCase();
+    return ['EAI_AGAIN', 'ECONNRESET', 'ECONNABORTED', 'EPIPE', 'ETIMEDOUT'].includes(code);
+}
+// 把请求异常收敛为对外稳定的短链失败代码。
+function classifyRequestFailure(error) {
+    const code = String(error?.code || '').toUpperCase();
+    return code === 'ETIMEDOUT' ? 'request_timeout' : 'request_failed';
+}
+// 用剩余总预算包住 DNS 或请求 Promise，防止注入实现绕过五秒总时限。
+async function runWithinShortLinkDeadline(action, timeoutMs) {
+    if (timeoutMs <= 0)
+        throw Object.assign(new Error('short link redirect timeout'), { code: 'ETIMEDOUT' });
+    let timer = null;
+    try {
+        return await Promise.race([
+            action(),
+            new Promise((_resolve, reject) => {
+                timer = setTimeout(() => reject(Object.assign(new Error('short link redirect timeout'), { code: 'ETIMEDOUT' })), timeoutMs);
+            }),
+        ]);
+    }
+    finally {
+        if (timer)
+            clearTimeout(timer);
+    }
+}
 // 沿受限重定向链把一个 b23 短链归一化为第一分 P 地址。
-async function resolveBiliShortLink(input, requestRedirect = requestRedirectLocation) {
+async function resolveBiliShortLink(input, options = {}) {
     let current = String(input || '').trim();
+    const direct = normalizeBiliP1Url(current);
     if (!isB23ShortUrl(current))
-        return normalizeBiliP1Url(current);
-    const deadline = Date.now() + SHORT_LINK_TIMEOUT_MS;
-    for (let index = 0; index <= SHORT_LINK_MAX_REDIRECTS; index++) {
+        return direct
+            ? { ok: true, p1Url: direct, hops: 0 }
+            : { ok: false, code: 'final_url_not_bv', hops: 0 };
+    const now = options.now || Date.now;
+    const startedAt = now();
+    const deadline = startedAt + SHORT_LINK_TIMEOUT_MS;
+    const requestRedirect = options.requestRedirect || requestRedirectLocation;
+    let hops = 0;
+    while (hops < SHORT_LINK_MAX_REDIRECTS) {
         const existing = normalizeBiliP1Url(current);
         if (existing)
-            return existing;
-        if (index === SHORT_LINK_MAX_REDIRECTS)
-            throw new Error('short link redirect limit exceeded');
+            return { ok: true, p1Url: existing, hops };
         if (!isAllowedBiliRedirectUrl(current))
-            throw new Error('short link redirect escaped Bilibili allowlist');
-        const remaining = deadline - Date.now();
-        if (remaining <= 0)
-            throw new Error('short link redirect timeout');
-        const response = await requestRedirect(current, remaining);
-        if (response.statusCode < 300 || response.statusCode >= 400 || !response.location)
-            return '';
-        current = new URL(response.location, current).toString();
+            return { ok: false, code: 'redirect_outside_allowlist', hops };
+        let response = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const remaining = deadline - now();
+            if (remaining <= 0)
+                return { ok: false, code: 'request_timeout', hops };
+            try {
+                const hostResult = await runWithinShortLinkDeadline(() => resolvePublicBiliHost(current, options.lookup), remaining);
+                if (!hostResult.ok) {
+                    const failure = { ...hostResult, hops };
+                    const safe = getSafeUrlParts(current);
+                    options.onHop?.({ hop: hops + 1, ...safe, failureCode: failure.code, elapsedMs: now() - startedAt });
+                    return failure;
+                }
+                const requestRemaining = deadline - now();
+                response = await runWithinShortLinkDeadline(() => requestRedirect(current, requestRemaining, hostResult.destination), requestRemaining);
+            }
+            catch (error) {
+                const failureCode = classifyRequestFailure(error);
+                const safe = getSafeUrlParts(current);
+                options.onHop?.({ hop: hops + 1, ...safe, failureCode, elapsedMs: now() - startedAt });
+                if (attempt === 0 && isRetryableNetworkError(error))
+                    continue;
+                return { ok: false, code: failureCode, hops };
+            }
+            if (response.statusCode >= 500 && response.statusCode <= 599) {
+                const safe = getSafeUrlParts(current);
+                options.onHop?.({ hop: hops + 1, ...safe, statusCode: response.statusCode, failureCode: 'request_failed', elapsedMs: now() - startedAt });
+                if (attempt === 0)
+                    continue;
+                return { ok: false, code: 'request_failed', hops, statusCode: response.statusCode };
+            }
+            break;
+        }
+        if (!response)
+            return { ok: false, code: 'request_failed', hops };
+        const redirectStatuses = [301, 302, 303, 307, 308];
+        if (!redirectStatuses.includes(response.statusCode)) {
+            const code = hops > 0 && response.statusCode >= 200 && response.statusCode < 300
+                ? 'final_url_not_bv'
+                : 'http_not_redirect';
+            const safe = getSafeUrlParts(current);
+            options.onHop?.({ hop: hops + 1, ...safe, statusCode: response.statusCode, failureCode: code, elapsedMs: now() - startedAt });
+            return { ok: false, code, hops, statusCode: response.statusCode };
+        }
+        if (!response.location) {
+            const safe = getSafeUrlParts(current);
+            options.onHop?.({ hop: hops + 1, ...safe, statusCode: response.statusCode, failureCode: 'missing_location', elapsedMs: now() - startedAt });
+            return { ok: false, code: 'missing_location', hops, statusCode: response.statusCode };
+        }
+        let nextUrl = '';
+        try {
+            nextUrl = new URL(response.location, current).toString();
+        }
+        catch { /* invalid Location is rejected below */ }
+        if (!nextUrl || !isAllowedBiliRedirectUrl(nextUrl)) {
+            const safe = getSafeUrlParts(nextUrl);
+            options.onHop?.({ hop: hops + 1, ...safe, statusCode: response.statusCode, failureCode: 'redirect_outside_allowlist', elapsedMs: now() - startedAt });
+            return { ok: false, code: 'redirect_outside_allowlist', hops, statusCode: response.statusCode };
+        }
+        hops += 1;
+        const safe = getSafeUrlParts(nextUrl);
+        options.onHop?.({ hop: hops, ...safe, statusCode: response.statusCode, elapsedMs: now() - startedAt });
+        current = nextUrl;
     }
-    return '';
+    const finalP1Url = normalizeBiliP1Url(current);
+    return finalP1Url
+        ? { ok: true, p1Url: finalP1Url, hops }
+        : { ok: false, code: 'redirect_limit', hops };
 }
+// --- 短链结果缓存与统一输入 --- //
 // 清理过期短链缓存并返回仍有效的第一分 P 结果。
 function getCachedShortLinkResolution(urlKey, now = Date.now()) {
     for (const [key, entry] of shortLinkResolutionCache)
@@ -249,19 +430,32 @@ async function resolveBiliInput(options) {
     const urlKey = normalizeBiliUrlKey(url);
     const cached = getCachedShortLinkResolution(urlKey);
     if (cached)
-        return { keys: uniqueStrings(keys.concat(cached.bvKey).concat(buildBiliKeys(cached.p1Url))), p1Url: cached.p1Url };
+        return {
+            keys: uniqueStrings(keys.concat(cached.bvKey).concat(buildBiliKeys(cached.p1Url))),
+            p1Url: cached.p1Url,
+            shortLink: { ok: true, p1Url: cached.p1Url, hops: 0 },
+        };
     try {
         const resolver = options.resolveShortLink || resolveBiliShortLink;
-        const p1Url = normalizeBiliP1Url(await resolver(url));
+        const shortLink = await resolver(url, { onHop: options.onShortLinkHop });
+        if (!shortLink.ok) {
+            options.onError?.(shortLink);
+            return { keys, p1Url: '', shortLink };
+        }
+        const p1Url = normalizeBiliP1Url(shortLink.p1Url);
         const bvKey = extractBvKey(p1Url);
-        if (!p1Url || !bvKey)
-            throw new Error('short link did not resolve to a Bilibili video BV address');
+        if (!p1Url || !bvKey) {
+            const failure = { ok: false, code: 'final_url_not_bv', hops: shortLink.hops };
+            options.onError?.(failure);
+            return { keys, p1Url: '', shortLink: failure };
+        }
         shortLinkResolutionCache.set(urlKey, { bvKey, p1Url, expiresAt: Date.now() + SHORT_LINK_CACHE_TTL_MS });
-        return { keys: uniqueStrings(keys.concat(bvKey).concat(buildBiliKeys(p1Url))), p1Url };
+        return { keys: uniqueStrings(keys.concat(bvKey).concat(buildBiliKeys(p1Url))), p1Url, shortLink };
     }
     catch (error) {
-        options.onError?.(error instanceof Error ? error.message : String(error || 'unknown error'));
-        return { keys, p1Url: '' };
+        const failure = { ok: false, code: classifyRequestFailure(error), hops: 0 };
+        options.onError?.(failure);
+        return { keys, p1Url: '', shortLink: failure };
     }
 }
 // 返回当前短链缓存数量，供运行状态展示。

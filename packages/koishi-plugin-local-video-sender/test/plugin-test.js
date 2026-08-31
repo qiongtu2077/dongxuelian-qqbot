@@ -4,6 +4,9 @@ const os = require('os')
 const path = require('path')
 
 const PLUGIN_PATH = path.resolve(__dirname, '..', 'lib', 'index.js')
+const COOKIE_FILE_MODULE_PATH = path.resolve(__dirname, '..', 'lib', 'cookie-file.js')
+const VIDEO_QUEUE_MODULE_PATH = path.resolve(__dirname, '..', 'lib', 'video-task-queue.js')
+const VIDEO_TRACE_MODULE_PATH = path.resolve(__dirname, '..', 'lib', 'video-trace.js')
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const MAX_SIZE = 60_000_000
 const TEST_BV = 'BV1xx411c7mD'
@@ -11,6 +14,11 @@ const TEST_URL = `https://www.bilibili.com/video/${TEST_BV}`
 
 let passed = 0
 let failed = 0
+
+// 构造一份不含真实凭据且覆盖 HttpOnly 数据行的有效 Netscape Cookie 文件。
+function buildValidCookieFile(value = 'test-value') {
+  return Buffer.from(`# Netscape HTTP Cookie File\n# test fixture\n#HttpOnly_.bilibili.com\tTRUE\t/\tFALSE\t0\tSESSDATA\t${value}\n`, 'utf8')
+}
 
 // 构造与 OneBot 适配器一致的明确拒绝错误。
 class SenderError extends Error {
@@ -129,6 +137,8 @@ async function withIsolatedPlugin(fn) {
   process.env.BILI_MIN_MEM_MB = '300'
   process.env.BILI_TEST_VIDEO_FILE = path.join(tmpRoot, 'test-video.mp4')
   process.env.DONGXUELIAN_AI_DATA_DIR = dataDir
+  fs.writeFileSync(process.env.BILI_COOKIES_FILE, buildValidCookieFile())
+  fs.chmodSync(process.env.BILI_COOKIES_FILE, 0o600)
   delete require.cache[PLUGIN_PATH]
 
   let plugin
@@ -142,8 +152,512 @@ async function withIsolatedPlugin(fn) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
-    fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+    await fsp.rm(tmpRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 })
   }
+}
+
+// 验证 Cookie 结构校验、严格 base64、事务失败回滚和运行时自动恢复。
+async function testCookieFileBoundary() {
+  section('cookie file validation and runtime recovery')
+  await withIsolatedPlugin(async ({ plugin, tmpRoot, dataDir }) => {
+    const cookieFile = require(COOKIE_FILE_MODULE_PATH)
+    const valid = buildValidCookieFile()
+    const httpOnly = cookieFile.validateNetscapeCookieFile(valid)
+    check('standard Netscape file accepts HttpOnly data row', httpOnly.ok && httpOnly.recordCount === 1, JSON.stringify(httpOnly))
+
+    const emptyValue = cookieFile.validateNetscapeCookieFile(buildValidCookieFile(''))
+    check('empty Cookie value remains valid', emptyValue.ok && emptyValue.recordCount === 1, JSON.stringify(emptyValue))
+
+    const invalidFixtures = [
+      ['zero bytes', Buffer.alloc(0), 'empty_file'],
+      ['missing header', Buffer.from('example.com\tTRUE\t/\tFALSE\t0\tname\tvalue\n'), 'missing_header'],
+      ['empty records', Buffer.from('# Netscape HTTP Cookie File\n# comment\n'), 'empty_records'],
+      ['six columns', Buffer.from('# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tname\n'), 'invalid_column_count'],
+      ['eight columns', Buffer.from('# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tname\tvalue\textra\n'), 'invalid_column_count'],
+      ['invalid boolean', Buffer.from('# Netscape HTTP Cookie File\n.example.com\tYES\t/\tFALSE\t0\tname\tvalue\n'), 'invalid_boolean'],
+      ['invalid expires', Buffer.from('# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t-1\tname\tvalue\n'), 'invalid_expires'],
+      ['NUL byte', Buffer.concat([valid, Buffer.from([0])]), 'nul_byte'],
+    ]
+    for (const [label, fixture, code] of invalidFixtures) {
+      const result = cookieFile.validateNetscapeCookieFile(fixture)
+      check(`${label} is rejected with ${code}`, !result.ok && result.code === code, JSON.stringify(result))
+    }
+
+    const encoded = valid.toString('base64')
+    check('strict base64 accepts canonical payload', cookieFile.decodeStrictBase64(encoded, valid.length).ok)
+    check('strict base64 rejects illegal characters', cookieFile.decodeStrictBase64(`${encoded.slice(0, -2)}!?`, valid.length + 10).code === 'invalid_base64')
+    check('strict base64 rejects decoded oversize', cookieFile.decodeStrictBase64(encoded, valid.length - 1).code === 'file_too_large')
+
+    const target = path.join(tmpRoot, 'atomic-cookies.txt')
+    const oldBuffer = buildValidCookieFile('old-value')
+    fs.writeFileSync(target, oldBuffer)
+    const oldHash = require('crypto').createHash('sha256').update(oldBuffer).digest('hex')
+    const stages = [
+      ['write', 'writeFileSync'],
+      ['sync', 'fsyncSync'],
+      ['rename', 'renameSync'],
+      ['chmod', 'chmodSync'],
+    ]
+    for (const [label, method] of stages) {
+      const fsApi = Object.create(fs)
+      fsApi[method] = () => { throw Object.assign(new Error(`${label} injected`), { code: 'EIO' }) }
+      try { cookieFile.replaceBiliCookieFileAtomic(target, buildValidCookieFile(`new-${label}`), { fsApi, randomBytes: () => Buffer.alloc(8, 1) }) } catch {}
+      const currentHash = require('crypto').createHash('sha256').update(fs.readFileSync(target)).digest('hex')
+      const leftovers = fs.readdirSync(tmpRoot).filter(name => name.includes('atomic-cookies.txt') && name.endsWith('.tmp'))
+      check(`${label} failure preserves old file and removes transaction files`, currentHash === oldHash && leftovers.length === 0, JSON.stringify({ currentHash, oldHash, leftovers }))
+    }
+
+    const written = cookieFile.replaceBiliCookieFileAtomic(target, buildValidCookieFile('new-value'))
+    check('successful atomic replacement writes mode 600 and validated summary', written.mode === 0o600 && written.recordCount === 1 && written.path === path.resolve(target), JSON.stringify(written))
+    check('default runtime and Dashboard path rule is identical', cookieFile.resolveBiliCookiePath(dataDir, '') === path.join(dataDir, 'bilibili-cookies.txt'))
+
+    const runtimeCookie = plugin.getRuntimeConfig().cookies
+    fs.writeFileSync(runtimeCookie, Buffer.alloc(0))
+    const counters = { probes: 0, downloads: 0 }
+    const invalidResult = await plugin.downloadAndSend(makeCtx(), makeSession({ guildId: 'cookie-invalid', channelId: 'cookie-invalid' }), TEST_URL, TEST_BV, makeDeps(50_000_000, 30_000_000, counters))
+    check('invalid runtime Cookie returns video-030 before probe or download', String(invalidResult).includes('video-030') && counters.probes === 0 && counters.downloads === 0, JSON.stringify({ invalidResult, counters }))
+
+    fs.writeFileSync(runtimeCookie, valid)
+    const recoveredResult = await plugin.downloadAndSend(makeCtx(), makeSession({ guildId: 'cookie-recovered', channelId: 'cookie-recovered' }), TEST_URL, TEST_BV, makeDeps(50_000_000, 30_000_000, counters))
+    check('restoring a valid Cookie recovers without plugin reload', recoveredResult === undefined && counters.probes === 1 && counters.downloads === 1, JSON.stringify({ recoveredResult, counters }))
+  })
+}
+
+// 验证 S0 存储故障统一返回 video-032，并按合并键通知全部管理员且支持最后有效名单缓存。
+async function testResourceGateStorageAlerts() {
+  section('resource gate storage failures and admin alerts')
+  await withIsolatedPlugin(async ({ plugin, dataDir }) => {
+    const adminIdsFile = path.join(dataDir, 'ai-admin-ids.json')
+    fs.mkdirSync(dataDir, { recursive: true })
+    fs.writeFileSync(adminIdsFile, JSON.stringify(['111', '222']), 'utf8')
+    const privateCalls = []
+    const ctx = makeCtx()
+    const session = makeSession({
+      guildId: 'gate-storage',
+      channelId: 'gate-storage',
+      bot: { internal: { async sendPrivateMsg(userId, message) { privateCalls.push({ userId: String(userId), message: String(message) }) } } },
+    })
+    const errnoCases = {
+      EACCES: 'gate_permission_denied',
+      EROFS: 'gate_readonly_filesystem',
+      ENOSPC: 'gate_storage_full',
+      EDQUOT: 'gate_quota_exceeded',
+      ENOTDIR: 'gate_path_invalid',
+      EMFILE: 'gate_fd_exhausted',
+      EIO: 'gate_io_error',
+    }
+    const gateModule = require(path.join(REPO_ROOT, 'packages', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-gate', 'gate.js'))
+    for (const [errno, expected] of Object.entries(errnoCases)) {
+      const classified = gateModule.classifyGateStorageError(Object.assign(new Error(errno), { code: errno }), 'test_stage', gateModule.LOCK_META_FILE)
+      check(`${errno} maps to ${expected}`, classified.failureCode === expected && classified.errno === errno && classified.safePath === 'lock/meta.json', JSON.stringify(classified))
+    }
+
+    const gateRollbackScript = `
+      const fs = require('fs')
+      const path = require('path')
+      const gate = require(${JSON.stringify(path.join(REPO_ROOT, 'packages', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-gate', 'gate.js'))})
+      const originalAppend = fs.appendFileSync
+      const originalWrite = fs.writeFileSync
+      let appendCalls = 0
+      let lockVisibleDuringMetaWrite = null
+      fs.writeFileSync = (...args) => {
+        if (path.basename(String(args[0])).startsWith('meta.json.')) lockVisibleDuringMetaWrite = fs.existsSync(gate.LOCK_DIR)
+        return originalWrite(...args)
+      }
+      fs.appendFileSync = (...args) => {
+        appendCalls += 1
+        if (appendCalls === 2) throw Object.assign(new Error('event write injected'), { code: 'EIO' })
+        return originalAppend(...args)
+      }
+      ;(async () => {
+        let failure = null
+        try {
+          await gate.acquireResourceGate({ taskId: 'rollback-test', kind: 'external_video_download', waitTimeoutMs: 50, pollMs: 200 })
+        } catch (error) {
+          failure = { failureCode: error.failureCode, errno: error.errno, stage: error.stage }
+        } finally {
+          fs.appendFileSync = originalAppend
+          fs.writeFileSync = originalWrite
+        }
+        const tickets = fs.existsSync(gate.TICKETS_DIR) ? fs.readdirSync(gate.TICKETS_DIR).filter(name => name.endsWith('.json')) : []
+        console.log(JSON.stringify({ failure, lockExists: fs.existsSync(gate.LOCK_DIR), lockVisibleDuringMetaWrite, tickets }))
+      })().catch(error => { console.error(error); process.exit(1) })
+    `
+    const rollbackOutput = require('child_process').execFileSync(process.execPath, ['-e', gateRollbackScript], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, DONGXUELIAN_AI_DATA_DIR: path.join(dataDir, 'gate-rollback') },
+      encoding: 'utf8',
+    }).trim().split(/\r?\n/).pop()
+    const rollbackSummary = JSON.parse(rollbackOutput)
+    check('lock event failure rolls back lock directory and ticket', rollbackSummary.failure?.failureCode === 'gate_event_write_failed' && rollbackSummary.failure?.errno === 'EIO' && rollbackSummary.lockExists === false && rollbackSummary.tickets.length === 0, JSON.stringify(rollbackSummary))
+    check('lock metadata is complete before the formal lock directory becomes visible', rollbackSummary.lockVisibleDuringMetaWrite === false, JSON.stringify(rollbackSummary))
+
+    const missingMetaScript = `
+      const fs = require('fs')
+      const gate = require(${JSON.stringify(path.join(REPO_ROOT, 'packages', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-gate', 'gate.js'))})
+      fs.mkdirSync(gate.LOCK_DIR, { recursive: true })
+      let failure = null
+      try { gate.readLockMeta() } catch (error) { failure = { failureCode: error.failureCode, errno: error.errno, stage: error.stage } }
+      console.log(JSON.stringify(failure))
+    `
+    const missingMetaOutput = require('child_process').execFileSync(process.execPath, ['-e', missingMetaScript], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, DONGXUELIAN_AI_DATA_DIR: path.join(dataDir, 'gate-missing-meta') },
+      encoding: 'utf8',
+    }).trim().split(/\r?\n/).pop()
+    const missingMeta = JSON.parse(missingMetaOutput)
+    check('lock directory without metadata is a state failure instead of ordinary busy', missingMeta?.failureCode === 'gate_state_unreadable' && missingMeta?.errno === 'MISSING_LOCK_META' && missingMeta?.stage === 'lock_meta_read', JSON.stringify(missingMeta))
+
+    const failures = [
+      ['gate_permission_denied', 'EACCES'],
+      ['gate_readonly_filesystem', 'EROFS'],
+      ['gate_storage_full', 'ENOSPC'],
+      ['gate_quota_exceeded', 'EDQUOT'],
+      ['gate_path_invalid', 'ENOTDIR'],
+      ['gate_fd_exhausted', 'EMFILE'],
+      ['gate_io_error', 'EIO'],
+      ['gate_state_unreadable', 'INVALID_STATE'],
+      ['gate_event_write_failed', 'EIO'],
+      ['gate_cleanup_failed', 'EACCES'],
+    ]
+    for (let index = 0; index < failures.length; index += 1) {
+      const [failureCode, errno] = failures[index]
+      const counters = { probes: 0, downloads: 0 }
+      const result = await plugin.downloadAndSend(ctx, { ...session, guildId: `gate-${index}`, channelId: `gate-${index}` }, TEST_URL, `${TEST_BV}-${index}`, makeDeps(50_000_000, 30_000_000, counters, {
+        resourceGate: undefined,
+        resourceModules: makeResourceModules({ decision: 'run_now', resourceState: 'green', memAvailableMb: 1000 }, async () => {
+          throw Object.assign(new Error('secret https://example.invalid/path?token=x'), { failureCode, errno, stage: 'ticket_write', safePath: 'tickets/test.json' })
+        }),
+        gateAdminAlertOptions: { adminIdsFile },
+      }))
+      check(`${failureCode} returns video-032 without media work`, String(result).includes('video-032') && counters.probes === 0 && counters.downloads === 0, JSON.stringify({ result, counters }))
+    }
+    check('each distinct gate failure immediately alerts both administrators', privateCalls.length === failures.length * 2, JSON.stringify(privateCalls))
+    const firstAlert = privateCalls[0]?.message || ''
+    check('gate alert contains complete sanitized evidence', firstAlert.includes('中文原因：资源锁路径权限不足') && firstAlert.includes('内部代码：gate_permission_denied') && firstAlert.includes('系统错误码：EACCES') && firstAlert.includes('失败步骤：ticket_write') && firstAlert.includes('脱敏路径：tickets/test.json') && firstAlert.includes('本次任务未入队') && !firstAlert.includes('example.invalid'), firstAlert)
+
+    const postAcquireStart = privateCalls.length
+    let postAcquireReleaseCalls = 0
+    const postAcquireCounters = { probes: 0, downloads: 0 }
+    const postAcquireResult = await plugin.downloadAndSend(ctx, { ...session, guildId: 'gate-post-acquire', channelId: 'gate-post-acquire' }, TEST_URL, TEST_BV, makeDeps(50_000_000, 30_000_000, postAcquireCounters, {
+      resourceGate: undefined,
+      resourceModules: makeResourceModules({ decision: 'run_now', resourceState: 'green', memAvailableMb: 1000 }, async () => ({
+        updateStep() { throw Object.assign(new Error('heartbeat failed'), { failureCode: 'gate_io_error', errno: 'EIO', stage: 'post_acquire_update', safePath: 'lock/meta.json' }) },
+        release() { postAcquireReleaseCalls += 1 },
+      })),
+      gateAdminAlertOptions: { adminIdsFile },
+    }))
+    check('post-acquire storage failure returns video-032, releases once, and skips media work', String(postAcquireResult).includes('video-032') && postAcquireReleaseCalls === 1 && postAcquireCounters.probes === 0 && postAcquireCounters.downloads === 0, JSON.stringify({ postAcquireResult, postAcquireReleaseCalls, postAcquireCounters }))
+    check('post-acquire storage failure alerts every administrator', privateCalls.length === postAcquireStart + 2)
+
+    const releaseFailureStart = privateCalls.length
+    const releaseFailureCtx = makeCtx()
+    const releaseFailureCounters = { probes: 0, downloads: 0 }
+    const releaseFailureResult = await plugin.downloadAndSend(releaseFailureCtx, { ...session, guildId: 'gate-release', channelId: 'gate-release' }, TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000, releaseFailureCounters, {
+      resourceGate: undefined,
+      resourceModules: makeResourceModules({ decision: 'run_now', resourceState: 'green', memAvailableMb: 1000 }, async () => ({
+        updateStep() {},
+        release() { throw Object.assign(new Error('event log failed'), { failureCode: 'gate_event_write_failed', errno: 'EIO', stage: 'release_event', safePath: 'events.jsonl' }) },
+      })),
+      gateAdminAlertOptions: { adminIdsFile },
+    }))
+    const releaseTraceEvents = releaseFailureCtx.logs.filter(entry => entry.msg.startsWith('video_trace ')).map(entry => entry.msg)
+    const releaseFailureIndex = releaseTraceEvents.findIndex(line => line.includes('event="gate_storage_failed"'))
+    const releaseTerminalIndex = releaseTraceEvents.findIndex(line => line.includes('event="terminal_status"'))
+    check('release storage failure preserves confirmed send result and reports the fault before terminal', releaseFailureResult === undefined && releaseFailureCounters.downloads === 1 && releaseFailureIndex >= 0 && releaseTerminalIndex > releaseFailureIndex, JSON.stringify(releaseTraceEvents))
+    check('release storage failure alerts every administrator', privateCalls.length === releaseFailureStart + 2)
+
+    const repeatedFailure = { failureCode: 'gate_permission_denied', errno: 'EACCES', stage: 'repeat_stage', safePath: 'tickets/repeat.json' }
+    await plugin.reportResourceGateStorageFailure(ctx, session, repeatedFailure, 'trace-repeat-1', 'task-repeat-1', { adminIdsFile })
+    await plugin.reportResourceGateStorageFailure(ctx, session, repeatedFailure, 'trace-repeat-2', 'task-repeat-2', { adminIdsFile })
+    const repeatKey = 'gate_permission_denied|EACCES|repeat_stage|tickets/repeat.json'
+    const beforeSummary = privateCalls.length
+    await plugin.flushGateAdminAlertWindow(repeatKey)
+    check('same merge key sends one immediate alert and one summary to each admin', privateCalls.length === beforeSummary + 2 && privateCalls.slice(-2).every(call => call.message.includes('总次数：2')), JSON.stringify(privateCalls.slice(-4)))
+    check('suppressed repeat is written to structured log', ctx.logs.some(entry => entry.msg.includes('gate_admin_alert_suppressed') && entry.msg.includes('count=2')))
+
+    fs.rmSync(adminIdsFile, { force: true })
+    const cachedBefore = privateCalls.length
+    await plugin.reportResourceGateStorageFailure(ctx, session, { failureCode: 'gate_io_error', errno: 'EIO', stage: 'cached_admins', safePath: 'lock/meta.json' }, 'trace-cache', 'task-cache', { adminIdsFile })
+    check('unreadable admin file falls back to last valid administrator list', privateCalls.length === cachedBefore + 2 && ctx.logs.some(entry => entry.msg.includes('gate_admin_ids_unavailable') && entry.msg.includes('cached_count=2')))
+
+    const failingCtx = makeCtx()
+    fs.writeFileSync(adminIdsFile, JSON.stringify(['333']), 'utf8')
+    const failingSession = makeSession({ bot: { internal: { async sendPrivateMsg() { throw Object.assign(new Error('offline'), { code: 'ECONNRESET' }) } } } })
+    await plugin.reportResourceGateStorageFailure(failingCtx, failingSession, { failureCode: 'gate_storage_full', errno: 'ENOSPC', stage: 'notify_failure', safePath: 'events.jsonl' }, 'trace-notify', 'task-notify', { adminIdsFile })
+    check('private-message failure logs once without recursive or false sent event', failingCtx.logs.filter(entry => entry.msg.includes('gate_admin_notify_failed')).length === 1 && !failingCtx.logs.some(entry => entry.msg.includes('gate_admin_alert_sent')))
+  })
+}
+
+// 验证 S2 真队列的接口门禁、原子容量、全状态确认、FIFO 单执行者和重启取消规则。
+async function testPersistentVideoTaskQueue() {
+  section('persistent cross-group video queue')
+  const queueModule = require(VIDEO_QUEUE_MODULE_PATH)
+
+  const unavailable = queueModule.createVideoTaskQueue({ store: {}, execute: async () => ({ status: 'done' }) })
+  const unavailableStartup = unavailable.initialize()
+  const unavailableResult = await unavailable.enqueue(makeQueueInput(1))
+  check('missing required task-store interface disables queue and never claims persistence', unavailableStartup.available === false && unavailableResult.status === 'unavailable', JSON.stringify({ unavailableStartup, unavailableResult }))
+  unavailable.dispose()
+
+  const failedStore = makeVideoTaskStore({ failBeforePersist: true })
+  const failedQueue = queueModule.createVideoTaskQueue({ store: failedStore, execute: async () => ({ status: 'done' }) })
+  failedQueue.initialize()
+  const failedPersist = await failedQueue.enqueue(makeQueueInput(2))
+  check('submit failure with no task found returns persist_failed', failedPersist.status === 'persist_failed' && failedStore.tasks.size === 0, JSON.stringify(failedPersist))
+  failedQueue.dispose()
+
+  const uncertainStore = makeVideoTaskStore({ failAfterPersist: true })
+  const uncertainQueue = queueModule.createVideoTaskQueue({ store: uncertainStore, execute: async () => ({ status: 'done' }) })
+  uncertainQueue.initialize()
+  const confirmedAfterThrow = await uncertainQueue.enqueue(makeQueueInput(3))
+  check('submit error followed by all-state lookup preserves real queued task', confirmedAfterThrow.status === 'queued' && uncertainStore.getResourceTaskById('video-task-3')?.status === 'pending', JSON.stringify(confirmedAfterThrow))
+  uncertainQueue.dispose()
+
+  const capacityStore = makeVideoTaskStore()
+  const capacityQueue = queueModule.createVideoTaskQueue({ store: capacityStore, execute: async () => ({ status: 'done' }) })
+  capacityQueue.initialize()
+  capacityStore.submitResourceTask({ ...makeQueueInput(90), id: 'running-video', kind: 'external_video_download', payload: makeQueueInput(90), notify: {} })
+  capacityStore.tasks.get('running-video').status = 'running'
+  const concurrentResults = await Promise.all(Array.from({ length: 11 }, (_, index) => capacityQueue.enqueue(makeQueueInput(index + 10))))
+  const queuedResults = concurrentResults.filter(result => result.status === 'queued')
+  const fullResults = concurrentResults.filter(result => result.status === 'full')
+  const waitingTasks = [...capacityStore.tasks.values()].filter(task => ['pending', 'deferred'].includes(task.status))
+  check('one running video does not consume ten waiting positions', capacityStore.tasks.get('running-video').status === 'running' && queuedResults.length === 10 && waitingTasks.length === 10, JSON.stringify(concurrentResults))
+  check('eleventh concurrent waiter is rejected without persistence', fullResults.length === 1 && !capacityStore.tasks.has('video-task-20'), JSON.stringify(concurrentResults))
+  check('serialized count-and-write never exceeds global capacity', capacityQueue.status().waiting === 10, JSON.stringify(capacityQueue.status()))
+  const persistedPayload = capacityStore.getResourceTaskById('video-task-10').payload
+  check('persisted payload contains only planned safe video fields', Object.keys(persistedPayload).sort().join(',') === 'bvId,inputType,p1Url,requestedAt,retryCount,targetId,targetType,traceId' && !JSON.stringify(persistedPayload).includes('Cookie'), JSON.stringify(persistedPayload))
+  capacityQueue.dispose()
+
+  const orderStore = makeVideoTaskStore()
+  let active = 0
+  let maxActive = 0
+  const order = []
+  const orderQueue = queueModule.createVideoTaskQueue({
+    store: orderStore,
+    schedule: handler => setTimeout(handler, 0),
+    execute: async task => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      order.push(task.id)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      active -= 1
+      return { status: 'done' }
+    },
+  })
+  orderQueue.initialize()
+  await orderQueue.enqueue(makeQueueInput(30))
+  await orderQueue.enqueue(makeQueueInput(31))
+  await orderQueue.enqueue(makeQueueInput(32))
+  orderQueue.kick()
+  await waitFor(() => [...orderStore.tasks.values()].filter(task => task.status === 'done').length === 3, 2000)
+  check('runner executes cross-group tasks strictly FIFO with one active video', order.join(',') === 'video-task-30,video-task-31,video-task-32' && maxActive === 1, JSON.stringify({ order, maxActive }))
+  orderQueue.dispose()
+
+  const restartStore = makeVideoTaskStore()
+  for (const [index, status] of ['pending', 'deferred', 'claiming', 'running'].entries()) {
+    const task = restartStore.submitResourceTask({ ...makeQueueInput(40 + index), id: `restart-video-${status}`, kind: 'external_video_download', payload: makeQueueInput(40 + index), notify: {} })
+    restartStore.tasks.get(task.id).status = status
+  }
+  const otherTask = restartStore.submitResourceTask({ id: 'other-ai-task', kind: 'agent_task', payload: {}, notify: {} })
+  const restartTerminals = []
+  const restartQueue = queueModule.createVideoTaskQueue({
+    store: restartStore,
+    execute: async () => ({ status: 'done' }),
+    onTerminal: (task, status, reason) => restartTerminals.push({ taskId: task.id, status, reason }),
+  })
+  const restart = restartQueue.initialize()
+  check('startup cancels all four old video active states with restart_discarded', restart.cancelled === 4 && [...restartStore.tasks.values()].filter(task => task.kind === 'external_video_download').every(task => task.status === 'cancelled' && task.error === 'restart_discarded'), JSON.stringify([...restartStore.tasks.values()]))
+  check('startup cancellation reports one cancelled terminal per old video trace', restartTerminals.length === 4 && restartTerminals.every(item => item.status === 'cancelled' && item.reason === 'restart_discarded'), JSON.stringify(restartTerminals))
+  check('startup video cleanup leaves other AI tasks unchanged', restartStore.getResourceTaskById(otherTask.id).status === 'pending')
+  restartQueue.dispose()
+}
+
+// 验证真实入口先落盘后回执、S0 普通超时转队列、原目标发送和失败通知单次重试。
+async function testQueuedVideoLifecycleIntegration() {
+  section('queued video lifecycle integration')
+
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const store = makeVideoTaskStore()
+    const counters = { probes: 0, downloads: 0 }
+    let admissions = 0
+    const resourceModules = {
+      admitTask: () => (++admissions % 2 === 1
+        ? { decision: 'queue', reason: 'exclusive slot is busy', resourceState: 'green', memAvailableMb: 1000 }
+        : { decision: 'run_now', reason: 'available', resourceState: 'green', memAvailableMb: 1000 }),
+      acquireResourceGate: async () => ({ updateStep() {}, release() {} }),
+    }
+    const session = makeSession({ guildId: 'queue-origin-a', channelId: 'queue-origin-a' })
+    await plugin.downloadAndSend(makeCtx(), session, TEST_URL, TEST_BV, makeDeps(50_000_000, 30_000_000, counters, { resourceGate: undefined, resourceModules, taskStore: store }))
+    const task = [...store.tasks.values()][0]
+    check('busy request is persisted before task-number acknowledgement', !!task && session.sent[0]?.includes('视频任务已排队') && session.sent[0]?.includes(task.id), JSON.stringify({ task, sent: session.sent }))
+    await waitFor(() => store.getResourceTaskById(task.id)?.status === 'done', 2000)
+    check('queued task executes once and sends preview/video to original group session', counters.probes === 1 && counters.downloads === 1 && session.sent.length === 3 && session.sent[1].includes('Demo Video') && session.sent[2].includes('file:'), JSON.stringify({ counters, sent: session.sent }))
+    check('persisted target identifies original group without retaining message body', task.payload.targetType === 'group' && task.payload.targetId === 'queue-origin-a' && !Object.keys(task.payload).some(key => /content|session|cookie|message/i.test(key)), JSON.stringify(task.payload))
+  })
+
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const store = makeVideoTaskStore()
+    let gateCalls = 0
+    const resourceModules = {
+      admitTask: () => ({ decision: 'run_now', reason: 'available', resourceState: 'green', memAvailableMb: 1000 }),
+      acquireResourceGate: async () => {
+        gateCalls += 1
+        if (gateCalls === 1) throw Object.assign(new Error('ordinary competition'), { code: 'gate_busy_timeout' })
+        return { updateStep() {}, release() {} }
+      },
+    }
+    const session = makeSession({ guildId: 's0-timeout', channelId: 's0-timeout' })
+    await plugin.downloadAndSend(makeCtx(), session, TEST_URL, TEST_BV, makeDeps(50_000_000, 30_000_000, null, { resourceGate: undefined, resourceModules, taskStore: store }))
+    const task = [...store.tasks.values()][0]
+    await waitFor(() => task && store.getResourceTaskById(task.id)?.status === 'done', 2000)
+    check('healthy S0 competition timeout enters real queue instead of video-006', gateCalls === 2 && session.sent.some(message => message.includes('视频任务已排队')) && !session.sent.some(message => message.includes('video-006')), JSON.stringify({ gateCalls, sent: session.sent }))
+  })
+
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const store = makeVideoTaskStore()
+    const counters = { probes: 0, downloads: 0 }
+    let admissions = 0
+    let sendCalls = 0
+    let delayMs = 0
+    const session = makeSession({
+      guildId: 'queue-failure',
+      channelId: 'queue-failure',
+      async send(message) {
+        sendCalls += 1
+        if (sendCalls === 1) return message
+        throw new Error('terminal notice send failed')
+      },
+    })
+    const resourceModules = {
+      admitTask: () => (++admissions % 2 === 1
+        ? { decision: 'queue', reason: 'busy', resourceState: 'green', memAvailableMb: 1000 }
+        : { decision: 'run_now', reason: 'available', resourceState: 'green', memAvailableMb: 1000 }),
+      acquireResourceGate: async () => ({ updateStep() {}, release() {} }),
+    }
+    const deps = makeDeps(50_000_000, 30_000_000, counters, {
+      resourceGate: undefined,
+      resourceModules,
+      taskStore: store,
+      probeVideo: async () => { counters.probes += 1; throw new Error('probe failed') },
+      finalNoticeDelay: async value => { delayMs = value },
+    })
+    await plugin.downloadAndSend(makeCtx(), session, TEST_URL, TEST_BV, deps)
+    const task = [...store.tasks.values()][0]
+    await waitFor(() => task && store.getResourceTaskById(task.id)?.status === 'failed' && sendCalls === 3, 2000)
+    check('queued terminal failure retries text exactly once after 10 seconds', sendCalls === 3 && delayMs === 10_000 && counters.probes === 1 && counters.downloads === 0, JSON.stringify({ sendCalls, delayMs, counters }))
+  })
+
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const store = makeVideoTaskStore()
+    let admissions = 0
+    let sends = 0
+    const session = makeSession({
+      guildId: 'queue-ack-failure',
+      channelId: 'queue-ack-failure',
+      async send(message) {
+        sends += 1
+        if (sends === 1) throw new Error('queue acknowledgement failed')
+        return message
+      },
+    })
+    const resourceModules = {
+      admitTask: () => (++admissions % 2 === 1
+        ? { decision: 'queue', reason: 'busy', resourceState: 'green', memAvailableMb: 1000 }
+        : { decision: 'run_now', reason: 'available', resourceState: 'green', memAvailableMb: 1000 }),
+      acquireResourceGate: async () => ({ updateStep() {}, release() {} }),
+    }
+    await plugin.downloadAndSend(makeCtx(), session, TEST_URL, TEST_BV, makeDeps(50_000_000, 30_000_000, null, { resourceGate: undefined, resourceModules, taskStore: store }))
+    const task = [...store.tasks.values()][0]
+    await waitFor(() => task && store.getResourceTaskById(task.id)?.status === 'done', 2000)
+    check('queue acknowledgement failure does not delete or stop persisted task', store.getResourceTaskById(task.id)?.status === 'done' && sends === 3, JSON.stringify({ task: store.getResourceTaskById(task.id), sends }))
+  })
+
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const store = makeVideoTaskStore({ statusAfterPersist: 'running' })
+    const resourceModules = {
+      admitTask: () => ({ decision: 'queue', reason: 'busy', resourceState: 'green', memAvailableMb: 1000 }),
+      acquireResourceGate: async () => ({ updateStep() {}, release() {} }),
+    }
+    const session = makeSession({ guildId: 'queue-fast-running', channelId: 'queue-fast-running' })
+    await plugin.downloadAndSend(makeCtx(), session, TEST_URL, TEST_BV, makeDeps(50_000_000, 30_000_000, null, { resourceGate: undefined, resourceModules, taskStore: store }))
+    const task = [...store.tasks.values()][0]
+    check('all-state confirmation reports a rapidly running task without claiming it is waiting', task?.status === 'running' && session.sent.some(message => message.includes('已保存并开始处理')) && !session.sent.some(message => message.includes('已排队')), JSON.stringify({ task, sent: session.sent }))
+  })
+
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const store = makeVideoTaskStore()
+    const counters = { probes: 0, downloads: 0 }
+    let admissions = 0
+    const resourceModules = {
+      admitTask: () => (++admissions % 2 === 1
+        ? { decision: 'queue', reason: 'busy', resourceState: 'green', memAvailableMb: 1000 }
+        : { decision: 'run_now', reason: 'available', resourceState: 'green', memAvailableMb: 1000 }),
+      acquireResourceGate: async () => ({ updateStep() {}, release() {} }),
+    }
+    const session = makeSession({ guildId: 'queue-short-link', channelId: 'queue-short-link' })
+    await plugin.downloadAndSend(makeCtx(), session, 'https://b23.tv/queueShort', 'https://b23.tv/queueShort', makeDeps(50_000_000, 30_000_000, counters, {
+      resourceGate: undefined,
+      resourceModules,
+      taskStore: store,
+      resolveShortLink: async () => ({ ok: true, p1Url: `${TEST_URL}?p=1`, hops: 1 }),
+    }))
+    const task = [...store.tasks.values()][0]
+    await waitFor(() => task && store.getResourceTaskById(task.id)?.status === 'done', 2000)
+    check('queued short link preserves its original input type without persisting dedupe keys', task?.payload?.inputType === 'short_link' && !Object.prototype.hasOwnProperty.call(task.payload, 'keys'), JSON.stringify(task?.payload))
+  })
+}
+
+// 验证 trace 字段脱敏、唯一终态以及排队前后沿用同一链路编号。
+async function testVideoTraceLifecycle() {
+  section('video trace lifecycle')
+  const traceModule = require(VIDEO_TRACE_MODULE_PATH)
+  traceModule.clearVideoTraceState()
+  const unitLines = []
+  const logger = { warn: message => unitLines.push(String(message)) }
+  const unitTrace = traceModule.createVideoTrace({ traceId: 'trace-unit', taskId: 'task-unit', inputType: 'short_link', videoKey: `${TEST_URL}?token=secret` })
+  const expectedEvents = ['input_detected', 'input_normalized', 'input_rejected', 'cookie_health_checked', 'shortlink_hop', 'shortlink_failed', 'admission_decided', 'queue_write_started', 'queue_persisted', 'queue_persist_failed', 'gate_acquired', 'gate_released', 'gate_storage_failed', 'gate_admin_alert_sent', 'gate_admin_alert_suppressed', 'gate_admin_alert_summary', 'probe_started', 'probe_finished', 'download_started', 'download_finished', 'preview_send_finished', 'video_send_finished', 'terminal_status']
+  const firstTerminal = traceModule.writeVideoTrace(logger, unitTrace, 'terminal_status', { status: 'done', reason: `Cookie=secret https://example.invalid/path?token=secret C:\\tmp\\bilibili-cookies.txt` })
+  const duplicateTerminal = traceModule.writeVideoTrace(logger, unitTrace, 'terminal_status', { status: 'failed', reason: 'must not be written' })
+  const invalidTerminal = traceModule.writeVideoTrace(logger, traceModule.createVideoTrace({ traceId: 'trace-invalid' }), 'terminal_status', { status: 'queued' })
+  check('trace module accepts one legal terminal and rejects duplicate or illegal terminal values', firstTerminal && !duplicateTerminal && !invalidTerminal && traceModule.getVideoTerminalTraceCount() === 1, JSON.stringify(unitLines))
+  check('trace module exposes only the fixed planned event set', JSON.stringify(traceModule.VIDEO_TRACE_EVENTS) === JSON.stringify(expectedEvents), JSON.stringify(traceModule.VIDEO_TRACE_EVENTS))
+  check('trace module hashes video keys and removes Cookie, URL query, and credential values', unitLines.length === 1 && unitLines[0].includes('videoKeyHash=') && !unitLines[0].includes('secret') && !unitLines[0].includes('example.invalid') && !unitLines[0].includes('bilibili-cookies'), unitLines[0])
+
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const ctx = makeCtx()
+    const counters = { probes: 0, downloads: 0 }
+    await plugin.downloadAndSend(ctx, makeSession({ guildId: 'trace-direct', channelId: 'trace-direct' }), `${TEST_URL}?token=hidden`, `分析一下 ${TEST_URL}?token=hidden`, makeDeps(1_000_000, 1_000_000, counters))
+    const lines = ctx.logs.filter(entry => entry.msg.startsWith('video_trace ')).map(entry => entry.msg)
+    const events = lines.map(line => line.match(/event="([^"]+)"/)?.[1]).filter(Boolean)
+    const required = ['input_detected', 'input_normalized', 'cookie_health_checked', 'admission_decided', 'gate_acquired', 'probe_started', 'probe_finished', 'preview_send_finished', 'download_started', 'download_finished', 'video_send_finished', 'gate_released', 'terminal_status']
+    check('direct execution emits the planned lifecycle event set', required.every(event => events.includes(event)), JSON.stringify(events))
+    check('direct execution writes exactly one done terminal with its taskId', events.filter(event => event === 'terminal_status').length === 1 && lines.some(line => line.includes('event="terminal_status"') && line.includes('status="done"') && !line.includes('taskId=""')), JSON.stringify(lines))
+    check('direct trace logs omit full URL query, Cookie path, and user text', lines.every(line => !line.includes('token=hidden') && !line.includes('bilibili-cookies') && !line.includes('分析一下')), JSON.stringify(lines))
+  })
+
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const ctx = makeCtx()
+    const store = makeVideoTaskStore()
+    let admissions = 0
+    const resourceModules = {
+      admitTask: () => (++admissions % 2 === 1
+        ? { decision: 'queue', reason: 'exclusive slot is busy', resourceState: 'green', memAvailableMb: 1000 }
+        : { decision: 'run_now', reason: 'available', resourceState: 'green', memAvailableMb: 1000 }),
+      acquireResourceGate: async () => ({ updateStep() {}, release() {} }),
+    }
+    await plugin.downloadAndSend(ctx, makeSession({ guildId: 'trace-queue', channelId: 'trace-queue' }), TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000, null, { resourceGate: undefined, resourceModules, taskStore: store }))
+    const task = [...store.tasks.values()][0]
+    await waitFor(() => task && store.getResourceTaskById(task.id)?.status === 'done', 2000)
+    const traceId = String(task?.payload?.traceId || '')
+    const lines = ctx.logs.filter(entry => entry.msg.startsWith('video_trace ') && entry.msg.includes(`traceId="${traceId}"`)).map(entry => entry.msg)
+    const events = lines.map(line => line.match(/event="([^"]+)"/)?.[1]).filter(Boolean)
+    const persistedIndex = events.indexOf('queue_persisted')
+    const terminalIndex = events.lastIndexOf('terminal_status')
+    check('queued task keeps a traceId distinct from taskId and links both after persistence', !!traceId && traceId !== task.id && lines.some(line => line.includes('event="queue_persisted"') && line.includes(`taskId="${task.id}"`)), JSON.stringify({ traceId, taskId: task.id, lines }))
+    check('queue persistence is a process event followed by one done terminal on the same trace', persistedIndex >= 0 && terminalIndex > persistedIndex && events.filter(event => event === 'terminal_status').length === 1 && lines[terminalIndex].includes('status="done"'), JSON.stringify(events))
+  })
 }
 
 // 返回带规范 BV 地址的探测元数据。
@@ -268,6 +782,94 @@ function makeResourceModules(admission, acquire = async () => ({ updateStep() {}
   }
 }
 
+// 创建只在内存中保存状态的 S2 task-store，用于并发容量和 runner 行为测试。
+function makeVideoTaskStore(options = {}) {
+  const tasks = new Map()
+  let sequence = 0
+  const copy = task => task ? { ...task, payload: { ...task.payload }, notify: { ...task.notify } } : null
+  const store = {
+    tasks,
+    submitResourceTask(input) {
+      if (options.failBeforePersist) throw new Error('submit failed before persist')
+      const now = new Date(Date.now() + sequence++).toISOString()
+      const task = {
+        id: String(input.id), kind: String(input.kind), status: 'pending', source: String(input.source || ''),
+        channelKey: String(input.channelKey || ''), userId: String(input.userId || ''), priority: Number(input.priority || 50),
+        createdAt: now, updatedAt: now, expiresAt: String(input.expiresAt || ''), timeoutMs: Number(input.timeoutMs || 0),
+        payload: { ...(input.payload || {}) }, notify: { ...(input.notify || {}) },
+      }
+      tasks.set(task.id, task)
+      if (options.statusAfterPersist) task.status = String(options.statusAfterPersist)
+      if (options.failAfterPersist) throw new Error('submit event failed after persist')
+      return copy(task)
+    },
+    getResourceTaskById(taskId) { return copy(tasks.get(String(taskId))) },
+    countResourceTasksByKind({ kind, statuses = [], limit = 20000 }) {
+      return [...tasks.values()].filter(task => task.kind === kind && statuses.includes(task.status)).slice(0, limit).length
+    },
+    claimNextTask(kind) {
+      const task = [...tasks.values()].filter(item => item.kind === kind && item.status === 'pending').sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0]
+      if (!task) return null
+      task.status = 'claiming'
+      return copy(task)
+    },
+    markTaskRunning(task) {
+      const current = tasks.get(task.id)
+      if (!current || current.status !== 'claiming') return copy(task)
+      current.status = 'running'
+      current.startedAt = new Date().toISOString()
+      return copy(current)
+    },
+    completeTask(task, result = {}) {
+      const current = tasks.get(task.id) || task
+      Object.assign(current, { status: 'done', result, finishedAt: new Date().toISOString() })
+      tasks.set(current.id, current)
+      return copy(current)
+    },
+    failTask(task, error, result = {}) {
+      const current = tasks.get(task.id) || task
+      Object.assign(current, { status: 'failed', error: String(error), result, finishedAt: new Date().toISOString() })
+      tasks.set(current.id, current)
+      return copy(current)
+    },
+    requeueTask(task, reason = 'requeued') {
+      const current = tasks.get(task.id) || task
+      Object.assign(current, { status: 'pending', requeueReason: reason })
+      tasks.set(current.id, current)
+      return copy(current)
+    },
+    cancelResourceTasksByKind(kind, statuses, actor, reason) {
+      const cancelled = []
+      for (const task of tasks.values()) {
+        if (task.kind !== kind || !statuses.includes(task.status)) continue
+        Object.assign(task, { status: 'cancelled', error: reason, actor })
+        cancelled.push(copy(task))
+      }
+      return cancelled
+    },
+  }
+  return store
+}
+
+// 构造队列模块要求的最小安全任务输入。
+function makeQueueInput(index = 0) {
+  const bvId = `BV1xx411c7${String(index).padStart(2, '0')}`.slice(0, 12)
+  return {
+    taskId: `video-task-${index}`,
+    p1Url: `https://www.bilibili.com/video/${bvId}?p=1`,
+    bvId,
+    inputType: 'bare_bv',
+    targetType: 'group',
+    targetId: `group-${index}`,
+    channelKey: `group-${index}`,
+    userId: `user-${index}`,
+    requestedAt: new Date().toISOString(),
+    retryCount: 0,
+    traceId: `trace-${index}`,
+    keys: [`bv:${bvId.slice(2).toLowerCase()}`],
+  }
+}
+
 // 验证环境配置、解析和纯函数行为。
 async function testConfigAndParsing() {
   section('env config and pure parsing')
@@ -300,11 +902,11 @@ async function testConfigAndParsing() {
     check('blocks private IPv4 redirect targets', plugin.isPrivateIpAddress('127.0.0.1') && plugin.isPrivateIpAddress('192.168.1.2'))
     check('allows public redirect targets', !plugin.isPrivateIpAddress('8.8.8.8'))
     check('restricts redirect host allowlist', plugin.isAllowedBiliRedirectUrl('https://www.bilibili.com/video/BV1xx411c7mD') && !plugin.isAllowedBiliRedirectUrl('https://example.com/'))
-    const resolved = await plugin.resolveBiliShortLink('https://b23.tv/testKey', async input => ({
-      statusCode: 302,
-      location: input.includes('testKey') ? `${TEST_URL}?p=2` : '',
-    }))
-    check('normalizes an allowed short-link redirect to P1 URL', resolved === `${TEST_URL}?p=1`, String(resolved))
+    const resolved = await plugin.resolveBiliShortLink('https://b23.tv/testKey', {
+      lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+      requestRedirect: async input => ({ statusCode: 302, location: input.includes('testKey') ? `${TEST_URL}?p=2` : '' }),
+    })
+    check('normalizes an allowed short-link redirect to P1 URL', resolved.ok && resolved.p1Url === `${TEST_URL}?p=1` && resolved.hops === 1, JSON.stringify(resolved))
 
     const acceptedStandaloneInputs = [
       TEST_BV,
@@ -312,17 +914,16 @@ async function testConfigAndParsing() {
       TEST_URL,
       `${TEST_URL}?p=2`,
       'https://b23.tv/abc123?x=1',
-    ]
-    check('standalone detector accepts bare BV and standalone Bilibili links', acceptedStandaloneInputs.every(input => plugin.isStandaloneBilibiliVideoInput(input)), JSON.stringify(acceptedStandaloneInputs))
-    const rejectedStandaloneInputs = [
       `这个视频讲了什么 ${TEST_BV}`,
-      `${TEST_URL} 讲了什么`,
-      `查看评论区 ${TEST_URL}`,
+      `帮我分析这个视频 ${TEST_URL}`,
+    ]
+    check('video detector accepts bare, linked, and natural-language Bilibili inputs', acceptedStandaloneInputs.every(input => plugin.isStandaloneBilibiliVideoInput(input)), JSON.stringify(acceptedStandaloneInputs))
+    const rejectedStandaloneInputs = [
       '普通文本',
       'https://example.com/video',
       `bvidl ${TEST_BV}`,
     ]
-    check('standalone detector leaves natural-language and non-Bilibili inputs to later middleware', rejectedStandaloneInputs.every(input => !plugin.isStandaloneBilibiliVideoInput(input)), JSON.stringify(rejectedStandaloneInputs))
+    check('video detector leaves commands and non-Bilibili inputs to their owners', rejectedStandaloneInputs.every(input => !plugin.isStandaloneBilibiliVideoInput(input)), JSON.stringify(rejectedStandaloneInputs))
   })
 }
 
@@ -334,11 +935,63 @@ async function testStandaloneMiddlewareRegistration() {
     plugin.apply(ctx)
     check('plugin registers one prepended and one normal middleware', ctx.middlewares.length === 2 && ctx.middlewares[0].prepend === true && ctx.middlewares[1].prepend === false, JSON.stringify(ctx.middlewares.map(item => item.prepend)))
 
-    for (const content of [`这个视频讲了什么 ${TEST_BV}`, '普通文本', 'https://example.com/video', `bvidl ${TEST_BV}`]) {
+    for (const content of ['普通文本', 'https://example.com/video', `bvidl ${TEST_BV}`]) {
       let nextCalls = 0
       await ctx.middlewares[0].handler(makeSession({ content }), () => { nextCalls += 1 })
       check(`prepended middleware passes through: ${content}`, nextCalls === 1)
     }
+  })
+}
+
+// 验证五类输入统一进入视频流程，结构化卡片只读取链接字段。
+async function testUnifiedBilibiliInputsAndCards() {
+  section('unified Bilibili inputs and cards')
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const miniApp = JSON.stringify({
+      app: 'com.tencent.miniapp_01',
+      prompt: '[QQ小程序]哔哩哔哩',
+      meta: { detail_1: { title: '为什么这个视频这么火', qqdocurl: 'https://b23.tv/miniKey' } },
+    })
+    const shareCard = JSON.stringify({
+      app: 'com.tencent.structmsg',
+      prompt: '[分享]哔哩哔哩',
+      meta: { news: { title: '讲了什么', jumpUrl: `${TEST_URL}?p=2` } },
+    })
+    const cases = [
+      { label: 'bare BV with question text', content: `这个视频讲了什么 ${TEST_BV}` },
+      { label: 'long link with analysis text', content: `帮我分析这个视频 ${TEST_URL}?p=2` },
+      { label: 'short link with summary text', content: '总结一下 https://b23.tv/textKey' },
+      { label: 'QQ mini app with question title', content: miniApp },
+      { label: 'QQ share card', content: shareCard },
+    ]
+
+    for (const item of cases) {
+      await plugin.clearVideoRuntimeState()
+      const counters = { probes: 0, downloads: 0 }
+      const deps = makeDeps(1_000_000, 1_000_000, counters, {
+        resolveShortLink: async () => ({ ok: true, p1Url: `${TEST_URL}?p=1`, hops: 1 }),
+      })
+      const session = makeSession({ guildId: `input-${item.label}`, channelId: `input-${item.label}`, content: item.content })
+      let nextCalls = 0
+      const result = await plugin.handleStandaloneBilibiliVideoInput(makeCtx(), session, () => { nextCalls += 1 }, deps)
+      check(`${item.label} enters video processing`, nextCalls === 0 && result === undefined && counters.probes === 1 && counters.downloads === 1, JSON.stringify({ result, nextCalls, counters, sent: session.sent }))
+    }
+
+    const ordinary = makeSession({ content: '普通聊天消息，不含视频编号或地址' })
+    let ordinaryNext = 0
+    await plugin.handleStandaloneBilibiliVideoInput(makeCtx(), ordinary, () => { ordinaryNext += 1 })
+    check('ordinary non-Bilibili message continues middleware chain', ordinaryNext === 1 && ordinary.sent.length === 0)
+
+    const brokenCard = JSON.stringify({
+      app: 'com.tencent.miniapp_01',
+      prompt: '[QQ小程序]哔哩哔哩',
+      meta: { detail_1: { title: `为什么 ${TEST_BV} 没有链接字段` } },
+    })
+    const brokenSession = makeSession({ content: brokenCard })
+    let brokenNext = 0
+    const brokenResult = await plugin.handleStandaloneBilibiliVideoInput(makeCtx(), brokenSession, () => { brokenNext += 1 })
+    check('recognized Bilibili card without link returns explicit parse error', brokenNext === 0 && String(brokenResult).includes('video-010'), JSON.stringify({ brokenResult, brokenNext }))
+    check('card title BV is not treated as a link field', plugin.extractBiliUrl(brokenCard) === null)
   })
 }
 
@@ -431,8 +1084,11 @@ async function testP1NormalizationAndResponseTimeout() {
     check('download uses --no-playlist', counters.args.includes('--no-playlist'), JSON.stringify(counters.args))
     check('multi-P handling adds no group notice', session.sent.length === 2, JSON.stringify(session.sent))
 
-    const shortP1 = await plugin.resolveBiliShortLink('https://b23.tv/p2Key', async () => ({ statusCode: 302, location: `${TEST_URL}?p=3` }))
-    check('short link ending at P3 is normalized to P1', shortP1 === `${TEST_URL}?p=1`, String(shortP1))
+    const shortP1 = await plugin.resolveBiliShortLink('https://b23.tv/p2Key', {
+      lookup: async () => [{ address: '8.8.4.4', family: 4 }],
+      requestRedirect: async () => ({ statusCode: 302, location: `${TEST_URL}?p=3` }),
+    })
+    check('short link ending at P3 is normalized to P1', shortP1.ok && shortP1.p1Url === `${TEST_URL}?p=1`, JSON.stringify(shortP1))
   })
 
   const example = fs.readFileSync(path.join(REPO_ROOT, 'koishi.example.yml'), 'utf8')
@@ -440,7 +1096,7 @@ async function testP1NormalizationAndResponseTimeout() {
   const deploySource = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'koishi-plugin-dashboard', 'src', 'lib', 'routes', 'deploy.ts'), 'utf8')
   const deployLib = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'koishi-plugin-dashboard', 'lib', 'routes', 'deploy.js'), 'utf8')
   const videoSource = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'koishi-plugin-local-video-sender', 'src', 'index.ts'), 'utf8')
-  const stagingBlock = videoSource.slice(videoSource.indexOf('function isStagingPathShapeSafe'), videoSource.indexOf('function detachVideoCacheEntry'))
+  const stagingBlock = videoSource.slice(videoSource.indexOf('async function removeRequestStagingDirectory'), videoSource.indexOf('function detachVideoCacheEntry'))
   check('example config uses 240-second OneBot timeout', example.includes('responseTimeout: 240000'))
   check('setup template uses 240-second OneBot timeout', setup.includes('responseTimeout: 240000'))
   check('Dashboard source template uses 240-second OneBot timeout', deploySource.includes('responseTimeout: 240000'))
@@ -449,7 +1105,7 @@ async function testP1NormalizationAndResponseTimeout() {
   check('registered bvidl command marks explicit cache retry', videoSource.includes("downloadAndSend(ctx, session, url, text || url, {}, { explicitCommand: true })"))
 }
 
-// 验证 video-001 至 video-027 的完整中文文案和动态数据。
+// 验证 video-001 至 video-032 的完整中文文案和动态数据。
 async function testChineseUserErrorCatalog() {
   section('Chinese user error catalog')
   await withIsolatedPlugin(async ({ plugin }) => {
@@ -457,8 +1113,8 @@ async function testChineseUserErrorCatalog() {
       [{ id: 'video-001' }, '视频解析命令格式错误。详细信息：请在“bvidl”后填写B站链接；也可以填写BV号。错误编号：video-001。'],
       [{ id: 'video-002', remainingSeconds: 300 }, '请勿在短时间内重复解析。详细信息：当前群对相同视频的300秒限制仍在生效，剩余300秒。错误编号：video-002。'],
       [{ id: 'video-003' }, '视频下载暂时关闭。详细信息：视频资源门禁模块加载失败。错误编号：video-003。'],
-      [{ id: 'video-004', resourceState: 'red', availableMemoryMb: 299.4, minimumMemoryMb: 300, decision: 'reject' }, '视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为紧张，当前可用内存299MB，视频任务最低需要300MB，调度结果为拒绝。错误编号：video-004。'],
-      [{ id: 'video-005', resourceState: 'red', minimumMemoryMb: 300, decision: 'queue' }, '视频搬运暂时无法执行，请稍后再试。详细信息：资源状态为紧张，当前可用内存数据未取得，视频任务最低需要300MB，调度结果为排队。错误编号：video-005。'],
+      [{ id: 'video-004', resourceState: 'red', availableMemoryMb: 299.4, minimumMemoryMb: 300, decision: 'reject' }, '视频搬运暂时无法执行，本次请求未执行。详细信息：资源状态为紧张，当前可用内存299MB，视频任务最低需要300MB，调度结果为拒绝。错误编号：video-004。'],
+      [{ id: 'video-005', resourceState: 'red', minimumMemoryMb: 300, decision: 'queue' }, '视频搬运暂时无法执行，本次请求未执行。详细信息：资源状态为紧张，当前可用内存数据未取得，视频任务最低需要300MB，调度结果为排队。错误编号：video-005。'],
       [{ id: 'video-006' }, '视频搬运暂时无法执行，请稍后再试。详细信息：视频资源锁在5秒内未申请成功。错误编号：video-006。'],
       [{ id: 'video-007' }, '视频目录准备失败，请稍后再试。详细信息：视频工作目录创建失败。错误编号：video-007。'],
       [{ id: 'video-008' }, '视频目录准备失败，请稍后再试。详细信息：五分钟视频缓存目录创建失败。错误编号：video-008。'],
@@ -481,6 +1137,11 @@ async function testChineseUserErrorCatalog() {
       [{ id: 'video-025' }, '缓存视频信息发送失败，请稍后再试。详细信息：缓存视频的封面、标题和链接消息调用接口失败。错误编号：video-025。'],
       [{ id: 'video-026', retcode: 1200 }, '缓存视频发送失败，请稍后再试。详细信息：缓存视频发送请求被消息接口拒绝，返回码为1200。错误编号：video-026。'],
       [{ id: 'video-027' }, '缓存视频发送失败，请稍后再试。详细信息：缓存视频发送接口调用失败。错误编号：video-027。'],
+      [{ id: 'video-028' }, '视频搬运资源正忙，本次没有进入队列，请稍后重新发送。错误编号：video-028。'],
+      [{ id: 'video-029' }, '视频任务排队保存失败，本次没有进入队列，请稍后重新发送。错误编号：video-029。'],
+      [{ id: 'video-030' }, '视频凭据不可用，请联系管理员更新 B 站 Cookie。错误编号：video-030。'],
+      [{ id: 'video-031' }, 'B 站短链接解析失败，请重新复制链接或发送 BV 号。错误编号：video-031。'],
+      [{ id: 'video-032' }, '视频资源系统故障，本次未执行。错误编号：video-032。'],
     ]
 
     const stages = new Set()
@@ -488,9 +1149,10 @@ async function testChineseUserErrorCatalog() {
       const userError = plugin.buildVideoUserError(input)
       stages.add(userError.stage)
       check(`${input.id} emits exact Chinese detail`, userError.id === input.id && userError.message === expected, JSON.stringify(userError))
-      check(`${input.id} has one detailed stage`, userError.message.includes('详细信息：') && userError.message.endsWith(`错误编号：${input.id}。`) && !/下载或暂存|下载或发送|创建或校验/.test(userError.message), userError.message)
+      const hasRequiredDetail = Number(input.id.slice(-3)) <= 27 ? userError.message.includes('详细信息：') : true
+      check(`${input.id} has one detailed stage`, hasRequiredDetail && userError.message.endsWith(`错误编号：${input.id}。`) && !/下载或暂存|下载或发送|创建或校验/.test(userError.message), userError.message)
     }
-    check('all 27 error IDs use distinct fixed stages', cases.length === 27 && stages.size === 27, JSON.stringify([...stages]))
+    check('all 32 error IDs use distinct fixed stages', cases.length === 32 && stages.size === 32, JSON.stringify([...stages]))
 
     const stateLabels = { green: '正常', yellow: '注意', red: '紧张' }
     for (const [state, label] of Object.entries(stateLabels)) {
@@ -566,7 +1228,9 @@ async function testSizeGates() {
     const postDownloadSession = makeSession({ guildId: '10003', channelId: '10003' })
     await plugin.downloadAndSend(ctx, postDownloadSession, TEST_URL, TEST_BV, makeDeps(MAX_SIZE - 1, MAX_SIZE + 1))
     check('actual oversize blocks video upload', postDownloadSession.sent.length === 2 && postDownloadSession.sent[1] === '视频文件过大（60.0 MB），请自行去 bilibili 观看。详细信息：实际大小为60000001字节，上传限制为60000000字节。错误编号：video-021。', JSON.stringify(postDownloadSession.sent))
-    check('actual oversize is deleted and not cached', plugin.getVideoCacheStatus().entries === 0 && fs.readdirSync(path.join(tmpRoot, 'downloads', 'cache')).length === 0, JSON.stringify(plugin.getVideoCacheStatus()))
+    const remainingCacheFiles = fs.readdirSync(path.join(tmpRoot, 'downloads', 'cache'))
+    const outputDeleteLogs = ctx.logs.filter(entry => entry.msg.includes('video output delete failed')).map(entry => entry.msg)
+    check('actual oversize is deleted and not cached', plugin.getVideoCacheStatus().entries === 0 && remainingCacheFiles.length === 0, JSON.stringify({ status: plugin.getVideoCacheStatus(), remainingCacheFiles, outputDeleteLogs }))
     check('actual oversize removes request staging', fs.readdirSync(path.join(tmpRoot, 'downloads', '.staging')).length === 0)
 
     await ctx.dispose()
@@ -720,7 +1384,7 @@ async function testShortLinkNormalization() {
     const secondShort = 'https://b23.tv/secondKey'
     const resolveShortLink = async () => {
       counters.resolutions += 1
-      return `${TEST_URL}?p=1`
+      return { ok: true, p1Url: `${TEST_URL}?p=1`, hops: 1 }
     }
     const deps = makeDeps(1_000_000, 1_000_000, counters, { resolveShortLink })
 
@@ -733,6 +1397,141 @@ async function testShortLinkNormalization() {
       resolveShortLink: async () => { throw new Error('resolution cache should be used') },
     })
     check('same short link uses ten-minute resolution cache', counters.resolutions === 2 && counters.probes === 1 && counters.downloads === 1, JSON.stringify(counters))
+  })
+}
+
+// 验证短链逐跳安全校验、失败代码、一次重试和失败不缓存。
+async function testShortLinkStructuredFailures() {
+  section('short-link structured failures')
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const publicLookup = async () => [{ address: '8.8.8.8', family: 4 }]
+    const hopEvents = []
+    let successCalls = 0
+    const success = await plugin.resolveBiliShortLink('https://b23.tv/fiveHops?secret=hidden', {
+      lookup: publicLookup,
+      requestRedirect: async (_input, _timeoutMs, destination) => {
+        successCalls += 1
+        check(`hop ${successCalls} connects to validated fixed IP`, destination.address === '8.8.8.8' && destination.family === 4, JSON.stringify(destination))
+        return {
+          statusCode: 302,
+          location: successCalls === 5 ? `${TEST_URL}?p=2&token=secret` : `/redirect/${successCalls}?token=secret`,
+        }
+      },
+      onHop: event => hopEvents.push(event),
+    })
+    check('five redirects succeed and normalize final P2 to P1', success.ok && success.hops === 5 && success.p1Url === `${TEST_URL}?p=1`, JSON.stringify(success))
+    check('short-link hop events omit full query strings', hopEvents.length === 5 && !JSON.stringify(hopEvents).includes('secret'), JSON.stringify(hopEvents))
+
+    let limitCalls = 0
+    const limited = await plugin.resolveBiliShortLink('https://b23.tv/tooMany', {
+      lookup: publicLookup,
+      requestRedirect: async () => ({ statusCode: 302, location: `/redirect/${++limitCalls}` }),
+    })
+    check('more than five redirects returns redirect_limit', !limited.ok && limited.code === 'redirect_limit' && limited.hops === 5 && limitCalls === 5, JSON.stringify(limited))
+
+    const missing = await plugin.resolveBiliShortLink('https://b23.tv/missing', {
+      lookup: publicLookup,
+      requestRedirect: async () => ({ statusCode: 302, location: '' }),
+    })
+    check('redirect without Location returns missing_location', !missing.ok && missing.code === 'missing_location' && missing.statusCode === 302, JSON.stringify(missing))
+
+    let httpCalls = 0
+    const httpFailure = await plugin.resolveBiliShortLink('https://b23.tv/notRedirect', {
+      lookup: publicLookup,
+      requestRedirect: async () => { httpCalls += 1; return { statusCode: 404, location: '' } },
+    })
+    check('4xx response is not retried and returns http_not_redirect', !httpFailure.ok && httpFailure.code === 'http_not_redirect' && httpCalls === 1, JSON.stringify(httpFailure))
+
+    let finalCalls = 0
+    const noBvFinal = await plugin.resolveBiliShortLink('https://b23.tv/noBv', {
+      lookup: publicLookup,
+      requestRedirect: async () => {
+        finalCalls += 1
+        return finalCalls === 1
+          ? { statusCode: 302, location: 'https://www.bilibili.com/read/cv1' }
+          : { statusCode: 200, location: '' }
+      },
+    })
+    check('allowed final page without BV returns final_url_not_bv', !noBvFinal.ok && noBvFinal.code === 'final_url_not_bv' && finalCalls === 2, JSON.stringify(noBvFinal))
+
+    let outsideCalls = 0
+    const outside = await plugin.resolveBiliShortLink('https://b23.tv/outside', {
+      lookup: publicLookup,
+      requestRedirect: async () => { outsideCalls += 1; return { statusCode: 302, location: 'https://example.com/video' } },
+    })
+    check('redirect outside allowlist is rejected without following it', !outside.ok && outside.code === 'redirect_outside_allowlist' && outsideCalls === 1, JSON.stringify(outside))
+
+    const emptyDns = await plugin.resolveBiliShortLink('https://b23.tv/noDns', {
+      lookup: async () => [],
+      requestRedirect: async () => { throw new Error('must not connect') },
+    })
+    check('empty DNS answer returns dns_empty', !emptyDns.ok && emptyDns.code === 'dns_empty', JSON.stringify(emptyDns))
+
+    for (const address of ['10.0.0.1', '127.0.0.1', '192.0.0.8', '192.0.2.1', '192.88.99.1', '198.51.100.2', '203.0.113.3', '::1', '::ffff:7f00:1', '64:ff9b::7f00:1', '2001:db8::1', '3fff::1']) {
+      let privateRequests = 0
+      const privateResult = await plugin.resolveBiliShortLink('https://b23.tv/private', {
+        lookup: async () => [{ address, family: address.includes(':') ? 6 : 4 }],
+        requestRedirect: async () => { privateRequests += 1; return { statusCode: 302, location: TEST_URL } },
+      })
+      check(`${address} is rejected before connection`, !privateResult.ok && privateResult.code === 'dns_private_address' && privateRequests === 0, JSON.stringify(privateResult))
+    }
+
+    let dnsAttempts = 0
+    const dnsRetry = await plugin.resolveBiliShortLink('https://b23.tv/dnsRetry', {
+      lookup: async () => {
+        dnsAttempts += 1
+        if (dnsAttempts === 1) throw Object.assign(new Error('temporary DNS failure'), { code: 'EAI_AGAIN' })
+        return [{ address: '8.8.4.4', family: 4 }]
+      },
+      requestRedirect: async () => ({ statusCode: 302, location: TEST_URL }),
+    })
+    check('temporary DNS failure retries exactly once', dnsRetry.ok && dnsAttempts === 2, JSON.stringify({ dnsRetry, dnsAttempts }))
+
+    let timeoutAttempts = 0
+    const timeout = await plugin.resolveBiliShortLink('https://b23.tv/timeout', {
+      lookup: publicLookup,
+      requestRedirect: async () => {
+        timeoutAttempts += 1
+        throw Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })
+      },
+    })
+    check('request timeout retries once then returns request_timeout', !timeout.ok && timeout.code === 'request_timeout' && timeoutAttempts === 2, JSON.stringify(timeout))
+
+    let resetAttempts = 0
+    const reset = await plugin.resolveBiliShortLink('https://b23.tv/reset', {
+      lookup: publicLookup,
+      requestRedirect: async () => {
+        resetAttempts += 1
+        throw Object.assign(new Error('reset'), { code: 'ECONNRESET' })
+      },
+    })
+    check('connection reset retries once then returns request_failed', !reset.ok && reset.code === 'request_failed' && resetAttempts === 2, JSON.stringify(reset))
+
+    let serverAttempts = 0
+    const serverFailure = await plugin.resolveBiliShortLink('https://b23.tv/serverError', {
+      lookup: publicLookup,
+      requestRedirect: async () => { serverAttempts += 1; return { statusCode: 503, location: '' } },
+    })
+    check('HTTP 5xx retries once then returns request_failed', !serverFailure.ok && serverFailure.code === 'request_failed' && serverFailure.statusCode === 503 && serverAttempts === 2, JSON.stringify(serverFailure))
+
+    let fakeNow = 0
+    let overBudgetRequests = 0
+    const totalTimeout = await plugin.resolveBiliShortLink('https://b23.tv/totalTimeout', {
+      now: () => fakeNow,
+      lookup: async () => { fakeNow = 5001; return [{ address: '8.8.8.8', family: 4 }] },
+      requestRedirect: async () => { overBudgetRequests += 1; return { statusCode: 302, location: TEST_URL } },
+    })
+    check('DNS time consumes the shared five-second budget before connection', !totalTimeout.ok && totalTimeout.code === 'request_timeout' && overBudgetRequests === 0, JSON.stringify(totalTimeout))
+
+    await plugin.clearVideoRuntimeState()
+    let failureResolutions = 0
+    const failingResolver = async () => {
+      failureResolutions += 1
+      return { ok: false, code: 'request_failed', hops: 0, statusCode: 503 }
+    }
+    const firstFailure = await plugin.downloadAndSend(makeCtx(), makeSession({ guildId: 'short-fail-a', channelId: 'short-fail-a' }), 'https://b23.tv/cacheFail', 'https://b23.tv/cacheFail', { resourceGate: false, resolveShortLink: failingResolver })
+    const secondFailure = await plugin.downloadAndSend(makeCtx(), makeSession({ guildId: 'short-fail-b', channelId: 'short-fail-b' }), 'https://b23.tv/cacheFail', 'https://b23.tv/cacheFail', { resourceGate: false, resolveShortLink: failingResolver })
+    check('short-link failures map to video-031 and are never cached', String(firstFailure).includes('video-031') && String(secondFailure).includes('video-031') && failureResolutions === 2, JSON.stringify({ firstFailure, secondFailure, failureResolutions }))
   })
 }
 
@@ -883,7 +1682,7 @@ async function testStagingCleanupAlerts() {
       fs: makeStagingFs({ rm: async () => { throw busyError } }),
       adminIdsFile: path.join(dataDir, 'missing-admins.json'),
     })
-    check('missing admin file logs exact reason without private fallback', noAdminCalls.length === 0 && ctx.logs.some(entry => entry.msg.includes('staging_cleanup_admin_ids_unavailable:') && entry.msg.includes('code=ENOENT')), JSON.stringify(noAdminCalls))
+    check('missing admin file logs exact reason and uses last valid list', noAdminCalls.length === 2 && ctx.logs.some(entry => entry.msg.includes('staging_cleanup_admin_ids_unavailable:') && entry.msg.includes('code=ENOENT') && entry.msg.includes('cached_count=2')), JSON.stringify(noAdminCalls))
 
     const noApiDir = path.join(stagingRoot, 'bili-job-noapi-1005-abc123')
     fs.mkdirSync(noApiDir)
@@ -972,7 +1771,13 @@ async function testFailurePaths() {
     const result = await plugin.downloadAndSend(ctx, uploadFailure, TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000))
     check('upload failure returns controlled error', String(result).includes('错误编号：video-023'), String(result))
     check('upload failure leaves no cache entry', plugin.getVideoCacheStatus().entries === 0, JSON.stringify(plugin.getVideoCacheStatus()))
-    check('upload failure removes final file and staging', fs.readdirSync(path.join(plugin.getRuntimeConfig().workdir, 'cache')).length === 0 && fs.readdirSync(path.join(plugin.getRuntimeConfig().workdir, '.staging')).length === 0)
+    const remainingCache = fs.readdirSync(path.join(plugin.getRuntimeConfig().workdir, 'cache'))
+    const remainingStaging = fs.readdirSync(path.join(plugin.getRuntimeConfig().workdir, '.staging'))
+    check(
+      'upload failure removes final file and staging',
+      remainingCache.length === 0 && remainingStaging.length === 0,
+      JSON.stringify({ remainingCache, remainingStaging, logs: ctx.logs.map(entry => entry.msg) }),
+    )
   })
 }
 
@@ -986,17 +1791,20 @@ async function testDetailedErrorRouting() {
     const bvidl = ctx.commands.find(command => command.name.startsWith('bvidl '))
     const usage = bvidl ? await bvidl.fn({ session: makeSession() }, '') : ''
     check('invalid bvidl input returns video-001', String(usage).includes('错误编号：video-001'), String(usage))
+    await plugin.clearVideoRuntimeState()
 
     const resourceCases = [
       ['video-003', { resourceModules: null }],
       ['video-004', { resourceModules: makeResourceModules({ decision: 'reject', reason: 'low memory', resourceState: 'red', memAvailableMb: 321 }) }],
-      ['video-005', { resourceModules: makeResourceModules({ decision: 'queue', reason: 'busy', resourceState: 'yellow', memAvailableMb: null }) }],
+      ['video-028', { resourceModules: makeResourceModules({ decision: 'queue', reason: 'busy', resourceState: 'yellow', memAvailableMb: null }), taskStore: {} }],
       ['video-006', { resourceModules: makeResourceModules({ decision: 'run_now', reason: 'accepted', resourceState: 'green', memAvailableMb: 1024 }, async () => { throw new Error('gate timed out') }) }],
     ]
     for (let index = 0; index < resourceCases.length; index += 1) {
       const [id, deps] = resourceCases[index]
-      const result = await plugin.downloadAndSend(ctx, makeSession({ guildId: `resource-${index}`, channelId: `resource-${index}` }), TEST_URL, TEST_BV, deps)
-      check(`resource path returns ${id}`, String(result).includes(`错误编号：${id}`), String(result))
+      const session = makeSession({ guildId: `resource-${index}`, channelId: `resource-${index}` })
+      const result = await plugin.downloadAndSend(ctx, session, TEST_URL, TEST_BV, deps)
+      const visible = [String(result), ...session.sent].join('\n')
+      check(`resource path returns ${id}`, visible.includes(`错误编号：${id}`), visible)
     }
 
     const workdir = path.join(tmpRoot, 'downloads')
@@ -1168,8 +1976,14 @@ async function testStagingDownloadLifecycle() {
 
 // 顺序运行插件测试，避免共享环境变量相互污染。
 async function run() {
+  await testCookieFileBoundary()
+  await testResourceGateStorageAlerts()
+  await testPersistentVideoTaskQueue()
+  await testQueuedVideoLifecycleIntegration()
+  await testVideoTraceLifecycle()
   await testConfigAndParsing()
   await testStandaloneMiddlewareRegistration()
+  await testUnifiedBilibiliInputsAndCards()
   await testStandaloneMiddlewareResourceBoundaries()
   await testP1NormalizationAndResponseTimeout()
   await testChineseUserErrorCatalog()
@@ -1179,6 +1993,7 @@ async function run() {
   await testExplicitUncertainCacheRetry()
   await testInflightReuse()
   await testShortLinkNormalization()
+  await testShortLinkStructuredFailures()
   await testCleanupAndSafety()
   await testStagingCleanupAlerts()
   await testSingleCleanupCallPerRequest()

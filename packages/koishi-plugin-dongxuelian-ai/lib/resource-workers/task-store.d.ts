@@ -63,6 +63,7 @@ declare function deferTask(task: ResourceTask, reason?: string): ResourceTask;
 declare function requeueTask(task: ResourceTask, reason?: string): ResourceTask;
 declare function updateTaskNotifyStatus(task: ResourceTask, status: string, error?: string): ResourceTask;
 declare function cancelTask(taskId: string, actor?: string, reason?: string): boolean;
+declare function cancelResourceTasksByKind(kind: string, statuses?: string[], actor?: string, reason?: string): ResourceTask[];
 declare function writeWorkerHeartbeat(workerName: string, state?: Partial<ResourceWorkerState>): ResourceWorkerState;
 declare function listWorkerStates(): ResourceWorkerState[];
 interface DiscardInterruptedResourceTaskStateResult {
@@ -109,6 +110,7 @@ declare const _default: {
     requeueTask: typeof requeueTask;
     updateTaskNotifyStatus: typeof updateTaskNotifyStatus;
     cancelTask: typeof cancelTask;
+    cancelResourceTasksByKind: typeof cancelResourceTasksByKind;
     writeWorkerHeartbeat: typeof writeWorkerHeartbeat;
     listWorkerStates: typeof listWorkerStates;
     discardInterruptedResourceTaskState: typeof discardInterruptedResourceTaskState;

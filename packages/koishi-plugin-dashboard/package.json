@@ -12,6 +12,7 @@
     "service": {}
   },
   "dependencies": {
-    "bcryptjs": "^2.4.3"
+    "bcryptjs": "^2.4.3",
+    "koishi-plugin-local-video-sender": "file:../koishi-plugin-local-video-sender"
   }
 }

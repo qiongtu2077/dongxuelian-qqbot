@@ -544,6 +544,37 @@ function cancelTask(taskId, actor = 'system', reason = 'cancelled') {
     writeWorkerEvent('task_cancelled', { taskId, kind: task.kind, actor, reason: safeReason });
     return true;
 }
+// 仅取消指定 kind 在给定非终态中的任务，供视频插件启动时丢弃本类旧任务且不影响其他 AI 任务。
+function cancelResourceTasksByKind(kind, statuses = DEFAULT_ACTIVE_TASK_STATUSES, actor = 'system', reason = 'cancelled') {
+    ensureTaskDirs();
+    const targetKind = String(kind || '');
+    if (!targetKind)
+        return [];
+    const allowedStatuses = normalizeTaskStatusList(statuses);
+    const safeReason = redactSensitiveText(reason) || 'cancelled';
+    const cancelled = [];
+    for (const status of allowedStatuses) {
+        const tasks = scanTasksByStatus(status, 20000, status === 'pending' ? { kinds: [targetKind] } : {})
+            .filter(task => String(task.kind || '') === targetKind);
+        for (const task of tasks) {
+            const target = prepareTaskTransition(task, 'cancelled');
+            if (!target)
+                continue;
+            const next = {
+                ...task,
+                status: 'cancelled',
+                updatedAt: nowIso(),
+                finishedAt: nowIso(),
+                step: 'cancelled',
+                error: safeReason,
+            };
+            writeJsonAtomic(target.file, next);
+            writeWorkerEvent('task_cancelled', { taskId: next.id, kind: next.kind, actor, reason: safeReason });
+            cancelled.push(next);
+        }
+    }
+    return cancelled;
+}
 // 写入 worker 心跳。
 function writeWorkerHeartbeat(workerName, state = {}) {
     ensureTaskDirs();
@@ -705,6 +736,7 @@ module.exports = {
     requeueTask,
     updateTaskNotifyStatus,
     cancelTask,
+    cancelResourceTasksByKind,
     writeWorkerHeartbeat,
     listWorkerStates,
     discardInterruptedResourceTaskState,
