@@ -327,7 +327,7 @@ function apply(ctx: DailyReportContextLike): void {
 
         cooldown.set(channelKey, Date.now())
         failureBackoff.delete(channelKey)
-        await safeSendDailyReport(ctx, session, `${modeLabel}已提交后台任务，完成后会自动发回结果。\n任务：${taskId}`, '日报后台任务提示')
+        await safeSendDailyReport(ctx, session, 'Thinking....', '日报后台任务提示')
         ctx.logger('daily-report').info(`${modeLabel}已提交后台 worker: task=${taskId}, channel=${channelKey}, admission=${String(admission.decision || 'run_now')}`)
       } catch (err) {
         ctx.logger('daily-report').error(`${modeLabel}提交后台任务失败: ${getErrorMessage(err)}`)

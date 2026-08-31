@@ -808,7 +808,7 @@ async function testConcurrentReportGuard() {
       _sent: firstSent,
       send: async msg => {
         firstSent.push(msg)
-        if (String(msg).includes('已提交后台任务')) return promptPending
+        if (msg === 'Thinking....') return promptPending
         return true
       },
     })
@@ -818,7 +818,7 @@ async function testConcurrentReportGuard() {
     const secondRun = middleware(secondSession, () => 'next-2')
 
     check('first report submits background task', runtime.state.submissions.length === 1, JSON.stringify(runtime.state.submissions))
-    check('first report enters in-flight while prompt is sending', firstSent.some(item => String(item).includes('已提交后台任务')), JSON.stringify(firstSent))
+    check('detailed report sends Thinking while background task starts', firstSent.includes('Thinking....'), JSON.stringify(firstSent))
     check('second report is rejected while first is running', secondSession._sent.some(item => String(item).includes('正在生成中')), JSON.stringify(secondSession._sent))
     check('second report does not submit another task', runtime.state.submissions.length === 1, JSON.stringify(runtime.state.submissions))
     check('middleware does not call collector', collectCalls === 0, String(collectCalls))
@@ -900,7 +900,7 @@ async function testCooldownAfterSuccessOnly() {
 
     const first = makeSession({ content: '群聊日报', guildId: '123' })
     await middleware(first, () => 'next')
-    check('successful submit sends background task prompt', first._sent.some(item => String(item).includes('已提交后台任务')), JSON.stringify(first._sent))
+    check('basic report submit sends Thinking', first._sent.includes('Thinking....'), JSON.stringify(first._sent))
     check('successful submit writes normal cooldown', plugin._test.cooldown.has('123'))
 
     const cooldownHit = makeSession({ content: '群聊日报', guildId: '123' })
@@ -925,7 +925,7 @@ async function testCooldownAfterSuccessOnly() {
     const retry = makeSession({ content: '群聊日报', guildId: '123' })
     retry.guildId = '456'
     await middleware(retry, () => 'next')
-    check('failed submit can retry after short backoff', retry._sent.some(item => String(item).includes('已提交后台任务')), JSON.stringify(retry._sent))
+    check('successful retry sends Thinking', retry._sent.includes('Thinking....'), JSON.stringify(retry._sent))
 
     const secondCooldownHit = makeSession({ content: '群聊日报', guildId: '123' })
     secondCooldownHit.guildId = '456'
