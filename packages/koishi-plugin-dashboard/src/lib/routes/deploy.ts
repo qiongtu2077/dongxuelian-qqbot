@@ -25,6 +25,13 @@ const { localTasks, getTaskPublicStatus, spawnLocalTask, getRebuildStatus, setRe
 const { readLastLogLines } = require('../logging') as typeof import('../logging')
 const dh = require('../deploy-helpers') as typeof import('../deploy-helpers')
 const remoteRelease = require('../remote-release') as typeof import('../remote-release')
+const cookieFile = require('koishi-plugin-local-video-sender/lib/cookie-file') as typeof import('koishi-plugin-local-video-sender/lib/cookie-file')
+const {
+  decodeStrictBase64,
+  replaceBiliCookieFileAtomic,
+  resolveBiliCookiePath,
+  validateNetscapeCookieFile,
+} = cookieFile
 
 const DEPLOY_CONFIG_FILE = path.join(DATA_DIR, 'deploy-config.json')
 const DEPLOY_TASKS_DIR = path.join(DATA_DIR, 'deploy-tasks')
@@ -386,6 +393,7 @@ function handlePostFrontendRebuild(req: IncomingMessage, res: ServerResponse): v
 
 function handleGetFrontendRebuildStatus(req: IncomingMessage, res: ServerResponse): void { return json(res, getRebuildStatus()) }
 
+// 严格校验并原子保存 Dashboard 上传的唯一 B 站 Cookie 文件。
 function handlePostDeployUpload(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, (body) => {
@@ -393,16 +401,30 @@ function handlePostDeployUpload(req: IncomingMessage, res: ServerResponse): void
       const { name, data } = JSON.parse(body) as DeployUploadBody
       if (!name || !data) return json(res, { ok: false, message: '文件名或内容为空' }, 400)
       if (name !== 'bilibili-cookies.txt') return json(res, { ok: false, message: 'only bilibili-cookies.txt can be uploaded here' }, 400)
-      const filePath = path.join(DATA_DIR, 'bilibili-cookies.txt')
-      const raw = String(data || '').trim()
-      const estimatedBytes = Math.floor(raw.length * 3 / 4)
-      if (estimatedBytes > dh.MAX_DEPLOY_UPLOAD_BYTES) return json(res, { ok: false, message: '上传文件过大' }, 413)
-      const buf = Buffer.from(raw, 'base64')
-      if (buf.length > dh.MAX_DEPLOY_UPLOAD_BYTES) return json(res, { ok: false, message: '上传文件过大' }, 413)
-      fs.mkdirSync(DATA_DIR, { recursive: true })
-      fs.writeFileSync(filePath, buf)
-      json(res, { ok: true, message: 'bilibili-cookies.txt 已保存到当前主控制台机器，不会随代码部署上传' })
-    } catch (e) { json(res, { ok: false, message: getLegacyErrorMessage(e) }, 400) }
+      const decoded = decodeStrictBase64(data, dh.MAX_DEPLOY_UPLOAD_BYTES)
+      if (!decoded.ok) {
+        const status = decoded.code === 'file_too_large' ? 413 : 400
+        return json(res, { ok: false, code: decoded.code }, status)
+      }
+      const validation = validateNetscapeCookieFile(decoded.buffer)
+      if (!validation.ok) return json(res, { ok: false, code: validation.code, line: validation.line }, 400)
+      const filePath = resolveBiliCookiePath(DATA_DIR, process.env.BILI_COOKIES_FILE)
+      const result = replaceBiliCookieFileAtomic(filePath, decoded.buffer)
+      log(`bilibili_cookie_upload path=${result.path} bytes=${result.size} records=${result.recordCount} mode=${result.mode.toString(8)}`)
+      return json(res, {
+        ok: true,
+        message: '已安全保存到当前主控制台机器；与视频插件共享同一数据目录时立即生效，远程代码发布不会携带此文件',
+        path: result.path,
+        size: result.size,
+        recordCount: result.recordCount,
+      })
+    } catch (e) {
+      const candidate = e as { code?: unknown, line?: unknown }
+      const code = String(candidate?.code || 'cookie_write_failed')
+      const line = Number.isInteger(candidate?.line) ? Number(candidate.line) : undefined
+      log(`bilibili_cookie_upload_failed code=${code} line=${line || 0}`)
+      return json(res, { ok: false, code, line }, 400)
+    }
   })
 }
 

@@ -506,6 +506,50 @@ async function testFallbackValidationIsStrictAndAtomic() {
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(fallbackFile, 'utf8')), { chat: [], vision: [], lightweight: [] })
 }
 
+// Verifies Cookie uploads reject malformed input before disk and atomically publish mode-600 files to the shared runtime path.
+async function testBilibiliCookieUploadValidationAndAtomicWrite() {
+  resetDataDir()
+  const previousOverride = process.env.BILI_COOKIES_FILE
+  delete process.env.BILI_COOKIES_FILE
+  try {
+    const target = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'bilibili-cookies.txt')
+    const oldContent = Buffer.from('# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\told\tvalue\n')
+    fs.writeFileSync(target, oldContent)
+    const oldHash = crypto.createHash('sha256').update(oldContent).digest('hex')
+
+    const invalidBase64 = await dispatchJson('POST', '/dashboard/api/deploy/upload', { name: 'bilibili-cookies.txt', data: '!!!!' }, adminHeaders())
+    assert.strictEqual(invalidBase64.statusCode, 400)
+    assert.strictEqual(parseJsonResponse(invalidBase64).code, 'invalid_base64')
+    assert.strictEqual(crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex'), oldHash)
+
+    const invalidCookie = Buffer.from('not a Netscape file\n').toString('base64')
+    const invalidStructure = await dispatchJson('POST', '/dashboard/api/deploy/upload', { name: 'bilibili-cookies.txt', data: invalidCookie }, adminHeaders())
+    assert.strictEqual(invalidStructure.statusCode, 400)
+    assert.strictEqual(parseJsonResponse(invalidStructure).code, 'missing_header')
+    assert.strictEqual(crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex'), oldHash)
+
+    const validContent = Buffer.from('# Netscape HTTP Cookie File\n#HttpOnly_.bilibili.com\tTRUE\t/\tFALSE\t0\tSESSDATA\ttest-value\n')
+    const success = await dispatchJson('POST', '/dashboard/api/deploy/upload', { name: 'bilibili-cookies.txt', data: validContent.toString('base64') }, adminHeaders())
+    const successBody = parseJsonResponse(success)
+    assert.strictEqual(success.statusCode, 200)
+    assert.strictEqual(successBody.ok, true)
+    assert.strictEqual(successBody.message, '已安全保存到当前主控制台机器；与视频插件共享同一数据目录时立即生效，远程代码发布不会携带此文件')
+    assert.strictEqual(successBody.path, path.resolve(target))
+    assert.strictEqual(successBody.recordCount, 1)
+    assert.deepStrictEqual(fs.readFileSync(target), validContent)
+    if (process.platform !== 'win32') assert.strictEqual(fs.statSync(target).mode & 0o777, 0o600)
+
+    const oversized = Buffer.alloc(1024 * 1024 + 1, 1).toString('base64')
+    const oversizedResponse = await dispatchJson('POST', '/dashboard/api/deploy/upload', { name: 'bilibili-cookies.txt', data: oversized }, adminHeaders())
+    assert.strictEqual(oversizedResponse.statusCode, 413)
+    assert.strictEqual(parseJsonResponse(oversizedResponse).code, 'file_too_large')
+    assert.deepStrictEqual(fs.readFileSync(target), validContent)
+  } finally {
+    if (previousOverride === undefined) delete process.env.BILI_COOKIES_FILE
+    else process.env.BILI_COOKIES_FILE = previousOverride
+  }
+}
+
 // Runs all tests sequentially so rate-limit state remains deterministic.
 async function run() {
   testRegexRouteObjectDispatch()
@@ -529,6 +573,7 @@ async function run() {
   await testCustomProviderValidationRejectsUnsafeInput()
   await testKeysIncludeCustomProviders()
   await testFallbackValidationIsStrictAndAtomic()
+  await testBilibiliCookieUploadValidationAndAtomicWrite()
 
   fs.rmSync(process.env.DONGXUELIAN_AI_DATA_DIR, { recursive: true, force: true })
   console.log('dashboard security/router tests passed')

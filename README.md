@@ -94,7 +94,7 @@ http://服务器IP:5150/dashboard/
 
 
 如果已经部署过，可以点击「我已部署，解锁」进入完整功能页；也可以继续使用「部署」Tab 生成 Windows 本地配置或更新远程服务器代码。
-B 站视频搬运功能需要浏览器导出的 `cookies.txt`。部署面板里可以上传，部署时会自动推送到远程服务器。
+B 站视频搬运功能需要浏览器导出的 `cookies.txt`。部署面板上传只会保存到当前主控制台机器；当 Dashboard 与视频插件共享同一数据目录时会立即生效。远程代码发布不会携带 Cookie，视频插件位于另一台服务器时，应在目标机 Dashboard 上传，或由已授权运维人员迁移到目标机标准路径并设置权限 `0600`。
 
 ### 2.3 按控制台里的步骤操作
 
@@ -165,8 +165,9 @@ Windows 本地部署会在当前项目目录内准备运行环境：
 - `ai-skills/` 人格、世界观、模式等数据文件。
 - 当前本地已有的 AI 配置文件和黑白名单文件。
 - `restart.sh` 与 `watchdog.sh`。
-- B 站 cookies 文件（如果你上传了）。
 - `yt-dlp` 和 `/root/koishi-bili-downloads` 视频下载目录。
+
+B 站 Cookie、API Key、`deploy-config.json` 和 `data/` 中的运行数据不会进入远程代码发布物。目标服务器需要视频功能时，请在目标机 Dashboard 上传 Cookie，或由已授权运维人员将最后有效文件迁移到 `/root/koishi-app/data/bilibili-cookies.txt` 并设置权限 `0600`。
 
 部署前确认：
 
@@ -465,7 +466,7 @@ KOISHI_DIR=<YOUR_APP_DIR> DONGXUELIAN_AI_DATA_DIR=<YOUR_DATA_DIR> sh scripts/sea
 | `NAPCAT_HOST` | `127.0.0.1` | Dashboard 代理 NapCat 的地址 |
 | `NAPCAT_PORT` | `6099` | Dashboard 代理 NapCat 的端口 |
 | `BILI_YTDLP` | `/usr/local/bin/yt-dlp` | 视频插件使用的 yt-dlp 路径 |
-| `BILI_COOKIES_FILE` | `/root/bilibili-cookies.txt` | B 站 cookies 文件路径 |
+| `BILI_COOKIES_FILE` | `${DONGXUELIAN_AI_DATA_DIR}/bilibili-cookies.txt` | B 站 cookies 文件路径；生产标准为 `/root/koishi-app/data/bilibili-cookies.txt` |
 | `BILI_WORKDIR` | `/root/koishi-bili-downloads` | 视频临时下载目录 |
 | `BILI_MAX_SIZE_BYTES` | `209715200` | 单个视频最大大小，默认 200MB |
 

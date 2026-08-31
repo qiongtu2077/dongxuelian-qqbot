@@ -74,8 +74,8 @@ npm run start
 1. 打开 `http://服务器IP:5150/dashboard/`。
 2. 进入“部署”页。
 3. 填 `root@服务器IP` 和目标目录，默认 `<YOUR_APP_DIR>`。
-4. 上传 B 站 `cookies.txt`，如果需要视频功能。
-5. 点击远程操作，等待 Dashboard 自动构建前端、同步插件、重启 Bot。
+4. 点击远程操作，等待 Dashboard 自动构建前端、同步插件、重启 Bot。
+5. 如果需要视频功能，在目标机 Dashboard 上传 B 站 `cookies.txt`，或由已授权运维人员将文件迁移到目标机标准路径并设置权限 `0600`。远程代码发布不会携带 Cookie。
 
 如果你要从零部署 Linux：
 
@@ -525,7 +525,7 @@ Dashboard → 部署 → 远程 Linux 部署
 - 远端已有基本 Koishi/NapCat 环境，或至少已有可识别的 Koishi 安装。
 - 远端安全组放行 `5150`。
 - 机器人 QQ 已能在 NapCat 登录。
-- 如果要用 B 站视频，先在部署页上传 `bilibili-cookies.txt`。
+- 如果要用 B 站视频，请在目标机 Dashboard 上传 `bilibili-cookies.txt`，或由已授权运维人员迁移到目标机标准路径并设置权限 `0600`。
 
 远程更新会同步：
 
@@ -534,8 +534,9 @@ Dashboard → 部署 → 远程 Linux 部署
 - Dashboard 前端源码、public、构建后的 `dist/`。
 - AI Skills 种子文件到远端 `data/ai-skills`，不会覆盖已存在文件。
 - `restart.sh`、`watchdog.sh`、`seal-data-dir.sh`。
-- B 站 cookies 文件，如果已上传。
 - 然后执行远程 `restart.sh` 并做端口/日志健康检查。
+
+远程代码发布明确排除 B 站 Cookie、API Key、`deploy-config.json` 和其他运行数据。目标服务器的标准 Cookie 路径是 `/root/koishi-app/data/bilibili-cookies.txt`。
 
 注意：
 
@@ -868,7 +869,7 @@ packages/koishi-plugin-local-video-sender/data
 | `NAPCAT_PORT` | `6099` | NapCat WebUI 端口 |
 | `NAPCAT_TOKEN` | 从数据或配置读取 | NapCat WebUI token |
 | `BILI_YTDLP` | `/usr/local/bin/yt-dlp` | 视频下载工具路径 |
-| `BILI_COOKIES_FILE` | `/root/bilibili-cookies.txt` | B 站 cookies |
+| `BILI_COOKIES_FILE` | `${DONGXUELIAN_AI_DATA_DIR}/bilibili-cookies.txt` | B 站 cookies；生产标准为 `/root/koishi-app/data/bilibili-cookies.txt` |
 | `BILI_WORKDIR` | `/root/koishi-bili-downloads` | 视频临时下载目录 |
 | `BILI_MAX_SIZE_BYTES` | `209715200` | 单视频大小限制，默认 200MB |
 | `AI_RANDOM_TRIGGER_RATE` | `0.008` | 主动回复基础概率 |

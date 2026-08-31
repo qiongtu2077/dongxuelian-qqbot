@@ -1,6 +1,9 @@
 import type { ExecFileOptions } from 'child_process';
 declare const fs: typeof import("fs/promises");
+declare const videoTaskQueueModule: typeof import("./video-task-queue");
 declare const resolveBiliShortLink: typeof import("./bili-input").resolveBiliShortLink;
+type VideoTraceContext = import('./video-trace').VideoTraceContext;
+type VideoTaskStore = Parameters<typeof videoTaskQueueModule.createVideoTaskQueue>[0]['store'];
 interface LoggerLike {
     warn(...args: unknown[]): void;
 }
@@ -90,14 +93,14 @@ interface ProbeResult {
 }
 type VideoFsApi = Pick<typeof fs, 'mkdir' | 'stat' | 'rm'>;
 type StagingFsApi = Pick<typeof fs, 'lstat' | 'realpath' | 'rm' | 'stat' | 'readFile'>;
-type VideoUserErrorNumber = '001' | '002' | '003' | '004' | '005' | '006' | '007' | '008' | '009' | '010' | '011' | '012' | '013' | '014' | '015' | '016' | '017' | '018' | '019' | '020' | '021' | '022' | '023' | '024' | '025' | '026' | '027';
+type VideoUserErrorNumber = '001' | '002' | '003' | '004' | '005' | '006' | '007' | '008' | '009' | '010' | '011' | '012' | '013' | '014' | '015' | '016' | '017' | '018' | '019' | '020' | '021' | '022' | '023' | '024' | '025' | '026' | '027' | '028' | '029' | '030' | '031' | '032';
 type VideoUserErrorId = `video-${VideoUserErrorNumber}`;
 interface VideoUserError {
     id: VideoUserErrorId;
     message: string;
     stage: string;
 }
-type StaticVideoUserErrorId = 'video-001' | 'video-003' | 'video-006' | 'video-007' | 'video-008' | 'video-009' | 'video-010' | 'video-013' | 'video-014' | 'video-016' | 'video-017' | 'video-018' | 'video-019' | 'video-020' | 'video-023' | 'video-025' | 'video-027';
+type StaticVideoUserErrorId = 'video-001' | 'video-003' | 'video-006' | 'video-007' | 'video-008' | 'video-009' | 'video-010' | 'video-013' | 'video-014' | 'video-016' | 'video-017' | 'video-018' | 'video-019' | 'video-020' | 'video-023' | 'video-025' | 'video-027' | 'video-028' | 'video-029' | 'video-030' | 'video-031' | 'video-032';
 type VideoUserErrorInput = {
     id: StaticVideoUserErrorId;
 } | {
@@ -160,6 +163,15 @@ interface StagingCleanupOptions {
     adminIdsFile?: string;
     now?: number;
 }
+interface ResourceGateStorageFailure {
+    failureCode: string;
+    errno: string;
+    stage: string;
+    safePath: string;
+}
+interface GateAdminAlertOptions extends StagingCleanupOptions {
+    schedule?: (handler: () => void, delayMs: number) => NodeJS.Timeout;
+}
 interface DownloadDeps {
     fs?: VideoFsApi;
     run?: typeof run;
@@ -169,6 +181,9 @@ interface DownloadDeps {
     resolveShortLink?: typeof resolveBiliShortLink;
     resourceModules?: VideoResourceModules | null;
     resourceGate?: false;
+    gateAdminAlertOptions?: GateAdminAlertOptions;
+    taskStore?: VideoTaskStore;
+    finalNoticeDelay?: (delayMs: number) => Promise<void>;
 }
 interface DownloadRequestOptions {
     explicitCommand?: boolean;
@@ -200,6 +215,9 @@ declare function formatDecimalMb(bytes: number): string;
 declare function buildOversizeMessage(bytes: number): string;
 declare function buildActualOversizeMessage(bytes: number): string;
 declare function createRequestStagingDirectory(cacheSlug: string): Promise<StagingPrepareResult>;
+declare function getResourceGateStorageFailure(error: unknown): ResourceGateStorageFailure | null;
+declare function flushGateAdminAlertWindow(key: string): Promise<void>;
+declare function reportResourceGateStorageFailure(ctx: ContextLike, session: VideoSessionLike, failure: ResourceGateStorageFailure, traceId: string, taskId: string, options?: GateAdminAlertOptions, trace?: VideoTraceContext): Promise<void>;
 declare function removeRequestStagingDirectory(ctx: ContextLike | null, session: VideoSessionLike, stagingDir: string, bvId: string, taskId: string, options?: StagingCleanupOptions): Promise<boolean>;
 declare function isStandaloneBilibiliVideoInput(input?: string): boolean;
 declare function cleanupVideoCache(ctx: ContextLike | null, now?: number): Promise<{
@@ -220,6 +238,7 @@ declare const _default: {
     name: string;
     apply: typeof apply;
     extractBiliUrl: typeof import("./bili-input").extractBiliUrl;
+    isBilibiliCardInput: typeof import("./bili-input").isBilibiliCardInput;
     isStandaloneBilibiliVideoInput: typeof isStandaloneBilibiliVideoInput;
     handleStandaloneBilibiliVideoInput: typeof handleStandaloneBilibiliVideoInput;
     buildBiliKeys: typeof import("./bili-input").buildBiliKeys;
@@ -245,6 +264,9 @@ declare const _default: {
     isPrivateIpAddress: typeof import("./bili-input").isPrivateIpAddress;
     cleanupVideoCache: typeof cleanupVideoCache;
     removeRequestStagingDirectory: typeof removeRequestStagingDirectory;
+    getResourceGateStorageFailure: typeof getResourceGateStorageFailure;
+    reportResourceGateStorageFailure: typeof reportResourceGateStorageFailure;
+    flushGateAdminAlertWindow: typeof flushGateAdminAlertWindow;
     getVideoCacheStatus: typeof getVideoCacheStatus;
     clearVideoRuntimeState: typeof clearVideoRuntimeState;
 };
