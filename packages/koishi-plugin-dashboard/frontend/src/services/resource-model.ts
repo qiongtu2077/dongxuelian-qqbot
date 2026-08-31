@@ -166,6 +166,9 @@ export function workerDisplay(worker: JsonRecord): ReadableWorkerDisplay {
   const pauseReasons = pauseReasonLabels(worker.workerPauseReasons)
   const base = (() : ReadableStatusDisplay => {
     if (code === 'task_timeout') return { label: '任务运行超时', detail: '系统正在自动清理超时任务。', level: 'danger' }
+    if (code === 'task_timeout_idle') return { label: '处理器空闲，上一个任务超时', detail: '系统正在自动清理超时任务。', level: 'danger' }
+    if (code === 'running_unresponsive_backlog') return { label: `任务运行中，但处理器无响应；另有 ${backlog} 项任务等待处理`, detail: '需要检查处理器运行状态。', level: 'danger' }
+    if (code === 'claiming_idle') return { label: '处理器空闲', detail: '任务尚未开始执行。', level: 'ok' }
     if (code === 'stopped_backlog') return { label: `处理器已停止，仍有 ${backlog} 项任务等待处理`, detail: '需要检查处理器运行状态。', level: 'danger' }
     if (code === 'stalled') return { label: '任务积压，处理器长时间未推进', detail: '处理器仍在线，但已超过进展观察窗口。', level: 'danger' }
     if (code === 'paused_auto_resume') return { label: '已暂停，将自动恢复', detail: pauseReasons.join('、') || '系统保护暂时阻止领取新任务。', level: 'off' }

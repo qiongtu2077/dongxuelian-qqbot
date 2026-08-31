@@ -133,7 +133,7 @@ async function generateDailyReportResult(options) {
     const data = collectReportData(options.channelKey);
     if (!data || !Array.isArray(data.messages) || data.messages.length === 0) {
         const textPath = path.join(outputDir, 'report.txt');
-        writeTextFile(textPath, '今天还没有收录足够消息，稍后再试。');
+        writeTextFile(textPath, '今天还没有收录足够多的消息');
         const result = {
             ok: true,
             taskId,

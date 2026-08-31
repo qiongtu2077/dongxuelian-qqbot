@@ -100,6 +100,12 @@ function testResourceModel(resource) {
   assert.strictEqual(resource.workerDisplay({ workerType: 'agent', workerHealthCode: 'stopped_idle', backlogTotal: 0 }).label, '已停止')
   assert.strictEqual(resource.workerDisplay({ workerType: 'media', workerHealthCode: 'idle', backlogTotal: 0 }).name, '媒体分析处理器')
   assert.strictEqual(resource.workerDisplay({ workerType: 'daily', workerHealthCode: 'working', runningCount: 1 }).name, '日报处理器')
+  assert.strictEqual(
+    resource.workerDisplay({ workerType: 'agent', workerHealthCode: 'running_unresponsive_backlog', backlogTotal: 1, runningCount: 1 }).label,
+    '任务运行中，但处理器无响应；另有 1 项任务等待处理',
+  )
+  assert.strictEqual(resource.workerDisplay({ workerType: 'daily', workerHealthCode: 'claiming_idle', backlogTotal: 1 }).label, '处理器空闲')
+  assert.strictEqual(resource.workerDisplay({ workerType: 'daily', workerHealthCode: 'task_timeout_idle', backlogTotal: 0 }).label, '处理器空闲，上一个任务超时')
   assert.strictEqual(resource.mediaQueueDisplay('image', { queueTotal: 96, queueLimit: 120, readyCount: 90, deferredCount: 6, runningCount: 1 }, 'near_limit').label, '接近上限')
   assert.match(resource.mediaSummaryDisplay({ mediaRiskCode: 'at_limit', mediaRiskKinds: ['file', 'voice'] }).detail, /文件、语音/)
 }
@@ -131,6 +137,10 @@ function testResourceReadability(readability) {
   const cases = [
     { expected: 'idle', worker: { name: 'agent-worker', kind: 'agent', alive: true, heartbeatAt: '2026-08-30T07:59:59.000Z' }, tasks: [] },
     { expected: 'working', worker: { name: 'agent-worker', kind: 'agent', alive: true, currentTaskId: 'r1', heartbeatAt: '2026-08-30T07:59:59.000Z' }, tasks: [{ id: 'r1', kind: 'agent_task', status: 'running', startedAt: '2026-08-30T07:59:55.000Z' }] },
+    { expected: 'claiming_idle', expectedRunningCount: 0, worker: { name: 'agent-worker', kind: 'agent', alive: false }, tasks: [{ id: 'c1', kind: 'agent_task', status: 'claiming', claimedBy: 'agent-worker' }, { id: 'p1', kind: 'agent_task', status: 'pending' }] },
+    { expected: 'running_unresponsive_backlog', worker: { name: 'agent-worker', kind: 'agent', alive: false, currentTaskId: 'r1' }, tasks: [{ id: 'p1', kind: 'agent_task', status: 'pending' }, { id: 'r1', kind: 'agent_task', status: 'running', startedAt: '2026-08-30T07:59:55.000Z' }] },
+    { expected: 'running_unresponsive_backlog', worker: { name: 'daily-worker', kind: 'daily', alive: false, currentTaskId: 'r1' }, tasks: [{ id: 'p1', kind: 'daily_report', status: 'pending' }, { id: 'r1', kind: 'daily_report', status: 'running', startedAt: '2026-08-30T07:59:55.000Z' }] },
+    { expected: 'task_timeout_idle', worker: { name: 'agent-worker', kind: 'agent', alive: false, currentTaskId: 'r1' }, tasks: [{ id: 'r1', kind: 'agent_task', status: 'running', startedAt: '2026-08-30T07:59:40.000Z' }] },
     { expected: 'paused_auto_resume', worker: { name: 'agent-worker', kind: 'agent', alive: true, parked: true, heartbeatAt: '2026-08-30T07:59:59.000Z' }, tasks: [] },
     { expected: 'stopped_idle', worker: { name: 'agent-worker', kind: 'agent', alive: false }, tasks: [] },
     { expected: 'stopped_backlog', worker: { name: 'agent-worker', kind: 'agent', alive: false }, tasks: [{ id: 'p1', kind: 'agent_task', status: 'pending' }] },
@@ -140,7 +150,18 @@ function testResourceReadability(readability) {
   for (const testCase of cases) {
     const result = readability.buildResourceReadability({ ...base, workers: [testCase.worker], tasks: testCase.tasks })
     assert.strictEqual(result.workers[0].workerHealthCode, testCase.expected)
+    if (testCase.expectedRunningCount !== undefined) assert.strictEqual(result.workers[0].runningCount, testCase.expectedRunningCount)
   }
+  const mediaWithRunningBacklog = {
+    queues: {
+      image: { queueTotal: 2, queueLimit: 120, readyCount: 1, deferredCount: 0, runningCount: 1 },
+      file: { queueTotal: 0, queueLimit: 60, readyCount: 0, deferredCount: 0, runningCount: 0 },
+      voice: { queueTotal: 0, queueLimit: 80, readyCount: 0, deferredCount: 0, runningCount: 0 },
+    },
+  }
+  const mediaWorker = readability.buildResourceReadability({ ...base, media: mediaWithRunningBacklog, workers: [{ name: 'media-worker', kind: 'media', alive: false }], tasks: [] }).workers[0]
+  assert.strictEqual(mediaWorker.workerHealthCode, 'running_unresponsive_backlog')
+  assert.strictEqual(mediaWorker.runningCount, 1)
   const mediaRisk = readability.buildMediaRisk(base.media)
   assert.deepStrictEqual(mediaRisk.mediaRiskByKind, { image: 'idle', file: 'near_limit', voice: 'at_limit' })
   assert.strictEqual(mediaRisk.mediaRiskCode, 'at_limit')

@@ -4,7 +4,7 @@
  * 边界: 不翻译界面文案，不读取文件，不改变调度状态。
  */
 type ReadableRecord = Record<string, unknown>;
-export type WorkerHealthCode = 'idle' | 'working' | 'paused_auto_resume' | 'stopped_idle' | 'stopped_backlog' | 'stalled' | 'task_timeout';
+export type WorkerHealthCode = 'idle' | 'working' | 'paused_auto_resume' | 'stopped_idle' | 'stopped_backlog' | 'stalled' | 'task_timeout' | 'running_unresponsive_backlog' | 'claiming_idle' | 'task_timeout_idle';
 export type BackgroundPauseReason = 'maintenance' | 'resource_critical' | 'browser_active' | 'daily_render_active';
 export type MediaRiskCode = 'idle' | 'queued' | 'near_limit' | 'at_limit';
 interface ResourceReadabilityInput {

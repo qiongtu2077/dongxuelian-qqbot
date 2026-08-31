@@ -63,7 +63,8 @@ function countResourceWorkerTasks(workerType, tasks) {
     return {
         readyCount: owned.filter(task => String(task.status || '') === 'pending').length,
         deferredCount: owned.filter(task => String(task.status || '') === 'deferred').length,
-        runningCount: owned.filter(task => ['claiming', 'running'].includes(String(task.status || ''))).length,
+        claimingCount: owned.filter(task => String(task.status || '') === 'claiming').length,
+        runningCount: owned.filter(task => String(task.status || '') === 'running').length,
     };
 }
 // 统计媒体处理器三类队列的当前数量。
@@ -80,7 +81,7 @@ function countMediaWorkerTasks(media) {
         result.deferredCount += countValue(queue.deferredCount);
         result.runningCount += countValue(queue.runningCount);
         return result;
-    }, { readyCount: 0, deferredCount: 0, runningCount: 0 });
+    }, { readyCount: 0, deferredCount: 0, claimingCount: 0, runningCount: 0 });
 }
 // 查找处理器当前运行的资源任务，不向总览带出任务 payload。
 function findWorkerRunningTask(worker, workerType, tasks) {
@@ -118,9 +119,18 @@ function buildWorkerPauseReasons(worker, workerType, snapshot, globalReasons) {
 // 按计划固定的严重程度顺序选择处理器主健康状态。
 function resolveWorkerHealthCode(worker, counts, runningTask, pauseReasons, resolveTaskTimeoutMs, now) {
     const backlog = counts.readyCount + counts.deferredCount;
+    const hasRunningTask = counts.runningCount > 0 || runningTask !== null;
+    const hasClaimingTask = counts.claimingCount > 0;
     const startedAt = Date.parse(String(runningTask?.startedAt || worker.currentTaskStartedAt || ''));
-    if (runningTask && Number.isFinite(startedAt) && now - startedAt > resolveTaskTimeoutMs(runningTask))
-        return 'task_timeout';
+    if (runningTask && Number.isFinite(startedAt) && now - startedAt > resolveTaskTimeoutMs(runningTask)) {
+        return backlog > 0 ? 'task_timeout' : 'task_timeout_idle';
+    }
+    // 刚领取只表示任务已被原子占有，尚未进入实际执行。
+    if (hasClaimingTask && !hasRunningTask)
+        return 'claiming_idle';
+    // 运行记录仍存在但心跳失效时，区分无响应与真正没有处理器。
+    if (worker.alive !== true && hasRunningTask && backlog > 0)
+        return 'running_unresponsive_backlog';
     if (worker.alive !== true && backlog > 0)
         return 'stopped_backlog';
     const progressAt = Date.parse(String(worker.loopChangedAt || worker.lastClaimAttemptAt || worker.heartbeatAt || ''));
@@ -128,7 +138,7 @@ function resolveWorkerHealthCode(worker, counts, runningTask, pauseReasons, reso
         return 'stalled';
     if (pauseReasons.length > 0 || worker.parked === true)
         return 'paused_auto_resume';
-    if (counts.runningCount > 0 || runningTask)
+    if (hasRunningTask)
         return 'working';
     return worker.alive === true ? 'idle' : 'stopped_idle';
 }
@@ -141,7 +151,7 @@ function buildReadableWorkers(input, globalReasons) {
             ? countMediaWorkerTasks(input.media)
             : workerType === 'agent' || workerType === 'daily'
                 ? countResourceWorkerTasks(workerType, input.tasks)
-                : { readyCount: 0, deferredCount: 0, runningCount: 0 };
+                : { readyCount: 0, deferredCount: 0, claimingCount: 0, runningCount: 0 };
         const runningTask = findWorkerRunningTask(worker, workerType, input.tasks);
         const workerPauseReasons = buildWorkerPauseReasons(worker, workerType, input.snapshot, globalReasons);
         const workerHealthCode = resolveWorkerHealthCode(worker, counts, runningTask, workerPauseReasons, input.resolveTaskTimeoutMs, now);
