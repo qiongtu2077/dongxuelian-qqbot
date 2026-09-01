@@ -1798,7 +1798,7 @@ async function enqueueBusyVideoRequest(ctx, session, result, deps, trace) {
         writeVideoTrace(ctx, queuedTaskTrace, 'queue_persisted', { waiting: queued.waiting, capacity: queued.capacity, stage: String(queued.task.status || 'pending') });
         const observedStatus = String(queued.task.status || '');
         if (observedStatus === 'pending' || observedStatus === 'deferred') {
-            await safeSend(ctx, session, `视频任务已排队，当前等待 ${queued.waiting}/${queued.capacity}，任务编号：${queued.task.id}。`, 'video queued');
+            await safeSend(ctx, session, `视频任务已排队，当前等待 ${queued.waiting}/${queued.capacity}。`, 'video queued');
             queue.kick();
         }
         else if (observedStatus === 'claiming' || observedStatus === 'running') {

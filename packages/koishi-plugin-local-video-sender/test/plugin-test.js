@@ -521,7 +521,7 @@ async function testQueuedVideoLifecycleIntegration() {
     const session = makeSession({ guildId: 'queue-origin-a', channelId: 'queue-origin-a' })
     await plugin.downloadAndSend(makeCtx(), session, TEST_URL, TEST_BV, makeDeps(50_000_000, 30_000_000, counters, { resourceGate: undefined, resourceModules, taskStore: store }))
     const task = [...store.tasks.values()][0]
-    check('busy request is persisted before task-number acknowledgement', !!task && session.sent[0]?.includes('视频任务已排队') && session.sent[0]?.includes(task.id), JSON.stringify({ task, sent: session.sent }))
+    check('busy request acknowledges queue position without exposing task id', !!task && session.sent[0] === '视频任务已排队，当前等待 1/10。' && !session.sent[0]?.includes(task.id), JSON.stringify({ task, sent: session.sent }))
     await waitFor(() => store.getResourceTaskById(task.id)?.status === 'done', 2000)
     check('queued task executes once and sends preview/video to original group session', counters.probes === 1 && counters.downloads === 1 && session.sent.length === 3 && session.sent[1].includes('Demo Video') && session.sent[2].includes('file:'), JSON.stringify({ counters, sent: session.sent }))
     check('persisted target identifies original group without retaining message body', task.payload.targetType === 'group' && task.payload.targetId === 'queue-origin-a' && !Object.keys(task.payload).some(key => /content|session|cookie|message/i.test(key)), JSON.stringify(task.payload))
