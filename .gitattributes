@@ -3,3 +3,10 @@
 *.js text eol=lf
 *.ts text eol=lf
 *.sh text eol=lf
+
+# Vite includes source line endings in hashed dashboard assets; pin these inputs to LF on every platform.
+packages/koishi-plugin-dashboard/frontend/index.html text eol=lf
+packages/koishi-plugin-dashboard/frontend/src/*.vue text eol=lf
+packages/koishi-plugin-dashboard/frontend/src/**/*.vue text eol=lf
+packages/koishi-plugin-dashboard/frontend/src/*.css text eol=lf
+packages/koishi-plugin-dashboard/frontend/src/**/*.css text eol=lf
