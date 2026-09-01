@@ -478,6 +478,36 @@ async function testPersistentVideoTaskQueue() {
 async function testQueuedVideoLifecycleIntegration() {
   section('queued video lifecycle integration')
 
+  // 复现真实 task-store 会把提交 ID 中冒号改写为下划线的完整短链排队链路。
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const store = makeVideoTaskStore({ normalizeTaskId: true })
+    const ctx = makeCtx()
+    const counters = { probes: 0, downloads: 0 }
+    let admissions = 0
+    const resourceModules = {
+      admitTask: () => (++admissions % 2 === 1
+        ? { decision: 'queue', reason: 'exclusive slot is busy', resourceState: 'green', memAvailableMb: 1000 }
+        : { decision: 'run_now', reason: 'available', resourceState: 'green', memAvailableMb: 1000 }),
+      acquireResourceGate: async () => ({ updateStep() {}, release() {} }),
+    }
+    const source = 'https://b23.tv/mKn7Jkw'
+    const session = makeSession({ guildId: 'queue-normalized-id', channelId: 'queue-normalized-id' })
+    await plugin.downloadAndSend(ctx, session, source, source, makeDeps(50_000_000, 30_000_000, counters, {
+      resourceGate: undefined,
+      resourceModules,
+      taskStore: store,
+      resolveShortLink: async () => ({ ok: true, p1Url: `${TEST_URL}?p=1`, hops: 1 }),
+    }))
+    const submittedTaskId = store.submittedTaskIds[0]
+    const task = [...store.tasks.values()][0]
+    await waitFor(() => task && store.getResourceTaskById(task.id)?.status === 'done', 2000)
+    const traceLines = ctx.logs.filter(entry => entry.msg.startsWith('video_trace ')).map(entry => entry.msg)
+    check('task store normalization changes the submitted URL-bearing task id', submittedTaskId.includes(':') && task.id !== submittedTaskId && !task.id.includes(':'), JSON.stringify({ submittedTaskId, actualTaskId: task.id }))
+    check('normalized task id stays linked through queue persistence and done terminal logs', traceLines.some(line => line.includes('event="queue_persisted"') && line.includes(`taskId="${task.id}"`)) && traceLines.some(line => line.includes('event="terminal_status"') && line.includes(`taskId="${task.id}"`) && line.includes('status="done"')), JSON.stringify(traceLines))
+    check('normalized task id queue executes exactly one download and one video send', counters.probes === 1 && counters.downloads === 1 && session.sent.filter(message => message.includes('file:')).length === 1, JSON.stringify({ counters, sent: session.sent }))
+    check('normalized task id queue finishes without invalid payload failure or active residue', store.getResourceTaskById(task.id)?.status === 'done' && !traceLines.some(line => line.includes('invalid_video_task_payload')) && [...store.tasks.values()].every(item => !['pending', 'claiming', 'running', 'deferred'].includes(item.status)), JSON.stringify({ task: store.getResourceTaskById(task.id), traceLines }))
+  })
+
   await withIsolatedPlugin(async ({ plugin }) => {
     const store = makeVideoTaskStore()
     const counters = { probes: 0, downloads: 0 }
@@ -785,15 +815,22 @@ function makeResourceModules(admission, acquire = async () => ({ updateStep() {}
 // 创建只在内存中保存状态的 S2 task-store，用于并发容量和 runner 行为测试。
 function makeVideoTaskStore(options = {}) {
   const tasks = new Map()
+  const submittedTaskIds = []
   let sequence = 0
   const copy = task => task ? { ...task, payload: { ...task.payload }, notify: { ...task.notify } } : null
   const store = {
     tasks,
+    submittedTaskIds,
     submitResourceTask(input) {
       if (options.failBeforePersist) throw new Error('submit failed before persist')
       const now = new Date(Date.now() + sequence++).toISOString()
+      const submittedTaskId = String(input.id)
+      const taskId = options.normalizeTaskId
+        ? submittedTaskId.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 160)
+        : submittedTaskId
+      submittedTaskIds.push(submittedTaskId)
       const task = {
-        id: String(input.id), kind: String(input.kind), status: 'pending', source: String(input.source || ''),
+        id: taskId, kind: String(input.kind), status: 'pending', source: String(input.source || ''),
         channelKey: String(input.channelKey || ''), userId: String(input.userId || ''), priority: Number(input.priority || 50),
         createdAt: now, updatedAt: now, expiresAt: String(input.expiresAt || ''), timeoutMs: Number(input.timeoutMs || 0),
         payload: { ...(input.payload || {}) }, notify: { ...(input.notify || {}) },

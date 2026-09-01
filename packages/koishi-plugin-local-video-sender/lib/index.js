@@ -1729,9 +1729,12 @@ async function executeQueuedVideoTask(ctx, task, deps) {
     const keys = uniqueStrings(buildBiliKeys(p1Url).concat(buildBiliKeys(bvId)));
     const session = queuedVideoSessions.get(task.id);
     const trace = getQueuedVideoTrace(task);
-    if (!session || normalizeBiliP1Url(p1Url) !== p1Url || !/^BV[0-9A-Za-z]{10}$/i.test(bvId) || !traceId || !keys.length) {
-        queuedVideoSessions.delete(task.id);
-        return { status: 'failed', reason: 'invalid_video_task_payload', notify: false };
+    // 会话缺失时禁止根据持久化目标凭空重建发送能力。
+    if (!session)
+        return { status: 'failed', reason: 'queued_video_session_missing', notify: false };
+    // 载荷无效但会话存在时保留映射，交给终态失败通知统一清理。
+    if (normalizeBiliP1Url(p1Url) !== p1Url || !/^BV[0-9A-Za-z]{10}$/i.test(bvId) || !traceId || !keys.length) {
+        return { status: 'failed', reason: 'invalid_video_task_payload' };
     }
     const result = await processInitialVideoRequest(ctx, session, p1Url, bvId, keys, null, deps, task.id, trace);
     if (result.kind === 'busy')
@@ -1774,7 +1777,6 @@ async function enqueueBusyVideoRequest(ctx, session, result, deps, trace) {
     const bvId = extractBvId(result.p1Url);
     const taskTrace = videoTraceModule.withVideoTraceTask(trace, result.taskId);
     writeVideoTrace(ctx, taskTrace, 'queue_write_started', { stage: 'video_queue_persist' });
-    queuedVideoSessions.set(result.taskId, session);
     const queued = await queue.enqueue({
         taskId: result.taskId,
         p1Url: result.p1Url,
@@ -1789,8 +1791,11 @@ async function enqueueBusyVideoRequest(ctx, session, result, deps, trace) {
         traceId: taskTrace.traceId,
     });
     if (queued.status === 'queued') {
-        ctx.logger('bvidl').warn(`queue_persisted taskId=${queued.task.id} traceId=${taskTrace.traceId} waiting=${queued.waiting} capacity=${queued.capacity}`);
-        writeVideoTrace(ctx, taskTrace, 'queue_persisted', { waiting: queued.waiting, capacity: queued.capacity, stage: String(queued.task.status || 'pending') });
+        const queuedTaskTrace = videoTraceModule.withVideoTraceTask(taskTrace, queued.task.id);
+        // 任务库可能规范化提交 ID；执行、清理和日志统一使用落盘后的实际 ID。
+        queuedVideoSessions.set(queued.task.id, session);
+        ctx.logger('bvidl').warn(`queue_persisted taskId=${queued.task.id} traceId=${queuedTaskTrace.traceId} waiting=${queued.waiting} capacity=${queued.capacity}`);
+        writeVideoTrace(ctx, queuedTaskTrace, 'queue_persisted', { waiting: queued.waiting, capacity: queued.capacity, stage: String(queued.task.status || 'pending') });
         const observedStatus = String(queued.task.status || '');
         if (observedStatus === 'pending' || observedStatus === 'deferred') {
             await safeSend(ctx, session, `视频任务已排队，当前等待 ${queued.waiting}/${queued.capacity}，任务编号：${queued.task.id}。`, 'video queued');
@@ -1801,18 +1806,17 @@ async function enqueueBusyVideoRequest(ctx, session, result, deps, trace) {
         }
         else if (observedStatus === 'done') {
             queuedVideoSessions.delete(queued.task.id);
-            writeVideoTrace(ctx, taskTrace, 'terminal_status', { status: 'done', reason: 'task_already_done', stage: 'video_queue_terminal' });
+            writeVideoTrace(ctx, queuedTaskTrace, 'terminal_status', { status: 'done', reason: 'task_already_done', stage: 'video_queue_terminal' });
             await safeSend(ctx, session, `视频任务已完成，任务编号：${queued.task.id}。`, 'video already done');
         }
         else {
             queuedVideoSessions.delete(queued.task.id);
             const statusLabel = observedStatus === 'cancelled' ? '已取消' : '已失败';
-            writeVideoTrace(ctx, taskTrace, 'terminal_status', { status: observedStatus === 'cancelled' ? 'cancelled' : 'failed', reason: `task_already_${observedStatus}`, stage: 'video_queue_terminal' });
+            writeVideoTrace(ctx, queuedTaskTrace, 'terminal_status', { status: observedStatus === 'cancelled' ? 'cancelled' : 'failed', reason: `task_already_${observedStatus}`, stage: 'video_queue_terminal' });
             await safeSend(ctx, session, `视频任务${statusLabel}，本次不会继续执行。任务编号：${queued.task.id}。`, 'video already terminal');
         }
         return true;
     }
-    queuedVideoSessions.delete(result.taskId);
     if (queued.status === 'full') {
         writeVideoTrace(ctx, taskTrace, 'queue_persist_failed', { reason: 'queue_full', waiting: queued.waiting, capacity: queued.capacity });
         await safeSend(ctx, session, '视频队列已满，本次未入队，请稍后重新发送。', 'video queue full');
