@@ -5,8 +5,10 @@
  * 边界: 不写对话历史、不改 conversation。只负责合成和发送。
  * 状态: 频道冷却 Map（内存，5 分钟过期）。
  */
-const { MIMORIUM_KEY_FILE, TTS_TEMP_DIR } = require('../../core/constants');
-const { readTextFile } = require('../../core/utils');
+const { TTS_TEMP_DIR } = require('../../core/constants');
+const { resolveCapabilityRuntimeSteps } = require('../../core/ai-capability-config');
+const { notifyCapabilityStepFailure } = require('../../core/capability-failure-notifier');
+const { recordTokenUsage } = require('../../core/api');
 const { resolveVoiceSampleFile } = require('./voice-assets');
 const { resolvePersonaRuntimePlan } = require('../../persona/persona-runtime-plan');
 const { DEFAULT_RANDOM_VOICE_RATE, getRandomVoiceRate } = require('../../behavior/random-voice-rate');
@@ -14,10 +16,6 @@ const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const TTS_TIMEOUT_MS = 15000;
-const TTS_BASE_URL = 'https://token-plan-cn.xiaomimimo.com/v1';
-// 普通 TTS 只接受内置音色名；voice clone 的 data URI 必须走专用模型。
-const TTS_MODEL = 'mimo-v2.5-tts';
-const TTS_CLONE_MODEL = 'mimo-v2.5-tts-voiceclone';
 const DEFAULT_VOICE = '冰糖';
 const NEUTRAL_TTS_STYLE = '自然清晰，语气稳定，情绪适度，贴合文本内容；不要夸张表演，不要强行卖萌，不要改变角色人设。';
 const MAX_TTS_TEXT_LENGTH = 300;
@@ -31,14 +29,15 @@ const TTS_SEND_FILE_TTL_MS = (() => {
     return Number.isFinite(value) && value >= 1000 ? value : DEFAULT_TTS_SEND_FILE_TTL_MS;
 })();
 const BUILTIN_VOICES = ['冰糖', '茉莉', '苏打', '白桦', 'Mia', 'Chloe', 'Milo', 'Dean', 'mimo_default'];
+const OPENAI_VOICES = new Set(['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar']);
 const channelCooldowns = new Map();
 const VOICE_STYLE_RE = /【语音风格[：:]([^】]+)】/;
 const DATA_URI_RE = /^data:([^;,]+)(;base64)?,([\s\S]*)$/i;
 const TTS_SEND_TEMP_PREFIX = 'tts-send-';
+// 从 voice-tts 能力链读取小米 Key，仅保留给既有诊断与测试入口。
 async function getMimoriumKey() {
-    const keyFile = MIMORIUM_KEY_FILE;
-    const key = await readTextFile(keyFile);
-    return key.replace(/[\r\n]+/g, '').trim();
+    const step = resolveCapabilityRuntimeSteps('voice-tts').find(item => item.provider === 'mimorium');
+    return String(step?.apiKey || '');
 }
 function sanitizeDiagnosticText(value, maxLength = 240) {
     return String(value || '')
@@ -237,75 +236,128 @@ function scheduleTtsSendFileCleanup(filePath, ttlMs = TTS_SEND_FILE_TTL_MS) {
     if (typeof timer.unref === 'function')
         timer.unref();
 }
+class TtsStepError extends Error {
+    // 创建不含上游响应正文的稳定 TTS 错误。
+    constructor(code, message, retryable = true, status = 0) {
+        super(message);
+        this.name = 'TtsStepError';
+        this.code = code;
+        this.status = status;
+        this.retryable = retryable;
+    }
+}
+// 校验 TTS HTTP 状态；鉴权、限流和 5xx 可继续下一优先级。
+function assertTtsResponseOk(response) {
+    if (response.ok)
+        return;
+    const retryable = response.status === 401 || response.status === 403 || response.status === 429 || response.status >= 500;
+    throw new TtsStepError('http_error', `语音合成上游失败（HTTP ${response.status}）`, retryable, response.status);
+}
+// 为音频 Buffer 标记检测到的 MIME，无法播放时作为可降级的无效结果。
+function finalizeTtsAudio(buffer, declaredMime = '') {
+    const detectedMime = detectAudioMime(buffer);
+    if (!detectedMime)
+        throw new TtsStepError('invalid_audio', '语音合成上游返回了不可播放的音频');
+    const audio = buffer;
+    Object.defineProperty(audio, 'mimeType', { value: detectedMime || declaredMime, enumerable: false });
+    return audio;
+}
+// 调用小米 Chat Completions 音频协议，模型严格使用当前优先级条目。
+async function requestMimoriumTts(step, text, voice, style, signal) {
+    const cloneVoice = voice.startsWith('data:');
+    const cloneModel = /voiceclone/i.test(step.model);
+    if (cloneVoice !== cloneModel)
+        throw new TtsStepError('voice_model_mismatch', '当前小米模型与所选音色类型不匹配');
+    const response = await fetch(`${step.baseURL.replace(/\/+$/, '')}/chat/completions`, {
+        method: 'POST', signal,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${step.apiKey}` },
+        body: JSON.stringify({
+            model: step.model,
+            messages: [{ role: 'user', content: style }, { role: 'assistant', content: text }],
+            audio: { format: 'wav', voice },
+        }),
+    });
+    assertTtsResponseOk(response);
+    let data;
+    try {
+        const value = await response.json();
+        if (!value || typeof value !== 'object' || Array.isArray(value))
+            throw new Error('invalid');
+        data = value;
+    }
+    catch {
+        throw new TtsStepError('invalid_json', '语音合成上游返回了无法解析的结果');
+    }
+    const choices = Array.isArray(data.choices) ? data.choices : [];
+    const first = choices[0] && typeof choices[0] === 'object' ? choices[0] : {};
+    const message = first.message && typeof first.message === 'object' ? first.message : {};
+    const audio = message.audio && typeof message.audio === 'object' ? message.audio : {};
+    const decoded = decodeTtsAudioData(audio.data);
+    if (!decoded.buffer)
+        throw new TtsStepError('invalid_audio_data', '语音合成结果缺少有效音频数据');
+    const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage : undefined;
+    return { buffer: finalizeTtsAudio(decoded.buffer, decoded.declaredMime), usage, readable: !!usage && Object.keys(usage).some(key => /tokens/i.test(key)) };
+}
+// 调用 OpenAI 官方 audio/speech 协议；不支持克隆音色时转入下一优先级。
+async function requestOpenAiTts(step, text, voice, signal) {
+    if (voice.startsWith('data:'))
+        throw new TtsStepError('voice_model_mismatch', 'OpenAI 语音合成不支持当前克隆音色');
+    const selectedVoice = OPENAI_VOICES.has(voice) ? voice : 'alloy';
+    const response = await fetch(`${step.baseURL.replace(/\/+$/, '')}/audio/speech`, {
+        method: 'POST', signal,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${step.apiKey}` },
+        body: JSON.stringify({ model: step.model, input: text, voice: selectedVoice, response_format: 'wav' }),
+    });
+    assertTtsResponseOk(response);
+    let buffer;
+    try {
+        buffer = Buffer.from(await response.arrayBuffer());
+    }
+    catch {
+        throw new TtsStepError('invalid_audio_data', '语音合成上游音频读取失败');
+    }
+    return { buffer: finalizeTtsAudio(buffer), readable: false };
+}
+// 严格按 voice-tts 优先级合成语音，并对每个失败步骤通知管理员。
 async function synthesizeSpeech(text, options = {}) {
-    const { voice = DEFAULT_VOICE } = options;
+    const voice = String(options.voice || DEFAULT_VOICE);
     const style = sanitizeTtsStyle(options.style, NEUTRAL_TTS_STYLE);
-    const apiKey = await getMimoriumKey();
-    const isCloneVoice = String(voice).startsWith('data:');
-    const model = isCloneVoice ? TTS_CLONE_MODEL : TTS_MODEL;
-    if (!apiKey)
-        return recordTtsFailure({ ...options, voice }, 'missing_key', `MiMo API key is empty: ${MIMORIUM_KEY_FILE}`, { model });
     const ttsText = String(text).slice(0, MAX_TTS_TEXT_LENGTH);
     if (!ttsText.trim())
-        return recordTtsFailure({ ...options, voice }, 'empty_text', 'TTS text is empty', { model });
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), isCloneVoice ? 30000 : TTS_TIMEOUT_MS);
-    try {
-        const response = await fetch(`${TTS_BASE_URL}/chat/completions`, {
-            method: 'POST',
-            signal: controller.signal,
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-            body: JSON.stringify({
-                model,
-                messages: [
-                    { role: 'user', content: style },
-                    { role: 'assistant', content: ttsText },
-                ],
-                audio: { format: 'wav', voice },
-            }),
-        });
-        if (!response.ok) {
-            const responseText = typeof response.text === 'function' ? await response.text().catch(() => '') : '';
-            const body = sanitizeDiagnosticText(responseText, 300);
-            return recordTtsFailure({ ...options, voice }, 'http_error', body || `HTTP ${response.status}`, { status: response.status, model });
-        }
-        let data = null;
+        return recordTtsFailure({ ...options, voice }, 'empty_text', 'TTS text is empty');
+    const steps = resolveCapabilityRuntimeSteps('voice-tts');
+    if (!steps.length)
+        return recordTtsFailure({ ...options, voice }, 'capability_unconfigured', '该能力未配置模型');
+    let lastError = null;
+    for (let index = 0; index < steps.length; index += 1) {
+        const step = steps[index];
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), voice.startsWith('data:') ? 30000 : TTS_TIMEOUT_MS);
         try {
-            data = await response.json();
+            const result = step.provider === 'openai'
+                ? await requestOpenAiTts(step, ttsText, voice, controller.signal)
+                : await requestMimoriumTts(step, ttsText, voice, style, controller.signal);
+            const usage = result.usage || {};
+            const total = Number(usage.total_tokens || usage.totalTokens || 0)
+                || Number(usage.input_tokens || usage.prompt_tokens || 0) + Number(usage.output_tokens || usage.completion_tokens || 0);
+            recordTokenUsage(step.provider, Number.isFinite(total) ? total : 0, { capability: 'voice-tts', model: step.model, usage, readable: result.readable });
+            return result.buffer;
         }
         catch (error) {
-            return recordTtsFailure({ ...options, voice }, 'invalid_json', error instanceof Error ? error.message : 'invalid json response', { model });
+            lastError = error;
+            console.warn(`[voice-tts] capability_step_failed provider=${step.provider} model=${step.model}`);
+            await notifyCapabilityStepFailure(step.provider, step.model).catch(() => false);
+            const retryable = !(error instanceof TtsStepError) || error.retryable;
+            if (!retryable || index >= steps.length - 1)
+                break;
         }
-        const dataRecord = data && typeof data === 'object' ? data : {};
-        const choices = Array.isArray(dataRecord.choices) ? dataRecord.choices : [];
-        const firstChoice = choices[0] && typeof choices[0] === 'object' ? choices[0] : {};
-        const message = firstChoice.message && typeof firstChoice.message === 'object' ? firstChoice.message : {};
-        const audio = message.audio && typeof message.audio === 'object' ? message.audio : {};
-        const audioData = audio.data;
-        if (!audioData)
-            return recordTtsFailure({ ...options, voice }, 'missing_audio_data', 'response has no choices[0].message.audio.data', { model });
-        const decoded = decodeTtsAudioData(audioData);
-        if (!decoded.buffer)
-            return recordTtsFailure({ ...options, voice }, 'invalid_audio_data', decoded.error || 'invalid audio data', { model, declaredMime: decoded.declaredMime || '' });
-        const detectedMime = detectAudioMime(decoded.buffer);
-        if (!detectedMime) {
-            return recordTtsFailure({ ...options, voice }, 'invalid_audio', 'decoded audio is not a playable WAV/MP3/OGG/FLAC/MP4 payload', {
-                model,
-                declaredMime: decoded.declaredMime || '',
-                bytes: decoded.buffer.length,
-            });
+        finally {
+            clearTimeout(timer);
         }
-        Object.defineProperty(decoded.buffer, 'mimeType', { value: detectedMime, enumerable: false });
-        return decoded.buffer;
     }
-    catch (error) {
-        const errorRecord = error && typeof error === 'object' ? error : {};
-        const isAbort = errorRecord.name === 'AbortError';
-        return recordTtsFailure({ ...options, voice }, isAbort ? 'timeout' : 'request_failed', error instanceof Error ? error.message : String(error), { model });
-    }
-    finally {
-        clearTimeout(timer);
-    }
+    const failure = lastError instanceof TtsStepError ? lastError : null;
+    const isAbort = lastError && typeof lastError === 'object' && lastError.name === 'AbortError';
+    return recordTtsFailure({ ...options, voice }, isAbort ? 'timeout' : (failure?.code || 'request_failed'), failure?.message || (isAbort ? '语音合成请求超时' : '语音合成请求失败'), { ...(failure?.status ? { status: failure.status } : {}), model: steps[steps.length - 1]?.model || '' });
 }
 async function sendVoiceMessage(session, audioBuf, options = {}) {
     if (!audioBuf || !audioBuf.length) {

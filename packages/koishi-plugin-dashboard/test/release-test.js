@@ -30,6 +30,12 @@ function runBash(command, options = {}) {
   return spawnSync('bash', ['-lc', command], { encoding: 'utf8', timeout: 120000, ...options })
 }
 
+// Detects whether the host can execute the POSIX activation harness before using shell links.
+function hasWorkingBash() {
+  const result = runBash('printf dashboard-release-bash-ready')
+  return result.status === 0 && result.stdout === 'dashboard-release-bash-ready'
+}
+
 // Writes one LF-only executable used by the isolated activation harness.
 function writeExecutable(filePath, content) {
   fs.writeFileSync(filePath, content.replace(/\r\n/g, '\n'), 'utf8')
@@ -331,8 +337,12 @@ function main() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dashboard-release-'))
   try {
     const releases = testReleaseManifest(tempRoot)
-    testActivationScenarios(tempRoot, releases)
-    console.log('release manifest and activation tests passed')
+    if (hasWorkingBash()) {
+      testActivationScenarios(tempRoot, releases)
+      console.log('release manifest and activation tests passed')
+    } else {
+      console.log('release manifest tests passed; activation scenarios skipped because bash is unavailable')
+    }
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }

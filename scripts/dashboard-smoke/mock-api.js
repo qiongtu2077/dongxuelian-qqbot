@@ -79,6 +79,13 @@ const mockState = {
   serverModeSource: 'resource-control/config.json',
   maintenance: false,
   resourceScenario: 'idle',
+  openAiKeyConfigured: true,
+  aiPriorities: {
+    text: [{ provider: 'openai', model: 'gpt-4o-mini' }],
+    vision: [{ provider: 'openai', model: 'gpt-4o-mini' }],
+    'voice-asr': [{ provider: 'mimorium', model: 'mimo-v2.5-asr' }],
+    'voice-tts': [{ provider: 'mimorium', model: 'mimo-v2.5-tts' }],
+  },
   clonedVoice: {
     id: 'voice_asset_a',
     personaName: '测试人格',
@@ -89,6 +96,71 @@ const mockState = {
     mtime: Date.now(),
     sampleText: '你好，这是克隆音色测试。',
   },
+}
+
+/** Returns the eight fixed provider entries exposed by the unified AI page. */
+function mockAiCatalog() {
+  return [
+    { id: 'openai', name: 'GPT', discoveryAvailable: true, discoveryReason: '', documentationURL: 'https://platform.openai.com/docs', supportedCapabilities: ['text', 'vision', 'voice-asr', 'voice-tts'] },
+    { id: 'anthropic', name: 'Claude', discoveryAvailable: true, discoveryReason: '', documentationURL: 'https://docs.anthropic.com', supportedCapabilities: ['text', 'vision'] },
+    { id: 'gemini', name: 'Gemini', discoveryAvailable: true, discoveryReason: '', documentationURL: 'https://ai.google.dev', supportedCapabilities: ['text', 'vision'] },
+    { id: 'deepseek', name: '深度求索', discoveryAvailable: true, discoveryReason: '', documentationURL: 'https://api-docs.deepseek.com', supportedCapabilities: ['text'] },
+    { id: 'glm', name: '智谱', discoveryAvailable: false, discoveryReason: 'Key 级模型枚举尚未验证', documentationURL: 'https://open.bigmodel.cn', supportedCapabilities: ['text', 'vision'] },
+    { id: 'mimorium', name: '小米', discoveryAvailable: false, discoveryReason: 'Key 级模型枚举尚未验证', documentationURL: 'https://platform.xiaomimimo.com', supportedCapabilities: ['text', 'vision', 'voice-asr', 'voice-tts'] },
+    { id: 'dashscope', name: '千问', discoveryAvailable: false, discoveryReason: '模型目录需要 Workspace ID', documentationURL: 'https://help.aliyun.com/zh/model-studio', supportedCapabilities: ['text', 'vision'] },
+    { id: 'opencode', name: 'OpenCode', discoveryAvailable: false, discoveryReason: 'Key 级模型枚举尚未验证', documentationURL: 'https://opencode.ai/docs', supportedCapabilities: ['text', 'vision'] },
+  ]
+}
+
+/** Builds a complete four-capability config snapshot from mutable smoke state. */
+function mockAiConfig() {
+  const emptyProvider = () => ({ models: [], key: { configured: false, prefix: '' } })
+  const providers = Object.fromEntries(mockAiCatalog().map(provider => [provider.id, emptyProvider()]))
+  providers.openai = {
+    models: [
+      { id: 'gpt-4o-mini', name: 'GPT-4o mini', capabilities: ['text', 'vision'] },
+      { id: 'gpt-4o', name: 'GPT-4o', capabilities: ['text', 'vision'] },
+      { id: 'gpt-4o-mini-transcribe', name: 'GPT-4o mini Transcribe', capabilities: ['voice-asr'] },
+      { id: 'gpt-4o-mini-tts', name: 'GPT-4o mini TTS', capabilities: ['voice-tts'] },
+    ],
+    key: { configured: mockState.openAiKeyConfigured, prefix: mockState.openAiKeyConfigured ? 'sk-moc****' : '' },
+  }
+  providers.mimorium = {
+    models: [
+      { id: 'mimo-v2.5-asr', name: 'MiMo ASR', capabilities: ['voice-asr'] },
+      { id: 'mimo-v2.5-tts', name: 'MiMo TTS', capabilities: ['voice-tts'] },
+    ],
+    key: { configured: true, prefix: 'tp-moc****' },
+  }
+  return {
+    version: 1,
+    capabilities: ['text', 'vision', 'voice-asr', 'voice-tts'],
+    providers,
+    priorities: Object.fromEntries(Object.entries(mockState.aiPriorities).map(([capability, steps]) => [capability, steps.map(step => ({ ...step }))])),
+  }
+}
+
+/** Returns distinct readable or unavailable usage for the requested capability. */
+function mockAiUsage(capability) {
+  const today = todayShanghaiDate()
+  if (capability === 'voice-asr') {
+    return {
+      capability, readable: false, unavailable: true,
+      days: [{ date: today, key: today, label: today, total: 0, requests: 2, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, readableRequests: 0, unreadableRequests: 2, providers: {}, models: {} }],
+      providers: [{ key: 'mimorium', label: '小米', total: 0, requests: 2, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, readableRequests: 0, unreadableRequests: 2 }],
+      models: [{ key: 'mimorium/mimo-v2.5-asr', label: 'mimo-v2.5-asr', provider: 'mimorium', total: 0, requests: 2, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, readableRequests: 0, unreadableRequests: 2 }],
+    }
+  }
+  if (capability === 'voice-tts') return { capability, readable: false, unavailable: false, days: [], providers: [], models: [] }
+  const vision = capability === 'vision'
+  const total = vision ? 7200 : 18400
+  const requests = vision ? 3 : 8
+  return {
+    capability, readable: true, unavailable: false,
+    days: [{ date: today, key: today, label: today, total, requests, input: Math.floor(total * 0.7), output: Math.ceil(total * 0.3), cacheCreation: 0, cacheRead: 0, readableRequests: requests, unreadableRequests: 0, providers: {}, models: {} }],
+    providers: [{ key: 'openai', label: 'GPT', total, requests, input: Math.floor(total * 0.7), output: Math.ceil(total * 0.3), cacheCreation: 0, cacheRead: 0, readableRequests: requests, unreadableRequests: 0 }],
+    models: [{ key: `openai/${vision ? 'gpt-4o' : 'gpt-4o-mini'}`, label: vision ? 'gpt-4o' : 'gpt-4o-mini', provider: 'openai', total, requests, input: Math.floor(total * 0.7), output: Math.ceil(total * 0.3), cacheCreation: 0, cacheRead: 0, readableRequests: requests, unreadableRequests: 0 }],
+  }
 }
 
 /** Builds empty media queue facts with the production capacity limits. */
@@ -219,6 +291,17 @@ function apiMock(method, pathname, body) {
   })
   if (method === 'GET' && pathname === '/config') return ok({ provider: 'deepseek', model: 'deepseek-chat', baseUrl: '' })
   if (method === 'PUT' && pathname === '/config') return writeOk('config saved')
+  if (method === 'GET' && pathname === '/ai-model-api/config') return ok({ ok: true, catalog: mockAiCatalog(), config: mockAiConfig(), migration: { applied: false, diagnostics: [] } })
+  if (method === 'POST' && pathname === '/ai-model-api/discover') {
+    mockState.openAiKeyConfigured = true
+    return ok({ ok: true, message: 'API Key 与模型池已原子保存', config: mockAiConfig(), models: mockAiConfig().providers.openai.models, removedModels: 0, removedSteps: 0, emptyCapabilities: [] })
+  }
+  if (method === 'PUT' && pathname === '/ai-model-api/priority') {
+    const capability = String(body.body?.capability || '')
+    const steps = Array.isArray(body.body?.steps) ? body.body.steps : []
+    if (Object.prototype.hasOwnProperty.call(mockState.aiPriorities, capability)) mockState.aiPriorities[capability] = steps.map(step => ({ provider: step.provider, model: step.model }))
+    return ok({ ok: true, message: steps.length ? '模型优先级已保存' : '优先级已保存；该能力未配置模型', config: mockAiConfig() })
+  }
   if (method === 'GET' && pathname === '/fallback') return ok({
     chains: {
       chat: [{ provider: 'deepseek', model: 'deepseek-chat' }],
@@ -285,40 +368,7 @@ function apiMock(method, pathname, body) {
 
   if (method === 'GET' && pathname === '/keys') return ok([{ file: 'ai-deepseek-key.txt', label: 'DeepSeek', exists: true, prefix: 'sk-***' }])
   if (method === 'PUT' && pathname === '/keys') return writeOk('key saved')
-  if (method === 'GET' && pathname === '/keys/usage') {
-    const today = todayShanghaiDate()
-    const d1 = addDays(today, -3)
-    const d2 = addDays(today, -2)
-    const d3 = addDays(today, -1)
-    return ok({
-      providers: [
-        { key: 'mimorium', label: 'MiMo', total: 604000000, requests: 4841, input: 43000000, output: 1100000, cacheCreation: 0, cacheRead: 560000000 },
-        { key: 'glm', label: 'GLM', total: 1400000, requests: 21, input: 1100000, output: 300000, cacheCreation: 0, cacheRead: 0 },
-        { key: 'dashscope', label: '阿里云', total: 197000, requests: 13, input: 115000, output: 82000, cacheCreation: 0, cacheRead: 0 },
-        { key: 'deepseek', label: 'DeepSeek', total: 35000000, requests: 92, input: 29000000, output: 6000000, cacheCreation: 0, cacheRead: 0 },
-      ],
-      models: [
-        { key: 'mimo-v2-omni', label: 'mimo-v2-omni', provider: 'mimorium', total: 604000000, requests: 4841, input: 43000000, output: 1100000, cacheCreation: 0, cacheRead: 560000000 },
-        { key: 'deepseek-v4-flash', label: 'deepseek-v4-flash', provider: 'deepseek', total: 35000000, requests: 92, input: 29000000, output: 6000000, cacheCreation: 0, cacheRead: 0 },
-        { key: 'glm-4.6v-flash', label: 'glm-4.6v-flash', provider: 'glm', total: 200000, requests: 15, input: 153000, output: 47000, cacheCreation: 0, cacheRead: 0 },
-        { key: 'glm:legacy', label: 'GLM 未分模型', provider: 'glm', total: 500000, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-        { key: 'glm:unknown', label: 'GLM 未分模型', provider: 'glm', total: 700000, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-        { key: 'qwen3.5-omni-flash', label: 'qwen3.5-omni-flash', provider: 'dashscope', total: 50000, requests: 3, input: 30000, output: 20000, cacheCreation: 0, cacheRead: 0 },
-        { key: 'mock-extra-model-05', label: 'mock-extra-model-05', provider: 'dashscope', total: 40000, requests: 2, input: 25000, output: 15000, cacheCreation: 0, cacheRead: 0 },
-        { key: 'mock-extra-model-06', label: 'mock-extra-model-06', provider: 'dashscope', total: 30000, requests: 2, input: 20000, output: 10000, cacheCreation: 0, cacheRead: 0 },
-        { key: 'mock-extra-model-07', label: 'mock-extra-model-07', provider: 'dashscope', total: 20000, requests: 1, input: 12000, output: 8000, cacheCreation: 0, cacheRead: 0 },
-        { key: 'mock-extra-model-08', label: 'mock-extra-model-08', provider: 'dashscope', total: 10000, requests: 1, input: 7000, output: 3000, cacheCreation: 0, cacheRead: 0 },
-        { key: 'mock-extra-model-09', label: 'mock-extra-model-09', provider: 'dashscope', total: 9000, requests: 1, input: 6000, output: 3000, cacheCreation: 0, cacheRead: 0 },
-        { key: 'mock-extra-model-10', label: 'mock-extra-model-10', provider: 'dashscope', total: 8000, requests: 1, input: 5000, output: 3000, cacheCreation: 0, cacheRead: 0 },
-      ],
-      days: [
-        { date: d1, total: 142000000, input: 13000000, output: 900000, cacheCreation: 0, cacheRead: 128100000, mimorium: 133000000, glm: 0, dashscope: 0, deepseek: 9000000, models: { 'mimo-v2-omni': { provider: 'mimorium', total: 133000000, requests: 1000 }, 'deepseek-v4-flash': { provider: 'deepseek', total: 9000000, requests: 20 } } },
-        { date: d2, total: 212200000, input: 15000000, output: 1200000, cacheCreation: 0, cacheRead: 196000000, mimorium: 201000000, glm: 1400000, dashscope: 0, deepseek: 9800000, models: { 'mimo-v2-omni': { provider: 'mimorium', total: 201000000, requests: 1500 }, 'glm-4.6v-flash': { provider: 'glm', total: 200000, requests: 15 }, 'glm:legacy': { provider: 'glm', total: 500000 }, 'glm:unknown': { provider: 'glm', total: 700000 }, 'deepseek-v4-flash': { provider: 'deepseek', total: 9800000, requests: 22 } } },
-        { date: d3, total: 210000000, input: 17000000, output: 1000000, cacheCreation: 0, cacheRead: 192000000, mimorium: 198000000, deepseek: 12000000, models: { 'mimo-v2-omni': { provider: 'mimorium', total: 198000000, requests: 1600 }, 'deepseek-v4-flash': { provider: 'deepseek', total: 12000000, requests: 25 } } },
-        { date: today, total: 75167000, input: 7105000, output: 562000, cacheCreation: 0, cacheRead: 67500000, mimorium: 72000000, deepseek: 3000000, dashscope: 167000, models: { 'mimo-v2-omni': { provider: 'mimorium', total: 72000000, requests: 741 }, 'deepseek-v4-flash': { provider: 'deepseek', total: 3000000, requests: 25 }, 'qwen3.5-omni-flash': { provider: 'dashscope', total: 50000, requests: 3 }, 'mock-extra-model-05': { provider: 'dashscope', total: 40000, requests: 2 }, 'mock-extra-model-06': { provider: 'dashscope', total: 30000, requests: 2 }, 'mock-extra-model-07': { provider: 'dashscope', total: 20000, requests: 1 }, 'mock-extra-model-08': { provider: 'dashscope', total: 10000, requests: 1 }, 'mock-extra-model-09': { provider: 'dashscope', total: 9000, requests: 1 }, 'mock-extra-model-10': { provider: 'dashscope', total: 8000, requests: 1 } } },
-      ],
-    })
-  }
+  if (method === 'GET' && pathname === '/keys/usage') return ok(mockAiUsage(String(body.searchParams.get('capability') || '')))
 
   if (method === 'GET' && pathname === '/whitelist') return ok({
     aiWhitelist: { label: '群聊 AI 白名单', data: ['10001'] },

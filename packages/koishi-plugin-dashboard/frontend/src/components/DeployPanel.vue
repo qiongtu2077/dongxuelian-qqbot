@@ -63,7 +63,7 @@
         <section class="local-panel local-config-panel">
           <div class="section-head"><strong>最少配置</strong><span>机器人 QQ 必填，AI Key 可以先留空</span></div>
           <div class="row"><label>机器人 QQ</label><input v-model="local.qq" placeholder="机器人 QQ 号" /></div>
-          <div class="row"><label>API Key</label><input v-model="local.apiKey" placeholder="可留空，之后在 API Keys 页填写" /></div>
+          <div class="row"><label>API Key</label><input v-model="local.apiKey" placeholder="可留空，之后在 AI模型与API配置 页填写" /></div>
           <p class="inline-note">AI Key 留空时仍会完成 NapCat 登录和 Koishi 启动；完成页会标记为基础可用，AI 回复暂不可用。</p>
 
           <details class="advanced-options">
@@ -692,7 +692,7 @@ export default {
       if (!step) return ''
       if (step.id === 'scan') return '扫码是唯一需要你手动完成的步骤。部署器会自动检测登录成功并继续启动 Koishi；超时后也可以手动继续。'
       if (step.id === 'health' && readyCheck.value) return readyCheck.value.message || step.description
-      if (step.id === 'config') return '只要求填写机器人 QQ。AI Key 可以留空，之后在 API Keys 页补充。'
+      if (step.id === 'config') return '只要求填写机器人 QQ。AI Key 可以留空，之后在 AI模型与API配置 页补充。'
       if (step.id === 'npm') return '部署器会为你生成终端命令，请复制到 PowerShell 或 CMD 中执行。安装完成后点击确认按钮。'
       return step.description
     })

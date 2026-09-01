@@ -203,7 +203,8 @@ function normalizeToolDefinitions(tools: ReturnType<typeof getToolDefinitions>):
   return tools as unknown as ToolDefinition[]
 }
 
-function requestAgentCompaction(messages: Parameters<typeof requestChatCompletions>[0], config: Record<string, unknown>, options: { max_tokens: number; _fallbackSet: string }): ReturnType<typeof requestChatCompletions> {
+// 通过统一文字能力链执行 Agent 上下文压缩。
+function requestAgentCompaction(messages: Parameters<typeof requestChatCompletions>[0], config: Record<string, unknown>, options: { max_tokens: number }): ReturnType<typeof requestChatCompletions> {
   return requestChatCompletions(messages, config as unknown as ApiConfig, options)
 }
 

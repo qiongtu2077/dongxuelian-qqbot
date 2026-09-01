@@ -92,7 +92,7 @@ async function generatePersonaFallbackReply({
     const result = await callModel(
       buildPersonaFallbackMessages(systemPrompt, currentUserMessage, reason),
       isRandom,
-      { max_tokens: 80, _fallbackSet: 'lightweight' }
+      { max_tokens: 80 }
     )
     return cleanPersonaFallbackReply(session, normalizeModelText(result), userName, maxChars)
   } catch (error) {

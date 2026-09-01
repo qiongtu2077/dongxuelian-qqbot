@@ -286,7 +286,7 @@ module.exports = {
             return fallbackSearch(queries, `API 联网搜索不可用（${capability.label}）。`);
         }
         try {
-            const resultObj = await runWebSearchWithTimeout(requestChatCompletions([{ role: 'user', content: `搜索当前最新信息，不要凭训练数据编造。优先官方或高可信来源，忽略素材/模板/图片下载站。查询：${queries.join('；')}` }], config, { enable_search: true, search_options: { forced_search: true }, max_tokens: 800, _fallbackSet: 'chat', _timeoutMs: API_SEARCH_TIMEOUT_MS }), API_SEARCH_TIMEOUT_MS, 'API 搜索');
+            const resultObj = await runWebSearchWithTimeout(requestChatCompletions([{ role: 'user', content: `搜索当前最新信息，不要凭训练数据编造。优先官方或高可信来源，忽略素材/模板/图片下载站。查询：${queries.join('；')}` }], config, { enable_search: true, search_options: { forced_search: true }, max_tokens: 800, _timeoutMs: API_SEARCH_TIMEOUT_MS }), API_SEARCH_TIMEOUT_MS, 'API 搜索');
             const result = typeof resultObj === 'string' ? resultObj : resultObj.content;
             if (typeof result === 'string' && /超时/.test(result))
                 return fallbackSearch(queries, `${result}。`);

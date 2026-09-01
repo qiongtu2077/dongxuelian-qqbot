@@ -43,9 +43,8 @@ import Sidebar from './components/Sidebar.vue'
 import ThemeSwitcher from './components/ThemeSwitcher.vue'
 import AdminModal from './components/AdminModal.vue'
 import DeployPanel from './components/DeployPanel.vue'
-import ConfigPanel from './components/ConfigPanel.vue'
 import ControlPanel from './components/ControlPanel.vue'
-import KeyManager from './components/KeyManager.vue'
+import AiModelApiConfigPanel from './components/AiModelApiConfigPanel.vue'
 import PersonaPanel from './components/PersonaPanel.vue'
 import CommandBrowser from './components/CommandBrowser.vue'
 import CommandList from './components/CommandList.vue'
@@ -58,7 +57,7 @@ import AgentPanel from './components/AgentPanel.vue'
 import ResourcePanel from './components/ResourcePanel.vue'
 
 const componentMap: Record<string, Component> = {
-  deploy: DeployPanel, control: ControlPanel, config: ConfigPanel, keys: KeyManager,
+  deploy: DeployPanel, control: ControlPanel, 'ai-model-api': AiModelApiConfigPanel,
   persona: PersonaPanel, features: CommandBrowser, commands: CommandList,
   whitelist: WhitelistPanel, settings: SettingsPanel, status: StatusPanel, logs: LogPanel,
   gallery: GalleryPanel, agent: AgentPanel, resource: ResourcePanel
@@ -103,14 +102,19 @@ defineOptions({ name: 'DashboardApp' })
     localStorage.removeItem('dashboard_deploy_unlocked')
     const deployGuideSkipped = ref(localStorage.getItem('dashboard_deploy_guide_skipped') === 'true')
     const allTabs: DashboardTab[] = [
-      { id: 'deploy', label: '部署' }, { id: 'control', label: '终端控制' }, { id: 'config', label: '模型配置' },
-      { id: 'keys', label: 'API Keys' }, { id: 'persona', label: '人格实验室' }, { id: 'features', label: '功能地图' },
+      { id: 'deploy', label: '部署' }, { id: 'control', label: '终端控制' }, { id: 'ai-model-api', label: 'AI模型与API配置' },
+      { id: 'persona', label: '人格实验室' }, { id: 'features', label: '功能地图' },
       { id: 'commands', label: '指令速查' }, { id: 'whitelist', label: '黑白名单' },
       { id: 'settings', label: '安全设置' }, { id: 'agent', label: 'Agent 控制台' }, { id: 'resource', label: '资源中心' }, { id: 'logs', label: '日志中心' }, { id: 'status', label: '系统状态' }, { id: 'gallery', label: '莲莲图集' }
     ]
     const visibleTabs = computed(() => isElectronDeployer ? allTabs.filter(item => item.id !== 'settings') : allTabs)
     const tabs = computed(() => deployGuideSkipped.value ? visibleTabs.value : visibleTabs.value.filter(item => item.id === 'deploy'))
+    // 把旧模型/Key 菜单缓存一次性收敛到统一入口，并保留其他旧归一化语义。
     function normalizeInitialActiveTab(value: string) {
+      if (value === 'config' || value === 'keys') {
+        localStorage.setItem('dashboard_active_tab', 'ai-model-api')
+        return 'ai-model-api'
+      }
       if (value === 'agent') {
         localStorage.setItem('dashboard_active_tab', 'features')
         return 'features'
@@ -129,7 +133,9 @@ defineOptions({ name: 'DashboardApp' })
     function onLoggedIn() {
       loggedIn.value = true
       loginNotice.value = ''
-      activeTab.value = localStorage.getItem('dashboard_deploy_guide_skipped') === 'true' ? 'features' : 'deploy'
+      activeTab.value = localStorage.getItem('dashboard_deploy_guide_skipped') === 'true'
+        ? normalizeInitialActiveTab(localStorage.getItem('dashboard_active_tab') || 'features')
+        : 'deploy'
     }
 
     const adminModalOpen = ref(false)

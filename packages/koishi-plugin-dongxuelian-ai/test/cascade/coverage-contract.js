@@ -27,9 +27,9 @@ function buildCoverageMap(AI_ROOT) {
     needles: ['scenario: chat middleware and thinking guard', 'scenario reasoning-only response falls back', 'scenario conversation stores visible reply only'],
   },
   {
-    behavior: 'API fallback behavior',
+    behavior: 'managed capability fallback behavior',
     file: path.join(AI_ROOT, 'test', 'scenarios', 'fallback.test.js'),
-    needles: ['scenario: API fallback chain', 'scenario invalid JSON falls back', 'scenario all fallbacks fail without key leak'],
+    needles: ['scenario: managed capability fallback', "['invalid JSON'", 'all managed steps error is sanitized'],
   },
   {
     behavior: 'forward summary resolution',

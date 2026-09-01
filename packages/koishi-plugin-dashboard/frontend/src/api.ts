@@ -6,16 +6,20 @@ import type {
   ApiMessageData,
   ApiResult,
   CommandGroup,
-  CustomProvider,
-  DashboardConfig,
-  FallbackData,
   FeatureInfo,
   JsonObject,
-  ProviderInfo,
   StatusData,
   WhitelistMap,
 } from './types'
 import { errorMessage } from './types'
+import type {
+  AiCapability,
+  AiDiscoveryResponse,
+  AiModelApiConfigResponse,
+  AiPriorityResponse,
+  AiPriorityStep,
+  CapabilityUsageResponse,
+} from './services/ai-model-api-model'
 
 function getAdminToken(): string {
   try {
@@ -153,17 +157,12 @@ export async function changePassword(type: string, oldPassword: string, newPassw
 export async function resetPassword(resetToken: string): Promise<ApiResult<ApiMessageData>> { return postPlain<ApiMessageData>('/auth/reset-password', { resetToken }) }
 export { setAdminToken, getAdminToken, clearAdminToken, clearDashboardSession }
 export async function fetchStatus(): Promise<ApiResult<StatusData | null>> { return get<StatusData>('/status') }
-export async function fetchProviders(): Promise<ApiResult<Record<string, ProviderInfo> | null>> { return get<Record<string, ProviderInfo>>('/providers') }
-export async function fetchConfig(): Promise<ApiResult<DashboardConfig | null>> { return get<DashboardConfig>('/config') }
-export async function updateConfig(data: unknown): Promise<ApiResult<ApiMessageData | null>> { return put<ApiMessageData>('/config', data, true) }
 export async function fetchPersonas() { return get('/personas') }
 export async function fetchPersonaDetail(name: string) { return get('/personas?name=' + encodeURIComponent(name)) }
 export async function fetchPersonaDiagnostics() { return get('/persona-diagnostics') }
 export async function fetchModes() { return get('/modes') }
 export async function fetchWhitelist(): Promise<ApiResult<WhitelistMap | null>> { return get<WhitelistMap>('/whitelist', true) }
 export async function updateWhitelist(type: string, data: unknown): Promise<ApiResult<ApiMessageData | null>> { return put<ApiMessageData>('/whitelist', { type, data }, true) }
-export async function fetchKeys() { return get('/keys', true) }
-export async function updateKey(file: string, value: string) { return put('/keys', { file, value }, true) }
 export async function fetchFeatures(): Promise<ApiResult<FeatureInfo[] | null>> { return get<FeatureInfo[]>('/features') }
 export async function fetchCommands(): Promise<ApiResult<CommandGroup[] | null>> { return get<CommandGroup[]>('/commands') }
 export async function fetchLoreList() { return get('/lore-list') }
@@ -211,15 +210,6 @@ export async function localBotStatus() { return get('/bot/local-status') }
 export async function localBotStop() { return post('/bot/local-stop', {}, true) }
 export async function rebuildFrontend() { return post('/frontend/rebuild', {}, true) }
 export async function rebuildFrontendStatus() { return get('/frontend/rebuild-status') }
-export async function fetchFallbackChains(): Promise<ApiResult<FallbackData | null>> { return get<FallbackData>('/fallback', true) }
-export async function saveFallbackChains(chains: unknown): Promise<ApiResult<ApiMessageData | null>> { return put<ApiMessageData>('/fallback', { chains }, true) }
-export async function fetchCustomProviders(): Promise<ApiResult<CustomProvider[] | null>> { return get<CustomProvider[]>('/providers/custom', true) }
-export async function saveCustomProviders(data: unknown): Promise<ApiResult<ApiMessageData | null>> { return put<ApiMessageData>('/providers/custom', data, true) }
-export async function saveApiConfigTransaction(providers: unknown, providerId: string, keyValue: string | undefined, chains: unknown): Promise<ApiResult<ApiMessageData | null>> {
-  const payload: JsonObject = { providers, providerId, chains }
-  if (keyValue !== undefined) payload.keyValue = keyValue
-  return put<ApiMessageData>('/api-config/transaction', payload, true)
-}
 export async function fetchAdminIds() { return get('/admin-ids', true) }
 export async function updateAdminIds(ids: string[]) { return put('/admin-ids', { ids }, true) }
 export async function fetchThrottle() { return get('/throttle') }
@@ -276,7 +266,25 @@ export async function uploadGalleryImage(data: unknown) { return post('/gallery'
 export async function deleteGalleryImage(idOrIds: string | string[]) { return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, true) }
 export async function updateGalleryImageStyle(id: string, foilStyle: string | null) { return put('/gallery/style', { id, foilStyle }, true) }
 
-export async function fetchKeysUsage() { return get('/keys/usage', true) }
+// 读取统一 AI 供应商目录和四能力脱敏配置。
+export async function fetchAiModelApiConfig(): Promise<ApiResult<AiModelApiConfigResponse | null>> {
+  return get<AiModelApiConfigResponse>('/ai-model-api/config', true)
+}
+
+// 用本次输入 Key 发现模型并原子保存固定 Key 槽位与模型池。
+export async function discoverAiProviderModels(providerId: string, apiKey: string): Promise<ApiResult<AiDiscoveryResponse | null>> {
+  return post<AiDiscoveryResponse>('/ai-model-api/discover', { providerId, apiKey }, true, 20000)
+}
+
+// 独立保存一个能力的有序优先级。
+export async function saveAiCapabilityPriority(capability: AiCapability, steps: AiPriorityStep[]): Promise<ApiResult<AiPriorityResponse | null>> {
+  return put<AiPriorityResponse>('/ai-model-api/priority', { capability, steps }, true)
+}
+
+// 只读取当前所选能力的独立用量。
+export async function fetchAiCapabilityUsage(capability: AiCapability): Promise<ApiResult<CapabilityUsageResponse | null>> {
+  return get<CapabilityUsageResponse>('/keys/usage?capability=' + encodeURIComponent(capability), true)
+}
 
 export async function fetchTtsVoices() { return get('/agent/tts/voices', true) }
 export async function ttsPreview(text: string, voice: string, style: string, personaName = '', voiceAssetId = '') { return post('/agent/tts/preview', { text, voice, style, personaName, voiceAssetId }, true, 30000) }

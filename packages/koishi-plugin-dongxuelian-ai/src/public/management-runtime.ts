@@ -6,6 +6,8 @@
 
 export interface ManagementModuleMap {
   'core.api': typeof import('../core/api')
+  'core.aiCapabilityConfig': typeof import('../core/ai-capability-config')
+  'core.modelDiscovery': typeof import('../core/model-discovery')
   'core.constants': typeof import('../core/constants')
   'core.conversation': typeof import('../conversation')
   'core.frontmatter': typeof import('../core/frontmatter')
@@ -59,6 +61,8 @@ export type ManagementModule<Name extends ManagementModuleName> = ManagementModu
 
 const MANAGEMENT_MODULE_PATHS: Record<ManagementModuleName, string> = {
   'core.api': '../core/api',
+  'core.aiCapabilityConfig': '../core/ai-capability-config',
+  'core.modelDiscovery': '../core/model-discovery',
   'core.constants': '../core/constants',
   'core.conversation': '../conversation',
   'core.frontmatter': '../core/frontmatter',

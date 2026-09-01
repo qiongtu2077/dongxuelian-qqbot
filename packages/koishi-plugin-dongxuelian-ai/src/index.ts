@@ -63,6 +63,7 @@ const {
 } = require('./routing/voice-quick-read') as typeof import('./routing/voice-quick-read') // 显式语音转写快捷分支
 const analyzeHistoricalImage = require('./agent/tools/analyze-image') as typeof import('./agent/tools/analyze-image') // 显式读图低成本排队恢复
 const { handleCommand } = require('./handler') as typeof import('./handler') // 指令路由（/help /reset 等）
+const { flushTokenUsage } = require('./core/api') as typeof import('./core/api')
 const { analyzeIncomingMessage, normalizeText } = require('./message/message-reader') as typeof import('./message/message-reader')
 const { resolveForwardSummary } = require('./message/forward') as typeof import('./message/forward')
 const { prepareVisionRequest, isVisionSession } = require('./media/image/vision') as typeof import('./media/image/vision') // 图片消息构建 + 视觉会话判断
@@ -95,6 +96,10 @@ const {
   loadConfig, resetConfigCache,   // 运行时配置加载/刷新
   getThinkingEnabled, setThinkingEnabled, // thinking 模式开关
 } = require('./core/runtime-config') as typeof import('./core/runtime-config')
+const {
+  registerCapabilityFailureContext,
+  resetCapabilityFailureNotifier,
+} = require('./core/capability-failure-notifier') as typeof import('./core/capability-failure-notifier')
 const {
   randomWhitelistCache,
   loadRuntimeSettings,
@@ -465,6 +470,9 @@ async function resolveGuardedFileQuickReadReply(
 
 // 注册插件生命周期与消息处理中间件。
 function apply(ctx: IndexContext): void {
+  registerCapabilityFailureContext(ctx as Parameters<typeof registerCapabilityFailureContext>[0])
+  ctx.on('dispose', resetCapabilityFailureNotifier)
+  ctx.on('dispose', flushTokenUsage)
   registerPluginLifecycle(ctx, { agentEngine, configureAgentQueue, chat, retellAgentResult })
 
   ctx.middleware(async (session, next) => {

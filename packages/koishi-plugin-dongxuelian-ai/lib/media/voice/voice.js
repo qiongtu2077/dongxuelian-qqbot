@@ -8,7 +8,9 @@
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
-const { requestChatCompletions } = require('../../core/api');
+const { recordTokenUsage } = require('../../core/api');
+const { resolveCapabilityRuntimeSteps } = require('../../core/ai-capability-config');
+const { notifyCapabilityStepFailure } = require('../../core/capability-failure-notifier');
 const { extractVoiceUrls, validatePublicHttpUrl, resolveAndValidateHostname } = require('../../core/utils');
 const { DATA_DIR } = require('../../core/constants');
 const ASR_TIMEOUT_MS = 10000;
@@ -158,34 +160,105 @@ function pcmToWav(pcmData, sampleRate, channels, bitsPerSample) {
     header.writeUInt32LE(dataSize, 40);
     return Buffer.concat([header, Buffer.from(pcmData)]);
 }
-async function callModelAsr(wavPath, config) {
-    const buf = fs.readFileSync(wavPath);
-    const base64 = `data:audio/wav;base64,${buf.toString('base64')}`;
-    const messages = [{
-            role: 'user',
-            content: [
-                { type: 'text', text: '请将这段语音转写成文字，只返回转写的文字本身，不要添加任何其他内容。' },
-                { type: 'input_audio', input_audio: { data: base64 } },
-            ],
-        }];
-    const { MIMORIUM_KEY_FILE } = require('../../core/constants');
-    let mimoriumKey = '';
+// 把上游 ASR HTTP 状态转换为不含响应正文的稳定错误。
+function assertAsrResponseOk(response) {
+    if (response.ok)
+        return;
+    const error = new Error(`语音识别上游失败（HTTP ${response.status}）`);
+    error.retryable = response.status === 401 || response.status === 403 || response.status === 429 || response.status >= 500;
+    throw error;
+}
+// 安全解析 ASR JSON，解析失败可进入下一优先级且不泄露上游正文。
+async function readAsrJson(response) {
     try {
-        mimoriumKey = fs.readFileSync(MIMORIUM_KEY_FILE, 'utf8').trim();
+        const value = await response.json();
+        if (value && typeof value === 'object' && !Array.isArray(value))
+            return value;
     }
-    catch { /* non-critical: ASR falls back to current config apiKey */
+    catch { /* handled below */ }
+    const error = new Error('语音识别上游返回了无法解析的结果');
+    error.retryable = true;
+    throw error;
+}
+// 通过 OpenAI 官方 audio/transcriptions 协议转写一个 WAV 文件。
+async function requestOpenAiAsr(wavPath, step, signal) {
+    const form = new FormData();
+    form.append('model', step.model);
+    form.append('file', new Blob([fs.readFileSync(wavPath)], { type: 'audio/wav' }), 'voice.wav');
+    const response = await fetch(`${step.baseURL.replace(/\/+$/, '')}/audio/transcriptions`, {
+        method: 'POST', signal, headers: { Authorization: `Bearer ${step.apiKey}` }, body: form,
+    });
+    assertAsrResponseOk(response);
+    const data = await readAsrJson(response);
+    const text = String(data.text || '').trim();
+    if (!text) {
+        const error = new Error('语音识别上游返回空结果');
+        error.retryable = true;
+        throw error;
     }
-    const asrConfig = {
-        ...config,
-        provider: 'mimorium',
-        model: 'mimo-v2.5',
-        baseURL: 'https://token-plan-cn.xiaomimimo.com/v1',
-        apiKey: mimoriumKey || config.apiKey,
-    };
-    const result = await requestChatCompletions(messages, asrConfig, { max_tokens: 500, _timeoutMs: ASR_TIMEOUT_MS });
-    const resultRecord = result && typeof result === 'object' ? result : null;
-    const text = typeof result === 'string' ? result : (resultRecord && resultRecord.content || '');
-    return String(text || '').trim();
+    const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage : undefined;
+    return { text, usage, readable: !!usage && Object.keys(usage).some(key => /tokens/i.test(key)) };
+}
+// 通过小米已验证的 OpenAI 兼容多模态路径调用专用 ASR 模型。
+async function requestMimoriumAsr(wavPath, step, signal) {
+    const audio = `data:audio/wav;base64,${fs.readFileSync(wavPath).toString('base64')}`;
+    const response = await fetch(`${step.baseURL.replace(/\/+$/, '')}/chat/completions`, {
+        method: 'POST', signal,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${step.apiKey}` },
+        body: JSON.stringify({
+            model: step.model,
+            max_tokens: 500,
+            messages: [{ role: 'user', content: [
+                        { type: 'text', text: '请将这段语音转写成文字，只返回转写的文字本身，不要添加任何其他内容。' },
+                        { type: 'input_audio', input_audio: { data: audio } },
+                    ] }],
+        }),
+    });
+    assertAsrResponseOk(response);
+    const data = await readAsrJson(response);
+    const choices = Array.isArray(data.choices) ? data.choices : [];
+    const first = choices[0] && typeof choices[0] === 'object' ? choices[0] : {};
+    const message = first.message && typeof first.message === 'object' ? first.message : {};
+    const text = String(message.content || '').trim();
+    if (!text) {
+        const error = new Error('语音识别上游返回空结果');
+        error.retryable = true;
+        throw error;
+    }
+    const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage : undefined;
+    return { text, usage, readable: !!usage && Object.keys(usage).some(key => /tokens/i.test(key)) };
+}
+// 读取 voice-asr 优先级并按顺序转写；配置为空时不发起任何请求。
+async function callModelAsr(wavPath, _config) {
+    const steps = resolveCapabilityRuntimeSteps('voice-asr');
+    if (!steps.length)
+        throw new Error('该能力未配置模型');
+    for (let index = 0; index < steps.length; index += 1) {
+        const step = steps[index];
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ASR_TIMEOUT_MS);
+        try {
+            const result = step.provider === 'openai'
+                ? await requestOpenAiAsr(wavPath, step, controller.signal)
+                : await requestMimoriumAsr(wavPath, step, controller.signal);
+            const usage = result.usage || {};
+            const total = Number(usage.total_tokens || usage.totalTokens || 0)
+                || Number(usage.input_tokens || usage.prompt_tokens || 0) + Number(usage.output_tokens || usage.completion_tokens || 0);
+            recordTokenUsage(step.provider, Number.isFinite(total) ? total : 0, { capability: 'voice-asr', model: step.model, usage, readable: result.readable });
+            return result.text;
+        }
+        catch (error) {
+            const retryable = error?.retryable !== false;
+            console.warn(`[voice-asr] capability_step_failed provider=${step.provider} model=${step.model}`);
+            await notifyCapabilityStepFailure(step.provider, step.model).catch(() => false);
+            if (!retryable || index >= steps.length - 1)
+                throw error;
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
+    throw new Error('该能力未配置模型');
 }
 // 依次提取、下载、转码和识别会话中的语音，无法识别时返回 null。
 async function transcribeVoice(session, config) {

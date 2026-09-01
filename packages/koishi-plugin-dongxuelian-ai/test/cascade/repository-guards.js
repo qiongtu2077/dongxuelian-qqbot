@@ -171,7 +171,8 @@ async function runRepositoryGuards(context) {
   const dashboardAppSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'App.vue'))
   const dashboardElectronDeployerSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'electron-deployer.ts'))
   const dashboardApiSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'api.ts'))
-  const dashboardKeyManagerSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'components', 'KeyManager.vue'))
+  const dashboardAiModelPanelSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'components', 'AiModelApiConfigPanel.vue'))
+  const dashboardAiModelServiceSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'services', 'ai-model-api-model.ts'))
   check('dashboard shares electron deployer detection helper', dashboardAppSrc.includes('electron-deployer') && dashboardElectronDeployerSrc.includes('dongxuelianExpose?.dongxuelianDeployer') && dashboardElectronDeployerSrc.includes('getDongxuelianDeployerBridge'))
   check('dashboard fetchAdminIds uses admin token', dashboardApiSrc.includes("fetchAdminIds() { return get('/admin-ids', true) }"))
   const dashboardConfigRoutesSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'routes', 'config.js'))
@@ -195,19 +196,24 @@ async function runRepositoryGuards(context) {
   check('dashboard agent panel exposes session and stats lists', dashboardAgentPanelSrc.includes('fetchAgentSessions') && dashboardAgentPanelSrc.includes('最近工具调用'))
   const dashboardSensitiveAdminApiSnippets = [
     "return get('/deploy/config', true)",
-    "return get<FallbackData>('/fallback', true)",
     "return get('/bot/activity' + suffix, true)",
-    "return get('/keys/usage', true)",
+    "return get<AiModelApiConfigResponse>('/ai-model-api/config', true)",
+    "return post<AiDiscoveryResponse>('/ai-model-api/discover', { providerId, apiKey }, true, 20000)",
+    "return put<AiPriorityResponse>('/ai-model-api/priority', { capability, steps }, true)",
+    "return get<CapabilityUsageResponse>('/keys/usage?capability=' + encodeURIComponent(capability), true)",
     "return post('/gallery', data, true, 60000)",
     "return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, true)",
     "return put('/gallery/style', { id, foilStyle }, true)",
   ]
   check('dashboard sensitive APIs use admin token', dashboardSensitiveAdminApiSnippets.every(snippet => dashboardApiSrc.includes(snippet)), dashboardApiSrc.slice(1400, 3600))
-    check('dashboard token usage uses distribution and trend charts', dashboardKeyManagerSrc.includes('模型分布') && dashboardKeyManagerSrc.includes('Token 使用趋势') && dashboardKeyManagerSrc.includes('donut-wrap') && dashboardKeyManagerSrc.includes('distribution-table') && dashboardKeyManagerSrc.includes('trend-chart') && !dashboardKeyManagerSrc.includes('class="token-bars"'))
-    check('dashboard token usage exposes range and date controls', dashboardKeyManagerSrc.includes('rangePresets') && dashboardKeyManagerSrc.includes('今天') && dashboardKeyManagerSrc.includes('7天') && dashboardKeyManagerSrc.includes('30天') && dashboardKeyManagerSrc.includes('type="date"') && dashboardKeyManagerSrc.includes('filteredUsageDays'))
-    check('dashboard token usage accepts provider and model stats', dashboardStandalone.includes('models: [...models.values()]') && dashboardStandalone.includes('source.models') && dashboardStandalone.includes('day.models') && dashboardStandalone.includes('cacheRead') && dashboardKeyManagerSrc.includes('usageModels') && dashboardKeyManagerSrc.includes('cacheHitRate'))
+  check('dashboard navigation converges old tabs into unified AI tab', dashboardAppSrc.includes("id: 'ai-model-api'") && dashboardAppSrc.includes("value === 'config' || value === 'keys'") && !dashboardAppSrc.includes("id: 'config'") && !dashboardAppSrc.includes("id: 'keys'"))
+  check('dashboard AI panel exposes all modality tabs', dashboardAiModelPanelSrc.includes("{ id: 'text', label: '文字' }") && dashboardAiModelPanelSrc.includes("{ id: 'vision', label: '识图' }") && dashboardAiModelPanelSrc.includes("{ id: 'voice-asr', label: '语音识别' }") && dashboardAiModelPanelSrc.includes("{ id: 'voice-tts', label: '语音合成' }"))
+  check('dashboard AI panel reuses supplier priority and usage sections', dashboardAiModelPanelSrc.includes('AI 供应商导入') && dashboardAiModelPanelSrc.includes('模型优先级调整') && dashboardAiModelPanelSrc.includes('模型用量'))
+  check('dashboard AI panel renders blocked discovery reason and accessible priority controls', dashboardAiModelPanelSrc.includes('selectedProvider.discoveryReason') && dashboardAiModelPanelSrc.includes('aria-label="`上移') && dashboardAiModelPanelSrc.includes('aria-label="`下移'))
+  check('dashboard AI panel displays capability distribution and unreadable usage', dashboardAiModelPanelSrc.includes('模型分布') && dashboardAiModelPanelSrc.includes('无法读取模型 Token 用量') && dashboardAiModelPanelSrc.includes('usage.providers') && dashboardAiModelPanelSrc.includes('usage.models'))
+  check('dashboard AI frontend imports the shared capability contract', dashboardAiModelServiceSrc.includes('ai-capability-contract.json') && dashboardAiModelServiceSrc.includes('AI_CAPABILITY_IDS'))
   const aiApiSrc = read(path.join(LIB, 'core', 'api.js'))
-  check('AI token usage records model and detailed usage fields', aiApiSrc.includes('function readUsageDetails') && aiApiSrc.includes("recordTokenUsage(config.provider || 'unknown', usageTokens, { model: config.model") && aiApiSrc.includes('cache_read_tokens'))
+  check('AI token usage records capability model and detailed usage fields', aiApiSrc.includes('function readUsageDetails') && aiApiSrc.includes('capability,') && aiApiSrc.includes('model: attempt.model') && aiApiSrc.includes('cache_read_tokens'))
   const agentConsoleSrc = fs.existsSync(path.join(PKG_ROOT, 'agent-console', 'src', 'main.tsx')) ? read(path.join(PKG_ROOT, 'agent-console', 'src', 'main.tsx')) : ''
   check('agent console exposes runtime config page', agentConsoleSrc.includes("id: 'runtime'") && agentConsoleSrc.includes('function RuntimePage') && agentConsoleSrc.includes('queue.maxGlobal'))
   check('agent console exposes persona page separate from skills', agentConsoleSrc.includes("id: 'personas'") && agentConsoleSrc.includes('function PersonasPage') && agentConsoleSrc.includes('api.savePersona'))

@@ -13,7 +13,6 @@ const {
   clickButtonByLabel,
   verifyAdminIfVisible,
   typePlaceholder,
-  selectOptionValue,
 } = require('./browser-helpers')
 const { verifyResourcePanel } = require('./mock-scenarios')
 
@@ -52,41 +51,24 @@ async function runLiveClicks(page) {
   await clickSidebarTab(page, '指令速查')
   await waitForText(page, '指令速查')
 
-  await clickSidebarTab(page, '模型配置')
-  await waitForText(page, '供应商和模型')
+  await clickSidebarTab(page, 'AI模型与API配置')
   await verifyAdminIfVisible(page)
-  await selectOptionValue(page, 'dashscope').catch(() => {})
-  await clickText(page, '+ 添加供应商').catch(() => {})
+  await waitForText(page, 'AI 供应商导入')
+  await waitForText(page, '模型优先级调整')
+  await waitForText(page, '模型用量')
+  await page.waitForFunction(() => {
+    const sidebar = document.querySelector('.sidebar-nav')?.innerText || ''
+    return !sidebar.includes('模型配置') && !sidebar.includes('API Keys')
+  }, { timeout: 15000 })
+  await clickText(page, '识图').catch(() => {})
+  await clickText(page, '语音').catch(() => {})
+  await waitForText(page, '语音识别')
+  await clickText(page, '语音合成').catch(() => {})
 
   await clickSidebarTab(page, '人格实验室')
   await waitForText(page, '创建/修改人格')
   await clickText(page, '编辑').catch(() => {})
   await waitForText(page, '保存修改').catch(() => {})
-  await clickText(page, '取消').catch(() => {})
-
-  await clickSidebarTab(page, 'API Keys')
-  await waitForText(page, 'API Key 管理')
-  await verifyAdminIfVisible(page)
-  await waitForText(page, '模型分布')
-  await waitForText(page, 'Token 使用趋势')
-  await waitForText(page, '今天')
-  await waitForText(page, '7天')
-  await waitForText(page, '30天')
-  await page.waitForFunction(() => {
-    const text = document.body.innerText || ''
-    if (text.includes('[object Object]')) return false
-    if (text.includes('"key"') || text.includes('"label"')) return false
-    const labels = ['MiMo', 'GLM', 'DeepSeek', '阿里云']
-    if (!labels.some(label => text.includes(label))) return false
-    return document.querySelectorAll('.distribution-table tbody tr').length > 0
-      && document.querySelectorAll('.trend-point').length > 0
-      && !!document.querySelector('.donut-wrap')
-  }, { timeout: 15000 })
-  await clickText(page, '今天').catch(() => {})
-  await waitForText(page, '今天').catch(() => {})
-  await clickText(page, '30天').catch(() => {})
-  await clickText(page, '编辑').catch(() => {})
-  await waitForText(page, '编辑').catch(() => {})
   await clickText(page, '取消').catch(() => {})
 
   await clickSidebarTab(page, '黑白名单')

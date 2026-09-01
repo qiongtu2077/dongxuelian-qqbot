@@ -640,8 +640,7 @@ async function testRequestChatCompletionsPayload() {
   const originalFetch = global.fetch
   const originalSetTimeout = global.setTimeout
   const originalClearTimeout = global.clearTimeout
-  const timeoutToken = { id: 'api-timeout' }
-  let timeoutMs = null
+  const timers = []
   let clearedToken = null
   let fetchUrl = ''
   let fetchOptions = null
@@ -665,8 +664,9 @@ async function testRequestChatCompletionsPayload() {
   }
 
   global.setTimeout = (fn, ms) => {
-    timeoutMs = ms
-    return timeoutToken
+    const token = { id: `api-timeout-${timers.length + 1}` }
+    timers.push({ ms, token })
+    return token
   }
   global.clearTimeout = token => {
     clearedToken = token
@@ -690,11 +690,12 @@ async function testRequestChatCompletionsPayload() {
       { max_tokens: 12, temperature: 5, _timeoutMs: 999999, signal },
     )
     const body = JSON.parse(fetchOptions.body)
+    const requestTimer = timers.find(timer => timer.ms === 300000)
     check('requestChatCompletions posts to chat endpoint', fetchUrl === 'https://example.com/chat/completions')
     check('requestChatCompletions serializes temperature', body.temperature === 2)
     check('requestChatCompletions serializes max tokens', body.max_tokens === 12)
-    check('requestChatCompletions clamps timeout', timeoutMs === 300000)
-    check('requestChatCompletions clears timeout', clearedToken === timeoutToken)
+    check('requestChatCompletions clamps timeout', !!requestTimer)
+    check('requestChatCompletions clears timeout', clearedToken === requestTimer?.token)
     check('requestChatCompletions attaches and removes abort listener', signalAttached === 1 && signalRemoved === 1)
     check('requestChatCompletions returns text payload', response.type === 'text' && response.content === 'ok')
   } finally {

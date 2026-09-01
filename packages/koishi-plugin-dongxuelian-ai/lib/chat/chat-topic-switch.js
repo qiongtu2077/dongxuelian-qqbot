@@ -31,7 +31,7 @@ async function detectTopicSwitch(lastMsg, currentMsg) {
     if (!config.apiKey)
         return null;
     try {
-        const result = await requestChatCompletions(prompt, config, { max_tokens: 5, _fallbackSet: 'lightweight', _timeoutMs: 8000 });
+        const result = await requestChatCompletions(prompt, config, { max_tokens: 5, _timeoutMs: 8000 });
         const reply = getTopicSwitchReplyContent(result);
         if (/^YES/i.test(reply))
             return true;

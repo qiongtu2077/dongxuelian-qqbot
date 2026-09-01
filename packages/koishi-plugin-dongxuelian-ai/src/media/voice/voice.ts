@@ -7,7 +7,9 @@
 const fs = require('fs')
 const path = require('path')
 const { execFile } = require('child_process')
-const { requestChatCompletions } = require('../../core/api') as typeof import('../../core/api')
+const { recordTokenUsage } = require('../../core/api') as typeof import('../../core/api')
+const { resolveCapabilityRuntimeSteps } = require('../../core/ai-capability-config') as typeof import('../../core/ai-capability-config')
+const { notifyCapabilityStepFailure } = require('../../core/capability-failure-notifier') as typeof import('../../core/capability-failure-notifier')
 const { extractVoiceUrls, validatePublicHttpUrl, resolveAndValidateHostname } = require('../../core/utils') as typeof import('../../core/utils')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
 
@@ -41,7 +43,19 @@ interface VoiceConfig {
   model?: string
   provider?: string
   baseURL?: string
-  [key: string]: unknown
+}
+
+interface AsrRuntimeStep extends VoiceConfig {
+  apiKey: string
+  model: string
+  provider: string
+  baseURL: string
+}
+
+interface AsrAttemptResult {
+  text: string
+  usage?: Record<string, unknown>
+  readable: boolean
 }
 
 interface HttpResponseLike {
@@ -185,31 +199,102 @@ function pcmToWav(pcmData: Buffer | Uint8Array, sampleRate: number, channels: nu
   return Buffer.concat([header, Buffer.from(pcmData)])
 }
 
-async function callModelAsr(wavPath: string, config: VoiceConfig): Promise<string> {
-  const buf = fs.readFileSync(wavPath)
-  const base64 = `data:audio/wav;base64,${buf.toString('base64')}`
-  const messages = [{
-    role: 'user',
-    content: [
-      { type: 'text', text: '请将这段语音转写成文字，只返回转写的文字本身，不要添加任何其他内容。' },
-      { type: 'input_audio', input_audio: { data: base64 } },
-    ],
-  }]
-  const { MIMORIUM_KEY_FILE } = require('../../core/constants') as typeof import('../../core/constants')
-  let mimoriumKey = ''
-  try { mimoriumKey = fs.readFileSync(MIMORIUM_KEY_FILE, 'utf8').trim() } catch { /* non-critical: ASR falls back to current config apiKey */
+// 把上游 ASR HTTP 状态转换为不含响应正文的稳定错误。
+function assertAsrResponseOk(response: Response): void {
+  if (response.ok) return
+  const error = new Error(`语音识别上游失败（HTTP ${response.status}）`) as Error & { retryable?: boolean }
+  error.retryable = response.status === 401 || response.status === 403 || response.status === 429 || response.status >= 500
+  throw error
+}
+
+// 安全解析 ASR JSON，解析失败可进入下一优先级且不泄露上游正文。
+async function readAsrJson(response: Response): Promise<Record<string, unknown>> {
+  try {
+    const value: unknown = await response.json()
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  } catch { /* handled below */ }
+  const error = new Error('语音识别上游返回了无法解析的结果') as Error & { retryable?: boolean }
+  error.retryable = true
+  throw error
+}
+
+// 通过 OpenAI 官方 audio/transcriptions 协议转写一个 WAV 文件。
+async function requestOpenAiAsr(wavPath: string, step: AsrRuntimeStep, signal: AbortSignal): Promise<AsrAttemptResult> {
+  const form = new FormData()
+  form.append('model', step.model)
+  form.append('file', new Blob([fs.readFileSync(wavPath)], { type: 'audio/wav' }), 'voice.wav')
+  const response = await fetch(`${step.baseURL.replace(/\/+$/, '')}/audio/transcriptions`, {
+    method: 'POST', signal, headers: { Authorization: `Bearer ${step.apiKey}` }, body: form,
+  })
+  assertAsrResponseOk(response)
+  const data = await readAsrJson(response)
+  const text = String(data.text || '').trim()
+  if (!text) {
+    const error = new Error('语音识别上游返回空结果') as Error & { retryable?: boolean }
+    error.retryable = true
+    throw error
   }
-  const asrConfig = {
-    ...config,
-    provider: 'mimorium',
-    model: 'mimo-v2.5',
-    baseURL: 'https://token-plan-cn.xiaomimimo.com/v1',
-    apiKey: mimoriumKey || config.apiKey,
+  const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage as Record<string, unknown> : undefined
+  return { text, usage, readable: !!usage && Object.keys(usage).some(key => /tokens/i.test(key)) }
+}
+
+// 通过小米已验证的 OpenAI 兼容多模态路径调用专用 ASR 模型。
+async function requestMimoriumAsr(wavPath: string, step: AsrRuntimeStep, signal: AbortSignal): Promise<AsrAttemptResult> {
+  const audio = `data:audio/wav;base64,${fs.readFileSync(wavPath).toString('base64')}`
+  const response = await fetch(`${step.baseURL.replace(/\/+$/, '')}/chat/completions`, {
+    method: 'POST', signal,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${step.apiKey}` },
+    body: JSON.stringify({
+      model: step.model,
+      max_tokens: 500,
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: '请将这段语音转写成文字，只返回转写的文字本身，不要添加任何其他内容。' },
+        { type: 'input_audio', input_audio: { data: audio } },
+      ] }],
+    }),
+  })
+  assertAsrResponseOk(response)
+  const data = await readAsrJson(response)
+  const choices = Array.isArray(data.choices) ? data.choices : []
+  const first = choices[0] && typeof choices[0] === 'object' ? choices[0] as Record<string, unknown> : {}
+  const message = first.message && typeof first.message === 'object' ? first.message as Record<string, unknown> : {}
+  const text = String(message.content || '').trim()
+  if (!text) {
+    const error = new Error('语音识别上游返回空结果') as Error & { retryable?: boolean }
+    error.retryable = true
+    throw error
   }
-  const result: unknown = await requestChatCompletions(messages as unknown as Parameters<typeof requestChatCompletions>[0], asrConfig as Parameters<typeof requestChatCompletions>[1], { max_tokens: 500, _timeoutMs: ASR_TIMEOUT_MS })
-  const resultRecord = result && typeof result === 'object' ? result as Record<string, unknown> : null
-  const text = typeof result === 'string' ? result : (resultRecord && resultRecord.content || '')
-  return String(text || '').trim()
+  const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage as Record<string, unknown> : undefined
+  return { text, usage, readable: !!usage && Object.keys(usage).some(key => /tokens/i.test(key)) }
+}
+
+// 读取 voice-asr 优先级并按顺序转写；配置为空时不发起任何请求。
+async function callModelAsr(wavPath: string, _config?: VoiceConfig): Promise<string> {
+  const steps = resolveCapabilityRuntimeSteps('voice-asr') as AsrRuntimeStep[]
+  if (!steps.length) throw new Error('该能力未配置模型')
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index]
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), ASR_TIMEOUT_MS)
+    try {
+      const result = step.provider === 'openai'
+        ? await requestOpenAiAsr(wavPath, step, controller.signal)
+        : await requestMimoriumAsr(wavPath, step, controller.signal)
+      const usage = result.usage || {}
+      const total = Number(usage.total_tokens || usage.totalTokens || 0)
+        || Number(usage.input_tokens || usage.prompt_tokens || 0) + Number(usage.output_tokens || usage.completion_tokens || 0)
+      recordTokenUsage(step.provider, Number.isFinite(total) ? total : 0, { capability: 'voice-asr', model: step.model, usage, readable: result.readable })
+      return result.text
+    } catch (error) {
+      const retryable = (error as { retryable?: unknown })?.retryable !== false
+      console.warn(`[voice-asr] capability_step_failed provider=${step.provider} model=${step.model}`)
+      await notifyCapabilityStepFailure(step.provider, step.model).catch(() => false)
+      if (!retryable || index >= steps.length - 1) throw error
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  throw new Error('该能力未配置模型')
 }
 
 // 依次提取、下载、转码和识别会话中的语音，无法识别时返回 null。

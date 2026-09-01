@@ -14,7 +14,7 @@ function installTypeScriptLoader() {
   require.extensions['.ts'] = (module, filename) => {
     const source = fs.readFileSync(filename, 'utf8')
     const output = ts.transpileModule(source, {
-      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true, resolveJsonModule: true },
       fileName: filename,
     }).outputText
     module._compile(output, filename)
@@ -46,20 +46,50 @@ function testDeployModel(deploy) {
   assert.strictEqual(preview.warnings[0].label, '保留数据')
 }
 
-// Verifies provider editing, validation and fallback transaction composition.
-function testKeyManagerModel(keys) {
-  const invalid = keys.buildProviderTransaction({ ...keys.createProviderDraft(), baseURL: '' }, [], {})
-  assert.match(invalid.error, /不能为空/)
+// Verifies the shared four-capability model, immutable editing and eligible-model filtering.
+function testAiModelApiModel(aiModel) {
+  assert.deepStrictEqual([...aiModel.AI_CAPABILITY_IDS], ['text', 'vision', 'voice-asr', 'voice-tts'])
+  assert.strictEqual(aiModel.isAiCapability('voice-tts'), true)
+  assert.strictEqual(aiModel.isAiCapability('chat'), false)
 
-  const draft = keys.createProviderDraft()
-  draft.apiKey = ' secret '
-  const transaction = keys.buildProviderTransaction(draft, [], {})
-  assert.strictEqual(transaction.error, '')
-  assert.strictEqual(transaction.keyValue, 'secret')
-  assert.strictEqual(transaction.providers.length, 1)
-  assert.strictEqual(transaction.chains.chat[0].model, 'gpt-4o')
-  assert.strictEqual(transaction.chains.vision[0].model, 'gpt-4o')
-  assert.strictEqual(transaction.chains.lightweight[0].model, 'gpt-4o-mini')
+  const priorities = {
+    text: [{ provider: 'openai', model: 'gpt-4o' }],
+    vision: [],
+    'voice-asr': [],
+    'voice-tts': [],
+  }
+  const cloned = aiModel.cloneCapabilityPriorities(priorities)
+  cloned.text[0].model = 'edited-only'
+  assert.strictEqual(priorities.text[0].model, 'gpt-4o')
+
+  const config = {
+    version: 1,
+    capabilities: [...aiModel.AI_CAPABILITY_IDS],
+    priorities,
+    providers: {
+      openai: {
+        key: { configured: true, prefix: 'sk-ope****' },
+        models: [
+          { id: 'gpt-4o', name: 'GPT-4o', capabilities: ['text', 'vision'] },
+          { id: 'gpt-4o-transcribe', name: 'Transcribe', capabilities: ['voice-asr'] },
+        ],
+      },
+      anthropic: {
+        key: { configured: false, prefix: '' },
+        models: [{ id: 'claude-test', name: 'Claude Test', capabilities: ['text'] }],
+      },
+    },
+  }
+  assert.deepStrictEqual(aiModel.listAvailableCapabilityModels(config, 'vision'), [{ provider: 'openai', model: 'gpt-4o', name: 'GPT-4o' }])
+  assert.deepStrictEqual(aiModel.listAvailableCapabilityModels(config, 'voice-asr'), [{ provider: 'openai', model: 'gpt-4o-transcribe', name: 'Transcribe' }])
+  assert.strictEqual(aiModel.listAvailableCapabilityModels(config, 'voice-tts').length, 0)
+  assert.strictEqual(aiModel.listAvailableCapabilityModels(config, 'text').some(item => item.provider === 'anthropic'), false)
+
+  const appSource = fs.readFileSync(path.join(FRONTEND_ROOT, 'App.vue'), 'utf8')
+  assert.match(appSource, /id: 'ai-model-api'/)
+  assert.match(appSource, /value === 'config' \|\| value === 'keys'/)
+  assert.doesNotMatch(appSource, /id: 'config'/)
+  assert.doesNotMatch(appSource, /id: 'keys'/)
 }
 
 // Verifies worker status classification against a deterministic resource snapshot.
@@ -223,7 +253,7 @@ function main() {
   const restore = installTypeScriptLoader()
   try {
     testDeployModel(loadService('deploy-model'))
-    testKeyManagerModel(loadService('key-manager-model'))
+    testAiModelApiModel(loadService('ai-model-api-model'))
     testResourceModel(loadService('resource-model'))
     testResourceReadability(loadBackendModule('resource-readability'))
     testResourceDiagnostics(loadBackendModule('resource-diagnostics'))

@@ -1,3 +1,4 @@
+// 验证自动记忆与梦境任务在统一文字能力链下的排队、执行和故障隔离。
 async function run(t) {
   t.section('scenario: auto-memory and dream')
 
@@ -5,13 +6,20 @@ async function run(t) {
   const fsp = require('fs/promises')
   const path = require('path')
   const os = require('os')
+  const { createCapabilityConfig } = require('../helpers/ai-capability-fixture')
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-memory-test-'))
   const originalDataDir = process.env.DONGXUELIAN_AI_DATA_DIR
   process.env.DONGXUELIAN_AI_DATA_DIR = tmpDir
+  fs.writeFileSync(path.join(tmpDir, 'ai-openai-key.txt'), 'test-auto-memory-key', 'utf8')
+  fs.writeFileSync(path.join(tmpDir, 'ai-capability-config.json'), JSON.stringify(createCapabilityConfig({
+    text: [{ provider: 'opencode', model: 'deepseek-v4-flash' }],
+  }), null, 2), 'utf8')
 
   const modulesToReload = [
     '../../lib/core/constants',
+    '../../lib/core/ai-capability-config',
+    '../../lib/core/capability-failure-notifier',
     '../../lib/resource-common/files',
     '../../lib/resource-workers/task-paths',
     '../../lib/resource-workers/task-store',
@@ -51,6 +59,7 @@ async function run(t) {
     const memoryWorker = require('../../lib/resource-workers/memory-worker')
     const taskStore = require('../../lib/resource-workers/task-store')
 
+    // 返回当前隔离数据目录中指定用户和记忆任务类型的记录。
     function listMemoryTasks(kind, userId, statuses = ['pending', 'deferred', 'failed', 'done']) {
       return taskStore.listResourceTasks({ statuses, limit: 100 })
         .filter(task => task.kind === kind && String(task.userId || '') === String(userId || ''))
@@ -212,6 +221,7 @@ async function run(t) {
 
   } finally {
     global.fetch = originalFetch
+    try { require('../../lib/core/api').flushTokenUsage() } catch {}
     if (originalDataDir === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
     else process.env.DONGXUELIAN_AI_DATA_DIR = originalDataDir
     for (const mod of modulesToReload) {

@@ -3,18 +3,13 @@
  * 职责: 提供 provider/model/baseURL/apiKey/thinking 等运行时配置的统一入口。
  * 边界: 只读配置，不含业务逻辑。业务模块通过此文件获取配置，不直接 require constants.js 中的路径常量。
  */
-const {
-  KEY_FILE, MODEL_FILE, BASE_URL_FILE,
-  SEARCH_ENABLED_FILE,
-  ADMIN_IDS_FILE,
-  PROVIDER_FILE,
-} = require('./constants') as typeof import('./constants')
+const { SEARCH_ENABLED_FILE, ADMIN_IDS_FILE } = require('./constants') as typeof import('./constants')
 const fs = require('fs')
 const fsp = require('fs/promises')
 const {
-  resolveProviderDefinition,
-  resolveProviderApiKey,
-} = require('./provider-registry') as typeof import('./provider-registry')
+  isAiCapability,
+  resolveCapabilityRuntimeSteps,
+} = require('./ai-capability-config') as typeof import('./ai-capability-config')
 
 interface RuntimeConfig {
   apiKey: string
@@ -22,14 +17,18 @@ interface RuntimeConfig {
   baseURL: string
   searchEnabled: boolean
   provider: string
+  capability?: string
+  chatProtocol?: string
+  priorityIndex?: number
   _originalConfig?: Pick<RuntimeConfig, 'model' | 'provider' | 'baseURL' | 'apiKey'>
   _fallbackTried?: number
   _isOriginalRetry?: boolean
+  [key: string]: unknown
 }
 
 type ThinkingArgs = Record<string, unknown>
 
-let configCache: RuntimeConfig | null = null
+const configCache = new Map<string, RuntimeConfig>()
 let adminUserIdsCache: Set<string> | null = null
 let thinkingEnabled = false
 
@@ -101,43 +100,36 @@ function getThinkingArgs(config: RuntimeConfig): ThinkingArgs {
   return {}
 }
 
-function selectRuntimeModel(model: string, providerDef: Awaited<ReturnType<typeof resolveProviderDefinition>>): string {
-  const models = Array.isArray(providerDef?.models) ? providerDef.models : []
-  const modelIds = new Set(models.map(item => String(item.id || '').trim()).filter(Boolean))
-  if (providerDef?.custom && model && !modelIds.has(model)) return models[0]?.id || 'gpt-4o-mini'
-  return model || models[0]?.id || 'gpt-4o-mini'
+// 按能力读取优先级第一项；空链立即报错且绝不回退到旧主模型或其他能力。
+async function loadCapabilityConfig(capability: string, force: boolean = false): Promise<RuntimeConfig> {
+  if (!isAiCapability(capability)) throw new Error('未知 AI 能力')
+  const cached = configCache.get(capability)
+  if (cached && !force) return cached
+  const steps = resolveCapabilityRuntimeSteps(capability)
+  const first = steps[0]
+  if (!first) throw new Error('该能力未配置模型')
+  const searchEnabledText = await readRuntimeTextFile(SEARCH_ENABLED_FILE)
+  const config: RuntimeConfig = {
+    apiKey: first.apiKey,
+    model: first.model,
+    baseURL: first.baseURL,
+    searchEnabled: parseRuntimeEnabledText(searchEnabledText),
+    provider: first.provider,
+    capability,
+    chatProtocol: first.chatProtocol,
+    priorityIndex: first.priorityIndex,
+  }
+  configCache.set(capability, config)
+  return config
 }
 
+// 保留文字调用方的稳定入口，但数据只来自 text 能力链。
 async function loadConfig(force: boolean = false): Promise<RuntimeConfig> {
-  if (configCache && !force) return configCache
-
-  const [apiKey, model, baseURL, searchEnabledText, provider] = await Promise.all([
-    readRuntimeTextFile(KEY_FILE),
-    readRuntimeTextFile(MODEL_FILE),
-    readRuntimeTextFile(BASE_URL_FILE),
-    readRuntimeTextFile(SEARCH_ENABLED_FILE),
-    readRuntimeTextFile(PROVIDER_FILE),
-  ])
-
-  const activeProvider = provider || 'opencode'
-  const providerDef = await resolveProviderDefinition(activeProvider)
-  if (!providerDef) throw new Error(`Unknown AI provider: ${activeProvider}`)
-  const resolvedBaseURL = String(providerDef?.baseURL || baseURL || 'https://api.openai.com/v1').replace(/\/+$/, '')
-  const resolvedApiKey = await resolveProviderApiKey(activeProvider, apiKey, { allowFallback: !providerDef.custom })
-
-  configCache = {
-    apiKey: resolvedApiKey,
-    model: selectRuntimeModel(model, providerDef),
-    baseURL: resolvedBaseURL,
-    searchEnabled: parseRuntimeEnabledText(searchEnabledText),
-    provider: activeProvider,
-  }
-
-  return configCache
+  return loadCapabilityConfig('text', force)
 }
 
 function resetConfigCache(): void {
-  configCache = null
+  configCache.clear()
   adminUserIdsCache = null
 }
 
@@ -151,6 +143,7 @@ function setThinkingEnabled(value: boolean): void {
 
 export = {
   loadConfig,
+  loadCapabilityConfig,
   resetConfigCache,
   getThinkingArgs,
   getAdminUserIds,

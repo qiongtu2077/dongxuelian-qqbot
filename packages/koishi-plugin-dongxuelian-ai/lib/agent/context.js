@@ -133,7 +133,7 @@ async function compactWithLLM(messages = [], config = {}, requestFn) {
         const rawSummary = await requestFn([
             { role: 'system', content: prompt },
             { role: 'user', content: '压缩以上 Agent 上下文。' },
-        ], config, { max_tokens: 1200, _fallbackSet: 'lightweight' });
+        ], config, { max_tokens: 1200 });
         if (isToolCallSummary(rawSummary))
             throw new Error('summary returned tool calls');
         const summary = getSummaryContent(rawSummary);

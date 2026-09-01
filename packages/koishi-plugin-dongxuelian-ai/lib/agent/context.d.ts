@@ -16,7 +16,6 @@ interface ContextReport {
 }
 interface CompactRequestOptions {
     max_tokens: number;
-    _fallbackSet: string;
 }
 type CompactRequestFn = (messages: Array<{
     role: string;

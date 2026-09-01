@@ -1,6 +1,7 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { seedCapabilityConfig } = require('../../koishi-plugin-dongxuelian-ai/test/helpers/ai-capability-fixture')
 
 const PLUGIN_PATH = path.resolve(__dirname, '..', 'lib', 'index.js')
 const PROTOCOL_PATH = path.resolve(__dirname, '..', 'lib', 'protocol.js')
@@ -59,6 +60,21 @@ function reloadPlugin() {
   return require(PLUGIN_PATH)
 }
 
+// Seeds the explicit text capability required by status and model-switch protocol calls.
+function seedPetBridgeTextCapability(dataDir) {
+  const data = {
+    writeJson(name, value) {
+      fs.writeFileSync(path.join(dataDir, name), JSON.stringify(value, null, 2), 'utf8')
+    },
+    writeText(name, value) {
+      fs.writeFileSync(path.join(dataDir, name), value, 'utf8')
+    },
+  }
+  seedCapabilityConfig(data, {
+    text: [{ provider: 'openai', model: 'gpt-4o-mini' }],
+  })
+}
+
 // Creates a tiny Koishi-like context for event and logger assertions.
 function makeCtx() {
   const events = new Map()
@@ -96,6 +112,7 @@ async function withIsolatedPlugin(fn) {
   const dataDir = path.join(tmpRoot, 'data')
   process.env.DONGXUELIAN_AI_DATA_DIR = dataDir
   fs.mkdirSync(dataDir, { recursive: true })
+  seedPetBridgeTextCapability(dataDir)
   clearPluginCaches()
 
   try {

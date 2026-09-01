@@ -1,0 +1,9 @@
+{
+    "version": 1,
+    "capabilities": [
+        "text",
+        "vision",
+        "voice-asr",
+        "voice-tts"
+    ]
+}

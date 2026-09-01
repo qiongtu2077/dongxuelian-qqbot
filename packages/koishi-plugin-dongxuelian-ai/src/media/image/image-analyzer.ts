@@ -5,7 +5,7 @@
  * 状态: 内存并发队列。
  */
 const { downloadImageAsBase64, callGetImage, readImageAsBase64, isVisionModel, requestChatCompletions } = require('../../core/api') as typeof import('../../core/api')
-const { loadConfig } = require('../../core/runtime-config') as typeof import('../../core/runtime-config')
+const { loadCapabilityConfig } = require('../../core/runtime-config') as typeof import('../../core/runtime-config')
 const { markAnalyzed, replaceImagePlaceholder, cacheImageFile, readCachedImage, getImageEntry } = require('./image-store') as typeof import('./image-store')
 const { isVisionBlindnessReply } = require('./vision') as typeof import('./vision')
 
@@ -102,7 +102,7 @@ async function runAnalysis({ channelKey, messageId, url, file }: ImageTask): Pro
 
     if (!base64) return null
 
-    const config = await loadConfig()
+    const config = await loadCapabilityConfig('vision')
     if (!isVisionModel(config.provider, config.model)) return null
 
     const messages = [

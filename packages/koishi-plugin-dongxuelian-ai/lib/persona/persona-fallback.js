@@ -51,7 +51,7 @@ async function generatePersonaFallbackReply({ session, systemPrompt, currentUser
     if (typeof callModel !== 'function' || !systemPrompt || !currentUserMessage)
         return '';
     try {
-        const result = await callModel(buildPersonaFallbackMessages(systemPrompt, currentUserMessage, reason), isRandom, { max_tokens: 80, _fallbackSet: 'lightweight' });
+        const result = await callModel(buildPersonaFallbackMessages(systemPrompt, currentUserMessage, reason), isRandom, { max_tokens: 80 });
         return cleanPersonaFallbackReply(session, normalizeModelText(result), userName, maxChars);
     }
     catch (error) {

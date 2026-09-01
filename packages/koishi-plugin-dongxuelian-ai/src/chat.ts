@@ -11,7 +11,6 @@ const {
   TEST_MODE_FILE, HOSTILE_MODE_FILE,
   REQUEST_TIMEOUT,
   MAX_OUTPUT_CHARS_FRIENDLY, MAX_OUTPUT_CHARS_ABUSIVE,
-  PROVIDERS, DASHSCOPE_KEY_FILE, GLM_KEY_FILE,
   USER_PROFILE_DIR, POLITICAL_DETECT_FILE,
   JAILBREAK_OUTPUT_RE,
   JAPAN_SELF_IDENTIFY_RE, GENERATION_REQUEST_RE,
@@ -78,7 +77,7 @@ const {
   isJailbreakAttempt,             // 越狱检测
   hasAdminPermission,              // 管理员权限判断
   sanitizeUserInput, sanitizeUserName, // 输入/昵称安全清洗
-  readTextFile, readJsonFile,      // 文件读取工具
+  readJsonFile,                    // JSON 文件读取工具
   safeChannelKey,                  // 统一频道文件名清洗
   isEvaluationRequest,             // 评价请求识别
   getSearchCapability,             // 当前模型联网搜索能力查询
@@ -111,7 +110,8 @@ const {
 } = require('./chat/chat-agent-retell-flow') as typeof import('./chat/chat-agent-retell-flow')
 const { redactSensitiveText } = require('./core/redactor') as typeof import('./core/redactor')
 const {
-  loadConfig,          // 加载运行时配置（API key/model/provider）
+  loadConfig,          // 加载文字能力运行时配置
+  loadCapabilityConfig, // 按统一能力读取运行时配置
   resetConfigCache,    // 强制刷新配置缓存
   getThinkingArgs,     // 获取 thinking/推理模式参数
   getThinkingEnabled,  // 查询 thinking 开关状态
@@ -658,29 +658,8 @@ async function executeChatModelStage(input: ExecuteChatModelStageOptions): Promi
   let wasVisionRequest = false
   let visionContext = null
   if (isVisionSession(session)) {
-    let vc = await loadConfig(true)
-    if (!isVisionModel(vc.provider, vc.model)) {
-      const visionFallbacks = [
-        { provider: 'glm', model: 'glm-4.6v-flash', keyFile: GLM_KEY_FILE },
-        { provider: 'dashscope', model: 'qwen3.5-plus', keyFile: DASHSCOPE_KEY_FILE },
-        { provider: 'dashscope', model: 'qwen3.6-plus', keyFile: DASHSCOPE_KEY_FILE },
-      ]
-      let used = false
-      for (const fb of visionFallbacks) {
-        if (isVisionModel(fb.provider, fb.model)) {
-          vc.model = fb.model
-          vc.baseURL = PROVIDERS[fb.provider].baseURL
-          vc.apiKey = (await readTextFile(fb.keyFile).catch(() => '') || vc.apiKey).replace(/[\r\n]+/g, '')
-          vc.provider = fb.provider
-          used = true
-          break
-        }
-      }
-      if (!used) {
-        clearVisionSession(session)
-        return ''
-      }
-    }
+    const vc = await loadCapabilityConfig('vision', true)
+    if (!isVisionModel(vc.provider, vc.model)) throw new Error('该能力未配置模型')
     const visionPromptText = options.randomTriggered
       ? '[群里刷到一张图。如果你看清了图，先输出 <image_fact>标签包住的一句客观图片事实（只描述图片里客观看到的内容，60字内，不要称呼用户，不要续聊），再输出按你人设风格的一句可见回应；不要假设这是有人专程拿给你看的。]'
       : '[用户发来一张图。先输出 <image_fact>标签包住的一句客观图片事实（只描述图片里客观看到的内容，60字内，不要称呼用户，不要续聊），再输出按你人设风格的一句可见回应。]'
@@ -1003,7 +982,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
         [{ role: 'system', content: '你是一个内容判断器。判断以下用户消息是否在阴阳 Bot 的国籍、稀有度或身份归属。只输出一个字：Y 或 N。不要输出任何其他文字。' },
          { role: 'user', content: cleanInput.slice(0, 200) }],
         cfg,
-        { max_tokens: 5, _fallbackSet: 'lightweight' }
+        { max_tokens: 5 }
       )
       const rareJudge = getChatCompletionText(rareJudgeObj)
       rareConfirmed = /^Y/i.test(rareJudge)
@@ -1103,31 +1082,16 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
       const rawMessages = (targetProfile.messages || []).slice(-20).map(m => m.content).join('\n').slice(0, 3000)
       if (rawMessages) {
         let summary = ''
-        const summaryModels = [
-          { provider: 'glm', model: 'glm-4.6v-flash', keyFile: GLM_KEY_FILE },
-          { provider: 'dashscope', model: 'qwen-turbo', keyFile: DASHSCOPE_KEY_FILE },
-          { provider: 'opencode', model: 'deepseek-v4-flash', keyFile: null },
-        ]
-        for (const am of summaryModels) {
-          const provDef = PROVIDERS[am.provider]
-          if (!provDef) continue
-          try {
-            const config = await loadConfig()
-            const apiKey = am.keyFile ? (await readTextFile(am.keyFile).catch(() => '') || config.apiKey).replace(/[\r\n]+/g, '') : config.apiKey
-            if (!apiKey) continue
-            const ac = new AbortController()
-            const timer = setTimeout(() => ac.abort(), 8000)
-            const summaryResult = await requestChatCompletions(
-              [{ role: 'system', content: '把以下发言用 200 字以内概括其发言风格和常用话题，越精炼越好。' },
-               { role: 'user', content: rawMessages }],
-              { model: am.model, baseURL: provDef.baseURL.replace(/\/+$/, ''), apiKey, provider: am.provider },
-              { max_tokens: 200, signal: ac.signal, _fallbackSet: 'lightweight' }
-            )
-            summary = getChatCompletionText(summaryResult)
-            clearTimeout(timer)
-            if (summary) break
-          } catch { /* non-critical: lightweight profile summary model fallback keeps trying next model */ }
-        }
+        try {
+          const config = await loadConfig()
+          const summaryResult = await requestChatCompletions(
+            [{ role: 'system', content: '把以下发言用 200 字以内概括其发言风格和常用话题，越精炼越好。' },
+             { role: 'user', content: rawMessages }],
+            config,
+            { max_tokens: 200, _timeoutMs: 8000 }
+          )
+          summary = getChatCompletionText(summaryResult)
+        } catch { /* non-critical: text capability fallback failure keeps the raw profile path */ }
         if (summary) {
           const cleaned = summary.replace(/^(?:该用户|这个用户|此人|对方|ta)的发言风格[是为：]?\s*/i, '').slice(0, 200)
           messages.push({

@@ -93,6 +93,16 @@ function createCascadeHarness(root) {
     }
   }
 
+  /** Returns whether PATH resolves bash to Windows' WSL launcher rather than a POSIX shell binary. */
+  function isWindowsSystemBash() {
+    if (process.platform !== 'win32') return false
+    const resolution = spawnSync('where.exe', ['bash'], { cwd: root, stdio: 'pipe' })
+    if (resolution.status !== 0) return false
+    const firstPath = String(resolution.stdout || '').split(/\r?\n/).find(Boolean)
+    const systemBash = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'bash.exe')
+    return !!firstPath && path.resolve(firstPath).toLowerCase() === path.resolve(systemBash).toLowerCase()
+  }
+
   /** Runs shell syntax validation using the first available shell. */
   function shellSyntaxCheck(file) {
     const blocked = []
@@ -103,7 +113,12 @@ function createCascadeHarness(root) {
       if (result.error && result.error.code === 'EPERM') { blocked.push(shell); continue }
       if (result.error) throw result.error
       if (result.status !== 0) {
-        const message = String(result.stderr || result.stdout || '').trim()
+        // Windows Bash can emit its WSL service error as UTF-16LE; this means no shell is available, not invalid script syntax.
+        const message = [result.stderr, result.stdout].filter(Boolean).map(rawOutput => Buffer.isBuffer(rawOutput)
+          ? `${rawOutput.toString('utf8')}\n${rawOutput.toString('utf16le')}`
+          : String(rawOutput)).join('\n').trim()
+        // A real Bash syntax failure reports a diagnostic; Windows' unavailable WSL shim returns an empty non-zero result.
+        if (message.includes('HCS_E_CONNECTION_TIMEOUT') || (shell === 'bash' && isWindowsSystemBash())) continue
         throw new Error(message || `${shell} -n exited with ${result.status}`)
       }
       return { skipped: false, shell }

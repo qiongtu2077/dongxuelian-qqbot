@@ -4,6 +4,7 @@ const os = require('os')
 const { spawnSync } = require('child_process')
 const { withScenario } = require('./_setup')
 
+// 构造供语音协议场景复用的最小可播放 WAV。
 function buildTestWav(payload = Buffer.from([1, 2, 3, 4])) {
   const data = Buffer.from(payload)
   const header = Buffer.alloc(44)
@@ -23,6 +24,7 @@ function buildTestWav(payload = Buffer.from([1, 2, 3, 4])) {
   return Buffer.concat([header, data])
 }
 
+// 验证语音识别、语音合成、人格音色与 Dashboard 预览的场景契约。
 async function run(t) {
   t.section('scenario: voice ASR module')
 
@@ -127,6 +129,7 @@ async function run(t) {
   const ttsModule = path.join(__dirname, '..', '..', 'lib', 'media', 'voice', 'tts')
   const dashboardRouteModule = path.join(__dirname, '..', '..', '..', 'koishi-plugin-dashboard', 'lib', 'routes', 'agent')
   const dashboardAuthModule = path.join(__dirname, '..', '..', '..', 'koishi-plugin-dashboard', 'lib', 'auth')
+  const capabilityFixtureModule = path.join(__dirname, '..', 'helpers', 'ai-capability-fixture')
   const assetScript = `
 const fs = require('fs')
 const path = require('path')
@@ -314,10 +317,14 @@ const fs = require('fs')
 const path = require('path')
 const { Readable } = require('stream')
 const constants = require(${JSON.stringify(constantsModule)})
-const auth = require(${JSON.stringify(dashboardAuthModule)})
-const dashboard = require(${JSON.stringify(dashboardRouteModule)})
+const { createCapabilityConfig } = require(${JSON.stringify(capabilityFixtureModule)})
 fs.mkdirSync(constants.DATA_DIR, { recursive: true })
 fs.writeFileSync(constants.MIMORIUM_KEY_FILE, 'tp-test-key')
+fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-capability-config.json'), JSON.stringify(createCapabilityConfig({
+  'voice-tts': [{ provider: 'mimorium', model: 'mimo-v2.5-tts' }],
+})))
+const auth = require(${JSON.stringify(dashboardAuthModule)})
+const dashboard = require(${JSON.stringify(dashboardRouteModule)})
 fs.mkdirSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas'), { recursive: true })
 fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas', 'SKILL.PreviewPersona.md'), '---\\nname: PreviewPersona\\nvoice_id: 冰糖\\nvoice_style: 沉稳预览\\n---\\npreview persona')
 function buildWav() {
@@ -489,10 +496,14 @@ console.log(JSON.stringify({
 const fs = require('fs')
 const path = require('path')
 const constants = require(${JSON.stringify(constantsModule)})
-const persona = require(${JSON.stringify(path.join(__dirname, '..', '..', 'lib', 'persona', 'persona'))})
-const command = require(${JSON.stringify(path.join(__dirname, '..', '..', 'lib', 'commands', 'voice-command'))})
+const { createCapabilityConfig } = require(${JSON.stringify(capabilityFixtureModule)})
 fs.mkdirSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas'), { recursive: true })
 fs.writeFileSync(constants.MIMORIUM_KEY_FILE, 'tp-test-key')
+fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-capability-config.json'), JSON.stringify(createCapabilityConfig({
+  'voice-tts': [{ provider: 'mimorium', model: 'mimo-v2.5-tts' }],
+})))
+const persona = require(${JSON.stringify(path.join(__dirname, '..', '..', 'lib', 'persona', 'persona'))})
+const command = require(${JSON.stringify(path.join(__dirname, '..', '..', 'lib', 'commands', 'voice-command'))})
 fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-skills', 'personas', 'SKILL.CurrentVoicePersona.md'), '---\\nname: CurrentVoicePersona\\nvoice_id: Mia\\nvoice_style: 当前人格沉稳冷静\\n---\\ncurrent persona')
 persona.loadPersonaGroups()
 persona.loadPersonaUsers()
@@ -567,46 +578,18 @@ function buildWav() {
 
   t.section('scenario: voice TTS synthesize (mock)')
 
-  const originalFetch = global.fetch
-  const mockAudioBase64 = buildTestWav(Buffer.from('fake wav data')).toString('base64')
-  let fetchCalls = []
-  let diagnostics = {}
-  global.fetch = async (url, opts) => {
-    fetchCalls.push({ url, opts })
-    return {
-      ok: true,
-      json: async () => ({ choices: [{ message: { audio: { data: mockAudioBase64 } } }] }),
-    }
-  }
-
-  try {
-    const buf = await tts.synthesizeSpeech('测试文本', { voice: '冰糖', style: '活泼', diagnostics })
-    if (buf) {
-      t.check('synthesizeSpeech returns Buffer', Buffer.isBuffer(buf))
-      t.check('synthesizeSpeech Buffer is playable wav', tts.detectAudioMime(buf) === 'audio/wav')
-      t.check('synthesizeSpeech called fetch', fetchCalls.length === 1)
-      t.check('synthesizeSpeech used correct URL', fetchCalls[0].url.includes('token-plan-cn.xiaomimimo.com'))
-      const body = JSON.parse(fetchCalls[0].opts.body)
-      t.check('synthesizeSpeech model is mimo-v2.5-tts', body.model === 'mimo-v2.5-tts')
-      t.check('synthesizeSpeech audio format is wav', body.audio && body.audio.format === 'wav')
-      t.check('synthesizeSpeech voice is 冰糖', body.audio && body.audio.voice === '冰糖')
-      t.check('synthesizeSpeech messages has style', body.messages[0].role === 'user' && body.messages[0].content === '活泼')
-      t.check('synthesizeSpeech messages has text', body.messages[1].role === 'assistant' && body.messages[1].content === '测试文本')
-    } else {
-      t.check('synthesizeSpeech reports missing key when no key file', diagnostics.lastError?.code === 'missing_key', JSON.stringify(diagnostics.lastError || {}))
-    }
-  } finally {
-    global.fetch = originalFetch
-    fetchCalls = []
-  }
-
   const ttsFailureScript = `
 const fs = require('fs')
 const path = require('path')
 const constants = require(${JSON.stringify(constantsModule)})
-const tts = require(${JSON.stringify(ttsModule)})
+const { createCapabilityConfig } = require(${JSON.stringify(capabilityFixtureModule)})
 fs.mkdirSync(constants.DATA_DIR, { recursive: true })
 fs.writeFileSync(constants.MIMORIUM_KEY_FILE, 'tp-test-key')
+const configFile = path.join(constants.DATA_DIR, 'ai-capability-config.json')
+fs.writeFileSync(configFile, JSON.stringify(createCapabilityConfig({
+  'voice-tts': [{ provider: 'mimorium', model: 'mimo-v2.5-tts' }],
+})))
+const tts = require(${JSON.stringify(ttsModule)})
 function buildWav() {
   const data = Buffer.from([1, 2, 3, 4])
   const header = Buffer.alloc(44)
@@ -630,13 +613,29 @@ function buildWav() {
   const wavBase64 = buildWav().toString('base64')
   let calls = []
   global.fetch = async (url, opts) => {
-    calls.push(JSON.parse(opts.body))
+    calls.push({ url: String(url), body: JSON.parse(opts.body) })
     return { ok: true, json: async () => ({ choices: [{ message: { audio: { data: 'data:audio/wav;base64,' + wavBase64 } } }] }) }
   }
   let diagnostics = {}
+  const normalBuf = await tts.synthesizeSpeech('测试文本', { voice: '冰糖', style: '活泼', diagnostics })
+  result.normalMime = tts.detectAudioMime(normalBuf)
+  result.normalUrl = calls[0].url
+  result.normalBody = calls[0].body
+
+  fs.unlinkSync(constants.MIMORIUM_KEY_FILE)
+  calls = []
+  diagnostics = {}
+  const unconfiguredBuf = await tts.synthesizeSpeech('测试', { voice: '冰糖', style: '活泼', diagnostics })
+  result.unconfiguredNull = unconfiguredBuf === null
+  result.unconfiguredCode = diagnostics.lastError && diagnostics.lastError.code
+  result.unconfiguredMessage = diagnostics.lastError && diagnostics.lastError.message
+  result.unconfiguredCalls = calls.length
+  fs.writeFileSync(constants.MIMORIUM_KEY_FILE, 'tp-test-key')
+
+  calls = []
   const dataUriBuf = await tts.synthesizeSpeech('测试', { voice: '冰糖', style: '活泼', diagnostics })
   result.dataUriMime = tts.detectAudioMime(dataUriBuf)
-  result.dataUriModel = calls[0].model
+  result.dataUriModel = calls[0].body.model
 
   global.fetch = async () => ({ ok: true, json: async () => ({ choices: [{ message: { audio: { data: Buffer.from('not audio').toString('base64') } } }] }) })
   diagnostics = {}
@@ -653,13 +652,16 @@ function buildWav() {
 
   calls = []
   global.fetch = async (url, opts) => {
-    calls.push(JSON.parse(opts.body))
+    calls.push({ url: String(url), body: JSON.parse(opts.body) })
     return { ok: true, json: async () => ({ choices: [{ message: { audio: { data: wavBase64 } } }] }) }
   }
+  fs.writeFileSync(configFile, JSON.stringify(createCapabilityConfig({
+    'voice-tts': [{ provider: 'mimorium', model: 'mimo-v2.5-tts-voiceclone' }],
+  })))
   diagnostics = {}
   const cloneBuf = await tts.synthesizeSpeech('测试', { voice: 'data:audio/wav;base64,' + wavBase64, style: '活泼', diagnostics })
   result.cloneMime = tts.detectAudioMime(cloneBuf)
-  result.cloneModel = calls[0].model
+  result.cloneModel = calls[0].body.model
   console.log(JSON.stringify(result))
 })().catch(error => {
   console.error(error.stack || error.message || error)
@@ -675,6 +677,9 @@ function buildWav() {
   let ttsFailureSummary = {}
   try { ttsFailureSummary = JSON.parse(String(ttsFailureResult.stdout || '').trim()) } catch {}
   t.check('tts diagnostics child process passes', ttsFailureResult.status === 0, ttsFailureResult.stderr || ttsFailureResult.stdout)
+  t.check('synthesizeSpeech follows configured Mimorium TTS protocol', ttsFailureSummary.normalMime === 'audio/wav' && ttsFailureSummary.normalUrl.includes('token-plan-cn.xiaomimimo.com') && ttsFailureSummary.normalBody?.model === 'mimo-v2.5-tts' && ttsFailureSummary.normalBody?.audio?.format === 'wav' && ttsFailureSummary.normalBody?.audio?.voice === '冰糖', JSON.stringify(ttsFailureSummary))
+  t.check('synthesizeSpeech keeps configured style and text ordering', ttsFailureSummary.normalBody?.messages?.[0]?.role === 'user' && ttsFailureSummary.normalBody?.messages?.[0]?.content === '活泼' && ttsFailureSummary.normalBody?.messages?.[1]?.role === 'assistant' && ttsFailureSummary.normalBody?.messages?.[1]?.content === '测试文本', JSON.stringify(ttsFailureSummary))
+  t.check('synthesizeSpeech stops without request when configured provider key is unavailable', ttsFailureSummary.unconfiguredNull === true && ttsFailureSummary.unconfiguredCode === 'capability_unconfigured' && ttsFailureSummary.unconfiguredMessage === '该能力未配置模型' && ttsFailureSummary.unconfiguredCalls === 0, JSON.stringify(ttsFailureSummary))
   t.check('synthesizeSpeech accepts data URI audio response', ttsFailureSummary.dataUriMime === 'audio/wav' && ttsFailureSummary.dataUriModel === 'mimo-v2.5-tts', JSON.stringify(ttsFailureSummary))
   t.check('synthesizeSpeech rejects unplayable decoded audio', ttsFailureSummary.badAudioNull === true && ttsFailureSummary.badAudioCode === 'invalid_audio', JSON.stringify(ttsFailureSummary))
   t.check('synthesizeSpeech reports sanitized HTTP failure', ttsFailureSummary.httpNull === true && ttsFailureSummary.httpCode === 'http_error' && !String(ttsFailureSummary.httpMessage || '').includes('tp-secret-value'), JSON.stringify(ttsFailureSummary))
@@ -759,46 +764,100 @@ function buildWav() {
 
   t.section('scenario: voice ASR transcribe (mock)')
 
-  const { TTS_TEMP_DIR } = require('../../lib/core/constants')
-  fs.mkdirSync(TTS_TEMP_DIR, { recursive: true })
-  const testWav = path.join(TTS_TEMP_DIR, 'test-asr-scenario.wav')
-  const wavHeader = Buffer.alloc(44)
-  wavHeader.write('RIFF', 0)
-  wavHeader.writeUInt32LE(36, 4)
-  wavHeader.write('WAVE', 8)
-  wavHeader.write('fmt ', 12)
-  wavHeader.writeUInt32LE(16, 16)
-  wavHeader.writeUInt16LE(1, 20)
-  wavHeader.writeUInt16LE(1, 22)
-  wavHeader.writeUInt32LE(16000, 24)
-  wavHeader.writeUInt32LE(32000, 28)
-  wavHeader.writeUInt16LE(2, 32)
-  wavHeader.writeUInt16LE(16, 34)
-  wavHeader.write('data', 36)
-  wavHeader.writeUInt32LE(0, 40)
-  fs.writeFileSync(testWav, wavHeader)
+  const voiceProtocolScript = `
+const fs = require('fs')
+const path = require('path')
+const constants = require(${JSON.stringify(constantsModule)})
+const { createCapabilityConfig } = require(${JSON.stringify(capabilityFixtureModule)})
+fs.mkdirSync(constants.DATA_DIR, { recursive: true })
+fs.writeFileSync(constants.MIMORIUM_KEY_FILE, 'tp-test-mimorium-key')
+fs.writeFileSync(path.join(constants.DATA_DIR, 'ai-openai-official-key.txt'), 'tp-test-openai-key')
+const configFile = path.join(constants.DATA_DIR, 'ai-capability-config.json')
+// 原子替换本子进程要验证的显式能力优先级。
+function saveConfig(priorities) {
+  fs.writeFileSync(configFile, JSON.stringify(createCapabilityConfig(priorities)))
+}
+saveConfig({ 'voice-asr': [{ provider: 'mimorium', model: 'mimo-v2.5-asr' }] })
+const voice = require(${JSON.stringify(path.join(__dirname, '..', '..', 'lib', 'media', 'voice', 'voice'))})
+const tts = require(${JSON.stringify(ttsModule)})
+// 构造同时适用于 ASR 上传和 TTS 返回值校验的最小 WAV。
+function buildWav() {
+  const data = Buffer.from([1, 2, 3, 4])
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + data.length, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(16000, 24)
+  header.writeUInt32LE(32000, 28)
+  header.writeUInt16LE(2, 32)
+  header.writeUInt16LE(16, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(data.length, 40)
+  return Buffer.concat([header, data])
+}
+(async () => {
+  const result = {}
+  const wav = buildWav()
+  const wavPath = path.join(constants.DATA_DIR, 'protocol-asr.wav')
+  fs.writeFileSync(wavPath, wav)
 
   global.fetch = async (url, opts) => {
-    fetchCalls.push({ url, opts })
-    return {
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: '你好世界' } }] }),
-    }
+    result.mimoriumAsrUrl = String(url)
+    result.mimoriumAsrBody = JSON.parse(opts.body)
+    return { ok: true, json: async () => ({ choices: [{ message: { content: '小米转写' } }] }) }
   }
+  result.mimoriumAsrText = await voice.callModelAsr(wavPath)
 
-  try {
-    const config = { apiKey: 'test-key', model: 'test', baseURL: 'http://localhost', provider: 'opencode' }
-    const text = await voice.callModelAsr(testWav, config)
-    t.check('callModelAsr returns transcribed text', text === '你好世界')
-    t.check('callModelAsr called fetch', fetchCalls.length === 1)
-    t.check('callModelAsr used mimorium URL', fetchCalls[0].url.includes('token-plan-cn.xiaomimimo.com'))
-    const body = JSON.parse(fetchCalls[0].opts.body)
-    t.check('callModelAsr model is mimo-v2.5', body.model === 'mimo-v2.5')
-    t.check('callModelAsr has audio content', body.messages[0].content.some(c => c.type === 'input_audio'))
-  } finally {
-    global.fetch = originalFetch
-    try { fs.unlinkSync(testWav) } catch {}
+  saveConfig({ 'voice-asr': [{ provider: 'openai', model: 'gpt-4o-mini-transcribe' }] })
+  global.fetch = async (url, opts) => {
+    result.openAiAsrUrl = String(url)
+    result.openAiAsrModel = opts.body.get('model')
+    return { ok: true, json: async () => ({ text: 'OpenAI转写' }) }
   }
+  result.openAiAsrText = await voice.callModelAsr(wavPath)
+
+  saveConfig({ 'voice-tts': [{ provider: 'openai', model: 'gpt-4o-mini-tts' }] })
+  global.fetch = async (url, opts) => {
+    result.openAiTtsUrl = String(url)
+    result.openAiTtsBody = JSON.parse(opts.body)
+    return { ok: true, arrayBuffer: async () => wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength) }
+  }
+  const openAiAudio = await tts.synthesizeSpeech('OpenAI 合成', { voice: '冰糖', style: '沉稳' })
+  result.openAiTtsMime = tts.detectAudioMime(openAiAudio)
+
+  saveConfig({})
+  let unconfiguredRequests = 0
+  global.fetch = async () => { unconfiguredRequests += 1; throw new Error('unexpected request') }
+  try {
+    await voice.callModelAsr(wavPath)
+  } catch (error) {
+    result.unconfiguredAsrMessage = String(error && error.message || error)
+  }
+  result.unconfiguredAsrRequests = unconfiguredRequests
+  console.log(JSON.stringify(result))
+})().catch(error => {
+  console.error(error.stack || error.message || error)
+  process.exit(1)
+})
+`
+  const voiceProtocolDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-protocol-'))
+  const voiceProtocolResult = spawnSync(process.execPath, ['-e', voiceProtocolScript], {
+    cwd: path.join(__dirname, '..', '..', '..', '..'),
+    env: { ...process.env, DONGXUELIAN_AI_DATA_DIR: voiceProtocolDataRoot },
+    encoding: 'utf8',
+  })
+  let voiceProtocolSummary = {}
+  try { voiceProtocolSummary = JSON.parse(String(voiceProtocolResult.stdout || '').trim()) } catch {}
+  t.check('voice protocol child process passes', voiceProtocolResult.status === 0, voiceProtocolResult.stderr || voiceProtocolResult.stdout)
+  t.check('callModelAsr uses configured Mimorium ASR model', voiceProtocolSummary.mimoriumAsrText === '小米转写' && voiceProtocolSummary.mimoriumAsrUrl?.endsWith('/chat/completions') && voiceProtocolSummary.mimoriumAsrBody?.model === 'mimo-v2.5-asr' && voiceProtocolSummary.mimoriumAsrBody?.messages?.[0]?.content?.some(item => item.type === 'input_audio'), JSON.stringify(voiceProtocolSummary))
+  t.check('callModelAsr uses OpenAI audio/transcriptions protocol', voiceProtocolSummary.openAiAsrText === 'OpenAI转写' && voiceProtocolSummary.openAiAsrUrl?.endsWith('/audio/transcriptions') && voiceProtocolSummary.openAiAsrModel === 'gpt-4o-mini-transcribe', JSON.stringify(voiceProtocolSummary))
+  t.check('synthesizeSpeech uses OpenAI audio/speech protocol', voiceProtocolSummary.openAiTtsMime === 'audio/wav' && voiceProtocolSummary.openAiTtsUrl?.endsWith('/audio/speech') && voiceProtocolSummary.openAiTtsBody?.model === 'gpt-4o-mini-tts' && voiceProtocolSummary.openAiTtsBody?.voice === 'alloy', JSON.stringify(voiceProtocolSummary))
+  t.check('callModelAsr stops without request when capability priority is empty', voiceProtocolSummary.unconfiguredAsrMessage === '该能力未配置模型' && voiceProtocolSummary.unconfiguredAsrRequests === 0, JSON.stringify(voiceProtocolSummary))
+  try { fs.rmSync(voiceProtocolDataRoot, { recursive: true, force: true }) } catch {}
 }
 
 module.exports = { run }

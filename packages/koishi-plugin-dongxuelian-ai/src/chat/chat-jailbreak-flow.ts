@@ -92,7 +92,7 @@ async function chatJailbreak(session: JailbreakSessionLike, userText: string, ct
     const replyObj = await requestChatCompletions(
       messages,
       config,
-      { max_tokens: 60, _fallbackSet: 'lightweight' }
+      { max_tokens: 60 }
     )
     const reply = normalizeChatJailbreakReply(replyObj)
     if (JAILBREAK_OUTPUT_RE.test(reply)) return pickJailbreakFallbackReply()

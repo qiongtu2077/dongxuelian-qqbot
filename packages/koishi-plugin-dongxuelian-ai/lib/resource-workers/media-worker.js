@@ -12,7 +12,7 @@ const { writeProcessCleanupEvent } = require('../resource-system/system-protecti
 const { analyzeImageNow } = require('../media/image/image-analyzer');
 const { analyzeFileNow } = require('../media/file/file-analyzer');
 const { transcribeVoice } = require('../media/voice/voice');
-const { loadConfig } = require('../core/runtime-config');
+const { loadCapabilityConfig } = require('../core/runtime-config');
 const { markVoiceTranscribed, markVoiceTranscriptionUnavailable, } = require('../media/voice/voice-store');
 const { claimNextMediaTask, requeueMediaTask, completeMediaTask, failMediaTask, } = require('../media/backpressure/media-queue');
 const MEDIA_TASK_TIMEOUT_MS = Math.max(10000, Math.min(10 * 60 * 1000, Number(process.env.RESOURCE_MEDIA_TASK_TIMEOUT_MS || 180000)));
@@ -60,7 +60,7 @@ async function runVoiceTranscriptionTask(task) {
     if (!channelKey || !messageId)
         throw new Error('voice transcription task missing channelKey or messageId');
     try {
-        const cfg = await loadConfig();
+        const cfg = await loadCapabilityConfig('voice-asr');
         const transcript = await transcribeVoice(buildVoiceTranscriptionSession(task), { ...cfg });
         if (transcript) {
             await markVoiceTranscribed(channelKey, messageId, transcript);

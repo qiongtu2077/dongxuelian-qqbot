@@ -21,12 +21,11 @@ interface VoiceConfig {
     model?: string;
     provider?: string;
     baseURL?: string;
-    [key: string]: unknown;
 }
 declare function extractVoicePayload(session: VoiceSessionLike | null | undefined): VoicePayload | null;
 declare function downloadVoiceFile(url: string, destPath: string): Promise<string | null>;
 declare function convertToWav(srcPath: string): Promise<string | null>;
-declare function callModelAsr(wavPath: string, config: VoiceConfig): Promise<string>;
+declare function callModelAsr(wavPath: string, _config?: VoiceConfig): Promise<string>;
 declare function transcribeVoice(session: VoiceSessionLike | null | undefined, config: VoiceConfig): Promise<string | null>;
 declare const _default: {
     extractVoicePayload: typeof extractVoicePayload;

@@ -1,6 +1,7 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { createCapabilityConfig, PROVIDER_IDS } = require('../helpers/ai-capability-fixture')
 
 const ROOT = path.resolve(__dirname, '..', '..', '..', '..')
 const AI_ROOT = path.join(ROOT, 'packages', 'koishi-plugin-dongxuelian-ai')
@@ -73,6 +74,15 @@ function createTestDataDir(options = {}) {
   writeText(path.join(dataDir, 'ai-dashscope-key.txt'), options.dashscopeKey || 'sk-test-dashscope')
   writeText(path.join(dataDir, 'ai-glm-key.txt'), options.glmKey || 'sk-test-glm')
   writeText(path.join(dataDir, 'ai-mimorium-key.txt'), options.mimoriumKey || 'sk-test-mimo')
+
+  const textProvider = PROVIDER_IDS.includes(options.provider) ? options.provider : 'opencode'
+  const textModel = options.model || 'deepseek-v4-flash'
+  writeJson(path.join(dataDir, 'ai-capability-config.json'), createCapabilityConfig({
+    text: [{ provider: textProvider, model: textModel }],
+    vision: [{ provider: 'glm', model: 'glm-4.6v-flash' }],
+    'voice-asr': [{ provider: 'mimorium', model: 'mimo-v2.5-asr' }],
+    'voice-tts': [{ provider: 'mimorium', model: 'mimo-v2.5-tts' }],
+  }))
 
   writeJson(path.join(dataDir, 'ai-admin-ids.json'), options.adminUserIds || ['100000000', '200000000'])
   writeJson(path.join(dataDir, 'ai-repeat-enabled.json'), options.repeatEnabled || {})

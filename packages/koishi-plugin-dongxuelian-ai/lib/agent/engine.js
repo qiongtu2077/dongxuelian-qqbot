@@ -42,6 +42,7 @@ function asToolDefinitions(tools) {
 function normalizeToolDefinitions(tools) {
     return tools;
 }
+// 通过统一文字能力链执行 Agent 上下文压缩。
 function requestAgentCompaction(messages, config, options) {
     return requestChatCompletions(messages, config, options);
 }

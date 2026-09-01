@@ -1,18 +1,20 @@
 interface ChatMessage {
     role?: string;
-    content?: string;
+    content?: unknown;
+    tool_call_id?: string;
+    tool_calls?: unknown[];
 }
 interface ApiConfig {
     apiKey: string;
     model: string;
     baseURL: string;
     provider?: string;
-    _originalConfig?: Pick<ApiConfig, 'model' | 'provider' | 'baseURL' | 'apiKey'>;
-    _fallbackTried?: number;
-    _isOriginalRetry?: boolean;
+    capability?: string;
+    chatProtocol?: string;
+    priorityIndex?: number;
+    searchEnabled?: boolean;
 }
 interface RequestExtraBody {
-    _fallbackSet?: string;
     _timeoutMs?: number | string;
     _thinkingEnabled?: boolean;
     _thinkingManaged?: boolean;
@@ -34,6 +36,8 @@ type ChatCompletionResult = {
     reasoning: string;
 };
 interface UsageDetails {
+    total_tokens?: number;
+    totalTokens?: number;
     prompt_tokens?: number;
     input_tokens?: number;
     inputTokens?: number;
@@ -58,7 +62,9 @@ interface UsageDetails {
 interface FallbackStep {
     model: string;
     provider: string;
-    keyFile?: string | null;
+    capability?: string;
+    chatProtocol?: string;
+    priorityIndex?: number;
 }
 interface SessionLike {
     content?: string;
@@ -72,8 +78,10 @@ interface SessionLike {
     };
 }
 declare function recordTokenUsage(provider: string, tokens: number, details?: {
+    capability?: unknown;
     model?: string;
     usage?: UsageDetails;
+    readable?: boolean;
 }): void;
 declare function flushTokenUsage(): void;
 declare function buildResponsesInput(messages?: ChatMessage[]): Array<{

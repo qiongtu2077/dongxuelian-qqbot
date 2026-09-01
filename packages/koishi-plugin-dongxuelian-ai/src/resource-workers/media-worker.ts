@@ -16,7 +16,7 @@ const { writeProcessCleanupEvent } = require('../resource-system/system-protecti
 const { analyzeImageNow } = require('../media/image/image-analyzer') as typeof import('../media/image/image-analyzer')
 const { analyzeFileNow } = require('../media/file/file-analyzer') as typeof import('../media/file/file-analyzer')
 const { transcribeVoice } = require('../media/voice/voice') as typeof import('../media/voice/voice')
-const { loadConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
+const { loadCapabilityConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
 const {
   markVoiceTranscribed,
   markVoiceTranscriptionUnavailable,
@@ -101,7 +101,7 @@ async function runVoiceTranscriptionTask(task: MediaTaskLike): Promise<Record<st
   const messageId = String(task?.messageId || '')
   if (!channelKey || !messageId) throw new Error('voice transcription task missing channelKey or messageId')
   try {
-    const cfg = await loadConfig()
+    const cfg = await loadCapabilityConfig('voice-asr')
     const transcript = await transcribeVoice(buildVoiceTranscriptionSession(task), { ...cfg })
     if (transcript) {
       await markVoiceTranscribed(channelKey, messageId, transcript)

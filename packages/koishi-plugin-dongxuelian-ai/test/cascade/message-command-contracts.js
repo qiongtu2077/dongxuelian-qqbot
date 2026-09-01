@@ -8,6 +8,7 @@ async function runMessageCommandContracts(context) {
     read, readJson, runSyntaxCheck, runShellSyntaxCheck, gitCheckIgnored, gitTrackedFiles,
     makeLoggerStore, makeSession, makeHandlerState, runHandler, getCounts,
   } = context
+  const { createCapabilityConfig } = require('../helpers/ai-capability-fixture')
   section('7. message reader behavior')
   const structuredFace = reader.analyzeIncomingMessage({ content: '', event: { message: [{ type: 'face', data: { id: 76 } }] } })
   checkEqual('structured face plain', structuredFace.plain, STR.qqFaceLike)
@@ -605,10 +606,14 @@ async function runMessageCommandContracts(context) {
   const agentTmp = fs.mkdtempSync(path.join(agentTmpRoot, 'cascade-agent-'))
   try {
     process.env.DONGXUELIAN_AI_DATA_DIR = agentTmp
-    for (const rel of ['core/constants', 'core/runtime-config', 'core/api', 'agent/config', 'agent/engine', 'agent/workspace-context', 'agent/path-guard', 'agent/skills', 'agent/http-search', 'chat/chat-tools', 'chat/chat-tool-policy', 'agent/tools/registry', 'agent/tools/read-agent-skill', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/tools/create-reminder', 'agent/tools/reminder-tools', 'agent/tools/scheduled-task-tools', 'agent/cron', 'agent/pending', 'agent/safety', 'agent/stats']) {
+    for (const rel of ['core/constants', 'core/ai-capability-config', 'core/capability-failure-notifier', 'core/runtime-config', 'core/api', 'agent/config', 'agent/engine', 'agent/workspace-context', 'agent/path-guard', 'agent/skills', 'agent/http-search', 'chat/chat-tools', 'chat/chat-tool-policy', 'agent/tools/registry', 'agent/tools/read-agent-skill', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/tools/create-reminder', 'agent/tools/reminder-tools', 'agent/tools/scheduled-task-tools', 'agent/cron', 'agent/pending', 'agent/safety', 'agent/stats']) {
       delete require.cache[require.resolve(path.join(LIB, rel))]
     }
     const isolatedConstants = require(path.join(LIB, 'core', 'constants'))
+    fs.writeFileSync(path.join(agentTmp, 'ai-openai-key.txt'), 'test-opencode-key', 'utf8')
+    fs.writeFileSync(path.join(agentTmp, 'ai-capability-config.json'), JSON.stringify(createCapabilityConfig({
+      text: [{ provider: 'opencode', model: 'deepseek-v4-flash' }],
+    }), null, 2), 'utf8')
     const isolatedRuntimeConfig = require(path.join(LIB, 'core', 'runtime-config'))
     const isolatedBrowserAction = require(path.join(LIB, 'agent', 'tools', 'browser-action'))
     const originalBrowserActionExecute = isolatedBrowserAction.execute
@@ -1166,6 +1171,9 @@ async function runMessageCommandContracts(context) {
       fs.writeFileSync(isolatedConstants.PROVIDER_FILE, 'dashscope')
       fs.writeFileSync(isolatedConstants.MODEL_FILE, 'qwen3.5-plus')
       fs.writeFileSync(isolatedConstants.DASHSCOPE_KEY_FILE, 'test-key')
+      fs.writeFileSync(path.join(agentTmp, 'ai-capability-config.json'), JSON.stringify(createCapabilityConfig({
+        text: [{ provider: 'dashscope', model: 'qwen3.5-plus' }],
+      }), null, 2), 'utf8')
       fs.writeFileSync(isolatedConstants.SEARCH_ENABLED_FILE, 'true')
       isolatedRuntimeConfig.resetConfigCache()
         const searchBodies = []
@@ -1340,7 +1348,7 @@ async function runMessageCommandContracts(context) {
   } finally {
     if (originalAgentDataDir) process.env.DONGXUELIAN_AI_DATA_DIR = originalAgentDataDir
     else delete process.env.DONGXUELIAN_AI_DATA_DIR
-    for (const rel of ['core/runtime-config', 'agent/config', 'agent/path-guard', 'agent/tools/registry', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/tools/create-reminder', 'agent/tools/reminder-tools', 'agent/tools/scheduled-task-tools', 'agent/cron', 'agent/pending', 'agent/safety', 'agent/stats']) {
+    for (const rel of ['core/ai-capability-config', 'core/capability-failure-notifier', 'core/runtime-config', 'core/api', 'agent/config', 'agent/path-guard', 'agent/tools/registry', 'agent/tools/read-file', 'agent/tools/list-files', 'agent/tools/find-files', 'agent/tools/write-file', 'agent/tools/edit-file', 'agent/tools/append-file', 'agent/tools/grep-search', 'agent/tools/execute-javascript', 'agent/tools/get-token-usage', 'agent/tools/set-user-timezone', 'agent/tools/query-logs', 'agent/tools/web-search', 'agent/tools/web-fetch', 'agent/tools/browser-action', 'agent/tools/create-reminder', 'agent/tools/reminder-tools', 'agent/tools/scheduled-task-tools', 'agent/cron', 'agent/pending', 'agent/safety', 'agent/stats']) {
       delete require.cache[require.resolve(path.join(LIB, rel))]
     }
     try { fs.rmSync(agentTmp, { recursive: true, force: true }) } catch {}

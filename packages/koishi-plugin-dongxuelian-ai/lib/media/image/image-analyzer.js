@@ -6,7 +6,7 @@
  * 状态: 内存并发队列。
  */
 const { downloadImageAsBase64, callGetImage, readImageAsBase64, isVisionModel, requestChatCompletions } = require('../../core/api');
-const { loadConfig } = require('../../core/runtime-config');
+const { loadCapabilityConfig } = require('../../core/runtime-config');
 const { markAnalyzed, replaceImagePlaceholder, cacheImageFile, readCachedImage, getImageEntry } = require('./image-store');
 const { isVisionBlindnessReply } = require('./vision');
 const MAX_CONCURRENT = 2;
@@ -91,7 +91,7 @@ async function runAnalysis({ channelKey, messageId, url, file }) {
         }
         if (!base64)
             return null;
-        const config = await loadConfig();
+        const config = await loadCapabilityConfig('vision');
         if (!isVisionModel(config.provider, config.model))
             return null;
         const messages = [

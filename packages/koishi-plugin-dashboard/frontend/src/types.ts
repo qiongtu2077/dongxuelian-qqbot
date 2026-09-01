@@ -79,43 +79,6 @@ export interface CommandGroup extends JsonObject {
   commands: CommandInfo[]
 }
 
-export interface ProviderModel extends JsonObject {
-  id: string
-  name?: string
-  vision?: boolean
-}
-
-export interface ProviderInfo {
-  name: string
-  baseURL?: string
-  keyFile?: string
-  models: ProviderModel[]
-}
-
-export interface CustomProvider extends ProviderInfo {
-  id: string
-}
-
-export interface DashboardConfig extends JsonObject {
-  provider?: string
-  model?: string
-  baseUrl?: string
-}
-
-export interface FallbackStep extends JsonObject {
-  provider: string
-  model: string
-  keyFile?: string
-}
-
-export type FallbackChains = Record<string, FallbackStep[]>
-
-export interface FallbackData extends JsonObject {
-  chains?: FallbackChains
-  defaults?: FallbackChains
-  message?: string
-}
-
 export interface WhitelistBuckets extends JsonObject {
   groups?: string[]
   users?: string[]

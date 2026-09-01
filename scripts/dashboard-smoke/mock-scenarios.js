@@ -1,5 +1,4 @@
 const { BASE_URL } = require('./runtime')
-const { todayShanghaiDate, addDays, chartDate } = require('./mock-api')
 const {
   waitForText,
   waitForTextInSelector,
@@ -274,17 +273,45 @@ async function runClicks(page) {
   await clickSidebarTab(page, '指令速查')
   await waitForText(page, '/help')
 
-  await clickSidebarTab(page, '模型配置')
-  await waitForText(page, '供应商和模型')
-  await selectOptionValue(page, 'dashscope')
-  await clickText(page, '+ 添加供应商')
-  await typePlaceholder(page, '标识', 'localmock')
-  await typePlaceholder(page, '名称', 'Local Mock')
-  await clickText(page, '保存自定义供应商')
-  await waitForText(page, '自定义供应商已保存')
-  await clickText(page, '+ 添加步骤')
-  await clickText(page, '保存全部备用链')
-  await waitForText(page, 'Fallback 链已保存')
+  await clickSidebarTab(page, 'AI模型与API配置')
+  await waitForText(page, '四项能力独立保存、独立调用、独立统计')
+  await waitForText(page, 'AI 供应商导入')
+  await waitForText(page, '模型优先级调整')
+  await waitForText(page, '模型用量')
+  await waitForText(page, 'GPT-4o mini')
+  await page.waitForFunction(() => {
+    const sidebar = document.querySelector('.sidebar-nav')?.innerText || ''
+    return !sidebar.includes('模型配置') && !sidebar.includes('API Keys')
+  }, { timeout: 8000 })
+  await page.waitForFunction(() => (document.querySelector('.usage-metrics')?.innerText || '').includes('18,400'), { timeout: 8000 })
+
+  await Promise.all([
+    page.waitForRequest(request => request.method() === 'POST' && request.url().includes('/ai-model-api/discover'), { timeout: 8000 }),
+    page.$eval('.key-field input', input => {
+      input.value = 'sk-smoke-discovery'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new Event('blur', { bubbles: true }))
+    }),
+  ])
+  await waitForText(page, 'API Key 与模型池已原子保存；移除 0 个旧模型、0 个失效优先级步骤。')
+  await Promise.all([
+    page.waitForRequest(request => request.method() === 'PUT' && request.url().includes('/ai-model-api/priority'), { timeout: 8000 }),
+    clickText(page, '保存优先级'),
+  ])
+  await waitForText(page, '模型优先级已保存')
+
+  await clickText(page, '识图')
+  await page.waitForFunction(() => (document.querySelector('.usage-metrics')?.innerText || '').includes('7,200'), { timeout: 8000 })
+  await clickText(page, '语音')
+  await waitForText(page, '无法读取模型 Token 用量')
+  await clickText(page, '语音合成')
+  await waitForText(page, '当前能力还没有新的用量记录。')
+  await page.setViewport({ width: 700, height: 900, deviceScaleFactor: 1 })
+  await page.waitForFunction(() => {
+    const panel = document.querySelector('.ai-model-api')
+    return panel && panel.scrollWidth <= panel.clientWidth + 1
+  }, { timeout: 8000 })
+  await page.setViewport({ width: 1440, height: 1100, deviceScaleFactor: 1 })
 
   await clickSidebarTab(page, '人格实验室')
   await waitForText(page, '创建/修改人格')
@@ -331,88 +358,6 @@ async function runClicks(page) {
   await waitForSelectBoxLabel(page, '克隆音色')
   await waitForSelectBoxLabel(page, '测试音色')
   await waitForText(page, '使用：测试人格')
-
-  await clickSidebarTab(page, 'API Keys')
-  await waitForText(page, 'API Key 管理')
-  await waitForText(page, '模型分布')
-  await waitForText(page, 'Token 使用趋势')
-  await waitForText(page, '今天')
-  await waitForText(page, '7天')
-  await waitForText(page, '30天')
-  await waitForText(page, 'mimo-v2-omni')
-  await waitForText(page, 'deepseek-v4-flash')
-  if (process.env.DASHBOARD_SMOKE_DEBUG_TOKEN_STATS) {
-    const tokenStatsDebug = await page.evaluate(() => {
-      const rows = [...document.querySelectorAll('.distribution-table tbody tr')]
-      const trendPoints = [...document.querySelectorAll('.trend-point')]
-      const chartLabels = [...document.querySelectorAll('.chart-axis text')].map(el => el.textContent.trim())
-      const rowText = rows.map(row => row.innerText).join('\n')
-      const pointTitles = [...document.querySelectorAll('.trend-point title')].map(el => el.textContent.trim())
-      const colors = rows.map(row => getComputedStyle(row.querySelector('.model-dot')).backgroundColor)
-      return {
-        rows: rows.length,
-        trendPoints: trendPoints.length,
-        chartLabels,
-        rowText,
-        pointTitles,
-      unknownModelRows: rows.filter(row => row.innerText.includes('未分模型（历史数据）')).length,
-        uniqueColors: Array.from(new Set(colors)),
-        donutBackground: getComputedStyle(document.querySelector('.donut-wrap')).backgroundImage,
-      }
-    })
-    console.log('[dashboard-smoke token-stats]', JSON.stringify(tokenStatsDebug, null, 2))
-  }
-  await page.waitForFunction((expectedFirstChartLabel) => {
-    const text = document.body.innerText
-    if (text.includes('[object Object]')) return false
-    if (text.includes('"key"') || text.includes('"label"')) return false
-    const rows = [...document.querySelectorAll('.distribution-table tbody tr')]
-    const trendPoints = [...document.querySelectorAll('.trend-point')]
-    const chartLabels = [...document.querySelectorAll('.chart-axis text')].map(el => el.textContent.trim())
-    const rowText = rows.map(row => row.innerText).join('\n')
-    const pointTitles = [...document.querySelectorAll('.trend-point title')].map(el => el.textContent.trim()).join('\n')
-    const unknownModelRows = rows.filter(row => row.innerText.includes('未分模型（历史数据）'))
-    const colors = rows.map(row => getComputedStyle(row.querySelector('.model-dot')).backgroundColor)
-    const uniqueColors = new Set(colors)
-    const cacheHitPoints = [...document.querySelectorAll('.trend-point title')].filter(el => el.textContent.includes('Cache Hit Rate'))
-    return rows.length >= 10
-      && trendPoints.length >= 10
-      && rowText.includes('604.0M')
-      && rowText.includes('未分模型（历史数据）')
-      && unknownModelRows.length === 1
-      && rowText.includes('mock-extra-model-10')
-      && pointTitles.includes('196.0M')
-      && cacheHitPoints.length === 0
-      && uniqueColors.size >= Math.min(8, colors.length)
-      && chartLabels.includes(expectedFirstChartLabel)
-      && getComputedStyle(document.querySelector('.donut-wrap')).backgroundImage.includes('conic-gradient')
-  }, { timeout: 8000 }, chartDate(addDays(todayShanghaiDate(), -3)))
-  await clickText(page, '今天')
-  await page.waitForFunction(() => {
-    const text = document.body.innerText || ''
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' })
-      .formatToParts(new Date())
-      .reduce((acc, item) => { acc[item.type] = item.value; return acc }, {})
-    const todayText = `${today.year}-${today.month}-${today.day}`
-    return text.includes(`今天 ${todayText}`)
-      && text.includes('75.2M')
-      && text.includes('mock-extra-model-10')
-      && document.querySelectorAll('.distribution-table tbody tr').length >= 9
-      && document.querySelectorAll('.trend-point').length >= 3
-      && ![...document.querySelectorAll('.trend-point title')].some(el => el.textContent.includes('Cache Hit Rate'))
-  }, { timeout: 8000 })
-  await clickText(page, '30天')
-  await page.waitForFunction(() => {
-    const text = document.body.innerText || ''
-    const labels = [...document.querySelectorAll('.chart-axis text')].map(el => el.textContent.trim())
-    return document.querySelectorAll('.distribution-table tbody tr').length >= 3
-      && labels.length >= 4
-      && [...document.querySelectorAll('.distribution-table tbody tr')].filter(row => row.innerText.includes('未分模型（历史数据）')).length === 1
-  }, { timeout: 8000 })
-  await clickText(page, '编辑')
-  await typePlaceholder(page, '输入新的 ai-deepseek-key.txt', 'local-smoke-placeholder')
-  await clickText(page, '保存')
-  await waitForText(page, 'Key 已更新并热加载')
 
   await clickSidebarTab(page, '黑白名单')
   await waitForText(page, '黑白名单管理')

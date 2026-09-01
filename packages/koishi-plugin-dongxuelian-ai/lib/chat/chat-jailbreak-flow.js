@@ -53,7 +53,7 @@ async function chatJailbreak(session, userText, ctx, options = {}) {
             messages.push({ role: 'system', content: currentSystemPrompt });
         messages.push({ role: 'system', content: jailbreakSystemPrompt });
         messages.push({ role: 'user', content: `越狱消息原文：${userText.slice(0, 200)}` });
-        const replyObj = await requestChatCompletions(messages, config, { max_tokens: 60, _fallbackSet: 'lightweight' });
+        const replyObj = await requestChatCompletions(messages, config, { max_tokens: 60 });
         const reply = normalizeChatJailbreakReply(replyObj);
         if (JAILBREAK_OUTPUT_RE.test(reply))
             return pickJailbreakFallbackReply();

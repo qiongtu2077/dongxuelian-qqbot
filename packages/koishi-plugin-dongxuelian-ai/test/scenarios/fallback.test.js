@@ -1,19 +1,30 @@
+'use strict'
+
 const path = require('path')
 const { withScenario } = require('./_setup')
-const { AI_ROOT, createTestDataDir, withDataEnv } = require('../fake/file')
+const { AI_ROOT } = require('../fake/file')
 const { mockFetch } = require('../fake/fetch')
+const { seedCapabilityConfig } = require('../helpers/ai-capability-fixture')
 
-async function withApi(t, queue, fn) {
-  const originalFetch = global.fetch
-  const originalWarn = console.warn
-  await withScenario({}, async () => {
+const TEXT_CHAIN = Object.freeze([
+  { provider: 'deepseek', model: 'deepseek-v4-flash' },
+  { provider: 'openai', model: 'gpt-4o-mini' },
+])
+
+// 在独立数据目录中安装四能力配置，并用队列化 fetch 执行一次运行时测试。
+async function withManagedApi(queue, priorities, fn) {
+  await withScenario({}, async scenario => {
+    seedCapabilityConfig(scenario.data, priorities)
+    const runtime = require(path.join(AI_ROOT, 'lib', 'core', 'runtime-config.js'))
+    runtime.resetConfigCache()
+    const originalFetch = global.fetch
+    const originalWarn = console.warn
     const mocked = mockFetch(queue)
     global.fetch = mocked.fetch
     console.warn = () => {}
     try {
       const api = require(path.join(AI_ROOT, 'lib', 'core', 'api.js'))
-      const constants = require(path.join(AI_ROOT, 'lib', 'core', 'constants.js'))
-      await fn(api, constants, mocked)
+      await fn(api, mocked, scenario)
     } finally {
       global.fetch = originalFetch
       console.warn = originalWarn
@@ -21,313 +32,169 @@ async function withApi(t, queue, fn) {
   })
 }
 
-function getFallbackStep(api, index) {
-  const fb = api.getFallbackSteps()
-  return (fb.chat || [])[index - 1]
+// 以文字能力发起托管调用，传入的直连字段故意与能力链不同以验证链优先。
+function requestManagedText(api, extraBody = {}, tools = null) {
+  return api.requestChatCompletions([
+    { role: 'user', content: 'test' },
+  ], {
+    capability: 'text',
+    provider: 'glm',
+    model: 'must-not-be-retried',
+    baseURL: 'https://example.invalid/v1',
+    apiKey: 'sk-current-secret',
+  }, extraBody, tools)
 }
 
-function clearAiModuleCache() {
-  const root = path.resolve(AI_ROOT) + path.sep
-  for (const key of Object.keys(require.cache)) {
-    const resolved = path.resolve(key)
-    if (resolved === path.resolve(AI_ROOT) || resolved.startsWith(root)) delete require.cache[key]
-  }
+// 读取文本结果，兼容运行时为了工具调用保留的结构化返回类型。
+function readResultText(result) {
+  return typeof result === 'string' ? result : result.content
 }
 
-async function withRuntimeConfigData(options, setup, fn) {
-  const data = createTestDataDir(options)
-  const restoreEnv = withDataEnv(data.dataDir)
-  try {
-    await setup(data)
-    clearAiModuleCache()
-    const runtime = require(path.join(AI_ROOT, 'lib', 'core', 'runtime-config.js'))
-    runtime.resetConfigCache()
-    return await fn(runtime, data)
-  } finally {
-    restoreEnv()
-    data.cleanup()
-    clearAiModuleCache()
-  }
+// 验证一次 OpenAI 兼容请求严格匹配指定优先级步骤。
+function checkOpenAiCall(t, label, call, step, expectedBaseURL) {
+  t.check(`${label} exists`, !!call, JSON.stringify(call || null))
+  if (!call) return
+  t.checkEqual(`${label} model`, call.requestBody?.model, step.model)
+  t.check(`${label} base URL`, call.url.startsWith(expectedBaseURL), call.url)
 }
 
-function checkFallbackCallMatchesStep(t, label, call, step, constants) {
-  t.check(`${label} call exists`, !!call, JSON.stringify(call || null))
-  t.check(`${label} step exists`, !!step, JSON.stringify(step || null))
-  if (!call || !step) return
-  const provider = constants.PROVIDERS[step.provider]
-  t.check(`${label} provider known`, !!provider, JSON.stringify(step))
-  t.checkEqual(`${label} model follows fallback step`, call.requestBody && call.requestBody.model, step.model)
-  if (provider) {
-    t.check(`${label} baseURL follows fallback provider`, call.url.startsWith(provider.baseURL), call.url)
-  }
-}
-
-function checkManagedThinkingDisabled(t, label, requestBody, step) {
-  if (!requestBody || !step) {
-    t.check(label, false, JSON.stringify({ requestBody, step }))
-    return
-  }
-  const provider = String(step.provider || '').toLowerCase()
-  const model = String(step.model || '').toLowerCase()
-  if (provider === 'dashscope' || provider === 'deepseek' || model.includes('deepseek')) {
-    t.checkEqual(label, requestBody.enable_thinking, false)
-    return
-  }
-  t.skip(label, `no disabled-thinking assertion for provider=${step.provider} model=${step.model}`)
-}
-
-// 真实失败输入复现：模型在 MAX_ROUNDS(5) 轮内每轮都返回 tool_calls、从不返回纯文本，
-// 旧逻辑会让 engine 返回空 reply，下游显示“(Agent 未获取到有效回复)”。
-// 修复后：轮次耗尽且已有工具结果时，强制做一次「禁用工具」的合成调用，必须产出非空回答。
+// 复现工具轮次耗尽，并确认最终禁用工具的收尾请求仍使用文字能力链。
 async function runRoundExhaustionSynthesis(t) {
   const toolCallResponse = {
     json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-time', type: 'function', function: { name: 'get_current_time', arguments: '{}' } }] } }] },
   }
-  await withScenario({}, async () => {
-    const originalFetch = global.fetch
-    const originalWarn = console.warn
-    // 5 轮全部要求调用工具（永不收口），第 6 次是收尾合成调用，返回最终文本。
-    const mocked = mockFetch([
-      toolCallResponse,
-      toolCallResponse,
-      toolCallResponse,
-      toolCallResponse,
-      toolCallResponse,
-      { json: { choices: [{ message: { content: '现在是中午12点整（基于已查询到的时间结果）。' } }] } },
-    ])
-    global.fetch = mocked.fetch
-    console.warn = () => {}
+  await withManagedApi([
+    toolCallResponse,
+    toolCallResponse,
+    toolCallResponse,
+    toolCallResponse,
+    toolCallResponse,
+    { json: { choices: [{ message: { content: '现在是中午12点整（基于已查询到的时间结果）。' } }] } },
+  ], { text: [{ provider: 'opencode', model: 'deepseek-v4-flash' }] }, async (_api, mocked) => {
+    const engine = require(path.join(AI_ROOT, 'lib', 'agent', 'engine.js'))
+    const result = await engine.run({
+      userMessage: '现在几点了',
+      userName: '验证测试',
+      userId: 'u-round-exhaust',
+      channelKey: 'g-round-exhaust',
+      channel: 'qq',
+      agentMode: true,
+    })
+    t.check('round-exhaustion synthesis produces non-empty reply', typeof result.reply === 'string' && result.reply.trim().length > 0, JSON.stringify(result))
+    t.check('round-exhaustion synthesis returns final text', result.reply.includes('现在是中午12点整') && !result.reply.includes('未获取到有效回复'), result.reply)
+    t.checkEqual('round-exhaustion uses MAX_ROUNDS plus synthesis', mocked.calls.length, 6)
+    t.check('round-exhaustion synthesis disables tools', !mocked.calls[5]?.requestBody?.tools?.length, JSON.stringify(mocked.calls[5]?.requestBody || null))
+    t.check('round-exhaustion earlier rounds expose tools', mocked.calls[0]?.requestBody?.tools?.length > 0, JSON.stringify(mocked.calls[0]?.requestBody || null))
+  })
+}
+
+// 验证所有被允许的失败类别都会按顺序进入下一模型，且不会重试调用方原模型。
+async function runRetryableFailureCases(t) {
+  const cases = [
+    ['HTTP 401', { status: 401, text: 'secret auth body' }],
+    ['HTTP 429', { status: 429, text: 'secret rate body' }],
+    ['HTTP 500', { status: 500, text: 'secret server body' }],
+    ['network', { error: new Error('network detail') }],
+    ['timeout', { abortError: true }],
+    ['invalid JSON', { invalidJson: true, text: '<html>secret</html>' }],
+    ['empty result', { json: { choices: [{ message: { content: '', reasoning_content: 'private reasoning' } }] } }],
+  ]
+  for (const [label, failure] of cases) {
+    await withManagedApi([
+      failure,
+      { json: { choices: [{ message: { content: `${label}-fallback-ok` } }] } },
+    ], { text: TEXT_CHAIN }, async (api, mocked) => {
+      const result = await requestManagedText(api)
+      t.checkEqual(`${label} falls back`, readResultText(result), `${label}-fallback-ok`)
+      t.checkEqual(`${label} makes exactly two managed calls`, mocked.calls.length, 2)
+      checkOpenAiCall(t, `${label} first step`, mocked.calls[0], TEXT_CHAIN[0], 'https://api.deepseek.com')
+      checkOpenAiCall(t, `${label} second step`, mocked.calls[1], TEXT_CHAIN[1], 'https://api.openai.com/v1')
+      t.check(`${label} never retries caller model`, mocked.calls.every(call => call.requestBody?.model !== 'must-not-be-retried'), JSON.stringify(mocked.calls.map(call => call.requestBody?.model)))
+    })
+  }
+}
+
+// 验证非重试错误立即终止，并且异常不包含 Key 或上游正文。
+async function runNonRetryableFailureCase(t) {
+  await withManagedApi([
+    { status: 400, text: 'sensitive bad request body' },
+    { json: { choices: [{ message: { content: 'must-not-run' } }] } },
+  ], { text: TEXT_CHAIN }, async (api, mocked) => {
     try {
-      const engine = require(path.join(AI_ROOT, 'lib', 'agent', 'engine.js'))
-      const result = await engine.run({
-        userMessage: '现在几点了',
-        userName: '验证测试',
-        userId: 'u-round-exhaust',
-        channelKey: 'g-round-exhaust',
-        channel: 'qq',
-        agentMode: true,
-      })
-      t.check('round-exhaustion synthesis produces non-empty reply', typeof result.reply === 'string' && result.reply.trim().length > 0, JSON.stringify({ reply: result.reply, toolCalls: result.toolCalls }))
-      t.check('round-exhaustion synthesis returns synthesized text not placeholder', result.reply.includes('现在是中午12点整') && !result.reply.includes('未获取到有效回复'), result.reply)
-      t.checkEqual('round-exhaustion ran exactly MAX_ROUNDS + 1 synthesis calls', mocked.calls.length, 6)
-      const synthCall = mocked.calls[5]
-      t.check('round-exhaustion synthesis call disables tools', synthCall && (!synthCall.requestBody.tools || synthCall.requestBody.tools.length === 0), JSON.stringify(synthCall ? Object.keys(synthCall.requestBody) : null))
-      t.check('round-exhaustion earlier rounds did expose tools', Array.isArray(mocked.calls[0].requestBody.tools) && mocked.calls[0].requestBody.tools.length > 0, JSON.stringify(Object.keys(mocked.calls[0].requestBody)))
-    } finally {
-      global.fetch = originalFetch
-      console.warn = originalWarn
-      delete require.cache[require.resolve(path.join(AI_ROOT, 'lib', 'agent', 'engine.js'))]
+      await requestManagedText(api)
+      t.check('HTTP 400 stops fallback', false, 'did not throw')
+    } catch (error) {
+      const message = String(error?.message || error)
+      t.check('HTTP 400 stops fallback', /HTTP 400/.test(message) && mocked.calls.length === 1, message)
+      t.check('HTTP 400 error is sanitized', !message.includes('sensitive bad request body') && !message.includes('sk-current-secret'), message)
     }
   })
 }
 
-async function run(t) {
-  t.section('scenario: API fallback chain')
-
-  await runRoundExhaustionSynthesis(t)
-
-  await withApi(t, [
-    { status: 429, text: 'rate limited' },
-    { json: { choices: [{ message: { content: 'fallback-ok' } }] } },
-  ], async (api, constants, mocked) => {
-    const result = await api.requestChatCompletions([], {
-      model: 'deepseek-chat',
-      baseURL: 'https://example.invalid/v1',
-      apiKey: 'sk-current',
-      provider: 'deepseek',
-    })
-    const resultText = typeof result === 'string' ? result : result.content
-    t.checkEqual('scenario 429 falls back to next provider result', resultText, 'fallback-ok')
-    checkFallbackCallMatchesStep(t, 'scenario 429 first fallback', mocked.calls[1], getFallbackStep(api, 1), constants)
-  })
-
-  await withApi(t, [
-    { status: 400, text: 'bad request' },
-    { status: 401, text: 'bad key' },
-    { status: 429, text: 'rate limited' },
-    { json: { choices: [{ message: { content: 'third-fallback-ok' } }] } },
-  ], async (api, constants, mocked) => {
-    const result = await api.requestChatCompletions([], {
-      model: 'deepseek-chat',
-      baseURL: 'https://example.invalid/v1',
-      apiKey: 'sk-current',
-      provider: 'deepseek',
-    }, { enable_thinking: false, _thinkingManaged: true, _thinkingEnabled: false, _explicitThinkingKeys: [] })
-    const resultText2 = typeof result === 'string' ? result : result.content
-    t.checkEqual('scenario 400/401/429 chain reaches third fallback response', resultText2, 'third-fallback-ok')
-    const thirdStep = getFallbackStep(api, 3)
-    checkFallbackCallMatchesStep(t, 'scenario third fallback after 400/401/429', mocked.calls[3], thirdStep, constants)
-    checkManagedThinkingDisabled(t, 'scenario third fallback thinking disabled by provider policy', mocked.calls[3] && mocked.calls[3].requestBody, thirdStep)
-  })
-
-  await withApi(t, [
-    { error: new Error('network down') },
-    { json: { choices: [{ message: { content: 'network-fallback-ok' } }] } },
-  ], async (api, constants, mocked) => {
-    const result = await api.requestChatCompletions([], {
-      model: 'deepseek-chat',
-      baseURL: 'https://example.invalid/v1',
-      apiKey: 'sk-current',
-      provider: 'deepseek',
-    })
-    const resultText3 = typeof result === 'string' ? result : result.content
-    t.checkEqual('scenario network error falls back', resultText3, 'network-fallback-ok')
-    checkFallbackCallMatchesStep(t, 'scenario network first fallback', mocked.calls[1], getFallbackStep(api, 1), constants)
-  })
-
-  await withApi(t, [
-    { abortError: true },
-    { json: { choices: [{ message: { content: 'abort-fallback-ok' } }] } },
-  ], async (api) => {
-    const result = await api.requestChatCompletions([], {
-      model: 'deepseek-chat',
-      baseURL: 'https://example.invalid/v1',
-      apiKey: 'sk-current',
-      provider: 'deepseek',
-    })
-    const resultText4 = typeof result === 'string' ? result : result.content
-    t.checkEqual('scenario AbortError falls back', resultText4, 'abort-fallback-ok')
-  })
-
-  await withApi(t, [
-    { invalidJson: true, text: '<html>bad gateway</html>' },
-    { json: { choices: [{ message: { content: 'invalid-json-fallback-ok' } }] } },
-  ], async (api) => {
-    const result = await api.requestChatCompletions([], {
-      model: 'deepseek-chat',
-      baseURL: 'https://example.invalid/v1',
-      apiKey: 'sk-current',
-      provider: 'deepseek',
-    })
-    const resultText5 = typeof result === 'string' ? result : result.content
-    t.checkEqual('scenario invalid JSON falls back', resultText5, 'invalid-json-fallback-ok')
-  })
-
-  await withApi(t, [
-    { json: { choices: [{ message: { content: '', reasoning_content: 'reasoning-secret' } }] } },
-    { json: { choices: [{ message: { content: 'reasoning-fallback-ok' } }] } },
-  ], async (api, constants, mocked) => {
-    const result = await api.requestChatCompletions([], {
-      model: 'deepseek-chat',
-      baseURL: 'https://example.invalid/v1',
-      apiKey: 'sk-current',
-      provider: 'deepseek',
-    }, { enable_thinking: false, _thinkingManaged: true, _thinkingEnabled: false, _explicitThinkingKeys: []     })
-    const resultText6 = typeof result === 'string' ? result : result.content
-    t.checkEqual('scenario reasoning-only falls back', resultText6, 'reasoning-fallback-ok')
-    checkManagedThinkingDisabled(t, 'scenario reasoning-only fallback thinking disabled by provider policy', mocked.calls[1] && mocked.calls[1].requestBody, getFallbackStep(api, 1))
-  })
-
-  await withApi(t, [
-    { status: 500, text: 'server exploded' },
-  ], async (api) => {
+// 验证空优先级不会产生请求，且所有失败步骤都进入通知并保持错误脱敏。
+async function runTerminalFailureCases(t) {
+  await withManagedApi([], { text: [] }, async (api, mocked) => {
     try {
-      await api.requestChatCompletions([], {
-        model: 'deepseek-chat',
-        baseURL: 'https://example.invalid/v1',
-        apiKey: 'sk-current',
-        provider: 'deepseek',
-      })
-      t.check('scenario HTTP 500 throws when not fallbackable', false, 'did not throw')
+      await requestManagedText(api)
+      t.check('empty text priority throws', false, 'did not throw')
     } catch (error) {
-      const msg = String(error && error.message || error)
-      t.check('scenario HTTP 500 throws sanitized HTTP error', /HTTP 500/.test(msg) && !msg.includes('sk-current'), msg)
+      t.checkEqual('empty text priority error', String(error?.message || error), '该能力未配置模型')
+      t.checkEqual('empty text priority sends no upstream request', mocked.calls.length, 0)
     }
   })
 
-  await withApi(t, [
-    { error: new Error('net1') },
-    { error: new Error('net2') },
-    { error: new Error('net3') },
-    { error: new Error('net4') },
-    { error: new Error('net5') },
-    { error: new Error('net6') },
-  ], async (api) => {
+  await withManagedApi([
+    { status: 429, text: 'first sensitive body' },
+    { error: new Error('second network secret') },
+  ], { text: TEXT_CHAIN }, async (api, mocked) => {
+    const notifier = require(path.join(AI_ROOT, 'lib', 'core', 'capability-failure-notifier.js'))
+    const notifications = []
+    notifier.resetCapabilityFailureNotifier()
+    notifier.setCapabilityFailureSender(async (adminId, message) => notifications.push({ adminId, message }))
     try {
-      await api.requestChatCompletions([], {
-        model: 'deepseek-chat',
-        baseURL: 'https://example.invalid/v1',
-        apiKey: 'sk-current',
-        provider: 'deepseek',
-      })
-      t.check('scenario all fallbacks fail throws', false, 'did not throw')
+      await requestManagedText(api)
+      t.check('all managed steps failing throws', false, 'did not throw')
     } catch (error) {
-      const msg = String(error && error.message || error)
-      t.check('scenario all fallbacks fail without key leak', !msg.includes('sk-current'), msg)
-    }
-  })
-
-  await withScenario({}, async (scenario) => {
-    scenario.data.writeText('ai-providers-custom.json', JSON.stringify([{
-      id: 'openai-official',
-      name: 'OpenAI 官方',
-      baseURL: 'https://api.openai.com/v1',
-      keyFile: 'ai-openai-official-key.txt',
-      models: [{ id: 'gpt-4o', vision: true }],
-    }]))
-    scenario.data.writeText('ai-fallback-chains.json', JSON.stringify({
-      chat: [
-        { provider: 'glm', model: 'glm-4.6v-flash', keyFile: 'ai-glm-key.txt' },
-        { provider: 'openai-official', model: 'gpt-4o', keyFile: 'ai-openai-official-key.txt' },
-      ],
-    }))
-    scenario.data.writeText('ai-openai-official-key.txt', 'sk-custom-openai')
-    const originalFetch = global.fetch
-    const mocked = mockFetch([
-      { status: 429, text: 'rate limited' },
-      { status: 429, text: 'fallback rate limited' },
-      { json: { choices: [{ message: { content: 'custom-fallback-ok' } }] } },
-    ])
-    global.fetch = mocked.fetch
-    try {
-      const api = require(path.join(AI_ROOT, 'lib', 'core', 'api.js'))
-      const result = await api.requestChatCompletions([], {
-        model: 'deepseek-chat',
-        baseURL: 'https://example.invalid/v1',
-        apiKey: 'sk-current',
-        provider: 'deepseek',
-      })
-      const resultText = typeof result === 'string' ? result : result.content
-      t.checkEqual('scenario custom provider fallback result', resultText, 'custom-fallback-ok')
-      t.check('scenario custom provider baseURL used', mocked.calls[2].url.startsWith('https://api.openai.com/v1'), mocked.calls[2].url)
-      t.checkEqual('scenario custom provider model used', mocked.calls[2].requestBody.model, 'gpt-4o')
-      const customAuth = mocked.calls[2].options.headers.Authorization || mocked.calls[2].options.headers.authorization
-      t.checkEqual('scenario custom provider key from data dir', customAuth, 'Bearer sk-custom-openai')
+      const message = String(error?.message || error)
+      t.check('all managed steps error is sanitized', !message.includes('secret') && !message.includes('sk-current-secret'), message)
+      t.checkEqual('all managed steps are attempted once', mocked.calls.length, 2)
+      const notifiedModels = new Set(notifications.map(item => item.message.match(/模型：(.+)$/m)?.[1]))
+      t.check('every failed managed step notifies administrators', notifiedModels.has(TEXT_CHAIN[0].model) && notifiedModels.has(TEXT_CHAIN[1].model), JSON.stringify(notifications))
     } finally {
-      global.fetch = originalFetch
+      notifier.resetCapabilityFailureNotifier()
     }
   })
+}
 
-  await withRuntimeConfigData({ provider: 'openai-official', model: '' }, async (data) => {
-    data.writeText('ai-providers-custom.json', JSON.stringify([{
-      id: 'openai-official',
-      name: 'OpenAI official',
-      baseURL: 'https://api.openai.com/v1',
-      keyFile: 'ai-openai-official-key.txt',
-      models: [{ id: 'gpt-4o', vision: true }],
-    }]))
-    data.writeText('ai-openai-official-key.txt', 'sk-official-main')
-  }, async (runtime) => {
-    const config = await runtime.loadConfig(true)
-    t.checkEqual('scenario custom main provider id retained', config.provider, 'openai-official')
-    t.checkEqual('scenario custom main provider model defaults to custom model', config.model, 'gpt-4o')
-    t.checkEqual('scenario custom main provider baseURL used', config.baseURL, 'https://api.openai.com/v1')
-    t.checkEqual('scenario custom main provider uses own key file', config.apiKey, 'sk-official-main')
+// 验证公开回退视图只含四能力，返回副本且能力间完全隔离。
+async function runCapabilityIsolation(t) {
+  const priorities = {
+    text: [{ provider: 'deepseek', model: 'deepseek-v4-flash' }],
+    vision: [{ provider: 'openai', model: 'gpt-4o' }],
+    'voice-asr': [{ provider: 'openai', model: 'gpt-4o-transcribe' }],
+    'voice-tts': [{ provider: 'mimorium', model: 'mimo-v2.5-tts' }],
+  }
+  await withManagedApi([], priorities, async api => {
+    const steps = api.getFallbackSteps()
+    t.checkEqual('fallback view exposes four capabilities', Object.keys(steps).sort().join(','), 'text,vision,voice-asr,voice-tts')
+    t.checkEqual('text chain remains isolated', steps.text[0]?.model, 'deepseek-v4-flash')
+    t.checkEqual('vision chain remains isolated', steps.vision[0]?.model, 'gpt-4o')
+    t.checkEqual('ASR chain remains isolated', steps['voice-asr'][0]?.model, 'gpt-4o-transcribe')
+    t.checkEqual('TTS chain remains isolated', steps['voice-tts'][0]?.model, 'mimo-v2.5-tts')
+    t.check('fallback view does not expose key material', !JSON.stringify(steps).includes('apiKey') && !JSON.stringify(steps).includes('keyFile'), JSON.stringify(steps))
+    steps.text[0].model = 'mutated'
+    t.checkEqual('fallback view returns copies', api.getFallbackSteps().text[0]?.model, 'deepseek-v4-flash')
   })
+}
 
-  await withRuntimeConfigData({ provider: 'openai-official', apiKey: 'sk-legacy-opencode' }, async (data) => {
-    data.writeText('ai-providers-custom.json', JSON.stringify([{
-      id: 'openai-official',
-      name: 'OpenAI official',
-      baseURL: 'https://api.openai.com/v1',
-      keyFile: 'ai-openai-official-key.txt',
-      models: [{ id: 'gpt-4o-mini', vision: true }],
-    }]))
-    data.writeText('ai-openai-official-key.txt', '')
-  }, async (runtime) => {
-    const config = await runtime.loadConfig(true)
-    t.checkEqual('scenario custom main provider empty key does not reuse legacy key', config.apiKey, '')
-  })
+// 运行四能力优先级场景测试。
+async function run(t) {
+  t.section('scenario: managed capability fallback')
+  await runRoundExhaustionSynthesis(t)
+  await runRetryableFailureCases(t)
+  await runNonRetryableFailureCase(t)
+  await runTerminalFailureCases(t)
+  await runCapabilityIsolation(t)
 }
 
 module.exports = { run }

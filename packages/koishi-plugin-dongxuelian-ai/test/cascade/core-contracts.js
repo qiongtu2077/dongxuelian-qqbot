@@ -306,10 +306,10 @@ async function runCoreContracts(context) {
       },
     })
     try {
-      const reasoningResult = await api.requestChatCompletions([], { baseURL: 'https://example.invalid/v1', apiKey: 'k', model: 'm', _fallbackTried: 4 })
-      check('chat completions returns reasoning when fallback exhausted', typeof reasoningResult.reasoning === 'string' && reasoningResult.reasoning.length > 0 && reasoningResult.content === '')
+      await api.requestChatCompletions([], { baseURL: 'https://example.invalid/v1', apiKey: 'k', model: 'm' })
+      check('chat completions rejects reasoning-only empty result', false, 'did not throw')
     } catch (error) {
-      check('chat completions should not throw on reasoning-only after fallback', false, error.message || String(error))
+      check('chat completions rejects reasoning-only empty result', /空结果/.test(String(error && error.message || error)))
     }
 
     const toolDefs = [{ type: 'function', function: { name: 'get_current_time', parameters: { type: 'object', properties: {} } } }]
@@ -323,177 +323,68 @@ async function runCoreContracts(context) {
     checkEqual('chat completions returns tool calls before content fallback', toolCallResult.type, 'tool_calls')
     checkEqual('chat completions preserves tool call name', toolCallResult.tool_calls[0].function.name, 'get_current_time')
 
-    const fallbackToolBodies = []
+    const directFailureBodies = []
     global.fetch = async (url, options = {}) => {
-      fallbackToolBodies.push(JSON.parse(options.body || '{}'))
-      if (fallbackToolBodies.length === 1) {
-        return {
-          ok: true,
-          async json() {
-            return { choices: [{ message: { content: '', reasoning_content: '内部推理不能外发' } }] }
-          },
-        }
-      }
-      return {
-        ok: true,
-        async json() {
-          return { choices: [{ message: { tool_calls: [{ id: 'tc2', type: 'function', function: { name: 'calculate', arguments: '{"expression":"1+1"}' } }] } }] }
-        },
-      }
+      directFailureBodies.push(JSON.parse(options.body || '{}'))
+      return { ok: false, status: 401 }
     }
-    const fallbackToolResult = await api.requestChatCompletions([], { baseURL: 'https://example.invalid/v1', apiKey: 'k', model: 'm' }, {}, toolDefs)
-    checkEqual('chat completions fallback preserves tool calls', fallbackToolResult.type, 'tool_calls')
-    check('chat completions fallback request keeps tools', Array.isArray(fallbackToolBodies[1] && fallbackToolBodies[1].tools) && fallbackToolBodies[1].tools.length === 1)
-
-    const fallbackBodies = []
-    global.fetch = async (url, options = {}) => {
-      fallbackBodies.push(JSON.parse(options.body || '{}'))
-      if (fallbackBodies.length === 1) {
-        return { ok: false, status: 401, async text() { return 'unauthorized' } }
-      }
-      return {
-        ok: true,
-        async json() {
-          return { choices: [{ message: { content: 'ok' } }] }
-        },
-      }
+    try {
+      await api.requestChatCompletions([], { baseURL: 'https://example.invalid/v1', apiKey: 'k', model: 'm' }, {}, toolDefs)
+      check('direct config does not enter hidden fallback', false, 'did not throw')
+    } catch (error) {
+      check('direct config does not enter hidden fallback', directFailureBodies.length === 1 && /HTTP 401/.test(String(error && error.message || error)))
     }
-    const managedFallback = await api.requestChatCompletions(
-      [],
-      { baseURL: 'https://example.invalid/v1', apiKey: 'k', model: 'deepseek-chat' },
-      { enable_thinking: false, _thinkingManaged: true, _thinkingEnabled: false, _explicitThinkingKeys: [] }
-    )
-    checkEqual('chat completions fallback returns after managed thinking rebuild', typeof managedFallback === 'string' ? managedFallback : managedFallback.content, 'ok')
-    check('chat completions fallback rebuilds dashscope thinking disable', fallbackBodies[1] && fallbackBodies[1].enable_thinking === undefined)
-
-    const explicitFallbackBodies = []
-    global.fetch = async (url, options = {}) => {
-      explicitFallbackBodies.push(JSON.parse(options.body || '{}'))
-      if (explicitFallbackBodies.length === 1) {
-        return { ok: false, status: 401, async text() { return 'unauthorized' } }
-      }
-      return {
-        ok: true,
-        async json() {
-          return { choices: [{ message: { content: 'ok' } }] }
-        },
-      }
-    }
-    await api.requestChatCompletions(
-      [],
-      { baseURL: 'https://example.invalid/v1', apiKey: 'k', model: 'deepseek-chat' },
-      { enable_thinking: true, _thinkingManaged: true, _thinkingEnabled: false, _explicitThinkingKeys: ['enable_thinking'] }
-    )
-    checkEqual('chat completions fallback preserves explicit thinking override', explicitFallbackBodies[1] && explicitFallbackBodies[1].enable_thinking, true)
   } finally {
     global.fetch = originalFetch
     console.warn = originalWarn
   }
 
   const fallbackSteps = api.getFallbackSteps()
-  check('fallback steps are configured', typeof fallbackSteps === 'object' && fallbackSteps.chat && fallbackSteps.chat.length > 0)
+  checkEqual('fallback view exposes only four capabilities', Object.keys(fallbackSteps).sort().join(','), 'text,vision,voice-asr,voice-tts')
+  check('text capability steps are configured', Array.isArray(fallbackSteps.text) && fallbackSteps.text.length > 0)
   const fallbackKeys = new Set()
-  for (const group of ['chat', 'vision', 'lightweight']) {
+  for (const group of ['text', 'vision', 'voice-asr', 'voice-tts']) {
     const steps = fallbackSteps[group]
-    if (!steps) continue
     for (let si = 0; si < steps.length; si++) {
       const step = steps[si]
       check(`fallback step ${group}[${si}] provider known`, !!(step && c.PROVIDERS[step.provider]), JSON.stringify(step))
       check(`fallback step ${group}[${si}] model configured`, !!(step && step.model && typeof step.model === 'string'), JSON.stringify(step))
-      check(`fallback step ${group}[${si}] key file shape`, !step.keyFile || (typeof step.keyFile === 'string' && path.basename(step.keyFile).endsWith('.txt')), JSON.stringify(step))
-      const key = `${group}:${step.provider}:${step.model}:${step.keyFile || ''}`
+      check(`fallback step ${group}[${si}] hides key material`, !Object.prototype.hasOwnProperty.call(step, 'apiKey') && !Object.prototype.hasOwnProperty.call(step, 'keyFile'), JSON.stringify(step))
+      const key = `${group}:${step.provider}:${step.model}`
       check(`fallback step ${group}[${si}] unique`, !fallbackKeys.has(key), key)
       fallbackKeys.add(key)
     }
   }
-  const originalFirstFallbackModel = api.getFallbackSteps().chat[0] && api.getFallbackSteps().chat[0].model
-  fallbackSteps.chat[0].model = 'mutated'
-  checkEqual('getFallbackSteps returns copies', api.getFallbackSteps().chat[0] && api.getFallbackSteps().chat[0].model, originalFirstFallbackModel)
+  const originalFirstFallbackModel = api.getFallbackSteps().text[0] && api.getFallbackSteps().text[0].model
+  fallbackSteps.text[0].model = 'mutated'
+  checkEqual('getFallbackSteps returns copies', api.getFallbackSteps().text[0] && api.getFallbackSteps().text[0].model, originalFirstFallbackModel)
 
-  const baseConfig = { provider: 'opencode', model: 'glm-5', baseURL: 'https://example.invalid/v1', apiKey: 'current-key' }
-  const chatSteps = api.getFallbackSteps().chat || []
-  const firstFallbackStep = chatSteps[0]
-  const fb1 = await api.buildFallbackConfig(baseConfig, 1, 'chat')
-  checkEqual('fallback step 1 provider follows configured step', fb1 && fb1.provider, firstFallbackStep && firstFallbackStep.provider)
-  checkEqual('fallback step 1 model follows configured step', fb1 && fb1.model, firstFallbackStep && firstFallbackStep.model)
-  checkEqual('fallback step 1 baseURL follows provider', fb1 && fb1.baseURL, firstFallbackStep && c.PROVIDERS[firstFallbackStep.provider].baseURL)
-  check('fallback step 1 resolves an api key', !!(fb1 && fb1.apiKey))
-  const noKeyStepIdx = chatSteps.findIndex(function(s) { return !s.keyFile })
-  if (noKeyStepIdx >= 0) {
-    const currentKeyFallback = await api.buildFallbackConfig(baseConfig, noKeyStepIdx + 1, 'chat')
-    checkEqual('fallback step without keyFile keeps current key', currentKeyFallback && currentKeyFallback.apiKey, 'current-key')
-  } else {
-    skip('fallback step without keyFile keeps current key', 'no fallback step without keyFile is configured')
+  const capabilityConfigFile = path.join(c.DATA_DIR, 'ai-capability-config.json')
+  const originalCapabilityConfig = fs.readFileSync(capabilityConfigFile)
+  const { createCapabilityConfig } = require(path.join(TEST_ROOT, 'helpers', 'ai-capability-fixture'))
+  fs.writeFileSync(capabilityConfigFile, JSON.stringify(createCapabilityConfig({
+    text: [
+      { provider: 'opencode', model: 'deepseek-v4-flash' },
+      { provider: 'opencode', model: 'deepseek-v4-pro' },
+    ],
+  })))
+  try {
+    const textSteps = api.getFallbackSteps().text || []
+    const currentStep = textSteps[0]
+    const nextStep = textSteps[1]
+    const fb1 = await api.buildFallbackConfig(currentStep, 1, 'text')
+    checkEqual('fallback step 1 provider follows next configured step', fb1 && fb1.provider, nextStep && nextStep.provider)
+    checkEqual('fallback step 1 model follows next configured step', fb1 && fb1.model, nextStep && nextStep.model)
+    checkEqual('fallback step 1 baseURL follows provider', fb1 && fb1.baseURL, nextStep && c.PROVIDERS[nextStep.provider].baseURL)
+    check('fallback step 1 resolves an api key', !!(fb1 && fb1.apiKey))
+    checkEqual('legacy chat fallback set is rejected', await api.buildFallbackConfig(currentStep, 1, 'chat'), null)
+    checkEqual('fallback after last step missing', await api.buildFallbackConfig(currentStep, textSteps.length, 'text'), null)
+  } finally {
+    fs.writeFileSync(capabilityConfigFile, originalCapabilityConfig)
   }
-  checkEqual('fallback after last step missing', await api.buildFallbackConfig(baseConfig, chatSteps.length + 1, 'chat'), null)
   check('vision model detects qwen', api.isVisionModel('dashscope', 'qwen3.5-omni-flash'))
   check('vision model detects glm', api.isVisionModel('glm', 'glm-4.6v-flash'))
   check('vision model rejects plain deepseek', !api.isVisionModel('deepseek', 'deepseek-chat'))
-  const originalRuntimeDataDir = process.env.DONGXUELIAN_AI_DATA_DIR
-  const runtimeTmpRoot = path.join(ROOT, 'tmp')
-  fs.mkdirSync(runtimeTmpRoot, { recursive: true })
-  const runtimeTmp = fs.mkdtempSync(path.join(runtimeTmpRoot, 'cascade-runtime-'))
-  try {
-    process.env.DONGXUELIAN_AI_DATA_DIR = runtimeTmp
-    for (const rel of ['core/constants', 'core/provider-registry', 'core/runtime-config', 'core/api']) {
-      delete require.cache[require.resolve(path.join(LIB, rel))]
-    }
-    const runtimeConstants = require(path.join(LIB, 'core', 'constants'))
-    const runtimeConfig = require(path.join(LIB, 'core', 'runtime-config'))
-    const runtimeApi = require(path.join(LIB, 'core', 'api'))
-    fs.writeFileSync(runtimeConstants.KEY_FILE, 'sk-generic-openai-key', 'utf8')
-    fs.writeFileSync(runtimeConstants.PROVIDER_FILE, 'auditcustom', 'utf8')
-    fs.writeFileSync(runtimeConstants.MODEL_FILE, '', 'utf8')
-    fs.writeFileSync(runtimeConstants.BASE_URL_FILE, '', 'utf8')
-    fs.writeFileSync(runtimeConstants.CUSTOM_PROVIDERS_FILE, JSON.stringify([
-      {
-        id: 'auditcustom',
-        name: 'Audit Custom',
-        baseURL: 'https://custom.example.invalid/v1',
-        keyFile: path.join(runtimeTmp, 'custom-key.txt'),
-        models: [{ id: 'audit-model', vision: true }],
-      },
-    ], null, 2), 'utf8')
-    fs.writeFileSync(path.join(runtimeTmp, 'custom-key.txt'), 'sk-custom-provider-key', 'utf8')
-    runtimeConfig.resetConfigCache()
-    const customRuntimeConfig = await runtimeConfig.loadConfig(true)
-    checkEqual('L37 runtime config uses custom provider baseURL', customRuntimeConfig.baseURL, 'https://custom.example.invalid/v1')
-    checkEqual('L37 runtime config uses custom provider default model', customRuntimeConfig.model, 'audit-model')
-    checkEqual('L37 runtime config uses custom provider key file', customRuntimeConfig.apiKey, 'sk-custom-provider-key')
-    check('L37 custom provider vision stays aligned with runtime config', runtimeApi.isVisionModel(customRuntimeConfig.provider, customRuntimeConfig.model))
-
-    fs.writeFileSync(runtimeConstants.CUSTOM_PROVIDERS_FILE, JSON.stringify([
-      {
-        id: 'auditcustom',
-        name: 'Audit Custom',
-        baseURL: 'https://custom-updated.example.invalid/v1',
-        keyFile: path.join(runtimeTmp, 'custom-key-updated.txt'),
-        models: [{ id: 'audit-model-updated', vision: true }],
-      },
-    ], null, 2), 'utf8')
-    fs.writeFileSync(path.join(runtimeTmp, 'custom-key-updated.txt'), 'sk-custom-provider-key-updated', 'utf8')
-    runtimeConfig.resetConfigCache()
-    const refreshedRuntimeConfig = await runtimeConfig.loadConfig(true)
-    checkEqual('L37 runtime config hot reloads updated custom baseURL', refreshedRuntimeConfig.baseURL, 'https://custom-updated.example.invalid/v1')
-    checkEqual('L37 runtime config hot reloads updated custom model', refreshedRuntimeConfig.model, 'audit-model-updated')
-    checkEqual('L37 runtime config hot reloads updated custom key file', refreshedRuntimeConfig.apiKey, 'sk-custom-provider-key-updated')
-
-    fs.writeFileSync(runtimeConstants.CUSTOM_PROVIDERS_FILE, JSON.stringify([], null, 2), 'utf8')
-    runtimeConfig.resetConfigCache()
-    try {
-      await runtimeConfig.loadConfig(true)
-      check('L37 deleted custom provider fails explicitly', false, 'loadConfig unexpectedly succeeded')
-    } catch (error) {
-      check('L37 deleted custom provider fails explicitly', /Unknown AI provider: auditcustom/.test(String(error && error.message || error)))
-    }
-  } finally {
-    if (originalRuntimeDataDir === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
-    else process.env.DONGXUELIAN_AI_DATA_DIR = originalRuntimeDataDir
-    for (const rel of ['core/constants', 'core/provider-registry', 'core/runtime-config', 'core/api']) {
-      delete require.cache[require.resolve(path.join(LIB, rel))]
-    }
-    try { fs.rmSync(runtimeTmp, { recursive: true, force: true }) } catch {}
-  }
 
 }
 

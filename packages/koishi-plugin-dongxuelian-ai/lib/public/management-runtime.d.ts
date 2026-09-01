@@ -5,6 +5,8 @@
  */
 export interface ManagementModuleMap {
     'core.api': typeof import('../core/api');
+    'core.aiCapabilityConfig': typeof import('../core/ai-capability-config');
+    'core.modelDiscovery': typeof import('../core/model-discovery');
     'core.constants': typeof import('../core/constants');
     'core.conversation': typeof import('../conversation');
     'core.frontmatter': typeof import('../core/frontmatter');

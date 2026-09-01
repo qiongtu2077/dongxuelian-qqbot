@@ -3,6 +3,7 @@ const { withScenario } = require('./_setup')
 const { AI_ROOT } = require('../fake/file')
 const { mockFetch } = require('../fake/fetch')
 const { checkSentIncludes, checkSentNonEmpty, checkSentExcludes, checkNoLeak } = require('../helpers/assert')
+const { createCapabilityConfig } = require('../helpers/ai-capability-fixture')
 const { flushAsync } = require('../fake/koishi')
 
 const INCIDENT_SAMPLE = [
@@ -140,38 +141,28 @@ async function run(t) {
     waitFor: message => String(message).includes('final-visible'),
   })
 
-  await runChatCase(t, 'custom provider main runtime config drives chat request', [
-    { json: { choices: [{ message: { content: 'custom-provider-ok' } }] } },
+  await runChatCase(t, 'whitelist provider capability config drives chat request', [
+    { json: { choices: [{ message: { content: 'whitelist-provider-ok' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario custom provider sends reply', result, 'custom-provider-ok')
+    checkSentIncludes(t, 'scenario whitelist provider sends reply', result, 'whitelist-provider-ok')
     const firstCall = calls[0] || mocked.calls[0] || {}
     const requestHeaders = firstCall.options && firstCall.options.headers || {}
-    t.check('scenario custom provider uses custom baseURL', String(firstCall.url || '').startsWith('https://custom.example.invalid/v1/'), String(firstCall.url || ''))
-    t.checkEqual('scenario custom provider uses default custom model when ai-model empty', firstCall.requestBody && firstCall.requestBody.model, 'audit-model')
-    t.checkEqual('scenario custom provider uses custom key file authorization', requestHeaders.Authorization, 'Bearer sk-custom-provider-key')
+    t.check('scenario whitelist provider uses catalog baseURL', String(firstCall.url || '').startsWith('https://api.openai.com/v1/'), String(firstCall.url || ''))
+    t.checkEqual('scenario whitelist provider uses capability model', firstCall.requestBody && firstCall.requestBody.model, 'gpt-4o')
+    t.checkEqual('scenario whitelist provider uses fixed key slot', requestHeaders.Authorization, 'Bearer sk-openai-whitelist-key')
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const history = conversation.getConversationHistory(session)
-    t.check('scenario custom provider still records assistant reply', history.some(item => item.role === 'assistant' && String(item.content || '').includes('custom-provider-ok')), JSON.stringify(history))
+    t.check('scenario whitelist provider records assistant reply', history.some(item => item.role === 'assistant' && String(item.content || '').includes('whitelist-provider-ok')), JSON.stringify(history))
   }, {
     input: '你好吗',
     setup(session, { data }) {
-      data.writeText('ai-provider.txt', 'auditcustom')
-      data.writeText('ai-model.txt', '')
-      data.writeText('ai-base-url.txt', '')
-      data.writeText('ai-openai-key.txt', 'sk-generic-openai-key')
-      data.writeText('custom-key.txt', 'sk-custom-provider-key')
-      data.writeJson('ai-providers-custom.json', [
-        {
-          id: 'auditcustom',
-          name: 'Audit Custom',
-          baseURL: 'https://custom.example.invalid/v1',
-          keyFile: data.pathFor('custom-key.txt'),
-          models: [{ id: 'audit-model', name: 'Audit Model', vision: true }],
-        },
-      ])
+      data.writeText('ai-openai-official-key.txt', 'sk-openai-whitelist-key')
+      data.writeJson('ai-capability-config.json', createCapabilityConfig({
+        text: [{ provider: 'openai', model: 'gpt-4o' }],
+      }))
       try { require(path.join(AI_ROOT, 'lib', 'core', 'runtime-config.js')).resetConfigCache() } catch {}
     },
-    waitFor: message => String(message).includes('custom-provider-ok'),
+    waitFor: message => String(message).includes('whitelist-provider-ok'),
   })
 
   await withScenario({}, async ({ harness, makeSession }) => {
@@ -368,17 +359,17 @@ async function run(t) {
     waitFor: message => String(message).includes('不乱搜'),
   })
 
-  await runChatCase(t, 'blocked cold private heavy web_search ignores model-guessed old query', [
+  await runChatCase(t, 'blocked cold heavy web_search stays silent without model-guessed old query', [
     { json: { choices: [{ message: { content: '', tool_calls: [{ id: 'tc-blocked-cold-heavy-search', type: 'function', function: { name: 'web_search', arguments: '{"query":"我的世界搞笑视频"}' } }] } }] } },
     { json: { choices: [{ message: { content: '让我看看…' } }] } },
     { json: { choices: [{ message: { content: '这句隔太久了，我不确定你还在说哪个东西，先不替你乱搜。' } }] } },
   ], async (result, mocked, session, calls) => {
-    checkSentIncludes(t, 'scenario blocked cold heavy web_search sends natural clarification', result, '先不替你乱搜')
+    t.check('scenario blocked cold heavy web_search stays silent', result.sent.length === 0, JSON.stringify(result.sent))
     t.check('scenario blocked cold heavy web_search does not call search tool', !Array.isArray(session._webSearchCalls) || session._webSearchCalls.length === 0, JSON.stringify(session._webSearchCalls || []))
-    t.check('scenario blocked cold heavy web_search does not hand off to Agent', calls.length === 3, `calls=${calls.length}`)
+    t.check('scenario blocked cold heavy web_search does not call a model', calls.length === 0, `calls=${calls.length}`)
   }, {
     input: '帮我找找吧',
-    session: { guildId: '', channelId: 'private-cold-search', userId: 'cold-search-user', isDirect: true },
+    session: { guildId: 'cold-search-group', channelId: 'cold-search-group', isDirect: false },
     setup(session) {
       const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
       conversation.writeConversationDisk(conversation.getConversationKey(session), {
@@ -389,6 +380,7 @@ async function run(t) {
           { role: 'user', content: '我想看我的世界的搞笑视频', ts: Date.now() - 4 * 60 * 60 * 1000, messageId: 'old-search-topic' },
         ],
       })
+      conversation.clearConversationHistory()
       const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
       webSearch.__scenarioOriginalExecute = webSearch.execute
       session._webSearchCalls = []
@@ -397,7 +389,7 @@ async function run(t) {
         return 'SHOULD_NOT_SEARCH'
       }
     },
-    waitFor: message => String(message).includes('先不替你乱搜'),
+    waitFor: null,
   })
   try {
     const webSearch = require(path.join(AI_ROOT, 'lib', 'agent', 'tools', 'web-search.js'))
@@ -1098,6 +1090,15 @@ async function run(t) {
     checkSentExcludes(t, 'scenario reasoning-only is never sent', result, 'reasoning-secret')
     t.check('scenario reasoning-only used fallback request', mocked.calls.length >= 2, `calls=${mocked.calls.length}`)
   }, {
+    setup(session, { data }) {
+      data.writeJson('ai-capability-config.json', createCapabilityConfig({
+        text: [
+          { provider: 'opencode', model: 'deepseek-v4-flash' },
+          { provider: 'deepseek', model: 'deepseek-v4-flash' },
+        ],
+      }))
+      require(path.join(AI_ROOT, 'lib', 'core', 'runtime-config.js')).resetConfigCache()
+    },
     waitFor: message => String(message).includes('fallback-visible'),
   })
 

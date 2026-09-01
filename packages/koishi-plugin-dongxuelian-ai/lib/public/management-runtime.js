@@ -9,6 +9,8 @@ exports.loadManagementModule = loadManagementModule;
 exports.listManagementModules = listManagementModules;
 const MANAGEMENT_MODULE_PATHS = {
     'core.api': '../core/api',
+    'core.aiCapabilityConfig': '../core/ai-capability-config',
+    'core.modelDiscovery': '../core/model-discovery',
     'core.constants': '../core/constants',
     'core.conversation': '../conversation',
     'core.frontmatter': '../core/frontmatter',
