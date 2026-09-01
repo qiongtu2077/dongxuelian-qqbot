@@ -49,7 +49,7 @@ interface TodayCache {
 }
 
 const MAX_CACHE_FILE_BYTES = parsePositiveInt(process.env.DAILY_REPORT_MAX_CACHE_FILE_BYTES, 8 * 1024 * 1024, 512 * 1024, 64 * 1024 * 1024)
-const MAX_ANALYSIS_MESSAGES = parsePositiveInt(process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES, 2000, 200, 10000)
+const MAX_ANALYSIS_MESSAGES = parsePositiveInt(process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES, 4000, 200, 10000)
 const CQ_EMOJI_RE = /\[CQ:(?:face|mface)\b[^\]]*\]/gi
 const XML_EMOJI_RE = /<(?:face|mface)\b[^>]*\/?>/gi
 const TEXT_EMOJI_RE = /【QQ表情[^】]*】/g

@@ -11,7 +11,7 @@ const { createDefaultAnalysisResult, createTopic, createGoldenQuote, createUserT
 const { getErrorMessage } = require('./error-utils');
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils');
 const COMPRESS_BATCH_SIZE = parsePositiveInt(process.env.DAILY_REPORT_COMPRESS_BATCH_SIZE, 100, 20, 200);
-const MAX_COMPRESS_BATCHES = parsePositiveInt(process.env.DAILY_REPORT_MAX_COMPRESS_BATCHES, 20, 1, 60);
+const MAX_COMPRESS_BATCHES = parsePositiveInt(process.env.DAILY_REPORT_MAX_COMPRESS_BATCHES, 40, 1, 60);
 const MAX_COMPRESSED_CHARS = parsePositiveInt(process.env.DAILY_REPORT_MAX_COMPRESSED_CHARS, 12000, 2000, 40000);
 const REPORT_AI_TEMPERATURE = parsePositiveFloat(process.env.DAILY_REPORT_AI_TEMPERATURE, 0.2, 0, 1);
 const REPORT_COMPRESS_TIMEOUT_MS = parsePositiveInt(process.env.DAILY_REPORT_COMPRESS_TIMEOUT_MS, 45000, 5000, 180000);

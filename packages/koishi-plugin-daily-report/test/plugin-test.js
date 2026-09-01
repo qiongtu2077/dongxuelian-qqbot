@@ -1589,6 +1589,20 @@ const dc = require(DATA_COLLECTOR_PATH)
 const emptyResult = dc.collectReportData('nonexistent-group-' + Date.now())
 check('collectReportData returns null for missing cache', emptyResult === null)
 const oldMaxAnalysisMessages = process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES
+delete process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES
+delete require.cache[DATA_COLLECTOR_PATH]
+const defaultCollector = require(DATA_COLLECTOR_PATH)
+const defaultBaseTs = Date.parse('2099-01-01T12:00:00+08:00')
+const defaultLimitMessages = Array.from({ length: 4001 }, (_, index) => ({
+  time: '12:00:00',
+  ts: defaultBaseTs + index,
+  user: '用户A',
+  userId: 'u-a',
+  content: `第${index + 1}条消息`,
+}))
+const defaultLimitData = defaultCollector.processMessages(defaultLimitMessages, '2099-01-01', Date.parse('2099-01-01T23:59:59+08:00'))
+check('processMessages defaults to four thousand analysis messages', defaultLimitData && defaultLimitData.messages.length === 4000 && defaultLimitData.sampledMessages === 4000 && defaultLimitData.truncatedMessages === 1)
+check('processMessages default limit keeps the newest messages', defaultLimitData && defaultLimitData.messages[0].content === '第2条消息')
 process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES = '200'
 delete require.cache[DATA_COLLECTOR_PATH]
 const cappedCollector = require(DATA_COLLECTOR_PATH)
