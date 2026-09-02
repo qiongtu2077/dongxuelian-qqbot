@@ -262,12 +262,14 @@ function assertActivationOrder(log, releaseId) {
   const dashboardInstall = log.indexOf('install-dashboard-service')
   const koishiInstall = log.indexOf('install-koishi-service')
   const restartBot = log.indexOf(`restart-bot:${releaseId}`)
+  const directKoishiRestart = log.indexOf('systemctl:restart lian-koishi')
   const restartDashboard = log.indexOf('systemctl:restart lian-dashboard')
   const firstHealth = log.indexOf(`curl:${releaseId}`)
   const stabilityWait = log.indexOf('sleep:10')
   const secondHealth = log.indexOf(`curl:${releaseId}`, firstHealth + 1)
   assert(dashboardInstall >= 0 && koishiInstall > dashboardInstall, `service installation order is invalid: ${log.join(', ')}`)
   assert(restartBot > koishiInstall && restartDashboard > restartBot, `service restart order is invalid: ${log.join(', ')}`)
+  assert.strictEqual(directKoishiRestart, -1, `normal activation bypassed restart-bot.sh: ${log.join(', ')}`)
   assert(firstHealth > restartDashboard && stabilityWait > firstHealth && secondHealth > stabilityWait, `stability verification order is invalid: ${log.join(', ')}`)
 }
 
@@ -278,6 +280,12 @@ function testActivationScenarios(tempRoot, releases) {
   const oldId = releases.oldRelease.manifest.releaseId
 
   const successApp = prepareVersionedApp(tempRoot, 'activation-success', releases)
+  // The release script is invoked by Bash, so Linux must not require an executable bit.
+  if (process.platform !== 'win32') {
+    const restartScript = path.join(successApp.nextDir, 'scripts', 'restart-bot.sh')
+    fs.chmodSync(restartScript, 0o644)
+    assert.strictEqual(fs.statSync(restartScript).mode & 0o111, 0, 'restart script test fixture unexpectedly remains executable')
+  }
   const success = runActivation(successApp, newId, fakeBin)
   assert.strictEqual(success.status, 0, success.stderr || success.stdout)
   assert.strictEqual(activeReleaseId(successApp.appDir), newId)

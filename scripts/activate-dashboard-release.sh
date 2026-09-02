@@ -109,10 +109,10 @@ NODE
   return 1
 }
 
-# Restarts Koishi through its dedicated service, with a systemd fallback for migration rollback.
+# Runs the release restart script through Bash when readable; falls back to systemd only when unavailable.
 restart_bot_service() {
   restart_script="${1:-$CURRENT_LINK/scripts/restart-bot.sh}"
-  if [ -x "$restart_script" ]; then
+  if [ -f "$restart_script" ] && [ -r "$restart_script" ]; then
     KOISHI_APP_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" bash "$restart_script"
   else
     systemctl restart lian-koishi
