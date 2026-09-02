@@ -86,6 +86,7 @@ function createFakeCommands(root) {
   fs.mkdirSync(binDir, { recursive: true })
   writeExecutable(path.join(binDir, 'node'), fakeNodeScript())
   writeExecutable(path.join(binDir, 'systemctl'), `#!/bin/bash
+printf 'systemctl:%s\\n' "$*" >> "$TEST_APP_DIR/activation-command.log"
 case "\${1:-}" in
   restart)
     current="$(readlink -f "$TEST_APP_DIR/.lian-releases/current" 2>/dev/null || true)"
@@ -97,8 +98,17 @@ esac
   writeExecutable(path.join(binDir, 'curl'), `#!/bin/bash
 manifest="$TEST_APP_DIR/.lian-releases/current/release-manifest.json"
 current="$(readlink -f "$TEST_APP_DIR/.lian-releases/current" 2>/dev/null || true)"
+release_id="$(basename "$current")"
+printf 'curl:%s\\n' "$release_id" >> "$TEST_APP_DIR/activation-command.log"
 if [ "\${FAIL_ALL_HEALTH:-0}" = "1" ]; then exit 22; fi
 if [ -n "\${FAIL_HEALTH_RELEASE_ID:-}" ] && [ "$(basename "$current")" = "$FAIL_HEALTH_RELEASE_ID" ]; then exit 22; fi
+if [ -n "\${FAIL_STABILITY_HEALTH_RELEASE_ID:-}" ] && [ "$release_id" = "$FAIL_STABILITY_HEALTH_RELEASE_ID" ]; then
+  count_file="$TEST_APP_DIR/.health-check-$release_id"
+  count="$(cat "$count_file" 2>/dev/null || printf 0)"
+  count=$((count + 1))
+  printf '%s' "$count" > "$count_file"
+  if [ "$count" -ge 2 ]; then exit 22; fi
+fi
 if [ -f "$manifest" ]; then
   hash="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).manifestHash)" "$manifest")"
   printf '{"ok":true,"dashboard":{"healthy":true},"release":{"manifestHash":"%s"},"bot":{"listening":true},"worker":{"processes":1},"onebot":{"listening":true}}\\n' "$hash"
@@ -107,10 +117,15 @@ else
 fi
 `)
   writeExecutable(path.join(binDir, 'ss'), '#!/bin/bash\nprintf "LISTEN 0 128 127.0.0.1:5140 0.0.0.0:*\\n"\n')
-  writeExecutable(path.join(binDir, 'sleep'), '#!/bin/bash\nexit 0\n')
+  writeExecutable(path.join(binDir, 'sleep'), '#!/bin/bash\nprintf "sleep:%s\\n" "${1:-}" >> "$TEST_APP_DIR/activation-command.log"\nexit 0\n')
   writeExecutable(path.join(binDir, 'bash'), `#!/bin/bash
 case "\${1:-}" in
-  *install-dashboard-service.sh) exit 0 ;;
+  *install-dashboard-service.sh)
+    printf 'install-dashboard-service\\n' >> "$TEST_APP_DIR/activation-command.log"
+    exit 0 ;;
+  *install-koishi-service.sh)
+    printf 'install-koishi-service\\n' >> "$TEST_APP_DIR/activation-command.log"
+    exit 0 ;;
   *install-logrotate.sh)
     if [ "\${FAIL_LOGROTATE:-0}" = "1" ]; then exit 45; fi
     : > "$TEST_APP_DIR/logrotate-installed"
@@ -119,6 +134,7 @@ case "\${1:-}" in
     if [ "\${KOISHI_APP_DIR:-}" != "$TEST_APP_DIR" ]; then exit 46; fi
     if [ "\${DONGXUELIAN_AI_DATA_DIR:-}" != "$TEST_APP_DIR/data" ]; then exit 47; fi
     current="$(readlink -f "$TEST_APP_DIR/.lian-releases/current" 2>/dev/null || true)"
+    printf 'restart-bot:%s\\n' "$(basename "$current")" >> "$TEST_APP_DIR/activation-command.log"
     if [ -n "\${FAIL_BOT_RELEASE_ID:-}" ] && [ "$(basename "$current")" = "$FAIL_BOT_RELEASE_ID" ]; then exit 44; fi
     exit 0 ;;
   *) exec /bin/bash "$@" ;;
@@ -146,6 +162,7 @@ function testReleaseManifest(tempRoot) {
   assert(listed.has('packages/koishi-plugin-dashboard/lib/release.js'))
   assert(listed.has('packages/koishi-plugin-dashboard/frontend/dist/index.html'))
   assert(listed.has('scripts/activate-dashboard-release.sh'))
+  assert(listed.has('scripts/install-koishi-service.sh'))
   for (const packageName of RELEASE_PACKAGES) {
     assert(listed.has(`packages/${packageName}/package.json`), `${packageName} package metadata missing`)
     assert(listed.has(`node_modules/${packageName}/package.json`), `${packageName} runtime copy missing`)
@@ -218,6 +235,7 @@ function runActivation(app, releaseId, fakeBin, failures = {}) {
     `export FAIL_RELEASE_ID=${shellQuote(failures.dashboardReleaseId || '')}`,
     `export FAIL_BOT_RELEASE_ID=${shellQuote(failures.botReleaseId || '')}`,
     `export FAIL_HEALTH_RELEASE_ID=${shellQuote(failures.healthReleaseId || '')}`,
+    `export FAIL_STABILITY_HEALTH_RELEASE_ID=${shellQuote(failures.stabilityHealthReleaseId || '')}`,
     `export FAIL_ALL_HEALTH=${shellQuote(failures.allHealth ? '1' : '0')}`,
     `export FAIL_LOGROTATE=${shellQuote(failures.logrotate ? '1' : '0')}`,
     `export FAIL_SWITCH=${shellQuote(failures.switch ? '1' : '0')}`,
@@ -232,6 +250,25 @@ function activeReleaseId(appDir) {
   const result = runBash(`basename "$(readlink -f ${shellQuote(toBashPath(path.join(appDir, '.lian-releases', 'current')))})"`)
   if (result.status !== 0) throw new Error(`failed to resolve current release: ${result.stderr}`)
   return result.stdout.trim()
+}
+
+// Reads the isolated activation command sequence emitted by the fake runtime commands.
+function readActivationCommandLog(appDir) {
+  return fs.readFileSync(path.join(appDir, 'activation-command.log'), 'utf8').trim().split(/\r?\n/).filter(Boolean)
+}
+
+// Asserts that activation prepares both services before switching and performs the two health phases in order.
+function assertActivationOrder(log, releaseId) {
+  const dashboardInstall = log.indexOf('install-dashboard-service')
+  const koishiInstall = log.indexOf('install-koishi-service')
+  const restartBot = log.indexOf(`restart-bot:${releaseId}`)
+  const restartDashboard = log.indexOf('systemctl:restart lian-dashboard')
+  const firstHealth = log.indexOf(`curl:${releaseId}`)
+  const stabilityWait = log.indexOf('sleep:10')
+  const secondHealth = log.indexOf(`curl:${releaseId}`, firstHealth + 1)
+  assert(dashboardInstall >= 0 && koishiInstall > dashboardInstall, `service installation order is invalid: ${log.join(', ')}`)
+  assert(restartBot > koishiInstall && restartDashboard > restartBot, `service restart order is invalid: ${log.join(', ')}`)
+  assert(firstHealth > restartDashboard && stabilityWait > firstHealth && secondHealth > stabilityWait, `stability verification order is invalid: ${log.join(', ')}`)
 }
 
 // Verifies successful switching, failure rollback, and first migration from physical paths.
@@ -249,6 +286,7 @@ function testActivationScenarios(tempRoot, releases) {
   assert.strictEqual(successResult.state, 'success')
   assert.strictEqual(successResult.manifestHash, releases.newRelease.manifest.manifestHash)
   assert.strictEqual(fs.existsSync(path.join(successApp.appDir, '.lian-releases', 'deploy.lock')), false)
+  assertActivationOrder(readActivationCommandLog(successApp.appDir), newId)
 
   const lockedApp = prepareVersionedApp(tempRoot, 'activation-locked', releases)
   const lockDir = path.join(lockedApp.appDir, '.lian-releases', 'deploy.lock')
@@ -305,6 +343,18 @@ function testActivationScenarios(tempRoot, releases) {
   const healthResult = JSON.parse(fs.readFileSync(healthApp.resultFile, 'utf8'))
   assert.strictEqual(healthResult.stage, 'health_check')
   assert.strictEqual(healthResult.rolledBack, true)
+
+  const stabilityApp = prepareVersionedApp(tempRoot, 'activation-stability-failure', releases)
+  const stabilityFailed = runActivation(stabilityApp, newId, fakeBin, { stabilityHealthReleaseId: newId })
+  assert.notStrictEqual(stabilityFailed.status, 0, 'secondary health failure unexpectedly succeeded')
+  assert.strictEqual(activeReleaseId(stabilityApp.appDir), oldId)
+  const stabilityResult = JSON.parse(fs.readFileSync(stabilityApp.resultFile, 'utf8'))
+  assert.strictEqual(stabilityResult.state, 'failed')
+  assert.strictEqual(stabilityResult.stage, 'stability_check')
+  assert.strictEqual(stabilityResult.rolledBack, true)
+  const stabilityLog = readActivationCommandLog(stabilityApp.appDir)
+  assertActivationOrder(stabilityLog, newId)
+  assert(stabilityLog.includes(`restart-bot:${oldId}`), 'rollback did not restart the old Koishi release')
 
   const rollbackHealthApp = prepareVersionedApp(tempRoot, 'activation-rollback-health-failure', releases)
   const rollbackHealthFailed = runActivation(rollbackHealthApp, newId, fakeBin, { allHealth: true })

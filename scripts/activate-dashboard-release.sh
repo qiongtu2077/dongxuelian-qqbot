@@ -85,12 +85,13 @@ acquire_deploy_lock() {
   fi
 }
 
-# Waits for Dashboard, bot, and the expected release identity to become healthy.
+# Waits for both systemd services, runtime health, and the expected release identity.
 wait_for_runtime() {
   expected_manifest="${1:-}"
   for _ in $(seq 1 30); do
     sleep 1
     if ! systemctl is-active --quiet lian-dashboard; then continue; fi
+    if ! systemctl is-active --quiet lian-koishi; then continue; fi
     if [ -n "$expected_manifest" ]; then
       status_json="$(curl -fsS http://127.0.0.1:5150/dashboard/api/release-status 2>/dev/null || true)"
       if [ -z "$status_json" ]; then continue; fi
@@ -108,6 +109,22 @@ NODE
   return 1
 }
 
+# Restarts Koishi through its dedicated service, with a systemd fallback for migration rollback.
+restart_bot_service() {
+  restart_script="${1:-$CURRENT_LINK/scripts/restart-bot.sh}"
+  if [ -x "$restart_script" ]; then
+    KOISHI_APP_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" bash "$restart_script"
+  else
+    systemctl restart lian-koishi
+  fi
+}
+
+# Restarts both independent runtime services through the controlled service entry points.
+restart_runtime_services() {
+  restart_bot_service "${1:-}"
+  systemctl restart lian-dashboard
+}
+
 # Restores the old pointer and services after any post-switch activation failure.
 rollback_release() {
   exit_code=$?
@@ -119,12 +136,7 @@ rollback_release() {
     rollback_state=failed
     ln -s "$OLD_TARGET" "$CURRENT_LINK.rollback"
     mv -Tf "$CURRENT_LINK.rollback" "$CURRENT_LINK"
-    if [ -x "$CURRENT_LINK/scripts/restart-bot.sh" ]; then
-      KOISHI_APP_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" bash "$CURRENT_LINK/scripts/restart-bot.sh" >/dev/null 2>&1 || true
-    elif [ -x "$APP_DIR/restart.sh" ]; then
-      bash "$APP_DIR/restart.sh" >/dev/null 2>&1 || true
-    fi
-    systemctl restart lian-dashboard >/dev/null 2>&1 || true
+    restart_runtime_services "$CURRENT_LINK/scripts/restart-bot.sh" >/dev/null 2>&1 || true
     old_manifest_hash=""
     if [ -f "$OLD_TARGET/release-manifest.json" ]; then
       old_manifest_hash="$(node -e "try{process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).manifestHash||'')}catch{}" "$OLD_TARGET/release-manifest.json")"
@@ -144,8 +156,7 @@ rollback_release() {
       done
     done
     rm -f "$CURRENT_LINK"
-    if [ -x "$APP_DIR/restart.sh" ]; then bash "$APP_DIR/restart.sh" >/dev/null 2>&1 || true; fi
-    systemctl restart lian-dashboard >/dev/null 2>&1 || true
+    restart_runtime_services "" >/dev/null 2>&1 || true
     if wait_for_runtime ""; then rolled_back=true; rollback_state=success; fi
   fi
   write_result failed "$STAGE" "release activation failed at $STAGE (exit $exit_code)" "$rolled_back" "$rollback_state"
@@ -226,6 +237,7 @@ KOISHI_APP_DIR="$APP_DIR" bash "$NEXT_DIR/scripts/install-logrotate.sh"
 STAGE="prepare_service"
 write_result running "$STAGE"
 KOISHI_APP_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" bash "$NEXT_DIR/scripts/install-dashboard-service.sh"
+KOISHI_APP_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" bash "$NEXT_DIR/scripts/install-koishi-service.sh"
 
 STAGE="prepare_version"
 write_result running "$STAGE"
@@ -242,7 +254,7 @@ SWITCHED=1
 
 STAGE="restart_bot"
 write_result running "$STAGE"
-KOISHI_APP_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" bash "$CURRENT_LINK/scripts/restart-bot.sh"
+restart_bot_service "$CURRENT_LINK/scripts/restart-bot.sh"
 
 STAGE="restart_dashboard"
 write_result running "$STAGE"
@@ -250,9 +262,15 @@ systemctl restart lian-dashboard
 
 STAGE="health_check"
 write_result running "$STAGE"
-healthy=0
-if wait_for_runtime "$MANIFEST_HASH"; then healthy=1; fi
-test "$healthy" = "1"
+wait_for_runtime "$MANIFEST_HASH"
+
+STAGE="stability_wait"
+write_result running "$STAGE"
+sleep 10
+
+STAGE="stability_check"
+write_result running "$STAGE"
+wait_for_runtime "$MANIFEST_HASH"
 
 STAGE="complete"
 write_result success "$STAGE"

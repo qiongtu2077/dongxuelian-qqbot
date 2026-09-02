@@ -121,7 +121,7 @@ function copyReleasePayload(repoRoot, releaseRoot) {
         copyReleaseEntry(repoRoot, releaseRoot, `${dashboardRoot}/${file}`, true);
     for (const entry of ['frontend/src', 'frontend/public', 'frontend/dist', 'frontend/index.html', 'frontend/package.json', 'frontend/vite.config.ts', 'frontend/tsconfig.json'])
         copyReleaseEntry(repoRoot, releaseRoot, `${dashboardRoot}/${entry}`, true);
-    for (const script of ['activate-dashboard-release.sh', 'verify-release-manifest.js', 'restart-bot.sh', 'seal-data-dir.sh', 'watchdog.sh', 'install-dashboard-service.sh', 'install-logrotate.sh'])
+    for (const script of ['activate-dashboard-release.sh', 'verify-release-manifest.js', 'restart-bot.sh', 'seal-data-dir.sh', 'watchdog.sh', 'install-dashboard-service.sh', 'install-koishi-service.sh', 'install-logrotate.sh'])
         copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true);
     for (const packageName of RELEASE_PACKAGES) {
         const source = path.join(releaseRoot, 'packages', packageName);

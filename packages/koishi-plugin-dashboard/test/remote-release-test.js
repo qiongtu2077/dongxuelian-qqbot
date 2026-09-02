@@ -16,6 +16,28 @@ function runGit(repoRoot, args) {
   return result.stdout.trim()
 }
 
+// Creates an unreachable test commit from staged release changes so detached-build coverage tests the candidate tree.
+function resolveFrozenBuildTestCommit(repoRoot) {
+  const head = runGit(repoRoot, ['rev-parse', 'HEAD'])
+  const staged = spawnSync('git', ['diff', '--cached', '--quiet'], { cwd: repoRoot, encoding: 'utf8' })
+  assert([0, 1].includes(staged.status), staged.stderr || staged.stdout)
+  if (staged.status === 0) return head
+  const tree = runGit(repoRoot, ['write-tree'])
+  const result = spawnSync('git', ['commit-tree', tree, '-p', head, '-m', 'test snapshot: remote release'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME || 'Dashboard Test',
+      GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL || 'dashboard@example.invalid',
+      GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || 'Dashboard Test',
+      GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || 'dashboard@example.invalid',
+    },
+  })
+  assert.strictEqual(result.status, 0, result.stderr || result.stdout)
+  return result.stdout.trim()
+}
+
 // Creates a one-commit repository for deterministic clean and dirty source checks.
 function createSourceRepo(tempRoot) {
   const repoRoot = path.join(tempRoot, 'source')
@@ -127,7 +149,7 @@ function testPreviewGates() {
 // Verifies the detached build freezes artifacts without changing the active source worktree.
 function testDetachedBuild(tempRoot) {
   const before = spawnSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: REPO_ROOT, encoding: 'utf8' }).stdout
-  const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).stdout.trim()
+  const commit = resolveFrozenBuildTestCommit(REPO_ROOT)
   const worktreeRoot = path.join(tempRoot, 'detached-build')
   const releasesRoot = path.join(tempRoot, 'releases')
   const built = remoteRelease.buildFrozenRelease(REPO_ROOT, worktreeRoot, releasesRoot, commit)
