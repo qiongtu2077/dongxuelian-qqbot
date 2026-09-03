@@ -17,6 +17,9 @@ export interface AiPriorityStep {
 export interface AiProviderCatalogItem {
   id: string
   name: string
+  note?: string
+  baseURL?: string
+  custom?: boolean
   discoveryAvailable: boolean
   discoveryReason: string
   documentationURL: string
@@ -59,6 +62,8 @@ export interface AiDiscoveryResponse {
   removedModels?: number
   removedSteps?: number
   emptyCapabilities?: AiCapability[]
+  providerId?: string
+  catalog?: AiProviderCatalogItem[]
 }
 
 export interface AiPriorityResponse {

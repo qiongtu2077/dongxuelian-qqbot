@@ -6,16 +6,17 @@
 const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
 import contract = require('../public/ai-capability-contract.json')
-const { DATA_DIR, FALLBACK_CHAINS_FILE } = require('./constants') as typeof import('./constants')
+const { DATA_DIR, FALLBACK_CHAINS_FILE, CUSTOM_PROVIDERS_FILE } = require('./constants') as typeof import('./constants')
 
 const AI_CAPABILITIES = Object.freeze([...contract.capabilities] as const)
 type AiCapability = (typeof AI_CAPABILITIES)[number]
-type ProviderId = 'glm' | 'mimorium' | 'dashscope' | 'deepseek' | 'openai' | 'anthropic' | 'gemini' | 'opencode'
-type DiscoveryProtocol = 'openai-models' | 'anthropic-models' | 'gemini-models' | 'blocked'
+type BuiltinProviderId = 'glm' | 'mimorium' | 'dashscope' | 'deepseek' | 'openai' | 'anthropic' | 'gemini' | 'opencode'
+type ProviderId = string
+type DiscoveryProtocol = 'openai-models' | 'anthropic-models' | 'gemini-models' | 'custom-openai-models' | 'blocked'
 type ChatProtocol = 'openai-chat' | 'anthropic-messages' | 'gemini-content'
 
 interface ProviderCatalogEntry {
-  id: ProviderId
+  id: string
   name: string
   keyFile: string
   baseURL: string
@@ -24,6 +25,8 @@ interface ProviderCatalogEntry {
   discoveryURL?: string
   discoveryReason?: string
   documentationURL: string
+  note?: string
+  custom?: boolean
 }
 
 interface CapabilityModel {
@@ -117,7 +120,44 @@ const PROVIDER_CATALOG: Record<ProviderId, ProviderCatalogEntry> = Object.freeze
   },
 })
 
-const PROVIDER_IDS = Object.freeze(Object.keys(PROVIDER_CATALOG) as ProviderId[])
+const PROVIDER_IDS = Object.freeze(Object.keys(PROVIDER_CATALOG) as BuiltinProviderId[])
+const CUSTOM_PROVIDER_ID_RE = /^custom-[a-z0-9]{8,64}$/
+const CUSTOM_KEY_FILE_RE = /^ai-custom-[a-z0-9]{8,64}-key\.txt$/
+const MAX_CUSTOM_PROVIDERS = 100
+
+interface CustomProviderDefinition {
+  id: string
+  name: string
+  note?: string
+  baseURL: string
+  keyFile: string
+}
+
+// 安全读取自定义供应商元数据；异常内容按空目录处理，写入路径由 Dashboard 严格校验。
+function readCustomProviderDefinitions(): CustomProviderDefinition[] {
+  try {
+    const stat = fs.statSync(CUSTOM_PROVIDERS_FILE)
+    if (!stat.isFile() || stat.size > 256 * 1024) return []
+    const raw: unknown = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'))
+    if (!Array.isArray(raw)) return []
+    const seen = new Set<string>()
+    return raw.slice(0, MAX_CUSTOM_PROVIDERS).flatMap(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+      const source = item as Record<string, unknown>
+      const id = String(source.id || '').trim()
+      const name = String(source.name || '').trim()
+      const baseURL = String(source.baseURL || '').trim().replace(/\/+$/, '')
+      const keyFile = String(source.keyFile || '').trim()
+      if (!CUSTOM_PROVIDER_ID_RE.test(id) || !name || !baseURL || !CUSTOM_KEY_FILE_RE.test(keyFile) || seen.has(id)) return []
+      seen.add(id)
+      return [{ id, name, note: String(source.note || '').trim().slice(0, 256) || undefined, baseURL, keyFile }]
+    })
+  } catch { return [] }
+}
+
+function getAllProviderIds(): string[] {
+  return [...PROVIDER_IDS, ...readCustomProviderDefinitions().map(item => item.id)]
+}
 
 // 官方枚举不返回模态时，只允许命中这里的精确模型 ID；禁止名称正则或前缀推断。
 const VERIFIED_MODEL_CAPABILITIES: Partial<Record<ProviderId, Record<string, AiCapability[]>>> = Object.freeze({
@@ -213,20 +253,21 @@ function isAiCapability(value: unknown): value is AiCapability {
 
 // 判断一个运行时值是否为白名单供应商标识。
 function isProviderId(value: unknown): value is ProviderId {
-  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(PROVIDER_CATALOG, value)
+  if (typeof value !== 'string') return false
+  return Object.prototype.hasOwnProperty.call(PROVIDER_CATALOG, value) || CUSTOM_PROVIDER_ID_RE.test(value)
 }
 
 // 返回官方证据确认的精确模型能力，未命中时返回空数组。
 function getVerifiedModelCapabilities(providerId: unknown, modelId: unknown): AiCapability[] {
   if (!isProviderId(providerId)) return []
   const model = String(modelId || '').trim()
-  return [...(VERIFIED_MODEL_CAPABILITIES[providerId]?.[model] || [])]
+  return [...(VERIFIED_MODEL_CAPABILITIES[providerId as BuiltinProviderId]?.[model] || [])]
 }
 
 // 创建包含八家空模型池和四条空优先级的最新配置。
 function createEmptyCapabilityConfig(): CapabilityConfig {
   const providers = {} as Record<ProviderId, ProviderModelPool>
-  for (const providerId of PROVIDER_IDS) providers[providerId] = { models: [] }
+  for (const providerId of getAllProviderIds()) providers[providerId] = { models: [] }
   const priorities = {} as Record<AiCapability, CapabilityPriorityStep[]>
   for (const capability of AI_CAPABILITIES) priorities[capability] = []
   return { version: contract.version, providers, priorities }
@@ -261,7 +302,8 @@ function normalizeCapabilityConfig(value: unknown): CapabilityConfig {
   if (Object.keys(rawPriorities).some(key => !isAiCapability(key))) throw new Error('AI 能力配置包含未知能力')
 
   const result = createEmptyCapabilityConfig()
-  for (const providerId of PROVIDER_IDS) {
+  const providerIds = [...new Set([...getAllProviderIds(), ...Object.keys(rawProviders).filter(key => CUSTOM_PROVIDER_ID_RE.test(key))])]
+  for (const providerId of providerIds) {
     const rawPool = rawProviders[providerId]
     const rawModels = rawPool && typeof rawPool === 'object' && !Array.isArray(rawPool)
       ? (rawPool as { models?: unknown }).models
@@ -328,7 +370,9 @@ function readJsonFile<T>(filePath: string, fallback: T, maxBytes = MAX_CAPABILIT
 
 // 读取固定供应商 Key；只返回内存字符串，不记录文件内容。
 function readProviderKey(providerId: ProviderId): string {
-  const filePath = path.join(DATA_DIR, PROVIDER_CATALOG[providerId].keyFile)
+  const provider = getProviderCatalogEntry(providerId)
+  if (!provider) return ''
+  const filePath = path.join(DATA_DIR, path.basename(provider.keyFile))
   try {
     const stat = fs.statSync(filePath)
     if (!stat.isFile() || stat.size > MAX_KEY_BYTES) return ''
@@ -358,7 +402,7 @@ function buildLegacyMigration(): MigrationResult {
   const config = createEmptyCapabilityConfig()
   const diagnostics: string[] = []
   const pools = new Map<ProviderId, Map<string, CapabilityModel>>()
-  for (const providerId of PROVIDER_IDS) pools.set(providerId, new Map())
+  for (const providerId of getAllProviderIds()) pools.set(providerId, new Map())
 
   const readLegacyChain = (key: 'chat' | 'vision' | 'lightweight'): LegacyFallbackStep[] => {
     const chain = source && Array.isArray(source[key]) ? source[key] : LEGACY_DEFAULT_CHAINS[key]
@@ -394,7 +438,7 @@ function buildLegacyMigration(): MigrationResult {
   mergeChain('text', readLegacyChain('chat'))
   mergeChain('text', readLegacyChain('lightweight'))
   mergeChain('vision', readLegacyChain('vision'))
-  for (const providerId of PROVIDER_IDS) config.providers[providerId].models = [...(pools.get(providerId)?.values() || [])]
+  for (const providerId of getAllProviderIds()) config.providers[providerId].models = [...(pools.get(providerId)?.values() || [])]
   return { config: normalizeCapabilityConfig(config), diagnostics, migrated: true }
 }
 
@@ -414,12 +458,20 @@ function serializeCapabilityConfig(config: CapabilityConfig): Buffer {
 // --- 模型池与优先级更新 ---
 
 // 用新发现池覆盖一个供应商，并同步清理四能力中的悬空引用。
-function replaceProviderModels(current: CapabilityConfig, providerId: unknown, discovered: unknown): ReplaceModelsResult {
+function replaceProviderModels(current: CapabilityConfig, providerId: unknown, discovered: unknown, capability?: unknown): ReplaceModelsResult {
   if (!isProviderId(providerId)) throw new Error('未知供应商')
   const config = normalizeCapabilityConfig(current)
-  const models = normalizeDiscoveredModels(discovered)
+  const incoming = normalizeDiscoveredModels(discovered)
+  const previousModels = config.providers[providerId]?.models || []
+  const isCustom = CUSTOM_PROVIDER_ID_RE.test(String(providerId))
+  const models = isCustom && isAiCapability(capability)
+    ? incoming.map(model => {
+      const previous = previousModels.find(item => item.id === model.id)
+      return previous ? { ...model, capabilities: [...new Set([...previous.capabilities, ...model.capabilities])] } : model
+    })
+    : incoming
   if (!models.length) throw new Error('发现结果没有可导入模型')
-  const previousIds = new Set(config.providers[providerId].models.map(model => model.id))
+  const previousIds = new Set(previousModels.map(model => model.id))
   const nextIds = new Set(models.map(model => model.id))
   const removedModels = [...previousIds].filter(id => !nextIds.has(id)).length
   config.providers[providerId] = { models }
@@ -448,7 +500,7 @@ function replaceCapabilityPriority(current: CapabilityConfig, capability: unknow
     const provider = String((rawStep as { provider?: unknown }).provider || '').trim()
     const model = String((rawStep as { model?: unknown }).model || '').trim()
     if (!isProviderId(provider) || !model) throw new Error(`第 ${index + 1} 步缺少有效供应商或模型`)
-    if (!isProviderKeyConfigured(provider)) throw new Error(`${PROVIDER_CATALOG[provider].name} 尚未保存 API Key`)
+    if (!isProviderKeyConfigured(provider)) throw new Error(`${getProviderCatalogEntry(provider)?.name || provider} 尚未保存 API Key`)
     return { provider, model }
   })
   return normalizeCapabilityConfig(config)
@@ -458,10 +510,10 @@ function replaceCapabilityPriority(current: CapabilityConfig, capability: unknow
 
 // 返回不含 URL、Key 文件名和密钥的前端供应商目录。
 function getPublicProviderCatalog(): Array<Record<string, unknown>> {
-  return PROVIDER_IDS.map(providerId => {
-    const provider = PROVIDER_CATALOG[providerId]
+  return getAllProviderIds().map(providerId => {
+    const provider = getProviderCatalogEntry(providerId) as ProviderCatalogEntry
     const supported = new Set<AiCapability>()
-    for (const capabilities of Object.values(VERIFIED_MODEL_CAPABILITIES[providerId] || {})) {
+    for (const capabilities of Object.values(VERIFIED_MODEL_CAPABILITIES[providerId as BuiltinProviderId] || {})) {
       for (const capability of capabilities) supported.add(capability)
     }
     return {
@@ -471,6 +523,7 @@ function getPublicProviderCatalog(): Array<Record<string, unknown>> {
       discoveryReason: provider.discoveryReason || '',
       documentationURL: provider.documentationURL,
       supportedCapabilities: AI_CAPABILITIES.filter(capability => supported.has(capability)),
+      ...(provider.custom ? { custom: true, baseURL: provider.baseURL, note: provider.note || '' } : {}),
     }
   })
 }
@@ -479,7 +532,7 @@ function getPublicProviderCatalog(): Array<Record<string, unknown>> {
 function getPublicCapabilityConfig(config: CapabilityConfig): Record<string, unknown> {
   const normalized = normalizeCapabilityConfig(config)
   const providers = {} as Record<string, unknown>
-  for (const providerId of PROVIDER_IDS) {
+  for (const providerId of getAllProviderIds()) {
     providers[providerId] = {
       models: normalized.providers[providerId].models,
       key: getProviderKeyStatus(providerId),
@@ -495,7 +548,8 @@ function resolveCapabilityRuntimeSteps(capability: unknown): RuntimeCapabilitySt
   const result: RuntimeCapabilityStep[] = []
   for (let index = 0; index < config.priorities[capability].length; index += 1) {
     const step = config.priorities[capability][index]
-    const provider = PROVIDER_CATALOG[step.provider]
+    const provider = getProviderCatalogEntry(step.provider)
+    if (!provider) continue
     const apiKey = readProviderKey(step.provider)
     if (!apiKey) continue
     result.push({
@@ -514,13 +568,28 @@ function resolveCapabilityRuntimeSteps(capability: unknown): RuntimeCapabilitySt
 
 // 返回服务端内部供应商定义，调用方不得把结果原样发给前端。
 function getProviderCatalogEntry(providerId: unknown): ProviderCatalogEntry | null {
-  return isProviderId(providerId) ? PROVIDER_CATALOG[providerId] : null
+  if (typeof providerId !== 'string') return null
+  if (Object.prototype.hasOwnProperty.call(PROVIDER_CATALOG, providerId)) return PROVIDER_CATALOG[providerId]
+  const custom = readCustomProviderDefinitions().find(item => item.id === providerId)
+  if (!custom) return null
+  return {
+    id: custom.id,
+    name: custom.name,
+    keyFile: custom.keyFile,
+    baseURL: custom.baseURL,
+    chatProtocol: 'openai-chat',
+    discoveryProtocol: 'custom-openai-models',
+    documentationURL: custom.baseURL,
+    note: custom.note,
+    custom: true,
+  }
 }
 
 export = {
   AI_CAPABILITIES,
   CAPABILITY_CONFIG_FILE,
   PROVIDER_IDS,
+  getAllProviderIds,
   isAiCapability,
   isProviderId,
   getVerifiedModelCapabilities,

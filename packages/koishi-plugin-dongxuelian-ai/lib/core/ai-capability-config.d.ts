@@ -1,10 +1,11 @@
 declare const AI_CAPABILITIES: readonly string[];
 type AiCapability = (typeof AI_CAPABILITIES)[number];
-type ProviderId = 'glm' | 'mimorium' | 'dashscope' | 'deepseek' | 'openai' | 'anthropic' | 'gemini' | 'opencode';
-type DiscoveryProtocol = 'openai-models' | 'anthropic-models' | 'gemini-models' | 'blocked';
+type BuiltinProviderId = 'glm' | 'mimorium' | 'dashscope' | 'deepseek' | 'openai' | 'anthropic' | 'gemini' | 'opencode';
+type ProviderId = string;
+type DiscoveryProtocol = 'openai-models' | 'anthropic-models' | 'gemini-models' | 'custom-openai-models' | 'blocked';
 type ChatProtocol = 'openai-chat' | 'anthropic-messages' | 'gemini-content';
 interface ProviderCatalogEntry {
-    id: ProviderId;
+    id: string;
     name: string;
     keyFile: string;
     baseURL: string;
@@ -13,6 +14,8 @@ interface ProviderCatalogEntry {
     discoveryURL?: string;
     discoveryReason?: string;
     documentationURL: string;
+    note?: string;
+    custom?: boolean;
 }
 interface CapabilityModel {
     id: string;
@@ -52,6 +55,7 @@ interface RuntimeCapabilityStep {
     chatProtocol: ChatProtocol;
     priorityIndex: number;
 }
+declare function getAllProviderIds(): string[];
 declare function isAiCapability(value: unknown): value is AiCapability;
 declare function isProviderId(value: unknown): value is ProviderId;
 declare function getVerifiedModelCapabilities(providerId: unknown, modelId: unknown): AiCapability[];
@@ -66,7 +70,7 @@ declare function getProviderKeyStatus(providerId: ProviderId): {
 declare function buildLegacyMigration(): MigrationResult;
 declare function loadCapabilityConfigSync(): MigrationResult;
 declare function serializeCapabilityConfig(config: CapabilityConfig): Buffer;
-declare function replaceProviderModels(current: CapabilityConfig, providerId: unknown, discovered: unknown): ReplaceModelsResult;
+declare function replaceProviderModels(current: CapabilityConfig, providerId: unknown, discovered: unknown, capability?: unknown): ReplaceModelsResult;
 declare function replaceCapabilityPriority(current: CapabilityConfig, capability: unknown, steps: unknown): CapabilityConfig;
 declare function getPublicProviderCatalog(): Array<Record<string, unknown>>;
 declare function getPublicCapabilityConfig(config: CapabilityConfig): Record<string, unknown>;
@@ -75,7 +79,8 @@ declare function getProviderCatalogEntry(providerId: unknown): ProviderCatalogEn
 declare const _default: {
     AI_CAPABILITIES: readonly string[];
     CAPABILITY_CONFIG_FILE: string;
-    PROVIDER_IDS: readonly ProviderId[];
+    PROVIDER_IDS: readonly BuiltinProviderId[];
+    getAllProviderIds: typeof getAllProviderIds;
     isAiCapability: typeof isAiCapability;
     isProviderId: typeof isProviderId;
     getVerifiedModelCapabilities: typeof getVerifiedModelCapabilities;

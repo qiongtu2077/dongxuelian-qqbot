@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const contract = require("../public/ai-capability-contract.json");
-const { DATA_DIR, FALLBACK_CHAINS_FILE } = require('./constants');
+const { DATA_DIR, FALLBACK_CHAINS_FILE, CUSTOM_PROVIDERS_FILE } = require('./constants');
 const AI_CAPABILITIES = Object.freeze([...contract.capabilities]);
 const CAPABILITY_CONFIG_FILE = path.join(DATA_DIR, 'ai-capability-config.json');
 const MAX_CAPABILITY_CONFIG_BYTES = 512 * 1024;
@@ -48,6 +48,40 @@ const PROVIDER_CATALOG = Object.freeze({
     },
 });
 const PROVIDER_IDS = Object.freeze(Object.keys(PROVIDER_CATALOG));
+const CUSTOM_PROVIDER_ID_RE = /^custom-[a-z0-9]{8,64}$/;
+const CUSTOM_KEY_FILE_RE = /^ai-custom-[a-z0-9]{8,64}-key\.txt$/;
+const MAX_CUSTOM_PROVIDERS = 100;
+// 安全读取自定义供应商元数据；异常内容按空目录处理，写入路径由 Dashboard 严格校验。
+function readCustomProviderDefinitions() {
+    try {
+        const stat = fs.statSync(CUSTOM_PROVIDERS_FILE);
+        if (!stat.isFile() || stat.size > 256 * 1024)
+            return [];
+        const raw = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'));
+        if (!Array.isArray(raw))
+            return [];
+        const seen = new Set();
+        return raw.slice(0, MAX_CUSTOM_PROVIDERS).flatMap(item => {
+            if (!item || typeof item !== 'object' || Array.isArray(item))
+                return [];
+            const source = item;
+            const id = String(source.id || '').trim();
+            const name = String(source.name || '').trim();
+            const baseURL = String(source.baseURL || '').trim().replace(/\/+$/, '');
+            const keyFile = String(source.keyFile || '').trim();
+            if (!CUSTOM_PROVIDER_ID_RE.test(id) || !name || !baseURL || !CUSTOM_KEY_FILE_RE.test(keyFile) || seen.has(id))
+                return [];
+            seen.add(id);
+            return [{ id, name, note: String(source.note || '').trim().slice(0, 256) || undefined, baseURL, keyFile }];
+        });
+    }
+    catch {
+        return [];
+    }
+}
+function getAllProviderIds() {
+    return [...PROVIDER_IDS, ...readCustomProviderDefinitions().map(item => item.id)];
+}
 // 官方枚举不返回模态时，只允许命中这里的精确模型 ID；禁止名称正则或前缀推断。
 const VERIFIED_MODEL_CAPABILITIES = Object.freeze({
     glm: {
@@ -138,7 +172,9 @@ function isAiCapability(value) {
 }
 // 判断一个运行时值是否为白名单供应商标识。
 function isProviderId(value) {
-    return typeof value === 'string' && Object.prototype.hasOwnProperty.call(PROVIDER_CATALOG, value);
+    if (typeof value !== 'string')
+        return false;
+    return Object.prototype.hasOwnProperty.call(PROVIDER_CATALOG, value) || CUSTOM_PROVIDER_ID_RE.test(value);
 }
 // 返回官方证据确认的精确模型能力，未命中时返回空数组。
 function getVerifiedModelCapabilities(providerId, modelId) {
@@ -150,7 +186,7 @@ function getVerifiedModelCapabilities(providerId, modelId) {
 // 创建包含八家空模型池和四条空优先级的最新配置。
 function createEmptyCapabilityConfig() {
     const providers = {};
-    for (const providerId of PROVIDER_IDS)
+    for (const providerId of getAllProviderIds())
         providers[providerId] = { models: [] };
     const priorities = {};
     for (const capability of AI_CAPABILITIES)
@@ -191,7 +227,8 @@ function normalizeCapabilityConfig(value) {
     if (Object.keys(rawPriorities).some(key => !isAiCapability(key)))
         throw new Error('AI 能力配置包含未知能力');
     const result = createEmptyCapabilityConfig();
-    for (const providerId of PROVIDER_IDS) {
+    const providerIds = [...new Set([...getAllProviderIds(), ...Object.keys(rawProviders).filter(key => CUSTOM_PROVIDER_ID_RE.test(key))])];
+    for (const providerId of providerIds) {
         const rawPool = rawProviders[providerId];
         const rawModels = rawPool && typeof rawPool === 'object' && !Array.isArray(rawPool)
             ? rawPool.models
@@ -267,7 +304,10 @@ function readJsonFile(filePath, fallback, maxBytes = MAX_CAPABILITY_CONFIG_BYTES
 }
 // 读取固定供应商 Key；只返回内存字符串，不记录文件内容。
 function readProviderKey(providerId) {
-    const filePath = path.join(DATA_DIR, PROVIDER_CATALOG[providerId].keyFile);
+    const provider = getProviderCatalogEntry(providerId);
+    if (!provider)
+        return '';
+    const filePath = path.join(DATA_DIR, path.basename(provider.keyFile));
     try {
         const stat = fs.statSync(filePath);
         if (!stat.isFile() || stat.size > MAX_KEY_BYTES)
@@ -296,7 +336,7 @@ function buildLegacyMigration() {
     const config = createEmptyCapabilityConfig();
     const diagnostics = [];
     const pools = new Map();
-    for (const providerId of PROVIDER_IDS)
+    for (const providerId of getAllProviderIds())
         pools.set(providerId, new Map());
     const readLegacyChain = (key) => {
         const chain = source && Array.isArray(source[key]) ? source[key] : LEGACY_DEFAULT_CHAINS[key];
@@ -332,7 +372,7 @@ function buildLegacyMigration() {
     mergeChain('text', readLegacyChain('chat'));
     mergeChain('text', readLegacyChain('lightweight'));
     mergeChain('vision', readLegacyChain('vision'));
-    for (const providerId of PROVIDER_IDS)
+    for (const providerId of getAllProviderIds())
         config.providers[providerId].models = [...(pools.get(providerId)?.values() || [])];
     return { config: normalizeCapabilityConfig(config), diagnostics, migrated: true };
 }
@@ -351,14 +391,22 @@ function serializeCapabilityConfig(config) {
 }
 // --- 模型池与优先级更新 ---
 // 用新发现池覆盖一个供应商，并同步清理四能力中的悬空引用。
-function replaceProviderModels(current, providerId, discovered) {
+function replaceProviderModels(current, providerId, discovered, capability) {
     if (!isProviderId(providerId))
         throw new Error('未知供应商');
     const config = normalizeCapabilityConfig(current);
-    const models = normalizeDiscoveredModels(discovered);
+    const incoming = normalizeDiscoveredModels(discovered);
+    const previousModels = config.providers[providerId]?.models || [];
+    const isCustom = CUSTOM_PROVIDER_ID_RE.test(String(providerId));
+    const models = isCustom && isAiCapability(capability)
+        ? incoming.map(model => {
+            const previous = previousModels.find(item => item.id === model.id);
+            return previous ? { ...model, capabilities: [...new Set([...previous.capabilities, ...model.capabilities])] } : model;
+        })
+        : incoming;
     if (!models.length)
         throw new Error('发现结果没有可导入模型');
-    const previousIds = new Set(config.providers[providerId].models.map(model => model.id));
+    const previousIds = new Set(previousModels.map(model => model.id));
     const nextIds = new Set(models.map(model => model.id));
     const removedModels = [...previousIds].filter(id => !nextIds.has(id)).length;
     config.providers[providerId] = { models };
@@ -392,7 +440,7 @@ function replaceCapabilityPriority(current, capability, steps) {
         if (!isProviderId(provider) || !model)
             throw new Error(`第 ${index + 1} 步缺少有效供应商或模型`);
         if (!isProviderKeyConfigured(provider))
-            throw new Error(`${PROVIDER_CATALOG[provider].name} 尚未保存 API Key`);
+            throw new Error(`${getProviderCatalogEntry(provider)?.name || provider} 尚未保存 API Key`);
         return { provider, model };
     });
     return normalizeCapabilityConfig(config);
@@ -400,8 +448,8 @@ function replaceCapabilityPriority(current, capability, steps) {
 // --- Dashboard 与运行时视图 ---
 // 返回不含 URL、Key 文件名和密钥的前端供应商目录。
 function getPublicProviderCatalog() {
-    return PROVIDER_IDS.map(providerId => {
-        const provider = PROVIDER_CATALOG[providerId];
+    return getAllProviderIds().map(providerId => {
+        const provider = getProviderCatalogEntry(providerId);
         const supported = new Set();
         for (const capabilities of Object.values(VERIFIED_MODEL_CAPABILITIES[providerId] || {})) {
             for (const capability of capabilities)
@@ -414,6 +462,7 @@ function getPublicProviderCatalog() {
             discoveryReason: provider.discoveryReason || '',
             documentationURL: provider.documentationURL,
             supportedCapabilities: AI_CAPABILITIES.filter(capability => supported.has(capability)),
+            ...(provider.custom ? { custom: true, baseURL: provider.baseURL, note: provider.note || '' } : {}),
         };
     });
 }
@@ -421,7 +470,7 @@ function getPublicProviderCatalog() {
 function getPublicCapabilityConfig(config) {
     const normalized = normalizeCapabilityConfig(config);
     const providers = {};
-    for (const providerId of PROVIDER_IDS) {
+    for (const providerId of getAllProviderIds()) {
         providers[providerId] = {
             models: normalized.providers[providerId].models,
             key: getProviderKeyStatus(providerId),
@@ -437,7 +486,9 @@ function resolveCapabilityRuntimeSteps(capability) {
     const result = [];
     for (let index = 0; index < config.priorities[capability].length; index += 1) {
         const step = config.priorities[capability][index];
-        const provider = PROVIDER_CATALOG[step.provider];
+        const provider = getProviderCatalogEntry(step.provider);
+        if (!provider)
+            continue;
         const apiKey = readProviderKey(step.provider);
         if (!apiKey)
             continue;
@@ -456,12 +507,30 @@ function resolveCapabilityRuntimeSteps(capability) {
 }
 // 返回服务端内部供应商定义，调用方不得把结果原样发给前端。
 function getProviderCatalogEntry(providerId) {
-    return isProviderId(providerId) ? PROVIDER_CATALOG[providerId] : null;
+    if (typeof providerId !== 'string')
+        return null;
+    if (Object.prototype.hasOwnProperty.call(PROVIDER_CATALOG, providerId))
+        return PROVIDER_CATALOG[providerId];
+    const custom = readCustomProviderDefinitions().find(item => item.id === providerId);
+    if (!custom)
+        return null;
+    return {
+        id: custom.id,
+        name: custom.name,
+        keyFile: custom.keyFile,
+        baseURL: custom.baseURL,
+        chatProtocol: 'openai-chat',
+        discoveryProtocol: 'custom-openai-models',
+        documentationURL: custom.baseURL,
+        note: custom.note,
+        custom: true,
+    };
 }
 module.exports = {
     AI_CAPABILITIES,
     CAPABILITY_CONFIG_FILE,
     PROVIDER_IDS,
+    getAllProviderIds,
     isAiCapability,
     isProviderId,
     getVerifiedModelCapabilities,

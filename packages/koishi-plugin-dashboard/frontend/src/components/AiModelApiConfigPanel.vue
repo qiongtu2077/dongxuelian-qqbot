@@ -40,7 +40,7 @@
           <div>
             <p class="step-index">01</p>
             <h3 id="provider-import-title">AI 供应商导入</h3>
-            <p>选择固定目录中的供应商，在 Key 输入框失焦后自动发现并原子保存模型池。</p>
+            <p>可选择内置供应商，或填写 CCSWITCH 风格的自定义 OpenAI 兼容地址并测试模型列表。</p>
           </div>
           <span class="capability-badge">{{ capabilityLabel }}</span>
         </div>
@@ -49,6 +49,7 @@
           <label class="field">
             <span>供应商</span>
             <select v-model="selectedProviderId" aria-label="选择 AI 供应商">
+              <option value="custom-new">自定义 OpenAI-compatible 供应商</option>
               <option v-for="provider in catalog" :key="provider.id" :value="provider.id">
                 {{ provider.name }}{{ provider.discoveryAvailable ? '' : '（暂不可发现）' }}
               </option>
@@ -66,6 +67,15 @@
           </div>
         </div>
 
+        <template v-if="isCustomSelection">
+          <div class="custom-fields">
+            <label class="field"><span>供应商名称</span><input v-model="customName" maxlength="96" autocomplete="off" placeholder="例如：我的中转站" /></label>
+            <label class="field"><span>请求地址</span><input v-model="customBaseURL" maxlength="2048" autocomplete="url" placeholder="https://example.com 或 https://example.com/v1/models" /></label>
+            <label class="field"><span>备注（可选）</span><input v-model="customNote" maxlength="256" autocomplete="off" placeholder="仅用于页面识别" /></label>
+          </div>
+          <p class="blocked-reason" role="status">普通根地址会依次尝试 <code>/v1/models</code> 与 <code>/models</code>；已填写完整模型列表地址时不会追加路径。公网地址必须使用 HTTPS。</p>
+        </template>
+
         <p v-if="selectedProvider && !selectedProvider.discoveryAvailable" class="blocked-reason" role="status">
           {{ selectedProvider.discoveryReason }}
         </p>
@@ -76,16 +86,20 @@
             v-model="keyDrafts[selectedProviderId]"
             type="password"
             autocomplete="off"
-            :disabled="!selectedProvider?.discoveryAvailable || discoveringProvider === selectedProviderId"
+            :disabled="(!selectedProvider?.discoveryAvailable && !isCustomSelection) || discoveringProvider === selectedProviderId"
             :placeholder="providerKeyPlaceholder"
             aria-describedby="provider-key-help"
-            @blur="discoverSelectedProvider"
-            @keydown.enter.prevent="discoverSelectedProvider"
+            @blur="!isCustomSelection && discoverSelectedProvider()"
+            @keydown.enter.prevent="isCustomSelection ? discoverSelectedProvider() : discoverSelectedProvider()"
           />
           <small id="provider-key-help">
-            {{ discoveringProvider === selectedProviderId ? '正在调用已验证的官方枚举接口…' : '输入只在本次发现请求中使用；成功后前端立即清空。' }}
+            {{ discoveringProvider === selectedProviderId ? '正在测试并获取模型…' : '输入只在本次发现请求中使用；成功后前端立即清空。' }}
           </small>
         </label>
+
+        <button v-if="isCustomSelection" class="primary-btn discover-btn" type="button" :disabled="discoveringProvider === selectedProviderId" @click="discoverSelectedProvider">
+          {{ discoveringProvider === selectedProviderId ? '测试中…' : '测试并获取模型' }}
+        </button>
 
         <p v-if="providerErrors[selectedProviderId]" class="field-error" role="alert">{{ providerErrors[selectedProviderId] }}</p>
         <p v-if="providerMessages[selectedProviderId]" class="field-success" role="status">{{ providerMessages[selectedProviderId] }}</p>
@@ -245,6 +259,9 @@ const catalog = ref<AiProviderCatalogItem[]>([])
 const config = ref<AiCapabilityConfigView | null>(null)
 const priorities = ref<AiCapabilityConfigView['priorities'] | null>(null)
 const selectedProviderId = ref('')
+const customName = ref('')
+const customNote = ref('')
+const customBaseURL = ref('')
 const keyDrafts = reactive<Record<string, string>>({})
 const providerErrors = reactive<Record<string, string>>({})
 const providerMessages = reactive<Record<string, string>>({})
@@ -261,6 +278,7 @@ let usageRequestId = 0
 const currentCapability = computed<AiCapability>(() => activeTopTab.value === 'voice' ? activeVoiceTab.value : activeTopTab.value)
 const capabilityLabel = computed(() => capabilityLabels[currentCapability.value])
 const selectedProvider = computed(() => catalog.value.find(item => item.id === selectedProviderId.value) || null)
+const isCustomSelection = computed(() => selectedProviderId.value === 'custom-new' || !!selectedProvider.value?.custom)
 const currentPriority = computed(() => priorities.value?.[currentCapability.value] || [])
 const availableModels = computed(() => config.value ? listAvailableCapabilityModels(config.value, currentCapability.value) : [])
 const unusedModels = computed(() => {
@@ -314,11 +332,18 @@ async function discoverSelectedProvider(): Promise<void> {
   const providerId = selectedProviderId.value
   const provider = selectedProvider.value
   const apiKey = String(keyDrafts[providerId] || '').trim()
-  if (!provider?.discoveryAvailable || !apiKey || discoveringProvider.value) return
+  if ((!provider?.discoveryAvailable && !isCustomSelection.value) || !apiKey || discoveringProvider.value) return
+  if (isCustomSelection.value && (!customName.value.trim() || !customBaseURL.value.trim())) {
+    providerErrors[providerId] = '请填写供应商名称和请求地址'
+    return
+  }
   providerErrors[providerId] = ''
   providerMessages[providerId] = ''
   discoveringProvider.value = providerId
-  const response = await discoverAiProviderModels(providerId, apiKey)
+  const response = await discoverAiProviderModels(providerId, apiKey, {
+    capability: currentCapability.value,
+    ...(isCustomSelection.value ? { name: customName.value.trim(), note: customNote.value.trim(), baseURL: customBaseURL.value.trim() } : {}),
+  })
   discoveringProvider.value = ''
   if (isAdminRequired(response)) return requestAdmin('发现并保存模型需要管理员密码', discoverSelectedProvider)
   if (!response.ok || !response.data?.config) {
@@ -326,6 +351,13 @@ async function discoverSelectedProvider(): Promise<void> {
     return
   }
   keyDrafts[providerId] = ''
+  if (isCustomSelection.value && response.data.providerId) {
+    selectedProviderId.value = response.data.providerId
+    customName.value = ''
+    customNote.value = ''
+    customBaseURL.value = ''
+    if (response.data.catalog) catalog.value = response.data.catalog
+  }
   applyConfig(response.data.config)
   providerMessages[providerId] = `${response.data.message || '模型池已保存'}；移除 ${response.data.removedModels || 0} 个旧模型、${response.data.removedSteps || 0} 个失效优先级步骤。`
 }
@@ -416,6 +448,19 @@ watch(currentCapability, () => {
   if (loaded.value) void loadUsage()
 })
 
+watch(selectedProviderId, value => {
+  const provider = catalog.value.find(item => item.id === value)
+  if (provider?.custom) {
+    customName.value = provider.name
+    customNote.value = provider.note || ''
+    customBaseURL.value = provider.baseURL || ''
+  } else if (value === 'custom-new') {
+    customName.value = ''
+    customNote.value = ''
+    customBaseURL.value = ''
+  }
+})
+
 onMounted(loadSharedConfig)
 </script>
 
@@ -437,6 +482,8 @@ onMounted(loadSharedConfig)
 .capability-badge, .status-dot { display: inline-flex; align-items: center; min-height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 850; white-space: nowrap; }
 .capability-badge { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .provider-layout { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(0, 1.2fr); gap: 16px; align-items: end; }
+.custom-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+.discover-btn { margin-top: 14px; }
 .field { display: grid; gap: 7px; min-width: 0; color: var(--text2); font-size: 13px; font-weight: 760; }
 .field input, .field select { width: 100%; min-width: 0; min-height: 42px; padding: 8px 11px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--input); font: inherit; }
 .field small { color: var(--text3); font-weight: 600; line-height: 1.5; }
@@ -483,7 +530,7 @@ th:first-child, td:first-child { text-align: left; max-width: 220px; overflow: h
 @media (max-width: 760px) {
   .page-head, .section-head { flex-direction: column; }
   .page-head, .section-card { padding: 18px; }
-  .provider-layout, .usage-tables, .add-model-row { grid-template-columns: 1fr; }
+  .provider-layout, .custom-fields, .usage-tables, .add-model-row { grid-template-columns: 1fr; }
   .usage-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .priority-list li { grid-template-columns: 32px minmax(0, 1fr); }
   .row-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }

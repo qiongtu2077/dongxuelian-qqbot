@@ -33,7 +33,7 @@ function normalizeProviderModel(model) {
     return {
         id,
         name: name || id,
-        vision: !!candidate.vision,
+        vision: !!candidate.vision || Array.isArray(candidate.capabilities) && (candidate.capabilities || []).includes('vision'),
     };
 }
 function normalizeCustomProvider(provider) {

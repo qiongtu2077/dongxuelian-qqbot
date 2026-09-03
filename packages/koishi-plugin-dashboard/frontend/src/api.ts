@@ -271,9 +271,10 @@ export async function fetchAiModelApiConfig(): Promise<ApiResult<AiModelApiConfi
   return get<AiModelApiConfigResponse>('/ai-model-api/config', true)
 }
 
-// 用本次输入 Key 发现模型并原子保存固定 Key 槽位与模型池。
-export async function discoverAiProviderModels(providerId: string, apiKey: string): Promise<ApiResult<AiDiscoveryResponse | null>> {
-  return post<AiDiscoveryResponse>('/ai-model-api/discover', { providerId, apiKey }, true, 20000)
+// 用本次输入 Key 发现模型并原子保存供应商定义、Key 槽位与模型池。
+export async function discoverAiProviderModels(providerId: string, apiKey: string, payload: { capability: AiCapability; name?: string; note?: string; baseURL?: string } = { capability: 'text' }): Promise<ApiResult<AiDiscoveryResponse | null>> {
+  if (providerId !== 'custom-new' && !providerId.startsWith('custom-') && payload.capability === 'text' && !payload.name && !payload.note && !payload.baseURL) return post<AiDiscoveryResponse>('/ai-model-api/discover', { providerId, apiKey }, true, 20000)
+  return post<AiDiscoveryResponse>('/ai-model-api/discover', { providerId, apiKey, ...payload }, true, 20000)
 }
 
 // 独立保存一个能力的有序优先级。

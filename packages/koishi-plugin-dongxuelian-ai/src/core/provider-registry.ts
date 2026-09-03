@@ -21,6 +21,7 @@ interface ProviderModel {
   id: string
   name?: string
   vision?: boolean
+  capabilities?: string[]
 }
 
 interface ProviderDefinitionLike {
@@ -82,7 +83,7 @@ function normalizeProviderModel(model: unknown): ProviderModel | null {
   return {
     id,
     name: name || id,
-    vision: !!candidate.vision,
+    vision: !!candidate.vision || Array.isArray((candidate as { capabilities?: unknown }).capabilities) && ((candidate as { capabilities: unknown[] }).capabilities || []).includes('vision'),
   }
 }
 

@@ -2,6 +2,7 @@ interface ProviderModel {
     id: string;
     name?: string;
     vision?: boolean;
+    capabilities?: string[];
 }
 interface ProviderDefinitionLike {
     name: string;
