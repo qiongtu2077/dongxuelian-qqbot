@@ -482,6 +482,11 @@ function buildRecentPublicTopicNote(items = [], currentUserId = '', options = {}
         return '';
     return `[短句/指代跟进候选]\n当前用户说"${currentText}"这类短句时，优先承接下面最近公共话题或你刚才说过的话；昵称只用于区分发言者，不是默认评价对象。\n${candidates.reverse().join('\n')}`;
 }
+/** 真实序号只接受正整数形式；短 ID 与空值都不能当成真实序号写进缓存。 */
+function normalizeRealSeqValue(value) {
+    const raw = String(value ?? '').trim();
+    return /^[1-9]\d*$/.test(raw) ? raw : '';
+}
 function flushTodayCacheToDisk(channelKey) {
     const cache = channelTodayCache.get(channelKey);
     if (!cache || !Array.isArray(cache.messages))
@@ -530,6 +535,10 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
                     const ts = Date.now();
                     const messageId = String(metadata.messageId || '');
                     cache.updatedAt = ts;
+                    // 跨重启可按真实序号引用；老记录没有这些字段，定位时按短 ID 预检后降级。
+                    const realSeq = normalizeRealSeqValue(metadata.realSeq);
+                    const entryGroupId = String(metadata.groupId || channelKey || '');
+                    const entryBotId = String(metadata.botId || '');
                     cache.messages.push({
                         time: formatShanghaiTime24h(ts),
                         ts,
@@ -537,6 +546,9 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
                         userId,
                         content: (value || '').slice(0, MAX_TODAY_CACHE_CONTENT_CHARS),
                         messageId,
+                        ...(realSeq ? { realSeq } : {}),
+                        ...(entryGroupId ? { groupId: entryGroupId } : {}),
+                        ...(entryBotId ? { botId: entryBotId } : {}),
                         mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [],
                     });
                     appendPrecomputeIndex({

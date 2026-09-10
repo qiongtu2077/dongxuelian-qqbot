@@ -38,6 +38,11 @@ interface HandlerSession {
     };
     bot?: {
         selfId?: string;
+        internal?: {
+            getMsg?: (messageId: string | number) => Promise<unknown> | unknown;
+            sendGroupMsg?: (groupId: string | number, message: unknown) => Promise<unknown> | unknown;
+            sendGroupForwardMsg?: (groupId: string | number, messages: unknown) => Promise<unknown> | unknown;
+        };
     };
     quote?: {
         content?: string;
@@ -62,6 +67,9 @@ interface HandlerTodayMessage {
     content?: string;
     userId?: string;
     messageId?: string;
+    realSeq?: string;
+    groupId?: string;
+    botId?: string;
     mentionUserIds?: string[];
 }
 interface HandlerTodayCache {

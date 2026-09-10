@@ -19,6 +19,7 @@ const { loadRandomVoiceRateCache, } = require('../behavior/random-voice-rate');
 const { channelTodayCache, trimChannelRuntimeCaches, cleanupDailyStatsFiles, analyzeChannelSensitive, } = require('../conversation');
 const { scheduleDailyStatsCleanup, scheduleDailyPrecomputePlanning, clearStartupSchedulers, } = require('./startup-schedulers');
 const { clearChannelQueues, } = require('./channel-task-queue');
+const { clearLocateSnapshots, } = require('./locate-snapshot');
 const { clearRandomPendingState, } = require('../behavior/random-state');
 const agentConfig = require('../agent/config');
 const agentCron = require('../agent/cron');
@@ -300,6 +301,7 @@ function registerPluginLifecycle(ctx, options = {}) {
             ctx.logger('dongxuelian-ai').warn(`agent cron scheduler stop failed: ${getLifecycleErrorMessage(error)}`);
         }
         clearChannelQueues();
+        clearLocateSnapshots();
         clearRandomPendingState();
         clearStartupSchedulers();
         try {

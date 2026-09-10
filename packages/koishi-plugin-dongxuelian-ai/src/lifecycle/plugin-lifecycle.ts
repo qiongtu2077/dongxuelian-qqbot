@@ -56,6 +56,9 @@ const {
   clearChannelQueues,
 } = require('./channel-task-queue') as typeof import('./channel-task-queue')
 const {
+  clearLocateSnapshots,
+} = require('./locate-snapshot') as typeof import('./locate-snapshot')
+const {
   clearRandomPendingState,
 } = require('../behavior/random-state') as typeof import('../behavior/random-state')
 const agentConfig = require('../agent/config') as typeof import('../agent/config')
@@ -398,6 +401,7 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     clearInterval(hostSampleTimer)
     try { agentCron.stopCronScheduler() } catch (error) { ctx.logger('dongxuelian-ai').warn(`agent cron scheduler stop failed: ${getLifecycleErrorMessage(error)}`) }
     clearChannelQueues()
+    clearLocateSnapshots()
     clearRandomPendingState()
     clearStartupSchedulers()
     try {

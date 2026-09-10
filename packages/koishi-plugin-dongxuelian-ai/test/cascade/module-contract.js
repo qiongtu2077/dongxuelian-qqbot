@@ -36,6 +36,7 @@ async function runModuleContract(context) {
     sessionCompat: path.join(LIB, 'lifecycle', 'session-compat'),
     botResolver: path.join(LIB, 'lifecycle', 'bot-resolver'),
     channelTaskQueue: path.join(LIB, 'lifecycle', 'channel-task-queue'),
+    locateSnapshot: path.join(LIB, 'lifecycle', 'locate-snapshot'),
     eventDump: path.join(LIB, 'lifecycle', 'event-dump'),
     startupSchedulers: path.join(LIB, 'lifecycle', 'startup-schedulers'),
     pluginLifecycle: path.join(LIB, 'lifecycle', 'plugin-lifecycle'),
@@ -62,6 +63,7 @@ async function runModuleContract(context) {
     planCommand: path.join(LIB, 'commands', 'plan-command'),
     agentCommand: path.join(LIB, 'commands', 'agent-command'),
     emotionCommand: path.join(LIB, 'commands', 'emotion-command'),
+    locateCommand: path.join(LIB, 'commands', 'locate-command'),
     messageReader: path.join(LIB, 'message', 'message-reader'),
     searchContext: path.join(LIB, 'routing', 'search-context'),
     chat: path.join(LIB, 'chat'),
@@ -435,6 +437,12 @@ async function runModuleContract(context) {
     ],
     emotionCommand: [
       'handleEmotionCommand',
+    ],
+    locateCommand: [
+      'handleLocateCommand', 'buildLocateContextNodes',
+    ],
+    locateSnapshot: [
+      'saveLocateSnapshot', 'getLocateSnapshot', 'clearLocateSnapshots',
     ],
     chat: [
       'chat', 'loadConfig', 'resetConfigCache', 'loadSkills',

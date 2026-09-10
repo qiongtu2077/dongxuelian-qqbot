@@ -184,6 +184,11 @@ async function resolveGuardedFileQuickReadReply(channelKey, plain, entryUserId, 
         return null;
     return await resolveFileQuickReadReply(channelKey, preferredFileMessageId);
 }
+// 读取适配器经 session.setInternal('onebot', data) 写入的原始 OneBot 报文；其他平台没有该字段。
+function readOneBotRawEvent(session) {
+    const data = session?.event?._data;
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+}
 // 注册插件生命周期与消息处理中间件。
 function apply(ctx) {
     registerCapabilityFailureContext(ctx);
@@ -649,9 +654,14 @@ function apply(ctx) {
             isDirect: isPrivate,
         });
         if (inGuild && sharedRecordText) {
+            const rawEvent = readOneBotRawEvent(session);
             saveSharedChannelTurn(session, userName, sharedRecordText, 'user', {
                 messageId: session.messageId,
                 replyToId: analyzed.replyToId,
+                // real_seq 是 NapCat 的真实消息序号，与短 ID（message_id / message_seq / real_id）不同名不同义。
+                realSeq: rawEvent.real_seq,
+                groupId: rawEvent.group_id,
+                botId: session.selfId,
                 mentionUserIds,
                 hasMessageRecordCue: analyzed.hasMessageRecordCue,
                 hasAudio: analyzed.hasAudio,

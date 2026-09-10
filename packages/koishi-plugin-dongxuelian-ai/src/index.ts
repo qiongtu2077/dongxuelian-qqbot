@@ -200,6 +200,9 @@ interface IndexBot {
   sendPrivateMessage?: (id: string, message: string) => Promise<unknown> | unknown
   internal?: {
     sendPrivateMsg?: (id: string, message: unknown) => Promise<unknown> | unknown
+    getMsg?: (messageId: string | number) => Promise<unknown> | unknown
+    sendGroupMsg?: (groupId: string | number, message: unknown) => Promise<unknown> | unknown
+    sendGroupForwardMsg?: (groupId: string | number, messages: unknown) => Promise<unknown> | unknown
   }
 }
 
@@ -466,6 +469,12 @@ async function resolveGuardedFileQuickReadReply(
   const preferredFileMessageId = String(fileFollowupState.targetFile?.messageId || '').trim()
   if (!preferredFileMessageId && preferDirectIntent) return null
   return await resolveFileQuickReadReply(channelKey, preferredFileMessageId)
+}
+
+// 读取适配器经 session.setInternal('onebot', data) 写入的原始 OneBot 报文；其他平台没有该字段。
+function readOneBotRawEvent(session: { event?: unknown }): Record<string, unknown> {
+  const data = (session?.event as { _data?: unknown } | undefined)?._data
+  return data && typeof data === 'object' && !Array.isArray(data) ? data as Record<string, unknown> : {}
 }
 
 // 注册插件生命周期与消息处理中间件。
@@ -940,9 +949,14 @@ function apply(ctx: IndexContext): void {
     })
 
     if (inGuild && sharedRecordText) {
+      const rawEvent = readOneBotRawEvent(session)
       saveSharedChannelTurn(session, userName, sharedRecordText, 'user', {
         messageId: session.messageId,
         replyToId: analyzed.replyToId,
+        // real_seq 是 NapCat 的真实消息序号，与短 ID（message_id / message_seq / real_id）不同名不同义。
+        realSeq: rawEvent.real_seq as string | number | undefined,
+        groupId: rawEvent.group_id as string | number | undefined,
+        botId: session.selfId,
         mentionUserIds,
         hasMessageRecordCue: analyzed.hasMessageRecordCue,
         hasAudio: analyzed.hasAudio,

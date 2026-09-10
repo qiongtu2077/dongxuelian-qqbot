@@ -8,6 +8,9 @@ interface IndexBot {
     sendPrivateMessage?: (id: string, message: string) => Promise<unknown> | unknown;
     internal?: {
         sendPrivateMsg?: (id: string, message: unknown) => Promise<unknown> | unknown;
+        getMsg?: (messageId: string | number) => Promise<unknown> | unknown;
+        sendGroupMsg?: (groupId: string | number, message: unknown) => Promise<unknown> | unknown;
+        sendGroupForwardMsg?: (groupId: string | number, messages: unknown) => Promise<unknown> | unknown;
     };
 }
 interface IndexContext {

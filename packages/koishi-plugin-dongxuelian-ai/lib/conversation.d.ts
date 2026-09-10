@@ -103,6 +103,9 @@ interface TodayCacheMessage {
     userId: string;
     content: string;
     messageId: string;
+    realSeq?: string;
+    groupId?: string;
+    botId?: string;
     mentionUserIds: string[];
 }
 interface TodayCache {
@@ -116,6 +119,9 @@ interface SharedTurnMetadata {
     personaName?: string;
     messageId?: string | number;
     replyToId?: string | number;
+    realSeq?: string | number;
+    groupId?: string | number;
+    botId?: string | number;
     hasMessageRecordCue?: boolean;
     hasAudio?: boolean;
     fromSummary?: boolean;

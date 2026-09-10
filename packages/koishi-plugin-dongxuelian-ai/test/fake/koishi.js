@@ -58,6 +58,24 @@ function makeSession(overrides = {}) {
   const sendWaiters = []
   const internalWaiters = []
   const internalShouldFail = !!overrides.internalShouldFail
+  const internal = overrides.internal || {}
+  // OneBot 假内部通道：sendGroupMsg 按 message_id 存下实际发出的段，getMsg 再按同一个 ID 读回。
+  // 这样测试能真实走完「预检 → 发送 → 读回核验」，也能用 onSendGroupMsg / onGetMsg 伪造引用被丢弃或短 ID 失效。
+  const internalMessages = new Map()
+  for (const seeded of Array.isArray(internal.seedMessages) ? internal.seedMessages : []) {
+    if (seeded && seeded.message_id) internalMessages.set(String(seeded.message_id), seeded)
+  }
+  let internalMessageSeq = 0
+  const internalNextMessageId = () => (internalMessageSeq += 1)
+  // 复刻 NapCat 的 seq 路径：只带 seq 的 reply 段会被解析回目标短 ID 再写进实际消息。
+  const applyReplySeqResolution = message => {
+    if (!Array.isArray(message) || !internal.replySeqMap) return message
+    return message.map(segment => {
+      if (segment?.type !== 'reply' || segment.data?.id !== undefined) return segment
+      const resolved = internal.replySeqMap[String(segment.data?.seq)]
+      return resolved ? { ...segment, data: { ...segment.data, id: resolved } } : segment
+    })
+  }
   const selfId = String(overrides.selfId || overrides.bot?.selfId || '90000')
 
   const notifyWaiters = (waiters, value) => {
@@ -115,7 +133,10 @@ function makeSession(overrides = {}) {
           timeline.push({ type: 'internal', method: 'sendGroupMsg', call })
           notifyWaiters(internalWaiters, call)
           if (internalShouldFail) throw new Error('internal send failed')
-          return { message_id: 'group-msg' }
+          if (typeof internal.onSendGroupMsg === 'function') return internal.onSendGroupMsg(call)
+          const messageId = `group-msg-${internalNextMessageId()}`
+          internalMessages.set(messageId, { message_id: messageId, group_id: String(groupId), message: applyReplySeqResolution(message) })
+          return { message_id: messageId }
         },
         async sendPrivateMsg(userId, message) {
           const call = { method: 'sendPrivateMsg', userId: String(userId), message }
@@ -124,6 +145,22 @@ function makeSession(overrides = {}) {
           notifyWaiters(internalWaiters, call)
           if (internalShouldFail) throw new Error('internal send failed')
           return { message_id: 'private-msg' }
+        },
+        // 复刻 NapCat：读不到的消息按 retcode!==0 抛错，而不是返回失败对象。
+        async getMsg(messageId) {
+          const id = String(messageId)
+          internalCalls.push({ method: 'getMsg', messageId: id })
+          if (typeof internal.onGetMsg === 'function') return internal.onGetMsg(id)
+          const found = internalMessages.get(id)
+          if (!found) throw new Error(`消息不存在: ${id}`)
+          return found
+        },
+        async sendGroupForwardMsg(groupId, messages) {
+          const call = { method: 'sendGroupForwardMsg', groupId: String(groupId), messages }
+          internalCalls.push(call)
+          timeline.push({ type: 'internal', method: 'sendGroupForwardMsg', call })
+          if (internal.forwardShouldFail) throw new Error('forward card failed')
+          return { message_id: `forward-msg-${internalNextMessageId()}` }
         },
       },
     },

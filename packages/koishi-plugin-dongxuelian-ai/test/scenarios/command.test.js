@@ -204,44 +204,97 @@ async function run(t) {
 
     const { todayCst, todayCstMinusDays } = require('../../lib/core/utils')
     const today = todayCst()
+    const WHO_AT_ME = '谁艾特我'
+    const LOCATE_ONE = '定位消息 1'
+    const buildMentionCache = messages => ({ date: today, messages })
+    // ts 必须跨多次写盘保持稳定，否则快照里的时间戳对不上重写后的缓存。
+    const mentionBaseTs = Date.now() - 100000
+    const mentionRow = (index, extra = {}) => ({
+      time: `10:${String(index + 1).padStart(2, '0')}:00`,
+      ts: mentionBaseTs + index,
+      user: `User${index + 1}`,
+      userId: `u${index + 1}`,
+      content: `第${index + 1}条 @消息`,
+      messageId: `at-${index + 1}`,
+      mentionUserIds: ['100000000'],
+      ...extra,
+    })
+    const findQuoteCall = result => result.internalCalls.find(call => call.method === 'sendGroupMsg')
+    const quoteSegmentOf = call => (Array.isArray(call?.message) ? call.message.find(segment => segment.type === 'reply') : null)
+
     data.writeJson('summary-whitelist.json', ['10001'])
-    data.writeJson('today-cache-10001.json', {
-      date: today,
-      messages: Array.from({ length: 12 }, (_, index) => ({
-        time: `10:${String(index + 1).padStart(2, '0')}:00`,
-        ts: Date.now() + index,
-        user: `User${index + 1}`,
-        userId: `u${index + 1}`,
-        content: `第${index + 1}条 @消息`,
-        messageId: `at-${index + 1}`,
-        mentionUserIds: ['100000000'],
-      })),
-    })
-    const whoAtMe = await run(makeSession({ content: '\u8c01\u827e\u7279\u6211' }))
-    t.check('scenario who-at-me shows latest ten mention items', whoAtMe.sent.join('\n').includes('近5天有 12 条消息 @了你（显示最近12条），时间正序1-12') && whoAtMe.sent.join('\n').includes('1. User12 10:12'), JSON.stringify(whoAtMe.sent))
-    const locateFirst = await run(makeSession({ content: '\u5b9a\u4f4d\u6d88\u606f 1' }))
-    t.check('scenario locate message quotes displayed first item', locateFirst.sent.length === 1 && locateFirst.sent[0] === '<quote id="at-12"/>找到啦！', JSON.stringify(locateFirst.sent))
-    data.writeJson('today-cache-10001.json', {
-      date: today,
-      messages: [
-        { time: '11:00:00', ts: Date.now(), user: 'Alice', userId: 'u1', content: '没有 messageId 的 @消息', mentionUserIds: ['100000000'] },
-      ],
-    })
-    const locateMissingId = await run(makeSession({ content: '\u5b9a\u4f4d\u6d88\u606f 1' }))
-    t.check('scenario locate message falls back without message id', locateMissingId.sent.some(item => String(item).includes('消息上下文') && String(item).includes('没有 messageId')), JSON.stringify(locateMissingId.sent))
-    data.writeJson('today-cache-10001.json', {
-      date: today,
-      messages: [
-        { time: '11:10:00', ts: Date.now(), user: 'Bob', userId: 'u2', content: '引用发送失败也回退', messageId: 'broken-quote', mentionUserIds: ['100000000'] },
-      ],
-    })
-    const locateSendFails = await run(makeSession({
-      content: '\u5b9a\u4f4d\u6d88\u606f 1',
-      async send() {
-        throw new Error('forced quote failure')
+    data.writeJson('today-cache-10001.json', buildMentionCache(Array.from({ length: 12 }, (_, index) => mentionRow(index))))
+    const whoAtMe = await run(makeSession({ content: WHO_AT_ME }))
+    t.check('scenario who-at-me shows latest ten mention items', whoAtMe.sent.join('\n').includes('近5天有 12 条消息 @了你（显示最近12条），最近消息优先，1 为最新') && whoAtMe.sent.join('\n').includes('1. User12 10:12'), JSON.stringify(whoAtMe.sent))
+
+    // 编号快照按「群号+用户」保存；没查过「谁艾特我」时不再实时重算编号，直接提示先查询。
+    const locateNoSnapshot = await run(makeSession({ content: LOCATE_ONE, userId: '909', author: { id: '909', name: 'outsider' } }))
+    t.check('scenario locate without snapshot asks to query first', locateNoSnapshot.sent.some(item => String(item).includes('请先发『谁艾特我』再按编号定位')), JSON.stringify(locateNoSnapshot.sent))
+
+    // 新格式记录带 real_seq：跳过短 ID 预检，直接用真实序号发引用，读回核验命中即成功。
+    data.writeJson('today-cache-10001.json', buildMentionCache([
+      mentionRow(0, { messageId: 'at-seq', realSeq: '778164', groupId: '10001', botId: '90000' }),
+    ]))
+    await run(makeSession({ content: WHO_AT_ME }))
+    const locateBySeq = await run(makeSession({
+      content: LOCATE_ONE,
+      internal: { replySeqMap: { '778164': 'at-seq' } },
+    }))
+    const seqQuoteSegment = quoteSegmentOf(findQuoteCall(locateBySeq))
+    t.check('scenario locate by real_seq skips precheck and sends seq only', locateBySeq.internalCalls[0]?.method === 'sendGroupMsg' && seqQuoteSegment?.data?.seq === 778164 && seqQuoteSegment?.data?.id === undefined, JSON.stringify(locateBySeq.internalCalls))
+    t.check('scenario locate by real_seq does not fall back', locateBySeq.sent.length === 0, JSON.stringify(locateBySeq.sent))
+
+    // 老格式记录没有 real_seq：先用 get_msg 预检，通过后用短 ID 发引用。
+    data.writeJson('today-cache-10001.json', buildMentionCache([
+      mentionRow(0, { messageId: 'at-old' }),
+    ]))
+    await run(makeSession({ content: WHO_AT_ME }))
+    const locateByShortId = await run(makeSession({
+      content: LOCATE_ONE,
+      internal: { seedMessages: [{ message_id: 'at-old', group_id: '10001', message: [] }] },
+    }))
+    const shortIdQuoteSegment = quoteSegmentOf(findQuoteCall(locateByShortId))
+    t.check('scenario locate by short id prechecks before sending', locateByShortId.internalCalls[0]?.method === 'getMsg' && locateByShortId.internalCalls[0]?.messageId === 'at-old' && shortIdQuoteSegment?.data?.id === 'at-old', JSON.stringify(locateByShortId.internalCalls))
+
+    // 预检失败（短 ID 映射已失效）：不发「找到啦！」，直接给上下文。
+    const locatePrecheckFails = await run(makeSession({
+      content: LOCATE_ONE,
+      internal: { onGetMsg: id => { throw new Error(`消息不存在: ${id}`) } },
+    }))
+    t.check('scenario locate precheck failure skips quote and sends context', !findQuoteCall(locatePrecheckFails) && locatePrecheckFails.sent.some(item => String(item).includes('原消息暂时无法引用')) && locatePrecheckFails.internalCalls.some(call => call.method === 'sendGroupForwardMsg'), JSON.stringify(locatePrecheckFails.sent))
+
+    // 回归场景：NapCat 丢弃引用段但发送成功。发送返回了消息 ID，读回却没有 reply 段，必须给上下文而不是假装成功。
+    const locateQuoteDropped = await run(makeSession({
+      content: LOCATE_ONE,
+      internal: {
+        onGetMsg: id => ({ message_id: id, group_id: '10001', message: [{ type: 'text', data: { text: '找到啦！' } }] }),
       },
     }))
-    t.check('scenario locate message falls back when quote send fails', locateSendFails.sent.some(item => String(item).includes('消息上下文') && String(item).includes('引用发送失败也回退')), JSON.stringify(locateSendFails.sent))
+    t.check('scenario locate dropped quote falls back to context', !!findQuoteCall(locateQuoteDropped) && locateQuoteDropped.sent.some(item => String(item).includes('未能查到该消息的引用结果')) && locateQuoteDropped.sent.length === 1, JSON.stringify(locateQuoteDropped.sent))
+
+    // 发送没有返回消息 ID 时按失败处理；Koishi 的 session.send 在生产中只会返回空数组，不会抛异常。
+    const locateNoMessageId = await run(makeSession({
+      content: LOCATE_ONE,
+      internal: { onSendGroupMsg: () => ({}) },
+    }))
+    t.check('scenario locate without sent message id falls back to context', locateNoMessageId.sent.some(item => String(item).includes('原消息暂时无法引用')) && locateNoMessageId.internalCalls.some(call => call.method === 'sendGroupForwardMsg'), JSON.stringify(locateNoMessageId.sent))
+
+    // 决策 17：卡片发送失败不重试，改发单条目标消息，不发全量纯文本。
+    const locateCardFails = await run(makeSession({
+      content: LOCATE_ONE,
+      internal: { forwardShouldFail: true, onGetMsg: id => { throw new Error(`消息不存在: ${id}`) } },
+    }))
+    t.check('scenario locate card failure sends single target line', locateCardFails.sent.some(item => String(item).includes('兜底上下文发送失败')) && locateCardFails.sent.some(item => String(item).includes('→ User1 10:01：第1条 @消息')) && locateCardFails.sent.length === 3, JSON.stringify(locateCardFails.sent))
+
+    // §3 列表漂移：查询后新增 @ 消息，仍按原快照命中原编号目标。
+    data.writeJson('today-cache-10001.json', buildMentionCache([mentionRow(0), mentionRow(1)]))
+    await run(makeSession({ content: WHO_AT_ME }))
+    data.writeJson('today-cache-10001.json', buildMentionCache([mentionRow(0), mentionRow(1), mentionRow(2)]))
+    const locateAfterDrift = await run(makeSession({
+      content: LOCATE_ONE,
+      internal: { seedMessages: [{ message_id: 'at-2', group_id: '10001', message: [] }] },
+    }))
+    t.check('scenario locate keeps numbering from snapshot after new mentions', quoteSegmentOf(findQuoteCall(locateAfterDrift))?.data?.id === 'at-2', JSON.stringify(locateAfterDrift.internalCalls))
 
     const emotion = await run(makeSession({ content: '\u4eca\u65e5\u60c5\u7eea' }))
     checkSentNonEmpty(t, 'scenario today emotion empty cache replies', emotion)

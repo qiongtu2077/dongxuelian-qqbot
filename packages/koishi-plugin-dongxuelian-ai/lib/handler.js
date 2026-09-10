@@ -16,6 +16,8 @@ const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply/reply
 const { logDebug } = require('./core/logging-config');
 const { handled, notHandled, } = require('./commands/command-result');
 const { handleVoiceCommand } = require('./commands/voice-command');
+const { handleLocateCommand } = require('./commands/locate-command');
+const { saveLocateSnapshot } = require('./lifecycle/locate-snapshot');
 const { handleMemoryCommand } = require('./commands/memory-command');
 const { handlePlanCommand } = require('./commands/plan-command');
 const { handleAgentCommand } = require('./commands/agent-command');
@@ -56,16 +58,7 @@ function findMentionedMessages(cache, userId) {
 function hasMessageTimestamp(message) {
     return typeof message.ts === 'number';
 }
-// 生成定位失败时使用的上下文文本。
-function buildLocateMessageContext(cache, cacheIdx) {
-    const start = Math.max(0, cacheIdx - 2);
-    const end = Math.min(cache.messages.length, cacheIdx + 3);
-    const contextLines = cache.messages.slice(start, end).map((m, i) => {
-        const prefix = start + i === cacheIdx ? '→ ' : '  ';
-        return `${prefix}${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}：${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 80)}`;
-    }).join('\n');
-    return `消息上下文（共${cache.messages.length}条）：\n\n${contextLines}`;
-}
+// 生成定位失败时使用的上下文文本。实现在 commands/locate-command，随卡片规格一起维护。
 // Handles operational commands for modes, diagnostics, history lookup and search switches.
 async function handleOperationalCommandDomain(session, ctx, state) {
     const { plain, inGuild, channelKey, currentUserId, adminCommandMatched, loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache, callOpenAI, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus, getThinkingEnabled, setThinkingEnabled, resetConfigCache, getSkillsCount, channelMissCount, repeatEnabledCache, channelTodayCache, lastEmotionCache, } = state;
@@ -132,8 +125,10 @@ async function handleOperationalCommandDomain(session, ctx, state) {
         const shown = Math.min(total, 20);
         const botId = String(session.selfId || session.bot?.selfId || '10000');
         const groupId = String(channelKey);
+        // 编号快照与列表同源，供「定位消息 N」按同一份编号解析，避免新增消息导致编号漂移。
+        saveLocateSnapshot(channelKey, userId, slice);
         const nodes = [];
-        nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: `近5天有 ${total} 条消息 @了你（显示最近${shown}条），时间正序1-${shown}` } });
+        nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: `近5天有 ${total} 条消息 @了你（显示最近${shown}条），最近消息优先，1 为最新` } });
         for (let i = 0; i < slice.length; i++) {
             const m = slice[i];
             const text = (m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 120);
@@ -151,7 +146,7 @@ async function handleOperationalCommandDomain(session, ctx, state) {
         if (forwardOk)
             return handled();
         const lines = slice.map((m, i) => `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}:\n${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 60)}`);
-        let reply = `近5天有 ${total} 条消息 @了你（显示最近${shown}条），时间正序1-${shown}：\n\n${lines.join('\n\n')}`;
+        let reply = `近5天有 ${total} 条消息 @了你（显示最近${shown}条），最近消息优先，1 为最新：\n\n${lines.join('\n\n')}`;
         if (total > shown)
             reply += `\n\n${shown}/${total}`;
         reply += `\n\n如需引用跳转可定位消息，示例：\n定位消息 1`;
@@ -159,7 +154,6 @@ async function handleOperationalCommandDomain(session, ctx, state) {
     }
     const locateMatch = plain.match(/^定位消息\s*(\d+)$/);
     if (locateMatch) {
-        const targetIdx = parseInt(locateMatch[1], 10) - 1;
         if (!inGuild)
             return handled('这个命令只能在群里用。');
         const safeKey = safeChannelKey(channelKey);
@@ -172,27 +166,14 @@ async function handleOperationalCommandDomain(session, ctx, state) {
         if (!cache || !Array.isArray(cache.messages) || !cache.messages.length) {
             return handled('还没有收录消息。');
         }
-        const userId = String(currentUserId || '');
-        const locateCutoffTs = Date.now() - 5 * 24 * 60 * 60 * 1000;
-        const atMe = findMentionedMessages(cache, userId).filter(hasMessageTimestamp).filter(m => m.ts >= locateCutoffTs);
-        const displayedAtMe = atMe.slice(-20).reverse();
-        if (targetIdx < 0 || targetIdx >= displayedAtMe.length)
-            return handled('编号超出范围。');
-        const targetMessage = displayedAtMe[targetIdx];
-        const cacheIdx = cache.messages.indexOf(targetMessage);
-        if (cacheIdx === -1)
-            return handled('未找到该消息。');
-        const quoteMessageId = String(targetMessage.messageId || '').trim();
-        if (quoteMessageId) {
-            try {
-                await session.send(`<quote id="${quoteMessageId}"/>找到啦！`);
-                return handled();
-            }
-            catch (error) {
-                ctx.logger('dongxuelian-ai').warn(`locate quote send failed: ${getHandlerErrorMessage(error)}`);
-            }
-        }
-        return handled(buildLocateMessageContext(cache, cacheIdx));
+        return await handleLocateCommand({
+            session,
+            ctx,
+            channelKey: String(channelKey || ''),
+            currentUserId: String(currentUserId || ''),
+            cache,
+            index: parseInt(locateMatch[1], 10),
+        });
     }
     if (/^东雪莲群聊AI概率查看$/.test(plain)) {
         if (!inGuild)
