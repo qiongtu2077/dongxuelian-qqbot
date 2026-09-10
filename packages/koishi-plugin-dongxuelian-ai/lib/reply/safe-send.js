@@ -141,18 +141,21 @@ async function sendRepeatMface(ctx, session, payload) {
         return false;
     const replySession = asReplySession(session);
     try {
+        // 适配器 Internal 的方法是原型方法，内部依赖 this._get；解构会丢 this，必须先 bind。
         if (replySession.isDirect) {
-            const sendPrivateMsg = replySession.bot?.internal?.sendPrivateMsg;
+            const internal = replySession.bot?.internal;
+            const sendPrivateMsg = internal?.sendPrivateMsg;
             if (typeof sendPrivateMsg !== 'function' || !replySession.userId)
                 throw new Error('missing private onebot internal send for mface repeat');
-            await sendPrivateMsg(replySession.userId, message);
+            await sendPrivateMsg.call(internal, replySession.userId, message);
         }
         else {
-            const sendGroupMsg = replySession.bot?.internal?.sendGroupMsg;
+            const internal = replySession.bot?.internal;
+            const sendGroupMsg = internal?.sendGroupMsg;
             const targetGroupId = replySession.guildId || replySession.channelId;
             if (typeof sendGroupMsg !== 'function' || !targetGroupId)
                 throw new Error('missing group onebot internal send for mface repeat');
-            await sendGroupMsg(targetGroupId, message);
+            await sendGroupMsg.call(internal, targetGroupId, message);
         }
         return true;
     }

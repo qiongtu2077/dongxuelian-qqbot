@@ -143,15 +143,19 @@ function findCacheIndexOfSnapshotEntry(cache, entry) {
 }
 /**
  * 传输层：预检读取、引用发送、核验读回、卡片发送都走 session.bot.internal。
+ * 这些是适配器 Internal 的原型方法，内部依赖 `this._get`，必须先 bind 再调用；
+ * 直接解构会让 this 丢失，每个调用都变成 TypeError（线上曾因此每次定位都降级）。
  * 测试可直接用假 session.bot.internal 注入；没有 OneBot 内部通道时返回 null，由调用方降级。
  */
 function createLocateTransport(session) {
     const internal = session?.bot?.internal;
     if (!internal)
         return null;
-    const { getMsg, sendGroupMsg, sendGroupForwardMsg } = internal;
-    if (typeof getMsg !== 'function' || typeof sendGroupMsg !== 'function')
+    if (typeof internal.getMsg !== 'function' || typeof internal.sendGroupMsg !== 'function')
         return null;
+    const getMsg = internal.getMsg.bind(internal);
+    const sendGroupMsg = internal.sendGroupMsg.bind(internal);
+    const sendGroupForwardMsg = typeof internal.sendGroupForwardMsg === 'function' ? internal.sendGroupForwardMsg.bind(internal) : null;
     return {
         readMessage(messageId, timeoutMs) {
             return callWithTimeout(async () => {
@@ -169,7 +173,7 @@ function createLocateTransport(session) {
             }, timeoutMs);
         },
         sendForwardCard(groupId, nodes, timeoutMs) {
-            if (typeof sendGroupForwardMsg !== 'function')
+            if (!sendGroupForwardMsg)
                 return Promise.resolve({ ok: false, reason: 'error' });
             return callWithTimeout(async () => extractSentMessageId(await sendGroupForwardMsg(groupId, nodes)), timeoutMs);
         },

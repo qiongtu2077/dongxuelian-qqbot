@@ -51,6 +51,63 @@ function makeCtx(options = {}) {
   return { ctx, middlewareList, eventListeners, logs }
 }
 
+// 假 OneBot 内部通道。
+// 刻意定义成类原型方法，而不是对象字面量上的自有箭头/普通函数：真实适配器的 Internal
+// 方法内部依赖 `this._get`，调用方一旦解构再调用就会丢掉 this 并全部抛错。
+// 保持同样的 this 约束，测试才不会比生产更宽容（线上曾因此每条定位都降级，测试却全绿）。
+class FakeInternal {
+  constructor(deps) {
+    this.internalCalls = deps.internalCalls
+    this.timeline = deps.timeline
+    this.internalWaiters = deps.internalWaiters
+    this.notifyWaiters = deps.notifyWaiters
+    this.internalShouldFail = deps.internalShouldFail
+    this.options = deps.internal
+    this.messages = deps.internalMessages
+    this.nextMessageId = deps.internalNextMessageId
+    this.applyReplySeqResolution = deps.applyReplySeqResolution
+  }
+
+  async sendGroupMsg(groupId, message) {
+    const call = { method: 'sendGroupMsg', groupId: String(groupId), message }
+    this.internalCalls.push(call)
+    this.timeline.push({ type: 'internal', method: 'sendGroupMsg', call })
+    this.notifyWaiters(this.internalWaiters, call)
+    if (this.internalShouldFail) throw new Error('internal send failed')
+    if (typeof this.options.onSendGroupMsg === 'function') return this.options.onSendGroupMsg(call)
+    const messageId = `group-msg-${this.nextMessageId()}`
+    this.messages.set(messageId, { message_id: messageId, group_id: String(groupId), message: this.applyReplySeqResolution(message) })
+    return { message_id: messageId }
+  }
+
+  async sendPrivateMsg(userId, message) {
+    const call = { method: 'sendPrivateMsg', userId: String(userId), message }
+    this.internalCalls.push(call)
+    this.timeline.push({ type: 'internal', method: 'sendPrivateMsg', call })
+    this.notifyWaiters(this.internalWaiters, call)
+    if (this.internalShouldFail) throw new Error('internal send failed')
+    return { message_id: 'private-msg' }
+  }
+
+  // 复刻 NapCat：读不到的消息按 retcode!==0 抛错，而不是返回失败对象。
+  async getMsg(messageId) {
+    const id = String(messageId)
+    this.internalCalls.push({ method: 'getMsg', messageId: id })
+    if (typeof this.options.onGetMsg === 'function') return this.options.onGetMsg(id)
+    const found = this.messages.get(id)
+    if (!found) throw new Error(`消息不存在: ${id}`)
+    return found
+  }
+
+  async sendGroupForwardMsg(groupId, messages) {
+    const call = { method: 'sendGroupForwardMsg', groupId: String(groupId), messages }
+    this.internalCalls.push(call)
+    this.timeline.push({ type: 'internal', method: 'sendGroupForwardMsg', call })
+    if (this.options.forwardShouldFail) throw new Error('forward card failed')
+    return { message_id: `forward-msg-${this.nextMessageId()}` }
+  }
+}
+
 function makeSession(overrides = {}) {
   const sent = Array.isArray(overrides.sent) ? overrides.sent : []
   const internalCalls = Array.isArray(overrides.internalCalls) ? overrides.internalCalls : []
@@ -126,43 +183,20 @@ function makeSession(overrides = {}) {
     event: { sender: { role: 'member' }, message: [] },
     bot: {
       selfId,
-      internal: {
-        async sendGroupMsg(groupId, message) {
-          const call = { method: 'sendGroupMsg', groupId: String(groupId), message }
-          internalCalls.push(call)
-          timeline.push({ type: 'internal', method: 'sendGroupMsg', call })
-          notifyWaiters(internalWaiters, call)
-          if (internalShouldFail) throw new Error('internal send failed')
-          if (typeof internal.onSendGroupMsg === 'function') return internal.onSendGroupMsg(call)
-          const messageId = `group-msg-${internalNextMessageId()}`
-          internalMessages.set(messageId, { message_id: messageId, group_id: String(groupId), message: applyReplySeqResolution(message) })
-          return { message_id: messageId }
-        },
-        async sendPrivateMsg(userId, message) {
-          const call = { method: 'sendPrivateMsg', userId: String(userId), message }
-          internalCalls.push(call)
-          timeline.push({ type: 'internal', method: 'sendPrivateMsg', call })
-          notifyWaiters(internalWaiters, call)
-          if (internalShouldFail) throw new Error('internal send failed')
-          return { message_id: 'private-msg' }
-        },
-        // 复刻 NapCat：读不到的消息按 retcode!==0 抛错，而不是返回失败对象。
-        async getMsg(messageId) {
-          const id = String(messageId)
-          internalCalls.push({ method: 'getMsg', messageId: id })
-          if (typeof internal.onGetMsg === 'function') return internal.onGetMsg(id)
-          const found = internalMessages.get(id)
-          if (!found) throw new Error(`消息不存在: ${id}`)
-          return found
-        },
-        async sendGroupForwardMsg(groupId, messages) {
-          const call = { method: 'sendGroupForwardMsg', groupId: String(groupId), messages }
-          internalCalls.push(call)
-          timeline.push({ type: 'internal', method: 'sendGroupForwardMsg', call })
-          if (internal.forwardShouldFail) throw new Error('forward card failed')
-          return { message_id: `forward-msg-${internalNextMessageId()}` }
-        },
-      },
+      // 假内部通道做成原型方法（不是对象字面量上的自有函数），复刻适配器 Internal 的形态：
+      // 真实方法内部依赖 this._get，调用方一旦解构就会丢 this 并全部抛错。
+      // 线上曾因此每条定位都降级，而当时的假实现不依赖 this，测试全绿却掩盖了问题。
+      internal: new FakeInternal({
+        internalCalls,
+        timeline,
+        notifyWaiters,
+        internalWaiters,
+        internalShouldFail,
+        internal,
+        internalMessages,
+        internalNextMessageId,
+        applyReplySeqResolution,
+      }),
     },
     async send(message) {
       const text = String(message)

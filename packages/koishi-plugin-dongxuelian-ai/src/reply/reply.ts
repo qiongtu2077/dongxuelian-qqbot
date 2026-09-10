@@ -257,15 +257,16 @@ async function sendStickerImage(ctx: ReplyContext, session: ReplySessionLike, st
     try {
       const segArr = [{ type: 'image', data: { file: image } }]
       let result = null
+      // 适配器 Internal 的方法是原型方法，内部依赖 this._get；解构会丢 this，必须先 bind。
       if (isDirect) {
         const sendPrivateMsg = bot.internal.sendPrivateMsg
         if (typeof sendPrivateMsg !== 'function') throw new Error('missing sendPrivateMsg for private sticker send')
-        result = await sendPrivateMsg(userId, segArr)
+        result = await sendPrivateMsg.bind(bot.internal)(userId, segArr)
       } else {
         if (!session.guildId) throw new Error('missing guildId for group sticker send')
         const sendGroupMsg = bot.internal.sendGroupMsg
         if (typeof sendGroupMsg !== 'function') throw new Error('missing sendGroupMsg for group sticker send')
-        result = await sendGroupMsg(session.guildId, segArr)
+        result = await sendGroupMsg.bind(bot.internal)(session.guildId, segArr)
       }
       const messageId = result && (result.message_id || result.messageId || result.id || result.data?.message_id)
       logger.info(`sticker sent via internal API${file ? `: ${file}` : ''}`)
