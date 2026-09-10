@@ -263,6 +263,16 @@ async function run(t) {
     }))
     t.check('scenario locate precheck failure skips quote and sends context', !findQuoteCall(locatePrecheckFails) && locatePrecheckFails.sent.some(item => String(item).includes('原消息暂时无法引用')) && locatePrecheckFails.internalCalls.some(call => call.method === 'sendGroupForwardMsg'), JSON.stringify(locatePrecheckFails.sent))
 
+    // 箭头必须落在节点 content 里：name 会被 QQ 换成真实昵称，放 name 上线上看不见。
+    const locateCardNodes = locatePrecheckFails.internalCalls.find(call => call.method === 'sendGroupForwardMsg')?.messages || []
+    const locateTargetNode = locateCardNodes.find(node => String(node?.data?.content || '').startsWith('→ '))
+    t.check('scenario locate card marks target with arrow in content', !!locateTargetNode
+      && String(locateTargetNode.data.content).includes('第1条 @消息')
+      && String(locateTargetNode.data.name) === 'User1 10:01'
+      && !String(locateTargetNode.data.name).includes('→')
+      && locateCardNodes.filter(node => String(node?.data?.content || '').startsWith('→ ')).length === 1,
+      JSON.stringify(locateCardNodes))
+
     // 回归场景：NapCat 丢弃引用段但发送成功。发送返回了消息 ID，读回却没有 reply 段，必须给上下文而不是假装成功。
     const locateQuoteDropped = await run(makeSession({
       content: LOCATE_ONE,
