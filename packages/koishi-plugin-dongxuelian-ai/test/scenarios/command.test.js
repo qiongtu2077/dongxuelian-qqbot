@@ -225,7 +225,19 @@ async function run(t) {
     data.writeJson('summary-whitelist.json', ['10001'])
     data.writeJson('today-cache-10001.json', buildMentionCache(Array.from({ length: 12 }, (_, index) => mentionRow(index))))
     const whoAtMe = await run(makeSession({ content: WHO_AT_ME }))
-    t.check('scenario who-at-me shows latest ten mention items', whoAtMe.sent.join('\n').includes('近5天有 12 条消息 @了你（显示最近12条），最近消息优先，1 为最新') && whoAtMe.sent.join('\n').includes('1. User12 10:12'), JSON.stringify(whoAtMe.sent))
+    const whoAtMeNodes = whoAtMe.internalCalls.find(call => call.method === 'sendGroupForwardMsg')?.messages || []
+    const whoAtMeNumbered = whoAtMeNodes.filter(node => /^\d+\. /.test(String(node?.data?.content || '')))
+    // 编号必须在 content 里：节点 name 会被 QQ 换成真实昵称，放 name 上编号会消失。
+    t.check('scenario who-at-me card numbers every entry in content', whoAtMeNumbered.length === 12
+      && String(whoAtMeNumbered[0].data.content).startsWith('1. 第12条 @消息')
+      && String(whoAtMeNumbered[11].data.content).startsWith('12. 第1条 @消息')
+      && whoAtMeNodes.every(node => !/^\d+\. /.test(String(node?.data?.name || '')))
+      && String(whoAtMeNodes[0].data.content).includes('行首数字为编号'),
+      JSON.stringify(whoAtMeNodes))
+
+    // 卡片通道整体不可用时仍要退化成编号完整的纯文本。
+    const whoAtMeFallback = await run(makeSession({ content: WHO_AT_ME, internal: { forwardShouldFail: true } }))
+    t.check('scenario who-at-me falls back to numbered plain text', whoAtMeFallback.sent.join('\n').includes('1. User12 10:12') && whoAtMeFallback.sent.join('\n').includes('12. User1 10:01'), JSON.stringify(whoAtMeFallback.sent))
 
     // 编号快照按「群号+用户」保存；没查过「谁艾特我」时不再实时重算编号，直接提示先查询。
     const locateNoSnapshot = await run(makeSession({ content: LOCATE_ONE, userId: '909', author: { id: '909', name: 'outsider' } }))

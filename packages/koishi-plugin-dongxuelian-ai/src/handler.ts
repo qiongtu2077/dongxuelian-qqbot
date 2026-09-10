@@ -284,19 +284,28 @@ async function handleOperationalCommandDomain(session: HandlerSession, ctx: Hand
     // 编号快照与列表同源，供「定位消息 N」按同一份编号解析，避免新增消息导致编号漂移。
     saveLocateSnapshot(channelKey, userId, slice)
 
+    // 编号必须放在 content 正文里：节点的 name 在 uin 能解析到真实用户时会被 QQ 换成
+    // 真实昵称，编号会整条消失（线上实测：正文里的编号保留，name 里的没了）。
     const nodes: { type: string; data: { name: string; uin: string; content: string } }[] = []
-    nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: `近5天有 ${total} 条消息 @了你（显示最近${shown}条），最近消息优先，1 为最新` } })
+    nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: `近5天有 ${total} 条消息 @了你（显示最近${shown}条），最近消息优先，行首数字为编号，1 为最新` } })
     for (let i = 0; i < slice.length; i++) {
       const m = slice[i]
       const text = (m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 120)
-      nodes.push({ type: 'node', data: { name: `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}`, uin: String(m.userId || '10000'), content: text || '(空)' } })
+      nodes.push({ type: 'node', data: { name: `${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}`, uin: String(m.userId || '10000'), content: `${i + 1}. ${text || '(空)'}` } })
     }
     let footer = '如需引用跳转可定位消息，示例：\n定位消息 1'
     if (total > shown) footer = `${shown}/${total}\n\n` + footer
     nodes.push({ type: 'node', data: { name: '东雪莲pro', uin: botId, content: footer } })
 
+    // 卡片优先走 bot.internal（复用已有连接，测试可注入）；不可用时退回独立 WS 通道。
     let forwardOk = false
-    try { forwardOk = !!(await sendForwardMsg(groupId, nodes)) } catch { /* fall through */ }
+    const internalBot = session.bot?.internal
+    if (typeof internalBot?.sendGroupForwardMsg === 'function') {
+      try { forwardOk = !!(await internalBot.sendGroupForwardMsg.call(internalBot, groupId, nodes)) } catch { forwardOk = false }
+    }
+    if (!forwardOk) {
+      try { forwardOk = !!(await sendForwardMsg(groupId, nodes)) } catch { /* fall through */ }
+    }
     if (forwardOk) return handled()
 
     const lines = slice.map((m, i) => `${i + 1}. ${m.user || '群友'} ${m.time ? m.time.slice(0, 5) : ''}:\n${(m.content || '').replace(/【[^】]*】/g, '').trim().slice(0, 60)}`)
