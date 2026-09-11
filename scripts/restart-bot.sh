@@ -170,16 +170,30 @@ echo "端口 $KOISHI_PORT 已释放"
 # 3. 写时间戳标记
 MARKER="=== RESTART $(date +%Y%m%d%H%M%S) ==="
 echo "$MARKER" >> "$LOG_FILE"
+RESTART_EPOCH="$(date +%s)"
 
 # 4. 由独立 systemd 服务启动 Koishi，发布单元不再持有 Bot 进程。
 echo "重启 lian-koishi.service..."
 systemctl restart lian-koishi
 
+# 收集启动日志：systemd 部署下 koishi 日志走 journald，旧直启才写 koishi.log；两者都查。
+collect_startup_log() {
+  local combined=""
+  combined="$(tail -40 "$LOG_FILE" 2>/dev/null || true)"
+  if command -v journalctl >/dev/null 2>&1 && systemctl list-unit-files lian-koishi.service >/dev/null 2>&1; then
+    local journal_tail
+    journal_tail="$(journalctl -u lian-koishi --since "@$RESTART_EPOCH" --no-pager 2>/dev/null | tail -40 || true)"
+    combined="$combined
+$journal_tail"
+  fi
+  printf '%s' "$combined"
+}
+
 # 5. 轮询服务、端口、适配器和资源 worker 健康状态。
 echo "等待 koishi 启动..."
 for i in $(seq 1 20); do
   sleep 1
-  LOG_TAIL=$(tail -40 "$LOG_FILE")
+  LOG_TAIL=$(collect_startup_log)
   if systemctl is-active --quiet lian-koishi && \
      ss -tlnp | grep -q ":$KOISHI_PORT" && \
      ps aux | grep -q 'koishi/lib/worker' && \
@@ -196,5 +210,5 @@ done
 
 echo "启动失败 ✗"
 echo "--- 最后 20 行日志 ---"
-tail -20 "$LOG_FILE"
+collect_startup_log | tail -20
 exit 1
