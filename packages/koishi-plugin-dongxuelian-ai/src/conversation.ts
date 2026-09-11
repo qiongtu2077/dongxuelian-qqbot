@@ -288,10 +288,13 @@ function trimTodayCacheMessages(cache: TodayCache | null | undefined): void {
   }
 }
 
-function pruneMapByActivity<T>(map: Map<string, T>, getLastTs: (value: T) => number, now: number = Date.now()): void {
+function pruneMapByActivity<T>(map: Map<string, T>, getLastTs: (value: T) => number, now: number = Date.now(), onEvict?: (key: string) => void): void {
   for (const [key, value] of map.entries()) {
     const ts = Number(getLastTs(value)) || 0
-    if (ts > 0 && now - ts > CHANNEL_RUNTIME_CACHE_TTL_MS) map.delete(key)
+    if (ts > 0 && now - ts > CHANNEL_RUNTIME_CACHE_TTL_MS) {
+      if (onEvict) onEvict(key)
+      map.delete(key)
+    }
   }
   if (map.size <= MAX_CHANNEL_RUNTIME_CACHE_ENTRIES) return
   const ordered = [...map.entries()]
@@ -299,7 +302,10 @@ function pruneMapByActivity<T>(map: Map<string, T>, getLastTs: (value: T) => num
     .sort((left, right) => left[1] - right[1])
   while (map.size > MAX_CHANNEL_RUNTIME_CACHE_ENTRIES && ordered.length) {
     const next = ordered.shift()
-    if (next) map.delete(next[0])
+    if (next) {
+      if (onEvict) onEvict(next[0])
+      map.delete(next[0])
+    }
   }
 }
 
@@ -348,7 +354,10 @@ function setLastForwardSummaryCache(channelKey: string, text: string, ts: number
 
 function trimChannelRuntimeCaches(now: number = Date.now()): void {
   pruneMapByActivity(channelSharedCache, items => getLastMessageTs(items), now)
-  pruneMapByActivity(channelTodayCache, cache => Number(cache?.updatedAt || cache?.lastDiskWrite || getLastMessageTs(cache?.messages)), now)
+  // today-cache 被驱逐前先落盘，保证磁盘文件保留当天全量历史（供运行期回读与跨重启恢复）。
+  pruneMapByActivity(channelTodayCache, cache => Number(cache?.updatedAt || cache?.lastDiskWrite || getLastMessageTs(cache?.messages)), now, key => {
+    try { flushTodayCacheToDisk(key) } catch { /* non-critical: best-effort flush before eviction */ }
+  })
   pruneForwardSummaryCache(60 * 60 * 1000, now)
   pruneMapWithTtl(pendingSensitiveAlert, entry => Number(entry?.ts || 0), 2 * 60 * 60 * 1000, now)
 }
@@ -656,6 +665,20 @@ function flushTodayCacheToDisk(channelKey: string): void {
   }
 }
 
+/**
+ * 运行期回读：today-cache 被 TTL 驱逐后，下一条消息到来时从磁盘恢复当日历史，
+ * 避免日报/谁艾特我/定位消息只看到驱逐后的尾部消息（issue #11 依赖项）。
+ * 磁盘文件缺失、超限或不可解析时返回 null，由调用方回退到空缓存。
+ */
+function loadTodayCacheFromDisk(channelKey: string): TodayCache | null {
+  const safeKey = safeChannelKey(channelKey)
+  const data = readJsonFileIfSmallSync<TodayCache | null>(TODAY_CACHE_PREFIX + safeKey + '.json', MAX_DAILY_STATS_FILE_BYTES, null)
+  if (!data || !Array.isArray(data.messages) || data.messages.length <= 0) return null
+  const cache: TodayCache = { date: todayCst(), messages: data.messages, updatedAt: Date.now(), lastDiskWrite: Date.now() }
+  trimTodayCacheMessages(cache)
+  return cache.messages.length > 0 ? cache : null
+}
+
 function saveSharedChannelTurn(session: SessionLike, speakerName: string, content: string, role: string = 'user', metadata: SharedTurnMetadata = {}): void {
   const channelKey = getChannelKey(session)
   const value = redactSensitiveText(normalizeText(content))
@@ -673,7 +696,11 @@ function saveSharedChannelTurn(session: SessionLike, speakerName: string, conten
       const sw = readJsonFileIfSmallSync<string[]>(SUMMARY_WHITELIST_FILE, MAX_SMALL_CONFIG_FILE_BYTES, [])
       if (Array.isArray(sw) && sw.includes(String(channelKey))) {
         const today = todayCst(); let cache = channelTodayCache.get(channelKey)
-        if (!cache) { cache = { date: today, messages: [], updatedAt: Date.now() }; channelTodayCache.set(channelKey, cache) } else { cache.date = today }
+        if (!cache) {
+          // 先回读磁盘当日历史再重建，避免 TTL 驱逐后日报/谁艾特我丢掉驱逐前的消息。
+          cache = loadTodayCacheFromDisk(channelKey) || { date: today, messages: [], updatedAt: Date.now() }
+          channelTodayCache.set(channelKey, cache)
+        } else { cache.date = today }
         if (value || hasMentions) {
           const displayName = speakerName || userId
           const ts = Date.now()

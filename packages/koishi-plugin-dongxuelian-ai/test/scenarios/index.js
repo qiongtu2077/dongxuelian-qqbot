@@ -21,6 +21,7 @@ const voiceTts = require('./voice-tts.test')
 const file = require('./file.test')
 const deployer = require('./deployer.test')
 const botRegression = require('./bot-regression.test')
+const todayCache = require('./today-cache.test')
 
 const SCENARIOS = [
   command,
@@ -46,6 +47,7 @@ const SCENARIOS = [
   file,
   deployer,
   botRegression,
+  todayCache,
 ]
 
 async function runScenarioTests(t) {

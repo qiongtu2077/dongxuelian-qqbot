@@ -110,11 +110,14 @@ function trimTodayCacheMessages(cache) {
         cache.messages.splice(0, cache.messages.length - MAX_TODAY_CACHE_MESSAGES);
     }
 }
-function pruneMapByActivity(map, getLastTs, now = Date.now()) {
+function pruneMapByActivity(map, getLastTs, now = Date.now(), onEvict) {
     for (const [key, value] of map.entries()) {
         const ts = Number(getLastTs(value)) || 0;
-        if (ts > 0 && now - ts > CHANNEL_RUNTIME_CACHE_TTL_MS)
+        if (ts > 0 && now - ts > CHANNEL_RUNTIME_CACHE_TTL_MS) {
+            if (onEvict)
+                onEvict(key);
             map.delete(key);
+        }
     }
     if (map.size <= MAX_CHANNEL_RUNTIME_CACHE_ENTRIES)
         return;
@@ -123,8 +126,11 @@ function pruneMapByActivity(map, getLastTs, now = Date.now()) {
         .sort((left, right) => left[1] - right[1]);
     while (map.size > MAX_CHANNEL_RUNTIME_CACHE_ENTRIES && ordered.length) {
         const next = ordered.shift();
-        if (next)
+        if (next) {
+            if (onEvict)
+                onEvict(next[0]);
             map.delete(next[0]);
+        }
     }
 }
 function pruneMapWithTtl(map, getLastTs, ttlMs, now = Date.now()) {
@@ -173,7 +179,13 @@ function setLastForwardSummaryCache(channelKey, text, ts = Date.now()) {
 }
 function trimChannelRuntimeCaches(now = Date.now()) {
     pruneMapByActivity(channelSharedCache, items => getLastMessageTs(items), now);
-    pruneMapByActivity(channelTodayCache, cache => Number(cache?.updatedAt || cache?.lastDiskWrite || getLastMessageTs(cache?.messages)), now);
+    // today-cache 被驱逐前先落盘，保证磁盘文件保留当天全量历史（供运行期回读与跨重启恢复）。
+    pruneMapByActivity(channelTodayCache, cache => Number(cache?.updatedAt || cache?.lastDiskWrite || getLastMessageTs(cache?.messages)), now, key => {
+        try {
+            flushTodayCacheToDisk(key);
+        }
+        catch { /* non-critical: best-effort flush before eviction */ }
+    });
     pruneForwardSummaryCache(60 * 60 * 1000, now);
     pruneMapWithTtl(pendingSensitiveAlert, entry => Number(entry?.ts || 0), 2 * 60 * 60 * 1000, now);
 }
@@ -504,6 +516,20 @@ function flushTodayCacheToDisk(channelKey) {
         warnConversationFailure('flush today cache', error);
     }
 }
+/**
+ * 运行期回读：today-cache 被 TTL 驱逐后，下一条消息到来时从磁盘恢复当日历史，
+ * 避免日报/谁艾特我/定位消息只看到驱逐后的尾部消息（issue #11 依赖项）。
+ * 磁盘文件缺失、超限或不可解析时返回 null，由调用方回退到空缓存。
+ */
+function loadTodayCacheFromDisk(channelKey) {
+    const safeKey = safeChannelKey(channelKey);
+    const data = readJsonFileIfSmallSync(TODAY_CACHE_PREFIX + safeKey + '.json', MAX_DAILY_STATS_FILE_BYTES, null);
+    if (!data || !Array.isArray(data.messages) || data.messages.length <= 0)
+        return null;
+    const cache = { date: todayCst(), messages: data.messages, updatedAt: Date.now(), lastDiskWrite: Date.now() };
+    trimTodayCacheMessages(cache);
+    return cache.messages.length > 0 ? cache : null;
+}
 function saveSharedChannelTurn(session, speakerName, content, role = 'user', metadata = {}) {
     const channelKey = getChannelKey(session);
     const value = redactSensitiveText(normalizeText(content));
@@ -524,7 +550,8 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
                 const today = todayCst();
                 let cache = channelTodayCache.get(channelKey);
                 if (!cache) {
-                    cache = { date: today, messages: [], updatedAt: Date.now() };
+                    // 先回读磁盘当日历史再重建，避免 TTL 驱逐后日报/谁艾特我丢掉驱逐前的消息。
+                    cache = loadTodayCacheFromDisk(channelKey) || { date: today, messages: [], updatedAt: Date.now() };
                     channelTodayCache.set(channelKey, cache);
                 }
                 else {
