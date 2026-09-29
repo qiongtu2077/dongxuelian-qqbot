@@ -88,6 +88,7 @@ async function run() {
   check('AI help lists tree branches only', typeof result.result === 'string' && result.result.includes('【切换模型与供应商】') && !result.result.includes('【常用】') && !result.result.includes('【集合】'), String(result.result))
 
   result = await runHelpCase(ctx, '杂项功能')
+  check('misc help includes group essence ranking', result.result.includes('统计群精华'), String(result.result))
   check('misc help returns root-level misc branch', typeof result.result === 'string' && result.result.includes('【杂项功能】') && result.result.includes('今日情绪'), String(result.result))
 
   result = await runHelpCase(ctx, '【杂项功能】')
