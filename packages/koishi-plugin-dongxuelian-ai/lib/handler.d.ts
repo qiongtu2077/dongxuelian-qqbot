@@ -39,6 +39,12 @@ interface HandlerSession {
     bot?: {
         selfId?: string;
         internal?: {
+            getEssenceMsgList?: (groupId: string) => Promise<Array<{
+                msg_seq: number;
+                msg_random: number;
+                sender_id: number;
+                sender_nick: string;
+            }>>;
             getMsg?: (messageId: string | number) => Promise<unknown> | unknown;
             sendGroupMsg?: (groupId: string | number, message: unknown) => Promise<unknown> | unknown;
             sendGroupForwardMsg?: (groupId: string | number, messages: unknown) => Promise<unknown> | unknown;

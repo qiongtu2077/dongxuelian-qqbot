@@ -1,4 +1,5 @@
 const command = require('./command.test')
+const essence = require('./essence.test')
 const chat = require('./chat.test')
 const repeat = require('./repeat.test')
 const sticker = require('./sticker.test')
@@ -25,6 +26,7 @@ const todayCache = require('./today-cache.test')
 
 const SCENARIOS = [
   command,
+  essence,
   chat,
   repeat,
   sticker,

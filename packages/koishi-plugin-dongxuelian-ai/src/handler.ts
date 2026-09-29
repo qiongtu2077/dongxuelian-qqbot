@@ -46,6 +46,7 @@ const {
 } = require('./commands/command-result') as typeof import('./commands/command-result')
 const { handleVoiceCommand } = require('./commands/voice-command') as typeof import('./commands/voice-command')
 const { handleLocateCommand } = require('./commands/locate-command') as typeof import('./commands/locate-command')
+const { handleEssenceCommand } = require('./commands/essence-command') as typeof import('./commands/essence-command')
 const { saveLocateSnapshot } = require('./lifecycle/locate-snapshot') as typeof import('./lifecycle/locate-snapshot')
 const { handleMemoryCommand } = require('./commands/memory-command') as typeof import('./commands/memory-command')
 const { handlePlanCommand } = require('./commands/plan-command') as typeof import('./commands/plan-command')
@@ -87,6 +88,7 @@ interface HandlerSession {
   bot?: {
     selfId?: string
     internal?: {
+      getEssenceMsgList?: (groupId: string) => Promise<Array<{ msg_seq: number; msg_random: number; sender_id: number; sender_nick: string }>>
       getMsg?: (messageId: string | number) => Promise<unknown> | unknown
       sendGroupMsg?: (groupId: string | number, message: unknown) => Promise<unknown> | unknown
       sendGroupForwardMsg?: (groupId: string | number, messages: unknown) => Promise<unknown> | unknown
@@ -256,6 +258,8 @@ async function handleOperationalCommandDomain(session: HandlerSession, ctx: Hand
     await safeUnlink(HOSTILE_MODE_FILE)
     return handled('嘴臭模式已关闭。被攻击时反击值 ≥ 90 将保持阴阳人格。')
   }
+
+  if (plain === '统计群精华') return handleEssenceCommand(session, ctx)
 
   if (/^谁(?:艾特|@)我$/.test(plain)) {
     if (!inGuild) return handled('这个命令只能在群里用。')

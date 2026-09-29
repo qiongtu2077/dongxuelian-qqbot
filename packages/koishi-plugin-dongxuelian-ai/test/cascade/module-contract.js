@@ -64,6 +64,7 @@ async function runModuleContract(context) {
     agentCommand: path.join(LIB, 'commands', 'agent-command'),
     emotionCommand: path.join(LIB, 'commands', 'emotion-command'),
     locateCommand: path.join(LIB, 'commands', 'locate-command'),
+    essenceCommand: path.join(LIB, 'commands', 'essence-command'),
     messageReader: path.join(LIB, 'message', 'message-reader'),
     searchContext: path.join(LIB, 'routing', 'search-context'),
     chat: path.join(LIB, 'chat'),
@@ -438,6 +439,7 @@ async function runModuleContract(context) {
     emotionCommand: [
       'handleEmotionCommand',
     ],
+    essenceCommand: ['handleEssenceCommand', 'rankEssenceMessages'],
     locateCommand: [
       'handleLocateCommand', 'buildLocateContextNodes',
     ],
