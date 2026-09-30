@@ -32,7 +32,7 @@ interface EssenceRanking {
     count: number;
 }
 declare function rankEssenceMessages(messages: EssenceMessage[]): EssenceRanking[];
-declare function handleEssenceCommand(session: EssenceSession, ctx: EssenceContext): Promise<ReturnType<typeof handled>>;
+declare function handleEssenceCommand(session: EssenceSession, ctx: EssenceContext, now?: number): Promise<ReturnType<typeof handled>>;
 declare const _default: {
     handleEssenceCommand: typeof handleEssenceCommand;
     rankEssenceMessages: typeof rankEssenceMessages;

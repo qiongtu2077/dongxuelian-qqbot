@@ -32,6 +32,8 @@ interface EssenceRanking {
 }
 
 const inFlight = new Set<string>()
+const cooldownUntil = new Map<string, number>()
+const COOLDOWN_MS = 60_000
 
 // --- 统计与展示 ---
 
@@ -58,7 +60,7 @@ function rankEssenceMessages(messages: EssenceMessage[]): EssenceRanking[] {
 // --- 命令执行 ---
 
 // 复用 OneBot 连接读取全量精华并发送一次合并转发；失败时明确提示，不发送残缺榜单。
-async function handleEssenceCommand(session: EssenceSession, ctx: EssenceContext): Promise<ReturnType<typeof handled>> {
+async function handleEssenceCommand(session: EssenceSession, ctx: EssenceContext, now = Date.now()): Promise<ReturnType<typeof handled>> {
   if (session.isDirect || !session.guildId) return handled('这个命令只能在群里用。')
   const internal = session.bot?.internal
   if (!internal?.getEssenceMsgList || !internal.sendGroupForwardMsg) {
@@ -66,17 +68,25 @@ async function handleEssenceCommand(session: EssenceSession, ctx: EssenceContext
   }
   const groupId = session.guildId
   const botId = String(session.selfId || session.bot?.selfId || '')
-  const taskKey = `${botId}:${groupId}`
+  const taskKey = groupId
+  // 只保留群号和冷却到期时间；惰性清理过期项，不缓存精华或排行榜。
+  for (const [key, expiresAt] of cooldownUntil) {
+    if (expiresAt <= now) cooldownUntil.delete(key)
+  }
   if (inFlight.has(taskKey)) return handled('本群正在统计群精华，请稍候。')
+  const expiresAt = cooldownUntil.get(taskKey)
+  if (expiresAt !== undefined) return handled(`本群统计群精华冷却中，请 ${Math.ceil((expiresAt - now) / 1000)} 秒后再试。`)
+  // 从接受本次请求起计时，空结果和失败也占用冷却，防止连续重复请求接口。
+  cooldownUntil.set(taskKey, now + COOLDOWN_MS)
   inFlight.add(taskKey)
   let stage = '获取群精华'
   try {
     // NapCat 的 get_essence_msg_list 内部遍历精华分页；无需自行猜测分页参数。
     const messages = await internal.getEssenceMsgList(groupId)
     const ranking = rankEssenceMessages(messages)
+    if (!ranking.length) return handled('本群群精华数量0')
     const total = ranking.reduce((sum, member) => sum + member.count, 0)
     const contents = [`群精华排行榜\n共 ${total} 条精华，${ranking.length} 位群友\n按精华数量降序排列`]
-    if (!ranking.length) contents.push('本群暂无群精华。')
     // 每个节点放 20 行，所有节点仍在同一条消息记录中，不截断低排名成员。
     for (let offset = 0; offset < ranking.length; offset += 20) {
       contents.push(ranking.slice(offset, offset + 20).map((member, index) =>
