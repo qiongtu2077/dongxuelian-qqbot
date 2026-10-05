@@ -171,18 +171,21 @@
             <h2>内存走势</h2>
             <div class="resource-subline">{{ memorySampleLabel }}</div>
           </div>
-          <select v-model="memoryRange" class="memory-range-select" @change="loadMemoryHistory({ animate: true })">
-            <option v-for="option in memoryRangeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-          </select>
+          <div class="memory-chart-controls">
+            <select v-model="memoryRange" class="memory-range-select" @change="loadMemoryHistory({ animate: true })">
+              <option v-for="option in memoryRangeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <div class="memory-current-usage">当前 {{ memoryCurrentPercentLabel }}</div>
+          </div>
         </div>
         <div class="memory-chart-wrap">
           <svg class="memory-chart" :class="{ 'is-transitioning': memoryChartTransitioning }" viewBox="0 0 640 220" preserveAspectRatio="none" role="img" aria-label="已使用内存折线图">
             <line
               v-for="tick in memoryYTicks"
               :key="tick.y"
-              x1="44"
+              x1="64"
               :y1="tick.y"
-              x2="624"
+              x2="576"
               :y2="tick.y"
               class="memory-chart-grid"
             />
@@ -193,6 +196,14 @@
               :y="tick.y + 4"
               class="memory-chart-label"
             >{{ tick.label }}</text>
+            <text
+              v-for="tick in memoryYTicks"
+              :key="'percent-' + tick.y"
+              x="632"
+              :y="tick.y + 4"
+              text-anchor="end"
+              class="memory-chart-label memory-chart-percent"
+            >{{ tick.percentLabel }}</text>
             <polyline
               v-if="memoryPolyline"
               :points="memoryPolyline"
@@ -411,6 +422,21 @@ export default {
     const memoryAverageLabel = computed(() => mbLabel(memoryAverageValue.value))
     const memoryMinLabel = computed(() => mbLabel(memoryMinValue.value))
     const memoryMaxLabel = computed(() => mbLabel(memoryMaxValue.value))
+    // 使用当前服务器总内存换算右轴；状态未返回总量时使用已有历史采样总量。
+    const memoryTotalValue = computed(() => {
+      const total = Number(status.value.memTotalMb)
+      if (Number.isFinite(total) && total > 0) return total
+      const sampledTotal = Number(memoryHistory.value.find(item => Number.isFinite(Number(item.memTotalMb)) && Number(item.memTotalMb) > 0)?.memTotalMb)
+      return Number.isFinite(sampledTotal) && sampledTotal > 0 ? sampledTotal : null
+    })
+    // 当前占比来自实时资源状态，避免把所选历史时间段的最后一点当成当前用量。
+    const memoryCurrentPercentLabel = computed(() => {
+      const total = memoryTotalValue.value
+      const available = status.value.memAvailableMb
+      return total !== null && typeof available === 'number' && Number.isFinite(available)
+        ? percentLabel(Math.max(0, total - available) / total)
+        : '—'
+    })
     const memorySampleLabel = computed(() => {
       const sample = formatInterval(Number(memoryMeta.value.hostSampleIntervalMs))
       const bucket = formatInterval(Number(memoryMeta.value.bucketMs))
@@ -423,13 +449,17 @@ export default {
     const memoryChartScale = computed(() => {
       const min = memoryMinValue.value
       const max = memoryMaxValue.value
-      const total = Number(status.value.memTotalMb || memoryHistory.value.find(item => Number.isFinite(Number(item.memTotalMb)))?.memTotalMb)
+      const total = memoryTotalValue.value
       const safeMin = min === null ? 0 : min
       const safeMax = max === null ? Math.max(total || 1, 1) : max
       const pad = Math.max(32, Math.round((safeMax - safeMin) * 0.12))
-      const top = Math.max(safeMax + pad, total && total > 0 ? Math.min(total, safeMax + pad) : safeMax + pad)
-      const bottom = Math.max(0, safeMin - pad)
-      return top <= bottom ? { min: 0, max: Math.max(1, top || 1) } : { min: bottom, max: top }
+      const paddedTop = safeMax + pad
+      const paddedBottom = Math.max(0, safeMin - pad)
+      // 刻度间隔以 100 MB 为单位扩大，两端对齐同一间隔，保留折线边缘空间。
+      const step = Math.max(100, Math.ceil((paddedTop - paddedBottom) / 500) * 100)
+      const bottom = Math.floor(paddedBottom / step) * step
+      const top = Math.max(bottom + step, Math.ceil(paddedTop / step) * step)
+      return { min: bottom, max: top, step }
     })
     const memoryChartPoints = computed(() => {
       const points = memorySeriesPoints.value
@@ -437,8 +467,8 @@ export default {
       const scale = memoryChartScale.value
       const height = 176
       const top = 24
-      const left = 44
-      const width = 580
+      const left = 64
+      const width = 512
       const span = Math.max(1, scale.max - scale.min)
       return points.map((item, index) => {
         const point = item.point
@@ -453,12 +483,14 @@ export default {
     const memoryPolyline = computed(() => memoryChartPoints.value.map(point => `${point.x},${point.y}`).join(' '))
     const memoryYTicks = computed(() => {
       const scale = memoryChartScale.value
-      const ticks = [0, 0.5, 1]
-      return ticks.map(ratio => {
-        const value = scale.max - (scale.max - scale.min) * ratio
+      const count = Math.round((scale.max - scale.min) / scale.step)
+      return Array.from({ length: count + 1 }, (_, index) => {
+        const value = scale.max - scale.step * index
+        const ratio = index / count
         return {
           y: round(24 + 176 * ratio),
           label: mbLabel(Math.round(value)),
+          percentLabel: memoryTotalValue.value === null ? '—' : percentLabel(value / memoryTotalValue.value),
         }
       })
     })
@@ -684,6 +716,7 @@ export default {
       hasMemoryChartData,
       memoryPolyline,
       memoryYTicks,
+      memoryCurrentPercentLabel,
       maintenanceLabel,
       lastRefreshLabel,
       display,
@@ -998,9 +1031,21 @@ export default {
   margin: 0 0 4px;
 }
 
+.memory-chart-controls {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 4px;
+  text-align: right;
+}
+
 .memory-range-select {
-  flex: 0 0 104px;
+  width: 104px;
   height: 34px;
+}
+
+.memory-current-usage {
+  color: var(--text2);
+  font-size: 12px;
 }
 
 .memory-chart-wrap {
