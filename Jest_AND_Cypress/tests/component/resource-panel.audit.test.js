@@ -228,4 +228,61 @@ describe('ResourcePanel 管理员操作与确认闭环', () => {
     expect(wrapper.text()).not.toContain('tool_active')
     wrapper.unmount()
   })
+
+  test('任务记录按状态查询，独立详情按钮保留完整 ID 与复制操作', async () => {
+    const doneTask = {
+      id: 'external_video_download-json_data_quot_prompt_very_long_internal_id',
+      kind: 'external_video_download', status: 'done', step: 'done', channelKey: '1072587329',
+      updatedAt: '2026-10-05T11:44:36.984Z', notify: { target: 'qq-group', channelKey: '1072587329', status: 'pending' },
+      displaySummary: { bvId: 'BV1xx411c7mD' },
+    }
+    dashboardApi.fetchResourceTasks.mockImplementation(async status => ({ ok: true, data: { tasks: status === 'done' ? [doneTask] : [] } }))
+    const writeText = jest.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const wrapper = await mountResource()
+    expect(dashboardApi.fetchResourceTasks).toHaveBeenLastCalledWith('pending,claiming,running,deferred')
+    expect(wrapper.find('.resource-task-card').text()).toContain('当前没有进行中的任务')
+    await findButton(wrapper, '已完成').trigger('click')
+    await flushPromises()
+    expect(dashboardApi.fetchResourceTasks).toHaveBeenLastCalledWith('done')
+    expect(wrapper.find('.resource-task-row').text()).toContain('下载 B 站视频 · BV1xx411c7mD')
+    expect(wrapper.find('.resource-task-row').text()).toContain('来源：群 1072587329')
+    expect(wrapper.find('.resource-task-row').text()).toContain('10-05 19:44:36')
+    expect(wrapper.find('.resource-task-row').text()).not.toContain(doneTask.id)
+    expect(wrapper.find('.resource-task-row').text()).not.toContain('已发送')
+    await wrapper.find('.resource-task-content').trigger('click')
+    expect(wrapper.find('.resource-task-detail').exists()).toBe(false)
+    await findButton(wrapper, '查看详情').trigger('click')
+    expect(wrapper.find('.resource-task-detail').text()).toContain(doneTask.id)
+    await findButton(wrapper, '复制任务 ID').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith(doneTask.id)
+    expect(wrapper.text()).toContain('任务 ID 已复制')
+    await findButton(wrapper, '失败').trigger('click')
+    await flushPromises()
+    expect(dashboardApi.fetchResourceTasks).toHaveBeenLastCalledWith('failed')
+    expect(wrapper.find('.resource-task-detail').exists()).toBe(false)
+    expect(wrapper.find('.resource-task-card').text()).toContain('暂无失败记录')
+    wrapper.unmount()
+  })
+
+  test('暂缓原因使用真实记录，读取失败可刷新重试', async () => {
+    dashboardApi.fetchResourceTasks.mockResolvedValueOnce({ ok: true, data: { tasks: [{
+      id: 'deferred-1', kind: 'media_image_analysis', status: 'deferred',
+      error: 'available memory is below task min memory budget',
+    }] } }).mockResolvedValueOnce({ ok: false, data: { message: '任务读取错误详情' } })
+      .mockResolvedValueOnce({ ok: true, data: { tasks: [] } })
+    const wrapper = await mountResource()
+    expect(wrapper.find('.resource-task-row').text()).toContain('暂缓处理')
+    expect(wrapper.find('.resource-task-row').text()).toContain('等待可用内存恢复')
+    await findButton(wrapper, '失败').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.resource-task-card').text()).toContain('任务读取错误详情')
+    expect(wrapper.find('.resource-task-row').exists()).toBe(false)
+    await findButton(wrapper, '刷新记录').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.resource-task-error').exists()).toBe(false)
+    expect(wrapper.find('.resource-task-card').text()).toContain('暂无失败记录')
+    wrapper.unmount()
+  })
 })

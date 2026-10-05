@@ -241,7 +241,8 @@ export async function fetchResourceStatus() { return get('/resource/status') }
 export async function fetchResourceMode() { return get('/resource/mode') }
 export async function setResourceMode(serverMode: string) { return post('/resource/mode', { serverMode }, true) }
 export async function fetchResourceMemoryHistory(range = '5m') { return get('/resource/memory-history?range=' + encodeURIComponent(range), false, 20000) }
-export async function fetchResourceTasks() { return get('/resource/tasks') }
+// 按选中的状态查询任务，避免历史记录占满进行中或失败列表。
+export async function fetchResourceTasks(status = '') { return get('/resource/tasks' + (status ? '?status=' + encodeURIComponent(status) : '')) }
 // Reads one stable page of resource diagnostic summaries.
 export async function fetchResourceDiagnostics(options: { group?: string; reason?: string; cursor?: string } = {}) {
   const params = new URLSearchParams()

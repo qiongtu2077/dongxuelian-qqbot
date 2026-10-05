@@ -127,6 +127,26 @@ function testResourceModel(resource) {
     ['维护模式', '资源不足', '浏览器自动操作占用', '日报图片生成占用'],
   )
   assert.strictEqual(resource.serverModeDisplay('small').label, '小内存策略')
+  const taskStatuses = {
+    pending: '排队中', claiming: '准备执行', running: '处理中', deferred: '暂缓处理',
+    done: '已完成', failed: '失败', cancelled: '已取消',
+  }
+  for (const [status, label] of Object.entries(taskStatuses)) {
+    assert.strictEqual(resource.taskStatusDisplay({ status }).label, label)
+  }
+  assert.strictEqual(resource.taskStatusDisplay({ status: 'deferred', error: 'available memory is below task min memory budget', requeueReason: 'resource_busy' }).detail, '等待可用内存恢复')
+  assert.strictEqual(resource.taskStatusDisplay({ status: 'pending', requeueReason: 'resource_busy' }).detail, '等待其他任务释放资源')
+  assert.strictEqual(resource.taskStatusDisplay({ status: 'running', step: 'video_prepare' }).detail, '准备视频')
+  assert.strictEqual(resource.taskStatusDisplay({ status: 'done', notify: { status: 'pending' } }).label, '已完成')
+  assert.strictEqual(resource.taskCategoryDisplay('external_video_download'), '视频下载')
+  assert.strictEqual(resource.taskCategoryDisplay('unknown_kind'), '其他后台')
+  assert.strictEqual(resource.taskContentDisplay({ kind: 'external_video_download', id: 'json_data_quot_prompt_secret' }), '下载 B 站视频')
+  assert.strictEqual(resource.taskContentDisplay({ kind: 'external_video_download', displaySummary: { bvId: 'BV1xx411c7mD' } }), '下载 B 站视频 · BV1xx411c7mD')
+  assert.strictEqual(resource.taskSourceDisplay({ channelKey: '1072587329', notify: { target: 'qq-group', channelKey: '1072587329' } }), '来源：群 1072587329')
+  assert.strictEqual(resource.taskSourceDisplay({ channelKey: '123', notify: { target: 'qq-private', channelKey: '123' } }), '来源：私聊 123')
+  assert.strictEqual(resource.taskTimeDisplay('2026-10-05T11:44:36.984Z'), '10-05 19:44:36')
+  assert.strictEqual(resource.taskTimeDisplay('2026-10-05T23:44:36.984Z', true), '2026-10-06 07:44:36（北京时间）')
+  assert.strictEqual(resource.taskTimeDisplay('invalid'), '未记录')
   assert.strictEqual(resource.workerDisplay({ workerType: 'agent', workerHealthCode: 'stopped_idle', backlogTotal: 0 }).label, '已停止')
   assert.strictEqual(resource.workerDisplay({ workerType: 'media', workerHealthCode: 'idle', backlogTotal: 0 }).name, '媒体分析处理器')
   assert.strictEqual(resource.workerDisplay({ workerType: 'daily', workerHealthCode: 'working', runningCount: 1 }).name, '日报处理器')

@@ -66,6 +66,11 @@ declare function sanitizeTask(task: ResourceTaskLike): {
     finishedAt: string | undefined;
     notify: import("koishi-plugin-dongxuelian-ai/lib/resource-workers/task-types").ResourceTaskNotify;
     error: string | undefined;
+    requeueReason: string | undefined;
+    retryAfter: string | undefined;
+    displaySummary: {
+        bvId: string;
+    };
     payloadKeys: string[];
 };
 declare function buildResourceStatus(mods: ResourceModuleSet): Record<string, unknown>;

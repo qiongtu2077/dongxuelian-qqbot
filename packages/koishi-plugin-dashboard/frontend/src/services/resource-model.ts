@@ -1,4 +1,4 @@
-import type { JsonRecord } from '../types'
+import { asRecord, type JsonRecord } from '../types'
 
 export interface WorkerProgressDisplay {
   label: string
@@ -68,6 +68,57 @@ const TASK_KIND_LABELS: Record<string, string> = {
   media_image_analysis: '图片分析任务',
   media_file_analysis: '文件分析任务',
   media_voice_transcription: '语音转写任务',
+  external_video_download: '视频下载任务',
+}
+
+const TASK_STATUS_DISPLAY: Record<string, ReadableStatusDisplay> = {
+  pending: { label: '排队中', detail: '', level: 'info' },
+  claiming: { label: '准备执行', detail: '', level: 'info' },
+  running: { label: '处理中', detail: '', level: 'info' },
+  deferred: { label: '暂缓处理', detail: '', level: 'warn' },
+  done: { label: '已完成', detail: '', level: 'ok' },
+  failed: { label: '失败', detail: '', level: 'danger' },
+  cancelled: { label: '已取消', detail: '', level: 'off' },
+}
+
+const TASK_CONTENT_LABELS: Record<string, string> = {
+  agent_task: '执行智能助手请求',
+  dashboard_agent: '执行控制台助手请求',
+  agent_memory: '更新智能助手记忆',
+  agent_memory_compaction: '整理智能助手记忆',
+  conversation_summary: '总结对话内容',
+  sensitive_cache_analysis: '分析敏感内容缓存',
+  daily_report: '生成群聊日报',
+  daily_summary: '预计算日报摘要',
+  emotion_render: '生成情绪图片',
+  media_image_analysis: '分析图片内容',
+  media_file_analysis: '分析文件内容',
+  media_voice_transcription: '将语音转为文字',
+  external_video_download: '下载 B 站视频',
+}
+
+const TASK_STEP_LABELS: Record<string, string> = {
+  starting: '启动处理',
+  waiting_lock: '等待其他任务释放资源',
+  video_prepare: '准备视频',
+  video_cached_send: '发送缓存视频',
+  video_probe: '读取视频信息',
+  video_preview: '生成视频预览',
+  video_download: '下载视频',
+  video_send: '发送视频',
+  analyzing_media: '分析媒体内容',
+}
+
+const TASK_REASON_LABELS: Record<string, string> = {
+  resource_busy: '等待其他任务释放资源',
+  restart_discarded: '服务重启时中断',
+  'available memory is below task min memory budget': '等待可用内存恢复',
+  'media drain paused during daily report': '等待日报生成结束',
+  'daily report already running': '等待当前日报完成',
+  'exclusive task waits for current report': '等待当前日报释放资源',
+  'resource state red defers business task': '等待可用资源恢复',
+  'exclusive slot is busy': '等待其他任务释放资源',
+  'media waits for exclusive slot to clear': '等待其他任务释放资源',
 }
 
 const WORKER_NAMES: Record<string, string> = {
@@ -140,6 +191,57 @@ export function activityLeaseDisplay(status: JsonRecord): { browser: string; ren
 // Translates a stable task kind for first-screen and diagnostic summaries.
 export function taskKindDisplay(value: unknown): string {
   return TASK_KIND_LABELS[String(value || '')] || '其他后台任务'
+}
+
+// --- 任务记录展示 --- //
+
+// 将任务状态和已知等待原因转换为中文，不把任务完成误报为发送成功。
+export function taskStatusDisplay(task: JsonRecord): ReadableStatusDisplay {
+  const status = String(task.status || '')
+  const base = TASK_STATUS_DISPLAY[status] || { label: '状态未知', detail: '', level: 'off' }
+  const reason = String(status === 'deferred' ? task.error || task.requeueReason || '' : task.requeueReason || task.error || '')
+  const detail = status === 'pending' || status === 'deferred'
+    ? TASK_REASON_LABELS[reason] || (reason ? '具体等待原因见详情' : '')
+    : status === 'running' ? TASK_STEP_LABELS[String(task.step || '')] || '' : ''
+  return { ...base, detail }
+}
+
+// 使用短类别名称，保留其他资源面板现有的完整任务名称。
+export function taskCategoryDisplay(value: unknown): string {
+  if (value === 'daily_report') return '日报生成'
+  return taskKindDisplay(value).replace(/任务$/, '')
+}
+
+// 从固定业务名称和后端允许公开的 BV 号构造内容，不解析内部任务 ID。
+export function taskContentDisplay(task: JsonRecord): string {
+  const title = TASK_CONTENT_LABELS[String(task.kind || '')] || '处理后台请求'
+  const bvId = asRecord(task.displaySummary).bvId
+  return task.kind === 'external_video_download' && bvId ? `${title} · ${String(bvId)}` : title
+}
+
+// 根据通知目标区分群聊和私聊，其他频道只展示实际记录的来源。
+export function taskSourceDisplay(task: JsonRecord): string {
+  const notify = asRecord(task.notify)
+  const channel = String(notify.channelKey || task.channelKey || '')
+  if (notify.target === 'qq-group' && channel) return `来源：群 ${channel}`
+  if (notify.target === 'qq-private' && channel) return `来源：私聊 ${channel}`
+  if (channel.startsWith('private:')) return `来源：私聊 ${channel.slice(8)}`
+  if (channel === 'dashboard' || notify.target === 'dashboard') return '来源：控制台'
+  if (channel === 'global') return '来源：系统后台'
+  return channel ? `来源：频道 ${channel}` : '来源：未记录'
+}
+
+// 用北京时间展示更新时间；完整格式用于悬浮提示和任务详情。
+export function taskTimeDisplay(value: unknown, full = false): string {
+  const parsed = Date.parse(String(value || ''))
+  if (!Number.isFinite(parsed)) return '未记录'
+  const parts = new Date(parsed + 8 * 60 * 60 * 1000).toISOString()
+  return `${parts.slice(full ? 0 : 5, 10)} ${parts.slice(11, 19)}${full ? '（北京时间）' : ''}`
+}
+
+// 翻译已知步骤，未知步骤的原始值留在详情中供排查。
+export function taskStepDisplay(task: JsonRecord): string {
+  return TASK_STEP_LABELS[String(task.step || '')] || taskStatusDisplay(task).label
 }
 
 // Formats a worker heartbeat lag using the user-facing “最后联系” vocabulary.

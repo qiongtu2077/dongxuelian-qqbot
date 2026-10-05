@@ -503,13 +503,17 @@ function apiMock(method, pathname, body) {
       points,
     })
   }
-  if (method === 'GET' && pathname === '/resource/tasks') return ok({
-    ok: true,
-    tasks: [
-      { id: 'mock-task-1', kind: 'daily', status: 'pending', step: 'queued', updatedAt: '12:00:01' },
-      { id: 'mock-task-2', kind: 'agent', status: 'running', step: 'worker', updatedAt: '12:00:02' },
-    ],
-  })
+  if (method === 'GET' && pathname === '/resource/tasks') {
+    const statuses = String(body.searchParams.get('status') || '').split(',').filter(Boolean)
+    const tasks = [
+      { id: 'mock-task-1', kind: 'daily_report', status: 'pending', step: 'pending', updatedAt: '2026-10-05T11:44:36.984Z', notify: { target: 'qq-group', channelKey: '10001' } },
+      { id: 'mock-task-2', kind: 'agent_task', status: 'running', step: 'waiting_lock', updatedAt: '2026-10-05T11:44:37.000Z' },
+      { id: 'mock-task-done', kind: 'external_video_download', status: 'done', step: 'done', updatedAt: '2026-10-05T11:44:36.984Z', displaySummary: { bvId: 'BV1xx411c7mD' }, notify: { target: 'qq-group', channelKey: '1072587329', status: 'pending' } },
+      { id: 'mock-task-failed', kind: 'media_image_analysis', status: 'failed', error: 'mock image analysis failed', updatedAt: '2026-10-05T11:44:36.984Z' },
+      { id: 'mock-task-deferred', kind: 'media_file_analysis', status: 'deferred', error: 'available memory is below task min memory budget', updatedAt: '2026-10-05T11:44:36.984Z' },
+    ]
+    return ok({ ok: true, tasks: tasks.filter(task => !statuses.length || statuses.includes(task.status)) })
+  }
   if (method === 'GET' && pathname === '/resource/events') return ok({
     ok: true,
     events: [{ source: 'S2', event: 'mock_event', reason: 'worker event', createdAt: '12:00:03', taskId: 'mock-task-1' }],

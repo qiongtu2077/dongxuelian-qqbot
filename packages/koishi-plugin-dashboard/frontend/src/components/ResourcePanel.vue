@@ -247,40 +247,87 @@
 
     <ResourceDiagnosticsPanel />
 
-    <section class="card">
+    <section class="card resource-task-card">
       <div class="resource-card-head">
-        <h2>任务队列</h2>
-        <button class="btn btn-sm" :disabled="loadingTasks" @click="loadTasks">刷新队列</button>
+        <h2>任务记录</h2>
+        <button class="btn btn-sm" :disabled="loadingTasks" @click="loadTasks">刷新记录</button>
       </div>
+      <div class="resource-task-filters" role="group" aria-label="任务状态筛选">
+        <button
+          v-for="filter in taskFilters"
+          :key="filter.status"
+          class="btn btn-sm"
+          :class="{ 'is-selected': taskFilter === filter.status }"
+          :aria-pressed="taskFilter === filter.status"
+          :disabled="loadingTasks"
+          @click="selectTaskFilter(filter.status)"
+        >{{ filter.label }}</button>
+      </div>
+      <p class="resource-task-hint">进行中包含排队、准备执行、处理和暂缓任务；已完成记录不占等待队列。时间为北京时间。</p>
+      <p v-if="taskReadError" class="resource-task-error" role="alert">{{ taskReadError }}</p>
       <div class="resource-table-wrap">
         <table class="resource-table">
           <thead>
             <tr>
               <th>状态</th>
-              <th>类型</th>
-              <th>任务</th>
-              <th>步骤</th>
-              <th>时间</th>
+              <th>任务类别</th>
+              <th>任务内容</th>
+              <th>更新时间</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="task in tasks" :key="display(task.id)">
-              <td><span class="resource-pill">{{ display(task.status) }}</span></td>
-              <td>{{ display(task.kind) }}</td>
-              <td class="resource-id">{{ display(task.id) }}</td>
-              <td>{{ display(task.step) }}</td>
-              <td>{{ display(task.updatedAt || task.createdAt) }}</td>
-              <td>
-                <button
-                  v-if="canCancel(task)"
-                  class="btn btn-sm"
-                  @click="cancelTask(task)"
-                >取消</button>
-              </td>
-            </tr>
+            <template v-for="task in tasks" :key="display(task.id)">
+              <tr class="resource-task-row">
+                <td>
+                  <span class="resource-pill" :class="'worker-progress-' + taskStatusDisplay(task).level">{{ taskStatusDisplay(task).label }}</span>
+                  <small v-if="taskStatusDisplay(task).detail" class="resource-task-secondary">{{ taskStatusDisplay(task).detail }}</small>
+                </td>
+                <td>{{ taskCategoryDisplay(task.kind) }}</td>
+                <td class="resource-task-content">
+                  <b>{{ taskContentDisplay(task) }}</b>
+                  <small class="resource-task-secondary">{{ taskSourceDisplay(task) }}</small>
+                </td>
+                <td class="resource-task-time" :title="taskTimeDisplay(task.updatedAt || task.createdAt, true)">{{ taskTimeDisplay(task.updatedAt || task.createdAt) }}</td>
+                <td>
+                  <div class="resource-task-actions">
+                    <button class="btn btn-sm" :aria-expanded="expandedTaskId === task.id" @click="toggleTaskDetail(task)">{{ expandedTaskId === task.id ? '收起详情' : '查看详情' }}</button>
+                    <button v-if="canCancel(task)" class="btn btn-sm" @click="cancelTask(task)">取消</button>
+                  </div>
+                </td>
+              </tr>
+              <tr v-if="expandedTaskId === task.id" class="resource-task-detail-row">
+                <td colspan="5">
+                  <div class="resource-task-detail">
+                    <div class="resource-task-id">
+                      <span>任务 ID：<code>{{ task.id }}</code></span>
+                      <button class="btn btn-sm" @click="copyTaskId(task)">复制任务 ID</button>
+                    </div>
+                    <p v-if="taskCopyMessage" class="resource-task-secondary" role="status">{{ taskCopyMessage }}</p>
+                    <dl class="resource-task-meta">
+                      <div><dt>状态</dt><dd>{{ taskStatusDisplay(task).label }}（{{ display(task.status) }}）</dd></div>
+                      <div><dt>内部类型</dt><dd>{{ display(task.kind) }}</dd></div>
+                      <div><dt>处理步骤</dt><dd>{{ taskStepDisplay(task) }} · {{ display(task.step) }}</dd></div>
+                      <div><dt>来源</dt><dd>{{ taskSourceDisplay(task) }}</dd></div>
+                      <div><dt>提交者</dt><dd>{{ display(task.userId, '未记录') }}</dd></div>
+                      <div><dt>处理器</dt><dd>{{ display(task.claimedBy, '未记录') }}</dd></div>
+                      <div><dt>创建时间</dt><dd>{{ taskTimeDisplay(task.createdAt, true) }}</dd></div>
+                      <div><dt>开始时间</dt><dd>{{ taskTimeDisplay(task.startedAt, true) }}</dd></div>
+                      <div><dt>结束时间</dt><dd>{{ taskTimeDisplay(task.finishedAt, true) }}</dd></div>
+                      <div v-if="task.retryAfter"><dt>重试时间</dt><dd>{{ taskTimeDisplay(task.retryAfter, true) }}</dd></div>
+                    </dl>
+                    <div v-if="task.error || task.requeueReason" class="resource-task-reason">
+                      <b>{{ task.status === 'failed' ? '具体报错' : '记录的原因' }}</b>
+                      <pre>{{ task.error || task.requeueReason }}</pre>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </template>
             <tr v-if="!tasks.length">
-              <td colspan="6" class="resource-empty-cell">暂无任务</td>
+              <td colspan="5" class="resource-empty-cell">
+                {{ loadingTasks ? '加载中…' : taskReadError ? '任务读取失败，请刷新重试' : taskEmptyText }}
+              </td>
             </tr>
           </tbody>
         </table>
@@ -317,7 +364,7 @@ import {
   setResourceMaintenance,
 } from '../api'
 import { asArray, asRecord, errorMessage, type JsonRecord, type MessageState, type ShowAdminDialog } from '../types'
-import { activityLeaseDisplay, botModeDisplay, canCancel, coverageKey, dateTimeDisplay, display, eventDetail, eventKey, formatInterval, mbLabel, mediaQueueDisplay, mediaSummaryDisplay, memoryUsedValue, numberValue, percentLabel, resourceStateDisplay, round, serverModeDisplay, sizeMbLabel, taskKindDisplay, workerDisplay } from '../services/resource-model'
+import { activityLeaseDisplay, botModeDisplay, canCancel, coverageKey, dateTimeDisplay, display, eventDetail, eventKey, formatInterval, mbLabel, mediaQueueDisplay, mediaSummaryDisplay, memoryUsedValue, numberValue, percentLabel, resourceStateDisplay, round, serverModeDisplay, sizeMbLabel, taskCategoryDisplay, taskContentDisplay, taskKindDisplay, taskSourceDisplay, taskStatusDisplay, taskStepDisplay, taskTimeDisplay, workerDisplay } from '../services/resource-model'
 import ResourceDiagnosticsPanel from './ResourceDiagnosticsPanel.vue'
 
 export default {
@@ -327,6 +374,17 @@ export default {
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const status = ref<JsonRecord>({})
     const tasks = ref<JsonRecord[]>([])
+    const taskFilters = [
+      { status: 'pending,claiming,running,deferred', label: '进行中', empty: '当前没有进行中的任务' },
+      { status: 'done', label: '已完成', empty: '暂无已完成记录' },
+      { status: 'failed', label: '失败', empty: '暂无失败记录' },
+      { status: 'cancelled', label: '已取消', empty: '暂无已取消记录' },
+    ]
+    const taskFilter = ref(taskFilters[0].status)
+    const taskEmptyText = computed(() => taskFilters.find(filter => filter.status === taskFilter.value)?.empty)
+    const taskReadError = ref('')
+    const expandedTaskId = ref('')
+    const taskCopyMessage = ref('')
     const events = ref<JsonRecord[]>([])
     const memoryHistory = ref<JsonRecord[]>([])
     const memoryRange = ref('5m')
@@ -506,15 +564,46 @@ export default {
       throw new Error(errorMessage(res.data, '资源状态读取失败'))
     }
 
-    // 读取任务列表。
+    // 按选中的状态查询任务，历史列表不会挤占进行中或失败记录的查询额度。
     async function loadTasks(): Promise<void> {
       if (loadingTasks.value) return
       loadingTasks.value = true
       try {
-        const res = await fetchResourceTasks()
-        if (res.ok && res.data) tasks.value = asArray<JsonRecord>(asRecord(res.data).tasks)
+        const res = await fetchResourceTasks(taskFilter.value)
+        if (!res.ok || !res.data) throw new Error(errorMessage(res.data, '任务记录读取失败'))
+        tasks.value = asArray<JsonRecord>(asRecord(res.data).tasks)
+        taskReadError.value = ''
+      } catch (error) {
+        taskReadError.value = errorMessage(error, '任务记录读取失败')
       } finally {
         loadingTasks.value = false
+      }
+    }
+
+    // 切换状态后清空旧列表和展开详情，避免将旧筛选结果显示在新分类下。
+    async function selectTaskFilter(status: string): Promise<void> {
+      if (loadingTasks.value || taskFilter.value === status) return
+      taskFilter.value = status
+      tasks.value = []
+      expandedTaskId.value = ''
+      taskCopyMessage.value = ''
+      await loadTasks()
+    }
+
+    // 只通过独立按钮展开详情，行内文字可正常选中和复制。
+    function toggleTaskDetail(task: JsonRecord): void {
+      const taskId = String(task.id || '')
+      expandedTaskId.value = expandedTaskId.value === taskId ? '' : taskId
+      taskCopyMessage.value = ''
+    }
+
+    // 复制完整任务 ID，浏览器未提供剪贴板时提示用户手动选中复制。
+    async function copyTaskId(task: JsonRecord): Promise<void> {
+      try {
+        await navigator.clipboard.writeText(String(task.id || ''))
+        taskCopyMessage.value = '任务 ID 已复制'
+      } catch {
+        taskCopyMessage.value = '自动复制失败，请选中上方任务 ID 手动复制'
       }
     }
 
@@ -673,6 +762,21 @@ export default {
     return {
       status,
       tasks,
+      taskFilters,
+      taskFilter,
+      taskEmptyText,
+      taskReadError,
+      expandedTaskId,
+      taskCopyMessage,
+      taskStatusDisplay,
+      taskCategoryDisplay,
+      taskContentDisplay,
+      taskSourceDisplay,
+      taskTimeDisplay,
+      taskStepDisplay,
+      selectTaskFilter,
+      toggleTaskDetail,
+      copyTaskId,
       events,
       eventDetail,
       memoryHistory,
@@ -1255,11 +1359,30 @@ export default {
   font-weight: 800;
 }
 
-.resource-id {
-  max-width: 260px;
-  overflow-wrap: anywhere;
-  color: var(--text2);
-}
+/* --- 可读任务记录与详情 --- */
+
+.resource-task-card { user-select: text; }
+.resource-task-filters,
+.resource-task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.resource-task-filters .is-selected { color: var(--accent); border-color: var(--accent); background: var(--input); }
+.resource-task-hint,
+.resource-task-secondary { color: var(--text3); font-size: 12px; line-height: 1.55; }
+.resource-task-hint { margin: 10px 0; }
+.resource-task-secondary { display: block; margin-top: 4px; }
+.resource-task-error { color: var(--danger); font-size: 13px; }
+.resource-task-content { min-width: 230px; overflow-wrap: anywhere; }
+.resource-task-content b { font-weight: 700; }
+.resource-task-time { white-space: nowrap; }
+.resource-task-detail { padding: 8px 4px; }
+.resource-task-detail-row { background: var(--input); }
+.resource-task-id { display: flex; align-items: flex-start; gap: 12px; }
+.resource-task-id span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.resource-task-id button { flex: 0 0 auto; }
+.resource-task-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; margin: 16px 0 0; }
+.resource-task-meta dt { color: var(--text3); font-size: 12px; margin-bottom: 3px; }
+.resource-task-meta dd { margin: 0; overflow-wrap: anywhere; }
+.resource-task-reason { margin-top: 14px; }
+.resource-task-reason pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 
 .resource-pill {
   display: inline-flex;

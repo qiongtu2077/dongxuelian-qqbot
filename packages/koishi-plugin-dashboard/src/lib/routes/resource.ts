@@ -519,9 +519,11 @@ function getCachedDiskUsage(): unknown {
   return payload
 }
 
-// 将任务 payload 从 Dashboard 响应中移除，避免泄露上下文和文件内容。
+// 移除任务 payload，只允许视频任务公开格式有效的 BV 号作为业务摘要。
 function sanitizeTask(task: ResourceTaskLike) {
   const payload = task && typeof task.payload === 'object' && task.payload ? task.payload : {}
+  const bvId = task.kind === 'external_video_download' && typeof payload.bvId === 'string' && /^BV[0-9A-Za-z]{10}$/i.test(payload.bvId)
+    ? payload.bvId : ''
   return {
     id: task.id,
     kind: task.kind,
@@ -541,6 +543,9 @@ function sanitizeTask(task: ResourceTaskLike) {
     finishedAt: task.finishedAt,
     notify: task.notify,
     error: task.error,
+    requeueReason: task.requeueReason,
+    retryAfter: task.retryAfter,
+    displaySummary: { bvId },
     payloadKeys: Object.keys(payload),
   }
 }

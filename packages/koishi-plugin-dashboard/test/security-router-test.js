@@ -369,6 +369,24 @@ function testResourceStatusIncludesServerModeFlags() {
   }
 }
 
+// 校验任务摘要只公开已知视频 BV 号，不把上下文、网址或其他任务载荷带回列表。
+function testResourceTaskSummaryWhitelist() {
+  const { sanitizeTask } = require('../lib/routes/resource')
+  const task = {
+    id: 'video-1', kind: 'external_video_download', status: 'pending',
+    payload: { bvId: 'BV1xx411c7mD', p1Url: 'https://example.com/private', prompt: 'private context', cookie: 'secret' },
+    requeueReason: 'resource_busy', retryAfter: '2026-10-05T12:00:00.000Z',
+  }
+  const summary = sanitizeTask(task)
+  assert.deepStrictEqual(summary.displaySummary, { bvId: 'BV1xx411c7mD' })
+  assert.strictEqual(summary.requeueReason, 'resource_busy')
+  assert.strictEqual(summary.retryAfter, task.retryAfter)
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(summary, 'payload'), false)
+  assert.doesNotMatch(JSON.stringify(summary), /private context|https:\/\/example|secret/)
+  assert.deepStrictEqual(sanitizeTask({ ...task, payload: { bvId: 'BV1xx411c7mD<script>' } }).displaySummary, { bvId: '' })
+  assert.deepStrictEqual(sanitizeTask({ ...task, kind: 'agent_task' }).displaySummary, { bvId: '' })
+}
+
 // Verifies resource center read APIs require only normal access while writes stay admin-gated.
 async function testResourceReadApisRequireAccessOnly() {
   process.env.GLOBAL_LOCAL_MODE = ''
@@ -568,6 +586,7 @@ async function run() {
   testResourceMemoryHistoryIncludesUsedMemory()
   testResourceStatusDoesNotWriteMemorySample()
   testResourceStatusIncludesServerModeFlags()
+  testResourceTaskSummaryWhitelist()
   await testResourceReadApisRequireAccessOnly()
   await testResourceModeRoundTripRequiresAdminAndUpdatesStatus()
   await testCustomProviderValidationRejectsUnsafeInput()
