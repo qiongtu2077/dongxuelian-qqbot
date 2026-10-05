@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.StoreAccessError = exports.DATA_FILE = exports.USE_LEGACY_STORE = exports.SCOPE_DATA_DIR = exports.LEGACY_DATA_FILE = void 0;
+exports.StoreAccessError = exports.DATA_FILE = exports.USE_LEGACY_STORE = exports.SCOPE_DATA_DIR = exports.LEGACY_DATA_FILE = exports.setAliasEntry = void 0;
 exports.createStoreAccessError = createStoreAccessError;
 exports.safeScopeFileName = safeScopeFileName;
 exports.ensureStore = ensureStore;
@@ -8,11 +8,15 @@ exports.loadScopeStore = loadScopeStore;
 exports.persistScopeStore = persistScopeStore;
 /**
  * MODULE: group-name-at scoped persistence.
- * 职责: 管理按群分片存储、旧单文件懒迁移与同 scope 串行原子写入。
+ * 职责: 管理双向群数据的分片存储、版本迁移与同 scope 串行原子写入。
  * 边界: 不处理命令、权限、成员查询或消息发送。
  */
 const fs = require('fs/promises');
 const path = require('path');
+const { constants } = require('fs');
+const scope_schema_1 = require("./scope-schema");
+var scope_schema_2 = require("./scope-schema");
+Object.defineProperty(exports, "setAliasEntry", { enumerable: true, get: function () { return scope_schema_2.setAliasEntry; } });
 // 解析插件运行时数据目录，保持与主插件数据目录约定一致。
 function resolveRuntimeDataDir() {
     const configured = String(process.env.DONGXUELIAN_AI_DATA_DIR || '').trim();
@@ -29,13 +33,15 @@ exports.SCOPE_DATA_DIR = path.resolve(process.env.GROUP_NAME_AT_DATA_DIR || path
 exports.USE_LEGACY_STORE = !!String(process.env.GROUP_NAME_AT_DATA_FILE || '').trim();
 exports.DATA_FILE = exports.LEGACY_DATA_FILE;
 const MAX_STORE_FILE_BYTES = 2 * 1024 * 1024;
-const STORE_VERSION = 1;
 const STORE_READ_FAILED = '昵称数据读取失败，请检查文件格式或权限。';
 const STORE_SAVE_FAILED = '昵称数据保存失败，请检查文件权限。';
 let legacyNicknameStore = { scopes: {} };
 let legacyStoreLoaded = false;
 let legacyStoreLoadError = null;
+let legacyStoreLoadTask = null;
+let legacyStoreNeedsMigration = false;
 const scopeStoreCache = new Map();
+const scopeLoadTasks = new Map();
 let legacySaveChain = Promise.resolve();
 const scopeSaveChains = new Map();
 class StoreAccessError extends Error {
@@ -63,17 +69,6 @@ function safeScopeFileName(scopeId = '') {
 function getScopeFilePath(scopeId = '') {
     return path.join(exports.SCOPE_DATA_DIR, `${safeScopeFileName(scopeId)}.json`);
 }
-// 将读取到的 scope 数据规整成插件内部稳定结构。
-function normalizeScopeStore(scopeId, data) {
-    const source = (data && typeof data === 'object' ? data : {});
-    const aliases = source.aliases && typeof source.aliases === 'object' ? source.aliases : {};
-    return {
-        version: Number(source.version || STORE_VERSION),
-        scopeId: String(source.scopeId || scopeId || 'global'),
-        aliases,
-        updatedAt: source.updatedAt || '',
-    };
-}
 // 按大小上限读取 JSON，避免异常大文件拖垮插件进程。
 async function readJsonFileIfSmall(filePath, fallback) {
     try {
@@ -95,19 +90,27 @@ async function ensureLegacyStore() {
             throw createStoreAccessError(STORE_READ_FAILED, legacyStoreLoadError);
         return;
     }
-    try {
-        const parsed = await readJsonFileIfSmall(exports.LEGACY_DATA_FILE, null);
-        if (parsed && typeof parsed === 'object')
-            legacyNicknameStore = parsed;
+    // 不同群的首次请求也共享总表加载，不能在其他群已更新后再用旧文件重置总表。
+    if (!legacyStoreLoadTask) {
+        legacyStoreLoadTask = (async () => {
+            try {
+                const parsed = await readJsonFileIfSmall(exports.LEGACY_DATA_FILE, null);
+                if (parsed && typeof parsed === 'object')
+                    legacyNicknameStore = parsed;
+                if (!legacyNicknameStore.scopes || typeof legacyNicknameStore.scopes !== 'object')
+                    legacyNicknameStore = { scopes: {} };
+                legacyStoreNeedsMigration = Object.values(legacyNicknameStore.scopes).some(scope => scope.version !== scope_schema_1.STORE_VERSION);
+            }
+            catch (error) {
+                legacyStoreLoadError = error;
+                throw createStoreAccessError(STORE_READ_FAILED, error);
+            }
+            finally {
+                legacyStoreLoaded = true;
+            }
+        })();
     }
-    catch (error) {
-        legacyStoreLoadError = error;
-        legacyStoreLoaded = true;
-        throw createStoreAccessError(STORE_READ_FAILED, error);
-    }
-    if (!legacyNicknameStore.scopes || typeof legacyNicknameStore.scopes !== 'object')
-        legacyNicknameStore = { scopes: {} };
-    legacyStoreLoaded = true;
+    await legacyStoreLoadTask;
 }
 // 从旧总表读取当前 scope，作为新目录模式的懒迁移来源。
 async function readLegacyScopeStore(scopeId) {
@@ -115,15 +118,31 @@ async function readLegacyScopeStore(scopeId) {
     const legacyScope = legacyNicknameStore.scopes[String(scopeId)];
     if (!legacyScope || typeof legacyScope !== 'object')
         return null;
-    return normalizeScopeStore(scopeId, legacyScope);
+    return legacyScope;
+}
+// 首次升级前保留旧文件，不覆盖已有备份或更改原始内容。
+async function backupLegacyFile(filePath) {
+    try {
+        await fs.copyFile(filePath, `${filePath}.v1.bak`, constants.COPYFILE_EXCL);
+    }
+    catch (error) {
+        if (error.code !== 'EEXIST')
+            throw error;
+    }
 }
 // 为旧版单文件模式排队写入，兼容显式 GROUP_NAME_AT_DATA_FILE 部署。
 async function saveLegacyStore() {
     const task = legacySaveChain.catch(() => { }).then(async () => {
         await fs.mkdir(path.dirname(exports.LEGACY_DATA_FILE), { recursive: true });
+        if (legacyStoreNeedsMigration)
+            await backupLegacyFile(exports.LEGACY_DATA_FILE);
+        const scopes = Object.fromEntries(Object.entries(legacyNicknameStore.scopes).map(([scopeId, scope]) => [
+            scopeId, (0, scope_schema_1.serializeScopeStore)(scopeStoreCache.get(scopeId) || (0, scope_schema_1.normalizeScopeStore)(scopeId, scope)),
+        ]));
         const tmp = `${exports.LEGACY_DATA_FILE}.tmp-${process.pid}-${Date.now()}`;
-        await fs.writeFile(tmp, JSON.stringify(legacyNicknameStore, null, 2), 'utf8');
+        await fs.writeFile(tmp, JSON.stringify({ scopes }, null, 2), 'utf8');
         await fs.rename(tmp, exports.LEGACY_DATA_FILE);
+        legacyStoreNeedsMigration = false;
     });
     legacySaveChain = task.catch(() => { });
     try {
@@ -154,11 +173,9 @@ async function writeScopeStore(scopeId, scopeStore) {
         await fs.mkdir(exports.SCOPE_DATA_DIR, { recursive: true });
         const file = getScopeFilePath(scopeId);
         const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-        const data = normalizeScopeStore(scopeId, scopeStore);
-        data.updatedAt = new Date().toISOString();
-        await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
+        scopeStore.updatedAt = new Date().toISOString();
+        await fs.writeFile(tmp, JSON.stringify((0, scope_schema_1.serializeScopeStore)(scopeStore), null, 2), 'utf8');
         await fs.rename(tmp, file);
-        scopeStoreCache.set(String(scopeId), data);
     });
 }
 // 初始化当前存储模式；新目录模式只准备目录，不一次性加载所有群。
@@ -177,29 +194,45 @@ async function ensureStore() {
 // 按 scope 加载昵称集合；新目录缺失时从旧总表懒迁移。
 async function loadScopeStore(scopeIdInput) {
     const scopeId = String(scopeIdInput || 'global');
-    if (exports.USE_LEGACY_STORE) {
-        await ensureLegacyStore();
-        if (!legacyNicknameStore.scopes[scopeId])
-            legacyNicknameStore.scopes[scopeId] = { aliases: {} };
-        if (!legacyNicknameStore.scopes[scopeId].aliases)
-            legacyNicknameStore.scopes[scopeId].aliases = {};
-        return legacyNicknameStore.scopes[scopeId];
-    }
     if (scopeStoreCache.has(scopeId))
         return scopeStoreCache.get(scopeId);
-    try {
-        let scopeStore = await readJsonFileIfSmall(getScopeFilePath(scopeId), null);
-        if (!scopeStore) {
-            scopeStore = await readLegacyScopeStore(scopeId);
-            if (scopeStore)
-                await writeScopeStore(scopeId, scopeStore);
+    if (scopeLoadTasks.has(scopeId))
+        return scopeLoadTasks.get(scopeId);
+    // 并发首次访问共享同一份加载结果，避免各自创建独立对象后互相覆盖。
+    const task = (async () => {
+        try {
+            if (exports.USE_LEGACY_STORE) {
+                await ensureLegacyStore();
+                const store = (0, scope_schema_1.normalizeScopeStore)(scopeId, legacyNicknameStore.scopes[scopeId]);
+                legacyNicknameStore.scopes[scopeId] = store;
+                scopeStoreCache.set(scopeId, store);
+                if (legacyStoreNeedsMigration)
+                    await saveLegacyStore();
+                return store;
+            }
+            const filePath = getScopeFilePath(scopeId);
+            const scoped = await readJsonFileIfSmall(filePath, null);
+            const source = scoped || await readLegacyScopeStore(scopeId);
+            const normalized = (0, scope_schema_1.normalizeScopeStore)(scopeId, source);
+            if (source && (!scoped || source.version !== scope_schema_1.STORE_VERSION)) {
+                if (scoped)
+                    await backupLegacyFile(filePath);
+                await writeScopeStore(scopeId, normalized);
+            }
+            scopeStoreCache.set(scopeId, normalized);
+            return normalized;
         }
-        const normalized = normalizeScopeStore(scopeId, scopeStore || { aliases: {} });
-        scopeStoreCache.set(scopeId, normalized);
-        return normalized;
+        catch (error) {
+            scopeStoreCache.delete(scopeId);
+            throw createStoreAccessError(STORE_READ_FAILED, error);
+        }
+    })();
+    scopeLoadTasks.set(scopeId, task);
+    try {
+        return await task;
     }
-    catch (error) {
-        throw createStoreAccessError(STORE_READ_FAILED, error);
+    finally {
+        scopeLoadTasks.delete(scopeId);
     }
 }
 // 保存已加载的 scope；旧模式写总表，新模式只写当前群文件。

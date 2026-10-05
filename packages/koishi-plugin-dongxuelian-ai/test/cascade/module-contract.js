@@ -11,6 +11,7 @@ async function runModuleContract(context) {
   const modules = {}
   section('2. module loading and exports')
   const modPaths = {
+    nicknameScopeSchema: path.resolve(LIB, '../../koishi-plugin-group-name-at/lib/scope-schema'),
     constants: path.join(LIB, 'core', 'constants'),
     frontmatter: path.join(LIB, 'core', 'frontmatter'),
     onebotEndpoint: path.join(LIB, 'core', 'onebot-endpoint'),
@@ -198,6 +199,7 @@ async function runModuleContract(context) {
   const index = modules.index
 
   const expectedExports = {
+    nicknameScopeSchema: ['normalizeScopeStore', 'serializeScopeStore', 'setAliasEntry'],
     frontmatter: [
       'normalizeFrontmatterSource', 'parseFrontmatterLines', 'parseFrontmatterDocument',
     ],
@@ -764,6 +766,7 @@ async function runModuleContract(context) {
     check('resourceTaskKinds classifies chromium task kinds', kinds.isChromiumTaskKind && kinds.isChromiumTaskKind('browser_action') && kinds.isChromiumTaskKind('daily_report_render') && !kinds.isChromiumTaskKind('daily_report'))
   })()
   checkEqual('AI plugin name', index.name, 'dongxuelian-ai')
+  checkEqual('nickname scope schema version is numeric', typeof modules.nicknameScopeSchema.STORE_VERSION, 'number')
   check('AI plugin does not export _testOnly', index._testOnly === undefined)
   check('handler.handleCommand exported', typeof handler.handleCommand === 'function')
   check('repeat candidate builder exported', typeof index.buildRepeatCandidate === 'function')

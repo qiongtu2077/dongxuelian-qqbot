@@ -1,18 +1,6 @@
-export interface StoreMember {
-    userId: string;
-    displayName?: string;
-    createdBy?: string;
-    createdAt?: string;
-}
-export interface AliasEntry {
-    members: StoreMember[];
-}
-export interface ScopeStore {
-    version?: number;
-    scopeId?: string;
-    aliases: Record<string, AliasEntry>;
-    updatedAt?: string;
-}
+import { ScopeStore } from './scope-schema';
+export type { StoreMember, AliasEntry, ScopeStore } from './scope-schema';
+export { setAliasEntry } from './scope-schema';
 export declare const LEGACY_DATA_FILE: string;
 export declare const SCOPE_DATA_DIR: string;
 export declare const USE_LEGACY_STORE: boolean;
