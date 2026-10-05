@@ -20,6 +20,8 @@ const CHECK_FILES = [
   'packages/koishi-plugin-dongxuelian-poke/lib/index.js',
   'packages/koishi-plugin-group-leave-notice/lib/index.js',
   'packages/koishi-plugin-group-name-at/lib/index.js',
+  'packages/koishi-plugin-group-name-at/lib/storage.js',
+  'packages/koishi-plugin-group-name-at/lib/scope-schema.js',
   'packages/koishi-plugin-local-video-sender/lib/index.js',
   'packages/koishi-plugin-pet-bridge/lib/index.js',
   'packages/koishi-plugin-pet-bridge/lib/protocol.js',

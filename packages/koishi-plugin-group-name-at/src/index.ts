@@ -413,8 +413,9 @@ async function saveStore(session: GroupNameSessionLike): Promise<void> {
 }
 
 
+// 获取名称条目，创建时同时初始化双向关系。
 function ensureAliasEntry(scopeStore: ScopeStore, alias: string): AliasEntry {
-  if (!scopeStore.aliases[alias]) scopeStore.aliases[alias] = { members: [] }
+  if (!scopeStore.aliases[alias]) nicknameStorage.setAliasEntry(scopeStore, alias, { members: [] })
   if (!Array.isArray(scopeStore.aliases[alias].members)) scopeStore.aliases[alias].members = []
   return scopeStore.aliases[alias]
 }
@@ -531,20 +532,27 @@ async function createMember(session: GroupNameSessionLike, userId: string): Prom
   }
 }
 
+// 添加未绑定的成员，并一次更新名称条目及用户索引。
 async function addMembers(session: GroupNameSessionLike, alias: string, userIds: string[]): Promise<{ entry: AliasEntry, added: number }> {
   const scopeStore = await getScopeStore(session)
-  const entry = ensureAliasEntry(scopeStore, alias)
-  let added = 0
+  const initial = ensureAliasEntry(scopeStore, alias)
+  const additions: StoreMember[] = []
 
   for (const userId of userIds) {
-    if (entry.members.some((member) => member.userId === String(userId))) continue
-    entry.members.push(await createMember(session, userId))
-    added += 1
+    if ([...initial.members, ...additions].some(member => member.userId === String(userId))) continue
+    additions.push(await createMember(session, userId))
   }
 
-  return { entry, added }
+  // 资料查询期间其他请求可完成绑定；提交时基于最新条目合并，避免丢人或重复。
+  const current = ensureAliasEntry(scopeStore, alias)
+  const existing = new Set(current.members.map(member => member.userId))
+  const addedMembers = additions.filter(member => !existing.has(member.userId))
+  const entry = { members: [...current.members, ...addedMembers] }
+  nicknameStorage.setAliasEntry(scopeStore, alias, entry)
+  return { entry, added: addedMembers.length }
 }
 
+// 将用户绑定到昵称，并同步用户到名称的反向索引。
 async function bindAlias(session: GroupNameSessionLike, alias: string, targetUserId: string): Promise<string> {
   await ensureStore()
   alias = normalizeName(alias)
@@ -556,13 +564,19 @@ async function bindAlias(session: GroupNameSessionLike, alias: string, targetUse
   const existing = entry.members.find((member) => member.userId === String(targetUserId))
   if (existing) return TEXT.aliasExists(alias)
 
-  entry.members.push(await createMember(session, targetUserId))
+  const member = await createMember(session, targetUserId)
+  // 再检查一次最新关系，收住并发首次绑定和重复绑定。
+  const current = ensureAliasEntry(scopeStore, alias)
+  if (current.members.some(item => item.userId === member.userId)) return TEXT.aliasExists(alias)
+  const members = [...current.members, member]
+  nicknameStorage.setAliasEntry(scopeStore, alias, { members })
   await saveStore(session)
 
-  if (entry.members.length === 1) return TEXT.aliasAdded(alias)
-  return TEXT.collectionAdded(alias, 1, entry.members.length)
+  if (members.length === 1) return TEXT.aliasAdded(alias)
+  return TEXT.collectionAdded(alias, 1, members.length)
 }
 
+// 移除昵称中的目标用户；最后一人移除时同时删除名称及索引。
 async function removeAliasBinding(session: GroupNameSessionLike, alias: string, targetUserId: string): Promise<string> {
   await ensureStore()
   alias = normalizeName(alias)
@@ -573,17 +587,18 @@ async function removeAliasBinding(session: GroupNameSessionLike, alias: string, 
   if (!entry || !entry.members.length) return TEXT.aliasNotFound(alias)
 
   const before = entry.members.length
-  entry.members = entry.members.filter((member) => member.userId !== String(targetUserId))
-  if (entry.members.length === before) return TEXT.aliasRemoveMissing(alias)
+  const members = entry.members.filter((member) => member.userId !== String(targetUserId))
+  if (members.length === before) return TEXT.aliasRemoveMissing(alias)
 
-  if (!entry.members.length) {
-    delete scopeStore.aliases[alias]
+  if (!members.length) {
+    nicknameStorage.setAliasEntry(scopeStore, alias, null)
     await saveStore(session)
     return TEXT.aliasRemovedLast(alias)
   }
 
+  nicknameStorage.setAliasEntry(scopeStore, alias, { members })
   await saveStore(session)
-  return TEXT.aliasRemoved(alias, entry.members.length)
+  return TEXT.aliasRemoved(alias, members.length)
 }
 
 async function viewAlias(session: GroupNameSessionLike, alias: string): Promise<string> {
@@ -666,6 +681,7 @@ async function createCollection(session: GroupNameSessionLike, alias: string, us
   return TEXT.collectionCreated(alias, entry.members.length)
 }
 
+// 向已有集合添加成员，并保存两个方向的关系。
 async function collectionAdd(session: GroupNameSessionLike, alias: string, userIds: string[]): Promise<string> {
   await ensureStore()
   alias = normalizeName(alias)
@@ -677,11 +693,12 @@ async function collectionAdd(session: GroupNameSessionLike, alias: string, userI
   const entry = getEntry(scopeStore, alias)
   if (!entry) return TEXT.aliasNotFound(alias)
 
-  const { added } = await addMembers(session, alias, userIds)
+  const { entry: updated, added } = await addMembers(session, alias, userIds)
   await saveStore(session)
-  return TEXT.collectionAdded(alias, added, entry.members.length)
+  return TEXT.collectionAdded(alias, added, updated.members.length)
 }
 
+// 从集合移除指定成员，保留空集合并清理对应用户索引。
 async function collectionRemove(session: GroupNameSessionLike, alias: string, userIds: string[]): Promise<string> {
   await ensureStore()
   alias = normalizeName(alias)
@@ -694,26 +711,35 @@ async function collectionRemove(session: GroupNameSessionLike, alias: string, us
 
   const removeSet = new Set(userIds.map(String))
   const before = entry.members.length
-  entry.members = entry.members.filter((member) => !removeSet.has(member.userId))
-  const removed = before - entry.members.length
+  const members = entry.members.filter((member) => !removeSet.has(member.userId))
+  const removed = before - members.length
+  nicknameStorage.setAliasEntry(scopeStore, alias, { members })
   await saveStore(session)
-  return TEXT.collectionRemoved(alias, removed, entry.members.length)
+  return TEXT.collectionRemoved(alias, removed, members.length)
 }
 
-function confirmKey(session: GroupNameSessionLike, action: string, alias: string): string {
-  return `${getScopeId(session)}:${session.userId || 'unknown'}:${action}:${alias}`
+// --- 危险操作确认 --- #
+
+// 将确认记录绑定到真实发送者、当前群聊、操作和集合。
+function confirmKey(session: GroupNameSessionLike, action: string, alias: string): string | null {
+  const userId = getSenderUserId(session)
+  return userId ? `${getScopeId(session)}:${userId}:${action}:${alias}` : null
 }
 
+// 为身份明确的发起者登记 60 秒内有效的确认记录。
 function askConfirm(session: GroupNameSessionLike, action: string, alias: string): boolean {
   trimPendingConfirms()
   const key = confirmKey(session, action, alias)
+  if (!key) return false
   pendingConfirms.set(key, Date.now() + CONFIRM_TIMEOUT)
   return false
 }
 
+// 仅消费当前发送者的有效确认，其他发送者不会影响原记录。
 function takeConfirm(session: GroupNameSessionLike, action: string, alias: string): boolean {
   trimPendingConfirms()
   const key = confirmKey(session, action, alias)
+  if (!key) return false
   const expiresAt = pendingConfirms.get(key)
   if (!expiresAt || expiresAt <= Date.now()) {
     pendingConfirms.delete(key)
@@ -732,21 +758,26 @@ function trimPendingConfirms(now: number = Date.now()): void {
   for (const [key] of ordered.slice(0, pendingConfirms.size - MAX_PENDING_CONFIRMS)) pendingConfirms.delete(key)
 }
 
+// --- 集合变更 --- #
+
+// 发起集合删除或执行本人确认，无效确认返回空字符串以静默结束。
 async function deleteCollection(session: GroupNameSessionLike, alias: string, confirmed: boolean): Promise<string> {
-  await ensureStore()
   alias = normalizeName(alias)
   if (!alias) return TEXT.aliasEmpty
+  // 在访问集合前校验归属和时限，让他人、超时和重复确认都直接忽略。
+  if (confirmed && !takeConfirm(session, 'delete', alias)) return ''
 
+  await ensureStore()
   const scopeStore = await getScopeStore(session)
   if (!scopeStore.aliases[alias]) return TEXT.aliasNotFound(alias)
-  if (confirmed && !takeConfirm(session, 'delete', alias)) return TEXT.confirmDelete(alias)
   if (!confirmed && !askConfirm(session, 'delete', alias)) return TEXT.confirmDelete(alias)
 
-  delete scopeStore.aliases[alias]
+  nicknameStorage.setAliasEntry(scopeStore, alias, null)
   await saveStore(session)
   return TEXT.collectionDeleted(alias)
 }
 
+// 经本人确认后清空集合成员，同时移除反向索引中的集合关系。
 async function clearCollection(session: GroupNameSessionLike, alias: string, confirmed: boolean): Promise<string> {
   await ensureStore()
   alias = normalizeName(alias)
@@ -758,11 +789,12 @@ async function clearCollection(session: GroupNameSessionLike, alias: string, con
   if (confirmed && !takeConfirm(session, 'clear', alias)) return TEXT.confirmClear(alias)
   if (!confirmed && !askConfirm(session, 'clear', alias)) return TEXT.confirmClear(alias)
 
-  entry.members = []
+  nicknameStorage.setAliasEntry(scopeStore, alias, { members: [] })
   await saveStore(session)
   return TEXT.collectionCleared(alias)
 }
 
+// 重命名昵称或集合，并替换所有关联用户索引中的名称。
 async function renameEntry(session: GroupNameSessionLike, from: string, to: string): Promise<string> {
   await ensureStore()
   from = normalizeName(from)
@@ -775,12 +807,14 @@ async function renameEntry(session: GroupNameSessionLike, from: string, to: stri
   if (!scopeStore.aliases[from]) return TEXT.aliasNotFound(from)
   if (scopeStore.aliases[to]) return TEXT.targetExists(to)
 
-  scopeStore.aliases[to] = scopeStore.aliases[from]
-  delete scopeStore.aliases[from]
+  const entry = scopeStore.aliases[from]
+  nicknameStorage.setAliasEntry(scopeStore, from, null)
+  nicknameStorage.setAliasEntry(scopeStore, to, entry)
   await saveStore(session)
   return TEXT.renameDone(from, to)
 }
 
+// 复制集合及成员元信息，同时登记用户与新集合的关系。
 async function copyCollection(session: GroupNameSessionLike, from: string, to: string): Promise<string> {
   await ensureStore()
   from = normalizeName(from)
@@ -794,11 +828,12 @@ async function copyCollection(session: GroupNameSessionLike, from: string, to: s
   if (!entry) return TEXT.aliasNotFound(from)
   if (scopeStore.aliases[to]) return TEXT.targetExists(to)
 
-  scopeStore.aliases[to] = { members: entry.members.map((member) => ({ ...member })) }
+  nicknameStorage.setAliasEntry(scopeStore, to, { members: entry.members.map((member) => ({ ...member })) })
   await saveStore(session)
   return TEXT.copied(from, to, entry.members.length)
 }
 
+// 合并集合中的不同成员，源集合及其索引关系保持有效。
 async function mergeCollection(session: GroupNameSessionLike, targetAlias: string, sourceAlias: string): Promise<string> {
   await ensureStore()
   targetAlias = normalizeName(targetAlias)
@@ -814,44 +849,49 @@ async function mergeCollection(session: GroupNameSessionLike, targetAlias: strin
   if (!source) return TEXT.aliasNotFound(sourceAlias)
 
   let added = 0
+  const members = [...target.members]
   for (const member of source.members) {
-    if (target.members.some((item) => item.userId === member.userId)) continue
-    target.members.push({ ...member })
+    if (members.some((item) => item.userId === member.userId)) continue
+    members.push({ ...member })
     added += 1
   }
 
+  nicknameStorage.setAliasEntry(scopeStore, targetAlias, { members })
   await saveStore(session)
-  return TEXT.merged(targetAlias, sourceAlias, added, target.members.length)
+  return TEXT.merged(targetAlias, sourceAlias, added, members.length)
 }
 
 // --- 成员查询与集合运算 --- #
 
+// 使用已保存的用户标识或显示名称进行本地匹配。
 function memberMatches(member: StoreMember, keyword: string): boolean {
   return member.userId === keyword || normalizeName(member.displayName).includes(keyword)
 }
 
-// 查询成员在当前群绑定的全部昵称和集合，并按 100 个名称一条记录展示。
+// 按群和用户索引读取昵称/集合；查询不刷新成员资料、不写入数据。
 async function viewMember(session: GroupNameSessionLike, keyword: string, mentionId?: string): Promise<string> {
   await ensureStore()
   const scopeStore = await getScopeStore(session)
-  const matched: string[] = []
+  const matched = new Set<string>()
   const target = mentionId ? String(mentionId) : normalizeName(keyword)
   if (!target) return TEXT.memberRequired
 
   let label = target
-  for (const [alias, entry] of Object.entries(scopeStore.aliases)) {
-    const members = Array.isArray(entry.members) ? entry.members : []
-    const changed = await refreshMemberDisplayNames(session, members)
-    if (changed) await saveStore(session)
-    const member = members.find((item) => mentionId ? item.userId === target : memberMatches(item, target))
-    if (member) {
+  // @ 或 QQ 号只访问该用户的名称列表；按显示名称模糊查找时才读取其他用户。
+  const exactUser = !!mentionId || /^\d+$/.test(target)
+  const userIds = exactUser ? [target] : Object.keys(scopeStore.users)
+  for (const userId of userIds) {
+    for (const alias of scopeStore.users[userId] || []) {
+      const entry = scopeStore.aliases[alias]
+      const member = entry.members.find(item => item.userId === userId)!
+      if (!exactUser && !memberMatches(member, target)) continue
       label = String(member.displayName || '').trim() || member.userId
-      matched.push(`${alias} (${members.length})`)
+      matched.add(`${alias} (${entry.members.length})`)
     }
   }
 
-  if (!matched.length) return renderNicknameRecord(TEXT.memberNoAlias(label), [])
-  return renderNicknameRecord(TEXT.memberTitle(label), matched.sort((a, b) => a.localeCompare(b, 'zh-CN')))
+  if (!matched.size) return renderNicknameRecord(TEXT.memberNoAlias(label), [])
+  return renderNicknameRecord(TEXT.memberTitle(label), [...matched].sort((a, b) => a.localeCompare(b, 'zh-CN')))
 }
 
 // 判断带 @ 的“查看昵称”是否应反查成员绑定的昵称和集合。
@@ -944,6 +984,7 @@ async function resolveAtAlias(session: GroupNameSessionLike, text: string): Prom
   return null
 }
 
+// 返回命令回复；空字符串表示静默处理，null 表示未匹配命令。
 async function handlePlainCommand(session: GroupNameSessionLike, content: string): Promise<string | null> {
   const plain = stripMentions(content)
   const mentionIds = extractMentionIds(content)
@@ -1025,6 +1066,7 @@ async function handlePlainCommand(session: GroupNameSessionLike, content: string
   return null
 }
 
+// 注册昵称与集合命令，并拦截已处理的消息。
 function apply(ctx: ContextLike): void {
   ctx.on('ready', async () => {
     try {
@@ -1074,7 +1116,8 @@ function apply(ctx: ContextLike): void {
       }
 
       const commandResult = await handlePlainCommand(session, content)
-      if (commandResult) {
+      // 空回复仍表示命令已处理，不能转交后续中间件触发 AI 回复。
+      if (commandResult !== null) {
         await safeSendText(ctx, session, commandResult)
         return
       }

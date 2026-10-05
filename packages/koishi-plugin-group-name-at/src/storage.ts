@@ -1,28 +1,14 @@
 /**
  * MODULE: group-name-at scoped persistence.
- * 职责: 管理按群分片存储、旧单文件懒迁移与同 scope 串行原子写入。
+ * 职责: 管理双向群数据的分片存储、版本迁移与同 scope 串行原子写入。
  * 边界: 不处理命令、权限、成员查询或消息发送。
  */
 const fs = require('fs/promises') as typeof import('fs/promises')
 const path = require('path') as typeof import('path')
-
-export interface StoreMember {
-  userId: string
-  displayName?: string
-  createdBy?: string
-  createdAt?: string
-}
-
-export interface AliasEntry {
-  members: StoreMember[]
-}
-
-export interface ScopeStore {
-  version?: number
-  scopeId?: string
-  aliases: Record<string, AliasEntry>
-  updatedAt?: string
-}
+const { constants } = require('fs') as typeof import('fs')
+import { ScopeStore, STORE_VERSION, normalizeScopeStore, serializeScopeStore } from './scope-schema'
+export type { StoreMember, AliasEntry, ScopeStore } from './scope-schema'
+export { setAliasEntry } from './scope-schema'
 
 interface NicknameStore {
   scopes: Record<string, ScopeStore>
@@ -47,14 +33,16 @@ export const SCOPE_DATA_DIR: string = path.resolve(process.env.GROUP_NAME_AT_DAT
 export const USE_LEGACY_STORE = !!String(process.env.GROUP_NAME_AT_DATA_FILE || '').trim()
 export const DATA_FILE: string = LEGACY_DATA_FILE
 const MAX_STORE_FILE_BYTES = 2 * 1024 * 1024
-const STORE_VERSION = 1
 const STORE_READ_FAILED = '昵称数据读取失败，请检查文件格式或权限。'
 const STORE_SAVE_FAILED = '昵称数据保存失败，请检查文件权限。'
 
 let legacyNicknameStore: NicknameStore = { scopes: {} }
 let legacyStoreLoaded = false
 let legacyStoreLoadError: unknown = null
+let legacyStoreLoadTask: Promise<void> | null = null
+let legacyStoreNeedsMigration = false
 const scopeStoreCache = new Map<string, ScopeStore>()
+const scopeLoadTasks = new Map<string, Promise<ScopeStore>>()
 let legacySaveChain = Promise.resolve()
 const scopeSaveChains = new Map<string, Promise<unknown>>()
 
@@ -90,18 +78,6 @@ function getScopeFilePath(scopeId: string = ''): string {
   return path.join(SCOPE_DATA_DIR, `${safeScopeFileName(scopeId)}.json`)
 }
 
-// 将读取到的 scope 数据规整成插件内部稳定结构。
-function normalizeScopeStore(scopeId: string, data: unknown): ScopeStore {
-  const source = (data && typeof data === 'object' ? data : {}) as Partial<ScopeStore>
-  const aliases = source.aliases && typeof source.aliases === 'object' ? source.aliases : {}
-  return {
-    version: Number(source.version || STORE_VERSION),
-    scopeId: String(source.scopeId || scopeId || 'global'),
-    aliases,
-    updatedAt: source.updatedAt || '',
-  }
-}
-
 // 按大小上限读取 JSON，避免异常大文件拖垮插件进程。
 async function readJsonFileIfSmall(filePath: string, fallback: unknown): Promise<unknown> {
   try {
@@ -120,16 +96,23 @@ async function ensureLegacyStore(): Promise<void> {
     if (legacyStoreLoadError) throw createStoreAccessError(STORE_READ_FAILED, legacyStoreLoadError)
     return
   }
-  try {
-    const parsed = await readJsonFileIfSmall(LEGACY_DATA_FILE, null)
-    if (parsed && typeof parsed === 'object') legacyNicknameStore = parsed as NicknameStore
-  } catch (error) {
-    legacyStoreLoadError = error
-    legacyStoreLoaded = true
-    throw createStoreAccessError(STORE_READ_FAILED, error)
+  // 不同群的首次请求也共享总表加载，不能在其他群已更新后再用旧文件重置总表。
+  if (!legacyStoreLoadTask) {
+    legacyStoreLoadTask = (async () => {
+      try {
+        const parsed = await readJsonFileIfSmall(LEGACY_DATA_FILE, null)
+        if (parsed && typeof parsed === 'object') legacyNicknameStore = parsed as NicknameStore
+        if (!legacyNicknameStore.scopes || typeof legacyNicknameStore.scopes !== 'object') legacyNicknameStore = { scopes: {} }
+        legacyStoreNeedsMigration = Object.values(legacyNicknameStore.scopes).some(scope => scope.version !== STORE_VERSION)
+      } catch (error) {
+        legacyStoreLoadError = error
+        throw createStoreAccessError(STORE_READ_FAILED, error)
+      } finally {
+        legacyStoreLoaded = true
+      }
+    })()
   }
-  if (!legacyNicknameStore.scopes || typeof legacyNicknameStore.scopes !== 'object') legacyNicknameStore = { scopes: {} }
-  legacyStoreLoaded = true
+  await legacyStoreLoadTask
 }
 
 // 从旧总表读取当前 scope，作为新目录模式的懒迁移来源。
@@ -137,16 +120,30 @@ async function readLegacyScopeStore(scopeId: string): Promise<ScopeStore | null>
   await ensureLegacyStore()
   const legacyScope = legacyNicknameStore.scopes[String(scopeId)]
   if (!legacyScope || typeof legacyScope !== 'object') return null
-  return normalizeScopeStore(scopeId, legacyScope)
+  return legacyScope
+}
+
+// 首次升级前保留旧文件，不覆盖已有备份或更改原始内容。
+async function backupLegacyFile(filePath: string): Promise<void> {
+  try {
+    await fs.copyFile(filePath, `${filePath}.v1.bak`, constants.COPYFILE_EXCL)
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'EEXIST') throw error
+  }
 }
 
 // 为旧版单文件模式排队写入，兼容显式 GROUP_NAME_AT_DATA_FILE 部署。
 async function saveLegacyStore(): Promise<void> {
   const task = legacySaveChain.catch(() => {}).then(async () => {
     await fs.mkdir(path.dirname(LEGACY_DATA_FILE), { recursive: true })
+    if (legacyStoreNeedsMigration) await backupLegacyFile(LEGACY_DATA_FILE)
+    const scopes = Object.fromEntries(Object.entries(legacyNicknameStore.scopes).map(([scopeId, scope]) => [
+      scopeId, serializeScopeStore(scopeStoreCache.get(scopeId) || normalizeScopeStore(scopeId, scope)),
+    ]))
     const tmp = `${LEGACY_DATA_FILE}.tmp-${process.pid}-${Date.now()}`
-    await fs.writeFile(tmp, JSON.stringify(legacyNicknameStore, null, 2), 'utf8')
+    await fs.writeFile(tmp, JSON.stringify({ scopes }, null, 2), 'utf8')
     await fs.rename(tmp, LEGACY_DATA_FILE)
+    legacyStoreNeedsMigration = false
   })
   legacySaveChain = task.catch(() => {})
   try {
@@ -176,11 +173,9 @@ async function writeScopeStore(scopeId: string, scopeStore: ScopeStore): Promise
     await fs.mkdir(SCOPE_DATA_DIR, { recursive: true })
     const file = getScopeFilePath(scopeId)
     const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
-    const data = normalizeScopeStore(scopeId, scopeStore)
-    data.updatedAt = new Date().toISOString()
-    await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
+    scopeStore.updatedAt = new Date().toISOString()
+    await fs.writeFile(tmp, JSON.stringify(serializeScopeStore(scopeStore), null, 2), 'utf8')
     await fs.rename(tmp, file)
-    scopeStoreCache.set(String(scopeId), data)
   })
 }
 
@@ -200,24 +195,39 @@ export async function ensureStore(): Promise<void> {
 // 按 scope 加载昵称集合；新目录缺失时从旧总表懒迁移。
 export async function loadScopeStore(scopeIdInput: string): Promise<ScopeStore> {
   const scopeId = String(scopeIdInput || 'global')
-  if (USE_LEGACY_STORE) {
-    await ensureLegacyStore()
-    if (!legacyNicknameStore.scopes[scopeId]) legacyNicknameStore.scopes[scopeId] = { aliases: {} }
-    if (!legacyNicknameStore.scopes[scopeId].aliases) legacyNicknameStore.scopes[scopeId].aliases = {}
-    return legacyNicknameStore.scopes[scopeId]
-  }
   if (scopeStoreCache.has(scopeId)) return scopeStoreCache.get(scopeId)!
-  try {
-    let scopeStore = await readJsonFileIfSmall(getScopeFilePath(scopeId), null) as ScopeStore | null
-    if (!scopeStore) {
-      scopeStore = await readLegacyScopeStore(scopeId)
-      if (scopeStore) await writeScopeStore(scopeId, scopeStore)
+  if (scopeLoadTasks.has(scopeId)) return scopeLoadTasks.get(scopeId)!
+  // 并发首次访问共享同一份加载结果，避免各自创建独立对象后互相覆盖。
+  const task = (async () => {
+    try {
+      if (USE_LEGACY_STORE) {
+        await ensureLegacyStore()
+        const store = normalizeScopeStore(scopeId, legacyNicknameStore.scopes[scopeId])
+        legacyNicknameStore.scopes[scopeId] = store
+        scopeStoreCache.set(scopeId, store)
+        if (legacyStoreNeedsMigration) await saveLegacyStore()
+        return store
+      }
+      const filePath = getScopeFilePath(scopeId)
+      const scoped = await readJsonFileIfSmall(filePath, null) as ScopeStore | null
+      const source = scoped || await readLegacyScopeStore(scopeId)
+      const normalized = normalizeScopeStore(scopeId, source)
+      if (source && (!scoped || source.version !== STORE_VERSION)) {
+        if (scoped) await backupLegacyFile(filePath)
+        await writeScopeStore(scopeId, normalized)
+      }
+      scopeStoreCache.set(scopeId, normalized)
+      return normalized
+    } catch (error) {
+      scopeStoreCache.delete(scopeId)
+      throw createStoreAccessError(STORE_READ_FAILED, error)
     }
-    const normalized = normalizeScopeStore(scopeId, scopeStore || { aliases: {} })
-    scopeStoreCache.set(scopeId, normalized)
-    return normalized
-  } catch (error) {
-    throw createStoreAccessError(STORE_READ_FAILED, error)
+  })()
+  scopeLoadTasks.set(scopeId, task)
+  try {
+    return await task
+  } finally {
+    scopeLoadTasks.delete(scopeId)
   }
 }
 
