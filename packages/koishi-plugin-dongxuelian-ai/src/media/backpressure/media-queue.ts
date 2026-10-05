@@ -11,6 +11,7 @@ const {
   appendJsonlEvent,
   ensureDir,
   listJsonFiles,
+  isProcessAlive,
   nowIso,
   readJsonFile,
   removePath,
@@ -44,6 +45,7 @@ interface MediaTask {
   status: string
   payload: Record<string, unknown>
   claimedBy?: string
+  claimedPid?: number
   claimedAt?: string
   updatedAt?: string
   finishedAt?: string
@@ -168,6 +170,7 @@ function parseMediaTask(value: unknown): MediaTask | null {
     || typeof task.expiresAt !== 'string'
     || typeof task.priority !== 'number' || !Number.isFinite(task.priority)
     || typeof task.status !== 'string'
+    || (task.claimedPid !== undefined && (!Number.isInteger(task.claimedPid) || task.claimedPid <= 0))
     || !task.payload || typeof task.payload !== 'object' || Array.isArray(task.payload)
   ) return null
   return task as MediaTask
@@ -482,6 +485,7 @@ function claimNextMediaTask(workerName = 'media-worker', kind = ''): MediaTask |
       ...task,
       status: 'running',
       claimedBy: workerName,
+      claimedPid: process.pid,
       claimedAt: nowIso(),
       updatedAt: nowIso(),
       deferredUntil: '',
@@ -509,6 +513,7 @@ function requeueMediaTask(task: MediaTask, reason = 'resource_defer', delayMs = 
     deferredUntil,
     notBefore: deferredUntil,
     claimedBy: '',
+    claimedPid: undefined,
     claimedAt: '',
   }
   try {
@@ -573,6 +578,34 @@ interface DiscardInterruptedMediaTasksResult {
   discarded: number
   invalidFilesRemoved: number
   failed: number
+}
+
+// 读取指定正在运行的媒体任务，供监督器核对进程归属与运行时间。
+function getRunningMediaTask(taskId: string): MediaTask | null {
+  return readMediaTaskFile(getFlatMediaTaskFile(MEDIA_RUNNING_ROOT, taskId))
+}
+
+// 只结束有明确领取 PID 且进程已死亡的媒体任务，保留完整失败诊断。
+function recoverDeadMediaTasks(): number {
+  let recovered = 0
+  for (const file of listJsonFiles(MEDIA_RUNNING_ROOT, { maxFiles: 20000 })) {
+    const task = readMediaTaskFile(file)
+    if (!task?.claimedPid || isProcessAlive(task.claimedPid)) continue
+    const current = readMediaTaskFile(file)
+    if (!current || current.id !== task.id || current.claimedPid !== task.claimedPid) continue
+    const target = getFlatMediaTaskFile(MEDIA_DROPPED_ROOT, task.id)
+    try { fs.renameSync(file, target) } catch (error) {
+      // 另一监督器已完成状态迁移时，不重复写入终态。
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      throw error
+    }
+    const finishedAt = nowIso()
+    const error = `媒体处理进程已退出，任务未完成（PID ${task.claimedPid}）`
+    writeJsonAtomic(target, { ...current, status: 'failed', finishReason: 'processing_failed', finishedAt, updatedAt: finishedAt, error })
+    recovered++
+    writeMediaEvent('media_task_failed', { taskId: task.id, kind: task.kind, claimedPid: task.claimedPid, reason: 'worker_exited', error })
+  }
+  return recovered
 }
 
 // Bot 启动时把 S6 running 任务移入 dropped，pending 队列保持不变。
@@ -812,6 +845,8 @@ export = {
   listPendingMediaTasks,
   claimNextMediaTask,
   requeueMediaTask,
+  getRunningMediaTask,
+  recoverDeadMediaTasks,
   completeMediaTask,
   failMediaTask,
   discardInterruptedMediaTasks,

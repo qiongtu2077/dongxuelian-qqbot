@@ -42,15 +42,17 @@
       <div v-if="error" class="msg err">{{ error }}</div>
       <div class="diagnostics-list">
         <article v-for="item in items" :key="display(item.recordId)" class="diagnostic-item">
-          <button class="diagnostic-summary" type="button" @click="toggleDetail(item)">
+          <div class="diagnostic-summary">
             <span class="diagnostic-title">
               <b>{{ taskKindDisplay(item.kind) }}</b>
               <span class="resource-pill">{{ recordStatus(item) }}</span>
             </span>
             <span class="diagnostic-time">{{ recordTime(item) }}</span>
             <span class="diagnostic-id">内部任务标识：{{ display(item.taskId) }}</span>
-            <span class="diagnostic-toggle">{{ isExpanded(item) ? '收起具体报错' : '展开具体报错' }}</span>
-          </button>
+            <button class="btn btn-sm btn-ghost diagnostic-toggle" type="button" :aria-expanded="isExpanded(item)" @click="toggleDetail(item)">
+              {{ isExpanded(item) ? '收起具体报错' : '展开具体报错' }}
+            </button>
+          </div>
           <div v-if="isExpanded(item)" class="diagnostic-detail">
             <div v-if="isDetailLoading(item)" class="diagnostic-muted">正在读取具体报错...</div>
             <template v-else>
@@ -329,11 +331,11 @@ export default {
 .diagnostics-filters label { display: grid; gap: 4px; color: var(--text3); font-size: 12px; }
 .diagnostics-filters select { min-width: 160px; min-height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--input); color: var(--text); padding: 0 9px; }
 .diagnostics-list { display: grid; gap: 8px; }
-.diagnostic-item { border: 1px solid var(--border); border-radius: 8px; background: var(--input); overflow: hidden; }
-.diagnostic-summary { width: 100%; display: grid; grid-template-columns: minmax(190px, 1fr) minmax(220px, 1fr); gap: 6px 14px; padding: 11px 12px; border: 0; background: transparent; color: var(--text); text-align: left; font: inherit; }
+.diagnostic-item { border: 1px solid var(--border); border-radius: 8px; background: var(--input); overflow: hidden; user-select: text; }
+.diagnostic-summary { display: grid; grid-template-columns: minmax(190px, 1fr) minmax(220px, 1fr); gap: 6px 14px; padding: 11px 12px; color: var(--text); }
 .diagnostic-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .diagnostic-id { overflow-wrap: anywhere; }
-.diagnostic-toggle { color: var(--accent); font-size: 12px; text-align: right; }
+.diagnostic-toggle { justify-self: end; color: var(--accent); font-size: 12px; }
 .diagnostic-detail { border-top: 1px solid var(--border); padding: 12px; }
 .diagnostic-error { margin: 0; padding: 10px; border-radius: 7px; background: color-mix(in srgb, var(--bg) 75%, var(--input)); color: var(--text2); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .diagnostic-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 12px; margin: 10px 0 0; font-size: 12px; }
@@ -343,6 +345,6 @@ export default {
 @media (max-width: 720px) {
   .diagnostics-head { align-items: flex-start; flex-direction: column; }
   .diagnostic-summary { grid-template-columns: 1fr; }
-  .diagnostic-toggle { text-align: left; }
+  .diagnostic-toggle { justify-self: start; }
 }
 </style>

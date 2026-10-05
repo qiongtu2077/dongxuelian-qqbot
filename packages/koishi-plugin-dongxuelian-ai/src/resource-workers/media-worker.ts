@@ -11,7 +11,7 @@ const {
   isVoiceMediaTaskKind,
 } = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
 const { decideBackgroundDirective } = require('../resource-scheduler/background-directive') as typeof import('../resource-scheduler/background-directive')
-const { acquireResourceGate } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
+const { acquireResourceGate, isResourceGateStorageError } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
 const { writeProcessCleanupEvent } = require('../resource-system/system-protection') as typeof import('../resource-system/system-protection')
 const { analyzeImageNow } = require('../media/image/image-analyzer') as typeof import('../media/image/image-analyzer')
 const { analyzeFileNow } = require('../media/file/file-analyzer') as typeof import('../media/file/file-analyzer')
@@ -31,6 +31,7 @@ const {
 interface MediaWorkerOptions {
   workerName?: string
   gateWaitMs?: number
+  onTaskChange?: (task: { id: string; claimedAt: string } | null) => void
 }
 
 interface MediaTaskPayloadLike {
@@ -179,23 +180,23 @@ async function drainOneMediaTask(options: MediaWorkerOptions = {}): Promise<bool
   if (gate.directive.action === 'park') return false
   const task = claimNextMediaTask(workerName)
   if (!task) return false
-  const admission = admitTask({
-    taskId: task.id,
-    kind: task.kind,
-    source: workerName,
-    channelKey: task.channelKey,
-    userId: String(task.payload?.userId || ''),
-    exclusive: false,
-  })
-  if (admission.decision !== 'run_now') {
-    // 止血：资源不足时 requeue 后返回 false，避免 worked=true 触发 200ms claim/requeue 忙等。
-    // 返回 false 让 runWorkerLoop 走 pollMs（默认 2s）退避，形成真背压而非忙等。
-    requeueMediaTask(task, String(admission.reason || admission.decision))
-    return false
-  }
-
   let gateHandle: { updateStep(step: string, memAvailableMb?: number | null): void; release(reason?: string): void } | null = null
   try {
+    options.onTaskChange?.({ id: task.id, claimedAt: String(task.claimedAt || '') })
+    const admission = admitTask({
+      taskId: task.id,
+      kind: task.kind,
+      source: workerName,
+      channelKey: task.channelKey,
+      userId: String(task.payload?.userId || ''),
+      exclusive: false,
+    })
+    if (admission.decision !== 'run_now') {
+      // 资源不足时重排并返回 false，让主循环退避，避免领取和重排忙等。
+      requeueMediaTask(task, String(admission.reason || admission.decision))
+      return false
+    }
+
     gateHandle = await acquireResourceGate({
       taskId: task.id,
       kind: task.kind,
@@ -213,6 +214,10 @@ async function drainOneMediaTask(options: MediaWorkerOptions = {}): Promise<bool
     return true
   } catch (error) {
     if (!gateHandle) {
+      if (isResourceGateStorageError(error)) {
+        failMediaTask(task, error, 'resource_gate_storage_failed')
+        throw error
+      }
       // 锁等待失败也属于资源繁忙，requeue 后返回 false 退避，不立刻重抢。
       requeueMediaTask(task, error instanceof Error ? error.message : String(error || 'lock_wait_failed'))
       return false
@@ -221,11 +226,16 @@ async function drainOneMediaTask(options: MediaWorkerOptions = {}): Promise<bool
     handleMediaTaskTimeout(workerName, task, error)
     return true
   } finally {
-    if (gateHandle) gateHandle.release('media-worker-finally')
+    try {
+      if (gateHandle) gateHandle.release('media-worker-finally')
+    } finally {
+      options.onTaskChange?.(null)
+    }
   }
 }
 
 export = {
+  MEDIA_TASK_TIMEOUT_MS,
   drainOneMediaTask,
   runClaimedMediaTask,
   runClaimedMediaTaskWithTimeout,

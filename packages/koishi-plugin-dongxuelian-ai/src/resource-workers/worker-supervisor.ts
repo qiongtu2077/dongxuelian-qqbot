@@ -12,7 +12,7 @@ const { SUPERVISOR_DIR } = require('./task-paths') as typeof import('./task-path
 const { listWorkerStates, listResourceTasks, countResourceTasks, failTask, failIsolatedClaimingTask, requeueTask, writeWorkerEvent } = require('./task-store') as typeof import('./task-store')
 const { ensureDir, isProcessAlive, nowIso, writeJsonAtomic } = require('../resource-common/files') as typeof import('../resource-common/files')
 const { writeProcessCleanupEvent, terminateProcessTree, terminateRecordedProcessPids } = require('../resource-system/system-protection') as typeof import('../resource-system/system-protection')
-const { getResourceGateStatus, reclaimStaleLock, releaseResourceGate } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
+const { getResourceGateStatus, reclaimStaleLock, reclaimDeadTickets, releaseResourceGate } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
 const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
 const { resolveTaskTimeoutMs } = require('./task-timeout') as typeof import('./task-timeout')
 type ResourceTask = import('./task-types').ResourceTask
@@ -241,11 +241,18 @@ function hasWorkerBacklog(type: string): number {
   return countPendingTasksForKinds(getWorkerKinds(normalized))
 }
 
+// 保护仍在运行时限内、且明确属于当前进程的业务或媒体任务。
 function isWorkerRunningLongTask(worker: ResourceWorkerState): boolean {
   const currentTaskId = String(worker?.currentTaskId || '').trim()
   if (!currentTaskId) return false
   const startedAt = Date.parse(String(worker?.currentTaskStartedAt || ''))
   if (!Number.isFinite(startedAt)) return false
+  if (getWorkerTypeFromNameOrState(worker) === 'media') {
+    const media = require('../media/backpressure/media-queue') as typeof import('../media/backpressure/media-queue')
+    const { MEDIA_TASK_TIMEOUT_MS } = require('./media-worker') as typeof import('./media-worker')
+    const task = media.getRunningMediaTask(currentTaskId)
+    return !!task && task.claimedPid === worker.pid && Date.now() - startedAt < MEDIA_TASK_TIMEOUT_MS
+  }
   const task = listResourceTasks({ statuses: ['running'], limit: 500 }).find(item => String(item.id || '') === currentTaskId)
   if (!task) return false
   const timeoutMs = resolveTaskTimeoutMs(task)
@@ -626,10 +633,12 @@ function runSupervisorOnce(options: SupervisorOptions = {}): Record<string, unkn
   const media = require('../media/backpressure/media-queue') as typeof import('../media/backpressure/media-queue')
   const mediaExpired = media.cleanupExpiredMediaTasksThrottled()
   const mediaRetention = media.cleanupFinishedMediaTasksThrottled()
+  const deadMediaRecovered = media.recoverDeadMediaTasks()
   const timedOutRecovered = auditTimedOutRunningTasks()
   const staleRecovered = auditStaleRunningTasks()
   const staleClaimingRecovered = auditStaleClaimingTasks()
   const gateReclaimed = reclaimStaleLock(30000, 'worker-supervisor')
+  const deadTicketsReclaimed = reclaimDeadTickets('worker-supervisor')
   const deferred = auditDeferredTasks()
   const started = options.start ? ensureWorkerProcesses(types, options) : []
   return writeSupervisorState({
@@ -637,10 +646,12 @@ function runSupervisorOnce(options: SupervisorOptions = {}): Record<string, unkn
     started,
     mediaExpired,
     mediaRetention,
+    deadMediaRecovered,
     timedOutRecovered,
     staleRecovered,
     staleClaimingRecovered,
     gateReclaimed,
+    deadTicketsReclaimed,
     deferred,
     workers: attachWorkerProgressSamples(listWorkerStates(), previousSamples),
   })

@@ -176,8 +176,23 @@ async function verifyResourcePanel(page, options = {}) {
   await waitForText(page, '处理失败')
   await waitForText(page, '服务重启时中断')
   await waitForText(page, '历史原因未知')
-  await clickVisibleSelector(page, '.diagnostic-summary')
+  await clickVisibleSelector(page, '.diagnostic-toggle')
   await waitForText(page, 'mock saved diagnostic error')
+  const diagnosticTextSelectable = await page.evaluate(() => {
+    const summary = document.querySelector('.diagnostic-summary')
+    const error = document.querySelector('.diagnostic-error')
+    const selection = window.getSelection()
+    if (!summary || !error || !selection || summary.closest('button') || getComputedStyle(error).userSelect !== 'text') return false
+    // 选中实际报错文字，验证诊断卡片允许用户复制，同时不触发展开按钮。
+    const range = document.createRange()
+    range.selectNodeContents(error)
+    selection.removeAllRanges()
+    selection.addRange(range)
+    const selected = selection.toString().includes('mock saved diagnostic error')
+    selection.removeAllRanges()
+    return selected
+  })
+  if (!diagnosticTextSelectable) throw new Error('diagnostic text is not selectable outside the toggle button')
 
   await page.select('.memory-range-select', '30m')
   await waitForText(page, '平均 1038 MB')

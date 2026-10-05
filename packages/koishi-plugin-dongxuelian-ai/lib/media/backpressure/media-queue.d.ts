@@ -22,6 +22,7 @@ interface MediaTask {
     status: string;
     payload: Record<string, unknown>;
     claimedBy?: string;
+    claimedPid?: number;
     claimedAt?: string;
     updatedAt?: string;
     finishedAt?: string;
@@ -80,6 +81,8 @@ interface DiscardInterruptedMediaTasksResult {
     invalidFilesRemoved: number;
     failed: number;
 }
+declare function getRunningMediaTask(taskId: string): MediaTask | null;
+declare function recoverDeadMediaTasks(): number;
 declare function discardInterruptedMediaTasks(reason?: string): DiscardInterruptedMediaTasksResult;
 declare function enqueueMediaTask(input: MediaTaskInput): EnqueueMediaTaskResult;
 declare function listUnfinishedMediaTasksForDiagnostics(): MediaDiagnosticTask[];
@@ -103,6 +106,8 @@ declare const _default: {
     listPendingMediaTasks: typeof listPendingMediaTasks;
     claimNextMediaTask: typeof claimNextMediaTask;
     requeueMediaTask: typeof requeueMediaTask;
+    getRunningMediaTask: typeof getRunningMediaTask;
+    recoverDeadMediaTasks: typeof recoverDeadMediaTasks;
     completeMediaTask: typeof completeMediaTask;
     failMediaTask: typeof failMediaTask;
     discardInterruptedMediaTasks: typeof discardInterruptedMediaTasks;

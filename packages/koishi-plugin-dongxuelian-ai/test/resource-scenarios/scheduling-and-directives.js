@@ -5,6 +5,7 @@ const path = require('path')
 const os = require('os')
 const { spawnSync } = require('child_process')
 const { check, createTempDataDir, runScenario } = require('../helpers/resource-harness')
+const { createCapabilityConfig } = require('../helpers/ai-capability-fixture')
 
 // === Scenario 1: S2 notifier 双副本不重复写回 ===
 function testNotifierNoDuplicateWriteback() {
@@ -144,6 +145,11 @@ process.exitCode = 0
 // 极大值，确保 ready 之后新出现的 done 文件只能由 fs.watch 触发 notifier，而非轮询兜底。
 function testDoneWatcherTriggersNotifierEventDriven() {
   const dataDir = createTempDataDir('resource-regress-watch-')
+  // ready 会加载文字能力，使用现有契约夹具，避免初始化失败掩盖 watcher 断言。
+  fs.writeFileSync(path.join(dataDir, 'ai-capability-config.json'), JSON.stringify(createCapabilityConfig({
+    text: [{ provider: 'opencode', model: 'deepseek-v4-flash' }],
+  })))
+  fs.writeFileSync(path.join(dataDir, 'ai-openai-key.txt'), 'test-opencode-key')
   const script = String.raw`
 const fs = require('fs')
 const path = require('path')

@@ -100,6 +100,9 @@ const DEFAULT_STALE_MS = Number(process.env.RESOURCE_GATE_STALE_MS || 30000)
 const DEFAULT_WAIT_TIMEOUT_MS = Number(process.env.RESOURCE_GATE_WAIT_TIMEOUT_MS || 600000)
 const DEFAULT_POLL_MS = Number(process.env.RESOURCE_GATE_POLL_MS || 1000)
 const MAX_GATE_JSON_BYTES = 2 * 1024 * 1024
+const MUTATION_DIR = path.join(GATE_ROOT, 'lock-mutation')
+const mutationWait = new Int32Array(new SharedArrayBuffer(4))
+let mutationDepth = 0
 
 // --- 结构化错误与安全路径 ---
 
@@ -242,6 +245,8 @@ function readGateJson<T>(target: string, stage: string, validate: (value: unknow
   try {
     parsed = JSON.parse(fs.readFileSync(target, 'utf8'))
   } catch (error) {
+    // 票据在 stat 后被另一进程正常删除时，仍按缺失处理。
+    if (getGateErrno(error) === 'ENOENT') return null
     throw classifyGateStorageError(error, stage, target, 'gate_state_unreadable')
   }
   if (!validate(parsed)) throw new ResourceGateStorageError('gate_state_unreadable', 'INVALID_STATE', stage, toSafeGatePath(target))
@@ -271,6 +276,112 @@ function writeGateEvent(event: string, data: Record<string, unknown> = {}): void
     fs.appendFileSync(target, `${JSON.stringify(payload)}\n`, 'utf8')
   } catch (error) {
     throw classifyGateStorageError(error, 'gate_event_write', target, 'gate_event_write_failed')
+  }
+}
+
+// --- 跨进程锁状态变更互斥 ---
+
+// 只移除空互斥目录，后来发布的新持有者由 rmdir 的非空检查保护。
+function removeEmptyMutationDirectory(): void {
+  const deadline = Date.now() + 2000
+  while (true) {
+    try {
+      fs.rmdirSync(MUTATION_DIR)
+      return
+    } catch (error) {
+      if (['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(getGateErrno(error))) return
+      // Windows 并发目录句柄尚未关闭时会短暂拒绝删除，限定等待时间后仍报真实故障。
+      if (process.platform === 'win32' && getGateErrno(error) === 'EPERM' && Date.now() < deadline) {
+        Atomics.wait(mutationWait, 0, 0, 10)
+        continue
+      }
+      throw classifyGateStorageError(error, 'mutation_directory_cleanup', MUTATION_DIR, 'gate_cleanup_failed')
+    }
+  }
+}
+
+// 只删除指定互斥持有者的唯一文件，避免回收旧持有者时误删新持有者。
+function removeMutationOwner(ownerFile: string): void {
+  const deadline = Date.now() + 2000
+  while (true) {
+    try {
+      fs.unlinkSync(path.join(MUTATION_DIR, ownerFile))
+      break
+    } catch (error) {
+      if (getGateErrno(error) === 'ENOENT') break
+      if (process.platform === 'win32' && getGateErrno(error) === 'EPERM' && Date.now() < deadline) {
+        Atomics.wait(mutationWait, 0, 0, 10)
+        continue
+      }
+      throw classifyGateStorageError(error, 'mutation_owner_cleanup', MUTATION_DIR, 'gate_cleanup_failed')
+    }
+  }
+  removeEmptyMutationDirectory()
+}
+
+// 串行化短暂的锁读写与回收；死亡持有者按唯一文件名回收，避免误删新锁。
+function withGateMutation<T>(operation: () => T): T {
+  if (mutationDepth > 0) return operation()
+  ensureGateDirs()
+  const ownerFile = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.json`
+  const candidate = path.join(GATE_ROOT, `.mutation-candidate-${ownerFile}`)
+  ensureGateDirectory(candidate, 'mutation_candidate_create')
+  let acquired = false
+  try {
+    writeGateJsonAtomic(path.join(candidate, ownerFile), { pid: process.pid }, 'mutation_owner_write')
+    const deadline = Date.now() + 2000
+    while (!acquired) {
+      try {
+        fs.renameSync(candidate, MUTATION_DIR)
+        acquired = true
+      } catch (error) {
+        if (!gatePathExists(MUTATION_DIR, 'mutation_competitor_exists')) {
+          // 竞争目录在 rename 失败后已被释放；Windows 的目录句柄关闭还会短暂返回 EPERM。
+          const competition = ['EEXIST', 'ENOTEMPTY'].includes(getGateErrno(error))
+            || (process.platform === 'win32' && getGateErrno(error) === 'EPERM')
+          if (competition && Date.now() < deadline) {
+            Atomics.wait(mutationWait, 0, 0, 10)
+            continue
+          }
+          throw classifyGateStorageError(error, 'mutation_publish', MUTATION_DIR)
+        }
+        let names: string[]
+        try { names = fs.readdirSync(MUTATION_DIR) } catch (readError) {
+          if (getGateErrno(readError) === 'ENOENT') continue
+          if (process.platform === 'win32' && getGateErrno(readError) === 'EPERM' && Date.now() < deadline) {
+            Atomics.wait(mutationWait, 0, 0, 10)
+            continue
+          }
+          throw classifyGateStorageError(readError, 'mutation_owner_list', MUTATION_DIR)
+        }
+        if (names.length === 0) {
+          removeEmptyMutationDirectory()
+          continue
+        }
+        if (names.length !== 1 || !/^\d+-\d+-[a-z0-9]+\.json$/.test(names[0])) {
+          throw new ResourceGateStorageError('gate_state_unreadable', 'INVALID_STATE', 'mutation_owner_read', toSafeGatePath(MUTATION_DIR))
+        }
+        // 唯一文件名已携带持有进程；避免读取即将被释放的标记文件。
+        const ownerPid = Number(names[0].split('-')[0])
+        if (!Number.isInteger(ownerPid) || ownerPid <= 0) {
+          throw new ResourceGateStorageError('gate_state_unreadable', 'INVALID_STATE', 'mutation_owner_read', toSafeGatePath(MUTATION_DIR))
+        }
+        if (!isProcessAlive(ownerPid)) {
+          removeMutationOwner(names[0])
+          continue
+        }
+        if (Date.now() >= deadline) {
+          throw new ResourceGateStorageError('gate_cleanup_failed', 'MUTATION_BUSY', 'mutation_wait', toSafeGatePath(MUTATION_DIR))
+        }
+        // 同步入口不能 await；短暂休眠让另一进程完成文件操作，避免忙等。
+        Atomics.wait(mutationWait, 0, 0, 10)
+      }
+    }
+    mutationDepth++
+    try { return operation() } finally { mutationDepth-- }
+  } finally {
+    if (acquired) removeMutationOwner(ownerFile)
+    removeGatePath(candidate, 'mutation_candidate_cleanup')
   }
 }
 
@@ -349,13 +460,32 @@ function removeTicket(ticketId: string): void {
   removeGatePath(getTicketFile(ticketId), 'ticket_cleanup')
 }
 
+// 清理确证死亡进程的票据，补偿锁已被清除或回收中途退出的情况。
+function reclaimDeadTickets(actor = 'system'): number {
+  return withGateMutation(() => {
+    let reclaimed = 0
+    for (const ticket of listTickets()) {
+      if (isProcessAlive(ticket.pid)) continue
+      const file = getTicketFile(ticket.ticketId)
+      const current = readGateJson(file, 'dead_ticket_read', isResourceGateTicket)
+      if (!current || current.pid !== ticket.pid || current.taskId !== ticket.taskId || current.ticketId !== ticket.ticketId) continue
+      if (!removeGatePath(file, 'dead_ticket_cleanup')) continue
+      reclaimed++
+      writeGateEvent('dead_ticket_reclaimed', { ticketId: ticket.ticketId, taskId: ticket.taskId, kind: ticket.kind, pid: ticket.pid, actor })
+    }
+    return reclaimed
+  })
+}
+
 // 读取当前锁元数据；仅锁文件不存在时返回 null。
 function readLockMeta(): ResourceGateLockMeta | null {
-  const meta = readGateJson(LOCK_META_FILE, 'lock_meta_read', isResourceGateLockMeta)
-  if (!meta && gatePathExists(LOCK_DIR, 'lock_dir_without_meta_check')) {
-    throw new ResourceGateStorageError('gate_state_unreadable', 'MISSING_LOCK_META', 'lock_meta_read', toSafeGatePath(LOCK_META_FILE))
-  }
-  return meta
+  return withGateMutation(() => {
+    const meta = readGateJson(LOCK_META_FILE, 'lock_meta_read', isResourceGateLockMeta)
+    if (!meta && gatePathExists(LOCK_DIR, 'lock_dir_without_meta_check')) {
+      throw new ResourceGateStorageError('gate_state_unreadable', 'MISSING_LOCK_META', 'lock_meta_read', toSafeGatePath(LOCK_META_FILE))
+    }
+    return meta
+  })
 }
 
 // 判断当前 ticket 是否排在队头。
@@ -366,103 +496,112 @@ function isTicketHead(ticketId: string): boolean {
 
 // 先在同级候选目录完整写入元数据，再原子发布正式锁目录，避免暴露无 meta 的正常建锁窗口。
 function tryCreateLock(ticket: ResourceGateTicket, input: AcquireGateOptions): ResourceGateLockMeta | null {
-  const candidateDir = path.join(GATE_ROOT, `.lock-candidate-${sanitizeId(ticket.ticketId)}-${Math.random().toString(36).slice(2, 8)}`)
-  try {
-    fs.mkdirSync(candidateDir)
-  } catch (error) {
-    throw classifyGateStorageError(error, 'lock_candidate_create', candidateDir)
-  }
-
-  const meta: ResourceGateLockMeta = {
-    taskId: ticket.taskId,
-    kind: ticket.kind,
-    owner: String(ticket.owner || input.owner || 'unknown'),
-    pid: process.pid,
-    channelKey: String(ticket.channelKey || input.channelKey || ''),
-    userId: String(ticket.userId || input.userId || ''),
-    startedAt: nowIso(),
-    heartbeatAt: nowIso(),
-    step: String(input.step || 'starting'),
-    memAvailableMb: input.memAvailableMb === undefined ? null : Number(input.memAvailableMb),
-    timeoutMs: Number.isFinite(Number(input.timeoutMs)) ? Number(input.timeoutMs) : DEFAULT_WAIT_TIMEOUT_MS,
-    ticketId: ticket.ticketId,
-  }
-  let published = false
-  try {
-    writeGateJsonAtomic(path.join(candidateDir, 'meta.json'), meta, 'lock_meta_write')
-    if (gatePathExists(LOCK_DIR, 'lock_publish_precheck')) {
-      readLockMeta()
-      removeGatePath(candidateDir, 'lock_candidate_competition_cleanup')
-      return null
-    }
+  return withGateMutation(() => {
+    const candidateDir = path.join(GATE_ROOT, `.lock-candidate-${sanitizeId(ticket.ticketId)}-${Math.random().toString(36).slice(2, 8)}`)
     try {
-      fs.renameSync(candidateDir, LOCK_DIR)
-      published = true
+      fs.mkdirSync(candidateDir)
     } catch (error) {
-      const lockExists = gatePathExists(LOCK_DIR, 'lock_publish_existing_check')
-      if (lockExists) {
-        let stat: import('fs').Stats
-        try { stat = fs.statSync(LOCK_DIR) } catch (statError) { throw classifyGateStorageError(statError, 'lock_existing_state', LOCK_DIR) }
-        if (!stat.isDirectory()) {
-          throw new ResourceGateStorageError('gate_path_invalid', getGateErrno(error), 'lock_existing_state', toSafeGatePath(LOCK_DIR), error)
-        }
+      throw classifyGateStorageError(error, 'lock_candidate_create', candidateDir)
+    }
+
+    const meta: ResourceGateLockMeta = {
+      taskId: ticket.taskId,
+      kind: ticket.kind,
+      owner: String(ticket.owner || input.owner || 'unknown'),
+      pid: process.pid,
+      channelKey: String(ticket.channelKey || input.channelKey || ''),
+      userId: String(ticket.userId || input.userId || ''),
+      startedAt: nowIso(),
+      heartbeatAt: nowIso(),
+      step: String(input.step || 'starting'),
+      memAvailableMb: input.memAvailableMb === undefined ? null : Number(input.memAvailableMb),
+      timeoutMs: Number.isFinite(Number(input.timeoutMs)) ? Number(input.timeoutMs) : DEFAULT_WAIT_TIMEOUT_MS,
+      ticketId: ticket.ticketId,
+    }
+    let published = false
+    try {
+      writeGateJsonAtomic(path.join(candidateDir, 'meta.json'), meta, 'lock_meta_write')
+      if (gatePathExists(LOCK_DIR, 'lock_publish_precheck')) {
+        readLockMeta()
         removeGatePath(candidateDir, 'lock_candidate_competition_cleanup')
         return null
       }
-      throw classifyGateStorageError(error, 'lock_publish', LOCK_DIR)
+      try {
+        fs.renameSync(candidateDir, LOCK_DIR)
+        published = true
+      } catch (error) {
+        const lockExists = gatePathExists(LOCK_DIR, 'lock_publish_existing_check')
+        if (lockExists) {
+          let stat: import('fs').Stats
+          try { stat = fs.statSync(LOCK_DIR) } catch (statError) { throw classifyGateStorageError(statError, 'lock_existing_state', LOCK_DIR) }
+          if (!stat.isDirectory()) {
+            throw new ResourceGateStorageError('gate_path_invalid', getGateErrno(error), 'lock_existing_state', toSafeGatePath(LOCK_DIR), error)
+          }
+          removeGatePath(candidateDir, 'lock_candidate_competition_cleanup')
+          return null
+        }
+        throw classifyGateStorageError(error, 'lock_publish', LOCK_DIR)
+      }
+      writeGateEvent('lock_acquired', { taskId: meta.taskId, kind: meta.kind, ticketId: meta.ticketId, owner: meta.owner })
+      return meta
+    } catch (error) {
+      removeGatePath(published ? LOCK_DIR : candidateDir, 'lock_acquire_rollback')
+      throw error
     }
-    writeGateEvent('lock_acquired', { taskId: meta.taskId, kind: meta.kind, ticketId: meta.ticketId, owner: meta.owner })
-    return meta
-  } catch (error) {
-    removeGatePath(published ? LOCK_DIR : candidateDir, 'lock_acquire_rollback')
-    throw error
-  }
+  })
 }
 
 // 检查并回收可确认死亡的 stale lock。
 function reclaimStaleLock(staleMs = DEFAULT_STALE_MS, actor = 'system'): boolean {
-  const meta = readLockMeta()
-  if (!meta) return false
-  const heartbeatAt = Date.parse(String(meta.heartbeatAt || meta.startedAt || ''))
-  const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > staleMs
-  if (!stale) return false
-  if (isProcessAlive(meta.pid)) {
-    writeGateEvent('stale_suspected', { taskId: meta.taskId, kind: meta.kind, pid: meta.pid, actor })
-    return false
-  }
-  const removed = removeGatePath(LOCK_DIR, 'stale_lock_cleanup')
-  if (removed) writeGateEvent('stale_reclaimed', { taskId: meta.taskId, kind: meta.kind, pid: meta.pid, actor })
-  return removed
+  return withGateMutation(() => {
+    const meta = readLockMeta()
+    if (!meta) return false
+    const heartbeatAt = Date.parse(String(meta.heartbeatAt || meta.startedAt || ''))
+    const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > staleMs
+    if (!stale) return false
+    if (isProcessAlive(meta.pid)) {
+      writeGateEvent('stale_suspected', { taskId: meta.taskId, kind: meta.kind, pid: meta.pid, actor })
+      return false
+    }
+    const ticketRemoved = removeGatePath(getTicketFile(meta.ticketId), 'stale_ticket_cleanup')
+    const removed = removeGatePath(LOCK_DIR, 'stale_lock_cleanup')
+    if (removed) writeGateEvent('stale_reclaimed', { taskId: meta.taskId, kind: meta.kind, pid: meta.pid, ticketId: meta.ticketId, ticketRemoved, actor })
+    return removed
+  })
 }
 
 // Bot 启动时丢弃上一次进程遗留的独占锁和全部短期 ticket。
 function discardInterruptedResourceGateState(reason = 'restart_discarded'): DiscardInterruptedResourceGateStateResult {
-  const meta = readLockMeta()
-  const lockExisted = gatePathExists(LOCK_DIR, 'startup_lock_exists')
-  let ticketsRemoved = 0
-  if (gatePathExists(TICKETS_DIR, 'startup_tickets_exists')) {
-    try { ticketsRemoved = fs.readdirSync(TICKETS_DIR).length } catch (error) { throw classifyGateStorageError(error, 'startup_ticket_list', TICKETS_DIR) }
-  }
-  const lockRemoved = lockExisted ? removeGatePath(LOCK_DIR, 'startup_lock_cleanup') : false
-  if (ticketsRemoved > 0) removeGatePath(TICKETS_DIR, 'startup_ticket_cleanup')
-  ensureGateDirs()
-  if (lockExisted || ticketsRemoved > 0) {
-    writeGateEvent('startup_runtime_discarded', { reason, lockRemoved, ticketsRemoved, taskId: meta?.taskId || '', kind: meta?.kind || '' })
-  }
-  return { lockRemoved, ticketsRemoved }
+  return withGateMutation(() => {
+    const meta = readLockMeta()
+    const lockExisted = gatePathExists(LOCK_DIR, 'startup_lock_exists')
+    let ticketsRemoved = 0
+    if (gatePathExists(TICKETS_DIR, 'startup_tickets_exists')) {
+      try { ticketsRemoved = fs.readdirSync(TICKETS_DIR).length } catch (error) { throw classifyGateStorageError(error, 'startup_ticket_list', TICKETS_DIR) }
+    }
+    const lockRemoved = lockExisted ? removeGatePath(LOCK_DIR, 'startup_lock_cleanup') : false
+    if (ticketsRemoved > 0) removeGatePath(TICKETS_DIR, 'startup_ticket_cleanup')
+    ensureGateDirs()
+    if (lockExisted || ticketsRemoved > 0) {
+      writeGateEvent('startup_runtime_discarded', { reason, lockRemoved, ticketsRemoved, taskId: meta?.taskId || '', kind: meta?.kind || '' })
+    }
+    return { lockRemoved, ticketsRemoved }
+  })
 }
 
 // 更新当前锁心跳和执行步骤；旧状态存在但不可读时向调用方抛出结构化故障。
 function updateLockMeta(ticketId: string, step?: string, memAvailableMb?: number | null): void {
-  const meta = readLockMeta()
-  if (!meta || meta.ticketId !== ticketId) return
-  const next = {
-    ...meta,
-    heartbeatAt: nowIso(),
-    step: step || meta.step,
-    memAvailableMb: memAvailableMb === undefined ? meta.memAvailableMb : memAvailableMb,
-  }
-  writeGateJsonAtomic(LOCK_META_FILE, next, 'lock_meta_update')
+  return withGateMutation(() => {
+    const meta = readLockMeta()
+    if (!meta || meta.ticketId !== ticketId) return
+    const next = {
+      ...meta,
+      heartbeatAt: nowIso(),
+      step: step || meta.step,
+      memAvailableMb: memAvailableMb === undefined ? meta.memAvailableMb : memAvailableMb,
+    }
+    writeGateJsonAtomic(LOCK_META_FILE, next, 'lock_meta_update')
+  })
 }
 
 // --- 获取、释放与只读状态 ---
@@ -478,6 +617,7 @@ async function acquireResourceGate(input: AcquireGateOptions): Promise<ResourceG
   let heartbeatFailure: ResourceGateStorageError | null = null
 
   try {
+    reclaimDeadTickets(`ticket:${ticket.ticketId}`)
     while (Date.now() <= deadline) {
       reclaimStaleLock(staleMs, `ticket:${ticket.ticketId}`)
       if (isTicketHead(ticket.ticketId)) {
@@ -520,10 +660,12 @@ async function acquireResourceGate(input: AcquireGateOptions): Promise<ResourceG
 
 // 释放 S0 独占运行槽和对应 ticket，清理失败会明确抛出 gate_cleanup_failed。
 function releaseResourceGate(ticketId: string, reason = 'completed'): void {
-  const meta = readLockMeta()
-  if (meta && meta.ticketId === ticketId) removeGatePath(LOCK_DIR, 'lock_release_cleanup')
-  removeTicket(ticketId)
-  if (meta && meta.ticketId === ticketId) writeGateEvent('lock_released', { ticketId, taskId: meta.taskId, kind: meta.kind, reason })
+  return withGateMutation(() => {
+    const meta = readLockMeta()
+    if (meta && meta.ticketId === ticketId) removeGatePath(LOCK_DIR, 'lock_release_cleanup')
+    removeTicket(ticketId)
+    if (meta && meta.ticketId === ticketId) writeGateEvent('lock_released', { ticketId, taskId: meta.taskId, kind: meta.kind, reason })
+  })
 }
 
 // 读取 S0 当前状态，Dashboard 展示当前 running 以此为准。
@@ -559,6 +701,7 @@ export = {
   acquireResourceGate,
   releaseResourceGate,
   reclaimStaleLock,
+  reclaimDeadTickets,
   discardInterruptedResourceGateState,
   getResourceGateStatus,
   isDailyReportRunning,

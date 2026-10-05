@@ -13,7 +13,7 @@ const { SUPERVISOR_DIR } = require('./task-paths');
 const { listWorkerStates, listResourceTasks, countResourceTasks, failTask, failIsolatedClaimingTask, requeueTask, writeWorkerEvent } = require('./task-store');
 const { ensureDir, isProcessAlive, nowIso, writeJsonAtomic } = require('../resource-common/files');
 const { writeProcessCleanupEvent, terminateProcessTree, terminateRecordedProcessPids } = require('../resource-system/system-protection');
-const { getResourceGateStatus, reclaimStaleLock, releaseResourceGate } = require('../resource-gate/gate');
+const { getResourceGateStatus, reclaimStaleLock, reclaimDeadTickets, releaseResourceGate } = require('../resource-gate/gate');
 const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds');
 const { resolveTaskTimeoutMs } = require('./task-timeout');
 const WORKER_MEMORY_LIMITS = {
@@ -203,6 +203,7 @@ function hasWorkerBacklog(type) {
         return getWorkerBacklogCount('media');
     return countPendingTasksForKinds(getWorkerKinds(normalized));
 }
+// 保护仍在运行时限内、且明确属于当前进程的业务或媒体任务。
 function isWorkerRunningLongTask(worker) {
     const currentTaskId = String(worker?.currentTaskId || '').trim();
     if (!currentTaskId)
@@ -210,6 +211,12 @@ function isWorkerRunningLongTask(worker) {
     const startedAt = Date.parse(String(worker?.currentTaskStartedAt || ''));
     if (!Number.isFinite(startedAt))
         return false;
+    if (getWorkerTypeFromNameOrState(worker) === 'media') {
+        const media = require('../media/backpressure/media-queue');
+        const { MEDIA_TASK_TIMEOUT_MS } = require('./media-worker');
+        const task = media.getRunningMediaTask(currentTaskId);
+        return !!task && task.claimedPid === worker.pid && Date.now() - startedAt < MEDIA_TASK_TIMEOUT_MS;
+    }
     const task = listResourceTasks({ statuses: ['running'], limit: 500 }).find(item => String(item.id || '') === currentTaskId);
     if (!task)
         return false;
@@ -605,10 +612,12 @@ function runSupervisorOnce(options = {}) {
     const media = require('../media/backpressure/media-queue');
     const mediaExpired = media.cleanupExpiredMediaTasksThrottled();
     const mediaRetention = media.cleanupFinishedMediaTasksThrottled();
+    const deadMediaRecovered = media.recoverDeadMediaTasks();
     const timedOutRecovered = auditTimedOutRunningTasks();
     const staleRecovered = auditStaleRunningTasks();
     const staleClaimingRecovered = auditStaleClaimingTasks();
     const gateReclaimed = reclaimStaleLock(30000, 'worker-supervisor');
+    const deadTicketsReclaimed = reclaimDeadTickets('worker-supervisor');
     const deferred = auditDeferredTasks();
     const started = options.start ? ensureWorkerProcesses(types, options) : [];
     return writeSupervisorState({
@@ -616,10 +625,12 @@ function runSupervisorOnce(options = {}) {
         started,
         mediaExpired,
         mediaRetention,
+        deadMediaRecovered,
         timedOutRecovered,
         staleRecovered,
         staleClaimingRecovered,
         gateReclaimed,
+        deadTicketsReclaimed,
         deferred,
         workers: attachWorkerProgressSamples(listWorkerStates(), previousSamples),
     });

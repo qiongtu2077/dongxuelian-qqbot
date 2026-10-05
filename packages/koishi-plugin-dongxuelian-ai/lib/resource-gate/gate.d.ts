@@ -68,6 +68,7 @@ declare function isResourceGateStorageError(error: unknown): error is ResourceGa
 declare function writeGateEvent(event: string, data?: Record<string, unknown>): void;
 declare function createTicket(input: ResourceGateTicketInput): ResourceGateTicket;
 declare function listTickets(): ResourceGateTicket[];
+declare function reclaimDeadTickets(actor?: string): number;
 declare function readLockMeta(): ResourceGateLockMeta | null;
 declare function reclaimStaleLock(staleMs?: number, actor?: string): boolean;
 declare function discardInterruptedResourceGateState(reason?: string): DiscardInterruptedResourceGateStateResult;
@@ -90,6 +91,7 @@ declare const _default: {
     acquireResourceGate: typeof acquireResourceGate;
     releaseResourceGate: typeof releaseResourceGate;
     reclaimStaleLock: typeof reclaimStaleLock;
+    reclaimDeadTickets: typeof reclaimDeadTickets;
     discardInterruptedResourceGateState: typeof discardInterruptedResourceGateState;
     getResourceGateStatus: typeof getResourceGateStatus;
     isDailyReportRunning: typeof isDailyReportRunning;

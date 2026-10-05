@@ -1,6 +1,10 @@
 interface MediaWorkerOptions {
     workerName?: string;
     gateWaitMs?: number;
+    onTaskChange?: (task: {
+        id: string;
+        claimedAt: string;
+    } | null) => void;
 }
 interface MediaTaskPayloadLike {
     userId?: unknown;
@@ -22,6 +26,7 @@ declare function runClaimedMediaTask(task: MediaTaskLike): Promise<Record<string
 declare function runClaimedMediaTaskWithTimeout(task: MediaTaskLike): Promise<Record<string, unknown>>;
 declare function drainOneMediaTask(options?: MediaWorkerOptions): Promise<boolean>;
 declare const _default: {
+    MEDIA_TASK_TIMEOUT_MS: number;
     drainOneMediaTask: typeof drainOneMediaTask;
     runClaimedMediaTask: typeof runClaimedMediaTask;
     runClaimedMediaTaskWithTimeout: typeof runClaimedMediaTaskWithTimeout;

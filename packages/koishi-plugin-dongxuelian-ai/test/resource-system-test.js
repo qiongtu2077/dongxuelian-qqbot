@@ -1047,6 +1047,11 @@ function startSleeper() {
 // Writes one exact resource-gate owner fixture.
 function writeGate(gate, files, input) {
   files.ensureDir(gate.LOCK_DIR)
+  files.ensureDir(gate.TICKETS_DIR)
+  files.writeJsonAtomic(path.join(gate.TICKETS_DIR, input.ticketId + '.json'), {
+    ticketId: input.ticketId, taskId: input.taskId, kind: input.kind,
+    owner: input.owner, pid: input.pid, priority: 50, createdAt: input.startedAt,
+  })
   files.writeJsonAtomic(gate.LOCK_META_FILE, {
     taskId: input.taskId,
     kind: input.kind,
@@ -1132,6 +1137,17 @@ async function main() {
   })
   const staleResult = supervisor.runSupervisorOnce({ start: false })
   const staleGateLocked = gate.getResourceGateStatus().locked
+  const staleTicketRetained = gate.listTickets().some(ticket => ticket.ticketId === 'dead-lock-ticket')
+  let followupAcquired = false
+  try {
+    const followup = await gate.acquireResourceGate({ taskId: 'after-dead-lock', kind: 'agent_task', priority: 50, waitTimeoutMs: 400, pollMs: 200 })
+    followupAcquired = true
+    followup.release('test-followup-completed')
+  } catch (error) {
+    if (!(error instanceof gate.ResourceGateBusyTimeoutError)) throw error
+  }
+  // Isolates the remaining scenarios when this regression fails on old code.
+  fs.rmSync(path.join(gate.TICKETS_DIR, 'dead-lock-ticket.json'), { force: true })
 
   const timedOutChild = startSleeper()
   const timedOutStartedAt = new Date(Date.now() - 11000).toISOString()
@@ -1170,6 +1186,8 @@ async function main() {
   const summary = {
     staleGateReclaimed: staleResult.gateReclaimed,
     staleGateLocked,
+    staleTicketRetained,
+    followupAcquired,
     timedOutRecovered: timedOutResult.timedOutRecovered,
     timedOutStatus: timedOutTask && timedOutTask.status,
     timedOutError: timedOutTask && timedOutTask.error,
@@ -1183,6 +1201,8 @@ async function main() {
   console.log(JSON.stringify(summary, null, 2))
   const ok = summary.staleGateReclaimed === true
     && summary.staleGateLocked === false
+    && summary.staleTicketRetained === false
+    && summary.followupAcquired === true
     && summary.timedOutRecovered === 1
     && summary.timedOutStatus === 'failed'
     && /timed out/i.test(String(summary.timedOutError || ''))
@@ -1207,9 +1227,190 @@ main().catch(error => {
   }, 30000)
   if (!summary) return
   check('supervisor reclaims a stale lock whose process exited', summary.staleGateReclaimed === true && summary.staleGateLocked === false, JSON.stringify(summary))
+  check('dead-lock recovery removes its ticket and lets the next task acquire', summary.staleTicketRetained === false && summary.followupAcquired === true, JSON.stringify(summary))
   check('supervisor terminates and fails a live timed-out task', summary.timedOutRecovered === 1 && summary.timedOutStatus === 'failed' && summary.timedOutAlive === false, JSON.stringify(summary))
   check('supervisor releases only the timed-out task matching gate', summary.timedOutGateLocked === false, JSON.stringify(summary))
   check('supervisor leaves a live task inside its timeout untouched', summary.healthyRecovered === 0 && summary.healthyStatus === 'running' && summary.healthyAlive === true && summary.healthyGateLocked === true, JSON.stringify(summary))
+}
+
+// Exercises orphan cleanup, concurrent lock ownership, and media worker recovery.
+function testGateAndMediaRecovery() {
+  const dataDir = createTempDataDir('s8-gate-media-recovery-')
+  const script = String.raw`
+const fs = require('fs')
+const path = require('path')
+const { spawn } = require('child_process')
+const Module = require('module')
+const gate = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-gate/gate')
+const media = require('./packages/koishi-plugin-dongxuelian-ai/lib/media/backpressure/media-queue')
+const files = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-common/files')
+const taskPaths = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/task-paths')
+const summary = {}
+
+// Starts only a child owned by this isolated test.
+function sleeper() {
+  return spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true })
+}
+
+// Waits for the exact child exit before treating its PID as dead.
+function waitExit(child) {
+  return new Promise(resolve => child.once('exit', code => resolve(code)))
+}
+
+// Creates a complete dead-owner ticket using the public ticket schema.
+function deadTicket(id, pid) {
+  const ticket = gate.createTicket({ taskId: id, kind: 'media_image_analysis', priority: 80 })
+  files.writeJsonAtomic(path.join(gate.TICKETS_DIR, ticket.ticketId + '.json'), { ...ticket, pid })
+  return ticket
+}
+
+// Creates and claims one media task through its normal queue API.
+function claimMedia(id) {
+  media.enqueueMediaTask({ kind: 'media_image_analysis', channelKey: 'recovery-test', messageId: id, url: id })
+  return media.claimNextMediaTask('media-worker')
+}
+
+// Runs the test-owned cases and cleans up live children even when assertions fail.
+async function main() {
+  const dead = sleeper()
+  const deadPid = dead.pid
+  const ended = waitExit(dead)
+  dead.kill('SIGKILL')
+  await ended
+  const orphan = deadTicket('orphan-without-lock', deadPid)
+  const next = await gate.acquireResourceGate({ taskId: 'after-orphan', kind: 'media_image_analysis', priority: 80, waitTimeoutMs: 500 })
+  summary.orphanRecovered = !gate.listTickets().some(ticket => ticket.ticketId === orphan.ticketId)
+  next.release('test-orphan-completed')
+  summary.repeatedCleanup = gate.reclaimDeadTickets() === 0
+
+  const live = gate.createTicket({ taskId: 'live-ticket', kind: 'media_image_analysis' })
+  summary.liveTicketKept = gate.reclaimDeadTickets() === 0 && gate.listTickets().some(ticket => ticket.ticketId === live.ticketId)
+  fs.unlinkSync(path.join(gate.TICKETS_DIR, live.ticketId + '.json'))
+
+  const permission = deadTicket('permission-ticket', deadPid)
+  const originalKill = process.kill
+  try {
+    process.kill = function checkedKill(pid, signal) {
+      if (Number(pid) === deadPid && signal === 0) throw Object.assign(new Error('denied'), { code: 'EPERM' })
+      return originalKill.call(process, pid, signal)
+    }
+    summary.permissionProbeKept = gate.reclaimDeadTickets() === 0
+  } finally { process.kill = originalKill }
+  const originalRemove = fs.rmSync
+  try {
+    fs.rmSync = function checkedRemove(target, options) {
+      if (target === path.join(gate.TICKETS_DIR, permission.ticketId + '.json')) throw Object.assign(new Error('denied'), { code: 'EACCES' })
+      return originalRemove.call(fs, target, options)
+    }
+    try { gate.reclaimDeadTickets() } catch (error) {
+      summary.cleanupFailureReported = error.failureCode === 'gate_cleanup_failed' && error.errno === 'EACCES'
+    }
+  } finally { fs.rmSync = originalRemove }
+  summary.cleanupRetried = gate.reclaimDeadTickets() === 1
+  const malformedFile = path.join(gate.TICKETS_DIR, 'malformed.json')
+  fs.writeFileSync(malformedFile, '{}')
+  try { gate.reclaimDeadTickets() } catch (error) {
+    summary.malformedReported = error.failureCode === 'gate_state_unreadable'
+  } finally { fs.unlinkSync(malformedFile) }
+
+  // A crashed mutex holder must not become a second permanent queue blocker.
+  const mutationDir = path.join(gate.GATE_ROOT, 'lock-mutation')
+  fs.mkdirSync(mutationDir)
+  fs.writeFileSync(path.join(mutationDir, deadPid + '-1-dead.json'), JSON.stringify({ pid: deadPid }))
+  summary.deadMutexRecovered = gate.readLockMeta() === null && !fs.existsSync(mutationDir)
+
+  const stale = deadTicket('concurrent-dead-owner', deadPid)
+  const oldAt = new Date(Date.now() - 60000).toISOString()
+  files.ensureDir(gate.LOCK_DIR)
+  files.writeJsonAtomic(gate.LOCK_META_FILE, { taskId: stale.taskId, kind: stale.kind, owner: 'media-worker', pid: deadPid,
+    channelKey: '', userId: '', startedAt: oldAt, heartbeatAt: oldAt, step: 'running', memAvailableMb: 1200,
+    timeoutMs: 10000, ticketId: stale.ticketId })
+  const orderFile = path.join(gate.GATE_ROOT, 'test-ownership.jsonl')
+  const contender = String.raw\`
+const fs = require('fs')
+const gate = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-gate/gate')
+// Acquires a real lock while parallel reclaimers inspect the same data directory.
+async function main() {
+  const handle = await gate.acquireResourceGate({ taskId: 'concurrent-' + process.pid, kind: 'media_image_analysis', priority: 80, waitTimeoutMs: 3000, staleMs: 0, pollMs: 200 })
+  fs.appendFileSync(process.env.TEST_ORDER_FILE, JSON.stringify({ phase: 'enter', pid: process.pid }) + String.fromCharCode(10))
+  await new Promise(resolve => setTimeout(resolve, 60))
+  if (gate.readLockMeta().ticketId !== handle.ticketId) throw new Error('live lock was replaced')
+  fs.appendFileSync(process.env.TEST_ORDER_FILE, JSON.stringify({ phase: 'leave', pid: process.pid }) + String.fromCharCode(10))
+  handle.release('concurrent-test-completed')
+}
+main().catch(error => { console.error(error); process.exitCode = 1 })
+\`
+  const reclaimer = "const g = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-gate/gate'); for (let i = 0; i < 20; i++) { g.reclaimStaleLock(0); g.reclaimDeadTickets(); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10) }"
+  const children = [contender, contender, reclaimer, reclaimer, reclaimer].map(code => spawn(process.execPath, ['-e', code], {
+    cwd: process.cwd(), env: { ...process.env, TEST_ORDER_FILE: orderFile }, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true,
+  }))
+  const errors = []
+  children.forEach(child => child.stderr.on('data', chunk => errors.push(String(chunk))))
+  const exits = await Promise.all(children.map(waitExit))
+  let active = 0
+  let overlap = false
+  for (const event of fs.readFileSync(orderFile, 'utf8').trim().split('\n').map(JSON.parse)) {
+    active += event.phase === 'enter' ? 1 : -1
+    if (active > 1 || active < 0) overlap = true
+  }
+  summary.concurrentOwnership = exits.every(code => code === 0) && !overlap && active === 0 && !gate.getResourceGateStatus().locked && gate.listTickets().length === 0
+  summary.concurrentErrors = errors
+
+  const abandoned = claimMedia('abandoned-image')
+  files.writeJsonAtomic(path.join(media.MEDIA_ROOT, 'running', abandoned.id + '.json'), { ...abandoned, claimedPid: deadPid })
+  summary.deadMediaRecovered = media.recoverDeadMediaTasks() === 1 && media.getRunningMediaTask(abandoned.id) === null
+  const failure = media.listUnfinishedMediaTasksForDiagnostics().find(task => task.id === abandoned.id)
+  summary.deadMediaDiagnosed = failure.status === 'failed' && failure.finishReason === 'processing_failed' && failure.error.includes('进程已退出')
+  const legacy = claimMedia('legacy-image')
+  delete legacy.claimedPid
+  files.writeJsonAtomic(path.join(media.MEDIA_ROOT, 'running', legacy.id + '.json'), legacy)
+  summary.legacyOwnershipPreserved = media.recoverDeadMediaTasks() === 0 && media.getRunningMediaTask(legacy.id) !== null
+
+  const healthy = sleeper()
+  try {
+    const task = claimMedia('healthy-image')
+    files.writeJsonAtomic(path.join(media.MEDIA_ROOT, 'running', task.id + '.json'), { ...task, claimedPid: healthy.pid })
+    files.writeJsonAtomic(taskPaths.getWorkerStateFile('media-worker'), { name: 'media-worker', kind: 'media', pid: healthy.pid,
+      alive: true, startedAt: oldAt, heartbeatAt: new Date().toISOString(), loopIterations: 1,
+      lastClaimAttemptAt: oldAt, currentTaskId: task.id, currentTaskStartedAt: task.claimedAt })
+    files.writeJsonAtomic(path.join(taskPaths.SUPERVISOR_DIR, 'state.json'), { updatedAt: oldAt,
+      workers: [{ name: 'media-worker', loopIterations: 1, loopChangedAt: oldAt }] })
+    media.enqueueMediaTask({ kind: 'media_image_analysis', channelKey: 'recovery-test', messageId: 'backlog-image', url: 'backlog-image' })
+    let killAttempts = 0
+    const originalLoad = Module._load
+    Module._load = function patchedLoad(request, parent, isMain) {
+      const loaded = originalLoad.apply(this, arguments)
+      if (request === '../resource-system/system-protection') return { ...loaded, terminateProcessTree() { killAttempts++; return { killedPids: [healthy.pid] } } }
+      return loaded
+    }
+    let supervisor
+    try { supervisor = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-supervisor') } finally { Module._load = originalLoad }
+    supervisor.ensureWorkerProcesses([])
+    summary.healthyMediaProtected = killAttempts === 0 && media.recoverDeadMediaTasks() === 0
+    const heartbeatStates = []
+    const workerMain = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-main')
+    const progress = { loopIterations: 0, lastClaimAttemptAt: '', lastTaskFinishedAt: '', currentTaskId: '', currentTaskStartedAt: '', parked: false, parkSleepMs: 0, idleSinceAt: '' }
+    const worked = await workerMain.runWorkerTick({ type: 'media' }, { patchProgress(value) { heartbeatStates.push({ ...value }) }, setStep() {} }, progress)
+    summary.mediaProgressReported = worked && heartbeatStates.some(state => state.currentTaskId && state.currentTaskStartedAt) && progress.currentTaskId === ''
+  } finally {
+    const ended = waitExit(healthy)
+    healthy.kill('SIGKILL')
+    await ended
+  }
+  console.log(JSON.stringify(summary))
+  process.exitCode = Object.entries(summary).filter(([key]) => key !== 'concurrentErrors').every(([, value]) => value === true) ? 0 : 1
+}
+main().catch(error => { console.error(error); process.exitCode = 1 })
+`
+  const summary = runScenario('S8 gate and media recovery', script.replaceAll('\\`', '`'), {
+    DONGXUELIAN_AI_DATA_DIR: dataDir,
+    RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE: '1200',
+    RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE: '1600',
+  }, 30000)
+  if (!summary) return
+  for (const [label, ok] of Object.entries(summary)) {
+    if (label !== 'concurrentErrors') check(`gate/media recovery ${label}`, ok === true, JSON.stringify(summary))
+  }
 }
 
 // Run all resource-system regression checks.
@@ -1223,6 +1424,7 @@ function main() {
   testChromiumCloseFailureInjection()
   testBrowserSessionSwitchIsolation()
   testSupervisorAutomaticRecovery()
+  testGateAndMediaRecovery()
   console.log(`passed: ${passed}`)
   console.log(`failed: ${failed}`)
   process.exit(failed > 0 ? 1 : 0)

@@ -485,7 +485,21 @@ async function runWorkerTick(options = {}, heartbeat, progress) {
         return false;
     }
     if (type === 'media')
-        return drainOneMediaTask({ workerName, gateWaitMs: options.gateWaitMs });
+        return drainOneMediaTask({
+            workerName,
+            gateWaitMs: options.gateWaitMs,
+            // 媒体任务属于独立队列，必须主动上报进度，避免被误判为停滞进程。
+            onTaskChange(task) {
+                if (progress)
+                    updateWorkerProgress(progress, {
+                        currentTaskId: task?.id || '',
+                        currentTaskStartedAt: task?.claimedAt || '',
+                        ...(task ? { lastClaimAttemptAt: task.claimedAt } : { lastTaskFinishedAt: new Date().toISOString() }),
+                    });
+                if (heartbeat && progress)
+                    heartbeat.patchProgress(progress);
+            },
+        });
     return runOneQueuedTask(options, heartbeat, progress);
 }
 function resolveWorkerIdleSleepMs(options = {}, worked = false) {
