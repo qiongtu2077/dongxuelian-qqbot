@@ -1,6 +1,9 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const assert = require('assert').strict
+const { h, Universal } = require('koishi')
+const { OneBotMessageEncoder } = require('koishi-plugin-adapter-onebot')
 
 const PLUGIN_PATH = path.resolve(__dirname, '..', 'lib', 'index.js')
 const STORAGE_PATH = path.resolve(__dirname, '..', 'lib', 'storage.js')
@@ -126,6 +129,59 @@ async function send(ctx, content, overrides) {
   return runMiddleware(ctx, makeSession(content, overrides))
 }
 
+// --- 消息记录验证 --- #
+
+// 校验查询只发送一份消息记录，并读取其中每条消息的纯文本正文。
+function readNicknameRecordPages(result) {
+  assert.equal(result.sent.length, 1, 'nickname query should send one record')
+  const records = h.parse(result.sent[0])
+  assert.equal(records.length, 1)
+  const [record] = records
+  assert.equal(record.type, 'message')
+  assert.ok('forward' in record.attrs, 'nickname query should be a forward record')
+  return record.children.map(page => {
+    assert.equal(page.type, 'message')
+    assert.ok(page.children.every(child => child.type === 'text'))
+    return page.children.map(child => child.attrs.content).join('')
+  })
+}
+
+// 使用已安装的真实 OneBot 编码器，检查群聊和私聊各发送一次合并转发。
+async function encodeNicknameRecord(content, isDirect) {
+  const calls = []
+  const channelId = isDirect ? `private:${TEST_MEMBER_ID}` : TEST_BLACKLIST_GROUP
+  const bot = {
+    selfId: TEST_BOT_ID,
+    userId: TEST_BOT_ID,
+    user: { name: 'fixture-bot' },
+    session() { return { event: { message: {} }, app: { emit() {} } } },
+    internal: {
+      async sendGroupForwardMsg(groupId, messages) {
+        calls.push({ method: 'group', target: groupId, messages })
+        return 1
+      },
+      async sendPrivateForwardMsg(userId, messages) {
+        calls.push({ method: 'private', target: userId, messages })
+        return 1
+      },
+    },
+  }
+  const encoder = new OneBotMessageEncoder(bot, channelId)
+  encoder.session = {
+    event: { channel: { type: isDirect ? Universal.Channel.Type.DIRECT : Universal.Channel.Type.TEXT } },
+    channelId,
+    guildId: isDirect ? undefined : channelId,
+    isDirect,
+  }
+  await encoder.render(h.parse(content), true)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].method, isDirect ? 'private' : 'group')
+  assert.equal(calls[0].target, isDirect ? TEST_MEMBER_ID : TEST_BLACKLIST_GROUP)
+  return calls[0].messages
+}
+
+// --- 隔离数据与插件运行 --- #
+
 function safeScopeFileName(scopeId) {
   return encodeURIComponent(String(scopeId || 'global'))
     .replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
@@ -244,6 +300,85 @@ async function run() {
 
     result = await send(ctx, `查看昵称<at id="${TEST_MEMBER_ID}"/>`)
     check('member nickname lookup supports command before mention without space', result.sent.some(item => item.includes(TEST_ALIAS)), JSON.stringify(result.sent))
+  })
+
+  section('nickname query forward records')
+  for (const count of [0, 1, 99, 100, 101, 200, 201]) {
+    await withIsolatedPlugin(async ({ ctx, scopeDataDir }) => {
+      const expectedLines = Array.from({ length: count }, (_, index) => `nickname-${String(index).padStart(3, '0')} (1)`)
+      const aliases = Object.fromEntries(expectedLines.map(line => [line.slice(0, -4), {
+        members: [{ userId: TEST_MEMBER_ID, displayName: `U${TEST_MEMBER_ID}` }],
+      }]))
+      // 群昵称列表排除集合和空条目；成员查询排除未绑定目标成员的集合。
+      aliases['other-collection'] = { members: [TEST_MEMBER_ID_2, TEST_MEMBER_ID_3].map(userId => ({ userId, displayName: `U${userId}` })) }
+      aliases['empty-collection'] = { members: [] }
+      const scopeFile = getScopeFile(scopeDataDir, TEST_GROUP_MAIN)
+      fs.mkdirSync(scopeDataDir, { recursive: true })
+      fs.writeFileSync(scopeFile, JSON.stringify({ scopeId: TEST_GROUP_MAIN, aliases }), 'utf8')
+      await ctx.emit('ready')
+
+      for (const command of ['查看全部昵称', `查看昵称 <at id="${TEST_MEMBER_ID}"/>`]) {
+        const result = await send(ctx, command)
+        const pages = readNicknameRecordPages(result)
+        const lines = pages.flatMap(page => page.split('\n').slice(1))
+        check(`forward record: ${command} with ${count} aliases has expected pages`, pages.length === Math.max(1, Math.ceil(count / 100)), JSON.stringify(pages))
+        check(`forward record: ${command} keeps all ${count} aliases in order`, JSON.stringify(lines) === JSON.stringify(expectedLines), JSON.stringify(lines))
+        check(`forward record: ${command} has at most 100 aliases per message`, pages.every(page => page.split('\n').length - 1 <= 100), JSON.stringify(pages))
+        check(`forward record: ${command} consumes the query`, !result.nextCalled)
+        if (count === 0) check(`forward record: ${command} keeps empty result hint`, pages[0].includes(command === '查看全部昵称' ? '本群还没有昵称' : '暂时没有昵称'))
+      }
+
+      if (count !== 201) return
+      for (const command of [
+        'nicklist',
+        `<at id="${TEST_MEMBER_ID}"/> 查看昵称`,
+        `<at id="${TEST_MEMBER_ID}"/>查看昵称`,
+        `查看昵称<at id="${TEST_MEMBER_ID}"/>`,
+        `<at id="${TEST_MEMBER_ID}"/> 昵称`,
+        `查看成员 <at id="${TEST_MEMBER_ID}"/>`,
+        `查看成员 ${TEST_MEMBER_ID}`,
+      ]) {
+        const pages = readNicknameRecordPages(await send(ctx, command))
+        check(`forward record: query alias ${command} uses 100/100/1 pages`, JSON.stringify(pages.map(page => page.split('\n').length - 1)) === '[100,100,1]')
+      }
+
+      const session = makeSession('nicklist')
+      await ctx.commands.find(command => command.name === 'nicklist').fn({ session })
+      const commandPages = readNicknameRecordPages({ sent: session.sent })
+      check('forward record: registered nicklist action sends paginated record', commandPages.length === 3)
+
+      const result = await send(ctx, '查看全部昵称')
+      for (const isDirect of [false, true]) {
+        const nodes = await encodeNicknameRecord(result.sent[0], isDirect)
+        check(`forward record: real OneBot encoder ${isDirect ? 'private' : 'group'} preserves 100/100/1 pages`, JSON.stringify(nodes.map(node => node.data.content[0].data.text.split('\n').length - 1)) === '[100,100,1]')
+      }
+    })
+  }
+
+  await withIsolatedPlugin(async ({ ctx, scopeDataDir }) => {
+    const specialAlias = '<at id="900000104"/>&昵称'
+    const scopeFile = getScopeFile(scopeDataDir, TEST_GROUP_MAIN)
+    fs.mkdirSync(scopeDataDir, { recursive: true })
+    fs.writeFileSync(scopeFile, JSON.stringify({ aliases: {
+      [specialAlias]: { members: [{ userId: TEST_MEMBER_ID, displayName: `U${TEST_MEMBER_ID}` }] },
+      'shared-collection': { members: [TEST_MEMBER_ID, TEST_MEMBER_ID_2].map(userId => ({ userId, displayName: `U${userId}` })) },
+    } }), 'utf8')
+    const groupResult = await send(ctx, '查看全部昵称')
+    const groupPages = readNicknameRecordPages(groupResult)
+    check('forward record: nickname message tags remain literal text', groupPages[0].includes(specialAlias), JSON.stringify(groupPages))
+    const nodes = await encodeNicknameRecord(groupResult.sent[0], false)
+    check('forward record: OneBot receives text without injected mentions', nodes[0].data.content.every(segment => segment.type === 'text') && nodes[0].data.content[0].data.text.includes(specialAlias), JSON.stringify(nodes))
+
+    const memberPages = readNicknameRecordPages(await send(ctx, `查看昵称 <at id="${TEST_MEMBER_ID}"/>`))
+    check('forward record: member lookup retains nickname and collection bindings', memberPages[0].includes(specialAlias) && memberPages[0].includes('shared-collection (2)'), JSON.stringify(memberPages))
+
+    const collections = await send(ctx, '查看全部集合')
+    check('forward record: collection list retains ordinary text behavior', collections.sent.length === 1 && collections.sent[0].startsWith('本群集合：'), JSON.stringify(collections))
+
+    const failure = await send(ctx, '查看全部昵称', {
+      async send() { throw new Error('retcode: 1200 risk control') },
+    })
+    check('forward record: send failure is caught without extra messages', failure.sent.length === 0 && !failure.nextCalled && failure.logs.some(log => log.level === 'warn' && log.msg.includes('send failed')), JSON.stringify(failure))
   })
 
   section('corrupt json handling')

@@ -1,5 +1,5 @@
 "use strict";
-const { segment } = require('koishi');
+const { h, segment } = require('koishi');
 const fs = require('fs/promises');
 const path = require('path');
 const nicknameStorage = require('./storage');
@@ -23,6 +23,7 @@ const MAX_DISABLED_GROUPS_BYTES = 128 * 1024;
 const MAX_ADMIN_IDS_BYTES = 128 * 1024;
 const MAX_PENDING_CONFIRMS = 500;
 const MAX_ALIAS_NAME_BYTES = 512;
+const NICKNAME_RECORD_PAGE_SIZE = 100;
 const CMD = {
     alias: '昵称',
     deleteAlias: '删除昵称',
@@ -398,11 +399,12 @@ async function getDisplayName(session, userId) {
     }
     return '';
 }
+// 优先使用成员显示名称，缺少名称时返回可发送的 @ 消息文本。
 function formatMemberLabel(member) {
     const displayName = String(member.displayName || '').trim();
     if (displayName && displayName !== member.userId && displayName !== `QQ${member.userId}`)
         return displayName;
-    return segment.at(member.userId);
+    return segment.at(member.userId).toString();
 }
 async function refreshMemberDisplayNames(session, members) {
     let changed = false;
@@ -509,6 +511,21 @@ async function sendAliasMention(session, alias, tail) {
         await saveStore(session);
     return buildAtMessage(entry.members, tail);
 }
+// --- 昵称列表展示 --- #
+// 将查询结果放入同一份消息记录，每条记录最多包含 100 个昵称。
+function renderNicknameRecord(title, lines) {
+    const pages = [];
+    const pageCount = Math.max(1, Math.ceil(lines.length / NICKNAME_RECORD_PAGE_SIZE));
+    // 空结果也保留一条提示；标题不占用昵称名额，最后一页保留不足 100 个的余项。
+    for (let offset = 0; offset < Math.max(lines.length, 1); offset += NICKNAME_RECORD_PAGE_SIZE) {
+        const pageTitle = pageCount > 1 ? `${title}（第 ${offset / NICKNAME_RECORD_PAGE_SIZE + 1}/${pageCount} 页）` : title;
+        const content = [pageTitle, ...lines.slice(offset, offset + NICKNAME_RECORD_PAGE_SIZE)].join('\n');
+        // 将昵称作为纯文本传入，避免名称中的消息标签被解析为 @ 或嵌套消息记录。
+        pages.push(h('message', {}, h.text(content)));
+    }
+    return h('message', { forward: true }, pages).toString();
+}
+// 列出当前群的昵称或集合，昵称查询通过分页消息记录展示。
 async function listEntries(session, mode) {
     await ensureStore();
     const scopeStore = await getScopeStore(session);
@@ -517,11 +534,12 @@ async function listEntries(session, mode) {
         .filter(([, members]) => mode === 'alias' ? members.length === 1 : members.length > 1)
         .sort((left, right) => left[0].localeCompare(right[0], 'zh-CN'));
     if (!entries.length)
-        return mode === 'alias' ? TEXT.aliasListEmpty : TEXT.collectionListEmpty;
+        return mode === 'alias' ? renderNicknameRecord(TEXT.aliasListEmpty, []) : TEXT.collectionListEmpty;
     const lines = entries.map(([alias, members]) => `${alias} (${members.length})`);
     const title = mode === 'alias' ? TEXT.aliasListTitle : TEXT.collectionListTitle;
-    return [title, ...lines].join('\n');
+    return mode === 'alias' ? renderNicknameRecord(title, lines) : [title, ...lines].join('\n');
 }
+// --- 集合管理 --- #
 async function createCollection(session, alias, userIds) {
     await ensureStore();
     alias = normalizeName(alias);
@@ -699,9 +717,11 @@ async function mergeCollection(session, targetAlias, sourceAlias) {
     await saveStore(session);
     return TEXT.merged(targetAlias, sourceAlias, added, target.members.length);
 }
+// --- 成员查询与集合运算 --- #
 function memberMatches(member, keyword) {
     return member.userId === keyword || normalizeName(member.displayName).includes(keyword);
 }
+// 查询成员在当前群绑定的全部昵称和集合，并按 100 个名称一条记录展示。
 async function viewMember(session, keyword, mentionId) {
     await ensureStore();
     const scopeStore = await getScopeStore(session);
@@ -717,13 +737,13 @@ async function viewMember(session, keyword, mentionId) {
             await saveStore(session);
         const member = members.find((item) => mentionId ? item.userId === target : memberMatches(item, target));
         if (member) {
-            label = formatMemberLabel(member);
+            label = String(member.displayName || '').trim() || member.userId;
             matched.push(`${alias} (${members.length})`);
         }
     }
     if (!matched.length)
-        return TEXT.memberNoAlias(label);
-    return [TEXT.memberTitle(label), ...matched.sort((a, b) => a.localeCompare(b, 'zh-CN'))].join('\n');
+        return renderNicknameRecord(TEXT.memberNoAlias(label), []);
+    return renderNicknameRecord(TEXT.memberTitle(label), matched.sort((a, b) => a.localeCompare(b, 'zh-CN')));
 }
 // 判断带 @ 的“查看昵称”是否应反查成员绑定的昵称和集合。
 function isMentionNicknameLookup(plain, mentionIds) {
