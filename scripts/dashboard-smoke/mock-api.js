@@ -78,6 +78,7 @@ const mockState = {
   serverMode: 'large',
   serverModeSource: 'resource-control/config.json',
   maintenance: false,
+  resourceCancelAttempts: 0,
   resourceScenario: 'idle',
   openAiKeyConfigured: true,
   aiPriorities: {
@@ -509,14 +510,17 @@ function apiMock(method, pathname, body) {
       { id: 'mock-task-1', kind: 'daily_report', status: 'pending', step: 'pending', updatedAt: '2026-10-05T11:44:36.984Z', notify: { target: 'qq-group', channelKey: '10001' } },
       { id: 'mock-task-2', kind: 'agent_task', status: 'running', step: 'waiting_lock', updatedAt: '2026-10-05T11:44:37.000Z' },
       { id: 'mock-task-done', kind: 'external_video_download', status: 'done', step: 'done', updatedAt: '2026-10-05T11:44:36.984Z', displaySummary: { bvId: 'BV1xx411c7mD' }, notify: { target: 'qq-group', channelKey: '1072587329', status: 'pending' } },
-      { id: 'mock-task-failed', kind: 'media_image_analysis', status: 'failed', error: 'mock image analysis failed', updatedAt: '2026-10-05T11:44:36.984Z' },
+      { id: 'mock-task-failed', kind: 'external_video_download', status: 'failed', error: 'worker heartbeat stale: local-video-sender-main', updatedAt: '2026-10-05T11:44:36.984Z' },
       { id: 'mock-task-deferred', kind: 'media_file_analysis', status: 'deferred', error: 'available memory is below task min memory budget', updatedAt: '2026-10-05T11:44:36.984Z' },
     ]
     return ok({ ok: true, tasks: tasks.filter(task => !statuses.length || statuses.includes(task.status)) })
   }
   if (method === 'GET' && pathname === '/resource/events') return ok({
     ok: true,
-    events: [{ source: 'S2', event: 'mock_event', reason: 'worker event', createdAt: '12:00:03', taskId: 'mock-task-1' }],
+    events: [
+      { source: 'S6', event: 'media_task_done', createdAt: '2026-10-05T12:22:56.771Z', taskId: 'mock-task-1' },
+      { source: 'S1', event: 'admission_decided', reason: 'resource budget accepted', createdAt: '2026-10-05T12:22:50.748Z' },
+    ],
   })
   if (method === 'GET' && pathname === '/resource/diagnostics') {
     const all = mockDiagnosticRecords()
@@ -559,7 +563,11 @@ function apiMock(method, pathname, body) {
   if (method === 'GET' && pathname === '/resource/workers') return ok({ ok: true, workers: resourceScenarioStatus(mockState.resourceScenario).workers })
   if (method === 'GET' && pathname === '/resource/media') return ok({ ok: true, media: resourceScenarioStatus(mockState.resourceScenario).media })
   if (method === 'GET' && pathname === '/resource/precompute') return ok({ ok: true, precompute: { coverageCount: 1, slotCount: 3, coverage: [] } })
-  if (method === 'POST' && pathname === '/resource/cancel') return ok({ ok: true, message: '任务已取消' })
+  if (method === 'POST' && pathname === '/resource/cancel') {
+    mockState.resourceCancelAttempts += 1
+    if (mockState.resourceCancelAttempts === 1) return jsonResponse({ ok: false, code: 'TASK_ID_CONFLICT', message: '任务 ID 与已有记录重复，系统为保留历史记录拒绝取消。' }, 409)
+    return ok({ ok: true, message: '任务已取消' })
+  }
   if (method === 'POST' && pathname === '/resource/mock-scenario') {
     mockState.resourceScenario = String(body.body?.scenario || 'idle')
     return ok({ ok: true, scenario: mockState.resourceScenario })

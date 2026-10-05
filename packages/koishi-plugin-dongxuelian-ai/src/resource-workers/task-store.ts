@@ -599,18 +599,33 @@ function updateTaskNotifyStatus(task: ResourceTask, status: string, error = ''):
   return next
 }
 
-// 取消 pending/deferred 任务。
-function cancelTask(taskId: string, actor = 'system', reason = 'cancelled'): boolean {
+// 取消排队或暂缓任务，并返回已确认的失败原因供管理界面展示。
+function cancelTaskWithResult(taskId: string, actor = 'system', reason = 'cancelled'): { ok: true } | { ok: false; code: string; message: string } {
   ensureTaskDirs()
   const task = getCanonicalTaskCopyById(taskId, ['deferred', 'pending'])
-  if (!task) return false
+  if (!task) {
+    const current = getCanonicalTaskCopyById(taskId)
+    if (!current) return { ok: false, code: 'TASK_NOT_FOUND', message: '任务记录已不存在，请刷新任务列表。' }
+    const labels: Record<string, string> = { claiming: '准备执行', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消' }
+    return { ok: false, code: 'TASK_NOT_CANCELLABLE', message: `任务当前为“${labels[current.status] || current.status}”，只能取消排队中或暂缓处理的任务。请刷新任务列表。` }
+  }
+  // 同 ID 的终态或执行中记录不能被排队记录覆盖，明确报告冲突而不是隐藏失败。
+  if (hasHigherRankTaskCopy(task) || fs.existsSync(getTaskFile('cancelled', task.kind, task.id))) {
+    const guidance = task.kind === 'external_video_download' ? '视频服务启动时会归档这条冲突记录，请刷新任务列表。' : '请检查重复的任务记录后重试。'
+    return { ok: false, code: 'TASK_ID_CONFLICT', message: `任务 ID 与已有记录重复，系统为保留历史记录拒绝取消。${guidance}` }
+  }
   const target = prepareTaskTransition(task, 'cancelled')
-  if (!target) return false
+  if (!target) return { ok: false, code: 'TASK_TRANSITION_FAILED', message: '任务文件未能更新，取消操作未完成。请刷新后重试；若仍失败，请检查服务器日志。' }
   const safeReason = redactSensitiveText(reason)
   const next: ResourceTask = { ...task, status: 'cancelled', updatedAt: nowIso(), finishedAt: nowIso(), error: safeReason }
   writeJsonAtomic(target.file, next)
   writeWorkerEvent('task_cancelled', { taskId, kind: task.kind, actor, reason: safeReason })
-  return true
+  return { ok: true }
+}
+
+// 保留内部调用方的布尔取消接口，实际状态迁移共用同一实现。
+function cancelTask(taskId: string, actor = 'system', reason = 'cancelled'): boolean {
+  return cancelTaskWithResult(taskId, actor, reason).ok
 }
 
 // 仅取消指定 kind 在给定非终态中的任务，供视频插件启动时丢弃本类旧任务且不影响其他 AI 任务。
@@ -642,6 +657,31 @@ function cancelResourceTasksByKind(kind: string, statuses: string[] = DEFAULT_AC
   }
   return cancelled
 }
+
+// --- 历史任务冲突归档 --- //
+
+// 将与其他状态同名的 pending 记录归档到独立取消 ID，保留原历史记录和任务内容。
+function discardConflictingPendingTasks(kind: string, actor: string): ResourceTask[] {
+  ensureTaskDirs()
+  const discarded: ResourceTask[] = []
+  for (const task of scanTasksByStatus('pending', 20000, { kinds: [kind] })) {
+    if (task.kind !== kind || !hasNonPendingTaskCopy(task.kind, task.id)) continue
+    const archivedId = createTaskId(task.kind, task.channelKey)
+    const target = getTaskFile('cancelled', task.kind, archivedId)
+    if (fs.existsSync(target) || !renameFileAtomic(getTaskFile('pending', task.kind, task.id), target)) continue
+    // 原 ID 已由另一条历史记录占用，不能覆盖它或重新执行没有会话的旧请求。
+    const archived: ResourceTask = {
+      ...task, id: archivedId, status: 'cancelled', step: 'cancelled',
+      updatedAt: nowIso(), finishedAt: nowIso(), error: 'task_id_conflict',
+    }
+    writeJsonAtomic(target, archived)
+    writeWorkerEvent('task_id_conflict_discarded', { taskId: archivedId, previousTaskId: task.id, kind, actor, reason: 'task_id_conflict' })
+    discarded.push(archived)
+  }
+  return discarded
+}
+
+// --- Worker 心跳 --- //
 
 // 写入 worker 心跳。
 function writeWorkerHeartbeat(workerName: string, state: Partial<ResourceWorkerState> = {}): ResourceWorkerState {
@@ -801,6 +841,7 @@ export = {
   writeWorkerEvent,
   createTaskId,
   submitResourceTask,
+  discardConflictingPendingTasks,
   getResourceTaskById,
   getResourceTaskByIdForKind,
   findResourceTaskByKindAndChannel,
@@ -821,6 +862,7 @@ export = {
   requeueTask,
   updateTaskNotifyStatus,
   cancelTask,
+  cancelTaskWithResult,
   cancelResourceTasksByKind,
   writeWorkerHeartbeat,
   listWorkerStates,

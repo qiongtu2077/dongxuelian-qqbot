@@ -1789,8 +1789,53 @@ try {
     JSON.stringify(summary))
 }
 
+// 复现视频 ID 冲突悬挂及主进程执行器被心跳审计误判的完整状态迁移。
+function testVideoQueueCollisionAndMainProcessOwnership() {
+  const dataDir = createTempDataDir('resource-video-ownership-')
+  const script = String.raw`
+const fs = require('fs')
+const store = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+const paths = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-paths')
+const supervisor = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/worker-supervisor')
+const input = { kind: 'external_video_download', source: 'local-video-sender', channelKey: '736770364', userId: 'tester', payload: {}, notify: {}, expiresAt: '2026-10-02T17:04:55.027Z' }
+const old = store.submitResourceTask({ ...input, id: 'colliding-video-id', payload: { bvId: 'old-video' } })
+store.failTask(old, 'old failure')
+const failedFile = paths.getTaskFile('failed', old.kind, old.id)
+const originalHistory = fs.readFileSync(failedFile, 'utf8')
+const pending = store.submitResourceTask({ ...input, id: old.id, payload: { bvId: 'new-video' } })
+const unrelated = store.submitResourceTask({ ...input, id: 'unrelated-agent', kind: 'agent_task' })
+const conflicts = store.discardConflictingPendingTasks('external_video_download', 'local-video-sender-main')
+const archived = conflicts[0]
+const collision = { count: conflicts.length, pendingRemoved: !fs.existsSync(paths.getTaskFile('pending', pending.kind, pending.id)), historyUnchanged: fs.readFileSync(failedFile, 'utf8') === originalHistory, archivedDistinct: archived.id !== old.id, archivedStatus: archived.status, archivedReason: archived.error, archivedVideo: archived.payload.bvId, unrelatedStatus: store.getResourceTaskById(unrelated.id).status }
+
+// 使用真实状态文件制造超过观察窗口的主进程任务和独立 worker 任务。
+for (const [id, kind, status, owner] of [['main-running', 'external_video_download', 'running', 'local-video-sender-main'], ['main-claiming', 'external_video_download', 'claiming', 'local-video-sender-main'], ['managed-running', 'agent_task', 'running', 'agent-worker']]) {
+  store.submitResourceTask({ ...input, id, kind })
+  let task = store.claimTaskById(id, owner)
+  if (status === 'running') task = store.markTaskRunning(task, owner, 'video_prepare')
+  task.updatedAt = '2026-10-01T00:00:00.000Z'
+  task.startedAt = '2026-10-01T00:00:00.000Z'
+  task.claimedAt = '2026-10-01T00:00:00.000Z'
+  fs.writeFileSync(paths.getTaskFile(status, kind, id), JSON.stringify(task))
+}
+const runningRecovered = supervisor.auditStaleRunningTasks()
+const claimingRecovered = supervisor.auditStaleClaimingTasks()
+const mainStatus = store.getResourceTaskById('main-running').status
+const claimingStatus = store.getResourceTaskById('main-claiming').status
+const managedStatus = store.getResourceTaskById('managed-running').status
+const completed = store.completeTask(store.getResourceTaskById('main-running'), { ok: true })
+console.log(JSON.stringify({ collision, runningRecovered, claimingRecovered, mainStatus, claimingStatus, managedStatus, completedStatus: completed.status }, null, 2))
+`
+  const result = runScenario('video queue ownership and collision', script, { DONGXUELIAN_AI_DATA_DIR: dataDir })
+  if (!result) return
+  check('conflicting video pending is archived without changing old failure or unrelated tasks', result.collision.count === 1 && result.collision.pendingRemoved && result.collision.historyUnchanged && result.collision.archivedDistinct && result.collision.archivedStatus === 'cancelled' && result.collision.archivedReason === 'task_id_conflict' && result.collision.archivedVideo === 'new-video' && result.collision.unrelatedStatus === 'pending', JSON.stringify(result))
+  check('main-process video running and claiming tasks are excluded from independent-worker heartbeat auditing', result.mainStatus === 'running' && result.claimingStatus === 'claiming' && result.claimingRecovered === 0, JSON.stringify(result))
+  check('independent worker stale recovery still works and video completion stays writable', result.runningRecovered === 1 && result.managedStatus === 'failed' && result.completedStatus === 'done', JSON.stringify(result))
+}
+
 // 运行 no-op 审计、恢复节流和热点路径写放大场景。
 function runAuditAndPerformanceScenarios() {
+  testVideoQueueCollisionAndMainProcessOwnership()
   testExplicitTaskIdResubmitDoesNotRecreatePendingOrEvents()
   testDeferredAuditDoesNotCountNoOpTransitions()
   testStaleRunningAuditDoesNotCountNoOpFailure()

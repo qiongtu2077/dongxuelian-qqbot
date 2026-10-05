@@ -2,6 +2,7 @@ import type { ExecFileOptions } from 'child_process'
 
 const { segment } = require('koishi')
 const { execFile } = require('child_process')
+const { randomUUID } = require('crypto') as typeof import('crypto')
 const fsSync = require('fs') as typeof import('fs')
 const fs = require('fs/promises') as typeof import('fs/promises')
 const path = require('path') as typeof import('path')
@@ -499,11 +500,9 @@ function getVideoUserId(session: VideoSessionLike): string {
   return String(session.userId || session.author?.id || session.event?.user?.id || session.event?.sender?.userId || session.event?.sender?.id || '')
 }
 
-// 生成一次外部视频下载任务的 S0/S1 追踪 ID。
-function buildVideoTaskId(session: VideoSessionLike, source: string): string {
-  const channelKey = sanitizeResourceId(getVideoChannelKey(session))
-  const sourceKey = sanitizeResourceId(source || 'bili')
-  return `${EXTERNAL_VIDEO_TASK_KIND}-${channelKey}-${sourceKey}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+// 用短 UUID 标识一次视频请求，避免消息正文挤掉时间和随机部分后发生编号冲突。
+function buildVideoTaskId(): string {
+  return `${EXTERNAL_VIDEO_TASK_KIND}-${Date.now()}-${randomUUID()}`
 }
 
 // 在启动 yt-dlp 前申请 S1 准入和 S0 独占锁。
@@ -520,7 +519,7 @@ async function acquireVideoResourceGate(ctx: ContextLike, session: VideoSessionL
     return { ok: false, userError }
   }
 
-  const taskId = existingTaskId || buildVideoTaskId(session, source)
+  const taskId = existingTaskId || buildVideoTaskId()
   const channelKey = getVideoChannelKey(session)
   const userId = getVideoUserId(session)
   const admission = modules.admitTask({
@@ -1760,7 +1759,7 @@ async function releaseAcquiredVideoGate(ctx: ContextLike, session: VideoSessionL
 
 // 给缓存命中请求单独申请资源锁并发送磁盘视频。
 async function sendCachedVideoWithGate(ctx: ContextLike, session: VideoSessionLike, entry: VideoFileCacheEntry, source: string, deps: DownloadDeps, trace?: VideoTraceContext): Promise<string | undefined> {
-  const taskId = buildVideoTaskId(session, source)
+  const taskId = buildVideoTaskId()
   const taskTrace = trace ? videoTraceModule.withVideoTraceTask(trace, taskId) : undefined
   const gateResult = await acquireVideoResourceGate(ctx, session, source, deps, taskId, taskTrace)
   if (!gateResult.ok) return (gateResult.userError || buildVideoUserError({ id: 'video-003' })).message
@@ -1810,7 +1809,7 @@ async function removeOutputFileOnce(ctx: ContextLike, fsApi: VideoFsApi, filePat
 
 // 为首次请求执行探测、大小门禁、下载、首发和缓存登记。
 async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessionLike, url: string, source: string, keys: string[], recentEntry: RecentParseEntry | null, deps: DownloadDeps, existingTaskId: string = '', trace?: VideoTraceContext): Promise<SharedVideoResult> {
-  const taskId = existingTaskId || buildVideoTaskId(session, source)
+  const taskId = existingTaskId || buildVideoTaskId()
   const taskTrace = trace ? videoTraceModule.withVideoTraceTask(trace, taskId) : undefined
   const gateResult = await acquireVideoResourceGate(ctx, session, source, deps, taskId, taskTrace)
   if (!gateResult.ok) {
@@ -2278,7 +2277,7 @@ async function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url:
   if (inflight) {
     const result = await inflight
     if (result.kind === 'busy') {
-      const queued = await enqueueBusyVideoRequest(ctx, session, { ...result, taskId: buildVideoTaskId(session, source) }, deps, trace)
+      const queued = await enqueueBusyVideoRequest(ctx, session, { ...result, taskId: buildVideoTaskId() }, deps, trace)
       if (!queued) forgetRecentParse(session, recentEntry)
       if (!queued) writeVideoTrace(ctx, trace, 'terminal_status', { status: 'failed', reason: 'queue_not_persisted' })
       return undefined

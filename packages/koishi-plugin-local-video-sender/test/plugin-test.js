@@ -478,6 +478,21 @@ async function testPersistentVideoTaskQueue() {
 async function testQueuedVideoLifecycleIntegration() {
   section('queued video lifecycle integration')
 
+  // 两条分享卡片正文前缀相同且超过文件 ID 上限，仍应得到两个短的独立任务。
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const store = makeVideoTaskStore()
+    const ctx = makeCtx()
+    const resourceModules = makeResourceModules({ decision: 'queue', reason: 'exclusive slot is busy', resourceState: 'green', memAvailableMb: 1000 })
+    const counters = { probes: 0, downloads: 0 }
+    const source = 'json_data_quot_prompt_' + 'same_card_content_'.repeat(30)
+    const deps = makeDeps(1_000_000, 1_000_000, counters, { resourceGate: undefined, resourceModules, taskStore: store })
+    await plugin.downloadAndSend(ctx, makeSession({ guildId: 'same-group', channelId: 'same-group' }), TEST_URL, source + '-first', deps)
+    await plugin.downloadAndSend(ctx, makeSession({ guildId: 'same-group', channelId: 'same-group' }), 'https://www.bilibili.com/video/BV1yy411c7mD', source + '-second', deps)
+    const ids = store.submittedTaskIds
+    check('long matching card content cannot collide task IDs', ids.length === 2 && new Set(ids).size === 2 && store.tasks.size === 2, JSON.stringify(ids))
+    check('video task IDs retain full uniqueness within the store limit and omit message content', ids.every(id => id.length <= 160 && !id.includes('json_data') && !id.includes('same_card_content')), JSON.stringify(ids))
+  })
+
   // 复现真实 task-store 会把提交 ID 中冒号改写为下划线的完整短链排队链路。
   await withIsolatedPlugin(async ({ plugin }) => {
     const store = makeVideoTaskStore({ normalizeTaskId: true })
@@ -502,7 +517,7 @@ async function testQueuedVideoLifecycleIntegration() {
     const task = [...store.tasks.values()][0]
     await waitFor(() => task && store.getResourceTaskById(task.id)?.status === 'done', 2000)
     const traceLines = ctx.logs.filter(entry => entry.msg.startsWith('video_trace ')).map(entry => entry.msg)
-    check('task store normalization changes the submitted URL-bearing task id', submittedTaskId.includes(':') && task.id !== submittedTaskId && !task.id.includes(':'), JSON.stringify({ submittedTaskId, actualTaskId: task.id }))
+    check('task store normalization preserves linkage for an opaque task id', task.id !== submittedTaskId && !task.id.includes(':'), JSON.stringify({ submittedTaskId, actualTaskId: task.id }))
     check('normalized task id stays linked through queue persistence and done terminal logs', traceLines.some(line => line.includes('event="queue_persisted"') && line.includes(`taskId="${task.id}"`)) && traceLines.some(line => line.includes('event="terminal_status"') && line.includes(`taskId="${task.id}"`) && line.includes('status="done"')), JSON.stringify(traceLines))
     check('normalized task id queue executes exactly one download and one video send', counters.probes === 1 && counters.downloads === 1 && session.sent.filter(message => message.includes('file:')).length === 1, JSON.stringify({ counters, sent: session.sent }))
     check('normalized task id queue finishes without invalid payload failure or active residue', store.getResourceTaskById(task.id)?.status === 'done' && !traceLines.some(line => line.includes('invalid_video_task_payload')) && [...store.tasks.values()].every(item => !['pending', 'claiming', 'running', 'deferred'].includes(item.status)), JSON.stringify({ task: store.getResourceTaskById(task.id), traceLines }))
@@ -826,7 +841,7 @@ function makeVideoTaskStore(options = {}) {
       const now = new Date(Date.now() + sequence++).toISOString()
       const submittedTaskId = String(input.id)
       const taskId = options.normalizeTaskId
-        ? submittedTaskId.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 160)
+        ? 'normalized_' + submittedTaskId.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 140)
         : submittedTaskId
       submittedTaskIds.push(submittedTaskId)
       const task = {
@@ -875,6 +890,8 @@ function makeVideoTaskStore(options = {}) {
       tasks.set(current.id, current)
       return copy(current)
     },
+    // 内存队列不模拟跨状态文件重名，返回空的历史冲突归档结果。
+    discardConflictingPendingTasks() { return [] },
     cancelResourceTasksByKind(kind, statuses, actor, reason) {
       const cancelled = []
       for (const task of tasks.values()) {

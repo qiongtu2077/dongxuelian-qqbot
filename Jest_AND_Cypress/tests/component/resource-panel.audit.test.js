@@ -126,6 +126,48 @@ describe('ResourcePanel 管理员操作与确认闭环', () => {
     wrapper.unmount()
   })
 
+  test('取消冲突弹窗显示中文原因和原始错误码，关闭后正常任务仍可取消', async () => {
+    dashboardApi.cancelResourceTask.mockResolvedValueOnce({ ok: false, data: { code: 'TASK_ID_CONFLICT', message: '任务 ID 与已有记录重复，系统为保留历史记录拒绝取消。' } }).mockResolvedValueOnce(OPERATIONS[1].success)
+    const wrapper = await mountResource()
+    await invokeOperation(wrapper, OPERATIONS[1])
+    const dialog = wrapper.find('[role="alertdialog"]')
+    expect(dialog.exists()).toBe(true)
+    expect(dialog.text()).toContain('取消任务失败')
+    expect(dialog.text()).toContain('任务 ID 与已有记录重复')
+    expect(dialog.text()).toContain(TASK.id)
+    expect(dialog.find('pre').text()).toContain('TASK_ID_CONFLICT')
+    expect(wrapper.text()).not.toContain('任务已取消')
+    await findButton(wrapper, '知道了').trigger('click')
+    expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false)
+    await invokeOperation(wrapper, OPERATIONS[1])
+    expect(wrapper.text()).toContain('任务已取消')
+    wrapper.unmount()
+  })
+
+  test('取消请求抛出网络异常时弹窗解释原因并保留原始报错', async () => {
+    dashboardApi.cancelResourceTask.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const wrapper = await mountResource()
+    await invokeOperation(wrapper, OPERATIONS[1])
+    expect(wrapper.find('[role="alertdialog"]').text()).toContain('未能连接到服务器')
+    expect(wrapper.find('[role="alertdialog"] pre').text()).toContain('Failed to fetch')
+    expect(findButton(wrapper, '取消').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  test('取消请求进行中禁用重复提交，失败后恢复操作', async () => {
+    let resolve
+    dashboardApi.cancelResourceTask.mockReturnValueOnce(new Promise(done => { resolve = done }))
+    const wrapper = await mountResource()
+    await findButton(wrapper, '取消').trigger('click')
+    expect(findButton(wrapper, '取消中…').attributes('disabled')).toBeDefined()
+    expect(dashboardApi.cancelResourceTask).toHaveBeenCalledTimes(1)
+    resolve({ ok: false, data: { message: '请求超时' } })
+    await flushPromises()
+    expect(wrapper.find('[role="alertdialog"]').text()).toContain('请求超时')
+    expect(findButton(wrapper, '取消').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
   test('进入维护取消确认时不发送请求，结束维护不重复确认', async () => {
     window.confirm.mockReturnValueOnce(false)
     let wrapper = await mountResource()
@@ -283,6 +325,34 @@ describe('ResourcePanel 管理员操作与确认闭环', () => {
     await flushPromises()
     expect(wrapper.find('.resource-task-error').exists()).toBe(false)
     expect(wrapper.find('.resource-task-card').text()).toContain('暂无失败记录')
+    wrapper.unmount()
+  })
+
+  test('失败说明与资源事件使用中文，原始错误和事件代码仅放在独立展开项', async () => {
+    const error = 'worker heartbeat stale: local-video-sender-main'
+    dashboardApi.fetchResourceTasks.mockImplementation(async status => ({ ok: true, data: { tasks: status === 'failed' ? [{
+      id: 'legacy-video', kind: 'external_video_download', status: 'failed', error,
+    }] : [] } }))
+    dashboardApi.fetchResourceEvents.mockResolvedValue({ ok: true, data: { events: [
+      { source: 'S6', event: 'media_task_done', createdAt: '2026-10-05T12:22:56.771Z' },
+      { source: 'S1', event: 'admission_decided', reason: 'resource budget accepted', createdAt: '2026-10-05T12:22:50.748Z' },
+    ] } })
+    const wrapper = await mountResource()
+    const summaries = wrapper.findAll('.resource-event-summary')
+    expect(summaries[0].text()).toContain('媒体处理')
+    expect(summaries[0].text()).toContain('媒体分析任务已完成')
+    expect(summaries[0].text()).toContain('10-05 20:22:56')
+    expect(summaries[0].text()).not.toContain('media_task_done')
+    expect(summaries[1].text()).toContain('资源满足要求，允许执行。')
+    expect(wrapper.find('.resource-event-raw').attributes('open')).toBeUndefined()
+    expect(wrapper.find('.resource-event-raw').text()).toContain('media_task_done')
+    await findButton(wrapper, '失败').trigger('click')
+    await flushPromises()
+    await findButton(wrapper, '查看详情').trigger('click')
+    expect(wrapper.find('.resource-task-reason p').text()).toContain('误判为失联')
+    expect(wrapper.find('.resource-task-reason p').text()).toContain('无法证明视频是否已发送')
+    expect(wrapper.find('.resource-task-reason details').attributes('open')).toBeUndefined()
+    expect(wrapper.find('.resource-task-reason pre').text()).toBe(error)
     wrapper.unmount()
   })
 })

@@ -387,6 +387,34 @@ function testResourceTaskSummaryWhitelist() {
   assert.deepStrictEqual(sanitizeTask({ ...task, kind: 'agent_task' }).displaySummary, { bvId: '' })
 }
 
+// 通过真实路由验证取消冲突、状态变化和缺失记录均有可读原因，正常任务仍可取消。
+async function testResourceCancelReportsSpecificFailure() {
+  resetDataDir()
+  const store = require('../../koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+  const input = { kind: 'external_video_download', source: 'router-test', channelKey: 'cancel-test', payload: {} }
+  const old = store.submitResourceTask({ ...input, id: 'cancel-conflict' })
+  store.failTask(old, 'preserved failure')
+  store.submitResourceTask({ ...input, id: old.id })
+  const conflict = await dispatchJson('POST', '/dashboard/api/resource/cancel', { taskId: old.id }, adminHeaders())
+  assert.strictEqual(conflict.statusCode, 409)
+  assert.strictEqual(parseJsonResponse(conflict).code, 'TASK_ID_CONFLICT')
+  assert.match(parseJsonResponse(conflict).message, /任务 ID.*重复/)
+  assert.strictEqual(store.getResourceTaskById(old.id).error, 'preserved failure')
+
+  const missing = await dispatchJson('POST', '/dashboard/api/resource/cancel', { taskId: 'not-present' }, adminHeaders())
+  assert.strictEqual(missing.statusCode, 404)
+  assert.strictEqual(parseJsonResponse(missing).code, 'TASK_NOT_FOUND')
+  const completed = store.completeTask(store.submitResourceTask({ ...input, id: 'cancel-done' }), {})
+  const terminal = await dispatchJson('POST', '/dashboard/api/resource/cancel', { taskId: completed.id }, adminHeaders())
+  assert.strictEqual(terminal.statusCode, 409)
+  assert.match(parseJsonResponse(terminal).message, /已完成/)
+  const pending = store.submitResourceTask({ ...input, id: 'cancel-normal' })
+  const success = await dispatchJson('POST', '/dashboard/api/resource/cancel', { taskId: pending.id }, adminHeaders())
+  assert.strictEqual(success.statusCode, 200)
+  assert.strictEqual(parseJsonResponse(success).ok, true)
+  assert.strictEqual(store.getResourceTaskById(pending.id).status, 'cancelled')
+}
+
 // Verifies resource center read APIs require only normal access while writes stay admin-gated.
 async function testResourceReadApisRequireAccessOnly() {
   process.env.GLOBAL_LOCAL_MODE = ''
@@ -587,6 +615,7 @@ async function run() {
   testResourceStatusDoesNotWriteMemorySample()
   testResourceStatusIncludesServerModeFlags()
   testResourceTaskSummaryWhitelist()
+  await testResourceCancelReportsSpecificFailure()
   await testResourceReadApisRequireAccessOnly()
   await testResourceModeRoundTripRequiresAdminAndUpdatesStatus()
   await testCustomProviderValidationRejectsUnsafeInput()

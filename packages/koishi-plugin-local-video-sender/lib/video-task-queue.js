@@ -23,6 +23,7 @@ const REQUIRED_STORE_METHODS = [
     'completeTask',
     'failTask',
     'requeueTask',
+    'discardConflictingPendingTasks',
     'cancelResourceTasksByKind',
 ];
 // 计算 sibling AI 插件的运行产物路径，避免编译期加载其业务入口。
@@ -160,10 +161,13 @@ function createVideoTaskQueue(options) {
             if (!available || !store)
                 return { available: false, cancelled: 0, reason: unavailableReason };
             try {
+                const conflicts = store.discardConflictingPendingTasks(EXTERNAL_VIDEO_TASK_KIND, VIDEO_QUEUE_WORKER_NAME);
+                for (const task of conflicts)
+                    options.onTerminal?.(task, 'cancelled', 'task_id_conflict');
                 const cancelled = store.cancelResourceTasksByKind(EXTERNAL_VIDEO_TASK_KIND, ACTIVE_VIDEO_TASK_STATUSES, VIDEO_QUEUE_WORKER_NAME, 'restart_discarded');
                 for (const task of cancelled)
                     options.onTerminal?.(task, 'cancelled', 'restart_discarded');
-                return { available: true, cancelled: cancelled.length, reason: '' };
+                return { available: true, cancelled: cancelled.length + conflicts.length, reason: '' };
             }
             catch (error) {
                 available = false;

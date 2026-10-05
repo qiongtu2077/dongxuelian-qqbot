@@ -700,8 +700,10 @@ function handlePostResourceCancel(req, res) {
             const taskId = String(data.taskId || '').trim();
             if (!taskId)
                 return json(res, { ok: false, message: 'taskId 不能为空' }, 400);
-            const ok = loadResourceModules().tasks.cancelTask(taskId, 'dashboard', String(data.reason || 'dashboard cancel'));
-            return json(res, { ok, message: ok ? '任务已取消' : '只能取消 pending/deferred 任务' }, ok ? 200 : 404);
+            const result = loadResourceModules().tasks.cancelTaskWithResult(taskId, 'dashboard', String(data.reason || 'dashboard cancel'));
+            if (result.ok)
+                return json(res, { ok: true, message: '任务已取消' });
+            return json(res, result, result.code === 'TASK_NOT_FOUND' ? 404 : 409);
         }
         catch (e) {
             return json(res, { ok: false, message: getErrorMessage(e) }, 400);

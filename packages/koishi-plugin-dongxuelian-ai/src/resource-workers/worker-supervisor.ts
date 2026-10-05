@@ -432,6 +432,8 @@ function auditStaleRunningTasks(staleMs = 30000): number {
   let recovered = 0
   for (const task of running) {
     const workerName = String(task.claimedBy || '')
+    // 视频队列属于 Koishi 主进程，不使用 supervisor 的独立 worker 心跳协议。
+    if (task.kind === RESOURCE_TASK_KIND.EXTERNAL_VIDEO_DOWNLOAD && workerName === 'local-video-sender-main') continue
     const worker = workerByName[workerName]
     const heartbeatAt = Date.parse(String(worker?.heartbeatAt || task.updatedAt || task.startedAt || ''))
     const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > staleMs
@@ -535,6 +537,8 @@ function auditStaleClaimingTasks(staleMs = 30000): number {
   let recovered = 0
   for (const task of claiming) {
     const workerName = String(task.claimedBy || '')
+    // 主进程视频执行器的 claiming 状态由其队列和重启清理负责。
+    if (task.kind === RESOURCE_TASK_KIND.EXTERNAL_VIDEO_DOWNLOAD && workerName === 'local-video-sender-main') continue
     const worker = workerByName[workerName]
     const heartbeatAt = Date.parse(String(worker?.heartbeatAt || task.updatedAt || task.claimedAt || ''))
     const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > staleMs

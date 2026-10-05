@@ -24,6 +24,7 @@ async function main() {
   let browser = null
   const consoleErrors = []
   const responseErrors = []
+  let expectedCancelConflicts = 0
   try {
     if (vite) await waitForServer(vite)
     browser = await puppeteer.launch({
@@ -39,11 +40,17 @@ async function main() {
       const pathname = new URL(url).pathname
       if (!LIVE_URL && status === 403 && pathname.startsWith('/dashboard/api/')) return
       if (!LIVE_URL && status === 404 && pathname.endsWith('/favicon.ico')) return
+      // 本地场景刻意触发一次取消冲突，并在点击流程中验证原因弹窗。
+      if (!LIVE_URL && status === 409 && pathname === '/dashboard/api/resource/cancel') {
+        expectedCancelConflicts += 1
+        return
+      }
       responseErrors.push(`${status} ${url}`)
     })
     page.on('console', msg => {
       const text = msg.text()
       if (/Failed to load resource: the server responded with a status of (403|404)/.test(text)) return
+      if (!LIVE_URL && /Failed to load resource: the server responded with a status of 409/.test(text)) return
       if (/WebSocket connection to .* failed: Page entered Back-Forward Cache\./.test(text)) return
       if (msg.type() === 'error') consoleErrors.push(text)
     })
@@ -54,6 +61,7 @@ async function main() {
     } else {
       await installApiMock(page)
       await runClicks(page)
+      if (expectedCancelConflicts !== 1) throw new Error('Expected exactly one rejected cancellation in the error-dialog scenario')
     }
     if (responseErrors.length) throw new Error('Browser response errors:\n' + responseErrors.join('\n'))
     if (consoleErrors.length) throw new Error('Browser console errors:\n' + consoleErrors.join('\n'))

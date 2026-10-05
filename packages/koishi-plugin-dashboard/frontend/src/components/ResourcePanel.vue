@@ -292,7 +292,7 @@
                 <td>
                   <div class="resource-task-actions">
                     <button class="btn btn-sm" :aria-expanded="expandedTaskId === task.id" @click="toggleTaskDetail(task)">{{ expandedTaskId === task.id ? '收起详情' : '查看详情' }}</button>
-                    <button v-if="canCancel(task)" class="btn btn-sm" @click="cancelTask(task)">取消</button>
+                    <button v-if="canCancel(task)" class="btn btn-sm" :disabled="!!cancellingTaskId" @click="cancelTask(task)">{{ cancellingTaskId === task.id ? '取消中…' : '取消' }}</button>
                   </div>
                 </td>
               </tr>
@@ -317,8 +317,12 @@
                       <div v-if="task.retryAfter"><dt>重试时间</dt><dd>{{ taskTimeDisplay(task.retryAfter, true) }}</dd></div>
                     </dl>
                     <div v-if="task.error || task.requeueReason" class="resource-task-reason">
-                      <b>{{ task.status === 'failed' ? '具体报错' : '记录的原因' }}</b>
-                      <pre>{{ task.error || task.requeueReason }}</pre>
+                      <b>{{ task.status === 'failed' ? '失败原因' : '记录的原因' }}</b>
+                      <p>{{ taskErrorDisplay(task.error || task.requeueReason) }}</p>
+                      <details>
+                        <summary>展开原始报错</summary>
+                        <pre>{{ task.error || task.requeueReason }}</pre>
+                      </details>
                     </div>
                   </div>
                 </td>
@@ -339,20 +343,47 @@
         <h2>最近事件</h2>
         <button class="btn btn-sm" :disabled="loadingEvents" @click="loadEvents">刷新事件</button>
       </div>
+      <p class="resource-task-hint">按发生时间排序，时间为北京时间。</p>
       <div class="resource-events">
         <div v-for="event in events" :key="eventKey(event)" class="resource-event">
-          <span>{{ display(event.source) }}</span>
-          <b>{{ display(event.event) }}</b>
-          <small>{{ eventDetail(event) }}</small>
+          <div class="resource-event-summary">
+            <span>{{ resourceEventSourceDisplay(event.source) }}</span>
+            <div>
+              <b>{{ resourceEventDisplay(event.event) }}</b>
+              <small v-if="eventDetail(event)">{{ eventDetail(event) }}</small>
+            </div>
+            <time :datetime="String(event.createdAt || '')" :title="taskTimeDisplay(event.createdAt, true)">{{ taskTimeDisplay(event.createdAt) }}</time>
+          </div>
+          <details class="resource-event-raw">
+            <summary>查看原始事件</summary>
+            <div>事件代码：<code>{{ display(event.event) }}</code></div>
+            <div>模块代码：{{ display(event.source) }}</div>
+            <div v-if="event.taskId">任务 ID：<code>{{ event.taskId }}</code></div>
+            <div v-if="event.previousTaskId">旧任务 ID：<code>{{ event.previousTaskId }}</code></div>
+            <pre v-if="event.reason || event.error">{{ event.error || event.reason }}</pre>
+          </details>
         </div>
         <div v-if="!events.length" class="resource-empty">暂无事件</div>
       </div>
     </section>
+    <div v-if="cancelFailure" class="admin-modal-backdrop" @keydown.esc="cancelFailure = null">
+      <div class="admin-modal-card resource-cancel-dialog" role="alertdialog" aria-modal="true" aria-labelledby="resource-cancel-title" aria-describedby="resource-cancel-reason">
+        <h2 id="resource-cancel-title">取消任务失败</h2>
+        <strong>{{ cancelFailure.taskName }}</strong>
+        <p id="resource-cancel-reason">{{ cancelFailure.reason }}</p>
+        <div class="resource-cancel-task-id">任务 ID：<code>{{ cancelFailure.taskId }}</code></div>
+        <details v-if="cancelFailure.rawError">
+          <summary>查看原始报错</summary>
+          <pre>{{ cancelFailure.rawError }}</pre>
+        </details>
+        <div class="gate-actions"><button ref="cancelFailureClose" class="btn" @click="cancelFailure = null">知道了</button></div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script lang="ts">
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import {
   cancelResourceTask,
   fetchResourceEvents,
@@ -364,7 +395,7 @@ import {
   setResourceMaintenance,
 } from '../api'
 import { asArray, asRecord, errorMessage, type JsonRecord, type MessageState, type ShowAdminDialog } from '../types'
-import { activityLeaseDisplay, botModeDisplay, canCancel, coverageKey, dateTimeDisplay, display, eventDetail, eventKey, formatInterval, mbLabel, mediaQueueDisplay, mediaSummaryDisplay, memoryUsedValue, numberValue, percentLabel, resourceStateDisplay, round, serverModeDisplay, sizeMbLabel, taskCategoryDisplay, taskContentDisplay, taskKindDisplay, taskSourceDisplay, taskStatusDisplay, taskStepDisplay, taskTimeDisplay, workerDisplay } from '../services/resource-model'
+import { activityLeaseDisplay, botModeDisplay, canCancel, coverageKey, dateTimeDisplay, display, eventDetail, eventKey, formatInterval, mbLabel, mediaQueueDisplay, mediaSummaryDisplay, memoryUsedValue, numberValue, percentLabel, resourceEventDisplay, resourceEventSourceDisplay, resourceStateDisplay, round, serverModeDisplay, sizeMbLabel, taskCategoryDisplay, taskContentDisplay, taskErrorDisplay, taskKindDisplay, taskSourceDisplay, taskStatusDisplay, taskStepDisplay, taskTimeDisplay, workerDisplay } from '../services/resource-model'
 import ResourceDiagnosticsPanel from './ResourceDiagnosticsPanel.vue'
 
 export default {
@@ -385,6 +416,9 @@ export default {
     const taskReadError = ref('')
     const expandedTaskId = ref('')
     const taskCopyMessage = ref('')
+    const cancellingTaskId = ref('')
+    const cancelFailure = ref<{ taskId: string; taskName: string; reason: string; rawError: string } | null>(null)
+    const cancelFailureClose = ref<HTMLButtonElement | null>(null)
     const events = ref<JsonRecord[]>([])
     const memoryHistory = ref<JsonRecord[]>([])
     const memoryRange = ref('5m')
@@ -731,18 +765,42 @@ export default {
       }
     }
 
-    // 取消 pending/deferred 任务。
+    // 在当前操作位置弹出可复制的取消失败原因，避免页面顶部提示被滚动隐藏。
+    function showCancelFailure(task: JsonRecord, taskId: string, rawError: string): void {
+      const reason = /[\u4e00-\u9fff]/.test(rawError) ? rawError
+        : /Failed to fetch|fetch failed|NetworkError/i.test(rawError) ? '取消请求未能连接到服务器，请检查网络连接后重试。'
+          : '服务器未能完成取消操作，请查看原始报错，刷新后重试。'
+      message.value = { type: 'err', text: `取消任务失败：${reason}` }
+      cancelFailure.value = { taskId, taskName: taskContentDisplay(task), reason, rawError }
+      void nextTick(() => cancelFailureClose.value?.focus())
+    }
+
+    // 取消排队或暂缓任务；权限、状态冲突、网络失败均给出明确反馈。
     async function cancelTask(task: JsonRecord, savedTaskId = '', retried = false): Promise<void> {
       const taskId = savedTaskId || display(task.id, '')
-      if (!taskId) return
-      const res = await cancelResourceTask(taskId)
-      if (isAdminRequired(res)) {
-        if (!retried && showAdminDialog) showAdminDialog('取消资源任务需要管理员密码', () => cancelTask(task, taskId, true))
-        else message.value = { type: 'err', text: '管理员验证后取消任务仍被拒绝' }
-        return
+      if (!taskId || cancellingTaskId.value) return
+      cancellingTaskId.value = taskId
+      try {
+        const res = await cancelResourceTask(taskId)
+        if (isAdminRequired(res)) {
+          if (!retried && showAdminDialog) showAdminDialog('取消资源任务需要管理员密码', () => cancelTask(task, taskId, true))
+          else showCancelFailure(task, taskId, '管理员验证后取消任务仍被拒绝，请重新验证管理员权限。')
+          return
+        }
+        if (!res.ok) {
+          const data = asRecord(res.data)
+          showCancelFailure(task, taskId, errorMessage(data, '服务器未返回取消结果，请检查登录状态并刷新后重试。'))
+          if (data.code && cancelFailure.value) cancelFailure.value.rawError = `${display(data.code)}\n${cancelFailure.value.rawError}`
+        } else {
+          cancelFailure.value = null
+          message.value = { type: 'ok', text: '任务已取消' }
+        }
+        await refreshAllInternal({ preserveMessage: true })
+      } catch (error) {
+        showCancelFailure(task, taskId, errorMessage(error, '取消请求失败，请刷新后重试。'))
+      } finally {
+        cancellingTaskId.value = ''
       }
-      message.value = { type: res.ok ? 'ok' : 'err', text: res.ok ? '任务已取消' : errorMessage(res.data, '取消失败') }
-      await refreshAllInternal({ preserveMessage: true })
     }
 
     onMounted(() => {
@@ -768,6 +826,9 @@ export default {
       taskReadError,
       expandedTaskId,
       taskCopyMessage,
+      cancellingTaskId,
+      cancelFailure,
+      cancelFailureClose,
       taskStatusDisplay,
       taskCategoryDisplay,
       taskContentDisplay,
@@ -779,6 +840,9 @@ export default {
       copyTaskId,
       events,
       eventDetail,
+      resourceEventDisplay,
+      resourceEventSourceDisplay,
+      taskErrorDisplay,
       memoryHistory,
       memoryRange,
       memoryRangeOptions,
@@ -1374,6 +1438,11 @@ export default {
 .resource-task-content b { font-weight: 700; }
 .resource-task-time { white-space: nowrap; }
 .resource-task-detail { padding: 8px 4px; }
+.resource-cancel-dialog { width: min(620px, 100%); max-height: 85vh; overflow-y: auto; user-select: text; }
+.resource-cancel-dialog p { line-height: 1.7; }
+.resource-cancel-task-id, .resource-cancel-dialog pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+.resource-cancel-dialog details { margin-top: 16px; }
+.resource-cancel-dialog summary { cursor: pointer; }
 .resource-task-detail-row { background: var(--input); }
 .resource-task-id { display: flex; align-items: flex-start; gap: 12px; }
 .resource-task-id span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -1382,6 +1451,9 @@ export default {
 .resource-task-meta dt { color: var(--text3); font-size: 12px; margin-bottom: 3px; }
 .resource-task-meta dd { margin: 0; overflow-wrap: anywhere; }
 .resource-task-reason { margin-top: 14px; }
+.resource-task-reason p { margin: 6px 0; line-height: 1.6; }
+.resource-task-reason summary,
+.resource-event-raw summary { cursor: pointer; color: var(--accent); font-size: 12px; }
 .resource-task-reason pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 
 .resource-pill {
@@ -1402,12 +1474,19 @@ export default {
   overflow: auto;
 }
 
-.resource-event {
+.resource-event-summary {
   display: grid;
-  grid-template-columns: 52px minmax(120px, 0.8fr) minmax(0, 1.6fr);
+  grid-template-columns: 84px minmax(160px, 1fr) auto;
   gap: 10px;
   align-items: center;
 }
+
+.resource-event time { color: var(--text3); font-size: 12px; white-space: nowrap; }
+.resource-event { user-select: text; }
+.resource-event-raw { margin-top: 6px; color: var(--text3); font-size: 12px; }
+.resource-event-raw[open] summary { margin-bottom: 6px; }
+.resource-event-raw div { overflow-wrap: anywhere; margin-top: 4px; }
+.resource-event-raw pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 5px 0 0; }
 
 .resource-event span {
   color: var(--accent);
@@ -1475,7 +1554,7 @@ export default {
     flex-basis: auto;
   }
 
-  .resource-event {
+  .resource-event-summary {
     grid-template-columns: 1fr;
     gap: 4px;
   }

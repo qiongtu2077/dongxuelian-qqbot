@@ -1,6 +1,7 @@
 "use strict";
 const { segment } = require('koishi');
 const { execFile } = require('child_process');
+const { randomUUID } = require('crypto');
 const fsSync = require('fs');
 const fs = require('fs/promises');
 const path = require('path');
@@ -178,11 +179,9 @@ function getVideoChannelKey(session) {
 function getVideoUserId(session) {
     return String(session.userId || session.author?.id || session.event?.user?.id || session.event?.sender?.userId || session.event?.sender?.id || '');
 }
-// 生成一次外部视频下载任务的 S0/S1 追踪 ID。
-function buildVideoTaskId(session, source) {
-    const channelKey = sanitizeResourceId(getVideoChannelKey(session));
-    const sourceKey = sanitizeResourceId(source || 'bili');
-    return `${EXTERNAL_VIDEO_TASK_KIND}-${channelKey}-${sourceKey}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+// 用短 UUID 标识一次视频请求，避免消息正文挤掉时间和随机部分后发生编号冲突。
+function buildVideoTaskId() {
+    return `${EXTERNAL_VIDEO_TASK_KIND}-${Date.now()}-${randomUUID()}`;
 }
 // 在启动 yt-dlp 前申请 S1 准入和 S0 独占锁。
 async function acquireVideoResourceGate(ctx, session, source, deps = {}, existingTaskId = '', trace) {
@@ -197,7 +196,7 @@ async function acquireVideoResourceGate(ctx, session, source, deps = {}, existin
         logVideoUserError(ctx, userError);
         return { ok: false, userError };
     }
-    const taskId = existingTaskId || buildVideoTaskId(session, source);
+    const taskId = existingTaskId || buildVideoTaskId();
     const channelKey = getVideoChannelKey(session);
     const userId = getVideoUserId(session);
     const admission = modules.admitTask({
@@ -1399,7 +1398,7 @@ async function releaseAcquiredVideoGate(ctx, session, handle, reason, taskId, op
 }
 // 给缓存命中请求单独申请资源锁并发送磁盘视频。
 async function sendCachedVideoWithGate(ctx, session, entry, source, deps, trace) {
-    const taskId = buildVideoTaskId(session, source);
+    const taskId = buildVideoTaskId();
     const taskTrace = trace ? videoTraceModule.withVideoTraceTask(trace, taskId) : undefined;
     const gateResult = await acquireVideoResourceGate(ctx, session, source, deps, taskId, taskTrace);
     if (!gateResult.ok)
@@ -1452,7 +1451,7 @@ async function removeOutputFileOnce(ctx, fsApi, filePath, reason) {
 }
 // 为首次请求执行探测、大小门禁、下载、首发和缓存登记。
 async function processInitialVideoRequest(ctx, session, url, source, keys, recentEntry, deps, existingTaskId = '', trace) {
-    const taskId = existingTaskId || buildVideoTaskId(session, source);
+    const taskId = existingTaskId || buildVideoTaskId();
     const taskTrace = trace ? videoTraceModule.withVideoTraceTask(trace, taskId) : undefined;
     const gateResult = await acquireVideoResourceGate(ctx, session, source, deps, taskId, taskTrace);
     if (!gateResult.ok) {
@@ -1923,7 +1922,7 @@ async function downloadAndSend(ctx, session, url, source = url, deps = {}, optio
     if (inflight) {
         const result = await inflight;
         if (result.kind === 'busy') {
-            const queued = await enqueueBusyVideoRequest(ctx, session, { ...result, taskId: buildVideoTaskId(session, source) }, deps, trace);
+            const queued = await enqueueBusyVideoRequest(ctx, session, { ...result, taskId: buildVideoTaskId() }, deps, trace);
             if (!queued)
                 forgetRecentParse(session, recentEntry);
             if (!queued)

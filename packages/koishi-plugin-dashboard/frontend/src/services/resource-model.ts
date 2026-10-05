@@ -121,6 +121,45 @@ const TASK_REASON_LABELS: Record<string, string> = {
   'media waits for exclusive slot to clear': '等待其他任务释放资源',
 }
 
+const RESOURCE_EVENT_LABELS: Record<string, string> = {
+  ticket_created: '任务已申请资源', dead_ticket_reclaimed: '已清理失效的资源申请',
+  lock_acquired: '任务已获得资源位置', lock_released: '任务已释放资源位置',
+  lock_stale_reclaimed: '已清理失效的资源占用', lock_wait_failed: '等待资源失败',
+  admission_decided: '任务资源检查完成',
+  task_created: '后台任务已创建', task_claimed: '后台任务已领取', task_running: '后台任务开始处理',
+  task_step: '后台任务进度更新', task_done: '后台任务已完成', task_failed: '后台任务失败',
+  task_deferred: '后台任务暂缓处理', task_requeued: '后台任务重新排队', task_cancelled: '后台任务已取消',
+  task_notify_updated: '任务结果通知已更新', task_cleanup: '历史任务清理完成',
+  task_id_conflict_discarded: '编号冲突的旧任务已归档',
+  task_discarded_on_startup: '重启时已结束旧任务', startup_runtime_discarded: '重启时已整理旧运行状态',
+  worker_process_started: '后台处理器已启动', worker_process_start_failed: '后台处理器启动失败',
+  worker_process_suspected_blocked: '后台处理器长时间未推进', worker_process_zombie_recovered: '已处理失去响应的后台处理器',
+  worker_stale_recovered: '已结束失联处理器的任务', claiming_stale_recovered: '已结束未启动的孤儿任务',
+  task_timeout_recovered: '已结束运行超时的任务', task_timeout_recovery_failed: '超时任务清理失败',
+  daily_worker_pipeline_started: '日报处理开始', daily_worker_pipeline_finished: '日报处理结束',
+  precompute_index_appended: '日报预计算记录已更新',
+  daily_final_input_written: '日报汇总输入已保存', daily_slot_retry_restored: '日报分段重试已恢复',
+  daily_slot_tasks_planned: '日报预计算任务已安排', daily_slot_written: '日报预计算分段已保存',
+  deferred_tasks_audited: '暂缓任务检查完成',
+  media_task_created: '媒体分析任务已创建', media_task_claimed: '媒体分析任务已领取',
+  media_task_requeued: '媒体分析任务重新排队', media_task_done: '媒体分析任务已完成',
+  media_task_failed: '媒体分析任务失败', media_task_expired: '媒体分析任务已过期',
+  media_task_dropped: '媒体分析任务已舍弃', media_task_deduped: '重复媒体任务已合并',
+  media_task_discarded_on_startup: '重启时已结束旧媒体任务', media_task_timed_out: '媒体分析任务运行超时',
+  media_cache_reused: '已复用媒体分析缓存', media_retention_completed: '媒体历史记录整理完成',
+  process_tree_terminated: '任务进程已清理', process_metrics: '进程资源用量已采样',
+  process_cleanup: '任务进程清理完成', process_tree_not_running: '任务进程已经退出',
+  process_tree_terminate_skipped: '任务进程清理已跳过', recorded_process_cleanup_skipped: '记录的子进程清理已跳过',
+  resource_history_retention_completed: '资源历史记录整理完成', stale_suspected: '资源占用长时间未更新',
+  worker_idle_exit: '空闲后台处理器已退出', worker_memory_limit_exceeded: '后台处理器内存超限',
+  worker_should_exit: '后台处理器已收到退出指令', worker_tick_failed: '后台处理器本轮执行失败',
+}
+
+const RESOURCE_SOURCE_LABELS: Record<string, string> = {
+  S0: '资源占用', S1: '资源检查', S2: '后台任务', S3: '日报预计算',
+  S6: '媒体处理', S8: '系统保护',
+}
+
 const WORKER_NAMES: Record<string, string> = {
   agent: '智能助手后台处理器',
   media: '媒体分析处理器',
@@ -244,6 +283,31 @@ export function taskStepDisplay(task: JsonRecord): string {
   return TASK_STEP_LABELS[String(task.step || '')] || taskStatusDisplay(task).label
 }
 
+// 解释已知错误和等待原因；原始文本由独立展开项保留，未知原因不编造结论。
+export function taskErrorDisplay(value: unknown): string {
+  const error = String(value || '')
+  if (error === 'worker heartbeat stale: local-video-sender-main') return '旧版监控未识别主进程中的视频执行器，误判为失联并标记失败。此记录无法证明视频是否已发送。'
+  if (error.startsWith('worker heartbeat stale: ')) return '任务处理器长时间未更新运行状态，系统已将任务标记为失败。'
+  if (error.startsWith('worker claiming stale: ')) return '任务已被领取，但处理器未能开始执行，系统已结束这条任务。'
+  const timeout = error.match(/^resource worker task timed out after (\d+)ms$/)
+  if (timeout) return `任务运行超过 ${Math.round(Number(timeout[1]) / 60000)} 分钟，系统已结束该任务。`
+  if (error === 'task_id_conflict') return '旧版任务编号与历史记录重复，任务无法继续执行，已归档。请重新发送视频链接。'
+  if (error === 'video_task_expired') return '视频请求已超过 15 分钟有效期，请重新发送视频链接。'
+  if (error === 'restart_discarded') return '服务重启，原任务已中断；需要处理时请重新发起请求。'
+  if (error === 'video_send_outcome_uncertain') return '未能确认视频是否发送成功，请先检查群内记录。'
+  return TASK_REASON_LABELS[error] || '系统记录了处理原因，请展开查看原始记录。'
+}
+
+// 将资源事件代码转换为中文名称，未知代码留在原始事件中供排查。
+export function resourceEventDisplay(value: unknown): string {
+  return RESOURCE_EVENT_LABELS[String(value || '')] || '其他系统事件'
+}
+
+// 将资源模块代号转换为中文来源。
+export function resourceEventSourceDisplay(value: unknown): string {
+  return RESOURCE_SOURCE_LABELS[String(value || '')] || '系统事件'
+}
+
 // Formats a worker heartbeat lag using the user-facing “最后联系” vocabulary.
 export function lastContactDisplay(value: unknown): string {
   const ms = Number(value)
@@ -340,7 +404,15 @@ export function eventDetail(event: JsonRecord): string {
   if (String(event.event || '') === 'process_tree_terminated' && event.treeTerminationConfirmed === false) {
     return '根进程已终止，子进程树未确认'
   }
-  return display(event.reason || event.error || event.createdAt)
+  if (event.error) return taskErrorDisplay(event.error)
+  const reason = String(event.reason || '')
+  if (!reason) return ''
+  if (reason === 'resource budget accepted') return '资源满足要求，允许执行。'
+  if (reason === 'external-video-finally') return '视频处理流程结束，已释放资源位置。'
+  if (reason === 'queue_limit') return '队列达到容量上限，已舍弃该任务。'
+  if (reason === 'worker_exited') return '处理器退出，未完成的任务已结束。'
+  if (reason === 'task_timed_out') return '任务超过运行时限，系统已执行清理。'
+  return taskErrorDisplay(reason)
 }
 
 // Converts an unknown numeric field into a finite display value.

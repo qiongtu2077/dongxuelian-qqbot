@@ -16,6 +16,7 @@ interface VideoTaskStore {
   completeTask(task: ResourceTask, result?: Record<string, unknown>): ResourceTask
   failTask(task: ResourceTask, error: unknown, result?: Record<string, unknown>): ResourceTask
   requeueTask(task: ResourceTask, reason?: string): ResourceTask
+  discardConflictingPendingTasks(kind: string, actor: string): ResourceTask[]
   cancelResourceTasksByKind(kind: string, statuses?: string[], actor?: string, reason?: string): ResourceTask[]
 }
 
@@ -82,6 +83,7 @@ const REQUIRED_STORE_METHODS: Array<keyof VideoTaskStore> = [
   'completeTask',
   'failTask',
   'requeueTask',
+  'discardConflictingPendingTasks',
   'cancelResourceTasksByKind',
 ]
 
@@ -211,9 +213,11 @@ function createVideoTaskQueue(options: CreateVideoTaskQueueOptions): VideoTaskQu
     initialize() {
       if (!available || !store) return { available: false, cancelled: 0, reason: unavailableReason }
       try {
+        const conflicts = store.discardConflictingPendingTasks(EXTERNAL_VIDEO_TASK_KIND, VIDEO_QUEUE_WORKER_NAME)
+        for (const task of conflicts) options.onTerminal?.(task, 'cancelled', 'task_id_conflict')
         const cancelled = store.cancelResourceTasksByKind(EXTERNAL_VIDEO_TASK_KIND, ACTIVE_VIDEO_TASK_STATUSES, VIDEO_QUEUE_WORKER_NAME, 'restart_discarded')
         for (const task of cancelled) options.onTerminal?.(task, 'cancelled', 'restart_discarded')
-        return { available: true, cancelled: cancelled.length, reason: '' }
+        return { available: true, cancelled: cancelled.length + conflicts.length, reason: '' }
       } catch (error) {
         available = false
         unavailableReason = error instanceof Error ? error.message : String(error || 'queue_startup_failed')

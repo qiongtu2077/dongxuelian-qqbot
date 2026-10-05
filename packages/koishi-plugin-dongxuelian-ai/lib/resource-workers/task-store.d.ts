@@ -62,8 +62,16 @@ declare function failTask(task: ResourceTask, error: unknown, result?: Record<st
 declare function deferTask(task: ResourceTask, reason?: string): ResourceTask;
 declare function requeueTask(task: ResourceTask, reason?: string): ResourceTask;
 declare function updateTaskNotifyStatus(task: ResourceTask, status: string, error?: string): ResourceTask;
+declare function cancelTaskWithResult(taskId: string, actor?: string, reason?: string): {
+    ok: true;
+} | {
+    ok: false;
+    code: string;
+    message: string;
+};
 declare function cancelTask(taskId: string, actor?: string, reason?: string): boolean;
 declare function cancelResourceTasksByKind(kind: string, statuses?: string[], actor?: string, reason?: string): ResourceTask[];
+declare function discardConflictingPendingTasks(kind: string, actor: string): ResourceTask[];
 declare function writeWorkerHeartbeat(workerName: string, state?: Partial<ResourceWorkerState>): ResourceWorkerState;
 declare function listWorkerStates(): ResourceWorkerState[];
 interface DiscardInterruptedResourceTaskStateResult {
@@ -90,6 +98,7 @@ declare const _default: {
     writeWorkerEvent: typeof writeWorkerEvent;
     createTaskId: typeof createTaskId;
     submitResourceTask: typeof submitResourceTask;
+    discardConflictingPendingTasks: typeof discardConflictingPendingTasks;
     getResourceTaskById: typeof getResourceTaskById;
     getResourceTaskByIdForKind: typeof getResourceTaskByIdForKind;
     findResourceTaskByKindAndChannel: typeof findResourceTaskByKindAndChannel;
@@ -110,6 +119,7 @@ declare const _default: {
     requeueTask: typeof requeueTask;
     updateTaskNotifyStatus: typeof updateTaskNotifyStatus;
     cancelTask: typeof cancelTask;
+    cancelTaskWithResult: typeof cancelTaskWithResult;
     cancelResourceTasksByKind: typeof cancelResourceTasksByKind;
     writeWorkerHeartbeat: typeof writeWorkerHeartbeat;
     listWorkerStates: typeof listWorkerStates;

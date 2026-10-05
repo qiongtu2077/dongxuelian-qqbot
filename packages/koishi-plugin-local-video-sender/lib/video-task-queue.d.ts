@@ -12,6 +12,7 @@ interface VideoTaskStore {
     completeTask(task: ResourceTask, result?: Record<string, unknown>): ResourceTask;
     failTask(task: ResourceTask, error: unknown, result?: Record<string, unknown>): ResourceTask;
     requeueTask(task: ResourceTask, reason?: string): ResourceTask;
+    discardConflictingPendingTasks(kind: string, actor: string): ResourceTask[];
     cancelResourceTasksByKind(kind: string, statuses?: string[], actor?: string, reason?: string): ResourceTask[];
 }
 interface VideoTaskPayload {
