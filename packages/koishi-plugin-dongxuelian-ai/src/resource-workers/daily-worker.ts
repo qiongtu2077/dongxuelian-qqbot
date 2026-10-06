@@ -6,6 +6,7 @@
 const path = require('path') as typeof import('path')
 const { getTaskResultDir } = require('./task-paths') as typeof import('./task-paths')
 const { updateTaskStep, writeWorkerEvent } = require('./task-store') as typeof import('./task-store')
+const { resolveReportPeriod } = require('../daily-precompute/report-period') as typeof import('../daily-precompute/report-period')
 
 interface WorkerTaskResult extends Record<string, unknown> {
   defer?: boolean
@@ -17,7 +18,8 @@ interface DailyWorkerTaskLike {
   id?: string
   kind?: string
   channelKey?: string
-  payload?: {
+  createdAt?: string
+  payload?: Record<string, unknown> & {
     renderImage?: unknown
     level?: unknown
     detail?: unknown
@@ -32,6 +34,11 @@ interface DailyPipelineLike {
     outputDir: string
     renderImage?: boolean
     onStep?: (step: string) => unknown
+    reportPeriod?: ReturnType<typeof resolveReportPeriod>
+    periodBackfilled?: boolean
+    deadlineMs?: number
+    startedAtMs?: number
+    signal?: AbortSignal
   }): Promise<Record<string, unknown>>
 }
 
@@ -81,11 +88,12 @@ function updateDailyWorkerStep(task: DailyWorkerTaskLike, step: string): void {
 }
 
 // 独立日报 worker 只生成结果文件，发送由 Koishi result-notifier 完成。
-async function runDailyWorkerTask(task: DailyWorkerTaskLike): Promise<WorkerTaskResult> {
+async function runDailyWorkerTask(task: DailyWorkerTaskLike, runtime: { deadlineMs?: number; startedAtMs?: number; signal?: AbortSignal } = {}): Promise<WorkerTaskResult> {
   const taskId = String(task?.id || '')
   const payload = task?.payload || {}
   const outputDir = getTaskResultDir(taskId)
   const renderImage = payload.renderImage !== false && payload.level !== 'text'
+  const reportPeriod = resolveReportPeriod(payload, String(task.createdAt || ''))
   const pipeline = loadDailyReportPipeline()
   writeWorkerEvent('daily_worker_pipeline_started', { taskId, channelKey: task?.channelKey || '', renderImage })
   const result = await pipeline.generateDailyReportResult({
@@ -94,6 +102,11 @@ async function runDailyWorkerTask(task: DailyWorkerTaskLike): Promise<WorkerTask
     detail: !!payload.detail,
     outputDir,
     renderImage,
+    reportPeriod,
+    periodBackfilled: reportPeriod.periodBackfilled,
+    deadlineMs: runtime.deadlineMs,
+    startedAtMs: runtime.startedAtMs,
+    signal: runtime.signal,
     onStep: step => updateDailyWorkerStep(task, step),
   })
   writeWorkerEvent('daily_worker_pipeline_finished', { taskId, mode: result.mode || '', reason: result.reason || '' })

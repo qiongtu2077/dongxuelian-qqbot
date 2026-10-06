@@ -1,3 +1,4 @@
+declare const createReportPeriod: typeof import("koishi-plugin-dongxuelian-ai/lib/daily-precompute/report-period").createReportPeriod;
 interface DailyReportPipelineOptions {
     taskId?: string;
     channelKey: unknown;
@@ -5,6 +6,12 @@ interface DailyReportPipelineOptions {
     outputDir: string;
     renderImage?: boolean;
     onStep?: (step: string) => unknown;
+    reportPeriod?: ReturnType<typeof createReportPeriod>;
+    periodBackfilled?: boolean;
+    deadlineMs?: number;
+    startedAtMs?: number;
+    signal?: AbortSignal;
+    now?: () => number;
 }
 interface DailyReportPipelineResult extends Record<string, unknown> {
     ok: boolean;
@@ -31,6 +38,9 @@ interface ReportDataLike {
     topMembers?: TopMemberLike[];
     messages?: unknown[];
     precomputedCoverageRate?: number;
+    sourceCompleteness?: 'complete' | 'incomplete' | 'legacy_unknown';
+    windowMessageCount?: number;
+    reportPeriod?: ReturnType<typeof createReportPeriod>;
 }
 interface AnalysisLike {
     topics?: Array<{
@@ -49,7 +59,13 @@ interface AnalysisLike {
     }>;
     qualityReview?: {
         title?: string;
+        subtitle?: string;
         summary?: string;
+        dimensions?: Array<{
+            name?: string;
+            percentage?: number;
+            comment?: string;
+        }>;
     } | null;
     meta?: {
         warnings?: unknown;

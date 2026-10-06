@@ -1,4 +1,8 @@
+declare const createReportPeriod: typeof import("koishi-plugin-dongxuelian-ai/lib/daily-precompute/report-period").createReportPeriod;
+type ReportPeriod = ReturnType<typeof createReportPeriod>;
 interface ReportMessage {
+    analysisId?: number;
+    messageId?: string;
     time?: string;
     ts?: number;
     user?: string;
@@ -14,6 +18,7 @@ interface TopMember {
 }
 interface ReportData {
     date: string;
+    reportPeriod: ReportPeriod;
     totalMessages: number;
     activeMembers: number;
     emojiCount: number;
@@ -25,23 +30,21 @@ interface ReportData {
     analysisMessages: ReportMessage[];
     sampledMessages: number;
     truncatedMessages: number;
-    precomputedContext?: string;
-    precomputedCoverageRate?: number;
+    windowMessageCount: number;
+    selectedMessageCount: number;
+    excludedByLimitCount: number;
+    sourceCompleteness: 'complete' | 'incomplete' | 'legacy_unknown';
 }
-/** 判断消息时间戳是否属于本次日报日期，且不晚于当前生成时刻。 */
-declare function isMessageInReportDay(msg: ReportMessage | null | undefined, today: string, now?: number): boolean;
-declare function messageHourShanghai(msg: ReportMessage | null | undefined): number;
-declare function collectReportData(channelKey: unknown): ReportData | null;
-declare function buildPrecomputedContext(finalInput: Record<string, unknown> | null): string;
-/** 统计 CQ、XML、可读 QQ 表情标记和 Unicode emoji 数量。 */
+declare function messageHourShanghai(message: ReportMessage | null | undefined): number;
+declare function isMessageInReportDay(message: ReportMessage | null | undefined, reportDate: string, cutoffMs?: number): boolean;
 declare function countEmojiInContent(content: unknown): number;
-declare function processMessages(messages: ReportMessage[], today: string, now?: number): ReportData | null;
+declare function collectReportData(channelKey: unknown, period?: ReportPeriod): ReportData | null;
+declare function processMessages(messages: ReportMessage[], reportDate: string, cutoffMs?: number): ReportData | null;
 declare const _default: {
     collectReportData: typeof collectReportData;
     processMessages: typeof processMessages;
     messageHourShanghai: typeof messageHourShanghai;
     isMessageInReportDay: typeof isMessageInReportDay;
     countEmojiInContent: typeof countEmojiInContent;
-    buildPrecomputedContext: typeof buildPrecomputedContext;
 };
 export = _default;

@@ -582,8 +582,10 @@ async function main() {
   const status = require('./packages/koishi-plugin-dongxuelian-ai/lib/daily-precompute/precompute-status')
   const files = require('./packages/koishi-plugin-dongxuelian-ai/lib/resource-common/files')
 
-  const date = '2026/06/09'
+  const date = '2026-06-09'
   const channelKey = 'group final/input test 中文'
+  require('assert').throws(() => precomputeIndex.appendPrecomputeIndex({ date: '2026/06/09', channelKey,
+    timestamp: Date.now(), text: '非法日期不作为原始自然日存储' }), /日报索引日期或群号无效/)
   precomputeIndex.appendPrecomputeIndex({
     date,
     channelKey,

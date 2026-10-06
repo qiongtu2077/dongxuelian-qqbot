@@ -38,6 +38,9 @@ function testPublicRuntimeContract() {
   assert.strictEqual(typeof management.loadManagementModule('resource.files').readRecentJsonlEvents, 'function')
   assert.strictEqual(typeof management.loadManagementModule('media.personaDiagnostics').scanPersonaDocuments, 'function')
   assert.strictEqual(typeof management.loadManagementModule('daily.summaryMerge').mergeDailyFinalInput, 'function')
+  assert.strictEqual(typeof management.loadManagementModule('daily.reportPeriod').resolveReportPeriod, 'function')
+  assert.strictEqual(typeof management.loadManagementModule('daily.reportRecords').readReportRecords, 'function')
+  assert.strictEqual(typeof management.loadManagementModule('daily.reportAnalysis').createReportAnalysisDiagnostics, 'function')
   assert.throws(() => management.loadManagementModule('core/private-file'), /unknown management module/)
 }
 

@@ -735,6 +735,19 @@ function handleGetResourceDiagnosticDetail(req: IncomingMessage, res: ServerResp
   }
 }
 
+// GET /resource/report-analysis：管理员按单日报读取白名单诊断，不接受文件路径。
+function handleGetReportAnalysis(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) {
+  if (!requireAdmin(req, res)) return
+  const taskId = url.searchParams.get('taskId') || ''
+  if (!/^[A-Za-z0-9_.-]{1,160}$/.test(taskId) || ['.', '..'].includes(taskId)) return json(res, { ok: false, message: '日报任务ID无效' }, 400)
+  try {
+    const detail = loadManagementModule('resource.taskStore').readDailyReportAnalysis(taskId)
+    return json(res, { ok: detail.state !== 'not_found', ...detail }, detail.state === 'not_found' ? 404 : 200)
+  } catch {
+    return json(res, { ok: false, state: 'invalid', message: '日报诊断文件损坏、超限或不可读取，请检查服务器任务记录' }, 422)
+  }
+}
+
 // GET /resource/events：返回最近资源事件。
 function handleGetResourceEvents(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) {
   try {
@@ -851,6 +864,7 @@ const routes: Record<string, RouteHandler> = {
   'GET /dashboard/api/resource/status': handleGetResourceStatus,
   'GET /dashboard/api/resource/memory-history': handleGetResourceMemoryHistory,
   'GET /dashboard/api/resource/tasks': handleGetResourceTasks,
+  'GET /dashboard/api/resource/report-analysis': handleGetReportAnalysis,
   'GET /dashboard/api/resource/diagnostics': handleGetResourceDiagnostics,
   'GET /dashboard/api/resource/diagnostics/detail': handleGetResourceDiagnosticDetail,
   'GET /dashboard/api/resource/events': handleGetResourceEvents,

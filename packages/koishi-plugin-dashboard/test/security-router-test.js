@@ -596,6 +596,82 @@ async function testBilibiliCookieUploadValidationAndAtomicWrite() {
   }
 }
 
+// 管理员单日报诊断只返回白名单，零值、可读用量与旧版本未知状态均真实保留。
+function testDailyReportAnalysisRoute() {
+  resetDataDir()
+  const store = require('../../koishi-plugin-dongxuelian-ai/lib/resource-workers/task-store')
+  const paths = require('../../koishi-plugin-dongxuelian-ai/lib/resource-workers/task-paths')
+  const analysis = require('../../koishi-plugin-dongxuelian-ai/lib/daily-precompute/report-analysis')
+  const period = require('../../koishi-plugin-dongxuelian-ai/lib/daily-precompute/report-period').createReportPeriod(Date.parse('2026-10-02T03:30:00+08:00'))
+  // GET路由在同步响应结束后可直接检查状态和JSON，无需伪造外部HTTP服务。
+  const request = (id, headers = adminHeaders()) => {
+    const pathname = '/dashboard/api/resource/report-analysis'
+    const url = new URL('http://127.0.0.1:5150' + pathname + '?taskId=' + encodeURIComponent(id))
+    const req = makeReq('GET', url.pathname + url.search, headers)
+    const res = makeRes()
+    assert.strictEqual(router.dispatch(req, res, pathname, url), true)
+    return res
+  }
+  const pending = store.submitResourceTask({ id: 'report-progress', kind: 'daily_report', channelKey: 'fixture', payload: period })
+  assert.strictEqual(request(pending.id, {}).statusCode, 401)
+  assert.strictEqual(request(pending.id, { authorization: 'Bearer ' + auth.createToken() }).statusCode, 403)
+  assert.strictEqual(request('../result').statusCode, 400)
+  assert.strictEqual(request('.').statusCode, 400)
+  assert.strictEqual(request('x'.repeat(161)).statusCode, 400)
+  assert.strictEqual(request('missing').statusCode, 404)
+  const other = store.submitResourceTask({ id: 'other-kind', kind: 'agent_task' })
+  assert.strictEqual(request(other.id).statusCode, 404)
+  assert.strictEqual(parseJsonResponse(request(pending.id)).state, 'not_started')
+  assert.strictEqual(parseJsonResponse(request(pending.id)).reportPeriod.cutoffMs, period.cutoffMs)
+  assert.strictEqual(parseJsonResponse(request(pending.id)).analysis, undefined)
+  const meta = analysis.createReportAnalysisDiagnostics({ windowMessageCount: 4500, selectedMessageCount: 4000, sourceCompleteness: 'complete', reportPeriod: period })
+  Object.assign(meta, { submittedMessageCount: 4000, summarizedMessageCount: 4000, topicInputMessageCount: 4000, omittedMessageCount: 0, unprocessedCount: 0,
+    coverageRate: 100, analysisState: 'complete', requestCount: 2, reportCallCount: 2, usageReadableRequests: 1,
+    tokenUsage: { promptTokens: 12, completionTokens: 3, totalTokens: 15 }, error: 'api_key=sk-test-secret F:\\private\\source.txt /root/private/source.json',
+    body: 'CHAT_BODY_SENTINEL', payload: { secret: 'TASK_PAYLOAD_SENTINEL' }, stageDurationsMs: { basic: 0, secret: 'DURATION_SENTINEL' } })
+  const resultDir = paths.getTaskResultDir(pending.id)
+  fs.mkdirSync(resultDir, { recursive: true })
+  fs.writeFileSync(path.join(resultDir, 'analysis-progress.json'), JSON.stringify({ analysisMeta: meta, messages: ['CHAT_BODY_SENTINEL'], api_key: 'OUTER_SECRET_SENTINEL' }))
+  const active = parseJsonResponse(request(pending.id))
+  assert.strictEqual(active.analysis.selectedMessageCount, 4000)
+  assert.strictEqual(active.analysis.excludedByLimitCount, 500)
+  assert.strictEqual(active.analysis.omittedMessageCount, 0)
+  assert.strictEqual(active.analysis.stageDurationsMs.basic, 0)
+  assert.strictEqual(active.analysis.coverageRate, 100)
+  assert.deepStrictEqual(active.analysis.tokenUsage, { promptTokens: 12, completionTokens: 3, totalTokens: 15 })
+  assert(!JSON.stringify(active).includes('SENTINEL'))
+  assert(!JSON.stringify(active).includes('sk-test-secret'))
+  assert(!JSON.stringify(active).includes('private'))
+  assert(active.analysis.error.includes('[内部路径]'))
+  const completed = store.completeTask(pending, { analysisMeta: meta, text: 'CHAT_BODY_SENTINEL', mode: 'text' })
+  const saved = JSON.parse(fs.readFileSync(path.join(resultDir, 'result.json')))
+  assert.deepStrictEqual(saved.analysisMeta.tokenUsage, { promptTokens: 12, completionTokens: 3, totalTokens: 15 })
+  const success = parseJsonResponse(request(completed.id))
+  assert.strictEqual(success.analysis.analysisState, 'complete')
+  assert(!JSON.stringify(success).includes('CHAT_BODY_SENTINEL'))
+  const failureTask = store.submitResourceTask({ id: 'report-timeout', kind: 'daily_report', channelKey: 'fixture', payload: period })
+  store.failTask(failureTask, new analysis.ReportAnalysisError('总时限耗尽', 'total_timeout', 'runtime', meta))
+  const failed = parseJsonResponse(request(failureTask.id))
+  assert.strictEqual(failed.taskStatus, 'failed')
+  assert.strictEqual(failed.analysis.analysisState, 'total_timeout')
+  assert.strictEqual(failed.analysis.failureKind, 'total_timeout')
+  const old = store.completeTask(store.submitResourceTask({ id: 'old-report', kind: 'daily_report' }), { text: 'old text' })
+  assert.strictEqual(parseJsonResponse(request(old.id)).state, 'legacy_unknown')
+  assert.strictEqual(parseJsonResponse(request(old.id)).analysis, undefined)
+  const empty = analysis.createReportAnalysisDiagnostics({ windowMessageCount: 0, selectedMessageCount: 0, sourceCompleteness: 'legacy_unknown' })
+  const emptyTask = store.completeTask(store.submitResourceTask({ id: 'empty-report', kind: 'daily_report' }), { analysisMeta: empty })
+  const noData = parseJsonResponse(request(emptyTask.id))
+  assert.strictEqual(noData.analysis.selectedMessageCount, 0)
+  assert.strictEqual(noData.analysis.coverageRate, null)
+  const invalidFile = path.join(paths.getTaskResultDir(emptyTask.id), 'result.json')
+  fs.writeFileSync(invalidFile, Buffer.alloc(1024 * 1024 + 1, 65))
+  assert.strictEqual(request(emptyTask.id).statusCode, 422)
+  fs.writeFileSync(invalidFile, '{broken}')
+  assert.strictEqual(request(emptyTask.id).statusCode, 422)
+  fs.writeFileSync(invalidFile, JSON.stringify({ analysisMeta: { ...empty, selectedMessageCount: -1 } }))
+  assert.strictEqual(request(emptyTask.id).statusCode, 422)
+}
+
 // Runs all tests sequentially so rate-limit state remains deterministic.
 async function run() {
   testRegexRouteObjectDispatch()
@@ -617,6 +693,7 @@ async function run() {
   testResourceTaskSummaryWhitelist()
   await testResourceCancelReportsSpecificFailure()
   await testResourceReadApisRequireAccessOnly()
+  testDailyReportAnalysisRoute()
   await testResourceModeRoundTripRequiresAdminAndUpdatesStatus()
   await testCustomProviderValidationRejectsUnsafeInput()
   await testKeysIncludeCustomProviders()

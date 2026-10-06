@@ -1,5 +1,6 @@
 type ResourceTask = import('./task-types').ResourceTask;
 type ResourceTaskNotify = import('./task-types').ResourceTaskNotify;
+type DailyReportDeliveryProgress = import('./task-types').DailyReportDeliveryProgress;
 type ResourceTaskStatus = import('./task-types').ResourceTaskStatus;
 type ResourceWorkerState = import('./task-types').ResourceWorkerState;
 interface SubmitTaskInput {
@@ -45,6 +46,8 @@ declare function submitResourceTask(input: SubmitTaskInput): ResourceTask;
 declare function parseResourceTask(value: unknown): ResourceTask | null;
 declare function listResourceTasks(options?: ListTasksOptions): ResourceTask[];
 declare function listResourceTasksForDiagnostics(): ResourceTask[];
+declare function listActiveDailyReportTasks(): ResourceTask[];
+declare function listTerminalTasksForNotification(matcher: (task: ResourceTask) => boolean, limit: number): ResourceTask[];
 declare function countResourceTasks(options?: CountTasksOptions): number;
 declare function countResourceTasksByKind(options: CountTasksByKindOptions, matcher?: (task: ResourceTask) => boolean): number;
 declare function findResourceTaskByKindAndChannel(kind: string, channelKey: string, statuses?: string[]): ResourceTask | null;
@@ -57,11 +60,13 @@ declare function markTaskRunning(task: ResourceTask, workerName: string, step?: 
 declare function failIsolatedClaimingTask(task: ResourceTask, error: unknown, result?: Record<string, unknown>): ResourceTask;
 declare function updateTaskStep(taskId: string, kind: string, step: string): ResourceTask | null;
 declare function writeTaskResult(taskId: string, result: Record<string, unknown>): string;
+declare function readDailyReportAnalysis(taskId: string): Record<string, unknown>;
 declare function completeTask(task: ResourceTask, result?: Record<string, unknown>): ResourceTask;
 declare function failTask(task: ResourceTask, error: unknown, result?: Record<string, unknown>): ResourceTask;
 declare function deferTask(task: ResourceTask, reason?: string): ResourceTask;
 declare function requeueTask(task: ResourceTask, reason?: string): ResourceTask;
 declare function updateTaskNotifyStatus(task: ResourceTask, status: string, error?: string): ResourceTask;
+declare function updateDailyReportDeliveryProgress(task: ResourceTask, progress: DailyReportDeliveryProgress): ResourceTask;
 declare function cancelTaskWithResult(taskId: string, actor?: string, reason?: string): {
     ok: true;
 } | {
@@ -104,6 +109,8 @@ declare const _default: {
     findResourceTaskByKindAndChannel: typeof findResourceTaskByKindAndChannel;
     listResourceTasks: typeof listResourceTasks;
     listResourceTasksForDiagnostics: typeof listResourceTasksForDiagnostics;
+    listActiveDailyReportTasks: typeof listActiveDailyReportTasks;
+    listTerminalTasksForNotification: typeof listTerminalTasksForNotification;
     countResourceTasks: typeof countResourceTasks;
     countResourceTasksByKind: typeof countResourceTasksByKind;
     getTaskQueueSummary: typeof getTaskQueueSummary;
@@ -113,11 +120,13 @@ declare const _default: {
     failIsolatedClaimingTask: typeof failIsolatedClaimingTask;
     updateTaskStep: typeof updateTaskStep;
     writeTaskResult: typeof writeTaskResult;
+    readDailyReportAnalysis: typeof readDailyReportAnalysis;
     completeTask: typeof completeTask;
     failTask: typeof failTask;
     deferTask: typeof deferTask;
     requeueTask: typeof requeueTask;
     updateTaskNotifyStatus: typeof updateTaskNotifyStatus;
+    updateDailyReportDeliveryProgress: typeof updateDailyReportDeliveryProgress;
     cancelTask: typeof cancelTask;
     cancelTaskWithResult: typeof cancelTaskWithResult;
     cancelResourceTasksByKind: typeof cancelResourceTasksByKind;

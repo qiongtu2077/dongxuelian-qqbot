@@ -107,6 +107,15 @@ function createSampleReportData() {
   }
 }
 
+// 渲染/门禁单元测试使用完整成功诊断；正式模型行为由独立入口测试覆盖。
+function createSuccessfulAnalysisMeta(messageCount = 3, windowMessageCount = 12) {
+  const { createReportAnalysisDiagnostics } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime').loadManagementModule('daily.reportAnalysis')
+  const meta = createReportAnalysisDiagnostics({ windowMessageCount, selectedMessageCount: messageCount, sourceCompleteness: 'complete' })
+  return { ...meta, submittedMessageCount: messageCount, summarizedMessageCount: messageCount, topicInputMessageCount: messageCount,
+    omittedMessageCount: 0, unprocessedCount: 0, coverageRate: 100, analysisState: 'complete',
+    stages: { compression: 'complete', basic: 'complete', full: 'complete' } }
+}
+
 function createResourceRuntimeMock(options = {}) {
   const state = {
     admissions: [],
@@ -183,14 +192,29 @@ function createAiRequestMock(routes) {
   const calls = []
   const request = async (messages, config, extraBody = {}) => {
     const systemPrompt = String(messages?.[0]?.content || '')
-    const kind = systemPrompt.includes('摘要助手')
+    const kind = systemPrompt.includes('consumedNodeIds')
+      ? 'merge'
+      : systemPrompt.includes('摘要助手')
       ? 'compress'
       : systemPrompt.includes('userTitles') || systemPrompt.includes('qualityReview')
         ? 'full'
         : 'basic'
     calls.push({ kind, messages, config, extraBody })
-    const response = typeof routes === 'function' ? routes({ kind, messages, config, extraBody, calls }) : routes[kind]
+    extraBody._onRequestAttempt?.()
+    let response = typeof routes === 'function' ? routes({ kind, messages, config, extraBody, calls }) : routes[kind]
+    // 摘要模拟消费实际片段，避免新的正式入口测试仍依赖纯文字摘要捷径。
+    if (response === undefined && kind === 'compress') {
+      const input = String(messages[1].content)
+      const fragments = [...input.matchAll(/\[M(\d+):P(\d+)\] \S+ 用户ID=([^:]+): ([^\n]*)/g)]
+      response = JSON.stringify({ consumedFragmentIds: fragments.map(match => `${match[1]}:${match[2]}`),
+        topics: fragments.slice(0, 5).map((match, index) => ({ title: `来源主题${index + 1}`, summary: match[4].slice(0, 100) || '媒体描述', participants: [match[3]], sourceIds: [Number(match[1])] })),
+        quoteRefs: [{ sourceId: Number(fragments[0][1]), reason: '真实原话来源' }] })
+    } else if (response === undefined && kind === 'merge') {
+      const nodes = JSON.parse(messages[1].content)
+      response = JSON.stringify({ consumedNodeIds: nodes.map(node => node.id), topics: nodes.flatMap(node => node.topics).slice(0, 5), quoteRefs: nodes.flatMap(node => node.quoteRefs).slice(0, 3) })
+    }
     if (response instanceof Error) throw response
+    extraBody._onRequestUsage?.({ readable: true, promptTokens: 3, completionTokens: 2, totalTokens: 5 })
     return response
   }
   return { calls, request }
@@ -493,7 +517,7 @@ async function testToolActiveRenderBlockRespectsServerMode() {
           goldenQuotes: [],
           userTitles: [],
           qualityReview: null,
-          meta: {},
+          meta: createSuccessfulAnalysisMeta(),
         }),
       },
     }
@@ -587,54 +611,41 @@ const fallbackBasic = aiAnalyzer.buildFallbackBasicAnalysis({
 check('basic fallback creates topics', Array.isArray(fallbackBasic.topics) && fallbackBasic.topics.length > 0)
 check('basic fallback creates golden quotes', Array.isArray(fallbackBasic.goldenQuotes) && fallbackBasic.goldenQuotes.length > 0)
 
-async function testAiFallbackRegression() {
-  section('AI fallback regression')
+// 必要分析重试仍失败就拒绝整份结果；单请求超时不是600秒总超时。
+async function testAiFailureRegression() {
+  section('AI failure regression')
   const sampleData = createSampleReportData()
-
-  const badJsonMock = createAiRequestMock({
-    compress: '压缩摘要',
-    basic: '{"topics":[{"id":1,"title":"缺半截"',
-    full: 'full ok',
-  })
+  const badJsonMock = createAiRequestMock({ basic: '{"topics":[{"title":"缺半截"', full: 'full ok' })
   await withMockedAiAnalyzer(badJsonMock.request, async analyzer => {
-    const result = await analyzer.analyzeWithAI(sampleData, false)
-    check('basic bad JSON still has topics', Array.isArray(result.topics) && result.topics.length > 0)
-    check('basic bad JSON still has golden quotes', Array.isArray(result.goldenQuotes) && result.goldenQuotes.length > 0)
-    check('basic bad JSON records fallback warning', Array.isArray(result.meta?.warnings) && result.meta.warnings.some(w => w.includes('基础分析')))
-    check('basic bad JSON records fallback stage', result.meta?.stages?.basic === 'fallback')
+    let error
+    try { await analyzer.analyzeWithAI(sampleData, false) } catch (caught) { error = caught }
+    check('basic bad JSON rejects whole analysis', error?.code === 'DAILY_REPORT_GENERATION_FAILED')
+    check('basic bad JSON retries exactly once', badJsonMock.calls.filter(call => call.kind === 'basic').length === 2)
+    check('basic failure keeps honest input coverage and failed result', error?.diagnostics?.topicInputMessageCount === 3 && error.diagnostics.analysisState === 'failed')
+    check('basic failure records necessary unit and attempts', error?.diagnostics?.failedBatches?.[0]?.id === 'topics' && error.diagnostics.failedBatches[0].attempts === 2)
     const compressCall = badJsonMock.calls.find(call => call.kind === 'compress')
     const basicCall = badJsonMock.calls.find(call => call.kind === 'basic')
-    check('basic bad JSON passes daily-report temperature', compressCall?.extraBody?.temperature === 0.2 && basicCall?.extraBody?.temperature === 0.2)
-    check('basic bad JSON passes extended timeouts', compressCall?.extraBody?._timeoutMs === 45000 && basicCall?.extraBody?._timeoutMs === 60000)
+    check('analysis passes daily-report temperature', compressCall?.extraBody?.temperature === 0.2 && basicCall?.extraBody?.temperature === 0.2)
+    check('analysis passes bounded single request timeouts', compressCall?.extraBody?._timeoutMs === 45000 && basicCall?.extraBody?._timeoutMs === 60000)
   })
-
-  const emptyMock = createAiRequestMock({
-    compress: '压缩摘要',
-    basic: '',
-    full: '',
-  })
+  const emptyMock = createAiRequestMock({ basic: '', full: '' })
   await withMockedAiAnalyzer(emptyMock.request, async analyzer => {
-    const result = await analyzer.analyzeWithAI(sampleData, true)
-    check('full empty response still has topics', Array.isArray(result.topics) && result.topics.length > 0)
-    check('full empty response still has golden quotes', Array.isArray(result.goldenQuotes) && result.goldenQuotes.length > 0)
-    check('full empty response still has user titles', Array.isArray(result.userTitles) && result.userTitles.length > 0)
-    check('full empty response still has quality review', !!result.qualityReview && Array.isArray(result.qualityReview.dimensions) && result.qualityReview.dimensions.length > 0)
-    check('full empty response records fallback stages', result.meta?.stages?.basic === 'fallback' && result.meta?.stages?.full === 'fallback')
+    let error
+    try { await analyzer.analyzeWithAI(sampleData, true) } catch (caught) { error = caught }
+    check('full empty response rejects whole analysis', error?.code === 'DAILY_REPORT_GENERATION_FAILED')
+    check('full empty response retries both necessary units once', emptyMock.calls.filter(call => call.kind === 'basic').length === 2 && emptyMock.calls.filter(call => call.kind === 'full').length === 2)
+    check('full empty response preserves both failed units', error?.diagnostics?.failedBatches?.length === 2)
+    check('full empty response cannot claim complete result', error?.diagnostics?.analysisState === 'failed' && error.diagnostics.stages.basic === 'failed' && error.diagnostics.stages.full === 'failed')
   })
-
-  const timeoutMock = createAiRequestMock({
-    compress: '压缩摘要',
-    basic: new Error('AbortError: request timed out'),
-    full: new Error('AbortError: request timed out'),
-  })
+  const timeoutMock = createAiRequestMock({ basic: new Error('AbortError: request timed out'), full: new Error('AbortError: request timed out') })
   await withMockedAiAnalyzer(timeoutMock.request, async analyzer => {
-    const result = await analyzer.analyzeWithAI(sampleData, true)
-    check('timeout response still has user titles', Array.isArray(result.userTitles) && result.userTitles.length > 0)
-    check('timeout response still has quality review', !!result.qualityReview && Array.isArray(result.qualityReview.dimensions) && result.qualityReview.dimensions.length > 0)
-    check('timeout response records warnings', Array.isArray(result.meta?.warnings) && result.meta.warnings.some(w => w.includes('请求失败')))
+    let error
+    try { await analyzer.analyzeWithAI(sampleData, true) } catch (caught) { error = caught }
+    check('single request timeout uses ordinary failure kind', error?.code === 'DAILY_REPORT_GENERATION_FAILED' && error.diagnostics.failureKind === 'generation_failed')
+    check('single request timeout does not fabricate portrait or quality success', error?.diagnostics?.analysisState === 'failed')
+    check('single request timeout records concrete retry reason', error?.diagnostics?.warnings?.some(warning => warning.includes('request timed out')))
   })
 }
-
 async function testRequestChatCompletionsPayload() {
   section('api request payload')
   const originalFetch = global.fetch
@@ -644,8 +655,11 @@ async function testRequestChatCompletionsPayload() {
   let clearedToken = null
   let fetchUrl = ''
   let fetchOptions = null
+  let fetchCalls = 0
   let signalAttached = 0
   let signalRemoved = 0
+  let attempts = 0
+  const usages = []
   const signalListeners = new Set()
   const signal = {
     aborted: false,
@@ -672,6 +686,7 @@ async function testRequestChatCompletionsPayload() {
     clearedToken = token
   }
   global.fetch = async (url, options) => {
+    fetchCalls += 1
     fetchUrl = url
     fetchOptions = options
     return {
@@ -687,7 +702,8 @@ async function testRequestChatCompletionsPayload() {
     const response = await requestChatCompletions(
       [{ role: 'user', content: 'ping' }],
       { provider: 'opencode', baseURL: 'https://example.com', apiKey: 'test-key', model: 'test-model' },
-      { max_tokens: 12, temperature: 5, _timeoutMs: 999999, signal },
+      { max_tokens: 12, temperature: 5, _timeoutMs: 999999, signal,
+        _onRequestAttempt: () => { attempts += 1 }, _onRequestUsage: usage => usages.push(usage) },
     )
     const body = JSON.parse(fetchOptions.body)
     const requestTimer = timers.find(timer => timer.ms === 300000)
@@ -698,6 +714,23 @@ async function testRequestChatCompletionsPayload() {
     check('requestChatCompletions clears timeout', clearedToken === requestTimer?.token)
     check('requestChatCompletions attaches and removes abort listener', signalAttached === 1 && signalRemoved === 1)
     check('requestChatCompletions returns text payload', response.type === 'text' && response.content === 'ok')
+    check('requestChatCompletions reports actual attempt and readable zero usage', attempts === 1 && usages.length === 1 && usages[0].readable && usages[0].totalTokens === 0)
+    check('requestChatCompletions excludes observer callbacks from upstream body', !('_onRequestAttempt' in body) && !('_onRequestUsage' in body) && !('signal' in body))
+    const observerError = new Error('usage observer failed')
+    let reportedError
+    try {
+      await requestChatCompletions([{ role: 'user', content: 'ping' }],
+        { provider: 'opencode', baseURL: 'https://example.com', apiKey: 'test-key', model: 'test-model' },
+        { _onRequestUsage: () => { throw observerError } })
+    } catch (error) { reportedError = error }
+    check('requestChatCompletions propagates observer failure without provider fallback', reportedError === observerError && fetchCalls === 2)
+    let submitObserverError
+    try {
+      await requestChatCompletions([{ role: 'user', content: 'ping' }],
+        { provider: 'opencode', baseURL: 'https://example.com', apiKey: 'test-key', model: 'test-model' },
+        { _onRequestAttempt: () => { throw observerError } })
+    } catch (error) { submitObserverError = error }
+    check('requestChatCompletions does not send when pre-submit observer fails', submitObserverError === observerError && fetchCalls === 2)
   } finally {
     global.fetch = originalFetch
     global.setTimeout = originalSetTimeout
@@ -705,34 +738,34 @@ async function testRequestChatCompletionsPayload() {
   }
 }
 
+// 公共API对象响应进入完整链路，金句从实际正文取回，用量来自实际回调。
 async function testAIAnalyzerObjectResponse() {
   section('AI object response regression')
+  const sampleData = createSampleReportData()
+  sampleData.messages = Array.from({ length: 5 }, (_, index) => ({ analysisId: index + 1, ts: 1791000000000 + index * 1000,
+    time: '21:00', user: index % 2 ? 'Bob' : 'Alice', userId: index % 2 ? '10002' : '10001', content: `独立活动主题${index + 1}的讨论和结论` }))
+  sampleData.totalMessages = 5
+  sampleData.sourceCompleteness = 'complete'
   const payload = JSON.stringify({
-    topics: [{ id: 1, title: '测试话题', summary: '测试摘要', participants: ['Alice'] }],
-    goldenQuotes: [{ sender: 'Alice', userId: '10001', content: '测试金句', reason: '测试点评' }],
-    userTitles: [{ name: 'Alice', userId: '10001', title: '测试称号', mbti: 'ENFP', reason: '测试画像' }],
-    qualityReview: {
-      title: '测试锐评',
-      subtitle: '测试副标题',
-      dimensions: [{ name: '测试维度', percentage: 100, comment: '测试点评', color: '#39C5BB' }],
-      summary: '测试总结',
-    },
+    topics: sampleData.messages.map((message, index) => ({ title: `活动主题${index + 1}`, summary: message.content, participants: [message.userId], sourceIds: [index + 1] })),
+    goldenQuotes: [{ sourceId: 1, reason: '测试点评' }],
+    userTitles: [{ userId: '10001', title: '活动推进者', mbti: 'ENFP', reason: '参与前后时段活动讨论' },
+      { userId: '10002', title: '建议提出者', mbti: '', reason: '补充活动细节' }],
+    qualityReview: { title: '活动讨论锐评', subtitle: '多个独立活动主题',
+      dimensions: ['信息', '互动', '组织', '情绪'].map(name => ({ name, percentage: 25, comment: '有实际讨论依据' })),
+      summary: '活动细节和讨论结论完整' },
   })
-  const mock = createAiRequestMock({
-    compress: { type: 'text', content: '压缩摘要' },
-    basic: { type: 'text', content: payload },
-    full: { type: 'text', content: payload },
-  })
-
+  const mock = createAiRequestMock({ basic: { type: 'text', content: payload }, full: { type: 'text', content: payload } })
   await withMockedAiAnalyzer(mock.request, async analyzer => {
-    const result = await analyzer.analyzeWithAI(createSampleReportData(), true)
-    check('analyzeWithAI parses object response topics', result.topics.length === 1)
-    check('analyzeWithAI parses object response quotes', result.goldenQuotes.length === 1)
-    check('analyzeWithAI parses object response titles', result.userTitles.length === 1)
-    check('analyzeWithAI parses object response quality review', !!result.qualityReview && result.qualityReview.dimensions.length === 1)
+    const result = await analyzer.analyzeWithAI(sampleData, true)
+    check('analyzeWithAI parses object response topics', result.topics.length === 5)
+    check('analyzeWithAI restores original quote and actual speaker', result.goldenQuotes.length === 1 && result.goldenQuotes[0].content === sampleData.messages[0].content && result.goldenQuotes[0].userId === '10001')
+    check('analyzeWithAI parses all necessary member portraits', result.userTitles.length === 2)
+    check('analyzeWithAI parses necessary quality dimensions', result.qualityReview?.dimensions.length === 4)
+    check('analyzeWithAI records actual readable usage', result.tokenUsage.totalTokens === 15 && result.meta.requestCount === 3 && result.meta.usageReadableRequests === 3)
+    check('analyzeWithAI finishes with complete input coverage', result.meta.summarizedMessageCount === 5 && result.meta.topicInputMessageCount === 5 && result.meta.coverageRate === 100 && result.meta.analysisState === 'complete')
   })
 }
-
 async function testConcurrentReportGuard() {
   section('middleware concurrency guard')
   const reportDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-report-'))
@@ -1405,6 +1438,7 @@ async function testRenderFailureSendsTextFallback() {
             goldenQuotes: [{ sender: 'Alice', content: 'Quote Alpha', reason: 'Reason Alpha' }],
             userTitles: [{ name: 'Alice', title: 'Title Alpha', reason: 'Portrait Alpha' }],
             qualityReview: { title: 'Review Alpha', summary: 'Quality Alpha' },
+            meta: createSuccessfulAnalysisMeta(3, 3),
           }
         },
       },
@@ -1496,6 +1530,7 @@ async function testRenderBlockedByActiveToolLease() {
             goldenQuotes: [],
             userTitles: [],
             qualityReview: null,
+            meta: createSuccessfulAnalysisMeta(),
           }
         },
       },
@@ -1584,6 +1619,7 @@ check('createGoldenQuote returns correct shape', quote.content === '内容' && q
 
 // ===== 4. data-collector 数据校验 =====
 section('data-collector 数据校验')
+require('./report-input-test').runReportInputTests(check)
 const dc = require(DATA_COLLECTOR_PATH)
 // 测试空目录
 const emptyResult = dc.collectReportData('nonexistent-group-' + Date.now())
@@ -1621,11 +1657,11 @@ check('processMessages returns tail sample', cappedData && cappedData.messages[0
 const reportNow = Date.parse('2099-01-01T12:30:00+08:00')
 const mixedDayData = cappedCollector.processMessages([
   { time: '23:50:00', ts: Date.parse('2098-12-31T23:50:00+08:00'), user: '旧日', userId: 'old', content: '昨天消息 [CQ:face,id=14]' },
-  { time: '00:05:00', ts: Date.parse('2099-01-01T00:05:00+08:00'), user: '今日A', userId: 'a', content: '今天消息 [CQ:face,id=14] 【QQ表情：微笑】' },
+  { time: '04:05:00', ts: Date.parse('2099-01-01T04:05:00+08:00'), user: '今日A', userId: 'a', content: '今天消息 [CQ:face,id=14] 【QQ表情：微笑】' },
   { time: '12:00:00', ts: Date.parse('2099-01-01T12:00:00+08:00'), user: '今日B', userId: 'b', content: '中午 <face id="13"/> 😊' },
   { time: '16:00:00', ts: Date.parse('2099-01-01T16:00:00+08:00'), user: '未来', userId: 'future', content: '未来消息 [CQ:mface,id=1]' },
 ], '2099-01-01', reportNow)
-check('processMessages filters old and future cache messages', mixedDayData && mixedDayData.totalMessages === 2 && mixedDayData.hourlyActivity[0] === 1 && mixedDayData.hourlyActivity[12] === 1 && mixedDayData.hourlyActivity[16] === 0, JSON.stringify(mixedDayData && mixedDayData.hourlyActivity))
+check('processMessages filters old and future business day messages', mixedDayData && mixedDayData.totalMessages === 2 && mixedDayData.hourlyActivity[4] === 1 && mixedDayData.hourlyActivity[12] === 1 && mixedDayData.hourlyActivity[16] === 0, JSON.stringify(mixedDayData && mixedDayData.hourlyActivity))
 check('processMessages counts CQ XML readable and unicode emoji', mixedDayData && mixedDayData.emojiCount === 4, JSON.stringify(mixedDayData && mixedDayData.emojiCount))
 check('countEmojiInContent supports mixed emoji formats', cappedCollector.countEmojiInContent('[CQ:face,id=14] <face id="13"/> 【QQ表情：微笑】 😊') === 4)
 if (oldMaxAnalysisMessages === undefined) delete process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES
@@ -1696,7 +1732,7 @@ testMiddleware('你好', '123').then(nonReport => {
   return testRendererTimeoutCleanup()
 }).then(() => testRendererSlotReleasedWhenLeaseAcquireFails()
 ).then(() => testToolActiveRenderBlockRespectsServerMode()
-).then(() => testAiFallbackRegression()
+).then(() => testAiFailureRegression()
 ).then(() => testRequestChatCompletionsPayload()
 ).then(() => testAIAnalyzerObjectResponse()
 ).then(() => testConcurrentReportGuard()
@@ -1725,6 +1761,7 @@ testMiddleware('你好', '123').then(nonReport => {
   let screenshotArgs = null
   const viewportCalls = []
   let evaluateCalls = 0
+  let measuredHeight = 1800
 
   fs.existsSync = () => true
   global.setTimeout = (fn, ms) => {
@@ -1753,7 +1790,7 @@ testMiddleware('你好', '123').then(nonReport => {
               },
               async evaluate() {
                 evaluateCalls += 1
-                return evaluateCalls === 1 ? true : 9200
+                return evaluateCalls === 1 ? true : measuredHeight
               },
               async waitForNetworkIdle(args) {
                 networkIdleArgs = args
@@ -1780,10 +1817,17 @@ testMiddleware('你好', '123').then(nonReport => {
       check('renderHtmlToImage returns screenshot buffer', Buffer.isBuffer(buffer) && buffer.toString() === 'render-ok')
       check('renderHtmlToImage keeps setContent timeout', setContentArgs && setContentArgs.args && setContentArgs.args.waitUntil === 'domcontentloaded' && setContentArgs.args.timeout === 20000)
       check('renderHtmlToImage waits for assets', networkIdleArgs && networkIdleArgs.timeout === 8000 && networkIdleArgs.idleTime === 1000)
-      check('renderHtmlToImage adjusts viewport height for long content', viewportCalls.length >= 2 && viewportCalls[0].height === 800 && viewportCalls[1].height === 6000)
-      check('renderHtmlToImage clips screenshot to viewport', screenshotArgs && screenshotArgs.clip && screenshotArgs.clip.height === 6000)
-      check('renderHtmlToImage clears timeout on success', timeoutMs === 8 * 60 * 1000 && clearedToken === timeoutToken)
+      check('renderHtmlToImage adjusts viewport height for long content', viewportCalls.length >= 2 && viewportCalls[0].height === 800 && viewportCalls[1].height === 1840)
+      check('renderHtmlToImage captures full measured height', screenshotArgs && screenshotArgs.clip && screenshotArgs.clip.height === 1840)
+      check('renderHtmlToImage clears timeout on success', timeoutMs > 0 && timeoutMs <= 8 * 60 * 1000 && clearedToken === timeoutToken)
       check('renderHtmlToImage closes browser on success', browserClosed === 1)
+      measuredHeight = 9200
+      evaluateCalls = 0
+      screenshotArgs = null
+      let heightError
+      try { await renderer.renderHtmlToImage('<html><body>oversized full report</body></html>') } catch (error) { heightError = error }
+      check('renderHtmlToImage rejects oversized content without cropped screenshot', heightError?.message.includes('全文高度超出') && screenshotArgs === null)
+      check('renderHtmlToImage closes browser and releases slot after oversized content', browserClosed === 2)
     } finally {
       fs.existsSync = originalExistsSync
       global.setTimeout = originalSetTimeout
@@ -1794,7 +1838,11 @@ testMiddleware('你好', '123').then(nonReport => {
       require(HTML_RENDERER_PATH)
     }
   })()
-}).then(() => {
+}).then(async () => {
+  await require('./complete-input-test').runCompleteInputTests(check)
+  await require('./analysis-entry-test').runAnalysisEntryTests(check, withMockedAiAnalyzer)
+  await require('./pipeline-completeness-test').runPipelineCompletenessTests(check, withMockedAiAnalyzer)
+  require('./render-runtime-test').runRenderRuntimeTests(check)
 
   // ===== 总结 =====
   console.log(`\n=== daily-report 测试总结 ===`)

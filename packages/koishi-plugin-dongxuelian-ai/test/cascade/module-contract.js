@@ -178,6 +178,9 @@ async function runModuleContract(context) {
     imageAnalyzer: path.join(LIB, 'media', 'image', 'image-analyzer'),
     imageAnalysisSanitizer: path.join(LIB, 'media', 'image', 'image-analysis-sanitizer'),
     publicManagementRuntime: path.join(LIB, 'public', 'management-runtime'),
+    reportPeriod: path.join(LIB, 'daily-precompute', 'report-period'),
+    reportRecords: path.join(LIB, 'daily-precompute', 'report-records'),
+    reportAnalysis: path.join(LIB, 'daily-precompute', 'report-analysis'),
     help: path.join(HELP, 'index'),
   }
   for (const [name, modulePath] of Object.entries(modPaths)) {
@@ -509,6 +512,7 @@ async function runModuleContract(context) {
     ],
     resultNotifier: [
       'buildAgentTaskTextMessage', 'hasHardSearchFailureSignal', 'isChatHeavyToolTask', 'hasAgentSendableText', 'createAgentTaskSender',
+      'splitDailyReportText', 'createDailyReportSender', 'notifyCompletedTasks',
     ],
     jailbreakRuleset: [
       'combinePatterns',
@@ -743,6 +747,9 @@ async function runModuleContract(context) {
     publicManagementRuntime: [
       'loadManagementModule', 'listManagementModules',
     ],
+    reportPeriod: ['createReportPeriod', 'resolveReportPeriod', 'isTimestampInReportPeriod', 'getReportIndexDates', 'getReportRecordExpiryMs'],
+    reportRecords: ['getReportIndexFile', 'appendReportRecord', 'scanReportIndex', 'readReportRecords'],
+    reportAnalysis: ['createReportAnalysisDiagnostics', 'ReportAnalysisError', 'ReportRuntimeTimeoutError', 'isReportTotalTimeoutError', 'sanitizeReportDiagnosticText', 'sanitizeReportAnalysisDiagnostics'],
   }
   for (const [moduleName, names] of Object.entries(expectedExports)) {
     const target = modules[moduleName]
@@ -751,6 +758,8 @@ async function runModuleContract(context) {
     }
   }
   check('onebotEndpoint.DEFAULT_ONEBOT_WS_URL exported', typeof modules.onebotEndpoint.DEFAULT_ONEBOT_WS_URL === 'string' && modules.onebotEndpoint.DEFAULT_ONEBOT_WS_URL.startsWith('ws://127.0.0.1:'))
+  check('reportRecords.REPORT_INDEX_ROOT exported', typeof modules.reportRecords.REPORT_INDEX_ROOT === 'string' && modules.reportRecords.REPORT_INDEX_ROOT.endsWith('index'))
+  check('reportAnalysis fixed failure replies exported', typeof modules.reportAnalysis.REPORT_FAILURE_TEXT === 'string' && typeof modules.reportAnalysis.REPORT_TIMEOUT_TEXT === 'string')
   check('backgroundDirective exports sleep helper', typeof modules.backgroundDirective.getBackgroundDirectiveSleepMs === 'function')
   check('resourceActivityLease.ACTIVITY_ROOT exported', typeof modules.resourceActivityLease.ACTIVITY_ROOT === 'string' && modules.resourceActivityLease.ACTIVITY_ROOT.includes('resource-activity'))
   check('randomState.channelMissCount exported as Map', modules.randomState.channelMissCount instanceof Map)

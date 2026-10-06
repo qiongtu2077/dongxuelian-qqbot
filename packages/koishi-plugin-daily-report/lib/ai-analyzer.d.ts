@@ -1,4 +1,16 @@
+declare const createReportAnalysisDiagnostics: typeof import("koishi-plugin-dongxuelian-ai/lib/daily-precompute/report-analysis").createReportAnalysisDiagnostics;
+type AnalysisRuntime = import('./complete-input').AnalysisRuntime;
+interface AnalysisOptions {
+    deadlineMs?: number;
+    workDeadlineMs?: number;
+    stageSoftDeadlinesMs?: AnalysisRuntime['stageSoftDeadlinesMs'];
+    signal?: AbortSignal;
+    now?: () => number;
+    onProgress?: AnalysisRuntime['onProgress'];
+}
 interface ReportMessage {
+    analysisId?: number;
+    ts?: number;
     time?: string;
     user?: string;
     sender?: string;
@@ -21,6 +33,10 @@ interface ReportData {
     messages?: ReportMessage[];
     precomputedContext?: string;
     precomputedCoverageRate?: number;
+    windowMessageCount?: number;
+    sourceCompleteness?: AnalysisMeta['sourceCompleteness'];
+    reportPeriod?: AnalysisMeta['reportPeriod'];
+    periodBackfilled?: boolean;
 }
 interface TokenUsage {
     promptTokens: number;
@@ -66,14 +82,7 @@ interface AnalysisResult {
     tokenUsage: TokenUsage;
     meta?: AnalysisMeta;
 }
-interface AnalysisMeta {
-    warnings: string[];
-    stages: {
-        compression: string;
-        basic: string;
-        full: string;
-    };
-}
+type AnalysisMeta = ReturnType<typeof createReportAnalysisDiagnostics>;
 interface BasicAnalysis {
     topics: Topic[];
     goldenQuotes: GoldenQuote[];
@@ -84,7 +93,7 @@ interface FullAnalysis extends BasicAnalysis {
 }
 declare function buildFallbackBasicAnalysis(data: ReportData | null | undefined): BasicAnalysis;
 declare function buildFallbackFullAnalysis(data: ReportData | null | undefined): FullAnalysis;
-declare function analyzeWithAI(data: ReportData, full?: boolean): Promise<AnalysisResult>;
+declare function analyzeWithAI(data: ReportData, full?: boolean, options?: AnalysisOptions): Promise<AnalysisResult>;
 declare const _default: {
     analyzeWithAI: typeof analyzeWithAI;
     buildFallbackFullAnalysis: typeof buildFallbackFullAnalysis;

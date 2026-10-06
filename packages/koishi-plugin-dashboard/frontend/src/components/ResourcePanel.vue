@@ -324,6 +324,7 @@
                         <pre>{{ task.error || task.requeueReason }}</pre>
                       </details>
                     </div>
+                    <ReportAnalysisDetail v-if="task.kind === 'daily_report'" :payload="reportAnalysis" :loading="loadingReportAnalysis" :error="reportAnalysisError" />
                   </div>
                 </td>
               </tr>
@@ -390,6 +391,7 @@ import {
   fetchResourceMemoryHistory,
   fetchResourceStatus,
   fetchResourceTasks,
+  fetchReportAnalysis,
   isAdminRequired,
   setResourceMode,
   setResourceMaintenance,
@@ -397,10 +399,11 @@ import {
 import { asArray, asRecord, errorMessage, type JsonRecord, type MessageState, type ShowAdminDialog } from '../types'
 import { activityLeaseDisplay, botModeDisplay, canCancel, coverageKey, dateTimeDisplay, display, eventDetail, eventKey, formatInterval, mbLabel, mediaQueueDisplay, mediaSummaryDisplay, memoryUsedValue, numberValue, percentLabel, resourceEventDisplay, resourceEventSourceDisplay, resourceStateDisplay, round, serverModeDisplay, sizeMbLabel, taskCategoryDisplay, taskContentDisplay, taskErrorDisplay, taskKindDisplay, taskSourceDisplay, taskStatusDisplay, taskStepDisplay, taskTimeDisplay, workerDisplay } from '../services/resource-model'
 import ResourceDiagnosticsPanel from './ResourceDiagnosticsPanel.vue'
+import ReportAnalysisDetail from './ReportAnalysisDetail.vue'
 
 export default {
   name: 'ResourcePanel',
-  components: { ResourceDiagnosticsPanel },
+  components: { ResourceDiagnosticsPanel, ReportAnalysisDetail },
   setup() {
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const status = ref<JsonRecord>({})
@@ -416,6 +419,10 @@ export default {
     const taskReadError = ref('')
     const expandedTaskId = ref('')
     const taskCopyMessage = ref('')
+    const reportAnalysis = ref<JsonRecord | null>(null)
+    const reportAnalysisError = ref('')
+    const loadingReportAnalysis = ref(false)
+    let reportAnalysisRequest = 0
     const cancellingTaskId = ref('')
     const cancelFailure = ref<{ taskId: string; taskName: string; reason: string; rawError: string } | null>(null)
     const cancelFailureClose = ref<HTMLButtonElement | null>(null)
@@ -607,6 +614,8 @@ export default {
         if (!res.ok || !res.data) throw new Error(errorMessage(res.data, '任务记录读取失败'))
         tasks.value = asArray<JsonRecord>(asRecord(res.data).tasks)
         taskReadError.value = ''
+        const expanded = tasks.value.find(task => task.id === expandedTaskId.value)
+        if (expanded?.kind === 'daily_report') await loadReportAnalysis(String(expanded.id))
       } catch (error) {
         taskReadError.value = errorMessage(error, '任务记录读取失败')
       } finally {
@@ -629,6 +638,32 @@ export default {
       const taskId = String(task.id || '')
       expandedTaskId.value = expandedTaskId.value === taskId ? '' : taskId
       taskCopyMessage.value = ''
+      reportAnalysisRequest++
+      reportAnalysis.value = null
+      reportAnalysisError.value = ''
+      loadingReportAnalysis.value = false
+      if (expandedTaskId.value && task.kind === 'daily_report') void loadReportAnalysis(taskId, true)
+    }
+
+    // 按需读取当前日报，异步旧响应不能覆盖另一个任务；自动刷新不重复弹出验证框。
+    async function loadReportAnalysis(taskId: string, promptAdmin = false): Promise<void> {
+      if (expandedTaskId.value !== taskId) return
+      const request = ++reportAnalysisRequest
+      loadingReportAnalysis.value = true
+      try {
+        const res = await fetchReportAnalysis(taskId)
+        if (request !== reportAnalysisRequest || expandedTaskId.value !== taskId) return
+        if (isAdminRequired(res)) {
+          reportAnalysisError.value = '查看日报分析详情需要管理员验证'
+          if (promptAdmin && showAdminDialog) showAdminDialog('查看日报分析详情需要管理员密码', () => loadReportAnalysis(taskId))
+          return
+        }
+        if (!res.ok || !res.data) throw new Error(errorMessage(res.data, '日报分析详情读取失败'))
+        reportAnalysis.value = asRecord(res.data)
+        reportAnalysisError.value = ''
+      } catch (error) {
+        if (request === reportAnalysisRequest) reportAnalysisError.value = errorMessage(error, '日报分析详情读取失败')
+      } finally { if (request === reportAnalysisRequest) loadingReportAnalysis.value = false }
     }
 
     // 复制完整任务 ID，浏览器未提供剪贴板时提示用户手动选中复制。
@@ -826,6 +861,9 @@ export default {
       taskReadError,
       expandedTaskId,
       taskCopyMessage,
+      reportAnalysis,
+      reportAnalysisError,
+      loadingReportAnalysis,
       cancellingTaskId,
       cancelFailure,
       cancelFailureClose,

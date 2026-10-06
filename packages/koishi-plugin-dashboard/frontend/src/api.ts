@@ -243,6 +243,8 @@ export async function setResourceMode(serverMode: string) { return post('/resour
 export async function fetchResourceMemoryHistory(range = '5m') { return get('/resource/memory-history?range=' + encodeURIComponent(range), false, 20000) }
 // 按选中的状态查询任务，避免历史记录占满进行中或失败列表。
 export async function fetchResourceTasks(status = '') { return get('/resource/tasks' + (status ? '?status=' + encodeURIComponent(status) : '')) }
+// 单日报诊断仅在展开详情时读取，使用既有管理员验证头。
+export async function fetchReportAnalysis(taskId: string) { return get('/resource/report-analysis?taskId=' + encodeURIComponent(taskId), true) }
 // Reads one stable page of resource diagnostic summaries.
 export async function fetchResourceDiagnostics(options: { group?: string; reason?: string; cursor?: string } = {}) {
   const params = new URLSearchParams()

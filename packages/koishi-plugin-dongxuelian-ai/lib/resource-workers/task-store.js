@@ -8,6 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const { appendJsonlEvent, ensureDir, listJsonFiles, nowIso, readJsonFile, removePath, renameFileAtomic, sanitizeId, writeJsonAtomic, } = require('../resource-common/files');
 const { redactSensitiveData, redactSensitiveText } = require('../core/redactor');
+const { ReportAnalysisError, createReportAnalysisDiagnostics, isReportTotalTimeoutError, sanitizeReportAnalysisDiagnostics, sanitizeReportDiagnosticText } = require('../daily-precompute/report-analysis');
+const { resolveReportPeriod } = require('../daily-precompute/report-period');
 const { WORKERS_ROOT, TASKS_ROOT, RESULTS_ROOT, WORKER_STATE_DIR, SUPERVISOR_DIR, getTaskFile, getTaskResultDir, getTaskStatusDir, getPendingKindDir, getWorkerStateFile, getWorkerEventFile, } = require('./task-paths');
 const RESOURCE_TASK_CANONICAL_STATUS_ORDER = [
     'cancelled',
@@ -178,6 +180,55 @@ function listResourceTasksForDiagnostics() {
         tasks.push(...scanTasksByStatus(status, 20000));
     }
     tasks.sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
+    return tasks;
+}
+// 完整枚举活动日报用于删除保护；读取失败、非法DTO和链接不能被当成无任务。
+function listActiveDailyReportTasks() {
+    ensureTaskDirs();
+    const tasks = [];
+    for (const status of DEFAULT_ACTIVE_TASK_STATUSES) {
+        const walk = (dir) => {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (entry.isSymbolicLink())
+                    throw new Error('日报维护任务目录存在链接，已停止清理');
+                const file = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    if (status !== 'pending')
+                        throw new Error('日报维护任务目录结构异常，已停止清理');
+                    walk(file);
+                    continue;
+                }
+                if (!entry.isFile() || !entry.name.endsWith('.json'))
+                    continue;
+                const task = readTaskFile(file);
+                if (!task || task.status !== status || entry.name !== `${sanitizeId(task.id)}.json`
+                    || path.resolve(file) !== path.resolve(getTaskFile(status, task.kind, task.id)))
+                    throw new Error('日报维护活动任务记录损坏或位置不一致，已停止清理');
+                if (task.kind === 'daily_report')
+                    tasks.push(task);
+            }
+        };
+        walk(getTaskStatusDir(status));
+    }
+    return tasks;
+}
+// 先过滤已通知记录再应用发送批次上限，历史已完成记录不阻塞新失败日报。
+function listTerminalTasksForNotification(matcher, limit) {
+    ensureTaskDirs();
+    const tasks = [];
+    for (const status of ['failed', 'done']) {
+        const dir = getTaskStatusDir(status);
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (!entry.isFile() || !entry.name.endsWith('.json'))
+                continue;
+            const task = readTaskFile(path.join(dir, entry.name));
+            if (!task || task.status !== status || !matcher(task))
+                continue;
+            tasks.push(task);
+            if (tasks.length >= limit)
+                return tasks;
+        }
+    }
     return tasks;
 }
 // 按 kind + statuses 统计任务数量，供后台提交前门做轻量 backlog 判断。
@@ -425,8 +476,52 @@ function writeTaskResult(taskId, result) {
     const resultDir = getTaskResultDir(taskId);
     ensureDir(resultDir);
     const file = path.join(resultDir, 'result.json');
-    writeJsonAtomic(file, { taskId, createdAt: nowIso(), ...redactRecord(result) });
+    const safeResult = redactRecord(result);
+    // 通用凭据键脱敏会误伤tokenUsage；只有已校验日报诊断的数值白名单可绕过此规则。
+    if (result.kind === 'daily_report' && result.analysisMeta && typeof result.analysisMeta === 'object'
+        && result.analysisMeta.reportPolicyVersion === 2)
+        safeResult.analysisMeta = sanitizeReportAnalysisDiagnostics(result.analysisMeta);
+    writeJsonAtomic(file, { taskId, createdAt: nowIso(), ...safeResult });
     return file;
+}
+// 按单任务读取有限大小的最新诊断，接口不接受任意路径，也不返回任务载荷与正文。
+function readDailyReportAnalysis(taskId) {
+    if (!/^[A-Za-z0-9_.-]{1,160}$/.test(taskId) || ['.', '..'].includes(taskId))
+        throw new Error('日报任务ID无效');
+    const task = getResourceTaskByIdForKind(taskId, 'daily_report');
+    if (!task)
+        return { state: 'not_found', message: '任务不存在或不是日报任务' };
+    const delivery = task.notify.dailyReportDelivery;
+    const notification = { status: ['pending', 'sent', 'failed', 'skipped'].includes(String(task.notify.status)) ? task.notify.status : 'unknown',
+        error: sanitizeReportDiagnosticText(typeof task.notify.error === 'string' ? task.notify.error : '') };
+    if (delivery?.version === 2) {
+        if (!['image', 'text', 'failure'].includes(delivery.mode) || !['ready', 'sending', 'confirmed', 'unknown'].includes(delivery.state)
+            || !Number.isSafeInteger(delivery.totalSegments) || delivery.totalSegments < 1 || !Number.isSafeInteger(delivery.confirmedSegments)
+            || delivery.confirmedSegments < 0 || delivery.confirmedSegments > delivery.totalSegments
+            || (delivery.pendingSegment !== null && (!Number.isSafeInteger(delivery.pendingSegment) || delivery.pendingSegment < 0 || delivery.pendingSegment >= delivery.totalSegments)))
+            throw new Error('日报通知诊断进度无效');
+        notification.delivery = { mode: delivery.mode, totalSegments: delivery.totalSegments, confirmedSegments: delivery.confirmedSegments, pendingSegment: delivery.pendingSegment, state: delivery.state };
+    }
+    const files = ['pending', 'claiming', 'running', 'deferred'].includes(task.status) ? ['analysis-progress.json', 'result.json'] : ['result.json', 'analysis-progress.json'];
+    for (const name of files) {
+        const file = path.join(getTaskResultDir(task.id), name);
+        if (!fs.existsSync(file))
+            continue;
+        const stat = fs.lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024)
+            throw new Error('日报诊断文件超限或不可读取');
+        const content = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (!content || typeof content !== 'object' || Array.isArray(content))
+            throw new Error('日报诊断文件结构无效');
+        const meta = content.analysisMeta;
+        if (meta && typeof meta === 'object' && meta.reportPolicyVersion === 2)
+            return { state: 'available', taskStatus: task.status, analysis: sanitizeReportAnalysisDiagnostics(meta), notification };
+    }
+    const active = ['pending', 'claiming', 'running', 'deferred'].includes(task.status);
+    // 新排队任务的窗口已知，但收录与覆盖尚未计算，不能用零计数代替未知。
+    const reportPeriod = active && task.payload.reportPolicyVersion === 2 ? resolveReportPeriod(task.payload, task.createdAt) : undefined;
+    return { state: active ? 'not_started' : 'legacy_unknown', reportPeriod,
+        message: ['pending', 'claiming', 'running', 'deferred'].includes(task.status) ? '尚未保存分析进度' : '旧版本未记录分析覆盖信息', notification };
 }
 // 将任务标记为 done。
 function completeTask(task, result = {}) {
@@ -440,7 +535,27 @@ function completeTask(task, result = {}) {
     triggerTaskCompletedCallbacks(next.id);
     return next;
 }
-// 将任务标记为 failed。
+// 日报失败保留最近进度和管线结果；硬退出后仍可由主进程发送正确固定提示。
+function buildDailyReportFailureResult(task, error, result) {
+    if (task.kind !== 'daily_report')
+        return result;
+    const resultDir = getTaskResultDir(task.id);
+    const stored = readJsonFile(path.join(resultDir, 'result.json'), null, 1024 * 1024) || {};
+    const progress = readJsonFile(path.join(resultDir, 'analysis-progress.json'), null, 1024 * 1024);
+    const latest = error instanceof ReportAnalysisError ? error.diagnostics : progress?.analysisMeta || stored.analysisMeta;
+    const diagnostics = latest?.reportPolicyVersion === 2 ? { ...latest } : createReportAnalysisDiagnostics({
+        windowMessageCount: 0, selectedMessageCount: 0, sourceCompleteness: 'legacy_unknown',
+    });
+    // 监督器的确定终止原因和共享错误码可确认总超时；错误文字不参与分类。
+    const timedOut = isReportTotalTimeoutError(error) || result.reason === 'task_timed_out' || diagnostics.failureKind === 'total_timeout';
+    const kind = timedOut ? 'total_timeout' : 'generation_failed';
+    const stage = timedOut ? 'runtime' : diagnostics.failureStage || 'worker';
+    new ReportAnalysisError(redactSensitiveText(error instanceof Error ? error.message : String(error || '')), kind, stage, diagnostics);
+    return { ...stored, ...result, ok: false, reportPolicyVersion: 2, analysisMeta: diagnostics,
+        failureKind: kind, failureStage: stage, failureNotificationVersion: 2,
+        reason: timedOut ? 'daily_report_total_timeout' : 'daily_report_generation_failed' };
+}
+// 将任务标记为 failed，日报诊断不会被外层一行错误覆盖。
 function failTask(task, error, result = {}) {
     const message = redactSensitiveText(error instanceof Error ? error.message : String(error || ''));
     const retryAfter = buildTaskRetryAfter(task);
@@ -452,13 +567,16 @@ function failTask(task, error, result = {}) {
         step: 'failed',
         error: message,
         retryAfter: retryAfter || undefined,
+        notify: task.kind === 'daily_report' ? { ...task.notify, failureNotificationVersion: 2 } : task.notify,
     };
     const target = prepareTaskTransition(task, 'failed');
     if (!target)
         return task;
-    writeTaskResult(task.id, { kind: task.kind, ok: false, error: message, ...result });
+    writeTaskResult(task.id, { kind: task.kind, ok: false, error: message, ...buildDailyReportFailureResult(task, error, result) });
     writeJsonAtomic(target.file, next);
     writeWorkerEvent('task_failed', { taskId: next.id, kind: next.kind, error: message, retryAfter: retryAfter || '' });
+    if (next.kind === 'daily_report')
+        triggerTaskCompletedCallbacks(next.id);
     return next;
 }
 // 将任务标记为 deferred，供 S1 返回 defer 时保存长期状态。
@@ -527,6 +645,24 @@ function updateTaskNotifyStatus(task, status, error = '') {
     };
     writeJsonAtomic(location.file, next);
     writeWorkerEvent('task_notify_updated', { taskId: next.id, kind: next.kind, status, error: safeError });
+    return next;
+}
+// 每段发送前后同步落盘，仅保存编号和状态；落盘失败时禁止继续发送。
+function updateDailyReportDeliveryProgress(task, progress) {
+    if (task.kind !== 'daily_report' || !['done', 'failed'].includes(task.status))
+        throw new Error('日报通知任务状态无效');
+    const file = getTaskFile(task.status, task.kind, task.id);
+    const current = readTaskFile(file);
+    if (!current || current.id !== task.id || current.kind !== task.kind || current.status !== task.status)
+        throw new Error('日报通知任务记录不可读取');
+    if (['sent', 'skipped'].includes(String(current.notify.status || '')))
+        return current;
+    if (progress.version !== 2 || !Number.isInteger(progress.totalSegments) || progress.totalSegments < 1
+        || !Number.isInteger(progress.confirmedSegments) || progress.confirmedSegments < 0 || progress.confirmedSegments > progress.totalSegments
+        || (progress.pendingSegment !== null && progress.pendingSegment !== progress.confirmedSegments))
+        throw new Error('日报通知分段进度无效');
+    const next = { ...current, notify: { ...current.notify, dailyReportDelivery: { ...progress } } };
+    writeJsonAtomic(file, next);
     return next;
 }
 // 取消排队或暂缓任务，并返回已确认的失败原因供管理界面展示。
@@ -760,6 +896,8 @@ module.exports = {
     findResourceTaskByKindAndChannel,
     listResourceTasks,
     listResourceTasksForDiagnostics,
+    listActiveDailyReportTasks,
+    listTerminalTasksForNotification,
     countResourceTasks,
     countResourceTasksByKind,
     getTaskQueueSummary,
@@ -769,11 +907,13 @@ module.exports = {
     failIsolatedClaimingTask,
     updateTaskStep,
     writeTaskResult,
+    readDailyReportAnalysis,
     completeTask,
     failTask,
     deferTask,
     requeueTask,
     updateTaskNotifyStatus,
+    updateDailyReportDeliveryProgress,
     cancelTask,
     cancelTaskWithResult,
     cancelResourceTasksByKind,

@@ -10,6 +10,7 @@ jest.mock('../../../packages/koishi-plugin-dashboard/frontend/src/api', () => ({
   fetchResourceMemoryHistory: jest.fn(),
   fetchResourceStatus: jest.fn(),
   fetchResourceTasks: jest.fn(),
+  fetchReportAnalysis: jest.fn(),
   isAdminRequired: jest.fn(res => res?.code === 'ADMIN_REQUIRED' || res?.data?.code === 'ADMIN_REQUIRED'),
   setResourceMode: jest.fn(),
   setResourceMaintenance: jest.fn(),
@@ -55,6 +56,7 @@ function resourceStatus(overrides = {}) {
 function arrangeResourceReads(status = resourceStatus()) {
   dashboardApi.fetchResourceStatus.mockResolvedValue({ ok: true, data: status })
   dashboardApi.fetchResourceTasks.mockResolvedValue({ ok: true, data: { tasks: [TASK] } })
+  dashboardApi.fetchReportAnalysis.mockResolvedValue({ ok: true, data: { state: 'legacy_unknown', message: '旧版本未记录分析覆盖信息', notification: { status: 'pending' } } })
   dashboardApi.fetchResourceEvents.mockResolvedValue({ ok: true, data: { events: [] } })
   dashboardApi.fetchResourceMemoryHistory.mockResolvedValue({ ok: true, data: { points: [] } })
   dashboardApi.fetchResourceDiagnostics.mockResolvedValue({ ok: true, data: { items: [], total: 0, counts: { all: 0, unknown: 0, media: 0 }, hasMore: false, nextCursor: '' } })
@@ -353,6 +355,122 @@ describe('ResourcePanel 管理员操作与确认闭环', () => {
     expect(wrapper.find('.resource-task-reason p').text()).toContain('无法证明视频是否已发送')
     expect(wrapper.find('.resource-task-reason details').attributes('open')).toBeUndefined()
     expect(wrapper.find('.resource-task-reason pre').text()).toBe(error)
+    wrapper.unmount()
+  })
+})
+
+// 完整日报详情仅按需查询，覆盖未知状态、管理员验证和异步任务切换。
+describe('ResourcePanel 日报分析详情', () => {
+  const dailyTask = { id: 'daily-1', kind: 'daily_report', status: 'running', createdAt: '2026-10-01T15:59:00Z' }
+  const payload = {
+    state: 'available', taskStatus: 'running',
+    analysis: {
+      analysisState: 'processing', sourceCompleteness: 'legacy_unknown', periodBackfilled: true,
+      reportPeriod: { reportDate: '2026-10-01', periodStartMs: Date.parse('2026-10-01T04:00:00+08:00'), periodEndMs: Date.parse('2026-10-02T04:00:00+08:00'), cutoffMs: Date.parse('2026-10-01T23:59:00+08:00') },
+      windowMessageCount: 4500, selectedMessageCount: 4000, excludedByLimitCount: 500, submittedMessageCount: 0, summarizedMessageCount: 0,
+      topicInputMessageCount: 0, omittedMessageCount: 4000, unprocessedCount: 4000, coverageRate: 0, batchCount: 41, mergeLevels: 0,
+      requestCount: 0, reportCallCount: 0, retryCount: 0, usageReadableRequests: 0, tokenUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      stages: { compression: 'processing', basic: 'pending', full: 'pending' }, stageDurationsMs: { basic: 0 }, failedBatches: [], warnings: [],
+    },
+    notification: { status: 'pending' },
+  }
+
+  beforeEach(() => {
+    jest.useFakeTimers()
+    jest.clearAllMocks()
+    arrangeResourceReads()
+    dashboardApi.fetchResourceTasks.mockResolvedValue({ ok: true, data: { tasks: [dailyTask] } })
+    dashboardApi.fetchReportAnalysis.mockResolvedValue({ ok: true, data: payload })
+  })
+  afterEach(() => jest.useRealTimers())
+
+  test('仅展开日报时读取，零值和北京时间保留，刷新展开详情更新进度', async () => {
+    const wrapper = await mountResource()
+    expect(dashboardApi.fetchReportAnalysis).not.toHaveBeenCalled()
+    await findButton(wrapper, '查看详情').trigger('click')
+    await flushPromises()
+    expect(dashboardApi.fetchReportAnalysis).toHaveBeenCalledWith('daily-1')
+    const detail = wrapper.find('.report-analysis-detail')
+    expect(detail.text()).toContain('旧版本未记录正文完整性')
+    expect(detail.text()).toContain('旧任务按创建时间补齐报告窗口')
+    expect(detail.text()).toContain('2026-10-01 04:00:00')
+    expect(detail.text()).toContain('2026-10-01 23:59:00')
+    expect(detail.text()).toContain('话题输入覆盖率0%')
+    expect(detail.text()).toContain('因条数上限未选入500')
+    expect(detail.text()).toContain('已提交摘要请求0')
+    expect(detail.text()).toContain('未知：未取得可读用量')
+    expect(detail.findAll('button')).toHaveLength(0)
+    expect(wrapper.find('.resource-task-detail').element.tagName).toBe('DIV')
+    dashboardApi.fetchReportAnalysis.mockResolvedValueOnce({ ok: true, data: { ...payload, analysis: { ...payload.analysis, analysisState: 'complete', topicInputMessageCount: 4000, omittedMessageCount: 0, coverageRate: 100, requestCount: 4, usageReadableRequests: 2, tokenUsage: { promptTokens: 12, completionTokens: 3, totalTokens: 15 } } } })
+    await findButton(wrapper, '刷新记录').trigger('click')
+    await flushPromises()
+    expect(detail.text()).toContain('完整成功')
+    expect(detail.text()).toContain('2/4 次请求有可读用量（仅统计已读部分）')
+    expect(detail.text()).toContain('12 / 3 / 15')
+    wrapper.unmount()
+  })
+
+  test('新排队日报显示固定窗口，分析数量尚未计算', async () => {
+    dashboardApi.fetchReportAnalysis.mockResolvedValueOnce({ ok: true, data: { state: 'not_started', message: '尚未保存分析进度', reportPeriod: payload.analysis.reportPeriod } })
+    const wrapper = await mountResource()
+    await findButton(wrapper, '查看详情').trigger('click')
+    await flushPromises()
+    const text = wrapper.find('.report-analysis-detail').text()
+    expect(text).toContain('2026-10-01 04:00:00')
+    expect(text).toContain('2026-10-01 23:59:00')
+    expect(text).toContain('尚未计算')
+    expect(text).not.toContain('100%')
+    wrapper.unmount()
+  })
+
+  test('历史未知与零条消息不显示100%覆盖', async () => {
+    dashboardApi.fetchReportAnalysis.mockResolvedValueOnce({ ok: true, data: { state: 'legacy_unknown', message: '旧版本未记录分析覆盖信息', notification: { status: 'sent' } } })
+    const wrapper = await mountResource()
+    await findButton(wrapper, '查看详情').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.report-analysis-detail').text()).toContain('旧版本未记录分析覆盖信息')
+    expect(wrapper.find('.report-analysis-detail').text()).not.toContain('100%')
+    dashboardApi.fetchReportAnalysis.mockResolvedValueOnce({ ok: true, data: { ...payload, analysis: { ...payload.analysis, selectedMessageCount: 0, coverageRate: null } } })
+    await findButton(wrapper, '刷新记录').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.report-analysis-detail').text()).toContain('无可分析消息')
+    wrapper.unmount()
+  })
+
+  test('管理员失效仅显式打开时请求验证，自动刷新不重复弹窗', async () => {
+    let retry
+    const prompt = jest.fn((_message, callback) => { retry = callback })
+    dashboardApi.fetchReportAnalysis.mockResolvedValue(ADMIN_REQUIRED)
+    const wrapper = await mountResource(prompt)
+    await findButton(wrapper, '查看详情').trigger('click')
+    await flushPromises()
+    expect(prompt).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.report-analysis-detail').text()).toContain('需要管理员验证')
+    await findButton(wrapper, '刷新记录').trigger('click')
+    await flushPromises()
+    expect(prompt).toHaveBeenCalledTimes(1)
+    dashboardApi.fetchReportAnalysis.mockResolvedValueOnce({ ok: true, data: payload })
+    await retry()
+    await flushPromises()
+    expect(wrapper.find('.report-analysis-detail').text()).toContain('4000')
+    wrapper.unmount()
+  })
+
+  test('切换日报时旧请求的迟到响应不能覆盖新任务', async () => {
+    let resolveFirst
+    dashboardApi.fetchResourceTasks.mockResolvedValue({ ok: true, data: { tasks: [dailyTask, { ...dailyTask, id: 'daily-2' }] } })
+    dashboardApi.fetchReportAnalysis.mockReturnValueOnce(new Promise(resolve => { resolveFirst = resolve }))
+      .mockResolvedValueOnce({ ok: true, data: { state: 'legacy_unknown', message: '第二份日报详情' } })
+    const wrapper = await mountResource()
+    await wrapper.findAll('button').filter(button => button.text() === '查看详情')[0].trigger('click')
+    await flushPromises()
+    await findButton(wrapper, '查看详情').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.report-analysis-detail').text()).toContain('第二份日报详情')
+    resolveFirst({ ok: true, data: payload })
+    await flushPromises()
+    expect(wrapper.find('.report-analysis-detail').text()).toContain('第二份日报详情')
+    expect(wrapper.find('.report-analysis-detail').text()).not.toContain('4500')
     wrapper.unmount()
   })
 })

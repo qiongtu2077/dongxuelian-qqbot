@@ -57,6 +57,9 @@ const MANAGEMENT_MODULE_PATHS = {
     'resource.taskTimeout': '../resource-workers/task-timeout',
     'resource.workerSupervisor': '../resource-workers/worker-supervisor',
     'daily.summaryMerge': '../daily-precompute/daily-summary-merge',
+    'daily.reportPeriod': '../daily-precompute/report-period',
+    'daily.reportRecords': '../daily-precompute/report-records',
+    'daily.reportAnalysis': '../daily-precompute/report-analysis',
 };
 // 按公开标识惰性加载受信管理模块，并拒绝任何未登记的运行时输入。
 function loadManagementModule(name) {

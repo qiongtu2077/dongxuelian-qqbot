@@ -10,6 +10,7 @@ const { getErrorMessage } = require('./error-utils') as typeof import('./error-u
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
 const { getShanghaiHourFromTs } = loadManagementModule('core.utils')
+const { ReportRuntimeTimeoutError } = loadManagementModule('daily.reportAnalysis')
 const { acquireResourceActivityLease } = loadManagementModule('resource.activityLease') as {
   acquireResourceActivityLease: (kind: string, options?: { owner?: string, taskId?: string, ttlMs?: number }) => (reason?: string) => void
 }
@@ -61,6 +62,7 @@ interface ReportData {
   totalChars?: number
   peakHour?: string
   hourlyActivity?: number[]
+  reportPeriod?: { periodStartMs: number; cutoffMs: number }
 }
 
 interface AnalysisResult {
@@ -104,6 +106,7 @@ interface PuppeteerLike {
     executablePath: string
     headless: string
     protocolTimeout?: number
+    timeout?: number
     args: string[]
   }): Promise<BrowserLike>
 }
@@ -111,6 +114,10 @@ interface PuppeteerLike {
 interface RenderContext {
   taskId?: string
   source?: string
+  deadlineMs?: number
+  workDeadlineMs?: number
+  signal?: AbortSignal
+  now?: () => number
 }
 
 interface SystemProtectionLike {
@@ -236,12 +243,15 @@ function logRenderStep(step: string, detail = ''): void {
 }
 
 // 等待并占用一个渲染槽位，返回幂等释放函数。
-async function acquireRendererSlot(): Promise<() => void> {
+async function acquireRendererSlot(context: RenderContext): Promise<() => void> {
   const startedAt = Date.now()
+  assertRenderRuntime(context)
   while (activeRenderers >= MAX_RENDERERS) {
+    assertRenderRuntime(context)
     if (Date.now() - startedAt > RENDER_QUEUE_TIMEOUT) throw new Error('daily report render queue timeout')
     await new Promise(r => setTimeout(r, 500))
   }
+  assertRenderRuntime(context)
   activeRenderers++
   let released = false
   return () => {
@@ -249,6 +259,13 @@ async function acquireRendererSlot(): Promise<() => void> {
     released = true
     activeRenderers = Math.max(0, activeRenderers - 1)
   }
+}
+
+// 渲染排队、启动和截图都服从任务硬截止，取消不能继续启动浏览器。
+function assertRenderRuntime(context: RenderContext): void {
+  if (context.signal?.aborted) throw context.signal.reason || new Error('日报渲染已取消')
+  if (context.deadlineMs !== undefined && (context.now || Date.now)() >= context.deadlineMs) throw new ReportRuntimeTimeoutError()
+  if (context.workDeadlineMs !== undefined && (context.now || Date.now)() >= context.workDeadlineMs) throw new Error('日报图片渲染预算已耗尽，保留完整文字并保存结果')
 }
 
 async function enableRenderRequestGuards(page: PageLike): Promise<void> {
@@ -361,17 +378,18 @@ function buildBarChart(hourlyActivity: number[]): string {
     '#5EEAD4','#5EEAD4','#39C5BB','#39C5BB','#39C5BB','#39C5BB']
 
   for (let i = 0; i < 24; i++) {
-    const h = Math.max((hourlyActivity[i] / max) * chartH, 2)
+    const hour = (i + 4) % 24
+    const h = Math.max((hourlyActivity[hour] / max) * chartH, 2)
     const x = i * (barW + gap), y = chartH - h
-    const c = hourlyActivity[i] === max ? '#F472B6' : colors[i]
+    const c = hourlyActivity[hour] === max ? '#F472B6' : colors[hour]
     bars += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${c}"/>`
-    if (hourlyActivity[i] > 0) {
-      bars += `<text x="${x+barW/2}" y="${Math.max(y-6,12)}" text-anchor="middle" font-size="10" font-weight="bold" fill="#7F8C8D" font-family="Arial">${hourlyActivity[i]}</text>`
+    if (hourlyActivity[hour] > 0) {
+      bars += `<text x="${x+barW/2}" y="${Math.max(y-6,12)}" text-anchor="middle" font-size="10" font-weight="bold" fill="#7F8C8D" font-family="Arial">${hourlyActivity[hour]}</text>`
     }
   }
   let labels = ''
   for (let i = 0; i < 24; i += 2) {
-    labels += `<text x="${i*(barW+gap)+barW/2}" y="${chartH+16}" text-anchor="middle" font-size="10" fill="#7F8C8D" font-family="Arial">${String(i).padStart(2,'0')}时</text>`
+    labels += `<text x="${i*(barW+gap)+barW/2}" y="${chartH+16}" text-anchor="middle" font-size="10" fill="#7F8C8D" font-family="Arial">${String((i + 4) % 24).padStart(2,'0')}时</text>`
   }
   return `<svg width="${totalW}" height="${svgH}" viewBox="0 0 ${totalW} ${svgH}" style="display:block;margin:0 auto"><g>${bars}</g>${labels}</svg>`
 }
@@ -381,8 +399,9 @@ function buildCssBarChart(hourlyActivity: number[]): string {
   const max = Math.max(...hourlyActivity, 1)
   let bars = ''
   for (let i = 0; i < 24; i++) {
-    const pct = Math.max((hourlyActivity[i] / max) * 100, 3)
-    const cls = hourlyActivity[i] === max ? 'hot' : hourlyActivity[i] > max * 0.6 ? 'warm' : hourlyActivity[i] > max * 0.3 ? '' : 'cool'
+    const hour = (i + 4) % 24
+    const pct = Math.max((hourlyActivity[hour] / max) * 100, 3)
+    const cls = hourlyActivity[hour] === max ? 'hot' : hourlyActivity[hour] > max * 0.6 ? 'warm' : hourlyActivity[hour] > max * 0.3 ? '' : 'cool'
     bars += `<div class="bar ${cls}" style="height:${pct}%"></div>`
   }
   return bars
@@ -484,7 +503,8 @@ function renderTemplate(template: string, data: ReportData, analysis: AnalysisRe
     '{{emojiCount}}': String(data.emojiCount),
     '{{totalChars}}': String(data.totalChars),
     '{{peakHour}}': esc(data.peakHour),
-    '{{timestamp}}': new Date().toLocaleString('zh-CN'),
+    '{{timestamp}}': new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }),
+    '{{periodLabel}}': data.reportPeriod ? esc(`统计时段：${new Date(data.reportPeriod.periodStartMs).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })} 至 ${new Date(data.reportPeriod.cutoffMs).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}（北京时间）`) : '',
     '{{chartHtml}}': chartHtml,
     '{{topicsHtml}}': topicsHtml,
     '{{profilesHtml}}': profilesHtml,
@@ -512,127 +532,122 @@ function findBrowser(): string | null {
   return null
 }
 
-// Puppeteer截图（带信号量和超时）
+// Puppeteer截图服从统一截止，超高不裁图，所有终止路径释放浏览器与槽位。
 async function renderHtmlToImage(htmlContent: string, context: RenderContext = {}): Promise<Buffer> {
+  assertRenderRuntime(context)
+  const now = context.now || Date.now
+  const renderDeadline = Math.min(context.deadlineMs ?? Number.POSITIVE_INFINITY, context.workDeadlineMs ?? Number.POSITIVE_INFINITY, now() + RENDER_TIMEOUT)
   const htmlBytes = Buffer.byteLength(String(htmlContent || ''), 'utf8')
   if (htmlBytes > MAX_HTML_BYTES) throw new Error('render HTML is too large')
   const memoryStatus = assertEnoughMemoryForRender()
   logRenderStep('memory ok', formatMemoryStatus(memoryStatus))
   logRenderStep('html accepted', `${htmlBytes} bytes`)
-  const releaseRendererSlot = await acquireRendererSlot()
+  const releaseRendererSlot = await acquireRendererSlot(context)
   logRenderStep('queue slot acquired', `active=${activeRenderers}`)
-  let rendererSlotReleased = false
-  const releaseRendererSlotOnce = () => {
-    if (rendererSlotReleased) return
-    rendererSlotReleased = true
-    releaseRendererSlot()
-    logRenderStep('cleanup ok', `active=${activeRenderers}`)
-  }
-  const puppeteer = require('puppeteer-core') as PuppeteerLike
-  const browserPath = findBrowser()
   let browser: BrowserLike | null = null
   let timeoutId: ReturnType<typeof setTimeout> | null = null
-  let releaseRenderLease: ((reason?: string) => void) | null = null
-  // 关闭浏览器实例并避免成功、失败、超时路径重复 close。
+  const renderLease: { release: ((reason?: string) => void) | null } = { release: null }
+  const controller = new AbortController()
+  const onOuterAbort = (): void => controller.abort(context.signal?.reason || new Error('日报渲染已取消'))
+  context.signal?.addEventListener('abort', onOuterAbort, { once: true })
+
+  // close最多等待三秒；卡住时只回收当前已记录的浏览器进程，避免阻塞后续任务。
   const closeBrowser = async (reason: string): Promise<void> => {
     if (!browser) return
     const current = browser
     const browserPid = getBrowserProcessPid(current)
     browser = null
+    let closeTimer: ReturnType<typeof setTimeout> | null = null
     try {
-      await current.close()
+      const closing = current.close()
+      if (context.deadlineMs === undefined) await closing
+      else await Promise.race([closing, new Promise<never>((_, reject) => {
+        closeTimer = setTimeout(() => reject(new Error('日报浏览器关闭超时')), 3000)
+      })])
       logRenderStep('browser close ok', reason)
-      writeDailyRenderCleanupEvent('daily_chromium_closed', {
-        taskId: context.taskId || '',
-        browserPid,
-        reason,
-      })
+      writeDailyRenderCleanupEvent('daily_chromium_closed', { taskId: context.taskId || '', browserPid, reason })
     } catch (error) {
       logRenderStep('browser close failed', `${reason}: ${getErrorMessage(error)}`)
-      writeDailyRenderCleanupEvent('daily_chromium_close_failed', {
-        taskId: context.taskId || '',
-        browserPid,
-        reason,
-        error: getErrorMessage(error),
-      })
+      writeDailyRenderCleanupEvent('daily_chromium_close_failed', { taskId: context.taskId || '', browserPid, reason, error: getErrorMessage(error) })
       terminateDailyRenderBrowser(browserPid, context, 'daily_chromium_close_failed')
+    } finally {
+      if (closeTimer) clearTimeout(closeTimer)
     }
   }
-  try {
+
+  // 可取消的渲染操作，与真实浏览器关闭配合，不能只让等待程序超时返回。
+  const render = async (): Promise<Buffer> => {
+    assertRenderRuntime(context)
+    const puppeteer = require('puppeteer-core') as PuppeteerLike
+    const browserPath = findBrowser()
     if (!browserPath) throw new Error('未找到Chrome/Chromium浏览器')
-
-    try {
-      releaseRenderLease = acquireResourceActivityLease('render_active', {
-        owner: context.source || 'daily_report_render',
-        taskId: context.taskId || '',
-        ttlMs: Math.max(RENDER_TIMEOUT + 60000, 120000),
-      })
-    } catch (error) {
-      releaseRendererSlotOnce()
-      throw error
+    renderLease.release = acquireResourceActivityLease('render_active', {
+      owner: context.source || 'daily_report_render', taskId: context.taskId || '', ttlMs: Math.max(renderDeadline - now() + 60000, 120000),
+    })
+    const launchTimeout = Math.max(1, Math.min(RENDER_PROTOCOL_TIMEOUT, renderDeadline - now()))
+    logRenderStep('browser launch start', `path=${browserPath}, protocolTimeout=${launchTimeout}`)
+    const launched = await puppeteer.launch({
+      executablePath: browserPath, headless: 'new', protocolTimeout: launchTimeout, timeout: launchTimeout,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-extensions',
+        '--disable-background-networking', '--disable-sync', '--disable-default-apps', '--disable-component-update',
+        '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints', '--no-first-run',
+        '--no-default-browser-check', '--disable-renderer-backgrounding', '--js-flags=--max-old-space-size=96'],
+    })
+    browser = launched
+    if (controller.signal.aborted) {
+      await closeBrowser('launch completed after cancellation')
+      throw controller.signal.reason
     }
-    logRenderStep('browser launch start', `path=${browserPath}, protocolTimeout=${RENDER_PROTOCOL_TIMEOUT}`)
-    browser = await puppeteer.launch({
-      executablePath: browserPath, headless: 'new', protocolTimeout: RENDER_PROTOCOL_TIMEOUT,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-extensions',
-        '--disable-background-networking',
-        '--disable-sync',
-        '--disable-default-apps',
-        '--disable-component-update',
-        '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-renderer-backgrounding',
-        '--js-flags=--max-old-space-size=96',
-      ],
-    })
+    assertRenderRuntime(context)
     logRenderStep('browser launch ok')
-    writeDailyRenderCleanupEvent('daily_chromium_launched', {
-      taskId: context.taskId || '',
-      browserPid: getBrowserProcessPid(browser),
-      parentPid: process.pid,
-      executablePath: browserPath,
-    })
-    timeoutId = setTimeout(async () => {
-      await closeBrowser('render timeout')
-    }, RENDER_TIMEOUT)
-
-    logRenderStep('newPage start')
+    writeDailyRenderCleanupEvent('daily_chromium_launched', { taskId: context.taskId || '', browserPid: getBrowserProcessPid(browser),
+      parentPid: process.pid, executablePath: browserPath })
     const page = await browser.newPage()
-    logRenderStep('newPage ok')
     await enableRenderRequestGuards(page)
     await page.setViewport({ width: 880, height: 800 })
-    logRenderStep('setContent start', `timeout=${RENDER_SET_CONTENT_TIMEOUT}`)
-    await page.setContent(htmlContent, { waitUntil: 'domcontentloaded', timeout: RENDER_SET_CONTENT_TIMEOUT })
-    logRenderStep('setContent ok')
-    await page.evaluate(() => document.fonts && document.fonts.ready ? document.fonts.ready.then(() => true) : true).catch(() => { /* non-critical: fonts readiness may be unavailable */
-    })
+    const contentTimeout = Math.max(1, Math.min(RENDER_SET_CONTENT_TIMEOUT, renderDeadline - now()))
+    await page.setContent(htmlContent, { waitUntil: 'domcontentloaded', timeout: contentTimeout })
+    await page.evaluate(() => document.fonts && document.fonts.ready ? document.fonts.ready.then(() => true) : true).catch(() => { /* 可用字体的加载由渲染总截止统一约束。 */ })
     await waitForRenderAssets(page)
     await applyProfileNameDots(page)
+    assertRenderRuntime(context)
+    if (controller.signal.aborted) throw controller.signal.reason
     const bodyH = await page.evaluate(() => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0))
-    const captureH = Math.min(Math.max(800, Number(bodyH) + 40), MAX_CAPTURE_HEIGHT)
+    const captureH = Math.max(800, Number(bodyH) + 40)
+    if (!Number.isFinite(captureH) || captureH > MAX_CAPTURE_HEIGHT) throw new Error(`日报图片全文高度超出截图保护值：${captureH}，改用完整文字`)
     await page.setViewport({ width: 880, height: captureH })
     logRenderStep('screenshot start', `height=${captureH}`)
     const screenshot = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 880, height: captureH } })
+    assertRenderRuntime(context)
+    if (controller.signal.aborted) throw controller.signal.reason
     logRenderStep('screenshot ok', `${screenshot.length} bytes`)
     return screenshot
-  } catch (err) {
-    logRenderStep('failed', getErrorMessage(err))
+  }
+
+  let onAbort: (() => void) | undefined
+  try {
+    assertRenderRuntime(context)
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(controller.signal.reason || new Error('日报图片渲染已取消'))
+      controller.signal.addEventListener('abort', onAbort, { once: true })
+    })
+    timeoutId = setTimeout(() => controller.abort(context.deadlineMs !== undefined && now() >= context.deadlineMs
+      ? new ReportRuntimeTimeoutError() : new Error('日报图片渲染超时')), Math.max(0, renderDeadline - now()))
+    return await Promise.race([render(), aborted])
+  } catch (error) {
+    logRenderStep('failed', getErrorMessage(error))
     await closeBrowser('error')
-    throw err
+    throw error
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
+    context.signal?.removeEventListener('abort', onOuterAbort)
+    if (onAbort) controller.signal.removeEventListener('abort', onAbort)
     await closeBrowser('finally')
-    try { if (releaseRenderLease) releaseRenderLease('render-finished') } catch { /* non-critical: lease cleanup is best effort */ }
-    releaseRendererSlotOnce()
+    try { renderLease.release?.('render-finished') } catch { /* 租约回收沿用既有保护。 */ }
+    releaseRendererSlot()
+    logRenderStep('cleanup ok', `active=${activeRenderers}`)
   }
 }
-
 // 主入口：随机选模板 + 渲染 + 截图
 async function renderReport(data: ReportData, analysis: AnalysisResult, context: RenderContext = {}): Promise<Buffer> {
   const template = selectTemplate()

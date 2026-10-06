@@ -53,6 +53,9 @@ export interface ManagementModuleMap {
     'resource.taskTimeout': typeof import('../resource-workers/task-timeout');
     'resource.workerSupervisor': typeof import('../resource-workers/worker-supervisor');
     'daily.summaryMerge': typeof import('../daily-precompute/daily-summary-merge');
+    'daily.reportPeriod': typeof import('../daily-precompute/report-period');
+    'daily.reportRecords': typeof import('../daily-precompute/report-records');
+    'daily.reportAnalysis': typeof import('../daily-precompute/report-analysis');
 }
 export type ManagementModuleName = keyof ManagementModuleMap;
 export type ManagementModule<Name extends ManagementModuleName> = ManagementModuleMap[Name];

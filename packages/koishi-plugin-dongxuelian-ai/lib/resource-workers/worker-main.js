@@ -19,6 +19,7 @@ const { runMemoryWorkerTask } = require('./memory-worker');
 const { runBackgroundLlmWorkerTask } = require('./background-llm-worker');
 const { runDailySlotTask } = require('../daily-precompute/daily-slot-worker');
 const { resolveTaskTimeoutMs } = require('./task-timeout');
+const { ReportRuntimeTimeoutError, isReportTotalTimeoutError } = require('../daily-precompute/report-analysis');
 function resolveBoundedNumber(value, fallback, min, max) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed))
@@ -50,14 +51,24 @@ function updateWorkerProgress(progress, patch = {}) {
 // 给单个 worker 任务加 S8 运行超时兜底；超时后由调用方标记失败并退出进程。
 async function runTaskWithTimeout(task) {
     const timeoutMs = resolveTaskTimeoutMs(task);
+    const startedAt = Date.parse(String(task.startedAt || ''));
+    const startedAtMs = Number.isFinite(startedAt) ? startedAt : Date.now();
+    const deadlineMs = startedAtMs + timeoutMs;
+    const controller = new AbortController();
     let timer = null;
+    // 已经耗尽运行时限的任务不再派发；排队创建时间不参与截止计算。
+    if (Date.now() >= deadlineMs)
+        throw task.kind === RESOURCE_TASK_KIND.DAILY_REPORT
+            ? new ReportRuntimeTimeoutError() : new Error(`resource worker task timed out after ${timeoutMs}ms`);
     try {
         return await Promise.race([
-            executeWorkerTask(task),
+            executeWorkerTask(task, { deadlineMs, startedAtMs, signal: controller.signal }),
             new Promise((_, reject) => {
                 timer = setTimeout(() => {
-                    reject(new Error(`resource worker task timed out after ${timeoutMs}ms`));
-                }, timeoutMs);
+                    const error = task.kind === RESOURCE_TASK_KIND.DAILY_REPORT ? new ReportRuntimeTimeoutError() : new Error(`resource worker task timed out after ${timeoutMs}ms`);
+                    controller.abort(error);
+                    reject(error);
+                }, Math.max(0, deadlineMs - Date.now()));
             }),
         ]);
     }
@@ -68,6 +79,8 @@ async function runTaskWithTimeout(task) {
 }
 // 判断错误是否为 S8 任务超时。
 function isTaskTimeoutError(error) {
+    if (isReportTotalTimeoutError(error))
+        return true;
     const message = error instanceof Error ? error.message : String(error || '');
     return /resource worker task timed out/i.test(message);
 }
@@ -182,9 +195,9 @@ function resolveClaimKindsForToolActive(kinds, toolActive) {
     return allowed.length ? allowed : kinds;
 }
 // 根据任务类型调用对应执行器。
-async function executeWorkerTask(task) {
+async function executeWorkerTask(task, runtime) {
     if (task.kind === RESOURCE_TASK_KIND.DAILY_REPORT)
-        return await runDailyWorkerTask(task);
+        return await runDailyWorkerTask(task, runtime);
     if (task.kind === RESOURCE_TASK_KIND.DAILY_SUMMARY)
         return runDailySlotTask(task);
     if (task.kind === RESOURCE_TASK_KIND.EMOTION_RENDER)

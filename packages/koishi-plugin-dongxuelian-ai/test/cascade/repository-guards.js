@@ -1,3 +1,17 @@
+const ts = require('typescript')
+
+/** 检查真正的var声明；字符串、注释和路径正则中的var不是变量声明。 */
+function containsVarDeclaration(source) {
+  const file = ts.createSourceFile('guard.js', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  let found = false
+  function visit(node) {
+    if (ts.isVariableDeclarationList(node) && !(node.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const))) found = true
+    if (!found) ts.forEachChild(node, visit)
+  }
+  visit(file)
+  return found
+}
+
 /** Verifies conversation helpers and repository, deployment, and cross-file guards. */
 async function runRepositoryGuards(context) {
   const {
@@ -531,8 +545,9 @@ async function runRepositoryGuards(context) {
   check('dashboard limits upload and gallery metadata memory', dashboardStandaloneSrc.includes('MAX_DEPLOY_UPLOAD_BYTES') && dashboardStandaloneSrc.includes('MAX_GALLERY_METADATA_BYTES') && dashboardStandaloneSrc.includes('estimatedBytes'))
   check('dashboard streams file responses', dashboardStandaloneSrc.includes('fs.createReadStream(abs).pipe(res)') && dashboardStandaloneSrc.includes('fs.createReadStream(filePath).pipe(res)'))
   check('daily report renderer guards Chromium memory', dailyRendererSrc.includes('DAILY_REPORT_MIN_MEM_MB') && dailyRendererSrc.includes('MemAvailable') && dailyRendererSrc.includes('MAX_RENDERERS') && dailyRendererSrc.includes('BLOCKED_RESOURCE_TYPES'))
-  check('daily report collector caps source file and analysis messages', dailyCollectorSrc.includes('MAX_CACHE_FILE_BYTES') && dailyCollectorSrc.includes('MAX_ANALYSIS_MESSAGES') && dailyCollectorSrc.includes('truncatedMessages'))
-  check('daily report analyzer compresses sequential capped batches', dailyAnalyzerSrc.includes('MAX_COMPRESS_BATCHES') && dailyAnalyzerSrc.includes('MAX_COMPRESSED_CHARS') && !dailyAnalyzerSrc.includes('Promise.allSettled(batches)'))
+  check('daily report collector delegates bounded raw input and keeps analysis cap', dailyCollectorSrc.includes("loadManagementModule('daily.reportRecords')") && dailyCollectorSrc.includes('MAX_ANALYSIS_MESSAGES') && dailyCollectorSrc.includes('truncatedMessages'))
+  const dailyCompleteInputSrc = read(path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'complete-input.js'))
+  check('daily report analyzer uses complete sequential batches without truncation caps', dailyAnalyzerSrc.includes('summarizeCompleteInput') && !dailyAnalyzerSrc.includes('MAX_COMPRESS_BATCHES') && !dailyAnalyzerSrc.includes('MAX_COMPRESSED_CHARS') && dailyCompleteInputSrc.includes('for (const batch of batches)') && !dailyCompleteInputSrc.includes('Promise.allSettled(batches)'))
   check('conversation runtime data files have size guards', conversationSrc.includes('MAX_CONVERSATION_FILE_BYTES') && conversationSrc.includes('MAX_USER_PROFILE_FILE_BYTES') && conversationSrc.includes('MAX_DAILY_STATS_FILE_BYTES') && conversationSrc.includes('readJsonFileIfSmallSync'))
   check('utils shared file readers have default size guards', utilsSrc.includes('MAX_TEXT_FILE_BYTES') && utilsSrc.includes('MAX_JSON_FILE_BYTES') && utilsSrc.includes('fs.stat(file)'))
   check('agent push log is tail-read and compacted', agentPushSrc.includes('MAX_PUSH_LOG_READ_BYTES') && agentPushSrc.includes('MAX_PUSH_LOG_FILE_BYTES') && agentPushSrc.includes('Math.max(0, stat.size - readBytes)'))
@@ -576,7 +591,7 @@ async function runRepositoryGuards(context) {
   collectLibJsFiles(LIB)
   for (const file of libJsFiles) {
     const rel = path.relative(AI_ROOT, file)
-    check(`lib file has no var: ${rel}`, !/\bvar\b/.test(read(file)))
+    check(`lib file has no var: ${rel}`, !containsVarDeclaration(read(file)))
   }
 
   return { constantsSrc }

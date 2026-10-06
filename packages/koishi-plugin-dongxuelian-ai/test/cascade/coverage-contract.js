@@ -7,6 +7,31 @@ const path = require('path')
 function buildCoverageMap(AI_ROOT) {
   return [
   {
+    behavior: 'daily report complete delivery and persistent confirmation',
+    file: path.join(AI_ROOT, 'test', 'helpers', 'daily-report-delivery-fixture.js'),
+    needles: ['splitDailyReportText', 'restart-partial', 'unknown-receipt', 'REPORT_TIMEOUT_TEXT', '1050'],
+  },
+  {
+    behavior: 'daily report noon source cleanup and complete active protection',
+    file: path.join(AI_ROOT, 'test', 'helpers', 'daily-report-maintenance-fixture.js'),
+    needles: ['cleanupReportRecords', '20005', 'must-keep', 'during-cleanup', 'scheduleReportSourceCleanup'],
+  },
+  {
+    behavior: 'daily report fixed four-hour date and complete raw input selection',
+    file: path.join(AI_ROOT, '..', 'koishi-plugin-daily-report', 'test', 'report-input-test.js'),
+    needles: ['runReportInputTests', '4500', '20005', 'sourceCompleteness', 'periodBackfilled'],
+  },
+  {
+    behavior: 'daily report formal analysis full source coverage and necessary failure',
+    file: path.join(AI_ROOT, '..', 'koishi-plugin-daily-report', 'test', 'analysis-entry-test.js'),
+    needles: ['runAnalysisEntryTests', '591', '1330', '4000', 'DAILY_REPORT_TOTAL_TIMEOUT', 'badReference'],
+  },
+  {
+    behavior: 'daily report formal pipeline full text and persistent diagnostics',
+    file: path.join(AI_ROOT, '..', 'koishi-plugin-daily-report', 'test', 'pipeline-completeness-test.js'),
+    needles: ['runPipelineCompletenessTests', 'tenTopicInput', 'failureNotificationVersion', 'analysis-progress.json', 'deadlineMs'],
+  },
+  {
     behavior: 'sticker text/image send order',
     file: path.join(AI_ROOT, 'test', 'scenarios', 'sticker.test.js'),
     needles: ['scenario: sticker sendReply', 'scenario sticker sends text before internal image'],

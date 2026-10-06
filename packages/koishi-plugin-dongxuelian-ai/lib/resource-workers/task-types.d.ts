@@ -7,12 +7,23 @@ import type resourceTaskKinds = require('../resource-common/resource-task-kinds'
 export type ResourceTaskStatus = 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred';
 export type KnownResourceTaskKind = typeof resourceTaskKinds.RESOURCE_TASK_KIND[keyof typeof resourceTaskKinds.RESOURCE_TASK_KIND];
 export type ResourceTaskKind = KnownResourceTaskKind | string;
+export interface DailyReportDeliveryProgress {
+    version: 2;
+    mode: 'image' | 'text' | 'failure';
+    contentHash: string;
+    totalSegments: number;
+    confirmedSegments: number;
+    pendingSegment: number | null;
+    state: 'ready' | 'sending' | 'confirmed' | 'unknown';
+}
 export interface ResourceTaskNotify {
     target?: 'qq-group' | 'dashboard' | 'none' | string;
     channelKey?: string;
     status?: 'pending' | 'sent' | 'failed' | string;
     error?: string;
     updatedAt?: string;
+    dailyReportDelivery?: DailyReportDeliveryProgress;
+    failureNotificationVersion?: 2;
 }
 export interface ResourceTask {
     id: string;

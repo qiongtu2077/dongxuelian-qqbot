@@ -9,6 +9,7 @@ const path = require('path');
 const { DATA_DIR } = require('../core/constants');
 const { todayCst } = require('../core/utils');
 const { appendJsonlEvent, ensureDir, readJsonFile, sanitizeId, writeJsonAtomic } = require('../resource-common/files');
+const { appendReportRecord } = require('./report-records');
 const PRECOMPUTE_ROOT = path.join(DATA_DIR, 'daily-precompute');
 const INDEX_ROOT = path.join(PRECOMPUTE_ROOT, 'index');
 const COVERAGE_ROOT = path.join(PRECOMPUTE_ROOT, 'coverage');
@@ -91,21 +92,20 @@ function tryUpdatePrecomputeCoverageIncrementally(date, channelKey) {
 // 将一条消息写入轻量索引。
 function appendPrecomputeIndex(input) {
     const channelKey = String(input.channelKey || '');
-    const text = String(input.text || '').slice(0, 1200);
+    const text = String(input.text || '');
     const media = Array.isArray(input.media) ? input.media.slice(0, 8) : [];
     if (!channelKey || (!text && !media.length))
         return null;
     const timestamp = Number(input.timestamp || Date.now());
     const date = String(input.date || todayCst(new Date(timestamp)));
-    const record = {
-        messageId: String(input.messageId || `msg-${timestamp}`),
+    const record = appendReportRecord(date, channelKey, {
+        messageId: input.messageId,
         timestamp,
         userId: String(input.userId || ''),
         userName: String(input.userName || ''),
         text,
         media,
-    };
-    appendJsonlEvent(getPrecomputeIndexFile(date, channelKey), record);
+    });
     tryUpdatePrecomputeCoverageIncrementally(date, channelKey) || updatePrecomputeCoverage(date, channelKey);
     writePrecomputeEvent('precompute_index_appended', { date, channelKey, messageId: record.messageId, hasMedia: media.length > 0 });
     return record;

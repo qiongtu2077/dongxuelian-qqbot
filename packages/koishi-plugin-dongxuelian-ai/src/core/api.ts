@@ -49,6 +49,8 @@ interface RequestExtraBody {
   _thinkingManaged?: boolean
   _explicitThinkingKeys?: string[]
   signal?: AbortSignal
+  _onRequestAttempt?: () => void
+  _onRequestUsage?: (usage: { readable: boolean; promptTokens: number; completionTokens: number; totalTokens: number }) => void
   [key: string]: unknown
 }
 
@@ -694,17 +696,26 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
         cleanupExternalSignal = () => externalSignal.removeEventListener('abort', onAbort)
       }
     }
+    let protocolStarted = false
+    let protocolCompleted = false
     try {
+      if (controller.signal.aborted) throw new Error('AI 请求在提交前已取消')
+      extraBody._onRequestAttempt?.()
+      protocolStarted = true
       const response = await requestProtocolAttempt(messages, attempt, filtered, tools, controller.signal)
+      protocolCompleted = true
       recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(response.usage), {
         capability,
         model: attempt.model,
         usage: response.usage,
         readable: response.usageReadable,
       })
+      const usage = readUsageDetails(response.usage)
+      extraBody._onRequestUsage?.({ readable: response.usageReadable, promptTokens: usage.input, completionTokens: usage.output, totalTokens: getUsageTotal(response.usage) })
       return response.result
     } catch (error) {
-      if (externalSignal?.aborted) throw error
+      // 诊断回调失败不是供应商故障，不能触发备用模型或管理员上游告警。
+      if (externalSignal?.aborted || !protocolStarted || protocolCompleted) throw error
       const failure = error instanceof CapabilityUpstreamError
         ? error
         : new CapabilityUpstreamError('AI 上游网络请求失败', 'NETWORK_ERROR', true)

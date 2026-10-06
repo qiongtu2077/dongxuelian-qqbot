@@ -17,8 +17,12 @@ const {
   writeJsonAtomic,
 } = require('../resource-common/files') as typeof import('../resource-common/files')
 const { redactSensitiveData, redactSensitiveText } = require('../core/redactor') as typeof import('../core/redactor')
+const { ReportAnalysisError, createReportAnalysisDiagnostics, isReportTotalTimeoutError, sanitizeReportAnalysisDiagnostics, sanitizeReportDiagnosticText } = require('../daily-precompute/report-analysis') as typeof import('../daily-precompute/report-analysis')
+const { resolveReportPeriod } = require('../daily-precompute/report-period') as typeof import('../daily-precompute/report-period')
+type ReportAnalysisDiagnostics = import('../daily-precompute/report-analysis').ReportAnalysisDiagnostics
 type ResourceTask = import('./task-types').ResourceTask
 type ResourceTaskNotify = import('./task-types').ResourceTaskNotify
+type DailyReportDeliveryProgress = import('./task-types').DailyReportDeliveryProgress
 type ResourceTaskStatus = import('./task-types').ResourceTaskStatus
 type ResourceWorkerState = import('./task-types').ResourceWorkerState
 const {
@@ -259,6 +263,49 @@ function listResourceTasksForDiagnostics(): ResourceTask[] {
   return tasks
 }
 
+// 完整枚举活动日报用于删除保护；读取失败、非法DTO和链接不能被当成无任务。
+function listActiveDailyReportTasks(): ResourceTask[] {
+  ensureTaskDirs()
+  const tasks: ResourceTask[] = []
+  for (const status of DEFAULT_ACTIVE_TASK_STATUSES) {
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isSymbolicLink()) throw new Error('日报维护任务目录存在链接，已停止清理')
+        const file = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (status !== 'pending') throw new Error('日报维护任务目录结构异常，已停止清理')
+          walk(file)
+          continue
+        }
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+        const task = readTaskFile(file)
+        if (!task || task.status !== status || entry.name !== `${sanitizeId(task.id)}.json`
+          || path.resolve(file) !== path.resolve(getTaskFile(status, task.kind, task.id))) throw new Error('日报维护活动任务记录损坏或位置不一致，已停止清理')
+        if (task.kind === 'daily_report') tasks.push(task)
+      }
+    }
+    walk(getTaskStatusDir(status))
+  }
+  return tasks
+}
+
+// 先过滤已通知记录再应用发送批次上限，历史已完成记录不阻塞新失败日报。
+function listTerminalTasksForNotification(matcher: (task: ResourceTask) => boolean, limit: number): ResourceTask[] {
+  ensureTaskDirs()
+  const tasks: ResourceTask[] = []
+  for (const status of ['failed', 'done'] as const) {
+    const dir = getTaskStatusDir(status)
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+      const task = readTaskFile(path.join(dir, entry.name))
+      if (!task || task.status !== status || !matcher(task)) continue
+      tasks.push(task)
+      if (tasks.length >= limit) return tasks
+    }
+  }
+  return tasks
+}
+
 // 按 kind + statuses 统计任务数量，供后台提交前门做轻量 backlog 判断。
 function countResourceTasks(options: CountTasksOptions = {}): number {
   const kind = String(options.kind || '')
@@ -496,8 +543,45 @@ function writeTaskResult(taskId: string, result: Record<string, unknown>): strin
   const resultDir = getTaskResultDir(taskId)
   ensureDir(resultDir)
   const file = path.join(resultDir, 'result.json')
-  writeJsonAtomic(file, { taskId, createdAt: nowIso(), ...redactRecord(result) })
+  const safeResult = redactRecord(result)
+  // 通用凭据键脱敏会误伤tokenUsage；只有已校验日报诊断的数值白名单可绕过此规则。
+  if (result.kind === 'daily_report' && result.analysisMeta && typeof result.analysisMeta === 'object'
+    && (result.analysisMeta as { reportPolicyVersion?: unknown }).reportPolicyVersion === 2) safeResult.analysisMeta = sanitizeReportAnalysisDiagnostics(result.analysisMeta)
+  writeJsonAtomic(file, { taskId, createdAt: nowIso(), ...safeResult })
   return file
+}
+
+// 按单任务读取有限大小的最新诊断，接口不接受任意路径，也不返回任务载荷与正文。
+function readDailyReportAnalysis(taskId: string): Record<string, unknown> {
+  if (!/^[A-Za-z0-9_.-]{1,160}$/.test(taskId) || ['.', '..'].includes(taskId)) throw new Error('日报任务ID无效')
+  const task = getResourceTaskByIdForKind(taskId, 'daily_report')
+  if (!task) return { state: 'not_found', message: '任务不存在或不是日报任务' }
+  const delivery = task.notify.dailyReportDelivery
+  const notification: Record<string, unknown> = { status: ['pending', 'sent', 'failed', 'skipped'].includes(String(task.notify.status)) ? task.notify.status : 'unknown',
+    error: sanitizeReportDiagnosticText(typeof task.notify.error === 'string' ? task.notify.error : '') }
+  if (delivery?.version === 2) {
+    if (!['image', 'text', 'failure'].includes(delivery.mode) || !['ready', 'sending', 'confirmed', 'unknown'].includes(delivery.state)
+      || !Number.isSafeInteger(delivery.totalSegments) || delivery.totalSegments < 1 || !Number.isSafeInteger(delivery.confirmedSegments)
+      || delivery.confirmedSegments < 0 || delivery.confirmedSegments > delivery.totalSegments
+      || (delivery.pendingSegment !== null && (!Number.isSafeInteger(delivery.pendingSegment) || delivery.pendingSegment < 0 || delivery.pendingSegment >= delivery.totalSegments))) throw new Error('日报通知诊断进度无效')
+    notification.delivery = { mode: delivery.mode, totalSegments: delivery.totalSegments, confirmedSegments: delivery.confirmedSegments, pendingSegment: delivery.pendingSegment, state: delivery.state }
+  }
+  const files = ['pending', 'claiming', 'running', 'deferred'].includes(task.status) ? ['analysis-progress.json', 'result.json'] : ['result.json', 'analysis-progress.json']
+  for (const name of files) {
+    const file = path.join(getTaskResultDir(task.id), name)
+    if (!fs.existsSync(file)) continue
+    const stat = fs.lstatSync(file)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw new Error('日报诊断文件超限或不可读取')
+    const content: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (!content || typeof content !== 'object' || Array.isArray(content)) throw new Error('日报诊断文件结构无效')
+    const meta = (content as { analysisMeta?: unknown }).analysisMeta
+    if (meta && typeof meta === 'object' && (meta as { reportPolicyVersion?: unknown }).reportPolicyVersion === 2) return { state: 'available', taskStatus: task.status, analysis: sanitizeReportAnalysisDiagnostics(meta), notification }
+  }
+  const active = ['pending', 'claiming', 'running', 'deferred'].includes(task.status)
+  // 新排队任务的窗口已知，但收录与覆盖尚未计算，不能用零计数代替未知。
+  const reportPeriod = active && task.payload.reportPolicyVersion === 2 ? resolveReportPeriod(task.payload, task.createdAt) : undefined
+  return { state: active ? 'not_started' : 'legacy_unknown', reportPeriod,
+    message: ['pending', 'claiming', 'running', 'deferred'].includes(task.status) ? '尚未保存分析进度' : '旧版本未记录分析覆盖信息', notification }
 }
 
 // 将任务标记为 done。
@@ -512,7 +596,27 @@ function completeTask(task: ResourceTask, result: Record<string, unknown> = {}):
   return next
 }
 
-// 将任务标记为 failed。
+// 日报失败保留最近进度和管线结果；硬退出后仍可由主进程发送正确固定提示。
+function buildDailyReportFailureResult(task: ResourceTask, error: unknown, result: Record<string, unknown>): Record<string, unknown> {
+  if (task.kind !== 'daily_report') return result
+  const resultDir = getTaskResultDir(task.id)
+  const stored = readJsonFile<Record<string, unknown>>(path.join(resultDir, 'result.json'), null, 1024 * 1024) || {}
+  const progress = readJsonFile<{ analysisMeta?: ReportAnalysisDiagnostics }>(path.join(resultDir, 'analysis-progress.json'), null, 1024 * 1024)
+  const latest = error instanceof ReportAnalysisError ? error.diagnostics : progress?.analysisMeta || stored.analysisMeta as ReportAnalysisDiagnostics | undefined
+  const diagnostics = latest?.reportPolicyVersion === 2 ? { ...latest } : createReportAnalysisDiagnostics({
+    windowMessageCount: 0, selectedMessageCount: 0, sourceCompleteness: 'legacy_unknown',
+  })
+  // 监督器的确定终止原因和共享错误码可确认总超时；错误文字不参与分类。
+  const timedOut = isReportTotalTimeoutError(error) || result.reason === 'task_timed_out' || diagnostics.failureKind === 'total_timeout'
+  const kind = timedOut ? 'total_timeout' : 'generation_failed'
+  const stage = timedOut ? 'runtime' : diagnostics.failureStage || 'worker'
+  new ReportAnalysisError(redactSensitiveText(error instanceof Error ? error.message : String(error || '')), kind, stage, diagnostics)
+  return { ...stored, ...result, ok: false, reportPolicyVersion: 2, analysisMeta: diagnostics,
+    failureKind: kind, failureStage: stage, failureNotificationVersion: 2,
+    reason: timedOut ? 'daily_report_total_timeout' : 'daily_report_generation_failed' }
+}
+
+// 将任务标记为 failed，日报诊断不会被外层一行错误覆盖。
 function failTask(task: ResourceTask, error: unknown, result: Record<string, unknown> = {}): ResourceTask {
   const message = redactSensitiveText(error instanceof Error ? error.message : String(error || ''))
   const retryAfter = buildTaskRetryAfter(task)
@@ -524,12 +628,14 @@ function failTask(task: ResourceTask, error: unknown, result: Record<string, unk
     step: 'failed',
     error: message,
     retryAfter: retryAfter || undefined,
+    notify: task.kind === 'daily_report' ? { ...task.notify, failureNotificationVersion: 2 } : task.notify,
   }
   const target = prepareTaskTransition(task, 'failed')
   if (!target) return task
-  writeTaskResult(task.id, { kind: task.kind, ok: false, error: message, ...result })
+  writeTaskResult(task.id, { kind: task.kind, ok: false, error: message, ...buildDailyReportFailureResult(task, error, result) })
   writeJsonAtomic(target.file, next)
   writeWorkerEvent('task_failed', { taskId: next.id, kind: next.kind, error: message, retryAfter: retryAfter || '' })
+  if (next.kind === 'daily_report') triggerTaskCompletedCallbacks(next.id)
   return next
 }
 
@@ -596,6 +702,21 @@ function updateTaskNotifyStatus(task: ResourceTask, status: string, error = ''):
   }
   writeJsonAtomic(location.file, next)
   writeWorkerEvent('task_notify_updated', { taskId: next.id, kind: next.kind, status, error: safeError })
+  return next
+}
+
+// 每段发送前后同步落盘，仅保存编号和状态；落盘失败时禁止继续发送。
+function updateDailyReportDeliveryProgress(task: ResourceTask, progress: DailyReportDeliveryProgress): ResourceTask {
+  if (task.kind !== 'daily_report' || !['done', 'failed'].includes(task.status)) throw new Error('日报通知任务状态无效')
+  const file = getTaskFile(task.status, task.kind, task.id)
+  const current = readTaskFile(file)
+  if (!current || current.id !== task.id || current.kind !== task.kind || current.status !== task.status) throw new Error('日报通知任务记录不可读取')
+  if (['sent', 'skipped'].includes(String(current.notify.status || ''))) return current
+  if (progress.version !== 2 || !Number.isInteger(progress.totalSegments) || progress.totalSegments < 1
+    || !Number.isInteger(progress.confirmedSegments) || progress.confirmedSegments < 0 || progress.confirmedSegments > progress.totalSegments
+    || (progress.pendingSegment !== null && progress.pendingSegment !== progress.confirmedSegments)) throw new Error('日报通知分段进度无效')
+  const next = { ...current, notify: { ...current.notify, dailyReportDelivery: { ...progress } } }
+  writeJsonAtomic(file, next)
   return next
 }
 
@@ -847,6 +968,8 @@ export = {
   findResourceTaskByKindAndChannel,
   listResourceTasks,
   listResourceTasksForDiagnostics,
+  listActiveDailyReportTasks,
+  listTerminalTasksForNotification,
   countResourceTasks,
   countResourceTasksByKind,
   getTaskQueueSummary,
@@ -856,11 +979,13 @@ export = {
   failIsolatedClaimingTask,
   updateTaskStep,
   writeTaskResult,
+  readDailyReportAnalysis,
   completeTask,
   failTask,
   deferTask,
   requeueTask,
   updateTaskNotifyStatus,
+  updateDailyReportDeliveryProgress,
   cancelTask,
   cancelTaskWithResult,
   cancelResourceTasksByKind,

@@ -10,6 +10,9 @@ const { runSchedulingAndDirectiveScenarios } = require('./resource-scenarios/sch
 const { runTaskStateAndSupervisorScenarios } = require('./resource-scenarios/task-state-and-supervisor')
 const { runAuditAndPerformanceScenarios } = require('./resource-scenarios/audit-and-performance')
 const { runAdmissionAndLookupScenarios } = require('./resource-scenarios/admission-and-lookups')
+const { runDailyReportDeliveryScenarios } = require('./resource-scenarios/daily-report-delivery')
+const { runDailyReportMaintenanceScenarios } = require('./resource-scenarios/daily-report-maintenance')
+const { runDailyReportRuntimeScenarios } = require('./resource-scenarios/daily-report-runtime')
 
 // 顺序运行全部资源回归组，保持旧入口的隔离子进程和汇总语义。
 function main() {
@@ -18,6 +21,9 @@ function main() {
   runTaskStateAndSupervisorScenarios()
   runAuditAndPerformanceScenarios()
   runAdmissionAndLookupScenarios()
+  runDailyReportDeliveryScenarios()
+  runDailyReportMaintenanceScenarios()
+  runDailyReportRuntimeScenarios()
   const summary = getSummary()
   console.log(`passed: ${summary.passed}`)
   console.log(`failed: ${summary.failed}`)

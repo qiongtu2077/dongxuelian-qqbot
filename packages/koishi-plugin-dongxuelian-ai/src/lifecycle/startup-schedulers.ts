@@ -14,6 +14,7 @@ const { countResourceTasks, cleanupFinishedTasks } = require('../resource-worker
 const { planDailySlotTasks } = require('../daily-precompute/daily-slot-planner') as typeof import('../daily-precompute/daily-slot-planner')
 const { listDailyCoverage } = require('../daily-precompute/precompute-status') as typeof import('../daily-precompute/precompute-status')
 const { decideBackgroundDirective } = require('../resource-scheduler/background-directive') as typeof import('../resource-scheduler/background-directive')
+const { cleanupReportRecords } = require('../daily-precompute/report-records') as typeof import('../daily-precompute/report-records')
 
 interface StartupSchedulerContext {
   bots?: Array<{ selfId?: string; userId?: string }>
@@ -24,6 +25,8 @@ type StartupTimer = ReturnType<typeof setTimeout> | null
 
 let dailyCleanupTimer: StartupTimer = null
 let dailyPrecomputeTimer: StartupTimer = null
+let reportSourceCleanupTimer: StartupTimer = null
+let reportCleanupGeneration = 0
 const DAILY_SLOT_BACKLOG_STOP_MAX_PENDING = Math.max(1, Number(process.env.DAILY_SLOT_BACKLOG_STOP_MAX_PENDING || 8))
 
 function getStartupSchedulerErrorMessage(error: unknown): string {
@@ -52,6 +55,34 @@ function scheduleDailyStatsCleanup(ctx: StartupSchedulerContext): void {
   }
   dailyCleanupTimer = setTimeout(runDailyStatsCleanup, getNextShanghaiMidnightDelayMs())
   if (dailyCleanupTimer && typeof dailyCleanupTimer.unref === 'function') dailyCleanupTimer.unref()
+}
+
+// 以北京时间自然日中午安排来源到期检查，不修改任务状态或发送管理员消息。
+function getNextShanghaiNoonDelayMs(now: number = Date.now()): number {
+  const [year, month, day] = todayCst(new Date(now)).split('-').map(Number)
+  let noon = Date.UTC(year, month - 1, day, 4)
+  if (noon <= now) noon += 24 * 60 * 60 * 1000
+  return Math.max(1000, noon - now)
+}
+
+// 启动补检，随后五分钟轮转维护并对齐中午；终态后无需等下一天即可释放过期来源。
+function scheduleReportSourceCleanup(ctx: StartupSchedulerContext): void {
+  const generation = ++reportCleanupGeneration
+  const run = async (): Promise<void> => {
+    try {
+      const result = await cleanupReportRecords()
+      if (result.changed) logDebug(ctx, 'daily-report-source-cleanup', `scanned=${result.scanned} removed=${result.removed} retained=${result.retained}`)
+    } catch (error) {
+      ctx.logger('dongxuelian-ai').warn(`daily report source cleanup stopped: ${getStartupSchedulerErrorMessage(error)}`)
+    } finally {
+      if (generation !== reportCleanupGeneration) return
+      reportSourceCleanupTimer = setTimeout(run, Math.min(5 * 60 * 1000, getNextShanghaiNoonDelayMs()))
+      reportSourceCleanupTimer.unref?.()
+    }
+  }
+  if (reportSourceCleanupTimer) clearTimeout(reportSourceCleanupTimer)
+  reportSourceCleanupTimer = setTimeout(run, 1000)
+  reportSourceCleanupTimer.unref?.()
 }
 
 async function runDailyPrecomputePlanningTick(ctx: StartupSchedulerContext): Promise<{ parked: boolean, planned: number, channels: number, reason: string }> {
@@ -118,6 +149,11 @@ function scheduleDailyPrecomputePlanning(ctx: StartupSchedulerContext): void {
 
 
 function clearStartupSchedulers(): void {
+  reportCleanupGeneration++
+  if (reportSourceCleanupTimer) {
+    clearTimeout(reportSourceCleanupTimer)
+    reportSourceCleanupTimer = null
+  }
   if (dailyCleanupTimer) {
     clearTimeout(dailyCleanupTimer)
     dailyCleanupTimer = null
@@ -131,6 +167,8 @@ function clearStartupSchedulers(): void {
 export = {
   getNextShanghaiMidnightDelayMs,
   scheduleDailyStatsCleanup,
+  getNextShanghaiNoonDelayMs,
+  scheduleReportSourceCleanup,
   runDailyPrecomputePlanningTick,
   scheduleDailyPrecomputePlanning,
   clearStartupSchedulers,

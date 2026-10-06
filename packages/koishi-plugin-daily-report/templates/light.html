@@ -70,6 +70,7 @@ body{font-family:'Microsoft YaHei','PingFang SC','Noto Sans SC',sans-serif,'Noto
   <div class="hd">
     <h1>群聊日常分析看板</h1>
     <div class="hd-date">分析日期 // {{date}}</div>
+    <div class="hd-date">{{periodLabel}}</div>
   </div>
 
   <div class="stats">
@@ -84,7 +85,7 @@ body{font-family:'Microsoft YaHei','PingFang SC','Noto Sans SC',sans-serif,'Noto
     <div class="peak-time">{{peakHour}}</div>
   </div>
 
-  <div class="sec"><div class="bar"></div><div class="sec-t">📈 24小时活动</div></div>
+  <div class="sec"><div class="bar"></div><div class="sec-t">📈 活动时段（04时起）</div></div>
   <div class="chart-wrap">{{chartHtml}}</div>
 
   {{topicsHtml}}
@@ -97,7 +98,7 @@ body{font-family:'Microsoft YaHei','PingFang SC','Noto Sans SC',sans-serif,'Noto
 
   <div class="ft">
     <div class="ft-r">koishi-plugin-daily-report</div>
-    <div>Generated at {{timestamp}}</div>
+    <div>生成时间 {{timestamp}}（北京时间）</div>
   </div>
 </div>
 </body>

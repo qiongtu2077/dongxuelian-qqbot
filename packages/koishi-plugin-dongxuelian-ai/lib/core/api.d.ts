@@ -20,6 +20,13 @@ interface RequestExtraBody {
     _thinkingManaged?: boolean;
     _explicitThinkingKeys?: string[];
     signal?: AbortSignal;
+    _onRequestAttempt?: () => void;
+    _onRequestUsage?: (usage: {
+        readable: boolean;
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+    }) => void;
     [key: string]: unknown;
 }
 interface ToolDefinition {

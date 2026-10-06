@@ -8,12 +8,15 @@ async function run(t) {
 
   await withScenario({}, async ({ data, makeSession, run }) => {
     const { todayCst } = require('../../lib/core/utils')
+    const { createReportPeriod } = require('../../lib/daily-precompute/report-period')
+    const { appendReportRecord } = require('../../lib/daily-precompute/report-records')
     const today = todayCst()
-    const baseTs = Date.now() - 3600000 // 1 小时前：属于今天，且未过保留期
+    const cutoffMs = Date.now()
+    const baseTs = Math.max(createReportPeriod(cutoffMs).periodStartMs, cutoffMs - 3600000)
 
     const row = (index, extra = {}) => ({
       time: `10:${String(index + 1).padStart(2, '0')}:00`,
-      ts: baseTs + index,
+      ts: Math.min(baseTs + index, cutoffMs),
       user: `User${index + 1}`,
       userId: `u${index + 1}`,
       content: `早上第${index + 1}条 @消息`,
@@ -26,6 +29,12 @@ async function run(t) {
     // 且不触发 ready 阶段的启动恢复，等价于"运行期 TTL 驱逐之后"的状态）。
     data.writeJson('summary-whitelist.json', ['10001'])
     data.writeJson('today-cache-10001.json', { date: today, messages: [row(0), row(1), row(2)] })
+    // 日报完整输入来自原始索引；共享缓存回读仍独立服务“谁艾特我”，不能把其截短正文当完整来源。
+    for (const message of [row(0), row(1), row(2)]) {
+      const recordDate = new Date(message.ts + 8 * 3600000).toISOString().slice(0, 10)
+      appendReportRecord(recordDate, '10001', { messageId: message.messageId, timestamp: message.ts,
+        userId: message.userId, userName: message.user, text: message.content })
+    }
 
     // 群冷掉 6h 后来了第一条新消息：应回读磁盘历史再追加，而不是从空开始。
     await run(makeSession({

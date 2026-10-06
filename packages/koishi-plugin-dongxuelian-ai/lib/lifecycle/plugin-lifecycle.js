@@ -17,7 +17,7 @@ const { loadPersonaGroups, loadPersonaUsers, } = require('../persona/persona');
 const { loadRepeatConfig, } = require('../behavior/repeat');
 const { loadRandomVoiceRateCache, } = require('../behavior/random-voice-rate');
 const { channelTodayCache, trimChannelRuntimeCaches, cleanupDailyStatsFiles, analyzeChannelSensitive, } = require('../conversation');
-const { scheduleDailyStatsCleanup, scheduleDailyPrecomputePlanning, clearStartupSchedulers, } = require('./startup-schedulers');
+const { scheduleDailyStatsCleanup, scheduleReportSourceCleanup, scheduleDailyPrecomputePlanning, clearStartupSchedulers, } = require('./startup-schedulers');
 const { clearChannelQueues, } = require('./channel-task-queue');
 const { clearLocateSnapshots, } = require('./locate-snapshot');
 const { clearRandomPendingState, } = require('../behavior/random-state');
@@ -155,9 +155,9 @@ function registerPluginLifecycle(ctx, options = {}) {
     const onTaskCompleted = (_taskId) => {
         runResultNotifierOnce().catch(error => ctx.logger('dongxuelian-ai').warn(`event-driven result notifier failed: ${getLifecycleErrorMessage(error)}`));
     };
-    // 跨进程事件驱动：worker 子进程把任务文件写入 tasks/done/，主进程用 fs.watch 监听该目录，
+    // 跨进程事件驱动：已完成与失败目录都触发主进程通知，旧失败仍由通知版本过滤。
     // 文件出现即触发结果通知。这是主路径（Linux 下走 inotify），轮询仅作纯兜底。
-    let doneWatcher = null;
+    const doneWatchers = [];
     let doneWatchDebounceTimer = null;
     const scheduleWatchedNotify = () => {
         if (doneWatchDebounceTimer)
@@ -170,26 +170,27 @@ function registerPluginLifecycle(ctx, options = {}) {
             doneWatchDebounceTimer.unref();
     };
     const startDoneWatcher = () => {
-        if (doneWatcher)
+        if (doneWatchers.length)
             return;
-        try {
-            const doneDir = getTaskStatusDir('done');
-            fsSync.mkdirSync(doneDir, { recursive: true });
-            const watcher = fsSync.watch(doneDir, { persistent: false }, (_eventType, fileName) => {
-                // 只关心 .json 任务文件的出现/改动，忽略其它噪声事件。
-                if (fileName && !String(fileName).endsWith('.json'))
-                    return;
-                scheduleWatchedNotify();
-            });
-            watcher.on?.('error', (error) => {
-                ctx.logger('dongxuelian-ai').warn(`done watcher error, falling back to polling: ${getLifecycleErrorMessage(error)}`);
-            });
-            doneWatcher = watcher;
-            ctx.logger('dongxuelian-ai').info(`done dir watcher started: ${doneDir}`);
-        }
-        catch (error) {
-            doneWatcher = null;
-            ctx.logger('dongxuelian-ai').warn(`failed to start done dir watcher, relying on polling fallback: ${getLifecycleErrorMessage(error)}`);
+        for (const status of ['done', 'failed']) {
+            try {
+                const doneDir = getTaskStatusDir(status);
+                fsSync.mkdirSync(doneDir, { recursive: true });
+                const watcher = fsSync.watch(doneDir, { persistent: false }, (_eventType, fileName) => {
+                    // 只关心 .json 任务文件的出现/改动，忽略其它噪声事件。
+                    if (fileName && !String(fileName).endsWith('.json'))
+                        return;
+                    scheduleWatchedNotify();
+                });
+                watcher.on?.('error', (error) => {
+                    ctx.logger('dongxuelian-ai').warn(`${status} watcher error, falling back to polling: ${getLifecycleErrorMessage(error)}`);
+                });
+                doneWatchers.push(watcher);
+                ctx.logger('dongxuelian-ai').info(`${status} dir watcher started: ${doneDir}`);
+            }
+            catch (error) {
+                ctx.logger('dongxuelian-ai').warn(`failed to start ${status} dir watcher, relying on polling fallback: ${getLifecycleErrorMessage(error)}`);
+            }
         }
     };
     const stopDoneWatcher = () => {
@@ -197,12 +198,11 @@ function registerPluginLifecycle(ctx, options = {}) {
             clearTimeout(doneWatchDebounceTimer);
             doneWatchDebounceTimer = null;
         }
-        if (doneWatcher) {
+        for (const watcher of doneWatchers.splice(0)) {
             try {
-                doneWatcher.close();
+                watcher.close();
             }
             catch { /* watcher 已关闭 */ }
-            doneWatcher = null;
         }
     };
     const runResourceSupervisorOnce = async () => {
@@ -239,6 +239,7 @@ function registerPluginLifecycle(ctx, options = {}) {
         trimChannelRuntimeCaches();
         cleanupDailyStatsFiles().catch(error => ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${getLifecycleErrorMessage(error)}`));
         scheduleDailyStatsCleanup(ctx);
+        scheduleReportSourceCleanup(ctx);
         scheduleDailyPrecomputePlanning(ctx);
         try {
             const config = agentConfig.getAgentConfig();

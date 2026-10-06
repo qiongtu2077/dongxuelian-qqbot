@@ -1,14 +1,16 @@
 "use strict";
 /**
  * MODULE: S2 result-notifier。
- * 职责: 扫描 done 任务并标记通知状态，为 Koishi 发送器提供稳定接口。
+ * 职责: 通知已完成任务和新失败日报，持久化日报分段送达进度。
  * 边界: 不构造 QQ session；只有调用方注入 bot sender 时才发送消息。
  */
 const fs = require('fs');
 const path = require('path');
+const { createHash } = require('crypto');
 const { h } = require('koishi');
-const { listResourceTasks, updateTaskNotifyStatus, writeWorkerEvent } = require('./task-store');
+const { listTerminalTasksForNotification, updateTaskNotifyStatus, updateDailyReportDeliveryProgress } = require('./task-store');
 const { getTaskResultDir } = require('./task-paths');
+const { REPORT_FAILURE_TEXT, REPORT_TIMEOUT_TEXT } = require('../daily-precompute/report-analysis');
 const { guardAgentRetellReply, hasSearchFailureMaterial, redactAgentMaterial, } = require('../chat/agent-retell-guard');
 const FAILED_NOTIFY_RETRY_COOLDOWN_MS = Math.max(1000, Math.min(30 * 60 * 1000, Number(process.env.RESOURCE_NOTIFY_FAILED_RETRY_COOLDOWN_MS || 60000)));
 const AGENT_NOTIFY_HARD_SEARCH_FAILURE_RE = /(?:搜索状态：weak_hit|weak_hit|弱命中|正文质量：(?:short|empty|garbage|error|unknown)|未读到可用正文|未打开候选网页正文|不能作为事实依据)/i;
@@ -31,14 +33,16 @@ function shouldNotifyTask(task) {
         return false;
     if (notify.status === 'failed' && isFailedNotifyCoolingDown(notify))
         return false;
-    return task.status === 'done';
+    return task.status === 'done' || (task.status === 'failed' && task.kind === 'daily_report' && notify.failureNotificationVersion === 2);
 }
+// 复用发送失败冷却，避免未知送达状态在每次轮询中立刻重试。
 function isFailedNotifyCoolingDown(notify, now = Date.now()) {
     const updatedAtMs = Date.parse(String(notify?.updatedAt || ''));
     if (!Number.isFinite(updatedAtMs) || updatedAtMs <= 0)
         return false;
     return now - updatedAtMs < FAILED_NOTIFY_RETRY_COOLDOWN_MS;
 }
+// 仅按任务存储实际写回的状态计入通知结果。
 function didNotifyStatusPersist(next, expectedStatus) {
     return String(next && next.notify && next.notify.status || '') === expectedStatus;
 }
@@ -73,7 +77,7 @@ function hasReportImage(result) {
 }
 // 构造日报文字发送内容，并根据实际降级原因补一句低成本提示。
 function buildDailyReportTextMessage(result) {
-    const text = readReportText(result).trim();
+    const text = readReportText(result);
     const reason = String(result.reason || '');
     const mode = String(result.mode || '');
     let prefix = '';
@@ -83,7 +87,38 @@ function buildDailyReportTextMessage(result) {
         prefix = '当前资源不足或图片不可用，已发送文字版日报。\n\n';
     else if (mode === 'summary')
         prefix = '当前可用内容较少，已发送摘要版日报。\n\n';
-    return `${prefix}${text || '日报已生成，但文字结果为空。'}`.slice(0, 4000);
+    if (!text.trim())
+        throw new Error('日报完整文字结果为空，无法发送');
+    return `${prefix}${text}`;
+}
+// 优先在段落或换行边界分段；超长单段完整切分且不拆开代理对。
+function splitDailyReportText(text, maxChars = 3900) {
+    if (!Number.isInteger(maxChars) || maxChars < 2 || maxChars > 3900)
+        throw new Error('日报文字分段长度无效');
+    const segments = [];
+    let start = 0;
+    while (start < text.length) {
+        let end = Math.min(text.length, start + maxChars);
+        if (end < text.length) {
+            const paragraphEnd = text.lastIndexOf('\n\n', end - 2);
+            const lineEnd = text.lastIndexOf('\n', end - 1);
+            if (paragraphEnd >= start)
+                end = paragraphEnd + 2;
+            else if (lineEnd >= start)
+                end = lineEnd + 1;
+            else if (/[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end]))
+                end--;
+        }
+        segments.push(text.slice(start, end));
+        start = end;
+    }
+    return segments;
+}
+// 发送回执仅采用已核实的 OneBot 数字消息号或 Koishi 非空消息号数组。
+function hasConfirmedSendReceipt(receipt, internal) {
+    if (internal)
+        return typeof receipt === 'number' && Number.isSafeInteger(receipt) && receipt !== 0;
+    return Array.isArray(receipt) && receipt.length > 0 && receipt.every(id => typeof id === 'string' && id.trim().length > 0);
 }
 // 判断 Agent 结果里是否存在通知层必须拦截的搜索失败材料。
 function hasHardSearchFailureSignal(result) {
@@ -128,24 +163,20 @@ async function sendNotifierText(bot, target, text) {
         if (!resolved.id)
             throw new Error('private notify target is empty');
         if (typeof bot.sendPrivateMessage === 'function') {
-            await bot.sendPrivateMessage(resolved.id, text);
-            return;
+            return hasConfirmedSendReceipt(await bot.sendPrivateMessage(resolved.id, text), false);
         }
         if (bot.internal && typeof bot.internal.sendPrivateMsg === 'function') {
-            await bot.internal.sendPrivateMsg(resolved.id, [{ type: 'text', data: { text } }]);
-            return;
+            return hasConfirmedSendReceipt(await bot.internal.sendPrivateMsg(resolved.id, [{ type: 'text', data: { text } }]), true);
         }
         throw new Error('bot private text send API unavailable for result notifier');
     }
     if (!resolved.id)
         throw new Error('group notify target is empty');
     if (bot.internal && typeof bot.internal.sendGroupMsg === 'function') {
-        await bot.internal.sendGroupMsg(resolved.id, [{ type: 'text', data: { text } }]);
-        return;
+        return hasConfirmedSendReceipt(await bot.internal.sendGroupMsg(resolved.id, [{ type: 'text', data: { text } }]), true);
     }
     if (typeof bot.sendMessage === 'function') {
-        await bot.sendMessage(resolved.id, text);
-        return;
+        return hasConfirmedSendReceipt(await bot.sendMessage(resolved.id, text), false);
     }
     throw new Error('bot text send API unavailable for result notifier');
 }
@@ -155,12 +186,10 @@ async function sendNotifierImage(bot, target, imagePath) {
         throw new Error('bot unavailable for result notifier');
     const base64 = fs.readFileSync(imagePath).toString('base64');
     if (bot.internal && typeof bot.internal.sendGroupMsg === 'function') {
-        await bot.internal.sendGroupMsg(target, [{ type: 'image', data: { file: `base64://${base64}` } }]);
-        return;
+        return hasConfirmedSendReceipt(await bot.internal.sendGroupMsg(target, [{ type: 'image', data: { file: `base64://${base64}` } }]), true);
     }
     if (typeof bot.sendMessage === 'function') {
-        await bot.sendMessage(target, h.normalize(h.image(`data:image/png;base64,${base64}`)));
-        return;
+        return hasConfirmedSendReceipt(await bot.sendMessage(target, h.normalize(h.image(`data:image/png;base64,${base64}`))), false);
     }
     throw new Error('bot image send API unavailable for result notifier');
 }
@@ -175,21 +204,45 @@ function createDailyReportSender(options = {}) {
         const target = String(notify.channelKey || task?.channelKey || '');
         if (!target)
             throw new Error('daily report notify target is empty');
-        if (hasReportImage(result)) {
+        const failure = task.status === 'failed';
+        if (failure && (notify.failureNotificationVersion !== 2 || result.failureNotificationVersion !== 2
+            || !['generation_failed', 'total_timeout'].includes(String(result.failureKind))))
+            return false;
+        if (!failure && task.status !== 'done')
+            return false;
+        const saved = notify.dailyReportDelivery;
+        const mode = failure ? 'failure' : saved?.mode || (hasReportImage(result) ? 'image' : 'text');
+        const material = mode === 'failure' ? (result.failureKind === 'total_timeout' ? REPORT_TIMEOUT_TEXT : REPORT_FAILURE_TEXT)
+            : mode === 'image' ? fs.readFileSync(String(result.imagePath || '')) : buildDailyReportTextMessage(result);
+        const contentHash = createHash('sha256').update(material).digest('hex');
+        const segments = mode === 'image' ? [''] : splitDailyReportText(String(material));
+        let progress = saved || { version: 2, mode, contentHash, totalSegments: segments.length,
+            confirmedSegments: 0, pendingSegment: null, state: 'ready' };
+        // 内容改变时不能猜测旧编号对应哪段；确认过的正文不允许重新从头发送。
+        if (progress.version !== 2 || progress.mode !== mode || progress.contentHash !== contentHash || progress.totalSegments !== segments.length
+            || !Number.isInteger(progress.confirmedSegments) || progress.confirmedSegments < 0 || progress.confirmedSegments > segments.length)
+            throw new Error('日报通知内容或分段进度已变化，请到控制台检查');
+        if (progress.confirmedSegments === segments.length)
+            return true;
+        for (let index = progress.confirmedSegments; index < segments.length; index++) {
+            progress = { ...progress, pendingSegment: index, state: 'sending' };
+            updateDailyReportDeliveryProgress(task, progress);
             try {
-                await sendNotifierImage(bot, target, String(result.imagePath || ''));
-                if (logger)
-                    logger.info(`daily report image notified: task=${task.id}, target=${target}`);
-                return true;
+                const content = mode === 'text' && segments.length > 1 ? `日报文字版（第 ${index + 1}/${segments.length} 段）\n\n${segments[index]}` : segments[index];
+                const confirmed = mode === 'image' ? await sendNotifierImage(bot, target, String(result.imagePath)) : await sendNotifierText(bot, target, content);
+                if (!confirmed)
+                    throw new Error('发送接口没有返回有效消息回执');
+                progress = { ...progress, confirmedSegments: index + 1, pendingSegment: null, state: 'confirmed' };
+                updateDailyReportDeliveryProgress(task, progress);
             }
             catch (error) {
-                if (logger)
-                    logger.warn(`daily report image notify failed, falling back to text: task=${task.id}, error=${getNotifierErrorMessage(error)}`);
+                // 调用已开始却没有可落盘回执：明确未知，下一次仅重试未确认段。
+                updateDailyReportDeliveryProgress(task, { ...progress, pendingSegment: index, confirmedSegments: index, state: 'unknown' });
+                throw new Error(`日报发送结果未知（第 ${index + 1}/${segments.length} 段），已确认段不会重发：${getNotifierErrorMessage(error)}`);
             }
         }
-        await sendNotifierText(bot, target, buildDailyReportTextMessage(result));
         if (logger)
-            logger.info(`daily report text notified: task=${task.id}, target=${target}`);
+            logger.info(`daily report notified: task=${task.id}, mode=${mode}, segments=${segments.length}`);
         return true;
     };
 }
@@ -348,10 +401,9 @@ function createResourceResultSender(options = {}) {
         return false;
     };
 }
-// 扫描 done 任务并更新 notify 状态；QQ 发送由调用方 sender 注入。
+// 扫描已完成任务及带新通知标记的失败日报；发送由主进程注入。
 async function notifyCompletedTasks(options = {}) {
-    const tasks = listResourceTasks({ statuses: ['done'], limit: Math.max(1, Math.min(500, Number(options.limit || 100))) })
-        .filter(shouldNotifyTask);
+    const tasks = listTerminalTasksForNotification(shouldNotifyTask, Math.max(1, Math.min(500, Number(options.limit || 100))));
     let sent = 0;
     let skipped = 0;
     let failed = 0;
@@ -395,6 +447,7 @@ module.exports = {
     buildAgentTaskTextMessage,
     extractSessionFromPayload,
     createDailyReportSender,
+    splitDailyReportText,
     createAgentTaskSender,
     createEmotionRenderSender,
     createResourceResultSender,

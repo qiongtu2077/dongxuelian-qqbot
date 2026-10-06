@@ -7,13 +7,18 @@ interface DailyWorkerTaskLike {
     id?: string;
     kind?: string;
     channelKey?: string;
-    payload?: {
+    createdAt?: string;
+    payload?: Record<string, unknown> & {
         renderImage?: unknown;
         level?: unknown;
         detail?: unknown;
     };
 }
-declare function runDailyWorkerTask(task: DailyWorkerTaskLike): Promise<WorkerTaskResult>;
+declare function runDailyWorkerTask(task: DailyWorkerTaskLike, runtime?: {
+    deadlineMs?: number;
+    startedAtMs?: number;
+    signal?: AbortSignal;
+}): Promise<WorkerTaskResult>;
 declare const _default: {
     runDailyWorkerTask: typeof runDailyWorkerTask;
 };

@@ -49,6 +49,7 @@ const {
 } = require('../conversation') as typeof import('../conversation')
 const {
   scheduleDailyStatsCleanup,
+  scheduleReportSourceCleanup,
   scheduleDailyPrecomputePlanning,
   clearStartupSchedulers,
 } = require('./startup-schedulers') as typeof import('./startup-schedulers')
@@ -272,9 +273,9 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     runResultNotifierOnce().catch(error => ctx.logger('dongxuelian-ai').warn(`event-driven result notifier failed: ${getLifecycleErrorMessage(error)}`))
   }
 
-  // 跨进程事件驱动：worker 子进程把任务文件写入 tasks/done/，主进程用 fs.watch 监听该目录，
+  // 跨进程事件驱动：已完成与失败目录都触发主进程通知，旧失败仍由通知版本过滤。
   // 文件出现即触发结果通知。这是主路径（Linux 下走 inotify），轮询仅作纯兜底。
-  let doneWatcher: FsWatcherLike | null = null
+  const doneWatchers: FsWatcherLike[] = []
   let doneWatchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
   const scheduleWatchedNotify = (): void => {
@@ -287,29 +288,30 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
   }
 
   const startDoneWatcher = (): void => {
-    if (doneWatcher) return
-    try {
-      const doneDir = getTaskStatusDir('done')
-      fsSync.mkdirSync(doneDir, { recursive: true })
-      const watcher: FsWatcherLike = fsSync.watch(doneDir, { persistent: false }, (_eventType: string, fileName: string | null) => {
-        // 只关心 .json 任务文件的出现/改动，忽略其它噪声事件。
-        if (fileName && !String(fileName).endsWith('.json')) return
-        scheduleWatchedNotify()
-      })
-      watcher.on?.('error', (error: unknown) => {
-        ctx.logger('dongxuelian-ai').warn(`done watcher error, falling back to polling: ${getLifecycleErrorMessage(error)}`)
-      })
-      doneWatcher = watcher
-      ctx.logger('dongxuelian-ai').info(`done dir watcher started: ${doneDir}`)
-    } catch (error) {
-      doneWatcher = null
-      ctx.logger('dongxuelian-ai').warn(`failed to start done dir watcher, relying on polling fallback: ${getLifecycleErrorMessage(error)}`)
+    if (doneWatchers.length) return
+    for (const status of ['done', 'failed']) {
+      try {
+        const doneDir = getTaskStatusDir(status)
+        fsSync.mkdirSync(doneDir, { recursive: true })
+        const watcher: FsWatcherLike = fsSync.watch(doneDir, { persistent: false }, (_eventType: string, fileName: string | null) => {
+          // 只关心 .json 任务文件的出现/改动，忽略其它噪声事件。
+          if (fileName && !String(fileName).endsWith('.json')) return
+          scheduleWatchedNotify()
+        })
+        watcher.on?.('error', (error: unknown) => {
+          ctx.logger('dongxuelian-ai').warn(`${status} watcher error, falling back to polling: ${getLifecycleErrorMessage(error)}`)
+        })
+        doneWatchers.push(watcher)
+        ctx.logger('dongxuelian-ai').info(`${status} dir watcher started: ${doneDir}`)
+      } catch (error) {
+        ctx.logger('dongxuelian-ai').warn(`failed to start ${status} dir watcher, relying on polling fallback: ${getLifecycleErrorMessage(error)}`)
+      }
     }
   }
 
   const stopDoneWatcher = (): void => {
     if (doneWatchDebounceTimer) { clearTimeout(doneWatchDebounceTimer); doneWatchDebounceTimer = null }
-    if (doneWatcher) { try { doneWatcher.close() } catch { /* watcher 已关闭 */ } doneWatcher = null }
+    for (const watcher of doneWatchers.splice(0)) { try { watcher.close() } catch { /* watcher 已关闭 */ } }
   }
 
   const runResourceSupervisorOnce = async (): Promise<void> => {
@@ -346,6 +348,7 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     trimChannelRuntimeCaches()
     cleanupDailyStatsFiles().catch(error => ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${getLifecycleErrorMessage(error)}`))
     scheduleDailyStatsCleanup(ctx)
+    scheduleReportSourceCleanup(ctx)
     scheduleDailyPrecomputePlanning(ctx)
     try {
       const config = agentConfig.getAgentConfig()

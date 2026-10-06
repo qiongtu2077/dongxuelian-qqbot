@@ -1,16 +1,15 @@
-/**
- * MODULE: 数据收集模块。
- * 职责: 读取今日缓存，计算统计数据。无缓存时返回null。
- */
-const fs = require('fs')
-const path = require('path')
-
-const { DATA_DIR } = require('./config') as typeof import('./config')
+/** 日报输入收集：按提交窗口扫描原始索引，统计全窗口并选择最新分析消息。 */
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
-const { todayCst, getShanghaiHourFromTs, safeChannelKey } = loadManagementModule('core.utils')
+const { getShanghaiHourFromTs, formatShanghaiTime24h } = loadManagementModule('core.utils')
+const { createReportPeriod, isTimestampInReportPeriod } = loadManagementModule('daily.reportPeriod')
+const { readReportRecords } = loadManagementModule('daily.reportRecords')
+type ReportPeriod = ReturnType<typeof createReportPeriod>
+type SourceRecord = Parameters<NonNullable<NonNullable<Parameters<typeof readReportRecords>[2]>['onRecord']>>[0]
 
 interface ReportMessage {
+  analysisId?: number
+  messageId?: string
   time?: string
   ts?: number
   user?: string
@@ -28,6 +27,7 @@ interface TopMember {
 
 interface ReportData {
   date: string
+  reportPeriod: ReportPeriod
   totalMessages: number
   activeMembers: number
   emojiCount: number
@@ -39,233 +39,127 @@ interface ReportData {
   analysisMessages: ReportMessage[]
   sampledMessages: number
   truncatedMessages: number
-  precomputedContext?: string
-  precomputedCoverageRate?: number
+  windowMessageCount: number
+  selectedMessageCount: number
+  excludedByLimitCount: number
+  sourceCompleteness: 'complete' | 'incomplete' | 'legacy_unknown'
 }
 
-interface TodayCache {
-  date?: string
-  messages?: ReportMessage[]
+interface MemberAccumulator extends TopMember { firstTs: number; lastTs: number }
+interface ReportStats {
+  totalMessages: number
+  emojiCount: number
+  totalChars: number
+  hourlyActivity: number[]
+  members: Map<string | number, MemberAccumulator>
 }
 
-const MAX_CACHE_FILE_BYTES = parsePositiveInt(process.env.DAILY_REPORT_MAX_CACHE_FILE_BYTES, 8 * 1024 * 1024, 512 * 1024, 64 * 1024 * 1024)
 const MAX_ANALYSIS_MESSAGES = parsePositiveInt(process.env.DAILY_REPORT_MAX_ANALYSIS_MESSAGES, 4000, 200, 10000)
-const CQ_EMOJI_RE = /\[CQ:(?:face|mface)\b[^\]]*\]/gi
-const XML_EMOJI_RE = /<(?:face|mface)\b[^>]*\/?>/gi
-const TEXT_EMOJI_RE = /【QQ表情[^】]*】/g
-const UNICODE_EMOJI_RE = /\p{Extended_Pictographic}/gu
+const EMOJI_PATTERNS = [/\[CQ:(?:face|mface)\b[^\]]*\]/gi, /<(?:face|mface)\b[^>]*\/?>/gi, /【QQ表情[^】]*】/g, /\p{Extended_Pictographic}/gu]
 
-/** 计算上海日历日边界，用于把 today-cache 中跨日恢复的消息过滤掉。 */
-function getShanghaiDayBounds(today: string): { startMs: number, endMs: number } | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(today || ''))) return null
-  const startMs = Date.parse(`${today}T00:00:00.000+08:00`)
-  const endMs = Date.parse(`${today}T23:59:59.999+08:00`)
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null
-  return { startMs, endMs }
-}
+// --- 消息与统计 ---
 
-/** 判断消息时间戳是否属于本次日报日期，且不晚于当前生成时刻。 */
-function isMessageInReportDay(msg: ReportMessage | null | undefined, today: string, now = Date.now()): boolean {
-  const ts = Number(msg && msg.ts)
-  if (!Number.isFinite(ts) || ts <= 0) return false
-  const bounds = getShanghaiDayBounds(today)
-  if (!bounds) return false
-  const cappedEnd = Math.min(bounds.endMs, Number.isFinite(now) ? now : Date.now())
-  return ts >= bounds.startMs && ts <= cappedEnd
-}
-
-/** 旧缓存 time 字符串解析为 0–23（尽力兼容 24h / 12h en-US） */
+// 保留旧显示时间字符串的小时解析；业务日期只能由明确时间戳判断。
 function hourFromLegacyTimeString(timeStr: unknown): number {
-  if (!timeStr || typeof timeStr !== 'string') return NaN
-  const s = timeStr.trim()
-  const m24 = s.match(/^(\d{1,2}):(\d{2})/)
-  if (!m24) return NaN
-  let h = parseInt(m24[1], 10)
-  const rest = s.slice(m24[0].length).toUpperCase()
-  if (rest.includes('PM') && h < 12) h += 12
-  if (rest.includes('AM') && h === 12) h = 0
-  if (h >= 0 && h < 24) return h
-  return NaN
+  if (typeof timeStr !== 'string') return NaN
+  const match = timeStr.trim().match(/^(\d{1,2}):(\d{2})/)
+  if (!match) return NaN
+  let hour = Number(match[1])
+  const suffix = timeStr.slice(match[0].length).toUpperCase()
+  if (suffix.includes('PM') && hour < 12) hour += 12
+  if (suffix.includes('AM') && hour === 12) hour = 0
+  return hour >= 0 && hour < 24 ? hour : NaN
 }
 
-function messageHourShanghai(msg: ReportMessage | null | undefined): number {
-  if (msg && typeof msg.ts === 'number' && Number.isFinite(msg.ts)) {
-    const h = getShanghaiHourFromTs(msg.ts)
-    if (!isNaN(h) && h >= 0 && h < 24) return h
-  }
-  return hourFromLegacyTimeString(msg && msg.time)
+// 计算消息北京时间小时，原始输入有时间戳时不依赖显示字符串。
+function messageHourShanghai(message: ReportMessage | null | undefined): number {
+  if (typeof message?.ts === 'number' && Number.isFinite(message.ts)) return getShanghaiHourFromTs(message.ts)
+  return hourFromLegacyTimeString(message?.time)
 }
 
-function collectReportData(channelKey: unknown): ReportData | null {
-  if (!DATA_DIR) return null
-
-  const rawKey = String(channelKey)
-  const key = rawKey ? safeChannelKey(rawKey) : rawKey
-  const today = todayCst()
-
-  const cacheFile = path.join(DATA_DIR, `today-cache-${key}.json`)
-
-  let cache: TodayCache | null = null
-  try {
-    const stat = fs.statSync(cacheFile)
-    if (!stat.isFile() || stat.size > MAX_CACHE_FILE_BYTES) return null
-    const raw = fs.readFileSync(cacheFile, 'utf8')
-    cache = JSON.parse(raw)
-  } catch {
-    return null
-  }
-
-  if (!cache || !cache.messages || !Array.isArray(cache.messages) || cache.messages.length === 0) {
-    return null
-  }
-
-  const data = processMessages(cache.messages, today)
-  if (!data) return null
-  attachPrecomputedContext(data, rawKey)
-  return data
+// 检查测试或直接调用提供的日期与四点业务日是否一致。
+function isMessageInReportDay(message: ReportMessage | null | undefined, reportDate: string, cutoffMs = Date.now()): boolean {
+  const period = createReportPeriod(cutoffMs)
+  return period.reportDate === reportDate && isTimestampInReportPeriod(Number(message?.ts), period)
 }
 
-// 动态读取 S3 final-input；不可用时保持日报旧路径。
-function readPrecomputedFinalInput(date: string, channelKey: string): Record<string, unknown> | null {
-  try {
-    const merge = loadManagementModule('daily.summaryMerge')
-    const status = loadManagementModule('resource.precomputeStatus')
-    const generated = merge && typeof merge.mergeDailyFinalInput === 'function'
-      ? merge.mergeDailyFinalInput(date, channelKey)
-      : null
-    if (generated && typeof generated === 'object') return generated
-    if (status && typeof status.readDailyFinalInput === 'function') return status.readDailyFinalInput(date, channelKey)
-  } catch {
-    /* non-critical: S3 precompute is an optimization, today-cache remains authoritative fallback */
-  }
-  return null
-}
-
-// 将 S3 final-input 压成日报 AI 可直接使用的短上下文。
-function buildPrecomputedContext(finalInput: Record<string, unknown> | null): string {
-  if (!finalInput) return ''
-  const lines: string[] = []
-  const slotCount = Number(finalInput.slotCount || 0)
-  const totalMessages = Number(finalInput.totalMessages || 0)
-  const coveredMessages = Number(finalInput.coveredMessages || 0)
-  const coverageRate = Number(finalInput.coverageRate || 0)
-  lines.push(`[S3预计算] slot=${slotCount}, total=${totalMessages}, covered=${coveredMessages}, coverage=${coverageRate}`)
-  const keywords = Array.isArray(finalInput.keywords) ? finalInput.keywords.map(String).filter(Boolean).slice(0, 30) : []
-  if (keywords.length) lines.push(`关键词：${keywords.join('、')}`)
-  const slots = Array.isArray(finalInput.slots) ? finalInput.slots.slice(0, 20) : []
-  if (slots.length) {
-    lines.push('分片统计：')
-    for (const raw of slots) {
-      const slot = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
-      const stats = slot.stats && typeof slot.stats === 'object' ? slot.stats as Record<string, unknown> : {}
-      const slotKeywords = Array.isArray(slot.keywords) ? slot.keywords.map(String).filter(Boolean).slice(0, 8).join('、') : ''
-      lines.push(`- ${slot.slotId || 'slot'}：消息${slot.messageCount || 0}，活跃${stats.activeUsers || 0}，媒体${stats.mediaCount || 0}${slotKeywords ? `，关键词${slotKeywords}` : ''}`)
-    }
-  }
-  const tail = Array.isArray(finalInput.uncoveredTail) ? finalInput.uncoveredTail.slice(-80) : []
-  if (tail.length) {
-    lines.push('未覆盖尾部消息：')
-    for (const raw of tail) {
-      const msg = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
-      lines.push(`[${msg.userName || msg.userId || '群友'}] ${String(msg.text || '').slice(0, 120)}`)
-    }
-  }
-  return lines.join('\n').slice(0, 12000)
-}
-
-// 给 ReportData 附加 S3 预计算上下文。
-function attachPrecomputedContext(data: ReportData, channelKey: string): void {
-  const finalInput = readPrecomputedFinalInput(data.date, channelKey)
-  const context = buildPrecomputedContext(finalInput)
-  if (!context) return
-  data.precomputedContext = context
-  data.precomputedCoverageRate = Number(finalInput && finalInput.coverageRate || 0)
-}
-
-/** 统计 CQ、XML、可读 QQ 表情标记和 Unicode emoji 数量。 */
+// 统计现有可读 QQ 表情、协议表情和 Unicode 表情数量。
 function countEmojiInContent(content: unknown): number {
   const text = String(content || '')
-  if (!text) return 0
-  let total = 0
-  for (const re of [CQ_EMOJI_RE, XML_EMOJI_RE, TEXT_EMOJI_RE, UNICODE_EMOJI_RE]) {
-    re.lastIndex = 0
-    total += (text.match(re) || []).length
-  }
-  return total
+  let count = 0
+  for (const pattern of EMOJI_PATTERNS) { pattern.lastIndex = 0; count += (text.match(pattern) || []).length }
+  return count
 }
 
-function processMessages(messages: ReportMessage[], today: string, now = Date.now()): ReportData | null {
-  const reportMessages = (Array.isArray(messages) ? messages : []).filter(msg => isMessageInReportDay(msg, today, now))
-  if (!reportMessages.length) return null
+// 把已收录正文和已知媒体提示转成模型输入，不额外触发下载或识图。
+function sourceRecordToMessage(record: SourceRecord): ReportMessage {
+  const mediaText = record.media.map(item => item.type === 'voice' ? '【已收录语音提示】' : item.type === 'message_record' ? '【已收录转发消息提示】' : '【已收录媒体提示】').join('')
+  return { messageId: record.messageId, ts: record.timestamp, time: formatShanghaiTime24h(record.timestamp), user: record.userName || '群友', userId: record.userId, content: record.text + mediaText }
+}
 
-  const totalMessages = reportMessages.length
-  const analysisMessages = reportMessages.length > MAX_ANALYSIS_MESSAGES ? reportMessages.slice(-MAX_ANALYSIS_MESSAGES) : reportMessages
+// 建立只保存数值与成员汇总的统计状态，正文候选由读取器有界保留。
+function createReportStats(): ReportStats {
+  return { totalMessages: 0, emojiCount: 0, totalChars: 0, hourlyActivity: new Array<number>(24).fill(0), members: new Map() }
+}
 
-  const memberMap = new Map<string | number, TopMember>()
-  for (const msg of reportMessages) {
-    const uid = msg.userId || msg.user || 'unknown'
-    if (!memberMap.has(uid)) {
-      memberMap.set(uid, { userId: uid, name: msg.user || '群友', msgCount: 0, firstMsg: msg.time, lastMsg: msg.time })
-    }
-    const m = memberMap.get(uid)
-    if (!m) continue
-    m.msgCount++
-    if (msg.time) m.lastMsg = msg.time
+// 累积窗口统计；乱序写入时按真实时间维护成员首次与末次发言。
+function accumulateMessage(stats: ReportStats, message: ReportMessage): void {
+  stats.totalMessages += 1
+  stats.emojiCount += countEmojiInContent(message.content)
+  stats.totalChars += String(message.content || '').replace(/\[CQ:[^\]]+\]/g, '').replace(/<(?:face|mface)\b[^>]*\/?>/gi, '').replace(/https?:\/\/\S+/g, '').replace(/【[^】]*】/g, '').trim().length
+  const hour = messageHourShanghai(message)
+  if (Number.isInteger(hour) && hour >= 0 && hour < 24) stats.hourlyActivity[hour] += 1
+  const uid = message.userId || message.user || 'unknown'
+  const ts = Number(message.ts)
+  let member = stats.members.get(uid)
+  if (!member) {
+    member = { userId: uid, name: message.user || '群友', msgCount: 0, firstMsg: message.time, lastMsg: message.time, firstTs: ts, lastTs: ts }
+    stats.members.set(uid, member)
   }
-  const activeMembers = memberMap.size
-  if (activeMembers === 0) return null
+  member.msgCount += 1
+  if (ts < member.firstTs) { member.firstTs = ts; member.firstMsg = message.time }
+  if (ts >= member.lastTs) { member.lastTs = ts; member.lastMsg = message.time; member.name = message.user || member.name }
+}
 
-  const topMembers = [...memberMap.values()]
-    .sort((a, b) => b.msgCount - a.msgCount)
-    .slice(0, 20)
-
-  let emojiCount = 0
-  for (const msg of reportMessages) emojiCount += countEmojiInContent(msg.content)
-
-  let totalChars = 0
-  for (const msg of reportMessages) {
-    if (!msg.content) continue
-    const text = msg.content
-      .replace(/\[CQ:[^\]]+\]/g, '')
-      .replace(/<(?:face|mface)\b[^>]*\/?>/gi, '')
-      .replace(/https?:\/\/\S+/g, '')
-      .replace(/【[^】]*】/g, '')
-      .trim()
-    totalChars += text.length
-  }
-
-  const hourlyActivity = new Array(24).fill(0)
-  for (const msg of reportMessages) {
-    const hour = messageHourShanghai(msg)
-    if (!isNaN(hour) && hour >= 0 && hour < 24) {
-      hourlyActivity[hour]++
-    }
-  }
-
-  let maxHour = 0
-  let maxCount = 0
-  for (let i = 0; i < 24; i++) {
-    if (hourlyActivity[i] > maxCount) {
-      maxCount = hourlyActivity[i]
-      maxHour = i
-    }
-  }
-  const peakHour = `${String(maxHour).padStart(2, '0')}:00-${String(maxHour).padStart(2, '0')}:59`
-
+// 将全窗口统计与独立入选记录组合成同一份日报数据。
+function finishReportData(stats: ReportStats, period: ReportPeriod, messages: ReportMessage[], sourceCompleteness: ReportData['sourceCompleteness']): ReportData | null {
+  if (!stats.totalMessages) return null
+  const topMembers = [...stats.members.values()].sort((a, b) => b.msgCount - a.msgCount).slice(0, 20).map(({ firstTs, lastTs, ...member }) => member)
+  const peak = stats.hourlyActivity.indexOf(Math.max(...stats.hourlyActivity))
+  const prefix = String(peak).padStart(2, '0')
   return {
-    date: today,
-    totalMessages,
-    activeMembers,
-    emojiCount,
-    totalChars,
-    hourlyActivity,
-    peakHour,
-    topMembers,
-    messages: analysisMessages,
-    analysisMessages,
-    sampledMessages: analysisMessages.length,
-    truncatedMessages: Math.max(0, reportMessages.length - analysisMessages.length),
+    date: period.reportDate, reportPeriod: period, totalMessages: stats.totalMessages, activeMembers: stats.members.size,
+    emojiCount: stats.emojiCount, totalChars: stats.totalChars, hourlyActivity: stats.hourlyActivity, peakHour: `${prefix}:00-${prefix}:59`, topMembers,
+    messages, analysisMessages: messages, sampledMessages: messages.length, truncatedMessages: stats.totalMessages - messages.length,
+    windowMessageCount: stats.totalMessages, selectedMessageCount: messages.length, excludedByLimitCount: stats.totalMessages - messages.length, sourceCompleteness,
   }
 }
 
-export = { collectReportData, processMessages, messageHourShanghai, isMessageInReportDay, countEmojiInContent, buildPrecomputedContext }
+// --- 固定窗口入口 ---
+
+// 扫描两份自然日原始索引；预计算文本不再作为日报话题分析输入。
+function collectReportData(channelKey: unknown, period: ReportPeriod = createReportPeriod(Date.now())): ReportData | null {
+  const stats = createReportStats()
+  const result = readReportRecords(String(channelKey), period, { maxMessages: MAX_ANALYSIS_MESSAGES, onRecord: record => accumulateMessage(stats, sourceRecordToMessage(record)) })
+  const messages = result.records.map(record => ({ ...sourceRecordToMessage(record), analysisId: record.analysisId }))
+  return finishReportData(stats, period, messages, result.sourceCompleteness)
+}
+
+// 对已提供的消息使用相同四点窗口、稳定排序和末尾上限，供行为测试与明确调用方使用。
+function processMessages(messages: ReportMessage[], reportDate: string, cutoffMs = Date.now()): ReportData | null {
+  const period = createReportPeriod(cutoffMs)
+  if (period.reportDate !== reportDate) throw new Error('日报日期与发起时间不一致')
+  const stats = createReportStats()
+  const seen = new Set<string>()
+  const valid = messages.filter(message => {
+    if (!isTimestampInReportPeriod(Number(message.ts), period)) return false
+    if (message.messageId && seen.has(message.messageId)) return false
+    if (message.messageId) seen.add(message.messageId)
+    return true
+  }).map((message, order) => ({ message, order })).sort((a, b) => Number(a.message.ts) - Number(b.message.ts) || a.order - b.order).map(item => item.message)
+  for (const message of valid) accumulateMessage(stats, message)
+  const selected = valid.slice(-MAX_ANALYSIS_MESSAGES).map((message, index) => ({ ...message, analysisId: index + 1 }))
+  return finishReportData(stats, period, selected, 'legacy_unknown')
+}
+
+export = { collectReportData, processMessages, messageHourShanghai, isMessageInReportDay, countEmojiInContent }

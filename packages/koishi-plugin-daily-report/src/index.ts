@@ -9,6 +9,7 @@ const { TIMEOUTS, DATA_DIR } = require('./config') as typeof import('./config')
 const { getErrorMessage } = require('./error-utils') as typeof import('./error-utils')
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
+const { createReportPeriod } = loadManagementModule('daily.reportPeriod')
 
 interface LoggerLike {
   info(...args: unknown[]): void
@@ -112,8 +113,8 @@ function safeResourceIdPart(value: unknown, fallback = 'unknown'): string {
 }
 
 // 生成日报任务 ID，供 S1、S2、S0 串联同一个任务。
-function createDailyReportTaskId(channelKey: unknown, detail: boolean): string {
-  return `daily_report-${Date.now()}-${safeResourceIdPart(channelKey)}-${detail ? 'detail' : 'basic'}`
+function createDailyReportTaskId(channelKey: unknown, detail: boolean, submittedAtMs: number): string {
+  return `daily_report-${submittedAtMs}-${safeResourceIdPart(channelKey)}-${detail ? 'detail' : 'basic'}`
 }
 
 // 从 Koishi session 中提取日报触发用户 ID。
@@ -159,7 +160,7 @@ async function sendDailyAdmissionNotice(ctx: DailyReportContextLike, session: Da
 }
 
 // 向 S2 写入日报任务；实际生成和发送由 daily-worker + result-notifier 完成。
-function submitDailyResourceTask(runtime: ResourceRuntimeLike, taskId: string, channelKey: unknown, userId: string, detail: boolean): ResourceTask {
+function submitDailyResourceTask(runtime: ResourceRuntimeLike, taskId: string, channelKey: unknown, userId: string, detail: boolean, submittedAtMs: number): ResourceTask {
   return runtime.tasks.submitResourceTask({
     id: taskId,
     kind: 'daily_report',
@@ -168,7 +169,7 @@ function submitDailyResourceTask(runtime: ResourceRuntimeLike, taskId: string, c
     userId,
     priority: detail ? 20 : 25,
     timeoutMs: 600000,
-    payload: { detail },
+    payload: { detail, ...createReportPeriod(submittedAtMs) },
     notify: { target: 'qq-group', channelKey: String(channelKey || ''), status: 'pending' },
   })
 }
@@ -247,6 +248,8 @@ function apply(ctx: DailyReportContextLike): void {
     const isBasic = content === '群聊日报' || content === '/群聊日报'
 
     if (isFull || isBasic) {
+      // 在识别命令时固定输入截止，排队、提交和执行时刻都不能改写。
+      const submittedAtMs = Date.now()
       const maintenanceText = readMaintenanceReplyText()
       if (maintenanceText) {
         await safeSendDailyReport(ctx, session, maintenanceText, '维护模式提示')
@@ -295,7 +298,7 @@ function apply(ctx: DailyReportContextLike): void {
       const modeLabel = isFull ? '详细日报' : '日报'
       inFlightReports.set(channelKey, Date.now())
       const userId = getDailyReportUserId(session)
-      const taskId = createDailyReportTaskId(channelKey, isFull)
+      const taskId = createDailyReportTaskId(channelKey, isFull, submittedAtMs)
       const resourceRuntime = getResourceRuntime(ctx)
 
       try {
@@ -312,7 +315,7 @@ function apply(ctx: DailyReportContextLike): void {
 
         const budget = buildDailyReportBudget(taskId, channelKey, userId, isFull)
         const admission = resourceRuntime.admission.admitTask(budget)
-        const task = submitDailyResourceTask(resourceRuntime, taskId, channelKey, userId, isFull)
+        const task = submitDailyResourceTask(resourceRuntime, taskId, channelKey, userId, isFull, submittedAtMs)
         if (admission.decision === 'reject' || admission.decision === 'silent_drop') {
           resourceRuntime.tasks.failTask(task, new Error(String(admission.reason || admission.decision)), { level: 'L4', mode: 'rejected', reason: admission.reason || admission.decision })
           await sendDailyAdmissionNotice(ctx, session, 'reject', String(admission.reason || ''))

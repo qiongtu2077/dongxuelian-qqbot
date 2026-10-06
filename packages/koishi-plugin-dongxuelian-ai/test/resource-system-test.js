@@ -518,6 +518,8 @@ async function main() {
     taskError: failedTask && failedTask.error,
     resultOk: result && result.ok,
     resultError: result && result.error,
+    failureKind: result && result.failureKind,
+    failureNotificationVersion: failedTask && failedTask.notify && failedTask.notify.failureNotificationVersion,
     timeoutEventCount: timeoutEvents.length,
     processTreeTerminatedCount: processTreeTerminated.length,
     recordedCleanupCount: recordedCleanup.length,
@@ -530,7 +532,8 @@ async function main() {
     && observedExitCode === 76
     && failedTask && failedTask.status === 'failed'
     && result && result.ok === false
-    && /timed out/i.test(String(result.error || failedTask.error || ''))
+    && result.failureKind === 'total_timeout'
+    && failedTask.notify.failureNotificationVersion === 2
     && timeoutEvents.length >= 1
     && fakeChromiumPid
     && fakeAliveAfterTimeout === false

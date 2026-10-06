@@ -191,22 +191,29 @@ async function run() {
   // ready 之后才写 done 文件 —— 模拟 worker 子进程完成任务、主进程没有 in-process 事件。
   // target=none 的 done 任务会被 notifier 标 skipped，是 notifier 确实跑过的可观测证据。
   fs.writeFileSync(doneFile, JSON.stringify({ ...base, status: 'done', notify: { target: 'none', status: 'pending' } }))
+  const failedId = 'daily-report-failed-watch-eventdriven-1'
+  const failedFile = taskPaths.getTaskFile('failed', 'daily_report', failedId)
+  fs.writeFileSync(failedFile, JSON.stringify({ ...base, id: failedId, kind: 'daily_report', status: 'failed',
+    notify: { target: 'none', status: 'pending', failureNotificationVersion: 2 } }))
 
   // 只等 fs.watch + debounce，不主动调用 notifier。最多等 2.5s（远小于 60s 轮询）。
   let notifyStatus = 'pending'
+  let failureNotifyStatus = 'pending'
   const deadline = Date.now() + 2500
   while (Date.now() < deadline) {
     await sleep(60)
     try {
       const task = JSON.parse(fs.readFileSync(doneFile, 'utf8'))
       notifyStatus = task.notify && task.notify.status
-      if (notifyStatus && notifyStatus !== 'pending') break
+      const failedTask = JSON.parse(fs.readFileSync(failedFile, 'utf8'))
+      failureNotifyStatus = failedTask.notify && failedTask.notify.status
+      if (notifyStatus && notifyStatus !== 'pending' && failureNotifyStatus !== 'pending') break
     } catch (e) { /* 文件可能正被原子替换，重试 */ }
   }
 
   for (const handler of disposeHandlers) { try { handler() } catch (e) {} }
 
-  const summary = { notifyStatusAfterWatch: notifyStatus }
+  const summary = { notifyStatusAfterWatch: notifyStatus, failureNotifyStatusAfterWatch: failureNotifyStatus }
   console.log(JSON.stringify(summary, null, 2))
   process.exitCode = 0
 }
@@ -224,6 +231,7 @@ run().catch(error => {
   }, 30000)
   if (!summary) return
   check('done dir fs.watch triggers notifier without polling', summary.notifyStatusAfterWatch === 'skipped', JSON.stringify(summary))
+  check('failed daily dir fs.watch triggers notifier without polling', summary.failureNotifyStatusAfterWatch === 'skipped', JSON.stringify(summary))
 }
 
 // === Scenario 2: S3 red 内存下不 planning（green 对照） ===

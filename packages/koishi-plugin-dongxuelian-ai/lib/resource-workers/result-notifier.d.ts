@@ -45,6 +45,7 @@ interface ResultNotifierSessionLike {
     [key: string]: unknown;
 }
 declare function readTaskResult(taskId: string): ResultNotifierResult;
+declare function splitDailyReportText(text: string, maxChars?: number): string[];
 declare function hasHardSearchFailureSignal(result: AgentNotifyResultLike): boolean;
 declare function isChatHeavyToolTask(task: ResourceTask | null | undefined): boolean;
 declare function hasAgentSendableText(result: ResultNotifierResult): boolean;
@@ -69,6 +70,7 @@ declare const _default: {
     buildAgentTaskTextMessage: typeof buildAgentTaskTextMessage;
     extractSessionFromPayload: typeof extractSessionFromPayload;
     createDailyReportSender: typeof createDailyReportSender;
+    splitDailyReportText: typeof splitDailyReportText;
     createAgentTaskSender: typeof createAgentTaskSender;
     createEmotionRenderSender: typeof createEmotionRenderSender;
     createResourceResultSender: typeof createResourceResultSender;

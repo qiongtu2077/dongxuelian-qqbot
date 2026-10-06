@@ -7,6 +7,7 @@
 const path = require('path');
 const { getTaskResultDir } = require('./task-paths');
 const { updateTaskStep, writeWorkerEvent } = require('./task-store');
+const { resolveReportPeriod } = require('../daily-precompute/report-period');
 function isMissingCandidateModule(error, candidate) {
     if (!error || typeof error !== 'object')
         return false;
@@ -49,11 +50,12 @@ function updateDailyWorkerStep(task, step) {
     }
 }
 // 独立日报 worker 只生成结果文件，发送由 Koishi result-notifier 完成。
-async function runDailyWorkerTask(task) {
+async function runDailyWorkerTask(task, runtime = {}) {
     const taskId = String(task?.id || '');
     const payload = task?.payload || {};
     const outputDir = getTaskResultDir(taskId);
     const renderImage = payload.renderImage !== false && payload.level !== 'text';
+    const reportPeriod = resolveReportPeriod(payload, String(task.createdAt || ''));
     const pipeline = loadDailyReportPipeline();
     writeWorkerEvent('daily_worker_pipeline_started', { taskId, channelKey: task?.channelKey || '', renderImage });
     const result = await pipeline.generateDailyReportResult({
@@ -62,6 +64,11 @@ async function runDailyWorkerTask(task) {
         detail: !!payload.detail,
         outputDir,
         renderImage,
+        reportPeriod,
+        periodBackfilled: reportPeriod.periodBackfilled,
+        deadlineMs: runtime.deadlineMs,
+        startedAtMs: runtime.startedAtMs,
+        signal: runtime.signal,
         onStep: step => updateDailyWorkerStep(task, step),
     });
     writeWorkerEvent('daily_worker_pipeline_finished', { taskId, mode: result.mode || '', reason: result.reason || '' });

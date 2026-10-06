@@ -39,6 +39,10 @@ interface ReportData {
     totalChars?: number;
     peakHour?: string;
     hourlyActivity?: number[];
+    reportPeriod?: {
+        periodStartMs: number;
+        cutoffMs: number;
+    };
 }
 interface AnalysisResult {
     topics?: Topic[];
@@ -50,6 +54,10 @@ interface AnalysisResult {
 interface RenderContext {
     taskId?: string;
     source?: string;
+    deadlineMs?: number;
+    workDeadlineMs?: number;
+    signal?: AbortSignal;
+    now?: () => number;
 }
 interface RenderMemoryStatus {
     availableMb: number | null;

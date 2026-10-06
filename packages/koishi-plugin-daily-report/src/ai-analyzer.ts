@@ -9,8 +9,23 @@ const { requestChatCompletions } = loadManagementModule('core.api')
 const { createDefaultAnalysisResult, createTopic, createGoldenQuote, createUserTitle } = require('./models') as typeof import('./models')
 const { getErrorMessage } = require('./error-utils') as typeof import('./error-utils')
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
+const { createReportAnalysisDiagnostics, ReportAnalysisError } = loadManagementModule('daily.reportAnalysis')
+const { summarizeCompleteInput, selectRepresentativeMessages, requestAnalysisUnit } = require('./complete-input') as typeof import('./complete-input')
+type AnalysisRuntime = import('./complete-input').AnalysisRuntime
+type SharedSummary = Awaited<ReturnType<typeof summarizeCompleteInput>>
+
+interface AnalysisOptions {
+  deadlineMs?: number
+  workDeadlineMs?: number
+  stageSoftDeadlinesMs?: AnalysisRuntime['stageSoftDeadlinesMs']
+  signal?: AbortSignal
+  now?: () => number
+  onProgress?: AnalysisRuntime['onProgress']
+}
 
 interface ReportMessage {
+  analysisId?: number
+  ts?: number
   time?: string
   user?: string
   sender?: string
@@ -35,6 +50,10 @@ interface ReportData {
   messages?: ReportMessage[]
   precomputedContext?: string
   precomputedCoverageRate?: number
+  windowMessageCount?: number
+  sourceCompleteness?: AnalysisMeta['sourceCompleteness']
+  reportPeriod?: AnalysisMeta['reportPeriod']
+  periodBackfilled?: boolean
 }
 
 interface TokenUsage {
@@ -88,14 +107,7 @@ interface AnalysisResult {
   meta?: AnalysisMeta
 }
 
-interface AnalysisMeta {
-  warnings: string[]
-  stages: {
-    compression: string
-    basic: string
-    full: string
-  }
-}
+type AnalysisMeta = ReturnType<typeof createReportAnalysisDiagnostics>
 
 interface BasicAnalysis {
   topics: Topic[]
@@ -119,11 +131,7 @@ interface MessageMaps {
 
 type JsonRecord = Record<string, unknown>
 
-const COMPRESS_BATCH_SIZE = parsePositiveInt(process.env.DAILY_REPORT_COMPRESS_BATCH_SIZE, 100, 20, 200)
-const MAX_COMPRESS_BATCHES = parsePositiveInt(process.env.DAILY_REPORT_MAX_COMPRESS_BATCHES, 40, 1, 60)
-const MAX_COMPRESSED_CHARS = parsePositiveInt(process.env.DAILY_REPORT_MAX_COMPRESSED_CHARS, 12000, 2000, 40000)
 const REPORT_AI_TEMPERATURE = parsePositiveFloat(process.env.DAILY_REPORT_AI_TEMPERATURE, 0.2, 0, 1)
-const REPORT_COMPRESS_TIMEOUT_MS = parsePositiveInt(process.env.DAILY_REPORT_COMPRESS_TIMEOUT_MS, 45000, 5000, 180000)
 const REPORT_ANALYSIS_TIMEOUT_MS = parsePositiveInt(process.env.DAILY_REPORT_AI_TIMEOUT_MS, 60000, 10000, 180000)
 
 // --- Config helpers --- #
@@ -222,24 +230,6 @@ function buildMessageMaps(messages: unknown): MessageMaps {
 // Detects placeholders that should not be rendered as real quote speakers.
 function isGenericSpeaker(name: string): boolean {
   return !name || /^(?:群友|某人|用户|匿名|unknown|unknown user)$/i.test(name)
-}
-
-// Appends a warning to the analysis metadata.
-function addMetaWarning(meta: AnalysisMeta | null | undefined, message: string): void {
-  if (!meta || !message) return
-  meta.warnings.push(message)
-}
-
-// Creates a metadata object that records degraded analysis stages.
-function createAnalysisMeta(): AnalysisMeta {
-  return {
-    warnings: [],
-    stages: {
-      compression: 'ai',
-      basic: 'ai',
-      full: 'ai',
-    },
-  }
 }
 
 // Extracts a balanced JSON object or array from AI text, including fenced blocks.
@@ -549,253 +539,199 @@ function buildFallbackFullAnalysis(data: ReportData | null | undefined): FullAna
   }
 }
 
-// Fills missing basic sections from deterministic fallback data.
-function completeBasicAnalysis(result: AnalysisResult, data: ReportData): AnalysisResult {
-  const fallback = buildFallbackBasicAnalysis(data)
-  if (!Array.isArray(result.topics) || result.topics.length === 0) {
-    result.topics = fallback.topics
-  }
-  if (!Array.isArray(result.goldenQuotes) || result.goldenQuotes.length === 0) {
-    result.goldenQuotes = fallback.goldenQuotes
-  }
-  return result
+// --- 正式分析校验 --- #
+
+// 解析完整模型对象；错误结构由处理单元重试，绝不补成统计成功。
+function readAnalysisObject(text: string): JsonRecord {
+  const value = safeParseJSON(text)
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('日报分析返回的JSON对象无效')
+  return value as JsonRecord
 }
 
-// Fills missing detailed sections from deterministic fallback data.
-function completeFullAnalysis(result: AnalysisResult, data: ReportData): AnalysisResult {
-  const fallback = buildFallbackFullAnalysis(data)
-  if (!Array.isArray(result.topics) || result.topics.length === 0) {
-    result.topics = fallback.topics
-  }
-  if (!Array.isArray(result.goldenQuotes) || result.goldenQuotes.length === 0) {
-    result.goldenQuotes = fallback.goldenQuotes
-  }
-  if (!Array.isArray(result.userTitles) || result.userTitles.length === 0) {
-    result.userTitles = fallback.userTitles
-  }
-  if (!result.qualityReview || typeof result.qualityReview !== 'object') {
-    result.qualityReview = fallback.qualityReview
-  }
-  return result
+// 必要文字字段必须真实返回，不能用默认标题或点评掩盖缺失。
+function requiredText(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`日报分析缺少必要文字：${field}`)
+  return value.trim()
 }
 
-// --- AI analysis stages --- #
-
-// Compresses long message history into bounded summaries before analysis.
-async function compressMessages(messages: unknown, meta?: AnalysisMeta): Promise<string> {
-  const limited = (Array.isArray(messages) ? messages : []).slice(-COMPRESS_BATCH_SIZE * MAX_COMPRESS_BATCHES)
-  const results: string[] = []
-  let failedBatches = 0
-  const totalBatches = Math.max(1, Math.ceil(limited.length / COMPRESS_BATCH_SIZE))
-
-  for (let i = 0; i < limited.length; i += COMPRESS_BATCH_SIZE) {
-    const batch = limited.slice(i, i + COMPRESS_BATCH_SIZE)
-    const batchText = batch.map(m => {
-      const msg = asRecord(m)
-      return `[${msg.time}] ${msg.user}：${msg.content}`
-    }).join('\n')
-    try {
-      const summary = await callAI(
-        '你是群聊摘要助手。将以下群聊记录压缩成100字以内的摘要，保留主要话题和有趣对话。不要评价，只摘要。',
-        batchText.slice(0, 4000),
-        200,
-        { _timeoutMs: REPORT_COMPRESS_TIMEOUT_MS },
-      )
-      if (summary) results.push(summary)
-      else failedBatches++
-    } catch {
-      failedBatches++
-    }
-    if (results.join('\n---\n').length >= MAX_COMPRESSED_CHARS) break
+// 话题引用必须来自最终共同摘要；金句只通过可信来源恢复完整原话。
+function readBasicAnalysis(text: string, summary: SharedSummary, messages: ReportMessage[], full: boolean): BasicAnalysis {
+  const value = readAnalysisObject(text)
+  const digest = JSON.parse(summary.digest) as { topics: import('./complete-input').DigestTopic[] }
+  const topicSources = new Set(digest.topics.flatMap(topic => topic.sourceIds))
+  const quoteSources = new Set(summary.quoteRefs.map(quote => quote.sourceId))
+  const bySource = new Map(messages.map((message, index) => [index + 1, message]))
+  const memberNames = new Map(messages.map(message => [String(message.userId || ''), String(message.user || '')]))
+  if (!Array.isArray(value.topics) || value.topics.length < (full ? 5 : 1) || value.topics.length > (full ? 10 : 5)) {
+    throw new Error(full ? '详细日报需要5—10个有来源依据的话题' : '普通日报话题数量无效')
   }
-
-  if (meta) {
-    meta.stages.compression = failedBatches === 0 ? 'ai' : (results.length ? 'partial' : 'fallback')
-    if (failedBatches > 0) {
-      addMetaWarning(meta, failedBatches >= totalBatches
-        ? '压缩阶段全部失败，已直接使用统计兜底。'
-        : `压缩阶段有 ${failedBatches} 批未能稳定生成摘要，已继续使用剩余结果。`)
-    }
-  }
-
-  const compressed = results.join('\n---\n').slice(0, MAX_COMPRESSED_CHARS)
-  if (!compressed && meta) addMetaWarning(meta, '压缩摘要为空，后续分析将主要依赖统计兜底。')
-  return compressed
-}
-
-// Uses S3 precomputed context when available, avoiding another full-day compression pass.
-function getPrecomputedCompressedContext(data: ReportData, meta?: AnalysisMeta): string {
-  const context = normalizeString(data.precomputedContext || '').slice(0, MAX_COMPRESSED_CHARS)
-  if (!context) return ''
-  if (meta) {
-    meta.stages.compression = 'precomputed'
-    addMetaWarning(meta, `已使用 S3 预计算输入，覆盖率 ${Number(data.precomputedCoverageRate || 0)}。`)
-  }
-  return context
-}
-
-// Runs topic and golden-quote analysis, falling back per section on bad output.
-async function analyzeBasic(compressed: string, messages: ReportMessage[], data: ReportData, meta?: AnalysisMeta): Promise<BasicAnalysis> {
-  const { nameToUserId } = buildMessageMaps(messages)
-  const memberMapStr = JSON.stringify(Object.fromEntries(nameToUserId))
-
-  const prompt = `你是群聊分析师。根据以下压缩后的群聊摘要，完成两项任务：
-
-1. 提取4-5个主要话题（标题6-12字，摘要50-80字，参与成员）
-2. 精选3条最有趣/有梗的金句（发言者、原话、简短点评）
-
-重要规则：
-- 金句的sender必须使用原始消息中的确切昵称，不能用"群友""某人"等泛称
-- userId必须从以下映射表中查找，查不到的不要编造
-- 如果无法确定某条金句的发送者对应映射表中的哪个用户，则不生成该条金句
-
-用户昵称→QQ号映射表：
-${memberMapStr}
-
-压缩摘要：
-${compressed.slice(0, 6000)}
-
-输出JSON：
-{
-  "topics": [{"id":1,"title":"标题","summary":"摘要","participants":["用户1"]}],
-  "goldenQuotes": [{"sender":"昵称","userId":"QQ号","content":"原话","reason":"点评"}]
-}`
-
-  try {
-    const text = await callAI(prompt, '请分析', 2000, {
-      _timeoutMs: REPORT_ANALYSIS_TIMEOUT_MS,
-    })
-    const parsed = asRecord(safeParseJSON(text))
-    const topics = normalizeTopics(parsed.topics)
-    const goldenQuotes = normalizeGoldenQuotes(parsed.goldenQuotes, messages)
-    const fallback = buildFallbackBasicAnalysis(data)
-    const result = {
-      topics: topics.length ? topics : fallback.topics,
-      goldenQuotes: goldenQuotes.length ? goldenQuotes : fallback.goldenQuotes,
-    }
-    if (meta) {
-      const usedFallback = topics.length === 0 || goldenQuotes.length === 0
-      meta.stages.basic = usedFallback ? (Object.keys(parsed).length ? 'partial' : 'fallback') : 'ai'
-      if (usedFallback) addMetaWarning(meta, '基础分析返回的 JSON 不完整，已启用话题/金句兜底。')
-    }
-    return result
-  } catch (err) {
-    if (meta) {
-      meta.stages.basic = 'fallback'
-      addMetaWarning(meta, `基础分析请求失败：${getErrorMessage(err)}`)
-    }
-    return buildFallbackBasicAnalysis(data)
-  }
-}
-
-// Runs detailed portrait and quality-review analysis, falling back per section.
-async function analyzeFull(compressed: string, messages: ReportMessage[], topMembers: TopMember[], data: ReportData, meta?: AnalysisMeta): Promise<FullSectionAnalysis> {
-  const memberData = (Array.isArray(topMembers) ? topMembers : []).slice(0, 8).map(m => {
-    const sample = (Array.isArray(messages) ? messages : [])
-      .filter(msg => msg.userId === m.userId || msg.user === m.name)
-      .slice(0, 15)
-      .map(msg => msg.content).join(' | ')
-    return { name: m.name, userId: m.userId, msgCount: m.msgCount, sample: sample.slice(0, 300) }
+  const titles = new Set<string>()
+  const topics = value.topics.map((raw, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('日报话题结构无效')
+    const item = raw as JsonRecord
+    const title = requiredText(item.title, '话题标题')
+    const normalizedTitle = title.toLowerCase()
+    if (titles.has(normalizedTitle)) throw new Error('日报话题重复，不能凑数')
+    titles.add(normalizedTitle)
+    if (!Array.isArray(item.sourceIds) || !item.sourceIds.length ||
+      item.sourceIds.some(id => typeof id !== 'number' || !Number.isInteger(id) || !topicSources.has(id))) throw new Error('日报话题来源不在共同摘要中')
+    if (!Array.isArray(item.participants) || item.participants.some(id => typeof id !== 'string' || !memberNames.has(id))) throw new Error('日报话题成员标识无效')
+    return createTopic(index + 1, title, requiredText(item.summary, '话题摘要'),
+      [...new Set(item.participants as string[])].map(id => memberNames.get(id) || id))
   })
-
-  const prompt = `你是群聊分析师。根据以下压缩摘要和成员数据，完成两项任务：
-
-1. 为每位活跃成员生成画像（角色标签、MBTI可选、50字特征描述）
-2. 写一段群聊质量锐评（标题、副标题、4-5个维度含占比和点评、总结）
-
-压缩摘要：
-${compressed.slice(0, 4000)}
-
-成员数据：
-${JSON.stringify(memberData, null, 2)}
-
-输出JSON：
-{
-  "userTitles": [{"name":"用户名","userId":"ID","title":"角色标签","mbti":"","reason":"描述"}],
-  "qualityReview": {
-    "title":"标题","subtitle":"副标题",
-    "dimensions": [{"name":"维度","percentage":40,"comment":"点评","color":"#39C5BB"}],
-    "summary":"总结"
-  }
-}`
-
-  try {
-    const text = await callAI(prompt, '请分析', 3000, {
-      _timeoutMs: REPORT_ANALYSIS_TIMEOUT_MS,
-    })
-    const parsed = asRecord(safeParseJSON(text))
-    const userTitles = normalizeUserTitles(parsed.userTitles, messages)
-    const qualityReview = normalizeQualityReview(parsed.qualityReview)
-    const fallback = buildFallbackFullAnalysis(data)
-    const result = {
-      userTitles: userTitles.length ? userTitles : fallback.userTitles,
-      qualityReview: qualityReview || fallback.qualityReview,
+  if (!Array.isArray(value.goldenQuotes) || value.goldenQuotes.length > 3) throw new Error('日报金句引用列表无效')
+  const seenQuotes = new Set<number>()
+  const goldenQuotes = value.goldenQuotes.map(raw => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('日报金句引用结构无效')
+    const item = raw as JsonRecord
+    if (typeof item.sourceId !== 'number' || !Number.isInteger(item.sourceId) || !quoteSources.has(item.sourceId) || seenQuotes.has(item.sourceId)) {
+      throw new Error('日报金句引用越界或重复')
     }
-    if (meta) {
-      const usedFallback = userTitles.length === 0 || !qualityReview
-      meta.stages.full = usedFallback ? (Object.keys(parsed).length ? 'partial' : 'fallback') : 'ai'
-      if (usedFallback) addMetaWarning(meta, '详细分析返回的 JSON 不完整，已启用画像/锐评兜底。')
-    }
-    return result
-  } catch (err) {
-    if (meta) {
-      meta.stages.full = 'fallback'
-      addMetaWarning(meta, `详细分析请求失败：${getErrorMessage(err)}`)
-    }
-    const fallback = buildFallbackFullAnalysis(data)
-    return { userTitles: fallback.userTitles, qualityReview: fallback.qualityReview }
-  }
+    seenQuotes.add(item.sourceId)
+    const source = bySource.get(item.sourceId)!
+    const content = requiredText(source.content, '金句原始正文')
+    const userId = requiredText(String(source.userId || ''), '金句成员标识')
+    const sender = requiredText(source.user, '金句实际昵称')
+    return createGoldenQuote(content, sender, requiredText(item.reason, '金句点评'), userId)
+  })
+  return { topics, goldenQuotes }
 }
 
-// Main entry: generates AI-enhanced analysis with deterministic fallbacks.
-async function analyzeWithAI(data: ReportData, full = false): Promise<AnalysisResult> {
-  const result = createDefaultAnalysisResult() as AnalysisResult
-  const meta = createAnalysisMeta()
-
-  try {
-    const messages = asArray(data.messages) as ReportMessage[]
-    const compressed = getPrecomputedCompressedContext(data, meta) || await compressMessages(messages, meta)
-
-    if (full) {
-      const [basicResult, fullResult] = await Promise.allSettled([
-        analyzeBasic(compressed, messages, data, meta),
-        analyzeFull(compressed, messages, data.topMembers || [], data, meta),
-      ])
-      const basic = basicResult.status === 'fulfilled' ? basicResult.value : buildFallbackBasicAnalysis(data)
-      const fullR = fullResult.status === 'fulfilled'
-        ? fullResult.value
-        : ((fallback) => ({ userTitles: fallback.userTitles, qualityReview: fallback.qualityReview }))(buildFallbackFullAnalysis(data))
-      result.topics = basic.topics || []
-      result.goldenQuotes = basic.goldenQuotes || []
-      result.userTitles = fullR.userTitles || []
-      result.qualityReview = fullR.qualityReview || null
-      completeFullAnalysis(result, data)
-    } else {
-      const basicResult = await analyzeBasic(compressed, messages, data, meta)
-      result.topics = basicResult.topics || []
-      result.goldenQuotes = basicResult.goldenQuotes || []
-      completeBasicAnalysis(result, data)
+// 校验全部必要成员画像和锐评，不允许空字段变成默认统计画像。
+function readFullAnalysis(text: string, members: Array<{ userId: string; name: string }>): FullSectionAnalysis {
+  const value = readAnalysisObject(text)
+  const expected = new Map(members.map(member => [member.userId, member.name]))
+  if (!Array.isArray(value.userTitles) || value.userTitles.length !== expected.size) throw new Error('详细日报成员画像不完整')
+  const seen = new Set<string>()
+  const userTitles = value.userTitles.map(raw => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('详细日报画像结构无效')
+    const item = raw as JsonRecord
+    if (typeof item.userId !== 'string' || !expected.has(item.userId) || seen.has(item.userId)) throw new Error('详细日报画像成员缺失、重复或越界')
+    seen.add(item.userId)
+    if (item.mbti !== undefined && typeof item.mbti !== 'string') throw new Error('详细日报画像性格字段无效')
+    return createUserTitle(expected.get(item.userId)!, item.userId, requiredText(item.title, '成员角色'),
+      requiredText(item.reason, '成员画像说明'), item.mbti as string || '')
+  })
+  if (!value.qualityReview || typeof value.qualityReview !== 'object' || Array.isArray(value.qualityReview)) throw new Error('详细日报缺少群聊锐评')
+  const review = value.qualityReview as JsonRecord
+  if (!Array.isArray(review.dimensions) || review.dimensions.length < 4 || review.dimensions.length > 5) throw new Error('详细日报锐评需要4—5个有效维度')
+  const colors = ['#39C5BB', '#A7E7E3', '#FCD34D', '#F472B6', '#60A5FA']
+  const dimensions = review.dimensions.map((raw, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('详细日报锐评维度结构无效')
+    const item = raw as JsonRecord
+    if (typeof item.percentage !== 'number' || !Number.isFinite(item.percentage) || item.percentage < 0 || item.percentage > 100) {
+      throw new Error('详细日报锐评维度占比无效')
     }
+    return { name: requiredText(item.name, '锐评维度名称'), percentage: item.percentage,
+      comment: requiredText(item.comment, '锐评维度点评'), color: colors[index] }
+  })
+  if (dimensions.reduce((total, item) => total + item.percentage, 0) <= 0) throw new Error('详细日报锐评维度占比全部为零')
+  return { userTitles, qualityReview: { title: requiredText(review.title, '锐评标题'), subtitle: requiredText(review.subtitle, '锐评副标题'),
+    summary: requiredText(review.summary, '锐评总结'), dimensions } }
+}
 
-    // token估算：中文约2字符=1 token，加上prompt开销
-    // 压缩阶段：N批 × 200 tokens
-    // 分析阶段：1-2次调用 × 1500 tokens
-    const batches = Math.min(MAX_COMPRESS_BATCHES, Math.ceil((Array.isArray(data.messages) ? data.messages.length : 0) / COMPRESS_BATCH_SIZE))
-    const compressTokens = batches * 200
-    const analysisTokens = full ? 3500 : 2000
-    result.tokenUsage = {
-      promptTokens: compressTokens + analysisTokens,
-      completionTokens: 0,
-      totalTokens: compressTokens + analysisTokens,
-    }
-  } catch (err) {
-    addMetaWarning(meta, `分析流程异常：${getErrorMessage(err)}`)
-    if (full) completeFullAnalysis(result, data)
-    else completeBasicAnalysis(result, data)
-  }
+// --- 正式模型分析阶段 --- #
 
-  result.meta = meta
+// 完整共同摘要进入最终话题请求，真实提交后才记录话题输入覆盖。
+async function analyzeBasic(summary: SharedSummary, messages: ReportMessage[], full: boolean, meta: AnalysisMeta, runtime: AnalysisRuntime): Promise<BasicAnalysis> {
+  meta.stages.basic = 'processing'
+  const system = `你是群聊分析师。根据用户输入中的完整共同摘要提炼${full ? '5—10' : '4—5'}个有依据、彼此不同的主要话题，真实内容不足时不要编造。普通版不足4个时可返回实际话题数。
+只输出JSON：{"topics":[{"title":"话题标题","summary":"讨论内容及结论","participants":[],"sourceIds":[1]}],"goldenQuotes":[{"sourceId":1,"reason":"简短点评"}]}。
+话题引用必须来自共同摘要topics的sourceIds，不能照抄格式示例的1。participants只能沿用共同摘要topics中真实用户ID字符串，无法确认可返回空数组，不能填“用户ID”、昵称或其他占位文字；金句只能从quoteRefs中选择最多3个可信来源，没有合适金句时返回空数组。金句不要改写原话、昵称或成员标识。`
+  const result = await requestAnalysisUnit(runtime, meta, { id: 'topics', stage: 'basic', sourceIds: [...summary.sourceIds], timestamps: [],
+    onSubmitted: () => {
+      meta.topicInputMessageCount = summary.sourceIds.size
+      meta.omittedMessageCount = meta.selectedMessageCount - summary.sourceIds.size
+      meta.coverageRate = meta.selectedMessageCount ? 100 * summary.sourceIds.size / meta.selectedMessageCount : null
+    } }, system, summary.digest, full ? 4000 : 2500, REPORT_ANALYSIS_TIMEOUT_MS,
+    text => readBasicAnalysis(text, summary, messages, full))
+  meta.stages.basic = 'complete'
+  runtime.onProgress?.(meta)
   return result
+}
+
+// 用同一共同摘要及全天代表性例句生成详细画像与锐评，原消息仍完整经过摘要。
+async function analyzeFull(summary: SharedSummary, messages: ReportMessage[], topMembers: TopMember[], meta: AnalysisMeta, runtime: AnalysisRuntime): Promise<FullSectionAnalysis> {
+  const selectedIds = new Set(messages.map(message => String(message.userId || '')))
+  const memberData = topMembers.slice(0, 8).filter(member => selectedIds.has(String(member.userId || ''))).map(member => ({
+    name: String(member.name || ''),
+    userId: String(member.userId || ''),
+    msgCount: Number(member.msgCount || 0),
+    samples: selectRepresentativeMessages(messages, String(member.userId || '')).map(message => ({
+      sourceId: message.analysisId ?? messages.indexOf(message) + 1, time: message.time || '',
+      excerpt: Array.from(String(message.content || '')).slice(0, 200).join(''),
+    })),
+  }))
+  if (memberData.some(member => !member.userId || !member.name) || new Set(memberData.map(member => member.userId)).size !== memberData.length) {
+    throw new ReportAnalysisError('详细日报活跃成员数据无效', 'generation_failed', 'full', meta)
+  }
+  meta.stages.full = 'processing'
+  const system = `你是群聊分析师。完整阅读用户输入的共同摘要和成员数据，为成员数据中每个userId生成有依据的画像，并完成群聊质量锐评；不要新增成员或用统计模板填充缺失结果。
+成员例句来自本次入选消息的不同时段，是辅助摘录；全体入选正文已进入共同摘要。
+只输出JSON：{"userTitles":[{"userId":"实际成员ID","title":"角色标签","mbti":"","reason":"发言特点和依据"}],"qualityReview":{"title":"标题","subtitle":"副标题","dimensions":[{"name":"维度","percentage":25,"comment":"实际点评"}],"summary":"总结"}}。
+userTitles恰好覆盖所有输入成员，mbti可以为空；qualityReview需要4—5个不同维度，percentage为0到100的数值，所有必要说明不能为空。`
+  const result = await requestAnalysisUnit(runtime, meta, { id: 'portraits', stage: 'full', sourceIds: [...summary.sourceIds], timestamps: [] },
+    system, JSON.stringify({ digest: JSON.parse(summary.digest), members: memberData }), 4500, REPORT_ANALYSIS_TIMEOUT_MS,
+    text => readFullAnalysis(text, memberData))
+  meta.stages.full = 'complete'
+  runtime.onProgress?.(meta)
+  return result
+}
+
+// 记录每个最终分析阶段的实际耗时；并行阶段各自计时且共享硬截止。
+async function measureAnalysisStage<T>(stage: string, meta: AnalysisMeta, runtime: AnalysisRuntime, run: () => Promise<T>): Promise<T> {
+  const now = runtime.now || Date.now
+  const start = now()
+  try { return await run() } finally { meta.stageDurationsMs[stage] = Math.max(0, now() - start) }
+}
+
+// 全部入选来源完整摘要后才分析，任何必要结果失败都向任务管线传播。
+async function analyzeWithAI(data: ReportData, full = false, options: AnalysisOptions = {}): Promise<AnalysisResult> {
+  const messages = getReportMessages(data)
+  const meta = createReportAnalysisDiagnostics({
+    windowMessageCount: data.windowMessageCount ?? data.totalMessages ?? messages.length,
+    selectedMessageCount: messages.length, sourceCompleteness: data.sourceCompleteness || 'legacy_unknown',
+    reportPeriod: data.reportPeriod, periodBackfilled: data.periodBackfilled,
+  })
+  const now = options.now || Date.now
+  const runtime: AnalysisRuntime = { deadlineMs: options.deadlineMs ?? now() + 600000, signal: options.signal, now,
+    workDeadlineMs: options.workDeadlineMs, stageSoftDeadlinesMs: options.stageSoftDeadlinesMs,
+    onProgress: options.onProgress, request: callAI }
+  try {
+    if (runtime.signal?.aborted) throw runtime.signal.reason || new Error('日报任务已取消')
+    if (meta.sourceCompleteness === 'incomplete') throw new ReportAnalysisError('日报原始记录不完整', 'generation_failed', 'collecting', meta)
+    const summary = await measureAnalysisStage('summary_and_merge', meta, runtime, () => summarizeCompleteInput(messages, meta, runtime))
+    const result = createDefaultAnalysisResult() as AnalysisResult
+    if (full) {
+      const outcomes = await Promise.allSettled([
+        measureAnalysisStage('basic', meta, runtime, () => analyzeBasic(summary, messages, true, meta, runtime)),
+        measureAnalysisStage('full', meta, runtime, () => analyzeFull(summary, messages, getTopMembers(data), meta, runtime)),
+      ])
+      const failures = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
+      if (failures.length) throw (failures.find(outcome => outcome.reason?.code === 'DAILY_REPORT_TOTAL_TIMEOUT') || failures[0]).reason
+      const basic = (outcomes[0] as PromiseFulfilledResult<BasicAnalysis>).value
+      const detailed = (outcomes[1] as PromiseFulfilledResult<FullSectionAnalysis>).value
+      result.topics = basic.topics; result.goldenQuotes = basic.goldenQuotes
+      result.userTitles = detailed.userTitles; result.qualityReview = detailed.qualityReview
+    } else {
+      const basic = await measureAnalysisStage('basic', meta, runtime, () => analyzeBasic(summary, messages, false, meta, runtime))
+      result.topics = basic.topics; result.goldenQuotes = basic.goldenQuotes
+      meta.stages.full = 'not_requested'
+    }
+    if (now() >= runtime.deadlineMs) throw new ReportAnalysisError('日报运行总时限已耗尽', 'total_timeout', 'analysis', meta)
+    if (meta.topicInputMessageCount !== messages.length || meta.omittedMessageCount !== 0) throw new ReportAnalysisError('最终话题输入覆盖不完整', 'generation_failed', 'basic', meta)
+    meta.analysisState = 'complete'
+    result.tokenUsage = { ...meta.tokenUsage }
+    result.meta = meta
+    runtime.onProgress?.(meta)
+    return result
+  } catch (error) {
+    if (runtime.signal?.aborted) throw runtime.signal.reason || error
+    const failure = error instanceof ReportAnalysisError ? error :
+      new ReportAnalysisError(getErrorMessage(error), now() >= runtime.deadlineMs ? 'total_timeout' : 'generation_failed', 'analysis', meta)
+    runtime.onProgress?.(meta)
+    throw failure
+  }
 }
 
 export = { analyzeWithAI, buildFallbackFullAnalysis, buildFallbackBasicAnalysis }
