@@ -20,11 +20,19 @@ async function renderOne(template, outputDir) {
       page.setContent = async (html, options) => { fs.writeFileSync(path.join(outputDir, template), html); return setContent(html, options) }
       const screenshot = page.screenshot.bind(page)
       page.screenshot = async options => {
-        measured = await page.evaluate(() => ({ topics: document.querySelectorAll('.topic-card').length,
+        measured = await page.evaluate(() => {
+          const title = document.querySelector('.hd h1').getBoundingClientRect()
+          const date = document.querySelector('.hd-date').getBoundingClientRect()
+          const period = document.querySelector('.hd-period').getBoundingClientRect()
+          const header = document.querySelector('.hd').getBoundingClientRect()
+          return { topics: document.querySelectorAll('.topic-card').length,
           portraits: document.querySelectorAll('.profile-card').length, text: document.body.innerText,
           fullHeight: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
           lastTopicBottom: document.querySelectorAll('.topic-card')[9].getBoundingClientRect().bottom,
-          reviewBottom: document.querySelector('.qr-summary').getBoundingClientRect().bottom }))
+          reviewBottom: document.querySelector('.qr-summary').getBoundingClientRect().bottom,
+          header: { titleRight: title.right, dateLeft: date.left, firstRowBottom: Math.max(title.bottom, date.bottom),
+            periodTop: period.top, periodBottom: period.bottom, periodRight: period.right, bottom: header.bottom, right: header.right } }
+        })
         measured.captureHeight = options.clip.height
         return screenshot(options)
       }
@@ -45,6 +53,9 @@ async function renderOne(template, outputDir) {
       dimensions: ['信息', '互动', '组织', '情绪'].map(name => ({ name, percentage: 25, comment: `${name}维度说明完整。`, color: '#39C5BB' })) } }
   const buffer = await renderReport(data, analysis, { taskId: `template-${template}`, deadlineMs: Date.now() + 60000, workDeadlineMs: Date.now() + 55000 })
   assert.equal(measured.topics, 10); assert.equal(measured.portraits, 8)
+  assert(measured.header.titleRight <= measured.header.dateLeft, '页头标题与分析日期重叠')
+  assert(measured.header.periodTop >= measured.header.firstRowBottom, '统计时段必须位于标题和日期下方')
+  assert(measured.header.periodBottom <= measured.header.bottom && measured.header.periodRight <= measured.header.right, '统计时段溢出页头')
   assert(measured.text.includes('2026-10-01') && measured.text.includes('北京时间'))
   assert(!measured.text.includes('覆盖率'))
   assert(measured.fullHeight <= measured.captureHeight && measured.captureHeight <= 6000)
@@ -56,7 +67,7 @@ async function renderOne(template, outputDir) {
   const metadata = await require('sharp')(buffer).metadata()
   assert.equal(metadata.height, measured.captureHeight)
   const evidence = { template, topics: measured.topics, portraits: measured.portraits, fullHeight: measured.fullHeight,
-    captureHeight: metadata.height, reviewBottom: measured.reviewBottom, bytes: buffer.length, png }
+    captureHeight: metadata.height, reviewBottom: measured.reviewBottom, header: measured.header, bytes: buffer.length, png }
   fs.writeFileSync(path.join(outputDir, template.replace('.html', '.json')), JSON.stringify(evidence, null, 2))
   console.log(JSON.stringify(evidence))
 }
