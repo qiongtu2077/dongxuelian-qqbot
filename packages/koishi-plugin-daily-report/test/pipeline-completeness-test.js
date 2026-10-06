@@ -1,6 +1,7 @@
 /** 正式管线验证：完整文字、固定窗口、进度与失败分类使用真实模型分析入口。 */
 'use strict'
 const assert = require('assert')
+const { formatExchange, formatFullExchange } = require('./complete-input-test')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
@@ -48,29 +49,75 @@ function tenTopicInput() {
     topMembers: Array.from({ length: 8 }, (_, index) => ({ userId: String(index + 1), name: `成员${index + 1}`, msgCount: 2 })) }
 }
 
-// 返回显式消费集合和来源；冗长最终摘要用于验证文字不会再被整篇截断。
+// 返回完整短引用记录；冗长最终摘要用于验证文字不会再被整篇截断。
 async function tenTopicRequest(messages, config, extra) {
   extra._onRequestAttempt?.()
   const system = messages[0].content
   const input = messages[1].content
-  if (system.includes('consumedFragmentIds')) {
-    const fragments = [...input.matchAll(/\[M(\d+):P(\d+)\] \S+ 用户ID=([^:]+): ([^\n]*)/g)]
-    return { type: 'text', content: JSON.stringify({ consumedFragmentIds: fragments.map(match => `${match[1]}:${match[2]}`),
-      topics: fragments.map(match => ({ title: `主题${match[1]}`, summary: `事实${match[1]}`, participants: [match[3]], sourceIds: [Number(match[1])] })),
-      quoteRefs: [{ sourceId: 1, reason: '真实来源' }] }) }
+  if (system.includes('群聊摘要助手')) {
+    const { items } = JSON.parse(input)
+    return { type: 'text', content: formatExchange({ groups: items.map((item, index) => ({ title: '主题' + (index + 1), summary: '事实' + (index + 1), refs: [item.ref] })),
+      quotes: [{ ref: items[0].ref, reason: '真实来源' }] }) }
   }
   if (system.includes('qualityReview')) {
     const { members } = JSON.parse(input)
-    return { type: 'text', content: JSON.stringify({ userTitles: members.map(member => ({ userId: member.userId, title: '讨论参与者', reason: `成员${member.userId}完整画像`, mbti: '' })),
+    return { type: 'text', content: formatFullExchange({ userTitles: members.map(member => ({ ref: member.ref, title: '讨论参与者', reason: `成员${member.ref.slice(1)}完整画像`, mbti: '' })),
       qualityReview: { title: '完整锐评', subtitle: '必要副标题', summary: '必要总结', dimensions: ['信息', '互动', '组织', '情绪'].map(name => ({ name, percentage: 25, comment: `${name}必要说明` })) } }) }
   }
   const digest = JSON.parse(input)
-  return { type: 'text', content: JSON.stringify({ topics: digest.topics.map(topic => ({ ...topic, summary: topic.summary.repeat(160) + `主题${topic.sourceIds[0]}尾部保留` })),
-    goldenQuotes: [{ sourceId: 1, reason: '保留原话' }] }) }
+  return { type: 'text', content: formatExchange({ groups: digest.items.map(item => ({ title: item.title, summary: item.summary.repeat(160) + `主题${item.ref.slice(1)}尾部保留`, refs: [item.ref] })),
+    quotes: [{ ref: digest.quotes[0].ref, reason: '保留原话' }] }) }
 }
 
 // 验证正式管线的保存、失败和渲染边界，而不是仅检查分析函数被调用。
 async function runPipelineCompletenessTests(check, withMockedAiAnalyzer) {
+  await verify(check, '同名成员画像仅按私有引用恢复身份，乱序返回不会交换用户ID', async () => {
+    const data = tenTopicInput()
+    data.topMembers.reverse().forEach(member => { member.name = '同名成员' })
+    const request = async (messages, config, extra) => {
+      const output = await tenTopicRequest(messages, config, extra)
+      if (messages[0].content.includes('qualityReview')) {
+        const input = JSON.parse(messages[1].content)
+        assert(input.members.every(member => !('userId' in member)))
+        const records = require('../lib/complete-input').parseExchangeRecords(output.content)
+        const value = { userTitles: records.filter(record => record.kind === 'portrait').map(({ kind, ...item }) => item), qualityReview: records.find(record => record.kind === 'review') }
+        delete value.qualityReview.kind
+        value.userTitles.forEach(member => { member.userId = '伪造ID'; member.name = '伪造昵称' })
+        value.userTitles.reverse(); output.content = formatFullExchange(value)
+      }
+      return output
+    }
+    await withMockedAiAnalyzer(request, async analyzer => {
+      const result = await analyzer.analyzeWithAI(data, true)
+      assert.equal(result.userTitles.find(member => member.userId === '8').reason, '成员1完整画像')
+      assert.equal(result.userTitles.find(member => member.userId === '1').reason, '成员8完整画像')
+      assert(result.userTitles.every(member => member.name === '同名成员'))
+    })
+  })
+  for (const mode of ['unknown_member', 'duplicate_member', 'raw_user_id', 'duplicate_dimension']) await verify(check, `画像交换拒绝技术身份或结构错误：${mode}`, async () => {
+    const request = async (messages, config, extra) => {
+      const output = await tenTopicRequest(messages, config, extra)
+      if (messages[0].content.includes('qualityReview')) {
+        const records = require('../lib/complete-input').parseExchangeRecords(output.content)
+        const value = { userTitles: records.filter(record => record.kind === 'portrait').map(({ kind, ...item }) => item), qualityReview: records.find(record => record.kind === 'review') }
+        delete value.qualityReview.kind
+        if (mode === 'unknown_member') value.userTitles[0].ref = 'p99'
+        if (mode === 'duplicate_member') value.userTitles[1].ref = value.userTitles[0].ref
+        if (mode === 'raw_user_id') { delete value.userTitles[0].ref; value.userTitles[0].userId = '1' }
+        if (mode === 'duplicate_dimension') value.qualityReview.dimensions[1].name = value.qualityReview.dimensions[0].name
+        output.content = formatFullExchange(value)
+      }
+      return output
+    }
+    await withPipeline(tenTopicInput(), request, withMockedAiAnalyzer, async (pipeline, outputDir, period) => {
+      await assert.rejects(pipeline.generateDailyReportResult({ channelKey: 'test', detail: true, reportPeriod: period, outputDir, renderImage: false }), error => {
+        assert.equal(error.diagnostics.failedBatches[0].stage, 'full')
+        assert.equal(error.diagnostics.failedBatches[0].attempts, 2)
+        return error.code === 'DAILY_REPORT_GENERATION_FAILED'
+      })
+      assert(!fs.existsSync(path.join(outputDir, 'report.txt')))
+    })
+  })
   for (const count of [591, 1330, 4000]) await verify(check, `正式管线${count}条保存完整覆盖与固定提交窗口`, async () => {
     const data = makeInput(count)
     await withPipeline(data, makeModelRequest([]), withMockedAiAnalyzer, async (pipeline, outputDir, period, getPeriod) => {
@@ -111,9 +158,9 @@ async function runPipelineCompletenessTests(check, withMockedAiAnalyzer) {
     await withPipeline(data, request, withMockedAiAnalyzer, async (pipeline, outputDir, period) => {
       await pipeline.generateDailyReportResult({ channelKey: 'test', detail: true, reportPeriod: period, outputDir, renderImage: false })
       assert(samples.length <= 15)
-      assert.deepEqual(samples.map(item => item.sourceId), data.messages.map(item => item.analysisId))
-      for (const sample of samples) assert.equal(sample.excerpt, data.messages[sample.sourceId - 1].content)
-      assert.equal(samples[0].sourceId, 1); assert.equal(samples.at(-1).sourceId, 10)
+      assert.deepEqual(samples.map(item => item.excerpt), data.messages.map(item => item.content))
+      assert(samples.every(item => !('sourceId' in item)))
+      assert.equal(samples[0].excerpt, data.messages[0].content); assert.equal(samples.at(-1).excerpt, data.messages.at(-1).content)
     })
   })
   await verify(check, '正式管线必要结果失败落盘保留全部诊断且不保存部分文字', async () => {

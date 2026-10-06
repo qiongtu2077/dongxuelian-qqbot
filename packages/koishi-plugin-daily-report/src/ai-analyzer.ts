@@ -10,7 +10,7 @@ const { createDefaultAnalysisResult, createTopic, createGoldenQuote, createUserT
 const { getErrorMessage } = require('./error-utils') as typeof import('./error-utils')
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
 const { createReportAnalysisDiagnostics, ReportAnalysisError } = loadManagementModule('daily.reportAnalysis')
-const { summarizeCompleteInput, selectRepresentativeMessages, requestAnalysisUnit } = require('./complete-input') as typeof import('./complete-input')
+const { summarizeCompleteInput, selectRepresentativeMessages, requestAnalysisUnit, createDigestExchange, readExchange, parseExchangeRecords, assertExchangeFields, assertExchangeRef, exchangeInstructions } = require('./complete-input') as typeof import('./complete-input')
 type AnalysisRuntime = import('./complete-input').AnalysisRuntime
 type SharedSummary = Awaited<ReturnType<typeof summarizeCompleteInput>>
 
@@ -541,13 +541,6 @@ function buildFallbackFullAnalysis(data: ReportData | null | undefined): FullAna
 
 // --- 正式分析校验 --- #
 
-// 解析完整模型对象；错误结构由处理单元重试，绝不补成统计成功。
-function readAnalysisObject(text: string): JsonRecord {
-  const value = safeParseJSON(text)
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('日报分析返回的JSON对象无效')
-  return value as JsonRecord
-}
-
 // 必要文字字段必须真实返回，不能用默认标题或点评掩盖缺失。
 function requiredText(value: unknown, field: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`日报分析缺少必要文字：${field}`)
@@ -556,73 +549,67 @@ function requiredText(value: unknown, field: string): string {
 
 // 话题引用必须来自最终共同摘要；金句只通过可信来源恢复完整原话。
 function readBasicAnalysis(text: string, summary: SharedSummary, messages: ReportMessage[], full: boolean): BasicAnalysis {
-  const value = readAnalysisObject(text)
-  const digest = JSON.parse(summary.digest) as { topics: import('./complete-input').DigestTopic[] }
-  const topicSources = new Set(digest.topics.flatMap(topic => topic.sourceIds))
-  const quoteSources = new Set(summary.quoteRefs.map(quote => quote.sourceId))
-  const bySource = new Map(messages.map((message, index) => [index + 1, message]))
-  const memberNames = new Map(messages.map(message => [String(message.userId || ''), String(message.user || '')]))
-  if (!Array.isArray(value.topics) || value.topics.length < (full ? 5 : 1) || value.topics.length > (full ? 10 : 5)) {
-    throw new Error(full ? '详细日报需要5—10个有来源依据的话题' : '普通日报话题数量无效')
+  const context = createDigestExchange(summary.topics, summary.quoteRefs, messages)
+  const result = readExchange(text, context)
+  if (result.topics.length < (full ? 5 : 1) || result.topics.length > (full ? 10 : 5)) {
+    throw new Error(full ? `详细日报需要5—10个有来源依据的话题，实际返回${result.topics.length}个；请将摘要中相互独立的具体讨论拆开，可沿用同一条目的ref，不能编造` : '普通日报话题数量无效')
   }
   const titles = new Set<string>()
-  const topics = value.topics.map((raw, index) => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('日报话题结构无效')
-    const item = raw as JsonRecord
-    const title = requiredText(item.title, '话题标题')
-    const normalizedTitle = title.toLowerCase()
+  const memberNames = new Map(messages.map(message => [String(message.userId || ''), String(message.user || '')]))
+  const topics = result.topics.map((item, index) => {
+    const normalizedTitle = item.title.toLowerCase()
     if (titles.has(normalizedTitle)) throw new Error('日报话题重复，不能凑数')
     titles.add(normalizedTitle)
-    if (!Array.isArray(item.sourceIds) || !item.sourceIds.length ||
-      item.sourceIds.some(id => typeof id !== 'number' || !Number.isInteger(id) || !topicSources.has(id))) throw new Error('日报话题来源不在共同摘要中')
-    if (!Array.isArray(item.participants) || item.participants.some(id => typeof id !== 'string' || !memberNames.has(id))) throw new Error('日报话题成员标识无效')
-    return createTopic(index + 1, title, requiredText(item.summary, '话题摘要'),
-      [...new Set(item.participants as string[])].map(id => memberNames.get(id) || id))
+    return createTopic(index + 1, item.title, item.summary, item.participants.map(id => memberNames.get(id) || id))
   })
-  if (!Array.isArray(value.goldenQuotes) || value.goldenQuotes.length > 3) throw new Error('日报金句引用列表无效')
-  const seenQuotes = new Set<number>()
-  const goldenQuotes = value.goldenQuotes.map(raw => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('日报金句引用结构无效')
-    const item = raw as JsonRecord
-    if (typeof item.sourceId !== 'number' || !Number.isInteger(item.sourceId) || !quoteSources.has(item.sourceId) || seenQuotes.has(item.sourceId)) {
-      throw new Error('日报金句引用越界或重复')
-    }
-    seenQuotes.add(item.sourceId)
-    const source = bySource.get(item.sourceId)!
-    const content = requiredText(source.content, '金句原始正文')
-    const userId = requiredText(String(source.userId || ''), '金句成员标识')
-    const sender = requiredText(source.user, '金句实际昵称')
-    return createGoldenQuote(content, sender, requiredText(item.reason, '金句点评'), userId)
+  const goldenQuotes = result.quoteRefs.map(item => {
+    const source = messages[item.sourceId - 1]
+    return createGoldenQuote(requiredText(source.content, '金句原始正文'), requiredText(source.user, '金句实际昵称'),
+      item.reason, requiredText(String(source.userId || ''), '金句成员标识'))
   })
   return { topics, goldenQuotes }
 }
 
 // 校验全部必要成员画像和锐评，不允许空字段变成默认统计画像。
-function readFullAnalysis(text: string, members: Array<{ userId: string; name: string }>): FullSectionAnalysis {
-  const value = readAnalysisObject(text)
-  const expected = new Map(members.map(member => [member.userId, member.name]))
-  if (!Array.isArray(value.userTitles) || value.userTitles.length !== expected.size) throw new Error('详细日报成员画像不完整')
+function readFullAnalysis(text: string, members: Array<{ ref: string; userId: string; name: string }>): FullSectionAnalysis {
+  const records = parseExchangeRecords(text)
+  const value: { userTitles: JsonRecord[]; qualityReview?: JsonRecord } = { userTitles: [] }
+  for (const record of records) {
+    const { kind, ...item } = record
+    if (kind === 'portrait' && !value.qualityReview) value.userTitles.push(item)
+    else if (kind === 'review' && !value.qualityReview) value.qualityReview = item
+    else throw new Error('[RECORD_ORDER] 详细分析必须先输出全部portrait，随后输出唯一review')
+  }
+  const expected = new Map(members.map(member => [member.ref, member]))
+  if (value.userTitles.length !== expected.size) throw new Error(`详细日报成员画像不完整：需要${expected.size}条，实际${value.userTitles.length}条`)
   const seen = new Set<string>()
   const userTitles = value.userTitles.map(raw => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('详细日报画像结构无效')
-    const item = raw as JsonRecord
-    if (typeof item.userId !== 'string' || !expected.has(item.userId) || seen.has(item.userId)) throw new Error('详细日报画像成员缺失、重复或越界')
-    seen.add(item.userId)
+    const item = raw
+    assertExchangeFields(item, ['ref', 'title', 'mbti', 'reason'], '成员画像')
+    const ref = assertExchangeRef(item.ref, expected, 'userTitles.ref')
+    if (seen.has(ref)) throw new Error('[REF_DUPLICATE] 详细日报画像重复引用' + ref)
+    seen.add(ref)
     if (item.mbti !== undefined && typeof item.mbti !== 'string') throw new Error('详细日报画像性格字段无效')
-    return createUserTitle(expected.get(item.userId)!, item.userId, requiredText(item.title, '成员角色'),
+    return createUserTitle(expected.get(ref)!.name, expected.get(ref)!.userId, requiredText(item.title, '成员角色'),
       requiredText(item.reason, '成员画像说明'), item.mbti as string || '')
   })
-  if (!value.qualityReview || typeof value.qualityReview !== 'object' || Array.isArray(value.qualityReview)) throw new Error('详细日报缺少群聊锐评')
+  if (!value.qualityReview) throw new Error('详细日报缺少群聊锐评')
   const review = value.qualityReview as JsonRecord
+  assertExchangeFields(review, ['title', 'subtitle', 'dimensions', 'summary'], 'qualityReview')
   if (!Array.isArray(review.dimensions) || review.dimensions.length < 4 || review.dimensions.length > 5) throw new Error('详细日报锐评需要4—5个有效维度')
   const colors = ['#39C5BB', '#A7E7E3', '#FCD34D', '#F472B6', '#60A5FA']
+  const dimensionNames = new Set<string>()
   const dimensions = review.dimensions.map((raw, index) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('详细日报锐评维度结构无效')
     const item = raw as JsonRecord
+    assertExchangeFields(item, ['name', 'percentage', 'comment'], `qualityReview.dimensions[${index}]`)
+    const name = requiredText(item.name, '锐评维度名称')
+    if (dimensionNames.has(name)) throw new Error('详细日报锐评维度重复')
+    dimensionNames.add(name)
     if (typeof item.percentage !== 'number' || !Number.isFinite(item.percentage) || item.percentage < 0 || item.percentage > 100) {
       throw new Error('详细日报锐评维度占比无效')
     }
-    return { name: requiredText(item.name, '锐评维度名称'), percentage: item.percentage,
+    return { name, percentage: item.percentage,
       comment: requiredText(item.comment, '锐评维度点评'), color: colors[index] }
   })
   if (dimensions.reduce((total, item) => total + item.percentage, 0) <= 0) throw new Error('详细日报锐评维度占比全部为零')
@@ -635,9 +622,7 @@ function readFullAnalysis(text: string, members: Array<{ userId: string; name: s
 // 完整共同摘要进入最终话题请求，真实提交后才记录话题输入覆盖。
 async function analyzeBasic(summary: SharedSummary, messages: ReportMessage[], full: boolean, meta: AnalysisMeta, runtime: AnalysisRuntime): Promise<BasicAnalysis> {
   meta.stages.basic = 'processing'
-  const system = `你是群聊分析师。根据用户输入中的完整共同摘要提炼${full ? '5—10' : '4—5'}个有依据、彼此不同的主要话题，真实内容不足时不要编造。普通版不足4个时可返回实际话题数。
-只输出JSON：{"topics":[{"title":"话题标题","summary":"讨论内容及结论","participants":[],"sourceIds":[1]}],"goldenQuotes":[{"sourceId":1,"reason":"简短点评"}]}。
-话题引用必须来自共同摘要topics的sourceIds，不能照抄格式示例的1。participants只能沿用共同摘要topics中真实用户ID字符串，无法确认可返回空数组，不能填“用户ID”、昵称或其他占位文字；金句只能从quoteRefs中选择最多3个可信来源，没有合适金句时返回空数组。金句不要改写原话、昵称或成员标识。`
+  const system = '你是群聊分析师。完整阅读items，完善' + (full ? '5—10' : '4—5') + '个有依据、彼此不同的主要话题。逐个完善已有条目的具体讨论，不能再次把独立话题合成生活、技术等大类。一个输入条目确实涵盖多个讨论时可根据summary拆分并沿用其ref。真实内容不足时不要编造，普通版可返回实际话题数。金句只能选择quotes的ref。\n' + exchangeInstructions(full ? 6000 : 4000) + '\n必须归组的完整ref清单：' + summary.topics.map((_, index) => 'r' + (index + 1)).join(',')
   const result = await requestAnalysisUnit(runtime, meta, { id: 'topics', stage: 'basic', sourceIds: [...summary.sourceIds], timestamps: [],
     onSubmitted: () => {
       meta.topicInputMessageCount = summary.sourceIds.size
@@ -653,12 +638,13 @@ async function analyzeBasic(summary: SharedSummary, messages: ReportMessage[], f
 // 用同一共同摘要及全天代表性例句生成详细画像与锐评，原消息仍完整经过摘要。
 async function analyzeFull(summary: SharedSummary, messages: ReportMessage[], topMembers: TopMember[], meta: AnalysisMeta, runtime: AnalysisRuntime): Promise<FullSectionAnalysis> {
   const selectedIds = new Set(messages.map(message => String(message.userId || '')))
-  const memberData = topMembers.slice(0, 8).filter(member => selectedIds.has(String(member.userId || ''))).map(member => ({
+  const memberData = topMembers.slice(0, 8).filter(member => selectedIds.has(String(member.userId || ''))).map((member, index) => ({
+    ref: 'p' + (index + 1),
     name: String(member.name || ''),
     userId: String(member.userId || ''),
     msgCount: Number(member.msgCount || 0),
     samples: selectRepresentativeMessages(messages, String(member.userId || '')).map(message => ({
-      sourceId: message.analysisId ?? messages.indexOf(message) + 1, time: message.time || '',
+      time: message.time || '',
       excerpt: Array.from(String(message.content || '')).slice(0, 200).join(''),
     })),
   }))
@@ -666,12 +652,13 @@ async function analyzeFull(summary: SharedSummary, messages: ReportMessage[], to
     throw new ReportAnalysisError('详细日报活跃成员数据无效', 'generation_failed', 'full', meta)
   }
   meta.stages.full = 'processing'
-  const system = `你是群聊分析师。完整阅读用户输入的共同摘要和成员数据，为成员数据中每个userId生成有依据的画像，并完成群聊质量锐评；不要新增成员或用统计模板填充缺失结果。
+  const system = `你是群聊分析师。完整阅读用户输入的共同摘要和成员数据，为成员数据中每个ref生成有依据的画像，并完成群聊质量锐评；不要新增成员或用统计模板填充缺失结果。
 成员例句来自本次入选消息的不同时段，是辅助摘录；全体入选正文已进入共同摘要。
-只输出JSON：{"userTitles":[{"userId":"实际成员ID","title":"角色标签","mbti":"","reason":"发言特点和依据"}],"qualityReview":{"title":"标题","subtitle":"副标题","dimensions":[{"name":"维度","percentage":25,"comment":"实际点评"}],"summary":"总结"}}。
-userTitles恰好覆盖所有输入成员，mbti可以为空；qualityReview需要4—5个不同维度，percentage为0到100的数值，所有必要说明不能为空。`
+只输出逐条JSON对象，不写外层数组或userTitles/qualityReview包装。每位成员一条portrait记录：{"kind":"portrait","ref":"输入成员的ref","title":"角色标签","mbti":"","reason":"发言特点和依据"}。
+全部portrait之后输出唯一review记录：{"kind":"review","title":"标题","subtitle":"副标题","dimensions":[{"name":"维度","percentage":25,"comment":"实际点评"}],"summary":"总结"}。最后必须输出{"kind":"end"}。记录间可用换行或单个逗号分隔，全部数组及对象必须闭合，end之后不能添加逗号。
+portrait恰好覆盖所有输入成员，mbti可以为空；review需要4—5个不同维度，percentage为0到100的数值，所有必要说明不能为空。`
   const result = await requestAnalysisUnit(runtime, meta, { id: 'portraits', stage: 'full', sourceIds: [...summary.sourceIds], timestamps: [] },
-    system, JSON.stringify({ digest: JSON.parse(summary.digest), members: memberData }), 4500, REPORT_ANALYSIS_TIMEOUT_MS,
+    system, JSON.stringify({ digest: JSON.parse(summary.digest), members: memberData.map(({ userId, ...member }) => member) }), 4500, REPORT_ANALYSIS_TIMEOUT_MS,
     text => readFullAnalysis(text, memberData))
   meta.stages.full = 'complete'
   runtime.onProgress?.(meta)
@@ -696,7 +683,7 @@ async function analyzeWithAI(data: ReportData, full = false, options: AnalysisOp
   const now = options.now || Date.now
   const runtime: AnalysisRuntime = { deadlineMs: options.deadlineMs ?? now() + 600000, signal: options.signal, now,
     workDeadlineMs: options.workDeadlineMs, stageSoftDeadlinesMs: options.stageSoftDeadlinesMs,
-    onProgress: options.onProgress, request: callAI }
+    onProgress: options.onProgress, topicRange: { min: full ? 5 : 1, max: full ? 10 : 5 }, request: callAI }
   try {
     if (runtime.signal?.aborted) throw runtime.signal.reason || new Error('日报任务已取消')
     if (meta.sourceCompleteness === 'incomplete') throw new ReportAnalysisError('日报原始记录不完整', 'generation_failed', 'collecting', meta)

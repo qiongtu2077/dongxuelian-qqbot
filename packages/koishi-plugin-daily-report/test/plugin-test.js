@@ -1,4 +1,5 @@
 const fs = require('fs')
+const { formatExchange, formatFullExchange } = require('./complete-input-test')
 const os = require('os')
 const path = require('path')
 const { spawn } = require('child_process')
@@ -188,11 +189,12 @@ function createResourceRuntimeMock(options = {}) {
   return { state, admission, tasks }
 }
 
+// 模拟公共API的逐条记录响应，引用仅来自每次实际请求输入。
 function createAiRequestMock(routes) {
   const calls = []
   const request = async (messages, config, extraBody = {}) => {
     const systemPrompt = String(messages?.[0]?.content || '')
-    const kind = systemPrompt.includes('consumedNodeIds')
+    const kind = systemPrompt.includes('摘要合并助手')
       ? 'merge'
       : systemPrompt.includes('摘要助手')
       ? 'compress'
@@ -203,15 +205,11 @@ function createAiRequestMock(routes) {
     extraBody._onRequestAttempt?.()
     let response = typeof routes === 'function' ? routes({ kind, messages, config, extraBody, calls }) : routes[kind]
     // 摘要模拟消费实际片段，避免新的正式入口测试仍依赖纯文字摘要捷径。
-    if (response === undefined && kind === 'compress') {
-      const input = String(messages[1].content)
-      const fragments = [...input.matchAll(/\[M(\d+):P(\d+)\] \S+ 用户ID=([^:]+): ([^\n]*)/g)]
-      response = JSON.stringify({ consumedFragmentIds: fragments.map(match => `${match[1]}:${match[2]}`),
-        topics: fragments.slice(0, 5).map((match, index) => ({ title: `来源主题${index + 1}`, summary: match[4].slice(0, 100) || '媒体描述', participants: [match[3]], sourceIds: [Number(match[1])] })),
-        quoteRefs: [{ sourceId: Number(fragments[0][1]), reason: '真实原话来源' }] })
-    } else if (response === undefined && kind === 'merge') {
-      const nodes = JSON.parse(messages[1].content)
-      response = JSON.stringify({ consumedNodeIds: nodes.map(node => node.id), topics: nodes.flatMap(node => node.topics).slice(0, 5), quoteRefs: nodes.flatMap(node => node.quoteRefs).slice(0, 3) })
+    if (response === undefined && (kind === 'compress' || kind === 'merge')) {
+      const { items, quotes } = JSON.parse(messages[1].content)
+      response = formatExchange({ groups: items.slice(0, 5).map((item, index) => ({ title: '来源主题' + (index + 1), summary: item.text?.slice(0, 100) || item.summary || '媒体描述',
+        refs: index === 4 ? items.slice(4).map(other => other.ref) : [item.ref] })),
+        quotes: [{ ref: kind === 'compress' ? items[0].ref : quotes[0].ref, reason: '真实原话来源' }] })
     }
     if (response instanceof Error) throw response
     extraBody._onRequestUsage?.({ readable: true, promptTokens: 3, completionTokens: 2, totalTokens: 5 })
@@ -625,7 +623,7 @@ async function testAiFailureRegression() {
     check('basic failure records necessary unit and attempts', error?.diagnostics?.failedBatches?.[0]?.id === 'topics' && error.diagnostics.failedBatches[0].attempts === 2)
     const compressCall = badJsonMock.calls.find(call => call.kind === 'compress')
     const basicCall = badJsonMock.calls.find(call => call.kind === 'basic')
-    check('analysis passes daily-report temperature', compressCall?.extraBody?.temperature === 0.2 && basicCall?.extraBody?.temperature === 0.2)
+    check('reference exchange preserves daily-report generation temperature', compressCall?.extraBody?.temperature === 0.2 && basicCall?.extraBody?.temperature === 0.2)
     check('analysis passes bounded single request timeouts', compressCall?.extraBody?._timeoutMs === 45000 && basicCall?.extraBody?._timeoutMs === 60000)
   })
   const emptyMock = createAiRequestMock({ basic: '', full: '' })
@@ -747,15 +745,16 @@ async function testAIAnalyzerObjectResponse() {
   sampleData.totalMessages = 5
   sampleData.sourceCompleteness = 'complete'
   const payload = JSON.stringify({
-    topics: sampleData.messages.map((message, index) => ({ title: `活动主题${index + 1}`, summary: message.content, participants: [message.userId], sourceIds: [index + 1] })),
-    goldenQuotes: [{ sourceId: 1, reason: '测试点评' }],
-    userTitles: [{ userId: '10001', title: '活动推进者', mbti: 'ENFP', reason: '参与前后时段活动讨论' },
-      { userId: '10002', title: '建议提出者', mbti: '', reason: '补充活动细节' }],
+    groups: sampleData.messages.map((message, index) => ({ title: `活动主题${index + 1}`, summary: message.content, refs: ['r' + (index + 1)] })),
+    quotes: [{ ref: 'r6', reason: '测试点评' }],
+    userTitles: [{ ref: 'p1', title: '活动推进者', mbti: 'ENFP', reason: '参与前后时段活动讨论' },
+      { ref: 'p2', title: '建议提出者', mbti: '', reason: '补充活动细节' }],
     qualityReview: { title: '活动讨论锐评', subtitle: '多个独立活动主题',
       dimensions: ['信息', '互动', '组织', '情绪'].map(name => ({ name, percentage: 25, comment: '有实际讨论依据' })),
       summary: '活动细节和讨论结论完整' },
   })
-  const mock = createAiRequestMock({ basic: { type: 'text', content: payload }, full: { type: 'text', content: payload } })
+  const parsed = JSON.parse(payload)
+  const mock = createAiRequestMock({ basic: { type: 'text', content: formatExchange({ groups: parsed.groups, quotes: parsed.quotes }) }, full: { type: 'text', content: formatFullExchange({ userTitles: parsed.userTitles, qualityReview: parsed.qualityReview }) } })
   await withMockedAiAnalyzer(mock.request, async analyzer => {
     const result = await analyzer.analyzeWithAI(sampleData, true)
     check('analyzeWithAI parses object response topics', result.topics.length === 5)

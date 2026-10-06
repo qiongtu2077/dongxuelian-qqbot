@@ -1,7 +1,7 @@
 /** 正式分析入口行为：实际摘要输入、预计算捷径失效、覆盖与严格失败。 */
 'use strict'
 const assert = require('assert')
-const { makeSummaryRequest } = require('./complete-input-test')
+const { makeSummaryRequest, formatExchange, formatFullExchange } = require('./complete-input-test')
 
 // 构造前中后主题与可核对的连续来源，不含任何生产发送目标。
 function makeInput(count) {
@@ -18,27 +18,27 @@ function makeModelRequest(calls, options = {}) {
   return async (messages, config, extra) => {
     const system = messages[0].content
     const input = messages[1].content
-    if (system.includes('consumedFragmentIds') || system.includes('consumedNodeIds')) {
+    if (system.includes('群聊摘要助手') || system.includes('摘要合并助手')) {
       return { type: 'text', content: await summarize(system, input, extra.max_tokens, extra) }
     }
     extra._onRequestAttempt?.()
     calls.push({ system, input, extra })
     if (system.includes('qualityReview')) {
       const members = JSON.parse(input).members
-      if (options.missingPortrait) return { type: 'text', content: JSON.stringify({ userTitles: [] }) }
-      return { type: 'text', content: JSON.stringify({ userTitles: members.map(member => ({ userId: member.userId, title: '讨论参与者', reason: '参与各时段讨论', mbti: '' })),
+      if (options.missingPortrait) return { type: 'text', content: formatFullExchange({ userTitles: [] }) }
+      return { type: 'text', content: formatFullExchange({ userTitles: members.map(member => ({ ref: member.ref, title: '讨论参与者', reason: '参与各时段讨论', mbti: '' })),
         qualityReview: { title: '实际讨论锐评', subtitle: '有前中后主题', summary: '各时段都有明确讨论',
           dimensions: ['信息', '互动', '情绪', '节奏'].map(name => ({ name, percentage: 25, comment: '实际讨论依据' })) } }) }
     }
     basicAttempts += 1
     if (options.badBasic || (options.retryBasic && basicAttempts === 1)) return { type: 'text', content: '{broken' }
     const digest = JSON.parse(input)
-    const value = { topics: digest.topics.map(topic => ({ ...topic })), goldenQuotes: digest.quoteRefs.slice(0, 1) }
-    if (options.badReference) value.topics[0].sourceIds = [999999]
-    if (options.duplicateTopics) value.topics.push(value.topics[0])
-    if (options.rewriteQuote) value.goldenQuotes[0].content = '这是模型改写的假原话'
+    const value = { groups: digest.items.map(item => ({ title: item.title, summary: item.summary, refs: [item.ref] })), quotes: digest.quotes.slice(0, 1).map(item => ({ ref: item.ref, reason: item.reason })) }
+    if (options.badReference) value.groups[0].refs = ['r999999']
+    if (options.duplicateTopics) value.groups.push(value.groups[0])
+    if (options.rewriteQuote) value.quotes[0].ref = digest.quotes[0].ref
     extra._onRequestUsage?.({ readable: false, promptTokens: 0, completionTokens: 0, totalTokens: 0 })
-    return { type: 'text', content: JSON.stringify(value) }
+    return { type: 'text', content: formatExchange(value) }
   }
 }
 
@@ -54,9 +54,10 @@ async function runAnalysisEntryTests(check, withMockedAiAnalyzer) {
     const calls = []
     await withMockedAiAnalyzer(makeModelRequest(calls), async analyzer => {
       const result = await analyzer.analyzeWithAI(input, false)
-      const rawCalls = calls.filter(call => call.system.includes('consumedFragmentIds'))
-      const ids = new Set(rawCalls.flatMap(call => [...call.input.matchAll(/\[M(\d+):P(\d+)\]/g)].map(match => Number(match[1]))))
-      assert.equal(ids.size, count)
+      const rawCalls = calls.filter(call => call.system.includes('群聊摘要助手'))
+      const items = rawCalls.flatMap(call => JSON.parse(call.input).items)
+      assert.equal(items.length, count)
+      assert(rawCalls.every(call => !call.input.includes('sourceIds') && !call.input.includes('userId')))
       assert.equal(result.meta.summarizedMessageCount, count)
       assert.equal(result.meta.topicInputMessageCount, count)
       assert.equal(result.meta.excludedByLimitCount, 20)
@@ -67,7 +68,7 @@ async function runAnalysisEntryTests(check, withMockedAiAnalyzer) {
       assert.equal(result.meta.reportCallCount, calls.length)
       assert.equal(result.meta.usageReadableRequests, 0)
       assert.equal(result.tokenUsage.totalTokens, 0)
-      const final = calls.find(call => !call.system.includes('consumedFragmentIds') && !call.system.includes('consumedNodeIds'))
+      const final = calls.find(call => !call.system.includes('群聊摘要助手') && !call.system.includes('摘要合并助手'))
       for (const theme of ['前段独立主题', '中段独立主题', '后段独立主题']) {
         assert.ok(final.input.includes(theme))
         assert.ok(result.topics.some(topic => topic.title === theme))
@@ -94,7 +95,7 @@ async function runAnalysisEntryTests(check, withMockedAiAnalyzer) {
         assert.equal(error.diagnostics.analysisState, 'failed')
         return true
       })
-      assert.equal(calls.filter(call => call.system.includes('只输出JSON：{"topics"')).length, 2)
+      assert.equal(calls.filter(call => call.system.includes('群聊分析师')).length, 2)
     })
   })
   await verify(check, '正式入口详细版不足5个话题或缺画像整份失败', async () => {
@@ -106,7 +107,7 @@ async function runAnalysisEntryTests(check, withMockedAiAnalyzer) {
       })
     })
   })
-  await verify(check, '正式入口金句忽略模型改写并恢复真实来源', async () => {
+  await verify(check, '正式入口金句通过短引用恢复真实来源，同名成员不会混淆', async () => {
     const input = makeInput(3)
     input.messages[1].userId = 'other-same-name'
     await withMockedAiAnalyzer(makeModelRequest([], { rewriteQuote: true }), async analyzer => {

@@ -18,6 +18,7 @@ export interface MessageFragment {
   sourceId: number
   part: number
   partCount: number
+  content: string
   text: string
 }
 
@@ -26,6 +27,14 @@ export interface DigestTopic { title: string; summary: string; participants: str
 export interface QuoteReference { sourceId: number; reason: string }
 interface SummaryNode { id: string; topics: DigestTopic[]; quoteRefs: QuoteReference[]; sourceIds: Set<number> }
 
+/** 引用表只存在于程序内，不把真实来源集合交给模型搬运。 */
+export interface ExchangeContext {
+  items: Map<string, DigestTopic>
+  requiredRefs: string[]
+  quotes: Map<string, QuoteReference>
+  input: string
+}
+
 export interface AnalysisRuntime {
   deadlineMs: number
   workDeadlineMs?: number
@@ -33,12 +42,13 @@ export interface AnalysisRuntime {
   signal?: AbortSignal
   now?: () => number
   onProgress?: (diagnostics: Diagnostics) => void
+  topicRange?: { min: number; max: number }
   request(system: string, input: string, maxTokens: number, extra: Record<string, unknown>): Promise<string>
 }
 
 const MAX_BATCH_CHARS = 4000
-const MAX_BATCH_MESSAGES = 100
-const INTERMEDIATE_CHARS = 1800
+const MAX_BATCH_MESSAGES = 40
+const INTERMEDIATE_CHARS = 1400
 
 // --- 分批与画像取样 ---
 
@@ -46,7 +56,7 @@ const INTERMEDIATE_CHARS = 1800
 export function packInputBatches(messages: InputMessage[]): InputBatch[] {
   const batches: InputBatch[] = []
   let fragments: MessageFragment[] = []
-  let length = 0
+  let length = 14
   let sources = new Set<number>()
   for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
     const message = messages[messageIndex]
@@ -54,24 +64,31 @@ export function packInputBatches(messages: InputMessage[]): InputBatch[] {
     if (sourceId !== messageIndex + 1) throw new Error('日报入选来源序号必须连续且唯一')
     const parts: string[] = []
     let body = ''
+    let encodedLength = 0
     let part = 1
     const prefix = (partNumber: number): string => `[M${sourceId}:P${partNumber}] ${message.time || '-'} 用户ID=${String(message.userId || '-')}: `
-    if (prefix(1).length >= MAX_BATCH_CHARS - 2) throw new Error('日报消息来源前缀过长')
+    if (prefix(1).length >= MAX_BATCH_CHARS - 120) throw new Error('日报消息来源前缀过长')
     for (const character of String(message.content || '')) {
-      if (prefix(part).length + body.length + character.length > MAX_BATCH_CHARS) { parts.push(body); body = ''; part += 1 }
+      const encodedCharacterLength = JSON.stringify(character).length - 2
+      if (prefix(part).length + Math.max(body.length + character.length, encodedLength + encodedCharacterLength) > MAX_BATCH_CHARS - 100) {
+        parts.push(body); body = ''; encodedLength = 0; part += 1
+      }
       body += character
+      encodedLength += encodedCharacterLength
     }
     if (body || !parts.length) parts.push(body)
     for (let index = 0; index < parts.length; index += 1) {
       const text = prefix(index + 1) + parts[index]
-      const extraLength = (fragments.length ? 1 : 0) + text.length
+      // JSON转义及短引用也算真实请求长度，长正文不能在封装后突破输入预算。
+      const itemLength = JSON.stringify({ ref: `r${fragments.length + 1}`, time: message.time || '', text: parts[index] }).length
+      const extraLength = (fragments.length ? 1 : 0) + Math.max(text.length, itemLength)
       if (fragments.length && (length + extraLength > MAX_BATCH_CHARS || (!sources.has(sourceId) && sources.size >= MAX_BATCH_MESSAGES))) {
         batches.push({ id: `B${batches.length + 1}`, fragments, text: fragments.map(item => item.text).join('\n') })
-        fragments = []; sources = new Set(); length = 0
+        fragments = []; sources = new Set(); length = 14
       }
-      fragments.push({ id: `${sourceId}:${index + 1}`, sourceId, part: index + 1, partCount: parts.length, text })
+      fragments.push({ id: `${sourceId}:${index + 1}`, sourceId, part: index + 1, partCount: parts.length, content: parts[index], text })
       sources.add(sourceId)
-      length += (fragments.length > 1 ? 1 : 0) + text.length
+      length += (fragments.length > 1 ? 1 : 0) + Math.max(text.length, itemLength)
     }
   }
   if (fragments.length) batches.push({ id: `B${batches.length + 1}`, fragments, text: fragments.map(item => item.text).join('\n') })
@@ -105,41 +122,148 @@ export function selectRepresentativeMessages(messages: InputMessage[], userId: s
 // --- 单元请求与结构校验 ---
 
 // 解析明确 JSON 契约，允许常见代码块包装，不接受截断结构或空返回。
-function parseObject(text: string): Record<string, unknown> {
+export function parseExchangeObject(text: string): Record<string, unknown> {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-  const value: unknown = JSON.parse(trimmed)
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('日报模型返回结构无效')
+  let value: unknown
+  try { value = JSON.parse(trimmed) } catch {
+    // 不记录模型正文，避免解析器把聊天内容或敏感字符串带进错误信息。
+    throw new Error(`[JSON_PARSE] 返回不是完整JSON对象（长度${trimmed.length}），请检查引号、逗号与闭合括号`)
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('[FIELD_TYPE] 顶层必须为JSON对象')
   return value as Record<string, unknown>
 }
 
-// 校验模型确认消费的片段或节点集合与当前输入恰好一致。
-function assertConsumedIds(value: unknown, expected: string[]): void {
-  if (!Array.isArray(value) || value.some(id => typeof id !== 'string') || new Set(value).size !== value.length ||
-    value.length !== expected.length || value.some(id => !expected.includes(id))) throw new Error('日报摘要未确认全部输入来源')
+// 读取逐条JSON记录：外层数组由程序组装，不猜测或补写模型遗漏的括号。
+export function parseExchangeRecords(text: string): Record<string, unknown>[] {
+  const input = text.trim().replace(/^```(?:jsonl?|ndjson)?\s*/i, '').replace(/\s*```$/, '')
+  const records: Record<string, unknown>[] = []
+  let start = -1
+  let depth = 0
+  let quoted = false
+  let escaped = false
+  let separatorPending = false
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index]
+    if (start === -1) {
+      if (/\s/.test(character)) continue
+      // 分隔符只影响传输排版；一条记录的内容、引用和闭合符仍按JSON原样校验。
+      if (character === ',' && records.length && !separatorPending) { separatorPending = true; continue }
+      if (character !== '{') throw new Error('[JSON_PARSE] 交换记录仅允许JSON对象，记录间可用空白或单个逗号分隔')
+      separatorPending = false
+      start = index; depth = 1; continue
+    }
+    if (quoted) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') quoted = false
+    } else if (character === '"') quoted = true
+    else if (character === '{') depth += 1
+    else if (character === '}' && --depth === 0) {
+      records.push(parseExchangeObject(input.slice(start, index + 1)))
+      start = -1
+    }
+  }
+  if (start !== -1) throw new Error('[JSON_PARSE] 最后一条交换记录未完整闭合')
+  if (separatorPending) throw new Error('[JSON_PARSE] 最后一条交换记录之后不能添加逗号')
+  if (!records.length || records[records.length - 1].kind !== 'end') throw new Error('[RECORD_INCOMPLETE] 缺少最后的end记录，不能把截断输出当作完成')
+  assertExchangeFields(records[records.length - 1], ['kind'], 'end记录')
+  if (records.slice(0, -1).some(record => record.kind === 'end')) throw new Error('[RECORD_ORDER] end记录只能在最后出现一次')
+  return records.slice(0, -1)
 }
 
-// 验证摘要必要内容及引用范围，来源覆盖数始终由程序集合计算。
-function readSummary(value: Record<string, unknown>, allowed: Set<number>, allowedMembers: Set<string>, maxChars: number): { topics: DigestTopic[]; quoteRefs: QuoteReference[] } {
-  if (!Array.isArray(value.topics) || !value.topics.length || !Array.isArray(value.quoteRefs)) throw new Error('日报摘要缺少必要字段')
-  if (value.quoteRefs.length > 3) throw new Error('日报摘要金句候选最多3条，不能重复枚举所有节点候选')
-  const topics = value.topics.map((raw, index) => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('日报话题摘要结构无效')
-    const topic = raw as DigestTopic
-    if (typeof topic.title !== 'string' || !topic.title.trim()) throw new Error(`第${index + 1}个话题缺少非空title`)
-    if (typeof topic.summary !== 'string' || !topic.summary.trim()) throw new Error(`第${index + 1}个话题缺少非空summary；金句候选只能放顶层quoteRefs，不能作为话题`)
-    if (!Array.isArray(topic.participants) || topic.participants.some(id => typeof id !== 'string' || !allowedMembers.has(id))) throw new Error(`第${index + 1}个话题participants必须为允许的用户ID字符串数组`)
-    if (!Array.isArray(topic.sourceIds) || !topic.sourceIds.length || topic.sourceIds.some(id => !Number.isInteger(id) || !allowed.has(id))) throw new Error(`第${index + 1}个话题sourceIds必须为允许的来源整数数组`)
-    return { title: topic.title.trim(), summary: topic.summary.trim(), participants: topic.participants, sourceIds: topic.sourceIds }
+// 必需字段按明确契约校验；适配器只读取这些字段，模型附加值没有数据所有权。
+export function assertExchangeFields(value: Record<string, unknown>, fields: string[], path: string): void {
+  for (const field of fields) if (!(field in value)) throw new Error(`[FIELD_MISSING] ${path}.${field}缺失`)
+}
+
+// 本次请求的短引用严格匹配；诊断仅输出格式受限的引用，其他字符串不泄露。
+export function assertExchangeRef(value: unknown, allowed: Map<string, unknown>, path: string): string {
+  if (typeof value !== 'string') throw new Error(`[FIELD_TYPE] ${path}必须是字符串引用，实际类型${typeof value}`)
+  if (!allowed.has(value)) {
+    const invalid = /^[rqpm]\d{1,6}$/.test(value) ? value : '非引用格式字符串'
+    throw new Error(`[REF_UNKNOWN] ${path}未知引用${invalid}；允许${[...allowed.keys()].join(',') || '空集合'}`)
+  }
+  return value
+}
+
+// 将真实摘要转换为紧凑输入，私有来源和成员集合绝不进入模型请求。
+export function createDigestExchange(topics: DigestTopic[], quotes: QuoteReference[], messages: InputMessage[]): ExchangeContext {
+  const items = new Map(topics.map((topic, index) => [`r${index + 1}`, topic]))
+  const requiredRefs = [...items.keys()]
+  const quoteMap = new Map([...new Map(quotes.map(quote => [quote.sourceId, quote])).values()].map((quote, index) => [`r${topics.length + index + 1}`, quote]))
+  // 话题与金句使用同一可信编号空间；引用金句原文也能提供真实话题依据，身份仍由程序恢复。
+  for (const [ref, quote] of quoteMap) items.set(ref, { title: '', summary: '', sourceIds: [quote.sourceId],
+    participants: [String(messages[quote.sourceId - 1].userId || '')].filter(Boolean) })
+  return { items, requiredRefs, quotes: quoteMap, input: JSON.stringify({ items: requiredRefs.map(ref => ({ ref, title: items.get(ref)!.title, summary: items.get(ref)!.summary })),
+    quotes: [...quoteMap].map(([ref, quote]) => ({ ref, reason: quote.reason, text: Array.from(String(messages[quote.sourceId - 1].content || '')).slice(0, 80).join('') })) }) }
+}
+
+// 统一校验摘要、合并与最终话题；全部输入覆盖只通过分组引用的并集确认一次。
+export function readExchange(text: string, context: ExchangeContext, maxTextChars = Infinity, preserveUnselected = false): { topics: DigestTopic[]; quoteRefs: QuoteReference[]; retainedRefs: string[] } {
+  const value: { groups: Record<string, unknown>[]; quotes: Record<string, unknown>[] } = { groups: [], quotes: [] }
+  for (const record of parseExchangeRecords(text)) {
+    if (record.kind !== 'group' && record.kind !== 'quote') throw new Error('[FIELD_TYPE] 话题交换记录kind只能为group或quote')
+    const { kind, ...item } = record
+    if (kind === 'group') {
+      if (value.quotes.length) throw new Error('[RECORD_ORDER] group记录必须在quote记录之前')
+      value.groups.push(item)
+    } else value.quotes.push(item)
+  }
+  if (!value.groups.length) throw new Error('[FIELD_TYPE] 必须至少有一条group记录')
+  if (value.quotes.length > 3) throw new Error('[FIELD_TYPE] quote记录最多3条')
+  const covered = new Set<string>()
+  const topics = value.groups.map((raw, index) => {
+    const path = `groups[${index}]`
+    const item = raw
+    assertExchangeFields(item, ['title', 'summary', 'refs'], path)
+    if (typeof item.title !== 'string' || !item.title.trim()) throw new Error(`[FIELD_TYPE] ${path}.title必须为非空文字`)
+    if (typeof item.summary !== 'string' || !item.summary.trim()) throw new Error(`[FIELD_TYPE] ${path}.summary必须为非空文字；金句单独输出quote记录`)
+    if (!Array.isArray(item.refs) || !item.refs.length) throw new Error(`[FIELD_TYPE] ${path}.refs必须为非空数组`)
+    const sources = new Set<number>()
+    const members = new Set<string>()
+    const seen = new Set<string>()
+    for (const rawRef of item.refs) {
+      const ref = assertExchangeRef(rawRef, context.items, `${path}.refs`)
+      if (seen.has(ref)) throw new Error(`[REF_DUPLICATE] ${path}.refs重复引用${ref}`)
+      seen.add(ref); covered.add(ref)
+      const parent = context.items.get(ref)!
+      parent.sourceIds.forEach(id => sources.add(id))
+      parent.participants.forEach(id => members.add(id))
+    }
+    return { title: item.title.trim(), summary: item.summary.trim(), sourceIds: [...sources], participants: [...members] }
   })
-  const quoteRefs = value.quoteRefs.map(raw => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('日报金句来源结构无效')
-    const quote = raw as QuoteReference
-    if (!Number.isInteger(quote.sourceId) || !allowed.has(quote.sourceId) || typeof quote.reason !== 'string') throw new Error('日报金句来源越界')
-    return { sourceId: quote.sourceId, reason: quote.reason }
+  const missing = context.requiredRefs.filter(ref => !covered.has(ref))
+  if (missing.length && !preserveUnselected) throw new Error(`[REF_UNCOVERED] groups.refs未覆盖输入${missing.join(',')}`)
+  // 合并是对已验证摘要的改写：未选中的节点保持原文和原来源，不推测它属于某个新话题。
+  if (preserveUnselected) for (const ref of missing) {
+    const original = context.items.get(ref)!
+    topics.push({ title: original.title, summary: original.summary, participants: [...original.participants], sourceIds: [...original.sourceIds] })
+  }
+  const seenQuotes = new Set<number>()
+  const quoteRefs = value.quotes.map((raw, index) => {
+    const path = `quotes[${index}]`
+    const item = raw
+    assertExchangeFields(item, ['ref', 'reason'], path)
+    const ref = assertExchangeRef(item.ref, context.quotes, `${path}.ref`)
+    if (typeof item.reason !== 'string' || !item.reason.trim()) throw new Error(`[FIELD_TYPE] ${path}.reason必须为非空文字`)
+    const sourceId = context.quotes.get(ref)!.sourceId
+    if (seenQuotes.has(sourceId)) throw new Error(`[REF_DUPLICATE] ${path}重复引用同一原始消息`)
+    seenQuotes.add(sourceId)
+    return { sourceId, reason: item.reason.trim() }
   })
-  const summary = { topics, quoteRefs }
-  if (JSON.stringify(summary).length > maxChars) throw new Error('日报摘要超过本阶段长度预算')
-  return summary
+  // 文字预算与引用数量分离；覆盖4000条时私有来源集合不受模型字符预算挤压。
+  if (JSON.stringify({ groups: topics.map(({ title, summary }) => ({ title, summary })), quotes: quoteRefs.map(({ reason }) => ({ reason })) }).length > maxTextChars) {
+    throw new Error(`[TEXT_BUDGET] 摘要文字超过${maxTextChars}字符预算，请压缩文字并保留全部refs`)
+  }
+  return { topics, quoteRefs, retainedRefs: preserveUnselected ? missing : [] }
+}
+
+// 所有阶段沿用同一交换格式，不要求模型生成真实编号或额外消费集合。
+export function exchangeInstructions(maxTextChars: number): string {
+  return `仅输出逐条JSON对象，记录间用换行或单个逗号分隔，不写外层数组或groups/quotes包装。每个话题一条group记录：{"kind":"group","title":"主题","summary":"讨论内容和结论","refs":["输入条目的ref"]}。每条金句候选一条quote记录：{"kind":"quote","ref":"候选的ref","reason":"简短点评"}。没有金句则不输出quote。最后必须输出{"kind":"end"}，确认完整结束。
+group记录必须有非空title、summary及非空refs；refs只选择本次items或quotes的可信字符串ref，每组不重复，各group的refs并集必须覆盖全部items，quotes只是补充依据。refs是完整归组清单，不是代表消息：正文重复的每条输入也必须逐个归组；合并两个主题时必须同时保留两个主题的全部ref。同一输入涉及多个主题可出现在不同group。金句摘选本身不是讨论话题。不要把全部主题合成宽泛类别，不编造讨论，不输出真实消息编号、用户ID或其他字段。
+先建立每条输入的完整归组清单，再写标题和摘要；重复或组合条目也不能遗漏。输出前逐项核对items中的每个ref都在某个group的refs中，不能用“已概括相同内容”省略引用。
+quote记录最多3条；只选择本次允许的金句ref，不返回原话或成员身份。所有标题、摘要、点评及其字段标点共不超过${maxTextChars}字符（refs另计），压缩文字而不遗漏引用。每条记录的所有数组和对象都必须闭合，最后的end之后不能再添加逗号。`
 }
 
 // 在同一硬截止内取消真实请求；单请求超时与整体600秒耗尽明确区分。
@@ -171,8 +295,9 @@ export async function requestAnalysisUnit<T>(runtime: AnalysisRuntime, diagnosti
         onRequestAbort = () => reject(controller.signal.reason || new Error('日报请求已取消'))
         controller.signal.addEventListener('abort', onRequestAbort, { once: true })
       })
+      // 沿用既有采样设置；真实身份与覆盖始终以程序校验为准。
       const text = await Promise.race([runtime.request(system + retryCorrection, input, maxTokens, {
-        signal: controller.signal, _timeoutMs: requestTimeout,
+        signal: controller.signal, _timeoutMs: requestTimeout, temperature: 0.2,
         _onRequestAttempt: () => { diagnostics.requestCount += 1; unit.onSubmitted?.(); runtime.onProgress?.(diagnostics) },
         _onRequestUsage: (usage: { readable: boolean; promptTokens: number; completionTokens: number; totalTokens: number }) => {
           if (!usage.readable) return
@@ -204,7 +329,7 @@ export async function requestAnalysisUnit<T>(runtime: AnalysisRuntime, diagnosti
       }
       diagnostics.warnings.push(`${unit.id}初次处理失败，重试一次：${message}`)
       // 仅反馈脱敏的校验原因，重试仍读取原始完整输入，不拼接未校验的模型正文。
-      retryCorrection = `\n上次返回未通过校验：${message}。请重新核对以上明确格式、真实编号及整个摘要对象长度，输出完整JSON。`
+      retryCorrection = `\n上次返回未通过校验：${message}。请重新核对以上明确格式、本次引用及摘要文字长度，输出全部独立JSON记录，不写外层包装，最后输出end记录。`
       runtime.onProgress?.(diagnostics)
     } finally {
       diagnostics.stageDurationsMs[unit.stage] = (diagnostics.stageDurationsMs[unit.stage] || 0) + Math.max(0, now() - requestStartedAt)
@@ -219,7 +344,7 @@ export async function requestAnalysisUnit<T>(runtime: AnalysisRuntime, diagnosti
 // --- 完整摘要与分层合并 ---
 
 // 所有入选片段完成后才累计原消息成功；不会因累计长度或批次数停止后续处理。
-export async function summarizeCompleteInput(messages: InputMessage[], diagnostics: Diagnostics, runtime: AnalysisRuntime): Promise<{ digest: string; sourceIds: Set<number>; quoteRefs: QuoteReference[] }> {
+export async function summarizeCompleteInput(messages: InputMessage[], diagnostics: Diagnostics, runtime: AnalysisRuntime): Promise<{ digest: string; topics: DigestTopic[]; sourceIds: Set<number>; quoteRefs: QuoteReference[] }> {
   const batches = packInputBatches(messages)
   diagnostics.batchCount = batches.length
   diagnostics.analysisState = 'processing'
@@ -233,27 +358,25 @@ export async function summarizeCompleteInput(messages: InputMessage[], diagnosti
   runtime.onProgress?.(diagnostics)
   for (const batch of batches) {
     const sourceIds = new Set(batch.fragments.map(fragment => fragment.sourceId))
-    const memberIds = new Set([...sourceIds].map(id => String(messages[id - 1].userId || '')).filter(Boolean))
-    const fragmentIds = batch.fragments.map(fragment => fragment.id)
-    const system = `你是群聊摘要助手。摘要必须涵盖本批全部消息片段，包括前中后时段和长正文尾部。仅输出JSON，topics与quoteRefs组成的完整JSON对象（含字段名、编号、标点）总长不超过${INTERMEDIATE_CHARS}字符；consumedFragmentIds另计。摘要应简洁，金句候选quoteRefs最多3条。
-格式：{"consumedFragmentIds":["来源编号:片段编号"],"topics":[{"title":"主题","summary":"讨论内容和结论","participants":[],"sourceIds":[1]}],"quoteRefs":[{"sourceId":1,"reason":"简短点评"}]}。每个topics元素必须同时具有title、summary、participants、sourceIds四个字段；金句候选只放顶层quoteRefs，禁止在topics中添加“金句候选”等非讨论元素。
-consumedFragmentIds必须恰好为${JSON.stringify(fragmentIds)}。输入的[M来源编号:P片段编号]是可信来源。无实际话题时如实概括内容性质，不编造。金句只返回来源引用。`
-    const sourceRule = `本批允许的来源编号是${JSON.stringify([...sourceIds])}，sourceIds与quoteRefs.sourceId必须为其中的整数，不能照抄格式示例中的1。participants只允许这些实际用户ID字符串：${JSON.stringify([...memberIds])}；前缀“用户ID=”后是成员ID，[M...:P...]中的M是来源、P是片段，P1不是用户ID。无法确认参与成员可以为空数组，不能填占位文字。每个话题只选1—3条代表来源，不要再次枚举全部消息；全部消费通过consumedFragmentIds确认。相互独立的具体讨论应分别提炼，不要用一个宽泛标题吞掉所有主题。`
+    const items = new Map(batch.fragments.map((fragment, index) => ['r' + (index + 1), {
+      title: '', summary: '', sourceIds: [fragment.sourceId], participants: [String(messages[fragment.sourceId - 1].userId || '')].filter(Boolean),
+    }]))
+    const quotes = new Map(batch.fragments.map((fragment, index) => ['r' + (index + 1), { sourceId: fragment.sourceId, reason: '' }]))
+    const context: ExchangeContext = { items, requiredRefs: [...items.keys()], quotes, input: JSON.stringify({ items: batch.fragments.map((fragment, index) => ({
+      ref: 'r' + (index + 1), time: messages[fragment.sourceId - 1].time || '',
+      text: fragment.content,
+    })) }) }
+    const system = '你是群聊摘要助手。完整阅读本批所有消息片段，涵盖前中后时段和长正文尾部。金句可选择items的ref。\n' + exchangeInstructions(INTERMEDIATE_CHARS) + '\n必须归组的完整ref清单：' + [...items.keys()].join(',')
     const summary = await requestAnalysisUnit(runtime, diagnostics, { id: batch.id, stage: 'compression', sourceIds: [...sourceIds], timestamps: [...sourceIds].map(id => timestamps.get(id)).filter((value): value is number => typeof value === 'number'), onSubmitted: () => {
       for (const id of sourceIds) submitted.add(id)
       diagnostics.submittedMessageCount = submitted.size
       diagnostics.unprocessedCount = diagnostics.selectedMessageCount - submitted.size
-    } },
-      system + '\n' + sourceRule, batch.text, 2500, 45000, text => {
-        const parsed = parseObject(text)
-        assertConsumedIds(parsed.consumedFragmentIds, fragmentIds)
-        return readSummary(parsed, sourceIds, memberIds, INTERMEDIATE_CHARS)
-      })
+    } }, system, context.input, 3000, 45000, response => readExchange(response, context, INTERMEDIATE_CHARS))
     for (const fragment of batch.fragments) completed.add(fragment.id)
     let summarized = 0
     for (const [id, count] of expectedParts) {
       let all = true
-      for (let part = 1; part <= count; part += 1) if (!completed.has(`${id}:${part}`)) { all = false; break }
+      for (let part = 1; part <= count; part += 1) if (!completed.has(id + ':' + part)) { all = false; break }
       if (all) summarized += 1
     }
     diagnostics.summarizedMessageCount = summarized
@@ -267,8 +390,9 @@ consumedFragmentIds必须恰好为${JSON.stringify(fragmentIds)}。输入的[M�
     const groups: SummaryNode[][] = []
     let group: SummaryNode[] = []
     for (const node of current) {
-      const candidate = [...group, node].map(item => ({ id: item.id, topics: item.topics, quoteRefs: item.quoteRefs }))
-      if (group.length && JSON.stringify(candidate).length > MAX_BATCH_CHARS) { groups.push(group); group = [] }
+      const candidate = [...group, node]
+      const input = createDigestExchange(candidate.flatMap(item => item.topics), candidate.flatMap(item => item.quoteRefs), messages).input
+      if (group.length && (input.length > MAX_BATCH_CHARS || group.length >= 3)) { groups.push(group); group = [] }
       group.push(node)
     }
     if (group.length) groups.push(group)
@@ -277,23 +401,21 @@ consumedFragmentIds必须恰好为${JSON.stringify(fragmentIds)}。输入的[M�
     for (const parents of groups) {
       if (parents.length === 1) { merged.push(parents[0]); continue }
       const sourceIds = new Set(parents.flatMap(node => [...node.sourceIds]))
-      const ids = parents.map(node => node.id)
-      const id = `L${diagnostics.mergeLevels}-${merged.length + 1}`
+      const id = 'L' + diagnostics.mergeLevels + '-' + (merged.length + 1)
       const final = groups.length === 1
-      const maxChars = final ? MAX_BATCH_CHARS : INTERMEDIATE_CHARS
-      const input = JSON.stringify(parents.map(node => ({ id: node.id, topics: node.topics, quoteRefs: node.quoteRefs })))
-      const system = `你是群聊摘要合并助手。完整合并所有输入节点，保留跨时段主要主题、结论和真实来源，不只保留前半段。仅输出JSON：{"consumedNodeIds":${JSON.stringify(ids)},"topics":[{"title":"主题","summary":"内容及结论","participants":[],"sourceIds":[1]}],"quoteRefs":[{"sourceId":1,"reason":"点评"}]}。consumedNodeIds必须恰好包含全部输入节点。topics与quoteRefs组成的完整JSON对象（含字段名、编号、标点）总长不超过${maxChars}字符；consumedNodeIds另计。quoteRefs去掉重复和同义候选，只保留最多3条。sourceIds与quoteRefs.sourceId只能沿用输入对应话题或金句的实际整数编号，不能照抄示例1。participants只能沿用输入里的真实用户ID字符串，无法确认可以为空数组，不能使用占位文字。每个话题保留1—3条代表来源；保留彼此独立的具体主题，不要全部并成一个宽泛类别。`
-      const summary = await requestAnalysisUnit(runtime, diagnostics, { id, stage: 'merge', sourceIds: [...sourceIds], timestamps: [] }, system + '\n每个topics元素必须包含title、summary、participants、sourceIds四个字段；金句候选只放顶层quoteRefs，禁止混入topics。', input, final ? 6000 : 2500, 45000, text => {
-        const parsed = parseObject(text)
-        assertConsumedIds(parsed.consumedNodeIds, ids)
-        // 引用只能沿实际输入摘要传播，不能在合并时新增未出现过的来源引用。
-        const referenced = new Set(parents.flatMap(parent => parent.topics.flatMap(topic => topic.sourceIds).concat(parent.quoteRefs.map(quote => quote.sourceId))))
-        const memberIds = new Set(parents.flatMap(parent => parent.topics.flatMap(topic => topic.participants)))
-        const result = readSummary(parsed, referenced, memberIds, maxChars)
-        const quoteSources = new Set(parents.flatMap(parent => parent.quoteRefs.map(quote => quote.sourceId)))
-        if (result.quoteRefs.some(quote => !quoteSources.has(quote.sourceId))) throw new Error('合并金句来源不在输入候选中')
-        return result
-      })
+      const maxChars = final ? 3000 : INTERMEDIATE_CHARS
+      const context = createDigestExchange(parents.flatMap(node => node.topics), parents.flatMap(node => node.quoteRefs), messages)
+      const system = '你是群聊摘要合并助手。完整合并items，保留不同时段的独立具体主题及结论，不只保留前半段。只合并同一具体讨论；不能仅因属于生活、技术、文艺等大类就吞并不同讨论。一个条目包含多个独立讨论时应拆开，可重复使用该条目的ref。未选中的条目由程序原样保留，因此请尽量完成合理合并以控制长度。金句只能选择quotes的ref。\n' + exchangeInstructions(maxChars) + '\n应归组的完整ref清单：' + [...context.items.keys()].join(',')
+      const summary = await requestAnalysisUnit(runtime, diagnostics, { id, stage: 'merge', sourceIds: [...sourceIds], timestamps: [] },
+        system + (final && runtime.topicRange ? `\n最终摘要须保留${runtime.topicRange.min}—${runtime.topicRange.max}个独立具体话题，不能再合成生活、技术等大类。` : ''),
+        context.input, final ? 6000 : 3000, 45000, response => {
+          const result = readExchange(response, context, maxChars, true)
+          if (final && runtime.topicRange && (result.topics.length < runtime.topicRange.min || result.topics.length > runtime.topicRange.max)) {
+            throw new Error(`最终摘要需要${runtime.topicRange.min}—${runtime.topicRange.max}个有依据的独立话题，实际${result.topics.length}个，请合理拆分或合并具体讨论并保留全部来源`)
+          }
+          return result
+        })
+      if (summary.retainedRefs.length) diagnostics.warnings.push(`${id}合并时${summary.retainedRefs.length}条已验证摘要未改写，程序已原样保留`)
       merged.push({ id, ...summary, sourceIds })
       runtime.onProgress?.(diagnostics)
     }
@@ -301,9 +423,12 @@ consumedFragmentIds必须恰好为${JSON.stringify(fragmentIds)}。输入的[M�
   }
   diagnostics.stages.compression = 'complete'
   const root = current[0]
-  if (root.sourceIds.size !== messages.length || diagnostics.summarizedMessageCount !== messages.length) throw new ReportAnalysisError('最终摘要来源覆盖不完整', 'generation_failed', 'merge', diagnostics)
-  const digest = JSON.stringify({ topics: root.topics, quoteRefs: root.quoteRefs })
+  const topicSources = new Set(root.topics.flatMap(topic => topic.sourceIds))
+  if (root.sourceIds.size !== messages.length || topicSources.size !== messages.length || diagnostics.summarizedMessageCount !== messages.length) {
+    throw new ReportAnalysisError('最终摘要来源覆盖不完整', 'generation_failed', 'merge', diagnostics)
+  }
+  const digest = createDigestExchange(root.topics, root.quoteRefs, messages).input
   if (digest.length > MAX_BATCH_CHARS) throw new ReportAnalysisError('共同摘要超出最终输入预算', 'generation_failed', 'merge', diagnostics)
   runtime.onProgress?.(diagnostics)
-  return { digest, sourceIds: root.sourceIds, quoteRefs: root.quoteRefs }
+  return { digest, topics: root.topics, sourceIds: root.sourceIds, quoteRefs: root.quoteRefs }
 }
