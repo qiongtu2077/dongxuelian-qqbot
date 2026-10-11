@@ -411,7 +411,7 @@ async function synthesizeSpeech(text: unknown, options: TtsOptions = {}): Promis
     } catch (error) {
       lastError = error
       console.warn(`[voice-tts] capability_step_failed provider=${step.provider} model=${step.model}`)
-      await notifyCapabilityStepFailure(step.provider, step.model).catch(() => false)
+      await notifyCapabilityStepFailure(step.provider, step.model, 'voice-tts').catch(() => false)
       const retryable = !(error instanceof TtsStepError) || error.retryable
       if (!retryable || index >= steps.length - 1) break
     } finally {

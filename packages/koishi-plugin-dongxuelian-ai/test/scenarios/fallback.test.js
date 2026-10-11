@@ -187,6 +187,38 @@ async function runCapabilityIsolation(t) {
   })
 }
 
+// 复现同一模型先后在文字与识图链失败，确认能力提示和通知冷却相互隔离。
+async function runFailureCapabilityNotifications(t) {
+  const step = { provider: 'openai', model: 'gpt-4o' }
+  await withManagedApi(Array.from({ length: 3 }, () => ({ status: 400, text: 'private upstream body' })), { text: [step], vision: [step] }, async (api) => {
+    const notifier = require(path.join(AI_ROOT, 'lib', 'core', 'capability-failure-notifier.js'))
+    const notifications = []
+    notifier.resetCapabilityFailureNotifier()
+    notifier.setCapabilityFailureSender(async (adminId, message) => notifications.push({ adminId, message }))
+    try {
+      for (const capability of ['text', 'text', 'vision']) {
+        let failure
+        try {
+          await api.requestChatCompletions([{ role: 'user', content: 'test' }], {
+            capability, provider: 'glm', model: 'ignored', baseURL: 'https://example.invalid/v1', apiKey: 'sk-current-secret',
+          })
+        } catch (error) { failure = error }
+        t.check(`${capability} failure retains HTTP 400`, /HTTP 400/.test(failure?.message), failure?.message)
+      }
+      const text = notifications.filter(item => item.message.startsWith('文字高优先级模型出错'))
+      const vision = notifications.filter(item => item.message.startsWith('识图高优先级模型出错'))
+      t.check('text failure notification reaches admins once despite repeated failures', text.length > 0 && new Set(text.map(item => item.adminId)).size === text.length, JSON.stringify(text))
+      t.check('same-model vision failure is not hidden by text cooldown', vision.length === text.length && vision.length > 0, JSON.stringify(vision))
+      t.check('capability notifications preserve supplier model and sanitization', notifications.every(item => item.message.includes('供应商：GPT') && item.message.includes('模型：gpt-4o') && !item.message.includes('private upstream body') && !item.message.includes('sk-current-secret')), JSON.stringify(notifications))
+      for (const [capability, label] of [['voice-asr', '语音识别'], ['voice-tts', '语音合成']]) {
+        const before = notifications.length
+        await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', capability)
+        t.check(`${capability} notification displays its capability`, notifications.length > before && notifications.slice(before).every(item => item.message.startsWith(label + '高优先级模型出错')), JSON.stringify(notifications.slice(before)))
+      }
+    } finally { notifier.resetCapabilityFailureNotifier() }
+  })
+}
+
 // 运行四能力优先级场景测试。
 async function run(t) {
   t.section('scenario: managed capability fallback')
@@ -195,6 +227,7 @@ async function run(t) {
   await runNonRetryableFailureCase(t)
   await runTerminalFailureCases(t)
   await runCapabilityIsolation(t)
+  await runFailureCapabilityNotifications(t)
 }
 
 module.exports = { run }

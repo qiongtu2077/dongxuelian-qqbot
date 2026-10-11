@@ -119,12 +119,12 @@ async function runAiCapabilityContracts(context) {
   const notifications = []
   notifier.resetCapabilityFailureNotifier()
   notifier.setCapabilityFailureSender(async (adminId, message) => notifications.push({ adminId, message }))
-  const firstNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 1000)
-  const cooledNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 1001)
-  const expiredNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 1000 + notifier.FAILURE_NOTIFICATION_COOLDOWN_MS)
+  const firstNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 'text', 1000)
+  const cooledNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 'text', 1001)
+  const expiredNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 'text', 1000 + notifier.FAILURE_NOTIFICATION_COOLDOWN_MS)
   check('failure notifier applies provider-model cooldown', firstNotify === true && cooledNotify === false && expiredNotify === true)
   check('failure notifier dynamically sends to all admins', notifications.length === 4 && new Set(notifications.map(item => item.adminId)).size === 2, JSON.stringify(notifications))
-  check('failure notification includes provider and model', notifications.every(item => item.message.includes('供应商：GPT') && item.message.includes('模型：gpt-4o')), JSON.stringify(notifications))
+  check('failure notification includes capability provider and model', notifications.every(item => item.message.startsWith('文字高优先级模型出错') && item.message.includes('供应商：GPT') && item.message.includes('模型：gpt-4o')), JSON.stringify(notifications))
   notifier.resetCapabilityFailureNotifier()
 
   api.recordTokenUsage('openai', 15, { capability: 'text', model: 'capability-usage-readable', usage: { input_tokens: 10, output_tokens: 5 }, readable: true })

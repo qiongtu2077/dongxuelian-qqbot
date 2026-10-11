@@ -720,7 +720,7 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
         ? error
         : new CapabilityUpstreamError('AI 上游网络请求失败', 'NETWORK_ERROR', true)
       console.warn(`[ai-api] capability_step_failed capability=${capability} provider=${attempt.provider || 'unknown'} model=${attempt.model} code=${failure.code}`)
-      await notifyCapabilityStepFailure(attempt.provider || 'unknown', attempt.model).catch(() => false)
+      await notifyCapabilityStepFailure(attempt.provider || 'unknown', attempt.model, capability).catch(() => false)
       if (!failure.retryable || index >= attempts.length - 1) throw failure
     } finally {
       clearTimeout(timer)

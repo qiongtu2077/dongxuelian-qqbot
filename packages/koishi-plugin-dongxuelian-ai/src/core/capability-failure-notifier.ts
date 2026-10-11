@@ -1,10 +1,11 @@
 /**
  * MODULE: 能力优先级故障通知。
- * 职责: 对供应商/模型故障做 30 分钟冷却，并动态通知全部超级管理员。
+ * 职责: 对能力/供应商/模型故障做 30 分钟冷却，并动态通知全部超级管理员。
  * 边界: 通知失败只记录脱敏警告，不影响模型回退或用户请求。
  */
 const { getAdminUserIds } = require('./runtime-config') as typeof import('./runtime-config')
-const { getProviderCatalogEntry } = require('./ai-capability-config') as typeof import('./ai-capability-config')
+const { AI_CAPABILITIES, getProviderCatalogEntry } = require('./ai-capability-config') as typeof import('./ai-capability-config')
+type AiCapability = (typeof AI_CAPABILITIES)[number]
 
 interface NotificationBot {
   sendPrivateMessage?: (id: string, message: string) => Promise<unknown> | unknown
@@ -19,6 +20,7 @@ interface NotificationContext {
 type FailureSender = (adminId: string, message: string) => Promise<unknown>
 
 const FAILURE_NOTIFICATION_COOLDOWN_MS = 30 * 60 * 1000
+const CAPABILITY_LABELS: Record<AiCapability, string> = { text: '文字', vision: '识图', 'voice-asr': '语音识别', 'voice-tts': '语音合成' }
 const failureCooldowns = new Map<string, number>()
 let failureSender: FailureSender | null = null
 
@@ -51,23 +53,24 @@ function pruneFailureCooldowns(now: number): void {
   }
 }
 
-// 对一个失败步骤通知全部动态管理员，同一供应商/模型 30 分钟内只发送一次。
-async function notifyCapabilityStepFailure(providerId: string, model: string, now = Date.now()): Promise<boolean> {
+// 对一个失败步骤通知全部动态管理员，同一能力/供应商/模型 30 分钟内只发送一次。
+async function notifyCapabilityStepFailure(providerId: string, model: string, capability: AiCapability, now = Date.now()): Promise<boolean> {
   const provider = getProviderCatalogEntry(providerId)
   const providerName = provider?.name || String(providerId || 'unknown')
   const modelName = String(model || 'unknown')
-  const cooldownKey = `${providerId}\u0000${modelName}`
+  // 同一模型可同时承担文字和识图，冷却不能跨能力遮蔽故障。
+  const cooldownKey = `${capability}\u0000${providerId}\u0000${modelName}`
   pruneFailureCooldowns(now)
   if ((failureCooldowns.get(cooldownKey) || 0) > now) return false
   failureCooldowns.set(cooldownKey, now + FAILURE_NOTIFICATION_COOLDOWN_MS)
   const admins = [...getAdminUserIds(true)]
-  const message = `高优先级模型出错，请管理员去控制台查看\n供应商：${providerName}\n模型：${modelName}`
+  const message = `${CAPABILITY_LABELS[capability]}高优先级模型出错，请管理员去控制台查看\n供应商：${providerName}\n模型：${modelName}`
   if (!failureSender || !admins.length) return false
   await Promise.all(admins.map(async adminId => {
     try {
       await failureSender?.(adminId, message)
     } catch {
-      console.warn(`[ai-capability] failure_notification_failed provider=${providerId} model=${modelName}`)
+      console.warn(`[ai-capability] failure_notification_failed capability=${capability} provider=${providerId} model=${modelName}`)
     }
   }))
   return true
