@@ -1,3 +1,5 @@
+declare const AI_CAPABILITIES: readonly string[];
+type AiCapability = (typeof AI_CAPABILITIES)[number];
 interface NotificationBot {
     sendPrivateMessage?: (id: string, message: string) => Promise<unknown> | unknown;
     internal?: {
@@ -11,7 +13,7 @@ interface NotificationContext {
 type FailureSender = (adminId: string, message: string) => Promise<unknown>;
 declare function setCapabilityFailureSender(sender: FailureSender | null): void;
 declare function registerCapabilityFailureContext(ctx: NotificationContext): void;
-declare function notifyCapabilityStepFailure(providerId: string, model: string, now?: number): Promise<boolean>;
+declare function notifyCapabilityStepFailure(providerId: string, model: string, capability: AiCapability, now?: number): Promise<boolean>;
 declare function resetCapabilityFailureNotifier(): void;
 declare const _default: {
     FAILURE_NOTIFICATION_COOLDOWN_MS: number;

@@ -288,7 +288,7 @@ async function callModelAsr(wavPath: string, _config?: VoiceConfig): Promise<str
     } catch (error) {
       const retryable = (error as { retryable?: unknown })?.retryable !== false
       console.warn(`[voice-asr] capability_step_failed provider=${step.provider} model=${step.model}`)
-      await notifyCapabilityStepFailure(step.provider, step.model).catch(() => false)
+      await notifyCapabilityStepFailure(step.provider, step.model, 'voice-asr').catch(() => false)
       if (!retryable || index >= steps.length - 1) throw error
     } finally {
       clearTimeout(timer)
