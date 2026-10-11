@@ -18,6 +18,8 @@ const { json, collectBody, getErrorMessage } = require('../utils') as {
 const { requireAdmin } = require('../auth') as { requireAdmin(req: IncomingMessage, res: ServerResponse): boolean }
 const { executeConfigTransaction, ConfigTransactionError } = require('../config-transaction') as typeof import('../config-transaction')
 const { DATA_DIR, CUSTOM_PROVIDERS_FILE } = require('../paths') as { DATA_DIR: string; CUSTOM_PROVIDERS_FILE: string }
+const { aggregateCapabilityUsage } = require('../capability-usage') as typeof import('../capability-usage')
+import type { UsageDateQuery } from '../capability-usage'
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => unknown
@@ -33,20 +35,6 @@ interface JsonBody {
   note?: unknown
   baseURL?: unknown
   custom?: unknown
-}
-
-interface UsageStat {
-  key: string
-  label: string
-  provider?: string
-  total: number
-  requests: number
-  input: number
-  output: number
-  cacheCreation: number
-  cacheRead: number
-  readableRequests: number
-  unreadableRequests: number
 }
 
 const TOKEN_USAGE_FILE = path.join(DATA_DIR, 'token-usage.json')
@@ -371,81 +359,15 @@ function handlePutAiCapabilityPriority(req: IncomingMessage, res: ServerResponse
 
 // --- 按能力用量聚合 ---
 
-// 把未知数值规范为非负有限数。
-function usageNumber(value: unknown): number {
-  const number = Number(value || 0)
-  return Number.isFinite(number) && number > 0 ? number : 0
-}
-
-// 创建一个可累计的用量统计行。
-function createUsageStat(key: string, label = key, provider = ''): UsageStat {
-  return { key, label, provider, total: 0, requests: 0, input: 0, output: 0, cacheCreation: 0, cacheRead: 0, readableRequests: 0, unreadableRequests: 0 }
-}
-
-// 将一个持久化统计对象累加到目标行。
-function addUsageStat(target: UsageStat, raw: unknown): void {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
-  const source = raw as Record<string, unknown>
-  for (const key of ['total', 'requests', 'input', 'output', 'cacheCreation', 'cacheRead', 'readableRequests', 'unreadableRequests'] as const) {
-    target[key] += usageNumber(source[key])
-  }
-  if (typeof source.provider === 'string') target.provider = source.provider
-}
-
-// 从新结构中聚合一个能力；无能力字段的历史记录会被完全忽略。
-function buildCapabilityUsage(capability: string): Record<string, unknown> {
+// 读取能力用量文件并交给日期区间聚合器；历史无能力记录不推断归类。
+function buildCapabilityUsage(capability: string, query: UsageDateQuery = {}): Record<string, unknown> {
   if (!capabilityConfig.isAiCapability(capability)) throw new Error('未知能力')
   let root: Record<string, unknown> = {}
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(TOKEN_USAGE_FILE, 'utf8'))
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) root = parsed as Record<string, unknown>
   } catch { root = {} }
-  const providers = new Map<string, UsageStat>()
-  const models = new Map<string, UsageStat>()
-  let readableRequests = 0
-  let unreadableRequests = 0
-  const days = Object.keys(root).sort().slice(-30).flatMap(date => {
-    const rawDay = root[date]
-    if (!rawDay || typeof rawDay !== 'object' || Array.isArray(rawDay)) return []
-    const capabilities = (rawDay as { capabilities?: unknown }).capabilities
-    if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) return []
-    const rawCapability = (capabilities as Record<string, unknown>)[capability]
-    if (!rawCapability || typeof rawCapability !== 'object' || Array.isArray(rawCapability)) return []
-    const source = rawCapability as Record<string, unknown>
-    const total = createUsageStat(date, date)
-    addUsageStat(total, source)
-    readableRequests += total.readableRequests
-    unreadableRequests += total.unreadableRequests
-    const dayProviders: Record<string, unknown> = {}
-    const providerSource = source.providers && typeof source.providers === 'object' && !Array.isArray(source.providers)
-      ? source.providers as Record<string, unknown>
-      : {}
-    for (const [key, value] of Object.entries(providerSource)) {
-      const row = providers.get(key) || createUsageStat(key, key)
-      addUsageStat(row, value)
-      providers.set(key, row)
-      dayProviders[key] = value
-    }
-    const dayModels: Record<string, unknown> = {}
-    const modelSource = source.models && typeof source.models === 'object' && !Array.isArray(source.models)
-      ? source.models as Record<string, unknown>
-      : {}
-    for (const [key, value] of Object.entries(modelSource)) {
-      const row = models.get(key) || createUsageStat(key, key)
-      addUsageStat(row, value)
-      models.set(key, row)
-      dayModels[key] = value
-    }
-    return [{ date, ...total, providers: dayProviders, models: dayModels }]
-  })
-  return {
-    capability,
-    days,
-    providers: [...providers.values()],
-    models: [...models.values()],
-    readable: readableRequests > 0,
-    unavailable: unreadableRequests > 0 && readableRequests === 0,
-  }
+  return aggregateCapabilityUsage(root, capability, query)
 }
 
 // 返回当前能力的独立用量，历史无能力数据不推断也不展示。
@@ -453,7 +375,7 @@ function handleGetCapabilityUsage(req: IncomingMessage, res: ServerResponse, _pa
   if (!requireAdmin(req, res)) return
   try {
     const capability = String(url.searchParams.get('capability') || '')
-    json(res, buildCapabilityUsage(capability))
+    json(res, buildCapabilityUsage(capability, { startDate: url.searchParams.get('startDate'), endDate: url.searchParams.get('endDate') }))
   } catch (error) {
     json(res, { ok: false, message: getErrorMessage(error) }, 400)
   }

@@ -92,6 +92,36 @@ function testAiModelApiModel(aiModel) {
   assert.doesNotMatch(appSource, /id: 'keys'/)
 }
 
+// 验证北京时间快捷区间、闰日、日历和长区间趋势分桶。
+function testUsageRangeModel(model) {
+  const now = Date.parse('2026-01-01T16:30:00.000Z')
+  assert.strictEqual(model.todayUsageDate(now), '2026-01-02')
+  const custom = { startDate: '2025-12-01', endDate: '2025-12-02' }
+  assert.deepStrictEqual(model.resolveUsagePreset('today', custom, now), { startDate: '2026-01-02', endDate: '2026-01-02' })
+  assert.deepStrictEqual(model.resolveUsagePreset('yesterday', custom, now), { startDate: '2026-01-01', endDate: '2026-01-01' })
+  assert.deepStrictEqual(model.resolveUsagePreset('7d', custom, now), { startDate: '2025-12-27', endDate: '2026-01-02' })
+  assert.deepStrictEqual(model.resolveUsagePreset('14d', custom, now), { startDate: '2025-12-20', endDate: '2026-01-02' })
+  assert.deepStrictEqual(model.resolveUsagePreset('30d', custom, now), { startDate: '2025-12-04', endDate: '2026-01-02' })
+  assert.strictEqual(model.resolveUsagePreset('all', custom, now), undefined)
+  assert.deepStrictEqual(model.resolveUsagePreset('custom', custom, now), custom)
+  assert.notStrictEqual(model.resolveUsagePreset('custom', custom, now), custom)
+  assert.strictEqual(model.shiftUsageDate('2024-03-01', -1), '2024-02-29')
+  assert.strictEqual(model.shiftUsageMonth('2026-01', -1), '2025-12')
+  assert.strictEqual(model.validateUsageRange({ startDate: '2024-02-29', endDate: '2024-02-29' }), '')
+  assert.ok(model.validateUsageRange({ startDate: '2026-02-29', endDate: '2026-03-01' }))
+  assert.ok(model.validateUsageRange({ startDate: '2026-03-02', endDate: '2026-03-01' }))
+  const calendar = model.usageCalendarDays('2024-02')
+  assert.strictEqual(calendar.length, 42)
+  assert.strictEqual(calendar[0], '2024-01-28')
+  assert.ok(calendar.includes('2024-02-29'))
+  const day = { date: '2026-01-02', total: 10, requests: 1, input: 7, output: 3, cacheCreation: 0, cacheRead: 2 }
+  const trend = model.buildUsageTrend([day], { startDate: '2026-01-01', endDate: '2026-01-03' })
+  assert.deepStrictEqual(trend.points.map(point => point.total), [0, 10, 0])
+  const wide = model.buildUsageTrend([day], { startDate: '2000-01-01', endDate: '2099-12-31' })
+  assert.ok(wide.points.length <= 366)
+  assert.strictEqual(wide.points.reduce((sum, point) => sum + point.total, 0), 10)
+}
+
 // Verifies worker status classification against a deterministic resource snapshot.
 function testResourceModel(resource) {
   const now = Date.parse('2026-08-30T08:00:00.000Z')
@@ -282,6 +312,7 @@ function main() {
   try {
     testDeployModel(loadService('deploy-model'))
     testAiModelApiModel(loadService('ai-model-api-model'))
+    testUsageRangeModel(loadService('usage-range-model'))
     testResourceModel(loadService('resource-model'))
     testResourceReadability(loadBackendModule('resource-readability'))
     testResourceDiagnostics(loadBackendModule('resource-diagnostics'))

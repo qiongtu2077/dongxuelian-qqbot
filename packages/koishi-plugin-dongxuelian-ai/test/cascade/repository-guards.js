@@ -187,6 +187,7 @@ async function runRepositoryGuards(context) {
   const dashboardElectronDeployerSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'electron-deployer.ts'))
   const dashboardApiSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'api.ts'))
   const dashboardAiModelPanelSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'components', 'AiModelApiConfigPanel.vue'))
+  const dashboardAiUsagePanelSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'components', 'AiUsagePanel.vue'))
   const dashboardAiModelServiceSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'services', 'ai-model-api-model.ts'))
   check('dashboard shares electron deployer detection helper', dashboardAppSrc.includes('electron-deployer') && dashboardElectronDeployerSrc.includes('dongxuelianExpose?.dongxuelianDeployer') && dashboardElectronDeployerSrc.includes('getDongxuelianDeployerBridge'))
   check('dashboard fetchAdminIds uses admin token', dashboardApiSrc.includes("fetchAdminIds() { return get('/admin-ids', true) }"))
@@ -215,7 +216,7 @@ async function runRepositoryGuards(context) {
     "return get<AiModelApiConfigResponse>('/ai-model-api/config', true)",
     "return post<AiDiscoveryResponse>('/ai-model-api/discover', { providerId, apiKey }, true, 20000)",
     "return put<AiPriorityResponse>('/ai-model-api/priority', { capability, steps }, true)",
-    "return get<CapabilityUsageResponse>('/keys/usage?capability=' + encodeURIComponent(capability), true)",
+    "return get<CapabilityUsageResponse>('/keys/usage?' + query, true)",
     "return post('/gallery', data, true, 60000)",
     "return del('/gallery', Array.isArray(idOrIds) ? { ids: idOrIds } : { id: idOrIds }, true)",
     "return put('/gallery/style', { id, foilStyle }, true)",
@@ -223,9 +224,9 @@ async function runRepositoryGuards(context) {
   check('dashboard sensitive APIs use admin token', dashboardSensitiveAdminApiSnippets.every(snippet => dashboardApiSrc.includes(snippet)), dashboardApiSrc.slice(1400, 3600))
   check('dashboard navigation converges old tabs into unified AI tab', dashboardAppSrc.includes("id: 'ai-model-api'") && dashboardAppSrc.includes("value === 'config' || value === 'keys'") && !dashboardAppSrc.includes("id: 'config'") && !dashboardAppSrc.includes("id: 'keys'"))
   check('dashboard AI panel exposes all modality tabs', dashboardAiModelPanelSrc.includes("{ id: 'text', label: '文字' }") && dashboardAiModelPanelSrc.includes("{ id: 'vision', label: '识图' }") && dashboardAiModelPanelSrc.includes("{ id: 'voice-asr', label: '语音识别' }") && dashboardAiModelPanelSrc.includes("{ id: 'voice-tts', label: '语音合成' }"))
-  check('dashboard AI panel reuses supplier priority and usage sections', dashboardAiModelPanelSrc.includes('AI 供应商导入') && dashboardAiModelPanelSrc.includes('模型优先级调整') && dashboardAiModelPanelSrc.includes('模型用量'))
+  check('dashboard AI panel reuses supplier priority and usage sections', dashboardAiModelPanelSrc.includes('AI 供应商导入') && dashboardAiModelPanelSrc.includes('模型优先级调整') && dashboardAiModelPanelSrc.includes('<AiUsagePanel') && dashboardAiUsagePanelSrc.includes('模型用量'))
   check('dashboard AI panel renders blocked discovery reason and accessible priority controls', dashboardAiModelPanelSrc.includes('selectedProvider.discoveryReason') && dashboardAiModelPanelSrc.includes('aria-label="`上移') && dashboardAiModelPanelSrc.includes('aria-label="`下移'))
-  check('dashboard AI panel displays capability distribution and unreadable usage', dashboardAiModelPanelSrc.includes('模型分布') && dashboardAiModelPanelSrc.includes('无法读取模型 Token 用量') && dashboardAiModelPanelSrc.includes('usage.providers') && dashboardAiModelPanelSrc.includes('usage.models'))
+  check('dashboard AI panel displays capability distribution and unreadable usage', dashboardAiUsagePanelSrc.includes('模型分布') && dashboardAiUsagePanelSrc.includes('无法读取模型 Token 用量') && dashboardAiUsagePanelSrc.includes('usage.providers') && dashboardAiUsagePanelSrc.includes('usage.models'))
   check('dashboard AI frontend imports the shared capability contract', dashboardAiModelServiceSrc.includes('ai-capability-contract.json') && dashboardAiModelServiceSrc.includes('AI_CAPABILITY_IDS'))
   const aiApiSrc = read(path.join(LIB, 'core', 'api.js'))
   check('AI token usage records capability model and detailed usage fields', aiApiSrc.includes('function readUsageDetails') && aiApiSrc.includes('capability,') && aiApiSrc.includes('model: attempt.model') && aiApiSrc.includes('cache_read_tokens'))

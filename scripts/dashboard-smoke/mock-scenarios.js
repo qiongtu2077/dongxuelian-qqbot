@@ -1,4 +1,6 @@
-const { BASE_URL } = require('./runtime')
+const { BASE_URL, ROOT } = require('./runtime')
+const fs = require('fs')
+const path = require('path')
 const {
   waitForText,
   waitForTextInSelector,
@@ -9,6 +11,7 @@ const {
   clickText,
   clickVisibleSelector,
   ensureSidebarExpanded,
+  ensureSidebarCollapsed,
   clickSidebarTab,
   clickSidebarTabExpectNavigation,
   clickButtonInCard,
@@ -21,6 +24,67 @@ const {
   waitForSelectBoxLabel,
   verifyAdminModalCancel,
 } = require('./browser-helpers')
+
+/** Verifies that date presets, custom intervals, cancellation and all-history queries reach the UI. */
+async function verifyUsageDateRanges(page) {
+  const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10)
+  const yesterday = new Date(Date.parse(today + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10)
+  const oldDate = new Date(Date.parse(today + 'T00:00:00Z') - 60 * 86400000).toISOString().slice(0, 10)
+  await page.click('.range-trigger')
+  await Promise.all([
+    page.waitForRequest(request => {
+      const url = new URL(request.url())
+      return url.pathname.endsWith('/keys/usage') && url.searchParams.get('startDate') === yesterday && url.searchParams.get('endDate') === yesterday
+    }, { timeout: 8000 }),
+    clickText(page, '昨天', '.range-popover button'),
+  ])
+  await waitForText(page, '所选日期区间内没有该能力的用量记录。')
+  await page.click('.range-trigger')
+  await clickText(page, '近 7 天', '.range-popover button')
+  await page.waitForFunction(() => document.querySelector('.usage-metrics')?.innerText.includes('18,400'), { timeout: 8000 })
+  await page.click('.range-trigger')
+  await page.$eval('input[aria-label="用量开始日期"]', (input, value) => { input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })) }, today)
+  await page.$eval('input[aria-label="用量结束日期"]', (input, value) => { input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })) }, yesterday)
+  await clickText(page, '确定', '.range-popover button')
+  await waitForText(page, '开始日期不能晚于结束日期')
+  await clickText(page, '取消', '.range-popover button')
+  await page.waitForFunction(() => document.querySelector('.range-trigger')?.textContent.includes('近 7 天'), { timeout: 8000 })
+  await page.click('.range-trigger')
+  for (const label of ['用量开始日期', '用量结束日期']) {
+    await page.$eval(`input[aria-label="${label}"]`, (input, value) => { input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })) }, oldDate)
+  }
+  await clickText(page, '确定', '.range-popover button')
+  await page.waitForFunction(value => document.querySelector('.range-caption')?.textContent.includes(value) && document.querySelector('.usage-metrics')?.innerText.includes('18,400'), { timeout: 8000 }, oldDate)
+  await clickText(page, '识图')
+  await waitForText(page, '所选日期区间内没有该能力的用量记录。')
+  await page.waitForFunction(value => document.querySelector('.range-trigger')?.textContent.includes(value.replaceAll('-', '/')), { timeout: 8000 }, oldDate)
+  await clickText(page, '文字')
+  await page.waitForFunction(() => document.querySelector('.usage-metrics')?.innerText.includes('18,400'), { timeout: 8000 })
+  await page.click('.range-trigger')
+  await clickText(page, '全部', '.range-popover button')
+  await page.waitForFunction(() => document.querySelector('.usage-metrics')?.innerText.includes('36,800'), { timeout: 8000 })
+  await page.waitForSelector('.trend-svg polyline')
+  await page.click('.daily-usage summary')
+  await page.waitForFunction(() => document.querySelectorAll('.daily-usage tbody tr').length === 2, { timeout: 8000 })
+  const outDir = path.join(ROOT, 'tmp', 'workspace')
+  fs.mkdirSync(outDir, { recursive: true })
+  await (await page.$('.usage-panel')).screenshot({ path: path.join(outDir, 'usage-date-range-panel.png') })
+  await page.click('.range-trigger')
+  await (await page.$('.range-popover')).screenshot({ path: path.join(outDir, 'usage-date-range-picker.png') })
+  await page.setViewport({ width: 380, height: 900, deviceScaleFactor: 1 })
+  await clickText(page, '取消', '.range-popover button')
+  await ensureSidebarCollapsed(page)
+  await page.click('.range-trigger')
+  await page.waitForFunction(() => {
+    const rect = document.querySelector('.range-popover')?.getBoundingClientRect()
+    return rect && rect.left >= 0 && rect.right <= window.innerWidth && rect.top >= 0 && rect.bottom <= window.innerHeight && document.documentElement.scrollWidth <= window.innerWidth
+  }, { timeout: 8000 })
+  await (await page.$('.range-popover')).screenshot({ path: path.join(outDir, 'usage-date-range-mobile.png') })
+  await page.setViewport({ width: 1440, height: 1100, deviceScaleFactor: 1 })
+  await clickText(page, '近 30 天', '.range-popover button')
+  await ensureSidebarExpanded(page)
+  await page.waitForFunction(() => document.querySelector('.usage-metrics')?.innerText.includes('18,400'), { timeout: 8000 })
+}
 
 /** Exercises the deployment panel smoke-test flow. */
 async function verifyDeployPanel(page) {
@@ -335,6 +399,7 @@ async function runClicks(page) {
     return !sidebar.includes('模型配置') && !sidebar.includes('API Keys')
   }, { timeout: 8000 })
   await page.waitForFunction(() => (document.querySelector('.usage-metrics')?.innerText || '').includes('18,400'), { timeout: 8000 })
+  await verifyUsageDateRanges(page)
 
   await Promise.all([
     page.waitForRequest(request => request.method() === 'POST' && request.url().includes('/ai-model-api/discover'), { timeout: 8000 }),
@@ -388,7 +453,7 @@ async function runClicks(page) {
   await clickText(page, '语音')
   await waitForText(page, '无法读取模型 Token 用量')
   await clickText(page, '语音合成')
-  await waitForText(page, '当前能力还没有新的用量记录。')
+  await waitForText(page, '所选日期区间内没有该能力的用量记录。')
   await page.setViewport({ width: 700, height: 900, deviceScaleFactor: 1 })
   await page.waitForFunction(() => {
     const panel = document.querySelector('.ai-model-api')

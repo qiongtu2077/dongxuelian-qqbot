@@ -160,55 +160,7 @@
         <p v-if="priorityMessage" :class="['notice', priorityMessageType]" role="status">{{ priorityMessage }}</p>
       </section>
 
-      <section class="card section-card" aria-labelledby="usage-title">
-        <div class="section-head">
-          <div>
-            <p class="step-index">03</p>
-            <h3 id="usage-title">模型用量</h3>
-            <p>这里只展示 {{ capabilityLabel }} 的新记录；无能力标识的历史数据不会推断归类。</p>
-          </div>
-          <button class="secondary-btn" type="button" :disabled="loadingUsage" @click="loadUsage">
-            {{ loadingUsage ? '加载中…' : '刷新用量' }}
-          </button>
-        </div>
-
-        <p v-if="usageError" class="notice error" role="alert">{{ usageError }}</p>
-        <p v-else-if="usage?.unavailable" class="token-unavailable" role="status">无法读取模型 Token 用量</p>
-        <template v-else-if="usage">
-          <div class="usage-metrics">
-            <div><span>请求次数</span><strong>{{ formatNumber(usageRequests) }}</strong></div>
-            <div><span>Token 总量</span><strong>{{ usage.readable ? formatNumber(usageTotal) : '—' }}</strong></div>
-            <div><span>供应商</span><strong>{{ usage.providers.length }}</strong></div>
-            <div><span>模型</span><strong>{{ usage.models.length }}</strong></div>
-          </div>
-
-          <div v-if="usage.providers.length || usage.models.length" class="usage-tables">
-            <div>
-              <h4>供应商分布</h4>
-              <table>
-                <thead><tr><th>供应商</th><th>请求</th><th>Token</th></tr></thead>
-                <tbody>
-                  <tr v-for="row in usage.providers" :key="row.key">
-                    <td>{{ providerDisplayName(row.key) }}</td><td>{{ formatNumber(row.requests) }}</td><td>{{ formatNumber(row.total) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div>
-              <h4>模型分布</h4>
-              <table>
-                <thead><tr><th>模型</th><th>请求</th><th>Token</th></tr></thead>
-                <tbody>
-                  <tr v-for="row in usage.models" :key="row.key">
-                    <td>{{ row.label || row.key }}</td><td>{{ formatNumber(row.requests) }}</td><td>{{ formatNumber(row.total) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <p v-else class="empty-copy">当前能力还没有新的用量记录。</p>
-        </template>
-      </section>
+      <AiUsagePanel :capability="currentCapability" :capability-label="capabilityLabel" :catalog="catalog" />
     </template>
   </section>
 </template>
@@ -217,7 +169,6 @@
 import { computed, inject, onMounted, reactive, ref, watch } from 'vue'
 import {
   discoverAiProviderModels,
-  fetchAiCapabilityUsage,
   fetchAiModelApiConfig,
   isAdminRequired,
   saveAiCapabilityPriority,
@@ -225,6 +176,7 @@ import {
 } from '../api'
 import type { ShowAdminDialog } from '../types'
 import { messageFromData } from '../types'
+import AiUsagePanel from './AiUsagePanel.vue'
 import {
   cloneCapabilityPriorities,
   listAvailableCapabilityModels,
@@ -234,7 +186,6 @@ import type {
   AiCapabilityConfigView,
   AiPriorityStep,
   AiProviderCatalogItem,
-  CapabilityUsageResponse,
 } from '../services/ai-model-api-model'
 
 defineOptions({ name: 'AiModelApiConfigPanel' })
@@ -276,10 +227,6 @@ const pendingModelKey = ref('')
 const savingPriority = ref(false)
 const priorityMessage = ref('')
 const priorityMessageType = ref<'success' | 'error'>('success')
-const usage = ref<CapabilityUsageResponse | null>(null)
-const usageError = ref('')
-const loadingUsage = ref(false)
-let usageRequestId = 0
 
 const currentCapability = computed<AiCapability>(() => activeTopTab.value === 'voice' ? activeVoiceTab.value : activeTopTab.value)
 const capabilityLabel = computed(() => capabilityLabels[currentCapability.value])
@@ -300,8 +247,6 @@ const providerKeyPlaceholder = computed(() => {
   if (state?.key?.configured) return `已保存 ${state.key.prefix}，输入新 Key 可替换`
   return selectedProvider.value && !selectedProvider.value.discoveryAvailable ? '输入 API Key 后点击保存' : '输入 API Key，失焦后自动发现'
 })
-const usageTotal = computed(() => (usage.value?.days || []).reduce((sum, day) => sum + Number(day.total || 0), 0))
-const usageRequests = computed(() => (usage.value?.days || []).reduce((sum, day) => sum + Number(day.requests || 0), 0))
 
 // --- 共享配置与供应商导入 ---
 
@@ -333,7 +278,6 @@ async function loadSharedConfig(): Promise<void> {
   applyConfig(response.data.config)
   if (!selectedProviderId.value || !catalog.value.some(item => item.id === selectedProviderId.value)) selectedProviderId.value = catalog.value[0]?.id || ''
   loaded.value = true
-  await loadUsage()
 }
 
 // 保存无法自动发现模型的供应商 Key，成功后更新参考模型池并清空明文。
@@ -449,39 +393,11 @@ async function savePriority(): Promise<void> {
   priorityMessage.value = response.data.message || '模型优先级已保存'
 }
 
-// --- 能力用量 ---
-
-// 读取当前能力用量，并用请求序号丢弃快速切换产生的过期响应。
-async function loadUsage(): Promise<void> {
-  if (!loaded.value) return
-  const capability = currentCapability.value
-  const requestId = ++usageRequestId
-  loadingUsage.value = true
-  usageError.value = ''
-  usage.value = null
-  const response = await fetchAiCapabilityUsage(capability)
-  if (requestId !== usageRequestId) return
-  loadingUsage.value = false
-  if (isAdminRequired(response)) return requestAdmin('查看模型用量需要管理员密码', loadUsage)
-  if (!response.ok || !response.data) {
-    usageError.value = messageFromData(response.data, '模型用量读取失败')
-    return
-  }
-  usage.value = response.data
-}
-
-// 格式化非负统计数值。
-function formatNumber(value: unknown): string {
-  const number = Number(value || 0)
-  return Number.isFinite(number) ? Math.max(0, number).toLocaleString('zh-CN') : '0'
-}
-
 // --- 页面生命周期 ---
 
 watch(currentCapability, () => {
   pendingModelKey.value = ''
   priorityMessage.value = ''
-  if (loaded.value) void loadUsage()
 })
 
 watch(selectedProviderId, value => {
@@ -534,7 +450,7 @@ onMounted(loadSharedConfig)
 .field-error, .notice.error { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border)); }
 .field-success, .notice.success { color: var(--success); background: color-mix(in srgb, var(--success) 10%, transparent); border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border)); }
 .model-pool { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
-.model-pool h4, .usage-tables h4 { margin-bottom: 10px; color: var(--text); }
+.model-pool h4 { margin-bottom: 10px; color: var(--text); }
 .model-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .model-chips span { max-width: 100%; overflow-wrap: anywhere; padding: 6px 9px; border-radius: 7px; color: var(--text2); background: var(--hover); font-size: 12px; font-weight: 750; }
 .primary-btn, .secondary-btn, .row-actions button { min-height: 38px; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border)); border-radius: 8px; padding: 0 14px; color: var(--text); background: color-mix(in srgb, var(--accent) 16%, var(--card)); font: inherit; font-weight: 800; cursor: pointer; }
@@ -553,21 +469,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .empty-priority, .token-unavailable, .loading-state { padding: 24px; text-align: center; color: var(--text3); border: 1px dashed var(--border); border-radius: 8px; }
 .token-unavailable { color: var(--danger); }
 .add-model-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: end; margin-top: 16px; }
-.usage-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.usage-metrics div { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--hoverLight); }
-.usage-metrics span { color: var(--text3); font-size: 12px; }
-.usage-metrics strong { color: var(--text); font-size: 20px; }
-.usage-tables { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 20px; min-width: 0; }
-.usage-tables > div { min-width: 0; overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; color: var(--text2); font-size: 13px; }
-th, td { padding: 9px 7px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
-th:first-child, td:first-child { text-align: left; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 
 @media (max-width: 760px) {
   .page-head, .section-head { flex-direction: column; }
   .page-head, .section-card { padding: 18px; }
-  .provider-layout, .custom-fields, .usage-tables, .add-model-row { grid-template-columns: 1fr; }
-  .usage-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .provider-layout, .custom-fields, .add-model-row { grid-template-columns: 1fr; }
   .priority-list li { grid-template-columns: 32px minmax(0, 1fr); }
   .row-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .provider-summary { align-items: flex-start; }

@@ -4,12 +4,13 @@
  * 边界: 所有写入均走多文件原子事务；Key 文件名由服务端供应商目录决定。
  */
 import type { IncomingMessage, ServerResponse } from 'http';
+import type { UsageDateQuery } from '../capability-usage';
 type RouteHandler = (req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) => unknown;
 declare function handleGetAiModelApiConfig(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePutAiProviderKey(req: IncomingMessage, res: ServerResponse): void;
 declare function handleDiscoverAiModels(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePutAiCapabilityPriority(req: IncomingMessage, res: ServerResponse): void;
-declare function buildCapabilityUsage(capability: string): Record<string, unknown>;
+declare function buildCapabilityUsage(capability: string, query?: UsageDateQuery): Record<string, unknown>;
 declare function handleGetCapabilityUsage(req: IncomingMessage, res: ServerResponse, _pathname: string, url: URL): void;
 declare const _default: {
     routes: Record<string, RouteHandler>;

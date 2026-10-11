@@ -291,8 +291,13 @@ export async function saveAiCapabilityPriority(capability: AiCapability, steps: 
 }
 
 // 只读取当前所选能力的独立用量。
-export async function fetchAiCapabilityUsage(capability: AiCapability): Promise<ApiResult<CapabilityUsageResponse | null>> {
-  return get<CapabilityUsageResponse>('/keys/usage?capability=' + encodeURIComponent(capability), true)
+export async function fetchAiCapabilityUsage(capability: AiCapability, range?: { startDate: string; endDate: string }): Promise<ApiResult<CapabilityUsageResponse | null>> {
+  const query = new URLSearchParams({ capability })
+  if (range) {
+    query.set('startDate', range.startDate)
+    query.set('endDate', range.endDate)
+  }
+  return get<CapabilityUsageResponse>('/keys/usage?' + query, true)
 }
 
 export async function fetchTtsVoices() { return get('/agent/tts/voices', true) }

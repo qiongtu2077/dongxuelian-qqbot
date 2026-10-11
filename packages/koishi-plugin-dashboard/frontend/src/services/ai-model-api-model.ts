@@ -102,6 +102,14 @@ export interface CapabilityUsageResponse {
   models: CapabilityUsageRow[]
   readable: boolean
   unavailable: boolean
+  range: UsageDateRange & { timeZone: 'Asia/Shanghai' }
+  availableRange: UsageDateRange | null
+  summary: CapabilityUsageRow
+}
+
+export interface UsageDateRange {
+  startDate: string
+  endDate: string
 }
 
 // 判断服务端返回的能力是否来自共享契约。

@@ -149,7 +149,7 @@ function mockAiConfig() {
 }
 
 /** Returns distinct readable or unavailable usage for the requested capability. */
-function mockAiUsage(capability) {
+function mockAiUsageDay(capability) {
   const today = todayShanghaiDate()
   if (capability === 'voice-asr') {
     return {
@@ -169,6 +169,22 @@ function mockAiUsage(capability) {
     providers: [{ key: 'openai', label: 'GPT', total, requests, input: Math.floor(total * 0.7), output: Math.ceil(total * 0.3), cacheCreation: 0, cacheRead: 0, readableRequests: requests, unreadableRequests: 0 }],
     models: [{ key: `openai/${vision ? 'gpt-4o' : 'gpt-4o-mini'}`, label: vision ? 'gpt-4o' : 'gpt-4o-mini', provider: 'openai', total, requests, input: Math.floor(total * 0.7), output: Math.ceil(total * 0.3), cacheCreation: 0, cacheRead: 0, readableRequests: requests, unreadableRequests: 0 }],
   }
+}
+
+/** Uses the production date aggregator so every smoke-test view shares the selected range. */
+function mockAiUsage(capability, searchParams) {
+  const { aggregateCapabilityUsage } = require('../../packages/koishi-plugin-dashboard/lib/capability-usage')
+  const fixture = mockAiUsageDay(capability)
+  const root = {}
+  for (const day of fixture.days) {
+    const source = { ...day, providers: Object.fromEntries(fixture.providers.map(row => [row.key, row])), models: Object.fromEntries(fixture.models.map(row => [row.key, row])) }
+    root[day.date] = { capabilities: { [capability]: source } }
+    if (capability === 'text') {
+      const oldDate = new Date(Date.parse(day.date + 'T00:00:00Z') - 60 * 86400000).toISOString().slice(0, 10)
+      root[oldDate] = { capabilities: { text: source } }
+    }
+  }
+  return aggregateCapabilityUsage(root, capability, { startDate: searchParams.get('startDate'), endDate: searchParams.get('endDate') })
 }
 
 /** Builds empty media queue facts with the production capacity limits. */
@@ -381,7 +397,7 @@ function apiMock(method, pathname, body) {
 
   if (method === 'GET' && pathname === '/keys') return ok([{ file: 'ai-deepseek-key.txt', label: 'DeepSeek', exists: true, prefix: 'sk-***' }])
   if (method === 'PUT' && pathname === '/keys') return writeOk('key saved')
-  if (method === 'GET' && pathname === '/keys/usage') return ok(mockAiUsage(String(body.searchParams.get('capability') || '')))
+  if (method === 'GET' && pathname === '/keys/usage') return ok(mockAiUsage(String(body.searchParams.get('capability') || ''), body.searchParams))
 
   if (method === 'GET' && pathname === '/whitelist') return ok({
     aiWhitelist: { label: '群聊 AI 白名单', data: ['10001'] },

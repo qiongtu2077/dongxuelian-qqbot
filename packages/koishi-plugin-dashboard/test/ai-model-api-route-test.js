@@ -282,6 +282,65 @@ async function testCapabilityUsageIsolation() {
   assert.strictEqual(parseResponse(invalid).message, '未知能力')
 }
 
+// 验证日期闭区间同步约束汇总和分布，旧于 30 个记录日的数据仍可查询。
+async function testUsageDateRange() {
+  seedUsage()
+  const usageFile = path.join(dataDir, 'token-usage.json')
+  const root = JSON.parse(fs.readFileSync(usageFile, 'utf8'))
+  for (let index = 0; index < 40; index++) {
+    const date = new Date(Date.UTC(2026, 5, 1 + index)).toISOString().slice(0, 10)
+    root[date] = { capabilities: { text: {
+      total: 1, requests: 1, input: 1, output: 0, readableRequests: 1,
+      providers: { deepseek: { total: 1, requests: 1, readableRequests: 1 } },
+      models: { 'deepseek-chat': { provider: 'deepseek', total: 1, requests: 1, readableRequests: 1 } },
+    } } }
+  }
+  root['2026-09-02'] = { capabilities: { text: {
+    total: 20, requests: 1, input: 12, output: 8, cacheRead: 3, readableRequests: 1,
+    providers: { dashscope: { total: 20, requests: 1, readableRequests: 1 } },
+    models: { 'qwen-plus': { provider: 'dashscope', total: 20, requests: 1, readableRequests: 1 } },
+  } } }
+  root['2026-09-03'] = { capabilities: { text: root['2026-09-01'].capabilities.text } }
+  root['not-a-date'] = root['2026-09-02']
+  fs.writeFileSync(usageFile, JSON.stringify(root), 'utf8')
+  const between = parseResponse(await callRoute('GET', '/dashboard/api/keys/usage?capability=text&startDate=2026-09-02&endDate=2026-09-03'))
+  assert.deepStrictEqual(between.days.map(day => day.date), ['2026-09-02', '2026-09-03'])
+  assert.strictEqual(between.summary.total, 32)
+  assert.strictEqual(between.summary.requests, 3)
+  assert.strictEqual(between.summary.input, 19)
+  assert.strictEqual(between.summary.cacheRead, 3)
+  assert.strictEqual(between.providers.reduce((sum, row) => sum + row.total, 0), 32)
+  assert.strictEqual(between.models.reduce((sum, row) => sum + row.total, 0), 32)
+  assert.deepStrictEqual(between.range, { startDate: '2026-09-02', endDate: '2026-09-03', timeZone: 'Asia/Shanghai' })
+  assert.deepStrictEqual(between.availableRange, { startDate: '2026-06-01', endDate: '2026-09-03' })
+  const old = parseResponse(await callRoute('GET', '/dashboard/api/keys/usage?capability=text&startDate=2026-06-01&endDate=2026-06-01'))
+  assert.strictEqual(old.days.length, 1)
+  assert.strictEqual(old.summary.total, 1)
+  const all = parseResponse(await callRoute('GET', '/dashboard/api/keys/usage?capability=text'))
+  assert.strictEqual(all.days.length, 43)
+  assert.strictEqual(all.summary.total, 84)
+  const empty = parseResponse(await callRoute('GET', '/dashboard/api/keys/usage?capability=text&startDate=2026-08-01&endDate=2026-08-31'))
+  assert.strictEqual(empty.summary.requests, 0)
+  assert.deepStrictEqual(empty.providers, [])
+  assert.deepStrictEqual(empty.models, [])
+  assert.deepStrictEqual(empty.days, [])
+  assert.strictEqual(empty.unavailable, false)
+  const leap = await callRoute('GET', '/dashboard/api/keys/usage?capability=text&startDate=2024-02-29&endDate=2024-02-29')
+  assert.strictEqual(leap.statusCode, 200)
+  for (const query of [
+    'startDate=2026-09-03&endDate=2026-09-02',
+    'startDate=2026-02-29&endDate=2026-03-01',
+    'startDate=2026-13-01&endDate=2026-13-02',
+    'startDate=2026-09-01T00:00:00Z&endDate=2026-09-02',
+    'startDate=&endDate=', 'startDate=2026-09-01', 'endDate=2026-09-01',
+  ]) {
+    const invalid = await callRoute('GET', '/dashboard/api/keys/usage?capability=text&' + query)
+    assert.strictEqual(invalid.statusCode, 400, query)
+  }
+  const unauthorized = await callRoute('GET', '/dashboard/api/keys/usage?capability=text&startDate=2026-09-01&endDate=2026-09-02', null, { 'x-admin-token': '', 'sec-fetch-site': 'cross-site' })
+  assert.strictEqual(unauthorized.statusCode, 403)
+}
+
 // 顺序执行路由集成场景并始终清理临时目录。
 async function main() {
   try {
@@ -291,6 +350,7 @@ async function main() {
     await testIndependentProviderKeyImport()
     await testIndependentKeyImportRejectsInvalidInput()
     await testCapabilityUsageIsolation()
+    await testUsageDateRange()
     console.log('ai-model-api route tests: OK')
   } finally {
     fs.rmSync(dataDir, { recursive: true, force: true })
