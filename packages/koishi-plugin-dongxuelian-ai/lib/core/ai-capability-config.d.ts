@@ -59,6 +59,7 @@ declare function getAllProviderIds(): string[];
 declare function isAiCapability(value: unknown): value is AiCapability;
 declare function isProviderId(value: unknown): value is ProviderId;
 declare function getVerifiedModelCapabilities(providerId: unknown, modelId: unknown): AiCapability[];
+declare function getVerifiedProviderModels(providerId: string): CapabilityModel[];
 declare function createEmptyCapabilityConfig(): CapabilityConfig;
 declare function normalizeCapabilityConfig(value: unknown): CapabilityConfig;
 declare function normalizeDiscoveredModels(models: unknown): CapabilityModel[];
@@ -84,6 +85,7 @@ declare const _default: {
     isAiCapability: typeof isAiCapability;
     isProviderId: typeof isProviderId;
     getVerifiedModelCapabilities: typeof getVerifiedModelCapabilities;
+    getVerifiedProviderModels: typeof getVerifiedProviderModels;
     createEmptyCapabilityConfig: typeof createEmptyCapabilityConfig;
     normalizeCapabilityConfig: typeof normalizeCapabilityConfig;
     normalizeDiscoveredModels: typeof normalizeDiscoveredModels;

@@ -351,6 +351,38 @@ async function runClicks(page) {
   ])
   await waitForText(page, '模型优先级已保存')
 
+  // 千问无法自动发现时仍能填 Key、独立保存，并把参考模型加入实际优先级。
+  await page.select('select[aria-label="选择 AI 供应商"]', 'dashscope')
+  await page.waitForFunction(() => document.querySelector('.key-field input')?.disabled === false, { timeout: 8000 })
+  const qwenDiscoveries = []
+  // 记录独立保存 Key 期间的错误发现请求，防止失焦逻辑再次拦截导入。
+  const trackQwenDiscovery = request => {
+    if (request.url().includes('/ai-model-api/discover')) qwenDiscoveries.push(request.url())
+  }
+  page.on('request', trackQwenDiscovery)
+  try {
+    await page.type('.key-field input', 'sk-smoke-qwen')
+    await Promise.all([
+      page.waitForRequest(request => request.method() === 'PUT' && request.url().includes('/ai-model-api/key'), { timeout: 8000 }),
+      clickText(page, '保存 API Key', 'button'),
+    ])
+    await waitForText(page, 'API Key 已保存；内置参考模型已加入模型池')
+    await page.waitForFunction(() => document.querySelector('.key-field input')?.value === '', { timeout: 8000 })
+    if (qwenDiscoveries.length) throw new Error('saving DashScope Key must not invoke model discovery')
+    await page.select('select[aria-label="选择要加入优先级的模型"]', 'dashscope\u0000qwen3.6-plus')
+    await clickText(page, '加入末尾', 'button')
+    await Promise.all([
+      page.waitForRequest(request => request.method() === 'PUT' && request.url().includes('/ai-model-api/priority') && JSON.parse(request.postData()).steps.some(step => step.provider === 'dashscope'), { timeout: 8000 }),
+      clickText(page, '保存优先级', 'button'),
+    ])
+    await page.reload({ waitUntil: 'networkidle0' })
+    await waitForText(page, 'qwen3.6-plus')
+    await page.select('select[aria-label="选择 AI 供应商"]', 'dashscope')
+    await page.waitForFunction(() => document.querySelector('.key-field input')?.placeholder.includes('已保存'), { timeout: 8000 })
+  } finally {
+    page.off('request', trackQwenDiscovery)
+  }
+
   await clickText(page, '识图')
   await page.waitForFunction(() => (document.querySelector('.usage-metrics')?.innerText || '').includes('7,200'), { timeout: 8000 })
   await clickText(page, '语音')

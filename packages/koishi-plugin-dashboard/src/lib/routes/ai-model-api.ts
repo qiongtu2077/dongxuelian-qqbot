@@ -2,8 +2,8 @@
 
 /**
  * MODULE: AI 模型与 API 统一配置路由。
- * 职责: 提供脱敏配置读取、模型发现即保存、单能力优先级保存和能力用量聚合。
- * 边界: 所有写入均走多文件原子事务；不接受自定义供应商、URL 或 Key 文件名。
+ * 职责: 提供脱敏配置读取、独立 Key 保存、模型发现即保存、单能力优先级保存和能力用量聚合。
+ * 边界: 所有写入均走多文件原子事务；Key 文件名由服务端供应商目录决定。
  */
 import type { IncomingMessage, ServerResponse } from 'http'
 
@@ -178,7 +178,7 @@ function ensureCapabilityConfig(): ReturnType<CapabilityModule['loadCapabilityCo
   return { ...loaded, migrated: true }
 }
 
-// --- 配置与发现路由 ---
+// --- 配置与供应商导入路由 ---
 
 // 返回内置及自定义供应商目录和脱敏四能力配置。
 function handleGetAiModelApiConfig(req: IncomingMessage, res: ServerResponse): void {
@@ -194,6 +194,46 @@ function handleGetAiModelApiConfig(req: IncomingMessage, res: ServerResponse): v
   } catch (error) {
     sendTransactionError(res, error)
   }
+}
+
+// 独立保存内置供应商 Key 并补充参考模型，模型发现受限时仍可完成配置。
+function handlePutAiProviderKey(req: IncomingMessage, res: ServerResponse): void {
+  if (!requireAdmin(req, res)) return
+  collectBody(req, res, body => {
+    try {
+      const data = parseBody(body)
+      const providerId = String(data.providerId || '').trim()
+      const provider = capabilityConfig.getProviderCatalogEntry(providerId)
+      if (!provider || provider.custom) return json(res, { ok: false, message: '请选择内置供应商', code: 'PROVIDER_KEY_INVALID_PROVIDER' }, 400)
+      if (typeof data.apiKey !== 'string') return json(res, { ok: false, message: 'API Key 必须是字符串', code: 'PROVIDER_KEY_INVALID' }, 400)
+      const apiKey = data.apiKey.trim().replace(/[\r\n]+/g, '')
+      if (!apiKey) return json(res, { ok: false, message: 'API Key 不能为空', code: 'PROVIDER_KEY_REQUIRED' }, 400)
+      if (apiKey.length > 16384) return json(res, { ok: false, message: 'API Key 长度超出限制', code: 'PROVIDER_KEY_INVALID' }, 400)
+      const next = capabilityConfig.normalizeCapabilityConfig(ensureCapabilityConfig().config)
+      const pool = next.providers[providerId].models
+      const existingIds = new Set(pool.map(model => model.id))
+      // 只补充缺失的内置模型，已有模型和四项能力优先级均保留。
+      pool.push(...capabilityConfig.getVerifiedProviderModels(providerId).filter(model => !existingIds.has(model.id)))
+      const result = executeConfigTransaction({
+        dataDir: DATA_DIR,
+        targets: [
+          { name: 'ai-capability-config', filePath: capabilityConfig.CAPABILITY_CONFIG_FILE, content: capabilityConfig.serializeCapabilityConfig(next), mode: 0o600 },
+          { name: 'provider-key', filePath: path.join(DATA_DIR, provider.keyFile), content: Buffer.from(apiKey, 'utf8'), mode: 0o600 },
+        ],
+        refresh: resetAiRuntimeCache,
+        verify: () => verifyConfigReadback(next, providerId, apiKey),
+      })
+      json(res, {
+        ok: true,
+        message: 'API Key 已保存；内置参考模型已加入模型池，尚未验证该 Key 的调用权限。',
+        transactionId: result.id,
+        config: capabilityConfig.getPublicCapabilityConfig(next),
+        catalog: capabilityConfig.getPublicProviderCatalog(),
+      })
+    } catch (error) {
+      sendTransactionError(res, error)
+    }
+  })
 }
 
 // 用本次内存 Key 发现模型，成功后原子保存供应商定义、Key、模型池和清理后的优先级。
@@ -421,6 +461,7 @@ function handleGetCapabilityUsage(req: IncomingMessage, res: ServerResponse, _pa
 
 const routes: Record<string, RouteHandler> = {
   'GET /dashboard/api/ai-model-api/config': handleGetAiModelApiConfig,
+  'PUT /dashboard/api/ai-model-api/key': handlePutAiProviderKey,
   'POST /dashboard/api/ai-model-api/discover': handleDiscoverAiModels,
   'PUT /dashboard/api/ai-model-api/priority': handlePutAiCapabilityPriority,
   'GET /dashboard/api/keys/usage': handleGetCapabilityUsage,
@@ -430,6 +471,7 @@ export = {
   routes,
   buildCapabilityUsage,
   handleGetAiModelApiConfig,
+  handlePutAiProviderKey,
   handleDiscoverAiModels,
   handlePutAiCapabilityPriority,
   handleGetCapabilityUsage,

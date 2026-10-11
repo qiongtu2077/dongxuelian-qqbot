@@ -51,7 +51,7 @@
             <select v-model="selectedProviderId" aria-label="选择 AI 供应商">
               <option value="custom-new">自定义 OpenAI-compatible 供应商</option>
               <option v-for="provider in catalog" :key="provider.id" :value="provider.id">
-                {{ provider.name }}{{ provider.discoveryAvailable ? '' : '（暂不可发现）' }}
+                {{ provider.name }}{{ provider.discoveryAvailable ? '' : '（可保存 Key，手动选模型）' }}
               </option>
             </select>
           </label>
@@ -59,8 +59,8 @@
           <div v-if="selectedProvider" class="provider-summary">
             <div>
               <strong>{{ selectedProvider.name }}</strong>
-              <span :class="['status-dot', selectedProvider.discoveryAvailable ? 'ready' : 'blocked']">
-                {{ selectedProvider.discoveryAvailable ? '可发现模型' : '发现受阻' }}
+              <span :class="['status-dot', selectedProvider.discoveryAvailable ? 'ready' : 'manual']">
+                {{ selectedProvider.discoveryAvailable ? '可发现模型' : '使用内置模型目录' }}
               </span>
             </div>
             <a :href="selectedProvider.documentationURL" target="_blank" rel="noreferrer">官方文档</a>
@@ -77,7 +77,7 @@
         </template>
 
         <p v-if="selectedProvider && !selectedProvider.discoveryAvailable" class="blocked-reason" role="status">
-          {{ selectedProvider.discoveryReason }}
+          {{ selectedProvider.discoveryReason }}。可先保存 API Key，再从内置模型池中选择模型。
         </p>
 
         <label class="field key-field">
@@ -86,18 +86,22 @@
             v-model="keyDrafts[selectedProviderId]"
             type="password"
             autocomplete="off"
-            :disabled="(!selectedProvider?.discoveryAvailable && !isCustomSelection) || discoveringProvider === selectedProviderId"
+            :disabled="!!discoveringProvider || !!savingKeyProvider"
             :placeholder="providerKeyPlaceholder"
             aria-describedby="provider-key-help"
-            @blur="!isCustomSelection && discoverSelectedProvider()"
-            @keydown.enter.prevent="isCustomSelection ? discoverSelectedProvider() : discoverSelectedProvider()"
+            @blur="selectedProvider?.discoveryAvailable && !isCustomSelection && discoverSelectedProvider()"
+            @keydown.enter.prevent="selectedProvider && !selectedProvider.discoveryAvailable ? saveSelectedProviderKey() : discoverSelectedProvider()"
           />
           <small id="provider-key-help">
-            {{ discoveringProvider === selectedProviderId ? '正在测试并获取模型…' : '输入只在本次发现请求中使用；成功后前端立即清空。' }}
+            {{ savingKeyProvider === selectedProviderId ? '正在保存 API Key…' : discoveringProvider === selectedProviderId ? '正在测试并获取模型…' : selectedProvider && !selectedProvider.discoveryAvailable ? '点击保存 API Key 后清空输入；保存不代表已验证调用权限。' : '输入只在本次发现请求中使用；成功后前端立即清空。' }}
           </small>
         </label>
 
-        <button v-if="isCustomSelection" class="primary-btn discover-btn" type="button" :disabled="discoveringProvider === selectedProviderId" @click="discoverSelectedProvider">
+        <button v-if="selectedProvider && !selectedProvider.discoveryAvailable" class="primary-btn discover-btn" type="button" :disabled="!!discoveringProvider || !!savingKeyProvider || !keyDrafts[selectedProviderId]?.trim()" @click="saveSelectedProviderKey">
+          {{ savingKeyProvider === selectedProviderId ? '保存中…' : '保存 API Key' }}
+        </button>
+
+        <button v-if="isCustomSelection" class="primary-btn discover-btn" type="button" :disabled="!!discoveringProvider || !!savingKeyProvider" @click="discoverSelectedProvider">
           {{ discoveringProvider === selectedProviderId ? '测试中…' : '测试并获取模型' }}
         </button>
 
@@ -109,7 +113,7 @@
           <div v-if="selectedProviderCapabilityModels.length" class="model-chips">
             <span v-for="model in selectedProviderCapabilityModels" :key="model.id">{{ model.name || model.id }}</span>
           </div>
-          <p v-else class="empty-copy">当前供应商尚无兼容模型。发现成功后，模型会先进入这里。</p>
+          <p v-else class="empty-copy">{{ selectedProvider && !selectedProvider.discoveryAvailable ? '保存 API Key 后，这里会显示内置参考模型。' : '当前供应商尚无兼容模型。发现成功后，模型会先进入这里。' }}</p>
         </div>
       </section>
 
@@ -217,6 +221,7 @@ import {
   fetchAiModelApiConfig,
   isAdminRequired,
   saveAiCapabilityPriority,
+  saveAiProviderKey,
 } from '../api'
 import type { ShowAdminDialog } from '../types'
 import { messageFromData } from '../types'
@@ -266,6 +271,7 @@ const keyDrafts = reactive<Record<string, string>>({})
 const providerErrors = reactive<Record<string, string>>({})
 const providerMessages = reactive<Record<string, string>>({})
 const discoveringProvider = ref('')
+const savingKeyProvider = ref('')
 const pendingModelKey = ref('')
 const savingPriority = ref(false)
 const priorityMessage = ref('')
@@ -291,10 +297,13 @@ const selectedProviderCapabilityModels = computed(() => {
 })
 const providerKeyPlaceholder = computed(() => {
   const state = config.value?.providers[selectedProviderId.value]
-  return state?.key?.configured ? `已保存 ${state.key.prefix}，输入新 Key 可替换` : '输入 API Key，失焦后自动发现'
+  if (state?.key?.configured) return `已保存 ${state.key.prefix}，输入新 Key 可替换`
+  return selectedProvider.value && !selectedProvider.value.discoveryAvailable ? '输入 API Key 后点击保存' : '输入 API Key，失焦后自动发现'
 })
 const usageTotal = computed(() => (usage.value?.days || []).reduce((sum, day) => sum + Number(day.total || 0), 0))
 const usageRequests = computed(() => (usage.value?.days || []).reduce((sum, day) => sum + Number(day.requests || 0), 0))
+
+// --- 共享配置与供应商导入 ---
 
 // 将管理员验证要求交给应用级弹窗，并在验证成功后重试原操作。
 function requestAdmin(message: string, retry: () => void | Promise<void>): void {
@@ -327,12 +336,33 @@ async function loadSharedConfig(): Promise<void> {
   await loadUsage()
 }
 
+// 保存无法自动发现模型的供应商 Key，成功后更新参考模型池并清空明文。
+async function saveSelectedProviderKey(): Promise<void> {
+  const providerId = selectedProviderId.value
+  const apiKey = String(keyDrafts[providerId] || '').trim()
+  if (!selectedProvider.value || selectedProvider.value.discoveryAvailable || !apiKey || discoveringProvider.value || savingKeyProvider.value) return
+  providerErrors[providerId] = ''
+  providerMessages[providerId] = ''
+  savingKeyProvider.value = providerId
+  const response = await saveAiProviderKey(providerId, apiKey)
+  savingKeyProvider.value = ''
+  if (isAdminRequired(response)) return requestAdmin('保存 API Key 需要管理员密码', saveSelectedProviderKey)
+  if (!response.ok || !response.data?.config) {
+    providerErrors[providerId] = messageFromData(response.data, 'API Key 保存失败')
+    return
+  }
+  keyDrafts[providerId] = ''
+  // 仅刷新模型池和 Key 状态，保留用户尚未保存的优先级编辑。
+  config.value = response.data.config
+  providerMessages[providerId] = response.data.message || 'API Key 已保存'
+}
+
 // 在 Key 失焦或回车时调用发现接口；失败保留输入，成功立即清空明文。
 async function discoverSelectedProvider(): Promise<void> {
   const providerId = selectedProviderId.value
   const provider = selectedProvider.value
   const apiKey = String(keyDrafts[providerId] || '').trim()
-  if ((!provider?.discoveryAvailable && !isCustomSelection.value) || !apiKey || discoveringProvider.value) return
+  if ((!provider?.discoveryAvailable && !isCustomSelection.value) || !apiKey || discoveringProvider.value || savingKeyProvider.value) return
   if (isCustomSelection.value && (!customName.value.trim() || !customBaseURL.value.trim())) {
     providerErrors[providerId] = '请填写供应商名称和请求地址'
     return
@@ -361,6 +391,8 @@ async function discoverSelectedProvider(): Promise<void> {
   applyConfig(response.data.config)
   providerMessages[providerId] = `${response.data.message || '模型池已保存'}；移除 ${response.data.removedModels || 0} 个旧模型、${response.data.removedSteps || 0} 个失效优先级步骤。`
 }
+
+// --- 模型优先级 ---
 
 // 返回供应商展示名。
 function providerDisplayName(providerId: string): string {
@@ -417,6 +449,8 @@ async function savePriority(): Promise<void> {
   priorityMessage.value = response.data.message || '模型优先级已保存'
 }
 
+// --- 能力用量 ---
+
 // 读取当前能力用量，并用请求序号丢弃快速切换产生的过期响应。
 async function loadUsage(): Promise<void> {
   if (!loaded.value) return
@@ -441,6 +475,8 @@ function formatNumber(value: unknown): string {
   const number = Number(value || 0)
   return Number.isFinite(number) ? Math.max(0, number).toLocaleString('zh-CN') : '0'
 }
+
+// --- 页面生命周期 ---
 
 watch(currentCapability, () => {
   pendingModelKey.value = ''
@@ -492,7 +528,7 @@ onMounted(loadSharedConfig)
 .provider-summary > div { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .provider-summary a { color: var(--accent); font-size: 13px; }
 .status-dot.ready { color: var(--success); background: color-mix(in srgb, var(--success) 14%, transparent); }
-.status-dot.blocked { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.status-dot.manual { color: var(--accent); background: var(--accentDim); }
 .blocked-reason, .field-error, .field-success, .notice, .token-unavailable { margin-top: 12px; padding: 11px 13px; border-radius: 8px; line-height: 1.5; }
 .blocked-reason { color: var(--text2); background: var(--hoverLight); border: 1px solid var(--border); }
 .field-error, .notice.error { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border)); }

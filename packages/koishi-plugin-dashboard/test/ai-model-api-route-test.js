@@ -17,6 +17,8 @@ const configFile = path.join(dataDir, 'ai-capability-config.json')
 const openAiKeyFile = path.join(dataDir, 'ai-openai-official-key.txt')
 const expectedProviders = ['anthropic', 'dashscope', 'deepseek', 'gemini', 'glm', 'mimorium', 'openai', 'opencode']
 
+// --- HTTP 与配置夹具 ---
+
 // 构造能够捕获状态码、响应头和正文的最小 HTTP 响应。
 function makeResponse(resolve) {
   return {
@@ -36,7 +38,7 @@ function makeResponse(resolve) {
 }
 
 // 直接调用统一 AI 路由并等待异步 collectBody 处理完毕。
-function callRoute(method, pathname, body) {
+function callRoute(method, pathname, body, headers = {}) {
   return new Promise((resolve, reject) => {
     const routePath = pathname.split('?')[0]
     const handler = aiModelApiRoutes.routes[`${method} ${routePath}`]
@@ -50,6 +52,7 @@ function callRoute(method, pathname, body) {
       'content-type': 'application/json',
       'content-length': Buffer.byteLength(text),
       'x-admin-token': auth.createAdminToken(),
+      ...headers,
     }
     req.socket = { remoteAddress: '127.0.0.1' }
     req.connection = req.socket
@@ -76,6 +79,8 @@ function parseResponse(res) {
 function writeConfig(priorities) {
   fs.writeFileSync(configFile, JSON.stringify(createCapabilityConfig(priorities)), 'utf8')
 }
+
+// --- 配置读取与模型发现 ---
 
 // 验证目录固定为八家且 GET 只返回脱敏配置。
 async function testCatalogAndMaskedConfig() {
@@ -156,6 +161,78 @@ async function testSuccessfulDiscoveryAndPriorityIsolation() {
   }
 }
 
+// --- 独立 Key 导入 ---
+
+// 验证千问等受限供应商可直接存 Key、保留既有配置且全程不发送上游请求。
+async function testIndependentProviderKeyImport() {
+  writeConfig({
+    text: [{ provider: 'dashscope', model: 'qwen-turbo' }],
+    vision: [{ provider: 'dashscope', model: 'existing-vision-model' }],
+    'voice-asr': [{ provider: 'mimorium', model: 'mimo-v2.5-asr' }],
+  })
+  const before = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+  const originalFetch = global.fetch
+  let fetchCalls = 0
+  global.fetch = async () => { fetchCalls += 1; throw new Error('independent key import must not call upstream') }
+  try {
+    for (const providerId of ['dashscope', 'glm', 'mimorium', 'opencode']) {
+      const secret = `sk-route-manual-${providerId}`
+      const response = await callRoute('PUT', '/dashboard/api/ai-model-api/key', { providerId, apiKey: `  ${secret}\r\n ` })
+      assert.strictEqual(response.statusCode, 200)
+      const payload = parseResponse(response)
+      assert.strictEqual(payload.ok, true)
+      assert.strictEqual(payload.config.providers[providerId].key.configured, true)
+      assert.strictEqual(fs.readFileSync(path.join(dataDir, providerId === 'opencode' ? 'ai-openai-key.txt' : `ai-${providerId}-key.txt`), 'utf8'), secret)
+      assert.deepStrictEqual(payload.config.priorities, before.priorities, 'saving a Key must not alter any priority')
+      assert(payload.config.providers[providerId].models.length > 0, 'verified reference models must be selectable')
+      assert(payload.message.includes('尚未验证'))
+      assert(!response.body.includes(secret), 'response leaked plaintext Key')
+    }
+    assert.strictEqual(fetchCalls, 0)
+    const saved = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+    assert.deepStrictEqual(saved.providers.deepseek, before.providers.deepseek)
+    assert.deepStrictEqual(saved.providers.dashscope.models.find(model => model.id === 'existing-vision-model'), before.providers.dashscope.models.find(model => model.id === 'existing-vision-model'))
+    assert.deepStrictEqual(saved.providers.dashscope.models.find(model => model.id === 'qwen3.6-plus').capabilities, ['text', 'vision'])
+
+    // 保存参考模型的优先级后，运行时必须读取同一供应商刚写入的 Key。
+    const priorityResponse = await callRoute('PUT', '/dashboard/api/ai-model-api/priority', { capability: 'text', steps: [{ provider: 'dashscope', model: 'qwen3.6-plus' }] })
+    assert.strictEqual(priorityResponse.statusCode, 200)
+    const capabilityConfig = require('../../koishi-plugin-dongxuelian-ai/lib/core/ai-capability-config')
+    const runtime = capabilityConfig.resolveCapabilityRuntimeSteps('text')
+    assert.strictEqual(runtime.length, 1)
+    assert.strictEqual(runtime[0].provider, 'dashscope')
+    assert.strictEqual(runtime[0].model, 'qwen3.6-plus')
+    assert.strictEqual(runtime[0].apiKey, 'sk-route-manual-dashscope')
+    assert.strictEqual(runtime[0].baseURL, 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+  } finally {
+    global.fetch = originalFetch
+  }
+}
+
+// 验证无效 Key、未知供应商和未通过管理验证的请求不会改写正式配置。
+async function testIndependentKeyImportRejectsInvalidInput() {
+  const beforeConfig = fs.readFileSync(configFile)
+  const keyFile = path.join(dataDir, 'ai-dashscope-key.txt')
+  const beforeKey = fs.readFileSync(keyFile)
+  for (const body of [
+    { providerId: '../outside', apiKey: 'sk-invalid' },
+    { providerId: 'custom-new', apiKey: 'sk-invalid' },
+    { providerId: 'dashscope', apiKey: ' \r\n ' },
+    { providerId: 'dashscope', apiKey: { value: 'sk-invalid' } },
+    { providerId: 'dashscope', apiKey: 'x'.repeat(16385) },
+  ]) {
+    const response = await callRoute('PUT', '/dashboard/api/ai-model-api/key', body)
+    assert.strictEqual(response.statusCode, 400)
+    assert.strictEqual(parseResponse(response).ok, false)
+  }
+  const unauthorized = await callRoute('PUT', '/dashboard/api/ai-model-api/key', { providerId: 'dashscope', apiKey: 'sk-unauthorized' }, { 'x-admin-token': '', 'sec-fetch-site': 'cross-site' })
+  assert.strictEqual(unauthorized.statusCode, 403)
+  assert.deepStrictEqual(fs.readFileSync(configFile), beforeConfig)
+  assert.deepStrictEqual(fs.readFileSync(keyFile), beforeKey)
+}
+
+// --- 能力用量 ---
+
 // 写入能力隔离用量，包含一条必须被忽略的无能力历史记录。
 function seedUsage() {
   fs.writeFileSync(path.join(dataDir, 'token-usage.json'), JSON.stringify({
@@ -211,6 +288,8 @@ async function main() {
     await testCatalogAndMaskedConfig()
     await testEmptyDiscoveryDoesNotPersist()
     await testSuccessfulDiscoveryAndPriorityIsolation()
+    await testIndependentProviderKeyImport()
+    await testIndependentKeyImportRejectsInvalidInput()
     await testCapabilityUsageIsolation()
     console.log('ai-model-api route tests: OK')
   } finally {

@@ -81,6 +81,7 @@ const mockState = {
   resourceCancelAttempts: 0,
   resourceScenario: 'idle',
   openAiKeyConfigured: true,
+  dashscopeKeyConfigured: false,
   aiPriorities: {
     text: [{ provider: 'openai', model: 'gpt-4o-mini' }],
     vision: [{ provider: 'openai', model: 'gpt-4o-mini' }],
@@ -132,6 +133,12 @@ function mockAiConfig() {
       { id: 'mimo-v2.5-tts', name: 'MiMo TTS', capabilities: ['voice-tts'] },
     ],
     key: { configured: true, prefix: 'tp-moc****' },
+  }
+  if (mockState.dashscopeKeyConfigured) {
+    providers.dashscope = {
+      models: [{ id: 'qwen3.6-plus', name: 'qwen3.6-plus', capabilities: ['text', 'vision'] }],
+      key: { configured: true, prefix: 'sk-moc****' },
+    }
   }
   return {
     version: 1,
@@ -293,6 +300,11 @@ function apiMock(method, pathname, body) {
   if (method === 'GET' && pathname === '/config') return ok({ provider: 'deepseek', model: 'deepseek-chat', baseUrl: '' })
   if (method === 'PUT' && pathname === '/config') return writeOk('config saved')
   if (method === 'GET' && pathname === '/ai-model-api/config') return ok({ ok: true, catalog: mockAiCatalog(), config: mockAiConfig(), migration: { applied: false, diagnostics: [] } })
+  if (method === 'PUT' && pathname === '/ai-model-api/key') {
+    if (body.body?.providerId !== 'dashscope' || !body.body?.apiKey) return jsonResponse({ ok: false, message: 'invalid provider Key' }, 400)
+    mockState.dashscopeKeyConfigured = true
+    return ok({ ok: true, message: 'API Key 已保存；内置参考模型已加入模型池，尚未验证该 Key 的调用权限。', config: mockAiConfig(), catalog: mockAiCatalog() })
+  }
   if (method === 'POST' && pathname === '/ai-model-api/discover') {
     mockState.openAiKeyConfigured = true
     return ok({ ok: true, message: 'API Key 与模型池已原子保存', config: mockAiConfig(), models: mockAiConfig().providers.openai.models, removedModels: 0, removedSteps: 0, emptyCapabilities: [] })

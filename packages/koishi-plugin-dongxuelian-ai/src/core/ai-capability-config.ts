@@ -264,6 +264,13 @@ function getVerifiedModelCapabilities(providerId: unknown, modelId: unknown): Ai
   return [...(VERIFIED_MODEL_CAPABILITIES[providerId as BuiltinProviderId]?.[model] || [])]
 }
 
+// 返回内置参考模型目录；该目录只描述已核实能力，不代表当前 Key 已获授权。
+function getVerifiedProviderModels(providerId: string): CapabilityModel[] {
+  return Object.entries(VERIFIED_MODEL_CAPABILITIES[providerId] || {}).map(([id, capabilities]) => ({
+    id, name: id, capabilities: [...capabilities],
+  }))
+}
+
 // 创建包含八家空模型池和四条空优先级的最新配置。
 function createEmptyCapabilityConfig(): CapabilityConfig {
   const providers = {} as Record<ProviderId, ProviderModelPool>
@@ -593,6 +600,7 @@ export = {
   isAiCapability,
   isProviderId,
   getVerifiedModelCapabilities,
+  getVerifiedProviderModels,
   createEmptyCapabilityConfig,
   normalizeCapabilityConfig,
   normalizeDiscoveredModels,

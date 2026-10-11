@@ -274,6 +274,11 @@ export async function fetchAiModelApiConfig(): Promise<ApiResult<AiModelApiConfi
   return get<AiModelApiConfigResponse>('/ai-model-api/config', true)
 }
 
+// 独立保存内置供应商 Key，获取参考模型池和脱敏配置。
+export async function saveAiProviderKey(providerId: string, apiKey: string): Promise<ApiResult<AiModelApiConfigResponse | null>> {
+  return put<AiModelApiConfigResponse>('/ai-model-api/key', { providerId, apiKey }, true)
+}
+
 // 用本次输入 Key 发现模型并原子保存供应商定义、Key 槽位与模型池。
 export async function discoverAiProviderModels(providerId: string, apiKey: string, payload: { capability: AiCapability; name?: string; note?: string; baseURL?: string } = { capability: 'text' }): Promise<ApiResult<AiDiscoveryResponse | null>> {
   if (providerId !== 'custom-new' && !providerId.startsWith('custom-') && payload.capability === 'text' && !payload.name && !payload.note && !payload.baseURL) return post<AiDiscoveryResponse>('/ai-model-api/discover', { providerId, apiKey }, true, 20000)

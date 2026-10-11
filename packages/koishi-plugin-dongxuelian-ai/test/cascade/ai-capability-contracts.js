@@ -20,6 +20,11 @@ async function runAiCapabilityContracts(context) {
   checkEqual('only four providers enable model discovery', publicCatalog.filter(item => item.discoveryAvailable).map(item => item.id).join(','), 'deepseek,openai,anthropic,gemini')
   check('blocked providers expose exact reasons', publicCatalog.filter(item => !item.discoveryAvailable).every(item => typeof item.discoveryReason === 'string' && item.discoveryReason.length > 8), JSON.stringify(publicCatalog))
   check('public provider catalog hides runtime URL and key file', publicCatalog.every(item => !Object.prototype.hasOwnProperty.call(item, 'baseURL') && !Object.prototype.hasOwnProperty.call(item, 'keyFile')), JSON.stringify(publicCatalog))
+  const dashscopeReferenceModels = configModule.getVerifiedProviderModels('dashscope')
+  check('DashScope reference catalog contains verified text and vision models', dashscopeReferenceModels.some(model => model.id === 'qwen3.6-plus' && model.capabilities.join(',') === 'text,vision'))
+  dashscopeReferenceModels[0].capabilities.length = 0
+  check('reference catalog does not expose mutable capability arrays', configModule.getVerifiedProviderModels('dashscope')[0].capabilities.length > 0)
+  checkEqual('unknown provider has no reference catalog', configModule.getVerifiedProviderModels('outside').length, 0)
 
   const invalidProviderConfig = createCapabilityConfig()
   invalidProviderConfig.providers.outside = { models: [] }
