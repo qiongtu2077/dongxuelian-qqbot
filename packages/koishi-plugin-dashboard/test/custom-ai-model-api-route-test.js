@@ -33,13 +33,14 @@ function callRoute(body) {
 async function testCreateAndUpdate() {
   let responseCount = 0
   global.fetch = async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({ data: responseCount++ ? [{ id: 'shared-model' }, { id: 'vision-only' }] : [{ id: 'shared-model' }, { id: 'text-only' }] }) })
-  const created = await callRoute({ providerId: 'custom-new', capability: 'text', name: '测试中转', note: '本地', baseURL: 'http://localhost:9988', apiKey: 'sk-create-secret' })
+  const created = await callRoute({ providerId: 'custom-new', capability: 'text', name: '测试中转', note: '公网 HTTP', baseURL: 'http://121.40.181.95:3000/v1', apiKey: 'sk-create-secret' })
   assert.strictEqual(created.statusCode, 200)
   assert.match(created.body.providerId, /^custom-[a-z0-9]{24}$/)
   assert.strictEqual(created.body.config.providers[created.body.providerId].models.length, 2)
   assert(!JSON.stringify(created.body).includes('sk-create-secret'))
   const customFile = path.join(dataDir, 'ai-providers-custom.json')
   const custom = JSON.parse(fs.readFileSync(customFile, 'utf8'))[0]
+  assert.strictEqual(custom.baseURL, 'http://121.40.181.95:3000/v1')
   assert.match(custom.keyFile, /^ai-custom-[a-z0-9]{24}-key\.txt$/)
   assert.strictEqual(fs.readFileSync(path.join(dataDir, custom.keyFile), 'utf8'), 'sk-create-secret')
 
