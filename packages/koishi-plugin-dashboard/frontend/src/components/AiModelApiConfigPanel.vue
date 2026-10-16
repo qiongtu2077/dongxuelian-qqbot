@@ -70,10 +70,10 @@
         <template v-if="isCustomSelection">
           <div class="custom-fields">
             <label class="field"><span>供应商名称</span><input v-model="customName" maxlength="96" autocomplete="off" placeholder="例如：我的中转站" /></label>
-            <label class="field"><span>请求地址</span><input v-model="customBaseURL" maxlength="2048" autocomplete="url" placeholder="https://example.com 或 https://example.com/v1/models" /></label>
+            <label class="field"><span>请求地址</span><input v-model="customBaseURL" maxlength="2048" autocomplete="url" placeholder="https://example.com/v1 或 http://example.com/v1" /></label>
             <label class="field"><span>备注（可选）</span><input v-model="customNote" maxlength="256" autocomplete="off" placeholder="仅用于页面识别" /></label>
           </div>
-          <p class="blocked-reason" role="status">普通根地址会依次尝试 <code>/v1/models</code> 与 <code>/models</code>；已填写完整模型列表地址时不会追加路径。公网地址必须使用 HTTPS。</p>
+          <p class="blocked-reason" role="status">填写 API 基础地址（如 <code>/v1</code>），不要填写 <code>/chat/completions</code>。普通根地址会依次尝试 <code>/v1/models</code> 与 <code>/models</code>；已填写完整模型列表地址时不会追加路径。支持 HTTP 和 HTTPS；HTTP 会明文传输 Key 和请求内容。</p>
         </template>
 
         <p v-if="selectedProvider && !selectedProvider.discoveryAvailable" class="blocked-reason" role="status">

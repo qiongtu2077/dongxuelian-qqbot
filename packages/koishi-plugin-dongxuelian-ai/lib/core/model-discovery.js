@@ -41,7 +41,7 @@ function buildCustomDiscoveryUrls(rawBaseURL) {
         return [`${normalized}/models`];
     return [`${normalized}/v1/models`, `${normalized}/models`];
 }
-// 判断主机是否为明确的本机回环地址；HTTP 只允许这些地址。
+// 判断主机是否为明确的本机回环地址，供本地 HTTP 服务豁免私网校验。
 function isLoopbackHostname(hostname) {
     const host = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
     if (host === 'localhost' || host === 'localhost.localdomain')
@@ -91,8 +91,6 @@ async function validateCustomDiscoveryUrl(rawURL, lookupImpl = async (hostname) 
         throw new ModelDiscoveryError('请求地址只允许 HTTP 或 HTTPS', 'DISCOVERY_URL_INVALID', 400);
     if (!url.hostname || url.username || url.password)
         throw new ModelDiscoveryError('请求地址不得包含用户名或密码', 'DISCOVERY_URL_INVALID', 400);
-    if (url.protocol === 'http:' && !isLoopbackHostname(url.hostname))
-        throw new ModelDiscoveryError('公网请求地址必须使用 HTTPS；HTTP 仅允许本机回环地址', 'DISCOVERY_URL_INSECURE', 400);
     if (isUnsafeAddress(url.hostname) && !(url.protocol === 'http:' && isLoopbackHostname(url.hostname)))
         throw new ModelDiscoveryError('请求地址命中私网或保留地址', 'DISCOVERY_SSRF_BLOCKED', 400);
     if (!net.isIP(url.hostname)) {
