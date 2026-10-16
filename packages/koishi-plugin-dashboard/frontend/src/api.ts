@@ -280,9 +280,19 @@ export async function saveAiProviderKey(providerId: string, apiKey: string): Pro
 }
 
 // 用本次输入 Key 发现模型并原子保存供应商定义、Key 槽位与模型池。
-export async function discoverAiProviderModels(providerId: string, apiKey: string, payload: { capability: AiCapability; name?: string; note?: string; baseURL?: string } = { capability: 'text' }): Promise<ApiResult<AiDiscoveryResponse | null>> {
+export async function discoverAiProviderModels(providerId: string, apiKey: string, payload: { capability?: AiCapability; detectCapabilities?: boolean; name?: string; note?: string; baseURL?: string } = { capability: 'text' }): Promise<ApiResult<AiDiscoveryResponse | null>> {
   if (providerId !== 'custom-new' && !providerId.startsWith('custom-') && payload.capability === 'text' && !payload.name && !payload.note && !payload.baseURL) return post<AiDiscoveryResponse>('/ai-model-api/discover', { providerId, apiKey }, true, 20000)
   return post<AiDiscoveryResponse>('/ai-model-api/discover', { providerId, apiKey, ...payload }, true, 20000)
+}
+
+// 只将供应商与模型标识交给服务端，复用已保存 Key 检测全部四项能力。
+export async function detectAiModelCapabilities(providerId: string, modelId: string): Promise<ApiResult<AiPriorityResponse | null>> {
+  return post<AiPriorityResponse>('/ai-model-api/detect', { providerId, modelId }, true, 45000)
+}
+
+// 移除本系统保存的 Key、模型池和优先级引用，保留历史用量。
+export async function deleteAiProviderKey(providerId: string): Promise<ApiResult<AiModelApiConfigResponse | null>> {
+  return del<AiModelApiConfigResponse>('/ai-model-api/key', { providerId }, true)
 }
 
 // 独立保存一个能力的有序优先级。

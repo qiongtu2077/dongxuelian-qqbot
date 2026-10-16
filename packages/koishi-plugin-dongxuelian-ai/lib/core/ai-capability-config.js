@@ -10,7 +10,7 @@ const contract = require("../public/ai-capability-contract.json");
 const { DATA_DIR, FALLBACK_CHAINS_FILE, CUSTOM_PROVIDERS_FILE } = require('./constants');
 const AI_CAPABILITIES = Object.freeze([...contract.capabilities]);
 const CAPABILITY_CONFIG_FILE = path.join(DATA_DIR, 'ai-capability-config.json');
-const MAX_CAPABILITY_CONFIG_BYTES = 512 * 1024;
+const MAX_CAPABILITY_CONFIG_BYTES = 4 * 1024 * 1024;
 const MAX_KEY_BYTES = 64 * 1024;
 // --- 权威供应商目录 ---
 const PROVIDER_CATALOG = Object.freeze({
@@ -55,7 +55,7 @@ const MAX_CUSTOM_PROVIDERS = 100;
 function readCustomProviderDefinitions() {
     try {
         const stat = fs.statSync(CUSTOM_PROVIDERS_FILE);
-        if (!stat.isFile() || stat.size > 256 * 1024)
+        if (!stat.isFile() || stat.size > MAX_CAPABILITY_CONFIG_BYTES)
             return [];
         const raw = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'));
         if (!Array.isArray(raw))
@@ -211,9 +211,14 @@ function normalizeCapabilityModel(value) {
     const capabilities = Array.isArray(source.capabilities)
         ? [...new Set(source.capabilities.filter(isAiCapability))]
         : [];
-    if (!capabilities.length)
+    const checks = source.capabilityChecks;
+    if (checks && AI_CAPABILITIES.some(capability => !checks[capability] || !['supported', 'unsupported', 'pending'].includes(checks[capability].status) || typeof checks[capability].reason !== 'string'))
         return null;
-    return { id, name, capabilities };
+    if (!capabilities.length && !checks)
+        return null;
+    // 待检测模型可以保留在管理列表；暂时检测失败不删除已有配置能力。
+    const capabilityChecks = checks ? Object.fromEntries(AI_CAPABILITIES.map(capability => [capability, { status: checks[capability].status, reason: checks[capability].reason.slice(0, 160) }])) : undefined;
+    return { id, name, capabilities, ...(capabilityChecks ? { capabilityChecks } : {}) };
 }
 // 严格读取并校验完整配置，阻止未知供应商、重复模型和悬空优先级引用。
 function normalizeCapabilityConfig(value) {

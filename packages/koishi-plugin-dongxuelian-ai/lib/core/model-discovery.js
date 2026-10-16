@@ -218,7 +218,7 @@ function parseGeminiModelList(payload) {
 }
 // 解析自定义 OpenAI 兼容模型列表，并把本次能力作为权威标签写入结果。
 function parseCustomOpenAiModelList(payload, capability) {
-    if (!['text', 'vision', 'voice-asr', 'voice-tts'].includes(String(capability)))
+    if (!['auto', 'text', 'vision', 'voice-asr', 'voice-tts'].includes(String(capability)))
         throw new ModelDiscoveryError('未知能力', 'DISCOVERY_CAPABILITY_INVALID', 400);
     const data = payload && typeof payload === 'object' && !Array.isArray(payload)
         ? payload.data
@@ -234,7 +234,9 @@ function parseCustomOpenAiModelList(payload, capability) {
         if (!id || id.length > MAX_MODEL_ID_LENGTH || seen.has(id))
             continue;
         seen.add(id);
-        result.push({ id, name: id, capabilities: [String(capability)], importable: true });
+        result.push({ id, name: id, capabilities: capability === 'auto' ? [] : [String(capability)], importable: true,
+            ...(capability === 'auto' ? { capabilityChecks: Object.fromEntries(['text', 'vision', 'voice-asr', 'voice-tts'].map(cap => [cap, { status: 'pending', reason: '等待接口能力检测' }])) } : {}),
+        });
     }
     return result;
 }
@@ -323,7 +325,7 @@ async function discoverCustomProviderModels(baseURL, capability, apiKey, options
         throw new ModelDiscoveryError('API Key 不能为空', 'DISCOVERY_KEY_REQUIRED', 400);
     if (key.length > 16384)
         throw new ModelDiscoveryError('API Key 长度超出限制', 'DISCOVERY_KEY_INVALID', 400);
-    if (!['text', 'vision', 'voice-asr', 'voice-tts'].includes(String(capability)))
+    if (!['auto', 'text', 'vision', 'voice-asr', 'voice-tts'].includes(String(capability)))
         throw new ModelDiscoveryError('未知能力', 'DISCOVERY_CAPABILITY_INVALID', 400);
     const candidates = buildCustomDiscoveryUrls(baseURL);
     if (!candidates.length)

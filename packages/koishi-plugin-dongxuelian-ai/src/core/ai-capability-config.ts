@@ -33,6 +33,7 @@ interface CapabilityModel {
   id: string
   name: string
   capabilities: AiCapability[]
+  capabilityChecks?: Record<AiCapability, { status: 'supported' | 'unsupported' | 'pending'; reason: string }>
 }
 
 interface CapabilityPriorityStep {
@@ -80,7 +81,7 @@ interface RuntimeCapabilityStep {
 }
 
 const CAPABILITY_CONFIG_FILE = path.join(DATA_DIR, 'ai-capability-config.json')
-const MAX_CAPABILITY_CONFIG_BYTES = 512 * 1024
+const MAX_CAPABILITY_CONFIG_BYTES = 4 * 1024 * 1024
 const MAX_KEY_BYTES = 64 * 1024
 
 // --- 权威供应商目录 ---
@@ -137,7 +138,7 @@ interface CustomProviderDefinition {
 function readCustomProviderDefinitions(): CustomProviderDefinition[] {
   try {
     const stat = fs.statSync(CUSTOM_PROVIDERS_FILE)
-    if (!stat.isFile() || stat.size > 256 * 1024) return []
+    if (!stat.isFile() || stat.size > MAX_CAPABILITY_CONFIG_BYTES) return []
     const raw: unknown = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'))
     if (!Array.isArray(raw)) return []
     const seen = new Set<string>()
@@ -283,15 +284,19 @@ function createEmptyCapabilityConfig(): CapabilityConfig {
 // 对单个模型池条目进行边界清洗，并限制能力只能来自统一契约。
 function normalizeCapabilityModel(value: unknown): CapabilityModel | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const source = value as { id?: unknown; name?: unknown; capabilities?: unknown }
+  const source = value as { id?: unknown; name?: unknown; capabilities?: unknown; capabilityChecks?: CapabilityModel['capabilityChecks'] }
   const id = String(source.id || '').trim()
   if (!id || id.length > 256) return null
   const name = String(source.name || id).trim().slice(0, 256) || id
   const capabilities = Array.isArray(source.capabilities)
     ? [...new Set(source.capabilities.filter(isAiCapability))]
     : []
-  if (!capabilities.length) return null
-  return { id, name, capabilities }
+  const checks = source.capabilityChecks
+  if (checks && AI_CAPABILITIES.some(capability => !checks[capability] || !['supported', 'unsupported', 'pending'].includes(checks[capability].status) || typeof checks[capability].reason !== 'string')) return null
+  if (!capabilities.length && !checks) return null
+  // 待检测模型可以保留在管理列表；暂时检测失败不删除已有配置能力。
+  const capabilityChecks = checks ? Object.fromEntries(AI_CAPABILITIES.map(capability => [capability, { status: checks[capability].status, reason: checks[capability].reason.slice(0, 160) }])) as CapabilityModel['capabilityChecks'] : undefined
+  return { id, name, capabilities, ...(capabilityChecks ? { capabilityChecks } : {}) }
 }
 
 // 严格读取并校验完整配置，阻止未知供应商、重复模型和悬空优先级引用。

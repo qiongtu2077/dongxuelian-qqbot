@@ -7,6 +7,7 @@ export interface AiCapabilityModel {
   id: string
   name: string
   capabilities: AiCapability[]
+  capabilityChecks?: Record<AiCapability, { status: 'supported' | 'unsupported' | 'pending'; reason: string }>
 }
 
 export interface AiPriorityStep {

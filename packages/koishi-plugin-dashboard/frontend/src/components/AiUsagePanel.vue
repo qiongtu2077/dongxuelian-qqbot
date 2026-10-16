@@ -7,6 +7,7 @@
         <button class="refresh-btn" type="button" :disabled="loading" @click="loadUsage">{{ loading ? '加载中…' : '刷新用量' }}</button>
       </div>
     </div>
+    <AiCapabilityTabs v-model="capability" label="用量统计能力" />
     <div class="range-caption"><span>{{ displayRange.startDate }} — {{ displayRange.endDate }} · 北京时间，包含起止当天</span><span v-if="usage?.availableRange">已有记录：{{ usage.availableRange.startDate }} — {{ usage.availableRange.endDate }}</span></div>
     <p v-if="error" class="notice error" role="alert">{{ error }}</p>
     <p v-else-if="loading" class="loading-copy" role="status">正在读取所选区间的用量…</p>
@@ -46,8 +47,12 @@ import { resolveUsagePreset, validateUsageRange } from '../services/usage-range-
 import type { UsagePreset } from '../services/usage-range-model'
 import UsageDateRangePicker from './UsageDateRangePicker.vue'
 import UsageTrend from './UsageTrend.vue'
+import AiCapabilityTabs from './AiCapabilityTabs.vue'
 
-const props = defineProps<{ capability: AiCapability; capabilityLabel: string; catalog: AiProviderCatalogItem[] }>()
+const props = defineProps<{ catalog: AiProviderCatalogItem[] }>()
+const capability = ref<AiCapability>('text')
+const capabilityLabels: Record<AiCapability, string> = { text: '文字', vision: '识图', 'voice-asr': '语音识别', 'voice-tts': '语音合成' }
+const capabilityLabel = computed(() => capabilityLabels[capability.value])
 const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
 const preset = ref<UsagePreset>('30d')
 const customRange = ref<UsageDateRange>({ startDate: '', endDate: '' })
@@ -68,7 +73,7 @@ async function loadUsage(): Promise<void> {
   loading.value = true
   error.value = ''
   usage.value = null
-  const response = await fetchAiCapabilityUsage(props.capability, range)
+  const response = await fetchAiCapabilityUsage(capability.value, range)
   if (currentRequest !== requestId) return
   loading.value = false
   if (isAdminRequired(response)) {
@@ -105,7 +110,7 @@ function formatNumber(value: number): string {
   return value.toLocaleString('zh-CN')
 }
 
-watch(() => props.capability, () => { void loadUsage() }, { immediate: true })
+watch(capability, () => { void loadUsage() }, { immediate: true })
 </script>
 
 <style scoped>
