@@ -81,7 +81,7 @@ interface RuntimeCapabilityStep {
 }
 
 const CAPABILITY_CONFIG_FILE = path.join(DATA_DIR, 'ai-capability-config.json')
-const MAX_CAPABILITY_CONFIG_BYTES = 512 * 1024
+const MAX_CAPABILITY_CONFIG_BYTES = 4 * 1024 * 1024
 const MAX_KEY_BYTES = 64 * 1024
 
 // --- 权威供应商目录 ---
@@ -138,7 +138,7 @@ interface CustomProviderDefinition {
 function readCustomProviderDefinitions(): CustomProviderDefinition[] {
   try {
     const stat = fs.statSync(CUSTOM_PROVIDERS_FILE)
-    if (!stat.isFile() || stat.size > 256 * 1024) return []
+    if (!stat.isFile() || stat.size > MAX_CAPABILITY_CONFIG_BYTES) return []
     const raw: unknown = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'))
     if (!Array.isArray(raw)) return []
     const seen = new Set<string>()

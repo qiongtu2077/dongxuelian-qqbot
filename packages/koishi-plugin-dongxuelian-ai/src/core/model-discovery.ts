@@ -24,6 +24,7 @@ interface DiscoveredModel {
   capabilities: string[]
   importable: boolean
   unavailableReason?: string
+  capabilityChecks?: Record<string, { status: 'supported' | 'unsupported' | 'pending'; reason: string }>
 }
 
 interface DiscoveryOptions {
@@ -222,7 +223,7 @@ function parseGeminiModelList(payload: unknown): DiscoveredModel[] {
 
 // 解析自定义 OpenAI 兼容模型列表，并把本次能力作为权威标签写入结果。
 function parseCustomOpenAiModelList(payload: unknown, capability: string): DiscoveredModel[] {
-  if (!['text', 'vision', 'voice-asr', 'voice-tts'].includes(String(capability))) throw new ModelDiscoveryError('未知能力', 'DISCOVERY_CAPABILITY_INVALID', 400)
+  if (!['auto', 'text', 'vision', 'voice-asr', 'voice-tts'].includes(String(capability))) throw new ModelDiscoveryError('未知能力', 'DISCOVERY_CAPABILITY_INVALID', 400)
   const data = payload && typeof payload === 'object' && !Array.isArray(payload)
     ? (payload as { data?: unknown }).data
     : null
@@ -234,7 +235,9 @@ function parseCustomOpenAiModelList(payload: unknown, capability: string): Disco
     const id = String((item as { id?: unknown }).id || '').trim()
     if (!id || id.length > MAX_MODEL_ID_LENGTH || seen.has(id)) continue
     seen.add(id)
-    result.push({ id, name: id, capabilities: [String(capability)], importable: true })
+    result.push({ id, name: id, capabilities: capability === 'auto' ? [] : [String(capability)], importable: true,
+      ...(capability === 'auto' ? { capabilityChecks: Object.fromEntries(['text', 'vision', 'voice-asr', 'voice-tts'].map(cap => [cap, { status: 'pending' as const, reason: '等待接口能力检测' }])) } : {}),
+    })
   }
   return result
 }
@@ -313,7 +316,7 @@ async function discoverCustomProviderModels(baseURL: string, capability: string,
   const key = String(apiKey || '').trim().replace(/[\r\n]+/g, '')
   if (!key) throw new ModelDiscoveryError('API Key 不能为空', 'DISCOVERY_KEY_REQUIRED', 400)
   if (key.length > 16384) throw new ModelDiscoveryError('API Key 长度超出限制', 'DISCOVERY_KEY_INVALID', 400)
-  if (!['text', 'vision', 'voice-asr', 'voice-tts'].includes(String(capability))) throw new ModelDiscoveryError('未知能力', 'DISCOVERY_CAPABILITY_INVALID', 400)
+  if (!['auto', 'text', 'vision', 'voice-asr', 'voice-tts'].includes(String(capability))) throw new ModelDiscoveryError('未知能力', 'DISCOVERY_CAPABILITY_INVALID', 400)
   const candidates = buildCustomDiscoveryUrls(baseURL)
   if (!candidates.length) throw new ModelDiscoveryError('请求地址格式无效', 'DISCOVERY_URL_INVALID', 400)
   const timeoutMs = Math.max(1000, Math.min(15000, Number(options.timeoutMs) || 8000))

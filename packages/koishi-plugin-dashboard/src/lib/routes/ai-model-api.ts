@@ -35,6 +35,8 @@ interface JsonBody {
   note?: unknown
   baseURL?: unknown
   custom?: unknown
+  detectCapabilities?: unknown
+  modelId?: unknown
 }
 
 const TOKEN_USAGE_FILE = path.join(DATA_DIR, 'token-usage.json')
@@ -52,7 +54,7 @@ interface CustomProviderRecord {
   note?: string
   baseURL: string
   keyFile: string
-  models: Array<{ id: string; name: string; capabilities: string[] }>
+  models: ReturnType<CapabilityModule['normalizeDiscoveredModels']>
 }
 
 // --- 通用边界 ---
@@ -77,13 +79,7 @@ function readCustomProviders(): CustomProviderRecord[] {
     const baseURL = String(source.baseURL || '').trim().replace(/\/+$/, '')
     const keyFile = String(source.keyFile || '').trim()
     if (!CUSTOM_ID_RE.test(id) || !name || !baseURL || !CUSTOM_KEY_RE.test(keyFile)) throw new Error('自定义供应商元数据无效')
-    const models = Array.isArray(source.models) ? source.models.map(model => {
-      if (!model || typeof model !== 'object' || Array.isArray(model)) return null
-      const value = model as Record<string, unknown>
-      const modelId = String(value.id || '').trim()
-      const capabilities = Array.isArray(value.capabilities) ? [...new Set(value.capabilities.map(String).filter(item => ['text', 'vision', 'voice-asr', 'voice-tts'].includes(item)))] : []
-      return modelId && capabilities.length ? { id: modelId, name: String(value.name || modelId).trim() || modelId, capabilities } : null
-    }).filter(Boolean) as CustomProviderRecord['models'] : []
+    const models = capabilityConfig.normalizeDiscoveredModels(Array.isArray(source.models) ? source.models : [])
     return { id, name: name.slice(0, MAX_CUSTOM_NAME), note: String(source.note || '').trim().slice(0, MAX_CUSTOM_NOTE) || undefined, baseURL, keyFile, models }
   })
 }
@@ -111,6 +107,20 @@ function upsertCustomProvider(records: CustomProviderRecord[], next: CustomProvi
   const result = records.filter(item => item.id !== next.id)
   result.push(next)
   return result
+}
+
+// 只从目录定义的固定 Key 槽位复用密钥；禁止向修改后的地址发送已保存 Key。
+function resolveDiscoveryKey(data: JsonBody): string {
+  if (data.apiKey !== undefined && typeof data.apiKey !== 'string') throw new Error('API Key 必须是字符串')
+  const input = String(data.apiKey || '').trim().replace(/[\r\n]+/g, '')
+  if (input) return input
+  if (data.apiKey !== undefined && data.apiKey !== '') throw new Error('API Key 不能为空')
+  const provider = capabilityConfig.getProviderCatalogEntry(String(data.providerId || ''))
+  if (!provider) return ''
+  if (data.baseURL !== undefined && String(data.baseURL).trim().replace(/\/+$/, '') !== provider.baseURL.replace(/\/+$/, '')) throw new Error('修改请求地址后需要重新输入 Key')
+  const file = path.join(DATA_DIR, provider.keyFile)
+  if (!fs.existsSync(file) || fs.statSync(file).size > 16384) return ''
+  return fs.readFileSync(file, 'utf8').trim().replace(/[\r\n]+/g, '')
 }
 
 // 以键排序后的 JSON 比较事务回读，避免字段顺序造成假失败。
@@ -194,7 +204,7 @@ function handlePutAiProviderKey(req: IncomingMessage, res: ServerResponse): void
       const provider = capabilityConfig.getProviderCatalogEntry(providerId)
       if (!provider || provider.custom) return json(res, { ok: false, message: '请选择内置供应商', code: 'PROVIDER_KEY_INVALID_PROVIDER' }, 400)
       if (typeof data.apiKey !== 'string') return json(res, { ok: false, message: 'API Key 必须是字符串', code: 'PROVIDER_KEY_INVALID' }, 400)
-      const apiKey = data.apiKey.trim().replace(/[\r\n]+/g, '')
+      const apiKey = resolveDiscoveryKey(data)
       if (!apiKey) return json(res, { ok: false, message: 'API Key 不能为空', code: 'PROVIDER_KEY_REQUIRED' }, 400)
       if (apiKey.length > 16384) return json(res, { ok: false, message: 'API Key 长度超出限制', code: 'PROVIDER_KEY_INVALID' }, 400)
       const next = capabilityConfig.normalizeCapabilityConfig(ensureCapabilityConfig().config)
@@ -231,10 +241,11 @@ function handleDiscoverAiModels(req: IncomingMessage, res: ServerResponse): void
     try {
       const data = parseBody(body)
       let providerId = String(data.providerId || '').trim()
-      const apiKey = String(data.apiKey || '').trim().replace(/[\r\n]+/g, '')
+      const apiKey = resolveDiscoveryKey(data)
       if (!apiKey) return json(res, { ok: false, message: 'API Key 不能为空', code: 'DISCOVERY_KEY_REQUIRED' }, 400)
       if (apiKey.length > 16384) return json(res, { ok: false, message: 'API Key 长度超出限制', code: 'DISCOVERY_KEY_INVALID' }, 400)
       const capability = String(data.capability || 'text').trim()
+      const autoDetect = data.detectCapabilities === true
       if (!capabilityConfig.isAiCapability(capability)) return json(res, { ok: false, message: '未知能力', code: 'DISCOVERY_CAPABILITY_INVALID' }, 400)
       const isCustom = providerId === 'custom' || providerId === 'custom-new' || CUSTOM_ID_RE.test(providerId) || (!providerId && (data.name !== undefined || data.baseURL !== undefined || data.custom !== undefined))
       let provider = capabilityConfig.getProviderCatalogEntry(providerId)
@@ -253,12 +264,14 @@ function handleDiscoverAiModels(req: IncomingMessage, res: ServerResponse): void
           customRecord = { ...customRecord, name: fields.name || customRecord.name, note: fields.note || undefined, baseURL: fields.baseURL || customRecord.baseURL }
         }
         provider = capabilityConfig.getProviderCatalogEntry(providerId)
-        const models = await modelDiscovery.discoverCustomProviderModels(customRecord.baseURL, capability, apiKey)
-        const importable = models.filter(model => model.importable).map(model => ({ id: model.id, name: model.name, capabilities: model.capabilities }))
-        if (!importable.length) return json(res, { ok: false, message: '该密钥未返回可导入模型', code: 'DISCOVERY_EMPTY', models }, 422)
+        const models = await modelDiscovery.discoverCustomProviderModels(customRecord.baseURL, autoDetect ? 'auto' : capability, apiKey)
         const current = ensureCapabilityConfig().config
+        const importable = models.filter(model => model.importable).map(model => autoDetect
+          ? current.providers[providerId]?.models.find(previous => previous.id === model.id) || { id: model.id, name: model.name, capabilities: model.capabilities, capabilityChecks: model.capabilityChecks }
+          : { id: model.id, name: model.name, capabilities: model.capabilities })
+        if (!importable.length) return json(res, { ok: false, message: '该密钥未返回可导入模型', code: 'DISCOVERY_EMPTY', models }, 422)
         if (!current.providers[providerId]) current.providers[providerId] = { models: [] }
-        const replaced = capabilityConfig.replaceProviderModels(current, providerId, importable, capability)
+        const replaced = capabilityConfig.replaceProviderModels(current, providerId, importable, autoDetect ? undefined : capability)
         const nextCustom: CustomProviderRecord = { ...customRecord, models: replaced.config.providers[providerId].models }
         const nextCustomRecords = upsertCustomProvider(customRecords, nextCustom)
         const result = executeConfigTransaction({
@@ -328,6 +341,62 @@ function handleDiscoverAiModels(req: IncomingMessage, res: ServerResponse): void
   })
 }
 
+// --- 既有连接的检测与删除 ---
+
+// 复用已保存 Key 检测一个模型，逐个提交结果，避免长请求阻塞整个导入流程。
+function handleDetectAiModel(req: IncomingMessage, res: ServerResponse): void {
+  if (!requireAdmin(req, res)) return
+  collectBody(req, res, async body => {
+    try {
+      const data = parseBody(body)
+      const providerId = String(data.providerId || '')
+      const provider = capabilityConfig.getProviderCatalogEntry(providerId)
+      if (!provider?.custom) throw new Error('请选择自定义供应商进行接口检测')
+      const apiKey = resolveDiscoveryKey({ providerId })
+      if (!apiKey) throw new Error('该供应商尚未保存 Key')
+      const model = ensureCapabilityConfig().config.providers[providerId]?.models.find(item => item.id === data.modelId)
+      if (!model) throw new Error('模型不在当前供应商模型池中')
+      const { detectModelCapabilities } = require('../model-capability-probe') as typeof import('../model-capability-probe')
+      const detected = await detectModelCapabilities(provider.baseURL, model, apiKey)
+      // 探测期间可能有删除或替换 Key；只向仍持有同一 Key 的同一连接保存结果。
+      if (resolveDiscoveryKey({ providerId }) !== apiKey) return json(res, { ok: false, message: 'Key 已变更，请重新检测' }, 409)
+      const current = ensureCapabilityConfig().config
+      if (!current.providers[providerId]?.models.some(item => item.id === model.id)) return json(res, { ok: false, message: '模型池已变更，请刷新' }, 409)
+      const incoming = current.providers[providerId].models.map(item => item.id === model.id ? detected : item)
+      const replaced = capabilityConfig.replaceProviderModels(current, providerId, incoming)
+      const records = readCustomProviders().map(item => item.id === providerId ? { ...item, models: replaced.config.providers[providerId].models } : item)
+      executeConfigTransaction({ dataDir: DATA_DIR, targets: [
+        { name: 'custom-providers', filePath: CUSTOM_PROVIDERS_FILE, content: Buffer.from(JSON.stringify(records, null, 2)), mode: 0o600 },
+        { name: 'ai-capability-config', filePath: capabilityConfig.CAPABILITY_CONFIG_FILE, content: capabilityConfig.serializeCapabilityConfig(replaced.config), mode: 0o600 },
+      ], refresh: resetAiRuntimeCache, verify: () => verifyConfigReadback(replaced.config) })
+      json(res, { ok: true, message: '模型能力检测完成；待检测项不会删除已有能力配置', model: detected, config: capabilityConfig.getPublicCapabilityConfig(replaced.config) })
+    } catch (error) { sendTransactionError(res, error) }
+  })
+}
+
+// 原子清空 Key、模型池及四条优先级引用；供应商定义可供重新导入，历史用量不变。
+function handleDeleteAiProviderKey(req: IncomingMessage, res: ServerResponse): void {
+  if (!requireAdmin(req, res)) return
+  collectBody(req, res, body => {
+    try {
+      const data = parseBody(body)
+      const providerId = String(data.providerId || '')
+      const provider = capabilityConfig.getProviderCatalogEntry(providerId)
+      if (!provider) throw new Error('未知供应商')
+      const next = capabilityConfig.normalizeCapabilityConfig(ensureCapabilityConfig().config)
+      next.providers[providerId] = { models: [] }
+      for (const capability of capabilityConfig.AI_CAPABILITIES) next.priorities[capability] = next.priorities[capability].filter(step => step.provider !== providerId)
+      const targets = [
+        { name: 'ai-capability-config', filePath: capabilityConfig.CAPABILITY_CONFIG_FILE, content: capabilityConfig.serializeCapabilityConfig(next), mode: 0o600 },
+        { name: 'provider-key', filePath: path.join(DATA_DIR, provider.keyFile), content: Buffer.alloc(0), mode: 0o600 },
+      ]
+      if (provider.custom) targets.unshift({ name: 'custom-providers', filePath: CUSTOM_PROVIDERS_FILE, content: Buffer.from(JSON.stringify(readCustomProviders().map(item => item.id === providerId ? { ...item, models: [] } : item), null, 2)), mode: 0o600 })
+      executeConfigTransaction({ dataDir: DATA_DIR, targets, refresh: resetAiRuntimeCache, verify: () => verifyConfigReadback(next, providerId, '') })
+      json(res, { ok: true, message: 'Key 与模型引用已移除；历史用量保留', config: capabilityConfig.getPublicCapabilityConfig(next), catalog: capabilityConfig.getPublicProviderCatalog() })
+    } catch (error) { sendTransactionError(res, error) }
+  })
+}
+
 // 独立保存一个能力的有序优先级，其余三项能力保持不变。
 function handlePutAiCapabilityPriority(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
@@ -385,6 +454,8 @@ const routes: Record<string, RouteHandler> = {
   'GET /dashboard/api/ai-model-api/config': handleGetAiModelApiConfig,
   'PUT /dashboard/api/ai-model-api/key': handlePutAiProviderKey,
   'POST /dashboard/api/ai-model-api/discover': handleDiscoverAiModels,
+  'POST /dashboard/api/ai-model-api/detect': handleDetectAiModel,
+  'DELETE /dashboard/api/ai-model-api/key': handleDeleteAiProviderKey,
   'PUT /dashboard/api/ai-model-api/priority': handlePutAiCapabilityPriority,
   'GET /dashboard/api/keys/usage': handleGetCapabilityUsage,
 }

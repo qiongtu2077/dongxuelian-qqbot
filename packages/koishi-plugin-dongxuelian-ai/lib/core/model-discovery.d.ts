@@ -10,6 +10,10 @@ interface DiscoveredModel {
     capabilities: string[];
     importable: boolean;
     unavailableReason?: string;
+    capabilityChecks?: Record<string, {
+        status: 'supported' | 'unsupported' | 'pending';
+        reason: string;
+    }>;
 }
 interface DiscoveryOptions {
     fetchImpl?: DiscoveryFetch;

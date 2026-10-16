@@ -10,7 +10,7 @@ const contract = require("../public/ai-capability-contract.json");
 const { DATA_DIR, FALLBACK_CHAINS_FILE, CUSTOM_PROVIDERS_FILE } = require('./constants');
 const AI_CAPABILITIES = Object.freeze([...contract.capabilities]);
 const CAPABILITY_CONFIG_FILE = path.join(DATA_DIR, 'ai-capability-config.json');
-const MAX_CAPABILITY_CONFIG_BYTES = 512 * 1024;
+const MAX_CAPABILITY_CONFIG_BYTES = 4 * 1024 * 1024;
 const MAX_KEY_BYTES = 64 * 1024;
 // --- 权威供应商目录 ---
 const PROVIDER_CATALOG = Object.freeze({
@@ -55,7 +55,7 @@ const MAX_CUSTOM_PROVIDERS = 100;
 function readCustomProviderDefinitions() {
     try {
         const stat = fs.statSync(CUSTOM_PROVIDERS_FILE);
-        if (!stat.isFile() || stat.size > 256 * 1024)
+        if (!stat.isFile() || stat.size > MAX_CAPABILITY_CONFIG_BYTES)
             return [];
         const raw = JSON.parse(fs.readFileSync(CUSTOM_PROVIDERS_FILE, 'utf8'));
         if (!Array.isArray(raw))

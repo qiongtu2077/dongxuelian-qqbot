@@ -55,10 +55,10 @@ async function verifyUsageDateRanges(page) {
   }
   await clickText(page, '确定', '.range-popover button')
   await page.waitForFunction(value => document.querySelector('.range-caption')?.textContent.includes(value) && document.querySelector('.usage-metrics')?.innerText.includes('18,400'), { timeout: 8000 }, oldDate)
-  await clickText(page, '识图')
+  await clickText(page, '识图', '.usage-panel .ability-tabs button')
   await waitForText(page, '所选日期区间内没有该能力的用量记录。')
   await page.waitForFunction(value => document.querySelector('.range-trigger')?.textContent.includes(value.replaceAll('-', '/')), { timeout: 8000 }, oldDate)
-  await clickText(page, '文字')
+  await clickText(page, '文字', '.usage-panel .ability-tabs button')
   await page.waitForFunction(() => document.querySelector('.usage-metrics')?.innerText.includes('18,400'), { timeout: 8000 })
   await page.click('.range-trigger')
   await clickText(page, '全部', '.range-popover button')
@@ -390,7 +390,7 @@ async function runClicks(page) {
 
   await clickSidebarTab(page, 'AI模型与API配置')
   await waitForText(page, '四项能力独立保存、独立调用、独立统计')
-  await waitForText(page, 'AI 供应商导入')
+  await waitForText(page, '已导入的 API Key')
   await waitForText(page, '模型优先级调整')
   await waitForText(page, '模型用量')
   await waitForText(page, 'GPT-4o mini')
@@ -401,58 +401,30 @@ async function runClicks(page) {
   await page.waitForFunction(() => (document.querySelector('.usage-metrics')?.innerText || '').includes('18,400'), { timeout: 8000 })
   await verifyUsageDateRanges(page)
 
-  await Promise.all([
-    page.waitForRequest(request => request.method() === 'POST' && request.url().includes('/ai-model-api/discover'), { timeout: 8000 }),
-    page.$eval('.key-field input', input => {
-      input.value = 'sk-smoke-discovery'
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-      input.dispatchEvent(new Event('blur', { bubbles: true }))
-    }),
-  ])
-  await waitForText(page, 'API Key 与模型池已原子保存；移除 0 个旧模型、0 个失效优先级步骤。')
-  await Promise.all([
-    page.waitForRequest(request => request.method() === 'PUT' && request.url().includes('/ai-model-api/priority'), { timeout: 8000 }),
-    clickText(page, '保存优先级'),
-  ])
+  // 弹窗显式导入，千问仅保存 Key 和参考目录。
+  await clickText(page, '导入 API Key', '.connections button')
+  await page.select('dialog[open] select', 'openai')
+  await page.type('dialog[open] input[type="password"]', 'sk-smoke-discovery')
+  await clickText(page, '导入并自动检测', 'dialog[open] button')
+  await waitForText(page, 'Key 与模型已导入')
+  await clickText(page, '保存优先级')
   await waitForText(page, '模型优先级已保存')
+  await clickText(page, '导入 API Key', '.connections button')
+  await page.select('dialog[open] select', 'dashscope')
+  await page.type('dialog[open] input[type="password"]', 'sk-smoke-qwen')
+  await clickText(page, '导入并自动检测', 'dialog[open] button')
+  await waitForText(page, 'Key 与模型已导入')
+  await page.select('select[aria-label="选择要加入优先级的模型"]', 'dashscope\u0000qwen3.6-plus')
+  await clickText(page, '加入末尾', 'button')
+  await clickText(page, '保存优先级', 'button')
+  await page.reload({ waitUntil: 'networkidle0' })
+  await waitForText(page, 'qwen3.6-plus')
 
-  // 千问无法自动发现时仍能填 Key、独立保存，并把参考模型加入实际优先级。
-  await page.select('select[aria-label="选择 AI 供应商"]', 'dashscope')
-  await page.waitForFunction(() => document.querySelector('.key-field input')?.disabled === false, { timeout: 8000 })
-  const qwenDiscoveries = []
-  // 记录独立保存 Key 期间的错误发现请求，防止失焦逻辑再次拦截导入。
-  const trackQwenDiscovery = request => {
-    if (request.url().includes('/ai-model-api/discover')) qwenDiscoveries.push(request.url())
-  }
-  page.on('request', trackQwenDiscovery)
-  try {
-    await page.type('.key-field input', 'sk-smoke-qwen')
-    await Promise.all([
-      page.waitForRequest(request => request.method() === 'PUT' && request.url().includes('/ai-model-api/key'), { timeout: 8000 }),
-      clickText(page, '保存 API Key', 'button'),
-    ])
-    await waitForText(page, 'API Key 已保存；内置参考模型已加入模型池')
-    await page.waitForFunction(() => document.querySelector('.key-field input')?.value === '', { timeout: 8000 })
-    if (qwenDiscoveries.length) throw new Error('saving DashScope Key must not invoke model discovery')
-    await page.select('select[aria-label="选择要加入优先级的模型"]', 'dashscope\u0000qwen3.6-plus')
-    await clickText(page, '加入末尾', 'button')
-    await Promise.all([
-      page.waitForRequest(request => request.method() === 'PUT' && request.url().includes('/ai-model-api/priority') && JSON.parse(request.postData()).steps.some(step => step.provider === 'dashscope'), { timeout: 8000 }),
-      clickText(page, '保存优先级', 'button'),
-    ])
-    await page.reload({ waitUntil: 'networkidle0' })
-    await waitForText(page, 'qwen3.6-plus')
-    await page.select('select[aria-label="选择 AI 供应商"]', 'dashscope')
-    await page.waitForFunction(() => document.querySelector('.key-field input')?.placeholder.includes('已保存'), { timeout: 8000 })
-  } finally {
-    page.off('request', trackQwenDiscovery)
-  }
-
-  await clickText(page, '识图')
+  await clickText(page, '识图', '.usage-panel .ability-tabs button')
   await page.waitForFunction(() => (document.querySelector('.usage-metrics')?.innerText || '').includes('7,200'), { timeout: 8000 })
-  await clickText(page, '语音')
+  await clickText(page, '语音识别', '.usage-panel .ability-tabs button')
   await waitForText(page, '无法读取模型 Token 用量')
-  await clickText(page, '语音合成')
+  await clickText(page, '语音合成', '.usage-panel .ability-tabs button')
   await waitForText(page, '所选日期区间内没有该能力的用量记录。')
   await page.setViewport({ width: 700, height: 900, deviceScaleFactor: 1 })
   await page.waitForFunction(() => {

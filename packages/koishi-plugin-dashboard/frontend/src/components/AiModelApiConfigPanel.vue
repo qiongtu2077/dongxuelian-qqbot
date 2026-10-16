@@ -9,113 +9,13 @@
       <button class="secondary-btn" type="button" :disabled="loading" @click="loadSharedConfig">刷新配置</button>
     </header>
 
-    <nav class="capability-tabs card" aria-label="AI 能力">
-      <button
-        v-for="tab in topTabs"
-        :key="tab.id"
-        type="button"
-        :class="{ active: activeTopTab === tab.id }"
-        :aria-current="activeTopTab === tab.id ? 'page' : undefined"
-        @click="activeTopTab = tab.id"
-      >{{ tab.label }}</button>
-    </nav>
 
-    <nav v-if="activeTopTab === 'voice'" class="voice-tabs" aria-label="语音能力">
-      <button
-        v-for="tab in voiceTabs"
-        :key="tab.id"
-        type="button"
-        :class="{ active: activeVoiceTab === tab.id }"
-        :aria-pressed="activeVoiceTab === tab.id"
-        @click="activeVoiceTab = tab.id"
-      >{{ tab.label }}</button>
-    </nav>
 
     <p v-if="pageError" class="notice error" role="alert">{{ pageError }}</p>
     <p v-if="loading" class="card loading-state" aria-live="polite">正在读取统一配置…</p>
 
     <template v-else-if="config">
-      <section class="card section-card" aria-labelledby="provider-import-title">
-        <div class="section-head">
-          <div>
-            <p class="step-index">01</p>
-            <h3 id="provider-import-title">AI 供应商导入</h3>
-            <p>可选择内置供应商，或填写 CCSWITCH 风格的自定义 OpenAI 兼容地址并测试模型列表。</p>
-          </div>
-          <span class="capability-badge">{{ capabilityLabel }}</span>
-        </div>
-
-        <div class="provider-layout">
-          <label class="field">
-            <span>供应商</span>
-            <select v-model="selectedProviderId" aria-label="选择 AI 供应商">
-              <option value="custom-new">自定义 OpenAI-compatible 供应商</option>
-              <option v-for="provider in catalog" :key="provider.id" :value="provider.id">
-                {{ provider.name }}{{ provider.discoveryAvailable ? '' : '（可保存 Key，手动选模型）' }}
-              </option>
-            </select>
-          </label>
-
-          <div v-if="selectedProvider" class="provider-summary">
-            <div>
-              <strong>{{ selectedProvider.name }}</strong>
-              <span :class="['status-dot', selectedProvider.discoveryAvailable ? 'ready' : 'manual']">
-                {{ selectedProvider.discoveryAvailable ? '可发现模型' : '使用内置模型目录' }}
-              </span>
-            </div>
-            <a :href="selectedProvider.documentationURL" target="_blank" rel="noreferrer">官方文档</a>
-          </div>
-        </div>
-
-        <template v-if="isCustomSelection">
-          <div class="custom-fields">
-            <label class="field"><span>供应商名称</span><input v-model="customName" maxlength="96" autocomplete="off" placeholder="例如：我的中转站" /></label>
-            <label class="field"><span>请求地址</span><input v-model="customBaseURL" maxlength="2048" autocomplete="url" placeholder="https://example.com/v1 或 http://example.com/v1" /></label>
-            <label class="field"><span>备注（可选）</span><input v-model="customNote" maxlength="256" autocomplete="off" placeholder="仅用于页面识别" /></label>
-          </div>
-          <p class="blocked-reason" role="status">填写 API 基础地址（如 <code>/v1</code>），不要填写 <code>/chat/completions</code>。普通根地址会依次尝试 <code>/v1/models</code> 与 <code>/models</code>；已填写完整模型列表地址时不会追加路径。支持 HTTP 和 HTTPS；HTTP 会明文传输 Key 和请求内容。</p>
-        </template>
-
-        <p v-if="selectedProvider && !selectedProvider.discoveryAvailable" class="blocked-reason" role="status">
-          {{ selectedProvider.discoveryReason }}。可先保存 API Key，再从内置模型池中选择模型。
-        </p>
-
-        <label class="field key-field">
-          <span>API Key</span>
-          <input
-            v-model="keyDrafts[selectedProviderId]"
-            type="password"
-            autocomplete="off"
-            :disabled="!!discoveringProvider || !!savingKeyProvider"
-            :placeholder="providerKeyPlaceholder"
-            aria-describedby="provider-key-help"
-            @blur="selectedProvider?.discoveryAvailable && !isCustomSelection && discoverSelectedProvider()"
-            @keydown.enter.prevent="selectedProvider && !selectedProvider.discoveryAvailable ? saveSelectedProviderKey() : discoverSelectedProvider()"
-          />
-          <small id="provider-key-help">
-            {{ savingKeyProvider === selectedProviderId ? '正在保存 API Key…' : discoveringProvider === selectedProviderId ? '正在测试并获取模型…' : selectedProvider && !selectedProvider.discoveryAvailable ? '点击保存 API Key 后清空输入；保存不代表已验证调用权限。' : '输入只在本次发现请求中使用；成功后前端立即清空。' }}
-          </small>
-        </label>
-
-        <button v-if="selectedProvider && !selectedProvider.discoveryAvailable" class="primary-btn discover-btn" type="button" :disabled="!!discoveringProvider || !!savingKeyProvider || !keyDrafts[selectedProviderId]?.trim()" @click="saveSelectedProviderKey">
-          {{ savingKeyProvider === selectedProviderId ? '保存中…' : '保存 API Key' }}
-        </button>
-
-        <button v-if="isCustomSelection" class="primary-btn discover-btn" type="button" :disabled="!!discoveringProvider || !!savingKeyProvider" @click="discoverSelectedProvider">
-          {{ discoveringProvider === selectedProviderId ? '测试中…' : '测试并获取模型' }}
-        </button>
-
-        <p v-if="providerErrors[selectedProviderId]" class="field-error" role="alert">{{ providerErrors[selectedProviderId] }}</p>
-        <p v-if="providerMessages[selectedProviderId]" class="field-success" role="status">{{ providerMessages[selectedProviderId] }}</p>
-
-        <div class="model-pool" aria-live="polite">
-          <h4>{{ capabilityLabel }}可用模型池</h4>
-          <div v-if="selectedProviderCapabilityModels.length" class="model-chips">
-            <span v-for="model in selectedProviderCapabilityModels" :key="model.id">{{ model.name || model.id }}</span>
-          </div>
-          <p v-else class="empty-copy">{{ selectedProvider && !selectedProvider.discoveryAvailable ? '保存 API Key 后，这里会显示内置参考模型。' : '当前供应商尚无兼容模型。发现成功后，模型会先进入这里。' }}</p>
-        </div>
-      </section>
+      <AiProviderManager :config="config" :catalog="catalog" @updated="applyProviderUpdate" />
 
       <section class="card section-card" aria-labelledby="priority-title">
         <div class="section-head">
@@ -129,6 +29,7 @@
           </button>
         </div>
 
+        <AiCapabilityTabs v-model="currentCapability" label="模型优先级能力" />
         <ol v-if="currentPriority.length" class="priority-list">
           <li v-for="(step, index) in currentPriority" :key="`${step.provider}:${step.model}`">
             <span class="rank" aria-hidden="true">{{ index + 1 }}</span>
@@ -160,23 +61,23 @@
         <p v-if="priorityMessage" :class="['notice', priorityMessageType]" role="status">{{ priorityMessage }}</p>
       </section>
 
-      <AiUsagePanel :capability="currentCapability" :capability-label="capabilityLabel" :catalog="catalog" />
+      <AiUsagePanel :catalog="catalog" />
     </template>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, reactive, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import {
-  discoverAiProviderModels,
   fetchAiModelApiConfig,
   isAdminRequired,
   saveAiCapabilityPriority,
-  saveAiProviderKey,
 } from '../api'
 import type { ShowAdminDialog } from '../types'
 import { messageFromData } from '../types'
 import AiUsagePanel from './AiUsagePanel.vue'
+import AiProviderManager from './AiProviderManager.vue'
+import AiCapabilityTabs from './AiCapabilityTabs.vue'
 import {
   cloneCapabilityPriorities,
   listAvailableCapabilityModels,
@@ -190,63 +91,29 @@ import type {
 
 defineOptions({ name: 'AiModelApiConfigPanel' })
 
-type TopTab = 'text' | 'vision' | 'voice'
-
 const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
-const topTabs: Array<{ id: TopTab; label: string }> = [
-  { id: 'text', label: '文字' },
-  { id: 'vision', label: '识图' },
-  { id: 'voice', label: '语音' },
-]
-const voiceTabs: Array<{ id: 'voice-asr' | 'voice-tts'; label: string }> = [
-  { id: 'voice-asr', label: '语音识别' },
-  { id: 'voice-tts', label: '语音合成' },
-]
-const capabilityLabels: Record<AiCapability, string> = {
-  text: '文字', vision: '识图', 'voice-asr': '语音识别', 'voice-tts': '语音合成',
-}
-
-const activeTopTab = ref<TopTab>('text')
-const activeVoiceTab = ref<'voice-asr' | 'voice-tts'>('voice-asr')
+const capabilityLabels: Record<AiCapability, string> = { text: '文字', vision: '识图', 'voice-asr': '语音识别', 'voice-tts': '语音合成' }
+const currentCapability = ref<AiCapability>('text')
 const loading = ref(false)
 const loaded = ref(false)
 const pageError = ref('')
 const catalog = ref<AiProviderCatalogItem[]>([])
 const config = ref<AiCapabilityConfigView | null>(null)
 const priorities = ref<AiCapabilityConfigView['priorities'] | null>(null)
-const selectedProviderId = ref('')
-const customName = ref('')
-const customNote = ref('')
-const customBaseURL = ref('')
-const keyDrafts = reactive<Record<string, string>>({})
-const providerErrors = reactive<Record<string, string>>({})
-const providerMessages = reactive<Record<string, string>>({})
-const discoveringProvider = ref('')
-const savingKeyProvider = ref('')
+
 const pendingModelKey = ref('')
 const savingPriority = ref(false)
 const priorityMessage = ref('')
 const priorityMessageType = ref<'success' | 'error'>('success')
 
-const currentCapability = computed<AiCapability>(() => activeTopTab.value === 'voice' ? activeVoiceTab.value : activeTopTab.value)
 const capabilityLabel = computed(() => capabilityLabels[currentCapability.value])
-const selectedProvider = computed(() => catalog.value.find(item => item.id === selectedProviderId.value) || null)
-const isCustomSelection = computed(() => selectedProviderId.value === 'custom-new' || !!selectedProvider.value?.custom)
 const currentPriority = computed(() => priorities.value?.[currentCapability.value] || [])
 const availableModels = computed(() => config.value ? listAvailableCapabilityModels(config.value, currentCapability.value) : [])
 const unusedModels = computed(() => {
   const used = new Set(currentPriority.value.map(step => `${step.provider}\u0000${step.model}`))
   return availableModels.value.filter(model => !used.has(`${model.provider}\u0000${model.model}`))
 })
-const selectedProviderCapabilityModels = computed(() => {
-  const state = config.value?.providers[selectedProviderId.value]
-  return (state?.models || []).filter(model => model.capabilities.includes(currentCapability.value))
-})
-const providerKeyPlaceholder = computed(() => {
-  const state = config.value?.providers[selectedProviderId.value]
-  if (state?.key?.configured) return `已保存 ${state.key.prefix}，输入新 Key 可替换`
-  return selectedProvider.value && !selectedProvider.value.discoveryAvailable ? '输入 API Key 后点击保存' : '输入 API Key，失焦后自动发现'
-})
+
 
 // --- 共享配置与供应商导入 ---
 
@@ -276,64 +143,17 @@ async function loadSharedConfig(): Promise<void> {
   }
   catalog.value = Array.isArray(response.data.catalog) ? response.data.catalog : []
   applyConfig(response.data.config)
-  if (!selectedProviderId.value || !catalog.value.some(item => item.id === selectedProviderId.value)) selectedProviderId.value = catalog.value[0]?.id || ''
   loaded.value = true
 }
 
-// 保存无法自动发现模型的供应商 Key，成功后更新参考模型池并清空明文。
-async function saveSelectedProviderKey(): Promise<void> {
-  const providerId = selectedProviderId.value
-  const apiKey = String(keyDrafts[providerId] || '').trim()
-  if (!selectedProvider.value || selectedProvider.value.discoveryAvailable || !apiKey || discoveringProvider.value || savingKeyProvider.value) return
-  providerErrors[providerId] = ''
-  providerMessages[providerId] = ''
-  savingKeyProvider.value = providerId
-  const response = await saveAiProviderKey(providerId, apiKey)
-  savingKeyProvider.value = ''
-  if (isAdminRequired(response)) return requestAdmin('保存 API Key 需要管理员密码', saveSelectedProviderKey)
-  if (!response.ok || !response.data?.config) {
-    providerErrors[providerId] = messageFromData(response.data, 'API Key 保存失败')
-    return
+// 合并连接操作后的服务端快照，保留其他能力尚未保存且仍然有效的编辑。
+function applyProviderUpdate(next: AiCapabilityConfigView, nextCatalog?: AiProviderCatalogItem[]): void {
+  if (nextCatalog) catalog.value = nextCatalog
+  config.value = next
+  if (!priorities.value) priorities.value = cloneCapabilityPriorities(next.priorities)
+  for (const capability of next.capabilities) {
+    priorities.value[capability] = priorities.value[capability].filter(step => next.providers[step.provider]?.key.configured && next.providers[step.provider].models.some(model => model.id === step.model && model.capabilities.includes(capability)))
   }
-  keyDrafts[providerId] = ''
-  // 仅刷新模型池和 Key 状态，保留用户尚未保存的优先级编辑。
-  config.value = response.data.config
-  providerMessages[providerId] = response.data.message || 'API Key 已保存'
-}
-
-// 在 Key 失焦或回车时调用发现接口；失败保留输入，成功立即清空明文。
-async function discoverSelectedProvider(): Promise<void> {
-  const providerId = selectedProviderId.value
-  const provider = selectedProvider.value
-  const apiKey = String(keyDrafts[providerId] || '').trim()
-  if ((!provider?.discoveryAvailable && !isCustomSelection.value) || !apiKey || discoveringProvider.value || savingKeyProvider.value) return
-  if (isCustomSelection.value && (!customName.value.trim() || !customBaseURL.value.trim())) {
-    providerErrors[providerId] = '请填写供应商名称和请求地址'
-    return
-  }
-  providerErrors[providerId] = ''
-  providerMessages[providerId] = ''
-  discoveringProvider.value = providerId
-  const response = await discoverAiProviderModels(providerId, apiKey, {
-    capability: currentCapability.value,
-    ...(isCustomSelection.value ? { name: customName.value.trim(), note: customNote.value.trim(), baseURL: customBaseURL.value.trim() } : {}),
-  })
-  discoveringProvider.value = ''
-  if (isAdminRequired(response)) return requestAdmin('发现并保存模型需要管理员密码', discoverSelectedProvider)
-  if (!response.ok || !response.data?.config) {
-    providerErrors[providerId] = messageFromData(response.data, '模型发现失败')
-    return
-  }
-  keyDrafts[providerId] = ''
-  if (isCustomSelection.value && response.data.providerId) {
-    selectedProviderId.value = response.data.providerId
-    customName.value = ''
-    customNote.value = ''
-    customBaseURL.value = ''
-    if (response.data.catalog) catalog.value = response.data.catalog
-  }
-  applyConfig(response.data.config)
-  providerMessages[providerId] = `${response.data.message || '模型池已保存'}；移除 ${response.data.removedModels || 0} 个旧模型、${response.data.removedSteps || 0} 个失效优先级步骤。`
 }
 
 // --- 模型优先级 ---
@@ -400,18 +220,7 @@ watch(currentCapability, () => {
   priorityMessage.value = ''
 })
 
-watch(selectedProviderId, value => {
-  const provider = catalog.value.find(item => item.id === value)
-  if (provider?.custom) {
-    customName.value = provider.name
-    customNote.value = provider.note || ''
-    customBaseURL.value = provider.baseURL || ''
-  } else if (value === 'custom-new') {
-    customName.value = ''
-    customNote.value = ''
-    customBaseURL.value = ''
-  }
-})
+
 
 onMounted(loadSharedConfig)
 </script>
