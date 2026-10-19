@@ -42,7 +42,8 @@ function makeSummaryRequest(calls) {
         groups.get(title).refs.push(item.ref)
       }
     }
-    return formatExchange({ groups: [...groups.values()], quotes: [{ ref: quotes ? quotes[0].ref : items[0].ref, reason: '真实来源候选' }] })
+    const quoteRef = quotes ? quotes[0]?.ref : items[0].ref
+    return formatExchange({ groups: [...groups.values()], quotes: quoteRef ? [{ ref: quoteRef, reason: '真实来源候选' }] : [] })
   }
 }
 
@@ -53,6 +54,35 @@ async function checkBehavior(check, label, run) {
 
 // 执行完整摘要行为验收；所有模型请求均为本地模拟，没有生产通知。
 async function runCompleteInputTests(check) {
+  await checkBehavior(check, '唯一恢复使用调用方明确格式，默认JSONL与records对象契约不混用', async () => {
+    for (const wrapped of [false, true]) {
+      const diagnostics = contract.createReportAnalysisDiagnostics({ selectedMessageCount: 1, windowMessageCount: 1, sourceCompleteness: 'complete' })
+      const systems = []
+      const runtime = { deadlineMs: Date.now() + 60000,
+        ...(wrapped ? { recoveryInstructions: '只返回单个records对象，最后一项为end。' } : {}),
+        request: async (system, _input, _tokens, extra) => {
+          extra._onRequestAttempt()
+          systems.push(system)
+          if (systems.length === 1) return '{broken'
+          return wrapped ? '{"records":[{"kind":"end"}]}' : '{"kind":"end"}'
+        } }
+      const value = await engine.requestAnalysisUnit(runtime, diagnostics,
+        { id: 'format-recovery', stage: 'basic', sourceIds: [1], timestamps: [] }, '明确业务契约', '固定原输入', 100, 1000,
+        output => wrapped ? engine.parseExchangeObject(output).records : engine.parseExchangeRecords(output))
+      assert.equal(systems.length, 2)
+      assert.equal(diagnostics.retryCount, 1)
+      assert.equal(diagnostics.requestCount, 2)
+      if (wrapped) {
+        assert(systems[1].endsWith(runtime.recoveryInstructions))
+        assert(!systems[1].includes('输出全部独立JSON记录，不写外层包装'))
+        assert.deepEqual(value, [{ kind: 'end' }])
+      } else {
+        assert(systems[1].includes('输出全部独立JSON记录，不写外层包装'))
+        assert.deepEqual(value, [])
+      }
+    }
+  })
+
   await checkBehavior(check, '最终共同摘要不满足详细话题数时重试一次并明确失败，不编造补足', async () => {
     const diagnostics = contract.createReportAnalysisDiagnostics({ selectedMessageCount: 250, windowMessageCount: 250, sourceCompleteness: 'complete' })
     await assert.rejects(engine.summarizeCompleteInput(sampleMessages(250), diagnostics, { deadlineMs: Date.now() + 60000,
@@ -127,6 +157,223 @@ async function runCompleteInputTests(check) {
     assert(!context.input.includes('sourceIds') && !context.input.includes('可信身份'))
     const result = engine.readExchange(formatExchange({ groups: [{ title: '主题', summary: '结论', refs: ['r1'] }], quotes: [] }), context)
     assert.equal(new Set(result.topics[0].sourceIds).size, 4000)
+  })
+
+  await checkBehavior(check, '摘要正文夹带旧临时引用时拒绝整轮，防止下一层同名编号串绑', async () => {
+    const messages = sampleMessages(2)
+    const context = engine.createDigestExchange([{ title: '图片分享', summary: '只有媒体提示', sourceIds: [1, 2], participants: ['u'] }], [], messages)
+    for (const field of ['title', 'summary']) {
+      for (const leak of ['（r20,r33）', '由p10与p13讨论', '沿用r20结论']) {
+        const group = { title: '图片分享', summary: '只有媒体提示', refs: ['r1'] }
+        group[field] += leak
+        assert.throws(() => engine.readExchange(formatExchange({ groups: [group], quotes: [] }), context), /REF_IN_TEXT/)
+      }
+    }
+    assert.doesNotThrow(() => engine.readExchange(formatExchange({ groups: [{ title: 'TCP1协议', summary: 'arp10字段与TCP1协议独立', refs: ['r1'] }], quotes: [] }), context))
+    let calls = 0
+    const diagnostics = contract.createReportAnalysisDiagnostics({ selectedMessageCount: 2, windowMessageCount: 2, sourceCompleteness: 'complete' })
+    await engine.summarizeCompleteInput(messages, diagnostics, { deadlineMs: Date.now() + 60000, request: async (system, input) => {
+      calls++
+      if (calls === 2) assert(system.includes('[REF_IN_TEXT]'))
+      const refs = JSON.parse(input).items.map(item => item.ref)
+      return formatExchange({ groups: [{ title: '普通讨论', summary: calls === 1 ? '媒体提示（r20）' : '消息正文的实际讨论', refs }], quotes: [] })
+    } })
+    assert.equal(calls, 2)
+    assert.equal(diagnostics.summarizedMessageCount, 2)
+  })
+
+  await checkBehavior(check, '唯一结构恢复切换冻结下一节点，实际调用额度仍在提交前限制', async () => {
+    const diagnostics = contract.createReportAnalysisDiagnostics({ selectedMessageCount: 1, windowMessageCount: 1, sourceCompleteness: 'complete' })
+    const calls = []
+    const runtime = { deadlineMs: Date.now() + 60000, maxRequestCount: 2, recoveryStepIndex: execution => execution.stepIndex + 1,
+      request: async (system, input, tokens, extra) => {
+        calls.push(extra)
+        const step = { routeIdentity: 'frozen', stepIndex: extra._frozenRouteStartStepIndex || 0 }
+        extra._onRequestAttempt(step)
+        extra._onRequestExecution({ ...step, model: step.stepIndex ? 'backup' : 'primary' })
+        return calls.length === 1 ? 'broken' : 'valid'
+      } }
+    const result = await engine.requestAnalysisUnit(runtime, diagnostics, { id: 'unit', stage: 'compression', sourceIds: [1], timestamps: [] }, 'system', 'input', 100, 10000,
+      text => { if (text !== 'valid') throw new Error('[JSON_PARSE] invalid'); return text })
+    assert.equal(result, 'valid')
+    assert.equal(calls.length, 2)
+    assert.equal(calls[1]._frozenRouteStartStepIndex, 1)
+    assert.equal(diagnostics.requestCount, 2)
+    assert.equal(diagnostics.retryCount, 1)
+    const exhausted = contract.createReportAnalysisDiagnostics({ selectedMessageCount: 1, windowMessageCount: 1, sourceCompleteness: 'complete' })
+    calls.length = 0
+    await assert.rejects(engine.requestAnalysisUnit({ ...runtime, maxRequestCount: 1 }, exhausted, { id: 'unit', stage: 'compression', sourceIds: [1], timestamps: [] },
+      'system', 'input', 100, 10000, () => { throw new Error('[JSON_PARSE] invalid') }), /实际模型调用额度已耗尽/)
+    assert.equal(exhausted.requestCount, 1)
+  })
+
+  await checkBehavior(check, '明确length结束的闭合正文不校验或保存，只能在原额度内整输入恢复', async () => {
+    for (const finishes of [['length', 'stop'], ['length', 'length']]) {
+      const diagnostics = contract.createReportAnalysisDiagnostics({ selectedMessageCount: 1, windowMessageCount: 1, sourceCompleteness: 'complete' })
+      const attempts = [], completed = []
+      let calls = 0, validations = 0
+      const runtime = { deadlineMs: Date.now() + 60000, maxRequestCount: 2,
+        onUnitCompleted: (unit, history, value) => { completed.push(value); attempts.push(...history) },
+        onUnitFailed: (unit, history) => attempts.push(...history),
+        request: async (system, input, tokens, extra) => {
+          extra._onRequestAttempt()
+          extra._onRequestExecution({ finishReason: finishes[calls++], finishReasonReadable: true })
+          return '{"completed":true}'
+        } }
+      const request = () => engine.requestAnalysisUnit(runtime, diagnostics, { id: 'closed-length', stage: 'compression', sourceIds: [1], timestamps: [] },
+        'same-system', 'same-full-input', 100, 10000, text => { validations++; return JSON.parse(text) })
+      if (finishes[1] === 'stop') assert.deepEqual(await request(), { completed: true })
+      else await assert.rejects(request(), /MODEL_TRUNCATED/)
+      assert.equal(calls, 2)
+      assert.equal(validations, finishes[1] === 'stop' ? 1 : 0)
+      assert.equal(completed.length, finishes[1] === 'stop' ? 1 : 0)
+      assert.equal(diagnostics.requestCount, 2)
+      assert.equal(diagnostics.retryCount, 1)
+      assert.equal(attempts[0].input, 'same-full-input')
+      assert.equal(attempts[1].input, 'same-full-input')
+      assert(attempts[0].error.includes('MODEL_TRUNCATED'))
+    }
+  })
+
+  for (const scenario of [
+    { count: 565, batch: 2, missing: ['r3'] },
+    { count: 592, batch: 3, missing: ['r8', 'r9', 'r10', 'r17', 'r20', 'r36'] },
+  ]) await checkBehavior(check, `${scenario.count}条注入历史遗漏：仅补${scenario.missing.join(',')}，首次文字来源保留且计数唯一`, async () => {
+    const messages = sampleMessages(scenario.count)
+    const batches = engine.packInputBatches(messages)
+    const target = batches[scenario.batch - 1]
+    const missing = new Set(scenario.missing)
+    const originalRefs = target.fragments.map((_, index) => `r${index + 1}`).filter(ref => !missing.has(ref))
+    const diagnostics = contract.createReportAnalysisDiagnostics({ selectedMessageCount: scenario.count, windowMessageCount: scenario.count, sourceCompleteness: 'complete' })
+    const calls = []
+    const normal = makeSummaryRequest(calls)
+    const seen = []
+    let compressionCount = 0
+    let injected = false
+    let firstMergeObserved = false
+    await engine.summarizeCompleteInput(messages, diagnostics, { deadlineMs: Date.now() + 60000, request: async (...args) => {
+      const [system, input, , extra] = args
+      const parsed = JSON.parse(input)
+      seen.push({ system, ...parsed })
+      if (system.includes('定向补漏')) {
+        extra._onRequestAttempt?.()
+        assert.deepEqual(parsed.items.map(item => item.ref), scenario.missing)
+        assert(parsed.items.every(item => item.text === target.fragments[Number(item.ref.slice(1)) - 1].content))
+        return formatExchange({ groups: [{ title: '补漏讨论', summary: '补漏只解释缺失片段', refs: scenario.missing }], quotes: [] })
+      }
+      if (!system.includes('摘要合并助手') && ++compressionCount === scenario.batch) {
+        extra._onRequestAttempt?.(); injected = true
+        return formatExchange({ groups: [{ title: '首轮原主题', summary: '首轮有效结论必须逐字保留', refs: originalRefs }], quotes: [] })
+      }
+      if (!firstMergeObserved && system.includes('摘要合并助手') && parsed.items.some(item => item.title === '首轮原主题')) {
+        const first = parsed.items.find(item => item.title === '首轮原主题')
+        assert.equal(first.summary, '首轮有效结论必须逐字保留')
+        firstMergeObserved = true
+      }
+      return normal(...args)
+    } })
+    assert(injected)
+    assert(firstMergeObserved)
+    assert.equal(seen.filter(call => call.system.includes('定向补漏')).length, 1)
+    assert.equal(diagnostics.retryCount, 1)
+    assert.equal(diagnostics.summarizedMessageCount, scenario.count)
+    assert.equal(diagnostics.submittedMessageCount, scenario.count)
+  })
+
+  await checkBehavior(check, '遗漏与非法金句同时出现先拒绝金句，结构恢复重发完整输入且不走补漏', async () => {
+    const messages = sampleMessages(3)
+    const normal = makeSummaryRequest([])
+    const requests = []
+    const diagnostics = contract.createReportAnalysisDiagnostics({ selectedMessageCount: 3, windowMessageCount: 3, sourceCompleteness: 'complete' })
+    await engine.summarizeCompleteInput(messages, diagnostics, { deadlineMs: Date.now() + 60000, request: async (...args) => {
+      requests.push({ system: args[0], input: args[1] })
+      if (requests.length === 1) return formatExchange({ groups: [{ title: '事实', summary: '结论', refs: ['r1'] }], quotes: [{ ref: 'r999', reason: '非法候选' }] })
+      return normal(...args)
+    } })
+    assert.equal(requests.length, 2)
+    assert.equal(requests[0].input, requests[1].input)
+    assert(requests[1].system.includes('REF_UNKNOWN'))
+    assert(!requests[1].system.includes('定向补漏'))
+  })
+
+  for (const badRepair of ['uncovered', 'unknown', 'already_covered', 'invalid_quote']) await checkBehavior(check, `补漏${badRepair}严格失败，只允许一次恢复且不标批次完成`, async () => {
+    const diagnostics = contract.createReportAnalysisDiagnostics({ selectedMessageCount: 4, windowMessageCount: 4, sourceCompleteness: 'complete' })
+    const calls = []
+    await assert.rejects(engine.summarizeCompleteInput(sampleMessages(4), diagnostics, { deadlineMs: Date.now() + 60000, request: async (system, input, tokens, extra) => {
+      extra._onRequestAttempt?.(); calls.push({ system, input })
+      if (calls.length === 1) return formatExchange({ groups: [{ title: '首轮', summary: '有效内容', refs: ['r1', 'r2'] }], quotes: [] })
+      assert.deepEqual(JSON.parse(input).items.map(item => item.ref), ['r3', 'r4'])
+      const refs = badRepair === 'uncovered' ? ['r3'] : badRepair === 'unknown' ? ['r999'] : badRepair === 'already_covered' ? ['r1', 'r3', 'r4'] : ['r3', 'r4']
+      return formatExchange({ groups: [{ title: '恢复', summary: '内容', refs }], quotes: badRepair === 'invalid_quote' ? [{ ref: 'r1', reason: '已覆盖引用不可用于恢复' }] : [] })
+    } }), error => error.code === 'DAILY_REPORT_GENERATION_FAILED' && error.message.includes(badRepair === 'uncovered' ? 'r4' : 'REF_UNKNOWN'))
+    assert.equal(calls.length, 2)
+    assert.equal(diagnostics.summarizedMessageCount, 0)
+    assert.equal(diagnostics.retryCount, 1)
+    assert.equal(diagnostics.failedBatches[0].attempts, 2)
+  })
+
+  await checkBehavior(check, '首轮与补漏各1400字独立预算，超过首轮预算的合法合计以完整节点合并', async () => {
+    const diagnostics = contract.createReportAnalysisDiagnostics({ selectedMessageCount: 4, windowMessageCount: 4, sourceCompleteness: 'complete' })
+    let calls = 0
+    const normal = makeSummaryRequest([])
+    await engine.summarizeCompleteInput(sampleMessages(4), diagnostics, { deadlineMs: Date.now() + 60000, request: async (...args) => {
+      calls++
+      if (calls <= 2) {
+        args[3]._onRequestAttempt?.()
+        return formatExchange({ groups: [{ title: calls === 1 ? '首轮长事实' : '补漏长事实', summary: '完整有效事实'.repeat(140), refs: calls === 1 ? ['r1', 'r2'] : ['r3', 'r4'] }], quotes: [] })
+      }
+      const items = JSON.parse(args[1]).items
+      assert.equal(items.length, 2)
+      assert(items.every(item => item.summary === '完整有效事实'.repeat(140)))
+      return normal(...args)
+    } })
+    assert.equal(calls, 3)
+    assert.equal(diagnostics.summarizedMessageCount, 4)
+  })
+
+  await checkBehavior(check, '成功单元先持久化再计完成，落盘失败仅一次调用且保持未完成', async () => {
+    const diagnostics = contract.createReportAnalysisDiagnostics({ selectedMessageCount: 3, windowMessageCount: 3, sourceCompleteness: 'complete' })
+    const normal = makeSummaryRequest([])
+    let calls = 0
+    let failureTrace
+    await assert.rejects(engine.summarizeCompleteInput(sampleMessages(3), diagnostics, { deadlineMs: Date.now() + 60000,
+      request: (...args) => { calls++; return normal(...args) },
+      onUnitCompleted(unit, attempts, result) {
+        assert.equal(diagnostics.summarizedMessageCount, 0)
+        assert.equal(unit.id, 'B1'); assert.equal(attempts.length, 1)
+        assert(result.topics.length > 0)
+        throw new Error('模拟落盘失败')
+      },
+      onUnitFailed(unit, attempts) { failureTrace = { unit, attempts } },
+    }), error => error.code === 'DAILY_REPORT_GENERATION_FAILED' && error.message === '模拟落盘失败')
+    assert.equal(calls, 1)
+    assert.equal(diagnostics.summarizedMessageCount, 0)
+    assert.equal(diagnostics.retryCount, 0)
+    assert.equal(failureTrace.attempts.length, 1)
+  })
+
+  await checkBehavior(check, '失败诊断保留两轮与真实缺失引用，诊断保存失败不能掩盖原始错误', async () => {
+    const diagnostics = contract.createReportAnalysisDiagnostics({ selectedMessageCount: 4, windowMessageCount: 4, sourceCompleteness: 'complete' })
+    const attemptsSeen = []
+    let calls = 0
+    await assert.rejects(engine.summarizeCompleteInput(sampleMessages(4), diagnostics, { deadlineMs: Date.now() + 60000,
+      request: async (system, input, tokens, extra) => {
+        extra._onRequestAttempt?.(); calls++
+        return formatExchange({ groups: [{ title: '已确认', summary: '具体事实', refs: calls === 1 ? ['r1', 'r2'] : ['r3'] }], quotes: [] })
+      },
+      onUnitFailed(unit, attempts) { attemptsSeen.push(...attempts); throw new Error('受控诊断磁盘写入失败') },
+      onProgress(value) { if (value.analysisState === 'failed') throw new Error('受控失败进度写入失败') },
+    }), error => error.code === 'DAILY_REPORT_GENERATION_FAILED' && error.message.includes('r4'))
+    assert.equal(attemptsSeen.length, 2)
+    assert.deepEqual(attemptsSeen[0].missingRefs, ['r3', 'r4'])
+    assert.deepEqual(attemptsSeen[1].missingRefs, ['r4'])
+    assert.deepEqual(diagnostics.failedBatches[0].allowedRefs, ['r1', 'r2', 'r3', 'r4'])
+    assert.deepEqual(diagnostics.failedBatches[0].missingRefs, ['r4'])
+    assert.deepEqual(contract.sanitizeReportAnalysisDiagnostics(diagnostics).failedBatches[0].missingRefs, ['r4'])
+    const invalid = JSON.parse(JSON.stringify(diagnostics)); invalid.failedBatches[0].missingRefs = ['私密正文']
+    assert.throws(() => contract.sanitizeReportAnalysisDiagnostics(invalid), /引用清单无效/)
+    assert(diagnostics.warnings.some(warning => warning.includes('失败诊断保存失败')))
+    assert(diagnostics.warnings.some(warning => warning.includes('失败进度保存失败')))
   })
 
   await checkBehavior(check, '含引号换行反斜杠的长消息按真实JSON长度分片且完整恢复', async () => {

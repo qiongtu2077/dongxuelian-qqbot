@@ -33,6 +33,7 @@ interface CapabilityModel {
   id: string
   name: string
   capabilities: AiCapability[]
+  capabilityChecks?: Record<AiCapability, { status: 'supported' | 'unsupported' | 'pending'; reason: string }>
 }
 
 interface CapabilityPriorityStep {
@@ -283,15 +284,21 @@ function createEmptyCapabilityConfig(): CapabilityConfig {
 // 对单个模型池条目进行边界清洗，并限制能力只能来自统一契约。
 function normalizeCapabilityModel(value: unknown): CapabilityModel | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const source = value as { id?: unknown; name?: unknown; capabilities?: unknown }
+  const source = value as { id?: unknown; name?: unknown; capabilities?: unknown; capabilityChecks?: CapabilityModel['capabilityChecks'] }
   const id = String(source.id || '').trim()
   if (!id || id.length > 256) return null
   const name = String(source.name || id).trim().slice(0, 256) || id
   const capabilities = Array.isArray(source.capabilities)
     ? [...new Set(source.capabilities.filter(isAiCapability))]
     : []
-  if (!capabilities.length) return null
-  return { id, name, capabilities }
+  const checks = source.capabilityChecks
+  if (checks && AI_CAPABILITIES.some(capability => !checks[capability] || !['supported', 'unsupported', 'pending'].includes(checks[capability].status)
+    || typeof checks[capability].reason !== 'string')) return null
+  if (!capabilities.length && !checks) return null
+  // 保留服务器现有明确检测状态；待检测条目可以列出，但不会因此获得运行能力。
+  const capabilityChecks = checks ? Object.fromEntries(AI_CAPABILITIES.map(capability => [capability,
+    { status: checks[capability].status, reason: checks[capability].reason.slice(0, 160) }])) as CapabilityModel['capabilityChecks'] : undefined
+  return { id, name, capabilities, ...(capabilityChecks ? { capabilityChecks } : {}) }
 }
 
 // 严格读取并校验完整配置，阻止未知供应商、重复模型和悬空优先级引用。
@@ -573,6 +580,18 @@ function resolveCapabilityRuntimeSteps(capability: unknown): RuntimeCapabilitySt
   return result
 }
 
+// 只读选择已配置模型池中的确切节点，不改全局优先级或派生未配置型号。
+function resolveConfiguredCapabilityModel(capability: unknown, providerId: unknown, modelId: unknown): RuntimeCapabilityStep {
+  if (!isAiCapability(capability) || !isProviderId(providerId) || typeof modelId !== 'string' || !modelId) throw new Error('指定模型节点必须包含明确能力、供应商和型号')
+  const { config } = loadCapabilityConfigSync(), provider = getProviderCatalogEntry(providerId)
+  const selected = config.providers[providerId]?.models.filter(model => model.id === modelId && model.capabilities.includes(capability))
+  if (!provider || selected?.length !== 1) throw new Error('指定模型节点必须唯一匹配已配置能力模型池')
+  const apiKey = readProviderKey(providerId)
+  if (!apiKey) throw new Error('指定模型节点缺少已配置凭据')
+  return { capability, provider: providerId, providerName: provider.name, model: modelId, apiKey,
+    baseURL: provider.baseURL, chatProtocol: provider.chatProtocol, priorityIndex: 0 }
+}
+
 // 返回服务端内部供应商定义，调用方不得把结果原样发给前端。
 function getProviderCatalogEntry(providerId: unknown): ProviderCatalogEntry | null {
   if (typeof providerId !== 'string') return null
@@ -615,4 +634,5 @@ export = {
   getProviderKeyStatus,
   isProviderKeyConfigured,
   resolveCapabilityRuntimeSteps,
+  resolveConfiguredCapabilityModel,
 }

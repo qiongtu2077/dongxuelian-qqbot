@@ -64,6 +64,8 @@ function recordIntegrityLoss(file, timestamp) {
 function appendReportRecord(date, channelKey, input) {
     if (!Number.isSafeInteger(input.timestamp) || input.timestamp <= 0)
         throw new Error('日报源记录时间戳无效');
+    if (input.replyToId !== undefined && (typeof input.replyToId !== 'string' || !input.replyToId.trim()))
+        throw new Error('日报源记录回复标识无效');
     const text = String(input.text || '');
     const media = input.media || [];
     const bodyComplete = Buffer.byteLength(text, 'utf8') <= MAX_BODY_BYTES;
@@ -71,6 +73,7 @@ function appendReportRecord(date, channelKey, input) {
         recordVersion: 2,
         messageId: input.messageId || `generated-${(0, crypto_1.randomUUID)()}`,
         realMessageId: Boolean(input.messageId),
+        ...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
         timestamp: input.timestamp,
         userId: input.userId || '',
         userName: input.userName || '',
@@ -158,6 +161,8 @@ function parseReportRecord(line, lineNumber) {
     if (record.recordVersion !== undefined && (record.recordVersion !== 2 || typeof record.bodyComplete !== 'boolean' || typeof record.realMessageId !== 'boolean')) {
         throw new Error(`日报原始记录第${lineNumber}行版本或完整性无效`);
     }
+    if (record.replyToId !== undefined && (typeof record.replyToId !== 'string' || !record.replyToId.trim()))
+        throw new Error(`日报原始记录第${lineNumber}行回复标识无效`);
     return record;
 }
 // 校验丢失范围的明确格式，损坏证据不能在维护或读取时静默丢弃。

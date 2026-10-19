@@ -1,6 +1,7 @@
 import { ReportPeriod } from './report-period';
 export interface ReportRecord extends Record<string, unknown> {
     messageId: string;
+    replyToId?: string;
     timestamp: number;
     userId: string;
     userName: string;
@@ -13,6 +14,7 @@ export interface ReportRecord extends Record<string, unknown> {
 }
 export interface ReportRecordInput {
     messageId?: string;
+    replyToId?: string;
     timestamp: number;
     userId?: string;
     userName?: string;

@@ -18,6 +18,7 @@ interface PrecomputeIndexInput {
   date?: string
   channelKey: string
   messageId?: string
+  replyToId?: string
   timestamp?: number
   userId?: string
   userName?: string
@@ -27,6 +28,7 @@ interface PrecomputeIndexInput {
 
 interface PrecomputeRecord extends Record<string, unknown> {
   messageId: string
+  replyToId?: string
   timestamp: number
   userId: string
   userName: string
@@ -51,11 +53,13 @@ interface CoverageSnapshotLike extends Record<string, unknown> {
   slotStamp?: unknown
 }
 
+// 读取既有统计索引；回复字段存在时只接受来源提供的非空字符串。
 function parsePrecomputeRecord(line: string): PrecomputeRecord | null {
   try {
     const value = JSON.parse(line) as unknown
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null
     const record = value as Record<string, unknown>
+    if (record.replyToId !== undefined && (typeof record.replyToId !== 'string' || !record.replyToId.trim())) return null
     return {
       ...record,
       messageId: String(record.messageId || ''),
@@ -140,6 +144,7 @@ function appendPrecomputeIndex(input: PrecomputeIndexInput): PrecomputeRecord | 
   const date = String(input.date || todayCst(new Date(timestamp)))
   const record = appendReportRecord(date, channelKey, {
     messageId: input.messageId,
+    ...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
     timestamp,
     userId: String(input.userId || ''),
     userName: String(input.userName || ''),

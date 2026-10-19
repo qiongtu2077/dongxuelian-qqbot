@@ -151,7 +151,7 @@ function getDeferredRestoreActiveBacklog(kind: string): number {
 
 function getWorkerKinds(type: string): string[] {
   const normalized = String(type || '').trim().toLowerCase()
-  if (normalized === 'daily') return [RESOURCE_TASK_KIND.DAILY_REPORT, RESOURCE_TASK_KIND.DAILY_SUMMARY, RESOURCE_TASK_KIND.EMOTION_RENDER]
+  if (normalized === 'daily') return [RESOURCE_TASK_KIND.DAILY_REPORT, RESOURCE_TASK_KIND.DAILY_REPORT_PREANALYSIS, RESOURCE_TASK_KIND.DAILY_SUMMARY, RESOURCE_TASK_KIND.EMOTION_RENDER]
   if (normalized === 'agent') {
     return [
       RESOURCE_TASK_KIND.AGENT_TASK,

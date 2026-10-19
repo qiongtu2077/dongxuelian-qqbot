@@ -9,9 +9,13 @@ const path = require('path');
 const { collectReportData } = require('./data-collector');
 const { analyzeWithAI } = require('./ai-analyzer');
 const { renderReport } = require('./html-renderer');
+const { createTaskArtifactStore } = require('./analysis-artifacts');
+const getReportEmptyStates = require('./models').getReportEmptyStates;
 const { getErrorMessage } = require('./error-utils');
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
 const { createReportPeriod } = loadManagementModule('daily.reportPeriod');
+const { getResourceGateStatus } = loadManagementModule('resource.gate');
+const { redactSensitiveText } = loadManagementModule('core.redactor');
 const { createReportAnalysisDiagnostics, ReportAnalysisError, isReportTotalTimeoutError } = loadManagementModule('daily.reportAnalysis');
 const { hasActiveResourceActivityLease } = loadManagementModule('resource.activityLease');
 const serverModePolicy = loadManagementModule('resource.serverModePolicy');
@@ -28,6 +32,7 @@ function collectAnalysisWarnings(analysis) {
 // 生成可直接发送的文字版日报，作为图片失败时的保底结果。
 function composeDailyReportText(data, analysis, options = {}) {
     const lines = [];
+    const empty = getReportEmptyStates(analysis);
     const title = options.detail ? '群聊详细日报' : '群聊日报';
     lines.push(`${title} 文字版`);
     if (options.reason)
@@ -56,7 +61,9 @@ function composeDailyReportText(data, analysis, options = {}) {
         for (const topic of topics)
             lines.push(`- ${topic.title || '话题'}：${topic.summary || '暂无摘要'}`);
     }
-    const quotes = Array.isArray(analysis.goldenQuotes) ? analysis.goldenQuotes.slice(0, 3) : [];
+    else if (empty.topics)
+        lines.push('', '话题摘要：', empty.topics);
+    const quotes = Array.isArray(analysis.goldenQuotes) ? analysis.goldenQuotes.slice(0, 5) : [];
     if (quotes.length) {
         lines.push('', '今日金句：');
         for (const quote of quotes) {
@@ -64,6 +71,8 @@ function composeDailyReportText(data, analysis, options = {}) {
             lines.push(`- ${quote.sender || '群友'}：${quote.content || ''}${reason}`);
         }
     }
+    else if (empty.quotes)
+        lines.push('', '今日金句：', empty.quotes);
     const titles = Array.isArray(analysis.userTitles) ? analysis.userTitles : [];
     if (titles.length) {
         lines.push('', '群友画像：');
@@ -72,6 +81,8 @@ function composeDailyReportText(data, analysis, options = {}) {
             lines.push(`- ${item.name || '群友'}：${item.title || '活跃群友'}${reason}`);
         }
     }
+    else if (empty.portraits)
+        lines.push('', '群友画像：', empty.portraits);
     if (analysis.qualityReview) {
         lines.push('', '群聊锐评：');
         lines.push(`${analysis.qualityReview.title || '今日群聊'}：${analysis.qualityReview.summary || '暂无总结'}`);
@@ -81,6 +92,8 @@ function composeDailyReportText(data, analysis, options = {}) {
             lines.push(`- ${dimension.name}（${dimension.percentage}%）：${dimension.comment}`);
         }
     }
+    else if (empty.review)
+        lines.push('', '群聊锐评：', empty.review);
     return lines.join('\n');
 }
 // 原子写入文本文件。
@@ -120,6 +133,20 @@ function buildResultBase(taskId, data, analysis, textPath, warnings) {
         analysisMeta: analysis.meta || null,
     };
 }
+// 默认从实际S0捕获原票据，后续不能借同任务新票据继续提交产物。
+function captureReportArtifactLease(taskId) {
+    const original = getResourceGateStatus();
+    if (!original.locked || !original.meta || original.meta.taskId !== taskId || original.meta.kind !== 'daily_report'
+        || original.meta.pid !== process.pid || !original.meta.ticketId)
+        throw new Error('日报产物缺少本次S0独占租约');
+    const ticketId = original.meta.ticketId;
+    return () => {
+        const current = getResourceGateStatus();
+        if (!current.locked || !current.meta || current.meta.taskId !== taskId || current.meta.kind !== 'daily_report'
+            || current.meta.pid !== process.pid || current.meta.ticketId !== ticketId)
+            throw new Error('日报产物S0独占租约已失效');
+    };
+}
 // 执行完整日报并原子保存诊断；硬截止、取消与失败不能转成部分成功。
 async function generateDailyReportResult(options) {
     const taskId = String(options.taskId || `daily-report-${Date.now()}`);
@@ -136,6 +163,7 @@ async function generateDailyReportResult(options) {
     const stageSoftDeadlinesMs = { compression: startedAtMs + runtimeBudgetMs * 0.6,
         merge: startedAtMs + runtimeBudgetMs * 0.7, basic: startedAtMs + runtimeBudgetMs * 0.8, full: startedAtMs + runtimeBudgetMs * 0.8 };
     let collectingDurationMs = 0;
+    let assertLease;
     const reportPeriod = options.reportPeriod || createReportPeriod(now());
     let stage = 'collecting';
     let diagnostics = createReportAnalysisDiagnostics({ windowMessageCount: 0, selectedMessageCount: 0,
@@ -146,9 +174,13 @@ async function generateDailyReportResult(options) {
             throw options.signal.reason || new Error('日报任务已取消');
         if (now() >= deadlineMs)
             throw new ReportAnalysisError('日报运行总时限已耗尽', 'total_timeout', stage, diagnostics);
+        options.assertActive?.();
+        assertLease?.();
     };
     // 进度只含计数、阶段和脱敏原因，最后一次进度可供进程回收后保留。
     const saveProgress = (value) => {
+        options.assertActive?.();
+        assertLease?.();
         value.stageDurationsMs.collecting = collectingDurationMs;
         value.stageDurationsMs.runtime = Math.max(0, now() - startedAtMs);
         diagnostics = value;
@@ -188,7 +220,10 @@ async function generateDailyReportResult(options) {
             return result;
         }
         emitStep('analyzing');
-        const analysis = await analyzeWithAI({ ...data, reportPeriod, periodBackfilled: options.periodBackfilled }, !!options.detail, { deadlineMs, workDeadlineMs, stageSoftDeadlinesMs, signal: options.signal, now, onProgress: saveProgress });
+        assertLease = options.assertLease || captureReportArtifactLease(taskId);
+        assertLease();
+        const artifactStore = createTaskArtifactStore({ taskId, channelKey: String(options.channelKey), deadlineMs, assertActive: assertRuntime, assertLease, now });
+        const analysis = await analyzeWithAI({ ...data, reportPeriod, periodBackfilled: options.periodBackfilled }, !!options.detail, { deadlineMs, workDeadlineMs, stageSoftDeadlinesMs, signal: options.signal, now, onProgress: saveProgress, ...artifactStore });
         if (!analysis.meta || analysis.meta.analysisState !== 'complete')
             throw new ReportAnalysisError('日报必要分析缺少完整成功诊断', 'generation_failed', stage, diagnostics);
         saveProgress(analysis.meta);
@@ -255,9 +290,18 @@ async function generateDailyReportResult(options) {
         // 用户取消沿用取消状态，不能建立生成失败通知标记。
         if (options.signal?.aborted && !isReportTotalTimeoutError(options.signal.reason))
             throw options.signal.reason || error;
+        // 领取失效后连失败结果也不写，避免旧执行覆盖当前任务的产物。
+        options.assertActive?.();
         const failure = error instanceof ReportAnalysisError ? error :
             new ReportAnalysisError(getErrorMessage(error), isReportTotalTimeoutError(error) || now() >= deadlineMs ? 'total_timeout' : 'generation_failed', stage, diagnostics);
-        saveProgress(failure.diagnostics);
+        try {
+            saveProgress(failure.diagnostics);
+        }
+        catch (progressError) {
+            // 原S0已失效或失败诊断落盘错误时停止写结果，保留原失败对象和已经发生的用量。
+            failure.diagnostics.warnings.push('失败进度保存失败：' + redactSensitiveText(getErrorMessage(progressError)));
+            throw failure;
+        }
         writeJsonFile(path.join(outputDir, 'result.json'), { taskId, kind: 'daily_report', ok: false, reportPolicyVersion: 2,
             reportPeriod, periodBackfilled: options.periodBackfilled === true, analysisMeta: failure.diagnostics,
             failureKind: failure.diagnostics.failureKind, failureStage: failure.diagnostics.failureStage,

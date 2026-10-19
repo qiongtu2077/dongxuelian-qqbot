@@ -5,6 +5,7 @@
  */
 declare const RESOURCE_TASK_KIND: {
     readonly DAILY_REPORT: "daily_report";
+    readonly DAILY_REPORT_PREANALYSIS: "daily_report_preanalysis";
     readonly DAILY_REPORT_RENDER: "daily_report_render";
     readonly DAILY_SUMMARY: "daily_summary";
     readonly AGENT_TASK: "agent_task";

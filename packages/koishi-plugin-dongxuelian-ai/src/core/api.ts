@@ -20,6 +20,7 @@ const path = require('path')
 const fs = require('fs')
 const http = require('http') as typeof import('http')
 const https = require('https') as typeof import('https')
+const { createHash } = require('crypto') as typeof import('crypto')
 
 const MAX_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_IMAGE_BYTES, 4 * 1024 * 1024, 128 * 1024, 16 * 1024 * 1024)
 const MAX_REMOTE_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_REMOTE_IMAGE_BYTES, MAX_IMAGE_BYTES, 128 * 1024, 16 * 1024 * 1024)
@@ -49,9 +50,44 @@ interface RequestExtraBody {
   _thinkingManaged?: boolean
   _explicitThinkingKeys?: string[]
   signal?: AbortSignal
-  _onRequestAttempt?: () => void
+  _frozenRoute?: FrozenChatRoute
+  _frozenRouteStartStepIndex?: number
+  _onRequestAttempt?: (step: ChatExecutionStep) => void
+  _onRequestExecution?: (execution: ChatExecutionMetadata) => void
   _onRequestUsage?: (usage: { readable: boolean; promptTokens: number; completionTokens: number; totalTokens: number }) => void
+  _structuredOutput?: StructuredOutputOptions
   [key: string]: unknown
+}
+
+type StructuredOutputOptions = { version: 1; thinkingBudget: 0 | 1024 } & (
+  { format: 'schema'; schema: Record<string, unknown> } | { format: 'object'; schema?: never }
+)
+
+interface FrozenChatRoute {
+  version: 1
+  capability: string
+  identity: string
+  routeRevision: string
+  steps: ReadonlyArray<Readonly<ApiConfig>>
+}
+
+interface ChatExecutionStep {
+  routeIdentity: string | null
+  routeRevision: string | null
+  stepIndex: number
+  priorityIndex: number
+  provider: string
+  model: string
+  protocol: string
+  configurationIdentity: string
+}
+
+interface ChatExecutionMetadata extends ChatExecutionStep {
+  modelVersion: null
+  modelVersionReadable: false
+  finishReason: string | null
+  finishReasonReadable: boolean
+  usage: { readable: boolean; promptTokens: number; completionTokens: number; totalTokens: number }
 }
 
 interface ToolDefinition {
@@ -377,6 +413,7 @@ interface ProtocolAttemptResult {
   result: ChatCompletionResult
   usage?: UsageDetails
   usageReadable: boolean
+  finishReason?: string
 }
 
 class CapabilityUpstreamError extends Error {
@@ -392,6 +429,11 @@ class CapabilityUpstreamError extends Error {
     this.retryable = retryable
     this.status = status
   }
+}
+
+// 仅透传程序已分类的上游错误元数据；不读取正文、认证内容或猜测额度含义。
+function getChatFailureMetadata(error: unknown): { code: string; status: number; retryable: boolean } | null {
+  return error instanceof CapabilityUpstreamError ? { code: error.code, status: error.status, retryable: error.retryable } : null
 }
 
 // 仅复制允许进入上游请求体的参数，并对温度做数值边界校验。
@@ -556,14 +598,45 @@ function buildGeminiMessages(messages: ChatMessage[]): { systemInstruction?: Rec
   return { ...(systemParts.length ? { systemInstruction: { parts: systemParts } } : {}), contents }
 }
 
+// 只为已真实核实的节点组装原生JSON参数；调用前快照化Schema，不猜其他协议的能力。
+function prepareStructuredRequest(option: StructuredOutputOptions, config: ApiConfig,
+  filtered: Record<string, unknown>, messages: ChatMessage[]): Record<string, unknown> {
+  if (!isRecord(option) || option.version !== 1 || !['schema', 'object'].includes(option.format)
+    || ![0, 1024].includes(option.thinkingBudget)
+    || Object.keys(option).some(key => !['version', 'format', 'schema', 'thinkingBudget'].includes(key))) {
+    throw new Error('原生结构化输出选项契约无效')
+  }
+  const protocol = config.chatProtocol || getProviderCatalogEntry(config.provider)?.chatProtocol || 'openai-chat'
+  if (protocol !== 'openai-chat' || String(config.baseURL).replace(/\/+$/, '') !== 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    || !['qwen3.7-flash', 'qwen3.7-plus'].includes(config.model)) {
+    throw new Error('原生结构化输出仅核实DashScope的qwen3.7-flash和qwen3.7-plus')
+  }
+  if (option.format === 'schema' && !isRecord(option.schema)) throw new Error('原生结构化输出缺少当前单元Schema')
+  if (option.format === 'object' && (option.schema !== undefined
+    || !messages.some(message => typeof message.content === 'string' && /json/i.test(message.content)))) {
+    throw new Error('JSON Object仅接受无Schema且明确包含JSON说明的请求')
+  }
+  const result = { ...filtered, _nativeStructuredOutput: true, enable_thinking: option.thinkingBudget > 0 } as Record<string, unknown>
+  // 原生契约省略输出token限制；字数、调用额度和原截止由业务严格限制。
+  delete result.max_tokens
+  delete result.thinking
+  delete result.thinking_budget
+  if (option.thinkingBudget) result.thinking_budget = option.thinkingBudget
+  result.response_format = option.format === 'schema'
+    ? { type: 'json_schema', json_schema: { name: 'daily_report', strict: true, schema: JSON.parse(JSON.stringify(option.schema)) } }
+    : { type: 'json_object' }
+  return result
+}
+
 // 调用 OpenAI 兼容 Chat Completions 并规范为统一结果。
 async function requestOpenAiChatAttempt(messages: ChatMessage[], config: ApiConfig, filtered: Record<string, unknown>, tools: ToolDefinition[] | null, signal: AbortSignal): Promise<ProtocolAttemptResult> {
-  const { _thinkingEnabled, ...requestFields } = filtered
+  const { _thinkingEnabled, _nativeStructuredOutput, ...requestFields } = filtered
   const response = await fetch(String(config.baseURL).replace(/\/+$/, '') + '/chat/completions', {
     method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
     body: JSON.stringify({
-      model: config.model, temperature: 0.9, max_tokens: filtered.max_tokens || 1500,
+      model: config.model, temperature: 0.9,
+      ...(_nativeStructuredOutput ? {} : { max_tokens: filtered.max_tokens || 1500 }),
       ...buildManagedThinkingArgs(config, !!_thinkingEnabled),
       ...requestFields, messages: normalizeMessagesForProvider(messages, config),
       ...(tools?.length ? { tools, tool_choice: 'auto' } : {}),
@@ -574,15 +647,18 @@ async function requestOpenAiChatAttempt(messages: ChatMessage[], config: ApiConf
   const choices = Array.isArray(data.choices) ? data.choices : []
   const first = isRecord(choices[0]) ? choices[0] : {}
   const message = isRecord(first.message) ? first.message : {}
+  // 只读取已核实的Chat Completions结束字段；缺失时不推断成功结束。
+  const finishReason = typeof first.finish_reason === 'string' && first.finish_reason.length ? first.finish_reason : undefined
   const reasoning = String(message.reasoning_content || '')
   const usage = isRecord(data.usage) ? data.usage as UsageDetails : undefined
   if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
-    return { result: { type: 'tool_calls', tool_calls: message.tool_calls, message, reasoning }, usage, usageReadable: hasReadableTokenUsage(usage) }
+    return { result: { type: 'tool_calls', tool_calls: message.tool_calls, message, reasoning }, usage, usageReadable: hasReadableTokenUsage(usage), finishReason }
   }
   let content = extractMessageText(message.content)
-  if (/<think>[\s\S]*?<\/think>/i.test(content)) content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+  // 原生JSON内的空白与标签可能属于原话，禁止按普通聊天整理而改写字符串值。
+  if (!_nativeStructuredOutput && /<think>[\s\S]*?<\/think>/i.test(content)) content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
   if (!content) throw new CapabilityUpstreamError('AI 上游返回空结果', 'EMPTY_RESPONSE', true)
-  return { result: { type: 'text', content: content.replace(/\s+/g, ' ').trim(), reasoning }, usage, usageReadable: hasReadableTokenUsage(usage) }
+  return { result: { type: 'text', content: _nativeStructuredOutput ? content.trim() : content.replace(/\s+/g, ' ').trim(), reasoning }, usage, usageReadable: hasReadableTokenUsage(usage), finishReason }
 }
 
 // 调用 Anthropic Messages 并把 text/tool_use 结果转换为统一格式。
@@ -667,20 +743,30 @@ function getUsageTotal(usage: UsageDetails | undefined): number {
       + usageNumber(usage.completion_tokens || usage.output_tokens || usage.completionTokens || usage.outputTokens)
 }
 
-// 严格从能力优先级第一项开始请求，只在规定错误条件下通知并进入下一项。
+// 普通请求从首项开始；明确冻结的结构恢复可从该链的指定节点开始，实际身份仍为完整链。
 async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig, extraBody: RequestExtraBody = {}, tools: ToolDefinition[] | null = null): Promise<ChatCompletionResult> {
   const managedCapability = isAiCapability(config.capability) ? config.capability : null
-  const capability = managedCapability || 'text'
-  const attempts: ApiConfig[] = managedCapability
+  const frozen = extraBody._frozenRoute
+  if (frozen && (frozen.version !== 1 || (managedCapability && frozen.capability !== managedCapability))) throw new Error('冻结模型路由契约或能力不匹配')
+  const capability = frozen?.capability || managedCapability || 'text'
+  const attempts: ReadonlyArray<Readonly<ApiConfig>> = frozen ? frozen.steps : managedCapability
     ? resolveCapabilityRuntimeSteps(managedCapability).map(step => ({ ...step, searchEnabled: config.searchEnabled }))
     : [{ ...config, capability }]
   if (!attempts.length) throw new Error('该能力未配置模型')
+  const startIndex = extraBody._frozenRouteStartStepIndex ?? 0
+  if (!Number.isInteger(startIndex) || startIndex < 0 || startIndex >= attempts.length || (startIndex !== 0 && !frozen)) {
+    throw new Error('冻结模型恢复起始节点无效')
+  }
   const filtered = buildFilteredExtraBody(extraBody)
   filtered._thinkingEnabled = extraBody._thinkingEnabled
+  if (extraBody._structuredOutput !== undefined && (!frozen || tools?.length)) throw new Error('原生结构化输出需要冻结路由且不支持工具组合')
+  // 所有可能执行的节点在提交前核实；备用配置未知时不能先消耗一次请求再猜兼容。
+  const structuredFields = extraBody._structuredOutput !== undefined
+    ? attempts.map((attempt, index) => index < startIndex ? filtered : prepareStructuredRequest(extraBody._structuredOutput!, attempt, filtered, messages)) : null
   const externalSignal = extraBody.signal && typeof extraBody.signal === 'object' ? extraBody.signal : null
   const requestedTimeout = Number(extraBody._timeoutMs)
 
-  for (let index = 0; index < attempts.length; index += 1) {
+  for (let index = startIndex; index < attempts.length; index += 1) {
     const attempt = attempts[index]
     const controller = new AbortController()
     const timeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
@@ -700,9 +786,12 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
     let protocolCompleted = false
     try {
       if (controller.signal.aborted) throw new Error('AI 请求在提交前已取消')
-      extraBody._onRequestAttempt?.()
+      const execution: ChatExecutionStep = { routeIdentity: frozen?.identity || null, routeRevision: frozen?.routeRevision || null,
+        stepIndex: index, priorityIndex: attempt.priorityIndex ?? index, provider: attempt.provider || 'unknown', model: attempt.model,
+        protocol: attempt.chatProtocol || getProviderCatalogEntry(attempt.provider)?.chatProtocol || 'openai-chat', configurationIdentity: chatStepIdentity(attempt, true) }
+      extraBody._onRequestAttempt?.(execution)
       protocolStarted = true
-      const response = await requestProtocolAttempt(messages, attempt, filtered, tools, controller.signal)
+      const response = await requestProtocolAttempt(messages, attempt, structuredFields?.[index] || filtered, tools, controller.signal)
       protocolCompleted = true
       recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(response.usage), {
         capability,
@@ -712,6 +801,10 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
       })
       const usage = readUsageDetails(response.usage)
       extraBody._onRequestUsage?.({ readable: response.usageReadable, promptTokens: usage.input, completionTokens: usage.output, totalTokens: getUsageTotal(response.usage) })
+      // 当前协议适配器没有可验证的权重版本契约；不把配置名称冒充精确模型版本。
+      extraBody._onRequestExecution?.({ ...execution, modelVersion: null, modelVersionReadable: false,
+        finishReason: response.finishReason ?? null, finishReasonReadable: response.finishReason !== undefined,
+        usage: { readable: response.usageReadable, promptTokens: usage.input, completionTokens: usage.output, totalTokens: getUsageTotal(response.usage) } })
       return response.result
     } catch (error) {
       // 诊断回调失败不是供应商故障，不能触发备用模型或管理员上游告警。
@@ -754,6 +847,29 @@ async function requestOpenAIResponsesWithSearch(messages: ChatMessage[], config:
     })
     return extractResponsesText(data)
   } finally { clearTimeout(timer) }
+}
+
+// 对已经核实的实际节点计算配置身份；凭据只参与摘要，不暴露正文。
+function chatStepIdentity(step: ApiConfig, includeCredential: boolean): string {
+  const protocol = step.chatProtocol || getProviderCatalogEntry(step.provider)?.chatProtocol || 'openai-chat'
+  return createHash('sha256').update(JSON.stringify({ provider: step.provider || 'unknown', model: step.model,
+    baseURL: step.baseURL, protocol, capability: step.capability || 'text', priorityIndex: step.priorityIndex ?? 0,
+    searchEnabled: !!step.searchEnabled, ...(includeCredential ? { credentialIdentity: createHash('sha256').update(step.apiKey).digest('hex') } : {}) })).digest('hex')
+}
+
+// 一次解析或显式指定并冻结真实节点；凭据仅供服务端请求，不可序列化到诊断。
+function freezeChatRoute(config: ApiConfig, explicitSteps?: readonly ApiConfig[]): FrozenChatRoute {
+  const capability = isAiCapability(config.capability) ? config.capability : 'text'
+  if (explicitSteps !== undefined && !Array.isArray(explicitSteps)) throw new Error('显式冻结节点必须为配置数组')
+  const steps = (explicitSteps !== undefined ? explicitSteps.map((step, priorityIndex) => ({ ...step, capability, priorityIndex })) : isAiCapability(config.capability)
+    ? resolveCapabilityRuntimeSteps(config.capability).map(step => ({ ...step, searchEnabled: config.searchEnabled }))
+    : [{ ...config, capability }]).map(step => Object.freeze({ ...step,
+      chatProtocol: step.chatProtocol || getProviderCatalogEntry(step.provider)?.chatProtocol || 'openai-chat' }))
+  if (!steps.length) throw new Error('该能力未配置模型')
+  const routeRevision = createHash('sha256').update(JSON.stringify(steps.map(step => chatStepIdentity(step, false)))).digest('hex')
+  const identity = createHash('sha256').update(JSON.stringify({ version: 1, capability, routeRevision,
+    steps: steps.map(step => chatStepIdentity(step, true)) })).digest('hex')
+  return Object.freeze({ version: 1, capability, identity, routeRevision, steps: Object.freeze(steps) })
 }
 
 // 返回当前能力链中相对当前步骤的后继项；不重试原模型，也不读取旧三链。
@@ -994,7 +1110,7 @@ function isVisionModel(provider: string, modelId: string): boolean {
 }
 
 export = {
-  requestChatCompletions, normalizeMessagesForProvider, buildResponsesInput, extractResponsesText,
+  requestChatCompletions, freezeChatRoute, getChatFailureMetadata, normalizeMessagesForProvider, buildResponsesInput, extractResponsesText,
   requestOpenAIResponsesWithSearch,
   buildFallbackConfig, getFallbackSteps,
   callGetImage, callGetFile, callGetRecord, callGetForwardMsg, sendForwardMsg, getGroupMemberInfo, getGroupInfo,

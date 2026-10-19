@@ -19,8 +19,59 @@ function runInputScenario(label, script, check, env = {}) {
   }
 }
 
-// 校验三类核心输入场景，并交给插件测试入口汇总结果。
+// 校验固定窗口、保存保护与回复元数据场景，交给插件测试入口汇总。
 function runReportInputTests(check) {
+  runInputScenario('真实聊天回复标识贯通索引，历史未知与同昵称身份保持', String.raw`
+const assert = require('assert')
+const fs = require('fs')
+const path = require('path')
+const management = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
+const NativeDate = Date
+const fixedNow = Date.parse('2026-10-01T12:00:00+08:00')
+// 固定自然日与业务日，避免测试执行时恰在凌晨四点边界。
+global.Date = class extends NativeDate {
+  constructor(...args) { super(...(args.length ? args : [fixedNow])) }
+  static now() { return fixedNow }
+}
+const records = management.loadManagementModule('daily.reportRecords')
+const periodApi = management.loadManagementModule('daily.reportPeriod')
+const constants = management.loadManagementModule('core.constants')
+const index = require('koishi-plugin-dongxuelian-ai/lib/daily-precompute/precompute-index')
+const conversation = require('koishi-plugin-dongxuelian-ai/lib/conversation')
+const collector = require('koishi-plugin-daily-report/lib/data-collector')
+fs.mkdirSync(path.dirname(constants.SUMMARY_WHITELIST_FILE), { recursive: true })
+fs.writeFileSync(constants.SUMMARY_WHITELIST_FILE, JSON.stringify(['reply-channel']))
+conversation.saveSharedChannelTurn({ guildId: 'reply-channel', userId: 'member-a' }, '同名', '发布版本甲', 'user', { messageId: 'parent' })
+conversation.saveSharedChannelTurn({ guildId: 'reply-channel', userId: 'member-b' }, '同名', '我选版本乙', 'user', { messageId: 'child', replyToId: 'parent' })
+const period = periodApi.createReportPeriod(Date.now())
+const data = collector.collectReportData('reply-channel', period)
+assert.equal(data.messages.length, 2)
+assert.deepEqual(data.messages.map(item => item.userId), ['member-a', 'member-b'])
+assert.equal(data.messages[0].user, data.messages[1].user)
+assert.equal(Object.hasOwn(data.messages[0], 'replyToId'), false)
+assert.equal(data.messages[1].replyToId, 'parent')
+assert.equal(data.messages[1].realMessageId, true)
+assert.equal(index.readPrecomputeIndex(period.reportDate, 'reply-channel')[1].replyToId, 'parent')
+const file = records.getReportIndexFile(period.reportDate, 'legacy-reply')
+fs.writeFileSync(file, JSON.stringify({ messageId: 'msg-1', timestamp: period.periodStartMs + 1, text: '历史正文', userId: 'old', userName: '旧名', media: [] }) + '\n')
+const legacy = collector.collectReportData('legacy-reply', period)
+assert.equal(legacy.sourceCompleteness, 'legacy_unknown')
+assert.equal(Object.hasOwn(legacy.messages[0], 'replyToId'), false)
+assert.equal(Object.hasOwn(legacy.messages[0], 'realMessageId'), false)
+const generated = records.appendReportRecord(period.reportDate, 'generated', { timestamp: period.periodStartMs + 2, text: '未提供消息标识', replyToId: 'external-parent' })
+assert.equal(generated.realMessageId, false)
+assert.equal(collector.collectReportData('generated', period).messages[0].replyToId, 'external-parent')
+// 非法字段在写入前拒绝，损坏旧文件也不能通过读取器冒充有效输入。
+for (const replyToId of [1, '', ' ', null]) {
+  assert.throws(() => index.appendPrecomputeIndex({ date: period.reportDate, channelKey: 'invalid-reply', timestamp: period.periodStartMs + 3, text: '正文', replyToId }), /回复标识无效/)
+  assert.equal(fs.existsSync(records.getReportIndexFile(period.reportDate, 'invalid-reply')), false)
+  fs.writeFileSync(file, JSON.stringify({ ...generated, replyToId }) + '\n')
+  assert.throws(() => collector.collectReportData('legacy-reply', period), /回复标识无效/)
+  assert.deepEqual(index.readPrecomputeIndex(period.reportDate, 'legacy-reply'), [])
+}
+console.log('reply source contracts checked')
+`, check)
+
   runInputScenario('四点边界、跨午夜窗口、固定截止与旧任务补齐', String.raw`
 const assert = require('assert')
 const period = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime').loadManagementModule('daily.reportPeriod')

@@ -13,6 +13,7 @@ const { listActiveDailyReportTasks } = taskStore
 
 export interface ReportRecord extends Record<string, unknown> {
   messageId: string
+  replyToId?: string
   timestamp: number
   userId: string
   userName: string
@@ -26,6 +27,7 @@ export interface ReportRecord extends Record<string, unknown> {
 
 export interface ReportRecordInput {
   messageId?: string
+  replyToId?: string
   timestamp: number
   userId?: string
   userName?: string
@@ -92,6 +94,7 @@ function recordIntegrityLoss(file: string, timestamp: number): void {
 // 保存完整可用正文，超限时保存明确不完整记录供选入后判失败。
 export function appendReportRecord(date: string, channelKey: string, input: ReportRecordInput): ReportRecord {
   if (!Number.isSafeInteger(input.timestamp) || input.timestamp <= 0) throw new Error('日报源记录时间戳无效')
+  if (input.replyToId !== undefined && (typeof input.replyToId !== 'string' || !input.replyToId.trim())) throw new Error('日报源记录回复标识无效')
   const text = String(input.text || '')
   const media = input.media || []
   const bodyComplete = Buffer.byteLength(text, 'utf8') <= MAX_BODY_BYTES
@@ -99,6 +102,7 @@ export function appendReportRecord(date: string, channelKey: string, input: Repo
     recordVersion: 2,
     messageId: input.messageId || `generated-${randomUUID()}`,
     realMessageId: Boolean(input.messageId),
+    ...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
     timestamp: input.timestamp,
     userId: input.userId || '',
     userName: input.userName || '',
@@ -170,6 +174,7 @@ function parseReportRecord(line: string, lineNumber: number): ReportRecord {
   if (record.recordVersion !== undefined && (record.recordVersion !== 2 || typeof record.bodyComplete !== 'boolean' || typeof record.realMessageId !== 'boolean')) {
     throw new Error(`日报原始记录第${lineNumber}行版本或完整性无效`)
   }
+  if (record.replyToId !== undefined && (typeof record.replyToId !== 'string' || !record.replyToId.trim())) throw new Error(`日报原始记录第${lineNumber}行回复标识无效`)
   return record
 }
 

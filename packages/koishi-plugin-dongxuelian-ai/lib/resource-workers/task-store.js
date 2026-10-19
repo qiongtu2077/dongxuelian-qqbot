@@ -6,6 +6,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { isFixedReportExecutionKind } = require('../resource-common/resource-task-kinds');
 const { appendJsonlEvent, ensureDir, listJsonFiles, nowIso, readJsonFile, removePath, renameFileAtomic, sanitizeId, writeJsonAtomic, } = require('../resource-common/files');
 const { redactSensitiveData, redactSensitiveText } = require('../core/redactor');
 const { ReportAnalysisError, createReportAnalysisDiagnostics, isReportTotalTimeoutError, sanitizeReportAnalysisDiagnostics, sanitizeReportDiagnosticText } = require('../daily-precompute/report-analysis');
@@ -182,7 +183,7 @@ function listResourceTasksForDiagnostics() {
     tasks.sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
     return tasks;
 }
-// 完整枚举活动日报用于删除保护；读取失败、非法DTO和链接不能被当成无任务。
+// 完整枚举活动日报及预分析用于删除保护；读取失败、非法DTO和链接不能被当成无任务。
 function listActiveDailyReportTasks() {
     ensureTaskDirs();
     const tasks = [];
@@ -204,7 +205,7 @@ function listActiveDailyReportTasks() {
                 if (!task || task.status !== status || entry.name !== `${sanitizeId(task.id)}.json`
                     || path.resolve(file) !== path.resolve(getTaskFile(status, task.kind, task.id)))
                     throw new Error('日报维护活动任务记录损坏或位置不一致，已停止清理');
-                if (task.kind === 'daily_report')
+                if (isFixedReportExecutionKind(task.kind))
                     tasks.push(task);
             }
         };
@@ -417,6 +418,7 @@ function getResourceTaskByIdForKind(taskId, kind, statuses) {
     }
     return null;
 }
+// 迁移前校验当前状态副本；日报执行态还必须匹配原领取，旧执行不得覆盖新领取。
 function prepareTaskTransition(task, targetStatus) {
     const targetFile = getTaskFile(targetStatus, task.kind, task.id);
     const knownFile = getTaskFile(task.status, task.kind, task.id);
@@ -424,6 +426,11 @@ function prepareTaskTransition(task, targetStatus) {
         return null;
     if (hasHigherRankTaskCopy(task))
         return null;
+    if (isFixedReportExecutionKind(task.kind) && ['claiming', 'running'].includes(task.status)) {
+        const current = readTaskFile(knownFile);
+        if (!current || current.claimedBy !== task.claimedBy || current.claimedAt !== task.claimedAt || current.startedAt !== task.startedAt)
+            return null;
+    }
     if (task.status === targetStatus)
         return { file: targetFile };
     if (fs.existsSync(knownFile)) {
@@ -591,7 +598,7 @@ function deferTask(task, reason = 'deferred') {
     writeWorkerEvent('task_deferred', { taskId: next.id, kind: next.kind, reason: safeReason });
     return next;
 }
-// 将 claiming/running/deferred 任务放回 S2 pending 队列。
+// 将任务放回 S2 pending 队列；已运行日报继续使用原始起点。
 function requeueTask(task, reason = 'requeued') {
     const pendingFile = getTaskFile('pending', task.kind, task.id);
     const safeReason = redactSensitiveText(reason);
@@ -603,7 +610,8 @@ function requeueTask(task, reason = 'requeued') {
         requeueReason: safeReason,
         claimedBy: undefined,
         claimedAt: undefined,
-        startedAt: undefined,
+        // 同任务的资源等待和恢复不得重新获得前台十分钟或后台九十秒预算。
+        startedAt: isFixedReportExecutionKind(task.kind) ? task.startedAt : undefined,
         finishedAt: undefined,
         error: undefined,
         retryAfter: undefined,
@@ -780,13 +788,16 @@ function listWorkerStates() {
     }
     return states;
 }
-// Bot 启动时将已领取或正在执行的 S2 任务标为已取消，并清除旧 worker 状态。
+// 启动取消已领取/运行任务及曾运行后等待的日报，保留从未运行的队列。
 function discardInterruptedResourceTaskState(reason = 'restart_discarded') {
     ensureTaskDirs();
     const safeReason = redactSensitiveText(reason) || 'restart_discarded';
     let cancelled = 0;
-    for (const status of ['claiming', 'running']) {
+    for (const status of ['claiming', 'running', 'pending', 'deferred']) {
         for (const task of scanTasksByStatus(status, 20000)) {
+            // 日报保留过起点就属于旧执行，不能借 pending/deferred 跨重启复活。
+            if ((status === 'pending' || status === 'deferred') && (!isFixedReportExecutionKind(task.kind) || !task.startedAt))
+                continue;
             const target = prepareTaskTransition(task, 'cancelled');
             if (!target)
                 continue;

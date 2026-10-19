@@ -39,6 +39,24 @@ async function runCoreContracts(context) {
 
   section('4. syntax and duplicate function scan')
   const syntaxFiles = [
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-evidence.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-candidates.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-exchange.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-reading.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-topics.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-outputs.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-runner.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-model.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-storage.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-snapshots.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-bindings.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-batch-catalog.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-classification-cache.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-cache-provenance.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-stage-bindings.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-stage-cache.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-request-pool.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-progress.js'),
     path.resolve(LIB, '../../koishi-plugin-group-name-at/lib/scope-schema.js'),
     path.join(LIB, 'index.js'),
     path.join(LIB, 'handler.js'),
@@ -202,6 +220,18 @@ async function runCoreContracts(context) {
   duplicateScanFiles.push('commands/essence-command.js', '../../koishi-plugin-group-name-at/lib/scope-schema.js')
   duplicateScanFiles.push('daily-precompute/report-period.js', 'daily-precompute/report-records.js')
   duplicateScanFiles.push('daily-precompute/report-analysis.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-evidence.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-candidates.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-exchange.js', '../../koishi-plugin-daily-report/lib/report-reading.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-topics.js', '../../koishi-plugin-daily-report/lib/report-outputs.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-runner.js', '../../koishi-plugin-daily-report/lib/report-model.js', '../../koishi-plugin-daily-report/lib/report-request-pool.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-progress.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-storage.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-snapshots.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-bindings.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-batch-catalog.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-classification-cache.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-cache-provenance.js', '../../koishi-plugin-daily-report/lib/report-stage-bindings.js', '../../koishi-plugin-daily-report/lib/report-stage-cache.js')
   for (const file of duplicateScanFiles) {
     const src = read(path.join(LIB, file))
     const matches = src.matchAll(/(?:^(?:async\s+)?function\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:function|\([^)]*\)\s*=>))/gm)

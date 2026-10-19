@@ -5,12 +5,13 @@
  */
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
 const { loadConfig } = loadManagementModule('core.runtimeConfig')
-const { requestChatCompletions } = loadManagementModule('core.api')
+const { requestChatCompletions, freezeChatRoute } = loadManagementModule('core.api')
 const { createDefaultAnalysisResult, createTopic, createGoldenQuote, createUserTitle } = require('./models') as typeof import('./models')
 const { getErrorMessage } = require('./error-utils') as typeof import('./error-utils')
+const { redactSensitiveText } = loadManagementModule('core.redactor')
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
 const { createReportAnalysisDiagnostics, ReportAnalysisError } = loadManagementModule('daily.reportAnalysis')
-const { summarizeCompleteInput, selectRepresentativeMessages, requestAnalysisUnit, createDigestExchange, readExchange, parseExchangeRecords, assertExchangeFields, assertExchangeRef, exchangeInstructions } = require('./complete-input') as typeof import('./complete-input')
+const { summarizeCompleteInput, packInputBatches, selectRepresentativeMessages, requestAnalysisUnit, createDigestExchange, readExchange, parseExchangeRecords, assertExchangeFields, assertExchangeRef, exchangeInstructions } = require('./complete-input') as typeof import('./complete-input')
 type AnalysisRuntime = import('./complete-input').AnalysisRuntime
 type SharedSummary = Awaited<ReturnType<typeof summarizeCompleteInput>>
 
@@ -21,6 +22,9 @@ interface AnalysisOptions {
   signal?: AbortSignal
   now?: () => number
   onProgress?: AnalysisRuntime['onProgress']
+  onUnitCompleted?: AnalysisRuntime['onUnitCompleted']
+  onUnitFailed?: AnalysisRuntime['onUnitFailed']
+  maxRequestCount?: number
 }
 
 interface ReportMessage {
@@ -162,13 +166,14 @@ function getTopMembers(data: ReportData | null | undefined): TopMember[] {
 // --- AI call helpers --- #
 
 // Calls the shared AI API with report-specific temperature and timeout options.
-async function callAI(systemPrompt: string, userMessage: string, maxTokens = 1500, extraBody: Record<string, unknown> = {}): Promise<string> {
-  const config = await loadConfig()
+async function callAI(config: Awaited<ReturnType<typeof loadConfig>>, route: ReturnType<typeof freezeChatRoute>,
+  systemPrompt: string, userMessage: string, maxTokens = 1500, extraBody: Record<string, unknown> = {}): Promise<string> {
   const result = await requestChatCompletions([
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userMessage },
   ], config, {
     ...extraBody,
+    _frozenRoute: route,
     max_tokens: maxTokens,
     temperature: extraBody.temperature !== undefined ? extraBody.temperature : REPORT_AI_TEMPERATURE,
   })
@@ -681,12 +686,19 @@ async function analyzeWithAI(data: ReportData, full = false, options: AnalysisOp
     reportPeriod: data.reportPeriod, periodBackfilled: data.periodBackfilled,
   })
   const now = options.now || Date.now
-  const runtime: AnalysisRuntime = { deadlineMs: options.deadlineMs ?? now() + 600000, signal: options.signal, now,
-    workDeadlineMs: options.workDeadlineMs, stageSoftDeadlinesMs: options.stageSoftDeadlinesMs,
-    onProgress: options.onProgress, topicRange: { min: full ? 5 : 1, max: full ? 10 : 5 }, request: callAI }
+  const deadlineMs = options.deadlineMs ?? now() + 600000
   try {
-    if (runtime.signal?.aborted) throw runtime.signal.reason || new Error('日报任务已取消')
+    if (options.signal?.aborted) throw options.signal.reason || new Error('日报任务已取消')
     if (meta.sourceCompleteness === 'incomplete') throw new ReportAnalysisError('日报原始记录不完整', 'generation_failed', 'collecting', meta)
+    const config = await loadConfig()
+    const route = freezeChatRoute(config)
+    const runtime: AnalysisRuntime = { deadlineMs, signal: options.signal, now,
+      workDeadlineMs: options.workDeadlineMs, stageSoftDeadlinesMs: options.stageSoftDeadlinesMs,
+      onProgress: options.onProgress, onUnitCompleted: options.onUnitCompleted, onUnitFailed: options.onUnitFailed,
+      // 最多2N个初始节点、2N-1次合并，每单元两轮；主备每次实际提交逐项扣账。
+      maxRequestCount: options.maxRequestCount ?? (6 * packInputBatches(messages).length + 4) * route.steps.length,
+      recoveryStepIndex: execution => execution ? Math.min(execution.stepIndex + 1, route.steps.length - 1) : undefined,
+      topicRange: { min: full ? 5 : 1, max: full ? 10 : 5 }, request: (system, input, tokens, extra) => callAI(config, route, system, input, tokens, extra) }
     const summary = await measureAnalysisStage('summary_and_merge', meta, runtime, () => summarizeCompleteInput(messages, meta, runtime))
     const result = createDefaultAnalysisResult() as AnalysisResult
     if (full) {
@@ -713,10 +725,12 @@ async function analyzeWithAI(data: ReportData, full = false, options: AnalysisOp
     runtime.onProgress?.(meta)
     return result
   } catch (error) {
-    if (runtime.signal?.aborted) throw runtime.signal.reason || error
+    if (options.signal?.aborted) throw options.signal.reason || error
     const failure = error instanceof ReportAnalysisError ? error :
-      new ReportAnalysisError(getErrorMessage(error), now() >= runtime.deadlineMs ? 'total_timeout' : 'generation_failed', 'analysis', meta)
-    runtime.onProgress?.(meta)
+      new ReportAnalysisError(getErrorMessage(error), now() >= deadlineMs ? 'total_timeout' : 'generation_failed', 'analysis', meta)
+    try { options.onProgress?.(meta) } catch (progressError) {
+      meta.warnings.push('失败进度保存失败：' + redactSensitiveText(getErrorMessage(progressError)))
+    }
     throw failure
   }
 }

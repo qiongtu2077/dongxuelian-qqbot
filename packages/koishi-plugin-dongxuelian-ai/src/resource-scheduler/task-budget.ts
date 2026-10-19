@@ -40,6 +40,10 @@ interface TaskBudget extends TaskBudgetInput {
 }
 
 const DEFAULT_BUDGETS: Record<string, Partial<TaskBudget>> = {
+  [RESOURCE_TASK_KIND.DAILY_REPORT_PREANALYSIS]: {
+    exclusive: true, priority: 99, minMemMb: 400, degradable: false, deferable: true,
+    fallbacks: [], queueTimeoutMs: 90000, runTimeoutMs: 90000,
+  },
   [RESOURCE_TASK_KIND.DAILY_REPORT]: {
     exclusive: true,
     priority: 20,

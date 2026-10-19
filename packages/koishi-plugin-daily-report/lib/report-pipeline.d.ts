@@ -1,3 +1,4 @@
+declare const getReportEmptyStates: typeof import('./models').getReportEmptyStates;
 declare const createReportPeriod: typeof import("koishi-plugin-dongxuelian-ai/lib/daily-precompute/report-period").createReportPeriod;
 interface DailyReportPipelineOptions {
     taskId?: string;
@@ -11,6 +12,8 @@ interface DailyReportPipelineOptions {
     deadlineMs?: number;
     startedAtMs?: number;
     signal?: AbortSignal;
+    assertActive?: () => void;
+    assertLease?: () => void;
     now?: () => number;
 }
 interface DailyReportPipelineResult extends Record<string, unknown> {
@@ -42,7 +45,8 @@ interface ReportDataLike {
     windowMessageCount?: number;
     reportPeriod?: ReturnType<typeof createReportPeriod>;
 }
-interface AnalysisLike {
+type ReportDisplayState = Parameters<typeof getReportEmptyStates>[0];
+interface AnalysisLike extends ReportDisplayState {
     topics?: Array<{
         title?: string;
         summary?: string;
@@ -67,7 +71,7 @@ interface AnalysisLike {
             comment?: string;
         }>;
     } | null;
-    meta?: {
+    meta?: Parameters<typeof getReportEmptyStates>[0]['meta'] & {
         warnings?: unknown;
     };
 }

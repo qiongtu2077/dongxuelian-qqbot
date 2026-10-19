@@ -244,8 +244,16 @@ function testContentSecurityPolicyAllowsPreviewAudio() {
 
 // Verifies resource status can include disk capacity and directory size details.
 function testResourceDiskUsageShape() {
-  const resourceRoutes = require('../lib/routes/resource')
-  const disk = resourceRoutes.collectDiskUsage()
+  // 隔离工作区体量，避免真实data扫描耗尽生产遍历预算后影响形状断言。
+  const workspace = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'disk-usage-fixture')
+  fs.mkdirSync(path.join(workspace, 'data'), { recursive: true })
+  fs.writeFileSync(path.join(workspace, 'data', 'sample.txt'), 'disk usage fixture')
+  const resourceModule = require.resolve('../lib/routes/resource')
+  const disk = JSON.parse(require('child_process').execFileSync(process.execPath,
+    ['-e', 'process.stdout.write(JSON.stringify(require(' + JSON.stringify(resourceModule) + ').collectDiskUsage()))'], {
+      encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, KOISHI_DIR: workspace, DONGXUELIAN_AI_DATA_DIR: path.join(workspace, 'data') },
+    }))
   assert.strictEqual(disk.ok, true)
   assert.ok(Array.isArray(disk.entries))
   assert.ok(disk.entries.length > 0)

@@ -5,13 +5,13 @@
  * 边界: 不注册 Koishi middleware，不直接处理用户消息入口。
  */
 const { admitTask } = require('../resource-scheduler/admission');
-const { RESOURCE_TASK_KIND, shouldYieldToToolActiveKind, } = require('../resource-common/resource-task-kinds');
+const { RESOURCE_TASK_KIND, shouldYieldToToolActiveKind, isFixedReportExecutionKind, } = require('../resource-common/resource-task-kinds');
 const { decideBackgroundDirective } = require('../resource-scheduler/background-directive');
 const { readResourceActivityLease } = require('../resource-scheduler/resource-activity-lease');
 const { acquireResourceGate } = require('../resource-gate/gate');
 const { checkWorkerMemoryLimit, writeProcessCleanupEvent, terminateRecordedProcessPids, } = require('../resource-system/system-protection');
-const { claimNextTask, markTaskRunning, failIsolatedClaimingTask, completeTask, failTask, deferTask, requeueTask, updateTaskStep, writeWorkerHeartbeat, } = require('./task-store');
-const { runDailyWorkerTask } = require('./daily-worker');
+const { claimNextTask, markTaskRunning, failIsolatedClaimingTask, completeTask, failTask, deferTask, requeueTask, updateTaskStep, writeWorkerHeartbeat, getResourceTaskByIdForKind, } = require('./task-store');
+const { runDailyWorkerTask, runDailyPreanalysisWorkerTask } = require('./daily-worker');
 const { runAgentWorkerTask } = require('./agent-worker');
 const { drainOneMediaTask } = require('./media-worker');
 const { runEmotionRenderWorkerTask } = require('./emotion-worker');
@@ -52,17 +52,27 @@ function updateWorkerProgress(progress, patch = {}) {
 async function runTaskWithTimeout(task) {
     const timeoutMs = resolveTaskTimeoutMs(task);
     const startedAt = Date.parse(String(task.startedAt || ''));
+    if (isFixedReportExecutionKind(task.kind) && !Number.isFinite(startedAt))
+        throw new Error('日报首次运行起点无效');
     const startedAtMs = Number.isFinite(startedAt) ? startedAt : Date.now();
     const deadlineMs = startedAtMs + timeoutMs;
     const controller = new AbortController();
+    // 保存产物前再查真实领取；重启取消或新领取不能让旧请求提交成功。
+    const assertActive = isFixedReportExecutionKind(task.kind) ? () => {
+        const current = getResourceTaskByIdForKind(task.id, task.kind);
+        if (!current || current.status !== 'running' || current.claimedBy !== task.claimedBy || current.claimedAt !== task.claimedAt || current.startedAt !== task.startedAt) {
+            throw new Error('日报任务已取消或领取已失效');
+        }
+    } : undefined;
     let timer = null;
+    let execution;
     // 已经耗尽运行时限的任务不再派发；排队创建时间不参与截止计算。
     if (Date.now() >= deadlineMs)
         throw task.kind === RESOURCE_TASK_KIND.DAILY_REPORT
             ? new ReportRuntimeTimeoutError() : new Error(`resource worker task timed out after ${timeoutMs}ms`);
     try {
         return await Promise.race([
-            executeWorkerTask(task, { deadlineMs, startedAtMs, signal: controller.signal }),
+            execution = executeWorkerTask(task, { deadlineMs, startedAtMs, signal: controller.signal, assertActive }),
             new Promise((_, reject) => {
                 timer = setTimeout(() => {
                     const error = task.kind === RESOURCE_TASK_KIND.DAILY_REPORT ? new ReportRuntimeTimeoutError() : new Error(`resource worker task timed out after ${timeoutMs}ms`);
@@ -75,6 +85,9 @@ async function runTaskWithTimeout(task) {
     finally {
         if (timer)
             clearTimeout(timer);
+        // 后台超时取消后先等实际请求清理，避免S0已交还而旧HTTP仍在途。
+        if (task.kind === RESOURCE_TASK_KIND.DAILY_REPORT_PREANALYSIS && execution)
+            await execution.catch(() => undefined);
     }
 }
 // 判断错误是否为 S8 任务超时。
@@ -138,7 +151,7 @@ function startWorkerHeartbeat(workerName, type, initialStep, progress, identity 
 // 将 worker 类型映射为 S2 任务 kind 列表。
 function getWorkerTaskKinds(type) {
     if (type === 'daily')
-        return [RESOURCE_TASK_KIND.DAILY_REPORT, RESOURCE_TASK_KIND.DAILY_SUMMARY, RESOURCE_TASK_KIND.EMOTION_RENDER];
+        return [RESOURCE_TASK_KIND.DAILY_REPORT, RESOURCE_TASK_KIND.DAILY_REPORT_PREANALYSIS, RESOURCE_TASK_KIND.DAILY_SUMMARY, RESOURCE_TASK_KIND.EMOTION_RENDER];
     if (type === 'agent') {
         return [
             RESOURCE_TASK_KIND.AGENT_TASK,
@@ -198,6 +211,8 @@ function resolveClaimKindsForToolActive(kinds, toolActive) {
 async function executeWorkerTask(task, runtime) {
     if (task.kind === RESOURCE_TASK_KIND.DAILY_REPORT)
         return await runDailyWorkerTask(task, runtime);
+    if (task.kind === RESOURCE_TASK_KIND.DAILY_REPORT_PREANALYSIS)
+        return await runDailyPreanalysisWorkerTask(task, runtime);
     if (task.kind === RESOURCE_TASK_KIND.DAILY_SUMMARY)
         return runDailySlotTask(task);
     if (task.kind === RESOURCE_TASK_KIND.EMOTION_RENDER)
@@ -348,8 +363,10 @@ async function runOneQueuedTask(options = {}, heartbeat, progress) {
     const admittedTask = applyAdmissionDecisionToTask(task, admission);
     if (!exclusive)
         return runTaskWithoutGate(admittedTask, workerName, heartbeat, progress);
-    let runningTask = markTaskRunning(admittedTask, workerName, 'waiting_lock');
-    if (runningTask.status !== 'running') {
+    // 日报与预分析领取后先等资源锁，首次实际执行才确定各自固定时限的起点。
+    const dailyReport = isFixedReportExecutionKind(admittedTask.kind);
+    let runningTask = dailyReport ? admittedTask : markTaskRunning(admittedTask, workerName, 'waiting_lock');
+    if (runningTask.status !== (dailyReport ? 'claiming' : 'running')) {
         failIsolatedClaimingTask(runningTask, new Error('task did not enter running'), { reason: 'task_did_not_enter_running' });
         if (progress) {
             updateWorkerProgress(progress, {
@@ -370,7 +387,7 @@ async function runOneQueuedTask(options = {}, heartbeat, progress) {
         if (progress) {
             updateWorkerProgress(progress, {
                 currentTaskId: task.id,
-                currentTaskStartedAt: new Date().toISOString(),
+                currentTaskStartedAt: dailyReport ? String(runningTask.startedAt || '') : new Date().toISOString(),
             });
         }
         if (heartbeat) {
@@ -390,15 +407,17 @@ async function runOneQueuedTask(options = {}, heartbeat, progress) {
             step: 'running',
         });
         gateHandle.updateStep('running');
-        if (heartbeat) {
-            if (progress)
-                heartbeat.patchProgress(progress);
-            heartbeat.setStep('running', { taskId: task.id, taskKind: task.kind });
-        }
         runningTask = markTaskRunning(runningTask, workerName, 'running');
         if (runningTask.status !== 'running') {
             failIsolatedClaimingTask(runningTask, new Error('task did not enter running'), { reason: 'task_did_not_enter_running' });
             return true;
+        }
+        if (progress && dailyReport)
+            updateWorkerProgress(progress, { currentTaskStartedAt: String(runningTask.startedAt || '') });
+        if (heartbeat) {
+            if (progress)
+                heartbeat.patchProgress(progress);
+            heartbeat.setStep('running', { taskId: task.id, taskKind: task.kind });
         }
         const result = await runTaskWithTimeout(runningTask);
         if (result && result.defer) {

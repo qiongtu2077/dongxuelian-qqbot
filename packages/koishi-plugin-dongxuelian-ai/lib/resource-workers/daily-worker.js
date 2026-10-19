@@ -8,6 +8,9 @@ const path = require('path');
 const { getTaskResultDir } = require('./task-paths');
 const { updateTaskStep, writeWorkerEvent } = require('./task-store');
 const { resolveReportPeriod } = require('../daily-precompute/report-period');
+const { listActiveDailyReportTasks } = require('./task-store');
+const { getResourceGateStatus } = require('../resource-gate/gate');
+const { decideBackgroundDirective } = require('../resource-scheduler/background-directive');
 function isMissingCandidateModule(error, candidate) {
     if (!error || typeof error !== 'object')
         return false;
@@ -69,6 +72,7 @@ async function runDailyWorkerTask(task, runtime = {}) {
         deadlineMs: runtime.deadlineMs,
         startedAtMs: runtime.startedAtMs,
         signal: runtime.signal,
+        assertActive: runtime.assertActive,
         onStep: step => updateDailyWorkerStep(task, step),
     });
     writeWorkerEvent('daily_worker_pipeline_finished', { taskId, mode: result.mode || '', reason: result.reason || '' });
@@ -78,6 +82,39 @@ async function runDailyWorkerTask(task, runtime = {}) {
         reason: String(result.reason || 'completed'),
     };
 }
+// 后台使用独立明确入口，任何缺省配置均关闭；不把重型模型请求交给统计工作器。
+async function runDailyPreanalysisWorkerTask(task, runtime) {
+    if (process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1')
+        throw new Error('日报预分析尚未启用');
+    if (task.notify?.target !== 'none')
+        throw new Error('日报预分析任务禁止结果通知');
+    if (!runtime?.assertActive || runtime.deadlineMs !== runtime.startedAtMs + 90000 || !task.id || !task.channelKey) {
+        throw new Error('日报预分析任务身份、领取或原截止无效');
+    }
+    runtime.assertActive();
+    const gate = getResourceGateStatus();
+    if (!gate.locked || !gate.meta || gate.meta.taskId !== task.id || gate.meta.kind !== 'daily_report_preanalysis'
+        || gate.meta.pid !== process.pid || !gate.meta.ticketId)
+        throw new Error('日报预分析缺少本次S0独占租约');
+    const ticketId = gate.meta.ticketId;
+    const assertLease = () => {
+        const current = getResourceGateStatus();
+        if (!current.locked || !current.meta || current.meta.taskId !== task.id || current.meta.kind !== task.kind
+            || current.meta.pid !== process.pid || current.meta.ticketId !== ticketId)
+            throw new Error('日报预分析S0独占租约已失效');
+    };
+    const hasForegroundPending = () => listActiveDailyReportTasks().some(value => value.kind === 'daily_report');
+    const directive = decideBackgroundDirective({ taskId: task.id, kind: task.kind, source: 'daily-preanalysis-worker',
+        channelKey: task.channelKey, exclusive: true, priority: 99, timeoutMs: 90000, runTimeoutMs: 90000, queueTimeoutMs: 90000 });
+    if (directive.directive.action === 'park' || hasForegroundPending())
+        return { defer: true, reason: 'daily_preanalysis_foreground_or_resource_wait' };
+    const pipeline = require(path.join(__dirname, '..', '..', '..', 'koishi-plugin-daily-report', 'lib', 'report-preanalysis'));
+    const { periodBackfilled: _periodBackfilled, ...period } = resolveReportPeriod(task.payload || {}, String(task.createdAt || ''));
+    return await pipeline.runReportPreanalysisTask({ taskId: task.id, channelKey: task.channelKey,
+        period, ...runtime,
+        assertActive: runtime.assertActive, assertLease, hasForegroundPending });
+}
 module.exports = {
     runDailyWorkerTask,
+    runDailyPreanalysisWorkerTask,
 };

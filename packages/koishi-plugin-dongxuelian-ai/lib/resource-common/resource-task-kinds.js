@@ -6,6 +6,7 @@
  */
 const RESOURCE_TASK_KIND = {
     DAILY_REPORT: 'daily_report',
+    DAILY_REPORT_PREANALYSIS: 'daily_report_preanalysis',
     DAILY_REPORT_RENDER: 'daily_report_render',
     DAILY_SUMMARY: 'daily_summary',
     AGENT_TASK: 'agent_task',
@@ -41,6 +42,7 @@ const DAILY_REPORT_KINDS = new Set([
     RESOURCE_TASK_KIND.DAILY_REPORT_RENDER,
 ]);
 const BACKGROUND_LLM_TASK_KINDS = new Set([
+    RESOURCE_TASK_KIND.DAILY_REPORT_PREANALYSIS,
     RESOURCE_TASK_KIND.CONVERSATION_SUMMARY,
     RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS,
 ]);
@@ -74,6 +76,10 @@ function isDailyReportKind(kind) {
 function isBackgroundLlmTaskKind(kind) {
     return BACKGROUND_LLM_TASK_KINDS.has(normalizeResourceTaskKind(kind));
 }
+// 日报及预分析都保留首次实际起点，并按原领取校验迟到状态迁移。
+function isFixedReportExecutionKind(kind) {
+    return kind === RESOURCE_TASK_KIND.DAILY_REPORT || kind === RESOURCE_TASK_KIND.DAILY_REPORT_PREANALYSIS;
+}
 function shouldYieldToToolActiveKind(kind) {
     const normalized = normalizeResourceTaskKind(kind);
     return normalized === RESOURCE_TASK_KIND.DAILY_SUMMARY
@@ -92,5 +98,6 @@ module.exports = {
     isChromiumTaskKind,
     isDailyReportKind,
     isBackgroundLlmTaskKind,
+    isFixedReportExecutionKind,
     shouldYieldToToolActiveKind,
 };

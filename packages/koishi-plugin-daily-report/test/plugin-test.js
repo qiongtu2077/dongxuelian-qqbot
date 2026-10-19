@@ -19,7 +19,7 @@ const AI_TASK_STORE_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-do
 const AI_CONSTANTS_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'core', 'constants.js')
 const AI_SYSTEM_PROTECTION_PATH = path.resolve(__dirname, '..', '..', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-system', 'system-protection.js')
 
-const { requestChatCompletions } = require(API_PATH)
+const { requestChatCompletions, freezeChatRoute } = require(API_PATH)
 
 let passed = 0
 let failed = 0
@@ -242,6 +242,7 @@ async function withMockedAiAnalyzer(requestImpl, runner) {
     loaded: true,
     exports: {
       requestChatCompletions: requestImpl,
+      freezeChatRoute,
     },
   }
 
@@ -558,6 +559,7 @@ async function testToolActiveRenderBlockRespectsServerMode() {
     const { generateDailyReportResult } = require(REPORT_PIPELINE_PATH)
     const result = await generateDailyReportResult({
       taskId: 'large-mode-tool-active-render',
+      assertLease() {},
       channelKey: 'large-mode-group',
       detail: true,
       outputDir,
@@ -1434,7 +1436,7 @@ async function testRenderFailureSendsTextFallback() {
           analyzeCalls += 1
           return {
             topics: [{ title: 'Topic Alpha', summary: 'Summary Alpha' }],
-            goldenQuotes: [{ sender: 'Alice', content: 'Quote Alpha', reason: 'Reason Alpha' }],
+            goldenQuotes: Array.from({ length: 5 }, (_, index) => ({ sender: 'Alice', content: 'Quote Alpha ' + (index + 1), reason: 'Reason Alpha' })),
             userTitles: [{ name: 'Alice', title: 'Title Alpha', reason: 'Portrait Alpha' }],
             qualityReview: { title: 'Review Alpha', summary: 'Quality Alpha' },
             meta: createSuccessfulAnalysisMeta(3, 3),
@@ -1460,6 +1462,7 @@ async function testRenderFailureSendsTextFallback() {
     const steps = []
     const result = await generateDailyReportResult({
       taskId: 'render-failure-test',
+      assertLease() {},
       channelKey: '123',
       detail: true,
       outputDir,
@@ -1479,6 +1482,7 @@ async function testRenderFailureSendsTextFallback() {
     check('render failure writes report.txt without image', result.imagePath === null && fs.existsSync(textPath), JSON.stringify({ imagePath: result.imagePath, textPathExists: fs.existsSync(textPath) }))
     check('render failure writes result.json as text', !!json && json.mode === 'text' && json.level === 'L2' && json.imagePath === null, JSON.stringify(json))
     check('render failure text includes AI topics', text.includes('Topic Alpha') && text.includes('Summary Alpha'), text.slice(0, 500))
+    check('render failure text preserves all five validated quotes', Array.from({ length: 5 }, (_, index) => 'Quote Alpha ' + (index + 1)).every(quote => text.includes(quote)))
     check('render failure emits pipeline steps', ['collecting', 'analyzing', 'compose_text', 'rendering', 'writing_result'].every(step => steps.includes(step)), JSON.stringify(steps))
   } finally {
     restoreModuleCache(DATA_COLLECTOR_PATH, originalDataCollectorCache)
@@ -1575,6 +1579,7 @@ async function testRenderBlockedByActiveToolLease() {
     const steps = []
     const result = await generateDailyReportResult({
       taskId: 'render-blocked-by-tool-lease',
+      assertLease() {},
       channelKey: 'lease-group',
       detail: true,
       outputDir,
@@ -1839,6 +1844,23 @@ testMiddleware('你好', '123').then(nonReport => {
   })()
 }).then(async () => {
   await require('./complete-input-test').runCompleteInputTests(check)
+  await require('./analysis-artifacts-test').runAnalysisArtifactTests(check)
+  await require('./report-storage-test').runReportStorageTests(check)
+  await require('./report-background-ledger-test').runReportBackgroundLedgerTests(check)
+  await require('./report-background-test').runReportBackgroundTests(check)
+  require('./report-bindings-test').runReportBindingTests(check)
+  await require('./report-batch-catalog-test').runReportBatchCatalogTests(check)
+  await require('./report-classification-cache-test').runReportClassificationCacheTests(check)
+  await require('./report-stage-cache-test').runReportStageCacheTests(check)
+  require('./report-evidence-test').runReportEvidenceTests(check)
+  await require('./report-candidates-test').runReportCandidateTests(check)
+  await require('./report-reading-test').runReportReadingTests(check)
+  require('./report-topics-test').runReportTopicTests(check)
+  await require('./report-outputs-test').runReportOutputTests(check)
+  await require('./report-runner-test').runReportRunnerTests(check)
+  await require('./report-model-test').runReportModelTests(check)
+  require('./report-progress-test').runReportProgressTests(check)
+  require('./report-display-test').runReportDisplayTests(check)
   await require('./analysis-entry-test').runAnalysisEntryTests(check, withMockedAiAnalyzer)
   await require('./pipeline-completeness-test').runPipelineCompletenessTests(check, withMockedAiAnalyzer)
   require('./render-runtime-test').runRenderRuntimeTests(check)

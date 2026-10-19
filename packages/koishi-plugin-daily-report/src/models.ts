@@ -2,6 +2,20 @@
  * MODULE: 数据模型定义。
  * 参考Python插件的dataclass设计。
  */
+import type { GroundedReportResult } from './report-runner'
+
+interface ReportDisplayState {
+  analysisVersion?: GroundedReportResult['analysisVersion']
+  meta?: Pick<GroundedReportResult['meta'], 'analysisState'>
+  audit?: Pick<GroundedReportResult['audit'], 'modules'>
+}
+
+const REPORT_EMPTY_STATES = Object.freeze({
+  topics: '本期未形成可总结的实质话题。',
+  quotes: '本期暂无适合展示的金句。',
+  portraits: '本期发言不足以形成有据的群友画像。',
+  review: '本期互动依据不足，暂不生成锐评。',
+})
 
 interface TokenUsage {
   promptTokens: number
@@ -45,13 +59,23 @@ interface QualityReview {
   summary: string
 }
 
-interface AnalysisResult {
+interface AnalysisResult extends ReportDisplayState {
   topics: Topic[]
   userTitles: UserTitle[]
   goldenQuotes: GoldenQuote[]
   qualityReview: QualityReview | null
   tokenUsage: TokenUsage
-  meta?: unknown
+  meta?: GroundedReportResult['meta']
+}
+
+// 只有整体成功且模块明确不足的新链结果可展示空态，旧链、失败或未知状态不能冒充不足。
+function getReportEmptyStates(analysis: ReportDisplayState): Partial<Record<keyof typeof REPORT_EMPTY_STATES, string>> {
+  const result: Partial<Record<keyof typeof REPORT_EMPTY_STATES, string>> = {}
+  if (analysis.analysisVersion !== 'grounded-report-1' || analysis.meta?.analysisState !== 'complete') return result
+  for (const module of ['topics', 'quotes', 'portraits', 'review'] as const) {
+    if (analysis.audit?.modules[module] === 'insufficient') result[module] = REPORT_EMPTY_STATES[module]
+  }
+  return result
 }
 
 /**
@@ -93,6 +117,7 @@ function createGoldenQuote(content: string, sender: string, reason: string, user
 }
 
 export = {
+  getReportEmptyStates,
   createDefaultAnalysisResult,
   createTopic,
   createUserTitle,

@@ -12,6 +12,21 @@ export interface FailedReportUnit {
   lastTimestamp: number | null
   attempts: number
   error: string
+  allowedRefs?: string[]
+  missingRefs?: string[]
+}
+
+export interface ReportEvidenceMetrics {
+  version: 1
+  selectedFragmentCount: number
+  modelSubmittedMessageCount: number; modelSubmittedFragmentCount: number
+  processedMessageCount: number; processedFragmentCount: number
+  deterministicMessageCount: number; deterministicFragmentCount: number
+  cacheHitMessageCount: number; cacheHitFragmentCount: number
+  selectedTopicMessageCount: number; selectedTopicFragmentCount: number
+  deepReadMessageCount: number; deepReadFragmentCount: number
+  displayedTopicMessageCount: number; displayedTopicFragmentCount: number
+  unprocessedMessageCount: number; processingCoverageRate: number | null
 }
 
 export interface ReportAnalysisDiagnostics {
@@ -45,6 +60,7 @@ export interface ReportAnalysisDiagnostics {
   analysisState: 'not_started' | 'processing' | 'complete' | 'failed' | 'total_timeout'
   warnings: string[]
   stages: { compression: string; basic: string; full: string }
+  evidence?: ReportEvidenceMetrics
 }
 
 export const REPORT_FAILURE_TEXT = '日报生成失败，请稍后重试，或联系Bot管理员处理'
@@ -61,6 +77,29 @@ function diagnosticCount(value: unknown): number {
   return value
 }
 
+// 新分析计数保留明确版本与独立语义；旧coverage字段不被更换含义，正文不进入公共诊断。
+function sanitizeEvidenceMetrics(value: ReportEvidenceMetrics, selected: number): ReportEvidenceMetrics {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1) throw new Error('日报证据计数版本无效')
+  const fields = ['selectedFragmentCount', 'modelSubmittedMessageCount', 'modelSubmittedFragmentCount', 'processedMessageCount', 'processedFragmentCount',
+    'deterministicMessageCount', 'deterministicFragmentCount', 'cacheHitMessageCount', 'cacheHitFragmentCount', 'selectedTopicMessageCount', 'selectedTopicFragmentCount',
+    'deepReadMessageCount', 'deepReadFragmentCount', 'displayedTopicMessageCount', 'displayedTopicFragmentCount', 'unprocessedMessageCount'] as const
+  const counts = Object.fromEntries(fields.map(field => [field, diagnosticCount(value[field])])) as Pick<ReportEvidenceMetrics, typeof fields[number]>
+  for (const field of fields) if (counts[field] > (field.endsWith('MessageCount') ? selected : counts.selectedFragmentCount)) throw new Error('日报证据计数超出固定入选范围')
+  // 这些来源计数采用“任一片段出现”的口径，原消息不能多于片段，零值必须同时成立。
+  for (const [messageField, fragmentField] of [['modelSubmittedMessageCount', 'modelSubmittedFragmentCount'],
+    ['deterministicMessageCount', 'deterministicFragmentCount'], ['cacheHitMessageCount', 'cacheHitFragmentCount'],
+    ['selectedTopicMessageCount', 'selectedTopicFragmentCount'], ['deepReadMessageCount', 'deepReadFragmentCount'],
+    ['displayedTopicMessageCount', 'displayedTopicFragmentCount']] as const) {
+    if (counts[messageField] > counts[fragmentField] || (counts[messageField] === 0) !== (counts[fragmentField] === 0)) throw new Error('日报证据原消息与片段计数不一致')
+  }
+  const rate = selected ? counts.processedMessageCount / selected * 100 : null
+  if (counts.selectedFragmentCount < selected || counts.processedMessageCount + counts.unprocessedMessageCount !== selected || value.processingCoverageRate !== rate
+    || counts.processedFragmentCount < counts.processedMessageCount || counts.deterministicFragmentCount + counts.cacheHitFragmentCount > counts.processedFragmentCount
+    || counts.displayedTopicFragmentCount > counts.deepReadFragmentCount || counts.deepReadFragmentCount > counts.selectedTopicFragmentCount
+    || counts.displayedTopicMessageCount > counts.deepReadMessageCount || counts.deepReadMessageCount > counts.selectedTopicMessageCount) throw new Error('日报证据处理/深读/展示计数不一致')
+  return { version: 1, ...counts, processingCoverageRate: rate }
+}
+
 // 按共享类型生成白名单副本，凭据同名字段和未知聊天/载荷字段均不进入输出。
 export function sanitizeReportAnalysisDiagnostics(value: unknown): ReportAnalysisDiagnostics {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('日报诊断结构无效')
@@ -70,6 +109,7 @@ export function sanitizeReportAnalysisDiagnostics(value: unknown): ReportAnalysi
     || !['not_started', 'processing', 'complete', 'failed', 'total_timeout'].includes(input.analysisState)
     || ![null, 'generation_failed', 'total_timeout'].includes(input.failureKind)) throw new Error('日报诊断规则或状态无效')
   const output = createReportAnalysisDiagnostics({ windowMessageCount: diagnosticCount(input.windowMessageCount), selectedMessageCount: diagnosticCount(input.selectedMessageCount), sourceCompleteness: input.sourceCompleteness, periodBackfilled: input.periodBackfilled })
+  if (input.evidence !== undefined) output.evidence = sanitizeEvidenceMetrics(input.evidence, output.selectedMessageCount)
   for (const field of ['excludedByLimitCount', 'submittedMessageCount', 'summarizedMessageCount', 'topicInputMessageCount', 'omittedMessageCount',
     'batchCount', 'unprocessedCount', 'mergeLevels', 'requestCount', 'reportCallCount', 'retryCount', 'inputChars', 'outputChars', 'usageReadableRequests'] as const) output[field] = diagnosticCount(input[field])
   if (input.coverageRate !== null && (typeof input.coverageRate !== 'number' || !Number.isFinite(input.coverageRate) || input.coverageRate < 0 || input.coverageRate > 100)) throw new Error('日报诊断覆盖率无效')
@@ -97,10 +137,18 @@ export function sanitizeReportAnalysisDiagnostics(value: unknown): ReportAnalysi
   if (!Array.isArray(input.failedBatches) || !Array.isArray(input.warnings)) throw new Error('日报诊断失败单元或提醒无效')
   output.failedBatches = input.failedBatches.map(unit => {
     if (!unit || typeof unit.id !== 'string' || typeof unit.stage !== 'string' || typeof unit.error !== 'string') throw new Error('日报诊断失败单元结构无效')
+    const refs: Pick<FailedReportUnit, 'allowedRefs' | 'missingRefs'> = {}
+    for (const field of ['allowedRefs', 'missingRefs'] as const) if (unit[field] !== undefined) {
+      const values = unit[field]
+      if (!Array.isArray(values) || values.length > 10000 || values.some(ref => typeof ref !== 'string' || !/^[rcqpm]\d{1,6}$/.test(ref))
+        || new Set(values).size !== values.length) throw new Error('日报诊断引用清单无效')
+      refs[field] = [...values]
+    }
+    if (refs.missingRefs?.some(ref => !refs.allowedRefs?.includes(ref))) throw new Error('日报诊断缺失引用不在允许清单内')
     return { id: sanitizeReportDiagnosticText(unit.id, 80), stage: sanitizeReportDiagnosticText(unit.stage, 80),
       firstSourceId: unit.firstSourceId === null ? null : diagnosticCount(unit.firstSourceId), lastSourceId: unit.lastSourceId === null ? null : diagnosticCount(unit.lastSourceId),
       firstTimestamp: unit.firstTimestamp === null ? null : diagnosticCount(unit.firstTimestamp), lastTimestamp: unit.lastTimestamp === null ? null : diagnosticCount(unit.lastTimestamp),
-      attempts: diagnosticCount(unit.attempts), error: sanitizeReportDiagnosticText(unit.error) }
+      attempts: diagnosticCount(unit.attempts), error: sanitizeReportDiagnosticText(unit.error), ...refs }
   })
   output.warnings = input.warnings.map(warning => {
     if (typeof warning !== 'string') throw new Error('日报诊断提醒无效')

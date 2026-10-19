@@ -7,6 +7,9 @@ interface AnalysisOptions {
     signal?: AbortSignal;
     now?: () => number;
     onProgress?: AnalysisRuntime['onProgress'];
+    onUnitCompleted?: AnalysisRuntime['onUnitCompleted'];
+    onUnitFailed?: AnalysisRuntime['onUnitFailed'];
+    maxRequestCount?: number;
 }
 interface ReportMessage {
     analysisId?: number;

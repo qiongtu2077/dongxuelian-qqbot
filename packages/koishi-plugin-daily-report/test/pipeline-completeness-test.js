@@ -5,6 +5,7 @@ const { formatExchange, formatFullExchange } = require('./complete-input-test')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { createHash } = require('crypto')
 const { makeInput, makeModelRequest } = require('./analysis-entry-test')
 const runtime = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
 const { createReportPeriod } = runtime.loadManagementModule('daily.reportPeriod')
@@ -12,11 +13,17 @@ const { ReportRuntimeTimeoutError } = runtime.loadManagementModule('daily.report
 const collectorPath = require.resolve('../lib/data-collector')
 const rendererPath = require.resolve('../lib/html-renderer')
 const pipelinePath = require.resolve('../lib/report-pipeline')
+const artifactPath = require.resolve('../lib/analysis-artifacts')
+const storagePath = require.resolve('../lib/report-storage')
 
 // 只替换采集和图片边界，管线、摘要引擎与模型分析保持正式实现。
 async function withPipeline(data, request, withMockedAiAnalyzer, run, render = async () => Buffer.from('test-image')) {
-  const originals = [collectorPath, rendererPath, pipelinePath].map(file => [file, require.cache[file]])
+  const originals = [collectorPath, rendererPath, pipelinePath, artifactPath, storagePath].map(file => [file, require.cache[file]])
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-complete-pipeline-'))
+  const originalLoad = runtime.loadManagementModule
+  const constants = originalLoad('core.constants')
+  runtime.loadManagementModule = id => id === 'core.constants' ? { ...constants, DATA_DIR: path.join(outputDir, 'data') } : originalLoad(id)
+  delete require.cache[artifactPath]; delete require.cache[storagePath]
   const period = createReportPeriod(data.messages[data.messages.length - 1].ts)
   let collectedPeriod
   require.cache[collectorPath] = { id: collectorPath, filename: collectorPath, loaded: true, exports: {
@@ -26,9 +33,12 @@ async function withPipeline(data, request, withMockedAiAnalyzer, run, render = a
   try {
     await withMockedAiAnalyzer(request, async () => {
       delete require.cache[pipelinePath]
-      await run(require(pipelinePath), outputDir, period, () => collectedPeriod)
+      const pipeline = require(pipelinePath)
+      // 资源租约是此管线单测的外部边界；真实S0另由资源运行时夹具验证。
+      await run({ ...pipeline, generateDailyReportResult: options => pipeline.generateDailyReportResult({ assertLease() {}, ...options }) }, outputDir, period, () => collectedPeriod)
     })
   } finally {
+    runtime.loadManagementModule = originalLoad
     for (const [file, original] of originals) { if (original) require.cache[file] = original; else delete require.cache[file] }
     const resolved = path.resolve(outputDir)
     assert.ok(resolved.startsWith(path.resolve(os.tmpdir()) + path.sep))
@@ -71,6 +81,26 @@ async function tenTopicRequest(messages, config, extra) {
 
 // 验证正式管线的保存、失败和渲染边界，而不是仅检查分析函数被调用。
 async function runPipelineCompletenessTests(check, withMockedAiAnalyzer) {
+  await verify(check, '正式管线没有明确S0租约时零模型请求拒绝，不使用默认空守卫', async () => {
+    let calls = 0
+    await withPipeline(tenTopicInput(), async (...args) => { calls++; return tenTopicRequest(...args) }, withMockedAiAnalyzer, async (pipeline, outputDir, period) => {
+      await assert.rejects(pipeline.generateDailyReportResult({ taskId: 'missing-explicit-lease', channelKey: 'test', reportPeriod: period,
+        outputDir, renderImage: false, assertLease: undefined }), /缺少本次S0独占租约/)
+      assert.equal(calls, 0)
+    })
+  })
+  await verify(check, '正式管线模型返回后失去租约不落成功或失败产物，不继续请求后续阶段', async () => {
+    let leased = true, calls = 0
+    const reason = new Error('fixture S0 lease lost')
+    const request = async (...args) => { calls++; const value = await tenTopicRequest(...args); leased = false; return value }
+    await withPipeline(tenTopicInput(), request, withMockedAiAnalyzer, async (pipeline, outputDir, period) => {
+      await assert.rejects(pipeline.generateDailyReportResult({ taskId: 'lost-explicit-lease', channelKey: 'test', reportPeriod: period,
+        outputDir, renderImage: false, assertLease() { if (!leased) throw reason } }), /S0 lease lost/)
+      assert.equal(calls, 1); assert(!fs.existsSync(path.join(outputDir, 'result.json')))
+      const root = path.join(outputDir, 'data', 'daily-analysis')
+      assert(!fs.existsSync(root) || !require('./helpers/report-store-fixture').listPagedStoreFiles(root).some(file => /\.(?:success|failure)\.json$/.test(file)))
+    })
+  })
   await verify(check, '同名成员画像仅按私有引用恢复身份，乱序返回不会交换用户ID', async () => {
     const data = tenTopicInput()
     data.topMembers.reverse().forEach(member => { member.name = '同名成员' })
@@ -225,6 +255,26 @@ async function runPipelineCompletenessTests(check, withMockedAiAnalyzer) {
       controller.abort(reason)
       await assert.rejects(pipeline.generateDailyReportResult({ channelKey: 'test', reportPeriod: period, outputDir, signal: controller.signal }), error => error === reason)
       assert.ok(!fs.existsSync(path.join(outputDir, 'result.json')))
+    })
+  })
+  await verify(check, '领取失效的迟到模型结果不写完成产物、报告或失败结果', async () => {
+    let active = true
+    const reason = new Error('日报任务已取消或领取已失效')
+    const request = async (...args) => {
+      const response = await makeModelRequest([])(...args)
+      active = false
+      return response
+    }
+    await withPipeline(makeInput(3), request, withMockedAiAnalyzer, async (pipeline, outputDir, period) => {
+      await assert.rejects(pipeline.generateDailyReportResult({ channelKey: 'test', reportPeriod: period,
+        outputDir, renderImage: false, assertActive() { if (!active) throw reason } }), error => error === reason)
+      assert(!fs.existsSync(path.join(outputDir, 'result.json')))
+      assert(!fs.existsSync(path.join(outputDir, 'report.txt')))
+      const progress = JSON.parse(fs.readFileSync(path.join(outputDir, 'analysis-progress.json'), 'utf8'))
+      const hash = text => createHash('sha256').update(JSON.stringify(text)).digest('hex')
+      const units = path.join(runtime.loadManagementModule('core.constants').DATA_DIR, 'daily-analysis', 'task-artifacts', hash('test'), hash(progress.taskId))
+      assert(!fs.existsSync(units) || fs.readdirSync(units).every(file => !file.endsWith('.success.json')))
+      assert.notEqual(progress.analysisMeta.analysisState, 'complete')
     })
   })
 }

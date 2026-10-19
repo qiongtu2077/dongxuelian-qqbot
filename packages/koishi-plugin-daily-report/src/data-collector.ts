@@ -10,6 +10,8 @@ type SourceRecord = Parameters<NonNullable<NonNullable<Parameters<typeof readRep
 interface ReportMessage {
   analysisId?: number
   messageId?: string
+  realMessageId?: boolean
+  replyToId?: string
   time?: string
   ts?: number
   user?: string
@@ -94,7 +96,10 @@ function countEmojiInContent(content: unknown): number {
 // 把已收录正文和已知媒体提示转成模型输入，不额外触发下载或识图。
 function sourceRecordToMessage(record: SourceRecord): ReportMessage {
   const mediaText = record.media.map(item => item.type === 'voice' ? '【已收录语音提示】' : item.type === 'message_record' ? '【已收录转发消息提示】' : '【已收录媒体提示】').join('')
-  return { messageId: record.messageId, ts: record.timestamp, time: formatShanghaiTime24h(record.timestamp), user: record.userName || '群友', userId: record.userId, content: record.text + mediaText }
+  return { messageId: record.messageId, ts: record.timestamp, time: formatShanghaiTime24h(record.timestamp), user: record.userName || '群友', userId: record.userId, content: record.text + mediaText,
+    ...(record.realMessageId !== undefined ? { realMessageId: record.realMessageId } : {}),
+    ...(record.replyToId !== undefined ? { replyToId: record.replyToId } : {}),
+  }
 }
 
 // 建立只保存数值与成员汇总的统计状态，正文候选由读取器有界保留。
@@ -138,9 +143,13 @@ function finishReportData(stats: ReportStats, period: ReportPeriod, messages: Re
 // --- 固定窗口入口 ---
 
 // 扫描两份自然日原始索引；预计算文本不再作为日报话题分析输入。
-function collectReportData(channelKey: unknown, period: ReportPeriod = createReportPeriod(Date.now())): ReportData | null {
+function collectReportData(channelKey: unknown, period: ReportPeriod = createReportPeriod(Date.now()), onSource?: (message: ReportMessage, record: SourceRecord) => void): ReportData | null {
   const stats = createReportStats()
-  const result = readReportRecords(String(channelKey), period, { maxMessages: MAX_ANALYSIS_MESSAGES, onRecord: record => accumulateMessage(stats, sourceRecordToMessage(record)) })
+  const result = readReportRecords(String(channelKey), period, { maxMessages: MAX_ANALYSIS_MESSAGES, onRecord: record => {
+    const message = sourceRecordToMessage(record)
+    accumulateMessage(stats, message)
+    onSource?.(message, record)
+  } })
   const messages = result.records.map(record => ({ ...sourceRecordToMessage(record), analysisId: record.analysisId }))
   return finishReportData(stats, period, messages, result.sourceCompleteness)
 }

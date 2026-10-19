@@ -6,6 +6,10 @@
  */
 const { RESOURCE_TASK_KIND } = require('../resource-common/resource-task-kinds');
 const DEFAULT_BUDGETS = {
+    [RESOURCE_TASK_KIND.DAILY_REPORT_PREANALYSIS]: {
+        exclusive: true, priority: 99, minMemMb: 400, degradable: false, deferable: true,
+        fallbacks: [], queueTimeoutMs: 90000, runTimeoutMs: 90000,
+    },
     [RESOURCE_TASK_KIND.DAILY_REPORT]: {
         exclusive: true,
         priority: 20,

@@ -21,6 +21,10 @@ interface CapabilityModel {
     id: string;
     name: string;
     capabilities: AiCapability[];
+    capabilityChecks?: Record<AiCapability, {
+        status: 'supported' | 'unsupported' | 'pending';
+        reason: string;
+    }>;
 }
 interface CapabilityPriorityStep {
     provider: ProviderId;
@@ -76,6 +80,7 @@ declare function replaceCapabilityPriority(current: CapabilityConfig, capability
 declare function getPublicProviderCatalog(): Array<Record<string, unknown>>;
 declare function getPublicCapabilityConfig(config: CapabilityConfig): Record<string, unknown>;
 declare function resolveCapabilityRuntimeSteps(capability: unknown): RuntimeCapabilityStep[];
+declare function resolveConfiguredCapabilityModel(capability: unknown, providerId: unknown, modelId: unknown): RuntimeCapabilityStep;
 declare function getProviderCatalogEntry(providerId: unknown): ProviderCatalogEntry | null;
 declare const _default: {
     AI_CAPABILITIES: readonly string[];
@@ -100,5 +105,6 @@ declare const _default: {
     getProviderKeyStatus: typeof getProviderKeyStatus;
     isProviderKeyConfigured: typeof isProviderKeyConfigured;
     resolveCapabilityRuntimeSteps: typeof resolveCapabilityRuntimeSteps;
+    resolveConfiguredCapabilityModel: typeof resolveConfiguredCapabilityModel;
 };
 export = _default;

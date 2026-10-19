@@ -15,6 +15,7 @@ const { planDailySlotTasks } = require('../daily-precompute/daily-slot-planner')
 const { listDailyCoverage } = require('../daily-precompute/precompute-status') as typeof import('../daily-precompute/precompute-status')
 const { decideBackgroundDirective } = require('../resource-scheduler/background-directive') as typeof import('../resource-scheduler/background-directive')
 const { cleanupReportRecords } = require('../daily-precompute/report-records') as typeof import('../daily-precompute/report-records')
+const { runDailyPreanalysisPlanningTick } = require('../resource-workers/daily-preanalysis-submission') as typeof import('../resource-workers/daily-preanalysis-submission')
 
 interface StartupSchedulerContext {
   bots?: Array<{ selfId?: string; userId?: string }>
@@ -27,6 +28,7 @@ let dailyCleanupTimer: StartupTimer = null
 let dailyPrecomputeTimer: StartupTimer = null
 let reportSourceCleanupTimer: StartupTimer = null
 let reportCleanupGeneration = 0
+let dailyPlanningGeneration = 0
 const DAILY_SLOT_BACKLOG_STOP_MAX_PENDING = Math.max(1, Number(process.env.DAILY_SLOT_BACKLOG_STOP_MAX_PENDING || 8))
 
 function getStartupSchedulerErrorMessage(error: unknown): string {
@@ -132,13 +134,18 @@ async function runDailyPrecomputePlanningTick(ctx: StartupSchedulerContext): Pro
 
 // 按 coverage 中出现过的频道低频规划 S3 分片任务，真正执行仍交给 daily-worker。
 function scheduleDailyPrecomputePlanning(ctx: StartupSchedulerContext): void {
+  const generation = ++dailyPlanningGeneration
+  if (dailyPrecomputeTimer) clearTimeout(dailyPrecomputeTimer)
   const intervalMs = Math.max(5 * 60 * 1000, Math.min(6 * 60 * 60 * 1000, Number(process.env.DAILY_PRECOMPUTE_PLAN_INTERVAL_MS || 30 * 60 * 1000)))
   const runDailyPrecomputeTick = async () => {
     try {
-      await runDailyPrecomputePlanningTick(ctx)
+      try { await runDailyPrecomputePlanningTick(ctx) }
+      catch (error) { ctx.logger('dongxuelian-ai').warn(`daily precompute planning failed: ${getStartupSchedulerErrorMessage(error)}`) }
+      if (generation === dailyPlanningGeneration) await runDailyPreanalysisPlanningTick(ctx, () => generation === dailyPlanningGeneration)
     } catch (error) {
-      ctx.logger('dongxuelian-ai').warn(`daily precompute planning failed: ${getStartupSchedulerErrorMessage(error)}`)
+      ctx.logger('dongxuelian-ai').warn(`daily preanalysis planning failed: ${getStartupSchedulerErrorMessage(error)}`)
     } finally {
+      if (generation !== dailyPlanningGeneration) return
       dailyPrecomputeTimer = setTimeout(runDailyPrecomputeTick, intervalMs)
       if (dailyPrecomputeTimer && typeof dailyPrecomputeTimer.unref === 'function') dailyPrecomputeTimer.unref()
     }
@@ -149,6 +156,7 @@ function scheduleDailyPrecomputePlanning(ctx: StartupSchedulerContext): void {
 
 
 function clearStartupSchedulers(): void {
+  dailyPlanningGeneration++
   reportCleanupGeneration++
   if (reportSourceCleanupTimer) {
     clearTimeout(reportSourceCleanupTimer)

@@ -530,6 +530,7 @@ function loadTodayCacheFromDisk(channelKey) {
     trimTodayCacheMessages(cache);
     return cache.messages.length > 0 ? cache : null;
 }
+// 保存共享聊天及日报原始索引，回复关系只来自已提供的真实元数据。
 function saveSharedChannelTurn(session, speakerName, content, role = 'user', metadata = {}) {
     const channelKey = getChannelKey(session);
     const value = redactSensitiveText(normalizeText(content));
@@ -581,6 +582,7 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
                     appendPrecomputeIndex({
                         channelKey,
                         messageId,
+                        ...(entry.replyToId ? { replyToId: entry.replyToId } : {}),
                         timestamp: ts,
                         userId,
                         userName: sanitizeUserName(String(displayName)),

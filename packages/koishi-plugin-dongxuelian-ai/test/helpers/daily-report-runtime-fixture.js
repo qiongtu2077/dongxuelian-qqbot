@@ -52,6 +52,8 @@ async function run() {
   assert.equal(pipelineOptions.reportPeriod.cutoffMs, period.cutoffMs)
   assert.equal(pipelineOptions.reportPeriod.reportDate, period.reportDate)
   assert(pipelineOptions.signal instanceof AbortSignal)
+  assert.equal(typeof pipelineOptions.assertActive, 'function')
+  assert.throws(pipelineOptions.assertActive, /领取已失效/)
 
   const expired = { ...queued, startedAt: new Date(Date.now() - 600001).toISOString() }
   const beforeExpired = dispatched
@@ -80,6 +82,6 @@ async function run() {
   mode = 'queued'
   await worker.runTaskWithTimeout({ ...queued, startedAt: new Date().toISOString() })
   assert.equal(actualAbort, 1)
-  console.log(JSON.stringify({ queueExcluded: true, fixedPeriod: true, noExpiredDispatch: true, actualAbort: true, diagnosticPreserved: true, nextTask: true }))
+  console.log(JSON.stringify({ queueExcluded: true, fixedPeriod: true, noExpiredDispatch: true, actualAbort: true, diagnosticPreserved: true, nextTask: true, activeGuardForwarded: true }))
 }
 run().catch(error => { console.error(error.stack || error); process.exitCode = 1 })

@@ -81,6 +81,29 @@ async function runAiCapabilityContracts(context) {
   const keyStatus = configModule.getProviderKeyStatus('openai')
   check('provider key status masks plaintext', keyStatus.configured === true && keyStatus.prefix.endsWith('****') && !keyStatus.prefix.includes('mask-test'), JSON.stringify(keyStatus))
 
+  const previousPool = fs.existsSync(configModule.CAPABILITY_CONFIG_FILE) ? fs.readFileSync(configModule.CAPABILITY_CONFIG_FILE) : null
+  try {
+    const explicitPool = createCapabilityConfig()
+    const checks = Object.fromEntries(configModule.AI_CAPABILITIES.map(capability => [capability, { status: 'pending', reason: '等待检测' }]))
+    explicitPool.providers.openai.models = [{ id: 'explicit-node', name: '指定模型', capabilities: ['text'] },
+      { id: 'pending-node', name: '待检测模型', capabilities: [], capabilityChecks: checks }]
+    const normalized = configModule.normalizeCapabilityConfig(explicitPool)
+    checkEqual('known capability checks survive normalization without granting capability', JSON.stringify(normalized.providers.openai.models[1]), JSON.stringify(explicitPool.providers.openai.models[1]))
+    fs.writeFileSync(configModule.CAPABILITY_CONFIG_FILE, JSON.stringify(explicitPool))
+    const before = fs.readFileSync(configModule.CAPABILITY_CONFIG_FILE, 'utf8')
+    const node = configModule.resolveConfiguredCapabilityModel('text', 'openai', 'explicit-node')
+    check('configured node resolves outside global priority without losing its credential', node.model === 'explicit-node' && node.provider === 'openai' && node.apiKey === 'sk-public-mask-test' && node.capability === 'text')
+    checkEqual('configured node resolution does not write global priority', fs.readFileSync(configModule.CAPABILITY_CONFIG_FILE, 'utf8'), before)
+    checkThrows('configured node rejects unconfigured model', () => configModule.resolveConfiguredCapabilityModel('text', 'openai', 'missing-node'), /唯一匹配/)
+    checkThrows('configured node rejects unsupported capability', () => configModule.resolveConfiguredCapabilityModel('vision', 'openai', 'explicit-node'), /唯一匹配/)
+    checkThrows('pending capability metadata cannot authorize a model call', () => configModule.resolveConfiguredCapabilityModel('text', 'openai', 'pending-node'), /唯一匹配/)
+    checks.text.status = 'invented-status'
+    checkThrows('known capability checks reject unknown status', () => configModule.normalizeCapabilityConfig(explicitPool), /无效模型/)
+  } finally {
+    if (previousPool === null) fs.rmSync(configModule.CAPABILITY_CONFIG_FILE, { force: true })
+    else fs.writeFileSync(configModule.CAPABILITY_CONFIG_FILE, previousPool)
+  }
+
   const openAiModels = discovery.parseOpenAiModelList('openai', { data: [{ id: 'gpt-4o' }, { id: 'unverified-model' }] })
   check('OpenAI discovery imports exact verified model only', openAiModels[0].importable === true && openAiModels[1].importable === false, JSON.stringify(openAiModels))
   const anthropicModels = discovery.parseAnthropicModelList({ data: [{ id: 'claude-test', display_name: 'Claude Test', capabilities: { image_input: { supported: true } } }] })

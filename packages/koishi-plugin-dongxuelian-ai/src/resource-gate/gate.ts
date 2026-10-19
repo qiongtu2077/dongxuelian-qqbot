@@ -615,10 +615,13 @@ async function acquireResourceGate(input: AcquireGateOptions): Promise<ResourceG
   const deadline = Date.now() + waitTimeoutMs
   let heartbeatTimer: NodeJS.Timeout | null = null
   let heartbeatFailure: ResourceGateStorageError | null = null
+  let firstAttempt = true
 
   try {
     reclaimDeadTickets(`ticket:${ticket.ticketId}`)
-    while (Date.now() <= deadline) {
+    // 零等待仍尝试一次即时领取；文件核验耗时不能令空闲锁永远没有领取机会。
+    while ((waitTimeoutMs === 0 && firstAttempt) || Date.now() <= deadline) {
+      firstAttempt = false
       reclaimStaleLock(staleMs, `ticket:${ticket.ticketId}`)
       if (isTicketHead(ticket.ticketId)) {
         const meta = tryCreateLock(ticket, input)
@@ -645,6 +648,7 @@ async function acquireResourceGate(input: AcquireGateOptions): Promise<ResourceG
           }
         }
       }
+      if (waitTimeoutMs === 0) break
       await new Promise(resolve => setTimeout(resolve, pollMs))
     }
     throw new ResourceGateBusyTimeoutError(ticket.ticketId, waitTimeoutMs)

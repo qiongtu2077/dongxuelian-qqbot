@@ -2,6 +2,7 @@ interface PrecomputeIndexInput {
     date?: string;
     channelKey: string;
     messageId?: string;
+    replyToId?: string;
     timestamp?: number;
     userId?: string;
     userName?: string;
@@ -10,6 +11,7 @@ interface PrecomputeIndexInput {
 }
 interface PrecomputeRecord extends Record<string, unknown> {
     messageId: string;
+    replyToId?: string;
     timestamp: number;
     userId: string;
     userName: string;

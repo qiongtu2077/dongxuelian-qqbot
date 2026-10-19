@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.AnalysisUnitRequestTimeoutError = exports.ExchangeCoverageError = exports.AnalysisUnitCoverageError = void 0;
 exports.packInputBatches = packInputBatches;
 exports.selectRepresentativeMessages = selectRepresentativeMessages;
 exports.parseExchangeObject = parseExchangeObject;
@@ -7,6 +8,7 @@ exports.parseExchangeRecords = parseExchangeRecords;
 exports.assertExchangeFields = assertExchangeFields;
 exports.assertExchangeRef = assertExchangeRef;
 exports.createDigestExchange = createDigestExchange;
+exports.readValidatedExchange = readValidatedExchange;
 exports.readExchange = readExchange;
 exports.exchangeInstructions = exchangeInstructions;
 exports.requestAnalysisUnit = requestAnalysisUnit;
@@ -196,8 +198,14 @@ function createDigestExchange(topics, quotes, messages) {
     return { items, requiredRefs, quotes: quoteMap, input: JSON.stringify({ items: requiredRefs.map(ref => ({ ref, title: items.get(ref).title, summary: items.get(ref).summary })),
             quotes: [...quoteMap].map(([ref, quote]) => ({ ref, reason: quote.reason, text: Array.from(String(messages[quote.sourceId - 1].content || '')).slice(0, 80).join('') })) }) };
 }
-// 统一校验摘要、合并与最终话题；全部输入覆盖只通过分组引用的并集确认一次。
-function readExchange(text, context, maxTextChars = Infinity, preserveUnselected = false) {
+// 临时短引用不属于事实文字，拒绝向下一层传播；原始金句正文不经过此校验。
+function assertNoReferenceText(value, field) {
+    if (/(?:^|[^A-Za-z0-9_])[rqpm]\d{1,6}(?=$|[^A-Za-z0-9_])/.test(value)) {
+        throw new Error(`[REF_IN_TEXT] ${field}含临时编号；标题、摘要、点评只写事实文字，编号仅写refs/ref字段`);
+    }
+}
+// 完整校验所有字段和预算后返回覆盖结果；遗漏不能掩盖后面的非法金句。
+function readValidatedExchange(text, context, maxTextChars = Infinity, maxQuoteRecords = 3) {
     const value = { groups: [], quotes: [] };
     for (const record of parseExchangeRecords(text)) {
         if (record.kind !== 'group' && record.kind !== 'quote')
@@ -213,8 +221,8 @@ function readExchange(text, context, maxTextChars = Infinity, preserveUnselected
     }
     if (!value.groups.length)
         throw new Error('[FIELD_TYPE] 必须至少有一条group记录');
-    if (value.quotes.length > 3)
-        throw new Error('[FIELD_TYPE] quote记录最多3条');
+    if (value.quotes.length > maxQuoteRecords)
+        throw new Error(`[FIELD_TYPE] quote记录最多${maxQuoteRecords}条`);
     const covered = new Set();
     const topics = value.groups.map((raw, index) => {
         const path = `groups[${index}]`;
@@ -224,6 +232,9 @@ function readExchange(text, context, maxTextChars = Infinity, preserveUnselected
             throw new Error(`[FIELD_TYPE] ${path}.title必须为非空文字`);
         if (typeof item.summary !== 'string' || !item.summary.trim())
             throw new Error(`[FIELD_TYPE] ${path}.summary必须为非空文字；金句单独输出quote记录`);
+        // 临时编号只能存在于结构字段；带入下一层会串绑恰好同名的短引用。
+        assertNoReferenceText(item.title, `${path}.title`);
+        assertNoReferenceText(item.summary, `${path}.summary`);
         if (!Array.isArray(item.refs) || !item.refs.length)
             throw new Error(`[FIELD_TYPE] ${path}.refs必须为非空数组`);
         const sources = new Set();
@@ -241,20 +252,13 @@ function readExchange(text, context, maxTextChars = Infinity, preserveUnselected
         }
         return { title: item.title.trim(), summary: item.summary.trim(), sourceIds: [...sources], participants: [...members] };
     });
-    const missing = context.requiredRefs.filter(ref => !covered.has(ref));
-    if (missing.length && !preserveUnselected)
-        throw new Error(`[REF_UNCOVERED] groups.refs未覆盖输入${missing.join(',')}`);
-    // 合并是对已验证摘要的改写：未选中的节点保持原文和原来源，不推测它属于某个新话题。
-    if (preserveUnselected)
-        for (const ref of missing) {
-            const original = context.items.get(ref);
-            topics.push({ title: original.title, summary: original.summary, participants: [...original.participants], sourceIds: [...original.sourceIds] });
-        }
     const seenQuotes = new Set();
     const quoteRefs = value.quotes.map((raw, index) => {
         const path = `quotes[${index}]`;
         const item = raw;
         assertExchangeFields(item, ['ref', 'reason'], path);
+        if (typeof item.reason === 'string')
+            assertNoReferenceText(item.reason, `${path}.reason`);
         const ref = assertExchangeRef(item.ref, context.quotes, `${path}.ref`);
         if (typeof item.reason !== 'string' || !item.reason.trim())
             throw new Error(`[FIELD_TYPE] ${path}.reason必须为非空文字`);
@@ -268,19 +272,74 @@ function readExchange(text, context, maxTextChars = Infinity, preserveUnselected
     if (JSON.stringify({ groups: topics.map(({ title, summary }) => ({ title, summary })), quotes: quoteRefs.map(({ reason }) => ({ reason })) }).length > maxTextChars) {
         throw new Error(`[TEXT_BUDGET] 摘要文字超过${maxTextChars}字符预算，请压缩文字并保留全部refs`);
     }
-    return { topics, quoteRefs, retainedRefs: preserveUnselected ? missing : [] };
+    const records = [
+        ...value.groups.map(item => ({ kind: 'group', title: String(item.title).trim(), summary: String(item.summary).trim(), refs: item.refs })),
+        ...value.quotes.map(item => ({ kind: 'quote', ref: item.ref, reason: String(item.reason).trim() })),
+    ];
+    return { result: { topics, quoteRefs, retainedRefs: [] }, records, coveredRefs: [...covered], missingRefs: context.requiredRefs.filter(ref => !covered.has(ref)) };
+}
+// 各明确协议共同携带覆盖范围，诊断与恢复不反解析报错字符串或猜字段。
+class AnalysisUnitCoverageError extends Error {
+    // 保存该轮允许及缺失引用，分别用于受控失败证据和公开诊断。
+    constructor(message, allowedRefs, missingRefs) {
+        super(message);
+        this.allowedRefs = allowedRefs;
+        this.missingRefs = missingRefs;
+        this.name = this.constructor.name;
+    }
+}
+exports.AnalysisUnitCoverageError = AnalysisUnitCoverageError;
+// 合法性已经通过的覆盖错误携带明确数据；恢复不解析报错字符串。
+class ExchangeCoverageError extends AnalysisUnitCoverageError {
+    // 保存本轮已验证记录与允许引用，供一次定向补漏和失败诊断共用。
+    constructor(validated, allowedRefs) {
+        super(`[REF_UNCOVERED] groups.refs未覆盖输入${validated.missingRefs.join(',')}`, allowedRefs, validated.missingRefs);
+        this.validated = validated;
+        this.name = 'ExchangeCoverageError';
+    }
+}
+exports.ExchangeCoverageError = ExchangeCoverageError;
+// 按原覆盖契约读取结果；合并遗漏只能原样保留已验证节点及其真实来源。
+function readExchange(text, context, maxTextChars = Infinity, preserveUnselected = false, maxQuoteRecords = 3) {
+    const validated = readValidatedExchange(text, context, maxTextChars, maxQuoteRecords);
+    if (validated.missingRefs.length && !preserveUnselected)
+        throw new ExchangeCoverageError(validated, context.requiredRefs);
+    if (preserveUnselected)
+        for (const ref of validated.missingRefs) {
+            const original = context.items.get(ref);
+            validated.result.topics.push({ title: original.title, summary: original.summary, participants: [...original.participants], sourceIds: [...original.sourceIds] });
+        }
+    const result = validated.result;
+    if (JSON.stringify({ groups: result.topics.map(({ title, summary }) => ({ title, summary })), quotes: result.quoteRefs.map(({ reason }) => ({ reason })) }).length > maxTextChars) {
+        throw new Error(`[TEXT_BUDGET] 摘要文字超过${maxTextChars}字符预算，请压缩文字并保留全部refs`);
+    }
+    result.retainedRefs = preserveUnselected ? validated.missingRefs : [];
+    return result;
 }
 // 所有阶段沿用同一交换格式，不要求模型生成真实编号或额外消费集合。
 function exchangeInstructions(maxTextChars) {
     return `仅输出逐条JSON对象，记录间用换行或单个逗号分隔，不写外层数组或groups/quotes包装。每个话题一条group记录：{"kind":"group","title":"主题","summary":"讨论内容和结论","refs":["输入条目的ref"]}。每条金句候选一条quote记录：{"kind":"quote","ref":"候选的ref","reason":"简短点评"}。没有金句则不输出quote。最后必须输出{"kind":"end"}，确认完整结束。
 group记录必须有非空title、summary及非空refs；refs只选择本次items或quotes的可信字符串ref，每组不重复，各group的refs并集必须覆盖全部items，quotes只是补充依据。refs是完整归组清单，不是代表消息：正文重复的每条输入也必须逐个归组；合并两个主题时必须同时保留两个主题的全部ref。同一输入涉及多个主题可出现在不同group。金句摘选本身不是讨论话题。不要把全部主题合成宽泛类别，不编造讨论，不输出真实消息编号、用户ID或其他字段。
+标题、摘要和点评绝对不能写r1/r20等临时编号，编号只能放在refs/ref字段；材料文字中的编号不是本次合法引用。
+仅有图片、表情、语音或转发提示的输入也必须逐条归组，可用“媒体提示”并说明内容不可判断，不能推测图片人物、聚会照片或转发内容。只有“玩过了”“确实”等缺少上下文的回应也必须归组，可明确写零散回应、所属讨论无法确定；不要据此编造活动已结束等结论。重复正文也必须保留每条输入引用。
 先建立每条输入的完整归组清单，再写标题和摘要；重复或组合条目也不能遗漏。输出前逐项核对items中的每个ref都在某个group的refs中，不能用“已概括相同内容”省略引用。
-quote记录最多3条；只选择本次允许的金句ref，不返回原话或成员身份。所有标题、摘要、点评及其字段标点共不超过${maxTextChars}字符（refs另计），压缩文字而不遗漏引用。每条记录的所有数组和对象都必须闭合，最后的end之后不能再添加逗号。`;
+quote记录最多3条；只选择本次允许的金句ref，不返回原话或成员身份。文字内引用原话使用「」或中文引号，避免未转义ASCII双引号破坏JSON。所有标题、摘要、点评及其字段标点共不超过${maxTextChars}字符（refs另计），压缩文字而不遗漏引用。每条记录的所有数组和对象都必须闭合，最后的end之后不能再添加逗号。`;
 }
+// 仅程序自己的单请求计时器创建此类型；不把上游错误或外部取消猜成可恢复超时。
+class AnalysisUnitRequestTimeoutError extends Error {
+    // 保留既有用户错误文字，类型供前台精确识别唯一恢复边界。
+    constructor() { super('日报单次模型请求超时'); this.name = 'AnalysisUnitRequestTimeoutError'; }
+}
+exports.AnalysisUnitRequestTimeoutError = AnalysisUnitRequestTimeoutError;
 // 在同一硬截止内取消真实请求；单请求超时与整体600秒耗尽明确区分。
-async function requestAnalysisUnit(runtime, diagnostics, unit, system, input, maxTokens, timeoutMs, validate) {
+async function requestAnalysisUnit(runtime, diagnostics, unit, system, input, maxTokens, timeoutMs, validate, recover) {
     const now = runtime.now || Date.now;
     let retryCorrection = '';
+    let requestSystem = system;
+    let requestInput = input;
+    let requestValidate = validate;
+    let recoveryStartStepIndex;
+    const attempts = [];
     for (let attempt = 1; attempt <= 2; attempt += 1) {
         if (runtime.signal?.aborted)
             throw runtime.signal.reason || new Error('日报任务已取消');
@@ -299,44 +358,97 @@ async function requestAnalysisUnit(runtime, diagnostics, unit, system, input, ma
         const onOuterAbort = () => controller.abort(runtime.signal?.reason);
         runtime.signal?.addEventListener('abort', onOuterAbort, { once: true });
         const requestTimeout = Math.min(timeoutMs, remaining, workRemaining);
-        const timer = setTimeout(() => controller.abort(new Error('日报单次模型请求超时')), requestTimeout);
+        const timer = setTimeout(() => controller.abort(new AnalysisUnitRequestTimeoutError()), requestTimeout);
         let onRequestAbort;
+        let pendingRequest;
+        let response = '';
+        let persisting = false;
+        const upstreamAttempts = [];
+        let execution;
         try {
             diagnostics.reportCallCount += 1;
             if (attempt > 1)
                 diagnostics.retryCount += 1;
-            diagnostics.inputChars += system.length + retryCorrection.length + input.length;
+            diagnostics.inputChars += requestSystem.length + retryCorrection.length + requestInput.length;
             const aborted = new Promise((_, reject) => {
                 onRequestAbort = () => reject(controller.signal.reason || new Error('日报请求已取消'));
                 controller.signal.addEventListener('abort', onRequestAbort, { once: true });
             });
             // 沿用既有采样设置；真实身份与覆盖始终以程序校验为准。
-            const text = await Promise.race([runtime.request(system + retryCorrection, input, maxTokens, {
-                    signal: controller.signal, _timeoutMs: requestTimeout, temperature: 0.2,
-                    _onRequestAttempt: () => { diagnostics.requestCount += 1; unit.onSubmitted?.(); runtime.onProgress?.(diagnostics); },
-                    _onRequestUsage: (usage) => {
-                        if (!usage.readable)
-                            return;
-                        diagnostics.usageReadableRequests += 1;
-                        diagnostics.tokenUsage.promptTokens += usage.promptTokens;
-                        diagnostics.tokenUsage.completionTokens += usage.completionTokens;
-                        diagnostics.tokenUsage.totalTokens += usage.totalTokens;
-                    },
-                }), aborted]);
+            pendingRequest = runtime.request(requestSystem + retryCorrection, requestInput, maxTokens, {
+                signal: controller.signal, _timeoutMs: requestTimeout, temperature: 0.2,
+                ...(recoveryStartStepIndex !== undefined ? { _frozenRouteStartStepIndex: recoveryStartStepIndex } : {}),
+                _onRequestAttempt: (step) => {
+                    if (controller.signal.aborted || runtime.signal?.aborted)
+                        throw controller.signal.reason || runtime.signal?.reason || new Error('日报任务已取消');
+                    if (now() >= runtime.deadlineMs)
+                        throw new Error('日报运行总时限已耗尽');
+                    if (runtime.workDeadlineMs !== undefined && now() >= runtime.workDeadlineMs)
+                        throw new Error('日报分析预算已耗尽');
+                    if (runtime.maxRequestCount !== undefined && diagnostics.requestCount >= runtime.maxRequestCount)
+                        throw new Error('日报实际模型调用额度已耗尽');
+                    if (step)
+                        upstreamAttempts.push(step);
+                    diagnostics.requestCount += 1;
+                    unit.onSubmitted?.();
+                    runtime.onProgress?.(diagnostics);
+                },
+                _onRequestExecution: (value) => { execution = value; },
+                _onRequestUsage: (usage) => {
+                    if (!usage.readable)
+                        return;
+                    diagnostics.usageReadableRequests += 1;
+                    diagnostics.tokenUsage.promptTokens += usage.promptTokens;
+                    diagnostics.tokenUsage.completionTokens += usage.completionTokens;
+                    diagnostics.tokenUsage.totalTokens += usage.totalTokens;
+                },
+            });
+            const text = await Promise.race([pendingRequest, aborted]);
+            response = text;
             if (now() >= runtime.deadlineMs)
                 throw new Error('日报运行总时限已耗尽');
             if (runtime.workDeadlineMs !== undefined && now() >= runtime.workDeadlineMs)
                 throw new Error('日报分析预算已耗尽，已预留结果保存时间');
             diagnostics.outputChars += text.length;
-            return validate(text);
+            // 上游明确长度截断时，闭合JSON也不能作为可信完整产物或定向补漏的首轮。
+            if (execution?.finishReasonReadable && execution.finishReason === 'length')
+                throw new Error('[MODEL_TRUNCATED] 模型正文因长度被截断');
+            // 不自报完成字段的契约必须由实际可读的正常结束证明，未知或其他结束不能猜成成功。
+            if (runtime.requireNormalFinish && (!execution?.finishReasonReadable || execution.finishReason !== 'stop'))
+                throw new Error('[MODEL_UNFINISHED] 模型未提供可验证的正常结束');
+            const result = requestValidate(text);
+            if (runtime.signal?.aborted)
+                throw runtime.signal.reason || new Error('日报任务已取消');
+            attempts.push({ attempt, system: requestSystem + retryCorrection, input: requestInput, maxTokens, response, error: '',
+                allowedRefs: [], missingRefs: [], elapsedMs: Math.max(0, now() - requestStartedAt), upstreamAttempts, ...(execution ? { execution } : {}) });
+            // 只有整单元合法且完整才原子落盘；落盘失败不得再耗一轮模型调用或标记完成。
+            persisting = true;
+            runtime.onUnitCompleted?.(unit, attempts, result);
+            if (runtime.signal?.aborted)
+                throw runtime.signal.reason || new Error('日报任务已取消');
+            if (now() >= runtime.deadlineMs)
+                throw new Error('日报运行总时限已耗尽');
+            return result;
         }
         catch (error) {
             if (runtime.signal?.aborted)
                 throw runtime.signal.reason || error;
+            if (controller.signal.reason instanceof AnalysisUnitRequestTimeoutError) {
+                error = controller.signal.reason;
+                // 超时竞速不等于真实请求已退出；清理结束后才能恢复，不能重叠本单元两轮。
+                await pendingRequest?.then(() => undefined, () => undefined);
+                if (runtime.signal?.aborted)
+                    throw runtime.signal.reason || error;
+            }
             const isTotalTimeout = now() >= runtime.deadlineMs;
             const isWorkExhausted = runtime.workDeadlineMs !== undefined && now() >= runtime.workDeadlineMs;
             const message = redactSensitiveText(error instanceof Error ? error.message : String(error));
-            if (attempt === 2 || isTotalTimeout || isWorkExhausted) {
+            const allowedRefs = error instanceof AnalysisUnitCoverageError ? error.allowedRefs : [];
+            const missingRefs = error instanceof AnalysisUnitCoverageError ? error.missingRefs : [];
+            if (!persisting)
+                attempts.push({ attempt, system: requestSystem + retryCorrection, input: requestInput, maxTokens, response, error: message,
+                    allowedRefs, missingRefs, elapsedMs: Math.max(0, now() - requestStartedAt), upstreamAttempts, ...(execution ? { execution } : {}) });
+            if (attempt === 2 || isTotalTimeout || isWorkExhausted || persisting || runtime.shouldRecover?.(error) === false) {
                 const state = isTotalTimeout ? 'total_timeout' : 'failed';
                 if (unit.stage === 'compression' || unit.stage === 'merge')
                     diagnostics.stages.compression = state;
@@ -344,27 +456,97 @@ async function requestAnalysisUnit(runtime, diagnostics, unit, system, input, ma
                     diagnostics.stages[unit.stage] = state;
                 diagnostics.failedBatches.push({ id: unit.id, stage: unit.stage, firstSourceId: unit.sourceIds.length ? Math.min(...unit.sourceIds) : null,
                     lastSourceId: unit.sourceIds.length ? Math.max(...unit.sourceIds) : null, firstTimestamp: unit.timestamps.length ? Math.min(...unit.timestamps) : null,
-                    lastTimestamp: unit.timestamps.length ? Math.max(...unit.timestamps) : null, attempts: attempt, error: message });
+                    lastTimestamp: unit.timestamps.length ? Math.max(...unit.timestamps) : null, attempts: attempt, error: message,
+                    ...(allowedRefs.length ? { allowedRefs, missingRefs } : {}) });
+                try {
+                    runtime.onUnitFailed?.(unit, attempts);
+                }
+                catch (diagnosticError) {
+                    diagnostics.warnings.push('失败诊断保存失败：' + redactSensitiveText(diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)));
+                }
                 const failure = new ReportAnalysisError(message, isTotalTimeout ? 'total_timeout' : 'generation_failed', unit.stage, diagnostics);
-                runtime.onProgress?.(diagnostics);
+                // 已失败单元的进度只是诊断；保存失效不能抹掉原错误及实际请求计数。
+                try {
+                    runtime.onProgress?.(diagnostics);
+                }
+                catch (progressError) {
+                    diagnostics.warnings.push('失败进度保存失败：' + redactSensitiveText(progressError instanceof Error ? progressError.message : String(progressError)));
+                }
                 throw failure;
             }
-            diagnostics.warnings.push(`${unit.id}初次处理失败，重试一次：${message}`);
-            // 仅反馈脱敏的校验原因，重试仍读取原始完整输入，不拼接未校验的模型正文。
-            retryCorrection = `\n上次返回未通过校验：${message}。请重新核对以上明确格式、本次引用及摘要文字长度，输出全部独立JSON记录，不写外层包装，最后输出end记录。`;
+            const recovery = recover?.(error);
+            // 结构恢复使用同一冻结链的下一节点；没有可验证执行元数据时保持原请求行为。
+            recoveryStartStepIndex = runtime.recoveryStepIndex?.(execution || upstreamAttempts[upstreamAttempts.length - 1]);
+            if (recovery) {
+                diagnostics.warnings.push(`${unit.id}合法结果覆盖不足，仅对缺失引用补漏一次：${message}`);
+                requestSystem = recovery.system;
+                requestInput = recovery.input;
+                requestValidate = recovery.validate;
+                retryCorrection = '';
+            }
+            else if (error instanceof AnalysisUnitRequestTimeoutError) {
+                diagnostics.warnings.push(`${unit.id}单次超时，清理后按原输入恢复一次`);
+                retryCorrection = '';
+            }
+            else {
+                diagnostics.warnings.push(`${unit.id}初次处理失败，重试一次：${message}`);
+                // 非法或损坏结果不保留；整输入恢复仍只反馈脱敏校验原因。
+                retryCorrection = `\n上次返回未通过校验：${message}。请重新核对以上明确格式、本次引用及摘要文字长度。`
+                    + (runtime.recoveryInstructions || '输出全部独立JSON记录，不写外层包装，最后输出end记录。');
+            }
             runtime.onProgress?.(diagnostics);
         }
         finally {
-            diagnostics.stageDurationsMs[unit.stage] = (diagnostics.stageDurationsMs[unit.stage] || 0) + Math.max(0, now() - requestStartedAt);
+            // 受控时钟也可能因原截止/租约失效抛错；必须先释放计时器和监听，不能让统计阻断清理。
             clearTimeout(timer);
             runtime.signal?.removeEventListener('abort', onOuterAbort);
             if (onRequestAbort)
                 controller.signal.removeEventListener('abort', onRequestAbort);
+            diagnostics.stageDurationsMs[unit.stage] = (diagnostics.stageDurationsMs[unit.stage] || 0) + Math.max(0, now() - requestStartedAt);
         }
     }
     throw new Error('日报处理单元没有执行');
 }
 // --- 完整摘要与分层合并 ---
+// 只修复已经完整校验的遗漏，沿用原短引用；合并后再次校验原始整批契约。
+function createCoverageRecovery(error, context, inputItems) {
+    if (!(error instanceof ExchangeCoverageError))
+        return undefined;
+    const first = error.validated;
+    const missing = new Set(first.missingRefs);
+    const repairContext = {
+        items: new Map([...context.items].filter(([ref]) => missing.has(ref))), requiredRefs: first.missingRefs,
+        quotes: new Map([...context.quotes].filter(([ref]) => missing.has(ref))),
+        input: JSON.stringify({ items: inputItems.filter(item => missing.has(item.ref)) }),
+    };
+    return {
+        system: '你是群聊摘要助手，正在定向补漏。只阅读本次缺失的核心items，保留原ref；首轮已确认的记录不会重写。每个缺失ref必须明确归组，媒体提示不能虚构内容。\n'
+            + exchangeInstructions(INTERMEDIATE_CHARS) + '\n必须归组的完整ref清单：' + first.missingRefs.join(','),
+        input: repairContext.input,
+        validate: response => {
+            const repair = readValidatedExchange(response, repairContext, INTERMEDIATE_CHARS);
+            if (repair.missingRefs.length)
+                throw new ExchangeCoverageError(repair, context.requiredRefs);
+            const groups = [...first.records, ...repair.records].filter(record => record.kind === 'group');
+            const seenQuotes = new Set();
+            // 同一长消息的多个片段可以提供同一金句，原消息身份去重，不改写已验证点评。
+            const quotes = [...first.records, ...repair.records].filter(record => {
+                if (record.kind !== 'quote')
+                    return false;
+                const sourceId = context.quotes.get(String(record.ref)).sourceId;
+                if (seenQuotes.has(sourceId))
+                    return false;
+                seenQuotes.add(sourceId);
+                return true;
+            });
+            const combined = [...groups, ...quotes, { kind: 'end' }].map(record => JSON.stringify(record)).join('\n');
+            const result = readExchange(combined, context, 2 * INTERMEDIATE_CHARS, false, 6);
+            // 两个完整有界结果分别进入摘要树，不截断正文，也不挤回首轮1400字预算。
+            result.segments = [first.result, repair.result];
+            return result;
+        },
+    };
+}
 // 所有入选片段完成后才累计原消息成功；不会因累计长度或批次数停止后续处理。
 async function summarizeCompleteInput(messages, diagnostics, runtime) {
     const batches = packInputBatches(messages);
@@ -386,17 +568,18 @@ async function summarizeCompleteInput(messages, diagnostics, runtime) {
                 title: '', summary: '', sourceIds: [fragment.sourceId], participants: [String(messages[fragment.sourceId - 1].userId || '')].filter(Boolean),
             }]));
         const quotes = new Map(batch.fragments.map((fragment, index) => ['r' + (index + 1), { sourceId: fragment.sourceId, reason: '' }]));
-        const context = { items, requiredRefs: [...items.keys()], quotes, input: JSON.stringify({ items: batch.fragments.map((fragment, index) => ({
-                    ref: 'r' + (index + 1), time: messages[fragment.sourceId - 1].time || '',
-                    text: fragment.content,
-                })) }) };
+        const inputItems = batch.fragments.map((fragment, index) => ({
+            ref: 'r' + (index + 1), time: messages[fragment.sourceId - 1].time || '',
+            text: fragment.content,
+        }));
+        const context = { items, requiredRefs: [...items.keys()], quotes, input: JSON.stringify({ items: inputItems }) };
         const system = '你是群聊摘要助手。完整阅读本批所有消息片段，涵盖前中后时段和长正文尾部。金句可选择items的ref。\n' + exchangeInstructions(INTERMEDIATE_CHARS) + '\n必须归组的完整ref清单：' + [...items.keys()].join(',');
         const summary = await requestAnalysisUnit(runtime, diagnostics, { id: batch.id, stage: 'compression', sourceIds: [...sourceIds], timestamps: [...sourceIds].map(id => timestamps.get(id)).filter((value) => typeof value === 'number'), onSubmitted: () => {
                 for (const id of sourceIds)
                     submitted.add(id);
                 diagnostics.submittedMessageCount = submitted.size;
                 diagnostics.unprocessedCount = diagnostics.selectedMessageCount - submitted.size;
-            } }, system, context.input, 3000, 45000, response => readExchange(response, context, INTERMEDIATE_CHARS));
+            } }, system, context.input, 3000, 45000, response => readExchange(response, context, INTERMEDIATE_CHARS), error => createCoverageRecovery(error, context, inputItems));
         for (const fragment of batch.fragments)
             completed.add(fragment.id);
         let summarized = 0;
@@ -411,7 +594,10 @@ async function summarizeCompleteInput(messages, diagnostics, runtime) {
                 summarized += 1;
         }
         diagnostics.summarizedMessageCount = summarized;
-        nodes.push({ id: batch.id, ...summary, sourceIds });
+        for (const [index, segment] of (summary.segments || [summary]).entries()) {
+            nodes.push({ id: `${batch.id}-${index + 1}`, topics: segment.topics, quoteRefs: segment.quoteRefs,
+                sourceIds: new Set(segment.topics.flatMap(topic => topic.sourceIds)) });
+        }
         runtime.onProgress?.(diagnostics);
     }
     if (!nodes.length)

@@ -13,12 +13,15 @@ const { appendReportRecord } = require('./report-records');
 const PRECOMPUTE_ROOT = path.join(DATA_DIR, 'daily-precompute');
 const INDEX_ROOT = path.join(PRECOMPUTE_ROOT, 'index');
 const COVERAGE_ROOT = path.join(PRECOMPUTE_ROOT, 'coverage');
+// 读取既有统计索引；回复字段存在时只接受来源提供的非空字符串。
 function parsePrecomputeRecord(line) {
     try {
         const value = JSON.parse(line);
         if (!value || typeof value !== 'object' || Array.isArray(value))
             return null;
         const record = value;
+        if (record.replyToId !== undefined && (typeof record.replyToId !== 'string' || !record.replyToId.trim()))
+            return null;
         return {
             ...record,
             messageId: String(record.messageId || ''),
@@ -100,6 +103,7 @@ function appendPrecomputeIndex(input) {
     const date = String(input.date || todayCst(new Date(timestamp)));
     const record = appendReportRecord(date, channelKey, {
         messageId: input.messageId,
+        ...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
         timestamp,
         userId: String(input.userId || ''),
         userName: String(input.userName || ''),

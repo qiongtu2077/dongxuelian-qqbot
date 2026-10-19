@@ -8,6 +8,7 @@ const path = require('path')
 const { FORCE_TEMPLATE } = require('./config') as typeof import('./config')
 const { getErrorMessage } = require('./error-utils') as typeof import('./error-utils')
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
+const getReportEmptyStates: typeof import('./models').getReportEmptyStates = require('./models').getReportEmptyStates
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
 const { getShanghaiHourFromTs } = loadManagementModule('core.utils')
 const { ReportRuntimeTimeoutError } = loadManagementModule('daily.reportAnalysis')
@@ -65,7 +66,8 @@ interface ReportData {
   reportPeriod?: { periodStartMs: number; cutoffMs: number }
 }
 
-interface AnalysisResult {
+type ReportDisplayState = Parameters<typeof getReportEmptyStates>[0]
+interface AnalysisResult extends ReportDisplayState {
   topics?: Topic[]
   userTitles?: UserTitle[]
   goldenQuotes?: GoldenQuote[]
@@ -419,6 +421,11 @@ function buildTopicsHtml(topics?: Topic[]): string {
   return html
 }
 
+// 正常不足使用既有卡片与章节样式，不伪造话题、原话、人物或评分。
+function buildEmptyModuleHtml(title: string, message: string): string {
+  return `<div class="sec"><div class="bar"></div><div class="sec-t">${esc(title)}</div></div><div class="qr-card report-empty"><div class="topic-detail">${esc(message)}</div></div>`
+}
+
 // 构建群友画像HTML
 function buildProfilesHtml(userTitles?: UserTitle[]): string {
   if (!userTitles || !userTitles.length) return ''
@@ -487,10 +494,11 @@ function buildQualityHtml(qr: QualityReview | null | undefined, tokenUsage?: Tok
 
 // 替换模板变量
 function renderTemplate(template: string, data: ReportData, analysis: AnalysisResult, templateName: string): string {
-  const topicsHtml = buildTopicsHtml(analysis.topics)
-  const profilesHtml = buildProfilesHtml(analysis.userTitles)
-  const quotesHtml = buildQuotesHtml(analysis.goldenQuotes)
-  const qualityHtml = buildQualityHtml(analysis.qualityReview, analysis.tokenUsage)
+  const empty = getReportEmptyStates(analysis)
+  const topicsHtml = buildTopicsHtml(analysis.topics) || (empty.topics ? buildEmptyModuleHtml('📌 话题总结', empty.topics) : '')
+  const profilesHtml = buildProfilesHtml(analysis.userTitles) || (empty.portraits ? buildEmptyModuleHtml('👤 群友画像', empty.portraits) : '')
+  const quotesHtml = buildQuotesHtml(analysis.goldenQuotes) || (empty.quotes ? buildEmptyModuleHtml('✝ 今日圣经', empty.quotes) : '')
+  const qualityHtml = buildQualityHtml(analysis.qualityReview, analysis.tokenUsage) || (empty.review ? buildEmptyModuleHtml('💬 群聊锐评', empty.review) : '')
   // paper模板用CSS柱状图，其他用SVG
   const chartHtml = templateName === 'paper.html'
     ? buildCssBarChart(data.hourlyActivity || new Array(24).fill(0))

@@ -10,6 +10,28 @@ export interface FailedReportUnit {
     lastTimestamp: number | null;
     attempts: number;
     error: string;
+    allowedRefs?: string[];
+    missingRefs?: string[];
+}
+export interface ReportEvidenceMetrics {
+    version: 1;
+    selectedFragmentCount: number;
+    modelSubmittedMessageCount: number;
+    modelSubmittedFragmentCount: number;
+    processedMessageCount: number;
+    processedFragmentCount: number;
+    deterministicMessageCount: number;
+    deterministicFragmentCount: number;
+    cacheHitMessageCount: number;
+    cacheHitFragmentCount: number;
+    selectedTopicMessageCount: number;
+    selectedTopicFragmentCount: number;
+    deepReadMessageCount: number;
+    deepReadFragmentCount: number;
+    displayedTopicMessageCount: number;
+    displayedTopicFragmentCount: number;
+    unprocessedMessageCount: number;
+    processingCoverageRate: number | null;
 }
 export interface ReportAnalysisDiagnostics {
     reportPolicyVersion: 2;
@@ -50,6 +72,7 @@ export interface ReportAnalysisDiagnostics {
         basic: string;
         full: string;
     };
+    evidence?: ReportEvidenceMetrics;
 }
 export declare const REPORT_FAILURE_TEXT = "\u65E5\u62A5\u751F\u6210\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\uFF0C\u6216\u8054\u7CFBBot\u7BA1\u7406\u5458\u5904\u7406";
 export declare const REPORT_TIMEOUT_TEXT = "\u65E5\u62A5\u751F\u6210\u8D85\u65F6\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\uFF0C\u6216\u8054\u7CFBBot\u7BA1\u7406\u5458\u5904\u7406";

@@ -1,3 +1,4 @@
+declare const getReportEmptyStates: typeof import('./models').getReportEmptyStates;
 interface Topic {
     title?: string;
     summary?: string;
@@ -44,7 +45,8 @@ interface ReportData {
         cutoffMs: number;
     };
 }
-interface AnalysisResult {
+type ReportDisplayState = Parameters<typeof getReportEmptyStates>[0];
+interface AnalysisResult extends ReportDisplayState {
     topics?: Topic[];
     userTitles?: UserTitle[];
     goldenQuotes?: GoldenQuote[];
