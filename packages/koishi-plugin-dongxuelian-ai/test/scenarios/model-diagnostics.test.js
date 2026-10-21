@@ -56,6 +56,22 @@ async function runEvidenceCases(t) {
     try { await api.requestChatCompletions([], CONFIG) } catch { /* 预期路径错误停止。 */ }
     t.checkEqual('plain path 404 never becomes unconditional fallback', mocked.calls.length, 1)
   })
+  await withApi([], async ({ diagnostic, data }) => {
+    const common = { requestId: 'same-millisecond', capability: 'text', purpose: 'chat', elapsedMs: 0 }
+    diagnostic.recordModelDiagnostic({ ...common, ...CHAIN[0], status: 'failure', attempt: 1, fallback: false, reason: '请求受限' })
+    diagnostic.recordModelDiagnostic({ ...common, ...CHAIN[1], status: 'success', attempt: 2, fallback: true })
+    const file = 'ai-call-diagnostics/recent.json', instant = new Date().toISOString()
+    const failureKey = 'text:' + CHAIN[0].provider + ':' + CHAIN[0].model, successKey = 'text:' + CHAIN[1].provider + ':' + CHAIN[1].model
+    const recent = data.readJson(file)
+    for (const record of Object.values(recent)) record.createdAt = instant
+    data.writeJson(file, { [failureKey]: recent[failureKey], [successKey]: recent[successKey] })
+    t.check('same-millisecond final success follows persisted recording order', diagnostic.formatRecentModelDiagnostic().includes('备用接手成功'))
+    diagnostic.recordModelDiagnostic({ ...common, ...CHAIN[0], status: 'failure', attempt: 3, fallback: true, reason: '请求受限' })
+    const failed = data.readJson(file)
+    for (const record of Object.values(failed)) record.createdAt = instant
+    data.writeJson(file, { [successKey]: failed[successKey], [failureKey]: failed[failureKey] })
+    t.check('same-millisecond later failure is not hidden by previous success', diagnostic.formatRecentModelDiagnostic().startsWith('最近文字调用：请求受限'))
+  })
 }
 
 // 截断仅共享一次扩容，所有节点预算总和与整次判断期限均有界。

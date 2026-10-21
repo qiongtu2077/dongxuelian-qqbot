@@ -114,19 +114,21 @@ function recordModelDiagnostic(event) {
         fs.mkdirSync(DIAGNOSTIC_ROOT, { recursive: true });
         const now = new Date(), today = now.toISOString().slice(0, 10);
         const file = path.join(DIAGNOSTIC_ROOT, today + '.jsonl');
-        const payload = { ...event, createdAt: now.toISOString() };
-        if (!fs.existsSync(file) || fs.statSync(file).size < 5 * 1024 * 1024)
-            fs.appendFileSync(file, JSON.stringify(payload) + '\n', 'utf8');
         let recent = {};
         try {
             recent = JSON.parse(fs.readFileSync(RECENT_FILE, 'utf8'));
         }
         catch { /* 新进程或损坏视图从当前事件恢复。 */ }
+        // 多个备用节点可能在同一毫秒完成，用持久序号保留实际记录顺序。
+        const sequence = Math.max(0, ...Object.values(recent).map(item => typeof item.sequence === 'number' ? item.sequence : 0)) + 1;
+        const payload = { ...event, createdAt: now.toISOString(), sequence };
+        if (!fs.existsSync(file) || fs.statSync(file).size < 5 * 1024 * 1024)
+            fs.appendFileSync(file, JSON.stringify(payload) + '\n', 'utf8');
         const key = event.capability + ':' + event.provider + ':' + event.model;
         const previous = recent[key] || {};
         recent[key] = { ...previous, ...payload,
             ...(event.status === 'success' ? { lastSuccessAt: payload.createdAt } : { lastFailureAt: payload.createdAt, lastFailureReason: event.reason }) };
-        const entries = Object.entries(recent).sort((a, b) => String(b[1].createdAt).localeCompare(String(a[1].createdAt))).slice(0, 128);
+        const entries = Object.entries(recent).sort((a, b) => String(b[1].createdAt).localeCompare(String(a[1].createdAt)) || Number(b[1].sequence || 0) - Number(a[1].sequence || 0)).slice(0, 128);
         const temporary = RECENT_FILE + '.tmp';
         fs.writeFileSync(temporary, JSON.stringify(Object.fromEntries(entries)), 'utf8');
         fs.renameSync(temporary, RECENT_FILE);
@@ -146,7 +148,7 @@ function formatRecentModelDiagnostic() {
     try {
         const recent = JSON.parse(fs.readFileSync(RECENT_FILE, 'utf8'));
         const records = Object.values(recent).filter(item => item.capability === 'text');
-        const latest = records.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        const latest = records.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || (b.sequence || 0) - (a.sequence || 0))[0];
         if (!latest)
             return '最近文字调用：暂无记录';
         const success = records.map(item => item.lastSuccessAt || '').sort().pop();
