@@ -230,7 +230,66 @@ async function run(t) {
       } finally { global.fetch = originalFetch }
     })
   })
+  await withScenario({}, async ({ data, makeSession, run: middleware }) => {
+    await githubCase(t, 'real middleware deletes screenshot-style linked commands with no API request and checks the matching group', async () => {
+      const originalFetch = global.fetch
+      const repositoryUrl = 'https://github.com/qiongtu2077/dsh-melody-launcher'
+      let calls = 0
+      global.fetch = async () => { calls++; return githubResponse(githubFixture('repository', { full_name: 'qiongtu2077/dsh-melody-launcher', html_url: repositoryUrl })) }
+      try {
+        await middleware(makeSession({ content: 'GitHub查询群添加 10001' }))
+        await middleware(makeSession({ content: 'GitHub群项目导入 ' + repositoryUrl }))
+        await middleware(makeSession({ guildId: '10002', content: 'GitHub群项目导入 ' + repositoryUrl }))
+        const baseline = data.readJson('github-preview-repositories.json'), apiCalls = calls
+        const denied = await middleware(makeSession({ userId: '300000000', content: 'GitHub群项目删除' + repositoryUrl }))
+        assert(denied.sent.join('').includes('指定管理员'))
+        const direct = await middleware(makeSession({ isDirect: true, content: 'GitHub群项目删除' + repositoryUrl }))
+        assert(direct.sent.join('').includes('请在'))
+        const mismatch = await middleware(makeSession({ content: 'GitHub群项目删除 https://github.com/other/project' }))
+        assert(mismatch.sent.join('').includes('不一致'))
+        for (const suffix of [repositoryUrl + '/issues/1', 'https://github.com.evil/owner/repo', '不是链接', repositoryUrl + ' ' + repositoryUrl]) {
+          const invalid = await middleware(makeSession({ content: 'GitHub群项目删除 ' + suffix }))
+          assert(invalid.sent.join('').includes('用法'))
+        }
+        assert.deepEqual(data.readJson('github-preview-repositories.json'), baseline); assert.equal(calls, apiCalls)
+        const screenshotInput = await middleware(makeSession({ content: 'GitHub群项目删除' + repositoryUrl }))
+        assert(screenshotInput.sent.join('').includes('已删除')); assert(!screenshotInput.nextCalled)
+        assert.deepEqual(data.readJson('github-preview-repositories.json'), { '10002': repositoryUrl })
+        assert.deepEqual(data.readJson('github-preview-groups.json'), ['10001']); assert.equal(calls, apiCalls)
+        const empty = await middleware(makeSession({ content: 'GitHub群项目删除 ' + repositoryUrl }))
+        assert(empty.sent.join('').includes('尚未绑定'))
+        await middleware(makeSession({ content: 'GitHub群项目导入 ' + repositoryUrl }))
+        const canonical = await middleware(makeSession({ content: 'GitHub群项目删除 HTTPS://GITHUB.COM/QIONGTU2077/DSH-MELODY-LAUNCHER/?x=1#readme' }))
+        assert(canonical.sent.join('').includes('已删除'))
+        await middleware(makeSession({ content: 'GitHub群项目导入 ' + repositoryUrl }))
+        const bare = await middleware(makeSession({ content: 'GitHub群项目删除' }))
+        assert(bare.sent.join('').includes('已删除')); assert.equal(calls, apiCalls)
+        assert.deepEqual(data.readJson('github-preview-repositories.json'), { '10002': repositoryUrl })
+      } finally { global.fetch = originalFetch }
+    })
+  })
   await withScenario({}, async ({ data }) => {
+    await githubCase(t, 'linked deletion compares the latest serialized binding and preserves failed writes', async () => {
+      const { GithubGroupRepositories, handleGithubRepositoryCommand } = require(path.join(AI_ROOT, 'lib/github-preview/repositories'))
+      const repository = parseGithubTarget('https://github.com/qiongtu2077/dsh-melody-launcher'), other = parseGithubTarget('https://github.com/other/project')
+      const directory = data.pathFor('delete-race'), repositories = new GithubGroupRepositories(directory)
+      const noLookup = async () => { throw new Error('deletion must not request GitHub') }, signal = new AbortController().signal
+      await repositories.update('10001', repository)
+      let notifications = 0; repositories.onChanged(() => notifications++)
+      const replacement = repositories.update('10001', other)
+      const deletion = handleGithubRepositoryCommand('10001', false, 'GitHub群项目删除' + repository.url, repositories, noLookup, signal)
+      await replacement
+      assert((await deletion).includes('不一致')); assert.equal(notifications, 1)
+      assert.equal(new GithubGroupRepositories(directory).get('10001').key, other.key)
+      const failure = new GithubGroupRepositories(directory, async () => { throw new Error('disk full') })
+      failure.onChanged(() => notifications++)
+      const failed = await handleGithubRepositoryCommand('10001', false, 'GitHub群项目删除 ' + other.url, failure, noLookup, signal)
+      assert(failed.includes('保存失败')); assert.equal(failure.get('10001').key, other.key); assert.equal(notifications, 1)
+      const removed = await handleGithubRepositoryCommand('10001', false, 'GitHub群项目删除 ' + other.url, repositories, noLookup, signal)
+      assert(removed.includes('已删除')); assert.equal(notifications, 2)
+      assert.equal(new GithubGroupRepositories(directory).get('10001'), null)
+      assert((await handleGithubRepositoryCommand('10001', false, 'GitHub群项目删除' + other.url, repositories, noLookup, signal)).includes('尚未绑定'))
+    })
     await githubCase(t, 'repository binding is singular, durable, serialized and unchanged after failed writes or invalid snapshots', async () => {
       const { GithubGroupRepositories, handleGithubRepositoryCommand } = require(path.join(AI_ROOT, 'lib/github-preview/repositories'))
       const { GithubQueryError: RepositoryQueryError } = require(path.join(AI_ROOT, 'lib/github-preview/client'))

@@ -15,6 +15,8 @@ const settings_1 = require("./settings");
 const client_1 = require("./client");
 const { DATA_DIR } = require('../core/constants');
 const { writeJsonFile } = require('../core/utils');
+class GithubRepositoryMismatchError extends Error {
+}
 // --- 独立绑定配置 --- //
 class GithubGroupRepositories {
     // Reject an entire malformed snapshot rather than partially trusting group bindings.
@@ -51,8 +53,8 @@ class GithubGroupRepositories {
     get(group) { const url = this.bindings.get(group); return url ? (0, input_1.parseGithubTarget)(url) : null; }
     // Notify the runtime only after the replacement or deletion is durable.
     onChanged(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-    // Serialize atomic updates; a group always has zero or one repository.
-    async update(group, repository) {
+    // Serialize atomic updates; conditional deletion checks the current binding inside the same write queue.
+    async update(group, repository, expected) {
         if (!(0, settings_1.normalizeGithubGroup)(group))
             throw new Error('群号格式不正确');
         const target = repository ? (0, input_1.parseGithubTarget)(repository.url) : null;
@@ -60,6 +62,8 @@ class GithubGroupRepositories {
             throw new Error('必须使用仓库根链接');
         const operation = this.updates.catch(() => { }).then(async () => {
             const previous = this.get(group);
+            if (expected && previous && previous.key !== expected.key)
+                throw new GithubRepositoryMismatchError('删除链接与本群当前绑定项目不一致，绑定未更改。请先使用 GitHub群项目查看。');
             if (previous?.key === target?.key || (!previous && !target))
                 return false;
             const next = new Map(this.bindings);
@@ -94,18 +98,22 @@ async function handleGithubRepositoryCommand(group, isDirect, plain, repositorie
         return '请在需要绑定的群中使用 GitHub 群项目命令。';
     if (/^GitHub群项目查看$/i.test(plain))
         return repositories.get(group) ? '本群 GitHub 项目：' + repositories.get(group).url : '本群尚未绑定 GitHub 项目。';
-    if (/^GitHub群项目删除$/i.test(plain)) {
+    if (/^GitHub群项目删除/i.test(plain)) {
+        const deletion = plain.match(/^GitHub群项目删除\s*(\S+)?$/i);
+        const expected = deletion?.[1] ? (0, input_1.parseGithubTarget)(deletion[1]) : undefined;
+        if (!deletion || (deletion[1] && expected?.kind !== 'repository'))
+            return '用法：GitHub群项目删除 [仓库链接]；省略链接删除本群绑定，带链接时须与当前绑定一致。';
         try {
-            return await repositories.update(group, null) ? '已删除本群 GitHub 项目绑定。' : '本群尚未绑定 GitHub 项目。';
+            return await repositories.update(group, null, expected || undefined) ? '已删除本群 GitHub 项目绑定。' : '本群尚未绑定 GitHub 项目。';
         }
-        catch {
-            return 'GitHub 群项目配置保存失败，绑定未更改。';
+        catch (error) {
+            return error instanceof GithubRepositoryMismatchError ? error.message : 'GitHub 群项目配置保存失败，绑定未更改。';
         }
     }
     const match = plain.match(/^GitHub群项目导入\s*(\S+)$/i);
     const target = match ? (0, input_1.parseGithubTarget)(match[1]) : null;
     if (target?.kind !== 'repository')
-        return '用法：GitHub群项目导入 <公开仓库链接> / GitHub群项目查看 / GitHub群项目删除';
+        return '用法：GitHub群项目导入 <公开仓库链接> / GitHub群项目查看 / GitHub群项目删除 [仓库链接]（可省略链接）';
     const controller = new AbortController();
     const cancelGithubImport = () => controller.abort(signal.reason);
     signal.addEventListener('abort', cancelGithubImport, { once: true });
