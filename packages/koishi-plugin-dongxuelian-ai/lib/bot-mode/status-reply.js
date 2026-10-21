@@ -9,6 +9,11 @@ const { readResourceSnapshot } = require('../resource-scheduler/resource-snapsho
 const { getResourceGateStatus } = require('../resource-gate/gate');
 const { AI_CAPABILITIES, loadCapabilityConfigSync, getProviderCatalogEntry, isProviderKeyConfigured } = require('../core/ai-capability-config');
 const { runTextConnectivityCheck } = require('../diagnostics/model-connectivity');
+const { formatRecentModelDiagnostic } = require('../core/request-diagnostics');
+const { loadRuntimeSettings, getRandomTriggerBaseRate, getRandomWhitelistStatus } = require('../behavior/runtime-settings');
+const { getGroupPersona } = require('../persona/persona');
+const { RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP } = require('../core/constants');
+const { formatPercent } = require('../core/utils');
 const CAPABILITY_LABELS = {
     text: '文字', vision: '识图', 'voice-asr': '语音识别', 'voice-tts': '语音合成',
 };
@@ -97,7 +102,7 @@ function formatCapabilityModels() {
 }
 // --- 状态回复 --- //
 // 资源查询保持只读；AI状态在资源允许时附加最多四个文字节点的微量探测。
-async function buildResourceStatusReply(checkConnectivity = false) {
+async function buildResourceStatusReply(checkConnectivity = false, channelKey = '') {
     if (checkConnectivity) {
         const now = Date.now();
         const remainingSeconds = Math.ceil((aiStatusAvailableAt - now) / 1000);
@@ -112,6 +117,14 @@ async function buildResourceStatusReply(checkConnectivity = false) {
         : snapshot.resourceState === 'red' ? '内存不足'
             : snapshot.resourceState === 'yellow' ? '内存偏紧' : '内存充足';
     const models = formatCapabilityModels();
+    const occupancy = typeof snapshot.memTotalMb === 'number' && snapshot.memTotalMb > 0 && typeof snapshot.memAvailableMb === 'number'
+        ? `内存占用${Math.round((1 - snapshot.memAvailableMb / snapshot.memTotalMb) * 100)}%｜` : '';
+    const groupSettings = [];
+    if (checkConnectivity && channelKey) {
+        await loadRuntimeSettings();
+        const baseRate = getRandomTriggerBaseRate(channelKey);
+        groupSettings.push('', `当前群人格：${getGroupPersona(channelKey)?.persona || '默认'}`, `当前群基础触发率：${formatPercent(baseRate)}`, `当前群白名单状态：${getRandomWhitelistStatus(channelKey) ? '允许主动回复' : '未允许主动回复'}`, `随机触发率规则：${RANDOM_TRIGGER_WARMUP}条内${formatPercent(baseRate)}，${RANDOM_TRIGGER_WARMUP}条后每条+${formatPercent(RANDOM_TRIGGER_RAMP)}（最高100%）`);
+    }
     const connectivity = checkConnectivity
         ? await runTextConnectivityCheck(MAX_STATUS_MODELS_PER_CAPABILITY, snapshot.botMode === 'normal' && snapshot.resourceState === 'green')
         : ['此查询未检测模型连通性；发送“AI状态”可进行微量文字探测。'];
@@ -119,14 +132,36 @@ async function buildResourceStatusReply(checkConnectivity = false) {
         '莲莲 · AI状态',
         `运行：${formatRuntimeMode(snapshot)}`,
         `任务：${formatRunningTask(gate.meta)}`,
-        `资源：${resource}｜可用 ${formatMemory(snapshot.memAvailableMb, snapshot.memTotalMb)}`,
+        `资源：${occupancy}${resource}｜可用 ${formatMemory(snapshot.memAvailableMb, snapshot.memTotalMb)}`,
         '',
         '模型顺序（按配置排列）',
         ...models,
+        ...groupSettings,
         '',
         ...connectivity,
+        ...(checkConnectivity ? ['', formatRecentModelDiagnostic()] : []),
     ].join('\n');
+}
+// AI状态使用适配器已确认的合并记录接口；冷却与不支持记录的适配器返回普通文字。
+async function buildStatusCommandReply(session, checkConnectivity = true) {
+    const groupId = session.isDirect ? '' : String(session.guildId || session.channelId || '');
+    const text = await buildResourceStatusReply(checkConnectivity, groupId);
+    if (!checkConnectivity || text.startsWith('查询冷却倒计时'))
+        return text;
+    const internal = session.bot?.internal;
+    const target = groupId || String(session.userId || '');
+    const sender = groupId ? internal?.sendGroupForwardMsg : internal?.sendPrivateForwardMsg;
+    if (target && typeof sender === 'function') {
+        const nodes = [{ type: 'node', data: { name: '东雪莲pro', uin: String(session.selfId || session.bot?.selfId || '10000'), content: text } }];
+        try {
+            if (await sender.call(internal, target, nodes))
+                return undefined;
+        }
+        catch { /* 记录发送失败时保留可读状态回复。 */ }
+    }
+    return text;
 }
 module.exports = {
     buildResourceStatusReply,
+    buildStatusCommandReply,
 };

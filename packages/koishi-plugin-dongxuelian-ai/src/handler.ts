@@ -53,7 +53,7 @@ const { handlePlanCommand } = require('./commands/plan-command') as typeof impor
 const { handleAgentCommand } = require('./commands/agent-command') as typeof import('./commands/agent-command')
 const { handleEmotionCommand } = require('./commands/emotion-command') as typeof import('./commands/emotion-command')
 const { DEFAULT_RANDOM_VOICE_RATE, getRandomVoiceRate } = require('./behavior/random-voice-rate') as typeof import('./behavior/random-voice-rate')
-const { buildResourceStatusReply } = require('./bot-mode/status-reply') as typeof import('./bot-mode/status-reply')
+const { buildStatusCommandReply } = require('./bot-mode/status-reply') as typeof import('./bot-mode/status-reply')
 
 type HandlerCommandResult = ReturnType<typeof handled> | ReturnType<typeof notHandled>
 
@@ -651,7 +651,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
   }
 
   if (plain === 'AI状态') {
-    return handled(await buildResourceStatusReply(true))
+    return handled(await buildStatusCommandReply(session, true))
   }
 
   if (plain === 'AI诊断') {

@@ -1,5 +1,6 @@
 const command = require('./command.test')
 const statusConnectivity = require('./status-connectivity.test')
+const modelDiagnostics = require('./model-diagnostics.test')
 const essence = require('./essence.test')
 const chat = require('./chat.test')
 const repeat = require('./repeat.test')
@@ -28,6 +29,7 @@ const todayCache = require('./today-cache.test')
 const SCENARIOS = [
   command,
   statusConnectivity,
+  modelDiagnostics,
   essence,
   chat,
   repeat,

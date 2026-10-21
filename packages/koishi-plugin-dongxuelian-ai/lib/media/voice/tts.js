@@ -8,6 +8,7 @@
 const { TTS_TEMP_DIR } = require('../../core/constants');
 const { resolveCapabilityRuntimeSteps } = require('../../core/ai-capability-config');
 const { notifyCapabilityStepFailure } = require('../../core/capability-failure-notifier');
+const { ModelRequestError, assertModelResponseOk, buildModelFailureNotice, getFailedModelUsage, createDiagnosticRequestId, recordModelDiagnostic } = require('../../core/request-diagnostics');
 const { recordTokenUsage } = require('../../core/api');
 const { resolveVoiceSampleFile } = require('./voice-assets');
 const { resolvePersonaRuntimePlan } = require('../../persona/persona-runtime-plan');
@@ -236,23 +237,14 @@ function scheduleTtsSendFileCleanup(filePath, ttlMs = TTS_SEND_FILE_TTL_MS) {
     if (typeof timer.unref === 'function')
         timer.unref();
 }
-class TtsStepError extends Error {
+class TtsStepError extends ModelRequestError {
     // 创建不含上游响应正文的稳定 TTS 错误。
     constructor(code, message, retryable = true, status = 0) {
-        super(message);
+        super(message, code, retryable, status, { reason: message });
         this.name = 'TtsStepError';
-        this.code = code;
-        this.status = status;
-        this.retryable = retryable;
     }
 }
 // 校验 TTS HTTP 状态；鉴权、限流和 5xx 可继续下一优先级。
-function assertTtsResponseOk(response) {
-    if (response.ok)
-        return;
-    const retryable = response.status === 401 || response.status === 403 || response.status === 429 || response.status >= 500;
-    throw new TtsStepError('http_error', `语音合成上游失败（HTTP ${response.status}）`, retryable, response.status);
-}
 // 为音频 Buffer 标记检测到的 MIME，无法播放时作为可降级的无效结果。
 function finalizeTtsAudio(buffer, declaredMime = '') {
     const detectedMime = detectAudioMime(buffer);
@@ -277,7 +269,7 @@ async function requestMimoriumTts(step, text, voice, style, signal) {
             audio: { format: 'wav', voice },
         }),
     });
-    assertTtsResponseOk(response);
+    await assertModelResponseOk(response, [step.apiKey, text, style, voice]);
     let data;
     try {
         const value = await response.json();
@@ -293,10 +285,17 @@ async function requestMimoriumTts(step, text, voice, style, signal) {
     const message = first.message && typeof first.message === 'object' ? first.message : {};
     const audio = message.audio && typeof message.audio === 'object' ? message.audio : {};
     const decoded = decodeTtsAudioData(audio.data);
-    if (!decoded.buffer)
-        throw new TtsStepError('invalid_audio_data', '语音合成结果缺少有效音频数据');
     const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage : undefined;
-    return { buffer: finalizeTtsAudio(decoded.buffer, decoded.declaredMime), usage, readable: !!usage && Object.keys(usage).some(key => /tokens/i.test(key)) };
+    try {
+        if (!decoded.buffer)
+            throw new TtsStepError('invalid_audio_data', '语音合成结果缺少有效音频数据');
+        return { buffer: finalizeTtsAudio(decoded.buffer, decoded.declaredMime), usage, readable: !!usage && Object.keys(usage).some(key => /tokens/i.test(key)) };
+    }
+    catch (error) {
+        if (error instanceof TtsStepError)
+            error.details.usage = usage;
+        throw error;
+    }
 }
 // 调用 OpenAI 官方 audio/speech 协议；不支持克隆音色时转入下一优先级。
 async function requestOpenAiTts(step, text, voice, signal) {
@@ -308,7 +307,7 @@ async function requestOpenAiTts(step, text, voice, signal) {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${step.apiKey}` },
         body: JSON.stringify({ model: step.model, input: text, voice: selectedVoice, response_format: 'wav' }),
     });
-    assertTtsResponseOk(response);
+    await assertModelResponseOk(response, [step.apiKey, text, voice]);
     let buffer;
     try {
         buffer = Buffer.from(await response.arrayBuffer());
@@ -329,10 +328,12 @@ async function synthesizeSpeech(text, options = {}) {
     if (!steps.length)
         return recordTtsFailure({ ...options, voice }, 'capability_unconfigured', '该能力未配置模型');
     let lastError = null;
+    const requestId = createDiagnosticRequestId();
     for (let index = 0; index < steps.length; index += 1) {
         const step = steps[index];
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), voice.startsWith('data:') ? 30000 : TTS_TIMEOUT_MS);
+        const startedAt = Date.now();
         try {
             const result = step.provider === 'openai'
                 ? await requestOpenAiTts(step, ttsText, voice, controller.signal)
@@ -341,13 +342,22 @@ async function synthesizeSpeech(text, options = {}) {
             const total = Number(usage.total_tokens || usage.totalTokens || 0)
                 || Number(usage.input_tokens || usage.prompt_tokens || 0) + Number(usage.output_tokens || usage.completion_tokens || 0);
             recordTokenUsage(step.provider, Number.isFinite(total) ? total : 0, { capability: 'voice-tts', model: step.model, usage, readable: result.readable });
+            recordModelDiagnostic({ requestId, capability: 'voice-tts', purpose: 'voice-tts', provider: step.provider, model: step.model, status: 'success', elapsedMs: Date.now() - startedAt, attempt: index + 1, fallback: index > 0, usageReadable: result.readable });
             return result.buffer;
         }
         catch (error) {
             lastError = error;
             console.warn(`[voice-tts] capability_step_failed provider=${step.provider} model=${step.model}`);
-            await notifyCapabilityStepFailure(step.provider, step.model, 'voice-tts').catch(() => false);
-            const retryable = !(error instanceof TtsStepError) || error.retryable;
+            // 音色与模型不匹配发生在本地，不能冒充模型故障或消耗失败用量。
+            if (!(error instanceof TtsStepError && error.code === 'voice_model_mismatch')) {
+                const notice = buildModelFailureNotice(error, controller.signal.aborted, requestId, 'voice-tts');
+                const failedUsage = getFailedModelUsage(error);
+                recordTokenUsage(step.provider, failedUsage.total, { capability: 'voice-tts', model: step.model, usage: failedUsage.usage, readable: failedUsage.readable });
+                recordModelDiagnostic({ ...notice, capability: 'voice-tts', provider: step.provider, model: step.model, status: 'failure', elapsedMs: Date.now() - startedAt, attempt: index + 1, fallback: index > 0, httpStatus: notice.status, usageReadable: failedUsage.readable,
+                    ...(failedUsage.readable ? { inputTokens: failedUsage.inputTokens, outputTokens: failedUsage.outputTokens } : {}) });
+                await notifyCapabilityStepFailure(step.provider, step.model, 'voice-tts', notice).catch(() => false);
+            }
+            const retryable = error?.retryable !== false;
             if (!retryable || index >= steps.length - 1)
                 break;
         }
@@ -355,9 +365,9 @@ async function synthesizeSpeech(text, options = {}) {
             clearTimeout(timer);
         }
     }
-    const failure = lastError instanceof TtsStepError ? lastError : null;
+    const failure = lastError instanceof TtsStepError || lastError instanceof ModelRequestError ? lastError : null;
     const isAbort = lastError && typeof lastError === 'object' && lastError.name === 'AbortError';
-    return recordTtsFailure({ ...options, voice }, isAbort ? 'timeout' : (failure?.code || 'request_failed'), failure?.message || (isAbort ? '语音合成请求超时' : '语音合成请求失败'), { ...(failure?.status ? { status: failure.status } : {}), model: steps[steps.length - 1]?.model || '' });
+    return recordTtsFailure({ ...options, voice }, isAbort ? 'timeout' : (failure instanceof ModelRequestError && !(failure instanceof TtsStepError) && failure.status ? 'http_error' : failure?.code || 'request_failed'), failure?.message || (isAbort ? '语音合成请求超时' : '语音合成请求失败'), { ...(failure?.status ? { status: failure.status } : {}), model: steps[steps.length - 1]?.model || '' });
 }
 async function sendVoiceMessage(session, audioBuf, options = {}) {
     if (!audioBuf || !audioBuf.length) {

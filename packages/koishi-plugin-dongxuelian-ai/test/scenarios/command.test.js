@@ -5,6 +5,7 @@ const { AI_ROOT } = require('../fake/file')
 const { mockFetch } = require('../fake/fetch')
 const { seedCapabilityConfig } = require('../helpers/ai-capability-fixture')
 const { checkSentNonEmpty, checkNoLeak, checkNextCalled } = require('../helpers/assert')
+const { readStatusResult } = require('../helpers/status-result')
 
 // 为状态与探测场景提供稳定的空闲资源预算。
 async function withGreenResourceSnapshot(fn) {
@@ -52,7 +53,9 @@ async function run(t) {
     try {
       await withGreenResourceSnapshot(async () => {
         const first = await run(makeSession({ content: 'AI状态' }))
-        const text = first.sent.join('\n')
+        const text = readStatusResult(first)
+        t.check('scenario status sends one merged record', first.sent.length === 0 && first.internalCalls.filter(call => call.method === 'sendGroupForwardMsg').length === 1)
+        t.check('scenario status shows actual memory occupancy and group settings', text.includes('内存占用25%') && text.includes('当前群人格：默认') && text.includes('当前群基础触发率：0.8%') && text.includes('当前群白名单状态：未允许主动回复') && text.includes('50条内0.8%，50条后每条+2%'), text)
         t.check('scenario status shows live custom provider and exact ordered models',
           text.includes('文字：1. 灵 / glm-5.3-flash → 2. OpenCode / deepseek-v4-flash → 3. 千问 / qwen3.7-plus'), text)
         t.check('scenario status distinguishes generation truncation from model failure',
@@ -94,7 +97,7 @@ async function run(t) {
     await withGreenResourceSnapshot(async () => {
       const empty = seedCapabilityConfig(data, {})
       const noModel = await run(makeSession({ content: 'AI状态' }))
-      t.check('scenario status survives empty text configuration', noModel.sent.join('\n').includes('文字：未配置'), JSON.stringify(noModel.sent))
+      t.check('scenario status survives empty text configuration', readStatusResult(noModel).includes('文字：未配置'), JSON.stringify(noModel.sent))
       data.writeText('ai-capability-config.json', '{broken sk-private-status-secret')
       const invalid = await run(makeSession({ content: '资源状态' }))
       t.check('scenario malformed model config preserves resource status',
@@ -116,7 +119,7 @@ async function run(t) {
     let status
     try { status = await run(makeSession({ content: 'AI\u72b6\u6001' })) }
     finally { global.fetch = originalFetch }
-    checkSentNonEmpty(t, 'scenario AI status replies', status)
+    t.check('scenario AI status replies', readStatusResult(status).startsWith('莲莲 · AI状态'), readStatusResult(status))
     checkNoLeak(t, 'scenario AI status does not leak key', status, ['sk-test-secret', 'Bearer'])
 
     const previousMemOverride = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE

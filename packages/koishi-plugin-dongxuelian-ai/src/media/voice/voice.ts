@@ -10,6 +10,7 @@ const { execFile } = require('child_process')
 const { recordTokenUsage } = require('../../core/api') as typeof import('../../core/api')
 const { resolveCapabilityRuntimeSteps } = require('../../core/ai-capability-config') as typeof import('../../core/ai-capability-config')
 const { notifyCapabilityStepFailure } = require('../../core/capability-failure-notifier') as typeof import('../../core/capability-failure-notifier')
+const { ModelRequestError, assertModelResponseOk, buildModelFailureNotice, getFailedModelUsage, createDiagnosticRequestId, recordModelDiagnostic } = require('../../core/request-diagnostics') as typeof import('../../core/request-diagnostics')
 const { extractVoiceUrls, validatePublicHttpUrl, resolveAndValidateHostname } = require('../../core/utils') as typeof import('../../core/utils')
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
 
@@ -199,48 +200,36 @@ function pcmToWav(pcmData: Buffer | Uint8Array, sampleRate: number, channels: nu
   return Buffer.concat([header, Buffer.from(pcmData)])
 }
 
-// 把上游 ASR HTTP 状态转换为不含响应正文的稳定错误。
-function assertAsrResponseOk(response: Response): void {
-  if (response.ok) return
-  const error = new Error(`语音识别上游失败（HTTP ${response.status}）`) as Error & { retryable?: boolean }
-  error.retryable = response.status === 401 || response.status === 403 || response.status === 429 || response.status >= 500
-  throw error
-}
-
 // 安全解析 ASR JSON，解析失败可进入下一优先级且不泄露上游正文。
 async function readAsrJson(response: Response): Promise<Record<string, unknown>> {
   try {
     const value: unknown = await response.json()
     if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
   } catch { /* handled below */ }
-  const error = new Error('语音识别上游返回了无法解析的结果') as Error & { retryable?: boolean }
-  error.retryable = true
-  throw error
+  throw new ModelRequestError('语音识别上游返回了无法解析的结果', 'INVALID_RESPONSE', true)
 }
 
 // 通过 OpenAI 官方 audio/transcriptions 协议转写一个 WAV 文件。
-async function requestOpenAiAsr(wavPath: string, step: AsrRuntimeStep, signal: AbortSignal): Promise<AsrAttemptResult> {
+async function requestOpenAiAsr(audioBytes: Buffer, step: AsrRuntimeStep, signal: AbortSignal): Promise<AsrAttemptResult> {
   const form = new FormData()
   form.append('model', step.model)
-  form.append('file', new Blob([fs.readFileSync(wavPath)], { type: 'audio/wav' }), 'voice.wav')
+  form.append('file', new Blob([new Uint8Array(audioBytes)], { type: 'audio/wav' }), 'voice.wav')
   const response = await fetch(`${step.baseURL.replace(/\/+$/, '')}/audio/transcriptions`, {
     method: 'POST', signal, headers: { Authorization: `Bearer ${step.apiKey}` }, body: form,
   })
-  assertAsrResponseOk(response)
+  await assertModelResponseOk(response, [step.apiKey])
   const data = await readAsrJson(response)
+  const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage as Record<string, unknown> : undefined
   const text = String(data.text || '').trim()
   if (!text) {
-    const error = new Error('语音识别上游返回空结果') as Error & { retryable?: boolean }
-    error.retryable = true
-    throw error
+    throw new ModelRequestError('语音识别上游返回空结果', 'EMPTY_RESPONSE', true, 200, { usage })
   }
-  const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage as Record<string, unknown> : undefined
   return { text, usage, readable: !!usage && Object.keys(usage).some(key => /tokens/i.test(key)) }
 }
 
 // 通过小米已验证的 OpenAI 兼容多模态路径调用专用 ASR 模型。
-async function requestMimoriumAsr(wavPath: string, step: AsrRuntimeStep, signal: AbortSignal): Promise<AsrAttemptResult> {
-  const audio = `data:audio/wav;base64,${fs.readFileSync(wavPath).toString('base64')}`
+async function requestMimoriumAsr(audioBytes: Buffer, step: AsrRuntimeStep, signal: AbortSignal): Promise<AsrAttemptResult> {
+  const audio = `data:audio/wav;base64,${audioBytes.toString('base64')}`
   const response = await fetch(`${step.baseURL.replace(/\/+$/, '')}/chat/completions`, {
     method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${step.apiKey}` },
@@ -253,18 +242,16 @@ async function requestMimoriumAsr(wavPath: string, step: AsrRuntimeStep, signal:
       ] }],
     }),
   })
-  assertAsrResponseOk(response)
+  await assertModelResponseOk(response, [step.apiKey, audio])
   const data = await readAsrJson(response)
+  const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage as Record<string, unknown> : undefined
   const choices = Array.isArray(data.choices) ? data.choices : []
   const first = choices[0] && typeof choices[0] === 'object' ? choices[0] as Record<string, unknown> : {}
   const message = first.message && typeof first.message === 'object' ? first.message as Record<string, unknown> : {}
   const text = String(message.content || '').trim()
   if (!text) {
-    const error = new Error('语音识别上游返回空结果') as Error & { retryable?: boolean }
-    error.retryable = true
-    throw error
+    throw new ModelRequestError('语音识别上游返回空结果', 'EMPTY_RESPONSE', true, 200, { usage })
   }
-  const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage as Record<string, unknown> : undefined
   return { text, usage, readable: !!usage && Object.keys(usage).some(key => /tokens/i.test(key)) }
 }
 
@@ -272,23 +259,33 @@ async function requestMimoriumAsr(wavPath: string, step: AsrRuntimeStep, signal:
 async function callModelAsr(wavPath: string, _config?: VoiceConfig): Promise<string> {
   const steps = resolveCapabilityRuntimeSteps('voice-asr') as AsrRuntimeStep[]
   if (!steps.length) throw new Error('该能力未配置模型')
+  // 本地文件读取在上游尝试之外完成，文件错误不发送模型故障告警。
+  const audioBytes = fs.readFileSync(wavPath)
+  const requestId = createDiagnosticRequestId()
   for (let index = 0; index < steps.length; index += 1) {
     const step = steps[index]
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), ASR_TIMEOUT_MS)
+    const startedAt = Date.now()
     try {
       const result = step.provider === 'openai'
-        ? await requestOpenAiAsr(wavPath, step, controller.signal)
-        : await requestMimoriumAsr(wavPath, step, controller.signal)
+        ? await requestOpenAiAsr(audioBytes, step, controller.signal)
+        : await requestMimoriumAsr(audioBytes, step, controller.signal)
       const usage = result.usage || {}
       const total = Number(usage.total_tokens || usage.totalTokens || 0)
         || Number(usage.input_tokens || usage.prompt_tokens || 0) + Number(usage.output_tokens || usage.completion_tokens || 0)
       recordTokenUsage(step.provider, Number.isFinite(total) ? total : 0, { capability: 'voice-asr', model: step.model, usage, readable: result.readable })
+      recordModelDiagnostic({ requestId, capability: 'voice-asr', purpose: 'voice-asr', provider: step.provider, model: step.model, status: 'success', elapsedMs: Date.now() - startedAt, attempt: index + 1, fallback: index > 0, usageReadable: result.readable })
       return result.text
     } catch (error) {
       const retryable = (error as { retryable?: unknown })?.retryable !== false
       console.warn(`[voice-asr] capability_step_failed provider=${step.provider} model=${step.model}`)
-      await notifyCapabilityStepFailure(step.provider, step.model, 'voice-asr').catch(() => false)
+      const notice = buildModelFailureNotice(error, controller.signal.aborted, requestId, 'voice-asr')
+      const failedUsage = getFailedModelUsage(error)
+      recordTokenUsage(step.provider, failedUsage.total, { capability: 'voice-asr', model: step.model, usage: failedUsage.usage, readable: failedUsage.readable })
+      recordModelDiagnostic({ ...notice, capability: 'voice-asr', provider: step.provider, model: step.model, status: 'failure', elapsedMs: Date.now() - startedAt, attempt: index + 1, fallback: index > 0, httpStatus: notice.status, usageReadable: failedUsage.readable,
+        ...(failedUsage.readable ? { inputTokens: failedUsage.inputTokens, outputTokens: failedUsage.outputTokens } : {}) })
+      await notifyCapabilityStepFailure(step.provider, step.model, 'voice-asr', notice).catch(() => false)
       if (!retryable || index >= steps.length - 1) throw error
     } finally {
       clearTimeout(timer)

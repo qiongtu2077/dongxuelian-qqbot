@@ -187,7 +187,7 @@ const {
   decideEntryDirective,
 } = require('./resource-scheduler/resource-directive') as typeof import('./resource-scheduler/resource-directive')
 type BotCommandType = ReturnType<typeof classifyCommand>
-const { buildResourceStatusReply } = require('./bot-mode/status-reply') as typeof import('./bot-mode/status-reply')
+const { buildStatusCommandReply } = require('./bot-mode/status-reply') as typeof import('./bot-mode/status-reply')
 
 interface IndexLogger {
   info(...args: unknown[]): void
@@ -494,7 +494,7 @@ function apply(ctx: IndexContext): void {
     try {
       await fs.access(MAINTENANCE_FILE)
       // 维护期间仍允许低成本状态查询，由同一状态模块解释当前限制。
-      if (isStatusCommand(normalizeText(stripMentions(content)))) return buildResourceStatusReply(/^AI状态$/i.test(normalizeText(stripMentions(content))))
+      if (isStatusCommand(normalizeText(stripMentions(content)))) return buildStatusCommandReply(session, /^AI状态$/i.test(normalizeText(stripMentions(content))))
       if (!session.isDirect && !isDirectAtBot(session)) return next()
       if (!session.isDirect) {
         bumpExplicitInteractionVersion(getChannelKey(session))
@@ -570,11 +570,11 @@ function apply(ctx: IndexContext): void {
     }
     if (shouldUseLightweightAiStatusFallback(plain, botDirective.action)) {
       markExplicitInteraction('resource-status')
-      return buildResourceStatusReply(/^AI状态$/i.test(plain))
+      return buildStatusCommandReply(session, /^AI状态$/i.test(plain))
     }
     if (botDirective.action === 'status_only') {
       markExplicitInteraction('resource-status')
-      return buildResourceStatusReply(/^AI状态$/i.test(plain))
+      return buildStatusCommandReply(session, /^AI状态$/i.test(plain))
     }
     if (botDirective.action === 'resource_notice') {
       markExplicitInteraction('resource-notice')

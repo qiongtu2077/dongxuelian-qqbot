@@ -99,7 +99,7 @@ const { channelMissCount, incrementRandomMiss, resetRandomMiss, getRandomTrigger
 const { buildAmbientWaterSendOptions } = require('./behavior/random-reply-mode'); // 随机非锚定水群发送策略
 const { classifyCommand, isStatusCommand } = require('./bot-mode/command-classifier');
 const { decideEntryDirective, } = require('./resource-scheduler/resource-directive');
-const { buildResourceStatusReply } = require('./bot-mode/status-reply');
+const { buildStatusCommandReply } = require('./bot-mode/status-reply');
 const configureAgentQueueForFlows = (queueConfig) => {
     configureAgentQueue(queueConfig);
 };
@@ -206,7 +206,7 @@ function apply(ctx) {
             await fs.access(MAINTENANCE_FILE);
             // 维护期间仍允许低成本状态查询，由同一状态模块解释当前限制。
             if (isStatusCommand(normalizeText(stripMentions(content))))
-                return buildResourceStatusReply(/^AI状态$/i.test(normalizeText(stripMentions(content))));
+                return buildStatusCommandReply(session, /^AI状态$/i.test(normalizeText(stripMentions(content))));
             if (!session.isDirect && !isDirectAtBot(session))
                 return next();
             if (!session.isDirect) {
@@ -281,11 +281,11 @@ function apply(ctx) {
         }
         if (shouldUseLightweightAiStatusFallback(plain, botDirective.action)) {
             markExplicitInteraction('resource-status');
-            return buildResourceStatusReply(/^AI状态$/i.test(plain));
+            return buildStatusCommandReply(session, /^AI状态$/i.test(plain));
         }
         if (botDirective.action === 'status_only') {
             markExplicitInteraction('resource-status');
-            return buildResourceStatusReply(/^AI状态$/i.test(plain));
+            return buildStatusCommandReply(session, /^AI状态$/i.test(plain));
         }
         if (botDirective.action === 'resource_notice') {
             markExplicitInteraction('resource-notice');

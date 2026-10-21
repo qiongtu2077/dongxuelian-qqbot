@@ -11,9 +11,19 @@ interface NotificationContext {
     bot?: NotificationBot;
 }
 type FailureSender = (adminId: string, message: string) => Promise<unknown>;
+interface FailureNotice {
+    purpose?: string;
+    reason?: string;
+    status?: number;
+    code?: string;
+    summary?: string;
+    upstreamCode?: string;
+    upstreamRequestId?: string;
+    requestId?: string;
+}
 declare function setCapabilityFailureSender(sender: FailureSender | null): void;
 declare function registerCapabilityFailureContext(ctx: NotificationContext): void;
-declare function notifyCapabilityStepFailure(providerId: string, model: string, capability: AiCapability, now?: number): Promise<boolean>;
+declare function notifyCapabilityStepFailure(providerId: string, model: string, capability: AiCapability, details?: FailureNotice): Promise<boolean>;
 declare function resetCapabilityFailureNotifier(): void;
 declare const _default: {
     FAILURE_NOTIFICATION_COOLDOWN_MS: number;

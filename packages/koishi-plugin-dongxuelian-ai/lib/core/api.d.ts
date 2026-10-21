@@ -15,6 +15,7 @@ interface ApiConfig {
     searchEnabled?: boolean;
 }
 interface RequestExtraBody {
+    _purpose?: 'chat' | 'topic_switch' | 'identity_judge';
     _timeoutMs?: number | string;
     _thinkingEnabled?: boolean;
     _thinkingManaged?: boolean;
@@ -86,6 +87,7 @@ type ChatCompletionResult = {
     reasoning: string;
 };
 interface UsageDetails {
+    [key: string]: unknown;
     total_tokens?: number;
     totalTokens?: number;
     prompt_tokens?: number;

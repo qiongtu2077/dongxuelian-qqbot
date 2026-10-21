@@ -8,6 +8,7 @@ const { REQUEST_TIMEOUT, DATA_DIR } = require('./constants');
 const { isDashScopeConfig, todayCst, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('./utils');
 const { AI_CAPABILITIES, isAiCapability, getProviderCatalogEntry, getVerifiedModelCapabilities, loadCapabilityConfigSync, resolveCapabilityRuntimeSteps, } = require('./ai-capability-config');
 const { notifyCapabilityStepFailure } = require('./capability-failure-notifier');
+const { ModelRequestError: CapabilityUpstreamError, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic } = require('./request-diagnostics');
 const { resolveOneBotWsUrl } = require('./onebot-endpoint');
 const WebSocket = require('ws');
 const path = require('path');
@@ -269,16 +270,6 @@ function normalizeMessagesForProvider(messages = [], config = {}) {
     }
     return result;
 }
-class CapabilityUpstreamError extends Error {
-    // 保存稳定诊断字段，消息中绝不包含上游正文或认证内容。
-    constructor(message, code, retryable, status = 0) {
-        super(message);
-        this.name = 'CapabilityUpstreamError';
-        this.code = code;
-        this.retryable = retryable;
-        this.status = status;
-    }
-}
 // 仅透传程序已分类的上游错误元数据；不读取正文、认证内容或猜测额度含义。
 function getChatFailureMetadata(error) {
     return error instanceof CapabilityUpstreamError ? { code: error.code, status: error.status, retryable: error.retryable } : null;
@@ -299,13 +290,9 @@ function buildFilteredExtraBody(extraBody) {
     }
     return filtered;
 }
-// 对非成功 HTTP 状态分类；只有鉴权、限流和 5xx 允许进入下一优先级。
-function assertUpstreamResponseOk(response) {
-    if (response.ok)
-        return;
-    const status = Number(response.status || 0);
-    const retryable = status === 401 || status === 403 || status === 429 || status >= 500;
-    throw new CapabilityUpstreamError(`AI 上游请求失败（HTTP ${status}）`, `HTTP_${status}`, retryable, status);
+// 从请求中收集只用于移除上游回显的内容；不写入诊断记录。
+function requestDiagnosticSecrets(config, messages) {
+    return [config.apiKey, ...messages.flatMap(message => typeof message.content === 'string' ? [message.content, ...message.content.split('\n').filter(Boolean)] : Array.isArray(message.content) ? message.content.flatMap(item => isRecord(item) && typeof item.text === 'string' ? [item.text] : []) : [])];
 }
 // 解析上游 JSON，失败时只报告稳定错误，不读取或回传正文。
 async function readUpstreamJson(response) {
@@ -517,7 +504,7 @@ async function requestOpenAiChatAttempt(messages, config, filtered, tools, signa
             ...(tools?.length ? { tools, tool_choice: 'auto' } : {}),
         }),
     });
-    assertUpstreamResponseOk(response);
+    await assertModelResponseOk(response, requestDiagnosticSecrets(config, messages));
     const data = await readUpstreamJson(response);
     const choices = Array.isArray(data.choices) ? data.choices : [];
     const first = isRecord(choices[0]) ? choices[0] : {};
@@ -534,7 +521,7 @@ async function requestOpenAiChatAttempt(messages, config, filtered, tools, signa
     if (!_nativeStructuredOutput && /<think>[\s\S]*?<\/think>/i.test(content))
         content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     if (!content)
-        throw new CapabilityUpstreamError('AI 上游返回空结果', 'EMPTY_RESPONSE', true);
+        throw new CapabilityUpstreamError('AI 上游没有返回可见答案', finishReason === 'length' ? 'OUTPUT_TRUNCATED' : 'EMPTY_RESPONSE', true, 200, { finishReason, contentLength: 0, reasoningLength: reasoning.length, usage });
     return { result: { type: 'text', content: _nativeStructuredOutput ? content.trim() : content.replace(/\s+/g, ' ').trim(), reasoning }, usage, usageReadable: hasReadableTokenUsage(usage), finishReason };
 }
 // 调用 Anthropic Messages 并把 text/tool_use 结果转换为统一格式。
@@ -553,7 +540,7 @@ async function requestAnthropicAttempt(messages, config, filtered, tools, signal
             ...(anthropicTools.length ? { tools: anthropicTools } : {}),
         }),
     });
-    assertUpstreamResponseOk(response);
+    await assertModelResponseOk(response, requestDiagnosticSecrets(config, messages));
     const data = await readUpstreamJson(response);
     const blocks = Array.isArray(data.content) ? data.content.filter(isRecord) : [];
     const text = blocks.filter(block => block.type === 'text').map(block => String(block.text || '')).join(' ').trim();
@@ -562,7 +549,7 @@ async function requestAnthropicAttempt(messages, config, filtered, tools, signal
     if (toolCalls.length)
         return { result: { type: 'tool_calls', tool_calls: toolCalls, message: { content: text, tool_calls: toolCalls }, reasoning: '' }, usage, usageReadable: hasReadableTokenUsage(usage) };
     if (!text)
-        throw new CapabilityUpstreamError('AI 上游返回空结果', 'EMPTY_RESPONSE', true);
+        throw new CapabilityUpstreamError('AI 上游返回空结果', 'EMPTY_RESPONSE', true, 200, { contentLength: 0, usage });
     return { result: { type: 'text', content: text.replace(/\s+/g, ' '), reasoning: '' }, usage, usageReadable: hasReadableTokenUsage(usage) };
 }
 // 调用 Gemini generateContent 并把文本、函数调用和用量规范为统一结构。
@@ -582,7 +569,7 @@ async function requestGeminiAttempt(messages, config, filtered, tools, signal) {
             ...(declarations.length ? { tools: [{ functionDeclarations: declarations }] } : {}),
         }),
     });
-    assertUpstreamResponseOk(response);
+    await assertModelResponseOk(response, requestDiagnosticSecrets(config, messages));
     const data = await readUpstreamJson(response);
     const candidates = Array.isArray(data.candidates) ? data.candidates : [];
     const candidate = isRecord(candidates[0]) ? candidates[0] : {};
@@ -602,7 +589,7 @@ async function requestGeminiAttempt(messages, config, filtered, tools, signal) {
     if (toolCalls.length)
         return { result: { type: 'tool_calls', tool_calls: toolCalls, message: { content: text, tool_calls: toolCalls }, reasoning: '' }, usage, usageReadable: !!metadata };
     if (!text)
-        throw new CapabilityUpstreamError('AI 上游返回空结果', 'EMPTY_RESPONSE', true);
+        throw new CapabilityUpstreamError('AI 上游返回空结果', 'EMPTY_RESPONSE', true, 200, { contentLength: 0, usage });
     return { result: { type: 'text', content: text.replace(/\s+/g, ' '), reasoning: '' }, usage, usageReadable: !!metadata };
 }
 // 依据权威供应商协议执行单个优先级步骤。
@@ -647,12 +634,25 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
         ? attempts.map((attempt, index) => index < startIndex ? filtered : prepareStructuredRequest(extraBody._structuredOutput, attempt, filtered, messages)) : null;
     const externalSignal = extraBody.signal && typeof extraBody.signal === 'object' ? extraBody.signal : null;
     const requestedTimeout = Number(extraBody._timeoutMs);
+    const purpose = extraBody._purpose || (capability === 'vision' ? 'vision' : 'chat');
+    const judgment = purpose === 'topic_switch' || purpose === 'identity_judge';
+    const deadline = judgment ? Date.now() + 8000 : Infinity;
+    const requestId = createDiagnosticRequestId();
+    let remainingOutput = 1024, recoveryUsed = false, recoveryNext = false, attemptNumber = 0;
     for (let index = startIndex; index < attempts.length; index += 1) {
         const attempt = attempts[index];
+        const maxTokens = judgment ? recoveryNext ? 512 : 256 : Number(filtered.max_tokens) || 1500;
+        const diagnosticMaxTokens = structuredFields?.[index]?._nativeStructuredOutput ? undefined : maxTokens;
+        // 辅助链总时限与最坏请求输出预算共享，不能对每个备用节点重新放大。
+        if (judgment && (Date.now() >= deadline || remainingOutput < maxTokens))
+            throw new CapabilityUpstreamError('辅助判断总时限或输出预算已耗尽', 'JUDGMENT_BUDGET_EXHAUSTED', false);
+        recoveryNext = false;
+        const attemptStartedAt = Date.now();
+        attemptNumber += 1;
         const controller = new AbortController();
-        const timeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+        const timeout = Math.min(deadline - Date.now(), Number.isFinite(requestedTimeout) && requestedTimeout > 0
             ? Math.max(1000, Math.min(REQUEST_TIMEOUT_CAP, requestedTimeout))
-            : index > 0 ? 10000 : REQUEST_TIMEOUT;
+            : index > 0 ? 10000 : REQUEST_TIMEOUT);
         const timer = setTimeout(() => controller.abort(), timeout);
         let cleanupExternalSignal = null;
         if (externalSignal && typeof externalSignal.addEventListener === 'function') {
@@ -674,7 +674,9 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
                 protocol: attempt.chatProtocol || getProviderCatalogEntry(attempt.provider)?.chatProtocol || 'openai-chat', configurationIdentity: chatStepIdentity(attempt, true) };
             extraBody._onRequestAttempt?.(execution);
             protocolStarted = true;
-            const response = await requestProtocolAttempt(messages, attempt, structuredFields?.[index] || filtered, tools, controller.signal);
+            if (judgment)
+                remainingOutput -= maxTokens;
+            const response = await requestProtocolAttempt(messages, attempt, judgment ? { ...filtered, max_tokens: maxTokens } : structuredFields?.[index] || filtered, tools, controller.signal);
             protocolCompleted = true;
             recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(response.usage), {
                 capability,
@@ -683,6 +685,11 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
                 readable: response.usageReadable,
             });
             const usage = readUsageDetails(response.usage);
+            recordModelDiagnostic({ requestId, capability, purpose, provider: attempt.provider || 'unknown', model: attempt.model,
+                status: 'success', elapsedMs: Date.now() - attemptStartedAt, attempt: attemptNumber, fallback: index > 0,
+                finishReason: response.finishReason, contentLength: response.result.type === 'text' ? response.result.content.length : 0,
+                reasoningLength: response.result.reasoning.length, maxTokens: diagnosticMaxTokens, usageReadable: response.usageReadable,
+                ...(response.usageReadable ? { inputTokens: usage.input, outputTokens: usage.output } : {}) });
             extraBody._onRequestUsage?.({ readable: response.usageReadable, promptTokens: usage.input, completionTokens: usage.output, totalTokens: getUsageTotal(response.usage) });
             // 当前协议适配器没有可验证的权重版本契约；不把配置名称冒充精确模型版本。
             extraBody._onRequestExecution?.({ ...execution, modelVersion: null, modelVersionReadable: false,
@@ -696,9 +703,27 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
                 throw error;
             const failure = error instanceof CapabilityUpstreamError
                 ? error
-                : new CapabilityUpstreamError('AI 上游网络请求失败', 'NETWORK_ERROR', true);
+                : new CapabilityUpstreamError(controller.signal.aborted ? 'AI 上游请求超时' : 'AI 上游网络请求失败', controller.signal.aborted ? 'TIMEOUT' : 'NETWORK_ERROR', true);
+            const readable = hasReadableTokenUsage(failure.details.usage);
+            const failedUsage = readUsageDetails(failure.details.usage);
+            recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(failure.details.usage), { capability, model: attempt.model, usage: failure.details.usage, readable });
+            const reason = getModelFailureReason(failure);
+            recordModelDiagnostic({ requestId, capability, purpose, provider: attempt.provider || 'unknown', model: attempt.model,
+                status: 'failure', elapsedMs: Date.now() - attemptStartedAt, attempt: attemptNumber, fallback: index > 0,
+                code: failure.code, httpStatus: failure.status, reason, summary: failure.details.summary, upstreamCode: failure.details.upstreamCode,
+                upstreamRequestId: failure.details.requestId, finishReason: failure.details.finishReason,
+                contentLength: failure.details.contentLength, reasoningLength: failure.details.reasoningLength, maxTokens: diagnosticMaxTokens, usageReadable: readable,
+                ...(readable ? { inputTokens: failedUsage.input, outputTokens: failedUsage.output } : {}) });
             console.warn(`[ai-api] capability_step_failed capability=${capability} provider=${attempt.provider || 'unknown'} model=${attempt.model} code=${failure.code}`);
-            await notifyCapabilityStepFailure(attempt.provider || 'unknown', attempt.model, capability).catch(() => false);
+            await notifyCapabilityStepFailure(attempt.provider || 'unknown', attempt.model, capability, { requestId, purpose, reason, status: failure.status, code: failure.code, summary: failure.details.summary, upstreamCode: failure.details.upstreamCode, upstreamRequestId: failure.details.requestId }).catch(() => false);
+            if (controller.signal.aborted || Date.now() >= deadline)
+                throw failure;
+            if (judgment && failure.code === 'OUTPUT_TRUNCATED' && !recoveryUsed && remainingOutput >= 512) {
+                recoveryUsed = true;
+                recoveryNext = true;
+                index -= 1;
+                continue;
+            }
             if (!failure.retryable || index >= attempts.length - 1)
                 throw failure;
         }
@@ -725,7 +750,7 @@ async function requestOpenAIResponsesWithSearch(messages, config) {
                 tools: [{ type: 'web_search' }],
             }),
         });
-        assertUpstreamResponseOk(response);
+        await assertModelResponseOk(response, requestDiagnosticSecrets(config, messages));
         const data = await readUpstreamJson(response);
         const usage = isRecord(data.usage) ? data.usage : undefined;
         recordTokenUsage(config.provider || 'unknown', getUsageTotal(usage), {

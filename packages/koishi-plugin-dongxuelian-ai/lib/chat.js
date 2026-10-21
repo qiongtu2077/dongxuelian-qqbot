@@ -665,7 +665,7 @@ async function chat(session, userText, ctx, options = {}) {
         try {
             const cfg = await loadConfig();
             const rareJudgeObj = await requestChatCompletions([{ role: 'system', content: '你是一个内容判断器。判断以下用户消息是否在阴阳 Bot 的国籍、稀有度或身份归属。只输出一个字：Y 或 N。不要输出任何其他文字。' },
-                { role: 'user', content: cleanInput.slice(0, 200) }], cfg, { max_tokens: 5 });
+                { role: 'user', content: cleanInput.slice(0, 200) }], cfg, { max_tokens: 256, _timeoutMs: 8000, _purpose: 'identity_judge' });
             const rareJudge = getChatCompletionText(rareJudgeObj);
             rareConfirmed = /^Y/i.test(rareJudge);
         }

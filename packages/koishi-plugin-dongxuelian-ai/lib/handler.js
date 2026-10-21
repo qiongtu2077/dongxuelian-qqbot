@@ -24,7 +24,7 @@ const { handlePlanCommand } = require('./commands/plan-command');
 const { handleAgentCommand } = require('./commands/agent-command');
 const { handleEmotionCommand } = require('./commands/emotion-command');
 const { DEFAULT_RANDOM_VOICE_RATE, getRandomVoiceRate } = require('./behavior/random-voice-rate');
-const { buildResourceStatusReply } = require('./bot-mode/status-reply');
+const { buildStatusCommandReply } = require('./bot-mode/status-reply');
 function getHandlerErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -501,7 +501,7 @@ async function handleCommand(session, ctx, state) {
         return handled(`未找到模型"${requestedName}"。可用模型：${allModels.join('、')}`);
     }
     if (plain === 'AI状态') {
-        return handled(await buildResourceStatusReply(true));
+        return handled(await buildStatusCommandReply(session, true));
     }
     if (plain === 'AI诊断') {
         if (!hasAdminPermission(session))

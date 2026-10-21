@@ -12,6 +12,7 @@ function makeResponse(item = {}) {
     status,
     headers: {
       get(name) {
+        if (item.headers?.[String(name).toLowerCase()]) return item.headers[String(name).toLowerCase()]
         if (String(name).toLowerCase() === 'content-type') return item.contentType || (item.invalidJson ? 'text/html' : 'application/json')
         return null
       },

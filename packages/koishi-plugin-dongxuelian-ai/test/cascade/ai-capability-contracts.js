@@ -142,12 +142,12 @@ async function runAiCapabilityContracts(context) {
   const notifications = []
   notifier.resetCapabilityFailureNotifier()
   notifier.setCapabilityFailureSender(async (adminId, message) => notifications.push({ adminId, message }))
-  const firstNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 'text', 1000)
-  const cooledNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 'text', 1001)
-  const expiredNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 'text', 1000 + notifier.FAILURE_NOTIFICATION_COOLDOWN_MS)
-  check('failure notifier applies provider-model cooldown', firstNotify === true && cooledNotify === false && expiredNotify === true)
-  check('failure notifier dynamically sends to all admins', notifications.length === 4 && new Set(notifications.map(item => item.adminId)).size === 2, JSON.stringify(notifications))
-  check('failure notification includes capability provider and model', notifications.every(item => item.message.startsWith('文字高优先级模型出错') && item.message.includes('供应商：GPT') && item.message.includes('模型：gpt-4o')), JSON.stringify(notifications))
+  const firstNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 'text')
+  const repeatedNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 'text')
+  const thirdNotify = await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', 'text')
+  check('failure notifier never suppresses repeated business failures', firstNotify === true && repeatedNotify === true && thirdNotify === true && notifier.FAILURE_NOTIFICATION_COOLDOWN_MS === 0)
+  check('failure notifier dynamically sends to all admins', notifications.length === 6 && new Set(notifications.map(item => item.adminId)).size === 2, JSON.stringify(notifications))
+  check('failure notification includes capability provider and model', notifications.every(item => item.message.startsWith('文字模型调用失败') && item.message.includes('供应商：GPT') && item.message.includes('模型：gpt-4o')), JSON.stringify(notifications))
   notifier.resetCapabilityFailureNotifier()
 
   api.recordTokenUsage('openai', 15, { capability: 'text', model: 'capability-usage-readable', usage: { input_tokens: 10, output_tokens: 5 }, readable: true })

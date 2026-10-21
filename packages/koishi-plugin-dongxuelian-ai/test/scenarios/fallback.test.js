@@ -205,15 +205,15 @@ async function runFailureCapabilityNotifications(t) {
         } catch (error) { failure = error }
         t.check(`${capability} failure retains HTTP 400`, /HTTP 400/.test(failure?.message), failure?.message)
       }
-      const text = notifications.filter(item => item.message.startsWith('文字高优先级模型出错'))
-      const vision = notifications.filter(item => item.message.startsWith('识图高优先级模型出错'))
-      t.check('text failure notification reaches admins once despite repeated failures', text.length > 0 && new Set(text.map(item => item.adminId)).size === text.length, JSON.stringify(text))
-      t.check('same-model vision failure is not hidden by text cooldown', vision.length === text.length && vision.length > 0, JSON.stringify(vision))
+      const text = notifications.filter(item => item.message.startsWith('文字模型调用失败'))
+      const vision = notifications.filter(item => item.message.startsWith('识图模型调用失败'))
+      t.check('each repeated text failure reaches every admin', text.length > 0 && new Set(text.map(item => item.adminId)).size * 2 === text.length, JSON.stringify(text))
+      t.check('same-model vision failure is independent', vision.length * 2 === text.length && vision.length > 0, JSON.stringify(vision))
       t.check('capability notifications preserve supplier model and sanitization', notifications.every(item => item.message.includes('供应商：GPT') && item.message.includes('模型：gpt-4o') && !item.message.includes('private upstream body') && !item.message.includes('sk-current-secret')), JSON.stringify(notifications))
       for (const [capability, label] of [['voice-asr', '语音识别'], ['voice-tts', '语音合成']]) {
         const before = notifications.length
         await notifier.notifyCapabilityStepFailure('openai', 'gpt-4o', capability)
-        t.check(`${capability} notification displays its capability`, notifications.length > before && notifications.slice(before).every(item => item.message.startsWith(label + '高优先级模型出错')), JSON.stringify(notifications.slice(before)))
+        t.check(`${capability} notification displays its capability`, notifications.length > before && notifications.slice(before).every(item => item.message.startsWith(label + '模型调用失败')), JSON.stringify(notifications.slice(before)))
       }
     } finally { notifier.resetCapabilityFailureNotifier() }
   })
@@ -228,6 +228,7 @@ async function runFrozenRouteCases(t) {
     const result = await requestManagedText(api, { _frozenRoute: route, _frozenRouteStartStepIndex: 1, _onRequestExecution: value => { execution = value } })
     t.checkEqual('explicit frozen recovery uses next node once', mocked.calls.length, 1)
     t.checkEqual('explicit frozen recovery produces valid result', readResultText(result), 'recovery-backup-ok')
+    t.check('explicit frozen backup is visible in recent status', require('../../lib/core/request-diagnostics').formatRecentModelDiagnostic().includes('备用接手成功'))
     t.checkEqual('recovery keeps original route identity', execution?.routeIdentity, route.identity)
     t.checkEqual('recovery keeps actual full-chain step index', execution?.stepIndex, 1)
     checkOpenAiCall(t, 'explicit frozen recovery node', mocked.calls[0], TEXT_CHAIN[1], 'https://api.openai.com/v1')

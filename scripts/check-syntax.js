@@ -13,6 +13,7 @@ const CHECK_DIRS = [
 
 const CHECK_FILES = [
   'packages/koishi-plugin-dongxuelian-ai/lib/diagnostics/model-connectivity.js',
+  'packages/koishi-plugin-dongxuelian-ai/lib/core/request-diagnostics.js',
   'packages/koishi-plugin-daily-report/lib/report-evidence.js',
   'packages/koishi-plugin-daily-report/lib/report-candidates.js',
   'packages/koishi-plugin-daily-report/lib/report-exchange.js',

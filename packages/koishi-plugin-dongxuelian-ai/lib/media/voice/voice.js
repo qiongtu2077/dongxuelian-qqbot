@@ -11,6 +11,7 @@ const { execFile } = require('child_process');
 const { recordTokenUsage } = require('../../core/api');
 const { resolveCapabilityRuntimeSteps } = require('../../core/ai-capability-config');
 const { notifyCapabilityStepFailure } = require('../../core/capability-failure-notifier');
+const { ModelRequestError, assertModelResponseOk, buildModelFailureNotice, getFailedModelUsage, createDiagnosticRequestId, recordModelDiagnostic } = require('../../core/request-diagnostics');
 const { extractVoiceUrls, validatePublicHttpUrl, resolveAndValidateHostname } = require('../../core/utils');
 const { DATA_DIR } = require('../../core/constants');
 const ASR_TIMEOUT_MS = 10000;
@@ -160,14 +161,6 @@ function pcmToWav(pcmData, sampleRate, channels, bitsPerSample) {
     header.writeUInt32LE(dataSize, 40);
     return Buffer.concat([header, Buffer.from(pcmData)]);
 }
-// 把上游 ASR HTTP 状态转换为不含响应正文的稳定错误。
-function assertAsrResponseOk(response) {
-    if (response.ok)
-        return;
-    const error = new Error(`语音识别上游失败（HTTP ${response.status}）`);
-    error.retryable = response.status === 401 || response.status === 403 || response.status === 429 || response.status >= 500;
-    throw error;
-}
 // 安全解析 ASR JSON，解析失败可进入下一优先级且不泄露上游正文。
 async function readAsrJson(response) {
     try {
@@ -176,32 +169,28 @@ async function readAsrJson(response) {
             return value;
     }
     catch { /* handled below */ }
-    const error = new Error('语音识别上游返回了无法解析的结果');
-    error.retryable = true;
-    throw error;
+    throw new ModelRequestError('语音识别上游返回了无法解析的结果', 'INVALID_RESPONSE', true);
 }
 // 通过 OpenAI 官方 audio/transcriptions 协议转写一个 WAV 文件。
-async function requestOpenAiAsr(wavPath, step, signal) {
+async function requestOpenAiAsr(audioBytes, step, signal) {
     const form = new FormData();
     form.append('model', step.model);
-    form.append('file', new Blob([fs.readFileSync(wavPath)], { type: 'audio/wav' }), 'voice.wav');
+    form.append('file', new Blob([new Uint8Array(audioBytes)], { type: 'audio/wav' }), 'voice.wav');
     const response = await fetch(`${step.baseURL.replace(/\/+$/, '')}/audio/transcriptions`, {
         method: 'POST', signal, headers: { Authorization: `Bearer ${step.apiKey}` }, body: form,
     });
-    assertAsrResponseOk(response);
+    await assertModelResponseOk(response, [step.apiKey]);
     const data = await readAsrJson(response);
+    const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage : undefined;
     const text = String(data.text || '').trim();
     if (!text) {
-        const error = new Error('语音识别上游返回空结果');
-        error.retryable = true;
-        throw error;
+        throw new ModelRequestError('语音识别上游返回空结果', 'EMPTY_RESPONSE', true, 200, { usage });
     }
-    const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage : undefined;
     return { text, usage, readable: !!usage && Object.keys(usage).some(key => /tokens/i.test(key)) };
 }
 // 通过小米已验证的 OpenAI 兼容多模态路径调用专用 ASR 模型。
-async function requestMimoriumAsr(wavPath, step, signal) {
-    const audio = `data:audio/wav;base64,${fs.readFileSync(wavPath).toString('base64')}`;
+async function requestMimoriumAsr(audioBytes, step, signal) {
+    const audio = `data:audio/wav;base64,${audioBytes.toString('base64')}`;
     const response = await fetch(`${step.baseURL.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${step.apiKey}` },
@@ -214,18 +203,16 @@ async function requestMimoriumAsr(wavPath, step, signal) {
                     ] }],
         }),
     });
-    assertAsrResponseOk(response);
+    await assertModelResponseOk(response, [step.apiKey, audio]);
     const data = await readAsrJson(response);
+    const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage : undefined;
     const choices = Array.isArray(data.choices) ? data.choices : [];
     const first = choices[0] && typeof choices[0] === 'object' ? choices[0] : {};
     const message = first.message && typeof first.message === 'object' ? first.message : {};
     const text = String(message.content || '').trim();
     if (!text) {
-        const error = new Error('语音识别上游返回空结果');
-        error.retryable = true;
-        throw error;
+        throw new ModelRequestError('语音识别上游返回空结果', 'EMPTY_RESPONSE', true, 200, { usage });
     }
-    const usage = data.usage && typeof data.usage === 'object' && !Array.isArray(data.usage) ? data.usage : undefined;
     return { text, usage, readable: !!usage && Object.keys(usage).some(key => /tokens/i.test(key)) };
 }
 // 读取 voice-asr 优先级并按顺序转写；配置为空时不发起任何请求。
@@ -233,24 +220,34 @@ async function callModelAsr(wavPath, _config) {
     const steps = resolveCapabilityRuntimeSteps('voice-asr');
     if (!steps.length)
         throw new Error('该能力未配置模型');
+    // 本地文件读取在上游尝试之外完成，文件错误不发送模型故障告警。
+    const audioBytes = fs.readFileSync(wavPath);
+    const requestId = createDiagnosticRequestId();
     for (let index = 0; index < steps.length; index += 1) {
         const step = steps[index];
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), ASR_TIMEOUT_MS);
+        const startedAt = Date.now();
         try {
             const result = step.provider === 'openai'
-                ? await requestOpenAiAsr(wavPath, step, controller.signal)
-                : await requestMimoriumAsr(wavPath, step, controller.signal);
+                ? await requestOpenAiAsr(audioBytes, step, controller.signal)
+                : await requestMimoriumAsr(audioBytes, step, controller.signal);
             const usage = result.usage || {};
             const total = Number(usage.total_tokens || usage.totalTokens || 0)
                 || Number(usage.input_tokens || usage.prompt_tokens || 0) + Number(usage.output_tokens || usage.completion_tokens || 0);
             recordTokenUsage(step.provider, Number.isFinite(total) ? total : 0, { capability: 'voice-asr', model: step.model, usage, readable: result.readable });
+            recordModelDiagnostic({ requestId, capability: 'voice-asr', purpose: 'voice-asr', provider: step.provider, model: step.model, status: 'success', elapsedMs: Date.now() - startedAt, attempt: index + 1, fallback: index > 0, usageReadable: result.readable });
             return result.text;
         }
         catch (error) {
             const retryable = error?.retryable !== false;
             console.warn(`[voice-asr] capability_step_failed provider=${step.provider} model=${step.model}`);
-            await notifyCapabilityStepFailure(step.provider, step.model, 'voice-asr').catch(() => false);
+            const notice = buildModelFailureNotice(error, controller.signal.aborted, requestId, 'voice-asr');
+            const failedUsage = getFailedModelUsage(error);
+            recordTokenUsage(step.provider, failedUsage.total, { capability: 'voice-asr', model: step.model, usage: failedUsage.usage, readable: failedUsage.readable });
+            recordModelDiagnostic({ ...notice, capability: 'voice-asr', provider: step.provider, model: step.model, status: 'failure', elapsedMs: Date.now() - startedAt, attempt: index + 1, fallback: index > 0, httpStatus: notice.status, usageReadable: failedUsage.readable,
+                ...(failedUsage.readable ? { inputTokens: failedUsage.inputTokens, outputTokens: failedUsage.outputTokens } : {}) });
+            await notifyCapabilityStepFailure(step.provider, step.model, 'voice-asr', notice).catch(() => false);
             if (!retryable || index >= steps.length - 1)
                 throw error;
         }

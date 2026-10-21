@@ -7,6 +7,16 @@ const path = require('path')
 function buildCoverageMap(AI_ROOT) {
   return [
   {
+    behavior: 'model failure evidence Chinese notification bounded judgment and failed media usage',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'model-diagnostics.test.js'),
+    needles: ['HTTP code includes Chinese status', 'whole chain allows only one expansion', 'in-flight cancel makes no notification', 'TTS invalid audio preserves actual failed-call usage'],
+  },
+  {
+    behavior: 'AI status merged records shared cooldown and fallback',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'status-connectivity.test.js'),
+    needles: ['private AI status uses merged private record', 'cooldown never sends merged record', 'failed merged record falls back to readable status'],
+  },
+  {
     behavior: 'daily report complete delivery and persistent confirmation',
     file: path.join(AI_ROOT, 'test', 'helpers', 'daily-report-delivery-fixture.js'),
     needles: ['splitDailyReportText', 'restart-partial', 'unknown-receipt', 'REPORT_TIMEOUT_TEXT', '1050'],

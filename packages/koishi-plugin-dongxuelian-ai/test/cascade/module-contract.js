@@ -125,6 +125,7 @@ async function runModuleContract(context) {
     sendGuard: path.join(LIB, 'reply', 'send-guard'),
     healthCheck: path.join(LIB, 'diagnostics', 'health-check'),
     modelConnectivity: path.join(LIB, 'diagnostics', 'model-connectivity'),
+    requestDiagnostics: path.join(LIB, 'core', 'request-diagnostics'),
     agentEngine: path.join(LIB, 'agent', 'engine'),
     agentMessages: path.join(LIB, 'agent', 'messages'),
     agentConfig: path.join(LIB, 'agent', 'config'),
@@ -581,6 +582,7 @@ async function runModuleContract(context) {
       'runHealthCheck', 'formatHealthReport', 'resetHealthCache',
     ],
     modelConnectivity: ['runTextConnectivityCheck'],
+    requestDiagnostics: ['ModelRequestError', 'sanitizeDiagnosticText', 'assertModelResponseOk', 'getModelFailureReason', 'getFailedModelUsage', 'formatModelHttpStatus', 'createDiagnosticRequestId', 'buildModelFailureNotice', 'recordModelDiagnostic', 'formatRecentModelDiagnostic'],
     retaliation: [
       'calculateRetaliationScore',
     ],
